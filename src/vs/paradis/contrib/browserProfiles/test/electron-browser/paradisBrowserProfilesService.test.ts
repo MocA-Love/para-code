@@ -117,6 +117,31 @@ suite('ParadisBrowserProfilesService', () => {
 		assert.strictEqual(service.list()[0].id, created.profile.id);
 	});
 
+	test('a profile created for an agent is marked so only agent-made profiles can be deleted by agents', () => {
+		const { service } = createService();
+		const byUser = service.create('USER', '#3fb950');
+		const byAgent = service.create('AGENT', '#3fb950', { createdByAgent: true });
+		assert.deepStrictEqual(
+			[byUser.ok && byUser.profile.createdByAgent, byAgent.ok && byAgent.profile.createdByAgent],
+			[undefined, true],
+		);
+	});
+
+	test('the agent marks come off once the user uses, renames or recolours the profile', () => {
+		const { service } = createService();
+		const first = service.create('ONE', '#3fb950', { createdByAgent: true, agentOwner: '0123456789abcdef' });
+		const second = service.create('TWO', '#3fb950', { createdByAgent: true, agentOwner: '0123456789abcdef' });
+		const third = service.create('THREE', '#3fb950', { createdByAgent: true, agentOwner: '0123456789abcdef' });
+		assert.ok(first.ok && second.ok && third.ok);
+		service.claimForUser(first.profile.id);
+		service.rename(second.profile.id, 'TWO renamed');
+		service.setColor(third.profile.id, '#a371f7');
+		assert.deepStrictEqual(
+			service.list().map(entry => [entry.createdByAgent, entry.agentOwner]),
+			[[undefined, undefined], [undefined, undefined], [undefined, undefined]],
+		);
+	});
+
 	test('empty and duplicate names are rejected with a reason instead of creating a profile', () => {
 		const { service } = createService();
 		service.create('TEST', '#3fb950');

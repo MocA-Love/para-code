@@ -13,9 +13,47 @@
 // (paradisCdpFilterProxy.ts) が複数paneでの同一Electronセッション共有を守るため拒否しているので、
 // ここではmainプロセス側で恒久的に配線する。呼び出し元は browserSession.ts の configure()（PARA-PATCH 1行）。
 
-import { app } from 'electron';
+import * as fs from 'fs';
+import { app, shell } from 'electron';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { paradisConfigureBrowserDownloadsWithPath } from './paradisBrowserDownloadsCore.js';
+import { paradisConfigureBrowserDownloadsWithPath, paradisResolveBrowserDownloadsDirectory } from './paradisBrowserDownloadsCore.js';
+import { IParadisDownloadOrigin, ParadisBrowserDownloadsTracker } from './paradisBrowserDownloadsTracker.js';
+import { paradisEnsureDownloadQuarantine } from './paradisDownloadQuarantine.js';
+
+/**
+ * main プロセスに1つだけのダウンロード一覧。セッション（グローバル・ワークスペース・プロファイル・
+ * エージェント…）ごとに `will-download` を配線するので、どのセッションのダウンロードもここへ集まる。
+ * 最初に触った側（セッションの configure() か app.ts から呼ばれる登録）が作る。どちらも同じ main の
+ * IConfigurationService を渡してくる。終了処理で dispose された後も差し替えない（dispose 済みの一覧は
+ * 何も記録しないので、終了間際に作られたセッションが繋がっていない新しい一覧へ記録することが無い）。
+ */
+let tracker: ParadisBrowserDownloadsTracker | undefined;
+
+/**
+ * Electron のセッションから、どの保存領域（エージェント専用か・どのプロファイルか）かを引く口。
+ * BrowserSession を知っている paradisBrowserDownloadsMain.ts が登録する（ここから BrowserSession を
+ * import すると、browserSession.ts との間で import が循環するため）。
+ */
+let originResolver: ((session: Electron.Session) => IParadisDownloadOrigin) | undefined;
+
+export function paradisSetBrowserDownloadOriginResolver(resolver: (session: Electron.Session) => IParadisDownloadOrigin): void {
+	originResolver = resolver;
+}
+
+export function paradisGetBrowserDownloadsTracker(configurationService: IConfigurationService): ParadisBrowserDownloadsTracker {
+	if (!tracker) {
+		tracker = new ParadisBrowserDownloadsTracker(
+			{
+				openPath: path => shell.openPath(path),
+				showItemInFolder: path => shell.showItemInFolder(path),
+				exists: path => fs.existsSync(path),
+				ensureQuarantine: async (path, sourceUrl) => (await paradisEnsureDownloadQuarantine(path, sourceUrl)) !== 'failed',
+			},
+			() => paradisResolveBrowserDownloadsDirectory(configurationService, () => app.getPath('downloads')),
+		);
+	}
+	return tracker;
+}
 
 /**
  * 内蔵ブラウザ用のElectronセッションへダウンロード自動保存を配線する。設定は `will-download` の
@@ -26,5 +64,8 @@ import { paradisConfigureBrowserDownloadsWithPath } from './paradisBrowserDownlo
  * `undefined` を「既定へフォールバック」側へ倒すため、既定ON・既定パスの意図した挙動になる。
  */
 export function paradisConfigureBrowserDownloads(session: Electron.Session, configurationService: IConfigurationService): void {
-	paradisConfigureBrowserDownloadsWithPath(session, configurationService, () => app.getPath('downloads'));
+	const downloads = paradisGetBrowserDownloadsTracker(configurationService);
+	paradisConfigureBrowserDownloadsWithPath(session, configurationService, () => app.getPath('downloads'), (item, from) => {
+		downloads.track(item, originResolver?.(from) ?? { agentSession: false });
+	});
 }

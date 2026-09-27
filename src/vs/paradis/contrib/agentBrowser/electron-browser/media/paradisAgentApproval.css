@@ -1,0 +1,16 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* Approval dialogs for agent requests (sharing a user's page, using a user's browser profile).
+	The workbench modal layer is 2575, but the fork's own modals (binding dialog, settings,
+	notification settings, ...) sit at 2600-2800. An agent request can arrive while one of those is
+	open; underneath it the approval would be invisible and silently time out. Only this dialog's
+	modal block is lifted above them. It is a deliberate exception to "fork UI stays below 2575":
+	this is a blocking security prompt, not a popover. */
+.monaco-workbench .monaco-dialog-modal-block:has(.paradis-agent-approval-dialog) {
+	z-index: 2850;
+}

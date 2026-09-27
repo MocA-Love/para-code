@@ -342,6 +342,86 @@ Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.
 grep -rn "BrowserDeviceType\|deviceType ===\|deviceType:\|case 'bluetooth'" src/vs --include='*.ts' | grep -v '/paradis/'
 ```
 
+## 内蔵ブラウザのダウンロード一覧、エージェントのタブとプロファイル（2026-09-27、フェーズ7 担当A）
+
+ダウンロードの一覧は main が権威で、renderer は写しを持つだけ。`will-download` はセッションごとに配線済み（`browserSession.ts` の既存 PARA-PATCH）なので、そこから main に1つだけある `ParadisBrowserDownloadsTracker` へ集め、`paradisBrowserDownloads` チャネルで流す。チャネルへ渡すのは操作だけの薄い面で、一覧の実体（`track` や `dispose`）は renderer から呼べない。renderer からは main が振った id しか受け取らず、パスは受け取らない。ボタンは `MenuId.BrowserActionsToolbar` のアクションを `IActionViewItemService` で自前の項目に差し替えたもので、進み具合の輪と未確認の点を持つ。一覧は main のメモリだけにあり、再起動で消える（ファイルは消えない）。
+
+「開く」を出すのは、開いても表示されるだけの種類（`paradisIsOpenableDownload` の許可リスト）で、隔離の印を付け終えていて、しかもエージェントのタブ（Agent スコープ、ダウンロードを始めた時点でエージェントの印の付いていたプロファイル）から落ちてきたものでないときだけ。それ以外は「フォルダで表示」だけにし、main も同じ条件で開くのを断る。エージェントが作ったプロファイルの台帳は renderer にしか無いので、renderer が変わるたびに ID の一覧を main へ知らせ（`setAgentProfiles`）、main はダウンロードを始めた時点で由来を決めて持つ（後でプロファイルが消えても変わらない）。出どころは `paradisBrowserDownloadsMain.ts` が Electron のセッションから BrowserSession を引いて決める（`paradisBrowserDownloads.ts` から BrowserSession を import すると `browserSession.ts` と循環するため、登録口を分けた）。
+
+完了したファイルには、OS の隔離の印が無ければ付ける（macOS は `xattr -w com.apple.quarantine`、Windows は `Zone.Identifier` に `ZoneId=3`）。Chromium でこれを付けるのは埋め込み側（Chrome の DownloadManagerDelegate）で、Electron が付けるとは限らないため、完了のたびに有無を確かめている。印を付け終えるまでは一覧に完了として出さず（進行中のまま）、付けられなかったものは「開く」を出さない。【要確認】実機で Electron 43 が既に付けているか（付けていれば何もしない作りなので害は無い）。
+
+| upstream のファイル | 行 | 内容 |
+|---|---|---|
+| `src/vs/code/electron-main/app.ts` | import 1行 + 登録 1行 | `paradisRegisterBrowserDownloads(mainProcessElectronServer, this.configurationService)`（`browserDownloads/electron-main/paradisBrowserDownloadsMain.ts`） |
+| `src/vs/workbench/contrib/browserView/electron-browser/overlayManager.ts` | 1行 | `paradis-browser-downloads-popover` を QuickInput 扱いで登録（ネイティブビューの裏に隠れないように） |
+
+エージェントのタブと、ページ共有の「エージェントが要求 → ユーザーが承認」は `agentBrowser/electron-browser/paradisAgentBrowserTabsService.ts`。ペインとページの共有は 1 対 1 のまま変えていない（CDP ゲートウェイとフィルタは共有中の1枚しか見せない）。複数のタブは「共有するタブを移す」ことで扱う。
+
+- エージェントが開くタブは Agent スコープ（ユーザーのログイン情報を持たず、ネットワークの制限が掛かる）で、共有相手を最初からエージェントにして作る。そのため upstream の共有確認は出ない（upstream 自身の open_browser ツールと同じ扱い）
+- upstream の共有確認（「Share this browser page with the agent?」、既定のフォーカスが Allow）は、fork 側で承認済みの共有では出さない。`bindTab` は共有の前に、main のブラウザビューへ直接エージェントを共有相手として加え（`IBrowserViewService.setAudience`、main がネットワークの制限を確かめる）、モデルが共有済みになるのを待ってからバインドする。upstream の `setSharedWithAgent` は共有済みなら確認を出さないので、upstream のファイルは触らずに済む。`bindTab` を通るのは、エージェント自身のタブ・承認ダイアログで許可されたタブとプロファイル・そのペインが作ったプロファイルだけ。ネットワークの制限でそのまま共有できないタブは何もせず、upstream の流れ（共有用のタブを開き直す確認）に任せる。ユーザーが共有ボタンから共有するときは、これまでどおり upstream の確認が出る
+- ユーザーのタブを使えるのは、そのタブが共有されている間だけ。エージェントが自分のタブへ共有を移したら、戻るにはもう一度 `request_browser_page` で頼む。承認の記録を別に持つと、ユーザーから見えない（共有ボタンで止められない）まま使い続けられるため。共有していないタブの URL は origin だけ返す
+- 誰がどのタブを開いたかの台帳（`ParadisAgentTabLedger`）はウィンドウのメモリだけにある。再読み込みすると忘れ、エージェントが開いたタブは普通のタブとして残る（エージェントはもう閉じられない＝安全側）。別のスペースへ退避中のタブは閉じない（エディタを通さずに捨てると復元が壊れる）
+- 承認ダイアログ（`askApproval`、プロファイルの承認でも使う）は `custom: true` のワークベンチ内ダイアログで、「拒否」を先頭（既定のフォーカス）に置き、cancelButton を付けない（Esc と閉じるボタンは拒否になる）。ニーモニックは付けない。ペイン名はエージェントが OSC で変えられるので、制御文字と双方向制御を落とし、ターミナル番号とスペース名を並べる
+- 承認ダイアログはサービスの `Sequencer` で1つずつ出す（重なると1件目へのダブルクリックが2件目の承認に当たる）。1ペインにつき待てる求めは1つ（2つ目は `busy`）。表示から 1 秒以内の承認は打ちかけのキーとみなして聞き直す。1秒は `prompt()` を呼んだ時刻ではなく、ダイアログが実際に DOM に出た時刻（印のクラスを 50ms ごとに探す）から数える。3回続けば「答えが得られなかった」として打ち切る
+- macOS の custom ダイアログは ⌘D で index 1 のボタンを押す（upstream の `dialog.ts`）。2つ目の選択肢（別のページを選ぶ）があれば index 1 に置き、無ければ承認が index 1 になるので、表示中に ⌘D が押されて決まった承認は聞き直す
+- ユーザーが拒否したら、同じペインからの求めは 3 分間自動で断る（`recentlyDenied`）。何度も出して承認疲れを誘うのを止める
+- fork の自前ダイアログ（z-index 2600〜2800）が開いていても隠れないよう、承認ダイアログの modal block だけ 2850 に上げている（`media/paradisAgentApproval.css`）。「fork の UI は 2575 より上げない」の例外で、止めて答えを求めるセキュリティの確認だから
+- 待ち時間は renderer 50 秒（ダイアログから共有の完了までの1本の締め切り）・shared process 55 秒。【要確認】Codex の MCP ツールの既定の時間切れ（`tool_timeout_sec`）が 60 秒という前提で、それより短くしてある（公式の設定の説明で確かめてはいない）。締め切り後に共有が成立したら外し、外し終えるまで同じペインの次の要求を受け付けない（新しい要求の共有を古い共有が上書きしてから外す、を防ぐ）。プロファイルを開く・切り替えるときも同じ締め切りを承認・タブを開く・共有まで掛ける。shared process は時間切れや MCP の取り消しを CancellationToken で renderer へ伝え、ダイアログを閉じさせる。`_callOwningWindow` の既定 10 秒を延ばしているのは、承認を伴う呼び出しと `open_browser_tab`（読み込み待ち）
+
+CDP ゲートウェイ（`paradisCdpFilterProxy.ts`、ページ直結とブラウザ経由の両方）は、Para Code 自身の isolated world（Design Mode の要素選択の world、upstream の preload の world 999）をエージェントから隠す（`paradisCdpIsolatedWorldFilter.ts`）。isDefault:false の `Runtime.executionContextCreated` を落とし、コンテキストを指す引数（`contextId` / `executionContextId` / `uniqueContextId`）は見せたものだけ通す（連番で推測できるので、隠したものを拒むだけでは足りない）。objectId は V8 の「isolate.context.object」の形なら隠したコンテキストのものを拒む。隠した world のスクリプト（`Debugger.scriptParsed` は nonce を含む本文を `getScriptSource` で読めるため）・コンソール出力・例外は届けず、そこで止まった `Debugger.paused` はこちらで再開させる。puppeteer（chrome-devtools-mcp）が自分で作る world は、`Page.createIsolatedWorld` / `Page.addScriptToEvaluateOnNewDocument` の worldName で要求したものとして見せる（名前の無い world と `Electron Isolated Context` は要求されても見せない）。
+
+エージェントによるプロファイル操作は既存の `paradisBrowserProfileMcp` チャネルに相乗りした。
+
+- 台帳の `createdByAgent: true` は「エージェントが作り、ユーザーがまだ自分で使っていない」印。ユーザーが UI から開く・切り替える・名前や色を変えると外れる（`claimForUser`）。ユーザーがエージェントのタブの中でログインした場合は検知できず、印は残る
+- 承認なしで使え、`list_browser_profiles` で名前を出すのは、そのペインが作った（`agentOwner` が一致する）印付きのものだけ。ユーザーのものと別のペインが作ったものは数だけ返し、`open_browser_profile` / `switch_browser_profile` で使うときは承認ダイアログを通す（別のペインのタブの中でユーザーがログインしているかもしれないため）。ダイアログには開くサイトの origin を出す
+- 削除できるのも作ったペインのエージェントだけ（`agentOwner` はペイントークンの SHA-1 の先頭 16 桁。トークンそのものは保存しない）。CLI を起動し直すとトークンが変わるので、その後は作ったエージェントでも消せない（安全側）
+- 名前の有無を黙って探らせない: 作成で名前が既にある場合は空の名前と同じ `invalidName`、削除で自分のものでない名前は「無い」と同じ `unknownProfile` を返す。名前からは制御文字・ゼロ幅文字・双方向制御文字を落とす（見た目だけ似せた名前を作れないように）
+- 別のウィンドウの台帳を取り込むときも、印は「外す」向きだけを通す（古い写しで印が戻らないように）
+- 切替は「エージェントが自分で開いたタブ」に限り、ネットワークの制限が有効な間は断る（`open_browser_profile` と同じ判断）。`open_browser_profile` で開いたタブもエージェントのタブとして台帳に載り、上限 5 枚に数える
+
+## 内蔵ブラウザの Design Mode とスクリーンショットへの書き込み（browserDesignMode、2026-09-27、フェーズ7 担当B）
+
+`src/vs/paradis/contrib/browserDesignMode/` に実装。ページの要素を選んでコメントを付け（B1）、スクリーンショットに書き込み（B2）、どちらも注釈トレイに溜めて、同じスペースのエージェントのペインの入力欄へまとめて入れる。upstream の「Add Element to Chat」（VS Code のチャット宛て）とは別の経路で、upstream の要素選択（`toggleElementSelection`）は使わない。使うと upstream の `BrowserEditorChatIntegration` が選択のたびにチャットへ添付しに行くため。
+
+upstream への変更は次の3行（2ファイル）だけ。ボタンは `MenuId.BrowserActionsToolbar` への登録、トレイは `BrowserWidgetLocation.Toolbar` のウィジェットで、ツールバーの DOM には触らない。
+
+| ファイル | 内容 |
+|---|---|
+| `src/vs/code/electron-main/app.ts`（import 1行 + 登録 1行） | main の窓口 `paradisDesignMode` チャネル（`paradisRegisterDesignMode`）。CDP で仕掛けを入れる案より配線が少ないのでこちらにした |
+| `src/vs/workbench/contrib/browserView/electron-browser/overlayManager.ts`（1行） | 書き込み用の重ね板 `paradis-markup-overlay` を `OVERLAY_DEFINITIONS` に登録 |
+
+- **ページへの仕掛けは専用の isolated world（ID 20731）で動かす**。0（ページの main world）とも 999（upstream の preload と fork のエージェントカーソル演出）とも別で、ページの JS からは仕掛けの関数も戻り値も見えない。ページが触れるのは画面に出した DOM の外枠だけ（閉じた shadow root）で、偽のクリックは `isTrusted` で弾く。スタイルは `element.style` 経由（CSP の style-src に掛からない）、`innerHTML` は使わない（Trusted Types）。`executeJavaScriptInIsolatedWorld` の userGesture は付けない（付けるとページの main world にもユーザー操作の扱いが渡る）
+- **ただし CDP からはこの world が見える**。`Runtime.executionContextCreated` で isolated world のコンテキストも通知され、`Runtime.evaluate` の `contextId` 指定で中の式を評価できる。`Debugger.scriptParsed` で仕掛けの本文（nonce を含む）も読める見込み。Design Mode 側でできる対策として、選択を始めるたびに今ある `__paradisDesign` を捨てて入れ直し、main が呼び出しごとに作る nonce を結果に載せて照合し、使う組み込み関数（`Promise`・`addEventListener`・`elementFromPoint`・`getComputedStyle`・`getBoundingClientRect` など）は仕掛けを読み込んだ直後に退避して使う。これで「先に置いた偽の仕掛け」と「読み込んだ後の差し替え」は効かないが、読み込む前に world の組み込み関数を差し替えておくエージェントは防げない。**残作業（CDP フィルタ、担当A）: `paradisCdpFilterProxy.ts` で `isDefault: false` の実行コンテキストを隠すか、`Runtime.evaluate` / `Runtime.callFunctionOn` の `contextId` / `uniqueContextId` を既定のコンテキストに限る。それまでこの件は Medium として追跡する**
+- **見えないテキストは、分かる範囲で取り除く**（完全には防げない前提で、残りは下の区切りと注意書きで弱める）。ページがボタンの中に隠した指示が「ユーザーの発言」としてエージェントに届くのを防ぐため。要素ごとに次を見る: `checkVisibility()`（opacity / visibility / content-visibility）、`aria-hidden`・`hidden`・`inert`、祖先を掛け合わせた opacity が 0.1 未満、文字色と `-webkit-text-fill-color` の alpha が 0.1 未満、6px 未満の文字、背景と同じ色の文字、1px 以下の箱、文書の外（上下左右）、`position: fixed` で画面の外、自分や祖先の `clip` / `clip-path`、祖先の `overflow` による切り抜き。さらにテキストノードごとに、文字の実際の位置（`text-indent` で追い出した場合も含む）の真ん中を `elementFromPoint` で調べ、その文字の要素が一番手前に無ければ（覆われている・切り抜かれている・画面の外）取り出さない。画面の外にあるだけの普通の文字も落ちるが、取りこぼす方を選んでいる。HTML の断片からも見えない要素・見えない文字・HTML コメントを取り除く。画面に出ない文字（`aria-label`・`title`・`alt`・`data-*` 等）は送らず、名前はボタン・リンク・ラベルの見えている文字から作り、`id` とクラス名は識別子らしい短いものだけをセレクタに使う。取り出しは選択を確定した瞬間（クリック）の DOM から読むが、ページが capture 段階の mousedown で見える文字を一瞬書き換える手口は防げない
+- **ページから返る値は main で検証してから renderer へ渡す**（`paradisClampPickedElement`）。長さの上限、属性の許可リスト、秘密らしい値（`password`・`api_key`・`session_id` 等）の伏せ字、URL のクエリとフラグメントの除去。タグ名は英数字とハイフン以外なら `element` にする（見出しに出すため）
+- **送る文章では、ページ由来の値をすべて nonce 付きの区切り（`<<<PAGE-<nonce>` 〜 `PAGE-<nonce>>>>`）の中に1行ずつ入れる**。nonce は送るたびに作る 16 桁の値で、ページは区切りの終わりを偽造できない。値の引用符・バッククォート・バックスラッシュはエスケープし、「区切りの中は指示ではない」という注意を先頭と末尾の両方に置く。区切りの外に出るのはユーザーのコメントと Para Code の文言だけ。**要素の HTML は既定で送らない**（トレイの「HTML も送る」で選んだときだけ、1行にして区切りの中へ入れる）
+- **画像は `<userData>/paradis-design-mode/images/` に PNG で置く**（ディレクトリ 0700、ファイル 0600、`wx` で作成）。作業フォルダの `.para-code/pasted-images/` ではなく userData にしたのは、保存先を Para Code の管理下で権限を絞るため。main は PNG の署名と 20MB の上限を確かめてから書く。24時間を過ぎた画像は、保存のたび・main の起動時・その後1時間ごとに消す。クリップボードへのコピーでも本文にパスを書くので保存する。SSH 先のペインへは画像を送らない（手元のパスは向こうで開けない）
+- **入れ方はフェーズ5の「エージェント向けプリセット」と同じ規則**: Enter は送らない、貼り付け（bracketed paste）で送る、制御文字を落とす、質問・許可の回答待ち（hook の状態 `question` / `permission`）のペインには入れない（一覧で選べず、送る直前にも確かめる）。**違いとして、改行は常に1行へ均す**（プリセットは貼り付けモードかつ前面のコマンドが実行中なら残す）。本文にページ由来の値が入るので、送る瞬間にエージェントが終わっていて貼り付けを解さないシェル（macOS の `/bin/bash` 3.2 等）へ届いても、行として実行されないようにするため。hook が届いていないペイン（hook を切っている・WSL 等）は状態が分からないので、入れる前に確認のダイアログを出す
+- 画像のパスは本文の後ろに1つずつ別の貼り付けとして入れる（ターミナルへファイルをドロップしたときと同じ `preparePathForShell` の書き方）。**Claude Code / Codex がこのパスを画像として取り込むかは実機で未確認**。取り込まれなくても、エージェントはパスのファイルを読める
+- 送り先の一覧は `IParadisAgentBrowserBindingModel.getPanesForPage()` から作る。共有の可否と同じ判定（`bindEligibility`）で同じスペースのペインだけ、エージェントが動いた実績（hook）かタイトルでエージェントと分かるペインだけを出す。「新しいエージェントを起動」は、ページのスペース（`IParadisBrowserScopeService.resolveScope`）が前面のスペースと同じで、hook の自動設置がオンのときだけ出す（別スペースのページから前面のスペースへ起動しないため・hook が無いと起動の完了が分からないため）。起動後は hook が届いて TUI が貼り付けモードを有効にするまで最大30秒待ち、エディタのページが替わる・閉じると待つのをやめる。待ちきれなければクリップボードへ回す
+- 結果やエラーは通知のトーストではなくトレイの中（書き込み中は道具バーの左端）に出す。fork ではトーストが内蔵ブラウザを止めない設定で、トーストはページの裏に隠れるため。エラーはベル（通知センター）にも残す
+- main のチャネルは `pickElement` / `cancelPick` / `setPins` / `saveImage` / `resetPicks` の5つだけを受ける明示の `IServerChannel`（`ProxyChannel.fromService` だと実装の内部のメソッドまで renderer から呼べる）。呼び出し元のウィンドウ（IPC の ctx）ごとに選択中のビューを覚えておき、renderer が起動したとき（`IParadisDesignModeService` を作ったとき）に `resetPicks` で自分の古い選択を取り消す。選択中にウィンドウを再読み込みしても、ページに十字カーソルの覆いが残らない
+- 書き込み（Markup）は `captureScreenshot({ format: 'png' })` で撮ったビューポートの画像を、ページの入れ物（`.browser-container`）と同じ位置に重ねて描く。重ね板は `.browser-container-wrapper` の子に置く。wrapper は z-index を持たず重なりの文脈を作らないので、重ね板がエディタの外へはみ出さないのは wrapper の `overflow: hidden` で切り抜かれるから（z-index 20 は同じ wrapper の中の、止めたページの代わりの画像より上に出すためだけ）。背景は透明で、ウィンドウの透過を変えない。**開いている間にエディタの大きさを変えると、重ね板の位置は開いたときのまま**になる
+- キーは ⇧⌥⌘C（Windows / Linux は Ctrl+Shift+Alt+C）。当初の ⌥⌘D は macOS の既定で「Dock を自動的に表示/非表示」に取られ、押すと Dock の設定が切り替わるのでやめた。⇧⌥⌘C はワークベンチでは「相対パスのコピー」（エクスプローラーやエディタで使う。Linux も同じキー）なので、`when` を「ブラウザが前面のエディタ」かつ「フォーカスがブラウザのエディタの中（`CONTEXT_BROWSER_FOCUSED`）」にして、エクスプローラーやターミナルにフォーカスがあるときは元の割り当てが効くようにしてある。Windows で AltGr+Shift+C に文字が割り当てられた配列では、ブラウザのエディタの URL 欄でその文字が打てない可能性がある【要確認】
+
+### フェーズ5の処理との統合で行う作業
+
+フェーズ5（エージェント向けプリセット、`terminalPresets`）の処理は今の main にあるが、このブランチの起点には無かったので、次の3つを写してある。統合するときに写しを消して main のものを使う。
+
+| Design Mode 側（写し） | main 側の元 |
+|---|---|
+| `paradisBuildAgentInsertText`（`browserDesignMode/common/paradisDesignModeFormat.ts`） | `paradisBuildPresetInsertText`（`terminalPresets/common/paradisTerminalPresets.ts`） |
+| `paradisDesignTargetAvailability`（同上） | `paradisAgentPromptAvailability`（同上） |
+| 送る直前の回答待ちの確認（`ParadisDesignModeSender._throwIfAwaitingAnswer`） | `ParadisPresetService._throwIfAwaitingAnswer` |
+
+改行を残すかの判定（プリセットの `_insertAgentPrompt` の `keepNewlines`）は、Design Mode では使わない（常に1行）。寄せるときにこの違いを消さないこと。
+
+upstream 取り込み時に確認すること:
+
+- `BrowserEditor.registerContribution`・`BrowserWidgetLocation.Toolbar`・`BrowserEditor.layoutBrowserContainer()`（トレイの出し入れで呼ぶ）・`MenuId.BrowserActionsToolbar` と `BrowserActionGroup.Tools` が残っているか
+- `IBrowserViewCaptureScreenshotOptions.pageRect` の意味（今はビューポート基準の CSS px。要素の切り抜きに使う）が変わっていないか
+- upstream が要素選択の Esc の weight を上げていないか（fork の Esc は `WorkbenchContrib + 1`）、「相対パスのコピー」の既定キーが変わっていないか
+
 ## 機能1: ワークスペース即時切り替え（workspaceSwitch、2026-07-02追加）
 
 `src/vs/paradis/contrib/workspaceSwitch/` に実装。単一ウィンドウ・単一 `.code-workspace`（identity固定）のまま `updateFolders` で folders を丸ごと入れ替え、エディタ/ターミナル/ブラウザの状態をリポジトリごとに退避・復元する（Superset方式: 破棄せず隠す）。実装時に判明した落とし穴:

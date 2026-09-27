@@ -44,6 +44,7 @@ import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX, BROWSER_VIEW_SCREENS
 import { IParadisCdpScreenshotOptions } from '../common/paradisAgentBrowser.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisCdpInputQueueOperation } from './paradisCdpInputQueue.js';
+import { ParadisCdpIsolatedWorldFilter } from './paradisCdpIsolatedWorldFilter.js';
 
 /** 動的import済みの `ws` モジュール（ゲートウェイが1回だけロードして渡す）。 */
 export interface IParadisWsModule {
@@ -375,6 +376,10 @@ function hasBoundedRoutingIdentifiers(value: unknown): boolean {
 
 function logNonThrowing(logService: ILogService, level: 'trace' | 'debug' | 'warn', message: string): void {
 	try { logService[level](message); } catch { /* diagnostics must not interrupt transport cleanup */ }
+}
+
+function isolatedWorldDeniedFrame(message: IParadisClientCommand, reason: string): string {
+	return JSON.stringify({ id: message.id, ...(message.sessionId !== undefined ? { sessionId: message.sessionId } : {}), error: { code: -32000, message: reason } });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -992,6 +997,9 @@ export function paradisProxyPageUpgrade(
 		const forwardedRequestBarriers = new Map<number, IParadisForwardedRequestBarrier>();
 		const rawScreenshots = ctx.rawScreenshotCoordinator;
 		const rawScreenshotOwner = {};
+		// Para Code 自身の isolated world（Design Mode の要素選択、preload）をエージェントから隠す。
+		const isolatedWorlds = new ParadisCdpIsolatedWorldFilter();
+		let isolatedWorldRequestSequence = 0;
 		const closeBoth = () => {
 			if (closed) {
 				return;
@@ -1095,6 +1103,13 @@ export function paradisProxyPageUpgrade(
 					if (!sendWithBoundedBackpressure(clientWs, serialized)) {
 						closeBoth();
 					}
+				}
+				return;
+			}
+			const isolatedDenied = isolatedWorlds.checkClientCommand(msg.sessionId ?? '', msg.id, msg.method, msg.params);
+			if (isolatedDenied !== undefined) {
+				if (clientWs.readyState === ws.WebSocket.OPEN && !sendWithBoundedBackpressure(clientWs, isolatedWorldDeniedFrame(msg, isolatedDenied))) {
+					closeBoth();
 				}
 				return;
 			}
@@ -1227,6 +1242,24 @@ export function paradisProxyPageUpgrade(
 				if (typeof response?.id === 'number' && Number.isSafeInteger(response.id)) {
 					completeForwardedRequestBarrier(forwardedRequestBarriers, response.id, response.sessionId);
 				}
+				if (response) {
+					const sessionKey = typeof response.sessionId === 'string' ? response.sessionId : '';
+					if (typeof response.id === 'number') {
+						if (response.id < 0) {
+							// こちらが出した Debugger.resume への応答。クライアントは知らない id なので届けない。
+							return;
+						}
+						isolatedWorlds.observeResponse(sessionKey, response.id, response.result);
+					} else if (typeof response.method === 'string') {
+						const verdict = isolatedWorlds.filterEvent(sessionKey, response.method, response.params);
+						if (verdict === 'resume') {
+							sendToUpstream(Buffer.from(JSON.stringify({ id: -(++isolatedWorldRequestSequence), method: 'Debugger.resume', params: {}, ...(sessionKey ? { sessionId: sessionKey } : {}) })));
+						}
+						if (verdict !== 'forward') {
+							return;
+						}
+					}
+				}
 				if (rawScreenshotActive) {
 					let msg: IJsonRpcMsg | undefined;
 					try { msg = JSON.parse(rawDataText(data)) as IJsonRpcMsg; } catch { /* non-JSON frame */ }
@@ -1305,6 +1338,8 @@ export async function paradisProxyBrowserUpgrade(
 		const allowedTargetIds = new Set<string>();
 		const childToParent = new Map<string, string>();
 		let internalRequestSequence = 0;
+		// Para Code 自身の isolated world（Design Mode の要素選択、preload）をエージェントから隠す。
+		const isolatedWorlds = new ParadisCdpIsolatedWorldFilter();
 		let closed = false;
 		let resolveConnectionClosed!: () => void;
 		const connectionClosed = new Promise<void>(resolve => resolveConnectionClosed = resolve);
@@ -1629,6 +1664,11 @@ export async function paradisProxyBrowserUpgrade(
 					rejectRequest(message, sharedStateDenied);
 					return;
 				}
+				const isolatedDenied = isolatedWorlds.checkClientCommand(message.sessionId, message.id, message.method, message.params);
+				if (isolatedDenied !== undefined) {
+					rejectRequest(message, isolatedDenied);
+					return;
+				}
 				const referencedTargetId = targetIdOf(message.params);
 				const referencedSessionId = boundedIdentifier(message.params?.sessionId);
 				if ((referencedTargetId && !allowedTargetIds.has(referencedTargetId)) || (referencedSessionId && !allowedSessionIds.has(referencedSessionId))) {
@@ -1909,6 +1949,9 @@ export async function paradisProxyBrowserUpgrade(
 						}
 					}
 				}
+				if (message.sessionId !== undefined) {
+					isolatedWorlds.observeResponse(message.sessionId, message.id, message.result);
+				}
 				if (pending.method === 'Target.getTargetInfo' && message.result?.targetInfo) {
 					const targetId = targetIdOf(message.result.targetInfo);
 					if (!targetId || targetId !== pending.targetId || !allowedTargetIds.has(targetId)) {
@@ -1950,6 +1993,7 @@ export async function paradisProxyBrowserUpgrade(
 					if (params?.sessionId) {
 						allowedSessionIds.delete(params.sessionId);
 						sessionIdToTargetId.delete(params.sessionId);
+						isolatedWorlds.forgetSession(params.sessionId);
 					}
 					dropTarget(params?.targetId);
 					// 保険: バインド済みtargetのセッションが剥離されたら、イベントを転送した上で接続を閉じる。
@@ -1958,6 +2002,14 @@ export async function paradisProxyBrowserUpgrade(
 					if (detachedTargetId !== undefined && ctx.boundTargetIds().has(detachedTargetId)) {
 						sendToClient(message);
 						closeBoth();
+						return;
+					}
+				} else {
+					const verdict = isolatedWorlds.filterEvent(message.sessionId, message.method, message.params);
+					if (verdict === 'resume') {
+						sendInternal('Debugger.resume', {}, message.sessionId);
+					}
+					if (verdict !== 'forward') {
 						return;
 					}
 				}
@@ -2015,6 +2067,7 @@ export async function paradisProxyBrowserUpgrade(
 				const detachedTargetId = sessionIdToTargetId.get(sessionId);
 				allowedSessionIds.delete(sessionId);
 				sessionIdToTargetId.delete(sessionId);
+				isolatedWorlds.forgetSession(sessionId);
 				// 保険: バインド済みtargetのセッションが剥離されたら、イベントを転送した上で接続を閉じる。
 				// 子プロセスは再接続でコンテキストを再構築するので自己回復する。
 				if (detachedTargetId !== undefined && ctx.boundTargetIds().has(detachedTargetId)) {

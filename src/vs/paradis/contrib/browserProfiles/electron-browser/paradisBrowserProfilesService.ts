@@ -82,10 +82,16 @@ export interface IParadisBrowserProfilesService {
 	findByName(name: string): IParadisBrowserProfile | undefined;
 
 	/** 新規作成。名前が空/重複なら失敗理由を返す。 */
-	create(name: string, color: string): { readonly ok: true; readonly profile: IParadisBrowserProfile } | { readonly ok: false; readonly error: ParadisProfileNameError };
+	create(name: string, color: string, options?: IParadisCreateProfileOptions): { readonly ok: true; readonly profile: IParadisBrowserProfile } | { readonly ok: false; readonly error: ParadisProfileNameError };
 
 	/** リネーム。パーティションには一切触れないのでログイン状態は残る。 */
 	rename(profileId: string, name: string): { readonly ok: true } | { readonly ok: false; readonly error: ParadisProfileNameError };
+
+	/**
+	 * ユーザーが自分でそのプロファイルを使った（UI から開いた・切り替えた）。エージェントが作った印を外し、
+	 * 以後はユーザーのものとして扱う（一覧で伏せる・使うには承認が要る・エージェントは消せない）。
+	 */
+	claimForUser(profileId: string): void;
 
 	/** 識別カラーの変更。 */
 	setColor(profileId: string, color: string): void;
@@ -129,6 +135,14 @@ export interface IParadisBrowserProfilesService {
 	 * 実体は同じ位置への差し替え（Electron セッションは差し替えられないため）。
 	 */
 	switchView(input: BrowserEditorInput, target: ParadisProfileTarget): Promise<BrowserEditorInput | undefined>;
+}
+
+/** {@link IParadisBrowserProfilesService.create} の追加の指定。 */
+export interface IParadisCreateProfileOptions {
+	/** エージェントが MCP から作った（同じペインのエージェントなら後で消してよい）。 */
+	readonly createdByAgent?: boolean;
+	/** 作ったペインの印（{@link IParadisBrowserProfile.agentOwner}）。 */
+	readonly agentOwner?: string;
 }
 
 /** ドロップダウンで選べる行が指すもの。 */
@@ -212,7 +226,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		return paradisFindProfileByName(this._profiles, name);
 	}
 
-	create(name: string, color: string): { readonly ok: true; readonly profile: IParadisBrowserProfile } | { readonly ok: false; readonly error: ParadisProfileNameError } {
+	create(name: string, color: string, options?: IParadisCreateProfileOptions): { readonly ok: true; readonly profile: IParadisBrowserProfile } | { readonly ok: false; readonly error: ParadisProfileNameError } {
 		const error = this._validateName(name);
 		if (error) {
 			return { ok: false, error };
@@ -224,6 +238,8 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 			color: PARADIS_BROWSER_PROFILE_COLORS.includes(color) ? color : PARADIS_BROWSER_PROFILE_COLORS[0],
 			createdAt: now,
 			lastUsedAt: now,
+			...(options?.createdByAgent ? { createdByAgent: true } as const : {}),
+			...(options?.createdByAgent && options.agentOwner ? { agentOwner: options.agentOwner } : {}),
 		};
 		this._profiles = [...this._profiles, profile];
 		this._persistProfiles();
@@ -235,7 +251,8 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		if (error) {
 			return { ok: false, error };
 		}
-		this._updateProfile(profileId, profile => ({ ...profile, name: paradisNormalizeProfileName(name) }));
+		// 名前や色を変えるのはユーザーだけ（UI からしか呼ばれない）。以後はユーザーのものとして扱う。
+		this._updateProfile(profileId, profile => ({ ...paradisWithoutAgentMarks(profile), name: paradisNormalizeProfileName(name) }));
 		return { ok: true };
 	}
 
@@ -243,7 +260,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		if (!PARADIS_BROWSER_PROFILE_COLORS.includes(color)) {
 			return;
 		}
-		this._updateProfile(profileId, profile => ({ ...profile, color }));
+		this._updateProfile(profileId, profile => ({ ...paradisWithoutAgentMarks(profile), color }));
 	}
 
 	async remove(profileId: string): Promise<void> {
@@ -312,6 +329,12 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 	private _closeViewsUsingProfile(profileId: string): void {
 		for (const input of this._viewsUsingProfile(profileId)) {
 			input.dispose(true);
+		}
+	}
+
+	claimForUser(profileId: string): void {
+		if (this._profiles.find(profile => profile.id === profileId)?.createdByAgent) {
+			this._updateProfile(profileId, paradisWithoutAgentMarks);
 		}
 	}
 
@@ -576,11 +599,17 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 	private _persistProfiles(removedId?: string): void {
 		const latest = paradisDeserializeProfiles(this.storageService.get(PROFILES_STORAGE_KEY, StorageScope.APPLICATION));
 		const mine = new Set(this._profiles.map(profile => profile.id));
+		const latestById = new Map(latest.map(profile => [profile.id, profile]));
 		// `removedId` を除外しないと、たった今このウィンドウで消した1件が「他ウィンドウの追加」に
 		// 見えて復活する（保存済みの台帳にはまだ載っているため）。削除だけは意図が明確なので通す。
+		// エージェントの印は「外す」向きだけを通す。他ウィンドウでユーザーが使って印が外れた後に、
+		// こちらの古い写しで印を戻してしまわないようにする。
 		this._profiles = [
 			...latest.filter(profile => !mine.has(profile.id) && profile.id !== removedId),
-			...this._profiles,
+			...this._profiles.map(profile => {
+				const stored = latestById.get(profile.id);
+				return stored && !stored.createdByAgent && profile.createdByAgent ? paradisWithoutAgentMarks(profile) : profile;
+			}),
 		];
 		this.storageService.store(
 			PROFILES_STORAGE_KEY,
@@ -667,4 +696,13 @@ function paradisSessionOptionsFor(scope: BrowserViewStorageScope, profileId?: st
 		case BrowserViewStorageScope.Profile:
 			return paradisIsValidProfileId(profileId) ? { scope: BrowserViewStorageScope.Profile, profileId } : undefined;
 	}
+}
+
+/** エージェントが作った印を外した台帳の1件。 */
+function paradisWithoutAgentMarks(profile: IParadisBrowserProfile): IParadisBrowserProfile {
+	if (!profile.createdByAgent && profile.agentOwner === undefined) {
+		return profile;
+	}
+	const { createdByAgent: _createdByAgent, agentOwner: _agentOwner, ...rest } = profile;
+	return rest;
 }

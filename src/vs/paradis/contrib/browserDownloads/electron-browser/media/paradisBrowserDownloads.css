@@ -1,0 +1,307 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* Browser downloads: the URL bar button (progress ring + unseen dot) and its popover list.
+	Colors come from --vscode-* tokens only, so light, dark and high-contrast themes all hold.
+	Selectors are anchored on .monaco-workbench so they outrank the generic action bar rules. */
+
+/* ============================================================
+	1. Toolbar button (MenuId.BrowserActionsToolbar, custom view item)
+	============================================================ */
+
+.monaco-workbench .monaco-action-bar .action-item.paradis-browser-downloads-item {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	border-radius: var(--vscode-cornerRadius-medium);
+}
+
+.monaco-workbench .monaco-action-bar .action-item.paradis-browser-downloads-item:hover .paradis-browser-downloads-glyph {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .monaco-action-bar .action-item.paradis-browser-downloads-item[aria-expanded="true"] .paradis-browser-downloads-glyph {
+	background-color: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground));
+}
+
+/* The ring is drawn around the glyph while something is downloading, masked to a 2px band: the
+	filled arc is the aggregate progress, the rest is a faint track. */
+.monaco-workbench .paradis-browser-downloads-item .paradis-browser-downloads-ring {
+	display: none;
+	position: absolute;
+	inset: 1px;
+	border-radius: 50%;
+	pointer-events: none;
+	/* The determinate arc is painted inline from TypeScript (the percentage changes every update). */
+	background: var(--vscode-widget-border, transparent);
+	-webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+	mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+}
+
+.monaco-workbench .paradis-browser-downloads-item.is-running .paradis-browser-downloads-ring {
+	display: block;
+}
+
+/* Unknown total size: a quarter arc that keeps turning. */
+.monaco-workbench .paradis-browser-downloads-item.is-indeterminate .paradis-browser-downloads-ring {
+	background: conic-gradient(var(--vscode-progressBar-background) 25%, transparent 0);
+	animation: paradis-browser-downloads-spin 1s linear infinite;
+}
+
+@keyframes paradis-browser-downloads-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.monaco-workbench .paradis-browser-downloads-item.is-indeterminate .paradis-browser-downloads-ring {
+		animation: none;
+	}
+}
+
+/* Something finished since the list was last opened. */
+.monaco-workbench .paradis-browser-downloads-item .paradis-browser-downloads-dot {
+	display: none;
+	position: absolute;
+	top: 1px;
+	right: 1px;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	pointer-events: none;
+	background-color: var(--vscode-activityBarBadge-background, var(--vscode-focusBorder));
+}
+
+.monaco-workbench .paradis-browser-downloads-item.has-unseen:not(.is-running) .paradis-browser-downloads-dot {
+	display: block;
+}
+
+/* ============================================================
+	2. Popover list (registered in overlayManager so the native view pauses)
+	============================================================ */
+
+/* z-index stays below the workbench modal layer (2575), same tier as the profile dropdown. */
+
+.monaco-workbench .paradis-browser-downloads-popover {
+	position: absolute;
+	z-index: 2550;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	box-sizing: border-box;
+	background-color: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+	font-size: 13px;
+	outline: none;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-message {
+	padding: 6px 12px;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--vscode-errorForeground);
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-message[hidden] {
+	display: none;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 8px 6px 12px;
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-title {
+	flex: 1;
+	font-weight: 600;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover button {
+	font: inherit;
+	color: inherit;
+	background: none;
+	border: none;
+	cursor: pointer;
+}
+
+/* The reset above (font: inherit) outranks the generic .codicon rule, so the icon buttons would
+	render their glyph in the UI font (a tofu box). Put the codicon font back, more specifically. */
+.monaco-workbench .paradis-browser-downloads-popover button.pbd-icon-button.codicon,
+.monaco-workbench .paradis-browser-downloads-popover button.pbd-icon-button.codicon::before {
+	font: normal normal normal 16px/1 codicon;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-link {
+	padding: 2px 4px;
+	color: var(--vscode-textLink-foreground);
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	font-size: 12px;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-link:hover {
+	color: var(--vscode-textLink-activeForeground);
+	text-decoration: underline;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-icon-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	flex: none;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	color: var(--vscode-icon-foreground, inherit);
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-icon-button:hover:not([disabled]) {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-icon-button[disabled] {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-list {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 4px 0;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-empty {
+	padding: 12px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px 6px 12px;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-row:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-icon {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-row.is-interrupted .pbd-icon {
+	color: var(--vscode-errorForeground);
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-main {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-name {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-row.is-cancelled .pbd-name,
+.monaco-workbench .paradis-browser-downloads-popover .pbd-row.is-interrupted .pbd-name {
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-status {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-row.is-interrupted .pbd-status {
+	color: var(--vscode-errorForeground);
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-bar {
+	position: relative;
+	height: 3px;
+	overflow: hidden;
+	border-radius: 2px;
+	background-color: var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-bar-fill {
+	height: 100%;
+	width: 0;
+	background-color: var(--vscode-progressBar-background);
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-bar.is-indeterminate .pbd-bar-fill {
+	width: 30%;
+	animation: paradis-browser-downloads-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes paradis-browser-downloads-slide {
+	from {
+		transform: translateX(-100%);
+	}
+	to {
+		transform: translateX(340%);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.monaco-workbench .paradis-browser-downloads-popover .pbd-bar.is-indeterminate .pbd-bar-fill {
+		animation: none;
+		width: 100%;
+		opacity: 0.5;
+	}
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-actions {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	flex: none;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-open {
+	padding: 2px 8px;
+	margin: 0 2px;
+	font-size: 12px;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	color: var(--vscode-button-secondaryForeground);
+	background-color: var(--vscode-button-secondaryBackground);
+	/* High contrast themes have no secondary button background; the border keeps it a button. */
+	border: 1px solid var(--vscode-button-border, transparent);
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-open:hover {
+	background-color: var(--vscode-button-secondaryHoverBackground);
+}
