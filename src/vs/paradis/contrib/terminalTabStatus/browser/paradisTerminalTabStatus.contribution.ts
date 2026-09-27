@@ -6,8 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 呼んでいるターミナルのエディタタブに、色の点を付ける（Q43 案A）。
-// あわせて、タブ左のアイコンを状態で差し替え、状態が無ければ Claude / OpenAI のロゴにする（Q52 案B）。
+// 呼んでいるターミナルのエディタタブに、色の点を付ける。
+// あわせて、タブ左のアイコンを状態で差し替え、状態が無ければ Claude / OpenAI のロゴにする。
 //
 // 仕組みは upstream のベル表示と同じファイル装飾（IDecorationsService）で、タブの部品には手を
 // 入れない。upstream の提供元（`terminalTabsList.ts` の TabDecorationsProvider）は下部パネルの
@@ -20,6 +20,7 @@
 import './media/paradisTerminalTabStatus.css';
 import { createStyleSheet } from '../../../../base/browser/domStylesheets.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { getCodiconFontCharacters } from '../../../../base/common/codiconsUtil.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
@@ -33,12 +34,15 @@ import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowse
 import { paradisCollectAllTerminalInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
 import { IParadisAgentStatusStore } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
-import { PARADIS_CLAUDE_LOGO_PATH, PARADIS_CODEX_LOGO_PATH } from '../../limitsMonitor/common/paradisAgentLogoPaths.js';
+import { PARADIS_CLAUDE_LOGO_PATH, PARADIS_CODEX_LOGO_PATH } from '../../../common/paradisAgentLogoPaths.js';
 import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 import { IParadisTerminalTabIcon, paradisRegisterTerminalTabIconProvider } from '../../workspaceSwitch/browser/paradisTerminalTabIconRegistry.js';
 import { ParadisTerminalAttention, ParadisTerminalTabIconKind, paradisAttentionColor, paradisGuessAgentKindFromTitle, paradisNextAttentionOnBell, paradisNextAttentionOnStatus, paradisTerminalTabIconKind } from '../common/paradisTerminalTabStatus.js';
 
 const DOT = '\u25CF';
+
+/** upstream のベルの状態（`TerminalStatus.Bell`。const enum なので値で持つ）。 */
+const UPSTREAM_BELL_STATUS_ID = 'bell';
 
 /**
  * 種類ごとのタブのアイコン。codicon は「その種類のクラスが付いた ::before」を CSS が描き替える
@@ -54,11 +58,27 @@ const TAB_ICONS: Record<ParadisTerminalTabIconKind, IParadisTerminalTabIcon> = {
 	codex: { icon: Codicon.terminal, extraClasses: ['paradis-terminal-tab-logo', 'paradis-terminal-tab-logo-codex'] },
 };
 
+/**
+ * 実行時に作る CSS のセレクタの頭。`media/paradisTerminalTabStatus.css` と揃える。
+ * `.file-icons-enabled` を含めるのは、ファイルアイコンテーマを外している人には upstream と同じく
+ * タブのアイコンを出さないため（upstream はその場合 codicon の ::before を消している）。
+ */
+const TAB_ICON_SELECTOR = '.monaco-workbench.file-icons-enabled .monaco-icon-label.terminal-tab';
+
 /** ロゴは色をテーマに追従させるため、SVG を mask にして地の色（currentColor）で塗る。 */
 function logoMaskRule(kind: 'claude' | 'codex', path: string): string {
 	const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 600'><path d='${path}'/></svg>`;
 	const url = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
-	return `.monaco-workbench .monaco-icon-label.terminal-tab.paradis-terminal-tab-logo-${kind}[class*='codicon-']::before { -webkit-mask-image: ${url}; mask-image: ${url}; }`;
+	return `${TAB_ICON_SELECTOR}.paradis-terminal-tab-logo-${kind}[class*='codicon-']::before { -webkit-mask-image: ${url}; mask-image: ${url}; }`;
+}
+
+/**
+ * 作業中の回転アイコンの中身。codicon の loading の文字を upstream の登録から引く（文字コードを
+ * 直に書くと、codicon の更新で別の図形になる）。
+ */
+function workingGlyphRule(): string {
+	const code = getCodiconFontCharacters()[Codicon.loading.id];
+	return code === undefined ? '' : `${TAB_ICON_SELECTOR}.paradis-terminal-tab-working[class*='codicon-']::before { content: '\\${code.toString(16)}' !important; }`;
 }
 
 export class ParadisTerminalTabStatusContribution extends Disposable implements IWorkbenchContribution {
@@ -99,6 +119,7 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 			style.textContent = [
 				logoMaskRule('claude', PARADIS_CLAUDE_LOGO_PATH),
 				logoMaskRule('codex', PARADIS_CODEX_LOGO_PATH),
+				workingGlyphRule(),
 			].join('\n');
 		}, logoStyles);
 		// どのエージェントが動いているかは、シェル統合が報告するコマンドラインで知る。
@@ -108,9 +129,13 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 		this._register(finished.event(({ instance, data }) => this.onCommandFinished(instance, data.command)));
 		this._register(this.terminalService.onAnyInstanceTitleChange(instance => this.refreshTabIcon(instance)));
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => this.onAgentStatusesChanged()));
-		// 「操作した」とみなすのは、そのターミナルにフォーカスが入ったときとキーを打ったとき。
+		// 「操作した」とみなすのは、そのターミナルにフォーカスが入ったときとキーを打ったときだけ。
+		// `onAnyInstanceDataInput` は使わない。カーソル位置の問い合わせへの自動応答やフォーカス
+		// 報告、モバイルやプリセットからの送信でも発火し、ユーザーが見ていないのに点が消える。
 		this._register(this.terminalService.onDidFocusInstance(instance => this.clearAttention(instance)));
-		this._register(this.terminalService.onAnyInstanceDataInput(instance => this.clearAttention(instance)));
+		// upstream のベル表示（パネルのタブ一覧を作ったときだけ登録される）と重ならないよう、
+		// その状態が変わったら描き直す。
+		this._register(this.terminalService.onAnyInstancePrimaryStatusChange(instance => this._onDidChangeDecorations.fire([instance.resource])));
 		this._register(this.terminalService.onDidCreateInstance(instance => this.watchInstance(instance)));
 		this._register(this.terminalService.onDidDisposeInstance(instance => this.forgetInstance(instance)));
 		for (const instance of this.terminalService.instances) {
@@ -119,7 +144,7 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 		this.onAgentStatusesChanged();
 	}
 
-	/** タブ左のアイコン（Q52 案B）。エージェントでないターミナルは undefined（upstream のまま）。 */
+	/** タブ左のアイコン。エージェントでないターミナルは undefined（upstream のまま）。 */
 	private getTabIcon(instanceId: number): IParadisTerminalTabIcon | undefined {
 		const kind = this._tabIconKinds.get(instanceId) ?? this.computeTabIconKind(instanceId);
 		return kind === undefined ? undefined : TAB_ICONS[kind];
@@ -194,9 +219,11 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 		if (attention === undefined) {
 			return undefined;
 		}
+		// upstream のベル表示が出ている間は、同じベルをもう1つ並べない（色だけ付ける）。
+		const upstreamBellShown = attention === 'bell' && instance?.statusList.statuses.some(status => status.id === UPSTREAM_BELL_STATUS_ID) === true;
 		return {
 			color: paradisAttentionColor(attention),
-			letter: attention === 'bell' ? Codicon.bell : DOT,
+			letter: upstreamBellShown ? undefined : attention === 'bell' ? Codicon.bell : DOT,
 			tooltip: attention === 'waiting'
 				? localize('paradis.terminalTabStatus.waiting', "確認を待っています")
 				: attention === 'done'
@@ -248,6 +275,8 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 			store.add(xterm.raw.onBell(() => {
 				this.setAttention(instance, paradisNextAttentionOnBell(this._attention.get(instance.instanceId), this.isWatching(instance)));
 			}));
+			// キー入力（貼り付けはフォーカスを伴うので上のフォーカスで消える）。
+			store.add(xterm.raw.onKey(() => this.clearAttention(instance)));
 		}, () => { /* xterm を作れなかったターミナルはベルも鳴らない */ });
 	}
 

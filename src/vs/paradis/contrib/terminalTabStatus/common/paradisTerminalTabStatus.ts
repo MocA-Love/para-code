@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// エディタのターミナルタブに出す「呼んでいる」印（Q43 案A）と、タブ左のアイコン（Q52 案B）の
+// エディタのターミナルタブに出す「呼んでいる」印と、タブ左のアイコンの
 // 判定。DOM にもサービスにも触れない純粋な関数だけを置く。
 
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -85,7 +85,7 @@ export function paradisAttentionColor(attention: ParadisTerminalAttention): stri
 	}
 }
 
-/** エディタのターミナルタブ左に出すアイコンの種類（Q52 案B）。 */
+/** エディタのターミナルタブ左に出すアイコンの種類。 */
 export type ParadisTerminalTabIconKind = 'working' | 'permission' | 'question' | 'done' | 'claude' | 'codex';
 
 /**
