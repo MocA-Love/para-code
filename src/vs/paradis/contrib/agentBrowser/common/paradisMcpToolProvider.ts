@@ -28,6 +28,8 @@ export interface IParadisMcpToolDefinition {
 	readonly name: string;
 	readonly description: string;
 	readonly inputSchema: object;
+	/** MCP のツール注釈（`readOnlyHint` / `destructiveHint` など）。クライアントが確認の出し分けに使う。 */
+	readonly annotations?: object;
 }
 
 /**
@@ -99,6 +101,13 @@ export interface IParadisMcpToolCallContext {
 	 * 画面側の表示は 2 秒ごとの取り直しで遅れるので、送ってよいかの判断はこちらで行う。
 	 */
 	getPaneAgentStatus(paneToken: string): IParadisMcpPaneAgentStatus | undefined;
+	/** そのペインから hook が一度でも届いたか（hook が効いていない相手を見分けるため）。 */
+	hasAgentHookHistory(paneToken: string): boolean;
+	/**
+	 * 接続元のプロセスが、呼び出し元ペインのシェルの子孫か。トークンは同じユーザーの別プロセスからも
+	 * 読めるので、操作系のツールはこれが真のときだけ動かす。SSH 越しの接続など確かめられないときは偽。
+	 */
+	verifyCallerProcess(): Promise<boolean>;
 }
 
 // --- 登録口 ----------------------------------------------------------------------------------

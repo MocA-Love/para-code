@@ -172,6 +172,8 @@ function createFixture(): {
 		_activeRequestControllers: new Set<AbortController>(),
 		_activeIngressRequestsByToken: new Map<string, number>(),
 		_activeIngressRequestCount: 0,
+		_activeHookRequestsByToken: new Map<string, number>(),
+		_activeHookRequestCount: 0,
 		_activeMobileVoiceRequestCount: 0,
 		_activeMobileVoiceBytes: 0,
 		_mobileVoiceTickets: new Map<string, unknown>(),
@@ -800,7 +802,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(Reflect.get(fixture.service, '_seenTokens').size, 0);
 	});
 
-	test('reserves MCP and hook ingress before body listeners and releases the shared per-token cap', async () => {
+	test('reserves MCP ingress before body listeners, caps it per token, and keeps hooks on a separate cap', async () => {
 		const fixture = createFixture();
 		const connection = {};
 		fixture.service.registerRendererConnection('window:1', connection);
@@ -813,11 +815,22 @@ suite('ParadisAgentBrowser authority integration', () => {
 		});
 		assert.ok(stalled.every(entry => entry.request.listenerCount('data') === 1));
 
-		const overflowRequest = new TestRequest('POST', '/agent-hook?pane=token&event=Stop');
+		const overflowRequest = new TestRequest('POST', '/?pane=token');
 		const overflowResponse = new TestResponse();
 		await handleRequest(overflowRequest, overflowResponse);
 		assert.strictEqual(overflowResponse.statusCode, 429);
 		assert.strictEqual(overflowRequest.listenerCount('data'), 0);
+
+		// Hooks keep their own cap, so long MCP requests (such as wait tools) cannot starve them.
+		const hookRequest = new TestRequest('POST', '/agent-hook?pane=token&event=Stop');
+		const hookResponse = new TestResponse();
+		const hookPending = handleRequest(hookRequest, hookResponse);
+		assert.strictEqual(hookRequest.listenerCount('data'), 1);
+		hookRequest.emit('data', Buffer.from('{}'));
+		hookRequest.emit('end');
+		await hookPending;
+		assert.notStrictEqual(hookResponse.statusCode, 429);
+		assert.strictEqual(Reflect.get(fixture.service, '_activeHookRequestCount'), 0);
 
 		for (const entry of stalled) {
 			entry.request.emit('data', Buffer.from('{"jsonrpc":"2.0","method":"notifications/initialized"}'));

@@ -82,6 +82,35 @@ export async function paradisResolvePaneTokenForPeerPort(
 
 // --- ピアPID特定 -------------------------------------------------------------
 
+/**
+ * loopback 接続の相手のプロセスが、`ancestorPid`（ペインのシェル）の子孫かを確かめる。
+ *
+ * 操作系の MCP ツールで「トークンを名乗っているのが本当にそのペインの中のプロセスか」を見るのに使う。
+ * 環境変数（`PARA_CODE_TERMINAL_PANE_ID`）は別のプロセスが自分に設定すれば偽装できるので見ない。
+ * 相手の特定や親の読み取りに失敗したら false（確かめられないものは通さない）。
+ */
+export async function paradisPeerDescendsFromPid(remotePort: number, ownPid: number, ancestorPid: number): Promise<boolean> {
+	const peerPid = await resolvePeerPid(remotePort, ownPid);
+	if (peerPid === undefined) {
+		return false;
+	}
+	let current = peerPid;
+	for (let depth = 0; depth < MAX_PARENT_WALK; depth++) {
+		if (!Number.isFinite(current) || current <= 1) {
+			return false;
+		}
+		if (current === ancestorPid) {
+			return true;
+		}
+		const parent = await readPpid(current);
+		if (parent === undefined || parent === current) {
+			return false;
+		}
+		current = parent;
+	}
+	return false;
+}
+
 async function resolvePeerPid(remotePort: number, ownPid: number): Promise<number | undefined> {
 	if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) {
 		return undefined;
