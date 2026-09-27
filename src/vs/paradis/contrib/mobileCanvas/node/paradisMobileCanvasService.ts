@@ -13,8 +13,8 @@
 //   1. 端末を指すIDを **エージェントに一切渡さない**。操作系ツールは deviceId 引数を持たず、
 //      サーバー側がそのペインにアタッチされている端末を注入する。これにより「他ペインの端末IDを
 //      推測して叩く」という攻撃面が原理的に消える（引数を検証して弾く方式より強い）。
-//   2. アタッチはユーザーの操作（アタッチUI）でのみ行う。エージェントは自分に何が割り当てられて
-//      いるかを読めるだけで、割り当てを変えられない。
+//   2. アタッチはユーザーの操作（アタッチUI、またはエージェントの要求を承認ダイアログで認める）でのみ行う。
+//      エージェントは要求できるだけで、自分で割り当てを変えられない（要求は paradisMobileDeviceOpsToolProvider.ts）。
 //   3. アタッチはターミナルが終わったら自動で外れる。スペースを切り替えても維持する
 //      （ターミナルとエージェントは生き続けるので、端末だけ取り上げると作業途中の相手が壊れる）。
 //
@@ -22,11 +22,13 @@
 // `_authorityFaulted` が一度立つとレンダラ操作が全滅する作りで、モバイル側の不調が
 // ブラウザ共有を道連れにしてしまうため。
 
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileAttachment, IParadisMobileCanvasSnapshot, IParadisMobileDevice, IParadisMobileDisplay } from '../common/paradisMobileCanvas.js';
+import { PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS, paradisDeviceHeldByAnotherPane } from '../common/paradisMobileDeviceOps.js';
 import { ParadisMobileCanvasHostClient, ParadisMobileCanvasUnavailableError } from './paradisMobileCanvasHostClient.js';
+import { IParadisMobileDeviceLedger } from './paradisMobileDeviceOpsToolProvider.js';
 
 /** MCPツールが返す標準形。`isError` を立てるとエージェント側で失敗として扱われる。 */
 interface IToolResult {
@@ -38,7 +40,7 @@ interface IToolResult {
 const TOOLS: IParadisMcpToolDefinition[] = [
 	{
 		name: 'mobile_list_devices',
-		description: 'List the local iOS simulators and Android emulators known to Para Code, and show which one (if any) is attached to this terminal pane. Use this to tell the user what is available; you cannot attach a device yourself, the user does that from Para Code.',
+		description: 'List the local iOS simulators and Android emulators known to Para Code, and show which one (if any) is attached to this terminal pane. To use a device that is not attached yet, call mobile_request_device: the user approves it in Para Code.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
@@ -80,7 +82,7 @@ const TOOLS: IParadisMcpToolDefinition[] = [
 				startY: { type: 'number' },
 				endX: { type: 'number' },
 				endY: { type: 'number' },
-				duration: { type: 'number', description: 'Gesture duration in seconds. Defaults to a natural swipe.' },
+				duration: { type: 'number', description: 'Gesture duration in seconds. Defaults to 0.4; much faster swipes may not register (for example, a home screen page does not turn).' },
 			},
 			required: ['startX', 'startY', 'endX', 'endY'],
 			additionalProperties: false,
@@ -164,7 +166,7 @@ interface ILedgerEntry {
 	lastActiveAt: number;
 }
 
-export class ParadisMobileCanvasService extends Disposable implements IParadisMcpToolProvider {
+export class ParadisMobileCanvasService extends Disposable implements IParadisMcpToolProvider, IParadisMobileDeviceLedger {
 
 	/** ペイントークン → アタッチ内容。1ペインにつき同時に1台まで。 */
 	private readonly _attachments = new Map<string, ILedgerEntry>();
@@ -180,8 +182,9 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 		// 実利用（MCPツール呼び出し）がないまま TTL を過ぎたエントリを自前で落とす。
 		const sweepTimer = setInterval(() => this._sweepIdleAttachments(), PARADIS_MOBILE_ATTACHMENT_SWEEP_INTERVAL_MS);
 		// 掃除だけで shared process を起こし続けないようにする（mobileRelayService と同じ手当て。
-		// キャストは dom/node の setInterval 型衝突を避けるため）。
-		(sweepTimer as unknown as NodeJS.Timeout).unref();
+		// キャストは dom/node の setInterval 型衝突を避けるため。Electron のテストランナーは renderer で動き、
+		// setInterval が数値を返すので、unref が無ければ何もしない）。
+		(sweepTimer as unknown as Partial<NodeJS.Timeout>).unref?.();
 		this._register({ dispose: () => clearInterval(sweepTimer) });
 	}
 
@@ -236,6 +239,24 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 		return attachment;
 	}
 
+	/**
+	 * エージェントの要求を利用者が承認したときの割り当て。端末一覧を待ち終えた後、書き込む直前に
+	 * 同期的に「ほかのペインが使っていないか」を確かめる（確かめてから書き込むまでの間に await を挟まない。
+	 * 別のウィンドウの2つのペインが同じ端末をほぼ同時に承認されても、二重に割り当てないように）。
+	 * @returns 割り当てたもの。端末が無い・ほかのペインが使っているときは undefined
+	 */
+	async attachIfFree(paneToken: string, deviceId: string, stateKey: string | undefined, signal?: AbortSignal): Promise<IParadisMobileAttachment | undefined> {
+		const devices = await this._listDevices(signal);
+		const device = devices.find(candidate => candidate.id === deviceId);
+		if (!device || paradisDeviceHeldByAnotherPane(paneToken, device, devices, this.listAttachments())) {
+			return undefined;
+		}
+		const attachment: IParadisMobileAttachment = { paneToken, deviceId: device.id, deviceName: device.name, stateKey, attachedAt: Date.now() };
+		this._attachments.set(paneToken, { attachment, lastActiveAt: attachment.attachedAt });
+		this._logService.info(`[paradis-mobile-canvas] attached ${device.name} to a terminal pane after the user approved the request`);
+		return attachment;
+	}
+
 	/** ペインのアタッチを解除する。アタッチが無ければ何もしない。 */
 	detach(paneToken: string): void {
 		if (this._attachments.delete(paneToken)) {
@@ -248,12 +269,30 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 		return [...this._attachments.values()].map(entry => entry.attachment);
 	}
 
+	/** そのペインのアタッチ。MCP ツールからの利用として最終利用時刻を進める。 */
+	getAttachment(paneToken: string): IParadisMobileAttachment | undefined {
+		this._touchLedgerEntry(paneToken);
+		return this._attachments.get(paneToken)?.attachment;
+	}
+
+	listDevices(signal?: AbortSignal): Promise<IParadisMobileDevice[]> {
+		return this._listDevices(signal);
+	}
+
+	/** このサービスと寿命をそろえる後始末（別のプロバイダの登録など）を預かる。 */
+	own(disposable: IDisposable): void {
+		this._register(disposable);
+	}
+
 	// --- MCPツールプロバイダ ---
 
 	listTools(): readonly IParadisMcpToolDefinition[] {
 		return TOOLS;
 	}
 
+	// ここのツール（画面の読み取りと入力）はトークンだけで動かす。利用者がその端末をそのペインへ渡した後の
+	// 画面の操作なので、接続元の確認は掛けない（tmux・WSL・採用した Codex app-server では確認を通らず、
+	// 使えなくなるため）。確認を掛けるのは paradisMobileDeviceOpsToolProvider.ts の要求・アプリの操作だけ。
 	async callTool(paneToken: string, name: string, args: unknown, signal?: AbortSignal): Promise<unknown | undefined> {
 		if (!TOOLS.some(tool => tool.name === name)) {
 			return undefined;
@@ -275,11 +314,16 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 			const attached = this._attachments.get(paneToken)?.attachment;
 			this._touchLedgerEntry(paneToken);
 			return jsonResult({
-				devices: devices.map(device => ({ ...device, attachedToThisPane: device.id === attached?.deviceId })),
+				// ほかのペインが使っている端末は mobile_request_device で要求できないので、選ぶ前に分かるようにする
+				devices: devices.map(device => ({
+					...device,
+					attachedToThisPane: device.id === attached?.deviceId,
+					usedByAnotherPane: paradisDeviceHeldByAnotherPane(paneToken, device, devices, this.listAttachments()),
+				})),
 				attachedToThisPane: attached ? { deviceId: attached.deviceId, name: attached.deviceName } : null,
 				hint: attached
 					? undefined
-					: 'No device is attached to this terminal pane. Ask the user to attach one from Para Code (the "Mobile Devices" tab of the sharing dialog); you cannot attach it yourself.',
+					: 'No device is attached to this terminal pane. Call mobile_request_device with the id or name of a device no other pane is using: the user approves it in Para Code. The user can also attach one from the "Mobile Devices" tab of the sharing dialog.',
 			});
 		}
 
@@ -323,7 +367,8 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 					startY: requireNumber(args, 'startY'),
 					endX: requireNumber(args, 'endX'),
 					endY: requireNumber(args, 'endY'),
-					duration: optionalNumber(args, 'duration'),
+					// 省いたときにホストの既定（速すぎてページが送られない）に任せない。mobile_gesture と同じ値
+					duration: optionalNumber(args, 'duration') ?? PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS,
 				};
 				await this._hostClient.request('POST', `/api/v1/devices/${id}/input/swipe`, body, signal);
 				return textResult(`Swiped ${attachment.deviceName} from (${body.startX}, ${body.startY}) to (${body.endX}, ${body.endY}).`);
@@ -403,7 +448,7 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 		this._touchLedgerEntry(paneToken);
 		const entry = this._attachments.get(paneToken);
 		if (!entry) {
-			throw new Error('No mobile device is attached to this terminal pane. Ask the user to attach one from Para Code (the "Mobile Devices" tab of the sharing dialog), then try again.');
+			throw new Error('No mobile device is attached to this terminal pane. Call mobile_request_device to ask the user for one (or ask them to attach it from the "Mobile Devices" tab of the sharing dialog), then try again.');
 		}
 		return entry.attachment;
 	}

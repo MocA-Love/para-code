@@ -26,6 +26,8 @@ import './contrib/workspaceSwitch/electron-browser/paradisAddRepositoryFlow.cont
 // モバイル端末⇔ターミナルペインのアタッチUIが使うモデル（registerSingletonを起動時に確実に走らせる）
 import './contrib/mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
 import './contrib/mobileCanvas/electron-browser/paradisMobileCanvasLifecycle.contribution.js';
+// エージェントの「この端末を使いたい」を承認ダイアログで受ける（B13）
+import './contrib/mobileCanvas/electron-browser/paradisMobileDeviceRequest.contribution.js';
 import './contrib/browserButton/electron-browser/paradisOpenBrowserButton.contribution.js';
 import './contrib/layoutPresets/electron-browser/paradisLayoutPresets.contribution.js';
 import './contrib/notifications/electron-browser/paradisNotificationTrigger.contribution.js';
