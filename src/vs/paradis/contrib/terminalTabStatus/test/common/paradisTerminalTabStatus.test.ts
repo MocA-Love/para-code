@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisNextAttentionOnBell, paradisNextAttentionOnStatus } from '../../common/paradisTerminalTabStatus.js';
+import { paradisGuessAgentKindFromTitle, paradisNextAttentionOnBell, paradisNextAttentionOnStatus, paradisTerminalTabIconKind } from '../../common/paradisTerminalTabStatus.js';
 
 suite('paradisTerminalTabStatus', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -52,6 +52,34 @@ suite('paradisTerminalTabStatus', () => {
 			waitingBeatsDone: 'waiting',
 			doneBeatsBell: 'done',
 			bellDoesNotHideWaiting: 'waiting',
+		});
+	});
+
+	test('picks the tab icon from the state first, then the agent logo, and leaves plain shells alone', () => {
+		assert.deepStrictEqual({
+			working: paradisTerminalTabIconKind('working', undefined, 'claude'),
+			permission: paradisTerminalTabIconKind('permission', 'waiting', 'codex'),
+			question: paradisTerminalTabIconKind('question', undefined, undefined),
+			unseenDone: paradisTerminalTabIconKind(undefined, 'done', 'claude'),
+			unacknowledgedReview: paradisTerminalTabIconKind('review', undefined, 'codex'),
+			idleClaude: paradisTerminalTabIconKind(undefined, undefined, 'claude'),
+			idleCodex: paradisTerminalTabIconKind(undefined, 'bell', 'codex'),
+			plainShell: paradisTerminalTabIconKind(undefined, undefined, undefined),
+			titleClaude: paradisGuessAgentKindFromTitle('Claude Code'),
+			titleCodex: paradisGuessAgentKindFromTitle('codex | 0199'),
+			titleShell: paradisGuessAgentKindFromTitle('zsh'),
+		}, {
+			working: 'working',
+			permission: 'permission',
+			question: 'question',
+			unseenDone: 'done',
+			unacknowledgedReview: 'done',
+			idleClaude: 'claude',
+			idleCodex: 'codex',
+			plainShell: undefined,
+			titleClaude: 'claude',
+			titleCodex: 'codex',
+			titleShell: undefined,
 		});
 	});
 });
