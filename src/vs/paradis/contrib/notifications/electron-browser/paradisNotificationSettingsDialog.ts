@@ -97,7 +97,7 @@ const STR_OS_EVENT_REVIEW = localize('paradis.notif.osEventReview', "作業完�
 // allow-any-unicode-next-line
 const STR_OS_MESSAGE_LABEL = localize('paradis.notif.osMessageLabel', "エージェントの最後の発言を載せる");
 // allow-any-unicode-next-line
-const STR_OS_MESSAGE_HINT = localize('paradis.notif.osMessageHint', "通知の本文に最後の発言（許可待ち・質問では待っている内容）の冒頭を 80 字ほど載せます。ロック画面や画面共有中に中身が見えるのを避けたい場合はオフにします");
+const STR_OS_MESSAGE_HINT = localize('paradis.notif.osMessageHint', "オンの間は、エージェントの発言の冒頭（許可待ちではツール名とコマンドの要約）が 80 字ほど通知に出ます。トークンなど秘密らしい値は伏せますが、すべては見分けられません。ロック画面や画面共有中に見えるのを避けたい場合はオフにします");
 // allow-any-unicode-next-line
 const STR_FOCUSED_TOGGLE_LABEL = localize('paradis.notif.focusedToggleLabel', "Para Code を見ている間も通知する");
 // allow-any-unicode-next-line
@@ -634,7 +634,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			eventCheckbox(STR_OS_EVENT_PERMISSION, this.settingsService.getOsNotifyOnPermission(), value => this.settingsService.setOsNotifyOnPermission(value));
 			eventCheckbox(STR_OS_EVENT_REVIEW, this.settingsService.getOsNotifyOnReview(), value => this.settingsService.setOsNotifyOnReview(value));
 
-			// --- 本文に最後の発言を載せる（settings.json の設定。q.html Q35） ---
+			// --- 本文に最後の発言を載せる（settings.json の設定） ---
 			const messageRow = dom.append(container, $('.setting-row'));
 			const messageLabels = dom.append(messageRow, $('.sr-main'));
 			dom.append(messageLabels, $('.sr-label')).textContent = STR_OS_MESSAGE_LABEL;

@@ -36,7 +36,10 @@ export class ParadisNotificationInboxLedger {
 
 	private readonly entries: MutableEntry[] = [];
 	private readonly livePanesByClient = new Map<string, ReadonlySet<string>>();
+	/** ペインごとに最後に知らされた状態。記録が状態の知らせより遅れて届いたときに使う。 */
+	private readonly lastStatusByPane = new Map<string, IParadisInboxPaneStatus['status']>();
 	private sequence = 0;
+	private revision = 0;
 
 	constructor(
 		private readonly now: () => number = Date.now,
@@ -46,7 +49,7 @@ export class ParadisNotificationInboxLedger {
 	record(input: IParadisInboxRecordInput): IParadisInboxEntry {
 		const entry: MutableEntry = {
 			kind: input.kind,
-			paneToken: input.paneToken,
+			paneKey: input.paneKey,
 			instanceId: input.instanceId,
 			windowId: input.windowId,
 			...(input.stateKey !== undefined ? { stateKey: input.stateKey } : {}),
@@ -57,7 +60,9 @@ export class ParadisNotificationInboxLedger {
 			delivery: input.delivery,
 			id: String(++this.sequence),
 			at: this.now(),
-			read: input.read === true,
+			// 記録より先に「もう別の状態になった」と知らされていれば（本文の取得を待つ間に確認された等）、
+			// 最初から既読で入れる。未読のまま入れると、次に状態が変わるまで件数に残り続ける。
+			read: input.read === true || (this.lastStatusByPane.has(input.paneKey) && this.lastStatusByPane.get(input.paneKey) !== input.kind),
 		};
 		this.entries.unshift(entry);
 		if (this.entries.length > this.limit) {
@@ -86,7 +91,7 @@ export class ParadisNotificationInboxLedger {
 
 	markPanesRead(tokens: readonly string[]): boolean {
 		const targets = new Set(tokens);
-		return this.update(entry => targets.has(entry.paneToken) && !entry.read, true);
+		return this.update(entry => targets.has(entry.paneKey) && !entry.read, true);
 	}
 
 	remove(id: string): boolean {
@@ -100,8 +105,11 @@ export class ParadisNotificationInboxLedger {
 
 	/** ペインの状態が通知の種類と違っていたら、そのペインの未読を既読にする。 */
 	syncPaneStatuses(statuses: readonly IParadisInboxPaneStatus[]): boolean {
-		const statusByToken = new Map(statuses.map(status => [status.token, status.status]));
-		return this.update(entry => !entry.read && statusByToken.has(entry.paneToken) && statusByToken.get(entry.paneToken) !== entry.kind, true);
+		const statusByPane = new Map(statuses.map(status => [status.paneKey, status.status]));
+		for (const [paneKey, status] of statusByPane) {
+			this.lastStatusByPane.set(paneKey, status);
+		}
+		return this.update(entry => !entry.read && statusByPane.has(entry.paneKey) && statusByPane.get(entry.paneKey) !== entry.kind, true);
 	}
 
 	/** あるウィンドウ（接続）がいま開いているペインを丸ごと置き換える。 */
@@ -112,19 +120,35 @@ export class ParadisNotificationInboxLedger {
 	}
 
 	removeClient(client: string): boolean {
-		if (!this.livePanesByClient.has(client)) {
+		const panes = this.livePanesByClient.get(client);
+		if (panes === undefined) {
 			return false;
 		}
 		const before = this.attentionSignature();
 		this.livePanesByClient.delete(client);
+		const live = this.livePanes();
+		for (const paneKey of panes) {
+			if (!live.has(paneKey)) {
+				this.lastStatusByPane.delete(paneKey);
+			}
+		}
 		return before !== this.attentionSignature();
+	}
+
+	/** 変更系のメソッドが true を返したら呼ぶ（スナップショットの番号を進める）。 */
+	bumpRevision(): void {
+		this.revision++;
 	}
 
 	snapshot(): IParadisInboxSnapshot {
 		const live = this.livePanes();
 		const entries = this.entries.map(entry => this.toEntry(entry, live));
-		const partial: IParadisInboxSnapshot = { entries, attentionPaneCount: 0, unreadCount: entries.filter(entry => !entry.read).length };
-		return { ...partial, attentionPaneCount: paradisInboxAttentionPaneCount(partial) };
+		return {
+			entries,
+			attentionPaneCount: paradisInboxAttentionPaneCount({ entries }),
+			unreadCount: entries.filter(entry => !entry.read).length,
+			revision: this.revision,
+		};
 	}
 
 	private update(predicate: (entry: MutableEntry) => boolean, read: boolean): boolean {
@@ -151,10 +175,10 @@ export class ParadisNotificationInboxLedger {
 	/** 表示に影響する「どの行が開いているペインのものか」の指紋。 */
 	private attentionSignature(): string {
 		const live = this.livePanes();
-		return this.entries.map(entry => live.has(entry.paneToken) ? '1' : '0').join('');
+		return this.entries.map(entry => live.has(entry.paneKey) ? '1' : '0').join('');
 	}
 
 	private toEntry(entry: MutableEntry, live: ReadonlySet<string>): IParadisInboxEntry {
-		return { ...entry, live: live.has(entry.paneToken) };
+		return { ...entry, live: live.has(entry.paneKey) };
 	}
 }

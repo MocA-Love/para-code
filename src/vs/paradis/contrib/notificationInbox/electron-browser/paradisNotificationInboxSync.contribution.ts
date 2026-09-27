@@ -24,7 +24,7 @@ import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-
 import { paradisRevealNotifiedPane } from '../../notifications/electron-browser/paradisNotificationReveal.js';
 import { paradisIsWorkbenchWindowFocused } from '../../workspaceSwitch/browser/paradisWindowFocus.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisInboxPaneStatus, IParadisInboxRevealRequest, IParadisNotificationInboxService } from '../common/paradisNotificationInbox.js';
+import { IParadisInboxPaneStatus, IParadisInboxRevealRequest, IParadisNotificationInboxService, paradisInboxPaneKey } from '../common/paradisNotificationInbox.js';
 
 /** 接続の出入りと食い違ったときの保険。開いているペインをこの間隔でも知らせ直す。 */
 const LIVE_PANES_REFRESH_INTERVAL = 30_000;
@@ -50,7 +50,7 @@ class ParadisNotificationInboxSync extends Disposable implements IWorkbenchContr
 		super();
 
 		const livePanes = this._register(new RunOnceScheduler(() => {
-			void this.inboxService.setLivePanes(this.paneTokenService.listPaneTokens().map(entry => entry.token));
+			void this.inboxService.setLivePanes(this.paneTokenService.listPaneTokens().map(entry => paradisInboxPaneKey(entry.token)));
 		}, LIVE_PANES_DELAY));
 		this._register(this.paneTokenService.onDidChange(() => livePanes.schedule()));
 		this._register(new IntervalTimer()).cancelAndSet(() => livePanes.schedule(), LIVE_PANES_REFRESH_INTERVAL);
@@ -67,8 +67,9 @@ class ParadisNotificationInboxSync extends Disposable implements IWorkbenchContr
 				return;
 			}
 			const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
-			if (token !== undefined && this.hasUnread(token)) {
-				void this.inboxService.markPanesRead([token]);
+			const paneKey = token !== undefined ? paradisInboxPaneKey(token) : undefined;
+			if (paneKey !== undefined && this.hasUnread(paneKey)) {
+				void this.inboxService.markPanesRead([paneKey]);
 			}
 		}));
 
@@ -79,8 +80,8 @@ class ParadisNotificationInboxSync extends Disposable implements IWorkbenchContr
 		const statusByToken = new Map(statuses.map(status => [status.token, status.status]));
 		// このウィンドウのペインだけ。状態に出てこない（待機中の）ペインは undefined として送る。
 		const owned: IParadisInboxPaneStatus[] = this.paneTokenService.listPaneTokens()
-			.map(entry => ({ token: entry.token, status: statusByToken.get(entry.token) }))
-			.sort((a, b) => a.token.localeCompare(b.token));
+			.map(entry => ({ paneKey: paradisInboxPaneKey(entry.token), status: statusByToken.get(entry.token) }))
+			.sort((a, b) => a.paneKey.localeCompare(b.paneKey));
 		const signature = JSON.stringify(owned);
 		if (signature === this.statusSignature) {
 			return;
@@ -89,12 +90,13 @@ class ParadisNotificationInboxSync extends Disposable implements IWorkbenchContr
 		void this.inboxService.syncPaneStatuses(owned);
 	}
 
-	private hasUnread(token: string): boolean {
-		return this.inboxService.snapshot.entries.some(entry => entry.paneToken === token && !entry.read);
+	private hasUnread(paneKey: string): boolean {
+		return this.inboxService.snapshot.entries.some(entry => entry.paneKey === paneKey && !entry.read);
 	}
 
 	private reveal(request: IParadisInboxRevealRequest): void {
-		const instanceId = this.paneTokenService.getInstanceForToken(request.paneToken);
+		const token = this.paneTokenService.listPaneTokens().find(entry => paradisInboxPaneKey(entry.token) === request.paneKey)?.token;
+		const instanceId = token !== undefined ? this.paneTokenService.getInstanceForToken(token) : undefined;
 		if (instanceId === undefined) {
 			return; // 別のウィンドウのペイン（そちらのウィンドウが受け取る）
 		}

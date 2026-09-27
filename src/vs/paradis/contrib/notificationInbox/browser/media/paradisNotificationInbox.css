@@ -56,8 +56,27 @@
 	color: var(--vscode-activityBarBadge-foreground);
 }
 
+/*
+ * Keep the badge slot even at zero so the bell never changes width. Upstream only re-measures the
+ * center-adjacent toolbar on layout, so a width change when the first count appears could push the
+ * window controls out of reach until the window is resized.
+ */
 .monaco-workbench .paradis-notification-inbox-titlebar-widget > .paradis-notification-inbox-badge.hidden {
-	display: none;
+	visibility: hidden;
+}
+
+/* High contrast: the badge and focus states have no fill to rely on, so draw outlines instead. */
+.monaco-workbench.hc-black .paradis-notification-inbox-titlebar-widget > .paradis-notification-inbox-badge,
+.monaco-workbench.hc-light .paradis-notification-inbox-titlebar-widget > .paradis-notification-inbox-badge {
+	border: 1px solid var(--vscode-contrastBorder);
+}
+
+.monaco-workbench.hc-black .paradis-notification-inbox-titlebar-widget:hover,
+.monaco-workbench.hc-black .paradis-notification-inbox-titlebar-widget.open,
+.monaco-workbench.hc-light .paradis-notification-inbox-titlebar-widget:hover,
+.monaco-workbench.hc-light .paradis-notification-inbox-titlebar-widget.open {
+	outline: 1px dashed var(--vscode-toolbar-hoverOutline);
+	outline-offset: -1px;
 }
 
 /* ---------------------------------------------------------------- popover */
@@ -166,6 +185,17 @@
 	background-color: var(--vscode-list-hoverBackground);
 }
 
+.monaco-workbench.hc-black .paradis-notification-inbox-popover .pnip-row:hover,
+.monaco-workbench.hc-light .paradis-notification-inbox-popover .pnip-row:hover {
+	outline: 1px dashed var(--vscode-contrastActiveBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench.hc-black .paradis-notification-inbox-popover .pnip-row.unread .pnip-dot,
+.monaco-workbench.hc-light .paradis-notification-inbox-popover .pnip-row.unread .pnip-dot {
+	border: 1px solid var(--vscode-contrastBorder);
+}
+
 .monaco-workbench .paradis-notification-inbox-popover .pnip-row:focus-visible {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
@@ -250,4 +280,12 @@
 .monaco-workbench .paradis-notification-inbox-popover .pnip-row.closed .pnip-location,
 .monaco-workbench .paradis-notification-inbox-popover .pnip-row.closed .pnip-kind {
 	opacity: 0.6;
+}
+
+/*
+ * Window transparency: like the other light-DOM overlays (paradisWindowTransparency.css), paint the
+ * theme background over an opaque base so a translucent editorWidget background never shows the desktop.
+ */
+.monaco-workbench.paradis-transparent .paradis-notification-inbox-popover {
+	background: linear-gradient(var(--vscode-editorWidget-background, var(--vscode-editor-background)), var(--vscode-editorWidget-background, var(--vscode-editor-background))), var(--vscode-editor-background);
 }

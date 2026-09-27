@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 音声入力（upstream 内蔵のディクテーション）の間、Para Code の読み上げ（Aivis）と通知音を止める
-// （q.html Q38 案A「読み上げが話している間は、声を拾わないよう読み上げを止めます」）。
+// （マイクが Para Code 自身の読み上げを拾って文字起こしに混ざらないようにする）。
 //
 // 音声入力はチャット・エディタ・ターミナルのどの入口から始めても、内蔵エンジンなら
 // IChatSpeechToTextService を通る。状態が Idle 以外か、モデルの準備中（マイクはこの間も開いている）を

@@ -11,12 +11,13 @@
 // エージェントの完了・許可待ち・質問の通知は、ペインを持っているウィンドウの renderer が
 // 1件ずつ判断して出す（paradisNotificationTrigger.contribution.ts）。ここではその判断の結果を、
 // 鳴らさなかったものも含めて shared process の台帳へ1か所に集める。台帳はタイトルバーのベルと
-// 受信箱、Dock の件数、メニューバーのアイコンのデータ源になる（q.html Q33〜Q36）。
+// 受信箱、Dock の件数、メニューバーのアイコンのデータ源になる。
 //
 // 台帳は shared process のメモリにだけ持つ。ウィンドウを再読み込みしても残り（ペイントークンは
 // 再読み込みをまたいで同じものが戻る）、アプリを終了すると消える。
 
 import { Event } from '../../../../base/common/event.js';
+import { StringSHA1 } from '../../../../base/common/hash.js';
 import { localize } from '../../../../nls.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { paradisOneLine } from '../../agentInsights/common/paradisAgentInsights.js';
@@ -26,18 +27,18 @@ export const PARADIS_NOTIFICATION_INBOX_CHANNEL = 'paradisNotificationInbox';
 /** 台帳に残す件数の上限。超えたら古いものから捨てる。 */
 export const PARADIS_NOTIFICATION_INBOX_LIMIT = 200;
 
-/** OS 通知の本文に載せる、最後の発言の長さ（q.html Q35「80 字程度」）。 */
+/** OS 通知の本文に載せる、最後の発言の長さ（80 字程度）。 */
 export const PARADIS_NOTIFICATION_PREVIEW_LENGTH = 80;
 
 // ---- 設定 ------------------------------------------------------------------------------------
 
-/** OS 通知の本文に、エージェントの最後の発言の冒頭を載せるか（既定オン、Q35 案A）。 */
+/** OS 通知の本文に、エージェントの最後の発言の冒頭を載せるか（既定オン。ユーザーが通知の中身を読める方を選んだ）。 */
 export const PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING = 'paradis.notifications.osIncludeMessage';
-/** タイトルバーにベル（受信箱）を出すか（既定オン、Q33 案A）。 */
+/** タイトルバーにベル（受信箱）を出すか（既定オン）。 */
 export const PARADIS_NOTIFICATION_INBOX_TITLE_BAR_SETTING = 'paradis.notifications.inbox.titleBar.enabled';
 /** Dock（macOS）・ランチャー（Linux）・タスクバー（Windows）のアイコンに要対応の数を出すか（既定オン）。 */
 export const PARADIS_NOTIFICATION_DOCK_BADGE_SETTING = 'paradis.notifications.dockBadge.enabled';
-/** メニューバー（Windows は通知領域）に Para Code のアイコンを出すか（既定オフ、Q36 案A）。 */
+/** メニューバー（Windows は通知領域）に Para Code のアイコンを出すか（既定オフ。メニューバーの幅を使わない人のため）。 */
 export const PARADIS_NOTIFICATION_MENU_BAR_SETTING = 'paradis.notifications.menuBarIcon.enabled';
 
 // ---- 台帳の中身 ------------------------------------------------------------------------------
@@ -58,7 +59,11 @@ export type ParadisInboxDelivery = 'notified' | 'silent' | 'focused' | 'doNotDis
 /** renderer が台帳へ書く1件。id・時刻・既読は台帳が決める（`read` だけは初期値を渡せる）。 */
 export interface IParadisInboxRecordInput {
 	readonly kind: ParadisInboxKind;
-	readonly paneToken: string;
+	/**
+	 * ペインを指す鍵。ペイントークンそのものではなく、そのハッシュ（{@link paradisInboxPaneKey}）。
+	 * 台帳は全ウィンドウへ配られるので、エージェントの認証にも使うトークンを渡さない。
+	 */
+	readonly paneKey: string;
 	/** 記録した時点のターミナルのインスタンス ID（そのウィンドウの中でだけ意味がある）。 */
 	readonly instanceId: number;
 	/** ペインを持っているウィンドウ（INativeHostService.windowId）。 */
@@ -89,24 +94,33 @@ export interface IParadisInboxEntry extends IParadisInboxRecordInput {
 export interface IParadisInboxSnapshot {
 	/** 新しい順。 */
 	readonly entries: readonly IParadisInboxEntry[];
-	/** 未読の通知があり、いまも開いているペインの数（Q34 案A「対応が必要なペインの数」）。 */
+	/** 未読の通知があり、いまも開いているペインの数（通知の件数ではなく「対応が必要なペインの数」で数える）。 */
 	readonly attentionPaneCount: number;
 	/** 未読の通知の件数（閉じたペインの分も含む）。 */
 	readonly unreadCount: number;
+	/** 台帳が変わるたびに増える番号。遅れて届いた古いスナップショットを見分けるのに使う。 */
+	readonly revision: number;
 }
 
-export const EMPTY_PARADIS_INBOX_SNAPSHOT: IParadisInboxSnapshot = Object.freeze({ entries: [], attentionPaneCount: 0, unreadCount: 0 });
+export const EMPTY_PARADIS_INBOX_SNAPSHOT: IParadisInboxSnapshot = Object.freeze({ entries: [], attentionPaneCount: 0, unreadCount: 0, revision: 0 });
+
+/** ペイントークンから台帳の鍵を作る（SHA-1。トークンは十分に長い乱数なので元には戻せない）。 */
+export function paradisInboxPaneKey(token: string): string {
+	const sha = new StringSHA1();
+	sha.update(`paradis-inbox:${token}`);
+	return sha.digest();
+}
 
 /** ペインの今の状態（台帳へ知らせる用）。`undefined` は待機中（通知の対象外の状態）。 */
 export interface IParadisInboxPaneStatus {
-	readonly token: string;
+	readonly paneKey: string;
 	readonly status: 'working' | ParadisInboxKind | undefined;
 }
 
 /** 受信箱の行（またはメニューバーの項目）を押して、そのペインへ移動してほしいという依頼。 */
 export interface IParadisInboxRevealRequest {
 	readonly entryId: string;
-	readonly paneToken: string;
+	readonly paneKey: string;
 	readonly windowId: number;
 	readonly stateKey?: string;
 }
@@ -172,7 +186,7 @@ export function paradisNotificationPreview(text: string | undefined, max = PARAD
 
 /**
  * OS 通知の本文。従来の本文（スペース名、worktree があれば括弧書き）に、発言の冒頭を
- * 「スペース: 発言」の形で続ける（q.html Q35 の例「main: ビルドが通るように…」）。
+ * 「スペース: 発言」の形で続ける（例「main: ビルドが通るように…」）。
  */
 export function paradisNotificationBody(location: string | undefined, preview: string | undefined): string | undefined {
 	if (!preview) {
@@ -181,12 +195,12 @@ export function paradisNotificationBody(location: string | undefined, preview: s
 	return location ? `${location}: ${preview}` : preview;
 }
 
-/** 要対応のペインのうち、`tokens`（あるウィンドウが持っているペイン）に入るものの数。 */
-export function paradisInboxAttentionPaneCount(snapshot: IParadisInboxSnapshot, tokens?: ReadonlySet<string>): number {
+/** 要対応のペインのうち、`paneKeys`（あるウィンドウが持っているペインの鍵）に入るものの数。 */
+export function paradisInboxAttentionPaneCount(snapshot: Pick<IParadisInboxSnapshot, 'entries'>, paneKeys?: ReadonlySet<string>): number {
 	const panes = new Set<string>();
 	for (const entry of snapshot.entries) {
-		if (!entry.read && entry.live && (tokens === undefined || tokens.has(entry.paneToken))) {
-			panes.add(entry.paneToken);
+		if (!entry.read && entry.live && (paneKeys === undefined || paneKeys.has(entry.paneKey))) {
+			panes.add(entry.paneKey);
 		}
 	}
 	return panes.size;
@@ -199,14 +213,95 @@ export function paradisInboxAttentionEntries(snapshot: IParadisInboxSnapshot, li
 	const seen = new Set<string>();
 	const result: IParadisInboxEntry[] = [];
 	for (const entry of snapshot.entries) {
-		if (entry.read || !entry.live || seen.has(entry.paneToken)) {
+		if (entry.read || !entry.live || seen.has(entry.paneKey)) {
 			continue;
 		}
-		seen.add(entry.paneToken);
+		seen.add(entry.paneKey);
 		result.push(entry);
 		if (result.length >= limit) {
 			break;
 		}
 	}
 	return result;
+}
+
+// ---- 通知に載せる文の選び方と、秘密らしい値の伏せ字 -------------------------------------------------
+
+/** 伏せた部分の印。 */
+const REDACTED = '***';
+
+const SECRET_PATTERNS: readonly [RegExp, string][] = [
+	// URL に埋め込んだ認証情報（https://user:pass@host）
+	[/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, `$1${REDACTED}@`],
+	// Authorization ヘッダー・Bearer / Basic の値
+	[/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}/gi, `$1 ${REDACTED}`],
+	// NAME_KEY=... / API_TOKEN: ... / password=... など（右辺だけ伏せる）
+	[/\b([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|passw(?:or)?d|pwd|credentials?|authorization))(["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s"'&;|]+)/gi, `$1$2${REDACTED}`],
+	// --password xxx / --token=xxx などのコマンドライン引数
+	[/(--?(?:[a-z0-9-]*(?:key|token|secret|password|passwd|pass))[=\s]+)("[^"]*"|'[^']*'|\S+)/gi, `$1${REDACTED}`],
+	// よく知られた形のトークン
+	[/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}/g, REDACTED],
+	[/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{12,}/g, REDACTED],
+	[/\bgithub_pat_[A-Za-z0-9_]{12,}/g, REDACTED],
+	[/\b(?:AKIA|ASIA)[0-9A-Z]{12,}/g, REDACTED],
+	[/\bxox[abprs]-[A-Za-z0-9-]{8,}/g, REDACTED],
+	[/\bAIza[0-9A-Za-z_-]{20,}/g, REDACTED],
+	[/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, REDACTED],
+];
+
+/**
+ * 通知や受信箱に出す文から、秘密らしい値を伏せる。通知はロック画面・通知センターの履歴・
+ * 画面共有に出るので、エージェントのコマンドに含まれるトークンやパスワードをそのまま載せない。
+ * 見落としはありうる（形の決まっていない秘密は拾えない）ので、確実に隠したい人のために
+ * 設定で本文そのものを切れるようにしてある。
+ */
+export function paradisRedactSecrets(text: string): string {
+	let result = text;
+	for (const [pattern, replacement] of SECRET_PATTERNS) {
+		result = result.replace(pattern, replacement);
+	}
+	return result;
+}
+
+/**
+ * 許可待ちの要約を「ツール名: 伏せ字を入れた要約」に整える。
+ * 中継の要約（paradisSummarizePermissionInput）は Bash のときだけツール名を付けないので補う。
+ */
+export function paradisPermissionPreview(text: string): string {
+	const oneLine = text.replace(/\s+/g, ' ').trim();
+	const prefixed = /^(?<tool>[A-Za-z][\w.-]*): (?<detail>.*)$/.exec(oneLine);
+	if (prefixed?.groups) {
+		return `${prefixed.groups.tool}: ${paradisRedactSecrets(prefixed.groups.detail)}`;
+	}
+	if (/^[A-Za-z][\w.-]*$/.test(oneLine)) {
+		return oneLine; // ツール名だけ
+	}
+	return `Bash: ${paradisRedactSecrets(oneLine)}`;
+}
+
+/** 中継から読んだペインの様子のうち、通知に使う部分。 */
+export interface IParadisNotificationMessageSource {
+	readonly lastMessage?: { readonly text: string; readonly at?: number };
+	readonly interaction?: { readonly text: string; readonly at: number };
+}
+
+/**
+ * 通知に載せる文を選ぶ。完了は最後の発言、許可待ち・質問は待っている内容（無ければ最後の発言）。
+ *
+ * 完了の発言は、そのターンの作業が始まった時刻（`since`）以降のものだけを「新しい」とする。
+ * 会話ログの読み取りが遅れていると前のターンの発言が返るので、`fresh: false` なら取り直す。
+ * 返す文は伏せ字済み。
+ */
+export function paradisPickNotificationMessage(source: IParadisNotificationMessageSource | undefined, kind: ParadisInboxKind, since: number): { readonly text?: string; readonly fresh: boolean } {
+	if (kind !== 'review' && source?.interaction !== undefined) {
+		const text = kind === 'permission' ? paradisPermissionPreview(source.interaction.text) : paradisRedactSecrets(source.interaction.text);
+		return { text, fresh: true };
+	}
+	const message = source?.lastMessage;
+	if (message === undefined) {
+		// セッションが確定していないペインは待っても出てこない。確定していれば、まだ読めていないだけ。
+		return { fresh: kind !== 'review' || source === undefined };
+	}
+	const fresh = kind !== 'review' || message.at === undefined || message.at >= since;
+	return { text: fresh ? paradisRedactSecrets(message.text) : undefined, fresh };
 }
