@@ -78,36 +78,56 @@ export function paradisHookAgentKindForTranscript(transcriptPath: string): Parad
 // `claude` があるだけでは判定しない（例: tmux サーバーの起動行 `tmux new-session -s x claude`。
 // サーバーは中の claude の祖先になるので、これをエージェントと見なすと最外側の所有者を奪い、
 // 中の claude 自身のhookを nested にしてしまう）。見るのは次の2つ:
-//   - argv[0] のベース名（`claude` / `codex` / `claude.exe` / `codex.cmd` など）
-//   - ラッパー（node・bun・npx・env・シェル・cmd・PowerShell）が実行するスクリプトのパスやコマンド
+//   - argv[0] のベース名（`claude` / `codex` / `claude.exe` / `codex.cmd` など）= 本体の形
+//   - 同じプロセスでスクリプトを実行するラッパー（node・bun・deno・env・シェル・cmd・PowerShell）
+//     が実行するスクリプトのパスやコマンド = 起動役の形
 // tmux・screen・zellij 等はどちらにも当たらないので、特別扱いの一覧は持たない。
+// npx・bunx・pnpx・`bun x` のようなパッケージランナーは本体を必ず子プロセスとして起動するので
+// 判定しない（子の本体が判定される）。
+//
+// 起動役の形のプロセス（npm 版 codex の `node …/bin/codex`、Para Code の codex ペイン用ランチャー、
+// `exec` しないラッパースクリプト等）は本体を子として起動して自分も親に残る。起動役とその直接の子の
+// 同じ種類のエージェントは1体として扱う（findEmitter 参照）。
 
 /** ネストしたラッパー（`env` → `sh -c` → …）を辿る深さの上限。 */
 const MAX_COMMAND_NESTING = 4;
-/** スクリプトを実行するランタイム。 */
+/** 同じプロセスでスクリプトを実行するランタイム。 */
 const SCRIPT_RUNTIME_BASENAMES = new Set(['node', 'nodejs', 'bun', 'deno']);
-/** パッケージの実行ファイルを起動するランナー。 */
-const PACKAGE_RUNNER_BASENAMES = new Set(['npx', 'bunx', 'pnpx']);
 const SHELL_BASENAMES = new Set(['sh', 'bash', 'zsh', 'fish', 'dash', 'ksh']);
 const POWERSHELL_BASENAMES = new Set(['powershell', 'pwsh']);
 /** ランタイムの、次のトークンを値に取るオプション。 */
 const RUNTIME_OPTIONS_WITH_VALUE = new Set(['-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions', '--title', '--env-file', '--preload', '--cwd', '--config']);
 /** ランタイムの、スクリプトファイルではなくコード片を実行するオプション。 */
 const RUNTIME_INLINE_CODE_OPTIONS = new Set(['-e', '--eval', '-p', '--print']);
-/** bun / deno のサブコマンド（`bun run x` / `bun x pkg` / `deno run x`）。 */
-const RUNTIME_SUBCOMMANDS = new Set(['run', 'x', 'exec']);
-const PACKAGE_RUNNER_OPTIONS_WITH_VALUE = new Set(['-p', '--package']);
-const PACKAGE_RUNNER_COMMAND_OPTIONS = new Set(['-c', '--call']);
+/** bun / deno の、同じプロセスでスクリプトを実行するサブコマンド（`bun run x` / `deno run x`）。 */
+const RUNTIME_SCRIPT_SUBCOMMANDS = new Set(['run']);
+/** bun のパッケージランナーのサブコマンド（`bun x pkg`）。本体は子プロセスになるので判定しない。 */
+const RUNTIME_RUNNER_SUBCOMMANDS = new Set(['x', 'exec']);
 const ENV_OPTIONS_WITH_VALUE = new Set(['-u', '--unset', '-C', '--chdir', '-P']);
 const SHELL_OPTIONS_WITH_VALUE = new Set(['-o', '+o', '-O', '+O']);
 const POWERSHELL_OPTIONS_WITH_VALUE = new Set(['-executionpolicy', '-ep', '-ex', '-windowstyle', '-w', '-version', '-v', '-inputformat', '-if', '-outputformat', '-of', '-configurationname', '-workingdirectory', '-wd', '-settingsfile']);
 const POWERSHELL_ENCODED_OPTIONS = new Set(['-encodedcommand', '-e', '-ec', '-enc']);
 const POWERSHELL_COMMAND_OPTIONS = new Set(['-command', '-c', '-file', '-f']);
+/** Para Code の Windows 用 codex ペインランチャー（`resources/paradis/bin/paradisCodexPaneLauncher.cjs`）。 */
+const PARADIS_CODEX_PANE_LAUNCHER_BASENAME = 'paradiscodexpanelauncher';
+/** npm の Claude Code 本体。Windows の npm・pnpm は bin のシムを経ずに `node …/cli.js` と見える。 */
+const CLAUDE_CODE_PACKAGE_ENTRY = /[\\/]node_modules[\\/]@anthropic-ai[\\/]claude-code[\\/]cli\.m?js$/i;
+/** 拡張子まで揃ったスクリプトのパス。これより後ろは空白でつながない。 */
+const SCRIPT_FILE_EXTENSION = /\.(?:js|mjs|cjs|ts|mts|cts|sh|py|rb|pl)$/i;
+/** 空白入りのパスとしてつなぐトークン数の上限。 */
+const MAX_PATH_SPACE_JOINS = 3;
 
 interface ICommandLineToken {
 	readonly value: string;
 	readonly start: number;
 	readonly end: number;
+}
+
+/** 起動行から判定したエージェント。 */
+interface IAgentCommandMatch {
+	readonly kind: ParadisHookAgentKind;
+	/** 起動役の形（ラッパーの引数で判定した）なら true。argv[0] で判定した本体の形なら false。 */
+	readonly launcher: boolean;
 }
 
 /**
@@ -156,18 +176,53 @@ function agentKindOfBasename(basename: string): ParadisHookAgentKind | undefined
 	return undefined;
 }
 
-/**
- * ラッパーが実行するスクリプトのパス・パッケージ名からエージェント種別を返す。
- * パッケージ名の版指定（`claude@latest`）は除く。スコープ付きの `@anthropic-ai/claude-code`
- * は `claude-code` なので一致しない（npx はエージェントを子プロセスとして起動し、そちらが
- * `claude` として判定される。ランナー自身まで拾うと同種の祖先ができて所有者を奪う）。
- */
-function agentKindOfOperand(operand: string): ParadisHookAgentKind | undefined {
-	return agentKindOfBasename(normalizedBasename(operand).replace(/(?<=.)@.*$/, ''));
+/** ラッパーが実行するスクリプトのパスからエージェント種別を返す。 */
+function agentKindOfScriptPath(scriptPath: string): ParadisHookAgentKind | undefined {
+	const basename = normalizedBasename(scriptPath);
+	const kind = agentKindOfBasename(basename);
+	if (kind !== undefined) {
+		return kind;
+	}
+	if (CLAUDE_CODE_PACKAGE_ENTRY.test(scriptPath)) {
+		return 'claude';
+	}
+	return basename === PARADIS_CODEX_PANE_LAUNCHER_BASENAME ? 'codex' : undefined;
 }
 
-/** `command` の先頭のプログラムを解釈してエージェント種別を返す。 */
-function agentKindOfCommand(command: string, depth: number): ParadisHookAgentKind | undefined {
+/**
+ * `tokens[index]` から始まるスクリプトのパスを判定する。POSIX の `ps` は argv を引用符なしの
+ * 空白区切りで出すので、`/Applications/Para Code.app/…/codex` や `/Users/John Smith/…/claude`
+ * のような空白入りのパスは複数のトークンに割れる。1トークンで判定できなければ、`-`・`/` で
+ * 始まらない後続のトークンを空白でつないで判定し直す（`/` を含む断片をつないだ時点で試す）。
+ */
+function agentKindOfScriptOperand(tokens: readonly ICommandLineToken[], index: number): ParadisHookAgentKind | undefined {
+	let scriptPath = tokens[index].value;
+	const direct = agentKindOfScriptPath(scriptPath);
+	if (direct !== undefined || !scriptPath.includes('/')) {
+		return direct;
+	}
+	for (let next = index + 1; next < tokens.length && next <= index + MAX_PATH_SPACE_JOINS; next++) {
+		const fragment = tokens[next].value;
+		if (SCRIPT_FILE_EXTENSION.test(scriptPath) || /^[-/]/.test(fragment)) {
+			return undefined;
+		}
+		scriptPath += ' ' + fragment;
+		if (fragment.includes('/')) {
+			const kind = agentKindOfScriptPath(scriptPath);
+			if (kind !== undefined) {
+				return kind;
+			}
+		}
+	}
+	return undefined;
+}
+
+function launcherMatch(kind: ParadisHookAgentKind | undefined): IAgentCommandMatch | undefined {
+	return kind !== undefined ? { kind, launcher: true } : undefined;
+}
+
+/** `command` の先頭のプログラムを解釈してエージェントを判定する。 */
+function agentMatchOfCommand(command: string, depth: number): IAgentCommandMatch | undefined {
 	if (depth > MAX_COMMAND_NESTING) {
 		return undefined;
 	}
@@ -175,20 +230,25 @@ function agentKindOfCommand(command: string, depth: number): ParadisHookAgentKin
 	if (tokens.length === 0) {
 		return undefined;
 	}
-	const kind = agentKindOfTokens(command, tokens, depth);
-	if (kind !== undefined || !/\s/.test(tokens[0].value)) {
-		return kind;
+	const match = agentMatchOfTokens(command, tokens, depth);
+	if (match !== undefined || !/\s/.test(tokens[0].value)) {
+		return match;
 	}
 	// 先頭が `"claude --resume"` のように引用符で囲まれたコマンド文字列だった場合（`sh -c` や
 	// `cmd /c` の中身）は、区切り直して解釈する。
-	return agentKindOfCommand(tokens[0].value + command.slice(tokens[0].end), depth + 1);
+	return agentMatchOfCommand(tokens[0].value + command.slice(tokens[0].end), depth + 1);
 }
 
-function agentKindOfTokens(command: string, tokens: readonly ICommandLineToken[], depth: number): ParadisHookAgentKind | undefined {
+/** ラッパーの中のコマンドを判定する。ラッパー自身は親に残りうるので起動役の形にする。 */
+function nestedCommandMatch(command: string, depth: number): IAgentCommandMatch | undefined {
+	return launcherMatch(agentMatchOfCommand(command, depth + 1)?.kind);
+}
+
+function agentMatchOfTokens(command: string, tokens: readonly ICommandLineToken[], depth: number): IAgentCommandMatch | undefined {
 	const program = normalizedBasename(tokens[0].value);
 	const programKind = agentKindOfBasename(program);
 	if (programKind !== undefined) {
-		return programKind;
+		return { kind: programKind, launcher: false };
 	}
 	const rest = (index: number) => index < tokens.length ? command.slice(tokens[index].start) : '';
 	if (program === 'env') {
@@ -198,37 +258,36 @@ function agentKindOfTokens(command: string, tokens: readonly ICommandLineToken[]
 			if (ENV_OPTIONS_WITH_VALUE.has(value)) {
 				i++;
 			} else if (!value.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(value)) {
-				return agentKindOfCommand(rest(i), depth + 1);
+				return nestedCommandMatch(rest(i), depth);
 			}
 		}
 		return undefined;
 	}
-	if (SCRIPT_RUNTIME_BASENAMES.has(program) || PACKAGE_RUNNER_BASENAMES.has(program)) {
-		const isRunner = PACKAGE_RUNNER_BASENAMES.has(program);
+	if (SCRIPT_RUNTIME_BASENAMES.has(program)) {
 		let subcommandAllowed = program === 'bun' || program === 'deno';
 		for (let i = 1; i < tokens.length; i++) {
 			const value = tokens[i].value;
 			if (value === '--') {
-				return i + 1 < tokens.length ? agentKindOfOperand(tokens[i + 1].value) : undefined;
+				return i + 1 < tokens.length ? launcherMatch(agentKindOfScriptOperand(tokens, i + 1)) : undefined;
 			}
-			if (isRunner && PACKAGE_RUNNER_COMMAND_OPTIONS.has(value)) {
-				return agentKindOfCommand(rest(i + 1), depth + 1);
-			}
-			if (!isRunner && RUNTIME_INLINE_CODE_OPTIONS.has(value)) {
+			if (RUNTIME_INLINE_CODE_OPTIONS.has(value)) {
 				return undefined;
 			}
-			if ((isRunner ? PACKAGE_RUNNER_OPTIONS_WITH_VALUE : RUNTIME_OPTIONS_WITH_VALUE).has(value)) {
+			if (RUNTIME_OPTIONS_WITH_VALUE.has(value)) {
 				i++;
 				continue;
 			}
 			if (value.startsWith('-')) {
 				continue;
 			}
-			if (subcommandAllowed && RUNTIME_SUBCOMMANDS.has(value)) {
+			if (subcommandAllowed && RUNTIME_RUNNER_SUBCOMMANDS.has(value)) {
+				return undefined;
+			}
+			if (subcommandAllowed && RUNTIME_SCRIPT_SUBCOMMANDS.has(value)) {
 				subcommandAllowed = false;
 				continue;
 			}
-			return agentKindOfOperand(value);
+			return launcherMatch(agentKindOfScriptOperand(tokens, i));
 		}
 		return undefined;
 	}
@@ -248,7 +307,7 @@ function agentKindOfTokens(command: string, tokens: readonly ICommandLineToken[]
 				commandMode ||= /^-[A-Za-z]*c[A-Za-z]*$/.test(value);
 				continue;
 			}
-			return commandMode ? agentKindOfCommand(rest(i), depth + 1) : agentKindOfOperand(value);
+			return commandMode ? nestedCommandMatch(rest(i), depth) : launcherMatch(agentKindOfScriptOperand(tokens, i));
 		}
 		return undefined;
 	}
@@ -262,7 +321,7 @@ function agentKindOfTokens(command: string, tokens: readonly ICommandLineToken[]
 		if (text.startsWith('""') && text.endsWith('"')) {
 			text = text.slice(1, -1);
 		}
-		return agentKindOfCommand(text, depth + 1);
+		return nestedCommandMatch(text, depth);
 	}
 	if (POWERSHELL_BASENAMES.has(program)) {
 		for (let i = 1; i < tokens.length; i++) {
@@ -271,7 +330,7 @@ function agentKindOfTokens(command: string, tokens: readonly ICommandLineToken[]
 				return undefined;
 			}
 			if (POWERSHELL_COMMAND_OPTIONS.has(value)) {
-				return agentKindOfCommand(rest(i + 1), depth + 1);
+				return nestedCommandMatch(rest(i + 1), depth);
 			}
 			if (POWERSHELL_OPTIONS_WITH_VALUE.has(value)) {
 				i++;
@@ -280,21 +339,25 @@ function agentKindOfTokens(command: string, tokens: readonly ICommandLineToken[]
 			if (value.startsWith('-')) {
 				continue;
 			}
-			return agentKindOfCommand(rest(i), depth + 1);
+			return nestedCommandMatch(rest(i), depth);
 		}
 		return undefined;
+	}
+	// node.exe が無い Windows では、ランチャーを Para Code 本体（ELECTRON_RUN_AS_NODE）で実行する。
+	if (tokens.length > 1 && normalizedBasename(tokens[1].value) === PARADIS_CODEX_PANE_LAUNCHER_BASENAME) {
+		return { kind: 'codex', launcher: true };
 	}
 	return undefined;
 }
 
 /**
  * プロセスの起動行からエージェント種別を推定する。
- * argv[0] のベース名と、ラッパー（node・bun・npx・env・シェル・cmd・PowerShell）が実行する
+ * argv[0] のベース名と、ラッパー（node・bun・deno・env・シェル・cmd・PowerShell）が実行する
  * スクリプトのパスだけを見る。ほかのプログラムの引数（`tmux new-session -s x claude` 等）や、
  * `codex-companion.mjs`・`.claude/...` のようなパス断片には一致しない。
  */
 export function paradisHookAgentKindFromCommandLine(command: string): ParadisHookAgentKind | undefined {
-	return agentKindOfCommand(command, 0);
+	return agentMatchOfCommand(command, 0)?.kind;
 }
 
 /** POSIX: `ps ax` 1回でプロセス表を取得する（LC_ALL=C で lstart を5トークン固定にする）。 */
@@ -503,13 +566,27 @@ export class ParadisAgentHookOwnership {
 	 * 種別不明イベント（transcript無し）は最も近い任意のエージェントプロセスを採用する。
 	 * 注意: 単なる「祖先に所有者PIDがいるか」では判定しない。親エージェントは子エージェントの
 	 * 祖先にも必ず現れるため、それでは子のhookを所有者由来として誤許可してしまう。
+	 *
+	 * 見つけたプロセスの直接の親が同じ種類の「起動役の形」（npm 版 codex の `node …/bin/codex`、
+	 * Para Code のランチャー、`exec` しないラッパースクリプト等）なら、本体を子として起動して親に
+	 * 残っているだけなので1体とみなし、発信元を親へずらす。親が本体の形（argv[0] が `claude` /
+	 * `codex`）なら止める。本体が直接起動した子のエージェントは、これまでどおり別の発信元になる。
 	 */
 	private findEmitter(chain: readonly IParadisHookProcessInfo[], eventKind: ParadisHookAgentKind | undefined): IParadisHookProcessInfo | undefined {
-		for (const entry of chain) {
-			const kind = paradisHookAgentKindFromCommandLine(entry.command);
-			if (kind !== undefined && (eventKind === undefined || kind === eventKind)) {
-				return entry;
+		for (let i = 0; i < chain.length; i++) {
+			const kind = paradisHookAgentKindFromCommandLine(chain[i].command);
+			if (kind === undefined || (eventKind !== undefined && kind !== eventKind)) {
+				continue;
 			}
+			let emitterIndex = i;
+			while (emitterIndex + 1 < chain.length) {
+				const parent = agentMatchOfCommand(chain[emitterIndex + 1].command, 0);
+				if (parent === undefined || !parent.launcher || parent.kind !== kind) {
+					break;
+				}
+				emitterIndex++;
+			}
+			return chain[emitterIndex];
 		}
 		return undefined;
 	}
