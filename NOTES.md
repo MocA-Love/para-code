@@ -315,7 +315,7 @@ Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.
   5. `paradis-limits-setup-overlay`（利用上限コード登録ダイアログ）
   - 境界事例（アンカー式ポップオーバーで全画面モーダルではないため優先度低）: `.paradis-limits-panel`、`.paradis-resource-monitor-panel`
 
-**運用ルール**: 内蔵ブラウザと同時に開かれうる場面がある「自前DOM + backdrop方式」の新規ダイアログ・モーダルを追加したら、そのbackdropクラス名を必ず `overlayManager.ts` の `OVERLAY_DEFINITIONS` に追加すること（`{ className: '...', type: BrowserOverlayType.Dialog }` を1行足すだけ）。標準の `IDialogService`/`IQuickInputService` をそのまま使う場合はこの対応は不要（既存ホワイトリストでカバー済み）。
+**運用ルール**: 内蔵ブラウザと同時に開かれうる場面がある「自前DOM + backdrop方式」の新規ダイアログ・モーダルを追加したら、そのbackdropクラス名を必ず `overlayManager.ts` の `OVERLAY_DEFINITIONS` に追加すること（`{ className: '...', type: BrowserOverlayType.Dialog }` を1行足すだけ）。標準の `IDialogService`/`IQuickInputService` をそのまま使う場合はこの対応は不要（既存ホワイトリストでカバー済み）。2026-09-27 からは共通の印 `paradis-modal-backdrop` を登録済みなので、新しいモーダルは backdrop にこのクラスを併記するだけでよい（`overlayManager.ts` への追加は不要。定期実行・スキルのモーダルが実例）。
 
 ## 内蔵ブラウザの倍率インジケータ（browserZoomIndicator、2026-08-20追加）
 
@@ -1060,30 +1060,34 @@ upstream のディクテーションは Foundry Local のネイティブ部品�
 
 ### 定期実行（`src/vs/paradis/contrib/scheduledRuns/`）
 
-時刻の判定と記録は shared process（`node/paradisScheduledRunsService.ts`、登録口経由）、起動と見張りはウィンドウ（`electron-browser/paradisScheduledRunsRunner.contribution.ts`）が持つ。upstream の変更はない。
+時刻の判定と記録は shared process（`node/paradisScheduledRunsService.ts`、登録口経由）、起動と見張りはウィンドウ（`electron-browser/paradisScheduledRunsRunner.contribution.ts`）が持つ。upstream の変更は `overlayManager.ts` の1行（下の「内蔵ブラウザの裏に隠れない」）だけ。
 
-- 保存先は `<userData>/paradis/scheduledRuns.json`（フォルダ 0700、ファイル 0600。指示の本文が入るため）。30 秒ごとに判定し、記録が変わったときだけ書く。判定した時刻（`lastEvaluatedAt`）は記録と一緒にしか書かないが、時刻が来れば必ず記録（実行かスキップ）が増えるので、起動し直しても同じ時刻を2回実行しない
+- 保存先は `<userData>/paradis/scheduledRuns.json`（フォルダ 0700、ファイル 0600。指示の本文が入るため）。定義の中身の指紋（sha256）を `scheduledRuns.digest.json` に別に書き、読み込んだときに指紋が合わない有効な定義は無効に戻す（Para Code の外で書き換えた定義が確認なしに動き出さないように）。読み込んだ定義は保存と同じ検証にかけ直し、通らないものは無効にして回数を範囲に収める。指紋のファイルを消すと、有効な定義はすべて無効に戻る30 秒ごとに判定し、記録が変わったときだけ書く。判定した時刻（`lastEvaluatedAt`）は記録と一緒にしか書かないが、時刻が来れば必ず記録（実行かスキップ）が増えるので、起動し直しても同じ時刻を2回実行しない
 - 時刻は 5 項目の cron 式をローカル時刻で解釈する自前の実装（`common/paradisScheduleCron.ts`）。画面の選択肢（毎日・平日・毎週・数時間ごと）は cron へ落とす。タイムゾーンは持たない（Orca も保存するだけで計算には使っていない）
-- 安全装置の判定は `common/paradisScheduledRuns.ts` の純粋な関数: 作成直後は shared process が必ず `enabled: false` で保存／同じ定義の実行が開始待ち〜要対応の間は次の時刻を「スキップ（重複）」／1 日の回数（既定 3、1〜24、ローカル時刻の 0 時区切り、スキップは数えない）／最短 15 分（式の検証と、前の回から 15 分たっていない時刻のスキップ）／起動から 30 分で打ち切り。**手動の「今すぐ実行」は重複だけを止め、回数と間隔では止めない（回数には数える）**
+- 安全装置の判定は `common/paradisScheduledRuns.ts` の純粋な関数: 作成直後は shared process が必ず `enabled: false` で保存／同じ定義の実行が開始待ち〜要対応の間は次の時刻を「スキップ（重複）」／1 日の回数（既定 3、1〜24、ローカル時刻の 0 時区切り、スキップは数えない）／最短 15 分（式の検証と、前の回から 15 分たっていない時刻のスキップ）／起動から 30 分で打ち切り。**手動の「今すぐ実行」は重複と全体の同時数だけを止め、回数と間隔では止めない（回数には数える）**。全体では同時に 3 本、1 日に自動で始めるのは合計 30 回まで（`globalConcurrency` / `globalDailyLimit`）。回数は予定の時刻の日付で数える（23:50 の回を 0:05 に後から実行しても前の日に数える）。最短間隔は予定の時刻どうしで比べ（判定の 0〜30 秒の遅れで `*/15` が落ちないように）、手動の回との比較だけ作成時刻で 3 分の余裕を持たせる
 - 逃した時刻: 一番新しい 1 回だけを候補にし、12 時間以内なら実行（遅れが 3 分を超えたら「後から」と記録）、それより前で 12 時間以内の分はその 1 回にまとめ、12 時間より古い分は件数ごと 1 件の「スキップ」にする。有効にした時点・時刻を変えた時点より前は見ない
-- 実行の受け渡し: shared process が「開始待ち」を作ってイベントで配り、対象のリポジトリ（`URI.toString()` の一致）を開いているウィンドウが `claim` する。先に取れた 1 つだけが実行する。誰も取らなければ判定のたびに配り直し、開いたばかりのウィンドウも起動時に開始待ちを聞くので、**ウィンドウが 0 枚なら次に開いたウィンドウが拾う**。12 時間拾われなければ「スキップ」
-- 見張り: ウィンドウは 1 分ごとに生存報告を送る。3 分途絶えたら shared process が「不明」にする。制限時間 + 5 分を過ぎても終わりの報告が無ければ shared process 側でも「時間切れ」にし、受け持ちへ停止を頼む。アプリを起動し直したときに残っていた実行中の記録は「不明」、開始待ちは残す
+- 実行の受け渡し: shared process が「開始待ち」を作ってイベントで配り、対象のリポジトリ（`URI.toString()` の一致）を開いているウィンドウが `claim` する。先に取れた 1 つだけが実行する。誰も取らなければ判定のたびに配り直し、開いたばかりのウィンドウも起動時に開始待ちを聞くので、**ウィンドウが 0 枚なら次に開いたウィンドウが拾う**。予定から 12 時間（遅れて作った開始待ちは作成から最低 1 時間）拾われなければ「スキップ」
+- 見張り: ウィンドウは 1 分ごとに生存報告を送る。3 分途絶えたら shared process が「不明」にし、受け持ちのウィンドウへ停止を頼む。生存報告は受け付けなかった実行の id を返し、ウィンドウはそれを受けてターミナルを閉じる（記録の上で終わった回が動き続けて重複の安全装置が外れないように）。判定の間隔が 2 分より空いたらスリープからの復帰とみなし、その回はリース切れを数えずに生存報告の時刻を今へ寄せる。ウィンドウ側の 30 分の打ち切りは `setTimeout` に加えて生存報告のたびに壁時計でも確かめる（スリープ中は `setTimeout` が進まないため）。制限時間 + 5 分を過ぎても終わりの報告が無ければ shared process 側でも「時間切れ」にし、受け持ちへ停止を頼む。アプリを起動し直したときに残っていた実行中の記録は「不明」、開始待ちは残す
 - 起動はフェーズ1の起動 API をそのまま使う（`paradisLaunchAgentInWorkspace` / `paradisRunWorktreeCreateFlow` の `switchToCreated: false`）。**指示はエージェントの起動引数で渡す**（`paradisBuildAgentCommand`）。フェーズ5の「貼り付けで入れる」プリセットは、すでに動いているエージェントへ足すためのもので、毎回新しく起動する定期実行では使っていない
-- 完了の判定はペイン単位の状態（`IParadisAgentStatusStore.getInstanceStatus`）で、`review` になったか、状態を 1 度でも見た後に状態が消えたら完了（`common/paradisScheduledRunWatch.ts`）。`permission` / `question` の間は「要対応」。**要対応の通知は既存のペイン単位の通知（PC のトーストとモバイル）がそのまま出す**ので、定期実行側からは通知を足していない（二重になるため）。完了してもターミナルは閉じない。hook が届かない環境では状態が来ないので、30 分で「時間切れ（状態が届かなかった）」になる
+- 完了の判定はペイン単位の状態（`IParadisAgentStatusStore.getInstanceStatus`）で、`review` を見たら完了（`common/paradisScheduledRunWatch.ts`）。**状態が消えただけでは完了にしない**（画面側は状態の取得に続けて失敗すると全ペインの状態を消すので、作業中の回を完了にして見張りを外してしまう）。`permission` / `question` の間は「要対応」。**要対応の通知は既存のペイン単位の通知（PC のトーストとモバイル）がそのまま出す**ので、定期実行側からは通知を足していない（二重になるため）。完了してもターミナルは閉じない。hook が届かない環境では状態が来ないので、30 分で「時間切れ（状態が届かなかった）」になる
 - ウィンドウを閉じる（再読み込みを含む）ときは、そのウィンドウで動いている定期実行のターミナルを閉じて「停止」と報告する。見張りの無いまま動かし続けないため。【要確認】常駐ターミナル（pty デーモン）を使っているときに本当にプロセスまで止まるか
 - 最後の発言と会話 ID: ウィンドウが起動直後にペイントークンを shared process へ渡し（メモリだけに持ち、記録には書かない）、shared process が hook のバス（`onParadisAgentHookEvent`）から Stop の `last_assistant_message`（先頭 400 文字）と `session_id` を拾う。トークン数と推定コストは、画面を開いたときに ccusage の `fetchRecentSessions`（使用量ダッシュボードと同じ 90 日の指定でキャッシュを分け合う）を会話 ID で引く。**Codex の回は出ない**（ccusage のセッション一覧が Claude Code だけのため）
 - 毎回新しいスペースを作る設定のスペースは、記録の `space` で覚える（ブランチ名は `scheduled-<定義 id の先頭6字>-<月日>-<時分>`）。新しい 5 件より古いものを片付け候補に出し、「削除…」は既存のワークツリー削除コマンド（確認・teardown つき）に任せる。記録の上限（1 定義 100 件）で消すときも、スペースを持つ記録は残す
 - モーダルの重ね順は 2570（ワークベンチのモーダル 2575 の下）。削除の確認に `IDialogService` を使うため。通知のトースト（2545）は下に隠れるので、結果はモーダルの中に出す
-- 担当A（操作ツール）との共通部品: 「エージェントを起動する」はフェーズ1の起動 API、「完了を待つ」は `common/paradisScheduledRunWatch.ts` の `paradisAdvanceRunWatch`（状態の列から running / needsAttention / completed を決める純粋な関数）を使える
+- 担当A（操作ツール）との関係: 「エージェントを起動する」はどちらもフェーズ1の起動 API。「終わったか」の判定は**意図して別々に持つ**。agentIde の `ParadisAgentStopWatcher` は「相手の番が終わったか」を見るので許可待ち・質問中も止まったとみなし、状態が無い相手は猶予で止まったとみなす。定期実行の `paradisAdvanceRunWatch` は許可待ちを「要対応」として見張り続け、状態が無い・消えただけでは完了にしない（30 分の打ち切りで「状態が届かなかった」と記録する）
+- 指示は保存のときに制御文字を落とし、起動のときに改行とタブも空白にして 1 行にする（`paradisScheduledRunLaunchPrompt`）。シェルごとの引用は起動 API 側（`paradisBuildAgentCommand`）の担当
+- 内蔵ブラウザの裏に隠れない: 定期実行とスキルのモーダルの backdrop には共通の印 `paradis-modal-backdrop` を付け、`overlayManager.ts` の `OVERLAY_DEFINITIONS` にこの1つだけを登録した（PARA-PATCH）。**今後の fork の DOM モーダルは backdrop にこのクラスを併記すれば、`overlayManager.ts` を触らずに済む**
 - 未対応: 事前チェックのコマンド（Orca の precheck）、実行前に前回の端末を使い回すこと、SSH の接続先だけにあるリポジトリをウィンドウを閉じた後に動かすこと（接続中のウィンドウが拾えば動く）
 
 ### スキル管理（`src/vs/paradis/contrib/skillsManager/`）
 
-歯車メニュー「スキル」のモーダル。読み書きはすべて `IFileService` で行う（`common/paradisSkills.ts`）。手元（file）・SSH の接続先（vscode-remote）・WSL（Windows から見た UNC）を同じ手順で扱える。upstream の変更はない。
+歯車メニュー「スキル」のモーダル。読み書きはすべて `IFileService` で行う（`common/paradisSkills.ts`）。手元（file）・SSH の接続先（vscode-remote）・WSL（Windows から見た UNC）を同じ手順で扱える。upstream の変更は定期実行と共通の `overlayManager.ts` の1行だけ。
 
 - 見るフォルダ（`electron-browser/paradisSkillRoots.ts`）: この PC の `$CLAUDE_CONFIG_DIR`（無ければ `~/.claude`）`/skills`、`$CODEX_HOME`（無ければ `~/.codex`）`/skills`、`~/.agents/skills`、このウィンドウの手元のリポジトリの `.claude/skills` と `.agents/skills`。環境変数はシェルの環境（`process.shellEnv()`）から読み、絶対パスのときだけ使う。SSH は**このウィンドウが接続しているときだけ**、ホームは接続先から受け取ったものだけを使う（`paradisRemoteUserHome`）。接続先の `$CLAUDE_CONFIG_DIR` などは見ない。WSL は Windows で WSL の中のリポジトリを登録しているときだけ、そのディストロのホームを見る。Claude Code のプラグインのスキルは見ない（Q81 の範囲外）
 - スキルはフォルダの直下の `<名前>/SKILL.md`。frontmatter の `name` / `description` を読む（無ければ見出しと最初の段落）。Codex の `skills/.system/` は同梱として一覧に出すが消させない
-- 削除と導入は、ボタンを押して `IDialogService` の確認に「はい」と答えたときだけ。削除は直下のフォルダだけを受け付け、表示後にリンク／フォルダが入れ替わっていたら止める。ごみ箱が使えるマシン（手元）ではごみ箱へ移す。リンクはリンクだけを消す。導入は隣の一時フォルダへ写してから入れ替える（40MB・2000 ファイルまで）。同じ名前があれば置き換えるかを確認する
+- 各フォルダは `realpath` で実体を解き、実体が同じフォルダ（`~/.claude/skills` → `~/.agents/skills` のリンク、ホームをリポジトリとして登録した場合など）は先に並んだ方にだけスキルを出す（`paradisDedupeSkillListings`）。同じスキルを2か所に出すと、片方の削除で両方が消えることが分からないため
+- 削除と導入は、ボタンを押して `IDialogService` の確認に「はい」と答えたときだけ。削除は直下のフォルダだけを受け付け、表示後にリンク／フォルダが入れ替わっていたら止める。ごみ箱が使えるマシン（手元）ではごみ箱へ移す。リンクはリンクだけを消す。親がリンクで実体が別の場所にあるときは、確認に実体のパスを出す
+- 導入は、スキルのフォルダ自体がリンクなら実体を写す（同じプロバイダ内のコピーはリンクをそのまま複製するため）。**フォルダの中にリンクがあるスキルは導入しない**（マシンをまたぐ写しはリンクをたどるので、`x -> ~/.ssh` の中身を接続先へ送りうる）。隣の一時フォルダへ写し、既にあるものは退避してから入れ替え、成功したら退避を消す（失敗したら戻す）。40MB・2000 ファイルまで。確認には写す元と導入先を出し、リポジトリの中のスキルをユーザー単位へ入れるときは注意を出す
 - 未対応: 接続していない SSH ホストへの導入（読み取り専用の `IParadisRemoteHostBrowser` しか無いため）、WSL の中の `$CODEX_HOME`、スキルの更新通知（Orca の同梱スキル向けの機能）
 
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
