@@ -191,6 +191,13 @@ export class ParadisOfficeFindWidget extends Disposable {
 		return this.visible;
 	}
 
+	/** 表示中で検索語が入っていれば、同じ条件で検索し直す（中身や並びが変わったとき用）。 */
+	refresh(): void {
+		if (this.visible && this.searchProvider && this.input.value.trim()) {
+			void this.beginSearch();
+		}
+	}
+
 	async findNext(): Promise<void> {
 		if (this.results.length === 0) {
 			return;

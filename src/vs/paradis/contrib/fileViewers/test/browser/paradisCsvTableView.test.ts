@@ -65,15 +65,30 @@ function describeCell(grid: HTMLElement, row: number, column: number): string {
 	return `${element.textContent}|${classes.join(' ')}`;
 }
 
-function key(grid: HTMLElement, key: string, modifiers: { shift?: boolean; primary?: boolean } = {}): void {
-	grid.dispatchEvent(new KeyboardEvent('keydown', {
+function key(grid: HTMLElement, key: string, modifiers: { shift?: boolean; primary?: boolean; alt?: boolean } = {}): boolean {
+	const event = new KeyboardEvent('keydown', {
 		key,
 		bubbles: true,
 		cancelable: true,
 		shiftKey: !!modifiers.shift,
+		altKey: !!modifiers.alt,
 		metaKey: !!modifiers.primary && isMacintosh,
 		ctrlKey: !!modifiers.primary && !isMacintosh,
-	}));
+	});
+	// Report whether the key reached the rest of the workbench (bubbled past the grid).
+	let bubbled = false;
+	const listener = () => bubbled = true;
+	grid.parentElement!.addEventListener('keydown', listener);
+	grid.dispatchEvent(event);
+	grid.parentElement!.removeEventListener('keydown', listener);
+	return bubbled;
+}
+
+function mouseDown(target: HTMLElement): void {
+	const rect = target.getBoundingClientRect();
+	const init = { bubbles: true, cancelable: true, button: 0, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+	target.dispatchEvent(new MouseEvent('mousedown', init));
+	mainWindow.dispatchEvent(new MouseEvent('mouseup', init));
 }
 
 suite('ParadisCsvTableView', () => {
@@ -143,6 +158,60 @@ suite('ParadisCsvTableView', () => {
 			'Kansai|paradis-csv-active paradis-csv-match-current paradis-csv-selected',
 			'Kansai|paradis-csv-match',
 			'Kanto|',
+		]);
+	});
+	test('keeps the sort and re-sorts new rows when the same file is reloaded', async () => {
+		const { view, grid } = createHarness(store);
+		view.setDocument(csv('name,n\nb,2\na,3\n'), false);
+		view.layout();
+		await settle();
+		mouseDown(cell(grid, 0, 2)!);
+		await settle();
+		view.setDocument(csv('name,n\nb,2\na,3\nc,1\n'), true);
+		view.layout();
+		await settle();
+		deepStrictEqual({ sort: view.sortState, names: [1, 2, 3].map(row => cell(grid, row, 1)?.textContent) }, {
+			sort: { column: 1, direction: 'asc', pending: false },
+			names: ['c', 'b', 'a'],
+		});
+	});
+
+	test('selects whole rows from the row numbers and leaves Alt and Ctrl/Cmd+PageUp to the workbench', async () => {
+		const { view, grid, clipboard } = createHarness(store);
+		view.setDocument(csv('a,b,c\n1,2,3\n4,"x\ty",6\n'), false);
+		view.layout();
+		await settle();
+		mouseDown(cell(grid, 2, 0)!);
+		key(grid, 'c', { primary: true });
+		await settle();
+		deepStrictEqual({
+			clipboard,
+			altReachesWorkbench: key(grid, 'ArrowRight', { alt: true }),
+			tabSwitchReachesWorkbench: key(grid, 'PageDown', { primary: true }),
+			plainReachesWorkbench: key(grid, 'ArrowRight'),
+		}, {
+			clipboard: ['4\t"x\ty"\t6'],
+			altReachesWorkbench: true,
+			tabSwitchReachesWorkbench: true,
+			plainReachesWorkbench: false,
+		});
+	});
+
+	test('searches again after sorting so the highlights stay in place', async () => {
+		const { view, grid } = createHarness(store);
+		view.setDocument(csv('k,v\nb,hit\na,miss\n'), false);
+		view.layout();
+		await settle();
+		key(grid, 'f', { primary: true });
+		const input = view.element.querySelector<HTMLInputElement>('.paradis-office-find-widget input')!;
+		input.value = 'hit';
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		mouseDown(cell(grid, 0, 1)!);
+		await settle();
+		deepStrictEqual([describeCell(grid, 2, 2), describeCell(grid, 1, 2)], [
+			'hit|paradis-csv-active paradis-csv-match-current paradis-csv-selected',
+			'miss|',
 		]);
 	});
 });
