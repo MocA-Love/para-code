@@ -49,7 +49,7 @@ import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
-import { mapSpreadsheetLogicalAnchor } from './spreadsheet/paradisSpreadsheetViewport.js';
+import { mapSpreadsheetLogicalAnchor } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { createLegacySpreadsheetPrintModel, createLegacySpreadsheetSearchPage, createParadisSpreadsheetSourceDescriptor, isParadisSpreadsheetV1Enabled, searchLegacySpreadsheetWorkbook, snapshotSpreadsheetRuntimeConfiguration } from './paradisSpreadsheetEditor.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
 import { renderSpreadsheetDiagnosticsRibbon } from './spreadsheet/paradisSpreadsheetDiagnostics.js';

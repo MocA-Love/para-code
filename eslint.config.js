@@ -1990,6 +1990,8 @@ export default defineConfig(
 						'vs/amdX',
 						'vs/base/**',
 						'vs/paradis/contrib/fileViewers/{common,node}/**',
+						// PARA-PATCH: the virtual grid moved to browser/spreadsheet so the CSV viewer can share it.
+						'vs/paradis/contrib/fileViewers/browser/spreadsheet/**',
 						'vs/paradis/contrib/fileViewers/electron-browser/**',
 						'vs/paradis/contrib/fileViewers/test/common/**',
 						'vs/paradis/contrib/fileViewers/test/visual/**'

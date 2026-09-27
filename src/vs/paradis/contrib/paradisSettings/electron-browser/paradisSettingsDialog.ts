@@ -633,6 +633,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.officeSearchPrintDesc', "変更点パネルから文書の検索と印刷ができるようにします。上の項目がオンのときだけ有効です。"),
 		keywords: 'office excel word search print find',
 	},
+	{
+		sectionId: 'psd-sec-office',
+		key: 'paradis.csvViewer.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.csvViewerEnabled', "CSV・TSV を表で開く"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.csvViewerEnabledDesc', "開くとすぐ表で表示し、上部の「表 | テキスト」で切り替えられます。テキストを選んだファイルは次もテキストで開きます。オフのときは従来どおりテキストで開きます。"),
+		keywords: 'csv tsv table viewer spreadsheet text',
+	},
 
 	// --- モバイル連携 ---
 	{
