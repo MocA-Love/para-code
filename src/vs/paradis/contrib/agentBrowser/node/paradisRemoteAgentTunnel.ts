@@ -293,6 +293,16 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 	 * 1枚閉じただけで全員の経路を畳まないために数えておく。
 	 * @returns 接続先で実際に割り当てられた番号。張れなかった／使い切って諦めた場合は undefined
 	 */
+	/**
+	 * その接続先への戻り経路を張っている `ssh`（`-R` の本体）の PID。張れていなければ undefined。
+	 * 戻り経路から来た接続（接続先の hook と MCP）は、手元ではこのプロセスが相手になるので、
+	 * 接続元の確認はこの PID との一致で行う。
+	 */
+	processPidFor(remoteAuthority: string): number | undefined {
+		const pid = this.tunnels.get(remoteAuthority)?.child?.pid;
+		return typeof pid === 'number' && pid > 0 ? pid : undefined;
+	}
+
 	ensure(remoteAuthority: string, port: number, owner?: string): Promise<number | undefined> {
 		if (!Number.isInteger(port) || port <= 0 || port > 65535) {
 			return Promise.resolve(undefined);
@@ -415,7 +425,9 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			'-R', `${listenPort}:127.0.0.1:${port}`,
 			// Codex ペインのソケットを後から足し引きするための制御口。接続そのものは1本のまま
 			// にしたいので、ペインごとに ssh を起こさずここへ相乗りさせる
-			...(entry.controlPath !== undefined ? ['-M', '-S', entry.controlPath, '-o', 'ControlPersist=no'] : []),
+			// 制御口を置けないときは、利用者の ~/.ssh/config の ControlMaster に相乗りしない（相乗りすると
+			// 戻り経路の接続を利用者のマスターが持ち、接続元の確認でこの ssh と一致しなくなる）
+			...(entry.controlPath !== undefined ? ['-M', '-S', entry.controlPath, '-o', 'ControlPersist=no'] : ['-o', 'ControlPath=none']),
 			// パスフレーズや初見ホストの確認で固まらせない。鍵は ssh-agent 側で解決される
 			'-o', 'BatchMode=yes',
 			// ポートを取れなかったら黙って繋がったままにせず終了させる

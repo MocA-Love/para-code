@@ -66,6 +66,8 @@ export interface IParadisPeerProcessProbe {
 	 */
 	findPeerPids(clientPort: number, serverPort: number, ownPid: number): Promise<readonly number[]>;
 	readProcess(pid: number): Promise<IParadisProcessInfo | undefined>;
+	/** プロセスの環境変数からペイントークンを読む（CDP ゲートウェイの解決だけが使う）。 */
+	readTokenFromEnv(pid: number): Promise<string | undefined>;
 }
 
 /**
@@ -78,11 +80,12 @@ export async function paradisResolvePaneTokenForPeerPort(
 	ownPid: number,
 	shellLookup: IParadisPaneShellLookup,
 	serverPort?: number,
-	probe: IParadisPeerProcessProbe = PARADIS_REAL_PEER_PROBE,
+	probe?: IParadisPeerProcessProbe,
 ): Promise<string | undefined> {
 	if (serverPort === undefined) {
 		return undefined;
 	}
+	probe ??= paradisPeerProbeFor(remotePort, serverPort);
 	const peerPids = await probe.findPeerPids(remotePort, serverPort, ownPid);
 	let resolved: string | undefined;
 	for (const peerPid of peerPids) {
@@ -104,7 +107,7 @@ async function resolveTokenFromAncestors(peerPid: number, shellLookup: IParadisP
 			result = byShell;
 			return true;
 		}
-		const byEnv = await readTokenFromEnv(pid);
+		const byEnv = await probe.readTokenFromEnv(pid);
 		if (byEnv) {
 			result = byEnv;
 			return true;
@@ -148,15 +151,27 @@ async function walkAncestors(pid: number, probe: IParadisPeerProcessProbe, visit
 export type ParadisPeerKind =
 	/** 指定したプロセス（ペインのシェル）の子孫。 */
 	| 'descendant'
-	/** このプロセス（shared process）自身の子孫。SSH の戻り経路など、Para Code が起こしたプロセス。 */
-	| 'ownChild'
+	/** Para Code が張った SSH の戻り経路（`ssh -R`）のプロセスそのもの。 */
+	| 'tunnel'
 	/** どちらでもない、または確かめられなかった。 */
 	| 'unknown';
 
+/** 何と照合するか。手元のペインはシェルの PID、SSH の接続先のペインは戻り経路の `ssh` の PID。 */
+export interface IParadisPeerExpectation {
+	/** 手元のペインのシェル。接続を持つプロセスがこの子孫なら `descendant`。 */
+	readonly ancestorPid?: number;
+	/**
+	 * Para Code が張った `ssh -R` の PID。接続を持つプロセスが**これそのもの**なら `tunnel`。
+	 * 祖先に shared process がいるかでは決めない（shared process は git や codex app-server なども起こし、
+	 * それらはリポジトリの設定やフックで利用者・エージェントのコードを走らせられるため）。
+	 */
+	readonly tunnelPid?: number;
+}
+
 /**
- * loopback 接続の相手のプロセスが、`ancestorPid`（ペインのシェル）の子孫か、このプロセス自身の子孫かを確かめる。
+ * loopback 接続の相手のプロセスを分類する。
  *
- * MCP ツールで「トークンを名乗っているのが本当にそのペインの中のプロセスか」を見るのに使う。
+ * MCP ツールと hook で「トークンを名乗っているのが本当にそのペインの中のプロセスか」を見るのに使う。
  * 環境変数（`PARA_CODE_TERMINAL_PANE_ID`）は別のプロセスが自分に設定すれば偽装できるので見ない。
  * 接続を持つプロセスが複数あるときは、全部が同じ分類に着くときだけその分類を返す。
  * 相手の特定や親の読み取りに失敗したら `unknown`（確かめられないものは通さない）。
@@ -165,8 +180,8 @@ export async function paradisClassifyPeer(
 	clientPort: number,
 	serverPort: number,
 	ownPid: number,
-	ancestorPid: number | undefined,
-	probe: IParadisPeerProcessProbe = PARADIS_REAL_PEER_PROBE,
+	expectation: IParadisPeerExpectation,
+	probe: IParadisPeerProcessProbe = paradisPeerProbeFor(clientPort, serverPort),
 ): Promise<ParadisPeerKind> {
 	if (!isPort(clientPort) || !isPort(serverPort)) {
 		return 'unknown';
@@ -178,28 +193,20 @@ export async function paradisClassifyPeer(
 	let verdict: ParadisPeerKind | undefined;
 	for (const peerPid of peerPids) {
 		let kind: ParadisPeerKind = 'unknown';
-		await walkAncestors(peerPid, probe, pid => {
-			if (ancestorPid !== undefined && pid === ancestorPid) {
+		if (expectation.tunnelPid !== undefined && peerPid === expectation.tunnelPid) {
+			kind = 'tunnel';
+		} else if (expectation.ancestorPid !== undefined) {
+			const ancestorPid = expectation.ancestorPid;
+			if (await walkAncestors(peerPid, probe, pid => pid === ancestorPid)) {
 				kind = 'descendant';
-				return true;
 			}
-			if (pid === ownPid) {
-				kind = 'ownChild';
-				return true;
-			}
-			return false;
-		});
+		}
 		if (kind === 'unknown' || (verdict !== undefined && verdict !== kind)) {
 			return 'unknown';
 		}
 		verdict = kind;
 	}
 	return verdict ?? 'unknown';
-}
-
-/** 互換用: 相手が `ancestorPid` の子孫か。 */
-export async function paradisPeerDescendsFromPid(clientPort: number, serverPort: number, ownPid: number, ancestorPid: number, probe?: IParadisPeerProcessProbe): Promise<boolean> {
-	return await paradisClassifyPeer(clientPort, serverPort, ownPid, ancestorPid, probe) === 'descendant';
 }
 
 function isPort(value: number): boolean {
@@ -333,7 +340,77 @@ async function findPeerPidsViaNetstat(clientPort: number, serverPort: number, ow
 const PARADIS_REAL_PEER_PROBE: IParadisPeerProcessProbe = {
 	findPeerPids,
 	readProcess: readProcessInfo,
+	readTokenFromEnv,
 };
+
+/**
+ * 1 回の照合に使う probe。Windows では PowerShell の起動が重い（1 回 0.3〜1 秒）ので、接続表と
+ * プロセス表を 1 本のスクリプトでまとめて取り、その結果だけで照合する（hook の待ち時間 3 秒に収める）。
+ */
+function paradisPeerProbeFor(clientPort: number, serverPort: number): IParadisPeerProcessProbe {
+	if (process.platform !== 'win32') {
+		return PARADIS_REAL_PEER_PROBE;
+	}
+	let snapshot: Promise<IParadisWindowsPeerSnapshot | undefined> | undefined;
+	const load = () => snapshot ??= readWindowsPeerSnapshot(clientPort, serverPort);
+	return {
+		findPeerPids: async (_clientPort, _serverPort, ownPid) => uniquePids((await load())?.peerPids ?? [], ownPid),
+		readProcess: async pid => (await load())?.processes.get(pid),
+		readTokenFromEnv: async () => undefined,
+	};
+}
+
+interface IParadisWindowsPeerSnapshot {
+	readonly peerPids: readonly number[];
+	readonly processes: ReadonlyMap<number, IParadisProcessInfo>;
+}
+
+/** `C <pid>`（4つ組の接続の持ち主）と `P <pid> <ppid> <起動時刻の ticks>`（プロセス表）の行を読む。 */
+export function paradisParseWindowsPeerSnapshot(stdout: string): IParadisWindowsPeerSnapshot {
+	const peerPids: number[] = [];
+	const processes = new Map<number, IParadisProcessInfo>();
+	for (const line of stdout.split(/\r?\n/)) {
+		const cols = line.trim().split(/\s+/);
+		if (cols[0] === 'C' && cols.length >= 2) {
+			peerPids.push(Number.parseInt(cols[1], 10));
+		} else if (cols[0] === 'P' && cols.length >= 3) {
+			const pid = Number.parseInt(cols[1], 10);
+			const ppid = Number.parseInt(cols[2], 10);
+			const ticks = Number(cols[3]);
+			if (Number.isSafeInteger(pid) && pid > 0) {
+				processes.set(pid, {
+					ppid: Number.isSafeInteger(ppid) && ppid > 0 ? ppid : undefined,
+					...(Number.isFinite(ticks) && ticks > 0 ? { startTime: ticks } : {}),
+				});
+			}
+		}
+	}
+	return { peerPids, processes };
+}
+
+async function readWindowsPeerSnapshot(clientPort: number, serverPort: number): Promise<IParadisWindowsPeerSnapshot | undefined> {
+	if (!isPort(clientPort) || !isPort(serverPort)) {
+		return undefined;
+	}
+	const script = [
+		`Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort ${clientPort} -RemoteAddress 127.0.0.1 -RemotePort ${serverPort} -State Established -ErrorAction SilentlyContinue | ForEach-Object { 'C ' + $_.OwningProcess }`,
+		`Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object { 'P {0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().Ticks } else { 0 }) }`,
+	].join('; ');
+	try {
+		// スクリプトは UTF-16LE の Base64 で渡す（cmd.exe を経由する引用の崩れを避ける）
+		const encoded = Buffer.from(script, 'utf16le').toString('base64');
+		const { stdout } = await execAsync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { timeout: EXEC_TIMEOUT_MS * 2, maxBuffer: 8 * 1024 * 1024 });
+		const parsed = paradisParseWindowsPeerSnapshot(stdout);
+		if (parsed.peerPids.length > 0) {
+			return parsed;
+		}
+		// Get-NetTCPConnection が使えない環境（古い Windows など）は netstat で持ち主を探す
+		const { stdout: netstat } = await execAsync('netstat -ano -p TCP', { timeout: EXEC_TIMEOUT_MS * 2, maxBuffer: 4 * 1024 * 1024 });
+		return { peerPids: paradisParseNetstatPeerPids(netstat, clientPort, serverPort, 0), processes: parsed.processes };
+	} catch {
+		return undefined;
+	}
+}
 
 // --- 環境変数からのトークン読み取り -------------------------------------------
 

@@ -14,6 +14,7 @@ import {
 	paradisParseLsofPeerPids,
 	paradisParseNetstatPeerPids,
 	paradisParseSsPeerPids,
+	paradisParseWindowsPeerSnapshot,
 	paradisResolvePaneTokenForPeerPort,
 } from '../../node/paradisCdpPeerResolver.js';
 
@@ -24,6 +25,8 @@ function probe(peerPids: readonly number[], table: Record<number, IParadisProces
 	return {
 		findPeerPids: async () => peerPids,
 		readProcess: async pid => table[pid],
+		// never read a real process environment in tests
+		readTokenFromEnv: async () => undefined,
 	};
 }
 
@@ -60,19 +63,32 @@ suite('paradisCdpPeerResolver', () => {
 		], [[303, 304], [303]]);
 	});
 
-	test('classifies the peer by its ancestors, and refuses when the processes holding the connection disagree', async () => {
+	test('classifies a local pane by its shell ancestry and an SSH pane only by the exact tunnel process', async () => {
 		const table: Record<number, IParadisProcessInfo> = {
-			// shell 50 -> claude 60 -> curl 70; the shared process is 100 -> ssh 110; an unrelated process 80 -> 1
-			50: { ppid: 40 }, 60: { ppid: 50 }, 70: { ppid: 60 }, 110: { ppid: OWN_PID }, 80: { ppid: 1 },
+			// shell 50 -> claude 60 -> curl 70; the tunnel ssh is 110 (child of the shared process 100);
+			// git 120 (also a child of the shared process) runs a repository hook 130; an unrelated process 80 -> 1
+			50: { ppid: 40 }, 60: { ppid: 50 }, 70: { ppid: 60 }, 110: { ppid: OWN_PID }, 120: { ppid: OWN_PID }, 130: { ppid: 120 }, 80: { ppid: 1 },
 		};
+		const local = { ancestorPid: 50 };
+		const remote = { tunnelPid: 110 };
 		assert.deepStrictEqual([
-			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, 50, probe([70], table)),
-			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, 50, probe([70, 60], table)),
-			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, 50, probe([70, 80], table)),
-			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, 50, probe([110], table)),
-			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, 50, probe([80], table)),
-			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, 50, probe([], table)),
-		], ['descendant', 'descendant', 'unknown', 'ownChild', 'unknown', 'unknown']);
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, local, probe([70], table)),
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, local, probe([70, 60], table)),
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, local, probe([70, 80], table)),
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, local, probe([110], table)),
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, remote, probe([110], table)),
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, remote, probe([130], table)),
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, remote, probe([70], table)),
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, local, probe([], table)),
+		], ['descendant', 'descendant', 'unknown', 'unknown', 'tunnel', 'unknown', 'unknown', 'unknown']);
+	});
+
+	test('Windows: one snapshot carries the connection owners and the process table', () => {
+		const snapshot = paradisParseWindowsPeerSnapshot(['C 303', 'P 303 60 638600000000000000', 'P 60 50 638500000000000000', 'P 4 0 0', 'noise'].join('\r\n'));
+		assert.deepStrictEqual({ peers: snapshot.peerPids, processes: [...snapshot.processes] }, {
+			peers: [303],
+			processes: [[303, { ppid: 60, startTime: 638600000000000000 }], [60, { ppid: 50, startTime: 638500000000000000 }], [4, { ppid: undefined }]],
+		});
 	});
 
 	test('a parent that started after its child is a reused PID, not an ancestor', async () => {
@@ -81,7 +97,7 @@ suite('paradisCdpPeerResolver', () => {
 			// PID 50 now belongs to a process started after 70: the original parent is gone
 			50: { ppid: 40, startTime: 2_000 },
 		};
-		assert.strictEqual(await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, 50, probe([70], table)), 'unknown');
+		assert.strictEqual(await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPid: 50 }, probe([70], table)), 'unknown');
 	});
 
 	test('the CDP gateway resolves a token only when every process holding the connection agrees', async () => {

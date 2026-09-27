@@ -65,7 +65,8 @@ export interface IParadisMcpToolProvider {
 /**
  * MCP の接続元の分類。
  * - `pane`: 呼び出し元ペインのシェルの子孫（手元のエージェント）
- * - `tunnel`: shared process 自身が起こしたプロセス（SSH の接続先から戻ってくる経路）。どのペインかは確かめられない
+ * - `tunnel`: 呼び出し元が SSH の接続先のペインで、接続が Para Code の張った戻り経路（`ssh -R`）そのものから来た。
+ *   接続先のどのプロセスかまでは確かめられない
  * - `unverified`: どちらでもない・確かめられなかった
  */
 export type ParadisMcpCallerKind = 'pane' | 'tunnel' | 'unverified';
@@ -92,6 +93,11 @@ export interface IParadisMcpPaneAgentStatus {
 	readonly status: ParadisAgentStatus;
 	/** その状態になった時刻（`Date.now()`）。 */
 	readonly changedAt: number;
+	/**
+	 * 許可待ち・質問中が hook ではなく transcript（同じユーザーの別プロセスが追記できる）から解かれ、
+	 * その後に接続元を確かめた hook がまだ来ていない。この間は状態を信用しない（Enter を送らない）。
+	 */
+	readonly unconfirmedRelease?: boolean;
 }
 
 /**
