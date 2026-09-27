@@ -148,9 +148,12 @@ const targetStorage = new WeakMap<object, FakeStorage>();
 function storageOf(webContents: object): FakeStorage {
 	return targetStorage.get(webContents)!;
 }
+/** Every tab a test created, closed after the test (the controller keeps one session per tab until it closes). */
+const createdTargets: FakeTarget[] = [];
 function createTarget(storage?: FakeStorage): FakeTarget {
 	const target = new FakeTarget(storage);
 	targetStorage.set(target.webContents, target.storage);
+	createdTargets.push(target);
 	return target;
 }
 
@@ -166,6 +169,15 @@ function rules(value: unknown) {
 }
 
 suite('ParadisBrowserPageOpsController', () => {
+	// Registered before the leak check so the tabs are closed (and their sessions released) first.
+	teardown(async () => {
+		for (const target of createdTargets.splice(0)) {
+			if (!target.destroyed) {
+				target.destroy();
+			}
+		}
+		await flush();
+	});
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('extra headers and rules go on one dedicated CDP session with the cache and service workers bypassed, and clearing detaches it', async () => {
@@ -221,7 +233,7 @@ suite('ParadisBrowserPageOpsController', () => {
 			controller.releaseTarget(target);
 			await flush();
 		}
-		// The agent let go of the tab: the dedicated session is torn down before it is disposed.
+		// The agent let go of the tab: everything is undone, and the session is kept for the next share.
 		{
 			const controller = new ParadisBrowserPageOpsController();
 			const target = createTarget();
@@ -229,7 +241,7 @@ suite('ParadisBrowserPageOpsController', () => {
 			await controller.highlight(target, { x: 1, y: 1, width: 5, height: 5 }, 30_000);
 			controller.releaseTarget(target);
 			await flush();
-			results.released = [target.requestReachesServer(), target.hasLeftovers(), target.sessions.every(session => session.disposed)];
+			results.released = [target.requestReachesServer(), target.hasLeftovers(), target.sessions.map(session => session.disposed)];
 		}
 		// Closing the tab: the storage caches are cleared through the storage captured when the overrides were set.
 		{
@@ -243,7 +255,7 @@ suite('ParadisBrowserPageOpsController', () => {
 		assert.deepStrictEqual(results, {
 			emptyRules: [true, true, false, 1],
 			shareSwitched: [true, false, 1],
-			released: [true, false, true],
+			released: [true, false, [false]],
 			closed: [0, 1, 1],
 		});
 	});
@@ -415,6 +427,27 @@ suite('ParadisBrowserPageOpsController', () => {
 		assert.deepStrictEqual([hiddenByClear, session.highlightShown, target.sessions.length], [true, false, 1]);
 		controller.releaseTarget(target);
 		await flush();
-		assert.deepStrictEqual([target.hasLeftovers(), session.disposed], [false, true]);
+		const afterRelease = [target.hasLeftovers(), session.disposed];
+		target.destroy();
+		await flush();
+		assert.deepStrictEqual([afterRelease, session.disposed], [[false, false], true]);
+	});
+
+	test('a tab keeps at most one session however often overrides and highlights are set, removed and the tab is re-shared', async () => {
+		const controller = new ParadisBrowserPageOpsController();
+		const target = createTarget();
+		for (let round = 0; round < 5; round++) {
+			await controller.apply(target, OWNER, round + 1, { rules: rules([{ url_pattern: '*', action: 'block' }]) });
+			await controller.highlight(target, { x: 1, y: 1, width: 5, height: 5 }, 30_000);
+			await controller.apply(target, OWNER, round + 1, { rules: null });
+			await controller.highlight(target, undefined, 0);
+			// The agent lets go of the tab (for example select_browser_tab to another tab and back).
+			controller.releaseTarget(target);
+			await flush();
+		}
+		const beforeClose = [target.sessions.length, target.requestReachesServer(), target.hasLeftovers()];
+		target.destroy();
+		await flush();
+		assert.deepStrictEqual([beforeClose, target.sessions.map(session => session.disposed)], [[1, true, false], [true]]);
 	});
 });
