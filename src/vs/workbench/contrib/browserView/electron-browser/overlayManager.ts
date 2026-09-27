@@ -32,6 +32,7 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	{ className: 'paradis-binding-dialog-backdrop', type: BrowserOverlayType.Dialog },
 	// PARA-PATCH: same for the fork's bookmark edit/folder dialogs (vs/paradis/contrib/browserBookmarks).
 	{ className: 'paradis-bookmark-dialog-backdrop', type: BrowserOverlayType.Dialog },
+	{ className: 'paradis-markup-overlay', type: BrowserOverlayType.Dialog }, // PARA-PATCH: the fork's screenshot markup overlay (vs/paradis/contrib/browserDesignMode) paints over the page
 	// PARA-PATCH: the fork's custom terminal preset command editor dialog (paradisPresetEditorDialog.ts).
 	{ className: 'paradis-preset-editor-backdrop', type: BrowserOverlayType.Dialog },
 	// PARA-PATCH: the fork's workspace switch / worktree creation dialog.
