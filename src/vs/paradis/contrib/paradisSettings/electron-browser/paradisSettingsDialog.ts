@@ -29,6 +29,7 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
 import { ParadisModalFocus } from '../browser/paradisModalFocus.js';
 import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
+import { PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
 
 const $ = dom.$;
 
@@ -101,6 +102,13 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		navLabel: localize('paradis.settings.navBrowser', "ブラウザ共有"),
 		// allow-any-unicode-next-line
 		heading: localize('paradis.settings.headBrowser', "ブラウザ共有"),
+	},
+	{
+		id: 'psd-sec-computeruse',
+		navLabel: localize('paradis.settings.navComputerUse', "Computer Use"),
+		heading: localize('paradis.settings.headComputerUse', "Computer Use"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.descComputerUse', "エージェントが MCP ツールで、この Mac のほかのアプリの画面を読めるようにします（macOS 14 以降）。アプリごとに、初めて使うときに承認を求めます。"),
 	},
 	{
 		id: 'psd-sec-agentide',
@@ -663,6 +671,49 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.userAgentParaCodeTokenDesc', "オフのときは通常の Chrome と同じ User-Agent を送ります。変更は新しく開いたタブから反映されます。"),
 		keywords: 'browser user agent useragent paracode token chrome',
+	},
+
+	// --- Computer Use ---
+	{
+		sectionId: 'psd-sec-computeruse',
+		key: PARADIS_COMPUTER_USE_ENABLED_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.computerUseEnabled', "Computer Use を使う"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.computerUseEnabledDesc', "Computer Use は、エージェントのサンドボックスと許可設定の外で、あなたの権限で動きます。読み取りを許可したアプリの画面（メール本文やチャットなど）はエージェントへ渡り、エージェントの提供元へ送られます。画面に表示された Web ページやメールに仕込まれた指示をエージェントが読む危険もあります。オンにした後は、エージェント側で MCP の再接続が必要です。"),
+		keywords: 'computer use macos accessibility screen recording screenshot app',
+	},
+	{
+		sectionId: 'psd-sec-computeruse',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.computerUseStatus', "状態と OS の許可"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.computerUseStatusDesc', "部品の状態と、アクセシビリティ・画面収録の許可を確かめます。許可は Para Code 本体ではなく「Para Code Computer Use」に付けます。"),
+		keywords: 'computer use status permission accessibility screen recording tcc',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.computerUseStatusAction', "状態を確認…"),
+			commandId: PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID,
+		},
+	},
+	{
+		sectionId: 'psd-sec-computeruse',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.computerUseRemote', "SSH 接続先のターミナルからの要求"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.computerUseRemoteDesc', "拒否します（変更できません）。"),
+		keywords: 'computer use ssh remote',
+	},
+	{
+		sectionId: 'psd-sec-computeruse',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.computerUseBlocked', "常に読ませないアプリ"),
+		description: PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES
+			// allow-any-unicode-next-line
+			? localize('paradis.settings.computerUseBlockedWithSystem', "パスワードマネージャー、キーチェーンアクセス、Para Code 自身、システム設定、認証のダイアログ（変更できません）。")
+			// allow-any-unicode-next-line
+			: localize('paradis.settings.computerUseBlockedDesc', "パスワードマネージャー、キーチェーンアクセス、Para Code 自身（変更できません）。"),
+		keywords: 'computer use blocked password manager keychain',
 	},
 
 	// --- ターミナル ---
