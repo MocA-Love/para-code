@@ -29,7 +29,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.notifications.osIncludeMessage', "エージェントの完了・許可待ち・質問のデスクトップ通知に、エージェントの最後の発言（許可待ち・質問では待っている内容）の冒頭を載せます。ロック画面や画面共有中に通知の中身が見えるのを避けたい場合はオフにします。"),
+			markdownDescription: localize('paradis.notifications.osIncludeMessage', "エージェントの完了・許可待ち・質問のデスクトップ通知に、エージェントの最後の発言（許可待ちではツール名とコマンドの要約、質問では質問文）の冒頭を載せます。オンの間は、エージェントの発言の冒頭が OS の通知（ロック画面・通知センターの履歴を含む）に出ます。トークンやパスワードらしい値は伏せますが、すべては見分けられません。画面共有中などに見えるのを避けたい場合はオフにします。"),
 		},
 		[PARADIS_NOTIFICATION_INBOX_TITLE_BAR_SETTING]: {
 			type: 'boolean',
@@ -41,13 +41,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.notifications.dockBadge', "Dock（Windows ではタスクバー）の Para Code のアイコンに、対応が必要なペインの数を表示します。"),
+			markdownDescription: localize('paradis.notifications.dockBadge', "Dock の Para Code のアイコンに、対応が必要なペインの数を表示します。Windows ではウィンドウごとに、そのウィンドウのペインの数をタスクバーに表示します。おやすみモードの間は表示しません。"),
 		},
 		[PARADIS_NOTIFICATION_MENU_BAR_SETTING]: {
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.notifications.menuBarIcon', "メニューバー（Windows では通知領域）に Para Code のアイコンを表示します。対応が必要なペインがあると印が付き、メニューから最大 5 件のペインへ直接移動できます。"),
+			markdownDescription: localize('paradis.notifications.menuBarIcon', "メニューバー（Windows では通知領域）に Para Code のアイコンを表示します。対応が必要なペインがあると印が付き、メニューから最大 5 件のペインへ直接移動できます。Linux では表示されません。"),
 		},
 	},
 });

@@ -48,10 +48,10 @@ export function paradisSanitizeInboxRecord(value: unknown): IParadisInboxRecordI
 		return undefined;
 	}
 	const input = value as Record<string, unknown>;
-	const paneToken = text(input.paneToken);
+	const paneKey = text(input.paneKey);
 	const space = text(input.space);
 	if (typeof input.kind !== 'string' || !KINDS.has(input.kind) || typeof input.delivery !== 'string' || !DELIVERIES.has(input.delivery)
-		|| paneToken === undefined || space === undefined || typeof input.instanceId !== 'number' || typeof input.windowId !== 'number') {
+		|| paneKey === undefined || space === undefined || typeof input.instanceId !== 'number' || typeof input.windowId !== 'number') {
 		return undefined;
 	}
 	const stateKey = text(input.stateKey);
@@ -60,7 +60,7 @@ export function paradisSanitizeInboxRecord(value: unknown): IParadisInboxRecordI
 	const message = text(input.message);
 	return {
 		kind: input.kind as ParadisInboxKind,
-		paneToken,
+		paneKey,
 		instanceId: input.instanceId,
 		windowId: input.windowId,
 		...(stateKey !== undefined ? { stateKey } : {}),
@@ -82,9 +82,9 @@ function paneStatuses(value: unknown): IParadisInboxPaneStatus[] {
 		if (item === null || typeof item !== 'object') {
 			continue;
 		}
-		const { token, status } = item as Record<string, unknown>;
-		if (typeof token === 'string' && (status === undefined || status === null || (typeof status === 'string' && STATUSES.has(status)))) {
-			result.push({ token, status: typeof status === 'string' ? status as IParadisInboxPaneStatus['status'] : undefined });
+		const { paneKey, status } = item as Record<string, unknown>;
+		if (typeof paneKey === 'string' && (status === undefined || status === null || (typeof status === 'string' && STATUSES.has(status)))) {
+			result.push({ paneKey, status: typeof status === 'string' ? status as IParadisInboxPaneStatus['status'] : undefined });
 		}
 	}
 	return result;
@@ -157,10 +157,10 @@ export class ParadisNotificationInboxService extends Disposable {
 		if (entry === undefined) {
 			return;
 		}
-		this.changed(this.ledger.markPanesRead([entry.paneToken]));
+		this.changed(this.ledger.markPanesRead([entry.paneKey]));
 		this._onDidRequestReveal.fire({
 			entryId: entry.id,
-			paneToken: entry.paneToken,
+			paneKey: entry.paneKey,
 			windowId: entry.windowId,
 			...(entry.stateKey !== undefined ? { stateKey: entry.stateKey } : {}),
 		});
@@ -168,6 +168,7 @@ export class ParadisNotificationInboxService extends Disposable {
 
 	private changed(changed: boolean): void {
 		if (changed) {
+			this.ledger.bumpRevision();
 			this.changeScheduler.schedule();
 		}
 	}
@@ -209,7 +210,13 @@ ParadisSharedProcessContributions.register(PARADIS_NOTIFICATION_INBOX_CHANNEL, (
 	server.registerChannel(PARADIS_NOTIFICATION_INBOX_CHANNEL, new ParadisNotificationInboxChannel(service));
 	// ウィンドウを閉じた（再読み込みした）ら、そのウィンドウのペインを「開いている」から外す。
 	// 再読み込みなら、新しい接続がすぐに同じペインを知らせ直す。
-	const listener = server.onDidRemoveConnection(connection => service.removeClient(connection.ctx));
+	// 接続名（ctx）は再読み込みしても変わらない。古い接続の切断が新しい接続の知らせより後に届いたときに
+	// 新しいウィンドウの分まで消さないよう、同じ接続名がまだ繋がっていれば外さない。
+	const listener = server.onDidRemoveConnection(connection => {
+		if (!server.connections.some(candidate => candidate.ctx === connection.ctx)) {
+			service.removeClient(connection.ctx);
+		}
+	});
 	return {
 		dispose: () => {
 			listener.dispose();

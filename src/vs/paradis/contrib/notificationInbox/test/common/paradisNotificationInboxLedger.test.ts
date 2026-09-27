@@ -18,14 +18,14 @@ import {
 } from '../../common/paradisNotificationInbox.js';
 import { ParadisNotificationInboxLedger } from '../../common/paradisNotificationInboxLedger.js';
 
-function input(paneToken: string, kind: IParadisInboxRecordInput['kind'], extra: Partial<IParadisInboxRecordInput> = {}): IParadisInboxRecordInput {
-	return { kind, paneToken, instanceId: 1, windowId: 1, space: 'para-code', delivery: 'notified', ...extra };
+function input(paneKey: string, kind: IParadisInboxRecordInput['kind'], extra: Partial<IParadisInboxRecordInput> = {}): IParadisInboxRecordInput {
+	return { kind, paneKey, instanceId: 1, windowId: 1, space: 'para-code', delivery: 'notified', ...extra };
 }
 
 function view(ledger: ParadisNotificationInboxLedger) {
 	const snapshot = ledger.snapshot();
 	return {
-		entries: snapshot.entries.map(entry => `${entry.id}:${entry.paneToken}:${entry.kind}:${entry.read ? 'read' : 'unread'}:${entry.live ? 'live' : 'closed'}`),
+		entries: snapshot.entries.map(entry => `${entry.id}:${entry.paneKey}:${entry.kind}:${entry.read ? 'read' : 'unread'}:${entry.live ? 'live' : 'closed'}`),
 		attentionPaneCount: snapshot.attentionPaneCount,
 		unreadCount: snapshot.unreadCount,
 	};
@@ -59,7 +59,7 @@ suite('Paradis notification inbox ledger', () => {
 		ledger.record(input('c', 'question'));
 
 		// a は答えて作業を再開した、b はまだ完了のまま（確認していない）
-		const changedByStatus = ledger.syncPaneStatuses([{ token: 'a', status: 'working' }, { token: 'b', status: 'review' }]);
+		const changedByStatus = ledger.syncPaneStatuses([{ paneKey: 'a', status: 'working' }, { paneKey: 'b', status: 'review' }]);
 		const changedByClose = ledger.removeClient('window:2');
 
 		assert.deepStrictEqual({ changedByStatus, changedByClose, ...view(ledger) }, {
@@ -69,6 +69,18 @@ suite('Paradis notification inbox ledger', () => {
 			attentionPaneCount: 1,
 			unreadCount: 2,
 		});
+	});
+
+	test('records an entry as read when the pane already moved on before the record arrived', () => {
+		const ledger = new ParadisNotificationInboxLedger(() => 1000);
+		ledger.setLivePanes('window:1', ['a', 'b']);
+		// 本文を待っている間に、a は確認済み（待機中）になり、b はまだ完了のまま
+		ledger.syncPaneStatuses([{ paneKey: 'a', status: undefined }, { paneKey: 'b', status: 'review' }]);
+		ledger.record(input('a', 'review'));
+		ledger.record(input('b', 'review'));
+		ledger.record(input('c', 'review'));
+
+		assert.deepStrictEqual(view(ledger).entries, ['3:c:review:unread:closed', '2:b:review:unread:live', '1:a:review:read:live']);
 	});
 
 	test('supports read, unread, read all, remove and the size limit', () => {

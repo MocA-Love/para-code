@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // Dock（macOS）・ランチャー（Linux）・タスクバー（Windows）のアイコンの件数と、
-// メニューバー（通知領域）のアイコンへの中身の受け渡し（q.html Q34 案A・Q36 案A）。
+// メニューバー（通知領域）のアイコンへの中身の受け渡し。数えるのは確認が必要なペインの数。
 //
 // 件数は upstream の `INativeHostService.setApplicationBadge` で出す。main の DockBadgeManager
 // （windowImpl.ts）がウィンドウごとの数を足し合わせ、ウィンドウが閉じたらその分を外し、
@@ -16,7 +16,8 @@
 // 掛け算になる。`app.setBadgeCount` を直接呼ぶと DockBadgeManager と取り合うので呼ばない。
 
 import { mainWindow } from '../../../../base/browser/window.js';
-import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { disposableTimeout } from '../../../../base/common/async.js';
+import { Disposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { isWindows } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
@@ -24,11 +25,13 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IApplicationBadge, INativeHostService } from '../../../../platform/native/common/native.js';
+import { contrastBorder } from '../../../../platform/theme/common/colors/baseColors.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ACTIVITY_BAR_BADGE_BACKGROUND, ACTIVITY_BAR_BADGE_FOREGROUND } from '../../../../workbench/common/theme.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
-import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_DOCK_BADGE_SETTING, PARADIS_NOTIFICATION_MENU_BAR_SETTING, paradisInboxAttentionPaneCount } from '../common/paradisNotificationInbox.js';
+import { IParadisNotificationsSettingsService } from '../../notifications/browser/paradisNotificationsSettings.js';
+import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_DOCK_BADGE_SETTING, PARADIS_NOTIFICATION_MENU_BAR_SETTING, paradisInboxAttentionPaneCount, paradisInboxPaneKey } from '../common/paradisNotificationInbox.js';
 import { IParadisTrayState, PARADIS_NOTIFICATION_TRAY_CHANNEL, ParadisTrayRequest, paradisTrayStateFromSnapshot } from '../common/paradisNotificationTray.js';
 
 /** Windows のタスクバーの重ね絵は小さく描かれるので、2倍で描く。 */
@@ -38,8 +41,11 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 
 	static readonly ID = 'workbench.contrib.paradisNotificationInboxBadge';
 
-	private lastCount = 0;
+	/** -1 で始めて、最初の1回は必ず送る（前の renderer が残した数を上書きするため）。 */
+	private lastCount = -1;
 	private lastTraySignature = '';
+	/** おやすみモードの期限で件数を出し直すためのタイマー。 */
+	private readonly doNotDisturbExpiry = this._register(new MutableDisposable());
 	private readonly trayChannel: IChannel;
 
 	constructor(
@@ -50,6 +56,7 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 		@IThemeService private readonly themeService: IThemeService,
 		@IMainProcessService mainProcessService: IMainProcessService,
 		@ILogService private readonly logService: ILogService,
+		@IParadisNotificationsSettingsService private readonly notificationsSettingsService: IParadisNotificationsSettingsService,
 	) {
 		super();
 		this.trayChannel = mainProcessService.getChannel(PARADIS_NOTIFICATION_TRAY_CHANNEL);
@@ -57,6 +64,7 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 		const update = () => this.updateBadge();
 		this._register(this.inboxService.onDidChange(update));
 		this._register(this.paneTokenService.onDidChange(update));
+		this._register(this.notificationsSettingsService.onDidChangeDoNotDisturb(update));
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(PARADIS_NOTIFICATION_DOCK_BADGE_SETTING)) {
 				update();
@@ -71,7 +79,7 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 			this._register(this.themeService.onDidColorThemeChange(() => this.setBadge(this.lastCount, true)));
 		}
 		// Dock の件数はアプリ全体のものなので、このウィンドウの分を残して閉じない
-		this._register(toDisposable(() => this.setBadge(0)));
+		this._register(toDisposable(() => this.setBadge(0, true)));
 		update();
 
 		// --- メニューバーのアイコン ---
@@ -81,8 +89,14 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 	}
 
 	private updateBadge(): void {
-		const enabled = this.configurationService.getValue<boolean>(PARADIS_NOTIFICATION_DOCK_BADGE_SETTING) !== false;
-		const owned = new Set(this.paneTokenService.listPaneTokens().map(entry => entry.token));
+		// おやすみモードの間は Dock に数を出さない。音・OS 通知・読み上げと同じく「鳴らさない」側に揃える
+		// （受信箱には残し、ベルの数も出す）。OS 通知だけを切っている人の分は数える（要対応には違いない）。
+		const doNotDisturb = this.notificationsSettingsService.getDoNotDisturb();
+		this.doNotDisturbExpiry.value = doNotDisturb.enabled && doNotDisturb.until !== undefined
+			? disposableTimeout(() => this.updateBadge(), Math.max(0, doNotDisturb.until - Date.now()) + 1_000)
+			: undefined;
+		const enabled = !doNotDisturb.enabled && this.configurationService.getValue<boolean>(PARADIS_NOTIFICATION_DOCK_BADGE_SETTING) !== false;
+		const owned = new Set(this.paneTokenService.listPaneTokens().map(entry => paradisInboxPaneKey(entry.token)));
 		this.setBadge(enabled ? paradisInboxAttentionPaneCount(this.inboxService.snapshot, owned) : 0);
 	}
 
@@ -114,8 +128,15 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 		const half = WINDOWS_ICON_SIZE / 2;
 		context.fillStyle = theme.getColor(ACTIVITY_BAR_BADGE_BACKGROUND)?.toString() ?? '#0078d4';
 		context.beginPath();
-		context.arc(half, half, half, 0, Math.PI * 2);
+		context.arc(half, half, half - 1, 0, Math.PI * 2);
 		context.fill();
+		// ハイコントラストでは背景と同じ色になるので縁取る
+		const border = theme.getColor(contrastBorder);
+		if (border) {
+			context.strokeStyle = border.toString();
+			context.lineWidth = 2;
+			context.stroke();
+		}
 		context.fillStyle = theme.getColor(ACTIVITY_BAR_BADGE_FOREGROUND)?.toString() ?? '#ffffff';
 		context.font = `600 ${count > 9 ? 16 : 20}px Segoe UI, sans-serif`;
 		context.textAlign = 'center';
@@ -138,7 +159,12 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 			return;
 		}
 		this.lastTraySignature = signature;
-		this.trayChannel.call('update', [state]).catch(error => this.logService.trace('[paradisNotificationInbox] tray update failed', String(error)));
+		this.trayChannel.call<{ readonly hideIcon?: boolean } | undefined>('update', [state]).then(result => {
+			// ウィンドウが無い間にメニューの「アイコンを隠す」が押されていた
+			if (result?.hideIcon) {
+				void this.configurationService.updateValue(PARADIS_NOTIFICATION_MENU_BAR_SETTING, false);
+			}
+		}, error => this.logService.trace('[paradisNotificationInbox] tray update failed', String(error)));
 	}
 
 	private handleTrayRequest(request: ParadisTrayRequest): void {

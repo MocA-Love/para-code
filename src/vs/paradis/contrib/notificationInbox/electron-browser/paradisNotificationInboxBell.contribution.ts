@@ -6,10 +6,10 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// タイトルバーのベル（未読数ならぬ「要対応のペイン数」のバッジ付き）と、受信箱を開くコマンド
-// （q.html Q33 案A・Q34 案A）。ベルは「エージェント一覧」「ブラウザ一覧」の右に並ぶ。
+// タイトルバーのベル（未読数ならぬ「要対応のペイン数」のバッジ付き）と、受信箱を開くコマンド。
+// ベルは「エージェント一覧」「ブラウザ一覧」の右に並ぶ。
 
-import { $, append } from '../../../../base/browser/dom.js';
+import { $, append, getActiveWindow, getWindow } from '../../../../base/browser/dom.js';
 import { BaseActionViewItem, IBaseActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IAction } from '../../../../base/common/actions.js';
@@ -74,7 +74,8 @@ class ParadisToggleNotificationInboxTitleBarAction extends ToggleTitleBarConfigA
 class ParadisNotificationInboxPopoverController extends Disposable {
 
 	private readonly popover = this._register(new MutableDisposable<ParadisNotificationInboxPopover>());
-	private anchor: HTMLElement | undefined;
+	/** 描かれているベル。補助ウィンドウのタイトルバーにも同じボタンが出るので複数ある。 */
+	private readonly anchors = new Set<HTMLElement>();
 	private openAnchor: HTMLElement | undefined;
 
 	constructor(@IInstantiationService private readonly instantiationService: IInstantiationService) {
@@ -85,31 +86,44 @@ class ParadisNotificationInboxPopoverController extends Disposable {
 		return this.popover.value !== undefined;
 	}
 
-	setAnchor(anchor: HTMLElement): void {
-		this.anchor = anchor;
+	addAnchor(anchor: HTMLElement): void {
+		this.anchors.add(anchor);
 	}
 
-	/** そのボタンが今の置き場所なら外す（補助ウィンドウのタイトルバーにも同じボタンが出るため）。 */
-	clearAnchor(anchor: HTMLElement): void {
-		if (this.anchor === anchor) {
-			this.anchor = undefined;
-		}
+	removeAnchor(anchor: HTMLElement): void {
+		this.anchors.delete(anchor);
 	}
 
-	toggle(): void {
-		if (this.isOpen) {
+	/** ベルを押した。押されたベルを基準に開閉する（別のウィンドウのベルと取り違えない）。 */
+	toggle(anchor: HTMLElement): void {
+		// 開いているのと同じベルなら閉じるだけ（ポップオーバーは自分のベルの mousedown では閉じない）。
+		// 別のウィンドウのベルなら、そちらに開き直す。
+		if (this.isOpen && this.openAnchor === anchor) {
 			this.close();
-		} else {
-			this.open();
+			return;
 		}
+		this.close();
+		this.open(anchor);
 	}
 
-	open(): void {
+	/** 今アクティブなウィンドウで見えているベル（狭い幅で隠れていると大きさが 0 になる）。 */
+	private findVisibleAnchor(): HTMLElement | undefined {
+		const activeWindow = getActiveWindow();
+		for (const anchor of this.anchors) {
+			const rect = anchor.getBoundingClientRect();
+			if (anchor.isConnected && getWindow(anchor) === activeWindow && rect.width > 0 && rect.height > 0) {
+				return anchor;
+			}
+		}
+		return undefined;
+	}
+
+	/** コマンド・メニューバーから開く。今のウィンドウで見えているベルがあればそこに、無ければ右上に出す。 */
+	open(anchor?: HTMLElement): void {
 		if (this.isOpen) {
 			return;
 		}
-		// ベルを隠している（またはまだ描かれていない）ときは、ウィンドウの右上に出す。
-		const anchor = this.anchor?.isConnected ? this.anchor : undefined;
+		anchor ??= this.findVisibleAnchor();
 		this.openAnchor = anchor;
 		anchor?.classList.add('open');
 		anchor?.setAttribute('aria-expanded', 'true');
@@ -153,8 +167,8 @@ class ParadisNotificationInboxTitleBarWidget extends BaseActionViewItem {
 		this.icon = append(container, $('span'));
 		this.icon.setAttribute('aria-hidden', 'true');
 		this.badge = append(container, $('span.paradis-notification-inbox-badge'));
-		this.controller.setAnchor(container);
-		this._register({ dispose: () => this.controller.clearAnchor(container) });
+		this.controller.addAnchor(container);
+		this._register({ dispose: () => this.controller.removeAnchor(container) });
 
 		const hover = this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), container, ''));
 		const update = () => {
@@ -175,18 +189,21 @@ class ParadisNotificationInboxTitleBarWidget extends BaseActionViewItem {
 	}
 
 	override onClick(): void {
-		this.controller.toggle();
+		if (this.element) {
+			this.controller.toggle(this.element);
+		}
 	}
 
 	private hoverText(attentionPanes: number, unread: number): string {
-		// 隣の「エージェント一覧」の黄色いバッジ（いま許可待ち・質問中の数）と数の意味が違うことを書く。
+		// 隣の「エージェント一覧」の黄色いバッジ（いま許可待ち・質問中の数）や、右下の VS Code の
+		// 通知センター（同じベルの形）と意味が違うことを書く。
 		if (attentionPanes > 0) {
-			return localize('paradis.inbox.hoverAttention', "通知の受信箱: 確認していないペイン {0} 件（未読の通知 {1} 件）", attentionPanes, unread);
+			return localize('paradis.inbox.hoverAttention', "エージェントの通知の受信箱: 確認していないペイン {0} 件（未読の通知 {1} 件）", attentionPanes, unread);
 		}
 		if (unread > 0) {
-			return localize('paradis.inbox.hoverUnread', "通知の受信箱（未読の通知 {0} 件。ペインはすべて閉じています）", unread);
+			return localize('paradis.inbox.hoverUnread', "エージェントの通知の受信箱（未読の通知 {0} 件。ペインはすべて閉じています）", unread);
 		}
-		return localize('paradis.inbox.hoverIdle', "通知の受信箱");
+		return localize('paradis.inbox.hoverIdle', "エージェントの通知の受信箱（完了・許可待ち・質問）");
 	}
 }
 

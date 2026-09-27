@@ -18,7 +18,7 @@ import { ParadisNotificationInboxPopover } from '../../browser/paradisNotificati
 import { IParadisInboxEntry, IParadisInboxSnapshot, IParadisNotificationInboxService } from '../../common/paradisNotificationInbox.js';
 
 function entry(id: string, extra: Partial<IParadisInboxEntry>): IParadisInboxEntry {
-	return { id, kind: 'review', paneToken: `pane-${id}`, instanceId: 1, windowId: 1, space: 'para-code', delivery: 'notified', at: Date.now(), read: false, live: true, ...extra };
+	return { id, kind: 'review', paneKey: `pane-${id}`, instanceId: 1, windowId: 1, space: 'para-code', delivery: 'notified', at: Date.now(), read: false, live: true, ...extra };
 }
 
 suite('Paradis notification inbox popover', () => {
@@ -36,6 +36,7 @@ suite('Paradis notification inbox popover', () => {
 			],
 			attentionPaneCount: 1,
 			unreadCount: 1,
+			revision: 3,
 		};
 		const calls: string[] = [];
 		const inboxService = {

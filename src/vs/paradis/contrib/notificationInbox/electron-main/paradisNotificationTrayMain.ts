@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// メニューバー（macOS）・通知領域（Windows）の Para Code のアイコン（q.html Q36 案A、既定オフ）。
+// メニューバー（macOS）・通知領域（Windows）の Para Code のアイコン（既定オフ）。
 // app.ts の PARA-PATCH から1回だけ呼ばれる。
 //
 // 構成は Orca（stablyai/orca、MIT）の src/main/tray/system-tray.ts に倣う:
@@ -24,6 +24,7 @@ import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { FocusMode } from '../../../../platform/native/common/native.js';
+import { ICodeWindow } from '../../../../platform/window/electron-main/window.js';
 import { IWindowsMainService, OpenContext } from '../../../../platform/windows/electron-main/windows.js';
 import { PARADIS_NOTIFICATION_MENU_BAR_SETTING } from '../common/paradisNotificationInbox.js';
 import {
@@ -49,8 +50,14 @@ export interface IParadisNotificationTrayChannelHost {
 class ParadisNotificationTray extends Disposable {
 
 	private tray: Tray | undefined;
-	private state: IParadisTrayState = { attentionCount: 0, items: [] };
+	private state: IParadisTrayState = { attentionCount: 0, items: [], revision: 0 };
 	private repaintScheduled = false;
+	/**
+	 * メニューの「アイコンを隠す」を押した。設定を書けるのは renderer だけなので、書き換わるまでの間
+	 * アイコンを出さない。ウィンドウが1つも無ければ、次に中身を送ってきたウィンドウに書かせる。
+	 */
+	private hiddenByMenu = false;
+	private pendingHide = false;
 
 	private readonly _onDidRequest = this._register(new Emitter<ParadisTrayRequest>());
 	readonly onDidRequest: Event<ParadisTrayRequest> = this._onDidRequest.event;
@@ -63,6 +70,15 @@ class ParadisNotificationTray extends Disposable {
 		super();
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(PARADIS_NOTIFICATION_MENU_BAR_SETTING)) {
+				this.hiddenByMenu = false;
+				this.schedule();
+			}
+		}));
+		// ウィンドウが1つも無くなったら、要対応の知らせは届かなくなる（台帳を読むのは renderer）。
+		// 古い赤い点と行を残さないよう空にする。
+		this._register(this.windowsMainService.onDidChangeWindowsCount(event => {
+			if (event.newCount === 0) {
+				this.state = { attentionCount: 0, items: [], revision: this.state.revision };
 				this.schedule();
 			}
 		}));
@@ -79,13 +95,21 @@ class ParadisNotificationTray extends Disposable {
 		this.schedule();
 	}
 
-	update(value: unknown): void {
-		this.state = paradisSanitizeTrayState(value);
-		this.schedule();
+	/** renderer から中身が届いた。「アイコンを隠す」の書き換えを頼みたいときは返り値で伝える。 */
+	update(value: unknown): { readonly hideIcon: boolean } {
+		const state = paradisSanitizeTrayState(value);
+		// 各ウィンドウが同じ台帳から送るので、遅れて届いた古いものは捨てる。
+		if (state.revision >= this.state.revision) {
+			this.state = state;
+			this.schedule();
+		}
+		const hideIcon = this.pendingHide;
+		this.pendingHide = false;
+		return { hideIcon };
 	}
 
 	private get enabled(): boolean {
-		return (isMacintosh || isWindows) && this.configurationService.getValue<boolean>(PARADIS_NOTIFICATION_MENU_BAR_SETTING) === true;
+		return (isMacintosh || isWindows) && !this.hiddenByMenu && this.configurationService.getValue<boolean>(PARADIS_NOTIFICATION_MENU_BAR_SETTING) === true;
 	}
 
 	/** まとめて次の周回で描き直す（AppKit のコールバックの中で Tray を触らないため）。 */
@@ -135,7 +159,7 @@ class ParadisNotificationTray extends Disposable {
 			case 'entry': return { label: item.label, click: () => this.safely(() => this.requestFromWindow(windowId => ({ type: 'reveal', windowId, entryId: item.entryId }))) };
 			case 'openInbox': return { label: item.label, click: () => this.safely(() => this.requestFromWindow(windowId => ({ type: 'openInbox', windowId }), true)) };
 			case 'openApp': return { label: item.label, click: () => this.safely(() => this.openApp()) };
-			case 'hideIcon': return { label: item.label, click: () => this.safely(() => this.requestFromWindow(windowId => ({ type: 'hideIcon', windowId }))) };
+			case 'hideIcon': return { label: item.label, click: () => this.safely(() => this.hideFromMenu()) };
 		}
 	}
 
@@ -144,7 +168,7 @@ class ParadisNotificationTray extends Disposable {
 	 * 自分で前に出る（台帳経由）ので、`focus` はウィンドウ自体を前に出したいときだけ。
 	 */
 	private requestFromWindow(create: (windowId: number) => ParadisTrayRequest, focus = false): void {
-		const window = this.windowsMainService.getLastActiveWindow() ?? this.windowsMainService.getWindows()[0];
+		const window = this.targetWindow();
 		if (!window) {
 			void this.windowsMainService.openEmptyWindow({ context: OpenContext.MENU });
 			return;
@@ -155,8 +179,30 @@ class ParadisNotificationTray extends Disposable {
 		this._onDidRequest.fire(create(window.id));
 	}
 
+	/** アイコンはすぐに消し、設定の書き換えはウィンドウに頼む（無ければ次に開いたウィンドウに）。 */
+	private hideFromMenu(): void {
+		this.hiddenByMenu = true;
+		this.schedule();
+		const window = this.targetWindow();
+		if (window) {
+			this._onDidRequest.fire({ type: 'hideIcon', windowId: window.id });
+		} else {
+			this.pendingHide = true;
+		}
+	}
+
+	/**
+	 * 依頼を受け取れるウィンドウ。Agent Sessions ウィンドウは fork の通常ウィンドウ向けの機能を
+	 * 読み込まないので（受け手がいない）外す。
+	 */
+	private targetWindow(): ICodeWindow | undefined {
+		const isNormal = (window: ICodeWindow) => window.config?.isSessionsWindow !== true;
+		const last = this.windowsMainService.getLastActiveWindow();
+		return last && isNormal(last) ? last : this.windowsMainService.getWindows().find(isNormal);
+	}
+
 	private openApp(): void {
-		const window = this.windowsMainService.getLastActiveWindow() ?? this.windowsMainService.getWindows()[0];
+		const window = this.targetWindow();
 		if (window) {
 			window.focus({ mode: FocusMode.Force });
 		} else {
@@ -219,7 +265,7 @@ class ParadisNotificationTrayChannel implements IServerChannel<string> {
 
 	async call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
 		switch (command) {
-			case 'update': this.tray.update(Array.isArray(arg) ? arg[0] : undefined); return undefined as T;
+			case 'update': return this.tray.update(Array.isArray(arg) ? arg[0] : undefined) as T;
 			default: throw new Error(`Method not found: ${command}`);
 		}
 	}

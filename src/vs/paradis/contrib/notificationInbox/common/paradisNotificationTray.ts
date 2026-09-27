@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// メニューバー（Windows は通知領域）のアイコンの契約と、アイコンの絵（q.html Q36 案A）。
+// メニューバー（Windows は通知領域）のアイコンの契約と、アイコンの絵（既定オフ）。
 //
 // アイコンは main プロセスが持つ（Electron の Tray は main でしか作れない）。中身（要対応の一覧）は
 // 台帳を読んでいる renderer が main へ送り、メニューで押されたものは main から renderer へ返す。
@@ -38,6 +38,8 @@ export interface IParadisTrayState {
 	/** 要対応のペイン数（点の有無と見出しに使う）。 */
 	readonly attentionCount: number;
 	readonly items: readonly IParadisTrayItem[];
+	/** もとにした台帳のスナップショットの番号（古いものを捨てるため）。 */
+	readonly revision: number;
 }
 
 /**
@@ -52,6 +54,7 @@ export type ParadisTrayRequest =
 export function paradisTrayStateFromSnapshot(snapshot: IParadisInboxSnapshot): IParadisTrayState {
 	return {
 		attentionCount: snapshot.attentionPaneCount,
+		revision: snapshot.revision,
 		items: paradisInboxAttentionEntries(snapshot, PARADIS_NOTIFICATION_TRAY_ITEM_LIMIT).map(entry => ({
 			entryId: entry.id,
 			kind: entry.kind,
@@ -75,7 +78,8 @@ export function paradisSanitizeTrayState(value: unknown): IParadisTrayState {
 		}
 	}
 	const attentionCount = typeof input.attentionCount === 'number' && input.attentionCount > 0 ? Math.floor(input.attentionCount) : 0;
-	return { attentionCount, items };
+	const revision = typeof input.revision === 'number' && Number.isFinite(input.revision) ? input.revision : 0;
+	return { attentionCount, items, revision };
 }
 
 // ---- メニューの組み立て（Electron に依存しない形で作り、main で MenuItem に写す） --------------------

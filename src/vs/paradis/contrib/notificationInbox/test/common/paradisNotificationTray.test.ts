@@ -25,9 +25,9 @@ suite('Paradis notification tray', () => {
 		const tokens = ['a', 'b', 'c', 'd', 'e', 'f'];
 		ledger.setLivePanes('window:1', tokens);
 		for (const token of tokens) {
-			ledger.record({ kind: 'permission', paneToken: token, instanceId: 1, windowId: 1, space: `space-${token}`, delivery: 'notified' });
+			ledger.record({ kind: 'permission', paneKey: token, instanceId: 1, windowId: 1, space: `space-${token}`, delivery: 'notified' });
 		}
-		ledger.record({ kind: 'review', paneToken: 'a', instanceId: 1, windowId: 1, space: 'space-a', tab: 'claude', delivery: 'notified' });
+		ledger.record({ kind: 'review', paneKey: 'a', instanceId: 1, windowId: 1, space: 'space-a', tab: 'claude', delivery: 'notified' });
 
 		const state = paradisSanitizeTrayState(JSON.parse(JSON.stringify(paradisTrayStateFromSnapshot(ledger.snapshot()))));
 		const menu = paradisTrayMenuModel(state, true).map(item => item.kind === 'entry' ? `${item.kind}:${item.entryId}` : item.kind);
@@ -39,11 +39,12 @@ suite('Paradis notification tray', () => {
 	});
 
 	test('drops malformed tray state instead of breaking the menu', () => {
-		assert.deepStrictEqual(paradisSanitizeTrayState({ attentionCount: -2, items: [{ entryId: 1 }, { entryId: 'x', kind: 'review', location: 'l', at: 1 }] }), {
+		assert.deepStrictEqual(paradisSanitizeTrayState({ attentionCount: -2, revision: 4, items: [{ entryId: 1 }, { entryId: 'x', kind: 'review', location: 'l', at: 1 }] }), {
 			attentionCount: 0,
 			items: [{ entryId: 'x', kind: 'review', location: 'l', at: 1 }],
+			revision: 4,
 		});
-		assert.deepStrictEqual(paradisSanitizeTrayState(undefined), { attentionCount: 0, items: [] });
+		assert.deepStrictEqual(paradisSanitizeTrayState(undefined), { attentionCount: 0, items: [], revision: 0 });
 	});
 
 	test('draws a bell with an optional red attention dot', () => {

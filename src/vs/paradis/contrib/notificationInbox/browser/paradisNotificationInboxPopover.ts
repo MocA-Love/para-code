@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// タイトルバーのベルから開く受信箱（q.html Q33 案A）。
+// タイトルバーのベルから開く受信箱。全スペースの完了・許可待ち・質問を1か所にため、行からペインへ移る。
 //
 // 作りはサービスステータスのポップオーバー（paradisServiceStatusPopover.ts）と同じ自前の DOM
 // （position: fixed、layoutService.activeContainer 直下、z-index 2500）。ワークベンチのモーダル（2575）
@@ -61,6 +61,8 @@ export class ParadisNotificationInboxPopover extends Disposable {
 	private rows: HTMLElement[] = [];
 	/** 右クリックのメニューを開いている間は、外側のクリックで閉じない（メニューは別の DOM にある）。 */
 	private contextMenuOpen = false;
+	/** 開く前にフォーカスがあった要素。閉じたらそこへ戻す（ターミナルで打っていた続きが消えないように）。 */
+	private readonly previousFocus: Element | null;
 
 	constructor(
 		private readonly options: IParadisNotificationInboxPopoverOptions,
@@ -82,7 +84,9 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		this.list.setAttribute('role', 'list');
 		this.footer = dom.append(this.element, $('.pnip-footer'));
 
-		layoutService.activeContainer.appendChild(this.element);
+		this.previousFocus = dom.getActiveElement();
+		const anchor = this.visibleAnchor();
+		(anchor ? layoutService.getContainer(dom.getWindow(anchor)) : layoutService.activeContainer).appendChild(this.element);
 		this.render();
 		this.reposition();
 		this.element.focus();
@@ -100,8 +104,23 @@ export class ParadisNotificationInboxPopover extends Disposable {
 	}
 
 	override dispose(): void {
+		const active = dom.getActiveElement();
+		const hadFocus = !active || dom.isAncestor(active, this.element) || active === dom.getWindow(this.element).document.body;
 		this.element.remove();
+		if (hadFocus && dom.isHTMLElement(this.previousFocus) && this.previousFocus.isConnected) {
+			this.previousFocus.focus();
+		}
 		super.dispose();
+	}
+
+	/** ベルが画面に出ているときだけ返す。狭い幅でタイトルバーのツールバーごと隠れていると大きさが 0 になる。 */
+	private visibleAnchor(): HTMLElement | undefined {
+		const anchor = this.options.anchor;
+		if (!anchor || !anchor.isConnected) {
+			return undefined;
+		}
+		const rect = anchor.getBoundingClientRect();
+		return rect.width > 0 && rect.height > 0 ? anchor : undefined;
 	}
 
 	private onWindowMouseDown(e: MouseEvent): void {
@@ -131,8 +150,9 @@ export class ParadisNotificationInboxPopover extends Disposable {
 	private reposition(): void {
 		const targetWindow = dom.getWindow(this.element);
 		const maxLeft = targetWindow.innerWidth - POPOVER_WIDTH - EDGE_MARGIN;
-		if (this.options.anchor && this.options.anchor.isConnected) {
-			const rect = this.options.anchor.getBoundingClientRect();
+		const anchor = this.visibleAnchor();
+		if (anchor) {
+			const rect = anchor.getBoundingClientRect();
 			// ベルの右端にそろえる（タイトルバーの中央寄りにあるので、左端にそろえると右へはみ出しやすい）。
 			const left = Math.max(EDGE_MARGIN, Math.min(rect.right - POPOVER_WIDTH, maxLeft));
 			this.element.style.top = `${rect.bottom + 6}px`;
@@ -144,6 +164,10 @@ export class ParadisNotificationInboxPopover extends Disposable {
 	}
 
 	private render(): void {
+		// 描き直しでフォーカスしていた行が消えないよう、同じ行へ戻す。
+		const active = dom.getActiveElement();
+		const focusedEntryId = active && dom.isAncestor(active, this.list) ? (active as HTMLElement).dataset.entryId : undefined;
+		const focusWasInside = !!active && dom.isAncestor(active, this.element);
 		this.renderDisposables.clear();
 		const scrollTop = this.list.scrollTop;
 		dom.clearNode(this.header);
@@ -172,6 +196,12 @@ export class ParadisNotificationInboxPopover extends Disposable {
 			this.renderRow(entry);
 		}
 		this.list.scrollTop = scrollTop;
+		if (focusedEntryId !== undefined) {
+			const row = this.rows.find(candidate => candidate.dataset.entryId === focusedEntryId);
+			(row ?? this.element).focus();
+		} else if (focusWasInside && !dom.isAncestor(dom.getActiveElement(), this.element)) {
+			this.element.focus();
+		}
 
 		// --- 下の段 ---
 		if (isMacintosh || isWindows) {
@@ -199,6 +229,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 	private renderRow(entry: IParadisInboxEntry): void {
 		const row = dom.append(this.list, $('.pnip-row'));
 		row.tabIndex = 0;
+		row.dataset.entryId = entry.id;
 		row.setAttribute('role', 'listitem');
 		row.classList.toggle('unread', !entry.read);
 		row.classList.toggle('closed', !entry.live);
@@ -259,9 +290,10 @@ export class ParadisNotificationInboxPopover extends Disposable {
 				enabled: entry.live,
 				run: () => this.open(entry),
 			}),
+			// 件数はペイン単位なので、既読もペイン単位にそろえる（1行だけ既読にしても件数が減らないため）。
 			entry.read
 				? toAction({ id: 'paradis.inbox.markUnread', label: localize('paradis.inbox.markUnread', "未読に戻す"), run: () => this.inboxService.markUnread(entry.id) })
-				: toAction({ id: 'paradis.inbox.markRead', label: localize('paradis.inbox.markRead', "既読にする"), run: () => this.inboxService.markRead([entry.id]) }),
+				: toAction({ id: 'paradis.inbox.markPaneRead', label: localize('paradis.inbox.markPaneRead', "このペインの通知を既読にする"), run: () => this.inboxService.markPanesRead([entry.paneKey]) }),
 			new Separator(),
 			toAction({ id: 'paradis.inbox.remove', label: localize('paradis.inbox.remove', "一覧から消す"), run: () => this.inboxService.remove(entry.id) }),
 		];
