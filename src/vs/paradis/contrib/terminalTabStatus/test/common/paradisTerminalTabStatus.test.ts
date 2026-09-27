@@ -60,6 +60,28 @@ suite('paradisTerminalTabStatus', () => {
 		});
 	});
 
+	test('does not count a pane that stopped for the user after a denied permission as finished, but still counts other finishes', () => {
+		assert.deepStrictEqual({
+			// 許可を拒否して止まった（idle の合図で状態が消えた）: 緑の点を付けず、赤い点も外す
+			deniedFromPermission: paradisNextAttentionOnStatus('permission', undefined, 'waiting', false, true),
+			// 答えた時点で作業中へ戻っていた（モバイルが繋がっている構成）ときの拒否
+			deniedFromWorking: paradisNextAttentionOnStatus('working', undefined, undefined, false, true),
+			// 前に付いていた完了の印は、拒否では消さない（ユーザーが触るまで残す）
+			deniedKeepsEarlierDone: paradisNextAttentionOnStatus('permission', undefined, 'done', false, true),
+			// 承認して作業が進んでから終わった通常の完了は、今までどおり点を付ける
+			approvedThenFinished: paradisNextAttentionOnStatus('working', 'review', undefined, false, false),
+			approvedThenAutoAcknowledged: paradisNextAttentionOnStatus('working', undefined, undefined, false, false),
+			permissionThenAutoAcknowledged: paradisNextAttentionOnStatus('permission', undefined, 'waiting', false, false),
+		}, {
+			deniedFromPermission: undefined,
+			deniedFromWorking: undefined,
+			deniedKeepsEarlierDone: 'done',
+			approvedThenFinished: 'done',
+			approvedThenAutoAcknowledged: 'done',
+			permissionThenAutoAcknowledged: 'done',
+		});
+	});
+
 	test('picks the tab icon from the state first, then the agent logo, and leaves plain shells alone', () => {
 		assert.deepStrictEqual({
 			working: paradisTerminalTabIconKind('working', undefined, 'claude'),

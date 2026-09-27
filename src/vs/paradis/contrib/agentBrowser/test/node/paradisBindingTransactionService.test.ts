@@ -87,6 +87,7 @@ function createFixture(): {
 		_paneStatuses: new Map(),
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set(),
+		_awaitingUserTokens: new Set<string>(),
 		_agentHookTokens: new Set(),
 		_seenTokens: new Set(),
 		_rendererConnections: new Map<string, object>(),

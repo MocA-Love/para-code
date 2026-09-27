@@ -43,6 +43,7 @@ function isWaiting(status: ParadisAgentStatus | undefined): boolean {
  *   モバイルから答えた場合などに、もう呼んでいないタブへ印が残り続けないようにするため
  * - 作業中・許可待ち・質問から完了（`review`、または状態なし）へ移ったら `done`。状態が消えるのは、見ているスペース
  *   の完了をアプリがすぐ既読にする場合で、ユーザーがそのタブを見たとは限らない
+ * - ただし、止まって次の指示を待っているために状態が消えた（許可の拒否。`stoppedForUser`）ときは完了に数えない
  * - ユーザーがそのターミナルを見ている（フォーカスがある）ときは印を付けない
  *
  * 付けた `done` と `bell` は、ユーザーがそのターミナルを操作するまで残す（`paradisClearAttention`）。
@@ -52,6 +53,7 @@ export function paradisNextAttentionOnStatus(
 	current: ParadisAgentStatus | undefined,
 	latched: ParadisTerminalAttention | undefined,
 	isWatching: boolean,
+	stoppedForUser: boolean = false,
 ): ParadisTerminalAttention | undefined {
 	let next = latched;
 	if (next === 'waiting' && !isWaiting(current)) {
@@ -63,10 +65,11 @@ export function paradisNextAttentionOnStatus(
 	if (isWaiting(current) && current !== previous) {
 		return stronger(next, 'waiting');
 	}
-	// 許可待ち・質問から直接終わることもある（答えた直後にターンが終わる、拒否して止まる）。
-	// 見ているスペースの完了はすぐ既読になって review を経ずに消えるので、そこからの消滅も完了に数える。
+	// 許可待ち・質問から直接終わることもある（答えた直後にターンが終わる）。見ているスペースの完了はすぐ
+	// 既読になって review を経ずに消えるので、そこからの消滅も完了に数える。許可を拒否して止まったときの
+	// 消滅は完了ではないので数えない。
 	const finished = (current === 'review' && previous !== 'review')
-		|| (current === undefined && (previous === 'working' || isWaiting(previous)));
+		|| (current === undefined && !stoppedForUser && (previous === 'working' || isWaiting(previous)));
 	if (finished) {
 		return stronger(next, 'done');
 	}

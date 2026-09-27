@@ -437,6 +437,12 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** transcript/app-server由来の承認待ちを一度観測したtoken。解除時だけpermissionをworkingへ戻す。 */
 	private readonly _activityApprovalTokens = new Set<string>();
 	/**
+	 * 完了ではなく、止まって利用者の次の指示を待っているために状態を消した（idle にした）token
+	 * （許可の拒否。`_settlePaneAwaitingUser`）。次に状態が付くまでスナップショットで知らせ、画面側が
+	 * 状態の消滅を完了（タブの緑の点）と数えないようにする。
+	 */
+	private readonly _awaitingUserTokens = new Set<string>();
+	/**
 	 * 一度でもエージェントhook (POST /agent-hook) を発火したペイントークンの集合。
 	 * 「そのターミナルでエージェントCLIが動いた実績」の判定に使う（プレーンなターミナルと
 	 * エージェントペインの区別。モバイルのホーム一覧・Live Activity のフィルタ用）。
@@ -1373,6 +1379,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		this._activityApprovalTokens.delete(token);
 		this._paneStatuses.delete(token);
+		this._awaitingUserTokens.add(token);
 	}
 
 	private _cleanupTokenLocalState(token: string, generation?: number, preserveTerminalExit: boolean = false): void {
@@ -1381,6 +1388,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._paneStatuses.delete(token);
 		this._paneSessions.delete(token);
 		this._activityApprovalTokens.delete(token);
+		this._awaitingUserTokens.delete(token);
 		this._agentHookTokens.delete(token);
 		this._hookReportedTokens.delete(token);
 		this._unconfirmedReleaseTokens.delete(token);
@@ -2602,10 +2610,18 @@ export class ParadisAgentBrowserService extends Disposable {
 		const paneSessions = [...this._paneSessions]
 			.filter(([token]) => eligibleTokens.has(token))
 			.map(([token, session]) => Object.freeze({ token, ...session }));
+		// 次の状態が付いたペインは、もう「止まって待っている」ではない
+		for (const token of [...this._awaitingUserTokens]) {
+			if (this._paneStatuses.has(token)) {
+				this._awaitingUserTokens.delete(token);
+			}
+		}
+		const awaitingUserTokens = [...this._awaitingUserTokens].filter(token => eligibleTokens.has(token));
 		return Object.freeze({
 			paneStatuses: Object.freeze(paneStatuses),
 			agentHookTokens: Object.freeze(agentHookTokens),
 			...(paneSessions.length > 0 ? { paneSessions: Object.freeze(paneSessions) } : {}),
+			...(awaitingUserTokens.length > 0 ? { awaitingUserTokens: Object.freeze(awaitingUserTokens) } : {}),
 			...(agentHookTokenIssueUrls.length > 0 ? { agentHookTokenIssueUrls: Object.freeze(agentHookTokenIssueUrls) } : {}),
 		});
 	}
@@ -3941,6 +3957,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._paneStatuses.clear();
 		this._paneSessions.clear();
 		this._activityApprovalTokens.clear();
+		this._awaitingUserTokens.clear();
 		this._agentHookTokens.clear();
 		this._hookReportedTokens.clear();
 		this._unconfirmedReleaseTokens.clear();
