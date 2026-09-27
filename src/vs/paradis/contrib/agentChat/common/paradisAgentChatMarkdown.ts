@@ -14,7 +14,7 @@ const IMAGE_SYNTAX = /!\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?(?:\s+(?:"[^"\n]*"|'[^'\
  * エージェントの発言の Markdown で、外部を指す画像の書き方（`![説明](https://...)`）をリンクに
  * 書き換える。チャット表示は外部の画像を読み込まない（読み込むと、プロンプトインジェクションで
  * 仕込まれた URL へ会話の中身を送れてしまう）ので、見えない画像の代わりに押せるリンクとして残す。
- * `data:` の画像はそのまま。コードブロック（``` / ~~~）の中は書き換えない。
+ * `data:` の画像はそのまま。コードブロック（``` / ~~~ と字下げ）とインラインコードの中は書き換えない。
  */
 export function paradisAgentChatImagesToLinks(markdown: string): string {
 	if (!markdown.includes('![')) {
@@ -37,7 +37,11 @@ export function paradisAgentChatImagesToLinks(markdown: string): string {
 		if (fence !== undefined) {
 			continue;
 		}
-		lines[index] = line.replace(IMAGE_SYNTAX, (whole, alt: string, url: string) => {
+		// 字下げのコードブロックとインラインコードの中は書き換えない（読み込みの遮断はサニタイザが担う）。
+		if (/^( {4}|\t)/.test(line)) {
+			continue;
+		}
+		lines[index] = line.split(/(`+[^`]*`+)/).map((segment, segmentIndex) => segmentIndex % 2 === 1 ? segment : segment.replace(IMAGE_SYNTAX, (whole, alt: string, url: string) => {
 			if (/^data:/i.test(url)) {
 				return whole;
 			}
@@ -45,7 +49,7 @@ export function paradisAgentChatImagesToLinks(markdown: string): string {
 				? localize('paradisAgentChat.imageLinkWithAlt', "画像: {0}", alt.trim())
 				: localize('paradisAgentChat.imageLink', "画像");
 			return `[${label.replace(/[[\]]/g, '')}](${url})`;
-		});
+		})).join('');
 	}
 	return lines.join('\n');
 }

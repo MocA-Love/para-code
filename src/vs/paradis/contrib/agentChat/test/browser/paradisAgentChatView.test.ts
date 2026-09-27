@@ -39,7 +39,7 @@ class TestHost implements IParadisAgentChatViewHost {
 	async getFullText(): Promise<string | undefined> { return undefined; }
 	async getImage(): Promise<IParadisAgentChatImageData | undefined> { return { mediaType: 'image/png', data: 'AAAA' }; }
 	getToggleKeybindingLabel(): string | undefined { return '⌘⇧J'; }
-	private readonly states: IParadisAgentChatCardStates = { questions: new Map(), approvals: new Map() };
+	private readonly states: IParadisAgentChatCardStates = { questions: new Map(), approvals: new Map(), composer: { sending: false } };
 	cardStates(): IParadisAgentChatCardStates { return this.states; }
 	getSendKey(): ParadisAgentChatSendKey { return 'enter'; }
 	getDraft(): string { return ''; }

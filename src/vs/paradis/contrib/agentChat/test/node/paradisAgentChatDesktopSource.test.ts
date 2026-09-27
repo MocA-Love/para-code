@@ -131,11 +131,21 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			});
 			await waitFor(() => !access.hookProcessing.has(token), 'hooks were not processed');
 			const view = await chat.getDesktopChat(token, undefined);
-			assert.strictEqual(view?.interaction, null);
+
+			// 取り込むが知らせない（チャットを開いていない）ペインの変化は、ウィンドウへ知らせない
+			const changed: string[] = [];
+			const listener = chat.onDidChangeDesktopChat(tokens => changed.push(...tokens));
+			chat.watchDesktopChat('window-1', [token], []);
+			await appendFile(transcriptPath, line({ type: 'assistant', timestamp: '2026-09-27T10:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] } }));
+			await waitFor(async () => (await chat.getDesktopChat(token, undefined))?.messages.length === 2, 'appended line was not read');
+			await new Promise<void>(resolve => setTimeout(resolve, 200));
+			listener.dispose();
+			assert.deepStrictEqual({ interaction: view?.interaction, changed }, { interaction: null, changed: [] });
 		} finally {
 			chat.dispose();
 		}
 	}));
+
 	test('an approval captured only for the desktop chat does not turn the pane status into waiting for permission', () => withClaudeHome(async claudeHome => {
 		const token = 'pane-desktop-approval';
 		const transcriptPath = join(claudeHome, 'projects', 'repo', 'session-3.jsonl');
@@ -162,45 +172,77 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			clearParadisAgentPaneActivity(token);
 		}
 	}));
-	test('clears a synthetic approval when the same tool finishes, marks the agent as exited after SessionEnd, and hands desktop-only captures to a mobile that attaches later', () => withClaudeHome(async claudeHome => {
+	test('ties a permission request to its tool call, keeps it through parallel calls of the same tool, marks the agent as exited after SessionEnd, and hands desktop-only captures to a mobile that attaches later', () => withClaudeHome(async claudeHome => {
 		const token = 'pane-desktop-synthetic';
 		const transcriptPath = join(claudeHome, 'projects', 'repo', 'session-4.jsonl');
 		await writeFile(transcriptPath, line({ type: 'user', timestamp: '2026-09-27T10:00:00.000Z', message: { role: 'user', content: 'テストして' } }));
 		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
-		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>> };
-		const processed = () => waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
+		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>>; tailers: Map<string, { enqueue(work: () => Promise<void>): Promise<void> }> };
+		// hook の処理と、tailer のキューに積まれた変更（承認の解除など）の両方が済むまで待つ。
+		const settled = async () => {
+			await waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
+			await access.tailers.get(token)?.enqueue(async () => { });
+		};
 		const hook = (event: string, extra: Record<string, unknown> = {}) => fireParadisAgentHookEvent({ token, event, sessionId: 'session-4', transcriptPath, cwd: '/repo', at: Date.now(), ...extra });
 		const guard = registerParadisAgentPaneActivityGuard(candidate => candidate === token);
 		try {
 			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
 			hook('SessionStart');
-			await processed();
+			await settled();
 			chat.watchDesktopChat('window-1', [token], [token]);
-			const view = () => chat.getDesktopChat(token, undefined);
+			const interaction = async () => (await chat.getDesktopChat(token, undefined))?.interaction ?? null;
 
-			// tool_use_id の無い許可要求は合成 id になる。別のツールの完了では解かず、同じツールの完了で解く
+			// 並列の同名ツール: 許可の要らない Read が先に終わっても、許可を待つ Read の承認は残る。
+			// PermissionRequest には tool_use_id が無いが、同じ入力の PreToolUse から id を引き当てる。
+			hook('PreToolUse', { toolName: 'Read', toolUseId: 'toolu_a', toolInput: { file_path: '/repo/a.ts' } });
+			hook('PreToolUse', { toolName: 'Read', toolUseId: 'toolu_b', toolInput: { file_path: '/etc/hosts' } });
+			hook('PermissionRequest', { toolName: 'Read', toolInput: { file_path: '/etc/hosts' } });
+			await settled();
+			const tied = (await interaction())?.id;
+			hook('PostToolUse', { toolName: 'Read', toolUseId: 'toolu_a' });
+			await settled();
+			const afterOtherRead = (await interaction())?.id;
+			hook('PostToolUse', { toolName: 'Read', toolUseId: 'toolu_b' });
+			await settled();
+			const afterOwnRead = await interaction();
+
+			// 同じ入力の呼び出しが2つあって決まらないときは合成 id。両方が終わるまで解かない
+			hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_c', toolInput: { command: 'npm test' } });
+			hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_d', toolInput: { command: 'npm test' } });
 			hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'npm test' } });
-			await waitFor(async () => (await view())?.interaction?.kind === 'approval', 'approval was not captured');
-			const synthetic = (await view())?.interaction?.id ?? '';
-			hook('PostToolUse', { toolName: 'Read' });
-			await processed();
-			const afterOtherTool = (await view())?.interaction?.id;
-			hook('PostToolUse', { toolName: 'Bash' });
-			await waitFor(async () => (await view())?.interaction === null, 'synthetic approval was not cleared');
+			await settled();
+			const synthetic = (await interaction())?.id ?? '';
+			hook('PostToolUse', { toolName: 'Bash', toolUseId: 'toolu_c' });
+			await settled();
+			const afterFirstBash = (await interaction())?.id;
+			hook('PostToolUse', { toolName: 'Bash', toolUseId: 'toolu_d' });
+			await settled();
+			const afterBothBash = await interaction();
+
+			// PreToolUse を1つも覚えていない承認は、ツールの完了では解かない（以前どおりターン終了まで）
+			hook('PermissionRequest', { toolName: 'WebFetch', toolInput: { url: 'https://example.com' } });
+			await settled();
+			hook('PostToolUse', { toolName: 'WebFetch', toolUseId: 'toolu_e' });
+			await settled();
+			const unknownCallStillPending = (await interaction())?.kind;
+			hook('Stop');
+			await settled();
 
 			// デスクトップ専用で入れた質問はペインの状態に数えない。モバイルが注入を有効にしたら数える
 			hook('PreToolUse', { toolName: 'AskUserQuestion', toolInput: { questions: [{ question: 'Q?', options: [{ label: 'A' }, { label: 'B' }] }] } });
-			await waitFor(async () => (await view())?.interaction?.kind === 'question', 'question was not captured');
+			await waitFor(async () => (await interaction())?.kind === 'question', 'question was not captured');
 			const questionBeforeMobile = getParadisAgentPaneActivity(token).pendingQuestion;
 			chat.setEagerTailing(true);
 			await waitFor(() => getParadisAgentPaneActivity(token).pendingQuestion, 'question was not promoted');
 
 			hook('SessionEnd');
-			await waitFor(async () => (await view())?.agentExited === true, 'exit was not recorded');
+			await waitFor(async () => (await chat.getDesktopChat(token, undefined))?.agentExited === true, 'exit was not recorded');
 			hook('SessionStart');
-			await waitFor(async () => (await view())?.agentExited === undefined, 'exit mark was not cleared');
+			await waitFor(async () => (await chat.getDesktopChat(token, undefined))?.agentExited === undefined, 'exit mark was not cleared');
 
-			assert.deepStrictEqual({ syntheticPrefix: synthetic.startsWith('approval:'), afterOtherTool: afterOtherTool === synthetic, questionBeforeMobile }, { syntheticPrefix: true, afterOtherTool: true, questionBeforeMobile: false });
+			assert.deepStrictEqual({ tied, afterOtherRead, afterOwnRead, syntheticPrefix: synthetic.startsWith('approval:'), afterFirstBash: afterFirstBash === synthetic, afterBothBash, unknownCallStillPending, questionBeforeMobile }, {
+				tied: 'toolu_b', afterOtherRead: 'toolu_b', afterOwnRead: null, syntheticPrefix: true, afterFirstBash: true, afterBothBash: null, unknownCallStillPending: 'approval', questionBeforeMobile: false,
+			});
 		} finally {
 			chat.dispose();
 			guard.dispose();

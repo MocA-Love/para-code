@@ -45,10 +45,9 @@ import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/servic
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisEditorTerminalOverlay, paradisRegisterEditorTerminalOverlay } from '../../agentBrowser/browser/paradisPaneIndicator.js';
 import { IParadisAgentInsightsService } from '../../agentInsights/common/paradisAgentInsights.js';
-import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../../mobileRelay/common/paradisMobileRelay.js';
-import { IParadisAgentChatTerminal, ParadisAgentChatInput } from '../browser/paradisAgentChatInput.js';
+import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisIsShellProcessName } from '../browser/paradisAgentChatInput.js';
 import { ParadisAgentChatSendKey, PARADIS_AGENT_CHAT_HISTORY_LIMIT } from '../browser/paradisAgentChatComposer.js';
 import { IParadisAgentChatService } from '../browser/paradisAgentChatService.js';
 import { ParadisAgentChatSession } from '../browser/paradisAgentChatSession.js';
@@ -462,7 +461,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	cardStates(token: string): IParadisAgentChatCardStates {
 		let states = this.cardStateByToken.get(token);
 		if (states === undefined) {
-			states = { questions: new Map(), approvals: new Map() };
+			states = { questions: new Map(), approvals: new Map(), composer: { sending: false } };
 			this.cardStateByToken.set(token, states);
 		}
 		return states;
@@ -513,20 +512,19 @@ function paradisChatTerminalFor(instance: ITerminalInstance): IParadisAgentChatT
 		sendText: (text, shouldExecute, bracketedPasteMode) => instance.sendText(text, shouldExecute, bracketedPasteMode),
 		readScreen: () => paradisVisibleTerminalText(instance),
 		foreground: () => {
-			const detection = instance.capabilities.get(TerminalCapability.CommandDetection);
-			if (detection === undefined) {
-				return 'unknown';
+			// 前面のプロセス名（pty host が知らせる）で判断する。シェルなら、エージェントは終わっている。
+			// 別名・ラッパー（`cc`・`npx`・`env FOO=1 claude`）でもシェル以外なら通し、再読み込みの後も効く。
+			// Codex は終了を知らせる hook が無いので、これが終了後の送信を止める唯一の手がかり。
+			const processName = instance.processName.trim();
+			if (processName.length > 0) {
+				return paradisIsShellProcessName(processName) ? 'shell' : 'agent';
 			}
-			// シェルのプロンプトが入力を待っている＝前面にエージェントはいない。再読み込みの後は実行中の
-			// コマンド名が失われるので、名前が分からないだけでは「いない」とはみなさない。
-			if (detection.promptInputModel.state === PromptInputState.Input) {
+			// プロセス名が分からないときは、シェル統合の入力待ちを見る。
+			const detection = instance.capabilities.get(TerminalCapability.CommandDetection);
+			if (detection?.promptInputModel.state === PromptInputState.Input) {
 				return 'shell';
 			}
-			const executing = detection.executingCommand;
-			if (executing === undefined || executing.trim().length === 0) {
-				return 'unknown';
-			}
-			return paradisInteractiveAgentCommand(executing) !== undefined ? 'agent' : 'other';
+			return 'unknown';
 		},
 		bracketedPasteMode: () => instance.xterm?.raw.modes.bracketedPasteMode === true,
 	};
