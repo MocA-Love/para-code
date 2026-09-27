@@ -21,6 +21,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IReconnectConstants } from '../../../../platform/terminal/common/terminal.js';
 import { ElectronPtyHostStarter } from '../../../../platform/terminal/electron-main/electronPtyHostStarter.js';
+import { validatedIpcMain } from '../../../../base/parts/ipc/electron-main/ipcMain.js';
 import { IPtyHostStarter } from '../../../../platform/terminal/node/ptyHost.js';
 import { PARADIS_PTY_HOST_STATE_DIR, paradisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
 import { paradisDeletePtyDaemonEnv } from '../common/paradisPtyEnvHygiene.js';
@@ -109,6 +110,8 @@ export function paradisCreatePtyHostStarter(
 	lifecycleMainService: ILifecycleMainService,
 	logService: ILogService,
 	productService: IProductService,
+	/** テスト用。起こす側が受ける IPC（既定は main の本物）。 */
+	ipcMain: Pick<typeof validatedIpcMain, 'on' | 'removeListener'> = validatedIpcMain,
 ): IPtyHostStarter {
 	// 親から受け継いだ常駐の内部用の変数は、どの分岐に進むにしても最初に消す。Para Code の
 	// ターミナルから起動された別の Para Code が、親の常駐の置き場所を持ったまま起きると、
@@ -118,7 +121,7 @@ export function paradisCreatePtyHostStarter(
 		logService.info(`[ParadisPtyHost] ignoring inherited pty daemon variables: ${inherited.join(', ')}`);
 	}
 
-	const inApp = () => new ElectronPtyHostStarter(reconnectConstants, configurationService, environmentMainService, lifecycleMainService, logService);
+	const inApp = () => new ElectronPtyHostStarter(reconnectConstants, configurationService, environmentMainService, lifecycleMainService, logService, ipcMain);
 
 	// 更新をまたいで繋ぎ直せる薄い常駐。**pty ホストはアプリの中のまま**で、その中から常駐へ
 	// 繋ぐので、ここは今までどおりの起こし方でよい。渡すのは置き場所だけ
@@ -196,5 +199,6 @@ export function paradisCreatePtyHostStarter(
 		environmentMainService,
 		lifecycleMainService,
 		logService,
+		ipcMain,
 	);
 }
