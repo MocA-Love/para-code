@@ -342,6 +342,24 @@ Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.
 grep -rn "BrowserDeviceType\|deviceType ===\|deviceType:\|case 'bluetooth'" src/vs --include='*.ts' | grep -v '/paradis/'
 ```
 
+## 内蔵ブラウザのダウンロード一覧、エージェントのタブとプロファイル（2026-09-27、フェーズ7 担当A）
+
+ダウンロードの一覧（q.html Q73 案B）は main が権威で、renderer は写しを持つだけ。`will-download` はセッションごとに配線済み（`browserSession.ts` の既存 PARA-PATCH）なので、そこから main に1つだけある `ParadisBrowserDownloadsTracker` へ集め、`paradisBrowserDownloads` チャネルで流す。renderer からは main が振った id しか受け取らず、パスは受け取らない。実行ファイル（拡張子で判定、拡張子なしも含む）は renderer がボタンを出さないうえ、main も開くのを断る。ボタンは `MenuId.BrowserActionsToolbar` のアクションを `IActionViewItemService` で自前の項目に差し替えたもので、進み具合の輪と未確認の点を持つ。一覧は main のメモリだけにあり、再起動で消える（ファイルは消えない）。
+
+| upstream のファイル | 行 | 内容 |
+|---|---|---|
+| `src/vs/code/electron-main/app.ts` | import 1行 + 登録 1行 | `paradisRegisterBrowserDownloads(mainProcessElectronServer, this.configurationService)` |
+| `src/vs/workbench/contrib/browserView/electron-browser/overlayManager.ts` | 1行 | `paradis-browser-downloads-popover` を QuickInput 扱いで登録（ネイティブビューの裏に隠れないように） |
+
+エージェントのタブ（Q70 案A）と共有の「要求 → 承認」（Q88 案A）は `agentBrowser/electron-browser/paradisAgentBrowserTabsService.ts`。ペインとページの共有は 1 対 1 のまま変えていない（CDP ゲートウェイとフィルタは共有中の1枚しか見せない）。複数のタブは「共有するタブを移す」ことで扱う。
+
+- エージェントが開くタブは Agent スコープ（ユーザーのログイン情報を持たず、ネットワークの制限が掛かる）で、共有相手を最初からエージェントにして作る。そのため upstream の共有確認は出ない（upstream 自身の open_browser ツールと同じ扱い）
+- 誰がどのタブを開いたか・どのユーザーのタブを承認済みかの台帳（`ParadisAgentTabLedger`）はウィンドウのメモリだけにある。再読み込みすると忘れ、エージェントが開いたタブは普通のタブとして残る（エージェントはもう閉じられない＝安全側）
+- 承認ダイアログは `custom: true` のワークベンチ内ダイアログにしている。ネイティブのシートは時間切れで閉じられず、内蔵ブラウザの上にも確実には出ないため。承認されても、upstream の共有確認（「今後表示しない」を選んでいなければ）がもう1回出る
+- 待ち時間は renderer 110 秒・shared process 120 秒。`_callOwningWindow` の既定 10 秒を、このツールと `open_browser_tab`（読み込み待ち）だけ延ばしている
+
+エージェントによるプロファイル操作（B9）は既存の `paradisBrowserProfileMcp` チャネルに相乗りした。台帳の各プロファイルに `createdByAgent: true` を持たせ、エージェントが消せるのはそれだけ。切替は「エージェントが自分で開いたタブ」に限り、ネットワークの制限が有効な間は断る（`open_browser_profile` と同じ判断）。`open_browser_profile` で開いたタブもエージェントのタブとして台帳に載り、上限 5 枚に数える。
+
 ## 機能1: ワークスペース即時切り替え（workspaceSwitch、2026-07-02追加）
 
 `src/vs/paradis/contrib/workspaceSwitch/` に実装。単一ウィンドウ・単一 `.code-workspace`（identity固定）のまま `updateFolders` で folders を丸ごと入れ替え、エディタ/ターミナル/ブラウザの状態をリポジトリごとに退避・復元する（Superset方式: 破棄せず隠す）。実装時に判明した落とし穴:
