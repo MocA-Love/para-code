@@ -13,7 +13,7 @@ import * as child_process from 'child_process';
 import { createRequire } from 'module';
 
 /**
- * ターミナル（xterm）の日本語入力の表示を直すパッチを当てる（Q51 A / TM16）。
+ * ターミナル（xterm）の日本語入力の表示を直すパッチを当てる（TM16）。
  *
  * 直す症状: 変換中の文字の幅がずれる、変換中の文字が黒い箱で出てカーソル位置の文字を隠す、
  * 変換を確定・取り消ししたときに文字が二重に送られる／落ちる（macOS の日本語入力、MS-IME）。

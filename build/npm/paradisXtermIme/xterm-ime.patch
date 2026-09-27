@@ -1,7 +1,7 @@
 # PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 #
 # IME (composition) fix for @xterm/xterm 6.1.0-beta.304, applied to the package's src/ and rebuilt
-# into lib/ by build/npm/paradisXtermImePatch.ts during postinstall (Para Code TM16 / Q51 A).
+# into lib/ by build/npm/paradisXtermImePatch.ts during postinstall (Para Code TM16).
 #
 # Source: Orca (https://github.com/stablyai/orca) config/patches/@xterm__xterm@6.1.0-beta.303.patch
 # Copyright (c) 2026 Lovecast Inc. Released under the MIT License:
