@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 内蔵ブラウザのダウンロードを main プロセスで1か所に集めて、renderer の一覧（URL バー右の
-// ボタンとポップオーバー、q.html Q73 案B）へ流す。
+// ボタンとポップオーバー）へ流す。
 //
 // 権威は main にある: DownloadItem は main にしか無く、ファイルを開く・Finder で見せるのも main
 // の shell でしか行えない。renderer から届くのは main が振った id だけで、パスは受け取らない
@@ -18,7 +18,7 @@
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { basename } from '../../../../base/common/path.js';
-import { IParadisBrowserDownloadItem, IParadisBrowserDownloadsMainService, ParadisBrowserDownloadState, paradisIsExecutableDownload } from '../common/paradisBrowserDownloads.js';
+import { IParadisBrowserDownloadItem, IParadisBrowserDownloadsMainService, ParadisBrowserDownloadState, paradisIsOpenableDownload } from '../common/paradisBrowserDownloads.js';
 
 /** Electron の `DownloadItem` のうち、ここで使う部分だけ。 */
 export interface IParadisTrackedDownloadItem {
@@ -40,6 +40,19 @@ export interface IParadisDownloadsShell {
 	openPath(path: string): Promise<string>;
 	showItemInFolder(path: string): void;
 	exists(path: string): boolean;
+	/**
+	 * 完了したファイルに OS の隔離の印（macOS の com.apple.quarantine、Windows の Zone.Identifier）が
+	 * 付いているか確かめ、無ければ付ける。開いたときに OS の警告（Gatekeeper / SmartScreen）を通させるため。
+	 */
+	ensureQuarantine(path: string, sourceUrl: string): Promise<void>;
+}
+
+/** ダウンロードがどのセッションから来たか。 */
+export interface IParadisDownloadOrigin {
+	/** エージェント専用の保存領域（Agent スコープ）。 */
+	readonly agentSession: boolean;
+	/** 名前付きプロファイルの ID。 */
+	readonly profileId?: string;
 }
 
 /** 一覧に残す最大件数。超えたら終わったものから古い順に落とす（進行中は落とさない）。 */
@@ -51,6 +64,7 @@ interface ITrackedEntry {
 	readonly id: string;
 	readonly item: IParadisTrackedDownloadItem;
 	readonly startTime: number;
+	readonly origin: IParadisDownloadOrigin;
 	/** `done` を受けた後の最終状態。受ける前は item から毎回読む。 */
 	finalState: ParadisBrowserDownloadState | undefined;
 }
@@ -75,11 +89,12 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 	}
 
 	/** `will-download` から呼ばれる。保存先は呼び出し側で決めてある（決まっていないこともある）。 */
-	track(item: IParadisTrackedDownloadItem): void {
+	track(item: IParadisTrackedDownloadItem, origin: IParadisDownloadOrigin = { agentSession: false }): void {
 		if (this._store.isDisposed) {
 			return;
 		}
 		const entry: ITrackedEntry = {
+			origin,
 			id: `download-${this._nextId++}`,
 			item,
 			// getStartTime() は秒（小数）。取れない場合は今の時刻で代用する。
@@ -95,6 +110,10 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 			// ダウンロードが始まってすらいないので一覧に残さない。
 			if (entry.finalState === 'cancelled' && !item.getSavePath()) {
 				this._removeEntry(entry.id);
+			}
+			const savePath = item.getSavePath();
+			if (entry.finalState === 'completed' && savePath) {
+				this._shell.ensureQuarantine(savePath, item.getURL()).catch(() => { /* 付けられなくても一覧には出す */ });
 			}
 			this._fireNow();
 		});
@@ -119,7 +138,7 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 		}
 		const path = entry.item.getSavePath();
 		// renderer 側でもボタンを出していないが、ここでも断る（renderer を信用しない）。
-		if (!path || paradisIsExecutableDownload(basename(path)) || !this._shell.exists(path)) {
+		if (!path || entry.origin.agentSession || !paradisIsOpenableDownload(basename(path)) || !this._shell.exists(path)) {
 			return false;
 		}
 		return (await this._shell.openPath(path)) === '';
@@ -198,7 +217,9 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 				state: this._stateOf(entry),
 				receivedBytes: entry.item.getReceivedBytes(),
 				totalBytes: entry.item.getTotalBytes(),
-				executable: paradisIsExecutableDownload(filename),
+				openable: paradisIsOpenableDownload(filename),
+				fromAgentSession: entry.origin.agentSession,
+				...(entry.origin.profileId ? { profileId: entry.origin.profileId } : {}),
 				startTime: entry.startTime,
 			};
 		});
