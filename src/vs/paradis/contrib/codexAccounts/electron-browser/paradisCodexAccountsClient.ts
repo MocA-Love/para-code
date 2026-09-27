@@ -12,6 +12,7 @@ import { Event } from '../../../../base/common/event.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import {
 	IParadisCodexAccountsState,
+	IParadisCodexPaneProcess,
 	IParadisCodexResetConsumeRequest,
 	IParadisCodexResetConsumeResult,
 	IParadisCodexResetCreditOffer,
@@ -52,9 +53,9 @@ export class ParadisCodexAccountsClient {
 		return this.channel.call<IParadisCodexAccountsState>('selectHome', [homePath]);
 	}
 
-	/** 渡したシェルの pid のうち、子孫で Codex が動いているもの（プロセス表で見分ける）。 */
-	shellsRunningCodex(shellPids: readonly number[]): Promise<number[]> {
-		return this.channel.call<number[]>('shellsRunningCodex', [shellPids]);
+	/** 渡したシェルのうち、子孫で Codex が動いているものと、読めたらその Codex の実際のホーム。 */
+	shellsRunningCodex(shellPids: readonly number[]): Promise<IParadisCodexPaneProcess[]> {
+		return this.channel.call<IParadisCodexPaneProcess[]>('shellsRunningCodex', [shellPids]);
 	}
 
 	/** 選択が変わった（どのウィンドウから変えても届く）。 */

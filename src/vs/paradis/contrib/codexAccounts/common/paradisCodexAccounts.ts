@@ -258,6 +258,29 @@ export function paradisLooksLikeRunningCodex(executingCommand: string | undefine
 	return processName !== undefined && /^codex(?:\.exe)?$/i.test(processName.trim());
 }
 
+/** ターミナルのシェルの下で動いている Codex（shared process がプロセス表で見つけたもの）。 */
+export interface IParadisCodexPaneProcess {
+	readonly shellPid: number;
+	/** その Codex の `CODEX_HOME` を読めたか（自分のプロセスで、macOS / Linux のときだけ読める）。 */
+	readonly homeKnown: boolean;
+	/** 読めたときの実際のホーム。既定のホームなら undefined（新しく開くターミナルの選択と同じ表し方）。 */
+	readonly codexHome?: string;
+}
+
+/**
+ * 動いている Codex が実際に使っているホーム（既定のホームは undefined）。
+ * 1. その Codex のプロセスの `CODEX_HOME` を読めたらそれ（再接続したペインや、手で `CODEX_HOME=… codex`
+ *    としたものも正しく分かる）
+ * 2. 読めなければ、そのペインを開いたときのホーム（新しく開いたペインだけ覚えている）
+ * 3. どちらも無い（再接続したペインで、環境変数も読めない）なら、切替の直前の選択で開いたものとみなす
+ */
+export function paradisRunningCodexHome(process: IParadisCodexPaneProcess | undefined, paneHome: { readonly known: boolean; readonly homePath?: string }, previous: string | undefined): string | undefined {
+	if (process?.homeKnown) {
+		return process.codexHome;
+	}
+	return paneHome.known ? paneHome.homePath : previous;
+}
+
 /** 会話ログのハードリンクの結果（件数だけ。パスは返さない）。 */
 export interface IParadisCodexSessionLinkSummary {
 	readonly linked: number;
