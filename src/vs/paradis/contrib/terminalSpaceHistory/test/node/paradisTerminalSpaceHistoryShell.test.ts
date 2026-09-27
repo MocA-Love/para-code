@@ -80,11 +80,12 @@ suite('Paradis per-space shell history (shell integration scripts)', () => {
 			const spaceDirectory = join(home, 'userData', 'terminal-history', 'abc123');
 			assert.deepStrictEqual({
 				space: await runZsh(home, spaceDirectory),
-				created: await fs.stat(spaceDirectory).then(stat => stat.isDirectory(), () => false),
+				// 他のユーザーから読めないよう 0700 で作る。
+				created: await fs.stat(spaceDirectory).then(stat => stat.isDirectory() ? (stat.mode & 0o777).toString(8) : 'not a folder', () => 'missing'),
 				none: await runZsh(home, undefined),
 			}, {
 				space: '~/userData/terminal-history/abc123/zsh_history|unset|unset',
-				created: true,
+				created: '700',
 				none: '~/.user_history|unset|unset',
 			});
 		});
