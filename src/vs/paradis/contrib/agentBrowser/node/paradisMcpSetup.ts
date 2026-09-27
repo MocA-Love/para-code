@@ -423,7 +423,7 @@ export class ParadisMcpSetupController {
 		if (existing !== undefined) {
 			return existing;
 		}
-		const flight = (cli === 'claude' ? this.setupClaude(gatewayPort) : this.setupCodex(gatewayPort)).finally(() => {
+		const flight = (cli === 'claude' ? this.setupClaude(gatewayPort) : this.withCodexPropagation(this.setupCodex(gatewayPort), gatewayPort)).finally(() => {
 			if (this.flights.get(cli) === flight) {
 				this.flights.delete(cli);
 			}
@@ -494,7 +494,16 @@ export class ParadisMcpSetupController {
 		if (cli === 'claude') {
 			return this.setup('claude', gatewayPort);
 		}
-		return this.fixCodex(gatewayPort).finally(() => this.propagateCodexSetup(gatewayPort));
+		return this.withCodexPropagation(this.fixCodex(gatewayPort), gatewayPort);
+	}
+
+	/** 既定のホームの結果をそのまま返しつつ、最後に1回だけ他のアカウント用ホームへ反映する。 */
+	private async withCodexPropagation(primary: Promise<IParadisMcpSetupResult>, gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
+		try {
+			return await primary;
+		} finally {
+			await this.propagateCodexSetup(gatewayPort);
+		}
 	}
 
 	/** 既定のホームへ入れたのと同じ節を、他のアカウント用ホームへも入れる（失敗しても結果は変えない）。 */
@@ -607,10 +616,8 @@ export class ParadisMcpSetupController {
 	 * 私たちの節は毎回書き直す（`paradisUpsertCodexMcpToml`）。旧shim方式の絶対パスや古いポートを
 	 * 指した節が残っていても、中身を読んで直すより丸ごと入れ替える方が確実。
 	 */
-	private async setupCodex(gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
-		const result = await this.setupCodexAt(this.options.codexHome, gatewayPort);
-		await this.propagateCodexSetup(gatewayPort);
-		return result;
+	private setupCodex(gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
+		return this.setupCodexAt(this.options.codexHome, gatewayPort);
 	}
 
 	private async setupCodexAt(codexHome: string, gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {

@@ -26,7 +26,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { paradisClaudeConfigDir, paradisCodexAccountHomes } from './paradisAgentHome.js';
+import { paradisClaudeConfigDir, paradisCodexHomeCandidates, paradisCodexHomes } from './paradisAgentHome.js';
 
 /**
  * notify.sh の内容を生成する (全行ASCII)。jq には依存せず grep/sed のみでパースする。
@@ -661,8 +661,10 @@ export async function paradisRemoveAgentHooksFile(filePath: string, logService: 
  */
 export async function paradisRemoveAgentHooks(logService: ILogService | undefined, paths: { readonly claudeSettingsPath?: string; readonly codexHooksPath?: string } = {}): Promise<void> {
 	await paradisRemoveAgentHooksFile(paths.claudeSettingsPath ?? join(paradisClaudeConfigDir(), 'settings.json'), logService);
-	// Codex はアカウントごとのホーム（~/.codex-2 等）にも設置しているので、全部から外す。
-	for (const codexHooksPath of paths.codexHooksPath !== undefined ? [paths.codexHooksPath] : paradisCodexHooksPaths()) {
+	// Codex はアカウントごとのホーム（~/.codex-2 等）にも設置しているので、全部から外す。ログアウトした
+	// ホームにも前に置いた hook が残るので、ログインの有無を問わず候補全部を見る（外すだけなので安全）。
+	const codexHooksPaths = paths.codexHooksPath !== undefined ? [paths.codexHooksPath] : paradisCodexHomeCandidates().map(home => join(home, 'hooks.json'));
+	for (const codexHooksPath of codexHooksPaths) {
 		await paradisRemoveAgentHooksFile(codexHooksPath, logService);
 	}
 }
@@ -673,7 +675,7 @@ export async function paradisRemoveAgentHooks(logService: ILogService | undefine
  * 既定のホームにだけ置くと切替後の Codex から状態が届かなくなる。
  */
 function paradisCodexHooksPaths(): string[] {
-	return paradisCodexAccountHomes().map(home => join(home, 'hooks.json'));
+	return paradisCodexHomes().map(home => join(home, 'hooks.json'));
 }
 
 /**
@@ -845,7 +847,8 @@ export class ParadisAgentHooksReconciler extends Disposable {
 	}
 
 	private onDirectoryChange(fileName: string | null): void {
-		if (this.disposed || (fileName !== null && fileName !== basename(this.claudeSettingsPath) && !this.codexHooksPaths().some(path => basename(path) === fileName))) {
+		// Codex の設置先の名前は常に hooks.json。変更イベントのたびにホームを走査し直さない。
+		if (this.disposed || (fileName !== null && fileName !== basename(this.claudeSettingsPath) && fileName !== basename(this.fixedCodexHooksPath ?? 'hooks.json'))) {
 			return;
 		}
 		if (this.pendingReconcile !== undefined) {
