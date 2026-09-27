@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { deepClone, deepFreeze } from '../../../../base/common/objects.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -123,13 +124,10 @@ export class ParadisAgentStatusSnapshotService extends Disposable implements IPa
 			if (!this._disposed && generation === this._generation) {
 				this._publish(Object.freeze({
 					sequence: ++this._sequence,
-					snapshot: Object.freeze({
-						paneStatuses: Object.freeze(snapshot.paneStatuses.map(status => Object.freeze({ ...status }))),
-						agentHookTokens: Object.freeze([...snapshot.agentHookTokens]),
-						...(snapshot.agentHookTokenIssueUrls ? {
-							agentHookTokenIssueUrls: Object.freeze(snapshot.agentHookTokenIssueUrls.map(entry => Object.freeze({ token: entry.token, issueUrls: Object.freeze([...entry.issueUrls]) }))),
-						} : {}),
-					}),
+					// フィールドを列挙して詰め直さない。列挙すると shared process 側で足したフィールド
+					// （`paneSessions` など）がここで黙って落ち、受け取る側の機能だけが動かなくなる
+					// （実際に2度起きた）。丸ごと写して凍らせる。
+					snapshot: deepFreeze(deepClone(snapshot)),
 				}));
 			}
 		} catch (error) {

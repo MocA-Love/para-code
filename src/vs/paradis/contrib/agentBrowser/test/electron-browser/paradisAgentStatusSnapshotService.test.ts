@@ -204,6 +204,33 @@ suite('ParadisAgentStatusSnapshotService', () => {
 		assert.strictEqual(Object.isFrozen(outcomes[0].snapshot?.agentHookTokenIssueUrls?.[0].issueUrls), true);
 	});
 
+	// shared process が返したフィールドは、ここで列挙していないものも含めて全部届くこと。
+	// 詰め直しで新しいフィールド（`paneSessions` 等）が落ちると、それを読む機能だけが黙って動かなくなる。
+	test('passes every field of the transport snapshot through, including ones added later, frozen', async () => {
+		const scheduler = new TestScheduler();
+		const transported = {
+			...snapshot('token-a'),
+			paneSessions: [{ token: 'token-a', agent: 'claude' as const, sessionId: 'session-1', cwd: '/repo', at: 7 }],
+			futureField: { nested: ['value'] },
+		};
+		const service = store.add(createService(scheduler, async () => transported));
+		const outcomes: IParadisAgentStatusSnapshotOutcome[] = [];
+		store.add(service.subscribe(outcome => outcomes.push(outcome)));
+
+		await scheduler.advanceBy(0);
+
+		const published = outcomes[0].snapshot as typeof transported | undefined;
+		assert.deepStrictEqual({
+			snapshot: published,
+			copied: published !== transported,
+			frozen: [Object.isFrozen(published), Object.isFrozen(published?.paneSessions), Object.isFrozen(published?.paneSessions[0]), Object.isFrozen(published?.futureField.nested)],
+		}, {
+			snapshot: transported,
+			copied: true,
+			frozen: [true, true, true, true],
+		});
+	});
+
 	test('omits agentHookTokenIssueUrls from the published snapshot when the transport reports none', async () => {
 		const scheduler = new TestScheduler();
 		const service = store.add(createService(scheduler, async () => snapshot('token-a')));
