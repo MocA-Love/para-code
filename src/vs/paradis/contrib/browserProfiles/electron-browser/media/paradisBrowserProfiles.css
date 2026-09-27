@@ -561,3 +561,111 @@
 	color: var(--vscode-errorForeground);
 	font-size: 11.5px;
 }
+
+/* PARA-CODE: 「他のブラウザから取り込む」ダイアログ（q.html Q66 案A）。色は --vscode-* トークンのみ。 */
+.paradis-browser-profile-modal .pbpm-select {
+	width: 100%;
+	margin-bottom: 6px;
+	padding: 6px 8px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background-color: var(--vscode-dropdown-background, var(--vscode-input-background));
+	color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+	font-family: inherit;
+	font-size: 12.5px;
+}
+
+.paradis-browser-profile-modal .pbpm-select:focus {
+	outline: none;
+	border-color: var(--vscode-focusBorder);
+}
+
+.paradis-browser-profile-modal .pbpm-import-domains,
+.paradis-browser-profile-modal .pbpm-import-destination {
+	margin-top: 16px;
+}
+
+.paradis-browser-profile-modal .pbpm-import-search {
+	margin-top: 6px;
+	margin-bottom: 8px;
+}
+
+.paradis-browser-profile-modal .pbpm-import-keychain {
+	margin: 6px 0;
+	padding: 6px 8px;
+	border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-input-border, transparent));
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background-color: var(--vscode-inputValidation-warningBackground, transparent);
+	color: var(--vscode-foreground);
+	font-size: 11.5px;
+}
+
+.paradis-browser-profile-modal .pbpm-import-unsupported {
+	padding: 8px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.paradis-browser-profile-modal .pbpm-import-list {
+	max-height: 220px;
+	overflow-y: auto;
+	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, transparent));
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+}
+
+.paradis-browser-profile-modal .pbpm-import-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px;
+	cursor: pointer;
+}
+
+.paradis-browser-profile-modal .pbpm-import-row + .pbpm-import-row {
+	border-top: 1px solid var(--vscode-widget-border, transparent);
+}
+
+.paradis-browser-profile-modal .pbpm-import-row.is-disabled {
+	cursor: default;
+	color: var(--vscode-disabledForeground);
+}
+
+.paradis-browser-profile-modal .pbpm-import-check {
+	flex: none;
+	margin: 0;
+}
+
+.paradis-browser-profile-modal .pbpm-import-domain {
+	flex: 1 1 auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12.5px;
+}
+
+.paradis-browser-profile-modal .pbpm-import-meta {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+}
+
+.paradis-browser-profile-modal .pbpm-import-summary {
+	margin-top: 8px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11.5px;
+}
+
+.paradis-browser-profile-modal .pbpm-import-notes {
+	margin-top: 16px;
+	padding-top: 12px;
+	border-top: 1px solid var(--vscode-widget-border, transparent);
+}
+
+.paradis-browser-profile-modal .pbpm-import-notes p {
+	margin: 0 0 6px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11.5px;
+	line-height: 1.5;
+}

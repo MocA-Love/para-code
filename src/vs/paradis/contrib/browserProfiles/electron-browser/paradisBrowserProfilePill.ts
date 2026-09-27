@@ -38,6 +38,7 @@ import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrows
 import { IParadisAgentBrowserBindingModel } from '../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
 import { ParadisBrowserProfileDropdown } from './paradisBrowserProfileDropdown.js';
 import { paradisShowCreateProfileDialog, paradisShowManageProfilesDialog } from './paradisBrowserProfileDialogs.js';
+import { paradisShowLoginImportDialog } from './paradisBrowserLoginImportDialog.js';
 import { IParadisBrowserProfilesService, ParadisProfileTarget } from './paradisBrowserProfilesService.js';
 
 const $ = dom.$;
@@ -197,6 +198,10 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 			onManage: () => {
 				this._dropdown.clear();
 				paradisShowManageProfilesDialog(this.instantiationService);
+			},
+			onImport: () => {
+				this._dropdown.clear();
+				paradisShowLoginImportDialog(this.instantiationService);
 			},
 		});
 	}

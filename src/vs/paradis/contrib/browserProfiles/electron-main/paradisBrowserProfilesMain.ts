@@ -19,8 +19,11 @@ import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { BrowserSession } from '../../../../platform/browserView/electron-main/browserSession.js';
 import { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
+import { IEnvironmentMainService } from '../../../../platform/environment/electron-main/environmentMainService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { IApplicationStorageMainService } from '../../../../platform/storage/electron-main/storageMainService.js';
+import { paradisRegisterBrowserLoginImport } from './paradisBrowserLoginImportMain.js';
 import {
 	IParadisBrowserProfilesMainService,
 	IParadisBrowserProfileStats,
@@ -139,5 +142,9 @@ export function paradisRegisterBrowserProfiles(
 	const disposables = new DisposableStore();
 	const service = instantiationService.createInstance(ParadisBrowserProfilesMainService);
 	channelHost.registerChannel(PARADIS_BROWSER_PROFILE_CHANNEL, ProxyChannel.fromService(service, disposables));
+	// 他ブラウザからのログイン取り込み channel も同じ登録点でまとめて立てる（app.ts への追加 import を増やさない）。
+	disposables.add(instantiationService.invokeFunction(accessor =>
+		paradisRegisterBrowserLoginImport(channelHost, accessor.get(IEnvironmentMainService).userDataPath, accessor.get(ILogService)),
+	));
 	return disposables;
 }
