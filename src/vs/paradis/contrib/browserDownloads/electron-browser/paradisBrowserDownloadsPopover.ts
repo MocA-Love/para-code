@@ -33,7 +33,6 @@ import { ByteSize } from '../../../../platform/files/common/files.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
-import { IParadisBrowserProfilesService } from '../../browserProfiles/electron-browser/paradisBrowserProfilesService.js';
 import { IParadisBrowserDownloadItem } from '../common/paradisBrowserDownloads.js';
 import { IParadisBrowserDownloadsService } from './paradisBrowserDownloadsService.js';
 
@@ -82,7 +81,6 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 		private readonly _anchor: HTMLElement | undefined,
 		private readonly _onDidClose: () => void,
 		@IParadisBrowserDownloadsService private readonly _downloads: IParadisBrowserDownloadsService,
-		@IParadisBrowserProfilesService private readonly _profiles: IParadisBrowserProfilesService,
 		@IHoverService private readonly _hoverService: IHoverService,
 		@ILayoutService layoutService: ILayoutService,
 	) {
@@ -116,7 +114,6 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 
 		this._render();
 		this._register(this._downloads.onDidChange(() => this._render()));
-		this._register(this._profiles.onDidChangeProfiles(() => this._render()));
 
 		this._container.appendChild(this._element);
 		this._anchor?.setAttribute('aria-expanded', 'true');
@@ -131,17 +128,11 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 	}
 
 	/**
-	 * 「開く」を出してよいか。開いても表示されるだけの種類で、エージェントのタブから落ちてきたもの
-	 * （Agent スコープ、エージェントが作りユーザーがまだ使っていないプロファイル）でないこと。
+	 * 「開く」を出してよいか。開いても表示されるだけの種類で隔離の印を付け終えていて、エージェントの
+	 * タブから落ちてきたものでないこと（どちらも main がダウンロードの時点で決めている）。
 	 */
 	private _canOpen(item: IParadisBrowserDownloadItem): boolean {
-		if (!item.openable || item.fromAgentSession) {
-			return false;
-		}
-		if (item.profileId) {
-			return !this._profiles.list().find(profile => profile.id === item.profileId)?.createdByAgent;
-		}
-		return true;
+		return item.openable && !item.fromAgent;
 	}
 
 	private _render(): void {
@@ -413,7 +404,7 @@ export function paradisDescribeDownload(item: IParadisBrowserDownloadItem, canOp
 				? localize('paradis.browserDownloads.progress', "{0} / {1}", ByteSize.formatSize(item.receivedBytes), ByteSize.formatSize(item.totalBytes))
 				: ByteSize.formatSize(item.receivedBytes);
 		case 'completed':
-			if (item.fromAgentSession) {
+			if (item.fromAgent) {
 				return localize('paradis.browserDownloads.completedFromAgent', "完了 · エージェントのタブから · {0}", ByteSize.formatSize(item.receivedBytes));
 			}
 			return canOpen

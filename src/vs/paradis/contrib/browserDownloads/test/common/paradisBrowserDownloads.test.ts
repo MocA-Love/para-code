@@ -10,7 +10,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IParadisBrowserDownloadItem, ParadisBrowserDownloadState, paradisAggregateDownloadProgress, paradisHasNewlyFinished } from '../../common/paradisBrowserDownloads.js';
 
 function item(id: string, state: ParadisBrowserDownloadState, receivedBytes = 0, totalBytes = 100): IParadisBrowserDownloadItem {
-	return { id, filename: `${id}.bin`, savePath: `/dl/${id}.bin`, url: '', state, receivedBytes, totalBytes, openable: true, fromAgentSession: false, startTime: 0 };
+	return { id, filename: `${id}.bin`, savePath: `/dl/${id}.bin`, url: '', state, receivedBytes, totalBytes, openable: true, fromAgent: false, startTime: 0 };
 }
 
 suite('ParadisBrowserDownloads (common)', () => {

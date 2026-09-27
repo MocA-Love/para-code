@@ -40,17 +40,30 @@ class FakeDownloadItem implements IParadisTrackedDownloadItem {
 	}
 }
 
-function createShell(existing: ReadonlySet<string>) {
+/** A fake shell whose quarantine step can be held until the test releases it. */
+function createShell(existing: ReadonlySet<string>, options: { readonly quarantineFails?: boolean; readonly holdQuarantine?: boolean } = {}) {
 	const opened: string[] = [];
 	const shown: string[] = [];
 	const quarantined: string[] = [];
+	const held: (() => void)[] = [];
 	const shell: IParadisDownloadsShell = {
 		openPath: async path => { opened.push(path); return ''; },
 		showItemInFolder: path => { shown.push(path); },
 		exists: path => existing.has(path),
-		ensureQuarantine: async path => { quarantined.push(path); },
+		ensureQuarantine: path => {
+			quarantined.push(path);
+			if (options.holdQuarantine) {
+				return new Promise<boolean>(resolve => held.push(() => resolve(!options.quarantineFails)));
+			}
+			return Promise.resolve(!options.quarantineFails);
+		},
 	};
-	return { shell, opened, shown, quarantined };
+	return { shell, opened, shown, quarantined, releaseQuarantine: () => held.splice(0).forEach(release => release()) };
+}
+
+/** Lets the quarantine promise chain run to completion. */
+function settle(): Promise<void> {
+	return new Promise(resolve => setTimeout(resolve, 0));
 }
 
 suite('ParadisBrowserDownloadsTracker', () => {
@@ -67,6 +80,7 @@ suite('ParadisBrowserDownloadsTracker', () => {
 		assert.strictEqual(await tracker.open('download-1'), false, 'a download still in progress must not open');
 		report.finish('completed');
 		setup.finish('completed');
+		await settle();
 
 		const items = await tracker.list();
 		assert.deepStrictEqual(items.map(item => [item.id, item.filename, item.state, item.openable]), [
@@ -120,8 +134,50 @@ suite('ParadisBrowserDownloadsTracker', () => {
 		const item = new FakeDownloadItem('notes.pdf', '/dl/notes.pdf');
 		tracker.track(item, { agentSession: true });
 		item.finish('completed');
+		await settle();
 		const [listed] = await tracker.list();
-		assert.deepStrictEqual([listed.fromAgentSession, listed.openable, await tracker.open(listed.id), opened], [true, true, false, []]);
+		assert.deepStrictEqual([listed.fromAgent, listed.openable, await tracker.open(listed.id), opened], [true, true, false, []]);
+	});
+
+	test('a profile the renderer reported as agent-made marks its downloads, and the mark stays', async () => {
+		const { shell } = createShell(new Set(['/dl/a.pdf', '/dl/b.pdf']));
+		const tracker = store.add(new ParadisBrowserDownloadsTracker(shell, () => '/dl'));
+		await tracker.setAgentProfiles(['a3f19c2b7e04']);
+		const fromAgentProfile = new FakeDownloadItem('a.pdf', '/dl/a.pdf');
+		const fromUserProfile = new FakeDownloadItem('b.pdf', '/dl/b.pdf');
+		tracker.track(fromAgentProfile, { agentSession: false, profileId: 'a3f19c2b7e04' });
+		tracker.track(fromUserProfile, { agentSession: false, profileId: 'b1c2d3e4f506' });
+		// Removing the profile later must not change what was decided when the download started.
+		await tracker.setAgentProfiles([]);
+		fromAgentProfile.finish('completed');
+		fromUserProfile.finish('completed');
+		await settle();
+		assert.deepStrictEqual((await tracker.list()).map(entry => [entry.filename, entry.fromAgent]), [['b.pdf', false], ['a.pdf', true]]);
+	});
+
+	test('shows a finished download as completed only after the quarantine mark is in place', async () => {
+		const { shell, opened, releaseQuarantine } = createShell(new Set(['/dl/a.zip']), { holdQuarantine: true });
+		const tracker = store.add(new ParadisBrowserDownloadsTracker(shell, () => '/dl'));
+		const item = new FakeDownloadItem('a.zip', '/dl/a.zip');
+		tracker.track(item);
+		item.finish('completed');
+		await settle();
+		const before = [(await tracker.list())[0].state, (await tracker.list())[0].openable, await tracker.open('download-1')];
+		releaseQuarantine();
+		await settle();
+		const after = [(await tracker.list())[0].state, (await tracker.list())[0].openable, await tracker.open('download-1')];
+		assert.deepStrictEqual({ before, after, opened }, { before: ['progressing', false, false], after: ['completed', true, true], opened: ['/dl/a.zip'] });
+	});
+
+	test('never offers or performs Open when the quarantine mark could not be added', async () => {
+		const { shell, opened } = createShell(new Set(['/dl/a.pdf']), { quarantineFails: true });
+		const tracker = store.add(new ParadisBrowserDownloadsTracker(shell, () => '/dl'));
+		const item = new FakeDownloadItem('a.pdf', '/dl/a.pdf');
+		tracker.track(item);
+		item.finish('completed');
+		await settle();
+		const [listed] = await tracker.list();
+		assert.deepStrictEqual([listed.state, listed.openable, await tracker.open(listed.id), await tracker.showInFolder(listed.id), opened], ['completed', false, false, true, []]);
 	});
 
 	test('only allow-listed types are openable', () => {

@@ -53,6 +53,7 @@ export function paradisRegisterBrowserDownloads(
 		remove: id => downloads.remove(id),
 		clearFinished: () => downloads.clearFinished(),
 		openDownloadsFolder: () => downloads.openDownloadsFolder(),
+		setAgentProfiles: profileIds => downloads.setAgentProfiles(profileIds),
 	};
 	// 一覧を見ているウィンドウが無い間の進み具合を main に溜め込まない。renderer は購読し始めた
 	// ときに list() で全件を取り直す。

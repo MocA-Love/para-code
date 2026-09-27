@@ -43,8 +43,9 @@ export interface IParadisDownloadsShell {
 	/**
 	 * 完了したファイルに OS の隔離の印（macOS の com.apple.quarantine、Windows の Zone.Identifier）が
 	 * 付いているか確かめ、無ければ付ける。開いたときに OS の警告（Gatekeeper / SmartScreen）を通させるため。
+	 * 印が付いている（付けた・元から付いていた・印の仕組みが無い OS）なら true、付けられなければ false。
 	 */
-	ensureQuarantine(path: string, sourceUrl: string): Promise<void>;
+	ensureQuarantine(path: string, sourceUrl: string): Promise<boolean>;
 }
 
 /** ダウンロードがどのセッションから来たか。 */
@@ -64,9 +65,12 @@ interface ITrackedEntry {
 	readonly id: string;
 	readonly item: IParadisTrackedDownloadItem;
 	readonly startTime: number;
-	readonly origin: IParadisDownloadOrigin;
+	/** ダウンロードを始めた時点で決めた、エージェントのタブ由来か。 */
+	readonly fromAgent: boolean;
 	/** `done` を受けた後の最終状態。受ける前は item から毎回読む。 */
 	finalState: ParadisBrowserDownloadState | undefined;
+	/** 隔離の印: 付けている途中（この間は完了として見せない）・付いた・付けられなかった。 */
+	quarantine: 'pending' | 'ok' | 'failed' | undefined;
 }
 
 export class ParadisBrowserDownloadsTracker extends Disposable implements IParadisBrowserDownloadsMainService {
@@ -77,6 +81,8 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 	/** 新しい順。 */
 	private readonly _entries: ITrackedEntry[] = [];
 	private _nextId = 1;
+	/** エージェントが作った印の付いたプロファイル（renderer から知らされる）。 */
+	private _agentProfileIds: ReadonlySet<string> = new Set();
 	private _throttleTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
@@ -94,7 +100,8 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 			return;
 		}
 		const entry: ITrackedEntry = {
-			origin,
+			fromAgent: origin.agentSession || (origin.profileId !== undefined && this._agentProfileIds.has(origin.profileId)),
+			quarantine: undefined,
 			id: `download-${this._nextId++}`,
 			item,
 			// getStartTime() は秒（小数）。取れない場合は今の時刻で代用する。
@@ -113,7 +120,12 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 			}
 			const savePath = item.getSavePath();
 			if (entry.finalState === 'completed' && savePath) {
-				this._shell.ensureQuarantine(savePath, item.getURL()).catch(() => { /* 付けられなくても一覧には出す */ });
+				// 印を付け終えるまでは完了として見せない（付ける前に「開く」を押されないように）。
+				entry.quarantine = 'pending';
+				this._shell.ensureQuarantine(savePath, item.getURL()).then(ok => ok, () => false).then(ok => {
+					entry.quarantine = ok ? 'ok' : 'failed';
+					this._fireNow();
+				});
 			}
 			this._fireNow();
 		});
@@ -138,7 +150,7 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 		}
 		const path = entry.item.getSavePath();
 		// renderer 側でもボタンを出していないが、ここでも断る（renderer を信用しない）。
-		if (!path || entry.origin.agentSession || !paradisIsOpenableDownload(basename(path)) || !this._shell.exists(path)) {
+		if (!path || entry.fromAgent || entry.quarantine !== 'ok' || !paradisIsOpenableDownload(basename(path)) || !this._shell.exists(path)) {
 			return false;
 		}
 		return (await this._shell.openPath(path)) === '';
@@ -174,6 +186,10 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 		}
 	}
 
+	async setAgentProfiles(profileIds: readonly string[]): Promise<void> {
+		this._agentProfileIds = new Set(Array.isArray(profileIds) ? profileIds.filter(id => typeof id === 'string') : []);
+	}
+
 	async openDownloadsFolder(): Promise<boolean> {
 		const directory = this._downloadsDirectory();
 		if (!this._shell.exists(directory)) {
@@ -194,6 +210,9 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 	}
 
 	private _stateOf(entry: ITrackedEntry): ParadisBrowserDownloadState {
+		if (entry.quarantine === 'pending') {
+			return 'progressing';
+		}
 		return entry.finalState ?? entry.item.getState();
 	}
 
@@ -217,9 +236,8 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 				state: this._stateOf(entry),
 				receivedBytes: entry.item.getReceivedBytes(),
 				totalBytes: entry.item.getTotalBytes(),
-				openable: paradisIsOpenableDownload(filename),
-				fromAgentSession: entry.origin.agentSession,
-				...(entry.origin.profileId ? { profileId: entry.origin.profileId } : {}),
+				openable: paradisIsOpenableDownload(filename) && entry.quarantine === 'ok',
+				fromAgent: entry.fromAgent,
 				startTime: entry.startTime,
 			};
 		});
