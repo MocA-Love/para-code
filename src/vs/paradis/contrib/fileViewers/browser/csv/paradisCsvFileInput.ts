@@ -20,6 +20,7 @@ import { IInstantiationService } from '../../../../../platform/instantiation/com
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { EditorInput } from '../../../../../workbench/common/editor/editorInput.js';
 import { ITextEditorService } from '../../../../../workbench/services/textfile/common/textEditorService.js';
+import { EncodingMode } from '../../../../../workbench/services/textfile/common/textfiles.js';
 import { ParadisFileViewerInput, ParadisFileViewerInputSerializer } from '../paradisFileViewerInput.js';
 
 /** CSV ビューアの EditorPane / EditorInput 識別子。 */
@@ -59,6 +60,41 @@ export class ParadisCsvFileInput extends ParadisFileViewerInput {
 	setCsvViewMode(mode: ParadisCsvViewMode): void {
 		this.setViewMode(mode === 'text' ? 'raw' : 'rendered');
 	}
+
+	private _preferredEncoding: string | undefined;
+
+	/**
+	 * ユーザーが「エンコード付きで再度開く」で選んだエンコーディング。テキストモデルが解放された後
+	 * （表だけを見ている間やウィンドウの再読み込み後）も、表とテキストの両方で同じエンコーディングで読むために持つ。
+	 * 本家の FileEditorInput の preferredEncoding と同じ役割。
+	 */
+	get preferredEncoding(): string | undefined {
+		return this._preferredEncoding;
+	}
+
+	setPreferredEncoding(encoding: string | undefined): void {
+		this._preferredEncoding = encoding;
+	}
+
+	/**
+	 * IEncodingSupport。これが無いと「エンコード付きで再度開く」やステータスバーのエンコーディングが
+	 * このタブ（テキスト表示）で使えない。テキストモデルがあればその値、無ければ覚えているエンコーディング。
+	 */
+	getEncoding(): string | undefined {
+		return this._textFileService.files.get(this.resource)?.getEncoding() ?? this._preferredEncoding;
+	}
+
+	async setEncoding(encoding: string, mode: EncodingMode): Promise<void> {
+		this._preferredEncoding = encoding;
+		// モデルの変更は files.onDidChangeEncoding でペインへ届き、表も同じエンコーディングで読み直す。
+		await this._textFileService.files.get(this.resource)?.setEncoding(encoding, mode);
+	}
+}
+
+interface SerializedParadisCsvInput {
+	readonly resource?: string;
+	readonly viewMode?: string;
+	readonly encoding?: string;
 }
 
 export class ParadisCsvFileInputSerializer extends ParadisFileViewerInputSerializer {
@@ -66,22 +102,36 @@ export class ParadisCsvFileInputSerializer extends ParadisFileViewerInputSeriali
 		return instantiationService.createInstance(ParadisCsvFileInput, resource);
 	}
 
-	override deserialize(instantiationService: IInstantiationService, serializedEditor: string): EditorInput | undefined {
-		// 表ビューアを設定で切った後の復元は、表ではなく通常のテキストエディタで開く。
-		const disabled = instantiationService.invokeFunction(accessor => accessor.get(IConfigurationService).getValue<boolean>(PARADIS_CSV_VIEWER_ENABLED_KEY) === false);
-		if (!disabled) {
-			return super.deserialize(instantiationService, serializedEditor);
+	override serialize(editor: EditorInput): string | undefined {
+		const serialized = super.serialize(editor);
+		if (!serialized || !(editor instanceof ParadisCsvFileInput) || !editor.preferredEncoding) {
+			return serialized;
 		}
+		return JSON.stringify({ ...JSON.parse(serialized) as SerializedParadisCsvInput, encoding: editor.preferredEncoding });
+	}
+
+	override deserialize(instantiationService: IInstantiationService, serializedEditor: string): EditorInput | undefined {
+		let data: SerializedParadisCsvInput;
 		try {
-			const data = JSON.parse(serializedEditor) as { resource?: string };
-			if (typeof data.resource !== 'string') {
-				return undefined;
-			}
-			const resource = URI.parse(data.resource);
-			return instantiationService.invokeFunction(accessor => accessor.get(ITextEditorService).createTextEditor({ resource }));
+			data = JSON.parse(serializedEditor) as SerializedParadisCsvInput;
 		} catch {
 			return undefined;
 		}
+		if (typeof data.resource !== 'string') {
+			return undefined;
+		}
+		const encoding = typeof data.encoding === 'string' ? data.encoding : undefined;
+		// 表ビューアを設定で切った後の復元は、表ではなく通常のテキストエディタで開く。
+		const disabled = instantiationService.invokeFunction(accessor => accessor.get(IConfigurationService).getValue<boolean>(PARADIS_CSV_VIEWER_ENABLED_KEY) === false);
+		if (disabled) {
+			const resource = URI.parse(data.resource);
+			return instantiationService.invokeFunction(accessor => accessor.get(ITextEditorService).createTextEditor({ resource, encoding }));
+		}
+		const input = super.deserialize(instantiationService, serializedEditor);
+		if (input instanceof ParadisCsvFileInput) {
+			input.setPreferredEncoding(encoding);
+		}
+		return input;
 	}
 }
 
