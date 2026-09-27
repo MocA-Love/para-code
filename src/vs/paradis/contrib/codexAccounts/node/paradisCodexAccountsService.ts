@@ -27,7 +27,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { disposableTimeout, IntervalTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { delimiter, dirname, isAbsolute, join } from '../../../../base/common/path.js';
+import { dirname, isAbsolute, join } from '../../../../base/common/path.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { onDidChangeParadisCodexHomes, paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
@@ -44,6 +44,7 @@ import {
 	paradisCodexResetOutcome,
 	paradisMapCodexBackendResetCredits
 } from '../common/paradisCodexAccounts.js';
+import { paradisResolveAgentCli } from '../../../node/paradisAgentCli.js';
 import { IParadisCodexAppServerRpc, ParadisCodexAppServerRpcFactory, ParadisCodexRpcError, paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { ParadisCodexResetCreditLedger } from './paradisCodexResetCreditLedger.js';
 import { paradisLinkCodexSessions } from './paradisCodexSessionLinker.js';
@@ -105,27 +106,11 @@ interface ICodexAuth {
 
 /** PATH（とよくある置き場所）から codex を探す。Para Code のペイン用ランチャーでも動く（非対話は素通し）。 */
 export async function paradisResolveCodexCommand(env: NodeJS.ProcessEnv): Promise<string> {
-	const isWindows = process.platform === 'win32';
-	const names = isWindows ? ['codex.exe', 'codex.cmd', 'codex'] : ['codex'];
-	const home = os.homedir();
-	const directories = [
-		...(env.PATH ?? env.Path ?? '').split(delimiter).filter(entry => entry.length > 0 && isAbsolute(entry)),
-		...(isWindows
-			? [join(home, 'AppData', 'Roaming', 'npm')]
-			: [join(home, '.local', 'bin'), join(home, '.npm-global', 'bin'), join(home, '.bun', 'bin'), '/opt/homebrew/bin', '/usr/local/bin']),
-	];
-	for (const directory of directories) {
-		for (const name of names) {
-			const candidate = join(directory, name);
-			try {
-				await fs.promises.access(candidate, isWindows ? fs.constants.F_OK : fs.constants.X_OK);
-				return candidate;
-			} catch {
-				// 次へ
-			}
-		}
+	const found = await paradisResolveAgentCli('codex', env);
+	if (found === undefined) {
+		throw new Error('codex not found');
 	}
-	throw new Error('codex not found');
+	return found;
 }
 
 export class ParadisCodexAccountsService extends Disposable {

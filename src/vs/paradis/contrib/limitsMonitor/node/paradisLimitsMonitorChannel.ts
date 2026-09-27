@@ -40,6 +40,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
+import { paradisResolveAgentCli } from '../../../node/paradisAgentCli.js';
 import { paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { paradisNormalizeCodexHomePath, paradisNotifyCodexHomesChanged } from '../../agentBrowser/node/paradisAgentHome.js';
 import {
@@ -818,8 +819,9 @@ export class ParadisLimitsMonitorService {
 	// ---------- 実行ヘルパー ----------
 
 	/**
-	 * コマンドを解決する。優先順: 明示パス(絶対パス必須) → PATH → よくあるインストール先。
-	 * GUI起動ではログインシェルのPATHが継承されないため、候補ディレクトリを直接確認する。
+	 * コマンドを解決する。優先順: 明示パス(絶対パス必須) → PATH → よくあるインストール先
+	 * （候補の場所は paradisResolveAgentCli と共通）。PATH 上にあるかは `codex --version` が
+	 * 通るかで確かめ、そのときはコマンド名のまま返す。
 	 */
 	private async resolveCommand(name: 'codex', explicitPath: string | undefined): Promise<string> {
 		if (explicitPath) {
@@ -828,26 +830,11 @@ export class ParadisLimitsMonitorService {
 			}
 			return explicitPath;
 		}
-		const isWindows = process.platform === 'win32';
-		const names = isWindows ? [`${name}.exe`, `${name}.cmd`, name] : [name];
-		for (const candidate of names) {
-			if (await this.canExecute(candidate)) {
-				return candidate;
-			}
+		const found = await paradisResolveAgentCli(name, {}, { isOnPath: candidate => this.canExecute(candidate), fileExists: candidate => this.fileExists(candidate) });
+		if (found === undefined) {
+			throw new Error(`${name} not found (install it or set the executable path in settings)`);
 		}
-		const home = os.homedir();
-		const candidateDirs = isWindows
-			? [path.join(home, '.local', 'bin'), path.join(home, 'AppData', 'Roaming', 'npm'), path.join(home, '.codex', 'bin')]
-			: [path.join(home, '.local', 'bin'), path.join(home, '.npm-global', 'bin'), path.join(home, '.bun', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
-		for (const dir of candidateDirs) {
-			for (const candidate of names) {
-				const fullPath = path.join(dir, candidate);
-				if (await this.fileExists(fullPath)) {
-					return fullPath;
-				}
-			}
-		}
-		throw new Error(`${name} not found (install it or set the executable path in settings)`);
+		return found;
 	}
 
 	private async canExecute(command: string): Promise<boolean> {
