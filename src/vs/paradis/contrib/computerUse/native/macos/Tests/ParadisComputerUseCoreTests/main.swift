@@ -93,6 +93,7 @@ do {
 final class FakeDesktop: ParadisDesktopBackend {
 	var screenshotCalls: [(Int32, UInt32, Int)] = []
 	var treeCalls: [(Int32, UInt32?, Int, Int)] = []
+	var inputCalls: [String] = []
 
 	func permissions() -> ParadisPermissionSnapshot {
 		return ParadisPermissionSnapshot(accessibility: false, screenRecording: true)
@@ -116,6 +117,34 @@ final class FakeDesktop: ParadisDesktopBackend {
 	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int) throws -> [String: Any] {
 		treeCalls.append((pid, windowId, maxNodes, maxDepth))
 		throw ParadisHelperError(code: "accessibility_not_granted", message: "no")
+	}
+	func activateApp(pid: Int32, windowId: UInt32?) throws -> [String: Any] {
+		inputCalls.append("activate \(pid) \(windowId.map(String.init) ?? "-")")
+		return [:]
+	}
+	func click(pid: Int32, windowId: UInt32, target: ParadisPointerTarget, button: ParadisMouseButton, clickCount: Int, modifiers: ParadisModifiers) throws -> [String: Any] {
+		inputCalls.append("click \(pid) \(windowId) \(target) \(button.rawValue) \(clickCount) \(modifiers.rawValue)")
+		return [:]
+	}
+	func drag(pid: Int32, windowId: UInt32, from: ParadisPointerTarget, to: ParadisPointerTarget) throws -> [String: Any] {
+		inputCalls.append("drag \(from) \(to)")
+		return [:]
+	}
+	func scroll(pid: Int32, windowId: UInt32, target: ParadisPointerTarget?, direction: ParadisScrollDirection, pages: Double) throws -> [String: Any] {
+		inputCalls.append("scroll \(target.map { "\($0)" } ?? "center") \(direction.rawValue) \(pages)")
+		return [:]
+	}
+	func typeText(pid: Int32, units: [ParadisTypedUnit]) throws -> [String: Any] {
+		inputCalls.append("type \(units.count)")
+		return [:]
+	}
+	func pasteText(pid: Int32, text: String) throws -> [String: Any] {
+		inputCalls.append("paste \(text.count)")
+		return [:]
+	}
+	func pressChord(pid: Int32, chord: ParadisKeyChord) throws -> [String: Any] {
+		inputCalls.append("chord \(chord.keyCode) \(chord.modifiers.rawValue)")
+		return [:]
 	}
 }
 
@@ -192,14 +221,106 @@ do {
 	check((tree?["error"] as? [String: Any])?["code"] as? String == "accessibility_not_granted", "passes the backend error code through")
 	check(desktop.treeCalls.first?.1 == nil && desktop.treeCalls.first?.2 == paradisDefaultAXMaxNodes, "tree uses the defaults")
 
-	let unknown = reply(handler.handle(line: Data(#"{"id":10,"method":"click","params":{}}"#.utf8)))
-	check((unknown?["error"] as? [String: Any])?["code"] as? String == "unknown_method", "has no input methods")
+	let unknown = reply(handler.handle(line: Data(#"{"id":10,"method":"setValue","params":{}}"#.utf8)))
+	check((unknown?["error"] as? [String: Any])?["code"] as? String == "unknown_method", "rejects unknown methods")
 
 	if case .replyAndTerminate(let data) = handler.handle(line: Data(#"{"id":11,"method":"shutdown"}"#.utf8)) {
 		check(data != nil, "replies to shutdown before terminating")
 	} else {
 		check(false, "replies to shutdown before terminating")
 	}
+}
+
+// MARK: - 操作の命令の振り分け
+
+do {
+	let desktop = FakeDesktop()
+	let handler = ParadisRequestHandler(backend: desktop, expectedToken: goodToken, selfPid: 42)
+	_ = handler.handle(line: Data(#"{"id":1,"method":"handshake","params":{"token":"\#(goodToken)"}}"#.utf8))
+	func code(_ json: String) -> String? {
+		let result = reply(handler.handle(line: Data(json.utf8)))
+		return result?["ok"] as? Bool == true ? "ok" : (result?["error"] as? [String: Any])?["code"] as? String
+	}
+	check(code(#"{"id":2,"method":"click","params":{"pid":100,"windowId":7,"x":10,"y":20.5}}"#) == "ok", "clicks a point")
+	check(code(#"{"id":3,"method":"click","params":{"pid":100,"windowId":7,"elementIndex":4,"button":"right","clickCount":2,"modifiers":["cmd","shift"]}}"#) == "ok", "right double clicks an element with modifiers")
+	check(code(#"{"id":4,"method":"click","params":{"pid":100,"x":1,"y":1}}"#) == "invalid_argument", "click needs a window")
+	check(code(#"{"id":5,"method":"click","params":{"pid":100,"windowId":7}}"#) == "invalid_argument", "click needs a target")
+	check(code(#"{"id":6,"method":"click","params":{"pid":100,"windowId":7,"x":-1,"y":1}}"#) == "invalid_argument", "click refuses negative coordinates")
+	check(code(#"{"id":7,"method":"click","params":{"pid":100,"windowId":7,"x":1,"y":1,"modifiers":["fn"]}}"#) == "invalid_argument", "click refuses the Fn modifier")
+	check(code(#"{"id":8,"method":"click","params":{"pid":100,"windowId":7,"x":1,"y":1,"clickCount":4}}"#) == "invalid_argument", "click caps the click count")
+	check(code(#"{"id":9,"method":"drag","params":{"pid":100,"windowId":7,"from":{"x":1,"y":2},"to":{"elementIndex":3}}}"#) == "ok", "drags")
+	check(code(#"{"id":10,"method":"scroll","params":{"pid":100,"windowId":7,"direction":"down"}}"#) == "ok", "scrolls the window center")
+	check(code(#"{"id":11,"method":"scroll","params":{"pid":100,"windowId":7,"direction":"sideways"}}"#) == "invalid_argument", "scroll needs a direction")
+	check(code(#"{"id":12,"method":"scroll","params":{"pid":100,"windowId":7,"direction":"up","pages":50}}"#) == "invalid_argument", "scroll caps the pages")
+	check(code(#"{"id":13,"method":"typeText","params":{"pid":100,"text":"a\nb"}}"#) == "ok", "types text")
+	let long = String(repeating: "x", count: paradisMaxTypeTextLength + 1)
+	check(code(#"{"id":14,"method":"typeText","params":{"pid":100,"text":"\#(long)"}}"#) == "invalid_argument", "type text is limited to 4,000 characters")
+	check(code(#"{"id":15,"method":"pasteText","params":{"pid":100,"text":"\#(long)"}}"#) == "ok", "paste takes longer text")
+	check(code(#"{"id":16,"method":"pressKey","params":{"pid":100,"key":"return"}}"#) == "ok", "presses a key")
+	check(code(#"{"id":17,"method":"pressKey","params":{"pid":100,"key":"cmd"}}"#) == "invalid_argument", "press key refuses a lone modifier")
+	check(code(#"{"id":18,"method":"hotkey","params":{"pid":100,"keys":["cmd","s"]}}"#) == "ok", "presses a hotkey")
+	check(code(#"{"id":19,"method":"hotkey","params":{"pid":100,"keys":["cmd","space"]}}"#) == "key_blocked", "blocks Spotlight")
+	check(code(#"{"id":20,"method":"hotkey","params":{"pid":100,"keys":["cmd","option","escape"]}}"#) == "key_blocked", "blocks Force Quit")
+	check(code(#"{"id":21,"method":"hotkey","params":{"pid":100,"keys":["s"]}}"#) == "invalid_argument", "hotkey needs modifiers")
+	check(code(#"{"id":22,"method":"activateApp","params":{"pid":100}}"#) == "ok", "activates an app")
+	check(desktop.inputCalls == [
+		"click 100 7 point(x: 10.0, y: 20.5) left 1 0",
+		"click 100 7 element(4) right 2 3",
+		"drag point(x: 1.0, y: 2.0) element(3)",
+		"scroll center down 1.0",
+		"type 3",
+		"paste 4001",
+		"chord 36 0",
+		"chord 1 1",
+		"activate 100 -",
+	], "only valid requests reach the desktop")
+}
+
+// MARK: - 入力の決まり
+
+do {
+	func blocked(_ keys: [String]) -> Bool {
+		guard let chord = try? paradisParseChord(keys) else {
+			return false
+		}
+		return paradisBlockedChordReason(chord) != nil
+	}
+	let blockedChords: [[String]] = [
+		["cmd", "space"], ["ctrl", "space"], ["cmd", "option", "space"], ["cmd", "tab"], ["cmd", "shift", "tab"], ["cmd", "`"],
+		["cmd", "option", "esc"], ["ctrl", "cmd", "q"], ["cmd", "shift", "q"], ["cmd", "shift", "3"], ["cmd", "shift", "4"], ["cmd", "shift", "5"],
+		["ctrl", "up"], ["ctrl", "left"], ["ctrl", "right"], ["ctrl", "down"], ["fn", "f"], ["globe", "e"],
+	]
+	check(blockedChords.allSatisfy(blocked), "blocks the listed shortcuts")
+	let allowedChords: [[String]] = [["cmd", "s"], ["cmd", "q"], ["cmd", "shift", "k"], ["option", "left"], ["cmd", "c"], ["shift", "tab"], ["cmd", "3"]]
+	check(!allowedChords.contains(where: blocked), "allows ordinary shortcuts")
+	check((try? paradisParseChord(["cmd", "a", "b"])) == nil, "a chord has one key")
+	check((try? paradisParseChord(["cmd", "nope"])) == nil, "unknown keys are refused")
+	check(paradisKeyCode(named: "Enter") == 36 && paradisKeyCode(named: "ArrowUp") == 126 && paradisKeyCode(named: "backspace") == 51, "reads key aliases")
+
+	check((try? paradisTypedUnits("a\r\nb\tc")) == [.text("a"), .key(paradisKeyCodeReturn), .text("b"), .key(paradisKeyCodeTab), .text("c")], "turns newlines and tabs into keys")
+	check((try? paradisTypedUnits("\u{1B}[2J")) == nil, "refuses control characters")
+	check((try? paradisTypedUnits("")) == nil, "refuses empty text")
+	check((try? paradisTypedUnits("日本語👍🏽"))?.count == 4, "types one grapheme at a time")
+
+	check(!paradisUserIsActive(secondsSinceLastInput: 5, secondsSinceOurLastEvent: nil), "idle user")
+	check(paradisUserIsActive(secondsSinceLastInput: 0.3, secondsSinceOurLastEvent: nil), "recent input with no synthetic input is the user")
+	check(!paradisUserIsActive(secondsSinceLastInput: 0.3, secondsSinceOurLastEvent: 0.3), "our own input is not the user")
+	check(paradisUserIsActive(secondsSinceLastInput: 0.1, secondsSinceOurLastEvent: 0.6), "input after ours is the user")
+
+	check(paradisFenceFailure(targetPid: 5, frontmostPid: 5, ownerAtTarget: 5) == nil, "front window of the target passes")
+	check(paradisFenceFailure(targetPid: 5, frontmostPid: 9, ownerAtTarget: 5)?.code == "window_not_focused", "another app in front stops input")
+	check(paradisFenceFailure(targetPid: 5, frontmostPid: 5, ownerAtTarget: 9)?.code == "point_obscured", "a covering window stops input")
+	check(paradisFenceFailure(targetPid: 5, frontmostPid: nil, ownerAtTarget: nil)?.code == "window_not_focused", "unknown front app stops input")
+
+	let down = paradisScrollSteps(direction: .down, pages: 1, extent: 500)
+	check(down.count == 5 && down.allSatisfy { $0.dx == 0 && $0.dy == -80 }, "scrolls a page down in steps")
+	check(paradisScrollSteps(direction: .left, pages: 0.1, extent: 100).first.map { $0.dx > 0 && $0.dy == 0 } == true, "scrolls left")
+	check(paradisScrollSteps(direction: .up, pages: 10, extent: 5000).count == 100, "caps the scroll steps")
+	let path = paradisDragPath(from: (0, 0), to: (10, 20), steps: 2)
+	check(path.count == 2 && path[0].x == 5 && path[0].y == 10 && path[1].x == 10 && path[1].y == 20, "interpolates the drag path")
+
+	check(paradisShouldRestoreClipboard(changeCountAfterOurWrite: 7, currentChangeCount: 7), "restores an untouched clipboard")
+	check(!paradisShouldRestoreClipboard(changeCountAfterOurWrite: 7, currentChangeCount: 8), "keeps a clipboard someone else changed")
 }
 
 // MARK: - 引数
