@@ -14,14 +14,13 @@
 //   読み書きで「キーチェーンへのアクセスを許可しますか」は出ない（claude-swap の実測）。
 //   Electron / Node の中からキーチェーン API を直接呼ぶと、項目のアクセス権が Para Code の
 //   実行ファイルに結び付き、更新のたびに許可ダイアログが出るおそれがある
-// - 書き込みは Claude Code（2.1.283）と同じ形にそろえる。値を16進にし、
-//   `add-generic-password -U -a "<account>" -s "<service>" -X "<hex>"` の1行を `security -i` の
-//   標準入力で渡す。この1行が 4,032 バイトを超えるときだけ（`security -i` は標準入力を 4096 バイトの
-//   行バッファで読む）、`security add-generic-password -U -a <account> -s <service> -X <hex>` と
-//   引数で渡す。`Claude Code-credentials` は MCP サーバーのトークン（`mcpOAuth`）を含んで数 KB に
-//   なり、Claude Code 自身もトークンを更新するたびにこの経路で書いている。引数に載せた一瞬だけ、
-//   同じユーザーのプロセス（ps）や EDR のログから値が見える。その露出は Claude Code と同じで、
-//   Para Code だけが避けても減らない
+// - 書き込みは Orca（`main/macos-keychain/generic-password.ts`）と同じく、値を常に引数で渡す
+//   （`security add-generic-password -U -a <account> -s <service> -X <16進>`、標準入力は繋がない）。
+//   値は Orca の `-w <値>` ではなく、Claude Code 自身と同じ `-X <16進>` で渡す。キーチェーンに入る
+//   バイト列はどちらも同じ（JSON の UTF-8）で、Claude Code・Orca・Para Code はどれも
+//   `find-generic-password -w` で読むので、読み手から見た違いは無い。16進にしておけば、項目の中身が
+//   Claude Code 自身の書いたものとバイト単位で同じになる。引数に載せた一瞬だけ、同じユーザーの
+//   プロセス（ps）や EDR のログから値が見える。Claude Code も長い値は引数で書いており、露出は同じ
 // - PATH 上の偽の `security` に秘密を渡さないよう、絶対パスで起動する
 //
 // テストではこのインターフェースをメモリ実装に差し替え、本物のキーチェーンには触れない。
@@ -45,11 +44,6 @@ const SECURITY_BINARY = '/usr/bin/security';
 const NOT_FOUND_EXIT_CODE = 44;
 /** ロックされたキーチェーンが解除を待ち続けても処理全体が止まらないように。正常なら 100ms もかからない。 */
 const SECURITY_TIMEOUT_MS = 5_000;
-/**
- * `security -i` は標準入力を 4096 バイトの行バッファで読む。Claude Code と同じく 4,032 バイト
- * （余裕 64 バイト）までを標準入力で渡し、超えたら引数で渡す。
- */
-export const PARADIS_SECURITY_STDIN_LINE_LIMIT = 4096 - 64;
 
 /** `security` の子プロセスのうち、ここで使う部分。テストでは偽物に差し替え、本物の `security` を起動しない。 */
 export interface IParadisSecurityProcess {
@@ -68,11 +62,6 @@ interface ISecurityResult {
 	readonly code: number | null;
 	readonly stdout: string;
 	readonly stderr: string;
-}
-
-/** `security -i` の1行の中で値を囲む（シェルと同じ規則で読み直されるため）。 */
-function quoteForSecurityStdin(value: string): string {
-	return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
 /** 本物の macOS キーチェーン。 */
@@ -94,16 +83,6 @@ export class ParadisSecurityCliKeychain implements IParadisKeychain {
 
 	async write(service: string, account: string, value: string): Promise<void> {
 		const hex = Buffer.from(value, 'utf8').toString('hex');
-		const command = `add-generic-password -U -a ${quoteForSecurityStdin(account)} -s ${quoteForSecurityStdin(service)} -X "${hex}"\n`;
-		if (Buffer.byteLength(command, 'utf8') <= PARADIS_SECURITY_STDIN_LINE_LIMIT) {
-			const result = await this.run(['-i'], { input: command });
-			// `security -i` は中のコマンドが失敗しても 0 で終わることがあるので、エラー出力も見る。
-			if (result.code !== 0 || /error|failed/i.test(result.stderr)) {
-				throw new ParadisKeychainError(`security add-generic-password failed (code ${result.code})`);
-			}
-			return;
-		}
-		// 標準入力の1行に収まらない。Claude Code と同じく引数で渡す（標準入力は使わない）。
 		const result = await this.run(['add-generic-password', '-U', '-a', account, '-s', service, '-X', hex], { ignoreStdin: true });
 		if (result.code !== 0) {
 			throw new ParadisKeychainError(`security add-generic-password failed (code ${result.code})`);
@@ -119,10 +98,9 @@ export class ParadisSecurityCliKeychain implements IParadisKeychain {
 	}
 
 	/**
-	 * @param options.input 標準入力へ書く内容。
 	 * @param options.ignoreStdin 標準入力を繋がない（引数で値を渡すとき。Claude Code と同じ）。
 	 */
-	private run(args: string[], options: { readonly input?: string; readonly ignoreStdin?: boolean } = {}): Promise<ISecurityResult> {
+	private run(args: string[], options: { readonly ignoreStdin?: boolean } = {}): Promise<ISecurityResult> {
 		return new Promise<ISecurityResult>((resolve, reject) => {
 			let settled = false;
 			let stdout = '';
@@ -157,11 +135,7 @@ export class ParadisSecurityCliKeychain implements IParadisKeychain {
 					resolve({ code, stdout, stderr });
 				}
 			});
-			if (options.input !== undefined) {
-				child.stdin?.end(options.input);
-			} else {
-				child.stdin?.end();
-			}
+			child.stdin?.end();
 		});
 	}
 }
