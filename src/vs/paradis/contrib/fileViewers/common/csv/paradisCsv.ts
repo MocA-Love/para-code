@@ -16,6 +16,7 @@
 
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { CancellationError } from '../../../../../base/common/errors.js';
+import { escapeRegExpCharacters } from '../../../../../base/common/strings.js';
 
 export type ParadisCsvDelimiter = ',' | '\t' | ';';
 
@@ -34,6 +35,8 @@ const CR = 0x0d;
 const DELIMITER_SNIFF_CODE_UNITS = 64 * 1024;
 const DELIMITER_SNIFF_LINES = 20;
 const RECORD_CACHE_SIZE = 4_096;
+/** キャッシュに持つフィールドの合計数の上限（列の多いファイルでメモリを抱え込まないため）。 */
+const RECORD_CACHE_FIELDS = 1_000_000;
 const DEFAULT_CHUNK_RECORDS = 20_000;
 
 /** 先頭の BOM（U+FEFF）を飛ばした本文の開始位置。 */
@@ -64,12 +67,20 @@ export function detectParadisCsvDelimiter(text: string, start = paradisCsvConten
 	};
 	for (let index = start; index < limit && lines < DELIMITER_SNIFF_LINES; index++) {
 		const code = text.charCodeAt(index);
-		if (code === QUOTE) {
-			inQuotes = !inQuotes;
-			lineHasContent = true;
+		if (inQuotes) {
+			if (code === QUOTE) {
+				if (text.charCodeAt(index + 1) === QUOTE) {
+					index++;
+				} else {
+					inQuotes = false;
+				}
+			}
 			continue;
 		}
-		if (inQuotes) {
+		// 索引作りと同じく、引用符はフィールドの先頭（行頭か区切り文字の直後）にあるときだけ引用を始める。
+		if (code === QUOTE && (index === start || isSniffFieldBoundary(text.charCodeAt(index - 1)))) {
+			inQuotes = true;
+			lineHasContent = true;
 			continue;
 		}
 		if (code === LF || code === CR) {
@@ -101,6 +112,10 @@ export function detectParadisCsvDelimiter(text: string, start = paradisCsvConten
 		}
 	});
 	return best;
+}
+
+function isSniffFieldBoundary(code: number): boolean {
+	return code === LF || code === CR || code === 0x2c /* , */ || code === 0x09 /* tab */ || code === 0x3b /* ; */;
 }
 
 export interface ParadisCsvIndexOptions {
@@ -228,14 +243,23 @@ export class ParadisCsvIndexer {
 		let count = this.count;
 		// 上限で打ち切ったときの position は「記録しなかった次のレコードの先頭」＝最後のレコードの終わり。
 		let end = this.truncatedRecords ? this.position : this.text.length;
-		if (this.options.contentTruncated && !this.truncatedRecords && count > 1) {
-			// 読み込みの途中で切れた最後のレコードは不完全かもしれないので捨てる。
+		const text = this.text;
+		const endsWithNewline = text.length > 0 && (text.charCodeAt(text.length - 1) === LF || text.charCodeAt(text.length - 1) === CR);
+		if (this.options.contentTruncated && !this.truncatedRecords && count > 1 && (this.inQuotes || !endsWithNewline)) {
+			// 読み込みの途中で切れた最後のレコードは不完全かもしれないので捨てる（改行で終わっていれば完全なので残す）。
+			count--;
+			end = this.starts[count];
+		}
+		// 末尾の空行（`\n\n` で終わるファイル等）はデータではないので数えない。途中の空行は 1 行として残す。
+		while (count > 1 && isBlankRecord(text, this.starts[count - 1], end)) {
 			count--;
 			end = this.starts[count];
 		}
 		return new ParadisCsvDocument(this.text, this.delimiter, this.starts.subarray(0, count), end, Math.min(this.columns, this.maxColumns), {
 			truncatedRecords: this.truncatedRecords || !!this.options.contentTruncated,
 			truncatedColumns: this.columns > this.maxColumns,
+			// 最後まで引用符が閉じなかった（それ以降がまとめて 1 つのセルになっている）。
+			unterminatedQuote: this.inQuotes && !this.truncatedRecords && !this.options.contentTruncated,
 		});
 	}
 
@@ -264,11 +288,23 @@ export class ParadisCsvIndexer {
 	}
 }
 
+function isBlankRecord(text: string, start: number, end: number): boolean {
+	for (let index = start; index < end; index++) {
+		const code = text.charCodeAt(index);
+		if (code !== LF && code !== CR) {
+			return false;
+		}
+	}
+	return true;
+}
+
 export interface ParadisCsvDocumentFlags {
 	/** ファイルの行が多すぎる・大きすぎるため、先頭の一部だけを表示している。 */
 	readonly truncatedRecords: boolean;
 	/** 列が多すぎるため、先頭の列だけを表示している。 */
 	readonly truncatedColumns: boolean;
+	/** 閉じていない引用符があり、そこからファイル末尾までが 1 つのセルになっている。 */
+	readonly unterminatedQuote?: boolean;
 }
 
 /**
@@ -277,6 +313,7 @@ export interface ParadisCsvDocumentFlags {
  */
 export class ParadisCsvDocument {
 	private readonly cache = new Map<number, readonly string[]>();
+	private cachedFields = 0;
 
 	constructor(
 		readonly text: string,
@@ -313,17 +350,39 @@ export class ParadisCsvDocument {
 		if (cached) {
 			return cached;
 		}
-		const [start, end] = this.recordRange(index);
-		const record = parseParadisCsvRecord(this.text, start, end, this.delimiter, this.columnCount);
-		if (this.cache.size >= RECORD_CACHE_SIZE) {
+		const record = this.parseRecord(index);
+		if (this.cache.size >= RECORD_CACHE_SIZE || this.cachedFields + record.length > RECORD_CACHE_FIELDS) {
 			this.cache.clear();
+			this.cachedFields = 0;
 		}
 		this.cache.set(index, record);
+		this.cachedFields += record.length;
 		return record;
 	}
 
 	getField(record: number, column: number): string {
 		return this.getRecord(record)[column] ?? '';
+	}
+
+	/**
+	 * キャッシュを通さずにレコードを解析する。全行をなめる処理（検索・コピー）はこちらを使い、
+	 * 表示用のキャッシュを押し出したりメモリに溜め込んだりしない。
+	 */
+	parseRecord(index: number): readonly string[] {
+		if (index < 0 || index >= this.starts.length) {
+			return [];
+		}
+		const [start, end] = this.recordRange(index);
+		return parseParadisCsvRecord(this.text, start, end, this.delimiter, this.columnCount);
+	}
+
+	/** キャッシュを通さずに 1 つのフィールドだけを取り出す（並べ替え用。目的の列まで読んだら止める）。 */
+	parseField(index: number, column: number): string {
+		if (index < 0 || index >= this.starts.length || column >= this.columnCount) {
+			return '';
+		}
+		const [start, end] = this.recordRange(index);
+		return parseParadisCsvRecord(this.text, start, end, this.delimiter, column + 1)[column] ?? '';
 	}
 }
 
@@ -370,8 +429,9 @@ export function parseParadisCsvRecord(text: string, start: number, end: number, 
 			position++;
 		}
 		value += text.substring(tailStart, position);
-		if (fields.length < maxFields) {
-			fields.push(value);
+		fields.push(value);
+		if (fields.length >= maxFields) {
+			return fields;
 		}
 		if (position < limit && text.charCodeAt(position) === delimiterCode) {
 			position++;
@@ -381,11 +441,12 @@ export function parseParadisCsvRecord(text: string, start: number, end: number, 
 	}
 }
 
-const NUMERIC_PATTERN = /^\s*[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)?(?:\.\d+)?(?:[eE][-+]?\d+)?\s*$/;
+// 仮数部には数字が必須（`E3` のような指数部だけの文字列は数値にしない）。
+const NUMERIC_PATTERN = /^\s*[-+]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)(?:[eE][-+]?\d+)?\s*$/;
 
 /** 数値として読めるフィールドか（右寄せと並べ替えに使う）。桁区切りのカンマを許す。 */
 export function isParadisCsvNumeric(value: string): boolean {
-	return value.length > 0 && value.length < 64 && /\d/.test(value) && NUMERIC_PATTERN.test(value);
+	return value.length > 0 && value.length < 64 && NUMERIC_PATTERN.test(value) && Number.isFinite(numericValue(value));
 }
 
 function numericValue(value: string): number {
@@ -399,7 +460,9 @@ export type ParadisCsvYield = () => Promise<void>;
 
 /**
  * データ行を列 `column` で並べ替えた表示順（データ行の番号 0..n-1 の並び）を返す。
- * 数値は数値として比べ、数値は文字列より先に並べる。空欄は向きに関係なく末尾に置く。同じ値は元の順を保つ。
+ * 数値は数値として比べ、昇順では数値を文字列より先に並べる（降順では逆）。文字列は大文字と小文字を
+ * 区別せずに比べる。空欄は向きに関係なく末尾に置く。同じ値は元の順を保つ。
+ * ロケールを考慮した比較（Intl.Collator）は 100 万行で数十秒かかるため使わない。
  */
 export async function sortParadisCsvRows(document: ParadisCsvDocument, column: number, direction: ParadisCsvSortDirection, yieldToHost: ParadisCsvYield, token: CancellationToken): Promise<Uint32Array> {
 	const count = document.dataRowCount;
@@ -412,7 +475,7 @@ export async function sortParadisCsvRows(document: ParadisCsvDocument, column: n
 			await yieldToHost();
 			throwIfCancelled(token);
 		}
-		const value = document.getField(row + 1, column);
+		const value = document.parseField(row + 1, column);
 		if (value.trim().length === 0) {
 			kinds[row] = 0;
 		} else if (isParadisCsvNumeric(value)) {
@@ -420,7 +483,7 @@ export async function sortParadisCsvRows(document: ParadisCsvDocument, column: n
 			numbers[row] = numericValue(value);
 		} else {
 			kinds[row] = 2;
-			strings[row] = value;
+			strings[row] = value.toLowerCase();
 		}
 	}
 	throwIfCancelled(token);
@@ -459,6 +522,8 @@ export interface ParadisCsvMatch {
 	readonly value: string;
 	/** フィールド内での一致の開始位置。 */
 	readonly offset: number;
+	/** フィールド内で一致した長さ。 */
+	readonly length: number;
 }
 
 export interface ParadisCsvSearchResult {
@@ -485,6 +550,8 @@ export async function searchParadisCsv(
 	if (!needle) {
 		return { matches, capped: false };
 	}
+	// 大文字小文字を無視する一致の位置は元の文字列で求める（`toLowerCase` で長さが変わる文字があるため）。
+	const insensitive = matchCase ? undefined : new RegExp(escapeRegExpCharacters(query), 'i');
 	const canPrefilter = !query.includes('"');
 	for (let row = 0; row < document.recordCount; row++) {
 		if (row % DEFAULT_CHUNK_RECORDS === 0 && row > 0) {
@@ -499,15 +566,23 @@ export async function searchParadisCsv(
 				continue;
 			}
 		}
-		const fields = document.getRecord(record);
+		const fields = document.parseRecord(record);
 		for (let column = 0; column < fields.length; column++) {
 			const value = fields[column];
-			const offset = (matchCase ? value : value.toLowerCase()).indexOf(needle);
+			let offset: number;
+			let length = query.length;
+			if (insensitive) {
+				const found = insensitive.exec(value);
+				offset = found ? found.index : -1;
+				length = found ? found[0].length : 0;
+			} else {
+				offset = value.indexOf(needle);
+			}
 			if (offset !== -1) {
 				if (matches.length >= limit) {
 					return { matches, capped: true };
 				}
-				matches.push({ row, column, value, offset });
+				matches.push({ row, column, value, offset, length });
 			}
 		}
 	}
