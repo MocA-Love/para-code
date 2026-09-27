@@ -9,10 +9,9 @@
 // CSV / TSV ビューア（web/desktop 両対応）の登録入り口。paradis.common.contribution.ts から import される。
 // EditorPane / シリアライザ / 設定 / EditorResolver をここで登録する。
 //
-// 差分とマージは登録しない（createDiffEditorInput / createMergeEditorInput を持たない）ので、resolver が
-// このビューアを飛ばして従来どおりテキストの差分・マージエディタで開く。
+// EditorResolver への登録内容（優先度 default の理由を含む）は paradisCsvEditorRegistration.ts にある。
 
-import { Schemas } from '../../../../../base/common/network.js';
+import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { localize } from '../../../../../nls.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../../platform/configuration/common/configurationRegistry.js';
@@ -23,21 +22,17 @@ import { IStorageService } from '../../../../../platform/storage/common/storage.
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../../workbench/browser/editor.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../../workbench/common/editor.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../../workbench/common/contributions.js';
-import { IEditorResolverService, RegisteredEditorPriority } from '../../../../../workbench/services/editor/common/editorResolverService.js';
-import { paradisGlobForExtension } from '../paradisFileViewers.js';
+import { IEditorResolverService } from '../../../../../workbench/services/editor/common/editorResolverService.js';
+import { PARADIS_CSV_VIEWER_LABEL, registerParadisCsvEditors } from './paradisCsvEditorRegistration.js';
 import { ParadisCsvFileEditor } from './paradisCsvFileEditor.js';
 import {
-	isParadisCsvResource,
 	isParadisCsvTextModePreferred,
 	PARADIS_CSV_EDITOR_ID,
-	PARADIS_CSV_EXTENSIONS,
 	PARADIS_CSV_INPUT_TYPE_ID,
 	PARADIS_CSV_VIEWER_ENABLED_KEY,
 	ParadisCsvFileInput,
 	ParadisCsvFileInputSerializer,
 } from './paradisCsvFileInput.js';
-
-const CSV_VIEWER_LABEL = localize('paradis.csvViewer', "CSV の表");
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis',
@@ -54,7 +49,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 });
 
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
-	EditorPaneDescriptor.create(ParadisCsvFileEditor, PARADIS_CSV_EDITOR_ID, CSV_VIEWER_LABEL),
+	EditorPaneDescriptor.create(ParadisCsvFileEditor, PARADIS_CSV_EDITOR_ID, PARADIS_CSV_VIEWER_LABEL),
 	[new SyncDescriptor(ParadisCsvFileInput)]
 );
 
@@ -63,9 +58,7 @@ Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEdit
 	ParadisCsvFileInputSerializer
 );
 
-const SUPPORTED_SCHEMES = new Set<string>([Schemas.file, Schemas.vscodeRemote]);
-
-class ParadisCsvViewerResolverContribution implements IWorkbenchContribution {
+class ParadisCsvViewerResolverContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'paradis.contrib.csvViewerResolver';
 
 	constructor(
@@ -74,37 +67,17 @@ class ParadisCsvViewerResolverContribution implements IWorkbenchContribution {
 		@IConfigurationService configurationService: IConfigurationService,
 		@IStorageService storageService: IStorageService,
 	) {
-		for (const ext of PARADIS_CSV_EXTENSIONS) {
-			editorResolverService.registerEditor(
-				paradisGlobForExtension(ext),
-				{
-					id: PARADIS_CSV_EDITOR_ID,
-					label: CSV_VIEWER_LABEL,
-					// default（Markdown / Excel ビューアの exclusive とは意図的に変えている）。CSV はテキストエディタや
-					// 拡張機能（Rainbow CSV 等）で扱う利用者が多いため、次の 2 つを本家どおりに残す:
-					// - ユーザーの `workbench.editorAssociations`（例 `"*.csv": "default"`）が表より優先される
-					// - 拡張機能の `showTextDocument`（EXCLUSIVE_ONLY で開く）はテキストエディタで開く
-					// 組み込みのテキストエディタ（builtin）よりは優先されるので、何も設定していなければ表で開く。
-					priority: RegisteredEditorPriority.default
-				},
-				{
-					canSupportResource: resource =>
-						SUPPORTED_SCHEMES.has(resource.scheme)
-						&& isParadisCsvResource(resource)
-						&& configurationService.getValue<boolean>(PARADIS_CSV_VIEWER_ENABLED_KEY) !== false,
-					singlePerResource: true
-				},
-				{
-					createEditorInput: ({ resource, options }) => {
-						const input = instantiationService.createInstance(ParadisCsvFileInput, resource);
-						if (isParadisCsvTextModePreferred(storageService, resource)) {
-							input.setCsvViewMode('text');
-						}
-						return { editor: input, options };
-					}
+		super();
+		this._register(registerParadisCsvEditors(editorResolverService, {
+			isEnabled: () => configurationService.getValue<boolean>(PARADIS_CSV_VIEWER_ENABLED_KEY) !== false,
+			createInput: resource => {
+				const input = instantiationService.createInstance(ParadisCsvFileInput, resource);
+				if (isParadisCsvTextModePreferred(storageService, resource)) {
+					input.setCsvViewMode('text');
 				}
-			);
-		}
+				return input;
+			},
+		}));
 	}
 }
 
