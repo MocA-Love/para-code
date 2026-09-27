@@ -24,7 +24,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
-import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_REMOVE_WORKTREE_COMMAND_ID, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult } from '../../../common/paradisIssueDetection.js';
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
@@ -39,7 +39,8 @@ import { IParadisHeadlessWorktreeRequest } from './paradisWorktreeHeadlessCreate
 registerSingleton(IParadisWorktreeCreateQueueService, ParadisWorktreeCreateQueueService, InstantiationType.Delayed);
 
 export const PARADIS_CREATE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.createWorktree';
-export const PARADIS_REMOVE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.removeWorktree';
+// 値は副作用の無い common に置き、ここから呼んでいた既存の import のために再公開する
+export { PARADIS_REMOVE_WORKTREE_COMMAND_ID };
 export const PARADIS_CONFIGURE_LIFECYCLE_SCRIPTS_COMMAND_ID = 'paradis.workspaceSwitch.configureLifecycleScripts';
 export const PARADIS_GET_DIFF_STATS_COMMAND_ID = 'paradis.workspaceSwitch.getDiffStats';
 export const PARADIS_GET_PR_STATUSES_COMMAND_ID = 'paradis.workspaceSwitch.getPrStatuses';
@@ -260,7 +261,11 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		});
 	}
 
-	async run(accessor: ServicesAccessor, worktree?: IParadisWorktree): Promise<void> {
+	/**
+	 * @param options.requestedByAgent エージェント（MCP の remove_space）からの依頼なら、依頼元の
+	 * ターミナルの名前。確認ダイアログに「エージェントからの依頼」と出し、自分で押したものと区別させる。
+	 */
+	async run(accessor: ServicesAccessor, worktree?: IParadisWorktree, options?: { readonly requestedByAgent?: string }): Promise<void> {
 		if (!worktree) {
 			return;
 		}
@@ -288,8 +293,12 @@ class ParadisRemoveWorktreeAction extends Action2 {
 			type: 'warning',
 			// allow-any-unicode-next-line
 			message: localize('paradis.workspaceSwitch.removeWorktreeConfirm', "ワークツリー「{0}」を削除しますか？", worktree.name),
-			// allow-any-unicode-next-line
-			detail: localize('paradis.workspaceSwitch.removeWorktreeDetail', "パス: {0}\n\nディスク上の作業ツリーを削除します。未コミットの変更は失われます。", uri.fsPath),
+			detail: (options?.requestedByAgent !== undefined
+				// allow-any-unicode-next-line
+				? localize('paradis.workspaceSwitch.removeWorktreeAgentRequest', "この削除は、あなたではなくターミナル「{0}」のエージェントからの依頼です。\n\n", options.requestedByAgent)
+				: '')
+				// allow-any-unicode-next-line
+				+ localize('paradis.workspaceSwitch.removeWorktreeDetail', "パス: {0}\n\nディスク上の作業ツリーを削除します。未コミットの変更は失われます。", uri.fsPath),
 			// allow-any-unicode-next-line
 			primaryButton: localize('paradis.workspaceSwitch.removeWorktreeConfirmAction', "削除")
 		});
