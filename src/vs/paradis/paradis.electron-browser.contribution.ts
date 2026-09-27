@@ -71,6 +71,7 @@ import './contrib/agentBrowser/electron-browser/paradisRemoteAgentHooks.contribu
 import './contrib/agentBrowser/electron-browser/paradisAgentHooksSettings.contribution.js';
 import './contrib/agentHookTrust/electron-browser/paradisCodexHookTrust.contribution.js';
 import './contrib/agentModelCatalog/electron-browser/paradisAgentModelCatalog.contribution.js';
+import './contrib/agentIde/electron-browser/paradisAgentIde.contribution.js';
 import { registerParadisRemoteTranscriptMirrorContribution } from './contrib/mobileRelay/electron-browser/paradisRemoteTranscriptMirror.contribution.js';
 
 registerParadisRemoteTranscriptMirrorContribution();
