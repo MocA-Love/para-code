@@ -205,6 +205,12 @@ suite('paradisWorktreeCreate', () => {
 		]);
 	});
 
+	test('refuses a prompt with a backslash when the shell is unknown, since it cannot be quoted for fish', () => {
+		const template = { id: 'codex', label: 'Codex', command: 'codex {prompt}' };
+		assert.throws(() => paradisBuildAgentCommand(template, 'a\\\'; touch /tmp/x; echo \\', undefined));
+		assert.strictEqual(paradisBuildAgentCommand(template, 'plain', undefined), 'codex \'plain\'');
+	});
+
 	test('encodes arbitrary cmd.exe prompts without interpolating metacharacters', () => {
 		const command = paradisBuildAgentCommand(
 			{ id: 'codex', label: 'Codex', command: 'codex {prompt}' },
