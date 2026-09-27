@@ -403,11 +403,17 @@ export function paradisBuildRespondHeaders(rule: IParadisRequestRule): { name: s
 }
 
 /** `redirect` のルールの応答ヘッダ。ブラウザは Location を辿り直す（その要求にもネットワークの制限が掛かる）。 */
-export function paradisBuildRedirectHeaders(rule: IParadisRequestRule): { name: string; value: string }[] {
-	return [
+export function paradisBuildRedirectHeaders(rule: IParadisRequestRule, requestOrigin?: string): { name: string; value: string }[] {
+	const headers = [
 		{ name: 'Location', value: rule.redirectUrl ?? '' },
 		{ name: 'Cache-Control', value: 'no-store' },
 	];
+	// 別 origin の fetch / XHR がこの 307 を辿れるよう、要求元の origin を CORS で許す（リダイレクトの応答
+	// そのものも CORS の検査を受ける）。辿った先の応答は、その先のサーバーの CORS で決まる。
+	if (requestOrigin !== undefined && /^https?:\/\/[^\s/]+$/.test(requestOrigin)) {
+		headers.push({ name: 'Access-Control-Allow-Origin', value: requestOrigin }, { name: 'Access-Control-Allow-Credentials', value: 'true' }, { name: 'Vary', value: 'Origin' });
+	}
+	return headers;
 }
 
 // --- タブの状態（エージェントへ返す要約） -------------------------------------------------------
@@ -521,10 +527,35 @@ export type ParadisPageOpsFailure =
 	/** ブラウザ側の処理に失敗した。 */
 	| 'failed'
 	/**
-	 * 利用者の保存領域のタブ（共有された利用者のタブ）。ネットワークの上書きは、エージェント用の保存領域
-	 * （エージェントが開いたタブ、エージェントが作ったプロファイル、エフェメラル）のタブにだけ掛ける。
+	 * 呼んだペインだけが使う保存領域のタブではない（利用者のタブ、ワークスペースで共有するエージェントの
+	 * 保存領域、別のペインや利用者も使っているプロファイル）。ネットワークの上書きは、そのペイン専用の
+	 * 保存領域（`open_browser_tab` の `private`）か、そのペインが作ってほかが使っていないプロファイルの
+	 * タブにだけ掛ける。
 	 */
 	| 'userStorage';
+
+/**
+ * そのペイン専用の保存領域（メモリだけ、ペインごと）の affinity。エージェントの保存領域（Agent スコープ）を
+ * この affinity で作ると、ほかのペイン・利用者のタブと保存領域（Cookie・認証のキャッシュ・HTTP キャッシュ）を
+ * 分け合わない。`ownerKey` はペイントークンから shared process が作る不透明な名前。
+ */
+export function paradisPaneStorageAffinity(ownerKey: string): string {
+	return `paradis-pane-${ownerKey}`;
+}
+
+/** {@link paradisPaneStorageAffinity} の形か（renderer が shared process から受け取った値を確かめる）。 */
+export function paradisIsPaneStorageAffinity(value: unknown): value is string {
+	return typeof value === 'string' && /^paradis-pane-[0-9a-f]{16,64}$/.test(value);
+}
+
+/** タブの保存領域が誰のものか（electron-main の判定）。 */
+export type IParadisPageStorageDescription =
+	/** 呼んだペイン専用の保存領域。 */
+	| { readonly kind: 'pane' }
+	/** エージェントが作った印の付いたプロファイル。そのペインが作ってほかが使っていないかは renderer が確かめる。 */
+	| { readonly kind: 'profile'; readonly profileId: string }
+	/** それ以外（利用者のタブ、共有の保存領域）。 */
+	| { readonly kind: 'user' };
 
 export type IParadisPageOverridesResult =
 	| { readonly ok: true; readonly summary: IParadisPageOverridesSummary }
@@ -740,8 +771,14 @@ export function paradisIsPageOpsOwnerKey(value: unknown): value is string {
  * どれも exact descriptor で指したタブにだけ効き、descriptor が古ければ `unavailable` を返す。
  */
 export interface IParadisCdpPageOpsService {
-	/** タブへの上書き（追加ヘッダ・HTTP 認証・リクエストのルール）を置き換える。`requestJson` は {@link IParadisPageOverridesRequest}。 */
-	applyExactViewPageOverrides(descriptor: unknown, ownerKey: unknown, generation: unknown, requestJson: unknown): Promise<IParadisPageOverridesResult>;
+	/**
+	 * タブへの上書き（追加ヘッダ・HTTP 認証・リクエストのルール）を置き換える。`requestJson` は
+	 * {@link IParadisPageOverridesRequest}。プロファイルのタブは、renderer がそのペインのものと確かめた
+	 * `confirmedProfileId` が一致するときだけ受け付ける。
+	 */
+	applyExactViewPageOverrides(descriptor: unknown, ownerKey: unknown, generation: unknown, requestJson: unknown, confirmedProfileId: unknown): Promise<IParadisPageOverridesResult>;
+	/** タブの保存領域が、呼んだペイン専用か・エージェントのプロファイルか・それ以外か。 */
+	describeExactViewStorage(descriptor: unknown, ownerKey: unknown): Promise<IParadisPageStorageDescription>;
 	/** タブに掛かっている上書きの要約（値とパスワードは含まない）。 */
 	getExactViewPageOverrides(descriptor: unknown, ownerKey: unknown): Promise<IParadisPageOverridesResult>;
 	/** 持ち主の共有が入れ替わった。`generation` より前に掛けたものを外す。 */

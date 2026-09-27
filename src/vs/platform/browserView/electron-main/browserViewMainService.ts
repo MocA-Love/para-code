@@ -575,7 +575,7 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 	}
 
 	private async showContextMenu(view: BrowserView, params: Electron.ContextMenuParams): Promise<void> {
-		if (paradisConsumeAgentContextMenuSuppression(view.webContents)) { return; } // PARA-PATCH: an agent's right-click reaches the page's contextmenu event but must not open Para Code's native menu on the user's screen
+		if (paradisConsumeAgentContextMenuSuppression(view.webContents, params)) { return; } // PARA-PATCH: an agent's right-click reaches the page's contextmenu event but must not open Para Code's native menu on the user's screen
 		const win = view.getElectronWindow();
 		if (!win) {
 			return;

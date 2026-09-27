@@ -16,7 +16,7 @@ import {
 	paradisParseExactBrowserViewDescriptor,
 	paradisParseExactCdpScreenshotOptions,
 } from '../../common/paradisAgentBrowser.js';
-import { ParadisCdpTargetService } from '../../electron-main/paradisCdpTargetService.js';
+import { ParadisCdpTargetService, paradisPaneStorageSessionId } from '../../electron-main/paradisCdpTargetService.js';
 import { paradisConsumeAgentContextMenuSuppression } from '../../electron-main/paradisAgentContextMenu.js';
 
 interface ITestViewState {
@@ -567,37 +567,58 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.strictEqual(await service.setExactViewBackgroundThrottling(exact, false), false);
 	});
 
-	test('an agent right-click reaches the page but suppresses Para Code\'s native context menu once', async () => {
+	test('only the context menu opened by an agent input is suppressed, not the user\'s right-click', async () => {
 		const current = createTestView();
+		Object.assign(current.view.webContents, { getZoomFactor: () => 1.25 });
 		const registry = createRegistry({ 'view-1': current.view });
 		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
 		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
-		await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mouseMoved', x: 1, y: 2 }));
-		const afterMove = paradisConsumeAgentContextMenuSuppression(current.view.webContents);
-		await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mousePressed', x: 1, y: 2, button: 'right', clickCount: 1 }));
-		assert.deepStrictEqual([
-			afterMove,
-			current.inputCalls.length,
-			paradisConsumeAgentContextMenuSuppression(current.view.webContents),
-			paradisConsumeAgentContextMenuSuppression(current.view.webContents),
-		], [false, 2, true, false]);
+		const wc = current.view.webContents;
+		await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mouseMoved', x: 10, y: 20 }));
+		const afterMove = paradisConsumeAgentContextMenuSuppression(wc, { x: 12.5, y: 25, menuSourceType: 'mouse' });
+		await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mousePressed', x: 10, y: 20, button: 'right', clickCount: 1 }));
+		const userElsewhere = paradisConsumeAgentContextMenuSuppression(wc, { x: 300, y: 400, menuSourceType: 'mouse' });
+		const agentMenu = paradisConsumeAgentContextMenuSuppression(wc, { x: 12.5, y: 25, menuSourceType: 'mouse' });
+		const userSamePointLater = paradisConsumeAgentContextMenuSuppression(wc, { x: 12.5, y: 25, menuSourceType: 'mouse' });
+		// Control + left click opens the context menu on macOS.
+		await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mousePressed', x: 40, y: 40, button: 'left', clickCount: 1, modifiers: 2 }));
+		const controlClick = paradisConsumeAgentContextMenuSuppression(wc, { x: 50, y: 50, menuSourceType: 'mouse' });
+		assert.deepStrictEqual([afterMove, userElsewhere, agentMenu, userSamePointLater, controlClick], [false, false, true, false, true]);
 	});
 
-	test('network overrides are refused on a tab that uses the user\'s own browser storage', async () => {
-		const scopes = ['global', 'workspace', 'profile', 'agent'];
+	test('network overrides are refused unless the tab uses browser storage of the calling pane alone', async () => {
+		const owner = '0123456789abcdef0123456789abcdef';
+		const cases: [string, { storageScope: string; id: string }][] = [
+			['user global tab', { storageScope: 'global', id: 'global' }],
+			['user workspace tab', { storageScope: 'workspace', id: 'workspace:w' }],
+			['user ephemeral tab', { storageScope: 'ephemeral', id: 'ephemeral:view-1' }],
+			['workspace agent storage', { storageScope: 'agent', id: 'agent:shared' }],
+			['another pane\'s private storage', { storageScope: 'agent', id: paradisPaneStorageSessionId('fedcba9876543210fedcba9876543210') }],
+			['user profile', { storageScope: 'profile', id: 'profile:unknown' }],
+			['this pane\'s private storage', { storageScope: 'agent', id: paradisPaneStorageSessionId(owner) }],
+		];
 		const results: string[] = [];
-		for (const storageScope of scopes) {
+		for (const [name, session] of cases) {
 			const current = createTestView();
-			Object.defineProperty(current.view, 'session', { value: { storageScope, id: storageScope === 'profile' ? 'paradis-profile:unknown' : storageScope } });
-			Object.assign(current.view.webContents, { getURL: () => 'https://example.com/', once: () => undefined, on: () => undefined, removeListener: () => undefined });
+			Object.defineProperty(current.view, 'session', { value: session });
+			Object.assign(current.view.webContents, { getURL: () => 'https://example.com/', once: () => undefined, on: () => undefined, removeListener: () => undefined, session: { clearAuthCache: async () => undefined, clearCache: async () => undefined } });
 			const registry = createRegistry({ 'view-1': current.view });
 			const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
 			const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
-			const result = await service.applyExactViewPageOverrides(exact, '0123456789abcdef0123456789abcdef', 1, JSON.stringify({ credentials: { origin: 'https://example.com', username: 'u', password: 'p' } }));
-			results.push(result.ok ? 'ok' : result.reason);
-			await service.releasePageOverridesOwner('0123456789abcdef0123456789abcdef', 2);
+			const described = await service.describeExactViewStorage(exact, owner);
+			const result = await service.applyExactViewPageOverrides(exact, owner, 1, JSON.stringify({ credentials: { origin: 'https://example.com', username: 'u', password: 'p' } }), null);
+			results.push(`${name}: ${described.kind}/${result.ok ? 'ok' : result.reason}`);
+			await service.releasePageOverridesOwner(owner, 2);
 		}
-		assert.deepStrictEqual(results, ['userStorage', 'userStorage', 'userStorage', 'ok']);
+		assert.deepStrictEqual(results, [
+			'user global tab: user/userStorage',
+			'user workspace tab: user/userStorage',
+			'user ephemeral tab: user/userStorage',
+			'workspace agent storage: user/userStorage',
+			'another pane\'s private storage: user/userStorage',
+			'user profile: user/userStorage',
+			'this pane\'s private storage: pane/ok',
+		]);
 	});
 
 	test('dispatches every allowed input through the exact BrowserView debugger root without focusing', async () => {

@@ -46,15 +46,19 @@ import {
 	IParadisAgentDownloadResult,
 	IParadisCdpPageOpsService,
 	IParadisPageOverridesResult,
+	IParadisPageStorageDescription,
 	IParadisPdfResult,
 	PARADIS_PAGE_OPS_MAX_HIGHLIGHT_MS,
+	paradisPaneStorageAffinity,
 	paradisIsPageOpsOwnerKey,
 	paradisParseHighlightRect,
 	paradisParsePageOverridesRequest,
 	paradisParsePdfOptions,
 } from '../common/paradisBrowserPageOps.js';
 import { IParadisPageOpsTarget, ParadisBrowserPageOpsController } from './paradisBrowserPageOpsController.js';
-import { paradisIsContextMenuInput, paradisSuppressNextContextMenu } from './paradisAgentContextMenu.js';
+import { paradisMarkAgentContextMenuInput } from './paradisAgentContextMenu.js';
+import { createHash } from 'crypto';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
 import { paradisProfileIdFromSessionId } from '../../browserProfiles/common/paradisBrowserProfileId.js';
 import { paradisAwaitAgentDownloadStart, paradisCancelAgentDownloadExpectation, paradisExpectAgentDownload, paradisGetAgentDownloadsTracker, paradisRecordChildWebContents, paradisSaveAgentFile, paradisSetWebContentsHeldByAgent } from '../../browserDownloads/electron-main/paradisAgentDownloads.js';
@@ -98,6 +102,24 @@ interface IParadisCursorViewport {
  */
 const CURSOR_VIEWPORT_TTL_MS = 2_000;
 
+/** PDF の既定のファイル名に使う、いまのページのタイトル（取れなければ `page`）。 */
+function pageTitle(view: BrowserView): string {
+	try {
+		return view.webContents.getTitle() || 'page';
+	} catch {
+		return 'page';
+	}
+}
+
+/**
+ * そのペイン専用の保存領域の BrowserSession の id。upstream の `BrowserSession.getOrCreateAgent`
+ * （browserSession.ts）が affinity から作る id と同じ式（`agent:` + sha256(`affinity:` + affinity)）。
+ * upstream がこの式を変えると一致しなくなり、上書きは断られる側に倒れる。
+ */
+export function paradisPaneStorageSessionId(ownerKey: string): string {
+	return `agent:${createHash('sha256').update(`affinity:${paradisPaneStorageAffinity(ownerKey)}`).digest('hex')}`;
+}
+
 export class ParadisCdpTargetService implements IParadisCdpExactViewService, IParadisCdpPageOpsService {
 
 	private readonly frameSubs = new Map<string, IFrameSubState>();
@@ -131,7 +153,11 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	readonly onDidChangeAgentCursor: Event<IParadisAgentCursorEvent> = this._onDidChangeAgentCursor.event;
 
 	/** 追加のブラウザ操作（追加ヘッダ・HTTP 認証・リクエストのルール・PDF・ハイライト）。 */
-	private readonly pageOps = new ParadisBrowserPageOpsController();
+	private readonly pageOps = new ParadisBrowserPageOpsController(Date.now, (step, error) => {
+		// 戻せなかった上書きは、タブの通信が止まったまま・ハイライトが残ったままになりうるので残す。
+		console.warn(`[ParadisBrowserPageOps] could not undo ${step} on a browser tab`, error);
+		reportParadisDiagnosticError('owned', 'agent-browser', 'page-ops-teardown', error, { safe_step: step }, 'warning');
+	});
 
 	constructor(
 		private readonly browserViewMainService: IBrowserViewMainService,
@@ -144,11 +170,21 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		// 開いた子タブで始まったダウンロードも、エージェント由来として扱うため。テストの偽物には無い。
 		const onDidCreateBrowserView = (browserViewMainService as Partial<IBrowserViewMainService>).onDidCreateBrowserView;
 		if (typeof onDidCreateBrowserView === 'function') {
-			onDidCreateBrowserView(event => this.recordChildView(event.info.id, event.editorOpenRequest?.parentViewId));
+			onDidCreateBrowserView(event => this.onViewCreated(event.info.id, event.editorOpenRequest?.parentViewId));
 		}
 	}
 
-	private recordChildView(childViewId: string, parentViewId: string | undefined): void {
+	private onViewCreated(childViewId: string, parentViewId: string | undefined): void {
+		try {
+			// プロファイルのタブへ掛けた上書きは、そのプロファイルに別のタブが開かれたら外す
+			// （利用者や別のペインがプロファイルを使い始めた）。
+			const created = this.browserViewMainService.tryGetBrowserView(childViewId);
+			if (created && !created.webContents.isDestroyed()) {
+				this.pageOps.onTabOpenedInStorage(created.webContents.session, created as unknown as IParadisPageOpsTarget);
+			}
+		} catch {
+			// ビューが既に閉じている。
+		}
 		if (parentViewId === undefined) {
 			return;
 		}
@@ -692,9 +728,14 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			}
 			committed = true;
 			// エージェントの右クリックで Para Code の OS のメニューを出さない（ページの contextmenu は届く）。
-			if (paradisIsContextMenuInput(command.method, command.params as Readonly<Record<string, unknown>>)) {
-				paradisSuppressNextContextMenu(view.webContents);
+			// 印はこの入力（座標・キー）にだけ付き、利用者の右クリックは止めない。
+			let zoomFactor = 1;
+			try {
+				zoomFactor = view.webContents.getZoomFactor();
+			} catch {
+				zoomFactor = 1;
 			}
+			paradisMarkAgentContextMenuInput(view.webContents, command.method, command.params as Readonly<Record<string, unknown>>, zoomFactor);
 			let result: unknown;
 			try {
 				result = await view.debugger.sendCommandRaw(command.method, command.params, undefined);
@@ -730,7 +771,15 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 
 	// --- 追加のブラウザ操作（para-browser MCP の B7） --------------------------------------------
 
-	async applyExactViewPageOverrides(descriptorValue: unknown, ownerKeyValue: unknown, generationValue: unknown, requestJsonValue: unknown): Promise<IParadisPageOverridesResult> {
+	async describeExactViewStorage(descriptorValue: unknown, ownerKeyValue: unknown): Promise<IParadisPageStorageDescription> {
+		const target = this.resolvePageOpsTarget(descriptorValue);
+		if (!target || !paradisIsPageOpsOwnerKey(ownerKeyValue)) {
+			return { kind: 'user' };
+		}
+		return this.describeStorage(target, ownerKeyValue);
+	}
+
+	async applyExactViewPageOverrides(descriptorValue: unknown, ownerKeyValue: unknown, generationValue: unknown, requestJsonValue: unknown, confirmedProfileIdValue?: unknown): Promise<IParadisPageOverridesResult> {
 		const target = this.resolvePageOpsTarget(descriptorValue);
 		if (!paradisIsPageOpsOwnerKey(ownerKeyValue) || typeof generationValue !== 'number' || !Number.isSafeInteger(generationValue) || typeof requestJsonValue !== 'string' || requestJsonValue.length > 8 * 1024 * 1024) {
 			return { ok: false, reason: 'invalid' };
@@ -738,9 +787,12 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		if (!target) {
 			return { ok: false, reason: 'unavailable' };
 		}
-		// ネットワークの上書きはエージェント用の保存領域のタブだけ。HTTP 認証と HTTP のキャッシュは保存領域
-		// 単位なので、利用者のタブに掛けると利用者の他のタブへ残る。
-		if (!this.isAgentStorage(target)) {
+		// ネットワークの上書きは、呼んだペインだけが使う保存領域のタブだけ。HTTP 認証と HTTP のキャッシュは
+		// 保存領域単位なので、共有の保存領域に掛けるとほかのタブ・ほかのペインへ残る。プロファイルは、
+		// renderer がそのペインが作ってほかが使っていないと確かめたもの（`confirmedProfileId`）だけ。
+		const storage = this.describeStorage(target, ownerKeyValue);
+		const sharedProfile = storage.kind === 'profile';
+		if (storage.kind === 'user' || (storage.kind === 'profile' && confirmedProfileIdValue !== storage.profileId)) {
 			return { ok: false, reason: 'userStorage' };
 		}
 		let raw: unknown;
@@ -754,7 +806,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		if (!request.ok) {
 			return { ok: false, reason: 'invalid', message: request.error };
 		}
-		return this.pageOps.apply(target, ownerKeyValue, generationValue, request.value);
+		return this.pageOps.apply(target, ownerKeyValue, generationValue, request.value, sharedProfile);
 	}
 
 	async getExactViewPageOverrides(descriptorValue: unknown, ownerKeyValue: unknown): Promise<IParadisPageOverridesResult> {
@@ -792,7 +844,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			paper_format: record.paperFormat,
 			scale: record.scale,
 			page_ranges: record.pageRanges,
-		}, 'page') : undefined;
+		}, pageTitle(view)) : undefined;
 		if (!options?.ok) {
 			return { ok: false, reason: 'invalid', message: options && !options.ok ? options.error : undefined };
 		}
@@ -880,21 +932,29 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	}
 
 	/**
-	 * エージェント用の保存領域のタブか。エージェントの保存領域（エージェントが開いたタブ）、
-	 * エフェメラル（タブごと）、エージェントが作った印の付いたプロファイルのとき true。
+	 * タブの保存領域が誰のものか。判定は保存領域の種類ではなく、誰の保存領域か:
+	 * - `pane`: 呼んだペイン専用の保存領域（`open_browser_tab` の `private` で、そのペインの affinity から
+	 *   作ったエージェントの保存領域）。affinity はペインのトークンから作るので、ほかのペインや利用者の
+	 *   タブがこの保存領域を使うことは無い
+	 * - `profile`: エージェントが作った印の付いたプロファイル。そのペインが作ってほかが使っていないかは
+	 *   renderer の台帳でしか分からないので、shared process が renderer に確かめてから渡す
+	 * - `user`: それ以外（利用者のタブ、ワークスペースで共有するエージェントの保存領域、エフェメラル）
 	 */
-	private isAgentStorage(target: IParadisPageOpsTarget): boolean {
+	private describeStorage(target: IParadisPageOpsTarget, ownerKey: string): IParadisPageStorageDescription {
 		const view = target as unknown as BrowserView;
 		try {
-			const scope = view.session.storageScope;
-			if (scope === BrowserViewStorageScope.Agent || scope === BrowserViewStorageScope.Ephemeral) {
-				return true;
+			const session = view.session;
+			if (session.storageScope === BrowserViewStorageScope.Agent && session.id === paradisPaneStorageSessionId(ownerKey)) {
+				return { kind: 'pane' };
 			}
-			const profileId = scope === BrowserViewStorageScope.Profile ? paradisProfileIdFromSessionId(view.session.id) : undefined;
-			return profileId !== undefined && paradisGetAgentDownloadsTracker()?.isAgentProfile(profileId) === true;
+			const profileId = session.storageScope === BrowserViewStorageScope.Profile ? paradisProfileIdFromSessionId(session.id) : undefined;
+			if (profileId !== undefined && paradisGetAgentDownloadsTracker()?.isAgentProfile(profileId) === true) {
+				return { kind: 'profile', profileId };
+			}
 		} catch {
-			return false;
+			// タブが既に閉じている。
 		}
+		return { kind: 'user' };
 	}
 
 	private resolvePageOpsTarget(descriptorValue: unknown): IParadisPageOpsTarget | undefined {

@@ -23,6 +23,7 @@ import {
 	IParadisHighlightRect,
 	IParadisPageOverridesRequest,
 	IParadisPageOverridesResult,
+	IParadisPageStorageDescription,
 	IParadisPdfResult,
 	PARADIS_PAGE_OPS_DEFAULT_HIGHLIGHT_MS,
 	PARADIS_PAGE_OPS_MAX_HIGHLIGHT_MS,
@@ -52,6 +53,11 @@ export interface IParadisPageOpsCall {
 	readonly signal?: AbortSignal;
 	/** ingress lease が古くなっていたら投げる。await の後に呼ぶ。 */
 	requireCurrent(): void;
+	/**
+	 * そのプロファイルを、呼んだペインだけが使っているか（renderer の台帳で確かめる。そのペインが作り、
+	 * 利用者がまだ使っておらず、開いているタブがすべてそのペインのもの）。
+	 */
+	confirmPaneProfile(profileId: string): Promise<boolean>;
 	/** uid の要素の中心座標などを内蔵 chrome-devtools-mcp の evaluate_script で求める。失敗は MCP のツールの結果（エラー）で返す。 */
 	resolveElement(uid: string): Promise<{ readonly ok: true; readonly target: IParadisResolvedDropTarget } | { readonly ok: false; readonly result: unknown }>;
 }
@@ -439,7 +445,9 @@ export class ParadisBrowserPageOps {
 		if (!options.ok) {
 			return error(options.error);
 		}
-		const result = await this.host.callMain<IParadisPdfResult>('printExactViewToPdf', [binding.exactView, JSON.stringify(options.value)]);
+		// ファイル名を指定されなければ、main がいまのページのタイトルから決める（共有した時点のタイトルは古い）。
+		const pdfOptions = args.file_name === undefined ? { ...options.value, fileName: undefined } : options.value;
+		const result = await this.host.callMain<IParadisPdfResult>('printExactViewToPdf', [binding.exactView, JSON.stringify(pdfOptions)]);
 		call.requireCurrent();
 		if (!result.ok) {
 			return error(this.failureMessage('save_page_as_pdf', result.reason, result.message));
@@ -448,7 +456,27 @@ export class ParadisBrowserPageOps {
 	}
 
 	private async applyOverrides(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding, request: IParadisPageOverridesRequest, label: string): Promise<IParadisPageOverridesResult | ToolResult> {
-		const result = await this.host.callMain<IParadisPageOverridesResult>('applyExactViewPageOverrides', [binding.exactView, paradisPageOpsOwnerKey(call.token), binding.generation, JSON.stringify(request)]);
+		const ownerKey = paradisPageOpsOwnerKey(call.token);
+		// 呼んだペインだけが使う保存領域のタブか。main が判定し、プロファイルなら renderer の台帳でも確かめる。
+		const storage = await this.host.callMain<IParadisPageStorageDescription>('describeExactViewStorage', [binding.exactView, ownerKey]);
+		if (!this.isCurrent(call, binding)) {
+			return error(BINDING_CHANGED);
+		}
+		let confirmedProfileId: string | null = null;
+		if (storage.kind === 'user') {
+			return error(this.failureMessage(label, 'userStorage'));
+		}
+		if (storage.kind === 'profile') {
+			const owned = await call.confirmPaneProfile(storage.profileId);
+			if (!this.isCurrent(call, binding)) {
+				return error(BINDING_CHANGED);
+			}
+			if (!owned) {
+				return error(this.failureMessage(label, 'userStorage'));
+			}
+			confirmedProfileId = storage.profileId;
+		}
+		const result = await this.host.callMain<IParadisPageOverridesResult>('applyExactViewPageOverrides', [binding.exactView, ownerKey, binding.generation, JSON.stringify(request), confirmedProfileId]);
 		if (!this.isCurrent(call, binding)) {
 			return error(BINDING_CHANGED);
 		}
@@ -635,7 +663,7 @@ export class ParadisBrowserPageOps {
 	private failureMessage(tool: string, reason: ParadisPageOpsFailure, detail?: string): string {
 		switch (reason) {
 			case 'unavailable': return `PARA_BROWSER_RETRYABLE: ${tool} could not reach the shared browser tab (it may have been closed or re-shared). Check get_shared_page and retry.`;
-			case 'userStorage': return `${tool}: this browser tab uses the user's own browser storage (the user shared one of their tabs), so headers, HTTP credentials and request rules are not applied to it: they would stay in the user's login and cache for their other tabs. Open a tab of your own with open_browser_tab (or a profile you created with open_browser_profile) and use ${tool} there.`;
+			case 'userStorage': return `${tool}: this browser tab does not use browser storage of this terminal pane alone (it is a tab the user opened or shared, a tab in the browser storage shared by all agents of the workspace, or a profile that the user or another pane also uses). Headers, HTTP credentials and request rules would stay in that storage's login and cache for the other tabs, so they are refused. Open a private tab of your own with open_browser_tab and "private": true (its browser storage is used by this pane only) and use ${tool} there.`;
 			case 'ownedByAnotherPane': return `${tool}: another terminal pane has set headers, credentials or request rules on this browser tab. Only one pane can change a tab at a time; use your own tab (open_browser_tab) instead.`;
 			case 'stale': return BINDING_CHANGED;
 			case 'invalid': return `${tool}: ${detail ?? 'the request was rejected as invalid.'}`;

@@ -32,7 +32,7 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../.
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOTES_METHOD, PARADIS_AGENT_NOTE_TOOL_OPERATIONS, paradisParseAgentNoteToolArgs } from '../common/paradisAgentNotes.js';
 // PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
-import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, IParadisSwitchProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, ParadisOpenProfileFailure, ParadisProfileManageFailure } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
+import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, IParadisSwitchProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, ParadisOpenProfileFailure, ParadisProfileManageFailure } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
 import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, ParadisAgentPageRequestFailure, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
@@ -58,7 +58,8 @@ import { IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsM
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
 import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
-import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps } from './paradisBrowserPageOps.js';
+import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOwnerKey } from './paradisBrowserPageOps.js';
+import { paradisPaneStorageAffinity } from '../common/paradisBrowserPageOps.js';
 import { URI } from '../../../../base/common/uri.js';
 import { AgentNetworkFilterService } from '../../../../platform/networkFilter/common/networkFilterService.js';
 import { IParadisResolvedDropTarget, PARADIS_FILE_DROP_MAX_BYTES_LABEL, PARADIS_RESOLVE_ELEMENT_CENTER_FUNCTION, ParadisFileDropStaging, paradisBuildFileDropDragCancelCommand, paradisBuildFileDropDragCommands, paradisDecodeFileDropContent, paradisParseResolvedDropTarget, paradisSanitizeFileDropName } from './paradisFileDropUpload.js';
@@ -2864,6 +2865,16 @@ export class ParadisAgentBrowserService extends Disposable {
 				signal,
 				requireCurrent: () => this._requireIngressLease(ingressLease),
 				resolveElement: uid => this._resolveElementForPageOps(ingressLease, uid, signal),
+				confirmPaneProfile: async profileId => {
+					const call = await this._callOwningWindow<boolean>(ingressLease, {
+						channelName: PARADIS_BROWSER_PROFILE_MCP_CHANNEL,
+						method: PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD,
+						args: [ingressLease.token, profileId],
+						failureLabel: name,
+						failureMessage: 'Para Code could not check who uses the browser profile of this tab.',
+					}, signal);
+					return call.ok && call.value === true;
+				},
 			}, name, args);
 		} catch (error) {
 			if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
@@ -3327,7 +3338,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				const call = await this._callOwningWindow<IParadisOpenAgentTabResult>(ingressLease, {
 					channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
 					method: ParadisAgentTabMethod.Open,
-					args: [token, text('url'), toolArgs.background === true],
+					// `private` のタブは、そのペイン専用の保存領域（ペインのトークンから作る affinity）で開く。
+					args: [token, text('url'), toolArgs.background === true, ...(toolArgs.private === true ? [paradisPaneStorageAffinity(paradisPageOpsOwnerKey(token))] : [])],
 					failureLabel: name,
 					failureMessage: 'Failed to open a browser tab in Para Code.',
 					// 読み込み待ち（最大20秒）の分だけ長く待つ。
