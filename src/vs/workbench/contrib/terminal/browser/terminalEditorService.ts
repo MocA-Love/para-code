@@ -197,6 +197,7 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 						pinned: true,
 						forceReload: true,
 						preserveFocus: editorOptions?.preserveFocus,
+						inactive: editorOptions?.paradisInactive,
 						auxiliary: editorOptions?.auxiliary,
 					}
 				}, exactGroup ?? editorOptions?.viewColumn ?? ACTIVE_GROUP)

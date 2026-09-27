@@ -788,6 +788,8 @@ export interface TerminalEditorLocation {
 	auxiliary?: IEditorOptions['auxiliary'];
 	/** PARA-CODE: Object identity guard for an exact destination editor group. */
 	paradisExactEditorGroup?: IEditorGroup;
+	/** PARA-CODE: Open as a background tab: neither the tab nor its group becomes active (agent and scheduled launches). */
+	paradisInactive?: boolean;
 }
 
 /**

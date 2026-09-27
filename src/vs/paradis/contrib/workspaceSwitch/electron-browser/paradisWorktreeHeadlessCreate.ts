@@ -29,7 +29,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IAuthenticationService } from '../../../../workbench/services/authentication/common/authentication.js';
-import { ITerminalEditorService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalEditorService, ITerminalInstance, ITerminalService, TerminalEditorLocation } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ACTIVE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import {
 	IParadisCopilotUtilityRequest,
@@ -386,8 +386,14 @@ export interface IParadisAgentLaunchInWorkspaceRequest {
 	readonly preserveFocus?: boolean;
 }
 
-/** フォーカスを奪わずにエディタへ開くときの場所。 */
-const PARADIS_BACKGROUND_EDITOR_LOCATION = { viewColumn: ACTIVE_GROUP, preserveFocus: true } as const;
+/**
+ * 利用者の操作を乱さずにエディタへ開くときの場所。`preserveFocus` だけではタブがアクティブになり、
+ * 直前に打っていたターミナルが裏へ回って打鍵が失われるので、裏のタブとして開く（`paradisInactive`）。
+ */
+function paradisBackgroundEditorLocation(): TerminalEditorLocation {
+	// 毎回作り直す: terminalService の `_getEditorOptions` は渡した場所の `viewColumn` を実際のグループへ書き換える
+	return { viewColumn: ACTIVE_GROUP, preserveFocus: true, paradisInactive: true };
+}
 
 /**
  * スペースへエディタエリアのターミナルを開き、そのスペースの持ち物にする。
@@ -402,10 +408,10 @@ export async function paradisOpenEditorTerminalInSpace(
 ): Promise<ITerminalInstance> {
 	const instance = await services.terminalService.createTerminal({
 		cwd: rootUri,
-		location: preserveFocus ? PARADIS_BACKGROUND_EDITOR_LOCATION : TerminalLocation.Editor,
+		location: preserveFocus ? paradisBackgroundEditorLocation() : TerminalLocation.Editor,
 	});
 	await instance.processReady;
-	await services.terminalEditorService.openEditor(instance, preserveFocus ? PARADIS_BACKGROUND_EDITOR_LOCATION : undefined);
+	await services.terminalEditorService.openEditor(instance, preserveFocus ? paradisBackgroundEditorLocation() : undefined);
 	services.terminalScopeService.assignInstanceScope(instance.instanceId, stateKey);
 	return instance;
 }

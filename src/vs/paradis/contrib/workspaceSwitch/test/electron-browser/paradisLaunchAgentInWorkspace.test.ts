@@ -59,7 +59,7 @@ suite('paradisLaunchAgentInWorkspace', () => {
 		});
 	});
 
-	test('preserveFocus opens the tab without taking focus, even in the active space', async () => {
+	test('preserveFocus opens a background tab without taking focus or activating it, even in the active space', async () => {
 		const { instantiationService, calls } = setup('repo-1');
 		await instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, {
 			rootUri: URI.file('/tmp/repo'),
@@ -68,8 +68,8 @@ suite('paradisLaunchAgentInWorkspace', () => {
 			preserveFocus: true,
 		});
 		assert.deepStrictEqual(calls, [
-			'create:{"viewColumn":-1,"preserveFocus":true}',
-			'open:{"viewColumn":-1,"preserveFocus":true}',
+			'create:{"viewColumn":-1,"preserveFocus":true,"paradisInactive":true}',
+			'open:{"viewColumn":-1,"preserveFocus":true,"paradisInactive":true}',
 			'assign:repo-1',
 		]);
 	});

@@ -85,6 +85,28 @@ suite('Paradis TerminalEditorService exact group', () => {
 		assert.strictEqual(preferredGroup, group);
 	});
 
+	test('opens a background terminal tab as inactive without focus, and leaves ordinary opens unchanged', async () => {
+		const group = { id: 14 } as IEditorGroup;
+		const options: unknown[] = [];
+		const service = createService(
+			editor => {
+				options.push((editor as { options?: unknown }).options);
+				return Promise.resolve({ group } as IEditorPane);
+			},
+			() => group,
+		);
+
+		await service.openEditor(createInstance(4), { viewColumn: group.id, preserveFocus: true, paradisInactive: true });
+		await service.openEditor(createInstance(5));
+
+		assert.deepStrictEqual(options, [
+			{ pinned: true, forceReload: true, preserveFocus: true, inactive: true, auxiliary: undefined },
+			{ pinned: true, forceReload: true, preserveFocus: undefined, inactive: undefined, auxiliary: undefined },
+		]);
+		// The service's own active terminal does not follow a background open.
+		assert.strictEqual(service.activeInstance, undefined);
+	});
+
 	function createService(
 		openEditor: (...args: unknown[]) => Promise<IEditorPane | undefined>,
 		getGroup: () => IEditorGroup | undefined,
