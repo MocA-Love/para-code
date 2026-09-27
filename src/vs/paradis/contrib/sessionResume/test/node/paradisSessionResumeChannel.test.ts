@@ -1189,6 +1189,23 @@ suite('ParadisSessionResume', () => {
 
 		const sessions = await service.list(createListRequest());
 
-		assert.deepStrictEqual(sessions.map(session => [session.agent, session.id]), [['codex', 'codex-session']]);
+		assert.deepStrictEqual(sessions.map(session => [session.agent, session.id, session.codexHome]), [['codex', 'codex-session', undefined]]);
+	});
+
+	test('remembers the Codex home of a conversation that only another home has', async () => {
+		const secondHome = join(root, 'codex-home-2');
+		const secondSessions = join(secondHome, 'sessions', '2026', '08', '13');
+		await fs.mkdir(secondSessions, { recursive: true });
+		await writeLines(join(secondSessions, 'rollout-other-session.jsonl'), [
+			JSON.stringify({ type: 'session_meta', payload: { id: 'other-session', cwd: workspace } }),
+			codexMessage('user', 'Codex fixture prompt'),
+		]);
+		const service = new ParadisSessionResumeService({
+			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
+		}, new NullLogService());
+
+		const sessions = await service.list(createListRequest());
+
+		assert.deepStrictEqual(sessions.map(session => [session.id, session.codexHome]), [['other-session', secondHome]]);
 	});
 });
