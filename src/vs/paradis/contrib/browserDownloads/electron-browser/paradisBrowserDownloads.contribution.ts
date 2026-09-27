@@ -30,7 +30,7 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { BrowserActionCategory, BrowserActionGroup } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
+import { BrowserActionCategory, BrowserActionGroup, BrowserEditor } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { paradisAggregateDownloadProgress } from '../common/paradisBrowserDownloads.js';
 import { ParadisBrowserDownloadsPopover } from './paradisBrowserDownloadsPopover.js';
@@ -160,7 +160,8 @@ class ParadisShowBrowserDownloadsAction extends Action2 {
 		const instantiationService = accessor.get(IInstantiationService);
 		const editorService = accessor.get(IEditorService);
 		// 見えているボタンのうち、アクティブなエディタの中にあるものを優先して位置の基準にする。
-		const activeContainer = editorService.activeEditorPane?.getContainer();
+		const activePane = editorService.activeEditorPane;
+		const activeContainer = activePane instanceof BrowserEditor ? activePane.getContainer() : undefined;
 		const visible = [...liveButtons].filter(button => button.isVisible);
 		const button = visible.find(candidate => activeContainer && candidate.element && activeContainer.contains(candidate.element)) ?? visible[0];
 		if (button) {
