@@ -197,22 +197,25 @@ suite('ParadisClaudeAccountService defenses', () => {
 		assert.deepStrictEqual({ refreshCalls: harness.oauth.refreshCalls, status: (await harness.service.getState(undefined)).claude.accounts[0].status }, { refreshCalls: [], status: 'unavailable' });
 	});
 
-	test('a login too large for the keychain stdin path fails as too_large and changes nothing', async () => {
+	// MCP サーバーのトークンを含む大きなログインでも切り替え、`mcpOAuth` は残す（標準入力に収まらない
+	// ときの書き方は paradisClaudeKeychain.test.ts で確かめる）。
+	test('a login with large MCP tokens is switched and keeps mcpOAuth', async () => {
 		const harness = await createHarness([record(ALICE_ID, 'u-alice', 'alice@example.com'), record(BOB_ID, 'u-bob', 'bob@example.com')]);
 		const aliceStored = paradisTestCredentials('alice-1', 'alice-r1', harness.clock.now + HOUR);
 		harness.keychain.set(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, ALICE_ID, aliceStored);
 		harness.keychain.set(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, BOB_ID, paradisTestCredentials('bob-1', 'bob-r1', harness.clock.now + HOUR));
-		const live = JSON.stringify({ ...JSON.parse(aliceStored), mcpOAuth: { big: 'x'.repeat(3000) } });
-		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, live);
+		const mcpOAuth = { big: 'x'.repeat(3000) };
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, JSON.stringify({ ...JSON.parse(aliceStored), mcpOAuth }));
 		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });
-		const configBefore = await fs.promises.readFile(path.join(harness.home, '.claude.json'), 'utf8');
-		harness.keychain.maxValueBytes = 2000;
 
 		const result = await harness.service.switchAccount(BOB);
+		const live = JSON.parse(harness.keychain.get(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER) ?? '{}');
+		const config = JSON.parse(await fs.promises.readFile(path.join(harness.home, '.claude.json'), 'utf8'));
 		assert.deepStrictEqual({
-			result,
-			live: harness.keychain.get(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER) === live,
-			config: await fs.promises.readFile(path.join(harness.home, '.claude.json'), 'utf8') === configBefore,
-		}, { result: { outcome: 'failed', email: 'bob@example.com', rolledBack: true, detail: 'too_large' }, live: true, config: true });
+			outcome: result.outcome,
+			accessToken: live.claudeAiOauth?.accessToken,
+			mcpOAuth: live.mcpOAuth,
+			email: config.oauthAccount?.emailAddress,
+		}, { outcome: 'switched', accessToken: 'bob-1', mcpOAuth, email: 'bob@example.com' });
 	});
 });

@@ -72,7 +72,7 @@ import {
 	ParadisLimitsUnavailableReason
 } from '../common/paradisLimitsMonitor.js';
 import { IParadisClaudeAccountRecord, IParadisClaudeSecretStore, ParadisClaudeAccountRegistry, paradisIsClaudeAccountId } from './paradisClaudeAccountStore.js';
-import { ParadisKeychainError, ParadisKeychainValueTooLargeError } from './paradisClaudeKeychain.js';
+import { ParadisKeychainError } from './paradisClaudeKeychain.js';
 import { ParadisClaudeConfigUnreadableError, ParadisClaudeLiveAuth, ParadisClaudeLockTimeoutError } from './paradisClaudeLiveAuth.js';
 import { IParadisClaudeLoginRunner, paradisOauthAccountFromClaudeStatus } from './paradisClaudeLogin.js';
 import { IParadisClaudeOAuthClient } from './paradisClaudeOAuthClient.js';
@@ -1060,9 +1060,6 @@ export class ParadisClaudeAccountService extends Disposable {
 
 	/** 失敗の種類を固定の英語にする（パスや秘密の値を含めない）。 */
 	private classifySwitchError(error: unknown): string {
-		if (error instanceof ParadisKeychainValueTooLargeError) {
-			return 'too_large';
-		}
 		if (error instanceof ParadisClaudeConfigUnreadableError) {
 			return 'config_unreadable';
 		}

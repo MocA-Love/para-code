@@ -141,8 +141,6 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 			case 'failed':
 				if (result.rolledBack === false) {
 					this.notificationService.error(localize('paradis.claudeAccounts.switchFailedNoRollback', "Claude のアカウントを切り替えられず、元に戻すこともできませんでした。ターミナルで claude を起動し、/login でログインし直してください。"));
-				} else if (result.detail === 'too_large') {
-					this.notificationService.error(localize('paradis.claudeAccounts.switchTooLarge', "この PC の Claude のログイン情報（MCP サーバーのログインを含む）が大きく、ほかのアプリから読み取られない方法ではキーチェーンへ書き込めないため、切り替えませんでした。変更はしていません。"));
 				} else if (result.detail === 'config_unreadable') {
 					this.notificationService.error(localize('paradis.claudeAccounts.switchConfigUnreadable', "~/.claude.json を読み取れないため、切り替えませんでした。ファイルが壊れていないか確認してください。"));
 				} else if (result.detail === 'keychain') {
