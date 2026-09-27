@@ -36,12 +36,12 @@ import {
 	PARADIS_COPILOT_UTILITY_CHANNEL,
 } from '../../copilotUtility/common/paradisCopilotUtility.js';
 import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
+import { paradisResolveAgentTemplates } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import {
 	IParadisAddWorktreeRequest,
 	IParadisAgentCommandTemplate,
 	IParadisGitBranches,
-	PARADIS_DEFAULT_AGENT_COMMANDS,
 	paradisBuildAgentCommand,
 	paradisBuildWorktreeNames,
 	paradisParseWorktreeNaming,
@@ -156,13 +156,9 @@ function paradisDescribeLaunchedAgent(paneTokenService: IParadisPaneTokenService
 	return { instanceId: instance.instanceId, paneToken: paneTokenService.getTokenForInstance(instance.instanceId) };
 }
 
-/** 設定 paradis.workspaceSwitch.agents（無ければ既定）からエージェント定義を得る（ダイアログの _agents と同じ規則）。 */
+/** 設定 paradis.workspaceSwitch.agents（無ければ既定＋CLI から取ったモデル候補）からエージェント定義を得る（ダイアログの _agents と同じ規則）。 */
 export function paradisConfiguredAgents(configurationService: IConfigurationService): readonly IParadisAgentCommandTemplate[] {
-	const configured = configurationService.getValue<IParadisAgentCommandTemplate[]>('paradis.workspaceSwitch.agents');
-	if (Array.isArray(configured) && configured.length > 0) {
-		return configured.filter(agent => agent && typeof agent.id === 'string' && agent.id !== 'none' && typeof agent.command === 'string');
-	}
-	return PARADIS_DEFAULT_AGENT_COMMANDS;
+	return paradisResolveAgentTemplates(configurationService);
 }
 
 /** worktree の作成先ディレクトリを決める（ダイアログの _computeWorktreeUri と同じ規則）。 */
