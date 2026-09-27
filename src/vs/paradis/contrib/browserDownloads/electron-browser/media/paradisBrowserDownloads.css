@@ -88,6 +88,7 @@
 	============================================================ */
 
 /* z-index stays below the workbench modal layer (2575), same tier as the profile dropdown. */
+
 .monaco-workbench .paradis-browser-downloads-popover {
 	position: absolute;
 	z-index: 2550;
@@ -102,6 +103,18 @@
 	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
 	font-size: 13px;
 	outline: none;
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-message {
+	padding: 6px 12px;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--vscode-errorForeground);
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.monaco-workbench .paradis-browser-downloads-popover .pbd-message[hidden] {
+	display: none;
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-header {
@@ -278,6 +291,8 @@
 	border-radius: var(--vscode-cornerRadius-small, 4px);
 	color: var(--vscode-button-secondaryForeground);
 	background-color: var(--vscode-button-secondaryBackground);
+	/* High contrast themes have no secondary button background; the border keeps it a button. */
+	border: 1px solid var(--vscode-button-border, transparent);
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-open:hover {

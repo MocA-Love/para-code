@@ -7,7 +7,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisIsExecutableDownload } from '../../common/paradisBrowserDownloads.js';
+import { paradisIsOpenableDownload } from '../../common/paradisBrowserDownloads.js';
 import { IParadisDownloadsShell, IParadisTrackedDownloadItem, ParadisBrowserDownloadsTracker } from '../../electron-main/paradisBrowserDownloadsTracker.js';
 
 class FakeDownloadItem implements IParadisTrackedDownloadItem {
@@ -43,19 +43,21 @@ class FakeDownloadItem implements IParadisTrackedDownloadItem {
 function createShell(existing: ReadonlySet<string>) {
 	const opened: string[] = [];
 	const shown: string[] = [];
+	const quarantined: string[] = [];
 	const shell: IParadisDownloadsShell = {
 		openPath: async path => { opened.push(path); return ''; },
 		showItemInFolder: path => { shown.push(path); },
 		exists: path => existing.has(path),
+		ensureQuarantine: async path => { quarantined.push(path); },
 	};
-	return { shell, opened, shown };
+	return { shell, opened, shown, quarantined };
 }
 
 suite('ParadisBrowserDownloadsTracker', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('lists downloads newest first and only opens finished, non-executable files', async () => {
-		const { shell, opened, shown } = createShell(new Set(['/dl/report.pdf', '/dl/setup.command', '/dl']));
+	test('lists downloads newest first and only opens finished files of an openable type', async () => {
+		const { shell, opened, shown, quarantined } = createShell(new Set(['/dl/report.pdf', '/dl/setup.command', '/dl']));
 		const tracker = store.add(new ParadisBrowserDownloadsTracker(shell, () => '/dl'));
 		const report = new FakeDownloadItem('report.pdf', '/dl/report.pdf');
 		const setup = new FakeDownloadItem('setup.command', '/dl/setup.command');
@@ -67,16 +69,16 @@ suite('ParadisBrowserDownloadsTracker', () => {
 		setup.finish('completed');
 
 		const items = await tracker.list();
-		assert.deepStrictEqual(items.map(item => [item.id, item.filename, item.state, item.executable]), [
-			['download-2', 'setup.command', 'completed', true],
-			['download-1', 'report.pdf', 'completed', false],
+		assert.deepStrictEqual(items.map(item => [item.id, item.filename, item.state, item.openable]), [
+			['download-2', 'setup.command', 'completed', false],
+			['download-1', 'report.pdf', 'completed', true],
 		]);
-		assert.strictEqual(await tracker.open('download-2'), false, 'executables are never opened');
+		assert.strictEqual(await tracker.open('download-2'), false, 'types outside the allow list are never opened');
 		assert.strictEqual(await tracker.open('download-1'), true);
 		assert.strictEqual(await tracker.showInFolder('download-2'), true);
 		assert.strictEqual(await tracker.open('download-99'), false);
 		assert.strictEqual(await tracker.openDownloadsFolder(), true);
-		assert.deepStrictEqual({ opened, shown }, { opened: ['/dl/report.pdf', '/dl'], shown: ['/dl/setup.command'] });
+		assert.deepStrictEqual({ opened, shown, quarantined }, { opened: ['/dl/report.pdf', '/dl'], shown: ['/dl/setup.command'], quarantined: ['/dl/report.pdf', '/dl/setup.command'] });
 	});
 
 	test('cancels running items, keeps them until finished, and drops dialogs the user closed', async () => {
@@ -112,10 +114,20 @@ suite('ParadisBrowserDownloadsTracker', () => {
 		assert.deepStrictEqual(seen, [['progressing'], ['interrupted']]);
 	});
 
-	test('treats scripts, installers and extensionless files as executables', () => {
+	test('never opens a file downloaded in an agent-only session, even of an openable type', async () => {
+		const { shell, opened } = createShell(new Set(['/dl/notes.pdf']));
+		const tracker = store.add(new ParadisBrowserDownloadsTracker(shell, () => '/dl'));
+		const item = new FakeDownloadItem('notes.pdf', '/dl/notes.pdf');
+		tracker.track(item, { agentSession: true });
+		item.finish('completed');
+		const [listed] = await tracker.list();
+		assert.deepStrictEqual([listed.fromAgentSession, listed.openable, await tracker.open(listed.id), opened], [true, true, false, []]);
+	});
+
+	test('only allow-listed types are openable', () => {
 		assert.deepStrictEqual(
-			['Setup.EXE', 'tool.app', 'x.dmg', 'y.pkg', 'run.sh', 'LICENSE', 'report.pdf', 'data.csv', 'archive.zip', 'trailing.exe. '].map(paradisIsExecutableDownload),
-			[true, true, true, true, true, true, false, false, false, true],
+			['report.PDF', 'photo.jpeg', 'data.csv', 'archive.zip', 'Setup.EXE', 'tool.app', 'x.dmg', 'disk.iso', 'help.chm', 'page.html', 'image.svg', 'macro.docm', 'link.webloc', 'profile.mobileconfig', 'LICENSE', 'trailing.pdf. ', 'double.pdf.exe'].map(paradisIsOpenableDownload),
+			[true, true, true, true, false, false, false, false, false, false, false, false, false, false, false, true, false],
 		);
 	});
 });

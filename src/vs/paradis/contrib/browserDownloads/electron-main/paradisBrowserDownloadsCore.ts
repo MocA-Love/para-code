@@ -27,7 +27,7 @@ export function paradisConfigureBrowserDownloadsWithPath(
 	session: Session,
 	configurationService: IConfigurationService,
 	defaultDownloadsPath: () => string,
-	onDownload?: (item: DownloadItem) => void,
+	onDownload?: (item: DownloadItem, session: Session) => void,
 ): void {
 	if (configuredSessions.has(session)) {
 		return;
@@ -38,7 +38,7 @@ export function paradisConfigureBrowserDownloadsWithPath(
 		paradisAssignDownloadSavePath(item, configurationService, defaultDownloadsPath);
 		// 一覧（URL バー右のボタン）への登録は、自動保存が無効で保存ダイアログを出す場合も行う。
 		// 保存先を決めた後に登録するのは、一覧の最初の1回目から保存先が見えるようにするため。
-		onDownload?.(item);
+		onDownload?.(item, session);
 	});
 }
 

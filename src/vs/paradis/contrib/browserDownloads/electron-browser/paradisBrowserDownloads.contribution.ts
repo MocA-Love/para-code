@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 内蔵ブラウザの URL バー右に出すダウンロードのボタン（q.html Q73 案B）。
+// 内蔵ブラウザの URL バー右に出すダウンロードのボタン。
 //
 // upstream のファイルには触らず、公開されている拡張点だけで足している:
 //  - MenuId.BrowserActionsToolbar（URL バーの右のツールバー）へアクションを1つ登録
@@ -20,7 +20,7 @@ import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hover
 import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { IAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js';
@@ -34,6 +34,7 @@ import { BrowserActionCategory, BrowserActionGroup, BrowserEditor } from '../../
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { paradisAggregateDownloadProgress } from '../common/paradisBrowserDownloads.js';
 import { ParadisBrowserDownloadsPopover } from './paradisBrowserDownloadsPopover.js';
+import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisBrowserDownloadsService } from './paradisBrowserDownloadsService.js';
 
 const SHOW_DOWNLOADS_ACTION_ID = 'paradis.browser.showDownloads';
@@ -46,21 +47,31 @@ const downloadsIcon = registerIcon('paradis-browser-downloads', Codicon.desktopD
 /** 今描かれているボタン。コマンドパレットから開いたときの位置合わせに使う。 */
 const liveButtons = new Set<ParadisBrowserDownloadsActionViewItem>();
 
-/** 1つのウィンドウ（renderer）で同時に開く一覧は1つだけ。 */
-const openPopover = new MutableDisposable<ParadisBrowserDownloadsPopover>();
+/**
+ * 開いている一覧。補助ウィンドウも同じ renderer なので、ウィンドウ（ボタンのある文書）ごとに1つ持つ。
+ * 別のウィンドウのボタンを押したときは、そのウィンドウの一覧を開く（こちらを閉じるだけにしない）。
+ */
+const openPopovers = new Map<Window, ParadisBrowserDownloadsPopover>();
+
+function closeAllDownloadsPopovers(): void {
+	for (const popover of [...openPopovers.values()]) {
+		popover.close();
+	}
+}
 
 function toggleDownloadsPopover(instantiationService: IInstantiationService, anchor: HTMLElement | undefined): void {
-	if (openPopover.value) {
-		openPopover.clear();
+	const targetWindow = anchor ? dom.getWindow(anchor) : undefined;
+	const existing = targetWindow ? openPopovers.get(targetWindow) : [...openPopovers.values()][0];
+	if (existing) {
+		existing.close();
 		return;
 	}
-	let popover: ParadisBrowserDownloadsPopover | undefined = undefined;
-	popover = instantiationService.createInstance(ParadisBrowserDownloadsPopover, anchor, () => {
-		if (openPopover.value === popover) {
-			openPopover.clearAndLeak();
+	const popover: ParadisBrowserDownloadsPopover = instantiationService.createInstance(ParadisBrowserDownloadsPopover, anchor, () => {
+		if (openPopovers.get(popover.targetWindow) === popover) {
+			openPopovers.delete(popover.targetWindow);
 		}
 	});
-	openPopover.value = popover;
+	openPopovers.set(popover.targetWindow, popover);
 }
 
 class ParadisBrowserDownloadsActionViewItem extends BaseActionViewItem {
@@ -183,6 +194,7 @@ class ParadisBrowserDownloadsContribution extends Disposable implements IWorkben
 		@IParadisBrowserDownloadsService downloads: IParadisBrowserDownloadsService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IActionViewItemService actionViewItemService: IActionViewItemService,
+		@IParadisWorkspaceSwitchService workspaceSwitchService: IParadisWorkspaceSwitchService,
 	) {
 		super();
 		this._hasDownloads = CONTEXT_PARADIS_BROWSER_HAS_DOWNLOADS.bindTo(contextKeyService);
@@ -192,7 +204,9 @@ class ParadisBrowserDownloadsContribution extends Disposable implements IWorkben
 
 		this._register(actionViewItemService.register(MenuId.BrowserActionsToolbar, SHOW_DOWNLOADS_ACTION_ID, (action, options, instantiationService) =>
 			instantiationService.createInstance(ParadisBrowserDownloadsActionViewItem, action, options)));
-		this._register(openPopover);
+		// スペースを切り替えるときは閉じる（一覧は内蔵ブラウザを止める扱いなので、切替先のページが止まったままになる）。
+		this._register(workspaceSwitchService.onWillSwitchScope(() => closeAllDownloadsPopovers()));
+		this._register(toDisposable(() => closeAllDownloadsPopovers()));
 	}
 }
 

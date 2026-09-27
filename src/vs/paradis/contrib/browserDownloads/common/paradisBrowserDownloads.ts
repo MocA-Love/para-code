@@ -17,7 +17,7 @@ export const PARADIS_BROWSER_DOWNLOADS_PATH_KEY = 'paradis.browser.downloads.pat
 export const PARADIS_BROWSER_DOWNLOADS_DEFAULT_SUBFOLDER = 'Paracode';
 
 // ---------------------------------------------------------------------------------------------
-// ダウンロード一覧（URL バー右のボタンとポップオーバー、q.html Q73 案B）の main ⇔ renderer 契約。
+// ダウンロード一覧（URL バー右のボタンとポップオーバー）の main ⇔ renderer 契約。
 // ---------------------------------------------------------------------------------------------
 
 /** electron-main が公開するチャネル名。 */
@@ -40,8 +40,19 @@ export interface IParadisBrowserDownloadItem {
 	readonly receivedBytes: number;
 	/** 0 はサーバーが大きさを知らせてこなかった（進み具合が分からない）ことを表す。 */
 	readonly totalBytes: number;
-	/** 実行ファイル。「開く」を出さず、main も開くのを断る。 */
-	readonly executable: boolean;
+	/**
+	 * 「開く」を出してよい種類か（{@link paradisIsOpenableDownload}）。それ以外は「フォルダで表示」だけで、
+	 * main も開くのを断る。
+	 */
+	readonly openable: boolean;
+	/**
+	 * エージェント専用の保存領域（Agent スコープ）のタブから落ちてきたもの。エージェントが選んだファイル
+	 * なので「開く」を出さない（main も開くのを断る）。エージェントが作ったプロファイルからのものは
+	 * renderer が {@link profileId} から判断する。
+	 */
+	readonly fromAgentSession: boolean;
+	/** 名前付きプロファイルのタブから落ちてきたときの、そのプロファイルの ID。 */
+	readonly profileId?: string;
 	/** 開始時刻（epoch ms）。一覧は新しい順に並べる。 */
 	readonly startTime: number;
 }
@@ -53,7 +64,7 @@ export interface IParadisBrowserDownloadsMainService {
 	list(): Promise<readonly IParadisBrowserDownloadItem[]>;
 	/** 進行中のものを取り消す。 */
 	cancel(id: string): Promise<void>;
-	/** 完了したファイルを既定のアプリで開く。実行ファイルは開かない（false を返す）。 */
+	/** 完了したファイルを既定のアプリで開く。開いてよい種類でなければ・エージェント由来なら開かない（false）。 */
 	open(id: string): Promise<boolean>;
 	/** Finder / エクスプローラーでファイルを選んだ状態で表示する。 */
 	showInFolder(id: string): Promise<boolean>;
@@ -66,36 +77,38 @@ export interface IParadisBrowserDownloadsMainService {
 }
 
 /**
- * 開くと何かが実行される種類のファイル。これらは一覧に「開く」を出さず「フォルダで表示」だけにする
- * （q.html Q73: 実行ファイルを誤って起動しない）。拡張子は小文字・ドット付きで持つ。
+ * 「開く」ボタンを出してよい種類（許可リスト）。開いても既定のアプリで表示されるだけで、実行・
+ * インストール・マウント・スクリプトの評価・マクロの実行につながらないものに限る。載っていないものは
+ * すべて「フォルダで表示」だけにする（知らない種類を安全とみなさない）。拡張子は小文字・ドット付き。
  *
- * 足すときの目安: OS が既定の関連付けで「実行・インストール・スクリプトとして評価」するもの。
- * 圧縮ファイル（.zip 等）は展開されるだけなので含めない。
+ * わざと載せていないもの: HTML / SVG / MHT（既定のブラウザで file: として開きスクリプトが動く）、
+ * マクロ付き・旧形式の Office 文書（.docm / .xls など）、ディスクイメージ（.dmg / .iso）、インストーラー、
+ * スクリプト、ショートカットの類（.url / .webloc / .lnk）、構成プロファイル（.mobileconfig）。
  */
-const PARADIS_EXECUTABLE_EXTENSIONS: ReadonlySet<string> = new Set([
-	// macOS
-	'.app', '.command', '.tool', '.pkg', '.mpkg', '.dmg', '.terminal', '.workflow', '.action',
-	'.scpt', '.scptd', '.applescript', '.osax', '.prefpane', '.kext', '.fileloc', '.inetloc',
-	// Windows
-	'.exe', '.com', '.bat', '.cmd', '.msi', '.msix', '.msixbundle', '.appx', '.appxbundle', '.msp',
-	'.scr', '.pif', '.cpl', '.msc', '.lnk', '.url', '.reg', '.hta', '.vbs', '.vbe', '.js', '.jse',
-	'.wsf', '.wsh', '.ps1', '.psm1', '.appref-ms', '.application', '.gadget', '.inf',
-	// Linux / 共通
-	'.sh', '.bash', '.zsh', '.csh', '.ksh', '.fish', '.run', '.bin', '.appimage', '.deb', '.rpm',
-	'.desktop', '.jar', '.py', '.pyw', '.pl', '.rb', '.php',
+const PARADIS_OPENABLE_EXTENSIONS: ReadonlySet<string> = new Set([
+	// 文書・テキスト
+	'.pdf', '.txt', '.md', '.csv', '.tsv', '.log', '.rtf', '.json',
+	'.docx', '.xlsx', '.pptx', '.odt', '.ods', '.odp', '.pages', '.numbers', '.key', '.epub',
+	// 画像
+	'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.heic', '.heif', '.avif', '.ico',
+	// 音声・動画
+	'.mp3', '.m4a', '.aac', '.wav', '.flac', '.ogg', '.opus', '.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi',
+	// 圧縮ファイル（展開されるだけ。中身は開かない）
+	'.zip', '.tar', '.gz', '.tgz', '.bz2', '.xz',
 ]);
 
 /**
- * ファイル名が実行ファイルか。拡張子の大文字小文字は区別しない。
- * 拡張子が無いファイルは判断できないので実行ファイル扱いにする（Unix の実行形式は拡張子を持たない）。
+ * ファイル名が「開く」を出してよい種類か。拡張子の大文字小文字は区別せず、末尾のドットや空白は
+ * 落として判定する（Windows はそれらを落として保存するため、`a.exe.` は `a.exe` として扱う）。
+ * 拡張子が無いものは開かせない。
  */
-export function paradisIsExecutableDownload(filename: string): boolean {
+export function paradisIsOpenableDownload(filename: string): boolean {
 	const name = filename.trim().replace(/[.\s]+$/, '');
 	const dot = name.lastIndexOf('.');
 	if (dot <= 0) {
-		return true;
+		return false;
 	}
-	return PARADIS_EXECUTABLE_EXTENSIONS.has(name.slice(dot).toLowerCase());
+	return PARADIS_OPENABLE_EXTENSIONS.has(name.slice(dot).toLowerCase());
 }
 
 /**

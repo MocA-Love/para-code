@@ -15,28 +15,39 @@
 
 import * as fs from 'fs';
 import { app, shell } from 'electron';
-import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { PARADIS_BROWSER_DOWNLOADS_CHANNEL } from '../common/paradisBrowserDownloads.js';
 import { paradisConfigureBrowserDownloadsWithPath, paradisResolveBrowserDownloadsDirectory } from './paradisBrowserDownloadsCore.js';
-import { ParadisBrowserDownloadsTracker } from './paradisBrowserDownloadsTracker.js';
+import { IParadisDownloadOrigin, ParadisBrowserDownloadsTracker } from './paradisBrowserDownloadsTracker.js';
+import { paradisEnsureDownloadQuarantine } from './paradisDownloadQuarantine.js';
 
 /**
  * main プロセスに1つだけのダウンロード一覧。セッション（グローバル・ワークスペース・プロファイル・
  * エージェント…）ごとに `will-download` を配線するので、どのセッションのダウンロードもここへ集まる。
- * 最初に触った側（セッションの configure() か app.ts のチャネル登録）が作る。どちらも同じ main の
- * IConfigurationService を渡してくる。
+ * 最初に触った側（セッションの configure() か app.ts から呼ばれる登録）が作る。どちらも同じ main の
+ * IConfigurationService を渡してくる。終了処理で dispose された後も差し替えない（dispose 済みの一覧は
+ * 何も記録しないので、終了間際に作られたセッションが繋がっていない新しい一覧へ記録することが無い）。
  */
 let tracker: ParadisBrowserDownloadsTracker | undefined;
 
-function paradisGetBrowserDownloadsTracker(configurationService: IConfigurationService): ParadisBrowserDownloadsTracker {
+/**
+ * Electron のセッションから、どの保存領域（エージェント専用か・どのプロファイルか）かを引く口。
+ * BrowserSession を知っている paradisBrowserDownloadsMain.ts が登録する（ここから BrowserSession を
+ * import すると、browserSession.ts との間で import が循環するため）。
+ */
+let originResolver: ((session: Electron.Session) => IParadisDownloadOrigin) | undefined;
+
+export function paradisSetBrowserDownloadOriginResolver(resolver: (session: Electron.Session) => IParadisDownloadOrigin): void {
+	originResolver = resolver;
+}
+
+export function paradisGetBrowserDownloadsTracker(configurationService: IConfigurationService): ParadisBrowserDownloadsTracker {
 	if (!tracker) {
 		tracker = new ParadisBrowserDownloadsTracker(
 			{
 				openPath: path => shell.openPath(path),
 				showItemInFolder: path => shell.showItemInFolder(path),
 				exists: path => fs.existsSync(path),
+				ensureQuarantine: async (path, sourceUrl) => { await paradisEnsureDownloadQuarantine(path, sourceUrl); },
 			},
 			() => paradisResolveBrowserDownloadsDirectory(configurationService, () => app.getPath('downloads')),
 		);
@@ -54,24 +65,7 @@ function paradisGetBrowserDownloadsTracker(configurationService: IConfigurationS
  */
 export function paradisConfigureBrowserDownloads(session: Electron.Session, configurationService: IConfigurationService): void {
 	const downloads = paradisGetBrowserDownloadsTracker(configurationService);
-	paradisConfigureBrowserDownloadsWithPath(session, configurationService, () => app.getPath('downloads'), item => downloads.track(item));
-}
-
-/** app.ts の PARA-PATCH 点から1行で呼ばれ、renderer 向けのダウンロード一覧チャネルを登録する。 */
-export function paradisRegisterBrowserDownloads(
-	server: { registerChannel(channelName: string, channel: IServerChannel<string>): void },
-	configurationService: IConfigurationService,
-): IDisposable {
-	const downloads = paradisGetBrowserDownloadsTracker(configurationService);
-	const store = new DisposableStore();
-	// 一覧を見ているウィンドウが無い間の進み具合を main に溜め込まない。renderer は購読し始めた
-	// ときに list() で全件を取り直す。
-	server.registerChannel(PARADIS_BROWSER_DOWNLOADS_CHANNEL, ProxyChannel.fromService(downloads, store, { unbufferedEvents: ['onDidChangeDownloads'] }));
-	store.add(toDisposable(() => {
-		downloads.dispose();
-		if (tracker === downloads) {
-			tracker = undefined;
-		}
-	}));
-	return store;
+	paradisConfigureBrowserDownloadsWithPath(session, configurationService, () => app.getPath('downloads'), (item, from) => {
+		downloads.track(item, originResolver?.(from) ?? { agentSession: false });
+	});
 }
