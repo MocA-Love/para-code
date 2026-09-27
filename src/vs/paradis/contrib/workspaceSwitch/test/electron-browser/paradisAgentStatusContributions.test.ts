@@ -22,6 +22,7 @@ import { IParadisAgentStatusSnapshotOutcome, IParadisAgentStatusSnapshotService 
 import { IParadisNotificationsSettingsService } from '../../../notifications/browser/paradisNotificationsSettings.js';
 import { PARADIS_NOTIFICATIONS_CHANNEL } from '../../../notifications/common/paradisNotifications.js';
 import { ParadisNotificationTrigger } from '../../../notifications/electron-browser/paradisNotificationTrigger.contribution.js';
+import { PARADIS_MOBILE_RELAY_CHANNEL } from '../../../mobileRelay/common/paradisMobileRelay.js';
 import { ParadisAgentStatusPoller } from '../../electron-browser/paradisAgentStatus.contribution.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../common/paradisWorkspaceSwitch.js';
 
@@ -40,6 +41,9 @@ suite('Paradis agent status contribution wiring', () => {
 			getChannel: (name: string) => {
 				if (name === PARADIS_NOTIFICATIONS_CHANNEL) {
 					return { listen: () => Event.None, call: async () => undefined };
+				}
+				if (name === PARADIS_MOBILE_RELAY_CHANNEL) {
+					return { listen: () => Event.None, call: async () => [] };
 				}
 				assert.strictEqual(name, PARADIS_AGENT_BROWSER_CHANNEL);
 				return {
@@ -100,6 +104,9 @@ suite('Paradis agent status contribution wiring', () => {
 			{ notify: () => undefined } as never,
 			logService,
 			producer,
+			{ getValue: () => undefined } as never,
+			{ windowId: 1 } as never,
+			{ record: async () => undefined } as never,
 		));
 		const statusContribution = store.add(new ParadisAgentStatusPoller(
 			sharedProcessService,

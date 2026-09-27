@@ -57,6 +57,8 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	// built-in 'quick-input-widget' entry above): a transient, user-invoked list that must paint
 	// above the native WebContentsView.
 	{ className: 'paradis-browser-profile-dropdown', type: BrowserOverlayType.QuickInput },
+	// PARA-PATCH: the fork's notification inbox popover under the title bar bell (vs/paradis/contrib/notificationInbox).
+	{ className: 'paradis-notification-inbox-popover', type: BrowserOverlayType.QuickInput },
 	{ className: 'notifications-center', type: BrowserOverlayType.Notification },
 	// PARA-PATCH: notification toasts intentionally do NOT pause the browser view. Upstream pauses the
 	// WebContentsView whenever a toast overlaps it (so the toast stays visible above the native view),

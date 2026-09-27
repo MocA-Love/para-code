@@ -305,7 +305,7 @@ Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.
 
 **重要**: この重なり検知は汎用的なz-index判定ではなく、**クラス名の決め打ちホワイトリスト方式**。標準の `monaco-dialog-modal-block` / `quick-input-widget`（`IDialogService`/`IQuickInputService`経由）は最初から登録済みで無条件に機能するが、fork独自の「自前DOM + backdrop方式」のダイアログは、それぞれ固有のbackdropクラス名を持ち、**そのクラス名を `OVERLAY_DEFINITIONS` に個別追加しない限りブラウザの背後に隠れる**。
 
-- 登録済み（問題なし）: `paradis-binding-dialog-backdrop`、`paradis-bookmark-dialog-backdrop`
+- 登録済み（問題なし）: `paradis-binding-dialog-backdrop`、`paradis-bookmark-dialog-backdrop`、`paradis-notification-inbox-popover`（通知の受信箱、2026-09-27）
 - 2026-08-15時点で判明した未登録（＝ブラウザ表示中に開くと背後に隠れる）:
   1. `paradis-preset-editor-backdrop`（カスタムプリセットコマンドのモーダル、`src/vs/paradis/contrib/terminalPresets/browser/paradisPresetEditorDialog.ts`）
   2. `paradis-create-worktree-backdrop`（ワークスペース切替/worktree作成ダイアログ）
@@ -821,6 +821,41 @@ TM14 の保存画面と TM12 の記録は、renderer の `IFileService` では�
 - パッチは `_inputEvent` の先頭に IME の確定を送る経路を足すので、スペース切り替え中の入力ゲートが素通りされうる。`terminalIme/browser/paradisTerminalImeInputGate.contribution.ts` が、ゲート中は xterm の要素のキャプチャ段階で `input` を止め、ゲート中に始まった変換（`compositionstart` / `update` / `end`）も丸ごと xterm に見せない（変換の確定で文字を送る素の xterm の経路もこれで止まる）。ゲートの前から続いている変換だけは、途中で止めると xterm が変換中のまま残るので通す
 - Web ビルド（`remote/web` の xterm）には当てていない
 - パッチには不可視文字（U+200E）と2スペースのインデントが入るので、`build/filters.ts` の unicode / indentation の検査から `build/npm/paradisXtermIme/**` を外してある
+
+## 通知の受信箱・Dock の件数・メニューバーのアイコン（notificationInbox、2026-09-27、フェーズ4）
+
+エージェントの完了・許可待ち・質問の通知は、これまでどおりペインを持っているウィンドウの renderer が1件ずつ鳴らすかを決める（`paradisNotificationTrigger.contribution.ts`）。その結果を、鳴らさなかったもの（見ていたスペース・おやすみモード）も含めて shared process の台帳へ書く。台帳は `contrib/notificationInbox/common/paradisNotificationInboxLedger.ts`（I/O なし）で、shared process の登録口から `paradisNotificationInbox` チャネルとして出している。タイトルバーのベル、Dock の件数、メニューバーのアイコンはどれもこの台帳だけを読む。
+
+- 台帳は shared process のメモリにだけある。ウィンドウの再読み込みでは残り、アプリの終了で消える。上限 200 件
+- **台帳の鍵はペイントークンではなく、その SHA-1（`paradisInboxPaneKey`）。** 台帳は全ウィンドウへ配られ、ペイントークンは MCP の認証にも使う秘密なので、他のウィンドウへ渡さない。持ち主のウィンドウは手元のトークンを同じ方法でハッシュして突き合わせる
+- 件数は「確認していないペインの数」（通知の件数ではない）。未読の行があり、いまどれかのウィンドウに開いているペインだけを数える。開いているペインは各ウィンドウが接続ごとに知らせ、接続が切れたら外す。接続名（`window:<id>`）は再読み込みでも変わらないので、同じ接続名がまだ繋がっていれば外さない
+- 既読になるのは、行を押したとき・「このペインの通知を既読にする」、ペインへフォーカスしたとき、ペインの状態が通知の種類から変わったとき（完了はスペースを見て確認済みになった＝`acknowledgePaneStatus` か次の作業を始めたとき、許可待ち・質問は答えたとき）。台帳はペインごとに最後の状態を覚えていて、状態の知らせより遅れて届いた記録は最初から既読で入れる
+- 行を押したときの移動は台帳経由でペインを持っているウィンドウへ届け、そのウィンドウがフェーズ1の `paradisRevealNotifiedPane` で前に出てスペースを切り替える
+- 音と読み上げは発言を待たずにすぐ鳴らす。OS 通知の本文と台帳の記録だけが、中継の `getAgentPaneInsights` を待つ（全体で 1.5 秒まで、取り直しは本文を載せるときだけ）。完了の発言は、そのターンの作業が始まった時刻（直前の状態の `changedAt`）より後のものだけを使い、古ければ載せない
+- 通知と受信箱に出す文は伏せ字を通す（`paradisRedactSecrets`）。伏せるのは、Bearer / Basic の値、大文字の環境変数 `*_KEY` / `*_SECRET` / `*_TOKEN` / `*_PASSWORD` / `*_DSN` などの右辺、`api_key:` や `password=` の右辺、`--password` / `--api-key` などの引数、`mysql -p<値>`・`docker login -p`・`curl -u user:pass`・空白区切りの `aws_secret_access_key <値>`、既知の形のトークン（`sk-`・`sk_live_`・`ghp_`・`github_pat_`・`AKIA`・`xox?-`・`AIza`・`npm_`・`glpat-`・`hf_`・JWT）、URL の認証情報と Sentry の DSN のキー、Slack / Discord の webhook、PEM の秘密鍵、切り詰めの境目に残った既知の接頭辞の断片。値として伏せるのは ASCII の文字だけで、引数は行頭か空白の直後のものだけ（日本語の文や `--sort-key` のような引数を消さないため）。許可待ちは「ツール名: 伏せ字を入れた要約」。形の決まっていない秘密は拾えないので、本文そのものを切る設定（`paradis.notifications.osIncludeMessage`、既定オン）を残している。受信箱の外（フェーズ3のエージェントの様子のホバー）は伏せ字を通していない
+- Dock の件数は、おやすみモードの間は出さない（受信箱とベルには残す）。OS 通知だけを切っている人の分（`silent`）は数える（要対応には違いないため）
+
+- 【要確認】アプリの再起動で復元されたターミナルに `PARA_CODE_TERMINAL_PANE_ID` が入っていなかった（新規ターミナルには入る。2026-09-27 のフェーズ4の実機確認で見つけた、フェーズ4とは別の件）。hook がペインを特定できず、そのペインの通知が届かない可能性がある
+
+upstream 取り込みで壊れやすいのは次の4点。
+
+- **Dock の件数は upstream の `setApplicationBadge` に乗っている。** main の `DockBadgeManager`（`windowImpl.ts`）がウィンドウごとの数を足し合わせる前提で、各ウィンドウは自分のペインの分だけを出している（全体の数を出すとウィンドウの数だけ掛け算になる）。Agent Sessions ウィンドウの `SessionsApplicationBadge` の数も同じ合計に足されるので、両方を開いていると Dock の数字は「確認が必要なペイン＋Sessions の件数」になる。**Windows はアプリ全体の数ではなく、ウィンドウごとにタスクバーへそのウィンドウの分を重ねて出す**（upstream の `setOverlayIcon`）。`app.setBadgeCount` を直接呼ぶと `DockBadgeManager` と取り合うので呼ばない
+- **メニューバーのアイコンは main で作る**（`electron-main/paradisNotificationTrayMain.ts`、既定オフ）。`app.ts` の PARA-PATCH は import 1行と登録1行。`Tray.setImage` / `setContextMenu` は AppKit のコールバックの中で呼ぶと main が固まることがある（Orca の知見）ので必ず `setImmediate` で次の周回に回す。絵は PNG を同梱せずコードで描いている（`paradisRenderTrayBell`）。Linux は作らない。依頼の宛先は Agent Sessions ウィンドウ（fork の通常ウィンドウ向け機能を読み込まない）を除いて選ぶ。ウィンドウが1つも無くなったら中身を空にし、「アイコンを隠す」は main ですぐ消して、設定の書き換えは次に中身を送ってきたウィンドウに頼む
+- **受信箱のポップオーバーを内蔵ブラウザの上に出すため**、`overlayManager.ts` の `OVERLAY_DEFINITIONS` に `paradis-notification-inbox-popover` を PARA-PATCH で足した。z-index はタイトルバーのポップオーバーと同じ 2500（モーダル 2575 より下）。ベルが1つ増えたぶん、upstream がタイトルバー中央のツールバーごと隠す幅（`titlebarPart.ts` のはみ出し判定）が広がり、「エージェント一覧」「ブラウザ一覧」も早めに消える。件数が出たときに幅が変わってはみ出し判定がずれないよう、バッジの枠は常に確保している
+- **音声入力中に読み上げを止める仕組みは、upstream のチャットの内部モジュールに依存している。** `workbench/contrib/chat/browser/speechToText/chatSpeechToTextService.js` の `ChatSpeechToTextState`・`state`・`isPreparingModel`・`onDidChangeState`・`onDidChangePreparingModel`（と `ISpeechService` のセッション）。チャットは upstream の変更が多いので、取り込みのたびにこれらが残っているかを確かめる。`isBusy` は使わない（停止の途中も busy のまま知らせずに消えるので、音声入力中から戻れなくなった。2026-09-27 に修正）
+
+### 内蔵の音声入力の配布（既定では無効）
+
+upstream のディクテーションは Foundry Local のネイティブ部品を使うが、パッケージングで `node_modules` から削られ（`getFoundryLocalExcludeFilter`）、初回に `product.json` の `dictationRuntime.urlTemplate` から取ってくる前提になっている。この値は upstream では Azure Pipelines の手順（`build/dictation-runtime/produce.ts`）が書き、Para Code のリリースでは誰も書いていない。そのため今の配布版ではマイクのボタンは出るが押すと失敗する見込み（推測。実機未確認）。
+
+- **ライセンス: 取ってくる部品は MIT ではない。** MIT なのは JS の `foundry-local-sdk` だけで、実行時に落とす `Microsoft.AI.Foundry.Local.Core` は "MICROSOFT SOFTWARE LICENSE TERMS / FOUNDRY LOCAL CORE"（nuspec は `requireLicenseAcceptance=true`）。利用権は「自分のアプリの開発とテスト」、再配布には利用者に同等の条項へ同意させることと Microsoft への補償が要り、Microsoft へのデータ収集がある（アプリ名 `vscode-dictation` で報告）。取得元も VS Code 製品用の `main.vscode-cdn.net`。Para Code の利用者に配ってよいかは【要確認】（ユーザーの判断待ち）
+- そのため `para-release.yml` のスタンプの段は、手動実行の入力 `dictation_runtime`（既定 false）を立てたときだけ走る。タグの push では走らない。立てたときは、スタンプした版が CDN に 4 ターゲットぶん（darwin-arm64・win32-x64・win32-arm64・linux-x64）あるかを `curl -fsI` で確かめる（`foundry-local-sdk` を上げると URL の版も変わるため）
+- ダウンロードした `.node` / dylib はハッシュを照合せずに読み込まれ（upstream の `foundryLocalRuntime.ts`）、Plugin helper は `disable-library-validation` 付き。CDN（HTTPS）を信頼の根にしている
+- **部品の取得先（`dictationRuntime`）が無いビルドでは、音声入力そのものを既定で無効にしている**（`contrib/dictation/browser/paradisDictationAvailability.contribution.ts` が `dictation.enabled` の既定値を false にする）。upstream の既定 true のままだと、dev と既定の配布版でマイクのボタン・コマンド・キーが出て、押すと約 775MB のモデルを `user-data/chatDictationModels` に落とした後、`Foundry Local transcription stream stalled for 60000ms` で失敗していた（1.139 取り込み以降の main でも同じ。2026-09-27 実機で確認）。チャット・エディタ・ターミナルの入口とモデル取り込みコマンドはどれもこの設定で閉じる。settings.json で自分で true にした人は対象外。Agent Sessions ウィンドウはこの集約ファイルを読み込まないので既定 true のまま
+- upstream の音声入力は、モデルの準備中（「Preparing…」）に Esc を押しても止まらず、準備が終わるまで音声入力中のまま（読み上げの保留も続く）。upstream の挙動
+- macOS の x64 は upstream が対応していない。Linux は glibc 2.34 以上。マイクが出る条件は `chatIsEnabled`（`chat.disableAIFeatures` で消える）。macOS のマイク許可ダイアログの本文は `build/darwin/sign.ts` が書く "Visual Studio Code" 表記のまま（有効化するときに直す）
+
+音声入力の間は Para Code の読み上げを止める（`notifications/electron-browser/paradisDictationAudioHold.contribution.ts`、音声入力を配布していなくても拡張機能や開発版の音声入力で働く）。shared process の `AudioScheduler.setHeld` が、再生中の afplay 等を止め、通知音を捨て、新しい発話を溜めて終わってから読む。止めるのはどれか1つのウィンドウでも音声入力中のとき（接続ごとに持ち、接続が切れたら外す。ウィンドウは起動時に自分の状態を送り直し、音声入力中は状態が動くたびに送り直す）。上限はウィンドウごとに 10 分で、過ぎたウィンドウだけを外す（モデルの初回ダウンロード中や、upstream のセッション数が戻らなかったときに通知が鳴らなくなり続けないため）。**Agent Sessions ウィンドウの音声入力では止まらない。** この仕組みは通常ウィンドウの集約ファイルからしか読み込まれず、Sessions ウィンドウのチャット入力にマイクが出るかは【要確認】（出るなら Sessions 側からも読み込む）。**外部の aivis-mcp は止めていない。** 止める口（`aivis --mute`）がおやすみモードと共有で、解除のときにおやすみモードのミュートやユーザー自身のミュートまで解いてしまうため。
 
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
 
