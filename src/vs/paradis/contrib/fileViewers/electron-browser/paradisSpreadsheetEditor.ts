@@ -49,12 +49,13 @@ import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applySh
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
-import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridTile } from './spreadsheet/paradisSpreadsheetGridRenderer.js';
-import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest } from './spreadsheet/paradisSpreadsheetViewport.js';
+import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridTile } from '../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
+import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
 import { renderSpreadsheetDiagnosticsRibbon } from './spreadsheet/paradisSpreadsheetDiagnostics.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 
+import '../browser/spreadsheet/media/paradisSpreadsheetGrid.css';
 import './media/paradisSpreadsheet.css';
 
 const $ = dom.$;

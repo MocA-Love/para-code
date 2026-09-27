@@ -144,9 +144,13 @@
 /* translucent layer shows through; `!important` outranks the inline style. The Para Code spreadsheet */
 /* editor (Excel viewer) is excluded so its sheet backdrop keeps today's opaque rendering; webview */
 /* based editors (browser tabs, md/html Rendered) composite above this layer and are unaffected. */
-.monaco-workbench.paradis-transparent .part.editor .editor-container:not(:has(.paradis-spreadsheet, .paradis-spreadsheet-diff, .settings-editor, .keybindings-editor, .extension-editor, .profiles-editor)) {
+.monaco-workbench.paradis-transparent .part.editor .editor-container:not(:has(.paradis-spreadsheet, .paradis-spreadsheet-diff, .paradis-csv-viewer.paradis-csv-table-mode, .settings-editor, .keybindings-editor, .extension-editor, .profiles-editor)) {
 	background-color: transparent !important;
 }
+
+/* The CSV viewer is excluded only while it shows the table (same reasoning as the Excel viewer: its frozen
+	header and row-number panes must stay opaque to hide the cells scrolling underneath). Its Text mode is
+	a regular code editor and stays translucent like other text editors. */
 
 /* Settings-like full-page editors (settings / keyboard shortcuts / extension details / profiles)
 	are excluded above so they keep the opaque inline editorBackground: these pages are dense

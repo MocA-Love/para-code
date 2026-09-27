@@ -35,7 +35,7 @@ export abstract class ParadisFileViewerInput extends EditorInput {
 
 	constructor(
 		private readonly _resource: URI,
-		@ITextFileService private readonly _textFileService: ITextFileService,
+		@ITextFileService protected readonly _textFileService: ITextFileService,
 		@IWorkingCopyService workingCopyService: IWorkingCopyService,
 	) {
 		super();
@@ -80,6 +80,15 @@ export abstract class ParadisFileViewerInput extends EditorInput {
 	override async save(_group: GroupIdentifier, options?: ISaveOptions): Promise<EditorInput | undefined> {
 		const target = await this._textFileService.save(this._resource, options);
 		return target ? this : undefined;
+	}
+
+	/**
+	 * 「名前を付けて保存」。EditorInput の既定は何もせず成功扱いにするため、テキストファイルとして保存し、
+	 * 保存先はリゾルバに任せて開き直す（保存先の拡張子に合ったビューア／エディタになる）。
+	 */
+	override async saveAs(_group: GroupIdentifier, options?: ISaveOptions): Promise<IUntypedEditorInput | undefined> {
+		const target = await this._textFileService.saveAs(this._resource, undefined, options);
+		return target ? { resource: target } : undefined;
 	}
 
 	override async revert(_group: GroupIdentifier, options?: IRevertOptions): Promise<void> {
