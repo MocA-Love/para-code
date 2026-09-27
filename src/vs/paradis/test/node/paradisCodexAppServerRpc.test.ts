@@ -120,6 +120,36 @@ rl.on('line', line => {
 		}, { quit: true, afterExit: true, fast: true, pending: 'codex app-server session disposed' });
 	});
 
+	// 使用量の問い合わせは Orca と同じくプラグインを止めて起こす。同じホームの app-server は1つずつ
+	// （前のセッションを閉じるまで次は起きない）。
+	test('disables plugins for short-lived probes and runs one app-server per Codex home at a time', async () => {
+		const command = fakeCodex(`
+const rl = require('readline').createInterface({ input: process.stdin });
+rl.on('line', line => {
+	const message = JSON.parse(line);
+	if (message.id === undefined) { return; }
+	process.stdout.write(JSON.stringify({ id: message.id, result: { args: process.argv.slice(2) } }) + '\\n');
+});
+`);
+		const home = join(root, 'home-a');
+		const order: string[] = [];
+		const first = await paradisStartCodexAppServerRpc(command, process.env, new NullLogService(), 'probe', { codexHome: home, shortLivedProbe: true });
+		const args = await first.request('whoami', {});
+		const secondStarting = paradisStartCodexAppServerRpc(command, process.env, new NullLogService(), 'probe', { codexHome: home }).then(rpc => { order.push('second started'); return rpc; });
+		const otherHome = await paradisStartCodexAppServerRpc(command, process.env, new NullLogService(), 'probe', { codexHome: join(root, 'home-b') });
+		order.push('other home started');
+		await new Promise(resolveLater => setTimeout(resolveLater, 50));
+		order.push('first disposed');
+		first.dispose();
+		const second = await secondStarting;
+		second.dispose();
+		otherHome.dispose();
+		assert.deepStrictEqual({ args, order }, {
+			args: { args: ['-c', 'features.plugins=false', '-s', 'read-only', '-a', 'never', 'app-server'] },
+			order: ['other home started', 'first disposed', 'second started'],
+		});
+	});
+
 	test('reports the exit code of an app-server that dies during initialize', async () => {
 		const command = fakeCodex(`process.exit(2);`);
 		const failure = await paradisStartCodexAppServerRpc(command, process.env, new NullLogService()).then(() => undefined, error => error) as Error & { exitCode?: number };
