@@ -40,6 +40,16 @@ describe('terminalGridFor', () => {
 		expect(terminalGridFor(IPHONE.width, IPHONE.height, TERMINAL_FOLLOW_MIN_FONT_SIZE, MENLO)?.cols).toBeGreaterThanOrEqual(80);
 	});
 
+	test('xterm が実際に描く行の高さがあれば、行数はそちらで決める（下の行が隠れない）', () => {
+		// iPad の実測: 12pt で見積もり 14.04px（lineHeight100 117）、xterm の実際の行は 15px。
+		// 見積もりだと 68 行になり、68 × 15 = 1020px が 966px の表示領域から 54px はみ出していた。
+		const measured = { charWidth100: 60.206, lineHeight100: 117, rowHeights: { '10': 13, '12': 15 } };
+		expect(terminalGridFor(314, 966, 12, { charWidth100: 60.206, lineHeight100: 117 })?.rows).toBe(68);
+		expect(terminalGridFor(314, 966, 12, measured)).toEqual({ cols: 43, rows: 64 });
+		// 表に無い大きさは見積もりで補う。
+		expect(terminalGridFor(314, 966, 14, measured)?.rows).toBe(Math.floor(966 / (117 / 100 * 14)));
+	});
+
 	test('寸法が測れていないうちは申告しない', () => {
 		expect(terminalGridFor(0, 510, 10, MENLO)).toBeUndefined();
 		expect(terminalGridFor(359, 510, 10, { charWidth100: 0, lineHeight100: 120 })).toBeUndefined();
