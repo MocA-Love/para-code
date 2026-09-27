@@ -130,6 +130,9 @@ export interface IParadisMcpToolCallContext {
 	/**
 	 * 接続元のプロセスの分類。トークンは同じユーザーの別プロセスからも読めるので、操作系のツールは
 	 * `pane` のときだけ、読み取り系は `pane` か `tunnel`（SSH の戻り経路）のときだけ動かす。
+	 * 例外: モバイル端末の画面の読み取りと入力（`mobile_tap`・`mobile_rotate`・`mobile_gesture` など）は、
+	 * 利用者がその端末をそのペインへ渡した後の操作なので、これを呼ばずトークンだけで動かす。
+	 * 端末の要求・アプリのインストール・起動・権限の付与は `pane` のときだけ（mobileCanvas）。
 	 */
 	classifyCaller(): Promise<ParadisMcpCallerKind>;
 }

@@ -149,6 +149,20 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 		], ['denied', 'recentlyDenied', 1, 'denied']);
 	}));
 
+	test('a denial with a cooldown key only refuses that key for that pane', () => runWithFakedTimers(fakedTimers, async () => {
+		const { service, shown } = createService([{ button: 0, afterMs: 1500 }, { button: 1, afterMs: 1500 }, { button: 1, afterMs: 1500 }]);
+		store.add(service);
+		const cts = store.add(new CancellationTokenSource());
+		const device = (id: string): IParadisAgentApprovalRequest => ({ ...request, cooldownKey: `mobile-device:${id}` });
+		assert.deepStrictEqual([
+			await service.askApproval('pane-token', device('iphone'), cts.token),
+			await service.askApproval('pane-token', device('iphone'), cts.token),
+			await service.askApproval('pane-token', device('pixel'), cts.token),
+			await service.askApproval('pane-token', request, cts.token),
+			shown.length,
+		], ['denied', 'recentlyDenied', 'approve', 'approve', 3]);
+	}));
+
 	test('reports cancellation, and refuses a second request from a pane that is still waiting', () => runWithFakedTimers(fakedTimers, async () => {
 		const { service } = createService([{ button: 1, afterMs: 1500 }]);
 		store.add(service);
