@@ -36,7 +36,7 @@ import {
 	paradisSanitizeBranchName,
 } from '../common/paradisWorktreeCreate.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
-import { paradisResolveAgentTemplates } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
+import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { paradisReadWorkspaceLifecycleConfig } from './paradisWorkspaceLifecycleService.js';
 import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { IParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
@@ -158,6 +158,7 @@ export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, pres
 		accessor.get(ILogService),
 		accessor.get(IStorageService),
 		accessor.get(IParadisWorktreeCreateQueueService),
+		accessor.get(IParadisAgentModelCatalogService),
 		preselectedRepositoryId,
 		prefill,
 	);
@@ -219,6 +220,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		private readonly logService: ILogService,
 		private readonly storageService: IStorageService,
 		private readonly createQueueService: IParadisWorktreeCreateQueueService,
+		private readonly modelCatalogService: IParadisAgentModelCatalogService,
 		preselectedRepositoryId: string | undefined,
 		prefill: IParadisHeadlessWorktreeRequest | undefined,
 	) {
@@ -247,6 +249,9 @@ class ParadisCreateWorktreeDialog extends Disposable {
 
 		layoutService.activeContainer.appendChild(this._backdrop);
 		this._renderForm(preselectedRepositoryId ?? prefill?.repositoryId, prefill);
+		// インストール済み CLI のモデル候補を取り直し、届いたら選択を保ったまま並べ直す
+		this._register(this.modelCatalogService.onDidChange(() => this._refreshModelOptions()));
+		this.modelCatalogService.refresh();
 	}
 
 	override dispose(): void {
@@ -256,7 +261,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 
 	private get _agents(): readonly IParadisAgentCommandTemplate[] {
 		// 設定を書いていなければ、既定の定義にインストール済み CLI のモデル候補を当てはめたもの
-		return paradisResolveAgentTemplates(this.configurationService);
+		return this.modelCatalogService.getAgentTemplates();
 	}
 
 	private get _selectedRepository(): IParadisWorkspaceRepository | undefined {
@@ -485,19 +490,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 			: this._loadStoredAgentOptions()[agent.id] ?? {};
 
 		// モデル
-		this._modelGroup.classList.toggle('hidden', !agent.models || agent.models.length === 0);
-		dom.clearNode(this._modelSelect);
-		const defaultModelOption = dom.append(this._modelSelect, $('option')) as HTMLOptionElement;
-		defaultModelOption.value = '';
-		defaultModelOption.textContent = STR_OPTION_DEFAULT;
-		for (const model of agent.models ?? []) {
-			const option = dom.append(this._modelSelect, $('option')) as HTMLOptionElement;
-			option.value = model.id;
-			option.textContent = model.label ?? model.id;
-		}
-		if (stored.modelId && agent.models?.some(model => model.id === stored.modelId)) {
-			this._modelSelect.value = stored.modelId;
-		}
+		this._fillModelOptions(agent, stored.modelId);
 
 		// 権限（セグメントトグル）。先頭要素を既定として選択する
 		this._permissionRow.classList.toggle('hidden', !agent.permissions || agent.permissions.length === 0);
@@ -525,6 +518,33 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		// エフォートはモデル選択に依存するため最後に組み立てる（保存値の復元込み）
 		this._rebuildEffortOptions(stored.effortId);
 		this._updateCommandPreview();
+	}
+
+	/** モデルの選択肢を並べる。`preferredModelId` が候補にあればそれを選ぶ（無ければ「既定」）。 */
+	private _fillModelOptions(agent: IParadisAgentCommandTemplate, preferredModelId: string | undefined): void {
+		this._modelGroup.classList.toggle('hidden', !agent.models || agent.models.length === 0);
+		dom.clearNode(this._modelSelect);
+		const defaultModelOption = dom.append(this._modelSelect, $('option')) as HTMLOptionElement;
+		defaultModelOption.value = '';
+		defaultModelOption.textContent = STR_OPTION_DEFAULT;
+		for (const model of agent.models ?? []) {
+			const option = dom.append(this._modelSelect, $('option')) as HTMLOptionElement;
+			option.value = model.id;
+			option.textContent = model.label ?? model.id;
+		}
+		if (preferredModelId && agent.models?.some(model => model.id === preferredModelId)) {
+			this._modelSelect.value = preferredModelId;
+		}
+	}
+
+	/** モデル候補が届き直したとき: 選んでいるモデルとエフォートを保ったまま並べ直す。 */
+	private _refreshModelOptions(): void {
+		const agent = this._selectedAgent;
+		if (!agent || !this._modelSelect) {
+			return;
+		}
+		this._fillModelOptions(agent, this._modelSelect.value || undefined);
+		this._onModelChanged();
 	}
 
 	/** モデル切り替え時: エフォート選択肢を選択モデルの対応表で絞り直す。 */

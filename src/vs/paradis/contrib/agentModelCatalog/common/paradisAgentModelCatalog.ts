@@ -17,7 +17,9 @@
 // 置き換えるのは「既定のエージェント定義」のモデル候補だけ。設定 `paradis.workspaceSwitch.agents` を
 // 利用者が自分で書いている場合は、その内容を一切変えない。取れなかったときは今の固定の候補を使う。
 
+import { Event } from '../../../../base/common/event.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IParadisAgentCommandTemplate, IParadisAgentModelOption, PARADIS_DEFAULT_AGENT_COMMANDS } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 
 export const PARADIS_AGENT_MODEL_CATALOG_CHANNEL = 'paradisAgentModelCatalog';
@@ -60,6 +62,9 @@ export function paradisModelFlagValue(id: string): string | undefined {
 
 // ---------- Claude Code ----------
 
+/** 会話ファイルを残さないフラグ（2.1.283 にはある。無い古い版では外して取り直す）。 */
+export const PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG = '--no-session-persistence';
+
 /** `list_models` の制御要求（stdin に1行で書く）。 */
 export const PARADIS_CLAUDE_MODEL_LIST_STDIN = `${JSON.stringify({
 	type: 'control_request',
@@ -70,14 +75,20 @@ export const PARADIS_CLAUDE_MODEL_LIST_STDIN = `${JSON.stringify({
 /**
  * `list_models` を送るときの引数。
  * - `--verbose` が無いと `-p` は stream-json の出力を拒む
+ * - 設定は利用者の層（`~/.claude/settings.json`）だけを読む。`-p` は workspace trust を確かめない
+ *   ので、作業ディレクトリのプロジェクト設定（`apiKeyHelper` や `env` を書ける）を読ませない。
+ *   2.1.283 で、作業ディレクトリの `.claude/settings.json` の hook が、これを付けないと走り、
+ *   付けると走らないことを確かめている
  * - hook を一切動かさない（利用者の SessionStart hook や Para Code の通知 hook が、モデル一覧を
  *   取るだけの裏のプロセスで走らないように）。利用者の設定（使えるモデルの制限など）は読ませる
- * - MCP サーバーを起こさない
+ * - MCP サーバーを起こさない。空の会話ファイルを残さない
  */
 export const PARADIS_CLAUDE_MODEL_LIST_ARGS: readonly string[] = [
 	'-p',
+	'--setting-sources', 'user',
 	'--settings', '{"disableAllHooks":true}',
 	'--strict-mcp-config',
+	PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG,
 	'--input-format', 'stream-json',
 	'--output-format', 'stream-json',
 	'--verbose',
@@ -243,19 +254,12 @@ export function paradisIsAgentListUserDefined(configurationService: IConfigurati
 	].some(value => value !== undefined);
 }
 
-let discoveredCatalogs: readonly IParadisAgentModelCatalog[] = [];
-
-/** CLI から取れた一覧を覚える（画面側の取得役だけが呼ぶ）。 */
-export function paradisSetDiscoveredAgentModels(catalogs: readonly IParadisAgentModelCatalog[]): void {
-	discoveredCatalogs = catalogs;
-}
-
 /**
  * 新しいスペースで選べるエージェント定義。ダイアログとモバイルからの作成で同じ規則を使う。
  * - 利用者が設定を書いていれば、その内容（'none' は予約語なので除く）
  * - 書いていなければ既定の定義に、CLI から取れたモデル候補を当てはめたもの
  */
-export function paradisResolveAgentTemplates(configurationService: IConfigurationService): readonly IParadisAgentCommandTemplate[] {
+export function paradisResolveAgentTemplates(configurationService: IConfigurationService, catalogs: readonly IParadisAgentModelCatalog[]): readonly IParadisAgentCommandTemplate[] {
 	if (paradisIsAgentListUserDefined(configurationService)) {
 		const configured = configurationService.getValue<IParadisAgentCommandTemplate[]>(PARADIS_WORKSPACE_AGENTS_SETTING);
 		if (Array.isArray(configured) && configured.length > 0) {
@@ -265,5 +269,21 @@ export function paradisResolveAgentTemplates(configurationService: IConfiguratio
 		}
 		return PARADIS_DEFAULT_AGENT_COMMANDS;
 	}
-	return discoveredCatalogs.length > 0 ? paradisApplyDiscoveredModels(PARADIS_DEFAULT_AGENT_COMMANDS, discoveredCatalogs) : PARADIS_DEFAULT_AGENT_COMMANDS;
+	return catalogs.length > 0 ? paradisApplyDiscoveredModels(PARADIS_DEFAULT_AGENT_COMMANDS, catalogs) : PARADIS_DEFAULT_AGENT_COMMANDS;
+}
+
+export const IParadisAgentModelCatalogService = createDecorator<IParadisAgentModelCatalogService>('paradisAgentModelCatalogService');
+
+/** 新しいスペースの作成で使うエージェント定義を持つ（画面側）。 */
+export interface IParadisAgentModelCatalogService {
+	readonly _serviceBrand: undefined;
+	/** CLI から取った一覧が変わった。 */
+	readonly onDidChange: Event<void>;
+	/** 今わかっている一覧で組み立てたエージェント定義（{@link paradisResolveAgentTemplates}）。 */
+	getAgentTemplates(): readonly IParadisAgentCommandTemplate[];
+	/**
+	 * CLI から取り直すよう頼む。結果は {@link onDidChange} で届く。shared process 側で
+	 * 60 秒は同じ結果を使い回し、CLI は版が変わったときだけ起こすので、ダイアログを開くたびに呼んでよい。
+	 */
+	refresh(): void;
 }
