@@ -14,6 +14,7 @@
 // paradisMobileWorkspaceProvider から instantiationService.invokeFunction で直接呼べる。
 
 import { raceTimeout } from '../../../../base/common/async.js';
+import { Event } from '../../../../base/common/event.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
@@ -430,6 +431,22 @@ function paradisBuildCommandOrClose(instance: ITerminalInstance, build: () => st
 	}
 }
 
+/** シェルの種類が届くのを待つ上限。 */
+const SHELL_TYPE_WAIT_MS = 2_000;
+
+/**
+ * 指示にバックスラッシュがあり、シェルの種類がまだ届いていないときだけ、少し待つ。
+ * 種類は pty host がプロセス名から調べて後から送ってくるので、`processReady` の直後にはまだ無いことがある。
+ * 種類が分からないままだと引用を決められず起動を断ることになるため、その前に届く機会を与える。
+ */
+async function paradisWaitForShellTypeIfNeeded(instance: ITerminalInstance, prompt: string | undefined): Promise<void> {
+	if (instance.shellType !== undefined || !(prompt ?? '').includes('\\')) {
+		return;
+	}
+	const arrived = Event.toPromise(Event.filter(instance.onDidChangeShellType, type => type !== undefined));
+	await raceTimeout(arrived, SHELL_TYPE_WAIT_MS, () => arrived.cancel());
+}
+
 /**
  * 既存ワークスペースに新しいターミナルを作り、エージェントCLIを起動する。
  * worktree作成フローの launchAgent 工程と同じ規則（パネル側に作成・非アクティブスコープは
@@ -450,6 +467,7 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 	if (request.preserveFocus === true) {
 		// 利用者の入力を横取りしない: 前に出さず、setActiveInstance も呼ばない
 		const background = await paradisOpenEditorTerminalInSpace({ terminalService, terminalEditorService, terminalScopeService }, request.rootUri, request.stateKey, true);
+		await paradisWaitForShellTypeIfNeeded(background, request.prompt);
 		const backgroundCommand = paradisBuildCommandOrClose(background, () => paradisBuildAgentCommand(agent, (request.prompt ?? '').trim(), background.shellType, {
 			modelId: request.modelId,
 			effortId: request.effortId,
@@ -475,6 +493,7 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 		terminalService.setActiveInstance(instance);
 	}
 	await instance.processReady;
+	await paradisWaitForShellTypeIfNeeded(instance, request.prompt);
 	const command = paradisBuildCommandOrClose(instance, () => paradisBuildAgentCommand(agent, (request.prompt ?? '').trim(), instance.shellType, {
 		modelId: request.modelId,
 		effortId: request.effortId,
@@ -708,6 +727,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 				// モバイルのホーム一覧）はそのまま効く。
 				// park は persistentProcessId が確定していないと失敗するため PTY 起動と openEditor の完了を待ってから assign する。
 				const instance = await paradisOpenEditorTerminalInSpace({ terminalService, terminalEditorService, terminalScopeService }, worktreeUri, targetStateKey, options.preserveFocus === true);
+				await paradisWaitForShellTypeIfNeeded(instance, prompt);
 				const command = paradisBuildCommandOrClose(instance, () => paradisBuildAgentCommand(agent, prompt, instance.shellType, {
 					modelId: request.modelId,
 					effortId: request.effortId,
