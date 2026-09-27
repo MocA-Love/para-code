@@ -41,7 +41,7 @@ import {
 	paradisCodexResetOutcome,
 	paradisMapCodexResetCredits
 } from '../common/paradisCodexAccounts.js';
-import { IParadisCodexAppServerRpc, ParadisCodexAppServerRpcFactory, paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from './paradisCodexAppServerRpc.js';
+import { IParadisCodexAppServerRpc, ParadisCodexAppServerRpcFactory, paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { ParadisCodexResetCreditLedger } from './paradisCodexResetCreditLedger.js';
 import { paradisLinkCodexSessions } from './paradisCodexSessionLinker.js';
 
@@ -342,7 +342,7 @@ export class ParadisCodexAccountsService extends Disposable {
 	private async withRpc<T>(homePath: string, run: (rpc: IParadisCodexAppServerRpc) => Promise<T>): Promise<T> {
 		const env = { ...await this.options.resolveEnv(), CODEX_HOME: homePath };
 		const command = await this.resolveCodexCommand(env);
-		const rpc = await this.startRpc(command, env, this.options.logService);
+		const rpc = await this.startRpc(command, env, this.options.logService, 'para-code-codex-accounts');
 		try {
 			return await run(rpc);
 		} finally {

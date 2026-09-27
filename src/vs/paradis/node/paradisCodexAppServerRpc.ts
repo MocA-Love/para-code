@@ -6,18 +6,21 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// `CODEX_HOME=<ホーム> codex app-server`（stdio、改行区切り JSON-RPC）と1往復ぶん話す最小のクライアント。
+// `CODEX_HOME=<ホーム> codex app-server`（stdio、改行区切り JSON-RPC）と短く話す最小のクライアント。
 //
-// limitsMonitor の ParadisCodexRpcSession と同じ流儀だが、あちらは読み取り専用の使用量取得に
-// 閉じた private クラスなので、書き込み系（リセットクレジットの消費）を足すためにこちらへ分けた。
-// 認証の更新・auth.json の書き戻しは codex 自身に任せる（このプロセスは auth.json を書かない）。
+// limitsMonitor（使用量の取得、shared process と REH）と codexAccounts（リセットクレジットの読み取りと
+// 消費）が共有する。認証の更新・auth.json の書き戻しは codex 自身に任せる（このプロセスは
+// auth.json を書かない）。
+//
+// 投げるエラーの文言は limitsMonitor の Sentry 用の分類（classifyCodexRpcFailure）が前提にしている。
+// 変えるときはそちらのテストも合わせること。
 
 import * as cp from 'child_process';
-import { timeout } from '../../../../base/common/async.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
-import { ILogService } from '../../../../platform/log/common/log.js';
-import { paradisKillChildProcessTree } from '../../../node/paradisKillChildProcess.js';
-import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
+import { timeout } from '../../base/common/async.js';
+import { Disposable } from '../../base/common/lifecycle.js';
+import { ILogService } from '../../platform/log/common/log.js';
+import { paradisWrapWindowsScriptShim } from '../common/paradisWindowsScriptShim.js';
+import { paradisKillChildProcessTree } from './paradisKillChildProcess.js';
 
 /** app-server が返したエラー。message は app-server の文言（パス・トークンは含まない）。 */
 export class ParadisCodexRpcError extends Error {
@@ -37,7 +40,7 @@ export interface IParadisCodexAppServerRpc {
 	dispose(): void;
 }
 
-export type ParadisCodexAppServerRpcFactory = (command: string, env: NodeJS.ProcessEnv, logService: ILogService) => Promise<IParadisCodexAppServerRpc>;
+export type ParadisCodexAppServerRpcFactory = (command: string, env: NodeJS.ProcessEnv, logService: ILogService, clientName?: string) => Promise<IParadisCodexAppServerRpc>;
 
 const INITIALIZE_TIMEOUT_MS = 15_000;
 
@@ -45,10 +48,10 @@ const INITIALIZE_TIMEOUT_MS = 15_000;
  * app-server を起動して `initialize` / `initialized` まで済ませたセッションを返す。
  * 呼び出し側は使い終わったら必ず dispose する（子プロセスを残さない）。
  */
-export const paradisStartCodexAppServerRpc: ParadisCodexAppServerRpcFactory = async (command, env, logService) => {
+export const paradisStartCodexAppServerRpc: ParadisCodexAppServerRpcFactory = async (command, env, logService, clientName = 'para-code') => {
 	const session = new ParadisCodexAppServerRpcSession(command, env, logService);
 	try {
-		await session.request('initialize', { clientInfo: { name: 'para-code-codex-accounts', version: '1.0.0' } }, INITIALIZE_TIMEOUT_MS);
+		await session.request('initialize', { clientInfo: { name: clientName, version: '1.0.0' } }, INITIALIZE_TIMEOUT_MS);
 		session.notify('initialized');
 		return session;
 	} catch (error) {
@@ -78,9 +81,14 @@ class ParadisCodexAppServerRpcSession extends Disposable implements IParadisCode
 		});
 		this.child.stdout?.on('data', (chunk: Buffer) => this.onStdout(chunk));
 		this.child.stderr?.on('data', (chunk: Buffer) => {
-			this.logService.trace(`[ParadisCodexAccounts] codex app-server stderr: ${chunk.toString('utf8').trim()}`);
+			this.logService.trace(`[ParadisCodexAppServer] codex app-server stderr: ${chunk.toString('utf8').trim()}`);
 		});
-		this.child.on('exit', (code, signal) => this.failAll(new Error(`codex app-server exited (code=${code}, signal=${signal})`)));
+		this.child.on('exit', (code, signal) => {
+			// 終了コードとシグナルは Sentry へ載せる（limitsMonitor）。文言には含めたまま。
+			const error = new Error(`codex app-server exited (code=${code}, signal=${signal})`);
+			Object.assign(error, { exitCode: code, exitSignal: signal });
+			this.failAll(error);
+		});
 		this.child.on('error', error => this.failAll(new Error(`failed to launch codex app-server: ${error.message}`)));
 		// stdin が閉じた後の書き込みで EPIPE が未処理例外にならないようにする。
 		this.child.stdin?.on('error', error => this.failAll(new Error(`codex app-server stdin failed: ${error.message}`)));
@@ -154,6 +162,6 @@ class ParadisCodexAppServerRpcSession extends Disposable implements IParadisCode
 	}
 
 	private terminate(): void {
-		paradisKillChildProcessTree(this.child, error => this.logService.trace(`[ParadisCodexAccounts] failed to stop codex app-server: ${error}`));
+		paradisKillChildProcessTree(this.child, error => this.logService.trace(`[ParadisCodexAppServer] failed to stop codex app-server: ${error}`));
 	}
 }

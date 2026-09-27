@@ -29,7 +29,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { timeout } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
-import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
+import { IDisposable } from '../../../../base/common/lifecycle.js';
 import * as path from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -40,6 +40,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
+import { paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import {
 	IParadisLimitsAccount,
 	IParadisLimitsCodexRemovalTarget,
@@ -62,8 +63,7 @@ import {
 const SNAPSHOT_CACHE_TTL_MS = 150_000;
 /** wham/usage HTTPタイムアウト。 */
 const USAGE_HTTP_TIMEOUT_MS = 30_000;
-/** app-server RPCの初期化/リクエストタイムアウト。 */
-const RPC_INIT_TIMEOUT_MS = 15_000;
+/** app-server RPCのリクエストタイムアウト（初期化は paradisCodexAppServerRpc.ts 側の15秒）。 */
 const RPC_REQUEST_TIMEOUT_MS = 10_000;
 /** RPCフォールバックも失敗したホームの再試行抑止時間(毎ポーリングでcodexを起動しないため)。 */
 const RPC_FAILURE_COOLDOWN_MS = 10 * 60_000;
@@ -84,7 +84,7 @@ const MAX_CODEX_HOME_INDEX = 20;
  */
 export type ParadisCodexRpcFailureKind = 'auth' | 'binary-missing' | 'spawn-failed' | 'exited' | 'init-timeout' | 'request-timeout' | 'rpc-error' | 'unknown';
 
-/** {@link ParadisCodexRpcSession} が投げるエラー文言をSentry用の種別に分類する。 */
+/** codex app-server との RPC（paradisCodexAppServerRpc.ts）が投げるエラー文言をSentry用の種別に分類する。 */
 export function classifyCodexRpcFailure(error: unknown): ParadisCodexRpcFailureKind {
 	if (isCodexAuthFailure(error)) {
 		return 'auth';
@@ -585,10 +585,9 @@ export class ParadisLimitsMonitorService {
 	private async fetchCodexAccountViaRpc(homePath: string): Promise<{ email?: string; planType?: string; windows: { fiveHour?: IParadisLimitsWindow; sevenDay?: IParadisLimitsWindow } }> {
 		const command = await this.resolveCommand('codex', undefined);
 		const env = { ...await this.getExecEnv(), CODEX_HOME: homePath };
-		const rpc = new ParadisCodexRpcSession(command, env, this.logService);
+		// initialize の失敗は開始関数の中で子プロセスを片付けてから投げる。
+		const rpc = await paradisStartCodexAppServerRpc(command, env, this.logService, 'para-code-limits-monitor');
 		try {
-			await rpc.request('initialize', { clientInfo: { name: 'para-code-limits-monitor', version: '1.0.0' } }, RPC_INIT_TIMEOUT_MS);
-			rpc.notify('initialized');
 			const rateLimits = await rpc.request('account/rateLimits/read', undefined, RPC_REQUEST_TIMEOUT_MS) as IRpcRateLimitsResult;
 			let account: IRpcAccountResult | undefined;
 			try {
@@ -868,108 +867,6 @@ export class ParadisLimitsMonitorService {
 		return new Promise<boolean>(resolve => {
 			fs.access(filePath, fs.constants.F_OK, err => resolve(!err));
 		});
-	}
-}
-
-/** `codex app-server` との改行区切りJSON-RPCセッション(読み取り専用サンドボックスで起動)。 */
-class ParadisCodexRpcSession extends Disposable {
-
-	private readonly child: cp.ChildProcess;
-	private readonly logService: ILogService;
-	private buffer = '';
-	private nextId = 1;
-	private readonly pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
-
-	constructor(command: string, env: NodeJS.ProcessEnv, logService: ILogService) {
-		super();
-		// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
-		// (shell 指定なしの spawn は CVE-2024-27980 対策後の Node では EINVAL になる)。
-		// `-a untrusted` は codex 0.149 (2026-08-24) で受け付けられなくなり、usage エラー(exit 2)で
-		// 即終了していた。読み取り専用 RPC しか呼ばないので `never` で動作は変わらない。
-		const args = ['-s', 'read-only', '-a', 'never', 'app-server'];
-		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, args) : undefined;
-		this.logService = logService;
-		this.child = cp.spawn(shimInvocation?.file ?? command, shimInvocation?.args ?? args, {
-			env,
-			stdio: ['pipe', 'pipe', 'pipe'],
-			windowsHide: true,
-			windowsVerbatimArguments: shimInvocation !== undefined,
-		});
-		this.child.stdout?.on('data', (chunk: Buffer) => this.onStdout(chunk));
-		this.child.stderr?.on('data', (chunk: Buffer) => {
-			logService.trace(`[ParadisLimitsMonitor] codex app-server stderr: ${chunk.toString('utf8').trim()}`);
-		});
-		this.child.on('exit', (code, signal) => {
-			const error = new Error(`codex app-server exited (code=${code}, signal=${signal})`);
-			Object.assign(error, { exitCode: code, exitSignal: signal });
-			this.failAll(error);
-		});
-		this.child.on('error', error => this.failAll(new Error(`failed to launch codex app-server: ${error.message}`)));
-		this._register({ dispose: () => this.terminate() });
-	}
-
-	private onStdout(chunk: Buffer): void {
-		this.buffer += chunk.toString('utf8');
-		let newlineIndex: number;
-		while ((newlineIndex = this.buffer.indexOf('\n')) >= 0) {
-			const line = this.buffer.slice(0, newlineIndex).trim();
-			this.buffer = this.buffer.slice(newlineIndex + 1);
-			if (!line) {
-				continue;
-			}
-			let message: { id?: unknown; result?: unknown; error?: { message?: string } };
-			try {
-				message = JSON.parse(line);
-			} catch {
-				continue;
-			}
-			if (typeof message.id !== 'number') {
-				continue; // 通知はすべて無視する
-			}
-			const pending = this.pending.get(message.id);
-			if (!pending) {
-				continue;
-			}
-			this.pending.delete(message.id);
-			if (message.error) {
-				pending.reject(new Error(message.error.message ?? 'codex app-server request failed'));
-			} else {
-				pending.resolve(message.result);
-			}
-		}
-	}
-
-	async request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
-		const id = this.nextId++;
-		const payload = JSON.stringify({ jsonrpc: '2.0', id, method, ...(params !== undefined ? { params } : {}) });
-		const result = new Promise<unknown>((resolve, reject) => {
-			this.pending.set(id, { resolve, reject });
-		});
-		this.child.stdin?.write(payload + '\n');
-		return Promise.race([
-			result,
-			timeout(timeoutMs).then(() => {
-				if (this.pending.delete(id)) {
-					this.terminate();
-				}
-				throw new Error(`codex app-server request '${method}' timed out`);
-			}),
-		]);
-	}
-
-	notify(method: string): void {
-		this.child.stdin?.write(JSON.stringify({ jsonrpc: '2.0', method }) + '\n');
-	}
-
-	private failAll(error: Error): void {
-		for (const pending of this.pending.values()) {
-			pending.reject(error);
-		}
-		this.pending.clear();
-	}
-
-	private terminate(): void {
-		paradisKillChildProcessTree(this.child, error => this.logService.trace(`[ParadisLimitsMonitor] failed to stop codex app-server: ${error}`));
 	}
 }
 
