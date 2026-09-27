@@ -1625,6 +1625,10 @@ class TranscriptTailer {
 	 * 以前と変えないため（tool_use_id の無い承認は合成 id になり、ターン終了まで解けない）。
 	 */
 	private desktopOnlyApprovalId: string | undefined;
+	/** 合成 id（tool_use_id の無い PermissionRequest）の承認を求めたツール名。次のそのツールの完了で解く。 */
+	private syntheticApprovalTool: string | undefined;
+	/** デスクトップのチャット表示のためだけに入れた質問の合成 id。ペインの状態（質問中）に数えない。 */
+	readonly desktopOnlyQuestionIds = new Set<string>();
 
 	/**
 	 * PermissionRequest hook で受けた承認要求の内容（ツール名・コマンド等）を表示カードとして
@@ -1651,6 +1655,7 @@ class TranscriptTailer {
 			const interactionId = toolUseId ?? `approval:${this.epoch}:${this.approvalSeq++}`;
 			this.lastApprovalKey = key;
 			this.desktopOnlyApprovalId = desktopOnly ? interactionId : undefined;
+			this.syntheticApprovalTool = toolUseId === undefined ? toolName ?? '' : undefined;
 			this.pendingApproval = {
 				kind: 'approval', id: interactionId, title: '操作の許可', detail: truncateText(text, TOOL_TEXT_LIMIT),
 				choices: [
@@ -1762,6 +1767,62 @@ class TranscriptTailer {
 	}
 
 	/**
+	 * 回答待ちの質問があるか（ペインの状態用）。デスクトップのチャット表示のためだけに入れた質問は
+	 * 数えない（モバイル向けの注入が動いていない構成で、ペインの状態を以前と変えないため）。
+	 */
+	hasPendingQuestionForStatus(): boolean {
+		for (const id of this.pendingQuestions) {
+			if (!this.desktopOnlyQuestionIds.has(id)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** モバイルが購読を始めた・注入が有効になった: デスクトップ専用の印を外し、ペインの状態へ反映する。 */
+	promoteDesktopOnly(): void {
+		this.enqueue(async () => {
+			if (this.desktopOnlyApprovalId === undefined && this.desktopOnlyQuestionIds.size === 0) {
+				return;
+			}
+			this.desktopOnlyApprovalId = undefined;
+			this.desktopOnlyQuestionIds.clear();
+			this.delegate.onActivity();
+		});
+	}
+
+	/**
+	 * 合成 id の承認を解く。tool_use_id の無い PermissionRequest から作った承認は PostToolUse と
+	 * id が合わず、以前はターン終了まで残っていた（答えた後もカードが押せ、`1`+Enter がエージェントへの
+	 * 発言として入る）。承認を待つ間ターンは止まっているので、同じツールの完了（PostToolUse /
+	 * PostToolUseFailure）か次の依頼が来た時点で決着済みとみなす。toolName が分からない hook では解かない。
+	 */
+	clearSyntheticApproval(toolName: string | undefined, newTurn: boolean): void {
+		this.enqueue(async () => {
+			const approval = this.pendingApproval;
+			if (approval === undefined || !approval.id.startsWith('approval:')) {
+				return;
+			}
+			const tool = this.syntheticApprovalTool;
+			if (!newTurn && (toolName === undefined || (tool !== undefined && tool.length > 0 && tool !== toolName))) {
+				return;
+			}
+			this.pendingApproval = undefined;
+			this.lastApprovalKey = undefined;
+			this.syntheticApprovalTool = undefined;
+			this.delegate.onDelta([]);
+			this.delegate.onActivity();
+		});
+	}
+
+	/** 同じ本文の承認要求の再発火を、新しい承認として受け付けるようにする（デスクトップから答え終えたとき）。 */
+	forgetApprovalKey(): void {
+		this.enqueue(async () => {
+			this.lastApprovalKey = undefined;
+		});
+	}
+
+	/**
 	 * 質問の決着（PostToolUse）またはターン終了で、未回答のまま残った質問の回答待ちを解除する。
 	 *
 	 * pendingQuestions は本来 transcript の tool_result 到達で消えるが、hook 由来のライブ質問は
@@ -1795,6 +1856,7 @@ class TranscriptTailer {
 		this.pendingQuestions.clear();
 		this.liveQuestions.clear();
 		this.liveQuestionRealIds.clear();
+		this.desktopOnlyQuestionIds.clear();
 		return true;
 	}
 
@@ -1854,6 +1916,9 @@ class TranscriptTailer {
 				existingIds.push(syntheticId);
 				this.liveQuestions.set(key, existingIds);
 				this.pendingQuestions.add(syntheticId);
+				if (quiet) {
+					this.desktopOnlyQuestionIds.add(syntheticId);
+				}
 				added.push({ ...message, toolUseId: syntheticId, questionGroup: groupId, rev: this.rev++ });
 			}
 			if (added.length === 0) {
@@ -2315,6 +2380,9 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (this.terminalIdForToken(token) !== undefined) {
 					this.ensureTailer(token, session);
 				}
+			}
+			for (const tailer of this.tailers.values()) {
+				tailer.promoteDesktopOnly();
 			}
 		}
 	}
@@ -4161,7 +4229,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (tailer.pendingQuestions.size > 0) {
 			for (let index = tailer.messages.length - 1; index >= 0; index--) {
 				const message = tailer.messages[index];
-				if (message.kind === 'question' && message.toolUseId !== undefined && tailer.pendingQuestions.has(message.toolUseId)) {
+				if (message.kind === 'question' && message.toolUseId !== undefined && tailer.pendingQuestions.has(message.toolUseId) && !tailer.desktopOnlyQuestionIds.has(message.toolUseId)) {
 					found = { kind: 'question', text: paradisOneLine(message.text, 200), ...(message.ts !== undefined ? { at: message.ts } : {}) };
 					break;
 				}
@@ -4270,6 +4338,11 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.desktopTailerInteractionSeenAt.delete(token);
 			}
 		}
+		for (const token of [...this.desktopExitedTokens]) {
+			if (!live.has(token)) {
+				this.desktopExitedTokens.delete(token);
+			}
+		}
 		let changed = false;
 		const seen = new Set<string>();
 		for (const insight of this.getDesktopPaneInsights([...this.paneSessions.keys()])) {
@@ -4304,19 +4377,28 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * デスクトップに質問のカードを出せない）。ウィンドウが閉じたり落ちたりして送り直しが途絶えたら、
 	 * 期限で外す。
 	 */
-	private readonly desktopChatWatchers = new Map<string, { readonly tokens: ReadonlySet<string>; readonly expiresAt: number }>();
+	private readonly desktopChatWatchers = new Map<string, { readonly tokens: ReadonlySet<string>; readonly visible: ReadonlySet<string>; readonly expiresAt: number }>();
+	/** SessionEnd を受けてからまだ次の hook が来ていないペイン。 */
+	private readonly desktopExitedTokens = new Set<string>();
 	private readonly _onDidChangeDesktopChat = this._register(new Emitter<readonly string[]>());
 	/** 見られているペインの会話（履歴・生成中の様子・待っている内容・モデル）が変わった。 */
 	readonly onDidChangeDesktopChat = this._onDidChangeDesktopChat.event;
 	private readonly desktopChatSignatures = new Map<string, string>();
 	private desktopChatTimer: ReturnType<typeof setTimeout> | undefined;
 
-	/** ウィンドウが見ているペインを差し替える（送り直しで期限を延ばす）。 */
-	watchDesktopChat(watcherId: string, tokens: readonly string[]): void {
+	/**
+	 * ウィンドウが見ているペインを差し替える（送り直しで期限を延ばす）。tokens は質問・承認の中身を
+	 * 取り込むペイン（チャットを開いていないものも含む）、visible は変化を知らせるペイン（チャット表示中）。
+	 */
+	watchDesktopChat(watcherId: string, tokens: readonly string[], visible: readonly string[] = []): void {
 		if (tokens.length === 0) {
 			this.desktopChatWatchers.delete(watcherId);
 		} else {
-			this.desktopChatWatchers.set(watcherId, { tokens: new Set(tokens.slice(0, PARADIS_DESKTOP_CHAT_MAX_TOKENS)), expiresAt: Date.now() + PARADIS_DESKTOP_CHAT_WATCH_TTL_MS });
+			this.desktopChatWatchers.set(watcherId, {
+				tokens: new Set(tokens.slice(0, PARADIS_DESKTOP_CHAT_MAX_TOKENS)),
+				visible: new Set(visible.slice(0, PARADIS_DESKTOP_CHAT_MAX_TOKENS)),
+				expiresAt: Date.now() + PARADIS_DESKTOP_CHAT_WATCH_TTL_MS,
+			});
 		}
 		// 見始めたペインは、セッションが確定していればすぐ読み始める（初回の取得を待たせない）。
 		for (const token of tokens) {
@@ -4378,6 +4460,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			interaction,
 			...(interaction?.kind === 'question' ? { pendingQuestions: tailer.pendingQuestionMessages(interaction.id) } : {}),
 			busy: this.activeTurnTokens.has(token) || this.liveStates.has(token),
+			...(this.desktopExitedTokens.has(token) ? { agentExited: true } : {}),
 		};
 	}
 
@@ -4471,6 +4554,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		this.desktopInteractionClaims.delete(entryKey);
+		if (sent && kind === 'approval') {
+			// 同じ本文の許可要求がもう一度出たら（同じコマンドの再実行）、新しい承認として受け付ける。
+			// 覚えたままだと重複として捨て、答え終えた古いカードだけが残る。
+			this.tailers.get(token)?.forgetApprovalKey();
+		}
 		if (!sent) {
 			this.releaseInteractionClaim(entry.key, entry.claim);
 			return;
@@ -4496,7 +4584,9 @@ export class ParadisMobileAgentChat extends Disposable {
 	private checkDesktopChat(): void {
 		const changed: string[] = [];
 		const watched = new Set<string>();
-		for (const token of new Set([...this.desktopChatWatchers.values()].flatMap(watcher => [...watcher.tokens]))) {
+		// 知らせるのはチャット表示中のペインだけ（生成中は頻繁に変わるので、全ペインを知らせると全ウィンドウへ
+		// IPC が流れ続ける）。閉じているペインは、次に開いたときに差分で追いつく。
+		for (const token of new Set([...this.desktopChatWatchers.values()].flatMap(watcher => [...watcher.visible]))) {
 			if (!this.isDesktopChatWatched(token)) {
 				continue;
 			}
@@ -4530,6 +4620,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			interaction === null ? '' : `${interaction.kind}:${interaction.id}:${interaction.kind === 'approval' ? interaction.choices?.length ?? 0 : ''}`,
 			info?.model ?? '', info?.effort ?? '',
 			this.activeTurnTokens.has(token) ? 'busy' : 'idle',
+			this.desktopExitedTokens.has(token) ? 'exited' : '',
 		].join('\0');
 	}
 
@@ -4711,6 +4802,13 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private onHookEvent(event: IParadisAgentHookEvent): void {
 		this.recordDesktopInteraction(event);
+		// デスクトップのチャット表示が「エージェントはもう終わった」と判断するための印（終わったペインへ
+		// 文を送ると、シェルでコマンドとして実行されるため）。SessionEnd の後に別の hook が来たら消す。
+		if (event.event === 'SessionEnd') {
+			this.desktopExitedTokens.add(event.token);
+		} else if (this.desktopExitedTokens.delete(event.token)) {
+			this.scheduleDesktopChatCheck();
+		}
 		// hook はペインの環境変数を継承したプロセスからしか届かない。届いた時点で
 		// 「今このペインでエージェントが動いている」証拠になる（transcript の有無は問わない）。
 		if (this.isLiveToken(event.token)) {
@@ -5218,6 +5316,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		if ((forceApprovalClear || matchingApprovalClear) && this.tailers.has(event.token)) {
 			this.tailers.get(event.token)?.clearApprovalRequest(event.toolUseId, forceApprovalClear);
 		}
+		const toolFinished = event.event === 'PostToolUse' || event.event === 'PostToolUseFailure';
+		if ((toolFinished || (event.event === 'UserPromptSubmit' && !isLocalSettingCommand)) && event.toolName !== 'AskUserQuestion') {
+			this.tailers.get(event.token)?.clearSyntheticApproval(event.toolName, !toolFinished);
+		}
 		// 未回答のまま残った質問の解除。質問を承認より優先するようになったため、決着し損ねた
 		// 合成IDの質問が残ると以後の承認が回答不能になる（clearPendingQuestions 参照）。
 		// 本命は AskUserQuestion の PostToolUse: 質問の決着を即時かつ確実に知らせる唯一の信号で、
@@ -5271,7 +5373,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.scheduleDesktopInsightCheck();
 			setParadisAgentPaneActivity(token, {
 				backgroundTasks: new Map(tailer.backgroundTasks),
-				pendingQuestion: tailer.pendingQuestions.size > 0,
+				pendingQuestion: tailer.hasPendingQuestionForStatus(),
 				// currentInteraction は質問を優先して承認を隠すため、ここは「承認が存在するか」の事実を渡す
 				pendingApproval: tailer.hasPendingApproval(),
 			});
@@ -5696,6 +5798,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			owner,
 			liveEncoding: liveEncoding === PARADIS_AGENT_LIVE_APPEND_ENCODING ? PARADIS_AGENT_LIVE_APPEND_ENCODING : undefined,
 		});
+		// デスクトップのためだけに入れていた質問・承認は、モバイルが見始めたらふつうの扱いに戻す。
+		this.tailers.get(token)?.promoteDesktopOnly();
 	}
 
 	private removeSubscriber(token: string, mobileId: string): boolean {

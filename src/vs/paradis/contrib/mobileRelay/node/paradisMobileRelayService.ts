@@ -932,11 +932,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	// --- デスクトップのチャット表示向けの読み取り口（agentChat）。モバイル連携が無効でも動く。モバイルへは送らない。
 
-	async watchAgentChat(watcherId: string, tokens: readonly string[]): Promise<void> {
+	async watchAgentChat(watcherId: string, tokens: readonly string[], visible?: readonly string[]): Promise<void> {
 		if (typeof watcherId !== 'string' || watcherId.length === 0 || watcherId.length > 200 || !Array.isArray(tokens)) {
 			return;
 		}
-		this.agentChat.watchDesktopChat(watcherId, tokens.filter(token => paradisIsAgentChatToken(token)));
+		const visibleTokens = Array.isArray(visible) ? visible.filter(token => paradisIsAgentChatToken(token)) : [];
+		this.agentChat.watchDesktopChat(watcherId, tokens.filter(token => paradisIsAgentChatToken(token)), visibleTokens);
 	}
 
 	async getAgentChat(token: string, cursor: IParadisAgentChatCursor | undefined): Promise<IParadisAgentChatView | undefined> {

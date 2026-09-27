@@ -12,7 +12,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { fireParadisAgentHookEvent, getParadisAgentPaneActivity } from '../../../agentBrowser/node/paradisAgentHookBus.js';
+import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, getParadisAgentPaneActivity, registerParadisAgentPaneActivityGuard } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { ParadisMobileAgentChat } from '../../../mobileRelay/node/paradisMobileAgentChat.js';
 import { IParadisAgentChatView } from '../../common/paradisAgentChat.js';
 
@@ -69,7 +69,7 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			assert.strictEqual(await chat.getDesktopChat(token, undefined), undefined, 'a pane without a session has no chat');
 			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: 'session-1', transcriptPath, cwd: '/repo', at: Date.now() });
 			await waitFor(() => !access.hookProcessing.has(token), 'SessionStart was not processed');
-			chat.watchDesktopChat('window-1', [token]);
+			chat.watchDesktopChat('window-1', [token], [token]);
 
 			let view: IParadisAgentChatView | undefined;
 			await waitFor(async () => (view = await chat.getDesktopChat(token, undefined))?.messages.length === 2, 'transcript was not read');
@@ -142,16 +142,69 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 		await writeFile(transcriptPath, line({ type: 'user', timestamp: '2026-09-27T10:00:00.000Z', message: { role: 'user', content: 'テストして' } }));
 		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
 		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>> };
+		// ペインの状態は shared process の持ち主の確認を通ったものだけが記録される（本番と同じ関門を立てる）
+		const guard = registerParadisAgentPaneActivityGuard(candidate => candidate === token);
 		try {
 			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
 			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: 'session-3', transcriptPath, cwd: '/repo', at: Date.now() });
 			await waitFor(() => !access.hookProcessing.has(token), 'SessionStart was not processed');
-			chat.watchDesktopChat('window-1', [token]);
+			chat.watchDesktopChat('window-1', [token], [token]);
 			fireParadisAgentHookEvent({ token, event: 'PermissionRequest', sessionId: 'session-3', transcriptPath, cwd: '/repo', toolName: 'Bash', toolInput: { command: 'npm test' }, at: Date.now() });
 			await waitFor(async () => (await chat.getDesktopChat(token, undefined))?.interaction?.kind === 'approval', 'approval was not captured');
-			assert.strictEqual(getParadisAgentPaneActivity(token).pendingApproval, false);
+			const beforeMobile = getParadisAgentPaneActivity(token).pendingApproval;
+			// モバイル向けの注入が有効になったら、ふつうの承認として数える
+			chat.setEagerTailing(true);
+			await waitFor(() => getParadisAgentPaneActivity(token).pendingApproval, 'approval was not promoted');
+			assert.strictEqual(beforeMobile, false);
 		} finally {
 			chat.dispose();
+			guard.dispose();
+			clearParadisAgentPaneActivity(token);
+		}
+	}));
+	test('clears a synthetic approval when the same tool finishes, marks the agent as exited after SessionEnd, and hands desktop-only captures to a mobile that attaches later', () => withClaudeHome(async claudeHome => {
+		const token = 'pane-desktop-synthetic';
+		const transcriptPath = join(claudeHome, 'projects', 'repo', 'session-4.jsonl');
+		await writeFile(transcriptPath, line({ type: 'user', timestamp: '2026-09-27T10:00:00.000Z', message: { role: 'user', content: 'テストして' } }));
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>> };
+		const processed = () => waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
+		const hook = (event: string, extra: Record<string, unknown> = {}) => fireParadisAgentHookEvent({ token, event, sessionId: 'session-4', transcriptPath, cwd: '/repo', at: Date.now(), ...extra });
+		const guard = registerParadisAgentPaneActivityGuard(candidate => candidate === token);
+		try {
+			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
+			hook('SessionStart');
+			await processed();
+			chat.watchDesktopChat('window-1', [token], [token]);
+			const view = () => chat.getDesktopChat(token, undefined);
+
+			// tool_use_id の無い許可要求は合成 id になる。別のツールの完了では解かず、同じツールの完了で解く
+			hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'npm test' } });
+			await waitFor(async () => (await view())?.interaction?.kind === 'approval', 'approval was not captured');
+			const synthetic = (await view())?.interaction?.id ?? '';
+			hook('PostToolUse', { toolName: 'Read' });
+			await processed();
+			const afterOtherTool = (await view())?.interaction?.id;
+			hook('PostToolUse', { toolName: 'Bash' });
+			await waitFor(async () => (await view())?.interaction === null, 'synthetic approval was not cleared');
+
+			// デスクトップ専用で入れた質問はペインの状態に数えない。モバイルが注入を有効にしたら数える
+			hook('PreToolUse', { toolName: 'AskUserQuestion', toolInput: { questions: [{ question: 'Q?', options: [{ label: 'A' }, { label: 'B' }] }] } });
+			await waitFor(async () => (await view())?.interaction?.kind === 'question', 'question was not captured');
+			const questionBeforeMobile = getParadisAgentPaneActivity(token).pendingQuestion;
+			chat.setEagerTailing(true);
+			await waitFor(() => getParadisAgentPaneActivity(token).pendingQuestion, 'question was not promoted');
+
+			hook('SessionEnd');
+			await waitFor(async () => (await view())?.agentExited === true, 'exit was not recorded');
+			hook('SessionStart');
+			await waitFor(async () => (await view())?.agentExited === undefined, 'exit mark was not cleared');
+
+			assert.deepStrictEqual({ syntheticPrefix: synthetic.startsWith('approval:'), afterOtherTool: afterOtherTool === synthetic, questionBeforeMobile }, { syntheticPrefix: true, afterOtherTool: true, questionBeforeMobile: false });
+		} finally {
+			chat.dispose();
+			guard.dispose();
+			clearParadisAgentPaneActivity(token);
 		}
 	}));
 });

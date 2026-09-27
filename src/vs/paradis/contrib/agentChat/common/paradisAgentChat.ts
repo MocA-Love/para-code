@@ -199,6 +199,8 @@ export interface IParadisAgentChatView {
 	readonly pendingQuestions?: readonly IParadisAgentChatMessage[];
 	/** エージェントがターンを処理している（入力待ちではない）。 */
 	readonly busy: boolean;
+	/** SessionEnd を受けた（エージェントが終わった）。次の hook が来るまで立つ。 */
+	readonly agentExited?: boolean;
 }
 
 /**
@@ -229,11 +231,12 @@ export interface IParadisAgentChatSource {
 	/** 見ているペインの会話が変わった。受け取った側は該当するペインだけを取り直す。 */
 	readonly onDidChangeAgentChat: Event<readonly string[]>;
 	/**
-	 * このウィンドウがチャット表示で見ているペインを知らせる。一定時間ごとに送り直す（送られなく
-	 * なったウィンドウの分は期限で外れる）。見ている間は、モバイルとつないでいなくても質問・承認の
-	 * 中身を hook から拾う。
+	 * このウィンドウのペインを知らせる。一定時間ごとに送り直す（送られなくなったウィンドウの分は期限で
+	 * 外れる）。tokens のペインは、モバイルとつないでいなくても質問・承認の中身を hook から拾う
+	 * （チャットを開く前に出た質問もカードにできるよう、チャットを開いていないペインも含める）。
+	 * 変化を知らせる（onDidChangeAgentChat）のは visible のペイン（チャット表示中）だけ。
 	 */
-	watchAgentChat(watcherId: string, tokens: readonly string[]): Promise<void>;
+	watchAgentChat(watcherId: string, tokens: readonly string[], visible?: readonly string[]): Promise<void>;
 	/** 起点より後の差分（起点が合わなければ全量）。セッションが確定していないペインは undefined。 */
 	getAgentChat(token: string, cursor: IParadisAgentChatCursor | undefined): Promise<IParadisAgentChatView | undefined>;
 	/** 切り詰めて渡したメッセージの全文。保持期限を過ぎていれば undefined。 */

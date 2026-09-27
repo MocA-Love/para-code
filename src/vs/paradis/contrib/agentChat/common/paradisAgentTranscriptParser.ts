@@ -16,6 +16,8 @@
 
 import { IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentQuestionOption } from './paradisAgentChat.js';
 
+export { paradisQuestionReadyMarker } from './paradisAgentQuestionMarker.js';
+
 export interface IParadisAgentActivityDetailMessage {
 	readonly role: 'user' | 'assistant' | 'tool';
 	readonly kind: 'text' | 'thinking' | 'tool';
@@ -44,8 +46,6 @@ export function toDetailMessage(message: IRawMessage): IParadisAgentActivityDeta
 	};
 }
 
-/** 目印にするラベル片の長さ。検証側の上限（`paradisMobileWorkspaceProvider`）はこれより緩い。 */
-export const PARADIS_QUESTION_READY_MARKER_LENGTH = 12;
 
 /** 本文テキストの上限 (モバイル表示用。超過は末尾に…を付けて切る)。 */
 export const TEXT_LIMIT = 6000;
@@ -417,29 +417,6 @@ export function parseAskUserQuestions(input: unknown, toolUseId: string | undefi
 		questionCount: out.length,
 		...(toolUseId !== undefined ? { questionGroup: toolUseId } : {}),
 	}));
-}
-
-/**
- * 「TUI が選択肢リストを出し終えたか」を画面文字列で判定するための目印を作る。
- *
- * 打鍵を流し始めてよいのは、リストがキーボードフォーカスを取った後。**それより前に送ると
- * 入力欄へ吸われて消える**（Claude Code 2.1.223 で実測。単問・単一選択はキーが1つしか無いので、
- * 取りこぼすと二度と拾えない）。フッタの英語表記（`Esc to cancel` 等）に頼ると TUI の文言変更で
- * 黙って壊れるため、**その質問自身の先頭の選択肢ラベル**を目印にする。
- *
- * ターミナルは折り返すので、長いラベルは画面上で途切れる。先頭の短い一片だけを使う。
- * 目印を作れない場合（ラベルが無い・記号だけ等）は `undefined` を返し、待たずに従来どおり流す。
- */
-export function paradisQuestionReadyMarker(question: Pick<IRawMessage, 'options'> | undefined): string | undefined {
-	const label = question?.options?.[0]?.label;
-	if (typeof label !== 'string') {
-		return undefined;
-	}
-	// **空白を取り除いてから切る**。空白の手前で切ると `"✓ Yes"` のような1文字トークンで
-	// 目印を作れなくなり、逆に空白を残すと折り返しの改行で照合が外れる。
-	// 照合側も同じ規則で空白を落とす（paradisScreenShowsMarker）。
-	const marker = label.replace(/\s+/g, '').slice(0, PARADIS_QUESTION_READY_MARKER_LENGTH);
-	return marker.length >= 2 ? marker : undefined;
 }
 
 /**

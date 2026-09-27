@@ -14,7 +14,8 @@ import { $, addDisposableListener, append, clearNode, EventType } from '../../..
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { disposableTimeout } from '../../../../base/common/async.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { IParadisAgentChatCommand } from '../common/paradisAgentChat.js';
@@ -94,9 +95,10 @@ export class ParadisAgentChatComposer extends Disposable {
 		}));
 		this._register(addDisposableListener(this.textarea, EventType.INPUT, () => this.onInput()));
 		this._register(addDisposableListener(this.textarea, EventType.KEY_DOWN, e => this.onKeyDown(e)));
+		const blurTimer = this._register(new MutableDisposable());
 		this._register(addDisposableListener(this.textarea, EventType.BLUR, () => {
 			// メニューのクリックより先に blur が来るので、少し待ってから閉じる。
-			setTimeout(() => this.hideSlashMenu(), 150);
+			blurTimer.value = disposableTimeout(() => this.hideSlashMenu(), 150);
 		}));
 		this._register(addDisposableListener(this.sendButton, EventType.CLICK, () => this.submit()));
 		this.updateHint();
@@ -113,6 +115,7 @@ export class ParadisAgentChatComposer extends Disposable {
 		}
 		this.token = token;
 		this.historyIndex = -1;
+		this.sending = false;
 		this.textarea.value = token !== undefined ? this.host.getDraft(token) : '';
 		this.hideSlashMenu();
 		this.autosize();
@@ -148,6 +151,15 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.notice.classList.toggle('visible', message !== undefined && message.length > 0);
 	}
 
+	/** 入力欄のカーソル位置へ文字を差し込む（ファイルのドロップなど）。 */
+	insertText(text: string): void {
+		const start = this.textarea.selectionStart;
+		const end = this.textarea.selectionEnd;
+		this.textarea.setRangeText(text, start, end, 'end');
+		this.onInput();
+		this.textarea.focus();
+	}
+
 	focus(): void {
 		this.textarea.focus();
 		const end = this.textarea.value.length;
@@ -158,8 +170,14 @@ export class ParadisAgentChatComposer extends Disposable {
 		return this.textarea.ownerDocument.activeElement === this.textarea;
 	}
 
-	/** 送った文を入力欄から消す（送れなかったときは呼ばない＝文が残る）。 */
-	clearAfterSend(): void {
+	/**
+	 * 送った文を入力欄から消す（送れなかったときは呼ばない＝文が残る）。送っている間に打ち足していたら
+	 * 消さない（打ち足した分まで消えるため）。
+	 */
+	clearAfterSend(sentText: string): void {
+		if (this.textarea.value !== sentText) {
+			return;
+		}
 		this.textarea.value = '';
 		this.historyIndex = -1;
 		if (this.token !== undefined) {
