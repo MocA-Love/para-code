@@ -71,8 +71,24 @@ export interface TerminalViewport {
 export interface TerminalFontMetrics {
 	/** 1文字ぶんの送り幅。 */
 	readonly charWidth100: number;
-	/** 1行ぶんの送り高さ。 */
+	/** 1行ぶんの送り高さ（フォントの自然な行送り。見積もり）。 */
 	readonly lineHeight100: number;
+	/**
+	 * xterm が実際に描く1行の高さ（px）を文字サイズ（pt。`"12"` のような鍵）ごとに並べたもの。
+	 *
+	 * xterm は行の高さを `lineHeight100` の比例では描かない。フォントの ascent + descent を整数に丸め、
+	 * さらに画面の画素（devicePixelRatio）へ切り上げるので、同じ文字サイズでも見積もりより高くなる
+	 * （実測: iPad の 12pt で見積もり 14.04px に対して実際は 15px）。見積もりで行数を決めると、
+	 * 行数 × 差のぶんだけ下の行（プロンプトとカーソルの行）が表示領域の外に出る。
+	 * あればこちらを使い、無い文字サイズは見積もりで補う。
+	 */
+	readonly rowHeights?: Readonly<Record<string, number>>;
+}
+
+/** 文字サイズ `size`（pt）のときの1行の高さ（px）。実測の表があればそれを、無ければ見積もりを使う。 */
+function terminalRowHeight(metrics: TerminalFontMetrics, size: number): number {
+	const measured = metrics.rowHeights?.[String(size)];
+	return typeof measured === 'number' && measured > 0 ? measured : metrics.lineHeight100 / 100 * size;
 }
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
@@ -103,7 +119,7 @@ export function terminalGridFor(
 	}
 	const size = clampTerminalFontSize(fontSize);
 	const cols = Math.floor(availWidth / (charWidth100 / 100 * size));
-	const rows = Math.floor(availHeight / (lineHeight100 / 100 * size));
+	const rows = Math.floor(availHeight / terminalRowHeight(metrics, size));
 	if (!Number.isFinite(cols) || !Number.isFinite(rows)) {
 		return undefined;
 	}
