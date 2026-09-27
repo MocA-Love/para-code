@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 呼んでいるターミナルのエディタタブに、色の点を付ける（Q43 案A）。
+// あわせて、タブ左のアイコンを状態で差し替え、状態が無ければ Claude / OpenAI のロゴにする（Q52 案B）。
 //
 // 仕組みは upstream のベル表示と同じファイル装飾（IDecorationsService）で、タブの部品には手を
 // 入れない。upstream の提供元（`terminalTabsList.ts` の TabDecorationsProvider）は下部パネルの
@@ -16,6 +17,8 @@
 // 色はスペース一覧のドットと同じで、完了は緑、許可待ちと質問は赤、ベルは黄。点はそのターミナルを
 // 操作する（フォーカスする・キーを打つ）まで残す。
 
+import './media/paradisTerminalTabStatus.css';
+import { createStyleSheet } from '../../../../base/browser/domStylesheets.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -29,9 +32,34 @@ import { IHostService } from '../../../../workbench/services/host/browser/host.j
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { paradisCollectAllTerminalInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
 import { IParadisAgentStatusStore } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { ParadisTerminalAttention, paradisAttentionColor, paradisNextAttentionOnBell, paradisNextAttentionOnStatus } from '../common/paradisTerminalTabStatus.js';
+import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
+import { PARADIS_CLAUDE_LOGO_PATH, PARADIS_CODEX_LOGO_PATH } from '../../limitsMonitor/common/paradisAgentLogoPaths.js';
+import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
+import { IParadisTerminalTabIcon, paradisRegisterTerminalTabIconProvider } from '../../workspaceSwitch/browser/paradisTerminalTabIconRegistry.js';
+import { ParadisTerminalAttention, ParadisTerminalTabIconKind, paradisAttentionColor, paradisGuessAgentKindFromTitle, paradisNextAttentionOnBell, paradisNextAttentionOnStatus, paradisTerminalTabIconKind } from '../common/paradisTerminalTabStatus.js';
 
-const DOT = '●';
+const DOT = '\u25CF';
+
+/**
+ * 種類ごとのタブのアイコン。codicon は「その種類のクラスが付いた ::before」を CSS が描き替える
+ * 土台で、回転（作業中）とロゴはクラスの側で描く（`media/paradisTerminalTabStatus.css`）。
+ * 作業中に `Codicon.loading` を使わないのは、`.codicon-loading` の回転がラベル全体に掛かるため。
+ */
+const TAB_ICONS: Record<ParadisTerminalTabIconKind, IParadisTerminalTabIcon> = {
+	working: { icon: Codicon.sync, extraClasses: ['paradis-terminal-tab-state', 'paradis-terminal-tab-working'] },
+	permission: { icon: Codicon.bell, extraClasses: ['paradis-terminal-tab-state', 'paradis-terminal-tab-waiting'] },
+	question: { icon: Codicon.question, extraClasses: ['paradis-terminal-tab-state', 'paradis-terminal-tab-waiting'] },
+	done: { icon: Codicon.circleFilled, extraClasses: ['paradis-terminal-tab-state', 'paradis-terminal-tab-done'] },
+	claude: { icon: Codicon.terminal, extraClasses: ['paradis-terminal-tab-logo', 'paradis-terminal-tab-logo-claude'] },
+	codex: { icon: Codicon.terminal, extraClasses: ['paradis-terminal-tab-logo', 'paradis-terminal-tab-logo-codex'] },
+};
+
+/** ロゴは色をテーマに追従させるため、SVG を mask にして地の色（currentColor）で塗る。 */
+function logoMaskRule(kind: 'claude' | 'codex', path: string): string {
+	const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 600'><path d='${path}'/></svg>`;
+	const url = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+	return `.monaco-workbench .monaco-icon-label.terminal-tab.paradis-terminal-tab-logo-${kind}[class*='codicon-']::before { -webkit-mask-image: ${url}; mask-image: ${url}; }`;
+}
 
 export class ParadisTerminalTabStatusContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.paradisTerminalTabStatus';
@@ -42,9 +70,11 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 	private readonly _lastStatus = new Map<number, ParadisAgentStatus>();
 	private readonly _instanceListeners = this._register(new DisposableMap<number, DisposableStore>());
 	private readonly _onDidChangeDecorations = this._register(new Emitter<URI[]>());
-	private readonly _onDidChangeAttention = this._register(new Emitter<ITerminalInstance>());
-	/** 呼んでいる理由が変わったターミナル。タブのアイコン（Q52）もこれで描き直す。 */
-	readonly onDidChangeAttention = this._onDidChangeAttention.event;
+	/** instanceId → 動いているエージェント（コマンドラインから分かったもの）。 */
+	private readonly _agentKinds = new Map<number, 'claude' | 'codex'>();
+	/** instanceId → 直前に出したタブのアイコン。変わったときだけ描き直させる。 */
+	private readonly _tabIconKinds = new Map<number, ParadisTerminalTabIconKind>();
+	private readonly _onDidChangeTabIcon = this._register(new Emitter<number>());
 
 	constructor(
 		@ITerminalService private readonly terminalService: ITerminalService,
@@ -59,6 +89,24 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 			onDidChange: this._onDidChangeDecorations.event,
 			provideDecorations: uri => this.provideDecorations(uri),
 		}));
+		this._register(paradisRegisterTerminalTabIconProvider({
+			onDidChange: this._onDidChangeTabIcon.event,
+			getTabIcon: instance => this.getTabIcon(instance.instanceId),
+		}));
+		const logoStyles = this._register(new DisposableStore());
+		// 中身は追加する前に入れる（補助ウィンドウへの複製は追加した時点の内容で作られる）。
+		createStyleSheet(undefined, style => {
+			style.textContent = [
+				logoMaskRule('claude', PARADIS_CLAUDE_LOGO_PATH),
+				logoMaskRule('codex', PARADIS_CODEX_LOGO_PATH),
+			].join('\n');
+		}, logoStyles);
+		// どのエージェントが動いているかは、シェル統合が報告するコマンドラインで知る。
+		const executed = this._register(this.terminalService.createOnInstanceCapabilityEvent(TerminalCapability.CommandDetection, capability => capability.onCommandExecuted));
+		this._register(executed.event(({ instance, data }) => this.onCommandExecuted(instance, data.command)));
+		const finished = this._register(this.terminalService.createOnInstanceCapabilityEvent(TerminalCapability.CommandDetection, capability => capability.onCommandFinished));
+		this._register(finished.event(({ instance, data }) => this.onCommandFinished(instance, data.command)));
+		this._register(this.terminalService.onAnyInstanceTitleChange(instance => this.refreshTabIcon(instance)));
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => this.onAgentStatusesChanged()));
 		// 「操作した」とみなすのは、そのターミナルにフォーカスが入ったときとキーを打ったとき。
 		this._register(this.terminalService.onDidFocusInstance(instance => this.clearAttention(instance)));
@@ -71,9 +119,70 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 		this.onAgentStatusesChanged();
 	}
 
-	/** そのターミナルが今呼んでいる理由。 */
-	getAttention(instanceId: number): ParadisTerminalAttention | undefined {
-		return this._attention.get(instanceId);
+	/** タブ左のアイコン（Q52 案B）。エージェントでないターミナルは undefined（upstream のまま）。 */
+	private getTabIcon(instanceId: number): IParadisTerminalTabIcon | undefined {
+		const kind = this._tabIconKinds.get(instanceId) ?? this.computeTabIconKind(instanceId);
+		return kind === undefined ? undefined : TAB_ICONS[kind];
+	}
+
+	private computeTabIconKind(instanceId: number): ParadisTerminalTabIconKind | undefined {
+		return paradisTerminalTabIconKind(
+			this.agentStatusStore.getInstanceStatus(instanceId),
+			this._attention.get(instanceId),
+			this.agentKind(instanceId),
+		);
+	}
+
+	/**
+	 * そのターミナルで動いているエージェント。コマンドラインで分かったものを優先し、再接続した
+	 * ターミナルは実行中のコマンド、最後にエージェントだと分かっているタブのタイトルから推測する。
+	 */
+	private agentKind(instanceId: number): 'claude' | 'codex' | undefined {
+		const known = this._agentKinds.get(instanceId);
+		if (known !== undefined) {
+			return known;
+		}
+		const instance = this.terminalService.instances.find(candidate => candidate.instanceId === instanceId);
+		if (instance === undefined) {
+			return undefined;
+		}
+		const executing = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
+		const fromCommand = executing === undefined ? undefined : paradisInteractiveAgentCommand(executing)?.agent;
+		if (fromCommand !== undefined) {
+			return fromCommand;
+		}
+		return this.agentStatusStore.isAgentInstance(instanceId) ? paradisGuessAgentKindFromTitle(instance.title) : undefined;
+	}
+
+	private onCommandExecuted(instance: ITerminalInstance, commandLine: string): void {
+		const agent = paradisInteractiveAgentCommand(commandLine)?.agent;
+		if (agent === undefined) {
+			return;
+		}
+		this._agentKinds.set(instance.instanceId, agent);
+		this.refreshTabIcon(instance);
+	}
+
+	private onCommandFinished(instance: ITerminalInstance, commandLine: string): void {
+		// エージェントを終えてシェルへ戻ったら、ロゴをふつうのターミナルのアイコンへ戻す。
+		if (!this._agentKinds.has(instance.instanceId) || paradisInteractiveAgentCommand(commandLine) === undefined) {
+			return;
+		}
+		this._agentKinds.delete(instance.instanceId);
+		this.refreshTabIcon(instance);
+	}
+
+	private refreshTabIcon(instance: ITerminalInstance): void {
+		const kind = this.computeTabIconKind(instance.instanceId);
+		if (this._tabIconKinds.get(instance.instanceId) === kind) {
+			return;
+		}
+		if (kind === undefined) {
+			this._tabIconKinds.delete(instance.instanceId);
+		} else {
+			this._tabIconKinds.set(instance.instanceId, kind);
+		}
+		this._onDidChangeTabIcon.fire(instance.instanceId);
 	}
 
 	private provideDecorations(uri: URI): IDecorationData | undefined {
@@ -117,6 +226,7 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 				continue;
 			}
 			this.setAttention(instance, paradisNextAttentionOnStatus(previous, current, this._attention.get(instance.instanceId), this.isWatching(instance)));
+			this.refreshTabIcon(instance);
 		}
 	}
 
@@ -145,6 +255,8 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 		this._instanceListeners.deleteAndDispose(instance.instanceId);
 		this._lastStatus.delete(instance.instanceId);
 		this._attention.delete(instance.instanceId);
+		this._agentKinds.delete(instance.instanceId);
+		this._tabIconKinds.delete(instance.instanceId);
 	}
 
 	private clearAttention(instance: ITerminalInstance): void {
@@ -161,7 +273,7 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 			this._attention.set(instance.instanceId, attention);
 		}
 		this._onDidChangeDecorations.fire([instance.resource]);
-		this._onDidChangeAttention.fire(instance);
+		this.refreshTabIcon(instance);
 	}
 }
 

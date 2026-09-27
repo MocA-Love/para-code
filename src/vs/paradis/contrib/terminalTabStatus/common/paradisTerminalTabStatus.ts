@@ -84,3 +84,44 @@ export function paradisAttentionColor(attention: ParadisTerminalAttention): stri
 		case 'bell': return 'charts.yellow';
 	}
 }
+
+/** エディタのターミナルタブ左に出すアイコンの種類（Q52 案B）。 */
+export type ParadisTerminalTabIconKind = 'working' | 'permission' | 'question' | 'done' | 'claude' | 'codex';
+
+/**
+ * タブ左のアイコン。状態があれば状態、無ければそのタブで動いているエージェントのロゴ、
+ * エージェントでなければ upstream のアイコンのまま（undefined）。
+ *
+ * 「完了」はユーザーがまだそのタブを触っていないもの（呼んでいる印の `done`、または既読に
+ * なっていない `review`）だけ。見終わった完了はロゴへ戻す。
+ */
+export function paradisTerminalTabIconKind(
+	status: ParadisAgentStatus | undefined,
+	attention: ParadisTerminalAttention | undefined,
+	agentKind: 'claude' | 'codex' | undefined,
+): ParadisTerminalTabIconKind | undefined {
+	switch (status) {
+		case 'permission': return 'permission';
+		case 'question': return 'question';
+		case 'working': return 'working';
+	}
+	if (attention === 'done' || status === 'review') {
+		return 'done';
+	}
+	return agentKind;
+}
+
+/**
+ * ターミナルのタイトルからエージェントを推測する。コマンドラインが取れなかった場合（別名で
+ * 起動した、シェル統合が無い等）の最後の手段で、エージェントだと分かっているタブにだけ使う。
+ */
+export function paradisGuessAgentKindFromTitle(title: string): 'claude' | 'codex' | undefined {
+	const lower = title.toLowerCase();
+	if (lower.includes('claude')) {
+		return 'claude';
+	}
+	if (lower.includes('codex')) {
+		return 'codex';
+	}
+	return undefined;
+}
