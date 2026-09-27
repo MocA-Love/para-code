@@ -39,6 +39,7 @@ import {
 	IParadisResumePreview,
 	IParadisResumeSearchResult,
 	IParadisResumeSession,
+	IParadisResumeSessionDetails,
 	IParadisResumeSpace,
 	PARADIS_RESUME_SESSION_ID_PATTERN,
 	PARADIS_SESSION_RESUME_CHANNEL,
@@ -49,6 +50,8 @@ const nodeRequire = createRequire(import.meta.url);
 const MAX_SESSIONS = 600;
 const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_PREVIEW_MESSAGES = 200;
+/** コピーする「最初の依頼」の上限。貼り付けた長文もそのまま写せるよう、一覧用より長くする。 */
+const MAX_DETAILS_PROMPT_CHARS = 256 * 1024;
 const MAX_CLAUDE_SESSIONS_PER_SPACE = 200;
 // 一覧行の「最新の会話」プレビュー用に transcript の末尾から読む量。
 // 最後のメッセージ行がこの長さを超えると採取できないが、その場合は preview(最初のプロンプト)へフォールバックする。
@@ -420,6 +423,28 @@ export class ParadisSessionResumeService {
 		this.latestMessageCache.set(catalogId, { revision, message });
 	}
 
+	/**
+	 * 「…」メニューのコピー・開く操作に使う、ログの置き場所と最初の依頼の全文。
+	 * 一覧には最初の依頼を切り詰めて載せているので、コピー用はここで読み直す。
+	 */
+	async details(catalogId: string): Promise<IParadisResumeSessionDetails> {
+		const entry = this.catalog.get(catalogId);
+		if (!entry || !pathInside(entry.allowedRoot, entry.transcriptPath)) {
+			throw new Error('Session is no longer available.');
+		}
+		entry.touchedAt = Date.now();
+		const data = await this.readBoundedFile(entry.transcriptPath, entry.allowedRoot, this.beforeTranscriptRead);
+		let firstPrompt: string | undefined;
+		for (const line of data.text.split('\n')) {
+			const message = parseLine(line, entry.session.agent, MAX_DETAILS_PROMPT_CHARS);
+			if (message?.role === 'user') {
+				firstPrompt = message.text;
+				break;
+			}
+		}
+		return { transcriptPath: entry.transcriptPath, firstPrompt };
+	}
+
 	async preview(catalogId: string, rawQuery?: string): Promise<IParadisResumePreview> {
 		const entry = this.catalog.get(catalogId);
 		if (!entry || !pathInside(entry.allowedRoot, entry.transcriptPath)) {
@@ -650,7 +675,7 @@ export class ParadisSessionResumeService {
 					this.addSession({
 						id: candidate.id, agent: 'claude', title: clipped(display, 160), preview: clipped(firstPrompt ?? display, 260),
 						cwd: space.cwd, spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
-						createdAt, updatedAt: candidate.updatedAt, archived: false,
+						createdAt, updatedAt: candidate.updatedAt, archived: false, empty: firstPrompt === undefined,
 					}, candidate.transcriptPath, claudeHome, target);
 				} catch (error) {
 					this.logService.debug('[ParadisSessionResume] unable to read Claude session', error);
@@ -732,7 +757,7 @@ export class ParadisSessionResumeService {
 					id, agent: 'codex', title: clipped(title, 160), preview: clipped(preview, 260), cwd: space.cwd,
 					spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
 					createdAt: number(row?.created_at_value), updatedAt: number(row?.updated_at_value) || Date.now(),
-					archived: number(row?.archived) === 1, gitBranch: string(row?.git_branch),
+					archived: number(row?.archived) === 1, empty: !string(row?.name) && !string(row?.title) && !string(row?.first_user_message) && !string(row?.preview), gitBranch: string(row?.git_branch),
 				}, transcriptPath, codexHome, target);
 				accepted++;
 				if (accepted >= MAX_SESSIONS) {
@@ -814,7 +839,7 @@ export class ParadisSessionResumeService {
 					this.addSession({
 						id: meta.id, agent: 'codex', title: clipped(display, 160), preview: clipped(display, 260), cwd: space.cwd,
 						spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
-						createdAt: firstPrompt?.timestamp, updatedAt: candidate.updatedAt, archived: false,
+						createdAt: firstPrompt?.timestamp, updatedAt: candidate.updatedAt, archived: false, empty: firstPrompt === undefined,
 					}, candidate.path, codexHome, target);
 				} catch (error) {
 					this.logService.debug('[ParadisSessionResume] unable to read Codex rollout', error);
@@ -850,6 +875,7 @@ export class ParadisSessionResumeChannel<TContext = string> implements IServerCh
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'list': return this.service.list((args[0] ?? {}) as IParadisResumeListRequest<string>) as Promise<T>;
+			case 'details': return this.service.details(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
 			case 'preview': return this.service.preview(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined) as Promise<T>;
 			case 'search': return this.service.search(clientIdFrom(ctx), typeof args[0] === 'string' ? args[0] : '', Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
 			default: throw new Error(`Method not found: ${command}`);

@@ -13,7 +13,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { paradisResolveHostPath } from '../../../common/paradisHostPath.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { IParadisResumeListRequest, IParadisResumePreview, IParadisResumeSearchResult, IParadisResumeSession, IParadisResumeSpace, PARADIS_SESSION_RESUME_CHANNEL } from '../common/paradisSessionResume.js';
+import { IParadisResumeListRequest, IParadisResumePreview, IParadisResumeSearchResult, IParadisResumeSession, IParadisResumeSessionDetails, IParadisResumeSpace, PARADIS_SESSION_RESUME_CHANNEL } from '../common/paradisSessionResume.js';
 
 const MAX_MERGED_SESSIONS = 600;
 
@@ -48,6 +48,8 @@ export class ParadisSessionResumeClient {
 	// list() が完了するまでは前回の結果を指す。in-flight の list を preview/search が手元へ
 	// 誤って落とさないよう、更新は list() が settle してから丸ごと差し替える（部分更新しない）。
 	private catalogHost = new Map<string, IChannel>();
+	/** 手元のマシン（shared process）から来た会話の catalogId。 */
+	private readonly localCatalogIds = new Set<string>();
 
 	constructor(
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
@@ -90,12 +92,12 @@ export class ParadisSessionResumeClient {
 		// 「呼び出さなかった（該当スペースが無い）」と「呼び出して失敗した」を区別するため、実際に
 		// 呼び出したものだけを集める。区別しないと、片方のマシンにしかスペースが無い構成で、その
 		// 唯一の呼び出しが失敗しても「もう片方は最初から成功扱い」でエラーが握り潰されてしまう。
-		const attempts: { readonly channel: IChannel; readonly promise: Promise<readonly IParadisResumeSession[]> }[] = [];
+		const attempts: { readonly channel: IChannel; readonly local: boolean; readonly promise: Promise<readonly IParadisResumeSession[]> }[] = [];
 		if (localSpaces.length > 0) {
-			attempts.push({ channel: local, promise: this.callList(local, localSpaces, request.includeArchived) });
+			attempts.push({ channel: local, local: true, promise: this.callList(local, localSpaces, request.includeArchived) });
 		}
 		if (remote !== undefined && remoteSpaces.length > 0) {
-			attempts.push({ channel: remote.channel, promise: this.callList(remote.channel, remoteSpaces, request.includeArchived) });
+			attempts.push({ channel: remote.channel, local: false, promise: this.callList(remote.channel, remoteSpaces, request.includeArchived) });
 		}
 		const results = await Promise.allSettled(attempts.map(attempt => attempt.promise));
 		const sessions: IParadisResumeSession[] = [];
@@ -108,10 +110,14 @@ export class ParadisSessionResumeClient {
 				for (const [catalogId, existingChannel] of this.catalogHost) {
 					if (existingChannel === channel) {
 						this.catalogHost.delete(catalogId);
+						this.localCatalogIds.delete(catalogId);
 					}
 				}
 				for (const session of result.value) {
 					this.catalogHost.set(session.catalogId, channel);
+					if (attempts[index].local) {
+						this.localCatalogIds.add(session.catalogId);
+					}
 				}
 				sessions.push(...result.value);
 			} else {
@@ -135,6 +141,23 @@ export class ParadisSessionResumeClient {
 	private async callList(channel: IChannel, spaces: readonly IParadisResumeSpace[], includeArchived: boolean | undefined): Promise<readonly IParadisResumeSession[]> {
 		const request: IParadisResumeListRequest = { spaces, includeArchived };
 		return channel.call<readonly IParadisResumeSession[]>('list', [request]);
+	}
+
+	/** 会話ログの置き場所と最初の依頼の全文。 */
+	details(catalogId: string): Promise<IParadisResumeSessionDetails> {
+		const channel = this.catalogHost.get(catalogId);
+		if (!channel) {
+			return Promise.reject(new Error('Session is no longer available.'));
+		}
+		return channel.call('details', [catalogId]);
+	}
+
+	/**
+	 * この会話が手元のマシン（shared process）から来たものか。SSH 接続先の会話のログは
+	 * Finder で表示できず、全文索引（手元だけ）にも入らない。
+	 */
+	isLocal(catalogId: string): boolean {
+		return this.localCatalogIds.has(catalogId);
 	}
 
 	preview(catalogId: string, query?: string): Promise<IParadisResumePreview> {
