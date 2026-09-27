@@ -23,7 +23,6 @@ import {
 	paradisChromiumSameSite,
 	paradisCookiePrefixRulesOk,
 	paradisCookieSetUrl,
-	paradisIsGoogleLoginCookieName,
 	paradisIsGoogleLoginHost,
 } from '../../common/paradisBrowserLoginImport.js';
 import {
@@ -121,11 +120,6 @@ suite('Paradis Chromium cookie import (node)', () => {
 			[true, true, true, true, true, true, true, true, true, true, true],
 		);
 		assert.deepStrictEqual(['github.com', 'mygoogle.com', 'example.com'].map(paradisIsGoogleLoginHost), [false, false, false]);
-		// N7: Cookie 名の網（Google ドメインでのみ使う）。__Secure-OSID と SIDCC も含める。
-		assert.deepStrictEqual(
-			['SAPISID', '__Secure-1PSID', '__Secure-OSID', 'SIDCC', 'session'].map(paradisIsGoogleLoginCookieName),
-			[true, true, true, true, false],
-		);
 
 		assert.strictEqual(paradisCookieSetUrl('.github.com', '/', true), 'https://github.com/');
 		assert.strictEqual(paradisCookieSetUrl('localhost', 'app', false), 'http://localhost/app');

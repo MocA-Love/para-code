@@ -261,7 +261,8 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 		// 検索の入力ごとに呼ばれるので、行のリスナーは毎回捨てる（積み上げない）。
 		this._rowStore.clear();
 		dom.clearNode(listElement);
-		// 検索欄のあとにチェックボックスを Tab の巡回へ入れる（キーボードだけでも選べるように）。
+		// 一覧全体を Tab の停止点1つにする（ロービング tabindex）。ドメインが数千あっても Tab 1回で抜けられ、
+		// 一覧の中は ↑↓ で移り、Space で切り替える。停止点は選べるチェックボックスのうち1つだけ tabIndex=0。
 		this._domainFocusables = [this._searchInput];
 		const query = this._search.trim().toLowerCase();
 		const domains = (this._domainListing?.domains ?? []).filter(group => query.length === 0 || group.domain.includes(query));
@@ -272,7 +273,22 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 			this._rebuildFocusables();
 			return;
 		}
+		const searchInput = this._searchInput;
 		const checkboxes: HTMLInputElement[] = [];
+		let active: HTMLInputElement | undefined;
+		// 停止点を1つに保つ。基底クラスの Tab 巡回（contentFocusables）にも、今の停止点だけを入れる。
+		const setActive = (next: HTMLInputElement) => {
+			if (active === next) {
+				return;
+			}
+			if (active) {
+				active.tabIndex = -1;
+			}
+			active = next;
+			next.tabIndex = 0;
+			this._domainFocusables = [searchInput, next];
+			this._rebuildFocusables();
+		};
 		for (const group of domains) {
 			const row = dom.append(listElement, $('label.pbpm-import-row')) as HTMLLabelElement;
 			row.classList.toggle('is-disabled', !group.importable);
@@ -280,9 +296,9 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 			checkbox.type = 'checkbox';
 			checkbox.checked = this._selectedDomains.has(group.domain);
 			checkbox.disabled = !group.importable;
+			checkbox.tabIndex = -1;
 			checkbox.setAttribute('aria-label', group.domain);
 			if (group.importable) {
-				this._domainFocusables.push(checkbox);
 				checkboxes.push(checkbox);
 			}
 			this._rowStore.add(dom.addDisposableListener(checkbox, dom.EventType.CHANGE, () => {
@@ -294,14 +310,19 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 				this._updateSummary();
 				this._updateImportButton();
 			}));
-			// 一覧の中は矢印キーで隣のチェックボックスへ移動できるようにする。
+			// クリックで選んだ行も次の停止点にする。
+			this._rowStore.add(dom.addDisposableListener(checkbox, dom.EventType.FOCUS, () => setActive(checkbox)));
 			this._rowStore.add(dom.addDisposableListener(checkbox, dom.EventType.KEY_DOWN, event => {
 				const keyboardEvent = new StandardKeyboardEvent(event);
 				if (keyboardEvent.keyCode === KeyCode.DownArrow || keyboardEvent.keyCode === KeyCode.UpArrow) {
 					keyboardEvent.preventDefault();
 					const index = checkboxes.indexOf(checkbox);
 					const next = keyboardEvent.keyCode === KeyCode.DownArrow ? index + 1 : index - 1;
-					checkboxes[(next + checkboxes.length) % checkboxes.length]?.focus();
+					const target = checkboxes[(next + checkboxes.length) % checkboxes.length];
+					if (target) {
+						setActive(target);
+						target.focus();
+					}
 				}
 			}));
 			dom.append(row, $('.pbpm-import-domain')).textContent = group.domain;
@@ -310,7 +331,14 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 				? localize('paradis.loginImport.cookieCount', "Cookie {0}件", group.cookieCount)
 				: (group.reason ?? localize('paradis.loginImport.cannotImport', "取り込めません"));
 		}
-		this._rebuildFocusables();
+
+		// 最初の停止点は、選択済みの先頭（無ければ選べる先頭）。
+		const initial = checkboxes.find(checkbox => checkbox.checked) ?? checkboxes[0];
+		if (initial) {
+			setActive(initial);
+		} else {
+			this._rebuildFocusables();
+		}
 	}
 
 	private _updateSummary(): void {

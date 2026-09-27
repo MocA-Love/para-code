@@ -626,7 +626,8 @@
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 6px 8px;
+	/* macOS のオーバーレイスクロールバーは scrollbar-gutter で幅を取れないので、右の余白で件数との重なりを避ける。 */
+	padding: 6px 16px 6px 8px;
 	cursor: pointer;
 }
 
