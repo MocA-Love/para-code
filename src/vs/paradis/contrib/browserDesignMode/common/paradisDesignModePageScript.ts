@@ -16,6 +16,16 @@
 // ページが触れるのは、画面に出した DOM（閉じた shadow root の外枠）だけ。ページが偽の
 // クリックを投げても `isTrusted` で弾く。
 //
+// ただし CDP（デバッグ用の通信）からは isolated world の実行コンテキストも見え、そこで式を
+// 評価できる。エージェントが生の CDP で先に偽の `__paradisDesign` を置いても使わないよう、
+// 選択を始めるたびに今あるものを捨てて入れ直し、戻り値に main が渡した使い捨ての nonce を
+// 載せて照合する。CDP 越しにこの world の中を書き換え続けられると防ぎきれないので、
+// 根本の対策は CDP フィルタ側で isolated world を隠すこと（NOTES の残作業）。
+//
+// 見えないテキスト（display:none・透明・極小の文字・aria-hidden・画面外へ追い出したもの）は
+// 取り出さない。ページがボタンの中に隠した指示を「ユーザーの発言」としてエージェントへ渡さない
+// ため。HTML の断片からも、見えない要素とコメントを取り除く。
+//
 // 要素の情報の集め方（セレクタの組み方・近くのテキスト・属性の伏せ方）は Orca（stablyai/orca、
 // MIT License、Copyright (c) 2026 Lovecast Inc.）の src/main/browser/grab-guest-*.ts を元にした。
 //
@@ -28,7 +38,12 @@ import { IParadisDesignPin } from './paradisDesignMode.js';
 const INSTALL_SCRIPT = `(function () {
 	'use strict';
 	var g = globalThis;
-	if (g.__paradisDesign) { return; }
+	if (g.__paradisDesign && !FORCE_REINSTALL) { return; }
+	if (g.__paradisDesign) {
+		// 前に入れたもの（または CDP から置かれた偽物）を片付けてから入れ直す
+		try { g.__paradisDesign.dispose(); } catch (e) { }
+		delete g.__paradisDesign;
+	}
 
 	var TEXT_MAX = 200;
 	var NEARBY_MAX = 6;
@@ -67,9 +82,51 @@ const INSTALL_SCRIPT = `(function () {
 	function normalizeSpaces(text) {
 		return String(text || '').split(/\\s+/).join(' ').trim();
 	}
+	function alphaOf(color) {
+		var match = /rgba?[(]([^)]*)[)]/.exec(color || '');
+		if (!match) { return color === 'transparent' ? 0 : 1; }
+		var parts = match[1].split(/[ ,/]+/).filter(function (part) { return part.length > 0; });
+		return parts.length >= 4 ? parseFloat(parts[3]) : 1;
+	}
+	var hiddenCache = null;
+	function isHidden(el) {
+		if (!el || el.nodeType !== 1) { return false; }
+		if (hiddenCache && hiddenCache.has(el)) { return hiddenCache.get(el); }
+		var hidden = false;
+		try {
+			if (el.closest('[aria-hidden="true"], [hidden], [inert]')) {
+				hidden = true;
+			} else if (typeof el.checkVisibility === 'function' && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true })) {
+				hidden = true;
+			} else {
+				var style = getComputedStyle(el);
+				var rect = el.getBoundingClientRect();
+				if (parseFloat(style.fontSize) < 2 || alphaOf(style.color) === 0) {
+					hidden = true;
+				} else if (el.getClientRects().length === 0 || rect.width <= 1 || rect.height <= 1) {
+					hidden = true;
+				} else if (rect.right + scrollX <= 0 || rect.bottom + scrollY <= 0) {
+					hidden = true;
+				} else if (style.clipPath && style.clipPath !== 'none' && /inset[(]50%|circle[(]0/.test(style.clipPath)) {
+					hidden = true;
+				} else if (style.clip && /rect[(]0(px)?[ ,]+0(px)?[ ,]+0(px)?[ ,]+0(px)?[)]/.test(style.clip)) {
+					hidden = true;
+				}
+			}
+		} catch (e) {
+			hidden = true;
+		}
+		if (hiddenCache) { hiddenCache.set(el, hidden); }
+		return hidden;
+	}
 	function boundedText(el, max) {
 		try {
-			var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+			if (isHidden(el)) { return ''; }
+			var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+				acceptNode: function (node) {
+					return isHidden(node.parentElement) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+				}
+			});
 			var parts = [];
 			var length = 0;
 			var inspected = 0;
@@ -167,7 +224,21 @@ const INSTALL_SCRIPT = `(function () {
 	}
 	function htmlSnippet(el) {
 		var clone = el.cloneNode(true);
-		var drop = clone.querySelectorAll('script, noscript, template, iframe, object, embed');
+		// 見えない要素を取り除く。複製と元は同じ並びなので、元で判定して同じ位置の複製を消す
+		var originals = Array.prototype.slice.call(el.querySelectorAll('*'), 0, 2000);
+		var copies = Array.prototype.slice.call(clone.querySelectorAll('*'), 0, 2000);
+		for (var h = originals.length - 1; h >= 0; h--) {
+			if (copies[h] && isHidden(originals[h])) { copies[h].remove(); }
+		}
+		var comments = document.createTreeWalker(clone, NodeFilter.SHOW_COMMENT);
+		var commentNodes = [];
+		var comment = comments.nextNode();
+		while (comment && commentNodes.length < 2000) {
+			commentNodes.push(comment);
+			comment = comments.nextNode();
+		}
+		for (var c = 0; c < commentNodes.length; c++) { commentNodes[c].remove(); }
+		var drop = clone.querySelectorAll('script, noscript, template, iframe, object, embed, style');
 		for (var i = 0; i < drop.length; i++) { drop[i].remove(); }
 		var nodes = [clone].concat(Array.prototype.slice.call(clone.querySelectorAll('*'), 0, 2000));
 		for (var j = 0; j < nodes.length; j++) {
@@ -205,6 +276,7 @@ const INSTALL_SCRIPT = `(function () {
 		return result;
 	}
 	function accessibleName(el) {
+		if (isHidden(el)) { return ''; }
 		var label = el.getAttribute('aria-label');
 		if (label) { return clamp(label, 200); }
 		var labelledBy = el.getAttribute('aria-labelledby');
@@ -231,6 +303,7 @@ const INSTALL_SCRIPT = `(function () {
 	}
 	function nearbyText(el) {
 		var result = [];
+		if (isHidden(el.parentElement)) { return result; }
 		var previous = el.previousElementSibling;
 		var next = el.nextElementSibling;
 		var inspected = 0;
@@ -251,6 +324,14 @@ const INSTALL_SCRIPT = `(function () {
 		return result;
 	}
 	function extract(el) {
+		hiddenCache = new Map();
+		try {
+			return extractUncached(el);
+		} finally {
+			hiddenCache = null;
+		}
+	}
+	function extractUncached(el) {
 		var rect = el.getBoundingClientRect();
 		return {
 			url: sanitizeUrl(location.href),
@@ -282,10 +363,13 @@ const INSTALL_SCRIPT = `(function () {
 		if (!current) { return; }
 		pick = null;
 		removeEventListener('keydown', current.onKeyDown, true);
+		removeEventListener('scroll', current.onViewportChange, { capture: true });
+		removeEventListener('resize', current.onViewportChange);
 		try { current.host.remove(); } catch (e) { }
+		result.nonce = current.nonce;
 		current.resolve(result);
 	}
-	function startPick() {
+	function startPick(nonce) {
 		if (pick) { finishPick({ cancelled: true }); }
 		return new Promise(function (resolve) {
 			var host = style(document.createElement('div'), 'position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483647;pointer-events:auto;cursor:crosshair;background:transparent;margin:0;padding:0;border:0;');
@@ -294,7 +378,7 @@ const INSTALL_SCRIPT = `(function () {
 			var label = style(document.createElement('div'), 'position:fixed;display:none;pointer-events:none;padding:2px 6px;border-radius:4px;background:' + ACCENT + ';color:#fff;font:11px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;white-space:nowrap;max-width:320px;overflow:hidden;text-overflow:ellipsis;');
 			shadow.appendChild(box);
 			shadow.appendChild(label);
-			var target = null;
+			var lastPoint = null;
 			function elementAt(x, y) {
 				host.style.pointerEvents = 'none';
 				var el = document.elementFromPoint(x, y);
@@ -303,7 +387,6 @@ const INSTALL_SCRIPT = `(function () {
 				return el;
 			}
 			function show(el) {
-				target = el;
 				if (!el) {
 					box.style.display = 'none';
 					label.style.display = 'none';
@@ -324,8 +407,20 @@ const INSTALL_SCRIPT = `(function () {
 			}
 			host.addEventListener('mousemove', function (event) {
 				if (!event.isTrusted) { return; }
+				lastPoint = { x: event.clientX, y: event.clientY };
 				show(elementAt(event.clientX, event.clientY));
 			});
+			// マウスを動かさずにスクロールしても、枠がカーソルの下の要素へ付いてくるようにする
+			var frame = 0;
+			var onViewportChange = function () {
+				if (!lastPoint || frame) { return; }
+				frame = requestAnimationFrame(function () {
+					frame = 0;
+					if (pick && lastPoint) { show(elementAt(lastPoint.x, lastPoint.y)); }
+				});
+			};
+			addEventListener('scroll', onViewportChange, { capture: true, passive: true });
+			addEventListener('resize', onViewportChange, { passive: true });
 			host.addEventListener('mousedown', function (event) {
 				event.preventDefault();
 				event.stopPropagation();
@@ -334,8 +429,10 @@ const INSTALL_SCRIPT = `(function () {
 				event.preventDefault();
 				event.stopPropagation();
 				if (!event.isTrusted) { return; }
-				var el = target || elementAt(event.clientX, event.clientY);
+				// 前回の mousemove の要素ではなく、押した位置の要素を選ぶ（スクロール後の取り違えを防ぐ）
+				var el = elementAt(event.clientX, event.clientY);
 				if (!el) { return; }
+				show(el);
 				var data;
 				try {
 					data = extract(el);
@@ -359,7 +456,7 @@ const INSTALL_SCRIPT = `(function () {
 				}
 			};
 			addEventListener('keydown', onKeyDown, true);
-			pick = { host: host, resolve: resolve, onKeyDown: onKeyDown };
+			pick = { host: host, resolve: resolve, onKeyDown: onKeyDown, onViewportChange: onViewportChange, nonce: String(nonce || '') };
 			document.documentElement.appendChild(host);
 		});
 	}
@@ -435,13 +532,40 @@ const INSTALL_SCRIPT = `(function () {
 	g.__paradisDesign = {
 		pick: startPick,
 		cancel: function () { finishPick({ cancelled: true }); },
+		dispose: function () {
+			finishPick({ cancelled: true });
+			setPins([]);
+		},
+		// 取り出しだけを行う（テスト用。この world の外からは呼べない）
+		extract: extract,
 		setPins: setPins
 	};
 })();`;
 
-/** 要素を1つ選ばせる。結果は `{ element }` か `{ cancelled: true }`（未検証の値）。 */
-export function paradisBuildPickScript(): string {
-	return `${INSTALL_SCRIPT}\nglobalThis.__paradisDesign.pick();`;
+function installScript(forceReinstall: boolean): string {
+	return INSTALL_SCRIPT.replace('FORCE_REINSTALL', forceReinstall ? 'true' : 'false');
+}
+
+/** 仕掛けを入れ直すだけのスクリプト（テストで取り出しの規則を確かめるのに使う）。 */
+export function paradisBuildInstallScript(): string {
+	return installScript(true);
+}
+
+function serializePins(pins: readonly IParadisDesignPin[]): string {
+	return JSON.stringify(pins.slice(0, 40).map(pin => ({
+		label: String(pin.label).slice(0, 3),
+		selector: String(pin.selector).slice(0, 700),
+		rectPage: { x: Number(pin.rectPage.x) || 0, y: Number(pin.rectPage.y) || 0 },
+	})));
+}
+
+/**
+ * 要素を1つ選ばせる。仕掛けは毎回入れ直し（前からあるものは捨てる）、番号札も置き直す。
+ * 結果は `{ nonce, element }` か `{ nonce, cancelled: true }`（未検証の値）。`nonce` は main が
+ * 呼び出しごとに作る使い捨ての値で、main は戻り値の nonce と照合してから使う。
+ */
+export function paradisBuildPickScript(nonce: string, pins: readonly IParadisDesignPin[]): string {
+	return `${installScript(true)}\nglobalThis.__paradisDesign.setPins(${serializePins(pins)});\nglobalThis.__paradisDesign.pick(${JSON.stringify(nonce)});`;
 }
 
 /** 選択中なら取り消す。仕掛けが入っていなければ何もしない。 */
@@ -451,16 +575,12 @@ export function paradisBuildCancelPickScript(): string {
 
 /**
  * 番号札を置き直す。値は JSON としてスクリプトへ埋め込む（JSON はそのまま JS の式として
- * 読めるので、文字列の連結で式を組み立てない）。
+ * 読めるので、文字列の連結で式を組み立てない）。選択中の仕掛けを壊さないよう、ここでは
+ * 入れ直さない（無いときだけ入れる）。
  */
 export function paradisBuildSetPinsScript(pins: readonly IParadisDesignPin[]): string {
-	const payload = pins.map(pin => ({
-		label: String(pin.label).slice(0, 3),
-		selector: String(pin.selector).slice(0, 700),
-		rectPage: { x: Number(pin.rectPage.x) || 0, y: Number(pin.rectPage.y) || 0 },
-	}));
-	if (payload.length === 0) {
+	if (pins.length === 0) {
 		return 'globalThis.__paradisDesign ? globalThis.__paradisDesign.setPins([]) : undefined;';
 	}
-	return `${INSTALL_SCRIPT}\nglobalThis.__paradisDesign.setPins(${JSON.stringify(payload)});`;
+	return `${installScript(false)}\nglobalThis.__paradisDesign.setPins(${serializePins(pins)});`;
 }

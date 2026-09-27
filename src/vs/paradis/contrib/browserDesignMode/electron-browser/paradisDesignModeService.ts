@@ -29,10 +29,15 @@ export interface IParadisDesignModeService {
 	readonly _serviceBrand: undefined;
 	/** 注釈が変わったページの id。 */
 	readonly onDidChangeAnnotations: Event<string>;
-	/** 画像を添えるかの切り替えが変わった。 */
+	/** 画像を添えるか・HTML を送るかの切り替えが変わった。 */
 	readonly onDidChangeAttachImages: Event<void>;
 	/** 送るときに画像を添えるか（トレイのチェック。ウィンドウ内で共通、既定オン）。 */
 	attachImages: boolean;
+	/**
+	 * 送るときに要素の HTML を含めるか（トレイのチェック。既定オフ）。HTML はページの作者が
+	 * 自由に書けて、指示を紛れ込ませやすいので、必要なときだけユーザーが選ぶ。
+	 */
+	includeHtml: boolean;
 
 	getAnnotations(pageId: string): readonly IParadisDesignAnnotation[];
 	/** 追加できたら true（1ページの上限を超えると false）。ページが閉じられたら注釈も捨てる。 */
@@ -40,7 +45,7 @@ export interface IParadisDesignModeService {
 	removeAnnotation(pageId: string, annotationId: string): void;
 	clearAnnotations(pageId: string): void;
 
-	pickElement(pageId: string): Promise<ParadisDesignPickResult>;
+	pickElement(pageId: string, pins: readonly IParadisDesignPin[]): Promise<ParadisDesignPickResult>;
 	cancelPick(pageId: string): Promise<void>;
 	setPins(pageId: string, pins: readonly IParadisDesignPin[]): Promise<void>;
 	/** PNG を userData 配下へ保存し、その絶対パスを返す。 */
@@ -60,10 +65,24 @@ export class ParadisDesignModeService extends Disposable implements IParadisDesi
 	private readonly _pageListeners = this._register(new DisposableMap<string>());
 	private readonly _main: IParadisDesignModeMainService;
 	private _attachImages = true;
+	private _includeHtml = false;
 
 	constructor(@IMainProcessService mainProcessService: IMainProcessService) {
 		super();
 		this._main = ProxyChannel.toService<IParadisDesignModeMainService>(mainProcessService.getChannel(PARADIS_DESIGN_MODE_CHANNEL));
+		// このウィンドウを再読み込みする前に始めた選択が残っていれば、ページの覆いを外す
+		void this._main.resetPicks().catch(() => undefined);
+	}
+
+	get includeHtml(): boolean {
+		return this._includeHtml;
+	}
+
+	set includeHtml(value: boolean) {
+		if (this._includeHtml !== value) {
+			this._includeHtml = value;
+			this._onDidChangeAttachImages.fire();
+		}
 	}
 
 	get attachImages(): boolean {
@@ -120,8 +139,8 @@ export class ParadisDesignModeService extends Disposable implements IParadisDesi
 		}
 	}
 
-	pickElement(pageId: string): Promise<ParadisDesignPickResult> {
-		return this._main.pickElement(pageId);
+	pickElement(pageId: string, pins: readonly IParadisDesignPin[]): Promise<ParadisDesignPickResult> {
+		return this._main.pickElement(pageId, pins);
 	}
 
 	cancelPick(pageId: string): Promise<void> {
