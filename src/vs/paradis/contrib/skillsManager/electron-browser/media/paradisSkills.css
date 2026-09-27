@@ -84,7 +84,7 @@
 	display: inline-flex;
 	align-items: center;
 	gap: 5px;
-	border: 1px solid transparent;
+	border: 1px solid var(--vscode-button-border, transparent);
 	border-radius: 5px;
 	padding: 4px 11px;
 	font-size: 12px;
@@ -139,10 +139,15 @@
 }
 
 .monaco-workbench .paradis-skills .psk-button:focus-visible,
-.monaco-workbench .paradis-skills .psk-nav-item:focus-visible,
-.monaco-workbench .paradis-skills .psk-row:focus-visible {
+.monaco-workbench .paradis-skills .psk-nav-item:focus-visible {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: 1px;
+}
+
+/* Rows fill a list with overflow: hidden, so draw the focus ring inside the row. */
+.monaco-workbench .paradis-skills .psk-row:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
 }
 
 .monaco-workbench .paradis-skills .psk-body {
@@ -398,4 +403,11 @@
 	line-height: 1.55;
 	white-space: pre-wrap;
 	word-break: break-word;
+}
+
+/* High contrast themes have no selection background for lists: outline the active nav item instead. */
+.monaco-workbench.hc-black .paradis-skills .psk-nav-item.active,
+.monaco-workbench.hc-light .paradis-skills .psk-nav-item.active {
+	outline: 1px solid var(--vscode-contrastActiveBorder);
+	outline-offset: -1px;
 }
