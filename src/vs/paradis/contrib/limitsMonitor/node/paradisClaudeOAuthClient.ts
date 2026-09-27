@@ -14,13 +14,16 @@
 // `fetch` は差し替えられるようにしてあり、テストでは本物の API を呼ばない。
 
 import {
+	IParadisClaudeIdentity,
 	IParadisClaudeTokenResponse,
 	IParadisClaudeUsageWindows,
 	PARADIS_CLAUDE_OAUTH_BETA,
 	PARADIS_CLAUDE_OAUTH_CLIENT_ID,
 	PARADIS_CLAUDE_OAUTH_TOKEN_URL,
+	PARADIS_CLAUDE_PROFILE_URL,
 	PARADIS_CLAUDE_USAGE_URL,
 	paradisApplyRefreshedClaudeToken,
+	paradisClaudeIdentityFromProfile,
 	paradisClaudeRefreshToken,
 	paradisParseClaudeUsage,
 	paradisParseRetryAfterS
@@ -49,8 +52,15 @@ export type ParadisClaudeRefreshResult =
 	/** 通信の失敗など。次の機会にまた試す。 */
 	| { readonly kind: 'transient'; readonly status?: number };
 
+export type ParadisClaudeProfileResult =
+	| { readonly kind: 'ok'; readonly identity: IParadisClaudeIdentity }
+	/** 応答が無い・持ち主を読めない。確かめられなかったものとして扱う。 */
+	| { readonly kind: 'unknown' };
+
 export interface IParadisClaudeOAuthClient {
 	fetchUsage(accessToken: string): Promise<ParadisClaudeUsageFetchResult>;
+	/** アクセストークンの持ち主。別のアカウントのトークンを取り込まないための確認に使う。 */
+	fetchProfile(accessToken: string): Promise<ParadisClaudeProfileResult>;
 	refresh(credentialsJson: string): Promise<ParadisClaudeRefreshResult>;
 }
 
@@ -88,6 +98,28 @@ export class ParadisClaudeOAuthClient implements IParadisClaudeOAuthClient {
 			return { kind: 'ok', usage: paradisParseClaudeUsage(await response.json()) };
 		} catch {
 			return { kind: 'network' };
+		}
+	}
+
+	async fetchProfile(accessToken: string): Promise<ParadisClaudeProfileResult> {
+		try {
+			const response = await this.fetchImpl(PARADIS_CLAUDE_PROFILE_URL, {
+				method: 'GET',
+				headers: {
+					'Authorization': `Bearer ${accessToken}`,
+					'anthropic-beta': PARADIS_CLAUDE_OAUTH_BETA,
+					'Accept': 'application/json',
+					'User-Agent': USER_AGENT,
+				},
+				signal: AbortSignal.timeout(USAGE_TIMEOUT_MS),
+			});
+			if (!response.ok) {
+				return { kind: 'unknown' };
+			}
+			const identity = paradisClaudeIdentityFromProfile(await response.json());
+			return identity ? { kind: 'ok', identity } : { kind: 'unknown' };
+		} catch {
+			return { kind: 'unknown' };
 		}
 	}
 

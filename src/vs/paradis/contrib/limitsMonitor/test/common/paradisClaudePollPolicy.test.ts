@@ -23,13 +23,14 @@ function usage(percent: number, resetInMinutes = 600): IParadisClaudePolicyUsage
 	return { fiveHour: { usedPercent: percent, resetsAt: NOW + resetInMinutes * 60_000 }, sevenDay: { usedPercent: 10, resetsAt: NOW + 7 * 24 * 3600_000 } };
 }
 
-function plan(options: { previousIntervalS?: number; previous?: IParadisClaudePolicyUsage; next?: IParadisClaudePolicyUsage; isActive: boolean; recent429?: boolean }): { intervalS: number; waitS: number } {
+function plan(options: { previousIntervalS?: number; previous?: IParadisClaudePolicyUsage; next?: IParadisClaudePolicyUsage; isActive: boolean; recent429?: boolean; fetchesInLastHour?: number }): { intervalS: number; waitS: number } {
 	const result = paradisClaudePlanAfterFetch({
 		previousIntervalS: options.previousIntervalS,
 		previousUsage: options.previous,
 		newUsage: options.next,
 		isActive: options.isActive,
 		recent429: options.recent429 ?? false,
+		fetchesInLastHour: options.fetchesInLastHour,
 		now: NOW,
 		random: NO_JITTER,
 	});
@@ -87,6 +88,20 @@ suite('ParadisClaudePollPolicy', () => {
 			grows: { intervalS: 900, waitS: 900 },
 			capped: { intervalS: 1800, waitS: 1800 },
 			noUrgent: { intervalS: 360, waitS: 360 },
+		});
+	});
+
+	test('the urgent 1-minute interval stops once the hourly budget is spent, and 429 keeps its floor near a reset', () => {
+		assert.deepStrictEqual({
+			withinBudget: plan({ previousIntervalS: 180, previous: usage(80), next: usage(88), isActive: true, fetchesInLastHour: 19 }),
+			// 直近 1 時間に 20 回取ったら緊急をやめる（上限は約 28〜30 回）
+			budgetSpent: plan({ previousIntervalS: 180, previous: usage(80), next: usage(88), isActive: true, fetchesInLastHour: 20 }),
+			// 429 の後はリセットが 2 分後でも 6 分より詰めない
+			resetSoonAfter429: plan({ previousIntervalS: 300, previous: usage(20), next: usage(20, 2), isActive: true, recent429: true }),
+		}, {
+			withinBudget: { intervalS: 60, waitS: 60 },
+			budgetSpent: { intervalS: 180, waitS: 180 },
+			resetSoonAfter429: { intervalS: 450, waitS: 360 },
 		});
 	});
 

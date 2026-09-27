@@ -14,7 +14,7 @@ import * as os from 'os';
 import * as path from '../../../../../base/common/path.js';
 import { IParadisClaudeUsageWindows } from '../../common/paradisClaudeUsage.js';
 import { IParadisKeychain, ParadisKeychainError } from '../../node/paradisClaudeKeychain.js';
-import { IParadisClaudeOAuthClient, ParadisClaudeRefreshResult, ParadisClaudeUsageFetchResult } from '../../node/paradisClaudeOAuthClient.js';
+import { IParadisClaudeOAuthClient, ParadisClaudeProfileResult, ParadisClaudeRefreshResult, ParadisClaudeUsageFetchResult } from '../../node/paradisClaudeOAuthClient.js';
 
 export class ParadisMemoryKeychain implements IParadisKeychain {
 
@@ -64,12 +64,29 @@ export class ParadisFakeClaudeOAuth implements IParadisClaudeOAuthClient {
 
 	readonly usageCalls: string[] = [];
 	readonly refreshCalls: string[] = [];
+	readonly profileCalls: string[] = [];
+	/** アクセストークン → 持ち主。無いものは「確かめられない」を返す。 */
+	readonly profileByToken = new Map<string, ParadisClaudeProfileResult>();
+	/** 取得を待たせる（テストで取得の途中に割り込むため）。 */
+	usageGate: Promise<void> | undefined;
 	readonly usageByToken = new Map<string, ParadisClaudeUsageFetchResult>();
 	/** リフレッシュトークン → 結果。 */
 	readonly refreshByToken = new Map<string, ParadisClaudeRefreshResult>();
 
+	setProfile(accessToken: string, accountUuid: string, email: string, organizationUuid = 'org-1'): void {
+		this.profileByToken.set(accessToken, { kind: 'ok', identity: { accountUuid, email, organizationUuid } });
+	}
+
+	async fetchProfile(accessToken: string): Promise<ParadisClaudeProfileResult> {
+		this.profileCalls.push(accessToken);
+		return this.profileByToken.get(accessToken) ?? { kind: 'unknown' };
+	}
+
 	async fetchUsage(accessToken: string): Promise<ParadisClaudeUsageFetchResult> {
 		this.usageCalls.push(accessToken);
+		if (this.usageGate) {
+			await this.usageGate;
+		}
 		return this.usageByToken.get(accessToken) ?? { kind: 'http', status: 401 };
 	}
 

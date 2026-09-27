@@ -13,7 +13,7 @@
 //  - 認証情報（リフレッシュトークンを含む credentials JSON）:
 //    macOS はキーチェーンの Para Code 専用の項目（サービス名 `Para Code Claude Accounts`、
 //    アカウント名は登録ごとの UUID）。Windows / Linux は Electron の safeStorage で暗号化して
-//    `paradis-claude-accounts/secrets/<UUID>.enc` に置く（設問 Q4）
+//    `paradis-claude-accounts/secrets/<UUID>.enc` に置く（平文のファイルにはしない、という決定）
 //
 // どちらもインターフェースにしてあり、テストでは一時ディレクトリとメモリ実装に差し替える。
 
@@ -68,6 +68,8 @@ export class ParadisKeychainClaudeSecretStore implements IParadisClaudeSecretSto
 /** main プロセスの safeStorage（'encryption' チャネル）のうち、ここで使う部分。 */
 export interface IParadisClaudeEncryption {
 	isEncryptionAvailable(): Promise<boolean>;
+	/** 鍵の保管先。`basic_text` は固定鍵で、暗号化していないのと同じ。 */
+	getKeyStorageProvider(): Promise<string>;
 	encrypt(value: string): Promise<string>;
 	decrypt(value: string): Promise<string>;
 }
@@ -100,8 +102,9 @@ export class ParadisEncryptedFileClaudeSecretStore implements IParadisClaudeSecr
 	}
 
 	async write(accountId: string, credentialsJson: string): Promise<void> {
-		// 鍵の保管サービスが無い Linux では safeStorage が平文に落ちる。その状態で黙って保存しない。
-		if (!await this.encryption.isEncryptionAvailable()) {
+		// 鍵の保管サービスが無い Linux では safeStorage が平文に落ちる。`--password-store=basic` の
+		// ときも「使える」と答えるが、鍵は固定なので暗号化していないのと同じ。どちらも保存しない。
+		if (!await this.encryption.isEncryptionAvailable() || await this.encryption.getKeyStorageProvider() === 'basic_text') {
 			throw new Error('OS encryption is not available');
 		}
 		const encrypted = await this.encryption.encrypt(credentialsJson);
@@ -122,6 +125,11 @@ export interface IParadisClaudeAccountRecord {
 	readonly organizationName?: string;
 	/** 切り替えたときに `~/.claude.json` へ書く Claude Code の oauthAccount。 */
 	readonly oauthAccount: unknown;
+	/**
+	 * いまのログインをそのまま写して登録した（ブラウザでログインし直していない）。この場合、
+	 * 同じリフレッシュトークンの系列を claude-swap も持っていることがある。
+	 */
+	readonly copiedFromLiveLogin?: boolean;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 }
