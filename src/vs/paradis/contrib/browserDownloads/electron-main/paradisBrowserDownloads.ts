@@ -47,7 +47,7 @@ export function paradisGetBrowserDownloadsTracker(configurationService: IConfigu
 				openPath: path => shell.openPath(path),
 				showItemInFolder: path => shell.showItemInFolder(path),
 				exists: path => fs.existsSync(path),
-				ensureQuarantine: async (path, sourceUrl) => { await paradisEnsureDownloadQuarantine(path, sourceUrl); },
+				ensureQuarantine: async (path, sourceUrl) => (await paradisEnsureDownloadQuarantine(path, sourceUrl)) !== 'failed',
 			},
 			() => paradisResolveBrowserDownloadsDirectory(configurationService, () => app.getPath('downloads')),
 		);

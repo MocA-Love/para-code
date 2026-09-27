@@ -41,18 +41,17 @@ export interface IParadisBrowserDownloadItem {
 	/** 0 はサーバーが大きさを知らせてこなかった（進み具合が分からない）ことを表す。 */
 	readonly totalBytes: number;
 	/**
-	 * 「開く」を出してよい種類か（{@link paradisIsOpenableDownload}）。それ以外は「フォルダで表示」だけで、
+	 * 「開く」を出してよいか。開いても表示されるだけの種類（{@link paradisIsOpenableDownload}）で、
+	 * OS の隔離の印を付け終えている（または印の仕組みが無い OS）こと。それ以外は「フォルダで表示」だけで、
 	 * main も開くのを断る。
 	 */
 	readonly openable: boolean;
 	/**
-	 * エージェント専用の保存領域（Agent スコープ）のタブから落ちてきたもの。エージェントが選んだファイル
-	 * なので「開く」を出さない（main も開くのを断る）。エージェントが作ったプロファイルからのものは
-	 * renderer が {@link profileId} から判断する。
+	 * エージェントのタブ（Agent スコープ、またはダウンロードを始めた時点でエージェントが作った印の
+	 * 付いていたプロファイル）から落ちてきたもの。エージェントが選んだファイルなので「開く」を出さず、
+	 * main も開くのを断る。判定はダウンロードを始めた時点で main が行い、後から変わらない。
 	 */
-	readonly fromAgentSession: boolean;
-	/** 名前付きプロファイルのタブから落ちてきたときの、そのプロファイルの ID。 */
-	readonly profileId?: string;
+	readonly fromAgent: boolean;
 	/** 開始時刻（epoch ms）。一覧は新しい順に並べる。 */
 	readonly startTime: number;
 }
@@ -74,6 +73,11 @@ export interface IParadisBrowserDownloadsMainService {
 	clearFinished(): Promise<void>;
 	/** 保存先フォルダを開く。 */
 	openDownloadsFolder(): Promise<boolean>;
+	/**
+	 * エージェントが作った印の付いているプロファイルの ID を知らせる（台帳は renderer にしか無いため）。
+	 * これ以降に始まったダウンロードの由来の判定に使う。
+	 */
+	setAgentProfiles(profileIds: readonly string[]): Promise<void>;
 }
 
 /**

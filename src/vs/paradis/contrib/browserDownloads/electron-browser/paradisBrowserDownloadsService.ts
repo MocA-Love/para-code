@@ -16,6 +16,7 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IParadisBrowserProfilesService } from '../../browserProfiles/electron-browser/paradisBrowserProfilesService.js';
 import { IParadisBrowserDownloadItem, IParadisBrowserDownloadsMainService, PARADIS_BROWSER_DOWNLOADS_CHANNEL, paradisHasNewlyFinished } from '../common/paradisBrowserDownloads.js';
 
 export const IParadisBrowserDownloadsService = createDecorator<IParadisBrowserDownloadsService>('paradisBrowserDownloadsService');
@@ -57,10 +58,19 @@ export class ParadisBrowserDownloadsService extends Disposable implements IParad
 
 	constructor(
 		@IMainProcessService mainProcessService: IMainProcessService,
+		@IParadisBrowserProfilesService profilesService: IParadisBrowserProfilesService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
 		this._main = ProxyChannel.toService<IParadisBrowserDownloadsMainService>(mainProcessService.getChannel(PARADIS_BROWSER_DOWNLOADS_CHANNEL));
+		// エージェントが作ったプロファイルの台帳は renderer にしか無い。main がダウンロードの由来を
+		// 始めた時点で決められるよう、変わるたびに知らせておく。
+		const publishAgentProfiles = () => {
+			const ids = profilesService.list().filter(profile => profile.createdByAgent).map(profile => profile.id);
+			this._main.setAgentProfiles(ids).catch(error => this._logService.warn('[ParadisBrowserDownloads] could not publish the agent profiles', error));
+		};
+		this._register(profilesService.onDidChangeProfiles(publishAgentProfiles));
+		publishAgentProfiles();
 		this._register(this._main.onDidChangeDownloads(items => {
 			this._receivedEvent = true;
 			this._update(items);

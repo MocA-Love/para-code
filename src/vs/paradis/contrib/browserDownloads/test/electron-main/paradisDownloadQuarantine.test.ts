@@ -36,7 +36,7 @@ suite('ParadisDownloadQuarantine', () => {
 			await paradisEnsureDownloadQuarantine('/dl/a.pdf', 'https://example.com/a.pdf', missing.value),
 			await paradisEnsureDownloadQuarantine('/dl/a.pdf', 'https://example.com/a.pdf', present.value),
 		];
-		assert.deepStrictEqual(results, [true, false]);
+		assert.deepStrictEqual(results, ['added', 'present']);
 		assert.deepStrictEqual(present.commands, [['/usr/bin/xattr', '-p', 'com.apple.quarantine', '/dl/a.pdf']]);
 		const write = missing.commands[1];
 		assert.deepStrictEqual(write.slice(0, 3), ['/usr/bin/xattr', '-w', 'com.apple.quarantine']);
@@ -49,8 +49,14 @@ suite('ParadisDownloadQuarantine', () => {
 		assert.deepStrictEqual([
 			await paradisEnsureDownloadQuarantine('C:\\dl\\a.pdf', 'https://user:secret@example.com/a.pdf', windows.value),
 			await paradisEnsureDownloadQuarantine('/dl/a.pdf', 'https://example.com/a.pdf', linux.value),
-		], [true, false]);
+		], ['added', 'notApplicable']);
 		assert.deepStrictEqual(windows.written, [['C:\\dl\\a.pdf:Zone.Identifier', '[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://example.com/a.pdf\r\n']]);
 		assert.deepStrictEqual([linux.commands, linux.written], [[], []]);
+	});
+
+	test('reports a failure when the macOS attribute cannot be written', async () => {
+		const failing = host('darwin', { hasMark: false });
+		const value: IParadisQuarantineHost = { ...failing.value, run: async () => false };
+		assert.strictEqual(await paradisEnsureDownloadQuarantine('/dl/a.pdf', 'https://example.com/a.pdf', value), 'failed');
 	});
 });

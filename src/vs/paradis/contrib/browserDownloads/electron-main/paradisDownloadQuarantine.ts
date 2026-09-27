@@ -58,33 +58,33 @@ function sanitizeSourceUrl(sourceUrl: string): string | undefined {
 	}
 }
 
-/**
- * 印が無ければ付ける。失敗しても例外は投げない（一覧への表示は妨げない）。
- * @returns 新たに印を付けたか
- */
-export async function paradisEnsureDownloadQuarantine(path: string, sourceUrl: string, host: IParadisQuarantineHost = paradisDefaultQuarantineHost): Promise<boolean> {
+/** 印の結果。present: 元から付いていた、added: 付けた、notApplicable: 印の仕組みが無い OS、failed: 付けられなかった。 */
+export type ParadisQuarantineResult = 'present' | 'added' | 'notApplicable' | 'failed';
+
+/** 印が無ければ付ける。失敗しても例外は投げない（呼び出し側は failed を見て「開く」を出さない）。 */
+export async function paradisEnsureDownloadQuarantine(path: string, sourceUrl: string, host: IParadisQuarantineHost = paradisDefaultQuarantineHost): Promise<ParadisQuarantineResult> {
 	try {
 		if (host.platform === 'darwin') {
 			if (await host.run('/usr/bin/xattr', ['-p', 'com.apple.quarantine', path])) {
-				return false;
+				return 'present';
 			}
 			// 形式は「フラグ;16進の時刻;付けたアプリ;UUID」。0081 は Safari などが付ける値と同じ
 			// （隔離あり・ダウンロード由来）。
 			const value = `0081;${Math.floor(host.now() / 1000).toString(16)};Para Code;${generateUuid().toUpperCase()}`;
-			return await host.run('/usr/bin/xattr', ['-w', 'com.apple.quarantine', value, path]);
+			return await host.run('/usr/bin/xattr', ['-w', 'com.apple.quarantine', value, path]) ? 'added' : 'failed';
 		}
 		if (host.platform === 'win32') {
 			const stream = `${path}:Zone.Identifier`;
 			if (host.exists(stream)) {
-				return false;
+				return 'present';
 			}
 			const source = sanitizeSourceUrl(sourceUrl);
 			// ZoneId=3 はインターネット。Chrome が書くのと同じ形。
 			host.writeFile(stream, `[ZoneTransfer]\r\nZoneId=3\r\n${source ? `HostUrl=${source}\r\n` : ''}`);
-			return true;
+			return 'added';
 		}
-		return false;
+		return 'notApplicable';
 	} catch {
-		return false;
+		return 'failed';
 	}
 }
