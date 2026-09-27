@@ -32,7 +32,7 @@ const $ = dom.$;
  * 共通のモーダルシェル（backdrop + タイトルバー + 本文 + フッター）。1回開くごとに1インスタンス、
  * 閉じるときに自分を破棄する。
  */
-abstract class ParadisProfileModal extends Disposable {
+export abstract class ParadisProfileModal extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	private readonly _modal: HTMLElement;

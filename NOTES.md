@@ -1293,6 +1293,44 @@ upstream由来の`pr.yml`/`pr-node-modules.yml`/`copilot-setup-steps.yml`（と�
 - 片方のプローブだけ失敗した回は、その資源の前回値を残す。ただしリセット時刻を過ぎた前回値は捨てる（窓が回った後の `remaining` は意味を持たず、残すとステータスバーの%と警告色が固まる）
 - 将来 GitHub が `/rate_limit` を直したとしても、ヘッダ方式のほうが正確（プローブ分のコストだけが差分）なので戻す必要はない
 
+## 他のブラウザからのログイン取り込み（browserProfiles/loginImport、2026-09-27、フェーズ7 B4）
+
+Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選んだドメインだけ内蔵ブラウザの名前付きプロファイルへ取り込む（q.html Q65・Q66 の回答 A）。実装は既存の `src/vs/paradis/contrib/browserProfiles/` へ足した。新しい contrib ディレクトリも app.ts への追加 import も作らず、channel は既存の `paradisRegisterBrowserProfiles` から一緒に立てている。
+
+### 層の役割
+
+- `common/paradisBrowserLoginImport.ts` — renderer ⇔ main の契約と、プラットフォーム非依存の純粋関数（samesite の写し、`expires_utc` の変換、`__Host-`/`__Secure-` 接頭辞の規則、Google サインインホストの判定、`cookies.set` の url 生成）。鍵も復号値も通さない。
+- `node/paradisChromiumCookies.ts` — 復号アルゴリズムと DB 読み取り。macOS の v10（PBKDF2 `saltysalt`・1003 回・SHA1 で AES-128 鍵を導出、AES-128-CBC、IV は空白 16、PKCS#7）。復号後の先頭 32 バイトのドメインハッシュは、DB の `meta.version` が 24 以上のときだけ `SHA-256(host_key)` 一致で剥がす。ブラウザのカタログ（パス・キーチェーン項目）、プロファイル列挙、DB の一時コピー（`mkdtemp` + 0600）もここ。テストはこの層を合成 DB＋既知鍵で叩く。
+- `electron-main/paradisBrowserLoginImportMain.ts` — 鍵の取得（`/usr/bin/security find-generic-password -w`）と、取り込み先の Electron セッション（`session.fromPartition().cookies.set()`）への書き込み。鍵の取得口は `IParadisSafeStoragePasswordProvider` で差し替えられる。
+- `electron-browser/paradisBrowserLoginImportDialog.ts` — ダイアログ（案A）。プロファイルのドロップダウン下部の「他のブラウザから取り込む…」から開く（`paradisBrowserProfileDropdown.ts` の footer に3行目を追加、`paradisBrowserProfilePill.ts` で配線）。取り込み先は利用者の名前付きプロファイルだけを出す（`createdByAgent` は除外）。
+
+### 安全の決め事
+
+- 鍵を読むのは取り込み実行のときだけ。ブラウザ・プロファイル・ドメインの列挙では読まない（キーチェーンの確認ダイアログを不用意に出さない）。
+- キーチェーンへは書き込まない（読み取りのみ）。
+- 鍵は `security` の stdout を Buffer で受け、導出鍵は取り込みの最後に、鍵の元にした（連結後の）パスワード Buffer は導出直後に `fill(0)` で潰す。ただし `execFile` が内部で保持する連結前の stdout チャンクは触れないので消せない。復号後の Cookie 値は JS 文字列になり GC まで残る（プロセス内・main のみ・外へは件数しか出さない）。復号値はログ・例外・モバイル・Sentry・エージェントへ一切出さない（失敗時もドメイン名と件数だけ）。
+- 表示するドメインは、取り込める候補が 0 件のもの（Partitioned だけ・SameSite=None 非Secure だけ等）は一覧から外す。Cookie 名（`SID` 等）では除外しない（無関係なサイトの `SID` を落とさない）。件数には鍵が無くても分かる範囲（`v10` でない暗号化行を除外）を反映し、版 24 でハッシュ不一致の行だけは件数から外せず取り込み時の `skipped` に入る。取り込み先の照合はキーチェーンの応答を待った後、書き込みの直前にもう一度行う。
+- 他ブラウザの Cookie DB はロック中でも読めるよう、`mkdtemp` で作った `userData/paracode-cookie-import-*/` の下へ `COPYFILE_EXCL` + 0600 でコピーして読み、終わったらディレクトリごと消す（WAL/journal は一緒に写すが、稼働中の共有メモリ索引 `-shm` は写さない）。コピーは自分専用なので `OPEN_READWRITE` で開き、hot journal を SQLite に復旧させる。途中失敗・クラッシュ対策として、コピー関数内で失敗時に自分で消し、登録時（起動時）に残骸 `paracode-cookie-import-*` を掃除する。
+- Cookie の属性（secure/httpOnly/sameSite/期限/`__Host-`・`__Secure-` 接頭辞規則/`source_scheme` による https 判定）を正しく写し、期限切れ・SameSite=None かつ非 Secure・Partitioned（CHIPS、`top_frame_site_key` 非空。Electron の `cookies.set` でパーティション指定不可のため）は取り込まない。取り込み後に `cookies.flushStore()` で流す。
+- ドメインハッシュ（平文先頭 32 バイト）を剥がすかは **DB の `meta.version`**（24 以上）で決める。推測（HMAC ヒューリスティック）は非 ASCII 値を壊すのでやめた。版 24 以上でハッシュが `SHA-256(host_key)` と一致しない値は Chromium 同様に捨てる。
+- Google のログインは eTLD+1 単位（`google.<tld>`・`google.co.<cc>`・`google.com.<cc>`・`youtube.com`・`googlemail.com`・`blogger.com`・`youtubekids.com`・`googlesource.com`・`googleusercontent.com`・`gmail.com` とそのサブドメイン、`.google` TLD）で、ドメインごと除外する。Cookie 名（`SID` など）による判定はしない（Google のドメインはドメイン判定で全件除外済みなので名前の網は冗長で、無関係なサイトの `SID` を誤って落とすため）。UI ではドメインをグレーアウトして選べなくする。
+- 取り込み先は名前付きプロファイルだけ。`profileId → partition` が唯一の経路なので global/workspace/ephemeral は原理的に選べない。さらに **main 側でも台帳（`paradis.browser.profiles`、APPLICATION スコープ）と照合**し、実在すること・`createdByAgent` でないことを確かめてから書く（renderer を信用しない）。`sourceDirectory` も列挙で返したディレクトリ名だけを受け、区切り文字・`..` を拒否する（パストラバーサル対策）。
+- 起動はユーザー操作（プロファイルメニュー）だけ。MCP の面（`paradisBrowserProfileMcp`）には取り込みメソッドを一切足していない。Cookie の読み書きをエージェントへ許さない既存方針（Q69）は変えていない。
+
+### macOS キーチェーンの「常に許可」の危険（M1、要対応候補）
+
+鍵は `/usr/bin/security find-generic-password -w -s "<Browser> Safe Storage"` で読む。macOS の確認ダイアログは「security が機密情報を使おうとしています」と表示し、ログインパスワードを求める。ここで**「常に許可」を押すと、ACL に入るのは Para Code ではなく `/usr/bin/security`** になる。以後はターミナルで動くエージェントを含む任意のプロセスが、確認なしにそのブラウザの全 Cookie を復号できてしまう。読み方自体はネイティブ補助を作るのが大きすぎるため今回は変えず、ダイアログの案内で「表示は `security`／ログインパスワードを求められる／必ず『許可』（今回だけ）を押す／『常に許可』は他プログラム（エージェント含む）に鍵を開放する」ことを明記して回避する。恒久策の候補は、Para Code 本体のコード署名で `SecItemCopyMatching` を呼ぶネイティブ経路に替えること（そうすれば「常に許可」でも ACL に入るのは Para Code だけになる）。
+
+### プラットフォームの対応範囲（判断）
+
+- macOS を実装。Chrome / Edge / Brave / Arc / Vivaldi / Chromium を対象にした（`~/Library/Application Support/<rel>`、Safe Storage はキーチェーン）。
+- Windows は今回は取り込まない。Chrome / Edge 140+ は app-bound encryption（v20）で writing browser 以外は復号できず（`Local State` の `os_crypt.app_bound_encrypted_key` で検知して理由を表示）、それ未満の DPAPI + v10 も DPAPI 復号にネイティブアドオンが要るため見送った。ダイアログは理由を表示する。
+- Linux も今回は取り込まない（gnome-keyring / kwallet 依存のため後回し）。
+
+### コメントを書けないファイルへの変更
+
+無し（追加した依存は既に許可済みの `@vscode/sqlite3`・`electron`・Node 標準のみ。`eslint.config.js` の変更も不要だった）。
+
 ## 今後の方針候補（未確定、要議論）
 
 - 優先実装ターゲットの選定（機能1〜3のうちfork版でしか解決できない部分から着手すべきか）
