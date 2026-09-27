@@ -18,9 +18,9 @@ import Foundation
 
 enum ParadisComputerUseVersion {
 	/** shared process との約束の版。handshake で突き合わせる。 */
-	static let protocolVersion = 1
+	static let protocolVersion = 2
 	/** 補助アプリ自身の版（報告用）。 */
-	static let helperVersion = "0.1.0"
+	static let helperVersion = "0.2.0"
 }
 
 /** 補助アプリが返す失敗。code は TS 側がそのまま読む英字の識別子。 */
@@ -109,6 +109,15 @@ func paradisExactInt(_ value: Any?) -> Int? {
 		return nil
 	}
 	return Int(double)
+}
+
+/** JSON の数を有限の実数として読む（真偽値は除く）。 */
+func paradisFiniteNumber(_ value: Any?) -> Double? {
+	guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else {
+		return nil
+	}
+	let double = number.doubleValue
+	return double.isFinite ? double : nil
 }
 
 // MARK: - 行の切り出し
