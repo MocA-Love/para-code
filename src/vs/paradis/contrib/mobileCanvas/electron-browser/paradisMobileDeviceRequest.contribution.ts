@@ -37,6 +37,8 @@ import {
 	PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL,
 	PARADIS_MOBILE_DEVICE_REQUEST_METHOD,
 	PARADIS_MOBILE_INSTALL_APPROVAL_METHOD,
+	PARADIS_MOBILE_INSTALL_PRECHECK_METHOD,
+	ParadisMobileApprovalPrecheck,
 } from '../common/paradisMobileDeviceOps.js';
 
 /** ダイアログに出す端末名の最大文字数（端末名はエージェントも simctl で付けられるので、長さも切る）。 */
@@ -55,7 +57,7 @@ export const PARADIS_MOBILE_ANY_DEVICE_DENIAL_MS = 10_000;
 export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 
 	constructor(
-		private readonly _approvals: Pick<IParadisAgentBrowserTabsService, 'askApproval'>,
+		private readonly _approvals: Pick<IParadisAgentBrowserTabsService, 'askApproval' | 'approvalBlock'>,
 		private readonly _paneTokens: Pick<IParadisPaneTokenService, 'getInstanceForToken'>,
 		private readonly _terminalScopes: Pick<IParadisTerminalScopeService, 'getStateKeyForInstance'>,
 		private readonly _now: () => number = Date.now,
@@ -77,6 +79,10 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 				return this._requestDevice(args[0], prompt, cancellation) as Promise<T>;
 			case PARADIS_MOBILE_INSTALL_APPROVAL_METHOD:
 				return this._approveInstall(args[0], prompt, cancellation) as Promise<T>;
+			case PARADIS_MOBILE_INSTALL_PRECHECK_METHOD: {
+				const answer: { readonly outcome: ParadisMobileApprovalPrecheck } = { outcome: this._precheckInstall(args[0], prompt) };
+				return answer as T;
+			}
 		}
 		throw new Error(`Method not found: ${command}`);
 	}
@@ -116,6 +122,13 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 		return answer;
 	}
 
+	private _precheckInstall(token: unknown, prompt: Record<string, unknown>): ParadisMobileApprovalPrecheck {
+		if (typeof token !== 'string' || this._paneTokens.getInstanceForToken(token) === undefined) {
+			return 'paneUnresolved';
+		}
+		return this._approvals.approvalBlock(token, installCooldownKey(prompt)) ?? 'clear';
+	}
+
 	private _approveInstall(token: unknown, prompt: Record<string, unknown>, cancellation: CancellationToken): Promise<IParadisMobileDeviceRequestAnswer> {
 		const deviceName = deviceNameOf(prompt);
 		const path = tailOf(paradisSanitizeDisplayText(text(prompt, 'path'), Number.MAX_SAFE_INTEGER), PATH_MAX_LENGTH);
@@ -138,7 +151,7 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 				localize('paradis.mobileInstall.effect', "このアプリは Para Code の権限で動き、エージェントの作業フォルダの制限の外に出られます（この Mac のファイルやネットワークに触れられます）。エージェントが作った覚えのないものなら拒否してください。"),
 			],
 			approveLabel: localize('paradis.mobileInstall.approve', "インストールする"),
-			cooldownKey: `mobile-install:${text(prompt, 'deviceId') ?? deviceName}`,
+			cooldownKey: installCooldownKey(prompt),
 		}, cancellation);
 	}
 
@@ -178,6 +191,11 @@ function tailOf(value: string | undefined, maxLength: number): string | undefine
 	}
 	const characters = Array.from(value);
 	return characters.length > maxLength ? `\u2026${characters.slice(characters.length - maxLength).join('')}` : value;
+}
+
+/** インストールの拒否を数える単位（そのペインの、その端末へのインストール）。確かめと承認で同じものを使う。 */
+function installCooldownKey(prompt: Record<string, unknown>): string {
+	return `mobile-install:${text(prompt, 'deviceId') ?? deviceNameOf(prompt)}`;
 }
 
 function deviceNameOf(prompt: Record<string, unknown>): string {

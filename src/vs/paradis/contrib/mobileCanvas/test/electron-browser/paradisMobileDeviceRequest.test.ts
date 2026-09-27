@@ -21,8 +21,10 @@ suite('ParadisMobileDeviceRequestChannel', () => {
 	function setup(outcome: ParadisAgentApprovalOutcome, onAsk?: () => void, clock = { now: 1_000_000 }) {
 		const asked: { token: string; message: string; detail: readonly string[]; alternative: string | undefined; cooldownKey: string | undefined; cancellable: boolean }[] = [];
 		const panes = new Map([['pane-a', 7]]);
+		const blocked = new Map<string, 'recentlyDenied' | 'busy'>();
 		const channel = new ParadisMobileDeviceRequestChannel(
 			{
+				approvalBlock: (token: string, cooldownKey?: string) => blocked.get(`${token}|${cooldownKey}`),
 				askApproval: async (token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken) => {
 					asked.push({ token, message: request.messageTemplate('PANE'), detail: request.detail, alternative: request.alternativeLabel, cooldownKey: request.cooldownKey, cancellable: cancellation !== CancellationToken.None });
 					onAsk?.();
@@ -34,7 +36,7 @@ suite('ParadisMobileDeviceRequestChannel', () => {
 			() => clock.now,
 		);
 		const call = (method: string, token: string, prompt: object) => channel.call<IParadisMobileDeviceRequestAnswer>(undefined, method, [token, prompt]);
-		return { asked, call, panes, clock };
+		return { asked, call, panes, clock, blocked };
 	}
 
 	test('asks through the shared approval dialog with sanitised text, counts denials per device, and returns the space on approval', async () => {
@@ -68,6 +70,17 @@ suite('ParadisMobileDeviceRequestChannel', () => {
 			lines: 5,
 			unknownSaysSo: true,
 		});
+	});
+
+	test('the install pre-check reports the same refusal the approval would give, without showing anything', async () => {
+		const { asked, call, blocked } = setup('approve');
+		blocked.set('pane-a|mobile-install:ios:iphone', 'recentlyDenied');
+		assert.deepStrictEqual([
+			await call('precheckInstall', 'pane-a', { deviceId: 'ios:iphone', deviceName: 'iPhone 17' }),
+			await call('precheckInstall', 'pane-a', { deviceId: 'android:pixel', deviceName: 'Pixel 9' }),
+			await call('precheckInstall', 'pane-z', { deviceId: 'ios:iphone', deviceName: 'iPhone 17' }),
+			asked.length,
+		], [{ outcome: 'recentlyDenied' }, { outcome: 'clear' }, { outcome: 'paneUnresolved' }, 0]);
 	});
 
 	test('right after a denied device request, requests for other devices from that pane are refused without a dialog for 10 seconds', async () => {

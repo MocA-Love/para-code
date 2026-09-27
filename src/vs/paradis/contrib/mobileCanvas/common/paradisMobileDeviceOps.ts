@@ -19,6 +19,20 @@ import { IParadisMobileAttachment, IParadisMobileDevice } from './paradisMobileC
 export const PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL = 'paradisMobileDeviceRequest';
 export const PARADIS_MOBILE_DEVICE_REQUEST_METHOD = 'requestDevice';
 export const PARADIS_MOBILE_INSTALL_APPROVAL_METHOD = 'approveInstall';
+/**
+ * インストールの承認を今頼んだら、ダイアログを出す前に断られるか（自動の断り・答え待ち）。
+ * 写しを作る前に確かめる（断られる呼び出しのたびに、大きな成果物を一時フォルダへ写さないように）。
+ */
+export const PARADIS_MOBILE_INSTALL_PRECHECK_METHOD = 'precheckInstall';
+
+/** 承認の前の確かめの答え。`clear` なら頼める。 */
+export type ParadisMobileApprovalPrecheck = 'clear' | 'recentlyDenied' | 'busy' | 'paneUnresolved';
+
+/** IPC 越しに来た確かめの答えを確かめる。形が違えば undefined（頼めるとは扱わない）。 */
+export function paradisParseMobileApprovalPrecheck(value: unknown): ParadisMobileApprovalPrecheck | undefined {
+	const outcome = value && typeof value === 'object' ? (value as { outcome?: unknown }).outcome : undefined;
+	return outcome === 'clear' || outcome === 'recentlyDenied' || outcome === 'busy' || outcome === 'paneUnresolved' ? outcome : undefined;
+}
 
 /**
  * shared process で承認の答えを待つ上限。renderer の締め切り（ダイアログを含めて 50 秒、
