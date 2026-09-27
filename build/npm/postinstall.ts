@@ -10,6 +10,8 @@ import * as child_process from 'child_process';
 import { dirs } from './dirs.ts';
 // PARA-PATCH: guard against @parcel/watcher#250, which kills the watcher process on long paths
 import { paradisIsParcelWatcherPatched, paradisPatchAndRebuildParcelWatcher } from './paradisParcelWatcherPatch.ts';
+// PARA-PATCH: rebuild xterm with the IME (composition) fix, see paradisXtermImePatch.ts
+import { paradisApplyXtermImePatch } from './paradisXtermImePatch.ts';
 import { root, stateFile, stateContentsFile, computeState, computeContents, isUpToDate } from './installStateHash.ts';
 import { ensureElectronTypes } from './electronTypes.ts';
 
@@ -262,6 +264,7 @@ async function main() {
 	const paradisWatcherPatched = dirs.every(dir => paradisIsParcelWatcherPatched(path.join(root, dir)));
 
 	if (!process.env['VSCODE_FORCE_INSTALL'] && isUpToDate() && paradisWatcherPatched) {
+		await paradisApplyXtermImePatch(root, message => log('.', message)); // PARA-PATCH: xterm IME fix when nothing else needs installing
 		log('.', 'All dependencies up to date, skipping postinstall.');
 		child_process.execSync('git config pull.rebase merges');
 		child_process.execSync('git config blame.ignoreRevsFile .git-blame-ignore-revs');
@@ -342,6 +345,9 @@ async function main() {
 
 	child_process.execSync('git config pull.rebase merges');
 	child_process.execSync('git config blame.ignoreRevsFile .git-blame-ignore-revs');
+
+	// PARA-PATCH: xterm IME fix, once build/ (which provides esbuild) has been installed
+	await paradisApplyXtermImePatch(root, message => log('.', message));
 
 	fs.writeFileSync(stateFile, JSON.stringify(_state));
 	fs.writeFileSync(stateContentsFile, JSON.stringify(computeContents()));
