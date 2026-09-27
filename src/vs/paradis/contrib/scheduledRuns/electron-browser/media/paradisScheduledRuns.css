@@ -84,7 +84,7 @@
 	display: inline-flex;
 	align-items: center;
 	gap: 5px;
-	border: 1px solid transparent;
+	border: 1px solid var(--vscode-button-border, transparent);
 	border-radius: 5px;
 	padding: 4px 11px;
 	font-size: 12px;
@@ -604,6 +604,12 @@
 	width: 110px;
 }
 
+/* Let Chromium draw the time picker indicator for dark backgrounds on dark themes. */
+.monaco-workbench.vs-dark .paradis-scheduled-runs .psr-input[type="time"],
+.monaco-workbench.hc-black .paradis-scheduled-runs .psr-input[type="time"] {
+	color-scheme: dark;
+}
+
 .monaco-workbench .paradis-scheduled-runs .psr-textarea {
 	width: 100%;
 	resize: vertical;
@@ -628,4 +634,11 @@
 	justify-content: flex-end;
 	gap: 8px;
 	margin-top: 16px;
+}
+
+/* High contrast themes have no selection background for lists: outline the active nav item instead. */
+.monaco-workbench.hc-black .paradis-scheduled-runs .psr-nav-item.active,
+.monaco-workbench.hc-light .paradis-scheduled-runs .psr-nav-item.active {
+	outline: 1px solid var(--vscode-contrastActiveBorder);
+	outline-offset: -1px;
 }
