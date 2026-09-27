@@ -11,10 +11,12 @@
 //
 // ここで決めること:
 //  - 対象のターミナルの特定（ID はペイントークンのハッシュ。トークンそのものはエージェントへ出さない）
-//  - 範囲: 読み取りはウィンドウ全体。送信は同じスペース（設定で同じウィンドウ全体）と、
-//    呼び出し元が作ったターミナル・スペースだけ。閉じる・削除は呼び出し元が作ったものだけ
-//  - 「誰が作ったか」の台帳。このウィンドウが生きている間だけ持つ（再読み込みで消えると
-//    閉じる・削除ができなくなるだけで、安全側に倒れる）
+//  - 範囲: 読み取りは同じスペースと呼び出し元が作ったもの（設定でウィンドウ全体）。送信は同じスペース
+//    （設定でウィンドウ全体）と呼び出し元が作ったもの。閉じる・削除は呼び出し元が作ったものだけ。
+//    所属は台帳の記録だけで決める（記録の無いターミナルを今のスペースとみなさない）
+//  - 「誰が作ったか」「誰が子か」の台帳。ワークスペースの保存領域に ID（トークンのハッシュ）だけで残し、
+//    ターミナルが閉じたら消す。子（エージェントのツールで起動したペイン）はさらに起動・作成できない
+//  - 作成の上限と、送信・起動の利用者への知らせ
 //
 // 設定（送信・作成の可否）は shared process でも見ているが、ここでも見る（どちらか片方の
 // 取りこぼしで送らないように）。
@@ -22,48 +24,66 @@
 import { Sequencer } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import { StringSHA1 } from '../../../../base/common/hash.js';
+import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { URI } from '../../../../base/common/uri.js';
+import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { INotificationService, NotificationPriority, Severity } from '../../../../platform/notification/common/notification.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
-import { ACTIVE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
+import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { ITerminalEditorService, ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { paradisCollectLivePaneInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import {
 	IParadisAgentStatusStore,
+	IParadisSpaceEntry,
 	IParadisTerminalScopeService,
 	IParadisWorkspaceSwitchService,
-	IParadisWorktree,
 	IParadisWorktreeService,
-	PARADIS_UNATTRIBUTED_TERMINAL_SCOPE,
+	PARADIS_REMOVE_WORKTREE_COMMAND_ID,
+	paradisListSpaces,
+	paradisResolveInstanceSpace,
 	paradisWorktreeStateKey,
 } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentCommandTemplate } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
-import { paradisLaunchAgentInWorkspace, paradisRunWorktreeCreateFlow } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
-import { paradisSendTextToTerminal } from '../browser/paradisAgentIdeTerminalInput.js';
+import { paradisLaunchAgentInWorkspace, paradisOpenEditorTerminalInSpace, paradisRunWorktreeCreateFlow } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
+import { paradisCanPasteMultiline, paradisTerminalRunsAgent } from '../browser/paradisAgentIdeTerminalInput.js';
 import {
 	PARADIS_AGENT_IDE_ACTION_SCOPE_SETTING,
 	PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING,
-	PARADIS_AGENT_IDE_MAX_READ_LINES,
+	PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING,
+	PARADIS_AGENT_IDE_CONTEXT_LINES,
+	PARADIS_AGENT_IDE_MAX_CREATED_PER_CALLER,
+	PARADIS_AGENT_IDE_MAX_CREATED_PER_WINDOW,
+	PARADIS_AGENT_IDE_MAX_SCROLLBACK_LINES,
+	PARADIS_AGENT_IDE_MAX_SPACES_PER_CALLER,
 	PARADIS_AGENT_IDE_METHOD,
+	PARADIS_AGENT_IDE_OUT_OF_READ_SCOPE_MESSAGE,
+	PARADIS_AGENT_IDE_READ_OTHER_SPACES_SETTING,
+	PARADIS_AGENT_IDE_SHELL_DISABLED_MESSAGE,
+	ParadisAgentIdeKey,
 	ParadisAgentIdeRequest,
 	ParadisAgentIdeResult,
 	ParadisAgentIdeTerminalStatus,
 	paradisAgentIdeActionScope,
 	paradisAgentIdeActionsAllowed,
 	paradisAgentIdeKeySequence,
+	paradisAgentIdeMessagePrefix,
 	paradisAgentIdeNeedsHuman,
 	paradisAgentIdeStatusLabel,
 	paradisAgentIdeTailLines,
+	paradisAgentIdeUntrustedTitle,
 } from '../common/paradisAgentIde.js';
 
-/** Workspaces ビューの「ワークツリーを削除」（確認ダイアログつき）。contribution を import すると登録の副作用が走るので ID を直書きする。 */
-const REMOVE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.removeWorktree';
+/** 台帳の保存先（ワークスペースの保存領域）。中身はターミナル ID とスペースのキーだけで、トークンは入れない。 */
+const LEDGER_STORAGE_KEY = 'paradis.agentIde.ledger';
+/** 台帳に残す呼び出し元の数の上限（古いものから捨てる）。 */
+const MAX_LEDGER_CALLERS = 200;
 
 /** ペイントークンからエージェントへ見せる ID を作る。トークンは推測できない乱数なので、ハッシュから元へは戻せない。 */
 export function paradisAgentIdeTerminalId(paneToken: string): string {
@@ -76,22 +96,18 @@ interface IResolvedTerminal {
 	readonly id: string;
 	readonly token: string;
 	readonly instance: ITerminalInstance;
-	/** 所属スペース。共通ターミナル・所属が未確定のものは undefined。 */
+	/** 所属スペース（台帳の記録）。共通ターミナル・所属が未確定のものは undefined。 */
 	readonly space: string | undefined;
-}
-
-interface ISpaceEntry {
-	readonly space: string;
-	readonly name: string;
-	readonly kind: 'repository' | 'worktree';
-	readonly repositoryId: string;
-	readonly uri: URI;
-	readonly worktree?: IParadisWorktree;
 }
 
 interface ICallerLedger {
 	readonly terminals: Set<string>;
 	readonly spaces: Set<string>;
+}
+
+interface IStoredLedger {
+	readonly callers?: Record<string, { readonly terminals?: unknown; readonly spaces?: unknown }>;
+	readonly children?: unknown;
 }
 
 type Failure = { readonly ok: false; readonly error: string };
@@ -100,19 +116,34 @@ function fail(error: string): Failure {
 	return { ok: false, error };
 }
 
+function stringArray(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
 const UNKNOWN_TERMINAL = (id: string) => `There is no terminal with id "${id}" in this Para Code window (it may have been closed). Call list_terminals for the current ids.`;
 const UNKNOWN_SPACE = (space: string) => `Unknown space "${space}". Call list_spaces for the space keys.`;
 const CALLER_UNKNOWN = 'Para Code cannot find your own terminal in this window yet (it may still be restoring). Retry in a few seconds.';
 const OUT_OF_SCOPE = 'That terminal is in a different space from yours. Agents can only send input to terminals in their own space and to terminals and spaces they created themselves (the user can widen this to the whole window in Para Code settings).';
 const CALLER_NO_SPACE = 'Para Code cannot tell which space your terminal belongs to (it may be the shared panel terminal or still restoring), so it only lets you reach terminals and spaces you created yourself.';
 const NEEDS_HUMAN = 'That terminal is waiting for the user to answer a permission request or a question, so Para Code does not send anything to it. Tell the user instead.';
+const CHILD_CANNOT_CREATE = 'You were started by another agent through Para Code, so you cannot launch agents, open terminals or create spaces yourself. Report back to the agent or the user instead.';
 
-export class ParadisAgentIdeChannel implements IServerChannel {
+export class ParadisAgentIdeChannel extends Disposable implements IServerChannel {
 
+	/** 呼び出し元のターミナル ID → その呼び出し元が作ったもの。 */
 	private readonly _ledgers = new Map<string, ICallerLedger>();
+	/** エージェントのツールで起動したペインの ID（子。さらに起動・作成はできない）。 */
+	private readonly _children = new Set<string>();
+	/** エージェントのツールで作ったペインを作った時刻（起動待ちの猶予に使う。保存しない）。 */
+	private readonly _launchedAt = new Map<string, number>();
+	/** ペイントークン → ID の計算結果。 */
 	private readonly _idCache = new Map<string, string>();
+	/** インスタンス → ID（閉じたときに台帳を掃除するため。閉じた後はトークンを引けない）。 */
+	private readonly _instanceIds = new Map<number, string>();
 	/** worktree の作成は同じリポジトリで重なると名前の重複回避がずれるので、1本ずつ流す。 */
 	private readonly _createSequencer = new Sequencer();
+	/** 利用者に確認を出している削除の依頼（同時に1件まで）。 */
+	private _pendingRemoval = false;
 
 	constructor(
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
@@ -127,8 +158,34 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@INotificationService private readonly notificationService: INotificationService,
+		@IStorageService private readonly storageService: IStorageService,
+		@ILifecycleService private readonly lifecycleService: ILifecycleService,
 		@ILogService private readonly logService: ILogService,
-	) { }
+	) {
+		super();
+		this._loadLedger();
+		this._register(this.terminalService.onDidDisposeInstance(instance => {
+			// ウィンドウを閉じる・再読み込みするときの破棄では消さない（ターミナルは常駐して戻ってくる）
+			if (this.lifecycleService.willShutdown) {
+				return;
+			}
+			const id = this._instanceIds.get(instance.instanceId);
+			this._instanceIds.delete(instance.instanceId);
+			if (id !== undefined) {
+				this._forgetTerminal(id);
+			}
+		}));
+		this._register(this.workspaceSwitchService.onDidRetireScope(stateKey => {
+			let changed = false;
+			for (const ledger of this._ledgers.values()) {
+				changed = ledger.spaces.delete(stateKey) || changed;
+			}
+			if (changed) {
+				this._saveLedger();
+			}
+		}));
+	}
 
 	listen<T>(_ctx: unknown, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
@@ -156,19 +213,21 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		switch (request.op) {
 			case 'listSpaces': return this._listSpaces(callerToken);
 			case 'listTerminals': return this._listTerminals(callerToken, request.space);
-			case 'readTerminal': return this._readTerminal(request.terminal, request.lines);
-			case 'probeTerminal': return this._probeTerminal(request.terminal, request.lines);
+			case 'readTerminal': return this._readTerminal(callerToken, request.terminal, request.scrollbackLines);
+			case 'probeTerminal': return this._probeTerminal(callerToken, request.terminal);
 		}
 		// ここから下は書き込み系。shared process が門番をしていても、ここでも設定を確かめる
-		if (!this._actionsAllowed()) {
+		if (!this._setting(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)) {
 			return fail('Agent actions are turned off in Para Code settings.');
 		}
 		switch (request.op) {
 			case 'resolveWriteTarget': {
 				const target = this._resolveWritable(callerToken, request.terminal);
-				return target.ok ? { ok: true, data: { terminal: target.value.id }, internal: { paneToken: target.value.token, status: this._status(target.value) } } : target;
+				return target.ok
+					? { ok: true, data: { terminal: target.value.id }, internal: { paneToken: target.value.token, status: this._status(target.value), agent: this._runsAgent(target.value) } }
+					: target;
 			}
-			case 'sendInput': return this._sendInput(callerToken, request.terminal, request.text, request.pressEnter);
+			case 'sendInput': return this._sendInput(callerToken, request.terminal, request.text);
 			case 'sendKey': return this._sendKey(callerToken, request.terminal, request.key);
 			case 'launchAgent': return this._launchAgent(callerToken, request);
 			case 'createTerminal': return this._createTerminal(callerToken, request.space);
@@ -182,27 +241,79 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 
 	// --- 設定 ----------------------------------------------------------------------------------
 
-	private _actionsAllowed(): boolean {
-		return paradisAgentIdeActionsAllowed(this.configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING));
+	private _setting(key: string): boolean {
+		return paradisAgentIdeActionsAllowed(this.configurationService.getValue(key));
 	}
 
 	private _windowScope(): boolean {
 		return paradisAgentIdeActionScope(this.configurationService.getValue(PARADIS_AGENT_IDE_ACTION_SCOPE_SETTING)) === 'window';
 	}
 
+	/** 別のスペースも読めるか。読み取り専用の設定か、ウィンドウ全体へ送れる設定（送れるなら読めて当然）で開く。 */
+	private _readWindowWide(): boolean {
+		return this._setting(PARADIS_AGENT_IDE_READ_OTHER_SPACES_SETTING)
+			|| (this._setting(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING) && this._windowScope());
+	}
+
 	// --- 台帳 ----------------------------------------------------------------------------------
 
-	private _ledger(callerToken: string): ICallerLedger {
-		let ledger = this._ledgers.get(callerToken);
+	private _loadLedger(): void {
+		let stored: IStoredLedger | undefined;
+		try {
+			stored = JSON.parse(this.storageService.get(LEDGER_STORAGE_KEY, StorageScope.WORKSPACE, '{}')) as IStoredLedger;
+		} catch {
+			stored = undefined;
+		}
+		for (const [callerId, entry] of Object.entries(stored?.callers ?? {})) {
+			this._ledgers.set(callerId, { terminals: new Set(stringArray(entry?.terminals)), spaces: new Set(stringArray(entry?.spaces)) });
+		}
+		for (const id of stringArray(stored?.children)) {
+			this._children.add(id);
+		}
+	}
+
+	private _saveLedger(): void {
+		const callers: Record<string, { terminals: string[]; spaces: string[] }> = {};
+		const entries = [...this._ledgers].filter(([, ledger]) => ledger.terminals.size > 0 || ledger.spaces.size > 0).slice(-MAX_LEDGER_CALLERS);
+		for (const [callerId, ledger] of entries) {
+			callers[callerId] = { terminals: [...ledger.terminals], spaces: [...ledger.spaces] };
+		}
+		this.storageService.store(LEDGER_STORAGE_KEY, JSON.stringify({ callers, children: [...this._children] }), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	private _ledger(callerId: string): ICallerLedger {
+		let ledger = this._ledgers.get(callerId);
 		if (!ledger) {
 			ledger = { terminals: new Set(), spaces: new Set() };
-			this._ledgers.set(callerToken, ledger);
+			this._ledgers.set(callerId, ledger);
 		}
 		return ledger;
 	}
 
 	private _createdBy(callerToken: string): ICallerLedger | undefined {
-		return this._ledgers.get(callerToken);
+		return this._ledgers.get(this._id(callerToken));
+	}
+
+	/** 閉じたターミナルを台帳から消す（作ったものの一覧・呼び出し元としての台帳・子の印）。 */
+	private _forgetTerminal(id: string): void {
+		let changed = this._ledgers.delete(id);
+		changed = this._children.delete(id) || changed;
+		this._launchedAt.delete(id);
+		for (const ledger of this._ledgers.values()) {
+			changed = ledger.terminals.delete(id) || changed;
+		}
+		if (changed) {
+			this._saveLedger();
+		}
+	}
+
+	private _recordCreatedTerminal(callerToken: string, id: string, child: boolean): void {
+		this._ledger(this._id(callerToken)).terminals.add(id);
+		if (child) {
+			this._children.add(id);
+		}
+		this._launchedAt.set(id, Date.now());
+		this._saveLedger();
 	}
 
 	// --- 対象の解決 ----------------------------------------------------------------------------
@@ -211,6 +322,9 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		let id = this._idCache.get(token);
 		if (id === undefined) {
 			id = paradisAgentIdeTerminalId(token);
+			if (this._idCache.size > 1000) {
+				this._idCache.clear();
+			}
 			this._idCache.set(token, id);
 		}
 		return id;
@@ -218,7 +332,11 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 
 	private _terminals(): IResolvedTerminal[] {
 		return paradisCollectLivePaneInstances(this.terminalService, this.terminalGroupService, this.paneTokenService)
-			.map(({ instance, token }) => ({ id: this._id(token), token, instance, space: this._spaceOf(instance.instanceId) }));
+			.map(({ instance, token }) => {
+				const id = this._id(token);
+				this._instanceIds.set(instance.instanceId, id);
+				return { id, token, instance, space: this._spaceOf(instance.instanceId) };
+			});
 	}
 
 	private _findTerminal(id: string): IResolvedTerminal | undefined {
@@ -229,49 +347,40 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		return this._terminals().find(candidate => candidate.token === callerToken);
 	}
 
-	/**
-	 * インスタンスの所属スペース。台帳の記録を優先し、無ければ確定したスコープだけを見る。
-	 * 切り替え中などの未確定（pending）を今のスペースで埋めると、別スペースへ送れてしまうので埋めない。
-	 */
+	/** 権限の判断に使う所属。記録の無いものを今のスペースで埋めない（strict）。 */
 	private _spaceOf(instanceId: number): string | undefined {
-		if (this.terminalScopeService.isSharedPanelTerminal?.(instanceId)) {
-			return undefined;
-		}
-		const recorded = this.terminalScopeService.getStateKeyForInstance(instanceId);
-		if (recorded !== undefined) {
-			return recorded === PARADIS_UNATTRIBUTED_TERMINAL_SCOPE ? undefined : recorded;
-		}
-		const scope = this.terminalScopeService.resolveScope(instanceId);
-		return scope.kind === 'managed'
-			? scope.stateKey
-			: scope.kind === 'unscoped'
-				? this.workspaceSwitchService.activeStateKey
-				: undefined;
+		return paradisResolveInstanceSpace(this.terminalScopeService, this.workspaceSwitchService.activeStateKey, instanceId, { strict: true });
 	}
 
-	private _spaces(): ISpaceEntry[] {
-		const entries: ISpaceEntry[] = [];
-		for (const repository of this.workspaceSwitchService.repositories) {
-			entries.push({ space: repository.id, name: repository.name, kind: 'repository', repositoryId: repository.id, uri: repository.uri });
-			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (worktree.missing || worktree.isMainCheckout) {
-					continue;
-				}
-				entries.push({
-					space: paradisWorktreeStateKey(worktree.uri),
-					name: `${repository.name} / ${worktree.name}`,
-					kind: 'worktree',
-					repositoryId: repository.id,
-					uri: worktree.uri,
-					worktree,
-				});
-			}
-		}
-		return entries;
+	private _spaces(): IParadisSpaceEntry[] {
+		return paradisListSpaces(this.workspaceSwitchService.repositories, this.worktreeService);
 	}
 
 	private _status(terminal: IResolvedTerminal): ParadisAgentIdeTerminalStatus {
 		return paradisAgentIdeStatusLabel(this.agentStatusStore.getInstanceStatus(terminal.instance.instanceId));
+	}
+
+	private _runsAgent(terminal: IResolvedTerminal): boolean {
+		return paradisTerminalRunsAgent(terminal.instance, this.agentStatusStore.isAgentInstance(terminal.instance.instanceId));
+	}
+
+	/** 自分自身・自分が作ったもの・自分のスペースのもの（設定でウィンドウ全体）だけ読める。 */
+	private _checkReadable(callerToken: string, target: IResolvedTerminal): string | undefined {
+		if (target.token === callerToken) {
+			return undefined;
+		}
+		const ledger = this._createdBy(callerToken);
+		if (ledger && (ledger.terminals.has(target.id) || (target.space !== undefined && ledger.spaces.has(target.space)))) {
+			return undefined;
+		}
+		if (this._readWindowWide()) {
+			return undefined;
+		}
+		const caller = this._caller(callerToken);
+		if (!caller) {
+			return CALLER_UNKNOWN;
+		}
+		return caller.space !== undefined && target.space === caller.space ? undefined : PARADIS_AGENT_IDE_OUT_OF_READ_SCOPE_MESSAGE;
 	}
 
 	/**
@@ -299,6 +408,15 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		return target.space === caller.space ? undefined : OUT_OF_SCOPE;
 	}
 
+	private _resolveReadable(callerToken: string, id: string): { readonly ok: true; readonly value: IResolvedTerminal } | Failure {
+		const target = this._findTerminal(id);
+		if (!target) {
+			return fail(UNKNOWN_TERMINAL(id));
+		}
+		const refusal = this._checkReadable(callerToken, target);
+		return refusal === undefined ? { ok: true, value: target } : fail(refusal);
+	}
+
 	private _resolveWritable(callerToken: string, id: string): { readonly ok: true; readonly value: IResolvedTerminal } | Failure {
 		const target = this._findTerminal(id);
 		if (!target) {
@@ -309,7 +427,7 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 	}
 
 	/** 作成先のスペース。省略時は呼び出し元のスペース。範囲外なら断る。 */
-	private _resolveTargetSpace(callerToken: string, space: string | undefined): { readonly ok: true; readonly value: ISpaceEntry } | Failure {
+	private _resolveTargetSpace(callerToken: string, space: string | undefined): { readonly ok: true; readonly value: IParadisSpaceEntry } | Failure {
 		const caller = this._caller(callerToken);
 		if (!caller) {
 			return fail(CALLER_UNKNOWN);
@@ -326,6 +444,31 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 			return fail('That space is not yours. Agents can only open terminals in their own space and in spaces they created themselves (the user can widen this to the whole window in Para Code settings).');
 		}
 		return { ok: true, value: entry };
+	}
+
+	/** 子（エージェントのツールで起動したペイン）は作れない。作れる数にも上限がある。 */
+	private _checkCanCreate(callerToken: string, terminals: IResolvedTerminal[]): string | undefined {
+		const callerId = this._id(callerToken);
+		if (this._children.has(callerId)) {
+			return CHILD_CANNOT_CREATE;
+		}
+		const live = new Set(terminals.map(terminal => terminal.id));
+		const mine = [...(this._ledgers.get(callerId)?.terminals ?? [])].filter(id => live.has(id)).length;
+		if (mine >= PARADIS_AGENT_IDE_MAX_CREATED_PER_CALLER) {
+			return `You already have ${mine} terminals you created open (limit: ${PARADIS_AGENT_IDE_MAX_CREATED_PER_CALLER}). Close ones you no longer need with close_terminal first.`;
+		}
+		const total = new Set([...this._ledgers.values()].flatMap(ledger => [...ledger.terminals]).filter(id => live.has(id))).size;
+		if (total >= PARADIS_AGENT_IDE_MAX_CREATED_PER_WINDOW) {
+			return `Agents already have ${total} terminals they created open in this window (limit: ${PARADIS_AGENT_IDE_MAX_CREATED_PER_WINDOW}). Ask the user to close some first.`;
+		}
+		return undefined;
+	}
+
+	/** 利用者への知らせに使う、呼び出し元の名乗り。タイトルはプログラムが書けるので短く均す。 */
+	private _describeCaller(callerToken: string): string {
+		const caller = this._caller(callerToken);
+		const id = this._id(callerToken);
+		return caller ? `${paradisAgentIdeUntrustedTitle(caller.instance.title)} (${id})` : id;
 	}
 
 	// --- 読み取り ------------------------------------------------------------------------------
@@ -364,36 +507,43 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		const names = new Map(spaces.map(entry => [entry.space, entry.name]));
 		const created = this._createdBy(callerToken);
 		const active = this.workspaceSwitchService.activeStateKey;
-		const actionsAllowed = this._actionsAllowed();
-		const terminals = this._terminals()
-			.filter(terminal => space === undefined || terminal.space === space)
-			.map(terminal => {
-				const status = this._status(terminal);
-				const canSend = actionsAllowed && !paradisAgentIdeNeedsHuman(status) && this._checkWritable(callerToken, terminal) === undefined;
-				return {
-					id: terminal.id,
-					title: terminal.instance.title,
-					space: terminal.space ?? null,
-					space_name: terminal.space !== undefined ? names.get(terminal.space) ?? null : 'shared panel terminal',
-					status,
-					agent_detected: this.agentStatusStore.isAgentInstance(terminal.instance.instanceId),
-					...(terminal.token === callerToken ? { self: true } : {}),
-					...(created?.terminals.has(terminal.id) ? { created_by_you: true } : {}),
-					...(terminal.space !== undefined && terminal.space === active ? { on_screen: true } : {}),
-					can_send: canSend,
-				};
-			});
-		return { ok: true, data: { terminals } };
+		const actionsAllowed = this._setting(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING);
+		const all = this._terminals().filter(terminal => space === undefined || terminal.space === space);
+		const readable = all.filter(terminal => this._checkReadable(callerToken, terminal) === undefined);
+		const terminals = readable.map(terminal => {
+			const status = this._status(terminal);
+			const canSend = actionsAllowed && !paradisAgentIdeNeedsHuman(status) && this._checkWritable(callerToken, terminal) === undefined;
+			return {
+				id: terminal.id,
+				title: paradisAgentIdeUntrustedTitle(terminal.instance.title),
+				space: terminal.space ?? null,
+				space_name: terminal.space !== undefined ? names.get(terminal.space) ?? null : null,
+				status,
+				agent: this._runsAgent(terminal),
+				...(terminal.token === callerToken ? { self: true } : {}),
+				...(created?.terminals.has(terminal.id) ? { created_by_you: true } : {}),
+				...(terminal.space !== undefined && terminal.space === active ? { on_screen: true } : {}),
+				can_send: canSend,
+			};
+		});
+		const hidden = all.length - readable.length;
+		return {
+			ok: true,
+			data: {
+				terminals,
+				...(hidden > 0 ? { not_listed: `${hidden} terminal(s) in other spaces are not shown: agents can only read their own space unless the user allows more.` } : {}),
+			},
+		};
 	}
 
-	/** 画面の末尾 `lines` 行。折り返しでできた行は元の1行へつなぐ。 */
-	private _screen(instance: ITerminalInstance, lines: number): string | undefined {
+	/** 見えている画面とその上 `extraLines` 行。折り返しでできた行は元の1行へつなぐ。 */
+	private _screen(instance: ITerminalInstance, extraLines: number): string | undefined {
 		const raw = instance.xterm?.raw;
 		if (!raw) {
 			return undefined;
 		}
 		const buffer = raw.buffer.active;
-		const limit = Math.min(lines, PARADIS_AGENT_IDE_MAX_READ_LINES);
+		const limit = raw.rows + Math.min(extraLines, PARADIS_AGENT_IDE_MAX_SCROLLBACK_LINES + PARADIS_AGENT_IDE_CONTEXT_LINES);
 		// 折り返しをつなぐと行数が減るので、多めに読んでから末尾を切る
 		const start = Math.max(0, buffer.length - limit * 4);
 		const logical: string[] = [];
@@ -412,18 +562,20 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		return paradisAgentIdeTailLines(logical, limit);
 	}
 
-	private _readTerminal(id: string, lines: number): ParadisAgentIdeResult {
-		const terminal = this._findTerminal(id);
-		if (!terminal) {
-			return fail(UNKNOWN_TERMINAL(id));
+	private _readTerminal(callerToken: string, id: string, scrollbackLines: number): ParadisAgentIdeResult {
+		const resolved = this._resolveReadable(callerToken, id);
+		if (!resolved.ok) {
+			return resolved;
 		}
-		const screen = this._screen(terminal.instance, lines);
+		const terminal = resolved.value;
+		const screen = this._screen(terminal.instance, PARADIS_AGENT_IDE_CONTEXT_LINES + scrollbackLines);
 		return {
 			ok: true,
 			data: {
 				id: terminal.id,
-				title: terminal.instance.title,
+				title: paradisAgentIdeUntrustedTitle(terminal.instance.title),
 				status: this._status(terminal),
+				agent: this._runsAgent(terminal),
 				text: screen ?? '',
 				...(screen === undefined ? { note: 'The terminal has not drawn its screen yet (it may have just been created). Retry in a moment.' } : {}),
 			},
@@ -431,21 +583,34 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		};
 	}
 
-	private _probeTerminal(id: string, lines: number): ParadisAgentIdeResult {
-		const terminal = this._findTerminal(id);
-		if (!terminal) {
-			return fail(UNKNOWN_TERMINAL(id));
+	private _probeTerminal(callerToken: string, id: string): ParadisAgentIdeResult {
+		const target = this._findTerminal(id);
+		if (!target) {
+			// 待機を「閉じられた」として終えられるよう、失敗ではなく gone を返す
+			return { ok: true, data: { id }, internal: { gone: true } };
 		}
+		const refusal = this._checkReadable(callerToken, target);
+		if (refusal !== undefined) {
+			return fail(refusal);
+		}
+		const launchedAt = this._launchedAt.get(target.id);
 		return {
 			ok: true,
-			data: { id: terminal.id },
-			internal: { paneToken: terminal.token, status: this._status(terminal), screen: this._screen(terminal.instance, lines) ?? '' },
+			data: { id: target.id },
+			internal: {
+				paneToken: target.token,
+				status: this._status(target),
+				agent: this._runsAgent(target),
+				screen: this._screen(target.instance, 0) ?? '',
+				...(launchedAt !== undefined ? { launchedAt } : {}),
+			},
 		};
 	}
 
 	// --- 送信 ----------------------------------------------------------------------------------
 
-	private async _sendInput(callerToken: string, id: string, text: string, pressEnter: boolean): Promise<ParadisAgentIdeResult> {
+	/** 貼り付けだけ行う。Enter は shared process が状態を確かめ直してから `sendKey` で送る。 */
+	private async _sendInput(callerToken: string, id: string, text: string): Promise<ParadisAgentIdeResult> {
 		const resolved = this._resolveWritable(callerToken, id);
 		if (!resolved.ok) {
 			return resolved;
@@ -454,31 +619,41 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		if (paradisAgentIdeNeedsHuman(this._status(target))) {
 			return fail(NEEDS_HUMAN);
 		}
-		const stillValid = async () => {
-			const current = this._findTerminal(id);
-			return current?.instance === target.instance && this._checkWritable(callerToken, current) === undefined && !paradisAgentIdeNeedsHuman(this._status(current));
-		};
-		const outcome = await paradisSendTextToTerminal(target.instance, text, pressEnter, stillValid);
-		switch (outcome.kind) {
-			case 'sent':
-				return { ok: true, data: { terminal: id, typed: text.length > 0, pressed_enter: outcome.pressedEnter } };
-			case 'multilineRefused':
-				return fail('That terminal does not accept pasted multi-line text right now (for example a plain shell prompt), so each line would run as its own command. Send one line at a time.');
-			case 'typedButNotSubmitted':
-				return fail('The text was typed, but the terminal started waiting for the user before Enter was pressed, so Enter was not sent.');
-			case 'invalidBeforeSend':
-				return fail(NEEDS_HUMAN);
+		// 貼り付けを受け付けないプログラム（素のシェルなど）へ複数行を送ると、行ごとに実行される
+		if (text.includes('\n') && !paradisCanPasteMultiline(target.instance)) {
+			return fail('That terminal does not run Claude Code / Codex in the foreground, so pasted lines could run one by one as commands. Send one line at a time.');
 		}
+		// 受け取ったエージェントが「利用者の指示」と取り違えないよう、エージェントからだと印を付ける
+		const agent = this._runsAgent(target);
+		const body = agent ? `${paradisAgentIdeMessagePrefix(this._id(callerToken))}${text}` : text;
+		await target.instance.sendText(body, false, true);
+		this.notificationService.notify({
+			severity: Severity.Info,
+			priority: NotificationPriority.SILENT,
+			// allow-any-unicode-next-line
+			message: localize('paradis.agentIde.notify.sent', "エージェント「{0}」がターミナル「{1}」へ入力しました。", this._describeCaller(callerToken), paradisAgentIdeUntrustedTitle(target.instance.title)),
+		});
+		return { ok: true, data: { terminal: id, typed: true, pressed_enter: false, ...(agent ? { marked_as_agent_message: true } : {}) } };
 	}
 
-	private async _sendKey(callerToken: string, id: string, key: Parameters<typeof paradisAgentIdeKeySequence>[0]): Promise<ParadisAgentIdeResult> {
+	private async _sendKey(callerToken: string, id: string, key: ParadisAgentIdeKey): Promise<ParadisAgentIdeResult> {
 		const resolved = this._resolveWritable(callerToken, id);
 		if (!resolved.ok) {
 			return resolved;
 		}
 		const target = resolved.value;
-		if (paradisAgentIdeNeedsHuman(this._status(target))) {
+		const status = this._status(target);
+		if (paradisAgentIdeNeedsHuman(status)) {
 			return fail(NEEDS_HUMAN);
+		}
+		if (key === 'enter') {
+			if (!this._runsAgent(target)) {
+				if (!this._setting(PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING)) {
+					return fail(PARADIS_AGENT_IDE_SHELL_DISABLED_MESSAGE);
+				}
+			} else if (status === 'working') {
+				return fail('The agent in that terminal is working right now, so Para Code does not press Enter there.');
+			}
 		}
 		const applicationMode = target.instance.xterm?.raw.modes.applicationCursorKeysMode === true;
 		await target.instance.sendText(paradisAgentIdeKeySequence(key, applicationMode), false);
@@ -502,7 +677,15 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		return { ok: true, value: agent };
 	}
 
+	private _notifyCreated(message: string): void {
+		this.notificationService.notify({ severity: Severity.Info, message });
+	}
+
 	private async _launchAgent(callerToken: string, request: Extract<ParadisAgentIdeRequest, { op: 'launchAgent' }>): Promise<ParadisAgentIdeResult> {
+		const limit = this._checkCanCreate(callerToken, this._terminals());
+		if (limit !== undefined) {
+			return fail(limit);
+		}
 		const agent = this._findAgent(request.agent, request.model, request.effort);
 		if (!agent.ok) {
 			return agent;
@@ -511,7 +694,8 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		if (!space.ok) {
 			return space;
 		}
-		// 権限モードは渡さない（既定のまま）。エージェントが子を「確認なし」で起動して権限を広げないため
+		// 権限モードは渡さない（既定のまま）。エージェントが子を「確認なし」で起動して権限を広げないため。
+		// 利用者の入力を横取りしないよう、フォーカスを奪わずに開く
 		const launched = await this.instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, {
 			rootUri: space.value.uri,
 			stateKey: space.value.space,
@@ -519,11 +703,15 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 			...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
 			...(request.model !== undefined ? { modelId: request.model } : {}),
 			...(request.effort !== undefined ? { effortId: request.effort } : {}),
+			preserveFocus: true,
 		});
 		const id = launched.paneToken !== undefined ? this._id(launched.paneToken) : undefined;
 		if (id !== undefined) {
-			this._ledger(callerToken).terminals.add(id);
+			this._instanceIds.set(launched.instanceId, id);
+			this._recordCreatedTerminal(callerToken, id, true);
 		}
+		// allow-any-unicode-next-line
+		this._notifyCreated(localize('paradis.agentIde.notify.launched', "エージェント「{0}」が {1} を起動しました（{2}）。", this._describeCaller(callerToken), agent.value.label, space.value.name));
 		return {
 			ok: true,
 			data: {
@@ -536,24 +724,27 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 	}
 
 	private async _createTerminal(callerToken: string, space: string | undefined): Promise<ParadisAgentIdeResult> {
+		// シェルを開いても、コマンドを実行する許可が無ければ使い道が無い（開くだけで断る）
+		if (!this._setting(PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING)) {
+			return fail(PARADIS_AGENT_IDE_SHELL_DISABLED_MESSAGE);
+		}
+		const limit = this._checkCanCreate(callerToken, this._terminals());
+		if (limit !== undefined) {
+			return fail(limit);
+		}
 		const target = this._resolveTargetSpace(callerToken, space);
 		if (!target.ok) {
 			return target;
 		}
-		// 利用者が別のターミナルで入力している最中でもフォーカスを奪わない
-		const instance = await this.terminalService.createTerminal({
-			cwd: target.value.uri,
-			location: { viewColumn: ACTIVE_GROUP, preserveFocus: true },
-		});
-		// park は persistentProcessId の確定とエディタを開き切ることが前提（paradisResumeAgentInWorkspace と同じ順）
-		await instance.processReady;
-		await this.terminalEditorService.openEditor(instance, { viewColumn: ACTIVE_GROUP, preserveFocus: true });
-		this.terminalScopeService.assignInstanceScope(instance.instanceId, target.value.space);
+		const instance = await paradisOpenEditorTerminalInSpace({ terminalService: this.terminalService, terminalEditorService: this.terminalEditorService, terminalScopeService: this.terminalScopeService }, target.value.uri, target.value.space, true);
 		const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
 		const id = token !== undefined ? this._id(token) : undefined;
 		if (id !== undefined) {
-			this._ledger(callerToken).terminals.add(id);
+			this._instanceIds.set(instance.instanceId, id);
+			this._recordCreatedTerminal(callerToken, id, true);
 		}
+		// allow-any-unicode-next-line
+		this._notifyCreated(localize('paradis.agentIde.notify.terminal', "エージェント「{0}」がターミナルを開きました（{1}）。", this._describeCaller(callerToken), target.value.name));
 		return { ok: true, data: { terminal: id ?? null, space: target.value.space } };
 	}
 
@@ -562,24 +753,46 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		if (!caller) {
 			return fail(CALLER_UNKNOWN);
 		}
+		const callerId = this._id(callerToken);
+		if (this._children.has(callerId)) {
+			return fail(CHILD_CANNOT_CREATE);
+		}
 		const spaces = this._spaces();
+		const existingSpaces = new Set(spaces.map(entry => entry.space));
+		const mySpaces = [...(this._ledgers.get(callerId)?.spaces ?? [])].filter(space => existingSpaces.has(space)).length;
+		if (mySpaces >= PARADIS_AGENT_IDE_MAX_SPACES_PER_CALLER) {
+			return fail(`You already created ${mySpaces} spaces that still exist (limit: ${PARADIS_AGENT_IDE_MAX_SPACES_PER_CALLER}). Ask the user to remove ones that are done (remove_space).`);
+		}
+		if (request.agent !== undefined) {
+			const limit = this._checkCanCreate(callerToken, this._terminals());
+			if (limit !== undefined) {
+				return fail(limit);
+			}
+		}
+		if (request.runSetup === true && !this._setting(PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING)) {
+			return fail(`run_setup=true runs the repository's setup script outside your sandbox. ${PARADIS_AGENT_IDE_SHELL_DISABLED_MESSAGE}`);
+		}
 		const callerRepository = spaces.find(entry => entry.space === caller.space)?.repositoryId;
 		const repositoryId = request.repository ?? callerRepository;
 		if (repositoryId === undefined) {
 			return fail('Para Code cannot tell which repository your terminal belongs to. Pass "repository" (a space key of kind "repository" from list_spaces).');
 		}
-		if (!this.workspaceSwitchService.repositories.some(repository => repository.id === repositoryId)) {
+		const repository = this.workspaceSwitchService.repositories.find(candidate => candidate.id === repositoryId);
+		if (!repository) {
 			return fail(`Unknown repository "${repositoryId}". Pass a space key of kind "repository" from list_spaces.`);
 		}
 		if (repositoryId !== callerRepository && !this._windowScope()) {
 			return fail('Agents can only create spaces in the repository of their own space (the user can widen this to the whole window in Para Code settings).');
 		}
+		let agentLabel: string | undefined;
 		if (request.agent !== undefined) {
 			const agent = this._findAgent(request.agent, request.model, request.effort);
 			if (!agent.ok) {
 				return agent;
 			}
+			agentLabel = agent.value.label;
 		}
+		const runSetup = request.runSetup === true;
 		const result = await this._createSequencer.queue(() => this.instantiationService.invokeFunction(paradisRunWorktreeCreateFlow, {
 			repositoryId,
 			...(request.name !== undefined ? { name: request.name } : {}),
@@ -589,16 +802,23 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 			agentId: request.agent ?? 'none',
 			...(request.model !== undefined ? { modelId: request.model } : {}),
 			...(request.effort !== undefined ? { effortId: request.effort } : {}),
-			...(request.runSetup !== undefined ? { runSetup: request.runSetup } : {}),
-		}, { switchToCreated: false }));
+			runSetup,
+		}, { switchToCreated: false, preserveFocus: true, runAutoRunPresets: runSetup }));
 		// 呼び出しが時間切れになっていても、作ったことは台帳に残す（後から閉じる・削除できるように）
-		const ledger = this._ledger(callerToken);
 		const space = paradisWorktreeStateKey(result.worktree.uri);
-		ledger.spaces.add(space);
+		this._ledger(callerId).spaces.add(space);
 		const agentTerminal = result.agent?.paneToken !== undefined ? this._id(result.agent.paneToken) : undefined;
-		if (agentTerminal !== undefined) {
-			ledger.terminals.add(agentTerminal);
+		if (agentTerminal !== undefined && result.agent) {
+			this._instanceIds.set(result.agent.instanceId, agentTerminal);
+			this._recordCreatedTerminal(callerToken, agentTerminal, true);
+		} else {
+			this._saveLedger();
 		}
+		this._notifyCreated(agentLabel !== undefined
+			// allow-any-unicode-next-line
+			? localize('paradis.agentIde.notify.spaceWithAgent', "エージェント「{0}」がスペース「{1}」を作り、{2} を起動しました。", this._describeCaller(callerToken), result.name, agentLabel)
+			// allow-any-unicode-next-line
+			: localize('paradis.agentIde.notify.space', "エージェント「{0}」がスペース「{1}」を作りました。", this._describeCaller(callerToken), result.name));
 		return {
 			ok: true,
 			data: {
@@ -619,7 +839,7 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		}
 		const terminal = this._findTerminal(id);
 		if (!terminal) {
-			this._createdBy(callerToken)?.terminals.delete(id);
+			this._forgetTerminal(id);
 			return { ok: true, data: { terminal: id, closed: true, note: 'It was already closed.' } };
 		}
 		if (this.terminalService.instances.includes(terminal.instance)) {
@@ -628,7 +848,7 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 			// 別のスペースへ退避（park）中のものは一覧に居ないので、直接閉じる
 			terminal.instance.dispose(TerminalExitReason.User);
 		}
-		this._createdBy(callerToken)?.terminals.delete(id);
+		this._forgetTerminal(id);
 		return { ok: true, data: { terminal: id, closed: true } };
 	}
 
@@ -640,9 +860,15 @@ export class ParadisAgentIdeChannel implements IServerChannel {
 		if (!entry?.worktree) {
 			return fail(UNKNOWN_SPACE(space));
 		}
-		// 削除は利用者の確認ダイアログを通す（未コミットの変更の強制削除も利用者が決める）。
-		// ダイアログを待つとツールの呼び出しが時間切れになるので、出したところで返す
-		this.commandService.executeCommand(REMOVE_WORKTREE_COMMAND_ID, entry.worktree).catch(error => this.logService.warn('[ParadisAgentIde] remove worktree failed', error));
+		if (this._pendingRemoval) {
+			return fail('Para Code is already asking the user about another removal. Wait until they answer.');
+		}
+		// 削除は利用者の確認ダイアログを通す（エージェントからの依頼だと出し、未コミットの変更の強制削除も
+		// 利用者が決める）。ダイアログを待つとツールの呼び出しが時間切れになるので、出したところで返す
+		this._pendingRemoval = true;
+		this.commandService.executeCommand(PARADIS_REMOVE_WORKTREE_COMMAND_ID, entry.worktree, { requestedByAgent: this._describeCaller(callerToken) })
+			.catch(error => this.logService.warn('[ParadisAgentIde] remove worktree failed', error))
+			.finally(() => { this._pendingRemoval = false; });
 		return { ok: true, data: { space, requested: true, note: 'Para Code asked the user to confirm the deletion. It is deleted only if they agree; call list_spaces later to see the result.' } };
 	}
 }

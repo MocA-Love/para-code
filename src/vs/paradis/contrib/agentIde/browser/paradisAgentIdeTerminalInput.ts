@@ -6,59 +6,37 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// ターミナル（エージェントの TUI かシェル）へ、プログラムから安全に文字を送る部品。
-// IDE 操作ツール（O1）が使い、定期実行（O3）などエージェントへ指示を入れる機能からも使えるよう
-// ここに切り出している。決まり:
-//  - 制御文字は落とす（paradisAgentIdeSanitizeInput）。改行だけ残す
-//  - 貼り付けの囲み（bracketed paste）を受け付けない相手へ複数行は送らない（行ごとに実行されるため）
-//  - Enter は貼り付けと分け、間に `validate` で相手がまだ送ってよい状態かを確かめる
-//    （許可待ち・質問に変わっていたら Enter を送らない）
+// IDE 操作ツール（O1）がターミナルへ文字を送るときの判定。
+//  - 前面で Claude Code / Codex が動いているか（素のシェルか）
+//  - 複数行を貼り付けてよいか。フェーズ5のコマンドプリセット（`paradisPresetService` の
+//    `_insertAgentPrompt`）と同じ規則: 貼り付けの囲み（bracketed paste）が有効で、しかも
+//    シェル統合で前面のコマンドがエージェントだと確かめられたときだけ。xterm の貼り付けモードの
+//    記録は最後に出た `ESC[?2004h/l` でしかなく、エージェントが後始末をせずに落ちると立ったままになる
 
+import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import type { ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { paradisSendAgentMessageToTui } from '../../mobileRelay/common/paradisAgentMessageSender.js';
-import { paradisAgentIdeSanitizeInput } from '../common/paradisAgentIde.js';
+import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 
-export type ParadisTerminalInputOutcome =
-	| { readonly kind: 'sent'; readonly pressedEnter: boolean }
-	/** 複数行を、貼り付けの囲みを受け付けない相手へ送ろうとした（何も送っていない）。 */
-	| { readonly kind: 'multilineRefused' }
-	/** 送る前に `validate` が偽になった（何も送っていない）。 */
-	| { readonly kind: 'invalidBeforeSend' }
-	/** 文字は入れたが、Enter の前に `validate` が偽になった（Enter は送っていない）。 */
-	| { readonly kind: 'typedButNotSubmitted' };
+type TerminalLike = Pick<ITerminalInstance, 'capabilities' | 'xterm'>;
 
 /**
- * ターミナルへ文字を送る。`pressEnter` は呼び出し側が必ず決める（既定値を持たせない）。
- * @param validate 送る直前と Enter の直前に呼ぶ。偽なら送らない。
+ * 前面でエージェントが動いているか。シェル統合があれば前面のコマンドで判断する。
+ * シェル統合が無いターミナル（接続先や統合の無いシェル）では、hook が届いたことがあるかで代える。
  */
-export async function paradisSendTextToTerminal(
-	instance: Pick<ITerminalInstance, 'sendText' | 'xterm'>,
-	text: string,
-	pressEnter: boolean,
-	validate: () => Promise<boolean>,
-): Promise<ParadisTerminalInputOutcome> {
-	const sanitized = paradisAgentIdeSanitizeInput(text);
-	if (sanitized.includes('\n') && instance.xterm?.raw.modes.bracketedPasteMode !== true) {
-		return { kind: 'multilineRefused' };
+export function paradisTerminalRunsAgent(instance: TerminalLike, hookEverFired: boolean): boolean {
+	const detection = instance.capabilities.get(TerminalCapability.CommandDetection);
+	if (detection === undefined) {
+		return hookEverFired;
 	}
-	const sendText = (value: string, execute?: boolean, bracketedPasteMode?: boolean) => instance.sendText(value, execute ?? false, bracketedPasteMode);
-	if (!pressEnter) {
-		if (!(await validate())) {
-			return { kind: 'invalidBeforeSend' };
-		}
-		await sendText(sanitized, false, true);
-		return { kind: 'sent', pressedEnter: false };
-	}
-	if (sanitized.length === 0) {
-		if (!(await validate())) {
-			return { kind: 'invalidBeforeSend' };
-		}
-		await sendText('\r', false, false);
-		return { kind: 'sent', pressedEnter: true };
-	}
-	const outcome = await paradisSendAgentMessageToTui(sanitized, sendText, validate);
-	if (outcome.executed) {
-		return { kind: 'sent', pressedEnter: true };
-	}
-	return outcome.consumed ? { kind: 'typedButNotSubmitted' } : { kind: 'invalidBeforeSend' };
+	const executing = detection.executingCommand;
+	return executing !== undefined && paradisInteractiveAgentCommand(executing) !== undefined;
+}
+
+/** 複数行をそのまま貼り付けてよいか（行ごとに実行される心配が無いか）。 */
+export function paradisCanPasteMultiline(instance: TerminalLike): boolean {
+	const detection = instance.capabilities.get(TerminalCapability.CommandDetection);
+	const executing = detection?.executingCommand;
+	return instance.xterm?.raw.modes.bracketedPasteMode === true
+		&& executing !== undefined
+		&& paradisInteractiveAgentCommand(executing) !== undefined;
 }
