@@ -345,9 +345,10 @@ export class ParadisSessionResumeService {
 					continue;
 				}
 				homesSeen.add(codexHome);
-				// 既定以外のホームの会話は、そのホームで再開しないと Codex が見つけられない（選んでいる
-				// アカウントのホームには無いことがある）。再開の要求へ渡せるよう会話に添える。
-				const resumeCodexHome = codexHome === homes.codex ? undefined : codexHome;
+				// 会話は、それが見つかったホームで再開しないと Codex が見つけられない（別のアカウントを選んで
+				// いると、そのアカウントのホームには無いことがある）。既定のホームの会話も含め、再開の要求へ
+				// 渡せるよう会話に添える。
+				const resumeCodexHome = codexHome;
 				const indexed = await this.collectCodex(request.spaces, codexHome, sessions, request.includeArchived, resumeCodexHome);
 				if (!indexed) {
 					await this.collectCodexRollouts(request.spaces, codexHome, sessions, resumeCodexHome);

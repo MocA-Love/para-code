@@ -1189,7 +1189,7 @@ suite('ParadisSessionResume', () => {
 
 		const sessions = await service.list(createListRequest());
 
-		assert.deepStrictEqual(sessions.map(session => [session.agent, session.id, session.codexHome]), [['codex', 'codex-session', undefined]]);
+		assert.deepStrictEqual(sessions.map(session => [session.agent, session.id, session.codexHome]), [['codex', 'codex-session', codexHome]]);
 	});
 
 	test('remembers the Codex home of a conversation that only another home has', async () => {
