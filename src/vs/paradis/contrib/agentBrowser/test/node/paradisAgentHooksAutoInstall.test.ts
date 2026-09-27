@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { DeferredPromise } from '../../../../../base/common/async.js';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -20,14 +20,15 @@ suite('ParadisAgentHooksAutoInstall', () => {
 		let enabled = initiallyEnabled;
 		const events: string[] = [];
 		const changed = store.add(new Emitter<void>());
-		// 設置は作られる前に「終わらせる」指示が来ることがあるので、先に用意しておく
-		const installs = [new DeferredPromise<void>(), new DeferredPromise<void>()];
+		// 設置ごとに「start が返る」と「走っている書き込みが終わる（whenIdle）」を別々に進められるようにする。
+		// 作られる前に終わらせる指示が来ることがあるので、先に用意しておく
+		const installs = [0, 1].map(() => ({ started: new DeferredPromise<void>(), idle: new DeferredPromise<void>() }));
 		const createInstaller = (): IParadisAgentHooksInstaller => {
 			const id = events.filter(event => event.startsWith('install')).length + 1;
 			events.push(`install#${id}`);
-			const idle = installs[id - 1];
+			const { started, idle } = installs[id - 1];
 			return {
-				start: async () => { await idle.p; },
+				start: () => started.p,
 				whenIdle: () => idle.p.then(() => { events.push(`idle#${id}`); }),
 				dispose: () => { events.push(`stop#${id}`); },
 			};
@@ -43,7 +44,8 @@ suite('ParadisAgentHooksAutoInstall', () => {
 			autoInstall,
 			events,
 			set(value: boolean) { enabled = value; changed.fire(); },
-			finishInstall(id: number) { void installs[id - 1].complete(); },
+			finishStart(id: number) { void installs[id - 1].started.complete(); },
+			finishIdle(id: number) { void installs[id - 1].idle.complete(); },
 		};
 	}
 
@@ -54,27 +56,43 @@ suite('ParadisAgentHooksAutoInstall', () => {
 		assert.deepStrictEqual(events, []);
 	});
 
-	test('オフに切り替わったその時だけ、走っている設置を待ってから取り外す。オンに戻せば置き直す', async () => {
-		const { autoInstall, events, set, finishInstall } = setup(true);
+	test('オフへの切り替えは、始めている設置（start）が返るまで取り外しへ進まない', async () => {
+		const { autoInstall, events, set, finishStart, finishIdle } = setup(true);
 		set(false);
-		// 設置が終わる前に取り外しへ進んではいけない（後から書き戻されるため）
-		await Promise.resolve();
-		const beforeInstallFinished = [...events];
-		finishInstall(1);
+		await timeout(0);
+		const beforeStartReturned = [...events];
+		finishStart(1);
+		finishIdle(1);
+		await autoInstall.whenIdle();
+		assert.deepStrictEqual({ beforeStartReturned, events }, {
+			beforeStartReturned: ['install#1'],
+			events: ['install#1', 'stop#1', 'idle#1', 'remove'],
+		});
+	});
+
+	test('設置を止めたあと、走っている書き込み（whenIdle）が終わるのを待ってから取り外す。オンに戻せば置き直す', async () => {
+		const { autoInstall, events, set, finishStart, finishIdle } = setup(true);
+		finishStart(1);
+		await autoInstall.whenIdle();
+		set(false);
+		await timeout(0);
+		// start は返っているが書き込みがまだ走っている。ここで取り外すと後から書き戻される
+		const whileWriting = [...events];
+		finishIdle(1);
 		await autoInstall.whenIdle();
 		set(true);
-		finishInstall(2);
+		finishStart(2);
 		await autoInstall.whenIdle();
-		assert.deepStrictEqual({ beforeInstallFinished, events }, {
-			beforeInstallFinished: ['install#1'],
+		assert.deepStrictEqual({ whileWriting, events }, {
+			whileWriting: ['install#1', 'stop#1'],
 			events: ['install#1', 'stop#1', 'idle#1', 'remove', 'install#2'],
 		});
 	});
 
 	test('起動時にオフで、あとからオンにしたら設置を始める', async () => {
-		const { autoInstall, events, set, finishInstall } = setup(false);
+		const { autoInstall, events, set, finishStart } = setup(false);
 		set(true);
-		finishInstall(1);
+		finishStart(1);
 		await autoInstall.whenIdle();
 		assert.deepStrictEqual(events, ['install#1']);
 	});
