@@ -544,4 +544,33 @@ suite('Para Browser MCP setup', () => {
 			await fs.rm(directory, { recursive: true, force: true });
 		}
 	});
+
+	// ホームが増えたとき、既定のホームでセットアップ済みなら同じ節を新しいホームへ入れる。
+	// 既定のホームが未設定（利用者がセットアップしていない）なら、どこにも書かない。
+	test('adds the Codex MCP section to new account homes only when the default home is set up', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-homes-'));
+		try {
+			const primary = join(directory, '.codex');
+			const second = join(directory, '.codex-2');
+			await fs.mkdir(primary);
+			await fs.mkdir(second);
+			const controller = new ParadisMcpSetupController({
+				platform: 'darwin',
+				resolveShellEnv: async () => ({ PATH: '/safe' }),
+				findExecutable: async () => undefined,
+				runCommand: async (): Promise<IParadisMcpSetupCommandResult> => ({ kind: 'exit', code: 0, output: '' }),
+				codexHome: primary,
+				additionalCodexHomes: () => [primary, second],
+				log: () => undefined,
+			});
+			const readSecond = () => fs.readFile(join(second, 'config.toml'), 'utf8').then(text => text.includes('[mcp_servers.para-browser]'), () => false);
+			await controller.propagateToCodexHomes(PORT);
+			const beforeSetup = await readSecond();
+			await fs.writeFile(join(primary, 'config.toml'), `[mcp_servers.para-browser]\nurl = "http://127.0.0.1:${PORT}/"\n`);
+			await controller.propagateToCodexHomes(PORT);
+			assert.deepStrictEqual({ beforeSetup, afterSetup: await readSecond() }, { beforeSetup: false, afterSetup: true });
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
 });

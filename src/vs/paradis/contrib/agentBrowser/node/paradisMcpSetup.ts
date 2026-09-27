@@ -485,6 +485,26 @@ export class ParadisMcpSetupController {
 		return this.withCodexPropagation(this.fixCodex(gatewayPort), gatewayPort);
 	}
 
+	/**
+	 * Codex のホームが増えた（アカウントの追加・ログイン、設定で足した）ときに呼ぶ。既定のホームに
+	 * para-browser の設定が入っている（利用者が一度セットアップした）ときだけ、同じ節を他のアカウント用
+	 * ホームへ入れる。既定のホームが未設定なら何もしない（セットアップしていない人の設定は書かない）。
+	 */
+	async propagateToCodexHomes(gatewayPort: number | undefined): Promise<void> {
+		if (gatewayPort === undefined || this.flights.has('codex')) {
+			return;
+		}
+		try {
+			const original = await readConfigSnapshot(join(this.options.codexHome, 'config.toml'), this.options.configReadFileSystem);
+			if (!original.exists || inspectParadisCodexMcpToml(original.text, gatewayPort).state !== 'configured') {
+				return;
+			}
+		} catch {
+			return;
+		}
+		await this.propagateCodexSetup(gatewayPort);
+	}
+
 	/** 既定のホームの結果をそのまま返しつつ、最後に1回だけ他のアカウント用ホームへ反映する。 */
 	private async withCodexPropagation(primary: Promise<IParadisMcpSetupResult>, gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
 		try {
