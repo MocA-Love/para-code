@@ -281,6 +281,67 @@ suite('ParadisClaudeAccountService switching', () => {
 		});
 	});
 
+	// CLAUDE_CONFIG_DIR=<home>/.claude で動く Claude Code はハッシュ付きの項目だけを更新する。Orca と同じく
+	// ハッシュ付きの項目も読み、新しい方を「いまのログイン」として控えのトークンに取り込む（持ち主の確認も通す）。
+	test('takes the newer token from the scoped keychain item when switching away', async () => {
+		const harness = await createHarness();
+		const scopedService = ParadisClaudeLiveAuth.scopedKeychainService(path.join(harness.home, '.claude'));
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, harness.aliceStored);
+		const aliceRefreshed = paradisTestCredentials('alice-2', 'alice-r2', Date.now() + 2 * HOUR);
+		harness.keychain.set(scopedService, USER, aliceRefreshed);
+		harness.oauth.setProfile('alice-2', 'u-alice', 'alice@example.com');
+		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });
+
+		const result = await harness.service.switchAccount(BOB);
+		assert.deepStrictEqual({
+			outcome: result.outcome,
+			// 控えに回る Alice の保存分は、ハッシュ付きの項目にあった新しいトークン
+			aliceStored: JSON.parse(harness.keychain.get(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, ALICE_ID) ?? '{}').claudeAiOauth?.refreshToken,
+		}, { outcome: 'switched', aliceStored: 'alice-r2' });
+	});
+
+	// 書く前からあったハッシュ付きの項目は、失敗したら元の値へ戻す。2つ目（ハッシュ付き）の書き込みで
+	// 失敗しても、1つ目（ハッシュ無し）を戻す。
+	test('restores both keychain items when the scoped write fails or a later step fails', async () => {
+		const harness = await createHarness();
+		const scopedService = ParadisClaudeLiveAuth.scopedKeychainService(path.join(harness.home, '.claude'));
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, harness.aliceStored);
+		const scopedBefore = JSON.stringify({ ...JSON.parse(harness.aliceStored), mcpOAuth: { server: 'scoped' } });
+		harness.keychain.set(scopedService, USER, scopedBefore);
+		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });
+		// ハッシュ付きの項目への書き込み（2つ目）だけを失敗させる
+		const write = harness.keychain.write.bind(harness.keychain);
+		harness.keychain.write = async (service, account, value) => {
+			if (service === scopedService && value !== scopedBefore) {
+				throw new Error('scoped write failed');
+			}
+			return write(service, account, value);
+		};
+
+		const result = await harness.service.switchAccount(BOB);
+		assert.deepStrictEqual({
+			outcome: result.outcome,
+			rolledBack: result.outcome === 'failed' ? result.rolledBack : undefined,
+			legacy: harness.keychain.get(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER) === harness.aliceStored,
+			scoped: harness.keychain.get(scopedService, USER) === scopedBefore,
+		}, { outcome: 'failed', rolledBack: true, legacy: true, scoped: true });
+	});
+
+	test('restores a scoped keychain item that existed before when a later step fails', async () => {
+		const harness = await createHarness('darwin', true);
+		const scopedService = ParadisClaudeLiveAuth.scopedKeychainService(path.join(harness.home, '.claude'));
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, harness.aliceStored);
+		const scopedBefore = JSON.stringify({ ...JSON.parse(harness.aliceStored), mcpOAuth: { server: 'scoped' } });
+		harness.keychain.set(scopedService, USER, scopedBefore);
+		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });
+		const result = await harness.service.switchAccount(BOB);
+		assert.deepStrictEqual({
+			outcome: result.outcome,
+			legacy: harness.keychain.get(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER) === harness.aliceStored,
+			scoped: harness.keychain.get(scopedService, USER) === scopedBefore,
+		}, { outcome: 'failed', legacy: true, scoped: true });
+	});
+
 	// Claude Code は安全な保存先（キーチェーン）を `~/.claude/.storage-write.lock`（proper-lockfile、
 	// 15 秒で古いとみなす）の中で読み直して書く。切り替えも同じロックの中で書き、持ち主がいる間は
 	// 書かずに `locked` で止める。15 秒より古いロックは持ち主がいないとみなして取る。
