@@ -436,6 +436,10 @@ export function paradisResolveAgentLaunchFlags(template: IParadisAgentCommandTem
 	return { model, effort, permission };
 }
 
+/** 種類の分からないシェルへバックスラッシュを含む指示を渡そうとしたときのエラー。 */
+// allow-any-unicode-next-line
+export const PARADIS_AGENT_PROMPT_UNKNOWN_SHELL_BACKSLASH = localize('paradis.agentPrompt.unknownShellBackslash', "新しいターミナルのシェルの種類が分からないため、バックスラッシュ（\\）を含む指示を安全に渡せません。指示からバックスラッシュを除くか、Para Code が種類を判別できるシェルで起動してください。");
+
 function paradisQuotePosixShellArg(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -510,6 +514,12 @@ export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate,
 	}
 	if (shellType === WindowsShellType.CommandPrompt) {
 		return paradisBuildCommandPromptAgentCommand(template, prompt, options);
+	}
+	// シェルの種類が分からない（tmux や `exec fish` などのラッパー経由の起動）と POSIX 式で引用するが、
+	// fish はシングルクオートの中のバックスラッシュをエスケープとして読むので、`\` を含む指示は
+	// 閉じ損ねて後ろがコマンドとして動きうる。確かめられないものは起動しない
+	if (shellType === undefined && prompt.includes('\\')) {
+		throw new Error(PARADIS_AGENT_PROMPT_UNKNOWN_SHELL_BACKSLASH);
 	}
 	const quoted = shellType === GeneralShellType.PowerShell
 		? paradisQuotePowerShellArg(prompt)
