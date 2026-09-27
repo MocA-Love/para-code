@@ -52,6 +52,11 @@ export class ParadisCodexAccountsClient {
 		return this.channel.call<IParadisCodexAccountsState>('selectHome', [homePath]);
 	}
 
+	/** 渡したシェルの pid のうち、子孫で Codex が動いているもの（プロセス表で見分ける）。 */
+	shellsRunningCodex(shellPids: readonly number[]): Promise<number[]> {
+		return this.channel.call<number[]>('shellsRunningCodex', [shellPids]);
+	}
+
 	/** 選択が変わった（どのウィンドウから変えても届く）。 */
 	get onDidChangeState(): Event<IParadisCodexAccountsState> {
 		return this.channel.listen<IParadisCodexAccountsState>('onDidChangeState');
