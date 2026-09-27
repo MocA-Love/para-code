@@ -17,7 +17,6 @@ import { openSession } from './openSession.js';
 import { usePcRouteId } from './pcRouteContext.js';
 import { FilterChip, ModeButton, PcHeader, PcSearchBar, ToolbarRight } from './pcHeader.js';
 import {
-	DEFAULT_PC_LIST_GROUP,
 	EMPTY_PC_LIST_FILTER,
 	PC_LIST_GROUP_OPTIONS,
 	PC_LIST_SORT_OPTIONS,
@@ -31,6 +30,8 @@ import {
 	type PcListFilter,
 	type PcListGroup,
 } from './pcList.js';
+import { EMPTY_PC_LIST_VIEW_OF_PC, effectivePcListFilter, pcListViewOf } from './pcListView.js';
+import { EMPTY_PC_LIST_TRANSIENT, ensurePcListViewLoaded, usePcListView } from './pcListViewStore.js';
 import { FAB_SIZE, LaunchFab, PcOfflineState, SectionToggle } from './pcListParts.js';
 import { RowActions, type RowActionTarget } from './rowActions.js';
 import { spaceColor } from './spaceColor.js';
@@ -52,6 +53,8 @@ import { EmptyState, PickerDrawer, Screen, connectionKind } from '../../ui/index
 
 // 行の経過時間の元（状態が変わった時刻）を早めに見張り始める（ホームと同じ。何度呼んでも1回だけ）。
 startStatusSinceTracking();
+// 一覧の表示条件（絞り込み・グループ・畳んだ段）の保存値を早めに読んでおく（何度呼んでも1回だけ）。
+ensurePcListViewLoaded();
 
 type Terminal = WorkspaceState['terminals'][number];
 type Space = WorkspaceState['workspaces'][number];
@@ -104,12 +107,25 @@ export function PcScreen({ placement, onCollapse }: {
 	const lastTerminalKey = useLastSession(s => (s.value?.pcId === pcId ? s.value?.terminalKey : undefined));
 	const toast = useParaToast(s => s.show);
 
-	const [group, setGroup] = useState<PcListGroup>(DEFAULT_PC_LIST_GROUP);
-	const [filter, setFilter] = useState<PcListFilter>(EMPTY_PC_LIST_FILTER);
-	const [searching, setSearching] = useState(false);
-	const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+	// 一覧の表示条件は画面の外（`pcListViewStore.ts`）に置く。アプリを終了しても残し、iPad の2列 ⇄ 1列で
+	// この画面が作り直されても消さないため。
+	const group = usePcListView(s => s.saved.group);
+	const view = usePcListView(s => (pcId !== undefined ? pcListViewOf(s.saved, pcId) : EMPTY_PC_LIST_VIEW_OF_PC));
+	const { query, searching } = usePcListView(s => (pcId !== undefined ? s.transient[pcId] : undefined) ?? EMPTY_PC_LIST_TRANSIENT);
+	const { setGroup, setListFilter, setListSearching, toggleListSection } = usePcListView(useShallow(s => ({
+		setGroup: s.setGroup, setListFilter: s.setFilter, setListSearching: s.setSearching, toggleListSection: s.toggleSection,
+	})));
+	const filter = effectivePcListFilter(view, query, spaces.map(candidate => candidate.id));
+	const collapsed = new Set(view.collapsed);
+	const setFilter = (next: PcListFilter) => {
+		if (pcId !== undefined) {
+			setListFilter(pcId, next);
+		}
+	};
 	const [sheet, setSheet] = useState<Sheet | undefined>(undefined);
 	const [menuKey, setMenuKey] = useState<string | undefined>(undefined);
+	// 検索欄をこの画面で開いたか（開いたときだけ入力欄に合わせる。作り直しで開いたままのときは合わせない）。
+	const [openedSearchHere, setOpenedSearchHere] = useState(false);
 
 	const kind = pc !== undefined ? connectionKind(pc.connection, pc.pcOnline) : 'offline';
 	// 一時的に再接続している間は一覧を消さない（行が点滅すると押し間違える）。
@@ -155,15 +171,9 @@ export function PcScreen({ placement, onCollapse }: {
 		toast({ key: 'pc-reconnect', text: `${pc?.name ?? 'PC'} に再接続しています…`, icon: 'refresh-outline', tone: 'info' }, 2_500);
 	};
 	const toggleSection = (key: string) => {
-		setCollapsed(current => {
-			const next = new Set(current);
-			if (next.has(key)) {
-				next.delete(key);
-			} else {
-				next.add(key);
-			}
-			return next;
-		});
+		if (pcId !== undefined) {
+			toggleListSection(pcId, key);
+		}
 	};
 
 	const menuTerminal = menuKey !== undefined ? terminals.find(candidate => candidate.terminalKey === menuKey) : undefined;
@@ -305,15 +315,15 @@ export function PcScreen({ placement, onCollapse }: {
 							onNotifications={() => { hapticSelection(); router.push(routes.notifications()); }}
 							onToggleSearch={() => {
 								hapticSelection();
-								if (searching) {
-									setFilter(current => ({ ...current, query: '' }));
+								if (pcId !== undefined) {
+									setOpenedSearchHere(!searching);
+									setListSearching(pcId, !searching);
 								}
-								setSearching(!searching);
 							}}
 						/>
 					</>
 				)}
-				{...(searching ? { search: <PcSearchBar value={filter.query} onChange={query => setFilter(current => ({ ...current, query }))} /> } : {})}
+				{...(searching ? { search: <PcSearchBar value={query} onChange={next => setFilter({ ...filter, query: next })} autoFocus={openedSearchHere} /> } : {})}
 			/>
 			<View style={styles.body}>{renderBody()}</View>
 			<LaunchFab disabled={!canLaunch} onPress={() => setSheet('launch')} />

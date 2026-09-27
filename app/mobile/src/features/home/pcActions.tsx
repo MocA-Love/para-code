@@ -7,6 +7,7 @@ import { useAppStore } from '../../appState.js';
 import { useParaToast } from '../../paraToast.js';
 import { ActionSheet, ConfirmDrawer, TextInputDrawer, connectionKind, type ActionSheetAction } from '../../ui/index.js';
 import { useLastSession } from './lastSessionStore.js';
+import { usePcListView } from '../pc/pcListViewStore.js';
 
 /**
  * PC のカードの ⋮ と長押しで開く PC のメニュー（モックの `hostMenu`）と、そこから開く名前の変更・
@@ -101,6 +102,7 @@ export function PcActions({ pcId, onClose }: {
 					if (useLastSession.getState().value?.pcId === pc.id) {
 						useLastSession.getState().clear();
 					}
+					usePcListView.getState().forgetPc(pc.id);
 					removePc(pc.id).catch((error: unknown) => {
 						toast({ key: 'pc-remove', text: 'ペアリングを解除できませんでした', sub: error instanceof Error ? error.message : String(error), icon: 'alert-circle', tone: 'warn' }, 4_000);
 					});
