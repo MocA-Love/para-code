@@ -402,6 +402,32 @@ CDP ゲートウェイ（`paradisCdpFilterProxy.ts`、ページ直結とブラ�
 - 別のウィンドウの台帳を取り込むときも、印は「外す」向きだけを通す（古い写しで印が戻らないように）
 - 切替は「エージェントが自分で開いたタブ」に限り、ネットワークの制限が有効な間は断る（`open_browser_profile` と同じ判断）。`open_browser_profile` で開いたタブもエージェントのタブとして台帳に載り、上限 5 枚に数える
 
+## para-browser MCP の追加のブラウザ操作は、共有中のタブ1枚にだけ効かせる（agentBrowser、2026-09-27、フェーズ7 B7）
+
+Orca の B7 に当たる8個のツールを para-browser MCP に足した。upstream のファイルは触っていない。ツールの定義は `agentBrowser/node/paradisBrowserPageOpsTools.ts`（オフラインのシムも同じ配列を読む）、shared process 側の処理は `node/paradisBrowserPageOps.ts`、タブへ掛ける処理は electron-main の `electron-main/paradisBrowserPageOpsController.ts` で、既存の `PARADIS_CDP_TARGET_CHANNEL`（`paradisCdpTargetService.ts`）にメソッドを足して呼ぶ。検証の関数は両側で同じもの（`common/paradisBrowserPageOps.ts`）を通し、electron-main でも受け取った値を検証し直す。
+
+| ツール | 中身 | 決め事 |
+|---|---|---|
+| `mouse_action` | move / down / up / context_click / middle_click / drag / wheel、修飾キー | 既存の入力の通り道（`dispatchExactViewInput`）で送るので、利用者がそのタブにフォーカスしていれば断られ、カーソル演出も出る。uid の要素が覆われている・iframe の中・画面外なら押さない。押したままのボタンはペインごとに覚え、共有が変わると忘れる |
+| `save_page_as_pdf` | `webContents.printToPDF` | ダウンロードと同じフォルダへ `wx` で書き、同名があれば ` (1)` を足す（上書きしない）。一覧にエージェント由来として載せ、隔離の印も付ける。ファイル名は区切り文字・制御文字・双方向制御を落として `.pdf` にそろえる |
+| `set_extra_http_headers` | タブ専用の CDP セッションで `Network.setExtraHTTPHeaders` | Cookie / Cookie2 / Set-Cookie、Host・Content-Length など接続のヘッダ、`Proxy-*` は断る |
+| `set_http_credentials` | webContents の `login` に答える | 答えるのは指定した origin（https、http は localhost だけ）の求めだけで、プロキシの求めには答えない。同じ realm へは1分に2回まで（間違ったパスワードで回らない）。パスワードは electron-main のメモリにだけ置き、応答にもログにも出さない |
+| `set_request_rules` | 同じセッションで `Fetch.enable`（requestStage は Request だけ） | block / set_headers / redirect / respond。redirect は 307 の応答を返してブラウザに辿らせる（`continueRequest` の `url` で差し替えない）。respond の応答ヘッダは許可リスト（Content-Type、Access-Control-*、X-* など）で、Set-Cookie・Clear-Site-Data・HSTS などブラウザに残るものは断り、`Cache-Control: no-store` を必ず付ける |
+| `get_page_network_overrides` | 掛かっている上書きの要約 | ヘッダは名前だけ、認証は origin だけ、ルールは当たった回数。値とパスワードは返さない |
+| `download_by_click` | クリックの前に「このタブのダウンロードを待つ」と登録し、クリックして待つ | 保存先・「開く」を出さない扱いはダウンロード一覧（`browserDownloads`）の規則のまま。待つのは開始まで最長 15 秒、全体で最長 50 秒 |
+| `highlight_element` | 使い捨ての CDP セッションで `Overlay.highlightRect` | ページの DOM は変えない。時間が来るか次のハイライトで、セッションごと外して消す |
+
+- 既存ツールとの分担: 左クリック・ダブルクリック（`click` / `click_at` の `dblClick`）、要素へのホバー（`hover`）、要素間の HTML のドラッグ＆ドロップ（`drag`）は chrome-devtools-mcp のものを使う。`mouse_action` はそれで出来ない右・中クリック、座標へのホバー、ボタンを押したままの移動（スライダーや canvas）、ホイールだけを持つ。ツールの説明にもそう書いてある
+- **上書きはタブ（webContents）1枚に付けた専用の CDP セッションに掛ける**。CDP の Network / Fetch はセッションごとなので、同じ保存領域の他のタブや他のペインのタブには届かない。セッションを外せば Chromium がすべて元に戻す（止めていたリクエストも流れる）。1枚のタブに上書きを掛けられるのは1つのペインだけで、別のペインは `ownedByAnotherPane` で断る
+- 外す契機は3つ。(1) shared process がそのペインのバインドの世代を進めた（`_activateBindingGeneration` から `releasePageOverridesOwner`。electron-main は持ち主ごとに世代の高水位を持ち、古い世代の要求を `stale` で断る）。(2) エージェントがタブを手放した（`setExactViewBackgroundThrottling(true)` の合図）。(3) タブが閉じた（`destroyed`）。持ち主は electron-main へトークンそのものではなく SHA-256 の先頭 32 桁で渡す
+- 上書き（ヘッダ・ルール）を掛けている間は、そのタブの HTTP キャッシュを使わない（`Network.setCacheDisabled`）。書き換えた要求や作った応答の結果が、共有の保存領域のキャッシュに残って利用者の他のタブへ出るのを防ぐため
+- エージェントのネットワークの制限: redirect はブラウザが辿り直す要求になるので、Electron の `webRequest` の制限にもう一度掛かる。加えて shared process が、制限が有効なら行き先を `AgentNetworkFilterService` で確かめて先に断る。【要確認】Chromium が Fetch で返した 307 を辿るときに `webRequest.onBeforeRequest` が改めて呼ばれることは実機で確かめていない（コードを読んだ上での推測）
+- Cookie は Q69 のとおり全面禁止のまま。新しいツールは Cookie のヘッダを送る・消す・Set-Cookie を返すのどれもできない。ついでに CDP ゲートウェイ（`paradisCdpFilterProxy.ts` の `paradisCookieAndRewriteDeniedMessage`）で、生の CDP からの同じ抜け道も塞いだ: `Network.setExtraHTTPHeaders` の Cookie、`Fetch.continueRequest` の `url` と Cookie、`Fetch.fulfillRequest` / `continueResponse` の Set-Cookie・Clear-Site-Data・`binaryResponseHeaders`、`Network.continueInterceptedRequest` / `setRequestInterception`
+- 接続元の確認（`pane` か `tunnel`）は、要約を返すだけの `get_page_network_overrides` も含めて8個すべてに掛ける（ヘッダの名前やルールの中身も他のペインに見せないため）
+- HTTP 認証のパスワードを画面へ出さない: hook の `tool_input`（`paradisSanitizeAgentHookPayload`、モバイルの承認カードの元）と、会話の記録からチャット表示・モバイルへ出す tool_use（`paradisAgentTranscriptParser.ts` の Claude と Codex の両方）で、`set_http_credentials` の `password` を `[hidden]` にする（`paradisRedactToolInputSecrets`）。エージェント自身の会話ログ（`~/.claude` / `~/.codex`）には残る。これはこちらで消せない
+- ダウンロードの由来: エージェントに共有中のタブ（利用者のタブでも）から始まったダウンロードは、すべてエージェント由来にした（`paradisAgentDownloads.ts` の `paradisSetWebContentsHeldByAgent`。`will-download` の第3引数の webContents で見分ける）。chrome-devtools-mcp の `click` や `navigate_page` で落ちたものも「開く」を出さない側に倒れる。利用者が共有中のタブで自分で落としたものも同じ扱いになる（安全側）
+- 限界: 上書きはトップのフレームのセッションだけに掛かり、別プロセスの iframe（cross-origin）の要求には効かない。shared process が落ちたまま戻らないと、上書きはタブを閉じるか共有が外れるまで残る。PDF はダウンロードの自動保存を切っていても同じフォルダへ置く（保存先を聞くダイアログを出せないため）
+
 ## 内蔵ブラウザの Design Mode とスクリーンショットへの書き込み（browserDesignMode、2026-09-27、フェーズ7 担当B）
 
 `src/vs/paradis/contrib/browserDesignMode/` に実装。ページの要素を選んでコメントを付け（B1）、スクリーンショットに書き込み（B2）、どちらも注釈トレイに溜めて、同じスペースのエージェントのペインの入力欄へまとめて入れる。upstream の「Add Element to Chat」（VS Code のチャット宛て）とは別の経路で、upstream の要素選択（`toggleElementSelection`）は使わない。使うと upstream の `BrowserEditorChatIntegration` が選択のたびにチャットへ添付しに行くため。
