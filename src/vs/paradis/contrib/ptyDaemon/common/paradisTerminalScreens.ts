@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 常駐ターミナルの画面をディスクへ保存して、PC の再起動の後に戻す（Q49 A / TM14）。判断の部分だけ。
+// 常駐ターミナルの画面をディスクへ保存して、PC の再起動の後に戻す（TM14）。判断の部分だけ。
 //
 // なぜ要るか: 常駐を使うと、アプリを閉じるときに upstream の「画面を保存して次に開いたとき
 // シェルを起こし直す」（`persistTerminalState` → `reviveTerminalProcesses`）を飛ばしている
@@ -19,8 +19,10 @@
 // **その画面を抱えていた常駐がもう居なければ**（常駐がそれより後に起動していれば）、
 // upstream の復元にそのまま渡す。常駐がまだ同じなら、プロセスは生きているので使わない。
 //
-// 保存物には、環境変数（内部用の `PARA_CODE_*` / `PARADIS_*` とペイントークンは落とす）と
-// シェル統合の nonce も入る。書き込みは main プロセスで、本人だけが読める権限（0600、フォルダ 0700）。
+// 保存物には、シェルの起動条件（`shellLaunchConfig` の環境変数。秘密の変数は落とす。
+// `paradisTerminalPrivateFiles.ts` の一覧）と、シェル統合の nonce が入る。**nonce からはペイント
+// ークンが決まる**（エディタのタブと起こし直した端末を結び付けるのに要るので残している）。
+// 書き込みは main プロセスで、本人だけが読める権限（0600、フォルダ 0700）。
 
 /** 保存物を使わずに捨てるまでの日数。 */
 export const PARADIS_TERMINAL_SCREENS_MAX_AGE_DAYS = 30;
@@ -63,12 +65,28 @@ export function paradisDecodeTerminalScreens(content: string): IParadisSavedTerm
 
 /** 常駐の今の状態のうち、判断に要る部分（`IParadisPtyDaemonStatus` の一部）。 */
 export interface IParadisDaemonStatusLike {
-	/** 常駐へ繋がっているか。false ならアプリの中の pty ホストが端末を持っている。 */
+	/**
+	 * 台帳に載っている今のビルドの常駐プロセスが生きているか。**pty ホストがその常駐を使って
+	 * いるかまでは表さない**（起動に失敗してアプリの中の pty ホストに落ちた後に、常駐だけが
+	 * 生きていることがある）。保存側は `terminalCount` も見て補う。
+	 */
 	readonly running: boolean;
 	readonly pid: number | undefined;
 	readonly startedAt: number | undefined;
 	/** 別のビルドの常駐（更新前の常駐が、元の端末を抱えたまま残っていることがある）。 */
 	readonly foreign: readonly { readonly pid: number; readonly startedAt: number }[];
+	/** 今の常駐が抱えている本数。聞けなかったら undefined。 */
+	readonly terminalCount?: number;
+}
+
+/**
+ * 保存するときの常駐。常駐が生きていて、しかも保存しようとしている本数以上を抱えていると
+ * 答えたときだけ返す。pty ホストがアプリの中に落ちている（常駐は生きているが使われていない）
+ * ときは、常駐はこちらの端末を抱えていないので、ここで弾かれる。
+ */
+export function paradisDaemonIdentityForSaving(status: IParadisDaemonStatusLike | undefined, terminalsToSave: number): IParadisDaemonIdentity | undefined {
+	const identity = paradisDaemonIdentityForSave(status);
+	return identity && status?.terminalCount !== undefined && status.terminalCount >= terminalsToSave ? identity : undefined;
 }
 
 /** 今、保存してよい常駐（繋がっていて、誰かが分かる）。保存しないときは undefined。 */
@@ -85,33 +103,34 @@ export const enum ParadisSavedScreensDecision {
 	Expired = 'expired',
 	/** 保存したときの常駐がまだ動いている（プロセスは生きている）。使わない。 */
 	DaemonStillHolds = 'daemonStillHolds',
-	/** 常駐の状態が分からない、または今は常駐へ繋がっていない。二重に起こすより戻さない方を採る。 */
+	/** 常駐の状態が分からない、または今は常駐が動いておらずアプリも保存より前から動いている。二重に起こすより戻さない方を採る。 */
 	Unknown = 'unknown',
 }
 
 /**
  * 保存物を使うか決める。
  *
- * 戻すのは「今は常駐へ繋がっていて、保存したときの常駐（pid と起動時刻の組）がもうどこにも居ない」
- * ときだけ。PC の再起動、24時間の放置で終了、手動の停止がこれに当たる。
- *
- * - 保存したときの常駐が今の常駐か、別ビルドの常駐（更新前のもの）として生きていれば、元の
- *   プロセスはそこにあるので使わない
- * - 常駐へ繋がっていない（起動に失敗してアプリの中の pty ホストに落ちている、設定を入れた直後で
- *   再起動していない）ときは使わない。アプリの中の pty ホストがまだ端末を抱えていることがあり
- *   （ウィンドウの再読み込み）、起こし直すと生きているシェルが誰にも繋がらなくなる
+ * - 保存したときの常駐（pid と起動時刻の組）が今の常駐か、別ビルドの常駐（更新前のもの）として
+ *   生きていれば、元のプロセスはそこにあるので使わない
+ * - 常駐が動いていて、保存したときの常駐がどこにも居なければ戻す（PC の再起動、24時間の放置で
+ *   終了、手動の停止）
+ * - 常駐が動いていない・状態が分からないときは、**アプリ（main プロセス）が保存より後に起動して
+ *   いれば**戻す。保存物のプロセスを抱えうるのは保存したときの常駐か、そのとき動いていたアプリの
+ *   中の pty ホストだけで、どちらも居ない（PC を再起動した直後で常駐の起動がまだ終わっていない
+ *   ときがこれに当たる）。アプリが保存より前から動いているなら、ウィンドウの再読み込みで
+ *   アプリの中の pty ホストがまだ端末を抱えていることがあるので戻さない
  */
-export function paradisDecideSavedScreens(saved: IParadisSavedTerminalScreens, now: number, status: IParadisDaemonStatusLike | undefined): ParadisSavedScreensDecision {
+export function paradisDecideSavedScreens(saved: IParadisSavedTerminalScreens, now: number, status: IParadisDaemonStatusLike | undefined, mainStartedAt?: number): ParadisSavedScreensDecision {
 	if (now - saved.savedAt > PARADIS_TERMINAL_SCREENS_MAX_AGE) {
 		return ParadisSavedScreensDecision.Expired;
 	}
-	const current = paradisDaemonIdentityForSave(status);
-	if (!status || !current) {
-		return ParadisSavedScreensDecision.Unknown;
-	}
 	const same = (other: { readonly pid: number; readonly startedAt: number }) => other.pid === saved.daemon.pid && other.startedAt === saved.daemon.startedAt;
-	if (same(current) || status.foreign.some(same)) {
+	if (status && status.foreign.some(same)) {
 		return ParadisSavedScreensDecision.DaemonStillHolds;
 	}
-	return ParadisSavedScreensDecision.Revive;
+	const current = paradisDaemonIdentityForSave(status);
+	if (current) {
+		return same(current) ? ParadisSavedScreensDecision.DaemonStillHolds : ParadisSavedScreensDecision.Revive;
+	}
+	return mainStartedAt !== undefined && mainStartedAt > saved.savedAt ? ParadisSavedScreensDecision.Revive : ParadisSavedScreensDecision.Unknown;
 }

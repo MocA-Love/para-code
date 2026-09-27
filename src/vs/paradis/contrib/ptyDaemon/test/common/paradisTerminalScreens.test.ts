@@ -10,7 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	IParadisDaemonStatusLike,
-	paradisDaemonIdentityForSave,
+	paradisDaemonIdentityForSaving,
 	paradisDecideSavedScreens,
 	paradisDecodeTerminalScreens,
 	paradisEncodeTerminalScreens,
@@ -37,12 +37,16 @@ suite('ParadisTerminalScreens', () => {
 		});
 	});
 
-	test('saves only while connected to a daemon', () => {
+	test('saves only while the daemon holds the terminals', () => {
 		assert.deepStrictEqual([
-			paradisDaemonIdentityForSave({ running: true, pid: 1, startedAt: 2, foreign: [] }),
-			paradisDaemonIdentityForSave({ running: false, pid: undefined, startedAt: undefined, foreign: [] }),
-			paradisDaemonIdentityForSave(undefined),
-		], [{ pid: 1, startedAt: 2 }, undefined, undefined]);
+			paradisDaemonIdentityForSaving({ running: true, pid: 1, startedAt: 2, foreign: [], terminalCount: 3 }, 3),
+			// 常駐は生きているが、保存する本数を抱えていない（pty ホストがアプリの中に落ちている）
+			paradisDaemonIdentityForSaving({ running: true, pid: 1, startedAt: 2, foreign: [], terminalCount: 0 }, 3),
+			// 本数を聞けなかった
+			paradisDaemonIdentityForSaving({ running: true, pid: 1, startedAt: 2, foreign: [] }, 1),
+			paradisDaemonIdentityForSaving({ running: false, pid: undefined, startedAt: undefined, foreign: [], terminalCount: 3 }, 1),
+			paradisDaemonIdentityForSaving(undefined, 0),
+		], [{ pid: 1, startedAt: 2 }, undefined, undefined, undefined, undefined]);
 	});
 
 	test('revives only when the daemon that held the screens is gone everywhere', () => {
@@ -58,12 +62,17 @@ suite('ParadisTerminalScreens', () => {
 			paradisDecideSavedScreens(saved, savedAt + 1000, status({ foreign: [{ pid: daemon.pid, startedAt: daemon.startedAt }] })),
 			// pid が再利用されていても、起動時刻が違えば別の常駐
 			paradisDecideSavedScreens(saved, savedAt + 1000, status({ pid: daemon.pid, startedAt: savedAt + 500 })),
-			// 常駐へ繋がっていない（アプリの中の pty ホスト。再読み込みなら生きているシェルがある）
-			paradisDecideSavedScreens(saved, savedAt + 1000, status({ running: false, pid: undefined, startedAt: undefined })),
+			// 常駐が動いていない・アプリは保存より前から動いている（再読み込み。アプリの中の pty ホストに生きているシェルがある）
+			paradisDecideSavedScreens(saved, savedAt + 1000, status({ running: false, pid: undefined, startedAt: undefined }), savedAt - 1),
 			// 状態が分からない
 			paradisDecideSavedScreens(saved, savedAt + 1000, undefined),
+			// PC を再起動した直後で常駐の起動がまだ: アプリが保存より後に起動していれば戻す
+			paradisDecideSavedScreens(saved, savedAt + 1000, status({ running: false, pid: undefined, startedAt: undefined }), savedAt + 1),
+			paradisDecideSavedScreens(saved, savedAt + 1000, undefined, savedAt + 1),
+			// ただし更新前の常駐が元の端末を抱えて生きていれば戻さない
+			paradisDecideSavedScreens(saved, savedAt + 1000, status({ running: false, pid: undefined, startedAt: undefined, foreign: [daemon] }), savedAt + 1),
 			// 30日を過ぎた
 			paradisDecideSavedScreens(saved, savedAt + PARADIS_TERMINAL_SCREENS_MAX_AGE + 1, status({})),
-		], ['revive', 'daemonStillHolds', 'daemonStillHolds', 'revive', 'unknown', 'unknown', 'expired']);
+		], ['revive', 'daemonStillHolds', 'daemonStillHolds', 'revive', 'unknown', 'unknown', 'revive', 'revive', 'daemonStillHolds', 'expired']);
 	});
 });
