@@ -89,3 +89,5 @@ import './contrib/terminalIme/browser/paradisTerminalImeInputGate.contribution.j
 import './contrib/unfocusedDimming/electron-browser/paradisUnfocusedDimming.contribution.js';
 import './contrib/terminalResumeBanner/electron-browser/paradisTerminalResumeBanner.contribution.js';
 import './contrib/agentChat/electron-browser/paradisAgentChat.contribution.js';
+import './contrib/computerUse/electron-browser/paradisComputerUseApproval.contribution.js';
+import './contrib/computerUse/electron-browser/paradisComputerUseStatus.contribution.js';
