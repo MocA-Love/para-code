@@ -112,12 +112,12 @@ export function PcScreen({ placement, onCollapse }: {
 	const group = usePcListView(s => s.saved.group);
 	const view = usePcListView(s => (pcId !== undefined ? pcListViewOf(s.saved, pcId) : EMPTY_PC_LIST_VIEW_OF_PC));
 	const { query, searching } = usePcListView(s => (pcId !== undefined ? s.transient[pcId] : undefined) ?? EMPTY_PC_LIST_TRANSIENT);
-	const { setGroup, setListFilter, setListSearching, toggleListSection } = usePcListView(useShallow(s => ({
-		setGroup: s.setGroup, setListFilter: s.setFilter, setListSearching: s.setSearching, toggleListSection: s.toggleSection,
+	const { setGroup, setListFilter, setListQuery, setListSearching, toggleListSection } = usePcListView(useShallow(s => ({
+		setGroup: s.setGroup, setListFilter: s.setFilter, setListQuery: s.setQuery, setListSearching: s.setSearching, toggleListSection: s.toggleSection,
 	})));
 	const filter = effectivePcListFilter(view, query, spaces.map(candidate => candidate.id));
 	const collapsed = new Set(view.collapsed);
-	const setFilter = (next: PcListFilter) => {
+	const setFilter = (next: Pick<PcListFilter, 'states' | 'spaces'>) => {
 		if (pcId !== undefined) {
 			setListFilter(pcId, next);
 		}
@@ -236,7 +236,15 @@ export function PcScreen({ placement, onCollapse }: {
 				<EmptyState
 					title="該当するエージェントがありません"
 					body="検索語や絞り込みを変えてください。"
-					action={{ label: '絞り込みをクリア', onPress: () => setFilter(EMPTY_PC_LIST_FILTER) }}
+					action={{
+						label: '絞り込みをクリア',
+						onPress: () => {
+							setFilter(EMPTY_PC_LIST_FILTER);
+							if (pcId !== undefined) {
+								setListQuery(pcId, '');
+							}
+						},
+					}}
 				/>
 			);
 		}
@@ -323,7 +331,7 @@ export function PcScreen({ placement, onCollapse }: {
 						/>
 					</>
 				)}
-				{...(searching ? { search: <PcSearchBar value={query} onChange={next => setFilter({ ...filter, query: next })} autoFocus={openedSearchHere} /> } : {})}
+				{...(searching ? { search: <PcSearchBar value={query} onChange={next => { if (pcId !== undefined) { setListQuery(pcId, next); } }} autoFocus={openedSearchHere} /> } : {})}
 			/>
 			<View style={styles.body}>{renderBody()}</View>
 			<LaunchFab disabled={!canLaunch} onPress={() => setSheet('launch')} />
