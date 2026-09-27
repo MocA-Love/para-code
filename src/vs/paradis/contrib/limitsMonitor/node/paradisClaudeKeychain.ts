@@ -14,10 +14,14 @@
 //   読み書きで「キーチェーンへのアクセスを許可しますか」は出ない（claude-swap の実測）。
 //   Electron / Node の中からキーチェーン API を直接呼ぶと、項目のアクセス権が Para Code の
 //   実行ファイルに結び付き、更新のたびに許可ダイアログが出るおそれがある
-// - 書き込みは値を16進にして `security -i` の標準入力で渡す。秘密の値を引数（ps で見える）に載せない。
-//   標準入力の1行は 4096 バイトまでなので、それを超える値は書かずに失敗させる（引数に落とすと、
-//   同じユーザーの別のプロセスや EDR のログから読める。保存するのは `claudeAiOauth` だけなので、
-//   通常はこの上限に届かない）
+// - 書き込みは Claude Code（2.1.283）と同じ形にそろえる。値を16進にし、
+//   `add-generic-password -U -a "<account>" -s "<service>" -X "<hex>"` の1行を `security -i` の
+//   標準入力で渡す。この1行が 4,032 バイトを超えるときだけ（`security -i` は標準入力を 4096 バイトの
+//   行バッファで読む）、`security add-generic-password -U -a <account> -s <service> -X <hex>` と
+//   引数で渡す。`Claude Code-credentials` は MCP サーバーのトークン（`mcpOAuth`）を含んで数 KB に
+//   なり、Claude Code 自身もトークンを更新するたびにこの経路で書いている。引数に載せた一瞬だけ、
+//   同じユーザーのプロセス（ps）や EDR のログから値が見える。その露出は Claude Code と同じで、
+//   Para Code だけが避けても減らない（q.html Q91 の回答 A）
 // - PATH 上の偽の `security` に秘密を渡さないよう、絶対パスで起動する
 //
 // テストではこのインターフェースをメモリ実装に差し替え、本物のキーチェーンには触れない。
@@ -36,20 +40,29 @@ export interface IParadisKeychain {
 /** キーチェーンが読めない・書けない（項目が無いのとは別）。 */
 export class ParadisKeychainError extends Error { }
 
-/**
- * 値が大きすぎて、標準入力（`security -i` の1行 4096 バイト）では渡せない。引数に載せる経路は
- * 使わないので書けない。Claude Code の `Claude Code-credentials` は MCP サーバーのトークン
- * （`mcpOAuth`）を含むため、数 KB になり得る。
- */
-export class ParadisKeychainValueTooLargeError extends ParadisKeychainError { }
-
 const SECURITY_BINARY = '/usr/bin/security';
 /** `security find/delete-generic-password` が「項目が無い」ときに返す終了コード（errSecItemNotFound）。 */
 const NOT_FOUND_EXIT_CODE = 44;
 /** ロックされたキーチェーンが解除を待ち続けても処理全体が止まらないように。正常なら 100ms もかからない。 */
 const SECURITY_TIMEOUT_MS = 5_000;
-/** `security -i` は標準入力を 4096 バイトの行バッファで読む。余裕を 64 バイト取る。 */
-const SECURITY_STDIN_LINE_LIMIT = 4096 - 64;
+/**
+ * `security -i` は標準入力を 4096 バイトの行バッファで読む。Claude Code と同じく 4,032 バイト
+ * （余裕 64 バイト）までを標準入力で渡し、超えたら引数で渡す。
+ */
+export const PARADIS_SECURITY_STDIN_LINE_LIMIT = 4096 - 64;
+
+/** `security` の子プロセスのうち、ここで使う部分。テストでは偽物に差し替え、本物の `security` を起動しない。 */
+export interface IParadisSecurityProcess {
+	readonly stdin: NodeJS.WritableStream | null;
+	readonly stdout: NodeJS.ReadableStream | null;
+	readonly stderr: NodeJS.ReadableStream | null;
+	on(event: 'error', listener: (error: Error) => void): unknown;
+	on(event: 'close', listener: (code: number | null) => void): unknown;
+	kill(): boolean;
+}
+
+/** `child_process.spawn` のうち、ここで使う形。 */
+export type ParadisSecuritySpawn = (command: string, args: readonly string[], options: cp.SpawnOptions) => IParadisSecurityProcess;
 
 interface ISecurityResult {
 	readonly code: number | null;
@@ -65,7 +78,7 @@ function quoteForSecurityStdin(value: string): string {
 /** 本物の macOS キーチェーン。 */
 export class ParadisSecurityCliKeychain implements IParadisKeychain {
 
-	constructor(private readonly spawn: typeof cp.spawn = cp.spawn) { }
+	constructor(private readonly spawn: ParadisSecuritySpawn = cp.spawn) { }
 
 	async read(service: string, account: string): Promise<string | undefined> {
 		const result = await this.run(['find-generic-password', '-a', account, '-w', '-s', service]);
@@ -81,13 +94,18 @@ export class ParadisSecurityCliKeychain implements IParadisKeychain {
 
 	async write(service: string, account: string, value: string): Promise<void> {
 		const hex = Buffer.from(value, 'utf8').toString('hex');
-		const command = `add-generic-password -U -a ${quoteForSecurityStdin(account)} -s ${quoteForSecurityStdin(service)} -X ${hex}\n`;
-		if (Buffer.byteLength(command, 'utf8') > SECURITY_STDIN_LINE_LIMIT) {
-			throw new ParadisKeychainValueTooLargeError('the value is too large to pass to security through stdin');
+		const command = `add-generic-password -U -a ${quoteForSecurityStdin(account)} -s ${quoteForSecurityStdin(service)} -X "${hex}"\n`;
+		if (Buffer.byteLength(command, 'utf8') <= PARADIS_SECURITY_STDIN_LINE_LIMIT) {
+			const result = await this.run(['-i'], { input: command });
+			// `security -i` は中のコマンドが失敗しても 0 で終わることがあるので、エラー出力も見る。
+			if (result.code !== 0 || /error|failed/i.test(result.stderr)) {
+				throw new ParadisKeychainError(`security add-generic-password failed (code ${result.code})`);
+			}
+			return;
 		}
-		const result = await this.run(['-i'], command);
-		// `security -i` は中のコマンドが失敗しても 0 で終わることがあるので、エラー出力も見る。
-		if (result.code !== 0 || /error|failed/i.test(result.stderr)) {
+		// 標準入力の1行に収まらない。Claude Code と同じく引数で渡す（標準入力は使わない）。
+		const result = await this.run(['add-generic-password', '-U', '-a', account, '-s', service, '-X', hex], { ignoreStdin: true });
+		if (result.code !== 0) {
 			throw new ParadisKeychainError(`security add-generic-password failed (code ${result.code})`);
 		}
 	}
@@ -100,14 +118,18 @@ export class ParadisSecurityCliKeychain implements IParadisKeychain {
 		throw new ParadisKeychainError(`security delete-generic-password failed (code ${result.code})`);
 	}
 
-	private run(args: string[], stdin?: string): Promise<ISecurityResult> {
+	/**
+	 * @param options.input 標準入力へ書く内容。
+	 * @param options.ignoreStdin 標準入力を繋がない（引数で値を渡すとき。Claude Code と同じ）。
+	 */
+	private run(args: string[], options: { readonly input?: string; readonly ignoreStdin?: boolean } = {}): Promise<ISecurityResult> {
 		return new Promise<ISecurityResult>((resolve, reject) => {
 			let settled = false;
 			let stdout = '';
 			let stderr = '';
-			let child: cp.ChildProcess;
+			let child: IParadisSecurityProcess;
 			try {
-				child = this.spawn(SECURITY_BINARY, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+				child = this.spawn(SECURITY_BINARY, args, { stdio: [options.ignoreStdin ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
 			} catch {
 				reject(new ParadisKeychainError('failed to launch security'));
 				return;
@@ -135,8 +157,8 @@ export class ParadisSecurityCliKeychain implements IParadisKeychain {
 					resolve({ code, stdout, stderr });
 				}
 			});
-			if (stdin !== undefined) {
-				child.stdin?.end(stdin);
+			if (options.input !== undefined) {
+				child.stdin?.end(options.input);
 			} else {
 				child.stdin?.end();
 			}
