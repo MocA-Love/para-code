@@ -266,18 +266,20 @@ Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.
 
 ### Codex の hook の信頼は app-server に付けさせる（agentHookTrust、2026-09-27）
 
-`src/vs/paradis/contrib/agentHookTrust/` に実装。Codex の TUI の「Trust all」と同じ RPC を `codex app-server`（stdio）で呼ぶ: `hooks/list` → `config/batchWrite`（`keyPath: "hooks.state"`、`mergeStrategy: "upsert"`、値は `{ "<鍵>": { "trusted_hash": "<currentHash>" } }`）→ もう一度 `hooks/list` で `trusted` になったかを確かめ、合わなければ書く前の config.toml のバイト列へ戻す。codex-cli 0.155.1 の一時 `CODEX_HOME` で、利用者の hook は `untrusted` のまま、Para Code の hook だけが `trusted` になること、config.toml のコメントが残ることを実測した。
+`src/vs/paradis/contrib/agentHookTrust/` に実装。Codex の TUI の「Trust all」と同じ RPC を `codex app-server`（stdio）で呼ぶ: `hooks/list` → `config/batchWrite`（`keyPath: "hooks.state"`、`mergeStrategy: "upsert"`、値は `{ "<鍵>": { "trusted_hash": "<currentHash>" } }`）→ もう一度 `hooks/list` で `trusted` になったかを確かめる。codex-cli 0.155.1 の一時 `CODEX_HOME` で、利用者の hook は `untrusted` のまま、Para Code の hook だけが `trusted` になること、config.toml のコメントが残ることを実測した。
 
 - **ハッシュは自前で計算しない。** Codex の `currentHash` をそのまま書く。Orca は自前計算が Codex の版上げのたびにずれて（Orca #7896 / #7110 / #8699）この方式へ移った
 - 対象の判定は3条件: `source: "user"`、`sourcePath` がその CODEX_HOME の hooks.json、`command` が Para Code の書く文字列と完全一致。Codex は CODEX_HOME を実体パスへ直して答える（`/tmp` → `/private/tmp`）ので、実体パス側でも比べる
-- 設定 `paradis.agentHooks.codexTrust`（`ask` 既定 / `auto` / `off`）。`ask` の間は画面側が起動 15 秒後に1回だけ通知で確かめ（窓が複数あっても shared process の `claimPrompt` で1つに絞る）、「信頼する」で `auto` に書き換えてその場で付ける。`auto` の間は shared process が起動 20 秒後と hooks.json の変化のたびに付ける
+- **config.toml は Codex にしか書かせず、書くときは必ず版を添える。** 書く直前に `config/read`（`includeLayers: true`）で利用者の層の `version` と `hooks.state` を読み、`config/batchWrite` の `expectedVersion` に渡す。その間に Codex の TUI などが書いていると、Codex が `-32600`（`configVersionConflict`）で断るので、利用者の変更を上書きしない（0.155.1 で実測）
+- 確かめが合わなかったときは、ファイルを丸ごと戻さない。もう一度 `config/read` して「今もこちらが書いたハッシュのままの鍵」だけを、書く前の値へ戻すか消し、`hooks.state` を `mergeStrategy: "replace"` で書き直す（これにも読んだ版を添える）。0.155.1 で、この戻し方で版のハッシュまで書く前と同じに戻ることを確かめた。書き込みが時間切れなどで例外になったときは、先にその app-server を止めてから（遅れて届く書き込みを防ぐ）、新しく起こした app-server で同じ戻し方をする。`hooks.state` の表の中に利用者が書いたコメントは、戻したときに消えることがある
+- 設定 `paradis.agentHooks.codexTrust`（`ask` 既定 / `auto` / `off`）。`ask` の間は画面側が起動 15 秒後に1回だけ通知で確かめ（窓が複数あっても shared process の `claimPrompt` で1つに絞る。札を使い切るのは実際に通知を出したときだけで、調べられなかった・まだ hook が無かったときは `releasePrompt` で返す。返さずに窓が消えても 2 分で戻る）、「信頼する」で `auto` に書き換えてその場で付ける。`auto` の間は shared process が起動 20 秒後と hooks.json の変化のたびに付ける
 - 起動のたびに codex を起こさないよう、「codex のパス + `--version` + hooks.json + config.toml」の指紋を `<userData>/paradis-codex-hook-trust.json` に残し、前回確かめたときと同じなら何もしない
 - 複数ホーム（`~/.codex-N`）は `ParadisCodexHookTrustService.autoGrant(home)` / チャネルの `grant`・`getStatus` にホームを渡せば同じ手順で動く。IPC 経由で任意のパスに codex を起こさないよう、受け付けるのは既定のホームと `~/.codex-<名前>` だけ。フェーズ2で hook をそこへ置くときは、置いたあとに `autoGrant(home)` を呼ぶこと（今は既定のホームしか監視していない）
 - `codex` は Node のスクリプトなので、shared process の PATH に `node` が無いと `env: node: No such file or directory` で起動できない。ログインシェルの環境（`ParadisCachedShellEnv`）を使っているので通常は問題ないが、失敗したときの outcome は `failed` で detail にこの文言が出る
 
 ### worktree の「このフォルダを信頼しますか」は元のリポジトリから引き継がれる（2026-09-27 実測、実装なし）
 
-Q17 は「引き継がれなければ、スペース作成時に信頼を書き込む」だったが、両方の CLI とも引き継ぐので実装していない。一時 HOME / `CLAUDE_CONFIG_DIR` / `CODEX_HOME` で、`git worktree add ../repo-worktrees/wt`（Para Code の既定の置き場所と同じ、リポジトリの外の兄弟ディレクトリ）を作って TUI を起動して確かめた。
+当初の方針は「worktree に信頼が引き継がれなければ、元のリポジトリが信頼済みのときだけ、スペース作成時に worktree のパスへ信頼を書き込む」だったが、両方の CLI とも引き継ぐので実装していない。一時 HOME / `CLAUDE_CONFIG_DIR` / `CODEX_HOME` で、`git worktree add ../repo-worktrees/wt`（Para Code の既定の置き場所と同じ、リポジトリの外の兄弟ディレクトリ）を作って TUI を起動して確かめた。
 
 | CLI | 元のリポジトリが信頼済み | 元のリポジトリが未信頼 | 無関係なフォルダ（対照） |
 |---|---|---|---|
@@ -373,12 +375,22 @@ grep -rn "BrowserDeviceType\|deviceType ===\|deviceType:\|case 'bluetooth'" src/
 
 `src/vs/paradis/contrib/agentModelCatalog/` に実装。shared process が CLI を起こして一覧を取り、`<userData>/paradis-agent-models.json` に残す。CLI のパスか `--version` が変わったとき、または1日経ったときだけ取り直す。取れなければ前回の一覧、それも無ければ固定の候補（`PARADIS_DEFAULT_AGENT_COMMANDS`）のまま。
 
-- Claude Code（2.1.283 で実測）: `claude -p --settings '{"disableAllHooks":true}' --strict-mcp-config --input-format stream-json --output-format stream-json --verbose` の stdin に `{"type":"control_request","request_id":"…","request":{"subtype":"list_models"}}` を1行書いて閉じる。API は呼ばず約2秒で返り、ログインしていなくても答える。`--settings` で hook を止めないと、利用者の SessionStart hook がこの裏のプロセスで走ることを確かめている。一覧の `default` 行と `disabled` 行は外す。一覧に出ない `opusplan` だけは既定の候補から引き継ぐ
+- Claude Code（2.1.283 で実測）: `claude -p --setting-sources user --settings '{"disableAllHooks":true}' --strict-mcp-config --no-session-persistence --input-format stream-json --output-format stream-json --verbose` の stdin に `{"type":"control_request","request_id":"…","request":{"subtype":"list_models"}}` を1行書いて閉じる。API は呼ばず約2秒で返り、ログインしていなくても答える。`--settings` で hook を止めないと、利用者の SessionStart hook がこの裏のプロセスで走ることを確かめている。`-p` は workspace trust を確かめないので、作業ディレクトリのプロジェクト設定（`.claude/settings.json` の `apiKeyHelper` や `env` など）も読んでしまう。`--setting-sources user` を付けないと作業ディレクトリの hook が走り、付けると走らないことを実測した。作業ディレクトリ自体も `fs.mkdtemp` で作る自分専用（0700）の空のディレクトリにし、終わったら消す（Linux の共有 `/tmp` をそのまま使うと、他の利用者が置いた設定を読みうる。Codex も同じディレクトリで起こす）。`--no-session-persistence` を知らない古い CLI では、stderr にこのフラグ名が出たときだけ外して取り直す。一覧の `default` 行と `disabled` 行は外す。一覧に出ない `opusplan` だけは既定の候補から引き継ぐ
 - Codex（0.155.1 で実測）: `codex app-server` の `model/list`（`hidden` は外す）。ログインしていない一時 `CODEX_HOME` でも同梱のカタログを返した。実物の取得は利用者の既定の `CODEX_HOME` で行う
 - **置き換えるのは既定の定義だけ。** `paradis.workspaceSwitch.agents` は `getValue` だとスキーマ既定値が返って「書いたか」が分からないので、`inspect` のどこかの層に値があるかで判断する（`paradisIsAgentListUserDefined`）。書いてあれば取得自体をしない
-- ダイアログ（`_agents`）とモバイルからの作成（`paradisConfiguredAgents`）は同じ `paradisResolveAgentTemplates` を通す
+- 画面側は `IParadisAgentModelCatalogService`（electron-browser の singleton）が一覧を持つ。ダイアログ（`_agents`）とモバイルからの作成（`paradisConfiguredAgents`）はどちらもここの `getAgentTemplates()`（中身は `paradisResolveAgentTemplates`）を通す。起動時と、作成ダイアログを開くたびに `refresh()` し、一覧が変わったらダイアログは選んでいるモデルとエフォートを保ったまま並べ直す。shared process は 60 秒は同じ結果を返すので、開くたびに呼んでも CLI は起きない
 - `opus[1m]` のような記号入りの id は `--model "opus[1m]"` と二重引用符で包む（zsh では `[...]` がグロブになる）。それでも安全に書けない id は候補から外す
 - SSH で接続中のウィンドウでも、候補は手元の CLI から取ったもの（接続先の CLI の版は見ていない）
+
+## フェーズ2との統合で行う作業（2026-09-27、フェーズ3のレビューで判明。まだ未着手）
+
+フェーズ3（hook の信頼・モデル候補）は、フェーズ2（`para/phase2`）が main に入る前に作ったため、次の重複と取りこぼしが残っている。どれもフェーズ2が main に入ってから、この順で片付ける。今コードを寄せないのは、寄せ先がまだ main に無いため。
+
+1. **Codex app-server のクライアントが3つある。** limitsMonitor の `ParadisCodexRpcSession`（`paradisLimitsMonitorChannel.ts`）、フェーズ2の `src/vs/paradis/node/paradisCodexAppServerRpc.ts`、フェーズ3の `src/vs/paradis/node/paradisCodexAppServerSession.ts`。起動の仕方も違う（フェーズ2は `-s read-only -a never app-server` で `jsonrpc: "2.0"` を付ける。フェーズ3はサンドボックス指定なしで `jsonrpc` を付けない）。エラーの型も `ParadisCodexRpcError` と `ParadisCodexRpcMethodNotFoundError` に分かれている。フェーズ2の `paradisCodexAppServerRpc.ts` へ一本化し、足りないもの（`clientInfo.title`、`cwd`、`CODEX_HOME` の上書き、「メソッドが無い」の判定）はオプションとして足す。`model/list` はサンドボックス付きの既定起動で足りる。`config/batchWrite` を読み取り専用サンドボックスのまま書けるかは【要確認】（書けなければ hook の信頼だけサンドボックスを外す）
+2. **Codex のホームの一覧をフェーズ2に揃える。** hook の信頼が監視・自動付与するのは既定のホームだけで、受け付ける条件も `~/.codex-[A-Za-z0-9._-]+` とフェーズ2（`/^\.codex-\d+$/` と設定 `paradis.limitsMonitor.codexHomes`。手作りの `.codex-backup` は外す）と違う。`ParadisCodexHookTrustService.resolveHome` をフェーズ2の `paradisCodexHomes()` / `paradisCodexHomeCandidates()` による判定へ置き換え、hook を置いたあとに全ホームへ `autoGrant(home)` を呼び、全ホームの hooks.json を監視する。放置すると `~/.codex-2` でログインした Codex では、フェーズ2が置いた hook に信頼が付かず、状態表示と通知が動かない。会話集計（`agentActivity` の `listTranscripts` が `paradisCodexHome()` の1つだけを読む。WSL も `paradisResolveAgentHomes` を通っていない）も同じ一覧へ揃える必要がある（agentActivity の担当分）
+3. **原子的な書き込みが3つある。** `paradisWriteFileAtomicallySync`（`agentBrowser/node/paradisAgentHooksSetup.ts`、ハードリンクと rename 失敗の扱いがある）、`writeConfigAtomic`（`paradisMcpSetup.ts`、書く直前に元のファイルが変わっていないか確かめる）、`paradisWriteFileAtomic`（`src/vs/paradis/node/`、fsync と権限の当て直しはあるが、置き場所は userData 専用の想定）。`src/vs/paradis/node/` へ1つにまとめる。フェーズ2が hooks の設置を触っているので、今は動かさない
+4. **CLI の実行ファイルの探し方が5か所に重複している。** limitsMonitor・ccusage・フェーズ2の codexAccounts・`paradisClaudeLogin.ts`・フェーズ3の `paradisResolveAgentCli`（`src/vs/paradis/node/paradisAgentCli.ts`）。`paradisResolveAgentCli` へ寄せる（こちらには `~/.claude/local` を足し済み）
+5. `paradis.sharedProcess.contribution.ts` の「登録」欄にフェーズ2も2行足しているので、統合時に1つのブロックへ並べ直す（解消は機械的）
 
 ## リリース手順（runbook、2026-07-03確立・v1.128.0-paracode-2で全自動を実証済み）
 
