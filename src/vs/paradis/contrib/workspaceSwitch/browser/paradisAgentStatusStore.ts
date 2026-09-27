@@ -34,6 +34,8 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 	private _statuses = new Map<string, ParadisAgentStatus>();
 	private _instanceStatuses = new Map<number, ParadisAgentStatus>();
 	private _agentInstanceIds = new Set<number>();
+	/** review を既読にして状態から外したインスタンス（次の状態が届くまで覚える）。 */
+	private _acknowledgedReviews = new Set<number>();
 	/**
 	 * hook 以外の根拠（記録ファイルの探索）でセッションが確定しているペイン。
 	 * インスタンスIDではなくペイントークンで持つのは、ターミナルを開き直しても同じ
@@ -57,6 +59,10 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 
 	getInstanceStatus(instanceId: number): ParadisAgentStatus | undefined {
 		return this._instanceStatuses.get(instanceId);
+	}
+
+	wasReviewAcknowledged(instanceId: number): boolean {
+		return this._acknowledgedReviews.has(instanceId);
 	}
 
 	isAgentInstance(instanceId: number): boolean {
@@ -98,11 +104,24 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 		this._onDidChangeAgentStatuses.fire();
 	}
 
-	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>): void {
+	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>, acknowledgedInstanceIds?: ReadonlySet<number>): void {
+		let acknowledgedChanged = false;
+		for (const instanceId of statuses.keys()) {
+			acknowledgedChanged = this._acknowledgedReviews.delete(instanceId) || acknowledgedChanged;
+		}
+		for (const instanceId of acknowledgedInstanceIds ?? []) {
+			if (!this._acknowledgedReviews.has(instanceId)) {
+				this._acknowledgedReviews.add(instanceId);
+				acknowledgedChanged = true;
+			}
+		}
 		// setScopeStatuses と同じく、変化がある時だけイベントを発火する
 		const statusesUnchanged = this._instanceStatuses.size === statuses.size && [...statuses].every(([key, value]) => this._instanceStatuses.get(key) === value);
 		const agentsUnchanged = this._agentInstanceIds.size === agentInstanceIds.size && [...agentInstanceIds].every(id => this._agentInstanceIds.has(id));
 		if (statusesUnchanged && agentsUnchanged) {
+			if (acknowledgedChanged) {
+				this._onDidChangeAgentStatuses.fire();
+			}
 			return;
 		}
 		this._instanceStatuses = new Map(statuses);

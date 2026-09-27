@@ -100,6 +100,7 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 		], ['local-review', 'inactive-review']));
 
 		assert.deepStrictEqual(fixture.acknowledged, ['local-review']);
+		assert.deepStrictEqual([...fixture.statusStore.acknowledgedInstanceIds], [1], 'the store learns which review was acknowledged rather than lost');
 		assert.deepStrictEqual(entries(fixture.statusStore.scopeBreakdowns), [
 			['space-b', ['review']],
 			['space-a', ['review']],
@@ -373,6 +374,7 @@ class TestStatusStore implements IParadisAgentStatusStore {
 	scopeBreakdowns = new Map<string, readonly ParadisAgentStatus[]>();
 	instanceStatuses = new Map<number, ParadisAgentStatus>();
 	agentInstanceIds = new Set<number>();
+	acknowledgedInstanceIds = new Set<number>();
 	scopeIssueUrls = new Map<string, readonly string[]>();
 
 	getScopeStatus(): ParadisAgentStatus | undefined { return undefined; }
@@ -385,9 +387,10 @@ class TestStatusStore implements IParadisAgentStatusStore {
 	setScopeBreakdowns(breakdowns: ReadonlyMap<string, readonly ParadisAgentStatus[]>): void {
 		this.scopeBreakdowns = new Map(breakdowns);
 	}
-	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>): void {
+	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>, acknowledgedInstanceIds?: ReadonlySet<number>): void {
 		this.instanceStatuses = new Map(statuses);
 		this.agentInstanceIds = new Set(agentInstanceIds);
+		this.acknowledgedInstanceIds = new Set(acknowledgedInstanceIds);
 	}
 	setScopeIssueUrls(issueUrls: ReadonlyMap<string, ReadonlySet<string>>): void {
 		this.scopeIssueUrls = new Map([...issueUrls].map(([key, urls]) => [key, [...urls]] as const));
