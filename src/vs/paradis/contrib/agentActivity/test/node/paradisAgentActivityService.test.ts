@@ -14,6 +14,7 @@ import { FileAccess } from '../../../../../base/common/network.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import type { IParadisAgentHomes } from '../../../agentBrowser/node/paradisAgentHome.js';
 import { paradisSessionCatalogId } from '../../../sessionResume/node/paradisSessionResumeChannel.js';
 import { PARADIS_SPACE_USAGE_OTHER_KEY, paradisActivityDayKey } from '../../common/paradisAgentActivity.js';
 import { IParadisActivityWorkerEnvelope, ParadisActivityWorkerReply } from '../../common/paradisAgentActivityWorkerProtocol.js';
@@ -36,6 +37,8 @@ suite('ParadisAgentActivityService', function () {
 	let root: string;
 	let claudeHome: string;
 	let codexHome: string;
+	let codexHomes: () => readonly string[];
+	let resolveAgentHomes: (cwd: string) => IParadisAgentHomes;
 	let service: ParadisAgentActivityService;
 	let indexDbPath: string;
 	let settings: { enabled?: boolean; retentionDays?: number; includeToolOutput?: boolean };
@@ -46,7 +49,8 @@ suite('ParadisAgentActivityService', function () {
 			worker: new ParadisAgentActivityWorkerHost(ParadisAgentActivityWorkerHost.workerFactory(WORKER_PATH), 10_000),
 			indexDbPath,
 			claudeHome: () => claudeHome,
-			codexHome: () => codexHome,
+			codexHomes: () => codexHomes(),
+			resolveAgentHomes: cwd => resolveAgentHomes(cwd),
 			indexSettings: () => settings,
 			onDidChangeIndexSettings: settingsChanged.event,
 		}, new NullLogService());
@@ -56,6 +60,8 @@ suite('ParadisAgentActivityService', function () {
 		root = await fs.mkdtemp(join(tmpdir(), 'paradis-activity-'));
 		claudeHome = join(root, 'claude');
 		codexHome = join(root, 'codex');
+		codexHomes = () => [codexHome];
+		resolveAgentHomes = cwd => ({ claude: claudeHome, codex: codexHome, matchCwd: cwd });
 		await fs.mkdir(join(claudeHome, 'projects', '-work-repo'), { recursive: true });
 		await fs.mkdir(join(codexHome, 'sessions', '2026', '09', '20'), { recursive: true });
 		indexDbPath = join(root, 'index', 'sessionIndex.sqlite');
@@ -99,6 +105,38 @@ suite('ParadisAgentActivityService', function () {
 			// codex の会話には依頼が無いので、エージェント数には入らない
 			stats: { claude: 0, codex: 0 },
 		});
+	});
+
+	// Codex のアカウントごとのホーム（~/.codex-2 等）と、WSL のスペースのディストロ側のホームも読む。
+	// 切り替えた2つのホームの間でハードリンクした会話は1回だけ数える。
+	test('reads every Codex home and WSL homes of the spaces, counting hard-linked conversations once', async () => {
+		const today = new Date();
+		const day = paradisActivityDayKey(today);
+		const rollout = (cwd: string, input: number) => [
+			JSON.stringify({ type: 'session_meta', timestamp: today.toISOString(), payload: { id: `c-${input}`, cwd } }),
+			JSON.stringify({ type: 'event_msg', timestamp: today.toISOString(), payload: { type: 'token_count', info: { total_token_usage: { input_tokens: input, cached_input_tokens: 0, output_tokens: 1 } } } }),
+		].join('\n') + '\n';
+		const secondHome = join(root, 'codex-2');
+		const wslClaude = join(root, 'wsl', 'claude');
+		const wslCodex = join(root, 'wsl', 'codex');
+		for (const dir of [join(secondHome, 'sessions', '2026', '09', '20'), join(wslCodex, 'sessions', '2026', '09', '20'), wslClaude]) {
+			await fs.mkdir(dir, { recursive: true });
+		}
+		const shared = join(codexHome, 'sessions', '2026', '09', '20', 'rollout-shared.jsonl');
+		await fs.writeFile(shared, rollout('/work/repo', 7));
+		await fs.link(shared, join(secondHome, 'sessions', '2026', '09', '20', 'rollout-shared.jsonl'));
+		await fs.writeFile(join(secondHome, 'sessions', '2026', '09', '20', 'rollout-second.jsonl'), rollout('/work/repo', 3));
+		await fs.writeFile(join(wslCodex, 'sessions', '2026', '09', '20', 'rollout-wsl.jsonl'), rollout('/home/u/repo', 5));
+		codexHomes = () => [codexHome, secondHome];
+		resolveAgentHomes = cwd => cwd === '/wsl/repo'
+			? { claude: wslClaude, codex: wslCodex, matchCwd: '/home/u/repo', wsl: { host: 'wsl.localhost', distro: 'Ubuntu', homeUncPath: '\\\\wsl.localhost\\Ubuntu\\home\\u', linuxCwd: '/home/u/repo' } }
+			: { claude: claudeHome, codex: codexHome, matchCwd: cwd };
+
+		const result = await service.spaceUsage({ since: day, until: day, spaces: [{ key: 'repo', name: 'repo', roots: ['/work/repo'] }, { key: 'wsl', name: 'wsl', roots: ['/wsl/repo'] }] });
+		assert.deepStrictEqual({
+			tokens: Object.fromEntries(result.buckets.map(bucket => [bucket.key, Object.values(bucket.days[day] ?? {}).map(value => value.input + value.output)])),
+			scannedFiles: result.scannedFiles,
+		}, { tokens: { repo: [12], wsl: [6] }, scannedFiles: 3 });
 	});
 
 	test('builds a trigram full-text index incrementally, follows deletions and retention, and can be deleted', async () => {
