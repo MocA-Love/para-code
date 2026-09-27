@@ -54,6 +54,8 @@ import { ParadisWorkspacesPollingController } from './paradisWorkspacesPollingLi
 import { paradisReorderByDrop, paradisSwapAdjacent } from '../common/paradisWorkspaceTreeState.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisWorktreeCreateJobSnapshot, IParadisWorktreeCreateProgressStore, ParadisPrState } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisSelectIssueLookupBatch, ParadisIssueState } from '../../../common/paradisIssueDetection.js';
+import { IParadisAgentInsightsService, IParadisAgentScopePane } from '../../agentInsights/common/paradisAgentInsights.js';
+import { paradisScopeSubagentsHoverMarkdown } from '../../agentInsights/browser/paradisAgentInsightsPresentation.js';
 import { IParadisWorktreeMetaEntry, IParadisWorktreeMetaPresence, PARADIS_DEFAULT_WORKTREE_ROW_META, PARADIS_WORKTREE_ROW_HEIGHT, PARADIS_WORKTREE_ROW_META_SETTING_ID, ParadisWorktreeMetaId, paradisCanMoveWorktreeMeta, paradisMoveWorktreeMeta, paradisNormalizeWorktreeRowMeta, paradisSetWorktreeMetaAlign, paradisSetWorktreeMetaVisible, paradisWorktreeMetaLabel, paradisWorktreeMetaOrder, paradisWorktreeMetaShown, paradisWorktreeRowHasMeta, paradisWorktreeRowHeight } from '../common/paradisWorktreeRowMeta.js';
 
 /** browser 層は electron-browser 層のコマンドIDを直接 import できないため、既存の
@@ -631,6 +633,8 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		 * 3段の中身が2段の高さに押し込まれる形で静かに壊れるため)。
 		 */
 		private readonly getMetaPresence: (worktree: IParadisWorktree) => IParadisWorktreeMetaPresence,
+		/** ドットのホバーに足すサブエージェント一覧の材料 (スペースに確実に属するペインだけ) */
+		private readonly getScopePanes: (stateKey: string) => readonly IParadisAgentScopePane[],
 	) { }
 
 	/**
@@ -764,7 +768,12 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		templateData.icon.classList.toggle('codicon-modifier-spin', switching);
 		renderStatusDots(templateData.dots, breakdown);
 		const dotsTooltip = agentStatusSummaryTooltip(breakdown);
-		templateData.dotsHover.update(dotsTooltip);
+		// サブエージェントはホバーしたときだけ一覧で出す (常時表示はしない)。中身は出す直前に組み立てる
+		const stateKey = worktreeStateKeyFor(worktree);
+		templateData.dotsHover.update(worktree.missing || breakdown.length === 0 ? dotsTooltip : {
+			markdown: async () => paradisScopeSubagentsHoverMarkdown(dotsTooltip, this.getScopePanes(stateKey), Date.now()) ?? dotsTooltip,
+			markdownNotSupportedFallback: dotsTooltip,
+		});
 		// ドットは色と明滅だけで状態を表すので、支援技術向けに同じ内容を文字でも持たせる
 		templateData.dots.ariaLabel = dotsTooltip;
 		templateData.name.textContent = worktree.name;
@@ -1041,6 +1050,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IStorageService private readonly storageService: IStorageService,
 		@ILogService private readonly logService: ILogService,
+		@IParadisAgentInsightsService private readonly agentInsightsService: IParadisAgentInsightsService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
@@ -1139,7 +1149,8 @@ export class ParadisWorkspacesView extends ViewPane {
 			this.hoverService,
 			worktree => this.workspaceSwitchService.pendingSwitchTargetKey === worktreeStateKeyFor(worktree),
 			() => this.rowMeta,
-			worktree => this.worktreeMetaPresence(worktree)
+			worktree => this.worktreeMetaPresence(worktree),
+			stateKey => this.agentInsightsService.getScopePanes(stateKey)
 		);
 		const creatingRenderer = new CreatingSpaceRenderer(
 			repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color)
