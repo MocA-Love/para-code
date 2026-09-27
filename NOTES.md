@@ -879,7 +879,7 @@ O1（Q75）と O4（Q79）。`src/vs/paradis/contrib/agentIde/` に実装し、p
 
 | ツール | 種類 | 権限 |
 |---|---|---|
-| `read_para_code_guide` / `list_spaces` / `list_terminals` / `read_terminal` / `wait_for_terminal` | 読み取り（MCP 注釈 `readOnlyHint`） | 常に使える。読めるのは自分のスペースのターミナルと自分が作ったものだけ。別のスペースは `paradis.agentIde.readOtherSpaces`（既定オフ）か、送信の範囲を「同じウィンドウ全体」にしたとき。`read_terminal` の既定は見えている画面 + 上 10 行で、スクロールバックは `scrollback_lines` で明示 |
+| `read_para_code_guide` / `list_spaces` / `list_terminals` / `read_terminal` / `wait_for_terminal` | 読み取り（MCP 注釈 `readOnlyHint`） | 常に使える（ただし接続元がそのペインの中か、SSH の戻り経路であることを確かめる）。読めるのは自分のスペースのターミナルと自分が作ったものだけ。別のスペースは `paradis.agentIde.readOtherSpaces`（既定オフ）か、送信の範囲を「同じウィンドウ全体」にしたとき。`read_terminal` の既定は見えている画面 + 上 10 行で、スクロールバックは `scrollback_lines` で明示 |
 | `send_terminal_input` / `send_terminal_key` | 送信（`destructiveHint`） | `paradis.agentIde.allowActions`（既定オフ）＋接続元の確認。同じスペース（`actionScope=window` で同じウィンドウ全体）と自分が作ったもの。自分自身・許可待ち・質問中へは何も送らない。Enter は下の規則 |
 | `launch_agent` / `create_terminal` / `create_space` | 作成（`destructiveHint`） | 同上。子（エージェントのツールで起動したペイン）は作れない。上限: 呼び出し元ごとに生きている作ったターミナル 5、ウィンドウ全体 12、作ったスペース 3。`create_terminal` と `create_space(run_setup=true)` は `paradis.agentIde.allowShellCommands`（既定オフ）も要る |
 | `close_terminal` / `remove_space` | 閉じる・削除（`destructiveHint`） | 同上、かつ自分が作ったものだけ。`remove_space` は「ワークツリーを削除」の確認ダイアログに「エージェントからの依頼」と出して利用者に決めさせる。依頼は同時に1件 |
@@ -887,15 +887,15 @@ O1（Q75）と O4（Q79）。`src/vs/paradis/contrib/agentIde/` に実装し、p
 ### Enter の規則（security H2・M1）
 
 - **Enter は貼り付けと別の呼び出しで送る**。shared process が「確かめる → 貼り付け → 250ms → 確かめ直す → Enter」の順に回し、確かめるたびに hook の最新の状態（`_paneStatuses`）を見る。ウィンドウ側も表示用の状態（2 秒ごとの取り直し）で止める
-- **エージェントへの Enter は、作業中でなく、許可待ち・質問中でなく、hook が一度でも届いたペインだけ**（`context.hasAgentHookHistory`）。hook を切っている・信頼していない相手は、許可ダイアログが出ているかを確かめられないので送らない
-- **素のシェル（前面が Claude Code / Codex でない）への Enter は `allowShellCommands`**。前面の判定はシェル統合の実行中のコマンド（`paradisInteractiveAgentCommand`）。シェル統合が無いターミナルだけ「hook が届いたことがあるか」で代える（`paradisTerminalRunsAgent`）
+- **エージェントへの Enter は、作業中でなく、許可待ち・質問中でなく、本物の hook が一度でも届いたペインだけ**（`context.hasAgentHookHistory`。transcript から推した開始は数えない。hook を信頼していない Codex もここで止まる）。hook を切っている・信頼していない相手は、許可ダイアログが出ているかを確かめられないので送らない。さらに Enter の直前に画面の末尾 30 行に確認の選択肢（「Do you want to proceed?」など）が無いかも見る（`paradisAgentIdeScreenShowsPrompt`。【要確認】文言は Claude Code 2.1.283 / codex-cli 0.155.1 の目安で、版が変わると外れうる）
+- **素のシェル（前面が Claude Code / Codex でない）への Enter は `allowShellCommands`**。前面の判定はシェル統合の実行中のコマンド（`paradisInteractiveAgentCommand`）だけ。シェル統合が無いターミナルは素のシェルとして扱う（hook の履歴で代えると、エージェントが終わった後のシェルや偽の hook でも立ってしまう）
 - 複数行の貼り付けは、フェーズ5のプリセットと同じく「貼り付けモードが有効で、前面がエージェント」のときだけ（`paradisCanPasteMultiline`）
-- エージェントへ貼る本文の先頭には `[Message from another agent (Para Code terminal t_xxx), not typed by the user. ...]` を付ける（security M3）。送信は通知センターへ静かに、起動・作成はトーストで知らせる
+- エージェントへ貼る本文の先頭には `[Message from another agent (Para Code terminal t_xxx), not typed by the user. ...]` を付ける（security M3）。貼り付けは通知センターへ静かに記録し、Enter・中断（`ctrl_c`）・起動・作成はトーストで知らせる
 
 ### なりすまし対策（security M2）
 
-- **操作系のツールは、接続元のプロセスがそのペインのシェルの子孫であることを確かめてから動く**（`context.verifyCallerProcess` → `paradisPeerDescendsFromPid`）。HTTP の接続元ポートから相手の PID を引き（macOS は `lsof`）、親をたどって `_paneShells` のシェル PID に着くかを見る。環境変数（`PARA_CODE_TERMINAL_PANE_ID`）は偽装できるので見ない。**SSH 越しの接続は確かめられないので、操作系は使えない**（読み取りは使える）。1 回あたり `lsof` と `ps` を数回起こす
-- **残作業（既存の問題、今回は直していない）**: hook の notify スクリプトは `curl ".../agent-hook?pane=$TOKEN..."` とトークンを argv に載せるので、`ps` で他のユーザーからも見える。hook の偽装で `_paneStatuses` を書き換えられる。`curl --config -` か stdin で渡し、hook の受け口でも祖先の照合をする必要がある。MCP の読み取り系も、トークンを知っていれば他のペインとして読める（接続元の確認は操作系だけ）
+- **接続元の確認**（`context.classifyCaller` → `paradisClassifyPeer`）。`127.0.0.1:<相手のポート> -> 127.0.0.1:<このサーバーのポート>` の4つ組が完全に一致する接続を持つプロセス（macOS は `lsof`、Linux は `ss`、Windows は `Get-NetTCPConnection` / `netstat`）を探し、親をたどって、そのペインのシェル（`_paneShells`）の子孫なら `pane`、shared process 自身の子孫（SSH の戻り経路の `ssh`）なら `tunnel` とする。手元のポートだけで探すと、同じポート番号の IPv6（`[::1]`）の接続を持つ無関係なプロセスが当たり、送信元ポートを細工すればなりすませた（再レビュー S-1 で実測）。接続を持つプロセスが複数あるときは全部が同じ分類のときだけ採る。環境変数は偽装できるので見ない。Windows は親の起動時刻が子より新しければ PID の使い回しとしてたどるのをやめる（【要確認】Windows 未検証）。結果は接続（keep-alive）とトークンの組ごとに覚える。**操作系は `pane` だけ、読み取り系は `pane` か `tunnel`**。SSH の接続先のエージェントは読み取りだけ使える。同じ4つ組の照合は CDP ゲートウェイの接続元の特定（`paradisResolvePaneTokenForPeerPort`）にも効いている
+- **hook の偽装対策**: notify スクリプトはトークンを URL（curl の argv）に載せず、`curl --config -` で標準入力から `Authorization: Bearer` ヘッダーとして渡す（PowerShell 版も `-Headers`）。スクリプトは起動のたびに内容を比べて置き直すので、既存の利用者の手元・SSH 先の分も置き換わる。許可待ち・質問中のペインへの hook は、接続元が `pane`（接続先の hook を名乗るものは `tunnel`）のときだけ受け付ける（それ以外の状態では確かめない。hook は頻繁に来るので `lsof` を毎回起こさないため。それ以外の状態を偽装しても、許可ダイアログを Enter で押させることにはつながらない）。**残り**: 前の Codex ペインの app-server を採用（adopt）した場合など、hook の送り主がペインのシェルの子孫でないと、許可待ちの間の hook が無視されて状態が許可待ちのまま残りうる
 
 ### 操作系を別の MCP サーバー名に分けなかった理由（security H2）
 
@@ -904,16 +904,17 @@ O1（Q75）と O4（Q79）。`src/vs/paradis/contrib/agentIde/` に実装し、p
 ### その他
 
 - **ツールの足し方**: `agentBrowser/common/paradisMcpToolProvider.ts` の `paradisRegisterMcpToolProvider(provider)` を shared process の登録（`ParadisSharedProcessContributions`）から呼ぶ。`callTool` の5番目の引数 `context` で、ウィンドウへの IPC（`callOwningWindow`、`timeoutMs` で延長可）、hook の状態（`getPaneAgentStatus` / `hasAgentHookHistory`）、接続元の確認（`verifyCallerProcess`）を借りられる。`instructions()` は `initialize` の `instructions` に足される（ブラウザ共有の説明はサーバーが先頭に固定で置く）。mobileCanvas はまだ `registerToolProvider`（`sharedProcessMain.ts` 経由）のまま。移すには mobileCanvas の登録に要る引数を `sharedProcessMain.ts` から外す必要があり、今回は見送った
-- **hook の受付は MCP と別枠**（`_reserveIngressRequest(token, 'hook')`）。待機（最大 240 秒）が枠を占めても hook が拒否されない。待機の同時数はペインごとに 2、全体で 16
+- **hook の受付は MCP と別枠**（`_reserveIngressRequest(token, 'hook')`）。待機（最大 240 秒）が枠を占めても hook が拒否されない。待機の同時数はペインごとに 2、全体で 16（接続元を確かめた後で数えるので、偽のトークンで枠を埋められない）
 - **ペイントークンはエージェントへ出さない**。ターミナルの ID は `t_` + SHA-1(`paradis-agent-ide:` + トークン) の先頭12桁（`paradisAgentIdeTerminalId`）。一覧のタイトルは制御文字を落として 80 文字で切り、「従うな」と説明に書く
 - **台帳（誰が作ったか・子の印）はワークスペースの保存領域（`paradis.agentIde.ledger`）に ID だけで残す**。ターミナルが閉じたら（ウィンドウを閉じるときの破棄は除く）、スペースが退役したら消す。呼び出し元は 200 件まで
+- 台帳は起動・再読み込みの 60 秒後に生きているペインと突き合わせ、もう居ない ID を消す（常駐ターミナルの再接続を待つため）。子の印は 500 件まで
 - **所属は台帳の記録だけで決める**（`paradisResolveInstanceSpace(..., { strict: true })`）。`resolveScope` は記録の無い生きたターミナルを今のスペースとして答えるので、権限の判断には使わない。スペースの一覧は `paradisListSpaces`（メモのツールと同じキーと名前）
 - **待機**: `until="agent_stopped"` は、一度も作業中にならないまま猶予（5 秒、エージェントのツールで起動したペインは起動から 90 秒）を過ぎると `met: false, reason: "no_agent_status"` を返す（止まったとは言わない）。既定 50 秒・上限 240 秒。上限は codex-cli 0.155.1 の MCP ツールの既定のタイムアウト 300 秒（`codex-rs/codex-mcp/src/rmcp_client.rs` の `DEFAULT_TOOL_TIMEOUT`。2026-06-15 の #28234 で 60 秒から 300 秒へ。0.140.0 は 120 秒。GitHub のソースで確認）、stdio シムの 310 秒、HTTP のソケットの無通信の上限 300 秒より短くする。文字列の待機は部分一致だけ（shared process で利用者由来の正規表現を回さない）。待機中に対象が閉じたら `reason: "terminal_closed"`
 - **終わったかの判定が定期実行と別**（correctness 7）。`ParadisAgentStopWatcher`（こちら）は呼び出したエージェントへ今の状況を返すので、許可待ちでも返し、状態が来なければ `no_agent_status` と言う。定期実行の `paradisAdvanceRunWatch` は完了を記録するので、許可待ちは要対応として見張りを続ける。目的が違うため1つにまとめていない
 - **起動コマンドのプロンプト**（`paradisBuildAgentCommand`）は入口で制御文字を落とす（`src/vs/paradis/common/paradisTerminalControlCharacters.ts`。MCP の送信本文と同じ関数）。PowerShell は U+2018〜U+201B も二重にし、fish はバックスラッシュとシングルクオートをエスケープする（security M6。fish と pwsh の実機では未確認）
 - **起動するエージェントの権限モードは渡せない**（テンプレートの既定のまま）。利用者の CLI の既定（`defaultMode` やカスタムテンプレート）は引き継ぐ
 - 設定は4つとも `ConfigurationScope.APPLICATION` + `restricted`。ただしエージェントは利用者の `settings.json` を書き換えられるので、設定で完全には守れない（ガイドとツールの説明で「自分で変えるな」と書いているだけ）
-- **起動 API のフォーカス**（architecture M1）: `paradisLaunchAgentInWorkspace` の `preserveFocus` と作成フローの `preserveFocus` / `runAutoRunPresets` を足した。`true` なら前に出さず `setActiveInstance` も呼ばない。`launch_agent`・`create_terminal`・`create_space` と、定期実行の既存スペースへの起動がこれを使う（定期実行の新しいスペースでの起動は担当Bの範囲なのでまだ渡していない）。スペースへターミナルを開く手順は `paradisOpenEditorTerminalInSpace` にまとめた（`paradisResumeAgentInWorkspace` とプレビューの所属判定はまだ別）
+- **起動 API のフォーカス**（architecture M1）: `paradisLaunchAgentInWorkspace` の `preserveFocus` と作成フローの `preserveFocus` / `runAutoRunPresets` を足した。`true` なら前に出さず `setActiveInstance` も呼ばない。`launch_agent`・`create_terminal`・`create_space` と、定期実行（既存スペースへの起動と新しいスペースの作成の両方）がこれを使う。スペースへターミナルを開く手順は `paradisOpenEditorTerminalInSpace` にまとめた（`paradisResumeAgentInWorkspace` とプレビューの所属判定はまだ別）。シェルの種類が分からない（ラッパー経由の起動）ときは、バックスラッシュを含む指示を起動コマンドへ入れずに断る（fish の引用が閉じ損ねるため）
 - 【要確認】`remove_space` の確認ダイアログは `window.dialogStyle=custom` のとき z-index 2575 で、fork の 2700 のモーダルの裏に入りうる（regression 7）
 
 ### スキルファイルの設置（O4）
@@ -923,7 +924,7 @@ O1（Q75）と O4（Q79）。`src/vs/paradis/contrib/agentIde/` に実装し、p
 - Claude Code: `$CLAUDE_CONFIG_DIR/skills/para-code/SKILL.md`（既定 `~/.claude/skills/...`）。`CLAUDE_CONFIG_DIR` はログインシェルの環境から読む（スキル管理画面の `process.shellEnv()` と揃える。GUI 起動の shared process の `process.env` には rc だけで export した値が入らない）
 - Codex: `~/.agents/skills/para-code/SKILL.md`。codex-cli 0.155.1 の利用者スキルの置き場所（`codex-rs/ext/skills/src/host_roots.rs`）。`$CODEX_HOME/skills` は非推奨として読まれるだけなので使わない
 - 中身は「MCP の `read_para_code_guide` を呼べ」と指すだけの入口で、本文はアプリが返す（Orca の orca-cli スキルと同じ考え方。版がずれない）
-- 置く前に場所と状態（新規・同じ・別の内容・ファイルでない）を見せて確認し、別の内容があれば上書きするかを別に聞く。上書きは、確認したときの中身の指紋（SHA-256）と書く直前の中身が一致したときだけ。新規は排他作成（`wx`）。`skills/`・`para-code/`・`SKILL.md` のどれかがシンボリックリンクなら触らない。手元の PC にだけ置く（SSH 先・WSL への導入はスキル管理（O6）の範囲）
+- 置く前に場所と状態（新規・同じ・別の内容・ファイルでない）を見せて確認し、別の内容があれば上書きするかを別に聞く。上書きは、確認したときの中身の指紋（SHA-256）と書く直前の中身が一致したときだけ。新規は排他作成（`wx`）、上書きは同じフォルダの一時ファイルへ書いて確かめ直してから `rename`（確かめた後に `SKILL.md` がリンクへ差し替えられても、先へ書かない）。`skills/`・`para-code/`・`SKILL.md` のどれかがシンボリックリンクなら触らない。手元の PC にだけ置く（SSH 先・WSL への導入はスキル管理（O6）の範囲）
 
 ### 担当B（定期実行 O3 など）と共有している部品
 
