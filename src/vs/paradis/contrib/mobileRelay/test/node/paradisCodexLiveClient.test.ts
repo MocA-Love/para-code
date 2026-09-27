@@ -59,6 +59,8 @@ async function createFakeAppServer(testRoot: string, name: string, loadedThreads
 					defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'high', description: '' }],
 				}],
 			};
+		} else if (message.method === 'thread/read' && message.params?.threadId === 'child-with-credentials') {
+			result = { thread: { turns: [{ items: [{ type: 'mcpToolCall', server: 'para-browser', tool: 'set_http_credentials', arguments: { origin: 'https://intranet.example.com', username: 'agent', password: 'hunter2' } }] }] } };
 		} else if (message.method === 'thread/read') {
 			result = { thread: { turns: [{ items: [{ type: 'agentMessage', text: `${name}:${message.params?.threadId}` }] }] } };
 		}
@@ -122,6 +124,22 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 suite('ParadisCodexLiveClient', function () {
 	this.timeout(5_000);
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('hides HTTP credential passwords in a sub-agent\'s tool calls', async () => {
+		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-live-'));
+		await using server = await createFakeAppServer(testRoot, 'first', ['thread-1']);
+		const client = new ParadisCodexLiveClient(() => { }, new NullLogService());
+		try {
+			client.setThreads([{ threadId: 'thread-1', socketPath: server.socketPath }]);
+			client.setEnabled(true);
+			await waitFor(() => client.isThreadReady('thread-1'));
+			const [message] = await client.readThreadMessages('child-with-credentials', 'thread-1');
+			assert.deepStrictEqual([message.text.includes('hunter2'), message.text.includes('[hidden]'), message.text.includes('intranet.example.com')], [false, true, true]);
+		} finally {
+			client.dispose();
+			await fs.rm(testRoot, { recursive: true, force: true });
+		}
+	});
 
 	test('routes each Mobile thread to its pane app-server socket', async () => {
 		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-live-'));

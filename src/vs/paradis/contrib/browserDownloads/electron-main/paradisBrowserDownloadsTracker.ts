@@ -273,6 +273,11 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 		this._agentProfileIds = new Set(Array.isArray(profileIds) ? profileIds.filter(id => typeof id === 'string') : []);
 	}
 
+	/** エージェントが作った印の付いたプロファイルか（renderer が最後に知らせた一覧で判定する）。 */
+	isAgentProfile(profileId: string): boolean {
+		return this._agentProfileIds.has(profileId);
+	}
+
 	async openDownloadsFolder(): Promise<boolean> {
 		const directory = this._downloadsDirectory();
 		if (!this._shell.exists(directory)) {

@@ -54,7 +54,10 @@ import {
 	paradisParsePdfOptions,
 } from '../common/paradisBrowserPageOps.js';
 import { IParadisPageOpsTarget, ParadisBrowserPageOpsController } from './paradisBrowserPageOpsController.js';
-import { paradisAwaitAgentDownloadStart, paradisCancelAgentDownloadExpectation, paradisExpectAgentDownload, paradisGetAgentDownloadsTracker, paradisSaveAgentFile, paradisSetWebContentsHeldByAgent } from '../../browserDownloads/electron-main/paradisAgentDownloads.js';
+import { paradisIsContextMenuInput, paradisSuppressNextContextMenu } from './paradisAgentContextMenu.js';
+import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
+import { paradisProfileIdFromSessionId } from '../../browserProfiles/common/paradisBrowserProfileId.js';
+import { paradisAwaitAgentDownloadStart, paradisCancelAgentDownloadExpectation, paradisExpectAgentDownload, paradisGetAgentDownloadsTracker, paradisRecordChildWebContents, paradisSaveAgentFile, paradisSetWebContentsHeldByAgent } from '../../browserDownloads/electron-main/paradisAgentDownloads.js';
 
 /** 上流ポートの問い合わせに答えるまでの上限。確定が間に合わなければ「まだ無い」と返す。 */
 const UPSTREAM_PORT_ANSWER_TIMEOUT_MS = 1_500;
@@ -136,7 +139,29 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		private readonly upstreamPortPin: ParadisCdpUpstreamPortPin = new ParadisCdpUpstreamPortPin(),
 		/** エージェント操作を見せる合成カーソル演出。既定は「常に有効」（app.tsが設定を渡す）。 */
 		private readonly cursorOverlay: ParadisCursorOverlayController = new ParadisCursorOverlayController(),
-	) { }
+	) {
+		// 子タブ（target=_blank・window.open・中クリック）を開いた元のタブを覚える。エージェントのタブから
+		// 開いた子タブで始まったダウンロードも、エージェント由来として扱うため。テストの偽物には無い。
+		const onDidCreateBrowserView = (browserViewMainService as Partial<IBrowserViewMainService>).onDidCreateBrowserView;
+		if (typeof onDidCreateBrowserView === 'function') {
+			onDidCreateBrowserView(event => this.recordChildView(event.info.id, event.editorOpenRequest?.parentViewId));
+		}
+	}
+
+	private recordChildView(childViewId: string, parentViewId: string | undefined): void {
+		if (parentViewId === undefined) {
+			return;
+		}
+		try {
+			const child = this.browserViewMainService.tryGetBrowserView(childViewId);
+			const parent = this.browserViewMainService.tryGetBrowserView(parentViewId);
+			if (child && parent && !child.webContents.isDestroyed() && !parent.webContents.isDestroyed()) {
+				paradisRecordChildWebContents(child.webContents, parent.webContents);
+			}
+		} catch {
+			// ビューが既に閉じている。
+		}
+	}
 
 	/**
 	 * カーソル演出を取り下げる。ページ側と一覧側の写しを必ず同時に片付ける。
@@ -666,6 +691,10 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus authority became unavailable before input dispatch' };
 			}
 			committed = true;
+			// エージェントの右クリックで Para Code の OS のメニューを出さない（ページの contextmenu は届く）。
+			if (paradisIsContextMenuInput(command.method, command.params as Readonly<Record<string, unknown>>)) {
+				paradisSuppressNextContextMenu(view.webContents);
+			}
 			let result: unknown;
 			try {
 				result = await view.debugger.sendCommandRaw(command.method, command.params, undefined);
@@ -708,6 +737,11 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		}
 		if (!target) {
 			return { ok: false, reason: 'unavailable' };
+		}
+		// ネットワークの上書きはエージェント用の保存領域のタブだけ。HTTP 認証と HTTP のキャッシュは保存領域
+		// 単位なので、利用者のタブに掛けると利用者の他のタブへ残る。
+		if (!this.isAgentStorage(target)) {
+			return { ok: false, reason: 'userStorage' };
 		}
 		let raw: unknown;
 		try {
@@ -840,6 +874,24 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		try {
 			await this.pageOps.highlight(target, rect, Math.max(500, Math.min(PARADIS_PAGE_OPS_MAX_HIGHLIGHT_MS, durationMsValue)));
 			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * エージェント用の保存領域のタブか。エージェントの保存領域（エージェントが開いたタブ）、
+	 * エフェメラル（タブごと）、エージェントが作った印の付いたプロファイルのとき true。
+	 */
+	private isAgentStorage(target: IParadisPageOpsTarget): boolean {
+		const view = target as unknown as BrowserView;
+		try {
+			const scope = view.session.storageScope;
+			if (scope === BrowserViewStorageScope.Agent || scope === BrowserViewStorageScope.Ephemeral) {
+				return true;
+			}
+			const profileId = scope === BrowserViewStorageScope.Profile ? paradisProfileIdFromSessionId(view.session.id) : undefined;
+			return profileId !== undefined && paradisGetAgentDownloadsTracker()?.isAgentProfile(profileId) === true;
 		} catch {
 			return false;
 		}

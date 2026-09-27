@@ -69,11 +69,12 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 	},
 	{
 		name: 'set_extra_http_headers',
-		description: 'Send extra HTTP request headers with every request of the page shared with this terminal pane (for example an Authorization or feature-flag header of a test environment). They apply only to that browser tab, replace any headers set before, and are removed when the tab is closed or no longer shared with this pane. Pass an empty object to remove them. Cookie headers cannot be set (agents cannot read or write cookies in Para Code). While headers are set, the browser cache is bypassed for that tab. Header values are not shown again by get_page_network_overrides.',
+		description: 'Send extra HTTP request headers from the page shared with this terminal pane (for example a feature-flag header of a test environment). By default they are sent only to the origin of the page at the time of the call (never to CDNs, analytics or other sites the page loads); pass "origins" to name the origins yourself. Only works on your own tabs (opened with open_browser_tab, or a profile you created); a tab the user shared from their own browser storage is refused. The headers apply only to that tab, replace any headers set before, and are removed when the tab is closed or no longer shared with this pane. Pass an empty object to remove them. Cookie headers cannot be set (agents cannot read or write cookies in Para Code). While headers are set, the browser cache and service workers are bypassed for that tab. Header values are not shown again by get_page_network_overrides.',
 		inputSchema: {
 			type: 'object',
 			properties: {
-				headers: { type: 'object', additionalProperties: { type: 'string' }, description: 'Header name to value, for example {"Authorization": "Bearer ..."}. Empty object removes all extra headers.' },
+				headers: { type: 'object', additionalProperties: { type: 'string' }, description: 'Header name to value, for example {"X-Feature-Flag": "new-checkout"}. Empty object removes all extra headers.' },
+				origins: { type: 'array', items: { type: 'string' }, description: 'Origins that receive the headers, for example ["https://staging.example.com"] (at most 10). Default: the origin of the page now.' },
 			},
 			required: ['headers'],
 			additionalProperties: false,
@@ -81,7 +82,7 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 	},
 	{
 		name: 'set_http_credentials',
-		description: 'Answer HTTP authentication (Basic / Digest) prompts of one site in the page shared with this terminal pane with the given user name and password, instead of the login prompt. Only prompts from that exact origin are answered (never proxy prompts), only in that browser tab, and a wrong password is not retried in a loop. The credentials are kept in memory only, are never shown again, and are removed when the tab is closed or no longer shared with this pane. Pass clear: true to remove them.',
+		description: 'Answer HTTP authentication (Basic / Digest) prompts of one site in the page shared with this terminal pane with the given user name and password, instead of the login prompt. Only prompts from that exact origin are answered (never proxy prompts), only in that browser tab, and a wrong password is not retried in a loop. Only works on your own tabs (opened with open_browser_tab, or a profile you created); a tab the user shared from their own browser storage is refused, because the login would stay in the user\'s browser for their other tabs. The credentials are kept in memory only, are never shown again, and are removed when the tab is closed or no longer shared with this pane. Pass clear: true to remove them.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -95,7 +96,7 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 	},
 	{
 		name: 'set_request_rules',
-		description: 'Block or rewrite requests of the page shared with this terminal pane. Rules are checked in order and the first rule whose url_pattern matches is used ("*" matches any characters, "?" exactly one; for example "*://*.analytics.example.com/*"). Actions: block (the request fails), set_headers (add, replace or remove request headers; cookie headers cannot be touched), redirect (the browser is redirected to redirect_url and follows it as a normal request, so the agent network restrictions still apply), respond (answer with the given status and text body without contacting the server; Set-Cookie and headers the browser would remember are refused, and the response is never cached). The rules apply only to that browser tab (not to cross-origin iframes), replace the rules set before, and are removed when the tab is closed or no longer shared with this pane. Pass an empty array to remove all rules. While rules are set, the browser cache is bypassed for that tab.',
+		description: 'Block or rewrite requests of the page shared with this terminal pane. Rules are checked in order and the first rule whose url_pattern matches is used ("*" matches any characters, "?" exactly one; for example "*://*.analytics.example.com/*"). Actions: block (the request fails), set_headers (add, replace or remove request headers; cookie headers cannot be touched), redirect (the browser is redirected to redirect_url and follows it as a normal request, so the agent network restrictions still apply), respond (answer with the given status and text body without contacting the server; Set-Cookie and headers the browser would remember are refused, and the response is never cached). Only works on your own tabs (opened with open_browser_tab, or a profile you created); a tab the user shared from their own browser storage is refused. The rules apply only to that browser tab (not to cross-origin iframes), replace the rules set before, and are removed when the tab is closed or no longer shared with this pane. Pass an empty array to remove all rules. While rules are set, the browser cache and service workers are bypassed for that tab.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -125,7 +126,7 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 	},
 	{
 		name: 'get_page_network_overrides',
-		description: 'Show what set_extra_http_headers, set_http_credentials and set_request_rules currently apply to the page shared with this terminal pane: the extra header names (not their values), the origin that gets credentials (not the password), and each request rule with how many requests it matched.',
+		description: 'Show what set_extra_http_headers, set_http_credentials and set_request_rules currently apply to the page shared with this terminal pane: the extra header names (not their values) and the origins they are sent to, the origin that gets credentials (not the password), and each request rule with how many requests it matched.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{

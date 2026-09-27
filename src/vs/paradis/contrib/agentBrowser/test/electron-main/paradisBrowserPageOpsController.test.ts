@@ -50,10 +50,12 @@ class FakeTarget implements IParadisPageOpsTarget {
 	readonly loginListeners = new Set<ParadisLoginListener>();
 	readonly destroyedListeners = new Set<() => void>();
 	destroyed = false;
+	authCacheClears = 0;
+	url = 'https://example.com/';
 
 	readonly webContents = {
 		isDestroyed: () => this.destroyed,
-		getURL: () => 'https://example.com/',
+		getURL: () => this.url,
 		getTitle: () => 'Example',
 		once: (_event: 'destroyed', listener: () => void) => { this.destroyedListeners.add(listener); },
 		on: (_event: 'login', listener: ParadisLoginListener) => { this.loginListeners.add(listener); },
@@ -65,6 +67,7 @@ class FakeTarget implements IParadisPageOpsTarget {
 			}
 		},
 		printToPDF: async () => new Uint8Array([1, 2, 3]),
+		session: { clearAuthCache: async () => { this.authCacheClears++; } },
 	};
 
 	readonly debugger = {
@@ -104,18 +107,24 @@ function rules(value: unknown) {
 suite('ParadisBrowserPageOpsController', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('extra headers and rules go on one dedicated CDP session with the cache disabled, and clearing detaches it', async () => {
+	test('extra headers and rules go on one dedicated CDP session with the cache and service workers bypassed, and clearing detaches it', async () => {
 		const controller = new ParadisBrowserPageOpsController();
 		const target = new FakeTarget();
-		const applied = await controller.apply(target, OWNER, 1, {
-			extraHeaders: { 'X-Env': 'test' },
-			rules: rules([{ url_pattern: '*/ads/*', action: 'block' }]),
-		});
-		assert.ok(applied.ok);
-		assert.deepStrictEqual(target.sessions[0].commands.map(command => command.method), [
-			'Network.enable', 'Network.setCacheDisabled', 'Network.setExtraHTTPHeaders', 'Fetch.enable',
+		const onlyRules = await controller.apply(target, OWNER, 1, { rules: rules([{ url_pattern: '*/ads/*', action: 'block' }]) });
+		assert.ok(onlyRules.ok);
+		assert.deepStrictEqual(target.sessions[0].commands.map(command => [command.method, command.params]), [
+			['Network.enable', { maxTotalBufferSize: 1048576, maxResourceBufferSize: 1048576 }],
+			['Network.setCacheDisabled', { cacheDisabled: true }],
+			['Network.setBypassServiceWorker', { bypass: true }],
+			['Fetch.enable', { patterns: [{ urlPattern: '*/ads/*', requestStage: 'Request' }] }],
 		]);
-		assert.deepStrictEqual(target.sessions[0].commands[3].params, { patterns: [{ urlPattern: '*/ads/*', requestStage: 'Request' }] });
+		const applied = await controller.apply(target, OWNER, 1, { extraHeaders: { headers: { 'X-Env': 'test' }, origins: [] } });
+		assert.ok(applied.ok);
+		// Headers are added per request by origin, so every request is paused (never Network.setExtraHTTPHeaders).
+		assert.deepStrictEqual(target.sessions[0].commands.slice(4).map(command => [command.method, command.params]), [
+			['Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }],
+		]);
+		assert.deepStrictEqual(applied.summary.extraHeaderOrigins, ['https://example.com']);
 
 		const cleared = await controller.apply(target, OWNER, 1, { extraHeaders: null, rules: null });
 		assert.deepStrictEqual([cleared.ok, target.sessions[0].disposed, controller.activeTargetCount, target.destroyedListeners.size], [true, true, 0, 0]);
@@ -151,14 +160,47 @@ suite('ParadisBrowserPageOpsController', () => {
 		controller.releaseTarget(target);
 	});
 
+	test('extra headers reach only the page origin (or the named origins), never third-party hosts', async () => {
+		const controller = new ParadisBrowserPageOpsController();
+		const target = new FakeTarget();
+		target.url = 'https://app.example.com/dashboard';
+		await controller.apply(target, OWNER, 1, {
+			extraHeaders: { headers: { 'X-Flag': 'on' }, origins: [] },
+			rules: rules([{ url_pattern: '*/api/*', action: 'set_headers', set_headers: { 'X-Api': '1' } }]),
+		});
+		const session = target.sessions[0];
+		const before = session.commands.length;
+		const paused = (id: string, url: string) => session.fire({ method: 'Fetch.requestPaused', params: { requestId: id, request: { url, headers: { Accept: '*/*' } } } });
+		paused('1', 'https://app.example.com/page');
+		paused('2', 'https://cdn.thirdparty.test/lib.js');
+		paused('3', 'https://app.example.com/api/items');
+		paused('4', 'https://analytics.thirdparty.test/api/track');
+		await Promise.resolve();
+		assert.deepStrictEqual(session.commands.slice(before), [
+			{ method: 'Fetch.continueRequest', params: { requestId: '1', headers: [{ name: 'Accept', value: '*/*' }, { name: 'X-Flag', value: 'on' }] } },
+			{ method: 'Fetch.continueRequest', params: { requestId: '2' } },
+			{ method: 'Fetch.continueRequest', params: { requestId: '3', headers: [{ name: 'Accept', value: '*/*' }, { name: 'X-Flag', value: 'on' }, { name: 'X-Api', value: '1' }] } },
+			{ method: 'Fetch.continueRequest', params: { requestId: '4', headers: [{ name: 'Accept', value: '*/*' }, { name: 'X-Api', value: '1' }] } },
+		]);
+		controller.releaseTarget(target);
+
+		const blank = new FakeTarget();
+		blank.url = 'about:blank';
+		const refused = await controller.apply(blank, OWNER, 1, { extraHeaders: { headers: { 'X-Flag': 'on' }, origins: [] } });
+		const named = await controller.apply(blank, OWNER, 1, { extraHeaders: { headers: { 'X-Flag': 'on' }, origins: ['https://staging.example.com'] } });
+		assert.deepStrictEqual([refused.ok ? 'ok' : refused.reason, named.ok && named.summary.extraHeaderOrigins], ['invalid', ['https://staging.example.com']]);
+		controller.releaseTarget(blank);
+	});
+
 	test('only one pane can change a tab, and its overrides go away when its sharing changes', async () => {
 		const controller = new ParadisBrowserPageOpsController();
 		const target = new FakeTarget();
-		await controller.apply(target, OWNER, 3, { extraHeaders: { 'X-A': '1' } });
-		const other = await controller.apply(target, OTHER_OWNER, 9, { extraHeaders: { 'X-B': '1' } });
+		const headers = (name: string) => ({ headers: { [name]: '1' }, origins: [] });
+		await controller.apply(target, OWNER, 3, { extraHeaders: headers('X-A') });
+		const other = await controller.apply(target, OTHER_OWNER, 9, { extraHeaders: headers('X-B') });
 		const otherSummary = controller.summary(target, OTHER_OWNER);
 		controller.releaseOwner(OWNER, 4);
-		const stale = await controller.apply(target, OWNER, 3, { extraHeaders: { 'X-A': '1' } });
+		const stale = await controller.apply(target, OWNER, 3, { extraHeaders: headers('X-A') });
 		assert.deepStrictEqual([
 			other.ok ? 'ok' : other.reason,
 			otherSummary.ok ? 'ok' : otherSummary.reason,
@@ -171,7 +213,7 @@ suite('ParadisBrowserPageOpsController', () => {
 	test('closing the tab removes everything', async () => {
 		const controller = new ParadisBrowserPageOpsController();
 		const target = new FakeTarget();
-		await controller.apply(target, OWNER, 1, { extraHeaders: { 'X-A': '1' }, credentials: { origin: 'https://intranet.example.com', username: 'u', password: 'p' } });
+		await controller.apply(target, OWNER, 1, { extraHeaders: { headers: { 'X-A': '1' }, origins: [] }, credentials: { origin: 'https://intranet.example.com', username: 'u', password: 'p' } });
 		target.destroy();
 		assert.deepStrictEqual([controller.activeTargetCount, target.loginListeners.size, target.sessions[0].disposed], [0, 0, true]);
 	});
@@ -198,7 +240,9 @@ suite('ParadisBrowserPageOpsController', () => {
 		assert.ok(summary.ok);
 		assert.deepStrictEqual(JSON.stringify(summary.summary).includes('secret'), false);
 		controller.releaseTarget(target);
-		assert.strictEqual(target.loginListeners.size, 0);
+		await Promise.resolve();
+		// The answered login must not stay in the storage's auth cache after the credentials are removed.
+		assert.deepStrictEqual([target.loginListeners.size, target.authCacheClears], [0, 1]);
 	});
 
 	test('a highlight uses its own session and is removed when replaced or cleared', async () => {

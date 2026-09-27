@@ -263,6 +263,19 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		assert.strictEqual(fixture.children[0].killCount, 1);
 	});
 
+	test('asks the vendored child to redact cookie and other sensitive network headers', async () => {
+		const fixture = createFakeDevtoolsChildren();
+		let receivedArgs: string[] = [];
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+			spawnChild: (command, args, options) => {
+				receivedArgs = args;
+				return fixture.spawn(command, args, options);
+			},
+		}));
+		await proxy.listTools('secret-token', 1, 'ws://one');
+		assert.strictEqual(receivedArgs.includes('--redactNetworkHeaders=true'), true);
+	});
+
 	test('disables update checks for the vendored child', async () => {
 		const fixture = createFakeDevtoolsChildren();
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { spawnChild: fixture.spawn }));

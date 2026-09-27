@@ -38,6 +38,9 @@ class FakeHost implements IParadisPageOpsHost {
 	readonly log: string[] = [];
 	mainResults = new Map<string, unknown>();
 	inputResult: IParadisCdpInputDispatchResult = { status: 'success', result: {} };
+	/** Refuse the n-th dispatch (1-based), as the main process does while the user focuses the page. */
+	refuseDispatch: (n: number) => boolean = () => false;
+	private dispatchCount = 0;
 	filter: { isUriAllowed(url: string): boolean } | undefined;
 
 	binding(): IParadisPageOpsBinding | undefined {
@@ -51,6 +54,10 @@ class FakeHost implements IParadisPageOpsHost {
 	}
 
 	async dispatchInput(_token: string, _binding: IParadisPageOpsBinding, _method: string, paramsJson: string): Promise<IParadisCdpInputDispatchResult> {
+		this.dispatchCount++;
+		if (this.refuseDispatch(this.dispatchCount)) {
+			return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: the bound BrowserView is focused by the user' };
+		}
 		const params = JSON.parse(paramsJson);
 		this.inputs.push(params);
 		this.log.push(params.type);
@@ -142,12 +149,46 @@ suite('paradisBrowserPageOps (shared process)', () => {
 		await ops.call(createCall(), 'set_request_rules', { rules: [] });
 		await ops.call(createCall(), 'set_extra_http_headers', { headers: {} });
 		assert.deepStrictEqual(host.mainCalls.map(call => [call.method, call.args[1], call.args[2], JSON.parse(call.args[3] as string)]), [
-			['applyExactViewPageOverrides', paradisPageOpsOwnerKey('pane-token'), 7, { extraHeaders: { 'X-Env': 'test' } }],
+			['applyExactViewPageOverrides', paradisPageOpsOwnerKey('pane-token'), 7, { extraHeaders: { headers: { 'X-Env': 'test' }, origins: [] } }],
 			['applyExactViewPageOverrides', paradisPageOpsOwnerKey('pane-token'), 7, { credentials: { origin: 'https://intranet.example.com', username: 'u', password: 'p' } }],
 			['applyExactViewPageOverrides', paradisPageOpsOwnerKey('pane-token'), 7, { rules: null }],
 			['applyExactViewPageOverrides', paradisPageOpsOwnerKey('pane-token'), 7, { extraHeaders: null }],
 		]);
 		assert.notStrictEqual(paradisPageOpsOwnerKey('pane-token'), 'pane-token');
+	});
+
+	test('a user tab is refused with a reason that points to the agent\'s own tabs', async () => {
+		const host = new FakeHost();
+		host.mainResults.set('applyExactViewPageOverrides', { ok: false, reason: 'userStorage' });
+		const ops = new ParadisBrowserPageOps(host);
+		const result = await ops.call(createCall(), 'set_http_credentials', { origin: 'https://intranet.example.com', username: 'u', password: 'p' });
+		assert.deepStrictEqual([isError(result), textOf(result).includes('open_browser_tab'), textOf(result).includes('p\'')], [true, true, false]);
+	});
+
+	test('extra headers can name their origins, and the result says where they go', async () => {
+		const host = new FakeHost();
+		host.mainResults.set('applyExactViewPageOverrides', { ok: true, summary: { extraHeaderNames: ['X-Flag'], extraHeaderOrigins: ['https://staging.example.com'], rules: [] } });
+		const ops = new ParadisBrowserPageOps(host);
+		const result = await ops.call(createCall(), 'set_extra_http_headers', { headers: { 'X-Flag': 'on' }, origins: ['https://staging.example.com/any/path'] });
+		assert.deepStrictEqual(JSON.parse(host.mainCalls[0].args[3] as string), { extraHeaders: { headers: { 'X-Flag': 'on' }, origins: ['https://staging.example.com'] } });
+		assert.strictEqual(textOf(result).includes('https://staging.example.com'), true);
+		const invalid = await ops.call(createCall(), 'set_extra_http_headers', { headers: { 'X-Flag': 'on' }, origins: ['file:///etc'] });
+		assert.strictEqual(isError(invalid), true);
+	});
+
+	test('a button left pressed by a refused action is released before the next mouse input', async () => {
+		const host = new FakeHost();
+		const ops = new ParadisBrowserPageOps(host);
+		// The press goes through, then the user focuses the page: the rest (and the first release attempt) is refused.
+		host.refuseDispatch = n => n >= 3 && n <= 4;
+		const failed = await ops.call(createCall(), 'mouse_action', { action: 'drag', x: 1, y: 1, to_x: 20, to_y: 1, steps: 2 });
+		assert.strictEqual(isError(failed), true);
+		await ops.call(createCall(), 'mouse_action', { action: 'move', x: 5, y: 5, steps: 1 });
+		assert.deepStrictEqual(host.inputs.map(input => [input.type, input.button]), [
+			['mouseMoved', 'none'], ['mousePressed', 'left'],
+			['mouseReleased', 'left'],
+			['mouseMoved', 'none'],
+		]);
 	});
 
 	test('cookie headers and redirects into the agent network restrictions are refused before reaching electron-main', async () => {

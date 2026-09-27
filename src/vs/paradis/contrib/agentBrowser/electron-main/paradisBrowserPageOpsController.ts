@@ -10,6 +10,9 @@
 // リクエストのルール）と、PDF・ハイライトを electron-main で行う。
 //
 // 決め事:
+// - ネットワークの上書きを掛けるのは、エージェント用の保存領域のタブだけ（判定は呼び出し側の
+//   paradisCdpTargetService.ts）。HTTP 認証のキャッシュと HTTP キャッシュは保存領域単位なので、
+//   利用者のタブに掛けると利用者の他のタブへ残るため。
 // - 上書きは「タブ（webContents）1枚」に掛ける。CDP の Network / Fetch はこのタブに付けた専用の
 //   CDP セッションで有効にするので、同じ保存領域の他のタブ・他のペインのタブには届かない。
 //   セッションを外せば Chromium がすべて元に戻す（止めていたリクエストも流れる）。
@@ -17,8 +20,9 @@
 // - 持ち主の共有が入れ替わった（shared process が世代を進めた）・エージェントがタブを手放した・
 //   タブが閉じた、のどれでも外す。
 // - HTTP 認証の資格情報はこのプロセスのメモリにだけ置く。ログにも応答にも出さない。
-// - 上書きを掛けている間はそのタブのキャッシュを使わない（作った応答や書き換えた要求の結果が、
-//   共有の HTTP キャッシュに残って利用者の他のタブへ出ないように）。
+// - 追加ヘッダは相手の origin を見て付ける（既定は掛けた時点のトップフレームの origin だけ）。
+// - 上書きを掛けている間はそのタブのキャッシュと Service Worker を通さない（ルールとヘッダが
+//   すり抜けないように）。資格情報を外すときは保存領域の認証のキャッシュも消す。
 
 import { raceTimeout } from '../../../../base/common/async.js';
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
@@ -26,12 +30,14 @@ import { DisposableStore, toDisposable } from '../../../../base/common/lifecycle
 import type { CDPEvent, ICDPConnection } from '../../../../platform/browserView/common/cdp/types.js';
 import {
 	IParadisHighlightRect,
+	IParadisExtraHeaders,
 	IParadisHttpCredentials,
 	IParadisPageOverridesRequest,
 	IParadisPageOverridesResult,
 	IParadisPageOverridesSummary,
 	IParadisPdfOptions,
 	IParadisRequestRule,
+	paradisApplyExtraHeaders,
 	paradisApplyHeaderRule,
 	paradisBuildRedirectHeaders,
 	paradisBuildRespondHeaders,
@@ -62,6 +68,8 @@ export interface IParadisPageOpsTarget {
 		on(event: 'login', listener: ParadisLoginListener): unknown;
 		removeListener(event: 'login', listener: ParadisLoginListener): unknown;
 		printToPDF(options: object): Promise<Uint8Array>;
+		/** HTTP 認証の資格情報を外すとき、保存領域に残った認証のキャッシュを消すため。 */
+		readonly session: { clearAuthCache(): Promise<void> };
 	};
 	readonly debugger: {
 		attach(): Promise<ICDPConnection>;
@@ -81,7 +89,7 @@ const NETWORK_BUFFER_BYTES = 1024 * 1024;
 interface IViewState {
 	readonly ownerKey: string;
 	generation: number;
-	extraHeaders: Readonly<Record<string, string>>;
+	extraHeaders: IParadisExtraHeaders | undefined;
 	credentials: IParadisHttpCredentials | undefined;
 	rules: readonly IParadisRequestRule[];
 	ruleMatches: number[];
@@ -100,6 +108,16 @@ interface IViewState {
 interface IHighlightState {
 	readonly session: ICDPConnection;
 	readonly timer: ReturnType<typeof setTimeout>;
+}
+
+/** http(s) の URL なら origin、それ以外（about:blank など）は undefined。 */
+function paradisHttpOrigin(url: string): string | undefined {
+	try {
+		const parsed = new URL(url);
+		return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 export class ParadisBrowserPageOpsController {
@@ -242,7 +260,7 @@ export class ParadisBrowserPageOpsController {
 		const state: IViewState = {
 			ownerKey,
 			generation,
-			extraHeaders: {},
+			extraHeaders: undefined,
 			credentials: undefined,
 			rules: [],
 			ruleMatches: [],
@@ -270,15 +288,36 @@ export class ParadisBrowserPageOpsController {
 			return { ok: false, reason: 'unavailable' };
 		}
 		if (request.extraHeaders !== undefined) {
-			state.extraHeaders = request.extraHeaders ?? {};
+			const extra = request.extraHeaders;
+			if (extra === null || Object.keys(extra.headers).length === 0) {
+				state.extraHeaders = undefined;
+			} else if (extra.origins.length > 0) {
+				state.extraHeaders = extra;
+			} else {
+				// 相手を指定しなければ、掛けた時点のトップフレームの origin だけに付ける。
+				const origin = paradisHttpOrigin(target.webContents.getURL());
+				if (origin === undefined) {
+					if (!this.hasAnything(state)) {
+						this.clear(target);
+					}
+					return { ok: false, reason: 'invalid', message: 'The shared page is not an http(s) page yet, so there is no origin to send the headers to. Navigate first, or pass "origins".' };
+				}
+				state.extraHeaders = { headers: extra.headers, origins: [origin] };
+			}
 		}
 		if (request.rules !== undefined) {
 			state.rules = request.rules ?? [];
 			state.ruleMatches = state.rules.map(() => 0);
 		}
 		if (request.credentials !== undefined) {
+			const hadCredentials = state.credentials !== undefined;
 			state.credentials = request.credentials ?? undefined;
 			state.authAnswers.clear();
+			if (hadCredentials) {
+				// 前に答えた資格情報が保存領域の認証のキャッシュに残らないようにする（このタブはエージェント用の
+				// 保存領域なので、消えるのはエージェントのタブの認証だけ）。
+				await this.clearAuthCache(target);
+			}
 		}
 		this.syncLoginListener(target, state);
 		try {
@@ -299,12 +338,12 @@ export class ParadisBrowserPageOpsController {
 	}
 
 	private hasAnything(state: IViewState): boolean {
-		return Object.keys(state.extraHeaders).length > 0 || state.rules.length > 0 || state.credentials !== undefined;
+		return state.extraHeaders !== undefined || state.rules.length > 0 || state.credentials !== undefined;
 	}
 
 	/** Network / Fetch をいまの上書きに合わせる。どちらも要らなくなったらセッションごと外す。 */
 	private async syncSession(target: IParadisPageOpsTarget, state: IViewState): Promise<void> {
-		const needsHeaders = Object.keys(state.extraHeaders).length > 0;
+		const needsHeaders = state.extraHeaders !== undefined;
 		const needsRules = state.rules.length > 0;
 		if (!needsHeaders && !needsRules) {
 			this.dropSession(state);
@@ -313,20 +352,21 @@ export class ParadisBrowserPageOpsController {
 		const session = await this.ensureSession(target, state);
 		if (!state.networkEnabled) {
 			await session.sendCommand('Network.enable', { maxTotalBufferSize: NETWORK_BUFFER_BYTES, maxResourceBufferSize: NETWORK_BUFFER_BYTES });
-			// 上書きしている間はキャッシュを読み書きしない（このタブだけ。セッションを外せば戻る）。
+			// 上書きしている間は、キャッシュの応答（Fetch を通らない）と Service Worker の応答（ページの
+			// セッションの Fetch を通らない）でルールとヘッダがすり抜けないようにする。どちらもこのタブだけで、
+			// セッションを外せば戻る。
 			await session.sendCommand('Network.setCacheDisabled', { cacheDisabled: true });
+			await session.sendCommand('Network.setBypassServiceWorker', { bypass: true });
 			state.networkEnabled = true;
 		}
-		await session.sendCommand('Network.setExtraHTTPHeaders', { headers: { ...state.extraHeaders } });
-		if (needsRules) {
-			await session.sendCommand('Fetch.enable', {
-				patterns: state.rules.map(rule => ({ urlPattern: rule.urlPattern, requestStage: 'Request' })),
-			});
-			state.fetchEnabled = true;
-		} else if (state.fetchEnabled) {
-			await session.sendCommand('Fetch.disable');
-			state.fetchEnabled = false;
-		}
+		// 追加ヘッダは相手の origin を見て付けるので、Network.setExtraHTTPHeaders（全部の要求に付く）は
+		// 使わず、Fetch で止めた要求ごとに足す。追加ヘッダがあればすべての要求を止める。
+		await session.sendCommand('Fetch.enable', {
+			patterns: needsHeaders
+				? [{ urlPattern: '*', requestStage: 'Request' }]
+				: state.rules.map(rule => ({ urlPattern: rule.urlPattern, requestStage: 'Request' })),
+		});
+		state.fetchEnabled = true;
 	}
 
 	private async ensureSession(target: IParadisPageOpsTarget, state: IViewState): Promise<ICDPConnection> {
@@ -349,7 +389,7 @@ export class ParadisBrowserPageOpsController {
 			state.session = undefined;
 			state.networkEnabled = false;
 			state.fetchEnabled = false;
-			if (!state.disposed && (Object.keys(state.extraHeaders).length > 0 || state.rules.length > 0)) {
+			if (!state.disposed && (state.extraHeaders !== undefined || state.rules.length > 0)) {
 				this.clear(target);
 			}
 		}));
@@ -382,14 +422,21 @@ export class ParadisBrowserPageOpsController {
 			return;
 		}
 		const url = typeof params?.request?.url === 'string' ? params.request.url : '';
+		const original = params?.request?.headers && typeof params.request.headers === 'object' ? params.request.headers as Record<string, string> : {};
 		const index = state.rules.findIndex(rule => paradisMatchUrlPattern(rule.urlPattern, url));
 		const rule = index >= 0 ? state.rules[index] : undefined;
 		const send = (method: string, commandParams: object) => session.sendCommand(method, { requestId, ...commandParams }).catch(() => {
 			// 決められなかったリクエストを止めたままにしない。
 			return session.sendCommand('Fetch.continueRequest', { requestId }).catch(() => undefined);
 		});
-		if (!rule || state.disposed) {
+		if (state.disposed) {
 			void send('Fetch.continueRequest', {});
+			return;
+		}
+		const withExtraHeaders = (headers: Record<string, string>) => state.extraHeaders ? paradisApplyExtraHeaders(headers, url, state.extraHeaders) : undefined;
+		if (!rule) {
+			const headers = withExtraHeaders(original);
+			void send('Fetch.continueRequest', headers ? { headers } : {});
 			return;
 		}
 		state.ruleMatches[index] = (state.ruleMatches[index] ?? 0) + 1;
@@ -398,8 +445,10 @@ export class ParadisBrowserPageOpsController {
 				void send('Fetch.failRequest', { errorReason: 'BlockedByClient' });
 				return;
 			case 'set_headers': {
-				const original = params?.request?.headers && typeof params.request.headers === 'object' ? params.request.headers as Record<string, string> : {};
-				void send('Fetch.continueRequest', { headers: paradisApplyHeaderRule(original, rule) });
+				// 追加ヘッダを足した後にルールを当てる（ルールの指定が勝つ）。
+				const withExtra = withExtraHeaders(original);
+				const base = withExtra ? Object.fromEntries(withExtra.map(header => [header.name, header.value])) : original;
+				void send('Fetch.continueRequest', { headers: paradisApplyHeaderRule(base, rule) });
 				return;
 			}
 			case 'redirect':
@@ -468,6 +517,9 @@ export class ParadisBrowserPageOpsController {
 		}
 		this.states.delete(target);
 		state.disposed = true;
+		if (state.credentials !== undefined) {
+			void this.clearAuthCache(target);
+		}
 		state.credentials = undefined;
 		state.authAnswers.clear();
 		try {
@@ -483,9 +535,20 @@ export class ParadisBrowserPageOpsController {
 		state.sessionStore.dispose();
 	}
 
+	private async clearAuthCache(target: IParadisPageOpsTarget): Promise<void> {
+		try {
+			if (!target.webContents.isDestroyed()) {
+				await target.webContents.session.clearAuthCache();
+			}
+		} catch {
+			// タブが既に閉じている。
+		}
+	}
+
 	private summarize(state: IViewState): IParadisPageOverridesSummary {
 		return {
-			extraHeaderNames: Object.keys(state.extraHeaders),
+			extraHeaderNames: state.extraHeaders ? Object.keys(state.extraHeaders.headers) : [],
+			...(state.extraHeaders ? { extraHeaderOrigins: state.extraHeaders.origins } : {}),
 			...(state.credentials ? { credentialsOrigin: state.credentials.origin } : {}),
 			rules: state.rules.map((rule, index) => ({ urlPattern: rule.urlPattern, action: rule.action, matched: state.ruleMatches[index] ?? 0 })),
 		};

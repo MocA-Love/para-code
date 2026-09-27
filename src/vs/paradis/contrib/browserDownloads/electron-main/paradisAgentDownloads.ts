@@ -48,6 +48,38 @@ export function paradisSetWebContentsHeldByAgent(webContents: object, held: bool
 	}
 }
 
+/** 子タブ（`target=_blank`・`window.open`・中クリックで開いたタブ）→ 開いた元のタブ。 */
+const openerOf = new WeakMap<object, object>();
+/** エージェントが手にしている間に開かれた子タブ。元のタブが後で手放されても、由来は変わらない。 */
+const openedWhileHeld = new WeakSet<object>();
+/** 開いた元を辿る深さの上限（ポップアップがさらにポップアップを開く連鎖）。 */
+const MAX_OPENER_DEPTH = 16;
+
+/**
+ * 子タブが開かれた。元のタブがエージェントの手にある（またはエージェントのクリックを待っている）なら、
+ * 子タブで始まるダウンロードもエージェント由来にする。
+ */
+export function paradisRecordChildWebContents(child: object, opener: object): void {
+	if (child === opener) {
+		return;
+	}
+	openerOf.set(child, opener);
+	if (paradisIsAgentDownload(opener)) {
+		openedWhileHeld.add(child);
+	}
+}
+
+/** そのタブと、それを開いた元のタブを順に返す（自分が先頭）。 */
+function openerChain(webContents: object): object[] {
+	const chain: object[] = [];
+	let current: object | undefined = webContents;
+	while (current !== undefined && chain.length < MAX_OPENER_DEPTH && !chain.includes(current)) {
+		chain.push(current);
+		current = openerOf.get(current);
+	}
+	return chain;
+}
+
 interface IAgentDownloadExpectation {
 	readonly webContents: object;
 	entryId: string | undefined;
@@ -58,8 +90,10 @@ interface IAgentDownloadExpectation {
 const expectations = new Map<string, IAgentDownloadExpectation>();
 /** 同時に待てる数（1 ペイン 1 件 × 余裕）。溢れたら古いものから諦める。 */
 const MAX_EXPECTATIONS = 64;
+/** 始まったダウンロードを、待つ側が受け取りに来るまで覚えておく時間。 */
+const STARTED_ENTRY_TTL_MS = 60_000;
 
-function settleExpectation(id: string, entryId: string | undefined): void {
+function deleteExpectation(id: string): void {
 	const expectation = expectations.get(id);
 	if (!expectation) {
 		return;
@@ -68,7 +102,6 @@ function settleExpectation(id: string, entryId: string | undefined): void {
 		clearTimeout(expectation.timer);
 		expectation.timer = undefined;
 	}
-	expectation.entryId ??= entryId;
 	for (const waiter of expectation.waiters.splice(0)) {
 		waiter(expectation.entryId);
 	}
@@ -85,16 +118,19 @@ export function paradisExpectAgentDownload(webContents: object, startTimeoutMs: 
 		if (oldest === undefined) {
 			break;
 		}
-		settleExpectation(oldest, undefined);
+		deleteExpectation(oldest);
 	}
 	const id = generateUuid();
 	const expectation: IAgentDownloadExpectation = { webContents, entryId: undefined, waiters: [], timer: undefined };
-	expectation.timer = setTimeout(() => settleExpectation(id, undefined), startTimeoutMs);
+	expectation.timer = setTimeout(() => deleteExpectation(id), startTimeoutMs);
 	expectations.set(id, expectation);
 	return id;
 }
 
-/** 始まったダウンロードの一覧の id。始まらずに諦めたら undefined。 */
+/**
+ * 始まったダウンロードの一覧の id。始まらずに諦めたら undefined。
+ * クリックの送信とこの呼び出しの間に始まっていても取りこぼさない（始まった id は受け取りに来るまで残す）。
+ */
 export function paradisAwaitAgentDownloadStart(id: string): Promise<string | undefined> {
 	const expectation = expectations.get(id);
 	if (!expectation) {
@@ -102,7 +138,7 @@ export function paradisAwaitAgentDownloadStart(id: string): Promise<string | und
 	}
 	if (expectation.entryId !== undefined) {
 		const entryId = expectation.entryId;
-		settleExpectation(id, entryId);
+		deleteExpectation(id);
 		return Promise.resolve(entryId);
 	}
 	return new Promise(resolve => expectation.waiters.push(resolve));
@@ -110,37 +146,52 @@ export function paradisAwaitAgentDownloadStart(id: string): Promise<string | und
 
 /** クリックに失敗したときなど、待つのをやめる。 */
 export function paradisCancelAgentDownloadExpectation(id: string): void {
-	settleExpectation(id, undefined);
+	deleteExpectation(id);
 }
 
 /**
  * `will-download` の時点で、そのダウンロードをエージェント由来として扱うか。
- * エージェントが手にしているタブか、エージェントのクリックを待っているタブなら true。
+ * エージェントが手にしているタブか、エージェントのクリックを待っているタブ、またはそれらから開かれた
+ * 子タブなら true。
  */
 export function paradisIsAgentDownload(webContents: object | undefined): boolean {
 	if (webContents === undefined) {
 		return false;
 	}
-	if (heldByAgent.has(webContents)) {
+	const chain = openerChain(webContents);
+	if (chain.some(candidate => heldByAgent.has(candidate) || openedWhileHeld.has(candidate))) {
 		return true;
 	}
 	for (const expectation of expectations.values()) {
-		if (expectation.webContents === webContents) {
+		if (chain.includes(expectation.webContents)) {
 			return true;
 		}
 	}
 	return false;
 }
 
-/** 始まったダウンロードを、そのタブで待っている登録へ知らせる。 */
+/** 始まったダウンロードを、そのタブ（または開いた元のタブ）で待っている登録へ知らせる。 */
 export function paradisNotifyAgentDownloadStarted(webContents: object | undefined, entryId: string | undefined): void {
 	if (webContents === undefined || entryId === undefined) {
 		return;
 	}
+	const chain = openerChain(webContents);
 	for (const [id, expectation] of [...expectations]) {
-		if (expectation.webContents === webContents && expectation.entryId === undefined) {
-			settleExpectation(id, entryId);
+		if (expectation.entryId !== undefined || !chain.includes(expectation.webContents)) {
+			continue;
 		}
+		expectation.entryId = entryId;
+		if (expectation.waiters.length > 0) {
+			deleteExpectation(id);
+		} else {
+			// 待つ側がまだ来ていない（クリックを送り終える前に始まった）。受け取りに来るまで残す。
+			if (expectation.timer !== undefined) {
+				clearTimeout(expectation.timer);
+			}
+			expectation.timer = setTimeout(() => deleteExpectation(id), STARTED_ENTRY_TTL_MS);
+		}
+		// 1つのダウンロードは1つの登録にだけ渡す。
+		return;
 	}
 }
 
