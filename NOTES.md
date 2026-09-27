@@ -253,6 +253,28 @@ Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.
 - 接続先の設置（ポートが変わるたびの書き直し）と取り外しは、同じ `Sequencer` で1本ずつ流す（`ParadisRemoteAgentHookFiles`）。設置は1ファイルごと・書く直前に設定を見直すので、途中でオフに切り替わっても古い判断で hook を書き戻さない。切り替えた時点で接続先のホームがまだ分からない、またはファイルが読めない・書き換えが3回続いて反映できなかったときは「取り外し待ち」を保持し、30秒ごとの見直しか次の設置で処理する。失敗し続けても警告は 1, 2, 4, 8… 回目だけ出す
 - オフにしたときの警告は、通知では出さず「設定 (Para Code)」ダイアログの行の中に出す場合がある。通知の層（z-index 2545）はダイアログの背景（2700）より下で、ダイアログを開いたままだと裏に隠れて「元に戻す」が押せないため。ダイアログが開いているか（`paradisIsSettingsDialogOpen()`）で出し分け、層の順序そのものは他のダイアログやモーダルとの重なりに関わるので変えない。警告と設定の登録は、取り外す側がデスクトップにしか無いので electron-browser に置いている
 
+### Codex の hook の信頼は app-server に付けさせる（agentHookTrust、2026-09-27）
+
+`src/vs/paradis/contrib/agentHookTrust/` に実装。Codex の TUI の「Trust all」と同じ RPC を `codex app-server`（stdio）で呼ぶ: `hooks/list` → `config/batchWrite`（`keyPath: "hooks.state"`、`mergeStrategy: "upsert"`、値は `{ "<鍵>": { "trusted_hash": "<currentHash>" } }`）→ もう一度 `hooks/list` で `trusted` になったかを確かめ、合わなければ書く前の config.toml のバイト列へ戻す。codex-cli 0.155.1 の一時 `CODEX_HOME` で、利用者の hook は `untrusted` のまま、Para Code の hook だけが `trusted` になること、config.toml のコメントが残ることを実測した。
+
+- **ハッシュは自前で計算しない。** Codex の `currentHash` をそのまま書く。Orca は自前計算が Codex の版上げのたびにずれて（Orca #7896 / #7110 / #8699）この方式へ移った
+- 対象の判定は3条件: `source: "user"`、`sourcePath` がその CODEX_HOME の hooks.json、`command` が Para Code の書く文字列と完全一致。Codex は CODEX_HOME を実体パスへ直して答える（`/tmp` → `/private/tmp`）ので、実体パス側でも比べる
+- 設定 `paradis.agentHooks.codexTrust`（`ask` 既定 / `auto` / `off`）。`ask` の間は画面側が起動 15 秒後に1回だけ通知で確かめ（窓が複数あっても shared process の `claimPrompt` で1つに絞る）、「信頼する」で `auto` に書き換えてその場で付ける。`auto` の間は shared process が起動 20 秒後と hooks.json の変化のたびに付ける
+- 起動のたびに codex を起こさないよう、「codex のパス + `--version` + hooks.json + config.toml」の指紋を `<userData>/paradis-codex-hook-trust.json` に残し、前回確かめたときと同じなら何もしない
+- 複数ホーム（`~/.codex-N`）は `ParadisCodexHookTrustService.autoGrant(home)` / チャネルの `grant`・`getStatus` にホームを渡せば同じ手順で動く。IPC 経由で任意のパスに codex を起こさないよう、受け付けるのは既定のホームと `~/.codex-<名前>` だけ。フェーズ2で hook をそこへ置くときは、置いたあとに `autoGrant(home)` を呼ぶこと（今は既定のホームしか監視していない）
+- `codex` は Node のスクリプトなので、shared process の PATH に `node` が無いと `env: node: No such file or directory` で起動できない。ログインシェルの環境（`ParadisCachedShellEnv`）を使っているので通常は問題ないが、失敗したときの outcome は `failed` で detail にこの文言が出る
+
+### worktree の「このフォルダを信頼しますか」は元のリポジトリから引き継がれる（2026-09-27 実測、実装なし）
+
+Q17 は「引き継がれなければ、スペース作成時に信頼を書き込む」だったが、両方の CLI とも引き継ぐので実装していない。一時 HOME / `CLAUDE_CONFIG_DIR` / `CODEX_HOME` で、`git worktree add ../repo-worktrees/wt`（Para Code の既定の置き場所と同じ、リポジトリの外の兄弟ディレクトリ）を作って TUI を起動して確かめた。
+
+| CLI | 元のリポジトリが信頼済み | 元のリポジトリが未信頼 | 無関係なフォルダ（対照） |
+|---|---|---|---|
+| Claude Code 2.1.283 | worktree で確認なし。`.claude.json` の `projects` に worktree のエントリも増えない | worktree で確認が出る | 確認が出る |
+| codex-cli 0.155.1 | worktree で確認なし。config.toml は変わらない | 確認が出て「Trusting will apply to the repository root: <元のリポジトリ>」と表示される | 確認が出る |
+
+どちらも「worktree → 元のリポジトリの根」で信頼を引くため、新しい worktree に信頼を書き込む必要は無い。CLI の版上げで挙動が変わったら、この表の手順で測り直すこと（Claude は `hasCompletedOnboarding` と `customApiKeyResponses.approved` を仕込んだ一時 `.claude.json` + ダミーの API キー、Codex は一時 `auth.json` にダミーの `OPENAI_API_KEY` と `check_for_update_on_startup = false` で、ログインや更新の画面を飛ばせる。Para Code のターミナルから測るときは `env -i` で `PARA_CODE_*` / `CLAUDE_CODE_*` を落とす）。
+
 ## 内蔵ブラウザの前面オーバーレイ機構（overlayManager、2026-08-15整備）
 
 内蔵ブラウザ（`src/vs/platform/browserView/`）はElectronのネイティブ `WebContentsView` として実装されている。ネイティブビューはOS合成レイヤーで描画されるため、通常のDOM要素はCSSの `z-index` では絶対に上書きできない。
@@ -335,6 +357,17 @@ grep -rn "BrowserDeviceType\|deviceType ===\|deviceType:\|case 'bluetooth'" src/
   - **LRU（上限24スペース）は「これから読むスペース」も必ず先頭へ寄せてから間引く**。保存したときだけ追跡すると、久しぶりに戻るスペースほど捨てられる側に溜まり、戻った瞬間に履歴を失う
   - 既知の制限: (1) 切り替え先スペースがフォルダ外のファイル（ユーザー設定等）を開いていた場合、切り替え元の履歴に残る（除去判定はフォルダ配下かどうかしか見られない。取り切るには切り替えの開始そのものを知る必要がある）。(2) 補助ウィンドウにピン留めしたエディタは`editorService.getEditors`が全パートを列挙するため新スペースの履歴に入り得る。(3) スペースを分ける前の`history.entries`は各スペースが自分の分を引き継げるよう残す（孤児として31KB程度）。(4) Ctrl+Shift+Tのreopenスタックとナビゲーションスタックはスペースを跨いだまま（どちらも非永続でセッション内のみ）
 - 既知の制限: ブラウザページはウィンドウリロードを跨ぐと再ロードされる（WebContentsViewがウィンドウに紐づくため。URLはworking set経由で復元）。ブラウザのCookieパーティションは全リポジトリ共有
+
+## 新しいスペースのモデル候補は CLI から取る（agentModelCatalog、2026-09-27）
+
+`src/vs/paradis/contrib/agentModelCatalog/` に実装。shared process が CLI を起こして一覧を取り、`<userData>/paradis-agent-models.json` に残す。CLI のパスか `--version` が変わったとき、または1日経ったときだけ取り直す。取れなければ前回の一覧、それも無ければ固定の候補（`PARADIS_DEFAULT_AGENT_COMMANDS`）のまま。
+
+- Claude Code（2.1.283 で実測）: `claude -p --settings '{"disableAllHooks":true}' --strict-mcp-config --input-format stream-json --output-format stream-json --verbose` の stdin に `{"type":"control_request","request_id":"…","request":{"subtype":"list_models"}}` を1行書いて閉じる。API は呼ばず約2秒で返り、ログインしていなくても答える。`--settings` で hook を止めないと、利用者の SessionStart hook がこの裏のプロセスで走ることを確かめている。一覧の `default` 行と `disabled` 行は外す。一覧に出ない `opusplan` だけは既定の候補から引き継ぐ
+- Codex（0.155.1 で実測）: `codex app-server` の `model/list`（`hidden` は外す）。ログインしていない一時 `CODEX_HOME` でも同梱のカタログを返した。実物の取得は利用者の既定の `CODEX_HOME` で行う
+- **置き換えるのは既定の定義だけ。** `paradis.workspaceSwitch.agents` は `getValue` だとスキーマ既定値が返って「書いたか」が分からないので、`inspect` のどこかの層に値があるかで判断する（`paradisIsAgentListUserDefined`）。書いてあれば取得自体をしない
+- ダイアログ（`_agents`）とモバイルからの作成（`paradisConfiguredAgents`）は同じ `paradisResolveAgentTemplates` を通す
+- `opus[1m]` のような記号入りの id は `--model "opus[1m]"` と二重引用符で包む（zsh では `[...]` がグロブになる）。それでも安全に書けない id は候補から外す
+- SSH で接続中のウィンドウでも、候補は手元の CLI から取ったもの（接続先の CLI の版は見ていない）
 
 ## リリース手順（runbook、2026-07-03確立・v1.128.0-paracode-2で全自動を実証済み）
 

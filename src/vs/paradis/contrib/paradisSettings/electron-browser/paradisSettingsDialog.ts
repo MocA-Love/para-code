@@ -436,6 +436,23 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		offWarning: localize('paradis.settings.agentHooksOffWarning', "オフの間は、Para Code が設置した hook を取り外し、置き直しません。エージェントの状態表示（実行中・許可待ち・完了）、完了や許可待ちの通知、モバイルへの通知とチャットの表示、読み上げが弱くなるか、働かなくなります。元に戻すには、このスイッチをオンにします。"),
 	},
+	{
+		sectionId: 'psd-sec-notif',
+		key: 'paradis.agentHooks.codexTrust',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.codexHookTrust', "Codex の hook に信頼を付ける"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.codexHookTrustDesc', "Codex は hook を使う前に信頼の確認を求めます。Para Code が設置した hook にだけ、Para Code が代わりに信頼を付けます。"),
+		keywords: 'codex hook trust hooks.state config.toml',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			ask: localize('paradis.settings.codexHookTrust.ask', "初回に確かめる"),
+			// allow-any-unicode-next-line
+			auto: localize('paradis.settings.codexHookTrust.auto', "自動で付ける"),
+			// allow-any-unicode-next-line
+			off: localize('paradis.settings.codexHookTrust.off', "付けない"),
+		},
+	},
 
 	// --- ブラウザ共有 ---
 	{
