@@ -22,7 +22,6 @@ import { paradisWriteFileAtomic } from '../../../../node/paradisWriteFileAtomic.
 const MANAGED = '[ -x "$HOME/.para-code/hooks/notify-v3.sh" ] && "$HOME/.para-code/hooks/notify-v3.sh" || true';
 const HOME = '/home/u/.codex';
 const HOOKS = `${HOME}/hooks.json`;
-const CONFIG = `${HOME}/config.toml`;
 
 interface IFakeHook {
 	readonly key: string;
@@ -33,52 +32,69 @@ interface IFakeHook {
 	readonly source?: string;
 }
 
-/** Codex の app-server の代わり。hooks.state は config.toml の中身として持つ。 */
+type HooksState = Record<string, { trusted_hash: string }>;
+
+/**
+ * Codex の app-server の代わり。config.toml の `hooks.state` と版を持ち、
+ * `expectedVersion` が今の版と違う書き込みは Codex と同じく断る。
+ */
 class FakeCodex {
 	readonly calls: string[] = [];
-	readonly files = new Map<string, Buffer>();
-	/** config/batchWrite を書いたことにして、実際には信頼を付けない（確認の失敗を再現する）。 */
-	brokenWrite = false;
+	state: HooksState = {};
+	version = 1;
+	/** 書き込みの直後に hooks.json が書き換わり、hook のハッシュが変わる（確認の失敗を再現する）。 */
+	hooksChangeAfterWrite = false;
+	/** 書き込みを反映したあと、応答を返さずに失敗させる（時間切れの再現）。 */
+	failAfterWrite = false;
+	/** こちらの書き込みの直後に、別の誰か（Codex の TUI など）が書く。 */
+	afterWrite: (() => void) | undefined;
 
-	constructor(readonly hooks: IFakeHook[]) { }
+	constructor(public hooks: IFakeHook[]) { }
 
-	private trusted(): Record<string, string> {
-		const raw = this.files.get(CONFIG)?.toString('utf8') ?? '';
-		const state: Record<string, string> = {};
-		for (const match of raw.matchAll(/^(?<key>[^=\n]+)=(?<hash>.+)$/gm)) {
-			state[match.groups!.key] = match.groups!.hash;
-		}
-		return state;
-	}
+	private rpcCount = 0;
 
 	rpc(): IParadisCodexRpc {
+		const id = ++this.rpcCount;
 		return {
 			request: async (method: string, params: unknown) => {
-				this.calls.push(method);
+				this.calls.push(`${id}:${method}`);
 				if (method === 'hooks/list') {
-					const trusted = this.trusted();
 					return {
 						data: [{
 							cwd: HOME, warnings: [], errors: [], hooks: this.hooks.map(hook => ({
 								key: hook.key, eventName: hook.eventName, handlerType: 'command', command: hook.command,
 								source: hook.source ?? 'user', sourcePath: hook.sourcePath ?? HOOKS, currentHash: hook.currentHash,
-								trustStatus: trusted[hook.key] === undefined ? 'untrusted' : trusted[hook.key] === hook.currentHash ? 'trusted' : 'modified',
+								trustStatus: this.state[hook.key] === undefined ? 'untrusted' : this.state[hook.key].trusted_hash === hook.currentHash ? 'trusted' : 'modified',
 							})),
 						}],
 					};
 				}
+				if (method === 'config/read') {
+					return { config: {}, origins: {}, layers: [{ name: { type: 'user', file: `${HOME}/config.toml` }, version: `v${this.version}`, config: { model: 'x', hooks: { state: { ...this.state } } } }] };
+				}
 				if (method === 'config/batchWrite') {
-					const edits = (params as { edits: { keyPath: string; value: Record<string, { trusted_hash: string }> }[] }).edits;
-					const lines = (this.files.get(CONFIG)?.toString('utf8') ?? '').split('\n');
-					for (const [key, entry] of Object.entries(edits[0].value)) {
-						lines.push(`${key}=${this.brokenWrite ? 'sha256:broken' : entry.trusted_hash}`);
+					const request = params as { edits: { keyPath: string; value: HooksState; mergeStrategy: string }[]; expectedVersion?: string };
+					if (request.expectedVersion !== undefined && request.expectedVersion !== `v${this.version}`) {
+						throw new Error('Configuration was modified since last read.');
 					}
-					this.files.set(CONFIG, Buffer.from(lines.filter(line => line.length > 0).join('\n') + '\n'));
-					return { status: 'ok' };
+					const edit = request.edits[0];
+					this.state = edit.mergeStrategy === 'replace' ? { ...edit.value } : { ...this.state, ...edit.value };
+					this.version++;
+					this.calls.push(`${id}:wrote:${edit.mergeStrategy}`);
+					if (edit.mergeStrategy === 'upsert') {
+						if (this.hooksChangeAfterWrite) {
+							this.hooks = this.hooks.map(hook => ({ ...hook, currentHash: `${hook.currentHash}-changed` }));
+						}
+						this.afterWrite?.();
+						if (this.failAfterWrite) {
+							throw new Error('codex app-server config/batchWrite timed out');
+						}
+					}
+					return { status: 'ok', version: `v${this.version}` };
 				}
 				throw new Error(`unexpected ${method}`);
 			},
-			dispose: () => { this.calls.push('dispose'); },
+			dispose: () => { this.calls.push(`${id}:dispose`); },
 		};
 	}
 
@@ -86,20 +102,12 @@ class FakeCodex {
 		return {
 			openRpc: async () => this.rpc(),
 			realpath: async path => path === HOOKS || path === HOME ? path : undefined,
-			readFile: async path => this.files.get(path),
-			restoreFile: async (path, content) => {
-				this.calls.push('restore');
-				if (content === undefined) {
-					this.files.delete(path);
-				} else {
-					this.files.set(path, content);
-				}
-			},
 		};
 	}
 }
 
 const target = { codexHome: HOME, managedCommand: MANAGED, isWindows: false };
+const managedStop = { key: `${HOOKS}:stop:0:0`, eventName: 'stop', command: MANAGED, currentHash: 'sha256:b' };
 
 suite('ParadisCodexHookTrust', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -116,13 +124,13 @@ suite('ParadisCodexHookTrust', () => {
 		assert.deepStrictEqual(selected.map(listing => listing.key), ['a']);
 	});
 
-	test('信頼が要る hook にだけ Codex の答えたハッシュで信頼を付け、付いたことを確かめる', async () => {
+	test('信頼が要る hook にだけ Codex の答えたハッシュで信頼を付け、読んだ版を添えて書く', async () => {
 		const codex = new FakeCodex([
 			{ key: `${HOOKS}:session_start:0:0`, eventName: 'sessionStart', command: 'echo mine', currentHash: 'sha256:user' },
 			{ key: `${HOOKS}:session_start:1:0`, eventName: 'sessionStart', command: MANAGED, currentHash: 'sha256:a' },
-			{ key: `${HOOKS}:stop:0:0`, eventName: 'stop', command: MANAGED, currentHash: 'sha256:b' },
+			managedStop,
 		]);
-		codex.files.set(CONFIG, Buffer.from(`${HOOKS}:stop:0:0=sha256:old\n`));
+		codex.state = { [managedStop.key]: { trusted_hash: 'sha256:old' } };
 
 		const before = await paradisInspectCodexHookTrust(target, codex.io());
 		const result = await paradisGrantCodexHookTrust(target, codex.io());
@@ -132,28 +140,71 @@ suite('ParadisCodexHookTrust', () => {
 			before: { pending: before.pending.map(listing => `${listing.eventName}:${listing.trustStatus}`), managedCount: before.managedCount },
 			result: { outcome: result.outcome, events: result.grantedEvents },
 			again: again.outcome,
-			config: codex.files.get(CONFIG)?.toString('utf8'),
+			// 利用者の hook（session_start:0:0）の信頼は付けない
+			state: codex.state,
 		}, {
 			before: { pending: ['sessionStart:untrusted', 'stop:modified'], managedCount: 2 },
 			result: { outcome: 'granted', events: ['sessionStart', 'stop'] },
 			again: 'already-trusted',
-			// 利用者の hook（session_start:0:0）の信頼は付けない
-			config: `${HOOKS}:stop:0:0=sha256:old\n${HOOKS}:session_start:1:0=sha256:a\n${HOOKS}:stop:0:0=sha256:b\n`,
+			state: { [managedStop.key]: { trusted_hash: 'sha256:b' }, [`${HOOKS}:session_start:1:0`]: { trusted_hash: 'sha256:a' } },
 		});
 	});
 
-	test('書いたあとの確認が合わなければ、書く前の config.toml へ戻す', async () => {
-		const codex = new FakeCodex([{ key: `${HOOKS}:stop:0:0`, eventName: 'stop', command: MANAGED, currentHash: 'sha256:b' }]);
-		codex.files.set(CONFIG, Buffer.from('model = "x"\n'));
-		codex.brokenWrite = true;
+	test('確認が合わなければ、こちらが書いた鍵だけを元へ戻し、その間に他が書いた値は残す', async () => {
+		const codex = new FakeCodex([managedStop, { key: `${HOOKS}:pre_tool_use:0:0`, eventName: 'preToolUse', command: MANAGED, currentHash: 'sha256:c' }]);
+		codex.state = { [managedStop.key]: { trusted_hash: 'sha256:old' }, '/other:stop:0:0': { trusted_hash: 'sha256:user' } };
+		codex.hooksChangeAfterWrite = true;
+		codex.afterWrite = () => {
+			codex.state = { ...codex.state, '/tui:stop:0:0': { trusted_hash: 'sha256:tui' } };
+			codex.version++;
+		};
 
 		const result = await paradisGrantCodexHookTrust(target, codex.io());
 
-		assert.deepStrictEqual({ outcome: result.outcome, config: codex.files.get(CONFIG)?.toString('utf8'), calls: codex.calls }, {
+		assert.deepStrictEqual({ outcome: result.outcome, state: codex.state }, {
 			outcome: 'verify-failed',
-			config: 'model = "x"\n',
-			calls: ['hooks/list', 'config/batchWrite', 'hooks/list', 'restore', 'dispose'],
+			state: {
+				[managedStop.key]: { trusted_hash: 'sha256:old' },
+				'/other:stop:0:0': { trusted_hash: 'sha256:user' },
+				'/tui:stop:0:0': { trusted_hash: 'sha256:tui' },
+			},
 		});
+	});
+
+	test('書き込みが途中で失敗したら、その app-server を止めてから新しい app-server で戻す', async () => {
+		const codex = new FakeCodex([managedStop]);
+		codex.failAfterWrite = true;
+
+		const result = await paradisGrantCodexHookTrust(target, codex.io());
+
+		assert.deepStrictEqual({ outcome: result.outcome, state: codex.state, calls: codex.calls }, {
+			outcome: 'failed',
+			state: {},
+			calls: ['1:hooks/list', '1:config/read', '1:config/batchWrite', '1:wrote:upsert', '1:dispose', '2:config/read', '2:config/batchWrite', '2:wrote:replace', '2:dispose'],
+		});
+	});
+
+	test('読んでから書くまでに config.toml が変わっていたら書かない', async () => {
+		const codex = new FakeCodex([managedStop]);
+		const io = codex.io();
+		const inner = codex.rpc.bind(codex);
+		codex.rpc = () => {
+			const rpc = inner();
+			return {
+				request: async (method: string, params: unknown) => {
+					const response = await rpc.request(method, params);
+					if (method === 'config/read') {
+						codex.version++; // 読んだ直後に誰かが書いた
+					}
+					return response;
+				},
+				dispose: () => rpc.dispose(),
+			};
+		};
+
+		const result = await paradisGrantCodexHookTrust(target, io);
+
+		assert.deepStrictEqual({ outcome: result.outcome, state: codex.state }, { outcome: 'failed', state: {} });
 	});
 
 	test('hooks.json が無ければ codex を起こさない', async () => {
@@ -202,9 +253,10 @@ suite('ParadisCodexHookTrust', () => {
 				watchHooks: (_home, listener) => { hooksChanged.push(listener); return Disposable.None; },
 				schedule: (_delay, callback): IDisposable => { scheduled.push(callback); return toDisposable(() => { const index = scheduled.indexOf(callback); if (index >= 0) { scheduled.splice(index, 1); } }); },
 			};
-			const service = store.add(new ParadisCodexHookTrustService(backend, { defaultCodexHome: '/home/u/.codex', userHome: '/home/u' }, () => mode, modeChanged.event, new NullLogService()));
+			const clock = { now: 0 };
+			const service = store.add(new ParadisCodexHookTrustService(backend, { defaultCodexHome: '/home/u/.codex', userHome: '/home/u', now: () => clock.now }, () => mode, modeChanged.event, new NullLogService()));
 			return {
-				service, events,
+				service, events, clock,
 				ledger: () => ledger,
 				setMode(value: string) { mode = value; modeChanged.fire(); },
 				setFingerprint(value: string) { fingerprint = value; },
@@ -245,14 +297,27 @@ suite('ParadisCodexHookTrust', () => {
 			const extra = await env.service.grant('/home/u/.codex-2');
 			const rejected = await env.service.getStatus('/etc').then(() => 'accepted', () => 'rejected');
 			const rejectedRelative = await env.service.grant('.codex-3').then(() => 'accepted', () => 'rejected');
-			assert.deepStrictEqual({ off: off.outcome, extra: extra.outcome, rejected, rejectedRelative, events: env.events, claims: [env.service.claimPrompt(), env.service.claimPrompt()] }, {
+			assert.deepStrictEqual({ off: off.outcome, extra: extra.outcome, rejected, rejectedRelative, events: env.events }, {
 				off: 'skipped',
 				extra: 'granted',
 				rejected: 'rejected',
 				rejectedRelative: 'rejected',
 				events: ['grant:/home/u/.codex-2'],
-				claims: [true, false],
 			});
+		});
+
+		test('確かめる札は1つの窓だけが持ち、通知を出さずに返したら次の窓が持てる。出したら以後は誰も持てない', () => {
+			const env = setup('ask');
+			const claims: boolean[] = [];
+			claims.push(env.service.claimPrompt(), env.service.claimPrompt());
+			env.service.releasePrompt(false);
+			claims.push(env.service.claimPrompt());
+			// 返さずに窓が消えても、2分で取り返せる
+			env.clock.now += 2 * 60_000;
+			claims.push(env.service.claimPrompt());
+			env.service.releasePrompt(true);
+			claims.push(env.service.claimPrompt());
+			assert.deepStrictEqual(claims, [true, false, true, true, false]);
 		});
 	});
 });

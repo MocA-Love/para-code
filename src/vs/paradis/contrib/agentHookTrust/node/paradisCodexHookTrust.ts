@@ -57,10 +57,6 @@ export interface IParadisCodexHookTrustIO {
 	openRpc(codexHome: string): Promise<IParadisCodexRpc | undefined>;
 	/** 実体パス。無ければ undefined。 */
 	realpath(path: string): Promise<string | undefined>;
-	/** 中身。無ければ undefined。 */
-	readFile(path: string): Promise<Buffer | undefined>;
-	/** 元へ戻す。`content` が undefined ならファイルを消す（もともと無かった）。 */
-	restoreFile(path: string, content: Buffer | undefined): Promise<void>;
 }
 
 export interface IParadisCodexHookTrustTarget {
@@ -74,7 +70,6 @@ interface IResolvedTarget {
 	readonly realHome: string;
 	readonly hooksPath: string;
 	readonly hooksPaths: readonly string[];
-	readonly configPath: string;
 }
 
 const HOOKS_LIST_TIMEOUT_MS = 20_000;
@@ -91,7 +86,6 @@ async function resolveTarget(target: IParadisCodexHookTrustTarget, io: IParadisC
 		realHome,
 		hooksPath,
 		hooksPaths: [join(realHome, 'hooks.json'), realHooks, hooksPath],
-		configPath: join(realHome, 'config.toml'),
 	};
 }
 
@@ -123,9 +117,73 @@ export async function paradisInspectCodexHookTrust(target: IParadisCodexHookTrus
 	}
 }
 
+/** 利用者の層（`CODEX_HOME/config.toml`）の `hooks.state` と、その版。 */
+interface IUserHooksState {
+	readonly version: string | undefined;
+	readonly state: Record<string, unknown>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function readUserHooksState(rpc: IParadisCodexRpc): Promise<IUserHooksState> {
+	const result = await rpc.request('config/read', { includeLayers: true }, CONFIG_WRITE_TIMEOUT_MS);
+	const layers = isRecord(result) && Array.isArray(result.layers) ? result.layers : [];
+	const user = layers.find(layer => isRecord(layer) && isRecord(layer.name) && layer.name.type === 'user');
+	if (!isRecord(user)) {
+		return { version: undefined, state: {} };
+	}
+	const hooks = isRecord(user.config) && isRecord(user.config.hooks) ? user.config.hooks : undefined;
+	return {
+		version: typeof user.version === 'string' ? user.version : undefined,
+		state: hooks !== undefined && isRecord(hooks.state) ? { ...hooks.state } : {},
+	};
+}
+
+function trustedHashOf(entry: unknown): string | undefined {
+	return isRecord(entry) && typeof entry.trusted_hash === 'string' ? entry.trusted_hash : undefined;
+}
+
+/**
+ * 書いた信頼を取り消す。対象は「今もこちらが書いたハッシュのままの鍵」だけで、書く前に値が
+ * あった鍵はその値へ、無かった鍵は消す。`config/read` で得た版を `expectedVersion` に渡すので、
+ * その間に Codex の TUI などが config.toml を書いていれば、何も戻さずにやめる（他人の変更を消さない）。
+ *
+ * @returns 戻したか（戻す必要が無かったときも true）
+ */
+async function rollbackGrantedKeys(rpc: IParadisCodexRpc, written: Readonly<Record<string, { trusted_hash: string }>>, before: Readonly<Record<string, unknown>>): Promise<boolean> {
+	const current = await readUserHooksState(rpc);
+	const next = { ...current.state };
+	let changed = false;
+	for (const [key, value] of Object.entries(written)) {
+		if (trustedHashOf(current.state[key]) !== value.trusted_hash) {
+			continue; // 書いていない（書き込みが届かなかった）か、もう別の値になっている
+		}
+		changed = true;
+		if (Object.prototype.hasOwnProperty.call(before, key)) {
+			next[key] = before[key];
+		} else {
+			delete next[key];
+		}
+	}
+	if (!changed) {
+		return true;
+	}
+	await rpc.request('config/batchWrite', {
+		edits: [{ keyPath: 'hooks.state', value: next, mergeStrategy: 'replace' }],
+		...(current.version !== undefined ? { expectedVersion: current.version } : {}),
+	}, CONFIG_WRITE_TIMEOUT_MS);
+	return true;
+}
+
 /**
  * Para Code が置いた hook のうち、まだ信頼されていないものに信頼を付ける。
  * 例外は投げない（失敗は結果の outcome で返す）。
+ *
+ * config.toml への読み書きはすべて Codex 自身（`config/read` / `config/batchWrite`）に任せ、
+ * 書くときは直前に読んだ版を `expectedVersion` に渡す。読んでから書くまでに他が書いていれば
+ * Codex が書き込みを断るので、利用者や TUI の変更を上書きしない。
  */
 export async function paradisGrantCodexHookTrust(target: IParadisCodexHookTrustTarget, io: IParadisCodexHookTrustIO): Promise<IParadisCodexHookTrustGrantResult> {
 	const base = { codexHome: target.codexHome, hooksPath: join(target.codexHome, 'hooks.json') };
@@ -134,17 +192,7 @@ export async function paradisGrantCodexHookTrust(target: IParadisCodexHookTrustT
 		return { ...base, outcome: 'nothing-installed', grantedEvents: [] };
 	}
 	let rpc: IParadisCodexRpc | undefined;
-	let snapshot: { readonly content: Buffer | undefined } | undefined;
-	const rollback = async () => {
-		if (snapshot === undefined) {
-			return;
-		}
-		const current = await io.readFile(resolved.configPath);
-		const unchanged = current === undefined ? snapshot.content === undefined : snapshot.content !== undefined && current.equals(snapshot.content);
-		if (!unchanged) {
-			await io.restoreFile(resolved.configPath, snapshot.content);
-		}
-	};
+	let attempted: { readonly written: Record<string, { trusted_hash: string }>; readonly before: Record<string, unknown> } | undefined;
 	try {
 		rpc = await io.openRpc(target.codexHome);
 		if (rpc === undefined) {
@@ -158,12 +206,16 @@ export async function paradisGrantCodexHookTrust(target: IParadisCodexHookTrustT
 		if (needing.length === 0) {
 			return { ...base, outcome: 'already-trusted', grantedEvents: [] };
 		}
-		const value: Record<string, { trusted_hash: string }> = {};
+		const written: Record<string, { trusted_hash: string }> = {};
 		for (const listing of needing) {
-			value[listing.key] = { trusted_hash: listing.currentHash };
+			written[listing.key] = { trusted_hash: listing.currentHash };
 		}
-		snapshot = { content: await io.readFile(resolved.configPath) };
-		await rpc.request('config/batchWrite', { edits: [{ keyPath: 'hooks.state', value, mergeStrategy: 'upsert' }] }, CONFIG_WRITE_TIMEOUT_MS);
+		const before = await readUserHooksState(rpc);
+		attempted = { written, before: before.state };
+		await rpc.request('config/batchWrite', {
+			edits: [{ keyPath: 'hooks.state', value: written, mergeStrategy: 'upsert' }],
+			...(before.version !== undefined ? { expectedVersion: before.version } : {}),
+		}, CONFIG_WRITE_TIMEOUT_MS);
 
 		// 付いたかどうかを Codex 自身に確かめさせる。鍵とハッシュが書いたとおりで、信頼済みになっていること
 		const verified = new Map((await listManaged(rpc, target, resolved)).map(listing => [listing.key, listing]));
@@ -172,13 +224,26 @@ export async function paradisGrantCodexHookTrust(target: IParadisCodexHookTrustT
 			return after === undefined || after.trustStatus !== 'trusted' || after.currentHash !== listing.currentHash;
 		});
 		if (failed.length > 0) {
-			await rollback();
-			return { ...base, outcome: 'verify-failed', grantedEvents: [], detail: `${failed.length} of ${needing.length} hooks were not trusted after the write` };
+			const rolledBack = await rollbackGrantedKeys(rpc, written, before.state).catch(() => false);
+			return { ...base, outcome: 'verify-failed', grantedEvents: [], detail: `${failed.length} of ${needing.length} hooks were not trusted after the write${rolledBack ? '' : '; could not roll back'}` };
 		}
 		return { ...base, outcome: 'granted', grantedEvents: needing.map(listing => listing.eventName) };
 	} catch (error) {
-		await rollback().catch(() => undefined);
 		const detail = String(error instanceof Error ? error.message : error);
+		if (attempted !== undefined) {
+			// 時間切れした書き込みが、戻したあとで届かないよう、先にその app-server を止める。
+			// 戻すのは新しく起こした app-server で、今もこちらの書いた値のままの鍵だけ
+			rpc?.dispose();
+			rpc = undefined;
+			const rollbackRpc = await io.openRpc(target.codexHome).catch(() => undefined);
+			try {
+				if (rollbackRpc !== undefined) {
+					await rollbackGrantedKeys(rollbackRpc, attempted.written, attempted.before).catch(() => undefined);
+				}
+			} finally {
+				rollbackRpc?.dispose();
+			}
+		}
 		return { ...base, outcome: error instanceof ParadisCodexRpcMethodNotFoundError ? 'unsupported' : 'failed', grantedEvents: [], detail };
 	} finally {
 		rpc?.dispose();
@@ -191,36 +256,24 @@ function isNotFound(error: unknown): boolean {
 	return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
 }
 
-const nodeFileIO: Pick<IParadisCodexHookTrustIO, 'realpath' | 'readFile' | 'restoreFile'> = {
-	async realpath(path) {
-		try {
-			return await fs.realpath(path);
-		} catch {
+async function realpathOrUndefined(path: string): Promise<string | undefined> {
+	try {
+		return await fs.realpath(path);
+	} catch {
+		return undefined;
+	}
+}
+
+async function readOptionalFile(path: string): Promise<Buffer | undefined> {
+	try {
+		return await fs.readFile(path);
+	} catch (error) {
+		if (isNotFound(error)) {
 			return undefined;
 		}
-	},
-	async readFile(path) {
-		try {
-			return await fs.readFile(path);
-		} catch (error) {
-			if (isNotFound(error)) {
-				return undefined;
-			}
-			throw error;
-		}
-	},
-	async restoreFile(path, content) {
-		if (content === undefined) {
-			await fs.unlink(path).catch(error => {
-				if (!isNotFound(error)) {
-					throw error;
-				}
-			});
-			return;
-		}
-		await paradisWriteFileAtomic(path, content);
-	},
-};
+		throw error;
+	}
+}
 
 // ---------- サービス（shared process） ----------
 
@@ -246,16 +299,22 @@ export interface IParadisCodexHookTrustServiceOptions {
 	readonly startupDelayMs?: number;
 	/** hooks.json が変わってから確認するまでの待ち時間。 */
 	readonly changeDelayMs?: number;
+	readonly now?: () => number;
 }
 
 const DEFAULT_STARTUP_DELAY_MS = 20_000;
 const DEFAULT_CHANGE_DELAY_MS = 3_000;
+/** 確かめる役を引き受けた窓が、結果を返さずに消えたときに札を取り返すまでの時間。 */
+const PROMPT_CLAIM_TTL_MS = 2 * 60_000;
 
 export class ParadisCodexHookTrustService extends Disposable {
 
 	private readonly queues = new Map<string, Promise<unknown>>();
 	private ledger: Promise<Record<string, string>> | undefined;
-	private promptClaimed = false;
+	/** 利用者に確かめる通知を、この shared process で出したか。 */
+	private promptShown = false;
+	/** 確かめる役を引き受けた窓がいる間の期限。 */
+	private promptClaimedUntil = 0;
 	private readonly pendingAuto = this._register(new MutableDisposable());
 
 	constructor(
@@ -341,13 +400,30 @@ export class ParadisCodexHookTrustService extends Disposable {
 		});
 	}
 
-	/** 利用者に確かめる役を1つの窓だけが引き受けるための札。この shared process で最初の1回だけ true。 */
+	/**
+	 * 利用者に確かめる役を1つの窓だけが引き受けるための札。
+	 * 通知をまだ出しておらず、ほかの窓が引き受けていなければ true。引き受けた窓は必ず
+	 * {@link releasePrompt} で結果を返す（返さずに窓が消えても、一定時間で札は戻る）。
+	 */
 	claimPrompt(): boolean {
-		if (this.promptClaimed) {
+		const now = this.now();
+		if (this.promptShown || now < this.promptClaimedUntil) {
 			return false;
 		}
-		this.promptClaimed = true;
+		this.promptClaimedUntil = now + PROMPT_CLAIM_TTL_MS;
 		return true;
+	}
+
+	/** 札を返す。`shown` が true なら通知を出したので、この shared process では以後聞かない。 */
+	releasePrompt(shown: boolean): void {
+		if (shown) {
+			this.promptShown = true;
+		}
+		this.promptClaimedUntil = 0;
+	}
+
+	private now(): number {
+		return (this.options.now ?? Date.now)();
 	}
 
 	private async grantAndRecord(home: string): Promise<IParadisCodexHookTrustGrantResult> {
@@ -393,6 +469,7 @@ export class ParadisCodexHookTrustChannel implements IServerChannel<string> {
 			case 'getStatus': return this.service.getStatus(arg) as Promise<T>;
 			case 'grant': return this.service.grant(arg) as Promise<T>;
 			case 'claimPrompt': return Promise.resolve(this.service.claimPrompt()) as Promise<T>;
+			case 'releasePrompt': return Promise.resolve(this.service.releasePrompt(arg === true)) as Promise<T>;
 		}
 		throw new Error(`Call not found: ${command}`);
 	}
@@ -417,7 +494,7 @@ export function createParadisCodexHookTrustBackend(userDataPath: string, getEnv:
 		return command === undefined ? undefined : { command, env };
 	};
 	const io: IParadisCodexHookTrustIO = {
-		...nodeFileIO,
+		realpath: realpathOrUndefined,
 		async openRpc(codexHome) {
 			const codex = await resolveCodex();
 			if (codex === undefined) {
@@ -439,13 +516,13 @@ export function createParadisCodexHookTrustBackend(userDataPath: string, getEnv:
 			const hash = createHash('sha256');
 			hash.update(codex.command).update('\0').update(version.stdout.trim()).update('\0');
 			for (const name of ['hooks.json', 'config.toml']) {
-				const content = await nodeFileIO.readFile(join(codexHome, name));
+				const content = await readOptionalFile(join(codexHome, name));
 				hash.update(name).update('\0').update(content ?? '<missing>').update('\0');
 			}
 			return hash.digest('hex');
 		},
 		async readLedger() {
-			const content = await nodeFileIO.readFile(ledgerPath);
+			const content = await readOptionalFile(ledgerPath);
 			if (content === undefined) {
 				return {};
 			}
