@@ -713,14 +713,16 @@ TM3 / TM4 / TM7 / TM10 / TM21 はすべて `src/vs/paradis/contrib/` の新規�
 
 ## エージェントの様子をデスクトップへ渡す経路（agentInsights、2026-09-27、フェーズ3 担当B）
 
-サブエージェント・最後の発言・未回答の質問・プロンプトキャッシュの残り時間は、モバイル中継（`mobileRelay/node/paradisMobileAgentChat.ts`）が transcript と hook から既に読んでいる。デスクトップの UI はこれを二重に集計せず、中継に**読み取り口だけ**を足して引く（Q20 案A）。モバイルへ送るメッセージの形は変えていない。
+サブエージェント・最後の発言・未回答の質問・プロンプトキャッシュの残り時間は、モバイル中継（`mobileRelay/node/paradisMobileAgentChat.ts`）が transcript と hook から既に読んでいる。デスクトップの UI はこれを二重に集計せず、中継に**読み取り口だけ**を足して引く（hook を直接読む集計を別に作ると、PC とスマホで表示が食い違い、Codex のサブエージェントも取れないため）。モバイルへ送るメッセージの形は変えていない。
 
 - 口は `IParadisAgentPaneInsightSource`（`agentInsights/common/paradisAgentInsights.ts`）。中継サービスのチャネル `PARADIS_MOBILE_RELAY_CHANNEL` に `getAgentPaneInsights(tokens)` と `onDidChangeAgentPaneInsights` を足しただけ。renderer 側は `agentInsights/electron-browser` の取得係がこのウィンドウのペイントークン分だけ取り、`IParadisAgentInsightsService`（browser 層のストア）へ置く。知らせの取りこぼしに備えて 10 秒ごとにも取り直す
 - **モバイル連携が無効でも動く**。中継サービスは shared process で常に生成され、セッションが確定したペインの status 用 tailer はモバイル接続と無関係に常駐している（`stopTailerIfUnsubscribed` 参照）。ただしモバイル向けの質問・承認の注入（`injectLiveQuestions` / `injectApprovalRequest`）はペアリング済みのモバイルがあるときしか動かないので、デスクトップの「待っている内容」はそれに頼らず hook（`PreToolUse` の AskUserQuestion と `PermissionRequest`）から別に覚えている（`recordDesktopInteraction`）
 - ProxyChannel はサービスのイベントをチャネル登録時に `Event.buffer` で購読してしまうため、「購読者がいる間だけ動かす」は効かない。変化の検出は hook・tailer の追記・活動ツリーの更新を契機に 250ms まとめて指紋を比べる方式にした
-- プロンプトキャッシュの残り時間は Claude の assistant 行の `usage.cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` から決める（両方あれば先に切れる 5 分、読み込みだけのリクエストは直前の長さを引き継ぐ）。起点は行の `timestamp`＝応答を書き終えた時刻で、実際の起点（リクエスト時刻）より応答時間ぶん長めに出る。応答中（状態が「動作中」）のペインは出さず、0 になったら消す
+- プロンプトキャッシュの残り時間は Claude の assistant 行の `usage.cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` から決める（両方あれば先に切れる 5 分、読み込みだけのリクエストは直前の長さを引き継ぐ）。起点はその応答を求めたリクエストの時刻で、直前の user 行（ユーザーの発言か tool_result）の `timestamp` で近似する（応答を書き終えた時刻を使うと、生成に2分かかった応答で残りを2分長く見積もる）。エディタのターミナルのバッジは、応答中（状態が「動作中」）と 0 になった後は消す
 - **Codex は残り時間を出さない**。OpenAI のプロンプトキャッシュは「おおむね 5〜10 分の無操作で消え、長くても 1 時間」という目安しか公開されておらず、rollout の `token_count` にも `cached_input_tokens` しか無い（有効期限を決める根拠が記録に無い）
-- スペース一覧のメタ段の項目 `promptCache` は `paradis.workspaceSwitch.rowMeta` の5項目目。既存の設定に書かれていない項目は末尾へ足されるので、並びを変えていない人には PR・Issue の右（左寄せの末尾）に出る。出る・消えるで行が 44px ⇔ 60px に変わるため、ツリーの組み直しは「出る・消える」のときだけにし、数字は 1 秒ごとに文字だけ書き換える（`ParadisPromptCacheChips`）
+- スペース一覧のメタ段の項目 `promptCache` は `paradis.workspaceSwitch.rowMeta` の5項目目で、PR・Issue の右（左寄せの末尾）に出る。**行の高さはターンごとに揺らさない**: 枠を出すかは「そのスペースの Claude ペインにキャッシュの記録があるか」で決め、応答中や期限切れの間は数字を消して炎を薄く残す（応答のたびに枠ごと消すと、メタ段を他に持たない行が 44px ⇔ 60px で上下し、押そうとした行がずれる）。ツリーの組み直しは記録を持つペインの出入りのときだけで、数字は 1 秒ごとに文字だけ書き換える（`ParadisPromptCacheChips`）
+- 設定を自分で書いた（「表示する情報」を触った）人の並びに `promptCache` が無いときは、**非表示で**末尾へ足す（すべて非表示にして2段表示を選んでいた人の行が、更新しただけで3段に伸びないように）。後から項目を足すときは `PARADIS_WORKTREE_META_ADDED_LATER` に入れる
+- エディタのターミナルのバッジは、ターミナルの検索ウィジェットと同じ右上の角に出る。検索ウィジェットが開いている間は CSS（`:has(.simple-find-part.visible)`）で隠し、ボタンを覆ったりクリックを奪ったりしないようにしている
 - エディタエリアのターミナルのバッジは、ペインインジケータと同じく DI を持たない `SessionTerminalEditor` から置く。値の供給元はモジュールのレジストリ（`setParadisPromptCacheBadgeHost`）で、`vs/sessions/contrib/*` から `vs/paradis/contrib/agentInsights/~` を import するための許可を `eslint.config.js` に足している
 
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
