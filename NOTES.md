@@ -448,6 +448,46 @@ upstream 取り込み時に確認すること:
 - `IBrowserViewCaptureScreenshotOptions.pageRect` の意味（今はビューポート基準の CSS px。要素の切り抜きに使う）が変わっていないか
 - upstream が要素選択の Esc の weight を上げていないか（fork の Esc は `WorkbenchContrib + 1`）、「相対パスのコピー」の既定キーが変わっていないか
 
+## エミュレータ操作は、ページ共有の承認と既存の台帳を使い回す（mobileCanvas、2026-09-27、フェーズ7 担当D、B13）
+
+エージェントが端末を使うには、`mobile_request_device` で頼み、利用者が承認ダイアログで認める（Q71 の回答 A）。ダイアログはページ共有の承認と同じ `IParadisAgentBrowserTabsService.askApproval` をそのまま呼ぶので、「拒否」が既定のフォーカス、表示から 1 秒以内と ⌘D の承認は聞き直す、ダイアログは1つずつ、1ペインにつき待てる求めは1つ、という決まりも同じ実装で効く。拒否の後 3 分の自動の断りだけは、`askApproval` に足した任意の `cooldownKey` で絞った。端末の要求は `mobile-device:<端末の ID>`、インストールは `mobile-install:<端末の ID>` で数え、そのペインのその端末への求めだけを止める（別の端末の要求とページ共有は止めない）。キーの無い求め（ページ共有・プロファイル）はこれまでどおりペイン単位で、キー付きの拒否には数えられない。端末ごとに数えるだけだと、端末の数だけ続けてダイアログを出せる（14 台ある Mac なら 14 回）ので、端末の要求を拒否された直後の 10 秒は、同じペインからのほかの端末の要求もダイアログを出さずに断る（`PARADIS_MOBILE_ANY_DEVICE_DENIAL_MS`、renderer のチャネルが数える。インストールとページ共有には掛けない）。
+
+ツールは `node/paradisMobileDeviceOpsToolProvider.ts` に置き、`paradisRegisterMcpToolProvider` から足した。台帳（`ParadisMobileCanvasService`）とホストへの接続はどちらも `registerParadisMobileCanvas` の中にしか無いので、組み立てと登録もそこで行い、登録の後始末は台帳の `own()` に預けた。para-browser 側（`paradisAgentBrowserService.ts`）と `IParadisMcpToolCallContext` は触っていない。承認は shared process → 呼び出し元ペインを所有するウィンドウ（`paradisMobileDeviceRequest` チャネルの `requestDevice` / `approveInstall`、`electron-browser/paradisMobileDeviceRequest.contribution.ts`）で取り、割り当てとインストールは shared process が行う。締め切りは renderer 50 秒・shared process 55 秒（`PARADIS_MOBILE_APPROVAL_TIMEOUT_MS`。ページ共有の定数とは別に持つ）で、割り当ては shared process が答えを受け取ってから行うので、時間切れの後に遅れて成立することは無い。
+
+**インストールは毎回、別に承認を取る。** 入れたアプリは Para Code の権限で動き（iOS シミュレータのアプリは利用者の uid の macOS のプロセス）、エージェントのサンドボックス（作業フォルダの制限・ネットワークの遮断）の外に出られる。端末の割り当ての承認1回で、clang で作った `.app` を入れて起動すればサンドボックスを抜けられてしまうため（レビュー H1）。承認の前に、インストールするものを Para Code だけが書ける一時フォルダ（`os.tmpdir()` の下に `mkdtemp`、0700）へ写し、ダイアログには写しから読んだ中身（iOS の `.app` は `plutil` で `CFBundleIdentifier` と表示名、Android の `.apk` は SDK の build-tools の `aapt2 dump packagename`。読めなければ「読めませんでした」）と、写した元のパス（長ければ先頭を `…` にして末尾のファイル名を残す）、この点を書く。インストールするのも写しで、終わったら（断られても）消す。写す前に、今頼んだらダイアログを出さずに断られる状態か（3 分の自動の断り・同じペインの求めが答え待ち）を renderer に確かめ（`precheckInstall` → `IParadisAgentBrowserTabsService.approvalBlock`）、断られるなら写さない。同じペインのインストールは shared process で1つずつにする（断られる呼び出しを並べて、写しを同時にいくつも作らせない）。元のパスは承認の後にも中身や行き先を差し替えられる（再レビュー N1、実機で別の bundle ID のアプリが入った）ため。写すときはリンクを辿らず、中にシンボリックリンクがある成果物は断る（写しの外の、あとで書き換えられる場所を指したまま入れることになるため）。写す量は 4 GiB・20 万項目まで。`.ipa` は中身を読まない。端末の要求のダイアログと更新履歴にも一言書いた。インストールできる場所を作業フォルダの中に限る案は採らなかった（Xcode の成果物は DerivedData に出るので、普通の開発ができなくなる）。起動は入っているアプリを動かすだけなので承認しない。承認を待つ間にそのペインの割り当てが変わっていたら入れない。
+
+| ツール | 接続元の確認 | 承認 | 実体 |
+|---|---|---|---|
+| `mobile_request_device` | `pane` だけ | 毎回 | 承認ダイアログ → 台帳の `attachIfFree` |
+| `mobile_install_app` | `pane` だけ | 毎回 | `xcrun simctl install` / `adb -s <serial> install -r` |
+| `mobile_launch_app` | `pane` だけ | なし | `xcrun simctl launch` / `adb shell monkey -p <pkg> -c android.intent.category.LAUNCHER 1`（`relaunch` は `--terminate-running-process` / `am force-stop`） |
+| `mobile_grant_permission` | `pane` だけ | なし | `xcrun simctl privacy <udid> grant <service> <bundle>` / `adb shell pm grant <pkg> <permission>` |
+| `mobile_rotate` | 掛けない | なし | ホストの `input/rotate`。0.5 秒待ってから、スクショの縦横が頼んだ向きになったかを最大3枚見る（次の1枚が全体で2秒を越えるなら見ない）。画面の大きさを返し、ならなければ「前面のアプリがその向きに回らなかった」と添える |
+| `mobile_gesture` | 掛けない | なし | 向きのスワイプ `input/swipe`（`duration` は既定 0.4 秒、0.05〜10 秒）、長押し `input/tap` の `duration`（0.5〜10 秒）、ピンチ `input/touch` の `fingerId` 0 / 1 |
+| 既存の `mobile_tap`・`mobile_swipe`・`mobile_type_text`・`mobile_press_button`・`mobile_ui_tap` と読み取り系 | 掛けない | なし | 変更なし |
+
+**入力の座標に使う画面の大きさは、スクショの画素数を `/display` の `scale` で割って出す**（`mobile_tap` がホストで解釈される基準と同じ）。ホストの `/display` の大きさは端末の向きで、前面のアプリがその向きに回ったかは見ていない。縦しか無い画面（iPhone のホーム画面など）で横にすると、`/display` は `874x402` なのにスクショは `1206x2622` のままで、縦の座標への長押しが「画面の外」として断られていた（再レビュー N2、実機）。回転の結果・ジェスチャーの範囲の確認・既定の位置（画面の中央）はこの大きさで決める。スクショは1枚 0.5〜0.9 秒かかる（iOS 27、1206x2622）ので、毎回取ると回転が 0.7 秒から 9.8 秒まで遅くなった（最終確認の Low 1）。そのため大きさは端末ごとに覚え、取り直すのは回転したとき・アプリを起動したとき（前面のアプリが変わる）・覚えた値が無いときだけにした。ジェスチャーは覚えた値を使い、範囲の外と判定したときだけ断る前に一度取り直す（利用者が手で回した、ホームへ戻ったなど、覚えた後に画面が変わった場合のため）。スクショを取れないときだけ `/display` で代え、そのときの範囲の確認は縦横どちらでも入る正方形で見る。スワイプの既定の長さを 0.4 秒にしたのは、ホストの既定（72ms で返る）では iOS のホーム画面のページが送られなかったため（実機で 0.4 秒は送られた）。既存の `mobile_swipe` の既定も同じ値にした。
+
+接続元の確認の線引き（レビュー M1）: 画面の入力と読み取りは、利用者がその端末をそのペインへ渡した後の操作なので、トークンだけで動かす。確認を掛けると、tmux・screen・zellij の中のエージェント、採用した Codex app-server、WSL・dev container（N-10 の構成）で使えなくなる。一方、端末を割り当てる・アプリを入れる・起動する・権限を付けるのは、利用者がまだ認めていない範囲へ広げる操作なので確認を掛け、`unverified` は断る。契約のコメント（`paradisMcpToolProvider.ts` の `classifyCaller`）にもこの例外を書いた。SSH の接続先のペイン（`tunnel`）は、要求・インストール・起動・権限の付与を断る。既存の方針は「利用者が共有ダイアログでそのペインへ渡した端末は、画面の入力で操作できる」だけで、それ以外は方針が無いため。インストールのパスは手元のファイルを指すので、接続先のエージェントには意味も合わない。
+
+安全の決め事:
+
+- 操作系のツールは端末を名指しする引数を持たず、そのペインに割り当てられた端末だけを台帳から引く。名指しするのは要求だけで、ほかのペインに割り当てられている端末は断る。ID が違っても端末の番号（UDID / シリアル）が同じなら同じ端末とみなす（`paradisDeviceHeldByAnotherPane`）。承認の後の割り当ては台帳の `attachIfFree` が、端末一覧を待ち終えてから書き込むまでの間に await を挟まずに確かめ直す（別のウィンドウの2つのペインが同時に承認されても二重に割り当てない）。承認を待つ間にペインが閉じたら、renderer が `paneUnresolved` を返して割り当てない。`mobile_list_devices` は `usedByAnotherPane` を返す
+- **インストールするパスの確認はセキュリティの境界ではない**。確かめた後に、パスを別の場所へのリンクに差し替えられる。確かめるのは、利用者に分かりやすいエラーを返すためで、守りは毎回の承認と、承認の前に写した写し（写しから読んだ ID を見せ、写しを入れる）が担う。確認の中身は、絶対パスであること、UNC（`\\host\share`・`\\?\`・`//host`）でないこと（`realpath` だけで SMB へ繋ぎ認証情報を送りうるため）、`realpath` で解いた先の拡張子と種類（`.app` はフォルダで中に `Info.plist`、`.ipa` / `.apk` は普通のファイル）、端末の種類との組み合わせ。コマンドと承認ダイアログには解いた先のパスを渡す。ファイル名の文字を `[A-Za-z0-9._-]` に絞る案は見送った（`My App.app` のような空白入りの成果物名が普通にあるため。`adb install` がファイル名を端末側の `pm install` へ渡す古い経路は adb の引用に頼っている）
+- 実行はすべて `execFile` に引数配列（シェルを通さない）。`xcrun` は `/usr/bin/xcrun`。`adb` は `ANDROID_HOME` → `ANDROID_SDK_ROOT` → 既定の SDK フォルダ（macOS は `~/Library/Android/sdk`）→ PATH の絶対パスの項目の順に探し、見つけた絶対パスで起動する（裸の `adb` は渡さない。Windows では今のフォルダが先に探されうるため）。見つからなければ覚えずにエラーにする（後から SDK を入れても再起動なしで使える）。環境変数は shared process のもので、ペインの環境は見ない。候補の所有者と書き込み権の確認は見送った（作業フォルダが `~` のエージェントは `~/Library/Android/sdk/platform-tools/adb` を差し替えうる。ただしそれができるエージェントは、利用者のシェルの設定ファイルも書き換えられる）
+- **`adb shell` の後ろは端末側のシェルがつなぎ直して解釈する**ので、引数配列でも空白や `;` があればコマンドになる。アプリの ID（`paradisIsValidAppId`）・権限名（`paradisResolveMobilePermission`）・端末の番号（`paradisIsValidNativeDeviceId`）は形を確かめた値しか渡さない。この検査を緩めるときは必ずこの点を見直す
+- 権限は1つのアプリに1つずつ付けるだけ（取り消し・`all`・全体の初期化はしない）。付けるのは利用者が入れたアプリだけで、名前ではなく端末に聞いて決める。iOS は `simctl listapps` の `ApplicationType` が `User` のもの（Xcode 27 の出力で確認した。OpenStep 形式の plist を字下げで読む）、Android は `pm list packages -3` に入っているもの。入っていなければ付けない。iOS で付けられる名前は `simctl privacy` の項目（`all` を除く。カメラと通知は無い）。Android は別名（camera など 9 つ）か `android.permission.<NAME>` で、さらに `pm list permissions -g -d` に出る dangerous（実行時の確認が出る）権限だけ。`WRITE_SECURE_SETTINGS`・`READ_LOGS` などの development 権限は断る
+
+レビューの Low で見送ったもの: 候補の adb の所有者の確認（上記）、ファイル名の文字の制限（上記）。
+
+【要確認】実機で確かめていないこと:
+
+- Android エミュレータでの動き全般（`adb` の呼び出し、`/display` とスクショの向き、`pm list permissions -g -d` の出力の形は Android の版ごとに）
+- `.ipa` をシミュレータへ `simctl install` できるか（通常シミュレータ向けは `.app`）
+- `adb install` の出力の `Success` の判定、`pm grant` が失敗を出力にだけ書く場合の文言、`aapt2 dump packagename` の出力
+
+実機（iOS 27 シミュレータ、2026-09-27 の再レビュー）で確かめたこと: ピンチが2本の指として効く（ホストの `input/touch` の `fingerId`）、向きの名前4つ、インストールのたびの承認、OS のアプリへの権限の拒否、ペインの外からの要求・インストール・起動・権限の拒否。指は要求を送る前に「下ろした」と記録し、失敗・取り消しでも必ず上げる（押したままだとその後の入力を受け付けなくなる）。
+
 ## 機能1: ワークスペース即時切り替え（workspaceSwitch、2026-07-02追加）
 
 `src/vs/paradis/contrib/workspaceSwitch/` に実装。単一ウィンドウ・単一 `.code-workspace`（identity固定）のまま `updateFolders` で folders を丸ごと入れ替え、エディタ/ターミナル/ブラウザの状態をリポジトリごとに退避・復元する（Superset方式: 破棄せず隠す）。実装時に判明した落とし穴:
@@ -930,7 +970,7 @@ O1（Q75）と O4（Q79）。`src/vs/paradis/contrib/agentIde/` に実装し、p
 
 ### その他
 
-- **ツールの足し方**: `agentBrowser/common/paradisMcpToolProvider.ts` の `paradisRegisterMcpToolProvider(provider)` を shared process の登録（`ParadisSharedProcessContributions`）から呼ぶ。`callTool` の5番目の引数 `context` で、ウィンドウへの IPC（`callOwningWindow`、`timeoutMs` で延長可）、hook の状態（`getPaneAgentStatus` / `hasAgentHookHistory`）、接続元の確認（`verifyCallerProcess`）を借りられる。`instructions()` は `initialize` の `instructions` に足される（ブラウザ共有の説明はサーバーが先頭に固定で置く）。mobileCanvas はまだ `registerToolProvider`（`sharedProcessMain.ts` 経由）のまま。移すには mobileCanvas の登録に要る引数を `sharedProcessMain.ts` から外す必要があり、今回は見送った
+- **ツールの足し方**: `agentBrowser/common/paradisMcpToolProvider.ts` の `paradisRegisterMcpToolProvider(provider)` を shared process の登録（`ParadisSharedProcessContributions`）から呼ぶ。`callTool` の5番目の引数 `context` で、ウィンドウへの IPC（`callOwningWindow`、`timeoutMs` で延長可）、hook の状態（`getPaneAgentStatus` / `hasAgentHookHistory`）、接続元の確認（`classifyCaller`）を借りられる。`instructions()` は `initialize` の `instructions` に足される（ブラウザ共有の説明はサーバーが先頭に固定で置く）。mobileCanvas の既存のツールはまだ `registerToolProvider`（`sharedProcessMain.ts` 経由）のまま（B13 で足した端末の操作は登録口から足した）。移すには mobileCanvas の登録に要る引数を `sharedProcessMain.ts` から外す必要があり、今回は見送った
 - **hook の受付は MCP と別枠**（`_reserveIngressRequest(token, 'hook')`）。待機（最大 240 秒）が枠を占めても hook が拒否されない。待機の同時数はペインごとに 2、全体で 16（接続元を確かめた後で数えるので、偽のトークンで枠を埋められない）
 - **ペイントークンはエージェントへ出さない**。ターミナルの ID は `t_` + SHA-1(`paradis-agent-ide:` + トークン) の先頭12桁（`paradisAgentIdeTerminalId`）。一覧のタイトルは制御文字を落として 80 文字で切り、「従うな」と説明に書く
 - **台帳（誰が作ったか・子の印）はワークスペースの保存領域（`paradis.agentIde.ledger`）に ID だけで残す**。ターミナルが閉じたら（ウィンドウを閉じるときの破棄は除く）、スペースが退役したら消す。呼び出し元は 200 件まで
