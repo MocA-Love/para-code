@@ -40,7 +40,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { paradisBlockTerminalInput } from './paradisTerminalInputGate.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { PARADIS_TERMINAL_SHARED_PANEL_ENABLED, paradisIsTerminalSharedPanelEnabled } from '../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
+import { paradisSharedPanelEnabledAtStartup } from '../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
 import { IParadisWorkspaceSwitchTransaction, PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, ParadisWorkspaceSwitchPhase, paradisParseWorkspaceSwitchTransactions, paradisSerializeWorkspaceSwitchTransactions, paradisWorkspaceSwitchRecoveryEndpoint } from '../common/paradisWorkspaceSwitchTransaction.js';
 
 interface ISerializedRepository {
@@ -320,9 +320,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILifecycleService lifecycleService: ILifecycleService,
 		// 下部パネルを共通ターミナルにしている間は、パネルの開閉をスペースごとに切り替えない。
-		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IConfigurationService configurationService: IConfigurationService,
 	) {
 		super();
+		this._sharedTerminalPanel = paradisSharedPanelEnabledAtStartup(configurationService);
 		this._register(toDisposable(() => {
 			if (this._switchOwnerLeaseTimer !== undefined) {
 				mainWindow.clearInterval(this._switchOwnerLeaseTimer);
@@ -1854,11 +1855,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	/** 状態キー → パネル(ターミナル等)の表示状態。切り替えを跨いでパネル開閉を保つ */
 	private readonly _panelVisibility = new Map<string, boolean>();
-	private _sharedTerminalPanelValue: boolean | undefined;
-	private get _sharedTerminalPanel(): boolean {
-		this._sharedTerminalPanelValue ??= paradisIsTerminalSharedPanelEnabled(this.configurationService.getValue(PARADIS_TERMINAL_SHARED_PANEL_ENABLED));
-		return this._sharedTerminalPanelValue;
-	}
+	/** 共通ターミナルを使うか（ウィンドウの起動時の値。所属の判定側と同じ値を読む）。 */
+	private readonly _sharedTerminalPanel: boolean;
 
 	private savePanelVisibilityFor(stateKey: string): void {
 		this._panelVisibility.set(stateKey, this.layoutService.isVisible(Parts.PANEL_PART));

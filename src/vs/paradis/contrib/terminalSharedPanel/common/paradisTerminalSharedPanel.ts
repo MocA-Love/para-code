@@ -27,6 +27,49 @@ export function paradisIsTerminalSharedPanelEnabled(value: unknown): boolean {
 	return value !== false;
 }
 
+let sharedPanelAtStartup: boolean | undefined;
+
+/**
+ * 共通ターミナルを使うか。**ウィンドウで最初に読んだ値をそのまま使い続ける**（変更は再読み込みで
+ * 反映）。所属の判定・パネルの開閉・開始フォルダ・シェル履歴の4か所が、途中で設定が変わっても
+ * 食い違わないよう、読むのはここ1か所にする。
+ */
+export function paradisSharedPanelEnabledAtStartup(configurationService: { getValue(key: string): unknown }): boolean {
+	sharedPanelAtStartup ??= paradisIsTerminalSharedPanelEnabled(configurationService.getValue(PARADIS_TERMINAL_SHARED_PANEL_ENABLED));
+	return sharedPanelAtStartup;
+}
+
+/** テスト用。起動時の値の控えを捨てる。 */
+export function paradisResetSharedPanelStartupValueForTest(): void {
+	sharedPanelAtStartup = undefined;
+}
+
+/** 起動設定、または復元時の attach 情報から読む、そのターミナルの素性。 */
+interface IParadisSharedPanelShellLike {
+	readonly type?: string;
+	readonly hideFromUser?: boolean;
+	readonly isFeatureTerminal?: boolean;
+	readonly isExtensionOwnedTerminal?: boolean;
+	readonly customPtyImplementation?: unknown;
+	readonly attachPersistentProcess?: { readonly type?: string; readonly hideFromUser?: boolean; readonly isFeatureTerminal?: boolean };
+}
+
+/**
+ * 共通ターミナルとして扱ってよい種類か（ユーザーが開いたシェルだけ）。
+ *
+ * タスク・拡張機能・機能用（feature）・隠し（hideFromUser）のターミナルは、そのスペースの作業の
+ * 一部なので従来どおりスペースに属させ、スペースを削除したら一緒に閉じる。復元したターミナルは
+ * 起動設定から種類が落ちているので、attach 情報の側も見る。
+ */
+export function paradisIsSharedPanelShell(config: IParadisSharedPanelShellLike): boolean {
+	const attach = config.attachPersistentProcess;
+	return config.type !== 'Task' && attach?.type !== 'Task'
+		&& config.hideFromUser !== true && attach?.hideFromUser !== true
+		&& config.isFeatureTerminal !== true && attach?.isFeatureTerminal !== true
+		&& config.isExtensionOwnedTerminal !== true
+		&& config.customPtyImplementation === undefined;
+}
+
 /**
  * この起動設定に共通ターミナルの開始フォルダを入れてよいか。
  *
@@ -39,11 +82,9 @@ export function paradisShouldApplySharedPanelCwd(shellLaunchConfig: IShellLaunch
 	return target === TerminalLocation.Panel
 		&& shellLaunchConfig.cwd === undefined
 		&& shellLaunchConfig.attachPersistentProcess === undefined
-		&& shellLaunchConfig.customPtyImplementation === undefined
-		&& shellLaunchConfig.isFeatureTerminal !== true
-		&& shellLaunchConfig.isExtensionOwnedTerminal !== true
-		&& shellLaunchConfig.hideFromUser !== true
-		&& shellLaunchConfig.type === undefined;
+		// 接続先のウィンドウで開く「手元のターミナル」（type: 'Local'）は、接続先のホームで開けない。
+		&& shellLaunchConfig.type === undefined
+		&& paradisIsSharedPanelShell(shellLaunchConfig);
 }
 
 /**

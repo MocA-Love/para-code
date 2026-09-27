@@ -20,6 +20,7 @@ import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
+import { paradisResetSharedPanelStartupValueForTest } from '../../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
 import { IWorkspaceContextService, toWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { Workspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
@@ -1776,6 +1777,8 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				Object.assign(instance, { target: TerminalLocation.Panel, dispose: () => { disposed = true; } });
 				const group = createTerminalGroup([instance]);
 				const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+				// 設定はウィンドウの起動時の値を1度だけ読む。ここでは所属の判定側が読む前に差し替える。
+				paradisResetSharedPanelStartupValueForTest();
 				await harness.configurationService.setUserConfiguration('paradis.terminal.sharedPanel.enabled', sharedPanel);
 				await harness.workspaceSwitchService.switchRepository('space-a');
 				const scope = harness.installTerminalScope(async () => { }, {
@@ -1789,13 +1792,17 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				harness.fireGroupsChanged();
 				await settle();
 				const parkedInSpaceA = harness.parkedGroups.has(group);
-				const scopeInSpaceA = scope.resolveScope(4301).kind;
+				// 設定をオフに戻したときのために、消した所属を控えてあるか。
+				const formerScopes = harness.storageService.get('paradis.workspaceSwitch.sharedPanelFormerScopes', StorageScope.WORKSPACE);
+				const resolvedInSpaceA = scope.resolveScope(4301);
+				const scopeInSpaceA = resolvedInSpaceA.kind === 'managed' ? `managed:${resolvedInSpaceA.stateKey}` : resolvedInSpaceA.kind;
 				await harness.workspaceSwitchService.switchRepository('space-b');
 				const parkedInSpaceB = harness.parkedGroups.has(group);
 				await harness.workspaceSwitchService.switchRepository('space-a');
 				await harness.workspaceSwitchService.removeRepository('space-b');
 				await settle();
 				return {
+					formerScopes: formerScopes === undefined ? undefined : [...(paradisParseTerminalNonceScopeStorage(formerScopes) ?? [])],
 					parkedInSpaceA,
 					parkedInSpaceB,
 					scopeInSpaceA,
@@ -1803,14 +1810,44 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 					disposedWithSpaceB: disposed,
 				};
 			} finally {
+				paradisResetSharedPanelStartupValueForTest();
 				testDisposables.dispose();
 			}
 		};
 
 		assert.deepStrictEqual({ shared: await run(true), perSpace: await run(false) }, {
-			shared: { parkedInSpaceA: false, parkedInSpaceB: false, scopeInSpaceA: 'unscoped', stateKey: undefined, disposedWithSpaceB: false },
-			perSpace: { parkedInSpaceA: true, parkedInSpaceB: false, scopeInSpaceA: 'managed', stateKey: undefined, disposedWithSpaceB: true },
+			// 共通ターミナルは台帳に所属を持たず、尋ねられたら今のスペース（最後は space-a）と答える。
+			shared: { formerScopes: [['nonce-4301', 'space-b']], parkedInSpaceA: false, parkedInSpaceB: false, scopeInSpaceA: 'managed:space-a', stateKey: 'space-a', disposedWithSpaceB: false },
+			perSpace: { formerScopes: undefined, parkedInSpaceA: true, parkedInSpaceB: false, scopeInSpaceA: 'managed:space-b', stateKey: undefined, disposedWithSpaceB: true },
 		});
+	});
+
+	// 共通扱いはユーザーが開いたシェルだけ。パネルで動かしたタスクはそのスペースの作業の一部なので、
+	// 切り替えで退避し、スペースを削除したら一緒に閉じる。
+	test('keeps a task terminal in the panel owned by its space even while the panel is shared', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			paradisResetSharedPanelStartupValueForTest();
+			const instance = createRestoredTerminalInstance(4401, { initialCwd: '/workspace-b' });
+			Object.assign(instance, { target: TerminalLocation.Panel, shellLaunchConfig: { attachPersistentProcess: { id: 4401, type: 'Task' } } });
+			const group = createTerminalGroup([instance]);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const scope = harness.installTerminalScope(async () => { }, {
+				groups: [group],
+				worktreeReady: true,
+				connected: true,
+				connectionState: TerminalConnectionState.Connected,
+				persistentProcessScopes: [[4401, 'space-b']],
+			});
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			assert.deepStrictEqual({ parked: harness.parkedGroups.has(group), stateKey: scope.getStateKeyForInstance(4401) }, { parked: true, stateKey: 'space-b' });
+		} finally {
+			paradisResetSharedPanelStartupValueForTest();
+			testDisposables.dispose();
+		}
 	});
 
 });
