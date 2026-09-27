@@ -27,7 +27,6 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisNextCronOccurrence, paradisParseCron } from '../common/paradisScheduleCron.js';
 import {
 	IParadisScheduledRunDefinition,
-	IParadisScheduledRunDraft,
 	IParadisScheduledRunRecord,
 	IParadisScheduledRunReport,
 	IParadisScheduledRunRequest,
