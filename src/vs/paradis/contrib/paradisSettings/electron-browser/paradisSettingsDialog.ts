@@ -806,6 +806,28 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.codexTerminalTitleDesc', "手動で変更したタブ名や Codex の /rename は常に優先されます。"),
 		keywords: 'codex terminal title tab name rename',
 	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.agentChat.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentChat', "エージェントのターミナルをチャット表示に切り替える"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentChatDesc', "Claude Code / Codex が動いているターミナルタブを、⌘⇧J かタブ列の吹き出しのボタンで同じ会話のチャット表示に切り替えます。"),
+		keywords: 'agent chat claude codex terminal toggle cmd shift j',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.agentChat.sendKey',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentChatSendKey', "チャット表示の送信キー"),
+		keywords: 'agent chat send enter newline shift cmd',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			enter: localize('paradis.settings.agentChatSendKeyEnter', "Enter で送信（Shift+Enter で改行）"),
+			// allow-any-unicode-next-line
+			modEnter: localize('paradis.settings.agentChatSendKeyModEnter', "⌘Enter で送信（Enter で改行）"),
+		},
+	},
 
 	// --- Office ビューア ---
 	{
