@@ -33,6 +33,7 @@ import {
 	PARADIS_AGENT_MODEL_CATALOG_CHANNEL,
 	PARADIS_CLAUDE_MODEL_LIST_ARGS,
 	PARADIS_CLAUDE_MODEL_LIST_STDIN,
+	PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG,
 	ParadisCatalogAgentId,
 	paradisCodexModelListNextCursor,
 	paradisParseClaudeModelList,
@@ -174,6 +175,41 @@ function isCachedCatalog(value: unknown, agentId: string): value is ICachedCatal
 		&& entry.models.every(model => typeof model?.id === 'string' && Array.isArray(model.efforts));
 }
 
+async function probeClaude(cli: IParadisResolvedCli, workDir: string): Promise<IParadisDiscoveredModel[]> {
+	const run = (args: readonly string[]) => paradisRunAgentCli(cli.command, args, {
+		env: cli.env,
+		cwd: workDir,
+		stdin: PARADIS_CLAUDE_MODEL_LIST_STDIN,
+		timeoutMs: CLAUDE_PROBE_TIMEOUT_MS,
+	});
+	const result = await run(PARADIS_CLAUDE_MODEL_LIST_ARGS);
+	const models = paradisParseClaudeModelList(result.stdout);
+	if (models.length > 0 || !result.stderr.includes(PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG)) {
+		return models;
+	}
+	// このフラグを知らない古い CLI。フラグだけ外して取り直す
+	return paradisParseClaudeModelList((await run(PARADIS_CLAUDE_MODEL_LIST_ARGS.filter(arg => arg !== PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG))).stdout);
+}
+
+async function probeCodex(cli: IParadisResolvedCli, workDir: string): Promise<IParadisDiscoveredModel[]> {
+	const rpc = await paradisOpenCodexAppServer({ command: cli.command, env: cli.env, codexHome: paradisCodexHome(), clientName: 'para-code-model-catalog', cwd: workDir });
+	try {
+		const models: IParadisDiscoveredModel[] = [];
+		let cursor: string | undefined;
+		for (let page = 0; page < CODEX_MAX_PAGES; page++) {
+			const result = await rpc.request('model/list', cursor !== undefined ? { cursor } : {});
+			models.push(...paradisParseCodexModelList(result));
+			cursor = paradisCodexModelListNextCursor(result);
+			if (cursor === undefined) {
+				break;
+			}
+		}
+		return models;
+	} finally {
+		rpc.dispose();
+	}
+}
+
 export function createParadisAgentModelCatalogBackend(userDataPath: string, getEnv: () => Promise<NodeJS.ProcessEnv>): IParadisAgentModelCatalogBackend {
 	const cachePath = join(userDataPath, CACHE_FILE_NAME);
 	return {
@@ -194,31 +230,13 @@ export function createParadisAgentModelCatalogBackend(userDataPath: string, getE
 			}
 		},
 		async probe(agentId, cli) {
-			if (agentId === 'claude') {
-				const result = await paradisRunAgentCli(cli.command, PARADIS_CLAUDE_MODEL_LIST_ARGS, {
-					env: cli.env,
-					// 作業ディレクトリのプロジェクト設定を読ませない
-					cwd: tmpdir(),
-					stdin: PARADIS_CLAUDE_MODEL_LIST_STDIN,
-					timeoutMs: CLAUDE_PROBE_TIMEOUT_MS,
-				});
-				return paradisParseClaudeModelList(result.stdout);
-			}
-			const rpc = await paradisOpenCodexAppServer({ command: cli.command, env: cli.env, codexHome: paradisCodexHome(), clientName: 'para-code-model-catalog', cwd: tmpdir() });
+			// 作業ディレクトリは、この取得のためだけに作る自分専用（0700）の空のディレクトリにする。
+			// Linux の共有 /tmp をそのまま使うと、他の利用者が置いたプロジェクト設定を読みうる
+			const workDir = await fs.mkdtemp(join(tmpdir(), 'paradis-models-'));
 			try {
-				const models: IParadisDiscoveredModel[] = [];
-				let cursor: string | undefined;
-				for (let page = 0; page < CODEX_MAX_PAGES; page++) {
-					const result = await rpc.request('model/list', cursor !== undefined ? { cursor } : {});
-					models.push(...paradisParseCodexModelList(result));
-					cursor = paradisCodexModelListNextCursor(result);
-					if (cursor === undefined) {
-						break;
-					}
-				}
-				return models;
+				return agentId === 'claude' ? await probeClaude(cli, workDir) : await probeCodex(cli, workDir);
 			} finally {
-				rpc.dispose();
+				await fs.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
 			}
 		},
 		async readCache() {

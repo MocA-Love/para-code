@@ -17,7 +17,6 @@ import {
 	paradisParseClaudeModelList,
 	paradisParseCodexModelList,
 	paradisResolveAgentTemplates,
-	paradisSetDiscoveredAgentModels,
 } from '../../common/paradisAgentModelCatalog.js';
 
 // Claude Code 2.1.283 の `list_models` の応答（ログイン無しの一時ホームで取得）を縮めたもの
@@ -48,8 +47,6 @@ const CODEX_RESULT = {
 
 suite('ParadisAgentModelCatalog', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
-
-	teardown(() => paradisSetDiscoveredAgentModels([]));
 
 	test('Claude の一覧から default・使えない行を外し、記号入りの id は引用符で包む', () => {
 		assert.deepStrictEqual({
@@ -93,18 +90,17 @@ suite('ParadisAgentModelCatalog', () => {
 
 	test('設定を自分で書いている人の定義は変えない。書いていなければ取れた一覧を使い、取れていなければ既定のまま', () => {
 		const catalogs: IParadisAgentModelCatalog[] = [{ agentId: 'codex', cliVersion: 'v', fetchedAt: 0, models: paradisParseCodexModelList(CODEX_RESULT) }];
-		const codexModels = (configurationService: TestConfigurationService) => paradisResolveAgentTemplates(configurationService).find(agent => agent.id === 'codex')?.models?.map(model => model.id);
+		const codexModels = (configurationService: TestConfigurationService, list: readonly IParadisAgentModelCatalog[]) => paradisResolveAgentTemplates(configurationService, list).find(agent => agent.id === 'codex')?.models?.map(model => model.id);
 
 		const unset = new TestConfigurationService();
-		const before = codexModels(unset);
-		paradisSetDiscoveredAgentModels(catalogs);
-		const after = codexModels(unset);
+		const before = codexModels(unset, []);
+		const after = codexModels(unset, catalogs);
 		const custom = new TestConfigurationService({ 'paradis.workspaceSwitch.agents': [{ id: 'codex', label: 'Codex', command: 'codex {prompt}', models: [{ id: 'mine', flag: '--model mine' }] }, { id: 'none', label: 'x', command: 'x' }] });
 
 		assert.deepStrictEqual({
 			before,
 			after,
-			custom: paradisResolveAgentTemplates(custom).map(agent => `${agent.id}:${agent.models?.map(model => model.id).join(',')}`),
+			custom: paradisResolveAgentTemplates(custom, catalogs).map(agent => `${agent.id}:${agent.models?.map(model => model.id).join(',')}`),
 		}, {
 			before: PARADIS_DEFAULT_AGENT_COMMANDS.find(agent => agent.id === 'codex')?.models?.map(model => model.id),
 			after: ['gpt-6-astra', 'gpt-5.5'],
