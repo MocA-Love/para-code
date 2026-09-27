@@ -16,6 +16,7 @@
 // upstreamの playwrightService.ts（_trackedPages等）は一切改造しない。
 
 import type * as http from 'http';
+import type { Socket } from 'net';
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -50,11 +51,12 @@ import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
+import { paradisClassifyPeer } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
-import { IParadisMcpToolProvider } from '../common/paradisMcpToolProvider.js';
+import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 import { PARADIS_FILE_DROP_MAX_BYTES_LABEL, ParadisFileDropStaging, paradisBuildFileDropDragCancelCommand, paradisBuildFileDropDragCommands, paradisDecodeFileDropContent, paradisParseResolvedDropTarget, paradisSanitizeFileDropName } from './paradisFileDropUpload.js';
 
@@ -88,6 +90,11 @@ interface IPaneShellEntry {
 	readonly windowCtx: string;
 	readonly token: string;
 	readonly shellPid: number;
+	/**
+	 * SSH など接続先で動くペインの接続先。このときの `shellPid` は接続先のプロセス番号なので、
+	 * 手元のプロセス表との照合（接続元の確認・CDP の PID 解決・PID の重複検査）には使わない。
+	 */
+	readonly remoteAuthority?: string;
 }
 
 interface IJsonRpcRequest {
@@ -108,6 +115,8 @@ const MAX_PANE_TOKEN_LENGTH = 200;
 const MAX_HOOK_EVENT_LENGTH = 200;
 const MAX_PENDING_BIND_PREPARATIONS = 256;
 const MAX_ACTIVE_INGRESS_REQUESTS = 128;
+/** `initialize` の `instructions` の先頭に置く、このサーバー自身（ブラウザ共有）の説明。 */
+const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on the browser page the user shared with this terminal pane.';
 const MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN = 8;
 const MAX_ACTIVE_MOBILE_VOICE_REQUESTS = 2;
 const MAX_ACTIVE_MOBILE_VOICE_BYTES = 16 * 1024 * 1024;
@@ -249,6 +258,17 @@ const PARADIS_AGENT_TAB_TOOL_NAMES: ReadonlySet<string> = new Set(['open_browser
 
 /** エージェントによるプロファイルの一覧・作成・切替・削除のツール名（paradisBrowserProfileMcp.ts の契約）。 */
 const PARADIS_AGENT_PROFILE_TOOL_NAMES: ReadonlySet<string> = new Set(['list_browser_profiles', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile']);
+
+/**
+ * 呼び出し元のプロセスを確かめてから動かすツール（利用者に承認を求めるもの、ページやプロファイルを開く・
+ * 切り替える・消すもの）。一覧だけのツールは含めない。
+ */
+const PARADIS_CALLER_VERIFIED_TOOL_NAMES: ReadonlySet<string> = new Set([
+	'open_browser_profile', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile',
+	'open_browser_tab', 'select_browser_tab', 'close_browser_tab', 'request_browser_page',
+]);
+
+const CALLER_UNVERIFIED_BROWSER_MESSAGE = 'Para Code could not confirm that this request comes from a process inside a Para Code terminal pane (or from Para Code\'s SSH port forwarding), so it does not open, switch or delete browser pages or profiles for it. Start this agent CLI from a terminal inside Para Code.';
 
 /** para-browser側の静的ツール名（chrome-devtools-mcp側で同名ツールが現れた場合に隠すための予約集合）。 */
 const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(TOOLS.map(tool => tool.name));
@@ -425,6 +445,22 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private readonly _agentHookTokens = new Set<string>();
 	/**
+	 * 本物の hook が届いたペイン（transcript から推した開始は含めない）。IDE 操作ツールが「状態を
+	 * hook で確かめられる相手か」を見るのに使う。`_agentHookTokens` は transcript 由来の開始でも立つので、
+	 * hook を信頼していない Codex でも真になってしまう。
+	 */
+	private readonly _hookReportedTokens = new Set<string>();
+	/**
+	 * 許可待ち・質問中が hook ではなく transcript から解かれ、その後に確かめた hook がまだ来ていないペイン。
+	 * transcript は同じユーザーの別プロセスが追記できるので、これで解かれた状態を IDE 操作ツールは
+	 * 信用しない（Enter を送らない）。確かめた hook が来たら外す。
+	 */
+	private readonly _unconfirmedReleaseTokens = new Set<string>();
+	/** 印が付いたまま、hook の接続元を確かめられなかったペイン（tmux・WSL など）。IDE 操作ツールの Enter は利用者に任せる。 */
+	private readonly _unconfirmableTokens = new Set<string>();
+	/** 接続（keep-alive）ごとの、接続元プロセスの分類の結果。接続が消えれば一緒に消える。 */
+	private readonly _callerClassifications = new WeakMap<Socket, Map<string, { readonly kind: ParadisMcpCallerKind; readonly key: string }>>();
+	/**
 	 * ペインで動いている会話（hook の session_id）。再起動後に復元したタブから前の会話を続ける
 	 * ために renderer へ渡す。SessionEnd（会話を終えた）と TerminalExit（ペインが消えた）で消す。
 	 */
@@ -468,6 +504,12 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _activeRequestControllers = new Set<AbortController>();
 	private readonly _activeIngressRequestsByToken = new Map<string, number>();
 	private _activeIngressRequestCount = 0;
+	/**
+	 * hook の受付は MCP と別枠で数える。MCP の待機ツール（最大 240 秒）が枠を占めても、
+	 * 許可待ち・完了の hook が拒否されないようにするため。
+	 */
+	private readonly _activeHookRequestsByToken = new Map<string, number>();
+	private _activeHookRequestCount = 0;
 	private _activeMobileVoiceRequestCount = 0;
 	private _activeMobileVoiceBytes = 0;
 	// lease未設定のticketは拡張機能ホスト由来（ペインを持たない）。音声取込だけに使える。
@@ -577,6 +619,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			if (this.isIngressLeaseCurrent(ingressLease)) {
 				this._agentHookTokens.add(token);
+				const previous = this._paneStatuses.get(token)?.status;
+				if (previous === 'permission' || previous === 'question') {
+					this._unconfirmedReleaseTokens.add(token);
+				}
 				this._paneStatuses.set(token, { status: 'working', changedAt: at, ...(cwd !== undefined ? { cwd } : {}) });
 			}
 		}));
@@ -643,6 +689,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (current === 'question' || (current === 'permission' && hadPendingApproval)) {
 				// 回答された → エージェントは続行する (直後のツール実行hookが上書きしてくれるが、
 				// 来ない場合でも赤表示が残らないよう working へ戻す)
+				this._unconfirmedReleaseTokens.add(token);
 				this._paneStatuses.set(token, { status: 'working', changedAt: Date.now(), ...(cwd !== undefined ? { cwd } : {}) });
 				return;
 			}
@@ -958,13 +1005,16 @@ export class ParadisAgentBrowserService extends Disposable {
 				: pane.shellPid !== undefined && !terminalExited
 					? pane.shellPid
 					: undefined;
+			// 不完全な manifest で番号を引き継ぐときは、接続先の印も引き継ぐ（番号だけ引き継ぐと、接続先の番号が
+			// 手元の番号として扱われる）
+			const desiredRemoteAuthority = preserveRecoveryPid ? existing.remoteAuthority : pane.remoteAuthority;
 			if (existing !== undefined
-				&& (existing.windowCtx !== windowCtx || existing.shellPid !== desiredShellPid)) {
+				&& (existing.windowCtx !== windowCtx || existing.shellPid !== desiredShellPid || existing.remoteAuthority !== desiredRemoteAuthority)) {
 				this._paneShells.delete(pane.token);
 				this._runNonThrowingCleanup('gateway-connections', () => this._cdpGateway.closeConnectionsForToken(pane.token));
 			}
 			if (desiredShellPid !== undefined) {
-				this._paneShells.set(pane.token, { windowCtx, token: pane.token, shellPid: desiredShellPid });
+				this._paneShells.set(pane.token, { windowCtx, token: pane.token, shellPid: desiredShellPid, ...(desiredRemoteAuthority !== undefined ? { remoteAuthority: desiredRemoteAuthority } : {}) });
 				// A quarantined token re-entering as a live pane under a different shell PID is a genuinely
 				// new binding lifecycle (e.g. the pane was reopened after its window was closed). Lift the
 				// isolation so a closed-window quarantine that never receives a TerminalExit can recover.
@@ -982,6 +1032,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (manifest.complete) {
 			for (const [token, entry] of projected) {
 				if (entry.windowCtx !== windowCtx || manifestTokens.has(token)) {
+					continue;
+				}
+				if (entry.remoteAuthority !== undefined) {
+					projected.delete(token);
 					continue;
 				}
 				let retiringTokens = retiringTokensByPid.get(entry.shellPid);
@@ -1011,17 +1065,21 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (desiredShellPid === undefined) {
 				projected.delete(pane.token);
 			} else {
-				const retiringTokens = retiringTokensByPid.get(desiredShellPid);
+				const desiredRemoteAuthority = preserveRecoveryPid ? existing.remoteAuthority : pane.remoteAuthority;
+				const retiringTokens = desiredRemoteAuthority === undefined ? retiringTokensByPid.get(desiredShellPid) : undefined;
 				if (retiringTokens !== undefined && [...retiringTokens].some(token => token !== pane.token)) {
 					// Retirement can be conservatively preserved by an ABA check. Never transfer its
 					// PID to another token until a later manifest observes the completed retirement.
 					throw new Error('Shell PID retirement is not yet committed');
 				}
-				projected.set(pane.token, { windowCtx, token: pane.token, shellPid: desiredShellPid });
+				projected.set(pane.token, { windowCtx, token: pane.token, shellPid: desiredShellPid, ...(desiredRemoteAuthority !== undefined ? { remoteAuthority: desiredRemoteAuthority } : {}) });
 			}
 		}
 		const ownersByPid = new Map<number, string>();
 		for (const entry of projected.values()) {
+			if (entry.remoteAuthority !== undefined) {
+				continue;
+			}
 			const owner = ownersByPid.get(entry.shellPid);
 			if (owner !== undefined && owner !== entry.token) {
 				throw new Error('Duplicate shell PID authority');
@@ -1033,7 +1091,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _getTokenForShellPid(pid: number): string | undefined {
 		let resolvedToken: string | undefined;
 		for (const entry of this._paneShells.values()) {
-			if (entry.shellPid !== pid || this.captureIngressLease(entry.token) === undefined) {
+			// 接続先のペインの番号は手元のプロセスとは無関係（偶然一致した手元のプロセスを当てない）
+			if (entry.shellPid !== pid || entry.remoteAuthority !== undefined || this.captureIngressLease(entry.token) === undefined) {
 				continue;
 			}
 			if (resolvedToken !== undefined && resolvedToken !== entry.token) {
@@ -1298,6 +1357,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._paneSessions.delete(token);
 		this._activityApprovalTokens.delete(token);
 		this._agentHookTokens.delete(token);
+		this._hookReportedTokens.delete(token);
+		this._unconfirmedReleaseTokens.delete(token);
+		this._unconfirmableTokens.delete(token);
 		this._seenTokens.delete(token);
 		if (!preserveTerminalExit) {
 			this._terminalExitedTokens.delete(token);
@@ -1538,6 +1600,101 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	registerToolProvider(provider: IParadisMcpToolProvider): void {
 		this._toolProviders.push(provider);
+	}
+
+	/** 直接登録されたものと、登録口（`paradisRegisterMcpToolProvider`）から足されたものを合わせる。 */
+	private _allToolProviders(): readonly IParadisMcpToolProvider[] {
+		return [...this._toolProviders, ...paradisRegisteredMcpToolProviders()];
+	}
+
+	/** プロバイダが足したサーバーの説明（`initialize` の `instructions`）。 */
+	private _serverInstructions(): string {
+		// ブラウザの説明はこのサーバー自身のものなので、プロバイダの有無に関係なく先頭に置く
+		const parts: string[] = [PARADIS_BROWSER_MCP_INSTRUCTIONS];
+		for (const provider of this._allToolProviders()) {
+			try {
+				const text = provider.instructions?.();
+				if (text && text.trim().length > 0) {
+					parts.push(text.trim());
+				}
+			} catch (error) {
+				this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] MCP instructions provider failed', error));
+			}
+		}
+		return parts.join('\n\n');
+	}
+
+	/** プロバイダへ渡す、この呼び出し（ingress lease）に結び付いた機能。 */
+	private _toolCallContext(ingressLease: IParadisAgentBrowserIngressLease, socket: Socket | undefined): IParadisMcpToolCallContext {
+		return {
+			hasAgentHookHistory: (paneToken: string): boolean => this._hookReportedTokens.has(paneToken),
+			classifyCaller: (): Promise<ParadisMcpCallerKind> => this._classifyCaller(ingressLease.token, socket),
+			callOwningWindow: <T>(request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>> => this._callOwningWindow<T>(ingressLease, request, signal),
+			getPaneAgentStatus: (paneToken: string): IParadisMcpPaneAgentStatus | undefined => {
+				const entry = this._paneStatuses.get(paneToken);
+				const unconfirmedRelease = this._unconfirmedReleaseOf(paneToken);
+				return entry ? { status: entry.status, changedAt: entry.changedAt, ...(unconfirmedRelease !== undefined ? { unconfirmedRelease } : {}) } : undefined;
+			},
+			// 状態の項目は既読（acknowledgePaneStatus）や idle で消えるので、印は状態とは別に引けるようにする
+			getUnconfirmedRelease: (paneToken: string) => this._unconfirmedReleaseOf(paneToken),
+		};
+	}
+
+	private _unconfirmedReleaseOf(paneToken: string): 'pending' | 'unverifiable' | undefined {
+		if (!this._unconfirmedReleaseTokens.has(paneToken)) {
+			return undefined;
+		}
+		return this._unconfirmableTokens.has(paneToken) ? 'unverifiable' : 'pending';
+	}
+
+	/**
+	 * 接続元のプロセスを分類する。トークンだけでは本人と言えない（同じユーザーのプロセスは他ペインの
+	 * 環境変数を `ps eww` で読める）ので、`127.0.0.1:<相手> -> 127.0.0.1:<このサーバー>` の接続を持つ
+	 * プロセスを調べる。手元のペインなら、そのペインのシェルの子孫のとき `pane`。SSH など接続先のペインなら、
+	 * Para Code が張った戻り経路の `ssh -R` のプロセスそのもののとき `tunnel`（接続先のどのプロセスからかは
+	 * 分からない）。どちらで確かめるかはペインの属性で決まる。環境変数は偽装できるので見ない。
+	 * 同じ接続（keep-alive）とトークンの組の結果は、接続が閉じるまで覚えておく（1 回に `lsof` / `ps` を数回起こすため）。
+	 * シェルの PID や戻り経路が変わったら覚えた結果は使わない。
+	 */
+	private async _classifyCaller(token: string, socket: Socket | undefined): Promise<ParadisMcpCallerKind> {
+		if (!socket || this._port === undefined || typeof socket.remotePort !== 'number' || socket.localPort !== this._port) {
+			return 'unverified';
+		}
+		const pane = this._paneShells.get(token);
+		if (!pane) {
+			return 'unverified';
+		}
+		// 手元のペインはシェルの子孫だけ、接続先のペインは Para Code が張った `ssh -R` そのものだけを認める。
+		// どちらで確かめるかはペインの属性で決める（hook のクエリ `host=` のような名乗りでは決めない）
+		const tunnelPid = pane.remoteAuthority !== undefined ? this._remoteTunnels.processPidFor(pane.remoteAuthority) : undefined;
+		const ancestorPid = pane.remoteAuthority === undefined && Number.isSafeInteger(pane.shellPid) && pane.shellPid > 1 ? pane.shellPid : undefined;
+		const expectation = { tunnelPid, ancestorPid };
+		const cacheKey = `${pane.remoteAuthority ?? ''}|${tunnelPid ?? ''}|${ancestorPid ?? ''}`;
+		let cached = this._callerClassifications.get(socket);
+		const hit = cached?.get(token);
+		// シェルが入れ替わった・戻り経路が張り直された後は、前の判定を使わない
+		if (hit && hit.key === cacheKey) {
+			return hit.kind;
+		}
+		let kind: ParadisMcpCallerKind = 'unverified';
+		try {
+			const peer = await paradisClassifyPeer(socket.remotePort, this._port, process.pid, expectation);
+			kind = peer === 'descendant' && pane.remoteAuthority === undefined
+				? 'pane'
+				: peer === 'tunnel' && pane.remoteAuthority !== undefined
+					? 'tunnel'
+					: 'unverified';
+		} catch {
+			kind = 'unverified';
+		}
+		if (kind !== 'unverified') {
+			if (!cached) {
+				cached = new Map();
+				this._callerClassifications.set(socket, cached);
+			}
+			cached.set(token, { kind, key: cacheKey });
+		}
+		return kind;
 	}
 
 	/** サーバー起動完了後に、フォールバックを含む実際のlistenポートだけを返す。 */
@@ -1937,7 +2094,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 
 			try {
-				const result = await this._dispatch(ingressLease, rpc, controller.signal);
+				const result = await this._dispatch(ingressLease, rpc, controller.signal, req.socket as Socket);
 				if (!controller.signal.aborted && this.isIngressLeaseCurrent(ingressLease)) {
 					this._sendJsonRpc(res, { jsonrpc: '2.0', id: rpc.id, result });
 				} else if (!controller.signal.aborted) {
@@ -2123,7 +2280,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			res.end(JSON.stringify({ error: 'Agent hook rejected.' }));
 			return;
 		}
-		const ingressReservation = this._reserveIngressRequest(token);
+		const ingressReservation = this._reserveIngressRequest(token, 'hook');
 		if (ingressReservation === undefined) {
 			this._sendIngressCapacityRejected(res);
 			return;
@@ -2177,6 +2334,46 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._sendIngressRejected(res);
 				return;
 			}
+			// 許可待ち・質問中のペインの状態は、そのペインの中のプロセス（接続先のペインなら Para Code が
+			// 張った戻り経路の ssh）から届いた hook でしか動かさない。トークンは同じユーザーの別プロセスからも
+			// 読めるので、偽の Stop などで状態を「完了」に書き換え、IDE 操作ツールの Enter で許可ダイアログを
+			// 承認させる経路を塞ぐ。hook は頻繁に来るので、確かめるのはこの 2 つの状態と、transcript から
+			// 許可待ちが解かれてまだ確かめた hook が来ていない間だけにする（それ以外の状態を偽装しても、
+			// 許可ダイアログを Enter で押させることにはつながらない）。どちらで確かめるかはペインの属性で決まり、
+			// クエリの `host=` の名乗りでは変わらない。
+			// 相手（curl の 3 秒の待ち）が先に切れても、確かめと状態の更新は最後まで続ける（Windows では
+			// 確かめが遅く、承認の後の hook を落とすと許可待ちのまま残るため）。
+			const currentStatus = eventType ? this._paneStatuses.get(token)?.status : undefined;
+			if (currentStatus === 'permission' || currentStatus === 'question') {
+				const caller = await this._classifyCaller(token, req.socket as Socket);
+				if (!this.isIngressLeaseCurrent(ingressLease)) {
+					this._sendIngressRejected(res);
+					return;
+				}
+				if (caller === 'unverified') {
+					this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] agent-hook ignored while waiting for the user (caller not verified): ${eventType}`));
+					res.writeHead(200, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify({ ok: false, reason: 'caller not verified' }));
+					return;
+				}
+				this._unconfirmedReleaseTokens.delete(token);
+				this._unconfirmableTokens.delete(token);
+			} else if (eventType && eventType !== 'TerminalExit' && this._unconfirmedReleaseTokens.has(token) && !this._unconfirmableTokens.has(token)) {
+				// transcript から許可待ちが解かれた後の印は、確かめた hook でだけ外す。確かめられない hook も
+				// 捨てずに処理する（tmux・WSL などでは確かめを通れないので、捨てると定期実行の見張りやモバイルの
+				// 会話が止まる）。印は IDE 操作ツールの Enter を断る条件にだけ使う。確かめられなかったペインは
+				// 次の許可待ちで確かめが通るまで問い合わせない（hook のたびに lsof を起こさない）
+				const caller = await this._classifyCaller(token, req.socket as Socket);
+				if (!this.isIngressLeaseCurrent(ingressLease)) {
+					this._sendIngressRejected(res);
+					return;
+				}
+				if (caller === 'unverified') {
+					this._unconfirmableTokens.add(token);
+				} else {
+					this._unconfirmedReleaseTokens.delete(token);
+				}
+			}
 			// 発信元プロセスの所有権分類。ペイントークンはターミナル配下の全子プロセスへ
 			// 継承されるため、所有エージェントの配下で動く別エージェント（例: plugin 経由の
 			// `codex exec`）のhookをここで仕分けないと、ペインのセッションrebind・状態・通知の
@@ -2191,11 +2388,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				// 番号が偶然ぶつかると、そのプロセスが所有者として焼かれ、以後この接続先の hook が
 				// 丸ごと 'invalid' で無言に落ち続ける（接続先の会話が一切出ない状態に戻る）。
 				// 素性の分からない発信元として、pid を使わない fail-closed 側の判定へ倒す。
-				const hookPid = remoteHostId !== undefined ? undefined : parsedPid;
+				// 接続先かどうかはクエリの `host=` だけでなくペインの属性でも見る（`host=` の無い古いスクリプトや偽装）
+				const hookPid = remoteHostId !== undefined || this._paneShells.get(token)?.remoteAuthority !== undefined ? undefined : parsedPid;
 				const hookOrigin = await this._hookOwnership.classify({ token, hookPid, transcriptPath, at: Date.now() });
-				if (controller.signal.aborted) {
-					return;
-				}
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
 					this._sendIngressRejected(res);
 					return;
@@ -2221,8 +2416,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (eventType) {
 				if (eventType === 'TerminalExit') {
 					this._agentHookTokens.delete(token);
+					this._hookReportedTokens.delete(token);
+					this._unconfirmedReleaseTokens.delete(token);
+					this._unconfirmableTokens.delete(token);
 				} else {
 					this._agentHookTokens.add(token);
+					this._hookReportedTokens.add(token);
 				}
 				this._recordPaneSession(token, eventType, sessionId, transcriptPath, cwd);
 				fireParadisAgentHookEvent({
@@ -2433,16 +2632,18 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 	}
 
-	private async _dispatch(ingressLease: IParadisAgentBrowserIngressLease, rpc: IJsonRpcRequest, signal?: AbortSignal): Promise<unknown> {
+	private async _dispatch(ingressLease: IParadisAgentBrowserIngressLease, rpc: IJsonRpcRequest, signal?: AbortSignal, socket?: Socket): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		switch (rpc.method) {
 			case 'initialize': {
 				const params = rpc.params as { protocolVersion?: unknown } | undefined;
 				const requested = typeof params?.protocolVersion === 'string' ? params.protocolVersion : '2025-03-26';
+				const instructions: string | undefined = this._serverInstructions();
 				return {
 					protocolVersion: requested,
 					capabilities: { tools: { listChanged: false } },
 					serverInfo: { name: 'para-code-agent-browser', version: '1.0.0' },
+					...(instructions !== undefined ? { instructions } : {}),
 				};
 			}
 			case 'ping':
@@ -2453,17 +2654,17 @@ export class ParadisAgentBrowserService extends Disposable {
 				const tools = await this._listDevtoolsTools(ingressLease, signal);
 				this._requireIngressLease(ingressLease);
 				// PARA-PATCH: 登録されたツールプロバイダ（モバイル端末操作など）のツールも1本のサーバーに混ぜて出す
-				const provided = this._toolProviders.flatMap(provider => [...provider.listTools()]);
+				const provided = this._allToolProviders().flatMap(provider => [...provider.listTools()]);
 				return { tools: [...TOOLS, ...provided, ...tools] };
 			}
 			case 'tools/call':
-				return this._callTool(ingressLease, rpc.params as { name?: unknown; arguments?: unknown } | undefined, signal);
+				return this._callTool(ingressLease, rpc.params as { name?: unknown; arguments?: unknown } | undefined, signal, socket);
 			default:
 				throw new JsonRpcMethodError(-32601, `Method not found: ${rpc.method}`);
 		}
 	}
 
-	private async _callTool(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal): Promise<unknown> {
+	private async _callTool(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal, socket?: Socket): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		const token = ingressLease.token;
 		const name = typeof params?.name === 'string' ? params.name : undefined;
@@ -2472,8 +2673,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		if (!TOOLS.some(t => t.name === name)) {
 			// PARA-PATCH: 登録されたツールプロバイダに先に当てる（自分のツールでなければundefinedを返す約束）
-			for (const provider of this._toolProviders) {
-				const result = await provider.callTool(token, name, params?.arguments, signal);
+			const context = this._toolCallContext(ingressLease, socket);
+			for (const provider of this._allToolProviders()) {
+				const result = await provider.callTool(token, name, params?.arguments, signal, context);
 				this._requireIngressLease(ingressLease);
 				if (result !== undefined) {
 					return result;
@@ -2481,6 +2683,18 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
 			return this._callDevtoolsTool(ingressLease, name, params?.arguments, signal);
+		}
+
+		// 利用者に承認を求める・ページやプロファイルを開く / 切り替える / 消すツールは、トークンだけでなく
+		// 接続元のプロセスも確かめる（トークンは同じユーザーの別プロセスが読めるので、他のペインの名で
+		// 共有を頼めてしまう）。SSH の接続先のエージェントは戻り経路の ssh（tunnel）として通す。
+		// 一覧だけのツールと、ブラウザの共有そのもの（CDP ゲートウェイ）はこれまでどおり
+		if (PARADIS_CALLER_VERIFIED_TOOL_NAMES.has(name)) {
+			const caller = await this._classifyCaller(token, socket);
+			this._requireIngressLease(ingressLease);
+			if (caller === 'unverified') {
+				return this._toolError(CALLER_UNVERIFIED_BROWSER_MESSAGE);
+			}
 		}
 
 		if (name === 'preview_file') {
@@ -3358,9 +3572,9 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private async _callOwningWindow<T>(
 		ingressLease: IParadisAgentBrowserIngressLease,
-		request: { readonly channelName: string; readonly method: string; readonly args: unknown[]; readonly failureLabel: string; readonly failureMessage: string; readonly timeoutMs?: number; readonly timeoutMessage?: string },
+		request: IParadisMcpOwningWindowRequest,
 		signal?: AbortSignal,
-	): Promise<{ readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: string }> {
+	): Promise<ParadisMcpOwningWindowResult<T>> {
 		this._requireIngressLease(ingressLease);
 		const token = ingressLease.token;
 		const pane = this._paneShells.get(token);
@@ -3481,15 +3695,24 @@ export class ParadisAgentBrowserService extends Disposable {
 		};
 	}
 
-	private _reserveIngressRequest(token: string): { dispose(): void } | undefined {
-		const tokenCount = this._activeIngressRequestsByToken.get(token) ?? 0;
+	private _reserveIngressRequest(token: string, pool: 'default' | 'hook' = 'default'): { dispose(): void } | undefined {
+		const byToken = pool === 'hook' ? this._activeHookRequestsByToken : this._activeIngressRequestsByToken;
+		const readTotal = () => pool === 'hook' ? this._activeHookRequestCount : this._activeIngressRequestCount;
+		const writeTotal = (value: number) => {
+			if (pool === 'hook') {
+				this._activeHookRequestCount = value;
+			} else {
+				this._activeIngressRequestCount = value;
+			}
+		};
+		const tokenCount = byToken.get(token) ?? 0;
 		if (this._serverDisposed
-			|| this._activeIngressRequestCount >= MAX_ACTIVE_INGRESS_REQUESTS
+			|| readTotal() >= MAX_ACTIVE_INGRESS_REQUESTS
 			|| tokenCount >= MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN) {
 			return undefined;
 		}
-		this._activeIngressRequestCount++;
-		this._activeIngressRequestsByToken.set(token, tokenCount + 1);
+		writeTotal(readTotal() + 1);
+		byToken.set(token, tokenCount + 1);
 		let released = false;
 		return {
 			dispose: () => {
@@ -3497,12 +3720,12 @@ export class ParadisAgentBrowserService extends Disposable {
 					return;
 				}
 				released = true;
-				this._activeIngressRequestCount = Math.max(0, this._activeIngressRequestCount - 1);
-				const current = this._activeIngressRequestsByToken.get(token);
+				writeTotal(Math.max(0, readTotal() - 1));
+				const current = byToken.get(token);
 				if (current === undefined || current <= 1) {
-					this._activeIngressRequestsByToken.delete(token);
+					byToken.delete(token);
 				} else {
-					this._activeIngressRequestsByToken.set(token, current - 1);
+					byToken.set(token, current - 1);
 				}
 			},
 		};
@@ -3664,6 +3887,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._activeRequestControllers.clear();
 		this._activeIngressRequestsByToken.clear();
 		this._activeIngressRequestCount = 0;
+		this._activeHookRequestsByToken.clear();
+		this._activeHookRequestCount = 0;
 		this._activeMobileVoiceRequestCount = 0;
 		this._activeMobileVoiceBytes = 0;
 		this._mobileVoiceTickets.clear();
@@ -3692,6 +3917,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._paneSessions.clear();
 		this._activityApprovalTokens.clear();
 		this._agentHookTokens.clear();
+		this._hookReportedTokens.clear();
+		this._unconfirmedReleaseTokens.clear();
+		this._unconfirmableTokens.clear();
 		this._seenTokens.clear();
 		this._terminalExitedTokens.clear();
 		this._rendererConnections.clear();

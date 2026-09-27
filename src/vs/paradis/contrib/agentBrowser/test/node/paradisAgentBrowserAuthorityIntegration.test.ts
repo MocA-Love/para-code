@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
 import assert from 'assert';
 import { EventEmitter } from 'events';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -12,6 +14,7 @@ import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/pa
 import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChannel.js';
 import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
 import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../node/paradisAgentHookBus.js';
+import { IParadisMcpToolCallContext } from '../../common/paradisMcpToolProvider.js';
 import { ParadisAgentHookOwnership } from '../../node/paradisAgentHookOwnership.js';
 
 interface ITestBinding {
@@ -62,7 +65,7 @@ class TestResponse extends EventEmitter {
 function authorityManifest(
 	revision: number,
 	complete: boolean,
-	panes: readonly { readonly token: string; readonly shellPid?: number }[],
+	panes: readonly { readonly token: string; readonly shellPid?: number; readonly remoteAuthority?: string }[],
 	views: readonly string[] = [],
 ): IParadisBindingAuthorityManifest {
 	return {
@@ -124,6 +127,10 @@ function createFixture(): {
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set<string>(),
 		_agentHookTokens: new Set<string>(),
+		_hookReportedTokens: new Set<string>(),
+		_unconfirmedReleaseTokens: new Set<string>(),
+		_unconfirmableTokens: new Set<string>(),
+		_callerClassifications: new WeakMap<object, Map<string, string>>(),
 		// プロセス表なし = 発信元不特定の fail-closed ポリシー（同一/無transcriptは素通し）。
 		_hookOwnership: new ParadisAgentHookOwnership({ snapshot: async () => undefined }),
 		_seenTokens: new Set<string>(),
@@ -172,6 +179,8 @@ function createFixture(): {
 		_activeRequestControllers: new Set<AbortController>(),
 		_activeIngressRequestsByToken: new Map<string, number>(),
 		_activeIngressRequestCount: 0,
+		_activeHookRequestsByToken: new Map<string, number>(),
+		_activeHookRequestCount: 0,
 		_activeMobileVoiceRequestCount: 0,
 		_activeMobileVoiceBytes: 0,
 		_mobileVoiceTickets: new Map<string, unknown>(),
@@ -800,7 +809,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(Reflect.get(fixture.service, '_seenTokens').size, 0);
 	});
 
-	test('reserves MCP and hook ingress before body listeners and releases the shared per-token cap', async () => {
+	test('reserves MCP ingress before body listeners, caps it per token, and keeps hooks on a separate cap', async () => {
 		const fixture = createFixture();
 		const connection = {};
 		fixture.service.registerRendererConnection('window:1', connection);
@@ -813,11 +822,22 @@ suite('ParadisAgentBrowser authority integration', () => {
 		});
 		assert.ok(stalled.every(entry => entry.request.listenerCount('data') === 1));
 
-		const overflowRequest = new TestRequest('POST', '/agent-hook?pane=token&event=Stop');
+		const overflowRequest = new TestRequest('POST', '/?pane=token');
 		const overflowResponse = new TestResponse();
 		await handleRequest(overflowRequest, overflowResponse);
 		assert.strictEqual(overflowResponse.statusCode, 429);
 		assert.strictEqual(overflowRequest.listenerCount('data'), 0);
+
+		// Hooks keep their own cap, so long MCP requests (such as wait tools) cannot starve them.
+		const hookRequest = new TestRequest('POST', '/agent-hook?pane=token&event=Stop');
+		const hookResponse = new TestResponse();
+		const hookPending = handleRequest(hookRequest, hookResponse);
+		assert.strictEqual(hookRequest.listenerCount('data'), 1);
+		hookRequest.emit('data', Buffer.from('{}'));
+		hookRequest.emit('end');
+		await hookPending;
+		assert.notStrictEqual(hookResponse.statusCode, 429);
+		assert.strictEqual(Reflect.get(fixture.service, '_activeHookRequestCount'), 0);
 
 		for (const entry of stalled) {
 			entry.request.emit('data', Buffer.from('{"jsonrpc":"2.0","method":"notifications/initialized"}'));
@@ -1198,6 +1218,87 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(response.body.includes('Failed to open the file in Para Code.'), true);
 		assert.strictEqual(response.body.includes('renderer-private-marker'), false);
 		assert.strictEqual(response.endCalls, 1);
+	});
+
+	test('browser tools that ask the user or change profiles refuse a caller that cannot be verified, without reaching the window', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 123 }]));
+		let windowCalls = 0;
+		Reflect.set(fixture.service, 'ipcServer', {
+			connections: [{ ctx: 'window:1' }],
+			getChannel: () => ({ call: async () => { windowCalls++; return { ok: true }; } }),
+		});
+		const bodies: string[] = [];
+		for (const name of ['request_browser_page', 'open_browser_profile', 'delete_browser_profile']) {
+			// The test socket has no peer port, so the caller cannot be verified.
+			const request = new TestRequest('POST', '/?pane=token');
+			const response = new TestResponse();
+			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+			request.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { profile: 'PRD' } } })));
+			request.emit('end');
+			await pending;
+			bodies.push(response.body);
+		}
+		assert.deepStrictEqual({ refused: bodies.every(body => body.includes('could not confirm')), windowCalls }, { refused: true, windowCalls: 0 });
+	});
+
+	test('the unconfirmed release mark outlives the status entry when the viewer acknowledges the review', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 123 }]));
+		Reflect.get(fixture.service, '_paneStatuses').set('token', { status: 'review', changedAt: 1 });
+		Reflect.get(fixture.service, '_unconfirmedReleaseTokens').add('token');
+		Reflect.get(fixture.service, '_unconfirmableTokens').add('token');
+		await fixture.service.acknowledgePaneStatus(connection, 'token');
+		const lease = fixture.service.captureIngressLease('token');
+		const context = Reflect.get(fixture.service, '_toolCallContext').call(fixture.service, lease, undefined) as IParadisMcpToolCallContext;
+		assert.deepStrictEqual({
+			statusGone: Reflect.get(fixture.service, '_paneStatuses').has('token') === false,
+			status: context.getPaneAgentStatus('token'),
+			mark: context.getUnconfirmedRelease('token'),
+		}, { statusGone: true, status: undefined, mark: 'unverifiable' });
+	});
+
+	test('keeps the remote mark when an incomplete manifest carries a remote pane over', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 4242, remoteAuthority: 'ssh-remote+dev' }]));
+		// After a reload the pane is listed before its terminal is back: no shell PID, no remote authority.
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(2, false, [{ token: 'token' }]));
+		assert.deepStrictEqual(fixture.paneShells.get('token'), { windowCtx: 'window:1', token: 'token', shellPid: 4242, remoteAuthority: 'ssh-remote+dev' });
+	});
+
+	test('hooks that cannot be verified after a transcript release still reach the hook bus and keep the release unconfirmed', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 123 }]));
+		Reflect.get(fixture.service, '_paneStatuses').set('token', { status: 'working', changedAt: 1 });
+		Reflect.get(fixture.service, '_unconfirmedReleaseTokens').add('token');
+		const events: IParadisAgentHookEvent[] = [];
+		const listener = onParadisAgentHookEvent(event => events.push(event));
+		try {
+			for (const event of ['PostToolUse', 'Stop']) {
+				const request = new TestRequest('POST', `/agent-hook?pane=token&event=${event}`);
+				const response = new TestResponse();
+				const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+				request.emit('data', Buffer.from('{}'));
+				request.emit('end');
+				await pending;
+			}
+			assert.deepStrictEqual({
+				events: events.map(event => event.event),
+				status: Reflect.get(fixture.service, '_paneStatuses').get('token')?.status,
+				stillUnconfirmed: Reflect.get(fixture.service, '_unconfirmedReleaseTokens').has('token'),
+				unconfirmable: Reflect.get(fixture.service, '_unconfirmableTokens').has('token'),
+			}, { events: ['PostToolUse', 'Stop'], status: 'review', stillUnconfirmed: true, unconfirmable: true });
+		} finally {
+			listener.dispose();
+		}
 	});
 
 	test('tells the caller a preview was queued for a space that is not on screen', async () => {

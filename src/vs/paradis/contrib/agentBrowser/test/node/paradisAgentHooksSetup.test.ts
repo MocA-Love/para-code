@@ -208,12 +208,12 @@ suite('ParadisAgentHooksSetup', () => {
 		this.timeout(15_000);
 		const { createServer } = await import('http');
 		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hook-post-'));
-		let received: { method: string | undefined; body: string } | undefined;
+		let received: { method: string | undefined; body: string; authorization: string | undefined; tokenInUrl: boolean } | undefined;
 		const server = createServer((request, response) => {
 			const chunks: Buffer[] = [];
 			request.on('data', chunk => chunks.push(Buffer.from(chunk)));
 			request.on('end', () => {
-				received = { method: request.method, body: Buffer.concat(chunks).toString('utf8') };
+				received = { method: request.method, body: Buffer.concat(chunks).toString('utf8'), authorization: request.headers.authorization, tokenInUrl: (request.url ?? '').includes('pane-token') };
 				response.writeHead(200, { 'Content-Type': 'application/json' });
 				response.end('{"ok":true}');
 			});
@@ -235,7 +235,8 @@ suite('ParadisAgentHooksSetup', () => {
 				[PARADIS_MCP_PORT_FILE_ENV_VAR]: portFilePath,
 			});
 
-			assert.deepStrictEqual(received, { method: 'POST', body: payload });
+			// The token travels in a header read from stdin, never in the URL or curl's argv.
+			assert.deepStrictEqual(received, { method: 'POST', body: payload, authorization: 'Bearer pane-token', tokenInUrl: false });
 		} finally {
 			if (server.listening) {
 				await new Promise<void>(resolve => server.close(() => resolve()));
@@ -251,7 +252,8 @@ suite('ParadisAgentHooksSetup', () => {
 		assert.match(script, /function Read-BoundedStandardInput/);
 		assert.match(script, /\$captureLimit = 4194305/);
 		assert.match(script, /if \(\$bodyBytes\.Length -gt 4194304\)/);
-		assert.match(script, /Invoke-RestMethod -Method Get/);
+		assert.match(script, /Invoke-RestMethod -Method Get -Uri \$hookUri -Headers \$hookHeaders/);
+		assert.doesNotMatch(script, /pane=/);
 	});
 
 	test('reinstalling leaves its hooks where they are, so Codex trust keyed by position stays valid', () => {

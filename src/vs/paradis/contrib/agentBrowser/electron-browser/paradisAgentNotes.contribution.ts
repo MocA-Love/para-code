@@ -47,6 +47,7 @@ import {
 	IParadisWorkspaceSwitchService,
 	IParadisWorktreeService,
 	paradisListSpaces,
+	paradisResolveInstanceSpace,
 } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
 const UNKNOWN_SPACE_HINT = 'Call list_space_notes to see the available spaces and their keys.';
@@ -133,16 +134,7 @@ export class ParadisAgentNotesChannel implements IServerChannel {
 	}
 
 	private _resolveInstanceSpace(instanceId: number): string | undefined {
-		const recorded = this.terminalScopeService.getStateKeyForInstance(instanceId);
-		if (recorded !== undefined) {
-			return recorded;
-		}
-		const scope = this.terminalScopeService.resolveScope(instanceId);
-		return scope.kind === 'managed'
-			? scope.stateKey
-			: scope.kind === 'unscoped'
-				? this.workspaceSwitchService.activeStateKey
-				: undefined;
+		return paradisResolveInstanceSpace(this.terminalScopeService, this.workspaceSwitchService.activeStateKey, instanceId);
 	}
 
 	private _toSpace(entry: IParadisSpaceEntry, current: string | undefined): IParadisAgentNoteSpace {

@@ -192,6 +192,25 @@ suite('paradisWorktreeCreate', () => {
 		assert.strictEqual(paradisBuildAgentCommand(template, 'fix it\'s broken', GeneralShellType.PowerShell), String.raw`codex 'fix it''s broken'`);
 	});
 
+	test('quotes fish prompts with its own escapes, PowerShell smart quotes, and drops control characters', () => {
+		const template = { id: 'codex', label: 'Codex', command: 'codex {prompt}' };
+		assert.deepStrictEqual([
+			paradisBuildAgentCommand(template, 'it\'s a\\', PosixShellType.Fish),
+			paradisBuildAgentCommand(template, 'fix it\u2019; Start-Process calc; \u2018', GeneralShellType.PowerShell),
+			paradisBuildAgentCommand(template, 'a\x03b\x15c\td\r\ne', PosixShellType.Bash),
+		], [
+			String.raw`codex 'it\'s a\\'`,
+			'codex \'fix it\u2019\u2019; Start-Process calc; \u2018\u2018\'',
+			'codex \'abc    d\ne\'',
+		]);
+	});
+
+	test('refuses a prompt with a backslash when the shell is unknown, since it cannot be quoted for fish', () => {
+		const template = { id: 'codex', label: 'Codex', command: 'codex {prompt}' };
+		assert.throws(() => paradisBuildAgentCommand(template, 'a\\\'; touch /tmp/x; echo \\', undefined));
+		assert.strictEqual(paradisBuildAgentCommand(template, 'plain', undefined), 'codex \'plain\'');
+	});
+
 	test('encodes arbitrary cmd.exe prompts without interpolating metacharacters', () => {
 		const command = paradisBuildAgentCommand(
 			{ id: 'codex', label: 'Codex', command: 'codex {prompt}' },

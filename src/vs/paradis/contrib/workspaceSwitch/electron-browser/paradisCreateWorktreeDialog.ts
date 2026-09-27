@@ -26,6 +26,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { PosixShellType } from '../../../../platform/terminal/common/terminal.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
 import {
 	IParadisAgentCommandTemplate,
@@ -638,7 +639,8 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		}
 		// プレビューは POSIX シェル表記で統一する（実行時は実際のシェルに合わせて組み直される。
 		// 空プロンプトは paradisBuildAgentCommand 側で引数ごと省かれる）
-		const command = paradisBuildAgentCommand(agent, prompt, undefined, this._currentLaunchOptions());
+		// 種類の分からないシェル（undefined）ではバックスラッシュを含む指示を断る作りなので、表記に合わせて bash として組む
+		const command = paradisBuildAgentCommand(agent, prompt, PosixShellType.Bash, this._currentLaunchOptions());
 		this._cmdPreview.textContent = `$ ${command}`;
 	}
 
