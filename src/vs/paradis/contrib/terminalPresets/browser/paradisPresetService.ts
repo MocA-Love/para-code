@@ -76,6 +76,8 @@ const STR_AGENT_PROMPT_NO_TERMINAL = localize('paradis.presets.agentPrompt.noTer
 const STR_AGENT_PROMPT_NOT_AGENT = localize('paradis.presets.agentPrompt.notAgent', "今のターミナルではエージェント（Claude Code / Codex）が動いていません。");
 // allow-any-unicode-next-line
 const STR_AGENT_PROMPT_AWAITING = localize('paradis.presets.agentPrompt.awaiting', "エージェントが質問か許可の確認を出しているため、プロンプトを入れられません。先に回答してください。");
+// allow-any-unicode-next-line
+const STR_INSERT_AWAITING = localize('paradis.presets.insert.awaiting', "エージェントが質問か許可の確認を出しているため、コマンドを挿入できません。先に回答してください。");
 
 /**
  * プリセット名をターミナルの初期タイトルとしてどう渡すかを決める。
@@ -1117,11 +1119,15 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		instance.focus(true);
 	}
 
-	/** そのターミナルのエージェントが許可・質問の回答を待っているなら、入れずに理由を投げる。 */
+	/**
+	 * そのターミナルのエージェントが許可・質問の回答を待っているなら、入れずに理由を投げる。
+	 * 「挿入だけ」のプリセット用。入れるのはコマンドなので、エージェント向けの「プロンプト」とは
+	 * 別の文言にする。
+	 */
 	private _throwIfAwaitingAnswer(instance: ITerminalInstance): void {
 		if (this.agentStatusStore.isAgentInstance(instance.instanceId)
 			&& paradisAgentPromptAvailability(true, true, this.agentStatusStore.getInstanceStatus(instance.instanceId)) === ParadisAgentPromptAvailability.AwaitingAnswer) {
-			throw new Error(STR_AGENT_PROMPT_AWAITING);
+			throw new Error(STR_INSERT_AWAITING);
 		}
 	}
 
