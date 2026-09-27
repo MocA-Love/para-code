@@ -5,6 +5,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Bell, ChevronRight, Plus, QrCode, Settings, SquareTerminal } from 'lucide-react-native';
 import { ProviderLogo } from '../../components/providerLogo.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
+import { useWindowControlsInset } from '../../ipad/windowControls.js';
 import type { RateLimitAccount, RateLimitsResult } from '../../store.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { pickRateLimitAccount } from '../../usageFormat.js';
@@ -26,8 +27,10 @@ export function HomeTopBar({ unread, onNotifications, onSettings, showBell = tru
 	showBell?: boolean;
 }) {
 	const insets = useStableInsets();
+	// iPad のウィンドウアプリで左上に出る操作ボタンの右からロゴを始める。
+	const controlsInset = useWindowControlsInset();
 	return (
-		<View style={[styles.topBar, { paddingTop: insets.top + space.sm }]}>
+		<View style={[styles.topBar, { paddingTop: insets.top + space.sm }, controlsInset > 0 ? { paddingLeft: space.lg + controlsInset } : undefined]}>
 			<View style={styles.brand}>
 				<ParaLogo size={BRAND_LOGO} />
 				<Text style={styles.brandText} accessibilityRole="header">Para Code</Text>

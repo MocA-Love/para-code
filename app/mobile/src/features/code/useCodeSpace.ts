@@ -25,16 +25,23 @@ export interface CodeSpace {
 
 type SearchParam = string | string[] | undefined;
 
+/** ルートの外（iPad のセッションの右のドック）で使うときに、PC とスペースを直接渡す。 */
+export interface CodeSpaceTarget {
+	readonly pcId: string;
+	readonly spaceId: string;
+}
+
 /**
  * ソース管理・差分・ファイルの画面の土台。ルートの PC とスペースを引き当て（PC の切り替えと
- * `selectedWs` の同期は `useRouteSpace` が行う）、要求を出せるかを決める。
+ * `selectedWs` の同期は `useRouteSpace` が行う）、要求を出せるかを決める。`target` を渡すとルートの代わりに
+ * それを使う（iPad のドック）。
  *
  * **ストアの `workspace` 全体は購読しない**（エージェントの実行中は最大 10Hz で作り直される）。
  * 購読するのは renderer の識別子（文字列）と、`useRouteSpace` が選んだスペース1件だけ。
  */
-export function useCodeSpace(): CodeSpace {
+export function useCodeSpace(target?: CodeSpaceTarget): CodeSpace {
 	const params = useLocalSearchParams<{ pcId?: SearchParam; spaceId?: SearchParam }>();
-	const route = useRouteSpace(params.pcId, params.spaceId);
+	const route = useRouteSpace(target?.pcId ?? params.pcId, target?.spaceId ?? params.spaceId);
 	const readyNow = route.status === 'active' && route.spaceStatus === 'ready' && route.space !== undefined;
 	const [everReady, setEverReady] = useState(false);
 	const [label, setLabel] = useState<{ name: string; branch: string | undefined } | undefined>(undefined);

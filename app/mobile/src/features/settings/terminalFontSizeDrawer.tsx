@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { monoFamily } from '../../monoFont.js';
-import { TERMINAL_FONT_SIZE_DEFAULT, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, terminalGridFor } from '../../terminalViewport.js';
+import { TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, defaultTerminalFontSize, terminalGridFor } from '../../terminalViewport.js';
+import { isTablet } from '../../hooks/useSizeClass.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { BottomDrawer, DrawerCaption, ListGroup, ListRow } from '../../ui/index.js';
 
@@ -50,7 +51,7 @@ export function TerminalFontSizeDrawer({ visible, fontSize, onSelect, onClose }:
 					<ListRow
 						key={size}
 						label={`${size}pt`}
-						hint={size === TERMINAL_FONT_SIZE_DEFAULT ? '既定' : undefined}
+						hint={size === defaultTerminalFontSize(isTablet) ? '既定' : undefined}
 						trailing={size === fontSize ? 'check' : 'none'}
 						selected={size === fontSize}
 						onPress={() => onSelect(size)}

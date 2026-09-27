@@ -3,7 +3,7 @@
 import { PairingEmptyState, usePairingRequired } from '../src/features/pairing/pairingEmptyState.js';
 import { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
 import { unreadQuestionNotificationCount } from '../src/components/notificationCount.js';
@@ -19,6 +19,7 @@ import { openSession } from '../src/features/pc/openSession.js';
 import { startStatusSinceTracking } from '../src/features/pc/statusSinceStore.js';
 import { hapticSelection } from '../src/haptics.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
+import { useShortcutSlot } from '../src/ipad/shortcutRegistry.js';
 import { shouldShowBattery } from '../src/pcStatus.js';
 import { routes } from '../src/routes.js';
 import { colors, space, type } from '../src/theme.js';
@@ -65,6 +66,9 @@ export default function HomeScreen() {
 	const activePc = pcs.find(pc => pc.id === activePcId);
 	const activeConnected = activePc !== undefined && connectionKind(activePc.connection, activePc.pcOnline) === 'connected';
 	const resumePc = lastSession !== undefined ? pcs.find(pc => pc.id === lastSession.pcId) : undefined;
+	// 外付けキーボードの ⌘N（iPad）。「新しいスペース」と同じシートを出す。
+	const focused = useIsFocused();
+	useShortcutSlot('launch', focused && !empty ? { launch: () => setLaunching(true) } : undefined);
 
 	return (
 		<Screen>

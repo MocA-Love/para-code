@@ -11,6 +11,7 @@ import { keyboardCoverage } from '../keyboardCoverage.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
+import { useShortcutSlot } from '../ipad/shortcutRegistry.js';
 
 /** iPadの広い幅でシートを中央寄せするときの最大幅（pt）。 */
 const SHEET_MAX_WIDTH = 640;
@@ -157,6 +158,10 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 }) {
 	const anim = useRef(new Animated.Value(0)).current;
 	const [mounted, setMounted] = useState(visible);
+	// 外付けキーボードの Esc で閉じる（iPad）。
+	const onCloseRef = useRef(onClose);
+	onCloseRef.current = onClose;
+	useShortcutSlot('escape', visible ? { escape: () => onCloseRef.current() } : undefined);
 	const insets = useStableInsets();
 	const keyboardInset = useKeyboardInset();
 	const { height: windowHeight, width: windowWidth } = useWindowDimensions();

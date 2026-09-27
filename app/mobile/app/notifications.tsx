@@ -51,11 +51,11 @@ export default function NotificationsScreen() {
 					setSelectedWs(target.spaceId);
 				}
 				setSelectedTerminalKey(target.terminalKey);
-				router.replace(target.href);
+				router.replace(target.href, { withAnchor: true });
 				return;
 			case 'pc':
 				dismissNotification(notification.id);
-				router.replace(target.href);
+				router.replace(target.href, { withAnchor: true });
 				return;
 			case 'wait':
 				useParaToast.getState().show({ key: 'notification-wait', text: 'PC から状態を受け取っています。少し待ってから開いてください', icon: 'time-outline', tone: 'info' }, 2_500);

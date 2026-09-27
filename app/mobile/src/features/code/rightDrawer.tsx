@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, Easing, Modal, PanResponder, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
+import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
 import { colors, radius, space } from '../../theme.js';
 
 /**
@@ -45,6 +46,8 @@ export function RightDrawer({ visible, onClose, onAfterClose, children, accessib
 	onCloseRef.current = onClose;
 	const onAfterCloseRef = useRef(onAfterClose);
 	onAfterCloseRef.current = onAfterClose;
+	// 外付けキーボードの Esc で閉じる（iPad）。
+	useShortcutSlot('escape', visible ? { escape: () => onCloseRef.current() } : undefined);
 	const { width } = useWindowDimensions();
 	const insets = useStableInsets();
 	const panelWidth = Math.min(PANEL_WIDTH, width);
