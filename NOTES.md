@@ -1036,6 +1036,36 @@ upstream のディクテーションは Foundry Local のネイティブ部品�
 
 音声入力の間は Para Code の読み上げを止める（`notifications/electron-browser/paradisDictationAudioHold.contribution.ts`、音声入力を配布していなくても拡張機能や開発版の音声入力で働く）。shared process の `AudioScheduler.setHeld` が、再生中の afplay 等を止め、通知音を捨て、新しい発話を溜めて終わってから読む。止めるのはどれか1つのウィンドウでも音声入力中のとき（接続ごとに持ち、接続が切れたら外す。ウィンドウは起動時に自分の状態を送り直し、音声入力中は状態が動くたびに送り直す）。上限はウィンドウごとに 10 分で、過ぎたウィンドウだけを外す（モデルの初回ダウンロード中や、upstream のセッション数が戻らなかったときに通知が鳴らなくなり続けないため）。**Agent Sessions ウィンドウの音声入力では止まらない。** この仕組みは通常ウィンドウの集約ファイルからしか読み込まれず、Sessions ウィンドウのチャット入力にマイクが出るかは【要確認】（出るなら Sessions 側からも読み込む）。**外部の aivis-mcp は止めていない。** 止める口（`aivis --mute`）がおやすみモードと共有で、解除のときにおやすみモードのミュートやユーザー自身のミュートまで解いてしまうため。
 
+## 定期実行とスキル管理（2026-09-27、フェーズ8 担当B、O3・O6）
+
+### 定期実行（`src/vs/paradis/contrib/scheduledRuns/`）
+
+時刻の判定と記録は shared process（`node/paradisScheduledRunsService.ts`、登録口経由）、起動と見張りはウィンドウ（`electron-browser/paradisScheduledRunsRunner.contribution.ts`）が持つ。upstream の変更はない。
+
+- 保存先は `<userData>/paradis/scheduledRuns.json`（フォルダ 0700、ファイル 0600。指示の本文が入るため）。30 秒ごとに判定し、記録が変わったときだけ書く。判定した時刻（`lastEvaluatedAt`）は記録と一緒にしか書かないが、時刻が来れば必ず記録（実行かスキップ）が増えるので、起動し直しても同じ時刻を2回実行しない
+- 時刻は 5 項目の cron 式をローカル時刻で解釈する自前の実装（`common/paradisScheduleCron.ts`）。画面の選択肢（毎日・平日・毎週・数時間ごと）は cron へ落とす。タイムゾーンは持たない（Orca も保存するだけで計算には使っていない）
+- 安全装置の判定は `common/paradisScheduledRuns.ts` の純粋な関数: 作成直後は shared process が必ず `enabled: false` で保存／同じ定義の実行が開始待ち〜要対応の間は次の時刻を「スキップ（重複）」／1 日の回数（既定 3、1〜24、ローカル時刻の 0 時区切り、スキップは数えない）／最短 15 分（式の検証と、前の回から 15 分たっていない時刻のスキップ）／起動から 30 分で打ち切り。**手動の「今すぐ実行」は重複だけを止め、回数と間隔では止めない（回数には数える）**
+- 逃した時刻: 一番新しい 1 回だけを候補にし、12 時間以内なら実行（遅れが 3 分を超えたら「後から」と記録）、それより前で 12 時間以内の分はその 1 回にまとめ、12 時間より古い分は件数ごと 1 件の「スキップ」にする。有効にした時点・時刻を変えた時点より前は見ない
+- 実行の受け渡し: shared process が「開始待ち」を作ってイベントで配り、対象のリポジトリ（`URI.toString()` の一致）を開いているウィンドウが `claim` する。先に取れた 1 つだけが実行する。誰も取らなければ判定のたびに配り直し、開いたばかりのウィンドウも起動時に開始待ちを聞くので、**ウィンドウが 0 枚なら次に開いたウィンドウが拾う**。12 時間拾われなければ「スキップ」
+- 見張り: ウィンドウは 1 分ごとに生存報告を送る。3 分途絶えたら shared process が「不明」にする。制限時間 + 5 分を過ぎても終わりの報告が無ければ shared process 側でも「時間切れ」にし、受け持ちへ停止を頼む。アプリを起動し直したときに残っていた実行中の記録は「不明」、開始待ちは残す
+- 起動はフェーズ1の起動 API をそのまま使う（`paradisLaunchAgentInWorkspace` / `paradisRunWorktreeCreateFlow` の `switchToCreated: false`）。**指示はエージェントの起動引数で渡す**（`paradisBuildAgentCommand`）。フェーズ5の「貼り付けで入れる」プリセットは、すでに動いているエージェントへ足すためのもので、毎回新しく起動する定期実行では使っていない
+- 完了の判定はペイン単位の状態（`IParadisAgentStatusStore.getInstanceStatus`）で、`review` になったか、状態を 1 度でも見た後に状態が消えたら完了（`common/paradisScheduledRunWatch.ts`）。`permission` / `question` の間は「要対応」。**要対応の通知は既存のペイン単位の通知（PC のトーストとモバイル）がそのまま出す**ので、定期実行側からは通知を足していない（二重になるため）。完了してもターミナルは閉じない。hook が届かない環境では状態が来ないので、30 分で「時間切れ（状態が届かなかった）」になる
+- ウィンドウを閉じる（再読み込みを含む）ときは、そのウィンドウで動いている定期実行のターミナルを閉じて「停止」と報告する。見張りの無いまま動かし続けないため。【要確認】常駐ターミナル（pty デーモン）を使っているときに本当にプロセスまで止まるか
+- 最後の発言と会話 ID: ウィンドウが起動直後にペイントークンを shared process へ渡し（メモリだけに持ち、記録には書かない）、shared process が hook のバス（`onParadisAgentHookEvent`）から Stop の `last_assistant_message`（先頭 400 文字）と `session_id` を拾う。トークン数と推定コストは、画面を開いたときに ccusage の `fetchRecentSessions`（使用量ダッシュボードと同じ 90 日の指定でキャッシュを分け合う）を会話 ID で引く。**Codex の回は出ない**（ccusage のセッション一覧が Claude Code だけのため）
+- 毎回新しいスペースを作る設定のスペースは、記録の `space` で覚える（ブランチ名は `scheduled-<定義 id の先頭6字>-<月日>-<時分>`）。新しい 5 件より古いものを片付け候補に出し、「削除…」は既存のワークツリー削除コマンド（確認・teardown つき）に任せる。記録の上限（1 定義 100 件）で消すときも、スペースを持つ記録は残す
+- モーダルの重ね順は 2570（ワークベンチのモーダル 2575 の下）。削除の確認に `IDialogService` を使うため。通知のトースト（2545）は下に隠れるので、結果はモーダルの中に出す
+- 担当A（操作ツール）との共通部品: 「エージェントを起動する」はフェーズ1の起動 API、「完了を待つ」は `common/paradisScheduledRunWatch.ts` の `paradisAdvanceRunWatch`（状態の列から running / needsAttention / completed を決める純粋な関数）を使える
+- 未対応: 事前チェックのコマンド（Orca の precheck）、実行前に前回の端末を使い回すこと、SSH の接続先だけにあるリポジトリをウィンドウを閉じた後に動かすこと（接続中のウィンドウが拾えば動く）
+
+### スキル管理（`src/vs/paradis/contrib/skillsManager/`）
+
+歯車メニュー「スキル」のモーダル。読み書きはすべて `IFileService` で行う（`common/paradisSkills.ts`）。手元（file）・SSH の接続先（vscode-remote）・WSL（Windows から見た UNC）を同じ手順で扱える。upstream の変更はない。
+
+- 見るフォルダ（`electron-browser/paradisSkillRoots.ts`）: この PC の `$CLAUDE_CONFIG_DIR`（無ければ `~/.claude`）`/skills`、`$CODEX_HOME`（無ければ `~/.codex`）`/skills`、`~/.agents/skills`、このウィンドウの手元のリポジトリの `.claude/skills` と `.agents/skills`。環境変数はシェルの環境（`process.shellEnv()`）から読み、絶対パスのときだけ使う。SSH は**このウィンドウが接続しているときだけ**、ホームは接続先から受け取ったものだけを使う（`paradisRemoteUserHome`）。接続先の `$CLAUDE_CONFIG_DIR` などは見ない。WSL は Windows で WSL の中のリポジトリを登録しているときだけ、そのディストロのホームを見る。Claude Code のプラグインのスキルは見ない（Q81 の範囲外）
+- スキルはフォルダの直下の `<名前>/SKILL.md`。frontmatter の `name` / `description` を読む（無ければ見出しと最初の段落）。Codex の `skills/.system/` は同梱として一覧に出すが消させない
+- 削除と導入は、ボタンを押して `IDialogService` の確認に「はい」と答えたときだけ。削除は直下のフォルダだけを受け付け、表示後にリンク／フォルダが入れ替わっていたら止める。ごみ箱が使えるマシン（手元）ではごみ箱へ移す。リンクはリンクだけを消す。導入は隣の一時フォルダへ写してから入れ替える（40MB・2000 ファイルまで）。同じ名前があれば置き換えるかを確認する
+- 未対応: 接続していない SSH ホストへの導入（読み取り専用の `IParadisRemoteHostBrowser` しか無いため）、WSL の中の `$CODEX_HOME`、スキルの更新通知（Orca の同梱スキル向けの機能）
+
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
 
 HTML プレビューは、ファイルの属するワークスペースフォルダーを 127.0.0.1 のローカルサーバへ載せ、
