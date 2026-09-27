@@ -23,7 +23,6 @@ import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -37,6 +36,7 @@ import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from '../../
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisConfiguredAgents, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
+import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import {
 	IParadisDesignAnnotation,
 	IParadisDesignImageReference,
@@ -143,7 +143,7 @@ export class ParadisDesignModeSender {
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@INotificationService private readonly notificationService: INotificationService,
-		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IParadisAgentModelCatalogService private readonly modelCatalogService: IParadisAgentModelCatalogService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
@@ -217,7 +217,7 @@ export class ParadisDesignModeSender {
 		}
 		const rootUri = this.workspaceContextService.getWorkspace().folders[0]?.uri;
 		if (rootUri && this.workspaceSwitchService.activeStateKey) {
-			for (const agent of paradisConfiguredAgents(this.configurationService)) {
+			for (const agent of paradisConfiguredAgents(this.modelCatalogService)) {
 				items.push({
 					label: localize('paradis.designMode.send.launch', "新しい {0} を起動して入れる", agent.label),
 					iconClass: ThemeIcon.asClassName(Codicon.add),
