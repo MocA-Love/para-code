@@ -21,12 +21,15 @@ import { getParadisPaneIndicatorHost, onDidChangeParadisPaneIndicatorHost } from
 import { ParadisAgentLiveMirror } from './paradisAgentLiveMirror.js';
 import { ParadisAgentLiveModel } from './paradisAgentLiveModel.js';
 import { ParadisAgentLiveSettingsPopover } from './paradisAgentLiveSettingsPopover.js';
+import { ParadisAgentLiveSummaryView } from './paradisAgentLiveBoardView.js';
 import {
 	IParadisAgentLiveEntry,
 	IParadisAgentLiveViewState,
 	PARADIS_AGENT_LIVE_DEFAULT_FONT_SIZE,
 	PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT,
+	PARADIS_AGENT_LIVE_LAYOUTS,
 	PARADIS_AGENT_LIVE_STATUS_ORDER,
+	ParadisAgentLiveLayout,
 	ParadisAgentLiveStatus,
 	paradisAgentLiveSpaceLabel,
 	paradisApplyAgentLiveManualDrop,
@@ -62,6 +65,28 @@ const STATUS_LABELS: Record<ParadisAgentLiveStatus, string> = {
 	review: localize('paradis.agentLive.status.review', "完了"),
 	idle: localize('paradis.agentLive.status.idle', "待機"),
 };
+
+const LAYOUT_LABELS: Record<ParadisAgentLiveLayout, string> = {
+	tiles: localize('paradis.agentLive.layout.tiles', "タイル"),
+	board: localize('paradis.agentLive.layout.board', "ボード"),
+	list: localize('paradis.agentLive.layout.list', "リスト"),
+};
+
+const LAYOUT_HINTS: Record<ParadisAgentLiveLayout, string> = {
+	tiles: localize('paradis.agentLive.layout.tilesHint', "各エージェントの端末を並べて見る"),
+	board: localize('paradis.agentLive.layout.boardHint', "状態ごとの列（要対応・作業中・完了・待機）に仕分けて見る"),
+	list: localize('paradis.agentLive.layout.listHint', "1行1エージェントで、最後の発言と未回答の質問を流し読みする"),
+};
+
+/** 見出し・カード・行に出す経過時間（タイル・ボード・リストで同じ書き方にする）。 */
+function entryClockText(entry: IParadisAgentLiveEntry, now: number): string {
+	const elapsed = paradisFormatAgentLiveDuration(now - entry.since);
+	return paradisIsAttentionStatus(entry.status)
+		? localize('paradis.agentLive.waiting', "{0} 待機中", elapsed)
+		: entry.status === 'review'
+			? localize('paradis.agentLive.completed', "{0}前に完了", elapsed)
+			: elapsed;
+}
 
 /** 経過時間表示の更新間隔。秒単位の表示なので1秒で足りる。 */
 const CLOCK_INTERVAL = 1000;
@@ -158,6 +183,10 @@ export class ParadisAgentLiveWindowView extends Disposable {
 	private readonly countText: HTMLElement;
 	private readonly attentionChip: HTMLElement;
 	private readonly settingsButton: HTMLElement;
+	/** タイル | ボード | リスト の切り替えボタン */
+	private readonly layoutButtons = new Map<ParadisAgentLiveLayout, HTMLElement>();
+	/** ボードとリストの描画係。タイル表示の間は隠れている */
+	private readonly summaryView: ParadisAgentLiveSummaryView;
 
 	/** 開いている間だけ生きる歯車ポップオーバー */
 	private readonly popover = this._register(new MutableDisposable<ParadisAgentLiveSettingsPopover>());
@@ -218,6 +247,17 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 		append(toolbar, $('span.paradis-agent-live-grow'));
 		this.countText = append(toolbar, $('span.paradis-agent-live-tool-label'));
+		// 見せ方の切り替え。絞り込み・並び替え・ピン・非表示は3つで共通 (Q21 案A)
+		const layoutSeg = append(toolbar, $('.paradis-agent-live-seg.paradis-agent-live-layout-seg'));
+		layoutSeg.setAttribute('role', 'group');
+		layoutSeg.setAttribute('aria-label', localize('paradis.agentLive.layout', "表示の切り替え"));
+		for (const layout of PARADIS_AGENT_LIVE_LAYOUTS) {
+			const button = append(layoutSeg, $('button'));
+			button.textContent = LAYOUT_LABELS[layout];
+			this.registerHover(button, LAYOUT_HINTS[layout]);
+			this._register(addDisposableListener(button, EventType.CLICK, () => this.setLayout(layout)));
+			this.layoutButtons.set(layout, button);
+		}
 		this.settingsButton = this.createIconButton(toolbar, 'settings-gear', localize('paradis.agentLive.settings', "表示と並び"));
 		this.settingsButton.setAttribute('aria-haspopup', 'true');
 		this._register(addDisposableListener(this.settingsButton, EventType.CLICK, () => this.toggleSettings()));
@@ -251,6 +291,12 @@ export class ParadisAgentLiveWindowView extends Disposable {
 			if (!isHTMLElement(related) || !this.wall.contains(related)) {
 				this.hideInsertLine();
 			}
+		}));
+
+		this.summaryView = this._register(this.instantiationService.createInstance(ParadisAgentLiveSummaryView, root, {
+			statusLabel: status => STATUS_LABELS[status],
+			clockText: (entry, now) => entryClockText(entry, now),
+			reveal: token => this.revealTile(token),
 		}));
 
 		this.observeIntersections(scroll);
@@ -305,7 +351,10 @@ export class ParadisAgentLiveWindowView extends Disposable {
 				this.disposeTile(token, tile);
 			}
 		}
-		const shown = new Set(this.visibleOrder);
+		// ボード・リストの間は端末を描かない。タイルは DOM から外すだけにして、戻したときに
+		// 端末を作り直さずに済むようにする (外れたタイルのミラーは購読を止める)。
+		const tilesShown = this.viewState.layout === 'tiles';
+		const shown = new Set(tilesShown ? this.visibleOrder : []);
 		for (const [token, tile] of this.tiles) {
 			if (!shown.has(token) && tile.root.parentElement) {
 				tile.root.remove();
@@ -317,6 +366,14 @@ export class ParadisAgentLiveWindowView extends Disposable {
 			chrome.remove();
 		}
 		this.chromeElements.length = 0;
+
+		this.scroll.classList.toggle('hidden', !tilesShown);
+		if (this.viewState.layout !== 'tiles') {
+			this.summaryView.render(this.viewState.layout, groups, this.viewState.group !== 'none', entries.length, now);
+			this.updateChrome(entries, sorted.length);
+			return;
+		}
+		this.summaryView.hide();
 
 		// 期待する並びへ「位置がずれている要素だけ」動かす。appendChild で総入れ替えすると
 		// 入力中のタイルが一度 DOM から外れ、フォーカス (と IME の変換) が飛ぶ。
@@ -643,12 +700,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 	}
 
 	private updateTileClock(tile: ITile, now: number): void {
-		const elapsed = paradisFormatAgentLiveDuration(now - tile.entry.since);
-		tile.clock.textContent = paradisIsAttentionStatus(tile.entry.status)
-			? localize('paradis.agentLive.waiting', "{0} 待機中", elapsed)
-			: tile.entry.status === 'review'
-				? localize('paradis.agentLive.completed', "{0}前に完了", elapsed)
-				: elapsed;
+		tile.clock.textContent = entryClockText(tile.entry, now);
 	}
 
 	private updateClocks(): void {
@@ -665,6 +717,10 @@ export class ParadisAgentLiveWindowView extends Disposable {
 				return;
 			}
 		}
+		if (this.viewState.layout !== 'tiles') {
+			this.summaryView.updateClocks(now);
+			return;
+		}
 		for (const tile of this.tiles.values()) {
 			this.updateTileClock(tile, now);
 		}
@@ -680,6 +736,11 @@ export class ParadisAgentLiveWindowView extends Disposable {
 			if (count) {
 				count.textContent = String(counts.get(status) ?? 0);
 			}
+		}
+		for (const [layout, button] of this.layoutButtons) {
+			const checked = this.viewState.layout === layout;
+			button.classList.toggle('checked', checked);
+			button.setAttribute('aria-pressed', String(checked));
 		}
 		this.attentionChip.classList.toggle('checked', this.viewState.attentionOnly);
 		this.attentionChip.setAttribute('aria-pressed', String(this.viewState.attentionOnly));
@@ -839,6 +900,33 @@ export class ParadisAgentLiveWindowView extends Disposable {
 			this.viewState.attentionOnly = false;
 		}
 		this.commit();
+	}
+
+	private setLayout(layout: ParadisAgentLiveLayout): void {
+		if (this.viewState.layout === layout) {
+			return;
+		}
+		this.viewState.layout = layout;
+		this.commit();
+		// 見えるようになったタイルはミラーを起こし直し、端末の大きさを測り直す
+		if (layout === 'tiles') {
+			this.layout();
+		}
+	}
+
+	/**
+	 * ボード・リストのカードを押したとき。タイル表示へ切り替えて、そのエージェントの端末を
+	 * 画面内へ出し、フォーカスを載せる (Q21: 「カードを押すとタイル表示のその端末へ移ります」)。
+	 */
+	private revealTile(token: string): void {
+		this.setLayout('tiles');
+		const tile = this.tiles.get(token);
+		if (!tile?.root.isConnected) {
+			return;
+		}
+		tile.mirror?.setVisible(true);
+		tile.root.scrollIntoView({ block: 'nearest' });
+		tile.root.focus({ preventScroll: true });
 	}
 
 	private toggleAttentionOnly(): void {
