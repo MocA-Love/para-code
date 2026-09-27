@@ -69,7 +69,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'get_cdp_endpoint',
-		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: the gateway exposes exactly one shared page, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and ask the user to open/close pages from Para Code).',
+		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: the gateway exposes exactly one shared page, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and open_browser_tab / select_browser_tab / close_browser_tab to work with several tabs).',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
@@ -159,7 +159,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'open_browser_profile',
-		description: 'Open a Para Code browser page using a named, persistent browser profile (its cookies and localStorage survive restarts, so a login done once stays), and share that page with this terminal pane so the chrome-devtools tools can drive it. Profiles are created by the user in Para Code; call this with the profile name shown there. If the profile has never been logged in, the page opens logged out - tell the user to log in once.',
+		description: 'Open a Para Code browser page using a named, persistent browser profile (its cookies and localStorage survive restarts, so a login done once stays), and share that page with this terminal pane so the chrome-devtools tools can drive it. Profiles created from this terminal pane with create_browser_profile open right away. Any other profile (the user\'s, or one created from another terminal pane; list_browser_profiles does not show their names) opens only after the user approves a dialog in Para Code, so the call can wait up to about 50 seconds. If the profile has never been logged in, the page opens logged out. The tab counts as one of your own tabs (at most 5 per terminal pane; close it with close_browser_tab).',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -167,6 +167,102 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 				url: { type: 'string', description: 'Optional URL to open in that profile. Omit to open a blank page in the profile.' },
 			},
 			required: ['profile'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'list_browser_profiles',
+		description: 'List the browser profiles created from this terminal pane, with whether each has a stored login. Other profiles (the user\'s, or ones created from other terminal panes) are not listed by name, only counted; ask the user for the name if you need one. Also tells whether profile pages can be shared with agents right now (not while agent network filtering is enabled).',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'create_browser_profile',
+		description: 'Create a new, empty named browser profile in Para Code (for example to keep a separate test login). Open it with open_browser_profile. You can later delete only the profiles you created.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				name: { type: 'string', description: 'Display name for the profile (max 64 characters, must not match an existing name ignoring case and width).' },
+			},
+			required: ['name'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'switch_browser_profile',
+		description: 'Reopen one of your own tabs (opened with open_browser_tab or open_browser_profile) in another named browser profile, keeping its URL, and keep it shared with this terminal pane. The tab is recreated, so it gets a new tabId. Switching to a profile not created from this terminal pane needs the user\'s approval in Para Code (the call can wait up to about 50 seconds). Tabs the user opened cannot be switched.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				profile: { type: 'string', description: 'Name of the profile to switch to (see list_browser_profiles).' },
+				tabId: { type: 'string', description: 'Optional tabId of your tab. Omit to switch the page currently shared with this terminal pane.' },
+			},
+			required: ['profile'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'delete_browser_profile',
+		description: 'Delete a named browser profile that was created from this terminal pane with create_browser_profile, together with its stored cookies and data. Profiles of the user (including ones an agent created but the user has since used) and profiles created from other terminal panes are never deleted; for those, the answer is the same as for a name that does not exist. Fails while the user or another terminal pane has a tab open in that profile.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				profile: { type: 'string', description: 'Name of the profile you created.' },
+			},
+			required: ['profile'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'open_browser_tab',
+		description: 'Open a new Para Code browser tab for your own work and share it with this terminal pane, so the chrome-devtools tools (take_snapshot, click, navigate_page, ...) act on it right away. The tab uses a separate agent-only browser session (none of the user\'s logins or cookies) and the agent network restrictions apply. You can have at most 5 tabs of your own open per terminal pane; close the ones you no longer need with close_browser_tab. Use this instead of new_page, which is not supported.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				url: { type: 'string', description: 'Optional http(s) URL to load. Omit to open a blank tab.' },
+				background: { type: 'boolean', description: 'Open the tab without bringing it to the front of its editor group (default false). Tools still work on a background tab.' },
+			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'list_browser_tabs',
+		description: 'List the browser tabs this terminal pane can use: the tabs you opened with open_browser_tab or open_browser_profile, and the user tab currently shared with this pane (if any). Shows which one is currently shared ("active": the one the chrome-devtools tools act on) and which ones you opened (only those can be closed). Note: the chrome-devtools list_pages / select_page tools only ever see the one shared page; use this tool and select_browser_tab to move between tabs.',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'select_browser_tab',
+		description: 'Switch the page shared with this terminal pane to one of your own tabs from list_browser_tabs, so the chrome-devtools tools act on that tab from now on. A user tab can only be used while it is shared; once you switch away from it, call request_browser_page to ask for it again.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				tabId: { type: 'string', description: 'The tabId from list_browser_tabs or open_browser_tab.' },
+			},
+			required: ['tabId'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'close_browser_tab',
+		description: 'Close a browser tab that you opened with open_browser_tab or open_browser_profile. Tabs the user opened are never closed by this tool - ask the user to close them instead.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				tabId: { type: 'string', description: 'The tabId of a tab you opened (see list_browser_tabs).' },
+			},
+			required: ['tabId'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'request_browser_page',
+		description: 'Ask the user to share one of their open browser tabs with this terminal pane (for example a page where they are already logged in). Para Code shows an approval dialog with your reason; the call waits up to about 50 seconds for the answer. If approved, the chosen tab becomes the page the chrome-devtools tools act on, until you switch to another tab. Do not call this again while a request is still waiting, or right after the user declined. For pages you can open yourself, prefer open_browser_tab, which needs no approval.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				reason: { type: 'string', description: 'One short sentence shown to the user explaining why you need the page (max 300 characters).' },
+				url: { type: 'string', description: 'Optional part of the URL of the tab you want (for example "github.com/org/repo"). The matching tab is suggested first; the user can still pick another.' },
+			},
+			required: ['reason'],
 			additionalProperties: false,
 		},
 	},

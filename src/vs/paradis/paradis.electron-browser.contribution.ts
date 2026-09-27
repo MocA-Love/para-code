@@ -16,6 +16,7 @@ import './contrib/sentry/electron-browser/paradisUnhandledErrorReporter.contribu
 import './contrib/windowTransparency/electron-browser/paradisWindowTransparency.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowser.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentPreview.contribution.js';
+import './contrib/agentBrowser/electron-browser/paradisAgentBrowserTabs.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentNotes.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowserCursorSettings.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisBrowserScope.contribution.js';
@@ -43,6 +44,7 @@ import './contrib/fileViewers/electron-browser/paradisOfficeDesktopSourceService
 import './contrib/browserBookmarks/electron-browser/paradisBrowserBookmarks.contribution.js';
 import './contrib/browserProfiles/electron-browser/paradisBrowserProfiles.contribution.js';
 import './contrib/browserProfiles/electron-browser/paradisBrowserProfileMcp.contribution.js';
+import './contrib/browserDownloads/electron-browser/paradisBrowserDownloads.contribution.js';
 import './contrib/releaseNotes/electron-browser/paradisReleaseNotes.contribution.js';
 import './contrib/keepAwake/electron-browser/paradisKeepAwake.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileRelay.contribution.js';
@@ -60,6 +62,7 @@ import './contrib/agentLiveWindow/electron-browser/paradisAgentLiveWindow.contri
 import './contrib/agentInsights/electron-browser/paradisAgentInsights.contribution.js';
 import './contrib/browserLiveWindow/electron-browser/paradisBrowserLiveWindow.contribution.js';
 import './contrib/browserZoomIndicator/electron-browser/paradisBrowserZoomIndicator.contribution.js';
+import './contrib/browserDesignMode/electron-browser/paradisDesignMode.contribution.js';
 import './contrib/healthBeacon/electron-browser/paradisHealthBeacon.contribution.js';
 import './contrib/heapSnapshot/electron-browser/paradisHeapSnapshot.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisRemoteDefaultWorkspace.contribution.js';

@@ -64,6 +64,8 @@ class ParadisOpenBrowserProfileAction extends Action2 {
 			{ placeHolder: localize('paradis.browserProfiles.action.pick', "開くブラウザプロファイルを選択") },
 		);
 		if (picked?.id) {
+			// ユーザーが自分で使ったので、エージェントが作った印を外す。
+			profilesService.claimForUser(picked.id);
 			await profilesService.openInProfile(picked.id);
 		}
 	}

@@ -1,0 +1,289 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Design Mode annotation tray (between the browser navbar and the page) and the Markup overlay.
+ * Selectors are anchored on the upstream `.browser-root` so they win over generic button rules.
+ */
+
+/* ---- Annotation tray ---- */
+
+.monaco-workbench .browser-root .paradis-design-tray {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	gap: var(--vscode-spacing-size80);
+	margin: 0 var(--vscode-spacing-size80) var(--vscode-spacing-size40);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size60) var(--vscode-spacing-size40) var(--vscode-spacing-size100);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-medium);
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-foreground);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-count {
+	flex-shrink: 0;
+	border: none;
+	background: none;
+	padding: 0;
+	color: var(--vscode-foreground);
+	font: inherit;
+	font-weight: var(--vscode-fontWeight-semiBold);
+	cursor: pointer;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-count:disabled {
+	cursor: default;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-count:not(:disabled):hover {
+	text-decoration: underline;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-hint,
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-message,
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-attach {
+	min-width: 0;
+	flex-shrink: 1;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-body2);
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-hint:empty,
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-message:empty {
+	display: none;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-message {
+	color: var(--vscode-foreground);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-message.warning {
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-message.error {
+	color: var(--vscode-errorForeground);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-attach {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	cursor: pointer;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-attach input {
+	margin: 0;
+	accent-color: var(--vscode-button-background);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-spacer {
+	flex: 1 1 0;
+	min-width: 0;
+}
+
+/* The action buttons never shrink, so Send stays reachable in a narrow editor; the texts above give way first. */
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-button {
+	flex-shrink: 0;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-button,
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-text-button {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size80);
+	border: var(--vscode-strokeThickness) solid var(--vscode-button-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small);
+	background-color: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	font: inherit;
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 18px;
+	cursor: pointer;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-button:not(:disabled):hover,
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-text-button:not(:disabled):hover {
+	background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-button.primary,
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-text-button.primary {
+	background-color: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-button.primary:not(:disabled):hover,
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-text-button.primary:not(:disabled):hover {
+	background-color: var(--vscode-button-hoverBackground);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-button:disabled,
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-text-button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray button:focus-visible,
+.monaco-workbench .browser-root .paradis-markup-overlay button:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+
+/* ---- Markup overlay ---- */
+
+/*
+ * Covers the page area inside `.browser-container-wrapper`. It is registered in overlayManager.ts
+ * (OVERLAY_DEFINITIONS), so the native page view is hidden while it is open. The wrapper does not
+ * create a stacking context (it has no z-index); the overlay stays inside the editor only because
+ * the wrapper clips it with `overflow: hidden`. The z-index just lifts it over the paused-page
+ * placeholder in the same wrapper. The background is transparent so window transparency and the
+ * placeholder around the stage look the same as before the overlay opened.
+ */
+.monaco-workbench .browser-root .browser-container-wrapper > .paradis-markup-overlay {
+	position: absolute;
+	inset: 0;
+	z-index: 20;
+	overflow: hidden;
+	background-color: transparent;
+	outline: none;
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-stage {
+	position: absolute;
+	overflow: hidden;
+	border-radius: var(--vscode-cornerRadius-small);
+	cursor: crosshair;
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-stage.text-tool {
+	cursor: text;
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-image,
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-canvas {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	display: block;
+	user-select: none;
+	-webkit-user-drag: none;
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-canvas {
+	touch-action: none;
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-text-input {
+	position: absolute;
+	min-width: 160px;
+	margin: 0;
+	padding: 0 var(--vscode-spacing-size20);
+	border: var(--vscode-strokeThickness) dashed var(--vscode-focusBorder);
+	border-radius: var(--vscode-cornerRadius-xSmall);
+	background-color: rgba(255, 255, 255, 0.6);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+	line-height: 1.2;
+	outline: none;
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-toolbar {
+	position: absolute;
+	transform: translateX(-50%);
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	max-width: calc(100% - var(--vscode-spacing-size160));
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-large);
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-foreground);
+	box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+	overflow-x: auto;
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-status {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-body2);
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-status.error {
+	color: var(--vscode-errorForeground);
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-group {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size20);
+	padding-left: var(--vscode-spacing-size80);
+	border-left: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-icon,
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-width {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small);
+	background: none;
+	color: var(--vscode-foreground);
+	cursor: pointer;
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-icon:not(:disabled):hover,
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-width:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-icon.checked,
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-width.checked {
+	background-color: var(--vscode-toolbar-activeBackground);
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-icon:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-width-dot {
+	/* width and height are set inline from the stroke width */
+	display: block;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background-color: var(--vscode-foreground);
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-swatch {
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-circle);
+	/* background-color is the ink color, set inline */
+	cursor: pointer;
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-swatch.checked {
+	outline: 2px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}

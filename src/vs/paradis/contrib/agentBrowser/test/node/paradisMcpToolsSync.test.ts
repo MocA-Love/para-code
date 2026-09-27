@@ -44,5 +44,8 @@ suite('paradisMcpToolsSync', () => {
 		const names = PARADIS_AGENT_BROWSER_TOOLS.map(tool => tool.name);
 		assert.ok(names.includes('upload_file_to_drop_zone'));
 		assert.ok(names.includes('get_session_health'));
+		for (const name of ['open_browser_tab', 'list_browser_tabs', 'select_browser_tab', 'close_browser_tab', 'request_browser_page', 'list_browser_profiles', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile']) {
+			assert.ok((names as readonly string[]).includes(name), name);
+		}
 	});
 });

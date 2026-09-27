@@ -17,6 +17,7 @@
 
 import type * as http from 'http';
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
+import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { isAbsolute, join } from '../../../../base/common/path.js';
@@ -30,7 +31,8 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../.
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOTES_METHOD, PARADIS_AGENT_NOTE_TOOL_OPERATIONS, paradisParseAgentNoteToolArgs } from '../common/paradisAgentNotes.js';
 // PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
-import { IParadisOpenProfileResult, ParadisOpenProfileFailure, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_METHOD } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
+import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, IParadisSwitchProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, ParadisOpenProfileFailure, ParadisProfileManageFailure } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
+import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, ParadisAgentPageRequestFailure, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
@@ -230,7 +232,7 @@ function parseMainRendererManifest(value: unknown): IParadisMobileRendererManife
 }
 
 // allow-any-unicode-next-line
-const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブラウザページはありません。Para Code側でブラウザページを開き、コマンドパレットから「Para Code: Share Browser Page with Terminal Pane」を実行してこのペインに共有してください。注意: 共有はPara Codeの再起動（自動アップデート適用を含む）でリセットされるため、以前共有していた場合も再共有が必要です。再共有しても届かない場合は、このCLIをペインで起動し直してから再共有してください（ペインの識別トークンが再起動で変わっている可能性があります）。';
+const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブラウザページはありません。自分用のタブが要るなら open_browser_tab で開けます（承認不要）。ユーザーのタブ（ログイン済みのページなど）を使いたいなら request_browser_page でユーザーに共有を頼めます。ユーザー側から共有する場合は、Para Code側でブラウザページを開き、コマンドパレットから「Para Code: Share Browser Page with Terminal Pane」を実行してこのペインに共有してください。注意: 共有はPara Codeの再起動（自動アップデート適用を含む）でリセットされるため、以前共有していた場合も再共有が必要です。再共有しても届かない場合は、このCLIをペインで起動し直してから再共有してください（ペインの識別トークンが再起動で変わっている可能性があります）。';
 
 /**
  * para固有の静的ツール定義。以前はこのファイルと `paradisBrowserMcpShim.ts`
@@ -241,6 +243,12 @@ const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブ�
  * 必要はない）。`test/node/paradisMcpToolsSync.test.ts` が単一ソースであることを検査する。
  */
 export const TOOLS = PARADIS_MCP_LOCAL_TOOLS;
+
+/** エージェントのタブ操作と共有の要求のツール名（paradisAgentBrowserTabs.ts の契約で renderer へ委ねる）。 */
+const PARADIS_AGENT_TAB_TOOL_NAMES: ReadonlySet<string> = new Set(['open_browser_tab', 'list_browser_tabs', 'select_browser_tab', 'close_browser_tab', 'request_browser_page']);
+
+/** エージェントによるプロファイルの一覧・作成・切替・削除のツール名（paradisBrowserProfileMcp.ts の契約）。 */
+const PARADIS_AGENT_PROFILE_TOOL_NAMES: ReadonlySet<string> = new Set(['list_browser_profiles', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile']);
 
 /** para-browser側の静的ツール名（chrome-devtools-mcp側で同名ツールが現れた場合に隠すための予約集合）。 */
 const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(TOOLS.map(tool => tool.name));
@@ -255,7 +263,7 @@ const EMBEDDED_DEVTOOLS_WS_ID = 'paradis-embedded';
  * get_cdp_endpoint 応答に添える、CDPゲートウェイの制約ガイダンス（LLM向け・英語）。
  * chrome-devtools-mcp のツールが「なぜ失敗するか」を接続前に伝えるためのもの。
  */
-const CDP_LIMITATIONS_NOTE = 'The gateway exposes exactly one page (the one shared with this terminal pane). new_page (Target.createTarget) and close_page (Target.closeTarget) are not supported - ask the user to open or close pages from the Para Code UI instead. resize_page is not supported because the embedded browser is laid out by the workbench - use the emulate tool (viewport emulation) instead. Clearing cookies/storage/cache over CDP is blocked because the browser partition is shared across Para Code.';
+const CDP_LIMITATIONS_NOTE = 'The gateway exposes exactly one page (the one shared with this terminal pane). new_page (Target.createTarget) and close_page (Target.closeTarget) are not supported - use the open_browser_tab / select_browser_tab / close_browser_tab tools of this server instead (you can only close tabs you opened). list_pages / select_page only ever see the one shared page; list_browser_tabs shows the tabs you can switch to. resize_page is not supported because the embedded browser is laid out by the workbench - use the emulate tool (viewport emulation) instead. Clearing cookies/storage/cache over CDP is blocked because the browser partition is shared across Para Code.';
 
 /** DevTools proxyのtoken別generationと、最終retireを待つactive operationを調停する。 */
 export class ParadisDevtoolsGenerationCoordinator {
@@ -2496,6 +2504,17 @@ export class ParadisAgentBrowserService extends Disposable {
 			);
 		}
 
+		if (PARADIS_AGENT_PROFILE_TOOL_NAMES.has(name)) {
+			const toolArgs = params?.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : {};
+			return this._agentProfileTool(ingressLease, name, toolArgs, signal);
+		}
+
+		if (PARADIS_AGENT_TAB_TOOL_NAMES.has(name)) {
+			// タブを開く・共有を移す/頼むツールなので、バインド必須のガードより前で扱う。
+			const toolArgs = params?.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : {};
+			return this._agentTabTool(ingressLease, name, toolArgs, signal);
+		}
+
 		if (name === 'get_session_health') {
 			// バインド有無・接続の生死そのものを切り分けるためのツールなので、バインド必須の
 			// ガード（この直後の `if (!binding)`）より前で扱う。
@@ -2931,6 +2950,9 @@ export class ParadisAgentBrowserService extends Disposable {
 			args: [ingressLease.token, profile, url],
 			failureLabel: 'open_browser_profile',
 			failureMessage: 'Failed to open a browser page in that profile in Para Code.',
+			// ユーザーのプロファイルなら承認を待ち、開いたタブの共有ではスペースの確定も待つ。
+			timeoutMs: PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS,
+			timeoutMessage: 'Para Code did not finish opening the page in time. The tab may still have opened - call list_browser_tabs before trying again.',
 		}, signal);
 		if (!call.ok) {
 			return this._toolError(call.error);
@@ -2945,7 +2967,280 @@ export class ParadisAgentBrowserService extends Disposable {
 		const shared = call.value.bound
 			? 'The page is now shared with this terminal pane, so the chrome-devtools tools (take_snapshot, click, navigate_page, ...) act on it.'
 			: 'The page was opened but could NOT be shared with this terminal pane, so the chrome-devtools tools do not target it yet - ask the user to share it from Para Code.';
-		return this._toolText(`Opened ${where} the "${call.value.profileName}" browser profile. ${login} ${shared}`);
+		const tab = call.value.tabId ? ` The tab is one of your own tabs (tabId ${call.value.tabId}); close it with close_browser_tab when you are done.` : '';
+		return this._toolText(`Opened ${where} the "${call.value.profileName}" browser profile. ${login} ${shared}${tab}`);
+	}
+
+	/**
+	 * エージェントのタブ操作（open/list/select/close_browser_tab）と共有の要求（request_browser_page）の実体。
+	 * 判断はすべて呼び出し元ペインのウィンドウ（paradisAgentBrowserTabs.contribution.ts）が持ち、
+	 * ここでは構造化された結果を定型英文へ翻訳するだけ（renderer は内部情報を含む文字列を返さない）。
+	 */
+	private async _agentTabTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, toolArgs: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+		this._requireIngressLease(ingressLease);
+		const text = (key: string) => typeof toolArgs[key] === 'string' ? toolArgs[key] as string : undefined;
+		const token = ingressLease.token;
+		switch (name) {
+			case 'open_browser_tab': {
+				const call = await this._callOwningWindow<IParadisOpenAgentTabResult>(ingressLease, {
+					channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
+					method: ParadisAgentTabMethod.Open,
+					args: [token, text('url'), toolArgs.background === true],
+					failureLabel: name,
+					failureMessage: 'Failed to open a browser tab in Para Code.',
+					// 読み込み待ち（最大20秒）の分だけ長く待つ。
+					timeoutMs: 40_000,
+					timeoutMessage: 'Para Code did not finish opening the tab in time. The tab may still have opened - call list_browser_tabs before opening another one.',
+				}, signal);
+				if (!call.ok) {
+					return this._toolError(call.error);
+				}
+				if (!call.value.ok) {
+					return this._toolError(this._agentTabFailureMessage(call.value.reason));
+				}
+				const shared = call.value.bound
+					? 'It is now the page shared with this terminal pane, so the chrome-devtools tools act on it.'
+					: 'It could NOT be shared with this terminal pane, so the chrome-devtools tools do not target it yet - retry with select_browser_tab.';
+				return this._toolText(`Opened tab ${call.value.tab.tabId} (${call.value.tab.url || 'about:blank'}). ${shared} You have ${call.value.openedCount} of ${PARADIS_AGENT_TAB_LIMIT} tabs of your own open.`);
+			}
+			case 'list_browser_tabs': {
+				const call = await this._callOwningWindow<IParadisListAgentTabsResult>(ingressLease, {
+					channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
+					method: ParadisAgentTabMethod.List,
+					args: [token],
+					failureLabel: name,
+					failureMessage: 'Failed to list the browser tabs in Para Code.',
+				}, signal);
+				if (!call.ok) {
+					return this._toolError(call.error);
+				}
+				if (!call.value.ok) {
+					return this._toolError(this._agentTabFailureMessage(call.value.reason));
+				}
+				return this._toolText(JSON.stringify({ tabs: call.value.tabs, openedByYou: call.value.openedCount, limit: PARADIS_AGENT_TAB_LIMIT }, null, 2));
+			}
+			case 'select_browser_tab':
+			case 'close_browser_tab': {
+				const tabId = text('tabId');
+				if (!tabId) {
+					return this._toolError(`${name} requires the tabId of a tab from list_browser_tabs.`);
+				}
+				if (name === 'select_browser_tab') {
+					const call = await this._callOwningWindow<IParadisSelectAgentTabResult>(ingressLease, {
+						channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
+						method: ParadisAgentTabMethod.Select,
+						args: [token, tabId],
+						failureLabel: name,
+						failureMessage: 'Failed to switch the shared browser tab in Para Code.',
+					}, signal);
+					if (!call.ok) {
+						return this._toolError(call.error);
+					}
+					if (!call.value.ok) {
+						return this._toolError(this._agentTabFailureMessage(call.value.reason));
+					}
+					return call.value.bound
+						? this._toolText(`Tab ${tabId} (${call.value.tab.url || 'about:blank'}) is now the page shared with this terminal pane.`)
+						: this._toolError(`PARA_BROWSER_RETRYABLE: Para Code could not share tab ${tabId} with this terminal pane. Retry once; if it keeps failing, ask the user to share it from Para Code.`);
+				}
+				const call = await this._callOwningWindow<IParadisCloseAgentTabResult>(ingressLease, {
+					channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
+					method: ParadisAgentTabMethod.Close,
+					args: [token, tabId],
+					failureLabel: name,
+					failureMessage: 'Failed to close the browser tab in Para Code.',
+				}, signal);
+				if (!call.ok) {
+					return this._toolError(call.error);
+				}
+				if (!call.value.ok) {
+					return this._toolError(this._agentTabFailureMessage(call.value.reason));
+				}
+				return this._toolText(`Closed tab ${tabId}. You have ${call.value.openedCount} of ${PARADIS_AGENT_TAB_LIMIT} tabs of your own open.`);
+			}
+			case 'request_browser_page': {
+				if (!text('reason')?.trim()) {
+					return this._toolError('request_browser_page requires a reason: one short sentence the user will see, explaining why you need their page.');
+				}
+				const call = await this._callOwningWindow<IParadisAgentPageRequestResult>(ingressLease, {
+					channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
+					method: ParadisAgentTabMethod.RequestPage,
+					args: [token, text('reason'), text('url')],
+					failureLabel: name,
+					failureMessage: 'Failed to ask the user for a browser page in Para Code.',
+					timeoutMs: PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS,
+					timeoutMessage: 'The user did not answer in time, so no page was shared. Do not ask again right away.',
+				}, signal);
+				if (!call.ok) {
+					return this._toolError(call.error);
+				}
+				if (!call.value.ok) {
+					return this._toolError(this._agentPageRequestFailureMessage(call.value.reason));
+				}
+				if (!call.value.approved) {
+					return this._toolText(call.value.timedOut
+						? 'The user did not answer in time, so no page was shared. Do not ask again right away; continue without it, or open a tab of your own with open_browser_tab if a login is not needed.'
+						: 'The user declined to share a page. Do not ask again; continue without it, or open a tab of your own with open_browser_tab if a login is not needed.');
+				}
+				return this._toolText(`The user shared tab ${call.value.tab.tabId} (${call.value.tab.url || 'about:blank'}). It is now the page shared with this terminal pane, so the chrome-devtools tools act on it. The share ends when you switch to another tab; to come back to this page you would have to ask again.`);
+			}
+		}
+		throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
+	}
+
+	private _agentTabFailureMessage(reason: ParadisAgentTabFailure): string {
+		switch (reason) {
+			case 'switching':
+				return 'PARA_BROWSER_RETRYABLE: Para Code is switching spaces right now. Retry in a moment.';
+			case 'paneUnresolved':
+				return 'PARA_BROWSER_RETRYABLE: Para Code is still restoring this terminal pane, so it cannot tell which space it belongs to. Retry in a few seconds.';
+			case 'spaceNotVisible':
+				return 'The space this terminal pane belongs to is not on screen right now, so a tab opened there would not be visible or controllable. Ask the user to switch back to that space, then call this tool again.';
+			case 'unreachableSpace':
+				return 'The space this terminal pane belongs to can no longer be opened in Para Code (its repository or worktree is gone from the list).';
+			case 'limitReached':
+				return `You already have ${PARADIS_AGENT_TAB_LIMIT} tabs of your own open for this terminal pane, which is the limit. Close one you no longer need with close_browser_tab (see list_browser_tabs), then try again.`;
+			case 'invalidUrl':
+				return 'Only http:// and https:// URLs (or no URL, for a blank tab) can be opened.';
+			case 'openFailed':
+				return 'PARA_BROWSER_RETRYABLE: Para Code could not open the tab. Retry once.';
+			case 'unknownTab':
+				return 'There is no tab with that tabId that this terminal pane may use. You can only select tabs you opened (and the page currently shared with this pane); call list_browser_tabs to see them. To use a user tab, call request_browser_page.';
+			case 'tabNotVisible':
+				return 'That tab is in a space that is not on screen right now, so it was not closed. Ask the user to switch back to that space, then call this tool again.';
+			case 'notOwned':
+				return 'That tab was not opened by you, so it cannot be closed from here. Ask the user to close it if needed.';
+		}
+	}
+
+	private _agentPageRequestFailureMessage(reason: ParadisAgentPageRequestFailure): string {
+		switch (reason) {
+			case 'switching':
+			case 'paneUnresolved':
+			case 'spaceNotVisible':
+			case 'unreachableSpace':
+				return this._agentTabFailureMessage(reason);
+			case 'noPages':
+				return 'The user has no browser tab open in the space of this terminal pane, so there is nothing to share. Open a tab of your own with open_browser_tab, or ask the user to open the page first.';
+			case 'alreadyPending':
+				return 'A request from this terminal pane is already waiting for the user\'s answer. Wait for it instead of asking again.';
+			case 'recentlyDenied':
+				return 'The user declined a request from this terminal pane a moment ago, so Para Code declined this one automatically. Continue without the page, or open a tab of your own with open_browser_tab if a login is not needed.';
+			case 'shareFailed':
+				return 'The user chose a page, but Para Code could not share it with this terminal pane (the page may not allow sharing under the current agent network restrictions, or the share confirmation was declined).';
+		}
+	}
+
+	/**
+	 * プロファイルの一覧・作成・切替・削除の実体。判断は呼び出し元ペインのウィンドウ
+	 * （paradisBrowserProfileMcp.contribution.ts）が持ち、ここでは結果を定型英文へ翻訳するだけ。
+	 */
+	private async _agentProfileTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, toolArgs: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+		this._requireIngressLease(ingressLease);
+		const text = (key: string) => typeof toolArgs[key] === 'string' ? (toolArgs[key] as string).trim() || undefined : undefined;
+		const token = ingressLease.token;
+		const request = (method: string, args: unknown[]) => ({
+			channelName: PARADIS_BROWSER_PROFILE_MCP_CHANNEL,
+			method,
+			args: [token, ...args],
+			failureLabel: name,
+			failureMessage: 'Failed to update the browser profiles in Para Code.',
+			// 切替は承認・タブの作り直し・共有まで待つ。ほかは短い処理なので時間は同じでも困らない。
+			timeoutMs: PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS,
+			timeoutMessage: 'Para Code did not finish in time. If you were switching a tab, it may already have been recreated with a new tabId - call list_browser_tabs to check.',
+		});
+		switch (name) {
+			case 'list_browser_profiles': {
+				const call = await this._callOwningWindow<IParadisListProfilesResult>(ingressLease, request(PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, []), signal);
+				if (!call.ok) {
+					return this._toolError(call.error);
+				}
+				const notes = [
+					call.value.hiddenProfileCount > 0 ? `There are ${call.value.hiddenProfileCount} other browser profile(s) (the user's, or ones created from other terminal panes). Their names are not listed; to use one, ask the user for its name and call open_browser_profile - the user will be asked to approve.` : undefined,
+					call.value.usable ? undefined : 'This workspace is not trusted, so named profiles cannot be used until the user trusts it.',
+					call.value.shareable ? undefined : 'Agent network filtering is enabled, so pages in named profiles cannot be shared with agents right now.',
+				].filter(note => note !== undefined);
+				return this._toolText(JSON.stringify({ profiles: call.value.profiles, ...(notes.length ? { notes } : {}) }, null, 2));
+			}
+			case 'create_browser_profile': {
+				const profileName = text('name');
+				if (!profileName) {
+					return this._toolError('create_browser_profile requires a non-empty name.');
+				}
+				const call = await this._callOwningWindow<IParadisManageProfileResult<{ readonly profileName: string }>>(ingressLease, request(PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, [profileName]), signal);
+				if (!call.ok) {
+					return this._toolError(call.error);
+				}
+				if (!call.value.ok) {
+					return this._toolError(this._profileManageFailureMessage(call.value.reason, profileName));
+				}
+				return this._toolText(`Created the "${call.value.profileName}" browser profile. It has no stored login yet; open it with open_browser_profile.`);
+			}
+			case 'switch_browser_profile': {
+				const profileName = text('profile');
+				if (!profileName) {
+					return this._toolError('switch_browser_profile requires the name of a browser profile (see list_browser_profiles).');
+				}
+				const call = await this._callOwningWindow<IParadisSwitchProfileResult>(ingressLease, request(PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, [profileName, text('tabId')]), signal);
+				if (!call.ok) {
+					return this._toolError(call.error);
+				}
+				if (!call.value.ok) {
+					return this._toolError(this._profileManageFailureMessage(call.value.reason, profileName));
+				}
+				const login = call.value.restored ? 'The profile has a stored login.' : 'The profile has no stored login yet, so the page may show logged out.';
+				const shared = call.value.bound ? 'It is shared with this terminal pane.' : 'It could NOT be shared with this terminal pane yet - retry with select_browser_tab.';
+				return this._toolText(`Reopened the tab in the "${call.value.profileName}" browser profile as tab ${call.value.tabId} (the old tabId is gone). ${login} ${shared}`);
+			}
+			case 'delete_browser_profile': {
+				const profileName = text('profile');
+				if (!profileName) {
+					return this._toolError('delete_browser_profile requires the name of a browser profile you created.');
+				}
+				const call = await this._callOwningWindow<IParadisManageProfileResult<{ readonly profileName: string }>>(ingressLease, request(PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, [profileName]), signal);
+				if (!call.ok) {
+					return this._toolError(call.error);
+				}
+				if (!call.value.ok) {
+					return this._toolError(this._profileManageFailureMessage(call.value.reason, profileName));
+				}
+				return this._toolText(`Deleted the "${call.value.profileName}" browser profile and its stored data.`);
+			}
+		}
+		throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
+	}
+
+	private _profileManageFailureMessage(reason: ParadisProfileManageFailure, requestedProfile: string): string {
+		switch (reason) {
+			case 'switching':
+				return 'PARA_BROWSER_RETRYABLE: Para Code is switching spaces right now. Retry in a moment.';
+			case 'paneUnresolved':
+				return 'PARA_BROWSER_RETRYABLE: Para Code is still restoring this terminal pane. Retry in a few seconds.';
+			case 'untrustedWorkspace':
+				return 'This workspace is not trusted, so Para Code keeps every browser page in a throwaway session and named profiles cannot be used. Ask the user to trust the workspace first.';
+			case 'unknownProfile':
+				return `There is no browser profile named "${requestedProfile}" that you can use for this (list_browser_profiles shows the profiles created from this terminal pane; you can only delete those). For a profile of the user, ask the user for its exact name.`;
+			case 'profileNotShareable':
+				return 'Agent network filtering (the chat.agent.networkFilter setting) is enabled, and pages in named browser profiles do not enforce that network policy, so Para Code does not share them with agents. Nothing was changed.';
+			case 'invalidName':
+				return 'A browser profile cannot be created with that name (it is empty, or not available). Pick another short name.';
+			case 'tooManyProfiles':
+				return `You have already created ${PARADIS_AGENT_CREATED_PROFILE_LIMIT} browser profiles, which is the limit. Delete one you no longer need with delete_browser_profile first.`;
+			case 'inUse':
+				return `The "${requestedProfile}" browser profile still has tabs open that are not yours (the user or another terminal pane is using it), so it was not deleted.`;
+			case 'notAgentTab':
+				return 'Only tabs you opened (with open_browser_tab or open_browser_profile) can be switched to another profile, and the given tab (or the page currently shared with this terminal pane) is not one of them. Call list_browser_tabs to see your tabs.';
+			case 'switchFailed':
+				return 'PARA_BROWSER_RETRYABLE: Para Code could not reopen the tab in that profile. Retry once.';
+			case 'denied':
+				return `The user declined to let you use the "${requestedProfile}" browser profile. Do not ask again; continue without it.`;
+			case 'approvalTimedOut':
+				return `The user did not answer the request to use the "${requestedProfile}" browser profile in time, so nothing was changed. Do not ask again right away.`;
+			case 'alreadyPending':
+				return 'Another request from this terminal pane is still waiting for the user\'s answer. Wait for it instead of asking again.';
+			case 'recentlyDenied':
+				return 'The user declined a request from this terminal pane a moment ago, so Para Code declined this one automatically. Continue without it; do not keep asking.';
+		}
 	}
 
 	/** renderer が返した `open_browser_profile` の失敗理由を英語メッセージへ翻訳する。 */
@@ -2956,7 +3251,17 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'paneUnresolved':
 				return 'PARA_BROWSER_RETRYABLE: Para Code is still restoring this terminal pane, so it cannot tell which space to open the page in. Retry in a few seconds.';
 			case 'unknownProfile':
-				return `There is no browser profile named "${requestedProfile}" in Para Code. Profiles are created by the user - ask them to create it (the profile pill at the right of the browser address bar, "Create Browser Profile"), then call this tool again with the exact name they used.`;
+				return `There is no browser profile named "${requestedProfile}" in Para Code. Create one of your own with create_browser_profile, or ask the user for the exact name of theirs (the profile pill at the right of the browser address bar shows them).`;
+			case 'invalidUrl':
+				return 'Only http:// and https:// URLs (or no URL) can be opened.';
+			case 'denied':
+				return `The user declined to let you use the "${requestedProfile}" browser profile, so no page was opened. Do not ask again; continue without it.`;
+			case 'approvalTimedOut':
+				return `The user did not answer the request to use the "${requestedProfile}" browser profile in time, so no page was opened. Do not ask again right away.`;
+			case 'alreadyPending':
+				return 'Another request from this terminal pane is still waiting for the user\'s answer, so no page was opened. Wait for it instead of asking again.';
+			case 'recentlyDenied':
+				return 'The user declined a request from this terminal pane a moment ago, so Para Code declined this one automatically and opened no page. Continue without it; do not keep asking.';
 			case 'untrustedWorkspace':
 				return 'This workspace is not trusted, so Para Code keeps every browser page in a throwaway session and named profiles cannot be used. Ask the user to trust the workspace first.';
 			case 'profileNotShareable':
@@ -2967,6 +3272,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				return 'The space this terminal pane belongs to can no longer be opened in Para Code (its repository or worktree is gone from the list), so there is nowhere to open the page.';
 			case 'openFailed':
 				return `PARA_BROWSER_RETRYABLE: Para Code found the "${requestedProfile}" browser profile but could not open a page in it. Retry once; if it keeps failing, ask the user to open the profile from the profile pill next to the browser address bar.`;
+			case 'limitReached':
+				return this._agentTabFailureMessage('limitReached');
 		}
 	}
 
@@ -3051,7 +3358,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private async _callOwningWindow<T>(
 		ingressLease: IParadisAgentBrowserIngressLease,
-		request: { readonly channelName: string; readonly method: string; readonly args: unknown[]; readonly failureLabel: string; readonly failureMessage: string },
+		request: { readonly channelName: string; readonly method: string; readonly args: unknown[]; readonly failureLabel: string; readonly failureMessage: string; readonly timeoutMs?: number; readonly timeoutMessage?: string },
 		signal?: AbortSignal,
 	): Promise<{ readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: string }> {
 		this._requireIngressLease(ingressLease);
@@ -3067,19 +3374,33 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let onAbort: (() => void) | undefined;
+		let timedOut = false;
+		// 呼び出し元が諦めた（時間切れ・MCP の取り消し）ことを renderer へも伝える。承認ダイアログなど、
+		// renderer 側で待っているものを閉じさせるため。
+		const cancellation = new CancellationTokenSource();
 		try {
 			const channel = this.ipcServer.getChannel(request.channelName, client => client.ctx === pane.windowCtx);
 			const aborted = new Promise<never>((_, reject) => {
-				onAbort = () => reject(new ParadisIngressLeaseError());
+				onAbort = () => {
+					cancellation.cancel();
+					reject(new ParadisIngressLeaseError());
+				};
 				if (signal?.aborted) {
 					onAbort();
 				} else {
 					signal?.addEventListener('abort', onAbort, { once: true });
 				}
 			});
+			const timeoutMs = request.timeoutMs ?? 10000;
 			const value = await Promise.race([
-				channel.call<T>(request.method, request.args),
-				new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timed out after 10s')), 10000); }),
+				channel.call<T>(request.method, request.args, cancellation.token),
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(() => {
+						timedOut = true;
+						cancellation.cancel();
+						reject(new Error(`timed out after ${timeoutMs}ms`));
+					}, timeoutMs);
+				}),
 				aborted,
 			]);
 			this._requireIngressLease(ingressLease);
@@ -3089,8 +3410,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				throw new ParadisIngressLeaseError();
 			}
 			this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] ${request.failureLabel} failed for pane ${this._tokenFingerprint(token)}`, error));
-			return { ok: false, error: request.failureMessage };
+			return { ok: false, error: timedOut && request.timeoutMessage ? request.timeoutMessage : request.failureMessage };
 		} finally {
+			cancellation.dispose();
 			if (timer !== undefined) {
 				clearTimeout(timer);
 			}

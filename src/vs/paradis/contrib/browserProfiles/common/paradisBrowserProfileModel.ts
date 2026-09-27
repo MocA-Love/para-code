@@ -27,7 +27,21 @@ export interface IParadisBrowserProfile {
 	readonly createdAt: number;
 	/** 最後にこのプロファイルでページを開いた時刻（epoch ms）。 */
 	readonly lastUsedAt: number;
+	/**
+	 * エージェントが MCP（create_browser_profile）で作り、ユーザーがまだ自分で使っていないプロファイル。
+	 * ユーザーが開く・切り替える・名前や色を変えると外れ、以後はユーザーのものとして扱う
+	 * （一覧で名前を伏せ、使うには承認が要り、エージェントは消せない）。
+	 */
+	readonly createdByAgent?: true;
+	/**
+	 * 作ったペインの印（ペイントークンのハッシュ）。削除できるのは同じペインのエージェントだけ。
+	 * トークンそのものは保存しない。
+	 */
+	readonly agentOwner?: string;
 }
+
+/** {@link IParadisBrowserProfile.agentOwner} の形（16 桁の 16 進）。 */
+const AGENT_OWNER_PATTERN = /^[0-9a-f]{16}$/;
 
 /**
  * 識別カラーの選択肢。承認済みモック（2-3.html）の6色をそのまま使う。
@@ -46,11 +60,12 @@ export const PARADIS_BROWSER_PROFILE_COLORS: readonly string[] = [
 export const PARADIS_BROWSER_PROFILE_NAME_MAX_LENGTH = 64;
 
 /**
- * 表示名を正規化する。前後の空白を落とし、連続空白（改行・タブを含む）を1つに畳み、
- * 64文字で切る。サロゲートペアの途中で割らないよう文字単位で数える。
+ * 表示名を正規化する。制御文字・ゼロ幅文字・双方向制御文字を空白へ寄せ（エージェントがユーザーの
+ * プロファイルに見た目だけ似せた名前を作れないように）、前後の空白を落とし、連続空白（改行・タブを
+ * 含む）を1つに畳み、64文字で切る。サロゲートペアの途中で割らないよう文字単位で数える。
  */
 export function paradisNormalizeProfileName(name: string): string {
-	const flattened = name.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
+	const flattened = name.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, ' ').replace(/\s+/g, ' ').trim();
 	const characters = Array.from(flattened);
 	return characters.length > PARADIS_BROWSER_PROFILE_NAME_MAX_LENGTH
 		? characters.slice(0, PARADIS_BROWSER_PROFILE_NAME_MAX_LENGTH).join('')
@@ -139,5 +154,9 @@ function paradisReviveProfile(entry: unknown): IParadisBrowserProfile | undefine
 		: PARADIS_BROWSER_PROFILE_COLORS[0];
 	const createdAt = typeof candidate.createdAt === 'number' && isFinite(candidate.createdAt) ? candidate.createdAt : 0;
 	const lastUsedAt = typeof candidate.lastUsedAt === 'number' && isFinite(candidate.lastUsedAt) ? candidate.lastUsedAt : createdAt;
-	return { id: candidate.id, name, color, createdAt, lastUsedAt };
+	return {
+		id: candidate.id, name, color, createdAt, lastUsedAt,
+		...(candidate.createdByAgent === true ? { createdByAgent: true } as const : {}),
+		...(candidate.createdByAgent === true && typeof candidate.agentOwner === 'string' && AGENT_OWNER_PATTERN.test(candidate.agentOwner) ? { agentOwner: candidate.agentOwner } : {}),
+	};
 }

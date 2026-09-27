@@ -49,7 +49,19 @@ export type ParadisOpenProfileFailure =
 	 * プロファイルは見つかったが、エディタを開けなかった。`unknownProfile` に丸めると
 	 * 「そんな名前は無い」とエージェントへ誤って伝わり、ユーザーへ嘘の指示（作り直せ）が飛ぶ。
 	 */
-	| 'openFailed';
+	| 'openFailed'
+	/** このペインのエージェントが開いたタブが上限（open_browser_tab と共通）に達している。 */
+	| 'limitReached'
+	/** http / https 以外の URL。 */
+	| 'invalidUrl'
+	/** ユーザーのプロファイルを使う承認を、ユーザーが断った。 */
+	| 'denied'
+	/** 承認の締め切りまでに確かな答えが得られなかった。 */
+	| 'approvalTimedOut'
+	/** このペインの別の求めがまだ答えを待っている。 */
+	| 'alreadyPending'
+	/** 少し前にユーザーがこのペインの求めを断った（しばらくは自動で断る）。 */
+	| 'recentlyDenied';
 
 /** `open_browser_profile` の結果。 */
 export type IParadisOpenProfileResult =
@@ -61,8 +73,92 @@ export type IParadisOpenProfileResult =
 		readonly restored: boolean;
 		/** 開いたページを呼び出し元ペインへ共有（bind）できたか。 */
 		readonly bound: boolean;
+		/** 開いたタブの ID（close_browser_tab / select_browser_tab に使う）。 */
+		readonly tabId?: string;
 	}
 	| {
 		readonly ok: false;
 		readonly reason: ParadisOpenProfileFailure;
 	};
+
+// ---------------------------------------------------------------------------------------------
+// エージェントによるプロファイルの一覧・作成・切替・削除。同じチャネルに相乗りする。
+//  - 一覧に名前を出すのは、そのペインのエージェントが作ったものだけ。ほかは数だけ知らせる
+//  - それ以外（ユーザーのもの、別のペインが作ったもの。ログイン状態を含みうる）を開く・切り替える
+//    ときは、ユーザーの承認を通す
+//  - 削除できるのは、そのペインのエージェントが作り、ユーザーがまだ自分で使っていないものだけ。
+//    それ以外の名前には「そんなプロファイルは無い」と同じ答えを返す（名前の有無を探らせない）
+//  - 切替できるのは、そのペインのエージェントが自分で開いたタブだけ（ユーザーのタブのログイン状態は変えない）
+//  - エージェント向けネットワークフィルタが有効な間は、プロファイルのページを共有できないので切替を断る
+// ---------------------------------------------------------------------------------------------
+
+export const PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD = 'listBrowserProfiles';
+export const PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD = 'createBrowserProfile';
+export const PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD = 'switchBrowserProfile';
+export const PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD = 'deleteBrowserProfile';
+
+/** エージェントが作れるプロファイルの数の上限（作りっぱなしで台帳が埋まるのを防ぐ）。 */
+export const PARADIS_AGENT_CREATED_PROFILE_LIMIT = 10;
+
+/** エージェントへ見せるプロファイル1件分。ID やパーティション名は見せない。 */
+export interface IParadisAgentProfileInfo {
+	readonly name: string;
+	/** このペインのエージェントが作ったもの（削除できるのはこれだけ）。 */
+	readonly createdByYou: boolean;
+	/** 保存されたログイン状態（Cookie）があるか。取得できなければ undefined。 */
+	readonly hasStoredLogin: boolean | undefined;
+	/** 最後に使った時刻（ISO 8601）。 */
+	readonly lastUsed: string;
+}
+
+export type ParadisProfileManageFailure =
+	| 'switching'
+	| 'paneUnresolved'
+	| 'untrustedWorkspace'
+	| 'unknownProfile'
+	| 'profileNotShareable'
+	/**
+	 * その名前では作れない（空、または既にある）。「既にある」を別の答えにすると、ユーザーの
+	 * プロファイル名を探れてしまうので分けない。
+	 */
+	| 'invalidName'
+	/** エージェントが作ったプロファイルが上限に達している。 */
+	| 'tooManyProfiles'
+	/** ユーザーのプロファイルを使う承認を、ユーザーが断った。 */
+	| 'denied'
+	/** 承認の締め切りまでに確かな答えが得られなかった。 */
+	| 'approvalTimedOut'
+	/** このペインの別の求めがまだ答えを待っている。 */
+	| 'alreadyPending'
+	/** 少し前にユーザーがこのペインの求めを断った。 */
+	| 'recentlyDenied'
+	/** そのプロファイルを使っているタブが、このペインのエージェントのもの以外にも開いている。 */
+	| 'inUse'
+	/** 切り替えるタブが無い（共有中のページが無い）、またはこのペインのエージェントが開いたタブではない。 */
+	| 'notAgentTab'
+	/** タブを作り直せなかった。 */
+	| 'switchFailed';
+
+export type IParadisListProfilesResult = {
+	readonly ok: true;
+	/** このペインのエージェントが作ったプロファイルだけ。 */
+	readonly profiles: readonly IParadisAgentProfileInfo[];
+	/** 名前を伏せたプロファイル（ユーザーのもの、別のペインが作ったもの）の数。 */
+	readonly hiddenProfileCount: number;
+	/** ワークスペースを信頼していて、名前付きプロファイルを使えるか。 */
+	readonly usable: boolean;
+	/** ネットワークフィルタが無効で、プロファイルのページをエージェントへ共有できるか。 */
+	readonly shareable: boolean;
+};
+
+export type IParadisManageProfileResult<T = {}> =
+	| ({ readonly ok: true } & T)
+	| { readonly ok: false; readonly reason: ParadisProfileManageFailure };
+
+export type IParadisSwitchProfileResult = IParadisManageProfileResult<{
+	readonly profileName: string;
+	/** 新しく作り直したタブの ID（元の ID は使えなくなる）。 */
+	readonly tabId: string;
+	readonly bound: boolean;
+	readonly restored: boolean;
+}>;

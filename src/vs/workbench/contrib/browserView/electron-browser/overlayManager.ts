@@ -32,6 +32,7 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	{ className: 'paradis-binding-dialog-backdrop', type: BrowserOverlayType.Dialog },
 	// PARA-PATCH: same for the fork's bookmark edit/folder dialogs (vs/paradis/contrib/browserBookmarks).
 	{ className: 'paradis-bookmark-dialog-backdrop', type: BrowserOverlayType.Dialog },
+	{ className: 'paradis-markup-overlay', type: BrowserOverlayType.Dialog }, // PARA-PATCH: the fork's screenshot markup overlay (vs/paradis/contrib/browserDesignMode) paints over the page
 	// PARA-PATCH: the fork's custom terminal preset command editor dialog (paradisPresetEditorDialog.ts).
 	{ className: 'paradis-preset-editor-backdrop', type: BrowserOverlayType.Dialog },
 	// PARA-PATCH: the fork's workspace switch / worktree creation dialog.
@@ -59,6 +60,7 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	{ className: 'paradis-browser-profile-dropdown', type: BrowserOverlayType.QuickInput },
 	// PARA-PATCH: the fork's notification inbox popover under the title bar bell (vs/paradis/contrib/notificationInbox).
 	{ className: 'paradis-notification-inbox-popover', type: BrowserOverlayType.QuickInput },
+	{ className: 'paradis-browser-downloads-popover', type: BrowserOverlayType.QuickInput }, // PARA-PATCH: the fork's browser downloads list (vs/paradis/contrib/browserDownloads)
 	{ className: 'notifications-center', type: BrowserOverlayType.Notification },
 	// PARA-PATCH: notification toasts intentionally do NOT pause the browser view. Upstream pauses the
 	// WebContentsView whenever a toast overlaps it (so the toast stays visible above the native view),

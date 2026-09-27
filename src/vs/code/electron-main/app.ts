@@ -53,6 +53,7 @@ import { paradisRegisterHealthBeacon } from '../../paradis/contrib/healthBeacon/
 import { paradisRegisterHeapSnapshot } from '../../paradis/contrib/heapSnapshot/electron-main/paradisHeapSnapshotMain.js';
 // PARA-PATCH: named persistent browser profiles (see paradis/contrib/browserProfiles)
 import { paradisRegisterBrowserProfiles } from '../../paradis/contrib/browserProfiles/electron-main/paradisBrowserProfilesMain.js';
+import { paradisRegisterBrowserDownloads } from '../../paradis/contrib/browserDownloads/electron-main/paradisBrowserDownloadsMain.js'; // PARA-PATCH: browser download list channel for the URL bar button
 // PARA-PATCH: pty daemon status channel for the status bar entry (see paradis/contrib/ptyDaemon)
 import { paradisRegisterPtyDaemonStatus } from '../../paradis/contrib/ptyDaemon/electron-main/paradisPtyDaemonStatusService.js';
 // PARA-PATCH: menu bar (tray) icon for the notification inbox (see paradis/contrib/notificationInbox)
@@ -64,6 +65,7 @@ import { ParadisMobileWindowLeaseChannel } from '../../paradis/contrib/mobileRel
 // PARA-PATCH: clear stale webview service worker registrations before the first window opens
 import { paradisResetWebviewServiceWorkers } from '../../paradis/contrib/fileViewers/electron-main/paradisWebviewServiceWorkerReset.js';
 import { paradisWatchWebviewServiceWorkers } from '../../paradis/contrib/fileViewers/electron-main/paradisWebviewServiceWorkerWatch.js';
+import { paradisRegisterDesignMode } from '../../paradis/contrib/browserDesignMode/electron-main/paradisDesignModeMain.js'; // PARA-PATCH: integrated browser Design Mode picker and image store channel
 import { BrowserViewMainService, IBrowserViewMainService } from '../../platform/browserView/electron-main/browserViewMainService.js';
 import { BrowserViewGroupMainService, IBrowserViewGroupMainService } from '../../platform/browserView/electron-main/browserViewGroupMainService.js';
 import { NativeParsedArgs } from '../../platform/environment/common/argv.js';
@@ -1518,6 +1520,7 @@ export class CodeApplication extends Disposable {
 		// PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator (main process only)
 		const paradisResourceMonitorChannel = ProxyChannel.fromService(new ParadisResourceMonitorMainService(), disposables);
 		mainProcessElectronServer.registerChannel(PARADIS_RESOURCE_MONITOR_CHANNEL, paradisResourceMonitorChannel);
+		disposables.add(paradisRegisterDesignMode(mainProcessElectronServer, accessor.get(IBrowserViewMainService), this.environmentMainService.userDataPath)); // PARA-PATCH: integrated browser Design Mode (see paradis/contrib/browserDesignMode)
 
 		// PARA-PATCH: periodic memory/CPU health beacon to Sentry (see paradis/contrib/healthBeacon)
 		disposables.add(paradisRegisterHealthBeacon(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IBrowserViewMainService), this.lifecycleMainService));
@@ -1527,6 +1530,7 @@ export class CodeApplication extends Disposable {
 
 		// PARA-PATCH: named browser profile session maintenance channel (see paradis/contrib/browserProfiles)
 		disposables.add(paradisRegisterBrowserProfiles(mainProcessElectronServer, accessor.get(IInstantiationService)));
+		disposables.add(paradisRegisterBrowserDownloads(mainProcessElectronServer, this.configurationService)); // PARA-PATCH: browser download list (see paradis/contrib/browserDownloads)
 
 		// PARA-PATCH: what the pty daemon is holding, for the status bar entry that makes terminals
 		// running outside the app visible (see paradis/contrib/ptyDaemon)
