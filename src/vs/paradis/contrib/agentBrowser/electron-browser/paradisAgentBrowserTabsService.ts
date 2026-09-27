@@ -184,6 +184,13 @@ export interface IParadisAgentBrowserTabsService {
 	askApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken): Promise<ParadisAgentApprovalOutcome>;
 
 	/**
+	 * {@link askApproval} を今呼んだら、ダイアログを出す前に断るか（自動の断りの間・同じペインの求めが答え待ち）。
+	 * 承認の前に重い下ごしらえ（インストールするものを写すなど）をする呼び出し側が、先に確かめるためのもの。
+	 * 判定は askApproval でもう一度行う。
+	 */
+	approvalBlock(token: string, cooldownKey?: string): 'recentlyDenied' | 'busy' | undefined;
+
+	/**
 	 * {@link bindTab} を締め切り付きで行う。締め切りまでに終われば結果、過ぎたら undefined を返し、
 	 * 後から共有が成立しても外す（時間切れと答えたエージェントのペインの共有先が黙って移らないように）。
 	 */
@@ -559,6 +566,14 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	 * （`monaco-dialog-modal-block` は overlayManager に登録済み）。fork の自前ダイアログ（z-index 2600〜2800）
 	 * が開いていてもその裏に隠れないよう、このダイアログの層だけ上げてある（media/paradisAgentApproval.css）。
 	 */
+	approvalBlock(token: string, cooldownKey?: string): 'recentlyDenied' | 'busy' | undefined {
+		const deniedUntil = this._deniedUntil.get(cooldownKey !== undefined ? `${token}\n${cooldownKey}` : token);
+		if (deniedUntil !== undefined && Date.now() < deniedUntil) {
+			return 'recentlyDenied';
+		}
+		return this._pendingApprovals.has(token) ? 'busy' : undefined;
+	}
+
 	async askApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken): Promise<ParadisAgentApprovalOutcome> {
 		const cooldownKey = request.cooldownKey !== undefined ? `${token}\n${request.cooldownKey}` : token;
 		const deniedUntil = this._deniedUntil.get(cooldownKey);
