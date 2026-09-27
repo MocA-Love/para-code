@@ -29,6 +29,7 @@ import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from '../../../../base/common/path.js';
 import { IParadisClaudeIdentity, paradisClaudeIdentityFromOauthAccount, paradisReplaceClaudeOAuth } from '../common/paradisClaudeUsage.js';
+import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { IParadisKeychain } from './paradisClaudeKeychain.js';
 
 export const PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE = 'Claude Code-credentials';
@@ -137,27 +138,13 @@ async function readFileIfExists(filePath: string): Promise<string | undefined> {
 	}
 }
 
-/** 同じディレクトリの一時ファイルに書いてから置き換える。既存のファイルの権限は保つ（新規は 0600）。 */
-export async function paradisWriteFileAtomically(filePath: string, contents: string, platform: NodeJS.Platform): Promise<void> {
-	let mode = 0o600;
-	try {
-		mode = (await fs.promises.stat(filePath)).mode & 0o777;
-	} catch {
-		// 新規
-	}
-	// 無いフォルダを作るときは本人だけが読める権限にする（認証情報の置き場所になるため）。
-	await fs.promises.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-	const temporaryPath = `${filePath}.paradis-${process.pid}-${Date.now()}.tmp`;
-	try {
-		await fs.promises.writeFile(temporaryPath, contents, { encoding: 'utf8', mode: 0o600 });
-		await fs.promises.rename(temporaryPath, filePath);
-	} catch (error) {
-		await fs.promises.rm(temporaryPath, { force: true }).catch(() => undefined);
-		throw error;
-	}
-	if (platform !== 'win32') {
-		await fs.promises.chmod(filePath, mode).catch(() => undefined);
-	}
+/**
+ * 同じディレクトリの一時ファイルに書いてから置き換える。既存のファイルの権限は保つ（新規は 0600）。
+ * 無いフォルダは本人だけが読める権限で作る（認証情報の置き場所になるため）。置き換えられなければ
+ * その場へは書かずに失敗させる（呼び出し側が控えから戻す）。
+ */
+export function paradisWriteClaudeFileAtomically(filePath: string, contents: string): Promise<void> {
+	return paradisWriteFileAtomic(filePath, contents, { newFileMode: 0o600, createParentMode: 0o700, fallbackToInPlace: false });
 }
 
 export class ParadisClaudeLiveAuth {
@@ -334,11 +321,11 @@ export class ParadisClaudeLiveAuth {
 				await fs.promises.utimes(this.credentialsPath, time, time);
 			}
 		} else {
-			await paradisWriteFileAtomically(this.credentialsPath, paradisReplaceClaudeOAuth(snapshot.credentialsFile, oauthOnlyJson), this.options.platform);
+			await paradisWriteClaudeFileAtomically(this.credentialsPath, paradisReplaceClaudeOAuth(snapshot.credentialsFile, oauthOnlyJson));
 		}
 
 		config.oauthAccount = oauthAccount;
-		await paradisWriteFileAtomically(configPath, JSON.stringify(config, null, 2), this.options.platform);
+		await paradisWriteClaudeFileAtomically(configPath, JSON.stringify(config, null, 2));
 		this.configCache = undefined;
 	}
 
@@ -440,7 +427,7 @@ export class ParadisClaudeLiveAuth {
 			if (await readFileIfExists(this.credentialsPath) === snapshot.credentialsFile) {
 				// 変わっていない
 			} else if (snapshot.credentialsFile !== undefined) {
-				await paradisWriteFileAtomically(this.credentialsPath, snapshot.credentialsFile, this.options.platform);
+				await paradisWriteClaudeFileAtomically(this.credentialsPath, snapshot.credentialsFile);
 			} else {
 				await fs.promises.rm(this.credentialsPath, { force: true });
 			}
@@ -452,7 +439,7 @@ export class ParadisClaudeLiveAuth {
 			if (await readFileIfExists(configPath) === snapshot.globalConfig) {
 				// 変わっていない
 			} else if (snapshot.globalConfig !== undefined) {
-				await paradisWriteFileAtomically(configPath, snapshot.globalConfig, this.options.platform);
+				await paradisWriteClaudeFileAtomically(configPath, snapshot.globalConfig);
 			} else {
 				await fs.promises.rm(configPath, { force: true });
 			}

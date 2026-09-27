@@ -57,7 +57,7 @@ suite('ParadisClaudeAccountService switching', () => {
 		cleanup = dirs.dispose;
 		const keychain = new ParadisMemoryKeychain();
 		const oauth = new ParadisFakeClaudeOAuth();
-		const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'accounts.json'), platform);
+		const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'accounts.json'));
 		await registry.save([record(ALICE_ID, 'u-alice', 'alice@example.com'), record(BOB_ID, 'u-bob', 'bob@example.com')]);
 		const liveAuthOptions = { homedir: dirs.home, platform, keychain: platform === 'darwin' ? keychain : undefined, userName: USER, lockTimeoutMs: 300 };
 		const service = disposables.add(new ParadisClaudeAccountService({

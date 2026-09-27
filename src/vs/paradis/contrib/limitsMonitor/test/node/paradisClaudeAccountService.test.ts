@@ -67,7 +67,7 @@ suite('ParadisClaudeAccountService usage', () => {
 		const platform = options.platform ?? 'darwin';
 		const keychain = new ParadisMemoryKeychain();
 		const oauth = new ParadisFakeClaudeOAuth();
-		const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'paradis-claude-accounts', 'accounts.json'), platform);
+		const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'paradis-claude-accounts', 'accounts.json'));
 		if (options.records) {
 			await registry.save(options.records);
 		}
