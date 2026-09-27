@@ -465,6 +465,12 @@ export interface IParadisTerminalScopeService {
 	/** Binding authority用。切り替え・再接続中の未確定状態も明示する。 */
 	resolveScope(instanceId: number): ParadisBindingScope;
 	/**
+	 * 下部パネルの共通ターミナルか。共通ターミナルは所属を尋ねられると「今のスペース」と答えるが、
+	 * 本当の持ち主は無いので、作業の成果（Issue の URL）をスペースへ紐付ける処理や、スペースを
+	 * 開いているだけで完了を既読にする処理はこれで除外する。
+	 */
+	isSharedPanelTerminal?(instanceId: number): boolean;
+	/**
 	 * インスタンスの所属グループを指定スコープへ付け替える。アクティブスコープ以外を
 	 * 指定した場合は即座に park する (モバイル発の「PCで非表示のワークスペース向け
 	 * ターミナル作成」用。既定のタグ付けはアクティブスコープ所属になるため)
