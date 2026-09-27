@@ -60,6 +60,8 @@ export interface IParadisBrowserProfileDropdownOptions {
 	readonly onSelect: (target: ParadisProfileTarget) => void;
 	readonly onCreate: () => void;
 	readonly onManage: () => void;
+	/** 「他のブラウザから取り込む…」。名前付きプロファイルが使えるときだけ出す。 */
+	readonly onImport: () => void;
 }
 
 /** 行1つ分の内部表現。 */
@@ -177,6 +179,10 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 		const footer = dom.append(this._element, $('.pbp-footer'));
 		this._appendActionRow(footer, Codicon.add, localize('paradis.browserProfiles.dropdown.create', "新しいプロファイルを作成…"), () => this.options.onCreate());
 		this._appendActionRow(footer, Codicon.settingsGear, localize('paradis.browserProfiles.dropdown.manage', "プロファイルを管理…"), () => this.options.onManage());
+		// 取り込み先は名前付きプロファイルだけなので、プロファイルが使えないワークスペースでは出さない。
+		if (this.options.profilesEnabled) {
+			this._appendActionRow(footer, Codicon.signIn, localize('paradis.browserProfiles.dropdown.import', "他のブラウザから取り込む…"), () => this.options.onImport());
+		}
 	}
 
 	private _appendSeparator(text: string): void {

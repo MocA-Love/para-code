@@ -60,6 +60,12 @@ export const PARADIS_BROWSER_PROFILE_COLORS: readonly string[] = [
 export const PARADIS_BROWSER_PROFILE_NAME_MAX_LENGTH = 64;
 
 /**
+ * プロファイル台帳のストレージキー（APPLICATION スコープ）。renderer のサービスが書き、
+ * ログイン取り込みの main 側が取り込み先の実在・種類を確かめるために読む。1か所で持つ。
+ */
+export const PARADIS_BROWSER_PROFILES_STORAGE_KEY = 'paradis.browser.profiles';
+
+/**
  * 表示名を正規化する。制御文字・ゼロ幅文字・双方向制御文字を空白へ寄せ（エージェントがユーザーの
  * プロファイルに見た目だけ似せた名前を作れないように）、前後の空白を落とし、連続空白（改行・タブを
  * 含む）を1つに畳み、64文字で切る。サロゲートペアの途中で割らないよう文字単位で数える。
