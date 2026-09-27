@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisAgentChatSource, IParadisAgentChatView } from '../../common/paradisAgentChat.js';
 import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisIsShellProcessName } from '../../browser/paradisAgentChatInput.js';
-import { paradisScreenShowsPermissionPrompt } from '../../browser/paradisAgentTuiInput.js';
+import { paradisScreenShowsAgentPrompt, paradisScreenShowsPermissionPrompt } from '../../browser/paradisAgentTuiInput.js';
 import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
 
 class FakeTerminal implements IParadisAgentChatTerminal {
@@ -41,6 +41,47 @@ const PERMISSION_SCREEN = [
 	'│ ❯ 1. Yes                        │',
 	'│   2. No, and tell Claude        │',
 	'╰────────────────────────────────╯',
+].join('\n');
+
+/** codex-cli 0.155.1 の request_user_input の実画面（フェーズ6の実機確認）。 */
+const CODEX_QUESTION_SCREEN = [
+	'Question 1/1 (1 unanswered)',
+	'Which environment should I deploy to?',
+	'',
+	'› 1. Development (Recommended)  dev',
+	'  2. Production                 prod',
+	'  3. None of the above          Optionally, add details in notes (tab).',
+	'',
+	'tab to add notes | enter to submit answer | esc to interrupt',
+].join('\n');
+
+/** Claude Code 2.1.283 の、計画が空の ExitPlanMode の実画面。 */
+const EXIT_PLAN_SCREEN = [
+	'──────────────────────────────────────',
+	'Exit plan mode?',
+	'',
+	' Claude wants to exit plan mode',
+	'',
+	'❯ 1. Yes, and switch to default (ask each time) for this session',
+	'  2. No',
+].join('\n');
+
+/** 返答の本文に確認の文言と番号の例があり、その下に入力欄が出ている実画面（Claude Code 2.1.283）。 */
+const BODY_LIST_SCREEN = [
+	'● 説明の例です。TUI では次のように表示されます:',
+	'',
+	'  Do you want to proceed?',
+	'  1. Yes',
+	'  2. No',
+	'',
+	'  以上です。',
+	'',
+	'✻ Cogitated for 0s · done 16:33',
+	'',
+	'──────────────────────────────────────',
+	'❯ ',
+	'──────────────────────────────────────',
+	'  ▸▸ accept edits on (shift+tab to cycle) · ← for agents',
 ].join('\n');
 
 suite('ParadisAgentChatInput', () => {
@@ -145,13 +186,25 @@ suite('ParadisAgentChatInput', () => {
 			sent: terminal.sent,
 			shells: ['zsh', '-zsh', 'bash', 'pwsh.exe', 'fish'].map(paradisIsShellProcessName),
 			agents: ['claude', 'node', 'codex', 'cc', 'npx'].map(paradisIsShellProcessName),
-			screens: [PERMISSION_SCREEN, 'Would you like to proceed?\n❯ 1. Yes, and auto-accept edits', 'Do you want to proceed?\n\n> '].map(paradisScreenShowsPermissionPrompt),
+			screens: [PERMISSION_SCREEN, 'Would you like to proceed?\n❯ 1. Yes, and auto-accept edits', 'Do you want to proceed?\n\n> ', EXIT_PLAN_SCREEN, BODY_LIST_SCREEN].map(paradisScreenShowsPermissionPrompt),
+			questionScreens: [CODEX_QUESTION_SCREEN, BODY_LIST_SCREEN].map(paradisScreenShowsAgentPrompt),
 		}, {
 			locked: true,
 			sent: [],
 			shells: [true, true, true, true, true],
 			agents: [false, false, false, false, false],
-			screens: [true, true, false],
+			screens: [true, true, false, true, false],
+			questionScreens: [true, false],
 		});
+	});
+
+	test('does not send while Codex asks a request_user_input question', async () => {
+		const { input, terminal, setView } = setup({ agent: 'codex', messages: [{ rev: 0, role: 'assistant', kind: 'tool_use', tool: 'request_user_input', text: '{}', toolUseId: 'call_1' }] });
+		const whileAsking = await input.sendMessage(1, 't', 'deploy to dev');
+		setView({ messages: [{ rev: 0, role: 'assistant', kind: 'tool_use', tool: 'request_user_input', text: '{}', toolUseId: 'call_1' }, { rev: 1, role: 'tool', kind: 'tool_result', text: 'ok', toolUseId: 'call_1' }] });
+		// 中継の会話に呼び出しが出る前でも、画面の質問（実画面の文言）で止まる
+		terminal.screen = CODEX_QUESTION_SCREEN;
+		const onScreen = await input.sendMessage(1, 't', 'deploy to dev');
+		assert.deepStrictEqual({ whileAsking: whileAsking !== undefined, onScreen: onScreen !== undefined, sent: terminal.sent }, { whileAsking: true, onScreen: true, sent: [] });
 	});
 });

@@ -44,7 +44,30 @@ function questionGroupOf(message: IParadisAgentChatMessage): string | undefined 
  * メッセージ列を画面の単位へ組み直す。tool_use と tool_result は toolUseId で対応付け、
  * ID の無い経路（Codex の一部）は直前の未解決の呼び出しへ順番に割り当てる。
  */
-export function paradisBuildAgentChatItems(messages: readonly IParadisAgentChatMessage[]): ParadisAgentChatItem[] {
+export function paradisBuildAgentChatItems(messages: readonly IParadisAgentChatMessage[], interaction?: IParadisAgentInteraction | null): ParadisAgentChatItem[] {
+	return paradisMergeDuplicateQuestions(buildItems(messages), interaction ?? null);
+}
+
+/**
+ * 同じ内容（質問文と選択肢）の質問のカードが重なったとき、抜け殻の方を外す。hook から先に入れた質問と、
+ * 後から transcript に書かれた同じ質問の突き合わせが外れると（フェーズ6の実機確認 NG-7）、同じ質問が2枚並び、
+ * 回答は片方にしか付かない。外すのは「回答が無く、今回答を待ってもいない」方だけで、回答済みの履歴と
+ * 回答待ちのカードは残す（同じ質問を後でもう一度聞かれた場合は、両方とも残る）。
+ */
+function paradisMergeDuplicateQuestions(items: ParadisAgentChatItem[], interaction: IParadisAgentInteraction | null): ParadisAgentChatItem[] {
+	const contentOf = (item: Extract<ParadisAgentChatItem, { kind: 'questions' }>) => JSON.stringify(item.questions.map(question => [question.text, (question.options ?? []).map(option => option.label)]));
+	const isPending = (item: Extract<ParadisAgentChatItem, { kind: 'questions' }>) => interaction?.kind === 'question' && interaction.id === item.group;
+	const liveByContent = new Map<string, number>();
+	for (const item of items) {
+		if (item.kind === 'questions' && (item.answered || isPending(item))) {
+			const content = contentOf(item);
+			liveByContent.set(content, (liveByContent.get(content) ?? 0) + 1);
+		}
+	}
+	return items.filter(item => item.kind !== 'questions' || item.answered || isPending(item) || !liveByContent.has(contentOf(item)));
+}
+
+function buildItems(messages: readonly IParadisAgentChatMessage[]): ParadisAgentChatItem[] {
 	const items: ParadisAgentChatItem[] = [];
 	const toolIndexById = new Map<string, number>();
 	const unresolvedTools: number[] = [];
@@ -113,6 +136,25 @@ export function paradisBuildAgentChatItems(messages: readonly IParadisAgentChatM
 		}
 	}
 	return items;
+}
+
+/**
+ * Codex の `request_user_input`（Plan mode の質問）で、まだ結果が書かれていない呼び出し。中継は回答待ちとして
+ * 持たない（hook も app-server の回答口も無い）ので、会話から見つける。ここからは答えられないので、チャットは
+ * 送信を止めてターミナルへ案内する（送ると、文が質問のメモ欄に入り Enter で既定の選択肢が確定する。
+ * フェーズ6の実機確認 NG-1）。
+ */
+export function paradisPendingCodexQuestion(messages: readonly IParadisAgentChatMessage[]): IParadisAgentChatMessage | undefined {
+	const answered = new Set<string>();
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message.kind === 'tool_result' && message.toolUseId !== undefined) {
+			answered.add(message.toolUseId);
+		} else if (message.kind === 'tool_use' && message.tool === 'request_user_input') {
+			return message.toolUseId !== undefined && answered.has(message.toolUseId) ? undefined : message;
+		}
+	}
+	return undefined;
 }
 
 /** 質問のカードに回答の操作を出すか（今まさに回答を待っている質問か）。 */

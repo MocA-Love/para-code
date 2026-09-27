@@ -18,6 +18,7 @@ import { paradisSendAgentMessageToTui } from '../../mobileRelay/common/paradisAg
 import { paradisBuildPresetInsertText } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { IParadisAgentChatSource, IParadisAgentInteraction, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisQuestionReadyMarker } from '../common/paradisAgentQuestionMarker.js';
+import { paradisPendingCodexQuestion } from '../common/paradisAgentChatTimeline.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
 import { paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsMarker, paradisScreenShowsPermissionPrompt, paradisScreenShowsQuestionPrompt, paradisSendAgentInteractionKeys } from './paradisAgentTuiInput.js';
 
@@ -92,6 +93,9 @@ export class ParadisAgentChatInput {
 		}
 		if (!this.interactionAllowsMessage(token, state.interaction)) {
 			return localize('paradisAgentChat.errorInteraction', "エージェントが回答を待っています。先に質問・許可の確認に答えてください");
+		}
+		if (state.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined) {
+			return localize('paradisAgentChat.errorCodexQuestion', "Codex が質問しています。ターミナルで答えてください");
 		}
 		// hook が届かない構成・中継が見落とした確認画面にも Enter を送らない。
 		if (paradisScreenShowsAgentPrompt(terminal.readScreen())) {
@@ -214,7 +218,10 @@ export class ParadisAgentChatInput {
 		const ready = (screen: string) => paradisScreenShowsPermissionPrompt(screen) && (piece === undefined || paradisPromptRegionShows(screen, piece));
 		// 各キーの前にも確かめる。`1` で確定して確認が消えたら、残りの Enter は送らずに終える（次に出た画面を
 		// 確定したり、入力欄の書きかけを送信したりしないように）。
-		const error = await this.sendInteractionKeys(instanceId, token, terminal, 'approval', interactionId, paradisAgentApprovalKeySequence(agent, choiceId), ready,
+		// Claude は `1` だけで確定する（Enter は送らない。後から届いた Enter が次の許可を確定するため）。
+		// Codex の拒否のキーは、画面の選択肢の表記から選ぶ（版で違う）。
+		const keys = paradisAgentApprovalKeySequence(agent, choiceId, { screen: terminal.readScreen(), confirmWithEnter: false });
+		const error = await this.sendInteractionKeys(instanceId, token, terminal, 'approval', interactionId, keys, ready,
 			(screen, keysSent) => ready(screen) ? 'continue' : keysSent > 0 ? 'done' : 'stop');
 		if (error === undefined) {
 			this.answeredApprovals.add(`${token}\0${interactionId}`);

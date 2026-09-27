@@ -249,4 +249,40 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			clearParadisAgentPaneActivity(token);
 		}
 	}));
+	test('keeps overlapping permission requests in a queue, shows the latest first, and settles one when its tool result is written without a hook', () => withClaudeHome(async claudeHome => {
+		const token = 'pane-desktop-queue';
+		const transcriptPath = join(claudeHome, 'projects', 'repo', 'session-5.jsonl');
+		await writeFile(transcriptPath, line({ type: 'user', timestamp: '2026-09-27T10:00:00.000Z', message: { role: 'user', content: '読んで' } }));
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>>; tailers: Map<string, { enqueue(work: () => Promise<void>): Promise<void> }> };
+		const settled = async () => {
+			await waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
+			await access.tailers.get(token)?.enqueue(async () => { });
+		};
+		const hook = (event: string, extra: Record<string, unknown> = {}) => fireParadisAgentHookEvent({ token, event, sessionId: 'session-5', transcriptPath, cwd: '/repo', at: Date.now(), ...extra });
+		try {
+			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
+			hook('SessionStart');
+			await settled();
+			chat.watchDesktopChat('window-1', [token], [token]);
+			const interaction = async () => (await chat.getDesktopChat(token, undefined))?.interaction ?? null;
+
+			hook('PreToolUse', { toolName: 'Read', toolUseId: 'toolu_b', toolInput: { file_path: '/outside/b.txt' } });
+			hook('PreToolUse', { toolName: 'Read', toolUseId: 'toolu_c', toolInput: { file_path: '/outside/c.txt' } });
+			hook('PermissionRequest', { toolName: 'Read', toolInput: { file_path: '/outside/b.txt' } });
+			hook('PermissionRequest', { toolName: 'Read', toolInput: { file_path: '/outside/c.txt' } });
+			await settled();
+			const first = (await interaction())?.id;
+			// c をターミナルで拒否した: hook は来ず、transcript に is_error の結果だけが書かれる（Claude Code 2.1.283）
+			await appendFile(transcriptPath, line({ type: 'user', timestamp: '2026-09-27T10:00:05.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_c', is_error: true, content: `The user doesn't want to proceed with this tool use.` }] } }));
+			await waitFor(async () => (await interaction())?.id === 'toolu_b', 'the earlier request did not come back to the front');
+			hook('PostToolUse', { toolName: 'Read', toolUseId: 'toolu_b' });
+			await settled();
+			const afterBoth = await interaction();
+
+			assert.deepStrictEqual({ first, afterBoth }, { first: 'toolu_c', afterBoth: null });
+		} finally {
+			chat.dispose();
+		}
+	}));
 });

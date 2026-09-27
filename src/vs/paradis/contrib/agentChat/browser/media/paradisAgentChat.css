@@ -382,6 +382,7 @@
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-path {
+	/* 右から省略するための rtl。中身の前後を LRM で挟んで（paradisAgentChatView.ts）、`/` などの記号の並びを保つ。 */
 	flex: 1;
 	min-width: 0;
 	overflow: hidden;
@@ -500,6 +501,8 @@
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card-detail {
 	margin: 0;
+	/* Light Modern ではカードとコードの背景が同じ色になるので、枠で中身を区切る。 */
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
 	max-height: 240px;
 	padding: var(--vscode-spacing-size80);
 	overflow: auto;

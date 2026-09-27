@@ -77,17 +77,33 @@ const PERMISSION_PROMPT_MARKERS: readonly string[] = [
 	'doyouwanttocreate',
 	'doyouwanttoallow',
 	'wouldyouliketoproceed?',
+	// 計画が空の ExitPlanMode（Claude Code 2.1.283 の実画面: `Exit plan mode?` / `Claude wants to exit plan mode` /
+	// `❯ 1. Yes, and switch to default (ask each time) for this session`）
+	'exitplanmode?',
 	// Codex の承認
 	'wouldyouliketorunthefollowingcommand',
 	'wouldyouliketomakethefollowingedits',
 	'allowcommand?',
 ];
 
-/** 質問（AskUserQuestion）の画面の操作説明と確認画面。 */
+/** 質問の画面の操作説明と確認画面。 */
 const QUESTION_PROMPT_MARKERS: readonly string[] = [
+	// Claude Code の AskUserQuestion
 	'entertoselect',
 	'reviewyouranswers',
+	// Codex の request_user_input（codex-cli 0.155.1 の実画面: `tab to add notes | enter to submit answer | esc to interrupt`）
+	'entertosubmitanswer',
 ];
+
+/** Codex の request_user_input の見出し（実画面: `Question 1/1 (1 unanswered)`）。 */
+const CODEX_QUESTION_HEADING = /question\d+\/\d+/;
+
+/**
+ * Claude Code が入力待ちのときの入力欄（実画面: 横線の下の `❯ ` の行。Claude Code 2.1.283）。確認の画面は
+ * 入力欄の代わりに出るので、文言の後ろにこれがあれば、文言は会話の本文の中のもの。
+ */
+const HORIZONTAL_RULE_LINE = /^\s*[─━]{8,}\s*$/;
+const IDLE_INPUT_LINE = /^\s*❯(?!\s*\d+[.)])/;
 
 /** 選択肢の1行目（`❯ 1. Yes` / `› 1. Yes, proceed` / `1) OK`。枠の縦線 `│` の内側でもよい）。 */
 const FIRST_OPTION_LINE = /^[\s│┃|]*[❯›>▶]?\s*1[.)]\s*\S/;
@@ -114,7 +130,13 @@ function regionShowsPromptWithOptions(lines: readonly string[], markers: readonl
 	for (let index = 0; index < lines.length; index++) {
 		joined += compact(lines[index]);
 		if (markers.some(marker => joined.includes(marker))) {
-			return lines.slice(index + 1).some(line => FIRST_OPTION_LINE.test(line));
+			const after = lines.slice(index + 1);
+			if (!after.some(line => FIRST_OPTION_LINE.test(line))) {
+				return false;
+			}
+			// 文言と選択肢の後ろに入力欄が出ていれば、それは本文の中の例示（確認の画面ではない）。
+			const idleInput = after.some((line, lineIndex) => IDLE_INPUT_LINE.test(line) && lineIndex > 0 && HORIZONTAL_RULE_LINE.test(after[lineIndex - 1]));
+			return !idleInput;
 		}
 	}
 	return false;
@@ -131,7 +153,7 @@ export function paradisScreenShowsPermissionPrompt(screen: string): boolean {
 /** 画面の下端に、質問の選択の画面（操作説明か回答の確認）が出ているか。 */
 export function paradisScreenShowsQuestionPrompt(screen: string): boolean {
 	const region = compact(promptRegion(screen).join('\n'));
-	return QUESTION_PROMPT_MARKERS.some(marker => region.includes(marker));
+	return QUESTION_PROMPT_MARKERS.some(marker => region.includes(marker)) || CODEX_QUESTION_HEADING.test(region);
 }
 
 /**
