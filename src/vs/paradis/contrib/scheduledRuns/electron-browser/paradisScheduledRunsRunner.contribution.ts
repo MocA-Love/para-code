@@ -188,7 +188,7 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 					prompt: definition.prompt,
 					agentId: definition.agentId,
 					...options,
-				}, { switchToCreated: false });
+				}, { switchToCreated: false, preserveFocus: true });
 				space = { stateKey: paradisWorktreeStateKey(result.worktree.uri), name: result.name, branch: result.branch, uri: result.worktree.uri.toString() };
 				launched = result.agent;
 				if (!launched) {
