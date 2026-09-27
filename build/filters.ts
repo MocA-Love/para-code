@@ -38,6 +38,8 @@ export const unicodeFilter = Object.freeze<string[]>([
 	// PARA-PATCH: fork-owned area (src/vs/paradis) intentionally contains Japanese comments and
 	// user-facing Japanese strings (settings descriptions, labels). Exempt it from the unicode check.
 	'!src/vs/paradis/**',
+	// PARA-PATCH: third-party xterm source diff (Orca, MIT) keeps its own characters, see build/npm/paradisXtermImePatch.ts
+	'!build/npm/paradisXtermIme/**',
 
 	'!**/ThirdPartyNotices.txt',
 	'!**/ThirdPartyNotices.cli.txt',
@@ -106,6 +108,8 @@ export const indentationFilter = Object.freeze<string[]>([
 	'!build/ext.js',
 	'!build/darwin/patch-dmg.py',
 	'!build/npm/gyp/patches/gyp_spectre_mitigation_support.patch',
+	// PARA-PATCH: third-party xterm source diff (2-space indented), see build/npm/paradisXtermImePatch.ts
+	'!build/npm/paradisXtermIme/**',
 	'!product.overrides.json',
 	'!src/vs/platform/endpoint/common/licenseAgreement.ts',
 
