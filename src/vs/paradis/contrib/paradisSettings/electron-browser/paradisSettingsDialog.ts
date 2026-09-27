@@ -28,6 +28,7 @@ import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '.
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
+import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
 
 const $ = dom.$;
 
@@ -108,7 +109,7 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		// allow-any-unicode-next-line
 		heading: localize('paradis.settings.headAgentIde', "エージェントの操作"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.descAgentIde', "エージェントが Para Code の MCP ツールで、ほかのターミナルの画面を読んだり入力を送ったりできます。一覧・画面の読み取り・待機はいつでも使えます。"),
+		description: localize('paradis.settings.descAgentIde', "エージェントが Para Code の MCP ツールで、ほかのターミナルの画面を読んだり入力を送ったりできます。自分のスペースのターミナルの一覧・画面の読み取り・待機はいつでも使えます。"),
 	},
 	{
 		id: 'psd-sec-terminal',
@@ -518,7 +519,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.agentIdeAllowActions', "エージェントがターミナルとスペースを操作できるようにする"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.agentIdeAllowActionsDesc', "ほかのターミナルへの入力、Claude Code / Codex の起動、スペースの作成、自分で作ったターミナルを閉じることを許可します。許可待ち・質問中のターミナルへは送りません。Web ページなどに仕込まれた指示が別のエージェントへ伝わる危険があるので、必要なときだけオンにしてください。"),
+		description: localize('paradis.settings.agentIdeAllowActionsDesc', "ほかのターミナルへの入力、Claude Code / Codex の起動、スペースの作成、自分で作ったターミナルを閉じることを許可します。起動されたエージェントは、呼び出したエージェントのサンドボックスと許可設定の外で動きます。許可待ち・質問中・作業中のエージェントへは Enter を送りません。Web ページなどに仕込まれた指示が別のエージェントへ伝わる危険があるので、必要なときだけオンにしてください。"),
 		keywords: 'agent mcp terminal send input launch space worktree orchestration',
 	},
 	{
@@ -536,6 +537,24 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-agentide',
+		key: 'paradis.agentIde.readOtherSpaces',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentIdeReadOtherSpaces', "別のスペースのターミナルも読めるようにする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentIdeReadOtherSpacesDesc', "オフの間、エージェントが読めるのは自分のスペースのターミナルと、自分が作ったものだけです。オンにすると、別のリポジトリで表示した秘密が外へ持ち出される危険があります。"),
+		keywords: 'agent read screen other space window',
+	},
+	{
+		sectionId: 'psd-sec-agentide',
+		key: 'paradis.agentIde.allowShellCommands',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentIdeAllowShellCommands', "エージェントがシェルでコマンドを実行できるようにする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentIdeAllowShellCommandsDesc', "Claude Code / Codex の動いていないシェルへの Enter、シェルのターミナルを開くこと、スペース作成時の setup スクリプトと自動実行を許可します。これらのコマンドはエージェントのサンドボックスと許可設定の外で、あなたの権限のまま実行されます。"),
+		keywords: 'agent shell command enter sandbox setup script',
+	},
+	{
+		sectionId: 'psd-sec-agentide',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.agentIdeSkills', "Claude Code と Codex にスキルを設置"),
 		// allow-any-unicode-next-line
@@ -544,7 +563,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		action: {
 			// allow-any-unicode-next-line
 			label: localize('paradis.settings.agentIdeSkillsAction', "スキルを設置…"),
-			commandId: 'paradis.agentIde.installSkills',
+			commandId: PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID,
 		},
 	},
 	{
