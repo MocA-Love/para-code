@@ -42,6 +42,7 @@ import {
 	IParadisRenderGrid,
 	paradisIsSuspectDivergence,
 	paradisIsThinGlyph,
+	paradisIsUnmeasurableDivergence,
 	paradisMeasureRenderDivergence,
 	paradisMissingCellCoordinates,
 	paradisMissingSetsOverlap,
@@ -189,6 +190,9 @@ function takeSnapshot(raw: RawXtermTerminal, withImage: boolean): IParadisRender
 	}
 }
 
+/** このウィンドウで「測れなかった」回数（trace ログ用）。 */
+let paradisUnmeasurableCount = 0;
+
 class ParadisRenderRepairContribution extends Disposable implements ITerminalContribution {
 
 	static readonly ID = 'terminal.paradisRenderRepair';
@@ -258,6 +262,13 @@ class ParadisRenderRepairContribution extends Disposable implements ITerminalCon
 		}
 		const record = this._configurationService.getValue<boolean>(PARADIS_RENDER_REPAIR_RECORD_SETTING) === true;
 		const first = takeSnapshot(xterm.raw, false);
+		if (first && paradisIsUnmeasurableDivergence(first.divergence)) {
+			// WebGL の描画バッファを読めていない（全部が欠けて見える）。判定はしないが、読み取りが
+			// 効いているかを実機で確かめられるよう回数を残す
+			paradisUnmeasurableCount++;
+			this._logService.trace(`[ParadisRenderRepair] could not measure terminal ${this._ctx.instance.instanceId} (${first.divergence.missing}/${first.divergence.textCells} cells look empty, ${paradisUnmeasurableCount} times in this window)`);
+			return;
+		}
 		if (!first || !paradisIsSuspectDivergence(first.divergence)) {
 			return;
 		}
