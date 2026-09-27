@@ -1760,6 +1760,9 @@ export default defineConfig(
 						// PARA-PATCH: browserSessionPermissions.ts がパスキーのアカウント選択
 						// (paradisInstallWebAuthnAccountChooser) を配線するための逆方向 import
 						'vs/paradis/contrib/browserWebAuthn/~',
+						// PARA-PATCH: browserViewMainService.ts がエージェントの右クリックで OS のメニューを出さない
+						// (paradisConsumeAgentContextMenuSuppression) ための逆方向 import
+						'vs/paradis/contrib/agentBrowser/~',
 						// PARA-PATCH: ptyHostMain.ts が常駐ターミナル(pty デーモン)として起きたときの
 						// ソケット確保と寿命管理を呼ぶための逆方向 import
 						'vs/paradis/contrib/ptyDaemon/~',
