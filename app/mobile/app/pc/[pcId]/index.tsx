@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useRef } from 'react';
-import { useIsFocused, useNavigation } from 'expo-router';
+import { useIsFocused, useNavigation, useRoute } from 'expo-router';
 import { usePcRouteId } from '../../../src/features/pc/pcRouteContext.js';
 import { PcScreen } from '../../../src/features/pc/pcScreen.js';
 import { useIsRegularWidth } from '../../../src/hooks/useSizeClass.js';
@@ -27,9 +27,13 @@ export default function PcIndexRoute() {
 	// 置き直し（＝前面への並べ替え）を navigation の差し替えで起こさないよう、最新のものを参照で持つ。
 	const navigationRef = useRef(navigation);
 	navigationRef.current = navigation;
+	const routeKey = useRoute().key;
+	// 詳細の列を置くのは、列の Stack の一番下にある根だけ。万一この画面が上にもう1枚積まれても（PC の画面への
+	// 行き先を push したなど）、同じ印で上書きして、閉じるときに列の様子ごと消すことが無いようにする。
+	const isColumnBase = (): boolean => navigationRef.current.getState()?.routes[0]?.key === routeKey;
 
 	useEffect(() => {
-		if (!regular || pcId === undefined || columnKey === undefined) {
+		if (!regular || pcId === undefined || columnKey === undefined || !isColumnBase()) {
 			return;
 		}
 		return useDetailColumn.getState().attach(columnKey, pcId, () => {
@@ -41,12 +45,14 @@ export default function PcIndexRoute() {
 				current.dispatch({ type: 'POP_TO_TOP' });
 			}
 		});
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- isColumnBase は ref とルートの key だけを読む
 	}, [regular, pcId, columnKey]);
 
 	useEffect(() => {
-		if (columnKey !== undefined) {
+		if (columnKey !== undefined && isColumnBase()) {
 			useDetailColumn.getState().setOpen(columnKey, !focused);
 		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- isColumnBase は ref とルートの key だけを読む
 	}, [columnKey, focused, regular]);
 
 	return regular ? <DetailPlaceholder /> : <PcScreen placement="page" />;

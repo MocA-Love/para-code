@@ -62,7 +62,7 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'arrow-undo-outline',
 				title: '通知やホームの「再開」から開いたセッションで戻ると、その PC のエージェント一覧に戻るようにしました',
-				body: 'iPhone と iPad のどちらも同じです。これまではホームまで戻っていました。',
+				body: 'これまではホームまで戻っていました。前に開いていた PC の通知を押すと、その PC の画面まで戻って開きます（あとから開いた PC の画面は閉じます）。',
 			},
 			{
 				icon: 'pulse-outline',

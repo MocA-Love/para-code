@@ -9,7 +9,10 @@ import { firstParam, type RouteHref } from '../../routes.js';
  * 規則（どの入口でも同じ）:
  *  1. 器の Stack には、同じ PC の器を1枚しか置かない
  *  2. 開きたい PC の器が器の Stack にあれば、その上に積んだ器を閉じてその器へ戻り、その中で開く
- *     （いまその器に出ている画面が開きたい画面と同じなら、開き直さない）
+ *     - 行き先が器の根（`/pc/<id>`＝PC の画面）なら、積まずに器の中を根まで戻す（根を2枚にしない）
+ *     - いまその器に出ている画面が開きたい画面と同じなら、開き直さない。`latest`（会話を最新まで送る印）が
+ *       付いていれば、その画面の引数として渡す（セッションの画面がタブを切り替えるときと同じ渡し方）
+ *     - 2列では、器の中（詳細の列）を根まで戻してから開く（左の列の行を押したときと同じく、積み増さず入れ替える）
  *  3. 無ければ器の Stack の上に新しい器を積んで開く
  *  4. 器の Stack が前面に無い（ホーム・設定などの上から開く）ときは、今までどおりルートに新しい器の Stack を積む
  *
@@ -44,6 +47,8 @@ export interface PcTarget {
 	readonly path: string;
 	/** セッションのタブ（`tab` のクエリ）。 */
 	readonly tab: string | undefined;
+	/** 会話を最新まで送る一度限りの印（`latest` のクエリ）。 */
+	readonly latest: string | undefined;
 }
 
 export type PcOpenPlan =
@@ -55,7 +60,11 @@ export type PcOpenPlan =
 		readonly closeOverlay: { readonly rootKey: string } | undefined;
 		/** 器の Stack から閉じる器の数（開きたい PC の器の上に積んだもの）。 */
 		readonly popPcs: { readonly stackKey: string; readonly count: number } | undefined;
-		/** 器の中で開く（false なら、もう出ているので開き直さない）。 */
+		/** 器の中の Stack を根まで戻す（行き先が根のとき・2列で入れ替えるとき）。 */
+		readonly popInner: { readonly stackKey: string } | undefined;
+		/** もう出ている画面へ引数（`latest`）だけ渡す。 */
+		readonly setParams: { readonly stackKey: string; readonly routeKey: string; readonly params: Readonly<Record<string, string>> } | undefined;
+		/** 器の中で開く（false なら開き直さない）。 */
 		readonly push: boolean;
 	};
 
@@ -76,8 +85,8 @@ export function pcTargetOf(href: RouteHref): PcTarget | undefined {
 		if (decoded[0] !== 'pc' || decoded[1] === undefined || decoded[1] === '') {
 			return undefined;
 		}
-		const tab = queryAt >= 0 ? readQuery(href.slice(queryAt + 1), 'tab') : undefined;
-		return { pcId: decoded[1], path: `/${decoded.join('/')}`.replace(/\/+$/, ''), tab };
+		const query = queryAt >= 0 ? href.slice(queryAt + 1) : '';
+		return { pcId: decoded[1], path: `/${decoded.join('/')}`.replace(/\/+$/, ''), tab: readQuery(query, 'tab'), latest: readQuery(query, 'latest') };
 	}
 	if (!href.pathname.startsWith('/pc/[pcId]')) {
 		return undefined;
@@ -87,11 +96,14 @@ export function pcTargetOf(href: RouteHref): PcTarget | undefined {
 		return undefined;
 	}
 	const path = fillPath(href.pathname.slice(1).split('/'), href.params);
-	return path === undefined ? undefined : { pcId, path, tab: href.params.tab };
+	return path === undefined ? undefined : { pcId, path, tab: href.params.tab, latest: href.params.latest };
 }
 
-/** どう開くか。`container` はナビゲーションのコンテナの状態（Expo Router の `__root` に包まれていてよい）。 */
-export function planPcOpen(container: NavStateLike, target: PcTarget, from: 'focus' | 'overlay'): PcOpenPlan {
+/**
+ * どう開くか。`container` はナビゲーションのコンテナの状態（Expo Router の `__root` に包まれていてよい）。
+ * `twoColumn` は iPad の2列で使っているか。
+ */
+export function planPcOpen(container: NavStateLike, target: PcTarget, from: 'focus' | 'overlay', twoColumn = false): PcOpenPlan {
 	const root = rootStackOf(container);
 	const stackIndex = from === 'focus' ? root.index : root.index - 1;
 	const stackRoute = root.routes[stackIndex];
@@ -109,12 +121,25 @@ export function planPcOpen(container: NavStateLike, target: PcTarget, from: 'foc
 		}
 	}
 	if (found < 0) {
-		return { kind: 'in-stack', closeOverlay, popPcs: undefined, push: true };
+		return { kind: 'in-stack', closeOverlay, popPcs: undefined, popInner: undefined, setParams: undefined, push: true };
 	}
 	const popPcs = found < top ? { stackKey: stack.key, count: top - found } : undefined;
-	const shown = shownTarget(stack.routes[found]);
-	const alreadyShown = shown !== undefined && shown.path === target.path && (target.tab === undefined || target.tab === shown.tab);
-	return { kind: 'in-stack', closeOverlay, popPcs, push: !alreadyShown };
+	const pcRoute = stack.routes[found];
+	const inner = pcRoute?.state;
+	const stacked = inner !== undefined && inner.routes.length > 1 ? { stackKey: inner.key } : undefined;
+	if (target.path === `/pc/${target.pcId}`) {
+		// PC の画面（器の根）。根をもう1枚積むと、詳細の列の様子が上の根に取られて壊れる。
+		return { kind: 'in-stack', closeOverlay, popPcs, popInner: stacked, setParams: undefined, push: false };
+	}
+	const shown = shownTarget(pcRoute);
+	if (shown !== undefined && shown.path === target.path && (target.tab === undefined || target.tab === shown.tab)) {
+		const shownRoute = inner?.routes[inner.index];
+		const setParams = target.latest !== undefined && target.latest !== shown.latest && inner !== undefined && shownRoute !== undefined
+			? { stackKey: inner.key, routeKey: shownRoute.key, params: { latest: target.latest } }
+			: undefined;
+		return { kind: 'in-stack', closeOverlay, popPcs, popInner: undefined, setParams, push: false };
+	}
+	return { kind: 'in-stack', closeOverlay, popPcs, popInner: twoColumn ? stacked : undefined, setParams: undefined, push: true };
 }
 
 /** アプリのルートの Stack（`app/_layout.tsx`）。コンテナの状態は Expo Router の `__root` 1枚に包まれている。 */
@@ -136,7 +161,7 @@ function shownTarget(pcRoute: NavRouteLike | undefined): PcTarget | undefined {
 	}
 	const params = stringParams(route.params);
 	const path = fillPath(['pc', '[pcId]', ...route.name.split('/').filter(segment => segment !== 'index')], { ...params, pcId });
-	return path === undefined ? undefined : { pcId, path, tab: params.tab };
+	return path === undefined ? undefined : { pcId, path, tab: params.tab, latest: params.latest };
 }
 
 function pcIdOf(route: NavRouteLike | undefined): string | undefined {
