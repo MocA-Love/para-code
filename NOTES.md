@@ -777,7 +777,7 @@ TM14 の保存画面と TM12 の記録は、renderer の `IFileService` では�
 
 - **`run` 以外の本文は `commands` / `tasks` ではなく `prompt` に置く**。すでに配布した古い版は `action` を知らないので、`commands` があると Enter 付きで実行してしまう。`prompt` だけの定義は古い版では無効として読み飛ばされる。新しい版でも、未知の `action` は読み飛ばす
 - `insert` は1行1コマンドの本文を `&&` でつないだ1行にして入れる。**改行は常に残さない**
-- `agent-prompt` の改行を残すのは、貼り付けモードで送れて、しかもシェル統合でコマンド（エージェント）が前面で実行中と確かめられたときだけ。xterm の貼り付けモードの記録は最後に出た `ESC[?2004h/l` でしかなく、エージェントが後始末をせずに落ちると、対応していないシェルでも立ったままになるため
+- `agent-prompt` の改行を残すのは、貼り付けモードで送れて、しかもシェル統合で前面の実行中コマンドが Claude Code / Codex（`paradisInteractiveAgentCommand`）だと確かめられたときだけ。xterm の貼り付けモードの記録は最後に出た `ESC[?2004h/l` でしかなく、エージェントが後始末をせずに落ちると、対応していないシェルでも立ったままになるため
 - エージェントが許可・質問の回答を待っている（`question` / `permission`）ターミナルには、`agent-prompt` も `insert` も入れない（先頭の文字が選択肢の操作として食われる）。状態は送る直前に読む
 - エージェントかどうかは「hook が1度でも発火したか」（`IParadisAgentStatusStore.isAgentInstance`）。エージェントを終了した後のシェルにも入るが、1行に均して Enter は送らないので実行はされない。タブのアイコン（TM18）・再開バナー（TM22）と判定が揃っていない（アーキテクチャレビュー L1、未対応）
 - モバイルの一覧と autoRun からは `run` 以外を外している（入れ先の「今のターミナル」がモバイルからは見えない）。承認の署名には `prompt` も入れてある
@@ -787,6 +787,7 @@ TM14 の保存画面と TM12 の記録は、renderer の `IFileService` では�
 
 `terminalRenderer/electron-browser/paradisRenderRepair.contribution.ts`。そのターミナルが見えるようになったときと、そのターミナルにフォーカスが入ったとき（ウィンドウに戻る・スリープから復帰すると、前にフォーカスのあった要素にフォーカスが戻るので、ここに入る）にだけ WebGL の画面を抜き取り、Orca の方式（文字のあるセルの中央に背景色以外の画素が1つも無ければ欠け）で判定する。2回（250ms 空けて）続けて、ビューポートの文字が同じまま同じセルが欠けていたら、`recreateRendererAfterWindowChange` で作り直す。ウィンドウ全体のフォーカスでは見ない（見えている全ターミナルの画面を読み戻すと重い）。
 
+- 「測れなかった」（欠け 95% 以上）ときは、回数を trace ログに出す（`[ParadisRenderRepair] could not measure`）。実機で読み取りが効いているかはこれで確かめる。画面全体が消える型の描画ずれは、この理由で修復しない
 - 判定は保守的にしてある: 文字 200 セル以上・欠け 8% 以上 95% 未満・2回で欠けの位置が半分以上重なる。95% 以上は「測れなかった」とみなす（WebGL は `preserveDrawingBuffer` なしで作られており、読み取りの時点でバッファが消えていると全セルが欠けて見える）。細い記号と罫線（`.` `_` `'` `─` など）はセルの中央にインクが無いので数えない。修復後 60 秒は同じターミナルを検査しない。修復後もまだ欠けて見えるなら判定の方が外れているとみなし、そのターミナルでは以後検査しない
 - **【要確認】実機で、正常な画面の欠けの割合がほぼ 0 になるか**（`drawImage` で描画バッファを読めているか）をまだ確かめていない。読めていなければ機能は何もしないだけ（95% 以上で判定しない）
 - **xterm の非公開のプロパティを読んでいる**: `_core._renderService._isPaused` と `_core._renderService._renderer.value` の `_canvas` / `_charAtlas` / `_themeService.colors.background.rgba` / `dimensions.device.cell`。xterm か addon-webgl を上げたら、`lib/xterm.js` と `addon-webgl/lib/addon-webgl.js` にこれらの名前が残っているかを `grep` で確かめる（merge-upstream スキルにも書いた）。消えていても検査が走らなくなるだけで、例外にはならない
@@ -796,10 +797,12 @@ TM14 の保存画面と TM12 の記録は、renderer の `IFileService` では�
 
 常駐を使うと、アプリを閉じるときの upstream の画面保存（`persistTerminalState`）を飛ばしている（`terminalService.ts` の PARA-PATCH。起こし直すと生きているプロセスと二重になる）。そのため PC を再起動すると画面もタブも戻らず、常駐を使わない方が再起動に強い状態だった。
 
-- 保存: `ptyDaemon/electron-browser/paradisTerminalScreens.contribution.ts`。**常駐へ実際に繋がっている間だけ**（`getStatus().running`。設定が有効でも、起動に失敗してアプリの中の pty ホストに落ちているとき・設定を入れた直後で再起動していないときは書かない）、pty ホストの `serializeTerminalState` を `<ユーザーデータ>/paradisTerminalScreens/<ワークスペース>.json` へ書く。保存時の常駐の pid と起動時刻も書く。5分ごと（出力があったときだけ。無くても30分に1回）、ターミナルを閉じた2秒後、アプリを閉じる前（`onBeforeShutdown`、上限2秒）。間隔が長めなのは、直列化が端末ごとに cwd の取得（macOS では lsof）とバッファ全体の書き出しを伴うため。対象は upstream が閉じるときに畳む範囲と同じ（待避中のグループとエディタの端末を含む）。1本も無くなったらファイルを消す
-- **保存物には環境変数とシェル統合の nonce が入る**（upstream が state.vscdb へ書くものと同じ）。main が書く前に `PARA_CODE_*` / `PARADIS_*` の環境変数とペイントークン（`processDetails.paradisPaneToken`）を落とし、復元のときにペイントークンのサービスで付け直す（トークンは nonce から決まるので同じ値になる）。nonce はエディタのタブと起こし直した端末を結び付けるのに要るので残している
+- 保存: `ptyDaemon/electron-browser/paradisTerminalScreens.contribution.ts`。**常駐が端末を抱えている間だけ**（`getStatus()` の `running` と、常駐が答えた本数が保存する本数以上あること。`running` は「台帳の常駐プロセスが生きている」という意味で、pty ホストがそれを使っているかまでは表さないので、本数で補う。設定を入れた直後で再起動していないとき・アプリの中の pty ホストに落ちているときは書かない）、pty ホストの `serializeTerminalState` を `<ユーザーデータ>/paradisTerminalScreens/<ワークスペース>.json` へ書く。保存時の常駐の pid と起動時刻も書く。5分ごと（出力があったときだけ。無くても30分に1回）、ターミナルを閉じた2秒後、アプリを閉じる前（`onBeforeShutdown`、上限2秒）。間隔が長めなのは、直列化が端末ごとに cwd の取得（macOS では lsof）とバッファ全体の書き出しを伴うため。対象は upstream が閉じるときに畳む範囲と同じ（待避中のグループとエディタの端末を含む）。1本も無くなったらファイルを消す
+- **保存物にはシェルの起動条件の環境変数とシェル統合の nonce が入る**。main が書く前に、秘密の変数（`PARA_CODE_TERMINAL_PANE_ID`、`PARA_CODE_VOICE_TOKEN`、`PARA_CODE_CODEX_APP_SERVER_*`、`PARADIS_PTY_*`。名指しで落とす）とペイントークン（`processDetails.paradisPaneToken`）を落とし、`processLaunchConfig.env`（起動元から引き継いだ全環境変数）は空にする（upstream は復元のときに `shellLaunchConfig.env` から作り直す）。スペース別の履歴（`PARA_CODE_SPACE_HISTORY_*`）や MCP のポートファイルは起こし直したシェルにも要るので残す。ペイン用の値は復元のときにペイントークンのサービスで付け直す。**ペイントークンは nonce から決まるので、このファイルを読めればトークンも分かる**（nonce はエディタのタブと起こし直した端末を結び付けるのに要るので残している）。そのためファイルは本人だけが読める権限で書く。main での解析と書き出しは1回ずつ
 - 復元: `localTerminalBackend.ts` の `getTerminalLayoutInfo` で、ストレージに保存物が無いときだけ `paradisTakeSavedTerminalScreens` を呼び、返ってきた文字列を upstream の復元へそのまま流す。配置はストレージの `terminal.integrated.layoutInfo`（常駐のときも upstream が書き続けている）を upstream が使う
-- **戻すのは「今は常駐へ繋がっていて、保存したときの常駐（pid と起動時刻の組）がどこにも居ない」ときだけ**（`paradisDecideSavedScreens`）。今の常駐か、別ビルドの常駐（更新前のもの、`status.foreign`）として生きていれば使わない。常駐へ繋がっていない・状態が3秒で分からないときも使わない（ウィンドウの再読み込みでは、アプリの中の pty ホストがまだ端末を抱えていることがある）。使ったらファイルを消す（2回使うと、起こし直したシェルを次の起動でまた起こす）
+- **戻すのは、保存したときの常駐（pid と起動時刻の組）がどこにも居ないと言えるときだけ**（`paradisDecideSavedScreens`）。今の常駐か、別ビルドの常駐（更新前のもの、`status.foreign`）として生きていれば使わない。常駐がまだ動いていなければ最大6秒（1秒おき）待つ。PC を再起動した直後は常駐の起動が pty ホストより遅れるため。それでも動いていなければ、**main プロセスの起動時刻（性能計測の印 `code/didStartMain`）が保存より後か**で決める。後なら、保存物のプロセスを抱えうるアプリの中の pty ホストも居ないので戻す。前なら（ウィンドウの再読み込み）戻さない。使ったらファイルを消す（2回使うと、起こし直したシェルを次の起動でまた起こす）
+- 判断が「分からない」で終わったときはファイルを残し、保存側は判断が付くまで上書きしない（上書きすると戻すはずの画面が消える）
+- 保存物があって常駐が動いていないときは、ターミナルの復元が最大6秒遅れる
 - 【要確認】`reattachAcrossUpdates` の常駐で、更新をまたいだときに今の常駐の pid と起動時刻が変わるか。変わって、かつ更新前の常駐が `foreign` に出ないなら、更新のたびに起こし直しが走る
 - 復元の前に保存が走ると、戻すはずの画面を空で上書きする。保存は `take` が済むまで（呼ばれなければ起動から2分）始めない
 - 30日より古いものは使わずに消す。開かれなくなったワークスペースの分は、起動5分後に保存フォルダを一度見回って消す。設定 `paradis.terminal.daemon.saveScreens`（既定 true）を切るとその場で消す
@@ -813,7 +816,7 @@ TM14 の保存画面と TM12 の記録は、renderer の `IFileService` では�
 - **xterm を上げたら**: `PARADIS_XTERM_IME_TARGET_VERSION` と違う版には当てない。手元の install では警告だけ出して素の xterm で動き、**CI（環境変数 `CI`）では install を失敗させる**（当たらないまま配布物を作ると日本語入力の修正が黙って抜ける）。新しい版の `src/` に `git apply --check` が通るか確かめ、通れば版の定数を書き換える。通らなければ Orca の新しいパッチから作り直す（merge-upstream スキルにも書いた）
 - 当てたかどうかは `lib/xterm.js` の先頭の印（`v2`）で見る。npm が入れ直せば印ごと消えてまた当たる。印の版を上げると、前の版で作り直したものも作り直す（`src/` が当てた後のものなら逆向きの `--check` で確かめてそのまま使う）
 - Orca の MIT の表示は、作り直したバンドルの先頭（esbuild の banner）、パッチファイルの冒頭、`ThirdPartyNotices.txt` の3か所に入れてある
-- パッチは `_inputEvent` の先頭に IME の確定を送る経路を足すので、スペース切り替え中の入力ゲートが素通りされうる。`terminalIme/browser/paradisTerminalImeInputGate.contribution.ts` が、ゲート中は xterm の要素のキャプチャ段階で `input` を止め、テキストエリアの文字も捨てる
+- パッチは `_inputEvent` の先頭に IME の確定を送る経路を足すので、スペース切り替え中の入力ゲートが素通りされうる。`terminalIme/browser/paradisTerminalImeInputGate.contribution.ts` が、ゲート中は xterm の要素のキャプチャ段階で `input` を止め、ゲート中に始まった変換（`compositionstart` / `update` / `end`）も丸ごと xterm に見せない（変換の確定で文字を送る素の xterm の経路もこれで止まる）。ゲートの前から続いている変換だけは、途中で止めると xterm が変換中のまま残るので通す
 - Web ビルド（`remote/web` の xterm）には当てていない
 - パッチには不可視文字（U+200E）と2スペースのインデントが入るので、`build/filters.ts` の unicode / indentation の検査から `build/npm/paradisXtermIme/**` を外してある
 
