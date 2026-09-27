@@ -49,6 +49,7 @@ import {
 	PARADIS_BROWSER_PROFILE_MCP_CHANNEL,
 	PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD,
 	PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD,
+	PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD,
 	PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD,
 	PARADIS_BROWSER_PROFILE_MCP_METHOD,
 	PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD,
@@ -111,6 +112,8 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 				return this._switchProfile(token, text(1) ?? '', text(2), cancellation) as Promise<T>;
 			case PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD:
 				return this._deleteProfile(token, text(1) ?? '') as Promise<T>;
+			case PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD:
+				return this._isPaneOwnedProfile(token, text(1) ?? '') as Promise<T>;
 		}
 		throw new Error(`Method not found: ${command}`);
 	}
@@ -353,6 +356,24 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		} finally {
 			deadline.dispose();
 		}
+	}
+
+	/**
+	 * そのプロファイルを、このペインだけが使っているか。そのペインが作り（利用者が使うと印が外れる）、
+	 * 開いているタブ（ほかのウィンドウのものも main が数える）がすべてこのペインのタブのとき true。
+	 */
+	private async _isPaneOwnedProfile(token: string | undefined, profileId: string): Promise<boolean> {
+		if (token === undefined || profileId.length === 0) {
+			return false;
+		}
+		const profile = this.profilesService.list().find(candidate => candidate.id === profileId);
+		if (!profile || !isOwnProfile(profile, token)) {
+			return false;
+		}
+		const ownTabs = [...this.browserViewWorkbenchService.getKnownBrowserViews().keys()]
+			.filter(viewId => this.profilesService.getProfileForView(viewId) === profile.id && this.agentTabsService.isOpenedBy(token, viewId)).length;
+		const stats = await this.profilesService.getProfileStats(profile.id);
+		return stats.openViewCount <= ownTabs;
 	}
 
 	private async _deleteProfile(token: string | undefined, profileName: string): Promise<IParadisManageProfileResult<{ readonly profileName: string }>> {

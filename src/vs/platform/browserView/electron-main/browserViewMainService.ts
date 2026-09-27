@@ -26,6 +26,7 @@ import { equals } from '../../../base/common/objects.js';
 import { URI } from '../../../base/common/uri.js';
 import { ILogService } from '../../log/common/log.js';
 import { IAgentNetworkFilterService } from '../../networkFilter/common/networkFilterService.js';
+import { paradisConsumeAgentContextMenuSuppression } from '../../../paradis/contrib/agentBrowser/electron-main/paradisAgentContextMenu.js'; // PARA-PATCH: suppress the native context menu for agent right-clicks
 
 export const IBrowserViewMainService = createDecorator<IBrowserViewMainService>('browserViewMainService');
 
@@ -574,6 +575,7 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 	}
 
 	private async showContextMenu(view: BrowserView, params: Electron.ContextMenuParams): Promise<void> {
+		if (paradisConsumeAgentContextMenuSuppression(view.webContents, params)) { return; } // PARA-PATCH: an agent's right-click reaches the page's contextmenu event but must not open Para Code's native menu on the user's screen
 		const win = view.getElectronWindow();
 		if (!win) {
 			return;

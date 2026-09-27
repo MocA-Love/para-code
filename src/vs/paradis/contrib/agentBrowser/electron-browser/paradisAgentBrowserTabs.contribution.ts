@@ -17,6 +17,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { PARADIS_AGENT_BROWSER_TABS_CHANNEL, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
+import { paradisIsPaneStorageAffinity } from '../common/paradisBrowserPageOps.js';
 
 /** shared process から届く呼び出しを {@link IParadisAgentBrowserTabsService} へ流すだけのチャネル。 */
 export class ParadisAgentBrowserTabsChannel implements IServerChannel {
@@ -33,7 +34,7 @@ export class ParadisAgentBrowserTabsChannel implements IServerChannel {
 		const text = (index: number) => typeof args[index] === 'string' ? args[index] as string : undefined;
 		switch (command) {
 			case ParadisAgentTabMethod.Open:
-				return this._tabs.openTab(token, text(1), args[2] === true) as Promise<T>;
+				return this._tabs.openTab(token, text(1), args[2] === true, paradisIsPaneStorageAffinity(args[3]) ? args[3] : undefined) as Promise<T>;
 			case ParadisAgentTabMethod.List:
 				return this._tabs.listTabs(token) as T;
 			case ParadisAgentTabMethod.Select:

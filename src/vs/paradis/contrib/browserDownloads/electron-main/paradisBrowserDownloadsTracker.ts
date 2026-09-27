@@ -54,6 +54,11 @@ export interface IParadisDownloadOrigin {
 	readonly agentSession: boolean;
 	/** 名前付きプロファイルの ID。 */
 	readonly profileId?: string;
+	/**
+	 * エージェントが操作しているタブ（共有中のタブ、またはエージェントのクリックを待っている間のタブ）から
+	 * 始まった。利用者のタブでも、エージェントに共有している間のダウンロードはエージェント由来として扱う。
+	 */
+	readonly agentInitiated?: boolean;
 }
 
 /** 一覧に残す最大件数。超えたら終わったものから古い順に落とす（進行中は落とさない）。 */
@@ -94,13 +99,16 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 		this._register({ dispose: () => this._clearThrottle() });
 	}
 
-	/** `will-download` から呼ばれる。保存先は呼び出し側で決めてある（決まっていないこともある）。 */
-	track(item: IParadisTrackedDownloadItem, origin: IParadisDownloadOrigin = { agentSession: false }): void {
+	/**
+	 * `will-download` から呼ばれる。保存先は呼び出し側で決めてある（決まっていないこともある）。
+	 * 一覧での id を返す（dispose 済みなら undefined）。
+	 */
+	track(item: IParadisTrackedDownloadItem, origin: IParadisDownloadOrigin = { agentSession: false }): string | undefined {
 		if (this._store.isDisposed) {
-			return;
+			return undefined;
 		}
 		const entry: ITrackedEntry = {
-			fromAgent: origin.agentSession || (origin.profileId !== undefined && this._agentProfileIds.has(origin.profileId)),
+			fromAgent: origin.agentSession || origin.agentInitiated === true || (origin.profileId !== undefined && this._agentProfileIds.has(origin.profileId)),
 			quarantine: undefined,
 			id: `download-${this._nextId++}`,
 			item,
@@ -130,6 +138,81 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 			this._fireNow();
 		});
 		this._fireNow();
+		return entry.id;
+	}
+
+	/**
+	 * エージェントが書き出したファイル（PDF など）を、完了したダウンロードとして一覧に載せる。
+	 * 必ずエージェント由来（「開く」を出さない）で、隔離の印もダウンロードと同じく付ける。
+	 */
+	trackSavedFile(path: string, sourceUrl: string, bytes: number): string | undefined {
+		if (this._store.isDisposed) {
+			return undefined;
+		}
+		const now = this._now();
+		const item: IParadisTrackedDownloadItem = {
+			getFilename: () => basename(path),
+			getSavePath: () => path,
+			getURL: () => sourceUrl,
+			getState: () => 'completed',
+			getReceivedBytes: () => bytes,
+			getTotalBytes: () => bytes,
+			getStartTime: () => now / 1000,
+			cancel: () => { },
+			on: () => undefined,
+		};
+		const entry: ITrackedEntry = {
+			fromAgent: true,
+			quarantine: 'pending',
+			id: `download-${this._nextId++}`,
+			item,
+			startTime: now,
+			finalState: 'completed',
+		};
+		this._entries.unshift(entry);
+		this._trim();
+		this._shell.ensureQuarantine(path, sourceUrl).then(ok => ok, () => false).then(ok => {
+			entry.quarantine = ok ? 'ok' : 'failed';
+			this._fireNow();
+		});
+		this._fireNow();
+		return entry.id;
+	}
+
+	/** 1件の今の状態。一覧から落ちていれば undefined。 */
+	get(id: string): IParadisBrowserDownloadItem | undefined {
+		const index = this._entries.findIndex(entry => entry.id === id);
+		return index >= 0 ? this._snapshot()[index] : undefined;
+	}
+
+	/**
+	 * 1件が終わる（完了して隔離の印を付け終える・取り消される・失敗する）か、`timeoutMs` が経つのを待つ。
+	 * 待ち終えた時点の状態を返す（一覧から落ちていれば undefined）。
+	 */
+	whenSettled(id: string, timeoutMs: number): Promise<IParadisBrowserDownloadItem | undefined> {
+		const current = this.get(id);
+		if (!current || current.state !== 'progressing' || timeoutMs <= 0 || this._store.isDisposed) {
+			return Promise.resolve(current);
+		}
+		return new Promise(resolve => {
+			const finish = () => {
+				clearTimeout(timer);
+				listener.dispose();
+				resolve(this.get(id));
+			};
+			const timer = setTimeout(finish, timeoutMs);
+			const listener = this.onDidChangeDownloads(items => {
+				const item = items.find(candidate => candidate.id === id);
+				if (!item || item.state !== 'progressing') {
+					finish();
+				}
+			});
+		});
+	}
+
+	/** 自動保存先のフォルダ（エージェントが書き出す PDF もここへ置く）。 */
+	downloadsDirectory(): string {
+		return this._downloadsDirectory();
 	}
 
 	async list(): Promise<readonly IParadisBrowserDownloadItem[]> {
@@ -188,6 +271,11 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 
 	async setAgentProfiles(profileIds: readonly string[]): Promise<void> {
 		this._agentProfileIds = new Set(Array.isArray(profileIds) ? profileIds.filter(id => typeof id === 'string') : []);
+	}
+
+	/** エージェントが作った印の付いたプロファイルか（renderer が最後に知らせた一覧で判定する）。 */
+	isAgentProfile(profileId: string): boolean {
+		return this._agentProfileIds.has(profileId);
 	}
 
 	async openDownloadsFolder(): Promise<boolean> {
