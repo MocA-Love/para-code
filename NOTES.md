@@ -66,25 +66,28 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 
 ## Claude のアカウントと使用量（limitsMonitor、2026-09-27、claude-swap を撤去）
 
-Claude の使用量の取得・アカウントの保存・PC 全体の切り替えは、shared process の `src/vs/paradis/contrib/limitsMonitor/node/paradisClaudeAccountService.ts` が1か所で持ち、チャネル `paradisClaudeAccounts` で全ウィンドウへ配ります。登録は `ParadisSharedProcessContributions`（`paradisClaudeAccounts.contribution.ts` → `paradis.sharedProcess.contribution.ts`）で、upstream のファイルは触っていません。REH には足していません。SSH で繋いでいる間も Claude の分は手元に聞き、切り替えるのはこの PC のログインだけです（接続先の Claude のログインは変えない）。Codex の分は従来どおり `paradisLimitsMonitorChannel.ts`（接続中は REH）で、レンダラーの `ParadisLimitsMonitorClient.getSnapshot()` が2つを合わせます。
+Claude の使用量の取得・アカウントの保存・PC 全体の切り替えは、shared process の `src/vs/paradis/contrib/limitsMonitor/node/paradisClaudeAccountService.ts` が1か所で持ち、チャネル `paradisClaudeAccounts` で全ウィンドウへ配ります。登録は `ParadisSharedProcessContributions`（`paradisClaudeAccounts.contribution.ts` → `paradis.sharedProcess.contribution.ts`）です。upstream 側は `sharedProcessMain.ts` の既存の PARA-PATCH コメント1行の文言を直しただけです。REH には足していません。SSH で繋いでいる間も Claude の分は手元に聞き、切り替えるのはこの PC のログインだけです（接続先の Claude のログインは変えない）。Codex の分は従来どおり `paradisLimitsMonitorChannel.ts`（接続中は REH）で、レンダラーの `ParadisLimitsMonitorClient.getSnapshot()` が2つを合わせます。
 
 | 対象 | 場所 | 誰が書くか |
 |---|---|---|
 | いまのログインの認証情報 | macOS: キーチェーン `Claude Code-credentials`（アカウント名は `$USER`、英数字と `._-` 以外を含むと `claude-code-user`）。それ以外: `~/.claude/.credentials.json` | Claude Code。Para Code は切り替えのときだけ書く |
 | いまのログインの身元 | `~/.claude.json` の `oauthAccount`（古い版は `~/.claude/.config.json`） | 同上。「使用中」はこの値と登録済みアカウントの照合で決める |
 | 登録したアカウントの一覧 | ユーザーデータの `paradis-claude-accounts/accounts.json`（秘密でない値だけ、0600） | Para Code |
-| 登録したアカウントの認証情報 | macOS: キーチェーン `Para Code Claude Accounts`（アカウント名は登録 UUID）。Windows / Linux: safeStorage で暗号化した `paradis-claude-accounts/secrets/<UUID>.enc`。暗号化できない環境では保存を断る | Para Code |
+| 登録したアカウントの認証情報 | credentials JSON のうち `claudeAiOauth` だけ。macOS: キーチェーン `Para Code Claude Accounts`（アカウント名は登録 UUID）。Windows / Linux: safeStorage で暗号化した `paradis-claude-accounts/secrets/<UUID>.enc`。暗号化できない環境と `--password-store=basic`（固定鍵）では保存を断る | Para Code |
 
 実装で踏みやすい点:
 
 - 使用量 API は `GET https://api.anthropic.com/api/oauth/usage`（`anthropic-beta: oauth-2025-04-20`）です。Orca・claude-swap・claude 2.1.283 のバイナリで同じ URL を確認しました。上限は「身元 × User-Agent の種類」ごとに1時間約 28〜30 回（claude-swap の実測）なので、User-Agent は `ParaCode-LimitsMonitor/1.0` にして他のツールと回数を取り合わないようにしています
-- 取得間隔は claude-swap の `poll_policy.py` を `common/paradisClaudePollPolicy.ts` へ移植しました（180 秒は取り直さない、通常 3〜10 分、使用中が 85% 以上で動いている間 1 分、429 は Retry-After（1 時間規模なら +15 分）、無ければ 5 分待ち、その後 1 時間は 6 分以上 ×1.5 で最大 30 分）。10 分間どのウィンドウからも聞かれなければ止まります
-- 使用中のアカウントのトークンは更新しません。リフレッシュトークンは使い捨てで、ここで更新すると動いている Claude Code の手元のトークンが無効になるためです。代わりに Claude Code が書き戻した新しいトークンを保存し直します（期限が保存済みより古いもの、トークン欄が空のものは取り込まない）。控えのアカウントだけ、期限の 5 分前から Para Code が更新して保存します
+- 取得間隔は claude-swap の `poll_policy.py` を `common/paradisClaudePollPolicy.ts` へ移植しました（180 秒は取り直さない、通常 3〜10 分、使用中が 85% 以上で動いている間 1 分（直近 1 時間に 20 回取ったら 3 分に戻す）、429 は Retry-After（1 時間規模なら +15 分）、無ければ 5 分待ち、その後 1 時間は 6 分以上 ×1.5 で最大 30 分。この 1 時間の起点は 429 を受けたときに決めて、成功しても消さない）。10 分間どのウィンドウからも聞かれなければ止まります。変更の通知を受けたウィンドウの読み直しは「聞かれた」と数えません（数えると、通知 → 読み直し → 取得 → 通知の輪で止まらなくなる）。非表示のウィンドウは通知で読み直しません
+- 使用中のアカウントのトークンは更新しません。リフレッシュトークンは使い捨てで、ここで更新すると動いている Claude Code の手元のトークンが無効になるためです。代わりに Claude Code が書き戻した新しいトークンを保存し直します（期限が保存済みより古いもの、トークン欄が空のものは取り込まない）。控えのアカウントだけ、期限の 5 分前から Para Code が更新して保存します。更新後に保存できなかったトークンは手元に持ち、次に読むときに保存し直します（使用済みのリフレッシュトークンで更新し直さない）
+- 取り込み（と「Para Code に登録」、切り替えのときの控え）で別のアカウントのトークンを保存しないよう、次をすべて満たすときだけ保存します: `~/.claude.json` の身元 → 認証情報 → 身元の順に読み直して2回とも一致、トークンの持ち主を `GET https://api.anthropic.com/api/oauth/profile`（claude-swap の `fetch_oauth_profile` と同じ）で確かめて一致、ほかの登録アカウントの保存分と同じリフレッシュトークンでない、切り替えの最中と直後の1周でない。確かめられないときは保存しません（古いトークンが残るだけで、別のアカウントのトークンで上書きするよりは安全）
+- 保存も書き戻しも `claudeAiOauth` だけです。`Claude Code-credentials` には MCP サーバーの OAuth トークン（`mcpOAuth`）なども入るので、切り替えではいまの JSON の `claudeAiOauth` だけを差し替えます
+- 一覧（`accounts.json`）を読めない間は、登録・削除で一覧を書きません（空の一覧に足して保存すると既存の登録が消えるため）
 - 切り替えは Claude Code 自身のロック（`~/.claude/.oauth_refresh.lock` → `~/.claude.lock` → `~/.claude.json.lock`、proper-lockfile 互換の mkdir 方式）を取った中で行い、書く前の状態を控えて失敗したら戻します。登録していないログインが使用中のときは上書きせずに止めます（そのログインのリフレッシュトークンを失うため）。`~/.claude.json` が壊れているときも書きません
-- 動いている Claude Code は、キーチェーンを約 30 秒ごとに読み直すので次の発言から新しいアカウントになります（claude-swap の説明による。実機で要確認）。`~/.claude/.credentials.json` が既にあるときは同じ中身で書き直して更新時刻を変え、読み直しを促します
-- アカウント追加は一時ディレクトリを `CLAUDE_CONFIG_DIR` と `CLAUDE_SECURESTORAGE_CONFIG_DIR` にして `claude auth login --claudeai` を動かし、そのディレクトリ用のキーチェーン項目（`Claude Code-credentials-<sha256 先頭8桁>`）と `.claude.json` から拾います。古い Claude Code が既定の項目へ書いた場合だけ、既定の項目を元へ戻します（待っている間に Claude Code 自身が更新しただけのときは戻さない）
-- claude-swap は撤去しました（設問 Q3）。移行期間は `~/.claude-swap-backup/sequence.json`（Linux は `$XDG_DATA_HOME/claude-swap/`）を読むだけで、まだ登録していないアカウントをパネルに並べ、1回だけ通知で登録し直しを案内します。claude-swap のデータには書き込みません
-- 使用量パネルへプロバイダ固有の操作を足す口は `electron-browser/paradisLimitsPanelContributions.ts` です。`ParadisLimitsPanelContributions.register(クラス)` し、`renderAccountActions`（カード下端のボタン列）と `renderProviderFooter`（節の末尾）を実装します。Claude の「このアカウントを使う」「Para Code に登録」もこの口で足しています（`paradisClaudeAccountActions.ts`）
+- 動いている Claude Code は、キーチェーンを約 30 秒ごとに読み直すので次の発言から新しいアカウントになる、と claude-swap は説明しています（実機で要確認。UI と changelog は「起動し直すと確実」と書いています）。macOS で `~/.claude/.credentials.json` が既にあるときは、中身は書かずに更新時刻だけ変えて読み直しを促します（最新のトークンを平文のファイルへ置かないため）
+- アカウント追加は一時ディレクトリを `CLAUDE_CONFIG_DIR` と `CLAUDE_SECURESTORAGE_CONFIG_DIR` にして `claude auth login --claudeai` を動かし、そのディレクトリ用のキーチェーン項目（`Claude Code-credentials-<sha256 先頭8桁>`）かそのディレクトリの `.credentials.json` と、`.claude.json` から拾います。既定の項目（いまのログイン）は見ません。ログインを待つ間に Claude Code の更新や切り替えでも変わるため、「変わった値が今回のログイン」とは言えないからです（`CLAUDE_CONFIG_DIR` でキーチェーンの項目名を分けない古い Claude Code では追加できません）。終了で消し損ねた一時ディレクトリ（`paradis-claude-login-*`、30 分より古いもの）とその項目は、次の起動で消します
+- claude-swap は撤去し、アカウントはログインし直して移してもらいます。移行期間は `~/.claude-swap-backup/sequence.json`（Linux は `$XDG_DATA_HOME/claude-swap/`）を読むだけで、まだ登録していないアカウントをパネルに並べ、1回だけ通知で登録し直しと「claude-swap での切り替えをやめる」ことを案内します。claude-swap のデータには書き込みません。「Para Code に登録」でいまのログインを写したアカウントが claude-swap にもあるときは、同じトークンの系列を claude-swap も持っている可能性があるので、控えに回っても Para Code は更新しません
+- 使用量パネルへプロバイダ固有の操作を足す口は `electron-browser/paradisLimitsPanelContributions.ts` です。`ParadisLimitsPanelContributions.register(クラス)` し、`renderAccountActions`（カード下端のボタン列）と `renderProviderFooter`（節の末尾）を実装します。Claude の「このアカウントを使う」「Para Code に登録」もこの口で足しています（`paradisClaudeAccountActions.ts`）。部品はそのプロバイダの contrib 側から副作用 import で読み込み、パネル側から各プロバイダを import しません
 - テストはすべて一時ディレクトリの HOME とメモリのキーチェーン、偽の HTTP で動き、本物の `~/.claude`・キーチェーン・API には触れません（`test/node/paradisClaudeTestUtils.ts`）
 
 ## リポジトリ構成
@@ -336,14 +339,14 @@ tmux サーバーの環境変数は、サーバーを起こしたペインのも
 
 ## Codex の複数アカウント（切替とリセットクレジット、2026-09-27）
 
-実体は `src/vs/paradis/contrib/codexAccounts/`（fork 所有）。Claude 側（limitsMonitor の中）とは別のディレクトリにしてある。使用量パネルのカードに出す「このアカウントを使う」「使用中」とリセットの残り・「使う…」は、Claude と同じ差し込み口（`ParadisLimitsPanelContributions`）に `electron-browser/paradisCodexAccountActions.ts` を登録して出している。Claude の切替は PC 全体のログインを書き換え、Codex の切替は新しく開くターミナルにだけ効く、という違いは意図どおり（q.html Q02）。
+実体は `src/vs/paradis/contrib/codexAccounts/`（fork 所有）。Claude 側（limitsMonitor の中）とは別のディレクトリにしてある。使用量パネルのカードに出す「このアカウントを使う」「使用中」とリセットの残り・「使う…」は、Claude と同じ差し込み口（`ParadisLimitsPanelContributions`）に `electron-browser/paradisCodexAccountActions.ts` を登録して出している。Claude の切替は PC 全体のログインを書き換え、Codex の切替は新しく開くターミナルにだけ効く、という違いは意図どおり（Claude は Orca / claude-swap と同じく PC 全体、Codex は `CODEX_HOME` で新しいターミナルだけ、という決定）。
 
 `codex app-server` と stdio で話すクライアントは `src/vs/paradis/node/paradisCodexAppServerRpc.ts` の1つにまとめ、limitsMonitor（使用量の取得。shared process と REH）とこの機能（リセットの読み取りと消費）が共有している。エラーの文言は limitsMonitor の Sentry 用の分類（`classifyCodexRpcFailure`）が前提にしているので、変えるときは両方のテストを見ること。
 
-**切替は「新しく開くターミナルへ `CODEX_HOME` を渡す」だけ**で、PC 全体の認証は書き換えない（q.html Q02 の Codex 側の決定）。選択は shared process が `userData/paradis/codexAccounts/codex-account-selection.json` に1つだけ持ち、全ウィンドウへイベントで配る（Q07）。renderer は `IParadisCodexLaunchHomeService`（browser 層）に反映し、`paradisPaneTokenService` が PTY 起動直前に env へ入れる。起動直後に shared process の返事が間に合わないターミナルのため、最後の値をアプリ全体の保存領域にも控えている。SSH の接続先で動くターミナルには渡さない（選択はこの PC のホームを指すため）。
+**切替は「新しく開くターミナルへ `CODEX_HOME` を渡す」だけ**で、PC 全体の認証は書き換えない（Codex 側の決定）。選択は shared process が `userData/paradis/codexAccounts/codex-account-selection.json` に1つだけ持ち、全ウィンドウへイベントで配る（アカウントの選択は全ウィンドウ共通、という決定）。renderer は `IParadisCodexLaunchHomeService`（browser 層）に反映し、`paradisPaneTokenService` が PTY 起動直前に env へ入れる。起動直後に shared process の返事が間に合わないターミナルのため、最後の値をアプリ全体の保存領域にも控えている。SSH の接続先で動くターミナルには渡さない（選択はこの PC のホームを指すため）。
 
 - 既定のホーム（`$CODEX_HOME` か `~/.codex`）を選んでいるときは何も渡さない。ユーザー自身の `CODEX_HOME` を潰さないため
-- 切り替えた時点で既に動いている Codex は前のアカウントのまま。そのウィンドウに1つでもあれば通常の通知を1回だけ出す（Q06。入力は止めない）。「Codex が動いているか」はシェル統合の実行中コマンド、無ければプロセス名で見る
+- 切り替えた時点で既に動いている Codex は前のアカウントのまま。そのウィンドウに1つでもあれば通常の通知を1回だけ出す（入力を止めるチップは出さない、という決定）。「Codex が動いているか」はシェル統合の実行中コマンド、無ければプロセス名で見る
 - 切り替えると、ログイン済みのホームどうしで `sessions/YYYY/MM/DD/rollout-*.jsonl` をハードリンクし合う（`paradisCodexSessionLinker.ts`）。既存のファイルは上書きせず、シンボリックリンクは辿らず、別ボリュームは飛ばす。起動後60秒にも1回走る。一時ホームで確かめた範囲では、リンクしただけの rollout を別ホームの app-server の `thread/list` と `thread/read` が拾った（codex-cli 0.155.1）
 
 `~/.codex` が1つだと仮定していた箇所は `paradisCodexHomes()`（全ホーム、読む側）と `paradisCodexAccountHomes()`（ログイン済みだけ、書く側）に寄せた。transcript の許可 root、Codex かどうかの判定、state DB の探索（主のホームが読めないときは従来どおり sessions/ の走査に落ちる）、会話の再開一覧、ターミナルのタブ名、hook の設置と取り外し、para-browser MCP の登録、`[tui].terminal_title` の書き込みが対象。hook は各ホームの `hooks.json` へ実ファイルで置く（シンボリックリンクにしない）ので、Codex の信頼はホームごとに1回ずつ要る。
