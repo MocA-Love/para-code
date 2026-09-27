@@ -22,6 +22,7 @@ import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { paradisAgentCliFallbackDirs, paradisResolveAgentCli } from '../../../node/paradisAgentCli.js';
+import { paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { IParadisTrackedChildProcess, ParadisChildProcessTreeTracker } from '../../../node/paradisKillChildProcess.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -543,7 +544,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 				maxBuffer: EXEC_MAX_BUFFER,
 				windowsHide: true,
 				windowsVerbatimArguments: shimInvocation !== undefined,
-				env: { ...env, NO_COLOR: '1', LOG_LEVEL: '0' }
+				env: { ...paradisCcusageCodexHomeEnv(env, paradisCodexHomes()), NO_COLOR: '1', LOG_LEVEL: '0' }
 			}, (err, stdout, stderr) => {
 				execution.completed = true;
 				const timedOut = execution.tracked?.timedOut === true;
@@ -646,6 +647,19 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			fs.access(filePath, fs.constants.X_OK, err => resolve(!err));
 		});
 	}
+}
+
+/**
+ * ccusage に読ませる Codex のホーム。アカウントを切り替えると Codex は `~/.codex-2` のような別のホームへ
+ * 会話ログを書くので、Para Code が扱う全ホームを `CODEX_HOME` にカンマ区切りで渡す。ccusage 20.0.14 は
+ * カンマ区切りの `CODEX_HOME` を全部読み、ホームの間で同じ会話（共有のためにハードリンク・複製したもの）を
+ * 1回だけ数える（一時フォルダで実測）。ホームが1つ（既定のホームだけ、SSH の接続先）なら env を変えない
+ * （利用者の `CODEX_HOME` をそのまま使う）。
+ */
+export function paradisCcusageCodexHomeEnv(env: NodeJS.ProcessEnv, codexHomes: readonly string[]): NodeJS.ProcessEnv {
+	// カンマを含むパスは区切りと見分けられないので渡さない（そのホームだけ読まれなくなる）
+	const homes = codexHomes.filter(home => !home.includes(','));
+	return homes.length > 1 ? { ...env, CODEX_HOME: homes.join(',') } : env;
 }
 
 // 接続先（REH）へも同じチャネルを生やすため context は型引数にしておく（中身では使わない）。
