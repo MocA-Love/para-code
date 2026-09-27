@@ -127,6 +127,8 @@ const desktopEntryPoints = [
 	// run it directly via `node out/vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js`
 	// (see paradisMcpSnippets.ts), so packaged builds must emit it at that exact path.
 	'vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim',
+	// PARA-PATCH: worker thread the shared process starts to read agent transcripts (usage per space, full-text index)
+	'vs/paradis/contrib/agentActivity/node/paradisAgentActivityWorkerMain',
 ];
 
 const codeEntryPoints = [

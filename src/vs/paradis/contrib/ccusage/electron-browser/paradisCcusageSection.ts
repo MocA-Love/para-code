@@ -571,7 +571,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 	/** 選択中メトリックでの値整形。 */
 	private formatMetricValue(value: number): string {
-		return this.metric === 'tokens' ? formatTokens(value) : formatUsd(value);
+		return this.metric === 'tokens' ? paradisFormatTokens(value) : paradisFormatUsd(value);
 	}
 
 	/**
@@ -599,7 +599,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			agentCosts.set(total.agent, (agentCosts.get(total.agent) ?? 0) + total.cost);
 		}
 		const agentSplit = this.agentFilter === 'all' && agentCosts.size > 1
-			? [...agentCosts.entries()].sort((a, b) => b[1] - a[1]).map(([agent, cost]) => `${agentDisplayName(agent)} ${formatUsd(cost)}`).join(' · ')
+			? [...agentCosts.entries()].sort((a, b) => b[1] - a[1]).map(([agent, cost]) => `${agentDisplayName(agent)} ${paradisFormatUsd(cost)}`).join(' · ')
 			: undefined;
 
 		const costNoun = localize('paradis.ccusage.kpi.cost', "コスト");
@@ -609,13 +609,13 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			// ヒーロー=Total tokens。コストは 2 枚目に回す(free モデルなど cost $0 の消費も見えるようにするため)。
 			const tokensTile = dom.append(kpis, $('.paradis-ccusage-card'));
 			dom.append(tokensTile, $('.paradis-ccusage-stat-label')).textContent = this.periodLabel(tokensNoun);
-			dom.append(tokensTile, $('.paradis-ccusage-stat-value.hero')).textContent = formatTokens(allTokens);
+			dom.append(tokensTile, $('.paradis-ccusage-stat-value.hero')).textContent = paradisFormatTokens(allTokens);
 			dom.append(tokensTile, $('.paradis-ccusage-stat-sub')).textContent =
-				localize('paradis.ccusage.kpi.tokensSub', "入力 {0}・出力 {1}", formatTokens(inputTokens), formatTokens(outputTokens));
+				localize('paradis.ccusage.kpi.tokensSub', "入力 {0}・出力 {1}", paradisFormatTokens(inputTokens), paradisFormatTokens(outputTokens));
 
 			const costTile = dom.append(kpis, $('.paradis-ccusage-card'));
 			dom.append(costTile, $('.paradis-ccusage-stat-label')).textContent = this.periodLabel(costNoun);
-			dom.append(costTile, $('.paradis-ccusage-stat-value')).textContent = formatUsd(totalCost);
+			dom.append(costTile, $('.paradis-ccusage-stat-value')).textContent = paradisFormatUsd(totalCost);
 			if (agentSplit !== undefined) {
 				dom.append(costTile, $('.paradis-ccusage-stat-sub')).textContent = agentSplit;
 			}
@@ -623,23 +623,23 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			// 期間コスト(ヒーロー数値) + エージェント内訳
 			const costTile = dom.append(kpis, $('.paradis-ccusage-card'));
 			dom.append(costTile, $('.paradis-ccusage-stat-label')).textContent = this.periodLabel(costNoun);
-			dom.append(costTile, $('.paradis-ccusage-stat-value.hero')).textContent = formatUsd(totalCost);
+			dom.append(costTile, $('.paradis-ccusage-stat-value.hero')).textContent = paradisFormatUsd(totalCost);
 			if (agentSplit !== undefined) {
 				dom.append(costTile, $('.paradis-ccusage-stat-sub')).textContent = agentSplit;
 			}
 
 			const tokensTile = dom.append(kpis, $('.paradis-ccusage-card'));
 			dom.append(tokensTile, $('.paradis-ccusage-stat-label')).textContent = tokensNoun;
-			dom.append(tokensTile, $('.paradis-ccusage-stat-value')).textContent = formatTokens(allTokens);
+			dom.append(tokensTile, $('.paradis-ccusage-stat-value')).textContent = paradisFormatTokens(allTokens);
 			dom.append(tokensTile, $('.paradis-ccusage-stat-sub')).textContent =
-				localize('paradis.ccusage.kpi.tokensSub', "入力 {0}・出力 {1}", formatTokens(inputTokens), formatTokens(outputTokens));
+				localize('paradis.ccusage.kpi.tokensSub', "入力 {0}・出力 {1}", paradisFormatTokens(inputTokens), paradisFormatTokens(outputTokens));
 		}
 
 		const cacheTile = dom.append(kpis, $('.paradis-ccusage-card'));
 		dom.append(cacheTile, $('.paradis-ccusage-stat-label')).textContent = localize('paradis.ccusage.kpi.cacheRate', "キャッシュ読み取り率");
 		dom.append(cacheTile, $('.paradis-ccusage-stat-value')).textContent = `${cacheRate.toFixed(1)}%`;
 		dom.append(cacheTile, $('.paradis-ccusage-stat-sub')).textContent =
-			localize('paradis.ccusage.kpi.cacheSub', "キャッシュ読み取り {0}", formatTokens(cacheRead));
+			localize('paradis.ccusage.kpi.cacheSub', "キャッシュ読み取り {0}", paradisFormatTokens(cacheRead));
 
 		// 消費速度(アクティブブロックの burnRate。Claude Code のブロック概念に基づく)
 		const burnTile = dom.append(kpis, $('.paradis-ccusage-card'));
@@ -647,10 +647,10 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		const block = this.data?.block;
 		const burnValue = dom.append(burnTile, $('.paradis-ccusage-stat-value'));
 		if (block?.tokensPerMinute !== undefined) {
-			burnValue.textContent = formatTokens(block.tokensPerMinute * 60);
+			burnValue.textContent = paradisFormatTokens(block.tokensPerMinute * 60);
 			dom.append(burnValue, $('span.unit')).textContent = ' tok/h';
 			if (block.costPerHour !== undefined) {
-				dom.append(burnTile, $('.paradis-ccusage-stat-sub')).textContent = `≈ ${formatUsd(block.costPerHour)} / h`;
+				dom.append(burnTile, $('.paradis-ccusage-stat-sub')).textContent = `≈ ${paradisFormatUsd(block.costPerHour)} / h`;
 			}
 		} else {
 			burnValue.textContent = '—';
@@ -692,12 +692,12 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			: localize('paradis.ccusage.block.remaining', "残り{0}", formatDuration(remainingMinutes));
 		dom.append(scale, $('span')).textContent = formatClock(end);
 
-		appendBlockStat(card, localize('paradis.ccusage.block.cost', "ブロックのコスト"), formatUsd(block.costUSD));
+		appendBlockStat(card, localize('paradis.ccusage.block.cost', "ブロックのコスト"), paradisFormatUsd(block.costUSD));
 		if (block.projectedCost !== undefined) {
-			appendBlockStat(card, localize('paradis.ccusage.block.projectedCost', "予測コスト"), formatUsd(block.projectedCost));
+			appendBlockStat(card, localize('paradis.ccusage.block.projectedCost', "予測コスト"), paradisFormatUsd(block.projectedCost));
 		}
 		if (block.projectedTokens !== undefined) {
-			appendBlockStat(card, localize('paradis.ccusage.block.projectedTokens', "予測トークン数"), formatTokens(block.projectedTokens));
+			appendBlockStat(card, localize('paradis.ccusage.block.projectedTokens', "予測トークン数"), paradisFormatTokens(block.projectedTokens));
 		}
 	}
 
@@ -773,7 +773,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			line.style.stroke = i === 0 ? 'color-mix(in srgb, var(--vscode-foreground) 28%, transparent)' : 'color-mix(in srgb, var(--vscode-foreground) 10%, transparent)';
 			svg.appendChild(line);
 			const tick = svgEl(doc, 'text', { x: String(padL - 6), y: String(y(value) + 3), 'text-anchor': 'end', class: 'paradis-ccusage-axis-text' });
-			tick.textContent = this.metric === 'tokens' ? formatTokens(value) : `$${formatAxisNumber(value)}`;
+			tick.textContent = this.metric === 'tokens' ? paradisFormatTokens(value) : `$${formatAxisNumber(value)}`;
 			svg.appendChild(tick);
 		}
 
@@ -887,7 +887,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			line.style.stroke = i === 0 ? 'color-mix(in srgb, var(--vscode-foreground) 28%, transparent)' : 'color-mix(in srgb, var(--vscode-foreground) 10%, transparent)';
 			svg.appendChild(line);
 			const tick = svgEl(doc, 'text', { x: String(padL - 6), y: String(y(value) + 3), 'text-anchor': 'end', class: 'paradis-ccusage-axis-text' });
-			tick.textContent = formatTokens(value);
+			tick.textContent = paradisFormatTokens(value);
 			svg.appendChild(tick);
 		}
 		const labelEvery = Math.max(1, Math.ceil(34 / (plotW / Math.max(1, points.length - 1))));
@@ -916,7 +916,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			dot.style.stroke = 'var(--vscode-editorWidget-background, var(--vscode-editor-background))';
 			svg.appendChild(dot);
 			const endLabel = svgEl(doc, 'text', { x: String(x(last) - 7), y: String(y(points[last].io) - 8), 'text-anchor': 'end', class: 'paradis-ccusage-direct-label' });
-			endLabel.textContent = formatTokens(points[last].io);
+			endLabel.textContent = paradisFormatTokens(points[last].io);
 			svg.appendChild(endLabel);
 		}
 
@@ -936,8 +936,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			crosshair.setAttribute('x2', String(x(index)));
 			crosshair.setAttribute('visibility', 'visible');
 			this.showTooltip(e, points[index].tooltipLabel, [
-				{ color: accent, name: localize('paradis.ccusage.trend.io', "入力+出力"), value: formatTokens(points[index].io) },
-				{ name: localize('paradis.ccusage.trend.cacheRead', "キャッシュ読み取り"), value: formatTokens(points[index].cacheRead) },
+				{ color: accent, name: localize('paradis.ccusage.trend.io', "入力+出力"), value: paradisFormatTokens(points[index].io) },
+				{ name: localize('paradis.ccusage.trend.cacheRead', "キャッシュ読み取り"), value: paradisFormatTokens(points[index].cacheRead) },
 			]);
 		}));
 		this.bodyDisposables.add(dom.addDisposableListener(hover, dom.EventType.POINTER_LEAVE, () => {
@@ -1002,10 +1002,10 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		// 「その他」の合計が個別プロジェクトの最大値を超えることがあるため、スケールに含める
 		const maxCost = Math.max(0.01, ...top.map(p => p.cost), restCost);
 		top.forEach((project, index) => {
-			appendHBarRow(card, project.name, project.rawName, project.cost, maxCost, seq[Math.min(index, seq.length - 1)], formatUsd(project.cost));
+			appendHBarRow(card, project.name, project.rawName, project.cost, maxCost, seq[Math.min(index, seq.length - 1)], paradisFormatUsd(project.cost));
 		});
 		if (restCost > 0) {
-			appendHBarRow(card, localize('paradis.ccusage.projects.rest', "その他（{0}）", projects.length - MAX_PROJECT_ROWS), '', restCost, maxCost, seq[seq.length - 1], formatUsd(restCost));
+			appendHBarRow(card, localize('paradis.ccusage.projects.rest', "その他（{0}）", projects.length - MAX_PROJECT_ROWS), '', restCost, maxCost, seq[seq.length - 1], paradisFormatUsd(restCost));
 		}
 	}
 
@@ -1050,8 +1050,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 				dot.style.background = colorMap.get(model) ?? OTHER_COLOR;
 				dot.title = prettyModelName(model);
 			}
-			dom.append(row, $('td.num')).textContent = formatTokens(session.totalTokens);
-			dom.append(row, $('td.num')).textContent = formatUsd(session.totalCost);
+			dom.append(row, $('td.num')).textContent = paradisFormatTokens(session.totalTokens);
+			dom.append(row, $('td.num')).textContent = paradisFormatUsd(session.totalCost);
 			dom.append(row, $('td')).textContent = session.lastActivity !== undefined ? fromNow(session.lastActivity, true) : '—';
 		}
 	}
@@ -1166,7 +1166,7 @@ function prettyModelName(modelName: string): string {
 	return name;
 }
 
-function formatUsd(value: number): string {
+export function paradisFormatUsd(value: number): string {
 	if (value >= 1000) {
 		return `$${Math.round(value).toLocaleString('en-US')}`;
 	}
@@ -1178,7 +1178,7 @@ function totalTokensOf(t: { readonly inputTokens: number; readonly outputTokens:
 	return t.inputTokens + t.outputTokens + t.cacheCreationTokens + t.cacheReadTokens;
 }
 
-function formatTokens(value: number): string {
+export function paradisFormatTokens(value: number): string {
 	if (value >= 1e9) {
 		return `${(value / 1e9).toFixed(value >= 1e10 ? 0 : 1)}B`;
 	}

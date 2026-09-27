@@ -29,6 +29,7 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { ParadisSpaceUsageSection } from '../../agentActivity/electron-browser/paradisSpaceUsageSection.js';
 import { ParadisCcusageSection } from '../../ccusage/electron-browser/paradisCcusageSection.js';
 import { ParadisGithubMetricsSection } from '../../githubMetrics/electron-browser/paradisGithubMetricsSection.js';
 import { ParadisRtkSection } from '../../rtk/electron-browser/paradisRtkSection.js';
@@ -37,7 +38,7 @@ import { IParadisUsageSection } from './paradisUsageSection.js';
 const $ = dom.$;
 
 /** 開いた直後に見せるタブ。コマンド引数で指定できる。 */
-export type ParadisUsageDashboardTab = 'ccusage' | 'github' | 'rtk' | 'settings';
+export type ParadisUsageDashboardTab = 'ccusage' | 'spaces' | 'github' | 'rtk' | 'settings';
 
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.usage.title', "使用量・コスト");
@@ -55,6 +56,8 @@ const STR_NAV_CCUSAGE = localize('paradis.usage.navCcusage', "AI コスト");
 const STR_NAV_GITHUB = localize('paradis.usage.navGithub', "GitHub API");
 // allow-any-unicode-next-line
 const STR_NAV_RTK = localize('paradis.usage.navRtk', "rtk 節約");
+// allow-any-unicode-next-line
+const STR_NAV_SPACES = localize('paradis.usage.navSpaces', "スペース別");
 // allow-any-unicode-next-line
 const STR_NAV_SETTINGS = localize('paradis.usage.navSettings', "表示と取得元");
 // allow-any-unicode-next-line
@@ -75,6 +78,7 @@ interface IParadisUsageTabSpec {
 
 const TABS: readonly IParadisUsageTabSpec[] = [
 	{ id: 'ccusage', navLabel: STR_NAV_CCUSAGE, icon: Codicon.creditCard, caption: STR_NAV_CAPTION_USAGE },
+	{ id: 'spaces', navLabel: STR_NAV_SPACES, icon: Codicon.repo, caption: undefined },
 	{ id: 'github', navLabel: STR_NAV_GITHUB, icon: Codicon.github, caption: undefined },
 	{ id: 'rtk', navLabel: STR_NAV_RTK, icon: Codicon.zap, caption: undefined },
 	{ id: 'settings', navLabel: STR_NAV_SETTINGS, icon: Codicon.gear, caption: STR_NAV_CAPTION_SETTINGS },
@@ -224,6 +228,7 @@ export class ParadisUsageDashboardDialog extends Disposable {
 		this._addSection('ccusage', this._register(instantiationService.createInstance(ParadisCcusageSection)));
 		this._addSection('github', this._register(instantiationService.createInstance(ParadisGithubMetricsSection)));
 		this._addSection('rtk', this._register(instantiationService.createInstance(ParadisRtkSection)));
+		this._addSection('spaces', this._register(instantiationService.createInstance(ParadisSpaceUsageSection)));
 		this._buildSettingsPane(this._panes.get('settings')!);
 
 		modal.tabIndex = -1;
