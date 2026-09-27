@@ -120,6 +120,12 @@ export interface IParadisAgentApprovalRequest {
 	readonly approveLabel: string;
 	/** 2つ目の承認の選択肢（「別のページを選ぶ」など）。 */
 	readonly alternativeLabel?: string;
+	/**
+	 * 拒否の後の自動の断りを数える単位。無ければペイン単位（ページ共有・プロファイル）。
+	 * 付けると「そのペインの、この単位の求め」だけを止め、ペイン単位の断りにも数えられない
+	 * （モバイル端末の要求は端末ごとに数え、ページ共有は止めない）。
+	 */
+	readonly cooldownKey?: string;
 }
 
 export type ParadisAgentApprovalChoice = 'approve' | 'alternative';
@@ -178,6 +184,13 @@ export interface IParadisAgentBrowserTabsService {
 	askApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken): Promise<ParadisAgentApprovalOutcome>;
 
 	/**
+	 * {@link askApproval} を今呼んだら、ダイアログを出す前に断るか（自動の断りの間・同じペインの求めが答え待ち）。
+	 * 承認の前に重い下ごしらえ（インストールするものを写すなど）をする呼び出し側が、先に確かめるためのもの。
+	 * 判定は askApproval でもう一度行う。
+	 */
+	approvalBlock(token: string, cooldownKey?: string): 'recentlyDenied' | 'busy' | undefined;
+
+	/**
 	 * {@link bindTab} を締め切り付きで行う。締め切りまでに終われば結果、過ぎたら undefined を返し、
 	 * 後から共有が成立しても外す（時間切れと答えたエージェントのペインの共有先が黙って移らないように）。
 	 */
@@ -207,7 +220,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	private readonly _pendingRequests = new Set<string>();
 	/** 承認を待っているペイン（ページでもプロファイルでも、1ペインにつき1つ）。 */
 	private readonly _pendingApprovals = new Set<string>();
-	/** ペイン → この時刻までは求めを自動で断る。 */
+	/** ペイン（cooldownKey があれば「ペイン + その単位」）→ この時刻までは求めを自動で断る。 */
 	private readonly _deniedUntil = new Map<string, number>();
 	/** 承認ダイアログは1つずつ出す（重なると、1件目へのダブルクリックが2件目の承認に当たる）。 */
 	private readonly _approvalQueue = new Sequencer();
@@ -553,13 +566,22 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	 * （`monaco-dialog-modal-block` は overlayManager に登録済み）。fork の自前ダイアログ（z-index 2600〜2800）
 	 * が開いていてもその裏に隠れないよう、このダイアログの層だけ上げてある（media/paradisAgentApproval.css）。
 	 */
+	approvalBlock(token: string, cooldownKey?: string): 'recentlyDenied' | 'busy' | undefined {
+		const deniedUntil = this._deniedUntil.get(cooldownKey !== undefined ? `${token}\n${cooldownKey}` : token);
+		if (deniedUntil !== undefined && Date.now() < deniedUntil) {
+			return 'recentlyDenied';
+		}
+		return this._pendingApprovals.has(token) ? 'busy' : undefined;
+	}
+
 	async askApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken): Promise<ParadisAgentApprovalOutcome> {
-		const deniedUntil = this._deniedUntil.get(token);
+		const cooldownKey = request.cooldownKey !== undefined ? `${token}\n${request.cooldownKey}` : token;
+		const deniedUntil = this._deniedUntil.get(cooldownKey);
 		if (deniedUntil !== undefined) {
 			if (Date.now() < deniedUntil) {
 				return 'recentlyDenied';
 			}
-			this._deniedUntil.delete(token);
+			this._deniedUntil.delete(cooldownKey);
 		}
 		if (this._pendingApprovals.has(token)) {
 			return 'busy';
@@ -571,7 +593,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 				? Promise.resolve<ParadisAgentApprovalOutcome>('cancelled')
 				: this._showApproval(token, request, cancellation));
 			if (outcome === 'denied') {
-				this._deniedUntil.set(token, Date.now() + DENIAL_COOLDOWN_MS);
+				this._deniedUntil.set(cooldownKey, Date.now() + DENIAL_COOLDOWN_MS);
 			}
 			return outcome;
 		} finally {
