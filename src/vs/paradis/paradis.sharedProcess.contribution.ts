@@ -28,6 +28,8 @@ import { ParadisSharedProcessContributions } from './common/paradisProcessContri
 import './contrib/agentHookTrust/node/paradisCodexHookTrust.js';
 import './contrib/agentModelCatalog/node/paradisAgentModelCatalog.js';
 
+import './contrib/agentActivity/node/paradisAgentActivityChannel.js';
+
 /**
  * 登録済みの shared process 向け contribution をすべて呼ぶ。
  * `accessor` は `invokeFunction` の中のものを渡すこと（同期的にしか使えない）。

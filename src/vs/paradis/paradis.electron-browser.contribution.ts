@@ -50,6 +50,7 @@ import './contrib/usageDashboard/electron-browser/paradisUsageDashboard.contribu
 import './contrib/ccusage/electron-browser/paradisCcusage.contribution.js';
 import './contrib/rtk/electron-browser/paradisRtk.contribution.js';
 import './contrib/sessionResume/electron-browser/paradisSessionResume.contribution.js';
+import './contrib/agentActivity/electron-browser/paradisSessionIndex.contribution.js';
 import './contrib/githubMetrics/electron-browser/paradisGithubMetrics.contribution.js';
 import './contrib/codexTerminalTitle/electron-browser/paradisCodexTerminalTitle.contribution.js';
 import './contrib/agentLiveWindow/electron-browser/paradisAgentLiveWindow.contribution.js';
