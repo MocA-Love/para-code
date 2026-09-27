@@ -15,7 +15,6 @@
 //
 // SSH の接続先を開いているウィンドウでは何もしない（選択はこの PC のホームを指すため）。
 
-import './paradisCodexAccountCard.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
