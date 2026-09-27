@@ -43,6 +43,7 @@ import {
 	ParadisScheduledRunReason,
 	PARADIS_SCHEDULED_RUN_HEARTBEAT_MS,
 	PARADIS_SCHEDULED_RUN_TIMEOUT_MS,
+	paradisScheduledRunLaunchPrompt,
 	paradisScheduledRunReasonLabel,
 } from '../common/paradisScheduledRuns.js';
 import { IParadisRunWatchState, PARADIS_RUN_WATCH_INITIAL, paradisAdvanceRunWatch, paradisRunWatchTimeoutReason } from '../common/paradisScheduledRunWatch.js';
@@ -154,7 +155,8 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 	}
 
 	private async execute(request: IParadisScheduledRunRequest): Promise<void> {
-		const { definition } = request;
+		// 指示は打鍵されるコマンドの一部になるので、制御文字を落として 1 行にしてから渡す
+		const definition = { ...request.definition, prompt: paradisScheduledRunLaunchPrompt(request.definition.prompt) };
 		const run: IActiveRun = {
 			runId: request.run.id,
 			definition,
@@ -317,10 +319,30 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 	}
 
 	private sendHeartbeat(): void {
-		const ids = [...this.active.keys()];
-		if (ids.length > 0) {
-			this.client.heartbeat(ids).catch(error => this.logService.warn('[ParadisScheduledRuns] heartbeat failed', error));
+		// 制限時間は壁時計でも確かめる。setTimeout はスリープ中に進まないので、復帰後に
+		// 実時間で 30 分を超えて動き続けないようにする
+		const now = Date.now();
+		for (const run of [...this.active.values()]) {
+			if (now - run.startedAt >= PARADIS_SCHEDULED_RUN_TIMEOUT_MS) {
+				this.onTimeout(run);
+			}
 		}
+		const ids = [...this.active.keys()];
+		if (ids.length === 0) {
+			return;
+		}
+		this.client.heartbeat(ids).then(rejected => {
+			// shared process がもう動いていないとみなした実行は、こちらでも止める（報告は受け付けられないので送らない）
+			for (const runId of rejected ?? []) {
+				const run = this.active.get(runId);
+				if (run && !run.finished) {
+					this.logService.warn('[ParadisScheduledRuns] the shared process no longer tracks this run; stopping it');
+					run.finished = true;
+					this.killTerminal(run.instance);
+					this.cleanup(run);
+				}
+			}
+		}, error => this.logService.warn('[ParadisScheduledRuns] heartbeat failed', error));
 	}
 
 	override dispose(): void {

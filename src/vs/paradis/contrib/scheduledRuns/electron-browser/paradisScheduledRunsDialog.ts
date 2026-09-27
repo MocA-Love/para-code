@@ -29,7 +29,7 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { IParadisCcusageSessionRow, PARADIS_CCUSAGE_CHANNEL } from '../../ccusage/common/paradisCcusage.js';
-import { PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH, paradisCcusageDateArg } from '../../ccusage/electron-browser/paradisCcusageClient.js';
+import { FETCH_WINDOW_DAYS, PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH, paradisCcusageDateArg } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentCommandTemplate } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { PARADIS_REMOVE_WORKTREE_COMMAND_ID } from '../../workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';
@@ -64,8 +64,6 @@ const $ = dom.$;
 
 /** 履歴に出す件数。 */
 const HISTORY_ROWS = 30;
-/** ccusage の取得範囲（使用量ダッシュボードと同じにしてキャッシュを分け合う）。 */
-const CCUSAGE_WINDOW_DAYS = 90;
 
 type ScheduleKind = ParadisSchedulePreset['kind'];
 
@@ -537,8 +535,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		const section = dom.append(this.content, $('.psr-section'));
 		dom.append(section, $('h4')).textContent = localize('paradis.scheduledRuns.cleanup', "片付け候補のスペース");
 		dom.append(section, $('.psr-muted')).textContent = localize('paradis.scheduledRuns.cleanupDesc', "この定期実行が作ったスペースのうち、新しい {0} 件より古いものです。自動では消しません。", PARADIS_SCHEDULED_RUN_KEEP_SPACES);
-		const candidates = paradisCleanupCandidateSpaces(definition.id, this.state?.runs ?? []);
-		const alive = candidates.filter(run => run.space && this.findWorktree(run.space.stateKey));
+		const alive = paradisCleanupCandidateSpaces(definition.id, this.state?.runs ?? [], space => this.findWorktree(space.stateKey) !== undefined);
 		if (alive.length === 0) {
 			dom.append(section, $('.psr-muted')).textContent = localize('paradis.scheduledRuns.cleanupEmpty', "今はありません。");
 			return;
@@ -636,7 +633,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		this.usageRequested = true;
 		const executablePath = this.configurationService.getValue<string>(PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH);
 		const since = new Date();
-		since.setDate(since.getDate() - (CCUSAGE_WINDOW_DAYS - 1));
+		since.setDate(since.getDate() - (FETCH_WINDOW_DAYS - 1));
 		const options = {
 			...(typeof executablePath === 'string' && executablePath.trim() ? { executablePath: executablePath.trim() } : {}),
 			since: paradisCcusageDateArg(since),

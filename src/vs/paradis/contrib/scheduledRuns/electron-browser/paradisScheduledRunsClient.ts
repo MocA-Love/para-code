@@ -42,7 +42,8 @@ export interface IParadisScheduledRunsClient {
 	getPendingRequests(): Promise<IParadisScheduledRunRequest[]>;
 	claim(runId: string): Promise<IParadisScheduledRunRequest | undefined>;
 	report(report: IParadisScheduledRunReport): Promise<boolean>;
-	heartbeat(runIds: readonly string[]): Promise<void>;
+	/** 受け付けられなかった実行の id を返す（もう終わった・不明にされたもの）。 */
+	heartbeat(runIds: readonly string[]): Promise<string[]>;
 }
 
 class ParadisScheduledRunsClient implements IParadisScheduledRunsClient {
@@ -71,7 +72,7 @@ class ParadisScheduledRunsClient implements IParadisScheduledRunsClient {
 	getPendingRequests(): Promise<IParadisScheduledRunRequest[]> { return this.channel.call('getPendingRequests'); }
 	claim(runId: string): Promise<IParadisScheduledRunRequest | undefined> { return this.channel.call('claim', [runId]); }
 	report(report: IParadisScheduledRunReport): Promise<boolean> { return this.channel.call('report', [report]); }
-	heartbeat(runIds: readonly string[]): Promise<void> { return this.channel.call('heartbeat', [runIds]); }
+	heartbeat(runIds: readonly string[]): Promise<string[]> { return this.channel.call('heartbeat', [runIds]); }
 }
 
 registerSingleton(IParadisScheduledRunsClient, ParadisScheduledRunsClient, InstantiationType.Delayed);
