@@ -80,9 +80,12 @@ class ParadisCsvViewerResolverContribution implements IWorkbenchContribution {
 				{
 					id: PARADIS_CSV_EDITOR_ID,
 					label: CSV_VIEWER_LABEL,
-					// exclusive: 他の fork ビューア（Markdown / Excel）と同じく、拡張機能の custom editor や
-					// 残っている editorAssociations より確実に優先させる。テキストに戻したい場合は設定で切る。
-					priority: RegisteredEditorPriority.exclusive
+					// default（Markdown / Excel ビューアの exclusive とは意図的に変えている）。CSV はテキストエディタや
+					// 拡張機能（Rainbow CSV 等）で扱う利用者が多いため、次の 2 つを本家どおりに残す:
+					// - ユーザーの `workbench.editorAssociations`（例 `"*.csv": "default"`）が表より優先される
+					// - 拡張機能の `showTextDocument`（EXCLUSIVE_ONLY で開く）はテキストエディタで開く
+					// 組み込みのテキストエディタ（builtin）よりは優先されるので、何も設定していなければ表で開く。
+					priority: RegisteredEditorPriority.default
 				},
 				{
 					canSupportResource: resource =>
