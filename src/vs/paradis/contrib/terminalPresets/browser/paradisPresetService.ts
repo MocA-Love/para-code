@@ -64,6 +64,7 @@ import {
 	paradisBuildInsertCommandsText,
 	paradisAgentPromptAvailability,
 	ParadisAgentPromptAvailability,
+	paradisThrowIfAgentAwaitingAnswer,
 } from '../common/paradisTerminalPresets.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
@@ -1108,8 +1109,9 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		}
 		await this._waitForTerminalProcess(instance);
 		// 待っている間に状態が変わりうるので、送る直前に確かめる。エージェントが許可・質問の回答を
-		// 待っている相手へ入れると、先頭の文字が選択肢の操作として食われる（許可してしまうことがある）
-		this._throwIfAwaitingAnswer(instance);
+		// 待っている相手へ入れると、先頭の文字が選択肢の操作として食われる（許可してしまうことがある）。
+		// 入れるのはコマンドなので、エージェント向けの「プロンプト」とは別の文言にする
+		paradisThrowIfAgentAwaitingAnswer(this.agentStatusStore, instance.instanceId, true, STR_INSERT_AWAITING);
 		// 改行は常に残さない（1行にまとめて入れる。Enter として届く経路を作らない）
 		const text = paradisBuildInsertCommandsText(preset.prompt ?? '', instance.shellType);
 		options?.onDidStart?.();
@@ -1117,18 +1119,6 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			await instance.sendText(text, false, true);
 		}
 		instance.focus(true);
-	}
-
-	/**
-	 * そのターミナルのエージェントが許可・質問の回答を待っているなら、入れずに理由を投げる。
-	 * 「挿入だけ」のプリセット用。入れるのはコマンドなので、エージェント向けの「プロンプト」とは
-	 * 別の文言にする。
-	 */
-	private _throwIfAwaitingAnswer(instance: ITerminalInstance): void {
-		if (this.agentStatusStore.isAgentInstance(instance.instanceId)
-			&& paradisAgentPromptAvailability(true, true, this.agentStatusStore.getInstanceStatus(instance.instanceId)) === ParadisAgentPromptAvailability.AwaitingAnswer) {
-			throw new Error(STR_INSERT_AWAITING);
-		}
 	}
 
 	/**

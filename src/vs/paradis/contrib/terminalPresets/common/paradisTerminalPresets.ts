@@ -18,6 +18,7 @@ import { localize } from '../../../../nls.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { GeneralShellType, ITerminalEnvironment, TerminalShellType } from '../../../../platform/terminal/common/terminal.js';
 import { paradisSshHostFromAuthority } from '../../../common/paradisHostPath.js';
+import { IParadisAgentStatusStore } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
 /** ワークスペースフォルダ直下で認識する設定ファイル名。 */
 export const PARADIS_WORKSPACE_PRESET_FILE = '.paracode.json';
@@ -882,6 +883,32 @@ export function paradisAgentPromptAvailability(hasTerminal: boolean, isAgent: bo
 		return ParadisAgentPromptAvailability.AwaitingAnswer;
 	}
 	return ParadisAgentPromptAvailability.Ready;
+}
+
+/**
+ * 送る直前に、そのターミナルのエージェントが質問・許可の回答を待っていないか確かめ、待っていれば
+ * `message` を投げる。入れた先頭の文字が選択肢の操作として食われる（許可してしまうことがある）ため。
+ * 状態を読んでから送るまでの間に await を挟まないこと。
+ *
+ * `requireAgentInstance` は、hook の実績がある（`isAgentInstance`）ペインだけを見るか。
+ * 状態は hook を送らないエージェント（Codex 等）でも transcript から届くので、`false` なら
+ * hook の実績が無いペインでも回答待ちなら止める。
+ *  - プリセットの「挿入だけ」は `true`（入れる相手はシェルのこともあるので、hook で
+ *    エージェントと分かったときだけ止める）
+ *  - Design Mode は `false`（送り先はエージェントのペインに限っており、届いた状態はすべて使う）
+ */
+export function paradisThrowIfAgentAwaitingAnswer(
+	statusStore: Pick<IParadisAgentStatusStore, 'isAgentInstance' | 'getInstanceStatus'>,
+	instanceId: number,
+	requireAgentInstance: boolean,
+	message: string,
+): void {
+	if (requireAgentInstance && !statusStore.isAgentInstance(instanceId)) {
+		return;
+	}
+	if (paradisAgentPromptAvailability(true, true, statusStore.getInstanceStatus(instanceId)) === ParadisAgentPromptAvailability.AwaitingAnswer) {
+		throw new Error(message);
+	}
 }
 
 /**
