@@ -1,0 +1,893 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments) */
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * デスクトップのチャット表示（agentChat）。エディタエリアのターミナルタブの overflow guard
+ * （`.terminal-overflow-guard.terminal-editor`、position: relative）を丸ごと覆う。
+ *
+ * - 重なり: xterm の層（最大 ~30）と検索ウィジェット（~33）より上、共有ドットとキャッシュの残り時間
+ *   （35）より下の 34。ワークベンチのモーダル（2575）には届かない
+ * - ウィンドウの透過（既定オン）では、ターミナルと同じく背景を塗らず、下のターミナルの画面は隠す
+ *   （透けて文字が重ならないように）
+ * - セレクタは `.monaco-workbench .terminal-overflow-guard.terminal-editor` から書き、upstream の
+ *   ターミナルの規則（`.monaco-workbench .terminal-editor ...`）より詳細度を高くしてある
+ */
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-agent-chat-active > .terminal-wrapper {
+	visibility: hidden;
+}
+
+/* チャットの間は、復元したタブのバナーを出さない（ターミナルに戻れば出る）。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-agent-chat-active > .paradis-terminal-resume-banner {
+	display: none;
+}
+
+/* 共有ドットとキャッシュの残り時間は、チャットの見出しの行の高さの中央に合わせる。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-agent-chat-active > .paradis-pane-indicator,
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-agent-chat-active .paradis-prompt-cache-badge {
+	top: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-agent-chat {
+	position: absolute;
+	inset: 0;
+	z-index: 34;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	min-height: 0;
+	color: var(--vscode-terminal-foreground, var(--vscode-foreground));
+	background-color: var(--vscode-terminal-background, var(--vscode-editor-background));
+	font-size: var(--vscode-fontSize-body1);
+	line-height: 1.5;
+}
+
+.monaco-workbench.paradis-transparent .terminal-overflow-guard.terminal-editor > .paradis-agent-chat {
+	background-color: transparent;
+}
+
+/* ---- 見出し ---- */
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-agent-chat > .paradis-agent-chat-header {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	min-height: 32px;
+	/* 右上の共有ドット（right 6px・幅 16px）とキャッシュの残り時間（right 26px から左へ伸びる）の分を空ける。 */
+	padding: 0 calc(var(--vscode-spacing-size400) * 2 + var(--vscode-spacing-size160)) 0 var(--vscode-spacing-size120);
+	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-header-agent {
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-header-model {
+	padding: 0 var(--vscode-spacing-size60);
+	border-radius: var(--vscode-cornerRadius-circle);
+	color: var(--vscode-badge-foreground);
+	background-color: var(--vscode-badge-background);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-header-status {
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-header-status.attention {
+	color: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow));
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-header-spacer {
+	flex: 1;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-back {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	height: 24px;
+	padding: 0 var(--vscode-spacing-size80);
+	color: var(--vscode-descriptionForeground);
+	background: none;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small);
+	font: inherit;
+	cursor: pointer;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-back:hover {
+	color: var(--vscode-foreground);
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-back > .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+/* ---- 会話の一覧 ---- */
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-body {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-scroll {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding: var(--vscode-spacing-size120) var(--vscode-spacing-size160);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	max-width: 880px;
+	margin: 0 auto;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-fallback,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-live-holder {
+	margin-top: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-notice {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	text-align: center;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-message.user {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-bubble {
+	max-width: min(80%, 640px);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	border-radius: var(--vscode-cornerRadius-large);
+	background-color: var(--vscode-chat-requestBubbleBackground, var(--vscode-editorWidget-background));
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-plain {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-message.peer {
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, transparent);
+	border-radius: var(--vscode-cornerRadius-medium);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-peer-name {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+/* アシスタントの発言（Markdown） */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown {
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown p {
+	margin: 0 0 var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown > div > :last-child,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown p:last-child {
+	margin-bottom: 0;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown ul,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown ol {
+	margin: 0 0 var(--vscode-spacing-size80);
+	padding-left: var(--vscode-spacing-size240);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown code {
+	font-family: var(--monaco-monospace-font);
+	font-size: 0.92em;
+	padding: 0 var(--vscode-spacing-size20);
+	border-radius: var(--vscode-cornerRadius-xSmall);
+	background-color: var(--vscode-textPreformat-background);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown pre {
+	margin: 0 0 var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	border-radius: var(--vscode-cornerRadius-medium);
+	background-color: var(--vscode-textCodeBlock-background);
+	overflow-x: auto;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown pre code {
+	padding: 0;
+	background: none;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown a {
+	color: var(--vscode-textLink-foreground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown table {
+	border-collapse: collapse;
+	margin: 0 0 var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown th,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown td {
+	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size80);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
+}
+
+/* ---- ツールの行・考えた内容 ---- */
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+	min-width: 0;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step-row {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	width: 100%;
+	min-width: 0;
+	min-height: 24px;
+	padding: 0 var(--vscode-spacing-size60);
+	color: var(--vscode-descriptionForeground);
+	background: none;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small);
+	font: inherit;
+	font-size: var(--vscode-fontSize-label1);
+	text-align: left;
+	cursor: pointer;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step-row.static {
+	cursor: default;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor button.paradis-agent-chat-step-row:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step-row > .codicon {
+	flex: none;
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step.done .paradis-agent-chat-step-status {
+	color: var(--vscode-charts-green);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step.failed .paradis-agent-chat-step-status {
+	color: var(--vscode-errorForeground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step-label {
+	flex: none;
+	color: var(--vscode-foreground);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step-namespace {
+	flex: none;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step-arg {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--monaco-monospace-font);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step-meta {
+	flex: none;
+	font-variant-numeric: tabular-nums;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+	padding-left: var(--vscode-spacing-size240);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step-caption {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step-detail {
+	margin: 0 0 0 var(--vscode-spacing-size240);
+	max-height: 320px;
+	padding: var(--vscode-spacing-size80);
+	overflow: auto;
+	border-radius: var(--vscode-cornerRadius-medium);
+	background-color: var(--vscode-textCodeBlock-background);
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step-body .paradis-agent-chat-step-detail {
+	margin-left: 0;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-link {
+	align-self: flex-start;
+	padding: 0;
+	color: var(--vscode-textLink-foreground);
+	background: none;
+	border: none;
+	font: inherit;
+	font-size: var(--vscode-fontSize-label1);
+	cursor: pointer;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-link:disabled {
+	color: var(--vscode-disabledForeground);
+	cursor: default;
+}
+
+/* ---- 差分カード ---- */
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff {
+	display: flex;
+	flex-direction: column;
+	margin-left: var(--vscode-spacing-size240);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
+	border-radius: var(--vscode-cornerRadius-medium);
+	overflow: hidden;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-header {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+	background-color: var(--vscode-editorWidget-background);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-path {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	direction: rtl;
+	text-align: left;
+	font-family: var(--monaco-monospace-font);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-added {
+	color: var(--vscode-chat-linesAddedForeground, var(--vscode-charts-green));
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-removed {
+	color: var(--vscode-chat-linesRemovedForeground, var(--vscode-charts-red));
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-body {
+	overflow-x: auto;
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-row {
+	display: flex;
+	min-width: max-content;
+	white-space: pre;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-row.add {
+	background-color: var(--vscode-diffEditor-insertedLineBackground, var(--vscode-diffEditor-insertedTextBackground));
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-row.del {
+	background-color: var(--vscode-diffEditor-removedLineBackground, var(--vscode-diffEditor-removedTextBackground));
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-row.hunk {
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-sign {
+	flex: none;
+	width: 20px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground);
+	user-select: none;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-text {
+	padding-right: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-diff-toggle {
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+}
+
+/* ---- 画像 ---- */
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-images {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size80);
+	margin-top: var(--vscode-spacing-size40);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-image {
+	max-width: 240px;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-image.zoomed {
+	max-width: 100%;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-image > img {
+	display: block;
+	max-width: 100%;
+	max-height: 240px;
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, transparent);
+	border-radius: var(--vscode-cornerRadius-medium);
+	cursor: zoom-in;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-image.zoomed > img {
+	max-height: none;
+	cursor: zoom-out;
+}
+
+/* ---- 質問・許可の確認のカード ---- */
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size120);
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	background-color: var(--vscode-editorWidget-background);
+	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: var(--vscode-cornerRadius-large);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card-title {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card.approval .paradis-agent-chat-card-title > .codicon,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card.question .paradis-agent-chat-card-title > .codicon {
+	color: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow));
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card-detail {
+	margin: 0;
+	max-height: 240px;
+	padding: var(--vscode-spacing-size80);
+	overflow: auto;
+	border-radius: var(--vscode-cornerRadius-medium);
+	background-color: var(--vscode-textCodeBlock-background);
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card-answer {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card-footer {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card-note {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card-footer.error .paradis-agent-chat-card-note {
+	color: var(--vscode-errorForeground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-primary,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-secondary,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-send {
+	height: 26px;
+	padding: 0 var(--vscode-spacing-size120);
+	border: var(--vscode-strokeThickness) solid var(--vscode-button-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small);
+	font: inherit;
+	font-size: var(--vscode-fontSize-label1);
+	cursor: pointer;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-primary,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-send {
+	color: var(--vscode-button-foreground);
+	background-color: var(--vscode-button-background);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-primary:hover:not(:disabled),
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-send:hover:not(:disabled) {
+	background-color: var(--vscode-button-hoverBackground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-secondary {
+	color: var(--vscode-button-secondaryForeground);
+	background-color: var(--vscode-button-secondaryBackground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-secondary:hover:not(:disabled) {
+	background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-primary:disabled,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-secondary:disabled,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-send:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question-header {
+	align-self: flex-start;
+	padding: 0 var(--vscode-spacing-size60);
+	border-radius: var(--vscode-cornerRadius-circle);
+	color: var(--vscode-badge-foreground);
+	background-color: var(--vscode-badge-background);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question-text {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question-steps {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size40);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question-step {
+	height: 22px;
+	padding: 0 var(--vscode-spacing-size80);
+	color: var(--vscode-descriptionForeground);
+	background: none;
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, transparent);
+	border-radius: var(--vscode-cornerRadius-circle);
+	font: inherit;
+	font-size: var(--vscode-fontSize-label2);
+	cursor: pointer;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question-step.done {
+	color: var(--vscode-foreground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question-step.active {
+	color: var(--vscode-foreground);
+	border-color: var(--vscode-focusBorder);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question-options {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question-options.readonly {
+	flex-direction: row;
+	flex-wrap: wrap;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-chip {
+	padding: 0 var(--vscode-spacing-size80);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, transparent);
+	border-radius: var(--vscode-cornerRadius-circle);
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-option {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--vscode-spacing-size20) var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size100);
+	color: var(--vscode-foreground);
+	background: none;
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-input-border, transparent));
+	border-radius: var(--vscode-cornerRadius-medium);
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-option:hover:not(:disabled) {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-option.selected {
+	border-color: var(--vscode-focusBorder);
+	background-color: var(--vscode-list-activeSelectionBackground);
+	color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-option > .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-option-description {
+	flex-basis: 100%;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question-other {
+	display: flex;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-other-input {
+	flex: 1;
+	min-width: 0;
+	height: 26px;
+	padding: 0 var(--vscode-spacing-size80);
+	color: var(--vscode-input-foreground);
+	background-color: var(--vscode-input-background);
+	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small);
+	font: inherit;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-other-input:focus {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* ---- 生成中の吹き出し ---- */
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-live {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-live[data-phase='message'] {
+	color: inherit;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-live-line {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-live-line > .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-live-clock {
+	font-variant-numeric: tabular-nums;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-live-detail {
+	padding-left: var(--vscode-spacing-size200);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-jump {
+	position: absolute;
+	right: var(--vscode-spacing-size160);
+	bottom: var(--vscode-spacing-size80);
+	display: none;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	height: 24px;
+	padding: 0 var(--vscode-spacing-size100);
+	color: var(--vscode-button-secondaryForeground);
+	background-color: var(--vscode-button-secondaryBackground);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, transparent);
+	border-radius: var(--vscode-cornerRadius-circle);
+	box-shadow: 0 0 8px 2px var(--vscode-widget-shadow);
+	font: inherit;
+	font-size: var(--vscode-fontSize-label1);
+	cursor: pointer;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-jump.visible {
+	display: inline-flex;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-jump > .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+/* ---- 入力欄 ---- */
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer {
+	position: relative;
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size160) var(--vscode-spacing-size120);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-notice {
+	display: none;
+	max-width: 880px;
+	width: 100%;
+	margin: 0 auto;
+	color: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow));
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-notice.visible {
+	display: block;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-box {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+	max-width: 880px;
+	width: 100%;
+	margin: 0 auto;
+	box-sizing: border-box;
+	padding: var(--vscode-spacing-size80);
+	background-color: var(--vscode-input-background);
+	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, var(--vscode-widget-border, transparent));
+	border-radius: var(--vscode-cornerRadius-large);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-box:focus-within {
+	border-color: var(--vscode-focusBorder);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-input {
+	width: 100%;
+	min-height: 20px;
+	padding: 0;
+	resize: none;
+	color: var(--vscode-input-foreground);
+	background: none;
+	border: none;
+	outline: none;
+	font: inherit;
+	line-height: 1.5;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-input::placeholder {
+	color: var(--vscode-input-placeholderForeground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-footer {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-hint {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-send {
+	height: 24px;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-slash-menu {
+	position: absolute;
+	left: 50%;
+	bottom: 100%;
+	transform: translateX(-50%);
+	width: min(880px, calc(100% - 32px));
+	max-height: 260px;
+	box-sizing: border-box;
+	padding: var(--vscode-spacing-size40);
+	overflow-y: auto;
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	background-color: var(--vscode-editorWidget-background);
+	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: var(--vscode-cornerRadius-large);
+	box-shadow: 0 0 8px 2px var(--vscode-widget-shadow);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-slash-item {
+	display: flex;
+	align-items: baseline;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+	border-radius: var(--vscode-cornerRadius-small);
+	font-size: var(--vscode-fontSize-label1);
+	cursor: pointer;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-slash-item.selected {
+	color: var(--vscode-quickInputList-focusForeground, var(--vscode-list-activeSelectionForeground));
+	background-color: var(--vscode-quickInputList-focusBackground, var(--vscode-list-activeSelectionBackground));
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-slash-name {
+	flex: none;
+	font-family: var(--monaco-monospace-font);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-slash-args {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+	font-family: var(--monaco-monospace-font);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-slash-description {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* 高コントラストのテーマでは、枠の色で区切る。 */
+.monaco-workbench.hc-black .terminal-overflow-guard.terminal-editor .paradis-agent-chat-bubble,
+.monaco-workbench.hc-light .terminal-overflow-guard.terminal-editor .paradis-agent-chat-bubble {
+	border: var(--vscode-strokeThickness) solid var(--vscode-contrastBorder);
+}
