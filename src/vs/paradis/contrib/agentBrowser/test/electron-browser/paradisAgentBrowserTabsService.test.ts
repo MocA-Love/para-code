@@ -2,18 +2,20 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as assert from 'assert';
+import { mainWindow } from '../../../../../base/browser/window.js';
 import { timeout } from '../../../../../base/common/async.js';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
+import { isMacintosh } from '../../../../../base/common/platform.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IDialogService, IPrompt } from '../../../../../platform/dialogs/common/dialogs.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IQuickInputService } from '../../../../../platform/quickinput/common/quickInput.js';
+import { BrowserEditorInput } from '../../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
@@ -29,13 +31,20 @@ interface IShownPrompt {
 	readonly hasCancelButton: boolean;
 }
 
-/** 押すボタンの位置（undefined は Esc / 閉じる）と、押すまでにかかる時間（ms）。 */
+/** The button the fake user presses (undefined = Escape / close), how long they take, and whether they use Cmd+D. */
 interface IAnswer {
 	readonly button: number | undefined;
 	readonly afterMs: number;
+	readonly viaCommandD?: boolean;
 }
 
-function createService(answers: IAnswer[]) {
+interface IFakeBinding {
+	pageId: string | undefined;
+	unbinds: number;
+	resolveBind?: (bound: boolean) => void;
+}
+
+function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: undefined, unbinds: 0 }) {
 	const shown: IShownPrompt[] = [];
 	const dialogService = {
 		prompt: async (prompt: IPrompt<unknown>) => {
@@ -47,6 +56,9 @@ function createService(answers: IAnswer[]) {
 			});
 			const answer = answers.shift() ?? { button: undefined, afterMs: 0 };
 			await timeout(answer.afterMs);
+			if (answer.viaCommandD) {
+				mainWindow.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', metaKey: true }));
+			}
 			if (prompt.token?.isCancellationRequested || answer.button === undefined) {
 				return { result: undefined };
 			}
@@ -55,9 +67,13 @@ function createService(answers: IAnswer[]) {
 	} as unknown as IDialogService;
 	const bindingModel = {
 		getPanes: () => [{ token: 'pane-token', title: 'cla\u202eude \u001b[31m' }],
+		getBindingForToken: () => binding.pageId === undefined ? undefined : { pageId: binding.pageId },
+		bindPageToPane: () => new Promise<boolean>(resolve => binding.resolveBind = resolve),
+		unbindToken: async () => { binding.unbinds++; binding.pageId = undefined; },
 	} as unknown as IParadisAgentBrowserBindingModel;
 	const paneTokenService = { getInstanceForToken: () => 7 } as unknown as IParadisPaneTokenService;
 	const terminalScopeService = { getStateKeyForInstance: () => 'repo-1' } as unknown as IParadisTerminalScopeService;
+	const browserScopeService = { resolveScope: () => ({ kind: 'managed' }) } as unknown as IParadisBrowserScopeService;
 	const workspaceSwitchService = { repositories: [{ id: 'repo-1', name: 'app' }] } as unknown as IParadisWorkspaceSwitchService;
 	const worktreeService = { getWorktrees: () => [] } as unknown as IParadisWorktreeService;
 	const service = new ParadisAgentBrowserTabsService(
@@ -67,7 +83,7 @@ function createService(answers: IAnswer[]) {
 		bindingModel,
 		paneTokenService,
 		terminalScopeService,
-		{} as IParadisBrowserScopeService,
+		browserScopeService,
 		workspaceSwitchService,
 		worktreeService,
 		{} as IParadisAuxiliaryWindowScopeService,
@@ -75,7 +91,7 @@ function createService(answers: IAnswer[]) {
 		{} as IQuickInputService,
 		new NullLogService(),
 	);
-	return { service, shown };
+	return { service, shown, binding };
 }
 
 const request: IParadisAgentApprovalRequest = {
@@ -84,43 +100,81 @@ const request: IParadisAgentApprovalRequest = {
 	approveLabel: 'Share',
 };
 
+const fakedTimers = { useFakeTimers: true, maxTaskCount: 100_000 };
+
 suite('ParadisAgentBrowserTabsService approval', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('puts Deny first (the default focus), has no separate cancel button, and names the pane safely', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+	test('puts Deny first (the default focus), has no separate cancel button, and names the pane safely', () => runWithFakedTimers(fakedTimers, async () => {
 		const { service, shown } = createService([{ button: 1, afterMs: 1500 }]);
 		store.add(service);
 		const cts = store.add(new CancellationTokenSource());
-		const choice = await service.askApproval('pane-token', request, cts.token);
+		const outcome = await service.askApproval('pane-token', request, cts.token);
 		assert.deepStrictEqual(
-			[choice, shown.map(prompt => [prompt.message, prompt.labels, prompt.hasCancelButton])],
-			['approve', [['\u300ccla ude [31m\u300d\uff08\u30bf\u30fc\u30df\u30ca\u30eb 7\u30fb\u30b9\u30da\u30fc\u30b9\u300capp\u300d\uff09 wants the page', ['\u62d2\u5426(&&D)', 'Share'], false]]],
+			[outcome, shown.map(prompt => [prompt.message, prompt.labels, prompt.hasCancelButton])],
+			['approve', [['\u300ccla ude [31m\u300d\uff08\u30bf\u30fc\u30df\u30ca\u30eb 7\u30fb\u30b9\u30da\u30fc\u30b9\u300capp\u300d\uff09 wants the page', ['\u62d2\u5426', 'Share'], false]]],
 		);
 	}));
 
-	test('asks again when approval comes right after the dialog appears', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
-		const { service, shown } = createService([{ button: 1, afterMs: 100 }, { button: 1, afterMs: 1500 }]);
-		store.add(service);
+	test('asks again when approval comes right after the dialog appears, and gives up after three fast answers', () => runWithFakedTimers(fakedTimers, async () => {
+		const slow = createService([{ button: 1, afterMs: 100 }, { button: 1, afterMs: 1500 }]);
+		const fast = createService([{ button: 1, afterMs: 100 }, { button: 1, afterMs: 100 }, { button: 1, afterMs: 100 }]);
+		store.add(slow.service);
+		store.add(fast.service);
 		const cts = store.add(new CancellationTokenSource());
-		const choice = await service.askApproval('pane-token', request, cts.token);
-		assert.deepStrictEqual([choice, shown.length, shown[0].detail === 'detail', shown[1].detail?.endsWith('detail')], ['approve', 2, true, true]);
+		assert.deepStrictEqual([
+			await slow.service.askApproval('pane-token', request, cts.token),
+			slow.shown.length,
+			slow.shown[1].detail?.endsWith('detail'),
+			await fast.service.askApproval('pane-token', request, cts.token),
+			fast.shown.length,
+		], ['approve', 2, true, 'unanswered', 3]);
 	}));
 
-	test('treats Deny, Escape and cancellation as a refusal', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
-		const denied = createService([{ button: 0, afterMs: 1500 }]);
+	test('treats Deny and Escape as a refusal, and refuses the same pane for a while afterwards', () => runWithFakedTimers(fakedTimers, async () => {
+		const denied = createService([{ button: 0, afterMs: 1500 }, { button: 1, afterMs: 1500 }]);
 		const escaped = createService([{ button: undefined, afterMs: 1500 }]);
-		const cancelled = createService([{ button: 1, afterMs: 1500 }]);
 		store.add(denied.service);
 		store.add(escaped.service);
-		store.add(cancelled.service);
+		const cts = store.add(new CancellationTokenSource());
+		assert.deepStrictEqual([
+			await denied.service.askApproval('pane-token', request, cts.token),
+			await denied.service.askApproval('pane-token', request, cts.token),
+			denied.shown.length,
+			await escaped.service.askApproval('pane-token', request, cts.token),
+		], ['denied', 'recentlyDenied', 1, 'denied']);
+	}));
+
+	test('reports cancellation, and refuses a second request from a pane that is still waiting', () => runWithFakedTimers(fakedTimers, async () => {
+		const { service } = createService([{ button: 1, afterMs: 1500 }]);
+		store.add(service);
 		const cts = store.add(new CancellationTokenSource());
 		const live = store.add(new CancellationTokenSource());
-		const pending = cancelled.service.askApproval('pane-token', request, cts.token);
+		const pending = service.askApproval('pane-token', request, cts.token);
+		const second = await service.askApproval('pane-token', request, live.token);
 		cts.cancel();
-		assert.deepStrictEqual([
-			await denied.service.askApproval('pane-token', request, live.token),
-			await escaped.service.askApproval('pane-token', request, live.token),
-			await pending,
-		], [undefined, undefined, undefined]);
+		assert.deepStrictEqual([second, await pending], ['busy', 'cancelled']);
+	}));
+
+	(isMacintosh ? test : test.skip)('asks again when the approval was chosen with Cmd+D', () => runWithFakedTimers(fakedTimers, async () => {
+		const { service, shown } = createService([{ button: 1, afterMs: 1500, viaCommandD: true }, { button: 1, afterMs: 1500 }]);
+		store.add(service);
+		const cts = store.add(new CancellationTokenSource());
+		assert.deepStrictEqual([await service.askApproval('pane-token', request, cts.token), shown.length], ['approve', 2]);
+	}));
+
+	test('withdraws a share that completes after the deadline', () => runWithFakedTimers(fakedTimers, async () => {
+		const { service, binding } = createService([]);
+		store.add(service);
+		const input = { id: 'view-1', resolve: async () => ({ id: 'view-1' }) } as unknown as BrowserEditorInput;
+		const cts = store.add(new CancellationTokenSource());
+		const result = service.bindTabWithin('pane-token', input, cts.token);
+		await timeout(0);
+		cts.cancel();
+		const bound = await result;
+		binding.pageId = 'view-1';
+		binding.resolveBind?.(true);
+		await timeout(0);
+		assert.deepStrictEqual([bound, binding.unbinds, binding.pageId], [undefined, 1, undefined]);
 	}));
 });

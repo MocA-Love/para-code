@@ -3124,6 +3124,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				return 'The user has no browser tab open in the space of this terminal pane, so there is nothing to share. Open a tab of your own with open_browser_tab, or ask the user to open the page first.';
 			case 'alreadyPending':
 				return 'A request from this terminal pane is already waiting for the user\'s answer. Wait for it instead of asking again.';
+			case 'recentlyDenied':
+				return 'The user declined a request from this terminal pane a moment ago, so Para Code declined this one automatically. Continue without the page, or open a tab of your own with open_browser_tab if a login is not needed.';
 			case 'shareFailed':
 				return 'The user chose a page, but Para Code could not share it with this terminal pane (the page may not allow sharing under the current agent network restrictions, or the share confirmation was declined).';
 		}
@@ -3154,7 +3156,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					return this._toolError(call.error);
 				}
 				const notes = [
-					call.value.userProfileCount > 0 ? `The user also has ${call.value.userProfileCount} browser profile(s) of their own. Their names are not listed; to use one, ask the user for its name and call open_browser_profile - the user will be asked to approve.` : undefined,
+					call.value.hiddenProfileCount > 0 ? `There are ${call.value.hiddenProfileCount} other browser profile(s) (the user's, or ones created from other terminal panes). Their names are not listed; to use one, ask the user for its name and call open_browser_profile - the user will be asked to approve.` : undefined,
 					call.value.usable ? undefined : 'This workspace is not trusted, so named profiles cannot be used until the user trusts it.',
 					call.value.shareable ? undefined : 'Agent network filtering is enabled, so pages in named profiles cannot be shared with agents right now.',
 				].filter(note => note !== undefined);
@@ -3217,17 +3219,13 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'untrustedWorkspace':
 				return 'This workspace is not trusted, so Para Code keeps every browser page in a throwaway session and named profiles cannot be used. Ask the user to trust the workspace first.';
 			case 'unknownProfile':
-				return `There is no browser profile named "${requestedProfile}" in Para Code. list_browser_profiles shows the profiles you created; for a profile of the user, ask the user for its exact name.`;
+				return `There is no browser profile named "${requestedProfile}" that you can use for this (list_browser_profiles shows the profiles created from this terminal pane; you can only delete those). For a profile of the user, ask the user for its exact name.`;
 			case 'profileNotShareable':
 				return 'Agent network filtering (the chat.agent.networkFilter setting) is enabled, and pages in named browser profiles do not enforce that network policy, so Para Code does not share them with agents. Nothing was changed.';
 			case 'invalidName':
-				return 'That profile name is empty or not allowed. Use a short, non-empty name.';
-			case 'duplicateName':
-				return `A browser profile named "${requestedProfile}" already exists (names are compared ignoring case and full-width/half-width differences). Use it with open_browser_profile, or pick another name.`;
+				return 'A browser profile cannot be created with that name (it is empty, or not available). Pick another short name.';
 			case 'tooManyProfiles':
 				return `You have already created ${PARADIS_AGENT_CREATED_PROFILE_LIMIT} browser profiles, which is the limit. Delete one you no longer need with delete_browser_profile first.`;
-			case 'notCreatedByAgent':
-				return `The "${requestedProfile}" browser profile belongs to the user (they created it, or have used it themselves), so agents cannot delete it. Ask the user if it should be removed.`;
 			case 'inUse':
 				return `The "${requestedProfile}" browser profile still has tabs open that are not yours (the user or another terminal pane is using it), so it was not deleted.`;
 			case 'notAgentTab':
@@ -3238,8 +3236,10 @@ export class ParadisAgentBrowserService extends Disposable {
 				return `The user declined to let you use the "${requestedProfile}" browser profile. Do not ask again; continue without it.`;
 			case 'approvalTimedOut':
 				return `The user did not answer the request to use the "${requestedProfile}" browser profile in time, so nothing was changed. Do not ask again right away.`;
-			case 'notOwner':
-				return `The "${requestedProfile}" browser profile was not created from this terminal pane, so it cannot be deleted from here.`;
+			case 'alreadyPending':
+				return 'Another request from this terminal pane is still waiting for the user\'s answer. Wait for it instead of asking again.';
+			case 'recentlyDenied':
+				return 'The user declined a request from this terminal pane a moment ago, so Para Code declined this one automatically. Continue without it; do not keep asking.';
 		}
 	}
 
@@ -3258,6 +3258,10 @@ export class ParadisAgentBrowserService extends Disposable {
 				return `The user declined to let you use the "${requestedProfile}" browser profile, so no page was opened. Do not ask again; continue without it.`;
 			case 'approvalTimedOut':
 				return `The user did not answer the request to use the "${requestedProfile}" browser profile in time, so no page was opened. Do not ask again right away.`;
+			case 'alreadyPending':
+				return 'Another request from this terminal pane is still waiting for the user\'s answer, so no page was opened. Wait for it instead of asking again.';
+			case 'recentlyDenied':
+				return 'The user declined a request from this terminal pane a moment ago, so Para Code declined this one automatically and opened no page. Continue without it; do not keep asking.';
 			case 'untrustedWorkspace':
 				return 'This workspace is not trusted, so Para Code keeps every browser page in a throwaway session and named profiles cannot be used. Ask the user to trust the workspace first.';
 			case 'profileNotShareable':

@@ -599,11 +599,17 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 	private _persistProfiles(removedId?: string): void {
 		const latest = paradisDeserializeProfiles(this.storageService.get(PROFILES_STORAGE_KEY, StorageScope.APPLICATION));
 		const mine = new Set(this._profiles.map(profile => profile.id));
+		const latestById = new Map(latest.map(profile => [profile.id, profile]));
 		// `removedId` を除外しないと、たった今このウィンドウで消した1件が「他ウィンドウの追加」に
 		// 見えて復活する（保存済みの台帳にはまだ載っているため）。削除だけは意図が明確なので通す。
+		// エージェントの印は「外す」向きだけを通す。他ウィンドウでユーザーが使って印が外れた後に、
+		// こちらの古い写しで印を戻してしまわないようにする。
 		this._profiles = [
 			...latest.filter(profile => !mine.has(profile.id) && profile.id !== removedId),
-			...this._profiles,
+			...this._profiles.map(profile => {
+				const stored = latestById.get(profile.id);
+				return stored && !stored.createdByAgent && profile.createdByAgent ? paradisWithoutAgentMarks(profile) : profile;
+			}),
 		];
 		this.storageService.store(
 			PROFILES_STORAGE_KEY,
