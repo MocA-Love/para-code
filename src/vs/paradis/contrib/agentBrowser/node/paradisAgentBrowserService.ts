@@ -31,7 +31,7 @@ import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } fr
 import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOTES_METHOD, PARADIS_AGENT_NOTE_TOOL_OPERATIONS, paradisParseAgentNoteToolArgs } from '../common/paradisAgentNotes.js';
 // PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
 import { IParadisOpenProfileResult, ParadisOpenProfileFailure, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_METHOD } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
-import { IParadisAbortBindResult, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
+import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
@@ -40,7 +40,7 @@ import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGRO
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
 import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
-import { ParadisAgentHookOwnership } from './paradisAgentHookOwnership.js';
+import { ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from './paradisAgentHooksSetup.js';
 import { ParadisAgentHooksAutoInstall } from './paradisAgentHooksAutoInstall.js';
@@ -416,6 +416,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ペイン消滅（TerminalExit）でのみ削除する。
 	 */
 	private readonly _agentHookTokens = new Set<string>();
+	/**
+	 * ペインで動いている会話（hook の session_id）。再起動後に復元したタブから前の会話を続ける
+	 * ために renderer へ渡す。SessionEnd（会話を終えた）と TerminalExit（ペインが消えた）で消す。
+	 */
+	private readonly _paneSessions = new Map<string, Omit<IParadisAgentPaneSession, 'token'>>();
 	/**
 	 * hook発信元プロセスの所有権レジストリ（ネストした子エージェントのhookによるペイン
 	 * セッション乗っ取り・状態汚染の防止）。詳細は paradisAgentHookOwnership.ts 参照。
@@ -1255,10 +1260,34 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._releaseTokenQuarantine(token);
 	}
 
+	/** hook から、そのペインで動いている会話を控える（`_paneSessions`）。 */
+	private _recordPaneSession(token: string, eventType: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd: string | undefined): void {
+		if (eventType === 'SessionEnd' || eventType === 'TerminalExit') {
+			this._paneSessions.delete(token);
+			return;
+		}
+		if (sessionId === undefined || sessionId.length === 0 || sessionId.length > 500) {
+			return;
+		}
+		const previous = this._paneSessions.get(token);
+		const agent = transcriptPath !== undefined
+			? paradisHookAgentKindForTranscript(transcriptPath)
+			: previous?.agent;
+		if (agent === undefined) {
+			return;
+		}
+		// 同じ会話の間は最初に報告された作業ディレクトリを使い続ける。後の hook の cwd は、ツールが
+		// `cd` した先になることがあり、分岐（`claude --resume <id> --fork-session`）がそこでは会話を
+		// 見つけられない（Claude Code は会話をプロジェクトのフォルダごとに持つ）。
+		const nextCwd = previous?.sessionId === sessionId ? (previous.cwd ?? cwd) : cwd;
+		this._paneSessions.set(token, { agent, sessionId, at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}) });
+	}
+
 	private _cleanupTokenLocalState(token: string, generation?: number, preserveTerminalExit: boolean = false): void {
 		const cleanupGeneration = generation ?? this._advanceBindingGeneration(token);
 		this._paneShells.delete(token);
 		this._paneStatuses.delete(token);
+		this._paneSessions.delete(token);
 		this._activityApprovalTokens.delete(token);
 		this._agentHookTokens.delete(token);
 		this._seenTokens.delete(token);
@@ -2187,6 +2216,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				} else {
 					this._agentHookTokens.add(token);
 				}
+				this._recordPaneSession(token, eventType, sessionId, transcriptPath, cwd);
 				fireParadisAgentHookEvent({
 					token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput,
 					toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,
@@ -2337,9 +2367,13 @@ export class ParadisAgentBrowserService extends Disposable {
 			.map(token => ({ token, issueUrls: [...getParadisAgentPaneIssueUrls(token)] }))
 			.filter(entry => entry.issueUrls.length > 0)
 			.map(entry => Object.freeze({ token: entry.token, issueUrls: Object.freeze(entry.issueUrls) }));
+		const paneSessions = [...this._paneSessions]
+			.filter(([token]) => eligibleTokens.has(token))
+			.map(([token, session]) => Object.freeze({ token, ...session }));
 		return Object.freeze({
 			paneStatuses: Object.freeze(paneStatuses),
 			agentHookTokens: Object.freeze(agentHookTokens),
+			...(paneSessions.length > 0 ? { paneSessions: Object.freeze(paneSessions) } : {}),
 			...(agentHookTokenIssueUrls.length > 0 ? { agentHookTokenIssueUrls: Object.freeze(agentHookTokenIssueUrls) } : {}),
 		});
 	}
@@ -3333,6 +3367,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._quarantinedTokenState.clear();
 		this._paneShells.clear();
 		this._paneStatuses.clear();
+		this._paneSessions.clear();
 		this._activityApprovalTokens.clear();
 		this._agentHookTokens.clear();
 		this._seenTokens.clear();

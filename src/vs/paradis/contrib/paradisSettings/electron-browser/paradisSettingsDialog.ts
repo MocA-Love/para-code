@@ -604,6 +604,61 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.sharedPanel.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.sharedPanel', "下部パネルのターミナルをスペース共通にする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.sharedPanelDesc', "スペースを切り替えても入れ替わらず、スペースを削除しても閉じません。変更はウィンドウの再読み込み後に反映されます。"),
+		keywords: 'terminal panel shared common space workspace',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.sharedPanel.cwd',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.sharedPanelCwd', "共通ターミナルを開くフォルダ"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.sharedPanelCwdDesc', "空のときはホームフォルダで開きます。フォルダが無いときもホームフォルダで開きます。"),
+		placeholder: '~',
+		keywords: 'terminal panel shared cwd folder home start',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.historyPerSpace.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.historyPerSpace', "シェルの履歴をスペースごとに分ける"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.historyPerSpaceDesc', "↑ キーで出る履歴がスペースごとになります。スペースを削除すると履歴も消えます（fish でデータフォルダを変えている場合は消えません）。下部パネルの共通ターミナルは対象外です。"),
+		keywords: 'terminal shell history histfile space zsh bash fish',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.daemon.saveScreens',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.daemonSaveScreens', "PC を再起動しても画面を戻す"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.daemonSaveScreensDesc', "ターミナルを残しているとき、画面とシェルの環境変数をディスクに保存しておき、PC の再起動後に直前の画面とタブを戻します。本人だけが読めるファイルに書き、30日で消えます。"),
+		keywords: 'terminal daemon save screen restore reboot scrollback disk',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.renderRepair.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.renderRepair', "ターミナルの文字の欠けを自動で直す"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.renderRepairDesc', "スペースを切り替えて戻ったときやスリープから復帰したときに検査し、欠けていれば描き直します。"),
+		keywords: 'terminal render repair glyph webgl desync missing characters',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.renderRepair.recordScreen',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.renderRepairRecord', "描き直したときの画面を記録する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.renderRepairRecordDesc', "不具合の調査用です。ログのフォルダに前後の画面の画像と欠けていた場所を最大4件・7日まで残します。画像には秘密情報が写ることがあります。"),
+		keywords: 'terminal render repair record screenshot logs evidence',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
 		key: 'paradis.terminal.shiftEnterNewline',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.shiftEnter', "Shift+Enter で改行を入力する"),

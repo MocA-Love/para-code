@@ -730,6 +730,7 @@ function createServiceFixture(generation: number): {
 		_terminalExitedTokens: new Set(),
 		_paneShells: paneShells,
 		_paneStatuses: new Map(),
+		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set(),
 		_agentHookTokens: new Set(),
 		_seenTokens: new Set(),

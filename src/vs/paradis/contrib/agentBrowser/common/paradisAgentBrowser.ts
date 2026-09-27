@@ -883,10 +883,27 @@ export interface IParadisAgentPaneStatus {
 	readonly cwd?: string;
 }
 
+/**
+ * ペインで動いている会話（hook が報告した最新のセッション）。再起動後に復元したタブから
+ * 前の会話を続けるための手がかりで、renderer が nonce（ペイントークン）ごとに控えておく。
+ * 会話が終わった（SessionEnd）かペインが消えた（TerminalExit）ら載らなくなる。
+ */
+export interface IParadisAgentPaneSession {
+	readonly token: string;
+	readonly agent: 'claude' | 'codex';
+	readonly sessionId: string;
+	/** hook が最後に報告した作業ディレクトリ。 */
+	readonly cwd?: string;
+	/** 最後に hook を受けた時刻 (epoch ms)。 */
+	readonly at: number;
+}
+
 /** 1回のowner解決とstale sweepから作る、renderer-local status producer向けsnapshot。 */
 export interface IParadisAgentStatusSnapshot {
 	readonly paneStatuses: readonly IParadisAgentPaneStatus[];
 	readonly agentHookTokens: readonly string[];
+	/** 各ペインで動いている会話。古い shared process は送らないので省略可能にしてある。 */
+	readonly paneSessions?: readonly IParadisAgentPaneSession[];
 	/**
 	 * hook実績のあるペイン、および (Codex 等 hook を送らないエージェントでも) paneStatuses に
 	 * 現れたペインぶんの、検出済み Issue URL。ペインが終了するまで消えない (paneStatuses と違い

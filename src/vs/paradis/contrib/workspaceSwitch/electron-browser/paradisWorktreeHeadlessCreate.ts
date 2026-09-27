@@ -54,7 +54,7 @@ import {
 import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js';
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
-import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent } from '../../sessionResume/common/paradisSessionResume.js';
+import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, paradisAgentResumeCommandLine } from '../../sessionResume/common/paradisSessionResume.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 
 /**
@@ -453,9 +453,10 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 		terminalService.setActiveInstance(instance);
 	}
 	// IDは上のホワイトリストを通り、実行ファイルと引数位置も固定。シェル文字を含まない。
-	const command = request.agent === 'claude'
-		? `claude ${request.dangerouslyBypassPermissions ? '--dangerously-skip-permissions ' : ''}--resume ${request.sessionId}`
-		: `codex ${request.dangerouslyBypassPermissions ? '--dangerously-bypass-approvals-and-sandbox ' : ''}resume ${request.sessionId}`;
+	const command = paradisAgentResumeCommandLine(request.agent, request.sessionId, 'resume', { dangerouslyBypassPermissions: request.dangerouslyBypassPermissions });
+	if (command === undefined) {
+		throw new Error('Invalid agent session id.');
+	}
 	await instance.sendText(command, true);
 	return paradisDescribeLaunchedAgent(paneTokenService, instance);
 }

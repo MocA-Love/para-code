@@ -27,6 +27,8 @@ export interface IParadisAgentStatusSnapshotConsumerOptions {
 	readonly acknowledgePaneStatus: (token: string) => void;
 	readonly logPollFailure: (error: unknown) => void;
 	readonly isWindowFocused: () => boolean;
+	/** そのターミナルにフォーカスがあるか。共通ターミナルの完了を既読にしてよいかの判定に使う。 */
+	readonly isTerminalFocused?: (instanceId: number) => boolean;
 }
 
 /**
@@ -143,7 +145,9 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 				continue;
 			}
 			const scope = this._options.terminalScopeService.resolveScope(instanceId);
-			if (scope.kind !== 'managed') {
+			// 共通ターミナルは「今のスペース」と答えるが持ち主ではない。紐付けると、切り替えた先の
+			// スペースに別の作業の Issue が付く。
+			if (scope.kind !== 'managed' || this._options.terminalScopeService.isSharedPanelTerminal?.(instanceId) === true) {
 				continue;
 			}
 			const urls = scopeIssueUrls.get(scope.stateKey) ?? new Set<string>();
@@ -177,7 +181,11 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 				continue;
 			}
 
-			if (paneStatus.status === 'review' && stateKey === activeStateKey && resolvedViaInstance && this._options.isWindowFocused()) {
+			// 共通ターミナルは常に今のスペースに居るので、スペースを開いているだけでは見たことにならない。
+			// そのターミナルにフォーカスがあるときだけ既読にする。
+			const sharedPanel = instanceId !== undefined && this._options.terminalScopeService.isSharedPanelTerminal?.(instanceId) === true;
+			if (paneStatus.status === 'review' && stateKey === activeStateKey && resolvedViaInstance && this._options.isWindowFocused()
+				&& (!sharedPanel || this._options.isTerminalFocused?.(instanceId) === true)) {
 				this._options.acknowledgePaneStatus(paneStatus.token);
 				if (instanceId !== undefined) {
 					instanceStatuses.delete(instanceId);

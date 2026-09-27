@@ -1,0 +1,101 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments) */
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * 復元したターミナルタブの右上のバナー。共有ドット（top 4px / right 6px / 16px 角）の
+ * 左に並べ、ドットを隠さない。ターミナルの上に浮く面なので、エディタの中の浮く部品（検索
+ * ウィジェット等）と同じ editorWidget の色・影・角丸（large）に揃える。ウィンドウ透過と
+ * Modern UI が既定なので、背景は不透明な editorWidget.background を使う（透けると下の文字と重なる）。
+ */
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner {
+	position: absolute;
+	top: var(--vscode-spacing-size40);
+	right: var(--vscode-spacing-size280);
+	z-index: 35;
+	box-sizing: border-box;
+	max-width: min(420px, calc(100% - 40px));
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+	color: var(--vscode-editorWidget-foreground);
+	background-color: var(--vscode-editorWidget-background);
+	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: var(--vscode-cornerRadius-large);
+	box-shadow: 0 0 8px 2px var(--vscode-widget-shadow);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 1.4;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-header {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-heading {
+	flex: 1;
+	min-width: 0;
+	font-weight: var(--vscode-fontWeight-semiBold);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-close {
+	flex-shrink: 0;
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: inherit;
+	background: none;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small);
+	cursor: pointer;
+	font-size: var(--vscode-codiconFontSize);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-close:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-close:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-detail {
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size60);
+}
+
+/* ボタンは upstream の monaco-text-button。横幅いっぱいに伸びる既定を打ち消して内容の幅にする。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-actions > .monaco-text-button {
+	width: auto;
+	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+/*
+ * ターミナルの検索欄（右上、upstream の simple-find-part）を開いている間は、その下へずらす。
+ * 検索欄はターミナルの要素の中、バナーは overflow guard の直下なので、:has で見る。
+ */
+.monaco-workbench .terminal-overflow-guard.terminal-editor:has(.simple-find-part.visible) > .paradis-terminal-resume-banner {
+	top: var(--vscode-spacing-size400);
+}

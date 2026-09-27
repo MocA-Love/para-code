@@ -30,6 +30,14 @@ if test "$VSCODE_PREVENT_SHELL_HISTORY" = "1"
 	set -e VSCODE_PREVENT_SHELL_HISTORY
 end
 
+# PARA-PATCH: Para Code keeps a separate shell history per space. fish cannot move
+# its history file, so switch the history session name instead (not exported).
+if string match -qr '^[A-Za-z0-9]+$' -- "$PARA_CODE_SPACE_HISTORY_ID"
+	set -g fish_history "paracode_$PARA_CODE_SPACE_HISTORY_ID"
+end
+set -e PARA_CODE_SPACE_HISTORY_DIR
+set -e PARA_CODE_SPACE_HISTORY_ID
+
 set -g envVarsToReport
 if test -n "$__vscode_shell_env_reporting"
 	set envVarsToReport (string split "," "$__vscode_shell_env_reporting")

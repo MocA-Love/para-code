@@ -78,6 +78,15 @@ if [[ -n "${PARA_CODE_CODEX_LAUNCHER_DIR:-}" && -x "$PARA_CODE_CODEX_LAUNCHER_DI
 	esac
 fi
 
+# PARA-PATCH: Para Code keeps a separate shell history per space. Apply it after
+# the user's rc so a HISTFILE set there does not win, keep the folder private
+# (0700), and do not pass it on.
+if [[ -n "${PARA_CODE_SPACE_HISTORY_DIR:-}" ]] && ( umask 077 && command mkdir -p -- "$PARA_CODE_SPACE_HISTORY_DIR" ) 2>/dev/null; then
+	command chmod 700 "$PARA_CODE_SPACE_HISTORY_DIR" 2>/dev/null
+	HISTFILE="$PARA_CODE_SPACE_HISTORY_DIR/zsh_history"
+fi
+builtin unset PARA_CODE_SPACE_HISTORY_DIR PARA_CODE_SPACE_HISTORY_ID
+
 # Register Python shell activate hooks
 # Prevent multiple activation with guard
 if [ -z "${VSCODE_PYTHON_AUTOACTIVATE_GUARD:-}" ]; then

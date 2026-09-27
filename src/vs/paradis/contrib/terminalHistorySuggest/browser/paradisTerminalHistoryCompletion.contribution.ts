@@ -31,7 +31,8 @@ import { FileOperationError, FileOperationResult, IFileService } from '../../../
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { PosixShellType, TerminalShellType } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { paradisSpaceHistoryFile } from '../../terminalSpaceHistory/common/paradisTerminalSpaceHistory.js';
 import { getCommandHistory, getShellFileHistory } from '../../../../workbench/contrib/terminalContrib/history/common/history.js';
 import { ITerminalCompletion, TerminalCompletionItemKind } from '../../../../workbench/contrib/terminalContrib/suggest/browser/terminalCompletionItem.js';
 import { ITerminalCompletionProvider, ITerminalCompletionService } from '../../../../workbench/contrib/terminalContrib/suggest/browser/terminalCompletionService.js';
@@ -136,6 +137,23 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 		};
 
 		const historyDetail = localize('para.terminalHistory.detail', "History");
+		// スペースごとの履歴を使っているターミナルでは、そのスペースの履歴ファイルを最初に読む
+		// （↑ キーで出るのはこちら）。全スペース共通の VS Code 内部の履歴と、全体の履歴ファイルは
+		// 後ろに続けて補う。先に共通の履歴を並べると、別のスペースのコマンドが先頭に来る。
+		const activeInstance = this._terminalService.activeInstance;
+		if (completions.length < MAX_RESULTS && activeInstance !== undefined) {
+			const spaceHistoryResult = await this._getSpaceFileHistory(activeInstance, token);
+			if (this._isDisposed || token.isCancellationRequested || spaceHistoryResult.kind === 'cancelled') {
+				return undefined;
+			}
+			const spaceHistory = spaceHistoryResult.value;
+			for (let i = (spaceHistory?.commands.length ?? 0) - 1; spaceHistory && i >= 0; i--) {
+				if (completions.length >= MAX_RESULTS) {
+					break;
+				}
+				addCompletion(spaceHistory.commands[i], spaceHistory.sourceLabel);
+			}
+		}
 		for (const [command] of entries) {
 			if (completions.length >= MAX_RESULTS) {
 				break;
@@ -146,7 +164,7 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 		// ターミナルからしか発生しないため、シェル種別は activeInstance から取得する
 		// (ITerminalCompletionProvider.provideCompletions には shellType が渡ってこないための代替)。
 		if (completions.length < MAX_RESULTS) {
-			const shellType = this._terminalService.activeInstance?.shellType;
+			const shellType = activeInstance?.shellType;
 			const fileHistoryResult = await this._getFileHistory(shellType, token);
 			if (this._isDisposed || token.isCancellationRequested || fileHistoryResult.kind === 'cancelled') {
 				return undefined;
@@ -193,6 +211,31 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 			this._fallbackHistory.set(shellType, shared);
 		}
 		return shared.get(token);
+	}
+
+	/** そのターミナルのスペースの履歴ファイル（スペース別履歴を使っていなければ無し）。 */
+	private async _getSpaceFileHistory(instance: ITerminalInstance, token: CancellationToken): Promise<ParadisTerminalHistoryWaitResult<IFileHistoryResult>> {
+		const shellType = instance.shellType;
+		if (shellType !== PosixShellType.Zsh && shellType !== PosixShellType.Bash) {
+			return { kind: 'completed', value: undefined };
+		}
+		const path = paradisSpaceHistoryFile(instance, shellType === PosixShellType.Zsh ? 'zsh' : 'bash');
+		if (path === undefined) {
+			return { kind: 'completed', value: undefined };
+		}
+		const locationResult = await this._location.get(token);
+		if (this._isDisposed || token.isCancellationRequested || locationResult.kind === 'cancelled') {
+			return { kind: 'cancelled' };
+		}
+		if (!locationResult.value) {
+			return { kind: 'completed', value: undefined };
+		}
+		const request: IParadisTerminalHistoryFileRequest = Object.freeze({
+			shellType,
+			sourceLabel: localize('para.terminalHistory.spaceSource', "このスペースの履歴"),
+			resource: URI.from({ scheme: locationResult.value.scheme, authority: locationResult.value.authority, path: URI.file(path).path }),
+		});
+		return this._fileHistoryCache.get(paradisTerminalHistoryCacheKey(shellType, request.resource), token, () => this._loadFileHistory(request));
 	}
 
 	private async _resolveLocation(): Promise<IParadisTerminalHistoryLocation | undefined> {

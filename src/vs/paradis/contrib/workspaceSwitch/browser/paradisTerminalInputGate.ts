@@ -35,6 +35,9 @@ import { IDisposable } from '../../../../base/common/lifecycle.js';
  * `_inputEvent` は custom key handler を見ないため素通りする。ただし通常のキー入力は
  * `_keyDownSeen` が立つので `_inputEvent` の条件（`!ev.composed || !this._keyDownSeen`）に
  * 掛からず届かない。**文字が数個混じり得るだけで、実行はされない**ので許容する。
+ * ただし xterm の IME パッチ（build/npm/paradisXtermImePatch.ts）は `_inputEvent` の先頭に
+ * IME の確定を送る経路を足しているので、そちらは `terminalIme/browser/paradisTerminalImeInputGate`
+ * が `input` イベントごと止めている。
  *
  * 状態はモジュールスコープに置く。ゲートは「このレンダラーの全ターミナル」に一斉に効かせたい
  * もので、端末インスタンスやウィンドウごとに持たせる意味がない。

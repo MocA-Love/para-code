@@ -108,6 +108,37 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 		assert.deepStrictEqual([...fixture.statusStore.agentInstanceIds], [1, 2]);
 	});
 
+	// 共通ターミナル（下部パネル）は「今のスペース」と答えるが持ち主ではない。見つけた Issue を
+	// 今のスペースへ付けず、スペースを開いているだけでは完了を既読にしない（そのターミナルに
+	// フォーカスがあるときだけ）。
+	test('keeps shared panel agents out of issue marks and acknowledges their review only when focused', () => {
+		const fixture = createFixture();
+		fixture.instanceByToken.set('shared-idle', 1);
+		fixture.instanceByToken.set('shared-focused', 2);
+		for (const instanceId of [1, 2]) {
+			fixture.scopeByInstance.set(instanceId, { kind: 'managed', stateKey: 'space-a' });
+			fixture.sharedPanelInstances.add(instanceId);
+		}
+		fixture.focusedInstances.add(2);
+
+		fixture.producer.publish(success(1, [
+			pane('shared-idle', 'review'),
+			pane('shared-focused', 'review'),
+		], ['shared-idle', 'shared-focused'], [
+			{ token: 'shared-idle', issueUrls: ['https://github.com/owner/repo/issues/3'] },
+		]));
+
+		assert.deepStrictEqual({
+			acknowledged: fixture.acknowledged,
+			issueUrls: entries(fixture.statusStore.scopeIssueUrls),
+			instanceStatuses: entries(fixture.statusStore.instanceStatuses),
+		}, {
+			acknowledged: ['shared-focused'],
+			issueUrls: [],
+			instanceStatuses: [[1, 'review']],
+		});
+	});
+
 	test('keeps an active local review visible without acknowledging it while the workbench is unfocused', () => {
 		const fixture = createFixture(() => false);
 		fixture.instanceByToken.set('local-review', 1);
@@ -231,6 +262,8 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 		const scopeSwitch = store.add(new Emitter<string>());
 		const instanceByToken = new Map<string, number>();
 		const scopeByInstance = new Map<number, ReturnType<IParadisTerminalScopeService['resolveScope']>>();
+		const sharedPanelInstances = new Set<number>();
+		const focusedInstances = new Set<number>();
 		const statusStore = new TestStatusStore();
 		const acknowledged: string[] = [];
 		const pollErrors: unknown[] = [];
@@ -258,6 +291,7 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 			} as IParadisPaneTokenService,
 			terminalScopeService: {
 				resolveScope: instanceId => scopeByInstance.get(instanceId) ?? { kind: 'unscoped' },
+				isSharedPanelTerminal: instanceId => sharedPanelInstances.has(instanceId),
 			} as IParadisTerminalScopeService,
 			workspaceSwitchService,
 			worktreeService: {
@@ -270,9 +304,11 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 			acknowledgePaneStatus: token => acknowledged.push(token),
 			logPollFailure: error => pollErrors.push(error),
 			isWindowFocused,
+			isTerminalFocused: instanceId => focusedInstances.has(instanceId),
 		}));
 
 		return {
+			sharedPanelInstances, focusedInstances,
 			producer, scopeSwitch, instanceByToken, scopeByInstance, statusStore, acknowledged, pollErrors, worktrees, consumer,
 			get activeStateKey() { return activeStateKey; },
 			set activeStateKey(value: string | undefined) { activeStateKey = value; },

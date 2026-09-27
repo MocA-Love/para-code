@@ -42,3 +42,15 @@ export interface IParadisCodexThreadPromptResult {
 	/** Set when the rollout scan stopped at its byte budget instead of reaching end of file. */
 	readonly rolloutScanExhausted?: boolean;
 }
+
+/**
+ * Codex が起動直後にタイトルへ出すスレッド ID（`codex | <uuid>`）。`[tui].terminal_title` で
+ * アプリ名を出す設定にしているので普通は接頭辞が付くが、ユーザーが設定を変えた場合に備えて
+ * 接頭辞は省略可能にしてある。タブ名の付け替えと、復元したタブの再開の案内の両方が使う。
+ */
+export const PARADIS_CODEX_THREAD_TITLE_PATTERN = /^(?:codex \| )?([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+
+/** タイトルが Codex のスレッド ID なら、その ID。 */
+export function paradisCodexThreadIdFromTerminalTitle(title: string): string | undefined {
+	return PARADIS_CODEX_THREAD_TITLE_PATTERN.exec(title)?.[1];
+}
