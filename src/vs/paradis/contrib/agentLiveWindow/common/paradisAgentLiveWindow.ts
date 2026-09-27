@@ -7,6 +7,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Event } from '../../../../base/common/event.js';
+import { localize } from '../../../../nls.js';
+import { RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { paradisSpaceInfoLabel } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
@@ -92,7 +94,25 @@ export interface IParadisAgentLiveWindowService {
 	readonly summary: IParadisAgentLiveSummary;
 	/** 開いていなければ開き、開いていれば前面に出す。 */
 	open(): Promise<void>;
+	/** 開いていれば閉じる。開いていなければ何もしない。 */
+	close(): void;
 }
+
+/**
+ * キー入力の宛先がライブウィンドウの中にあるとき true。ウィンドウの document.body に
+ * スコープを張るので、フォーカスが何にも当たっていない (body が宛先になる) 間も true になる。
+ *
+ * ライブウィンドウは editor part を持たない補助ウィンドウなので、ここで押された
+ * エディタ系のショートカット (Cmd+W など) は、放っておくとメインウィンドウのアクティブな
+ * エディタグループに対して実行されてしまう。それを塞ぐキーバインドの when 句に使う。
+ */
+export const ParadisAgentLiveWindowFocusContext = new RawContextKey<boolean>('paradisAgentLiveWindowFocus', false, localize('paradis.agentLive.focusContext', "キー入力の宛先がエージェント一覧ウィンドウの中にあるかどうか"));
+
+/** ライブウィンドウを閉じる (ライブウィンドウ内の Cmd+W / Cmd+Shift+W など)。 */
+export const PARADIS_AGENT_LIVE_CLOSE_COMMAND_ID = 'paradis.agentLiveWindow.close';
+
+/** ライブウィンドウ内で押されたエディタを閉じる系のショートカットを握りつぶす。 */
+export const PARADIS_AGENT_LIVE_BLOCK_EDITOR_SHORTCUT_COMMAND_ID = 'paradis.agentLiveWindow.blockEditorShortcut';
 
 export type ParadisAgentLiveSort = 'attention' | 'status' | 'elapsed' | 'updated' | 'space' | 'manual';
 
