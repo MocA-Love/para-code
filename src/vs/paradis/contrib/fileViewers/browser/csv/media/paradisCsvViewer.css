@@ -116,6 +116,7 @@
 .paradis-csv-grid:focus .paradis-csv-selected,
 .paradis-csv-grid:focus-within .paradis-csv-selected {
 	background-color: var(--vscode-editor-selectionBackground);
+	color: var(--vscode-editor-selectionForeground, var(--vscode-editor-foreground));
 }
 
 .paradis-csv-grid .paradis-csv-match {
@@ -158,6 +159,11 @@
 
 .paradis-csv-message.visible {
 	display: flex;
+}
+
+.paradis-csv-message-actions {
+	display: flex;
+	gap: var(--vscode-spacing-size120);
 }
 
 /* Truncation notice (large files) between the toolbar and the grid. */
@@ -206,4 +212,27 @@
 
 .paradis-csv-footer.hidden {
 	display: none;
+}
+
+/* High contrast: several background tokens are null there, so mark header, selection and matches with borders. */
+.monaco-workbench.hc-black .paradis-csv-grid .paradis-csv-header,
+.monaco-workbench.hc-light .paradis-csv-grid .paradis-csv-header {
+	border-bottom-color: var(--vscode-contrastBorder);
+}
+
+.monaco-workbench.hc-black .paradis-csv-grid .paradis-csv-selected,
+.monaco-workbench.hc-light .paradis-csv-grid .paradis-csv-selected {
+	outline: var(--vscode-strokeThickness) dotted var(--vscode-contrastActiveBorder, var(--vscode-focusBorder));
+	outline-offset: -2px;
+}
+
+.monaco-workbench.hc-black .paradis-csv-grid .paradis-csv-match,
+.monaco-workbench.hc-light .paradis-csv-grid .paradis-csv-match {
+	outline: var(--vscode-strokeThickness) dashed var(--vscode-editor-findMatchHighlightBorder, var(--vscode-contrastActiveBorder));
+	outline-offset: -2px;
+}
+
+.monaco-workbench.hc-black .paradis-csv-grid .paradis-csv-active,
+.monaco-workbench.hc-light .paradis-csv-grid .paradis-csv-active {
+	outline: 2px solid var(--vscode-contrastActiveBorder, var(--vscode-focusBorder));
 }
