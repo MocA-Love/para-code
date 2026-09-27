@@ -171,7 +171,7 @@ interface AppState extends StoreState {
 	homePreferences: HomeListPreferences;
 	setHomePreferences(next: HomeListPreferences): void;
 	/**
-	 * iPadの常設サイドバーを畳んでいるか（アイコンのみのレール表示）。狭い幅（iPhone、
+	 * iPadの2列で左の列（PCの画面）を隠しているか（`app/pc/[pcId]/_layout.tsx`）。狭い幅（iPhone、
 	 * Split View/Slide Over）では意味を持たない。端末に保存し、次回起動時も同じ見え方にする。
 	 */
 	sidebarCollapsed: boolean;

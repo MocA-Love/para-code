@@ -36,7 +36,9 @@ function ShortcutHostInner() {
 		inSettings: pathname.startsWith('/settings'),
 		inNotifications: pathname === '/notifications',
 	};
-	const specs: KeyCommandSpec[] = availableShortcuts(context).map(def => ({ id: def.id, input: def.input, modifiers: def.modifiers, title: def.title }));
+	const specs: KeyCommandSpec[] = availableShortcuts(context).map(def => ({
+		id: def.id, input: def.input, modifiers: def.modifiers, title: def.title, priority: def.overridesTextInput === true,
+	}));
 	// 中身が同じなら渡し直さない（ネイティブ側で UIKeyCommand を作り直すので）。
 	const signature = specs.map(spec => spec.id).join(',');
 	const specsRef = useRef(specs);

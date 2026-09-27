@@ -40,10 +40,13 @@ export function DevProbe() {
 			windowControls: devDescribeWindowControls,
 			// 左の列の幅（つまみを動かしたのと同じ値の変え方。離したときの保存も行う）。
 			sidebarWidth: (width: number) => { useIpadLayout.getState().setSidebarWidth(width); useIpadLayout.getState().commit(); return useIpadLayout.getState().sidebarWidth; },
-			detail: () => JSON.stringify({ pcId: useDetailColumn.getState().pcId, open: useDetailColumn.getState().open }),
+			// 詳細の列（置いた順。最後が前面）。
+			detail: () => JSON.stringify(useDetailColumn.getState().entries.map(({ key, pcId, open }) => ({ key, pcId, open }))),
 			fireKey: devFireKeyCommand,
 			// 画面の積み方（Stack ごとのルート名の並び）。2列で詳細の列が積み増されていないかを見る。
 			stacks: () => describeStacks(navigation.getRootState()),
+			// ナビゲーションの状態そのもの（ルートの引数まで見るとき）。
+			rootState: () => JSON.stringify(navigation.getRootState()),
 		};
 		console.log(`[para-dev] route ${pathname} ${paramsKey}`);
 	}, [pathname, paramsKey, router, navigation]);
@@ -51,12 +54,17 @@ export function DevProbe() {
 }
 
 interface NavStateLike {
-	readonly routes: readonly { readonly name: string; readonly state?: NavStateLike }[];
+	readonly routes: readonly { readonly name: string; readonly params?: object; readonly state?: NavStateLike }[];
 }
 
+/** Stack ごとのルート名の並び。`pcId` を持つルートは `名前(pcId)` と書く（どの PC の器かを見分けるため）。 */
 function describeStacks(state: NavStateLike | undefined): string {
 	if (state === undefined) {
 		return '';
 	}
-	return `[${state.routes.map(route => (route.state !== undefined ? `${route.name} ${describeStacks(route.state)}` : route.name)).join(', ')}]`;
+	return `[${state.routes.map(route => {
+		const pcId = (route.params as { pcId?: unknown } | undefined)?.pcId;
+		const name = typeof pcId === 'string' ? `${route.name}(${pcId})` : route.name;
+		return route.state !== undefined ? `${name} ${describeStacks(route.state)}` : name;
+	}).join(', ')}]`;
 }

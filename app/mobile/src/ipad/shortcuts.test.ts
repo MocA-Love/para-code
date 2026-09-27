@@ -17,6 +17,10 @@ const NOTHING: ShortcutContext = {
 const ids = (context: ShortcutContext) => availableShortcuts(context).map(def => def.id);
 
 describe('SHORTCUTS', () => {
+	test('入力欄より先に効かせるのは、入力欄の標準の動きとぶつかるものだけ（Esc は変換の取り消しを奪わない）', () => {
+		expect(SHORTCUTS.filter(def => def.overridesTextInput === true).map(def => def.id)).toEqual(['tab.prev', 'tab.next', 'send', 'agent.prev', 'agent.next']);
+	});
+
 	test('同じキーの組み合わせを2つに割り当てない', () => {
 		const combos = SHORTCUTS.map(def => `${[...def.modifiers].sort().join('+')}:${def.input}`);
 		expect(new Set(combos).size).toBe(combos.length);
