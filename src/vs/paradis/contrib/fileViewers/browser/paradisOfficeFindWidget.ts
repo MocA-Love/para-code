@@ -191,10 +191,13 @@ export class ParadisOfficeFindWidget extends Disposable {
 		return this.visible;
 	}
 
-	/** 表示中で検索語が入っていれば、同じ条件で検索し直す（中身や並びが変わったとき用）。 */
-	refresh(): void {
+	/**
+	 * 表示中で検索語が入っていれば、同じ条件で検索し直す（中身や並びが変わったとき用）。
+	 * `navigate: false` のときは結果と件数だけを更新し、先頭の一致へは移動しない（再読込で表示位置を動かさない）。
+	 */
+	refresh(options: { readonly navigate?: boolean } = {}): void {
 		if (this.visible && this.searchProvider && this.input.value.trim()) {
-			void this.beginSearch();
+			void this.beginSearch(options.navigate ?? true);
 		}
 	}
 
@@ -233,7 +236,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.navigateCurrent();
 	}
 
-	private async beginSearch(): Promise<void> {
+	private async beginSearch(navigate = true): Promise<void> {
 		this.cancelSearch();
 		const generation = ++this.generation;
 		this.resetResults();
@@ -256,7 +259,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 				return;
 			}
 			this.acceptPage(page, false);
-			if (this.results.length > 0) {
+			if (this.results.length > 0 && navigate) {
 				this.currentIndex = 0;
 				this.navigateCurrent();
 			} else {
@@ -324,6 +327,14 @@ export class ParadisOfficeFindWidget extends Disposable {
 
 	private updateResultPresentation(): void {
 		const result = this.results[this.currentIndex];
+		if (!result && this.results.length > 0) {
+			// 一致はあるが、まだどれにも移動していない（`refresh({ navigate: false })` の後）。
+			this.currentElement.textContent = '';
+			this.statusElement.textContent = localize('paradis.office.findCount', "{0} 件", this.capped ? `${this.total}+` : String(this.total));
+			this.previousButton.disabled = false;
+			this.nextButton.disabled = false;
+			return;
+		}
 		if (!result) {
 			this.currentElement.textContent = '';
 			if (this.input.value && this.searchProvider) {
