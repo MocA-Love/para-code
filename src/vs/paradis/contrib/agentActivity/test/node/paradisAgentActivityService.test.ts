@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
+import { Emitter } from '../../../../../base/common/event.js';
 import { FileAccess } from '../../../../../base/common/network.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -36,6 +37,20 @@ suite('ParadisAgentActivityService', function () {
 	let claudeHome: string;
 	let codexHome: string;
 	let service: ParadisAgentActivityService;
+	let indexDbPath: string;
+	let settings: { enabled?: boolean; retentionDays?: number; includeToolOutput?: boolean };
+	let settingsChanged: Emitter<void>;
+
+	function createService(): ParadisAgentActivityService {
+		return new ParadisAgentActivityService({
+			worker: new ParadisAgentActivityWorkerHost(ParadisAgentActivityWorkerHost.workerFactory(WORKER_PATH), 10_000),
+			indexDbPath,
+			claudeHome: () => claudeHome,
+			codexHome: () => codexHome,
+			indexSettings: () => settings,
+			onDidChangeIndexSettings: settingsChanged.event,
+		}, new NullLogService());
+	}
 
 	setup(async () => {
 		root = await fs.mkdtemp(join(tmpdir(), 'paradis-activity-'));
@@ -43,12 +58,10 @@ suite('ParadisAgentActivityService', function () {
 		codexHome = join(root, 'codex');
 		await fs.mkdir(join(claudeHome, 'projects', '-work-repo'), { recursive: true });
 		await fs.mkdir(join(codexHome, 'sessions', '2026', '09', '20'), { recursive: true });
-		service = store.add(new ParadisAgentActivityService({
-			worker: new ParadisAgentActivityWorkerHost(ParadisAgentActivityWorkerHost.workerFactory(WORKER_PATH), 10_000),
-			indexDbPath: join(root, 'index', 'sessionIndex.sqlite'),
-			claudeHome: () => claudeHome,
-			codexHome: () => codexHome,
-		}, new NullLogService()));
+		indexDbPath = join(root, 'index', 'sessionIndex.sqlite');
+		settings = {};
+		settingsChanged = store.add(new Emitter<void>());
+		service = store.add(createService());
 	});
 
 	teardown(async () => {
@@ -96,40 +109,111 @@ suite('ParadisAgentActivityService', function () {
 		await fs.writeFile(old, claudeLines('/work/repo', '古いログイン画面の話', 'はい', now));
 		const longAgo = new Date(now.getTime() - 200 * 86_400_000);
 		await fs.utimes(old, longAgo, longAgo);
-		const options = { retentionDays: 90, includeToolOutput: false };
+		const liveId = paradisSessionCatalogId('claude', live);
+		const oldId = paradisSessionCatalogId('claude', old);
 
-		await service.indexUpdate(options);
-		const japanese = await service.indexSearch('ログイン画面');
-		const shortTerm = await service.indexSearch('画面 テスト');
+		await service.indexUpdate();
+		const japanese = await service.indexSearch('ログイン画面', [liveId, oldId]);
+		const twoTerms = await service.indexSearch('ログイン画面 追加しました', [liveId]);
 		await fs.appendFile(live, claudeLines('/work/repo', 'キャッシュ期限を調べて', 'TTL は5分でした', now));
-		await service.indexUpdate(options);
-		const appended = await service.indexSearch('キャッシュ期限');
+		await service.indexUpdate();
+		const appended = await service.indexSearch('キャッシュ期限', [liveId]);
 		const status = await service.indexStatus();
 		await fs.rm(live);
-		await service.indexUpdate(options);
-		const afterDelete = await service.indexSearch('キャッシュ期限');
+		await service.indexUpdate();
+		const afterDelete = await service.indexSearch('キャッシュ期限', [liveId]);
 		await service.indexDelete();
 		const afterIndexDelete = await service.indexStatus();
 
-		const liveId = paradisSessionCatalogId('claude', live);
 		assert.deepStrictEqual({
-			japanese: japanese.matches.map(match => [match.catalogId === liveId, match.matchCount]),
-			covered: japanese.covered.map(id => id === liveId),
-			shortTerm: shortTerm.matches.map(match => match.catalogId === liveId),
+			japanese: { uncovered: japanese.uncovered.map(id => id === oldId), matches: japanese.matches.map(match => [match.catalogId === liveId, match.terms, match.matchCount]) },
+			twoTerms: twoTerms.matches.map(match => match.terms),
 			appended: appended.matches.map(match => [match.catalogId === liveId, match.snippet]),
 			status: { exists: status.exists, files: status.files, messages: status.messages },
-			afterDelete,
+			afterDelete: { uncovered: afterDelete.uncovered.length, matches: afterDelete.matches.length },
 			afterIndexDelete: afterIndexDelete.exists,
-			databaseRemoved: await fs.stat(join(root, 'index', 'sessionIndex.sqlite')).then(() => false, () => true),
+			databaseRemoved: await fs.stat(indexDbPath).then(() => false, () => true),
 		}, {
-			japanese: [[true, 1]],
-			covered: [true],
-			shortTerm: [true],
+			// 保存日数を過ぎた会話は索引に入らず、従来の検索に回る
+			japanese: { uncovered: [true], matches: [[true, [0], 1]] },
+			// 語ごとに、本文のどの語に一致したかを返す（AND はセッション情報と合わせて画面側で取る）
+			twoTerms: [[0, 1]],
 			appended: [[true, 'キャッシュ期限を調べて']],
 			status: { exists: true, files: 1, messages: 4 },
-			afterDelete: { covered: [], matches: [] },
+			afterDelete: { uncovered: 1, matches: 0 },
 			afterIndexDelete: false,
 			databaseRemoved: true,
+		});
+	});
+
+	test('keeps the index owned by this user, drops shell output unless tool output is included, and rebuilds when that setting turns off', async () => {
+		const now = new Date();
+		const transcript = join(claudeHome, 'projects', '-work-repo', 'shell.jsonl');
+		const shell = '<bash-input>cat .env</bash-input><bash-stdout>SECRET_TOKEN=abcdef</bash-stdout><bash-stderr>warning text</bash-stderr>';
+		await fs.writeFile(transcript, claudeLines('/work/repo', shell, 'ok', now));
+		const id = paradisSessionCatalogId('claude', transcript);
+
+		settings.includeToolOutput = true;
+		await service.indexUpdate();
+		const withOutput = await service.indexSearch('SECRET_TOKEN', [id]);
+		settings.includeToolOutput = false;
+		settingsChanged.fire();
+		await service.whenIndexReconciled();
+		const afterSwitch = await service.indexStatus();
+		await service.indexUpdate();
+		const withoutOutput = await service.indexSearch('SECRET_TOKEN', [id]);
+		const command = await service.indexSearch('cat .env', [id]);
+		const modes = process.platform === 'win32' ? [] : [(await fs.stat(indexDbPath)).mode & 0o777, (await fs.stat(join(root, 'index'))).mode & 0o777];
+
+		assert.deepStrictEqual({
+			withOutput: withOutput.matches.length,
+			afterSwitch: afterSwitch.files,
+			withoutOutput: withoutOutput.matches.length,
+			command: command.matches.length,
+			modes,
+		}, {
+			withOutput: 1,
+			// ツール出力を入れない設定に変わった時点で、会話ログを読まずに索引を作り直す
+			afterSwitch: 0,
+			withoutOutput: 0,
+			command: 1,
+			modes: process.platform === 'win32' ? [] : [0o600, 0o700],
+		});
+	});
+
+	test('reads a transcript from the start again when it was rewritten in place and does not duplicate its messages', async () => {
+		const now = new Date();
+		const transcript = join(claudeHome, 'projects', '-work-repo', 'rewrite.jsonl');
+		await fs.writeFile(transcript, claudeLines('/work/repo', '最初の依頼です', 'はい', now));
+		const id = paradisSessionCatalogId('claude', transcript);
+		await service.indexUpdate();
+		// 同じファイル（inode）のまま中身を書き直し、元の長さより伸ばす
+		const handle = await fs.open(transcript, 'r+');
+		await handle.truncate(0);
+		await handle.write(claudeLines('/work/repo', '書き直した依頼です。ずっと長い本文になっています', 'はいはい', now), 0);
+		await handle.close();
+		await service.indexUpdate();
+		const oldText = await service.indexSearch('最初の依頼', [id]);
+		const newText = await service.indexSearch('書き直した依頼', [id]);
+		const status = await service.indexStatus();
+		assert.deepStrictEqual({ oldText: oldText.matches.length, newText: newText.matches.length, messages: status.messages }, { oldText: 0, newText: 1, messages: 2 });
+	});
+
+	test('deletes an existing index at startup when the setting is off and refuses to rebuild it', async () => {
+		const transcript = join(claudeHome, 'projects', '-work-repo', 'off.jsonl');
+		await fs.writeFile(transcript, claudeLines('/work/repo', '索引に入る依頼', 'はい', new Date()));
+		await service.indexUpdate();
+		const before = await fs.stat(indexDbPath).then(() => true, () => false);
+		service.dispose();
+
+		settings.enabled = false;
+		const restarted = store.add(createService());
+		await restarted.whenIndexReconciled();
+		const afterStartup = await fs.stat(indexDbPath).then(() => true, () => false);
+		const update = await restarted.indexUpdate();
+		const search = await restarted.indexSearch('索引に入る', ['x']);
+		assert.deepStrictEqual({ before, afterStartup, update, search }, {
+			before: true, afterStartup: false, update: undefined, search: { terms: [], uncovered: ['x'], matches: [] },
 		});
 	});
 });

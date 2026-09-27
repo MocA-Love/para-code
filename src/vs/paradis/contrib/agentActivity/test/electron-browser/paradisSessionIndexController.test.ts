@@ -20,7 +20,7 @@ import { ParadisSessionIndexController } from '../../electron-browser/paradisSes
 suite('ParadisSessionIndexController', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('is on without any setting and without asking, and turns off only when the setting is false', async () => {
+	test('is on without any setting and without asking, turns off only when the setting is false, and leaves short terms to the old search', async () => {
 		const calls: string[] = [];
 		const channel = { call: async (command: string) => { calls.push(command); return { covered: [], matches: [] }; }, listen: () => { throw new Error('unused'); } } as unknown as IChannel;
 		const configuration = new TestConfigurationService();
@@ -36,9 +36,14 @@ suite('ParadisSessionIndexController', () => {
 		await Promise.resolve();
 		await configuration.setUserConfiguration(PARADIS_SESSION_INDEX_SETTING_ENABLED, false);
 		const off = controller.state;
-		const searchWhenOff = await controller.search('needle');
-		assert.deepStrictEqual({ byDefault, updatingByDefault, off, searchWhenOff, calls }, {
-			byDefault: 'on', updatingByDefault: true, off: 'off', searchWhenOff: undefined, calls: ['indexUpdate'],
+		const searchWhenOff = await controller.search('needle', ['c']);
+		await configuration.setUserConfiguration(PARADIS_SESSION_INDEX_SETTING_ENABLED, true);
+		// 3文字未満の語は trigram に掛からず索引全体をなめることになるので、索引を使わない
+		const shortTerm = await controller.search('設定 needle', ['c']);
+		const searched = await controller.search('needle', ['c']);
+		assert.deepStrictEqual({ byDefault, updatingByDefault, off, searchWhenOff, shortTerm, searched, calls }, {
+			byDefault: 'on', updatingByDefault: true, off: 'off', searchWhenOff: undefined, shortTerm: undefined,
+			searched: { covered: [], matches: [] }, calls: ['indexUpdate', 'indexSearch'],
 		});
 	});
 });

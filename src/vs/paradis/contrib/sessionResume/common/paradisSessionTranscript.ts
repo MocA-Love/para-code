@@ -213,3 +213,15 @@ export function paradisTranscriptToolOutputFromItem(item: Record<string, unknown
 	const joined = parts.join('\n');
 	return joined.trim() ? paradisTranscriptClipped(joined, maxChars) : undefined;
 }
+
+/**
+ * 利用者が自分で打ったシェルコマンド（Claude Code の `!` モードやローカルコマンド）の出力の区間。
+ * 発言（`type: user` の行）として記録されるが、中身はコマンドの出力なので、ツールの出力と同じく
+ * 「ツール出力を索引しない」ときは除く。切り詰めで閉じタグが落ちた区間も末尾まで除く。
+ */
+const USER_SHELL_OUTPUT_PATTERN = /<(?<tag>bash-stdout|bash-stderr|local-command-stdout|local-command-stderr)>[\s\S]*?(?:<\/\k<tag>>|$)/g;
+
+/** 発言の本文から、利用者のシェルコマンドの出力の区間を取り除く。 */
+export function paradisStripUserShellOutput(text: string): string {
+	return text.replace(USER_SHELL_OUTPUT_PATTERN, '');
+}

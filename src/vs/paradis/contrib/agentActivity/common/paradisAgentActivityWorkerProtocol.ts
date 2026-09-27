@@ -31,8 +31,15 @@ export interface IParadisWorkerIndexFile {
 export type ParadisActivityWorkerRequest =
 	| { readonly op: 'parse'; readonly files: readonly IParadisActivityParseFile[] }
 	| { readonly op: 'indexUpdate'; readonly dbPath: string; readonly files: readonly IParadisWorkerIndexFile[]; readonly includeToolOutput: boolean }
-	| { readonly op: 'indexSearch'; readonly dbPath: string; readonly query: string }
+	/** 会話ログを読まずに、保存日数とツール出力の設定を今ある索引へ反映する。 */
+	| { readonly op: 'indexPrune'; readonly dbPath: string; readonly retentionThresholdMs: number; readonly includeToolOutput: boolean }
+	/** 更新の列に並ばず、すぐに読む（検索用の別接続）。 */
+	| { readonly op: 'indexSearch'; readonly dbPath: string; readonly query: string; readonly catalogIds: readonly string[] }
 	| { readonly op: 'indexStats'; readonly dbPath: string }
+	/** 実行中の更新を、行の切れ目で打ち切らせる（列に並ばずすぐ効く）。 */
+	| { readonly op: 'indexAbort' }
+	/** 接続を閉じて索引のファイル一式を消す（更新の列に並ぶので、書きかけのまま消すことはない）。 */
+	| { readonly op: 'indexDelete'; readonly dbPath: string }
 	| { readonly op: 'indexClose' };
 
 export interface IParadisActivityWorkerEnvelope {

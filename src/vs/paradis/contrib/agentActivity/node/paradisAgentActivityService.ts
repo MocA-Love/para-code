@@ -14,7 +14,8 @@
 
 import { promises as fs, type Dirent } from 'fs';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { join, resolve } from '../../../../base/common/path.js';
+import { Event } from '../../../../base/common/event.js';
+import { dirname, join, resolve } from '../../../../base/common/path.js';
 import { isLinux } from '../../../../base/common/platform.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
@@ -31,7 +32,7 @@ import {
 	paradisAggregateWorkStats,
 	paradisCreateSpaceMatcher,
 } from '../common/paradisAgentActivity.js';
-import { IParadisSessionIndexStatus, IParadisSessionIndexUpdateRequest } from '../common/paradisSessionIndex.js';
+import { IParadisSessionIndexStatus, PARADIS_SESSION_INDEX_DEFAULT_RETENTION_DAYS } from '../common/paradisSessionIndex.js';
 import { IParadisActivityParseFile, IParadisWorkerIndexFile, ParadisActivityParseReply } from '../common/paradisAgentActivityWorkerProtocol.js';
 import { IParadisIndexSearchResult, IParadisIndexStats, IParadisIndexUpdateResult } from './paradisSessionIndexStore.js';
 import { ParadisAgentActivityWorkerHost } from './paradisAgentActivityWorkerHost.js';
@@ -58,10 +59,20 @@ interface ICachedSummary {
 	readonly summary: IParadisActivityFileSummary;
 }
 
+interface IParadisSessionIndexSettingsSnapshot {
+	readonly enabled: boolean;
+	readonly retentionDays: number;
+	readonly includeToolOutput: boolean;
+}
+
 export interface IParadisAgentActivityServiceOptions {
 	readonly worker: ParadisAgentActivityWorkerHost;
 	/** 全文索引の SQLite の置き場所。 */
 	readonly indexDbPath: string;
+	/** 全文索引の設定（shared process の設定サービスから読む）。未指定なら既定値（オン・90日・ツール出力なし）。 */
+	readonly indexSettings?: () => { readonly enabled?: unknown; readonly retentionDays?: unknown; readonly includeToolOutput?: unknown };
+	/** 全文索引の設定が変わった。 */
+	readonly onDidChangeIndexSettings?: Event<void>;
 	readonly claudeHome?: () => string;
 	readonly codexHome?: () => string;
 	readonly now?: () => number;
@@ -75,8 +86,9 @@ export class ParadisAgentActivityService extends Disposable {
 
 	private readonly cache = new Map<string, ICachedSummary>();
 	private collecting: Promise<void> = Promise.resolve();
-	private indexUpdating: Promise<IParadisIndexUpdateResult> | undefined;
-	private indexDeleted = false;
+	private indexUpdating: Promise<IParadisIndexUpdateResult | undefined> | undefined;
+	private indexDeleting: Promise<void> | undefined;
+	private reconciling: Promise<void> = Promise.resolve();
 	private readonly claudeHome: () => string;
 	private readonly codexHome: () => string;
 	private readonly now: () => number;
@@ -90,6 +102,11 @@ export class ParadisAgentActivityService extends Disposable {
 		this.claudeHome = options.claudeHome ?? paradisClaudeConfigDir;
 		this.codexHome = options.codexHome ?? paradisCodexHome;
 		this.now = options.now ?? Date.now;
+		if (options.onDidChangeIndexSettings) {
+			this._register(options.onDidChangeIndexSettings(() => void this.reconcileIndex()));
+		}
+		// 起動時にも照合する（アプリを閉じている間に設定がオフにされた場合など、変更の通知は来ない）。
+		void this.reconcileIndex();
 	}
 
 	// ---- 使用量・作業実績 ----------------------------------------------------------------------
@@ -97,7 +114,7 @@ export class ParadisAgentActivityService extends Disposable {
 	async spaceUsage(request: IParadisSpaceUsageRequest): Promise<IParadisSpaceUsageResult> {
 		const range = this.normalizeRange(request);
 		const spaces = this.normalizeSpaces(request?.spaces);
-		const { summaries, scannedFiles, failedFiles } = await this.collect(range.sinceMs, request?.bypassCache === true);
+		const { summaries, scannedFiles, failedFiles } = await this.collect(range.sinceMs);
 		const aliases = await this.withRealPaths(spaces);
 		const buckets = paradisAggregateSpaceUsage(summaries, range, paradisCreateSpaceMatcher(aliases, !isLinux));
 		return { buckets, scannedFiles, failedFiles, computedAt: this.now() };
@@ -105,7 +122,7 @@ export class ParadisAgentActivityService extends Disposable {
 
 	async workStats(request: IParadisWorkStatsRequest): Promise<IParadisWorkStatsResult> {
 		const range = this.normalizeRange(request);
-		const { summaries } = await this.collect(range.sinceMs, request?.bypassCache === true);
+		const { summaries } = await this.collect(range.sinceMs);
 		return { agents: paradisAggregateWorkStats(summaries, range), computedAt: this.now() };
 	}
 
@@ -150,9 +167,10 @@ export class ParadisAgentActivityService extends Disposable {
 
 	/**
 	 * `sinceMs` 以降に更新された会話ログを列挙し、変わったファイルだけ worker で読み直す。
-	 * 同時に呼ばれたら順に処理する（2回目は1回目のキャッシュをそのまま使える）。
+	 * 同時に呼ばれたら順に処理する（2回目は1回目のキャッシュをそのまま使える）。更新ボタンでも、大きさ・
+	 * 更新日時・inode が同じファイルは読み直さない（中身が変わっていないので、読み直しても結果は同じ）。
 	 */
-	private collect(sinceMs: number, bypassCache: boolean): Promise<{ summaries: IParadisActivityFileSummary[]; scannedFiles: number; failedFiles: number }> {
+	private collect(sinceMs: number): Promise<{ summaries: IParadisActivityFileSummary[]; scannedFiles: number; failedFiles: number }> {
 		const run = async () => {
 			const files = await this.listTranscripts();
 			const present = new Set(files.map(file => file.path));
@@ -164,7 +182,7 @@ export class ParadisAgentActivityService extends Disposable {
 			const inRange = files.filter(file => file.mtimeMs >= sinceMs);
 			const stale = inRange.filter(file => {
 				const cached = this.cache.get(file.path);
-				return bypassCache || !cached || cached.dev !== file.dev || cached.ino !== file.ino || cached.size !== file.size || cached.mtimeMs !== file.mtimeMs;
+				return !cached || cached.dev !== file.dev || cached.ino !== file.ino || cached.size !== file.size || cached.mtimeMs !== file.mtimeMs;
 			});
 			let failedFiles = 0;
 			for (let index = 0; index < stale.length; index += PARSE_BATCH) {
@@ -182,7 +200,9 @@ export class ParadisAgentActivityService extends Disposable {
 					}
 				});
 			}
-			const summaries = inRange.map(file => this.cache.get(file.path)?.summary).filter((summary): summary is IParadisActivityFileSummary => summary !== undefined);
+			// 古いファイルから渡す。再開・分岐で写された応答や依頼は、集計側で「先に来たファイル」の分として数えるため、
+			// 写した先（新しいファイル）ではなく元の会話に付く。
+			const summaries = [...inRange].sort((a, b) => a.mtimeMs - b.mtimeMs).map(file => this.cache.get(file.path)?.summary).filter((summary): summary is IParadisActivityFileSummary => summary !== undefined);
 			return { summaries, scannedFiles: inRange.length, failedFiles };
 		};
 		const next = this.collecting.then(run, run);
@@ -247,21 +267,59 @@ export class ParadisAgentActivityService extends Disposable {
 	}
 
 	// ---- 全文索引 ----------------------------------------------------------------------------
+	//
+	// 「オフなら索引は残っていない」はここ（shared process）で守る。起動したときと設定が変わったときに
+	// 設定と索引を照合し、オフなら消す。画面側がオフを知る前に更新を頼んできても、設定がオフなら断る。
+
+	/** 起動時・設定の変更時に、設定と索引を照合する。重ねて呼ばれたら最後の1回にまとめる。 */
+	private reconcileIndex(): Promise<void> {
+		const run = async () => {
+			const settings = this.indexSettings();
+			if (!settings.enabled) {
+				await this.indexDelete();
+				return;
+			}
+			if (await this.indexExists()) {
+				await this.options.worker.request({
+					op: 'indexPrune',
+					dbPath: this.options.indexDbPath,
+					retentionThresholdMs: this.now() - settings.retentionDays * DAY_MS,
+					includeToolOutput: settings.includeToolOutput,
+				});
+			}
+		};
+		const next = this.reconciling.then(run, run);
+		this.reconciling = next.catch(error => this.logService.warn('[ParadisAgentActivity] unable to reconcile the session index with the settings', error));
+		return this.reconciling;
+	}
+
+	/** 起動時・設定の変更時の照合が終わるのを待つ（テスト・診断用）。 */
+	whenIndexReconciled(): Promise<void> {
+		return this.reconciling;
+	}
+
+	private indexSettings(): IParadisSessionIndexSettingsSnapshot {
+		const value = this.options.indexSettings?.() ?? {};
+		const retentionDays = typeof value.retentionDays === 'number' && value.retentionDays > 0 ? Math.min(value.retentionDays, 3650) : PARADIS_SESSION_INDEX_DEFAULT_RETENTION_DAYS;
+		// 既定はオン。明示的に false のときだけオフ。
+		return { enabled: value.enabled !== false, retentionDays, includeToolOutput: value.includeToolOutput === true };
+	}
 
 	/**
 	 * 索引を会話ログに合わせる。保存日数より古い会話と、消された会話の分は索引から消える。
-	 * 更新中にもう一度呼ばれたら、実行中のものを返す（呼び出し側は数十秒おきにしか呼ばない）。
+	 * 設定がオフのとき・索引を消している最中は何もしない。更新中にもう一度呼ばれたら、実行中のものを返す。
 	 */
-	indexUpdate(request: IParadisSessionIndexUpdateRequest): Promise<IParadisIndexUpdateResult> {
+	indexUpdate(): Promise<IParadisIndexUpdateResult | undefined> {
+		const settings = this.indexSettings();
+		if (!settings.enabled || this.indexDeleting) {
+			return Promise.resolve(undefined);
+		}
 		if (this.indexUpdating) {
 			return this.indexUpdating;
 		}
-		const retentionDays = typeof request?.retentionDays === 'number' && request.retentionDays > 0 ? Math.min(request.retentionDays, 3650) : 90;
-		const includeToolOutput = request?.includeToolOutput === true;
-		this.indexDeleted = false;
 		const update = (async () => {
-			await fs.mkdir(join(this.options.indexDbPath, '..'), { recursive: true });
-			const threshold = this.now() - retentionDays * DAY_MS;
+			await fs.mkdir(dirname(this.options.indexDbPath), { recursive: true, mode: 0o700 });
+			const threshold = this.now() - settings.retentionDays * DAY_MS;
 			const files: IParadisWorkerIndexFile[] = (await this.listTranscripts())
 				.filter(file => !file.subagentFile && file.mtimeMs >= threshold)
 				.sort((a, b) => b.mtimeMs - a.mtimeMs)
@@ -269,7 +327,10 @@ export class ParadisAgentActivityService extends Disposable {
 					path: file.path, agent: file.agent, catalogId: paradisSessionCatalogId(file.agent, file.path),
 					dev: file.dev, ino: file.ino, size: file.size, mtimeMs: file.mtimeMs,
 				}));
-			return this.options.worker.request<IParadisIndexUpdateResult>({ op: 'indexUpdate', dbPath: this.options.indexDbPath, files, includeToolOutput });
+			if (this.indexDeleting || !this.indexSettings().enabled) {
+				return undefined;
+			}
+			return this.options.worker.request<IParadisIndexUpdateResult>({ op: 'indexUpdate', dbPath: this.options.indexDbPath, files, includeToolOutput: settings.includeToolOutput });
 		})();
 		this.indexUpdating = update;
 		void update.finally(() => {
@@ -280,37 +341,59 @@ export class ParadisAgentActivityService extends Disposable {
 		return update;
 	}
 
-	async indexSearch(query: string): Promise<IParadisIndexSearchResult> {
-		if (typeof query !== 'string' || !(await this.indexExists())) {
-			return { covered: [], matches: [] };
+	/**
+	 * 索引で探す。設定がオフ・削除中・索引がまだ無いときは、すべて `uncovered`（従来の検索で探す）として返す。
+	 * 更新の列には並ばないので、索引を作っている最中でも待たされない。
+	 */
+	async indexSearch(query: string, catalogIds: readonly string[]): Promise<IParadisIndexSearchResult> {
+		const requested = Array.isArray(catalogIds) ? catalogIds.filter((id): id is string => typeof id === 'string').slice(0, 5000) : [];
+		if (typeof query !== 'string' || !this.indexSettings().enabled || this.indexDeleting || !(await this.indexExists())) {
+			return { terms: [], uncovered: requested, matches: [] };
 		}
-		return this.options.worker.request<IParadisIndexSearchResult>({ op: 'indexSearch', dbPath: this.options.indexDbPath, query: query.slice(0, 200) });
+		return this.options.worker.request<IParadisIndexSearchResult>({ op: 'indexSearch', dbPath: this.options.indexDbPath, query: query.slice(0, 200), catalogIds: requested });
 	}
 
 	async indexStatus(): Promise<IParadisSessionIndexStatus> {
+		const updating = this.indexUpdating !== undefined;
 		if (!(await this.indexExists())) {
-			return { exists: false, files: 0, messages: 0, updating: this.indexUpdating !== undefined };
+			return { exists: false, files: 0, messages: 0, updating };
 		}
 		const stats = await this.options.worker.request<IParadisIndexStats>({ op: 'indexStats', dbPath: this.options.indexDbPath });
-		return { exists: true, files: stats.files, messages: stats.messages, updating: this.indexUpdating !== undefined };
+		return { exists: true, files: stats.files, messages: stats.messages, updating };
 	}
 
-	/** 索引を消す。更新中なら終わるのを待ってから消す（書きかけのファイルを残さない）。 */
-	async indexDelete(): Promise<void> {
-		this.indexDeleted = true;
-		await this.indexUpdating?.catch(() => undefined);
-		if (this.options.worker.running) {
-			await this.options.worker.request({ op: 'indexClose' }).catch(() => undefined);
+	/**
+	 * 索引を消す。実行中の更新は行の切れ目で打ち切らせ、worker の中で「接続を閉じる → ファイルを消す」を
+	 * 更新と同じ列で行う（書きかけのまま消したり、消した直後に作り直されたりしないように）。
+	 * 同時に何度呼ばれても1回にまとめる。
+	 */
+	indexDelete(): Promise<void> {
+		if (this.indexDeleting) {
+			return this.indexDeleting;
 		}
-		for (const suffix of ['', '-wal', '-shm', '-journal']) {
-			await fs.rm(`${this.options.indexDbPath}${suffix}`, { force: true });
-		}
+		const deleting = (async () => {
+			if (this.options.worker.running) {
+				await this.options.worker.request({ op: 'indexAbort' }).catch(() => undefined);
+				await this.indexUpdating?.catch(() => undefined);
+				await this.options.worker.request({ op: 'indexDelete', dbPath: this.options.indexDbPath });
+			} else {
+				await this.indexUpdating?.catch(() => undefined);
+				// worker が動いていなければ開いている接続も無いので、ここで消してよい（消すためだけに worker を起こさない）。
+				for (const suffix of ['', '-wal', '-shm', '-journal']) {
+					await fs.rm(`${this.options.indexDbPath}${suffix}`, { force: true });
+				}
+			}
+		})();
+		this.indexDeleting = deleting;
+		void deleting.finally(() => {
+			if (this.indexDeleting === deleting) {
+				this.indexDeleting = undefined;
+			}
+		}).catch(() => undefined);
+		return deleting;
 	}
 
 	private async indexExists(): Promise<boolean> {
-		if (this.indexDeleted) {
-			return false;
-		}
 		try {
 			return (await fs.stat(this.options.indexDbPath)).isFile();
 		} catch {

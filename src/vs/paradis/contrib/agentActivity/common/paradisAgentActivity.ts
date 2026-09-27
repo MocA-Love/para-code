@@ -58,6 +58,13 @@ export interface IParadisActivityFileSummary {
 	readonly days: { readonly [day: string]: IParadisActivityDay };
 	/** エージェントが作った PR の URL と、それが記録された日。 */
 	readonly prs: readonly { readonly url: string; readonly day: string }[];
+	/**
+	 * 識別子の付いた応答（Claude Code の `message.id:requestId`）のトークン。再開・分岐で前の会話の行が
+	 * 新しいファイルへ写されることがあるので、`days.models` には入れず、集計時にファイルをまたいで重複を除く。
+	 */
+	readonly keyedUsage?: readonly (readonly [key: string, day: string, model: string, input: number, output: number, cacheCreation: number, cacheRead: number])[];
+	/** 識別子（行の `uuid`）の付いたユーザーの依頼。同じ理由で `days.turns` には入れない。 */
+	readonly keyedTurns?: readonly (readonly [key: string, day: string])[];
 }
 
 // ---- 電文（renderer ⇔ shared process） ----------------------------------------------------------
@@ -182,6 +189,8 @@ export class ParadisActivityTranscriptParser {
 
 	private readonly days = new Map<string, IMutableDay>();
 	private readonly seenUsage = new Set<string>();
+	private readonly keyedUsage: [string, string, string, number, number, number, number][] = [];
+	private readonly keyedTurns: [string, string][] = [];
 	private readonly prCommandIds = new Set<string>();
 	private readonly prs = new Map<string, string>();
 	private sessionId: string | undefined;
@@ -241,6 +250,8 @@ export class ParadisActivityTranscriptParser {
 			root: this.root,
 			days,
 			prs: [...this.prs].map(([url, day]) => ({ url, day })),
+			keyedUsage: this.keyedUsage,
+			keyedTurns: this.keyedTurns,
 		};
 	}
 
@@ -307,13 +318,18 @@ export class ParadisActivityTranscriptParser {
 						this.seenUsage.add(key);
 					}
 					const model = paradisTranscriptString(message.model) ?? 'unknown';
-					if (model !== '<synthetic>') {
-						this.addUsage(timestamp, model, {
-							input: nonNegative(usage.input_tokens),
-							output: nonNegative(usage.output_tokens),
-							cacheCreation: nonNegative(usage.cache_creation_input_tokens),
-							cacheRead: nonNegative(usage.cache_read_input_tokens),
-						});
+					const tokens: IParadisTokenCounts = {
+						input: nonNegative(usage.input_tokens),
+						output: nonNegative(usage.output_tokens),
+						cacheCreation: nonNegative(usage.cache_creation_input_tokens),
+						cacheRead: nonNegative(usage.cache_read_input_tokens),
+					};
+					if (model === '<synthetic>' || timestamp === undefined || paradisTotalTokens(tokens) === 0) {
+						// 数えるものが無い
+					} else if (key) {
+						this.keyedUsage.push([key, paradisActivityDayKey(timestamp), model, tokens.input, tokens.output, tokens.cacheCreation, tokens.cacheRead]);
+					} else {
+						this.addUsage(timestamp, model, tokens);
 					}
 				}
 			}
@@ -343,7 +359,12 @@ export class ParadisActivityTranscriptParser {
 			}
 			const spoken = paradisTranscriptMessageFromItem(item, 'claude', 64);
 			if (spoken?.role === 'user' && !spoken.text.startsWith('<local-command-')) {
-				this.addTurn(timestamp);
+				const uuid = paradisTranscriptString(item.uuid);
+				if (uuid && timestamp !== undefined && this.root) {
+					this.keyedTurns.push([uuid, paradisActivityDayKey(timestamp)]);
+				} else {
+					this.addTurn(timestamp);
+				}
 			}
 		}
 	}
@@ -455,6 +476,22 @@ export function paradisAggregateSpaceUsage(
 	matchSpace: (cwd: string | undefined) => string | undefined,
 ): IParadisSpaceUsageBucket[] {
 	const buckets = new Map<string, { days: Map<string, Map<string, IParadisTokenCounts>>; sessions: number }>();
+	// 再開・分岐で前の会話の応答が新しいファイルへ写されることがあるので、応答の識別子はファイルをまたいで
+	// 1回だけ数える（ccusage と同じ扱い。先に渡されたファイルが勝つ）。
+	const seenUsage = new Set<string>();
+	const add = (key: string, day: string, model: string, tokens: IParadisTokenCounts) => {
+		let bucket = buckets.get(key);
+		if (!bucket) {
+			bucket = { days: new Map(), sessions: 0 };
+			buckets.set(key, bucket);
+		}
+		let models = bucket.days.get(day);
+		if (!models) {
+			models = new Map();
+			bucket.days.set(day, models);
+		}
+		models.set(model, addTokens(models.get(model) ?? ZERO_TOKENS, tokens));
+	};
 	for (const summary of summaries) {
 		const key = matchSpace(summary.cwd) ?? PARADIS_SPACE_USAGE_OTHER_KEY;
 		let active = false;
@@ -463,17 +500,17 @@ export function paradisAggregateSpaceUsage(
 				continue;
 			}
 			for (const [model, tokens] of Object.entries(value.models)) {
-				let bucket = buckets.get(key);
-				if (!bucket) {
-					bucket = { days: new Map(), sessions: 0 };
-					buckets.set(key, bucket);
-				}
-				let models = bucket.days.get(day);
-				if (!models) {
-					models = new Map();
-					bucket.days.set(day, models);
-				}
-				models.set(model, addTokens(models.get(model) ?? ZERO_TOKENS, tokens));
+				add(key, day, model, tokens);
+				active = true;
+			}
+		}
+		for (const [usageKey, day, model, input, output, cacheCreation, cacheRead] of summary.keyedUsage ?? []) {
+			if (seenUsage.has(usageKey)) {
+				continue;
+			}
+			seenUsage.add(usageKey);
+			if (inRange(day, request.since, request.until)) {
+				add(key, day, model, { input, output, cacheCreation, cacheRead });
 				active = true;
 			}
 		}
@@ -488,29 +525,49 @@ export function paradisAggregateSpaceUsage(
 	}));
 }
 
-/** ファイルごとの集計を、エージェントごとの作業実績へまとめる。 */
+/**
+ * ファイルごとの集計を、エージェントごとの作業実績へまとめる。再開・分岐で写された依頼は、行の識別子で
+ * ファイルをまたいで1回だけ数える（写しただけのファイルはエージェント数にも入らない）。稼働時間は
+ * ファイルごとの記録の間隔から出すので、写された区間は重ねて数えることがある。
+ */
 export function paradisAggregateWorkStats(summaries: Iterable<IParadisActivityFileSummary>, request: Pick<IParadisWorkStatsRequest, 'since' | 'until'>): IParadisWorkStatsResult['agents'] {
 	const agents = new Map<ParadisActivityAgent, { sessions: number; turns: number; activeMs: number; prs: Set<string>; days: Map<string, { turns: number; activeMs: number }> }>();
 	for (const agent of PARADIS_ACTIVITY_AGENTS) {
 		agents.set(agent, { sessions: 0, turns: 0, activeMs: 0, prs: new Set(), days: new Map() });
 	}
+	const seenTurns = new Set<string>();
 	for (const summary of summaries) {
 		if (!summary.root) {
 			continue;
 		}
 		const target = agents.get(summary.agent)!;
+		const dayEntry = (day: string) => {
+			const entry = target.days.get(day) ?? { turns: 0, activeMs: 0 };
+			target.days.set(day, entry);
+			return entry;
+		};
 		let turns = 0;
 		for (const [day, value] of Object.entries(summary.days)) {
 			if (!inRange(day, request.since, request.until) || (value.turns === 0 && value.activeMs === 0)) {
 				continue;
 			}
-			const entry = target.days.get(day) ?? { turns: 0, activeMs: 0 };
+			const entry = dayEntry(day);
 			entry.turns += value.turns;
 			entry.activeMs += value.activeMs;
-			target.days.set(day, entry);
 			target.turns += value.turns;
 			target.activeMs += value.activeMs;
 			turns += value.turns;
+		}
+		for (const [turnKey, day] of summary.keyedTurns ?? []) {
+			if (seenTurns.has(turnKey)) {
+				continue;
+			}
+			seenTurns.add(turnKey);
+			if (inRange(day, request.since, request.until)) {
+				dayEntry(day).turns++;
+				target.turns++;
+				turns++;
+			}
 		}
 		if (turns > 0) {
 			target.sessions++;
@@ -598,8 +655,8 @@ function agentForModel(model: string): string {
  * ccusage の金額を、スペースごとのトークン比率で按分する。
  *
  * 日ごと・モデルごとに「そのモデルをその日に使ったトークン（種類ごとに重み付け）」の比で分ける。
- * 同じモデルの記録が会話ログに無ければ、同じエージェントのその日の全モデル、それも無ければその日の
- * 全記録の比で分ける。どれも無い金額は {@link IParadisSpaceCostAllocation.unallocatedCost} に残す。
+ * 同じモデルの記録が会話ログに無ければ、同じエージェントのその日の全モデルの比で分ける。それも無い金額と、
+ * Claude Code・Codex 以外（Gemini など）の金額は {@link IParadisSpaceCostAllocation.unallocatedCost} に残す。
  * こうすると、スペース別の合計と未割り当ての和が ccusage の合計に一致する。
  */
 export function paradisAllocateSpaceCosts(costDays: readonly IParadisCostDay[], buckets: readonly IParadisSpaceUsageBucket[], since: string, until: string): IParadisSpaceCostAllocation {
@@ -612,7 +669,6 @@ export function paradisAllocateSpaceCosts(costDays: readonly IParadisCostDay[], 
 		}
 		const weightsByModel = new Map<string, Map<string, number>>();
 		const weightsByAgent = new Map<string, Map<string, number>>();
-		const weightsAll = new Map<string, number>();
 		for (const bucket of buckets) {
 			for (const [model, tokens] of Object.entries(bucket.days[costDay.date] ?? {})) {
 				const weight = paradisWeightedTokens(tokens);
@@ -627,7 +683,6 @@ export function paradisAllocateSpaceCosts(costDays: readonly IParadisCostDay[], 
 					}
 					inner.set(bucket.key, (inner.get(bucket.key) ?? 0) + weight);
 				}
-				weightsAll.set(bucket.key, (weightsAll.get(bucket.key) ?? 0) + weight);
 			}
 		}
 		for (const entry of costDay.models) {
@@ -636,7 +691,9 @@ export function paradisAllocateSpaceCosts(costDays: readonly IParadisCostDay[], 
 			}
 			totalCost += entry.cost;
 			const agent = entry.agent === 'claude' || entry.agent === 'codex' ? entry.agent : agentForModel(entry.model);
-			const weights = weightsByModel.get(modelKey(entry.model)) ?? weightsByAgent.get(agent) ?? (weightsAll.size > 0 ? weightsAll : undefined);
+			// 同じモデル、なければ同じエージェントの記録だけで分ける。別のエージェントや他のツール（Gemini など）の
+			// 金額をスペースへ配らないよう、どちらも無い分は未割り当てに残す。
+			const weights = weightsByModel.get(modelKey(entry.model)) ?? (agent === 'other' ? undefined : weightsByAgent.get(agent));
 			const sum = weights ? [...weights.values()].reduce((a, b) => a + b, 0) : 0;
 			if (!weights || sum <= 0) {
 				unallocatedCost += entry.cost;

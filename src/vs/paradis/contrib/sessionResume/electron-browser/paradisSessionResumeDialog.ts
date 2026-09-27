@@ -39,6 +39,7 @@ import {
 	PARADIS_RESUME_LIST_OPTIONS_STORAGE_KEY,
 	ParadisResumeGrouping,
 	ParadisResumeSortOrder,
+	paradisCombineIndexedSearch,
 	paradisGroupResumeSessions,
 	paradisParseResumeListOptions,
 	paradisResumeGroupLabel,
@@ -85,7 +86,8 @@ export class ParadisSessionResumeDialog extends Disposable {
 	private spaceNavAll: { button: HTMLButtonElement; count: HTMLElement } | undefined;
 	/** 一覧上部のツールバー（並び・グループ・空を隠す・全文索引の状態）。 */
 	private listBar: HTMLElement | undefined;
-	private readonly listBarDisposables = this._register(new DisposableStore());
+	/** 一覧上部に出す全文索引の状態。索引の状態が変わったときは、この要素だけを書き換える。 */
+	private indexStatus: HTMLElement | undefined;
 	private listOptions: IParadisResumeListOptions;
 	private readonly indexController: ParadisSessionIndexController;
 	private readonly rowMenu: ParadisSessionResumeRowMenu;
@@ -141,7 +143,10 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.indexController = this._register(instantiationService.createInstance(ParadisSessionIndexController));
 		this.rowMenu = instantiationService.createInstance(ParadisSessionResumeRowMenu, this.client);
 		this._register(this.indexController.onDidChange(() => {
-			this.renderListBar();
+			// ツールバーは作り直さず、状態の表示だけを書き換える（開いている select やフォーカスを奪わない）。
+			if (this.indexStatus) {
+				this.indexController.renderStatus(this.indexStatus);
+			}
 			if (this.query) {
 				this.searchScheduler.schedule();
 			}
@@ -365,15 +370,13 @@ export class ParadisSessionResumeDialog extends Disposable {
 	}
 
 	/**
-	 * 一覧上部のツールバー（並び・グループ・空を隠す）と、全文索引の状態を描き直す。
-	 * 一覧の再描画（render）とは別に持つ。select を開いている最中に一覧が描き直されても閉じないように。
+	 * 一覧上部のツールバー（並び・グループ・空を隠す・全文索引の状態）を作る。ダイアログを開いたときに1回だけ作り、
+	 * 一覧の再描画（render）や索引の状態の変化では作り直さない（select を開いている最中に閉じないように）。
 	 */
 	private renderListBar(): void {
 		if (!this.listBar) {
 			return;
 		}
-		this.listBarDisposables.clear();
-		dom.clearNode(this.listBar);
 
 		const addSelect = <T extends string>(label: string, values: readonly T[], current: T, text: (value: T) => string, onChange: (value: T) => void) => {
 			const wrap = dom.append(this.listBar!, $('label.listbar-field'));
@@ -385,7 +388,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 				option.textContent = text(value);
 			}
 			select.value = current;
-			this.listBarDisposables.add(dom.addDisposableListener(select, dom.EventType.CHANGE, () => onChange(select.value as T)));
+			this._register(dom.addDisposableListener(select, dom.EventType.CHANGE, () => onChange(select.value as T)));
 		};
 		addSelect<ParadisResumeSortOrder>(localize('paradis.sessionResume.sortLabel', "並び"), ['updated', 'created', 'title'], this.listOptions.sort, paradisResumeSortLabel,
 			sort => this.setListOptions({ ...this.listOptions, sort }));
@@ -397,9 +400,10 @@ export class ParadisSessionResumeDialog extends Disposable {
 		checkbox.checked = this.listOptions.hideEmpty;
 		dom.append(hideEmpty, $('span')).textContent = localize('paradis.sessionResume.hideEmpty', "空を隠す");
 		hideEmpty.title = localize('paradis.sessionResume.hideEmptyTitle', "依頼が1つも無いセッション（起動しただけで閉じたもの）を隠します");
-		this.listBarDisposables.add(dom.addDisposableListener(checkbox, dom.EventType.CHANGE, () => this.setListOptions({ ...this.listOptions, hideEmpty: checkbox.checked })));
+		this._register(dom.addDisposableListener(checkbox, dom.EventType.CHANGE, () => this.setListOptions({ ...this.listOptions, hideEmpty: checkbox.checked })));
 		dom.append(this.listBar, $('span.listbar-spacer'));
-		this.indexController.renderStatus(this.listBar);
+		this.indexStatus = dom.append(this.listBar, $('span.paradis-session-index-status'));
+		this.indexController.renderStatus(this.indexStatus);
 	}
 
 	private setListOptions(options: IParadisResumeListOptions): void {
@@ -679,31 +683,30 @@ export class ParadisSessionResumeDialog extends Disposable {
 	/**
 	 * 会話の中身まで探す。全文索引がオンなら索引で探し、索引に入っていない会話（保存日数より古いもの、
 	 * SSH 先のもの、作成中でまだ入っていないもの）だけを従来の方法（会話の先頭と末尾を読む）で探す。
-	 * タイトルやパスなどセッション情報での一致は索引に無いので、ここで見る。
+	 *
+	 * 従来の方法と同じく「どの語も、セッション情報（タイトル・パス・ID など）か会話の本文のどちらかに含まれる」
+	 * ものを一致とする。語ごとにセッション情報か本文かを判定するので、スペース名と会話の語を混ぜても見つかる。
 	 */
 	private async searchSessions(query: string): Promise<readonly IParadisResumeSearchResult[]> {
 		const catalogIds = this.sessions.map(session => session.catalogId);
-		const indexed = await this.indexController.search(query);
+		const indexed = await this.indexController.search(query, catalogIds);
 		if (!indexed) {
 			return this.client.search(query, catalogIds);
 		}
-		const covered = new Set(indexed.covered);
-		const terms = query.split(/\s+/).filter(Boolean);
+		const uncovered = new Set(indexed.uncovered);
+		const bodyMatches = new Map(indexed.matches.map(match => [match.catalogId, match]));
 		const results = new Map<string, IParadisResumeSearchResult>();
 		for (const session of this.sessions) {
-			const metadata = `${session.title}\n${session.preview}\n${session.cwd}\n${session.id}\n${session.spaceName}`.toLocaleLowerCase();
-			if (covered.has(session.catalogId) && terms.every(term => metadata.includes(term))) {
-				results.set(session.catalogId, { catalogId: session.catalogId, matchCount: 0, snippet: '', source: 'metadata' });
+			if (uncovered.has(session.catalogId)) {
+				continue;
+			}
+			const result = paradisCombineIndexedSearch(session, indexed.terms, bodyMatches.get(session.catalogId));
+			if (result) {
+				results.set(session.catalogId, result);
 			}
 		}
-		for (const match of indexed.matches) {
-			if (!results.has(match.catalogId)) {
-				results.set(match.catalogId, { catalogId: match.catalogId, matchCount: match.matchCount, snippet: match.snippet, source: 'conversation' });
-			}
-		}
-		const uncovered = catalogIds.filter(catalogId => !covered.has(catalogId));
-		if (uncovered.length > 0) {
-			for (const match of await this.client.search(query, uncovered)) {
+		if (uncovered.size > 0) {
+			for (const match of await this.client.search(query, [...uncovered])) {
 				results.set(match.catalogId, match);
 			}
 		}

@@ -18,6 +18,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
@@ -25,6 +26,13 @@ import { IRemoteAgentService } from '../../../../workbench/services/remote/commo
 import { IParadisResumeSession } from '../common/paradisSessionResume.js';
 import { paradisResumeCommandLine } from '../common/paradisSessionResumeListOptions.js';
 import { ParadisSessionResumeClient } from './paradisSessionResumeClient.js';
+
+/**
+ * メニューの層。HTML のコンテキストメニューの z-index は `2575 + layer` で、セッション履歴のモーダル
+ * （z-index 2700）と同じコンテナに入る。layer を渡さないとモーダルの下に描かれて見えないので、
+ * モーダルより上（2775）へ出す。
+ */
+const PARADIS_SESSION_RESUME_MENU_LAYER = 200;
 
 export class ParadisSessionResumeRowMenu {
 
@@ -36,6 +44,7 @@ export class ParadisSessionResumeRowMenu {
 		@IEditorService private readonly editorService: IEditorService,
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IFileService private readonly fileService: IFileService,
 	) { }
 
 	/** メニューを開く。`anchor` はボタン要素か、右クリックした位置。 */
@@ -44,6 +53,7 @@ export class ParadisSessionResumeRowMenu {
 			getAnchor: () => anchor,
 			getActions: () => this.actions(session),
 			onHide,
+			layer: PARADIS_SESSION_RESUME_MENU_LAYER,
 		});
 	}
 
@@ -77,7 +87,19 @@ export class ParadisSessionResumeRowMenu {
 					await this.nativeHostService.showItemInFolder(transcriptPath);
 				})
 			}),
-			toAction({ id: 'paradis.sessionResume.openFolder', label: localize('paradis.sessionResume.openFolder', "作業フォルダを開く"), enabled: local, run: run(async () => { await this.nativeHostService.openExternal(URI.file(session.cwd).toString(true)); }) }),
+			toAction({
+				id: 'paradis.sessionResume.openFolder', label: localize('paradis.sessionResume.openFolder', "作業フォルダを開く"), enabled: local, run: run(async () => {
+					// 会話ログに書かれた作業フォルダは、そのまま外部で開くとアプリ（.app / .command など）を起動しかねない。
+					// ディレクトリであることを確かめてから開く。
+					const folder = URI.file(session.cwd);
+					const stat = await this.fileService.stat(folder).catch(() => undefined);
+					if (!stat?.isDirectory) {
+						this.notificationService.info(localize('paradis.sessionResume.folderMissing', "作業フォルダが見つかりません: {0}", session.cwd));
+						return;
+					}
+					await this.nativeHostService.openExternal(folder.toString(true));
+				})
+			}),
 		];
 	}
 

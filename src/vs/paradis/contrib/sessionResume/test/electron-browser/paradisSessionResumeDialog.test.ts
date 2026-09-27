@@ -24,7 +24,7 @@ import { paradisResumeAgentInWorkspace } from '../../../workspaceSwitch/electron
 import { ParadisSessionResumeDialog, paradisOpenSessionResumeDialog } from '../../electron-browser/paradisSessionResumeDialog.js';
 import { ParadisSessionResumeRowMenu } from '../../electron-browser/paradisSessionResumeRowMenu.js';
 import { ParadisSessionIndexController } from '../../../agentActivity/electron-browser/paradisSessionIndexController.js';
-import { IParadisSessionIndexSearchResult } from '../../../agentActivity/electron-browser/paradisAgentActivityClient.js';
+import { IParadisSessionIndexSearchResult } from '../../../agentActivity/common/paradisSessionIndex.js';
 import { IStorageService } from '../../../../../platform/storage/common/storage.js';
 import { IParadisResumeListRequestWithUri } from '../../electron-browser/paradisSessionResumeClient.js';
 import { IParadisResumePreview, IParadisResumeSearchResult, IParadisResumeSession } from '../../common/paradisSessionResume.js';
@@ -108,18 +108,20 @@ suite('ParadisSessionResumeDialog', () => {
 		}
 	});
 
-	test('searches the full-text index for indexed sessions and scans only the sessions the index does not cover', async () => {
+	test('matches each term in the session info or the indexed body, and scans only the sessions the index does not cover', async () => {
 		const client = new TestResumeClient();
 		client.listResult = async () => [testSession('one', 'First session'), testSession('two', 'Second session'), testSession('three', 'Needle in the title')];
 		client.searchResult = async () => [{ catalogId: 'catalog-two', matchCount: 1, snippet: 'needle from the scan', source: 'conversation' }];
+		// 「workspace」はセッション情報（スペース名）に、「needle」は one の本文にだけある。語ごとに見るので one も一致する。
 		const fixture = createRefreshFixture(client, async () => ({
-			covered: ['catalog-one', 'catalog-three'],
-			matches: [{ catalogId: 'catalog-one', matchCount: 2, snippet: 'needle from the index' }],
+			terms: ['workspace', 'needle'],
+			uncovered: ['catalog-two'],
+			matches: [{ catalogId: 'catalog-one', terms: [1], matchCount: 2, snippet: 'needle from the index' }],
 		}));
 		try {
 			await fixture.load();
 			const search = fixture.root.querySelector<HTMLInputElement>('input[type="search"]')!;
-			search.value = 'needle';
+			search.value = 'workspace needle';
 			search.dispatchEvent(new Event('input'));
 			await timeout(300);
 			await flushMicrotasks();

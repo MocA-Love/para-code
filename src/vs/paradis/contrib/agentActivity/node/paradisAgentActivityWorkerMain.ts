@@ -12,15 +12,18 @@
 // などが遅れる。読み取り・集計・全文索引（同期 API の SQLite）はすべてここで行う。
 // パッケージ版でもこの場所へ出力されるよう、`build/next/index.ts` の入口一覧に載せてある。
 
+import { existsSync } from 'fs';
 import { parentPort } from 'worker_threads';
 import { ParadisActivityTranscriptParser } from '../common/paradisAgentActivity.js';
 import { IParadisActivityWorkerEnvelope, ParadisActivityParseReply, ParadisActivityWorkerReply, ParadisActivityWorkerRequest } from '../common/paradisAgentActivityWorkerProtocol.js';
-import { ParadisSessionIndexStore } from './paradisSessionIndexStore.js';
+import { ParadisSessionIndexStore, paradisRemoveIndexFiles } from './paradisSessionIndexStore.js';
 import { paradisReadTranscriptLines } from './paradisTranscriptLineReader.js';
 
 let store: { readonly path: string; readonly store: ParadisSessionIndexStore } | undefined;
 /** 索引への書き込みは1本ずつ（同じ接続で BEGIN を重ねない）。 */
 let indexQueue: Promise<unknown> = Promise.resolve();
+/** 索引の削除が来たら立てる。実行中の更新は行の切れ目でこれを見て止まる。次の更新の開始で下ろす。 */
+let aborted = false;
 
 function openStore(dbPath: string): ParadisSessionIndexStore {
 	if (store?.path !== dbPath) {
@@ -60,11 +63,28 @@ async function handle(request: ParadisActivityWorkerRequest): Promise<unknown> {
 		case 'parse':
 			return parseFiles(request);
 		case 'indexUpdate':
-			return queued(() => openStore(request.dbPath).update(request.files, { includeToolOutput: request.includeToolOutput }));
+			return queued(() => {
+				aborted = false;
+				return openStore(request.dbPath).update(request.files, { includeToolOutput: request.includeToolOutput }, () => !aborted);
+			});
+		case 'indexPrune':
+			return queued(() => existsSync(request.dbPath) ? openStore(request.dbPath).prune(request.retentionThresholdMs, request.includeToolOutput) : 0);
 		case 'indexSearch':
-			return queued(() => openStore(request.dbPath).search(request.query));
+			// 更新の列には並ばない。更新は別の接続で書いているので、読みは WAL で並行できる。
+			if (store?.path !== request.dbPath && !existsSync(request.dbPath)) {
+				return { terms: [], uncovered: request.catalogIds, matches: [] };
+			}
+			return openStore(request.dbPath).search(request.query, request.catalogIds);
 		case 'indexStats':
-			return queued(() => openStore(request.dbPath).stats());
+			return existsSync(request.dbPath) ? openStore(request.dbPath).stats() : { files: 0, messages: 0 };
+		case 'indexAbort':
+			aborted = true;
+			return undefined;
+		case 'indexDelete':
+			return queued(() => {
+				closeStore();
+				paradisRemoveIndexFiles(request.dbPath);
+			});
 		case 'indexClose':
 			return queued(() => closeStore());
 	}

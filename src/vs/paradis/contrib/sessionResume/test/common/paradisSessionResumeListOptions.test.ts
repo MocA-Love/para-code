@@ -10,6 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisResumeSession } from '../../common/paradisSessionResume.js';
 import {
+	paradisCombineIndexedSearch,
 	paradisGroupResumeSessions,
 	paradisParseResumeListOptions,
 	paradisResumeCommandLine,
@@ -50,12 +51,26 @@ suite('ParadisSessionResumeListOptions', () => {
 			broken: paradisParseResumeListOptions('{not json'),
 			partial: paradisParseResumeListOptions(JSON.stringify({ sort: 'title', group: 'nope', hideEmpty: true })),
 			posix: paradisResumeCommandLine({ agent: 'claude', id: 'abc', cwd: `/work/it's` }, false),
-			windows: paradisResumeCommandLine({ agent: 'codex', id: 'def', cwd: 'C:\\work\\repo' }, true),
+			windows: paradisResumeCommandLine({ agent: 'codex', id: 'def', cwd: `C:\\work\\$(calc) it's %TEMP%` }, true),
 		}, {
 			broken: { sort: 'updated', group: 'space', hideEmpty: false },
 			partial: { sort: 'title', group: 'space', hideEmpty: true },
 			posix: `cd '/work/it'\\''s' && claude --resume abc`,
-			windows: 'cd /d "C:\\work\\repo" && codex resume def',
+			windows: `Set-Location -LiteralPath 'C:\\work\\$(calc) it''s %TEMP%'; codex resume def`,
+		});
+	});
+
+	test('matches every term either in the session info or in the indexed body', () => {
+		const target = session('a', 'claude', 'Login screen', '/work/para-code', 30);
+		const terms = ['para-code', 'バグ修正'];
+		assert.deepStrictEqual({
+			mixed: paradisCombineIndexedSearch(target, terms, { terms: [1], matchCount: 3, snippet: 'バグ修正の話' }),
+			metadataOnly: paradisCombineIndexedSearch(target, ['login', 'para-code'], undefined),
+			missing: paradisCombineIndexedSearch(target, terms, { terms: [0], matchCount: 1, snippet: 'para-code' }),
+		}, {
+			mixed: { catalogId: 'c-a', matchCount: 3, snippet: 'バグ修正の話', source: 'conversation' },
+			metadataOnly: { catalogId: 'c-a', matchCount: 0, snippet: '', source: 'metadata' },
+			missing: undefined,
 		});
 	});
 });

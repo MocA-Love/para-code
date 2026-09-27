@@ -289,14 +289,15 @@
 
 /* allow-any-unicode-next-line */
 /* 行末の「…」。マウスを乗せた行・選択中の行・メニューを開いている行・キーボードで入った行にだけ出す。 */
+/* 隠している間は幅も取らない（行の間隔 7px も打ち消す）。タイトルが常に短くならないように。 */
 .paradis-session-resume .paradis-session-resume-row .row-more {
-	flex: none; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center;
+	flex: none; width: 0; height: 20px; margin-left: -7px; overflow: hidden; display: inline-flex; align-items: center; justify-content: center;
 	border-radius: 4px; visibility: hidden; cursor: pointer; color: var(--vscode-icon-foreground);
 }
 .paradis-session-resume .paradis-session-resume-row:hover .row-more,
 .paradis-session-resume .paradis-session-resume-row:focus-visible .row-more,
 .paradis-session-resume .paradis-session-resume-row.selected .row-more,
-.paradis-session-resume .paradis-session-resume-row.menu-open .row-more { visibility: visible; }
+.paradis-session-resume .paradis-session-resume-row.menu-open .row-more { width: 20px; margin-left: 0; visibility: visible; }
 .paradis-session-resume .paradis-session-resume-row .row-more:hover,
 .paradis-session-resume .paradis-session-resume-row.menu-open .row-more { background: var(--vscode-toolbar-hoverBackground); }
 .paradis-session-resume .paradis-session-resume-row.selected .row-more { color: inherit; }
