@@ -38,10 +38,13 @@ import { ParadisHostPath } from '../../../common/paradisHostPath.js';
 import {
 	IParadisPresetService,
 	IParadisResolvedPreset,
+	paradisPresetAction,
 	paradisPresetApprovalSignature,
 	paradisPresetCommandSignature,
 	paradisPresetQualifiers,
 	paradisPresetTooltip,
+	PARADIS_PRESET_ACTIONS,
+	PARADIS_PRESET_AGENT_PROMPT_MAX_LENGTH,
 	PARADIS_PRESET_FOLDERS_SETTING,
 	PARADIS_PRESET_LAUNCH_MODES,
 	PARADIS_PRESET_LAYOUTS,
@@ -52,6 +55,7 @@ import {
 import { ParadisPresetService } from './paradisPresetService.js';
 import { openParadisPresetEditorDialog } from './paradisPresetEditorDialog.js';
 import { ParadisPresetClusterViewItem } from './paradisPresetClusterViewItem.js';
+import { ParadisAgentPromptMenuContribution } from './paradisAgentPromptMenu.js';
 
 registerSingleton(IParadisPresetService, ParadisPresetService, InstantiationType.Delayed);
 
@@ -76,6 +80,17 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 					id: { type: 'string', description: localize('paradis.terminal.presets.id', "識別子。GUI で保存すると自動で入ります（手で書く必要はありません）。名前は識別子ではないため、同じ名前のプリセットを複数登録できます。") },
 					name: { type: 'string', description: localize('paradis.terminal.presets.name', "プリセット名。同じ名前を複数のプリセットに付けられます。") },
 					description: { type: 'string', description: localize('paradis.terminal.presets.description', "説明（ツールチップに表示）。") },
+					action: {
+						type: 'string',
+						enum: [...PARADIS_PRESET_ACTIONS],
+						enumDescriptions: [
+							localize('paradis.terminal.presets.action.run', "コマンドを実行する（Enter を送る）"),
+							localize('paradis.terminal.presets.action.insert', "アクティブなターミナルの入力欄に入れるだけ（Enter を送らない）"),
+							localize('paradis.terminal.presets.action.agentPrompt', "今のターミナルで動いているエージェント（Claude Code / Codex）の入力欄へプロンプトを入れる"),
+						],
+						description: localize('paradis.terminal.presets.action', "プリセットの種別。既定は run。")
+					},
+					prompt: { type: 'string', maxLength: PARADIS_PRESET_AGENT_PROMPT_MAX_LENGTH, description: localize('paradis.terminal.presets.prompt', "action が agent-prompt のときにエージェントの入力欄へ入れる本文。") },
 					commands: {
 						type: 'array',
 						items: { type: 'string' },
@@ -252,6 +267,7 @@ class ParadisPresetButtonsContribution extends Disposable implements IWorkbenchC
 }
 
 registerWorkbenchContribution2(ParadisPresetButtonsContribution.ID, ParadisPresetButtonsContribution, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(ParadisAgentPromptMenuContribution.ID, ParadisAgentPromptMenuContribution, WorkbenchPhase.AfterRestored);
 
 // --- コマンドパレット ----------------------------------------------------------------------------
 
@@ -350,7 +366,9 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 	for (const preset of presets) {
 		// hosts 条件が現在の接続先と一致しないものは自動実行しない（スペース作成はそのウィンドウと
 		// 同じマシン上で起きるため、envInactive ならユーザーが「この環境では動かない」と指定したもの）。
-		if (!preset.autoRun || preset.envInactive) {
+		// 挿入だけ・エージェント向けは「今の入力欄」へ入れるもので、作ったばかりのスペースで
+		// 自動に走らせる意味が無い（エディタでも autoRun を選べないようにしてある）。
+		if (!preset.autoRun || preset.envInactive || paradisPresetAction(preset) !== 'run') {
 			continue;
 		}
 		if (preset.source === 'workspace') {

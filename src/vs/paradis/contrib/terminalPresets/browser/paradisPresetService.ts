@@ -35,7 +35,7 @@ import { ITerminalInstance, ITerminalService } from '../../../../workbench/contr
 import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
 import { GroupDirection, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
-import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisPresetDefinition,
@@ -58,12 +58,22 @@ import {
 	PARADIS_WORKSPACE_PRESET_FILE,
 	ParadisPresetSource,
 	paradisJoinPresetCommands,
+	paradisPresetAction,
+	paradisBuildPresetInsertText,
+	paradisAgentPromptAvailability,
+	ParadisAgentPromptAvailability,
 } from '../common/paradisTerminalPresets.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 
 // allow-any-unicode-next-line
 const STR_PRESET_GONE = localize('paradis.presets.gone', "このプリセットは見つかりませんでした。設定が別の場所で変更された可能性があります。一覧を開き直してください。");
+// allow-any-unicode-next-line
+const STR_AGENT_PROMPT_NO_TERMINAL = localize('paradis.presets.agentPrompt.noTerminal', "プロンプトを入れるターミナルがありません。エージェントが動いているターミナルを選んでから実行してください。");
+// allow-any-unicode-next-line
+const STR_AGENT_PROMPT_NOT_AGENT = localize('paradis.presets.agentPrompt.notAgent', "今のターミナルではエージェント（Claude Code / Codex）が動いていません。");
+// allow-any-unicode-next-line
+const STR_AGENT_PROMPT_AWAITING = localize('paradis.presets.agentPrompt.awaiting', "エージェントが質問か許可の確認を出しているため、プロンプトを入れられません。先に回答してください。");
 
 /**
  * プリセット名をターミナルの初期タイトルとしてどう渡すかを決める。
@@ -149,6 +159,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
 	) {
 		super();
 
@@ -993,6 +1004,15 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	}
 
 	async runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void> {
+		const action = paradisPresetAction(preset);
+		if (action === 'agent-prompt') {
+			await this._insertAgentPrompt(preset, options);
+			return;
+		}
+		if (action === 'insert') {
+			await this._insertCommands(preset, options);
+			return;
+		}
 		const { tasks, layout } = paradisGetPresetTasks(preset);
 		if (tasks.length === 0) {
 			return;
@@ -1062,6 +1082,66 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			await instance.sendText(paradisJoinPresetCommands(task.commands, instance.shellType), true);
 		}
 		first?.focus(true);
+	}
+
+	/**
+	 * 「挿入だけ」: 全タスクのコマンドを1行に連結し、Enter を送らずに入力欄へ入れる。
+	 * 並べ方（layout）と作業ディレクトリの cd は使わない——cd を前置すると「入れるだけ」の文字列が
+	 * 複合コマンドに化け、ユーザーが入力欄で見て直す前提が崩れる。アクティブなターミナルが無い
+	 * （または forceNewTerminal）ときだけ新しく作り、そのときは cwd を作成時に渡す。
+	 */
+	private async _insertCommands(preset: IParadisResolvedPreset, options: IParadisRunPresetOptions | undefined): Promise<void> {
+		const commands = paradisGetPresetTasks(preset).tasks.flatMap(task => task.commands);
+		if (commands.length === 0) {
+			return;
+		}
+		let instance = options?.forceNewTerminal ? undefined : this.terminalService.activeInstance;
+		if (!instance) {
+			instance = await this._createTerminalInActiveGroup(this._resolveCwd(preset, preset.cwd, options?.cwd), preset.name, options?.env);
+			options?.onDidCreateTerminal?.(instance.instanceId);
+			if (options?.stateKey) {
+				this.terminalScopeService.assignInstanceScope(instance.instanceId, options.stateKey);
+			}
+		}
+		await this._waitForTerminalProcess(instance);
+		const text = paradisBuildPresetInsertText(paradisJoinPresetCommands(commands, instance.shellType), instance.xterm?.raw.modes.bracketedPasteMode === true);
+		options?.onDidStart?.();
+		if (text !== undefined) {
+			await instance.sendText(text, false, true);
+		}
+		instance.focus(true);
+	}
+
+	/**
+	 * エージェント向けプロンプト: 今のターミナルで動いているエージェントの入力欄へ、貼り付けとして
+	 * 入れる（Enter は送らない）。新しいターミナルは作らない——入れる相手は「今の会話」であって、
+	 * 空のシェルへ入れても意味が無い（Q57 A。新しい会話を始めるのは Orca の方式で、採らなかった）。
+	 * 入れられないときは理由を例外で返し、呼び出し側（ボタン・メニュー）が通知に出す。
+	 */
+	private async _insertAgentPrompt(preset: IParadisResolvedPreset, options: IParadisRunPresetOptions | undefined): Promise<void> {
+		const instance = options?.forceNewTerminal ? undefined : this.terminalService.activeInstance;
+		const availability = paradisAgentPromptAvailability(
+			instance !== undefined,
+			instance !== undefined && this.agentStatusStore.isAgentInstance(instance.instanceId),
+			instance !== undefined ? this.agentStatusStore.getInstanceStatus(instance.instanceId) : undefined,
+		);
+		switch (availability) {
+			case ParadisAgentPromptAvailability.NoTerminal:
+				throw new Error(STR_AGENT_PROMPT_NO_TERMINAL);
+			case ParadisAgentPromptAvailability.NotAgent:
+				throw new Error(STR_AGENT_PROMPT_NOT_AGENT);
+			case ParadisAgentPromptAvailability.AwaitingAnswer:
+				throw new Error(STR_AGENT_PROMPT_AWAITING);
+		}
+		if (!instance) {
+			return;
+		}
+		const text = paradisBuildPresetInsertText(preset.prompt ?? '', instance.xterm?.raw.modes.bracketedPasteMode === true);
+		options?.onDidStart?.();
+		if (text !== undefined) {
+			await instance.sendText(text, false, true);
+		}
+		instance.focus(true);
 	}
 
 	/**

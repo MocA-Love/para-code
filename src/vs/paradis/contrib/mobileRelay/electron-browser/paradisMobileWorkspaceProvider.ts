@@ -58,7 +58,7 @@ import { IParadisGithubMetricsSnapshot } from '../../githubMetrics/common/paradi
 import { IParadisResourceMonitorMobileReport } from '../../resourceMonitor/common/paradisResourceMonitor.js';
 import { IParadisSpaceDiskResult } from '../../spaceDisk/common/paradisSpaceDisk.js';
 import { hash } from '../../../../base/common/hash.js';
-import { IParadisPresetService, IParadisResolvedPreset, paradisGetPresetTasks, paradisPresetApprovalSignature, paradisPresetQualifiers } from '../../terminalPresets/common/paradisTerminalPresets.js';
+import { IParadisPresetService, IParadisResolvedPreset, paradisGetPresetTasks, paradisPresetAction, paradisPresetApprovalSignature, paradisPresetQualifiers } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
 import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
@@ -1770,7 +1770,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// PC 側でアクティブとは限らず、キャッシュはアクティブなフォルダの解決結果を指すため。
 				// hosts 条件が現在の接続先と一致しないもの（envInactive）は PC 側のタブバーと同じく
 				// 一覧・実行の両方から外す。
-				const presets = (await this.presetService.getPresetsForFolder(root)).filter(preset => !preset.envInactive);
+				// 挿入だけ・エージェント向けは PC の「今のターミナル」へ入れるもので、モバイルからは
+				// 入れ先が見えない（モバイルは必ず新しいターミナルで実行する）ので一覧にも出さない。
+				const presets = (await this.presetService.getPresetsForFolder(root)).filter(preset => !preset.envInactive && paradisPresetAction(preset) === 'run');
 				// 区別語は切り詰める前の一覧全体で決める（PC版の一覧・ボタンと同じ見え方にする）
 				const qualifiers = paradisPresetQualifiers(presets);
 				if (msg.t === 'presets') {
