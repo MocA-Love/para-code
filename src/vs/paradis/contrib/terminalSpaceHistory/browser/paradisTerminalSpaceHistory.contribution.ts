@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// スペースごとのシェル履歴（Q40 案A）。
+// スペースごとのシェル履歴。
 //
 // ターミナルを作る直前に、そのターミナルが属するスペースの履歴フォルダを環境変数で渡す。
 // HISTFILE を直接渡さないのは、ユーザーの ~/.zshrc が後から上書きするため（切り替えはシェル統合

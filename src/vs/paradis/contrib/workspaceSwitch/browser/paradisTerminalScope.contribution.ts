@@ -241,7 +241,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private readonly _restoredNonceScopes: Map<string, string>;
 
 	/**
-	 * 下部パネルのターミナルを「どのスペースにも属さない共通ターミナル」として扱うか（Q39 案C）。
+	 * 下部パネルのターミナルを「どのスペースにも属さない共通ターミナル」として扱うか。
 	 * 起動時の設定値で固定する。途中で切り替えると、park 中のグループと台帳の扱いが食い違う。
 	 *
 	 * 有効なとき、パネルのターミナル（`target === TerminalLocation.Panel`）は
