@@ -13,7 +13,7 @@ import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { paradisMapCodexResetCredits } from '../../common/paradisCodexAccounts.js';
-import { IParadisCodexAppServerRpc, ParadisCodexAppServerRpcFactory } from '../../node/paradisCodexAppServerRpc.js';
+import { IParadisCodexAppServerRpc, ParadisCodexAppServerRpcFactory } from '../../../../node/paradisCodexAppServerRpc.js';
 import { ParadisCodexAccountsService } from '../../node/paradisCodexAccountsService.js';
 
 interface IFakeCall { readonly home: string | undefined; readonly method: string; readonly params: unknown }
