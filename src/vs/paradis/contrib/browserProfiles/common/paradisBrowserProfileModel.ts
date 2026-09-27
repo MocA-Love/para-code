@@ -28,11 +28,20 @@ export interface IParadisBrowserProfile {
 	/** 最後にこのプロファイルでページを開いた時刻（epoch ms）。 */
 	readonly lastUsedAt: number;
 	/**
-	 * エージェントが MCP（create_browser_profile）で作ったプロファイル。エージェントが消せるのは
-	 * これが付いたものだけ（ユーザーが作ったものは消させない）。ユーザーが作ったものには付けない。
+	 * エージェントが MCP（create_browser_profile）で作り、ユーザーがまだ自分で使っていないプロファイル。
+	 * ユーザーが開く・切り替える・名前や色を変えると外れ、以後はユーザーのものとして扱う
+	 * （一覧で名前を伏せ、使うには承認が要り、エージェントは消せない）。
 	 */
 	readonly createdByAgent?: true;
+	/**
+	 * 作ったペインの印（ペイントークンのハッシュ）。削除できるのは同じペインのエージェントだけ。
+	 * トークンそのものは保存しない。
+	 */
+	readonly agentOwner?: string;
 }
+
+/** {@link IParadisBrowserProfile.agentOwner} の形（16 桁の 16 進）。 */
+const AGENT_OWNER_PATTERN = /^[0-9a-f]{16}$/;
 
 /**
  * 識別カラーの選択肢。承認済みモック（2-3.html）の6色をそのまま使う。
@@ -147,5 +156,6 @@ function paradisReviveProfile(entry: unknown): IParadisBrowserProfile | undefine
 	return {
 		id: candidate.id, name, color, createdAt, lastUsedAt,
 		...(candidate.createdByAgent === true ? { createdByAgent: true } as const : {}),
+		...(candidate.createdByAgent === true && typeof candidate.agentOwner === 'string' && AGENT_OWNER_PATTERN.test(candidate.agentOwner) ? { agentOwner: candidate.agentOwner } : {}),
 	};
 }

@@ -233,6 +233,10 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 			return;
 		}
 		const replacement = await this.profilesService.switchView(input, target);
+		if (replacement && target.kind === 'profile') {
+			// ユーザーが自分で使ったので、エージェントが作った印を外す。
+			this.profilesService.claimForUser(target.profileId);
+		}
 		if (!replacement) {
 			this.notificationService.notify({
 				severity: Severity.Warning,

@@ -51,7 +51,13 @@ export type ParadisOpenProfileFailure =
 	 */
 	| 'openFailed'
 	/** このペインのエージェントが開いたタブが上限（open_browser_tab と共通）に達している。 */
-	| 'limitReached';
+	| 'limitReached'
+	/** http / https 以外の URL。 */
+	| 'invalidUrl'
+	/** ユーザーのプロファイルを使う承認を、ユーザーが断った。 */
+	| 'denied'
+	/** 承認の締め切りまでに答えが無かった。 */
+	| 'approvalTimedOut';
 
 /** `open_browser_profile` の結果。 */
 export type IParadisOpenProfileResult =
@@ -72,8 +78,11 @@ export type IParadisOpenProfileResult =
 	};
 
 // ---------------------------------------------------------------------------------------------
-// エージェントによるプロファイルの一覧・作成・切替・削除（計画書 B9）。同じチャネルに相乗りする。
-//  - 一覧・作成・切替はどのプロファイルでもよい。削除はエージェントが作ったものだけ
+// エージェントによるプロファイルの一覧・作成・切替・削除。同じチャネルに相乗りする。
+//  - 一覧に名前を出すのはエージェントが作ったものだけ。ユーザーのプロファイルは数だけ知らせる
+//  - ユーザーのプロファイル（ログイン状態を含みうる）を開く・切り替えるときは、ユーザーの承認を通す。
+//    エージェントが作ったものは承認なしで使える
+//  - 削除できるのは、そのペインのエージェントが作り、ユーザーがまだ自分で使っていないものだけ
 //  - 切替できるのは、そのペインのエージェントが自分で開いたタブだけ（ユーザーのタブのログイン状態は変えない）
 //  - エージェント向けネットワークフィルタが有効な間は、プロファイルのページを共有できないので切替を断る
 // ---------------------------------------------------------------------------------------------
@@ -89,7 +98,8 @@ export const PARADIS_AGENT_CREATED_PROFILE_LIMIT = 10;
 /** エージェントへ見せるプロファイル1件分。ID やパーティション名は見せない。 */
 export interface IParadisAgentProfileInfo {
 	readonly name: string;
-	readonly createdByAgent: boolean;
+	/** このペインのエージェントが作ったもの（削除できるのはこれだけ）。 */
+	readonly createdByYou: boolean;
 	/** 保存されたログイン状態（Cookie）があるか。取得できなければ undefined。 */
 	readonly hasStoredLogin: boolean | undefined;
 	/** 最後に使った時刻（ISO 8601）。 */
@@ -108,8 +118,14 @@ export type ParadisProfileManageFailure =
 	| 'duplicateName'
 	/** エージェントが作ったプロファイルが上限に達している。 */
 	| 'tooManyProfiles'
-	/** ユーザーが作ったプロファイルは消させない。 */
+	/** ユーザーのプロファイル（作った・使った）は消させない。 */
 	| 'notCreatedByAgent'
+	/** 別のペインのエージェントが作ったもの。 */
+	| 'notOwner'
+	/** ユーザーのプロファイルを使う承認を、ユーザーが断った。 */
+	| 'denied'
+	/** 承認の締め切りまでに答えが無かった。 */
+	| 'approvalTimedOut'
 	/** そのプロファイルを使っているタブが、このペインのエージェントのもの以外にも開いている。 */
 	| 'inUse'
 	/** 切り替えるタブが無い（共有中のページが無い）、またはこのペインのエージェントが開いたタブではない。 */
@@ -119,7 +135,10 @@ export type ParadisProfileManageFailure =
 
 export type IParadisListProfilesResult = {
 	readonly ok: true;
+	/** エージェントが作ったプロファイルだけ。 */
 	readonly profiles: readonly IParadisAgentProfileInfo[];
+	/** 名前を伏せたユーザーのプロファイルの数。 */
+	readonly userProfileCount: number;
 	/** ワークスペースを信頼していて、名前付きプロファイルを使えるか。 */
 	readonly usable: boolean;
 	/** ネットワークフィルタが無効で、プロファイルのページをエージェントへ共有できるか。 */

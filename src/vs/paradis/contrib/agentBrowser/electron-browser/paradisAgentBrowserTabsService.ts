@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// エージェントのタブ操作（q.html Q70 案A）と、ページ共有の「要求 → 承認」（Q88 案A）の受け口（renderer 側）。
+// エージェントのタブ操作と、ページ共有の「エージェントが要求 → ユーザーが承認」の受け口（renderer 側）。
 //
 // shared process の ParadisAgentBrowserService が「呼び出し元ペインを所有するウィンドウ」だけへ
 // ルーティングして呼ぶ。1つのウィンドウには複数のスペースがあるので、ペイン → スペース → そのスペースが
@@ -15,16 +15,21 @@
 // 1ペインとページの共有は 1 対 1 のまま（CDP ゲートウェイが見せるのは共有中の1枚だけ）。複数のタブは
 // 「共有するタブを切り替える」ことで扱う:
 //  - open_browser_tab: 新しいタブを Agent スコープで開き、そのままこのペインへ共有する（承認済み扱い）
-//  - select_browser_tab: 自分が開いたタブか、ユーザーが一度共有・承認したタブへ共有を移す
+//  - select_browser_tab: 自分が開いたタブへ共有を移す。ユーザーのタブは、共有されている間しか使えない
+//    （自分のタブへ移ったら、ユーザーのタブへ戻るにはもう一度頼む。見えないまま使い続けさせない）
 //  - close_browser_tab: 自分が開いたタブだけ閉じられる
 //  - request_browser_page: ユーザーのタブを使いたいときに頼む。承認ダイアログで選ばれたら共有する
 //
-// 台帳（誰がどのタブを開いたか・どのタブを承認済みか）はこのウィンドウのメモリにだけ持つ。ウィンドウを
+// 承認ダイアログは「拒否」を先頭（既定のフォーカス）にし、表示直後の承認は打ちかけの Enter とみなして
+// 聞き直す。ユーザーがエージェントのペインに文字を打っている最中に出ても、Enter 1回で共有されないように。
+//
+// 台帳（誰がどのタブを開いたか）はこのウィンドウのメモリにだけ持つ。ウィンドウを
 // 再読み込みすると忘れ、それまでエージェントが開いていたタブは普通のタブとして残る（エージェントは
 // もう閉じられない）。安全側に倒れるだけなので、永続化はしていない。
 
-import { raceTimeout } from '../../../../base/common/async.js';
-import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import './media/paradisAgentApproval.css';
+import { raceCancellation, raceTimeout } from '../../../../base/common/async.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
@@ -55,11 +60,14 @@ import {
 	IParadisListAgentTabsResult,
 	IParadisOpenAgentTabResult,
 	IParadisSelectAgentTabResult,
-	PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS,
+	PARADIS_AGENT_APPROVAL_DEADLINE_MS,
+	PARADIS_AGENT_APPROVAL_GUARD_MS,
 	ParadisAgentTabLedger,
 	ParadisAgentTabTargetFailure,
 	paradisIsAllowedAgentTabUrl,
 	paradisSanitizeAgentPageRequestReason,
+	paradisSanitizeDisplayText,
+	paradisUrlOrigin,
 } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 
@@ -67,8 +75,47 @@ import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingMo
 const SCOPE_SETTLE_TIMEOUT_MS = 3_000;
 /** 開いたタブで URL を読み込むのを待つ上限。超えてもタブは開いたまま返す。 */
 const NAVIGATION_TIMEOUT_MS = 20_000;
-/** renderer 側で承認を待つ上限。shared process の待ち時間より少し短くして、先にダイアログを閉じる。 */
-const PAGE_REQUEST_DIALOG_TIMEOUT_MS = PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS - 10_000;
+/** 承認ダイアログに出すペイン名の最大文字数。 */
+const PANE_TITLE_MAX_LENGTH = 60;
+
+/**
+ * 承認の締め切り。呼び出し元（shared process）の取り消しと、{@link PARADIS_AGENT_APPROVAL_DEADLINE_MS}
+ * の時間切れのどちらでも取り消される。`timedOut` は時間切れで取り消されたかどうか。
+ */
+export class ParadisApprovalDeadline extends Disposable {
+	private readonly _source: CancellationTokenSource;
+	private _timedOut = false;
+
+	constructor(parent: CancellationToken | undefined, durationMs: number = PARADIS_AGENT_APPROVAL_DEADLINE_MS) {
+		super();
+		this._source = this._register(new CancellationTokenSource(parent));
+		const timer = setTimeout(() => {
+			this._timedOut = true;
+			this._source.cancel();
+		}, durationMs);
+		this._register(toDisposable(() => clearTimeout(timer)));
+	}
+
+	get token(): CancellationToken {
+		return this._source.token;
+	}
+
+	get timedOut(): boolean {
+		return this._timedOut;
+	}
+}
+
+/** {@link IParadisAgentBrowserTabsService.askApproval} に渡す中身。文言は呼び出し側で翻訳済みのもの。 */
+export interface IParadisAgentApprovalRequest {
+	/** ペインを示す語句を {0} に入れる見出し。 */
+	readonly messageTemplate: (paneLabel: string) => string;
+	readonly detail: readonly string[];
+	readonly approveLabel: string;
+	/** 2つ目の承認の選択肢（「別のページを選ぶ」など）。 */
+	readonly alternativeLabel?: string;
+}
+
+export type ParadisAgentApprovalChoice = 'approve' | 'alternative';
 
 export const IParadisAgentBrowserTabsService = createDecorator<IParadisAgentBrowserTabsService>('paradisAgentBrowserTabsService');
 
@@ -97,10 +144,16 @@ export interface IParadisAgentBrowserTabsService {
 	isOpenedBy(token: string, viewId: string): boolean;
 
 	/**
-	 * そのタブへペインの共有を移す（前に共有していたユーザーのタブの承認は残す）。タブのスペースが
-	 * 決まるのを少し待ってから共有する。失敗しても例外は投げず false を返す。
+	 * そのタブへペインの共有を移す。タブのスペースが決まるのを少し待ってから共有する。
+	 * 失敗しても例外は投げず false を返す。
 	 */
 	bindTab(token: string, input: BrowserEditorInput): Promise<boolean>;
+
+	/**
+	 * エージェントの求めをユーザーに承認してもらう（ページの共有、ユーザーのプロファイルを使うなど）。
+	 * 「拒否」が先頭で既定のフォーカス。表示直後の承認は聞き直す。拒否・閉じる・取り消しは undefined。
+	 */
+	askApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken): Promise<ParadisAgentApprovalChoice | undefined>;
 
 	/** 上限の確認とタブを開く処理の間に、同じペインの別の呼び出しが割り込まないよう枠を取る。 */
 	reserveSlot(token: string): IDisposable | undefined;
@@ -109,13 +162,13 @@ export interface IParadisAgentBrowserTabsService {
 	listTabs(token: string | undefined): IParadisListAgentTabsResult;
 	selectTab(token: string | undefined, tabId: string): Promise<IParadisSelectAgentTabResult>;
 	closeTab(token: string | undefined, tabId: string): Promise<IParadisCloseAgentTabResult>;
-	requestPage(token: string | undefined, reason: string | undefined, urlHint: string | undefined): Promise<IParadisAgentPageRequestResult>;
+	requestPage(token: string | undefined, reason: string | undefined, urlHint: string | undefined, cancellation?: CancellationToken): Promise<IParadisAgentPageRequestResult>;
 }
 
 export class ParadisAgentBrowserTabsService extends Disposable implements IParadisAgentBrowserTabsService {
 	declare readonly _serviceBrand: undefined;
 
-	/** 誰がどのタブを開いたか・どのタブを承認済みか。 */
+	/** 誰がどのタブを開いたか。 */
 	private readonly _ledger = new ParadisAgentTabLedger();
 	/** viewId → エージェントが開いたタブ（閉じるときと一覧に使う）。 */
 	private readonly _agentInputs = new Map<string, BrowserEditorInput>();
@@ -139,8 +192,6 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
-		this._register(this._bindingModel.onDidChange(() => this._observeBindings()));
-		this._observeBindings();
 	}
 
 	// #region 台帳
@@ -178,10 +229,6 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		this._ledger.forget(viewId);
 		this._agentInputs.delete(viewId);
 		this._agentTabListeners.deleteAndDispose(viewId);
-	}
-
-	private _observeBindings(): void {
-		this._ledger.observeBindings(this._bindingModel.bindings);
 	}
 
 	// #endregion
@@ -325,9 +372,6 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		for (const viewId of this._ledger.agentTabsOf(token)) {
 			add(this._agentInputs.get(viewId));
 		}
-		for (const pageId of this._ledger.approvedOf(token)) {
-			add(known.get(pageId));
-		}
 		return { ok: true, tabs, openedCount: this.openedCount(token) };
 	}
 
@@ -335,9 +379,14 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		if (token === undefined) {
 			return { ok: false, reason: 'paneUnresolved' };
 		}
+		// 選べるのは自分が開いたタブと、今このペインに共有されているタブ（選び直しても何も変わらない）だけ。
 		const input = this._browserViewWorkbenchService.getKnownBrowserViews().get(tabId);
-		if (!input || !(this.isOpenedBy(token, tabId) || this._ledger.isApproved(token, tabId))) {
+		const isCurrent = this._bindingModel.getBindingForToken(token)?.pageId === tabId;
+		if (!input || !(this.isOpenedBy(token, tabId) || isCurrent)) {
 			return { ok: false, reason: 'unknownTab' };
+		}
+		if (isCurrent) {
+			return { ok: true, tab: this._describe(token, input), bound: true };
 		}
 		const bound = await this.bindTab(token, input);
 		return { ok: true, tab: this._describe(token, input), bound };
@@ -354,20 +403,22 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		if (!this.isOpenedBy(token, tabId)) {
 			return { ok: false, reason: 'notOwned' };
 		}
-		for (const group of this._editorGroupsService.groups) {
-			if (group.contains(input)) {
-				await group.closeEditor(input, { preserveFocus: true });
-			}
+		// 切替の最中や、別のスペースへ退避中のタブ（エディタから外れている）は閉じない。退避中のタブを
+		// エディタを通さずに捨てると、スペースを戻したときの復元が壊れる。
+		if (this._workspaceSwitchService.isSwitching) {
+			return { ok: false, reason: 'switching' };
 		}
-		// エディタに無いまま残っていた場合（開く途中で失敗した等）も、台帳からは必ず外す。
-		if (this._agentInputs.has(tabId)) {
-			this._forgetView(tabId);
-			input.dispose();
+		const groups = this._editorGroupsService.groups.filter(group => group.contains(input));
+		if (groups.length === 0) {
+			return { ok: false, reason: 'tabNotVisible' };
+		}
+		for (const group of groups) {
+			await group.closeEditor(input, { preserveFocus: true });
 		}
 		return { ok: true, openedCount: this.openedCount(token) };
 	}
 
-	async requestPage(token: string | undefined, reason: string | undefined, urlHint: string | undefined): Promise<IParadisAgentPageRequestResult> {
+	async requestPage(token: string | undefined, reason: string | undefined, urlHint: string | undefined, cancellation?: CancellationToken): Promise<IParadisAgentPageRequestResult> {
 		if (token === undefined) {
 			return { ok: false, reason: 'paneUnresolved' };
 		}
@@ -387,25 +438,44 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		const primary = (hint ? candidates.find(input => (input.url ?? '').includes(hint)) : undefined) ?? candidates[0];
 
 		this._pendingRequests.add(token);
-		const cts = new CancellationTokenSource();
+		// 締め切りは1本: ダイアログ・ページ選び・共有の完了までをまとめて打ち切る。
+		const deadline = new ParadisApprovalDeadline(cancellation);
 		try {
-			const chosen = await raceTimeout(this._askForPage(token, paradisSanitizeAgentPageRequestReason(reason), primary, candidates, cts), PAGE_REQUEST_DIALOG_TIMEOUT_MS, () => cts.cancel());
-			if (!chosen) {
-				return { ok: true, approved: false };
+			const chosen = await this._askForPage(token, paradisSanitizeAgentPageRequestReason(reason), primary, candidates, deadline.token);
+			if (!chosen || deadline.token.isCancellationRequested) {
+				return { ok: true, approved: false, timedOut: deadline.timedOut };
 			}
-			this._ledger.approve(token, chosen.id);
-			const bound = await this.bindTab(token, chosen);
+			const binding = this.bindTab(token, chosen);
+			const bound = await raceCancellation(binding, deadline.token);
+			if (bound === undefined) {
+				// 締め切りを過ぎた。エージェントには時間切れと返したので、後から共有が成立しても外す
+				// （断られたと思っているエージェントのペインの共有先が、黙ってユーザーのタブへ移らないように）。
+				void binding.then(ok => ok ? this._unbindIfCurrent(token, chosen) : undefined);
+				return { ok: true, approved: false, timedOut: deadline.timedOut };
+			}
 			if (!bound) {
 				return { ok: false, reason: 'shareFailed' };
 			}
 			// upstream が共有用に別タブを開き直した場合は、実際に共有されたタブを返す。
 			const boundPage = this._bindingModel.getBindingForToken(token)?.pageId;
 			const shared = (boundPage && this._browserViewWorkbenchService.getKnownBrowserViews().get(boundPage)) || chosen;
-			this._ledger.approve(token, shared.id);
 			return { ok: true, approved: true, tab: this._describe(token, shared) };
 		} finally {
-			cts.dispose();
+			deadline.dispose();
 			this._pendingRequests.delete(token);
+		}
+	}
+
+	/** 締め切り後に成立した共有を外す。その間にほかのタブへ移っていたら触らない。 */
+	private async _unbindIfCurrent(token: string, input: BrowserEditorInput): Promise<void> {
+		const pageId = this._bindingModel.getBindingForToken(token)?.pageId;
+		if (pageId === undefined || (pageId !== input.id && this._ledger.isAgentTab(pageId))) {
+			return;
+		}
+		try {
+			await this._bindingModel.unbindToken(token);
+		} catch (error) {
+			this._logService.warn('[ParadisAgentBrowserTabs] could not withdraw a share that completed after the deadline', error);
 		}
 	}
 
@@ -414,75 +484,120 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	// #region 承認ダイアログ
 
 	/**
-	 * 承認ダイアログ。ワークベンチ内のダイアログ（custom）にしているのは、時間切れで閉じられるように
+	 * 承認ダイアログ。ワークベンチ内のダイアログ（custom）にしているのは、締め切りで閉じられるように
 	 * するため（ネイティブのシートは取り消せない）と、内蔵ブラウザの上に確実に出すため
-	 * （`monaco-dialog-modal-block` は overlayManager に登録済み）。
+	 * （`monaco-dialog-modal-block` は overlayManager に登録済み）。fork の自前ダイアログ（z-index 2600〜2800）
+	 * が開いていてもその裏に隠れないよう、このダイアログの層だけ上げてある（media/paradisAgentApproval.css）。
 	 */
-	private async _askForPage(token: string, reason: string | undefined, primary: BrowserEditorInput, candidates: readonly BrowserEditorInput[], cts: CancellationTokenSource): Promise<BrowserEditorInput | undefined> {
-		const paneTitle = this._bindingModel.getPanes().find(pane => pane.token === token)?.title;
-		const pageLabel = this._pageLabel(primary);
-		const detailLines = [
-			reason ? localize('paradis.agentTabs.request.reason', "理由: {0}", reason) : undefined,
-			localize('paradis.agentTabs.request.page', "共有するページ: {0}", pageLabel),
-			localize('paradis.agentTabs.request.effect', "共有すると、このターミナルのエージェントはページを読んだり操作したりできます。共有はブラウザの共有ボタンからいつでも止められます。"),
-		].filter((line): line is string => line !== undefined);
-
-		type Choice = 'share' | 'pick' | 'deny';
+	async askApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken): Promise<ParadisAgentApprovalChoice | undefined> {
+		type Choice = ParadisAgentApprovalChoice | 'deny';
 		const buttons: { label: string; run: () => Choice }[] = [
-			{ label: localize({ key: 'paradis.agentTabs.request.share', comment: ['&& denotes a mnemonic'] }, "このページを共有(&&S)"), run: () => 'share' },
+			// 先頭のボタンに既定のフォーカスが当たる。打ちかけの Enter が「拒否」に当たるよう、拒否を先頭にする。
+			{ label: localize({ key: 'paradis.agentTabs.approval.deny', comment: ['&& denotes a mnemonic'] }, "拒否(&&D)"), run: () => 'deny' },
+			{ label: request.approveLabel, run: () => 'approve' },
 		];
-		if (candidates.length > 1) {
-			buttons.push({ label: localize({ key: 'paradis.agentTabs.request.pick', comment: ['&& denotes a mnemonic'] }, "別のページを選ぶ(&&P)…"), run: () => 'pick' });
+		if (request.alternativeLabel) {
+			buttons.push({ label: request.alternativeLabel, run: () => 'alternative' });
 		}
-		const { result } = await this._dialogService.prompt<Choice>({
-			type: 'question',
-			message: paneTitle
-				? localize('paradis.agentTabs.request.messageWithPane', "ターミナル「{0}」のエージェントが、ブラウザのページを使いたいと求めています", paneTitle)
-				: localize('paradis.agentTabs.request.message', "エージェントが、ブラウザのページを使いたいと求めています"),
-			detail: detailLines.join('\n\n'),
-			buttons,
-			cancelButton: { label: localize('paradis.agentTabs.request.deny', "拒否"), run: () => 'deny' },
-			custom: true,
-			token: cts.token,
-		});
-		if (cts.token.isCancellationRequested || result === undefined || result === 'deny') {
+		const message = request.messageTemplate(this._describePane(token));
+		let detail = request.detail;
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const shownAt = Date.now();
+			// cancelButton を付けないので、Esc と閉じるボタンは結果なし（＝拒否）になる。
+			const { result } = await this._dialogService.prompt<Choice>({
+				type: 'warning',
+				message,
+				detail: detail.join('\n\n'),
+				buttons,
+				custom: { classes: ['paradis-agent-approval-dialog'] },
+				token: cancellation,
+			});
+			if (cancellation.isCancellationRequested || result === undefined || result === 'deny') {
+				return undefined;
+			}
+			if (Date.now() - shownAt >= PARADIS_AGENT_APPROVAL_GUARD_MS) {
+				return result;
+			}
+			// 表示直後の承認は、ほかの場所へ打っていた Enter が当たった可能性が高い。もう一度聞く。
+			detail = [
+				localize('paradis.agentTabs.approval.tooFast', "表示された直後に押されたため、もう一度確認しています。"),
+				...request.detail,
+			];
+		}
+		return undefined;
+	}
+
+	private async _askForPage(token: string, reason: string | undefined, primary: BrowserEditorInput, candidates: readonly BrowserEditorInput[], cancellation: CancellationToken): Promise<BrowserEditorInput | undefined> {
+		const detail = [
+			reason ? localize('paradis.agentTabs.request.reason', "エージェントが書いた理由: {0}", reason) : undefined,
+			localize('paradis.agentTabs.request.page', "共有するページ: {0}", this._pageLabel(primary)),
+			localize('paradis.agentTabs.request.effect', "共有すると、このターミナルのエージェントはページを読んだり操作したりできます。共有はブラウザの共有ボタンからいつでも止められ、エージェントが別のタブへ移った時点でも終わります。"),
+		].filter((line): line is string => line !== undefined);
+		const choice = await this.askApproval(token, {
+			messageTemplate: pane => localize('paradis.agentTabs.request.message', "{0} のエージェントが、ブラウザのページを使いたいと求めています", pane),
+			detail,
+			approveLabel: localize({ key: 'paradis.agentTabs.request.share', comment: ['&& denotes a mnemonic'] }, "このページを共有(&&S)"),
+			alternativeLabel: candidates.length > 1 ? localize({ key: 'paradis.agentTabs.request.pick', comment: ['&& denotes a mnemonic'] }, "別のページを選ぶ(&&P)…") : undefined,
+		}, cancellation);
+		if (choice === undefined) {
 			return undefined;
 		}
-		if (result === 'share') {
+		if (choice === 'approve') {
 			return primary;
 		}
 
 		type Item = IQuickPickItem & { readonly input: BrowserEditorInput };
-		const items: Item[] = candidates.map(input => ({ label: input.title || input.getName(), description: input.url, input }));
+		const items: Item[] = candidates.map(input => ({ label: this._displayTitle(input), description: input.url, input }));
 		const picked = await this._quickInputService.pick(items, {
 			title: localize('paradis.agentTabs.request.pickTitle', "エージェントに共有するページ"),
 			placeHolder: localize('paradis.agentTabs.request.pickPlaceholder', "共有するページを選んでください（Esc で拒否）"),
 			ignoreFocusLost: true,
-		}, cts.token);
+		}, cancellation);
 		return picked?.input;
 	}
 
+	/**
+	 * ダイアログに出すペインの呼び名。ターミナルのタイトルはエージェントが OSC で書き換えられるので、
+	 * 危ない文字を落としたうえで、書き換えられないターミナル番号とスペース名を並べる。
+	 */
+	private _describePane(token: string): string {
+		const title = paradisSanitizeDisplayText(this._bindingModel.getPanes().find(pane => pane.token === token)?.title, PANE_TITLE_MAX_LENGTH);
+		const instanceId = this._paneTokenService.getInstanceForToken(token);
+		const stateKey = instanceId !== undefined ? this._terminalScopeService.getStateKeyForInstance(instanceId) : undefined;
+		const spaceName = stateKey !== undefined
+			? paradisSanitizeDisplayText(paradisListSpaces(this._workspaceSwitchService.repositories, this._worktreeService).find(entry => entry.space === stateKey)?.name, PANE_TITLE_MAX_LENGTH)
+			: undefined;
+		const where = instanceId === undefined
+			? undefined
+			: spaceName
+				? localize('paradis.agentTabs.pane.whereWithSpace', "ターミナル {0}・スペース「{1}」", instanceId, spaceName)
+				: localize('paradis.agentTabs.pane.where', "ターミナル {0}", instanceId);
+		if (title && where) {
+			return localize('paradis.agentTabs.pane.titleAndWhere', "「{0}」（{1}）", title, where);
+		}
+		return title ? localize('paradis.agentTabs.pane.title', "「{0}」", title) : where ?? localize('paradis.agentTabs.pane.unknown', "ターミナル");
+	}
+
+	private _displayTitle(input: BrowserEditorInput): string {
+		return paradisSanitizeDisplayText(input.title || input.getName(), 120) ?? input.getName();
+	}
+
 	private _pageLabel(input: BrowserEditorInput): string {
-		const title = input.title || input.getName();
-		const url = input.url;
+		const title = this._displayTitle(input);
+		const url = paradisSanitizeDisplayText(input.url, 200);
 		return url && url !== title ? `${title} (${url})` : title;
 	}
 
 	// #endregion
 
 	async bindTab(token: string, input: BrowserEditorInput): Promise<boolean> {
-		this._ledger.beginSwitch(token, input.id);
-		let bound = false;
 		try {
 			const model = await input.resolve();
 			await this._waitForStableScope(input.id);
-			bound = await this._bindingModel.bindPageToPane(model, token);
-			return bound;
+			return await this._bindingModel.bindPageToPane(model, token);
 		} catch (error) {
 			this._logService.warn('[ParadisAgentBrowserTabs] could not share the tab with the calling pane', error);
 			return false;
-		} finally {
-			this._ledger.endSwitch(token, input.id, bound);
 		}
 	}
 
@@ -499,12 +614,15 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	}
 
 	private _describe(token: string, input: BrowserEditorInput): IParadisAgentTabInfo {
+		const openedByAgent = this.isOpenedBy(token, input.id);
+		const active = this._bindingModel.getBindingForToken(token)?.pageId === input.id;
 		return {
 			tabId: input.id,
-			url: input.url ?? '',
-			title: input.title || input.getName(),
-			openedByAgent: this.isOpenedBy(token, input.id),
-			active: this._bindingModel.getBindingForToken(token)?.pageId === input.id,
+			// 共有していないユーザーのタブは、どこのサイトかだけを見せる（パスやクエリに個人の情報が載りうる）。
+			url: openedByAgent || active ? input.url ?? '' : paradisUrlOrigin(input.url),
+			title: openedByAgent || active ? input.title || input.getName() : '',
+			openedByAgent,
+			active,
 		};
 	}
 }

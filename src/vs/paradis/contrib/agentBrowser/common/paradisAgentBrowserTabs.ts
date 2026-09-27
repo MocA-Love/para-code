@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// エージェントのタブ操作（q.html Q70 案A）と、ページ共有の「要求 → 承認」（Q88 案A）の
+// エージェントのタブ操作と、ページ共有の「エージェントが要求 → ユーザーが承認」の
 // shared process ⇔ renderer 契約。形は `open_browser_profile`（paradisBrowserProfileMcp.ts）に揃えてある:
 // renderer は内部情報を含み得る文字列を返さず構造化された結果だけを返し、LLM 向けの英文への
 // 翻訳は shared process 側（paradisAgentBrowserService.ts）が持つ。
@@ -15,6 +15,8 @@
 //  - エージェントが開けるタブは1ペインあたり {@link PARADIS_AGENT_TAB_LIMIT} 枚まで
 //  - 閉じられるのは、そのペインのエージェントが自分で開いたタブだけ（ユーザーのタブは閉じない）
 //  - エージェントが開いたタブは最初から共有済み（承認済み）。ユーザーのタブは要求 → 承認を経る
+//  - ユーザーのタブを使えるのは、そのタブが共有されている間だけ。エージェントが自分のタブへ共有を
+//    移したら、ユーザーのタブへ戻るにはもう一度頼む（見えないまま使い続けられないようにする）
 //  - どのタブもエージェント用の保存領域（Agent スコープ）で開き、ネットワークの制限が掛かる
 
 /** shared process → renderer のチャネル名。 */
@@ -29,18 +31,24 @@ export const ParadisAgentTabMethod = {
 	RequestPage: 'requestPage',
 } as const;
 
-/** 1ペインのエージェントが同時に開いておけるタブの上限（q.html Q70 案A）。 */
+/** 1ペインのエージェントが同時に開いておけるタブの上限。 */
 export const PARADIS_AGENT_TAB_LIMIT = 5;
 
 /** 要求の理由（エージェントが書く文）を承認ダイアログへ出すときの最大文字数。 */
 export const PARADIS_AGENT_PAGE_REQUEST_REASON_MAX_LENGTH = 300;
 
 /**
- * 承認待ちの上限時間。この間に答えが無ければ shared process は「まだ答えが無い」と返す
- * （ダイアログは開いたまま残り、後から承認されれば共有される）。MCP の呼び出し全体の上限
- * （PARADIS_MCP_OVERALL_TIMEOUT_MS = 310 秒）より十分短くしてある。
+ * 承認を待つ上限（renderer 側）。ダイアログの表示から共有の完了までを、この1本の締め切りで打ち切る。
+ * 時間切れになったらダイアログを閉じ、その後に共有が成立しても外す。Codex の MCP ツールの既定の
+ * 時間切れ（60 秒）より短くしてある。
  */
-export const PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS = 120_000;
+export const PARADIS_AGENT_APPROVAL_DEADLINE_MS = 50_000;
+
+/** shared process 側で承認付きの呼び出しを待つ上限。renderer の締め切りより少し長い。 */
+export const PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS = 55_000;
+
+/** 承認ダイアログが出てからこの時間内の「承認」は、打ちかけの Enter とみなして聞き直す。 */
+export const PARADIS_AGENT_APPROVAL_GUARD_MS = 1_000;
 
 /** どのタブ操作でも起こりうる、ペインとスペースの解決に関わる失敗。 */
 export type ParadisAgentTabTargetFailure =
@@ -63,6 +71,8 @@ export type ParadisAgentTabFailure =
 	| 'openFailed'
 	/** その ID のタブが無い、またはこのペインが使ってよいタブではない。 */
 	| 'unknownTab'
+	/** そのタブのスペースが今画面に出ていない（退避中のタブは閉じない）。 */
+	| 'tabNotVisible'
 	/** このペインのエージェントが開いたタブではない（ユーザーのタブは閉じない）。 */
 	| 'notOwned';
 
@@ -104,7 +114,7 @@ export type IParadisCloseAgentTabResult = IParadisAgentTabResult<{
 	readonly openedCount: number;
 }>;
 
-/** 共有の要求（Q88）が失敗した理由。 */
+/** 共有の要求が失敗した理由。 */
 export type ParadisAgentPageRequestFailure =
 	| ParadisAgentTabTargetFailure
 	/** そのスペースに開いているブラウザのタブが無い（エージェントは open_browser_tab で開ける）。 */
@@ -116,7 +126,8 @@ export type ParadisAgentPageRequestFailure =
 
 export type IParadisAgentPageRequestResult =
 	| { readonly ok: true; readonly approved: true; readonly tab: IParadisAgentTabInfo }
-	| { readonly ok: true; readonly approved: false }
+	/** timedOut: 締め切りまでに答えが無かった（断られたのとは区別する）。 */
+	| { readonly ok: true; readonly approved: false; readonly timedOut: boolean }
 	| { readonly ok: false; readonly reason: ParadisAgentPageRequestFailure };
 
 /**
@@ -135,42 +146,58 @@ export function paradisIsAllowedAgentTabUrl(url: string): boolean {
 	}
 }
 
+/** URL の origin だけ（共有していないタブの URL をエージェントへ見せるとき）。読めなければ空文字。 */
+export function paradisUrlOrigin(url: string | undefined): string {
+	if (!url) {
+		return '';
+	}
+	try {
+		const origin = new URL(url).origin;
+		return origin === 'null' ? '' : origin;
+	} catch {
+		return '';
+	}
+}
+
 /**
- * エージェントが書いた理由をダイアログへ出せる形にする。制御文字を空白へ寄せ、連続空白を畳み、
- * 長すぎるものは文字単位で切る（サロゲートペアの途中で割らない）。
+ * 画面に出す文字列から、制御文字と見た目を偽れる不可視文字を取り除く。
+ * C0 / C1 制御文字、ゼロ幅文字と LRM / RLM（U+200B〜U+200F）、埋め込みと上書きの双方向制御
+ * （U+202A〜U+202E）、分離の双方向制御（U+2066〜U+2069）、BOM（U+FEFF）を空白へ寄せる。
  */
-export function paradisSanitizeAgentPageRequestReason(reason: string | undefined): string | undefined {
-	if (typeof reason !== 'string') {
+const PARADIS_UNSAFE_DISPLAY_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+
+/**
+ * エージェントやページ由来の文字列を1行の表示用にする。危ない文字を空白へ寄せ、連続空白を畳み、
+ * 長すぎるものは文字単位で切る（サロゲートペアの途中で割らない）。空になれば undefined。
+ */
+export function paradisSanitizeDisplayText(text: string | undefined, maxLength: number): string | undefined {
+	if (typeof text !== 'string') {
 		return undefined;
 	}
-	const flattened = reason.replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/g, ' ').replace(/\s+/g, ' ').trim();
+	const flattened = text.replace(PARADIS_UNSAFE_DISPLAY_CHARACTERS, ' ').replace(/\s+/g, ' ').trim();
 	if (!flattened) {
 		return undefined;
 	}
 	const characters = Array.from(flattened);
-	return characters.length > PARADIS_AGENT_PAGE_REQUEST_REASON_MAX_LENGTH
-		? `${characters.slice(0, PARADIS_AGENT_PAGE_REQUEST_REASON_MAX_LENGTH).join('')}…`
+	return characters.length > maxLength
+		? `${characters.slice(0, maxLength).join('')}\u2026`
 		: flattened;
 }
 
+/** エージェントが書いた要求の理由をダイアログへ出せる形にする。 */
+export function paradisSanitizeAgentPageRequestReason(reason: string | undefined): string | undefined {
+	return paradisSanitizeDisplayText(reason, PARADIS_AGENT_PAGE_REQUEST_REASON_MAX_LENGTH);
+}
+
 /**
- * エージェントが開いたタブと、ペインごとの「共有してよいユーザーのタブ」の台帳（純粋なデータ構造）。
- * renderer の ParadisAgentBrowserTabsService が持ち、ブラウザやエディタには触らない。
- *
- * 承認済みのユーザーのタブ: ユーザーが共有した、または要求を承認したタブ。エージェントが自分のタブへ
- * 共有を移した後でも、select_browser_tab でそこへ戻れる。こちらが移したのではない共有の解除
- * （ユーザーが共有を止めた・別のタブへ付け替えた）を見たら、その承認は取り消す。
+ * エージェントが開いたタブの台帳（純粋なデータ構造）。renderer の ParadisAgentBrowserTabsService が持ち、
+ * ブラウザやエディタには触らない。ユーザーのタブの承認はここに持たない: ユーザーのタブを使えるのは
+ * 共有されている間だけで、共有の状態そのものはバインドの台帳が持っている。
  */
 export class ParadisAgentTabLedger {
 
 	/** viewId → そのタブを開いたペインのトークン。 */
 	private readonly _agentTabs = new Map<string, string>();
-	/** token → 承認済みのユーザーのタブ。 */
-	private readonly _approved = new Map<string, Set<string>>();
-	/** token → 前回見たときに共有されていたページ。 */
-	private readonly _lastBound = new Map<string, string>();
-	/** token → こちらから共有を移している先。 */
-	private readonly _switchingTo = new Map<string, string>();
 	/** token → 開いている途中のタブの数。 */
 	private readonly _reserved = new Map<string, number>();
 
@@ -186,7 +213,7 @@ export class ParadisAgentTabLedger {
 		return count;
 	}
 
-	/** そのペインの agent tabs を新しく開く枠を取る。上限なら false。取ったら必ず {@link releaseSlot} する。 */
+	/** そのペインのタブを新しく開く枠を取る。上限なら false。取ったら必ず {@link releaseSlot} する。 */
 	tryReserveSlot(token: string): boolean {
 		const reserved = this._reserved.get(token) ?? 0;
 		if (this.openedCount(token) + reserved >= this._limit) {
@@ -228,72 +255,5 @@ export class ParadisAgentTabLedger {
 	/** タブが閉じられた。 */
 	forget(viewId: string): void {
 		this._agentTabs.delete(viewId);
-		for (const pages of this._approved.values()) {
-			pages.delete(viewId);
-		}
-	}
-
-	approve(token: string, viewId: string): void {
-		let pages = this._approved.get(token);
-		if (!pages) {
-			pages = new Set();
-			this._approved.set(token, pages);
-		}
-		pages.add(viewId);
-	}
-
-	isApproved(token: string, viewId: string): boolean {
-		return this._approved.get(token)?.has(viewId) === true;
-	}
-
-	approvedOf(token: string): string[] {
-		return [...this._approved.get(token) ?? []];
-	}
-
-	beginSwitch(token: string, viewId: string): void {
-		this._switchingTo.set(token, viewId);
-	}
-
-	/**
-	 * 共有を移し終えた。成功した場合、移った先の共有を {@link observeBindings} が見るまで印を残す
-	 * （共有の変化の通知は、移す処理が終わった後に届くこともある）。
-	 */
-	endSwitch(token: string, viewId: string, succeeded: boolean): void {
-		if (!succeeded && this._switchingTo.get(token) === viewId) {
-			this._switchingTo.delete(token);
-		}
-	}
-
-	/** 今の共有（token → pageId）を見て、承認の追加と取り消しを行う。 */
-	observeBindings(bindings: Iterable<{ readonly token: string; readonly pageId: string }>): void {
-		const current = new Map<string, string>();
-		for (const binding of bindings) {
-			current.set(binding.token, binding.pageId);
-		}
-		for (const [token, pageId] of current) {
-			if (!this._agentTabs.has(pageId)) {
-				this.approve(token, pageId);
-			}
-		}
-		for (const [token, previous] of this._lastBound) {
-			const now = current.get(token);
-			if (now === previous) {
-				continue;
-			}
-			if (now !== undefined && this._switchingTo.get(token) === now) {
-				this._switchingTo.delete(token);
-			} else {
-				this._approved.get(token)?.delete(previous);
-			}
-		}
-		for (const [token, pageId] of current) {
-			if (!this._lastBound.has(token) && this._switchingTo.get(token) === pageId) {
-				this._switchingTo.delete(token);
-			}
-		}
-		this._lastBound.clear();
-		for (const [token, pageId] of current) {
-			this._lastBound.set(token, pageId);
-		}
 	}
 }

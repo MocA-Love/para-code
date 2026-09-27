@@ -9,6 +9,7 @@
 // エージェントのタブ操作と共有の要求（実体は paradisAgentBrowserTabsService.ts）を、shared process の
 // ParadisAgentBrowserService から呼べるようにするチャネル。引数の形を確かめてサービスへ渡すだけ。
 
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -26,7 +27,7 @@ export class ParadisAgentBrowserTabsChannel implements IServerChannel {
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	async call<T>(_ctx: unknown, command: string, arg?: unknown): Promise<T> {
+	async call<T>(_ctx: unknown, command: string, arg?: unknown, cancellationToken?: CancellationToken): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		const token = typeof args[0] === 'string' ? args[0] : undefined;
 		const text = (index: number) => typeof args[index] === 'string' ? args[index] as string : undefined;
@@ -40,7 +41,7 @@ export class ParadisAgentBrowserTabsChannel implements IServerChannel {
 			case ParadisAgentTabMethod.Close:
 				return this._tabs.closeTab(token, text(1) ?? '') as Promise<T>;
 			case ParadisAgentTabMethod.RequestPage:
-				return this._tabs.requestPage(token, text(1), text(2)) as Promise<T>;
+				return this._tabs.requestPage(token, text(1), text(2), cancellationToken) as Promise<T>;
 		}
 		throw new Error(`Method not found: ${command}`);
 	}
