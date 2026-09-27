@@ -305,16 +305,27 @@ suite('ParadisRemoteAgentHookFiles', () => {
 			resolvedHome: home as URI | undefined,
 			/** 設置の中身を組み立てる問い合わせを、ここが解決されるまで止める */
 			buildGate: Promise.resolve(),
+			/** 組み立ての問い合わせの最中に走らせる処理（その間の設定の切り替えを作る） */
+			duringBuild: () => { },
+			/** ここに入れたファイルは読めない */
+			unreadable: new Set<string>(),
 			calls: [] as string[],
 		};
 		const host: IParadisRemoteAgentHookFilesHost = {
-			fileService,
+			fileService: {
+				exists: resource => fileService.exists(resource),
+				writeFile: (resource, content) => fileService.writeFile(resource, content),
+				readFile: resource => state.unreadable.has(resource.toString())
+					? Promise.reject(new Error('permission denied'))
+					: fileService.readFile(resource),
+			},
 			logService: new NullLogService(),
 			remoteAuthority: 'ssh-remote+host',
 			resolveHome: async () => state.resolvedHome,
 			buildHooksJson: async cli => {
 				state.calls.push(`build:${cli}`);
 				await state.buildGate;
+				state.duringBuild();
 				return HOOKED;
 			},
 			buildRemovalJson: async current => {
@@ -346,10 +357,10 @@ suite('ParadisRemoteAgentHookFiles', () => {
 			calls: state.calls,
 			pending: files.pendingChange,
 		}, {
-			// 設置は Claude の分を書き終えた後に止まり、続く取り外しがそれを外す
-			claude: JSON.stringify({ hooks: {} }),
+			// 設置は組み立て後・書く直前にオフを見て Claude の分も書かない。取り外すものも残らない
+			claude: undefined,
 			codex: undefined,
-			calls: ['build:claude', 'remove'],
+			calls: ['build:claude'],
 			pending: undefined,
 		});
 	});
@@ -399,5 +410,44 @@ suite('ParadisRemoteAgentHookFiles', () => {
 		});
 
 		assert.deepStrictEqual({ seen, content: await read(file) }, { seen: ['a', 'b'], content: 'b+para' });
+	});
+
+	test('読めないファイルが残ったら取り外し待ちを消さず、読めるようになった周回で外す', async () => {
+		const disposables = store.add(new DisposableStore());
+		const { files, fileService, state, read } = setup(disposables, true);
+		await fileService.writeFile(claudeSettings, VSBuffer.fromString(HOOKED));
+		await fileService.writeFile(codexHooks, VSBuffer.fromString(HOOKED));
+		state.unreadable.add(claudeSettings.toString());
+
+		await files.setEnabled(false);
+		const whileUnreadable = { claude: await read(claudeSettings), codex: await read(codexHooks), pending: files.pendingChange };
+		state.unreadable.clear();
+		await files.retryPending();
+
+		assert.deepStrictEqual({ whileUnreadable, claude: await read(claudeSettings), pending: files.pendingChange }, {
+			whileUnreadable: { claude: HOOKED, codex: JSON.stringify({ hooks: {} }), pending: 'remove' },
+			claude: JSON.stringify({ hooks: {} }),
+			pending: undefined,
+		});
+	});
+
+	test('組み立ての問い合わせの最中にオフへ切り替わったら、書く直前に気付いて置かない', async () => {
+		const disposables = store.add(new DisposableStore());
+		const { files, state, read } = setup(disposables, true);
+		let removal: Promise<void> | undefined;
+		state.duringBuild = () => {
+			state.duringBuild = () => { };
+			removal = files.setEnabled(false);
+		};
+
+		await files.runExclusive(() => files.sync(home));
+		await removal;
+
+		assert.deepStrictEqual({ claude: await read(claudeSettings), codex: await read(codexHooks), calls: state.calls, pending: files.pendingChange }, {
+			claude: undefined,
+			codex: undefined,
+			calls: ['build:claude'],
+			pending: undefined,
+		});
 	});
 });

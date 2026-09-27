@@ -199,6 +199,9 @@ export class ParadisRemoteAgentHookFiles {
 	 */
 	private pending: 'install' | 'remove' | undefined;
 
+	/** 反映に続けて失敗した回数。30秒ごとの見直しで同じ警告を出し続けないよう、1, 2, 4, 8… 回目だけ出す。 */
+	private consecutiveFailures = 0;
+
 	constructor(
 		private readonly host: IParadisRemoteAgentHookFilesHost,
 		/** hook の自動設置が有効か。オフに切り替わった瞬間だけ、接続先からも取り外すために覚えておく。 */
@@ -243,10 +246,22 @@ export class ParadisRemoteAgentHookFiles {
 			if (home === undefined) {
 				return; // 保留したまま。次の周回で試し直す
 			}
-			await this.sync(home);
-			this.host.logService.info(`[paradis] ${change === 'install' ? 'installed' : 'removed'} the agent hooks on ${this.host.remoteAuthority} after the setting changed`);
+			if (await this.sync(home)) {
+				this.consecutiveFailures = 0;
+				this.host.logService.info(`[paradis] ${change === 'install' ? 'installed' : 'removed'} the agent hooks on ${this.host.remoteAuthority} after the setting changed`);
+			} else {
+				this.reportFailure(undefined);
+			}
 		} catch (error) {
-			this.host.logService.warn('[paradis] could not apply the agent hook setting on the host (will retry)', error);
+			this.reportFailure(error);
+		}
+	}
+
+	private reportFailure(error: unknown): void {
+		this.consecutiveFailures++;
+		// 2 のべき乗の回だけ出す（1, 2, 4, 8… 回目）。恒常的に失敗していても、ログは対数でしか増えない
+		if ((this.consecutiveFailures & (this.consecutiveFailures - 1)) === 0) {
+			this.host.logService.warn(`[paradis] could not apply the agent hook setting on the host (failed ${this.consecutiveFailures} time(s) in a row; will retry)`, error);
 		}
 	}
 
@@ -256,26 +271,36 @@ export class ParadisRemoteAgentHookFiles {
 	 * オンなら置き、オフで取り外しが保留されていれば外す。オフのまま起動しただけなら触らない
 	 * （手で入れた接続先の hook を、繋いだだけで消さない）。1ファイルごとに設定を見直すので、
 	 * 途中で切り替わっても古い判断のまま書き進めない。すべて済んだときだけ保留を消す。
+	 *
+	 * @returns すべてのファイルに反映できたか。読めない・書き換えが続いたファイルがあれば false で、
+	 *   そのときは保留を残して次の周回で試し直す。
 	 */
-	async sync(home: URI): Promise<void> {
+	async sync(home: URI): Promise<boolean> {
 		const change = this.pending;
 		const files: readonly [URI, 'claude' | 'codex'][] = [
 			[joinPath(home, '.claude', 'settings.json'), 'claude'],
 			[joinPath(home, '.codex', 'hooks.json'), 'codex'],
 		];
+		let applied = true;
 		for (const [file, cli] of files) {
 			if (this.enabled) {
-				await this.mergeJson(file, async current => this.enabled
-					? this.host.buildHooksJson(cli, current)
-					// 組み立てる前にオフへ切り替わった。置かずに、後に続く取り外しに任せる
-					: current);
+				applied = await this.mergeJson(
+					file,
+					async current => this.enabled
+						? this.host.buildHooksJson(cli, current)
+						// 組み立てる前にオフへ切り替わった。置かずに、後に続く取り外しに任せる
+						: current,
+					// 組み立てた後、書く直前にもう一度見る（問い合わせの間に切り替わることがある）
+					() => this.enabled,
+				) && applied;
 			} else if (this.pending === 'remove') {
-				await this.mergeJson(file, async current => current === undefined ? undefined : this.host.buildRemovalJson(current));
+				applied = await this.mergeJson(file, async current => current === undefined ? undefined : this.host.buildRemovalJson(current)) && applied;
 			}
 		}
-		if (this.pending === change) {
+		if (applied && this.pending === change) {
 			this.pending = undefined;
 		}
+		return applied;
 	}
 
 	/**
@@ -289,28 +314,36 @@ export class ParadisRemoteAgentHookFiles {
 	 * 書き込みは一時ファイルを経由しない。接続先のファイルは IFileService 越しにしか触れず、
 	 * そこでの原子的な書き込みは元の mode（`~/.claude.json` の 0600 など）を引き継げない
 	 * （一時ファイルは umask の既定で作られ、それが元の名前に置き換わる）。symlink にも使えない。
+	 *
+	 * @param stillWanted 書く直前に呼ぶ。false なら書かずに終える（済んだものとして true を返す。
+	 *   その後の扱いは呼び出し側の保留が決める）。
+	 * @returns 反映できた（書いた・書く必要が無かった）か。読めない、または3回とも組み立てている間に
+	 *   書き換えられたときは false。
 	 */
-	async mergeJson(file: URI, update: (current: string | undefined) => string | undefined | Promise<string | undefined>): Promise<void> {
+	async mergeJson(file: URI, update: (current: string | undefined) => string | undefined | Promise<string | undefined>, stillWanted?: () => boolean): Promise<boolean> {
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const read = await this.readTextIfPossible(file);
 			if (read === undefined) {
-				return;
+				return false;
 			}
 			const updated = await update(read.text);
 			if (updated === undefined || updated === read.text) {
-				return;
+				return true;
 			}
 			const latest = await this.readTextIfPossible(file);
 			if (latest === undefined) {
-				return;
+				return false;
 			}
 			if (latest.text !== read.text) {
 				continue; // 組み立てている間に書き換えられた。読み直した中身からやり直す
 			}
+			if (stillWanted && !stillWanted()) {
+				return true;
+			}
 			await this.host.fileService.writeFile(file, VSBuffer.fromString(updated));
-			return;
+			return true;
 		}
-		this.host.logService.warn(`[paradis] ${file.path} on the host kept changing while updating it; leaving it as is (will retry)`);
+		return false;
 	}
 
 	/** @returns 無ければ `{ text: undefined }`、読めなければ undefined */
@@ -479,7 +512,10 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 			// 自動設置をオフにしている間は hook だけ置かない（MCP と戻り経路は hook と関係なく使う）。
 			// 保留中の取り外しがあればここで済ませる
-			await this.hookFiles.sync(home);
+			if (!await this.hookFiles.sync(home)) {
+				// 読めない・書き換えが続いた。MCP と戻り経路は使えるので設置自体は続ける
+				this.logService.warn('[paradis] could not update the agent hook settings on the host; leaving them as they are');
+			}
 			await this.mergeClaudeMcp(home, remotePort);
 			await this.mergeCodexMcp(home, remotePort);
 			this.syncCodexSockets(home, channel);
