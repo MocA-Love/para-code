@@ -93,13 +93,21 @@ function isStoredDefinition(value: unknown): value is IParadisScheduledRunDefini
 		&& paradisSanitizeScheduledRunDraft(value) !== undefined;
 }
 
+const RUN_STATUSES: ReadonlySet<string> = new Set(['pending', 'starting', 'running', 'needsAttention', 'completed', 'timedOut', 'failed', 'skipped', 'cancelled', 'lost']);
+const RUN_TRIGGERS: ReadonlySet<string> = new Set(['schedule', 'catchUp', 'manual']);
+
+function optionalTime(value: unknown): boolean {
+	return value === undefined || (typeof value === 'number' && Number.isFinite(value));
+}
+
 function isStoredRun(value: unknown): value is IParadisScheduledRunRecord {
 	return isRecord(value)
 		&& typeof value.id === 'string'
 		&& typeof value.definitionId === 'string'
-		&& typeof value.status === 'string'
-		&& typeof value.trigger === 'string'
-		&& typeof value.createdAt === 'number';
+		&& typeof value.status === 'string' && RUN_STATUSES.has(value.status)
+		&& typeof value.trigger === 'string' && RUN_TRIGGERS.has(value.trigger)
+		&& typeof value.createdAt === 'number' && Number.isFinite(value.createdAt)
+		&& optionalTime(value.scheduledFor) && optionalTime(value.startedAt) && optionalTime(value.finishedAt) && optionalTime(value.heartbeatAt);
 }
 
 /** 読んだ JSON を保存の形へ直す。形の違う項目は捨てる（1 件の破損で全部を失わない）。 */
@@ -130,8 +138,12 @@ export function paradisScheduledRunDefinitionDigest(definition: IParadisSchedule
 
 /**
  * 保存先。定義の中身の指紋を別のファイル（`scheduledRuns.digest.json`）に持ち、読み込んだときに
- * 前回 Para Code が書いた中身から変わっていた有効な定義は無効に戻す。Para Code の外で書き換えられた
- * 定義（エージェントが書き足したものなど）が、利用者の確認なしに次の起動から動き出さないようにする。
+ * 前回 Para Code が書いた中身から変わっていた有効な定義は無効に戻す。
+ *
+ * 指紋は鍵の無い sha256 で、同じフォルダに置いているので、両方を書き換える相手は防げない。
+ * 防げるのは、定義のファイルだけを書き換えた・書き足した場合（手作業や、指紋を知らない
+ * スクリプト・エージェント）だけ。鍵で守るにはキーチェーン等の置き場所が要り、shared process からは
+ * まだ使えないため見送っている。
  */
 export function createParadisScheduledRunsFileStore(userDataPath: string): IParadisScheduledRunsStore {
 	const directory = join(userDataPath, 'paradis');
@@ -167,7 +179,7 @@ export function createParadisScheduledRunsFileStore(userDataPath: string): IPara
 			return {
 				...state,
 				definitions: state.definitions.map(definition => definition.enabled && digests[definition.id] !== paradisScheduledRunDefinitionDigest(definition)
-					? { ...definition, enabled: false }
+					? { ...definition, enabled: false, disabledReason: 'modifiedOutside' as const }
 					: definition),
 			};
 		},

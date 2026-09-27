@@ -12,10 +12,10 @@
 // review = ターンが終わった）。定期実行は「最初の依頼を1ターン処理し終えた」＝ review を見たら
 // 完了とみなす。
 //
-// 状態が消えた（undefined）だけでは完了にしない。画面側は状態の取得に続けて失敗すると全ペインの
-// 状態を消すので、作業中の回を完了と誤って記録し、見張り（30 分の打ち切り）まで外してしまうため。
-// 消える直前に見たのが review のときだけ完了とする（review を見た時点で完了にしているので、実際には
-// 取りこぼしの保険）。
+// 利用者がそのスペースを見ているときは、画面側が review をその場で既読にして状態から消すので、
+// 見張りには review が一度も見えない。そのため「既読にして消した」（`acknowledged`）ときも完了とする。
+// 一方、画面側は状態の取得に続けて失敗しても全ペインの状態を消す。こちらは完了ではないので、
+// 既読の印が無く状態が消えただけでは完了にしない（作業中の回を完了と記録し、見張りを外さないため）。
 //
 // MCP の待機（agentIde の `ParadisAgentStopWatcher`）とは規則が違う。あちらは「相手の番が終わったか」
 // を見るので許可待ち・質問中も止まったとみなすが、こちらは許可待ちを「要対応」として見張り続ける。
@@ -39,14 +39,17 @@ export interface IParadisRunWatchStep {
 	readonly report?: 'running' | 'needsAttention' | 'completed';
 }
 
-/** 状態を1つ受けて進める。 */
-export function paradisAdvanceRunWatch(state: IParadisRunWatchState, status: ParadisAgentStatus | undefined): IParadisRunWatchStep {
+/**
+ * 状態を1つ受けて進める。`acknowledged` は、画面側がこのペインの review を既読にして状態から
+ * 外したか（`IParadisAgentStatusStore.wasReviewAcknowledged`）。
+ */
+export function paradisAdvanceRunWatch(state: IParadisRunWatchState, status: ParadisAgentStatus | undefined, acknowledged = false): IParadisRunWatchStep {
 	if (state.phase === 'completed') {
 		return { state };
 	}
 	if (status === undefined) {
-		// 状態が消えた: 取得の失敗でも起きるので、直前が review のときだけ完了にする
-		return state.lastStatus === 'review' ? { state: { ...state, phase: 'completed' }, report: 'completed' } : { state };
+		// 状態が消えた: 既読にして消した（または直前が review）なら完了。取得の失敗で消えただけなら待つ
+		return acknowledged || state.lastStatus === 'review' ? { state: { ...state, sawStatus: true, phase: 'completed' }, report: 'completed' } : { state };
 	}
 	const next: IParadisRunWatchState = { phase: state.phase, sawStatus: true, lastStatus: status };
 	switch (status) {
