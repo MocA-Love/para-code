@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { GeneralShellType } from '../../../../../platform/terminal/common/terminal.js';
+import { GeneralShellType, PosixShellType } from '../../../../../platform/terminal/common/terminal.js';
 import {
 	isValidPresetDefinition,
 	paradisBuildInsertCommandsText,
@@ -68,9 +68,9 @@ suite('ParadisPresetAction', () => {
 
 	test('insert presets always become a single line', () => {
 		assert.deepStrictEqual([
-			paradisBuildInsertCommandsText('git fetch\n\n  git log --oneline\n', GeneralShellType.Bash),
+			paradisBuildInsertCommandsText('git fetch\n\n  git log --oneline\n', PosixShellType.Bash),
 			paradisBuildInsertCommandsText('a\nb', GeneralShellType.PowerShell),
-			paradisBuildInsertCommandsText('  \n', GeneralShellType.Bash),
+			paradisBuildInsertCommandsText('  \n', PosixShellType.Bash),
 		], ['git fetch && git log --oneline', 'a; if ($?) { b }', undefined]);
 	});
 
