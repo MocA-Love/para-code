@@ -10,6 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	IParadisActivityFileSummary,
+	IParadisSpaceUsageBucket,
 	PARADIS_SPACE_USAGE_OTHER_KEY,
 	ParadisActivityTranscriptParser,
 	paradisAggregateSpaceUsage,
@@ -137,7 +138,7 @@ suite('ParadisAgentActivity', () => {
 	});
 
 	test('allocates ccusage costs by weighted token share so that the parts add up to the total', () => {
-		const buckets = [
+		const buckets: IParadisSpaceUsageBucket[] = [
 			{ key: 'a', sessions: 1, days: { '2026-09-20': { 'claude-opus-4-20250101': { input: 0, output: 100, cacheCreation: 0, cacheRead: 0 } } } },
 			{ key: 'b', sessions: 2, days: { '2026-09-20': { 'claude-opus-4-20250101': { input: 0, output: 0, cacheCreation: 0, cacheRead: 5000 }, 'gpt-5': { input: 10, output: 0, cacheCreation: 0, cacheRead: 0 } } } },
 		];
