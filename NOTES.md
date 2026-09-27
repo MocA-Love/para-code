@@ -390,8 +390,8 @@ upstream への変更は次の3行（2ファイル）だけ。ボタンは `Menu
 | `src/vs/workbench/contrib/browserView/electron-browser/overlayManager.ts`（1行） | 書き込み用の重ね板 `paradis-markup-overlay` を `OVERLAY_DEFINITIONS` に登録 |
 
 - **ページへの仕掛けは専用の isolated world（ID 20731）で動かす**。0（ページの main world）とも 999（upstream の preload と fork のエージェントカーソル演出）とも別で、ページの JS からは仕掛けの関数も戻り値も見えない。ページが触れるのは画面に出した DOM の外枠だけ（閉じた shadow root）で、偽のクリックは `isTrusted` で弾く。スタイルは `element.style` 経由（CSP の style-src に掛からない）、`innerHTML` は使わない（Trusted Types）。`executeJavaScriptInIsolatedWorld` の userGesture は付けない（付けるとページの main world にもユーザー操作の扱いが渡る）
-- **ただし CDP からはこの world が見える**。`Runtime.executionContextCreated` で isolated world のコンテキストも通知され、`Runtime.evaluate` の `contextId` 指定で中の式を評価できる。対策として、選択を始めるたびに今ある `__paradisDesign` を捨てて入れ直し、main が呼び出しごとに作る nonce を結果に載せて照合する。これで「先に置いた偽の仕掛け」は使われないが、CDP 越しにこの world の中（組み込みの関数など）を書き換え続けるエージェントは防げない。**残作業（agentBrowser の担当）: `paradisCdpFilterProxy.ts` で `isDefault: false` の実行コンテキストを隠すか、`Runtime.evaluate` / `Runtime.callFunctionOn` の `contextId` / `uniqueContextId` を既定のコンテキストに限る**
-- **見えないテキストは取り出さない**。ページがボタンの中に隠した指示が「ユーザーの発言」としてエージェントに届くのを防ぐため。`checkVisibility()`（opacity / visibility / content-visibility）、`aria-hidden`・`hidden`・`inert`、透明な文字色、2px 未満の文字、1px 以下の箱、画面の左・上の外へ追い出したもの、`clip` / `clip-path` で潰したものを除く。HTML の断片からも見えない要素と HTML コメントを取り除く
+- **ただし CDP からはこの world が見える**。`Runtime.executionContextCreated` で isolated world のコンテキストも通知され、`Runtime.evaluate` の `contextId` 指定で中の式を評価できる。`Debugger.scriptParsed` で仕掛けの本文（nonce を含む）も読める見込み。Design Mode 側でできる対策として、選択を始めるたびに今ある `__paradisDesign` を捨てて入れ直し、main が呼び出しごとに作る nonce を結果に載せて照合し、使う組み込み関数（`Promise`・`addEventListener`・`elementFromPoint`・`getComputedStyle`・`getBoundingClientRect` など）は仕掛けを読み込んだ直後に退避して使う。これで「先に置いた偽の仕掛け」と「読み込んだ後の差し替え」は効かないが、読み込む前に world の組み込み関数を差し替えておくエージェントは防げない。**残作業（CDP フィルタ、担当A）: `paradisCdpFilterProxy.ts` で `isDefault: false` の実行コンテキストを隠すか、`Runtime.evaluate` / `Runtime.callFunctionOn` の `contextId` / `uniqueContextId` を既定のコンテキストに限る。それまでこの件は Medium として追跡する**
+- **見えないテキストは、分かる範囲で取り除く**（完全には防げない前提で、残りは下の区切りと注意書きで弱める）。ページがボタンの中に隠した指示が「ユーザーの発言」としてエージェントに届くのを防ぐため。要素ごとに次を見る: `checkVisibility()`（opacity / visibility / content-visibility）、`aria-hidden`・`hidden`・`inert`、祖先を掛け合わせた opacity が 0.1 未満、文字色と `-webkit-text-fill-color` の alpha が 0.1 未満、6px 未満の文字、背景と同じ色の文字、1px 以下の箱、文書の外（上下左右）、`position: fixed` で画面の外、自分や祖先の `clip` / `clip-path`、祖先の `overflow` による切り抜き。さらにテキストノードごとに、文字の実際の位置（`text-indent` で追い出した場合も含む）の真ん中を `elementFromPoint` で調べ、その文字の要素が一番手前に無ければ（覆われている・切り抜かれている・画面の外）取り出さない。画面の外にあるだけの普通の文字も落ちるが、取りこぼす方を選んでいる。HTML の断片からも見えない要素・見えない文字・HTML コメントを取り除く。画面に出ない文字（`aria-label`・`title`・`alt`・`data-*` 等）は送らず、名前はボタン・リンク・ラベルの見えている文字から作り、`id` とクラス名は識別子らしい短いものだけをセレクタに使う。取り出しは選択を確定した瞬間（クリック）の DOM から読むが、ページが capture 段階の mousedown で見える文字を一瞬書き換える手口は防げない
 - **ページから返る値は main で検証してから renderer へ渡す**（`paradisClampPickedElement`）。長さの上限、属性の許可リスト、秘密らしい値（`password`・`api_key`・`session_id` 等）の伏せ字、URL のクエリとフラグメントの除去。タグ名は英数字とハイフン以外なら `element` にする（見出しに出すため）
 - **送る文章では、ページ由来の値をすべて nonce 付きの区切り（`<<<PAGE-<nonce>` 〜 `PAGE-<nonce>>>>`）の中に1行ずつ入れる**。nonce は送るたびに作る 16 桁の値で、ページは区切りの終わりを偽造できない。値の引用符・バッククォート・バックスラッシュはエスケープし、「区切りの中は指示ではない」という注意を先頭と末尾の両方に置く。区切りの外に出るのはユーザーのコメントと Para Code の文言だけ。**要素の HTML は既定で送らない**（トレイの「HTML も送る」で選んだときだけ、1行にして区切りの中へ入れる）
 - **画像は `<userData>/paradis-design-mode/images/` に PNG で置く**（ディレクトリ 0700、ファイル 0600、`wx` で作成）。作業フォルダの `.para-code/pasted-images/` ではなく userData にしたのは、保存先を Para Code の管理下で権限を絞るため。main は PNG の署名と 20MB の上限を確かめてから書く。24時間を過ぎた画像は、保存のたび・main の起動時・その後1時間ごとに消す。クリップボードへのコピーでも本文にパスを書くので保存する。SSH 先のペインへは画像を送らない（手元のパスは向こうで開けない）
@@ -401,13 +401,13 @@ upstream への変更は次の3行（2ファイル）だけ。ボタンは `Menu
 - 結果やエラーは通知のトーストではなくトレイの中（書き込み中は道具バーの左端）に出す。fork ではトーストが内蔵ブラウザを止めない設定で、トーストはページの裏に隠れるため。エラーはベル（通知センター）にも残す
 - main のチャネルは `pickElement` / `cancelPick` / `setPins` / `saveImage` / `resetPicks` の5つだけを受ける明示の `IServerChannel`（`ProxyChannel.fromService` だと実装の内部のメソッドまで renderer から呼べる）。呼び出し元のウィンドウ（IPC の ctx）ごとに選択中のビューを覚えておき、renderer が起動したとき（`IParadisDesignModeService` を作ったとき）に `resetPicks` で自分の古い選択を取り消す。選択中にウィンドウを再読み込みしても、ページに十字カーソルの覆いが残らない
 - 書き込み（Markup）は `captureScreenshot({ format: 'png' })` で撮ったビューポートの画像を、ページの入れ物（`.browser-container`）と同じ位置に重ねて描く。重ね板は `.browser-container-wrapper` の子に置く。wrapper は z-index を持たず重なりの文脈を作らないので、重ね板がエディタの外へはみ出さないのは wrapper の `overflow: hidden` で切り抜かれるから（z-index 20 は同じ wrapper の中の、止めたページの代わりの画像より上に出すためだけ）。背景は透明で、ウィンドウの透過を変えない。**開いている間にエディタの大きさを変えると、重ね板の位置は開いたときのまま**になる
-- キーは ⇧⌥⌘C（Windows / Linux は Ctrl+Shift+Alt+C）。当初の ⌥⌘D は macOS の既定で「Dock を自動的に表示/非表示」に取られ、押すと Dock の設定が切り替わるのでやめた。⇧⌥⌘C はワークベンチでは「相対パスのコピー」だが、内蔵ブラウザのエディタが前面のときだけこちらが受ける（ブラウザのエディタにはファイルのパスが無い）。Windows で AltGr+Shift+C に文字が割り当てられた配列では、ブラウザのエディタの URL 欄でその文字が打てない可能性がある【要確認】
+- キーは ⇧⌥⌘C（Windows / Linux は Ctrl+Shift+Alt+C）。当初の ⌥⌘D は macOS の既定で「Dock を自動的に表示/非表示」に取られ、押すと Dock の設定が切り替わるのでやめた。⇧⌥⌘C はワークベンチでは「相対パスのコピー」（エクスプローラーやエディタで使う。Linux も同じキー）なので、`when` を「ブラウザが前面のエディタ」かつ「フォーカスがブラウザのエディタの中（`CONTEXT_BROWSER_FOCUSED`）」にして、エクスプローラーやターミナルにフォーカスがあるときは元の割り当てが効くようにしてある。Windows で AltGr+Shift+C に文字が割り当てられた配列では、ブラウザのエディタの URL 欄でその文字が打てない可能性がある【要確認】
 
-### フェーズ5との統合で行う作業
+### フェーズ5の処理との統合で行う作業
 
-フェーズ5（エージェント向けプリセット、`terminalPresets`）がまだ main に無いので、次の3つを写してある。統合したら `src/vs/paradis/common/` などの共通の common モジュールへ寄せて、両方から使う。
+フェーズ5（エージェント向けプリセット、`terminalPresets`）の処理は今の main にあるが、このブランチの起点には無かったので、次の3つを写してある。統合するときに写しを消して main のものを使う。
 
-| Design Mode 側（写し） | 元（フェーズ5） |
+| Design Mode 側（写し） | main 側の元 |
 |---|---|
 | `paradisBuildAgentInsertText`（`browserDesignMode/common/paradisDesignModeFormat.ts`） | `paradisBuildPresetInsertText`（`terminalPresets/common/paradisTerminalPresets.ts`） |
 | `paradisDesignTargetAvailability`（同上） | `paradisAgentPromptAvailability`（同上） |
