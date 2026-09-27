@@ -31,6 +31,7 @@ import {
 	AivisTaskRunner,
 	AudioScheduler,
 } from './paradisAudioScheduler.js';
+import { ParadisDictationHold } from '../common/paradisDictationHold.js';
 import {
 	CUSTOM_RINGTONE_ID,
 	getRingtoneFilename,
@@ -195,6 +196,16 @@ export class ParadisNotificationsService extends Disposable {
 	/** 通知音と Aivis 再生の重なりを調停する単一スケジューラ。 */
 	private readonly _scheduler: AudioScheduler;
 
+	/** 再生中の音声プレイヤー（afplay 等）。音声入力が始まったら止める。 */
+	private readonly _audioPlayers = new Set<ChildProcess>();
+	/** 音声入力で止めたプレイヤー。その終了は失敗として扱わない。 */
+	private readonly _stoppedPlayers = new WeakSet<ChildProcess>();
+	/** 音声入力（ディクテーション）中のウィンドウ（接続）。1つでもあれば読み上げを止める。上限はウィンドウごと。 */
+	private readonly _dictationHold = this._register(new ParadisDictationHold(
+		held => this._applyDictationHold(held),
+		client => this.logService.warn(`[ParadisNotifications] dictation in ${client} kept the audio on hold for too long; no longer holding for it`),
+	));
+
 	constructor(private readonly logService: ILogService) {
 		super();
 		this._scheduler = new AudioScheduler({
@@ -310,6 +321,39 @@ export class ParadisNotificationsService extends Disposable {
 	/** Aivis の一時停止状態を解除する（ユーザーが APIキー等を修正して設定を保存した時に呼ばれる）。 */
 	resumeAivis(): void {
 		this._scheduler.resume();
+	}
+
+	/**
+	 * あるウィンドウで音声入力（ディクテーション）が始まった・終わった。
+	 *
+	 * どれか1つのウィンドウでも音声入力中なら、読み上げと通知音を止める。マイクが Para Code 自身の
+	 * 読み上げを拾って文字起こしに混ざるのを防ぐため。再生中の発話はその場で切り（その発話は
+	 * 読み直さない）、その後に届いた発話は溜めておいて、音声入力が終わってから読み上げる。
+	 */
+	setDictationActive(client: string, active: boolean): void {
+		this._dictationHold.set(client, active);
+	}
+
+	private _applyDictationHold(held: boolean): void {
+		this._scheduler.setHeld(held);
+		if (held) {
+			for (const player of this._audioPlayers) {
+				this._stoppedPlayers.add(player);
+				player.kill();
+			}
+		}
+	}
+
+	/**
+	 * ウィンドウとの接続が切れたら、そのウィンドウの音声入力は終わったものとみなす。
+	 * ただし同じ接続名の新しい接続（再読み込み）が既にあれば、そちらの状態を消さない。
+	 */
+	trackClientDisconnects(onDidDisconnect: Event<string>, isStillConnected: (client: string) => boolean): void {
+		this._register(onDidDisconnect(client => {
+			if (!isStillConnected(client)) {
+				this.setDictationActive(client, false);
+			}
+		}));
 	}
 
 	/** ringtoneId から実ファイルパスを解決して再生し、完了を待つ。解決不可なら即 resolve（＝スキップ）。 */
@@ -1201,6 +1245,9 @@ export class ParadisNotificationsService extends Disposable {
 			return;
 		}
 
+		if (this._scheduler.isHeld) {
+			return; // 音声入力中（setDictationActive）
+		}
 		if (process.platform === 'darwin') {
 			await this._runAudioPlayer('afplay', ['-v', volumeDecimal.toString(), soundPath]);
 			return;
@@ -1230,13 +1277,24 @@ export class ParadisNotificationsService extends Disposable {
 			if (await this._tryAudioPlayer(command, args)) {
 				return;
 			}
+			if (this._scheduler.isHeld) {
+				return; // 音声入力で止めたプレイヤーを、次の候補で鳴らし直さない
+			}
 		}
 		throw new Error('Linuxで音声を再生できませんでした（paplay、ffplay、mpv、play、mpg123、aplayのいずれかが必要です）');
 	}
 
 	private _runAudioPlayer(command: string, args: readonly string[], windowsHide: boolean = false): Promise<void> {
 		return new Promise((resolve, reject) => {
-			execFile(command, [...args], { windowsHide }, error => error ? reject(error) : resolve());
+			const player = execFile(command, [...args], { windowsHide }, error => {
+				this._audioPlayers.delete(player);
+				if (error && !this._stoppedPlayers.has(player)) {
+					reject(error);
+				} else {
+					resolve();
+				}
+			});
+			this._audioPlayers.add(player);
 		});
 	}
 

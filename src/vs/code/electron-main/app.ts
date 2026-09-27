@@ -55,6 +55,8 @@ import { paradisRegisterHeapSnapshot } from '../../paradis/contrib/heapSnapshot/
 import { paradisRegisterBrowserProfiles } from '../../paradis/contrib/browserProfiles/electron-main/paradisBrowserProfilesMain.js';
 // PARA-PATCH: pty daemon status channel for the status bar entry (see paradis/contrib/ptyDaemon)
 import { paradisRegisterPtyDaemonStatus } from '../../paradis/contrib/ptyDaemon/electron-main/paradisPtyDaemonStatusService.js';
+// PARA-PATCH: menu bar (tray) icon for the notification inbox (see paradis/contrib/notificationInbox)
+import { paradisRegisterNotificationTray } from '../../paradis/contrib/notificationInbox/electron-main/paradisNotificationTrayMain.js';
 // PARA-PATCH: LocalPty channel that does not eagerly buffer the per-process pty events
 import { paradisCreateLocalPtyChannel } from '../../paradis/contrib/ptyChannel/electron-main/paradisLocalPtyChannel.js';
 import { PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../paradis/contrib/mobileRelay/common/paradisMobileWindowLease.js';
@@ -1529,6 +1531,9 @@ export class CodeApplication extends Disposable {
 		// PARA-PATCH: what the pty daemon is holding, for the status bar entry that makes terminals
 		// running outside the app visible (see paradis/contrib/ptyDaemon)
 		disposables.add(paradisRegisterPtyDaemonStatus(mainProcessElectronServer, accessor.get(ILocalPtyService), this.configurationService, this.environmentMainService, this.productService, this.logService));
+
+		// PARA-PATCH: menu bar (tray) icon for the notification inbox, off by default (see paradis/contrib/notificationInbox)
+		disposables.add(paradisRegisterNotificationTray(mainProcessElectronServer, accessor.get(IWindowsMainService), this.configurationService, this.logService));
 
 		// allow-any-unicode-next-line
 		// PARA-PATCH: Renderer reload世代の唯一の権威。Main lifetimeで単調増加し、Shared再起動を跨ぐ。

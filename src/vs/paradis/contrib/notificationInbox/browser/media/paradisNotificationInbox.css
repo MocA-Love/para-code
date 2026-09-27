@@ -1,0 +1,293 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Notification inbox: the title bar bell (paradisNotificationInboxBell.contribution.ts) and its popover
+ * (paradisNotificationInboxPopover.ts). The bell sits next to the Agent List / Browser List buttons
+ * and borrows their sizing (paradisAgentLiveWindow.css). Every rule is scoped under .monaco-workbench
+ * so it outranks the generic title bar toolbar rules under Modern UI and window transparency.
+ */
+
+/* ---------------------------------------------------------------- title bar bell */
+
+.monaco-workbench .paradis-notification-inbox-titlebar-widget {
+	display: inline-flex;
+	align-items: center;
+	height: 22px;
+	padding: 0 var(--vscode-spacing-size40);
+	border-radius: var(--vscode-cornerRadius-small);
+	cursor: pointer;
+	color: var(--vscode-titleBar-activeForeground);
+	-webkit-app-region: no-drag;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-notification-inbox-titlebar-widget:hover,
+.monaco-workbench .paradis-notification-inbox-titlebar-widget.open {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .paradis-notification-inbox-titlebar-widget:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench .paradis-notification-inbox-titlebar-widget > .codicon {
+	font-size: var(--vscode-codiconFontSize);
+	color: inherit;
+}
+
+.monaco-workbench .paradis-notification-inbox-titlebar-widget > .paradis-notification-inbox-badge {
+	/* Wide enough for "9+", the longest label, so the bell keeps one width at any count. */
+	min-width: 20px;
+	box-sizing: border-box;
+	height: 16px;
+	margin-left: var(--vscode-spacing-size40);
+	padding: 0 var(--vscode-spacing-size40);
+	border-radius: var(--vscode-cornerRadius-circle);
+	font-size: var(--vscode-fontSize-label3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: var(--vscode-activityBarBadge-background);
+	color: var(--vscode-activityBarBadge-foreground);
+}
+
+/*
+ * Keep the badge slot even at zero so the bell never changes width. Upstream only re-measures the
+ * center-adjacent toolbar on layout, so a width change when the first count appears could push the
+ * window controls out of reach until the window is resized.
+ */
+.monaco-workbench .paradis-notification-inbox-titlebar-widget > .paradis-notification-inbox-badge.hidden {
+	visibility: hidden;
+}
+
+/* High contrast: the badge and focus states have no fill to rely on, so draw outlines instead. */
+.monaco-workbench.hc-black .paradis-notification-inbox-titlebar-widget > .paradis-notification-inbox-badge,
+.monaco-workbench.hc-light .paradis-notification-inbox-titlebar-widget > .paradis-notification-inbox-badge {
+	border: 1px solid var(--vscode-contrastBorder);
+}
+
+.monaco-workbench.hc-black .paradis-notification-inbox-titlebar-widget:hover,
+.monaco-workbench.hc-black .paradis-notification-inbox-titlebar-widget.open,
+.monaco-workbench.hc-light .paradis-notification-inbox-titlebar-widget:hover,
+.monaco-workbench.hc-light .paradis-notification-inbox-titlebar-widget.open {
+	outline: 1px dashed var(--vscode-toolbar-hoverOutline);
+	outline-offset: -1px;
+}
+
+/* ---------------------------------------------------------------- popover */
+
+/*
+ * z-index stays at the title bar popover tier (2500, same as the service status and limits
+ * popovers) and below the workbench modal block (2575), so approval dialogs are never covered.
+ */
+.monaco-workbench .paradis-notification-inbox-popover {
+	position: fixed;
+	z-index: 2500;
+	display: flex;
+	flex-direction: column;
+	max-height: min(520px, calc(100vh - 80px));
+	background-color: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: var(--vscode-cornerRadius-large);
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	font-size: var(--vscode-fontSize-label1);
+	outline: none;
+	overflow: hidden;
+	-webkit-app-region: no-drag;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-header,
+.monaco-workbench .paradis-notification-inbox-popover .pnip-footer {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	flex: none;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-header {
+	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-footer {
+	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-title {
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-unread {
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-grow {
+	flex: 1;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-link {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size40);
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small);
+	background: transparent;
+	color: var(--vscode-textLink-foreground);
+	font: inherit;
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-link:hover:not(:disabled) {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-link:disabled {
+	color: var(--vscode-disabledForeground);
+	cursor: default;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-menubar {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-list {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	padding: var(--vscode-spacing-size40) 0;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-empty {
+	padding: var(--vscode-spacing-size200) var(--vscode-spacing-size160);
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.5;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-row {
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size120);
+	cursor: pointer;
+	outline: none;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-row:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.monaco-workbench.hc-black .paradis-notification-inbox-popover .pnip-row:hover,
+.monaco-workbench.hc-light .paradis-notification-inbox-popover .pnip-row:hover {
+	outline: 1px dashed var(--vscode-contrastActiveBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench.hc-black .paradis-notification-inbox-popover .pnip-row.unread .pnip-dot,
+.monaco-workbench.hc-light .paradis-notification-inbox-popover .pnip-row.unread .pnip-dot {
+	border: 1px solid var(--vscode-contrastBorder);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-row:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-row-top {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-dot {
+	width: 6px;
+	height: 6px;
+	flex: none;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background-color: transparent;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-row.unread .pnip-dot {
+	background-color: var(--vscode-activityBarBadge-background);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-kind {
+	flex: none;
+	padding: 0 var(--vscode-spacing-size60);
+	border-radius: var(--vscode-cornerRadius-small);
+	font-size: var(--vscode-fontSize-label2);
+	line-height: 16px;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-kind.review {
+	background-color: color-mix(in srgb, var(--vscode-charts-green) 20%, transparent);
+	color: var(--vscode-charts-green);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-kind.permission {
+	background-color: color-mix(in srgb, var(--vscode-charts-yellow) 20%, transparent);
+	color: var(--vscode-charts-yellow);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-kind.question {
+	background-color: color-mix(in srgb, var(--vscode-charts-blue) 20%, transparent);
+	color: var(--vscode-charts-blue);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-location {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-row.unread .pnip-location {
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-time {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-message,
+.monaco-workbench .paradis-notification-inbox-popover .pnip-note {
+	margin: var(--vscode-spacing-size20) 0 0 var(--vscode-spacing-size120);
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.4;
+	overflow: hidden;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	word-break: break-word;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-note {
+	font-style: italic;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-row.closed .pnip-location,
+.monaco-workbench .paradis-notification-inbox-popover .pnip-row.closed .pnip-kind {
+	opacity: 0.6;
+}
+
+/*
+ * Window transparency: like the other light-DOM overlays (paradisWindowTransparency.css), paint the
+ * theme background over an opaque base so a translucent editorWidget background never shows the desktop.
+ */
+.monaco-workbench.paradis-transparent .paradis-notification-inbox-popover {
+	background: linear-gradient(var(--vscode-editorWidget-background, var(--vscode-editor-background)), var(--vscode-editorWidget-background, var(--vscode-editor-background))), var(--vscode-editor-background);
+}

@@ -501,6 +501,42 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			off: localize('paradis.settings.codexHookTrust.off', "付けない"),
 		},
 	},
+	{
+		sectionId: 'psd-sec-notif',
+		key: 'paradis.notifications.osIncludeMessage',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.osIncludeMessage', "デスクトップ通知にエージェントの最後の発言を載せる"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.osIncludeMessageDesc', "オンの間は、エージェントの発言の冒頭（許可待ちではツール名とコマンドの要約）が OS の通知に出ます。トークンなど秘密らしい値は伏せますが、すべては見分けられません。ロック画面や画面共有中に見えるのを避けたい場合はオフにします。"),
+		keywords: 'notification message preview body lock screen privacy',
+	},
+	{
+		sectionId: 'psd-sec-notif',
+		key: 'paradis.notifications.inbox.titleBar.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.inboxTitleBar', "タイトルバーに通知の受信箱（ベル）を表示"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.inboxTitleBarDesc', "全スペースの完了・許可待ち・質問をまとめて見られます。数字はまだ確認していないペインの数です。"),
+		keywords: 'notification inbox bell title bar unread',
+	},
+	{
+		sectionId: 'psd-sec-notif',
+		key: 'paradis.notifications.dockBadge.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.dockBadge', "Dock のアイコンに確認が必要なペインの数を表示"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.dockBadgeDesc', "Windows ではウィンドウごとに、そのウィンドウのペインの数をタスクバーに表示します。おやすみモードの間は表示しません。"),
+		keywords: 'dock badge taskbar count unread',
+	},
+	{
+		sectionId: 'psd-sec-notif',
+		key: 'paradis.notifications.menuBarIcon.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.menuBarIcon', "メニューバーに Para Code のアイコンを表示"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.menuBarIconDesc', "確認が必要なペインがあると赤い点が付き、メニューから最大 5 件のペインへ移動できます。Windows では通知領域に表示します。Linux では表示されません。"),
+		keywords: 'menu bar tray status item icon',
+	},
 
 	// --- ブラウザ共有 ---
 	{

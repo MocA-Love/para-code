@@ -28,11 +28,14 @@ const defaultScheduler: IParadisAgentStatusNotificationScheduler = {
  */
 export class ParadisAgentStatusNotificationTracker extends Disposable {
 	private readonly _previousStatus = new Map<string, ParadisAgentStatus>();
+	/** 今の状態になった時刻（shared process の changedAt）。完了の直前の状態に入った時刻＝ターンの作業の開始。 */
+	private readonly _previousChangedAt = new Map<string, number>();
 	private readonly _pendingActionTimers = this._register(new DisposableMap<string>());
 	private _disposed = false;
 
 	constructor(
-		private readonly _notify: (token: string, status: ParadisAgentNotifyStatus) => void,
+		/** `since` は遷移の直前の状態に入った時刻（分からなければ undefined）。 */
+		private readonly _notify: (token: string, status: ParadisAgentNotifyStatus, since?: number) => void,
 		private readonly _scheduler: IParadisAgentStatusNotificationScheduler = defaultScheduler,
 	) {
 		super();
@@ -46,14 +49,18 @@ export class ParadisAgentStatusNotificationTracker extends Disposable {
 		for (const paneStatus of statuses) {
 			seenTokens.add(paneStatus.token);
 			const previous = this._previousStatus.get(paneStatus.token);
+			const previousChangedAt = this._previousChangedAt.get(paneStatus.token);
 			this._previousStatus.set(paneStatus.token, paneStatus.status);
 			if (previous === paneStatus.status) {
+				// hook は同じ状態のままでもイベントのたびに changedAt を書き直すので、状態が変わったときの
+				// 時刻だけを覚える（完了の直前の working に入った時刻＝ターンの作業の開始、を保つ）。
 				continue;
 			}
+			this._previousChangedAt.set(paneStatus.token, paneStatus.changedAt);
 
 			this._pendingActionTimers.deleteAndDispose(paneStatus.token);
 			if (paneStatus.status === 'review') {
-				this._notify(paneStatus.token, paneStatus.status);
+				this._notify(paneStatus.token, paneStatus.status, previous !== undefined ? previousChangedAt : undefined);
 				continue;
 			}
 			if (paneStatus.status !== 'permission' && paneStatus.status !== 'question') {
@@ -73,6 +80,7 @@ export class ParadisAgentStatusNotificationTracker extends Disposable {
 		for (const token of [...this._previousStatus.keys()]) {
 			if (!seenTokens.has(token)) {
 				this._previousStatus.delete(token);
+				this._previousChangedAt.delete(token);
 				this._pendingActionTimers.deleteAndDispose(token);
 			}
 		}
@@ -84,6 +92,7 @@ export class ParadisAgentStatusNotificationTracker extends Disposable {
 		}
 		this._disposed = true;
 		this._previousStatus.clear();
+		this._previousChangedAt.clear();
 		super.dispose();
 	}
 }
