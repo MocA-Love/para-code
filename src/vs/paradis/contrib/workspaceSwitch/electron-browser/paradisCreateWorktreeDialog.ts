@@ -31,12 +31,12 @@ import {
 	IParadisAgentCommandTemplate,
 	IParadisAgentLaunchOptions,
 	IParadisGitBranches,
-	PARADIS_DEFAULT_AGENT_COMMANDS,
 	paradisBuildAgentCommand,
 	paradisDeduplicateWorktreeDirName,
 	paradisSanitizeBranchName,
 } from '../common/paradisWorktreeCreate.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
+import { paradisResolveAgentTemplates } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { paradisReadWorkspaceLifecycleConfig } from './paradisWorkspaceLifecycleService.js';
 import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { IParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
@@ -255,13 +255,8 @@ class ParadisCreateWorktreeDialog extends Disposable {
 	}
 
 	private get _agents(): readonly IParadisAgentCommandTemplate[] {
-		const configured = this.configurationService.getValue<IParadisAgentCommandTemplate[]>('paradis.workspaceSwitch.agents');
-		if (Array.isArray(configured) && configured.length > 0) {
-			// 'none' は「実行しない」を表す予約識別子（セグメントの固定項目）のため、
-			// 設定で誤って同じ id が指定されても既定端末とエージェント端末の二重起動を避けるため除外する
-			return configured.filter(agent => agent && typeof agent.id === 'string' && agent.id !== 'none' && typeof agent.command === 'string');
-		}
-		return PARADIS_DEFAULT_AGENT_COMMANDS;
+		// 設定を書いていなければ、既定の定義にインストール済み CLI のモデル候補を当てはめたもの
+		return paradisResolveAgentTemplates(this.configurationService);
 	}
 
 	private get _selectedRepository(): IParadisWorkspaceRepository | undefined {
