@@ -64,8 +64,6 @@ suite('ParadisAgentHookOwnership', () => {
 			'/usr/bin/env -u OLD FOO=1 BAR=2 codex exec',
 			'node --require /x/preload.js /usr/local/bin/claude',
 			'bun run /x/node_modules/.bin/claude',
-			'npx claude',
-			'npx -y claude@latest',
 			'node /home/user/.npm/_npx/abc/node_modules/.bin/claude',
 			'/bin/sh -c claude --resume',
 			'/bin/zsh -lc "env FOO=1 claude --resume"',
@@ -74,7 +72,20 @@ suite('ParadisAgentHookOwnership', () => {
 			'"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js"',
 			'C:\\WINDOWS\\system32\\cmd.exe /d /s /c ""C:\\Users\\user\\AppData\\Roaming\\npm\\codex.cmd" exec"',
 			'pwsh -NoProfile -File C:\\Users\\user\\AppData\\Roaming\\npm\\claude.ps1',
-		].map(paradisHookAgentKindFromCommandLine), ['codex', 'claude', 'codex', 'claude', 'claude', 'claude', 'claude', 'claude', 'claude', 'claude', 'claude', 'claude', 'codex', 'codex', 'claude']);
+		].map(paradisHookAgentKindFromCommandLine), ['codex', 'claude', 'codex', 'claude', 'claude', 'claude', 'claude', 'claude', 'claude', 'claude', 'codex', 'codex', 'claude']);
+	});
+
+	test('recognizes the package entry of npm Claude Code, Para Code launchers and paths with spaces', () => {
+		assert.deepStrictEqual([
+			// Windows の npm・pnpm は bin のシムを経ずにパッケージの cli.js を実行する。
+			'"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js" --resume',
+			'node /home/user/.local/share/pnpm/global/5/node_modules/@anthropic-ai/claude-code/cli.js',
+			// ps は argv を引用符なしで空白区切りにする。
+			'/bin/sh /Applications/Para Code.app/Contents/Resources/app/resources/paradis/bin/codex --model x',
+			'node /Users/John Smith/.npm-global/bin/claude --resume',
+			'"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\AppData\\Local\\Programs\\Para Code\\resources\\app\\resources\\paradis\\bin\\paradisCodexPaneLauncher.cjs"',
+			'"C:\\Users\\user\\AppData\\Local\\Programs\\Para Code\\Para Code.exe" "C:\\Users\\user\\AppData\\Local\\Programs\\Para Code\\resources\\app\\resources\\paradis\\bin\\paradisCodexPaneLauncher.cjs"',
+		].map(paradisHookAgentKindFromCommandLine), ['claude', 'claude', 'codex', 'claude', 'codex', 'codex']);
 	});
 
 	test('does not treat programs that merely pass claude as an argument as agents', () => {
@@ -87,9 +98,16 @@ suite('ParadisAgentHookOwnership', () => {
 			'vim /repo/claude',
 			'node -e require("claude")',
 			'/bin/zsh -c source /home/user/.claude/shell-snapshots/snapshot.sh && eval \'claude -p x\'',
-			'npx -y @anthropic-ai/claude-code',
 			'-zsh',
-		].map(paradisHookAgentKindFromCommandLine), [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
+			// パッケージランナーは本体を子として起動するので、ランナー自身は判定しない。
+			'npx claude',
+			'npx -y @anthropic-ai/claude-code',
+			'npm exec claude',
+			'bunx claude',
+			'bun x claude',
+			// スクリプトのパスが拡張子まで揃っていれば、後ろの引数をつながない。
+			'node /repo/scripts/run.js logs/claude',
+		].map(paradisHookAgentKindFromCommandLine), [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
 	});
 
 	/**
@@ -134,16 +152,109 @@ suite('ParadisAgentHookOwnership', () => {
 	});
 
 	test('claude launched through npx owns the pane', async () => {
+		// npx の実際の ps は npm が process.title を書き換えた `npm exec …` になる。
 		const tree = new Map([
 			[1, proc(1, 0, '/sbin/launchd')],
 			[100, proc(100, 1, '/bin/zsh -il')],
-			[600, proc(600, 100, 'npx -y @anthropic-ai/claude-code')],
+			[600, proc(600, 100, 'npm exec @anthropic-ai/claude-code')],
 			[610, proc(610, 600, 'node /home/user/.npm/_npx/abc/node_modules/.bin/claude')],
 			[615, proc(615, 610, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
 		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
 		const ownership = ownershipWith(tree);
 		const result = await ownership.classify({ token: 't', hookPid: 615, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
 		assert.deepStrictEqual(result, { origin: 'owner', agentKind: 'claude' });
+	});
+
+	const NPM_CODEX = 'node /Users/user/.npm-global/bin/codex';
+	const VENDOR_CODEX = '/Users/user/.npm-global/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex';
+
+	/**
+	 * npm 版 codex の実際の親子（`bin/codex.js` が vendor の codex を spawn し、自分は親に残る）:
+	 *   100 (zsh) ← 700 (node …/bin/codex, 起動役) ← 710 (vendor codex, 本体) ← 715 (notify)
+	 */
+	function npmCodexTree(): Map<number, IParadisHookProcessInfo> {
+		return new Map([
+			[1, proc(1, 0, '/sbin/launchd')],
+			[100, proc(100, 1, '/bin/zsh -il')],
+			[700, proc(700, 100, NPM_CODEX)],
+			[710, proc(710, 700, VENDOR_CODEX)],
+			[715, proc(715, 710, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+	}
+
+	test('npm codex and the vendor binary it spawns are one agent that owns the pane', async () => {
+		const ownership = ownershipWith(npmCodexTree());
+		assert.deepStrictEqual([
+			await ownership.classify({ token: 't', hookPid: 715, transcriptPath: CODEX_TRANSCRIPT, at: 1 }),
+			await ownership.classify({ token: 't', hookPid: 715, transcriptPath: CODEX_TRANSCRIPT, at: 2 }),
+		], [{ origin: 'owner', agentKind: 'codex' }, { origin: 'owner', agentKind: 'codex' }]);
+	});
+
+	test('codex behind the Para Code pane launcher owns the pane, with and without spaces in the path', async () => {
+		const results = [];
+		for (const launcherDir of ['/Users/user/src/para-code/resources/paradis/bin', '/Applications/Para Code.app/Contents/Resources/app/resources/paradis/bin']) {
+			// ランチャーの sh が app-server と TUI を子として起動し、hook は app-server の配下で動く。
+			const tree = new Map([
+				[1, proc(1, 0, '/sbin/launchd')],
+				[100, proc(100, 1, '/bin/zsh -il')],
+				[800, proc(800, 100, `/bin/sh ${launcherDir}/codex`)],
+				[810, proc(810, 800, `${NPM_CODEX} app-server --listen unix:///tmp/pcx/pane.sock`)],
+				[820, proc(820, 810, `${VENDOR_CODEX} app-server --listen unix:///tmp/pcx/pane.sock`)],
+				[825, proc(825, 820, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
+				[830, proc(830, 800, `${NPM_CODEX} --remote unix:///tmp/pcx/pane.sock`)],
+				[840, proc(840, 830, `${VENDOR_CODEX} --remote unix:///tmp/pcx/pane.sock`)],
+			].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+			results.push(await ownershipWith(tree).classify({ token: 't', hookPid: 825, transcriptPath: CODEX_TRANSCRIPT, at: 1 }));
+		}
+		assert.deepStrictEqual(results, [{ origin: 'owner', agentKind: 'codex' }, { origin: 'owner', agentKind: 'codex' }]);
+	});
+
+	test('codex behind the Windows pane launcher owns the pane', async () => {
+		const tree = new Map([
+			[1, proc(1, 0, 'C:\\WINDOWS\\Explorer.EXE')],
+			[100, proc(100, 1, '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoLogo')],
+			[900, proc(900, 100, 'C:\\WINDOWS\\system32\\cmd.exe /d /s /c ""C:\\Users\\user\\AppData\\Local\\Programs\\Para Code\\resources\\app\\resources\\paradis\\bin\\codex.cmd""')],
+			[910, proc(910, 900, '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\AppData\\Local\\Programs\\Para Code\\resources\\app\\resources\\paradis\\bin\\paradisCodexPaneLauncher.cjs"')],
+			[920, proc(920, 910, 'C:\\Users\\user\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe app-server --listen ws://127.0.0.1:0')],
+			[925, proc(925, 920, 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\\Users\\user\\.para-code\\hooks\\notify-v3.ps1')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+		const result = await ownershipWith(tree).classify({ token: 't', hookPid: 925, transcriptPath: CODEX_TRANSCRIPT, at: 1 });
+		assert.deepStrictEqual(result, { origin: 'owner', agentKind: 'codex' });
+	});
+
+	test('claude behind a wrapper script that does not exec owns the pane', async () => {
+		const tree = new Map([
+			[1, proc(1, 0, '/sbin/launchd')],
+			[100, proc(100, 1, '/bin/zsh -il')],
+			[1000, proc(1000, 100, '/bin/sh /Users/user/bin/claude --resume')],
+			[1010, proc(1010, 1000, '/Users/user/.local/bin/claude --resume')],
+			[1015, proc(1015, 1010, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+		const result = await ownershipWith(tree).classify({ token: 't', hookPid: 1015, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
+		assert.deepStrictEqual(result, { origin: 'owner', agentKind: 'claude' });
+	});
+
+	test('codex exec started directly by an npm codex stays nested', async () => {
+		// d3bae4a490a が防いだ乗っ取りの同種版。本体（vendor の codex）が起動した `codex exec` は、
+		// 間にシェルが無くても本体の形で止まるので、所有者の codex と1体にはならない。
+		const tree = npmCodexTree();
+		tree.set(740, proc(740, 710, `${NPM_CODEX} exec task`));
+		tree.set(750, proc(750, 740, `${VENDOR_CODEX} exec task`));
+		tree.set(755, proc(755, 750, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh'));
+		const CODEX_TRANSCRIPT_2 = '/home/user/.codex/sessions/2026/07/16/rollout-2026-07-16T16-06-02-def.jsonl';
+		const childFirst = ownershipWith(tree);
+		const ownerFirst = ownershipWith(tree);
+		assert.deepStrictEqual([
+			await childFirst.classify({ token: 't', hookPid: 755, transcriptPath: CODEX_TRANSCRIPT_2, at: 1 }),
+			await childFirst.classify({ token: 't', hookPid: 715, transcriptPath: CODEX_TRANSCRIPT, at: 2 }),
+			await ownerFirst.classify({ token: 't', hookPid: 715, transcriptPath: CODEX_TRANSCRIPT, at: 1 }),
+			await ownerFirst.classify({ token: 't', hookPid: 755, transcriptPath: CODEX_TRANSCRIPT_2, at: 2 }),
+		], [
+			{ origin: 'nested', agentKind: 'codex' },
+			{ origin: 'owner', agentKind: 'codex' },
+			{ origin: 'owner', agentKind: 'codex' },
+			{ origin: 'nested', agentKind: 'codex' },
+		]);
 	});
 
 	test('first hook bootstraps the emitting agent as the pane owner', async () => {
