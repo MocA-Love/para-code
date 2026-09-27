@@ -10,11 +10,11 @@ import assert from 'assert';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { Emitter } from '../../../../../base/common/event.js';
-import { Disposable, IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
+import { IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { IParadisCodexRpc } from '../../../../node/paradisCodexAppServerSession.js';
+import { IParadisCodexAppServerRpc } from '../../../../node/paradisCodexAppServerRpc.js';
 import { IParadisCodexHookTrustGrantResult, IParadisCodexHookTrustStatus, paradisSelectManagedCodexHooks } from '../../common/paradisCodexHookTrust.js';
 import { IParadisCodexHookTrustBackend, IParadisCodexHookTrustIO, paradisGrantCodexHookTrust, paradisInspectCodexHookTrust, ParadisCodexHookTrustService } from '../../node/paradisCodexHookTrust.js';
 import { paradisWriteFileAtomic } from '../../../../node/paradisWriteFileAtomic.js';
@@ -53,7 +53,7 @@ class FakeCodex {
 
 	private rpcCount = 0;
 
-	rpc(): IParadisCodexRpc {
+	rpc(): IParadisCodexAppServerRpc {
 		const id = ++this.rpcCount;
 		return {
 			request: async (method: string, params: unknown) => {
@@ -236,10 +236,13 @@ suite('ParadisCodexHookTrust', () => {
 
 	suite('service', () => {
 
-		function setup(initialMode: string) {
+		function setup(initialMode: string, initialHomes: readonly string[] = ['/home/u/.codex']) {
 			let mode = initialMode;
+			let homes = initialHomes;
 			const modeChanged = store.add(new Emitter<void>());
+			const homesChanged = store.add(new Emitter<void>());
 			const hooksChanged: (() => void)[] = [];
+			const watched: string[] = [];
 			const scheduled: (() => void)[] = [];
 			const events: string[] = [];
 			let fingerprint = 'fp1';
@@ -250,13 +253,14 @@ suite('ParadisCodexHookTrust', () => {
 				fingerprint: async () => fingerprint,
 				readLedger: async () => ({ ...ledger }),
 				writeLedger: async value => { ledger = value; },
-				watchHooks: (_home, listener) => { hooksChanged.push(listener); return Disposable.None; },
+				watchHooks: (home, listener) => { hooksChanged.push(listener); watched.push(home); return toDisposable(() => watched.splice(watched.indexOf(home), 1)); },
 				schedule: (_delay, callback): IDisposable => { scheduled.push(callback); return toDisposable(() => { const index = scheduled.indexOf(callback); if (index >= 0) { scheduled.splice(index, 1); } }); },
 			};
 			const clock = { now: 0 };
-			const service = store.add(new ParadisCodexHookTrustService(backend, { defaultCodexHome: '/home/u/.codex', userHome: '/home/u', now: () => clock.now }, () => mode, modeChanged.event, new NullLogService()));
+			const service = store.add(new ParadisCodexHookTrustService(backend, { listHomes: () => homes, onDidChangeHomes: homesChanged.event, now: () => clock.now }, () => mode, modeChanged.event, new NullLogService()));
 			return {
-				service, events, clock,
+				service, events, clock, watched,
+				setHomes(value: readonly string[]) { homes = value; homesChanged.fire(); },
 				ledger: () => ledger,
 				setMode(value: string) { mode = value; modeChanged.fire(); },
 				setFingerprint(value: string) { fingerprint = value; },
@@ -290,19 +294,40 @@ suite('ParadisCodexHookTrust', () => {
 			});
 		});
 
-		test('off なら同意の経路でも付けない。受け付ける CODEX_HOME は既定と ~/.codex-N だけ', async () => {
-			const env = setup('off');
+		test('off なら同意の経路でも付けない。受け付ける CODEX_HOME は hook を置くホームの一覧にあるものだけ', async () => {
+			const env = setup('off', ['/home/u/.codex', '/home/u/.codex-2']);
 			const off = await env.service.grant();
 			env.setMode('ask');
 			const extra = await env.service.grant('/home/u/.codex-2');
 			const rejected = await env.service.getStatus('/etc').then(() => 'accepted', () => 'rejected');
 			const rejectedRelative = await env.service.grant('.codex-3').then(() => 'accepted', () => 'rejected');
-			assert.deepStrictEqual({ off: off.outcome, extra: extra.outcome, rejected, rejectedRelative, events: env.events }, {
+			// 手で作った ~/.codex-backup や、ログインしていない ~/.codex-3 は一覧に無いので受け付けない
+			const rejectedBackup = await env.service.grant('/home/u/.codex-backup').then(() => 'accepted', () => 'rejected');
+			const rejectedUnlisted = await env.service.grant('/home/u/.codex-3').then(() => 'accepted', () => 'rejected');
+			assert.deepStrictEqual({ off: off.outcome, extra: extra.outcome, rejected, rejectedRelative, rejectedBackup, rejectedUnlisted, events: env.events }, {
 				off: 'skipped',
 				extra: 'granted',
 				rejected: 'rejected',
 				rejectedRelative: 'rejected',
+				rejectedBackup: 'rejected',
+				rejectedUnlisted: 'rejected',
 				events: ['grant:/home/u/.codex-2'],
+			});
+		});
+
+		test('auto では一覧の全ホームに付け、全ホームの hooks.json を見る。ホームが増えたら監視と確認を足す', async () => {
+			const env = setup('auto', ['/home/u/.codex', '/home/u/.codex-2']);
+			await env.flush();
+			await env.service.autoGrant('/home/u/.codex-2');
+			const first = { events: [...env.events], watched: [...env.watched] };
+			env.setHomes(['/home/u/.codex', '/home/u/.codex-3']);
+			await env.flush();
+			await env.service.autoGrant('/home/u/.codex-3');
+			assert.deepStrictEqual({ first, events: env.events, watched: env.watched, ledger: Object.keys(env.ledger()).sort() }, {
+				first: { events: ['grant:/home/u/.codex', 'grant:/home/u/.codex-2'], watched: ['/home/u/.codex', '/home/u/.codex-2'] },
+				events: ['grant:/home/u/.codex', 'grant:/home/u/.codex-2', 'grant:/home/u/.codex-3'],
+				watched: ['/home/u/.codex', '/home/u/.codex-3'],
+				ledger: ['/home/u/.codex', '/home/u/.codex-2', '/home/u/.codex-3'],
 			});
 		});
 
