@@ -5,7 +5,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { DeferredPromise } from '../../../../../base/common/async.js';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/virtualScheduling/runWithFakedTimers.js';
 import { Event, Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
@@ -313,4 +314,31 @@ suite('ParadisKeepAwakeContribution', () => {
 
 		contribution.dispose();
 	});
+
+	test('auto mode lets the PC sleep after about a minute when agent status stops arriving at all', () => runWithFakedTimers({ startTime: 1_000_000 }, async () => {
+		let nextId = 1;
+		const configurationService = new TestConfigurationService('auto');
+		const powerService = new TestPowerService(async () => nextId++, async () => true);
+		const statusbarService = new TestStatusbarService();
+		const logService = disposables.add(new TestLogService());
+		const agentStatusService = new TestAgentStatusSnapshotService();
+		disposables.add(configurationService);
+		const contribution = createContribution(configurationService, powerService, statusbarService, logService, agentStatusService);
+
+		agentStatusService.publish([{ token: 'a', status: 'working', changedAt: Date.now() }]);
+		await settle();
+		const startedWhileWorking = [...powerService.startedTypes];
+		// 配る側が失敗も返さず黙ったまま。60秒ごとの見直しだけが頼り
+		await timeout(30_000);
+		const stoppedWithinAMinute = powerService.stoppedIds.length;
+		await timeout(95_000);
+		await settle();
+
+		assert.deepStrictEqual({ startedWhileWorking, stoppedWithinAMinute, stoppedAfterSilence: powerService.stoppedIds }, {
+			startedWhileWorking: ['prevent-app-suspension'],
+			stoppedWithinAMinute: 0,
+			stoppedAfterSilence: [1],
+		});
+		contribution.dispose();
+	}));
 });
