@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { redirectLegacyLink } from '../src/features/links/legacyLinks.js';
+import { relayRunningPcLink } from '../src/features/links/runningPcLink.js';
 
 /**
  * OS から開かれたリンク（Live Activity・通知以外のディープリンク）を、画面を探す前に書き換える
@@ -9,11 +10,15 @@ import { redirectLegacyLink } from '../src/features/links/legacyLinks.js';
  * Live Activity は表示していたセッションを直接開く）もここで書き換える。対応表は
  * `src/features/links/legacyLinks.ts` と `src/features/links/widgetLinks.ts`。
  *
+ * アプリが起動している間に届いた PC の中の画面へのリンクは、中継の画面を経由させる（器の Stack を新しく積むため。
+ * 理由は `src/features/links/runningPcLink.ts`）。
+ *
  * ここで例外を出すとアプリが落ちるので、書き換えに失敗したら元のまま開く。
  */
-export function redirectSystemPath({ path }: { path: string; initial: boolean }): string {
+export function redirectSystemPath({ path, initial }: { path: string; initial: boolean }): string {
 	try {
-		return redirectLegacyLink(path) ?? path;
+		const target = redirectLegacyLink(path) ?? path;
+		return initial ? target : relayRunningPcLink(target);
 	} catch {
 		return path;
 	}

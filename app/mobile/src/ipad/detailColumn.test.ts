@@ -46,6 +46,19 @@ describe('detailColumn', () => {
 		expect(pops).toEqual(['a2']);
 	});
 
+	test('作り直されずに最前面へ並べ替えられた器は、前に来た時点で前面になり、入れ替えもそこへ効く', () => {
+		// 器を積む Stack が [B, A] → [A, B] に並べ替えても、根の attach は走り直さない。
+		const pops: string[] = [];
+		const { attach, bringToFront } = useDetailColumn.getState();
+		attach('b', 'pc-b', () => pops.push('b'));
+		attach('a', 'pc-a', () => pops.push('a'));
+		bringToFront('b');
+		resetDetailColumnFor('pc-b');
+		resetDetailColumnFor('pc-a');
+		bringToFront('missing');
+		expect({ order: snapshot().map(entry => entry.key), pops }).toEqual({ order: ['a', 'b'], pops: ['b'] });
+	});
+
 	test('同じ印で置き直した後に古い方を外しても、新しい方は残る', () => {
 		const { attach } = useDetailColumn.getState();
 		const detachOld = attach('a', 'pc-a', () => {});

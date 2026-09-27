@@ -7,6 +7,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 import { useAppStore } from '../src/appState.js';
 import { openSessionTarget, type OpenSessionTarget } from '../src/features/links/openSessionTarget.js';
+import { isPcPath } from '../src/features/links/runningPcLink.js';
 import { firstParam, routes } from '../src/routes.js';
 import { colors } from '../src/theme.js';
 import { Screen } from '../src/ui/index.js';
@@ -21,11 +22,15 @@ const WAIT_LIMIT_MS = 8_000;
  *
  * `latest`（会話を最新まで送る一度限りの印）は旧 `/agent` のクエリの意味のまま引き継ぐ。付いていなければ
  * 通知のタップと同じく新しく作る。
+ *
+ * `to`（PC の中の画面のパス）が付いていれば、待たずにそこへ置き換える。アプリが起動している間に届いた
+ * PC の中の画面へのリンクを、`app/+native-intent.tsx` がここ経由に書き換えたもの（`runningPcLink.ts`）。
  */
 export default function OpenSessionScreen() {
 	const router = useRouter();
-	const params = useLocalSearchParams<{ latest?: string | string[] }>();
+	const params = useLocalSearchParams<{ latest?: string | string[]; to?: string | string[] }>();
 	const latest = firstParam(params.latest);
+	const relayTarget = firstParam(params.to);
 	// 行き先だけを購読する（workspace 本体を購読すると PC の再送のたびに描き直す）。
 	const target = useAppStore(useShallow((s): OpenSessionTarget => openSessionTarget({
 		ready: s.ready,
@@ -36,7 +41,16 @@ export default function OpenSessionScreen() {
 	const doneRef = useRef(false);
 
 	useEffect(() => {
-		if (doneRef.current || target.kind === 'wait') {
+		if (doneRef.current || relayTarget === undefined) {
+			return;
+		}
+		doneRef.current = true;
+		// withAnchor: PC の中の Stack の根（1列では PC の画面、2列では「エージェントが開かれていません」）を下に敷く。
+		router.replace(isPcPath(relayTarget) ? relayTarget : routes.home(), { withAnchor: true });
+	}, [relayTarget, router]);
+
+	useEffect(() => {
+		if (doneRef.current || relayTarget !== undefined || target.kind === 'wait') {
 			return;
 		}
 		doneRef.current = true;
@@ -61,7 +75,7 @@ export default function OpenSessionScreen() {
 				return;
 			}
 		}
-	}, [target, latest, router]);
+	}, [target, latest, relayTarget, router]);
 
 	useEffect(() => {
 		const timer = setTimeout(() => {
