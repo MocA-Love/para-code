@@ -19,9 +19,10 @@
 // リセットクレジット:
 //   - 読み取り: ホームの auth.json のアクセストークンで ChatGPT のバックエンドを直接読む（使用量と
 //     同じやり方。app-server は起こさない。トークンの更新は limitsMonitor が codex 自身にやらせる）
-//   - 消費: `CODEX_HOME=<ホーム> codex app-server` の `account/rateLimitResetCredit/consume`。
-//     二重消費は台帳（paradisCodexResetCreditLedger.ts）で防ぐ。消費は shared process の中で1本ずつ
-//     直列に流すので、複数ウィンドウから同時に押しても provider へ出る要求は1つになる
+//   - 消費: Orca と同じく、バックエンドへ直接 `POST …/wham/rate-limit-reset-credits/consume` し、
+//     本文に `redeem_request_id`（冪等の鍵）を付ける。二重消費は台帳（paradisCodexResetCreditLedger.ts）で
+//     防ぐ。結果が分からない要求は、同じ `redeem_request_id` で再送する。消費は shared process の中で
+//     1本ずつ直列に流すので、複数ウィンドウから同時に押しても provider へ出る要求は1つになる
 
 import * as fs from 'fs';
 import * as os from 'os';
@@ -40,23 +41,41 @@ import {
 	IParadisCodexResetConsumeResult,
 	IParadisCodexResetCreditOffer,
 	IParadisCodexResetCredits,
+	ParadisCodexResetOutcome,
 	paradisCodexResetOfferRevision,
-	paradisCodexResetOutcome,
 	paradisMapCodexBackendResetCredits
 } from '../common/paradisCodexAccounts.js';
-import { paradisResolveAgentCli } from '../../../node/paradisAgentCli.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
-import { IParadisCodexAppServerRpc, ParadisCodexAppServerRpcFactory, ParadisCodexRpcError, paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { ParadisCodexResetCreditLedger } from './paradisCodexResetCreditLedger.js';
 import { paradisLinkCodexSessions } from './paradisCodexSessionLinker.js';
 
 /** 読み取り結果を使い回す時間。パネルは30秒ごとに描き直すので、そのたびに読まない。 */
 const RESET_CREDITS_CACHE_MS = 3 * 60_000;
 const READ_TIMEOUT_MS = 20_000;
-/** 消費は provider まで往復するので長め。 */
-const CONSUME_TIMEOUT_MS = 45_000;
+/** 消費は provider まで往復するので長め（Orca と同じ 30 秒）。 */
+const CONSUME_TIMEOUT_MS = 30_000;
 /** リセットクレジットの残りを読むバックエンドの URL（Orca と同じ。使用量の wham/usage の隣）。 */
 const RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits';
+/** リセットクレジットを使うバックエンドの URL（Orca の codex-reset-credit-client.ts と同じ）。 */
+const RESET_CREDITS_CONSUME_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume';
+
+/** バックエンドの消費の結果の `code` を画面の outcome にする（Orca と同じ対応）。知らない値は undefined。 */
+function outcomeOfBackendCode(code: unknown): ParadisCodexResetOutcome | undefined {
+	switch (code) {
+		case 'reset': return 'reset';
+		case 'nothing_to_reset': return 'nothingToReset';
+		case 'no_credit': return 'noCredit';
+		case 'already_redeemed': return 'alreadyRedeemed';
+		default: return undefined;
+	}
+}
+
+/** バックエンドが消費の要求を断ったか（結果が確定している）。401/403 は認証の問題で、使われていない。 */
+class ParadisCodexResetHttpError extends Error {
+	constructor(readonly status: number) {
+		super(`Codex reset failed: HTTP ${status}`);
+	}
+}
 /**
  * 起動してから会話ログのリンクを1回走らせるまでの待ち。前回の切替以降に切替元・切替先で増えた会話を
  * 拾うため。起動直後の混雑を避けて少し遅らせる。
@@ -81,8 +100,6 @@ export interface IParadisCodexAccountsServiceOptions {
 	readonly homeDirectory?: string;
 	/** テスト用。`homeDirectory` と一緒に、設定で足したホームを渡す。 */
 	readonly configuredHomes?: readonly string[];
-	readonly startRpc?: ParadisCodexAppServerRpcFactory;
-	readonly resolveCodexCommand?: (env: NodeJS.ProcessEnv) => Promise<string>;
 	readonly fetch?: typeof fetch;
 	readonly now?: () => number;
 	/** テストで起動時のリンクとホームの監視を止める。 */
@@ -105,15 +122,6 @@ interface ICodexAuth {
 	readonly email?: string;
 }
 
-/** PATH（とよくある置き場所）から codex を探す。Para Code のペイン用ランチャーでも動く（非対話は素通し）。 */
-export async function paradisResolveCodexCommand(env: NodeJS.ProcessEnv): Promise<string> {
-	const found = await paradisResolveAgentCli('codex', env);
-	if (found === undefined) {
-		throw new Error('codex not found');
-	}
-	return found;
-}
-
 export class ParadisCodexAccountsService extends Disposable {
 
 	private readonly ledger: ParadisCodexResetCreditLedger;
@@ -124,8 +132,6 @@ export class ParadisCodexAccountsService extends Disposable {
 	/** 消費は全ホームを通して1本ずつ流す。 */
 	private consumeQueue: Promise<unknown> = Promise.resolve();
 	private readonly now: () => number;
-	private readonly startRpc: ParadisCodexAppServerRpcFactory;
-	private readonly resolveCodexCommand: (env: NodeJS.ProcessEnv) => Promise<string>;
 	private readonly fetchImpl: typeof fetch;
 
 	private readonly selectionPath: string;
@@ -145,8 +151,6 @@ export class ParadisCodexAccountsService extends Disposable {
 	constructor(protected readonly options: IParadisCodexAccountsServiceOptions) {
 		super();
 		this.now = options.now ?? Date.now;
-		this.startRpc = options.startRpc ?? paradisStartCodexAppServerRpc;
-		this.resolveCodexCommand = options.resolveCodexCommand ?? paradisResolveCodexCommand;
 		this.fetchImpl = options.fetch ?? fetch;
 		this.ledger = new ParadisCodexResetCreditLedger(join(options.stateDirectory, 'codex-reset-credit-ledger.json'), this.now);
 		this.selectionPath = join(options.stateDirectory, 'codex-account-selection.json');
@@ -515,30 +519,35 @@ export class ParadisCodexAccountsService extends Disposable {
 			key = request.idempotencyKey;
 		}
 
-		// app-server を先に起こす。起動に失敗したら要求は出ていないので、台帳には何も書かない。
-		const response = await this.withRpc(homePath, async rpc => {
-			// 書けなければここで例外になり、provider へは出さない。
-			await this.ledger.markProviderPending(key, offerScope, accountScope);
-			try {
-				return await rpc.request('account/rateLimitResetCredit/consume', { idempotencyKey: key }, CONSUME_TIMEOUT_MS) as { outcome?: unknown } | undefined;
-			} catch (error) {
-				if (paradisIsCodexAuthError(error)) {
-					// 認証が無い・切れていると app-server は provider へ出す前に断る。使われていないので
-					// 「結果不明」から外す（残すと、ログインし直した後も同じ鍵の再送から抜けられない）。
+		const auth = await this.readAuth(homePath);
+		if (!auth.accessToken) {
+			// 要求は出ていないので、台帳には何も書かない。
+			this.offers.delete(homePath);
+			throw new Error('Codex not signed in');
+		}
+		// 書けなければここで例外になり、provider へは出さない。
+		await this.ledger.markProviderPending(key, offerScope, accountScope);
+		let code: unknown;
+		try {
+			code = await this.postConsume(auth.accessToken, auth.accountId, key);
+		} catch (error) {
+			if (error instanceof ParadisCodexResetHttpError) {
+				if (error.status === 401 || error.status === 403 || error.status === 429) {
+					// 認証が無い・切れている、回数の上限。バックエンドは使う前に断っているので「結果不明」から外す
+					// （残すと、ログインし直した後も同じ鍵の再送から抜けられない）。
 					await this.ledger.release(key);
-					this.offers.delete(homePath);
-				} else if (error instanceof ParadisCodexRpcError) {
-					// app-server がエラーで答えた（結果が確定した失敗）。結果不明にはせず、同じ提示への
-					// 2回目は断る。読み直した新しい提示なら押せる。
+				} else if (error.status >= 400 && error.status < 500 && error.status !== 408) {
+					// 要求が断られた（結果が確定した失敗）。結果不明にはせず、同じ提示への2回目は断る。
+					// 読み直した新しい提示なら押せる。
 					await this.ledger.markFailed(key);
-					this.offers.delete(homePath);
 				}
-				// それ以外（時間切れ・プロセスの終了）は結果が分からない。providerPending のまま残し、
-				// 次の操作で同じ鍵を再送させる。
-				throw error;
+				// 5xx と 408 は、使われたかどうか分からない。providerPending のまま残し、同じ鍵で再送させる。
+				this.offers.delete(homePath);
 			}
-		});
-		const outcome = paradisCodexResetOutcome(response?.outcome);
+			// 通信の失敗・時間切れも結果が分からない。providerPending のまま残し、次の操作で同じ鍵を再送させる。
+			throw error;
+		}
+		const outcome = outcomeOfBackendCode(code);
 		if (outcome === undefined) {
 			// 結果が読めない。providerPending のまま残し、次の操作で同じ鍵を再送させる。
 			throw new Error('unknown reset-credit outcome');
@@ -549,14 +558,34 @@ export class ParadisCodexAccountsService extends Disposable {
 		return { kind: 'consumed', outcome };
 	}
 
-	private async withRpc<T>(homePath: string, run: (rpc: IParadisCodexAppServerRpc) => Promise<T>): Promise<T> {
-		const env = { ...await this.options.resolveEnv(), CODEX_HOME: homePath };
-		const command = await this.resolveCodexCommand(env);
-		const rpc = await this.startRpc(command, env, this.options.logService, 'para-code-codex-accounts');
+	/** バックエンドへ消費を送り、応答の `code` を返す。断られたら {@link ParadisCodexResetHttpError}。 */
+	private async postConsume(accessToken: string, accountId: string | undefined, redeemRequestId: string): Promise<unknown> {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), CONSUME_TIMEOUT_MS);
 		try {
-			return await run(rpc);
+			const headers: Record<string, string> = {
+				'Authorization': `Bearer ${accessToken}`,
+				'Accept': 'application/json',
+				'Content-Type': 'application/json',
+				'User-Agent': 'ParaCode-CodexAccounts',
+			};
+			if (accountId) {
+				headers['ChatGPT-Account-Id'] = accountId;
+			}
+			const response = await this.fetchImpl(RESET_CREDITS_CONSUME_URL, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify({ redeem_request_id: redeemRequestId }),
+				signal: controller.signal,
+			});
+			if (!response.ok) {
+				await response.body?.cancel().catch(() => undefined);
+				throw new ParadisCodexResetHttpError(response.status);
+			}
+			const payload = await response.json() as { code?: unknown } | null;
+			return payload?.code;
 		} finally {
-			rpc.dispose();
+			clearTimeout(timer);
 		}
 	}
 }
