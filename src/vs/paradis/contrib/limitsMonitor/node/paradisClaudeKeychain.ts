@@ -14,13 +14,18 @@
 //   読み書きで「キーチェーンへのアクセスを許可しますか」は出ない（claude-swap の実測）。
 //   Electron / Node の中からキーチェーン API を直接呼ぶと、項目のアクセス権が Para Code の
 //   実行ファイルに結び付き、更新のたびに許可ダイアログが出るおそれがある
-// - 書き込みは Orca（`main/macos-keychain/generic-password.ts`）と同じく、値を常に引数で渡す
-//   （`security add-generic-password -U -a <account> -s <service> -X <16進>`、標準入力は繋がない）。
-//   値は Orca の `-w <値>` ではなく、Claude Code 自身と同じ `-X <16進>` で渡す。キーチェーンに入る
-//   バイト列はどちらも同じ（JSON の UTF-8）で、Claude Code・Orca・Para Code はどれも
-//   `find-generic-password -w` で読むので、読み手から見た違いは無い。16進にしておけば、項目の中身が
-//   Claude Code 自身の書いたものとバイト単位で同じになる。引数に載せた一瞬だけ、同じユーザーの
-//   プロセス（ps）や EDR のログから値が見える。Claude Code も長い値は引数で書いており、露出は同じ
+// - 書き込みは項目によって渡し方を分ける。値はどちらも Claude Code 自身と同じ `-X <16進>` で渡す
+//   （キーチェーンに入るバイト列は Orca の `-w <値>` と同じ JSON の UTF-8 で、Claude Code・Orca・
+//   Para Code はどれも `find-generic-password -w` で読むので、読み手から見た違いは無い）。
+//   - Claude Code の項目（`Claude Code-credentials` とハッシュ付きの `Claude Code-credentials-<hash>`）:
+//     Orca（`main/macos-keychain/generic-password.ts`）と同じく、長さに関係なく常に引数で渡す
+//     （`security add-generic-password -U -a <account> -s <service> -X <16進>`、標準入力は繋がない）。
+//     引数に載せた一瞬は、同じユーザーのプロセス（ps）や EDR のログから値が見える。Claude Code 自身は
+//     短い値を標準入力、4,032 バイトを超える値を引数で書くので、短い値ではこの露出が Claude Code より増える
+//   - Para Code 自身の保存分（`Para Code Claude Accounts`。控えの更新で定期的に書く）: 以前どおり
+//     `add-generic-password …` の1行を `security -i` の標準入力で渡し、その1行が 4,032 バイトを超える
+//     ときだけ引数で渡す（`security -i` は標準入力を 4096 バイトの行バッファで読む）。保存するのは
+//     `claudeAiOauth` だけなので、通常は標準入力に収まり、引数には載らない
 // - PATH 上の偽の `security` に秘密を渡さないよう、絶対パスで起動する
 //
 // テストではこのインターフェースをメモリ実装に差し替え、本物のキーチェーンには触れない。
@@ -44,6 +49,18 @@ const SECURITY_BINARY = '/usr/bin/security';
 const NOT_FOUND_EXIT_CODE = 44;
 /** ロックされたキーチェーンが解除を待ち続けても処理全体が止まらないように。正常なら 100ms もかからない。 */
 const SECURITY_TIMEOUT_MS = 5_000;
+/**
+ * `security -i` は標準入力を 4096 バイトの行バッファで読む。Claude Code と同じく 4,032 バイト
+ * （余裕 64 バイト）までを標準入力で渡し、超えたら引数で渡す。
+ */
+export const PARADIS_SECURITY_STDIN_LINE_LIMIT = 4096 - 64;
+/** Claude Code が作る項目の名前（ハッシュ付きは `<これ>-<8桁>`）。これらは Orca と同じく常に引数で書く。 */
+const CLAUDE_CODE_SERVICE = 'Claude Code-credentials';
+
+/** `security -i` の1行の中で値を囲む（シェルと同じ規則で読み直されるため）。 */
+function quoteForSecurityStdin(value: string): string {
+	return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
 
 /** `security` の子プロセスのうち、ここで使う部分。テストでは偽物に差し替え、本物の `security` を起動しない。 */
 export interface IParadisSecurityProcess {
@@ -83,6 +100,16 @@ export class ParadisSecurityCliKeychain implements IParadisKeychain {
 
 	async write(service: string, account: string, value: string): Promise<void> {
 		const hex = Buffer.from(value, 'utf8').toString('hex');
+		const claudeCodeItem = service === CLAUDE_CODE_SERVICE || service.startsWith(`${CLAUDE_CODE_SERVICE}-`);
+		const command = `add-generic-password -U -a ${quoteForSecurityStdin(account)} -s ${quoteForSecurityStdin(service)} -X "${hex}"\n`;
+		if (!claudeCodeItem && Buffer.byteLength(command, 'utf8') <= PARADIS_SECURITY_STDIN_LINE_LIMIT) {
+			const stdinResult = await this.run(['-i'], { input: command });
+			// `security -i` は中のコマンドが失敗しても 0 で終わることがあるので、エラー出力も見る。
+			if (stdinResult.code !== 0 || /error|failed/i.test(stdinResult.stderr)) {
+				throw new ParadisKeychainError(`security add-generic-password failed (code ${stdinResult.code})`);
+			}
+			return;
+		}
 		const result = await this.run(['add-generic-password', '-U', '-a', account, '-s', service, '-X', hex], { ignoreStdin: true });
 		if (result.code !== 0) {
 			throw new ParadisKeychainError(`security add-generic-password failed (code ${result.code})`);
@@ -98,9 +125,10 @@ export class ParadisSecurityCliKeychain implements IParadisKeychain {
 	}
 
 	/**
+	 * @param options.input 標準入力へ書く内容。
 	 * @param options.ignoreStdin 標準入力を繋がない（引数で値を渡すとき。Claude Code と同じ）。
 	 */
-	private run(args: string[], options: { readonly ignoreStdin?: boolean } = {}): Promise<ISecurityResult> {
+	private run(args: string[], options: { readonly input?: string; readonly ignoreStdin?: boolean } = {}): Promise<ISecurityResult> {
 		return new Promise<ISecurityResult>((resolve, reject) => {
 			let settled = false;
 			let stdout = '';
@@ -135,7 +163,11 @@ export class ParadisSecurityCliKeychain implements IParadisKeychain {
 					resolve({ code, stdout, stderr });
 				}
 			});
-			child.stdin?.end();
+			if (options.input !== undefined) {
+				child.stdin?.end(options.input);
+			} else {
+				child.stdin?.end();
+			}
 		});
 	}
 }
