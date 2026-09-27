@@ -9,7 +9,8 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisPickedElement } from '../../common/paradisDesignMode.js';
-import { IParadisDesignAnnotation, ParadisDesignTargetAvailability, paradisBuildAgentInsertText, paradisDesignTargetAvailability, paradisFormatDesignAnnotations } from '../../common/paradisDesignModeFormat.js';
+import { ParadisAgentPromptAvailability, paradisAgentPromptAvailability, paradisBuildPresetInsertText } from '../../../terminalPresets/common/paradisTerminalPresets.js';
+import { IParadisDesignAnnotation, paradisFormatDesignAnnotations } from '../../common/paradisDesignModeFormat.js';
 
 function element(overrides: Partial<IParadisPickedElement> = {}): IParadisPickedElement {
 	return {
@@ -83,10 +84,11 @@ suite('paradisDesignModeFormat', () => {
 	});
 
 	test('入力欄へ入れる文章から制御文字と末尾の改行を落とす', () => {
+		// Design Mode はプリセットの整形をそのまま使う（ターミナルへは false、クリップボードへは true）
 		assert.deepStrictEqual([
-			paradisBuildAgentInsertText('a\x1b[201~b\r\nc\t d\n\n', true),
-			paradisBuildAgentInsertText('a\x1b[201~b\r\nc\t d\n\n', false),
-			paradisBuildAgentInsertText('\n\x07 \n', true),
+			paradisBuildPresetInsertText('a\x1b[201~b\r\nc\t d\n\n', true),
+			paradisBuildPresetInsertText('a\x1b[201~b\r\nc\t d\n\n', false),
+			paradisBuildPresetInsertText('\n\x07 \n', true),
 		], [
 			'a[201~b\nc\t d',
 			'a[201~b c  d',
@@ -95,14 +97,15 @@ suite('paradisDesignModeFormat', () => {
 	});
 
 	test('質問・許可の回答待ちの相手には入れない', () => {
+		// 送り先の一覧はエージェントのペインに限っているので、常にエージェントとして判定する
 		assert.deepStrictEqual(
-			[undefined, 'working', 'review', 'question', 'permission'].map(status => paradisDesignTargetAvailability(status)),
+			[undefined, 'working', 'review', 'question', 'permission'].map(status => paradisAgentPromptAvailability(true, true, status)),
 			[
-				ParadisDesignTargetAvailability.Ready,
-				ParadisDesignTargetAvailability.Ready,
-				ParadisDesignTargetAvailability.Ready,
-				ParadisDesignTargetAvailability.AwaitingAnswer,
-				ParadisDesignTargetAvailability.AwaitingAnswer,
+				ParadisAgentPromptAvailability.Ready,
+				ParadisAgentPromptAvailability.Ready,
+				ParadisAgentPromptAvailability.Ready,
+				ParadisAgentPromptAvailability.AwaitingAnswer,
+				ParadisAgentPromptAvailability.AwaitingAnswer,
 			],
 		);
 	});

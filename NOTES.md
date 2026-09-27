@@ -414,17 +414,20 @@ upstream への変更は次の3行（2ファイル）だけ。ボタンは `Menu
 - 書き込み（Markup）は `captureScreenshot({ format: 'png' })` で撮ったビューポートの画像を、ページの入れ物（`.browser-container`）と同じ位置に重ねて描く。重ね板は `.browser-container-wrapper` の子に置く。wrapper は z-index を持たず重なりの文脈を作らないので、重ね板がエディタの外へはみ出さないのは wrapper の `overflow: hidden` で切り抜かれるから（z-index 20 は同じ wrapper の中の、止めたページの代わりの画像より上に出すためだけ）。背景は透明で、ウィンドウの透過を変えない。**開いている間にエディタの大きさを変えると、重ね板の位置は開いたときのまま**になる
 - キーは ⇧⌥⌘C（Windows / Linux は Ctrl+Shift+Alt+C）。当初の ⌥⌘D は macOS の既定で「Dock を自動的に表示/非表示」に取られ、押すと Dock の設定が切り替わるのでやめた。⇧⌥⌘C はワークベンチでは「相対パスのコピー」（エクスプローラーやエディタで使う。Linux も同じキー）なので、`when` を「ブラウザが前面のエディタ」かつ「フォーカスがブラウザのエディタの中（`CONTEXT_BROWSER_FOCUSED`）」にして、エクスプローラーやターミナルにフォーカスがあるときは元の割り当てが効くようにしてある。Windows で AltGr+Shift+C に文字が割り当てられた配列では、ブラウザのエディタの URL 欄でその文字が打てない可能性がある【要確認】
 
-### フェーズ5の処理との統合で行う作業
+### フェーズ5のプリセットと共有している処理
 
-フェーズ5（エージェント向けプリセット、`terminalPresets`）の処理は今の main にあるが、このブランチの起点には無かったので、次の3つを写してある。統合するときに写しを消して main のものを使う。
+Design Mode の送信（`paradisDesignModeSender.ts`）は、フェーズ5（エージェント向けプリセット、`terminalPresets`）の判定と整形を `terminalPresets/common/paradisTerminalPresets.ts` から使う。以前はこのブランチの起点に無かったため写しを置いていたが、2026-09-27 に写しを消して寄せた。
 
-| Design Mode 側（写し） | main 側の元 |
-|---|---|
-| `paradisBuildAgentInsertText`（`browserDesignMode/common/paradisDesignModeFormat.ts`） | `paradisBuildPresetInsertText`（`terminalPresets/common/paradisTerminalPresets.ts`） |
-| `paradisDesignTargetAvailability`（同上） | `paradisAgentPromptAvailability`（同上） |
-| 送る直前の回答待ちの確認（`ParadisDesignModeSender._throwIfAwaitingAnswer`） | `ParadisPresetService._throwIfAwaitingAnswer` |
+| 用途 | 使う処理 | Design Mode 側の渡し方 |
+|---|---|---|
+| 入力欄へ入れる文章の整形 | `paradisBuildPresetInsertText` | ターミナルへは常に `keepNewlines = false`、クリップボードへは `true` |
+| 送り先一覧の「今すぐ入れられるか」 | `paradisAgentPromptAvailability` | `(true, true, status)`。一覧はエージェントのペインに限っているので、hook の実績が無くてもエージェントとして扱う |
+| 送る直前の回答待ちの確認 | `paradisThrowIfAgentAwaitingAnswer` | `requireAgentInstance = false` |
 
-改行を残すかの判定（プリセットの `_insertAgentPrompt` の `keepNewlines`）は、Design Mode では使わない（常に1行）。寄せるときにこの違いを消さないこと。
+プリセットとの違いは2つあり、寄せた後も残している。
+
+- 改行: プリセットの `_insertAgentPrompt` は貼り付けモードかつ前面のコマンドがエージェントなら改行を残す（`keepNewlines`）。Design Mode はページ由来の値が入るので常に1行へ均す
+- 回答待ちの確認: 状態は hook の実績が無いペイン（hook を切っている・WSL の中・Codex の hook が届かない構成など）にも transcript から届くことがある。プリセットの「挿入だけ」は `requireAgentInstance = true` で、hook の実績（`isAgentInstance`）があるペインだけを止める。Design Mode は `false` で、hook の実績が無いペインでも回答待ちなら止める（hook が無いペインには入れる前に確認のダイアログも出す）。どちらも写しの時点の挙動のままで、`paradisPresetAction.test.ts` で両方を押さえている
 
 upstream 取り込み時に確認すること:
 
