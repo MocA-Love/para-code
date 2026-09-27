@@ -29,6 +29,7 @@ import './contrib/agentHookTrust/node/paradisCodexHookTrust.js';
 import './contrib/agentModelCatalog/node/paradisAgentModelCatalog.js';
 
 import './contrib/agentActivity/node/paradisAgentActivityChannel.js';
+import './contrib/notificationInbox/node/paradisNotificationInboxChannel.js';
 
 /**
  * 登録済みの shared process 向け contribution をすべて呼ぶ。
