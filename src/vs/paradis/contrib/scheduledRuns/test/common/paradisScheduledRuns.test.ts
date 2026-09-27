@@ -143,16 +143,21 @@ suite('paradisScheduledRuns decisions', () => {
 		// 23:50 の回を 0:05 に後から実行しても、翌日の回数には数えない
 		const late = run({ scheduledFor: at(2026, 9, 25, 23, 50), createdAt: at(2026, 9, 26, 0, 5) });
 		assert.strictEqual(paradisCheckRunGuards(d, [late], 'schedule', at(2026, 9, 26, 9, 0), at(2026, 9, 26, 9, 0)), undefined);
+		// 後から実行する回は予定の時刻が古くても、直前に始めた回から 15 分たっていなければ止める
+		const justRan = run({ scheduledFor: at(2026, 9, 25, 9, 0), createdAt: at(2026, 9, 25, 9, 0) });
+		assert.strictEqual(paradisCheckRunGuards(definition(), [justRan], 'catchUp', at(2026, 9, 25, 9, 5), at(2026, 9, 25, 8, 0)), 'tooSoon');
 	});
 
 	test('limits concurrent runs and the daily total across all schedules', () => {
 		const now = at(2026, 9, 25, 12, 0);
-		const others = (status: IParadisScheduledRunRecord['status'], count: number) => Array.from({ length: count }, (_, index) => run({ id: `o${index}`, definitionId: `other${index}`, status, createdAt: now - HOUR, scheduledFor: now - HOUR }));
+		const others = (status: IParadisScheduledRunRecord['status'], count: number, trigger: IParadisScheduledRunRecord['trigger'] = 'schedule') => Array.from({ length: count }, (_, index) => run({ id: `o${index}`, definitionId: `other${index}`, status, trigger, createdAt: now - HOUR, scheduledFor: now - HOUR }));
 		assert.deepStrictEqual([
 			paradisCheckRunGuards(definition(), others('running', 3), 'manual', now),
+			paradisCheckRunGuards(definition(), others('pending', 3), 'schedule', now, now),
 			paradisCheckRunGuards(definition(), others('completed', 30), 'schedule', now, now),
+			paradisCheckRunGuards(definition(), others('completed', 30, 'manual'), 'schedule', now, now),
 			paradisCheckRunGuards(definition(), others('completed', 30), 'manual', now),
-		], ['globalConcurrency', 'globalDailyLimit', undefined]);
+		], ['globalConcurrency', undefined, 'globalDailyLimit', undefined, undefined]);
 	});
 
 	test('strips control characters from prompts', () => {

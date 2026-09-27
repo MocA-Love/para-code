@@ -93,6 +93,12 @@ export interface IParadisScheduledRunDefinition {
 	readonly dailyLimit: number;
 	readonly createdAt: number;
 	readonly updatedAt: number;
+	/**
+	 * 読み込んだときに無効へ戻した理由（画面に出す）。利用者が有効にし直すか保存すると消える。
+	 * - modifiedOutside: 前回 Para Code が書いた中身から変わっていた
+	 * - invalid: 保存の規則を満たしていなかった
+	 */
+	readonly disabledReason?: 'modifiedOutside' | 'invalid';
 }
 
 /** 画面から保存するときに送る値（id と日時は shared process が決める）。 */
@@ -144,6 +150,7 @@ export type ParadisScheduledRunReason =
 	| 'noWindowTooOld'
 	| 'disabled'
 	| 'deleted'
+	| 'appRestarted'
 	| 'timeoutWhileWaiting'
 	| 'timeoutNoStatus'
 	| 'timeout'
@@ -241,6 +248,11 @@ export function paradisIsActiveRunStatus(status: ParadisScheduledRunStatus): boo
 	return status === 'pending' || status === 'starting' || status === 'running' || status === 'needsAttention';
 }
 
+/** 実際に動いている（ウィンドウが受け持った）実行の数。開始待ちは数えない。 */
+export function paradisCountRunningRuns(runs: readonly IParadisScheduledRunRecord[]): number {
+	return runs.filter(run => run.status === 'starting' || run.status === 'running' || run.status === 'needsAttention').length;
+}
+
 export function paradisIsFinishedRunStatus(status: ParadisScheduledRunStatus): boolean {
 	return !paradisIsActiveRunStatus(status);
 }
@@ -317,7 +329,7 @@ export function paradisRevalidateStoredDefinition(definition: IParadisScheduledR
 	if (problem === undefined) {
 		return { definition: cleaned };
 	}
-	return { definition: { ...cleaned, enabled: false }, problem };
+	return { definition: { ...cleaned, enabled: false, ...(definition.enabled ? { disabledReason: 'invalid' as const } : {}) }, problem };
 }
 
 // ---------- 時刻の判定 ----------
@@ -412,8 +424,9 @@ export function paradisCheckRunGuards(
 	if (own.some(run => paradisIsActiveRunStatus(run.status))) {
 		return 'overlap';
 	}
-	// 全体で同時に動かす数の上限（手動でも同じ）
-	if (runs.filter(run => paradisIsActiveRunStatus(run.status)).length >= PARADIS_SCHEDULED_RUN_MAX_CONCURRENT) {
+	// 全体で同時に動かす数の上限（手動でも同じ）。開始待ちは数えない（どのウィンドウも開いていない
+	// リポジトリの回が、拾われるまでの最大 12 時間ほかの回を止めないように。拾う側の claim で数える）
+	if (paradisCountRunningRuns(runs) >= PARADIS_SCHEDULED_RUN_MAX_CONCURRENT) {
 		return 'globalConcurrency';
 	}
 	if (trigger === 'manual') {
@@ -427,7 +440,8 @@ export function paradisCheckRunGuards(
 	if (own.filter(sameDay).length >= definition.dailyLimit) {
 		return 'dailyLimit';
 	}
-	if (runs.filter(sameDay).length >= PARADIS_SCHEDULED_RUN_MAX_DAILY_TOTAL) {
+	// 全体の 1 日の上限は自動の回だけで数える（手動の回は数えない）
+	if (runs.filter(run => run.trigger !== 'manual' && sameDay(run)).length >= PARADIS_SCHEDULED_RUN_MAX_DAILY_TOTAL) {
 		return 'globalDailyLimit';
 	}
 	const minGap = PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES * PARADIS_MINUTE_MS;
@@ -435,11 +449,11 @@ export function paradisCheckRunGuards(
 		if (!countsTowardLimit(run)) {
 			return false;
 		}
-		if (scheduledFor !== undefined && run.scheduledFor !== undefined) {
-			return Math.abs(scheduledFor - run.scheduledFor) < minGap;
-		}
-		// 手動の回との比較は作成時刻どうし。判定の遅れの分だけ許す
-		return now - run.createdAt < minGap - PARADIS_SCHEDULED_RUN_ON_TIME_MS;
+		// 予定の時刻どうしの間隔（判定の遅れに左右されない）と、実際に始めた時刻どうしの間隔の両方を見る。
+		// 後から実行する回は予定の時刻が古いので、予定どうしだけでは直前の回とくっついて走りうる。
+		// 実際の時刻の方は判定の遅れ（最大 3 分）だけ許す
+		const scheduledTooClose = scheduledFor !== undefined && run.scheduledFor !== undefined && Math.abs(scheduledFor - run.scheduledFor) < minGap;
+		return scheduledTooClose || now - run.createdAt < minGap - PARADIS_SCHEDULED_RUN_ON_TIME_MS;
 	});
 	return tooSoon ? 'tooSoon' : undefined;
 }
@@ -496,6 +510,7 @@ export function paradisScheduledRunReasonLabel(reason: ParadisScheduledRunReason
 		case 'noWindowTooOld': return localize('paradis.scheduledRuns.reason.noWindowTooOld', "実行できるウィンドウが開かないまま 12 時間たちました");
 		case 'disabled': return localize('paradis.scheduledRuns.reason.disabled', "無効にしたため取りやめました");
 		case 'deleted': return localize('paradis.scheduledRuns.reason.deleted', "削除したため取りやめました");
+		case 'appRestarted': return localize('paradis.scheduledRuns.reason.appRestarted', "開始する前にアプリを終了したため取りやめました");
 		case 'timeoutWhileWaiting': return localize('paradis.scheduledRuns.reason.timeoutWhileWaiting', "許可・質問の回答を待ったまま 30 分たったため停止しました");
 		case 'timeoutNoStatus': return localize('paradis.scheduledRuns.reason.timeoutNoStatus', "30 分で停止しました（エージェントの状態が届きませんでした。hook が設置されていない可能性があります）");
 		case 'timeout': return localize('paradis.scheduledRuns.reason.timeout', "30 分で停止しました");

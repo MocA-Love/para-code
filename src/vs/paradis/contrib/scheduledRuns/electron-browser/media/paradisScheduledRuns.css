@@ -269,6 +269,10 @@
 	display: block;
 }
 
+.monaco-workbench .paradis-scheduled-runs .psr-content .psr-message {
+	margin: 0 0 12px;
+}
+
 .monaco-workbench .paradis-scheduled-runs .psr-message.error {
 	color: var(--vscode-errorForeground);
 	border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));

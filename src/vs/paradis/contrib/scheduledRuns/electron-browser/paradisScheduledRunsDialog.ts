@@ -346,7 +346,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			const sub = dom.append(main, $('span.psr-nav-sub'));
 			const next = this.state?.nextRuns[definition.id];
 			sub.textContent = !definition.enabled
-				? localize('paradis.scheduledRuns.navDisabled', "無効")
+				? (definition.disabledReason ? localize('paradis.scheduledRuns.navDisabledChecked', "無効（要確認）") : localize('paradis.scheduledRuns.navDisabled', "無効"))
 				: next !== undefined
 					? localize('paradis.scheduledRuns.navNext', "次回 {0}", paradisFormatScheduledTime(next))
 					: paradisDescribeCron(definition.schedule);
@@ -412,6 +412,12 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		const remove = this.button(head, localize('paradis.scheduledRuns.delete', "削除"), 'secondary', Codicon.trash);
 		this.contentDisposables.add(dom.addDisposableListener(remove, 'click', () => this.deleteDefinition(definition)));
 
+		if (!definition.enabled && definition.disabledReason) {
+			const warning = dom.append(this.content, $('.psr-message.visible.error'));
+			warning.textContent = definition.disabledReason === 'modifiedOutside'
+				? localize('paradis.scheduledRuns.disabledModified', "保存ファイルの中身が Para Code の外で書き換えられていたため、無効に戻しました。指示と設定を確かめてから有効にしてください。")
+				: localize('paradis.scheduledRuns.disabledInvalid', "保存ファイルの中身が規則（間隔・回数など）を満たしていなかったため、無効に戻しました。編集して保存し直してください。");
+		}
 		const summary = dom.append(this.content, $('.psr-summary'));
 		const next = this.state?.nextRuns[definition.id];
 		this.summaryRow(summary, localize('paradis.scheduledRuns.field.schedule', "スケジュール"), (value => {

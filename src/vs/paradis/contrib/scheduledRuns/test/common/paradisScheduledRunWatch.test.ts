@@ -11,11 +11,12 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { ParadisAgentStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisRunWatchState, PARADIS_RUN_WATCH_INITIAL, paradisAdvanceRunWatch, paradisRunWatchTimeoutReason } from '../../common/paradisScheduledRunWatch.js';
 
-function play(statuses: readonly (ParadisAgentStatus | undefined)[]): { reports: string[]; state: IParadisRunWatchState } {
+/** 状態の列を流す。`'acked'` は「review を既読にして状態から外した」（状態は undefined）。 */
+function play(statuses: readonly (ParadisAgentStatus | undefined | 'acked')[]): { reports: string[]; state: IParadisRunWatchState } {
 	let state = PARADIS_RUN_WATCH_INITIAL;
 	const reports: string[] = [];
 	for (const status of statuses) {
-		const step = paradisAdvanceRunWatch(state, status);
+		const step = status === 'acked' ? paradisAdvanceRunWatch(state, undefined, true) : paradisAdvanceRunWatch(state, status);
 		state = step.state;
 		if (step.report) {
 			reports.push(step.report);
@@ -31,7 +32,11 @@ suite('paradisScheduledRunWatch', () => {
 		assert.deepStrictEqual(play([undefined, 'working', 'permission', 'permission', 'working', 'review', 'working']).reports, ['needsAttention', 'running', 'completed']);
 	});
 
-	test('does not complete when the status disappears, since that also happens when polling fails', () => {
+	test('completes when the review was acknowledged by the viewer before the watcher saw it', () => {
+		assert.deepStrictEqual(play(['working', 'acked']).reports, ['completed']);
+	});
+
+	test('does not complete when the status disappears without an acknowledgement, since that also happens when polling fails', () => {
 		assert.deepStrictEqual([play([undefined, undefined]).reports, play(['working', undefined, 'working']).reports, play(['working', undefined]).state.phase], [[], [], 'running']);
 	});
 

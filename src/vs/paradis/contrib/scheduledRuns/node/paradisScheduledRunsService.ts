@@ -41,6 +41,8 @@ import {
 	PARADIS_SCHEDULED_RUN_HISTORY_LIMIT,
 	PARADIS_SCHEDULED_RUN_LAST_MESSAGE_LENGTH,
 	PARADIS_SCHEDULED_RUN_LEASE_MS,
+	PARADIS_SCHEDULED_RUN_MAX_CONCURRENT,
+	paradisCountRunningRuns,
 	PARADIS_SCHEDULED_RUN_MIN_PENDING_MS,
 	PARADIS_SCHEDULED_RUN_MAX_DEFINITIONS,
 	PARADIS_SCHEDULED_RUN_TIMEOUT_MS,
@@ -63,8 +65,11 @@ export function paradisAgentFromTranscriptPath(path: string | undefined): 'claud
 
 /** 判定の間隔。 */
 export const PARADIS_SCHEDULED_RUNS_TICK_MS = 30_000;
-/** 判定の間隔がこれより空いたら、スリープからの復帰とみなす。 */
-export const PARADIS_SCHEDULED_RUNS_RESUME_GAP_MS = 2 * 60_000;
+/**
+ * 判定の間隔がこれより空いたら、スリープからの復帰とみなす。生存報告は 60 秒おきなので、
+ * 空きがこれ以下なら最後の報告からの経過は 150 秒以下で、リース（180 秒）に 30 秒の余裕が残る。
+ */
+export const PARADIS_SCHEDULED_RUNS_RESUME_GAP_MS = 90_000;
 /** 制限時間を過ぎてもウィンドウから終了の報告が来ないときに、こちらで打ち切りと記録するまでの余裕。 */
 const TIMEOUT_GRACE_MS = 5 * 60_000;
 
@@ -165,6 +170,8 @@ export class ParadisScheduledRunsService extends Disposable {
 				const { definition: checked, problem } = paradisRevalidateStoredDefinition(definition);
 				if (problem !== undefined) {
 					this.logService.warn(`[ParadisScheduledRuns] disabled a saved schedule that no longer passes validation: ${problem}`);
+				} else if (checked.disabledReason === 'modifiedOutside') {
+					this.logService.warn('[ParadisScheduledRuns] disabled a saved schedule whose content changed outside Para Code');
 				}
 				return checked;
 			});
@@ -172,14 +179,18 @@ export class ParadisScheduledRunsService extends Disposable {
 			this.lastEvaluatedAt = { ...stored.lastEvaluatedAt };
 		}
 		// 前回の shared process が抱えていた実行は、アプリを閉じたときに一緒に止まっている
-		// （ウィンドウを閉じるときにターミナルを閉じる）。開始待ちのものだけは、次に開いた
-		// ウィンドウが拾えるよう残す
+		// （ウィンドウを閉じるときにターミナルを閉じる）。開始待ちも持ち越さずに取りやめる。
+		// ファイルに開始待ちを書き足せば、安全装置を通らずに（無効の定義でも）起動できてしまうため
 		const now = this.clock.now();
 		let changed = false;
 		this.runs = this.runs.map(run => {
 			if (run.status === 'starting' || run.status === 'running' || run.status === 'needsAttention') {
 				changed = true;
 				return { ...run, status: 'lost', reason: 'heartbeatLost', finishedAt: now };
+			}
+			if (run.status === 'pending') {
+				changed = true;
+				return { ...run, status: 'cancelled', reason: 'appRestarted', finishedAt: now };
 			}
 			return run;
 		});
@@ -240,7 +251,8 @@ export class ParadisScheduledRunsService extends Disposable {
 		};
 		let definition: IParadisScheduledRunDefinition;
 		if (existing) {
-			definition = { ...existing, ...fields, updatedAt: now };
+			const { disabledReason: _cleared, ...rest } = existing;
+			definition = { ...rest, ...fields, updatedAt: now };
 			this.definitions = this.definitions.map(candidate => candidate.id === existing.id ? definition : candidate);
 			if (existing.schedule !== definition.schedule) {
 				// 時刻を変えたら、変える前の式で過ぎた時刻を新しい式で拾い直さない
@@ -267,7 +279,8 @@ export class ParadisScheduledRunsService extends Disposable {
 			// 押し直しでは判定の起点を動かさない（直前の時刻を黙って逃さないように）
 			return { ok: true, definition: existing };
 		}
-		const definition = { ...existing, enabled, updatedAt: now };
+		const { disabledReason: _cleared, ...rest } = existing;
+		const definition = { ...rest, enabled, updatedAt: now };
 		this.definitions = this.definitions.map(candidate => candidate.id === id ? definition : candidate);
 		// 有効にした時点より前の時刻は拾わない（無効だった間の時刻を「逃した」と扱わない）
 		this.lastEvaluatedAt[id] = now;
@@ -350,6 +363,10 @@ export class ParadisScheduledRunsService extends Disposable {
 		const run = this.runs.find(candidate => candidate.id === runId);
 		const definition = run && this.definitions.find(candidate => candidate.id === run.definitionId);
 		if (!run || !definition || run.status !== 'pending') {
+			return undefined;
+		}
+		if (paradisCountRunningRuns(this.runs) >= PARADIS_SCHEDULED_RUN_MAX_CONCURRENT) {
+			// 全体の同時数に空きが無い。開始待ちのまま、次の判定で配り直す
 			return undefined;
 		}
 		const now = this.clock.now();
@@ -547,6 +564,13 @@ export class ParadisScheduledRunsService extends Disposable {
 					}
 				}
 			}
+		}
+
+		// 定義を消した後に終わった記録（不明・時間切れにしたもの）は残す先が無いので消す
+		const orphans = this.runs.filter(run => !paradisIsActiveRunStatus(run.status) && !this.definitions.some(definition => definition.id === run.definitionId));
+		if (orphans.length > 0) {
+			changed = true;
+			this.runs = this.runs.filter(run => !orphans.includes(run));
 		}
 
 		// 判定した時刻は毎回変わるが、それだけで書き込むと 30 秒ごとにディスクへ書くことになる。

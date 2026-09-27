@@ -243,7 +243,8 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 		if (run.finished || !run.instance) {
 			return;
 		}
-		const step = paradisAdvanceRunWatch(run.watch, this.statusStore.getInstanceStatus(run.instance.instanceId));
+		const instanceId = run.instance.instanceId;
+		const step = paradisAdvanceRunWatch(run.watch, this.statusStore.getInstanceStatus(instanceId), this.statusStore.wasReviewAcknowledged?.(instanceId) === true);
 		const sawFirstStatus = !run.watch.sawStatus && step.state.sawStatus;
 		run.watch = step.state;
 		if (step.report === 'completed') {
