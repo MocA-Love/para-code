@@ -84,14 +84,15 @@ suite('paradisBrowserProfileModel', () => {
 		);
 	});
 
-	test('only a literal true createdByAgent survives the round trip', () => {
-		const agentMade = { ...profile('a3f19c2b7e04', 'AGENT'), createdByAgent: true as const };
+	test('only a literal true createdByAgent and a well-formed owner mark survive the round trip', () => {
+		const agentMade = { ...profile('a3f19c2b7e04', 'AGENT'), createdByAgent: true as const, agentOwner: '0123456789abcdef' };
 		assert.deepStrictEqual(
 			paradisDeserializeProfiles(JSON.stringify([
 				agentMade,
-				{ ...profile('b1c2d3e4f506', 'USER'), createdByAgent: 'yes' },
+				{ ...profile('b1c2d3e4f506', 'USER'), createdByAgent: 'yes', agentOwner: '0123456789abcdef' },
+				{ ...profile('c1c2d3e4f506', 'BAD OWNER'), createdByAgent: true, agentOwner: 'not-a-mark' },
 			])),
-			[agentMade, profile('b1c2d3e4f506', 'USER')],
+			[agentMade, profile('b1c2d3e4f506', 'USER'), { ...profile('c1c2d3e4f506', 'BAD OWNER'), createdByAgent: true }],
 		);
 	});
 });
