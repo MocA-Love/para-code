@@ -218,6 +218,31 @@ suite('Paradis Codex reset credits', () => {
 		});
 	});
 
+	// app-server がエラーで答えたら結果不明にしない（同じ提示への2回目は断り、読み直せば押せる）。
+	test('records a definite app-server error as failed instead of unknown', async () => {
+		consumeHandler = async () => { throw new ParadisCodexRpcError('reset credit request rejected', -32000); };
+		const service = createService();
+		const offer = await service.readResetCredits(codexHome, false);
+		await assert.rejects(service.consumeResetCredit({ homePath: codexHome, offerRevision: offer.offerRevision!, idempotencyKey: 'key-a' }));
+		const reread = await service.readResetCredits(codexHome, false);
+		service.dispose();
+		assert.deepStrictEqual({ ledger: ledgerStates(), pendingUnknown: reread.pendingUnknown, fetchedAgain: fetches.length }, {
+			ledger: ['key-a:failed'],
+			pendingUnknown: undefined,
+			fetchedAgain: 2,
+		});
+	});
+
+	// 確認した後にそのホームで別のアカウントへログインし直していたら、消費しない。
+	test('refuses to consume when the home signed in to another account after the offer was shown', async () => {
+		const service = createService();
+		const offer = await service.readResetCredits(codexHome, false);
+		writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({ tokens: { account_id: 'acct-2', access_token: 'test-token' } }));
+		const result = await service.consumeResetCredit({ homePath: codexHome, offerRevision: offer.offerRevision!, idempotencyKey: 'key-a' });
+		service.dispose();
+		assert.deepStrictEqual({ result, sent: consumeCalls() }, { result: { kind: 'rejected', reason: 'offerChanged' }, sent: [] });
+	});
+
 	// 同じ ChatGPT アカウントで2つのホームにログインしていても、「結果不明」は両方に効く。
 	test('an unknown outcome in one home also blocks a fresh key from another home of the same account', async () => {
 		const secondHome = join(home, '.codex-2');

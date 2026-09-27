@@ -16,6 +16,7 @@
 
 import * as fs from 'fs';
 import { homedir } from 'os';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js';
 import { IParadisWslAgentHome, paradisResolveWslAgentHome, paradisWslUncPathFrom } from '../../../common/paradisWslAgentHome.js';
 
@@ -55,6 +56,19 @@ export interface IParadisCodexHomesOptions {
 	readonly homeDirectory?: string;
 	/** テスト用。`homeDirectory` と一緒に、設定で足したホームを渡す。 */
 	readonly configured?: readonly string[];
+}
+
+const onDidChangeCodexHomesEmitter = new Emitter<void>();
+/** ホームが増えた・消えた・ログインした（{@link paradisNotifyCodexHomesChanged} が呼ばれた）。 */
+export const onDidChangeParadisCodexHomes: Event<void> = onDidChangeCodexHomesEmitter.event;
+
+/**
+ * Codex のホームを作った・消した・ログインが終わったときに呼ぶ（使用量パネルのアカウント追加・削除）。
+ * 一覧のキャッシュを捨て、codexAccounts に選択を見直させる。
+ */
+export function paradisNotifyCodexHomesChanged(): void {
+	codexHomesCache = undefined;
+	onDidChangeCodexHomesEmitter.fire();
 }
 
 /** shared process の codexAccounts が起動時に呼ぶ。 */

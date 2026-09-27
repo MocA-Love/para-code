@@ -7,13 +7,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisCodexAccountsState } from '../../common/paradisCodexAccounts.js';
+import { paradisNotifyCodexHomesChanged } from '../../../agentBrowser/node/paradisAgentHome.js';
 import { ParadisCodexAccountsService } from '../../node/paradisCodexAccountsService.js';
 import { paradisLinkCodexSessions } from '../../node/paradisCodexSessionLinker.js';
 
@@ -136,6 +137,29 @@ suite('Paradis Codex account switching', () => {
 		});
 	});
 
+	// 使用量パネルでアカウントを消したら（shared process の中で知らせが来たら）、待たずに見直す。
+	test('re-checks the selection as soon as the limits monitor reports a home change', async () => {
+		const service = new ParadisCodexAccountsService({
+			logService: new NullLogService(),
+			stateDirectory,
+			resolveEnv: async () => ({}),
+			homeDirectory: home,
+			shareConversations: () => false,
+		});
+		await service.selectHome(join(home, '.codex-2'));
+		const changed = new Promise<string | undefined>(resolve => {
+			const listener = service.onDidChangeState(state => {
+				listener.dispose();
+				resolve(state.selection.homePath);
+			});
+		});
+		rmSync(join(home, '.codex-2'), { recursive: true, force: true });
+		paradisNotifyCodexHomesChanged();
+		const selected = await changed;
+		service.dispose();
+		assert.strictEqual(selected, undefined);
+	});
+
 	// 会話を広げるのは実際に行き来した2つのホームの間だけ。設定でやめられる。
 	test('links conversations only between the homes switched from and to, unless turned off', async () => {
 		rollout(join(home, '.codex'), 'rollout-a.jsonl');
@@ -184,7 +208,7 @@ suite('Paradis Codex account switching', () => {
 			symlinkCopied: exists(join(b, day, 'rollout-link.jsonl')),
 			notesCopied: exists(join(b, day, 'notes.txt')),
 		}, {
-			summary: { linked: 2, skippedExisting: 0, skippedRemoved: 0, skippedUnsupported: 0, failed: 0 },
+			summary: { linked: 2, skippedExisting: 0, skippedRemoved: 0, skippedOtherOrigin: 0, skippedUnsupported: 0, failed: 0 },
 			aHasB: 'b\n',
 			bHasA: 'a\n',
 			sameInode: true,
@@ -194,8 +218,8 @@ suite('Paradis Codex account switching', () => {
 		});
 	});
 
-	// 消した・アーカイブした会話を、もう一方のホームから足し戻さない。新しく作るディレクトリは 0700。
-	test('does not bring back conversations the user removed and creates private directories', async () => {
+	// 消した・アーカイブした会話を、もう一方のホームから足し戻さない（何度リンクし直しても）。新しく作るディレクトリは 0700。
+	test('never brings back conversations the user removed and creates private directories', async () => {
 		const a = join(home, '.codex');
 		const b = join(home, '.codex-2');
 		const ledgerPath = join(stateDirectory, 'links.json');
@@ -204,14 +228,65 @@ suite('Paradis Codex account switching', () => {
 		const createdMode = statSync(join(b, 'sessions', '2026')).mode & 0o777;
 		rmSync(secret);
 		const second = await paradisLinkCodexSessions([a, b], { ledgerPath });
+		const third = await paradisLinkCodexSessions([a, b], { ledgerPath });
 		assert.deepStrictEqual({
 			second,
+			third,
 			backInA: exists(secret),
 			createdMode: isWindows ? 0o700 : createdMode,
 		}, {
-			second: { linked: 0, skippedExisting: 0, skippedRemoved: 1, skippedUnsupported: 0, failed: 0 },
+			second: { linked: 0, skippedExisting: 0, skippedRemoved: 1, skippedOtherOrigin: 0, skippedUnsupported: 0, failed: 0 },
+			third: { linked: 0, skippedExisting: 0, skippedRemoved: 1, skippedOtherOrigin: 0, skippedUnsupported: 0, failed: 0 },
 			backInA: false,
 			createdMode: 0o700,
+		});
+	});
+
+	// .codex → .codex-2 → .codex-4 と切り替えても、.codex で書いた会話は .codex-4 へ届かない。
+	test('only links conversations that started in one of the two homes being linked', async () => {
+		const a = join(home, '.codex');
+		const b = join(home, '.codex-2');
+		const c = join(home, '.codex-4');
+		const ledgerPath = join(stateDirectory, 'links.json');
+		const observeHomes = [a, b, c];
+		rollout(a, 'rollout-from-a.jsonl');
+		await paradisLinkCodexSessions([a, b], { ledgerPath, observeHomes });
+		rollout(b, 'rollout-from-b.jsonl');
+		const second = await paradisLinkCodexSessions([b, c], { ledgerPath, observeHomes });
+		assert.deepStrictEqual({
+			second,
+			aInC: exists(join(c, day, 'rollout-from-a.jsonl')),
+			bInC: exists(join(c, day, 'rollout-from-b.jsonl')),
+		}, {
+			second: { linked: 1, skippedExisting: 0, skippedRemoved: 0, skippedOtherOrigin: 1, skippedUnsupported: 0, failed: 0 },
+			aInC: false,
+			bInC: true,
+		});
+	});
+
+	// 台帳が読めないときは、どれを消したのか分からないので何もリンクせず、壊れた台帳を退避する。
+	test('stops linking and moves an unreadable ledger aside', async () => {
+		const a = join(home, '.codex');
+		const b = join(home, '.codex-2');
+		mkdirSync(stateDirectory, { recursive: true });
+		const ledgerPath = join(stateDirectory, 'links.json');
+		writeFileSync(ledgerPath, '{broken');
+		rollout(a, 'rollout-old.jsonl');
+		const first = await paradisLinkCodexSessions([a, b], { ledgerPath });
+		rollout(a, 'rollout-new.jsonl');
+		const second = await paradisLinkCodexSessions([a, b], { ledgerPath });
+		assert.deepStrictEqual({
+			first,
+			second,
+			oldInB: exists(join(b, day, 'rollout-old.jsonl')),
+			newInB: exists(join(b, day, 'rollout-new.jsonl')),
+			backedUp: readdirSync(stateDirectory).some(name => name.startsWith('links.json.unreadable-')),
+		}, {
+			first: { linked: 0, skippedExisting: 0, skippedRemoved: 0, skippedOtherOrigin: 0, skippedUnsupported: 0, failed: 0, ledgerUnavailable: true },
+			second: { linked: 1, skippedExisting: 0, skippedRemoved: 0, skippedOtherOrigin: 1, skippedUnsupported: 0, failed: 0 },
+			oldInB: false,
+			newInB: true,
+			backedUp: true,
 		});
 	});
 });

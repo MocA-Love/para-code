@@ -12,7 +12,7 @@
 //   - 選択は userData 配下の JSON に1つだけ持ち、変わったら全ウィンドウへ通知する。renderer は
 //     それを受けて、新しく開くターミナルへ `CODEX_HOME` を渡す（paradisCodexLaunchHomeService.ts）
 //   - 選んだホームが消えたり（使用量パネルからの削除）、ログアウトしたりしたら既定のホームへ戻す。
-//     ホームディレクトリを監視して、`.codex*` が増減したら見直して全ウィンドウへ通知する
+//     使用量パネルからの追加・削除はすぐ、それ以外（手で消した等）は30秒ごとの見直しで全ウィンドウへ通知する
 //   - 切り替えたら、切替元と切替先の2ホームの間だけ会話ログをハードリンクし合う
 //     （paradisCodexSessionLinker.ts）。設定でやめられる
 //
@@ -25,12 +25,12 @@
 
 import * as fs from 'fs';
 import * as os from 'os';
-import { disposableTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
+import { disposableTimeout, IntervalTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { delimiter, dirname, isAbsolute, join } from '../../../../base/common/path.js';
-import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
+import { onDidChangeParadisCodexHomes, paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import {
 	IParadisCodexAccountSelection,
 	IParadisCodexAccountsState,
@@ -44,7 +44,7 @@ import {
 	paradisCodexResetOutcome,
 	paradisMapCodexBackendResetCredits
 } from '../common/paradisCodexAccounts.js';
-import { IParadisCodexAppServerRpc, ParadisCodexAppServerRpcFactory, paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
+import { IParadisCodexAppServerRpc, ParadisCodexAppServerRpcFactory, ParadisCodexRpcError, paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { ParadisCodexResetCreditLedger } from './paradisCodexResetCreditLedger.js';
 import { paradisLinkCodexSessions } from './paradisCodexSessionLinker.js';
 
@@ -60,8 +60,12 @@ const RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset
  * 拾うため。起動直後の混雑を避けて少し遅らせる。
  */
 const STARTUP_LINK_DELAY_MS = 60_000;
-/** ホームディレクトリの変化をまとめる待ち（`.codex-N` の作成・削除は一連の操作で何度も通知が来る）。 */
-const HOME_WATCH_DEBOUNCE_MS = 1_000;
+/**
+ * ホームの増減を見直す間隔。ホームディレクトリを監視しない（macOS ではホーム配下の全変更を受けうる）
+ * かわりに、安い見直し（ホーム直下の一覧と auth.json の有無）をこの間隔で回す。使用量パネルからの
+ * 追加・削除は paradisNotifyCodexHomesChanged ですぐ届く。
+ */
+const HOME_RECHECK_INTERVAL_MS = 30_000;
 
 export interface IParadisCodexAccountsServiceOptions {
 	readonly logService: ILogService;
@@ -145,7 +149,7 @@ export class ParadisCodexAccountsService extends Disposable {
 	/** 選択の読み書き（選ぶ・見直す）は1本ずつ流す。同時に選ぶと同じ revision が2回出るため。 */
 	private selectionQueue: Promise<unknown> = Promise.resolve();
 	private lastStateKey: string | undefined;
-	private linking: Promise<IParadisCodexSessionLinkSummary> = Promise.resolve({ linked: 0, skippedExisting: 0, skippedRemoved: 0, skippedUnsupported: 0, failed: 0 });
+	private linking: Promise<IParadisCodexSessionLinkSummary> = Promise.resolve({ linked: 0, skippedExisting: 0, skippedRemoved: 0, skippedOtherOrigin: 0, skippedUnsupported: 0, failed: 0 });
 	private disposed = false;
 
 	private readonly _onDidChangeState = this._register(new Emitter<IParadisCodexAccountsState>());
@@ -169,7 +173,9 @@ export class ParadisCodexAccountsService extends Disposable {
 					}
 				});
 			}, STARTUP_LINK_DELAY_MS));
-			this.watchHomeDirectory();
+			this._register(onDidChangeParadisCodexHomes(() => void this.revalidate()));
+			const recheck = this._register(new IntervalTimer());
+			recheck.cancelAndSet(() => void this.revalidate(), HOME_RECHECK_INTERVAL_MS);
 		}
 	}
 
@@ -208,22 +214,6 @@ export class ParadisCodexAccountsService extends Disposable {
 		}
 	}
 
-	private watchHomeDirectory(): void {
-		const scheduler = this._register(new RunOnceScheduler(() => void this.revalidate(), HOME_WATCH_DEBOUNCE_MS));
-		try {
-			const watcher = fs.watch(os.homedir(), { persistent: false }, (_event, fileName) => {
-				// ホーム直下は履歴ファイルなどで頻繁に変わる。Codex のホームに関わる名前だけ拾う。
-				if (fileName === null || fileName.toString().startsWith('.codex')) {
-					scheduler.schedule();
-				}
-			});
-			watcher.on('error', error => this.options.logService.warn('[ParadisCodexAccounts] home directory watcher failed', error));
-			this._register(toDisposable(() => watcher.close()));
-		} catch (error) {
-			this.options.logService.warn('[ParadisCodexAccounts] could not watch the home directory', error);
-		}
-	}
-
 	// ---------- 切替 ----------
 
 	private loadSelection(): Promise<void> {
@@ -257,7 +247,10 @@ export class ParadisCodexAccountsService extends Disposable {
 	getState(): Promise<IParadisCodexAccountsState> {
 		return this.serializeSelection(async () => {
 			await this.resetMissingSelection();
-			return this.buildState();
+			const state = await this.buildState();
+			// 呼んだウィンドウはこの内容を持ったので、次の見直しで同じ内容を配り直さない。
+			this.lastStateKey = JSON.stringify(state);
+			return state;
 		});
 	}
 
@@ -366,12 +359,15 @@ export class ParadisCodexAccountsService extends Disposable {
 					signedIn.push(homePath);
 				}
 			}
-			const summary = await paradisLinkCodexSessions(signedIn, { ledgerPath: this.linkLedgerPath, shouldStop: () => this.disposed });
-			this.options.logService.info(`[ParadisCodexAccounts] linked Codex sessions between ${signedIn.length} homes: ${summary.linked} linked, ${summary.skippedExisting} existing, ${summary.skippedRemoved} removed by the user, ${summary.skippedUnsupported} unsupported, ${summary.failed} failed`);
+			const summary = await paradisLinkCodexSessions(signedIn, { ledgerPath: this.linkLedgerPath, observeHomes: this.knownHomes(), shouldStop: () => this.disposed });
+			if (summary.ledgerUnavailable) {
+				this.options.logService.warn('[ParadisCodexAccounts] the Codex session link ledger was unreadable; moved it aside and skipped linking');
+			}
+			this.options.logService.info(`[ParadisCodexAccounts] linked Codex sessions between ${signedIn.length} homes: ${summary.linked} linked, ${summary.skippedExisting} existing, ${summary.skippedRemoved} removed by the user, ${summary.skippedOtherOrigin} from other homes, ${summary.skippedUnsupported} unsupported, ${summary.failed} failed`);
 			return summary;
 		}).catch(error => {
 			this.options.logService.warn('[ParadisCodexAccounts] failed to link Codex sessions', error);
-			return { linked: 0, skippedExisting: 0, skippedRemoved: 0, skippedUnsupported: 0, failed: 1 };
+			return { linked: 0, skippedExisting: 0, skippedRemoved: 0, skippedOtherOrigin: 0, skippedUnsupported: 0, failed: 1 };
 		});
 	}
 
@@ -507,7 +503,13 @@ export class ParadisCodexAccountsService extends Disposable {
 		}
 
 		const cached = this.offers.get(homePath);
-		const accountId = cached?.accountId ?? (await this.readAuth(homePath)).accountId;
+		// 確認した後にそのホームで別のアカウントへログインし直していたら、確認した内容とは別のアカウントを
+		// 消費することになる。今の auth.json を読み直し、食い違えば断る。
+		const accountId = (await this.readAuth(homePath)).accountId;
+		if (cached && cached.accountId !== undefined && accountId !== undefined && cached.accountId !== accountId) {
+			this.offers.delete(homePath);
+			return { kind: 'rejected', reason: 'offerChanged' };
+		}
 		const accountScope = accountScopeOf(homePath, accountId);
 		let key: string;
 		let offerScope: string;
@@ -541,8 +543,15 @@ export class ParadisCodexAccountsService extends Disposable {
 					// 認証が無い・切れていると app-server は provider へ出す前に断る。使われていないので
 					// 「結果不明」から外す（残すと、ログインし直した後も同じ鍵の再送から抜けられない）。
 					await this.ledger.release(key);
+					this.offers.delete(homePath);
+				} else if (error instanceof ParadisCodexRpcError) {
+					// app-server がエラーで答えた（結果が確定した失敗）。結果不明にはせず、同じ提示への
+					// 2回目は断る。読み直した新しい提示なら押せる。
+					await this.ledger.markFailed(key);
+					this.offers.delete(homePath);
 				}
-				// それ以外は結果が分からない。providerPending のまま残し、次の操作で同じ鍵を再送させる。
+				// それ以外（時間切れ・プロセスの終了）は結果が分からない。providerPending のまま残し、
+				// 次の操作で同じ鍵を再送させる。
 				throw error;
 			}
 		});

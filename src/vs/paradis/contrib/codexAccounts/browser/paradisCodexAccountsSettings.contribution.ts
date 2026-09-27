@@ -23,7 +23,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.codexAccounts.shareConversations', "使用量パネルで Codex のアカウントを切り替えたとき、切替元と切替先のアカウントの間で会話の記録を共有し、どちらのアカウントからでも `codex resume` で開けるようにします。共有するのは実際に切り替えた2つのアカウントの間だけです。\n\n共有した会話を別のアカウントで再開すると、その会話の内容は再開したアカウント（別の組織のアカウントを含む）へ送られます。仕事用と個人用のように分けておきたい場合はオフにしてください。オフにしても、すでに共有した記録は消しません。")
+			markdownDescription: localize('paradis.codexAccounts.shareConversations', "使用量パネルで Codex のアカウントを切り替えたとき、切替元と切替先のアカウントの間で会話の記録を共有し、どちらのアカウントからでも `codex resume` で開けるようにします。共有するのは実際に切り替えた2つのアカウントの間だけで、そのどちらかで始めた会話に限ります（ほかのアカウントで始めた会話は届きません）。削除・アーカイブした会話は共有し直しません。\n\n共有した会話を別のアカウントで再開すると、その会話の内容は再開したアカウント（別の組織のアカウントを含む）へ送られます。仕事用と個人用のように分けておきたい場合はオフにしてください。オフにしても、すでに共有した記録は消しません。")
 		}
 	}
 });

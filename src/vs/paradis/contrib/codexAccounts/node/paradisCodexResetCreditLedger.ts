@@ -33,7 +33,13 @@ const SETTLED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
  */
 const PENDING_RESEND_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-type DurableAttemptState = 'providerPending' | 'settled';
+/**
+ * - providerPending: provider へ出した（かもしれない）が結果が分からない
+ * - settled: 結果を受けた
+ * - failed: app-server がエラーで答えた（結果が確定した失敗）。同じ提示への2回目は断るが、
+ *   読み直した新しい提示では押せる
+ */
+type DurableAttemptState = 'providerPending' | 'settled' | 'failed';
 
 interface IDurableAttempt {
 	readonly key: string;
@@ -67,7 +73,7 @@ function isDurableAttempt(value: unknown): value is IDurableAttempt {
 	return typeof attempt.key === 'string' && attempt.key.length > 0
 		&& typeof attempt.offerScope === 'string'
 		&& typeof attempt.accountScope === 'string'
-		&& (attempt.state === 'providerPending' || (attempt.state === 'settled' && paradisCodexResetOutcome(attempt.outcome) !== undefined))
+		&& (attempt.state === 'providerPending' || attempt.state === 'failed' || (attempt.state === 'settled' && paradisCodexResetOutcome(attempt.outcome) !== undefined))
 		&& typeof attempt.updatedAt === 'number';
 }
 
@@ -161,6 +167,15 @@ export class ParadisCodexResetCreditLedger {
 		return this.update(key, { ...existing, state: 'settled', outcome, updatedAt: this.now() });
 	}
 
+	/** app-server がエラーで答えた（結果が確定した失敗）。結果不明から外す。 */
+	markFailed(key: string): Promise<void> {
+		const existing = this.attempts.get(key);
+		if (!existing) {
+			return Promise.reject(new Error('unknown reset-credit attempt'));
+		}
+		return this.update(key, { key: existing.key, offerScope: existing.offerScope, accountScope: existing.accountScope, state: 'failed', updatedAt: this.now() });
+	}
+
 	/**
 	 * provider へ届いていないと分かった要求を外す（app-server が認証の無さで断ったとき）。
 	 * 同じ提示でもう一度押せるようになる。
@@ -182,7 +197,7 @@ export class ParadisCodexResetCreditLedger {
 			}
 			const cutoff = this.now() - SETTLED_RETENTION_MS;
 			for (const [key, attempt] of attempts) {
-				if (attempt.state === 'settled' && attempt.updatedAt < cutoff) {
+				if (attempt.state !== 'providerPending' && attempt.updatedAt < cutoff) {
 					attempts.delete(key);
 				}
 			}

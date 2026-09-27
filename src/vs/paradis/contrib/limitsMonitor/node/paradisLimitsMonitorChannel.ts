@@ -41,7 +41,7 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../.
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
-import { paradisNormalizeCodexHomePath } from '../../agentBrowser/node/paradisAgentHome.js';
+import { paradisNormalizeCodexHomePath, paradisNotifyCodexHomesChanged } from '../../agentBrowser/node/paradisAgentHome.js';
 import {
 	IParadisLimitsAccount,
 	IParadisLimitsCodexRemovalTarget,
@@ -389,6 +389,8 @@ export class ParadisLimitsMonitorService {
 	async removeCodexHome(homePath: string): Promise<void> {
 		const resolved = (await this.validateCodexHomeRemoval(homePath)).homePath;
 		await fs.promises.rm(resolved, { recursive: true });
+		// 選ばれていたホームなら、Codex の切替（codexAccounts）が既定のホームへ戻す。
+		paradisNotifyCodexHomesChanged();
 	}
 
 	private async readCodexIdentity(homePath: string): Promise<{ accountId?: string; email?: string }> {
@@ -440,6 +442,8 @@ export class ParadisLimitsMonitorService {
 			this.rpcFailureAt.delete(homePath);
 			this.rpcFailureReported.delete(homePath);
 			session.state = { ...session.state, phase: 'done', email: identity.email };
+			// Codex の切替（codexAccounts）へ、ログインが終わったホームを知らせる。
+			paradisNotifyCodexHomesChanged();
 			this.scheduleSetupCleanup(session);
 		} finally {
 			releaseQueue();
@@ -769,6 +773,7 @@ export class ParadisLimitsMonitorService {
 		this.rpcFailureReported.delete(session.codexHomePath);
 		session.codexHomePath = undefined;
 		session.state = { ...session.state, phase: 'done' };
+		paradisNotifyCodexHomesChanged();
 		this.scheduleSetupCleanup(session);
 	}
 
