@@ -16,8 +16,8 @@ import { join } from '../../../../../base/common/path.js';
 import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../../common/paradisAgentBrowser.js';
-import { PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, paradisManagedAgentHookCommand } from '../../common/paradisAgentHooks.js';
-import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
+import { PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CODEX_HOOK_EVENTS, paradisManagedAgentHookCommand, paradisManagedHookDefinition } from '../../common/paradisAgentHooks.js';
+import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay, paradisWriteFileAtomicallySync } from '../../node/paradisAgentHooksSetup.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -252,6 +252,219 @@ suite('ParadisAgentHooksSetup', () => {
 		assert.match(script, /\$captureLimit = 4194305/);
 		assert.match(script, /if \(\$bodyBytes\.Length -gt 4194304\)/);
 		assert.match(script, /Invoke-RestMethod -Method Get/);
+	});
+
+	test('reinstalling leaves its hooks where they are, so Codex trust keyed by position stays valid', () => {
+		// Codex は hook の信頼を `<path>:<event>:<定義の位置>:<hookの位置>` で覚えている。
+		// 自hookの後ろにユーザーの hook があっても、設置し直しで位置が動いてはいけない
+		const userEarlier = { hooks: [{ type: 'command', command: '/tmp/user-earlier.sh' }] };
+		const userLater = { hooks: [{ type: 'command', command: '/tmp/user-later.sh' }] };
+		const hooks: Record<string, unknown[]> = {};
+		for (const event of PARADIS_CODEX_HOOK_EVENTS) {
+			hooks[event.eventName] = [paradisManagedHookDefinition(event)];
+		}
+		hooks.Stop = [userEarlier, paradisManagedHookDefinition({ eventName: 'Stop' }), userLater];
+		hooks.SessionStart = [paradisManagedHookDefinition({ eventName: 'SessionStart' }), userLater];
+		const existing = JSON.stringify({ hooks }, undefined, 2);
+
+		assert.strictEqual(paradisMergeAgentHooksJson(existing, PARADIS_CODEX_HOOK_EVENTS), existing);
+	});
+
+	test('upgrades an older-schema hook in the same position and drops duplicates after it', () => {
+		const schema1Command = '[ -x "$HOME/.para-code/hooks/notify-v1.sh" ] && "$HOME/.para-code/hooks/notify-v1.sh" || true';
+		const userHook = { hooks: [{ type: 'command', command: '/tmp/user-hook.sh' }] };
+		const existing = JSON.stringify({
+			hooks: {
+				Stop: [
+					{ hooks: [{ type: 'command', command: schema1Command }] },
+					userHook,
+					{ hooks: [{ type: 'command', command: paradisManagedAgentHookCommand() }] },
+				],
+			},
+		});
+		const merged = paradisMergeAgentHooksJson(existing, [{ eventName: 'Stop' }]);
+		assert.ok(merged !== undefined);
+		assert.deepStrictEqual(JSON.parse(merged), {
+			hooks: { Stop: [paradisManagedHookDefinition({ eventName: 'Stop' }), userHook] },
+		});
+	});
+
+	test('removing takes out only Para Code hooks, keeps user hooks and other settings, and is a no-op when none are there', () => {
+		const userHook = { type: 'command', command: '/tmp/user-hook.sh' };
+		const existing = JSON.stringify({
+			model: 'opus',
+			hooks: {
+				Stop: [paradisManagedHookDefinition({ eventName: 'Stop' }), { hooks: [userHook] }],
+				SessionStart: [paradisManagedHookDefinition({ eventName: 'SessionStart' })],
+				PreToolUse: [{ matcher: '*', hooks: [userHook, { type: 'command', command: paradisManagedAgentHookCommand() }] }],
+			},
+		}, undefined, 2);
+		const removed = paradisRemoveAgentHooksJson(existing);
+		assert.ok(removed !== undefined);
+		const userOnly = JSON.stringify({ hooks: { Stop: [{ hooks: [userHook] }] } }, undefined, 2);
+		assert.deepStrictEqual({
+			removed: JSON.parse(removed),
+			again: paradisRemoveAgentHooksJson(removed) === removed,
+			userOnlyUntouched: paradisRemoveAgentHooksJson(userOnly) === userOnly,
+			unparseable: paradisRemoveAgentHooksJson('{ broken'),
+		}, {
+			removed: {
+				model: 'opus',
+				hooks: {
+					Stop: [{ hooks: [userHook] }],
+					PreToolUse: [{ matcher: '*', hooks: [userHook] }],
+				},
+			},
+			again: true,
+			userOnlyUntouched: true,
+			unparseable: undefined,
+		});
+	});
+
+	test('removing from the hook files leaves a missing file missing', async () => {
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hooks-remove-'));
+		try {
+			const claudeSettingsPath = join(root, '.claude', 'settings.json');
+			const codexHooksPath = join(root, '.codex', 'hooks.json');
+			await fs.mkdir(join(root, '.codex'), { recursive: true });
+			await fs.writeFile(codexHooksPath, JSON.stringify({ hooks: { Stop: [paradisManagedHookDefinition({ eventName: 'Stop' })] } }, undefined, 2) + '\n');
+
+			await paradisRemoveAgentHooks(undefined, { claudeSettingsPath, codexHooksPath });
+
+			const claudeExists = await fs.stat(claudeSettingsPath).then(() => true, () => false);
+			assert.deepStrictEqual({ claudeExists, codex: await fs.readFile(codexHooksPath, 'utf8') }, {
+				claudeExists: false,
+				codex: JSON.stringify({ hooks: {} }, undefined, 2) + '\n',
+			});
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('writes the settings file through a temp file, keeping a symlink and the original mode', async function () {
+		if (process.platform === 'win32') {
+			this.skip(); // symlink と mode の扱いが違う
+		}
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hooks-atomic-'));
+		try {
+			const realDir = join(root, 'dotfiles');
+			const linkDir = join(root, 'home');
+			await fs.mkdir(realDir);
+			await fs.mkdir(linkDir);
+			const realFile = join(realDir, 'settings.json');
+			const link = join(linkDir, 'settings.json');
+			await fs.writeFile(realFile, '{"old":true}\n');
+			await fs.chmod(realFile, 0o600);
+			await fs.symlink(realFile, link);
+			const newFile = join(linkDir, 'new.json');
+
+			paradisWriteFileAtomicallySync(link, '{"new":true}\n');
+			paradisWriteFileAtomicallySync(newFile, '{"created":true}\n');
+
+			assert.deepStrictEqual({
+				linkIsSymlink: (await fs.lstat(link)).isSymbolicLink(),
+				content: await fs.readFile(link, 'utf8'),
+				mode: (await fs.stat(realFile)).mode & 0o777,
+				created: await fs.readFile(newFile, 'utf8'),
+				leftovers: [...await fs.readdir(realDir), ...await fs.readdir(linkDir)].filter(name => name.endsWith('.tmp')),
+			}, {
+				linkIsSymlink: true,
+				content: '{"new":true}\n',
+				mode: 0o600,
+				created: '{"created":true}\n',
+				leftovers: [],
+			});
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('leaves a read-only settings file alone instead of replacing it', async function () {
+		if (process.platform === 'win32') {
+			this.skip();
+		}
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hooks-readonly-'));
+		try {
+			const file = join(root, 'settings.json');
+			await fs.writeFile(file, '{"locked":true}\n');
+			await fs.chmod(file, 0o444);
+
+			let code: string | undefined;
+			try {
+				paradisWriteFileAtomicallySync(file, '{"new":true}\n');
+			} catch (error) {
+				code = (error as NodeJS.ErrnoException).code;
+			}
+
+			assert.deepStrictEqual({
+				code,
+				content: await fs.readFile(file, 'utf8'),
+				mode: (await fs.stat(file)).mode & 0o777,
+				leftovers: (await fs.readdir(root)).filter(name => name.endsWith('.tmp')),
+			}, {
+				code: 'EACCES',
+				content: '{"locked":true}\n',
+				mode: 0o444,
+				leftovers: [],
+			});
+		} finally {
+			await fs.chmod(join(root, 'settings.json'), 0o644).catch(() => undefined);
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('writes in place for hard links, for a directory it cannot add files to, and follows a dangling symlink chain', async function () {
+		if (process.platform === 'win32') {
+			this.skip();
+		}
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hooks-inplace-'));
+		const lockedDir = join(root, 'locked');
+		try {
+			// ハードリンク: 差し替えると片方だけ新しくなる
+			const original = join(root, 'settings.json');
+			const hardLink = join(root, 'settings-link.json');
+			await fs.writeFile(original, 'old');
+			await fs.link(original, hardLink);
+			const inodeBefore = (await fs.stat(original)).ino;
+			paradisWriteFileAtomicallySync(original, 'hard');
+
+			// 一時ファイルを作れないディレクトリ（ファイル自体には書ける）
+			await fs.mkdir(lockedDir);
+			const lockedFile = join(lockedDir, 'hooks.json');
+			await fs.writeFile(lockedFile, 'old');
+			await fs.chmod(lockedDir, 0o555);
+			paradisWriteFileAtomicallySync(lockedFile, 'locked');
+			await fs.chmod(lockedDir, 0o755);
+
+			// 多段の symlink で、最後のリンク先がまだ無い
+			const first = join(root, 'first.json');
+			const second = join(root, 'second.json');
+			const finalTarget = join(root, 'final.json');
+			await fs.symlink(second, first);
+			await fs.symlink(finalTarget, second);
+			paradisWriteFileAtomicallySync(first, 'chain');
+
+			assert.deepStrictEqual({
+				hardLinkContent: await fs.readFile(hardLink, 'utf8'),
+				sameInode: (await fs.stat(original)).ino === inodeBefore,
+				lockedContent: await fs.readFile(lockedFile, 'utf8'),
+				firstIsSymlink: (await fs.lstat(first)).isSymbolicLink(),
+				secondIsSymlink: (await fs.lstat(second)).isSymbolicLink(),
+				finalContent: await fs.readFile(finalTarget, 'utf8'),
+				leftovers: [...await fs.readdir(root), ...await fs.readdir(lockedDir)].filter(name => name.endsWith('.tmp')),
+			}, {
+				hardLinkContent: 'hard',
+				sameInode: true,
+				lockedContent: 'locked',
+				firstIsSymlink: true,
+				secondIsSymlink: true,
+				finalContent: 'chain',
+				leftovers: [],
+			});
+		} finally {
+			await fs.chmod(lockedDir, 0o755).catch(() => undefined);
+			await fs.rm(root, { recursive: true, force: true });
+		}
 	});
 
 	test('does not let an older process replace newer managed hooks', () => {

@@ -29,7 +29,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IAuthenticationService } from '../../../../workbench/services/authentication/common/authentication.js';
-import { ITerminalEditorService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalEditorService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import {
 	IParadisCopilotUtilityRequest,
 	IParadisCopilotUtilityResult,
@@ -55,6 +55,7 @@ import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent } from '../../sessionResume/common/paradisSessionResume.js';
+import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 
 /**
  * 命名にかけてよい合計時間。ここを過ぎたらフォールバック名で worktree 作成へ進む。
@@ -128,6 +129,31 @@ export interface IParadisWorktreeCreateFlowOptions {
 export interface IParadisWorktreeCreateFlowResult extends IParadisHeadlessWorktreeResult {
 	/** 作成された worktree（完了通知の「切り替える」アクションに使う）。 */
 	readonly worktree: IParadisWorktree;
+	/** エージェントを起動したターミナル。エージェントを起動しなかった・起動前に失敗した場合は undefined。 */
+	readonly agent?: IParadisLaunchedAgentTerminal;
+}
+
+/**
+ * エージェントを起動したターミナルの識別子。
+ *
+ * 起動後にそのエージェントへ何かを送る・状態を追う側（定期実行・操作ツール・Design Mode の
+ * 送り先など）が、ターミナルの一覧を探し直さずに済むように返す。
+ */
+export interface IParadisLaunchedAgentTerminal {
+	/** このウィンドウの `ITerminalInstance.instanceId`。別ウィンドウ・再起動後には通じない。 */
+	readonly instanceId: number;
+	/**
+	 * ペイントークン（シェルの `PARA_CODE_TERMINAL_PANE_ID`）。hook や MCP がどのペインから来たかを
+	 * 名乗るのに使う値で、shared process 側の状態もこれで引ける。割り当てられていない場合は undefined。
+	 *
+	 * **秘密に準じて扱う。** これを知っていればそのペインを名乗って hook を送れるので、ログや
+	 * モバイルへの応答にそのまま載せない。
+	 */
+	readonly paneToken: string | undefined;
+}
+
+function paradisDescribeLaunchedAgent(paneTokenService: IParadisPaneTokenService, instance: ITerminalInstance): IParadisLaunchedAgentTerminal {
+	return { instanceId: instance.instanceId, paneToken: paneTokenService.getTokenForInstance(instance.instanceId) };
 }
 
 /** 設定 paradis.workspaceSwitch.agents（無ければ既定）からエージェント定義を得る（ダイアログの _agents と同じ規則）。 */
@@ -354,8 +380,9 @@ export interface IParadisAgentLaunchInWorkspaceRequest {
  * assignInstanceScope で即park・paneトークン自動注入で稼働状態表示が効く）で、
  * ワークスペース作成を伴わない分だけを切り出したもの。
  */
-export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, request: IParadisAgentLaunchInWorkspaceRequest): Promise<void> {
+export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, request: IParadisAgentLaunchInWorkspaceRequest): Promise<IParadisLaunchedAgentTerminal> {
 	const configurationService = accessor.get(IConfigurationService);
+	const paneTokenService = accessor.get(IParadisPaneTokenService);
 	const terminalService = accessor.get(ITerminalService);
 	const terminalEditorService = accessor.get(ITerminalEditorService);
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
@@ -387,6 +414,7 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 		permissionId: request.permissionId,
 	});
 	await instance.sendText(command, true);
+	return paradisDescribeLaunchedAgent(paneTokenService, instance);
 }
 
 export interface IParadisResumeAgentInWorkspaceRequest {
@@ -398,10 +426,11 @@ export interface IParadisResumeAgentInWorkspaceRequest {
 }
 
 /** 検証済みのセッションIDで、指定スペースのエディタターミナルへresumeコマンドを送る。 */
-export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, request: IParadisResumeAgentInWorkspaceRequest): Promise<void> {
+export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, request: IParadisResumeAgentInWorkspaceRequest): Promise<IParadisLaunchedAgentTerminal> {
 	if (!PARADIS_RESUME_SESSION_ID_PATTERN.test(request.sessionId)) {
 		throw new Error('Invalid agent session id.');
 	}
+	const paneTokenService = accessor.get(IParadisPaneTokenService);
 	const terminalService = accessor.get(ITerminalService);
 	const terminalEditorService = accessor.get(ITerminalEditorService);
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
@@ -432,6 +461,7 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 		? `claude ${request.dangerouslyBypassPermissions ? '--dangerously-skip-permissions ' : ''}--resume ${request.sessionId}`
 		: `codex ${request.dangerouslyBypassPermissions ? '--dangerously-bypass-approvals-and-sandbox ' : ''}resume ${request.sessionId}`;
 	await instance.sendText(command, true);
+	return paradisDescribeLaunchedAgent(paneTokenService, instance);
 }
 
 /**
@@ -441,7 +471,10 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
  * モバイル発の作成では従来どおり作成後に新スペースへ切り替える。
  */
 export async function paradisCreateWorktreeHeadless(accessor: ServicesAccessor, request: IParadisHeadlessWorktreeRequest): Promise<IParadisHeadlessWorktreeResult> {
-	return paradisRunWorktreeCreateFlow(accessor, request, { switchToCreated: true });
+	// 結果はモバイルへの応答にそのまま広げられる。ペイントークンを端末の外へ出さないよう、
+	// 起動したエージェントの識別子はここで落とす（使うのは PC 内の呼び出し側だけ）。
+	const { agent: _agent, ...result } = await paradisRunWorktreeCreateFlow(accessor, request, { switchToCreated: true });
+	return result;
 }
 
 /**
@@ -467,6 +500,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
 	const instantiationService = accessor.get(IInstantiationService);
 	const logService = accessor.get(ILogService);
+	const paneTokenService = accessor.get(IParadisPaneTokenService);
 
 	const repository = switchService.repositories.find(r => r.id === request.repositoryId);
 	if (!repository) {
@@ -553,6 +587,8 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	worktreeService.addKnownWorktree(createdWorktree);
 	callbacks?.onWorktreeCreated?.(targetStateKey);
 
+	// 後続工程が途中で失敗しても、起動済みのエージェントは返す（warning と一緒に）
+	let launchedAgent: IParadisLaunchedAgentTerminal | undefined;
 	try {
 		// 3. 新スペースへ切り替え（モバイル発・従来ダイアログ相当の挙動）。バックグラウンド作成
 		//    （ダイアログ発のキュー実行）では切り替えず、現在のスペースに留まる
@@ -619,11 +655,12 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 					permissionId: request.permissionId,
 				});
 				await instance.sendText(command, true);
+				launchedAgent = paradisDescribeLaunchedAgent(paneTokenService, instance);
 			},
 		});
 	} catch (error) {
 		logService.error('[ParadisWorktreeHeadlessCreate] post-create steps failed', error);
-		return { name: displayName, branch, warning: toErrorMessage(error), worktree: createdWorktree };
+		return { name: displayName, branch, warning: toErrorMessage(error), worktree: createdWorktree, ...(launchedAgent ? { agent: launchedAgent } : {}) };
 	}
-	return { name: displayName, branch, worktree: createdWorktree };
+	return { name: displayName, branch, worktree: createdWorktree, ...(launchedAgent ? { agent: launchedAgent } : {}) };
 }

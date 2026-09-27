@@ -29,6 +29,7 @@ import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisW
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { IParadisAivisPlaceholders, IParadisNotifyAudioRequest, PARADIS_NOTIFICATIONS_CHANNEL, renderParadisAivisTemplate } from '../common/paradisNotifications.js';
 import { paradisIsWorkbenchWindowFocused } from '../../workspaceSwitch/browser/paradisWindowFocus.js';
+import { paradisRevealNotifiedPane } from './paradisNotificationReveal.js';
 import { ParadisAgentStatusNotificationConsumer, ParadisAgentStatusNotificationTracker, ParadisAgentNotifyStatus } from './paradisAgentStatusNotificationTracker.js';
 
 /** {{event}} の読み上げ用ラベル（日本語）。 */
@@ -117,7 +118,7 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 			if (isVisibleAndFocused && !notifyWhileFocused) {
 				return;
 			}
-			await this._notify(undefined, status, await this._resolveFallbackPlaceholders(status, instanceId));
+			await this._notify(undefined, instanceId, status, await this._resolveFallbackPlaceholders(status, instanceId));
 			return;
 		}
 
@@ -128,11 +129,11 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 			return;
 		}
 
-		await this._notify(stateKey, status, await this._resolvePlaceholders(stateKey, status, instanceId));
+		await this._notify(stateKey, instanceId, status, await this._resolvePlaceholders(stateKey, status, instanceId));
 	}
 
 	/** 音 + OS通知 + Aivis を発火する (stateKey === undefined はスコープ外フォールバック)。 */
-	private async _notify(stateKey: string | undefined, status: ParadisAgentNotifyStatus, placeholders: IParadisAivisPlaceholders): Promise<void> {
+	private async _notify(stateKey: string | undefined, instanceId: number, status: ParadisAgentNotifyStatus, placeholders: IParadisAivisPlaceholders): Promise<void> {
 		// おやすみモード中は音・OS通知・Aivis発話を一括抑制する。
 		if (this.settingsService.getDoNotDisturb().enabled) {
 			return;
@@ -147,7 +148,7 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		const osEnabled = this.settingsService.getOsNotificationsEnabled()
 			&& (needsAction ? this.settingsService.getOsNotifyOnPermission() : this.settingsService.getOsNotifyOnReview());
 		if (osEnabled) {
-			this._showOsNotification(stateKey, status, placeholders);
+			this._showOsNotification(stateKey, instanceId, status, placeholders);
 		}
 
 		const muted = this.settingsService.getSoundsMuted();
@@ -268,33 +269,25 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		}
 	}
 
-	private _showOsNotification(stateKey: string | undefined, status: ParadisAgentNotifyStatus, placeholders: IParadisAivisPlaceholders): void {
+	private _showOsNotification(stateKey: string | undefined, instanceId: number, status: ParadisAgentNotifyStatus, placeholders: IParadisAivisPlaceholders): void {
 		const title = status === 'review' ? STR_TITLE_REVIEW : STR_TITLE_PERMISSION;
 		const body = placeholders.worktree && placeholders.worktree !== placeholders.space
 			? `${placeholders.space ?? ''} (${placeholders.worktree})`
 			: placeholders.space;
 
 		this.hostService.showToast({ title, body, silent: true }, CancellationToken.None).then(result => {
-			// スコープ外フォールバック (stateKey === undefined) はクリックでの切り替え先が無い
-			if (result.clicked && stateKey !== undefined) {
-				void this._switchToScope(stateKey);
+			// クリックでこのウィンドウを前面に出し、スペースを切り替えて該当ペインへフォーカスする
+			// (スコープ外のペインはスペース切り替えを省く)
+			if (result.clicked) {
+				paradisRevealNotifiedPane({
+					hostService: this.hostService,
+					terminalService: this.terminalService,
+					workspaceSwitchService: this.workspaceSwitchService,
+				}, stateKey, instanceId).catch(error => {
+					this.logService.warn('[ParadisNotifications] failed to reveal the notified pane', error);
+				});
 			}
 		}, () => { /* 通知の権限が無い等は無視 */ });
-	}
-
-	private async _switchToScope(stateKey: string): Promise<void> {
-		for (const repository of this.workspaceSwitchService.repositories) {
-			if (repository.id === stateKey) {
-				await this.workspaceSwitchService.switchRepository(repository.id);
-				return;
-			}
-			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (paradisWorktreeStateKey(worktree.uri) === stateKey) {
-					await this.workspaceSwitchService.switchToWorktree(worktree);
-					return;
-				}
-			}
-		}
 	}
 }
 

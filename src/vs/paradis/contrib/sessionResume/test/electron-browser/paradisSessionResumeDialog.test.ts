@@ -19,6 +19,7 @@ import { INotificationService } from '../../../../../platform/notification/commo
 import { TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
 import { ITerminalEditorService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisPaneTokenService } from '../../../agentBrowser/browser/paradisPaneTokenService.js';
 import { paradisResumeAgentInWorkspace } from '../../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { ParadisSessionResumeDialog, paradisOpenSessionResumeDialog } from '../../electron-browser/paradisSessionResumeDialog.js';
 import { IParadisResumeListRequestWithUri } from '../../electron-browser/paradisSessionResumeClient.js';
@@ -560,8 +561,12 @@ suite('paradisResumeAgentInWorkspace', () => {
 		const switchService = {
 			activeStateKey: options?.activeStateKey ?? 'another-space',
 		} as unknown as IParadisWorkspaceSwitchService;
+		const paneTokenService = {
+			getTokenForInstance: (instanceId: number) => instanceId === 17 ? 'pane-token-17' : undefined,
+		} as unknown as IParadisPaneTokenService;
 		const accessor = {
 			get: (service: unknown) => {
+				if (service === IParadisPaneTokenService) { return paneTokenService; }
 				if (service === ITerminalService) { return terminalService; }
 				if (service === ITerminalEditorService) { return terminalEditorService; }
 				if (service === IParadisTerminalScopeService) { return terminalScopeService; }
@@ -590,15 +595,18 @@ suite('paradisResumeAgentInWorkspace', () => {
 		assert.deepStrictEqual(fixture.events, ['create']);
 
 		fixture.ready.complete();
-		await result;
-		assert.deepStrictEqual(fixture.events, [
-			'create',
-			'ready',
-			'open',
-			'assign:17:worktree:feature',
-			'active',
-			'send:claude --resume session-123:true',
-		]);
+		const launched = await result;
+		assert.deepStrictEqual({ events: fixture.events, launched }, {
+			events: [
+				'create',
+				'ready',
+				'open',
+				'assign:17:worktree:feature',
+				'active',
+				'send:claude --resume session-123:true',
+			],
+			launched: { instanceId: 17, paneToken: 'pane-token-17' },
+		});
 	});
 
 	test('uses the agent-specific dangerous flag', async () => {

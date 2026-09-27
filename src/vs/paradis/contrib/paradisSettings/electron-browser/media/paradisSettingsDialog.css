@@ -244,6 +244,29 @@
 	max-width: 520px;
 }
 
+.paradis-settings-dialog .psd-row-warning {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+	font-size: 11.5px;
+	line-height: 1.6;
+	max-width: 520px;
+	margin-top: 6px;
+	padding: 6px 8px;
+	color: var(--vscode-editorWarning-foreground);
+	border: 1px solid var(--vscode-editorWarning-foreground);
+	border-radius: 4px;
+}
+
+.paradis-settings-dialog .psd-row-warning.hidden {
+	display: none;
+}
+
+.paradis-settings-dialog .psd-row-warning .codicon {
+	flex: none;
+	margin-top: 2px;
+}
+
 /* ---------- controls ---------- */
 
 .paradis-settings-dialog .psd-toggle {

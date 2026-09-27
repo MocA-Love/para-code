@@ -27,6 +27,7 @@ import { ConfigurationTarget, IConfigurationService } from '../../../../platform
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
+import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
 
 const $ = dom.$;
 
@@ -164,6 +165,14 @@ interface IParadisSettingRowSpec {
 	readonly choiceLabels?: Readonly<Record<string, string>>;
 	/** 行の右端に置くボタン。押すとコマンドを実行してこのダイアログは閉じる。 */
 	readonly action?: { readonly label: string; readonly commandId: string; readonly primary?: boolean };
+	/**
+	 * オン/オフの設定がオフの間、行の中に出す警告。
+	 *
+	 * オフにしたときの警告を通知で出す機能は、このダイアログが開いている間は通知を出さない
+	 * （通知はダイアログの背景より下の層にあり、裏に隠れて「元に戻す」が押せないため）。
+	 * 代わりにここで、その行の中に何が起きるかを出す。
+	 */
+	readonly offWarning?: string;
 }
 
 const ROWS: readonly IParadisSettingRowSpec[] = [
@@ -416,6 +425,17 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			primary: true,
 		},
 	},
+	{
+		sectionId: 'psd-sec-notif',
+		key: 'paradis.agentHooks.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentHooks', "Claude Code と Codex に状態通知用の hook を自動で設置する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentHooksDesc', "オフにすると、Para Code が設置した hook だけをその場で取り外します（自分で書いた hook は残ります）。エージェントの状態表示、完了・許可待ちの通知、モバイルへの通知、読み上げが弱くなります。"),
+		keywords: 'agent hooks claude codex hook status notification',
+		// allow-any-unicode-next-line
+		offWarning: localize('paradis.settings.agentHooksOffWarning', "オフの間は、Para Code が設置した hook を取り外し、置き直しません。エージェントの状態表示（実行中・許可待ち・完了）、完了や許可待ちの通知、モバイルへの通知とチャットの表示、読み上げが弱くなるか、働かなくなります。元に戻すには、このスイッチをオンにします。"),
+	},
 
 	// --- ブラウザ共有 ---
 	{
@@ -471,6 +491,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		placeholder: localize('paradis.settings.unset', "(未設定)"),
 		keywords: 'browser downloads path folder save',
 	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.browser.userAgent.includeParaCodeToken',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.userAgentParaCodeToken', "サイトに Para Code だと名乗る"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.userAgentParaCodeTokenDesc', "オフのときは通常の Chrome と同じ User-Agent を送ります。変更は新しく開いたタブから反映されます。"),
+		keywords: 'browser user agent useragent paracode token chrome',
+	},
 
 	// --- ターミナル ---
 	{
@@ -517,6 +546,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-terminal',
+		key: 'accessibility.dimUnfocused.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.dimUnfocused', "操作していないエディタとターミナルを薄くする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.dimUnfocusedDesc', "エディタを分割して並べたとき、いま文字が入る場所を見分けやすくなります。"),
+		keywords: 'dim unfocused opacity terminal editor focus accessibility',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
 		key: 'paradis.editor.openTerminalOnSplit',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.openTerminalOnSplit', "エディタを分割したらターミナルを開く"),
@@ -526,15 +564,17 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		sectionId: 'psd-sec-terminal',
 		key: 'paradis.power.keepAwake',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.keepAwake', "エージェント実行中のスリープ"),
-		keywords: 'power keep awake sleep prevent',
+		label: localize('paradis.settings.keepAwake', "PC のスリープ防止"),
+		keywords: 'power keep awake sleep prevent agent auto',
 		choiceLabels: {
 			// allow-any-unicode-next-line
 			off: localize('paradis.settings.keepAwakeOff', "防がない"),
 			// allow-any-unicode-next-line
-			system: localize('paradis.settings.keepAwakeSystem', "システムのスリープを防ぐ"),
+			auto: localize('paradis.settings.keepAwakeAuto', "エージェントの作業中だけ防ぐ"),
 			// allow-any-unicode-next-line
-			display: localize('paradis.settings.keepAwakeDisplay', "画面のスリープも防ぐ"),
+			system: localize('paradis.settings.keepAwakeSystem', "常にシステムのスリープを防ぐ"),
+			// allow-any-unicode-next-line
+			display: localize('paradis.settings.keepAwakeDisplay', "常に画面のスリープも防ぐ"),
 		},
 	},
 	{
@@ -730,6 +770,7 @@ export class ParadisSettingsDialog extends Disposable {
 		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super();
+		this._register(paradisMarkSettingsDialogOpen());
 
 		this._backdrop = $('.paradis-settings-dialog-backdrop');
 		const modal = $('.paradis-settings-dialog');
@@ -862,6 +903,9 @@ export class ParadisSettingsDialog extends Disposable {
 			}));
 		} else if (spec.key) {
 			this._buildControl(row, spec.key, spec);
+			if (spec.offWarning) {
+				this._buildOffWarning(main, spec.key, spec.offWarning);
+			}
 		}
 
 		this._rows.push({
@@ -975,6 +1019,17 @@ export class ParadisSettingsDialog extends Disposable {
 			this.dispose();
 			void this.commandService.executeCommand('workbench.action.openSettings', `@id:${key}`);
 		}));
+	}
+
+	/** オン/オフの設定がオフの間だけ、行の中に警告を出す。 */
+	private _buildOffWarning(main: HTMLElement, key: string, text: string): void {
+		const warning = dom.append(main, $('.psd-row-warning'));
+		warning.setAttribute('role', 'status');
+		warning.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.warning)}`));
+		dom.append(warning, $('span')).textContent = text;
+		const sync = () => warning.classList.toggle('hidden', this.configurationService.getValue(key) !== false);
+		sync();
+		this._refreshers.push(sync);
 	}
 
 	private async _write(key: string, value: unknown): Promise<void> {

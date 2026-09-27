@@ -32,7 +32,7 @@ import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOT
 // PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
 import { IParadisOpenProfileResult, ParadisOpenProfileFailure, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_METHOD } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
 import { IParadisAbortBindResult, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
-import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
+import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
 import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
@@ -42,7 +42,8 @@ import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisAgentHookOwnership } from './paradisAgentHookOwnership.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
-import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from './paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from './paradisAgentHooksSetup.js';
+import { ParadisAgentHooksAutoInstall } from './paradisAgentHooksAutoInstall.js';
 import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
@@ -540,11 +541,21 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] ${message}`, error));
 			},
 		);
-		const agentHooksReconciler = this._register(new ParadisAgentHooksReconciler(logService, {}, () => cachedShellEnv.getEnv()));
-		void agentHooksReconciler.start().catch(error => {
-			reportParadisDiagnosticError('owned', 'agent-browser', 'configure-agent-hooks', error, { phase: 'setup' });
-			this._runNonThrowingDiagnostic(() => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error));
-		});
+		// 設定でオフにできる。オフに切り替わったその時だけ取り外し、起動時には取り外さない
+		// （paradisAgentHooksAutoInstall.ts）。
+		this._register(new ParadisAgentHooksAutoInstall({
+			isEnabled: () => paradisAgentHooksEnabled(configurationService?.getValue(PARADIS_AGENT_HOOKS_ENABLED_SETTING)),
+			onDidChangeEnabled: configurationService
+				? Event.map(Event.filter(configurationService.onDidChangeConfiguration, e => e.affectsConfiguration(PARADIS_AGENT_HOOKS_ENABLED_SETTING)), () => undefined)
+				: Event.None,
+			createInstaller: () => new ParadisAgentHooksReconciler(logService, {}, () => cachedShellEnv.getEnv()),
+			removeHooks: () => paradisRemoveAgentHooks(logService),
+			logService,
+			onInstallError: error => {
+				reportParadisDiagnosticError('owned', 'agent-browser', 'configure-agent-hooks', error, { phase: 'setup' });
+				this._runNonThrowingDiagnostic(() => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error));
+			},
+		}));
 		this._register(registerParadisAgentPaneActivityGuard(token => this.captureIngressLease(token) !== undefined));
 		this._register(onParadisAgentTurnStarted(({ token, cwd, at }) => {
 			const ingressLease = this.captureIngressLease(token);
@@ -1612,6 +1623,19 @@ export class ParadisAgentBrowserService extends Disposable {
 			...(version !== undefined && paradisSupportsClaudeMessageDisplay(version) ? [PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT] : []),
 		];
 		return paradisMergeAgentHooksJson(existingRaw, events);
+	}
+
+	/**
+	 * 接続先の settings.json / hooks.json から、Para Code が置いた hook だけを外した中身を返す
+	 * （hook の自動設置をオフにしたとき用）。判断を手元と同じ規則に揃えるため、ここに置く。
+	 *
+	 * @returns 書き戻すべき中身。ファイルが無い・壊れている場合は undefined（呼び出し側は触らない）
+	 */
+	async buildRemoteAgentHooksRemovalJson(existingRaw: string | undefined): Promise<string | undefined> {
+		if (existingRaw === undefined || existingRaw.trim().length === 0) {
+			return undefined;
+		}
+		return paradisRemoveAgentHooksJson(existingRaw);
 	}
 
 	/**

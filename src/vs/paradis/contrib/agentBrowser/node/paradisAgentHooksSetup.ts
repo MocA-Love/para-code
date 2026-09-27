@@ -15,11 +15,12 @@
 // 既存ファイルのJSONパースに失敗した場合は何も書かない (ユーザーファイルを壊すくらいなら諦める)。
 
 import { execFile } from 'child_process';
-import { promises as fs, readFileSync, watch, writeFileSync } from 'fs';
+import { accessSync, chmodSync, constants as fsConstants, lstatSync, promises as fs, readFileSync, readlinkSync, realpathSync, renameSync, Stats, statSync, unlinkSync, watch, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { basename, dirname, join } from '../../../../base/common/path.js';
+import { basename, dirname, join, resolve } from '../../../../base/common/path.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { findExecutable } from '../../../../base/node/processes.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
@@ -268,11 +269,22 @@ function highestParadisManagedHookSchema(hooks: Readonly<Record<string, unknown>
 }
 
 /**
- * hook定義配列から当fork管理のhookだけを取り除く (ユーザーhookは構造ごと保持)。
- * 定義の hooks 配列が空になった場合は定義自体を落とす。
+ * hook定義配列の中で、当fork管理のhookを置き換える (並び順は変えない)。
+ *
+ * 当fork管理のhookだけから成る定義は、最初の1つを `replacement` に差し替え、2つ目以降は落とす。
+ * ユーザーhookと混在する定義からは当fork管理のhookだけを取り除く。`replacement` が無い
+ * (もう登録しないイベント) なら差し替えずに落とす。
+ *
+ * **位置を保つのは Codex の hook の信頼のため。** Codex は信頼した hook を
+ * `<hooks.json のパス>:<イベント>:<定義の位置>:<hookの位置>` の鍵で config.toml に記録する。
+ * 以前は自hookを毎回いったん全部外して末尾へ付け直していたため、自hookより後ろにユーザーの
+ * hook があると、設置し直すたびにその位置がずれて信頼が黙って外れ得た。
+ *
+ * @returns 新しい定義配列と、`replacement` を既存の位置に置けたか
  */
-function removeManagedHooksFromDefinitions(definitions: readonly unknown[]): unknown[] {
+function replaceManagedHooksInDefinitions(definitions: readonly unknown[], replacement: unknown | undefined): { readonly definitions: unknown[]; readonly placed: boolean } {
 	const result: unknown[] = [];
+	let placed = false;
 	for (const definition of definitions) {
 		if (!isPlainObject(definition) || !Array.isArray(definition.hooks)) {
 			result.push(definition);
@@ -285,18 +297,23 @@ function removeManagedHooksFromDefinitions(definitions: readonly unknown[]): unk
 			continue;
 		}
 		if (filtered.length === 0) {
+			if (replacement !== undefined && !placed) {
+				result.push(replacement);
+				placed = true;
+			}
 			continue;
 		}
 		result.push({ ...definition, hooks: filtered });
 	}
-	return result;
+	return { definitions: result, placed };
 }
 
 /**
  * 既存の settings.json / hooks.json (生テキスト) に当fork管理のhook定義を冪等マージし、
  * 新しいJSON文字列を返す。パース不能・ルートがオブジェクトでない場合は undefined
  * (呼び出し側は何も書かない)。既存のユーザーhook・その他の設定キーはすべて保持する。
- * 2回適用しても結果が変わらない (先に自hookを全除去してから追記し直すため)。
+ * 2回適用しても結果が変わらず、既に置いてある自hookの位置も動かさない
+ * (置き場所の規則は {@link replaceManagedHooksInDefinitions})。
  */
 export function paradisMergeAgentHooksJson(existingRaw: string | undefined, managedEvents: readonly IParadisManagedHookEvent[], hookCommand?: string): string | undefined {
 	let parsed: unknown = {};
@@ -318,29 +335,31 @@ export function paradisMergeAgentHooksJson(existingRaw: string | undefined, mana
 		return existingRaw;
 	}
 
-	// 全イベントから当fork管理のhookを一旦取り除く。もう登録しないイベント
-	// (旧スニペットの PreToolUse 等) に残った自hookの掃除も兼ねる。
+	// 既に並んでいる自hookはその場で最新の定義へ差し替える。もう登録しないイベント
+	// (旧スニペットの PreToolUse 等) に残った自hookは取り除く。
 	for (const eventName of Object.keys(hooks)) {
 		const current = hooks[eventName];
 		if (!Array.isArray(current)) {
 			continue;
 		}
-		const filtered = removeManagedHooksFromDefinitions(current);
-		if (filtered.length === 0 && current.length > 0 && !managedEvents.some(e => e.eventName === eventName)) {
+		const event = managedEvents.find(e => e.eventName === eventName);
+		const replacement = event !== undefined ? paradisManagedHookDefinition(event, hookCommand) : undefined;
+		const { definitions, placed } = replaceManagedHooksInDefinitions(current, replacement);
+		if (replacement !== undefined && !placed) {
+			// まだ置いていないイベントは末尾へ足す (ユーザーhookの位置は動かない)
+			definitions.push(replacement);
+		}
+		if (definitions.length === 0 && current.length > 0 && event === undefined) {
 			delete hooks[eventName];
 		} else {
-			hooks[eventName] = filtered;
+			hooks[eventName] = definitions;
 		}
 	}
 
-	// 管理対象イベントへ自hookを追記する (既存ユーザーhookは上で保持済み)。
+	// イベント自体がまだ無い管理対象イベントを足す。
 	for (const event of managedEvents) {
-		const definition = paradisManagedHookDefinition(event, hookCommand);
-		const current = hooks[event.eventName];
-		if (Array.isArray(current)) {
-			current.push(definition);
-		} else {
-			hooks[event.eventName] = [definition];
+		if (!Array.isArray(hooks[event.eventName])) {
+			hooks[event.eventName] = [paradisManagedHookDefinition(event, hookCommand)];
 		}
 	}
 
@@ -377,6 +396,96 @@ async function installNotifyScript(logService: ILogService): Promise<void> {
 	}
 }
 
+/**
+ * 設定ファイルを原子的に置き換える（同期）。
+ *
+ * Claude Code / Codex が書き込み途中の中身を読んで壊れた設定と判断しないよう、同じディレクトリの
+ * 一時ファイルへ書いてから `rename` で差し替える。
+ *
+ * - symlink は壊さない。実体（多段でも最後まで辿った先）の隣に一時ファイルを作って実体を差し替える
+ *   （dotfiles をリポジトリから symlink している人の設定が、ただのファイルに化けないように）
+ * - 元のファイルの mode（`~/.claude.json` の 0600 など）を引き継ぐ。新規作成のときは umask に任せる
+ * - ユーザーが書き込めなくしたファイル（`chmod 444` など）は、その場へ書くときと同じく失敗させる。
+ *   `rename` はディレクトリの権限で通ってしまい、読み取り専用の意図を黙って破るため
+ * - ハードリンク（リンク数が2以上）は、差し替えると片方だけが新しい中身になるので、その場へ書く
+ * - 一時ファイルを作れない（ディレクトリに書き込めない等）ときや `rename` が通らないとき（Windows で
+ *   他のプロセスが開いている等）は、一時ファイルを消してこれまでどおりその場へ書く。原子的でなく
+ *   なるだけで、設定が置けないよりはよい
+ *
+ * 所有者・ACL・拡張属性は一時ファイルへ引き継がない（NOTES.md の hook の節を参照）。
+ */
+export function paradisWriteFileAtomicallySync(filePath: string, content: string): void {
+	const target = resolveWriteTarget(filePath);
+	let stat: Stats | undefined;
+	try {
+		stat = statSync(target);
+	} catch {
+		stat = undefined; // まだ無い（新規作成）
+	}
+	if (stat) {
+		if ((stat.mode & 0o200) === 0) {
+			// root は accessSync が通ってしまうので、所有者の書き込みビットでも見る
+			throw Object.assign(new Error(`EACCES: permission denied, open '${target}'`), { code: 'EACCES', path: target });
+		}
+		accessSync(target, fsConstants.W_OK);
+		if (stat.nlink > 1) {
+			writeFileSync(target, content);
+			return;
+		}
+	}
+	const mode = stat ? stat.mode & 0o7777 : undefined;
+	const temp = join(dirname(target), `.${basename(target)}.paradis-${generateUuid()}.tmp`);
+	try {
+		writeFileSync(temp, content, { mode: mode ?? 0o666, flag: 'wx' });
+		if (mode !== undefined) {
+			// writeFileSync の mode は umask で削られるので、元と同じになるよう当て直す
+			chmodSync(temp, mode);
+		}
+	} catch {
+		removeQuietly(temp);
+		writeFileSync(target, content);
+		return;
+	}
+	try {
+		renameSync(temp, target);
+	} catch {
+		removeQuietly(temp);
+		writeFileSync(target, content);
+	}
+}
+
+/** symlink の段数の上限（OS の ELOOP と同程度）。循環していたら諦めてリンクそのものへ書く。 */
+const MAX_SYMLINK_HOPS = 40;
+
+/** 書き込み先の実体。symlink を最後まで辿る（辿った先がまだ無い symlink も、リンク先へ書く）。 */
+function resolveWriteTarget(filePath: string): string {
+	try {
+		return realpathSync(filePath);
+	} catch {
+		// 無いファイル、またはリンク先がまだ無い symlink（多段を含む）
+	}
+	let current = filePath;
+	for (let hop = 0; hop < MAX_SYMLINK_HOPS; hop++) {
+		try {
+			if (!lstatSync(current).isSymbolicLink()) {
+				return current;
+			}
+			current = resolve(dirname(current), readlinkSync(current));
+		} catch {
+			return current; // 辿った先が無い。ここへ新しく作る
+		}
+	}
+	return filePath;
+}
+
+function removeQuietly(filePath: string): void {
+	try {
+		unlinkSync(filePath);
+	} catch {
+		// 作れていなかった
+	}
+}
+
 export interface IParadisAgentHooksFileIO {
 	readFile(filePath: string): Promise<string | undefined>;
 	writeFileIfUnchanged(filePath: string, expected: string | undefined, content: string): boolean;
@@ -404,7 +513,8 @@ const defaultAgentHooksFileIO: IParadisAgentHooksFileIO = {
 		// 比較後にイベントループへ制御を返さず直ちに保存し、外部writerとの競合窓を
 		// 最小化する。非協調プロセスとの完全なCASは通常ファイルAPIでは不可能だが、
 		// 少なくともPara Code自身が非同期処理を挟んで古い内容を書くことはない。
-		writeFileSync(filePath, content);
+		// 読む側が書きかけの中身を見ないよう、一時ファイル経由で差し替える。
+		paradisWriteFileAtomicallySync(filePath, content);
 		return true;
 	},
 	async mkdir(directory) {
@@ -413,42 +523,89 @@ const defaultAgentHooksFileIO: IParadisAgentHooksFileIO = {
 };
 
 /**
- * 設定ファイル1つ分の冪等マージ + 書き込み。書き込み直前に再読込し、外部更新が
- * 入っていれば最新内容からマージし直す。上限内に安定しなければユーザーファイルを
- * 優先して書き込みを見送る。失敗しても例外は投げない。
+ * 当fork管理のhookだけを取り除いたJSON文字列を返す。ユーザーのhook・その他の設定キーは残す。
+ *
+ * 自hookが1つも無ければ受け取ったものをそのまま返す（書き込みを起こさない）。パース不能・
+ * ルートがオブジェクトでない場合は undefined（呼び出し側は何も書かない）。
  */
-export async function paradisMergeAgentHooksFile(filePath: string, managedEvents: readonly IParadisManagedHookEvent[], logService: ILogService | undefined, hookCommand?: string, io: IParadisAgentHooksFileIO = defaultAgentHooksFileIO): Promise<void> {
+export function paradisRemoveAgentHooksJson(existingRaw: string): string | undefined {
+	let parsed: unknown;
 	try {
-		await io.mkdir(dirname(filePath));
+		parsed = JSON.parse(existingRaw);
+	} catch {
+		return undefined;
+	}
+	if (!isPlainObject(parsed)) {
+		return undefined;
+	}
+	const hooks = parsed.hooks;
+	if (!isPlainObject(hooks) || highestParadisManagedHookSchema(hooks) === undefined) {
+		return existingRaw;
+	}
+	for (const eventName of Object.keys(hooks)) {
+		const current = hooks[eventName];
+		if (!Array.isArray(current)) {
+			continue;
+		}
+		const { definitions } = replaceManagedHooksInDefinitions(current, undefined);
+		if (definitions.length === 0 && current.length > 0) {
+			delete hooks[eventName];
+		} else {
+			hooks[eventName] = definitions;
+		}
+	}
+	return JSON.stringify(parsed, undefined, 2);
+}
+
+type ParadisAgentHooksFileUpdate =
+	| { readonly kind: 'content'; readonly content: string }
+	| { readonly kind: 'unchanged' }
+	| { readonly kind: 'unparseable' };
+
+/**
+ * 設定ファイル1つ分の書き換え。書き込み直前に再読込し、外部更新が入っていれば最新内容から
+ * 作り直す。上限内に安定しなければユーザーファイルを優先して書き込みを見送る。
+ * 失敗しても例外は投げない。
+ *
+ * @param operation ログと診断の名前（'merge' は既存の診断名を変えないため）
+ */
+async function updateAgentHooksFile(filePath: string, operation: 'merge' | 'remove', update: (existingRaw: string | undefined) => ParadisAgentHooksFileUpdate, logService: ILogService | undefined, io: IParadisAgentHooksFileIO): Promise<void> {
+	try {
+		if (operation === 'merge') {
+			await io.mkdir(dirname(filePath));
+		}
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const existingRaw = await io.readFile(filePath);
-			const merged = paradisMergeAgentHooksJson(existingRaw, managedEvents, hookCommand);
-			if (merged === undefined) {
-				logService?.warn(`[ParadisAgentHooks] Could not parse ${filePath}; skipping hook merge (user file left untouched)`);
+			const result = update(existingRaw);
+			if (result.kind === 'unchanged') {
+				return;
+			}
+			if (result.kind === 'unparseable') {
+				logService?.warn(`[ParadisAgentHooks] Could not parse ${filePath}; skipping hook ${operation} (user file left untouched)`);
 				// ここで見送ると hook が1つも設置されず、エージェントの状態表示・通知・モバイルの
 				// 応答性がまとめて静かに縮退する。ログしか残らないと後から原因に到達できないので
 				// 記録する（ファイルパスや中身は載せない）。
-				reportParadisDiagnosticError('owned', 'agent-hooks', 'merge-unparseable', new Error('Managed hook file could not be parsed'), {
+				reportParadisDiagnosticError('owned', 'agent-hooks', `${operation}-unparseable`, new Error('Managed hook file could not be parsed'), {
 					phase: 'setup',
 					safe_target: basename(filePath),
 				});
 				return;
 			}
 			// 既存ファイルの末尾改行は維持する (余計な毎回書き込みを防ぐ)
-			const content = existingRaw !== undefined && existingRaw.endsWith('\n') ? `${merged}\n` : merged;
+			const content = existingRaw !== undefined && existingRaw.endsWith('\n') ? `${result.content}\n` : result.content;
 			if (content === existingRaw) {
 				return; // 既に最新
 			}
 			// read→write間にユーザーや別ツールが保存していれば、古いスナップショットで
-			// 上書きせず、最新内容を起点に再マージする。
+			// 上書きせず、最新内容を起点に作り直す。
 			if (!io.writeFileIfUnchanged(filePath, existingRaw, content)) {
 				continue;
 			}
-			logService?.info(`[ParadisAgentHooks] Updated agent hooks in ${filePath}`);
+			logService?.info(operation === 'merge' ? `[ParadisAgentHooks] Updated agent hooks in ${filePath}` : `[ParadisAgentHooks] Removed Para Code agent hooks from ${filePath}`);
 			return;
 		}
-		logService?.warn(`[ParadisAgentHooks] ${filePath} kept changing during hook merge; skipped update to preserve external changes`);
-		reportParadisDiagnosticError('owned', 'agent-hooks', 'merge-contended', new Error('Managed hook file kept changing during merge'), {
+		logService?.warn(`[ParadisAgentHooks] ${filePath} kept changing during hook ${operation}; skipped update to preserve external changes`);
+		reportParadisDiagnosticError('owned', 'agent-hooks', `${operation}-contended`, new Error(`Managed hook file kept changing during ${operation}`), {
 			phase: 'setup',
 			safe_target: basename(filePath),
 			attempt: 3,
@@ -457,11 +614,47 @@ export async function paradisMergeAgentHooksFile(filePath: string, managedEvents
 		logService?.warn(`[ParadisAgentHooks] Failed to update ${filePath}`, error);
 		// error は fs のエラーで、message に絶対パスを含む（EACCES: ... open '/Users/.../settings.json'）。
 		// ホームディレクトリは送信前のサニタイズで ~ に置換されるが、それ以上の詳細は載せない。
-		reportParadisDiagnosticError('owned', 'agent-hooks', 'merge-failed', error, {
+		reportParadisDiagnosticError('owned', 'agent-hooks', `${operation}-failed`, error, {
 			phase: 'setup',
 			safe_target: basename(filePath),
 		});
 	}
+}
+
+/**
+ * 設定ファイル1つ分の冪等マージ + 書き込み。書き込み直前に再読込し、外部更新が
+ * 入っていれば最新内容からマージし直す。上限内に安定しなければユーザーファイルを
+ * 優先して書き込みを見送る。失敗しても例外は投げない。
+ */
+export async function paradisMergeAgentHooksFile(filePath: string, managedEvents: readonly IParadisManagedHookEvent[], logService: ILogService | undefined, hookCommand?: string, io: IParadisAgentHooksFileIO = defaultAgentHooksFileIO): Promise<void> {
+	await updateAgentHooksFile(filePath, 'merge', existingRaw => {
+		const merged = paradisMergeAgentHooksJson(existingRaw, managedEvents, hookCommand);
+		return merged === undefined ? { kind: 'unparseable' } : { kind: 'content', content: merged };
+	}, logService, io);
+}
+
+/**
+ * 設定ファイル1つ分から当fork管理のhookだけを取り外す。ファイルが無ければ何もしない
+ * （取り外すために作ることはしない）。失敗しても例外は投げない。
+ */
+export async function paradisRemoveAgentHooksFile(filePath: string, logService: ILogService | undefined, io: IParadisAgentHooksFileIO = defaultAgentHooksFileIO): Promise<void> {
+	await updateAgentHooksFile(filePath, 'remove', existingRaw => {
+		if (existingRaw === undefined || existingRaw.trim().length === 0) {
+			return { kind: 'unchanged' };
+		}
+		const removed = paradisRemoveAgentHooksJson(existingRaw);
+		return removed === undefined ? { kind: 'unparseable' } : { kind: 'content', content: removed };
+	}, logService, io);
+}
+
+/**
+ * Claude Code の settings.json と Codex の hooks.json から、当fork管理のhookを取り外す。
+ * 設置先の解決は自動設置と同じ（$CLAUDE_CONFIG_DIR / $CODEX_HOME を尊重する）。
+ * notify スクリプト自体は消さない: 同じ PC の別の Para Code がまだ使っていることがある。
+ */
+export async function paradisRemoveAgentHooks(logService: ILogService | undefined, paths: { readonly claudeSettingsPath?: string; readonly codexHooksPath?: string } = {}): Promise<void> {
+	await paradisRemoveAgentHooksFile(paths.claudeSettingsPath ?? join(paradisClaudeConfigDir(), 'settings.json'), logService);
+	await paradisRemoveAgentHooksFile(paths.codexHooksPath ?? join(paradisCodexHome(), 'hooks.json'), logService);
 }
 
 /**

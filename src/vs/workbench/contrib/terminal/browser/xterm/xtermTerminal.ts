@@ -52,6 +52,8 @@ import { clamp } from '../../../../../base/common/numbers.js';
 import { installParadisWebglBackgroundAlphaPatch, isParadisTransparentActive, paradisXtermBackground } from '../../../../../paradis/contrib/windowTransparency/browser/paradisTerminalTransparency.js';
 // PARA-PATCH: tell a terminal that lost its GPU context apart from a machine that cannot render at all (fork-owned, see vs/paradis)
 import { ParadisWebglRecovery, paradisWebglSupport } from '../../../../../paradis/contrib/terminalRenderer/browser/paradisWebglRecovery.js';
+// PARA-PATCH: per-terminal font size (Para Code TM21), applied on top of terminal.integrated.fontSize in getFont()
+import { paradisZoomTerminalFont } from '../../../../../paradis/contrib/terminalRenderer/browser/paradisTerminalFontZoom.js';
 // PARA-PATCH: report webgl fallback / global-disable diagnostics to Sentry (see vs/paradis)
 import { reportParadisDiagnosticError } from '../../../../../paradis/contrib/sentry/common/paradisSentryDiagnostics.js';
 import { LayoutSettings } from '../../../../services/layout/browser/layoutService.js';
@@ -757,7 +759,8 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	}
 
 	getFont(): ITerminalFont {
-		return this._terminalConfigurationService.getFont(dom.getWindow(this.raw.element), this._core);
+		// PARA-PATCH: add this terminal's own font size delta (Para Code TM21)
+		return paradisZoomTerminalFont(this, this._terminalConfigurationService.getFont(dom.getWindow(this.raw.element), this._core), this._core);
 	}
 
 	getLongestViewportWrappedLineLength(): number {

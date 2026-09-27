@@ -139,6 +139,8 @@ import { registerParadisGithubMetricsForServer } from '../../paradis/contrib/git
 // PARA-PATCH: while a client is connected, the ports it needs to inspect/kill are listening on
 // this machine, not the one showing the window (registered below)
 import { registerParadisPortListForServer } from '../../paradis/contrib/portList/node/paradisPortListChannelServer.js';
+// PARA-PATCH: single entry point for further fork server channels (see paradis.server.contribution.ts)
+import { registerParadisServerContributions } from '../../paradis/paradis.server.contribution.js';
 
 const eventPrefix = 'monacoworkbench';
 
@@ -476,6 +478,8 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 		// PARA-PATCH: expose the same port-list channel the shared process has, so a connected
 		// client's title bar widget can search/kill ports that are actually listening on this machine.
 		disposables.add(registerParadisPortListForServer(socketServer, logService));
+		// PARA-PATCH: every fork channel registered through paradis.server.contribution.ts
+		disposables.add(registerParadisServerContributions(socketServer, accessor));
 
 		// PARA-PATCH: the daemon that outlives this server lives on this machine, so a connected
 		// client's status bar has to ask this side. Asking its own main process instead showed the

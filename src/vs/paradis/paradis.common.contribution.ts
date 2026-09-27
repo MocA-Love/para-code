@@ -36,9 +36,14 @@ import './contrib/mobileRelay/browser/paradisMobileRelaySettings.contribution.js
 import './contrib/terminalShiftEnter/browser/paradisTerminalShiftEnter.contribution.js';
 import './contrib/codexTerminalTitle/browser/paradisCodexTerminalTitleSettings.contribution.js';
 import './contrib/browserDownloads/browser/paradisBrowserDownloadsSettings.contribution.js';
+import './contrib/browserUserAgent/browser/paradisBrowserUserAgentSettings.contribution.js';
 import './contrib/terminalDiagnostics/browser/paradisTerminalCountDiagnostics.contribution.js';
 import './contrib/settingsMenu/browser/paradisSettingsMenu.contribution.js';
 import './contrib/terminalWordSeparators/browser/paradisTerminalWordSeparators.contribution.js';
 import './contrib/ptyDaemon/browser/paradisPtyDaemonSettings.contribution.js';
 import './contrib/spaceAccent/browser/paradisSpaceAccent.contribution.js';
 import './contrib/auxiliaryActivityBar/browser/paradisAuxiliaryActivityBar.contribution.js';
+import './contrib/terminalEditorMenu/browser/paradisTerminalEditorMenu.contribution.js';
+import './contrib/terminalFontZoom/browser/paradisTerminalFontZoom.contribution.js';
+import './contrib/terminalLinkMenu/browser/paradisTerminalLinkMenu.contribution.js';
+import './contrib/terminalReopen/browser/paradisReopenClosedTerminal.contribution.js';

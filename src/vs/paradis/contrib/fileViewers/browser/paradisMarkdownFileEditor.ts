@@ -17,6 +17,8 @@
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { URI } from '../../../../base/common/uri.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
 import { generateTokensCSSForColorMap } from '../../../../editor/common/languages/supports/tokenization.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
@@ -27,6 +29,7 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { ITextModelService } from '../../../../editor/common/services/resolverService.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
@@ -36,7 +39,8 @@ import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/b
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { DEFAULT_MARKDOWN_STYLES, renderMarkdownDocument } from '../../../../workbench/contrib/markdown/browser/markdownDocumentRenderer.js';
 import { applyParadisFrontMatter, PARADIS_FRONTMATTER_STYLES, ParadisFrontMatterStyle } from './paradisMarkdownFrontMatter.js';
-import { inlineParadisMarkdownMedia, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
+import { inlineParadisMarkdownMedia, PARADIS_INLINE_MEDIA_LIMITS, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
+import { paradisMarkdownLinkToOpen, rewriteParadisMarkdownLinks } from './paradisMarkdownLinks.js';
 import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMermaidExtension } from './paradisMarkdownMermaid.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
 import { PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
@@ -61,6 +65,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		@IExtensionService private readonly _extensionService: IExtensionService,
 		@ILanguageService private readonly _languageService: ILanguageService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@IOpenerService private readonly _openerService: IOpenerService,
 	) {
 		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService);
 	}
@@ -75,6 +80,17 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	// 画像は data: で埋め込むので、`vscode-resource` を解決する service worker は要らない。
 	protected override disableServiceWorkerFor(_resource: URI): boolean {
 		return true;
+	}
+
+	// webview 基盤は `#見出し` 以外のリンクを通知するだけで自分では開かないので、ここで開く。
+	// 相対パスのリンクは描画時に絶対 URI へ書き換え済み（paradisMarkdownLinks）。
+	protected override onWebviewCreated(webview: IOverlayWebview, store: DisposableStore): void {
+		store.add(webview.onDidClickLink(link => {
+			const target = paradisMarkdownLinkToOpen(link);
+			if (target) {
+				this._openerService.open(target, { fromUserGesture: true, allowContributedOpeners: true }).catch(onUnexpectedError);
+			}
+		}));
 	}
 
 	/** 標準 Markdown プレビューと同じ `markdown.preview.frontMatter` 設定を読む（不正値は既定の table 扱い）。 */
@@ -106,12 +122,15 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		// サニタイズ済みの HTML を受け取ってから、ローカルの画像だけを data: に差し替える。
 		// <base href> は置かない。置いても service worker が無ければ解決できず、その一方で
 		// 文書内アンカー（#見出し）の解決先を歪めるだけになるため。
+		const workspaceFolder = this._workspaceContextService.getWorkspaceFolder(resource)?.uri;
 		const media = await inlineParadisMarkdownMedia(
 			rendered,
 			resource,
-			this._workspaceContextService.getWorkspaceFolder(resource)?.uri,
+			workspaceFolder,
 			this._fileService,
-			token);
+			token,
+			PARADIS_INLINE_MEDIA_LIMITS,
+			body => rewriteParadisMarkdownLinks(body, resource, workspaceFolder));
 
 		const nonce = generateUuid();
 		const colorMap = TokenizationRegistry.getColorMap();
