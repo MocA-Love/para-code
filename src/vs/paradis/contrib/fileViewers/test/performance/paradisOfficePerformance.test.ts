@@ -28,8 +28,8 @@ import { OfficeMemoryAccountant, OfficeWorkerHost, type IOfficeWorker } from '..
 import { ParadisOfficeSpoolTransport, SpoolAwareParadisOfficeSourceResolver } from '../../node/paradisOfficeChannel.js';
 import { OfficeSpoolStore } from '../../node/paradisOfficeSpoolStore.js';
 import { parseWordSemanticNode } from '../../node/word/paradisWordNodeAdapter.js';
-import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridCell, type ParadisSpreadsheetGridTile } from '../../electron-browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
-import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest } from '../../electron-browser/spreadsheet/paradisSpreadsheetViewport.js';
+import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridCell, type ParadisSpreadsheetGridTile } from '../../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
+import { ParadisSpreadsheetViewport, type ParadisSpreadsheetTileRequest } from '../../browser/spreadsheet/paradisSpreadsheetViewport.js';
 import { buildShapeOverlay } from '../../electron-browser/paradisSpreadsheetRender.js';
 import { computePageLayout, pageRectangles } from '../../common/paradisSpreadsheetPageLayout.js';
 import { assertParadisOfficeSerializedGeometryGolden } from '../visual/paradisOfficeVisualGolden.js';
@@ -320,8 +320,8 @@ suite('ParadisOfficePerformance', () => {
 		strictEqual(fixture.schema, 2);
 		strictEqual(createHash('sha256').update(JSON.stringify(fixture.cases)).digest('hex'), fixture.caseHash);
 		strictEqual(createHash('sha256').update(JSON.stringify(fixture.serializedGeometry.regions)).digest('hex'), fixture.serializedGeometryHash);
-		strictEqual(fixture.attachedPaintBaseline.rendererSourceSha256, sha256File('src/vs/paradis/contrib/fileViewers/electron-browser/spreadsheet/paradisSpreadsheetGridRenderer.ts'));
-		strictEqual(fixture.attachedPaintBaseline.rendererCompiledSha256, sha256File('out/vs/paradis/contrib/fileViewers/electron-browser/spreadsheet/paradisSpreadsheetGridRenderer.js'));
+		strictEqual(fixture.attachedPaintBaseline.rendererSourceSha256, sha256File('src/vs/paradis/contrib/fileViewers/browser/spreadsheet/paradisSpreadsheetGridRenderer.ts'));
+		strictEqual(fixture.attachedPaintBaseline.rendererCompiledSha256, sha256File('out/vs/paradis/contrib/fileViewers/browser/spreadsheet/paradisSpreadsheetGridRenderer.js'));
 		strictEqual(fixture.attachedPaintBaseline.environmentIdentity, rendererEnvironmentIdentity());
 		strictEqual(fixture.attachedPaintBaseline.calibration.validation, 'identity-and-threshold');
 		strictEqual(fixture.attachedPaintBaseline.calibration.requestedRegressionPercent, 10);
