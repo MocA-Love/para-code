@@ -113,15 +113,20 @@ export interface IParadisDesignPin {
 /** main プロセス側の窓口。renderer からは ProxyChannel で呼ぶ。 */
 export interface IParadisDesignModeMainService {
 	/**
-	 * ページに要素選択の仕掛けを入れ、ユーザーがクリックするまで待つ。
-	 * Esc・{@link cancelPick}・ページ遷移で `cancelled` を返す。
+	 * ページに要素選択の仕掛けを入れ直し（番号札も `pins` で置き直す）、ユーザーがクリック
+	 * するまで待つ。Esc・{@link cancelPick}・ページ遷移で `cancelled` を返す。
 	 */
-	pickElement(viewId: string): Promise<ParadisDesignPickResult>;
+	pickElement(viewId: string, pins: readonly IParadisDesignPin[]): Promise<ParadisDesignPickResult>;
 	cancelPick(viewId: string): Promise<void>;
 	/** 番号札を置き直す（空配列で消す）。 */
 	setPins(viewId: string, pins: readonly IParadisDesignPin[]): Promise<void>;
 	/** PNG を userData 配下（所有者だけが読める場所）へ保存し、絶対パスを返す。 */
 	saveImage(png: VSBuffer): Promise<string>;
+	/**
+	 * このウィンドウが前に始めたまま終わっていない選択を取り消す。renderer の起動時に呼ぶ
+	 * （選択中にウィンドウを再読み込みすると、ページに十字カーソルの覆いが残るため）。
+	 */
+	resetPicks(): Promise<void>;
 }
 
 function clampString(value: unknown, max: number): string {
@@ -229,7 +234,8 @@ export function paradisClampPickedElement(raw: unknown): IParadisPickedElement |
 		title: clampString(value.title, 300),
 		viewportWidth: Math.max(0, finiteNumber(value.viewportWidth)),
 		viewportHeight: Math.max(0, finiteNumber(value.viewportHeight)),
-		tagName: clampString(value.tagName, 50).toLowerCase(),
+		// タグ名は見出しに出すので、英数字とハイフン以外（カスタム要素名に紛れた文）は捨てる
+		tagName: /^[a-z][a-z0-9-]{0,49}$/.test(String(value.tagName).toLowerCase()) ? String(value.tagName).toLowerCase() : 'element',
 		selector: clampString(value.selector, PARADIS_DESIGN_BUDGET.selectorMaxLength),
 		path: secretSafe(clampString(value.path, PARADIS_DESIGN_BUDGET.pathMaxLength)),
 		textSnippet: secretSafe(clampString(value.textSnippet, PARADIS_DESIGN_BUDGET.textSnippetMaxLength)),

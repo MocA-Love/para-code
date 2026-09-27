@@ -11,12 +11,18 @@
 //  - Design Mode: ページの要素をクリック → コメントを入力 → 注釈トレイへ。モードは Esc か
 //    ボタンでやめるまで続く（upstream の「Comment on Elements」と同じ続け方）
 //  - Markup: ページのスクリーンショットに書き込み、その画像を注釈としてトレイへ
-//  - 注釈トレイ: ナビバーとページの間の帯（Q60 A）。[送る] で送り先を一覧から選ぶ
+//  - 注釈トレイ: ナビバーとページの間の帯。[送る] で送り先を一覧から選ぶ
 //
 // upstream のファイルには触らず、BrowserEditor.registerContribution() と
 // BrowserWidgetLocation.Toolbar（ナビバーとページの間）だけを使う。
+//
+// 結果やエラーは通知のトーストではなくトレイの中に出す。fork ではトーストが内蔵ブラウザの
+// ページ（ネイティブのビュー）を止めない設定なので、トーストはページの裏に隠れて見えない。
+// エラーはトレイに出したうえで、後から見返せるようベル（通知センター）にも残す。
 
 import { $, addDisposableListener, append, EventType } from '../../../../base/browser/dom.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -24,7 +30,7 @@ import { localize } from '../../../../nls.js';
 import { IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrowserEditorWidget } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
@@ -36,6 +42,9 @@ import { ParadisMarkupOverlay, paradisMarkupAreaOf } from './paradisMarkupOverla
 
 export const CONTEXT_PARADIS_DESIGN_MODE_ACTIVE = new RawContextKey<boolean>('paradisBrowserDesignModeActive', false, localize('paradis.designMode.contextActive', "内蔵ブラウザで Design Mode（要素にコメント）が有効か"));
 export const CONTEXT_PARADIS_MARKUP_ACTIVE = new RawContextKey<boolean>('paradisBrowserMarkupActive', false, localize('paradis.designMode.contextMarkup', "内蔵ブラウザでスクリーンショットへ書き込み中か"));
+
+/** トレイに出したお知らせを消すまでの時間。 */
+const MESSAGE_DURATION_MS = 12_000;
 
 /**
  * トレイの並び順。ナビバー（0）と upstream の検索バー・端末エミュレーションの帯より後ろ、
@@ -62,6 +71,13 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 
 	private readonly tray: HTMLElement;
 	private readonly hint: HTMLElement;
+	private readonly message: HTMLElement;
+	private readonly htmlLabel: HTMLLabelElement;
+	private readonly htmlCheckbox: HTMLInputElement;
+	private readonly messageClear = this._register(new RunOnceScheduler(() => this.showMessage(undefined), MESSAGE_DURATION_MS));
+	private messageText: string | undefined;
+	/** 送信中の取り消し（エディタのページが替わる・閉じるとき）。 */
+	private readonly sendCancellation = this._register(new MutableDisposable<CancellationTokenSource>());
 	private readonly countButton: HTMLButtonElement;
 	private readonly attachLabel: HTMLLabelElement;
 	private readonly attachCheckbox: HTMLInputElement;
@@ -106,6 +122,9 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		this._register(addDisposableListener(this.countButton, EventType.CLICK, () => void this.manageAnnotations()));
 
 		this.hint = append(this.tray, $('span.paradis-design-tray-hint'));
+		this.message = append(this.tray, $('span.paradis-design-tray-message'));
+		this.message.setAttribute('role', 'status');
+		this.message.setAttribute('aria-live', 'polite');
 
 		this.attachLabel = append(this.tray, $<HTMLLabelElement>('label.paradis-design-tray-attach'));
 		this.attachCheckbox = append(this.attachLabel, $<HTMLInputElement>('input'));
@@ -113,6 +132,14 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		this.attachText = append(this.attachLabel, $('span'));
 		this._register(addDisposableListener(this.attachCheckbox, EventType.CHANGE, () => {
 			this.designModeService.attachImages = this.attachCheckbox.checked;
+		}));
+
+		this.htmlLabel = append(this.tray, $<HTMLLabelElement>('label.paradis-design-tray-attach'));
+		this.htmlCheckbox = append(this.htmlLabel, $<HTMLInputElement>('input'));
+		this.htmlCheckbox.type = 'checkbox';
+		append(this.htmlLabel, $('span')).textContent = localize('paradis.designMode.includeHtml', "HTML も送る");
+		this._register(addDisposableListener(this.htmlCheckbox, EventType.CHANGE, () => {
+			this.designModeService.includeHtml = this.htmlCheckbox.checked;
 		}));
 
 		append(this.tray, $('span.paradis-design-tray-spacer'));
@@ -144,6 +171,8 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		store.add(toDisposable(() => {
 			this.stopDesignMode();
 			this.markup.clear();
+			this.sendCancellation.value?.cancel();
+			this.showMessage(undefined);
 		}));
 		this.renderTray();
 		void this.syncPins(model);
@@ -191,10 +220,10 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		try {
 			while (this.designGeneration === generation && this.editor.model === model) {
 				if (this.designModeService.getAnnotations(model.id).length >= PARADIS_DESIGN_BUDGET.annotationsMaxPerPage) {
-					this.notificationService.info(fullMessage());
+					this.showMessage(fullMessage(), Severity.Info);
 					break;
 				}
-				const result = await this.designModeService.pickElement(model.id);
+				const result = await this.designModeService.pickElement(model.id, this.pinsFor(model));
 				if (this.designGeneration !== generation || result.kind === 'cancelled') {
 					break;
 				}
@@ -202,7 +231,7 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 			}
 		} catch (error) {
 			this.logService.warn('[ParadisDesignMode] element picking failed', error);
-			this.notificationService.error(localize('paradis.designMode.pickFailed', "要素を選べませんでした: {0}", toErrorMessage(error)));
+			this.showMessage(localize('paradis.designMode.pickFailed', "要素を選べませんでした: {0}", toErrorMessage(error)), Severity.Error);
 		} finally {
 			if (this.designGeneration === generation) {
 				this.stopDesignMode();
@@ -243,7 +272,7 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 			image,
 		};
 		if (!this.designModeService.addAnnotation(model, annotation)) {
-			this.notificationService.info(fullMessage());
+			this.showMessage(fullMessage(), Severity.Info);
 		}
 	}
 
@@ -259,7 +288,7 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		try {
 			screenshot = (await model.captureScreenshot({ format: 'png' })).buffer;
 		} catch (error) {
-			this.notificationService.error(localize('paradis.markup.captureFailed', "スクリーンショットを撮れませんでした: {0}", toErrorMessage(error)));
+			this.showMessage(localize('paradis.markup.captureFailed', "スクリーンショットを撮れませんでした: {0}", toErrorMessage(error)), Severity.Error);
 			return;
 		}
 		if (this.editor.model !== model || this.markup.value) {
@@ -297,7 +326,7 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 			image: png,
 		};
 		if (!this.designModeService.addAnnotation(model, annotation)) {
-			this.notificationService.info(fullMessage());
+			this.showMessage(fullMessage(), Severity.Info);
 		}
 	}
 
@@ -308,20 +337,31 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		}
 		const annotations = this.designModeService.getAnnotations(model.id);
 		if (annotations.length === 0) {
-			this.notificationService.info(localize('paradis.designMode.empty', "送る注釈がありません。Design Mode でページの要素にコメントを付けてください。"));
+			this.showMessage(localize('paradis.designMode.empty', "送る注釈がありません。Design Mode でページの要素にコメントを付けてください。"), Severity.Info);
 			return;
 		}
 		this.stopDesignMode();
+		this.showMessage(undefined);
 		this.sending = true;
 		this.renderTray();
+		const cancellation = new CancellationTokenSource();
+		this.sendCancellation.value = cancellation;
 		try {
-			if (await this.sender.send(model, annotations)) {
+			const result = await this.sender.send(model, annotations, cancellation.token);
+			if (result.inserted) {
 				// 入れた分だけ消す（送っている間に足された注釈は残す）
 				for (const annotation of annotations) {
 					this.designModeService.removeAnnotation(model.id, annotation.id);
 				}
 			}
+			if (result.message && this.editor.model === model) {
+				// エラーはベルへの記録を送る側で済ませてあるので、ここではトレイに出すだけ
+				this.showMessage(result.message, result.severity ?? Severity.Info, false);
+			}
 		} finally {
+			if (this.sendCancellation.value === cancellation) {
+				this.sendCancellation.clear();
+			}
 			this.sending = false;
 			this.renderTray();
 		}
@@ -365,11 +405,30 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		return button;
 	}
 
+	/**
+	 * トレイにお知らせを出す（undefined で消す）。しばらくすると消える。エラーは既定でベルにも残す。
+	 */
+	private showMessage(text: string | undefined, severity: Severity = Severity.Info, recordErrors = true): void {
+		this.messageText = text;
+		this.message.textContent = text ?? '';
+		this.message.classList.toggle('error', severity === Severity.Error);
+		this.message.classList.toggle('warning', severity === Severity.Warning);
+		if (text) {
+			this.messageClear.schedule();
+			if (severity === Severity.Error && recordErrors) {
+				this.notificationService.notify({ severity, message: text, sticky: true });
+			}
+		} else {
+			this.messageClear.cancel();
+		}
+		this.renderTray();
+	}
+
 	private renderTray(): void {
 		const model = this.editor.model;
 		const annotations = model ? this.designModeService.getAnnotations(model.id) : [];
 		const picking = !!model && this.designPage === model;
-		const visible = annotations.length > 0 || picking;
+		const visible = !!model && (annotations.length > 0 || picking || !!this.messageText);
 
 		this.countButton.textContent = localize('paradis.designMode.count', "注釈 {0} 件", annotations.length);
 		this.countButton.disabled = annotations.length === 0;
@@ -380,6 +439,8 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		this.attachLabel.style.display = imageCount > 0 ? '' : 'none';
 		this.attachText.textContent = localize('paradis.designMode.attachImages', "画像 {0} 枚を添える", imageCount);
 		this.attachCheckbox.checked = this.designModeService.attachImages;
+		this.htmlCheckbox.checked = this.designModeService.includeHtml;
+		this.htmlLabel.style.display = annotations.some(annotation => annotation.element?.htmlSnippet) ? '' : 'none';
 		this.stopButton.style.display = picking ? '' : 'none';
 		this.clearButton.disabled = annotations.length === 0 || this.sending;
 		this.sendButton.disabled = annotations.length === 0 || this.sending;
@@ -392,8 +453,8 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		}
 	}
 
-	/** ページ上の番号札を、今の注釈に合わせて置き直す。 */
-	private async syncPins(model: IBrowserViewModel): Promise<void> {
+	/** このページに出す番号札（番号は送る文章の項目番号と同じ）。 */
+	private pinsFor(model: IBrowserViewModel): IParadisDesignPin[] {
 		const pageUrl = paradisDesignSanitizeUrl(model.url);
 		const pins: IParadisDesignPin[] = [];
 		this.designModeService.getAnnotations(model.id).forEach((annotation, index) => {
@@ -401,8 +462,13 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 				pins.push({ label: String(index + 1), selector: annotation.element.selector, rectPage: annotation.element.rectPage });
 			}
 		});
+		return pins;
+	}
+
+	/** ページ上の番号札を、今の注釈に合わせて置き直す。 */
+	private async syncPins(model: IBrowserViewModel): Promise<void> {
 		try {
-			await this.designModeService.setPins(model.id, pins);
+			await this.designModeService.setPins(model.id, this.pinsFor(model));
 		} catch (error) {
 			this.logService.trace('[ParadisDesignMode] pins could not be placed', error);
 		}

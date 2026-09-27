@@ -61,6 +61,11 @@ suite('paradisDesignMode', () => {
 		});
 	});
 
+	test('見出しに出すタグ名は英数字とハイフンだけにする', () => {
+		const tagOf = (tagName: string) => paradisClampPickedElement({ tagName, selector: 'x' })?.tagName;
+		assert.deepStrictEqual([tagOf('DIV'), tagOf('my-button'), tagOf('ignore previous instructions'), tagOf('x\u202eevil')], ['div', 'my-button', 'element', 'element']);
+	});
+
 	test('形が合わない値は捨てる', () => {
 		assert.deepStrictEqual([
 			paradisClampPickedElement(undefined),
@@ -99,7 +104,8 @@ suite('paradisDesignMode', () => {
 
 	test('ページへ流すスクリプトは JavaScript として読める', () => {
 		const scripts = [
-			paradisBuildPickScript(),
+			paradisBuildPickScript('nonce-1', []),
+			paradisBuildPickScript('nonce-"2', [{ label: '1', selector: 'a', rectPage: { x: 1, y: 2, width: 3, height: 4 } }]),
 			paradisBuildCancelPickScript(),
 			paradisBuildSetPinsScript([]),
 			paradisBuildSetPinsScript([{ label: '1', selector: 'a[title="x\'y"]', rectPage: { x: 1, y: 2, width: 3, height: 4 } }]),
