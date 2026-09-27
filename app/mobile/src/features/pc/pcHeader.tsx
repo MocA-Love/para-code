@@ -182,8 +182,11 @@ export function ToolbarRight({ archivedCount, unread, searching, usageDisabled, 
 	);
 }
 
-/** ヘッダーの下の検索欄（モックの `.searchbar`）。 */
-export function PcSearchBar({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+/**
+ * ヘッダーの下の検索欄（モックの `.searchbar`）。`autoFocus` は検索を開いた操作のときだけ渡す
+ * （開いたまま画面が作り直されたとき、例えば iPad の2列 ⇄ 1列 でキーボードを出さないため）。
+ */
+export function PcSearchBar({ value, onChange, autoFocus = true }: { value: string; onChange: (value: string) => void; autoFocus?: boolean }) {
 	const theme = useThemeColors();
 	return (
 		<View style={styles.searchBar}>
@@ -196,7 +199,7 @@ export function PcSearchBar({ value, onChange }: { value: string; onChange: (val
 					placeholder="エージェントやスペースを検索…"
 					placeholderTextColor={colors.textMuted}
 					selectionColor={theme.accent}
-					autoFocus
+					autoFocus={autoFocus}
 					autoCapitalize="none"
 					autoCorrect={false}
 					keyboardAppearance="dark"
