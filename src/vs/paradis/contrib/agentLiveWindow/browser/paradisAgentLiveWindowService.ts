@@ -11,8 +11,10 @@ import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { ServiceCollection } from '../../../../platform/instantiation/common/serviceCollection.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IAuxiliaryWindowService } from '../../../../workbench/services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
@@ -25,6 +27,7 @@ import {
 	IParadisAgentLiveWindowService,
 	paradisParseAgentLiveViewState,
 	paradisSerializeAgentLiveViewState,
+	ParadisAgentLiveWindowFocusContext,
 } from '../common/paradisAgentLiveWindow.js';
 import { ParadisAgentLiveModel } from './paradisAgentLiveModel.js';
 import { ParadisAgentLiveWindowView } from './paradisAgentLiveWindowView.js';
@@ -50,6 +53,11 @@ const EMPTY_SUMMARY: IParadisAgentLiveSummary = { total: 0, active: 0, attention
  * なお editor part を伴わない素のウィンドウなので、スペースに紐づく auxiliary window の
  * 台帳 (ParadisAuxiliaryWindowScopeService は onDidCreateAuxiliaryEditorPart のみ購読) には
  * 載らない。スペースを切り替えても巻き添えで閉じられることはない。
+ *
+ * 同じ理由で、このウィンドウで押したエディタ系のショートカットはメインウィンドウの
+ * アクティブなエディタグループに届いてしまう (Cmd+W でメインのターミナルが閉じる)。
+ * ウィンドウの body に {@link ParadisAgentLiveWindowFocusContext} を張り、
+ * paradisAgentLiveWindowKeybindings.ts がそれを when 句にして横取りする。
  */
 export class ParadisAgentLiveWindowService extends Disposable implements IParadisAgentLiveWindowService {
 
@@ -65,6 +73,7 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 	private _summary: IParadisAgentLiveSummary = EMPTY_SUMMARY;
 	private windowDisposables: DisposableStore | undefined;
 	private focusWindow: (() => void) | undefined;
+	private closeWindow: (() => void) | undefined;
 	private opening = false;
 
 	constructor(
@@ -74,6 +83,7 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 		@IParadisAuxiliaryWindowScopeService private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 	) {
 		super();
 
@@ -132,7 +142,16 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 			// スペースに紐付かなくなる。
 			disposables.add(this.auxiliaryWindowScopeService.registerScopelessWindow(auxiliaryWindow.window.vscodeWindowId));
 
-			const view = disposables.add(this.instantiationService.createInstance(
+			// キーバインドの解決はキー入力の宛先要素から祖先をたどってコンテキストを決める。
+			// container ではなく body に張るのは、何にもフォーカスが当たっていないとき
+			// (タイルの余白をクリックした後など) の宛先が body になるため。ビューは
+			// このスコープを親に持つ子の instantiation service で作り、ビューの中で作られる
+			// ウィジェットのスコープもこのキーを継ぐようにする。
+			const scopedContextKeyService = disposables.add(this.contextKeyService.createScoped(auxiliaryWindow.window.document.body));
+			ParadisAgentLiveWindowFocusContext.bindTo(scopedContextKeyService).set(true);
+			const scopedInstantiationService = disposables.add(this.instantiationService.createChild(new ServiceCollection([IContextKeyService, scopedContextKeyService])));
+
+			const view = disposables.add(scopedInstantiationService.createInstance(
 				ParadisAgentLiveWindowView,
 				auxiliaryWindow.container,
 				this.model,
@@ -145,6 +164,9 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 			disposables.add(auxiliaryWindow.onWillLayout(() => view.layout()));
 
 			this.focusWindow = () => auxiliaryWindow.window.focus();
+			// dispose ではなく window.close() で閉じる。onUnload を経由させ、ウィンドウの位置と
+			// 表示状態の保存をユーザーが閉じたときと同じ経路で行うため。
+			this.closeWindow = () => auxiliaryWindow.window.close();
 			this.windowDisposables = disposables;
 			this.model.setOutputTracking(true);
 		} catch (error) {
@@ -157,12 +179,17 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 		}
 	}
 
+	close(): void {
+		this.closeWindow?.();
+	}
+
 	private onWindowClosed(disposables: DisposableStore, bounds: { bounds?: ISerializedWindowBounds }): void {
 		if (this.windowDisposables !== disposables) {
 			return;
 		}
 		this.windowDisposables = undefined;
 		this.focusWindow = undefined;
+		this.closeWindow = undefined;
 		this.model.setOutputTracking(false);
 		if (bounds.bounds) {
 			this.storageService.store(WINDOW_STATE_STORAGE_KEY, JSON.stringify(bounds.bounds), StorageScope.WORKSPACE, StorageTarget.MACHINE);

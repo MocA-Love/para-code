@@ -8,6 +8,7 @@
 
 import '../browser/media/paradisAgentLiveWindow.css';
 import '../browser/paradisAgentLiveWindowService.js';
+import '../browser/paradisAgentLiveWindowKeybindings.js';
 import { $, append } from '../../../../base/browser/dom.js';
 import { BaseActionViewItem, IBaseActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
