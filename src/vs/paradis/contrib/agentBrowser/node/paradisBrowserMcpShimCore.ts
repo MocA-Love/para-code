@@ -69,7 +69,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'get_cdp_endpoint',
-		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: the gateway exposes exactly one shared page, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and ask the user to open/close pages from Para Code).',
+		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: the gateway exposes exactly one shared page, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and open_browser_tab / select_browser_tab / close_browser_tab to work with several tabs).',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
@@ -167,6 +167,59 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 				url: { type: 'string', description: 'Optional URL to open in that profile. Omit to open a blank page in the profile.' },
 			},
 			required: ['profile'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'open_browser_tab',
+		description: 'Open a new Para Code browser tab for your own work and share it with this terminal pane, so the chrome-devtools tools (take_snapshot, click, navigate_page, ...) act on it right away. The tab uses a separate agent-only browser session (none of the user\'s logins or cookies) and the agent network restrictions apply. You can have at most 5 tabs of your own open per terminal pane; close the ones you no longer need with close_browser_tab. Use this instead of new_page, which is not supported.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				url: { type: 'string', description: 'Optional http(s) URL to load. Omit to open a blank tab.' },
+				background: { type: 'boolean', description: 'Open the tab without bringing it to the front of its editor group (default false). Tools still work on a background tab.' },
+			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'list_browser_tabs',
+		description: 'List the browser tabs this terminal pane can use: the tabs you opened with open_browser_tab or open_browser_profile, and user tabs that were shared with this pane. Shows which one is currently shared ("active": the one the chrome-devtools tools act on) and which ones you opened (only those can be closed).',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'select_browser_tab',
+		description: 'Switch the page shared with this terminal pane to another tab from list_browser_tabs, so the chrome-devtools tools act on that tab from now on. Only tabs you opened, or user tabs that were already shared with this pane, can be selected; to use any other user tab, call request_browser_page.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				tabId: { type: 'string', description: 'The tabId from list_browser_tabs or open_browser_tab.' },
+			},
+			required: ['tabId'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'close_browser_tab',
+		description: 'Close a browser tab that you opened with open_browser_tab or open_browser_profile. Tabs the user opened are never closed by this tool - ask the user to close them instead.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				tabId: { type: 'string', description: 'The tabId of a tab you opened (see list_browser_tabs).' },
+			},
+			required: ['tabId'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'request_browser_page',
+		description: 'Ask the user to share one of their open browser tabs with this terminal pane (for example a page where they are already logged in). Para Code shows an approval dialog with your reason; the call waits up to about 2 minutes for the answer. If approved, the chosen tab becomes the page the chrome-devtools tools act on. Do not call this again while a request is still waiting. For pages you can open yourself, prefer open_browser_tab, which needs no approval.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				reason: { type: 'string', description: 'One short sentence shown to the user explaining why you need the page (max 300 characters).' },
+				url: { type: 'string', description: 'Optional part of the URL of the tab you want (for example "github.com/org/repo"). The matching tab is suggested first; the user can still pick another.' },
+			},
 			additionalProperties: false,
 		},
 	},
