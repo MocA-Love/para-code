@@ -258,7 +258,8 @@ const nodeRequire = createRequire(import.meta.url);
 const PARADIS_CLAUDE_TOOL_REJECTED_PREFIX = `The user doesn't want to proceed with this tool use`;
 /**
  * Codex が、利用者が承認を拒否した（codex-cli 0.155.1 の `No, and tell Codex what to do differently (esc)`）
- * ツールの結果（function_call_output）に書く本文。直後に rollout へ `turn_aborted` を書き、次の指示を待つ。
+ * ツールの結果（function_call_output）の最後の行。実機では `Wall time: 7.5 seconds\naborted by user` のように
+ * 前に経過時間の行が付く。直後に rollout へ `turn_aborted` を書き、次の指示を待つ。
  */
 const PARADIS_CODEX_TOOL_ABORTED_TEXT = 'aborted by user';
 
@@ -268,7 +269,7 @@ function paradisIsToolRejection(agent: ParadisAgentKind, message: IParadisAgentC
 		return false;
 	}
 	return agent === 'codex'
-		? message.text.trim() === PARADIS_CODEX_TOOL_ABORTED_TEXT
+		? message.text.trim().split('\n').pop()?.trim() === PARADIS_CODEX_TOOL_ABORTED_TEXT
 		: message.isError === true && message.text.startsWith(PARADIS_CLAUDE_TOOL_REJECTED_PREFIX);
 }
 

@@ -447,7 +447,7 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 				chat.releaseDesktopInteraction(token, 'approval', approvalId, true);
 				await settled();
 				// 実機（codex-cli 0.155.1）の順: 拒否したツールの結果（aborted by user）の直後に turn_aborted
-				const aborted = line({ timestamp: '2026-09-27T10:00:05.764Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_deny', output: 'aborted by user' } });
+				const aborted = line({ timestamp: '2026-09-27T10:00:05.764Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_deny', output: 'Wall time: 7.5 seconds\naborted by user' } });
 				const turnAborted = line({ timestamp: '2026-09-27T10:00:05.769Z', type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } });
 				if (split) {
 					await appendFile(rolloutPath, aborted);
