@@ -281,7 +281,13 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		// コマンドと Enter を送るので、シェルが入力を待っていて入力欄が空のときだけにする。別の
 		// プログラム（ssh 先のシェル、vim など）が前面に居ると、そちらへ入ってしまう。
 		const commandDetection = instance.capabilities.get(TerminalCapability.CommandDetection);
-		if (commandDetection === undefined || commandDetection.executingCommand !== undefined || commandDetection.promptInputModel.value.trim().length > 0) {
+		if (commandDetection === undefined) {
+			// シェル統合が無いと、前面で何が動いているかも入力欄の中身も分からない。自動では送らず、
+			// 自分で打つコマンドを案内する（ID のコピーはバナーから行える）。
+			this.notificationService.info(localize('paradis.resumeBanner.noShellIntegration', "このターミナルではシェルの状態が分からないため、自動では再開しません。シェルのプロンプトで次のコマンドを実行してください: {0}", command));
+			return;
+		}
+		if (commandDetection.executingCommand !== undefined || commandDetection.promptInputModel.value.trim().length > 0) {
 			this.notificationService.info(localize('paradis.resumeBanner.notAtPrompt', "シェルが入力を待っていて入力欄が空のときに押してください。いま動いているプログラムを終えるか、入力欄を空にしてからもう一度押します。"));
 			return;
 		}
