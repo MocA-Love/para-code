@@ -159,12 +159,54 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'open_browser_profile',
-		description: 'Open a Para Code browser page using a named, persistent browser profile (its cookies and localStorage survive restarts, so a login done once stays), and share that page with this terminal pane so the chrome-devtools tools can drive it. Profiles are created by the user in Para Code; call this with the profile name shown there. If the profile has never been logged in, the page opens logged out - tell the user to log in once.',
+		description: 'Open a Para Code browser page using a named, persistent browser profile (its cookies and localStorage survive restarts, so a login done once stays), and share that page with this terminal pane so the chrome-devtools tools can drive it. Profiles are usually created by the user in Para Code (list them with list_browser_profiles); call this with the profile name shown there. If the profile has never been logged in, the page opens logged out - tell the user to log in once. The tab counts as one of your own tabs (at most 5 per terminal pane; close it with close_browser_tab).',
 		inputSchema: {
 			type: 'object',
 			properties: {
 				profile: { type: 'string', description: 'Name of the browser profile as shown in Para Code (case- and width-insensitive, e.g. "PRD" or "TEST").' },
 				url: { type: 'string', description: 'Optional URL to open in that profile. Omit to open a blank page in the profile.' },
+			},
+			required: ['profile'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'list_browser_profiles',
+		description: 'List the named browser profiles in Para Code (persistent sessions whose logins survive restarts): their names, whether each has a stored login, whether you created it, and whether profile pages can be shared with agents right now (not while agent network filtering is enabled).',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'create_browser_profile',
+		description: 'Create a new, empty named browser profile in Para Code (for example to keep a separate test login). Open it with open_browser_profile. You can later delete only the profiles you created.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				name: { type: 'string', description: 'Display name for the profile (max 64 characters, must not match an existing name ignoring case and width).' },
+			},
+			required: ['name'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'switch_browser_profile',
+		description: 'Reopen one of your own tabs (opened with open_browser_tab or open_browser_profile) in another named browser profile, keeping its URL, and keep it shared with this terminal pane. The tab is recreated, so it gets a new tabId. Tabs the user opened cannot be switched - ask the user to use the profile pill next to the address bar instead.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				profile: { type: 'string', description: 'Name of the profile to switch to (see list_browser_profiles).' },
+				tabId: { type: 'string', description: 'Optional tabId of your tab. Omit to switch the page currently shared with this terminal pane.' },
+			},
+			required: ['profile'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'delete_browser_profile',
+		description: 'Delete a named browser profile that you created with create_browser_profile, together with its stored cookies and data. Profiles created by the user are never deleted by this tool. Fails while the user or another terminal pane has a tab open in that profile.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				profile: { type: 'string', description: 'Name of the profile you created.' },
 			},
 			required: ['profile'],
 			additionalProperties: false,

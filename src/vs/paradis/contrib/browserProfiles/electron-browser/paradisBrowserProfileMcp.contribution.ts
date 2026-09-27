@@ -25,6 +25,8 @@ import { BrowserViewStorageScope, isBrowserViewStorageScopeShareableWithAgent } 
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentNetworkFilterService } from '../../../../platform/networkFilter/common/networkFilterService.js';
+import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
+import { IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisAgentBrowserBindingModel } from '../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
@@ -36,11 +38,22 @@ import {
 	IParadisWorktreeService,
 	paradisListSpaces,
 } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisAgentBrowserTabsService } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import {
+	IParadisAgentProfileInfo,
+	IParadisListProfilesResult,
+	IParadisManageProfileResult,
 	IParadisOpenProfileResult,
+	IParadisSwitchProfileResult,
+	PARADIS_AGENT_CREATED_PROFILE_LIMIT,
 	PARADIS_BROWSER_PROFILE_MCP_CHANNEL,
+	PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD,
+	PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD,
+	PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD,
 	PARADIS_BROWSER_PROFILE_MCP_METHOD,
+	PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD,
 } from '../common/paradisBrowserProfileMcp.js';
+import { PARADIS_BROWSER_PROFILE_COLORS, paradisIsDuplicateProfileName, paradisNormalizeProfileName } from '../common/paradisBrowserProfileModel.js';
 import { IParadisBrowserProfilesService } from './paradisBrowserProfilesService.js';
 
 /** 呼び出し元ペインから決まる、ページを開く先。 */
@@ -62,6 +75,8 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 		private readonly agentNetworkFilterService: IAgentNetworkFilterService,
 		private readonly logService: ILogService,
+		private readonly agentTabsService: IParadisAgentBrowserTabsService,
+		private readonly browserViewWorkbenchService: IBrowserViewWorkbenchService,
 	) {
 		super();
 	}
@@ -71,12 +86,20 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 	}
 
 	async call<T>(_ctx: unknown, command: string, arg?: unknown): Promise<T> {
-		if (command === PARADIS_BROWSER_PROFILE_MCP_METHOD) {
-			const args = Array.isArray(arg) ? arg : [];
-			const token = typeof args[0] === 'string' ? args[0] : undefined;
-			const profileName = typeof args[1] === 'string' ? args[1] : '';
-			const url = typeof args[2] === 'string' ? args[2] : undefined;
-			return this._openBrowserProfile(token, profileName, url) as Promise<T>;
+		const args = Array.isArray(arg) ? arg : [];
+		const token = typeof args[0] === 'string' ? args[0] : undefined;
+		const text = (index: number) => typeof args[index] === 'string' ? args[index] as string : undefined;
+		switch (command) {
+			case PARADIS_BROWSER_PROFILE_MCP_METHOD:
+				return this._openBrowserProfile(token, text(1) ?? '', text(2)) as Promise<T>;
+			case PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD:
+				return this._listProfiles() as Promise<T>;
+			case PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD:
+				return this._createProfile(text(1) ?? '', text(2)) as Promise<T>;
+			case PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD:
+				return this._switchProfile(token, text(1) ?? '', text(2)) as Promise<T>;
+			case PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD:
+				return this._deleteProfile(token, text(1) ?? '') as Promise<T>;
 		}
 		throw new Error(`Method not found: ${command}`);
 	}
@@ -127,7 +150,20 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		const stats = await this.profilesService.getProfileStats(profile.id);
 		const restored = (stats.cookieCount ?? 0) > 0;
 
-		const input = await this.profilesService.openInProfile(profile.id, url, group);
+		// エージェントが開くタブなので、open_browser_tab と同じ上限と台帳に載せる（自分で閉じられるように）。
+		const slot = token !== undefined ? this.agentTabsService.reserveSlot(token) : undefined;
+		if (token !== undefined && !slot) {
+			return { ok: false, reason: 'limitReached' };
+		}
+		let input: BrowserEditorInput | undefined;
+		try {
+			input = await this.profilesService.openInProfile(profile.id, url, group);
+			if (input && token !== undefined) {
+				this.agentTabsService.registerAgentTab(token, input);
+			}
+		} finally {
+			slot?.dispose();
+		}
 		if (!input) {
 			this.logService.warn('[ParadisBrowserProfileMcp] could not open a page in the requested profile');
 			return { ok: false, reason: 'openFailed' };
@@ -141,14 +177,131 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 			// 開いている間にフィルタが有効化された場合も、差し替えタブへのバインドへ進ませない
 			// （上の事前判定と同じ理由。ページは開けているので bound: false で返す）。
 			if (token !== undefined && model && model.isDirectlyShareable) {
-				bound = await this.bindingModel.bindPageToPane(model, token);
+				bound = await this.agentTabsService.bindTab(token, input);
 			}
 		} catch (error) {
 			this.logService.warn('[ParadisBrowserProfileMcp] opened the page but could not share it with the calling pane', error);
 		}
 
-		return { ok: true, profileName: profile.name, restored, bound };
+		return { ok: true, profileName: profile.name, restored, bound, tabId: input.id };
 	}
+
+	// #region 一覧・作成・切替・削除（計画書 B9）
+
+	private async _listProfiles(): Promise<IParadisListProfilesResult> {
+		const profiles: IParadisAgentProfileInfo[] = [];
+		for (const profile of this.profilesService.list()) {
+			const stats = await this.profilesService.getProfileStats(profile.id);
+			profiles.push({
+				name: profile.name,
+				createdByAgent: profile.createdByAgent === true,
+				hasStoredLogin: stats.cookieCount === undefined ? undefined : stats.cookieCount > 0,
+				lastUsed: new Date(profile.lastUsedAt).toISOString(),
+			});
+		}
+		return {
+			ok: true,
+			profiles,
+			usable: this.profilesService.canUseProfiles(),
+			shareable: isBrowserViewStorageScopeShareableWithAgent(BrowserViewStorageScope.Profile, this.agentNetworkFilterService.isEnabled()),
+		};
+	}
+
+	private async _createProfile(name: string, color: string | undefined): Promise<IParadisManageProfileResult<{ readonly profileName: string }>> {
+		if (!this.profilesService.canUseProfiles()) {
+			return { ok: false, reason: 'untrustedWorkspace' };
+		}
+		const normalized = paradisNormalizeProfileName(name);
+		if (!normalized) {
+			return { ok: false, reason: 'invalidName' };
+		}
+		const profiles = this.profilesService.list();
+		if (paradisIsDuplicateProfileName(profiles, normalized)) {
+			return { ok: false, reason: 'duplicateName' };
+		}
+		if (profiles.filter(profile => profile.createdByAgent).length >= PARADIS_AGENT_CREATED_PROFILE_LIMIT) {
+			return { ok: false, reason: 'tooManyProfiles' };
+		}
+		// 色はエージェントに選ばせない（ユーザーが見分けるための印）。まだ使われていない色から順に割り当てる。
+		const used = new Set(profiles.map(profile => profile.color));
+		const requested = color && PARADIS_BROWSER_PROFILE_COLORS.includes(color) ? color : undefined;
+		const assigned = requested ?? PARADIS_BROWSER_PROFILE_COLORS.find(candidate => !used.has(candidate)) ?? PARADIS_BROWSER_PROFILE_COLORS[profiles.length % PARADIS_BROWSER_PROFILE_COLORS.length];
+		const created = this.profilesService.create(normalized, assigned, { createdByAgent: true });
+		return created.ok ? { ok: true, profileName: created.profile.name } : { ok: false, reason: 'invalidName' };
+	}
+
+	/**
+	 * エージェントが開いたタブを別のプロファイルで開き直す。Electron のセッションはビューの作成時に
+	 * 固定されるので、切替は「同じ位置へ新しいタブを差し込み古いタブを閉じる」作り直しになる
+	 * （プロファイルのピルから切り替えたときと同じ）。ユーザーのタブは対象にしない。
+	 */
+	private async _switchProfile(token: string | undefined, profileName: string, tabId: string | undefined): Promise<IParadisSwitchProfileResult> {
+		if (token === undefined) {
+			return { ok: false, reason: 'paneUnresolved' };
+		}
+		if (this.workspaceSwitchService.isSwitching) {
+			return { ok: false, reason: 'switching' };
+		}
+		if (!this.profilesService.canUseProfiles()) {
+			return { ok: false, reason: 'untrustedWorkspace' };
+		}
+		const profile = this.profilesService.findByName(profileName);
+		if (!profile) {
+			return { ok: false, reason: 'unknownProfile' };
+		}
+		if (!isBrowserViewStorageScopeShareableWithAgent(BrowserViewStorageScope.Profile, this.agentNetworkFilterService.isEnabled())) {
+			return { ok: false, reason: 'profileNotShareable' };
+		}
+		const targetId = tabId ?? this.bindingModel.getBindingForToken(token)?.pageId;
+		const input = targetId ? this.browserViewWorkbenchService.getKnownBrowserViews().get(targetId) : undefined;
+		if (!input || !this.agentTabsService.isOpenedBy(token, input.id)) {
+			return { ok: false, reason: 'notAgentTab' };
+		}
+
+		const stats = await this.profilesService.getProfileStats(profile.id);
+		const restored = (stats.cookieCount ?? 0) > 0;
+		const replacement = await this.profilesService.switchView(input, { kind: 'profile', profileId: profile.id });
+		if (!replacement) {
+			return { ok: false, reason: 'switchFailed' };
+		}
+		// 古いタブは閉じられて台帳から外れる。作り直したタブをエージェントのものとして載せ直す。
+		this.agentTabsService.registerAgentTab(token, replacement);
+		let bound = false;
+		try {
+			const model = await replacement.resolve();
+			if (model.isDirectlyShareable) {
+				bound = await this.agentTabsService.bindTab(token, replacement);
+			}
+		} catch (error) {
+			this.logService.warn('[ParadisBrowserProfileMcp] switched the profile but could not share the new tab', error);
+		}
+		return { ok: true, profileName: profile.name, tabId: replacement.id, bound, restored };
+	}
+
+	private async _deleteProfile(token: string | undefined, profileName: string): Promise<IParadisManageProfileResult<{ readonly profileName: string }>> {
+		if (token === undefined) {
+			return { ok: false, reason: 'paneUnresolved' };
+		}
+		const profile = this.profilesService.findByName(profileName);
+		if (!profile) {
+			return { ok: false, reason: 'unknownProfile' };
+		}
+		if (profile.createdByAgent !== true) {
+			return { ok: false, reason: 'notCreatedByAgent' };
+		}
+		// 削除はそのプロファイルのタブを全部閉じる。ユーザーや別のペインが使っているタブがあれば断る
+		// （このウィンドウ以外で開いているタブも main が数えている）。
+		const ownTabs = [...this.browserViewWorkbenchService.getKnownBrowserViews().keys()]
+			.filter(viewId => this.profilesService.getProfileForView(viewId) === profile.id && this.agentTabsService.isOpenedBy(token, viewId)).length;
+		const stats = await this.profilesService.getProfileStats(profile.id);
+		if (stats.openViewCount > ownTabs) {
+			return { ok: false, reason: 'inUse' };
+		}
+		await this.profilesService.remove(profile.id);
+		return { ok: true, profileName: profile.name };
+	}
+
+	// #endregion
 
 	/** 呼び出し元ペインから届け先を決める（paradisAgentPreview と同じ判断）。 */
 	private _resolvePaneTarget(token: string | undefined): ParadisProfileTargetSpace {
@@ -205,6 +358,8 @@ class ParadisBrowserProfileMcpContribution extends Disposable implements IWorkbe
 		@IParadisAuxiliaryWindowScopeService auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 		@IAgentNetworkFilterService agentNetworkFilterService: IAgentNetworkFilterService,
 		@ILogService logService: ILogService,
+		@IParadisAgentBrowserTabsService agentTabsService: IParadisAgentBrowserTabsService,
+		@IBrowserViewWorkbenchService browserViewWorkbenchService: IBrowserViewWorkbenchService,
 	) {
 		super();
 		sharedProcessService.registerChannel(PARADIS_BROWSER_PROFILE_MCP_CHANNEL, this._register(new ParadisBrowserProfileMcpChannel(
@@ -218,6 +373,8 @@ class ParadisBrowserProfileMcpContribution extends Disposable implements IWorkbe
 			auxiliaryWindowScopeService,
 			agentNetworkFilterService,
 			logService,
+			agentTabsService,
+			browserViewWorkbenchService,
 		)));
 	}
 }

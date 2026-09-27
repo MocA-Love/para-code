@@ -117,6 +117,16 @@ suite('ParadisBrowserProfilesService', () => {
 		assert.strictEqual(service.list()[0].id, created.profile.id);
 	});
 
+	test('a profile created for an agent is marked so only agent-made profiles can be deleted by agents', () => {
+		const { service } = createService();
+		const byUser = service.create('USER', '#3fb950');
+		const byAgent = service.create('AGENT', '#3fb950', { createdByAgent: true });
+		assert.deepStrictEqual(
+			[byUser.ok && byUser.profile.createdByAgent, byAgent.ok && byAgent.profile.createdByAgent],
+			[undefined, true],
+		);
+	});
+
 	test('empty and duplicate names are rejected with a reason instead of creating a profile', () => {
 		const { service } = createService();
 		service.create('TEST', '#3fb950');

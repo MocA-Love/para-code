@@ -27,6 +27,11 @@ export interface IParadisBrowserProfile {
 	readonly createdAt: number;
 	/** 最後にこのプロファイルでページを開いた時刻（epoch ms）。 */
 	readonly lastUsedAt: number;
+	/**
+	 * エージェントが MCP（create_browser_profile）で作ったプロファイル。エージェントが消せるのは
+	 * これが付いたものだけ（ユーザーが作ったものは消させない）。ユーザーが作ったものには付けない。
+	 */
+	readonly createdByAgent?: true;
 }
 
 /**
@@ -139,5 +144,8 @@ function paradisReviveProfile(entry: unknown): IParadisBrowserProfile | undefine
 		: PARADIS_BROWSER_PROFILE_COLORS[0];
 	const createdAt = typeof candidate.createdAt === 'number' && isFinite(candidate.createdAt) ? candidate.createdAt : 0;
 	const lastUsedAt = typeof candidate.lastUsedAt === 'number' && isFinite(candidate.lastUsedAt) ? candidate.lastUsedAt : createdAt;
-	return { id: candidate.id, name, color, createdAt, lastUsedAt };
+	return {
+		id: candidate.id, name, color, createdAt, lastUsedAt,
+		...(candidate.createdByAgent === true ? { createdByAgent: true } as const : {}),
+	};
 }

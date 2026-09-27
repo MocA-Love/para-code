@@ -83,4 +83,15 @@ suite('paradisBrowserProfileModel', () => {
 			[[], [], [], [], [profile('a3f19c2b7e04', 'TEST')]],
 		);
 	});
+
+	test('only a literal true createdByAgent survives the round trip', () => {
+		const agentMade = { ...profile('a3f19c2b7e04', 'AGENT'), createdByAgent: true as const };
+		assert.deepStrictEqual(
+			paradisDeserializeProfiles(JSON.stringify([
+				agentMade,
+				{ ...profile('b1c2d3e4f506', 'USER'), createdByAgent: 'yes' },
+			])),
+			[agentMade, profile('b1c2d3e4f506', 'USER')],
+		);
+	});
 });

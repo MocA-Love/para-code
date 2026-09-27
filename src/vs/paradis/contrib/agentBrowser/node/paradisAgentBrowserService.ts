@@ -30,7 +30,7 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../.
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOTES_METHOD, PARADIS_AGENT_NOTE_TOOL_OPERATIONS, paradisParseAgentNoteToolArgs } from '../common/paradisAgentNotes.js';
 // PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
-import { IParadisOpenProfileResult, ParadisOpenProfileFailure, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_METHOD } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
+import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, IParadisSwitchProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, ParadisOpenProfileFailure, ParadisProfileManageFailure } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
 import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, ParadisAgentPageRequestFailure, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
@@ -245,6 +245,9 @@ export const TOOLS = PARADIS_MCP_LOCAL_TOOLS;
 
 /** エージェントのタブ操作と共有の要求のツール名（paradisAgentBrowserTabs.ts の契約で renderer へ委ねる）。 */
 const PARADIS_AGENT_TAB_TOOL_NAMES: ReadonlySet<string> = new Set(['open_browser_tab', 'list_browser_tabs', 'select_browser_tab', 'close_browser_tab', 'request_browser_page']);
+
+/** エージェントによるプロファイルの一覧・作成・切替・削除のツール名（paradisBrowserProfileMcp.ts の契約）。 */
+const PARADIS_AGENT_PROFILE_TOOL_NAMES: ReadonlySet<string> = new Set(['list_browser_profiles', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile']);
 
 /** para-browser側の静的ツール名（chrome-devtools-mcp側で同名ツールが現れた場合に隠すための予約集合）。 */
 const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(TOOLS.map(tool => tool.name));
@@ -2500,6 +2503,11 @@ export class ParadisAgentBrowserService extends Disposable {
 			);
 		}
 
+		if (PARADIS_AGENT_PROFILE_TOOL_NAMES.has(name)) {
+			const toolArgs = params?.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : {};
+			return this._agentProfileTool(ingressLease, name, toolArgs, signal);
+		}
+
 		if (PARADIS_AGENT_TAB_TOOL_NAMES.has(name)) {
 			// タブを開く・共有を移す/頼むツールなので、バインド必須のガードより前で扱う。
 			const toolArgs = params?.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : {};
@@ -2955,7 +2963,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		const shared = call.value.bound
 			? 'The page is now shared with this terminal pane, so the chrome-devtools tools (take_snapshot, click, navigate_page, ...) act on it.'
 			: 'The page was opened but could NOT be shared with this terminal pane, so the chrome-devtools tools do not target it yet - ask the user to share it from Para Code.';
-		return this._toolText(`Opened ${where} the "${call.value.profileName}" browser profile. ${login} ${shared}`);
+		const tab = call.value.tabId ? ` The tab is one of your own tabs (tabId ${call.value.tabId}); close it with close_browser_tab when you are done.` : '';
+		return this._toolText(`Opened ${where} the "${call.value.profileName}" browser profile. ${login} ${shared}${tab}`);
 	}
 
 	/**
@@ -3107,6 +3116,110 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 	}
 
+	/**
+	 * プロファイルの一覧・作成・切替・削除（計画書 B9）の実体。判断は呼び出し元ペインのウィンドウ
+	 * （paradisBrowserProfileMcp.contribution.ts）が持ち、ここでは結果を定型英文へ翻訳するだけ。
+	 */
+	private async _agentProfileTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, toolArgs: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+		this._requireIngressLease(ingressLease);
+		const text = (key: string) => typeof toolArgs[key] === 'string' ? (toolArgs[key] as string).trim() || undefined : undefined;
+		const token = ingressLease.token;
+		const request = (method: string, args: unknown[]) => ({
+			channelName: PARADIS_BROWSER_PROFILE_MCP_CHANNEL,
+			method,
+			args: [token, ...args],
+			failureLabel: name,
+			failureMessage: 'Failed to update the browser profiles in Para Code.',
+		});
+		switch (name) {
+			case 'list_browser_profiles': {
+				const call = await this._callOwningWindow<IParadisListProfilesResult>(ingressLease, request(PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, []), signal);
+				if (!call.ok) {
+					return this._toolError(call.error);
+				}
+				const notes = [
+					call.value.usable ? undefined : 'This workspace is not trusted, so named profiles cannot be used until the user trusts it.',
+					call.value.shareable ? undefined : 'Agent network filtering is enabled, so pages in named profiles cannot be shared with agents right now.',
+				].filter(note => note !== undefined);
+				return this._toolText(JSON.stringify({ profiles: call.value.profiles, ...(notes.length ? { notes } : {}) }, null, 2));
+			}
+			case 'create_browser_profile': {
+				const profileName = text('name');
+				if (!profileName) {
+					return this._toolError('create_browser_profile requires a non-empty name.');
+				}
+				const call = await this._callOwningWindow<IParadisManageProfileResult<{ readonly profileName: string }>>(ingressLease, request(PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, [profileName]), signal);
+				if (!call.ok) {
+					return this._toolError(call.error);
+				}
+				if (!call.value.ok) {
+					return this._toolError(this._profileManageFailureMessage(call.value.reason, profileName));
+				}
+				return this._toolText(`Created the "${call.value.profileName}" browser profile. It has no stored login yet; open it with open_browser_profile.`);
+			}
+			case 'switch_browser_profile': {
+				const profileName = text('profile');
+				if (!profileName) {
+					return this._toolError('switch_browser_profile requires the name of a browser profile (see list_browser_profiles).');
+				}
+				const call = await this._callOwningWindow<IParadisSwitchProfileResult>(ingressLease, request(PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, [profileName, text('tabId')]), signal);
+				if (!call.ok) {
+					return this._toolError(call.error);
+				}
+				if (!call.value.ok) {
+					return this._toolError(this._profileManageFailureMessage(call.value.reason, profileName));
+				}
+				const login = call.value.restored ? 'The profile has a stored login.' : 'The profile has no stored login yet, so the page may show logged out.';
+				const shared = call.value.bound ? 'It is shared with this terminal pane.' : 'It could NOT be shared with this terminal pane yet - retry with select_browser_tab.';
+				return this._toolText(`Reopened the tab in the "${call.value.profileName}" browser profile as tab ${call.value.tabId} (the old tabId is gone). ${login} ${shared}`);
+			}
+			case 'delete_browser_profile': {
+				const profileName = text('profile');
+				if (!profileName) {
+					return this._toolError('delete_browser_profile requires the name of a browser profile you created.');
+				}
+				const call = await this._callOwningWindow<IParadisManageProfileResult<{ readonly profileName: string }>>(ingressLease, request(PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, [profileName]), signal);
+				if (!call.ok) {
+					return this._toolError(call.error);
+				}
+				if (!call.value.ok) {
+					return this._toolError(this._profileManageFailureMessage(call.value.reason, profileName));
+				}
+				return this._toolText(`Deleted the "${call.value.profileName}" browser profile and its stored data.`);
+			}
+		}
+		throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
+	}
+
+	private _profileManageFailureMessage(reason: ParadisProfileManageFailure, requestedProfile: string): string {
+		switch (reason) {
+			case 'switching':
+				return 'PARA_BROWSER_RETRYABLE: Para Code is switching spaces right now. Retry in a moment.';
+			case 'paneUnresolved':
+				return 'PARA_BROWSER_RETRYABLE: Para Code is still restoring this terminal pane. Retry in a few seconds.';
+			case 'untrustedWorkspace':
+				return 'This workspace is not trusted, so Para Code keeps every browser page in a throwaway session and named profiles cannot be used. Ask the user to trust the workspace first.';
+			case 'unknownProfile':
+				return `There is no browser profile named "${requestedProfile}" in Para Code. Call list_browser_profiles to see the names.`;
+			case 'profileNotShareable':
+				return 'Agent network filtering (the chat.agent.networkFilter setting) is enabled, and pages in named browser profiles do not enforce that network policy, so Para Code does not share them with agents. Nothing was changed.';
+			case 'invalidName':
+				return 'That profile name is empty or not allowed. Use a short, non-empty name.';
+			case 'duplicateName':
+				return `A browser profile named "${requestedProfile}" already exists (names are compared ignoring case and full-width/half-width differences). Use it with open_browser_profile, or pick another name.`;
+			case 'tooManyProfiles':
+				return `You have already created ${PARADIS_AGENT_CREATED_PROFILE_LIMIT} browser profiles, which is the limit. Delete one you no longer need with delete_browser_profile first.`;
+			case 'notCreatedByAgent':
+				return `The "${requestedProfile}" browser profile was created by the user, so agents cannot delete it. Ask the user if it should be removed.`;
+			case 'inUse':
+				return `The "${requestedProfile}" browser profile still has tabs open that are not yours (the user or another terminal pane is using it), so it was not deleted.`;
+			case 'notAgentTab':
+				return 'Only tabs you opened (with open_browser_tab or open_browser_profile) can be switched to another profile, and the given tab (or the page currently shared with this terminal pane) is not one of them. Call list_browser_tabs to see your tabs.';
+			case 'switchFailed':
+				return 'PARA_BROWSER_RETRYABLE: Para Code could not reopen the tab in that profile. Retry once.';
+		}
+	}
+
 	/** renderer が返した `open_browser_profile` の失敗理由を英語メッセージへ翻訳する。 */
 	private _openProfileFailureMessage(reason: ParadisOpenProfileFailure, requestedProfile: string): string {
 		switch (reason) {
@@ -3126,6 +3239,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				return 'The space this terminal pane belongs to can no longer be opened in Para Code (its repository or worktree is gone from the list), so there is nowhere to open the page.';
 			case 'openFailed':
 				return `PARA_BROWSER_RETRYABLE: Para Code found the "${requestedProfile}" browser profile but could not open a page in it. Retry once; if it keeps failing, ask the user to open the profile from the profile pill next to the browser address bar.`;
+			case 'limitReached':
+				return this._agentTabFailureMessage('limitReached');
 		}
 	}
 
