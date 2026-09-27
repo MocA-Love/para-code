@@ -10,7 +10,8 @@
 // terminalInstanceService.ts の createInstance()（全ターミナル生成経路のチョークポイント）から
 // PARA-PATCH 1行で呼ばれ、PTY起動前の IShellLaunchConfig.env にトークンとポートファイルパスを注入する。
 // ウィンドウリロード時の永続ターミナル再接続では、PTYと共にreviveされる
-// shellIntegrationNonceから同じトークンを復元する。
+// shellIntegrationNonceから同じトークンを復元する。再接続に失敗して新しいシェルを起こし直す
+// 経路でも同じトークンのenvが付くよう、再接続時も env を用意しておく。
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, IDisposable } from '../../../../base/common/lifecycle.js';
@@ -59,8 +60,8 @@ export interface IParadisPaneTokenService {
 
 	/**
 	 * PTY起動前の {@link IShellLaunchConfig} にペイントークン等のenvを注入する。
-	 * `attachPersistentProcess`（永続ターミナル再接続）の場合は元のPTY環境を保持するため
-	 * envを変更せず、インスタンス生成後にrevive済みnonceから対応を復元する。
+	 * `attachPersistentProcess`（永続ターミナル再接続）の場合も、繋ぎに失敗して新しいシェルを
+	 * 起こし直す経路に備えて同じトークンのenvを入れておく（繋げたときは使われない）。
 	 */
 	prepareShellLaunchConfig(shellLaunchConfig: IShellLaunchConfig): void;
 }
@@ -121,22 +122,27 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 	}
 
 	prepareShellLaunchConfig(shellLaunchConfig: IShellLaunchConfig): void {
-		if (shellLaunchConfig.attachPersistentProcess) {
-			// 再接続: プロセスは生きていて元のenvを保持しているため注入しない。
-			return;
-		}
-
 		const portFilePath = this._getPortFilePath();
 		if (!portFilePath) {
 			// デスクトップ以外（userDataPathが無いWeb workbench等）では本機能は無効。
 			return;
 		}
 
-		const nonce = shellLaunchConfig.shellIntegrationNonce;
+		const attachTarget = shellLaunchConfig.attachPersistentProcess;
+		// 再接続でも env は入れておく。繋げたときはプロセスが元の env を持っているので使われないが、
+		// 繋げなかったとき（アプリ終了時に一度も入力されずバッファが保存されなかったターミナル、
+		// pty host に同じ id が無い等）は terminalProcessManager がこの shellLaunchConfig のまま
+		// 新しいシェルを起こす。ここで入れておかないと、そのシェルだけペイントークンを持たず、
+		// hook・通知・ブラウザ共有が効かない。
+		// nonce とトークンは _handleInstanceCreated が登録するものと同じ決め方にする
+		// （TerminalInstance は shellIntegrationNonce が無ければ attach 先の nonce を引き継ぐ）。
+		const nonce = shellLaunchConfig.shellIntegrationNonce ?? attachTarget?.shellIntegrationNonce;
 		if (nonce === undefined || nonce.length === 0) {
 			return;
 		}
-		const token = paneTokenFromShellIntegrationNonce(nonce);
+		const token = attachTarget
+			? restoredPaneToken(nonce, attachTarget.paradisPaneToken)
+			: paneTokenFromShellIntegrationNonce(nonce);
 		// CDP URLは動的ポート確定前に固定注入せず、ユーザーが指定済みならその値を保持する。
 		shellLaunchConfig.env = paradisCreateTerminalPaneEnvironment(shellLaunchConfig.env, token, portFilePath, this._getCodexRuntime(token));
 	}
