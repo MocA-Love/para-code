@@ -20,23 +20,17 @@ import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradis
 type TerminalLike = Pick<ITerminalInstance, 'capabilities' | 'xterm'>;
 
 /**
- * 前面でエージェントが動いているか。シェル統合があれば前面のコマンドで判断する。
- * シェル統合が無いターミナル（接続先や統合の無いシェル）では、hook が届いたことがあるかで代える。
+ * 前面でエージェントが動いているか。シェル統合の「実行中のコマンド」で判断する。
+ * シェル統合が無いターミナルでは確かめようがないので、素のシェルとして扱う（安全側）。
+ * hook が届いたことがあるかで代えると、エージェントが終わった後のシェルもエージェント扱いになり、
+ * 偽の hook でも立てられてしまう。
  */
-export function paradisTerminalRunsAgent(instance: TerminalLike, hookEverFired: boolean): boolean {
-	const detection = instance.capabilities.get(TerminalCapability.CommandDetection);
-	if (detection === undefined) {
-		return hookEverFired;
-	}
-	const executing = detection.executingCommand;
+export function paradisTerminalRunsAgent(instance: TerminalLike): boolean {
+	const executing = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
 	return executing !== undefined && paradisInteractiveAgentCommand(executing) !== undefined;
 }
 
 /** 複数行をそのまま貼り付けてよいか（行ごとに実行される心配が無いか）。 */
 export function paradisCanPasteMultiline(instance: TerminalLike): boolean {
-	const detection = instance.capabilities.get(TerminalCapability.CommandDetection);
-	const executing = detection?.executingCommand;
-	return instance.xterm?.raw.modes.bracketedPasteMode === true
-		&& executing !== undefined
-		&& paradisInteractiveAgentCommand(executing) !== undefined;
+	return instance.xterm?.raw.modes.bracketedPasteMode === true && paradisTerminalRunsAgent(instance);
 }

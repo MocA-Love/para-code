@@ -15,7 +15,7 @@
 //  - 置き場所の `skills/` `para-code/` と `SKILL.md` のどれかがシンボリックリンク（またはファイルでない）なら
 //    触らない（dotfiles で管理しているスキルをリンクの先まで書き換えないため）
 
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import { dirname, isAbsolute, join } from '../../../../base/common/path.js';
@@ -133,9 +133,28 @@ export async function paradisInstallAgentIdeSkills(
 				}
 			}
 			await fs.mkdir(dirname(target.path), { recursive: true });
-			// 無いはずのファイルは排他作成にする（確かめた後に別のものが置かれていたら上書きしない）
-			await fs.writeFile(target.path, content, { encoding: 'utf8', mode: 0o644, flag: inspected.state === 'missing' ? 'wx' : 'w' });
-			results.push({ ...target, outcome: inspected.state === 'missing' ? 'installed' : 'overwritten' });
+			if (inspected.state === 'missing') {
+				// 無いはずのファイルは排他作成にする（確かめた後に別のものが置かれていたら上書きしない）
+				await fs.writeFile(target.path, content, { encoding: 'utf8', mode: 0o644, flag: 'wx' });
+				results.push({ ...target, outcome: 'installed' });
+				continue;
+			}
+			// 上書きは同じフォルダの一時ファイルへ書いてから rename で差し替える。その場へ `w` で書くと、
+			// 確かめた後に SKILL.md がシンボリックリンクへ差し替えられていた場合にリンクの先へ書いてしまう
+			// （rename はリンクそのものを置き換え、先はたどらない）
+			const temporary = join(dirname(target.path), `.SKILL.md.paradis-${randomUUID()}.tmp`);
+			try {
+				await fs.writeFile(temporary, content, { encoding: 'utf8', mode: 0o644, flag: 'wx' });
+				const recheck = await inspectPath(target.path, content);
+				if (recheck.state !== 'different' || recheck.fingerprint !== inspected.fingerprint) {
+					results.push({ ...target, outcome: 'skipped', detail: 'the file changed after it was checked' });
+					continue;
+				}
+				await fs.rename(temporary, target.path);
+			} finally {
+				await fs.rm(temporary, { force: true });
+			}
+			results.push({ ...target, outcome: 'overwritten' });
 		} catch (error) {
 			results.push({ ...target, outcome: 'failed', detail: error instanceof Error ? error.message : String(error) });
 		}
