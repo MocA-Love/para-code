@@ -1619,6 +1619,12 @@ class TranscriptTailer {
 	private lastApprovalKey: string | undefined;
 	private pendingApproval: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }> | undefined;
 	private approvalSeq = 0;
+	/**
+	 * デスクトップのチャット表示のためだけに入れた承認の id。ペインの状態（許可待ちの表示）へは
+	 * 反映しない（hasPendingApproval）。モバイル向けの注入が動いていない構成で、ペインの状態表示を
+	 * 以前と変えないため（tool_use_id の無い承認は合成 id になり、ターン終了まで解けない）。
+	 */
+	private desktopOnlyApprovalId: string | undefined;
 
 	/**
 	 * PermissionRequest hook で受けた承認要求の内容（ツール名・コマンド等）を表示カードとして
@@ -1626,7 +1632,7 @@ class TranscriptTailer {
 	 * transcript に現れないため、hook が唯一のライブな供給源。モバイル側はこのメッセージの
 	 * 内容を承認バー（許可/拒否）に添えて表示する。
 	 */
-	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string): void {
+	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string, desktopOnly = false): void {
 		this.enqueue(async () => {
 			// ここで pendingQuestions を見て注入自体を捨ててはいけない。PermissionRequest hook は
 			// 1プロンプトにつき1回しか来ないため、落とすと承認要求が永久に復元されない。
@@ -1644,6 +1650,7 @@ class TranscriptTailer {
 			}
 			const interactionId = toolUseId ?? `approval:${this.epoch}:${this.approvalSeq++}`;
 			this.lastApprovalKey = key;
+			this.desktopOnlyApprovalId = desktopOnly ? interactionId : undefined;
 			this.pendingApproval = {
 				kind: 'approval', id: interactionId, title: '操作の許可', detail: truncateText(text, TOOL_TEXT_LIMIT),
 				choices: [
@@ -1751,7 +1758,7 @@ class TranscriptTailer {
 	 * 「承認が存在するか」という事実が必要な箇所（ペイン状態の補正など）はこちらを使う。
 	 */
 	hasPendingApproval(): boolean {
-		return this.pendingApproval !== undefined;
+		return this.pendingApproval !== undefined && this.pendingApproval.id !== this.desktopOnlyApprovalId;
 	}
 
 	/**
@@ -2189,6 +2196,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService));
 		this._register(toDisposable(() => clearTimeout(this.desktopInsightTimer)));
 		this._register(toDisposable(() => clearTimeout(this.desktopChatTimer)));
+		this._register(toDisposable(() => {
+			for (const timer of this.desktopClaimTimers) {
+				clearTimeout(timer);
+			}
+			this.desktopClaimTimers.clear();
+		}));
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
 		void this.loadPersistedSessions();
 		this._register(onParadisAgentNestedHookEvent(event => this.onNestedHookEvent(event)));
@@ -4155,7 +4168,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 		}
 		const current = found === undefined ? tailer.currentInteraction() : null;
-		if (current?.kind === 'approval') {
+		// デスクトップのチャット表示のためだけに入れた承認（hasPendingApproval が数えないもの）は、
+		// ここでも数えない。以前どおり hook から覚えた内容（desktopInteractions）だけで決める。
+		if (current?.kind === 'approval' && tailer.hasPendingApproval()) {
 			const text = [current.title, current.detail].filter((part): part is string => part !== undefined && part.length > 0).join(': ');
 			if (text.length > 0) {
 				found = { kind: 'permission', text: paradisOneLine(text, 200) };
@@ -4419,6 +4434,52 @@ export class ParadisMobileAgentChat extends Disposable {
 		} finally {
 			this.releaseInteractionClaim(interactionKey, claim);
 		}
+	}
+
+	/** デスクトップのチャット表示が打鍵で答えている interaction の claim（`token\0kind\0id` → claim）。 */
+	private readonly desktopInteractionClaims = new Map<string, { readonly key: string; readonly claim: string }>();
+	private readonly desktopClaimTimers = new Set<ReturnType<typeof setTimeout>>();
+	private desktopClaimSeq = 0;
+
+	/**
+	 * デスクトップのチャット表示が質問・承認へ打鍵で答える前に、モバイルと同じ claim を取る。
+	 * 取れなければ（モバイルやこの画面からの回答が反映待ち）false。
+	 */
+	claimDesktopInteraction(token: string, kind: 'question' | 'approval', id: string): boolean {
+		const tailer = this.tailers.get(token);
+		if (tailer === undefined || !tailer.hasPendingInteraction({ kind, id })) {
+			return false;
+		}
+		const key = `${token}\0${tailer.epoch}\0${kind}\0${id}`;
+		if (this.interactionClaims.has(key)) {
+			return false;
+		}
+		const claim = `desktop\0${++this.desktopClaimSeq}`;
+		this.interactionClaims.set(key, claim);
+		this.desktopInteractionClaims.set(`${token}\0${kind}\0${id}`, { key, claim });
+		return true;
+	}
+
+	/**
+	 * claim を返す。送り終えた回答は、TUI が消費して interaction が消えるまで同じものへの回答を
+	 * 受け付けない（モバイルの completedActions と同じ 60 秒。質問の決着・ターン終了ではその場で解ける）。
+	 */
+	releaseDesktopInteraction(token: string, kind: 'question' | 'approval', id: string, sent: boolean): void {
+		const entryKey = `${token}\0${kind}\0${id}`;
+		const entry = this.desktopInteractionClaims.get(entryKey);
+		if (entry === undefined) {
+			return;
+		}
+		this.desktopInteractionClaims.delete(entryKey);
+		if (!sent) {
+			this.releaseInteractionClaim(entry.key, entry.claim);
+			return;
+		}
+		const timer = setTimeout(() => {
+			this.desktopClaimTimers.delete(timer);
+			this.releaseInteractionClaim(entry.key, entry.claim);
+		}, 60_000);
+		this.desktopClaimTimers.add(timer);
 	}
 
 	/** 見られているペインの指紋を比べ、変わったものだけを知らせる。 */
@@ -5149,7 +5210,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& !getParadisAgentPaneActivity(event.token).pendingQuestion
 			&& (event.toolName !== undefined || event.toolInput !== undefined)
 			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
-			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, event.toolUseId);
+			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
+			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, event.toolUseId, !mobileWants);
 		}
 		const forceApprovalClear = event.event === 'PermissionDenied';
 		const matchingApprovalClear = (event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined;
