@@ -36,6 +36,7 @@ suite('ParadisAgentIdeToolProvider', () => {
 
 	function setup(options: { actionsEnabled?: boolean; shellCommands?: boolean; caller?: ParadisMcpCallerKind } = {}) {
 		const statuses = new Map<string, IParadisMcpPaneAgentStatus>();
+		const marks = new Map<string, 'pending' | 'unverifiable'>();
 		const hookTokens = new Set<string>([TARGET]);
 		const calls: ParadisAgentIdeRequest[] = [];
 		const state = { screen: '', agent: true, gone: false, launchedAt: undefined as number | undefined };
@@ -58,6 +59,7 @@ suite('ParadisAgentIdeToolProvider', () => {
 				return { ok: true, value: respond(call) as T };
 			},
 			getPaneAgentStatus: token => statuses.get(token),
+			getUnconfirmedRelease: token => marks.get(token),
 			hasAgentHookHistory: token => hookTokens.has(token),
 			classifyCaller: async () => options.caller ?? 'pane',
 		};
@@ -69,7 +71,7 @@ suite('ParadisAgentIdeToolProvider', () => {
 			shellCommands: () => options.shellCommands ?? false,
 		};
 		const provider = new ParadisAgentIdeToolProvider(settings, undefined, clock);
-		return { provider, calls, statuses, hookTokens, state, clock, context };
+		return { provider, calls, statuses, marks, hookTokens, state, clock, context };
 	}
 
 	const ops = (calls: ParadisAgentIdeRequest[]) => calls.map(call => call.op === 'sendKey' ? `sendKey:${call.key}` : call.op);
@@ -114,12 +116,16 @@ suite('ParadisAgentIdeToolProvider', () => {
 	});
 
 	test('Enter is refused after a release that no verified hook confirmed yet', async () => {
-		const { provider, context, statuses } = setup();
-		statuses.set(TARGET, { status: 'review', changedAt: 2, unconfirmedRelease: 'pending' });
+		const { provider, context, statuses, marks } = setup();
+		statuses.set(TARGET, { status: 'review', changedAt: 2 });
+		marks.set(TARGET, 'pending');
 		const pending = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'enter' }, undefined, context));
-		statuses.set(TARGET, { status: 'review', changedAt: 3, unconfirmedRelease: 'unverifiable' });
+		marks.set(TARGET, 'unverifiable');
 		const unverifiable = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'enter' }, undefined, context));
-		assert.deepStrictEqual([pending.isError, unverifiable.isError, unverifiable.body.includes('leaves pressing Enter there to the user')], [true, true, true]);
+		// The viewer acknowledged the review, so the status entry is gone; the mark must still hold.
+		statuses.delete(TARGET);
+		const acknowledged = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'enter' }, undefined, context));
+		assert.deepStrictEqual([pending.isError, unverifiable.isError, unverifiable.body.includes('leaves pressing Enter there to the user'), acknowledged.isError], [true, true, true, true]);
 	});
 
 	test('pasted text that looks like a prompt does not block its own Enter, but a prompt already on screen does', async () => {

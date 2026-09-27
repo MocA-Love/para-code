@@ -224,7 +224,8 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		}
 		const token = target.internal?.paneToken;
 		// transcript から許可待ちが解かれ、まだ確かめた hook が来ていない（追記で偽装できる）
-		const unconfirmedRelease = token !== undefined ? context.getPaneAgentStatus(token)?.unconfirmedRelease : undefined;
+		// 状態の項目（既読や idle で消える）ではなく、印そのものを引く
+		const unconfirmedRelease = token !== undefined ? context.getUnconfirmedRelease(token) : undefined;
 		if (unconfirmedRelease === 'unverifiable') {
 			return UNVERIFIABLE_RELEASE_MESSAGE;
 		}

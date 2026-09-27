@@ -1632,12 +1632,19 @@ export class ParadisAgentBrowserService extends Disposable {
 			callOwningWindow: <T>(request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>> => this._callOwningWindow<T>(ingressLease, request, signal),
 			getPaneAgentStatus: (paneToken: string): IParadisMcpPaneAgentStatus | undefined => {
 				const entry = this._paneStatuses.get(paneToken);
-				const unconfirmedRelease = this._unconfirmedReleaseTokens.has(paneToken)
-					? (this._unconfirmableTokens.has(paneToken) ? 'unverifiable' as const : 'pending' as const)
-					: undefined;
+				const unconfirmedRelease = this._unconfirmedReleaseOf(paneToken);
 				return entry ? { status: entry.status, changedAt: entry.changedAt, ...(unconfirmedRelease !== undefined ? { unconfirmedRelease } : {}) } : undefined;
 			},
+			// 状態の項目は既読（acknowledgePaneStatus）や idle で消えるので、印は状態とは別に引けるようにする
+			getUnconfirmedRelease: (paneToken: string) => this._unconfirmedReleaseOf(paneToken),
 		};
+	}
+
+	private _unconfirmedReleaseOf(paneToken: string): 'pending' | 'unverifiable' | undefined {
+		if (!this._unconfirmedReleaseTokens.has(paneToken)) {
+			return undefined;
+		}
+		return this._unconfirmableTokens.has(paneToken) ? 'unverifiable' : 'pending';
 	}
 
 	/**
