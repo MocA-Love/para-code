@@ -45,6 +45,28 @@ const INSTALL_SCRIPT = `(function () {
 		delete g.__paradisDesign;
 	}
 
+	// 使う組み込み関数は、読み込んだ直後に退避してから使う。この world の中で後から Promise や
+	// addEventListener を差し替えられても、それ以降の選択には効かない（読み込む前に差し替えられて
+	// いた場合は防げない。根本は CDP フィルタ側で world を隠すこと）
+	var NativePromise = Promise;
+	var NativeSet = Set;
+	var addListener = EventTarget.prototype.addEventListener;
+	var removeListener = EventTarget.prototype.removeEventListener;
+	var nativeElementFromPoint = Document.prototype.elementFromPoint;
+	var nativeCreateRange = Document.prototype.createRange;
+	var nativeRangeRects = Range.prototype.getClientRects;
+	var nativeSelectNodeContents = Range.prototype.selectNodeContents;
+	var nativeGetRect = Element.prototype.getBoundingClientRect;
+	var nativeGetClientRects = Element.prototype.getClientRects;
+	var nativeGetComputedStyle = g.getComputedStyle;
+	var nativeRequestAnimationFrame = g.requestAnimationFrame;
+	function on(target, type, listener, options) { addListener.call(target, type, listener, options); }
+	function off(target, type, listener, options) { removeListener.call(target, type, listener, options); }
+	function styleOf(el) { return nativeGetComputedStyle.call(g, el); }
+	function rectOf(el) { return nativeGetRect.call(el); }
+	function hitAt(x, y) { return nativeElementFromPoint.call(document, x, y); }
+	function nextFrame(callback) { return nativeRequestAnimationFrame.call(g, callback); }
+
 	var TEXT_MAX = 200;
 	var NEARBY_MAX = 6;
 	var HTML_MAX = 4096;
@@ -52,7 +74,11 @@ const INSTALL_SCRIPT = `(function () {
 	var PATH_MAX = 900;
 	var TEXT_NODE_SCAN_LIMIT = 80;
 	var ACCENT = '#005fb8';
-	var SAFE_ATTRS = new Set(['id', 'class', 'name', 'type', 'role', 'href', 'src', 'alt', 'title', 'placeholder', 'for', 'action', 'method']);
+	// 画面に出ない文字（title・alt・aria-*）は送らない。ページが見えない指示を置ける場所なので
+	var SAFE_ATTRS = new NativeSet(['id', 'class', 'name', 'type', 'role', 'href', 'src', 'placeholder', 'for', 'action', 'method']);
+	// 見えないとみなす境目。ちょうど 0 だけを見ると、0.01 のような「ほぼ透明」がすり抜ける
+	var MIN_ALPHA = 0.1;
+	var MIN_FONT_PX = 6;
 	var SECRET = ['access_token', 'auth_token', 'api_key', 'apikey', 'client_secret', 'oauth_state', 'x-amz-', 'session_id', 'sessionid', 'csrf', 'secret', 'password', 'passwd'];
 	var STYLE_PROPS = ['display', 'position', 'width', 'height', 'margin', 'padding', 'color', 'background-color', 'border', 'border-radius', 'font-family', 'font-size', 'font-weight', 'line-height', 'text-align', 'z-index'];
 
@@ -82,36 +108,92 @@ const INSTALL_SCRIPT = `(function () {
 	function normalizeSpaces(text) {
 		return String(text || '').split(/\\s+/).join(' ').trim();
 	}
-	function alphaOf(color) {
-		var match = /rgba?[(]([^)]*)[)]/.exec(color || '');
-		if (!match) { return color === 'transparent' ? 0 : 1; }
-		var parts = match[1].split(/[ ,/]+/).filter(function (part) { return part.length > 0; });
-		return parts.length >= 4 ? parseFloat(parts[3]) : 1;
+	function colorOf(value) {
+		if (!value || value === 'transparent') { return value === 'transparent' ? [0, 0, 0, 0] : undefined; }
+		var match = /rgba?[(]([^)]*)[)]/.exec(value);
+		if (!match) { return undefined; }
+		var parts = match[1].split(/[ ,/]+/).filter(function (part) { return part.length > 0; }).map(parseFloat);
+		return [parts[0] || 0, parts[1] || 0, parts[2] || 0, parts.length >= 4 ? parts[3] : 1];
+	}
+	function clipsAway(style) {
+		if (style.clipPath && style.clipPath !== 'none' && /inset[(]\\s*(4[5-9]|50)%|circle[(]\\s*0|polygon[(]\\s*0[^,]*,\\s*0[^,]*,\\s*0/.test(style.clipPath)) { return true; }
+		var clip = /rect[(]([^)]*)[)]/.exec(style.clip || '');
+		if (clip) {
+			var edges = clip[1].split(/[ ,]+/).map(parseFloat);
+			if (edges.length === 4 && Math.abs(edges[1] - edges[3]) <= 2 && Math.abs(edges[2] - edges[0]) <= 2) { return true; }
+		}
+		return false;
+	}
+	/**
+	 * 祖先の overflow / clip / clip-path で切り抜かれて、ほとんど見えていないか。overflow で切り抜く
+	 * のは包含ブロックの並びにある祖先だけ（absolute は位置指定のある祖先まで飛ばし、fixed は
+	 * どれにも切り抜かれない）。body と html の overflow は画面全体へ移るので見ない。
+	 */
+	function isClippedByAncestor(el, rect) {
+		var mode = styleOf(el).position;
+		var depth = 0;
+		for (var current = el.parentElement; current && current !== document.documentElement && current !== document.body && depth < 40; current = current.parentElement, depth++) {
+			var style = styleOf(current);
+			if (clipsAway(style)) { return true; }
+			var inChain = mode !== 'fixed' && !(mode === 'absolute' && style.position === 'static');
+			if (inChain && (style.overflowX !== 'visible' || style.overflowY !== 'visible' || /paint|strict|content/.test(style.contain || ''))) {
+				var box = rectOf(current);
+				var width = Math.min(rect.right, box.right) - Math.max(rect.left, box.left);
+				var height = Math.min(rect.bottom, box.bottom) - Math.max(rect.top, box.top);
+				if (box.width <= 2 || box.height <= 2 || width < 2 || height < 2) { return true; }
+			}
+			if (inChain) { mode = style.position; }
+		}
+		return false;
+	}
+	/** 文字の後ろにある背景色（不透明に近い最初の祖先の背景。無ければ白）。 */
+	function backgroundOf(el) {
+		var depth = 0;
+		for (var current = el; current && depth < 40; current = current.parentElement, depth++) {
+			var style = styleOf(current);
+			if (style.backgroundImage && style.backgroundImage !== 'none') { return undefined; }
+			var color = colorOf(style.backgroundColor);
+			if (color && color[3] >= 0.9) { return color; }
+		}
+		return [255, 255, 255, 1];
+	}
+	function effectiveOpacity(el) {
+		var opacity = 1;
+		var depth = 0;
+		for (var current = el; current && depth < 40; current = current.parentElement, depth++) {
+			var value = parseFloat(styleOf(current).opacity);
+			opacity *= isNaN(value) ? 1 : value;
+		}
+		return opacity;
 	}
 	var hiddenCache = null;
+	/** 要素そのものが見えていないか（ページが見えない指示を隠す手口を、分かる範囲で拾う）。 */
 	function isHidden(el) {
 		if (!el || el.nodeType !== 1) { return false; }
 		if (hiddenCache && hiddenCache.has(el)) { return hiddenCache.get(el); }
 		var hidden = false;
 		try {
+			var style = styleOf(el);
+			var rect = rectOf(el);
+			var textColor = colorOf(style.getPropertyValue('-webkit-text-fill-color')) || colorOf(style.color);
+			var background = backgroundOf(el);
 			if (el.closest('[aria-hidden="true"], [hidden], [inert]')) {
 				hidden = true;
 			} else if (typeof el.checkVisibility === 'function' && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true })) {
 				hidden = true;
-			} else {
-				var style = getComputedStyle(el);
-				var rect = el.getBoundingClientRect();
-				if (parseFloat(style.fontSize) < 2 || alphaOf(style.color) === 0) {
-					hidden = true;
-				} else if (el.getClientRects().length === 0 || rect.width <= 1 || rect.height <= 1) {
-					hidden = true;
-				} else if (rect.right + scrollX <= 0 || rect.bottom + scrollY <= 0) {
-					hidden = true;
-				} else if (style.clipPath && style.clipPath !== 'none' && /inset[(]50%|circle[(]0/.test(style.clipPath)) {
-					hidden = true;
-				} else if (style.clip && /rect[(]0(px)?[ ,]+0(px)?[ ,]+0(px)?[ ,]+0(px)?[)]/.test(style.clip)) {
-					hidden = true;
-				}
+			} else if (parseFloat(style.fontSize) < MIN_FONT_PX || (textColor && textColor[3] < MIN_ALPHA) || effectiveOpacity(el) < MIN_ALPHA) {
+				hidden = true;
+			} else if (textColor && background && Math.abs(textColor[0] - background[0]) + Math.abs(textColor[1] - background[1]) + Math.abs(textColor[2] - background[2]) < 30) {
+				// 背景と同じ色の文字
+				hidden = true;
+			} else if (nativeGetClientRects.call(el).length === 0 || rect.width <= 1 || rect.height <= 1) {
+				hidden = true;
+			} else if (style.position === 'fixed' && (rect.right <= 0 || rect.bottom <= 0 || rect.left >= innerWidth || rect.top >= innerHeight)) {
+				hidden = true;
+			} else if (rect.right + scrollX <= 0 || rect.bottom + scrollY <= 0 || rect.left + scrollX >= document.documentElement.scrollWidth || rect.top + scrollY >= document.documentElement.scrollHeight) {
+				hidden = true;
+			} else if (clipsAway(style) || isClippedByAncestor(el, rect)) {
+				hidden = true;
 			}
 		} catch (e) {
 			hidden = true;
@@ -119,12 +201,37 @@ const INSTALL_SCRIPT = `(function () {
 		if (hiddenCache) { hiddenCache.set(el, hidden); }
 		return hidden;
 	}
+	/**
+	 * テキストノードが画面上で本当に見えているか。文字の実際の位置（text-indent で追い出した
+	 * 場合も含む）を取り、その真ん中の点で一番手前にある要素がその文字の要素か確かめる。ほかの
+	 * 要素で覆われた文字・切り抜かれた文字・画面の外の文字はここで落ちる。画面の外にあるだけの
+	 * 普通の文字も落ちるが、取りこぼす方を選ぶ。
+	 */
+	function isTextVisible(node) {
+		var parent = node.parentElement;
+		if (!parent || isHidden(parent)) { return false; }
+		var range = nativeCreateRange.call(document);
+		nativeSelectNodeContents.call(range, node);
+		var rects = nativeRangeRects.call(range);
+		var pointerEventsNone = styleOf(parent).pointerEvents === 'none';
+		for (var i = 0; i < rects.length && i < 4; i++) {
+			var rect = rects[i];
+			if (rect.width < 1 || rect.height < 1) { continue; }
+			var x = rect.left + rect.width / 2;
+			var y = rect.top + rect.height / 2;
+			if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) { continue; }
+			var hit = hitAt(x, y);
+			if (hit && (hit === parent || parent.contains(hit) || (pointerEventsNone && hit.contains(parent)))) { return true; }
+		}
+		return false;
+	}
 	function boundedText(el, max) {
 		try {
 			if (isHidden(el)) { return ''; }
 			var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
 				acceptNode: function (node) {
-					return isHidden(node.parentElement) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+					if (!(node.nodeValue || '').trim()) { return NodeFilter.FILTER_SKIP; }
+					return isTextVisible(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
 				}
 			});
 			var parts = [];
@@ -153,15 +260,21 @@ const INSTALL_SCRIPT = `(function () {
 		if (!el.classList) { return result; }
 		for (var i = 0; i < el.classList.length && result.length < maxCount; i++) {
 			var name = el.classList[i];
-			if (!name || name.length > 60 || containsSecret(name)) { continue; }
+			// クラス名は識別子らしいものだけ（文章を詰め込んだ名前はセレクタに使わない）
+			if (!name || !/^[A-Za-z_-][A-Za-z0-9_-]{0,59}$/.test(name) || containsSecret(name)) { continue; }
 			if (/^css-[a-z0-9]+$/i.test(name) || looksHashy(name)) { continue; }
 			result.push(name);
 		}
 		return result;
 	}
+	/** id は識別子らしい短いものだけ使う（id は画面に出ないので、文章を詰め込めてしまう）。 */
+	function usableId(el) {
+		var id = el.id;
+		return id && /^[A-Za-z][A-Za-z0-9_:.-]{0,39}$/.test(id) && !containsSecret(id) ? id : '';
+	}
 	function selectorPart(el) {
 		var tag = el.tagName.toLowerCase();
-		if (el.id && !containsSecret(el.id)) { return tag + '#' + CSS.escape(el.id); }
+		if (usableId(el)) { return tag + '#' + CSS.escape(usableId(el)); }
 		var classes = stableClasses(el, 2);
 		if (classes.length) { return tag + classes.map(function (name) { return '.' + CSS.escape(name); }).join(''); }
 		return tag;
@@ -205,15 +318,12 @@ const INSTALL_SCRIPT = `(function () {
 		while (current && current !== document.documentElement && current !== document.body && parts.length < 6) {
 			var tag = current.tagName.toLowerCase();
 			var label = tag;
-			var aria = current.getAttribute('aria-label');
 			var role = current.getAttribute('role');
 			var classes = stableClasses(current, 1);
-			if (current.id && !containsSecret(current.id)) {
-				label = '#' + CSS.escape(current.id);
-			} else if (aria && !containsSecret(aria)) {
-				label = tag + '[aria-label="' + clamp(aria, 40).split('"').join("'") + '"]';
-			} else if (role) {
-				label = tag + '[role="' + clamp(role, 30).split('"').join("'") + '"]';
+			if (usableId(current)) {
+				label = '#' + CSS.escape(usableId(current));
+			} else if (role && /^[a-z-]{1,30}$/.test(role)) {
+				label = tag + '[role="' + role + '"]';
 			} else if (classes.length) {
 				label = '.' + CSS.escape(classes[0]);
 			}
@@ -224,6 +334,18 @@ const INSTALL_SCRIPT = `(function () {
 	}
 	function htmlSnippet(el) {
 		var clone = el.cloneNode(true);
+		// 見えない文字も消す（元と複製のテキストノードは同じ並び。要素を消す前に行う）
+		var originalTexts = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+		var copiedTexts = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
+		var hiddenTexts = [];
+		var originalText = originalTexts.nextNode();
+		var copiedText = copiedTexts.nextNode();
+		while (originalText && copiedText && hiddenTexts.length < 4000) {
+			if ((originalText.nodeValue || '').trim() && !isTextVisible(originalText)) { hiddenTexts.push(copiedText); }
+			originalText = originalTexts.nextNode();
+			copiedText = copiedTexts.nextNode();
+		}
+		for (var t = 0; t < hiddenTexts.length; t++) { hiddenTexts[t].nodeValue = ''; }
 		// 見えない要素を取り除く。複製と元は同じ並びなので、元で判定して同じ位置の複製を消す
 		var originals = Array.prototype.slice.call(el.querySelectorAll('*'), 0, 2000);
 		var copies = Array.prototype.slice.call(clone.querySelectorAll('*'), 0, 2000);
@@ -250,7 +372,8 @@ const INSTALL_SCRIPT = `(function () {
 			var attrs = Array.prototype.slice.call(node.attributes);
 			for (var k = 0; k < attrs.length; k++) {
 				var name = attrs[k].name.toLowerCase();
-				if (name.indexOf('on') === 0) {
+				// 画面に出ない文字を運べる属性（title・alt・aria-*・data-*・value 等）とイベント属性は落とす
+				if (!SAFE_ATTRS.has(name) || (name === 'id' && !usableId(node))) {
 					node.removeAttribute(attrs[k].name);
 				} else if (containsSecret(attrs[k].value)) {
 					node.setAttribute(attrs[k].name, '[redacted]');
@@ -264,7 +387,7 @@ const INSTALL_SCRIPT = `(function () {
 		for (var i = 0; i < el.attributes.length && i < 40; i++) {
 			var attr = el.attributes[i];
 			var name = attr.name.toLowerCase();
-			if (!SAFE_ATTRS.has(name) && name.indexOf('aria-') !== 0) { continue; }
+			if (!SAFE_ATTRS.has(name) || (name === 'id' && !usableId(el))) { continue; }
 			if (containsSecret(attr.value)) {
 				result[name] = '[redacted]';
 			} else if (name === 'href' || name === 'src' || name === 'action') {
@@ -275,26 +398,16 @@ const INSTALL_SCRIPT = `(function () {
 		}
 		return result;
 	}
+	/**
+	 * 名前は画面に見えている文字からだけ作る。aria-label・title・alt は画面に出ないので、ページが
+	 * 見えない指示を置ける。
+	 */
 	function accessibleName(el) {
-		if (isHidden(el)) { return ''; }
-		var label = el.getAttribute('aria-label');
-		if (label) { return clamp(label, 200); }
-		var labelledBy = el.getAttribute('aria-labelledby');
-		if (labelledBy) {
-			var names = [];
-			var ids = labelledBy.split(' ').slice(0, 8);
-			for (var i = 0; i < ids.length; i++) {
-				var ref = ids[i] ? document.getElementById(ids[i]) : null;
-				if (ref) { names.push(boundedText(ref, 100)); }
-			}
-			if (names.length) { return clamp(names.join(' '), 200); }
-		}
 		var tag = el.tagName.toLowerCase();
-		if (tag === 'button' || tag === 'a' || tag === 'label') { return boundedText(el, 100); }
-		return clamp(el.getAttribute('title') || el.getAttribute('alt') || '', 200);
+		return tag === 'button' || tag === 'a' || tag === 'label' ? boundedText(el, 100) : '';
 	}
 	function computedStyles(el) {
-		var style = getComputedStyle(el);
+		var style = styleOf(el);
 		var result = {};
 		for (var i = 0; i < STYLE_PROPS.length; i++) {
 			result[STYLE_PROPS[i]] = style.getPropertyValue(STYLE_PROPS[i]) || '';
@@ -332,7 +445,7 @@ const INSTALL_SCRIPT = `(function () {
 		}
 	}
 	function extractUncached(el) {
-		var rect = el.getBoundingClientRect();
+		var rect = rectOf(el);
 		return {
 			url: sanitizeUrl(location.href),
 			title: clamp(document.title || '', 300),
@@ -362,16 +475,16 @@ const INSTALL_SCRIPT = `(function () {
 		var current = pick;
 		if (!current) { return; }
 		pick = null;
-		removeEventListener('keydown', current.onKeyDown, true);
-		removeEventListener('scroll', current.onViewportChange, { capture: true });
-		removeEventListener('resize', current.onViewportChange);
+		off(g, 'keydown', current.onKeyDown, true);
+		off(g, 'scroll', current.onViewportChange, { capture: true });
+		off(g, 'resize', current.onViewportChange);
 		try { current.host.remove(); } catch (e) { }
 		result.nonce = current.nonce;
 		current.resolve(result);
 	}
 	function startPick(nonce) {
 		if (pick) { finishPick({ cancelled: true }); }
-		return new Promise(function (resolve) {
+		return new NativePromise(function (resolve) {
 			var host = style(document.createElement('div'), 'position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483647;pointer-events:auto;cursor:crosshair;background:transparent;margin:0;padding:0;border:0;');
 			var shadow = host.attachShadow({ mode: 'closed' });
 			var box = style(document.createElement('div'), 'position:fixed;display:none;pointer-events:none;border:2px solid ' + ACCENT + ';border-radius:3px;background:rgba(0,95,184,0.08);box-shadow:0 0 0 1px rgba(255,255,255,0.8);');
@@ -381,7 +494,7 @@ const INSTALL_SCRIPT = `(function () {
 			var lastPoint = null;
 			function elementAt(x, y) {
 				host.style.pointerEvents = 'none';
-				var el = document.elementFromPoint(x, y);
+				var el = hitAt(x, y);
 				host.style.pointerEvents = 'auto';
 				if (!el || el === document.documentElement || el === document.body || el === host) { return null; }
 				return el;
@@ -392,7 +505,7 @@ const INSTALL_SCRIPT = `(function () {
 					label.style.display = 'none';
 					return;
 				}
-				var rect = el.getBoundingClientRect();
+				var rect = rectOf(el);
 				box.style.left = rect.x + 'px';
 				box.style.top = rect.y + 'px';
 				box.style.width = rect.width + 'px';
@@ -405,7 +518,7 @@ const INSTALL_SCRIPT = `(function () {
 				label.style.top = top + 'px';
 				label.style.display = 'block';
 			}
-			host.addEventListener('mousemove', function (event) {
+			on(host, 'mousemove', function (event) {
 				if (!event.isTrusted) { return; }
 				lastPoint = { x: event.clientX, y: event.clientY };
 				show(elementAt(event.clientX, event.clientY));
@@ -414,25 +527,29 @@ const INSTALL_SCRIPT = `(function () {
 			var frame = 0;
 			var onViewportChange = function () {
 				if (!lastPoint || frame) { return; }
-				frame = requestAnimationFrame(function () {
+				frame = nextFrame(function () {
 					frame = 0;
 					if (pick && lastPoint) { show(elementAt(lastPoint.x, lastPoint.y)); }
 				});
 			};
-			addEventListener('scroll', onViewportChange, { capture: true, passive: true });
-			addEventListener('resize', onViewportChange, { passive: true });
-			host.addEventListener('mousedown', function (event) {
+			on(g, 'scroll', onViewportChange, { capture: true, passive: true });
+			on(g, 'resize', onViewportChange, { passive: true });
+			on(host, 'mousedown', function (event) {
 				event.preventDefault();
 				event.stopPropagation();
 			}, true);
-			host.addEventListener('click', function (event) {
+			on(host, 'click', function (event) {
 				event.preventDefault();
 				event.stopPropagation();
 				if (!event.isTrusted) { return; }
 				// 前回の mousemove の要素ではなく、押した位置の要素を選ぶ（スクロール後の取り違えを防ぐ）
 				var el = elementAt(event.clientX, event.clientY);
 				if (!el) { return; }
-				show(el);
+				// 取り出しは押した瞬間（選択を確定した時点）の DOM から読む。見えているかの判定で
+				// 一番手前の要素を調べるので、その間だけ覆いを当たり判定から外す
+				host.style.pointerEvents = 'none';
+				box.style.display = 'none';
+				label.style.display = 'none';
 				var data;
 				try {
 					data = extract(el);
@@ -443,7 +560,7 @@ const INSTALL_SCRIPT = `(function () {
 				hidePins();
 				finishPick({ element: data });
 			}, true);
-			host.addEventListener('contextmenu', function (event) {
+			on(host, 'contextmenu', function (event) {
 				event.preventDefault();
 				event.stopPropagation();
 				if (event.isTrusted) { finishPick({ cancelled: true }); }
@@ -455,7 +572,7 @@ const INSTALL_SCRIPT = `(function () {
 					finishPick({ cancelled: true });
 				}
 			};
-			addEventListener('keydown', onKeyDown, true);
+			on(g, 'keydown', onKeyDown, true);
 			pick = { host: host, resolve: resolve, onKeyDown: onKeyDown, onViewportChange: onViewportChange, nonce: String(nonce || '') };
 			document.documentElement.appendChild(host);
 		});
@@ -472,12 +589,12 @@ const INSTALL_SCRIPT = `(function () {
 		pinState.host = host;
 		pinState.layer = layer;
 		document.documentElement.appendChild(host);
-		addEventListener('scroll', schedulePins, { capture: true, passive: true });
-		addEventListener('resize', schedulePins, { passive: true });
+		on(g, 'scroll', schedulePins, { capture: true, passive: true });
+		on(g, 'resize', schedulePins, { passive: true });
 	}
 	function schedulePins() {
 		if (pinState.frame) { return; }
-		pinState.frame = requestAnimationFrame(function () {
+		pinState.frame = nextFrame(function () {
 			pinState.frame = 0;
 			layoutPins();
 		});
@@ -492,7 +609,7 @@ const INSTALL_SCRIPT = `(function () {
 			}
 			var x, y;
 			if (el) {
-				var rect = el.getBoundingClientRect();
+				var rect = rectOf(el);
 				x = rect.x;
 				y = rect.y;
 			} else {
@@ -512,8 +629,8 @@ const INSTALL_SCRIPT = `(function () {
 		if (!Array.isArray(list) || list.length === 0) {
 			if (pinState.host) { pinState.host.remove(); }
 			pinState.host = null;
-			removeEventListener('scroll', schedulePins, { capture: true });
-			removeEventListener('resize', schedulePins);
+			off(g, 'scroll', schedulePins, { capture: true });
+			off(g, 'resize', schedulePins);
 			return;
 		}
 		ensurePinHost();

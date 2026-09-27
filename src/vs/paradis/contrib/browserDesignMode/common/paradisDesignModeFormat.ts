@@ -173,8 +173,9 @@ export function paradisFormatDesignAnnotations(annotations: readonly IParadisDes
  * 値が入るので、送る瞬間に TUI が終わっていて貼り付けを解さないシェルへ届いても、行として
  * 実行されないようにする）。`true` はクリップボードへのコピーなど、ターミナルを通らない経路用。
  *
- * フェーズ5の `paradisBuildPresetInsertText`（terminalPresets/common/paradisTerminalPresets.ts）の
- * 写し。統合時に1つへまとめる（NOTES「フェーズ5との統合で行う作業」）。
+ * main にある `paradisBuildPresetInsertText`（terminalPresets/common/paradisTerminalPresets.ts）の
+ * 写し。このブランチの起点にはまだ無いため写してある。統合時に main のものへまとめる（NOTES
+ * 「フェーズ5の処理との統合で行う作業」）。
  */
 export function paradisBuildAgentInsertText(text: string, keepNewlines: boolean): string | undefined {
 	let normalized = text.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f\x80-\x9f]/g, '');
@@ -193,8 +194,8 @@ export const enum ParadisDesignTargetAvailability {
 }
 
 /**
- * エージェントの状態（hook 由来）から、送り先として選べるかを決める。フェーズ5の
- * `paradisAgentPromptAvailability` の写し（統合時に1つへまとめる）。
+ * エージェントの状態（hook 由来）から、送り先として選べるかを決める。main にある
+ * `paradisAgentPromptAvailability` の写し（このブランチの起点には無い。統合時に main のものへまとめる）。
  */
 export function paradisDesignTargetAvailability(status: string | undefined): ParadisDesignTargetAvailability {
 	return status === 'question' || status === 'permission' ? ParadisDesignTargetAvailability.AwaitingAnswer : ParadisDesignTargetAvailability.Ready;
