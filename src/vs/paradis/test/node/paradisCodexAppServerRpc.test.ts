@@ -7,13 +7,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../base/common/path.js';
 import { isWindows } from '../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
 import { NullLogService } from '../../../platform/log/common/log.js';
-import { paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from '../../node/paradisCodexAppServerRpc.js';
+import { ParadisCodexRpcMethodNotFoundError, paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from '../../node/paradisCodexAppServerRpc.js';
 
 // 本物の codex は使わない。改行区切り JSON-RPC を話す小さな偽物を node で動かす。
 (isWindows ? suite.skip : suite)('Paradis Codex app-server RPC', () => {
@@ -56,6 +56,36 @@ rl.on('line', line => {
 			const echoed = await rpc.request('echo', { value: 1 }, 5_000);
 			const failure = await rpc.request('account/rateLimits/read', {}, 5_000).then(() => undefined, error => error);
 			assert.deepStrictEqual({ echoed, auth: paradisIsCodexAuthError(failure) }, { echoed: { value: 1 }, auth: true });
+		} finally {
+			rpc.dispose();
+		}
+	});
+
+	// hook の信頼とモデル一覧が使う指定（CODEX_HOME の上書き・作業ディレクトリ・clientInfo.title）と、
+	// 「メソッドが無い」の見分け。codex 0.155.1 は知らないメソッドに -32600 の「unknown variant」で答える。
+	test('passes the Codex home, working directory and title, and tells a missing method apart', async () => {
+		const command = fakeCodex(`
+const rl = require('readline').createInterface({ input: process.stdin });
+rl.on('line', line => {
+	const message = JSON.parse(line);
+	if (message.id === undefined) { return; }
+	if (message.method === 'initialize') { globalThis.clientInfo = message.params.clientInfo; process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + '\\n'); return; }
+	if (message.method === 'whoami') { process.stdout.write(JSON.stringify({ id: message.id, result: { home: process.env.CODEX_HOME, cwd: process.cwd(), args: process.argv.slice(2), jsonrpc: message.jsonrpc, clientInfo: globalThis.clientInfo } }) + '\\n'); return; }
+	if (message.method === 'old/method') { process.stdout.write(JSON.stringify({ id: message.id, error: { code: -32601, message: 'method not found' } }) + '\\n'); return; }
+	process.stdout.write(JSON.stringify({ id: message.id, error: { code: -32600, message: 'Invalid request: unknown variant \\u0060' + message.method + '\\u0060' } }) + '\\n');
+});
+`);
+		const home = join(root, 'codex-2');
+		const cwd = join(root, 'work');
+		mkdirSync(cwd);
+		const rpc = await paradisStartCodexAppServerRpc(command, { ...process.env, CODEX_HOME: join(root, 'other') }, new NullLogService(), 'test-client', { codexHome: home, cwd, clientTitle: 'Para Code' });
+		try {
+			const whoami = await rpc.request('whoami', {});
+			const failures = await Promise.all(['old/method', 'hooks/list', 'config/read'].map(method => rpc.request(method, {}).then(() => undefined, (error: Error) => error instanceof ParadisCodexRpcMethodNotFoundError ? error.method : 'other')));
+			assert.deepStrictEqual({ whoami, failures }, {
+				whoami: { home, cwd: realpathSync(cwd), args: ['-s', 'read-only', '-a', 'never', 'app-server'], jsonrpc: '2.0', clientInfo: { name: 'test-client', title: 'Para Code', version: '1.0.0' } },
+				failures: ['old/method', 'hooks/list', 'config/read'],
+			});
 		} finally {
 			rpc.dispose();
 		}
