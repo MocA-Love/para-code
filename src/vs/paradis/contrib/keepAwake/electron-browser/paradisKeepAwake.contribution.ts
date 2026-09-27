@@ -8,7 +8,8 @@
 
 import { localize, localize2 } from '../../../../nls.js';
 import Severity from '../../../../base/common/severity.js';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { IntervalTimer } from '../../../../base/common/async.js';
+import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -19,7 +20,7 @@ import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickin
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IPowerService } from '../../../../workbench/services/power/common/powerService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
-import { PARADIS_KEEP_AWAKE_PROMPT_COMMAND, PARADIS_KEEP_AWAKE_SELECT_COMMAND, PARADIS_KEEP_AWAKE_SETTING, ParadisKeepAwakeBlockerMode, ParadisKeepAwakeMode, paradisAgentsActiveAfterSnapshotFailure, paradisAgentsNeedKeepAwake, toParadisKeepAwakeMode } from '../common/paradisKeepAwake.js';
+import { PARADIS_KEEP_AWAKE_PROMPT_COMMAND, PARADIS_KEEP_AWAKE_SELECT_COMMAND, PARADIS_KEEP_AWAKE_SETTING, PARADIS_KEEP_AWAKE_AUTO_SNAPSHOT_STALE_MS, ParadisKeepAwakeBlockerMode, ParadisKeepAwakeMode, paradisAgentsActiveAfterSnapshotFailure, paradisAgentsNeedKeepAwake, toParadisKeepAwakeMode } from '../common/paradisKeepAwake.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { ParadisKeepAwakeController } from '../common/paradisKeepAwakeController.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -42,7 +43,8 @@ const STATUSBAR_ENTRY_ID = 'paradis.power.keepAwake';
  * `auto` モードでは、このウィンドウのペインのエージェント状態（hook / transcript 由来。
  * {@link IParadisAgentStatusSnapshotService} が約2秒ごとに配る）を見て、作業中・許可待ち・質問中の
  * ペインがある間だけ 'system' の blocker を掛ける。スナップショットの取得に失敗した回は直前の判断を保つが、
- * 約60秒続けて取れなければ「動いていない」に倒す。
+ * 約60秒続けて取れなければ「動いていない」に倒す。配る側が失敗すら返さず黙ったままのこともあるので、
+ * この判定はスナップショットの到着とは別に、auto の間だけ60秒ごとのタイマーでも行う。
  */
 export class ParadisKeepAwakeContribution extends Disposable implements IWorkbenchContribution {
 
@@ -102,29 +104,41 @@ export class ParadisKeepAwakeContribution extends Disposable implements IWorkben
 				this.lastSnapshotAt = Date.now();
 				// subscribe は最新のスナップショットをその場で配ることがあるので、コールバックからは
 				// 購読の張り直しを伴わない applyBlocker だけを呼ぶ。
-				this.agentStatusSubscription.value = this.agentStatusSnapshotService.subscribe(outcome => {
-					const now = Date.now();
-					let active: boolean;
+				const store = new DisposableStore();
+				store.add(this.agentStatusSnapshotService.subscribe(outcome => {
 					if (outcome.snapshot) {
+						const now = Date.now();
 						this.lastSnapshotAt = now;
-						active = paradisAgentsNeedKeepAwake(outcome.snapshot.paneStatuses, now);
+						this.setAgentsActive(paradisAgentsNeedKeepAwake(outcome.snapshot.paneStatuses, now));
 					} else {
-						active = paradisAgentsActiveAfterSnapshotFailure(this.agentsActive, this.lastSnapshotAt, now);
-						if (active !== this.agentsActive) {
-							this.logService.info('[paradisKeepAwake] agent status has been unavailable for a while; letting the PC sleep');
-						}
+						this.checkSnapshotStale();
 					}
-					if (active !== this.agentsActive) {
-						this.agentsActive = active;
-						this.applyBlocker();
-					}
-				});
+				}));
+				const staleCheck = store.add(new IntervalTimer());
+				staleCheck.cancelAndSet(() => this.checkSnapshotStale(), PARADIS_KEEP_AWAKE_AUTO_SNAPSHOT_STALE_MS);
+				this.agentStatusSubscription.value = store;
 			}
 		} else {
 			this.agentStatusSubscription.clear();
 			this.agentsActive = false;
 		}
 		this.applyBlocker();
+	}
+
+	/** 最後にスナップショットが取れてから長く経っていれば、「エージェントは動いていない」に倒す。 */
+	private checkSnapshotStale(): void {
+		const active = paradisAgentsActiveAfterSnapshotFailure(this.agentsActive, this.lastSnapshotAt, Date.now());
+		if (active !== this.agentsActive) {
+			this.logService.info('[paradisKeepAwake] agent status has been unavailable for a while; letting the PC sleep');
+		}
+		this.setAgentsActive(active);
+	}
+
+	private setAgentsActive(active: boolean): void {
+		if (active !== this.agentsActive) {
+			this.agentsActive = active;
+			this.applyBlocker();
+		}
 	}
 
 	/** 設定のモードと（auto なら）エージェント状態から、実際に掛ける blocker を決めて反映する。 */
