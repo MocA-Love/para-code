@@ -415,6 +415,8 @@ export function paradisBuildRedirectHeaders(rule: IParadisRequestRule): { name: 
 /** タブに掛かっている上書きの要約。ヘッダの値とパスワードは返さない。 */
 export interface IParadisPageOverridesSummary {
 	readonly extraHeaderNames: readonly string[];
+	/** 追加ヘッダを付ける相手（origin）。 */
+	readonly extraHeaderOrigins?: readonly string[];
 	/** HTTP 認証を答える相手。置いていなければ undefined。 */
 	readonly credentialsOrigin?: string;
 	readonly rules: readonly { readonly urlPattern: string; readonly action: ParadisRequestRuleAction; readonly matched: number }[];
@@ -422,12 +424,87 @@ export interface IParadisPageOverridesSummary {
 
 // --- electron-main への要求 ----------------------------------------------------------------------
 
+/** 追加ヘッダの上限の相手の数。 */
+export const PARADIS_PAGE_OPS_MAX_HEADER_ORIGINS = 10;
+
+/**
+ * 追加ヘッダと、それを付ける相手。`origins` が空なら、electron-main が掛けた時点のトップフレームの
+ * origin だけにする（ページが読み込む第三者のホストへ出さないため）。
+ */
+export interface IParadisExtraHeaders {
+	readonly headers: Readonly<Record<string, string>>;
+	readonly origins: readonly string[];
+}
+
+/** 追加ヘッダを付ける相手の一覧を検証して origin に揃える（http / https のみ）。 */
+export function paradisParseHeaderOrigins(value: unknown): ParadisPageOpsParseResult<readonly string[]> {
+	if (value === undefined) {
+		return ok(Object.freeze([]));
+	}
+	if (!Array.isArray(value) || value.length > PARADIS_PAGE_OPS_MAX_HEADER_ORIGINS) {
+		return fail(`"origins" must be an array of at most ${PARADIS_PAGE_OPS_MAX_HEADER_ORIGINS} origins such as "https://staging.example.com".`);
+	}
+	const origins = new Set<string>();
+	for (const [index, entry] of value.entries()) {
+		const url = parseHttpUrl(entry, `origins[${index}]`);
+		if (!url.ok) {
+			return url;
+		}
+		origins.add(new URL(url.value).origin);
+	}
+	return ok(Object.freeze([...origins]));
+}
+
+function parseExtraHeaders(value: unknown): ParadisPageOpsParseResult<IParadisExtraHeaders> {
+	if (!isPlainRecord(value)) {
+		return fail('invalid extra headers');
+	}
+	const headers = paradisParseHeaderMap(value.headers, 'request', 'headers');
+	if (!headers.ok) {
+		return headers;
+	}
+	const origins = paradisParseHeaderOrigins(value.origins);
+	if (!origins.ok) {
+		return origins;
+	}
+	return ok(Object.freeze({ headers: headers.value, origins: origins.value }));
+}
+
+/**
+ * 止めたリクエストに追加ヘッダを足した結果（Fetch.continueRequest の `headers`）。
+ * 相手の origin が一覧に無ければ undefined（何も足さない）。
+ */
+export function paradisApplyExtraHeaders(original: Readonly<Record<string, string>>, url: string, extra: IParadisExtraHeaders): { name: string; value: string }[] | undefined {
+	let origin: string;
+	try {
+		origin = new URL(url).origin;
+	} catch {
+		return undefined;
+	}
+	if (!extra.origins.includes(origin)) {
+		return undefined;
+	}
+	const overridden = new Set(Object.keys(extra.headers).map(name => name.toLowerCase()));
+	const headers: { name: string; value: string }[] = [];
+	for (const [name, value] of Object.entries(original)) {
+		if (!overridden.has(name.toLowerCase())) {
+			headers.push({ name, value });
+		}
+	}
+	for (const [name, value] of Object.entries(extra.headers)) {
+		if (!paradisIsForbiddenRequestHeader(name)) {
+			headers.push({ name, value });
+		}
+	}
+	return headers;
+}
+
 /**
  * タブへの上書きの要求。値のある項目だけを置き換える（`null` はその項目を外す）。
  * shared process と electron-main の間を JSON で渡す。
  */
 export interface IParadisPageOverridesRequest {
-	readonly extraHeaders?: Readonly<Record<string, string>> | null;
+	readonly extraHeaders?: IParadisExtraHeaders | null;
 	readonly credentials?: IParadisHttpCredentials | null;
 	readonly rules?: readonly IParadisRequestRule[] | null;
 }
@@ -442,7 +519,12 @@ export type ParadisPageOpsFailure =
 	/** 値が不正。 */
 	| 'invalid'
 	/** ブラウザ側の処理に失敗した。 */
-	| 'failed';
+	| 'failed'
+	/**
+	 * 利用者の保存領域のタブ（共有された利用者のタブ）。ネットワークの上書きは、エージェント用の保存領域
+	 * （エージェントが開いたタブ、エージェントが作ったプロファイル、エフェメラル）のタブにだけ掛ける。
+	 */
+	| 'userStorage';
 
 export type IParadisPageOverridesResult =
 	| { readonly ok: true; readonly summary: IParadisPageOverridesSummary }
@@ -453,16 +535,16 @@ export function paradisParsePageOverridesRequest(value: unknown): ParadisPageOps
 	if (!isPlainRecord(value)) {
 		return fail('invalid request');
 	}
-	const request: { extraHeaders?: Readonly<Record<string, string>> | null; credentials?: IParadisHttpCredentials | null; rules?: readonly IParadisRequestRule[] | null } = {};
+	const request: { extraHeaders?: IParadisExtraHeaders | null; credentials?: IParadisHttpCredentials | null; rules?: readonly IParadisRequestRule[] | null } = {};
 	if (value.extraHeaders !== undefined) {
 		if (value.extraHeaders === null) {
 			request.extraHeaders = null;
 		} else {
-			const headers = paradisParseHeaderMap(value.extraHeaders, 'request', 'headers');
-			if (!headers.ok) {
-				return headers;
+			const extra = parseExtraHeaders(value.extraHeaders);
+			if (!extra.ok) {
+				return extra;
 			}
-			request.extraHeaders = headers.value;
+			request.extraHeaders = extra.value;
 		}
 	}
 	if (value.credentials !== undefined) {
@@ -560,9 +642,11 @@ export function paradisSanitizePdfFileName(value: unknown, fallback: string): st
 	if (base.length === 0) {
 		base = 'page';
 	}
-	// Windows の予約名（CON、NUL など）は後ろに印を付けて避ける。
-	if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(base)) {
-		base = `${base}_`;
+	// Windows の予約名（CON、NUL、COM1 など。拡張子が付いていても、上付き数字でも予約名）は、
+	// 最初の点の前に印を付けて避ける。
+	const reserved = /^(con|prn|aux|nul|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])(\..*)?$/i.exec(base);
+	if (reserved) {
+		base = `${reserved[1]}_${base.slice(reserved[1].length)}`;
 	}
 	const maxBase = PARADIS_PAGE_OPS_MAX_FILE_NAME_LENGTH - 4;
 	if (base.length > maxBase) {

@@ -28,6 +28,7 @@ import {
 	PARADIS_PAGE_OPS_MAX_HIGHLIGHT_MS,
 	ParadisPageOpsFailure,
 	paradisParseHeaderMap,
+	paradisParseHeaderOrigins,
 	paradisParseHttpCredentials,
 	paradisParsePdfOptions,
 	paradisParseRequestRules,
@@ -202,6 +203,11 @@ function isCoordinate(value: unknown): value is number {
 export class ParadisBrowserPageOps {
 
 	private readonly mouseStates = new Map<string, { readonly binding: IParadisPageOpsBinding; state: IParadisMouseState }>();
+	/**
+	 * 途中で断られて送れなかったボタンの離し（ペインごと）。ページに押したままのボタンを残さないよう、
+	 * 次にそのタブへマウスの入力を送る前に送る。
+	 */
+	private readonly pendingReleases = new Map<string, { readonly binding: IParadisPageOpsBinding; readonly releases: Record<string, unknown>[] }>();
 
 	constructor(private readonly host: IParadisPageOpsHost) { }
 
@@ -215,6 +221,8 @@ export class ParadisBrowserPageOps {
 	 */
 	releaseOwner(token: string, generation: number): void {
 		this.mouseStates.delete(token);
+		// 共有が変わった後は元のタブへ入力を送れないので、送れなかった離しは諦める（NOTES の限界）。
+		this.pendingReleases.delete(token);
 		void this.host.callMain('releasePageOverridesOwner', [paradisPageOpsOwnerKey(token), generation]).catch(() => undefined);
 	}
 
@@ -279,14 +287,68 @@ export class ParadisBrowserPageOps {
 		return { ok: false, result: error(`Give "${keys.uid}" (from take_snapshot) or both "${keys.x}" and "${keys.y}" (non-negative CSS pixel coordinates of the viewport).`) };
 	}
 
+	/** 前に送れなかったボタンの離しを送る。送れなければその理由を返す。 */
+	private async flushPendingReleases(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding): Promise<string | undefined> {
+		const pending = this.pendingReleases.get(call.token);
+		if (!pending) {
+			return undefined;
+		}
+		if (pending.binding !== binding) {
+			this.pendingReleases.delete(call.token);
+			return undefined;
+		}
+		while (pending.releases.length > 0) {
+			const result = await this.host.dispatchInput(call.token, binding, 'Input.dispatchMouseEvent', JSON.stringify(pending.releases[0]));
+			if (result.status !== 'success') {
+				return `a mouse button pressed by an earlier action is still held and could not be released yet (${result.message})`;
+			}
+			pending.releases.shift();
+		}
+		this.pendingReleases.delete(call.token);
+		return undefined;
+	}
+
+	/**
+	 * 列を順に送る。途中で断られたら、この列で押したまま離せていないボタンを離しに行き、それも断られたら
+	 * 次の入力の前に送るよう覚える（ページにドラッグ中・押下中の状態を残さない）。
+	 */
 	private async dispatchAll(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding, commands: readonly IParadisMouseCommand[], pauseMs: number): Promise<{ ok: true } | { ok: false; sent: number; message: string }> {
+		const pressed = new Map<string, Record<string, unknown>>();
+		const releaseOutstanding = async () => {
+			if (pressed.size === 0) {
+				return;
+			}
+			const releases = [...pressed.values()].map(press => ({ ...press, type: 'mouseReleased', buttons: 0 }));
+			const unsent: Record<string, unknown>[] = [];
+			for (const release of releases) {
+				if (unsent.length > 0 || this.host.binding(call.token) !== binding) {
+					unsent.push(release);
+					continue;
+				}
+				const result = await this.host.dispatchInput(call.token, binding, 'Input.dispatchMouseEvent', JSON.stringify(release)).catch(() => undefined);
+				if (result?.status !== 'success') {
+					unsent.push(release);
+				}
+			}
+			if (unsent.length > 0 && this.host.binding(call.token) === binding) {
+				this.pendingReleases.set(call.token, { binding, releases: unsent });
+			}
+		};
 		for (const [index, command] of commands.entries()) {
 			if (!this.isCurrent(call, binding)) {
+				await releaseOutstanding();
 				return { ok: false, sent: index, message: BINDING_CHANGED };
 			}
 			const result = await this.host.dispatchInput(call.token, binding, command.method, JSON.stringify(command.params));
 			if (result.status !== 'success') {
+				await releaseOutstanding();
 				return { ok: false, sent: index, message: result.message };
+			}
+			const button = typeof command.params.button === 'string' ? command.params.button : '';
+			if (command.params.type === 'mousePressed') {
+				pressed.set(button, { x: command.params.x, y: command.params.y, button, clickCount: 1 });
+			} else if (command.params.type === 'mouseReleased') {
+				pressed.delete(button);
 			}
 			if (pauseMs > 0 && index < commands.length - 1) {
 				await new Promise<void>(resolve => setTimeout(resolve, pauseMs));
@@ -328,6 +390,10 @@ export class ParadisBrowserPageOps {
 				return error('wheel needs a non-zero "delta_x" and/or "delta_y" (CSS pixels).');
 			}
 		}
+		const stuck = await this.flushPendingReleases(call, binding);
+		if (stuck !== undefined) {
+			return error(`mouse_action ${mouseAction} was not sent: ${stuck}. Retry when the user is not using the page.`);
+		}
 		const pressing = mouseAction === 'down' || mouseAction === 'context_click' || mouseAction === 'middle_click' || mouseAction === 'drag';
 		const from = await this.resolvePoint(call, binding, args, { uid: 'uid', x: 'x', y: 'y' }, pressing);
 		if (!from.ok) {
@@ -352,11 +418,7 @@ export class ParadisBrowserPageOps {
 		}, state);
 		const sent = await this.dispatchAll(call, binding, built.commands, mouseAction === 'drag' || mouseAction === 'move' ? 16 : 0);
 		if (!sent.ok) {
-			// 押したまま途中で止まった drag は、離しておく（ページにドラッグ中の状態を残さない）。
-			if (mouseAction === 'drag' && sent.sent >= 2 && this.host.binding(call.token) === binding) {
-				const at = to ?? from.point;
-				await this.host.dispatchInput(call.token, binding, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mouseReleased', x: at.x, y: at.y, button: 'left', buttons: state.buttons, clickCount: 1 })).catch(() => undefined);
-			}
+			// 押したまま止まったボタンは dispatchAll が離しに行く（送れなければ次の入力の前に送る）。
 			return error(`mouse_action ${mouseAction} was not completed: ${sent.message}`);
 		}
 		this.mouseStates.set(call.token, { binding, state: built.next });
@@ -404,13 +466,18 @@ export class ParadisBrowserPageOps {
 		if (!headers.ok) {
 			return error(headers.error);
 		}
+		const origins = paradisParseHeaderOrigins(args.origins);
+		if (!origins.ok) {
+			return error(origins.error);
+		}
 		const names = Object.keys(headers.value);
-		const applied = await this.applyOverrides(call, binding, { extraHeaders: names.length > 0 ? headers.value : null }, 'set_extra_http_headers');
+		const applied = await this.applyOverrides(call, binding, { extraHeaders: names.length > 0 ? { headers: headers.value, origins: origins.value } : null }, 'set_extra_http_headers');
 		if (!isOverridesResult(applied)) {
 			return applied;
 		}
+		const sentTo = applied.summary.extraHeaderOrigins ?? [];
 		return text(names.length > 0
-			? `Every request of the shared tab now carries these extra headers: ${names.join(', ')}. The browser cache is bypassed for that tab while overrides are set.`
+			? `Requests of the shared tab to ${sentTo.join(', ')} now carry these extra headers: ${names.join(', ')}. Requests to any other host (CDNs, analytics, other sites) do not. The browser cache and service workers are bypassed for that tab while overrides are set.`
 			: 'Removed the extra headers of the shared tab.');
 	}
 
@@ -472,6 +539,10 @@ export class ParadisBrowserPageOps {
 		const timeoutSeconds = args.timeout_seconds ?? 30;
 		if (typeof timeoutSeconds !== 'number' || !Number.isFinite(timeoutSeconds) || timeoutSeconds < 5 || timeoutSeconds > 50) {
 			return error('"timeout_seconds" must be a number from 5 to 50.');
+		}
+		const stuck = await this.flushPendingReleases(call, binding);
+		if (stuck !== undefined) {
+			return error(`download_by_click did not click: ${stuck}. Retry when the user is not using the page.`);
 		}
 		const point = await this.resolvePoint(call, binding, args, { uid: 'uid', x: 'x', y: 'y' }, true);
 		if (!point.ok) {
@@ -564,6 +635,7 @@ export class ParadisBrowserPageOps {
 	private failureMessage(tool: string, reason: ParadisPageOpsFailure, detail?: string): string {
 		switch (reason) {
 			case 'unavailable': return `PARA_BROWSER_RETRYABLE: ${tool} could not reach the shared browser tab (it may have been closed or re-shared). Check get_shared_page and retry.`;
+			case 'userStorage': return `${tool}: this browser tab uses the user's own browser storage (the user shared one of their tabs), so headers, HTTP credentials and request rules are not applied to it: they would stay in the user's login and cache for their other tabs. Open a tab of your own with open_browser_tab (or a profile you created with open_browser_profile) and use ${tool} there.`;
 			case 'ownedByAnotherPane': return `${tool}: another terminal pane has set headers, credentials or request rules on this browser tab. Only one pane can change a tab at a time; use your own tab (open_browser_tab) instead.`;
 			case 'stale': return BINDING_CHANGED;
 			case 'invalid': return `${tool}: ${detail ?? 'the request was rejected as invalid.'}`;
@@ -572,6 +644,6 @@ export class ParadisBrowserPageOps {
 	}
 }
 
-function isOverridesResult(value: unknown): value is IParadisPageOverridesResult {
+function isOverridesResult(value: unknown): value is Extract<IParadisPageOverridesResult, { ok: true }> {
 	return typeof value === 'object' && value !== null && 'ok' in value && (value as { ok: unknown }).ok === true;
 }

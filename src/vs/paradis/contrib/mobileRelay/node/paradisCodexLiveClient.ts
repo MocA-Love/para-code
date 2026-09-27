@@ -12,6 +12,7 @@ import { WebSocket, type RawData } from 'ws';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 import {
 	IParadisCodexPaneFailureInput,
 	PARADIS_CODEX_PANE_LOG_TAIL_BYTES,
@@ -705,7 +706,10 @@ class ParadisCodexServerConnection extends Disposable {
 					threadMessageText(item?.output), threadMessageText(item?.prompt), threadMessageText(item?.error),
 				];
 				for (const field of ['changes', 'arguments', 'result'] as const) {
-					const value = item?.[field];
+					// 資格情報（set_http_credentials の password）はモバイルへ出さない
+					const value = field === 'arguments'
+						? paradisRedactToolInputSecrets(stringValue(item?.tool) ?? stringValue(item?.name), item?.[field])
+						: item?.[field];
 					if (value !== undefined) {
 						try { parts.push(threadMessageText(JSON.stringify(value))); } catch { /* 循環参照等は表示しない */ }
 					}

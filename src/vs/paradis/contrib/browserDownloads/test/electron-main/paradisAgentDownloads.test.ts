@@ -16,6 +16,7 @@ import {
 	paradisExpectAgentDownload,
 	paradisIsAgentDownload,
 	paradisNotifyAgentDownloadStarted,
+	paradisRecordChildWebContents,
 	paradisSaveAgentFile,
 	paradisSetWebContentsHeldByAgent,
 	paradisWriteFileWithoutOverwrite,
@@ -57,6 +58,40 @@ suite('paradisAgentDownloads', () => {
 
 		paradisSetWebContentsHeldByAgent(held, false);
 		assert.strictEqual(paradisIsAgentDownload(held), false);
+	});
+
+	test('a download that starts before the tool starts waiting is not missed', async () => {
+		const tab = {};
+		const expectation = paradisExpectAgentDownload(tab, 5_000);
+		// will-download arrives while the click is still being sent, before the await.
+		paradisNotifyAgentDownloadStarted(tab, 'download-7');
+		assert.strictEqual(await paradisAwaitAgentDownloadStart(expectation), 'download-7');
+		assert.strictEqual(await paradisAwaitAgentDownloadStart(expectation), undefined, 'the started download is handed over once');
+	});
+
+	test('downloads in a child tab opened from an agent tab count as agent downloads and satisfy the wait', async () => {
+		const held = {};
+		const child = {};
+		const grandChild = {};
+		paradisSetWebContentsHeldByAgent(held, true);
+		paradisRecordChildWebContents(child, held);
+		paradisRecordChildWebContents(grandChild, child);
+		paradisSetWebContentsHeldByAgent(held, false);
+		// The child was opened while the agent held its opener, so it keeps the mark after the agent lets go.
+		assert.deepStrictEqual([paradisIsAgentDownload(child), paradisIsAgentDownload(grandChild)], [true, true]);
+
+		const waiting = {};
+		const popup = {};
+		const expectation = paradisExpectAgentDownload(waiting, 5_000);
+		paradisRecordChildWebContents(popup, waiting);
+		const started = paradisAwaitAgentDownloadStart(expectation);
+		paradisNotifyAgentDownloadStarted(popup, 'download-8');
+		assert.strictEqual(await started, 'download-8');
+
+		const userTab = {};
+		const userChild = {};
+		paradisRecordChildWebContents(userChild, userTab);
+		assert.strictEqual(paradisIsAgentDownload(userChild), false);
 	});
 
 	test('a cancelled wait reports that nothing started', async () => {

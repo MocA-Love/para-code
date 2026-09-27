@@ -17,6 +17,7 @@ import {
 	paradisParseExactCdpScreenshotOptions,
 } from '../../common/paradisAgentBrowser.js';
 import { ParadisCdpTargetService } from '../../electron-main/paradisCdpTargetService.js';
+import { paradisConsumeAgentContextMenuSuppression } from '../../electron-main/paradisAgentContextMenu.js';
 
 interface ITestViewState {
 	ownerWindowId: number;
@@ -564,6 +565,39 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.deepStrictEqual(current.throttlingValues, [false, true]);
 		current.state.throwThrottling = true;
 		assert.strictEqual(await service.setExactViewBackgroundThrottling(exact, false), false);
+	});
+
+	test('an agent right-click reaches the page but suppresses Para Code\'s native context menu once', async () => {
+		const current = createTestView();
+		const registry = createRegistry({ 'view-1': current.view });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mouseMoved', x: 1, y: 2 }));
+		const afterMove = paradisConsumeAgentContextMenuSuppression(current.view.webContents);
+		await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mousePressed', x: 1, y: 2, button: 'right', clickCount: 1 }));
+		assert.deepStrictEqual([
+			afterMove,
+			current.inputCalls.length,
+			paradisConsumeAgentContextMenuSuppression(current.view.webContents),
+			paradisConsumeAgentContextMenuSuppression(current.view.webContents),
+		], [false, 2, true, false]);
+	});
+
+	test('network overrides are refused on a tab that uses the user\'s own browser storage', async () => {
+		const scopes = ['global', 'workspace', 'profile', 'agent'];
+		const results: string[] = [];
+		for (const storageScope of scopes) {
+			const current = createTestView();
+			Object.defineProperty(current.view, 'session', { value: { storageScope, id: storageScope === 'profile' ? 'paradis-profile:unknown' : storageScope } });
+			Object.assign(current.view.webContents, { getURL: () => 'https://example.com/', once: () => undefined, on: () => undefined, removeListener: () => undefined });
+			const registry = createRegistry({ 'view-1': current.view });
+			const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+			const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+			const result = await service.applyExactViewPageOverrides(exact, '0123456789abcdef0123456789abcdef', 1, JSON.stringify({ credentials: { origin: 'https://example.com', username: 'u', password: 'p' } }));
+			results.push(result.ok ? 'ok' : result.reason);
+			await service.releasePageOverridesOwner('0123456789abcdef0123456789abcdef', 2);
+		}
+		assert.deepStrictEqual(results, ['userStorage', 'userStorage', 'userStorage', 'ok']);
 	});
 
 	test('dispatches every allowed input through the exact BrowserView debugger root without focusing', async () => {

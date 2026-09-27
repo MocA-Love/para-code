@@ -586,6 +586,20 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(fixture.bindings.has('token-b'), true);
 	});
 
+	test('a pane\'s page overrides are released at the new generation when its sharing ends', async () => {
+		const fixture = createFixture();
+		const released: string[] = [];
+		Reflect.set(fixture.service, '_pageOps', { releaseOwner: (token: string, generation: number) => released.push(`${token}:${generation}`) });
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token' }]));
+		fixture.seedBinding('token');
+		const generationBefore = Reflect.get(fixture.service, '_nextBindingGeneration') as number;
+		assert.strictEqual(await fixture.service.unbind(connection, 'token'), true);
+		// The release carries the generation that retired the binding, so main drops everything set before it.
+		assert.deepStrictEqual(released, [`token:${generationBefore + 1}`]);
+	});
+
 	test('returns one status snapshot scoped to the caller connection including owned hook-only tokens', async () => {
 		const fixture = createFixture();
 		const connectionA = {};

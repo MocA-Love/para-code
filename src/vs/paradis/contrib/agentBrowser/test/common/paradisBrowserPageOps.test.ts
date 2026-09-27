@@ -141,10 +141,14 @@ suite('paradisBrowserPageOps', () => {
 	test('electron-main re-validates the internal request shape', () => {
 		const rules = paradisParseRequestRules([{ url_pattern: '*/a', action: 'set_headers', set_headers: { 'X-A': '1' } }]);
 		assert.ok(rules.ok);
-		const roundTrip = paradisParsePageOverridesRequest(JSON.parse(JSON.stringify({ extraHeaders: { 'X-B': '2' }, credentials: null, rules: rules.value })));
+		const extraHeaders = { headers: { 'X-B': '2' }, origins: ['https://example.com'] };
+		const roundTrip = paradisParsePageOverridesRequest(JSON.parse(JSON.stringify({ extraHeaders, credentials: null, rules: rules.value })));
 		assert.ok(roundTrip.ok);
-		assert.deepStrictEqual(roundTrip.value, { extraHeaders: { 'X-B': '2' }, credentials: null, rules: rules.value });
-		const smuggled = paradisParsePageOverridesRequest({ extraHeaders: { Cookie: 'a=1' } });
+		assert.deepStrictEqual(roundTrip.value, { extraHeaders, credentials: null, rules: rules.value });
+		const smuggled = paradisParsePageOverridesRequest({ extraHeaders: { headers: { Cookie: 'a=1' }, origins: [] } });
+		assert.strictEqual(smuggled.ok, false);
+		const badOrigin = paradisParsePageOverridesRequest({ extraHeaders: { headers: { 'X-B': '2' }, origins: ['javascript:alert(1)'] } });
+		assert.strictEqual(badOrigin.ok, false);
 		assert.strictEqual(smuggled.ok, false);
 		const smuggledRule = paradisParsePageOverridesRequest({ rules: [{ urlPattern: '*', action: 'respond', responseHeaders: { 'Set-Cookie': 'a=1' } }] });
 		assert.strictEqual(smuggledRule.ok, false);
@@ -158,8 +162,10 @@ suite('paradisBrowserPageOps', () => {
 			paradisSanitizePdfFileName('a\u202eb\u0000c', 'x'),
 			paradisSanitizePdfFileName(undefined, ''),
 			paradisSanitizePdfFileName('nul', 'x'),
+			paradisSanitizePdfFileName('CON.report', 'x'),
+			paradisSanitizePdfFileName('com\u00b9', 'x'),
 			paradisSanitizePdfFileName('x'.repeat(300), 'x').length,
-		], ['_.._etc_passwd.pdf', 'report.pdf', 'Page Title_ A_B.pdf', 'abc.pdf', 'page.pdf', 'nul_.pdf', 120]);
+		], ['_.._etc_passwd.pdf', 'report.pdf', 'Page Title_ A_B.pdf', 'abc.pdf', 'page.pdf', 'nul_.pdf', 'CON_.report.pdf', 'com\u00b9_.pdf', 120]);
 		const options = paradisParsePdfOptions({ landscape: true, paper_format: 'Letter', page_ranges: '1-2, 5' }, 'Title');
 		assert.ok(options.ok);
 		assert.deepStrictEqual(options.value, { fileName: 'Title.pdf', landscape: true, printBackground: true, paperFormat: 'Letter', scale: 1, pageRanges: '1-2, 5' });

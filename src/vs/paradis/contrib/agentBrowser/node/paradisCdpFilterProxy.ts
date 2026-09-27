@@ -45,6 +45,7 @@ import { IParadisCdpScreenshotOptions } from '../common/paradisAgentBrowser.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisCdpInputQueueOperation } from './paradisCdpInputQueue.js';
 import { ParadisCdpIsolatedWorldFilter } from './paradisCdpIsolatedWorldFilter.js';
+import { paradisCookieAndRewriteDeniedMessage, paradisSanitizeCookieBearingEvent } from './paradisCdpCookieFilter.js';
 
 /** 動的import済みの `ws` モジュール（ゲートウェイが1回だけロードして渡す）。 */
 export interface IParadisWsModule {
@@ -468,6 +469,12 @@ const SHARED_STATE_DENIED_METHODS = new Set([
 	'Network.setCookie',
 	'Network.setCookies',
 	'Network.deleteCookies',
+	// Cookie の読み書き（q.html Q69）: 旧い Page.getCookies、Cookie の扱いの設定、ページの Cookie 付きで
+	// 取りに行ってヘッダを返す Network.loadNetworkResource
+	'Page.getCookies',
+	'Page.deleteCookie',
+	'Network.setCookieControls',
+	'Network.loadNetworkResource',
 	'Page.setDownloadBehavior',
 ]);
 
@@ -504,57 +511,6 @@ function sharedStateDeniedMessage(method: string): string | undefined {
 		return `${method} is not permitted: this CDP connection is scoped to one Para Code browser pane and cannot access shared browser state.`;
 	}
 	return undefined;
-}
-
-/** 送るリクエストに Cookie を載せるヘッダの名前（小文字）。 */
-const COOKIE_REQUEST_HEADER_NAMES: ReadonlySet<string> = new Set(['cookie', 'cookie2']);
-/** 応答に載せると、共有の保存領域へ書き込む・消すヘッダの名前（小文字）。 */
-const STATE_WRITING_RESPONSE_HEADER_NAMES: ReadonlySet<string> = new Set(['set-cookie', 'set-cookie2', 'clear-site-data']);
-
-function headerEntryNames(value: unknown): string[] | undefined {
-	if (Array.isArray(value)) {
-		return value.map(entry => (typeof entry === 'object' && entry !== null && typeof (entry as { name?: unknown }).name === 'string' ? (entry as { name: string }).name : '').toLowerCase());
-	}
-	if (typeof value === 'object' && value !== null) {
-		return Object.keys(value).map(name => name.toLowerCase());
-	}
-	return undefined;
-}
-
-/**
- * 引数まで見て断るコマンド。Cookie の読み書きは全面禁止（q.html Q69）なので、ヘッダ経由で Cookie を
- * 送る・Set-Cookie を返して書き込む抜け道を塞ぐ。Fetch で要求の URL を差し替えると、エージェントの
- * ネットワークの制限（Electron の webRequest で見る元の URL）をすり抜けうるので、差し替えも断る
- * （行き先を変えたいときは para-browser の set_request_rules の redirect を使う。ブラウザが
- * 辿り直すので制限に掛かる）。
- */
-export function paradisCookieAndRewriteDeniedMessage(method: string, params: Record<string, unknown> | undefined): string | undefined {
-	switch (method) {
-		case 'Network.setExtraHTTPHeaders':
-			return headerEntryNames(params?.headers)?.some(name => COOKIE_REQUEST_HEADER_NAMES.has(name))
-				? `${method} with a Cookie header is not permitted: agents cannot read or write cookies in Para Code.`
-				: undefined;
-		case 'Fetch.continueRequest':
-			if (params?.url !== undefined) {
-				return `${method} with "url" is not permitted: rewriting the URL of a paused request could bypass the agent network restrictions. Use the redirect action of the para-browser set_request_rules tool instead.`;
-			}
-			return headerEntryNames(params?.headers)?.some(name => COOKIE_REQUEST_HEADER_NAMES.has(name))
-				? `${method} with a Cookie header is not permitted: agents cannot read or write cookies in Para Code.`
-				: undefined;
-		case 'Fetch.fulfillRequest':
-		case 'Fetch.continueResponse':
-			if (params?.binaryResponseHeaders !== undefined) {
-				return `${method} with "binaryResponseHeaders" is not permitted; pass "responseHeaders" instead.`;
-			}
-			return headerEntryNames(params?.responseHeaders)?.some(name => STATE_WRITING_RESPONSE_HEADER_NAMES.has(name))
-				? `${method} with a Set-Cookie or Clear-Site-Data header is not permitted: agents cannot write cookies or clear the browser storage shared with the user in Para Code.`
-				: undefined;
-		case 'Network.continueInterceptedRequest':
-		case 'Network.setRequestInterception':
-			return `${method} is not permitted; use the Fetch domain (without URL rewriting) or the para-browser set_request_rules tool instead.`;
-		default:
-			return undefined;
-	}
 }
 
 /**
@@ -1294,6 +1250,8 @@ export function paradisProxyPageUpgrade(
 				if (typeof response?.id === 'number' && Number.isSafeInteger(response.id)) {
 					completeForwardedRequestBarrier(forwardedRequestBarriers, response.id, response.sessionId);
 				}
+				// Cookie を落としたイベント（q.html Q69）。落とさなければ undefined で、元のフレームを送る。
+				let cookieSanitized: string | undefined;
 				if (response) {
 					const sessionKey = typeof response.sessionId === 'string' ? response.sessionId : '';
 					if (typeof response.id === 'number') {
@@ -1309,6 +1267,10 @@ export function paradisProxyPageUpgrade(
 						}
 						if (verdict !== 'forward') {
 							return;
+						}
+						const sanitizedParams = paradisSanitizeCookieBearingEvent(response.method, response.params);
+						if (sanitizedParams !== undefined) {
+							cookieSanitized = JSON.stringify({ ...response, params: sanitizedParams });
 						}
 					}
 				}
@@ -1326,7 +1288,7 @@ export function paradisProxyPageUpgrade(
 				}
 				if (clientWs.readyState === ws.WebSocket.OPEN) {
 					// U+FFFD replacement can grow the frame, so size the backpressure check on what is actually sent.
-					const forwarded = reencodeUtf8(data);
+					const forwarded = cookieSanitized ?? reencodeUtf8(data);
 					if (!sendWithBoundedBackpressure(clientWs, forwarded, payloadByteLength(forwarded) > MAX_CDP_FRAME_BYTES, true)) {
 						closeBoth();
 					}
@@ -2062,6 +2024,12 @@ export async function paradisProxyBrowserUpgrade(
 						sendInternal('Debugger.resume', {}, message.sessionId);
 					}
 					if (verdict !== 'forward') {
+						return;
+					}
+					// Cookie のヘッダと一覧はエージェントへ届けない（q.html Q69）
+					const sanitizedParams = paradisSanitizeCookieBearingEvent(message.method, message.params);
+					if (sanitizedParams !== undefined) {
+						sendToClient({ ...message, params: sanitizedParams });
 						return;
 					}
 				}

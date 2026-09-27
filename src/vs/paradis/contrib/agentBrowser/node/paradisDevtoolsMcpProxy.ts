@@ -386,6 +386,10 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			// Input.dispatchMouseEvent（allowlist、dispatchExactViewInput経由）で配信されるため、
 			// 信頼済みイベントとして届く（座標はLLMがスクリーンショットから読み取る前提）。
 			'--experimentalVision=true',
+			// get_network_request などが返すヘッダのうち、許可リストに無いもの（Cookie・Set-Cookie・
+			// Authorization など）を伏せる。エージェントは Cookie を読めない（q.html Q69）。ゲートウェイでも
+			// CDP のイベントから Cookie を落としているので二重の備え。
+			'--redactNetworkHeaders=true',
 		], {
 			env: {
 				...process.env,

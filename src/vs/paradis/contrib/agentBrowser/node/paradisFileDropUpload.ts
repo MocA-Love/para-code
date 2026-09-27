@@ -77,10 +77,6 @@ const DEFAULT_MAX_STAGING_ENTRIES = 32;
 const DEFAULT_MAX_STAGING_TOTAL_BYTES = 64 * 1024 * 1024;
 
 /**
- * ドロップ先要素の中心座標（メインフレームのビューポートに対するCSS px、
- * `Input.dispatchDragEvent` の x/y と同じ座標系）と、それを安全に使ってよいかの判定材料。
- */
-/**
  * uid の要素をビューポートの中央へスクロールし、中心座標・大きさ・メインフレーム所属・ビューポート寸法・
  * 遮蔽の有無を返す関数（内蔵 chrome-devtools-mcp の `evaluate_script` に uid 付きで渡す）。
  * 結果は {@link paradisParseResolvedDropTarget} で読む。upload_file_to_drop_zone と、追加のブラウザ操作
@@ -88,6 +84,10 @@ const DEFAULT_MAX_STAGING_TOTAL_BYTES = 64 * 1024 * 1024;
  */
 export const PARADIS_RESOLVE_ELEMENT_CENTER_FUNCTION = '(el) => { el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" }); const r = el.getBoundingClientRect(); const cx = r.left + r.width / 2, cy = r.top + r.height / 2; const hit = document.elementFromPoint(cx, cy); return { x: cx, y: cy, width: r.width, height: r.height, inMainFrame: window.top === window, viewW: innerWidth, viewH: innerHeight, occluded: !(hit && (el === hit || el.contains(hit) || hit.contains(el))) }; }';
 
+/**
+ * ドロップ先要素の中心座標（メインフレームのビューポートに対するCSS px、
+ * `Input.dispatchDragEvent` の x/y と同じ座標系）と、それを安全に使ってよいかの判定材料。
+ */
 export interface IParadisResolvedDropTarget {
 	readonly x: number;
 	readonly y: number;
