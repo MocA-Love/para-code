@@ -528,6 +528,21 @@ export function paradisAggregateWorkStats(summaries: Iterable<IParadisActivityFi
 	return { claude: finish('claude'), codex: finish('codex') };
 }
 
+/** 作業実績タブのエージェントの絞り込み。 */
+export type ParadisWorkStatsAgentFilter = 'all' | ParadisActivityAgent;
+
+/** 指定のエージェント（または全部）の実績を足し合わせる。 */
+export function paradisCombineWorkStats(result: IParadisWorkStatsResult, filter: ParadisWorkStatsAgentFilter, days: readonly string[]): { sessions: number; turns: number; activeMs: number; prs: number; dailyTurns: number[] } {
+	const agents: IParadisWorkStatsAgent[] = (filter === 'all' ? PARADIS_ACTIVITY_AGENTS : [filter]).map(agent => result.agents[agent]);
+	return {
+		sessions: agents.reduce((sum, agent) => sum + agent.sessions, 0),
+		turns: agents.reduce((sum, agent) => sum + agent.turns, 0),
+		activeMs: agents.reduce((sum, agent) => sum + agent.activeMs, 0),
+		prs: agents.reduce((sum, agent) => sum + agent.prs, 0),
+		dailyTurns: days.map(day => agents.reduce((sum, agent) => sum + (agent.days[day]?.turns ?? 0), 0)),
+	};
+}
+
 // ---- 金額の按分 ---------------------------------------------------------------------------------
 
 /**

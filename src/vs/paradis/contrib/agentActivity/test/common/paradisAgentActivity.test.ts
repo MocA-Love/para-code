@@ -15,6 +15,7 @@ import {
 	paradisAggregateSpaceUsage,
 	paradisAggregateWorkStats,
 	paradisAllocateSpaceCosts,
+	paradisCombineWorkStats,
 	paradisCreateSpaceMatcher,
 } from '../../common/paradisAgentActivity.js';
 
@@ -155,6 +156,21 @@ suite('ParadisAgentActivity', () => {
 			],
 			unallocated: 2,
 			total: 16,
+		});
+	});
+
+	test('combines work stats of the selected agents with the daily turns of every day in the range', () => {
+		const result = {
+			computedAt: 0,
+			agents: {
+				claude: { sessions: 2, turns: 5, activeMs: 60_000, prs: 1, days: { '2026-09-20': { turns: 5, activeMs: 60_000 } } },
+				codex: { sessions: 1, turns: 3, activeMs: 30_000, prs: 2, days: { '2026-09-22': { turns: 3, activeMs: 30_000 } } },
+			},
+		};
+		const days = ['2026-09-20', '2026-09-21', '2026-09-22'];
+		assert.deepStrictEqual({ all: paradisCombineWorkStats(result, 'all', days), codex: paradisCombineWorkStats(result, 'codex', days) }, {
+			all: { sessions: 3, turns: 8, activeMs: 90_000, prs: 3, dailyTurns: [5, 0, 3] },
+			codex: { sessions: 1, turns: 3, activeMs: 30_000, prs: 2, dailyTurns: [0, 0, 3] },
 		});
 	});
 });
