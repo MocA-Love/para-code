@@ -417,49 +417,62 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			chat.dispose();
 		}
 	}));
-	test('moves a Codex pane to idle, not to completion, when its turn is aborted after the approval was denied from the card', () => withCodexHome(async codexHome => {
-		const token = 'pane-desktop-codex-deny';
-		const rolloutPath = join(codexHome, 'sessions', '2026', '09', '27', 'rollout-2026-09-27T10-00-00-thread-deny.jsonl');
-		await writeFile(rolloutPath, line({ timestamp: '2026-09-27T10:00:00.000Z', type: 'session_meta', payload: { id: 'thread-deny', cwd: '/repo', originator: 'codex_cli_rs' } })
-			+ line({ timestamp: '2026-09-27T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'テストして' }] } }));
-		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
-		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>>; tailers: Map<string, { enqueue(work: () => Promise<void>): Promise<void> }> };
-		const settled = async () => {
-			await waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
-			await access.tailers.get(token)?.enqueue(async () => { });
-		};
-		const hook = (event: string, extra: Record<string, unknown> = {}) => fireParadisAgentHookEvent({ token, event, sessionId: 'thread-deny', transcriptPath: rolloutPath, cwd: '/repo', at: Date.now(), ...extra });
-		const signals = recordPaneSignals(token);
-		try {
-			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
-			hook('SessionStart');
-			await settled();
-			chat.watchDesktopChat('window-1', [token], [token]);
-			const interaction = async () => (await chat.getDesktopChat(token, undefined))?.interaction ?? null;
+	for (const split of [false, true]) {
+		test(`moves a Codex pane to idle, not to completion, when the approval is denied from the card and the rollout writes the aborted result before turn_aborted${split ? ' in separate reads' : ''}`, () => withCodexHome(async codexHome => {
+			const token = `pane-desktop-codex-deny${split ? '-split' : ''}`;
+			const rolloutPath = join(codexHome, 'sessions', '2026', '09', '27', 'rollout-2026-09-27T10-00-00-thread-deny.jsonl');
+			await writeFile(rolloutPath, line({ timestamp: '2026-09-27T10:00:00.000Z', type: 'session_meta', payload: { id: 'thread-deny', cwd: '/repo', originator: 'codex_cli_rs' } })
+				+ line({ timestamp: '2026-09-27T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'テストして' }] } }));
+			const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+			const access = chat as unknown as { hookProcessing: Map<string, Promise<void>>; tailers: Map<string, { enqueue(work: () => Promise<void>): Promise<void> }> };
+			const settled = async () => {
+				await waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
+				await access.tailers.get(token)?.enqueue(async () => { });
+			};
+			const hook = (event: string, extra: Record<string, unknown> = {}) => fireParadisAgentHookEvent({ token, event, sessionId: 'thread-deny', transcriptPath: rolloutPath, cwd: '/repo', at: Date.now(), ...extra });
+			const signals = recordPaneSignals(token);
+			try {
+				chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
+				hook('SessionStart');
+				await settled();
+				chat.watchDesktopChat('window-1', [token], [token]);
+				const interaction = async () => (await chat.getDesktopChat(token, undefined))?.interaction ?? null;
 
-			hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'npm test' } });
-			await waitFor(async () => (await interaction())?.kind === 'approval', 'approval was not captured');
-			const approvalId = (await interaction())?.id ?? '';
-			// カードから拒否した（キーを送り終えた）→ Codex はターンを中断して rollout に turn_aborted を書く
-			chat.claimDesktopInteraction(token, 'approval', approvalId);
-			chat.releaseDesktopInteraction(token, 'approval', approvalId, true);
-			await settled();
-			await appendFile(rolloutPath, line({ timestamp: '2026-09-27T10:00:05.000Z', type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } }));
-			await waitFor(() => signals.awaitingUser.length > 0, 'the pane was not moved to idle');
-			await settled();
-			const afterAbort = { awaitingUser: signals.awaitingUser.length, turnEnded: signals.turnEnded.length, interaction: await interaction() };
+				hook('PreToolUse', { toolName: 'Bash', toolUseId: 'call_deny', toolInput: { command: 'npm test' } });
+				hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'npm test' } });
+				await waitFor(async () => (await interaction())?.kind === 'approval', 'approval was not captured');
+				const approvalId = (await interaction())?.id ?? '';
+				// カードから拒否した（キーを送り終えた）
+				chat.claimDesktopInteraction(token, 'approval', approvalId);
+				chat.releaseDesktopInteraction(token, 'approval', approvalId, true);
+				await settled();
+				// 実機（codex-cli 0.155.1）の順: 拒否したツールの結果（aborted by user）の直後に turn_aborted
+				const aborted = line({ timestamp: '2026-09-27T10:00:05.764Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_deny', output: 'aborted by user' } });
+				const turnAborted = line({ timestamp: '2026-09-27T10:00:05.769Z', type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } });
+				if (split) {
+					await appendFile(rolloutPath, aborted);
+					await waitFor(async () => (await interaction()) === null, 'the denied approval was not settled by its result');
+					await settled();
+					await appendFile(rolloutPath, turnAborted);
+				} else {
+					await appendFile(rolloutPath, aborted + turnAborted);
+				}
+				await waitFor(async () => (await chat.getDesktopChat(token, undefined))?.messages.some(message => message.kind === 'tool_result') === true, 'the aborted result was not read');
+				await waitFor(() => signals.awaitingUser.length > 0, 'the pane was not moved to idle');
+				await settled();
+				await access.tailers.get(token)?.enqueue(async () => { });
+				const afterAbort = { stoppedForUser: signals.awaitingUser.length > 0, turnEnded: signals.turnEnded.length, interaction: await interaction() };
 
-			// 承認の無いターンの完了は、今までどおり完了（review）の合図
-			await appendFile(rolloutPath, line({ timestamp: '2026-09-27T10:00:10.000Z', type: 'event_msg', payload: { type: 'task_complete' } }));
-			await waitFor(() => signals.turnEnded.length > 0, 'the completed turn was not signalled');
+				// 承認の無いターンの完了は、今までどおり完了（review）の合図
+				await appendFile(rolloutPath, line({ timestamp: '2026-09-27T10:00:09.000Z', type: 'event_msg', payload: { type: 'task_started' } })
+					+ line({ timestamp: '2026-09-27T10:00:10.000Z', type: 'event_msg', payload: { type: 'task_complete' } }));
+				await waitFor(() => signals.turnEnded.length > 0, 'the completed turn was not signalled');
 
-			assert.deepStrictEqual({ afterAbort, awaitingUser: signals.awaitingUser.length }, {
-				afterAbort: { awaitingUser: 1, turnEnded: 0, interaction: null },
-				awaitingUser: 1,
-			});
-		} finally {
-			signals.dispose();
-			chat.dispose();
-		}
-	}));
+				assert.deepStrictEqual(afterAbort, { stoppedForUser: true, turnEnded: 0, interaction: null });
+			} finally {
+				signals.dispose();
+				chat.dispose();
+			}
+		}));
+	}
 });

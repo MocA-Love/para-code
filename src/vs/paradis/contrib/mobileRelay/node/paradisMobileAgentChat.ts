@@ -256,6 +256,21 @@ const nodeRequire = createRequire(import.meta.url);
  * doing and wait for the user to tell you how to proceed." で、エージェントはそこで次の指示を待つ。
  */
 const PARADIS_CLAUDE_TOOL_REJECTED_PREFIX = `The user doesn't want to proceed with this tool use`;
+/**
+ * Codex が、利用者が承認を拒否した（codex-cli 0.155.1 の `No, and tell Codex what to do differently (esc)`）
+ * ツールの結果（function_call_output）に書く本文。直後に rollout へ `turn_aborted` を書き、次の指示を待つ。
+ */
+const PARADIS_CODEX_TOOL_ABORTED_TEXT = 'aborted by user';
+
+/** 利用者が許可を拒否したツールの結果か（Claude Code の定型文、Codex の `aborted by user`）。 */
+function paradisIsToolRejection(agent: ParadisAgentKind, message: IParadisAgentChatMessage): boolean {
+	if (message.kind !== 'tool_result') {
+		return false;
+	}
+	return agent === 'codex'
+		? message.text.trim() === PARADIS_CODEX_TOOL_ABORTED_TEXT
+		: message.isError === true && message.text.startsWith(PARADIS_CLAUDE_TOOL_REJECTED_PREFIX);
+}
 
 /** ペインごとに覚える未完了のツール呼び出しの上限（hook の取りこぼしで伸び続けないように）。 */
 const PARADIS_OPEN_TOOL_USE_LIMIT = 256;
@@ -1472,6 +1487,7 @@ class TranscriptTailer {
 				this.backgroundTasks.clear();
 				this.pendingQuestions.clear();
 				this.approvalQueue.length = 0;
+				this.approvalDeniedInTurn = false;
 				this.liveQuestions.clear();
 				this.liveQuestionRealIds.clear();
 				// rev が 0 から振り直されるため、退避済みの全文・画像をそのまま残すと新しい rev の
@@ -1678,9 +1694,18 @@ class TranscriptTailer {
 		}
 		// 結果が書かれたツールの承認は決着している（ターミナルで拒否したときは hook が来ず、これが唯一の手がかり）。
 		const resultIds = added.filter(message => message.kind === 'tool_result' && message.toolUseId !== undefined).map(message => message.toolUseId!);
+		const hadQueuedApproval = this.approvalQueue.length > 0;
+		if (signals.codexActivityTimeline.some(event => event.type === 'turnStart')) {
+			this.approvalDeniedInTurn = false;
+		}
 		const approvalsSettled = emitDelta && this.settleApprovalsByToolResults(resultIds);
 		if (emitDelta && resultIds.length > 0) {
-			const rejected = added.some(message => message.kind === 'tool_result' && message.isError === true && message.text.startsWith(PARADIS_CLAUDE_TOOL_REJECTED_PREFIX));
+			const rejected = added.some(message => paradisIsToolRejection(this.agent, message));
+			// 承認の拒否を覚えておく。Codex は拒否の結果（`aborted by user`）の直後に `turn_aborted` を書くが、
+			// 結果で承認はもう列から外れているので、ターンの終わりの時点では列を見ても拒否と分からない。
+			if (rejected && hadQueuedApproval) {
+				this.approvalDeniedInTurn = true;
+			}
 			this.delegate.onToolResults?.(resultIds, rejected);
 		}
 		this.applySignals(signals, emitDelta);
@@ -1739,6 +1764,8 @@ class TranscriptTailer {
 	 * 返す）のは最後の1件で、それが解けたら次のものを出す。モバイルへ送る形は1件のまま変えない。
 	 */
 	private readonly approvalQueue: IParadisApprovalEntry[] = [];
+	/** このターンで利用者が承認を拒否した（ターンの終わりで戻す。stoppedOnApproval）。 */
+	private approvalDeniedInTurn = false;
 	private approvalSeq = 0;
 
 	/** 今表に出している承認。 */
@@ -1944,9 +1971,12 @@ class TranscriptTailer {
 		return this.approvalQueue.some(entry => !entry.answered);
 	}
 
-	/** 答え終えたものも含め、ツールの完了を待っている承認が列にあるか。 */
-	hasQueuedApproval(): boolean {
-		return this.approvalQueue.length > 0;
+	/**
+	 * このターンが承認のところで止まったか（答え終えたものも含めて承認が列に残っている、またはこのターンで
+	 * 承認を拒否した）。中断されたターンを完了（review）ではなく次の指示待ち（idle）とみなすのに使う。
+	 */
+	stoppedOnApproval(): boolean {
+		return this.approvalQueue.length > 0 || this.approvalDeniedInTurn;
 	}
 
 	/** 今キューに積まれている処理（承認の解除など）が済んだ後に実行する。 */
@@ -2242,6 +2272,9 @@ class TranscriptTailer {
 		// 過去の task_complete で、現在進行中のライブ状態を消してしまわないように）。
 		if (live && signals.turnEnded !== undefined) {
 			this.delegate.onTurnEnded(signals.turnEnded);
+		}
+		if (signals.turnEnded !== undefined) {
+			this.approvalDeniedInTurn = false;
 		}
 	}
 }
@@ -5799,7 +5832,7 @@ export class ParadisMobileAgentChat extends Disposable {
 						// 承認が残ったままの中断（承認の拒否）は完了ではない（直後の onTurnEnded がペインを idle へ移す）。
 						// ここで完了の合図を出すと、答えた時点で作業中へ戻っていたペインが確認待ち（review）へ移り、
 						// 完了の通知が鳴る。
-						if (!(event.reason === 'interrupted' && tailer.hasQueuedApproval())) {
+						if (!(event.reason === 'interrupted' && tailer.stoppedOnApproval())) {
 							fireParadisAgentTurnEnded(token);
 						}
 						changed = tracker.endTurn(event.at) || changed;
@@ -5817,7 +5850,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				// 承認が残ったままターンが中断された（Codex の承認をカードやターミナルで拒否すると、ターンが
 				// 中断されて終わる。カードで答えた承認は「回答済み」で列に残っている）なら、承認を外し、ペインは
 				// 完了（review）ではなく状態なし（idle）へ移す（完了の通知を鳴らさない）。
-				if (reason === 'interrupted' && tailer.hasQueuedApproval()) {
+				if (reason === 'interrupted' && tailer.stoppedOnApproval()) {
 					tailer.clearApprovalRequest(undefined, true, true);
 					fireParadisAgentAwaitingUser(token);
 				} else {
