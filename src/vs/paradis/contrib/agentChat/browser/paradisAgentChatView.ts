@@ -65,6 +65,8 @@ interface IQuestionDraft {
 	readonly multi: Map<number, Set<number>>;
 	readonly other: Map<number, string>;
 	sending: boolean;
+	/** 送り終えた。TUI が消費して質問が消えるまで、もう一度は送らせない。 */
+	sent: boolean;
 	error?: string;
 }
 
@@ -98,7 +100,7 @@ export class ParadisAgentChatView extends Disposable {
 	private readonly pendingImages = new Set<string>();
 	private readonly questionDrafts = new Map<string, IQuestionDraft>();
 	/** 承認の回答を送っている・送れなかった状態（interaction id ごと）。 */
-	private readonly approvalStates = new Map<string, { readonly sending: boolean; readonly error?: string }>();
+	private readonly approvalStates = new Map<string, { readonly sending: boolean; readonly sent?: boolean; readonly error?: string }>();
 	private liveClock: HTMLElement | undefined;
 	private readonly liveMarkdown = this._register(new MutableDisposable<IDisposable>());
 	private readonly fallbackStore = this._register(new DisposableStore());
@@ -195,10 +197,6 @@ export class ParadisAgentChatView extends Disposable {
 		this.composer.focus();
 	}
 
-	hasFocus(): boolean {
-		return this.element.contains(this.element.ownerDocument.activeElement);
-	}
-
 	private updateBackLabel(): void {
 		const keybinding = this.host.getToggleKeybindingLabel();
 		clearNode(this.backButton);
@@ -253,13 +251,21 @@ export class ParadisAgentChatView extends Disposable {
 		this.renderLive(state);
 		this.renderFallbackApproval(state);
 		this.composer.setBusy(state?.busy === true);
+		// この画面から答え終えた質問・承認は、中継が消すのを待たずに送れるようにする
+		// （tool_use_id の無い承認は、ターンが終わるまで中継に残るため）。
+		const interaction = state?.interaction;
+		const answeredHere = interaction?.kind === 'question'
+			? this.questionDrafts.get(interaction.id)?.sent === true
+			: interaction?.kind === 'approval' && this.approvalStates.get(interaction.id)?.sent === true;
 		this.composer.setBlockedReason(state === undefined
 			? localize('paradisAgentChat.blockedNoSession', "エージェントの会話が見つかりません")
-			: state.interaction?.kind === 'question'
-				? localize('paradisAgentChat.blockedQuestion', "質問に答えてから送ってください")
-				: state.interaction?.kind === 'approval'
-					? localize('paradisAgentChat.blockedApproval', "許可の確認に答えてから送ってください")
-					: undefined);
+			: answeredHere
+				? undefined
+				: state.interaction?.kind === 'question'
+					? localize('paradisAgentChat.blockedQuestion', "質問に答えてから送ってください")
+					: state.interaction?.kind === 'approval'
+						? localize('paradisAgentChat.blockedApproval', "許可の確認に答えてから送ってください")
+						: undefined);
 		if (follow) {
 			this.scrollToBottom();
 		}
@@ -335,12 +341,12 @@ export class ParadisAgentChatView extends Disposable {
 		switch (item.kind) {
 			case 'tool': {
 				const key = item.use !== undefined ? this.fullTextKey(item.use.rev) : '';
-				return JSON.stringify([item.kind, item.use?.rev, item.result?.rev, expanded, this.fullTexts.has(key), this.imageSignature(item.result)]);
+				return JSON.stringify([item.kind, item.use?.rev, item.result?.rev, expanded, this.expanded.has(`${item.key}:diff`), this.fullTexts.has(key), this.imageSignature(item.result)]);
 			}
 			case 'questions': {
 				// 自由入力の文字は指紋に入れない（打つたびにカードを作り直すと、入力欄のフォーカスが外れる）。
 				const draft = this.questionDrafts.get(item.group);
-				const draftSignature = draft === undefined ? undefined : [draft.step, draft.sending, draft.error, draft.answers.map(answer => answer === undefined ? '' : answer.kind === 'option' ? `o${answer.index}` : answer.kind === 'multi' ? `m${answer.indices.join(',')}` : 't')];
+				const draftSignature = draft === undefined ? undefined : [draft.step, draft.sending, draft.sent, draft.error, draft.answers.map(answer => answer === undefined ? '' : answer.kind === 'option' ? `o${answer.index}` : answer.kind === 'multi' ? `m${answer.indices.join(',')}` : 't')];
 				return JSON.stringify([item.kind, item.questions.map(question => question.rev), item.answered, item.answer, paradisIsPendingQuestionItem(item, interaction), draftSignature]);
 			}
 			case 'approval':
@@ -656,7 +662,7 @@ export class ParadisAgentChatView extends Disposable {
 		}
 		let draft = this.questionDrafts.get(item.group);
 		if (draft === undefined || draft.answers.length !== questions.length) {
-			draft = { step: 0, answers: questions.map(() => undefined), multi: new Map(), other: new Map(), sending: false };
+			draft = { step: 0, answers: questions.map(() => undefined), multi: new Map(), other: new Map(), sending: false, sent: false };
 			this.questionDrafts.set(item.group, draft);
 		}
 		const currentDraft = draft;
@@ -688,7 +694,7 @@ export class ParadisAgentChatView extends Disposable {
 		(question.options ?? []).forEach((option, optionIndex) => {
 			const button = append(options, $('button.paradis-agent-chat-option')) as HTMLButtonElement;
 			button.type = 'button';
-			button.disabled = currentDraft.sending;
+			button.disabled = currentDraft.sending || currentDraft.sent;
 			const chosen = multiSelect ? selected.has(optionIndex) : (currentDraft.answers[index]?.kind === 'option' && (currentDraft.answers[index] as { index: number }).index === optionIndex);
 			button.classList.toggle('selected', chosen);
 			if (multiSelect) {
@@ -727,7 +733,7 @@ export class ParadisAgentChatView extends Disposable {
 		otherInput.type = 'text';
 		otherInput.placeholder = localize('paradisAgentChat.otherPlaceholder', "その他（自由に入力）");
 		otherInput.value = currentDraft.other.get(index) ?? '';
-		otherInput.disabled = currentDraft.sending;
+		otherInput.disabled = currentDraft.sending || currentDraft.sent;
 		const otherComposing = { value: false };
 		store.add(addDisposableListener(otherInput, 'compositionstart', () => { otherComposing.value = true; }));
 		store.add(addDisposableListener(otherInput, 'compositionend', () => { otherComposing.value = false; }));
@@ -743,7 +749,7 @@ export class ParadisAgentChatView extends Disposable {
 			}
 			// 打つたびにカードを作り直さず、送るボタンの押せる状態だけを合わせる。
 			if (submit.button !== undefined) {
-				submit.button.disabled = !isReady() || currentDraft.sending;
+				submit.button.disabled = !isReady() || currentDraft.sending || currentDraft.sent;
 			}
 		};
 		store.add(addDisposableListener(otherInput, EventType.INPUT, applyOther));
@@ -766,10 +772,16 @@ export class ParadisAgentChatView extends Disposable {
 		const footer = append(card, $('.paradis-agent-chat-card-footer'));
 		const submitButton = submit.button = append(footer, $('button.paradis-agent-chat-primary')) as HTMLButtonElement;
 		submitButton.type = 'button';
-		submitButton.disabled = !isReady() || currentDraft.sending;
-		submitButton.textContent = currentDraft.sending ? localize('paradisAgentChat.sending', "送っています…") : localize('paradisAgentChat.submitAnswers', "回答を送る");
+		submitButton.disabled = !isReady() || currentDraft.sending || currentDraft.sent;
+		submitButton.textContent = currentDraft.sending
+			? localize('paradisAgentChat.sending', "送っています…")
+			: currentDraft.sent
+				? localize('paradisAgentChat.sent', "送りました")
+				: localize('paradisAgentChat.submitAnswers', "回答を送る");
 		store.add(addDisposableListener(submitButton, EventType.CLICK, () => this.submitQuestions(item.group, questions.length, currentDraft)));
-		append(footer, $('span.paradis-agent-chat-card-note')).textContent = currentDraft.error ?? localize('paradisAgentChat.answerInTerminalNote', "ターミナル側で答えた場合も自動的に閉じます");
+		append(footer, $('span.paradis-agent-chat-card-note')).textContent = currentDraft.error ?? (currentDraft.sent
+			? localize('paradisAgentChat.sentNote', "ターミナルに反映されるのを待っています")
+			: localize('paradisAgentChat.answerInTerminalNote', "ターミナル側で答えた場合も自動的に閉じます"));
 		footer.classList.toggle('error', currentDraft.error !== undefined);
 		return card;
 	}
@@ -782,7 +794,7 @@ export class ParadisAgentChatView extends Disposable {
 	private submitQuestions(group: string, questionCount: number, draft: IQuestionDraft): void {
 		const instanceId = this.instanceId;
 		const token = this.token;
-		if (instanceId === undefined || token === undefined || draft.sending || draft.answers.length !== questionCount) {
+		if (instanceId === undefined || token === undefined || draft.sending || draft.sent || draft.answers.length !== questionCount) {
 			return;
 		}
 		const answers = draft.answers.filter((answer): answer is ParadisAgentQuestionAnswer => answer !== undefined);
@@ -794,6 +806,7 @@ export class ParadisAgentChatView extends Disposable {
 		this.rerenderQuestionCard();
 		this.host.answerQuestions(instanceId, token, group, answers).then(error => {
 			draft.sending = false;
+			draft.sent = error === undefined;
 			draft.error = error;
 			this.rerenderQuestionCard();
 			void this.session?.refresh();
@@ -841,13 +854,15 @@ export class ParadisAgentChatView extends Disposable {
 			const button = append(footer, $(choice.tone === 'approve' ? 'button.paradis-agent-chat-primary' : 'button.paradis-agent-chat-secondary')) as HTMLButtonElement;
 			button.type = 'button';
 			button.textContent = choice.label;
-			button.disabled = approvalState?.sending === true;
+			button.disabled = approvalState?.sending === true || approvalState?.sent === true;
 			store.add(addDisposableListener(button, EventType.CLICK, () => this.submitApproval(interaction.id, choice.id)));
 		}
 		const note = append(footer, $('span.paradis-agent-chat-card-note'));
 		note.textContent = approvalState?.error ?? (approvalState?.sending
 			? localize('paradisAgentChat.sending', "送っています…")
-			: localize('paradisAgentChat.answerInTerminalNote', "ターミナル側で答えた場合も自動的に閉じます"));
+			: approvalState?.sent
+				? localize('paradisAgentChat.sentNote', "ターミナルに反映されるのを待っています")
+				: localize('paradisAgentChat.answerInTerminalNote', "ターミナル側で答えた場合も自動的に閉じます"));
 		footer.classList.toggle('error', approvalState?.error !== undefined);
 		return card;
 	}
@@ -858,14 +873,15 @@ export class ParadisAgentChatView extends Disposable {
 		if (instanceId === undefined || token === undefined) {
 			return;
 		}
+		const previous = this.approvalStates.get(interactionId);
+		if (previous?.sending || previous?.sent) {
+			return;
+		}
 		this.approvalStates.set(interactionId, { sending: true });
 		this.rerenderQuestionCard();
 		this.host.answerApproval(instanceId, token, interactionId, choiceId).then(error => {
-			if (error !== undefined) {
-				this.approvalStates.set(interactionId, { sending: false, error });
-			} else {
-				this.approvalStates.delete(interactionId);
-			}
+			// 送れたら、TUI が消費して承認が消えるまで押せないままにする（押し直した `1`+Enter が入力欄へ流れるため）。
+			this.approvalStates.set(interactionId, error !== undefined ? { sending: false, error } : { sending: false, sent: true });
 			this.rerenderQuestionCard();
 			void this.session?.refresh();
 		});
@@ -960,7 +976,9 @@ export class ParadisAgentChatView extends Disposable {
 			return;
 		}
 		this.composer.showNotice(undefined);
+		this.composer.setSending(true);
 		this.host.sendMessage(instanceId, token, text).then(error => {
+			this.composer.setSending(false);
 			if (error !== undefined) {
 				this.composer.showNotice(error);
 				return;

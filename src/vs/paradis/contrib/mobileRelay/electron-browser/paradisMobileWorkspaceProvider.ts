@@ -70,13 +70,13 @@ import { paradisEncodeJsonResponsePayload } from '../common/paradisMobileGzipJso
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import { paradisSendAgentInteractionKeys } from '../../agentChat/browser/paradisAgentTuiInput.js';
-
-// 画面の目印の照合は、デスクトップのチャット表示と共有するため agentChat/browser へ切り出した。
-export { paradisScreenShowsMarker } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { PARADIS_OFFICE_CHANNEL, marshalParadisOfficeRequest, unmarshalParadisOfficeResponse, type ParadisOfficeV1Negotiation } from '../../fileViewers/common/paradisOfficeChannel.js';
 import type { ParadisOfficeSourceDescriptor } from '../../fileViewers/common/paradisOfficeProtocol.js';
+
+// 画面の目印の照合は、デスクトップのチャット表示と共有するため agentChat/browser へ切り出した。
+export { paradisScreenShowsMarker } from '../../agentChat/browser/paradisAgentTuiInput.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

@@ -18,8 +18,13 @@
  *   ターミナルの規則（`.monaco-workbench .terminal-editor ...`）より詳細度を高くしてある
  */
 
+/*
+ * visibility: hidden にはしない。xterm がフォーカスを受けられなくなり、タブを選び直したときに
+ * TerminalEditor が戻すフォーカスを入力欄へ付け替える（onDidFocus）契機が無くなるため。
+ */
 .monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-agent-chat-active > .terminal-wrapper {
-	visibility: hidden;
+	opacity: 0;
+	pointer-events: none;
 }
 
 /* チャットの間は、復元したタブのバナーを出さない（ターミナルに戻れば出る）。 */

@@ -37,6 +37,7 @@ import { IEditorCommandsContext } from '../../../../workbench/common/editor.js';
 import { ITerminalInstance, ITerminalService, terminalEditorId } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
 import { DEFAULT_COMMANDS_TO_SKIP_SHELL } from '../../../../workbench/contrib/terminal/common/terminal.js';
+import { TerminalContextKeys } from '../../../../workbench/contrib/terminal/common/terminalContextKey.js';
 import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisEditorTerminalOverlay, paradisRegisterEditorTerminalOverlay } from '../../agentBrowser/browser/paradisPaneIndicator.js';
@@ -48,7 +49,7 @@ import { paradisSendAgentInteractionKeys } from '../browser/paradisAgentTuiInput
 import { ParadisAgentChatSendKey, PARADIS_AGENT_CHAT_HISTORY_LIMIT } from '../browser/paradisAgentChatComposer.js';
 import { ParadisAgentChatSession } from '../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatViewHost, ParadisAgentChatView } from '../browser/paradisAgentChatView.js';
-import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
+import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentInteraction, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisPushAgentChatHistory } from '../common/paradisAgentChatComposerLogic.js';
 import { paradisQuestionReadyMarker } from '../common/paradisAgentTranscriptParser.js';
 import '../browser/media/paradisAgentChat.css';
@@ -124,10 +125,6 @@ class ParadisAgentChatOverlay extends Disposable implements IParadisEditorTermin
 		return true;
 	}
 
-	hasFocus(): boolean {
-		return this.view?.hasFocus() === true;
-	}
-
 	override dispose(): void {
 		this.container.classList.remove('paradis-agent-chat-active');
 		this.controller.forgetOverlay(this);
@@ -152,6 +149,8 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 	private readonly overlays = new Set<ParadisAgentChatOverlay>();
 	private readonly drafts = new Map<string, string>();
 	private readonly histories = new Map<string, string[]>();
+	/** この画面から打鍵で答え終えた interaction（`token\0kind\0id`）。中継が消すまでの間も文を送れるようにする。 */
+	private readonly answeredInteractions = new Set<string>();
 	private readonly commandCache = new Map<string, { readonly at: number; readonly promise: Promise<readonly IParadisAgentChatCommand[]> }>();
 	private readonly groupListeners = this._register(new DisposableMap<IEditorGroup, IDisposable>());
 	private readonly instanceListeners = this._register(new DisposableMap<number, IDisposable>());
@@ -187,8 +186,13 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 			return overlay;
 		}));
 		this._register(this.source.onDidChangeAgentChat(tokens => {
+			// 取り直すのはチャット表示になっているペインだけ（生成中は知らせが頻繁に来るため）。
+			// 閉じているペインは、次に開いたときに差分で追いつく。
+			const visible = this.visibleTokens();
 			for (const token of tokens) {
-				void this.sessions.get(token)?.refresh();
+				if (visible.has(token)) {
+					void this.sessions.get(token)?.refresh();
+				}
 			}
 		}));
 		this._register(this.paneTokenService.onDidChange(() => {
@@ -373,6 +377,11 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 				this.drafts.delete(token);
 				this.histories.delete(token);
 				this.commandCache.delete(token);
+				for (const key of [...this.answeredInteractions]) {
+					if (key.startsWith(`${token}\0`)) {
+						this.answeredInteractions.delete(key);
+					}
+				}
 			}
 		}
 	}
@@ -386,12 +395,20 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 		this.source.watchAgentChat(this.watcherId, tokens).catch(error => this.logService.trace('[paradisAgentChat] watch failed', String(error)));
 	}
 
-	private refreshVisibleSessions(): void {
+	private visibleTokens(): Set<string> {
+		const tokens = new Set<string>();
 		for (const instanceId of this.chatModeInstances) {
 			const token = this.tokenFor(instanceId);
 			if (token !== undefined) {
-				void this.sessions.get(token)?.refresh();
+				tokens.add(token);
 			}
+		}
+		return tokens;
+	}
+
+	private refreshVisibleSessions(): void {
+		for (const token of this.visibleTokens()) {
+			void this.sessions.get(token)?.refresh();
 		}
 	}
 
@@ -462,14 +479,20 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 			return localize('paradisAgentChat.errorNoSession', "エージェントの会話が見つかりません");
 		}
 		// 質問・承認の画面に文字を流すと、先頭の文字が選択肢の操作として食われる（TM23 と同じ理由）。
-		if (session.state.interaction !== null) {
+		if (!this.isAnsweredOrNone(token, session.state.interaction)) {
 			return localize('paradisAgentChat.errorInteraction', "エージェントが回答を待っています。先に質問・許可の確認に答えてください");
 		}
 		try {
 			const outcome = await paradisSendAgentMessageToTui(
 				text,
 				(value, execute, bracketedPasteMode) => instance.sendText(value, execute ?? false, bracketedPasteMode),
-				async () => this.liveInstance(instanceId, token) === instance && (this.sessions.get(token)?.state?.interaction ?? null) === null,
+				async () => {
+					if (this.liveInstance(instanceId, token) !== instance) {
+						return false;
+					}
+					await session.refresh();
+					return session.state !== undefined && this.isAnsweredOrNone(token, session.state.interaction);
+				},
 			);
 			if (!outcome.executed) {
 				return outcome.consumed
@@ -482,6 +505,10 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 		}
 		this.histories.set(token, paradisPushAgentChatHistory(this.getHistory(token), text, PARADIS_AGENT_CHAT_HISTORY_LIMIT));
 		return undefined;
+	}
+
+	private isAnsweredOrNone(token: string, interaction: IParadisAgentInteraction | null): boolean {
+		return interaction === null || this.answeredInteractions.has(`${token}\0${interaction.kind}\0${interaction.id}`);
 	}
 
 	/** 待っている interaction がまだ同じか（中継から取り直して確かめる）。 */
@@ -548,7 +575,12 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 		if (parts.length === 0) {
 			return localize('paradisAgentChat.errorNoKeys', "送る内容がありません");
 		}
+		// モバイルと同じ claim を取る。取れなければ、別の場所（スマホ・この画面）から送った回答が反映待ち。
+		if (!(await this.source.claimAgentChatInteraction(token, kind, id).catch(() => false))) {
+			return localize('paradisAgentChat.errorLocked', "送った回答がターミナルに反映されるのを待っています。変わらない場合はターミナルで確かめてください");
+		}
 		let stopReason: string | undefined;
+		let keysSent = 0;
 		try {
 			const sent = await paradisSendAgentInteractionKeys(instance, parts, INTERACTION_KEY_DELAY, readyMarker, async () => {
 				if (this.liveInstance(instanceId, token) !== instance) {
@@ -560,13 +592,20 @@ class ParadisAgentChatController extends Disposable implements IWorkbenchContrib
 					stopReason = localize('paradisAgentChat.errorInteractionChanged', "途中で回答待ちが終わったため、残りのキーを送りませんでした");
 					return false;
 				}
+				keysSent++;
 				return true;
 			});
-			void this.sessions.get(token)?.refresh();
+			if (sent) {
+				this.answeredInteractions.add(`${token}\0${kind}\0${id}`);
+			}
 			return sent ? undefined : stopReason;
 		} catch (error) {
 			this.logService.warn('[paradisAgentChat] interaction keys failed', error);
 			return localize('paradisAgentChat.errorSend', "ターミナルへ送れませんでした");
+		} finally {
+			// 1つでも打鍵したら、TUI が消費するまで同じ interaction へ打ち直させない（二重の打鍵が入力欄へ流れるため）。
+			void this.source.releaseAgentChatInteraction(token, kind, id, keysSent > 0).catch(() => undefined);
+			void this.sessions.get(token)?.refresh();
 		}
 	}
 }
@@ -589,7 +628,8 @@ registerAction2(class ParadisToggleAgentChatAction extends Action2 {
 			toggled: PARADIS_AGENT_CHAT_ACTIVE,
 			keybinding: {
 				primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyJ,
-				when: chatToggleWhen,
+				// 下部パネルのターミナルにフォーカスがあるときは受けない（アクティブなエディタのタブを切り替えてしまうため）。
+				when: ContextKeyExpr.and(chatToggleWhen, ContextKeyExpr.or(TerminalContextKeys.focus.negate(), TerminalContextKeys.editorFocus)),
 				// 検索ビューの「クエリ詳細の切り替え」と同じキー。あちらは検索にフォーカスがあるときだけ効くので、
 				// ターミナルタブを選んでいる間だけこちらが受ける。
 				weight: KeybindingWeight.WorkbenchContrib + 1,

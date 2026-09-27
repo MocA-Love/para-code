@@ -56,6 +56,8 @@ function sourceReturning(views: IParadisAgentChatView[]): IParadisAgentChatSourc
 		getAgentChatImage: async () => undefined,
 		getAgentChatCommands: async () => [],
 		answerAgentChatApproval: async () => false,
+		claimAgentChatInteraction: async () => true,
+		releaseAgentChatInteraction: async () => { },
 	};
 }
 

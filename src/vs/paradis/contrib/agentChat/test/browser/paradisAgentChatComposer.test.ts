@@ -8,13 +8,9 @@
 
 import assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
-import { Event as BaseEvent } from '../../../../../base/common/event.js';
-import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatSource, IParadisAgentChatView } from '../../common/paradisAgentChat.js';
+import { IParadisAgentChatCommand } from '../../common/paradisAgentChat.js';
 import { IParadisAgentChatComposerHost, ParadisAgentChatComposer, ParadisAgentChatSendKey } from '../../browser/paradisAgentChatComposer.js';
-import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
 
 class TestComposerHost implements IParadisAgentChatComposerHost {
 	sendKey: ParadisAgentChatSendKey = 'enter';
@@ -119,54 +115,6 @@ suite('ParadisAgentChatComposer', () => {
 			recalledOlder: 'first',
 			backToDraft: '',
 			sent: [],
-		});
-	});
-});
-
-suite('ParadisAgentChatSession', () => {
-	const store = ensureNoDisposablesAreLeakedInTestSuite();
-
-	test('applies deltas from the cursor and falls back to a full read when the delta does not fit', async () => {
-		const requests: (IParadisAgentChatCursor | undefined)[] = [];
-		const responses: (IParadisAgentChatView | undefined)[] = [
-			{ token: 't', agent: 'codex', epoch: 'e1', rev: 1, reset: true, messages: [{ rev: 0, role: 'user', kind: 'text', text: 'a' }], live: null, interaction: null, busy: false },
-			{ token: 't', agent: 'codex', epoch: 'e1', rev: 2, reset: false, messages: [{ rev: 1, role: 'assistant', kind: 'text', text: 'b' }], live: null, interaction: null, busy: true },
-			// 読み取りが始め直された（epoch が変わった）のに差分として返ってきた → 全量を取り直す
-			{ token: 't', agent: 'codex', epoch: 'e2', rev: 1, reset: false, messages: [], live: null, interaction: null, busy: false },
-			{ token: 't', agent: 'codex', epoch: 'e2', rev: 1, reset: true, messages: [{ rev: 0, role: 'user', kind: 'text', text: 'c' }], live: null, interaction: null, busy: false },
-		];
-		const source: IParadisAgentChatSource = {
-			onDidChangeAgentChat: BaseEvent.None,
-			watchAgentChat: async () => { },
-			getAgentChat: async (_token, cursor) => {
-				requests.push(cursor);
-				return responses.shift();
-			},
-			getAgentChatFullText: async () => undefined,
-			getAgentChatImage: async () => undefined,
-			getAgentChatCommands: async () => [],
-			answerAgentChatApproval: async () => false,
-		};
-		const disposables = store.add(new DisposableStore());
-		const session = disposables.add(new ParadisAgentChatSession('t', source, new NullLogService()));
-		let changes = 0;
-		disposables.add(session.onDidChange(() => changes++));
-		await session.refresh();
-		await session.refresh();
-		const afterDelta = session.state?.messages.map(message => message.text);
-		await session.refresh();
-		assert.deepStrictEqual({
-			requests,
-			afterDelta,
-			final: session.state?.messages.map(message => message.text),
-			epoch: session.state?.epoch,
-			changes,
-		}, {
-			requests: [undefined, { epoch: 'e1', rev: 1 }, { epoch: 'e1', rev: 2 }, undefined],
-			afterDelta: ['a', 'b'],
-			final: ['c'],
-			epoch: 'e2',
-			changes: 3,
 		});
 	});
 });

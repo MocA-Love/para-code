@@ -61,6 +61,8 @@ export class ParadisAgentChatComposer extends Disposable {
 	private historyDraft = '';
 	private blockedReason: string | undefined;
 	private busy = false;
+	/** 送っている最中（貼り付けと Enter の間に数百 ms かかる）。二重送信を防ぐ。 */
+	private sending = false;
 	private slashItems: readonly IParadisAgentChatCommand[] = [];
 	private readonly slashRowListeners = this._register(new DisposableStore());
 	private slashSelected = 0;
@@ -127,6 +129,12 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.updateSendState();
 	}
 
+	/** 送っている最中は送信を受け付けない。 */
+	setSending(sending: boolean): void {
+		this.sending = sending;
+		this.updateSendState();
+	}
+
 	/** エージェントが動いている間は、送った文が TUI の待ち行列に入る旨を見せる。 */
 	setBusy(busy: boolean): void {
 		if (this.busy !== busy) {
@@ -176,7 +184,7 @@ export class ParadisAgentChatComposer extends Disposable {
 
 	private updateSendState(): void {
 		const empty = this.textarea.value.trim().length === 0;
-		this.sendButton.disabled = empty || this.blockedReason !== undefined;
+		this.sendButton.disabled = empty || this.blockedReason !== undefined || this.sending;
 	}
 
 	private onInput(): void {
@@ -231,7 +239,10 @@ export class ParadisAgentChatComposer extends Disposable {
 			if (wantsSend) {
 				event.preventDefault();
 				event.stopPropagation();
-				this.submit();
+				// 押しっぱなしのキーリピートで同じ文を何度も送らない。
+				if (!e.repeat) {
+					this.submit();
+				}
 				return;
 			}
 			if (!modEnter && event.shiftKey) {
@@ -287,7 +298,7 @@ export class ParadisAgentChatComposer extends Disposable {
 
 	private submit(): void {
 		const text = this.textarea.value;
-		if (text.trim().length === 0 || this.blockedReason !== undefined) {
+		if (text.trim().length === 0 || this.blockedReason !== undefined || this.sending) {
 			return;
 		}
 		this.hideSlashMenu();

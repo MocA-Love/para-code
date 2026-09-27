@@ -247,4 +247,11 @@ export interface IParadisAgentChatSource {
 	 * 画面側が TUI へ打鍵するので、ここは通らない。答えられたら true。
 	 */
 	answerAgentChatApproval(token: string, interactionId: string, choiceId: string): Promise<boolean>;
+	/**
+	 * 質問・承認へ打鍵で答える前に、モバイルと同じ claim を取る（同じ interaction へ2か所から同時に
+	 * 打鍵しないため）。取れなければ false。
+	 */
+	claimAgentChatInteraction(token: string, kind: 'question' | 'approval', id: string): Promise<boolean>;
+	/** claim を返す。sent なら TUI が消費するまで（最長 60 秒）同じ interaction への回答を受け付けない。 */
+	releaseAgentChatInteraction(token: string, kind: 'question' | 'approval', id: string, sent: boolean): Promise<void>;
 }

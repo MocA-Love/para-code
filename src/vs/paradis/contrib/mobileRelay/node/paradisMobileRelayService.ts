@@ -961,6 +961,18 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return paradisIsAgentChatToken(token) ? this.agentChat.getDesktopChatCommands(token) : [];
 	}
 
+	async claimAgentChatInteraction(token: string, kind: 'question' | 'approval', id: string): Promise<boolean> {
+		return paradisIsAgentChatToken(token) && (kind === 'question' || kind === 'approval') && typeof id === 'string' && id.length <= 500
+			? this.agentChat.claimDesktopInteraction(token, kind, id)
+			: false;
+	}
+
+	async releaseAgentChatInteraction(token: string, kind: 'question' | 'approval', id: string, sent: boolean): Promise<void> {
+		if (paradisIsAgentChatToken(token) && (kind === 'question' || kind === 'approval') && typeof id === 'string') {
+			this.agentChat.releaseDesktopInteraction(token, kind, id, sent === true);
+		}
+	}
+
 	async answerAgentChatApproval(token: string, interactionId: string, choiceId: string): Promise<boolean> {
 		return paradisIsAgentChatToken(token) && typeof interactionId === 'string' && interactionId.length <= 500 && typeof choiceId === 'string' && choiceId.length <= 100
 			? this.agentChat.answerDesktopCodexApproval(token, interactionId, choiceId)

@@ -12,7 +12,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { fireParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
+import { fireParadisAgentHookEvent, getParadisAgentPaneActivity } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { ParadisMobileAgentChat } from '../../../mobileRelay/node/paradisMobileAgentChat.js';
 import { IParadisAgentChatView } from '../../common/paradisAgentChat.js';
 
@@ -100,6 +100,14 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			await waitFor(async () => (view = await chat.getDesktopChat(token, undefined))?.interaction?.kind === 'question', 'question was not captured');
 			assert.deepStrictEqual(view!.pendingQuestions?.map(question => [question.text, question.options?.map(option => option.label)]), [['見出しも直しますか?', ['はい', 'いいえ']]]);
 
+			// 打鍵で答える間はモバイルと同じ claim を取る。2つ目は取れず、送らずに返せばまた取れる
+			const group = view!.interaction!.id;
+			const claims = [chat.claimDesktopInteraction(token, 'question', group), chat.claimDesktopInteraction(token, 'question', group)];
+			chat.releaseDesktopInteraction(token, 'question', group, false);
+			claims.push(chat.claimDesktopInteraction(token, 'question', group));
+			chat.releaseDesktopInteraction(token, 'question', group, false);
+			assert.deepStrictEqual(claims, [true, false, true]);
+
 			// モバイルへは何も送っていない
 			assert.deepStrictEqual(sent, []);
 		} finally {
@@ -124,6 +132,24 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			await waitFor(() => !access.hookProcessing.has(token), 'hooks were not processed');
 			const view = await chat.getDesktopChat(token, undefined);
 			assert.strictEqual(view?.interaction, null);
+		} finally {
+			chat.dispose();
+		}
+	}));
+	test('an approval captured only for the desktop chat does not turn the pane status into waiting for permission', () => withClaudeHome(async claudeHome => {
+		const token = 'pane-desktop-approval';
+		const transcriptPath = join(claudeHome, 'projects', 'repo', 'session-3.jsonl');
+		await writeFile(transcriptPath, line({ type: 'user', timestamp: '2026-09-27T10:00:00.000Z', message: { role: 'user', content: 'テストして' } }));
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>> };
+		try {
+			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: 'session-3', transcriptPath, cwd: '/repo', at: Date.now() });
+			await waitFor(() => !access.hookProcessing.has(token), 'SessionStart was not processed');
+			chat.watchDesktopChat('window-1', [token]);
+			fireParadisAgentHookEvent({ token, event: 'PermissionRequest', sessionId: 'session-3', transcriptPath, cwd: '/repo', toolName: 'Bash', toolInput: { command: 'npm test' }, at: Date.now() });
+			await waitFor(async () => (await chat.getDesktopChat(token, undefined))?.interaction?.kind === 'approval', 'approval was not captured');
+			assert.strictEqual(getParadisAgentPaneActivity(token).pendingApproval, false);
 		} finally {
 			chat.dispose();
 		}

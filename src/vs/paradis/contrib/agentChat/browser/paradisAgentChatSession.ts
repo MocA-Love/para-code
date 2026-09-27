@@ -27,7 +27,8 @@ export class ParadisAgentChatSession extends Disposable {
 	/** 一度でも取りに行って答えが返ったか（読み込み中の表示と「会話が無い」表示を分ける）。 */
 	private _loaded = false;
 	private _inFlight: Promise<void> | undefined;
-	private _dirty = false;
+	/** 取得中に頼まれた、次の1回の取得。 */
+	private _next: Promise<void> | undefined;
 
 	constructor(
 		readonly token: string,
@@ -45,20 +46,28 @@ export class ParadisAgentChatSession extends Disposable {
 		return this._loaded;
 	}
 
-	/** 最新の会話を取りに行く。取りに行っている最中なら、終わったあとにもう1回だけ取りに行く。 */
+	/**
+	 * 最新の会話を取りに行く。返る promise は「呼んだ時点より後に始めた取得」が終わったときに解ける
+	 * （取得中に呼ばれたら、今の取得の後にもう1回だけ取り、その完了を待たせる。呼ぶ前に始まった取得の
+	 * 古い結果で判断させないため）。
+	 */
 	refresh(): Promise<void> {
-		if (this._inFlight !== undefined) {
-			this._dirty = true;
+		if (this._inFlight === undefined) {
+			this._inFlight = this.fetch().finally(() => this._inFlight = undefined);
 			return this._inFlight;
 		}
-		this._inFlight = this.fetch().finally(() => {
-			this._inFlight = undefined;
-			if (this._dirty && !this._store.isDisposed) {
-				this._dirty = false;
-				void this.refresh();
-			}
-		});
-		return this._inFlight;
+		if (this._next === undefined) {
+			const previous = this._inFlight;
+			this._next = previous.then(() => {
+				this._next = undefined;
+				if (this._store.isDisposed) {
+					return;
+				}
+				this._inFlight = this.fetch().finally(() => this._inFlight = undefined);
+				return this._inFlight;
+			});
+		}
+		return this._next;
 	}
 
 	private async fetch(): Promise<void> {
