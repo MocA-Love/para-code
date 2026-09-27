@@ -21,6 +21,7 @@ import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
+import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -34,6 +35,7 @@ import {
 	IParadisSkill,
 	IParadisSkillRoot,
 	IParadisSkillRootListing,
+	paradisDedupeSkillListings,
 	paradisDeleteSkill,
 	paradisInstallSkill,
 	paradisListSkills,
@@ -41,6 +43,7 @@ import {
 	paradisSkillDeleteBlocker,
 	paradisSkillDeleteUsesTrash,
 	paradisSkillInstallBlocker,
+	paradisSkillInstallSource,
 	paradisSkillInstallTarget,
 	paradisSkillRootLabel,
 } from '../common/paradisSkills.js';
@@ -153,7 +156,7 @@ export class ParadisSkillsDialog extends Disposable {
 			if (this._store.isDisposed) {
 				return;
 			}
-			this.listings = listings;
+			this.listings = paradisDedupeSkillListings(listings);
 			if (!this.listings.some(listing => listing.root.id === this.selectedRootId)) {
 				this.selectedRootId = (this.listings.find(listing => listing.skills.length > 0) ?? this.listings[0])?.root.id;
 			}
@@ -193,7 +196,7 @@ export class ParadisSkillsDialog extends Disposable {
 			item.classList.toggle('active', listing.root.id === this.selectedRootId);
 			item.classList.toggle('empty', !listing.exists || listing.skills.length === 0);
 			dom.append(item, $('span.psk-nav-label')).textContent = paradisSkillRootLabel(listing.root);
-			dom.append(item, $('span.psk-nav-count')).textContent = listing.exists ? String(listing.skills.length) : '—';
+			dom.append(item, $('span.psk-nav-count')).textContent = listing.aliasOf !== undefined ? '=' : listing.exists ? String(listing.skills.length) : '—';
 			item.title = listing.root.uri.scheme === 'file' ? listing.root.uri.fsPath : listing.root.uri.path;
 			this.navDisposables.add(dom.addDisposableListener(item, 'click', () => {
 				this.selectedRootId = listing.root.id;
@@ -206,7 +209,11 @@ export class ParadisSkillsDialog extends Disposable {
 	}
 
 	private displayPath(root: IParadisSkillRoot): string {
-		return root.uri.scheme === 'file' ? root.uri.fsPath : root.uri.path;
+		return this.displayUri(root.uri);
+	}
+
+	private displayUri(uri: URI): string {
+		return uri.scheme === 'file' ? uri.fsPath : uri.path;
 	}
 
 	// ---------- 右の本文 ----------
@@ -228,6 +235,14 @@ export class ParadisSkillsDialog extends Disposable {
 		dom.append(head, $('code.psk-path')).textContent = this.displayPath(listing.root);
 		if (listing.error) {
 			dom.append(this.content, $('.psk-error')).textContent = listing.error;
+		}
+		if (listing.aliasOf !== undefined) {
+			const original = this.listing(listing.aliasOf);
+			dom.append(this.content, $('.psk-muted')).textContent = localize('paradis.skills.aliasRoot', "このフォルダは「{0}」と同じ実体です（リンク、または同じ場所）。スキルはそちらに出しています。", original ? `${original.root.host.label} · ${paradisSkillRootLabel(original.root)}` : '');
+			return;
+		}
+		if (listing.realUri && listing.realUri.toString() !== listing.root.uri.toString()) {
+			dom.append(this.content, $('.psk-muted')).textContent = localize('paradis.skills.rootIsLink', "このフォルダはリンクです。実体: {0}", this.displayUri(listing.realUri));
 		}
 		if (!listing.exists) {
 			dom.append(this.content, $('.psk-muted')).textContent = localize('paradis.skills.missingRoot', "このフォルダはまだありません。ほかの場所のスキルを「導入」すると作ります。");
@@ -283,7 +298,12 @@ export class ParadisSkillsDialog extends Disposable {
 
 		// 導入
 		const actions = dom.append(this.content, $('.psk-actions'));
-		const targets = this.listings.map(listing => listing.root).filter(root => paradisSkillInstallBlocker(skill, root) === undefined);
+		// 同じ実体のフォルダ（リンク・重複）へは導入先として出さない
+		const sourceReal = (this.listing(skill.root.id)?.realUri ?? skill.root.uri).toString();
+		const targets = this.listings
+			.filter(listing => listing.aliasOf === undefined && (listing.realUri ?? listing.root.uri).toString() !== sourceReal)
+			.map(listing => listing.root)
+			.filter(root => paradisSkillInstallBlocker(skill, root) === undefined);
 		if (targets.length > 0) {
 			dom.append(actions, $('span.psk-muted')).textContent = localize('paradis.skills.installTo', "導入先");
 			const select = dom.append(actions, $('select.psk-select')) as HTMLSelectElement;
@@ -338,7 +358,14 @@ export class ParadisSkillsDialog extends Disposable {
 			message: exists
 				? localize('paradis.skills.installOverwrite', "「{0}」は導入先にすでにあります。置き換えますか？", skill.name)
 				: localize('paradis.skills.installConfirm', "「{0}」を導入しますか？", skill.name),
-			detail: localize('paradis.skills.installDetail', "導入先: {0}\n{1}\n\nスキルのフォルダをそのまま写します。", `${target.host.label} · ${paradisSkillRootLabel(target)}`, destination.scheme === 'file' ? destination.fsPath : destination.path),
+			detail: [
+				localize('paradis.skills.installFrom', "写す元: {0} · {1}\n{2}", skill.root.host.label, paradisSkillRootLabel(skill.root), this.displayUri(paradisSkillInstallSource(skill))),
+				localize('paradis.skills.installTo2', "導入先: {0} · {1}\n{2}", target.host.label, paradisSkillRootLabel(target), this.displayUri(destination)),
+				'',
+				skill.root.scope === 'project' && target.scope === 'user'
+					? localize('paradis.skills.installProjectWarning', "写す元はリポジトリの中のスキルです。中身はリポジトリの作者が決められます。導入すると、このマシンのすべてのプロジェクトでエージェントが読みます。中身を確かめてから導入してください。")
+					: localize('paradis.skills.installCopy', "スキルのフォルダをそのまま写します。"),
+			].join('\n'),
 			primaryButton: exists ? localize('paradis.skills.overwriteButton', "置き換える") : localize('paradis.skills.installButton', "導入"),
 		});
 		if (!confirmed || this._store.isDisposed) {
@@ -368,6 +395,8 @@ export class ParadisSkillsDialog extends Disposable {
 		];
 		if (skill.isSymbolicLink) {
 			details.push(localize('paradis.skills.deleteLink', "これはリンクです。リンクだけを消し、リンク先のフォルダは残します。"));
+		} else if (skill.realUri) {
+			details.push(localize('paradis.skills.deleteReal', "スキルのフォルダはリンクの先にあります。消えるのは実体の {0} です。", this.displayUri(skill.realUri)));
 		}
 		const { confirmed } = await this.dialogService.confirm({
 			type: 'warning',
