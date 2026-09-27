@@ -27,16 +27,45 @@ import { createRequire } from 'module';
  *
  * - 対象の版（{@link PARADIS_XTERM_IME_TARGET_VERSION}）以外には当てない。xterm を上げたら、
  *   差分が当たるか確かめてからこの版を書き換える（当たらなければ作り直す）
- * - esbuild は build/ の依存にある。まだ入っていない（初回の install で build/ より前）ときは
- *   何もせず、install の最後にもう一度呼ばれたときに当てる
- * - 失敗しても install は止めない（素の xterm のまま動く）。警告だけ出す
+ * - esbuild は build/ の依存にある。postinstall は build/ を入れ終えた後（または全部入っている
+ *   ときに）呼ぶ
+ * - 手元の install では失敗しても止めない（素の xterm のまま動く）。警告だけ出す。**CI（環境変数
+ *   `CI`）では失敗させる**。版が変わった・差分が当たらないまま配布物を作ると、日本語入力の修正が
+ *   黙って抜ける
+ * - 作り直したバンドルの先頭に Orca の MIT の表示を入れる（ThirdPartyNotices.txt にも載せてある）
  * - 当てたかどうかは lib/xterm.js の先頭の印で見る。npm が入れ直せば印ごと消えるので、また当たる
  */
 export const PARADIS_XTERM_IME_TARGET_VERSION = '6.1.0-beta.304';
 
-const MARKER = '/* PARA-CODE: xterm IME patch v1 (build/npm/paradisXtermImePatch.ts) */';
+// 版を上げると、印の違う（前の版で作り直した）バンドルも作り直す
+const MARKER = '/* PARA-CODE: xterm IME patch v2 (build/npm/paradisXtermImePatch.ts) */';
 
 const PATCH_FILE = path.join(import.meta.dirname, 'paradisXtermIme', 'xterm-ime.patch');
+
+/** 作り直したバンドルの先頭に入れる、Orca 由来のコードの許諾表示。 */
+const ORCA_NOTICE = `/*!
+ * Includes IME (composition) handling derived from Orca (https://github.com/stablyai/orca).
+ * Copyright (c) 2026 Lovecast Inc.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+ * associated documentation files (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge, publish, distribute,
+ * sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions: The above copyright notice and this
+ * permission notice shall be included in all copies or substantial portions of the Software.
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+ * NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
+ * OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */`;
+
+/** CI では当てられなかったことを失敗にする。手元では警告だけ出して素の xterm のまま続ける。 */
+function fail(log: (message: string) => void, message: string): void {
+	if (process.env['CI']) {
+		throw new Error(`xterm IME patch: ${message}`);
+	}
+	log(`WARNING: ${message}`);
+}
 
 function xtermDir(root: string): string {
 	return path.join(root, 'node_modules', '@xterm', 'xterm');
@@ -94,7 +123,7 @@ export async function paradisApplyXtermImePatch(root: string, log: (message: str
 		return;
 	}
 	if (version !== PARADIS_XTERM_IME_TARGET_VERSION) {
-		log(`WARNING: @xterm/xterm is ${version}, but the IME patch targets ${PARADIS_XTERM_IME_TARGET_VERSION}; skipped (regenerate build/npm/paradisXtermIme/xterm-ime.patch)`);
+		fail(log, `@xterm/xterm is ${version}, but the IME patch targets ${PARADIS_XTERM_IME_TARGET_VERSION}; skipped (regenerate build/npm/paradisXtermIme/xterm-ime.patch)`);
 		return;
 	}
 	if (paradisIsXtermImePatched(root)) {
@@ -102,15 +131,27 @@ export async function paradisApplyXtermImePatch(root: string, log: (message: str
 	}
 	const esbuildDir = path.join(root, 'build', 'node_modules', 'esbuild');
 	if (!fs.existsSync(esbuildDir)) {
-		log('esbuild is not installed in build/ yet; the xterm IME patch will be applied after it is');
+		// postinstall は build/ を入れ終えてから（または全部入っているときに）しか呼ばないので、
+		// ここに来るのは build/ の install が失敗したとき
+		fail(log, 'esbuild is not installed in build/; the xterm IME patch was not applied');
 		return;
 	}
 	const pkgDir = xtermDir(root);
-	const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paradis-xterm-ime-'));
+	let workDir: string | undefined;
 	try {
+		workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paradis-xterm-ime-'));
 		fs.cpSync(path.join(pkgDir, 'src'), path.join(workDir, 'src'), { recursive: true });
-		// git apply はリポジトリの外でも patch として働く（-p1 で a/src/... → src/...）
-		child_process.execFileSync('git', ['apply', '--whitespace=nowarn', PATCH_FILE], { cwd: workDir, stdio: 'pipe' });
+		// git apply はリポジトリの外でも patch として働く（-p1 で a/src/... → src/...）。前の版の印で
+		// 作り直した後は src/ が当てた後のものになっているので、逆向きに当たるならそのまま使う
+		try {
+			child_process.execFileSync('git', ['apply', '--whitespace=nowarn', PATCH_FILE], { cwd: workDir, stdio: 'pipe' });
+		} catch (error) {
+			try {
+				child_process.execFileSync('git', ['apply', '--reverse', '--check', PATCH_FILE], { cwd: workDir, stdio: 'pipe' });
+			} catch {
+				throw error;
+			}
+		}
 
 		const esbuild = createRequire(import.meta.url)(esbuildDir) as IEsbuild;
 		const options = {
@@ -125,6 +166,7 @@ export async function paradisApplyXtermImePatch(root: string, log: (message: str
 			tsconfigRaw: { compilerOptions: { experimentalDecorators: true, useDefineForClassFields: false } },
 			// 型だけの import（'@xterm/xterm' の d.ts）。値の import は無いので出力には残らない
 			external: ['@xterm/xterm'],
+			banner: { js: ORCA_NOTICE },
 		};
 		const cjs = await esbuild.build({ ...options, format: 'cjs' });
 		const esm = await esbuild.build({ ...options, format: 'esm' });
@@ -140,8 +182,10 @@ export async function paradisApplyXtermImePatch(root: string, log: (message: str
 		log(`Patched @xterm/xterm ${version} IME handling (rebuilt lib/xterm.js and lib/xterm.mjs)`);
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
-		log(`WARNING: could not apply the xterm IME patch, keeping the stock xterm: ${detail}`);
+		fail(log, `could not apply the xterm IME patch, keeping the stock xterm: ${detail}`);
 	} finally {
-		fs.rmSync(workDir, { recursive: true, force: true });
+		if (workDir) {
+			fs.rmSync(workDir, { recursive: true, force: true });
+		}
 	}
 }

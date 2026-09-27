@@ -131,6 +131,10 @@ npm run valid-layers-check
 
 **Node バージョン**: upstream が `.nvmrc` を上げていると `build/npm/preinstall.ts` が `npm install` を弾く。fork 所有の `mise.toml` を同じ値に上げて `mise install` する（mise.toml のコミットは hygiene の既知衝突で `--no-verify` が必要）。
 
+**xterm を上げる取り込みでは2点を必ず確かめる**（どちらも黙って効かなくなる。NOTES.md の「プリセットの種類・描画修復・常駐画面の保存・IME パッチ」節）:
+- IME パッチ: `npm install` のログに `Patched @xterm/xterm ... IME handling` が出るか。版が変わると警告だけで素の xterm になる（CI では失敗する）。新しい版の `node_modules/@xterm/xterm` で `git apply --check build/npm/paradisXtermIme/xterm-ime.patch` が通れば `build/npm/paradisXtermImePatch.ts` の `PARADIS_XTERM_IME_TARGET_VERSION` を書き換え、通らなければ Orca の新しいパッチから作り直す
+- 描画ずれの修復が読む非公開プロパティ: `grep -c "_renderService\|_isPaused\|_charAtlas\|_themeService" node_modules/@xterm/xterm/lib/xterm.js node_modules/@xterm/addon-webgl/lib/addon-webgl.js` が 0 にならないか
+
 **`build/node_modules`**: root の `npm install` が exit 0 でも build/ のサブインストールがスキップされることがある。起動時に `gulp-merge-json` の `ERR_MODULE_NOT_FOUND` が出たら `cd build && npm ci`。
 
 ---
