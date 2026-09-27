@@ -12,7 +12,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, getParadisAgentPaneActivity, registerParadisAgentPaneActivityGuard } from '../../../agentBrowser/node/paradisAgentHookBus.js';
+import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentAwaitingUser, onParadisAgentTurnEnded, registerParadisAgentPaneActivityGuard } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { ParadisMobileAgentChat } from '../../../mobileRelay/node/paradisMobileAgentChat.js';
 import { IParadisAgentChatView } from '../../common/paradisAgentChat.js';
 
@@ -43,6 +43,40 @@ async function withClaudeHome(run: (claudeHome: string) => Promise<void>): Promi
 		}
 		await rm(root, { recursive: true, force: true });
 	}
+}
+
+/** 本物の ~/.codex には触れないよう、Codex の置き場を一時ディレクトリへ向けて動かす。 */
+async function withCodexHome(run: (codexHome: string) => Promise<void>): Promise<void> {
+	const root = await realpath(await mkdtemp(join(tmpdir(), 'paradis-agent-chat-codex-')));
+	const codexHome = join(root, 'codex-home');
+	await mkdir(join(codexHome, 'sessions', '2026', '09', '27'), { recursive: true });
+	const previous = process.env['CODEX_HOME'];
+	process.env['CODEX_HOME'] = codexHome;
+	try {
+		await run(codexHome);
+	} finally {
+		if (previous === undefined) {
+			delete process.env['CODEX_HOME'];
+		} else {
+			process.env['CODEX_HOME'] = previous;
+		}
+		await rm(root, { recursive: true, force: true });
+	}
+}
+
+/** ペインが止まって次の指示を待つ合図（idle）と、ターン終了の合図（review）を集める。 */
+function recordPaneSignals(token: string): { readonly awaitingUser: number[]; readonly turnEnded: number[]; dispose(): void } {
+	const awaitingUser: number[] = [];
+	const turnEnded: number[] = [];
+	const awaitingListener = onParadisAgentAwaitingUser(event => { if (event.token === token) { awaitingUser.push(1); } });
+	const turnEndedListener = onParadisAgentTurnEnded(event => { if (event.token === token) { turnEnded.push(1); } });
+	return {
+		awaitingUser, turnEnded,
+		dispose: () => {
+			awaitingListener.dispose();
+			turnEndedListener.dispose();
+		},
+	};
 }
 
 function line(value: unknown): string {
@@ -296,6 +330,7 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			await access.tailers.get(token)?.enqueue(async () => { });
 		};
 		const hook = (event: string, extra: Record<string, unknown> = {}) => fireParadisAgentHookEvent({ token, event, sessionId: 'session-6', transcriptPath, cwd: '/repo', at: Date.now(), ...extra });
+		const signals = recordPaneSignals(token);
 		try {
 			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
 			hook('SessionStart');
@@ -321,8 +356,109 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			await waitFor(async () => (await view())?.live === null, 'the waiting state was not cleared');
 			const after = await view();
 
-			assert.deepStrictEqual({ cards, livePhase, busy: after?.busy }, { cards: 2, livePhase: 'permission', busy: false });
+			// 拒否は完了ではない: ペインを状態なし（idle）へ移す合図だけを出し、完了（review）の合図は出さない
+			assert.deepStrictEqual({ cards, livePhase, busy: after?.busy, awaitingUser: signals.awaitingUser.length, turnEnded: signals.turnEnded.length }, { cards: 2, livePhase: 'permission', busy: false, awaitingUser: 1, turnEnded: 0 });
 		} finally {
+			signals.dispose();
+			chat.dispose();
+		}
+	}));
+	test('shows the second of two identical permission requests after the first is answered from the desktop, and removes both only when the tools finish', () => withClaudeHome(async claudeHome => {
+		const token = 'pane-desktop-answered-twins';
+		const transcriptPath = join(claudeHome, 'projects', 'repo', 'session-7.jsonl');
+		await writeFile(transcriptPath, line({ type: 'user', timestamp: '2026-09-27T10:00:00.000Z', message: { role: 'user', content: '読んで' } }));
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>>; tailers: Map<string, { enqueue(work: () => Promise<void>): Promise<void> }> };
+		const settled = async () => {
+			await waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
+			await access.tailers.get(token)?.enqueue(async () => { });
+		};
+		const hook = (event: string, extra: Record<string, unknown> = {}) => fireParadisAgentHookEvent({ token, event, sessionId: 'session-7', transcriptPath, cwd: '/repo', at: Date.now(), ...extra });
+		try {
+			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
+			hook('SessionStart');
+			await settled();
+			chat.watchDesktopChat('window-1', [token], [token]);
+			const interaction = async () => (await chat.getDesktopChat(token, undefined))?.interaction ?? null;
+
+			// 実機の形: 同じ入力の呼び出しが2つ、tool_use_id の無い同じ本文の許可要求が2つ（どちらも合成 id）
+			hook('PreToolUse', { toolName: 'Read', toolUseId: 'toolu_p', toolInput: { file_path: '/outside/same.txt' } });
+			hook('PreToolUse', { toolName: 'Read', toolUseId: 'toolu_q', toolInput: { file_path: '/outside/same.txt' } });
+			hook('PermissionRequest', { toolName: 'Read', toolInput: { file_path: '/outside/same.txt' } });
+			hook('PermissionRequest', { toolName: 'Read', toolInput: { file_path: '/outside/same.txt' } });
+			await settled();
+			const first = (await interaction())?.id ?? '';
+
+			// デスクトップのカードから1件目に答える（キーを送り終えた）
+			const claimed = chat.claimDesktopInteraction(token, 'approval', first);
+			chat.releaseDesktopInteraction(token, 'approval', first, true);
+			await settled();
+			const second = (await interaction())?.id ?? '';
+			// 答え終えた1件目にはもう答えられない
+			const claimAnsweredAgain = chat.claimDesktopInteraction(token, 'approval', first);
+
+			hook('PostToolUse', { toolName: 'Read', toolUseId: 'toolu_p' });
+			await settled();
+			const afterFirstTool = (await interaction())?.id;
+			hook('PostToolUse', { toolName: 'Read', toolUseId: 'toolu_q' });
+			await settled();
+			const afterBothTools = await interaction();
+
+			assert.deepStrictEqual({
+				bothSynthetic: first.startsWith('approval:') && second.startsWith('approval:'),
+				secondIsAnother: second !== first,
+				claimed, claimAnsweredAgain,
+				afterFirstToolStillSecond: afterFirstTool === second,
+				afterBothTools,
+			}, {
+				bothSynthetic: true, secondIsAnother: true, claimed: true, claimAnsweredAgain: false, afterFirstToolStillSecond: true, afterBothTools: null,
+			});
+		} finally {
+			chat.dispose();
+		}
+	}));
+	test('moves a Codex pane to idle, not to completion, when its turn is aborted after the approval was denied from the card', () => withCodexHome(async codexHome => {
+		const token = 'pane-desktop-codex-deny';
+		const rolloutPath = join(codexHome, 'sessions', '2026', '09', '27', 'rollout-2026-09-27T10-00-00-thread-deny.jsonl');
+		await writeFile(rolloutPath, line({ timestamp: '2026-09-27T10:00:00.000Z', type: 'session_meta', payload: { id: 'thread-deny', cwd: '/repo', originator: 'codex_cli_rs' } })
+			+ line({ timestamp: '2026-09-27T10:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'テストして' }] } }));
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>>; tailers: Map<string, { enqueue(work: () => Promise<void>): Promise<void> }> };
+		const settled = async () => {
+			await waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
+			await access.tailers.get(token)?.enqueue(async () => { });
+		};
+		const hook = (event: string, extra: Record<string, unknown> = {}) => fireParadisAgentHookEvent({ token, event, sessionId: 'thread-deny', transcriptPath: rolloutPath, cwd: '/repo', at: Date.now(), ...extra });
+		const signals = recordPaneSignals(token);
+		try {
+			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
+			hook('SessionStart');
+			await settled();
+			chat.watchDesktopChat('window-1', [token], [token]);
+			const interaction = async () => (await chat.getDesktopChat(token, undefined))?.interaction ?? null;
+
+			hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'npm test' } });
+			await waitFor(async () => (await interaction())?.kind === 'approval', 'approval was not captured');
+			const approvalId = (await interaction())?.id ?? '';
+			// カードから拒否した（キーを送り終えた）→ Codex はターンを中断して rollout に turn_aborted を書く
+			chat.claimDesktopInteraction(token, 'approval', approvalId);
+			chat.releaseDesktopInteraction(token, 'approval', approvalId, true);
+			await settled();
+			await appendFile(rolloutPath, line({ timestamp: '2026-09-27T10:00:05.000Z', type: 'event_msg', payload: { type: 'turn_aborted', reason: 'interrupted' } }));
+			await waitFor(() => signals.awaitingUser.length > 0, 'the pane was not moved to idle');
+			await settled();
+			const afterAbort = { awaitingUser: signals.awaitingUser.length, turnEnded: signals.turnEnded.length, interaction: await interaction() };
+
+			// 承認の無いターンの完了は、今までどおり完了（review）の合図
+			await appendFile(rolloutPath, line({ timestamp: '2026-09-27T10:00:10.000Z', type: 'event_msg', payload: { type: 'task_complete' } }));
+			await waitFor(() => signals.turnEnded.length > 0, 'the completed turn was not signalled');
+
+			assert.deepStrictEqual({ afterAbort, awaitingUser: signals.awaitingUser.length }, {
+				afterAbort: { awaitingUser: 1, turnEnded: 0, interaction: null },
+				awaitingUser: 1,
+			});
+		} finally {
+			signals.dispose();
 			chat.dispose();
 		}
 	}));

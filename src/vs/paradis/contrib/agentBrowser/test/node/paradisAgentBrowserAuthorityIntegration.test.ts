@@ -682,6 +682,24 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(staleSweeps, 1);
 	});
 
+	test('moves a pane waiting for permission to idle when the agent stops for the user, and leaves a completed pane alone', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'denied-token' }, { token: 'review-token' }]));
+		Reflect.get(fixture.service, '_paneStatuses')
+			.set('denied-token', { status: 'permission', changedAt: 3 })
+			.set('review-token', { status: 'review', changedAt: 4 });
+		// モバイルが繋がっていない構成（デスクトップ専用の承認はペインの状態に数えない）でも動くこと
+		const settle = (token: string) => (fixture.service as unknown as { _settlePaneAwaitingUser(token: string): void })._settlePaneAwaitingUser(token);
+		settle('denied-token');
+		settle('review-token');
+
+		assert.deepStrictEqual(await fixture.service.listPaneStatuses(connection), [
+			{ token: 'review-token', status: 'review', changedAt: 4 },
+		]);
+	});
+
 	test('keeps legacy status and hook-token list commands independently available', async () => {
 		const fixture = createFixture();
 		const connection = {};

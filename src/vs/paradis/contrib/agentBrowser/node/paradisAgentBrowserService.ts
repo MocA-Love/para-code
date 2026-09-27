@@ -42,7 +42,7 @@ import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStat
 import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator, ParadisExactViewBackgroundThrottlingDispatcher } from '../common/paradisExactViewBackgroundThrottling.js';
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
 import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
-import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
+import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from './paradisAgentHooksSetup.js';
@@ -647,6 +647,11 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._paneStatuses.set(token, { status: 'review', changedAt: at, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) });
 			}
 		}));
+		// エージェントが完了ではなく、止まって利用者の次の指示を待っている（許可を拒否された等。どの hook も
+		// 来ない）。許可待ち・作業中のまま残ると、スリープ防止・タブの鈴・一覧の件数が次のプロンプトまで残るので、
+		// 状態なし（idle）へ移す。確認待ち（review）にはしない（review は完了の通知の対象）。モバイルの接続とは
+		// 関係なく届く（transcript を読む側から直接発火する）。
+		this._register(onParadisAgentAwaitingUser(({ token }) => this._settlePaneAwaitingUser(token)));
 
 		// transcript由来のペインアクティビティ (ParadisMobileAgentChat の tailer が学習) を
 		// 実行状態へ反映する。hookイベントが来ない場面の状態変化はここが拾う:
@@ -1348,6 +1353,26 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 見つけられない（Claude Code は会話をプロジェクトのフォルダごとに持つ）。
 		const nextCwd = previous?.sessionId === sessionId ? (previous.cwd ?? cwd) : cwd;
 		this._paneSessions.set(token, { agent, sessionId, at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}) });
+	}
+
+	/**
+	 * エージェントが止まって利用者の次の指示を待っているペイン（許可を拒否された等）を、状態なし（idle）へ移す。
+	 * 許可待ち・作業中のときだけ動かす。確認待ち（review）にはしない（review は完了の通知の対象）。
+	 */
+	private _settlePaneAwaitingUser(token: string): void {
+		const ingressLease = this.captureIngressLease(token);
+		if (ingressLease === undefined) {
+			return;
+		}
+		const entry = this._paneStatuses.get(token);
+		if (entry === undefined || (entry.status !== 'permission' && entry.status !== 'working')) {
+			return;
+		}
+		if (!this.isIngressLeaseCurrent(ingressLease)) {
+			return;
+		}
+		this._activityApprovalTokens.delete(token);
+		this._paneStatuses.delete(token);
 	}
 
 	private _cleanupTokenLocalState(token: string, generation?: number, preserveTerminalExit: boolean = false): void {

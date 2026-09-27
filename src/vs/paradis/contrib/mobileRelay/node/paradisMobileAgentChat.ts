@@ -36,7 +36,7 @@ import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js'
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { BACKGROUND_TASK_ID_MAX_LENGTH, BACKGROUND_TASK_MAX_ENTRIES, fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity, setParadisAgentPaneIssueUrls } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { BACKGROUND_TASK_ID_MAX_LENGTH, BACKGROUND_TASK_MAX_ENTRIES, fireParadisAgentAwaitingUser, fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity, setParadisAgentPaneIssueUrls } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHome, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { paradisExtractIssueUrls } from '../../../common/paradisIssueDetection.js';
 import { paradisIsWslAgentHomePath } from '../../../common/paradisWslAgentHome.js';
@@ -1147,6 +1147,8 @@ interface IParadisApprovalEntry {
 	readonly desktopOnly: boolean;
 	/** 合成 id の承認を、どの待ち合わせで解くか（ParadisMobileAgentChat.syntheticApprovalWaits）。 */
 	readonly waitKey?: string;
+	/** デスクトップかモバイルから答え終えた（表に出さない。ツールの完了で列から外れる）。 */
+	readonly answered?: boolean;
 }
 
 interface ITailerDelegate {
@@ -1741,7 +1743,21 @@ class TranscriptTailer {
 
 	/** 今表に出している承認。 */
 	private get pendingApproval(): Extract<IParadisAgentInteraction, { readonly kind: 'approval' }> | undefined {
-		return this.approvalQueue.at(-1)?.interaction;
+		const index = this.frontApprovalIndex();
+		return index < 0 ? undefined : this.approvalQueue[index].interaction;
+	}
+
+	/**
+	 * 表に出す承認の位置（答えていないもののうち最後に積んだもの。無ければ -1）。答え終えた承認は、
+	 * ツールの完了で列から外れるまで残るが、表には出さない（答えていない次の1件を出す）。
+	 */
+	private frontApprovalIndex(): number {
+		for (let index = this.approvalQueue.length - 1; index >= 0; index--) {
+			if (!this.approvalQueue[index].answered) {
+				return index;
+			}
+		}
+		return -1;
 	}
 
 	/** 承認を列から外す（該当が無ければ何もしない）。外したら true。 */
@@ -1812,11 +1828,12 @@ class TranscriptTailer {
 	injectCodexApprovalRequest(interaction: IParadisCodexApprovalInteraction): void {
 		this.enqueue(async () => {
 			if (this.approvalQueue.some(entry => entry.interaction.id === interaction.id)) { return; }
-			const hadApproval = this.approvalQueue.length > 0;
+			const front = this.frontApprovalIndex();
+			const hadApproval = front >= 0;
 			const entry: IParadisApprovalEntry = { interaction, key: `codex:${interaction.id}`, desktopOnly: false };
 			if (hadApproval) {
 				// hook経路が先着していた場合（表の1件）は、正式な選択肢のものへ置き換える。
-				this.approvalQueue[this.approvalQueue.length - 1] = entry;
+				this.approvalQueue[front] = entry;
 			} else {
 				this.approvalQueue.push(entry);
 			}
@@ -1867,8 +1884,9 @@ class TranscriptTailer {
 				key: fallbackId,
 				desktopOnly: false,
 			};
-			if (this.approvalQueue.length > 0) {
-				this.approvalQueue[this.approvalQueue.length - 1] = fallback;
+			const front = this.frontApprovalIndex();
+			if (front >= 0) {
+				this.approvalQueue[front] = fallback;
 			} else {
 				this.approvalQueue.push(fallback);
 			}
@@ -1918,11 +1936,16 @@ class TranscriptTailer {
 	 * 「承認が存在するか」という事実が必要な箇所（ペイン状態の補正など）はこちらを使う。
 	 */
 	hasPendingApproval(): boolean {
-		return this.approvalQueue.some(entry => !entry.desktopOnly);
+		return this.approvalQueue.some(entry => !entry.desktopOnly && !entry.answered);
 	}
 
 	/** デスクトップ専用のものも含めて、回答待ちの承認が残っているか。 */
 	hasAnyPendingApproval(): boolean {
+		return this.approvalQueue.some(entry => !entry.answered);
+	}
+
+	/** 答え終えたものも含め、ツールの完了を待っている承認が列にあるか。 */
+	hasQueuedApproval(): boolean {
 		return this.approvalQueue.length > 0;
 	}
 
@@ -1973,16 +1996,23 @@ class TranscriptTailer {
 	}
 
 	/**
-	 * 同じ本文の承認要求の再発火を、新しい承認として受け付けるようにする（デスクトップから答え終えたとき）。
-	 * 答え終えた承認の重複の印（key）を外す。承認そのものは、ツールの完了で解けるまで残す。
+	 * デスクトップかモバイルから答え終えた承認に印を付ける。表に出す候補から外し（答えていない次の1件が
+	 * 表に出る。同じ内容の許可が2つ続いたとき、2つ目を出すため）、同じ本文の要求の再発火も新しい承認として
+	 * 受け付ける。承認そのものは、今までどおりツールの完了で列から外れるまで残す。
 	 */
-	forgetApprovalKey(interactionId: string): void {
+	markApprovalAnswered(interactionId: string): void {
 		this.enqueue(async () => {
+			let changed = false;
 			for (let index = 0; index < this.approvalQueue.length; index++) {
 				const entry = this.approvalQueue[index];
-				if (entry.interaction.id === interactionId) {
-					this.approvalQueue[index] = { ...entry, key: `answered:${entry.key}:${index}:${Date.now()}` };
+				if (entry.interaction.id === interactionId && !entry.answered) {
+					this.approvalQueue[index] = { ...entry, answered: true, key: `answered:${entry.key}:${index}:${Date.now()}` };
+					changed = true;
 				}
+			}
+			if (changed) {
+				this.delegate.onDelta([]);
+				this.delegate.onActivity();
 			}
 		});
 	}
@@ -3568,6 +3598,12 @@ export class ParadisMobileAgentChat extends Disposable {
 	finalizeInteractionAction(mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed', windowId: number, windowSession: string): void {
 		const key = this.actionKey(mobileId, requestId);
 		const completed = this.completedActions.get(key);
+		// モバイルから答え終えた承認も、表に出す候補から外す（デスクトップと同じ。同じ内容の次の許可を出すため）。
+		const answered = completed ?? this.pendingActions.get(key);
+		if (outcome === 'accepted' && answered?.token === token && answered.windowId === windowId && answered.windowSession === windowSession
+			&& answered.interaction?.kind === 'approval') {
+			this.tailers.get(token)?.markApprovalAnswered(answered.interaction.id);
+		}
 		if (outcome === 'failed' && completed?.token === token && completed.windowId === windowId && completed.windowSession === windowSession
 			&& this.ownerForPane(completed.terminalId, token)?.windowSession === windowSession) {
 			this.releaseInteractionClaim(completed.interactionKey, key);
@@ -4791,12 +4827,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const live = this.liveStates.get(token);
 		if (rejected) {
+			// 完了ではなく、エージェントが止まって次の指示を待っている。ペインは確認待ち（review）ではなく
+			// 状態なし（idle）へ移す（review にすると完了の通知が鳴る）。
 			this.liveBeforePermission.delete(token);
-			const wasActive = this.activeTurnTokens.delete(token);
+			this.activeTurnTokens.delete(token);
 			this.clearLiveState(token);
-			if (wasActive || live !== undefined) {
-				fireParadisAgentTurnEnded(token);
-			}
+			fireParadisAgentAwaitingUser(token);
 			return;
 		}
 		if (live?.phase !== 'permission' || live.tool === 'AskUserQuestion') {
@@ -4864,7 +4900,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (sent && kind === 'approval') {
 			// 同じ本文の許可要求がもう一度出たら（同じコマンドの再実行）、新しい承認として受け付ける。
 			// 覚えたままだと重複として捨て、答え終えた古いカードだけが残る。
-			this.tailers.get(token)?.forgetApprovalKey(id);
+			this.tailers.get(token)?.markApprovalAnswered(id);
 		}
 		if (!sent) {
 			this.releaseInteractionClaim(entry.key, entry.claim);
@@ -5760,7 +5796,12 @@ export class ParadisMobileAgentChat extends Disposable {
 						this.enrichCodexActivityRelationship(token, event.id, event.at).catch(err => this.logService.trace('[paradisAgentChat] codex activity relationship lookup failed', String(err)));
 					} else {
 						this.activeTurnTokens.delete(token);
-						fireParadisAgentTurnEnded(token);
+						// 承認が残ったままの中断（承認の拒否）は完了ではない（直後の onTurnEnded がペインを idle へ移す）。
+						// ここで完了の合図を出すと、答えた時点で作業中へ戻っていたペインが確認待ち（review）へ移り、
+						// 完了の通知が鳴る。
+						if (!(event.reason === 'interrupted' && tailer.hasQueuedApproval())) {
+							fireParadisAgentTurnEnded(token);
+						}
 						changed = tracker.endTurn(event.at) || changed;
 					}
 				}
@@ -5773,7 +5814,15 @@ export class ParadisMobileAgentChat extends Disposable {
 			onTurnEnded: reason => {
 				this.activeTurnTokens.delete(token);
 				this.clearLiveState(token);
-				fireParadisAgentTurnEnded(token);
+				// 承認が残ったままターンが中断された（Codex の承認をカードやターミナルで拒否すると、ターンが
+				// 中断されて終わる。カードで答えた承認は「回答済み」で列に残っている）なら、承認を外し、ペインは
+				// 完了（review）ではなく状態なし（idle）へ移す（完了の通知を鳴らさない）。
+				if (reason === 'interrupted' && tailer.hasQueuedApproval()) {
+					tailer.clearApprovalRequest(undefined, true, true);
+					fireParadisAgentAwaitingUser(token);
+				} else {
+					fireParadisAgentTurnEnded(token);
+				}
 				this.scheduleDesktopChatCheck();
 			},
 			// 接続先かどうかは、これから読むファイルそのものでも見る。`isRemoteAgentPane` は
