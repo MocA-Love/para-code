@@ -2,11 +2,12 @@
 
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet } from 'react-native';
-import { DarkTheme, Stack, ThemeProvider, useRouter } from 'expo-router';
+import { DarkTheme, Stack, ThemeProvider, useNavigationContainerRef, useRouter } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Notifications from 'expo-notifications';
 import * as Sentry from '@sentry/react-native';
 import { useAppStore } from '../src/appState.js';
+import { openPcRoute } from '../src/features/pc/openPcRoute.js';
 import { AuthGate } from '../src/components/authGate.js';
 import { OverlayHost } from '../src/components/overlayHost.js';
 import { UpdateSheetHost } from '../src/components/updateSheet.js';
@@ -73,6 +74,7 @@ const appTheme = {
  */
 function RootLayout() {
 	const router = useRouter();
+	const container = useNavigationContainerRef();
 	const init = useAppStore(s => s.init);
 	const setSelectedWs = useAppStore(s => s.setSelectedWs);
 	const setSelectedTerminalKey = useAppStore(s => s.setSelectedTerminalKey);
@@ -157,9 +159,9 @@ function RootLayout() {
 			setSelectedWs(destination.spaceId);
 		}
 		setSelectedTerminalKey(target.terminalKey);
-		// withAnchor: PC の中の Stack の根（1列では PC の画面、2列では「エージェントが開かれていません」）を下に敷く。
-		router.push(destination.href, { withAnchor: true });
-	}, [router, setSelectedWs, setSelectedTerminalKey]);
+		// PC の中を開いているなら、その中で開く（同じ PC の器は増やさない。`openPcRoute`）。
+		openPcRoute(router, container, destination.href, 'focus');
+	}, [router, container, setSelectedWs, setSelectedTerminalKey]);
 
 	useEffect(() => {
 		unlockedRef.current = unlocked;

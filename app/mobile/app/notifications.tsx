@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useState } from 'react';
-import { useRouter } from 'expo-router';
+import { useNavigationContainerRef, useRouter } from 'expo-router';
 import { BellOff } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import type { NotifyPayload } from '@para/protocol';
@@ -14,6 +14,7 @@ import { Button, ConfirmDrawer, EmptyState, ListGroup } from '../src/ui/index.js
 import { GroupNote, SettingsScreen } from '../src/features/settings/settingsScaffold.js';
 import { NotificationRow } from '../src/features/notifications/notificationRow.js';
 import { notificationTarget } from '../src/features/notifications/notificationListModel.js';
+import { openPcRoute } from '../src/features/pc/openPcRoute.js';
 
 /**
  * 通知の一覧（`/notifications`。Orca に無い画面で、モックでは設定の部品で組んでいる）。
@@ -22,11 +23,13 @@ import { notificationTarget } from '../src/features/notifications/notificationLi
  * 一覧からも消える（`dismissNotification` / `clearNotifications`）。そのためモックの「すべて既読」は
  * 「すべて消す」にしている（取り消せないので一度確かめる）。
  *
- * 押したときの行き先は OS の通知のタップと同じ（`notificationDestination`）。この画面を行き先に置き換えるので、
- * 戻ると一覧ではなくホームへ戻る。
+ * 押したときの行き先は OS の通知のタップと同じ（`notificationDestination`）。この画面を閉じて行き先を開くので、
+ * 戻ると一覧ではなく、この画面の下にあった画面へ戻る。下が PC の画面なら、その中で開く（`openPcRoute`。
+ * 同じ PC の器は増やさない）。
  */
 export default function NotificationsScreen() {
 	const router = useRouter();
+	const container = useNavigationContainerRef();
 	const now = useNow();
 	// workspace 本体は購読しない（PC からの再送で最大 10Hz 描き直すため）。押したときにだけ読む。
 	const { notifications, setSelectedWs, setSelectedTerminalKey, clearNotifications, dismissNotification } = useAppStore(useShallow(s => ({
@@ -51,11 +54,11 @@ export default function NotificationsScreen() {
 					setSelectedWs(target.spaceId);
 				}
 				setSelectedTerminalKey(target.terminalKey);
-				router.replace(target.href, { withAnchor: true });
+				openPcRoute(router, container, target.href, 'overlay');
 				return;
 			case 'pc':
 				dismissNotification(notification.id);
-				router.replace(target.href, { withAnchor: true });
+				openPcRoute(router, container, target.href, 'overlay');
 				return;
 			case 'wait':
 				useParaToast.getState().show({ key: 'notification-wait', text: 'PC から状態を受け取っています。少し待ってから開いてください', icon: 'time-outline', tone: 'info' }, 2_500);

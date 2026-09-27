@@ -24,6 +24,22 @@ describe('relayRunningPcLink', () => {
 
 describe('isPcPath', () => {
 	test('PC の中の画面だけを通す', () => {
-		expect(['/pc/pc-1', '/pc/pc-1/session/a?b=c', '/pc/', '/settings', 'https://example.com/pc/x'].map(isPcPath)).toEqual([true, true, false, false, false]);
+		expect(['/pc/pc-1', '/pc/pc-1/', '/pc/pc-1/session/1%3Aw1?path=a/../b', '/pc/', '/settings', 'https://example.com/pc/x'].map(isPcPath)).toEqual([true, true, true, false, false, false]);
+	});
+
+	test('PC の外へ出る区切り（`.`・`..`・その符号化・空・壊れた符号化）は拒む', () => {
+		const escapes = [
+			'/pc/x/../../settings',
+			'/pc/x/./session/a',
+			'/pc/../settings',
+			'/pc/x/%2e%2e/%2E%2E/settings',
+			'/pc/x/.%2e/settings',
+			'/pc/x/%2e',
+			'/pc/x/a%2f..%2fb',
+			'/pc/x/a%5cb',
+			'/pc/x//session',
+			'/pc/x/%E0%A4%A',
+		];
+		expect(escapes.map(isPcPath)).toEqual(escapes.map(() => false));
 	});
 });
