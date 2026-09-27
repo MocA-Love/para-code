@@ -283,7 +283,7 @@ Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.
 
 ## 内蔵ブラウザのパスキー選択は upstream のデバイス選択に乗せている（browserWebAuthn、2026-09-27）
 
-セキュリティキー等に複数のアカウントが入っているとき、どのアカウントでログインするかを選ばせる。Electron の `select-webauthn-account` を受け、upstream が USB / HID / シリアル / Bluetooth の機器選択に使っている流れ（main の `_beginDeviceRequest` → renderer の QuickPick → `selectDevice`）へそのまま流す。選択 UI を自前で持たないので、upstream のファイルへの変更は次の4行（import を含めて3ファイル）だけ。
+セキュリティキー等に複数のアカウントが入っているとき、どのアカウントでログインするかを選ばせる。Electron の `select-webauthn-account` を受け、upstream が USB / HID / シリアル / Bluetooth の機器選択に使っている流れ（main の `_beginDeviceRequest` → renderer の QuickPick → `selectDevice`）へそのまま流す。選択 UI を自前で持たないので、upstream のファイルへの変更は次の6行（3ファイル、import 2行を含む）だけ。
 
 | ファイル | 触った箇所 | 内容 |
 |---|---|---|
