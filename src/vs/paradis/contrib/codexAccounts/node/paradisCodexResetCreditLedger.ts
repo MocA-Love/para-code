@@ -167,7 +167,7 @@ export class ParadisCodexResetCreditLedger {
 		return this.update(key, { ...existing, state: 'settled', outcome, updatedAt: this.now() });
 	}
 
-	/** app-server がエラーで答えた（結果が確定した失敗）。結果不明から外す。 */
+	/** バックエンドが要求を断った（結果が確定した失敗）。結果不明から外す。 */
 	markFailed(key: string): Promise<void> {
 		const existing = this.attempts.get(key);
 		if (!existing) {

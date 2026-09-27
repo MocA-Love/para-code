@@ -15,7 +15,7 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { paradisMapCodexBackendResetCredits, paradisMapCodexResetCredits } from '../../common/paradisCodexAccounts.js';
 import { ParadisCodexAccountsService } from '../../node/paradisCodexAccountsService.js';
 
-interface IFakeConsume { readonly account: string | undefined; readonly token: string | undefined; readonly redeemRequestId: string }
+interface IFakeConsume { readonly account: string | undefined; readonly token: string | undefined; readonly redeemRequestId: string; readonly userAgent?: string; readonly beta?: string; readonly originator?: string; readonly redirect?: string }
 
 /** 偽のバックエンドの消費の答え。`status` が 200 以外なら本文は空。`throws` なら通信の失敗。 */
 type ParadisFakeConsumeAnswer = { readonly status: number; readonly code?: string; readonly throws?: undefined } | { readonly status?: undefined; readonly throws: Error };
@@ -54,7 +54,11 @@ suite('Paradis Codex reset credits', () => {
 		const headers = (init?.headers ?? {}) as Record<string, string>;
 		if (url === 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume') {
 			assert.strictEqual(init?.method, 'POST');
-			consumes.push({ account: headers['ChatGPT-Account-Id'], token: headers.Authorization, redeemRequestId: (JSON.parse(String(init?.body)) as { redeem_request_id: string }).redeem_request_id });
+			consumes.push({
+				account: headers['ChatGPT-Account-Id'], token: headers.Authorization,
+				redeemRequestId: (JSON.parse(String(init?.body)) as { redeem_request_id: string }).redeem_request_id,
+				userAgent: headers['User-Agent'], beta: headers['OpenAI-Beta'], originator: headers.originator, redirect: init?.redirect,
+			});
 			const answer = consumeAnswer();
 			if (answer.throws !== undefined) {
 				throw answer.throws;
@@ -135,7 +139,8 @@ suite('Paradis Codex reset credits', () => {
 		assert.deepStrictEqual({ a, b, consumes }, {
 			a: { kind: 'consumed', outcome: 'reset' },
 			b: { kind: 'rejected', reason: 'offerChanged' },
-			consumes: [{ account: 'acct-1', token: 'Bearer test-token', redeemRequestId: 'key-a' }],
+			// 見出しは Orca と同じ。リダイレクトは追わない（トークンを chatgpt.com の外へ転送させない）
+			consumes: [{ account: 'acct-1', token: 'Bearer test-token', redeemRequestId: 'key-a', userAgent: 'codex-cli', beta: 'codex-1', originator: 'Codex Desktop', redirect: 'error' }],
 		});
 	});
 
@@ -191,7 +196,7 @@ suite('Paradis Codex reset credits', () => {
 	});
 
 	// 要求が provider へ出ていない・使われていないと分かっているときは「結果不明」にしない（抜けられなくなるため）。
-	test('does not leave an unknown outcome when signed out or the backend refused for auth or rate limit', async () => {
+	test('does not leave an unknown outcome when signed out or the backend refused a first request for auth', async () => {
 		const service = createService();
 		const offer = await service.readResetCredits(codexHome, false);
 		writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({ tokens: { account_id: 'acct-1' } }));
@@ -199,7 +204,7 @@ suite('Paradis Codex reset credits', () => {
 		const afterSignedOut = { ledger: ledgerStates(), sent: consumeCalls() };
 		writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({ tokens: { account_id: 'acct-1', access_token: 'test-token' } }));
 		const results: string[] = [];
-		for (const status of [401, 403, 429]) {
+		for (const status of [401, 403]) {
 			consumeAnswer = () => ({ status });
 			const reread = await service.readResetCredits(codexHome, true);
 			results.push(await service.consumeResetCredit({ homePath: codexHome, offerRevision: reread.offerRevision!, idempotencyKey: `key-${status}` }).then(() => 'consumed', (error: Error) => error.message));
@@ -208,9 +213,39 @@ suite('Paradis Codex reset credits', () => {
 		service.dispose();
 		assert.deepStrictEqual({ afterSignedOut, results, ledger: ledgerStates(), pendingUnknown: reread.pendingUnknown }, {
 			afterSignedOut: { ledger: [], sent: [] },
-			results: ['Codex reset failed: HTTP 401', 'Codex reset failed: HTTP 403', 'Codex reset failed: HTTP 429'],
+			results: ['Codex reset failed: HTTP 401', 'Codex reset failed: HTTP 403'],
 			ledger: [],
 			pendingUnknown: undefined,
+		});
+	});
+
+	// 429 は初めての鍵でも結果不明のまま残す（ゲートウェイで断ったとは限らない）。
+	// 結果不明の再送が 401・403・429 を受けても記録を外さない。外すと次の操作が新しい鍵になり、
+	// 最初の要求が使われていた場合に2枚目が減る。
+	test('keeps the unknown outcome when a first request gets 429 or a resend gets 401, 403 or 429', async () => {
+		consumeAnswer = () => ({ status: 429 });
+		const service = createService();
+		const offer = await service.readResetCredits(codexHome, false);
+		await assert.rejects(service.consumeResetCredit({ homePath: codexHome, offerRevision: offer.offerRevision!, idempotencyKey: 'key-a' }));
+		const after429 = ledgerStates();
+		const resent: string[] = [];
+		for (const status of [401, 403, 429]) {
+			consumeAnswer = () => ({ status });
+			const reread = await service.readResetCredits(codexHome, true);
+			resent.push(await service.consumeResetCredit({ homePath: codexHome, offerRevision: reread.offerRevision!, idempotencyKey: `key-${status}` }).then(() => 'consumed', (error: Error) => error.message));
+		}
+		consumeAnswer = () => ({ status: 200, code: 'already_redeemed' });
+		const reread = await service.readResetCredits(codexHome, true);
+		const settled = await service.consumeResetCredit({ homePath: codexHome, offerRevision: reread.offerRevision!, idempotencyKey: 'key-new' });
+		service.dispose();
+		assert.deepStrictEqual({ after429, resent, pendingUnknown: reread.pendingUnknown, settled, sent: consumeCalls(), ledger: ledgerStates() }, {
+			after429: ['key-a:providerPending'],
+			resent: ['Codex reset failed: HTTP 401', 'Codex reset failed: HTTP 403', 'Codex reset failed: HTTP 429'],
+			pendingUnknown: true,
+			settled: { kind: 'consumed', outcome: 'alreadyRedeemed' },
+			// どの再送も最初の鍵のまま
+			sent: ['key-a', 'key-a', 'key-a', 'key-a', 'key-a'],
+			ledger: ['key-a:settled'],
 		});
 	});
 

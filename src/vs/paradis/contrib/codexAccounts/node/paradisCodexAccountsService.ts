@@ -70,7 +70,25 @@ function outcomeOfBackendCode(code: unknown): ParadisCodexResetOutcome | undefin
 	}
 }
 
-/** バックエンドが消費の要求を断ったか（結果が確定している）。401/403 は認証の問題で、使われていない。 */
+/**
+ * 消費の要求が HTTP のエラーで返ったときの台帳の扱い。
+ * - release: 使われていないと分かる。記録を外す（初めて出した鍵が 401・403 で断られたときだけ）
+ * - failed: 結果が確定した失敗（初めて出した鍵が、ほかの 4xx で断られたとき）
+ * - pending: 使われたか分からない。結果不明のまま残し、同じ `redeem_request_id` で再送する
+ *
+ * 再送（`resend`）はどの応答でも pending。再送への応答から分かるのは再送そのものの扱いだけで、最初の
+ * 要求（5xx・時間切れ・通信断で結果不明になったもの）が使われたかは分からないため。記録を外すと、次の
+ * 操作が新しい鍵になり、2枚目が減りうる。429 は初めての鍵でも pending（ゲートウェイで断ったとは限らない）。
+ * 409（同じ鍵を処理中の可能性）と 408・5xx も pending。
+ */
+export function paradisCodexResetHttpFailureOutcome(status: number, resend: boolean): 'release' | 'failed' | 'pending' {
+	if (resend || status === 408 || status === 409 || status === 429 || status >= 500 || status < 400) {
+		return 'pending';
+	}
+	return status === 401 || status === 403 ? 'release' : 'failed';
+}
+
+/** バックエンドが消費の要求を断った（HTTP のエラー）。扱いは {@link paradisCodexResetHttpFailureOutcome}。 */
 class ParadisCodexResetHttpError extends Error {
 	constructor(readonly status: number) {
 		super(`Codex reset failed: HTTP ${status}`);
@@ -412,15 +430,7 @@ export class ParadisCodexAccountsService extends Disposable {
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
 			try {
-				const headers: Record<string, string> = {
-					'Authorization': `Bearer ${auth.accessToken}`,
-					'Accept': 'application/json',
-					'User-Agent': 'ParaCode-CodexAccounts',
-				};
-				if (auth.accountId) {
-					headers['ChatGPT-Account-Id'] = auth.accountId;
-				}
-				const response = await this.fetchImpl(RESET_CREDITS_URL, { method: 'GET', headers, signal: controller.signal });
+				const response = await this.fetchImpl(RESET_CREDITS_URL, { method: 'GET', headers: codexBackendHeaders(auth.accessToken, auth.accountId), redirect: 'error', signal: controller.signal });
 				if (response.status === 401 || response.status === 403) {
 					// トークンの更新は使用量の取得（limitsMonitor）が codex 自身にさせる。次の読み取りで直る。
 					result = { offer: { homePath, error: 'auth', fetchedAt }, accountId: auth.accountId };
@@ -501,6 +511,9 @@ export class ParadisCodexAccountsService extends Disposable {
 		let key: string;
 		let offerScope: string;
 		const pendingKey = this.ledger.pendingKeyForAccount(accountScope);
+		// 結果が分からない前回の要求の再送か。再送への応答から分かるのは「その再送が使われたか」だけで、
+		// 最初の要求が使われたかは分からない。
+		const resend = pendingKey !== undefined;
 		if (pendingKey !== undefined) {
 			// 前回の要求の結果が分からない。新しい鍵で出すと2枚目が減りうるので、同じ鍵で再送する
 			// （provider 側で1回にまとめられる）。
@@ -532,16 +545,17 @@ export class ParadisCodexAccountsService extends Disposable {
 			code = await this.postConsume(auth.accessToken, auth.accountId, key);
 		} catch (error) {
 			if (error instanceof ParadisCodexResetHttpError) {
-				if (error.status === 401 || error.status === 403 || error.status === 429) {
-					// 認証が無い・切れている、回数の上限。バックエンドは使う前に断っているので「結果不明」から外す
+				const outcome = paradisCodexResetHttpFailureOutcome(error.status, resend);
+				if (outcome === 'release') {
+					// 初めて出した鍵が認証で断られた（使う前に断られている）。「結果不明」から外す
 					// （残すと、ログインし直した後も同じ鍵の再送から抜けられない）。
 					await this.ledger.release(key);
-				} else if (error.status >= 400 && error.status < 500 && error.status !== 408) {
-					// 要求が断られた（結果が確定した失敗）。結果不明にはせず、同じ提示への2回目は断る。
+				} else if (outcome === 'failed') {
+					// 初めて出した鍵が断られた（結果が確定した失敗）。結果不明にはせず、同じ提示への2回目は断る。
 					// 読み直した新しい提示なら押せる。
 					await this.ledger.markFailed(key);
 				}
-				// 5xx と 408 は、使われたかどうか分からない。providerPending のまま残し、同じ鍵で再送させる。
+				// それ以外は providerPending のまま残し、同じ鍵で再送させる。
 				this.offers.delete(homePath);
 			}
 			// 通信の失敗・時間切れも結果が分からない。providerPending のまま残し、次の操作で同じ鍵を再送させる。
@@ -563,18 +577,11 @@ export class ParadisCodexAccountsService extends Disposable {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), CONSUME_TIMEOUT_MS);
 		try {
-			const headers: Record<string, string> = {
-				'Authorization': `Bearer ${accessToken}`,
-				'Accept': 'application/json',
-				'Content-Type': 'application/json',
-				'User-Agent': 'ParaCode-CodexAccounts',
-			};
-			if (accountId) {
-				headers['ChatGPT-Account-Id'] = accountId;
-			}
 			const response = await this.fetchImpl(RESET_CREDITS_CONSUME_URL, {
 				method: 'POST',
-				headers,
+				headers: { ...codexBackendHeaders(accessToken, accountId), 'Content-Type': 'application/json' },
+				// トークンと冪等の鍵を chatgpt.com の外へ転送させない
+				redirect: 'error',
 				body: JSON.stringify({ redeem_request_id: redeemRequestId }),
 				signal: controller.signal,
 			});
@@ -588,6 +595,20 @@ export class ParadisCodexAccountsService extends Disposable {
 			clearTimeout(timer);
 		}
 	}
+}
+
+/**
+ * ChatGPT のバックエンドへの要求の見出し。Orca（`main/rate-limits/codex-backend-auth.ts` の
+ * `getCodexBackendAuthHeaders`）と同じ値にする（バックエンドがこれらを見て断ることがありうるため）。
+ */
+function codexBackendHeaders(accessToken: string, accountId: string | undefined): Record<string, string> {
+	return {
+		'Authorization': `Bearer ${accessToken}`,
+		'User-Agent': 'codex-cli',
+		'OpenAI-Beta': 'codex-1',
+		'originator': 'Codex Desktop',
+		...(accountId ? { 'ChatGPT-Account-Id': accountId } : {}),
+	};
 }
 
 /**
