@@ -177,7 +177,8 @@ class ParadisNotificationInboxTitleBarWidget extends BaseActionViewItem {
 				this.icon.className = ThemeIcon.asClassName(attentionPaneCount > 0 ? Codicon.bellDot : Codicon.bell);
 			}
 			if (this.badge) {
-				this.badge.textContent = attentionPaneCount > 0 ? String(attentionPaneCount) : '';
+				// 2桁以上は「9+」で頭打ちにして、ベルの幅を変えない（正確な数はホバーに出る）
+				this.badge.textContent = attentionPaneCount > 9 ? '9+' : attentionPaneCount > 0 ? String(attentionPaneCount) : '';
 				this.badge.classList.toggle('hidden', attentionPaneCount === 0);
 			}
 			const text = this.hoverText(attentionPaneCount, unreadCount);

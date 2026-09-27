@@ -42,7 +42,9 @@
 }
 
 .monaco-workbench .paradis-notification-inbox-titlebar-widget > .paradis-notification-inbox-badge {
-	min-width: 16px;
+	/* Wide enough for "9+", the longest label, so the bell keeps one width at any count. */
+	min-width: 20px;
+	box-sizing: border-box;
 	height: 16px;
 	margin-left: var(--vscode-spacing-size40);
 	padding: 0 var(--vscode-spacing-size40);

@@ -146,7 +146,7 @@ export interface IParadisNotificationInboxService {
 	markRead(ids: readonly string[]): Promise<void>;
 	markUnread(id: string): Promise<void>;
 	markAllRead(): Promise<void>;
-	markPanesRead(tokens: readonly string[]): Promise<void>;
+	markPanesRead(paneKeys: readonly string[]): Promise<void>;
 	remove(id: string): Promise<void>;
 	/** 行を押したときの移動。ペインを持っているウィンドウが受け取って移動する。 */
 	reveal(entry: IParadisInboxEntry): Promise<void>;
@@ -155,7 +155,7 @@ export interface IParadisNotificationInboxService {
 	/** このウィンドウのペインの今の状態を知らせる（状態が通知の種類から変わった未読を既読にする）。 */
 	syncPaneStatuses(statuses: readonly IParadisInboxPaneStatus[]): Promise<void>;
 	/** このウィンドウがいま開いているペインを知らせる（件数は開いているペインだけを数える）。 */
-	setLivePanes(tokens: readonly string[]): Promise<void>;
+	setLivePanes(paneKeys: readonly string[]): Promise<void>;
 }
 
 // ---- 表示の補助 --------------------------------------------------------------------------------
@@ -230,23 +230,55 @@ export function paradisInboxAttentionEntries(snapshot: IParadisInboxSnapshot, li
 /** 伏せた部分の印。 */
 const REDACTED = '***';
 
+/**
+ * 値として伏せる文字。ASCII の記号・英数字だけに限る（引用符と `&;|` は区切りとして除く）。
+ * 日本語の文は空白で区切られないので、「次の空白まで」を値にすると文の残りまで消えてしまう。
+ */
+const VALUE = `[!#-%(-:<-{}~]+`;
+const QUOTED_OR_VALUE = `("[^"]*"|'[^']*'|${VALUE})`;
+
+/** 既知の形のトークンの接頭辞（切り詰めの境目で断片だけ残ったものを伏せるのにも使う）。 */
+const KNOWN_TOKEN_PREFIXES = `(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|sk-|sk_|pk_|rk_|AKIA|ASIA|xox[abprs]-|AIza|npm_|glpat-|hf_|eyJ)`;
+
 const SECRET_PATTERNS: readonly [RegExp, string][] = [
-	// URL に埋め込んだ認証情報（https://user:pass@host）
+	// URL に埋め込んだ認証情報（https://user:pass@host）と、キーだけのもの（Sentry の DSN など）
 	[/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, `$1${REDACTED}@`],
+	[/\b(https?:\/\/)[0-9a-f]{16,}@/gi, `$1${REDACTED}@`],
+	// Webhook の URL（パスそのものが秘密）
+	[/\b(https:\/\/hooks\.slack\.com\/services\/)[A-Za-z0-9/]+/g, `$1${REDACTED}`],
+	[/\b(https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/)[A-Za-z0-9/_-]+/g, `$1${REDACTED}`],
+	// PEM の秘密鍵（1行に畳まれて届くので、ヘッダーより後ろを全部伏せる）
+	[/(-----BEGIN [A-Z ]*PRIVATE KEY-----).*/g, `$1 ${REDACTED}`],
 	// Authorization ヘッダー・Bearer / Basic の値
 	[/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}/gi, `$1 ${REDACTED}`],
-	// NAME_KEY=... / API_TOKEN: ... / password=... など（右辺だけ伏せる）
-	[/\b([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|passw(?:or)?d|pwd|credentials?|authorization))(["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s"'&;|]+)/gi, `$1$2${REDACTED}`],
-	// --password xxx / --token=xxx などのコマンドライン引数
-	[/(--?(?:[a-z0-9-]*(?:key|token|secret|password|passwd|pass))[=\s]+)("[^"]*"|'[^']*'|\S+)/gi, `$1${REDACTED}`],
+	// 大文字の環境変数（STRIPE_SECRET_KEY=... / OPENAI_KEY=... / SENTRY_DSN=...）
+	[new RegExp(`\\b([A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASS(?:WORD)?|PWD|DSN|CREDENTIALS?))(\\s*=\\s*)${QUOTED_OR_VALUE}`, 'g'), `$1$2${REDACTED}`],
+	// api_key: ... / password=... / secret_key_base: ... など（右辺だけ伏せる）
+	[new RegExp(`\\b([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|secret|token|passw(?:or)?d|pwd|credentials?|authorization)[A-Za-z0-9_]*)(["']?\\s*[:=]\\s*)${QUOTED_OR_VALUE}`, 'gi'), `$1$2${REDACTED}`],
+	// 空白区切りで値を渡す設定（aws configure set aws_secret_access_key <値>）
+	[new RegExp(`\\b([a-z0-9]+_(?:secret_access_key|session_token|secret_key|api_key|access_token))(\\s+)${QUOTED_OR_VALUE}`, 'gi'), `$1$2${REDACTED}`],
+	// --password xxx / --api-key=xxx などのコマンドライン引数（行頭か空白の直後のものだけ）
+	[new RegExp(`(^|\\s)(--?(?:[a-z0-9-]*-)?(?:api-key|access-key|secret-key|secret|token|password|passwd|pass)(?:=|\\s+))${QUOTED_OR_VALUE}`, 'gi'), `$1$2${REDACTED}`],
+	// mysql -phunter2（値を空けずに付ける形）と docker login -p hunter2
+	[new RegExp(`\\b((?:mysql|mysqldump|mariadb|mysqladmin)\\b[^|;&]*?\\s-p)${VALUE}`, 'g'), `$1${REDACTED}`],
+	[new RegExp(`\\b(login\\b[^|;&]*?\\s-p\\s+)${QUOTED_OR_VALUE}`, 'g'), `$1${REDACTED}`],
+	// curl -u user:pass
+	[new RegExp(`(^|\\s)(-u|--user)(\\s+|=)([^\\s:"']+):${VALUE}`, 'g'), `$1$2$3$4:${REDACTED}`],
 	// よく知られた形のトークン
 	[/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}/g, REDACTED],
+	[/\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{8,}/g, REDACTED],
 	[/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{12,}/g, REDACTED],
 	[/\bgithub_pat_[A-Za-z0-9_]{12,}/g, REDACTED],
 	[/\b(?:AKIA|ASIA)[0-9A-Z]{12,}/g, REDACTED],
 	[/\bxox[abprs]-[A-Za-z0-9-]{8,}/g, REDACTED],
 	[/\bAIza[0-9A-Za-z_-]{20,}/g, REDACTED],
+	[/\bnpm_[A-Za-z0-9]{20,}/g, REDACTED],
+	[/\bglpat-[A-Za-z0-9_-]{16,}/g, REDACTED],
+	[/\bhf_[A-Za-z0-9]{20,}/g, REDACTED],
 	[/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, REDACTED],
+	// 中継が長い文を切り詰めたとき（末尾が省略記号）、境目で既知の接頭辞の断片だけが残っていれば伏せる
+	[new RegExp(`\\b${KNOWN_TOKEN_PREFIXES}[A-Za-z0-9_-]*(?=\\u2026$)`, 'g'), REDACTED],
+	[/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]*(?=…$)/gi, `$1 ${REDACTED}`],
 ];
 
 /**

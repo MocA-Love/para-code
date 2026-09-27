@@ -131,8 +131,8 @@ export class ParadisNotificationInboxService extends Disposable {
 		this.changed(this.ledger.markAllRead());
 	}
 
-	markPanesRead(tokens: unknown): void {
-		this.changed(this.ledger.markPanesRead(strings(tokens)));
+	markPanesRead(paneKeys: unknown): void {
+		this.changed(this.ledger.markPanesRead(strings(paneKeys)));
 	}
 
 	remove(id: unknown): void {
@@ -143,8 +143,8 @@ export class ParadisNotificationInboxService extends Disposable {
 		this.changed(this.ledger.syncPaneStatuses(paneStatuses(statuses)));
 	}
 
-	setLivePanes(client: string, tokens: unknown): void {
-		this.changed(this.ledger.setLivePanes(client, strings(tokens)));
+	setLivePanes(client: string, paneKeys: unknown): void {
+		this.changed(this.ledger.setLivePanes(client, strings(paneKeys)));
 	}
 
 	removeClient(client: string): void {
