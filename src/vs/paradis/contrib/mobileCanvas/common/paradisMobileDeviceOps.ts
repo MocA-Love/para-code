@@ -57,8 +57,12 @@ export interface IParadisMobileInstallPrompt {
 	/** 拒否の後の自動の断りを、端末ごとに数えるために使う（表示はしない）。 */
 	readonly deviceId: string;
 	readonly deviceName: string;
-	/** インストールするもの（シンボリックリンクを解いた後のパス）。 */
+	/** エージェントが渡したものの、シンボリックリンクを解いた後のパス（どこから写したかを見せるため）。 */
 	readonly path: string;
+	/** 写しから読んだバンドル ID / パッケージ名。読めなければ無い。 */
+	readonly appId?: string;
+	/** 写しから読んだ表示名（iOS の `.app` だけ）。 */
+	readonly appName?: string;
 }
 
 export interface IParadisMobileDeviceRequestAnswer {
@@ -272,6 +276,12 @@ export function paradisMobileInstallKindFor(platform: ParadisMobilePlatform, pat
 
 // --- 画面の寸法とジェスチャー ---
 
+/**
+ * スワイプの既定の長さ。ホストの既定（実機で 72ms で返る速さ）では、iOS のホーム画面のページが送られなかった。
+ * 0.4 秒では送られた（2026-09-27、iOS 27 シミュレータ）。mobile_swipe の既定も同じ値。
+ */
+export const PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS = 0.4;
+
 export interface IParadisPoint {
 	readonly x: number;
 	readonly y: number;
@@ -300,6 +310,29 @@ export function paradisParseDisplaySize(raw: unknown): (IParadisPointSize & { re
 		...(typeof record.orientation === 'string' ? { orientation: record.orientation } : {}),
 		...(typeof record.scale === 'number' ? { scale: record.scale } : {}),
 	};
+}
+
+/** PNG の幅と高さ（画素）を IHDR から読む。PNG でなければ undefined。 */
+export function paradisPngSize(bytes: Uint8Array): { readonly width: number; readonly height: number } | undefined {
+	const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+	if (bytes.length < 24 || signature.some((value, index) => bytes[index] !== value) || String.fromCharCode(...bytes.subarray(12, 16)) !== 'IHDR') {
+		return undefined;
+	}
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const width = view.getUint32(16);
+	const height = view.getUint32(20);
+	return width > 0 && height > 0 ? { width, height } : undefined;
+}
+
+/**
+ * 入力の座標に使う画面の大きさ（ポイント）を、スクリーンショットの画素数と `scale` から出す。
+ * **ホストの `/display` の大きさは端末の向きで、前面のアプリがその向きに回ったかは見ていない**
+ * （縦しか無いアプリの上で横にすると、`/display` は横なのに画面もスクショも縦のまま）。mobile_tap などの
+ * 座標はスクショと同じ向きで解釈されるので、範囲の確認と返す大きさはこちらにそろえる。
+ */
+export function paradisScreenSizeFromScreenshot(png: { readonly width: number; readonly height: number }, scale: number): IParadisPointSize {
+	const safeScale = scale > 0 ? scale : 1;
+	return { width: Math.round(png.width / safeScale * 10) / 10, height: Math.round(png.height / safeScale * 10) / 10 };
 }
 
 /** 点が画面の中にあるか（端ちょうどは外。OS の端のジェスチャーを誤って起こさないため）。 */

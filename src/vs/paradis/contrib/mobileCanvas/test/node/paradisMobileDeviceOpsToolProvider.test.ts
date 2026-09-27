@@ -6,6 +6,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
@@ -13,7 +16,7 @@ import { IParadisMobileAttachment, IParadisMobileDevice } from '../../common/par
 import { paradisDeviceHeldByAnotherPane } from '../../common/paradisMobileDeviceOps.js';
 import { ParadisMobileCanvasHostClient } from '../../node/paradisMobileCanvasHostClient.js';
 import { ParadisMobileCanvasService } from '../../node/paradisMobileCanvasService.js';
-import { IParadisMobileCommandResult, IParadisMobileFileProbe, ParadisMobileDeviceCommands, paradisAdbCandidates } from '../../node/paradisMobileDeviceCommands.js';
+import { IParadisMobileCommandResult, IParadisMobileFileProbe, IParadisMobileStagingFs, ParadisMobileDeviceCommands, paradisAdbCandidates, paradisNodeMobileFileProbe, paradisNodeMobileStagingFs } from '../../node/paradisMobileDeviceCommands.js';
 import { IParadisMobileDeviceLedger, ParadisMobileDeviceOpsToolProvider } from '../../node/paradisMobileDeviceOpsToolProvider.js';
 
 const PANE = 'pane-a';
@@ -55,11 +58,29 @@ class FakeLedger implements IParadisMobileDeviceLedger {
 
 interface IHostCall { readonly method: string; readonly path: string; readonly body?: unknown }
 
+/** 幅と高さだけを持つ PNG の頭（IHDR まで）。 */
+function pngHeader(width: number, height: number): Uint8Array {
+	const bytes = new Uint8Array(24);
+	bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+	const view = new DataView(bytes.buffer);
+	view.setUint32(16, width);
+	view.setUint32(20, height);
+	return bytes;
+}
+
 class FakeHost {
 	readonly calls: IHostCall[] = [];
 	display: object = { pointWidth: 400, pointHeight: 800, scale: 3, orientation: 'portrait' };
+	/** スクショの画素数（画面の向き）。 */
+	screenshot = { width: 1200, height: 2400 };
+	/** 前面のアプリが横に回るか。false なら端末（`/display`）だけ回り、画面は縦のまま。 */
+	appRotates = true;
 	failTouchAfter: number | undefined;
 	onTouch: (() => void) | undefined;
+	async requestBinary(path: string): Promise<Uint8Array> {
+		this.calls.push({ method: 'GET', path });
+		return pngHeader(this.screenshot.width, this.screenshot.height);
+	}
 	async request(method: string, path: string, body?: unknown): Promise<unknown> {
 		this.calls.push({ method, path, ...(body !== undefined ? { body } : {}) });
 		if (path.endsWith('/display')) {
@@ -67,6 +88,9 @@ class FakeHost {
 		}
 		if (path.endsWith('/input/rotate')) {
 			this.display = { pointWidth: 800, pointHeight: 400, scale: 3, orientation: 'landscape-left' };
+			if (this.appRotates) {
+				this.screenshot = { width: 2400, height: 1200 };
+			}
 		}
 		if (path.endsWith('/input/touch')) {
 			this.onTouch?.();
@@ -77,7 +101,7 @@ class FakeHost {
 		return undefined;
 	}
 	inputs(): IHostCall[] {
-		return this.calls.filter(call => !call.path.endsWith('/display'));
+		return this.calls.filter(call => call.method === 'POST');
 	}
 }
 
@@ -90,7 +114,9 @@ const LISTAPPS = '{\n    "com.apple.Preferences" =     {\n        ApplicationTyp
 function deviceResponse(run: IRun): IParadisMobileCommandResult {
 	const args = run.args.join(' ');
 	if (run.file === '/usr/bin/plutil') {
-		return { code: 0, stdout: 'com.example.myapp\n', stderr: '' };
+		const values: Record<string, string> = { CFBundleIdentifier: 'com.example.myapp', CFBundleDisplayName: 'My App' };
+		const value = values[run.args[1]];
+		return value ? { code: 0, stdout: `${value}\n`, stderr: '' } : { code: 1, stdout: '', stderr: 'No value at that key path' };
 	}
 	if (args.includes('listapps')) {
 		return { code: 0, stdout: LISTAPPS, stderr: '' };
@@ -147,6 +173,25 @@ function text(result: unknown): { readonly isError: boolean; readonly body: stri
 	return { isError: value.isError === true, body: value.content[0].text };
 }
 
+/** 写しを作ったふりをする。写し先は `/tmp/stage-<番号>`。 */
+class FakeStaging implements IParadisMobileStagingFs {
+	readonly copies: [string, string][] = [];
+	readonly removed: string[] = [];
+	private _serial = 0;
+	async makePrivateDir(): Promise<string> {
+		return `/tmp/stage-${++this._serial}`;
+	}
+	async copy(source: string, destination: string): Promise<void> {
+		this.copies.push([source, destination]);
+	}
+	async remove(path: string): Promise<void> {
+		this.removed.push(path);
+	}
+	async list(): Promise<string[]> {
+		return [];
+	}
+}
+
 interface ISetupOptions {
 	readonly caller?: ParadisMcpCallerKind;
 	readonly answer?: unknown;
@@ -163,7 +208,8 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		const runner = new FakeRunner();
 		const windowCalls: IParadisMcpOwningWindowRequest[] = [];
 		const files = fakeFiles({ ...FILES }, { '/Users/example/Build/Link.app': '/Users/example/Build/Notes.txt' });
-		const commands = new ParadisMobileDeviceCommands(runner.run, files, {}, 'darwin', '/Users/example');
+		const staging = new FakeStaging();
+		const commands = new ParadisMobileDeviceCommands(runner.run, files, {}, 'darwin', '/Users/example', staging);
 		const provider = new ParadisMobileDeviceOpsToolProvider(ledger, host, commands, new NullLogService(), async () => { });
 		let callerChecks = 0;
 		const context: IParadisMcpToolCallContext = {
@@ -182,7 +228,7 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 			hasAgentHookHistory: () => false,
 		};
 		const call = async (name: string, args: object = {}, withContext = true) => text(await provider.callTool(PANE, name, args, undefined, withContext ? context : undefined));
-		return { ledger, host, runner, windowCalls, provider, call, callerChecks: () => callerChecks };
+		return { ledger, host, runner, staging, windowCalls, provider, call, callerChecks: () => callerChecks };
 	}
 
 	test('ignores tools it does not own', async () => {
@@ -265,8 +311,33 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 			rotated: false,
 			body: { orientation: 'landscape-left', screen: { pointWidth: 800, pointHeight: 400, scale: 3 } },
 			hostPaths: [['/api/v1/devices/ios%3Aiphone/input/rotate', { orientation: 'landscape-left' }]],
+			// 端末の向きではなく、スクショ（2400x1200 画素、scale 3）と同じ向きの大きさ
 			commands: 0,
 			callerChecks: 0,
+		});
+	});
+
+	test('rotating under an app that stays portrait reports the screen the screenshot shows, and gestures accept its coordinates', async () => {
+		// 実機の形: ホーム画面（縦だけ）で landscape-left にすると、/display は 874x402 なのにスクショは 1206x2622 のまま
+		const { ledger, host, call } = setup();
+		ledger.give(PANE, IPHONE);
+		host.screenshot = { width: 1206, height: 2622 };
+		host.display = { pointWidth: 402, pointHeight: 874, scale: 3, orientation: 'portrait' };
+		host.appRotates = false;
+		const rotated = JSON.parse((await call('mobile_rotate', { orientation: 'landscape-left' })).body);
+		host.display = { pointWidth: 874, pointHeight: 402, scale: 3, orientation: 'landscape-left' };
+		const longPress = await call('mobile_gesture', { kind: 'long_press', x: 339, y: 422 });
+		const outside = await call('mobile_gesture', { kind: 'long_press', x: 500, y: 200 });
+		assert.deepStrictEqual({
+			screen: rotated.screen,
+			noted: typeof rotated.note === 'string',
+			longPress: longPress.isError,
+			outside: outside.isError,
+		}, {
+			screen: { pointWidth: 402, pointHeight: 874, scale: 3 },
+			noted: true,
+			longPress: false,
+			outside: true,
 		});
 	});
 
@@ -276,18 +347,19 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		const longPress = await call('mobile_gesture', { kind: 'long_press', x: 100, y: 200, duration: 30 });
 		const outside = await call('mobile_gesture', { kind: 'long_press', x: 500, y: 200 });
 		const swipe = await call('mobile_gesture', { kind: 'swipe', direction: 'up', duration: 1e9 });
+		const defaultSwipe = await call('mobile_gesture', { kind: 'swipe', direction: 'left' });
 		const bodies = host.inputs().map(entry => (entry.body as { duration?: number }).duration);
 		host.calls.length = 0;
 		host.failTouchAfter = 3;
 		const pinch = await call('mobile_gesture', { kind: 'pinch', scale: 2 });
 		const touches = host.inputs().map(entry => entry.body as { phase: string; fingerId: number });
 		assert.deepStrictEqual({
-			errors: [longPress.isError, outside.isError, swipe.isError, pinch.isError],
+			errors: [longPress.isError, outside.isError, swipe.isError, defaultSwipe.isError, pinch.isError],
 			durations: bodies,
 			touchPhases: touches.map(touch => `${touch.fingerId}:${touch.phase}`),
 		}, {
-			errors: [false, true, false, true],
-			durations: [10, 10],
+			errors: [false, true, false, false, true],
+			durations: [10, 10, 0.4],
 			// 2本下ろして1本動かしたところで失敗しても、2本とも上げる
 			touchPhases: ['0:down', '1:down', '0:move', '1:move', '0:up', '1:up'],
 		});
@@ -319,8 +391,8 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		});
 	});
 
-	test('install: checks the path, asks the user every time with the resolved path, then calls simctl / adb with an argument array', async () => {
-		const { ledger, runner, windowCalls, call } = setup();
+	test('install: checks the path, copies it privately, shows the copy\'s app id, installs the copy with an argument array and removes it', async () => {
+		const { ledger, runner, staging, windowCalls, call } = setup();
 		ledger.give(PANE, IPHONE);
 		const results = {
 			relative: (await call('mobile_install_app', { path: 'Build/My.app' })).isError,
@@ -344,19 +416,25 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 				missing: true,
 				wrongType: true,
 				linkToText: true,
-				ios: { installed: true, device: 'iPhone 17', path: '/Users/example/Build/My.app', appId: 'com.example.myapp' },
+				ios: { installed: true, device: 'iPhone 17', path: '/Users/example/Build/My.app', note: 'Para Code installed a copy it made of this path before asking the user; later changes to the path are not included.', appId: 'com.example.myapp' },
 			},
 			android: false,
 			approvals: [
-				['approveInstall', { deviceId: 'ios:iphone', deviceName: 'iPhone 17', path: '/Users/example/Build/My.app' }],
+				['approveInstall', { deviceId: 'ios:iphone', deviceName: 'iPhone 17', path: '/Users/example/Build/My.app', appId: 'com.example.myapp', appName: 'My App' }],
+				// aapt2 が無いのでパッケージ名は読めない（ダイアログは「読めませんでした」と出す）
 				['approveInstall', { deviceId: 'android:pixel', deviceName: 'Pixel 9', path: '/Users/example/Build/app.apk' }],
 			],
 			runs: [
-				{ file: '/usr/bin/xcrun', args: ['simctl', 'install', IOS_UDID, '/Users/example/Build/My.app'] },
-				{ file: '/usr/bin/plutil', args: ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', '/Users/example/Build/My.app/Info.plist'] },
-				{ file: ADB, args: ['-s', 'emulator-5554', 'install', '-r', '/Users/example/Build/app.apk'] },
+				{ file: '/usr/bin/plutil', args: ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', '/tmp/stage-1/My.app/Info.plist'] },
+				{ file: '/usr/bin/plutil', args: ['-extract', 'CFBundleDisplayName', 'raw', '-o', '-', '/tmp/stage-1/My.app/Info.plist'] },
+				{ file: '/usr/bin/xcrun', args: ['simctl', 'install', IOS_UDID, '/tmp/stage-1/My.app'] },
+				{ file: ADB, args: ['-s', 'emulator-5554', 'install', '-r', '/tmp/stage-2/app.apk'] },
 			],
 		});
+		assert.deepStrictEqual([staging.copies, staging.removed], [
+			[['/Users/example/Build/My.app', '/tmp/stage-1/My.app'], ['/Users/example/Build/app.apk', '/tmp/stage-2/app.apk']],
+			['/tmp/stage-1', '/tmp/stage-2'],
+		]);
 	});
 
 	test('install: nothing is installed when the user declines or the attached device changes while they answer', async () => {
@@ -366,11 +444,14 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		const switched = setup({ onWindowCall: () => holder.ledger!.give(PANE, PIXEL) });
 		holder.ledger = switched.ledger;
 		switched.ledger.give(PANE, IPHONE);
+		const installs = (runner: FakeRunner) => runner.runs.filter(run => run.args.includes('install')).length;
 		assert.deepStrictEqual([
 			(await declined.call('mobile_install_app', { path: '/Users/example/Build/My.app' })).isError,
 			(await switched.call('mobile_install_app', { path: '/Users/example/Build/My.app' })).isError,
-			declined.runner.runs.length + switched.runner.runs.length,
-		], [false, true, 0]);
+			installs(declined.runner) + installs(switched.runner),
+			// どちらも写しは消す
+			[...declined.staging.removed, ...switched.staging.removed],
+		], [false, true, 0, ['/tmp/stage-1', '/tmp/stage-1']]);
 	});
 
 	test('install and launch refuse SSH panes and devices that are not running', async () => {
@@ -429,6 +510,33 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 			['simctl', 'listapps', IOS_UDID],
 			['simctl', 'privacy', IOS_UDID, 'grant', 'photos', 'com.example.myapp'],
 		]]);
+	});
+
+	test('staging copies into a private folder, keeps the copy when the source changes, refuses symbolic links and removes the copy', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'paradis-stage-test-'));
+		try {
+			const app = join(root, 'My.app');
+			mkdirSync(join(app, 'sub'), { recursive: true });
+			writeFileSync(join(app, 'Info.plist'), 'original');
+			writeFileSync(join(app, 'sub', 'binary'), 'hello');
+			const runner = new FakeRunner();
+			const commands = new ParadisMobileDeviceCommands(runner.run, paradisNodeMobileFileProbe, {}, 'darwin', root, paradisNodeMobileStagingFs);
+			const staged = await commands.stageInstall({ path: app, kind: 'app' });
+			writeFileSync(join(app, 'Info.plist'), 'swapped');
+			const copied = { plist: readFileSync(join(staged.path, 'Info.plist'), 'utf8'), binary: readFileSync(join(staged.path, 'sub', 'binary'), 'utf8'), mode: (statSync(join(staged.path, '..')).mode & 0o777).toString(8), appId: staged.appId };
+			await staged.dispose();
+			const removed = !existsSync(staged.path);
+
+			symlinkSync('/etc/hosts', join(app, 'sub', 'link'));
+			const refused = await commands.stageInstall({ path: app, kind: 'app' }).then(() => 'staged', (error: Error) => error.message);
+			assert.deepStrictEqual({ copied, removed, refused }, {
+				copied: { plist: 'original', binary: 'hello', mode: '700', appId: 'com.example.myapp' },
+				removed: true,
+				refused: 'The app contains a symbolic link (link). Para Code only installs apps without symbolic links.',
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	test('adb: SDK variables, the default SDK folder, then absolute PATH entries; a miss is not remembered', async () => {

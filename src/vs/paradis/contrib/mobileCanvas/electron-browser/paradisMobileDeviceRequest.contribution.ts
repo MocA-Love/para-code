@@ -16,7 +16,9 @@
 //  - 表示から 1 秒以内の承認と、⌘D での承認は聞き直す
 //  - ダイアログはページ共有・プロファイルの承認と同じ列に並べて1つずつ出す。1ペインにつき待てる求めは1つ
 // 拒否の後 3 分の自動の断りだけは、`cooldownKey` で「そのペインの、その端末への要求（インストールは、その端末への
-// インストール）」に絞る。別の端末の要求やページ共有は止めない。
+// インストール）」に絞る。別の端末の要求やページ共有は止めない。ただし端末の要求を拒否された直後の 10 秒は、
+// 同じペインからの別の端末の要求も断る（端末を替えて続けてダイアログを出させない）。
+// インストールは、承認の前に shared process が写した一時フォルダの中身（ID と名前）を見せる。
 // ここは承認を取るだけで、台帳への割り当てとインストールは shared process が行う。
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
@@ -40,8 +42,14 @@ import {
 /** ダイアログに出す端末名の最大文字数（端末名はエージェントも simctl で付けられるので、長さも切る）。 */
 const DEVICE_NAME_MAX_LENGTH = 80;
 const RUNTIME_MAX_LENGTH = 40;
-/** ダイアログに出すインストールするパスの最大文字数。 */
-const PATH_MAX_LENGTH = 400;
+/** ダイアログに出すインストールするパスの最大文字数。超えたら先頭を切り、末尾（ファイル名）を残す。 */
+const PATH_MAX_LENGTH = 200;
+const APP_ID_MAX_LENGTH = 200;
+/**
+ * 端末の要求を拒否された直後、同じペインからのほかの端末の要求も断る時間。3 分の断りは端末ごとなので、
+ * これが無いと端末の数だけ続けてダイアログを出せる。
+ */
+export const PARADIS_MOBILE_ANY_DEVICE_DENIAL_MS = 10_000;
 
 /** shared process から届く要求を承認ダイアログへ流すチャネル。 */
 export class ParadisMobileDeviceRequestChannel implements IServerChannel {
@@ -50,7 +58,11 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 		private readonly _approvals: Pick<IParadisAgentBrowserTabsService, 'askApproval'>,
 		private readonly _paneTokens: Pick<IParadisPaneTokenService, 'getInstanceForToken'>,
 		private readonly _terminalScopes: Pick<IParadisTerminalScopeService, 'getStateKeyForInstance'>,
+		private readonly _now: () => number = Date.now,
 	) { }
+
+	/** ペイン → 端末の要求を最後に拒否された時刻。 */
+	private readonly _lastDeviceDenial = new Map<string, number>();
 
 	listen<T>(_ctx: unknown, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
@@ -69,7 +81,15 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 		throw new Error(`Method not found: ${command}`);
 	}
 
-	private _requestDevice(token: unknown, prompt: Record<string, unknown>, cancellation: CancellationToken): Promise<IParadisMobileDeviceRequestAnswer> {
+	private async _requestDevice(token: unknown, prompt: Record<string, unknown>, cancellation: CancellationToken): Promise<IParadisMobileDeviceRequestAnswer> {
+		// 拒否された直後は、別の端末の要求もダイアログを出さずに断る（端末を替えて続けて迫らせない）
+		const deniedAt = typeof token === 'string' ? this._lastDeviceDenial.get(token) : undefined;
+		if (deniedAt !== undefined) {
+			if (this._now() - deniedAt < PARADIS_MOBILE_ANY_DEVICE_DENIAL_MS) {
+				return { outcome: 'recentlyDenied' };
+			}
+			this._lastDeviceDenial.delete(token as string);
+		}
 		// 名前・理由はエージェントが決められる文字列なので、制御文字と双方向制御を落としてから出す
 		const deviceName = deviceNameOf(prompt);
 		const runtime = paradisSanitizeDisplayText(text(prompt, 'runtime'), RUNTIME_MAX_LENGTH);
@@ -84,25 +104,37 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 			localize('paradis.mobileDeviceRequest.effect', "承認すると、このターミナルのエージェントはこの端末の画面を読み、タップ・入力・回転などの操作と、アプリの起動・権限の付与ができます。共有ダイアログの「モバイル端末」タブからいつでも外せます。"),
 			localize('paradis.mobileDeviceRequest.install', "アプリのインストールは、そのたびに確認します。エージェントが入れたアプリは Para Code の権限で動き、エージェントの作業フォルダの制限の外に出られます。"),
 		].filter((line): line is string => line !== undefined);
-		return this._ask(token, {
+		const answer = await this._ask(token, {
 			messageTemplate: pane => localize('paradis.mobileDeviceRequest.message', "{0} のエージェントが、モバイル端末を使いたいと求めています", pane),
 			detail,
 			approveLabel: localize('paradis.mobileDeviceRequest.approve', "この端末を渡す"),
 			cooldownKey: `mobile-device:${text(prompt, 'deviceId') ?? deviceName}`,
 		}, cancellation);
+		if (answer.outcome === 'denied' && typeof token === 'string') {
+			this._lastDeviceDenial.set(token, this._now());
+		}
+		return answer;
 	}
 
 	private _approveInstall(token: unknown, prompt: Record<string, unknown>, cancellation: CancellationToken): Promise<IParadisMobileDeviceRequestAnswer> {
 		const deviceName = deviceNameOf(prompt);
-		const path = paradisSanitizeDisplayText(text(prompt, 'path'), PATH_MAX_LENGTH);
+		const path = tailOf(paradisSanitizeDisplayText(text(prompt, 'path'), Number.MAX_SAFE_INTEGER), PATH_MAX_LENGTH);
 		if (!path) {
 			return Promise.resolve({ outcome: 'cancelled' });
 		}
+		const appId = paradisSanitizeDisplayText(text(prompt, 'appId'), APP_ID_MAX_LENGTH);
+		const appName = paradisSanitizeDisplayText(text(prompt, 'appName'), DEVICE_NAME_MAX_LENGTH);
 		return this._ask(token, {
 			messageTemplate: pane => localize('paradis.mobileInstall.message', "{0} のエージェントが、モバイル端末にアプリを入れようとしています", pane),
 			detail: [
-				localize('paradis.mobileInstall.path', "インストールするもの: {0}", path),
+				appId
+					? appName
+						? localize('paradis.mobileInstall.appWithName', "入れるアプリ: {0}（{1}）", appId, appName)
+						: localize('paradis.mobileInstall.app', "入れるアプリ: {0}", appId)
+					: localize('paradis.mobileInstall.appUnknown', "入れるアプリ: ID を読めませんでした"),
+				localize('paradis.mobileInstall.path', "写した元: {0}", path),
 				localize('paradis.mobileInstall.device', "入れる端末: {0}", deviceName),
+				localize('paradis.mobileInstall.copy', "Para Code がこの時点の中身を写したものを入れます。承認の後に元のファイルが変わっても、入るものは変わりません。"),
 				localize('paradis.mobileInstall.effect', "このアプリは Para Code の権限で動き、エージェントの作業フォルダの制限の外に出られます（この Mac のファイルやネットワークに触れられます）。エージェントが作った覚えのないものなら拒否してください。"),
 			],
 			approveLabel: localize('paradis.mobileInstall.approve', "インストールする"),
@@ -137,6 +169,15 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 
 function text(prompt: Record<string, unknown>, name: string): string | undefined {
 	return typeof prompt[name] === 'string' ? prompt[name] as string : undefined;
+}
+
+/** 長すぎる文字列の先頭を切り、末尾（パスのファイル名）を残す。 */
+function tailOf(value: string | undefined, maxLength: number): string | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	const characters = Array.from(value);
+	return characters.length > maxLength ? `\u2026${characters.slice(characters.length - maxLength).join('')}` : value;
 }
 
 function deviceNameOf(prompt: Record<string, unknown>): string {
