@@ -56,9 +56,16 @@ export function paradisSpaceHistoryDirectory(base: string, historyId: string): s
 	return `${base.replace(/[\\/]+$/, '')}/${historyId}`;
 }
 
-/** 作った履歴フォルダの控え（historyId → stateKey）を読む。壊れた行は捨てる。 */
-export function paradisParseCreatedHistoryIds(raw: string | undefined): Map<string, string> {
-	const result = new Map<string, string>();
+/** 作った履歴フォルダの控え1件。 */
+export interface IParadisCreatedHistoryId {
+	readonly stateKey: string;
+	/** 続けて何回の起動で、そのスペースが一覧に見つからなかったか。 */
+	readonly missedStartups: number;
+}
+
+/** 作った履歴フォルダの控え（historyId → 控え）を読む。壊れた行は捨てる。 */
+export function paradisParseCreatedHistoryIds(raw: string | undefined): Map<string, IParadisCreatedHistoryId> {
+	const result = new Map<string, IParadisCreatedHistoryId>();
 	if (!raw) {
 		return result;
 	}
@@ -67,7 +74,8 @@ export function paradisParseCreatedHistoryIds(raw: string | undefined): Map<stri
 		if (Array.isArray(parsed)) {
 			for (const entry of parsed) {
 				if (Array.isArray(entry) && typeof entry[0] === 'string' && /^[0-9a-f]{16}$/.test(entry[0]) && typeof entry[1] === 'string' && entry[1].length > 0) {
-					result.set(entry[0], entry[1]);
+					const missed = typeof entry[2] === 'number' && Number.isSafeInteger(entry[2]) && entry[2] > 0 ? entry[2] : 0;
+					result.set(entry[0], { stateKey: entry[1], missedStartups: missed });
 				}
 			}
 		}
@@ -75,6 +83,28 @@ export function paradisParseCreatedHistoryIds(raw: string | undefined): Map<stri
 		// 壊れていたら控えが無いのと同じ（消しすぎない側に倒す）。
 	}
 	return result;
+}
+
+export function paradisSerializeCreatedHistoryIds(ids: ReadonlyMap<string, IParadisCreatedHistoryId>, max: number): string {
+	return JSON.stringify([...ids].slice(-max).map(([historyId, entry]) => entry.missedStartups > 0 ? [historyId, entry.stateKey, entry.missedStartups] : [historyId, entry.stateKey]));
+}
+
+/** 何回続けて見つからなければ消す候補にするか。 */
+export const PARADIS_ORPHAN_HISTORY_MIN_MISSED_STARTUPS = 3;
+/** 最後に書かれてから何日たっていれば消してよいか。 */
+export const PARADIS_ORPHAN_HISTORY_MIN_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * 起動時の掃除で、この履歴を消してよいか。
+ *
+ * スペースの一覧は、起動時に worktree の列挙が一時的に失敗しても（外付けディスクや SSH 先の遅延）
+ * そのまま確定してしまう。1回見つからなかっただけで消すと、生きているスペースの履歴を取り返しの
+ * つかない形で失う。**続けて何回も見つからず、しかも長い間書かれていない**ものだけを消す
+ * （生きているスペースの履歴は、使っていれば書かれて新しくなる）。
+ */
+export function paradisShouldDeleteOrphanHistory(missedStartups: number, lastWrittenAt: number | undefined, now: number): boolean {
+	return missedStartups >= PARADIS_ORPHAN_HISTORY_MIN_MISSED_STARTUPS
+		&& (lastWrittenAt === undefined || now - lastWrittenAt >= PARADIS_ORPHAN_HISTORY_MIN_AGE_MS);
 }
 
 /** 補完候補が履歴ファイルを引くときに渡すターミナルの情報。 */

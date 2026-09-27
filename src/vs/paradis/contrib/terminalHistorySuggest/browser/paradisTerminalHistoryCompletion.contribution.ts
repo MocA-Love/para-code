@@ -137,17 +137,9 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 		};
 
 		const historyDetail = localize('para.terminalHistory.detail', "History");
-		for (const [command] of entries) {
-			if (completions.length >= MAX_RESULTS) {
-				break;
-			}
-			addCompletion(command, historyDetail);
-		}
-		// シェル自身の履歴ファイル(~/.zsh_history 等)からもマージする。補完要求はフォーカス中の
-		// ターミナルからしか発生しないため、シェル種別は activeInstance から取得する
-		// (ITerminalCompletionProvider.provideCompletions には shellType が渡ってこないための代替)。
-		// スペースごとの履歴を使っているターミナルでは、そのスペースの履歴ファイルを先に読む
-		// （↑ キーで出るのはこちら）。全体の履歴ファイルは後ろに続けて補う。
+		// スペースごとの履歴を使っているターミナルでは、そのスペースの履歴ファイルを最初に読む
+		// （↑ キーで出るのはこちら）。全スペース共通の VS Code 内部の履歴と、全体の履歴ファイルは
+		// 後ろに続けて補う。先に共通の履歴を並べると、別のスペースのコマンドが先頭に来る。
 		const activeInstance = this._terminalService.activeInstance;
 		if (completions.length < MAX_RESULTS && activeInstance !== undefined) {
 			const spaceHistoryResult = await this._getSpaceFileHistory(activeInstance, token);
@@ -162,6 +154,15 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 				addCompletion(spaceHistory.commands[i], spaceHistory.sourceLabel);
 			}
 		}
+		for (const [command] of entries) {
+			if (completions.length >= MAX_RESULTS) {
+				break;
+			}
+			addCompletion(command, historyDetail);
+		}
+		// シェル自身の履歴ファイル(~/.zsh_history 等)からもマージする。補完要求はフォーカス中の
+		// ターミナルからしか発生しないため、シェル種別は activeInstance から取得する
+		// (ITerminalCompletionProvider.provideCompletions には shellType が渡ってこないための代替)。
 		if (completions.length < MAX_RESULTS) {
 			const shellType = activeInstance?.shellType;
 			const fileHistoryResult = await this._getFileHistory(shellType, token);
