@@ -126,6 +126,7 @@ function createFixture(): {
 		_paneStatuses: new Map<string, { status: string; changedAt: number }>(),
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set<string>(),
+		_awaitingUserTokens: new Set<string>(),
 		_agentHookTokens: new Set<string>(),
 		_hookReportedTokens: new Set<string>(),
 		_unconfirmedReleaseTokens: new Set<string>(),
@@ -680,6 +681,34 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(snapshot.paneStatuses[0].changedAt <= after, true);
 		assert.strictEqual(eligibleResolutions, 1);
 		assert.strictEqual(staleSweeps, 1);
+	});
+
+	test('moves a pane waiting for permission to idle when the agent stops for the user, and leaves a completed pane alone', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'denied-token' }, { token: 'review-token' }]));
+		Reflect.get(fixture.service, '_paneStatuses')
+			.set('denied-token', { status: 'permission', changedAt: 3 })
+			.set('review-token', { status: 'review', changedAt: 4 });
+		// モバイルが繋がっていない構成（デスクトップ専用の承認はペインの状態に数えない）でも動くこと
+		const settle = (token: string) => (fixture.service as unknown as { _settlePaneAwaitingUser(token: string): void })._settlePaneAwaitingUser(token);
+		settle('denied-token');
+		settle('review-token');
+		const statuses = await fixture.service.listPaneStatuses(connection);
+		// 画面側が状態の消滅を完了と数えないよう、次に状態が付くまで知らせる
+		const whileStopped = (await fixture.service.listAgentStatusSnapshot(connection)).awaitingUserTokens;
+		Reflect.get(fixture.service, '_paneStatuses').set('denied-token', { status: 'working', changedAt: 5 });
+		const afterNextTurn = (await fixture.service.listAgentStatusSnapshot(connection)).awaitingUserTokens;
+		Reflect.get(fixture.service, '_paneStatuses').delete('denied-token');
+		const afterNextTurnEnds = (await fixture.service.listAgentStatusSnapshot(connection)).awaitingUserTokens;
+
+		assert.deepStrictEqual({ statuses, whileStopped, afterNextTurn, afterNextTurnEnds }, {
+			statuses: [{ token: 'review-token', status: 'review', changedAt: 4 }],
+			whileStopped: ['denied-token'],
+			afterNextTurn: undefined,
+			afterNextTurnEnds: undefined,
+		});
 	});
 
 	test('keeps legacy status and hook-token list commands independently available', async () => {

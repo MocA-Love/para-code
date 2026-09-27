@@ -912,6 +912,12 @@ export interface IParadisAgentStatusSnapshot {
 	 * 対応で、次のターン待ち等の一時的なアイドルでは消えない。空配列のエントリは含めない。
 	 */
 	readonly agentHookTokenIssueUrls?: readonly { readonly token: string; readonly issueUrls: readonly string[] }[];
+	/**
+	 * 完了ではなく、止まって利用者の次の指示を待っているために状態を消した（idle にした）ペイン（許可の拒否）。
+	 * 次に状態が付くまで載る。画面側は、これらのペインの状態の消滅を完了として数えない（タブの緑の点を付けない）。
+	 * 古い shared process は送らないので省略可能にしてある。
+	 */
+	readonly awaitingUserTokens?: readonly string[];
 }
 
 // --- ワンボタンMCPセットアップ（バインディングダイアログの「自動セットアップ」用） -----------------

@@ -146,3 +146,44 @@ export function paradisAgentQuestionKeySequence(
 export function paradisAgentQuestionNeedsReviewSubmit(questions: readonly IParadisAgentQuestionShape[]): boolean {
 	return !(questions.length === 1 && questions[0]?.multiSelect === false);
 }
+
+/**
+ * 許可の確認（Claude Code の「Do you want to proceed?」、Codex の承認プロンプト）への回答をキー列にする。
+ *
+ * Claude は `1`（Yes）で許可、Esc で拒否。モバイルは以前から `1` の後に Enter も送っている
+ * （`confirmWithEnter`）。デスクトップのチャット表示は Enter を送らない: Claude Code 2.1.283 では `1` だけで
+ * 確定し、後から送った Enter が次に出た同じ内容の許可を確定した（フェーズ6の実機確認 NG-2）。
+ *
+ * Codex は `y` で許可。拒否のキーは版で違う: codex-cli 0.155.1 の画面は
+ * `3. No, and tell Codex what to do differently (esc)` で Esc、それより前の版は `d`。画面の文字が
+ * 渡されれば、選択肢の行の末尾の `(…)` から選ぶ（{@link paradisCodexApprovalDenyKey}）。
+ *
+ * モバイルとデスクトップのチャット表示が同じ関数を使う（Codex の app-server 経由の承認は
+ * キーではなく構造化された回答で返すので、ここは通らない）。
+ */
+export function paradisAgentApprovalKeySequence(agent: 'claude' | 'codex', choice: 'yes' | 'no', options?: { readonly screen?: string; readonly confirmWithEnter?: boolean }): string[] {
+	if (agent === 'codex') {
+		return [choice === 'yes' ? 'y' : paradisCodexApprovalDenyKey(options?.screen)];
+	}
+	if (choice === 'no') {
+		return ['\u001b'];
+	}
+	return options?.confirmWithEnter === false ? ['1'] : ['1', ENTER];
+}
+
+/**
+ * Codex の承認の画面から、拒否のキーを選ぶ。`No, …` で始まる選択肢の行の末尾の `(esc)` / `(d)` / `(n)` を読む。
+ * 画面が無い・読めないときは、以前からの `d`。
+ */
+export function paradisCodexApprovalDenyKey(screen: string | undefined): string {
+	if (screen !== undefined) {
+		for (const line of screen.split('\n')) {
+			const match = /\bNo\b.*\((?<key>esc|[a-z])\)\s*$/.exec(line);
+			const key = match?.groups?.key;
+			if (key !== undefined) {
+				return key === 'esc' ? '\u001b' : key;
+			}
+		}
+	}
+	return 'd';
+}

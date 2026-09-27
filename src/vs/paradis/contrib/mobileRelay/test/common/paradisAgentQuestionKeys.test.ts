@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAgentQuestionKeySequence } from '../../common/paradisAgentQuestionKeys.js';
+import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence, paradisCodexApprovalDenyKey } from '../../common/paradisAgentQuestionKeys.js';
 
 suite('paradisAgentQuestionKeySequence', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -96,5 +96,46 @@ suite('paradisAgentQuestionKeySequence', () => {
 		assert.deepStrictEqual(parts.filter(part => part.includes('\t')), []);
 		// 本文は失われず、タブが空白に置き換わって残る。
 		assert.deepStrictEqual(parts.filter(part => part.startsWith('タブ')), ['タブ を含む回答', 'タブ を含む回答']);
+	});
+
+	// モバイルとデスクトップのチャット表示が同じ列を使う。モバイルが送っていた列から変えないこと。
+	test('許可の確認への回答はエージェントごとに決まったキー列になる', () => {
+		assert.deepStrictEqual({
+			claudeYes: paradisAgentApprovalKeySequence('claude', 'yes'),
+			claudeNo: paradisAgentApprovalKeySequence('claude', 'no'),
+			codexYes: paradisAgentApprovalKeySequence('codex', 'yes'),
+			codexNo: paradisAgentApprovalKeySequence('codex', 'no'),
+		}, {
+			claudeYes: ['1', '\r'],
+			claudeNo: ['\u001b'],
+			codexYes: ['y'],
+			codexNo: ['d'],
+		});
+	});
+	// codex-cli 0.155.1 の実画面の選択肢（フェーズ6の実機確認）。拒否は `(esc)`。古い版の `(d)` にも対応を残す。
+	test('picks the Codex deny key from the prompt on screen, and lets the desktop confirm a Claude approval with 1 alone', () => {
+		const codex0155 = [
+			'Would you like to run the following command?',
+			'$ touch p6-codex-made.txt',
+			'› 1. Yes, proceed (y)',
+			`  2. Yes, and don't ask again for commands that start with 'touch p6-codex-made.txt' (p)`,
+			'  3. No, and tell Codex what to do differently (esc)',
+			'Press enter to confirm or esc to cancel',
+		].join('\n');
+		assert.deepStrictEqual({
+			codex0155: paradisAgentApprovalKeySequence('codex', 'no', { screen: codex0155 }),
+			older: paradisCodexApprovalDenyKey('  2. No, provide feedback (d)'),
+			noScreen: paradisCodexApprovalDenyKey(undefined),
+			codexYes: paradisAgentApprovalKeySequence('codex', 'yes', { screen: codex0155 }),
+			claudeDesktop: paradisAgentApprovalKeySequence('claude', 'yes', { confirmWithEnter: false }),
+			claudeMobile: paradisAgentApprovalKeySequence('claude', 'yes'),
+		}, {
+			codex0155: ['\u001b'],
+			older: 'd',
+			noScreen: 'd',
+			codexYes: ['y'],
+			claudeDesktop: ['1'],
+			claudeMobile: ['1', '\r'],
+		});
 	});
 });

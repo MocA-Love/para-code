@@ -29,13 +29,14 @@
 
 import { watch, type Dirent, FSWatcher, promises as fs } from 'fs';
 import { createRequire } from 'module';
+import { homedir } from 'os';
 // eslint-disable-next-line local/code-import-patterns
 import type { DatabaseSync } from 'node:sqlite';
 import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { BACKGROUND_TASK_ID_MAX_LENGTH, BACKGROUND_TASK_MAX_ENTRIES, fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity, setParadisAgentPaneIssueUrls } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { BACKGROUND_TASK_ID_MAX_LENGTH, BACKGROUND_TASK_MAX_ENTRIES, fireParadisAgentAwaitingUser, fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity, setParadisAgentPaneIssueUrls } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHome, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { paradisExtractIssueUrls } from '../../../common/paradisIssueDetection.js';
 import { paradisIsWslAgentHomePath } from '../../../common/paradisWslAgentHome.js';
@@ -48,122 +49,21 @@ import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirrorPath, paradisRemoteTranscriptMirrorRoots } from './paradisRemoteTranscriptMirror.js';
 import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
-import { paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
+import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
+import { IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentSessionInfo, ParadisAgentKind, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
+import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
-/** エージェントCLIの種別 (transcriptパスから判定)。 */
-export type ParadisAgentKind = 'claude' | 'codex';
+// 会話の型と transcript の正規化は、デスクトップのチャット表示と共有するため agentChat/common へ
+// 切り出した。既存の呼び出し元（テスト）がこのモジュールから引けるよう、公開していたものは再公開する。
+export type { IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentQuestionOption, IParadisAgentSessionInfo, ParadisAgentKind } from '../../agentChat/common/paradisAgentChat.js';
+export { paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
+export type { IParadisAgentActivityDetailMessage } from '../../agentChat/common/paradisAgentTranscriptParser.js';
+export { paradisHasPendingDuplicateQuestion, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta } from '../../agentChat/common/paradisAgentTranscriptParser.js';
+
 export type ParadisCliDiscoveryMode = 'new' | 'resume' | 'fork';
-
-/** kind==='question' の選択肢1件。 */
-export interface IParadisAgentQuestionOption {
-	readonly label: string;
-	readonly description?: string;
-}
-
-/**
- * tool_result に含まれていた画像1枚のメタ情報。実体（base64）はここには載せず、
- * モバイルがステップを開いたときの 'tool-image' 要求で初めて転送する。
- */
-export interface IParadisAgentChatImage {
-	/** 同一メッセージ内での並び順。'tool-image' 要求のキー（rev と組で1枚を指す）。 */
-	readonly index: number;
-	/** 'image/png' 等。モバイルは data URI の組み立てに使う。 */
-	readonly mediaType: string;
-	/** デコード後のおおよそのバイト数（モバイルの容量表示用）。 */
-	readonly bytes: number;
-	/**
-	 * 大きすぎて実体を保持していない。モバイルは取り寄せを試みず、その旨を表示する
-	 * （保持期限切れと区別するためのフラグ）。
-	 */
-	readonly oversize?: true;
-}
-
-/** モバイルへ送る正規化済みチャットメッセージ1件。 */
-export interface IParadisAgentChatMessage {
-	/** epoch内で単調増加する連番 (差分同期用)。 */
-	readonly rev: number;
-	readonly role: 'user' | 'assistant' | 'tool';
-	readonly kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'question' | 'peer_message';
-	readonly text: string;
-	/** kind==='tool_use' のときのツール名。 */
-	readonly tool?: string;
-	/** 元イベントの時刻 (epoch ms、取れた場合のみ)。 */
-	readonly ts?: number;
-	/** kind==='question' のとき: タブ見出し（AskUserQuestion の header）。 */
-	readonly header?: string;
-	/** kind==='question' のとき: 選択肢（TUIの表示順 = 番号キーの割り当て順）。 */
-	readonly options?: readonly IParadisAgentQuestionOption[];
-	/** kind==='question' のとき: 複数選択可能な質問か（TUIではトグル選択 + Enter確定）。 */
-	readonly multiSelect?: boolean;
-	/** kind==='question' | 'tool_result' のとき: 対応付け用の tool_use ID。
-	 *  同じIDの tool_result が後続に現れたら質問は回答済み（モバイルはUIを非活性化する）。 */
-	readonly toolUseId?: string;
-	/** kind==='question' のとき: 同一 AskUserQuestion 呼び出しのグループキー。
-	 *  複数質問はモバイル側でこのキーごとに1枚のステップ式カードへ集約され、
-	 *  全問回答が揃ってから一括でTUIへ注入される（1問ごとのEnterはフォーム全体を
-	 *  Submitしてしまうため）。 */
-	readonly questionGroup?: string;
-	/** kind==='question' のとき: グループ内の位置（0起点）。 */
-	readonly questionIndex?: number;
-	/** kind==='question' のとき: グループの総質問数。 */
-	readonly questionCount?: number;
-	/** kind==='peer_message': Claude Code Agent Teamsの送信元と要約。 */
-	readonly peerName?: string;
-	readonly peerSummary?: string;
-	/** kind==='tool_result' のとき: ツールがエラーを返したか（transcriptの is_error）。 */
-	readonly isError?: boolean;
-	/**
-	 * text が TOOL_TEXT_LIMIT / TEXT_LIMIT で切り詰められている。モバイルは 'tool-full'
-	 * リクエストで全文を取り寄せられる（展開時のオンデマンド取得）。
-	 */
-	readonly truncated?: boolean;
-	/**
-	 * 画像のメタ情報。ツール結果に含まれていた画像（Readで読んだ画像、MCPのスクリーンショット、
-	 * Codex の view_image）と、ユーザーが発言に貼った画像の両方で付く。
-	 * 実体は 'tool-image' で別途取り寄せる。
-	 */
-	readonly images?: readonly IParadisAgentChatImage[];
-}
-
-/** transcript確定前に表示する一時的な実行状況。履歴revには含めず、常に最新値で置換する。 */
-export interface IParadisAgentLiveState {
-	readonly phase: 'thinking' | 'tool' | 'message' | 'permission';
-	readonly source: 'hook' | 'transcript' | 'codex-daemon' | 'pty';
-	/** 現在の処理が始まった時刻（経過時間表示用）。 */
-	readonly startedAt: number;
-	readonly updatedAt: number;
-	readonly tool?: string;
-	readonly detail?: string;
-	/** MessageDisplay / daemon deltaで先出しする生成中テキスト。 */
-	readonly text?: string;
-	readonly final?: boolean;
-	/** transcript/PTYが明示的に報告した経過秒。無ければstartedAtから算出する。 */
-	readonly elapsedSeconds?: number;
-	/** PTY等が表示した概算生成トークン数。 */
-	readonly tokenCount?: number;
-}
-
-/** セッションのメタ情報（モバイルのエージェントタブに表示する）。 */
-export interface IParadisAgentSessionInfo {
-	/** モデル名（Claude: assistant行の message.model、Codex: turn_context.model）。 */
-	readonly model?: string;
-	/** reasoning effort（Codex: turn_context.effort、Claude: settings.json の既定値 + /effort の実行記録）。 */
-	readonly effort?: string;
-}
-
-export type IParadisAgentInteraction =
-	| { readonly kind: 'question'; readonly id: string }
-	| {
-		readonly kind: 'approval'; readonly id: string; readonly title?: string; readonly detail?: string;
-		readonly choices?: IParadisCodexApprovalInteraction['choices'];
-	};
-
-export function paradisIsCodexDaemonApprovalInteraction(interactionId: string): boolean {
-	return interactionId.startsWith('codex:') || interactionId.startsWith('codex-status:');
-}
 
 /**
  * ターンやセッションの終了を伝える hook か。
@@ -206,58 +106,6 @@ export function paradisIsLateHookAfterTurnEnd(eventName: string, at: number, tur
 	return sinceTurnEnd !== undefined && sinceTurnEnd <= LATE_HOOK_AFTER_TURN_END_MS;
 }
 
-/**
- * 現在モバイルへ提示すべき interaction を決める。未回答の質問を承認より優先する。
- *
- * 承認と質問はエージェント側で同時に成立しないが、tool_use_id を伴わない PermissionRequest から
- * 作られた pendingApproval は合成IDになり PostToolUse と一致しないためターン終了まで解除されない。
- * 承認を先に返していた頃は、それが後続の質問を覆い隠してモバイルからの回答が全て
- * stale-interaction で弾かれていた（「質問なのに許可/拒否しか出ず、押しても効かない」の実体）。
- *
- * 逆向きの固着（質問が承認を永久に覆う）を防ぐため、pendingQuestions 側にも
- * ターン終了での解除経路（ParadisAgentChatTailer.clearPendingQuestions）を用意してある。
- */
-export function paradisPickCurrentInteraction(
-	messages: readonly IParadisAgentChatMessage[],
-	pendingQuestions: ReadonlySet<string>,
-	pendingApproval: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }> | undefined,
-): IParadisAgentInteraction | null {
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const message = messages[index];
-		if (message?.kind === 'question' && message.toolUseId !== undefined && pendingQuestions.has(message.toolUseId)) {
-			return { kind: 'question', id: message.questionGroup ?? message.toolUseId };
-		}
-	}
-	return pendingApproval ?? null;
-}
-
-export interface IParadisAgentActivityDetailMessage {
-	readonly role: 'user' | 'assistant' | 'tool';
-	readonly kind: 'text' | 'thinking' | 'tool';
-	readonly text: string;
-	/**
-	 * kind==='tool' のとき、呼び出しか結果か。モバイルはこれと toolUseId で
-	 * 親のチャット画面と同じタイムライン（ツール名つきのステップ）を組み立てる。
-	 */
-	readonly toolKind?: 'tool_use' | 'tool_result';
-	readonly tool?: string;
-	readonly toolUseId?: string;
-	readonly ts?: number;
-	readonly isError?: boolean;
-}
-
-/** transcriptの生メッセージを SubAgent詳細用へ落とす（Claude / Codex 共通）。 */
-function toDetailMessage(message: IRawMessage): IParadisAgentActivityDetailMessage {
-	const kind: IParadisAgentActivityDetailMessage['kind'] = message.kind === 'thinking' ? 'thinking' : message.kind === 'tool_use' || message.kind === 'tool_result' ? 'tool' : 'text';
-	return {
-		role: message.role, kind, text: message.text,
-		...(message.kind === 'tool_use' || message.kind === 'tool_result' ? { toolKind: message.kind } : {}),
-		...(message.tool !== undefined ? { tool: message.tool } : {}),
-		...(message.toolUseId !== undefined ? { toolUseId: message.toolUseId } : {}),
-		...(message.ts !== undefined ? { ts: message.ts } : {}),
-		...(message.isError === true ? { isError: true } : {}),
-	};
-}
 
 /** agentチャネルのモバイル→PCメッセージ。 */
 type AgentInbound =
@@ -323,8 +171,6 @@ const MESSAGE_RING_LIMIT = 400;
  * 素朴な挿入順ではなく最終利用順で捨てる（{@link bumpQuestionNotifyCount}）。
  */
 const QUESTION_NOTIFY_COUNT_LIMIT = 400;
-/** 目印にするラベル片の長さ。検証側の上限（`paradisMobileWorkspaceProvider`）はこれより緩い。 */
-const PARADIS_QUESTION_READY_MARKER_LENGTH = 12;
 
 /**
  * 質問の通知がどこまで進んだか。`dispatched` 以外は「出そうとしてやめた」。
@@ -355,24 +201,9 @@ const QUESTION_NOTIFY_CONTENT_SUPPRESS_TTL_MS = 60_000;
 const QUESTION_SETTLE_MAX_WAIT_MS = 30_000;
 /** attach応答スナップショットで送る最大件数。 */
 const SNAPSHOT_SEND_LIMIT = 200;
-/** 本文テキストの上限 (モバイル表示用。超過は末尾に…を付けて切る)。 */
-const TEXT_LIMIT = 6000;
-const TOOL_TEXT_LIMIT = 1500;
-/**
- * 'tool-full'（モバイルの展開時オンデマンド取得）で返せる全文の1件あたり上限。
- * 転送とPCメモリの両方を有界にするため、これを超える出力はここで打ち切る。
- */
-const FULL_TEXT_LIMIT = 64 * 1024;
 /** 1ペインが保持する全文キャッシュの上限（件数・合計バイト）。古いrevから捨てる。 */
 const FULL_TEXT_CACHE_ENTRIES = 40;
 const FULL_TEXT_CACHE_BYTES = 2 * 1024 * 1024;
-/**
- * 'tool-image'（モバイルの展開時オンデマンド取得）で扱う画像1枚あたりの上限。
- * transcript には base64 のまま入っているため、その文字数で判定する（生バイトの約4/3 =
- * 生 2.2MB 程度まで）。MAX_TRANSCRIPT_LINE_BYTES より小さくしておくこと（それを超える行は
- * そもそも transcript から読めない）。超過した画像はメタに oversize を立てて実体を捨てる。
- */
-const TOOL_IMAGE_BASE64_LIMIT = 3 * 1024 * 1024;
 /**
  * 保持する画像キャッシュの上限（枚数・base64合計文字数）。参照の古い順に捨てる。
  * 画像は1枚で全文キャッシュ全体に匹敵するため、全文とは別枠で会計する。
@@ -383,11 +214,6 @@ const TOOL_IMAGE_BASE64_LIMIT = 3 * 1024 * 1024;
  */
 const IMAGE_CACHE_ENTRIES = 24;
 const IMAGE_CACHE_BYTES = 16 * 1024 * 1024;
-/**
- * 1メッセージから拾う画像の枚数上限。'tool-image' 要求の index 上限（100未満）と揃える
- * （取り寄せられない画像のカードをモバイルに出さないため）。
- */
-const MAX_IMAGES_PER_MESSAGE = 100;
 /** 1ペインで同時に送れる 'tool-image' の数（画面に見えている枚数ぶんは通す）。 */
 const TOOL_IMAGE_MAX_IN_FLIGHT = 4;
 const PERSISTED_ACTIVITY_HEAD_BYTES = 256 * 1024;
@@ -424,24 +250,50 @@ const CODEX_ROLLOUT_ORIGIN_CACHE_LIMIT = 512;
  */
 const LATE_HOOK_AFTER_TURN_END_MS = 3_000;
 const nodeRequire = createRequire(import.meta.url);
-
-function truncateText(text: string, limit: number): string {
-	// allow-any-unicode-next-line
-	return text.length > limit ? `${text.slice(0, limit)}…` : text;
-}
-
 /**
- * 表示用に切り詰めつつ、切り詰めたときだけ全文（FULL_TEXT_LIMIT まで）を添えて返す。
- * 全文は送信メッセージには載せず、tailer が rev 単位で保持してモバイルの
- * 'tool-full' リクエスト（展開時のオンデマンド取得）に応答するために使う。
+ * Claude Code が、利用者が許可を拒否したツールの結果に書く定型文の書き出し（tool_result の is_error と組で見る）。
+ * 全文は "The user doesn't want to proceed with this tool use. The tool use was rejected … STOP what you are
+ * doing and wait for the user to tell you how to proceed." で、エージェントはそこで次の指示を待つ。
  */
-function withTruncation(text: string, limit: number): { readonly text: string; readonly truncated?: true; readonly fullText?: string } {
-	if (text.length <= limit) {
-		return { text };
+const PARADIS_CLAUDE_TOOL_REJECTED_PREFIX = `The user doesn't want to proceed with this tool use`;
+/**
+ * Codex が、利用者が承認を拒否した（codex-cli 0.155.1 の `No, and tell Codex what to do differently (esc)`）
+ * ツールの結果（function_call_output）の最後の行。実機では `Wall time: 7.5 seconds\naborted by user` のように
+ * 前に経過時間の行が付く。直後に rollout へ `turn_aborted` を書き、次の指示を待つ。
+ */
+const PARADIS_CODEX_TOOL_ABORTED_TEXT = 'aborted by user';
+
+/** 利用者が許可を拒否したツールの結果か（Claude Code の定型文、Codex の `aborted by user`）。 */
+function paradisIsToolRejection(agent: ParadisAgentKind, message: IParadisAgentChatMessage): boolean {
+	if (message.kind !== 'tool_result') {
+		return false;
 	}
-	// allow-any-unicode-next-line
-	return { text: `${text.slice(0, limit)}…`, truncated: true, fullText: text.slice(0, FULL_TEXT_LIMIT) };
+	return agent === 'codex'
+		? message.text.trim().split('\n').pop()?.trim() === PARADIS_CODEX_TOOL_ABORTED_TEXT
+		: message.isError === true && message.text.startsWith(PARADIS_CLAUDE_TOOL_REJECTED_PREFIX);
 }
+
+/** ペインごとに覚える未完了のツール呼び出しの上限（hook の取りこぼしで伸び続けないように）。 */
+const PARADIS_OPEN_TOOL_USE_LIMIT = 256;
+
+/** キーの順序に依らない JSON（PreToolUse と PermissionRequest の tool_input を突き合わせるため）。 */
+function paradisStableJson(value: unknown): string {
+	if (Array.isArray(value)) {
+		return `[${value.map(paradisStableJson).join(',')}]`;
+	}
+	if (value !== null && typeof value === 'object') {
+		const record = value as Record<string, unknown>;
+		return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${paradisStableJson(record[key])}`).join(',')}}`;
+	}
+	return JSON.stringify(value) ?? 'undefined';
+}
+
+/** デスクトップのチャット表示の登録の期限。表示側はこれより短い間隔で送り直す。 */
+const PARADIS_DESKTOP_CHAT_WATCH_TTL_MS = 30_000;
+/** 1ウィンドウが一度に見られるペインの数（外からの入力で Set が伸び続けないための上限）。 */
+const PARADIS_DESKTOP_CHAT_MAX_TOKENS = 256;
+/** 変化の知らせをまとめる間隔。生成中の文字の流れが途切れて見えない程度に短くする。 */
+const PARADIS_DESKTOP_CHAT_NOTIFY_DELAY_MS = 80;
 
 /** 生成中テキストは後続deltaが見えるよう、上限超過時は末尾を保持する。 */
 function truncateLiveText(text: string, limit: number): string {
@@ -474,6 +326,35 @@ function agentKindForPath(transcriptPath: string): ParadisAgentKind {
  * 渡るため、hookエンドポイントを騙って任意ファイルをモバイルへtailさせる悪用を防ぐ
  * （所在検証 + realpath でシンボリックリンク・`..` 経由の脱出も排除する）。
  */
+/** 許可 root の realpath（解決できたものだけ覚える。root は起動中に変わらない）。 */
+const rootRealpaths = new Map<string, string>();
+
+/** 許可 root の字面と realpath 後の綴り（重複なし）。 */
+async function paradisRootSpellings(roots: readonly string[]): Promise<string[]> {
+	const spellings = new Set<string>();
+	for (const root of roots) {
+		spellings.add(root);
+		let real = rootRealpaths.get(root);
+		if (real === undefined) {
+			try {
+				real = await fs.realpath(root);
+				rootRealpaths.set(root, real);
+			} catch {
+				// まだ無い（初回起動前など）。字面だけで比べる。
+			}
+		}
+		if (real !== undefined) {
+			spellings.add(real);
+		}
+	}
+	return [...spellings];
+}
+
+/** 回帰テスト用。本番と同じ規則で transcript のパスを許すかを返す。 */
+export function paradisIsAllowedTranscriptPathForTest(transcriptPath: string): Promise<boolean> {
+	return isAllowedTranscriptPath(transcriptPath);
+}
+
 async function isAllowedTranscriptPath(transcriptPath: string): Promise<boolean> {
 	if (!isAbsolute(transcriptPath) || !transcriptPath.endsWith('.jsonl')) {
 		return false;
@@ -488,7 +369,11 @@ async function isAllowedTranscriptPath(transcriptPath: string): Promise<boolean>
 	}
 	// 接続先の transcript は写しを読む。写しは私たちしか書かない場所にあるので、許可rootに加える
 	// （hookを騙って任意ファイルを読ませる筋道は増えない）。
-	const roots = [paradisClaudeConfigDir(), paradisCodexHome(), ...paradisRemoteTranscriptMirrorRoots()];
+	// 許可 root は、字面と realpath 後の両方の綴りで比べる。`CLAUDE_CONFIG_DIR` などが symlink を含むと
+	// （macOS の `/tmp` → `/private/tmp`）、エージェントが報告する transcript のパスや、下の実体の確認で得る
+	// パスが root の字面と合わず、正しい transcript を「root の外」として拒んでいた（フェーズ6の実機確認）。
+	// root の外へ抜ける symlink は、実体（realpath）が どちらの綴りの root にも入らないので引き続き拒む。
+	const roots = await paradisRootSpellings([paradisClaudeConfigDir(), paradisCodexHome(), ...paradisRemoteTranscriptMirrorRoots()]);
 	const within = (candidate: string) => roots.some(root => candidate === root || candidate.startsWith(root + sep));
 	if (!within(resolved)) {
 		return false;
@@ -646,121 +531,6 @@ async function discoverCodexPersistedSubagentFiles(rootThreadId: string, homes: 
 	}
 }
 
-// ---- transcript行 → 正規化メッセージ --------------------------------------------------------
-
-interface IRawMessage {
-	readonly role: 'user' | 'assistant' | 'tool';
-	readonly kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'question' | 'peer_message';
-	readonly text: string;
-	readonly tool?: string;
-	readonly ts?: number;
-	readonly header?: string;
-	readonly options?: readonly IParadisAgentQuestionOption[];
-	readonly multiSelect?: boolean;
-	readonly toolUseId?: string;
-	readonly questionGroup?: string;
-	readonly questionIndex?: number;
-	readonly questionCount?: number;
-	readonly peerName?: string;
-	readonly peerSummary?: string;
-	readonly isError?: boolean;
-	/** 切り詰め前の全文。モバイルへは送らず tailer が 'tool-full' 用に保持する。 */
-	readonly fullText?: string;
-	/** 画像の実体。モバイルへは送らず tailer が 'tool-image' 用に保持する。 */
-	readonly imageData?: readonly IFlattenedImage[];
-}
-
-/**
- * 表示メッセージには乗らない「状態のためのシグナル」。パース時に1バッチ分を収集し、
- * tailer がバックグラウンドタスク・質問回答待ち・セッションメタ情報の追跡へ反映する。
- */
-type ICodexTranscriptActivityEvent =
-	| { readonly type: 'turnStart'; readonly at: number }
-	| { readonly type: 'subagent'; readonly id: string; readonly agentPath?: string; readonly kind: 'started' | 'interacted' | 'interrupted'; readonly at: number }
-	| { readonly type: 'turnEnd'; readonly reason: 'completed' | 'failed' | 'interrupted'; readonly at: number };
-
-interface IParseSignals {
-	/** バックグラウンドタスク（サブエージェント等）の起動: id → 起動時刻。 */
-	readonly openedTasks: Map<string, number>;
-	/** task-notification が届いた（完了・失敗・停止いずれも）タスクID。 */
-	readonly closedTasks: string[];
-	/** 出現した質問 (AskUserQuestion) の tool_use_id。 */
-	readonly askedQuestionIds: string[];
-	/** tool_result が現れた tool_use_id（質問の「回答済み」判定）。 */
-	readonly answeredIds: string[];
-	/** 実ユーザーのテキスト発話があった（未回答質問クリアの保険）。 */
-	userText: boolean;
-	/**
-	 * ターンが終了した（Codex event_msg の task_complete / error / turn_aborted）。
-	 * usage limit 等のエラー中断は Stop 系 hook が発火しないため、transcript が唯一の検出点。
-	 * ライブ追記時のみライブ状態（考え中表示）の解除に使う。
-	 */
-	turnEnded: 'completed' | 'failed' | 'interrupted' | undefined;
-	readonly codexActivityTimeline: ICodexTranscriptActivityEvent[];
-	/**
-	 * 直前に現れた Codex の view_image 呼び出しの call_id。
-	 * Codex は読んだ画像の実体を「関数の結果」ではなく直後の user メッセージへ書くため、
-	 * その画像をユーザーの発言ではなく view_image の結果として繋ぐのに使う。
-	 */
-	pendingCodexImageCallId?: string;
-	model?: string;
-	effort?: string;
-	/**
-	 * transcript の行が書かれた CLI のバージョン（Claude Code は各行に `version` を持つ）。
-	 *
-	 * 回答をTUIへ流すキー列は特定バージョンの実挙動に合わせてあるため（paradisAgentQuestionKeys の
-	 * 冒頭を参照）、壊れたときに「どの版から変わったか」を切り分けられるようにこれだけ拾う。
-	 */
-	cliVersion?: string;
-}
-
-function newParseSignals(): IParseSignals {
-	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], userText: false, turnEnded: undefined };
-}
-
-function decodeXmlAttribute(value: string): string {
-	return value.replace(/&quot;/g, '"').replace(/&apos;/g, String.fromCodePoint(39)).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-}
-
-/** Claude Code Agent TeamsのMailbox配送を通常のユーザー発言から分離する。 */
-function parseClaudePeerMessage(rawText: string, ts: number | undefined): IRawMessage | null | undefined {
-	// ユーザーがタグ文字列を質問に含めただけのケースを誤分類しないよう、Claude Codeが
-	// 付ける配送prefixまたはcross-session wrapperが先頭にある場合だけ内部通信として扱う。
-	if (!rawText.startsWith('Another Claude session sent a message') && !rawText.startsWith('<cross-session-message>')) {
-		return undefined;
-	}
-	const tagged = /<(teammate-message|agent-message)\b([^>]*)>([\s\S]*?)<\/\1>/.exec(rawText);
-	if (tagged === null) {
-		const crossSession = /<cross-session-message>([\s\S]*?)<\/cross-session-message>/.exec(rawText);
-		const text = (crossSession?.[1] ?? rawText.replace(/^Another Claude session sent a message(?: while you were working)?:?\s*/, '')).trim();
-		return text.length > 0 ? { role: 'assistant', kind: 'peer_message', text: truncateText(text, TEXT_LIMIT), ts } : null;
-	}
-	const attributes = tagged[2];
-	const body = tagged[3].trim();
-	try {
-		const protocol = rec(JSON.parse(body));
-		if (protocol?.type === 'idle_notification') {
-			return null;
-		}
-	} catch {
-		// 通常の自然言語レポートはJSONではない。
-	}
-	if (body.length === 0) {
-		return null;
-	}
-	const name = /\b(?:teammate_id|from)="([^"]+)"/.exec(attributes)?.[1];
-	const summary = /\bsummary="([^"]+)"/.exec(attributes)?.[1];
-	return {
-		role: 'assistant', kind: 'peer_message', text: truncateText(body, TEXT_LIMIT), ts,
-		...(name !== undefined ? { peerName: decodeXmlAttribute(name) } : {}),
-		...(summary !== undefined ? { peerSummary: decodeXmlAttribute(summary) } : {}),
-	};
-}
-
-/** unknown からの安全なプロパティ読み出し。 */
-function rec(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
 
 type AgentInboundCandidate = Record<string, unknown>;
 type ValidTerminalIdentity = AgentInboundCandidate & { readonly id: number; readonly token?: string };
@@ -900,23 +670,6 @@ export function paradisIsValidAgentInboundForTest(value: unknown): boolean {
 	return parseAgentInbound(value) !== undefined;
 }
 
-function str(value: unknown): string | undefined {
-	return typeof value === 'string' ? value : undefined;
-}
-
-function num(value: unknown): number | undefined {
-	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function stableTextHash(value: string): string {
-	let hash = 2166136261;
-	for (const character of value) {
-		hash ^= character.charCodeAt(0);
-		hash = Math.imul(hash, 16777619);
-	}
-	return (hash >>> 0).toString(36);
-}
-
 /** Codex rollout先頭行から、cwdと共有daemonのthread IDを取り出す。 */
 export interface IParadisCodexSessionMeta {
 	readonly cwd: string;
@@ -1042,61 +795,6 @@ export function paradisSelectUnambiguousSessionCandidate<T extends { readonly tr
 	return fresh.length === 1 ? fresh[0] : undefined;
 }
 
-interface ITranscriptProgress {
-	readonly tool: string;
-	readonly detail?: string;
-	readonly elapsedSeconds?: number;
-	readonly done?: boolean;
-}
-
-/** Claude transcriptのephemeral progress行を、表示に必要な最小情報へ正規化する。 */
-function parseClaudeProgress(obj: Record<string, unknown>): ITranscriptProgress | undefined {
-	if (obj.type !== 'progress') {
-		return undefined;
-	}
-	const data = rec(obj.data);
-	const type = str(data?.type);
-	if (type === 'bash_progress') {
-		const output = str(data?.output)?.trim();
-		const detail = output?.split(/\r?\n/).filter(Boolean).at(-1);
-		const elapsedSeconds = num(data?.elapsedTimeSeconds);
-		return {
-			tool: 'Bash',
-			...(detail !== undefined ? { detail: truncateText(detail, 500) } : {}),
-			...(elapsedSeconds !== undefined ? { elapsedSeconds } : {}),
-		};
-	}
-	if (type === 'mcp_progress') {
-		const toolName = str(data?.toolName) ?? 'MCP';
-		const serverName = str(data?.serverName);
-		const progressMessage = str(data?.progressMessage);
-		const status = str(data?.status);
-		const elapsedTimeMs = num(data?.elapsedTimeMs);
-		const detail = [serverName !== undefined ? `${serverName} MCP` : undefined, progressMessage].filter((part): part is string => part !== undefined && part.length > 0).join(' · ');
-		return {
-			tool: toolName,
-			...(detail.length > 0 ? { detail: truncateText(detail, 500) } : {}),
-			...(elapsedTimeMs !== undefined ? { elapsedSeconds: Math.max(0, Math.round(elapsedTimeMs / 1000)) } : {}),
-			...((status === 'completed' || status === 'failed') ? { done: true } : {}),
-		};
-	}
-	return undefined;
-}
-
-/**
- * 画像1枚のメタ情報（モバイルへ送る側）を作る。実体を保持できるかの判定も兼ねる:
- * transcript の1行上限を超える画像はそもそも読めないため、保持できる上限
- * （TOOL_IMAGE_BASE64_LIMIT）を超えたものは oversize として実体を捨てる。
- */
-export function paradisToolImageMeta(index: number, image: { readonly mediaType: string; readonly base64: string }): IParadisAgentChatImage {
-	// base64 の実バイト数（末尾パディングを除いた概算）。モバイルの容量表示にだけ使う。
-	const padding = image.base64.endsWith('==') ? 2 : image.base64.endsWith('=') ? 1 : 0;
-	const bytes = Math.max(0, Math.floor(image.base64.length * 3 / 4) - padding);
-	return {
-		index, mediaType: image.mediaType, bytes,
-		...(image.base64.length > TOOL_IMAGE_BASE64_LIMIT ? { oversize: true as const } : {}),
-	};
-}
 
 /** 上限どうしの整合（画像は transcript の1行に収まる範囲でしか扱えない）を検査するため公開する。 */
 export const paradisAgentChatImageLimitsForTest = {
@@ -1106,531 +804,6 @@ export const paradisAgentChatImageLimitsForTest = {
 	get initialReadTailBytes() { return INITIAL_READ_TAIL_BYTES; },
 } as const;
 
-/** tool_result の content に含まれていた画像1枚（実体つき）。 */
-interface IFlattenedImage {
-	readonly mediaType: string;
-	/** transcript に入っていた base64 そのまま。モバイルへは 'tool-image' でのみ渡す。 */
-	readonly base64: string;
-}
-
-/** tool_result 等の content (string | ブロック配列) を表示テキストと画像へ分解した結果。 */
-interface IFlattenedContent {
-	readonly text: string;
-	readonly images: readonly IFlattenedImage[];
-}
-
-function isImageMediaType(value: string): boolean {
-	return /^image\/[a-zA-Z0-9.+-]{1,60}$/.test(value);
-}
-
-/**
- * 平坦化後の本文が画像のプレースホルダだけか（＝読める文が1つも無いか）。
- * 画像ブロックは `[image]` の行として残るため、本文の有無はこれで判定する。
- */
-function isImagePlaceholderOnly(text: string): boolean {
-	return text.split('\n').every(line => {
-		const trimmed = line.trim();
-		return trimmed.length === 0 || trimmed === '[image]';
-	});
-}
-
-/**
- * Codex が rollout に書く画像は data URI 形式（`data:image/png;base64,...`）。
- * 想定外の形（外部URL・base64以外のエンコード）は取り込まない。
- */
-export function parseImageDataUri(value: string | undefined): IFlattenedImage | undefined {
-	if (value === undefined) {
-		return undefined;
-	}
-	const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/.exec(value);
-	const mediaType = match?.[1];
-	const base64 = match?.[2];
-	if (mediaType === undefined || base64 === undefined || base64.length === 0 || !isImageMediaType(mediaType)) {
-		return undefined;
-	}
-	return { mediaType, base64 };
-}
-
-/** tool_result 等の content (string | ブロック配列) を表示テキストへ平坦化する。 */
-function flattenContent(content: unknown): string {
-	return flattenContentParts(content).text;
-}
-
-/**
- * flattenContent の画像つき版。画像ブロックは表示テキストでは従来どおり `[image]` の
- * プレースホルダにしつつ（この行しか読めない旧モバイルのため）、実体を別に取り出す。
- */
-function flattenContentParts(content: unknown): IFlattenedContent {
-	if (typeof content === 'string') {
-		return { text: content, images: [] };
-	}
-	if (Array.isArray(content)) {
-		const parts: string[] = [];
-		const images: IFlattenedImage[] = [];
-		for (const block of content) {
-			const b = rec(block);
-			if (!b) {
-				continue;
-			}
-			const text = str(b.text);
-			if (text !== undefined) {
-				parts.push(text);
-			} else if (b.type === 'image') {
-				// Claude: { type:'image', source:{ type:'base64', media_type, data } }
-				parts.push('[image]');
-				const source = rec(b.source);
-				const base64 = str(source?.data);
-				const mediaType = str(source?.media_type);
-				if (str(source?.type) === 'base64' && base64 !== undefined && base64.length > 0 && mediaType !== undefined && isImageMediaType(mediaType)) {
-					images.push({ mediaType, base64 });
-				}
-			} else if (b.type === 'input_image') {
-				// Codex: { type:'input_image', image_url:'data:image/png;base64,...' }
-				parts.push('[image]');
-				const image = parseImageDataUri(str(b.image_url));
-				if (image !== undefined) {
-					images.push(image);
-				}
-			}
-		}
-		return { text: parts.join('\n'), images };
-	}
-	return { text: '', images: [] };
-}
-
-/**
- * AskUserQuestion の input（{ questions: [{ question, header, options: [{label, description}] , multiSelect? }] }）を
- * question メッセージ列へ展開する。想定形でなければ空配列（呼び出し側が汎用 tool_use にフォールバック）。
- */
-function parseAskUserQuestions(input: unknown, toolUseId: string | undefined, ts: number | undefined): IRawMessage[] {
-	const inputRec = rec(input);
-	const questionsRaw = inputRec?.questions;
-	if (!Array.isArray(questionsRaw)) {
-		return [];
-	}
-	const out: IRawMessage[] = [];
-	for (const questionRaw of questionsRaw) {
-		const q = rec(questionRaw);
-		const questionText = str(q?.question);
-		if (!q || questionText === undefined || questionText.trim().length === 0) {
-			continue;
-		}
-		const options: IParadisAgentQuestionOption[] = [];
-		const optionsRaw = q.options;
-		if (Array.isArray(optionsRaw)) {
-			for (const optionRaw of optionsRaw) {
-				const o = rec(optionRaw);
-				const label = str(o?.label);
-				if (label !== undefined && label.trim().length > 0) {
-					const description = str(o?.description);
-					options.push({ label: truncateText(label, 200), ...(description !== undefined ? { description: truncateText(description, 500) } : {}) });
-				}
-			}
-		}
-		out.push({
-			role: 'assistant', kind: 'question', text: truncateText(questionText, TEXT_LIMIT), ts,
-			...(str(q.header) !== undefined ? { header: str(q.header) } : {}),
-			...(options.length > 0 ? { options } : {}),
-			...(q.multiSelect === true ? { multiSelect: true } : {}),
-			...(toolUseId !== undefined ? { toolUseId } : {}),
-		});
-	}
-	// 同一呼び出しの複数質問はモバイル側で1枚のステップ式カードへ集約するため、グループメタを
-	// 付与する（グループキーは transcript 経路では実 toolUseId。ライブ注入経路では toolUseId が
-	// 無いため injectLiveQuestions 側で合成キーを設定する）。
-	return out.map((message, index) => ({
-		...message,
-		questionIndex: index,
-		questionCount: out.length,
-		...(toolUseId !== undefined ? { questionGroup: toolUseId } : {}),
-	}));
-}
-
-/**
- * 「TUI が選択肢リストを出し終えたか」を画面文字列で判定するための目印を作る。
- *
- * 打鍵を流し始めてよいのは、リストがキーボードフォーカスを取った後。**それより前に送ると
- * 入力欄へ吸われて消える**（Claude Code 2.1.223 で実測。単問・単一選択はキーが1つしか無いので、
- * 取りこぼすと二度と拾えない）。フッタの英語表記（`Esc to cancel` 等）に頼ると TUI の文言変更で
- * 黙って壊れるため、**その質問自身の先頭の選択肢ラベル**を目印にする。
- *
- * ターミナルは折り返すので、長いラベルは画面上で途切れる。先頭の短い一片だけを使う。
- * 目印を作れない場合（ラベルが無い・記号だけ等）は `undefined` を返し、待たずに従来どおり流す。
- */
-export function paradisQuestionReadyMarker(question: Pick<IRawMessage, 'options'> | undefined): string | undefined {
-	const label = question?.options?.[0]?.label;
-	if (typeof label !== 'string') {
-		return undefined;
-	}
-	// **空白を取り除いてから切る**。空白の手前で切ると `"✓ Yes"` のような1文字トークンで
-	// 目印を作れなくなり、逆に空白を残すと折り返しの改行で照合が外れる。
-	// 照合側も同じ規則で空白を落とす（paradisScreenShowsMarker）。
-	const marker = label.replace(/\s+/g, '').slice(0, PARADIS_QUESTION_READY_MARKER_LENGTH);
-	return marker.length >= 2 ? marker : undefined;
-}
-
-/**
- * ライブ質問（hook注入）と transcript 上の本物の質問を突き合わせるための内容キー。
- * 両者とも parseAskUserQuestions を通るため、truncate 後のテキストが一致する。
- */
-function liveQuestionContentKey(m: Pick<IRawMessage, 'text' | 'options'>): string {
-	return `${m.text}\0${(m.options ?? []).map(o => o.label).join('\x01')}`;
-}
-
-/**
- * transcript に現れた質問に対応する注入済みライブ質問の合成IDを台帳から取り出す。
- * まず内容キー（質問文+選択肢ラベル列）の完全一致で引き、外れた場合は質問文のみの
- * 第2段マッチへフォールバックする。第2段は hook 側/transcript 側の一方で選択肢が
- * 欠落した場合（Windows の PowerShell hook が tool_input の深い配列を落とす等）の救済で、
- * 同文の別質問を誤って間引かないよう、候補が1エントリに絞れるときだけ適用する。
- * 内容キーは `text + '\0' + labels` 形式のため、`text + '\0'` の前方一致 = 質問文の完全一致。
- */
-export function paradisTakeLiveQuestionSyntheticId(liveQuestions: Map<string, string[]>, message: Pick<IRawMessage, 'text' | 'options'>): string | undefined {
-	let key = liveQuestionContentKey(message);
-	let ids = liveQuestions.get(key);
-	if (ids === undefined || ids.length === 0) {
-		// 選択肢欠落は「一方の options が空」の形でしか起きないため、第2段は
-		// 「incoming が選択肢なし、または台帳側エントリが選択肢なし（キーが text+'\0' のみ）」
-		// に限定する。両側に異なる選択肢が付いた同文の質問は別物として素通しする
-		// （誤 dedup で実在質問を隠し、回答を別質問へ誤紐付けするのを防ぐ）。
-		const textPrefix = `${message.text}\0`;
-		const incomingHasNoOptions = (message.options ?? []).length === 0;
-		const candidates = [...liveQuestions.entries()].filter(([entryKey, entryIds]) =>
-			entryIds.length > 0 && entryKey.startsWith(textPrefix) && (incomingHasNoOptions || entryKey === textPrefix));
-		if (candidates.length !== 1) {
-			return undefined;
-		}
-		[key, ids] = candidates[0];
-	}
-	const syntheticId = ids.shift();
-	if (syntheticId !== undefined && ids.length === 0) {
-		liveQuestions.delete(key);
-	}
-	return syntheticId;
-}
-
-/**
- * メッセージ列に未回答のまま残っている同内容の質問があるかを返す。突き合わせは内容キーの
- * 完全一致に加え、どちらかの選択肢が欠落しているケースを質問文のみでも拾う
- * （前方一致は `'\0'` 区切りのため質問文の完全一致と等価）。回答済みの同文質問とは衝突しない。
- */
-export function paradisHasPendingDuplicateQuestion(
-	messages: readonly Pick<IParadisAgentChatMessage, 'kind' | 'text' | 'options' | 'toolUseId'>[],
-	pendingQuestions: ReadonlySet<string>,
-	message: Pick<IRawMessage, 'text' | 'options'>,
-): boolean {
-	const contentKey = liveQuestionContentKey(message);
-	const textPrefix = `${message.text}\0`;
-	const incomingHasNoOptions = (message.options ?? []).length === 0;
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const existing = messages[index];
-		if (existing.kind !== 'question' || existing.toolUseId === undefined || !pendingQuestions.has(existing.toolUseId)) {
-			continue;
-		}
-		const existingKey = liveQuestionContentKey(existing);
-		if (existingKey === contentKey) {
-			return true;
-		}
-		// 質問文のみの一致は「どちらかの選択肢が欠落している」場合に限る
-		// （take 側と同じ理由: 同文・異選択肢の別質問を誤って抑制しない）
-		const existingHasNoOptions = (existing.options ?? []).length === 0;
-		if ((incomingHasNoOptions && existingKey.startsWith(textPrefix))
-			|| (existingHasNoOptions && contentKey.startsWith(`${existing.text}\0`))) {
-			return true;
-		}
-	}
-	return false;
-}
-
-/**
- * Claude Code のユーザーロール行のテキストを表示メッセージへ変換する。
- * ハーネスが user ロールとして注入する合成テキスト（バックグラウンドタスクの完了通知・
- * スラッシュコマンドの実行記録・system-reminder 等）は「ユーザーの発言」として
- * 吹き出し表示すると誤解を招くため、種類ごとに変換・除去する。
- */
-function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: number | undefined, signals: IParseSignals): void {
-	const trimmed = rawText.trim();
-	if (trimmed.length === 0) {
-		return;
-	}
-	const peerMessage = parseClaudePeerMessage(trimmed, ts);
-	if (peerMessage !== undefined) {
-		if (peerMessage !== null) {
-			out.push(peerMessage);
-		}
-		return;
-	}
-	// ユーザーがescでツール実行（AskUserQuestion等）を中断した際にハーネスが注入する
-	// 内部マーカー。ユーザーの発言ではないため表示しない（signals.userTextも立てない。
-	// 立てると同一バッチ内の未回答質問カードを誤ってクリアしてしまう）。
-	if (/^\[Request interrupted by user( for tool use)?\]$/.test(trimmed)) {
-		return;
-	}
-	// バックグラウンドタスク（サブエージェント等）の完了通知。ユーザーの発言ではなく
-	// ハーネスからの通知なので、ツール結果カードとして表示する。
-	if (trimmed.startsWith('<task-notification>')) {
-		for (const match of trimmed.matchAll(/<task-id>([^<\n]+)<\/task-id>/g)) {
-			signals.closedTasks.push(match[1].trim());
-		}
-		const summary = /<summary>([\s\S]*?)<\/summary>/.exec(trimmed)?.[1]?.trim();
-		const result = /<result>([\s\S]*?)<\/result>/.exec(trimmed)?.[1]?.trim();
-		const status = /<status>([^<\n]+)<\/status>/.exec(trimmed)?.[1]?.trim();
-		// allow-any-unicode-next-line
-		const title = summary !== undefined && summary.length > 0 ? `バックグラウンドタスク完了: ${summary}` : 'バックグラウンドタスクが完了しました';
-		const parts = [title];
-		if (status !== undefined && status !== 'completed') {
-			parts.push(`status: ${status}`);
-		}
-		if (result !== undefined && result.length > 0) {
-			parts.push(result);
-		}
-		out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(parts.join('\n'), TOOL_TEXT_LIMIT), ts });
-		return;
-	}
-	// スラッシュコマンドの実行記録（/compact 等）。コマンド名だけを短く出す。
-	const commandName = /<command-name>([^<\n]*)<\/command-name>/.exec(trimmed)?.[1]?.trim();
-	if (commandName !== undefined && commandName.length > 0) {
-		const commandArgs = /<command-args>([^<\n]*)<\/command-args>/.exec(trimmed)?.[1]?.trim();
-		out.push({ role: 'user', kind: 'text', text: truncateText(commandArgs ? `${commandName} ${commandArgs}` : commandName, TEXT_LIMIT), ts });
-		return;
-	}
-	// ローカルコマンドの出力・注意書きはノイズなので出さない。ただし /effort の実行記録は
-	// セッションの effort 変更としてメタ情報へ反映する（Claude の transcript に effort の
-	// 直接の記録は無く、これと settings.json の既定値だけが手掛かり）。
-	if (trimmed.startsWith('<local-command-stdout>') || trimmed.startsWith('<local-command-caveat>')) {
-		const effortMatch = /^<local-command-stdout>Set effort level to (\w+)/.exec(trimmed);
-		if (effortMatch) {
-			signals.effort = effortMatch[1];
-		}
-		return;
-	}
-	// 本文へ付随する system-reminder（メモリ想起等のハーネス注入）は表示から除く。
-	const text = rawText.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
-	if (text.length === 0) {
-		return;
-	}
-	signals.userText = true;
-	out.push({ role: 'user', kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
-}
-
-/** Claude Code transcript JSONL の1行をパースする。表示対象外の行は空配列。 */
-function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, includeSidechain = false): IRawMessage[] {
-	if ((!includeSidechain && obj.isSidechain === true) || obj.isMeta === true) {
-		return []; // サブエージェント内・メタ行はメインの会話に出さない
-	}
-	// 表示対象かどうかに関わらず拾う（どの行にも入っており、最後に見た値が今動いている版）。
-	const version = str(obj.version);
-	if (version !== undefined) {
-		signals.cliVersion = version;
-	}
-	const type = str(obj.type);
-	if (type !== 'user' && type !== 'assistant') {
-		return []; // summary / system / file-history-snapshot 等
-	}
-	const message = rec(obj.message);
-	if (!message) {
-		return [];
-	}
-	const tsRaw = str(obj.timestamp);
-	const tsParsed = tsRaw !== undefined ? Date.parse(tsRaw) : NaN;
-	const ts = Number.isFinite(tsParsed) ? tsParsed : undefined;
-	const out: IRawMessage[] = [];
-	const content = message.content;
-
-	if (type === 'user') {
-		if (typeof content === 'string') {
-			pushClaudeUserText(out, content, ts, signals);
-			return out;
-		}
-		if (Array.isArray(content)) {
-			// ユーザーが貼った画像は tool_result ではなく content 直下に image ブロックとして入る。
-			// 本文と同じ発言の一部なので、テキスト側のメッセージへまとめて添える。
-			const pastedImages: IFlattenedImage[] = [];
-			for (const block of content) {
-				const b = rec(block);
-				if (!b) {
-					continue;
-				}
-				if (b.type === 'text') {
-					pushClaudeUserText(out, str(b.text) ?? '', ts, signals);
-				} else if (b.type === 'image') {
-					const image = flattenContentParts([b]).images[0];
-					if (image !== undefined) {
-						pastedImages.push(image);
-					}
-				} else if (b.type === 'tool_result') {
-					const { text, images } = flattenContentParts(b.content);
-					// toolUseId は質問(AskUserQuestion)の「回答済み」判定に使う（本文が空でも回答は成立する）。
-					const toolUseId = str(b.tool_use_id);
-					if (toolUseId !== undefined) {
-						signals.answeredIds.push(toolUseId);
-					}
-					// バックグラウンドタスク（サブエージェント等）の起動応答から実行中タスクを学習する。
-					if (/Async agent launched|running in the background/i.test(text)) {
-						const idMatch = /\bagentId:\s*([A-Za-z0-9_-]+)/.exec(text) ?? /background with ID:\s*([A-Za-z0-9_-]+)/.exec(text);
-						if (idMatch) {
-							signals.openedTasks.set(idMatch[1], ts ?? Date.now());
-						}
-					}
-					if (text.trim().length > 0 || images.length > 0) {
-						out.push({
-							role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts,
-							...(toolUseId !== undefined ? { toolUseId } : {}),
-							// transcript の is_error。モバイルは失敗ステップを赤で示す（推定に頼らない）。
-							...(b.is_error === true ? { isError: true } : {}),
-							...(images.length > 0 ? { imageData: images } : {}),
-						});
-					}
-				}
-			}
-			if (pastedImages.length > 0) {
-				// 直前のユーザー発言に添える。画像だけを貼った（本文なし）ときは
-				// 画像だけの発言として1件作る。
-				const last = out.at(-1);
-				if (last?.role === 'user' && last.kind === 'text' && last.imageData === undefined) {
-					out[out.length - 1] = { ...last, imageData: pastedImages };
-				} else {
-					signals.userText = true;
-					out.push({ role: 'user', kind: 'text', text: '', ts, imageData: pastedImages });
-				}
-			}
-		}
-		return out;
-	}
-
-	// assistant
-	const model = str(message.model);
-	if (model !== undefined && model.length > 0) {
-		signals.model = model;
-	}
-	if (Array.isArray(content)) {
-		for (const block of content) {
-			const b = rec(block);
-			if (!b) {
-				continue;
-			}
-			if (b.type === 'text') {
-				const text = str(b.text) ?? '';
-				if (text.trim().length > 0) {
-					out.push({ role: 'assistant', kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
-				}
-			} else if (b.type === 'thinking') {
-				const text = str(b.thinking) ?? '';
-				if (text.trim().length > 0) {
-					out.push({ role: 'assistant', kind: 'thinking', ...withTruncation(text, TOOL_TEXT_LIMIT), ts });
-				}
-			} else if (b.type === 'tool_use') {
-				const rawTool = str(b.name) ?? 'tool';
-				const tool = rawTool === 'WebSearch' ? 'web_search' : rawTool;
-				const toolUseId = str(b.id);
-				// AskUserQuestion はユーザーへの選択式質問。汎用ツールとして折りたたむと
-				// モバイルで質問に気づけないため、専用の question メッセージに展開する。
-				if (tool === 'AskUserQuestion') {
-					const questions = parseAskUserQuestions(b.input, toolUseId, ts);
-					if (questions.length > 0) {
-						if (toolUseId !== undefined) {
-							signals.askedQuestionIds.push(toolUseId);
-						}
-						out.push(...questions);
-						continue;
-					}
-					// input が想定形でない場合は従来どおり汎用 tool_use として出す
-				}
-				let text = '';
-				const input = rec(b.input);
-				if (tool === 'Agent' || tool === 'Task') {
-					// サブエージェント起動は description（何をさせるか）を出す方が JSON より分かりやすい。
-					const description = str(input?.description);
-					const subagentType = str(input?.subagent_type);
-					if (description !== undefined && description.length > 0) {
-						text = subagentType !== undefined && subagentType.length > 0 ? `${description} (${subagentType})` : description;
-					}
-				}
-				if (tool === 'web_search') {
-					// クエリ文字列をそのまま出す（JSON のままだとモバイルの検索カードで読みにくい）。
-					text = str(input?.query) ?? '';
-				}
-				if (text.length === 0) {
-					try {
-						text = JSON.stringify(b.input);
-					} catch { /* 表示は空でよい */ }
-				}
-				out.push({ role: 'assistant', kind: 'tool_use', tool, ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(toolUseId !== undefined ? { toolUseId } : {}) });
-			}
-		}
-	}
-	return out;
-}
-
-/** transcript分類の回帰テスト用。productionと同じparserを1行だけ通す。 */
-export function paradisParseClaudeTranscriptLineForTest(line: string): { messages: IRawMessage[]; userText: boolean } {
-	let obj: Record<string, unknown> | undefined;
-	try {
-		obj = rec(JSON.parse(line));
-	} catch {
-		return { messages: [], userText: false };
-	}
-	if (obj === undefined) {
-		return { messages: [], userText: false };
-	}
-	const signals = newParseSignals();
-	const messages = JSON.parse(JSON.stringify(parseClaudeLine(obj, signals))) as IRawMessage[];
-	return { messages, userText: signals.userText };
-}
-
-/** Codex transcript分類の回帰テスト用。productionと同じparserを1行だけ通す。 */
-export function paradisParseCodexTranscriptLineForTest(line: string): { messages: IRawMessage[]; activity?: Omit<Extract<ICodexTranscriptActivityEvent, { type: 'subagent' }>, 'type'>; turn?: 'started' | 'ended' } {
-	let obj: Record<string, unknown> | undefined;
-	try {
-		obj = rec(JSON.parse(line));
-	} catch {
-		return { messages: [] };
-	}
-	if (obj === undefined) {
-		return { messages: [] };
-	}
-	const signals = newParseSignals();
-	const messages = JSON.parse(JSON.stringify(parseCodexLine(obj, signals))) as IRawMessage[];
-	const activity = signals.codexActivityTimeline.find((event): event is Extract<ICodexTranscriptActivityEvent, { type: 'subagent' }> => event.type === 'subagent');
-	const turn = signals.codexActivityTimeline.find(event => event.type === 'turnStart' || event.type === 'turnEnd');
-	return { messages, ...(activity !== undefined ? { activity: { id: activity.id, ...(activity.agentPath !== undefined ? { agentPath: activity.agentPath } : {}), kind: activity.kind, at: activity.at } } : {}), ...(turn !== undefined ? { turn: turn.type === 'turnStart' ? 'started' : 'ended' } : {}) };
-}
-
-/**
- * 連続する Codex rollout 行を1つの signals で通す（view_image のように、呼び出しと
- * 画像の実体が別の行に分かれる並びを検証するため）。
- */
-export function paradisParseCodexTranscriptLinesForTest(lines: readonly string[]): IRawMessage[] {
-	const signals = newParseSignals();
-	const out: IRawMessage[] = [];
-	for (const line of lines) {
-		let obj: Record<string, unknown> | undefined;
-		try {
-			obj = rec(JSON.parse(line));
-		} catch {
-			continue;
-		}
-		if (obj !== undefined) {
-			out.push(...parseCodexLine(obj, signals));
-		}
-	}
-	return JSON.parse(JSON.stringify(out)) as IRawMessage[];
-}
-
-/** Codex子threadのrollout行を、SubAgent詳細用メッセージへ正規化する。 */
-export function paradisParseCodexDetailLinesForTest(lines: readonly string[]): IParadisAgentActivityDetailMessage[] {
-	const out: IParadisAgentActivityDetailMessage[] = [];
-	for (const line of lines) {
-		let parsed: Record<string, unknown> | undefined;
-		try { parsed = rec(JSON.parse(line)); } catch { continue; }
-		if (parsed === undefined) { continue; }
-		for (const message of parseCodexLine(parsed, newParseSignals())) {
-			if (message.kind === 'question' || message.kind === 'peer_message') { continue; }
-			out.push(toDetailMessage(message));
-		}
-	}
-	return out.slice(-200);
-}
 
 /** Claude hookの公式pathを優先し、規定配置をフォールバック候補として返す。 */
 export function paradisClaudeSubagentTranscriptCandidates(transcriptPath: string, activityId: string, hookTranscriptPath?: string): readonly string[] {
@@ -1702,204 +875,6 @@ export function paradisResolveHookSessionTranscript(input: {
 	return { kind: 'session', transcriptPath: hookTranscriptPath, nested: undefined };
 }
 
-/** Codex rollout JSONL の1行をパースする。表示対象外の行は空配列。 */
-function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): IRawMessage[] {
-	// rollout行: { timestamp, type, payload }
-	if (obj.type === 'turn_context') {
-		// ターンごとの実行コンテキスト（model / effort 等）。表示メッセージは無いがメタ情報を学習する。
-		const context = rec(obj.payload);
-		const model = str(context?.model);
-		const effort = str(context?.effort);
-		if (model !== undefined && model.length > 0) {
-			signals.model = model;
-		}
-		if (effort !== undefined && effort.length > 0) {
-			signals.effort = effort;
-		}
-		return [];
-	}
-	if (obj.type === 'event_msg') {
-		// event_msg は表示内容には使わず、SubAgent活動とターン終了の状態復元に使う。
-		// usage limit（error / codex_error_info: usage_limit_exceeded）や
-		// 中断（turn_aborted）は hooks.json に対応イベントが無く Stop hook が発火しないため、
-		// ここで拾わないと「考え中」表示が永久に残る。
-		const eventPayload = rec(obj.payload);
-		const eventType = str(eventPayload?.type);
-		if (eventType === 'sub_agent_activity') {
-			const id = str(eventPayload?.agent_thread_id);
-			const kind = str(eventPayload?.kind);
-			const timestamp = str(obj.timestamp);
-			const at = num(eventPayload?.occurred_at_ms) ?? (timestamp !== undefined ? Date.parse(timestamp) : NaN);
-			if (id !== undefined && (kind === 'started' || kind === 'interacted' || kind === 'interrupted') && Number.isFinite(at)) {
-				signals.codexActivityTimeline.push({ type: 'subagent', id, ...(str(eventPayload?.agent_path) !== undefined ? { agentPath: str(eventPayload?.agent_path) } : {}), kind, at });
-			}
-		}
-		if (eventType === 'task_started') {
-			const timestamp = str(obj.timestamp);
-			const at = timestamp !== undefined ? Date.parse(timestamp) : NaN;
-			if (Number.isFinite(at)) { signals.codexActivityTimeline.push({ type: 'turnStart', at }); }
-		}
-		if (eventType === 'task_complete' || eventType === 'error' || eventType === 'turn_aborted') {
-			signals.turnEnded = eventType === 'task_complete' ? 'completed' : eventType === 'turn_aborted' ? 'interrupted' : 'failed';
-			const timestamp = str(obj.timestamp);
-			const at = timestamp !== undefined ? Date.parse(timestamp) : NaN;
-			if (Number.isFinite(at)) { signals.codexActivityTimeline.push({ type: 'turnEnd', reason: signals.turnEnded, at }); }
-		}
-		return [];
-	}
-	if (obj.type !== 'response_item') {
-		return []; // session_meta 等も対象外
-	}
-	const payload = rec(obj.payload);
-	if (!payload) {
-		return [];
-	}
-	const tsRaw = str(obj.timestamp);
-	const tsParsed = tsRaw !== undefined ? Date.parse(tsRaw) : NaN;
-	const ts = Number.isFinite(tsParsed) ? tsParsed : undefined;
-	const ptype = str(payload.type);
-	// Codex のツール呼び出し/結果は call_id で対応付く (Claude の tool_use_id 相当)。
-	// toolUseId に載せてモバイル側で呼び出し⇔結果の突き合わせに使えるようにする
-	// (質問の回答済み判定は kind==='question' 限定なので Codex の ID が混ざっても影響しない)。
-	let callId = str(payload.call_id) ?? str(payload.id);
-	const out: IRawMessage[] = [];
-
-	if (ptype === 'message') {
-		const role = str(payload.role);
-		if (role !== 'user' && role !== 'assistant') {
-			return []; // developer / system プロンプトは出さない
-		}
-		const { text, images } = flattenContentParts(payload.content);
-		// Codexはuserメッセージとして環境コンテキスト/プロジェクト指示を注入するため表示から除く。
-		// 旧CLI(0.4x): <environment_context> / <user_instructions>
-		// 新CLI(0.80+): 「# AGENTS.md instructions for <path>」見出し＋<INSTRUCTIONS>ラッパー
-		const trimmedText = text.trim();
-		if (/^<(environment_context|user_instructions|ENVIRONMENT_CONTEXT|INSTRUCTIONS)/.test(trimmedText)
-			|| trimmedText.startsWith('# AGENTS.md instructions for')) {
-			return [];
-		}
-		// view_image の実体が来るのは「直後の」メッセージだけなので、ここで必ず手放す。
-		// 持ち越すと、実体が来ないまま後で貼られた無関係な画像がその呼び出しの結果として
-		// 繋がってしまう（環境コンテキストの注入は上で弾いた後なので巻き込まれない）。
-		const pendingImageCallId = signals.pendingCodexImageCallId;
-		signals.pendingCodexImageCallId = undefined;
-		if (images.length > 0) {
-			// Codex は view_image の実体を「関数の結果」ではなく直後の user メッセージへ
-			// input_image として書く。本文のない画像だけのメッセージがそれで、ユーザーの発言
-			// ではなく直前の view_image の結果なので、ツール結果として繋ぐ（signals が覚えた
-			// call_id を使う）。本文つき = ユーザーが貼った画像はそのまま発言として出す。
-			const viewImageCallId = isImagePlaceholderOnly(trimmedText) ? pendingImageCallId : undefined;
-			if (viewImageCallId !== undefined) {
-				out.push({
-					role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts,
-					toolUseId: viewImageCallId, imageData: images,
-				});
-				return out;
-			}
-			out.push({ role, kind: 'text', text: truncateText(text, TEXT_LIMIT), ts, imageData: images });
-			return out;
-		}
-		if (trimmedText.length === 0) {
-			return [];
-		}
-		out.push({ role, kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
-	} else if (ptype === 'reasoning') {
-		const text = flattenContent(payload.summary);
-		if (text.trim().length > 0) {
-			out.push({ role: 'assistant', kind: 'thinking', ...withTruncation(text, TOOL_TEXT_LIMIT), ts });
-		}
-	} else if (ptype === 'function_call' || ptype === 'custom_tool_call' || ptype === 'mcp_tool_call') {
-		// custom_tool_call は arguments でなく input にテキストが入る（それ以外は function_call と同形）
-		const tool = str(payload.name) ?? 'tool';
-		const text = str(payload.arguments) ?? str(payload.input) ?? '';
-		if (tool === 'view_image') {
-			// 実体は直後の user メッセージへ書かれる。その画像をこの呼び出しへ繋ぐため覚えておく。
-			signals.pendingCodexImageCallId = callId;
-		}
-		out.push({ role: 'assistant', kind: 'tool_use', tool, ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
-	} else if (ptype === 'web_search_call' || ptype === 'tool_search_call') {
-		// web_search_call は action.query、tool_search_call は arguments(オブジェクト)にクエリが入る
-		const action = rec(payload.action);
-		const args = rec(payload.arguments);
-		let query = str(action?.query) ?? str(args?.query) ?? '';
-		if (ptype === 'web_search_call' && action !== undefined) {
-			try {
-				const actionText = JSON.stringify(action);
-				if (/https?:\/\//i.test(actionText) && !query.includes(actionText)) { query = [query, actionText].filter(Boolean).join('\n'); }
-			} catch { /* 表示はqueryだけでよい */ }
-		}
-		if (query.length === 0) {
-			try {
-				query = JSON.stringify(args ?? action ?? '');
-			} catch { /* 表示は空でよい */ }
-		}
-		if (ptype === 'web_search_call' && callId === undefined && tsRaw !== undefined) {
-			callId = `web:${tsRaw}:${stableTextHash(query)}`;
-		}
-		out.push({ role: 'assistant', kind: 'tool_use', tool: ptype === 'web_search_call' ? 'web_search' : 'tool_search', ...withTruncation(query, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
-		if (ptype === 'web_search_call' && (payload.status === 'completed' || payload.status === 'failed')) {
-			const resultText = payload.status === 'failed' ? `Web検索に失敗しました${query ? `\n${query}` : ''}` : query || 'Web検索完了';
-			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(resultText, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}), ...(payload.status === 'failed' ? { isError: true } : {}) });
-		}
-	} else if (ptype === 'tool_search_output') {
-		// tool_search_call の結果 ({ call_id, status, execution, tools: [...] })。見つかった
-		// ツール一覧を結果カードとして出す (無視するとツール検索の結果だけ同期から抜ける)。
-		const toolsRaw = payload.tools;
-		let text = '';
-		if (Array.isArray(toolsRaw) && toolsRaw.length > 0) {
-			try {
-				text = toolsRaw.map(tool => {
-					const t = rec(tool);
-					return str(t?.name) ?? JSON.stringify(tool);
-				}).join('\n');
-			} catch { /* 表示は空でよい */ }
-		}
-		if (text.trim().length === 0) {
-			text = str(payload.status) ?? '';
-		}
-		if (text.trim().length > 0) {
-			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
-		}
-	} else if (ptype === 'custom_tool_call_output') {
-		const text = str(payload.output) ?? '';
-		if (text.trim().length > 0) {
-			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
-		}
-	} else if (ptype === 'local_shell_call') {
-		let text = '';
-		try {
-			text = JSON.stringify(payload.action);
-		} catch { /* 表示は空でよい */ }
-		out.push({ role: 'assistant', kind: 'tool_use', tool: 'shell', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
-	} else if (ptype === 'function_call_output') {
-		const output = payload.output;
-		let text: string;
-		let failed = false;
-		if (typeof output === 'string') {
-			text = output;
-		} else {
-			const o = rec(output);
-			text = str(o?.content) ?? flattenContent(output) ?? '';
-			// Codex は成否を output.success / metadata.exit_code で示す（形は実装依存なので取れた方だけ見る）。
-			const exitCode = rec(o?.metadata)?.exit_code;
-			failed = o?.success === false || (typeof exitCode === 'number' && exitCode !== 0);
-			if (!text) {
-				try {
-					text = JSON.stringify(output);
-				} catch {
-					text = '';
-				}
-			}
-		}
-		// view_image は結果本文を持たず（"attached local image path" とだけ書く）、実体は直後の
-		// user メッセージに来る。この定型文を出すと画像カードと同じ枠が二重に並ぶので落とす。
-		const isViewImagePlaceholder = callId !== undefined && callId === signals.pendingCodexImageCallId && text.trim() === 'attached local image path';
-		if (text.trim().length > 0 && !isViewImagePlaceholder) {
-			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}), ...(failed ? { isError: true } : {}) });
-		}
-	}
-	return out;
-}
 
 // ---- hook未発火時のセッション探索フォールバック ------------------------------------------------
 
@@ -2014,6 +989,40 @@ async function discoverCodexThreadSourceById(threadId: string, homes: IParadisAg
  * Codex rollout の先頭行（session_meta）を読む。cwd探索とhookの親子判定の両方が使う。
  * session_meta は書き出し後に変わらないため、先頭16KBだけ読めば足りる。
  */
+/**
+ * rollout の先頭行（session_meta）の上限。codex-cli 0.155.1 の先頭行は base_instructions を含んで 22,116 バイト
+ * あり（フェーズ6の実機確認）、以前の 16KB では読み切れず、素性（root / SubAgent）が分からないまま同じタブの
+ * 新しい Codex の会話へ乗り換えられなかった。大きめに取り、超えたら諦める（読み切れない行は解析しない）。
+ */
+const CODEX_SESSION_META_MAX_BYTES = 1024 * 1024;
+const FIRST_LINE_CHUNK_BYTES = 64 * 1024;
+
+/** ファイルの先頭行を改行まで読む。上限までに改行が無ければ undefined（改行が無いまま終わったらその全体）。 */
+async function paradisReadFirstLine(handle: fs.FileHandle, maxBytes: number): Promise<string | undefined> {
+	const chunks: Buffer[] = [];
+	let total = 0;
+	while (total < maxBytes) {
+		const chunk = Buffer.alloc(Math.min(FIRST_LINE_CHUNK_BYTES, maxBytes - total));
+		const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
+		if (bytesRead === 0) {
+			return total === 0 ? undefined : Buffer.concat(chunks).toString('utf8');
+		}
+		const newline = chunk.subarray(0, bytesRead).indexOf(0x0a);
+		if (newline !== -1) {
+			chunks.push(chunk.subarray(0, newline));
+			return Buffer.concat(chunks).toString('utf8');
+		}
+		chunks.push(chunk.subarray(0, bytesRead));
+		total += bytesRead;
+	}
+	return undefined;
+}
+
+/** 回帰テスト用。rollout の先頭行を本番と同じ読み方で解析する。 */
+export function paradisReadCodexRolloutSessionMetaForTest(rolloutPath: string): Promise<IParadisCodexSessionMeta | undefined> {
+	return readCodexRolloutSessionMeta(rolloutPath);
+}
+
 async function readCodexRolloutSessionMeta(rolloutPath: string): Promise<IParadisCodexSessionMeta | undefined> {
 	let handle: fs.FileHandle;
 	try {
@@ -2022,9 +1031,8 @@ async function readCodexRolloutSessionMeta(rolloutPath: string): Promise<IParadi
 		return undefined;
 	}
 	try {
-		const buffer = Buffer.alloc(16 * 1024);
-		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-		return paradisParseCodexSessionMeta(buffer.subarray(0, bytesRead).toString('utf8').split('\n')[0] ?? '');
+		const firstLine = await paradisReadFirstLine(handle, CODEX_SESSION_META_MAX_BYTES);
+		return firstLine === undefined ? undefined : paradisParseCodexSessionMeta(firstLine);
 	} catch {
 		return undefined;
 	} finally {
@@ -2146,9 +1154,25 @@ async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMti
 
 // ---- tailer ---------------------------------------------------------------------------------
 
+/** 回答待ちの承認1件。 */
+interface IParadisApprovalEntry {
+	readonly interaction: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>;
+	/** 重複の印（同じ要求の再発火を捨てるため）。 */
+	readonly key: string;
+	/** デスクトップのチャット表示のためだけに入れた（ペインの状態に数えない）。 */
+	readonly desktopOnly: boolean;
+	/** 合成 id の承認を、どの待ち合わせで解くか（ParadisMobileAgentChat.syntheticApprovalWaits）。 */
+	readonly waitKey?: string;
+	/** デスクトップかモバイルから答え終えた（表に出さない。ツールの完了で列から外れる）。 */
+	readonly answered?: boolean;
+}
+
 interface ITailerDelegate {
-	/** 追記分のメッセージが確定した (差分push用)。 */
-	onDelta(messages: IParadisAgentChatMessage[]): void;
+	/**
+	 * 追記分のメッセージが確定した (差分push用)。
+	 * quiet は、デスクトップのチャット表示のためだけに入れた質問で、モバイルへの質問通知を出さない印。
+	 */
+	onDelta(messages: IParadisAgentChatMessage[], options?: { readonly quiet?: boolean }): void;
 	/** epoch が切り替わった (truncate検知・読み直し)。購読者へ全量スナップショットを送り直す。 */
 	onEpochReset(): void;
 	/** アクティビティ（バックグラウンドタスク・質問回答待ち）が変化した。 */
@@ -2172,6 +1196,11 @@ interface ITailerDelegate {
 	 * 呼び出し側 (paradisAgentHookBus) でペインの生死に紐づけて自然に消す。
 	 */
 	onIssueUrlsUpdated?(issueUrls: ReadonlySet<string>): void;
+	/**
+	 * 追記で、これらのツールの結果が transcript に書かれた（PostToolUse が来ない拒否の検出に使う）。
+	 * rejected は、利用者が許可を拒否した結果（Claude Code の定型文）が含まれていたか。
+	 */
+	onToolResults?(toolUseIds: readonly string[], rejected: boolean): void;
 }
 
 /**
@@ -2458,8 +1487,8 @@ class TranscriptTailer {
 				this.initialTruncated = false;
 				this.backgroundTasks.clear();
 				this.pendingQuestions.clear();
-				this.pendingApproval = undefined;
-				this.lastApprovalKey = undefined;
+				this.approvalQueue.length = 0;
+				this.approvalDeniedInTurn = false;
 				this.liveQuestions.clear();
 				this.liveQuestionRealIds.clear();
 				// rev が 0 から振り直されるため、退避済みの全文・画像をそのまま残すと新しい rev の
@@ -2664,7 +1693,29 @@ class TranscriptTailer {
 			}
 			added[i] = replacement;
 		}
+		// 結果が書かれたツールの承認は決着している（ターミナルで拒否したときは hook が来ず、これが唯一の手がかり）。
+		const resultIds = added.filter(message => message.kind === 'tool_result' && message.toolUseId !== undefined).map(message => message.toolUseId!);
+		const hadQueuedApproval = this.approvalQueue.length > 0;
+		if (signals.codexActivityTimeline.some(event => event.type === 'turnStart')) {
+			this.approvalDeniedInTurn = false;
+		}
+		const approvalsSettled = emitDelta && this.settleApprovalsByToolResults(resultIds);
+		if (emitDelta && resultIds.length > 0) {
+			const rejected = added.some(message => paradisIsToolRejection(this.agent, message));
+			// 承認の拒否を覚えておく。Codex は拒否の結果（`aborted by user`）の直後に `turn_aborted` を書くが、
+			// 結果で承認はもう列から外れているので、ターンの終わりの時点では列を見ても拒否と分からない。
+			if (rejected && hadQueuedApproval) {
+				this.approvalDeniedInTurn = true;
+			}
+			this.delegate.onToolResults?.(resultIds, rejected);
+		}
 		this.applySignals(signals, emitDelta);
+		if (approvalsSettled && added.length === 0) {
+			this.delegate.onDelta([]);
+		}
+		if (approvalsSettled) {
+			this.delegate.onActivity();
+		}
 		if (latestProgress !== undefined) {
 			this.delegate.onProgress(latestProgress);
 		}
@@ -2708,10 +1759,48 @@ class TranscriptTailer {
 		this.promptCache = { lastUsedAt: usedAt, ttlMs: usage.ttlMs ?? this.promptCache?.ttlMs ?? PARADIS_PROMPT_CACHE_TTL_5M };
 	}
 
-	/** 直近に注入した承認要求の内容キー（PermissionRequest hookの再発火による重複注入の抑止）。 */
-	private lastApprovalKey: string | undefined;
-	private pendingApproval: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }> | undefined;
+	/**
+	 * 回答待ちの承認（届いた順）。並列のツールで許可要求が重なることがあり（TUI は後から来たものを先に
+	 * 出し、答えると前のものを出す）、1枠だと先の許可が中継から消える。表に出す（currentInteraction が
+	 * 返す）のは最後の1件で、それが解けたら次のものを出す。モバイルへ送る形は1件のまま変えない。
+	 */
+	private readonly approvalQueue: IParadisApprovalEntry[] = [];
+	/** このターンで利用者が承認を拒否した（ターンの終わりで戻す。stoppedOnApproval）。 */
+	private approvalDeniedInTurn = false;
 	private approvalSeq = 0;
+
+	/** 今表に出している承認。 */
+	private get pendingApproval(): Extract<IParadisAgentInteraction, { readonly kind: 'approval' }> | undefined {
+		const index = this.frontApprovalIndex();
+		return index < 0 ? undefined : this.approvalQueue[index].interaction;
+	}
+
+	/**
+	 * 表に出す承認の位置（答えていないもののうち最後に積んだもの。無ければ -1）。答え終えた承認は、
+	 * ツールの完了で列から外れるまで残るが、表には出さない（答えていない次の1件を出す）。
+	 */
+	private frontApprovalIndex(): number {
+		for (let index = this.approvalQueue.length - 1; index >= 0; index--) {
+			if (!this.approvalQueue[index].answered) {
+				return index;
+			}
+		}
+		return -1;
+	}
+
+	/** 承認を列から外す（該当が無ければ何もしない）。外したら true。 */
+	private removeApprovals(predicate: (entry: IParadisApprovalEntry) => boolean): boolean {
+		let removed = false;
+		for (let index = this.approvalQueue.length - 1; index >= 0; index--) {
+			if (predicate(this.approvalQueue[index])) {
+				this.approvalQueue.splice(index, 1);
+				removed = true;
+			}
+		}
+		return removed;
+	}
+	/** デスクトップのチャット表示のためだけに入れた質問の合成 id。ペインの状態（質問中）に数えない。 */
+	readonly desktopOnlyQuestionIds = new Set<string>();
 
 	/**
 	 * PermissionRequest hook で受けた承認要求の内容（ツール名・コマンド等）を表示カードとして
@@ -2719,7 +1808,7 @@ class TranscriptTailer {
 	 * transcript に現れないため、hook が唯一のライブな供給源。モバイル側はこのメッセージの
 	 * 内容を承認バー（許可/拒否）に添えて表示する。
 	 */
-	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string): void {
+	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string, desktopOnly = false, waitKey?: string, sameContentLimit = 1): void {
 		this.enqueue(async () => {
 			// ここで pendingQuestions を見て注入自体を捨ててはいけない。PermissionRequest hook は
 			// 1プロンプトにつき1回しか来ないため、落とすと承認要求が永久に復元されない。
@@ -2732,18 +1821,24 @@ class TranscriptTailer {
 				return;
 			}
 			const key = toolUseId !== undefined ? `${toolUseId}:${text}` : text;
-			if (this.lastApprovalKey === key) {
-				return; // 同一要求の再発火（リトライ等）は無視
+			// 同じ内容の要求が、同じ内容の未完了のツール呼び出しの数より多くなるなら、同じ hook の再送として捨てる。
+			// 並列の同じ呼び出し（同じファイルの Read を2つ等）は、呼び出しの数まで別の承認として積む。
+			if (this.approvalQueue.filter(entry => entry.key === key).length >= Math.max(1, sameContentLimit)) {
+				return;
 			}
 			const interactionId = toolUseId ?? `approval:${this.epoch}:${this.approvalSeq++}`;
-			this.lastApprovalKey = key;
-			this.pendingApproval = {
-				kind: 'approval', id: interactionId, title: '操作の許可', detail: truncateText(text, TOOL_TEXT_LIMIT),
-				choices: [
-					{ id: 'yes', label: '許可', tone: 'approve' },
-					{ id: 'no', label: '拒否', tone: 'deny' },
-				],
-			};
+			this.approvalQueue.push({
+				interaction: {
+					kind: 'approval', id: interactionId, title: '操作の許可', detail: truncateText(text, TOOL_TEXT_LIMIT),
+					choices: [
+						{ id: 'yes', label: '許可', tone: 'approve' },
+						{ id: 'no', label: '拒否', tone: 'deny' },
+					],
+				},
+				key,
+				desktopOnly,
+				...(waitKey !== undefined ? { waitKey } : {}),
+			});
 			const message: IParadisAgentChatMessage = {
 				role: 'assistant', kind: 'tool_use', tool: 'approval_request',
 				text: truncateText(text, TOOL_TEXT_LIMIT), ts: Date.now(), rev: this.rev++, toolUseId: interactionId,
@@ -2760,10 +1855,16 @@ class TranscriptTailer {
 	/** Codex app-server由来の構造化された承認要求を、その選択肢を失わず表示する。 */
 	injectCodexApprovalRequest(interaction: IParadisCodexApprovalInteraction): void {
 		this.enqueue(async () => {
-			if (this.pendingApproval?.id === interaction.id) { return; }
-			const hadApproval = this.pendingApproval !== undefined;
-			this.pendingApproval = interaction;
-			this.lastApprovalKey = `codex:${interaction.id}`;
+			if (this.approvalQueue.some(entry => entry.interaction.id === interaction.id)) { return; }
+			const front = this.frontApprovalIndex();
+			const hadApproval = front >= 0;
+			const entry: IParadisApprovalEntry = { interaction, key: `codex:${interaction.id}`, desktopOnly: false };
+			if (hadApproval) {
+				// hook経路が先着していた場合（表の1件）は、正式な選択肢のものへ置き換える。
+				this.approvalQueue[front] = entry;
+			} else {
+				this.approvalQueue.push(entry);
+			}
 			if (hadApproval) {
 				// hook経路が先着していた場合はカードだけ正式な選択肢へ置換し、履歴を重複させない。
 				this.delegate.onDelta([]);
@@ -2803,23 +1904,41 @@ class TranscriptTailer {
 				&& (!replaceExisting || this.pendingApproval.id === fallbackId || !paradisIsCodexDaemonApprovalInteraction(this.pendingApproval.id))) {
 				return;
 			}
-			this.pendingApproval = {
-				kind: 'approval', id: fallbackId, title: 'Codexが許可を待っています',
-				detail: '承認内容を同期できませんでした。PCのCodex画面で確認してください。', choices: [],
+			const fallback: IParadisApprovalEntry = {
+				interaction: {
+					kind: 'approval', id: fallbackId, title: 'Codexが許可を待っています',
+					detail: '承認内容を同期できませんでした。PCのCodex画面で確認してください。', choices: [],
+				},
+				key: fallbackId,
+				desktopOnly: false,
 			};
-			this.lastApprovalKey = fallbackId;
+			const front = this.frontApprovalIndex();
+			if (front >= 0) {
+				this.approvalQueue[front] = fallback;
+			} else {
+				this.approvalQueue.push(fallback);
+			}
 			this.delegate.onDelta([]);
 			this.delegate.onActivity();
 		});
 	}
 
-	clearApprovalRequest(toolUseId: string | undefined, force: boolean): void {
+	/**
+	 * 承認を解く。toolUseId が一致するものを外す。force（拒否の hook）は、一致するものが無ければ表の1件を
+	 * 外す。all（ターン終了）はすべて外す。
+	 */
+	clearApprovalRequest(toolUseId: string | undefined, force: boolean, all = false): void {
 		this.enqueue(async () => {
-			if (this.pendingApproval === undefined || (!force && (toolUseId === undefined || this.pendingApproval.id !== toolUseId))) {
+			let removed = all
+				? this.removeApprovals(() => true)
+				: toolUseId !== undefined && this.removeApprovals(entry => entry.interaction.id === toolUseId);
+			if (!removed && force && this.approvalQueue.length > 0) {
+				this.approvalQueue.pop();
+				removed = true;
+			}
+			if (!removed) {
 				return;
 			}
-			this.pendingApproval = undefined;
-			this.lastApprovalKey = undefined;
 			this.delegate.onDelta([]);
 			this.delegate.onActivity();
 		});
@@ -2827,9 +1946,10 @@ class TranscriptTailer {
 
 	clearCodexApprovalRequest(interactionId?: string): void {
 		this.enqueue(async () => {
-			if (this.pendingApproval === undefined || (interactionId !== undefined && this.pendingApproval.id !== interactionId)) { return; }
-			this.pendingApproval = undefined;
-			this.lastApprovalKey = undefined;
+			const removed = interactionId !== undefined
+				? this.removeApprovals(entry => entry.interaction.id === interactionId)
+				: this.approvalQueue.pop() !== undefined;
+			if (!removed) { return; }
 			this.delegate.onDelta([]);
 			this.delegate.onActivity();
 		});
@@ -2844,7 +1964,101 @@ class TranscriptTailer {
 	 * 「承認が存在するか」という事実が必要な箇所（ペイン状態の補正など）はこちらを使う。
 	 */
 	hasPendingApproval(): boolean {
-		return this.pendingApproval !== undefined;
+		return this.approvalQueue.some(entry => !entry.desktopOnly && !entry.answered);
+	}
+
+	/** デスクトップ専用のものも含めて、回答待ちの承認が残っているか。 */
+	hasAnyPendingApproval(): boolean {
+		return this.approvalQueue.some(entry => !entry.answered);
+	}
+
+	/**
+	 * このターンが承認のところで止まったか（答え終えたものも含めて承認が列に残っている、またはこのターンで
+	 * 承認を拒否した）。中断されたターンを完了（review）ではなく次の指示待ち（idle）とみなすのに使う。
+	 */
+	stoppedOnApproval(): boolean {
+		return this.approvalQueue.length > 0 || this.approvalDeniedInTurn;
+	}
+
+	/** 今キューに積まれている処理（承認の解除など）が済んだ後に実行する。 */
+	afterQueue(work: () => void): Promise<void> {
+		return this.enqueue(async () => work());
+	}
+
+	/**
+	 * 回答待ちの質問があるか（ペインの状態用）。デスクトップのチャット表示のためだけに入れた質問は
+	 * 数えない（モバイル向けの注入が動いていない構成で、ペインの状態を以前と変えないため）。
+	 */
+	hasPendingQuestionForStatus(): boolean {
+		for (const id of this.pendingQuestions) {
+			if (!this.desktopOnlyQuestionIds.has(id)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** モバイルが購読を始めた・注入が有効になった: デスクトップ専用の印を外し、ペインの状態へ反映する。 */
+	promoteDesktopOnly(): void {
+		this.enqueue(async () => {
+			if (!this.approvalQueue.some(entry => entry.desktopOnly) && this.desktopOnlyQuestionIds.size === 0) {
+				return;
+			}
+			for (let index = 0; index < this.approvalQueue.length; index++) {
+				this.approvalQueue[index] = { ...this.approvalQueue[index], desktopOnly: false };
+			}
+			this.desktopOnlyQuestionIds.clear();
+			this.delegate.onActivity();
+		});
+	}
+
+	/**
+	 * 合成 id（tool_use_id の無い PermissionRequest から作った承認）の承認を解く。いつ解くかは呼び出し側が
+	 * PreToolUse / PostToolUse の tool_use_id を数えて決める（ParadisMobileAgentChat.syntheticApprovalWaits）。
+	 */
+	clearSyntheticApproval(waitKey: string): void {
+		this.enqueue(async () => {
+			if (!this.removeApprovals(entry => entry.waitKey === waitKey && entry.interaction.id.startsWith('approval:'))) {
+				return;
+			}
+			this.delegate.onDelta([]);
+			this.delegate.onActivity();
+		});
+	}
+
+	/**
+	 * デスクトップかモバイルから答え終えた承認に印を付ける。表に出す候補から外し（答えていない次の1件が
+	 * 表に出る。同じ内容の許可が2つ続いたとき、2つ目を出すため）、同じ本文の要求の再発火も新しい承認として
+	 * 受け付ける。承認そのものは、今までどおりツールの完了で列から外れるまで残す。
+	 */
+	markApprovalAnswered(interactionId: string): void {
+		this.enqueue(async () => {
+			let changed = false;
+			for (let index = 0; index < this.approvalQueue.length; index++) {
+				const entry = this.approvalQueue[index];
+				if (entry.interaction.id === interactionId && !entry.answered) {
+					this.approvalQueue[index] = { ...entry, answered: true, key: `answered:${entry.key}:${index}:${Date.now()}` };
+					changed = true;
+				}
+			}
+			if (changed) {
+				this.delegate.onDelta([]);
+				this.delegate.onActivity();
+			}
+		});
+	}
+
+	/**
+	 * transcript に書かれたツールの結果で承認を解く。Claude Code は許可をターミナルで拒否したとき、
+	 * PostToolUse も PermissionDenied も出さず、transcript に is_error の tool_result を書くだけ
+	 * （2.1.283 で確認）。結果が書かれた時点でそのツールの承認は決着している。
+	 */
+	private settleApprovalsByToolResults(toolUseIds: readonly string[]): boolean {
+		if (toolUseIds.length === 0 || this.approvalQueue.length === 0) {
+			return false;
+		}
+		const ids = new Set(toolUseIds);
+		return this.removeApprovals(entry => ids.has(entry.interaction.id));
 	}
 
 	/**
@@ -2881,6 +2095,7 @@ class TranscriptTailer {
 		this.pendingQuestions.clear();
 		this.liveQuestions.clear();
 		this.liveQuestionRealIds.clear();
+		this.desktopOnlyQuestionIds.clear();
 		return true;
 	}
 
@@ -2907,9 +2122,10 @@ class TranscriptTailer {
 	 * PreToolUse hook で受けた AskUserQuestion の tool_input をライブ質問カードとして注入する。
 	 * transcript の読み取りと同じキューで直列化し、rev 採番・リング更新の競合を防ぐ。
 	 * 注入されたカードは delegate.onDelta 経由で購読者へ届き、（onDelta 内の既存処理で）
-	 * 質問プッシュ通知も発火する。
+	 * 質問プッシュ通知も発火する。quiet のときは通知を出さない（デスクトップのチャット表示のためだけに
+	 * 入れる場合。モバイル向けの注入が動いていない構成で、モバイルへ新しく通知を出さないため）。
 	 */
-	injectLiveQuestions(input: unknown): void {
+	injectLiveQuestions(input: unknown, quiet = false): void {
 		this.enqueue(async () => {
 			const parsed = parseAskUserQuestions(input, undefined, Date.now());
 			// transcript 側が先に同じ質問群を出している（hook の配送が transcript 読み取りより
@@ -2939,6 +2155,9 @@ class TranscriptTailer {
 				existingIds.push(syntheticId);
 				this.liveQuestions.set(key, existingIds);
 				this.pendingQuestions.add(syntheticId);
+				if (quiet) {
+					this.desktopOnlyQuestionIds.add(syntheticId);
+				}
 				added.push({ ...message, toolUseId: syntheticId, questionGroup: groupId, rev: this.rev++ });
 			}
 			if (added.length === 0) {
@@ -2949,15 +2168,12 @@ class TranscriptTailer {
 			// おく（currentInteraction の質問優先と合わせた二重の保険）。
 			// ただし Codex app-server 由来の承認は実際に serverRequest が応答待ちなので消さない。
 			// 消すと handleApprovalAction の daemon 経路に乗らず Codex が永久にブロックされる。
-			if (this.pendingApproval !== undefined && !paradisIsCodexDaemonApprovalInteraction(this.pendingApproval.id)) {
-				this.pendingApproval = undefined;
-				this.lastApprovalKey = undefined;
-			}
+			this.removeApprovals(entry => !paradisIsCodexDaemonApprovalInteraction(entry.interaction.id));
 			this.messages.push(...added);
 			if (this.messages.length > MESSAGE_RING_LIMIT) {
 				this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
 			}
-			this.delegate.onDelta(added);
+			this.delegate.onDelta(added, quiet ? { quiet: true } : undefined);
 			this.delegate.onActivity();
 		});
 	}
@@ -3057,6 +2273,9 @@ class TranscriptTailer {
 		// 過去の task_complete で、現在進行中のライブ状態を消してしまわないように）。
 		if (live && signals.turnEnded !== undefined) {
 			this.delegate.onTurnEnded(signals.turnEnded);
+		}
+		if (signals.turnEnded !== undefined) {
+			this.approvalDeniedInTurn = false;
 		}
 	}
 }
@@ -3280,6 +2499,13 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.codexDirectoryWalkLedger = codexDirectoryWalkBudget ?? new ParadisDirectoryWalkLedger(PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS, PARADIS_CODEX_DIRECTORY_WALK_LIMIT);
 		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService));
 		this._register(toDisposable(() => clearTimeout(this.desktopInsightTimer)));
+		this._register(toDisposable(() => clearTimeout(this.desktopChatTimer)));
+		this._register(toDisposable(() => {
+			for (const timer of this.desktopClaimTimers) {
+				clearTimeout(timer);
+			}
+			this.desktopClaimTimers.clear();
+		}));
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
 		void this.loadPersistedSessions();
 		this._register(onParadisAgentNestedHookEvent(event => this.onNestedHookEvent(event)));
@@ -3393,6 +2619,9 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (this.terminalIdForToken(token) !== undefined) {
 					this.ensureTailer(token, session);
 				}
+			}
+			for (const tailer of this.tailers.values()) {
+				tailer.promoteDesktopOnly();
 			}
 		}
 	}
@@ -4224,13 +3453,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		const agent = session?.agent;
-		const parts = agent === 'codex'
-			? [msg.choice === 'yes' ? 'y' : 'd']
-			: msg.choice === 'yes' ? ['1', '\r'] : ['\u001b'];
 		if (msg.choice !== 'yes' && msg.choice !== 'no') {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: '承認の選択肢が更新されました' }, token ?? msg.token);
 			return;
 		}
+		const parts = paradisAgentApprovalKeySequence(agent === 'codex' ? 'codex' : 'claude', msg.choice);
 		this.dispatchInteractionAction(mobileId, msg, { kind: 'approval', id: msg.interactionId }, parts);
 	}
 
@@ -4405,6 +3632,12 @@ export class ParadisMobileAgentChat extends Disposable {
 	finalizeInteractionAction(mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed', windowId: number, windowSession: string): void {
 		const key = this.actionKey(mobileId, requestId);
 		const completed = this.completedActions.get(key);
+		// モバイルから答え終えた承認も、表に出す候補から外す（デスクトップと同じ。同じ内容の次の許可を出すため）。
+		const answered = completed ?? this.pendingActions.get(key);
+		if (outcome === 'accepted' && answered?.token === token && answered.windowId === windowId && answered.windowSession === windowSession
+			&& answered.interaction?.kind === 'approval') {
+			this.tailers.get(token)?.markApprovalAnswered(answered.interaction.id);
+		}
 		if (outcome === 'failed' && completed?.token === token && completed.windowId === windowId && completed.windowSession === windowSession
 			&& this.ownerForPane(completed.terminalId, token)?.windowSession === windowSession) {
 			this.releaseInteractionClaim(completed.interactionKey, key);
@@ -4795,6 +4028,12 @@ export class ParadisMobileAgentChat extends Disposable {
 				return;
 			}
 			case 'PermissionRequest': {
+				// 許可が決着したときに戻せるよう、許可を待つ前の様子を覚える（決着を知らせる hook が来ない
+				// 拒否があるため。settleLiveAfterApprovals）。
+				const before = this.liveStates.get(event.token);
+				if (before?.phase !== 'permission') {
+					this.liveBeforePermission.set(event.token, before);
+				}
 				const detail = ParadisMobileAgentChat.toolDetail(event.toolInput);
 				this.setLiveState(event.token, {
 					phase: 'permission', source: 'hook', startedAt: event.at, updatedAt: event.at,
@@ -4842,6 +4081,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.liveStates.set(token, state);
 		this.liveRevisions.set(token, revision);
 		this.pushLiveToSubscribers(token, previous, state, baseRevision, revision);
+		this.scheduleDesktopChatCheck();
 	}
 
 	private clearLiveState(token: string): void {
@@ -4852,6 +4092,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			const revision = (this.liveRevisions.get(token) ?? 0) + 1;
 			this.liveRevisions.set(token, revision);
 			this.pushFullLiveToSubscribers(token, null, revision);
+			this.scheduleDesktopChatCheck();
 		}
 	}
 
@@ -4863,6 +4104,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		this.lastTurnEndedAt.set(event.token, event.at);
 		this.activeTurnTokens.delete(event.token);
+		this.liveBeforePermission.delete(event.token);
 		this.clearLiveState(event.token);
 		const tracker = this.activityTrackers.get(event.token);
 		const activityEnded = event.event === 'SessionEnd'
@@ -4872,7 +4114,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.pushActivityToSubscribers(event.token);
 		}
 		const tailer = this.tailers.get(event.token);
-		tailer?.clearApprovalRequest(undefined, true);
+		tailer?.clearApprovalRequest(undefined, true, true);
 		tailer?.clearPendingQuestions();
 		this.releaseInteractionClaimsFor(event.token);
 		this.schedulePersistedAgentActivityReconcile(event.token);
@@ -5239,14 +4481,16 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (tailer.pendingQuestions.size > 0) {
 			for (let index = tailer.messages.length - 1; index >= 0; index--) {
 				const message = tailer.messages[index];
-				if (message.kind === 'question' && message.toolUseId !== undefined && tailer.pendingQuestions.has(message.toolUseId)) {
+				if (message.kind === 'question' && message.toolUseId !== undefined && tailer.pendingQuestions.has(message.toolUseId) && !tailer.desktopOnlyQuestionIds.has(message.toolUseId)) {
 					found = { kind: 'question', text: paradisOneLine(message.text, 200), ...(message.ts !== undefined ? { at: message.ts } : {}) };
 					break;
 				}
 			}
 		}
 		const current = found === undefined ? tailer.currentInteraction() : null;
-		if (current?.kind === 'approval') {
+		// デスクトップのチャット表示のためだけに入れた承認（hasPendingApproval が数えないもの）は、
+		// ここでも数えない。以前どおり hook から覚えた内容（desktopInteractions）だけで決める。
+		if (current?.kind === 'approval' && tailer.hasPendingApproval()) {
 			const text = [current.title, current.detail].filter((part): part is string => part !== undefined && part.length > 0).join(': ');
 			if (text.length > 0) {
 				found = { kind: 'permission', text: paradisOneLine(text, 200) };
@@ -5323,6 +4567,8 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** 変化の知らせをまとめる。知らせるのは指紋が変わったペインがあるときだけ。 */
 	private scheduleDesktopInsightCheck(): void {
+		// チャット表示も同じ契機（追記・活動・hook・tailer の張り替え）で取り直しが要る。
+		this.scheduleDesktopChatCheck();
 		if (this.desktopInsightTimer !== undefined || this._store.isDisposed) {
 			return;
 		}
@@ -5344,6 +4590,11 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.desktopTailerInteractionSeenAt.delete(token);
 			}
 		}
+		for (const token of [...this.desktopExitedTokens]) {
+			if (!live.has(token)) {
+				this.desktopExitedTokens.delete(token);
+			}
+		}
 		let changed = false;
 		const seen = new Set<string>();
 		for (const insight of this.getDesktopPaneInsights([...this.paneSessions.keys()])) {
@@ -5363,6 +4614,391 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (changed) {
 			this._onDidChangeDesktopPaneInsights.fire();
 		}
+	}
+
+	// ---- デスクトップのチャット表示向けの読み取り口（agentChat） ------------------------------------
+	//
+	// モバイルの attach と同じ tailer を、デスクトップの画面が引ける形に写すだけ。ここからモバイルへは
+	// 何も送らない（IParadisAgentChatSource、agentChat/common/paradisAgentChat.ts 参照）。
+
+	/**
+	 * チャット表示を持つウィンドウが見ているペイン。
+	 *
+	 * 見ている間は、モバイルとつないでいなくても質問・承認の中身を hook から tailer へ入れる
+	 * （Claude Code は AskUserQuestion を回答されるまで transcript に書かないので、入れないと
+	 * デスクトップに質問のカードを出せない）。ウィンドウが閉じたり落ちたりして送り直しが途絶えたら、
+	 * 期限で外す。
+	 */
+	private readonly desktopChatWatchers = new Map<string, { readonly tokens: ReadonlySet<string>; readonly visible: ReadonlySet<string>; readonly expiresAt: number }>();
+	/** SessionEnd を受けてからまだ次の hook が来ていないペイン。 */
+	private readonly desktopExitedTokens = new Set<string>();
+	private readonly _onDidChangeDesktopChat = this._register(new Emitter<readonly string[]>());
+	/** 見られているペインの会話（履歴・生成中の様子・待っている内容・モデル）が変わった。 */
+	readonly onDidChangeDesktopChat = this._onDidChangeDesktopChat.event;
+	private readonly desktopChatSignatures = new Map<string, string>();
+	private desktopChatTimer: ReturnType<typeof setTimeout> | undefined;
+
+	/**
+	 * ウィンドウが見ているペインを差し替える（送り直しで期限を延ばす）。tokens は質問・承認の中身を
+	 * 取り込むペイン（チャットを開いていないものも含む）、visible は変化を知らせるペイン（チャット表示中）。
+	 */
+	watchDesktopChat(watcherId: string, tokens: readonly string[], visible: readonly string[] = []): void {
+		if (tokens.length === 0) {
+			this.desktopChatWatchers.delete(watcherId);
+		} else {
+			this.desktopChatWatchers.set(watcherId, {
+				tokens: new Set(tokens.slice(0, PARADIS_DESKTOP_CHAT_MAX_TOKENS)),
+				visible: new Set(visible.slice(0, PARADIS_DESKTOP_CHAT_MAX_TOKENS)),
+				expiresAt: Date.now() + PARADIS_DESKTOP_CHAT_WATCH_TTL_MS,
+			});
+		}
+		// 見始めたペインは、セッションが確定していればすぐ読み始める（初回の取得を待たせない）。
+		for (const token of tokens) {
+			const session = this.paneSessions.get(token);
+			if (session !== undefined) {
+				this.ensureEagerTailer(token, session);
+			}
+		}
+		this.scheduleDesktopChatCheck();
+	}
+
+	/** いずれかのウィンドウのチャット表示が、このペインを見ているか。期限切れの登録はここで外す。 */
+	private isDesktopChatWatched(token: string): boolean {
+		const now = Date.now();
+		let watched = false;
+		for (const [watcherId, watcher] of [...this.desktopChatWatchers]) {
+			if (watcher.expiresAt < now) {
+				this.desktopChatWatchers.delete(watcherId);
+			} else if (watcher.tokens.has(token)) {
+				watched = true;
+			}
+		}
+		return watched;
+	}
+
+	/**
+	 * 1ペイン分の会話。起点（前回の epoch と rev）が今の読み取りと合えば差分だけ、合わなければ
+	 * 保持している全量を返す。セッションが確定していない・もう生きていないペインは undefined。
+	 */
+	async getDesktopChat(token: string, cursor: IParadisAgentChatCursor | undefined): Promise<IParadisAgentChatView | undefined> {
+		const session = this.paneSessions.get(token);
+		if (session === undefined || !this.isLiveToken(token)) {
+			return undefined;
+		}
+		const tailer = this.tailers.get(token) ?? (this.terminalIdForToken(token) !== undefined ? this.ensureTailer(token, session) : undefined);
+		if (tailer === undefined) {
+			return undefined;
+		}
+		await tailer.ready;
+		if (this.tailers.get(token) !== tailer) {
+			return undefined; // 読み込みを待つ間にセッションが替わった。知らせを受けて取り直してもらう。
+		}
+		const oldestRev = tailer.messages.length > 0 ? tailer.messages[0].rev : tailer.rev;
+		// 差分で返せるのは「起点の続きが欠けずにリングに残っている」ときだけ（モバイルの attach と同じ）。
+		const incremental = cursor !== undefined && cursor.epoch === tailer.epoch && cursor.rev <= tailer.rev && cursor.rev >= oldestRev;
+		const messages = incremental ? tailer.messages.filter(message => message.rev >= cursor.rev) : [...tailer.messages];
+		const interaction = tailer.currentInteraction();
+		const info = this.infoOf(token, tailer);
+		return {
+			token,
+			agent: tailer.agent,
+			epoch: tailer.epoch,
+			rev: tailer.rev,
+			reset: !incremental,
+			messages,
+			...(!incremental && (tailer.wasInitialTruncated || oldestRev > 0) ? { truncated: true } : {}),
+			...(info !== undefined ? { info } : {}),
+			live: this.liveStates.get(token) ?? null,
+			interaction,
+			...(interaction?.kind === 'question' ? { pendingQuestions: tailer.pendingQuestionMessages(interaction.id) } : {}),
+			busy: this.activeTurnTokens.has(token) || this.liveStates.has(token),
+			...(this.desktopExitedTokens.has(token) ? { agentExited: true } : {}),
+		};
+	}
+
+	/** 切り詰めて渡したメッセージの全文（tailer が退避しておいた分だけ。読み直さない）。 */
+	getDesktopChatFullText(token: string, epoch: string, rev: number): string | undefined {
+		const tailer = this.isLiveToken(token) ? this.tailers.get(token) : undefined;
+		return tailer?.epoch === epoch ? tailer.fullTextFor(rev) : undefined;
+	}
+
+	/** メッセージに付いていた画像の実体（tailer が退避しておいた分だけ）。 */
+	getDesktopChatImage(token: string, epoch: string, rev: number, index: number): IParadisAgentChatImageData | undefined {
+		const tailer = this.isLiveToken(token) ? this.tailers.get(token) : undefined;
+		const image = tailer?.epoch === epoch ? tailer.imageFor(rev, index) : undefined;
+		return image !== undefined ? { mediaType: image.mediaType, data: image.base64 } : undefined;
+	}
+
+	/** そのペインのエージェントで使えるスラッシュコマンド（モバイルへ送る一覧と同じもの）。 */
+	async getDesktopChatCommands(token: string): Promise<readonly IParadisAgentChatCommand[]> {
+		const session = this.paneSessions.get(token);
+		const cwd = this.tokenToCwd.get(token);
+		// 接続先で動いているペインは、手元の設定からコマンドを作らない（向こうのものではない）。
+		if (session === undefined || !this.isLiveToken(token) || this.isRemoteAgentPane(token)) {
+			return [];
+		}
+		// cwd がまだ同期されていないときは、プロジェクトのコマンドを探さずホームの分だけにする。
+		return paradisBuildAgentCommandCatalog(session.agent, cwd ?? homedir());
+	}
+
+	/**
+	 * Codex の app-server 経由の承認にデスクトップのチャット表示から答える。モバイルからの回答と
+	 * 同じ interaction の取り合いにならないよう、答えている間は同じ claim を持つ。
+	 */
+	async answerDesktopCodexApproval(token: string, interactionId: string, choiceId: string): Promise<boolean> {
+		const session = this.paneSessions.get(token);
+		const tailer = this.tailers.get(token);
+		const interaction = tailer?.currentInteraction();
+		if (session?.agent !== 'codex' || session.sessionId === undefined || tailer === undefined
+			|| interaction?.kind !== 'approval' || interaction.id !== interactionId
+			|| !this.codexLiveClient.hasPendingApproval(session.sessionId, interactionId)) {
+			return false;
+		}
+		const interactionKey = `${token}\0${tailer.epoch}\0approval\0${interactionId}`;
+		if (this.interactionClaims.has(interactionKey)) {
+			return false;
+		}
+		const claim = `desktop\0${interactionId}`;
+		this.interactionClaims.set(interactionKey, claim);
+		try {
+			await this.codexLiveClient.answerApproval(session.sessionId, interactionId, choiceId);
+			return true;
+		} catch (error) {
+			this.logService.warn('[paradisAgentChat] desktop Codex approval failed', error);
+			return false;
+		} finally {
+			this.releaseInteractionClaim(interactionKey, claim);
+		}
+	}
+
+	// ---- 許可要求と tool_use_id の対応付け ---------------------------------------------------------
+	//
+	// Claude Code の PermissionRequest hook には tool_use_id が無い（公式の hook リファレンスの
+	// 「PermissionRequest input」: "like PreToolUse hooks, but without tool_use_id"）。そのままだと承認は
+	// 合成 id になり PostToolUse と照合できず、ターン終了まで残る。PreToolUse（tool_use_id・tool_name・
+	// tool_input を持つ）を覚えておき、ツール名と入力が同じ未完了の呼び出しが1つだけならその id を承認に付ける。
+	// 決まらないときは合成 id のまま、その時点で未完了だった同名のツール（とその後に始まった同名のツール）が
+	// 全部終わったときだけ解く。1つも覚えていなければ、以前どおりターン終了まで解かない。
+
+	/** ペイン → 未完了のツール呼び出し（tool_use_id → ツール名と入力の指紋）。 */
+	private readonly openToolUses = new Map<string, Map<string, { readonly tool: string; readonly inputKey: string }>>();
+	/** ペイン → 待ち合わせの印 → 合成 id の承認が待っている、同名の未完了のツール呼び出し。 */
+	private readonly syntheticApprovalWaits = new Map<string, Map<string, { readonly tool: string; readonly ids: Set<string> }>>();
+	private syntheticWaitSeq = 0;
+
+	/**
+	 * hook からツール呼び出しの開始・完了を覚える。PermissionRequest なら、承認に付ける tool_use_id
+	 * （hook 自身が持っていればそれ）か、合成 id の承認を解く待ち合わせの印を返す。
+	 */
+	private trackToolUse(event: IParadisAgentHookEvent): { readonly toolUseId?: string; readonly waitKey?: string; readonly sameContentLimit?: number } {
+		const token = event.token;
+		if (paradisIsTurnEndHookEvent(event.event) || event.event === 'SessionStart') {
+			this.openToolUses.delete(token);
+			this.syntheticApprovalWaits.delete(token);
+			return {};
+		}
+		let open = this.openToolUses.get(token);
+		if (event.event === 'PreToolUse' && event.toolUseId !== undefined && event.toolName !== undefined) {
+			if (open === undefined) {
+				open = new Map();
+				this.openToolUses.set(token, open);
+			}
+			if (open.size >= PARADIS_OPEN_TOOL_USE_LIMIT) {
+				open.delete(open.keys().next().value!);
+			}
+			open.set(event.toolUseId, { tool: event.toolName, inputKey: paradisStableJson(event.toolInput) });
+			// 承認の後に始まった同名のツールも待つ（PermissionRequest が PreToolUse より先に届いた場合に備える）。
+			for (const wait of this.syntheticApprovalWaits.get(token)?.values() ?? []) {
+				if (wait.tool === event.toolName) {
+					wait.ids.add(event.toolUseId);
+				}
+			}
+			return {};
+		}
+		if ((event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined) {
+			this.finishToolUses(token, [event.toolUseId]);
+			return {};
+		}
+		if (event.event !== 'PermissionRequest') {
+			return {};
+		}
+		if (event.toolUseId !== undefined) {
+			return { toolUseId: event.toolUseId };
+		}
+		const inputKey = paradisStableJson(event.toolInput);
+		const matches = [...(open ?? [])].filter(([, use]) => use.tool === event.toolName && use.inputKey === inputKey);
+		if (matches.length === 1) {
+			return { toolUseId: matches[0][0] };
+		}
+		// 決まらない。今の同名の未完了の呼び出しが全部終わるまで待つ（空なら待たない＝ターン終了まで残る）。
+		const sameTool = [...(open ?? [])].filter(([, use]) => use.tool === event.toolName).map(([id]) => id);
+		if (event.toolName === undefined || sameTool.length === 0) {
+			return {};
+		}
+		const waitKey = `w${++this.syntheticWaitSeq}`;
+		let waits = this.syntheticApprovalWaits.get(token);
+		if (waits === undefined) {
+			waits = new Map();
+			this.syntheticApprovalWaits.set(token, waits);
+		}
+		waits.set(waitKey, { tool: event.toolName, ids: new Set(sameTool) });
+		return { waitKey, sameContentLimit: matches.length };
+	}
+
+	/** 許可を待つ前の様子（ペイン → 様子。無ければ何も動いていなかった）。 */
+	private readonly liveBeforePermission = new Map<string, IParadisAgentLiveState | undefined>();
+
+	/**
+	 * transcript に結果が書かれて承認が決着した後の、生成中の様子を直す。Claude Code 2.1.283 は許可を Esc で
+	 * 拒否しても hook を出さないので、許可を待つ様子（「許可を待っています n秒」）が次のターンまで残っていた。
+	 * - 利用者が拒否した結果（Claude Code の定型文）なら、エージェントは次の指示を待っている。ターンを終える
+	 * - それ以外で承認が残っていなければ、許可を待つ前の様子へ戻す
+	 */
+	private settleLiveAfterApprovals(token: string, rejected: boolean): void {
+		const tailer = this.tailers.get(token);
+		if (tailer === undefined || tailer.hasAnyPendingApproval()) {
+			return;
+		}
+		const live = this.liveStates.get(token);
+		if (rejected) {
+			// 完了ではなく、エージェントが止まって次の指示を待っている。ペインは確認待ち（review）ではなく
+			// 状態なし（idle）へ移す（review にすると完了の通知が鳴る）。
+			this.liveBeforePermission.delete(token);
+			this.activeTurnTokens.delete(token);
+			this.clearLiveState(token);
+			fireParadisAgentAwaitingUser(token);
+			return;
+		}
+		if (live?.phase !== 'permission' || live.tool === 'AskUserQuestion') {
+			return;
+		}
+		const before = this.liveBeforePermission.get(token);
+		this.liveBeforePermission.delete(token);
+		if (before === undefined) {
+			this.clearLiveState(token);
+		} else {
+			this.setLiveState(token, { ...before, updatedAt: Date.now() });
+		}
+	}
+
+	/** ツール呼び出しが終わった（PostToolUse か、transcript の tool_result）。待ち合わせが空になった承認を解く。 */
+	private finishToolUses(token: string, toolUseIds: readonly string[]): void {
+		const open = this.openToolUses.get(token);
+		const waits = this.syntheticApprovalWaits.get(token);
+		for (const id of toolUseIds) {
+			open?.delete(id);
+			for (const [waitKey, wait] of [...(waits ?? [])]) {
+				if (wait.ids.delete(id) && wait.ids.size === 0) {
+					waits?.delete(waitKey);
+					this.tailers.get(token)?.clearSyntheticApproval(waitKey);
+				}
+			}
+		}
+	}
+
+	/** デスクトップのチャット表示が打鍵で答えている interaction の claim（`token\0kind\0id` → claim）。 */
+	private readonly desktopInteractionClaims = new Map<string, { readonly key: string; readonly claim: string }>();
+	private readonly desktopClaimTimers = new Set<ReturnType<typeof setTimeout>>();
+	private desktopClaimSeq = 0;
+
+	/**
+	 * デスクトップのチャット表示が質問・承認へ打鍵で答える前に、モバイルと同じ claim を取る。
+	 * 取れなければ（モバイルやこの画面からの回答が反映待ち）false。
+	 */
+	claimDesktopInteraction(token: string, kind: 'question' | 'approval', id: string): boolean {
+		const tailer = this.tailers.get(token);
+		if (tailer === undefined || !tailer.hasPendingInteraction({ kind, id })) {
+			return false;
+		}
+		const key = `${token}\0${tailer.epoch}\0${kind}\0${id}`;
+		if (this.interactionClaims.has(key)) {
+			return false;
+		}
+		const claim = `desktop\0${++this.desktopClaimSeq}`;
+		this.interactionClaims.set(key, claim);
+		this.desktopInteractionClaims.set(`${token}\0${kind}\0${id}`, { key, claim });
+		return true;
+	}
+
+	/**
+	 * claim を返す。送り終えた回答は、TUI が消費して interaction が消えるまで同じものへの回答を
+	 * 受け付けない（モバイルの completedActions と同じ 60 秒。質問の決着・ターン終了ではその場で解ける）。
+	 */
+	releaseDesktopInteraction(token: string, kind: 'question' | 'approval', id: string, sent: boolean): void {
+		const entryKey = `${token}\0${kind}\0${id}`;
+		const entry = this.desktopInteractionClaims.get(entryKey);
+		if (entry === undefined) {
+			return;
+		}
+		this.desktopInteractionClaims.delete(entryKey);
+		if (sent && kind === 'approval') {
+			// 同じ本文の許可要求がもう一度出たら（同じコマンドの再実行）、新しい承認として受け付ける。
+			// 覚えたままだと重複として捨て、答え終えた古いカードだけが残る。
+			this.tailers.get(token)?.markApprovalAnswered(id);
+		}
+		if (!sent) {
+			this.releaseInteractionClaim(entry.key, entry.claim);
+			return;
+		}
+		const timer = setTimeout(() => {
+			this.desktopClaimTimers.delete(timer);
+			this.releaseInteractionClaim(entry.key, entry.claim);
+		}, 60_000);
+		this.desktopClaimTimers.add(timer);
+	}
+
+	/** 見られているペインの指紋を比べ、変わったものだけを知らせる。 */
+	private scheduleDesktopChatCheck(): void {
+		if (this.desktopChatTimer !== undefined || this._store.isDisposed || this.desktopChatWatchers.size === 0) {
+			return;
+		}
+		this.desktopChatTimer = setTimeout(() => {
+			this.desktopChatTimer = undefined;
+			this.checkDesktopChat();
+		}, PARADIS_DESKTOP_CHAT_NOTIFY_DELAY_MS);
+	}
+
+	private checkDesktopChat(): void {
+		const changed: string[] = [];
+		const watched = new Set<string>();
+		// 知らせるのはチャット表示中のペインだけ（生成中は頻繁に変わるので、全ペインを知らせると全ウィンドウへ
+		// IPC が流れ続ける）。閉じているペインは、次に開いたときに差分で追いつく。
+		for (const token of new Set([...this.desktopChatWatchers.values()].flatMap(watcher => [...watcher.visible]))) {
+			if (!this.isDesktopChatWatched(token)) {
+				continue;
+			}
+			watched.add(token);
+			const signature = this.desktopChatSignature(token);
+			if (this.desktopChatSignatures.get(token) !== signature) {
+				this.desktopChatSignatures.set(token, signature);
+				changed.push(token);
+			}
+		}
+		for (const token of [...this.desktopChatSignatures.keys()]) {
+			if (!watched.has(token)) {
+				this.desktopChatSignatures.delete(token);
+			}
+		}
+		if (changed.length > 0) {
+			this._onDidChangeDesktopChat.fire(changed);
+		}
+	}
+
+	/** 取り直しが要るかを決める指紋。本文は含めない（rev と live の revision で変化が分かる）。 */
+	private desktopChatSignature(token: string): string {
+		const tailer = this.tailers.get(token);
+		if (tailer === undefined || !this.paneSessions.has(token)) {
+			return '';
+		}
+		const interaction = tailer.currentInteraction();
+		const info = this.infoOf(token, tailer);
+		return [
+			tailer.epoch, tailer.rev, this.liveRevisions.get(token) ?? 0,
+			interaction === null ? '' : `${interaction.kind}:${interaction.id}:${interaction.kind === 'approval' ? interaction.choices?.length ?? 0 : ''}`,
+			info?.model ?? '', info?.effort ?? '',
+			this.activeTurnTokens.has(token) ? 'busy' : 'idle',
+			this.desktopExitedTokens.has(token) ? 'exited' : '',
+		].join('\0');
 	}
 
 	private activityTracker(token: string): ParadisAgentActivityTracker {
@@ -5543,6 +5179,13 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private onHookEvent(event: IParadisAgentHookEvent): void {
 		this.recordDesktopInteraction(event);
+		// デスクトップのチャット表示が「エージェントはもう終わった」と判断するための印（終わったペインへ
+		// 文を送ると、シェルでコマンドとして実行されるため）。SessionEnd の後に別の hook が来たら消す。
+		if (event.event === 'SessionEnd') {
+			this.desktopExitedTokens.add(event.token);
+		} else if (this.desktopExitedTokens.delete(event.token)) {
+			this.scheduleDesktopChatCheck();
+		}
 		// hook はペインの環境変数を継承したプロセスからしか届かない。届いた時点で
 		// 「今このペインでエージェントが動いている」証拠になる（transcript の有無は問わない）。
 		if (this.isLiveToken(event.token)) {
@@ -6024,8 +5667,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		// transcript へ flush しないため、PreToolUse hook の tool_input から合成質問カードを
 		// 注入する（チャット表示・回答待ちバッジ・プッシュ通知の唯一のライブな供給源）。
 		if (event.event === 'PreToolUse' && event.toolName === 'AskUserQuestion' && event.toolInput !== undefined
-			&& (this.eagerTailing || this.subscribers.has(event.token))) {
-			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectLiveQuestions(event.toolInput);
+			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
+			// デスクトップのチャット表示のためだけに入れる（モバイル向けの注入が動いていない）ときは、
+			// モバイルへの質問通知を出さない。モバイルから見た振る舞いを変えないため。
+			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
+			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectLiveQuestions(event.toolInput, !mobileWants);
 		}
 
 		// 承認要求のライブ検出: Codex は承認要求を rollout に書かず、Claude もプロンプト
@@ -6035,11 +5681,15 @@ export class ParadisMobileAgentChat extends Disposable {
 		// こちらも注入すると生JSONの承認カードが二重に出る（回答も質問カード側で完結する）。
 		// tool_name が取れない PermissionRequest（旧CLI・パース失敗）でも、質問回答待ち中は
 		// AskUserQuestion 由来とみなして注入しない（質問カードと承認カードの二重表示防止）。
+		const approvalTarget = this.trackToolUse(event);
 		if (event.event === 'PermissionRequest' && event.toolName !== 'AskUserQuestion'
+			// 質問の回答待ちかは、ペインの状態（デスクトップ専用の質問を数えない）ではなく tailer の実際の有無で見る
 			&& !getParadisAgentPaneActivity(event.token).pendingQuestion
+			&& !((this.tailers.get(event.token)?.pendingQuestions.size ?? 0) > 0)
 			&& (event.toolName !== undefined || event.toolInput !== undefined)
-			&& (this.eagerTailing || this.subscribers.has(event.token))) {
-			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, event.toolUseId);
+			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
+			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
+			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, approvalTarget.toolUseId, !mobileWants, approvalTarget.waitKey, approvalTarget.sameContentLimit);
 		}
 		const forceApprovalClear = event.event === 'PermissionDenied';
 		const matchingApprovalClear = (event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined;
@@ -6078,6 +5728,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private pushInfoToSubscribers(token: string): void {
+		this.scheduleDesktopChatCheck();
 		const terminalId = this.terminalIdForToken(token);
 		const tailer = this.tailers.get(token);
 		const info = tailer !== undefined ? this.infoOf(token, tailer) : undefined;
@@ -6098,13 +5749,13 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.scheduleDesktopInsightCheck();
 			setParadisAgentPaneActivity(token, {
 				backgroundTasks: new Map(tailer.backgroundTasks),
-				pendingQuestion: tailer.pendingQuestions.size > 0,
+				pendingQuestion: tailer.hasPendingQuestionForStatus(),
 				// currentInteraction は質問を優先して承認を隠すため、ここは「承認が存在するか」の事実を渡す
 				pendingApproval: tailer.hasPendingApproval(),
 			});
 		};
 		const tailer = new TranscriptTailer(session.transcriptPath, session.agent, {
-			onDelta: messages => {
+			onDelta: (messages, options) => {
 				this.scheduleDesktopInsightCheck();
 				const live = this.liveStates.get(token);
 				if (live?.phase === 'message' && live.final && messages.some(message => message.role === 'assistant' && message.kind === 'text')) {
@@ -6117,7 +5768,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 				// 質問の出現は購読の有無に関わらず通知へ流す（アプリを開いていないモバイルへの
 				// プッシュ供給源。onDelta はライブ追記でのみ呼ばれるため過去分の再通知はない）。
-				for (const message of messages) {
+				for (const message of options?.quiet === true ? [] : messages) {
 					if (message.kind !== 'question') {
 						continue;
 					}
@@ -6134,6 +5785,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 			},
 			onEpochReset: () => {
+				this.scheduleDesktopChatCheck();
 				const terminalId = this.terminalIdForToken(token);
 				if (terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
@@ -6145,6 +5797,12 @@ export class ParadisMobileAgentChat extends Disposable {
 			// hook が届かない構成（WSL のディストロの中）と、質問を出したまま止まっていた
 			// セッションを、鮮度の推測を持ち込まずに引き継ぎ扱いから解くための唯一の経路。
 			onAppended: () => this.rememberAgentEvidence(token),
+			// PostToolUse が来ない拒否（ターミナルでの Esc）でも、合成 id の承認の待ち合わせを進める。
+			onToolResults: (toolUseIds, rejected) => {
+				this.finishToolUses(token, toolUseIds);
+				// 承認の解除は tailer のキューで行われるので、その後で生成中の様子を直す。
+				void tailer.afterQueue(() => this.settleLiveAfterApprovals(token, rejected));
+			},
 			// ワークスペース一覧のIssueマーク用。ペインの生死に紐づける判定 (activityGuard) は
 			// setParadisAgentPaneIssueUrls 側で行うため、ここでは検出結果をそのまま渡すだけでよい。
 			onIssueUrlsUpdated: issueUrls => setParadisAgentPaneIssueUrls(token, issueUrls),
@@ -6172,19 +5830,34 @@ export class ParadisMobileAgentChat extends Disposable {
 						this.enrichCodexActivityRelationship(token, event.id, event.at).catch(err => this.logService.trace('[paradisAgentChat] codex activity relationship lookup failed', String(err)));
 					} else {
 						this.activeTurnTokens.delete(token);
-						fireParadisAgentTurnEnded(token);
+						// 承認が残ったままの中断（承認の拒否）は完了ではない（直後の onTurnEnded がペインを idle へ移す）。
+						// ここで完了の合図を出すと、答えた時点で作業中へ戻っていたペインが確認待ち（review）へ移り、
+						// 完了の通知が鳴る。
+						if (!(event.reason === 'interrupted' && tailer.stoppedOnApproval())) {
+							fireParadisAgentTurnEnded(token);
+						}
 						changed = tracker.endTurn(event.at) || changed;
 					}
 				}
 				if (changed) { this.pushActivityToSubscribers(token); }
 				this.schedulePersistedAgentActivityReconcile(token);
+				this.scheduleDesktopChatCheck();
 			},
 			// ターン終了（Codex の task_complete / error / turn_aborted）: 考え中表示を解除し、
 			// ペイン実行状態（working）側の解除は hook バス経由で ParadisAgentBrowserService に任せる。
 			onTurnEnded: reason => {
 				this.activeTurnTokens.delete(token);
 				this.clearLiveState(token);
-				fireParadisAgentTurnEnded(token);
+				// 承認が残ったままターンが中断された（Codex の承認をカードやターミナルで拒否すると、ターンが
+				// 中断されて終わる。カードで答えた承認は「回答済み」で列に残っている）なら、承認を外し、ペインは
+				// 完了（review）ではなく状態なし（idle）へ移す（完了の通知を鳴らさない）。
+				if (reason === 'interrupted' && tailer.stoppedOnApproval()) {
+					tailer.clearApprovalRequest(undefined, true, true);
+					fireParadisAgentAwaitingUser(token);
+				} else {
+					fireParadisAgentTurnEnded(token);
+				}
+				this.scheduleDesktopChatCheck();
 			},
 			// 接続先かどうかは、これから読むファイルそのものでも見る。`isRemoteAgentPane` は
 			// 「今このペインに載っているセッション」を見るが、ここへは差し替え中の新しい
@@ -6520,6 +6193,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			owner,
 			liveEncoding: liveEncoding === PARADIS_AGENT_LIVE_APPEND_ENCODING ? PARADIS_AGENT_LIVE_APPEND_ENCODING : undefined,
 		});
+		// デスクトップのためだけに入れていた質問・承認は、モバイルが見始めたらふつうの扱いに戻す。
+		this.tailers.get(token)?.promoteDesktopOnly();
 	}
 
 	private removeSubscriber(token: string, mobileId: string): boolean {

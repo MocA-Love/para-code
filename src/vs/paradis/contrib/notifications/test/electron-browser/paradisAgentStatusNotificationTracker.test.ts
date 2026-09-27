@@ -60,6 +60,16 @@ suite('ParadisAgentStatusNotificationTracker', () => {
 		assert.deepStrictEqual(fixture.notifications, []);
 	});
 
+	test('does not notify when a denied permission leaves the pane idle instead of review', () => {
+		const fixture = createFixture();
+		fixture.tracker.accept([status('pane-a', 'working')]);
+		fixture.tracker.accept([status('pane-a', 'permission')]);
+		fixture.tracker.accept([]);
+
+		fixture.scheduler.advanceBy(5_000);
+		assert.deepStrictEqual(fixture.notifications, []);
+	});
+
 	test('forgets a disappeared token so a later review notifies again', () => {
 		const fixture = createFixture();
 		fixture.tracker.accept([status('pane-a', 'review')]);
