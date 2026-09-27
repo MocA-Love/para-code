@@ -436,9 +436,22 @@ export function paradisResolveAgentLaunchFlags(template: IParadisAgentCommandTem
 	return { model, effort, permission };
 }
 
-/** 種類の分からないシェルへバックスラッシュを含む指示を渡そうとしたときのエラー。 */
+/** 種類の分からないシェルへバックスラッシュを含む指示を渡そうとしたときのエラー（利用者向けの文言）。 */
 // allow-any-unicode-next-line
 export const PARADIS_AGENT_PROMPT_UNKNOWN_SHELL_BACKSLASH = localize('paradis.agentPrompt.unknownShellBackslash', "新しいターミナルのシェルの種類が分からないため、バックスラッシュ（\\）を含む指示を安全に渡せません。指示からバックスラッシュを除くか、Para Code が種類を判別できるシェルで起動してください。");
+
+/**
+ * 種類の分からないシェルへバックスラッシュを含む指示を渡そうとしたときのエラー。`message` は利用者向け（日本語）、
+ * `agentMessage` はエージェント（MCP）へ返す英文。
+ */
+export class ParadisAgentPromptQuotingError extends Error {
+	readonly agentMessage = 'The instruction contains a backslash, and the shell of the new terminal could not be identified, so Para Code cannot quote it safely and did not start the agent. Remove the backslashes (for example write paths with forward slashes) and try again.';
+
+	constructor() {
+		super(PARADIS_AGENT_PROMPT_UNKNOWN_SHELL_BACKSLASH);
+		this.name = 'ParadisAgentPromptQuotingError';
+	}
+}
 
 function paradisQuotePosixShellArg(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -519,7 +532,7 @@ export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate,
 	// fish はシングルクオートの中のバックスラッシュをエスケープとして読むので、`\` を含む指示は
 	// 閉じ損ねて後ろがコマンドとして動きうる。確かめられないものは起動しない
 	if (shellType === undefined && prompt.includes('\\')) {
-		throw new Error(PARADIS_AGENT_PROMPT_UNKNOWN_SHELL_BACKSLASH);
+		throw new ParadisAgentPromptQuotingError();
 	}
 	const quoted = shellType === GeneralShellType.PowerShell
 		? paradisQuotePowerShellArg(prompt)

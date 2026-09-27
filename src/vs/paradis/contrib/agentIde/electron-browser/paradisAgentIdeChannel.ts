@@ -50,7 +50,7 @@ import {
 	paradisResolveInstanceSpace,
 	paradisWorktreeStateKey,
 } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisAgentCommandTemplate } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
+import { IParadisAgentCommandTemplate, ParadisAgentPromptQuotingError } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { paradisLaunchAgentInWorkspace, paradisOpenEditorTerminalInSpace, paradisRunWorktreeCreateFlow } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { paradisCanPasteMultiline, paradisTerminalRunsAgent } from '../browser/paradisAgentIdeTerminalInput.js';
 import {
@@ -218,6 +218,10 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 			return await this.run(callerToken, request) as T;
 		} catch (error) {
 			this.logService.warn(`[ParadisAgentIde] ${request.op} failed`, error);
+			// エージェント向けの文は英語。利用者向けに日本語の文言を持つエラーは、英文の側を返す
+			if (error instanceof ParadisAgentPromptQuotingError) {
+				return fail(error.agentMessage) as T;
+			}
 			return fail(`Para Code failed to run the operation: ${error instanceof Error ? error.message : String(error)}`) as T;
 		}
 	}
