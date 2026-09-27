@@ -14,6 +14,7 @@ import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/pa
 import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChannel.js';
 import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
 import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../node/paradisAgentHookBus.js';
+import { IParadisMcpToolCallContext } from '../../common/paradisMcpToolProvider.js';
 import { ParadisAgentHookOwnership } from '../../node/paradisAgentHookOwnership.js';
 
 interface ITestBinding {
@@ -1241,6 +1242,24 @@ suite('ParadisAgentBrowser authority integration', () => {
 			bodies.push(response.body);
 		}
 		assert.deepStrictEqual({ refused: bodies.every(body => body.includes('could not confirm')), windowCalls }, { refused: true, windowCalls: 0 });
+	});
+
+	test('the unconfirmed release mark outlives the status entry when the viewer acknowledges the review', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 123 }]));
+		Reflect.get(fixture.service, '_paneStatuses').set('token', { status: 'review', changedAt: 1 });
+		Reflect.get(fixture.service, '_unconfirmedReleaseTokens').add('token');
+		Reflect.get(fixture.service, '_unconfirmableTokens').add('token');
+		await fixture.service.acknowledgePaneStatus(connection, 'token');
+		const lease = fixture.service.captureIngressLease('token');
+		const context = Reflect.get(fixture.service, '_toolCallContext').call(fixture.service, lease, undefined) as IParadisMcpToolCallContext;
+		assert.deepStrictEqual({
+			statusGone: Reflect.get(fixture.service, '_paneStatuses').has('token') === false,
+			status: context.getPaneAgentStatus('token'),
+			mark: context.getUnconfirmedRelease('token'),
+		}, { statusGone: true, status: undefined, mark: 'unverifiable' });
 	});
 
 	test('keeps the remote mark when an incomplete manifest carries a remote pane over', async () => {

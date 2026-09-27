@@ -117,6 +117,12 @@ export interface IParadisMcpToolCallContext {
 	 */
 	getPaneAgentStatus(paneToken: string): IParadisMcpPaneAgentStatus | undefined;
 	/**
+	 * transcript から許可待ち・質問中が解かれた後、接続元を確かめた hook がまだ来ていないか。
+	 * 状態の項目とは別に持つ（既読や idle で状態が消えても印は残る）。印が無ければ undefined。
+	 * `unverifiable` は、その後の hook の接続元を確かめられなかった（tmux・WSL など）ペイン。
+	 */
+	getUnconfirmedRelease(paneToken: string): 'pending' | 'unverifiable' | undefined;
+	/**
 	 * そのペインから本物の hook が一度でも届いたか（hook が効いていない相手を見分けるため）。
 	 * transcript から推した開始は含めない。
 	 */
