@@ -13,8 +13,8 @@
 //  1. 同じ提示（アカウント × 確認ダイアログで見せた残数）に対して provider へ出す消費要求は1つだけ。
 //     連打・複数ウィンドウからの同時操作でも2回目は出さない（claimedKeyForOffer）。
 //  2. provider へ要求を出した後にプロセスが落ちて結果が分からなくなっても、次の操作は
-//     **同じ idempotencyKey の再送** になる（pendingKeyForAccount）。app-server の消費は
-//     idempotencyKey ごとに1回しか効かないので、再送しても2枚目は減らない。
+//     **同じ idempotencyKey の再送** になる（pendingKeyForAccount）。バックエンドの消費は
+//     `redeem_request_id`（= idempotencyKey）ごとに1回しか効かないので、再送しても2枚目は減らない。
 //  3. 台帳が読めない・書けないときは消費しない（fail closed）。
 //
 // 永続化は「provider へ出す前に providerPending を書く」「結果を受けたら settled を書く」の2回。
@@ -36,7 +36,7 @@ const PENDING_RESEND_WINDOW_MS = 24 * 60 * 60 * 1000;
 /**
  * - providerPending: provider へ出した（かもしれない）が結果が分からない
  * - settled: 結果を受けた
- * - failed: app-server がエラーで答えた（結果が確定した失敗）。同じ提示への2回目は断るが、
+ * - failed: バックエンドが要求を断った（結果が確定した失敗）。同じ提示への2回目は断るが、
  *   読み直した新しい提示では押せる
  */
 type DurableAttemptState = 'providerPending' | 'settled' | 'failed';

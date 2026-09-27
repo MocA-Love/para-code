@@ -10,8 +10,8 @@
 //
 // - リセットクレジット: Codex の使用枠を即時に戻せる権利。残数と期限は ChatGPT のバックエンドの
 //   `wham/rate-limit-reset-credits`（app-server の `account/rateLimits/read` の `rateLimitResetCredits`
-//   と同じ内容）、消費は app-server の `account/rateLimitResetCredit/consume`（codex-cli 0.155.1 の
-//   JSON-RPC スキーマで確認）。
+//   と同じ内容）、消費は Orca と同じくバックエンドの `wham/rate-limit-reset-credits/consume` へ
+//   `redeem_request_id` を付けて POST する。
 // - 切替: 新しく開くターミナルへ渡す `CODEX_HOME` の選択。全ウィンドウ共通で、正は shared process が
 //   持つ（ウィンドウごとの保存にすると食い違うため）。
 //
@@ -70,7 +70,7 @@ export interface IParadisCodexResetCreditOffer {
 	readonly fetchedAt: number;
 }
 
-/** app-server の `ConsumeAccountRateLimitResetCreditOutcome` と同じ。 */
+/** 消費の結果（app-server の `ConsumeAccountRateLimitResetCreditOutcome` と同じ名前。バックエンドの `code` から写す）。 */
 export type ParadisCodexResetOutcome = 'reset' | 'nothingToReset' | 'noCredit' | 'alreadyRedeemed';
 
 /**
@@ -95,7 +95,7 @@ export interface IParadisCodexResetConsumeRequest {
 
 const RESET_OUTCOMES: ReadonlySet<string> = new Set<ParadisCodexResetOutcome>(['reset', 'nothingToReset', 'noCredit', 'alreadyRedeemed']);
 
-/** app-server の応答の outcome を検証する。知らない値は undefined（呼び出し側で失敗扱い）。 */
+/** 台帳に残した outcome を検証する。知らない値は undefined（呼び出し側で失敗扱い）。 */
 export function paradisCodexResetOutcome(value: unknown): ParadisCodexResetOutcome | undefined {
 	return typeof value === 'string' && RESET_OUTCOMES.has(value) ? value as ParadisCodexResetOutcome : undefined;
 }

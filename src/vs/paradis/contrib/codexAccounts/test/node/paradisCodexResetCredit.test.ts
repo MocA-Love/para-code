@@ -13,10 +13,12 @@ import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { paradisMapCodexBackendResetCredits, paradisMapCodexResetCredits } from '../../common/paradisCodexAccounts.js';
-import { IParadisCodexAppServerRpc, ParadisCodexAppServerRpcFactory, ParadisCodexRpcError } from '../../../../node/paradisCodexAppServerRpc.js';
 import { ParadisCodexAccountsService } from '../../node/paradisCodexAccountsService.js';
 
-interface IFakeCall { readonly home: string | undefined; readonly method: string; readonly params: unknown }
+interface IFakeConsume { readonly account: string | undefined; readonly token: string | undefined; readonly redeemRequestId: string }
+
+/** 偽のバックエンドの消費の答え。`status` が 200 以外なら本文は空。`throws` なら通信の失敗。 */
+type ParadisFakeConsumeAnswer = { readonly status: number; readonly code?: string; readonly throws?: undefined } | { readonly status?: undefined; readonly throws: Error };
 
 suite('Paradis Codex reset credits', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -25,10 +27,9 @@ suite('Paradis Codex reset credits', () => {
 	let home: string;
 	let codexHome: string;
 	let stateDirectory: string;
-	let calls: IFakeCall[];
+	let consumes: IFakeConsume[];
 	let fetches: { url: string; account: string | undefined }[];
-	let consumeHandler: (params: { idempotencyKey: string }) => Promise<unknown>;
-	let startFailure: Error | undefined;
+	let consumeAnswer: () => ParadisFakeConsumeAnswer;
 	let backendCredits: unknown;
 
 	setup(() => {
@@ -38,36 +39,28 @@ suite('Paradis Codex reset credits', () => {
 		stateDirectory = join(root, 'state');
 		mkdirSync(codexHome, { recursive: true });
 		writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({ tokens: { account_id: 'acct-1', access_token: 'test-token' } }));
-		calls = [];
+		consumes = [];
 		fetches = [];
-		startFailure = undefined;
 		backendCredits = { available_count: 2, credits: [{ status: 'AVAILABLE', expires_at: '2030-03-17T17:46:40.000Z', granted_at: '2027-01-15T08:00:00.000Z' }, { status: 'available', expires_at: 1_950_000_000 }] };
-		consumeHandler = async () => ({ outcome: 'reset' });
+		consumeAnswer = () => ({ status: 200, code: 'reset' });
 	});
 
 	teardown(() => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	const startRpc: ParadisCodexAppServerRpcFactory = async (_command, env) => {
-		if (startFailure) {
-			throw startFailure;
-		}
-		const rpc: IParadisCodexAppServerRpc = {
-			request: async (method, params) => {
-				calls.push({ home: env.CODEX_HOME, method, params });
-				if (method === 'account/rateLimitResetCredit/consume') {
-					return consumeHandler(params as { idempotencyKey: string });
-				}
-				throw new Error('unexpected method');
-			},
-			dispose: () => { },
-		};
-		return rpc;
-	};
-
+	// 本物の chatgpt.com へは出さない。読み取りと消費の両方をこの偽物が答える。
 	const fakeFetch = (async (url: string, init?: RequestInit) => {
 		const headers = (init?.headers ?? {}) as Record<string, string>;
+		if (url === 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume') {
+			assert.strictEqual(init?.method, 'POST');
+			consumes.push({ account: headers['ChatGPT-Account-Id'], token: headers.Authorization, redeemRequestId: (JSON.parse(String(init?.body)) as { redeem_request_id: string }).redeem_request_id });
+			const answer = consumeAnswer();
+			if (answer.throws !== undefined) {
+				throw answer.throws;
+			}
+			return new Response(answer.status === 200 ? JSON.stringify({ code: answer.code }) : null, { status: answer.status, headers: { 'Content-Type': 'application/json' } });
+		}
 		fetches.push({ url, account: headers['ChatGPT-Account-Id'] });
 		return new Response(JSON.stringify(backendCredits), { status: 200, headers: { 'Content-Type': 'application/json' } });
 	}) as unknown as typeof fetch;
@@ -78,8 +71,6 @@ suite('Paradis Codex reset credits', () => {
 			stateDirectory,
 			resolveEnv: async () => ({}),
 			homeDirectory: home,
-			startRpc,
-			resolveCodexCommand: async () => 'codex',
 			fetch: fakeFetch,
 			now,
 			skipBackgroundWork: true,
@@ -87,7 +78,7 @@ suite('Paradis Codex reset credits', () => {
 	}
 
 	function consumeCalls(): string[] {
-		return calls.filter(call => call.method === 'account/rateLimitResetCredit/consume').map(call => (call.params as { idempotencyKey: string }).idempotencyKey);
+		return consumes.map(consume => consume.redeemRequestId);
 	}
 
 	function ledgerStates(): string[] {
@@ -118,8 +109,8 @@ suite('Paradis Codex reset credits', () => {
 		});
 	});
 
-	// パネルを開くたびに app-server を起こさない。残りは使用量と同じく auth.json のトークンで直接読む。
-	test('reads credits over HTTP once per cache window without starting an app-server', async () => {
+	// 残りは使用量と同じく auth.json のトークンで直接読む。
+	test('reads credits over HTTP once per cache window', async () => {
 		const service = createService();
 		const first = await service.readResetCredits(codexHome, false);
 		const second = await service.readResetCredits(codexHome, false);
@@ -128,8 +119,8 @@ suite('Paradis Codex reset credits', () => {
 			count: first.credits?.availableCount,
 			sameOffer: first.offerRevision === second.offerRevision && typeof first.offerRevision === 'string',
 			fetches,
-			appServerCalls: calls.length,
-		}, { count: 2, sameOffer: true, fetches: [{ url: 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits', account: 'acct-1' }], appServerCalls: 0 });
+			consumes: consumes.length,
+		}, { count: 2, sameOffer: true, fetches: [{ url: 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits', account: 'acct-1' }], consumes: 0 });
 	});
 
 	test('two windows pressing at the same time only send one consume request', async () => {
@@ -140,11 +131,11 @@ suite('Paradis Codex reset credits', () => {
 			service.consumeResetCredit({ homePath: codexHome, offerRevision: offer.offerRevision!, idempotencyKey: 'key-b' }),
 		]);
 		service.dispose();
-		assert.deepStrictEqual({ a, b, sent: consumeCalls(), home: calls[0]?.home }, {
+		// Orca と同じく、バックエンドへ直接 POST し、本文の redeem_request_id に冪等の鍵を載せる
+		assert.deepStrictEqual({ a, b, consumes }, {
 			a: { kind: 'consumed', outcome: 'reset' },
 			b: { kind: 'rejected', reason: 'offerChanged' },
-			sent: ['key-a'],
-			home: codexHome,
+			consumes: [{ account: 'acct-1', token: 'Bearer test-token', redeemRequestId: 'key-a' }],
 		});
 	});
 
@@ -180,14 +171,14 @@ suite('Paradis Codex reset credits', () => {
 		});
 	});
 
-	test('an unknown outcome is resent with the original key after a restart', async () => {
-		consumeHandler = async () => { throw new Error('codex app-server request timed out'); };
+	test('an unknown outcome is resent with the original redeem_request_id after a restart', async () => {
+		consumeAnswer = () => ({ throws: new Error('fetch failed') });
 		const first = createService();
 		const offer = await first.readResetCredits(codexHome, false);
 		await assert.rejects(first.consumeResetCredit({ homePath: codexHome, offerRevision: offer.offerRevision!, idempotencyKey: 'key-a' }));
 		first.dispose();
 
-		consumeHandler = async () => ({ outcome: 'alreadyRedeemed' });
+		consumeAnswer = () => ({ status: 200, code: 'already_redeemed' });
 		const second = createService(() => 2_000);
 		const reread = await second.readResetCredits(codexHome, true);
 		const result = await second.consumeResetCredit({ homePath: codexHome, offerRevision: reread.offerRevision!, idempotencyKey: 'key-b' });
@@ -199,28 +190,50 @@ suite('Paradis Codex reset credits', () => {
 		});
 	});
 
-	// 要求が provider へ出ていないと分かっているときは「結果不明」にしない（抜けられなくなるため）。
-	test('does not leave an unknown outcome when codex never started or refused for missing auth', async () => {
+	// 要求が provider へ出ていない・使われていないと分かっているときは「結果不明」にしない（抜けられなくなるため）。
+	test('does not leave an unknown outcome when signed out or the backend refused for auth or rate limit', async () => {
 		const service = createService();
 		const offer = await service.readResetCredits(codexHome, false);
-		startFailure = new Error('codex not found');
+		writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({ tokens: { account_id: 'acct-1' } }));
 		await assert.rejects(service.consumeResetCredit({ homePath: codexHome, offerRevision: offer.offerRevision!, idempotencyKey: 'key-a' }));
-		const afterStartFailure = ledgerStates();
-		startFailure = undefined;
-		consumeHandler = async () => { throw new ParadisCodexRpcError('codex account authentication required for rate limit reset credits', -32600); };
-		await assert.rejects(service.consumeResetCredit({ homePath: codexHome, offerRevision: offer.offerRevision!, idempotencyKey: 'key-b' }));
+		const afterSignedOut = { ledger: ledgerStates(), sent: consumeCalls() };
+		writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({ tokens: { account_id: 'acct-1', access_token: 'test-token' } }));
+		const results: string[] = [];
+		for (const status of [401, 403, 429]) {
+			consumeAnswer = () => ({ status });
+			const reread = await service.readResetCredits(codexHome, true);
+			results.push(await service.consumeResetCredit({ homePath: codexHome, offerRevision: reread.offerRevision!, idempotencyKey: `key-${status}` }).then(() => 'consumed', (error: Error) => error.message));
+		}
 		const reread = await service.readResetCredits(codexHome, false);
 		service.dispose();
-		assert.deepStrictEqual({ afterStartFailure, afterAuthFailure: ledgerStates(), pendingUnknown: reread.pendingUnknown }, {
-			afterStartFailure: [],
-			afterAuthFailure: [],
+		assert.deepStrictEqual({ afterSignedOut, results, ledger: ledgerStates(), pendingUnknown: reread.pendingUnknown }, {
+			afterSignedOut: { ledger: [], sent: [] },
+			results: ['Codex reset failed: HTTP 401', 'Codex reset failed: HTTP 403', 'Codex reset failed: HTTP 429'],
+			ledger: [],
 			pendingUnknown: undefined,
 		});
 	});
 
-	// app-server がエラーで答えたら結果不明にしない（同じ提示への2回目は断り、読み直せば押せる）。
-	test('records a definite app-server error as failed instead of unknown', async () => {
-		consumeHandler = async () => { throw new ParadisCodexRpcError('reset credit request rejected', -32000); };
+	// バックエンドが要求を断ったら結果不明にしない（同じ提示への2回目は断り、読み直せば押せる）。
+	// 5xx は使われたか分からないので結果不明のまま残し、同じ redeem_request_id で再送する。
+	test('records a refused request as failed and keeps a 5xx as unknown', async () => {
+		consumeAnswer = () => ({ status: 503 });
+		const unknown = createService();
+		const first = await unknown.readResetCredits(codexHome, false);
+		await assert.rejects(unknown.consumeResetCredit({ homePath: codexHome, offerRevision: first.offerRevision!, idempotencyKey: 'key-5xx' }));
+		consumeAnswer = () => ({ status: 200, code: 'reset' });
+		const retried = await unknown.readResetCredits(codexHome, true);
+		const resent = await unknown.consumeResetCredit({ homePath: codexHome, offerRevision: retried.offerRevision!, idempotencyKey: 'key-new' });
+		unknown.dispose();
+		assert.deepStrictEqual({ pendingUnknown: retried.pendingUnknown, resent, sent: consumeCalls() }, {
+			pendingUnknown: true,
+			resent: { kind: 'consumed', outcome: 'reset' },
+			sent: ['key-5xx', 'key-5xx'],
+		});
+	});
+
+	test('records a definite backend refusal as failed instead of unknown', async () => {
+		consumeAnswer = () => ({ status: 400 });
 		const service = createService();
 		const offer = await service.readResetCredits(codexHome, false);
 		await assert.rejects(service.consumeResetCredit({ homePath: codexHome, offerRevision: offer.offerRevision!, idempotencyKey: 'key-a' }));
@@ -248,11 +261,11 @@ suite('Paradis Codex reset credits', () => {
 		const secondHome = join(home, '.codex-2');
 		mkdirSync(secondHome, { recursive: true });
 		writeFileSync(join(secondHome, 'auth.json'), JSON.stringify({ tokens: { account_id: 'acct-1', access_token: 'test-token' } }));
-		consumeHandler = async () => { throw new Error('codex app-server request timed out'); };
+		consumeAnswer = () => ({ throws: new Error('The operation was aborted') });
 		const service = createService();
 		const offer = await service.readResetCredits(codexHome, false);
 		await assert.rejects(service.consumeResetCredit({ homePath: codexHome, offerRevision: offer.offerRevision!, idempotencyKey: 'key-a' }));
-		consumeHandler = async () => ({ outcome: 'alreadyRedeemed' });
+		consumeAnswer = () => ({ status: 200, code: 'already_redeemed' });
 		const other = await service.readResetCredits(secondHome, false);
 		const result = await service.consumeResetCredit({ homePath: secondHome, offerRevision: other.offerRevision!, idempotencyKey: 'key-b' });
 		service.dispose();
