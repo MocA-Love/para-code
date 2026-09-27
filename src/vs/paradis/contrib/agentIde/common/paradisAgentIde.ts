@@ -123,7 +123,8 @@ export type ParadisAgentIdeRequest =
 	| { readonly op: 'resolveWriteTarget'; readonly terminal: string }
 	/** 貼り付けだけ。Enter は shared process が状態を確かめ直してから `sendKey` で送る。 */
 	| { readonly op: 'sendInput'; readonly terminal: string; readonly text: string }
-	| { readonly op: 'sendKey'; readonly terminal: string; readonly key: ParadisAgentIdeKey }
+	/** `typedText` は直前に貼った本文（Enter の直前の画面の確認で、その部分を除くため）。 */
+	| { readonly op: 'sendKey'; readonly terminal: string; readonly key: ParadisAgentIdeKey; readonly typedText?: string }
 	| { readonly op: 'launchAgent'; readonly agent: string; readonly prompt?: string; readonly space?: string; readonly model?: string; readonly effort?: string }
 	| { readonly op: 'createTerminal'; readonly space?: string }
 	| { readonly op: 'createSpace'; readonly repository?: string; readonly name?: string; readonly branch?: string; readonly baseBranch?: string; readonly prompt?: string; readonly agent?: string; readonly model?: string; readonly effort?: string; readonly runSetup?: boolean }
@@ -148,6 +149,8 @@ export interface IParadisAgentIdeInternal {
 	readonly status?: ParadisAgentIdeTerminalStatus;
 	/** 前面で Claude Code / Codex が動いている（素のシェルではない）。 */
 	readonly agent?: boolean;
+	/** SSH など接続先で動くターミナル（その状態の報告は戻り経路を通れる誰からでも届きうる）。 */
+	readonly remote?: boolean;
 	/** エージェントのツールで作ったターミナルなら、作った時刻（起動待ちの猶予に使う）。 */
 	readonly launchedAt?: number;
 }
@@ -254,19 +257,35 @@ export function paradisAgentIdeUntrustedTitle(title: string): string {
  * 【要確認】文言は Claude Code 2.1.283 / codex-cli 0.155.1 の確認画面から拾った目安で、版が変わると
  * 外れうる（外れても hook の状態の確認は残る）。誤って当たったときは Enter を送らないだけ（安全側）。
  * 文言による目安なので、確認の画面を必ず見分けられるわけではない。
+ *
+ * @param typedText 直前に貼った本文。画面からその部分を除いてから探す（本文そのものに確認の文言が
+ * 入っていても、それで止めない）。除くかどうかは呼び出し側の申告ではなく、実際に貼った本文で決まる。
+ * 入力欄の折り返しと枠線を越えて照合できるよう、空白と罫線の文字を落とした形で比べる。
  */
-export function paradisAgentIdeScreenShowsPrompt(screen: string): boolean {
-	const tail = screen.split('\n').slice(-30).join('\n');
+export function paradisAgentIdeScreenShowsPrompt(screen: string, typedText?: string): boolean {
+	let tail = compactForPromptMatch(screen.split('\n').slice(-30).join('\n'));
+	if (typedText !== undefined) {
+		const typed = compactForPromptMatch(typedText);
+		if (typed.length > 0) {
+			tail = tail.split(typed).join('');
+		}
+	}
 	return PROMPT_PATTERNS.some(pattern => pattern.test(tail));
 }
 
+/** 空白（改行を含む）と罫線の文字（入力欄の枠）を落とす。 */
+function compactForPromptMatch(text: string): string {
+	return text.replace(/[\s\u2500-\u257f]+/g, '');
+}
+
+/** 空白を落とした形の確認の文言。 */
 const PROMPT_PATTERNS: readonly RegExp[] = [
-	/Do you want to (?:proceed|make this edit|create|delete|allow|run|use|overwrite)/i,
-	/Do you trust the (?:contents|files) (?:of|in) this/i,
-	/Would you like to (?:run|make|apply|allow|proceed)/i,
-	/\bYes, (?:proceed|and don't ask again|allow)/i,
-	/Press enter to confirm/i,
-	/Enter to select/i,
+	/Doyouwantto(?:proceed|makethisedit|create|delete|allow|run|use|overwrite)/i,
+	/Doyoutrustthe(?:contents|files)(?:of|in)this/i,
+	/Wouldyouliketo(?:run|make|apply|allow|proceed)/i,
+	/Yes,(?:proceed|anddon't?askagain|allow)/i,
+	/Pressentertoconfirm/i,
+	/Entertoselect/i,
 	/\(y\/n\)/i,
 ];
 

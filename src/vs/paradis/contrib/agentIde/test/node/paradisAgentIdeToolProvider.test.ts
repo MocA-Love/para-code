@@ -115,10 +115,11 @@ suite('ParadisAgentIdeToolProvider', () => {
 
 	test('Enter is refused after a release that no verified hook confirmed yet', async () => {
 		const { provider, context, statuses } = setup();
-		statuses.set(TARGET, { status: 'working', changedAt: 1, unconfirmedRelease: true });
-		statuses.set(TARGET, { status: 'review', changedAt: 2, unconfirmedRelease: true });
-		const result = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'enter' }, undefined, context));
-		assert.strictEqual(result.isError, true);
+		statuses.set(TARGET, { status: 'review', changedAt: 2, unconfirmedRelease: 'pending' });
+		const pending = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'enter' }, undefined, context));
+		statuses.set(TARGET, { status: 'review', changedAt: 3, unconfirmedRelease: 'unverifiable' });
+		const unverifiable = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'enter' }, undefined, context));
+		assert.deepStrictEqual([pending.isError, unverifiable.isError, unverifiable.body.includes('leaves pressing Enter there to the user')], [true, true, true]);
 	});
 
 	test('pasted text that looks like a prompt does not block its own Enter, but a prompt already on screen does', async () => {
@@ -129,6 +130,13 @@ suite('ParadisAgentIdeToolProvider', () => {
 		onScreen.state.screen = 'Do you want to proceed?';
 		const blocked = text(await onScreen.provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: 'hello', press_enter: true }, undefined, onScreen.context));
 		assert.deepStrictEqual([own.isError, blocked.isError, ops(onScreen.calls)], [false, true, ['resolveWriteTarget']]);
+	});
+
+	test('putting a prompt phrase in the text does not hide a real prompt that appears after the paste', async () => {
+		const { provider, context, state, clock, calls } = setup();
+		clock.onSleep = () => { state.screen = 'Reply (y/n) when done\nDo you want to proceed?'; };
+		const result = text(await provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: 'Reply (y/n) when done', press_enter: true }, undefined, context));
+		assert.deepStrictEqual({ isError: result.isError, ops: ops(calls) }, { isError: true, ops: ['resolveWriteTarget', 'sendInput', 'resolveWriteTarget'] });
 	});
 
 	test('Enter is refused while a confirmation prompt is on screen', async () => {

@@ -75,6 +75,7 @@ import {
 	paradisAgentIdeKeySequence,
 	paradisAgentIdeMessagePrefix,
 	paradisAgentIdeNeedsHuman,
+	paradisAgentIdeScreenShowsPrompt,
 	paradisAgentIdeStatusLabel,
 	paradisAgentIdeTailLines,
 	paradisAgentIdeUntrustedTitle,
@@ -236,11 +237,11 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 			case 'resolveWriteTarget': {
 				const target = this._resolveWritable(callerToken, request.terminal);
 				return target.ok
-					? { ok: true, data: { terminal: target.value.id }, internal: { paneToken: target.value.token, status: this._status(target.value), agent: this._runsAgent(target.value), screen: this._screen(target.value.instance, 0) } }
+					? { ok: true, data: { terminal: target.value.id }, internal: { paneToken: target.value.token, status: this._status(target.value), agent: this._runsAgent(target.value), screen: this._screen(target.value.instance, 0), ...(target.value.instance.remoteAuthority ? { remote: true } : {}) } }
 					: target;
 			}
 			case 'sendInput': return this._sendInput(callerToken, request.terminal, request.text);
-			case 'sendKey': return this._sendKey(callerToken, request.terminal, request.key);
+			case 'sendKey': return this._sendKey(callerToken, request.terminal, request.key, request.typedText);
 			case 'launchAgent': return this._launchAgent(callerToken, request);
 			case 'createTerminal': return this._createTerminal(callerToken, request.space);
 			case 'createSpace': return this._createSpace(callerToken, request);
@@ -670,7 +671,7 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		return { ok: true, data: { terminal: id, typed: true, pressed_enter: false, ...(agent ? { marked_as_agent_message: true } : {}) } };
 	}
 
-	private async _sendKey(callerToken: string, id: string, key: ParadisAgentIdeKey): Promise<ParadisAgentIdeResult> {
+	private async _sendKey(callerToken: string, id: string, key: ParadisAgentIdeKey, typedText?: string): Promise<ParadisAgentIdeResult> {
 		const resolved = this._resolveWritable(callerToken, id);
 		if (!resolved.ok) {
 			return resolved;
@@ -686,6 +687,11 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 			const screen = this._screen(target.instance, 0);
 			if (screen === undefined) {
 				return fail('Para Code cannot read that terminal\'s screen right now, so it does not press Enter there. Retry in a moment.');
+			}
+			// Enter の直前の最後の見張り（shared process の確認から Enter までの間に出た確認を拾う）。
+			// 直前に貼った本文の部分は除いて探す
+			if (paradisAgentIdeScreenShowsPrompt(screen, typedText)) {
+				return fail('That terminal shows a confirmation prompt on screen, so Para Code does not press Enter there. Tell the user instead.');
 			}
 			if (!this._runsAgent(target)) {
 				if (!this._setting(PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING)) {
