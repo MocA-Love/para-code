@@ -36,7 +36,9 @@ import { CancellationToken, CancellationTokenSource } from '../../../../base/com
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
-import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
+import { BrowserViewStorageScope, IBrowserViewService, ipcBrowserViewChannelName } from '../../../../platform/browserView/common/browserView.js';
+import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
@@ -44,7 +46,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { EditorsOrder } from '../../../../workbench/common/editor.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
-import { IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { BrowserViewSharingState, IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
@@ -74,6 +76,8 @@ import {
 } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 
+/** 共有相手を加えた後、モデルが共有済みになるのを待つ上限。 */
+const SHARE_STATE_TIMEOUT_MS = 3_000;
 /** 新しいタブのスペースが決まるのを待つ上限。決まらないまま共有すると、所属不明として断られる。 */
 const SCOPE_SETTLE_TIMEOUT_MS = 3_000;
 /** 開いたタブで URL を読み込むのを待つ上限。超えてもタブは開いたまま返す。 */
@@ -192,6 +196,8 @@ export interface IParadisAgentBrowserTabsService {
 export class ParadisAgentBrowserTabsService extends Disposable implements IParadisAgentBrowserTabsService {
 	declare readonly _serviceBrand: undefined;
 
+	/** main のブラウザビュー（共有相手の設定に使う）。 */
+	private readonly _browserViews: IBrowserViewService;
 	/** 誰がどのタブを開いたか。 */
 	private readonly _ledger = new ParadisAgentTabLedger();
 	/** viewId → エージェントが開いたタブ（閉じるときと一覧に使う）。 */
@@ -221,8 +227,10 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		@IDialogService private readonly _dialogService: IDialogService,
 		@IQuickInputService private readonly _quickInputService: IQuickInputService,
 		@ILogService private readonly _logService: ILogService,
+		@IMainProcessService mainProcessService: IMainProcessService,
 	) {
 		super();
+		this._browserViews = ProxyChannel.toService<IBrowserViewService>(mainProcessService.getChannel(ipcBrowserViewChannelName));
 	}
 
 	// #region 台帳
@@ -382,7 +390,9 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 				this._logService.debug('[ParadisAgentBrowserTabs] navigation in the agent tab did not finish', error);
 			}
 		}
-		return { ok: true, tab: this._describe(token, input), bound, openedCount: this.openedCount(token) };
+		// 読み込みの通知はモデルへ遅れて届くので、まだ空のページに見えるときは開くよう頼んだ URL を返す。
+		const tab = this._describe(token, input);
+		return { ok: true, tab: !tab.url || tab.url === 'about:blank' ? { ...tab, url: target } : tab, bound, openedCount: this.openedCount(token) };
 	}
 
 	listTabs(token: string | undefined): IParadisListAgentTabsResult {
@@ -725,10 +735,38 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		try {
 			const model = await input.resolve();
 			await this._waitForStableScope(input.id);
+			await this._shareApproved(model);
 			return await this._bindingModel.bindPageToPane(model, token);
 		} catch (error) {
 			this._logService.warn('[ParadisAgentBrowserTabs] could not share the tab with the calling pane', error);
 			return false;
+		}
+	}
+
+	/**
+	 * ここへ来る共有は、どれも Para Code 側で承認済み（エージェント自身のタブ、ユーザーが承認ダイアログで
+	 * 許可したタブやプロファイル、そのペインが作ったプロファイル）。そのまま共有に進むと upstream の
+	 * 「Share this browser page with the agent?」確認（既定のフォーカスが Allow）がもう1枚出て二重の
+	 * 確認になるので、先にページの共有相手へエージェントを加えておく。upstream の確認は、共有済みの
+	 * ページには出ない（`setSharedWithAgent` が最初に共有済みかを見る）。
+	 *
+	 * ネットワークの制限でそのまま共有できないタブ（`isDirectlyShareable` が false）には何もしない。
+	 * その場合は upstream の流れ（共有用のタブを開き直す確認）に任せる。
+	 */
+	private async _shareApproved(model: IBrowserViewModel): Promise<void> {
+		if (model.sharingState !== BrowserViewSharingState.Available || !model.isDirectlyShareable) {
+			return;
+		}
+		const store = new DisposableStore();
+		try {
+			const shared = Event.toPromise(Event.filter(model.onDidChangeSharingState, state => state === BrowserViewSharingState.Shared), store);
+			await this._browserViews.setAudience(model.id, { type: 'agent' }, true);
+			// モデルが共有済みになったのを見てから進む（見る前に進むと upstream の確認が出る）。
+			await raceTimeout(shared, SHARE_STATE_TIMEOUT_MS);
+		} catch (error) {
+			this._logService.warn('[ParadisAgentBrowserTabs] could not mark the approved page as shared', error);
+		} finally {
+			store.dispose();
 		}
 	}
 

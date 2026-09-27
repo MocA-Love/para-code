@@ -9,10 +9,12 @@ import * as assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { timeout } from '../../../../../base/common/async.js';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { isMacintosh } from '../../../../../base/common/platform.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IDialogService, IPrompt } from '../../../../../platform/dialogs/common/dialogs.js';
+import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IQuickInputService } from '../../../../../platform/quickinput/common/quickInput.js';
 import { BrowserEditorInput } from '../../../../../workbench/contrib/browserView/common/browserEditorInput.js';
@@ -42,9 +44,10 @@ interface IFakeBinding {
 	pageId: string | undefined;
 	unbinds: number;
 	resolveBind?: (bound: boolean) => void;
+	sharingAtBind?: string;
 }
 
-function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: undefined, unbinds: 0 }) {
+function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: undefined, unbinds: 0 }, onSetAudience: (args: unknown) => void = () => { }) {
 	const shown: IShownPrompt[] = [];
 	const dialogService = {
 		prompt: async (prompt: IPrompt<unknown>) => {
@@ -68,7 +71,7 @@ function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: und
 	const bindingModel = {
 		getPanes: () => [{ token: 'pane-token', title: 'cla\u202eude \u001b[31m' }],
 		getBindingForToken: () => binding.pageId === undefined ? undefined : { pageId: binding.pageId },
-		bindPageToPane: () => new Promise<boolean>(resolve => binding.resolveBind = resolve),
+		bindPageToPane: (model: { sharingState?: string }) => { binding.sharingAtBind = model.sharingState; return new Promise<boolean>(resolve => binding.resolveBind = resolve); },
 		unbindToken: async () => { binding.unbinds++; binding.pageId = undefined; },
 	} as unknown as IParadisAgentBrowserBindingModel;
 	const paneTokenService = { getInstanceForToken: () => 7 } as unknown as IParadisPaneTokenService;
@@ -90,6 +93,7 @@ function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: und
 		dialogService,
 		{} as IQuickInputService,
 		new NullLogService(),
+		{ getChannel: () => ({ call: async (_command: string, args: unknown) => onSetAudience(args), listen: () => Event.None }) } as unknown as IMainProcessService,
 	);
 	return { service, shown, binding };
 }
@@ -176,5 +180,28 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 		binding.resolveBind?.(true);
 		await timeout(0);
 		assert.deepStrictEqual([bound, binding.unbinds, binding.pageId], [undefined, 1, undefined]);
+	}));
+
+	test('marks an approved page as shared before binding, so the upstream share confirmation does not appear again', () => runWithFakedTimers(fakedTimers, async () => {
+		const onDidChangeSharingState = new Emitter<string>();
+		const model = {
+			id: 'view-1',
+			sharingState: 'available',
+			isDirectlyShareable: true,
+			onDidChangeSharingState: onDidChangeSharingState.event,
+		};
+		const audienceCalls: unknown[] = [];
+		const { service, binding } = createService([], { pageId: undefined, unbinds: 0 }, args => {
+			audienceCalls.push(args);
+			model.sharingState = 'shared';
+			onDidChangeSharingState.fire('shared');
+		});
+		store.add(service);
+		store.add(onDidChangeSharingState);
+		const input = { id: 'view-1', resolve: async () => model } as unknown as BrowserEditorInput;
+		const bound = service.bindTab('pane-token', input);
+		await timeout(0);
+		binding.resolveBind?.(true);
+		assert.deepStrictEqual([await bound, audienceCalls, binding.sharingAtBind], [true, [['view-1', { type: 'agent' }, true]], 'shared']);
 	}));
 });
