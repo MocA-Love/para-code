@@ -1761,8 +1761,9 @@ export default defineConfig(
 						// (paradisInstallWebAuthnAccountChooser) を配線するための逆方向 import
 						'vs/paradis/contrib/browserWebAuthn/~',
 						// PARA-PATCH: browserViewMainService.ts がエージェントの右クリックで OS のメニューを出さない
-						// (paradisConsumeAgentContextMenuSuppression) ための逆方向 import
-						'vs/paradis/contrib/agentBrowser/~',
+						// (paradisConsumeAgentContextMenuSuppression) ための逆方向 import。依存を増やさないよう、
+						// Electron にも他のモジュールにも依存しないこの1ファイルだけを許す
+						'vs/paradis/contrib/agentBrowser/electron-main/paradisAgentContextMenu.js',
 						// PARA-PATCH: ptyHostMain.ts が常駐ターミナル(pty デーモン)として起きたときの
 						// ソケット確保と寿命管理を呼ぶための逆方向 import
 						'vs/paradis/contrib/ptyDaemon/~',
