@@ -400,8 +400,8 @@ export function paradisCookieSkipReason(row: IParadisRawCookieRow, nowSeconds: n
 	if (paradisChromiumExpiry(row.expiresUtc, nowSeconds).kind === 'expired') {
 		return 'expired';
 	}
-	// Google のログインはドメイン単位で弾く（Cookie 名の網は Google ドメインでしか意味を持たないので、
-	// 無関係なサイトの `SID` を落とさないため、ここでは名前で弾かない）。
+	// Google のログインはドメイン単位で丸ごと弾く。Cookie 名では弾かない（無関係なサイトの `SID` を
+	// 落とさないため。Google のドメインはこの判定で全件除外される）。
 	if (paradisIsGoogleLoginHost(row.hostKey)) {
 		return 'google';
 	}

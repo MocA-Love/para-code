@@ -192,20 +192,6 @@ export function paradisIsGoogleLoginHost(host: string): boolean {
 }
 
 /**
- * Google のログインセッションに使う Cookie 名か。**Google 系ドメインでしか意味を持たない**ので、
- * 呼び出し側は Google ドメインのときにだけ使う（無関係なサイトの `SID` を落とさないため）。
- */
-const PARADIS_GOOGLE_LOGIN_COOKIE_NAMES: ReadonlySet<string> = new Set([
-	'SID', 'HSID', 'SSID', 'APISID', 'SAPISID', 'LSID', 'OSID', 'SIDCC', 'ACCOUNT_CHOOSER', 'LOGIN_INFO',
-	'__Host-GAPS', '__Host-1PLSID', '__Host-3PLSID',
-]);
-
-export function paradisIsGoogleLoginCookieName(name: string): boolean {
-	return PARADIS_GOOGLE_LOGIN_COOKIE_NAMES.has(name)
-		|| (name.startsWith('__Secure-') && /(PSID|PAPISID|OSID)/.test(name));
-}
-
-/**
  * `__Host-` / `__Secure-` 接頭辞の規則を満たすか。満たさない Cookie は取り込み先で正しく
  * 設定できない（ブラウザ側で拒否される）ので写さない。
  * - `__Secure-`: Secure 必須。
