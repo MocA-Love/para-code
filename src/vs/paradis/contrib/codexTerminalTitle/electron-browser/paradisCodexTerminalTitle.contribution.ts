@@ -31,6 +31,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { paradisRemoteUserHome } from '../../agentBrowser/common/paradisRemoteUserHome.js';
 import { ParadisCodexAccountsClient } from '../../codexAccounts/electron-browser/paradisCodexAccountsClient.js';
+import type { IParadisCodexHome } from '../../codexAccounts/common/paradisCodexAccounts.js';
 import {
 	IParadisCodexThreadPromptRequest,
 	IParadisCodexThreadPromptResult,
@@ -552,11 +553,18 @@ function replaceTerminalTitleInTuiSection(config: string): string {
 	return `${config.slice(0, sectionStart + titleKeyMatch.index)}${titleLine}${config.slice(sectionStart + valueEnd)}`;
 }
 
+/** ログイン済みのアカウント用ホームの顔ぶれ（並び順に依らない）。 */
+function accountHomesKey(homes: readonly IParadisCodexHome[]): string {
+	return JSON.stringify(homes.filter(home => !home.isDefault && home.signedIn).map(home => home.homePath).sort());
+}
+
 class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisCodexTerminalTitle';
 
 	private writeQueue = Promise.resolve();
+	/** 最後に書いたアカウント用ホームの顔ぶれ。 */
+	private writtenAccountHomesKey: string | undefined;
 	private readonly codexAccountsClient: ParadisCodexAccountsClient;
 
 	constructor(
@@ -575,6 +583,16 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 				this.applySetting();
 			}
 		}));
+		// 起動した後に増えたアカウント用ホーム（使用量パネルでの追加・ログイン、設定で足したホーム）にも
+		// 入れる。一覧が変わると codexAccounts が全ウィンドウへ状態を配るので、ホームの顔ぶれが変わったら書き直す
+		// （書く中身は同じで、既に入っているホームは書き換えない）。
+		if (this.environmentService.remoteAuthority === undefined) {
+			this._register(this.codexAccountsClient.onDidChangeState(state => {
+				if (accountHomesKey(state.homes) !== this.writtenAccountHomesKey) {
+					this.applySetting();
+				}
+			}));
+		}
 	}
 
 	private applySetting(): void {
@@ -612,6 +630,9 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 				if (!home.isDefault && home.signedIn) {
 					await this.writeTerminalTitleConfig(URI.file(home.homePath));
 				}
+			}
+			if (state !== undefined) {
+				this.writtenAccountHomesKey = accountHomesKey(state.homes);
 			}
 		}
 	}
