@@ -40,6 +40,8 @@ import { IRemoteAgentService } from '../../../services/remote/common/remoteAgent
 import { INativeWorkbenchEnvironmentService } from '../../../services/environment/electron-browser/environmentService.js';
 import { shouldUseEnvironmentVariableCollection } from '../../../../platform/terminal/common/terminalEnvironment.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+// PARA-PATCH: screens the pty daemon saved to disk, revived after an OS restart (see vs/paradis/contrib/ptyDaemon)
+import { paradisTakeSavedTerminalScreens } from '../../../../paradis/contrib/ptyDaemon/electron-browser/paradisTerminalScreenRestore.js';
 
 export class LocalTerminalBackendContribution implements IWorkbenchContribution {
 
@@ -342,7 +344,8 @@ class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBacke
 		const layoutArgs: IGetTerminalLayoutInfoArgs = { workspaceId };
 
 		// Revive processes if needed
-		const serializedState = this._storageService.get(TerminalStorageKeys.TerminalBufferState, StorageScope.WORKSPACE);
+		// PARA-PATCH: with the pty daemon nothing is saved here on exit; after an OS restart fall back to the screens saved to disk (Para Code TM14)
+		const serializedState = this._storageService.get(TerminalStorageKeys.TerminalBufferState, StorageScope.WORKSPACE) ?? await paradisTakeSavedTerminalScreens(workspaceId);
 		const reviveBufferState = this._deserializeTerminalState(serializedState);
 		if (reviveBufferState && reviveBufferState.length > 0) {
 			try {
