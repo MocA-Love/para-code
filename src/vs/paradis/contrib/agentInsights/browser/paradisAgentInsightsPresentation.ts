@@ -11,6 +11,7 @@ import { localize } from '../../../../nls.js';
 import {
 	IParadisAgentPaneSubagent,
 	IParadisAgentScopePane,
+	PARADIS_PROMPT_CACHE_TTL_1H,
 	ParadisAgentPaneSubagentStatus,
 	paradisFormatPromptCacheRemaining,
 	paradisIsActiveSubagent,
@@ -86,4 +87,21 @@ export function paradisScopeSubagentsHoverMarkdown(summary: string, panes: reado
 		}
 	}
 	return markdown;
+}
+
+/** 有効期限の長さの表示（「5 分」「1 時間」）。 */
+export function paradisPromptCacheTtlLabel(ttlMs: number): string {
+	return ttlMs >= PARADIS_PROMPT_CACHE_TTL_1H
+		? localize('paradis.agentInsights.ttl1h', "1 時間")
+		: localize('paradis.agentInsights.ttlMinutes', "{0} 分", Math.round(ttlMs / 60000));
+}
+
+/** 残り時間のツールチップ（1ペイン分）。ここでだけ「キャッシュ」という言葉で意味を説明する。 */
+export function paradisPromptCacheTooltip(remainingMs: number, ttlMs: number): string {
+	return localize(
+		'paradis.agentInsights.promptCacheTooltip',
+		"Claude のプロンプトキャッシュ残り {0}（有効期限 {1}）。切れると次の依頼は割高になります。",
+		paradisFormatPromptCacheRemaining(remainingMs),
+		paradisPromptCacheTtlLabel(ttlMs),
+	);
 }
