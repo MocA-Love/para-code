@@ -75,6 +75,22 @@ export type ParadisPresetLaunchMode = typeof PARADIS_PRESET_LAUNCH_MODES[number]
 export const PARADIS_PRESET_LAYOUTS = ['tabs', 'split', 'current', 'smart'] as const;
 export type ParadisPresetLayout = typeof PARADIS_PRESET_LAYOUTS[number];
 
+/**
+ * プリセットの種別（Q57 A / TM23）。
+ *   - run: コマンドを実行する（Enter を送る。従来のプリセット）
+ *   - insert: コマンドをアクティブなターミナルの入力欄へ入れるだけ（Enter を送らない）
+ *   - agent-prompt: 今のターミナルで動いているエージェント（Claude Code / Codex）の入力欄へ
+ *     プロンプトを入れる（Enter は送らない。送るかどうかはユーザーが入力欄で決める）
+ *
+ * 未知の値は「読み飛ばす」（{@link isValidPresetDefinition}）。新しい版で足した種別を古い版が
+ * run と解釈して Enter 付きで流すと、挿入のつもりの文字列が実行されてしまうため。
+ */
+export const PARADIS_PRESET_ACTIONS = ['run', 'insert', 'agent-prompt'] as const;
+export type ParadisPresetAction = typeof PARADIS_PRESET_ACTIONS[number];
+
+/** エージェント向けプロンプトの長さの上限（Orca の MAX_QUICK_COMMAND_AGENT_PROMPT_LENGTH と同じ値）。 */
+export const PARADIS_PRESET_AGENT_PROMPT_MAX_LENGTH = 6000;
+
 /** 1タスク = 1ターミナル。名前・作業ディレクトリ・そのターミナルで順に実行するコマンド列を持つ。 */
 export interface IParadisPresetTask {
 	/** ターミナルのタイトル。未指定はプリセット名。 */
@@ -96,6 +112,10 @@ export interface IParadisPresetDefinition {
 	 * 増やさないため）。id を持たない定義は「定義元ファイル内の位置」で識別する。
 	 */
 	readonly id?: string;
+	/** 種別。未指定は run（{@link ParadisPresetAction}）。 */
+	readonly action?: ParadisPresetAction;
+	/** action が agent-prompt のときだけ使う、エージェントの入力欄へ入れる本文。 */
+	readonly prompt?: string;
 	/** 表示名（ボタンのツールチップ・一覧に使う）。同名の重複を許す。 */
 	readonly name: string;
 	readonly description?: string;
@@ -401,6 +421,9 @@ export function paradisPresetFingerprint(definition: IParadisPresetDefinition, o
 		definition.autoRun === true,
 		layout,
 		tasks.map(task => [task.name ?? '', task.cwd ?? '', task.commands]),
+		// 種別は run 以外のときだけ足す。指紋は「このマシンだけ隠したリポジトリのプリセット」の
+		// 台帳キーにも使われ保存されるので、従来のプリセットの指紋を変えると隠したものが出てくる。
+		...(paradisPresetAction(definition) === 'run' ? [] : [[paradisPresetAction(definition), definition.prompt ?? '']]),
 	]);
 }
 
@@ -779,10 +802,70 @@ export function isValidPresetDefinition(value: unknown): value is IParadisPreset
 	if (candidate.hosts !== undefined && (!Array.isArray(candidate.hosts) || !candidate.hosts.every(isValidHostEntry))) {
 		return false;
 	}
+	if (candidate.action !== undefined && !(PARADIS_PRESET_ACTIONS as readonly unknown[]).includes(candidate.action)) {
+		return false;
+	}
+	if (candidate.action === 'agent-prompt') {
+		return typeof candidate.prompt === 'string' && candidate.prompt.trim().length > 0;
+	}
 	if (Array.isArray(candidate.tasks)) {
 		return candidate.tasks.length > 0 && candidate.tasks.every(isValidPresetTask);
 	}
 	return isValidCommandList(candidate.commands);
+}
+
+/** 定義の種別（未指定・不正値は run）。 */
+export function paradisPresetAction(definition: IParadisPresetDefinition): ParadisPresetAction {
+	return definition.action === 'insert' || definition.action === 'agent-prompt' ? definition.action : 'run';
+}
+
+/**
+ * 入力欄へ入れるだけの文字列（insert / agent-prompt）を、ターミナルへ送れる形に整える。
+ * 入れるものが無ければ undefined。
+ *
+ * - 制御文字は落とす（改行とタブを除く）。ESC が残ると、貼り付けの終わり（ESC[201~）を
+ *   本文の途中で偽造できてしまい、残りが打鍵として解釈される
+ * - 末尾の改行・空白は落とす。送った瞬間に Enter と同じ意味になり「挿入だけ」が崩れるため
+ * - 貼り付けモード（bracketed paste）が使えない相手には、改行とタブを空白へ均して1行にする。
+ *   改行はそのまま Enter として届き、1行ずつ実行・送信されてしまう。タブは Claude Code の
+ *   TUI では質問の切り替えに食われる（NOTES / メモの「Claude Code TUI へのキー注入」）
+ */
+export function paradisBuildPresetInsertText(text: string, bracketedPasteMode: boolean): string | undefined {
+	let normalized = text.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f\x80-\x9f]/g, '');
+	normalized = normalized.replace(/\s+$/, '');
+	if (!bracketedPasteMode) {
+		normalized = normalized.replace(/[\n\t]+/g, ' ');
+	}
+	return normalized.trim().length > 0 ? normalized : undefined;
+}
+
+/** エージェント向けプロンプトを今のターミナルへ入れられるか。 */
+export const enum ParadisAgentPromptAvailability {
+	Ready = 'ready',
+	/** アクティブなターミナルが無い。 */
+	NoTerminal = 'noTerminal',
+	/** アクティブなターミナルでエージェントが動いた実績が無い。 */
+	NotAgent = 'notAgent',
+	/** エージェントが質問・許可の回答を待っている。入れた文字が回答の選択に食われる。 */
+	AwaitingAnswer = 'awaitingAnswer',
+}
+
+/**
+ * エージェント向けプロンプトの挿入可否を決める。
+ * 質問（AskUserQuestion）や許可の確認が出ている間は、入力が選択肢の操作として解釈される
+ * （数字キーは選択肢のトグル、Enter は確定）ので入れない。
+ */
+export function paradisAgentPromptAvailability(hasTerminal: boolean, isAgent: boolean, status: string | undefined): ParadisAgentPromptAvailability {
+	if (!hasTerminal) {
+		return ParadisAgentPromptAvailability.NoTerminal;
+	}
+	if (!isAgent) {
+		return ParadisAgentPromptAvailability.NotAgent;
+	}
+	if (status === 'question' || status === 'permission') {
+		return ParadisAgentPromptAvailability.AwaitingAnswer;
+	}
+	return ParadisAgentPromptAvailability.Ready;
 }
 
 /**
@@ -794,6 +877,11 @@ export function isValidPresetDefinition(value: unknown): value is IParadisPreset
  *   - split: コマンドごとに1タスク、split
  */
 export function paradisGetPresetTasks(definition: IParadisPresetDefinition): { readonly tasks: readonly IParadisPresetTask[]; readonly layout: ParadisPresetLayout } {
+	if (paradisPresetAction(definition) === 'agent-prompt') {
+		// エージェント向けはシェルのコマンドを持たない（本文は prompt）。タスクとして扱うと、
+		// 種別を見ない経路が本文をシェルで実行してしまう。
+		return { tasks: [], layout: 'current' };
+	}
 	const normalizeCommands = (commands: readonly string[]) =>
 		commands.map(command => command.trim()).filter(command => command.length > 0);
 
@@ -822,6 +910,9 @@ export function paradisGetPresetTasks(definition: IParadisPresetDefinition): { r
 
 /** 全タスクの全コマンドを1つの文字列にする（確認ダイアログ・一覧プレビュー用）。 */
 export function paradisPresetCommandSignature(definition: IParadisPresetDefinition, separator = '\n'): string {
+	if (paradisPresetAction(definition) === 'agent-prompt') {
+		return (definition.prompt ?? '').trim();
+	}
 	return paradisGetPresetTasks(definition).tasks.flatMap(task => task.commands).join(separator);
 }
 
