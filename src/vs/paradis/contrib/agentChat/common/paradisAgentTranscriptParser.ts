@@ -15,6 +15,7 @@
 // 送られる**ので、出力の形を変えるときはモバイル側の表示も確かめること。
 
 import { IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentQuestionOption } from './paradisAgentChat.js';
+import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 
 export { paradisQuestionReadyMarker } from './paradisAgentQuestionMarker.js';
 
@@ -702,7 +703,8 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 				}
 				if (text.length === 0) {
 					try {
-						text = JSON.stringify(b.input);
+						// 資格情報（set_http_credentials の password）は画面へ出さない
+						text = JSON.stringify(paradisRedactToolInputSecrets(rawTool, b.input));
 					} catch { /* 表示は空でよい */ }
 				}
 				out.push({ role: 'assistant', kind: 'tool_use', tool, ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(toolUseId !== undefined ? { toolUseId } : {}) });
@@ -893,7 +895,8 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 	} else if (ptype === 'function_call' || ptype === 'custom_tool_call' || ptype === 'mcp_tool_call') {
 		// custom_tool_call は arguments でなく input にテキストが入る（それ以外は function_call と同形）
 		const tool = str(payload.name) ?? 'tool';
-		const text = str(payload.arguments) ?? str(payload.input) ?? '';
+		// 資格情報（set_http_credentials の password）は画面へ出さない
+		const text = paradisRedactToolArgumentsText(tool, str(payload.arguments) ?? str(payload.input) ?? '');
 		if (tool === 'view_image') {
 			// 実体は直後の user メッセージへ書かれる。その画像をこの呼び出しへ繋ぐため覚えておく。
 			signals.pendingCodexImageCallId = callId;

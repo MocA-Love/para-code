@@ -19,6 +19,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { paradisConfigureBrowserDownloadsWithPath, paradisResolveBrowserDownloadsDirectory } from './paradisBrowserDownloadsCore.js';
 import { IParadisDownloadOrigin, ParadisBrowserDownloadsTracker } from './paradisBrowserDownloadsTracker.js';
 import { paradisEnsureDownloadQuarantine } from './paradisDownloadQuarantine.js';
+import { paradisIsAgentDownload, paradisNotifyAgentDownloadStarted, paradisSetAgentDownloadsTracker } from './paradisAgentDownloads.js';
 
 /**
  * main プロセスに1つだけのダウンロード一覧。セッション（グローバル・ワークスペース・プロファイル・
@@ -51,6 +52,8 @@ export function paradisGetBrowserDownloadsTracker(configurationService: IConfigu
 			},
 			() => paradisResolveBrowserDownloadsDirectory(configurationService, () => app.getPath('downloads')),
 		);
+		// エージェントが書き出す PDF とクリックでのダウンロードの待ち合わせが、同じ一覧を使う
+		paradisSetAgentDownloadsTracker(tracker);
 	}
 	return tracker;
 }
@@ -65,7 +68,10 @@ export function paradisGetBrowserDownloadsTracker(configurationService: IConfigu
  */
 export function paradisConfigureBrowserDownloads(session: Electron.Session, configurationService: IConfigurationService): void {
 	const downloads = paradisGetBrowserDownloadsTracker(configurationService);
-	paradisConfigureBrowserDownloadsWithPath(session, configurationService, () => app.getPath('downloads'), (item, from) => {
-		downloads.track(item, originResolver?.(from) ?? { agentSession: false });
+	paradisConfigureBrowserDownloadsWithPath(session, configurationService, () => app.getPath('downloads'), (item, from, webContents) => {
+		// エージェントに共有中のタブ・エージェントのクリックを待っているタブからのものはエージェント由来にする
+		const origin = originResolver?.(from) ?? { agentSession: false };
+		const id = downloads.track(item, { ...origin, agentInitiated: paradisIsAgentDownload(webContents) });
+		paradisNotifyAgentDownloadStarted(webContents, id);
 	});
 }
