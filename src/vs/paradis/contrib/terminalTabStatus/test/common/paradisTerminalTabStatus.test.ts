@@ -20,6 +20,9 @@ suite('paradisTerminalTabStatus', () => {
 			finishesWithReview: paradisNextAttentionOnStatus('working', 'review', undefined, false),
 			// 見ているスペースの完了はアプリがすぐ既読にするので、状態は「無し」へ落ちる。
 			finishesAutoAcknowledged: paradisNextAttentionOnStatus('working', undefined, undefined, false),
+			// 許可待ちから直接終わった（見ているスペースではすぐ既読になり review を経ない）。
+			finishesFromPermission: paradisNextAttentionOnStatus('permission', undefined, 'waiting', false),
+			finishesFromQuestionWithReview: paradisNextAttentionOnStatus('question', 'review', 'waiting', false),
 			watchedFinish: paradisNextAttentionOnStatus('working', 'review', undefined, true),
 			watchedPermission: paradisNextAttentionOnStatus('working', 'permission', undefined, true),
 			startsWorking: paradisNextAttentionOnStatus(undefined, 'working', undefined, false),
@@ -30,6 +33,8 @@ suite('paradisTerminalTabStatus', () => {
 			asksQuestion: 'waiting',
 			finishesWithReview: 'done',
 			finishesAutoAcknowledged: 'done',
+			finishesFromPermission: 'done',
+			finishesFromQuestionWithReview: 'done',
 			watchedFinish: undefined,
 			watchedPermission: undefined,
 			startsWorking: undefined,
