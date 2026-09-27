@@ -24,8 +24,9 @@
 
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileAttachment, IParadisMobileCanvasSnapshot, IParadisMobileDevice, IParadisMobileDisplay } from '../common/paradisMobileCanvas.js';
+import { paradisDeviceHeldByAnotherPane } from '../common/paradisMobileDeviceOps.js';
 import { ParadisMobileCanvasHostClient, ParadisMobileCanvasUnavailableError } from './paradisMobileCanvasHostClient.js';
 import { IParadisMobileDeviceLedger } from './paradisMobileDeviceOpsToolProvider.js';
 
@@ -151,15 +152,6 @@ const TOOLS: IParadisMcpToolDefinition[] = [
 	},
 ];
 
-/**
- * 端末の状態を変えるツール。トークンだけでなく接続元のプロセスを確かめる（トークンは同じユーザーの
- * 別プロセスから読めるため）。SSH の接続先のペイン（`tunnel`）は、利用者がそのペインへ渡した端末なので
- * これまでどおり通す。読み取りだけのツールはトークンだけで使える（ブラウザの一覧系と同じ）。
- */
-const STATE_CHANGING_TOOLS: ReadonlySet<string> = new Set(['mobile_tap', 'mobile_swipe', 'mobile_type_text', 'mobile_press_button', 'mobile_ui_tap']);
-
-const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside your own terminal pane, so it refuses to change the device. Start this agent CLI from a terminal inside Para Code.';
-
 /** アタッチがアイドル扱いになるまでの時間。ウィンドウを閉じたペインの幽霊行を掃除するためのもの。 */
 const PARADIS_MOBILE_ATTACHMENT_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
 /** アイドルアタッチの掃除周期。 */
@@ -247,6 +239,24 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 		return attachment;
 	}
 
+	/**
+	 * エージェントの要求を利用者が承認したときの割り当て。端末一覧を待ち終えた後、書き込む直前に
+	 * 同期的に「ほかのペインが使っていないか」を確かめる（確かめてから書き込むまでの間に await を挟まない。
+	 * 別のウィンドウの2つのペインが同じ端末をほぼ同時に承認されても、二重に割り当てないように）。
+	 * @returns 割り当てたもの。端末が無い・ほかのペインが使っているときは undefined
+	 */
+	async attachIfFree(paneToken: string, deviceId: string, stateKey: string | undefined, signal?: AbortSignal): Promise<IParadisMobileAttachment | undefined> {
+		const devices = await this._listDevices(signal);
+		const device = devices.find(candidate => candidate.id === deviceId);
+		if (!device || paradisDeviceHeldByAnotherPane(paneToken, device, devices, this.listAttachments())) {
+			return undefined;
+		}
+		const attachment: IParadisMobileAttachment = { paneToken, deviceId: device.id, deviceName: device.name, stateKey, attachedAt: Date.now() };
+		this._attachments.set(paneToken, { attachment, lastActiveAt: attachment.attachedAt });
+		this._logService.info(`[paradis-mobile-canvas] attached ${device.name} to a terminal pane after the user approved the request`);
+		return attachment;
+	}
+
 	/** ペインのアタッチを解除する。アタッチが無ければ何もしない。 */
 	detach(paneToken: string): void {
 		if (this._attachments.delete(paneToken)) {
@@ -280,15 +290,15 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 		return TOOLS;
 	}
 
-	async callTool(paneToken: string, name: string, args: unknown, signal?: AbortSignal, context?: IParadisMcpToolCallContext): Promise<unknown | undefined> {
+	// ここのツール（画面の読み取りと入力）はトークンだけで動かす。利用者がその端末をそのペインへ渡した後の
+	// 画面の操作なので、接続元の確認は掛けない（tmux・WSL・採用した Codex app-server では確認を通らず、
+	// 使えなくなるため）。確認を掛けるのは paradisMobileDeviceOpsToolProvider.ts の要求・アプリの操作だけ。
+	async callTool(paneToken: string, name: string, args: unknown, signal?: AbortSignal): Promise<unknown | undefined> {
 		if (!TOOLS.some(tool => tool.name === name)) {
 			return undefined;
 		}
 		const record = args && typeof args === 'object' ? args as Record<string, unknown> : {};
 		try {
-			if (STATE_CHANGING_TOOLS.has(name) && (!context || await context.classifyCaller() === 'unverified')) {
-				return errorResult(CALLER_UNVERIFIED_MESSAGE);
-			}
 			return await this._callTool(paneToken, name, record, signal);
 		} catch (error) {
 			if (error instanceof ParadisMobileCanvasUnavailableError) {
@@ -308,7 +318,7 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 				devices: devices.map(device => ({
 					...device,
 					attachedToThisPane: device.id === attached?.deviceId,
-					usedByAnotherPane: [...this._attachments.values()].some(entry => entry.attachment.deviceId === device.id && entry.attachment.paneToken !== paneToken),
+					usedByAnotherPane: paradisDeviceHeldByAnotherPane(paneToken, device, devices, this.listAttachments()),
 				})),
 				attachedToThisPane: attached ? { deviceId: attached.deviceId, name: attached.deviceName } : null,
 				hint: attached

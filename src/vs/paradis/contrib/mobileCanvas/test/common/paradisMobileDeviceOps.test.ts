@@ -7,13 +7,17 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IParadisMobileDevice } from '../../common/paradisMobileCanvas.js';
 import {
-	paradisIsSystemAppId,
+	paradisDeviceHeldByAnotherPane,
 	paradisIsValidAppId,
 	paradisIsValidNativeDeviceId,
 	paradisMobileInstallKindFor,
+	paradisListappsApplicationType,
 	paradisMobilePlatformOf,
 	paradisNormalizeOrientation,
+	paradisPackageListIncludes,
+	paradisParseDangerousPermissions,
 	paradisParseMobileDeviceRequestAnswer,
 	paradisPinchFrames,
 	paradisResolveMobilePermission,
@@ -69,7 +73,7 @@ suite('ParadisMobileDeviceOps', () => {
 		});
 	});
 
-	test('platforms, native ids, system apps, install kinds and orientations', () => {
+	test('platforms, native ids, install kinds and orientations', () => {
 		assert.deepStrictEqual({
 			platforms: [paradisMobilePlatformOf('iOS'), paradisMobilePlatformOf('Android'), paradisMobilePlatformOf('watchOS')],
 			ids: [
@@ -78,7 +82,6 @@ suite('ParadisMobileDeviceOps', () => {
 				paradisIsValidNativeDeviceId('android', '-s'),
 				paradisIsValidNativeDeviceId('ios', 'booted udid'),
 			],
-			system: [paradisIsSystemAppId('ios', 'com.apple.Preferences'), paradisIsSystemAppId('android', 'com.android.settings'), paradisIsSystemAppId('android', 'com.example.app')],
 			kinds: [
 				paradisMobileInstallKindFor('ios', '/b/My.app/'),
 				paradisMobileInstallKindFor('ios', '/b/My.IPA'),
@@ -90,10 +93,57 @@ suite('ParadisMobileDeviceOps', () => {
 		}, {
 			platforms: ['ios', 'android', undefined],
 			ids: [true, true, false, false],
-			system: [true, true, false],
 			kinds: ['app', 'ipa', undefined, 'apk', undefined],
 			orientations: ['landscape-right', 'landscape-left', undefined],
 		});
+	});
+
+	test('reads what the device reports: dangerous permissions, user packages and the iOS application type', () => {
+		const permissions = [
+			'Dangerous Permissions:',
+			'',
+			'group:android.permission-group.CAMERA',
+			'  permission:android.permission.CAMERA',
+			'',
+			'ungrouped:',
+			'  permission:android.permission.POST_NOTIFICATIONS',
+		].join('\n');
+		const listapps = [
+			'{',
+			'    "com.apple.Preferences" =     {',
+			'        ApplicationType = System;',
+			'        GroupContainers =         {',
+			'            "group.com.example.app" = "file:///x/";',
+			'        };',
+			'    };',
+			'    "com.example.app" =     {',
+			'        ApplicationType = User;',
+			'        CFBundleIdentifier = "com.example.app";',
+			'    };',
+			'    "com.example.noType" =     {',
+			'        CFBundleIdentifier = "com.example.noType";',
+			'    };',
+			'}',
+		].join('\n');
+		assert.deepStrictEqual({
+			permissions: [...paradisParseDangerousPermissions(permissions)],
+			packages: [paradisPackageListIncludes('package:com.example.app\npackage:com.example.app2\n', 'com.example.app'), paradisPackageListIncludes('package:com.example.app2\n', 'com.example.app')],
+			types: ['com.example.app', 'com.apple.Preferences', 'group.com.example.app', 'com.example.noType', 'com.example.missing'].map(id => paradisListappsApplicationType(listapps, id)),
+		}, {
+			permissions: ['android.permission.CAMERA', 'android.permission.POST_NOTIFICATIONS'],
+			packages: [true, false],
+			types: ['User', 'System', undefined, undefined, undefined],
+		});
+	});
+
+	test('a device held by another pane is recognised by id and by native id', () => {
+		const device = (id: string, udid?: string): IParadisMobileDevice => ({ id, udid, name: id, platform: 'Android', state: 'device', isRunning: true });
+		const devices = [device('avd:pixel', 'emulator-5554'), device('serial:emulator-5554', 'emulator-5554'), device('avd:other', 'emulator-5556')];
+		const attachments = [{ paneToken: 'pane-b', deviceId: 'avd:pixel', deviceName: 'Pixel', stateKey: undefined, attachedAt: 0 }];
+		assert.deepStrictEqual(
+			devices.map(entry => [paradisDeviceHeldByAnotherPane('pane-a', entry, devices, attachments), paradisDeviceHeldByAnotherPane('pane-b', entry, devices, attachments)]),
+			[[true, false], [true, false], [false, false]],
+		);
 	});
 
 	test('request answers: anything malformed is not an approval', () => {
