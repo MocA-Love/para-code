@@ -26,7 +26,7 @@ import { ITerminalInstance, ITerminalService } from '../../../../workbench/contr
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisCodexLaunchHomeService } from '../browser/paradisCodexLaunchHomeService.js';
-import { IParadisCodexAccountsState, IParadisCodexHome, paradisCodexLaunchHomeFor, paradisLooksLikeRunningCodex } from '../common/paradisCodexAccounts.js';
+import { IParadisCodexAccountsState, IParadisCodexHome, IParadisCodexPaneProcess, paradisCodexLaunchHomeFor, paradisLooksLikeRunningCodex, paradisRunningCodexHome } from '../common/paradisCodexAccounts.js';
 import { ParadisCodexAccountsClient } from './paradisCodexAccountsClient.js';
 // 使用量パネルへ差し込む Codex の部品（ParadisLimitsPanelContributions へ登録する副作用 import）。
 // パネル側（limitsMonitor）からは読み込まない（差し込み口の依存を一方向に保つ）。
@@ -152,9 +152,7 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 			if (!running.has(instance)) {
 				continue;
 			}
-			// 開いたときのホームが分からない（再接続した）ペインは、切替の直前の選択で開いたものとみなす。
-			const paneHome = this.launchHomeService.getPaneHome(token);
-			const home = paneHome.known ? paneHome.homePath : previous;
+			const home = paradisRunningCodexHome(running.get(instance), this.launchHomeService.getPaneHome(token), previous);
 			if (home === next) {
 				continue;
 			}
@@ -177,24 +175,26 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 	 * （再接続したペイン、npm 版の `node`、`echo …; codex` のような行）はシェルの子孫を shared process の
 	 * プロセス表で調べる。調べられなければ画面側で分かった分だけにする。
 	 */
-	private async panesRunningCodex(instances: readonly ITerminalInstance[]): Promise<Set<ITerminalInstance>> {
-		const running = new Set<ITerminalInstance>();
-		const unknown = new Map<number, ITerminalInstance>();
+	private async panesRunningCodex(instances: readonly ITerminalInstance[]): Promise<Map<ITerminalInstance, IParadisCodexPaneProcess | undefined>> {
+		const running = new Map<ITerminalInstance, IParadisCodexPaneProcess | undefined>();
+		const byShellPid = new Map<number, ITerminalInstance>();
 		for (const instance of instances) {
 			const commandDetection = instance.capabilities.get(TerminalCapability.CommandDetection);
 			if (paradisLooksLikeRunningCodex(commandDetection?.executingCommand, instance.processName)) {
-				running.add(instance);
-			} else if (instance.processId !== undefined && instance.processId > 0) {
-				unknown.set(instance.processId, instance);
+				running.set(instance, undefined);
+			}
+			// 画面側で分かったペインも渡す（動いている Codex の実際のホームを読むため）
+			if (instance.processId !== undefined && instance.processId > 0) {
+				byShellPid.set(instance.processId, instance);
 			}
 		}
 		// SSH の接続先のウィンドウではこの通知自体を出さない（コンストラクタ）ので、pid は常にこの PC のもの
-		if (unknown.size > 0) {
+		if (byShellPid.size > 0) {
 			try {
-				for (const pid of await this.client.shellsRunningCodex([...unknown.keys()])) {
-					const instance = unknown.get(pid);
+				for (const found of await this.client.shellsRunningCodex([...byShellPid.keys()])) {
+					const instance = byShellPid.get(found.shellPid);
 					if (instance) {
-						running.add(instance);
+						running.set(instance, found);
 					}
 				}
 			} catch (error) {
