@@ -2107,8 +2107,12 @@ export default defineConfig(
 						// PARA-PATCH: sharedProcessMain.ts が fork独自の agentBrowser サービス（MCPサーバー）を登録するための import
 						'vs/paradis/contrib/*/~',
 						// PARA-PATCH: sharedProcessMain.ts が fork 独自チャネルの集約入り口
-						// (registerParadisSharedProcessContributions) を1回呼ぶための import
-						'vs/paradis/paradis.sharedProcess.contribution.js',
+						// (registerParadisSharedProcessContributions) を1回呼ぶための import。
+						// 集約入り口は electron-utility 層なので、Node の使える層からだけ許す
+						{
+							'when': 'hasNode',
+							'pattern': 'vs/paradis/paradis.sharedProcess.contribution.js'
+						},
 						{
 							'when': 'hasBrowser',
 							'pattern': 'vs/workbench/workbench.web.main.js'
