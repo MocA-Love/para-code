@@ -15,7 +15,7 @@
 
 import { addDisposableListener } from '../../../../base/browser/dom.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 
 /** インジケータの表示状態。 */
 export type ParadisPaneIndicatorState = 'bound' | 'unbound';
@@ -173,13 +173,56 @@ export interface IParadisEditorTerminalIndicatorController extends IDisposable {
  */
 export function createParadisEditorTerminalIndicator(container: HTMLElement): IParadisEditorTerminalIndicatorController {
 	const current = new MutableDisposable<{ readonly element: HTMLElement } & IDisposable>();
+	// 共有ドットと同じ場所・同じ切り替えで出す、ほかの機能の部品（復元したタブのバナー等）。
+	// 登録は起動後の contribution から来ることがあり、そのときには復元済みのタブがもう開いて
+	// いるので、後から来た登録にも今の対象ペインを渡す。
+	const overlays = new DisposableStore();
+	const overlayInstances: IParadisEditorTerminalOverlay[] = [];
+	let currentInstanceId: number | undefined;
+	const attachOverlay = (factory: ParadisEditorTerminalOverlayFactory): void => {
+		const overlay = factory(container);
+		overlays.add(overlay);
+		overlayInstances.push(overlay);
+		overlay.setInstance(currentInstanceId);
+	};
+	for (const factory of editorTerminalOverlayFactories) {
+		attachOverlay(factory);
+	}
+	overlays.add(onDidRegisterEditorTerminalOverlay.event(attachOverlay));
 	return {
 		setInstance(instanceId) {
+			currentInstanceId = instanceId;
 			current.value = instanceId !== undefined ? createParadisPaneIndicator(instanceId) : undefined;
 			if (current.value) {
 				container.appendChild(current.value.element);
 			}
+			for (const overlay of overlayInstances) {
+				overlay.setInstance(instanceId);
+			}
 		},
-		dispose: () => current.dispose(),
+		dispose: () => {
+			current.dispose();
+			overlays.dispose();
+		},
 	};
+}
+
+/** エディタタブのターミナルの上に重ねる部品。対象ペインはタブの切り替えのたびに差し替わる。 */
+export interface IParadisEditorTerminalOverlay extends IDisposable {
+	setInstance(instanceId: number | undefined): void;
+}
+
+export type ParadisEditorTerminalOverlayFactory = (container: HTMLElement) => IParadisEditorTerminalOverlay;
+
+const editorTerminalOverlayFactories = new Set<ParadisEditorTerminalOverlayFactory>();
+const onDidRegisterEditorTerminalOverlay = new Emitter<ParadisEditorTerminalOverlayFactory>();
+
+/**
+ * エディタタブのターミナルに重ねる部品を登録する。すでに開いているタブにもすぐ付く。
+ * 外した後は新しいタブには付かない（付いている分は、そのタブのエディタと一緒に破棄される）。
+ */
+export function paradisRegisterEditorTerminalOverlay(factory: ParadisEditorTerminalOverlayFactory): IDisposable {
+	editorTerminalOverlayFactories.add(factory);
+	onDidRegisterEditorTerminalOverlay.fire(factory);
+	return toDisposable(() => editorTerminalOverlayFactories.delete(factory));
 }
