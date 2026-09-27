@@ -62,6 +62,8 @@ export interface IParadisSkill {
 	/** Codex の同梱スキル（`skills/.system/`）。更新で置き直されるので消させない。 */
 	readonly bundled: boolean;
 	readonly mtime?: number;
+	/** 実体の場所（フォルダかその親がリンクで、`uri` と違うときだけ）。 */
+	readonly realUri?: URI;
 }
 
 export interface IParadisSkillRootListing {
@@ -70,6 +72,13 @@ export interface IParadisSkillRootListing {
 	readonly skills: readonly IParadisSkill[];
 	/** 読めなかったときの理由（表示用）。 */
 	readonly error?: string;
+	/** フォルダの実体（リンクをたどった先）。解決できなければ undefined。 */
+	readonly realUri?: URI;
+	/**
+	 * 実体が先に並んだ別のフォルダと同じとき、そのフォルダの id。スキルは一覧に出さない
+	 * （同じスキルを2か所に出すと、片方の削除で両方が消えることが分からない）。
+	 */
+	readonly aliasOf?: string;
 }
 
 /** SKILL.md のうち一覧に使うために読む量。 */
@@ -190,6 +199,14 @@ function isNotFound(error: unknown): boolean {
 	return error instanceof Error && toFileOperationResult(error) === FileOperationResult.FILE_NOT_FOUND;
 }
 
+async function realpathOf(fileService: IFileService, uri: URI): Promise<URI | undefined> {
+	try {
+		return await fileService.realpath(uri);
+	} catch {
+		return undefined;
+	}
+}
+
 async function readSkill(fileService: IFileService, root: IParadisSkillRoot, child: IFileStat, bundled: boolean): Promise<IParadisSkill | undefined> {
 	const skillFile = joinPath(child.resource, 'SKILL.md');
 	let text: string;
@@ -207,6 +224,10 @@ async function readSkill(fileService: IFileService, root: IParadisSkillRoot, chi
 		uri: child.resource,
 		skillFile,
 		isSymbolicLink: child.isSymbolicLink,
+		...await (async () => {
+			const real = await realpathOf(fileService, child.resource);
+			return real && !extUri.isEqual(real, child.resource) ? { realUri: real } : {};
+		})(),
 		bundled,
 		...(child.mtime !== undefined ? { mtime: child.mtime } : {}),
 	};
@@ -250,7 +271,30 @@ export async function paradisListSkills(fileService: IFileService, root: IParadi
 		}
 	}
 	skills.sort((a, b) => a.name.localeCompare(b.name));
-	return { root, exists: true, skills };
+	const realUri = await realpathOf(fileService, root.uri);
+	return { root, exists: true, skills, ...(realUri ? { realUri } : {}) };
+}
+
+/**
+ * 実体が同じフォルダを1つにまとめる（先に並んだ方を残し、後の方は `aliasOf` を付けてスキルを空にする）。
+ *
+ * `~/.claude/skills` を `~/.agents/skills` へのリンクにしている、ホームをリポジトリとして登録して
+ * いる、などで同じフォルダが2回並ぶ。
+ */
+export function paradisDedupeSkillListings(listings: readonly IParadisSkillRootListing[]): IParadisSkillRootListing[] {
+	const seen = new Map<string, string>();
+	return listings.map(listing => {
+		if (!listing.exists) {
+			return listing;
+		}
+		const key = extUri.getComparisonKey(listing.realUri ?? listing.root.uri);
+		const first = seen.get(key);
+		if (first !== undefined) {
+			return { ...listing, skills: [], aliasOf: first };
+		}
+		seen.set(key, listing.root.id);
+		return listing;
+	});
 }
 
 /** SKILL.md の中身（画面に出す分だけ）。 */
@@ -327,14 +371,22 @@ export function paradisSkillInstallBlocker(skill: IParadisSkill, target: IParadi
 	return undefined;
 }
 
-/** 写す前に大きさを数える（大きすぎる・数が多すぎるフォルダは写さない）。 */
-async function measure(fileService: IFileService, uri: URI): Promise<{ bytes: number; files: number }> {
+/**
+ * 写す前に中身を数える（大きすぎる・数が多すぎるフォルダは写さない）。
+ *
+ * 中にリンクがあれば `hasSymbolicLink` を立てる。マシンをまたぐ写しはリンクをたどって中身を写すので、
+ * `x -> ~/.ssh` のようなリンクがあると、リンク先の中身を接続先へ送ってしまうため。
+ */
+async function measure(fileService: IFileService, uri: URI): Promise<{ bytes: number; files: number; hasSymbolicLink: boolean }> {
 	let bytes = 0;
 	let files = 0;
 	const queue: URI[] = [uri];
 	while (queue.length > 0) {
 		const stat = await fileService.resolve(queue.shift()!, { resolveMetadata: true });
 		for (const child of stat.children ?? []) {
+			if (child.isSymbolicLink) {
+				return { bytes, files, hasSymbolicLink: true };
+			}
 			if (child.isDirectory) {
 				queue.push(child.resource);
 			} else {
@@ -342,25 +394,40 @@ async function measure(fileService: IFileService, uri: URI): Promise<{ bytes: nu
 				files++;
 			}
 			if (files > MAX_INSTALL_FILES || bytes > PARADIS_SKILL_INSTALL_MAX_BYTES) {
-				return { bytes, files };
+				return { bytes, files, hasSymbolicLink: false };
 			}
 		}
 	}
-	return { bytes, files };
+	return { bytes, files, hasSymbolicLink: false };
+}
+
+/** 写す元（スキルのフォルダ自体がリンクなら、リンクではなく実体を写す）。 */
+export function paradisSkillInstallSource(skill: IParadisSkill): URI {
+	return skill.isSymbolicLink && skill.realUri ? skill.realUri : skill.uri;
 }
 
 /**
  * スキルのフォルダを別の場所（別のマシンを含む）へ写す。
  *
  * 同じ名前がすでにあるときは `overwrite` が true のときだけ置き換える（呼ぶ側で確認すること）。
- * いったん隣の一時フォルダへ写してから入れ替えるので、途中で失敗しても元のスキルは壊れない。
+ * 隣の一時フォルダへ写し、既にあるものは退避してから入れ替え、入れ替えに成功してから退避を消す。
+ * 途中で失敗したら退避を元へ戻すので、導入先にあったスキルは失われない。
+ *
+ * フォルダの中にリンクがあるスキルは写さない（リンク先の中身を別のマシンへ送らないため）。
  */
 export async function paradisInstallSkill(fileService: IFileService, skill: IParadisSkill, target: IParadisSkillRoot, overwrite: boolean): Promise<URI> {
 	const blocker = paradisSkillInstallBlocker(skill, target);
 	if (blocker !== undefined) {
 		throw new Error(blocker);
 	}
-	const size = await measure(fileService, skill.uri);
+	const source = paradisSkillInstallSource(skill);
+	if (skill.isSymbolicLink && !skill.realUri) {
+		throw new Error(localize('paradis.skills.linkUnresolved', "リンクの先を確かめられないため導入できません。"));
+	}
+	const size = await measure(fileService, source);
+	if (size.hasSymbolicLink) {
+		throw new Error(localize('paradis.skills.containsLink', "スキルのフォルダの中にリンクがあるため導入できません（リンク先の中身まで写してしまうため）。"));
+	}
 	if (size.files > MAX_INSTALL_FILES || size.bytes > PARADIS_SKILL_INSTALL_MAX_BYTES) {
 		throw new Error(localize('paradis.skills.tooLarge', "スキルのフォルダが大きすぎます（{0} MB・{1} ファイルまで）。", PARADIS_SKILL_INSTALL_MAX_BYTES / 1024 / 1024, MAX_INSTALL_FILES));
 	}
@@ -370,17 +437,29 @@ export async function paradisInstallSkill(fileService: IFileService, skill: IPar
 		throw new Error(localize('paradis.skills.exists', "導入先に同じ名前のスキルがあります。"));
 	}
 	await fileService.createFolder(target.uri).catch(() => undefined);
-	const staging = joinPath(target.uri, `.${skill.folderName}.paradis-install-${Date.now().toString(36)}`);
+	const stamp = Date.now().toString(36);
+	const staging = joinPath(target.uri, `.${skill.folderName}.paradis-install-${stamp}`);
+	const backup = joinPath(target.uri, `.${skill.folderName}.paradis-backup-${stamp}`);
+	let movedAway = false;
 	try {
-		await fileService.copy(skill.uri, staging, false);
+		await fileService.copy(source, staging, false);
 		if (exists) {
-			const current = await fileService.resolve(destination);
-			// 置き換えるのは直下の普通のフォルダだけ（リンクなら、リンク先には触らずリンクだけを外す）
-			await fileService.del(destination, { recursive: !current.isSymbolicLink, useTrash: fileService.hasCapability(destination, FileSystemProviderCapabilities.Trash) });
+			// 既にあるもの（リンクならリンクそのもの）を退避する。リンク先には触らない
+			await fileService.move(destination, backup, false);
+			movedAway = true;
 		}
 		await fileService.move(staging, destination, false);
+	} catch (error) {
+		if (movedAway && !(await fileService.exists(destination))) {
+			await fileService.move(backup, destination, false).catch(() => undefined);
+		}
+		throw error;
 	} finally {
 		await fileService.del(staging, { recursive: true }).catch(() => undefined);
+	}
+	if (movedAway) {
+		const current = await fileService.resolve(backup).catch(() => undefined);
+		await fileService.del(backup, { recursive: !current?.isSymbolicLink, useTrash: fileService.hasCapability(backup, FileSystemProviderCapabilities.Trash) }).catch(() => undefined);
 	}
 	return destination;
 }
