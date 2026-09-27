@@ -11,7 +11,7 @@
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { localize } from '../../../../nls.js';
-import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE, PARADIS_PTY_DAEMON_SAVE_SCREENS, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis.terminal',
@@ -41,6 +41,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.MACHINE,
 			markdownDescription: localize('paradis.terminal.daemon.reattachAcrossUpdates', "ターミナルを常駐プロセスで動かし、**Para Code を更新しても繋ぎ直せる**ようにします。SSH 先でも同じように動きます。\n\n{0} との違いは、更新したときの振る舞いだけです。あちらは更新すると新しい常駐に切り替わり、それまでのターミナルは古い常駐に取り残されます。\n\nまた、閉じている間もコマンドは止まらずに走り切ります（そのぶん、長く走ると古い出力から消えることがあります。消えた場合は画面にその旨が出ます）。\n\n変更は Para Code の再起動後に反映されます。", `\`#${PARADIS_PTY_DAEMON_ENABLED}#\``),
 			tags: ['experimental'],
+		},
+		[PARADIS_PTY_DAEMON_SAVE_SCREENS]: {
+			type: 'boolean',
+			default: true,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('paradis.terminal.daemon.saveScreens', "常駐を使っている間、ターミナルの画面を定期的にディスクへ保存し、PC を再起動した後に開いたとき、直前の画面とタブの配置を戻します（シェルは起動し直されます）。{0} または「更新をまたいで繋ぎ直す」が有効なときに意味を持ちます。\n\n保存した画面は30日で消え、ターミナルを閉じるとすぐに消えます。画面に写っていた秘密情報もその間ディスクに残るため、気になる場合はオフにしてください。", `\`#${PARADIS_PTY_DAEMON_ENABLED}#\``),
 		},
 		[PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE]: {
 			type: 'string',
