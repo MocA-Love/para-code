@@ -417,6 +417,20 @@ export async function paradisOpenEditorTerminalInSpace(
 }
 
 /**
+ * 起動コマンドを組み立てる。組み立てられない（シェルの種類が分からず安全に引用できない指示など）ときは、
+ * そのために開いたターミナルを閉じてから投げる（何も起動していない空のシェルを残さない）。
+ * シェルの種類は開いた後でないと分からないので、先に確かめることはできない。
+ */
+function paradisBuildCommandOrClose(instance: ITerminalInstance, build: () => string): string {
+	try {
+		return build();
+	} catch (error) {
+		instance.dispose();
+		throw error;
+	}
+}
+
+/**
  * 既存ワークスペースに新しいターミナルを作り、エージェントCLIを起動する。
  * worktree作成フローの launchAgent 工程と同じ規則（パネル側に作成・非アクティブスコープは
  * assignInstanceScope で即park・paneトークン自動注入で稼働状態表示が効く）で、
@@ -436,11 +450,11 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 	if (request.preserveFocus === true) {
 		// 利用者の入力を横取りしない: 前に出さず、setActiveInstance も呼ばない
 		const background = await paradisOpenEditorTerminalInSpace({ terminalService, terminalEditorService, terminalScopeService }, request.rootUri, request.stateKey, true);
-		const backgroundCommand = paradisBuildAgentCommand(agent, (request.prompt ?? '').trim(), background.shellType, {
+		const backgroundCommand = paradisBuildCommandOrClose(background, () => paradisBuildAgentCommand(agent, (request.prompt ?? '').trim(), background.shellType, {
 			modelId: request.modelId,
 			effortId: request.effortId,
 			permissionId: request.permissionId,
-		});
+		}));
 		await background.sendText(backgroundCommand, true);
 		return paradisDescribeLaunchedAgent(paneTokenService, background);
 	}
@@ -461,11 +475,11 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 		terminalService.setActiveInstance(instance);
 	}
 	await instance.processReady;
-	const command = paradisBuildAgentCommand(agent, (request.prompt ?? '').trim(), instance.shellType, {
+	const command = paradisBuildCommandOrClose(instance, () => paradisBuildAgentCommand(agent, (request.prompt ?? '').trim(), instance.shellType, {
 		modelId: request.modelId,
 		effortId: request.effortId,
 		permissionId: request.permissionId,
-	});
+	}));
 	await instance.sendText(command, true);
 	return paradisDescribeLaunchedAgent(paneTokenService, instance);
 }
@@ -694,11 +708,11 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 				// モバイルのホーム一覧）はそのまま効く。
 				// park は persistentProcessId が確定していないと失敗するため PTY 起動と openEditor の完了を待ってから assign する。
 				const instance = await paradisOpenEditorTerminalInSpace({ terminalService, terminalEditorService, terminalScopeService }, worktreeUri, targetStateKey, options.preserveFocus === true);
-				const command = paradisBuildAgentCommand(agent, prompt, instance.shellType, {
+				const command = paradisBuildCommandOrClose(instance, () => paradisBuildAgentCommand(agent, prompt, instance.shellType, {
 					modelId: request.modelId,
 					effortId: request.effortId,
 					permissionId: request.permissionId,
-				});
+				}));
 				await instance.sendText(command, true);
 				launchedAgent = paradisDescribeLaunchedAgent(paneTokenService, instance);
 			},
