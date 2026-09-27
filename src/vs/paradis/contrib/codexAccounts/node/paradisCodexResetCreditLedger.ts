@@ -26,6 +26,12 @@ import { ParadisCodexResetOutcome, paradisCodexResetOutcome } from '../common/pa
 
 /** settled の記録を残す期間。これより古い記録は次の書き込みで捨てる。 */
 const SETTLED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * 結果不明の要求を「同じ鍵で送り直す」対象にしておく期間。これを過ぎたら新しい提示で押せる
+ * ようにする（ずっと同じ失敗を返し続ける要求があっても、アカウントが使えないままにならないように）。
+ * 同じ提示への2回目は、期間を過ぎても claimedKeyForOffer が断る。
+ */
+const PENDING_RESEND_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 type DurableAttemptState = 'providerPending' | 'settled';
 
@@ -132,8 +138,9 @@ export class ParadisCodexResetCreditLedger {
 
 	/** このアカウントで結果が分かっていない要求の鍵。 */
 	pendingKeyForAccount(accountScope: string): string | undefined {
+		const cutoff = this.now() - PENDING_RESEND_WINDOW_MS;
 		for (const attempt of this.attempts.values()) {
-			if (attempt.accountScope === accountScope && attempt.state === 'providerPending') {
+			if (attempt.accountScope === accountScope && attempt.state === 'providerPending' && attempt.updatedAt >= cutoff) {
 				return attempt.key;
 			}
 		}
@@ -142,7 +149,7 @@ export class ParadisCodexResetCreditLedger {
 
 	/** provider へ要求を出す直前に呼ぶ。書けなければ例外（呼び出し側は要求を出さない）。 */
 	markProviderPending(key: string, offerScope: string, accountScope: string): Promise<void> {
-		return this.update({ key, offerScope, accountScope, state: 'providerPending', updatedAt: this.now() });
+		return this.update(key, { key, offerScope, accountScope, state: 'providerPending', updatedAt: this.now() });
 	}
 
 	/** provider から結果を受けたら呼ぶ。 */
@@ -151,16 +158,28 @@ export class ParadisCodexResetCreditLedger {
 		if (!existing) {
 			return Promise.reject(new Error('unknown reset-credit attempt'));
 		}
-		return this.update({ ...existing, state: 'settled', outcome, updatedAt: this.now() });
+		return this.update(key, { ...existing, state: 'settled', outcome, updatedAt: this.now() });
 	}
 
-	private update(next: IDurableAttempt): Promise<void> {
+	/**
+	 * provider へ届いていないと分かった要求を外す（app-server が認証の無さで断ったとき）。
+	 * 同じ提示でもう一度押せるようになる。
+	 */
+	release(key: string): Promise<void> {
+		return this.update(key, undefined);
+	}
+
+	private update(key: string, next: IDurableAttempt | undefined): Promise<void> {
 		const run = this.writeQueue.then(async () => {
 			if (this.stateError) {
 				throw this.stateError;
 			}
 			const attempts = new Map(this.attempts);
-			attempts.set(next.key, next);
+			if (next) {
+				attempts.set(key, next);
+			} else {
+				attempts.delete(key);
+			}
 			const cutoff = this.now() - SETTLED_RETENTION_MS;
 			for (const [key, attempt] of attempts) {
 				if (attempt.state === 'settled' && attempt.updatedAt < cutoff) {
@@ -177,7 +196,7 @@ export class ParadisCodexResetCreditLedger {
 	}
 
 	private async writeAtomically(content: string): Promise<void> {
-		await fs.promises.mkdir(dirname(this.filePath), { recursive: true });
+		await fs.promises.mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
 		const temporaryPath = `${this.filePath}.${process.pid}.${this.now()}.tmp`;
 		try {
 			await fs.promises.writeFile(temporaryPath, content, { encoding: 'utf8', mode: 0o600 });

@@ -13,6 +13,9 @@
 // 決まりごと（壊さないための約束）:
 //  - 既にあるファイルは決して上書きしない（`link` は既存なら EEXIST で失敗するので、それを「済み」とみなす）
 //  - 何も消さない・動かさない
+//  - 一度そのホームにあった会話が消えていたら（ユーザーが削除・アーカイブした）、足し戻さない。
+//    前回の実行でどのホームに何があったかを台帳（ledgerPath）に控えて見分ける
+//  - 新しく作るディレクトリは 0700（会話ログを同じ PC の別ユーザーから読めなくする）
 //  - 実ファイルだけを元にする（シンボリックリンクは辿らない）
 //  - 別ボリュームのホームへはリンクできないので飛ばす（コピーはしない。書き足され続けるファイルの
 //    写しは古くなるだけなので）
@@ -30,13 +33,53 @@ const ROLLOUT_PATTERN = /^rollout-[^/\\]+\.jsonl$/;
 export interface IParadisCodexSessionLinkOptions {
 	/** true を返したら途中で止める（アプリ終了時など）。 */
 	readonly shouldStop?: () => boolean;
+	/**
+	 * 「前回どのホームに何があったか」の台帳。指定しないと削除した会話も足し戻すので、
+	 * 本番では必ず渡す。
+	 */
+	readonly ledgerPath?: string;
 }
 
 interface IMutableSummary {
 	linked: number;
 	skippedExisting: number;
+	skippedRemoved: number;
 	skippedUnsupported: number;
 	failed: number;
+}
+
+interface ILinkLedger {
+	readonly version: 1;
+	/** ホーム → 前回の実行の終わりにそのホームにあった会話の相対パス。 */
+	readonly homes: { readonly [home: string]: readonly string[] };
+}
+
+async function readLedger(ledgerPath: string | undefined): Promise<Map<string, Set<string>>> {
+	const result = new Map<string, Set<string>>();
+	if (ledgerPath === undefined) {
+		return result;
+	}
+	try {
+		const parsed = JSON.parse(await fs.promises.readFile(ledgerPath, 'utf8')) as Partial<ILinkLedger>;
+		if (parsed.version === 1 && parsed.homes && typeof parsed.homes === 'object') {
+			for (const [home, paths] of Object.entries(parsed.homes)) {
+				if (Array.isArray(paths)) {
+					result.set(home, new Set(paths.filter((entry): entry is string => typeof entry === 'string')));
+				}
+			}
+		}
+	} catch {
+		// 無い・壊れている → 初回と同じ（今あるものを控えるところから始める）
+	}
+	return result;
+}
+
+async function writeLedger(ledgerPath: string, ledger: Map<string, Set<string>>): Promise<void> {
+	const payload: ILinkLedger = { version: 1, homes: Object.fromEntries([...ledger].map(([home, paths]) => [home, [...paths].sort()])) };
+	await fs.promises.mkdir(dirname(ledgerPath), { recursive: true, mode: 0o700 });
+	const temporaryPath = `${ledgerPath}.${process.pid}.${Date.now()}.tmp`;
+	await fs.promises.writeFile(temporaryPath, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 });
+	await fs.promises.rename(temporaryPath, ledgerPath);
 }
 
 async function readDirectoryNames(directory: string, pattern: RegExp, kind: 'directory' | 'file'): Promise<string[]> {
@@ -73,15 +116,19 @@ async function listRollouts(codexHome: string): Promise<string[]> {
  * @param codexHomes アカウント用ホームの絶対パス。1つ以下なら何もしない。
  */
 export async function paradisLinkCodexSessions(codexHomes: readonly string[], options: IParadisCodexSessionLinkOptions = {}): Promise<IParadisCodexSessionLinkSummary> {
-	const summary: IMutableSummary = { linked: 0, skippedExisting: 0, skippedUnsupported: 0, failed: 0 };
+	const summary: IMutableSummary = { linked: 0, skippedExisting: 0, skippedRemoved: 0, skippedUnsupported: 0, failed: 0 };
 	const homes = [...new Set(codexHomes)];
 	if (homes.length < 2) {
 		return summary;
 	}
+	const ledger = await readLedger(options.ledgerPath);
 	// 相対パス → それを持っているホーム
 	const owners = new Map<string, string[]>();
+	const present = new Map<string, Set<string>>();
 	for (const home of homes) {
-		for (const relative of await listRollouts(home)) {
+		const rollouts = await listRollouts(home);
+		present.set(home, new Set(rollouts));
+		for (const relative of rollouts) {
 			const list = owners.get(relative);
 			if (list) {
 				list.push(home);
@@ -108,14 +155,20 @@ export async function paradisLinkCodexSessions(codexHomes: readonly string[], op
 			if (owningHomes.includes(home)) {
 				continue;
 			}
+			// 前回はこのホームにあったのに今は無い → ユーザーが消したかアーカイブした。戻さない。
+			if (ledger.get(home)?.has(relative)) {
+				summary.skippedRemoved++;
+				continue;
+			}
 			const target = join(home, 'sessions', ...segments);
 			try {
 				const directory = dirname(target);
 				if (!ensuredDirectories.has(directory)) {
-					await fs.promises.mkdir(directory, { recursive: true });
+					await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
 					ensuredDirectories.add(directory);
 				}
 				await fs.promises.link(source, target);
+				present.get(home)?.add(relative);
 				summary.linked++;
 			} catch (error) {
 				const code = (error as NodeJS.ErrnoException).code;
@@ -128,6 +181,13 @@ export async function paradisLinkCodexSessions(codexHomes: readonly string[], op
 				}
 			}
 		}
+	}
+	if (options.ledgerPath !== undefined) {
+		// 今あるものを控える。ほかのホームの控えは残す（切替のたびに対象の2ホームだけを見るため）。
+		for (const [home, paths] of present) {
+			ledger.set(home, paths);
+		}
+		await writeLedger(options.ledgerPath, ledger);
 	}
 	return summary;
 }

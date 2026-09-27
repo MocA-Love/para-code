@@ -21,6 +21,7 @@ import './contrib/watermark/browser/paradisWatermark.contribution.js';
 import './contrib/notifications/browser/paradisNotificationsSettings.js';
 import './contrib/resourceMonitor/browser/paradisResourceMonitorSettings.contribution.js';
 import './contrib/limitsMonitor/browser/paradisLimitsMonitorSettings.contribution.js';
+import './contrib/codexAccounts/browser/paradisCodexAccountsSettings.contribution.js';
 import './contrib/serviceStatus/browser/paradisServiceStatusSettings.contribution.js';
 import './contrib/defaultExtensions/browser/paradisDefaultSettings.contribution.js';
 import './contrib/defaultExtensions/browser/paradisSuppressExtensionWelcomeTabs.contribution.js';

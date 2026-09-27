@@ -29,7 +29,7 @@ import { IPathService } from '../../../../workbench/services/path/common/pathSer
 import { IParadisCodexPaneRuntime, paradisCodexPaneEndpointFilePath, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, paradisCreateTerminalPaneEnvironment, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
 import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
 import { paradisListCurrentPaneTokens } from './paradisLivePaneInstances.js';
-import { IParadisCodexLaunchHomeService, paradisApplyCodexLaunchHome } from '../../codexAccounts/browser/paradisCodexLaunchHomeService.js';
+import { IParadisCodexLaunchHomeService, paradisApplyCodexLaunchHome, PARADIS_CODEX_HOME_ENV_VAR } from '../../codexAccounts/browser/paradisCodexLaunchHomeService.js';
 
 export const IParadisPaneTokenService = createDecorator<IParadisPaneTokenService>('paradisPaneTokenService');
 
@@ -149,7 +149,11 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 		shellLaunchConfig.env = paradisCreateTerminalPaneEnvironment(shellLaunchConfig.env, token, portFilePath, this._getCodexRuntime(token));
 		// Codex のアカウント切替: 選んだアカウントのホームを新しく開くターミナルへ渡す。選択はこの PC の
 		// ホームを指すので、SSH の接続先で動くターミナルには渡さない。
-		const codexHome = this.environmentService.remoteAuthority === undefined ? this.codexLaunchHomeService.getLaunchHome() : undefined;
+		// 呼び出し側が CODEX_HOME を決めているとき（会話を、その会話のあるホームで再開する等）はそちらを使う。
+		const explicitCodexHome = shellLaunchConfig.env?.[PARADIS_CODEX_HOME_ENV_VAR];
+		const codexHome = typeof explicitCodexHome === 'string' && explicitCodexHome.length > 0
+			? explicitCodexHome
+			: this.environmentService.remoteAuthority === undefined ? this.codexLaunchHomeService.getLaunchHome() : undefined;
 		shellLaunchConfig.env = paradisApplyCodexLaunchHome(shellLaunchConfig.env, codexHome);
 		this.codexLaunchHomeService.recordPaneHome(token, codexHome);
 	}
