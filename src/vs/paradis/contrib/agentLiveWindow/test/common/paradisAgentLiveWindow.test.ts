@@ -13,6 +13,8 @@ import {
 	IParadisAgentLiveViewState,
 	PARADIS_AGENT_LIVE_MAX_COLUMNS,
 	ParadisAgentLiveStatus,
+	paradisAgentLiveBoardColumns,
+	paradisAgentLiveSummary,
 	paradisApplyAgentLiveManualDrop,
 	paradisDefaultAgentLiveViewState,
 	paradisFilterAgentLiveEntries,
@@ -172,6 +174,7 @@ suite('Paradis - agent live window', () => {
 			],
 			[
 				{
+					layout: 'tiles',
 					statuses: ['working'],
 					spaces: undefined,
 					attentionOnly: true,
@@ -271,6 +274,64 @@ suite('Paradis - agent live window', () => {
 				[true, 150],
 				[false, 450],
 				[11, true],
+			],
+		);
+	});
+
+	test('remembers the chosen layout and ignores unknown ones', () => {
+		const parse = (raw: object): IParadisAgentLiveViewState => paradisParseAgentLiveViewState(JSON.stringify(raw));
+		assert.deepStrictEqual(
+			[
+				paradisDefaultAgentLiveViewState().layout,
+				paradisParseAgentLiveViewState(paradisSerializeAgentLiveViewState(state({ layout: 'board' }))).layout,
+				parse({ layout: 'list' }).layout,
+				parse({ layout: 'kanban' }).layout,
+				parse({ layout: 3 }).layout,
+			],
+			['tiles', 'board', 'list', 'tiles', 'tiles'],
+		);
+	});
+
+	test('sorts the board into fixed state columns without reordering within a column', () => {
+		const sorted = [
+			entry('a1', 'working'),
+			entry('a2', 'question'),
+			entry('a3', 'review'),
+			entry('a4', 'permission'),
+			entry('a5', 'working'),
+		];
+		assert.deepStrictEqual(
+			paradisAgentLiveBoardColumns(sorted).map(column => [column.id, column.entries.map(item => item.token)]),
+			[
+				// 要対応 = 許可待ち + 質問中。並びは受け取った順のまま
+				['attention', ['a2', 'a4']],
+				['working', ['a1', 'a5']],
+				['review', ['a3']],
+				// 空の列も位置を保つために返す
+				['idle', []],
+			],
+		);
+	});
+
+	test('summarizes what the agent waits for, falling back to its last message', () => {
+		const insight = {
+			token: 't', agent: 'claude' as const, subagents: [],
+			lastMessage: { text: '設計メモをまとめました。' },
+			interaction: { kind: 'permission' as const, text: 'npm test -- login', at: 1 },
+		};
+		assert.deepStrictEqual(
+			[
+				paradisAgentLiveSummary('permission', insight),
+				// 要対応でなければ、残っている待ち内容より最後の発言を出す
+				paradisAgentLiveSummary('review', insight),
+				paradisAgentLiveSummary('question', { ...insight, interaction: undefined }),
+				paradisAgentLiveSummary('working', undefined),
+			],
+			[
+				{ kind: 'permission', text: 'npm test -- login' },
+				{ kind: 'message', text: '設計メモをまとめました。' },
+				{ kind: 'message', text: '設計メモをまとめました。' },
+				undefined,
 			],
 		);
 	});

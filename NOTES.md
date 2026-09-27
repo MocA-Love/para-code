@@ -45,6 +45,25 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - 型の上では Promise を返せないが、`() => void` として async 関数が紛れ込んだ場合は、失敗をログへ出す
 - 既存の `registerParadis*` 直呼びはまだ移していない。agentBrowser → mobileCanvas / mobileRelay のように値を渡し合うものと、REH で pty ホストのサービスを受け取るものがあり、1つずつ引数の出どころを確かめてから移す
 
+## 会話ログの集計 worker と全文索引（agentActivity、2026-09-27）
+
+使用量ダッシュボードの「スペース別」「作業実績」と、セッション履歴の全文索引は、どれも shared process が起動する worker（`src/vs/paradis/contrib/agentActivity/node/paradisAgentActivityWorkerMain.ts`）で会話ログを読む。会話ログは合計で数 GB になり、shared process 本体で読むとエージェントの状態通知が遅れるため。なお contrib 名の `agentActivity` は、既存の `mobileRelay/node/paradisAgentActivity.ts`（サブエージェントの活動ツリー）とは別物。全文索引の本体もセッション履歴側ではなくこちらにある。
+
+- worker はパスを指定して起動するのでどこからも import されない。パッケージ版に出力させるため `build/next/index.ts` の `desktopEntryPoints` に PARA-PATCH で1行足し、`build/next/test/entryPoints.test.ts` で検査している。依頼が 90 秒途絶えると終了する
+- 読むのは手元の既定のホーム（`$CLAUDE_CONFIG_DIR` / `$CODEX_HOME`、無ければ `~/.claude` / `~/.codex`）の `projects/*/*.jsonl`・`*/<session>/subagents/*.jsonl` と `sessions/**/rollout-*.jsonl` だけ。**複数の Codex ホーム（`~/.codex-2` など）と WSL のホームは読まない**（統合時にホームの一覧を共通の解決関数へ寄せること）。SSH で接続しているウィンドウでは「スペース別」は出さない（ccusage は接続先を数えるので、手元の会話ログで按分すると合わない）。REH サーバーには登録していない
+- shared process はファイルごとの集計結果を（大きさ・更新日時・inode が同じなら）使い回す。更新ボタンでも同じ。期間の開始より前に最後に更新されたファイルは読まない。追記されたファイルは先頭から読み直す（途中から読むには解析の状態を持ち越す必要があり、見送った）
+- Claude Code の応答（`message.id:requestId`）と依頼（行の `uuid`）は、再開・分岐で前の会話の行が新しいファイルへ写されることがあるので、集計時にファイルをまたいで重複を除く（古いファイルが勝つ）。稼働時間はファイルごとの記録の間隔から出すので、写された区間は重ねて数えることがある
+- 金額の按分は ccusage の日別・モデル別の金額を、同じ日・同じモデル（無ければ同じエージェント）のトークン比率で分ける。トークンは種類ごとに重みを付ける（入力 1・出力 5・キャッシュ書き込み 1.25・キャッシュ読み取り 0.1）。生のトークン数で割ると、量は多いが安いキャッシュ読み取りで按分がほぼ決まってしまうため。価格表は持たない。Claude Code・Codex 以外（Gemini など）の金額と、会話ログに対応する記録が無い金額は「未割り当て」に残す
+- 全文索引は `<userData>/paradis/sessionIndex/sessionIndex.sqlite`（ディレクトリ 0700、ファイル 0600）。`node:sqlite` の FTS5 の trigram トークナイザを使う（Electron 同梱の Node 24.20 / SQLite 3.53.4 で動作確認）。既定はオンで確認は出さない。会話ログの全文のコピーになるので、そのことを設定の説明に明記している
+- **「オフなら索引が残っていない」は shared process（`ParadisAgentActivityService`）が守る**。起動時と設定 `paradis.sessionIndex.*` の変更時に照合し、オフなら消す（起動時もすぐ）。オンのときの保存日数・ツール出力の反映は、起動時だけ 60 秒遅らせ、期限を過ぎた会話が無ければ何も書かない。画面側の更新依頼も、設定がオフなら断る。スキーマは画面側でしか登録されないので、shared process は未設定を既定値（オン・90 日・ツール出力なし）として読む。コマンド「会話の全文索引を削除」は削除して設定もオフにする
+- 消した本文をファイルに残さない: SQLite の `secure_delete` と FTS5 の `secure-delete` オプション（消したその場で語のセグメントからも消す）を有効にし、行を消したあとは `wal_checkpoint(TRUNCATE)` だけを行う。FTS5 の `optimize` は索引全体を書き直し、その間は検索も止まるので使わない。DB と WAL の生のバイト列に消した本文が残らないことをテストで確かめている。ツール出力を入れない設定に変わったとき・スキーマが古いとき・開けないときは、DB ファイル一式を消して作り直す。保存日数とツール出力の設定の変更は、会話ログを読まずに今ある索引へすぐ反映する
+- 索引の削除は worker の更新と同じ列で「接続を閉じる → ファイルを消す」を行う。打ち切りは世代番号で、打ち切り要求より前に頼まれた更新は、実行中なら行の切れ目で、列に並んでいるなら始まった時点で止まる。削除中の更新依頼と状態の問い合わせでは DB を開かない。使っている途中で `SQLITE_CORRUPT` / `SQLITE_NOTADB` を受けたら、ファイル一式を消して次の依頼で作り直す
+- 索引はファイルごとに「どこまで読んだか」と先頭 4KB の指紋を持ち、伸びた分だけ足す。inode が変わった・縮んだ・先頭が書き変わったファイルは読み直し、一覧から消えたファイル（削除、保存日数切れ）の分は消す。読んでいる間に差し替えられたら、入れた分を消して次回読み直す。最後まで読み終えた会話だけを「索引に入っている」とみなし、読みかけ（初回の作成中・打ち切り後）の会話は従来の検索で探す
+- ツール出力を入れない設定（既定）では、利用者が打ったシェルコマンドの出力（`<bash-stdout>` など）も発言から除く。Codex の利用者シェルコマンドの記録形式は未確認
+- 検索は更新とは別の読み取り専用の接続で行い、更新の列に並ばない。3 文字未満の語を含む検索は索引を使わず従来の検索（会話の先頭と末尾を読む）で探す。画面側は語ごとに「セッション情報か本文のどちらかに含まれる」を見て AND を取る（従来の検索と同じ意味）
+- セッション履歴の行メニューの結果（コピーした・見つからない・失敗した）はモーダルの中に出す。通知の層（2545）はモーダル（2700）の下にあって見えないため。作業フォルダを開く前にディレクトリか確かめ、macOS のバンドル（`.app` など）は Finder で場所を見せるだけにする
+- 一覧の行との突き合わせは `paradisSessionCatalogId`（agent と正規化したパスのハッシュ）。Codex の一覧は state DB の `rollout_path` から作るので、`CODEX_HOME` をシンボリックリンクにしているとパスの綴りがずれて索引が効かない（その会話は従来の方法で探す）
+
 ## リポジトリ構成
 
 - `upstream`: `https://github.com/microsoft/vscode.git`（push無効化済み、fetch専用）
@@ -253,6 +272,30 @@ Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.
 - 接続先の設置（ポートが変わるたびの書き直し）と取り外しは、同じ `Sequencer` で1本ずつ流す（`ParadisRemoteAgentHookFiles`）。設置は1ファイルごと・書く直前に設定を見直すので、途中でオフに切り替わっても古い判断で hook を書き戻さない。切り替えた時点で接続先のホームがまだ分からない、またはファイルが読めない・書き換えが3回続いて反映できなかったときは「取り外し待ち」を保持し、30秒ごとの見直しか次の設置で処理する。失敗し続けても警告は 1, 2, 4, 8… 回目だけ出す
 - オフにしたときの警告は、通知では出さず「設定 (Para Code)」ダイアログの行の中に出す場合がある。通知の層（z-index 2545）はダイアログの背景（2700）より下で、ダイアログを開いたままだと裏に隠れて「元に戻す」が押せないため。ダイアログが開いているか（`paradisIsSettingsDialogOpen()`）で出し分け、層の順序そのものは他のダイアログやモーダルとの重なりに関わるので変えない。警告と設定の登録は、取り外す側がデスクトップにしか無いので electron-browser に置いている
 
+### Codex の hook の信頼は app-server に付けさせる（agentHookTrust、2026-09-27）
+
+`src/vs/paradis/contrib/agentHookTrust/` に実装。Codex の TUI の「Trust all」と同じ RPC を `codex app-server`（stdio）で呼ぶ: `hooks/list` → `config/batchWrite`（`keyPath: "hooks.state"`、`mergeStrategy: "upsert"`、値は `{ "<鍵>": { "trusted_hash": "<currentHash>" } }`）→ もう一度 `hooks/list` で `trusted` になったかを確かめる。codex-cli 0.155.1 の一時 `CODEX_HOME` で、利用者の hook は `untrusted` のまま、Para Code の hook だけが `trusted` になること、config.toml のコメントが残ることを実測した。
+
+- **ハッシュは自前で計算しない。** Codex の `currentHash` をそのまま書く。Orca は自前計算が Codex の版上げのたびにずれて（Orca #7896 / #7110 / #8699）この方式へ移った
+- 対象の判定は3条件: `source: "user"`、`sourcePath` がその CODEX_HOME の hooks.json、`command` が Para Code の書く文字列と完全一致。Codex は CODEX_HOME を実体パスへ直して答える（`/tmp` → `/private/tmp`）ので、実体パス側でも比べる
+- **config.toml は Codex にしか書かせず、書くときは必ず版を添える。** 書く直前に `config/read`（`includeLayers: true`）で利用者の層の `version` と `hooks.state` を読み、`config/batchWrite` の `expectedVersion` に渡す。その間に Codex の TUI などが書いていると、Codex が `-32600`（`configVersionConflict`）で断るので、利用者の変更を上書きしない（0.155.1 で実測）
+- 確かめが合わなかったときは、ファイルを丸ごと戻さない。もう一度 `config/read` して「今もこちらが書いたハッシュのままの鍵」だけを、書く前の値へ戻すか消し、`hooks.state` を `mergeStrategy: "replace"` で書き直す（これにも読んだ版を添える）。0.155.1 で、この戻し方で版のハッシュまで書く前と同じに戻ることを確かめた。書き込みが時間切れなどで例外になったときは、先にその app-server を止めてから（遅れて届く書き込みを防ぐ）、新しく起こした app-server で同じ戻し方をする。`hooks.state` の表の中に利用者が書いたコメントは、戻したときに消えることがある
+- 設定 `paradis.agentHooks.codexTrust`（`ask` 既定 / `auto` / `off`）。`ask` の間は画面側が起動 15 秒後に1回だけ通知で確かめ（窓が複数あっても shared process の `claimPrompt` で1つに絞る。札を使い切るのは実際に通知を出したときだけで、調べられなかった・まだ hook が無かったときは `releasePrompt` で返す。返さずに窓が消えても 2 分で戻る）、「信頼する」で `auto` に書き換えてその場で付ける。`auto` の間は shared process が起動 20 秒後と hooks.json の変化のたびに付ける
+- 起動のたびに codex を起こさないよう、「codex のパス + `--version` + hooks.json + config.toml」の指紋を `<userData>/paradis-codex-hook-trust.json` に残し、前回確かめたときと同じなら何もしない
+- 複数ホーム（`~/.codex-N`）は `ParadisCodexHookTrustService.autoGrant(home)` / チャネルの `grant`・`getStatus` にホームを渡せば同じ手順で動く。IPC 経由で任意のパスに codex を起こさないよう、受け付けるのは既定のホームと `~/.codex-<名前>` だけ。フェーズ2で hook をそこへ置くときは、置いたあとに `autoGrant(home)` を呼ぶこと（今は既定のホームしか監視していない）
+- `codex` は Node のスクリプトなので、shared process の PATH に `node` が無いと `env: node: No such file or directory` で起動できない。ログインシェルの環境（`ParadisCachedShellEnv`）を使っているので通常は問題ないが、失敗したときの outcome は `failed` で detail にこの文言が出る
+
+### worktree の「このフォルダを信頼しますか」は元のリポジトリから引き継がれる（2026-09-27 実測、実装なし）
+
+当初の方針は「worktree に信頼が引き継がれなければ、元のリポジトリが信頼済みのときだけ、スペース作成時に worktree のパスへ信頼を書き込む」だったが、両方の CLI とも引き継ぐので実装していない。一時 HOME / `CLAUDE_CONFIG_DIR` / `CODEX_HOME` で、`git worktree add ../repo-worktrees/wt`（Para Code の既定の置き場所と同じ、リポジトリの外の兄弟ディレクトリ）を作って TUI を起動して確かめた。
+
+| CLI | 元のリポジトリが信頼済み | 元のリポジトリが未信頼 | 無関係なフォルダ（対照） |
+|---|---|---|---|
+| Claude Code 2.1.283 | worktree で確認なし。`.claude.json` の `projects` に worktree のエントリも増えない | worktree で確認が出る | 確認が出る |
+| codex-cli 0.155.1 | worktree で確認なし。config.toml は変わらない | 確認が出て「Trusting will apply to the repository root: <元のリポジトリ>」と表示される | 確認が出る |
+
+どちらも「worktree → 元のリポジトリの根」で信頼を引くため、新しい worktree に信頼を書き込む必要は無い。CLI の版上げで挙動が変わったら、この表の手順で測り直すこと（Claude は `hasCompletedOnboarding` と `customApiKeyResponses.approved` を仕込んだ一時 `.claude.json` + ダミーの API キー、Codex は一時 `auth.json` にダミーの `OPENAI_API_KEY` と `check_for_update_on_startup = false` で、ログインや更新の画面を飛ばせる。Para Code のターミナルから測るときは `env -i` で `PARA_CODE_*` / `CLAUDE_CODE_*` を落とす）。
+
 ## 内蔵ブラウザの前面オーバーレイ機構（overlayManager、2026-08-15整備）
 
 内蔵ブラウザ（`src/vs/platform/browserView/`）はElectronのネイティブ `WebContentsView` として実装されている。ネイティブビューはOS合成レイヤーで描画されるため、通常のDOM要素はCSSの `z-index` では絶対に上書きできない。
@@ -335,6 +378,27 @@ grep -rn "BrowserDeviceType\|deviceType ===\|deviceType:\|case 'bluetooth'" src/
   - **LRU（上限24スペース）は「これから読むスペース」も必ず先頭へ寄せてから間引く**。保存したときだけ追跡すると、久しぶりに戻るスペースほど捨てられる側に溜まり、戻った瞬間に履歴を失う
   - 既知の制限: (1) 切り替え先スペースがフォルダ外のファイル（ユーザー設定等）を開いていた場合、切り替え元の履歴に残る（除去判定はフォルダ配下かどうかしか見られない。取り切るには切り替えの開始そのものを知る必要がある）。(2) 補助ウィンドウにピン留めしたエディタは`editorService.getEditors`が全パートを列挙するため新スペースの履歴に入り得る。(3) スペースを分ける前の`history.entries`は各スペースが自分の分を引き継げるよう残す（孤児として31KB程度）。(4) Ctrl+Shift+Tのreopenスタックとナビゲーションスタックはスペースを跨いだまま（どちらも非永続でセッション内のみ）
 - 既知の制限: ブラウザページはウィンドウリロードを跨ぐと再ロードされる（WebContentsViewがウィンドウに紐づくため。URLはworking set経由で復元）。ブラウザのCookieパーティションは全リポジトリ共有
+
+## 新しいスペースのモデル候補は CLI から取る（agentModelCatalog、2026-09-27）
+
+`src/vs/paradis/contrib/agentModelCatalog/` に実装。shared process が CLI を起こして一覧を取り、`<userData>/paradis-agent-models.json` に残す。CLI のパスか `--version` が変わったとき、または1日経ったときだけ取り直す。取れなければ前回の一覧、それも無ければ固定の候補（`PARADIS_DEFAULT_AGENT_COMMANDS`）のまま。
+
+- Claude Code（2.1.283 で実測）: `claude -p --setting-sources user --settings '{"disableAllHooks":true}' --strict-mcp-config --no-session-persistence --input-format stream-json --output-format stream-json --verbose` の stdin に `{"type":"control_request","request_id":"…","request":{"subtype":"list_models"}}` を1行書いて閉じる。API は呼ばず約2秒で返り、ログインしていなくても答える。`--settings` で hook を止めないと、利用者の SessionStart hook がこの裏のプロセスで走ることを確かめている。`-p` は workspace trust を確かめないので、作業ディレクトリのプロジェクト設定（`.claude/settings.json` の `apiKeyHelper` や `env` など）も読んでしまう。`--setting-sources user` を付けないと作業ディレクトリの hook が走り、付けると走らないことを実測した。作業ディレクトリ自体も `fs.mkdtemp` で作る自分専用（0700）の空のディレクトリにし、終わったら消す（Linux の共有 `/tmp` をそのまま使うと、他の利用者が置いた設定を読みうる。Codex も同じディレクトリで起こす）。`--no-session-persistence` を知らない古い CLI では、stderr にこのフラグ名が出たときだけ外して取り直す。一覧の `default` 行と `disabled` 行は外す。一覧に出ない `opusplan` だけは既定の候補から引き継ぐ
+- Codex（0.155.1 で実測）: `codex app-server` の `model/list`（`hidden` は外す）。ログインしていない一時 `CODEX_HOME` でも同梱のカタログを返した。実物の取得は利用者の既定の `CODEX_HOME` で行う
+- **置き換えるのは既定の定義だけ。** `paradis.workspaceSwitch.agents` は `getValue` だとスキーマ既定値が返って「書いたか」が分からないので、`inspect` のどこかの層に値があるかで判断する（`paradisIsAgentListUserDefined`）。書いてあれば取得自体をしない
+- 画面側は `IParadisAgentModelCatalogService`（electron-browser の singleton）が一覧を持つ。ダイアログ（`_agents`）とモバイルからの作成（`paradisConfiguredAgents`）はどちらもここの `getAgentTemplates()`（中身は `paradisResolveAgentTemplates`）を通す。起動時と、作成ダイアログを開くたびに `refresh()` し、一覧が変わったらダイアログは選んでいるモデルとエフォートを保ったまま並べ直す。shared process は 60 秒は同じ結果を返すので、開くたびに呼んでも CLI は起きない
+- `opus[1m]` のような記号入りの id は `--model "opus[1m]"` と二重引用符で包む（zsh では `[...]` がグロブになる）。それでも安全に書けない id は候補から外す
+- SSH で接続中のウィンドウでも、候補は手元の CLI から取ったもの（接続先の CLI の版は見ていない）
+
+## フェーズ2との統合で行う作業（2026-09-27、フェーズ3のレビューで判明。まだ未着手）
+
+フェーズ3（hook の信頼・モデル候補）は、フェーズ2（`para/phase2`）が main に入る前に作ったため、次の重複と取りこぼしが残っている。どれもフェーズ2が main に入ってから、この順で片付ける。今コードを寄せないのは、寄せ先がまだ main に無いため。
+
+1. **Codex app-server のクライアントが3つある。** limitsMonitor の `ParadisCodexRpcSession`（`paradisLimitsMonitorChannel.ts`）、フェーズ2の `src/vs/paradis/node/paradisCodexAppServerRpc.ts`、フェーズ3の `src/vs/paradis/node/paradisCodexAppServerSession.ts`。起動の仕方も違う（フェーズ2は `-s read-only -a never app-server` で `jsonrpc: "2.0"` を付ける。フェーズ3はサンドボックス指定なしで `jsonrpc` を付けない）。エラーの型も `ParadisCodexRpcError` と `ParadisCodexRpcMethodNotFoundError` に分かれている。フェーズ2の `paradisCodexAppServerRpc.ts` へ一本化し、足りないもの（`clientInfo.title`、`cwd`、`CODEX_HOME` の上書き、「メソッドが無い」の判定）はオプションとして足す。`model/list` はサンドボックス付きの既定起動で足りる。`config/batchWrite` を読み取り専用サンドボックスのまま書けるかは【要確認】（書けなければ hook の信頼だけサンドボックスを外す）
+2. **Codex のホームの一覧をフェーズ2に揃える。** hook の信頼が監視・自動付与するのは既定のホームだけで、受け付ける条件も `~/.codex-[A-Za-z0-9._-]+` とフェーズ2（`/^\.codex-\d+$/` と設定 `paradis.limitsMonitor.codexHomes`。手作りの `.codex-backup` は外す）と違う。`ParadisCodexHookTrustService.resolveHome` をフェーズ2の `paradisCodexHomes()` / `paradisCodexHomeCandidates()` による判定へ置き換え、hook を置いたあとに全ホームへ `autoGrant(home)` を呼び、全ホームの hooks.json を監視する。放置すると `~/.codex-2` でログインした Codex では、フェーズ2が置いた hook に信頼が付かず、状態表示と通知が動かない。会話集計（`agentActivity` の `listTranscripts` が `paradisCodexHome()` の1つだけを読む。WSL も `paradisResolveAgentHomes` を通っていない）も同じ一覧へ揃える必要がある（agentActivity の担当分）
+3. **原子的な書き込みが3つある。** `paradisWriteFileAtomicallySync`（`agentBrowser/node/paradisAgentHooksSetup.ts`、ハードリンクと rename 失敗の扱いがある）、`writeConfigAtomic`（`paradisMcpSetup.ts`、書く直前に元のファイルが変わっていないか確かめる）、`paradisWriteFileAtomic`（`src/vs/paradis/node/`、fsync と権限の当て直しはあるが、置き場所は userData 専用の想定）。`src/vs/paradis/node/` へ1つにまとめる。フェーズ2が hooks の設置を触っているので、今は動かさない
+4. **CLI の実行ファイルの探し方が5か所に重複している。** limitsMonitor・ccusage・フェーズ2の codexAccounts・`paradisClaudeLogin.ts`・フェーズ3の `paradisResolveAgentCli`（`src/vs/paradis/node/paradisAgentCli.ts`）。`paradisResolveAgentCli` へ寄せる（こちらには `~/.claude/local` を足し済み）
+5. `paradis.sharedProcess.contribution.ts` の「登録」欄にフェーズ2も2行足しているので、統合時に1つのブロックへ並べ直す（解消は機械的）
 
 ## リリース手順（runbook、2026-07-03確立・v1.128.0-paracode-2で全自動を実証済み）
 
@@ -654,6 +718,20 @@ TM3 / TM4 / TM7 / TM10 / TM21 はすべて `src/vs/paradis/contrib/` の新規�
 - 「非アクティブ」はネイティブのウィンドウ（BrowserWindow）単位で判定する（`INativeHostService.onDidFocusMainOrAuxiliaryWindow` / `onDidBlurMainOrAuxiliaryWindow` と各ウィンドウの `vscodeWindowId` を突き合わせる。補助ウィンドウも別々）。`document.hasFocus()` で判定すると、内蔵ブラウザ（同じウィンドウの中の別の WebContentsView）をクリックしただけでワークベンチの document が blur し、同じウィンドウの中なのに減光が全部消える（実機で確認）。そのため機能ごと electron-browser に置き、Web ビルドは upstream の動きのまま
 - 印は各ウィンドウのワークベンチのコンテナ（`ILayoutService.getContainer(window)`、`.monaco-workbench`）の `data-paradis-window-inactive` 属性に付ける。`<html>` / `<body>` やクラスには付けない。upstream の `auxiliaryWindowService.ts`（`trackAttributes` の3行）がメインの `<html>` と `<body>` の属性すべてと、コンテナの class を補助ウィンドウへ写し続けるので、メインへフォーカスが戻って印が外れると補助ウィンドウの印まで消え、補助ウィンドウの中が薄くなる（実機で確認）。取り込み時に upstream がコンテナの写しを class 以外へ広げていないか（`trackAttributes(this.layoutService.mainContainer, container, ['class'])` のままか）を確かめる
 - 打ち消しの CSS は `unfocusedViewDimmingContribution.ts` の規則を1つずつ写してある。**upstream が減光の対象を増やしたら、`paradisUnfocusedDimming.css` にも同じ形で足す。** 取り込み時は `grep -c "rules.add(" src/vs/workbench/contrib/accessibility/browser/unfocusedViewDimmingContribution.ts` と、`paradisUnfocusedDimming.css` の `.monaco-workbench[data-paradis-window-inactive]` で始まるセレクタの数（今は 9）が一致するかを見る
+
+## エージェントの様子をデスクトップへ渡す経路（agentInsights、2026-09-27、フェーズ3 担当B）
+
+サブエージェント・最後の発言・未回答の質問・プロンプトキャッシュの残り時間は、モバイル中継（`mobileRelay/node/paradisMobileAgentChat.ts`）が transcript と hook から既に読んでいる。デスクトップの UI はこれを二重に集計せず、中継に**読み取り口だけ**を足して引く（hook を直接読む集計を別に作ると、PC とスマホで表示が食い違い、Codex のサブエージェントも取れないため）。モバイルへ送るメッセージの形は変えていない。
+
+- 口は `IParadisAgentPaneInsightSource`（`agentInsights/common/paradisAgentInsights.ts`）。中継サービスのチャネル `PARADIS_MOBILE_RELAY_CHANNEL` に `getAgentPaneInsights(tokens)` と `onDidChangeAgentPaneInsights` を足しただけ。renderer 側は `agentInsights/electron-browser` の取得係がこのウィンドウのペイントークン分だけ取り、`IParadisAgentInsightsService`（browser 層のストア）へ置く。知らせの取りこぼしに備えて 10 秒ごとにも取り直す
+- **モバイル連携が無効でも動く**。中継サービスは shared process で常に生成され、セッションが確定したペインの status 用 tailer はモバイル接続と無関係に常駐している（`stopTailerIfUnsubscribed` 参照）。ただしモバイル向けの質問・承認の注入（`injectLiveQuestions` / `injectApprovalRequest`）はペアリング済みのモバイルがあるときしか動かないので、デスクトップの「待っている内容」はそれに頼らず hook（`PreToolUse` の AskUserQuestion と `PermissionRequest`）から別に覚えている（`recordDesktopInteraction`）
+- ProxyChannel はサービスのイベントをチャネル登録時に `Event.buffer` で購読してしまうため、「購読者がいる間だけ動かす」は効かない。変化の検出は hook・tailer の追記・活動ツリーの更新を契機に 250ms まとめて指紋を比べる方式にした
+- プロンプトキャッシュの残り時間は Claude の assistant 行の `usage.cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens` から決める（両方あれば先に切れる 5 分、読み込みだけのリクエストは直前の長さを引き継ぐ）。起点はその応答を求めたリクエストの時刻で、直前の user 行（ユーザーの発言か tool_result）の `timestamp` で近似する（応答を書き終えた時刻を使うと、生成に2分かかった応答で残りを2分長く見積もる）。エディタのターミナルのバッジは、応答中（状態が「動作中」）と 0 になった後は消す
+- **Codex は残り時間を出さない**。OpenAI のプロンプトキャッシュは「おおむね 5〜10 分の無操作で消え、長くても 1 時間」という目安しか公開されておらず、rollout の `token_count` にも `cached_input_tokens` しか無い（有効期限を決める根拠が記録に無い）
+- スペース一覧のメタ段の項目 `promptCache` は `paradis.workspaceSwitch.rowMeta` の5項目目で、PR・Issue の右（左寄せの末尾）に出る。**行の高さはターンごとに揺らさない**: 枠を出すかは「そのスペースの Claude ペインにキャッシュの記録があるか」で決め、応答中や期限切れの間は数字を消して炎を薄く残す（応答のたびに枠ごと消すと、メタ段を他に持たない行が 44px ⇔ 60px で上下し、押そうとした行がずれる）。ツリーの組み直しは記録を持つペインの出入りのときだけで、数字は 1 秒ごとに文字だけ書き換える（`ParadisPromptCacheChips`）
+- 設定を自分で書いた（「表示する情報」を触った）人の並びに `promptCache` が無いときは、**非表示で**末尾へ足す（すべて非表示にして2段表示を選んでいた人の行が、更新しただけで3段に伸びないように）。後から項目を足すときは `PARADIS_WORKTREE_META_ADDED_LATER` に入れる
+- エディタのターミナルのバッジは、ターミナルの検索ウィジェットと同じ右上の角に出る。検索ウィジェットが開いている間は CSS（`:has(.simple-find-part.visible)`）で隠し、ボタンを覆ったりクリックを奪ったりしないようにしている
+- エディタエリアのターミナルのバッジは、ペインインジケータと同じく DI を持たない `SessionTerminalEditor` から置く。値の供給元はモジュールのレジストリ（`setParadisPromptCacheBadgeHost`）で、`vs/sessions/contrib/*` から `vs/paradis/contrib/agentInsights/~` を import するための許可を `eslint.config.js` に足している
 
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
 

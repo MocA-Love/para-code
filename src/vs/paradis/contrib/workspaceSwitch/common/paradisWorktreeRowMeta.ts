@@ -22,7 +22,7 @@ import { localize } from '../../../../nls.js';
 export const PARADIS_WORKTREE_ROW_META_SETTING_ID = 'paradis.workspaceSwitch.rowMeta';
 
 /** メタ段に並べられる情報の種類。 */
-export type ParadisWorktreeMetaId = 'pr' | 'issues' | 'diff' | 'notes';
+export type ParadisWorktreeMetaId = 'pr' | 'issues' | 'diff' | 'notes' | 'promptCache';
 
 /** メタ段の中での寄せ方向。left は左端から、right は右端から詰める。 */
 export type ParadisWorktreeMetaAlign = 'left' | 'right';
@@ -39,9 +39,11 @@ export interface IParadisWorktreeMetaPresence {
 	readonly issues: boolean;
 	readonly diff: boolean;
 	readonly notes: boolean;
+	/** Claude のプロンプトキャッシュの残り時間（agentInsights の ParadisPromptCacheChips が判定）。 */
+	readonly promptCache: boolean;
 }
 
-export const PARADIS_WORKTREE_META_IDS: readonly ParadisWorktreeMetaId[] = ['pr', 'issues', 'diff', 'notes'];
+export const PARADIS_WORKTREE_META_IDS: readonly ParadisWorktreeMetaId[] = ['pr', 'issues', 'diff', 'notes', 'promptCache'];
 
 // 設定レジストリの default としても、正規化の戻り値としても使う同じ実体なので凍結する。
 // (getValue 経由で受け取った側が書き換えると、以降の既定値が全ウィンドウで壊れる)
@@ -50,7 +52,16 @@ export const PARADIS_DEFAULT_WORKTREE_ROW_META: readonly IParadisWorktreeMetaEnt
 	Object.freeze({ id: 'issues', visible: true, align: 'left' }),
 	Object.freeze({ id: 'diff', visible: true, align: 'right' }),
 	Object.freeze({ id: 'notes', visible: true, align: 'right' }),
+	// 左寄せの末尾 (PR・Issue の右、差分の左) に並ぶ
+	Object.freeze({ id: 'promptCache', visible: true, align: 'left' }),
 ] as const);
+
+/**
+ * 後から足した項目。設定を自分で書いた (「表示する情報」を触った) 人の並びにこれが無いときは、
+ * **非表示で**末尾へ足す。すべて非表示にして 2 段表示を選んでいた人の行が、更新しただけで
+ * 勝手に 3 段へ伸びないようにするため。設定を触っていない人には既定どおり表示で出る。
+ */
+const PARADIS_WORKTREE_META_ADDED_LATER: ReadonlySet<ParadisWorktreeMetaId> = new Set(['promptCache']);
 
 /** メタ段を持たない行 (2段) の高さ。 */
 export const PARADIS_WORKTREE_ROW_HEIGHT = 44;
@@ -67,6 +78,8 @@ export function paradisWorktreeMetaLabel(id: ParadisWorktreeMetaId): string {
 		case 'diff': return localize('paradis.rowMeta.diff', "未コミットの差分");
 		// allow-any-unicode-next-line
 		case 'notes': return localize('paradis.rowMeta.notes', "メモの未完了件数");
+		// allow-any-unicode-next-line
+		case 'promptCache': return localize('paradis.rowMeta.promptCache', "プロンプトキャッシュの残り時間");
 	}
 }
 
@@ -75,7 +88,7 @@ function isMetaId(value: unknown): value is ParadisWorktreeMetaId {
 }
 
 /**
- * 設定値 (ユーザーが settings.json を直接編集できる) を、必ず4項目ちょうど・重複なしの
+ * 設定値 (ユーザーが settings.json を直接編集できる) を、必ず全項目ちょうど・重複なしの
  * 並びへ正規化する。壊れた値・欠けた項目は既定で補い、知らない id は捨てる。
  * 設定エディタや手書きの JSON がどんな形でも描画側が破綻しないための境界。
  */
@@ -102,9 +115,11 @@ export function paradisNormalizeWorktreeRowMeta(value: unknown): readonly IParad
 		});
 	}
 	// 設定に書かれていない項目は既定の順序を保ったまま末尾へ足す (項目が消えたままにしない)
+	// 有効な項目が1つでも書かれていれば、利用者が自分で選んだ並び (空配列は「指定なし」)
+	const userConfigured = entries.length > 0;
 	for (const fallback of PARADIS_DEFAULT_WORKTREE_ROW_META) {
 		if (!seen.has(fallback.id)) {
-			entries.push(fallback);
+			entries.push(userConfigured && PARADIS_WORKTREE_META_ADDED_LATER.has(fallback.id) ? { ...fallback, visible: false } : fallback);
 		}
 	}
 	return entries;

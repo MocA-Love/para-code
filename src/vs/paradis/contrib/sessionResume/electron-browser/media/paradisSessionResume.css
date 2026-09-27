@@ -269,3 +269,47 @@
 	.paradis-session-resume.detail-open .paradis-session-resume-detail { display: flex; }
 	.paradis-session-resume .paradis-session-resume-detail-back { display: inline-flex; }
 }
+
+/* allow-any-unicode-next-line */
+/* 一覧上部のツールバー（並び・グループ・空を隠す・全文索引の状態）。一覧全体に効く設定なので、行の外に常に出しておく。 */
+.paradis-session-resume .paradis-session-resume-listbar {
+	flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 6px 10px;
+	border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background);
+	font-size: 12px; color: var(--vscode-descriptionForeground);
+}
+.paradis-session-resume .paradis-session-resume-listbar .listbar-field { display: inline-flex; align-items: center; gap: 6px; }
+.paradis-session-resume .paradis-session-resume-listbar select {
+	height: 22px; padding: 0 4px; border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border)); border-radius: 4px;
+	background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); font-family: inherit; font-size: 12px;
+}
+.paradis-session-resume .paradis-session-resume-listbar select:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.paradis-session-resume .paradis-session-resume-listbar .listbar-check { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; cursor: pointer; }
+.paradis-session-resume .paradis-session-resume-listbar .listbar-spacer { flex: 1; }
+.paradis-session-resume .paradis-session-index-status { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; white-space: nowrap; }
+
+/* allow-any-unicode-next-line */
+/* 行末の「…」。マウスを乗せた行・選択中の行・メニューを開いている行・キーボードで入った行にだけ出す。 */
+/* 隠している間は幅も取らない（行の間隔 7px も打ち消す）。タイトルが常に短くならないように。 */
+.paradis-session-resume .paradis-session-resume-row .row-more {
+	flex: none; width: 0; height: 20px; margin-left: -7px; overflow: hidden; display: inline-flex; align-items: center; justify-content: center;
+	border-radius: 4px; visibility: hidden; cursor: pointer; color: var(--vscode-icon-foreground);
+}
+.paradis-session-resume .paradis-session-resume-row:hover .row-more,
+.paradis-session-resume .paradis-session-resume-row:focus-visible .row-more,
+.paradis-session-resume .paradis-session-resume-row.selected .row-more,
+.paradis-session-resume .paradis-session-resume-row.menu-open .row-more { width: 20px; margin-left: 0; visibility: visible; }
+.paradis-session-resume .paradis-session-resume-row .row-more:hover,
+.paradis-session-resume .paradis-session-resume-row.menu-open .row-more { background: var(--vscode-toolbar-hoverBackground); }
+.paradis-session-resume .paradis-session-resume-row.selected .row-more { color: inherit; }
+
+/* 行メニューの操作結果。通知はモーダルの下に隠れるので、モーダルの中の下端に数秒だけ出す。 */
+.paradis-session-resume-modal { position: relative; }
+.paradis-session-resume-modal .paradis-session-resume-inline-message {
+	position: absolute; left: 50%; bottom: 16px; z-index: 30; max-width: 80%; transform: translateX(-50%);
+	padding: 6px 12px; border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); border-radius: 6px;
+	background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); color: var(--vscode-foreground);
+	box-shadow: 0 4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.25)); font-size: 12px;
+	overflow: hidden; white-space: nowrap; text-overflow: ellipsis; pointer-events: none; visibility: hidden;
+}
+.paradis-session-resume-modal .paradis-session-resume-inline-message.visible { visibility: visible; }
+.paradis-session-resume-modal .paradis-session-resume-inline-message.error { border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); }

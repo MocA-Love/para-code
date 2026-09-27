@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { CancellationError } from '../../../../../base/common/errors.js';
-import { Emitter } from '../../../../../base/common/event.js';
+import { Emitter, Event as BaseEvent } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -22,8 +22,12 @@ import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisW
 import { IParadisPaneTokenService } from '../../../agentBrowser/browser/paradisPaneTokenService.js';
 import { paradisResumeAgentInWorkspace } from '../../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { ParadisSessionResumeDialog, paradisOpenSessionResumeDialog } from '../../electron-browser/paradisSessionResumeDialog.js';
+import { ParadisSessionResumeRowMenu } from '../../electron-browser/paradisSessionResumeRowMenu.js';
+import { ParadisSessionIndexController } from '../../../agentActivity/electron-browser/paradisSessionIndexController.js';
+import { IParadisSessionIndexSearchResult } from '../../../agentActivity/common/paradisSessionIndex.js';
+import { IStorageService } from '../../../../../platform/storage/common/storage.js';
 import { IParadisResumeListRequestWithUri } from '../../electron-browser/paradisSessionResumeClient.js';
-import { IParadisResumePreview, IParadisResumeSession } from '../../common/paradisSessionResume.js';
+import { IParadisResumePreview, IParadisResumeSearchResult, IParadisResumeSession } from '../../common/paradisSessionResume.js';
 import { paradisSessionResumeEditorActionOptions, paradisResumeSessionFromEditor } from '../../electron-browser/paradisSessionResumeOrchestration.js';
 
 /** 自動更新は750ms遅延で走るので、それを跨いで待つ。 */
@@ -101,6 +105,33 @@ suite('ParadisSessionResumeDialog', () => {
 			assert.strictEqual(stubs.dialogs.length, 1);
 		} finally {
 			stubs.dispose();
+		}
+	});
+
+	test('matches each term in the session info or the indexed body, and scans only the sessions the index does not cover', async () => {
+		const client = new TestResumeClient();
+		client.listResult = async () => [testSession('one', 'First session'), testSession('two', 'Second session'), testSession('three', 'Needle in the title')];
+		client.searchResult = async () => [{ catalogId: 'catalog-two', matchCount: 1, snippet: 'needle from the scan', source: 'conversation' }];
+		// 「workspace」はセッション情報（スペース名）に、「needle」は one の本文にだけある。語ごとに見るので one も一致する。
+		const fixture = createRefreshFixture(client, async () => ({
+			terms: ['workspace', 'needle'],
+			uncovered: ['catalog-two'],
+			matches: [{ catalogId: 'catalog-one', terms: [1], matchCount: 2, snippet: 'needle from the index' }],
+		}));
+		try {
+			await fixture.load();
+			const search = fixture.root.querySelector<HTMLInputElement>('input[type="search"]')!;
+			search.value = 'workspace needle';
+			search.dispatchEvent(new Event('input'));
+			await timeout(300);
+			await flushMicrotasks();
+			const rows = [...fixture.root.querySelectorAll('.paradis-session-resume-row .row-title')].map(row => row.textContent);
+			assert.deepStrictEqual({ scanned: client.searchRequests, rows: rows.sort() }, {
+				scanned: [['catalog-two']],
+				rows: ['First session', 'Needle in the title', 'Second session'],
+			});
+		} finally {
+			fixture.dispose();
 		}
 	});
 
@@ -372,7 +403,8 @@ class TestResumeClient {
 	readonly listRequests: IParadisResumeListRequestWithUri[] = [];
 	listResult: () => Promise<readonly IParadisResumeSession[]> = async () => [];
 	previewResult: () => Promise<IParadisResumePreview> = async () => ({ messages: [], truncated: false });
-	searchResult: () => Promise<readonly []> = async () => [];
+	searchResult: () => Promise<readonly IParadisResumeSearchResult[]> = async () => [];
+	readonly searchRequests: (readonly string[])[] = [];
 
 	async list(request: IParadisResumeListRequestWithUri): Promise<readonly IParadisResumeSession[]> {
 		this.listRequests.push(request);
@@ -383,7 +415,8 @@ class TestResumeClient {
 		return this.previewResult();
 	}
 
-	async search(): Promise<readonly []> {
+	async search(_query: string, catalogIds: readonly string[]): Promise<readonly IParadisResumeSearchResult[]> {
+		this.searchRequests.push(catalogIds);
 		return this.searchResult();
 	}
 }
@@ -402,7 +435,7 @@ interface IDialogStubs {
 	dispose(): void;
 }
 
-function createDialogStubs(client: TestResumeClient): IDialogStubs {
+function createDialogStubs(client: TestResumeClient, indexSearch?: (query: string) => Promise<IParadisSessionIndexSearchResult>): IDialogStubs {
 	const scopeEmitter = new Emitter<void>();
 	const repositoryEmitter = new Emitter<void>();
 	const worktreeEmitter = new Emitter<void>();
@@ -418,8 +451,23 @@ function createDialogStubs(client: TestResumeClient): IDialogStubs {
 		},
 		setDefaultCodeBlockRenderer() { },
 	};
+	// 全文索引はオフ、行メニューは開かない。ダイアログの一覧・検索・再開の検証に絞る。
+	const indexController = {
+		onDidChange: BaseEvent.None,
+		state: indexSearch ? 'on' : 'off',
+		isUpdating: false,
+		renderStatus() { },
+		requestUpdate() { },
+		search: async (query: string) => indexSearch?.(query),
+		dispose() { },
+	};
+	const rowMenu = { show() { } };
+	const storage = { get: () => undefined, getBoolean: () => false, store() { } } as unknown as IStorageService;
 	const instantiationService = {
-		createInstance: (ctor: unknown) => ctor === ParadisSessionResumeDialog ? createDialog() : client,
+		createInstance: (ctor: unknown) => ctor === ParadisSessionResumeDialog ? createDialog()
+			: ctor === ParadisSessionIndexController ? indexController
+				: ctor === ParadisSessionResumeRowMenu ? rowMenu
+					: client,
 	} as unknown as IInstantiationService;
 
 	function createDialog(): ParadisSessionResumeDialog {
@@ -440,6 +488,7 @@ function createDialogStubs(client: TestResumeClient): IDialogStubs {
 			notifications as unknown as INotificationService,
 			markdownRendererService,
 			Object.create(null),
+			storage,
 		);
 		dialogs.push(dialog);
 		return dialog;
@@ -474,8 +523,8 @@ interface IRefreshFixture extends IDialogStubs {
 	load(): Promise<void>;
 }
 
-function createRefreshFixture(client: TestResumeClient): IRefreshFixture {
-	const stubs = createDialogStubs(client);
+function createRefreshFixture(client: TestResumeClient, indexSearch?: (query: string) => Promise<IParadisSessionIndexSearchResult>): IRefreshFixture {
+	const stubs = createDialogStubs(client, indexSearch);
 	return {
 		...stubs,
 		dialog: stubs.createDialog(),

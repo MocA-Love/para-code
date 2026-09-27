@@ -15,6 +15,8 @@ import { TestConfigurationService } from '../../../../../platform/configuration/
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ITerminalEditorService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisPaneTokenService } from '../../../agentBrowser/browser/paradisPaneTokenService.js';
+import { IParadisAgentModelCatalogService } from '../../../agentModelCatalog/common/paradisAgentModelCatalog.js';
+import { PARADIS_DEFAULT_AGENT_COMMANDS } from '../../common/paradisWorktreeCreate.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../common/paradisWorkspaceSwitch.js';
 import { paradisLaunchAgentInWorkspace, paradisResumeAgentInWorkspace } from '../../electron-browser/paradisWorktreeHeadlessCreate.js';
 
@@ -36,6 +38,7 @@ suite('paradisLaunchAgentInWorkspace', () => {
 		instantiationService.stub(IParadisTerminalScopeService, { assignInstanceScope: () => { } });
 		instantiationService.stub(IParadisWorkspaceSwitchService, { activeStateKey });
 		instantiationService.stub(IParadisPaneTokenService, { getTokenForInstance: (instanceId: number) => instanceId === 7 ? 'pane-token-7' : undefined });
+		instantiationService.stub(IParadisAgentModelCatalogService, { getAgentTemplates: () => PARADIS_DEFAULT_AGENT_COMMANDS });
 		return { instantiationService, sent };
 	}
 

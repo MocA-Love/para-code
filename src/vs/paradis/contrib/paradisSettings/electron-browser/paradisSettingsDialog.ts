@@ -231,6 +231,54 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-space',
+		key: 'paradis.sessionIndex.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.sessionIndex', "セッション履歴で会話の全文を検索する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.sessionIndexDesc', "会話ログの全文を検索用に Para Code 内へ保存します（会話に貼った秘密情報もコピーされます）。オフにすると保存した索引は消えます。"),
+		keywords: 'session history full text search index sqlite fts trigram',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.sessionIndex.retentionDays',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.sessionIndexRetention', "全文索引に入れる会話の日数"),
+		keywords: 'session history index retention days',
+		choices: [
+			// allow-any-unicode-next-line
+			{ value: 30, label: localize('paradis.settings.sessionIndexRetention30', "30日") },
+			// allow-any-unicode-next-line
+			{ value: 90, label: localize('paradis.settings.sessionIndexRetention90', "90日（既定）") },
+			// allow-any-unicode-next-line
+			{ value: 180, label: localize('paradis.settings.sessionIndexRetention180', "180日") },
+			// allow-any-unicode-next-line
+			{ value: 365, label: localize('paradis.settings.sessionIndexRetention365', "1年") },
+		],
+	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.sessionIndex.includeToolOutput',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.sessionIndexToolOutput', "ツールの出力も全文索引に入れる"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.sessionIndexToolOutputDesc', "コマンドの実行結果なども検索できるようになりますが、索引が大きくなり、出力に含まれた秘密情報も残ります。"),
+		keywords: 'session history index tool output',
+	},
+	{
+		sectionId: 'psd-sec-space',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.sessionIndexDelete', "会話の全文索引"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.sessionIndexDeleteDesc', "この PC に保存した索引を削除し、全文検索をオフにします。会話のログそのものは消えません。"),
+		keywords: 'session history index delete remove clear',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.sessionIndexDeleteAction', "削除…"),
+			commandId: 'paradis.sessionIndex.delete',
+		},
+	},
+	{
+		sectionId: 'psd-sec-space',
 		key: 'paradis.workspaceSwitch.cloneParentDirectory',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.cloneParentDir', "リポジトリのクローン先"),
@@ -246,7 +294,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		label: localize('paradis.settings.rowMeta', "スペース一覧に表示する情報"),
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.rowMetaDesc', "行を右クリックした「表示する情報」からも変えられます。"),
-		keywords: 'workspaces view row meta pull request issue diff notes order',
+		keywords: 'workspaces view row meta pull request issue diff notes order prompt cache',
 	},
 	{
 		sectionId: 'psd-sec-space',
@@ -296,7 +344,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.usageDashboard', "使用量ダッシュボード"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.usageDashboardDesc', "AI コスト・GitHub API の残量・rtk の節約量をまとめて見ます。"),
+		description: localize('paradis.settings.usageDashboardDesc', "AI コスト・スペース別の使用量・GitHub API の残量・rtk の節約量・作業実績をまとめて見ます。"),
 		keywords: 'usage dashboard ccusage github rtk unified',
 		action: {
 			// allow-any-unicode-next-line
@@ -435,6 +483,23 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		keywords: 'agent hooks claude codex hook status notification',
 		// allow-any-unicode-next-line
 		offWarning: localize('paradis.settings.agentHooksOffWarning', "オフの間は、Para Code が設置した hook を取り外し、置き直しません。エージェントの状態表示（実行中・許可待ち・完了）、完了や許可待ちの通知、モバイルへの通知とチャットの表示、読み上げが弱くなるか、働かなくなります。元に戻すには、このスイッチをオンにします。"),
+	},
+	{
+		sectionId: 'psd-sec-notif',
+		key: 'paradis.agentHooks.codexTrust',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.codexHookTrust', "Codex の hook に信頼を付ける"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.codexHookTrustDesc', "Codex は hook を使う前に信頼の確認を求めます。Para Code が設置した hook にだけ、Para Code が代わりに信頼を付けます。"),
+		keywords: 'codex hook trust hooks.state config.toml',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			ask: localize('paradis.settings.codexHookTrust.ask', "初回に確かめる"),
+			// allow-any-unicode-next-line
+			auto: localize('paradis.settings.codexHookTrust.auto', "自動で付ける"),
+			// allow-any-unicode-next-line
+			off: localize('paradis.settings.codexHookTrust.off', "付けない"),
+		},
 	},
 
 	// --- ブラウザ共有 ---
