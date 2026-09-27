@@ -82,7 +82,7 @@ export interface IParadisBrowserProfilesService {
 	findByName(name: string): IParadisBrowserProfile | undefined;
 
 	/** 新規作成。名前が空/重複なら失敗理由を返す。 */
-	create(name: string, color: string): { readonly ok: true; readonly profile: IParadisBrowserProfile } | { readonly ok: false; readonly error: ParadisProfileNameError };
+	create(name: string, color: string, options?: IParadisCreateProfileOptions): { readonly ok: true; readonly profile: IParadisBrowserProfile } | { readonly ok: false; readonly error: ParadisProfileNameError };
 
 	/** リネーム。パーティションには一切触れないのでログイン状態は残る。 */
 	rename(profileId: string, name: string): { readonly ok: true } | { readonly ok: false; readonly error: ParadisProfileNameError };
@@ -129,6 +129,12 @@ export interface IParadisBrowserProfilesService {
 	 * 実体は同じ位置への差し替え（Electron セッションは差し替えられないため）。
 	 */
 	switchView(input: BrowserEditorInput, target: ParadisProfileTarget): Promise<BrowserEditorInput | undefined>;
+}
+
+/** {@link IParadisBrowserProfilesService.create} の追加の指定。 */
+export interface IParadisCreateProfileOptions {
+	/** エージェントが MCP から作った（エージェントが後で消してよい）。 */
+	readonly createdByAgent?: boolean;
 }
 
 /** ドロップダウンで選べる行が指すもの。 */
@@ -212,7 +218,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		return paradisFindProfileByName(this._profiles, name);
 	}
 
-	create(name: string, color: string): { readonly ok: true; readonly profile: IParadisBrowserProfile } | { readonly ok: false; readonly error: ParadisProfileNameError } {
+	create(name: string, color: string, options?: IParadisCreateProfileOptions): { readonly ok: true; readonly profile: IParadisBrowserProfile } | { readonly ok: false; readonly error: ParadisProfileNameError } {
 		const error = this._validateName(name);
 		if (error) {
 			return { ok: false, error };
@@ -224,6 +230,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 			color: PARADIS_BROWSER_PROFILE_COLORS.includes(color) ? color : PARADIS_BROWSER_PROFILE_COLORS[0],
 			createdAt: now,
 			lastUsedAt: now,
+			...(options?.createdByAgent ? { createdByAgent: true } as const : {}),
 		};
 		this._profiles = [...this._profiles, profile];
 		this._persistProfiles();
