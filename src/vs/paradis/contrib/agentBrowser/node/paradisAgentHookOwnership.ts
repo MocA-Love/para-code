@@ -74,33 +74,227 @@ export function paradisHookAgentKindForTranscript(transcriptPath: string): Parad
 	return (transcriptPath === codexHome || transcriptPath.startsWith(codexHome + sep)) ? 'codex' : 'claude';
 }
 
-/** インタープリタ等、エージェント本体ではないコマンド名。 */
-const NON_AGENT_BASENAMES = new Set(['node', 'bun', 'deno', 'sh', 'bash', 'zsh', 'fish', 'dash', 'env', 'powershell', 'pwsh', 'cmd']);
+// エージェントかどうかは「そのプロセスが何の実行ファイルか」だけで決める。起動行のどこかに
+// `claude` があるだけでは判定しない（例: tmux サーバーの起動行 `tmux new-session -s x claude`。
+// サーバーは中の claude の祖先になるので、これをエージェントと見なすと最外側の所有者を奪い、
+// 中の claude 自身のhookを nested にしてしまう）。見るのは次の2つ:
+//   - argv[0] のベース名（`claude` / `codex` / `claude.exe` / `codex.cmd` など）
+//   - ラッパー（node・bun・npx・env・シェル・cmd・PowerShell）が実行するスクリプトのパスやコマンド
+// tmux・screen・zellij 等はどちらにも当たらないので、特別扱いの一覧は持たない。
+
+/** ネストしたラッパー（`env` → `sh -c` → …）を辿る深さの上限。 */
+const MAX_COMMAND_NESTING = 4;
+/** スクリプトを実行するランタイム。 */
+const SCRIPT_RUNTIME_BASENAMES = new Set(['node', 'nodejs', 'bun', 'deno']);
+/** パッケージの実行ファイルを起動するランナー。 */
+const PACKAGE_RUNNER_BASENAMES = new Set(['npx', 'bunx', 'pnpx']);
+const SHELL_BASENAMES = new Set(['sh', 'bash', 'zsh', 'fish', 'dash', 'ksh']);
+const POWERSHELL_BASENAMES = new Set(['powershell', 'pwsh']);
+/** ランタイムの、次のトークンを値に取るオプション。 */
+const RUNTIME_OPTIONS_WITH_VALUE = new Set(['-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions', '--title', '--env-file', '--preload', '--cwd', '--config']);
+/** ランタイムの、スクリプトファイルではなくコード片を実行するオプション。 */
+const RUNTIME_INLINE_CODE_OPTIONS = new Set(['-e', '--eval', '-p', '--print']);
+/** bun / deno のサブコマンド（`bun run x` / `bun x pkg` / `deno run x`）。 */
+const RUNTIME_SUBCOMMANDS = new Set(['run', 'x', 'exec']);
+const PACKAGE_RUNNER_OPTIONS_WITH_VALUE = new Set(['-p', '--package']);
+const PACKAGE_RUNNER_COMMAND_OPTIONS = new Set(['-c', '--call']);
+const ENV_OPTIONS_WITH_VALUE = new Set(['-u', '--unset', '-C', '--chdir', '-P']);
+const SHELL_OPTIONS_WITH_VALUE = new Set(['-o', '+o', '-O', '+O']);
+const POWERSHELL_OPTIONS_WITH_VALUE = new Set(['-executionpolicy', '-ep', '-ex', '-windowstyle', '-w', '-version', '-v', '-inputformat', '-if', '-outputformat', '-of', '-configurationname', '-workingdirectory', '-wd', '-settingsfile']);
+const POWERSHELL_ENCODED_OPTIONS = new Set(['-encodedcommand', '-e', '-ec', '-enc']);
+const POWERSHELL_COMMAND_OPTIONS = new Set(['-command', '-c', '-file', '-f']);
+
+interface ICommandLineToken {
+	readonly value: string;
+	readonly start: number;
+	readonly end: number;
+}
 
 /**
- * プロセスのコマンドラインからエージェント種別を推定する。
- * 「claude」「codex」という basename のトークン（実行ファイルまたはスクリプト引数）を探す。
- * `codex-companion.mjs` や `.claude/...` のようなパス断片には一致しない。
+ * 起動行を空白で区切る。`"` で囲んだ部分は1トークンにまとめる（Windows の
+ * `"C:\Program Files\...\claude.exe"` 用）。バックスラッシュはパス区切りとして残す。
  */
-export function paradisHookAgentKindFromCommandLine(command: string): ParadisHookAgentKind | undefined {
-	for (const rawToken of command.split(/\s+/)) {
-		const token = rawToken.replace(/^["']+|["']+$/g, '');
-		if (token.length === 0 || token.startsWith('-')) {
-			continue;
+function tokenizeCommandLine(command: string): ICommandLineToken[] {
+	const tokens: ICommandLineToken[] = [];
+	let index = 0;
+	while (index < command.length) {
+		while (index < command.length && /\s/.test(command[index])) {
+			index++;
 		}
-		const basename = token.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
-		const normalized = basename.toLowerCase().replace(/\.(exe|cmd|bat|ps1|js|mjs|cjs)$/, '');
-		if (normalized === 'claude') {
-			return 'claude';
+		if (index >= command.length) {
+			break;
 		}
-		if (normalized === 'codex') {
-			return 'codex';
+		const start = index;
+		let value = '';
+		let quoted = false;
+		while (index < command.length && (quoted || !/\s/.test(command[index]))) {
+			if (command[index] === '"') {
+				quoted = !quoted;
+			} else {
+				value += command[index];
+			}
+			index++;
 		}
-		if (NON_AGENT_BASENAMES.has(normalized)) {
-			continue;
-		}
+		tokens.push({ value: value.replace(/^'+|'+$/g, ''), start, end: index });
+	}
+	return tokens;
+}
+
+/** パスのベース名を小文字にし、Windows のシム・スクリプトの拡張子を除く。 */
+function normalizedBasename(token: string): string {
+	const basename = token.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+	return basename.toLowerCase().replace(/\.(exe|cmd|bat|ps1|js|mjs|cjs)$/, '');
+}
+
+function agentKindOfBasename(basename: string): ParadisHookAgentKind | undefined {
+	if (basename === 'claude') {
+		return 'claude';
+	}
+	if (basename === 'codex') {
+		return 'codex';
 	}
 	return undefined;
+}
+
+/**
+ * ラッパーが実行するスクリプトのパス・パッケージ名からエージェント種別を返す。
+ * パッケージ名の版指定（`claude@latest`）は除く。スコープ付きの `@anthropic-ai/claude-code`
+ * は `claude-code` なので一致しない（npx はエージェントを子プロセスとして起動し、そちらが
+ * `claude` として判定される。ランナー自身まで拾うと同種の祖先ができて所有者を奪う）。
+ */
+function agentKindOfOperand(operand: string): ParadisHookAgentKind | undefined {
+	return agentKindOfBasename(normalizedBasename(operand).replace(/(?<=.)@.*$/, ''));
+}
+
+/** `command` の先頭のプログラムを解釈してエージェント種別を返す。 */
+function agentKindOfCommand(command: string, depth: number): ParadisHookAgentKind | undefined {
+	if (depth > MAX_COMMAND_NESTING) {
+		return undefined;
+	}
+	const tokens = tokenizeCommandLine(command);
+	if (tokens.length === 0) {
+		return undefined;
+	}
+	const kind = agentKindOfTokens(command, tokens, depth);
+	if (kind !== undefined || !/\s/.test(tokens[0].value)) {
+		return kind;
+	}
+	// 先頭が `"claude --resume"` のように引用符で囲まれたコマンド文字列だった場合（`sh -c` や
+	// `cmd /c` の中身）は、区切り直して解釈する。
+	return agentKindOfCommand(tokens[0].value + command.slice(tokens[0].end), depth + 1);
+}
+
+function agentKindOfTokens(command: string, tokens: readonly ICommandLineToken[], depth: number): ParadisHookAgentKind | undefined {
+	const program = normalizedBasename(tokens[0].value);
+	const programKind = agentKindOfBasename(program);
+	if (programKind !== undefined) {
+		return programKind;
+	}
+	const rest = (index: number) => index < tokens.length ? command.slice(tokens[index].start) : '';
+	if (program === 'env') {
+		// `env [-i] [-u NAME] [NAME=VALUE ...] program ...`
+		for (let i = 1; i < tokens.length; i++) {
+			const value = tokens[i].value;
+			if (ENV_OPTIONS_WITH_VALUE.has(value)) {
+				i++;
+			} else if (!value.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(value)) {
+				return agentKindOfCommand(rest(i), depth + 1);
+			}
+		}
+		return undefined;
+	}
+	if (SCRIPT_RUNTIME_BASENAMES.has(program) || PACKAGE_RUNNER_BASENAMES.has(program)) {
+		const isRunner = PACKAGE_RUNNER_BASENAMES.has(program);
+		let subcommandAllowed = program === 'bun' || program === 'deno';
+		for (let i = 1; i < tokens.length; i++) {
+			const value = tokens[i].value;
+			if (value === '--') {
+				return i + 1 < tokens.length ? agentKindOfOperand(tokens[i + 1].value) : undefined;
+			}
+			if (isRunner && PACKAGE_RUNNER_COMMAND_OPTIONS.has(value)) {
+				return agentKindOfCommand(rest(i + 1), depth + 1);
+			}
+			if (!isRunner && RUNTIME_INLINE_CODE_OPTIONS.has(value)) {
+				return undefined;
+			}
+			if ((isRunner ? PACKAGE_RUNNER_OPTIONS_WITH_VALUE : RUNTIME_OPTIONS_WITH_VALUE).has(value)) {
+				i++;
+				continue;
+			}
+			if (value.startsWith('-')) {
+				continue;
+			}
+			if (subcommandAllowed && RUNTIME_SUBCOMMANDS.has(value)) {
+				subcommandAllowed = false;
+				continue;
+			}
+			return agentKindOfOperand(value);
+		}
+		return undefined;
+	}
+	if (SHELL_BASENAMES.has(program)) {
+		// `sh -c 'claude ...'` はコマンド文字列の先頭、`sh /path/to/claude` はスクリプトのパスを見る。
+		let commandMode = false;
+		for (let i = 1; i < tokens.length; i++) {
+			const value = tokens[i].value;
+			if (SHELL_OPTIONS_WITH_VALUE.has(value)) {
+				i++;
+				continue;
+			}
+			if (value === '--' || value === '-') {
+				continue;
+			}
+			if (/^[-+]/.test(value)) {
+				commandMode ||= /^-[A-Za-z]*c[A-Za-z]*$/.test(value);
+				continue;
+			}
+			return commandMode ? agentKindOfCommand(rest(i), depth + 1) : agentKindOfOperand(value);
+		}
+		return undefined;
+	}
+	if (program === 'cmd') {
+		// `cmd.exe /d /s /c ""C:\...\codex.cmd" exec"`: /c 以降がコマンド。/s の外側の引用符を外す。
+		const commandIndex = tokens.findIndex((token, i) => i > 0 && /^\/[ck]$/i.test(token.value));
+		if (commandIndex < 0) {
+			return undefined;
+		}
+		let text = command.slice(tokens[commandIndex].end).trim();
+		if (text.startsWith('""') && text.endsWith('"')) {
+			text = text.slice(1, -1);
+		}
+		return agentKindOfCommand(text, depth + 1);
+	}
+	if (POWERSHELL_BASENAMES.has(program)) {
+		for (let i = 1; i < tokens.length; i++) {
+			const value = tokens[i].value.toLowerCase();
+			if (POWERSHELL_ENCODED_OPTIONS.has(value)) {
+				return undefined;
+			}
+			if (POWERSHELL_COMMAND_OPTIONS.has(value)) {
+				return agentKindOfCommand(rest(i + 1), depth + 1);
+			}
+			if (POWERSHELL_OPTIONS_WITH_VALUE.has(value)) {
+				i++;
+				continue;
+			}
+			if (value.startsWith('-')) {
+				continue;
+			}
+			return agentKindOfCommand(rest(i), depth + 1);
+		}
+		return undefined;
+	}
+	return undefined;
+}
+
+/**
+ * プロセスの起動行からエージェント種別を推定する。
+ * argv[0] のベース名と、ラッパー（node・bun・npx・env・シェル・cmd・PowerShell）が実行する
+ * スクリプトのパスだけを見る。ほかのプログラムの引数（`tmux new-session -s x claude` 等）や、
+ * `codex-companion.mjs`・`.claude/...` のようなパス断片には一致しない。
+ */
+export function paradisHookAgentKindFromCommandLine(command: string): ParadisHookAgentKind | undefined {
+	return agentKindOfCommand(command, 0);
 }
 
 /** POSIX: `ps ax` 1回でプロセス表を取得する（LC_ALL=C で lstart を5トークン固定にする）。 */
