@@ -925,6 +925,23 @@ suite('Paradis CDP screenshot filter', () => {
 		assert.strictEqual(retired.client.closeCalls, 0);
 	});
 
+	test('hides Para Code isolated worlds on a browser-level session and refuses to evaluate in them', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		publishAllowedSession(fixture, 'session-1');
+		fixture.client.sent.length = 0;
+		const emit = (payload: unknown) => fixture.upstream.emit('message', Buffer.from(JSON.stringify(payload)));
+		emit({ sessionId: 'session-1', method: 'Runtime.executionContextCreated', params: { context: { id: 1, uniqueId: 'main', name: '', auxData: { isDefault: true, frameId: 'F1' } } } });
+		emit({ sessionId: 'session-1', method: 'Runtime.executionContextCreated', params: { context: { id: 2, uniqueId: 'design', name: '', auxData: { isDefault: false, frameId: 'F1' } } } });
+		const upstreamBefore = fixture.upstream.sent.length;
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 5, sessionId: 'session-1', method: 'Runtime.evaluate', params: { expression: 'window.__paradisDesign', contextId: 2 } })));
+		const sent = parseSent(fixture.client) as { method?: string; id?: number; error?: { message: string } }[];
+		assert.deepStrictEqual(
+			[sent.map(frame => frame.method ?? frame.id), fixture.upstream.sent.length - upstreamBefore, fixture.client.closeCalls],
+			[['Runtime.executionContextCreated', 5], 0, 0],
+		);
+		assert.match(sent[1].error?.message ?? '', /not available on the Para Code CDP gateway/);
+	});
+
 	test('forwards valid ordinary upstream frames larger than 1 MiB', async () => {
 		const fixture = await createOpenBrowserProxyFixture();
 		publishAllowedSession(fixture, 'session-1');
