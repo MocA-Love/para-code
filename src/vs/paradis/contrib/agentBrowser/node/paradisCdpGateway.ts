@@ -648,6 +648,8 @@ export class ParadisCdpGateway extends Disposable {
 		}
 		const resolutionEpoch = this._peerResolutionEpoch;
 		let shellAccess: IParadisCdpIngressAccess | undefined;
+		// 4つ組（127.0.0.1:<相手> -> 127.0.0.1:<このサーバー>）で相手を探すので、待ち受けのポートも渡す
+		const serverPort = s.localPort;
 		const token = await this.resolvePaneTokenForPeerPort(remotePort, process.pid, {
 			getTokenForShellPid: pid => {
 				if (this._disposed || this._peerResolutionEpoch !== resolutionEpoch) {
@@ -657,7 +659,7 @@ export class ParadisCdpGateway extends Disposable {
 				shellAccess = candidate ? this._captureIngressAccess(candidate, true) : undefined;
 				return shellAccess?.token;
 			},
-		});
+		}, serverPort);
 		if (this._disposed || this._peerResolutionEpoch !== resolutionEpoch) {
 			return undefined;
 		}
