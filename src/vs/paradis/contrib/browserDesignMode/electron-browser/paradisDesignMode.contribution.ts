@@ -9,10 +9,13 @@
 // 内蔵ブラウザの Design Mode（B1）と Markup（B2）の登録。
 //
 // ボタンは upstream のブラウザのツールバー（MenuId.BrowserActionsToolbar の Tools グループ）に
-// メニュー項目として足すだけで、ツールバーの DOM には触らない。キーは Q62 の提案どおり ⌘⌥D
-// （upstream の「Add Element to Chat」⇧⌘C / 「Comment on Elements」⌥⌘C と重ならない）。
-// 注意: macOS の既定では ⌥⌘D は「Dock を自動的に表示/非表示」に割り当てられていて、OS が先に
-// 受け取る。その場合はツールバーのボタンかコマンドパレットから使う。
+// メニュー項目として足すだけで、ツールバーの DOM には触らない。
+//
+// キーは ⇧⌥⌘C（Windows / Linux は Ctrl+Shift+Alt+C）。upstream の「Comment on Elements」⌥⌘C の
+// 隣に置いた。当初の ⌥⌘D は macOS の既定で「Dock を自動的に表示/非表示」に取られ、押すと Dock の
+// 設定が切り替わってしまうのでやめた。⇧⌥⌘C はワークベンチでは「相対パスのコピー」だが、内蔵
+// ブラウザのエディタにはファイルのパスが無いので、ブラウザのエディタが前面のときだけこちらが受ける
+// （upstream が ⌥⌘C の「パスのコピー」を同じように上書きしているのと同じ扱い）。
 
 import './media/paradisDesignMode.css';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -52,9 +55,9 @@ registerAction2(class extends Action2 {
 				order: 3,
 			},
 			keybinding: {
-				weight: KeybindingWeight.WorkbenchContrib,
+				weight: KeybindingWeight.WorkbenchContrib + 1,
 				when: BROWSER_EDITOR_ACTIVE,
-				primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.KeyD,
+				primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyMod.Alt | KeyCode.KeyC,
 			},
 		});
 	}

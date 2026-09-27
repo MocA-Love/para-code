@@ -29,6 +29,7 @@
 }
 
 .monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-count {
+	flex-shrink: 0;
 	border: none;
 	background: none;
 	padding: 0;
@@ -47,11 +48,31 @@
 }
 
 .monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-hint,
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-message,
 .monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-attach {
+	min-width: 0;
+	flex-shrink: 1;
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-body2);
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-hint:empty,
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-message:empty {
+	display: none;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-message {
+	color: var(--vscode-foreground);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-message.warning {
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-message.error {
+	color: var(--vscode-errorForeground);
 }
 
 .monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-attach {
@@ -67,7 +88,13 @@
 }
 
 .monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-spacer {
-	flex: 1;
+	flex: 1 1 0;
+	min-width: 0;
+}
+
+/* The action buttons never shrink, so Send stays reachable in a narrow editor; the texts above give way first. */
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-button {
+	flex-shrink: 0;
 }
 
 .monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-button,
@@ -118,15 +145,18 @@
 
 /*
  * Covers the page area inside `.browser-container-wrapper`. It is registered in overlayManager.ts
- * (OVERLAY_DEFINITIONS), so the native page view is hidden while it is open. The z-index is only
- * local to the editor (the wrapper is its own positioned box) and stays far below workbench modals.
+ * (OVERLAY_DEFINITIONS), so the native page view is hidden while it is open. The wrapper does not
+ * create a stacking context (it has no z-index); the overlay stays inside the editor only because
+ * the wrapper clips it with `overflow: hidden`. The z-index just lifts it over the paused-page
+ * placeholder in the same wrapper. The background is transparent so window transparency and the
+ * placeholder around the stage look the same as before the overlay opened.
  */
 .monaco-workbench .browser-root .browser-container-wrapper > .paradis-markup-overlay {
 	position: absolute;
 	inset: 0;
 	z-index: 20;
 	overflow: hidden;
-	background-color: var(--vscode-editor-background);
+	background-color: transparent;
 	outline: none;
 }
 
@@ -191,6 +221,10 @@
 .monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-status {
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-body2);
+}
+
+.monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-status.error {
+	color: var(--vscode-errorForeground);
 }
 
 .monaco-workbench .browser-root .paradis-markup-overlay .paradis-markup-group {
