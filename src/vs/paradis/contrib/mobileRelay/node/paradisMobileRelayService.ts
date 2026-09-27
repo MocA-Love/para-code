@@ -61,6 +61,7 @@ import {
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyPcFocusQuiet, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
 import { paradisAgentLabel, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInsightSource } from '../../agentInsights/common/paradisAgentInsights.js';
+import { IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatView } from '../../agentChat/common/paradisAgentChat.js';
 import {
 	IParadisConfirmedAgentPanes,
 	IParadisMobileInboundFrame,
@@ -520,7 +521,12 @@ function probeFailureCause(err: unknown): string {
 	return 'unknown';
 }
 
-export class ParadisMobileRelayService extends Disposable implements IParadisMobileRelayService, IParadisAgentPaneInsightSource {
+/** renderer から届いたペイントークンの形を確かめる（IPC の入力は信用しない）。 */
+function paradisIsAgentChatToken(token: unknown): token is string {
+	return typeof token === 'string' && token.length > 0 && token.length <= 200;
+}
+
+export class ParadisMobileRelayService extends Disposable implements IParadisMobileRelayService, IParadisAgentPaneInsightSource, IParadisAgentChatSource {
 	declare readonly _serviceBrand: undefined;
 
 	private readonly _onDidChangeStatus = this._register(new Emitter<IParadisMobileStatus>());
@@ -540,6 +546,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	/** デスクトップ UI 向け: ペインの様子が変わった（agentInsights が購読する。モバイルとは無関係）。 */
 	private readonly _onDidChangeAgentPaneInsights = this._register(new Emitter<void>());
 	readonly onDidChangeAgentPaneInsights = this._onDidChangeAgentPaneInsights.event;
+	/** デスクトップのチャット表示向け: 見られているペインの会話が変わった（agentChat が購読する。モバイルとは無関係）。 */
+	private readonly _onDidChangeAgentChat = this._register(new Emitter<readonly string[]>());
+	readonly onDidChangeAgentChat = this._onDidChangeAgentChat.event;
 
 	// PC本体（マシン全体）のリソースサンプラー。CPUは累積値の差分なので使い回す必要がある。
 	private readonly hostResourceSampler = new ParadisHostResourceSampler();
@@ -698,6 +707,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		));
 		this._register(toDisposable(() => { void agentSessionStore.flush(); }));
 		this._register(this.agentChat.onDidChangeDesktopPaneInsights(() => this._onDidChangeAgentPaneInsights.fire()));
+		this._register(this.agentChat.onDidChangeDesktopChat(tokens => this._onDidChangeAgentChat.fire(tokens)));
 		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(({ tokens, tokensOutsideHookReach }) => {
 			this.confirmedAgentPanes = { revision: this.confirmedAgentPanes.revision + 1, tokens, tokensOutsideHookReach };
 			this._onDidChangeConfirmedAgentPanes.fire(this.confirmedAgentPanes);
@@ -918,6 +928,37 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	/** デスクトップ UI 向けの読み取り口。モバイル連携が無効でも動く（送信は一切しない）。 */
 	async getAgentPaneInsights(tokens: readonly string[]): Promise<readonly IParadisAgentPaneInsight[]> {
 		return this.agentChat.getDesktopPaneInsights(Array.isArray(tokens) ? tokens.filter(token => typeof token === 'string') : []);
+	}
+
+	// --- デスクトップのチャット表示向けの読み取り口（agentChat）。モバイル連携が無効でも動く。モバイルへは送らない。
+
+	async watchAgentChat(watcherId: string, tokens: readonly string[]): Promise<void> {
+		if (typeof watcherId !== 'string' || watcherId.length === 0 || watcherId.length > 200 || !Array.isArray(tokens)) {
+			return;
+		}
+		this.agentChat.watchDesktopChat(watcherId, tokens.filter(token => paradisIsAgentChatToken(token)));
+	}
+
+	async getAgentChat(token: string, cursor: IParadisAgentChatCursor | undefined): Promise<IParadisAgentChatView | undefined> {
+		if (!paradisIsAgentChatToken(token)) {
+			return undefined;
+		}
+		const validCursor = cursor !== undefined && cursor !== null && typeof cursor.epoch === 'string' && Number.isSafeInteger(cursor.rev) ? { epoch: cursor.epoch, rev: cursor.rev } : undefined;
+		return this.agentChat.getDesktopChat(token, validCursor);
+	}
+
+	async getAgentChatFullText(token: string, epoch: string, rev: number): Promise<string | undefined> {
+		return paradisIsAgentChatToken(token) && typeof epoch === 'string' && Number.isSafeInteger(rev) ? this.agentChat.getDesktopChatFullText(token, epoch, rev) : undefined;
+	}
+
+	async getAgentChatImage(token: string, epoch: string, rev: number, index: number): Promise<IParadisAgentChatImageData | undefined> {
+		return paradisIsAgentChatToken(token) && typeof epoch === 'string' && Number.isSafeInteger(rev) && Number.isSafeInteger(index)
+			? this.agentChat.getDesktopChatImage(token, epoch, rev, index)
+			: undefined;
+	}
+
+	async getAgentChatCommands(token: string): Promise<readonly IParadisAgentChatCommand[]> {
+		return paradisIsAgentChatToken(token) ? this.agentChat.getDesktopChatCommands(token) : [];
 	}
 
 	async claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string, lease: IParadisMobileWindowLease): Promise<'claimed' | 'stale' | 'expired'> {
