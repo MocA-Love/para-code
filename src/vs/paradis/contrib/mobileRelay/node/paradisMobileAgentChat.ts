@@ -250,6 +250,13 @@ const CODEX_ROLLOUT_ORIGIN_CACHE_LIMIT = 512;
  */
 const LATE_HOOK_AFTER_TURN_END_MS = 3_000;
 const nodeRequire = createRequire(import.meta.url);
+/**
+ * Claude Code が、利用者が許可を拒否したツールの結果に書く定型文の書き出し（tool_result の is_error と組で見る）。
+ * 全文は "The user doesn't want to proceed with this tool use. The tool use was rejected … STOP what you are
+ * doing and wait for the user to tell you how to proceed." で、エージェントはそこで次の指示を待つ。
+ */
+const PARADIS_CLAUDE_TOOL_REJECTED_PREFIX = `The user doesn't want to proceed with this tool use`;
+
 /** ペインごとに覚える未完了のツール呼び出しの上限（hook の取りこぼしで伸び続けないように）。 */
 const PARADIS_OPEN_TOOL_USE_LIMIT = 256;
 
@@ -303,6 +310,35 @@ function agentKindForPath(transcriptPath: string): ParadisAgentKind {
  * 渡るため、hookエンドポイントを騙って任意ファイルをモバイルへtailさせる悪用を防ぐ
  * （所在検証 + realpath でシンボリックリンク・`..` 経由の脱出も排除する）。
  */
+/** 許可 root の realpath（解決できたものだけ覚える。root は起動中に変わらない）。 */
+const rootRealpaths = new Map<string, string>();
+
+/** 許可 root の字面と realpath 後の綴り（重複なし）。 */
+async function paradisRootSpellings(roots: readonly string[]): Promise<string[]> {
+	const spellings = new Set<string>();
+	for (const root of roots) {
+		spellings.add(root);
+		let real = rootRealpaths.get(root);
+		if (real === undefined) {
+			try {
+				real = await fs.realpath(root);
+				rootRealpaths.set(root, real);
+			} catch {
+				// まだ無い（初回起動前など）。字面だけで比べる。
+			}
+		}
+		if (real !== undefined) {
+			spellings.add(real);
+		}
+	}
+	return [...spellings];
+}
+
+/** 回帰テスト用。本番と同じ規則で transcript のパスを許すかを返す。 */
+export function paradisIsAllowedTranscriptPathForTest(transcriptPath: string): Promise<boolean> {
+	return isAllowedTranscriptPath(transcriptPath);
+}
+
 async function isAllowedTranscriptPath(transcriptPath: string): Promise<boolean> {
 	if (!isAbsolute(transcriptPath) || !transcriptPath.endsWith('.jsonl')) {
 		return false;
@@ -317,7 +353,11 @@ async function isAllowedTranscriptPath(transcriptPath: string): Promise<boolean>
 	}
 	// 接続先の transcript は写しを読む。写しは私たちしか書かない場所にあるので、許可rootに加える
 	// （hookを騙って任意ファイルを読ませる筋道は増えない）。
-	const roots = [paradisClaudeConfigDir(), paradisCodexHome(), ...paradisRemoteTranscriptMirrorRoots()];
+	// 許可 root は、字面と realpath 後の両方の綴りで比べる。`CLAUDE_CONFIG_DIR` などが symlink を含むと
+	// （macOS の `/tmp` → `/private/tmp`）、エージェントが報告する transcript のパスや、下の実体の確認で得る
+	// パスが root の字面と合わず、正しい transcript を「root の外」として拒んでいた（フェーズ6の実機確認）。
+	// root の外へ抜ける symlink は、実体（realpath）が どちらの綴りの root にも入らないので引き続き拒む。
+	const roots = await paradisRootSpellings([paradisClaudeConfigDir(), paradisCodexHome(), ...paradisRemoteTranscriptMirrorRoots()]);
 	const within = (candidate: string) => roots.some(root => candidate === root || candidate.startsWith(root + sep));
 	if (!within(resolved)) {
 		return false;
@@ -933,6 +973,40 @@ async function discoverCodexThreadSourceById(threadId: string, homes: IParadisAg
  * Codex rollout の先頭行（session_meta）を読む。cwd探索とhookの親子判定の両方が使う。
  * session_meta は書き出し後に変わらないため、先頭16KBだけ読めば足りる。
  */
+/**
+ * rollout の先頭行（session_meta）の上限。codex-cli 0.155.1 の先頭行は base_instructions を含んで 22,116 バイト
+ * あり（フェーズ6の実機確認）、以前の 16KB では読み切れず、素性（root / SubAgent）が分からないまま同じタブの
+ * 新しい Codex の会話へ乗り換えられなかった。大きめに取り、超えたら諦める（読み切れない行は解析しない）。
+ */
+const CODEX_SESSION_META_MAX_BYTES = 1024 * 1024;
+const FIRST_LINE_CHUNK_BYTES = 64 * 1024;
+
+/** ファイルの先頭行を改行まで読む。上限までに改行が無ければ undefined（改行が無いまま終わったらその全体）。 */
+async function paradisReadFirstLine(handle: fs.FileHandle, maxBytes: number): Promise<string | undefined> {
+	const chunks: Buffer[] = [];
+	let total = 0;
+	while (total < maxBytes) {
+		const chunk = Buffer.alloc(Math.min(FIRST_LINE_CHUNK_BYTES, maxBytes - total));
+		const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
+		if (bytesRead === 0) {
+			return total === 0 ? undefined : Buffer.concat(chunks).toString('utf8');
+		}
+		const newline = chunk.subarray(0, bytesRead).indexOf(0x0a);
+		if (newline !== -1) {
+			chunks.push(chunk.subarray(0, newline));
+			return Buffer.concat(chunks).toString('utf8');
+		}
+		chunks.push(chunk.subarray(0, bytesRead));
+		total += bytesRead;
+	}
+	return undefined;
+}
+
+/** 回帰テスト用。rollout の先頭行を本番と同じ読み方で解析する。 */
+export function paradisReadCodexRolloutSessionMetaForTest(rolloutPath: string): Promise<IParadisCodexSessionMeta | undefined> {
+	return readCodexRolloutSessionMeta(rolloutPath);
+}
+
 async function readCodexRolloutSessionMeta(rolloutPath: string): Promise<IParadisCodexSessionMeta | undefined> {
 	let handle: fs.FileHandle;
 	try {
@@ -941,9 +1015,8 @@ async function readCodexRolloutSessionMeta(rolloutPath: string): Promise<IParadi
 		return undefined;
 	}
 	try {
-		const buffer = Buffer.alloc(16 * 1024);
-		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-		return paradisParseCodexSessionMeta(buffer.subarray(0, bytesRead).toString('utf8').split('\n')[0] ?? '');
+		const firstLine = await paradisReadFirstLine(handle, CODEX_SESSION_META_MAX_BYTES);
+		return firstLine === undefined ? undefined : paradisParseCodexSessionMeta(firstLine);
 	} catch {
 		return undefined;
 	} finally {
@@ -1105,8 +1178,11 @@ interface ITailerDelegate {
 	 * 呼び出し側 (paradisAgentHookBus) でペインの生死に紐づけて自然に消す。
 	 */
 	onIssueUrlsUpdated?(issueUrls: ReadonlySet<string>): void;
-	/** 追記で、これらのツールの結果が transcript に書かれた（PostToolUse が来ない拒否の検出に使う）。 */
-	onToolResults?(toolUseIds: readonly string[]): void;
+	/**
+	 * 追記で、これらのツールの結果が transcript に書かれた（PostToolUse が来ない拒否の検出に使う）。
+	 * rejected は、利用者が許可を拒否した結果（Claude Code の定型文）が含まれていたか。
+	 */
+	onToolResults?(toolUseIds: readonly string[], rejected: boolean): void;
 }
 
 /**
@@ -1602,7 +1678,8 @@ class TranscriptTailer {
 		const resultIds = added.filter(message => message.kind === 'tool_result' && message.toolUseId !== undefined).map(message => message.toolUseId!);
 		const approvalsSettled = emitDelta && this.settleApprovalsByToolResults(resultIds);
 		if (emitDelta && resultIds.length > 0) {
-			this.delegate.onToolResults?.(resultIds);
+			const rejected = added.some(message => message.kind === 'tool_result' && message.isError === true && message.text.startsWith(PARADIS_CLAUDE_TOOL_REJECTED_PREFIX));
+			this.delegate.onToolResults?.(resultIds, rejected);
 		}
 		this.applySignals(signals, emitDelta);
 		if (approvalsSettled && added.length === 0) {
@@ -1687,7 +1764,7 @@ class TranscriptTailer {
 	 * transcript に現れないため、hook が唯一のライブな供給源。モバイル側はこのメッセージの
 	 * 内容を承認バー（許可/拒否）に添えて表示する。
 	 */
-	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string, desktopOnly = false, waitKey?: string): void {
+	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string, desktopOnly = false, waitKey?: string, sameContentLimit = 1): void {
 		this.enqueue(async () => {
 			// ここで pendingQuestions を見て注入自体を捨ててはいけない。PermissionRequest hook は
 			// 1プロンプトにつき1回しか来ないため、落とすと承認要求が永久に復元されない。
@@ -1700,8 +1777,10 @@ class TranscriptTailer {
 				return;
 			}
 			const key = toolUseId !== undefined ? `${toolUseId}:${text}` : text;
-			if (this.approvalQueue.some(entry => entry.key === key)) {
-				return; // 同一要求の再発火（リトライ等）は無視
+			// 同じ内容の要求が、同じ内容の未完了のツール呼び出しの数より多くなるなら、同じ hook の再送として捨てる。
+			// 並列の同じ呼び出し（同じファイルの Read を2つ等）は、呼び出しの数まで別の承認として積む。
+			if (this.approvalQueue.filter(entry => entry.key === key).length >= Math.max(1, sameContentLimit)) {
+				return;
 			}
 			const interactionId = toolUseId ?? `approval:${this.epoch}:${this.approvalSeq++}`;
 			this.approvalQueue.push({
@@ -1840,6 +1919,16 @@ class TranscriptTailer {
 	 */
 	hasPendingApproval(): boolean {
 		return this.approvalQueue.some(entry => !entry.desktopOnly);
+	}
+
+	/** デスクトップ専用のものも含めて、回答待ちの承認が残っているか。 */
+	hasAnyPendingApproval(): boolean {
+		return this.approvalQueue.length > 0;
+	}
+
+	/** 今キューに積まれている処理（承認の解除など）が済んだ後に実行する。 */
+	afterQueue(work: () => void): Promise<void> {
+		return this.enqueue(async () => work());
 	}
 
 	/**
@@ -3869,6 +3958,12 @@ export class ParadisMobileAgentChat extends Disposable {
 				return;
 			}
 			case 'PermissionRequest': {
+				// 許可が決着したときに戻せるよう、許可を待つ前の様子を覚える（決着を知らせる hook が来ない
+				// 拒否があるため。settleLiveAfterApprovals）。
+				const before = this.liveStates.get(event.token);
+				if (before?.phase !== 'permission') {
+					this.liveBeforePermission.set(event.token, before);
+				}
 				const detail = ParadisMobileAgentChat.toolDetail(event.toolInput);
 				this.setLiveState(event.token, {
 					phase: 'permission', source: 'hook', startedAt: event.at, updatedAt: event.at,
@@ -3939,6 +4034,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		this.lastTurnEndedAt.set(event.token, event.at);
 		this.activeTurnTokens.delete(event.token);
+		this.liveBeforePermission.delete(event.token);
 		this.clearLiveState(event.token);
 		const tracker = this.activityTrackers.get(event.token);
 		const activityEnded = event.event === 'SessionEnd'
@@ -4624,7 +4720,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * hook からツール呼び出しの開始・完了を覚える。PermissionRequest なら、承認に付ける tool_use_id
 	 * （hook 自身が持っていればそれ）か、合成 id の承認を解く待ち合わせの印を返す。
 	 */
-	private trackToolUse(event: IParadisAgentHookEvent): { readonly toolUseId?: string; readonly waitKey?: string } {
+	private trackToolUse(event: IParadisAgentHookEvent): { readonly toolUseId?: string; readonly waitKey?: string; readonly sameContentLimit?: number } {
 		const token = event.token;
 		if (paradisIsTurnEndHookEvent(event.event) || event.event === 'SessionStart') {
 			this.openToolUses.delete(token);
@@ -4676,7 +4772,43 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.syntheticApprovalWaits.set(token, waits);
 		}
 		waits.set(waitKey, { tool: event.toolName, ids: new Set(sameTool) });
-		return { waitKey };
+		return { waitKey, sameContentLimit: matches.length };
+	}
+
+	/** 許可を待つ前の様子（ペイン → 様子。無ければ何も動いていなかった）。 */
+	private readonly liveBeforePermission = new Map<string, IParadisAgentLiveState | undefined>();
+
+	/**
+	 * transcript に結果が書かれて承認が決着した後の、生成中の様子を直す。Claude Code 2.1.283 は許可を Esc で
+	 * 拒否しても hook を出さないので、許可を待つ様子（「許可を待っています n秒」）が次のターンまで残っていた。
+	 * - 利用者が拒否した結果（Claude Code の定型文）なら、エージェントは次の指示を待っている。ターンを終える
+	 * - それ以外で承認が残っていなければ、許可を待つ前の様子へ戻す
+	 */
+	private settleLiveAfterApprovals(token: string, rejected: boolean): void {
+		const tailer = this.tailers.get(token);
+		if (tailer === undefined || tailer.hasAnyPendingApproval()) {
+			return;
+		}
+		const live = this.liveStates.get(token);
+		if (rejected) {
+			this.liveBeforePermission.delete(token);
+			const wasActive = this.activeTurnTokens.delete(token);
+			this.clearLiveState(token);
+			if (wasActive || live !== undefined) {
+				fireParadisAgentTurnEnded(token);
+			}
+			return;
+		}
+		if (live?.phase !== 'permission' || live.tool === 'AskUserQuestion') {
+			return;
+		}
+		const before = this.liveBeforePermission.get(token);
+		this.liveBeforePermission.delete(token);
+		if (before === undefined) {
+			this.clearLiveState(token);
+		} else {
+			this.setLiveState(token, { ...before, updatedAt: Date.now() });
+		}
 	}
 
 	/** ツール呼び出しが終わった（PostToolUse か、transcript の tool_result）。待ち合わせが空になった承認を解く。 */
@@ -5487,7 +5619,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& (event.toolName !== undefined || event.toolInput !== undefined)
 			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
 			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
-			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, approvalTarget.toolUseId, !mobileWants, approvalTarget.waitKey);
+			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, approvalTarget.toolUseId, !mobileWants, approvalTarget.waitKey, approvalTarget.sameContentLimit);
 		}
 		const forceApprovalClear = event.event === 'PermissionDenied';
 		const matchingApprovalClear = (event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined;
@@ -5596,7 +5728,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			// セッションを、鮮度の推測を持ち込まずに引き継ぎ扱いから解くための唯一の経路。
 			onAppended: () => this.rememberAgentEvidence(token),
 			// PostToolUse が来ない拒否（ターミナルでの Esc）でも、合成 id の承認の待ち合わせを進める。
-			onToolResults: toolUseIds => this.finishToolUses(token, toolUseIds),
+			onToolResults: (toolUseIds, rejected) => {
+				this.finishToolUses(token, toolUseIds);
+				// 承認の解除は tailer のキューで行われるので、その後で生成中の様子を直す。
+				void tailer.afterQueue(() => this.settleLiveAfterApprovals(token, rejected));
+			},
 			// ワークスペース一覧のIssueマーク用。ペインの生死に紐づける判定 (activityGuard) は
 			// setParadisAgentPaneIssueUrls 側で行うため、ここでは検出結果をそのまま渡すだけでよい。
 			onIssueUrlsUpdated: issueUrls => setParadisAgentPaneIssueUrls(token, issueUrls),
