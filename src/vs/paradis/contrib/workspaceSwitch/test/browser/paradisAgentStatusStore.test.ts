@@ -119,4 +119,20 @@ suite('ParadisAgentStatusStore', () => {
 		}, { a: false, b: true, unknown: false, afterFirst: 1, afterSame: 1, afterRemoval: 2 });
 	});
 
+	test('remembers a review acknowledged by the viewer until the pane reports again', () => {
+		// 定期実行の見張りが「既読で消えた」と「取得の失敗で消えた」を見分けるのに使う
+		const { store, fired } = createStore();
+		store.setInstanceStates(new Map([[7, 'working']]), new Set([7]));
+		const afterWorking = fired();
+		store.setInstanceStates(new Map(), new Set([7]), new Set([7]));
+		const acknowledged = store.wasReviewAcknowledged(7);
+		const afterAck = fired();
+		store.setInstanceStates(new Map(), new Set());
+		const afterPollFailure = store.wasReviewAcknowledged(7);
+		store.setInstanceStates(new Map([[7, 'working']]), new Set([7]));
+
+		assert.deepStrictEqual({ afterWorking, acknowledged, afterAck, afterPollFailure, afterNextTurn: store.wasReviewAcknowledged(7) },
+			{ afterWorking: 1, acknowledged: true, afterAck: 2, afterPollFailure: true, afterNextTurn: false });
+	});
+
 });

@@ -119,6 +119,8 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 		const activeStateKey = this._options.workspaceSwitchService.activeStateKey;
 		const scopeBreakdowns = new Map<string, ParadisAgentStatus[]>();
 		const instanceStatuses = new Map<number, ParadisAgentStatus>();
+		/** この回に review を既読にして状態から外したインスタンス（取得失敗で消えたのと見分けるため）。 */
+		const acknowledgedInstances = new Set<number>();
 		const agentInstanceIds = new Set<number>();
 		/**
 		 * スコープ (stateKey) → 検出済み Issue URL。cwd 最長一致・記憶されたスコープ経由の
@@ -189,6 +191,7 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 				this._options.acknowledgePaneStatus(paneStatus.token);
 				if (instanceId !== undefined) {
 					instanceStatuses.delete(instanceId);
+					acknowledgedInstances.add(instanceId);
 				}
 				continue;
 			}
@@ -202,7 +205,7 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 		}
 
 		this._options.statusStore.setScopeBreakdowns(scopeBreakdowns);
-		this._options.statusStore.setInstanceStates(instanceStatuses, agentInstanceIds);
+		this._options.statusStore.setInstanceStates(instanceStatuses, agentInstanceIds, acknowledgedInstances);
 		this._options.statusStore.setScopeIssueUrls(scopeIssueUrls);
 	}
 }

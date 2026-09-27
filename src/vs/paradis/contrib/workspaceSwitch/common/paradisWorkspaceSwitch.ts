@@ -625,8 +625,17 @@ export interface IParadisAgentStatusStore {
 	getScopeIssueUrls(stateKey: string): readonly string[];
 	/** ポーラー専用。代表値は内訳から導出するため、書き込みは内訳のみで行う */
 	setScopeBreakdowns(breakdowns: ReadonlyMap<string, readonly ParadisAgentStatus[]>): void;
-	/** ポーラー専用（ペイン単位の状態とエージェント実績インスタンスの一括更新） */
-	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>): void;
+	/**
+	 * 完了（review）を、利用者がそのスペースを見ていたために画面側がその場で既読にして状態から消した
+	 * インスタンスか。状態の取得失敗で消えた場合と見分けるのに使う（定期実行の完了判定）。
+	 * そのインスタンスに次の状態が届くと false に戻る。
+	 */
+	wasReviewAcknowledged?(instanceId: number): boolean;
+	/**
+	 * ポーラー専用（ペイン単位の状態とエージェント実績インスタンスの一括更新）。
+	 * `acknowledgedInstanceIds` はこの回に review を既読にして状態から外したインスタンス。
+	 */
+	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>, acknowledgedInstanceIds?: ReadonlySet<number>): void;
 	/** モバイルリレー専用（hook 以外の根拠でセッションが確定しているペインの一括更新）。 */
 	setDiscoveredAgentPaneTokens(paneTokens: ReadonlySet<string>): void;
 	/** ポーラー専用（スコープごとに検出済み Issue URL の一括更新）。 */
