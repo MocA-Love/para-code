@@ -379,6 +379,94 @@ suite('ParadisAgentHooksSetup', () => {
 		}
 	});
 
+	test('leaves a read-only settings file alone instead of replacing it', async function () {
+		if (process.platform === 'win32') {
+			this.skip();
+		}
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hooks-readonly-'));
+		try {
+			const file = join(root, 'settings.json');
+			await fs.writeFile(file, '{"locked":true}\n');
+			await fs.chmod(file, 0o444);
+
+			let code: string | undefined;
+			try {
+				paradisWriteFileAtomicallySync(file, '{"new":true}\n');
+			} catch (error) {
+				code = (error as NodeJS.ErrnoException).code;
+			}
+
+			assert.deepStrictEqual({
+				code,
+				content: await fs.readFile(file, 'utf8'),
+				mode: (await fs.stat(file)).mode & 0o777,
+				leftovers: (await fs.readdir(root)).filter(name => name.endsWith('.tmp')),
+			}, {
+				code: 'EACCES',
+				content: '{"locked":true}\n',
+				mode: 0o444,
+				leftovers: [],
+			});
+		} finally {
+			await fs.chmod(join(root, 'settings.json'), 0o644).catch(() => undefined);
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('writes in place for hard links, for a directory it cannot add files to, and follows a dangling symlink chain', async function () {
+		if (process.platform === 'win32') {
+			this.skip();
+		}
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hooks-inplace-'));
+		const lockedDir = join(root, 'locked');
+		try {
+			// ハードリンク: 差し替えると片方だけ新しくなる
+			const original = join(root, 'settings.json');
+			const hardLink = join(root, 'settings-link.json');
+			await fs.writeFile(original, 'old');
+			await fs.link(original, hardLink);
+			const inodeBefore = (await fs.stat(original)).ino;
+			paradisWriteFileAtomicallySync(original, 'hard');
+
+			// 一時ファイルを作れないディレクトリ（ファイル自体には書ける）
+			await fs.mkdir(lockedDir);
+			const lockedFile = join(lockedDir, 'hooks.json');
+			await fs.writeFile(lockedFile, 'old');
+			await fs.chmod(lockedDir, 0o555);
+			paradisWriteFileAtomicallySync(lockedFile, 'locked');
+			await fs.chmod(lockedDir, 0o755);
+
+			// 多段の symlink で、最後のリンク先がまだ無い
+			const first = join(root, 'first.json');
+			const second = join(root, 'second.json');
+			const finalTarget = join(root, 'final.json');
+			await fs.symlink(second, first);
+			await fs.symlink(finalTarget, second);
+			paradisWriteFileAtomicallySync(first, 'chain');
+
+			assert.deepStrictEqual({
+				hardLinkContent: await fs.readFile(hardLink, 'utf8'),
+				sameInode: (await fs.stat(original)).ino === inodeBefore,
+				lockedContent: await fs.readFile(lockedFile, 'utf8'),
+				firstIsSymlink: (await fs.lstat(first)).isSymbolicLink(),
+				secondIsSymlink: (await fs.lstat(second)).isSymbolicLink(),
+				finalContent: await fs.readFile(finalTarget, 'utf8'),
+				leftovers: [...await fs.readdir(root), ...await fs.readdir(lockedDir)].filter(name => name.endsWith('.tmp')),
+			}, {
+				hardLinkContent: 'hard',
+				sameInode: true,
+				lockedContent: 'locked',
+				firstIsSymlink: true,
+				secondIsSymlink: true,
+				finalContent: 'chain',
+				leftovers: [],
+			});
+		} finally {
+			await fs.chmod(lockedDir, 0o755).catch(() => undefined);
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('does not let an older process replace newer managed hooks', () => {
 		const newerCommand = paradisManagedAgentHookCommand().replace(
 			`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`,
