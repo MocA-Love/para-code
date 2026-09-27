@@ -659,13 +659,13 @@ upstream 取り込み時に確認すること:
 
 ## Computer Use は同梱の補助アプリに TCC の許可を閉じ込める（computerUse、2026-09-28、フェーズ7 B3）
 
-設計は研究リポジトリの `phase7-b3/design.md`。この版は設計書 7 章の段取りのうち、回答待ちの設問（`q.html` の Q97〜Q101）に左右されない土台で、読み取りだけを入れた。クリック・文字入力・貼り付け、許可したアプリの一覧と取り消し、OS の許可のやり直し（`tccutil reset`）はまだ無い。
+設計は研究リポジトリの `phase7-b3/design.md`。読み取りと操作の両方を入れた。設問 Q97〜Q101 はすべて案 A（2026-09-28）。許可したアプリの一覧と取り消し、OS の許可のやり直し（`tccutil reset`）はまだ無い。
 
 | 層 | 置き場所 | 中身 |
 |---|---|---|
-| 補助アプリ（Swift） | `src/vs/paradis/contrib/computerUse/native/macos/` | `Para Code Computer Use.app`（bundle id `ltd.paradis.paracode.computeruse`、`LSUIElement`、macOS 14 以上、universal）。命令は `handshake`・`status`・`permissions`・`listApps`・`listWindows`・`screenshotWindow`（ScreenCaptureKit の単一ウィンドウ）・`accessibilityTree`・`shutdown` |
+| 補助アプリ（Swift） | `src/vs/paradis/contrib/computerUse/native/macos/` | `Para Code Computer Use.app`（bundle id `ltd.paradis.paracode.computeruse`、`LSUIElement`、macOS 14 以上、universal、約束の版 2）。読み取りの命令は `handshake`・`status`・`permissions`・`listApps`・`listWindows`・`screenshotWindow`（ScreenCaptureKit の単一ウィンドウ）・`accessibilityTree`、操作の命令は `activateApp`・`click`・`drag`・`scroll`・`typeText`・`pasteText`・`pressKey`・`hotkey` |
 | ビルド | `build/paradis/computerUse/buildHelper.ts`・`embedHelper.ts` | swiftc で arm64 と x86_64 を作って `lipo`、`.app` に包んで ad-hoc 署名。`--test` で Swift のテスト、`--if-stale` で古いときだけ作る |
-| shared process | `contrib/computerUse/node/` | 補助アプリの起動と接続（`paradisComputerUseHelperClient.ts`）、ペインとアプリの組ごとの許可の台帳（メモリだけ）、MCP ツール 4 件（`computer_status`・`computer_list_apps`・`computer_list_windows`・`computer_get_app_state`）、状態のチャネル |
+| shared process | `contrib/computerUse/node/` | 補助アプリの起動と接続（`paradisComputerUseHelperClient.ts`）、ペインとアプリの組ごとの許可の台帳（メモリだけ）、MCP ツール 12 件（読み取り 4 件と、`computer_activate_app`・`computer_click`（右・ダブル・トリプルも）・`computer_drag`・`computer_scroll`・`computer_type_text`・`computer_paste_text`・`computer_press_key`・`computer_hotkey`）、状態のチャネル |
 | 画面 | `contrib/computerUse/electron-browser/`・`browser/` | 承認ダイアログ（ページ共有と同じ `askApproval`、`cooldownKey` は `computer:<bundle id>`）、状態を見るコマンド `paradis.computerUse.showStatus`、設定 `paradis.computerUse.enabled`（既定オフ、APPLICATION）、設定画面の「Computer Use」節 |
 
 補助アプリは shared process から `open -n -g -j` で起動する。Para Code の子として exec すると TCC の許可が Para Code 本体で評価されうるため。手元（macOS 27、ad-hoc 署名）で `open -n` から起動した補助アプリは `responsibility_get_pid_responsible_for_pid` が自分自身を返した（Developer ID 署名と公証の後も同じかは未確認）。この関数が見つからない OS では確認を飛ばし、自分以外が返ったら `misattributed` で機能を止める。
@@ -674,7 +674,17 @@ upstream 取り込み時に確認すること:
 
 残る穴（受け入れる）: `ELECTRON_RUN_AS_NODE=1` で Para Code の実行ファイルを動かすと同じ署名のプロセスを作れる。親が main でなければ止まるが、main の子である拡張機能ホストの拡張機能は通り得る。拡張機能はもともと利用者の権限で何でもできる前提なので防がない。
 
-常に断るアプリはパスワードマネージャー 11 件（Orca の 8 件に `com.apple.Passwords`・`com.agilebits.onepassword7`・`com.1password.1password-launcher`）、キーチェーンアクセス、Para Code 自身（`ltd.paradis.paracode` とその下、開発時の `com.github.Electron`）。Q97（システム設定と認証のダイアログ）は `PARADIS_COMPUTER_USE_SYSTEM_SURFACES` に並べてあり、回答が A なら `PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES` を true にするだけで効く。承認ダイアログの「操作も許可」は、操作系のツールが入るまで `PARADIS_COMPUTER_USE_OPERATE_AVAILABLE`（false）で出さない。
+常に断るアプリはパスワードマネージャー 11 件（Orca の 8 件に `com.apple.Passwords`・`com.agilebits.onepassword7`・`com.1password.1password-launcher`）、キーチェーンアクセス、Para Code 自身（`ltd.paradis.paracode` とその下、開発時の `com.github.Electron`）、システム設定と認証のダイアログ（Q97 A、`PARADIS_COMPUTER_USE_SYSTEM_SURFACES`）。ターミナル類とスクリプトエディタ（`PARADIS_COMPUTER_USE_COMMAND_APPS`）は断らず、承認ダイアログに「このアプリを操作すると、コマンドをあなたの権限で実行できます」を足す（Q98 A）。SSH 接続先のペインは設定で変えられない固定の拒否（Q99 A）。
+
+承認は「拒否」「読み取りのみ許可」「操作も許可」の 3 つ。読み取りを許可済みのアプリへの操作の求めは格上げとして「拒否」「操作も許可」の 2 つにする。初回の操作の求めに「読み取りのみ」を選んだ・格上げを拒否したときは読み取りの許可を残し、そのペインのそのアプリへの操作は聞き直さずに断る（台帳の `operateRefused`）。読み取りだけのアプリには入力を一切送らない。
+
+入力の守り（設計書 6.3、補助アプリ側）: どの操作もアクセシビリティの許可が無ければ OS に触れる前に断る。送る直前と各イベントの間に、前面のアプリが目的の pid か、的の点（キーなら一番手前の layer 0 のウィンドウ）の持ち主が目的の pid かを確かめ、違えば `window_not_focused` / `point_obscured` で止める。押したボタンとキーは止めるときも必ず離す。送らない組み合わせ（⌘Space・⌃Space・⌘Tab・⌘`・⌘⌥Esc・⌃⌘Q・⌘⇧Q・⌘⇧3/4/5/6・⌃矢印・Fn の組み合わせ）は `key_blocked`。修飾キーはイベントのフラグで付け、イベントの元は `privateState`（利用者が押している修飾キーを混ぜない）。`typeText` は 4,000 文字まで（改行は Return、タブは Tab のキー）、`pasteText` は 20,000 文字まで。クリックとキーは HID のタップへ、スクロールだけ `postToPid`。
+
+利用者の操作中（Q101 A）: キー・修飾キー・マウスのボタン・移動・スクロールのどれかが直前 1 秒以内にあれば `user_active` で送らない。合成入力も OS の数に入ることがあるため、最後の入力が補助アプリの最後の合成入力より前なら利用者の入力とみなさない（`paradisUserIsActive`）。前面に出す（`activateApp`）も同じ判定を通す。
+
+貼り付け（Q100 A）: クリップボードの全部の項目と型を退避し、文字を書いて変更回数を覚え、⌘V の後 0.4 秒待って、変更回数が変わっていなければ元へ戻す。変わっていればほかのアプリか利用者が書き換えたので戻さず、エージェントへその旨を返す。
+
+入力は shared process の `Sequencer` で全ペイン 1 本の列に並べる（承認の待ちは列の外）。操作の後は既定で 0.3 秒待ってウィンドウのツリーとスクショを返す（`includeState: false` で省ける）。番号でのクリックは、補助アプリが直前に読んだツリー（同じ pid と windowId）の要素の今の位置の中心を使い、古ければ `stale_element`。
 
 同梱: 手元の `npm run gulp vscode-darwin-<arch>-min` は `build/gulpfile.vscode.ts` の PARA-PATCH から `paradisComputerUseHelperPackageTask` を呼び、補助アプリを作って `Contents/Helpers/` に入れる（失敗は警告だけ。`PARADIS_COMPUTER_USE_HELPER=0` で飛ばせる）。CI（`CI` がある）では gulp は何もせず、`para-release.yml` の 3 段（Build / Pre-notarize / Embed、どれも `continue-on-error`）に任せる。Embed は Pre-notarize が Apple に受け入れられたとき書く目印（`.build/paradis/computerUse/prenotarized`）があるときだけ入れる。`workflow_dispatch` の `computer_use_helper` を false にすると 3 段とも飛ばす。`build/darwin/sign.ts` の PARA-PATCH は補助アプリに空の entitlements を渡す 3 行だけ。本体の公証が補助アプリのせいで拒否された場合に補助アプリを外して出し直す段は無い（Pre-notarize で先に潰す前提）。
 

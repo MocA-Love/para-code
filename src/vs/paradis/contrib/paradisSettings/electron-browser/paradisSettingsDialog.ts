@@ -108,7 +108,7 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		navLabel: localize('paradis.settings.navComputerUse', "Computer Use"),
 		heading: localize('paradis.settings.headComputerUse', "Computer Use"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.descComputerUse', "エージェントが MCP ツールで、この Mac のほかのアプリの画面を読めるようにします（macOS 14 以降）。アプリごとに、初めて使うときに承認を求めます。"),
+		description: localize('paradis.settings.descComputerUse', "エージェントが MCP ツールで、この Mac のほかのアプリの画面を読み、クリックや文字入力で操作できるようにします（macOS 14 以降）。アプリごとに、初めて使うときに「読み取りのみ」か「操作も」かの承認を求めます。"),
 	},
 	{
 		id: 'psd-sec-agentide',
@@ -680,7 +680,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.computerUseEnabled', "Computer Use を使う"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.computerUseEnabledDesc', "Computer Use は、エージェントのサンドボックスと許可設定の外で、あなたの権限で動きます。読み取りを許可したアプリの画面（メール本文やチャットなど）はエージェントへ渡り、エージェントの提供元へ送られます。画面に表示された Web ページやメールに仕込まれた指示をエージェントが読む危険もあります。オンにした後は、エージェント側で MCP の再接続が必要です。"),
+		description: localize('paradis.settings.computerUseEnabledDesc', "Computer Use は、エージェントの作業フォルダやサンドボックス、許可設定の制限の外で、あなたの権限で動きます。操作を許可したアプリでは、ファイルの移動や削除、ログイン済みのサイトの操作、ターミナルへのコマンド入力もできます。読み取りを許可したアプリの画面（メール本文やチャットなど）はエージェントへ渡り、エージェントの提供元へ送られます。画面に表示された Web ページやメールに仕込まれた指示をエージェントが読む危険もあります。あなたがキーボードやマウスを使っている間は入力を送りません。オンにした後は、エージェント側で MCP の再接続が必要です。"),
 		keywords: 'computer use macos accessibility screen recording screenshot app',
 	},
 	{
@@ -707,7 +707,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	{
 		sectionId: 'psd-sec-computeruse',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.computerUseBlocked', "常に読ませないアプリ"),
+		label: localize('paradis.settings.computerUseBlocked', "常に使わせないアプリ"),
 		description: PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES
 			// allow-any-unicode-next-line
 			? localize('paradis.settings.computerUseBlockedWithSystem', "パスワードマネージャー、キーチェーンアクセス、Para Code 自身、システム設定、認証のダイアログ（変更できません）。")
