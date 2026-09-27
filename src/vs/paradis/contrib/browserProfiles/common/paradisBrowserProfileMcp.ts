@@ -96,6 +96,12 @@ export const PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD = 'listBrowserProfiles';
 export const PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD = 'createBrowserProfile';
 export const PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD = 'switchBrowserProfile';
 export const PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD = 'deleteBrowserProfile';
+/**
+ * そのプロファイルを、呼んだペインだけが使っているか（そのペインが作り、利用者がまだ使っておらず、
+ * 開いているタブがすべてそのペインのタブ）。para-browser MCP のネットワークの上書きを掛けてよいかの判定。
+ * 引数は [ペイントークン, プロファイル ID]、戻り値は boolean。
+ */
+export const PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD = 'isPaneOwnedProfile';
 
 /** エージェントが作れるプロファイルの数の上限（作りっぱなしで台帳が埋まるのを防ぐ）。 */
 export const PARADIS_AGENT_CREATED_PROFILE_LIMIT = 10;

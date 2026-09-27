@@ -10,23 +10,27 @@
 // リクエストのルール）と、PDF・ハイライトを electron-main で行う。
 //
 // 決め事:
-// - ネットワークの上書きを掛けるのは、エージェント用の保存領域のタブだけ（判定は呼び出し側の
-//   paradisCdpTargetService.ts）。HTTP 認証のキャッシュと HTTP キャッシュは保存領域単位なので、
-//   利用者のタブに掛けると利用者の他のタブへ残るため。
-// - 上書きは「タブ（webContents）1枚」に掛ける。CDP の Network / Fetch はこのタブに付けた専用の
-//   CDP セッションで有効にするので、同じ保存領域の他のタブ・他のペインのタブには届かない。
-//   セッションを外せば Chromium がすべて元に戻す（止めていたリクエストも流れる）。
+// - ネットワークの上書きを掛けるのは、呼んだペインだけが使う保存領域のタブだけ（判定は呼び出し側の
+//   paradisCdpTargetService.ts と renderer）。HTTP 認証のキャッシュと HTTP キャッシュは保存領域単位なので、
+//   共有の保存領域に掛けるとほかのタブ・ほかのペインへ残るため。
+// - 上書きは「タブ（webContents）1枚」に付けた専用の CDP セッションで有効にするので、同じ保存領域の
+//   他のタブには届かない。
+// - 外すときは、有効にしたもの（Fetch・Network・キャッシュの無効化・Service Worker の迂回・ハイライト）を
+//   自分で戻す。upstream の BrowserViewDebugger はセッションの `Target.detachFromTarget` に失敗して
+//   （空の session id）セッションを残すので、「セッションを外せば元に戻る」を頼りにしない。専用の
+//   セッションはタブを手放すか閉じるまで使い回し、付け直しで無効なセッションが増えないようにする。
 // - 1枚のタブに上書きを掛けられるのは1つのペインだけ（持ち主）。別のペインは断られる。
 // - 持ち主の共有が入れ替わった（shared process が世代を進めた）・エージェントがタブを手放した・
-//   タブが閉じた、のどれでも外す。
+//   タブが閉じた・プロファイルに別のタブが開かれた、のどれでも外す。外すときは、掛けた時点の保存領域の
+//   認証のキャッシュと HTTP キャッシュも消す（閉じたタブでも）。
 // - HTTP 認証の資格情報はこのプロセスのメモリにだけ置く。ログにも応答にも出さない。
 // - 追加ヘッダは相手の origin を見て付ける（既定は掛けた時点のトップフレームの origin だけ）。
 // - 上書きを掛けている間はそのタブのキャッシュと Service Worker を通さない（ルールとヘッダが
-//   すり抜けないように）。資格情報を外すときは保存領域の認証のキャッシュも消す。
+//   すり抜けないように）。
 
 import { raceTimeout } from '../../../../base/common/async.js';
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
-import { DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import type { CDPEvent, ICDPConnection } from '../../../../platform/browserView/common/cdp/types.js';
 import {
 	IParadisHighlightRect,
@@ -54,6 +58,14 @@ export interface IParadisLoginAuthInfo {
 
 export type ParadisLoginListener = (event: { preventDefault(): void }, details: { readonly url: string }, authInfo: IParadisLoginAuthInfo, callback: (username?: string, password?: string) => void) => void;
 
+/** タブの保存領域（Electron の session）のうち、上書きを外すときに使うもの。 */
+export interface IParadisPageOpsStorage {
+	/** HTTP 認証のキャッシュを消す（答えた資格情報を、保存領域のほかのタブに使わせない）。 */
+	clearAuthCache(): Promise<void>;
+	/** HTTP キャッシュを消す（書き換えた要求への応答を、上書きを外した後に出さない）。 */
+	clearCache(): Promise<void>;
+}
+
 /**
  * このコントローラが使うタブ（BrowserView）の部分。Electron の具象型ではなく構造で受け、
  * テストから偽物を渡せるようにしてある。
@@ -63,13 +75,13 @@ export interface IParadisPageOpsTarget {
 		isDestroyed(): boolean;
 		getURL(): string;
 		getTitle(): string;
+		getZoomFactor(): number;
 		once(event: 'destroyed', listener: () => void): unknown;
 		removeListener(event: 'destroyed', listener: () => void): unknown;
 		on(event: 'login', listener: ParadisLoginListener): unknown;
 		removeListener(event: 'login', listener: ParadisLoginListener): unknown;
 		printToPDF(options: object): Promise<Uint8Array>;
-		/** HTTP 認証の資格情報を外すとき、保存領域に残った認証のキャッシュを消すため。 */
-		readonly session: { clearAuthCache(): Promise<void> };
+		readonly session: IParadisPageOpsStorage;
 	};
 	readonly debugger: {
 		attach(): Promise<ICDPConnection>;
@@ -86,27 +98,57 @@ const PDF_TIMEOUT_MS = 60_000;
 /** 上書きに使うセッションの Network のバッファ（本文を読むことは無いので小さくする）。 */
 const NETWORK_BUFFER_BYTES = 1024 * 1024;
 
+/** ネットワークの上書きを外すときに送る、有効にしたものを戻すコマンド（順番どおり）。 */
+const NETWORK_TEARDOWN_COMMANDS: readonly (readonly [string, object])[] = [
+	['Fetch.disable', {}],
+	['Network.setExtraHTTPHeaders', { headers: {} }],
+	['Network.setCacheDisabled', { cacheDisabled: false }],
+	['Network.setBypassServiceWorker', { bypass: false }],
+	['Network.disable', {}],
+];
+
+/** ハイライトを消すとき・セッションを手放すときに送るコマンド。 */
+const HIGHLIGHT_HIDE_COMMAND: readonly [string, object] = ['Overlay.hideHighlight', {}];
+const OVERLAY_TEARDOWN_COMMANDS: readonly (readonly [string, object])[] = [
+	['Overlay.hideHighlight', {}],
+	['Overlay.disable', {}],
+	['DOM.disable', {}],
+];
+
+/**
+ * タブ1枚に付けた、このコントローラ専用の CDP セッション。上書きとハイライトで共用し、タブを手放すか
+ * 閉じるまで使い回す。外すときは有効にしたものを自分で戻す（`Target.detachFromTarget` が失敗して
+ * セッションが残っても、止めたままの要求やハイライトが残らないように）。
+ */
+interface ITargetSession {
+	readonly session: ICDPConnection;
+	readonly store: DisposableStore;
+	networkEnabled: boolean;
+	fetchEnabled: boolean;
+	overlayEnabled: boolean;
+}
+
 interface IViewState {
 	readonly ownerKey: string;
 	generation: number;
+	/** 上書きを掛けた時点の保存領域。タブが閉じた後も、認証とキャッシュを消すのに使う。 */
+	readonly storage: IParadisPageOpsStorage;
+	/** 保存領域がプロファイル（ほかのタブが後から開かれうる）。 */
+	readonly sharedProfile: boolean;
 	extraHeaders: IParadisExtraHeaders | undefined;
 	credentials: IParadisHttpCredentials | undefined;
 	rules: readonly IParadisRequestRule[];
 	ruleMatches: number[];
-	session: ICDPConnection | undefined;
-	networkEnabled: boolean;
-	fetchEnabled: boolean;
+	/** ヘッダかルールを一度でも掛けた（外すときに HTTP キャッシュを消す）。 */
+	touchedCache: boolean;
 	loginListener: ParadisLoginListener | undefined;
 	readonly authAnswers: Map<string, { count: number; firstAt: number }>;
-	readonly sessionStore: DisposableStore;
-	readonly destroyedListener: () => void;
 	/** 同じタブへの操作を1つずつ行うための鎖。 */
 	queue: Promise<unknown>;
 	disposed: boolean;
 }
 
 interface IHighlightState {
-	readonly session: ICDPConnection;
 	readonly timer: ReturnType<typeof setTimeout>;
 }
 
@@ -125,8 +167,15 @@ export class ParadisBrowserPageOpsController {
 	private readonly states = new Map<IParadisPageOpsTarget, IViewState>();
 	private readonly ownerWatermarks = new Map<string, number>();
 	private readonly highlights = new Map<IParadisPageOpsTarget, IHighlightState>();
+	private readonly targetSessions = new Map<IParadisPageOpsTarget, ITargetSession>();
+	private readonly pendingSessions = new Map<IParadisPageOpsTarget, Promise<ITargetSession>>();
+	private readonly destroyedListeners = new Map<IParadisPageOpsTarget, () => void>();
 
-	constructor(private readonly now: () => number = Date.now) { }
+	constructor(
+		private readonly now: () => number = Date.now,
+		/** 外すときに戻せなかったもの（ログに出す）。閉じたタブへのものは呼ばない。 */
+		private readonly onTeardownFailure: (step: string, error: unknown) => void = () => { },
+	) { }
 
 	/** タブに掛かっている上書きの要約。持ち主でなければ上書きの中身は見せない。 */
 	summary(target: IParadisPageOpsTarget, ownerKey: string): IParadisPageOverridesResult {
@@ -140,8 +189,11 @@ export class ParadisBrowserPageOpsController {
 		return { ok: true, summary: this.summarize(state) };
 	}
 
-	/** 上書きを置き換える。値の無い項目はそのまま、`null` は外す。 */
-	apply(target: IParadisPageOpsTarget, ownerKey: string, generation: number, request: IParadisPageOverridesRequest): Promise<IParadisPageOverridesResult> {
+	/**
+	 * 上書きを置き換える。値の無い項目はそのまま、`null` は外す。`sharedProfile` はタブの保存領域が
+	 * プロファイル（同じ保存領域のタブが後から開かれうる）であること。
+	 */
+	apply(target: IParadisPageOpsTarget, ownerKey: string, generation: number, request: IParadisPageOverridesRequest, sharedProfile = false): Promise<IParadisPageOverridesResult> {
 		if ((this.ownerWatermarks.get(ownerKey) ?? 0) > generation) {
 			return Promise.resolve({ ok: false, reason: 'stale' });
 		}
@@ -153,7 +205,7 @@ export class ParadisBrowserPageOpsController {
 			return Promise.resolve({ ok: false, reason: 'unavailable' });
 		}
 		if (!state) {
-			state = this.createState(target, ownerKey, generation);
+			state = this.createState(target, ownerKey, generation, sharedProfile);
 		}
 		const current = state;
 		current.generation = Math.max(current.generation, generation);
@@ -186,10 +238,37 @@ export class ParadisBrowserPageOpsController {
 		}
 	}
 
-	/** タブの上書きとハイライトをすべて外す（エージェントが手放した・タブが閉じた）。 */
+	/**
+	 * 同じ保存領域に別のタブが開かれた。プロファイルのタブに掛けた上書きは、そのプロファイルを
+	 * そのペインだけが使っている間だけのものなので外す（利用者や別のペインがプロファイルを使い始めた）。
+	 */
+	onTabOpenedInStorage(storage: IParadisPageOpsStorage, opened: IParadisPageOpsTarget): void {
+		for (const [target, state] of [...this.states]) {
+			if (target !== opened && state.sharedProfile && state.storage === storage) {
+				this.clear(target);
+			}
+		}
+	}
+
+	/** タブの上書きとハイライトをすべて外し、専用のセッションも手放す（エージェントが手放した・タブが閉じた）。 */
 	releaseTarget(target: IParadisPageOpsTarget): void {
 		this.clear(target);
 		this.clearHighlight(target);
+		const entry = this.targetSessions.get(target);
+		this.targetSessions.delete(target);
+		this.pendingSessions.delete(target);
+		const destroyedListener = this.destroyedListeners.get(target);
+		this.destroyedListeners.delete(target);
+		if (destroyedListener) {
+			try {
+				target.webContents.removeListener('destroyed', destroyedListener);
+			} catch {
+				// タブが既に閉じている。
+			}
+		}
+		if (entry) {
+			void this.teardownAndDispose(target, entry);
+		}
 	}
 
 	/** いま上書きを掛けているタブの数（テスト用）。 */
@@ -212,35 +291,44 @@ export class ParadisBrowserPageOpsController {
 		return pdf;
 	}
 
-	/** ハイライトを出す（`rect` が無ければ消す）。前のハイライトは消す。 */
+	/** ハイライトを出す（`rect` が無ければ消す）。前のハイライトは消す。`rect` はページの CSS ピクセル。 */
 	async highlight(target: IParadisPageOpsTarget, rect: IParadisHighlightRect | undefined, durationMs: number): Promise<void> {
 		this.clearHighlight(target);
 		if (!rect || target.webContents.isDestroyed()) {
 			return;
 		}
-		const session = await target.debugger.attach();
-		try {
-			await session.sendCommand('DOM.enable');
-			await session.sendCommand('Overlay.enable');
-			await session.sendCommand('Overlay.highlightRect', {
-				x: Math.round(rect.x),
-				y: Math.round(rect.y),
-				width: Math.round(rect.width),
-				height: Math.round(rect.height),
-				color: { r: 9, g: 105, b: 218, a: 0.18 },
-				outlineColor: { r: 9, g: 105, b: 218, a: 1 },
-			});
-		} catch (error) {
-			session.dispose();
-			throw error;
+		const entry = await this.ensureTargetSession(target);
+		if (!entry.overlayEnabled) {
+			await entry.session.sendCommand('DOM.enable');
+			await entry.session.sendCommand('Overlay.enable');
+			entry.overlayEnabled = true;
 		}
-		// 重なった呼び出しで先に別のハイライトが入っていたら、それを消してこちらを残す。
-		this.clearHighlight(target);
-		// セッションを外すと Chromium がハイライトも消す。
+		// Overlay.highlightRect はページの拡大率を掛ける前の座標で受けるので、CSS ピクセルに倍率を掛ける。
+		let zoom = 1;
+		try {
+			const factor = target.webContents.getZoomFactor();
+			zoom = Number.isFinite(factor) && factor > 0 ? factor : 1;
+		} catch {
+			zoom = 1;
+		}
+		await entry.session.sendCommand('Overlay.highlightRect', {
+			x: Math.round(rect.x * zoom),
+			y: Math.round(rect.y * zoom),
+			width: Math.round(rect.width * zoom),
+			height: Math.round(rect.height * zoom),
+			color: { r: 9, g: 105, b: 218, a: 0.18 },
+			outlineColor: { r: 9, g: 105, b: 218, a: 1 },
+		});
+		// 重なった呼び出しの時間切れが、こちらのハイライトを消さないよう付け替える。
+		const previous = this.highlights.get(target);
+		if (previous) {
+			clearTimeout(previous.timer);
+		}
 		const timer = setTimeout(() => this.clearHighlight(target), durationMs);
-		this.highlights.set(target, { session, timer });
+		this.highlights.set(target, { timer });
 	}
 
+	/** ハイライトを消す（`clear: true`・時間切れ・次のハイライト・タブを手放す）。 */
 	private clearHighlight(target: IParadisPageOpsTarget): void {
 		const highlight = this.highlights.get(target);
 		if (!highlight) {
@@ -248,33 +336,121 @@ export class ParadisBrowserPageOpsController {
 		}
 		this.highlights.delete(target);
 		clearTimeout(highlight.timer);
+		const entry = this.targetSessions.get(target);
+		if (entry && entry.overlayEnabled) {
+			void this.sendTeardown(target, entry.session, [HIGHLIGHT_HIDE_COMMAND]);
+		}
+	}
+
+	/** このタブの専用のセッション。無ければ付ける（同時に呼ばれても1つだけ）。 */
+	private ensureTargetSession(target: IParadisPageOpsTarget): Promise<ITargetSession> {
+		const existing = this.targetSessions.get(target);
+		if (existing) {
+			return Promise.resolve(existing);
+		}
+		const pending = this.pendingSessions.get(target);
+		if (pending) {
+			return pending;
+		}
+		let created: Promise<ITargetSession> | undefined = undefined;
+		created = (async () => {
+			const session = await target.debugger.attach();
+			if (this.pendingSessions.get(target) !== created || target.webContents.isDestroyed()) {
+				session.dispose();
+				throw new Error('The tab was released while attaching.');
+			}
+			const entry: ITargetSession = { session, store: new DisposableStore(), networkEnabled: false, fetchEnabled: false, overlayEnabled: false };
+			entry.store.add(session.onEvent(event => this.onEvent(target, session, event)));
+			entry.store.add(session.onClose(() => {
+				if (this.targetSessions.get(target) !== entry) {
+					return;
+				}
+				// タブの debugger が外れた（タブが閉じた・別の理由で切れた）。上書きはもう効いていないので、
+				// 効いているように見せ続けない。
+				this.targetSessions.delete(target);
+				entry.store.dispose();
+				const state = this.states.get(target);
+				if (state && (state.extraHeaders !== undefined || state.rules.length > 0)) {
+					this.clear(target);
+				}
+				this.highlights.delete(target);
+			}));
+			this.targetSessions.set(target, entry);
+			this.pendingSessions.delete(target);
+			if (!this.destroyedListeners.has(target)) {
+				const destroyedListener = () => this.releaseTarget(target);
+				this.destroyedListeners.set(target, destroyedListener);
+				target.webContents.once('destroyed', destroyedListener);
+			}
+			return entry;
+		})();
+		const pendingSession = created;
+		this.pendingSessions.set(target, pendingSession);
+		pendingSession.catch(() => {
+			if (this.pendingSessions.get(target) === pendingSession) {
+				this.pendingSessions.delete(target);
+			}
+		});
+		return pendingSession;
+	}
+
+	/** 戻すコマンドを順に送る。失敗はログに出す（閉じたタブへのものは出さない）。 */
+	private async sendTeardown(target: IParadisPageOpsTarget, session: ICDPConnection, commands: readonly (readonly [string, object])[]): Promise<void> {
+		for (const [method, params] of commands) {
+			try {
+				await session.sendCommand(method, params);
+			} catch (error) {
+				let destroyed = true;
+				try {
+					destroyed = target.webContents.isDestroyed();
+				} catch {
+					destroyed = true;
+				}
+				if (!destroyed) {
+					this.onTeardownFailure(method, error);
+				}
+			}
+		}
+	}
+
+	private async teardownAndDispose(target: IParadisPageOpsTarget, entry: ITargetSession): Promise<void> {
+		const commands = [
+			...(entry.networkEnabled || entry.fetchEnabled ? NETWORK_TEARDOWN_COMMANDS : []),
+			...(entry.overlayEnabled ? OVERLAY_TEARDOWN_COMMANDS : []),
+		];
+		entry.networkEnabled = false;
+		entry.fetchEnabled = false;
+		entry.overlayEnabled = false;
+		await this.sendTeardown(target, entry.session, commands);
+		entry.store.dispose();
 		try {
-			highlight.session.dispose();
+			entry.session.dispose();
 		} catch {
 			// タブが既に閉じている。
 		}
 	}
 
-	private createState(target: IParadisPageOpsTarget, ownerKey: string, generation: number): IViewState {
-		const destroyedListener = () => this.releaseTarget(target);
+	private createState(target: IParadisPageOpsTarget, ownerKey: string, generation: number, sharedProfile: boolean): IViewState {
 		const state: IViewState = {
 			ownerKey,
 			generation,
+			storage: target.webContents.session,
+			sharedProfile,
 			extraHeaders: undefined,
 			credentials: undefined,
 			rules: [],
 			ruleMatches: [],
-			session: undefined,
-			networkEnabled: false,
-			fetchEnabled: false,
+			touchedCache: false,
 			loginListener: undefined,
 			authAnswers: new Map(),
-			sessionStore: new DisposableStore(),
-			destroyedListener,
 			queue: Promise.resolve(),
 			disposed: false,
 		};
-		target.webContents.once('destroyed', destroyedListener);
+		if (!this.destroyedListeners.has(target)) {
+			const destroyedListener = () => this.releaseTarget(target);
+			this.destroyedListeners.set(target, destroyedListener);
+			target.webContents.once('destroyed', destroyedListener);
+		}
 		this.states.set(target, state);
 		return state;
 	}
@@ -287,6 +463,7 @@ export class ParadisBrowserPageOpsController {
 			this.clear(target);
 			return { ok: false, reason: 'unavailable' };
 		}
+		const hadNetworkOverrides = state.extraHeaders !== undefined || state.rules.length > 0;
 		if (request.extraHeaders !== undefined) {
 			const extra = request.extraHeaders;
 			if (extra === null || Object.keys(extra.headers).length === 0) {
@@ -314,18 +491,23 @@ export class ParadisBrowserPageOpsController {
 			state.credentials = request.credentials ?? undefined;
 			state.authAnswers.clear();
 			if (hadCredentials) {
-				// 前に答えた資格情報が保存領域の認証のキャッシュに残らないようにする（このタブはエージェント用の
-				// 保存領域なので、消えるのはエージェントのタブの認証だけ）。
-				await this.clearAuthCache(target);
+				// 前に答えた資格情報が保存領域の認証のキャッシュに残らないようにする。
+				await this.clearStorage(state.storage, 'auth');
 			}
 		}
+		state.touchedCache ||= state.extraHeaders !== undefined || state.rules.length > 0;
 		this.syncLoginListener(target, state);
 		try {
-			await this.syncSession(target, state);
+			await this.syncNetwork(target, state);
 		} catch {
 			// 途中で失敗したら、中途半端に効いている状態を残さない。
 			this.clear(target);
 			return { ok: false, reason: 'failed', message: 'The browser tab did not accept the change. The overrides of this tab were removed; try again.' };
+		}
+		// 何も残らないときは、この後の clear が消す。
+		if (hadNetworkOverrides && this.hasAnything(state) && (request.extraHeaders !== undefined || request.rules !== undefined)) {
+			// 前のヘッダ・ルールで書き換えた要求への応答を、キャッシュから出さない。
+			await this.clearStorage(state.storage, 'cache');
 		}
 		if (state.disposed) {
 			return { ok: false, reason: 'unavailable' };
@@ -341,78 +523,48 @@ export class ParadisBrowserPageOpsController {
 		return state.extraHeaders !== undefined || state.rules.length > 0 || state.credentials !== undefined;
 	}
 
-	/** Network / Fetch をいまの上書きに合わせる。どちらも要らなくなったらセッションごと外す。 */
-	private async syncSession(target: IParadisPageOpsTarget, state: IViewState): Promise<void> {
+	/** Network / Fetch をいまの上書きに合わせる。どちらも要らなくなったら、有効にしたものを戻す。 */
+	private async syncNetwork(target: IParadisPageOpsTarget, state: IViewState): Promise<void> {
 		const needsHeaders = state.extraHeaders !== undefined;
 		const needsRules = state.rules.length > 0;
 		if (!needsHeaders && !needsRules) {
-			this.dropSession(state);
+			await this.resetNetwork(target);
 			return;
 		}
-		const session = await this.ensureSession(target, state);
-		if (!state.networkEnabled) {
-			await session.sendCommand('Network.enable', { maxTotalBufferSize: NETWORK_BUFFER_BYTES, maxResourceBufferSize: NETWORK_BUFFER_BYTES });
+		const entry = await this.ensureTargetSession(target);
+		if (state.disposed) {
+			return;
+		}
+		if (!entry.networkEnabled) {
+			entry.networkEnabled = true;
+			await entry.session.sendCommand('Network.enable', { maxTotalBufferSize: NETWORK_BUFFER_BYTES, maxResourceBufferSize: NETWORK_BUFFER_BYTES });
 			// 上書きしている間は、キャッシュの応答（Fetch を通らない）と Service Worker の応答（ページの
-			// セッションの Fetch を通らない）でルールとヘッダがすり抜けないようにする。どちらもこのタブだけで、
-			// セッションを外せば戻る。
-			await session.sendCommand('Network.setCacheDisabled', { cacheDisabled: true });
-			await session.sendCommand('Network.setBypassServiceWorker', { bypass: true });
-			state.networkEnabled = true;
+			// セッションの Fetch を通らない）でルールとヘッダがすり抜けないようにする。どちらもこのタブだけ。
+			await entry.session.sendCommand('Network.setCacheDisabled', { cacheDisabled: true });
+			await entry.session.sendCommand('Network.setBypassServiceWorker', { bypass: true });
 		}
 		// 追加ヘッダは相手の origin を見て付けるので、Network.setExtraHTTPHeaders（全部の要求に付く）は
 		// 使わず、Fetch で止めた要求ごとに足す。追加ヘッダがあればすべての要求を止める。
-		await session.sendCommand('Fetch.enable', {
+		entry.fetchEnabled = true;
+		await entry.session.sendCommand('Fetch.enable', {
 			patterns: needsHeaders
 				? [{ urlPattern: '*', requestStage: 'Request' }]
 				: state.rules.map(rule => ({ urlPattern: rule.urlPattern, requestStage: 'Request' })),
 		});
-		state.fetchEnabled = true;
 	}
 
-	private async ensureSession(target: IParadisPageOpsTarget, state: IViewState): Promise<ICDPConnection> {
-		if (state.session) {
-			return state.session;
+	/** このタブで有効にしたネットワークの上書きを戻す（セッションは次の上書きとハイライトのために残す）。 */
+	private async resetNetwork(target: IParadisPageOpsTarget): Promise<void> {
+		const entry = this.targetSessions.get(target);
+		if (!entry || (!entry.networkEnabled && !entry.fetchEnabled)) {
+			return;
 		}
-		const session = await target.debugger.attach();
-		if (state.disposed) {
-			session.dispose();
-			throw new Error('The overrides were removed while attaching.');
-		}
-		state.session = session;
-		state.sessionStore.add(session.onEvent(event => this.onEvent(state, session, event)));
-		state.sessionStore.add(session.onClose(() => {
-			if (state.session !== session) {
-				return;
-			}
-			// タブの debugger が外れた（タブが閉じた・別の理由で切れた）。上書きはもう効いていないので、
-			// 効いているように見せ続けない。
-			state.session = undefined;
-			state.networkEnabled = false;
-			state.fetchEnabled = false;
-			if (!state.disposed && (state.extraHeaders !== undefined || state.rules.length > 0)) {
-				this.clear(target);
-			}
-		}));
-		state.sessionStore.add(toDisposable(() => session.dispose()));
-		return session;
+		entry.networkEnabled = false;
+		entry.fetchEnabled = false;
+		await this.sendTeardown(target, entry.session, NETWORK_TEARDOWN_COMMANDS);
 	}
 
-	private dropSession(state: IViewState): void {
-		const session = state.session;
-		state.session = undefined;
-		state.networkEnabled = false;
-		state.fetchEnabled = false;
-		state.sessionStore.clear();
-		if (session) {
-			try {
-				session.dispose();
-			} catch {
-				// タブが既に閉じている。
-			}
-		}
-	}
-
-	private onEvent(state: IViewState, session: ICDPConnection, event: CDPEvent): void {
+	private onEvent(target: IParadisPageOpsTarget, session: ICDPConnection, event: CDPEvent): void {
 		if (event.method !== 'Fetch.requestPaused') {
 			return;
 		}
@@ -421,18 +573,20 @@ export class ParadisBrowserPageOpsController {
 		if (typeof requestId !== 'string') {
 			return;
 		}
-		const url = typeof params?.request?.url === 'string' ? params.request.url : '';
-		const original = params?.request?.headers && typeof params.request.headers === 'object' ? params.request.headers as Record<string, string> : {};
-		const index = state.rules.findIndex(rule => paradisMatchUrlPattern(rule.urlPattern, url));
-		const rule = index >= 0 ? state.rules[index] : undefined;
 		const send = (method: string, commandParams: object) => session.sendCommand(method, { requestId, ...commandParams }).catch(() => {
 			// 決められなかったリクエストを止めたままにしない。
 			return session.sendCommand('Fetch.continueRequest', { requestId }).catch(() => undefined);
 		});
-		if (state.disposed) {
+		const state = this.states.get(target);
+		if (!state || state.disposed) {
+			// 外している途中に止まった要求は、そのまま流す。
 			void send('Fetch.continueRequest', {});
 			return;
 		}
+		const url = typeof params?.request?.url === 'string' ? params.request.url : '';
+		const original = params?.request?.headers && typeof params.request.headers === 'object' ? params.request.headers as Record<string, string> : {};
+		const index = state.rules.findIndex(rule => paradisMatchUrlPattern(rule.urlPattern, url));
+		const rule = index >= 0 ? state.rules[index] : undefined;
 		const withExtraHeaders = (headers: Record<string, string>) => state.extraHeaders ? paradisApplyExtraHeaders(headers, url, state.extraHeaders) : undefined;
 		if (!rule) {
 			const headers = withExtraHeaders(original);
@@ -451,9 +605,11 @@ export class ParadisBrowserPageOpsController {
 				void send('Fetch.continueRequest', { headers: paradisApplyHeaderRule(base, rule) });
 				return;
 			}
-			case 'redirect':
-				void send('Fetch.fulfillRequest', { responseCode: 307, responseHeaders: paradisBuildRedirectHeaders(rule), body: '' });
+			case 'redirect': {
+				const requestOrigin = Object.entries(original).find(([name]) => name.toLowerCase() === 'origin')?.[1];
+				void send('Fetch.fulfillRequest', { responseCode: 307, responseHeaders: paradisBuildRedirectHeaders(rule, requestOrigin), body: '' });
 				return;
+			}
 			case 'respond':
 				void send('Fetch.fulfillRequest', {
 					responseCode: rule.status ?? 200,
@@ -510,6 +666,11 @@ export class ParadisBrowserPageOpsController {
 		callback(credentials.username, credentials.password);
 	}
 
+	/**
+	 * タブの上書きを外す。有効にしたネットワークの上書きを戻し、答えた資格情報と書き換えた応答が
+	 * 保存領域に残らないよう、認証のキャッシュと HTTP キャッシュを消す（閉じたタブでも、掛けた時点の
+	 * 保存領域に対して消す）。
+	 */
 	private clear(target: IParadisPageOpsTarget): void {
 		const state = this.states.get(target);
 		if (!state) {
@@ -518,7 +679,10 @@ export class ParadisBrowserPageOpsController {
 		this.states.delete(target);
 		state.disposed = true;
 		if (state.credentials !== undefined) {
-			void this.clearAuthCache(target);
+			void this.clearStorage(state.storage, 'auth');
+		}
+		if (state.touchedCache) {
+			void this.clearStorage(state.storage, 'cache');
 		}
 		state.credentials = undefined;
 		state.authAnswers.clear();
@@ -526,22 +690,18 @@ export class ParadisBrowserPageOpsController {
 			if (state.loginListener) {
 				target.webContents.removeListener('login', state.loginListener);
 			}
-			target.webContents.removeListener('destroyed', state.destroyedListener);
 		} catch {
 			// タブが既に閉じている。
 		}
 		state.loginListener = undefined;
-		this.dropSession(state);
-		state.sessionStore.dispose();
+		void this.resetNetwork(target);
 	}
 
-	private async clearAuthCache(target: IParadisPageOpsTarget): Promise<void> {
+	private async clearStorage(storage: IParadisPageOpsStorage, what: 'auth' | 'cache'): Promise<void> {
 		try {
-			if (!target.webContents.isDestroyed()) {
-				await target.webContents.session.clearAuthCache();
-			}
-		} catch {
-			// タブが既に閉じている。
+			await (what === 'auth' ? storage.clearAuthCache() : storage.clearCache());
+		} catch (error) {
+			this.onTeardownFailure(what === 'auth' ? 'clearAuthCache' : 'clearCache', error);
 		}
 	}
 

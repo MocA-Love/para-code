@@ -36,7 +36,7 @@ class FakeHost implements IParadisPageOpsHost {
 	readonly inputs: Record<string, unknown>[] = [];
 	/** Main calls and dispatched inputs, in the order they happened. */
 	readonly log: string[] = [];
-	mainResults = new Map<string, unknown>();
+	mainResults = new Map<string, unknown>([['describeExactViewStorage', { kind: 'pane' }]]);
 	inputResult: IParadisCdpInputDispatchResult = { status: 'success', result: {} };
 	/** Refuse the n-th dispatch (1-based), as the main process does while the user focuses the page. */
 	refuseDispatch: (n: number) => boolean = () => false;
@@ -73,6 +73,7 @@ function createCall(element?: IParadisResolvedDropTarget): IParadisPageOpsCall {
 	return {
 		token: 'pane-token',
 		requireCurrent: () => { },
+		confirmPaneProfile: async profileId => profileId === 'own-profile',
 		resolveElement: async () => element ? { ok: true, target: element } : { ok: false, result: { content: [{ type: 'text', text: 'no element' }], isError: true } },
 	};
 }
@@ -148,7 +149,7 @@ suite('paradisBrowserPageOps (shared process)', () => {
 		await ops.call(createCall(), 'set_http_credentials', { origin: 'https://intranet.example.com', username: 'u', password: 'p' });
 		await ops.call(createCall(), 'set_request_rules', { rules: [] });
 		await ops.call(createCall(), 'set_extra_http_headers', { headers: {} });
-		assert.deepStrictEqual(host.mainCalls.map(call => [call.method, call.args[1], call.args[2], JSON.parse(call.args[3] as string)]), [
+		assert.deepStrictEqual(host.mainCalls.filter(call => call.method === 'applyExactViewPageOverrides').map(call => [call.method, call.args[1], call.args[2], JSON.parse(call.args[3] as string)]), [
 			['applyExactViewPageOverrides', paradisPageOpsOwnerKey('pane-token'), 7, { extraHeaders: { headers: { 'X-Env': 'test' }, origins: [] } }],
 			['applyExactViewPageOverrides', paradisPageOpsOwnerKey('pane-token'), 7, { credentials: { origin: 'https://intranet.example.com', username: 'u', password: 'p' } }],
 			['applyExactViewPageOverrides', paradisPageOpsOwnerKey('pane-token'), 7, { rules: null }],
@@ -165,12 +166,26 @@ suite('paradisBrowserPageOps (shared process)', () => {
 		assert.deepStrictEqual([isError(result), textOf(result).includes('open_browser_tab'), textOf(result).includes('p\'')], [true, true, false]);
 	});
 
+	test('overrides are refused before reaching electron-main unless the tab uses storage of this pane alone', async () => {
+		const results: string[] = [];
+		for (const storage of [{ kind: 'user' }, { kind: 'profile', profileId: 'someone-elses' }, { kind: 'profile', profileId: 'own-profile' }, { kind: 'pane' }]) {
+			const host = new FakeHost();
+			host.mainResults.set('describeExactViewStorage', storage);
+			host.mainResults.set('applyExactViewPageOverrides', { ok: true, summary: { extraHeaderNames: [], rules: [] } });
+			const ops = new ParadisBrowserPageOps(host);
+			const result = await ops.call(createCall(), 'set_request_rules', { rules: [{ url_pattern: '*', action: 'block' }] });
+			const apply = host.mainCalls.find(call => call.method === 'applyExactViewPageOverrides');
+			results.push(`${isError(result) ? (textOf(result).includes('"private": true') ? 'refused' : 'error') : 'ok'}:${apply ? String(apply.args[4]) : '-'}`);
+		}
+		assert.deepStrictEqual(results, ['refused:-', 'refused:-', 'ok:own-profile', 'ok:null']);
+	});
+
 	test('extra headers can name their origins, and the result says where they go', async () => {
 		const host = new FakeHost();
 		host.mainResults.set('applyExactViewPageOverrides', { ok: true, summary: { extraHeaderNames: ['X-Flag'], extraHeaderOrigins: ['https://staging.example.com'], rules: [] } });
 		const ops = new ParadisBrowserPageOps(host);
 		const result = await ops.call(createCall(), 'set_extra_http_headers', { headers: { 'X-Flag': 'on' }, origins: ['https://staging.example.com/any/path'] });
-		assert.deepStrictEqual(JSON.parse(host.mainCalls[0].args[3] as string), { extraHeaders: { headers: { 'X-Flag': 'on' }, origins: ['https://staging.example.com'] } });
+		assert.deepStrictEqual(JSON.parse(host.mainCalls[1].args[3] as string), { extraHeaders: { headers: { 'X-Flag': 'on' }, origins: ['https://staging.example.com'] } });
 		assert.strictEqual(textOf(result).includes('https://staging.example.com'), true);
 		const invalid = await ops.call(createCall(), 'set_extra_http_headers', { headers: { 'X-Flag': 'on' }, origins: ['file:///etc'] });
 		assert.strictEqual(isError(invalid), true);
@@ -241,12 +256,13 @@ suite('paradisBrowserPageOps (shared process)', () => {
 		assert.deepStrictEqual(host.mainCalls[0].args.slice(1), [{ x: 40, y: 55, width: 20, height: 10 }, 2000]);
 	});
 
-	test('save_page_as_pdf names the file after the page title by default', async () => {
+	test('save_page_as_pdf leaves the default name to electron-main (the current page title) and keeps a given one', async () => {
 		const host = new FakeHost();
 		host.mainResults.set('printExactViewToPdf', { ok: true, path: '/downloads/Example Page.pdf', fileName: 'Example Page.pdf', bytes: 10 });
 		const ops = new ParadisBrowserPageOps(host);
 		const result = await ops.call(createCall(), 'save_page_as_pdf', {});
+		await ops.call(createCall(), 'save_page_as_pdf', { file_name: 'report' });
 		assert.strictEqual(isError(result), false);
-		assert.strictEqual(JSON.parse(host.mainCalls[0].args[1] as string).fileName, 'Example Page.pdf');
+		assert.deepStrictEqual(host.mainCalls.map(call => JSON.parse(call.args[1] as string).fileName), [undefined, 'report.pdf']);
 	});
 });

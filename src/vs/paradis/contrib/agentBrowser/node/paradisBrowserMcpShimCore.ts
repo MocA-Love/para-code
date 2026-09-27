@@ -221,6 +221,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 			properties: {
 				url: { type: 'string', description: 'Optional http(s) URL to load. Omit to open a blank tab.' },
 				background: { type: 'boolean', description: 'Open the tab without bringing it to the front of its editor group (default false). Tools still work on a background tab.' },
+				private: { type: 'boolean', description: 'Open the tab in browser storage used by this terminal pane only (in memory, not shared with other panes, the user or your other non-private tabs). Needed for set_extra_http_headers, set_http_credentials and set_request_rules. Default false.' },
 			},
 			additionalProperties: false,
 		},
