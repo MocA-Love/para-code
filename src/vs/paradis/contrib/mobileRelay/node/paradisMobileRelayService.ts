@@ -60,6 +60,7 @@ import {
 } from '../common/paradisMobileProtocol.js';
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyPcFocusQuiet, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
 import { paradisAgentLabel, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
+import { IParadisAgentPaneInsight, IParadisAgentPaneInsightSource } from '../../agentInsights/common/paradisAgentInsights.js';
 import {
 	IParadisConfirmedAgentPanes,
 	IParadisMobileInboundFrame,
@@ -519,7 +520,7 @@ function probeFailureCause(err: unknown): string {
 	return 'unknown';
 }
 
-export class ParadisMobileRelayService extends Disposable implements IParadisMobileRelayService {
+export class ParadisMobileRelayService extends Disposable implements IParadisMobileRelayService, IParadisAgentPaneInsightSource {
 	declare readonly _serviceBrand: undefined;
 
 	private readonly _onDidChangeStatus = this._register(new Emitter<IParadisMobileStatus>());
@@ -536,6 +537,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly _onDidRequestAgentPaneSync = this._register(new Emitter<IParadisMobileWindowLease>());
 	readonly onDidRequestAgentPaneSync = this._onDidRequestAgentPaneSync.event;
 	private confirmedAgentPanes: IParadisConfirmedAgentPanes = { revision: 0, tokens: [], tokensOutsideHookReach: [] };
+	/** デスクトップ UI 向け: ペインの様子が変わった（agentInsights が購読する。モバイルとは無関係）。 */
+	private readonly _onDidChangeAgentPaneInsights = this._register(new Emitter<void>());
+	readonly onDidChangeAgentPaneInsights = this._onDidChangeAgentPaneInsights.event;
 
 	// PC本体（マシン全体）のリソースサンプラー。CPUは累積値の差分なので使い回す必要がある。
 	private readonly hostResourceSampler = new ParadisHostResourceSampler();
@@ -693,6 +697,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.remoteTranscriptMirror,
 		));
 		this._register(toDisposable(() => { void agentSessionStore.flush(); }));
+		this._register(this.agentChat.onDidChangeDesktopPaneInsights(() => this._onDidChangeAgentPaneInsights.fire()));
 		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(({ tokens, tokensOutsideHookReach }) => {
 			this.confirmedAgentPanes = { revision: this.confirmedAgentPanes.revision + 1, tokens, tokensOutsideHookReach };
 			this._onDidChangeConfirmedAgentPanes.fire(this.confirmedAgentPanes);
@@ -908,6 +913,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	async getConfirmedAgentPanes(): Promise<IParadisConfirmedAgentPanes> {
 		return this.confirmedAgentPanes;
+	}
+
+	/** デスクトップ UI 向けの読み取り口。モバイル連携が無効でも動く（送信は一切しない）。 */
+	async getAgentPaneInsights(tokens: readonly string[]): Promise<readonly IParadisAgentPaneInsight[]> {
+		return this.agentChat.getDesktopPaneInsights(Array.isArray(tokens) ? tokens.filter(token => typeof token === 'string') : []);
 	}
 
 	async claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string, lease: IParadisMobileWindowLease): Promise<'claimed' | 'stale' | 'expired'> {
