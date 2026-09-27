@@ -5,7 +5,7 @@
 
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
-/* ---------------------------------------------------------------- board / list (Q21 plan A)
+/* ---------------------------------------------------------------- board / list
  *
  * Board = one column per state bucket, list = one row per agent. Both read the conversation summary
  * instead of drawing terminals. Every selector is rooted at `.paradis-agent-live-window` so the rules
@@ -272,12 +272,21 @@
 
 /* ---- window transparency (same handling as the tiles, see paradisAgentLiveWindow.css) ---- */
 
-.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-summary,
-.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-list-head {
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-summary {
 	background-color: transparent !important;
 }
 
+/* The sticky list header keeps a (translucent) fill: fully transparent, the rows scrolling under it
+ * would show through and the two lines of text would overlap. */
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-list-head,
 .paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-card,
 .paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-list-group {
 	background-color: color-mix(in srgb, var(--vscode-editorWidget-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+/* The fill above is !important and would swallow :hover, so the hover colour is laid on top of it
+ * as an image layer instead. */
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-card:hover,
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-list-row:hover {
+	background-image: linear-gradient(var(--vscode-list-hoverBackground), var(--vscode-list-hoverBackground)) !important;
 }

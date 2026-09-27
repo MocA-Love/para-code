@@ -439,7 +439,7 @@ export function paradisFormatAgentLiveDuration(milliseconds: number): string {
 	return `${Math.floor(total / 3600)}時間${Math.floor((total % 3600) / 60)}分`;
 }
 
-// ---- ボード・リスト（Q21 案A） -----------------------------------------------------------------
+// ---- ボード・リスト --------------------------------------------------------------------------
 
 /** ボードの列。要対応 = 許可待ち + 質問中、作業中 = 実行中、完了、待機。 */
 export type ParadisAgentLiveBoardColumnId = 'attention' | 'working' | 'review' | 'idle';

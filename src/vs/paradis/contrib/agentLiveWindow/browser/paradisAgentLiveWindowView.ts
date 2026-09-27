@@ -247,7 +247,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 		append(toolbar, $('span.paradis-agent-live-grow'));
 		this.countText = append(toolbar, $('span.paradis-agent-live-tool-label'));
-		// 見せ方の切り替え。絞り込み・並び替え・ピン・非表示は3つで共通 (Q21 案A)
+		// 見せ方の切り替え。絞り込み・並び替え・ピン・非表示は3つで共通
 		const layoutSeg = append(toolbar, $('.paradis-agent-live-seg.paradis-agent-live-layout-seg'));
 		layoutSeg.setAttribute('role', 'group');
 		layoutSeg.setAttribute('aria-label', localize('paradis.agentLive.layout', "表示の切り替え"));
@@ -916,7 +916,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 	/**
 	 * ボード・リストのカードを押したとき。タイル表示へ切り替えて、そのエージェントの端末を
-	 * 画面内へ出し、フォーカスを載せる (Q21: 「カードを押すとタイル表示のその端末へ移ります」)。
+	 * 画面内へ出し、フォーカスを載せる (要約で目星を付けてから、端末そのものを見に行く流れ)。
 	 */
 	private revealTile(token: string): void {
 		this.setLayout('tiles');
