@@ -16,9 +16,11 @@
 //  - 期限切れ・接頭辞規則違反の Cookie は写さない。
 
 import type { Database } from '@vscode/sqlite3';
-import { createDecipheriv, createHash, pbkdf2Sync, randomBytes } from 'crypto';
-import { chmod, copyFile, mkdir, readFile, rm, stat } from 'fs/promises';
+import { constants as fsConstants } from 'fs';
+import { createDecipheriv, createHash, pbkdf2Sync } from 'crypto';
+import { chmod, copyFile, mkdtemp, readFile, rm, stat } from 'fs/promises';
 import { homedir, platform as osPlatform } from 'os';
+import { localize } from '../../../../nls.js';
 import { join } from '../../../../base/common/path.js';
 import {
 	IParadisImportBrowser,
@@ -31,7 +33,8 @@ import {
 	paradisCookieSetUrl,
 	ParadisElectronSameSite,
 	paradisIsDomainCookie,
-	paradisIsGoogleSignInHost,
+	paradisIsGoogleLoginCookie,
+	paradisIsGoogleLoginHost,
 } from '../common/paradisBrowserLoginImport.js';
 
 // #region ブラウザカタログ（プラットフォーム別のパスと鍵の在りか）
@@ -161,11 +164,11 @@ export async function paradisResolveBrowser(entry: IParadisBrowserCatalogEntry, 
 
 	let unsupportedReason: string | undefined;
 	if (env.platform === 'win32' && localState.appBound) {
-		unsupportedReason = 'Windows の Chrome / Edge 140 以降は暗号化の方式（app-bound encryption）が変わり、Para Code からは取り込めません。';
+		unsupportedReason = localize('paradis.loginImport.unsupported.winAppBound', "Windows の Chrome / Edge 140 以降は暗号化の方式（app-bound encryption）が変わり、Para Code からは取り込めません。");
 	} else if (env.platform === 'win32') {
-		unsupportedReason = 'Windows からの取り込みは現在サポートしていません。';
+		unsupportedReason = localize('paradis.loginImport.unsupported.win', "Windows からの取り込みは現在サポートしていません。");
 	} else if (env.platform === 'linux') {
-		unsupportedReason = 'Linux からの取り込みは現在サポートしていません。';
+		unsupportedReason = localize('paradis.loginImport.unsupported.linux', "Linux からの取り込みは現在サポートしていません。");
 	}
 
 	return { id: entry.id, label: entry.label, profiles, ...(unsupportedReason ? { unsupportedReason } : {}) };
@@ -192,29 +195,51 @@ export function paradisBrowserCatalogEntry(id: ParadisImportBrowserId): IParadis
 
 // #region DB の一時コピーと読み取り
 
+/** 一時コピーの接頭辞（起動時の掃除でも同じ接頭辞を使う）。 */
+export const PARADIS_COOKIE_IMPORT_SCRATCH_PREFIX = 'paracode-cookie-import-';
+
 /**
  * ロック中でも読めるよう、Cookie DB を 0600 の一時ファイルへコピーして、そのパスと後始末関数を返す。
- * WAL/journal の同居ファイルも一緒に写す（写さないと未フラッシュの行が欠ける）。
- * コピー先は `userData/paracode-cookie-import-<rand>/` の下に置き、終わったらディレクトリごと消す。
+ * WAL/journal の同居ファイルも一緒に写す（写さないと未フラッシュの行が欠ける）。`-shm` は稼働中の
+ * 共有メモリ索引で、写してもロールバックに使えず不整合の元なので写さない。
+ *
+ * ディレクトリは `mkdtemp` で作り（衝突しない・先頭 0700）、コピー先は `COPYFILE_EXCL`。途中で失敗
+ * したらこの関数の中でディレクトリごと消してから投げ直す（呼び出し側の finally に頼らない）。
  */
 export async function paradisCopyCookieDb(sourceDbPath: string, userDataPath: string): Promise<{ readonly path: string; readonly dispose: () => Promise<void> }> {
-	const scratchDir = join(userDataPath, `paracode-cookie-import-${randomBytes(8).toString('hex')}`);
-	await mkdir(scratchDir, { recursive: true, mode: 0o700 });
-	const destPath = join(scratchDir, 'Cookies');
-	await copyFile(sourceDbPath, destPath);
-	await chmod(destPath, 0o600);
-	for (const suffix of ['-wal', '-journal', '-shm']) {
-		try {
-			await copyFile(`${sourceDbPath}${suffix}`, `${destPath}${suffix}`);
-			await chmod(`${destPath}${suffix}`, 0o600);
-		} catch {
-			// その同居ファイルが無いだけ。
+	const scratchDir = await mkdtemp(join(userDataPath, PARADIS_COOKIE_IMPORT_SCRATCH_PREFIX));
+	const dispose = () => rm(scratchDir, { recursive: true, force: true }).catch(() => undefined);
+	try {
+		const destPath = join(scratchDir, 'Cookies');
+		await copyFile(sourceDbPath, destPath, fsConstants.COPYFILE_EXCL);
+		await chmod(destPath, 0o600);
+		for (const suffix of ['-wal', '-journal']) {
+			try {
+				await copyFile(`${sourceDbPath}${suffix}`, `${destPath}${suffix}`, fsConstants.COPYFILE_EXCL);
+				await chmod(`${destPath}${suffix}`, 0o600);
+			} catch {
+				// その同居ファイルが無いだけ。
+			}
 		}
+		return { path: destPath, dispose };
+	} catch (error) {
+		await dispose();
+		throw error;
 	}
-	return {
-		path: destPath,
-		dispose: () => rm(scratchDir, { recursive: true, force: true }).catch(() => undefined),
-	};
+}
+
+/** 起動時などに、前回のクラッシュで残った一時コピーを掃除する。 */
+export async function paradisCleanupCookieImportScratch(userDataPath: string): Promise<void> {
+	const { readdir } = await import('fs/promises');
+	let entries: string[];
+	try {
+		entries = await readdir(userDataPath);
+	} catch {
+		return;
+	}
+	await Promise.all(entries
+		.filter(name => name.startsWith(PARADIS_COOKIE_IMPORT_SCRATCH_PREFIX))
+		.map(name => rm(join(userDataPath, name), { recursive: true, force: true }).catch(() => undefined)));
 }
 
 /** Cookie DB の1行（暗号化された値そのものを持つ。復号前）。 */
@@ -228,6 +253,17 @@ export interface IParadisRawCookieRow {
 	readonly expiresUtc: number;
 	readonly encryptedValue: Buffer;
 	readonly plainValue: string;
+	/** `source_scheme`（2 = https で設定）。列が無い古い DB では 0。 */
+	readonly sourceScheme: number;
+	/** `top_frame_site_key`（非空 = Partitioned Cookie/CHIPS）。列が無い DB では ''。 */
+	readonly topFrameSiteKey: string;
+}
+
+/** {@link paradisReadCookieDatabase} の戻り。DB のスキーマ版と全行。 */
+export interface IParadisCookieDatabase {
+	/** `meta.version`（読めなければ 0）。24 以上で平文にドメインハッシュの接頭辞が付く。 */
+	readonly schemaVersion: number;
+	readonly rows: readonly IParadisRawCookieRow[];
 }
 
 /** Cookie DB の生の行（列名は Chromium のスキーマそのまま）。 */
@@ -241,22 +277,44 @@ interface IParadisSqliteCookieRow {
 	readonly samesite?: number;
 	readonly expires_utc?: number;
 	readonly encrypted_value?: Buffer;
+	readonly source_scheme?: number;
+	readonly top_frame_site_key?: string;
 }
 
-/** Cookie DB を読み取り専用で開き、必要な列だけ取り出す。復号はしない。 */
-export async function paradisReadCookieRows(dbPath: string): Promise<IParadisRawCookieRow[]> {
+function allRows<T>(database: Database, sql: string): Promise<T[]> {
+	return new Promise((resolve, reject) => database.all(sql, (error, result) => error ? reject(error) : resolve(result as T[])));
+}
+
+/**
+ * Cookie DB を開き、`meta.version` と全行を取り出す。復号はしない。
+ *
+ * 稼働中の Chrome からコピーした DB は hot journal を抱えることがあり、`OPEN_READONLY` では
+ * ロールバックできず読めない。自分専用のコピーなので `OPEN_READWRITE` で開いて SQLite に復旧させる。
+ * `top_frame_site_key` / `source_scheme` は無い版もあるので、`PRAGMA table_info` で列の有無を見てから
+ * SELECT を組み立てる。
+ */
+export async function paradisReadCookieDatabase(dbPath: string): Promise<IParadisCookieDatabase> {
 	const sqlite3 = (await import('@vscode/sqlite3')).default;
 	const database: Database = await new Promise((resolve, reject) => {
-		const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY, error => error ? reject(error) : resolve(db));
+		const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE, error => error ? reject(error) : resolve(db));
 	});
 	try {
-		const rows = await new Promise<IParadisSqliteCookieRow[]>((resolve, reject) => {
-			database.all(
-				'SELECT host_key, name, value, path, is_secure, is_httponly, samesite, expires_utc, encrypted_value FROM cookies',
-				(error, result) => error ? reject(error) : resolve(result as IParadisSqliteCookieRow[]),
-			);
-		});
-		return rows.map(row => ({
+		const columns = new Set((await allRows<{ name?: string }>(database, 'PRAGMA table_info(cookies)')).map(column => String(column.name ?? '')));
+		const hasTopFrame = columns.has('top_frame_site_key');
+		const hasSourceScheme = columns.has('source_scheme');
+		const selected = ['host_key', 'name', 'value', 'path', 'is_secure', 'is_httponly', 'samesite', 'expires_utc', 'encrypted_value'];
+		if (hasSourceScheme) { selected.push('source_scheme'); }
+		if (hasTopFrame) { selected.push('top_frame_site_key'); }
+
+		let schemaVersion = 0;
+		try {
+			const meta = await allRows<{ value?: string | number }>(database, `SELECT value FROM meta WHERE key = 'version'`);
+			schemaVersion = Number(meta[0]?.value ?? 0) || 0;
+		} catch {
+			// meta が無い古い DB。0 のまま（接頭辞を剥がさない）。
+		}
+
+		const rows = (await allRows<IParadisSqliteCookieRow>(database, `SELECT ${selected.join(', ')} FROM cookies`)).map(row => ({
 			hostKey: String(row.host_key ?? ''),
 			name: String(row.name ?? ''),
 			path: String(row.path ?? '/'),
@@ -266,7 +324,10 @@ export async function paradisReadCookieRows(dbPath: string): Promise<IParadisRaw
 			expiresUtc: Number(row.expires_utc ?? 0),
 			encryptedValue: Buffer.isBuffer(row.encrypted_value) ? row.encrypted_value : Buffer.alloc(0),
 			plainValue: typeof row.value === 'string' ? row.value : '',
+			sourceScheme: Number(row.source_scheme ?? 0),
+			topFrameSiteKey: typeof row.top_frame_site_key === 'string' ? row.top_frame_site_key : '',
 		}));
+		return { schemaVersion, rows };
 	} finally {
 		await new Promise<void>(resolve => database.close(() => resolve()));
 	}
@@ -277,55 +338,26 @@ export async function paradisReadCookieRows(dbPath: string): Promise<IParadisRaw
 // #region 復号（macOS の v10）
 
 /** macOS の Safe Storage パスワードから AES-128 鍵を導出する（PBKDF2 saltysalt / 1003回 / SHA1）。 */
-export function paradisDeriveMacCookieKey(safeStoragePassword: string): Buffer {
+export function paradisDeriveMacCookieKey(safeStoragePassword: string | Buffer): Buffer {
 	return pbkdf2Sync(safeStoragePassword, 'saltysalt', 1003, 16, 'sha1');
 }
 
-/** 復号後の平文の先頭に付く 32 バイト（Chromium 127+ の HMAC / schema 24+ のドメインハッシュ）。 */
+/** 復号後の平文の先頭に付く 32 バイト（DB schema 24+ のドメインハッシュ）。 */
 const CHROMIUM_COOKIE_PREFIX_LEN = 32;
-
-/**
- * 平文の先頭 32 バイトが「そのドメインの SHA-256」か（DB schema 24+）。空値のときは平文が
- * ハッシュだけになるので、一致しても長さで value 扱いへ倒れる（下の {@link paradisStripCookiePrefix}）。
- */
-function paradisHasHostKeyHashPrefix(plaintext: Buffer, hostKey: string): boolean {
-	return plaintext.length >= CHROMIUM_COOKIE_PREFIX_LEN
-		&& plaintext.subarray(0, CHROMIUM_COOKIE_PREFIX_LEN).equals(createHash('sha256').update(hostKey).digest());
-}
-
-/**
- * 平文の先頭 32 バイトが Chromium 127+ の HMAC 接頭辞か（ハッシュは約半分が非印字なので、
- * 先頭 32 バイトに非印字が 8 個以上あれば接頭辞と判断する）。
- */
-function paradisHasHmacPrefix(plaintext: Buffer): boolean {
-	if (plaintext.length <= CHROMIUM_COOKIE_PREFIX_LEN) {
-		return false;
-	}
-	let nonPrintable = 0;
-	for (let i = 0; i < CHROMIUM_COOKIE_PREFIX_LEN; i++) {
-		if (plaintext[i] < 0x20 || plaintext[i] > 0x7e) {
-			nonPrintable++;
-		}
-	}
-	return nonPrintable >= 8;
-}
-
-/** 付いていれば先頭 32 バイトを剥がす。付いていなければそのまま返す。 */
-export function paradisStripCookiePrefix(plaintext: Buffer, hostKey: string): Buffer {
-	return paradisHasHostKeyHashPrefix(plaintext, hostKey) || paradisHasHmacPrefix(plaintext)
-		? plaintext.subarray(CHROMIUM_COOKIE_PREFIX_LEN)
-		: plaintext;
-}
+/** この版以上でドメインハッシュの接頭辞が付く。 */
+export const CHROMIUM_COOKIE_HASH_PREFIX_SCHEMA = 24;
 
 /**
  * v10 形式の暗号化 Cookie を復号する。
  *
  * - 先頭 3 バイトは 'v10'。残りが AES-128-CBC の暗号文（IV は 16 個の空白）。PKCS#7 パディング。
- * - 復号後、新しめの Chrome は「そのドメインの SHA-256」または HMAC の 32 バイトを平文の先頭に
- *   付ける。付いていれば剥がす（{@link paradisStripCookiePrefix}）。
+ * - 平文の先頭 32 バイトのドメインハッシュを剥がすかどうかは **DB のスキーマ版**で決める（推測しない）。
+ *   版が {@link CHROMIUM_COOKIE_HASH_PREFIX_SCHEMA} 以上なら、先頭 32 バイトが `SHA-256(host_key)` と
+ *   一致したときだけ剥がす。一致しなければ Chromium が捨てる値なので `undefined`（＝取り込まない）。
+ *   版がそれ未満なら接頭辞は付かないので剥がさない。
  * - 復号に失敗した値は `undefined`。値そのものはここでも呼び出し側でもログに出さない。
  */
-export function paradisDecryptCookieValueV10(encryptedValue: Buffer, macKey: Buffer, hostKey: string): string | undefined {
+export function paradisDecryptCookieValueV10(encryptedValue: Buffer, macKey: Buffer, hostKey: string, schemaVersion: number): string | undefined {
 	if (encryptedValue.length < 3 || encryptedValue.subarray(0, 3).toString('ascii') !== 'v10') {
 		// 平文（暗号化されていない）や app-bound（v20）Cookie はこの経路では扱わない。
 		return undefined;
@@ -338,8 +370,15 @@ export function paradisDecryptCookieValueV10(encryptedValue: Buffer, macKey: Buf
 		const iv = Buffer.alloc(16, ' ');
 		const decipher = createDecipheriv('aes-128-cbc', macKey, iv);
 		decipher.setAutoPadding(true);
-		const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-		return paradisStripCookiePrefix(plaintext, hostKey).toString('utf8');
+		let plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+		if (schemaVersion >= CHROMIUM_COOKIE_HASH_PREFIX_SCHEMA) {
+			if (plaintext.length < CHROMIUM_COOKIE_PREFIX_LEN
+				|| !plaintext.subarray(0, CHROMIUM_COOKIE_PREFIX_LEN).equals(createHash('sha256').update(hostKey).digest())) {
+				return undefined; // 版 24+ なのにハッシュが合わない = 壊れ値。Chromium 同様に捨てる。
+			}
+			plaintext = plaintext.subarray(CHROMIUM_COOKIE_PREFIX_LEN);
+		}
+		return plaintext.toString('utf8');
 	} catch {
 		return undefined;
 	}
@@ -349,7 +388,44 @@ export function paradisDecryptCookieValueV10(encryptedValue: Buffer, macKey: Buf
 
 // #region ドメイン集計・取り込み用の正規化
 
-/** ドメイン集計（復号しない）。Google のサインインホストは importable=false にする。 */
+/** Google のログイン理由（renderer がそのまま出せる）。 */
+function paradisGoogleReason(): string {
+	return localize('paradis.loginImport.googleReason', "Google のログインは取り込めません");
+}
+
+/**
+ * 取り込みの前段フィルタ（復号しない）。写せない行の理由を返す（`undefined` は写せる候補）。
+ * ドメイン集計の件数と `paradisToImportableCookie` の両方がこれを使い、件数と実際に写す数を合わせる。
+ */
+export function paradisCookieSkipReason(row: IParadisRawCookieRow, nowSeconds: number): 'expired' | 'google' | 'partitioned' | 'prefix' | 'samesite' | 'novalue' | undefined {
+	if (paradisChromiumExpiry(row.expiresUtc, nowSeconds).kind === 'expired') {
+		return 'expired';
+	}
+	if (paradisIsGoogleLoginCookie(row.hostKey, row.name)) {
+		return 'google';
+	}
+	// Partitioned Cookie（CHIPS）は Electron の cookies.set でパーティションを指定できないので写さない。
+	if (row.topFrameSiteKey.length > 0) {
+		return 'partitioned';
+	}
+	if (!paradisCookiePrefixRulesOk(row.name, { secure: row.isSecure, path: row.path, domainCookie: paradisIsDomainCookie(row.hostKey) })) {
+		return 'prefix';
+	}
+	// SameSite=None は Secure 必須。Secure でないと cookies.set が拒否するので事前に外す。
+	if (row.sameSite === 0 && !row.isSecure) {
+		return 'samesite';
+	}
+	// v10 暗号でも平文 value でもない（例: linux の v11）行は写せない。
+	if (row.encryptedValue.length === 0 && row.plainValue.length === 0) {
+		return 'novalue';
+	}
+	return undefined;
+}
+
+/**
+ * ドメイン集計（復号しない）。Google のログインドメインは importable=false。件数は実際に写せる
+ * 候補だけ数える（Google ドメインは情報として非期限切れ件数を出す）。
+ */
 export function paradisGroupCookieDomains(rows: readonly IParadisRawCookieRow[], nowSeconds: number = Date.now() / 1000): Map<string, { count: number; importable: boolean; reason?: string }> {
 	const groups = new Map<string, { count: number; importable: boolean; reason?: string }>();
 	for (const row of rows) {
@@ -360,14 +436,21 @@ export function paradisGroupCookieDomains(rows: readonly IParadisRawCookieRow[],
 		if (domain.length === 0) {
 			continue;
 		}
+		const googleDomain = paradisIsGoogleLoginHost(row.hostKey);
 		const existing = groups.get(domain);
-		if (existing) {
-			existing.count++;
+		if (!existing) {
+			groups.set(domain, googleDomain
+				? { count: 1, importable: false, reason: paradisGoogleReason() }
+				: { count: paradisCookieSkipReason(row, nowSeconds) === undefined ? 1 : 0, importable: true });
 			continue;
 		}
-		groups.set(domain, paradisIsGoogleSignInHost(row.hostKey)
-			? { count: 1, importable: false, reason: 'Google のログインは取り込めません' }
-			: { count: 1, importable: true });
+		if (existing.importable) {
+			if (paradisCookieSkipReason(row, nowSeconds) === undefined) {
+				existing.count++;
+			}
+		} else {
+			existing.count++;
+		}
 	}
 	return groups;
 }
@@ -386,8 +469,9 @@ export interface IParadisImportableCookie {
 }
 
 /**
- * 1行を「取り込める Cookie」へ変換する。取り込めない場合（期限切れ・接頭辞規則違反・Google・
- * 選択外ドメイン・復号失敗）は `undefined`。復号は渡された関数に委ねる（テストで差し替え可能）。
+ * 1行を「取り込める Cookie」へ変換する。写せない場合（選択外・{@link paradisCookieSkipReason} に該当・
+ * 復号失敗）は `undefined`。復号は渡された関数に委ねる（テストで差し替え可能。DB のスキーマ版は
+ * 呼び出し側がクロージャに閉じ込める）。暗号化されていない Cookie は `value` 列をそのまま使う。
  */
 export function paradisToImportableCookie(
 	row: IParadisRawCookieRow,
@@ -396,23 +480,17 @@ export function paradisToImportableCookie(
 	nowSeconds: number = Date.now() / 1000,
 ): IParadisImportableCookie | undefined {
 	const domain = paradisCookieHostToDomain(row.hostKey);
-	if (!selectedDomains.has(domain) || paradisIsGoogleSignInHost(row.hostKey)) {
+	if (!selectedDomains.has(domain) || paradisCookieSkipReason(row, nowSeconds) !== undefined) {
 		return undefined;
 	}
-	const expiry = paradisChromiumExpiry(row.expiresUtc, nowSeconds);
-	if (expiry.kind === 'expired') {
-		return undefined;
-	}
-	const domainCookie = paradisIsDomainCookie(row.hostKey);
-	if (!paradisCookiePrefixRulesOk(row.name, { secure: row.isSecure, path: row.path, domainCookie })) {
-		return undefined;
-	}
-	const value = decrypt(row);
+	const value = row.encryptedValue.length > 0 ? decrypt(row) : row.plainValue;
 	if (value === undefined) {
 		return undefined;
 	}
+	const domainCookie = paradisIsDomainCookie(row.hostKey);
+	const expiry = paradisChromiumExpiry(row.expiresUtc, nowSeconds);
 	return {
-		url: paradisCookieSetUrl(row.hostKey, row.path, row.isSecure),
+		url: paradisCookieSetUrl(row.hostKey, row.path, row.isSecure, row.sourceScheme),
 		name: row.name,
 		value,
 		...(domainCookie ? { domain: row.hostKey } : {}),

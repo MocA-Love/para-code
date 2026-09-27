@@ -143,8 +143,16 @@ export function paradisRegisterBrowserProfiles(
 	const service = instantiationService.createInstance(ParadisBrowserProfilesMainService);
 	channelHost.registerChannel(PARADIS_BROWSER_PROFILE_CHANNEL, ProxyChannel.fromService(service, disposables));
 	// 他ブラウザからのログイン取り込み channel も同じ登録点でまとめて立てる（app.ts への追加 import を増やさない）。
-	disposables.add(instantiationService.invokeFunction(accessor =>
-		paradisRegisterBrowserLoginImport(channelHost, accessor.get(IEnvironmentMainService).userDataPath, accessor.get(ILogService)),
-	));
+	disposables.add(instantiationService.invokeFunction(accessor => {
+		// upstream の `IApplicationStorageMainService` decorator は `IStorageMainService` 型で宣言されて
+		// いるが、実体は ApplicationStorageMainService（whenReady/get を持つ）なので、注入と同じく narrow する。
+		const applicationStorageMainService = accessor.get(IApplicationStorageMainService) as unknown as IApplicationStorageMainService;
+		return paradisRegisterBrowserLoginImport(
+			channelHost,
+			accessor.get(IEnvironmentMainService).userDataPath,
+			accessor.get(ILogService),
+			applicationStorageMainService,
+		);
+	}));
 	return disposables;
 }

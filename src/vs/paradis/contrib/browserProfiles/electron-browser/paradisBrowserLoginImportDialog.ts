@@ -36,7 +36,15 @@ const $ = dom.$;
 class ParadisLoginImportDialog extends ParadisProfileModal {
 
 	private readonly _mainService: IParadisBrowserLoginImportMainService;
+	// 各領域は独立して作り直すので、作り直しごとに捨てるリスナー置き場を領域ごとに持つ
+	// （CLAUDE.md「繰り返し呼ばれるメソッド内で作った disposable をクラスへ register しない」）。
+	private readonly _sourceStore = this._register(new DisposableStore());
 	private readonly _renderStore = this._register(new DisposableStore());
+	private readonly _destStore = this._register(new DisposableStore());
+	// フォーカス巡回対象も領域ごとに持ち、再描画のたびに入れ替える（際限なく増やさない）。
+	private _sourceFocusables: HTMLElement[] = [];
+	private _domainFocusables: HTMLElement[] = [];
+	private _destFocusables: HTMLElement[] = [];
 
 	private _browsers: readonly IParadisImportBrowser[] = [];
 	private _selectedBrowserId: string | undefined;
@@ -107,13 +115,21 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 		void this._loadDomains();
 	}
 
+	/** 3領域のフォーカス対象を1本にまとめ直す（基底クラスの巡回はこの配列を見る）。 */
+	private _rebuildFocusables(): void {
+		this.contentFocusables.splice(0, this.contentFocusables.length, ...this._sourceFocusables, ...this._domainFocusables, ...this._destFocusables);
+	}
+
 	private _renderSource(): void {
+		this._sourceStore.clear();
+		this._sourceFocusables = [];
 		dom.clearNode(this._sourceRow);
 		if (this._browsers.length === 0) {
 			dom.append(this._sourceRow, $('.pbpm-hint')).textContent = localize(
 				'paradis.loginImport.noBrowsers',
 				"取り込めるブラウザが見つかりませんでした。macOS の Chrome / Edge / Brave / Arc などが対象です。",
 			);
+			this._rebuildFocusables();
 			return;
 		}
 
@@ -126,8 +142,8 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 			option.textContent = browser.label;
 			option.selected = browser.id === this._selectedBrowserId;
 		}
-		this.contentFocusables.push(browserSelect);
-		this._register(dom.addDisposableListener(browserSelect, dom.EventType.CHANGE, () => {
+		this._sourceFocusables.push(browserSelect);
+		this._sourceStore.add(dom.addDisposableListener(browserSelect, dom.EventType.CHANGE, () => {
 			this._selectedBrowserId = browserSelect.value;
 			this._selectedSourceDir = this._currentBrowser()?.profiles[0]?.directory;
 			this._selectedDomains.clear();
@@ -145,13 +161,14 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 				option.textContent = profile.label;
 				option.selected = profile.directory === this._selectedSourceDir;
 			}
-			this.contentFocusables.push(profileSelect);
-			this._register(dom.addDisposableListener(profileSelect, dom.EventType.CHANGE, () => {
+			this._sourceFocusables.push(profileSelect);
+			this._sourceStore.add(dom.addDisposableListener(profileSelect, dom.EventType.CHANGE, () => {
 				this._selectedSourceDir = profileSelect.value;
 				this._selectedDomains.clear();
 				void this._loadDomains();
 			}));
 		}
+		this._rebuildFocusables();
 	}
 
 	private async _loadDomains(): Promise<void> {
@@ -181,25 +198,32 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 
 	private _renderDomains(): void {
 		this._renderStore.clear();
+		this._domainFocusables = [];
 		dom.clearNode(this._domainSection);
 
 		const browser = this._currentBrowser();
 		const unsupported = browser?.unsupportedReason ?? this._domainListing?.unsupportedReason;
 		if (unsupported) {
 			dom.append(this._domainSection, $('.pbpm-import-unsupported')).textContent = unsupported;
+			this._rebuildFocusables();
 			return;
 		}
 		const listing = this._domainListing;
 		if (!listing) {
+			this._rebuildFocusables();
 			return;
 		}
 
 		dom.append(this._domainSection, $('label.pbpm-label')).textContent = localize('paradis.loginImport.sites', "取り込むサイト");
 
 		if (listing.needsKeychainConsent) {
+			// M1: 「常に許可」を押すと ACL に入るのは Para Code ではなく security コマンドなので、
+			// ほかのプログラム（ターミナルのエージェントを含む）も無言で鍵を読めるようになる。危険を明記する。
+			const browserName = browser?.label ?? localize('paradis.loginImport.thisBrowser', "選んだブラウザ");
 			dom.append(this._domainSection, $('.pbpm-import-keychain')).textContent = localize(
 				'paradis.loginImport.keychainGuidance',
-				"[取り込む] を押すと、Chrome などの鍵を読むためにキーチェーンの確認が出ます。「許可」を押してください（「常に許可」は不要です）。",
+				"[取り込む] を押すと、確認ダイアログに「security」と表示され、Mac のログインパスワードを求められます。「許可」（今回だけ）を押してください。「常に許可」を押すと、以後は Para Code 以外のプログラム（エージェントを含む）も確認なしに {0} の保存データを読めるようになります。",
+				browserName,
 			);
 		}
 
@@ -208,7 +232,7 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 		searchInput.placeholder = localize('paradis.loginImport.searchPlaceholder', "ドメインを検索");
 		searchInput.value = this._search;
 		searchInput.setAttribute('aria-label', localize('paradis.loginImport.searchPlaceholder', "ドメインを検索"));
-		this.contentFocusables.push(searchInput);
+		this._domainFocusables.push(searchInput);
 		this._renderStore.add(dom.addDisposableListener(searchInput, dom.EventType.INPUT, () => {
 			this._search = searchInput.value;
 			this._renderDomainRows(listElement);
@@ -220,6 +244,7 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 
 		this._summary = dom.append(this._domainSection, $('.pbpm-import-summary'));
 		this._updateSummary();
+		this._rebuildFocusables();
 	}
 
 	private _renderDomainRows(listElement: HTMLElement): void {
@@ -270,6 +295,8 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 	}
 
 	private _renderDestination(): void {
+		this._destStore.clear();
+		this._destFocusables = [];
 		dom.clearNode(this._destinationRow);
 		// 取り込み先は「利用者の名前付きプロファイル」だけ。エージェントが作ったものは既定で除外する。
 		const profiles = this.profilesService.list().filter(profile => !profile.createdByAgent);
@@ -280,6 +307,7 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 				"取り込み先の名前付きプロファイルがありません。先にプロファイルを作成してください。",
 			);
 			this._destinationProfileId = undefined;
+			this._rebuildFocusables();
 			return;
 		}
 		if (this._destinationProfileId === undefined || !profiles.some(profile => profile.id === this._destinationProfileId)) {
@@ -293,11 +321,12 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 			option.textContent = profile.name;
 			option.selected = profile.id === this._destinationProfileId;
 		}
-		this.contentFocusables.push(select);
-		this._register(dom.addDisposableListener(select, dom.EventType.CHANGE, () => {
+		this._destFocusables.push(select);
+		this._destStore.add(dom.addDisposableListener(select, dom.EventType.CHANGE, () => {
 			this._destinationProfileId = select.value;
 			this._updateImportButton();
 		}));
+		this._rebuildFocusables();
 	}
 
 	private _updateImportButton(): void {
@@ -327,25 +356,29 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 			domains: [...this._selectedDomains],
 		}).catch(() => undefined);
 		this._importing = false;
-		if (this._store.isDisposed) {
-			return;
-		}
+		// 取り込み中に閉じても（キーチェーンの確認中に Esc など）、取り込みは完了しているので通知は出す。
+		// 破棄済みならボタン更新だけを飛ばす。
 		if (!result || result.error) {
 			this.notificationService.notify({
 				severity: Severity.Warning,
 				message: result?.error ?? localize('paradis.loginImport.failed', "ログインの取り込みに失敗しました。"),
 			});
-			this._updateImportButton();
+			if (!this._store.isDisposed) {
+				this._updateImportButton();
+			}
 			return;
 		}
-		this.notificationService.notify({
-			severity: Severity.Info,
-			message: localize(
-				'paradis.loginImport.done',
-				"{0} サイト・{1} 件のログインを取り込みました。",
-				result.importedDomains, result.importedCookies,
-			),
-		});
+		const parts = [localize('paradis.loginImport.done', "{0} サイト・{1} 件のログインを取り込みました。", result.importedDomains, result.importedCookies)];
+		if (result.skipped > 0) {
+			parts.push(localize('paradis.loginImport.doneSkipped', "取り込めなかった Cookie が {0} 件あります（期限切れや Google のログインなど）。", result.skipped));
+		}
+		if (result.failedDomains.length > 0) {
+			parts.push(localize('paradis.loginImport.doneFailed', "次のサイトは書き込めませんでした: {0}", result.failedDomains.join(', ')));
+		}
+		if (result.sessionCookies && result.sessionCookies > 0) {
+			parts.push(localize('paradis.loginImport.doneSession', "うち {0} 件は期限なし（セッション）Cookie で、再起動で消える場合があります。", result.sessionCookies));
+		}
+		this.notificationService.notify({ severity: Severity.Info, message: parts.join(' ') });
 		this.close();
 	}
 

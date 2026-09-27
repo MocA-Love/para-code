@@ -98,6 +98,8 @@ export interface IParadisImportResult {
 	readonly skipped: number;
 	/** 復号または書き込みに失敗したドメイン（UI が名前を出せるように）。 */
 	readonly failedDomains: readonly string[];
+	/** 取り込んだうち期限なし（セッション）Cookie の件数。再起動で消える場合があると案内するため。 */
+	readonly sessionCookies?: number;
 	/** 全体が失敗したときの理由（例: キーチェーンの許可が下りなかった）。 */
 	readonly error?: string;
 }
@@ -173,15 +175,36 @@ export function paradisIsDomainCookie(hostKey: string): boolean {
 }
 
 /**
- * Google のサインインに使うホストか。ここは取り込めない（取り込んでもエージェント経由で
- * Google の対策に弾かれ、かつ一番渡したくない資格情報のため）。
- * 内蔵ブラウザで直接サインインしてもらう。
+ * Google のログインが置かれるドメインか（登録可能ドメイン = eTLD+1 単位で判定）。
+ *
+ * Google のセッション本体（`SID` など）は `accounts.google.com` ではなく `.google.com` に
+ * 置かれ、`.youtube.com` や国別の `.google.co.jp` にも写しがある。ホスト完全一致では漏れるので、
+ * ブランドのラベル（`google` / `youtube` / `googleusercontent` / `gmail`）が登録可能ドメインの
+ * SLD に来るものを、そのサブドメインごとすべて取り込み不可にする。過剰にブロックする側（安全側）に倒す。
  */
-export function paradisIsGoogleSignInHost(host: string): boolean {
+export function paradisIsGoogleLoginHost(host: string): boolean {
 	const domain = paradisCookieHostToDomain(host);
-	return domain === 'accounts.google.com'
-		|| domain === 'accounts.youtube.com'
-		|| /^accounts\.google\.[a-z.]+$/.test(domain);
+	// 末尾が `<brand>.<tld>` または `<brand>.<ccSLD>.<cctld>`（google.co.jp / google.com.br 等）。
+	return /(^|\.)(google|youtube|googleusercontent|gmail)\.([a-z]{2,4}\.)?[a-z]{2,}$/.test(domain);
+}
+
+/**
+ * Google のログインセッションに使う Cookie 名か。ドメイン判定を擦り抜けた場合の二段目の網。
+ * どちらか一方に当たれば取り込まない。
+ */
+const PARADIS_GOOGLE_LOGIN_COOKIE_NAMES: ReadonlySet<string> = new Set([
+	'SID', 'HSID', 'SSID', 'APISID', 'SAPISID', 'LSID', 'OSID', 'ACCOUNT_CHOOSER', 'LOGIN_INFO',
+	'__Host-GAPS', '__Host-1PLSID', '__Host-3PLSID',
+]);
+
+export function paradisIsGoogleLoginCookieName(name: string): boolean {
+	return PARADIS_GOOGLE_LOGIN_COOKIE_NAMES.has(name)
+		|| (name.startsWith('__Secure-') && /(PSID|PAPISID)/.test(name));
+}
+
+/** ホストか Cookie 名のどちらかが Google のログインに当たるか。 */
+export function paradisIsGoogleLoginCookie(host: string, name: string): boolean {
+	return paradisIsGoogleLoginHost(host) || paradisIsGoogleLoginCookieName(name);
 }
 
 /**
@@ -204,15 +227,19 @@ export function paradisCookiePrefixRulesOk(name: string, attrs: {
 	return true;
 }
 
+/** Chromium の `source_scheme` 列（2 = kSecure）。 */
+export const PARADIS_CHROMIUM_SOURCE_SCHEME_SECURE = 2;
+
 /**
- * Electron の `cookies.set` へ渡す url を作る。Secure Cookie は https、そうでなければ http。
+ * Electron の `cookies.set` へ渡す url を作る。Secure Cookie、または元が https で設定された
+ * Cookie（`source_scheme = 2`）は https、それ以外は http。scheme-bound cookie を壊さないため。
  * ドメイン Cookie（先頭ドット）はホスト部分をドット無しにし、`domain` 側で範囲を伝える。
  */
-export function paradisCookieSetUrl(hostKey: string, path: string, secure: boolean): string {
-	const scheme = secure ? 'https' : 'http';
+export function paradisCookieSetUrl(hostKey: string, path: string, secure: boolean, sourceScheme?: number): string {
+	const https = secure || sourceScheme === PARADIS_CHROMIUM_SOURCE_SCHEME_SECURE;
 	const host = paradisCookieHostToDomain(hostKey);
 	const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-	return `${scheme}://${host}${normalizedPath}`;
+	return `${https ? 'https' : 'http'}://${host}${normalizedPath}`;
 }
 
 // #endregion
