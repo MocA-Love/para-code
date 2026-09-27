@@ -9,17 +9,24 @@
 // para-browser MCP サーバーへ「IDE 操作ツール」（O1）と「ガイドを読む」ツール（O4）を足すプロバイダ。
 // shared process で動く。スペースやターミナルの実体はウィンドウ側にあるので、ここでは
 //  - 設定で送信・作成・削除が許されているかの門番
-//  - 送る直前の「許可待ち・質問中ではないか」の確かめ（hook から分かる最新の状態で行う）
-//  - 待機（1 秒ごとにウィンドウへ画面と状態を聞く。上限つき）
+//  - 操作系のツールで、接続元のプロセスが本当にそのペインの中にあるかの確かめ（トークンのなりすまし防止）
+//  - 送る直前と Enter の直前の「作業中・許可待ち・質問中ではないか」の確かめ（hook から分かる最新の状態で行う）
+//  - 待機（1 秒ごとにウィンドウへ画面と状態を聞く。上限と同時数の制限つき）
 //  - エージェントへ返す文面の組み立て（ペイントークンは絶対に載せない）
-// だけを受け持ち、範囲（同じスペースか・自分が作ったものか）の判断はウィンドウ側が行う。
+// を受け持ち、範囲（同じスペースか・自分が作ったものか）の判断はウィンドウ側が行う。
 
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import {
 	IParadisAgentIdeInternal,
+	PARADIS_AGENT_IDE_ACTIONS_DISABLED_MESSAGE,
 	PARADIS_AGENT_IDE_CHANNEL,
+	PARADIS_AGENT_IDE_LAUNCH_GRACE_MS,
+	PARADIS_AGENT_IDE_MAX_WAITS_PER_PANE,
+	PARADIS_AGENT_IDE_MAX_WAITS_TOTAL,
 	PARADIS_AGENT_IDE_METHOD,
+	PARADIS_AGENT_IDE_SHELL_DISABLED_MESSAGE,
+	PARADIS_AGENT_IDE_START_GRACE_MS,
 	PARADIS_AGENT_IDE_TOOLS,
 	PARADIS_AGENT_IDE_TOOL_NAMES,
 	ParadisAgentIdeActionScope,
@@ -38,6 +45,8 @@ import { PARADIS_AGENT_IDE_SERVER_INSTRUCTIONS, paradisAgentIdeGuide } from '../
 export interface IParadisAgentIdeSettings {
 	actionsEnabled(): boolean;
 	actionScope(): ParadisAgentIdeActionScope;
+	readOtherSpaces(): boolean;
+	shellCommands(): boolean;
 }
 
 /** 時間の扱い（テストで差し替える）。 */
@@ -67,17 +76,21 @@ const REAL_CLOCK: IParadisAgentIdeClock = {
 
 /** 待機でウィンドウへ聞きに行く間隔。 */
 const WAIT_POLL_MS = 1_000;
-/** 待機で見る画面の行数と、結果に添える行数。 */
-const WAIT_SCREEN_LINES = 80;
+/** 待機の結果に添える画面の行数。 */
 const WAIT_RESULT_TAIL_LINES = 20;
+/** 貼り付けから Enter までの間（TUI が貼り付けを確定させる時間。モバイルからの送信と同じ）。 */
+const PASTE_SETTLE_MS = 250;
 
 /** worktree の作成（命名・git worktree add・setup スクリプト）を待つ上限。 */
 const CREATE_SPACE_TIMEOUT_MS = 150_000;
 /** ターミナルを開いてシェルが立ち上がるのを待つ上限。 */
 const OPEN_TERMINAL_TIMEOUT_MS = 30_000;
 
-const ACTIONS_DISABLED_MESSAGE = 'Para Code does not allow agents to send input to terminals or to create and close terminals and spaces. Only the user can allow it: Para Code settings > "Agent control" > "Allow agents to operate terminals and spaces". Tell the user what you wanted to do; do not try to change the setting yourself.';
 const NEEDS_HUMAN_MESSAGE = 'That terminal is waiting for the user to answer a permission request or a question, so Para Code does not send anything to it. Tell the user which terminal is waiting (its id and title from list_terminals) and let them answer.';
+const WORKING_MESSAGE = 'The agent in that terminal is working right now, so Para Code does not press Enter there (a permission prompt could appear at any moment and Enter would answer it). Wait with wait_for_terminal until="agent_stopped" and send again.';
+const NO_HOOKS_MESSAGE = 'Para Code cannot see the status of the agent in that terminal (its hooks have never reported), so it cannot tell whether a permission prompt is on screen and does not press Enter there. Ask the user to turn on the agent hooks in Para Code settings, or to send it themselves.';
+const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside your own terminal pane, so it refuses actions (this also happens for agents connected over SSH). Reading tools still work.';
+const TOO_MANY_WAITS_MESSAGE = 'Too many wait_for_terminal calls are running at once. Wait for the current ones to return before starting another.';
 
 function toolText(value: string | object): unknown {
 	return { content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] };
@@ -96,6 +109,9 @@ function tailOf(screen: string | undefined, lines: number): string {
 }
 
 export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
+
+	private readonly _waitsByPane = new Map<string, number>();
+	private _waitsTotal = 0;
 
 	constructor(
 		private readonly settings: IParadisAgentIdeSettings,
@@ -120,27 +136,36 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 			case 'error':
 				return toolError(parsed.error);
 			case 'guide':
-				return toolText(paradisAgentIdeGuide({ actionsEnabled: this.settings.actionsEnabled(), actionScope: this.settings.actionScope() }));
+				return toolText(paradisAgentIdeGuide({
+					actionsEnabled: this.settings.actionsEnabled(),
+					actionScope: this.settings.actionScope(),
+					readOtherSpaces: this.settings.readOtherSpaces(),
+					shellCommands: this.settings.shellCommands(),
+				}));
 		}
 		if (!context) {
 			return toolError('This Para Code build cannot route IDE tools to its window. Update Para Code.');
 		}
 		if (parsed.kind === 'wait') {
-			return this._wait(paneToken, parsed.terminal, parsed.until, parsed.text, parsed.timeoutSeconds, context, signal);
+			return this._withWaitSlot(paneToken, () => this._wait(paneToken, parsed.terminal, parsed.until, parsed.text, parsed.timeoutSeconds, context, signal));
 		}
-		if (parsed.action && !this.settings.actionsEnabled()) {
-			return toolError(ACTIONS_DISABLED_MESSAGE);
+		const action = parsed.kind === 'input' || parsed.action;
+		if (action) {
+			if (!this.settings.actionsEnabled()) {
+				return toolError(PARADIS_AGENT_IDE_ACTIONS_DISABLED_MESSAGE);
+			}
+			if (!(await context.verifyCallerProcess())) {
+				return toolError(CALLER_UNVERIFIED_MESSAGE);
+			}
+		}
+		if (parsed.kind === 'input') {
+			return this._sendInput(paneToken, parsed.terminal, parsed.text, parsed.pressEnter, context, signal);
 		}
 		const request = parsed.request;
-		if (request.op === 'sendInput' || request.op === 'sendKey') {
-			// 送る前に、hook から分かる最新の状態で「人の答えを待っていないか」を確かめる。
-			// ウィンドウ側の表示は 2 秒ごとの取り直しなので、そちらだけでは許可待ちへ入った直後に送りうる。
-			const target = await this._callWindow(paneToken, { op: 'resolveWriteTarget', terminal: request.terminal }, name, context, signal);
-			if (!target.ok) {
-				return toolError(target.error);
-			}
-			if (this._needsHuman(target.internal, context)) {
-				return toolError(NEEDS_HUMAN_MESSAGE);
+		if (request.op === 'sendKey') {
+			const refusal = await this._checkTarget(paneToken, request.terminal, request.key === 'enter', name, context, signal);
+			if (refusal !== undefined) {
+				return toolError(refusal);
 			}
 		}
 		const result = await this._callWindow(paneToken, request, name, context, signal);
@@ -148,14 +173,76 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 			return toolError(result.error);
 		}
 		if (request.op === 'listSpaces' || request.op === 'listTerminals') {
-			return toolText({ actions_enabled: this.settings.actionsEnabled(), action_scope: this.settings.actionScope(), ...result.data });
+			return toolText({
+				actions_enabled: this.settings.actionsEnabled(),
+				action_scope: this.settings.actionScope(),
+				read_other_spaces: this.settings.readOtherSpaces(),
+				shell_commands: this.settings.shellCommands(),
+				...result.data,
+			});
 		}
 		return toolText(result.data);
 	}
 
-	private _needsHuman(internal: IParadisAgentIdeInternal | undefined, context: IParadisMcpToolCallContext): boolean {
-		const status = this._statusOf(internal, context);
-		return paradisAgentIdeNeedsHuman(status);
+	/**
+	 * 送ってよい相手かを、ウィンドウの範囲判定と hook の最新の状態で確かめる。断る理由を返す。
+	 * @param wantsEnter Enter を送るか（コマンドの実行・プロンプトの送信になる）
+	 */
+	private async _checkTarget(paneToken: string, terminal: string, wantsEnter: boolean, toolName: string, context: IParadisMcpToolCallContext, signal: AbortSignal | undefined): Promise<string | undefined> {
+		const target = await this._callWindow(paneToken, { op: 'resolveWriteTarget', terminal }, toolName, context, signal);
+		if (!target.ok) {
+			return target.error;
+		}
+		const status = this._statusOf(target.internal, context);
+		if (paradisAgentIdeNeedsHuman(status)) {
+			return NEEDS_HUMAN_MESSAGE;
+		}
+		if (!wantsEnter) {
+			return undefined;
+		}
+		if (target.internal?.agent !== true) {
+			return this.settings.shellCommands() ? undefined : PARADIS_AGENT_IDE_SHELL_DISABLED_MESSAGE;
+		}
+		if (status === 'working') {
+			return WORKING_MESSAGE;
+		}
+		// hook が一度も届いていない相手は、許可待ちかどうかを確かめられない（安全側に倒す）
+		const token = target.internal?.paneToken;
+		if (token === undefined || !context.hasAgentHookHistory(token)) {
+			return NO_HOOKS_MESSAGE;
+		}
+		return undefined;
+	}
+
+	/**
+	 * 本文を貼り付け、必要なら Enter を送る。貼り付けと Enter を別の呼び出しに分け、その間に hook の
+	 * 状態を確かめ直す（貼り付けている間に許可ダイアログが出たら、Enter でそれを承認してしまうため）。
+	 */
+	private async _sendInput(paneToken: string, terminal: string, text: string, pressEnter: boolean, context: IParadisMcpToolCallContext, signal: AbortSignal | undefined): Promise<unknown> {
+		const toolName = 'send_terminal_input';
+		const before = await this._checkTarget(paneToken, terminal, pressEnter, toolName, context, signal);
+		if (before !== undefined) {
+			return toolError(before);
+		}
+		if (text.length > 0) {
+			const pasted = await this._callWindow(paneToken, { op: 'sendInput', terminal, text }, toolName, context, signal);
+			if (!pasted.ok) {
+				return toolError(pasted.error);
+			}
+			if (!pressEnter) {
+				return toolText(pasted.data);
+			}
+			await this.clock.sleep(PASTE_SETTLE_MS, signal);
+			const after = await this._checkTarget(paneToken, terminal, true, toolName, context, signal);
+			if (after !== undefined) {
+				return toolError(`The text was typed, but Enter was not pressed: ${after}`);
+			}
+		}
+		const submitted = await this._callWindow(paneToken, { op: 'sendKey', terminal, key: 'enter' }, toolName, context, signal);
+		if (!submitted.ok) {
+			return toolError(text.length > 0 ? `The text was typed, but Enter was not pressed: ${submitted.error}` : submitted.error);
+		}
+		return toolText({ terminal, typed: text.length > 0, pressed_enter: true });
 	}
 
 	/** 状態は hook（shared process）を優先し、無ければウィンドウの見立てを使う。 */
@@ -194,6 +281,27 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		return value;
 	}
 
+	/** 待機の同時数を制限する（待機は MCP の受付枠を長く占めるので、hook などの受付を枯らさない）。 */
+	private async _withWaitSlot(paneToken: string, run: () => Promise<unknown>): Promise<unknown> {
+		const perPane = this._waitsByPane.get(paneToken) ?? 0;
+		if (perPane >= PARADIS_AGENT_IDE_MAX_WAITS_PER_PANE || this._waitsTotal >= PARADIS_AGENT_IDE_MAX_WAITS_TOTAL) {
+			return toolError(TOO_MANY_WAITS_MESSAGE);
+		}
+		this._waitsByPane.set(paneToken, perPane + 1);
+		this._waitsTotal++;
+		try {
+			return await run();
+		} finally {
+			this._waitsTotal--;
+			const current = (this._waitsByPane.get(paneToken) ?? 1) - 1;
+			if (current <= 0) {
+				this._waitsByPane.delete(paneToken);
+			} else {
+				this._waitsByPane.set(paneToken, current);
+			}
+		}
+	}
+
 	private async _wait(
 		paneToken: string,
 		terminal: string,
@@ -205,9 +313,10 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 	): Promise<unknown> {
 		const startedAt = this.clock.now();
 		const deadline = startedAt + timeoutSeconds * 1000;
-		const stopWatcher = new ParadisAgentStopWatcher(startedAt);
+		let stopWatcher: ParadisAgentStopWatcher | undefined;
 		let lastStatus: ParadisAgentIdeTerminalStatus = 'idle';
 		let lastScreen: string | undefined;
+		let probedOnce = false;
 
 		const report = (met: boolean, extra: object = {}) => toolText({
 			terminal,
@@ -223,32 +332,51 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 			if (signal?.aborted) {
 				return toolError('The wait was cancelled.');
 			}
-			const probe = await this._callWindow(paneToken, { op: 'probeTerminal', terminal, lines: WAIT_SCREEN_LINES }, 'wait_for_terminal', context, signal);
+			const probe = await this._callWindow(paneToken, { op: 'probeTerminal', terminal }, 'wait_for_terminal', context, signal);
 			if (!probe.ok) {
 				return toolError(probe.error);
 			}
 			if (probe.internal?.gone) {
-				return report(false, { reason: 'The terminal was closed.' });
+				// 最初から無い ID は呼び出しの誤り、待っている間に消えたのなら「閉じられた」
+				return probedOnce
+					? report(false, { reason: 'terminal_closed' })
+					: toolError(`There is no terminal with id "${terminal}" in this Para Code window (it may have been closed). Call list_terminals for the current ids.`);
 			}
+			probedOnce = true;
 			lastScreen = probe.internal?.screen;
 			lastStatus = this._statusOf(probe.internal, context);
 			const hookStatus = probe.internal?.paneToken !== undefined ? context.getPaneAgentStatus(probe.internal.paneToken) : undefined;
 			const now = this.clock.now();
 
-			let met = false;
 			switch (until) {
 				case 'needs_input':
-					met = paradisAgentIdeNeedsHuman(lastStatus);
+					if (paradisAgentIdeNeedsHuman(lastStatus)) {
+						return report(true, { reason: 'needs_input' });
+					}
 					break;
 				case 'text':
-					met = text !== undefined && (lastScreen ?? '').includes(text);
+					if (text !== undefined && (lastScreen ?? '').includes(text)) {
+						return report(true, { reason: 'text_found' });
+					}
 					break;
-				case 'agent_stopped':
-					met = stopWatcher.observe(lastStatus, hookStatus?.changedAt, now);
+				case 'agent_stopped': {
+					if (!stopWatcher) {
+						// エージェントのツールで起動したばかりのペインは、CLI が立ち上がるまでの猶予を長く取る
+						const launchedAt = probe.internal?.launchedAt;
+						const grace = launchedAt !== undefined
+							? Math.max(PARADIS_AGENT_IDE_START_GRACE_MS, launchedAt + PARADIS_AGENT_IDE_LAUNCH_GRACE_MS - startedAt)
+							: PARADIS_AGENT_IDE_START_GRACE_MS;
+						stopWatcher = new ParadisAgentStopWatcher(startedAt, grace);
+					}
+					const verdict = stopWatcher.observe(lastStatus, hookStatus?.changedAt, now);
+					if (verdict === 'stopped' || verdict === 'needs_input') {
+						return report(true, { reason: verdict });
+					}
+					if (verdict === 'no_agent_status') {
+						return report(false, { reason: verdict, hint: 'The agent never reported that it started working. This does not mean it finished: read_terminal to see the screen, or use until="text".' });
+					}
 					break;
-			}
-			if (met) {
-				return report(true);
+				}
 			}
 			if (now >= deadline) {
 				return report(false, { timed_out: true, hint: 'Not reached yet. Call wait_for_terminal again to keep waiting.' });

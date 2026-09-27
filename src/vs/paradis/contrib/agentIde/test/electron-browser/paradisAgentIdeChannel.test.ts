@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -13,13 +14,23 @@ import { ICommandService } from '../../../../../platform/commands/common/command
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { INotification, INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { InMemoryStorageService } from '../../../../../platform/storage/common/storage.js';
+import { TerminalCapability } from '../../../../../platform/terminal/common/capabilities/capabilities.js';
+import { ILifecycleService } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { ITerminalEditorService, ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ParadisAgentStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisPaneTokenService } from '../../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentModelCatalogService } from '../../../agentModelCatalog/common/paradisAgentModelCatalog.js';
-import { ParadisAgentStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { PARADIS_DEFAULT_AGENT_COMMANDS } from '../../../workspaceSwitch/common/paradisWorktreeCreate.js';
-import { PARADIS_AGENT_IDE_ACTION_SCOPE_SETTING, PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, ParadisAgentIdeResult } from '../../common/paradisAgentIde.js';
+import {
+	PARADIS_AGENT_IDE_ACTION_SCOPE_SETTING,
+	PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING,
+	PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING,
+	PARADIS_AGENT_IDE_READ_OTHER_SPACES_SETTING,
+	ParadisAgentIdeResult,
+} from '../../common/paradisAgentIde.js';
 import { ParadisAgentIdeChannel, paradisAgentIdeTerminalId } from '../../electron-browser/paradisAgentIdeChannel.js';
 
 const REPOSITORY = { id: 'repo-1', name: 'para-code', uri: URI.file('/repo') };
@@ -34,42 +45,54 @@ interface IFakeTerminal {
 	readonly space: string;
 	readonly sent: { text: string; bracketed: boolean | undefined }[];
 	status?: ParadisAgentStatus;
+	/** 前面で動いているコマンド（エージェントなら 'claude'）。 */
+	executing: string | undefined;
 	bracketedPaste: boolean;
 	disposed: boolean;
 }
 
 suite('ParadisAgentIdeChannel', () => {
-	ensureNoDisposablesAreLeakedInTestSuite();
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(options: { actionsEnabled?: boolean; scope?: 'space' | 'window' } = {}) {
+	function setup(options: { actionsEnabled?: boolean; scope?: 'space' | 'window'; readOtherSpaces?: boolean; shellCommands?: boolean; storage?: InMemoryStorageService } = {}) {
 		const terminals: IFakeTerminal[] = [];
 		const instances = new Map<number, ITerminalInstance>();
-		const add = (instanceId: number, space: string, status?: ParadisAgentStatus) => {
-			const fake: IFakeTerminal = { instanceId, token: `token-${instanceId}`, space, sent: [], status, bracketedPaste: true, disposed: false };
+		const onDidDisposeInstance = store.add(new Emitter<ITerminalInstance>());
+		const add = (instanceId: number, space: string, status?: ParadisAgentStatus, executing: string | null = 'claude') => {
+			const fake: IFakeTerminal = { instanceId, token: `token-${instanceId}`, space, sent: [], status, executing: executing ?? undefined, bracketedPaste: true, disposed: false };
 			terminals.push(fake);
-			instances.set(instanceId, upcastPartial<ITerminalInstance>({
+			const instance = upcastPartial<ITerminalInstance>({
 				instanceId,
 				title: `Terminal ${instanceId}`,
 				get isDisposed() { return fake.disposed; },
+				capabilities: upcastPartial<ITerminalInstance['capabilities']>({
+					get: ((capability: TerminalCapability) => capability === TerminalCapability.CommandDetection ? { executingCommand: fake.executing } : undefined) as ITerminalInstance['capabilities']['get'],
+				}),
 				xterm: {
 					raw: {
+						rows: 2,
 						buffer: { active: { length: 2, getLine: (y: number) => ({ isWrapped: false, translateToString: () => `line ${y}` }) } },
 						get modes() { return { bracketedPasteMode: fake.bracketedPaste, applicationCursorKeysMode: false }; },
 					},
 				} as unknown as ITerminalInstance['xterm'],
 				sendText: async (text: string, _execute: boolean, bracketed?: boolean) => { fake.sent.push({ text, bracketed }); },
-				dispose: () => { fake.disposed = true; },
-			}));
+				dispose: () => { fake.disposed = true; onDidDisposeInstance.fire(instance); },
+			});
+			instances.set(instanceId, instance);
 			return fake;
 		};
 		const live = () => terminals.filter(terminal => !terminal.disposed);
 		const configuration = new TestConfigurationService({
 			[PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING]: options.actionsEnabled ?? true,
 			[PARADIS_AGENT_IDE_ACTION_SCOPE_SETTING]: options.scope ?? 'space',
+			[PARADIS_AGENT_IDE_READ_OTHER_SPACES_SETTING]: options.readOtherSpaces ?? false,
+			[PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING]: options.shellCommands ?? false,
 		});
 		const commands: unknown[][] = [];
-		const launched: { stateKey: string }[] = [];
-		const channel = new ParadisAgentIdeChannel(
+		const notifications: INotification[] = [];
+		const storage = options.storage ?? store.add(new InMemoryStorageService());
+		let launches = 0;
+		const channel = store.add(new ParadisAgentIdeChannel(
 			upcastPartial<IParadisPaneTokenService>({
 				getTokenForInstance: (instanceId: number) => live().find(terminal => terminal.instanceId === instanceId)?.token,
 				getInstanceForToken: (token: string) => live().find(terminal => terminal.token === token)?.instanceId,
@@ -77,15 +100,17 @@ suite('ParadisAgentIdeChannel', () => {
 			upcastPartial<ITerminalService>({
 				get instances() { return live().map(terminal => instances.get(terminal.instanceId)!); },
 				safeDisposeTerminal: async (instance: ITerminalInstance) => instance.dispose(),
+				onDidDisposeInstance: onDidDisposeInstance.event,
 			}),
 			upcastPartial<ITerminalGroupService>({ paradisParkedGroups: [] }),
 			upcastPartial<ITerminalEditorService>({}),
 			upcastPartial<IParadisTerminalScopeService>({
 				isSharedPanelTerminal: () => false,
 				getStateKeyForInstance: (instanceId: number) => terminals.find(terminal => terminal.instanceId === instanceId)?.space,
-				resolveScope: () => ({ kind: 'pending' }),
+				// 記録の無いものを今のスペースと答える本物の挙動（strict では使わない）
+				resolveScope: () => ({ kind: 'managed', stateKey: REPOSITORY.id }),
 			}),
-			upcastPartial<IParadisWorkspaceSwitchService>({ repositories: [REPOSITORY], activeStateKey: REPOSITORY.id }),
+			upcastPartial<IParadisWorkspaceSwitchService>({ repositories: [REPOSITORY], activeStateKey: REPOSITORY.id, onDidRetireScope: Event.None }),
 			upcastPartial<IParadisWorktreeService>({ getWorktrees: () => [WORKTREE] }),
 			upcastPartial<IParadisAgentStatusStore>({
 				getInstanceStatus: (instanceId: number) => terminals.find(terminal => terminal.instanceId === instanceId)?.status,
@@ -101,17 +126,20 @@ suite('ParadisAgentIdeChannel', () => {
 						const created = add(20, NEW_WORKTREE_KEY);
 						return { name: 'child', branch: 'child', worktree: { repositoryId: request.repositoryId, name: 'child', uri: NEW_WORKTREE_URI }, agent: { instanceId: created.instanceId, paneToken: created.token } };
 					}
-					launched.push({ stateKey: request.stateKey! });
-					const created = add(10 + launched.length, request.stateKey!);
+					launches++;
+					const created = add(10 + launches, request.stateKey!);
 					return { instanceId: created.instanceId, paneToken: created.token };
 				}) as unknown as IInstantiationService['invokeFunction'],
 			}),
+			upcastPartial<INotificationService>({ notify: (notification: INotification) => { notifications.push(notification); return undefined!; } }),
+			storage,
+			upcastPartial<ILifecycleService>({ willShutdown: false }),
 			new NullLogService(),
-		);
+		));
 		const caller = add(1, REPOSITORY.id);
 		const sameSpace = add(2, REPOSITORY.id);
 		const otherSpace = add(3, WORKTREE_KEY);
-		return { channel, caller, sameSpace, otherSpace, add, commands, launched };
+		return { channel, caller, sameSpace, otherSpace, add, commands, notifications, storage };
 	}
 
 	const id = (terminal: IFakeTerminal) => paradisAgentIdeTerminalId(terminal.token);
@@ -124,34 +152,73 @@ suite('ParadisAgentIdeChannel', () => {
 		);
 	});
 
-	test('list_terminals marks self and only offers the same space for sending', async () => {
-		const { channel, caller } = setup();
-		const result = await channel.run(caller.token, { op: 'listTerminals' });
-		assert.ok(result.ok);
-		const rows = (result.data as { terminals: { id: string; space: string; self?: boolean; can_send: boolean }[] }).terminals;
-		assert.deepStrictEqual(rows.map(row => ({ space: row.space, self: row.self === true, can_send: row.can_send })), [
-			{ space: REPOSITORY.id, self: true, can_send: false },
-			{ space: REPOSITORY.id, self: false, can_send: true },
-			{ space: WORKTREE_KEY, self: false, can_send: false },
-		]);
-		assert.ok(!JSON.stringify(result.data).includes('token-'));
+	test('reading is limited to the own space unless allowed', async () => {
+		const narrow = setup();
+		const wide = setup({ readOtherSpaces: true });
+		const listed = await narrow.channel.run(narrow.caller.token, { op: 'listTerminals' });
+		assert.ok(listed.ok);
+		const rows = (listed.data as { terminals: { space: string; self?: boolean; can_send: boolean }[]; not_listed?: string }).terminals;
+		assert.deepStrictEqual({
+			rows: rows.map(row => ({ space: row.space, self: row.self === true, can_send: row.can_send })),
+			notListed: typeof (listed.data as { not_listed?: string }).not_listed,
+			readOther: outcome(await narrow.channel.run(narrow.caller.token, { op: 'readTerminal', terminal: id(narrow.otherSpace), scrollbackLines: 0 })).startsWith('That terminal is in a different space'),
+			probeOther: (await narrow.channel.run(narrow.caller.token, { op: 'probeTerminal', terminal: id(narrow.otherSpace) })).ok,
+			wideRead: (await wide.channel.run(wide.caller.token, { op: 'readTerminal', terminal: id(wide.otherSpace), scrollbackLines: 0 })).ok,
+			leaks: JSON.stringify(listed.data).includes('token-'),
+		}, {
+			rows: [{ space: REPOSITORY.id, self: true, can_send: false }, { space: REPOSITORY.id, self: false, can_send: true }],
+			notListed: 'string',
+			readOther: true,
+			probeOther: false,
+			wideRead: true,
+			leaks: false,
+		});
 	});
 
-	test('sending: same space ok, other space / self / permission refused', async () => {
-		const { channel, caller, sameSpace, otherSpace, add } = setup();
+	test('a terminal without a recorded space is not treated as the current space', async () => {
+		const { channel, caller, add } = setup();
+		const unrecorded = add(4, undefined!);
+		assert.strictEqual((await channel.run(caller.token, { op: 'readTerminal', terminal: id(unrecorded), scrollbackLines: 0 })).ok, false);
+	});
+
+	test('sending: same space is pasted with the agent marker; other space, self and permission are refused', async () => {
+		const { channel, caller, sameSpace, otherSpace, add, notifications } = setup();
 		const waiting = add(4, REPOSITORY.id, 'permission');
 		const results = [
-			outcome(await channel.run(caller.token, { op: 'sendInput', terminal: id(sameSpace), text: 'ls', pressEnter: false })),
-			outcome(await channel.run(caller.token, { op: 'sendInput', terminal: id(otherSpace), text: 'ls', pressEnter: false })).startsWith('That terminal is in a different space'),
-			outcome(await channel.run(caller.token, { op: 'sendInput', terminal: id(caller), text: 'ls', pressEnter: false })).startsWith('That is your own terminal'),
+			outcome(await channel.run(caller.token, { op: 'sendInput', terminal: id(sameSpace), text: 'ls' })),
+			outcome(await channel.run(caller.token, { op: 'sendInput', terminal: id(otherSpace), text: 'ls' })).startsWith('That terminal is in a different space'),
+			outcome(await channel.run(caller.token, { op: 'sendInput', terminal: id(caller), text: 'ls' })).startsWith('That is your own terminal'),
 			outcome(await channel.run(caller.token, { op: 'sendKey', terminal: id(waiting), key: 'enter' })).includes('waiting for the user'),
 		];
-		assert.deepStrictEqual({ results, sent: sameSpace.sent, otherSent: otherSpace.sent.length, waitingSent: waiting.sent.length }, {
-			results: ['ok', true, true, true],
-			sent: [{ text: 'ls', bracketed: true }],
-			otherSent: 0,
-			waitingSent: 0,
-		});
+		assert.deepStrictEqual({
+			results,
+			marked: sameSpace.sent.length === 1 && sameSpace.sent[0].text.startsWith('[Message from another agent') && sameSpace.sent[0].text.endsWith('ls') && sameSpace.sent[0].bracketed === true,
+			otherSent: otherSpace.sent.length,
+			waitingSent: waiting.sent.length,
+			notified: notifications.length,
+		}, { results: ['ok', true, true, true], marked: true, otherSent: 0, waitingSent: 0, notified: 1 });
+	});
+
+	test('Enter in a plain shell needs the shell setting; working agents do not get Enter', async () => {
+		const blocked = setup();
+		const shell = blocked.add(4, REPOSITORY.id, undefined, null);
+		const busy = blocked.add(5, REPOSITORY.id, 'working');
+		const allowed = setup({ shellCommands: true });
+		const allowedShell = allowed.add(4, REPOSITORY.id, undefined, null);
+		assert.deepStrictEqual([
+			(await blocked.channel.run(blocked.caller.token, { op: 'sendKey', terminal: id(shell), key: 'enter' })).ok,
+			(await blocked.channel.run(blocked.caller.token, { op: 'sendKey', terminal: id(shell), key: 'ctrl_c' })).ok,
+			(await blocked.channel.run(blocked.caller.token, { op: 'sendKey', terminal: id(busy), key: 'enter' })).ok,
+			(await allowed.channel.run(allowed.caller.token, { op: 'sendKey', terminal: id(allowedShell), key: 'enter' })).ok,
+			(await blocked.channel.run(blocked.caller.token, { op: 'createTerminal' })).ok,
+		], [false, true, false, true, false]);
+	});
+
+	test('multi-line text is only pasted into an agent in the foreground', async () => {
+		const { channel, caller, sameSpace } = setup();
+		sameSpace.executing = 'bash';
+		const result = await channel.run(caller.token, { op: 'sendInput', terminal: id(sameSpace), text: 'a\nb' });
+		assert.deepStrictEqual({ ok: result.ok, sent: sameSpace.sent.length }, { ok: false, sent: 0 });
 	});
 
 	test('window scope reaches other spaces', async () => {
@@ -162,49 +229,54 @@ suite('ParadisAgentIdeChannel', () => {
 	test('actions off: the window refuses writes too', async () => {
 		const { channel, caller, sameSpace } = setup({ actionsEnabled: false });
 		assert.deepStrictEqual([
-			(await channel.run(caller.token, { op: 'readTerminal', terminal: id(sameSpace), lines: 10 })).ok,
-			(await channel.run(caller.token, { op: 'sendInput', terminal: id(sameSpace), text: 'ls', pressEnter: true })).ok,
+			(await channel.run(caller.token, { op: 'readTerminal', terminal: id(sameSpace), scrollbackLines: 0 })).ok,
+			(await channel.run(caller.token, { op: 'sendInput', terminal: id(sameSpace), text: 'ls' })).ok,
 		], [true, false]);
 	});
 
-	test('multi-line text is refused where it would run line by line', async () => {
-		const { channel, caller, sameSpace } = setup();
-		sameSpace.bracketedPaste = false;
-		const result = await channel.run(caller.token, { op: 'sendInput', terminal: id(sameSpace), text: 'a\nb', pressEnter: false });
-		assert.deepStrictEqual({ ok: result.ok, sent: sameSpace.sent.length }, { ok: false, sent: 0 });
-	});
-
-	test('launching into another space is refused; launched terminals can be closed only by the agent that launched them', async () => {
-		const { channel, caller, sameSpace } = setup();
-		const outOfScope = await channel.run(caller.token, { op: 'launchAgent', agent: 'claude', space: WORKTREE_KEY });
-		const launched = await channel.run(caller.token, { op: 'launchAgent', agent: 'claude' });
+	test('launched children cannot launch or create, only their launcher can close them, and the ledger survives a reload', async () => {
+		const first = setup();
+		const outOfScope = await first.channel.run(first.caller.token, { op: 'launchAgent', agent: 'claude', space: WORKTREE_KEY });
+		const launched = await first.channel.run(first.caller.token, { op: 'launchAgent', agent: 'claude' });
 		assert.ok(launched.ok);
 		const child = (launched.data as { terminal: string }).terminal;
-		const results = [
+		const childToken = 'token-11';
+		const reloaded = setup({ storage: first.storage });
+		reloaded.add(11, REPOSITORY.id);
+		assert.deepStrictEqual([
 			outcome(outOfScope).startsWith('That space is not yours'),
-			outcome(await channel.run(caller.token, { op: 'sendInput', terminal: child, text: 'next task', pressEnter: false })),
-			outcome(await channel.run(caller.token, { op: 'closeTerminal', terminal: id(sameSpace) })).startsWith('You can only close'),
-			outcome(await channel.run(caller.token, { op: 'closeTerminal', terminal: child })),
-			(await channel.run(sameSpace.token, { op: 'closeTerminal', terminal: child })).ok,
-		];
-		assert.deepStrictEqual(results, [true, 'ok', true, 'ok', false]);
+			outcome(await first.channel.run(childToken, { op: 'launchAgent', agent: 'claude' })).startsWith('You were started by another agent'),
+			outcome(await first.channel.run(childToken, { op: 'createSpace', prompt: 'x' })).startsWith('You were started by another agent'),
+			(await first.channel.run(first.sameSpace.token, { op: 'closeTerminal', terminal: child })).ok,
+			// 再読み込みの後も、作ったことと子であることは残っている
+			outcome(await reloaded.channel.run(childToken, { op: 'launchAgent', agent: 'claude' })).startsWith('You were started by another agent'),
+			outcome(await reloaded.channel.run(reloaded.caller.token, { op: 'closeTerminal', terminal: child })),
+			first.notifications.length,
+		], [true, true, true, false, true, 'ok', 1]);
 	});
 
-	test('a space the caller created is reachable even with the space scope', async () => {
-		const { channel, caller, otherSpace } = setup();
-		const created = await channel.run(caller.token, { op: 'createSpace', prompt: 'fix the login bug', agent: 'claude' });
+	test('the number of terminals an agent creates is limited', async () => {
+		const { channel, caller } = setup();
+		const results: boolean[] = [];
+		for (let index = 0; index < 6; index++) {
+			results.push((await channel.run(caller.token, { op: 'launchAgent', agent: 'claude' })).ok);
+		}
+		assert.deepStrictEqual(results, [true, true, true, true, true, false]);
+	});
+
+	test('a space the caller created is reachable with the space scope, and removal asks the user as an agent request', async () => {
+		const { channel, caller, otherSpace, commands } = setup();
+		const setupRefused = (await channel.run(caller.token, { op: 'createSpace', prompt: 'x', runSetup: true })).ok;
+		const created = await channel.run(caller.token, { op: 'createSpace', prompt: 'fix the login bug', agent: 'claude', runSetup: false });
 		assert.ok(created.ok);
 		const data = created.data as { space: string; agent_terminal: string };
 		assert.deepStrictEqual([
+			setupRefused,
 			data.space,
-			outcome(await channel.run(caller.token, { op: 'sendInput', terminal: data.agent_terminal, text: 'status?', pressEnter: false })),
-			(await channel.run(caller.token, { op: 'sendInput', terminal: id(otherSpace), text: 'x', pressEnter: false })).ok,
-		], [NEW_WORKTREE_KEY, 'ok', false]);
-	});
-
-	test('remove_space only asks for spaces the caller created, through the confirming command', async () => {
-		const { channel, caller, commands } = setup();
-		const result = await channel.run(caller.token, { op: 'removeSpace', space: WORKTREE_KEY });
-		assert.deepStrictEqual({ ok: result.ok, commands: commands.length }, { ok: false, commands: 0 });
+			outcome(await channel.run(caller.token, { op: 'sendInput', terminal: data.agent_terminal, text: 'status?' })),
+			(await channel.run(caller.token, { op: 'sendInput', terminal: id(otherSpace), text: 'x' })).ok,
+			(await channel.run(caller.token, { op: 'removeSpace', space: WORKTREE_KEY })).ok,
+			commands.length,
+		], [false, NEW_WORKTREE_KEY, 'ok', false, false, 0]);
 	});
 });

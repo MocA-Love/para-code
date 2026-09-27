@@ -25,14 +25,14 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import {
 	PARADIS_AGENT_IDE_ACTION_SCOPE_SETTING,
 	PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING,
+	PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING,
 	PARADIS_AGENT_IDE_CHANNEL,
+	PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID,
+	PARADIS_AGENT_IDE_READ_OTHER_SPACES_SETTING,
 	PARADIS_AGENT_IDE_SKILLS_CHANNEL,
 } from '../common/paradisAgentIde.js';
 import { ParadisAgentIdeChannel } from './paradisAgentIdeChannel.js';
 import { IParadisAgentIdeSkillInspection, IParadisAgentIdeSkillInstallRequest, IParadisAgentIdeSkillInstallResult, paradisAgentIdeSkillInstallPlan } from '../common/paradisAgentIdeSkillPlan.js';
-
-/** 「設定 (Para Code)」のボタンから呼ぶコマンド。 */
-export const PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID = 'paradis.agentIde.installSkills';
 
 const paradisConfigurationNodeBase = Object.freeze<IConfigurationNode>({
 	id: 'paradis',
@@ -51,7 +51,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			restricted: true,
 			// allow-any-unicode-next-line
-			markdownDescription: localize('paradis.agentIde.allowActions', "Para Code の MCP ツールを使って、エージェントが他のターミナルへ入力を送る・Claude Code や Codex を起動する・スペース（worktree）を作る・自分で作ったターミナルを閉じることを許可します。\n\nオフの間も、ターミナルやスペースの一覧、画面の読み取り、終わるまで待つことはできます。\n\nオンにすると、Web ページなどに仕込まれた指示を読んだエージェントが、それを別のエージェントへ伝えてしまう危険があります。許可待ち・質問中のターミナルへは送りません。"),
+			markdownDescription: localize('paradis.agentIde.allowActions', "Para Code の MCP ツールを使って、エージェントが他のターミナルへ入力を送る・Claude Code や Codex を起動する・スペース（worktree）を作る・自分で作ったターミナルを閉じることを許可します。\n\nオフの間も、自分のスペースのターミナルの一覧・画面の読み取り・終わるまで待つことはできます。\n\n**起動されたエージェントや送った指示は、呼び出したエージェントのサンドボックスと許可設定の外で動きます。** Web ページなどに仕込まれた指示を読んだエージェントが、それを別のエージェントへ伝えてしまう危険もあります。許可待ち・質問中・作業中のエージェントへは Enter を送らず、送った文には「別のエージェントから」の印を付けます。"),
 		},
 		[PARADIS_AGENT_IDE_ACTION_SCOPE_SETTING]: {
 			type: 'string',
@@ -66,7 +66,23 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				localize('paradis.agentIde.actionScope.window', "同じウィンドウのすべてのターミナル。別のウィンドウへは送れません。"),
 			],
 			// allow-any-unicode-next-line
-			markdownDescription: localize('paradis.agentIde.actionScope', "エージェントが入力を送れる範囲です。`#paradis.agentIde.allowActions#` がオンのときだけ使われます。"),
+			markdownDescription: localize('paradis.agentIde.actionScope', "エージェントが入力を送れる範囲です。`#paradis.agentIde.allowActions#` がオンのときだけ使われます。「同じウィンドウ全体」にすると、別のスペースのターミナルの画面も読めるようになります。"),
+		},
+		[PARADIS_AGENT_IDE_READ_OTHER_SPACES_SETTING]: {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			restricted: true,
+			// allow-any-unicode-next-line
+			markdownDescription: localize('paradis.agentIde.readOtherSpaces', "エージェントが、同じウィンドウの別のスペースのターミナルの画面も読めるようにします。オフの間に読めるのは、そのエージェントのスペースのターミナルと、そのエージェントが作ったものだけです。\n\nオンにすると、Web ページなどに仕込まれた指示で、別のリポジトリで表示した秘密（`.env` の中身など）が外へ持ち出される危険があります。"),
+		},
+		[PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING]: {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			restricted: true,
+			// allow-any-unicode-next-line
+			markdownDescription: localize('paradis.agentIde.allowShellCommands', "エージェントが、Claude Code / Codex の動いていないシェルへ Enter を送る（コマンドを実行する）こと、シェルのターミナルを開くこと、スペースを作るときに setup スクリプトと自動実行のコマンドを走らせることを許可します。`#paradis.agentIde.allowActions#` がオンのときだけ使われます。\n\n**これらのコマンドは、エージェント自身のサンドボックスと許可設定の外で、あなたの権限のまま実行されます。**"),
 		},
 	}
 });
@@ -80,7 +96,7 @@ class ParadisAgentIdeContribution extends Disposable implements IWorkbenchContri
 		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
-		sharedProcessService.registerChannel(PARADIS_AGENT_IDE_CHANNEL, instantiationService.createInstance(ParadisAgentIdeChannel));
+		sharedProcessService.registerChannel(PARADIS_AGENT_IDE_CHANNEL, this._register(instantiationService.createInstance(ParadisAgentIdeChannel)));
 	}
 }
 
@@ -173,7 +189,11 @@ class ParadisInstallAgentSkillsAction extends Action2 {
 			overwrite = result === 'overwrite';
 		}
 
-		const requests: IParadisAgentIdeSkillInstallRequest[] = [...plan.missing, ...plan.different].map(inspection => ({ agent: inspection.agent, overwrite }));
+		const requests: IParadisAgentIdeSkillInstallRequest[] = [
+			...plan.missing.map(inspection => ({ agent: inspection.agent, overwrite: false })),
+			// 確かめたときの中身の指紋を添え、その後に書き換わっていたら上書きしない
+			...plan.different.map(inspection => ({ agent: inspection.agent, overwrite, ...(inspection.fingerprint !== undefined ? { expectedFingerprint: inspection.fingerprint } : {}) })),
+		];
 		let results: IParadisAgentIdeSkillInstallResult[];
 		try {
 			results = await channel.call<IParadisAgentIdeSkillInstallResult[]>('install', [requests]);

@@ -20,6 +20,8 @@ export interface IParadisAgentIdeSkillTarget {
 
 export interface IParadisAgentIdeSkillInspection extends IParadisAgentIdeSkillTarget {
 	readonly state: ParadisAgentIdeSkillState;
+	/** 既にあるファイルの中身の指紋（上書きの確認をした後に変わっていないかを比べる）。 */
+	readonly fingerprint?: string;
 }
 
 export type ParadisAgentIdeSkillOutcome = 'installed' | 'overwritten' | 'unchanged' | 'skipped' | 'failed';
@@ -33,6 +35,8 @@ export interface IParadisAgentIdeSkillInstallRequest {
 	readonly agent: ParadisAgentIdeSkillAgent;
 	/** 中身の違う既存ファイルを上書きしてよいか（利用者が確かめた場合だけ true）。 */
 	readonly overwrite: boolean;
+	/** 上書きするとき、利用者が確かめたときの中身の指紋（`inspect` の `fingerprint`）。 */
+	readonly expectedFingerprint?: string;
 }
 
 /** 調べた結果を「新しく作るもの」「上書きの確認が要るもの」に分ける。 */

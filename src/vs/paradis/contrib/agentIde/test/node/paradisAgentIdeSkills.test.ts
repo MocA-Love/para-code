@@ -27,13 +27,17 @@ suite('paradisAgentIdeSkills', () => {
 	});
 
 	function targets() {
-		return paradisAgentIdeSkillTargets({ claudeConfigDir: join(root, '.claude'), userHome: root });
+		return paradisAgentIdeSkillTargets({ CLAUDE_CONFIG_DIR: join(root, '.claude') }, root);
 	}
 
-	test('targets are the Claude config dir and the ~/.agents skills dir', () => {
-		assert.deepStrictEqual(targets().map(target => target.path.slice(root.length)), [
+	test('targets are the Claude config dir (from the shell environment) and the ~/.agents skills dir', () => {
+		assert.deepStrictEqual([
+			...targets().map(target => target.path.slice(root.length)),
+			paradisAgentIdeSkillTargets({ CLAUDE_CONFIG_DIR: 'relative/ignored' }, root)[0].path.slice(root.length),
+		], [
 			join('/', '.claude', 'skills', 'para-code', 'SKILL.md'),
 			join('/', '.agents', 'skills', 'para-code', 'SKILL.md'),
+			join('/', '.claude', 'skills', 'para-code', 'SKILL.md'),
 		]);
 	});
 
@@ -52,15 +56,31 @@ suite('paradisAgentIdeSkills', () => {
 		await fs.mkdir(join(path, '..'), { recursive: true });
 		await fs.writeFile(path, 'my own skill');
 		const inspected = await paradisInspectAgentIdeSkills(targets());
+		const expectedFingerprint = inspected[0].fingerprint;
 		const kept = await paradisInstallAgentIdeSkills(targets(), [{ agent: 'claude', overwrite: false }]);
 		const keptContent = await fs.readFile(path, 'utf8');
-		const overwritten = await paradisInstallAgentIdeSkills(targets(), [{ agent: 'claude', overwrite: true }]);
+		const withoutFingerprint = await paradisInstallAgentIdeSkills(targets(), [{ agent: 'claude', overwrite: true }]);
+		await fs.writeFile(path, 'edited after the user confirmed');
+		const changed = await paradisInstallAgentIdeSkills(targets(), [{ agent: 'claude', overwrite: true, expectedFingerprint }]);
+		await fs.writeFile(path, 'my own skill');
+		const overwritten = await paradisInstallAgentIdeSkills(targets(), [{ agent: 'claude', overwrite: true, expectedFingerprint }]);
 		assert.deepStrictEqual({
 			states: inspected.map(inspection => inspection.state),
 			kept: kept[0].outcome,
 			keptContent,
+			withoutFingerprint: withoutFingerprint[0].outcome,
+			changed: changed[0].outcome,
 			overwritten: overwritten[0].outcome,
-		}, { states: ['different', 'missing'], kept: 'skipped', keptContent: 'my own skill', overwritten: 'overwritten' });
+		}, { states: ['different', 'missing'], kept: 'skipped', keptContent: 'my own skill', withoutFingerprint: 'skipped', changed: 'skipped', overwritten: 'overwritten' });
+	});
+
+	test('a linked skills folder is never written through', async () => {
+		const shared = join(root, 'dotfiles-skills');
+		await fs.mkdir(shared, { recursive: true });
+		await fs.mkdir(join(root, '.claude'), { recursive: true });
+		await fs.symlink(shared, join(root, '.claude', 'skills'));
+		const result = await paradisInstallAgentIdeSkills(targets(), [{ agent: 'claude', overwrite: false }]);
+		assert.deepStrictEqual({ outcome: result[0].outcome, sharedEntries: await fs.readdir(shared) }, { outcome: 'skipped', sharedEntries: [] });
 	});
 
 	test('symlinks are never written through', async () => {
