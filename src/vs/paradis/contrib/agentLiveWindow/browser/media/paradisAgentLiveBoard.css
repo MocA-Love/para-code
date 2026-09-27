@@ -1,0 +1,283 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* ---------------------------------------------------------------- board / list (Q21 plan A)
+ *
+ * Board = one column per state bucket, list = one row per agent. Both read the conversation summary
+ * instead of drawing terminals. Every selector is rooted at `.paradis-agent-live-window` so the rules
+ * outrank the workbench defaults that the auxiliary window inherits (button, [tabindex] focus rings).
+ * Colours stay on the same vocabulary as the tiles (editorWidget background + border, charts-* for
+ * states) so switching the view does not change what a colour means.
+ */
+
+.paradis-agent-live-window .paradis-agent-live-scroll.hidden,
+.paradis-agent-live-window .paradis-agent-live-summary.hidden {
+	display: none;
+}
+
+.paradis-agent-live-window .paradis-agent-live-summary {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	background-color: var(--vscode-editor-background);
+}
+
+/* ---- board ---- */
+
+.paradis-agent-live-window .paradis-agent-live-board {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(180px, 1fr));
+	gap: 10px;
+	padding: 10px;
+	min-height: 100%;
+	box-sizing: border-box;
+	align-items: start;
+}
+
+.paradis-agent-live-window .paradis-agent-live-board-column {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-width: 0;
+	padding: 8px;
+	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border);
+	border-radius: var(--vscode-cornerRadius-large);
+	background-color: color-mix(in srgb, var(--vscode-editorWidget-background) 60%, transparent);
+}
+
+.paradis-agent-live-window .paradis-agent-live-board-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 0 2px;
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-foreground);
+}
+
+.paradis-agent-live-window .paradis-agent-live-board-count {
+	margin-left: auto;
+	font-weight: var(--vscode-fontWeight-regular);
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-agent-live-window .paradis-agent-live-board-column.empty .paradis-agent-live-board-head {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-agent-live-window .paradis-agent-live-board-cards {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.paradis-agent-live-window .paradis-agent-live-card {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 8px 10px 8px 12px;
+	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border);
+	border-radius: var(--vscode-cornerRadius-medium);
+	background-color: var(--vscode-editorWidget-background);
+	cursor: pointer;
+	overflow: hidden;
+}
+
+.paradis-agent-live-window .paradis-agent-live-card:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-agent-live-window .paradis-agent-live-card.attention {
+	border-color: var(--vscode-charts-yellow, #cca700);
+}
+
+.paradis-agent-live-window .paradis-agent-live-card:focus,
+.paradis-agent-live-window .paradis-agent-live-list-row:focus {
+	outline: none;
+}
+
+.paradis-agent-live-window .paradis-agent-live-card:focus-visible,
+.paradis-agent-live-window .paradis-agent-live-list-row:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* Space colour: the same thin band the tile header carries, here along the card edge. */
+.paradis-agent-live-window .paradis-agent-live-card-spacebar {
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: 3px;
+}
+
+.paradis-agent-live-window .paradis-agent-live-card-head {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	min-width: 0;
+}
+
+.paradis-agent-live-window .paradis-agent-live-card-name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-foreground);
+}
+
+.paradis-agent-live-window .paradis-agent-live-card-clock,
+.paradis-agent-live-window .paradis-agent-live-list-clock {
+	flex: none;
+	font-size: var(--vscode-fontSize-label2);
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.paradis-agent-live-window .paradis-agent-live-card-meta {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-agent-live-window .paradis-agent-live-card-text {
+	display: -webkit-box;
+	-webkit-line-clamp: 3;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 1.45;
+	color: var(--vscode-foreground);
+	overflow-wrap: anywhere;
+}
+
+/* ---- summary label shared by cards and rows ---- */
+
+.paradis-agent-live-window .paradis-agent-live-summary-kind {
+	display: inline-block;
+	margin-right: 6px;
+	padding: 0 6px;
+	border-radius: var(--vscode-cornerRadius-small);
+	font-size: var(--vscode-fontSize-label3);
+	line-height: 16px;
+	vertical-align: 1px;
+	color: var(--vscode-charts-red, #ef4444);
+	border: var(--vscode-strokeThickness) solid currentColor;
+}
+
+.paradis-agent-live-window .paradis-agent-live-summary-none {
+	color: var(--vscode-descriptionForeground);
+	font-style: italic;
+}
+
+/* ---- list ---- */
+
+.paradis-agent-live-window .paradis-agent-live-list {
+	display: flex;
+	flex-direction: column;
+	padding: 6px 10px 10px;
+}
+
+.paradis-agent-live-window .paradis-agent-live-list-head,
+.paradis-agent-live-window .paradis-agent-live-list-row {
+	display: grid;
+	grid-template-columns: 96px minmax(140px, 22%) minmax(0, 1fr) 96px;
+	align-items: center;
+	gap: 12px;
+	padding: 6px 10px;
+}
+
+.paradis-agent-live-window .paradis-agent-live-list-head {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-descriptionForeground);
+	background-color: var(--vscode-editor-background);
+	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border);
+}
+
+.paradis-agent-live-window .paradis-agent-live-list-row {
+	border-bottom: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border);
+	cursor: pointer;
+}
+
+.paradis-agent-live-window .paradis-agent-live-list-row:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-agent-live-window .paradis-agent-live-list-row.attention .paradis-agent-live-list-text {
+	color: var(--vscode-foreground);
+}
+
+.paradis-agent-live-window .paradis-agent-live-list-space {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.paradis-agent-live-window .paradis-agent-live-list-names {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.paradis-agent-live-window .paradis-agent-live-list-text {
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-foreground);
+}
+
+.paradis-agent-live-window .paradis-agent-live-list-clock {
+	text-align: right;
+}
+
+.paradis-agent-live-window .paradis-agent-live-list-group {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 8px;
+	padding: 4px 10px;
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-descriptionForeground);
+	background-color: var(--vscode-editorWidget-background);
+	border-radius: var(--vscode-cornerRadius-small);
+}
+
+.paradis-agent-live-window .paradis-agent-live-list-group-count {
+	margin-left: auto;
+}
+
+.paradis-agent-live-window .paradis-agent-live-list-empty {
+	padding: 56px 20px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* ---- window transparency (same handling as the tiles, see paradisAgentLiveWindow.css) ---- */
+
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-summary,
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-list-head {
+	background-color: transparent !important;
+}
+
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-card,
+.paradis-agent-live-window.paradis-agent-live-transparent .paradis-agent-live-list-group {
+	background-color: color-mix(in srgb, var(--vscode-editorWidget-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
