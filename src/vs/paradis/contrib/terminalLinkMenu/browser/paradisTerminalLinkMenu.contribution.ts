@@ -14,11 +14,12 @@
 // 画面幅で折り返された URL の結合、OSC 8 ハイパーリンク）が見つけたリンクと同じものになるので、
 // 検出をやり直さず、upstream のファイルにも手を入れない。
 //
-// 右クリックのメニューは contextmenu イベントで同期的に組み立てられるため、その前に来る mousedown
-// （キャプチャ段階）でリンクを読み取っておき、contextmenu のキャプチャ段階でグローバルの
-// コンテキストキーに反映する。メニューを開くたびに、まずウィンドウのキャプチャ段階で消してから
-// 入れ直すので、リンクの無い場所（ターミナルの余白など）やキーボードで開いたメニューに、前回の
-// リンクが残らない。
+// 右クリックのメニューは、ふつうは contextmenu イベントで、Shift+右クリックでは mousedown の直後に
+// （upstream の `handleMouseEvent`）同期的に組み立てられる。どちらにも間に合うよう、右クリックの
+// mousedown（キャプチャ段階）でリンクを読み取ってグローバルのコンテキストキーに反映し、contextmenu の
+// キャプチャ段階でもう一度入れ直す。右クリックとメニューのたびに、まずウィンドウのキャプチャ段階で
+// 消してから入れ直すので、リンクの無い場所（ターミナルの余白など）やキーボードで開いたメニューに、
+// 前回のリンクが残らない。
 // エディタエリアのターミナル（TerminalEditor）とパネルのターミナルは同じ `TerminalInstanceContext`
 // メニューを使うので、どちらでも出る。
 
@@ -116,10 +117,11 @@ function isSecondaryClick(event: MouseEvent, isMac: boolean): boolean {
 /**
  * 1つのターミナルについて、メニューを開くたびに「右クリックしたリンク」を取り直す。
  *
- * - `root`（ターミナルのあるウィンドウ）のキャプチャ段階で、どこで開かれたメニューでもまず消す。
- *   ウィンドウのキャプチャはターミナル要素のキャプチャより先に走る
- * - ターミナル要素の上で開かれたときだけ、右クリックを押した時点のリンクを入れ直す。押した後に
- *   upstream が単語を選択するなどして、xterm がリンクの下線を外すことがあるので、押した時点で取る
+ * - `root`（ターミナルのあるウィンドウ）のキャプチャ段階で、どこで右クリックしても・どこで開かれた
+ *   メニューでも、まず消す。ウィンドウのキャプチャはターミナル要素のキャプチャより先に走る
+ * - ターミナル要素の上で右クリックしたときだけ、押した時点のリンクを入れる（Shift+右クリックは
+ *   mousedown の直後にメニューが開くため）。contextmenu でも同じ値を入れ直す。押した後に upstream が
+ *   単語を選択するなどして、xterm がリンクの下線を外すことがあるので、押した時点の値を使う
  */
 export function paradisTrackTerminalLinkAtMouse(
 	root: EventTarget,
@@ -130,8 +132,16 @@ export function paradisTrackTerminalLinkAtMouse(
 ): IDisposable {
 	const store = new DisposableStore();
 	let pressed: string | undefined;
+	store.add(addDisposableListener(root, EventType.MOUSE_DOWN, (event: MouseEvent) => {
+		if (isSecondaryClick(event, isMac)) {
+			setUrl(undefined);
+		}
+	}, true));
 	store.add(addDisposableListener(element, EventType.MOUSE_DOWN, (event: MouseEvent) => {
 		pressed = isSecondaryClick(event, isMac) ? paradisHttpUrlFromTerminalLinkText(hoveredLinkText()) : undefined;
+		if (pressed !== undefined) {
+			setUrl(pressed);
+		}
 	}, true));
 	store.add(addDisposableListener(element, EventType.KEY_DOWN, () => {
 		pressed = undefined;

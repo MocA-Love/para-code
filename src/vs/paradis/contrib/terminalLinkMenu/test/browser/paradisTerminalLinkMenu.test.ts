@@ -83,15 +83,23 @@ suite('ParadisTerminalLinkMenu', () => {
 		const rightClickOnPlainText = press(terminal, { button: 2 });
 		hovered = 'https://example.com/b';
 		const controlClickOnMac = press(terminal, { button: 0, ctrlKey: true });
+		// Shift+右クリックは mousedown の直後にメニューが開く（contextmenu を待たない）
+		hovered = 'https://example.com/c';
+		terminal.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 2, shiftKey: true }));
+		const shiftRightClickOnLink = url;
+		padding.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 2, shiftKey: true }));
+		const shiftRightClickOnPadding = url;
 		terminal.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
 		terminal.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
 		const keyboardMenu = url;
 
-		assert.deepStrictEqual({ rightClickOnLink, rightClickOnPadding, rightClickOnPlainText, controlClickOnMac, keyboardMenu }, {
+		assert.deepStrictEqual({ rightClickOnLink, rightClickOnPadding, rightClickOnPlainText, controlClickOnMac, shiftRightClickOnLink, shiftRightClickOnPadding, keyboardMenu }, {
 			rightClickOnLink: 'https://example.com/a',
 			rightClickOnPadding: undefined,
 			rightClickOnPlainText: undefined,
 			controlClickOnMac: 'https://example.com/b',
+			shiftRightClickOnLink: 'https://example.com/c',
+			shiftRightClickOnPadding: undefined,
 			keyboardMenu: undefined,
 		});
 	});
