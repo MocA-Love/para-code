@@ -323,10 +323,13 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 
 		if (account.status !== 'ok') {
 			const errorRow = dom.append(card, $('.plm-error-row'));
-			dom.append(errorRow, $('span')).textContent = this.statusMessage(account);
 			// Claude の登録していないログインは Para Code からは直せない（ターミナルで claude に
-			// ログインし直す）。再ログインのボタンは登録したアカウントと Codex にだけ出す。
+			// ログインし直す）。再ログインのボタンは登録したアカウントと Codex にだけ出し、それ以外は
+			// 直し方を文で案内する。
 			const canRelogin = account.provider === 'codex' || account.managed === true;
+			dom.append(errorRow, $('span')).textContent = paradisLimitsNeedsRelogin(account.status) && !canRelogin
+				? localize('paradis.limitsMonitor.claudeLiveRelogin', "ターミナルで claude を起動し、/login でログインし直してください")
+				: this.statusMessage(account);
 			if (paradisLimitsNeedsRelogin(account.status) && canRelogin) {
 				const reloginButton = dom.append(errorRow, $('button.plm-relogin-btn'));
 				reloginButton.setAttribute('type', 'button');

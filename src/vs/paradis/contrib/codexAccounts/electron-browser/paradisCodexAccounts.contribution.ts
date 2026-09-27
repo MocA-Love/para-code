@@ -28,6 +28,9 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { IParadisCodexLaunchHomeService } from '../browser/paradisCodexLaunchHomeService.js';
 import { IParadisCodexAccountsState, IParadisCodexHome, paradisCodexLaunchHomeFor, paradisLooksLikeRunningCodex } from '../common/paradisCodexAccounts.js';
 import { ParadisCodexAccountsClient } from './paradisCodexAccountsClient.js';
+// 使用量パネルへ差し込む Codex の部品（ParadisLimitsPanelContributions へ登録する副作用 import）。
+// パネル側（limitsMonitor）からは読み込まない（差し込み口の依存を一方向に保つ）。
+import './paradisCodexAccountActions.js';
 
 class ParadisCodexAccountsContribution extends Disposable implements IWorkbenchContribution {
 

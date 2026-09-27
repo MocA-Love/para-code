@@ -82,9 +82,9 @@ export class ParadisLimitsMonitorClient {
 	 * Claude の状態。`refresh` は手動の更新で、180 秒より古い結果だけ取り直す。取り直した結果は
 	 * {@link onDidChangeClaudeState} の後にもう一度聞くと届く。
 	 */
-	async getClaudeState(refresh = false): Promise<IParadisClaudeAccountsState> {
+	async getClaudeState(refresh = false, passive = false): Promise<IParadisClaudeAccountsState> {
 		try {
-			return await this.claudeChannel.call<IParadisClaudeAccountsState>('getState', [{ refresh }]);
+			return await this.claudeChannel.call<IParadisClaudeAccountsState>('getState', [{ refresh, passive }]);
 		} catch (error) {
 			return { claude: { accounts: [], sourceError: (error as Error).message }, switching: false };
 		}

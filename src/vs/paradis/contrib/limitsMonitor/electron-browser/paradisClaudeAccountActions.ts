@@ -8,10 +8,11 @@
 
 // 使用量パネルの Claude のアカウントカードに出す操作（paradisLimitsPanelContributions.ts の部品）。
 //  - 登録していない、いまのログイン: 「Para Code に登録」（ブラウザでのログインなしで登録する）
-//  - 登録した控えのアカウント: 「このアカウントを使う」（設問 Q5）。この PC の Claude のログインを
-//    書き換える（設問 Q2）ので、押したら確認し、動いている Claude Code への影響を説明する
+//  - 登録した控えのアカウント: 「このアカウントを使う」（切替ボタンは使用量パネルの各カードに置く、
+//    という決定）。この PC 全体の Claude のログインを書き換えるので、押したら確認し、動いている
+//    Claude Code への影響を説明する
 //  - 節の末尾: claude-swap に登録されていて Para Code にはまだ無いアカウントの一覧と、登録し直しの
-//    案内（設問 Q3。claude-swap のデータは読むだけ）
+//    案内（claude-swap のデータは読むだけ）
 
 import * as dom from '../../../../base/browser/dom.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
@@ -70,7 +71,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		}
 		dom.append(container, $('div')).textContent = localize(
 			'paradis.claudeAccounts.legacyNotice',
-			"claude-swap (cswap) に登録されていた次のアカウントは、Para Code ではまだ使えません。「＋ アカウントを追加」からログインし直して登録してください（いまログインしているアカウントは、カードの「Para Code に登録」で登録できます）。claude-swap のデータは読むだけで、書き換えません。",
+			"claude-swap (cswap) に登録されていた次のアカウントは、Para Code ではまだ使えません。「＋ アカウントを追加」からログインし直して登録してください（いまログインしているアカウントは、カードの「Para Code に登録」で登録できます）。登録したら、claude-swap での切り替えはやめてください。両方で切り替えると、片方が保存したログインが使えなくなることがあります。claude-swap のデータは読むだけで、書き換えません。",
 		);
 		const list = dom.append(container, $('ul.plm-legacy-list'));
 		for (const account of legacy) {
@@ -90,7 +91,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 			message: localize('paradis.claudeAccounts.switchConfirm', "Claude のアカウントを {0} に切り替えますか？", email),
 			detail: localize(
 				'paradis.claudeAccounts.switchDetail',
-				"この PC の Claude Code のログインを書き換えます。Para Code の外で使っている Claude Code も含め、すべてのウィンドウでこのアカウントを使うようになります。\n\n動いている Claude Code は、次の発言から新しいアカウントを使います（反映まで 30 秒ほどかかることがあります）。すぐに切り替わらないときは、Claude Code を起動し直してください。",
+				"この PC の Claude Code のログインを書き換えます。Para Code の外で使う Claude Code も含め、この PC で新しく起動する Claude Code はこのアカウントを使います。\n\nいま動いている Claude Code は、しばらくして読み直すまで前のアカウントのまま動くことがあります。確実に切り替えるには、Claude Code を起動し直してください。",
 			),
 			primaryButton: localize('paradis.claudeAccounts.switchButton', "切り替える"),
 		});
@@ -114,7 +115,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 	private reportSwitch(result: IParadisClaudeSwitchResult, email: string): void {
 		switch (result.outcome) {
 			case 'switched':
-				this.notificationService.info(localize('paradis.claudeAccounts.switched', "Claude のアカウントを {0} に切り替えました。動いている Claude Code は次の発言から新しいアカウントを使います。", result.email ?? email));
+				this.notificationService.info(localize('paradis.claudeAccounts.switched', "Claude のアカウントを {0} に切り替えました。いま動いている Claude Code は、起動し直すと確実に新しいアカウントを使います。", result.email ?? email));
 				return;
 			case 'already_active':
 				this.notificationService.info(localize('paradis.claudeAccounts.alreadyActive', "すでに {0} を使っています。", result.email ?? email));
@@ -168,6 +169,9 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 					break;
 				case 'busy':
 					this.notificationService.warn(localize('paradis.claudeAccounts.registerBusy', "アカウントの切り替え中です。終わってからもう一度お試しください。"));
+					break;
+				case 'unverified':
+					this.notificationService.warn(localize('paradis.claudeAccounts.registerUnverified', "ログインしているアカウントを確認できなかったため、登録しませんでした。通信できることを確かめ、しばらくしてからもう一度お試しください。"));
 					break;
 				case 'failed':
 					this.notificationService.error(localize('paradis.claudeAccounts.registerFailed', "Claude アカウントを登録できませんでした。もう一度お試しください。"));
