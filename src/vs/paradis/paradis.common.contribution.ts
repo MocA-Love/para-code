@@ -55,3 +55,4 @@ import './contrib/terminalSharedPanel/browser/paradisTerminalSharedPanel.contrib
 import './contrib/terminalSpaceHistory/browser/paradisTerminalSpaceHistory.contribution.js';
 import './contrib/terminalTabStatus/browser/paradisTerminalTabStatus.contribution.js';
 import './contrib/agentChat/browser/paradisAgentChatSettings.contribution.js';
+import './contrib/computerUse/browser/paradisComputerUseSettings.contribution.js';
