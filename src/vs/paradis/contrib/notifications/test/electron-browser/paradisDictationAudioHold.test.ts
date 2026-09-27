@@ -11,8 +11,9 @@ import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { ChatSpeechToTextState } from '../../../../../workbench/contrib/chat/browser/speechToText/chatSpeechToTextService.js';
-import { ParadisDictationAudioHold, ParadisDictationSpeech, ParadisDictationSpeechToText } from '../../electron-browser/paradisDictationAudioHold.contribution.js';
+import { ChatSpeechToTextState, IChatSpeechToTextService } from '../../../../../workbench/contrib/chat/browser/speechToText/chatSpeechToTextService.js';
+import { ISpeechService } from '../../../../../workbench/contrib/speech/common/speechService.js';
+import { ParadisDictationAudioHold } from '../../electron-browser/paradisDictationAudioHold.contribution.js';
 
 suite('Paradis dictation audio hold', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -40,7 +41,7 @@ suite('Paradis dictation audio hold', () => {
 			getChannel: () => ({ call: async (_command: string, args: boolean[]) => { sent.push(args[0]); } }),
 		} as unknown as ISharedProcessService;
 
-		const hold = store.add(new ParadisDictationAudioHold(speechToText as ParadisDictationSpeechToText, speech as ParadisDictationSpeech, sharedProcessService, new NullLogService()));
+		const hold = store.add(new ParadisDictationAudioHold(speechToText as unknown as IChatSpeechToTextService, speech as unknown as ISpeechService, sharedProcessService, new NullLogService()));
 
 		speechToText.isPreparingModel = true;
 		onDidChangePreparingModel.fire(true);
