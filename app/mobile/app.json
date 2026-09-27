@@ -8,6 +8,9 @@
 		"orientation": "portrait",
 		"userInterfaceStyle": "dark",
 		"newArchEnabled": true,
+		"experiments": {
+			"onDemandFilesystem": false
+		},
 		"ios": {
 			"supportsTablet": true,
 			"bundleIdentifier": "ltd.paradis.paracode.mobile",

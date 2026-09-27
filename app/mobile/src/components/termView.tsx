@@ -36,7 +36,7 @@ import { StyleSheet } from 'react-native';
 import { WebView } from 'react-native-webview';
 import xtermBundle from '../../assets/xterm/xtermBundle.json';
 import type { TermStreamEvent } from '../store.js';
-import { TERMINAL_FOLLOW_MIN_FONT_SIZE, terminalGridFor, type TerminalGrid } from '../terminalViewport.js';
+import { TERMINAL_FOLLOW_MIN_FONT_SIZE, TERMINAL_FONT_SIZE_MIN, terminalGridFor, type TerminalGrid } from '../terminalViewport.js';
 import { colors } from '../theme.js';
 
 interface TermViewProps {
@@ -65,8 +65,9 @@ interface TermViewProps {
 
 /** WebView から来るメッセージ（旧形式の 'ready' / 'desync' も引き続き受ける）。 */
 type TermViewMessage =
-	| { t: 'metrics'; width: number; height: number; charWidth100: number; lineHeight100: number }
-	| { t: 'scroll'; dir: 'up' | 'down'; lines: number };
+	| { t: 'metrics'; width: number; height: number; charWidth100: number; lineHeight100: number; rowHeights?: Record<string, number> }
+	| { t: 'scroll'; dir: 'up' | 'down'; lines: number }
+	| { t: 'warn'; text: string };
 
 /** WebView に流す HTML/CSS 用の地色。RN 側のスタイルは `colors.terminalBg`（同じ値）を使う。 */
 const TERM_BG = '#1e1e1e';
@@ -171,6 +172,59 @@ function buildHtml(): string {
 			lineHeight100: rect.height,
 		};
 	}
+	// xterm が実際に描く1行の高さ（px）。**lineHeight100 の比例にはならない**ので、行数を決めるときはこちらを使う。
+	//
+	// xterm（DOM レンダラ）は文字の高さを canvas の measureText の fontBoundingBoxAscent + Descent
+	// （使えなければ測り用の span の offsetHeight）で取り、画面の画素へ切り上げ（ceil(高さ × dpr)）、
+	// 行の高さ（lineHeight 1）を掛けて切り捨てた値を1行にする（バンドルの CharSizeService と
+	// DomRenderer._updateDimensions）。ここはその計算を同じ API でなぞる。xterm を更新したら、
+	// 実際の行の高さ（.xterm-rows の子の高さ）と一致するかを確かめ直すこと。
+	//
+	// 見積もり（lineHeight: normal）との差は小さいが、行数ぶん積み上がる。iPad の 12pt では
+	// 見積もり 14.04px に対して実際は 15px で、68行では 54px（3行半）が下にはみ出していた。
+	var rowMeasureCtx = null;
+	try {
+		rowMeasureCtx = new OffscreenCanvas(100, 100).getContext('2d');
+		var rowProbeText = rowMeasureCtx.measureText('W');
+		if (!('fontBoundingBoxAscent' in rowProbeText) || !('fontBoundingBoxDescent' in rowProbeText)) {
+			rowMeasureCtx = null;
+		}
+	} catch (e) { rowMeasureCtx = null; }
+	function rowHeightAt(size) {
+		var h = 0;
+		if (rowMeasureCtx) {
+			rowMeasureCtx.font = size + 'px ' + term.options.fontFamily;
+			var tm = rowMeasureCtx.measureText('W');
+			h = tm.fontBoundingBoxAscent + tm.fontBoundingBoxDescent;
+		}
+		if (!(h > 0)) {
+			var span = document.createElement('span');
+			span.style.fontFamily = term.options.fontFamily;
+			span.style.fontSize = size + 'px';
+			span.style.whiteSpace = 'pre';
+			span.style.position = 'absolute';
+			span.style.visibility = 'hidden';
+			span.textContent = 'W';
+			document.body.appendChild(span);
+			h = span.offsetHeight;
+			document.body.removeChild(span);
+		}
+		var dpr = window.devicePixelRatio || 1;
+		return Math.floor(Math.ceil(h * dpr) * (term.options.lineHeight || 1)) / dpr;
+	}
+	// rows 行ぶんの高さ（xterm は全体の高さを CSS の px へ丸めて描く）。
+	function rowsHeightAt(rows, size) {
+		return Math.round(rows * rowHeightAt(size));
+	}
+	// RN へ渡す行の高さの表（文字サイズごと）。設定で選べる範囲と、追従モードで広い画面が使う大きさまで。
+	var ROW_TABLE_MAX = 26;
+	function rowHeightTable() {
+		var table = {};
+		for (var size = ${TERMINAL_FONT_SIZE_MIN}; size <= ROW_TABLE_MAX; size++) {
+			table[size] = rowHeightAt(size);
+		}
+		return table;
+	}
 	// 表示領域の実測値をRNへ送る。固定モードではRN側がここから桁数・行数を決める
 	// （計算をRN側に置くことで、WebViewを起動せずに境界の挙動をテストできる）。
 	//
@@ -182,7 +236,28 @@ function buildHtml(): string {
 		clearTimeout(metricsTimer);
 		metricsTimer = setTimeout(reportMetrics, 180);
 	}
+	// 開発ビルドだけ: rowHeightAt（xterm の計算を写したもの）が、xterm が実際に描いた行の高さと
+	// 食い違っていないかを確かめる。xterm を更新して計算が変わると行数の見積もりが黙ってずれ、
+	// また下の行が隠れるので、0.5px 以上ずれたら RN 側へ警告を送る（console.warn で Metro のログに出る）。
+	var checkRowHeight = ${__DEV__ ? 'true' : 'false'};
+	function verifyRowHeight() {
+		var row = document.querySelector('.xterm-rows > div');
+		if (!row) {
+			return;
+		}
+		var actual = row.getBoundingClientRect().height;
+		var expected = rowHeightAt(term.options.fontSize);
+		if (actual > 0 && Math.abs(actual - expected) >= 0.5) {
+			window.ReactNativeWebView.postMessage(JSON.stringify({
+				t: 'warn',
+				text: 'row height mismatch: xterm draws ' + actual + 'px but rowHeightAt(' + term.options.fontSize + ') = ' + expected + 'px. Re-check rowHeightAt against the bundled xterm.',
+			}));
+		}
+	}
 	function reportMetrics() {
+		if (checkRowHeight) {
+			verifyRowHeight();
+		}
 		var m = measure();
 		window.ReactNativeWebView.postMessage(JSON.stringify({
 			t: 'metrics',
@@ -190,6 +265,7 @@ function buildHtml(): string {
 			height: document.documentElement.clientHeight - 10,
 			charWidth100: m.charWidth100,
 			lineHeight100: m.lineHeight100,
+			rowHeights: rowHeightTable(),
 		}));
 	}
 	// PCと同じ cols/rows を維持したまま画面に収まるフォントサイズを実測ベースで求める。
@@ -230,8 +306,13 @@ function buildHtml(): string {
 			// 上限は画面の広さで変える。iPhone幅（<700px）はこれまで通り16ptで頭打ちにし、
 			// iPadの広い幅では上限に張り付いて右側に黒帯が残らないところまで許す
 			// （PC側のcols/rowsは変えられないので、埋められるのは文字を大きくする方向だけ）。
-			var maxFontSize = availWidth >= 700 ? 26 : 16;
+			var maxFontSize = availWidth >= 700 ? ROW_TABLE_MAX : 16;
 			size = Math.max(followFloor, Math.min(maxFontSize, fontSize));
+			// 高さで決めた大きさは見積もりの行送りによる。実際の行の高さで入りきらなければ1pt ずつ下げる
+			// （入りきらないまま下限に当たったら、applyOverflow が上側を切って下端を見せる）。
+			while (rows > 0 && size > followFloor && rowsHeightAt(rows, size) > availHeight + 2) {
+				size--;
+			}
 		}
 		term.options.fontSize = size;
 		applyOverflow(cols, rows, size, m, availWidth, availHeight);
@@ -242,7 +323,7 @@ function buildHtml(): string {
 	function applyOverflow(cols, rows, size, m, availWidth, availHeight) {
 		var needWidth = Math.ceil(cols * m.charWidth100 / 100 * size);
 		var panX = needWidth > availWidth + 2;
-		var clipTop = rows > 0 && rows * m.lineHeight100 / 100 * size > availHeight + 2;
+		var clipTop = rows > 0 && rowsHeightAt(rows, size) > availHeight + 2;
 		document.body.classList.toggle('pan-x', panX);
 		document.body.classList.toggle('clip-top', clipTop);
 		// 横にはみ出すときは器の幅を端末の幅まで広げ、#wrap の横スクロールで見せる。
@@ -469,7 +550,7 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 	const onScrollRef = useRef(onScroll);
 	onScrollRef.current = onScroll;
 	// WebView が最後に報告した表示領域とフォント実寸（回転・キーボード開閉のたびに更新される）。
-	const metricsRef = useRef<{ width: number; height: number; charWidth100: number; lineHeight100: number } | undefined>(undefined);
+	const metricsRef = useRef<{ width: number; height: number; charWidth100: number; lineHeight100: number; rowHeights?: Record<string, number> } | undefined>(undefined);
 	// 固定モードで最後に適用したグリッド（同じ値の再適用・再申告を避ける）。
 	const gridRef = useRef<TerminalGrid | undefined>(undefined);
 
@@ -619,6 +700,8 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 						applyPinnedGridRef.current();
 					} else if (msg.t === 'scroll' && (msg.dir === 'up' || msg.dir === 'down') && msg.lines > 0) {
 						onScrollRef.current?.(msg.dir, msg.lines);
+					} else if (msg.t === 'warn' && __DEV__) {
+						console.warn('[termView]', msg.text);
 					}
 					return;
 				}

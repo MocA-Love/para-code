@@ -6,6 +6,7 @@ import { Stack, useIsFocused, useLocalSearchParams, useNavigation, useRoute } fr
 import { useAppStore } from '../../../src/appState.js';
 import { PcRouteContext } from '../../../src/features/pc/pcRouteContext.js';
 import { PcScreen } from '../../../src/features/pc/pcScreen.js';
+import { usePcListView } from '../../../src/features/pc/pcListViewStore.js';
 import { stackWithoutRoute } from '../../../src/features/pc/pcStackAnchor.js';
 import { hapticSelection } from '../../../src/haptics.js';
 import { useIsRegularWidth } from '../../../src/hooks/useSizeClass.js';
@@ -55,6 +56,9 @@ export default function PcLayout() {
 			navigation.dispatch({ type: 'RESET', payload: next });
 		}
 	}, [pcId, navigation, routeKey]);
+	// PC の画面の検索（検索語と検索欄）は、この器がある間だけ持つ。2列 ⇄ 1列で `PcScreen` が作り直されても
+	// 器は残るので消えず、戻る・閉じるで器が外れたら消える（次に開いたとき前の検索語で絞られないように）。
+	useEffect(() => (pcId !== undefined ? usePcListView.getState().holdPc(pcId) : undefined), [pcId]);
 	// 自分の詳細の列の印。PC の画面が2枚積まれても、それぞれ自分の列の様子だけを読む（`detailColumn.ts`）。
 	const columnKey = useId();
 	const detailOpen = useDetailColumnOpen(columnKey);

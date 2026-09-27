@@ -41,6 +41,7 @@ import { defaultTerminalPrefs, normalizeTerminalPrefs, type TerminalPrefs, type 
 import { isTablet } from './hooks/useSizeClass.js';
 import { MobileVoiceLifecycle } from './voiceLifecycle.js';
 import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
+import { usePcListView } from './features/pc/pcListViewStore.js';
 
 /**
  * PC側とモバイル側の Sentry イベントを突き合わせる相関IDを設定する。
@@ -1400,6 +1401,8 @@ export const useAppStore = create<AppState>(set => ({
 		secureKeyStore.setItem('archivedTerminals', JSON.stringify(archivedRecord)).catch(err => console.warn('[appState] failed to save archivedTerminals', err));
 		secureKeyStore.setItem('presetHidden', JSON.stringify(presetHiddenRecord)).catch(err => console.warn('[appState] failed to save presetHidden', err));
 		secureKeyStore.setItem('presetApproved', JSON.stringify(presetApprovedRecord)).catch(err => console.warn('[appState] failed to save presetApproved', err));
+		// PC の画面の一覧の表示条件（絞り込み・畳んだ段・検索語）もその PC の分を消す。
+		usePcListView.getState().forgetPc(id);
 		// PC画面の一部が写り込んだ画像をメモリに残さない（取得済みの画像はストア外のキャッシュにある）。
 		toolImageCache.clear();
 		if (id === activePcId) {
