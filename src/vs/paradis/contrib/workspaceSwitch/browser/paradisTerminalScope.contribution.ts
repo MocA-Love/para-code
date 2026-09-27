@@ -259,6 +259,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private readonly _sharedPanel: boolean;
 	/** 共通ターミナルとして一度でも見たインスタンス。エディタへ移されたことを見分けるために持つ。 */
 	private readonly _sharedPanelInstanceIds = new Set<number>();
+	/**
+	 * 共通ターミナル以外（エディタのタブ等）として見たことのあるインスタンス。エディタのタブから
+	 * パネルへ移しただけの端末を、更新による移行として数えないために持つ。
+	 */
+	private readonly _seenOutsideSharedPanel = new Set<number>();
 	/** このウィンドウで共通ターミナルへ移した（元の所属を消した）ターミナルの数。1度だけ知らせる。 */
 	private _sharedPanelMigratedCount = 0;
 	private readonly _sharedPanelMigrationNotice = this._register(new RunOnceScheduler(() => this.notifySharedPanelMigration(), 3_000));
@@ -990,6 +995,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			this._inheritedGroupScopes.delete(instanceId);
 			this._restoredInstances.delete(instanceId);
 			this._sharedPanelInstanceIds.delete(instanceId);
+			this._seenOutsideSharedPanel.delete(instanceId);
 			this._stableScopeTracker.retire(instanceId);
 			this.persistMapping();
 		});
@@ -2198,6 +2204,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			&& paradisIsSharedPanelShell(instance.shellLaunchConfig);
 	}
 
+	isSharedPanelTerminal(instanceId: number): boolean {
+		return this.isSharedPanelInstanceId(instanceId);
+	}
+
 	private isSharedPanelInstanceId(instanceId: number): boolean {
 		if (!this._sharedPanel) {
 			return false;
@@ -2225,6 +2235,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private syncSharedPanelInstance(instance: ITerminalInstance): void {
 		if (!this._sharedPanel || instance.isDisposed) {
 			return;
+		}
+		if (!this.isSharedPanelInstance(instance)) {
+			this._seenOutsideSharedPanel.add(instance.instanceId);
 		}
 		if (this.isSharedPanelInstance(instance)) {
 			this._sharedPanelInstanceIds.add(instance.instanceId);
@@ -2265,8 +2278,12 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * まとめて入ってしまう）。
 	 */
 	private rememberFormerSharedPanelScope(instance: ITerminalInstance, former: string): void {
-		this._sharedPanelMigratedCount++;
-		this._sharedPanelMigrationNotice.schedule();
+		// 知らせるのは、前のバージョンがスペースに入れていたパネルの端末だけ。このウィンドウで
+		// エディタのタブからパネルへ移した端末は、ユーザー自身の操作なので数えない。
+		if (!this._seenOutsideSharedPanel.has(instance.instanceId)) {
+			this._sharedPanelMigratedCount++;
+			this._sharedPanelMigrationNotice.schedule();
+		}
 		const nonce = this.instanceNonce(instance);
 		if (nonce === undefined) {
 			return;
