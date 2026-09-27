@@ -735,6 +735,7 @@ function createServiceFixture(generation: number): {
 		_agentHookTokens: new Set(),
 		_hookReportedTokens: new Set(),
 		_unconfirmedReleaseTokens: new Set(),
+		_unconfirmableTokens: new Set(),
 		_callerClassifications: new WeakMap(),
 		_seenTokens: new Set(),
 		_rendererConnections: new Map([['window:1', connection]]),
