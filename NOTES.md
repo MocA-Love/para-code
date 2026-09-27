@@ -1309,11 +1309,11 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - 鍵を読むのは取り込み実行のときだけ。ブラウザ・プロファイル・ドメインの列挙では読まない（キーチェーンの確認ダイアログを不用意に出さない）。
 - キーチェーンへは書き込まない（読み取りのみ）。
 - 鍵は `security` の stdout を Buffer で受け、導出鍵は取り込みの最後に、鍵の元にした（連結後の）パスワード Buffer は導出直後に `fill(0)` で潰す。ただし `execFile` が内部で保持する連結前の stdout チャンクは触れないので消せない。復号後の Cookie 値は JS 文字列になり GC まで残る（プロセス内・main のみ・外へは件数しか出さない）。復号値はログ・例外・モバイル・Sentry・エージェントへ一切出さない（失敗時もドメイン名と件数だけ）。
-- 表示するドメインは、取り込める候補が 0 件のもの（Partitioned だけ・SameSite=None 非Secure だけ等）は一覧から外す。Google の Cookie 名の網（`SID` 等）は Google ドメインでしか使わない（無関係なサイトの `SID` を落とさない）。件数には鍵が無くても分かる範囲（`v10` でない暗号化行を除外）を反映し、版 24 でハッシュ不一致の行だけは件数から外せず取り込み時の `skipped` に入る。取り込み先の照合はキーチェーンの応答を待った後、書き込みの直前にもう一度行う。
+- 表示するドメインは、取り込める候補が 0 件のもの（Partitioned だけ・SameSite=None 非Secure だけ等）は一覧から外す。Cookie 名（`SID` 等）では除外しない（無関係なサイトの `SID` を落とさない）。件数には鍵が無くても分かる範囲（`v10` でない暗号化行を除外）を反映し、版 24 でハッシュ不一致の行だけは件数から外せず取り込み時の `skipped` に入る。取り込み先の照合はキーチェーンの応答を待った後、書き込みの直前にもう一度行う。
 - 他ブラウザの Cookie DB はロック中でも読めるよう、`mkdtemp` で作った `userData/paracode-cookie-import-*/` の下へ `COPYFILE_EXCL` + 0600 でコピーして読み、終わったらディレクトリごと消す（WAL/journal は一緒に写すが、稼働中の共有メモリ索引 `-shm` は写さない）。コピーは自分専用なので `OPEN_READWRITE` で開き、hot journal を SQLite に復旧させる。途中失敗・クラッシュ対策として、コピー関数内で失敗時に自分で消し、登録時（起動時）に残骸 `paracode-cookie-import-*` を掃除する。
 - Cookie の属性（secure/httpOnly/sameSite/期限/`__Host-`・`__Secure-` 接頭辞規則/`source_scheme` による https 判定）を正しく写し、期限切れ・SameSite=None かつ非 Secure・Partitioned（CHIPS、`top_frame_site_key` 非空。Electron の `cookies.set` でパーティション指定不可のため）は取り込まない。取り込み後に `cookies.flushStore()` で流す。
 - ドメインハッシュ（平文先頭 32 バイト）を剥がすかは **DB の `meta.version`**（24 以上）で決める。推測（HMAC ヒューリスティック）は非 ASCII 値を壊すのでやめた。版 24 以上でハッシュが `SHA-256(host_key)` と一致しない値は Chromium 同様に捨てる。
-- Google のログインは eTLD+1 単位（`google.<tld>`・`google.co.<cc>`・`google.com.<cc>`・`youtube.com`・`googleusercontent.com`・`gmail.com` とそのサブドメイン）で除外し、加えて Cookie 名（`SID`・`SAPISID`・`__Secure-*PSID*` など）でも除外する。どちらか一方に当たれば取り込まない。UI ではドメインをグレーアウトして選べなくする。
+- Google のログインは eTLD+1 単位（`google.<tld>`・`google.co.<cc>`・`google.com.<cc>`・`youtube.com`・`googlemail.com`・`blogger.com`・`youtubekids.com`・`googlesource.com`・`googleusercontent.com`・`gmail.com` とそのサブドメイン、`.google` TLD）で、ドメインごと除外する。Cookie 名（`SID` など）による判定はしない（Google のドメインはドメイン判定で全件除外済みなので名前の網は冗長で、無関係なサイトの `SID` を誤って落とすため）。UI ではドメインをグレーアウトして選べなくする。
 - 取り込み先は名前付きプロファイルだけ。`profileId → partition` が唯一の経路なので global/workspace/ephemeral は原理的に選べない。さらに **main 側でも台帳（`paradis.browser.profiles`、APPLICATION スコープ）と照合**し、実在すること・`createdByAgent` でないことを確かめてから書く（renderer を信用しない）。`sourceDirectory` も列挙で返したディレクトリ名だけを受け、区切り文字・`..` を拒否する（パストラバーサル対策）。
 - 起動はユーザー操作（プロファイルメニュー）だけ。MCP の面（`paradisBrowserProfileMcp`）には取り込みメソッドを一切足していない。Cookie の読み書きをエージェントへ許さない既存方針（Q69）は変えていない。
 
