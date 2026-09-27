@@ -28,7 +28,7 @@
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from '../../../../base/common/path.js';
-import { IParadisClaudeIdentity, paradisClaudeIdentityFromOauthAccount, paradisReplaceClaudeOAuth } from '../common/paradisClaudeUsage.js';
+import { IParadisClaudeIdentity, paradisClaudeIdentityFromOauthAccount, paradisParseClaudeOAuthBlob, paradisReplaceClaudeOAuth } from '../common/paradisClaudeUsage.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { IParadisKeychain } from './paradisClaudeKeychain.js';
 
@@ -60,6 +60,12 @@ export class ParadisClaudeConfigUnreadableError extends Error { }
 
 /** 書き換えの途中で `~/.claude.json` がほかから書き換えられた。 */
 class ParadisClaudeConfigChangedError extends Error { }
+
+/** credentials JSON の `claudeAiOauth.expiresAt`（読めなければ 0）。どちらが新しいトークンかの判断に使う。 */
+function claudeTokenExpiresAt(credentialsJson: string): number {
+	const expiresAt = paradisParseClaudeOAuthBlob(credentialsJson)?.expiresAt;
+	return typeof expiresAt === 'number' && Number.isFinite(expiresAt) ? expiresAt : 0;
+}
 
 /** `~/.claude.json` がほかから書き換えられていたときに、読み直して組み立て直す回数の上限。 */
 const CONFIG_WRITE_ATTEMPTS = 3;
@@ -242,9 +248,23 @@ export class ParadisClaudeLiveAuth {
 		if (this.usesKeychain) {
 			try {
 				for (const account of this.keychainAccountNames()) {
-					const value = await this.options.keychain!.read(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, account);
-					if (value && value.trim()) {
-						return { value, source: 'keychain', keychainUnavailable: false };
+					// Orca と同じく、設定フォルダのハッシュ付きの項目を先に、ハッシュ無しの項目を後に読み、同じ扱いに
+					// する。`CLAUDE_CONFIG_DIR=<home>/.claude` で動く Claude Code はハッシュ付きの項目だけを更新し、
+					// 既定で動く Claude Code はハッシュ無しの項目だけを更新する。どちらが今のトークンかは中身で決める
+					// （期限が新しい方。同じなら先に読んだハッシュ付きの方）。古い方を「いまのログイン」として控えたり
+					// 取り込んだりすると、使い捨てのリフレッシュトークンの新しい方を失う。
+					let newest: { readonly value: string; readonly expiresAt: number } | undefined;
+					for (const service of [this.scopedLiveKeychainService, PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE]) {
+						const value = await this.options.keychain!.read(service, account);
+						if (value && value.trim()) {
+							const expiresAt = claudeTokenExpiresAt(value);
+							if (newest === undefined || expiresAt > newest.expiresAt) {
+								newest = { value, expiresAt };
+							}
+						}
+					}
+					if (newest !== undefined) {
+						return { value: newest.value, source: 'keychain', keychainUnavailable: false };
 					}
 				}
 			} catch {
