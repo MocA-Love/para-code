@@ -35,7 +35,7 @@ class ParadisSessionIndexCleanupContribution extends Disposable implements IWork
 		super();
 		const client = instantiationService.createInstance(ParadisAgentActivityClient);
 		this._register(configurationService.onDidChangeConfiguration(event => {
-			if (event.affectsConfiguration(PARADIS_SESSION_INDEX_SETTING_ENABLED) && configurationService.getValue<boolean>(PARADIS_SESSION_INDEX_SETTING_ENABLED) !== true) {
+			if (event.affectsConfiguration(PARADIS_SESSION_INDEX_SETTING_ENABLED) && configurationService.getValue<boolean>(PARADIS_SESSION_INDEX_SETTING_ENABLED) === false) {
 				client.indexDelete().catch(error => logService.warn('[ParadisSessionIndex] unable to delete the full-text index', error));
 			}
 		}));

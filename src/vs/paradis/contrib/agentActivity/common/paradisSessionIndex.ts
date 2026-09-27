@@ -8,10 +8,10 @@
 
 // 会話の全文索引の設定キーと電文。
 //
-// 索引は会話の2部目のコピーになる（会話に貼った秘密情報もそこへ残る）ので、既定ではオフにし、
-// セッション履歴を初めて開いたときに1回だけ案内して、本人がオンにしたときだけ作る。
+// 何もしなくても検索が強くなるよう既定でオンにする（q.html Q15 の回答 A）。索引は会話の2部目のコピーに
+// なり、会話に貼った秘密情報もそこへ残るので、そのことを設定の説明に明記し、オフにしたら索引を消す。
 
-/** 全文索引を作って使うか。既定はオフ（案内に答えてオンにする）。オフにすると索引は消える。 */
+/** 全文索引を作って使うか。既定はオン。オフにすると索引は消える。 */
 export const PARADIS_SESSION_INDEX_SETTING_ENABLED = 'paradis.sessionIndex.enabled';
 /** 索引に入れる会話の保存日数。これより前に最後に更新された会話は索引から外す。 */
 export const PARADIS_SESSION_INDEX_SETTING_RETENTION_DAYS = 'paradis.sessionIndex.retentionDays';
@@ -19,9 +19,6 @@ export const PARADIS_SESSION_INDEX_SETTING_RETENTION_DAYS = 'paradis.sessionInde
 export const PARADIS_SESSION_INDEX_SETTING_INCLUDE_TOOL_OUTPUT = 'paradis.sessionIndex.includeToolOutput';
 
 export const PARADIS_SESSION_INDEX_DEFAULT_RETENTION_DAYS = 90;
-
-/** 案内に答えたかどうか（オンでもオフでも、答えたら二度と出さない）。 */
-export const PARADIS_SESSION_INDEX_CONSENT_STORAGE_KEY = 'paradis.sessionIndex.consentAnswered';
 
 /** 索引を消してオフにするコマンド。 */
 export const PARADIS_SESSION_INDEX_DELETE_COMMAND_ID = 'paradis.sessionIndex.delete';

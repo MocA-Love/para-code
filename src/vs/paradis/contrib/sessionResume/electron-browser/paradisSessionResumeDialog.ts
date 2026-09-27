@@ -83,9 +83,8 @@ export class ParadisSessionResumeDialog extends Disposable {
 	private readonly agentNavButtons = new Map<AgentFilter, { button: HTMLButtonElement; count: HTMLElement }>();
 	private spaceNavCurrent: { button: HTMLButtonElement; count: HTMLElement } | undefined;
 	private spaceNavAll: { button: HTMLButtonElement; count: HTMLElement } | undefined;
-	/** 一覧上部のツールバー（並び・グループ・空を隠す・全文索引の状態）と、全文検索の案内の置き場所。 */
+	/** 一覧上部のツールバー（並び・グループ・空を隠す・全文索引の状態）。 */
 	private listBar: HTMLElement | undefined;
-	private consentHost: HTMLElement | undefined;
 	private readonly listBarDisposables = this._register(new DisposableStore());
 	private listOptions: IParadisResumeListOptions;
 	private readonly indexController: ParadisSessionIndexController;
@@ -356,7 +355,6 @@ export class ParadisSessionResumeDialog extends Disposable {
 			this.railToggleButton?.setAttribute('aria-expanded', String(open));
 		}));
 		this.createRefreshButton(headActions);
-		this.consentHost = dom.append(listColumn, $('.paradis-session-resume-consent-host'));
 		this.listBar = dom.append(listColumn, $('.paradis-session-resume-listbar'));
 		this.renderListBar();
 		this.list = dom.append(listColumn, $('.paradis-session-resume-list'));
@@ -367,17 +365,15 @@ export class ParadisSessionResumeDialog extends Disposable {
 	}
 
 	/**
-	 * 一覧上部のツールバー（並び・グループ・空を隠す）と、全文検索の案内・状態を描き直す。
+	 * 一覧上部のツールバー（並び・グループ・空を隠す）と、全文索引の状態を描き直す。
 	 * 一覧の再描画（render）とは別に持つ。select を開いている最中に一覧が描き直されても閉じないように。
 	 */
 	private renderListBar(): void {
-		if (!this.listBar || !this.consentHost) {
+		if (!this.listBar) {
 			return;
 		}
 		this.listBarDisposables.clear();
 		dom.clearNode(this.listBar);
-		dom.clearNode(this.consentHost);
-		this.indexController.renderConsent(this.consentHost, this.listBarDisposables, () => this.renderListBar());
 
 		const addSelect = <T extends string>(label: string, values: readonly T[], current: T, text: (value: T) => string, onChange: (value: T) => void) => {
 			const wrap = dom.append(this.listBar!, $('label.listbar-field'));

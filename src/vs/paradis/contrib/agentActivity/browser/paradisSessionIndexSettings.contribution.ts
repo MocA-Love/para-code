@@ -26,10 +26,10 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	properties: {
 		[PARADIS_SESSION_INDEX_SETTING_ENABLED]: {
 			type: 'boolean',
-			default: false,
+			default: true,
 			// 索引は手元のマシンの userData に1つだけ作る。ワークスペースごとに変えられると意味が通らない。
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.sessionIndex.enabled', "セッション履歴の検索に、会話の全文索引を使います。索引は会話の本文のコピーをこの PC の中に保存します（会話に貼った秘密情報も含まれます）。オフにすると索引は削除されます。"),
+			markdownDescription: localize('paradis.sessionIndex.enabled', "セッション履歴で会話の全文を検索できるよう、会話ログの全文を検索用に Para Code 内へ保存します。会話に貼った秘密情報もコピーされます。オフにすると保存した索引は消えます。"),
 		},
 		[PARADIS_SESSION_INDEX_SETTING_RETENTION_DAYS]: {
 			type: 'number',
