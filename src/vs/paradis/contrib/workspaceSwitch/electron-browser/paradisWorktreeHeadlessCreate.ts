@@ -30,6 +30,7 @@ import { TerminalLocation } from '../../../../platform/terminal/common/terminal.
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IAuthenticationService } from '../../../../workbench/services/authentication/common/authentication.js';
 import { ITerminalEditorService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ACTIVE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import {
 	IParadisCopilotUtilityRequest,
 	IParadisCopilotUtilityResult,
@@ -124,6 +125,16 @@ export interface IParadisWorktreeCreateFlowOptions {
 	/** true なら作成完了後に新スペースへ切り替える（従来のダイアログ/モバイルの挙動）。 */
 	readonly switchToCreated: boolean;
 	readonly callbacks?: IParadisWorktreeCreateFlowCallbacks;
+	/**
+	 * true なら、作るターミナルが利用者のフォーカスを奪わない（エージェントや定期実行など、
+	 * 利用者の操作と関係ない時刻に作るとき）。既定は従来どおり。
+	 */
+	readonly preserveFocus?: boolean;
+	/**
+	 * false なら自動実行プリセットを走らせない。プリセットは `.paracode.json` からも来るので、
+	 * エージェントの依頼で作るときはサンドボックスの外でコマンドを走らせないよう止める。既定は true。
+	 */
+	readonly runAutoRunPresets?: boolean;
 }
 
 export interface IParadisWorktreeCreateFlowResult extends IParadisHeadlessWorktreeResult {
@@ -368,6 +379,35 @@ export interface IParadisAgentLaunchInWorkspaceRequest {
 	readonly modelId?: string;
 	readonly effortId?: string;
 	readonly permissionId?: string;
+	/**
+	 * true なら新しいターミナルが利用者のフォーカスを奪わない（今のスペースへ起動しても前に出さない）。
+	 * エージェントや定期実行のように、利用者の入力の最中に起動しうる呼び出し元が使う。既定は従来どおり。
+	 */
+	readonly preserveFocus?: boolean;
+}
+
+/** フォーカスを奪わずにエディタへ開くときの場所。 */
+const PARADIS_BACKGROUND_EDITOR_LOCATION = { viewColumn: ACTIVE_GROUP, preserveFocus: true } as const;
+
+/**
+ * スペースへエディタエリアのターミナルを開き、そのスペースの持ち物にする。
+ * park は persistentProcessId の確定とエディタを開き切ることが前提なので、この順で待つ。
+ * スペースが今のスペースでなければ、割り当てた時点で park される。
+ */
+export async function paradisOpenEditorTerminalInSpace(
+	services: { readonly terminalService: ITerminalService; readonly terminalEditorService: ITerminalEditorService; readonly terminalScopeService: IParadisTerminalScopeService },
+	rootUri: URI,
+	stateKey: string,
+	preserveFocus: boolean,
+): Promise<ITerminalInstance> {
+	const instance = await services.terminalService.createTerminal({
+		cwd: rootUri,
+		location: preserveFocus ? PARADIS_BACKGROUND_EDITOR_LOCATION : TerminalLocation.Editor,
+	});
+	await instance.processReady;
+	await services.terminalEditorService.openEditor(instance, preserveFocus ? PARADIS_BACKGROUND_EDITOR_LOCATION : undefined);
+	services.terminalScopeService.assignInstanceScope(instance.instanceId, stateKey);
+	return instance;
 }
 
 /**
@@ -386,6 +426,17 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 	const agent = paradisConfiguredAgents(modelCatalogService).find(candidate => candidate.id === request.agentId);
 	if (!agent) {
 		throw new Error(`unknown agent: ${request.agentId}`);
+	}
+	if (request.preserveFocus === true) {
+		// 利用者の入力を横取りしない: 前に出さず、setActiveInstance も呼ばない
+		const background = await paradisOpenEditorTerminalInSpace({ terminalService, terminalEditorService, terminalScopeService }, request.rootUri, request.stateKey, true);
+		const backgroundCommand = paradisBuildAgentCommand(agent, (request.prompt ?? '').trim(), background.shellType, {
+			modelId: request.modelId,
+			effortId: request.effortId,
+			permissionId: request.permissionId,
+		});
+		await background.sendText(backgroundCommand, true);
+		return paradisDescribeLaunchedAgent(paneTokenService, background);
 	}
 	const instance = await terminalService.createTerminal({
 		cwd: request.rootUri,
@@ -604,6 +655,9 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 				await instantiationService.invokeFunction(paradisRunWorkspaceLifecycleScript, 'setup', repository, worktreeUri);
 			},
 			runAutoRun: async () => {
+				if (options.runAutoRunPresets === false) {
+					return false;
+				}
 				callbacks?.onStage?.('starting');
 				try {
 					// リポジトリのパスは PARACODE_PROJECT_ROOT_PATH としてプリセットの動くマシンの
@@ -620,14 +674,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 				if (!paradisShouldCreateDefaultTerminal(agentId, prompt)) {
 					return;
 				}
-				const instance = await terminalService.createTerminal({
-					cwd: worktreeUri,
-					location: TerminalLocation.Editor,
-				});
-				// park は persistentProcessId が確定していないと失敗するため PTY 起動と openEditor の完了を待ってから assign する
-				await instance.processReady;
-				await terminalEditorService.openEditor(instance);
-				terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
+				await paradisOpenEditorTerminalInSpace({ terminalService, terminalEditorService, terminalScopeService }, worktreeUri, targetStateKey, options.preserveFocus === true);
 			},
 			launchAgent: async () => {
 				const agent = paradisConfiguredAgents(modelCatalogService).find(candidate => candidate.id === agentId);
@@ -640,13 +687,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 				// paneトークンは同様に自動注入されるため、稼働状態表示（Workspaces ビュー/
 				// モバイルのホーム一覧）はそのまま効く。
 				// park は persistentProcessId が確定していないと失敗するため PTY 起動と openEditor の完了を待ってから assign する。
-				const instance = await terminalService.createTerminal({
-					cwd: worktreeUri,
-					location: TerminalLocation.Editor,
-				});
-				await instance.processReady;
-				await terminalEditorService.openEditor(instance);
-				terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
+				const instance = await paradisOpenEditorTerminalInSpace({ terminalService, terminalEditorService, terminalScopeService }, worktreeUri, targetStateKey, options.preserveFocus === true);
 				const command = paradisBuildAgentCommand(agent, prompt, instance.shellType, {
 					modelId: request.modelId,
 					effortId: request.effortId,
