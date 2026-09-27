@@ -44,6 +44,16 @@ export interface IParadisCodexPaneHome {
 	readonly known: boolean;
 	/** 既定のホームで開いたときは undefined。 */
 	readonly homePath?: string;
+	/** shared process の選択が届く前に開いた（選んだアカウントではなく既定のホームで開いた可能性がある）。 */
+	readonly beforeSync?: boolean;
+}
+
+/** 選択の反映。 */
+export interface IParadisCodexLaunchHomeChange {
+	readonly previous: string | undefined;
+	readonly next: string | undefined;
+	/** このウィンドウで初めて shared process の選択を受け取った。 */
+	readonly initial: boolean;
 }
 
 export const IParadisCodexLaunchHomeService = createDecorator<IParadisCodexLaunchHomeService>('paradisCodexLaunchHomeService');
@@ -51,8 +61,11 @@ export const IParadisCodexLaunchHomeService = createDecorator<IParadisCodexLaunc
 export interface IParadisCodexLaunchHomeService {
 	readonly _serviceBrand: undefined;
 
-	/** 選択が変わった。 */
-	readonly onDidChangeLaunchHome: Event<void>;
+	/** 選択を反映した（初回は値が変わらなくても1回届く）。 */
+	readonly onDidChangeLaunchHome: Event<IParadisCodexLaunchHomeChange>;
+
+	/** shared process の選択を一度でも受け取ったか。 */
+	readonly synced: boolean;
 
 	/** 新しく開くターミナルへ渡す CODEX_HOME。既定のホームなら undefined。 */
 	getLaunchHome(): string | undefined;
@@ -73,12 +86,16 @@ export interface IParadisCodexLaunchHomeService {
 export class ParadisCodexLaunchHomeService extends Disposable implements IParadisCodexLaunchHomeService {
 	declare readonly _serviceBrand: undefined;
 
-	private readonly _onDidChangeLaunchHome = this._register(new Emitter<void>());
+	private readonly _onDidChangeLaunchHome = this._register(new Emitter<IParadisCodexLaunchHomeChange>());
 	readonly onDidChangeLaunchHome = this._onDidChangeLaunchHome.event;
 
 	private launchHome: string | undefined;
-	private readonly paneHomes = new Map<string, string | undefined>();
+	private _synced = false;
+	private readonly paneHomes = new Map<string, { readonly homePath: string | undefined; readonly beforeSync: boolean }>();
 
+	get synced(): boolean {
+		return this._synced;
+	}
 
 	getLaunchHome(): string | undefined {
 		return this.launchHome;
@@ -86,19 +103,23 @@ export class ParadisCodexLaunchHomeService extends Disposable implements IParadi
 
 	setLaunchHome(homePath: string | undefined): void {
 		const next = homePath !== undefined && homePath.length > 0 ? homePath : undefined;
-		if (next === this.launchHome) {
+		const initial = !this._synced;
+		if (next === this.launchHome && !initial) {
 			return;
 		}
+		const previous = this.launchHome;
 		this.launchHome = next;
-		this._onDidChangeLaunchHome.fire();
+		this._synced = true;
+		this._onDidChangeLaunchHome.fire({ previous, next, initial });
 	}
 
 	recordPaneHome(token: string, homePath: string | undefined): void {
-		this.paneHomes.set(token, homePath);
+		this.paneHomes.set(token, { homePath, beforeSync: !this._synced });
 	}
 
 	getPaneHome(token: string): IParadisCodexPaneHome {
-		return this.paneHomes.has(token) ? { known: true, homePath: this.paneHomes.get(token) } : { known: false };
+		const entry = this.paneHomes.get(token);
+		return entry ? { known: true, homePath: entry.homePath, beforeSync: entry.beforeSync } : { known: false };
 	}
 
 	forgetPaneHome(token: string): void {

@@ -264,6 +264,10 @@ export interface IParadisCodexSessionLinkSummary {
 	readonly skippedExisting: number;
 	/** 前にそのホームにあったのに消されていた（削除・アーカイブ）ので足し戻さなかった数。 */
 	readonly skippedRemoved: number;
+	/** 出どころが切り替えた2ホームのどちらでもない（または分からない）のでリンクしなかった数。 */
+	readonly skippedOtherOrigin: number;
 	readonly skippedUnsupported: number;
 	readonly failed: number;
+	/** 台帳が読めなかったので、リンクせずに作り直した。 */
+	readonly ledgerUnavailable?: boolean;
 }
