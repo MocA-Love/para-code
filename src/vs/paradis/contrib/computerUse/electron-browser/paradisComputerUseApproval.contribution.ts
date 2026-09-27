@@ -16,9 +16,9 @@
 // 拒否の後 3 分の自動の断りは、`cooldownKey` でそのアプリに絞る（別のアプリやページ共有は止めない）。
 // 答えの記録（台帳）は shared process が行う。ここは聞くだけ。
 //
-// 回答待ちの設問に関わる所:
-//  - Q98（ターミナル類の扱い）: 案 A なら、ターミナル類の bundle id のときに detail へ警告の1行を足す
-//  - 「操作も許可」の選択肢は、操作系のツールが入るまで出さない（PARADIS_COMPUTER_USE_OPERATE_AVAILABLE）
+// ボタンは「拒否」「読み取りのみ許可」「操作も許可」の 3 つ。読み取りを許可済みのアプリの格上げでは
+// 「拒否」「操作も許可」の 2 つにする。ターミナル類とスクリプトエディタには、コマンドを打てる旨の一文を足す（Q98 の回答 A）。
+// Computer Use はエージェントの作業フォルダ・サンドボックス・許可設定の外で動くので、本文に必ず書く（設計書 6.6）。
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
@@ -35,6 +35,7 @@ import {
 	PARADIS_COMPUTER_USE_APPROVAL_METHOD,
 	PARADIS_COMPUTER_USE_APPROVAL_TIMEOUT_MS,
 	ParadisComputerUseApprovalOutcome,
+	paradisComputerUseRunsCommands,
 } from '../common/paradisComputerUse.js';
 
 /** ダイアログに出すアプリ名の最大文字数（アプリ名は誰でも付けられるので長さも切る）。 */
@@ -76,21 +77,28 @@ export class ParadisComputerUseApprovalChannel implements IServerChannel {
 		}
 		// アプリ名はアプリ自身が決める文字列なので、制御文字と双方向制御を落としてから出す
 		const appName = paradisSanitizeDisplayText(typeof prompt.appName === 'string' ? prompt.appName : undefined, APP_NAME_MAX_LENGTH) ?? bundleId;
-		const upgrade = prompt.requested === 'operate';
-		const offerOperate = upgrade || prompt.offerOperate === true;
+		const wantsOperate = prompt.requested === 'operate';
+		const offerOperate = prompt.offerOperate === true || wantsOperate;
+		// 格上げは、読み取りを許可済みのアプリへの操作の求めだけ
+		const upgrade = prompt.upgrade === true && wantsOperate;
 
 		const detail = [
 			localize('paradis.computerUse.approval.app', "アプリ: {0}（{1}）", appName, bundleId),
-			upgrade
-				? localize('paradis.computerUse.approval.upgrade', "このアプリの画面は読み取りを許可済みです。操作も許可すると、クリックと文字入力もします。")
-				: localize('paradis.computerUse.approval.read', "読み取りを許可すると、エージェントはこのアプリのウィンドウの画面とアクセシビリティの情報（ボタンや文字の並び）を読みます。画面に写ったメール本文やチャットなどもエージェントへ渡り、エージェントの提供元へ送られます。"),
-			...(offerOperate && !upgrade ? [localize('paradis.computerUse.approval.operate', "操作も許可すると、クリックと文字入力もします。")] : []),
+			...(upgrade
+				? [localize('paradis.computerUse.approval.upgrade', "このアプリの画面は読み取りを許可済みです。操作も許可すると、クリック・文字入力・貼り付け・キー操作・前面に出すこともします。")]
+				: [localize('paradis.computerUse.approval.read', "読み取り: このアプリのウィンドウの画面とアクセシビリティの情報（ボタンや文字の並び）を読みます。画面に写ったメール本文やチャットなどもエージェントへ渡り、エージェントの提供元へ送られます。")]),
+			...(offerOperate && !upgrade
+				? [localize('paradis.computerUse.approval.operate', "操作: クリック・文字入力・貼り付け・キー操作・前面に出すこともします。あなたがキーボードやマウスを使っている間は止まります。")]
+				: []),
+			...(offerOperate && paradisComputerUseRunsCommands(bundleId)
+				? [localize('paradis.computerUse.approval.commands', "このアプリを操作すると、コマンドをあなたの権限で実行できます。")]
+				: []),
 			localize('paradis.computerUse.approval.scope', "選んだ内容はこのターミナルにだけ効き、Para Code を終了するまで覚えます。拒否した場合も、このターミナルからの同じアプリの求めは断ります。"),
-			localize('paradis.computerUse.approval.outside', "Computer Use の操作は、エージェントのサンドボックスと許可設定の外で、あなたの権限で行われます。"),
+			localize('paradis.computerUse.approval.outside', "Computer Use は、エージェントの作業フォルダやサンドボックス、許可設定の制限の外で、あなたの権限で動きます。"),
 		];
 		const request: IParadisAgentApprovalRequest = {
-			messageTemplate: pane => upgrade
-				? localize('paradis.computerUse.approval.messageUpgrade', "{0} のエージェントが、「{1}」を操作したいと求めています", pane, appName)
+			messageTemplate: pane => wantsOperate
+				? localize('paradis.computerUse.approval.messageOperate', "{0} のエージェントが、「{1}」を操作したいと求めています", pane, appName)
 				: localize('paradis.computerUse.approval.message', "{0} のエージェントが、「{1}」の画面を読みたいと求めています", pane, appName),
 			detail,
 			// 格上げでは「読み取りのみ」を出さない。初回は「読み取りのみ」を 2 番目（⌘D が押す位置）に置き、

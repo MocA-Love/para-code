@@ -7,13 +7,13 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisComputerUseBlockReason, paradisComputerUseEnabled, paradisParseComputerUseApprovalOutcome, paradisParseComputerUseStatus } from '../../common/paradisComputerUse.js';
+import { paradisComputerUseBlockReason, paradisComputerUseEnabled, paradisComputerUseRunsCommands, paradisParseComputerUseApprovalOutcome, paradisParseComputerUseStatus } from '../../common/paradisComputerUse.js';
 import { ParadisComputerUseGrantLedger } from '../../node/paradisComputerUseGrantLedger.js';
 
 suite('ParadisComputerUse common', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('blocks password managers, Keychain Access and Para Code itself; system surfaces only when Q97 turns them on', () => {
+	test('blocks password managers, Keychain Access, Para Code itself and the Q97 system surfaces, and knows the apps that run commands', () => {
 		const ids = [
 			'com.1password.1password',
 			'COM.BITWARDEN.DESKTOP',
@@ -31,10 +31,14 @@ suite('ParadisComputerUse common', () => {
 		];
 		assert.deepStrictEqual({
 			defaults: ids.map(id => paradisComputerUseBlockReason(id) ?? ''),
-			withSystem: ids.map(id => paradisComputerUseBlockReason(id, { blockSystemSurfaces: true }) ?? ''),
+			withoutSystem: ids.map(id => paradisComputerUseBlockReason(id, { blockSystemSurfaces: false }) ?? ''),
+			commands: ['com.apple.Terminal', 'com.googlecode.iterm2', 'com.mitchellh.ghostty', 'dev.warp.Warp-Stable', 'com.apple.ScriptEditor2', 'com.apple.finder'].map(paradisComputerUseRunsCommands),
 		}, {
-			defaults: ['password-manager', 'password-manager', 'password-manager', 'keychain', 'para-code', 'para-code', 'para-code', 'para-code', '', '', '', '', ''],
-			withSystem: ['password-manager', 'password-manager', 'password-manager', 'keychain', 'para-code', 'para-code', 'para-code', 'para-code', '', 'system', 'system', 'system', ''],
+			// Q97 の回答 A: システム設定と認証のダイアログも既定で断る
+			defaults: ['password-manager', 'password-manager', 'password-manager', 'keychain', 'para-code', 'para-code', 'para-code', 'para-code', '', 'system', 'system', 'system', ''],
+			withoutSystem: ['password-manager', 'password-manager', 'password-manager', 'keychain', 'para-code', 'para-code', 'para-code', 'para-code', '', '', '', '', ''],
+			// Q98 の回答 A: ターミナル類は断らず、ダイアログで警告する
+			commands: [true, true, true, true, true, false],
 		});
 	});
 
@@ -62,8 +66,11 @@ suite('ParadisComputerUse common', () => {
 		// 上限 3 件を超えたら、いちばん古い行（pane-a の Finder）から落とす
 		ledger.set('pane-c', 'com.apple.Mail', 'read');
 		const overflow = { a: ledger.listForPane('pane-a'), b: ledger.listForPane('pane-b') };
+		ledger.set('pane-d', 'com.apple.Notes', 'read', true);
+		ledger.set('pane-e', 'com.apple.Notes', 'operate', true);
+		const refused = [ledger.operateRefused('pane-d', 'com.apple.notes'), ledger.operateRefused('pane-e', 'com.apple.Notes'), ledger.operateRefused('pane-c', 'com.apple.Mail')];
 		ledger.forgetPane('pane-b');
-		assert.deepStrictEqual({ full, overflow, afterForget: ledger.listForPane('pane-b'), c: ledger.listForPane('pane-c') }, {
+		assert.deepStrictEqual({ full, overflow, refused, afterForget: ledger.listForPane('pane-b'), c: ledger.listForPane('pane-c') }, {
 			full: {
 				a: [{ bundleId: 'com.apple.finder', grant: 'denied' }, { bundleId: 'com.apple.Safari', grant: 'read' }],
 				finder: 'denied',
@@ -73,6 +80,8 @@ suite('ParadisComputerUse common', () => {
 				a: [{ bundleId: 'com.apple.Safari', grant: 'read' }],
 				b: [{ bundleId: 'com.apple.Notes', grant: 'read' }],
 			},
+			// 「操作は断られた」の印は、読み取りの許可にだけ付く
+			refused: [true, false, false],
 			afterForget: [],
 			c: [{ bundleId: 'com.apple.Mail', grant: 'read' }],
 		});
