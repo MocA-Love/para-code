@@ -53,7 +53,7 @@ suite('ParadisClaudeAccountService safety', () => {
 		await fs.promises.mkdir(tmp);
 		const keychain = new ParadisMemoryKeychain();
 		const oauth = new ParadisFakeClaudeOAuth();
-		const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'accounts.json'), 'darwin');
+		const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'accounts.json'));
 		await registry.save(records);
 		const clock = { now: Date.parse('2029-12-31T12:00:00Z') };
 		const service = disposables.add(new ParadisClaudeAccountService({

@@ -77,12 +77,11 @@ ParadisSharedProcessContributions.register('claudeAccounts', ({ server, accessor
 		: new ParadisEncryptedFileClaudeSecretStore(
 			path.join(storageDir, 'secrets'),
 			ProxyChannel.toService<IEncryptionService>(mainProcessService.getChannel('encryption')),
-			platform,
 		);
 
 	const service = new ParadisClaudeAccountService({
 		liveAuth: new ParadisClaudeLiveAuth({ homedir: os.homedir(), platform, keychain, userName: currentUserName() }),
-		registry: new ParadisClaudeAccountRegistry(path.join(storageDir, 'accounts.json'), platform),
+		registry: new ParadisClaudeAccountRegistry(path.join(storageDir, 'accounts.json')),
 		secrets,
 		oauth: new ParadisClaudeOAuthClient(),
 		logService,

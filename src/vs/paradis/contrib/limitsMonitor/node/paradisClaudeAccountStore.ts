@@ -20,7 +20,7 @@
 import * as fs from 'fs';
 import * as path from '../../../../base/common/path.js';
 import { IParadisKeychain } from './paradisClaudeKeychain.js';
-import { paradisWriteFileAtomically } from './paradisClaudeLiveAuth.js';
+import { paradisWriteClaudeFileAtomically } from './paradisClaudeLiveAuth.js';
 
 /** 登録したアカウントの認証情報の置き場所。 */
 export interface IParadisClaudeSecretStore {
@@ -80,7 +80,6 @@ export class ParadisEncryptedFileClaudeSecretStore implements IParadisClaudeSecr
 	constructor(
 		private readonly directory: string,
 		private readonly encryption: IParadisClaudeEncryption,
-		private readonly platform: NodeJS.Platform,
 	) { }
 
 	private filePath(accountId: string): string {
@@ -108,7 +107,7 @@ export class ParadisEncryptedFileClaudeSecretStore implements IParadisClaudeSecr
 			throw new Error('OS encryption is not available');
 		}
 		const encrypted = await this.encryption.encrypt(credentialsJson);
-		await paradisWriteFileAtomically(this.filePath(accountId), encrypted, this.platform);
+		await paradisWriteClaudeFileAtomically(this.filePath(accountId), encrypted);
 	}
 
 	async delete(accountId: string): Promise<void> {
@@ -156,7 +155,6 @@ export class ParadisClaudeAccountRegistry {
 
 	constructor(
 		private readonly filePath: string,
-		private readonly platform: NodeJS.Platform,
 	) { }
 
 	async load(): Promise<IParadisClaudeAccountRecord[]> {
@@ -175,6 +173,6 @@ export class ParadisClaudeAccountRegistry {
 
 	async save(accounts: readonly IParadisClaudeAccountRecord[]): Promise<void> {
 		const data: IParadisClaudeAccountsFile = { version: 1, accounts };
-		await paradisWriteFileAtomically(this.filePath, JSON.stringify(data, null, '\t'), this.platform);
+		await paradisWriteClaudeFileAtomically(this.filePath, JSON.stringify(data, null, '\t'));
 	}
 }

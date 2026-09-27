@@ -7,12 +7,12 @@
 // PARA-CODE: shared processだけが実行できるPara Browser MCP自動セットアップ境界。
 
 import { spawn } from 'child_process';
-import { randomUUID } from 'crypto';
 import { constants as fsConstants, promises as fs, type Stats } from 'fs';
 import { homedir } from 'os';
-import { basename, dirname, extname, join } from '../../../../base/common/path.js';
+import { extname, join } from '../../../../base/common/path.js';
 import { findExecutable, killTree } from '../../../../base/node/processes.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
+import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
 import { inspectParadisMcpTomlSection, paradisCodexMcpTableBody, paradisMcpServerUrl, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
 import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml } from './paradisMcpConfigStatus.js';
@@ -377,40 +377,28 @@ function sameSnapshot(left: IConfigSnapshot, right: IConfigSnapshot): boolean {
 		&& left.changedAt === right.changedAt;
 }
 
+/**
+ * 設定を原子的に書き換える。書く直前に元のファイルが読んだときのままか確かめ、変わっていたら
+ * 置き換えずに失敗させる（利用者や CLI の変更を上書きしない）。置き換えられないときもその場へは
+ * 書かずに失敗させる。
+ */
 async function writeConfigAtomic(
 	path: string,
 	original: IConfigSnapshot,
 	content: string,
 	fileSystem: IConfigReadFileSystem = defaultConfigReadFileSystem,
 ): Promise<void> {
-	const directory = dirname(path);
-	await fs.mkdir(directory, { recursive: true });
-	const temporary = join(directory, `.${basename(path)}.paradis-${randomUUID()}.tmp`);
-	let opened: Awaited<ReturnType<typeof fs.open>> | undefined;
-	try {
-		opened = await fs.open(temporary, 'wx', original.mode ?? 0o600);
-		if (original.mode !== undefined) {
-			await opened.chmod(original.mode);
-		}
-		await opened.writeFile(content, 'utf8');
-		await opened.sync();
-		await opened.close();
-		opened = undefined;
-		const current = await readConfigSnapshot(path, fileSystem);
-		if (!sameSnapshot(original, current)) {
-			throw new Error('Codex configuration changed during setup');
-		}
-		await fs.rename(temporary, path);
-	} finally {
-		if (opened !== undefined) {
-			await opened.close().catch(() => undefined);
-		}
-		await fs.unlink(temporary).catch(error => {
-			if (!isFileNotFound(error)) {
-				throw error;
+	await paradisWriteFileAtomic(path, content, {
+		newFileMode: original.mode ?? 0o600,
+		createParentMode: 0o777,
+		fallbackToInPlace: false,
+		beforeReplace: async () => {
+			const current = await readConfigSnapshot(path, fileSystem);
+			if (!sameSnapshot(original, current)) {
+				throw new Error('Codex configuration changed during setup');
 			}
-		});
-	}
+		},
+	});
 }
 
 export class ParadisMcpSetupController {

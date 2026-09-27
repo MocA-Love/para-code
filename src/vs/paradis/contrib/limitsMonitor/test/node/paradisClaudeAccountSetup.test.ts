@@ -45,7 +45,7 @@ suite('ParadisClaudeAccountService setup', () => {
 		const keychain = new ParadisMemoryKeychain();
 		const runner = new ParadisFakeClaudeLoginRunner((configDir, signal) => onLogin(configDir, keychain, signal));
 		const oauth = new ParadisFakeClaudeOAuth();
-		const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'accounts.json'), 'darwin');
+		const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'accounts.json'));
 		const service = disposables.add(new ParadisClaudeAccountService({
 			liveAuth: new ParadisClaudeLiveAuth({ homedir: dirs.home, platform: 'darwin', keychain, userName: USER }),
 			registry,
@@ -237,7 +237,7 @@ suite('ParadisEncryptedFileClaudeSecretStore', () => {
 				decrypt: async (value: string) => Buffer.from(value.slice(4), 'base64').toString(),
 			};
 			const directory = path.join(dirs.userData, 'secrets');
-			const store = new ParadisEncryptedFileClaudeSecretStore(directory, encryption, 'linux');
+			const store = new ParadisEncryptedFileClaudeSecretStore(directory, encryption);
 			const id = '33333333-3333-4333-8333-333333333333';
 			const secret = paradisTestCredentials('a', 'r', 1);
 			await store.write(id, secret);
@@ -285,7 +285,7 @@ suite('ParadisClaudeAccountService claude-swap migration', () => {
 			await fs.promises.writeFile(sequencePath, sequence);
 			const statBefore = await fs.promises.stat(sequencePath);
 			const keychain = new ParadisMemoryKeychain();
-			const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'accounts.json'), 'darwin');
+			const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'accounts.json'));
 			await registry.save([{ id: '11111111-1111-4111-8111-111111111111', email: 'alice@example.com', accountUuid: 'u-alice', organizationUuid: 'org-1', oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com'), createdAt: 1, updatedAt: 1 }]);
 			const service = disposables.add(new ParadisClaudeAccountService({
 				liveAuth: new ParadisClaudeLiveAuth({ homedir: dirs.home, platform: 'darwin', keychain, userName: USER }),

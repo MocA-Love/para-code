@@ -63,7 +63,7 @@ suite('ParadisClaudeAccountService defenses', () => {
 		cleanup = dirs.dispose;
 		const keychain = new ParadisMemoryKeychain();
 		const oauth = new ParadisFakeClaudeOAuth();
-		const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'accounts.json'), 'darwin');
+		const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'accounts.json'));
 		await registry.save(records);
 		const clock = { now: Date.parse('2029-12-31T12:00:00Z') };
 		const liveAuthOptions: IParadisClaudeLiveAuthOptions = { homedir: dirs.home, platform: 'darwin', keychain, userName: USER, lockTimeoutMs: 300, now: () => clock.now };
