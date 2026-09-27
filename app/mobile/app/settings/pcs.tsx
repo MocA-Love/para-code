@@ -12,6 +12,7 @@ import { colors } from '../../src/theme.js';
 import { useNow } from '../../src/time.js';
 import { ActionSheet, ConfirmDrawer, Icon, ListGroup, ListRow, TextInputDrawer, type ActionSheetAction } from '../../src/ui/index.js';
 import { useLastSession } from '../../src/features/home/lastSessionStore.js';
+import { usePcListView } from '../../src/features/pc/pcListViewStore.js';
 import { GroupGap, GroupHeader, GroupNote, SettingsScreen, SettingsSwitch } from '../../src/features/settings/settingsScaffold.js';
 import { pcRowHint } from '../../src/features/settings/settingsSummary.js';
 
@@ -117,6 +118,7 @@ export default function PcSettingsScreen() {
 								if (useLastSession.getState().value?.pcId === target.id) {
 									useLastSession.getState().clear();
 								}
+								usePcListView.getState().forgetPc(target.id);
 								removePc(target.id).catch(error => showFailure('ペアリングを解除できませんでした', error));
 							}
 						}}
