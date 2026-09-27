@@ -17,7 +17,9 @@
 // `src/shared/skill-deletion-eligibility.ts`（消してよいものの条件）を参考にした。Orca は
 // パッケージ形式・symlink での配置・journal を持つが、ここでは「フォルダをそのまま写す」だけにする。
 
-import { basename, dirname, extUri, joinPath } from '../../../../base/common/resources.js';
+import { Schemas } from '../../../../base/common/network.js';
+import { basename, dirname, extUri, extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { FileOperationResult, FileSystemProviderCapabilities, IFileService, IFileStat, toFileOperationResult } from '../../../../platform/files/common/files.js';
@@ -199,12 +201,26 @@ function isNotFound(error: unknown): boolean {
 	return error instanceof Error && toFileOperationResult(error) === FileOperationResult.FILE_NOT_FOUND;
 }
 
+/**
+ * 実体の場所。`IFileService.realpath` は Windows ではネイティブ形式（`C:\\...`）を `URI.path` に
+ * 入れて返すので、URI 形式へ直してから比べる（`mobileRelay/common/paradisMobileWorkspacePath.ts` と同じ）。
+ */
 async function realpathOf(fileService: IFileService, uri: URI): Promise<URI | undefined> {
 	try {
-		return await fileService.realpath(uri);
+		const real = await fileService.realpath(uri);
+		return real && real.scheme === Schemas.file && (real.path.includes('\\') || !real.path.startsWith('/')) ? URI.file(real.path) : real;
 	} catch {
 		return undefined;
 	}
+}
+
+/** 同じ場所か。手元のファイルはこのマシンの規則（Windows・macOS は大文字小文字を区別しない）で比べる。 */
+function sameLocation(a: URI, b: URI): boolean {
+	return (a.scheme === Schemas.file ? extUriBiasedIgnorePathCase : extUri).isEqual(a, b);
+}
+
+function locationKey(uri: URI): string {
+	return (uri.scheme === Schemas.file ? extUriBiasedIgnorePathCase : extUri).getComparisonKey(uri);
 }
 
 async function readSkill(fileService: IFileService, root: IParadisSkillRoot, child: IFileStat, bundled: boolean): Promise<IParadisSkill | undefined> {
@@ -226,7 +242,7 @@ async function readSkill(fileService: IFileService, root: IParadisSkillRoot, chi
 		isSymbolicLink: child.isSymbolicLink,
 		...await (async () => {
 			const real = await realpathOf(fileService, child.resource);
-			return real && !extUri.isEqual(real, child.resource) ? { realUri: real } : {};
+			return real && !sameLocation(real, child.resource) ? { realUri: real } : {};
 		})(),
 		bundled,
 		...(child.mtime !== undefined ? { mtime: child.mtime } : {}),
@@ -287,7 +303,7 @@ export function paradisDedupeSkillListings(listings: readonly IParadisSkillRootL
 		if (!listing.exists) {
 			return listing;
 		}
-		const key = extUri.getComparisonKey(listing.realUri ?? listing.root.uri);
+		const key = locationKey(listing.realUri ?? listing.root.uri);
 		const first = seen.get(key);
 		if (first !== undefined) {
 			return { ...listing, skills: [], aliasOf: first };
@@ -411,7 +427,8 @@ export function paradisSkillInstallSource(skill: IParadisSkill): URI {
  *
  * 同じ名前がすでにあるときは `overwrite` が true のときだけ置き換える（呼ぶ側で確認すること）。
  * 隣の一時フォルダへ写し、既にあるものは退避してから入れ替え、入れ替えに成功してから退避を消す。
- * 途中で失敗したら退避を元へ戻すので、導入先にあったスキルは失われない。
+ * 途中で失敗したら途中まで置かれたものを外して退避を元へ戻す。戻すのにも失敗したときは、退避の
+ * 場所をエラーの文に入れて知らせる（退避は消さない）。
  *
  * フォルダの中にリンクがあるスキルは写さない（リンク先の中身を別のマシンへ送らないため）。
  */
@@ -437,12 +454,18 @@ export async function paradisInstallSkill(fileService: IFileService, skill: IPar
 		throw new Error(localize('paradis.skills.exists', "導入先に同じ名前のスキルがあります。"));
 	}
 	await fileService.createFolder(target.uri).catch(() => undefined);
-	const stamp = Date.now().toString(36);
+	const stamp = generateUuid().slice(0, 8);
 	const staging = joinPath(target.uri, `.${skill.folderName}.paradis-install-${stamp}`);
 	const backup = joinPath(target.uri, `.${skill.folderName}.paradis-backup-${stamp}`);
 	let movedAway = false;
 	try {
 		await fileService.copy(source, staging, false);
+		// 数えてから写すまでの間に中へリンクが置かれていないか、写したものと元をもう一度確かめる
+		// （同じマシンの中の写しはリンクをリンクのまま写し、マシンをまたぐ写しはたどって中身を写す）
+		const [copied, again] = await Promise.all([measure(fileService, staging), measure(fileService, source)]);
+		if (copied.hasSymbolicLink || again.hasSymbolicLink || copied.files > MAX_INSTALL_FILES || copied.bytes > PARADIS_SKILL_INSTALL_MAX_BYTES) {
+			throw new Error(localize('paradis.skills.changedWhileCopying', "写している間にスキルのフォルダの中身が変わりました（リンクが増えた・大きくなった）。一覧を読み直してからもう一度導入してください。"));
+		}
 		if (exists) {
 			// 既にあるもの（リンクならリンクそのもの）を退避する。リンク先には触らない
 			await fileService.move(destination, backup, false);
@@ -450,8 +473,16 @@ export async function paradisInstallSkill(fileService: IFileService, skill: IPar
 		}
 		await fileService.move(staging, destination, false);
 	} catch (error) {
-		if (movedAway && !(await fileService.exists(destination))) {
-			await fileService.move(backup, destination, false).catch(() => undefined);
+		if (movedAway) {
+			// 入れ替えの途中で失敗した。途中まで置かれた新しいもの（写しの一部）があれば外し、退避を戻す
+			try {
+				if (await fileService.exists(destination)) {
+					await fileService.del(destination, { recursive: true });
+				}
+				await fileService.move(backup, destination, false);
+			} catch (restoreError) {
+				throw new Error(localize('paradis.skills.restoreFailed', "導入に失敗し、元のスキルを戻せませんでした。元のスキルは {0} に残っています: {1}", backup.scheme === Schemas.file ? backup.fsPath : backup.path, String((restoreError as Error)?.message ?? restoreError)));
+			}
 		}
 		throw error;
 	} finally {

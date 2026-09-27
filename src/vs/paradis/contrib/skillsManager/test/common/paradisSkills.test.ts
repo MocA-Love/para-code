@@ -104,6 +104,27 @@ suite('paradisSkills', () => {
 		await assert.rejects(() => paradisInstallSkill(fileService, skill, claude, true), 'installing onto the same root is refused');
 	});
 
+	test('puts the previous skill back when replacing it fails midway', async () => {
+		const { fileService, write } = setup(store.add(new DisposableStore()));
+		const [claude] = paradisPlanSkillRoots({ host: LOCAL, projects: [] });
+		const [remoteClaude] = paradisPlanSkillRoots({ host: REMOTE, projects: [] });
+		await write(joinPath(claude.uri, 'pdf', 'SKILL.md'), '---\nname: new\n---\n');
+		await write(joinPath(remoteClaude.uri, 'pdf', 'SKILL.md'), '---\nname: old\n---\n');
+		const [skill] = (await paradisListSkills(fileService, claude)).skills;
+		// 写しを置く最後の入れ替えだけを失敗させる
+		const failing = new Proxy(fileService, {
+			get: (target, key) => key === 'move'
+				? (from: URI, to: URI, overwrite?: boolean) => from.path.includes('.paradis-install-') ? Promise.reject(new Error('boom')) : target.move(from, to, overwrite)
+				: Reflect.get(target, key),
+		});
+		await assert.rejects(() => paradisInstallSkill(failing, skill, remoteClaude, true), /boom/);
+		const remote = await fileService.resolve(remoteClaude.uri);
+		assert.deepStrictEqual({
+			names: (await paradisListSkills(fileService, remoteClaude)).skills.map(entry => entry.name),
+			leftovers: (remote.children ?? []).map(child => child.name).filter(name => name.startsWith('.')),
+		}, { names: ['old'], leftovers: [] });
+	});
+
 	test('deletes only direct children of a skills root', async () => {
 		const { fileService, write } = setup(store.add(new DisposableStore()));
 		const [claude] = paradisPlanSkillRoots({ host: LOCAL, projects: [] });
