@@ -12,22 +12,27 @@
  * Chromium はウィンドウがフォーカスを失うと、フォーカスを持っていた要素にも :focus-within を
  * 当てなくなる (document.activeElement は残る)。upstream の減光は
  * ":not(:focus-within)" で選んでいるので、そのままだと別のアプリへ切り替えた瞬間に
- * エディタもターミナルも全部が薄くなる。クラスはネイティブのウィンドウ単位のフォーカスで付ける
+ * エディタもターミナルも全部が薄くなる。印 (data-paradis-window-inactive 属性) はネイティブの
+ * ウィンドウ単位のフォーカスで、各ウィンドウのワークベンチのコンテナ (.monaco-workbench) に付ける
  * (paradisUnfocusedDimming.contribution.ts)。内蔵ブラウザへのフォーカスはウィンドウの中の話
  * なので、そのときは付かない。
  *
- * セレクタは unfocusedViewDimmingContribution.ts の規則をそのまま写し、先頭に
- * html.paradis-window-inactive を足して詳細度で必ず勝たせている。upstream が減光の対象を
+ * <html> / <body> やクラスには付けない。upstream の auxiliaryWindowService.ts が、メインの
+ * <html> と <body> の属性すべてと、ワークベンチのコンテナの class を補助ウィンドウへ写し続けるため、
+ * メインの印が外れると補助ウィンドウの印まで消える。コンテナの class 以外の属性は写されない。
+ *
+ * セレクタは unfocusedViewDimmingContribution.ts の規則をそのまま写し、先頭の .monaco-workbench に
+ * [data-paradis-window-inactive] を足して詳細度で必ず勝たせている。upstream が減光の対象を
  * 増やしたら、ここにも同じ形で足すこと。
  */
-html.paradis-window-inactive .monaco-workbench .pane-body.integrated-terminal:not(:focus-within) .tabs-container,
-html.paradis-window-inactive .monaco-workbench .pane-body.integrated-terminal .terminal-wrapper:not(:focus-within),
-html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .monaco-editor,
-html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .breadcrumbs-below-tabs,
-html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .terminal-wrapper,
-html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .settings-editor,
-html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .keybindings-editor,
-html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .monaco-editor-pane-placeholder,
-html.paradis-window-inactive .monaco-workbench .editor-instance:not(:focus-within) .gettingStartedContainer {
+.monaco-workbench[data-paradis-window-inactive] .pane-body.integrated-terminal:not(:focus-within) .tabs-container,
+.monaco-workbench[data-paradis-window-inactive] .pane-body.integrated-terminal .terminal-wrapper:not(:focus-within),
+.monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .monaco-editor,
+.monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .breadcrumbs-below-tabs,
+.monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .terminal-wrapper,
+.monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .settings-editor,
+.monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .keybindings-editor,
+.monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .monaco-editor-pane-placeholder,
+.monaco-workbench[data-paradis-window-inactive] .editor-instance:not(:focus-within) .gettingStartedContainer {
 	filter: none;
 }

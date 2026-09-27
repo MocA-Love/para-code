@@ -22,28 +22,35 @@
 // BrowserWindow のもので、中の WebContentsView の出入りでは来ない。
 //
 // 補助ウィンドウ（エディタを別ウィンドウへ出したもの）もそれぞれのネイティブウィンドウとして扱う。
+//
+// 印は各ウィンドウのワークベンチのコンテナ（`.monaco-workbench`）の `data-` 属性に付ける。`<html>` /
+// `<body>` やクラスには付けない: upstream の `auxiliaryWindowService.ts` がメインの `<html>` と `<body>` の
+// 属性すべてと、ワークベンチのコンテナの class を補助ウィンドウへ写し続けるので、メインにフォーカスが
+// 戻って印が外れると、補助ウィンドウの印まで消える（実機で確認）。コンテナの class 以外は写されない。
 // Web ビルドにはこの問題の元（別アプリへの切り替え・内蔵ブラウザ）が無いので、electron-browser に
 // だけ置く（Web は upstream の動きのまま）。
 
 import './media/paradisUnfocusedDimming.css';
-import { getWindows, onDidRegisterWindow, onDidUnregisterWindow } from '../../../../base/browser/dom.js';
+import { getWindow, getWindows, onDidUnregisterWindow } from '../../../../base/browser/dom.js';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 
-/** ウィンドウが非アクティブの間 `<html>` に付けるクラス。CSS 側と同じ名前。 */
-export const PARADIS_WINDOW_INACTIVE_CLASS = 'paradis-window-inactive';
+/** ウィンドウが非アクティブの間、ワークベンチのコンテナに付ける属性。CSS 側と同じ名前。 */
+export const PARADIS_WINDOW_INACTIVE_ATTRIBUTE = 'data-paradis-window-inactive';
 
-/** クラスを付けるウィンドウの部分。`CodeWindow` はそのまま渡せる。 */
+/** 印を付ける相手。 */
 export interface IParadisDimmingWindow {
 	/** ネイティブのウィンドウ ID（main が知らせるフォーカスの ID と同じもの）。 */
 	readonly vscodeWindowId: number;
-	readonly document: { readonly documentElement: HTMLElement };
+	/** そのウィンドウのワークベンチのコンテナ（`ILayoutService.getContainer(window)`）。 */
+	readonly container: HTMLElement;
 }
 
 /**
- * ネイティブのウィンドウのフォーカスに合わせて、各ウィンドウの `<html>` にクラスを付け外しする。
+ * ネイティブのウィンドウのフォーカスに合わせて、各ウィンドウのワークベンチのコンテナに印を付け外しする。
  *
  * フォーカスのあるネイティブウィンドウは同時に1つだけなので、その ID だけを持つ。別のウィンドウへ
  * 移るときはブラーとフォーカスがどちらの順で届いても同じ結果になる。最初のフォーカスが分かるまでは
@@ -75,7 +82,7 @@ export class ParadisWindowInactiveClasses extends Disposable {
 		}, () => undefined);
 	}
 
-	/** クラスを付ける対象に加える。戻り値を dispose すると外してクラスも消す。 */
+	/** 印を付ける対象に加える。戻り値を dispose すると外して印も消す。 */
 	addWindow(targetWindow: IParadisDimmingWindow): IDisposable {
 		this.windows.set(targetWindow.vscodeWindowId, targetWindow);
 		this.update(targetWindow);
@@ -83,7 +90,7 @@ export class ParadisWindowInactiveClasses extends Disposable {
 			if (this.windows.get(targetWindow.vscodeWindowId) === targetWindow) {
 				this.windows.delete(targetWindow.vscodeWindowId);
 			}
-			targetWindow.document.documentElement.classList.remove(PARADIS_WINDOW_INACTIVE_CLASS);
+			targetWindow.container.removeAttribute(PARADIS_WINDOW_INACTIVE_ATTRIBUTE);
 		});
 	}
 
@@ -97,26 +104,32 @@ export class ParadisWindowInactiveClasses extends Disposable {
 
 	private update(targetWindow: IParadisDimmingWindow): void {
 		const inactive = this.known && targetWindow.vscodeWindowId !== this.focusedWindowId;
-		targetWindow.document.documentElement.classList.toggle(PARADIS_WINDOW_INACTIVE_CLASS, inactive);
+		targetWindow.container.toggleAttribute(PARADIS_WINDOW_INACTIVE_ATTRIBUTE, inactive);
 	}
 }
 
 class ParadisUnfocusedDimmingWindowFocusContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'paradis.unfocusedDimming.windowFocus';
 
-	constructor(@INativeHostService nativeHostService: INativeHostService) {
+	constructor(
+		@INativeHostService nativeHostService: INativeHostService,
+		@ILayoutService layoutService: ILayoutService,
+	) {
 		super();
 		const classes = this._register(new ParadisWindowInactiveClasses(
 			nativeHostService.onDidFocusMainOrAuxiliaryWindow,
 			nativeHostService.onDidBlurMainOrAuxiliaryWindow,
 			nativeHostService.getActiveWindowId(),
 		));
-		const perWindow = this._register(new DisposableMap<number>());
+		const track = (container: HTMLElement): IDisposable => classes.addWindow({ vscodeWindowId: getWindow(container).vscodeWindowId, container });
+		// 今あるウィンドウ（復元済みの補助ウィンドウを含む）。閉じたら外す
+		const existing = this._register(new DisposableMap<number>());
 		for (const { window } of getWindows()) {
-			perWindow.set(window.vscodeWindowId, classes.addWindow(window));
+			existing.set(window.vscodeWindowId, track(layoutService.getContainer(window)));
 		}
-		this._register(onDidRegisterWindow(({ window }) => perWindow.set(window.vscodeWindowId, classes.addWindow(window))));
-		this._register(onDidUnregisterWindow(window => perWindow.deleteAndDispose(window.vscodeWindowId)));
+		this._register(onDidUnregisterWindow(window => existing.deleteAndDispose(window.vscodeWindowId)));
+		// 補助ウィンドウのコンテナ。ウィンドウを閉じると disposables ごと片付く
+		this._register(layoutService.onDidAddContainer(({ container, disposables }) => disposables.add(track(container))));
 	}
 }
 

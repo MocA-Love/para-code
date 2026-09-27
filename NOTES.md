@@ -652,7 +652,8 @@ TM3 / TM4 / TM7 / TM10 / TM21 はすべて `src/vs/paradis/contrib/` の新規�
 フォーカスの無いビューの減光（TM7、upstream の `accessibility.dimUnfocused.enabled` を既定オン）は、ウィンドウが非アクティブの間は打ち消す（`contrib/unfocusedDimming/electron-browser/`）。Chromium はウィンドウがフォーカスを失うと、フォーカスを持っていた要素にも `:focus-within` を当てなくなる（`document.activeElement` は残る。Para Code の Electron で2つのウィンドウを使って実測）ので、upstream の `:not(:focus-within)` の規則だけだと、別のアプリへ切り替えただけで全部が薄くなる。
 
 - 「非アクティブ」はネイティブのウィンドウ（BrowserWindow）単位で判定する（`INativeHostService.onDidFocusMainOrAuxiliaryWindow` / `onDidBlurMainOrAuxiliaryWindow` と各ウィンドウの `vscodeWindowId` を突き合わせる。補助ウィンドウも別々）。`document.hasFocus()` で判定すると、内蔵ブラウザ（同じウィンドウの中の別の WebContentsView）をクリックしただけでワークベンチの document が blur し、同じウィンドウの中なのに減光が全部消える（実機で確認）。そのため機能ごと electron-browser に置き、Web ビルドは upstream の動きのまま
-- 打ち消しの CSS は `unfocusedViewDimmingContribution.ts` の規則を1つずつ写してある。**upstream が減光の対象を増やしたら、`paradisUnfocusedDimming.css` にも同じ形で足す。** 取り込み時は `grep -c "rules.add(" src/vs/workbench/contrib/accessibility/browser/unfocusedViewDimmingContribution.ts` と、`paradisUnfocusedDimming.css` の `html.paradis-window-inactive` で始まるセレクタの数（今は 9）が一致するかを見る
+- 印は各ウィンドウのワークベンチのコンテナ（`ILayoutService.getContainer(window)`、`.monaco-workbench`）の `data-paradis-window-inactive` 属性に付ける。`<html>` / `<body>` やクラスには付けない。upstream の `auxiliaryWindowService.ts`（`trackAttributes` の3行）がメインの `<html>` と `<body>` の属性すべてと、コンテナの class を補助ウィンドウへ写し続けるので、メインへフォーカスが戻って印が外れると補助ウィンドウの印まで消え、補助ウィンドウの中が薄くなる（実機で確認）。取り込み時に upstream がコンテナの写しを class 以外へ広げていないか（`trackAttributes(this.layoutService.mainContainer, container, ['class'])` のままか）を確かめる
+- 打ち消しの CSS は `unfocusedViewDimmingContribution.ts` の規則を1つずつ写してある。**upstream が減光の対象を増やしたら、`paradisUnfocusedDimming.css` にも同じ形で足す。** 取り込み時は `grep -c "rules.add(" src/vs/workbench/contrib/accessibility/browser/unfocusedViewDimmingContribution.ts` と、`paradisUnfocusedDimming.css` の `.monaco-workbench[data-paradis-window-inactive]` で始まるセレクタの数（今は 9）が一致するかを見る
 
 ## HTML プレビューの読み取り範囲（2026-08-21、未解決の課題として記録）
 
