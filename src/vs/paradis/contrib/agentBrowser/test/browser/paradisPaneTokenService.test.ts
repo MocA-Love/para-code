@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { Event } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { join } from '../../../../../base/common/path.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -15,7 +15,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import type { IShellLaunchConfig } from '../../../../../platform/terminal/common/terminal.js';
 import type { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
-import type { ITerminalInstanceService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import type { ITerminalInstance, ITerminalInstanceService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import type { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_ENABLED_KEY } from '../../../mobileRelay/common/paradisMobileRelay.js';
 import { ParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
@@ -57,6 +57,64 @@ suite('Paradis pane token service', () => {
 				PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
 				PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
 			}, `mobile=${String(mobileEnabled)} codexLive=${String(codexLive)} でランチャーを注入してはいけない`);
+		}
+	});
+
+	// アプリを終了→起動し直したとき、終了前に一度も入力されなかったターミナルはバッファが保存されず
+	// pty host に蘇らない。復元したタブは attach に失敗し、同じ shellLaunchConfig で新しいシェルを
+	// 起こし直す。その shellLaunchConfig にペイントークンが無いと、復元したターミナルだけ
+	// hook・通知・ブラウザ共有が効かなかった。新規と同じトークンが入り、登録されるトークンとも
+	// 一致することを確かめる。
+	test('gives a restored terminal the same pane token env as when it was new, even if attach falls back to a new shell', () => {
+		const onDidCreateInstance = new Emitter<ITerminalInstance>();
+		const service = new ParadisPaneTokenService(
+			{ onDidCreateInstance: onDidCreateInstance.event } as unknown as ITerminalInstanceService,
+			{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, execPath: `${APP_ROOT}/Para Code` } as unknown as IWorkbenchEnvironmentService,
+			{ userHome: async () => URI.file('/home/test') } as unknown as IPathService,
+			new TestConfigurationService(),
+		);
+		try {
+			const createdConfig = { shellIntegrationNonce: PANE_TOKEN } as IShellLaunchConfig;
+			service.prepareShellLaunchConfig(createdConfig);
+
+			const restoredConfig: IShellLaunchConfig = {
+				attachPersistentProcess: { id: 2, shellIntegrationNonce: PANE_TOKEN } as IShellLaunchConfig['attachPersistentProcess'],
+			};
+			service.prepareShellLaunchConfig(restoredConfig);
+			// TerminalInstance は shellIntegrationNonce が無ければ attach 先の nonce を引き継ぐ
+			onDidCreateInstance.fire({
+				instanceId: 7,
+				shellIntegrationNonce: PANE_TOKEN,
+				shellLaunchConfig: restoredConfig,
+				onDisposed: Event.None,
+			} as unknown as ITerminalInstance);
+
+			const revivedToken = 'token-held-by-the-previous-pty';
+			const revivedConfig: IShellLaunchConfig = {
+				attachPersistentProcess: { id: 3, shellIntegrationNonce: PANE_TOKEN, paradisPaneToken: revivedToken } as IShellLaunchConfig['attachPersistentProcess'],
+			};
+			service.prepareShellLaunchConfig(revivedConfig);
+
+			assert.deepStrictEqual({
+				created: createdConfig.env,
+				restored: restoredConfig.env,
+				registered: service.getTokenForInstance(7),
+				revivedPaneId: revivedConfig.env?.PARA_CODE_TERMINAL_PANE_ID,
+			}, {
+				created: {
+					PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
+					PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
+				},
+				restored: {
+					PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
+					PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
+				},
+				registered: PANE_TOKEN,
+				revivedPaneId: revivedToken,
+			});
+		} finally {
+			service.dispose();
+			onDidCreateInstance.dispose();
 		}
 	});
 
