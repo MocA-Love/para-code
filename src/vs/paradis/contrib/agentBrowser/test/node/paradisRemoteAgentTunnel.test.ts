@@ -161,6 +161,7 @@ suite('ParadisRemoteAgentTunnel', () => {
 					args: [
 						'-N',
 						'-R', `${preferredPort}:127.0.0.1:47286`,
+						'-o', 'ControlPath=none',
 						'-o', 'BatchMode=yes',
 						'-o', 'ExitOnForwardFailure=yes',
 						'-o', 'LogLevel=DEBUG1',

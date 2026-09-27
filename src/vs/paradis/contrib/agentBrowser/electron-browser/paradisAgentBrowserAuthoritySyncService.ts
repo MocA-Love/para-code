@@ -216,10 +216,15 @@ export class ParadisAgentBrowserAuthoritySyncService extends Disposable implemen
 		const livePaneByToken = new Map(livePanes.map(entry => [entry.token, entry.instance]));
 		const panes = this.paneTokenService.listPaneTokens()
 			.map(({ instanceId, token }) => {
-				const shellPid = livePaneByToken.get(token)?.processId;
+				const instance = livePaneByToken.get(token);
+				const shellPid = instance?.processId;
+				// 接続先で動くペインの番号は接続先のプロセス表のもの。shared process が手元のプロセスと
+				// 取り違えないよう、接続先を添えて送る
+				const remoteAuthority = instance?.remoteAuthority;
 				return Object.freeze({
 					token,
 					...(typeof shellPid === 'number' && Number.isSafeInteger(shellPid) && shellPid > 0 ? { shellPid } : {}),
+					...(typeof remoteAuthority === 'string' && remoteAuthority.length > 0 ? { remoteAuthority } : {}),
 					scope: copyScope(this.terminalScopeService.resolveScope(instanceId)),
 				});
 			})
