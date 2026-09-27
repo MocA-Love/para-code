@@ -146,3 +146,17 @@ export function paradisAgentQuestionKeySequence(
 export function paradisAgentQuestionNeedsReviewSubmit(questions: readonly IParadisAgentQuestionShape[]): boolean {
 	return !(questions.length === 1 && questions[0]?.multiSelect === false);
 }
+
+/**
+ * 許可の確認（Claude Code の「Do you want to proceed?」、Codex の承認プロンプト）への回答をキー列にする。
+ *
+ * Claude は `1`（Yes）→ Enter で許可、Esc で拒否。Codex は `y` で許可、`d` で拒否。
+ * モバイルとデスクトップのチャット表示が同じ列を使う（Codex の app-server 経由の承認は
+ * キーではなく構造化された回答で返すので、ここは通らない）。
+ */
+export function paradisAgentApprovalKeySequence(agent: 'claude' | 'codex', choice: 'yes' | 'no'): string[] {
+	if (agent === 'codex') {
+		return [choice === 'yes' ? 'y' : 'd'];
+	}
+	return choice === 'yes' ? ['1', ENTER] : ['\u001b'];
+}

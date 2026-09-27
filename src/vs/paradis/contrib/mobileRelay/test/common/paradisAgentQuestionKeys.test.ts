@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAgentQuestionKeySequence } from '../../common/paradisAgentQuestionKeys.js';
+import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../../common/paradisAgentQuestionKeys.js';
 
 suite('paradisAgentQuestionKeySequence', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -96,5 +96,20 @@ suite('paradisAgentQuestionKeySequence', () => {
 		assert.deepStrictEqual(parts.filter(part => part.includes('\t')), []);
 		// 本文は失われず、タブが空白に置き換わって残る。
 		assert.deepStrictEqual(parts.filter(part => part.startsWith('タブ')), ['タブ を含む回答', 'タブ を含む回答']);
+	});
+
+	// モバイルとデスクトップのチャット表示が同じ列を使う。モバイルが送っていた列から変えないこと。
+	test('許可の確認への回答はエージェントごとに決まったキー列になる', () => {
+		assert.deepStrictEqual({
+			claudeYes: paradisAgentApprovalKeySequence('claude', 'yes'),
+			claudeNo: paradisAgentApprovalKeySequence('claude', 'no'),
+			codexYes: paradisAgentApprovalKeySequence('codex', 'yes'),
+			codexNo: paradisAgentApprovalKeySequence('codex', 'no'),
+		}, {
+			claudeYes: ['1', '\r'],
+			claudeNo: ['\u001b'],
+			codexYes: ['y'],
+			codexNo: ['d'],
+		});
 	});
 });
