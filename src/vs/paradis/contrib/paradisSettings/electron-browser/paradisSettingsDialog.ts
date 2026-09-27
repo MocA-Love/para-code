@@ -632,6 +632,33 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.daemon.saveScreens',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.daemonSaveScreens', "PC を再起動しても画面を戻す"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.daemonSaveScreensDesc', "ターミナルを残しているとき、画面をディスクに保存しておき、PC の再起動後に直前の画面とタブを戻します。保存は30日で消えます。"),
+		keywords: 'terminal daemon save screen restore reboot scrollback disk',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.renderRepair.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.renderRepair', "ターミナルの文字の欠けを自動で直す"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.renderRepairDesc', "スペースを切り替えて戻ったときやスリープから復帰したときに検査し、欠けていれば描き直します。"),
+		keywords: 'terminal render repair glyph webgl desync missing characters',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.renderRepair.recordScreen',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.renderRepairRecord', "描き直したときの画面を記録する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.renderRepairRecordDesc', "ログのフォルダに画面の画像と文字を最大4件残します。秘密情報が写ることがあります。"),
+		keywords: 'terminal render repair record screenshot logs evidence',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
 		key: 'paradis.terminal.shiftEnterNewline',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.shiftEnter', "Shift+Enter で改行を入力する"),
