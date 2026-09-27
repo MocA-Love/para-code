@@ -21,7 +21,7 @@
 // 書き込みは一時ファイル＋rename で、途中で落ちても壊れた JSON を残さない。
 
 import * as fs from 'fs';
-import { dirname } from '../../../../base/common/path.js';
+import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { ParadisCodexResetOutcome, paradisCodexResetOutcome } from '../common/paradisCodexAccounts.js';
 
 /** settled の記録を残す期間。これより古い記録は次の書き込みで捨てる。 */
@@ -210,15 +210,8 @@ export class ParadisCodexResetCreditLedger {
 		return run;
 	}
 
-	private async writeAtomically(content: string): Promise<void> {
-		await fs.promises.mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 });
-		const temporaryPath = `${this.filePath}.${process.pid}.${this.now()}.tmp`;
-		try {
-			await fs.promises.writeFile(temporaryPath, content, { encoding: 'utf8', mode: 0o600 });
-			await fs.promises.rename(temporaryPath, this.filePath);
-		} catch (error) {
-			await fs.promises.rm(temporaryPath, { force: true }).catch(() => { });
-			throw error;
-		}
+	private writeAtomically(content: string): Promise<void> {
+		// fsync してから置き換える（二重消費を防ぐ台帳なので、電源断で消えた「送信済み」を残さない）
+		return paradisWriteFileAtomic(this.filePath, content, { newFileMode: 0o600, createParentMode: 0o700, fallbackToInPlace: false });
 	}
 }
