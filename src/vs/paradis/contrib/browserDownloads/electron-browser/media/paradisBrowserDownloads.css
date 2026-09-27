@@ -138,6 +138,13 @@
 	cursor: pointer;
 }
 
+/* The reset above (font: inherit) outranks the generic .codicon rule, so the icon buttons would
+	render their glyph in the UI font (a tofu box). Put the codicon font back, more specifically. */
+.monaco-workbench .paradis-browser-downloads-popover button.pbd-icon-button.codicon,
+.monaco-workbench .paradis-browser-downloads-popover button.pbd-icon-button.codicon::before {
+	font: normal normal normal 16px/1 codicon;
+}
+
 .monaco-workbench .paradis-browser-downloads-popover button:focus-visible {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
