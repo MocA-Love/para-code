@@ -11,14 +11,19 @@ import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { FileAccess } from '../../../../../base/common/network.js';
 import { IParadisIndexFile, ParadisSessionIndexStore } from '../../node/paradisSessionIndexStore.js';
+import { ParadisAgentActivityWorkerHost } from '../../node/paradisAgentActivityWorkerHost.js';
+
+const WORKER_PATH = FileAccess.asFileUri('vs/paradis/contrib/agentActivity/node/paradisAgentActivityWorkerMain.js').fsPath;
 
 function line(role: 'user' | 'assistant', text: string): string {
 	return JSON.stringify({ type: role, timestamp: new Date().toISOString(), message: { role, content: text } });
 }
 
-suite('ParadisSessionIndexStore', () => {
-	ensureNoDisposablesAreLeakedInTestSuite();
+suite('ParadisSessionIndexStore', function () {
+	this.timeout(20_000);
+	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 	let root: string;
 
 	setup(async () => {
@@ -84,5 +89,83 @@ suite('ParadisSessionIndexStore', () => {
 		} finally {
 			store.close();
 		}
+	});
+
+	/** DB と、その隣の WAL の生のバイト列に `text` が含まれるか。 */
+	async function onDisk(dbPath: string, text: string): Promise<boolean> {
+		const needle = Buffer.from(text, 'utf8');
+		for (const file of [dbPath, `${dbPath}-wal`]) {
+			const bytes = await fs.readFile(file).catch(() => Buffer.alloc(0));
+			if (bytes.includes(needle)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	test('leaves no deleted text in the database or the WAL after retention and after a transcript disappears, without rewriting the index', async () => {
+		const dbPath = join(root, 'index.sqlite');
+		const expiring = join(root, 'expiring.jsonl');
+		const removed = join(root, 'removed.jsonl');
+		const kept = join(root, 'kept.jsonl');
+		await fs.writeFile(expiring, `${line('user', 'EXPIRING_SECRET_A1B2C3 を保存')}\n`);
+		await fs.writeFile(removed, `${line('user', 'REMOVED_SECRET_D4E5F6 を保存')}\n`);
+		await fs.writeFile(kept, `${line('user', '残る会話の本文です')}\n`);
+		const store = new ParadisSessionIndexStore(dbPath);
+		try {
+			const files = [
+				{ ...await indexFile(expiring), catalogId: 'expiring', mtimeMs: 1_000 },
+				{ ...await indexFile(removed), catalogId: 'removed', mtimeMs: 50_000 },
+				{ ...await indexFile(kept), catalogId: 'kept', mtimeMs: 50_000 },
+			];
+			await store.update(files, { includeToolOutput: false });
+			const before = [await onDisk(dbPath, 'EXPIRING_SECRET_A1B2C3'), await onDisk(dbPath, 'REMOVED_SECRET_D4E5F6')];
+			const pruned = store.prune(10_000, false);
+			const afterPrune = await onDisk(dbPath, 'EXPIRING_SECRET_A1B2C3');
+			await store.update(files.filter(file => file.catalogId === 'kept'), { includeToolOutput: false });
+			const afterRemoval = await onDisk(dbPath, 'REMOVED_SECRET_D4E5F6');
+			const nothingExpired = store.prune(10_000, false);
+			assert.deepStrictEqual({ before, pruned, afterPrune, afterRemoval, nothingExpired, stats: store.stats(), kept: store.search('残る会話', ['kept']).matches.length }, {
+				before: [true, true], pruned: 1, afterPrune: false, afterRemoval: false, nothingExpired: 0, stats: { files: 1, messages: 1 }, kept: 1,
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	test('does not count a transcript as indexed until it has been read to the end', async () => {
+		const transcript = join(root, 'partial.jsonl');
+		await fs.writeFile(transcript, [line('user', '一つ目の依頼です'), line('user', '二つ目の依頼です')].join('\n') + '\n');
+		const store = new ParadisSessionIndexStore(join(root, 'index.sqlite'));
+		try {
+			let calls = 0;
+			await store.update([await indexFile(transcript)], { includeToolOutput: false }, () => ++calls < 2);
+			const partial = store.search('一つ目の依頼', ['c1']);
+			await store.update([await indexFile(transcript)], { includeToolOutput: false });
+			const complete = store.search('一つ目の依頼', ['c1']);
+			assert.deepStrictEqual({ partial: [partial.uncovered, partial.matches.length], complete: [complete.uncovered, complete.matches.length] }, {
+				partial: [['c1'], 0], complete: [[], 1],
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	test('stops updates that were queued before an abort, even if they have not started yet, and deletes the index after them', async () => {
+		const dbPath = join(root, 'worker.sqlite');
+		const files: IParadisIndexFile[] = [];
+		for (let index = 0; index < 20; index++) {
+			const path = join(root, `many-${index}.jsonl`);
+			await fs.writeFile(path, Array.from({ length: 50 }, (_, n) => line('user', `会話 ${index} の ${n} 番目の依頼です`)).join('\n') + '\n');
+			files.push({ ...await indexFile(path), catalogId: `c${index}` });
+		}
+		const host = disposables.add(new ParadisAgentActivityWorkerHost(ParadisAgentActivityWorkerHost.workerFactory(WORKER_PATH), 10_000));
+		const first = host.request<{ aborted: boolean }>({ op: 'indexUpdate', dbPath, files, includeToolOutput: false });
+		const queued = host.request<{ aborted: boolean }>({ op: 'indexUpdate', dbPath, files, includeToolOutput: false });
+		await host.request({ op: 'indexAbort' });
+		const deleted = host.request({ op: 'indexDelete', dbPath });
+		const results = [(await first).aborted, (await queued).aborted];
+		await deleted;
+		assert.deepStrictEqual({ results, databaseRemoved: await fs.stat(dbPath).then(() => false, () => true) }, { results: [true, true], databaseRemoved: true });
 	});
 });

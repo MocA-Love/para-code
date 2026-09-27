@@ -107,12 +107,13 @@ export function paradisResumeGroupLabel(group: ParadisResumeGrouping): string {
  *
  * パスは貼り付け先のシェルで展開されない形で囲む。Windows は既定のターミナルの PowerShell 向けに
  * `Set-Location -LiteralPath '...'` とする（二重引用符だと `$(...)` が実行され、cmd の `cd "..."` では
- * `%VAR%` が展開されるため）。単一引用符の中は `''` だけが特別。
+ * `%VAR%` が展開されるため）。PowerShell は `'` のほかに U+2018・U+2019・U+201A・U+201B も単一引用符として
+ * 扱うので、どれも2つ重ねる。
  */
 export function paradisResumeCommandLine(session: Pick<IParadisResumeSession, 'agent' | 'id' | 'cwd'>, windows: boolean): string {
 	const resume = session.agent === 'claude' ? `claude --resume ${session.id}` : `codex resume ${session.id}`;
 	return windows
-		? `Set-Location -LiteralPath '${session.cwd.replace(/'/g, `''`)}'; ${resume}`
+		? `Set-Location -LiteralPath '${session.cwd.replace(/['\u2018\u2019\u201a\u201b]/g, quote => quote + quote)}'; ${resume}`
 		: `cd '${session.cwd.replace(/'/g, `'\\''`)}' && ${resume}`;
 }
 

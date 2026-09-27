@@ -38,6 +38,10 @@ import { IParadisIndexSearchResult, IParadisIndexStats, IParadisIndexUpdateResul
 import { ParadisAgentActivityWorkerHost } from './paradisAgentActivityWorkerHost.js';
 
 const PARSE_BATCH = 40;
+/** 起動してから、保存日数・ツール出力の設定を今ある索引へ反映するまでの時間。 */
+const STARTUP_PRUNE_DELAY_MS = 60_000;
+/** 1回の検索で索引へ問い合わせる会話の数の上限。 */
+const MAX_INDEX_SEARCH_CATALOG_IDS = 5000;
 const DAY_MS = 86_400_000;
 /** 1回に扱うファイル数の上限（異常に多いときに shared process のメモリを食い潰さないため）。 */
 const MAX_FILES = 50_000;
@@ -73,6 +77,8 @@ export interface IParadisAgentActivityServiceOptions {
 	readonly indexSettings?: () => { readonly enabled?: unknown; readonly retentionDays?: unknown; readonly includeToolOutput?: unknown };
 	/** 全文索引の設定が変わった。 */
 	readonly onDidChangeIndexSettings?: Event<void>;
+	/** 起動時の保存日数・ツール出力の反映を遅らせる時間（テスト用。既定 60 秒）。 */
+	readonly startupPruneDelayMs?: number;
 	readonly claudeHome?: () => string;
 	readonly codexHome?: () => string;
 	readonly now?: () => number;
@@ -103,10 +109,11 @@ export class ParadisAgentActivityService extends Disposable {
 		this.codexHome = options.codexHome ?? paradisCodexHome;
 		this.now = options.now ?? Date.now;
 		if (options.onDidChangeIndexSettings) {
-			this._register(options.onDidChangeIndexSettings(() => void this.reconcileIndex()));
+			this._register(options.onDidChangeIndexSettings(() => void this.reconcileIndex(false)));
 		}
 		// 起動時にも照合する（アプリを閉じている間に設定がオフにされた場合など、変更の通知は来ない）。
-		void this.reconcileIndex();
+		// オフなら索引をすぐ消す。オンのときの保存日数・ツール出力の反映は、起動の邪魔をしないよう遅らせる。
+		void this.reconcileIndex(true);
 	}
 
 	// ---- 使用量・作業実績 ----------------------------------------------------------------------
@@ -271,15 +278,24 @@ export class ParadisAgentActivityService extends Disposable {
 	// 「オフなら索引は残っていない」はここ（shared process）で守る。起動したときと設定が変わったときに
 	// 設定と索引を照合し、オフなら消す。画面側がオフを知る前に更新を頼んできても、設定がオフなら断る。
 
-	/** 起動時・設定の変更時に、設定と索引を照合する。重ねて呼ばれたら最後の1回にまとめる。 */
-	private reconcileIndex(): Promise<void> {
+	/**
+	 * 起動時・設定の変更時に、設定と索引を照合する。オフなら消す。オンなら、会話ログを読まずに保存日数と
+	 * ツール出力の設定を反映する（期限を過ぎた会話が無ければ何も書かない）。起動時の反映は
+	 * {@link IParadisAgentActivityServiceOptions.startupPruneDelayMs} だけ遅らせる。
+	 */
+	private reconcileIndex(startup: boolean): Promise<void> {
+		if (startup && this.indexSettings().enabled) {
+			const timer = setTimeout(() => void this.reconcileIndex(false), this.options.startupPruneDelayMs ?? STARTUP_PRUNE_DELAY_MS);
+			this._register({ dispose: () => clearTimeout(timer) });
+			return this.reconciling;
+		}
 		const run = async () => {
 			const settings = this.indexSettings();
 			if (!settings.enabled) {
 				await this.indexDelete();
 				return;
 			}
-			if (await this.indexExists()) {
+			if (!this.indexDeleting && await this.indexExists()) {
 				await this.options.worker.request({
 					op: 'indexPrune',
 					dbPath: this.options.indexDbPath,
@@ -327,10 +343,13 @@ export class ParadisAgentActivityService extends Disposable {
 					path: file.path, agent: file.agent, catalogId: paradisSessionCatalogId(file.agent, file.path),
 					dev: file.dev, ino: file.ino, size: file.size, mtimeMs: file.mtimeMs,
 				}));
-			if (this.indexDeleting || !this.indexSettings().enabled) {
+			// 会話ログを列挙している間に設定が変わっていることがある。送る直前に読み直す（ツール出力をオフにした直後に、
+			// 古い設定の更新がツール出力を入れ直さないように）。
+			const latest = this.indexSettings();
+			if (this.indexDeleting || !latest.enabled) {
 				return undefined;
 			}
-			return this.options.worker.request<IParadisIndexUpdateResult>({ op: 'indexUpdate', dbPath: this.options.indexDbPath, files, includeToolOutput: settings.includeToolOutput });
+			return this.options.worker.request<IParadisIndexUpdateResult>({ op: 'indexUpdate', dbPath: this.options.indexDbPath, files, includeToolOutput: latest.includeToolOutput });
 		})();
 		this.indexUpdating = update;
 		void update.finally(() => {
@@ -346,16 +365,21 @@ export class ParadisAgentActivityService extends Disposable {
 	 * 更新の列には並ばないので、索引を作っている最中でも待たされない。
 	 */
 	async indexSearch(query: string, catalogIds: readonly string[]): Promise<IParadisIndexSearchResult> {
-		const requested = Array.isArray(catalogIds) ? catalogIds.filter((id): id is string => typeof id === 'string').slice(0, 5000) : [];
+		const all = Array.isArray(catalogIds) ? catalogIds.filter((id): id is string => typeof id === 'string') : [];
 		if (typeof query !== 'string' || !this.indexSettings().enabled || this.indexDeleting || !(await this.indexExists())) {
-			return { terms: [], uncovered: requested, matches: [] };
+			return { terms: [], uncovered: all, matches: [] };
 		}
-		return this.options.worker.request<IParadisIndexSearchResult>({ op: 'indexSearch', dbPath: this.options.indexDbPath, query: query.slice(0, 200), catalogIds: requested });
+		// 一度に索引へ問い合わせる数には上限を置き、超えた分は索引に無いものとして返す（従来の検索で探させ、
+		// 黙って落とさない）。
+		const requested = all.slice(0, MAX_INDEX_SEARCH_CATALOG_IDS);
+		const result = await this.options.worker.request<IParadisIndexSearchResult>({ op: 'indexSearch', dbPath: this.options.indexDbPath, query: query.slice(0, 200), catalogIds: requested });
+		return all.length > requested.length ? { ...result, uncovered: [...result.uncovered, ...all.slice(requested.length)] } : result;
 	}
 
 	async indexStatus(): Promise<IParadisSessionIndexStatus> {
 		const updating = this.indexUpdating !== undefined;
-		if (!(await this.indexExists())) {
+		// 削除中・オフのときは DB を開かない（消している最中のファイルを worker が開き直さないように）。
+		if (this.indexDeleting || !this.indexSettings().enabled || !(await this.indexExists())) {
 			return { exists: false, files: 0, messages: 0, updating };
 		}
 		const stats = await this.options.worker.request<IParadisIndexStats>({ op: 'indexStats', dbPath: this.options.indexDbPath });

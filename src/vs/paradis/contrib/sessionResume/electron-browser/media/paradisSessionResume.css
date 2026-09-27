@@ -301,3 +301,15 @@
 .paradis-session-resume .paradis-session-resume-row .row-more:hover,
 .paradis-session-resume .paradis-session-resume-row.menu-open .row-more { background: var(--vscode-toolbar-hoverBackground); }
 .paradis-session-resume .paradis-session-resume-row.selected .row-more { color: inherit; }
+
+/* 行メニューの操作結果。通知はモーダルの下に隠れるので、モーダルの中の下端に数秒だけ出す。 */
+.paradis-session-resume-modal { position: relative; }
+.paradis-session-resume-modal .paradis-session-resume-inline-message {
+	position: absolute; left: 50%; bottom: 16px; z-index: 30; max-width: 80%; transform: translateX(-50%);
+	padding: 6px 12px; border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); border-radius: 6px;
+	background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); color: var(--vscode-foreground);
+	box-shadow: 0 4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.25)); font-size: 12px;
+	overflow: hidden; white-space: nowrap; text-overflow: ellipsis; pointer-events: none; visibility: hidden;
+}
+.paradis-session-resume-modal .paradis-session-resume-inline-message.visible { visibility: visible; }
+.paradis-session-resume-modal .paradis-session-resume-inline-message.error { border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); }

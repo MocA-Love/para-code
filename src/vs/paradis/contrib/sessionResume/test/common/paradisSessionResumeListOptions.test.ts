@@ -51,12 +51,12 @@ suite('ParadisSessionResumeListOptions', () => {
 			broken: paradisParseResumeListOptions('{not json'),
 			partial: paradisParseResumeListOptions(JSON.stringify({ sort: 'title', group: 'nope', hideEmpty: true })),
 			posix: paradisResumeCommandLine({ agent: 'claude', id: 'abc', cwd: `/work/it's` }, false),
-			windows: paradisResumeCommandLine({ agent: 'codex', id: 'def', cwd: `C:\\work\\$(calc) it's %TEMP%` }, true),
+			windows: paradisResumeCommandLine({ agent: 'codex', id: 'def', cwd: `C:\\work\\$(calc) it's %TEMP% \u2019x\u2018\u201a\u201b` }, true),
 		}, {
 			broken: { sort: 'updated', group: 'space', hideEmpty: false },
 			partial: { sort: 'title', group: 'space', hideEmpty: true },
 			posix: `cd '/work/it'\\''s' && claude --resume abc`,
-			windows: `Set-Location -LiteralPath 'C:\\work\\$(calc) it''s %TEMP%'; codex resume def`,
+			windows: `Set-Location -LiteralPath 'C:\\work\\$(calc) it''s %TEMP% \u2019\u2019x\u2018\u2018\u201a\u201a\u201b\u201b'; codex resume def`,
 		});
 	});
 

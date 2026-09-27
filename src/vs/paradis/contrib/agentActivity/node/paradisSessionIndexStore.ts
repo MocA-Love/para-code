@@ -37,7 +37,7 @@ import { paradisReadTranscriptLines } from './paradisTranscriptLineReader.js';
 
 const nodeRequire = createRequire(import.meta.url);
 
-const SCHEMA_VERSION = '2';
+const SCHEMA_VERSION = '3';
 /** 1メッセージとして索引へ入れる本文の上限。これを超える分は捨てる（巨大な貼り付けで索引が膨らまないように）。 */
 const MAX_INDEXED_MESSAGE_CHARS = 32 * 1024;
 const INSERT_BATCH = 500;
@@ -154,6 +154,7 @@ interface IStatements {
 	readonly insertMessageFile: StatementSync;
 	readonly deleteMessages: StatementSync;
 	readonly deleteMessageFiles: StatementSync;
+	readonly setComplete: StatementSync;
 }
 
 export class ParadisSessionIndexStore {
@@ -199,12 +200,16 @@ export class ParadisSessionIndexStore {
 				offset INTEGER NOT NULL,
 				skipped INTEGER NOT NULL DEFAULT 0,
 				head_len INTEGER NOT NULL DEFAULT 0,
-				head_hash TEXT NOT NULL DEFAULT ''
+				head_hash TEXT NOT NULL DEFAULT '',
+				complete INTEGER NOT NULL DEFAULT 0
 			);
 			CREATE TABLE IF NOT EXISTS message_files(rowid INTEGER PRIMARY KEY, file_id INTEGER NOT NULL);
 			CREATE INDEX IF NOT EXISTS message_files_file ON message_files(file_id);
 			CREATE VIRTUAL TABLE IF NOT EXISTS messages USING fts5(body, tokenize = 'trigram');
 		`);
+		// 行を消したとき、FTS5 の索引（語のセグメント）からもその場で語を消させる。これが無いと、消した語は
+		// セグメントがまとめ直されるまで残る。索引全体を書き直す optimize を消すたびに走らせずに済む。
+		this.db.exec(`INSERT INTO messages(messages, rank) VALUES('secure-delete', 1)`);
 		this.db.prepare(`INSERT OR REPLACE INTO meta(key, value) VALUES ('schema', ?)`).run(SCHEMA_VERSION);
 		this.statements = {
 			selectFiles: this.db.prepare('SELECT id, path, dev, ino, size, mtime, offset, skipped, head_len, head_hash FROM files'),
@@ -215,6 +220,7 @@ export class ParadisSessionIndexStore {
 			insertMessageFile: this.db.prepare('INSERT INTO message_files(file_id) VALUES (?)'),
 			deleteMessages: this.db.prepare('DELETE FROM messages WHERE rowid IN (SELECT rowid FROM message_files WHERE file_id = ?)'),
 			deleteMessageFiles: this.db.prepare('DELETE FROM message_files WHERE file_id = ?'),
+			setComplete: this.db.prepare('UPDATE files SET complete = ? WHERE id = ?'),
 		};
 	}
 
@@ -247,9 +253,12 @@ export class ParadisSessionIndexStore {
 		this.open();
 	}
 
-	/** 行を消したあと、FTS5 のセグメントに残った語を消し、WAL を切り詰める。 */
+	/**
+	 * 行を消したあと、WAL を本体へ書き戻して切り詰める（WAL に残った消す前のページを消す）。本体側の本文は
+	 * `secure_delete` が、語のセグメントは FTS5 の secure-delete が、消したその場で消している。
+	 * 書く量は WAL の大きさだけで、索引の大きさには比例しない。
+	 */
 	private compact(): void {
-		this.db.exec(`INSERT INTO messages(messages) VALUES('optimize')`);
 		this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
 		this.restrictPermissions();
 	}
@@ -279,7 +288,7 @@ export class ParadisSessionIndexStore {
 			this.setIndexedToolOutput(false);
 			return 0;
 		}
-		const expired = (this.statements.selectFiles.all() as unknown as IFileRow[]).filter(row => row.mtime < retentionThresholdMs);
+		const expired = this.db.prepare('SELECT id FROM files WHERE mtime < ?').all(retentionThresholdMs) as { id: number }[];
 		for (const row of expired) {
 			this.removeFile(row.id);
 		}
@@ -379,6 +388,7 @@ export class ParadisSessionIndexStore {
 			// 差し替えられた、縮んだ、または先頭が書き変わった。そのファイルの分を消して最初から読む。
 			fileId = row.id;
 			this.clearFileMessages(fileId);
+			this.statements.setComplete.run(0, fileId);
 			outcome = 'replaced';
 		} else {
 			fileId = Number(this.statements.insertFile.run(file.path, file.agent, file.catalogId, file.dev, file.ino, 0, 0).lastInsertRowid);
@@ -440,6 +450,7 @@ export class ParadisSessionIndexStore {
 			// 次の更新で「差し替え」として最初から読み直させる。
 			this.clearFileMessages(fileId);
 			this.statements.updateFile.run(-1, -1, -1, -1, 0, 0, file.catalogId, 0, '', fileId);
+			this.statements.setComplete.run(0, fileId);
 			return 'replaced';
 		}
 		const headLength = Math.min(HEAD_FINGERPRINT_BYTES, result.endOffset);
@@ -448,6 +459,11 @@ export class ParadisSessionIndexStore {
 		// 書きかけの最終行が残っているときは、覚えるサイズを実際に読んだ所までにして、次回の更新で続きを読ませる。
 		const offset = skip ? file.size : result.endOffset;
 		this.statements.updateFile.run(file.dev, file.ino, skip ? file.size : Math.min(file.size, result.endOffset), file.mtimeMs, offset, skip ? 1 : 0, file.catalogId, storedHeadLength, headHash, fileId);
+		// 最後まで読めたときだけ「読み終えた」にする。読みかけ（初回の作成中・打ち切り後）の会話は検索で
+		// 索引に入っていない扱いにし、呼び出し側が従来の方法で探す。
+		if (shouldContinue()) {
+			this.statements.setComplete.run(1, fileId);
+		}
 		return outcome;
 	}
 
@@ -459,7 +475,7 @@ export class ParadisSessionIndexStore {
 	search(query: string, catalogIds: readonly string[]): IParadisIndexSearchResult {
 		const reader = this.readerConnection();
 		const terms = paradisIndexSearchTerms(query);
-		const coveredRows = reader.prepare('SELECT id, catalog_id FROM files WHERE skipped = 0').all() as { id: number; catalog_id: string }[];
+		const coveredRows = reader.prepare('SELECT id, catalog_id FROM files WHERE skipped = 0 AND complete = 1').all() as { id: number; catalog_id: string }[];
 		const covered = new Set(coveredRows.map(row => row.catalog_id));
 		const catalogById = new Map(coveredRows.map(row => [row.id, row.catalog_id]));
 		const uncovered = catalogIds.filter(catalogId => !covered.has(catalogId));

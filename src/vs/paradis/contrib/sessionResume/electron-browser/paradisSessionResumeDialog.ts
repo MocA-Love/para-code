@@ -15,7 +15,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { MarkdownString } from '../../../../base/common/htmlContent.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { basename } from '../../../../base/common/resources.js';
 import { escapeRegExpCharacters } from '../../../../base/common/strings.js';
@@ -86,6 +86,9 @@ export class ParadisSessionResumeDialog extends Disposable {
 	private spaceNavAll: { button: HTMLButtonElement; count: HTMLElement } | undefined;
 	/** 一覧上部のツールバー（並び・グループ・空を隠す・全文索引の状態）。 */
 	private listBar: HTMLElement | undefined;
+	/** 行メニューの操作結果を出す、ダイアログ内の一時的な表示。 */
+	private inlineMessage: HTMLElement | undefined;
+	private readonly inlineMessageTimer = this._register(new MutableDisposable());
 	/** 一覧上部に出す全文索引の状態。索引の状態が変わったときは、この要素だけを書き換える。 */
 	private indexStatus: HTMLElement | undefined;
 	private listOptions: IParadisResumeListOptions;
@@ -141,7 +144,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.client = instantiationService.createInstance(ParadisSessionResumeClient);
 		this.listOptions = paradisParseResumeListOptions(this.storageService.get(PARADIS_RESUME_LIST_OPTIONS_STORAGE_KEY, StorageScope.APPLICATION));
 		this.indexController = this._register(instantiationService.createInstance(ParadisSessionIndexController));
-		this.rowMenu = instantiationService.createInstance(ParadisSessionResumeRowMenu, this.client);
+		this.rowMenu = instantiationService.createInstance(ParadisSessionResumeRowMenu, this.client, (message: string, severity: 'info' | 'error') => this.showInlineMessage(message, severity));
 		this._register(this.indexController.onDidChange(() => {
 			// ツールバーは作り直さず、状態の表示だけを書き換える（開いている select やフォーカスを奪わない）。
 			if (this.indexStatus) {
@@ -213,6 +216,23 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.currentSearchMatchIndex = 0;
 		this.searchScheduler.schedule();
 		this.render();
+	}
+
+	/**
+	 * 行メニューの操作結果（コピーした、見つからない、失敗した）をダイアログの中に数秒出す。
+	 * 通知の層（z-index 2545）はこのモーダル（2700）より下にあり、通知では見えないため。
+	 */
+	private showInlineMessage(message: string, severity: 'info' | 'error'): void {
+		if (this._store.isDisposed) {
+			return;
+		}
+		this.inlineMessage ??= dom.append(this.modal, $('.paradis-session-resume-inline-message'));
+		this.inlineMessage.textContent = message;
+		this.inlineMessage.setAttribute('role', severity === 'error' ? 'alert' : 'status');
+		this.inlineMessage.classList.toggle('error', severity === 'error');
+		this.inlineMessage.classList.add('visible');
+		const handle = setTimeout(() => this.inlineMessage?.classList.remove('visible'), severity === 'error' ? 8000 : 3000);
+		this.inlineMessageTimer.value = toDisposable(() => clearTimeout(handle));
 	}
 
 	/** 既に開いているダイアログを前面へ。入力位置も戻す。 */
