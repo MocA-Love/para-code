@@ -11,18 +11,7 @@
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisSpaceUsageRequest, IParadisSpaceUsageResult, IParadisWorkStatsRequest, IParadisWorkStatsResult, PARADIS_AGENT_ACTIVITY_CHANNEL } from '../common/paradisAgentActivity.js';
-import { IParadisSessionIndexStatus, IParadisSessionIndexUpdateRequest } from '../common/paradisSessionIndex.js';
-
-export interface IParadisSessionIndexSearchMatch {
-	readonly catalogId: string;
-	readonly matchCount: number;
-	readonly snippet: string;
-}
-
-export interface IParadisSessionIndexSearchResult {
-	readonly covered: readonly string[];
-	readonly matches: readonly IParadisSessionIndexSearchMatch[];
-}
+import { IParadisSessionIndexSearchResult, IParadisSessionIndexStatus } from '../common/paradisSessionIndex.js';
 
 export class ParadisAgentActivityClient {
 
@@ -42,12 +31,14 @@ export class ParadisAgentActivityClient {
 		return this.channel.call('workStats', [request]);
 	}
 
-	indexUpdate(request: IParadisSessionIndexUpdateRequest): Promise<void> {
-		return this.channel.call('indexUpdate', [request]);
+	/** 索引を会話ログへ合わせる。設定（オン・保存日数・ツール出力）は shared process が自分で読む。 */
+	indexUpdate(): Promise<void> {
+		return this.channel.call('indexUpdate');
 	}
 
-	indexSearch(query: string): Promise<IParadisSessionIndexSearchResult> {
-		return this.channel.call('indexSearch', [query]);
+	/** `catalogIds` のうち索引に入っている会話を索引で探す。入っていないものは `uncovered` で返る。 */
+	indexSearch(query: string, catalogIds: readonly string[]): Promise<IParadisSessionIndexSearchResult> {
+		return this.channel.call('indexSearch', [query, catalogIds]);
 	}
 
 	indexStatus(): Promise<IParadisSessionIndexStatus> {

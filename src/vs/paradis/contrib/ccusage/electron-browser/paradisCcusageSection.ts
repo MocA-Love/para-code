@@ -29,6 +29,7 @@ import { ColorScheme } from '../../../../platform/theme/common/theme.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
 import { ParadisCcusageAgent } from '../common/paradisCcusage.js';
+import { paradisFormatTokens, paradisFormatUsd } from '../common/paradisCcusageFormat.js';
 import { FETCH_WINDOW_DAYS, IParadisCcusageDashboardData, IParadisCcusageDayData, IParadisCcusageModelSlice, ParadisCcusageClient } from './paradisCcusageClient.js';
 
 const $ = dom.$;
@@ -1166,30 +1167,11 @@ function prettyModelName(modelName: string): string {
 	return name;
 }
 
-export function paradisFormatUsd(value: number): string {
-	if (value >= 1000) {
-		return `$${Math.round(value).toLocaleString('en-US')}`;
-	}
-	return `$${value.toFixed(2)}`;
-}
-
 /** input+output+cache(作成/読み) の合計 token 数。 */
 function totalTokensOf(t: { readonly inputTokens: number; readonly outputTokens: number; readonly cacheCreationTokens: number; readonly cacheReadTokens: number }): number {
 	return t.inputTokens + t.outputTokens + t.cacheCreationTokens + t.cacheReadTokens;
 }
 
-export function paradisFormatTokens(value: number): string {
-	if (value >= 1e9) {
-		return `${(value / 1e9).toFixed(value >= 1e10 ? 0 : 1)}B`;
-	}
-	if (value >= 1e6) {
-		return `${(value / 1e6).toFixed(value >= 1e7 ? 0 : 1)}M`;
-	}
-	if (value >= 1e3) {
-		return `${(value / 1e3).toFixed(value >= 1e4 ? 0 : 1)}K`;
-	}
-	return String(Math.round(value));
-}
 
 function formatAxisNumber(value: number): string {
 	if (value >= 1000) {

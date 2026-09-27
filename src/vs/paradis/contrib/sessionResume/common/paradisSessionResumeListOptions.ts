@@ -9,7 +9,7 @@
 // セッション履歴の一覧上部のツールバー（並び順・グループ・空を隠す）の設定と、その並べ替え・分け方。
 
 import { localize } from '../../../../nls.js';
-import { IParadisResumeSession } from './paradisSessionResume.js';
+import { IParadisResumeSearchResult, IParadisResumeSession } from './paradisSessionResume.js';
 
 export type ParadisResumeSortOrder = 'updated' | 'created' | 'title';
 export type ParadisResumeGrouping = 'space' | 'folder' | 'agent';
@@ -102,11 +102,50 @@ export function paradisResumeGroupLabel(group: ParadisResumeGrouping): string {
 	}
 }
 
-/** 「再開コマンドをコピー」で写すコマンド。作業フォルダへ移ってから再開する形にする。 */
+/**
+ * 「再開コマンドをコピー」で写すコマンド。作業フォルダへ移ってから再開する形にする。
+ *
+ * パスは貼り付け先のシェルで展開されない形で囲む。Windows は既定のターミナルの PowerShell 向けに
+ * `Set-Location -LiteralPath '...'` とする（二重引用符だと `$(...)` が実行され、cmd の `cd "..."` では
+ * `%VAR%` が展開されるため）。単一引用符の中は `''` だけが特別。
+ */
 export function paradisResumeCommandLine(session: Pick<IParadisResumeSession, 'agent' | 'id' | 'cwd'>, windows: boolean): string {
 	const resume = session.agent === 'claude' ? `claude --resume ${session.id}` : `codex resume ${session.id}`;
-	const cd = windows
-		? `cd /d "${session.cwd.replace(/"/g, '')}"`
-		: `cd '${session.cwd.replace(/'/g, `'\\''`)}'`;
-	return `${cd} && ${resume}`;
+	return windows
+		? `Set-Location -LiteralPath '${session.cwd.replace(/'/g, `''`)}'; ${resume}`
+		: `cd '${session.cwd.replace(/'/g, `'\\''`)}' && ${resume}`;
+}
+
+/** 全文索引が返した、1つの会話の本文での一致。 */
+export interface IParadisIndexedBodyMatch {
+	/** 本文に含まれていた検索語の位置。 */
+	readonly terms: readonly number[];
+	readonly matchCount: number;
+	readonly snippet: string;
+}
+
+/**
+ * 索引に入っている会話が検索語に一致するかを決める。従来の検索（セッション情報と本文をつないだ文字列に
+ * すべての語が含まれるか）と同じ意味になるよう、語ごとに「セッション情報に含まれる」か「本文に含まれる」かを
+ * 見て、すべての語がどちらかを満たせば一致とする。
+ */
+export function paradisCombineIndexedSearch(session: IParadisResumeSession, terms: readonly string[], body: IParadisIndexedBodyMatch | undefined): IParadisResumeSearchResult | undefined {
+	if (terms.length === 0) {
+		return undefined;
+	}
+	const metadata = `${session.title}\n${session.preview}\n${session.cwd}\n${session.id}\n${session.spaceName}`.toLocaleLowerCase();
+	const inBody = new Set(body?.terms ?? []);
+	let usedBody = false;
+	for (let index = 0; index < terms.length; index++) {
+		if (metadata.includes(terms[index])) {
+			continue;
+		}
+		if (!inBody.has(index)) {
+			return undefined;
+		}
+		usedBody = true;
+	}
+	return usedBody && body
+		? { catalogId: session.catalogId, matchCount: body.matchCount, snippet: body.snippet, source: 'conversation' }
+		: { catalogId: session.catalogId, matchCount: 0, snippet: '', source: 'metadata' };
 }

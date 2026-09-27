@@ -52,7 +52,8 @@ suite('ParadisAgentActivity', () => {
 			JSON.stringify({ type: 'pr-link', timestamp: at(20, 10, 4), prUrl: 'https://github.com/o/r/pull/7' }),
 			// 20 分空いたので稼働時間には入らない
 			claudeUser(at(20, 10, 24), '<local-command-stdout>x</local-command-stdout>'),
-			claudeUser(at(21, 9, 0), '次の日の依頼'),
+			// 識別子の付いた依頼は、ファイルをまたいで重複を除けるよう別に持つ
+			claudeUser(at(21, 9, 0), '次の日の依頼', { uuid: 'u2' }),
 			'not json',
 		]) {
 			parser.pushLine(line);
@@ -64,10 +65,11 @@ suite('ParadisAgentActivity', () => {
 			cwd: '/work/repo',
 			root: true,
 			days: {
-				'2026-09-20': { turns: 1, activeMs: 4 * 60_000, models: { 'claude-opus-4': { input: 10, output: 20, cacheCreation: 30, cacheRead: 40 } } },
-				'2026-09-21': { turns: 1, activeMs: 0, models: {} },
+				'2026-09-20': { turns: 1, activeMs: 4 * 60_000, models: {} },
 			},
 			prs: [{ url: 'https://github.com/o/r/pull/7', day: '2026-09-20' }],
+			keyedUsage: [['m1:req-m1', '2026-09-20', 'claude-opus-4', 10, 20, 30, 40]],
+			keyedTurns: [['u2', '2026-09-21']],
 		});
 	});
 
@@ -150,12 +152,12 @@ suite('ParadisAgentActivity', () => {
 		const rounded = allocation.spaces.map(space => ({ ...space, cost: Math.round(space.cost * 1000) / 1000 }));
 		assert.deepStrictEqual({ spaces: rounded, unallocated: allocation.unallocatedCost, total: allocation.totalCost }, {
 			// opus: 重み a=500, b=500 → 5 ずつ。gpt-5-mini は同じモデルが無いので codex 全体（b のみ）→ 3。
-			// gemini はその日の全記録の比（a=500, b=510）。9/22 は記録が無いので未割り当て。
+			// gemini は Claude Code・Codex 以外なので配らない。9/22 は記録が無い。どちらも未割り当て。
 			spaces: [
-				{ key: 'a', cost: Math.round((5 + 500 / 1010) * 1000) / 1000, tokens: 100, sessions: 1 },
-				{ key: 'b', cost: Math.round((5 + 3 + 510 / 1010) * 1000) / 1000, tokens: 5010, sessions: 2 },
+				{ key: 'a', cost: 5, tokens: 100, sessions: 1 },
+				{ key: 'b', cost: 8, tokens: 5010, sessions: 2 },
 			],
-			unallocated: 2,
+			unallocated: 3,
 			total: 16,
 		});
 	});
@@ -172,6 +174,26 @@ suite('ParadisAgentActivity', () => {
 		assert.deepStrictEqual({ all: paradisCombineWorkStats(result, 'all', days), codex: paradisCombineWorkStats(result, 'codex', days) }, {
 			all: { sessions: 3, turns: 8, activeMs: 90_000, prs: 3, dailyTurns: [5, 0, 3] },
 			codex: { sessions: 1, turns: 3, activeMs: 30_000, prs: 2, dailyTurns: [0, 0, 3] },
+		});
+	});
+
+	test('counts a response or a request copied into another transcript only once', () => {
+		const tokens = { input: 1, output: 0, cacheCreation: 0, cacheRead: 0 };
+		const summaries: IParadisActivityFileSummary[] = [
+			{ agent: 'claude', cwd: '/work/repo', root: true, days: {}, prs: [], keyedUsage: [['m1:r1', '2026-09-20', 'm', 1, 0, 0, 0]], keyedTurns: [['u1', '2026-09-20']] },
+			// 再開で前の会話の行が写されたファイル。写された分は数えず、新しい依頼だけを数える
+			{ agent: 'claude', cwd: '/work/repo/.wt/b', root: true, days: {}, prs: [], keyedUsage: [['m1:r1', '2026-09-20', 'm', 1, 0, 0, 0], ['m2:r2', '2026-09-21', 'm', 1, 0, 0, 0]], keyedTurns: [['u1', '2026-09-20'], ['u2', '2026-09-21']] },
+			// 写しただけのファイルはエージェント数に入らない
+			{ agent: 'claude', cwd: '/work/repo', root: true, days: {}, prs: [], keyedUsage: [['m1:r1', '2026-09-20', 'm', 1, 0, 0, 0]], keyedTurns: [['u1', '2026-09-20']] },
+		];
+		const match = paradisCreateSpaceMatcher([{ key: 'repo', name: 'repo', roots: ['/work/repo'] }, { key: 'b', name: 'b', roots: ['/work/repo/.wt/b'] }], false);
+		const range = { since: '2026-09-20', until: '2026-09-26' };
+		assert.deepStrictEqual({ buckets: paradisAggregateSpaceUsage(summaries, range, match), claude: paradisAggregateWorkStats(summaries, range).claude }, {
+			buckets: [
+				{ key: 'repo', sessions: 1, days: { '2026-09-20': { m: tokens } } },
+				{ key: 'b', sessions: 1, days: { '2026-09-21': { m: tokens } } },
+			],
+			claude: { sessions: 2, turns: 2, activeMs: 0, prs: 0, days: { '2026-09-20': { turns: 1, activeMs: 0 }, '2026-09-21': { turns: 1, activeMs: 0 } } },
 		});
 	});
 });

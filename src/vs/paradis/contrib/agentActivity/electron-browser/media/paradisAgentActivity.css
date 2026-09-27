@@ -50,7 +50,7 @@
 	border: 1px solid var(--vscode-descriptionForeground);
 }
 
-.paradis-ccusage.paradis-activity-panel td.bar-col {
+.paradis-ccusage.paradis-activity-panel td.bar-col .bar-cell {
 	display: flex;
 	align-items: center;
 	gap: var(--vscode-spacing-size80);

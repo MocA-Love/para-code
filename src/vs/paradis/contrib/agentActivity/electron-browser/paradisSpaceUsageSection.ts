@@ -23,7 +23,7 @@ import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcusageClient.js';
-import { paradisFormatTokens, paradisFormatUsd } from '../../ccusage/electron-browser/paradisCcusageSection.js';
+import { paradisFormatTokens, paradisFormatUsd } from '../../ccusage/common/paradisCcusageFormat.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
@@ -247,7 +247,8 @@ export class ParadisSpaceUsageSection extends Disposable implements IParadisUsag
 			dom.append(tr, $('td.num')).textContent = row.sessions === undefined ? '—' : String(row.sessions);
 			dom.append(tr, $('td.num')).textContent = row.tokens === undefined ? '—' : paradisFormatTokens(row.tokens);
 			const value = costUnavailable ? row.tokens ?? 0 : row.cost;
-			const barCell = dom.append(tr, $('td.bar-col'));
+			// td そのものを flex にすると table-cell でなくなり、行の高さや下線がずれる。中に1枚挟む。
+			const barCell = dom.append(dom.append(tr, $('td.bar-col')), $('.bar-cell'));
 			const track = dom.append(barCell, $('.paradis-space-usage-track'));
 			const bar = dom.append(track, $('.paradis-space-usage-bar'));
 			bar.style.width = `${max > 0 ? Math.max(1, value / max * 100).toFixed(1) : 0}%`;

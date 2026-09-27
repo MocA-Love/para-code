@@ -86,7 +86,12 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 		this.shareButton.type = 'button';
 		dom.append(this.shareButton, $(`span${ThemeIcon.asCSSSelector(Codicon.fileMedia)}`));
 		dom.append(this.shareButton, $('span')).textContent = localize('paradis.workStats.share', "画像で共有");
-		store.add(dom.addDisposableListener(this.shareButton, 'click', () => void this.openSharePreview()));
+		store.add(dom.addDisposableListener(this.shareButton, 'click', () => {
+			this.openSharePreview().catch(error => {
+				this.overlay.clear();
+				this.notificationService.error(localize('paradis.workStats.shareFailed', "共有画像を作れませんでした: {0}", error instanceof Error ? error.message : String(error)));
+			});
+		}));
 		this.body = dom.append(this.element, $('.paradis-ccusage-body'));
 		this.render();
 	}

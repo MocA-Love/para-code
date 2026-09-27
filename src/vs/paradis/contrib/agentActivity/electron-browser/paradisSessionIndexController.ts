@@ -22,12 +22,13 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
-	PARADIS_SESSION_INDEX_DEFAULT_RETENTION_DAYS,
+	IParadisSessionIndexSearchResult,
+	PARADIS_SESSION_INDEX_MIN_TERM_LENGTH,
 	PARADIS_SESSION_INDEX_SETTING_ENABLED,
 	PARADIS_SESSION_INDEX_SETTING_INCLUDE_TOOL_OUTPUT,
 	PARADIS_SESSION_INDEX_SETTING_RETENTION_DAYS,
 } from '../common/paradisSessionIndex.js';
-import { IParadisSessionIndexSearchResult, ParadisAgentActivityClient } from './paradisAgentActivityClient.js';
+import { ParadisAgentActivityClient } from './paradisAgentActivityClient.js';
 
 const $ = dom.$;
 
@@ -71,12 +72,15 @@ export class ParadisSessionIndexController extends Disposable {
 		return this.updating !== undefined;
 	}
 
-	/** 索引の状態を1行で出す（オンのときだけ）。 */
-	renderStatus(parent: HTMLElement): void {
+	/**
+	 * 索引の状態を `status` の中へ描き直す（オフのときは空にする）。ツールバー全体は作り直さず、この要素だけを
+	 * 書き換える（開いている select やフォーカスを奪わないように）。
+	 */
+	renderStatus(status: HTMLElement): void {
+		dom.clearNode(status);
 		if (this.state !== 'on') {
 			return;
 		}
-		const status = dom.append(parent, $('span.paradis-session-index-status'));
 		const icon = dom.append(status, $(`span${ThemeIcon.asCSSSelector(this.isUpdating ? Codicon.loading : Codicon.database)}`));
 		if (this.isUpdating) {
 			icon.classList.add('codicon-modifier-spin');
@@ -95,10 +99,7 @@ export class ParadisSessionIndexController extends Disposable {
 			return;
 		}
 		this.lastUpdate = Date.now();
-		const update = this.client.indexUpdate({
-			retentionDays: this.retentionDays(),
-			includeToolOutput: this.configurationService.getValue<boolean>(PARADIS_SESSION_INDEX_SETTING_INCLUDE_TOOL_OUTPUT) === true,
-		}).then(() => undefined, error => {
+		const update = this.client.indexUpdate().then(() => undefined, error => {
 			this.logService.warn('[ParadisSessionIndex] unable to update the full-text index', error);
 		}).finally(() => {
 			if (this.updating === update) {
@@ -113,24 +114,20 @@ export class ParadisSessionIndexController extends Disposable {
 	}
 
 	/**
-	 * 索引で探す。オフのとき・索引の更新中（worker が更新を終えるまで検索が待たされる）・失敗したときは
-	 * undefined（呼び出し側は従来の方法で探し、更新が終わった合図で探し直す）。索引がまだ無いときは
-	 * `covered` が空になり、すべての会話を従来の方法で探すことになる。
+	 * `catalogIds` の会話を索引で探す。オフのとき・3文字未満の語を含むとき（trigram に掛からず、索引全体を
+	 * なめることになる）・失敗したときは undefined（呼び出し側は従来の方法で探す）。索引を作っている最中でも
+	 * 待たされない（検索は更新とは別の接続で読む）。入っていない会話は `uncovered` で返る。
 	 */
-	async search(query: string): Promise<IParadisSessionIndexSearchResult | undefined> {
-		if (this.state !== 'on' || this.isUpdating) {
+	async search(query: string, catalogIds: readonly string[]): Promise<IParadisSessionIndexSearchResult | undefined> {
+		const terms = query.trim().split(/\s+/).filter(Boolean);
+		if (this.state !== 'on' || terms.length === 0 || terms.some(term => [...term].length < PARADIS_SESSION_INDEX_MIN_TERM_LENGTH)) {
 			return undefined;
 		}
 		try {
-			return await this.client.indexSearch(query);
+			return await this.client.indexSearch(query, catalogIds);
 		} catch (error) {
 			this.logService.warn('[ParadisSessionIndex] full-text search failed', error);
 			return undefined;
 		}
-	}
-
-	private retentionDays(): number {
-		const value = this.configurationService.getValue<number>(PARADIS_SESSION_INDEX_SETTING_RETENTION_DAYS);
-		return typeof value === 'number' && value > 0 ? value : PARADIS_SESSION_INDEX_DEFAULT_RETENTION_DAYS;
 	}
 }
