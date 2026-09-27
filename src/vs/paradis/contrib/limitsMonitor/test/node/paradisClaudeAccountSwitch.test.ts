@@ -111,7 +111,8 @@ suite('ParadisClaudeAccountService switching', () => {
 	test('writes ~/.claude/.credentials.json outside macOS', async () => {
 		const harness = await createHarness('linux');
 		await fs.promises.mkdir(path.join(harness.home, '.claude'));
-		await fs.promises.writeFile(path.join(harness.home, '.claude', '.credentials.json'), paradisTestCredentials('alice-1', 'alice-r1', Date.now() + HOUR));
+		// 保存分と同じ（Claude Code が更新していない）ので、控えに回る Alice の確認は要らない
+		await fs.promises.writeFile(path.join(harness.home, '.claude', '.credentials.json'), harness.aliceStored);
 		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });
 
 		const result = await harness.service.switchAccount(BOB);

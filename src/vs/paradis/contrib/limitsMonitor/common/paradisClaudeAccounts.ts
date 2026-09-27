@@ -54,6 +54,12 @@ export type ParadisClaudeSwitchOutcome =
 	| 'no_credentials'
 	/** Claude Code がトークンを更新している最中で、ロックを取れなかった。少し待てば通る。 */
 	| 'locked'
+	/**
+	 * いま使っているアカウントの最新のトークン（Claude Code が更新したもの）の持ち主を確かめられず、
+	 * 保存し直せなかった。そのまま切り替えるとそのアカウントの最新のリフレッシュトークンを失うので
+	 * 止めた。通信できるようになれば通る。
+	 */
+	| 'unverified'
 	/** それ以外の失敗。変更は元に戻した。 */
 	| 'failed';
 
