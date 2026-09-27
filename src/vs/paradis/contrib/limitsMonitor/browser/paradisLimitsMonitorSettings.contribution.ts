@@ -32,7 +32,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			items: { type: 'string' },
 			default: [],
 			scope: ConfigurationScope.APPLICATION,
-			description: localize('paradis.limitsMonitor.codexHomes', "自動走査 (~/.codex, ~/.codex-*) に追加で監視する Codex ホームディレクトリのパス。")
+			description: localize('paradis.limitsMonitor.codexHomes', "自動で見つける Codex ホーム（使用量パネルは ~/.codex と ~/.codex-*、アカウントの切り替え・hook の設置と信頼・会話の集計は ~/.codex と使用量パネルで追加した ~/.codex-<数字>）に加えて扱う Codex ホームのパス。")
 		}
 	}
 });

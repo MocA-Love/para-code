@@ -684,18 +684,6 @@
 	white-space: nowrap;
 }
 
-.paradis-limits-setup .pls-input {
-	width: 100%;
-	box-sizing: border-box;
-	background: var(--vscode-input-background);
-	border: 1px solid var(--vscode-input-border, transparent);
-	border-radius: 3px;
-	color: var(--vscode-input-foreground);
-	font-size: 12px;
-	padding: 6px 8px;
-	font-family: var(--monaco-monospace-font);
-}
-
 .paradis-limits-setup .pls-error {
 	color: var(--vscode-errorForeground, #ef4444);
 	margin-top: 10px;
