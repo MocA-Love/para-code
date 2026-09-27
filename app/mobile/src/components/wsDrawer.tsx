@@ -130,8 +130,8 @@ export function WsDrawerLayout({ children }: { children: ReactNode }) {
 	const ref = useRef<DrawerLayoutMethods>(null);
 	const { width } = useWindowDimensions();
 	const [fullWidthSwipe, setFullWidthSwipe] = useState(false);
-	// iPadの広い幅では同じ中身が常設サイドバー（ipadShell.tsx）として画面左に出ている。
-	// スライド式ドロワーはそこでは二重表示になるため、開けないよう錠を掛ける。
+	// iPadの広い幅ではスライド式ドロワーを開かせない（広い幅の左側は `app/pc/[pcId]/_layout.tsx` の
+	// 2列の左の列が受け持つ）。錠を掛けて開かないようにする。
 	const regular = useIsRegularWidth();
 	// **タブ以外の画面では開かせない。** ここは `Stack` ごと包んでいるので、錠を掛けないと
 	// エージェント詳細などで左端スワイプがドロワーに取られ、標準の「戻る」が効かなくなる。
@@ -295,10 +295,8 @@ function PcResourceRow({ resources, onPress }: { resources: DesktopResources; on
 /**
  * ドロワーの中身。ReanimatedDrawerLayoutのrenderNavigationViewから描画される。
  *
- * iPadの広い幅では同じ中身を常設サイドバーとしても使う（`ipadSidebar.tsx`）。そちらは
- * 閉じる操作を持たないため `onClose` にno-opを渡し、下部タブの代わりになるセグメントを
- * `navigation` として差し込む。中身を作り分けないのは、PCステータス・ワークスペース一覧・
- * メモ・接続管理といった実装をiPhone版と1つに保つため。
+ * `navigation` を渡すと、接続管理の上に移動用の部品を差し込める（呼び出し側が閉じる操作を持たない
+ * 場合は `onClose` に no-op を渡す）。
  *
  * `navigation` を接続管理（切断・ペアリング解除）より**上**へ置くのは、主要な移動手段が
  * 破壊的な操作の下に来ないようにするため。
@@ -339,10 +337,8 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 	const repoIds = new Set(repos.map(r => r.id));
 	// 親が一覧に見つからないworktree（不整合時の保険）はフラット表示にフォールバック
 	const orphans = list.filter(w => w.parent !== undefined && !repoIds.has(w.parent));
-	// 閉じているリポジトリidの集合（既定は全展開）。iPhone版と、iPadの常設サイドバーを
-	// 展開しているあいだはマウントされ続けるためセッション中は保持される（永続化はしない）。
-	// ただしiPadでサイドバーをレール（畳んだ状態）へ切り替えると `IpadSidebar` がこの
-	// コンポーネントごと一旦アンマウントするため、そのときはこの状態も一緒にリセットされる。
+	// 閉じているリポジトリidの集合（既定は全展開）。このコンポーネントがマウントされている
+	// あいだだけ保持する（永続化はしない）。
 	const [collapsedRepos, setCollapsedRepos] = useState<ReadonlySet<string>>(new Set());
 	// 「新しいスペース（worktree）を作成」シートの表示状態（見出し右の＋から開く）。
 	const [createSheetOpen, setCreateSheetOpen] = useState(false);

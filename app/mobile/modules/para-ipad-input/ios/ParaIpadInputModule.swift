@@ -12,7 +12,12 @@ struct ParaKeyCommandSpec: Record {
 	@Field var modifiers: [String] = []
 	/// ⌘ を長押ししたときの一覧に出す名前。
 	@Field var title: String = ""
+	/// 入力欄の標準の動き（⌘[ の字下げなど）より先に効かせるか。Esc など、付けると日本語の変換を奪うものには付けない。
+	@Field var priority: Bool = false
 }
+
+/// ネイティブ側で持ち回すショートカット1つぶん（`ParaKeyCommandSpec` の写し。主スレッドへ渡すため値で持つ）。
+typealias ParaKeyCommandValue = (id: String, input: String, modifiers: [String], title: String, priority: Bool)
 
 /**
  * iPad の外付けキーボードのショートカットと、ポインタのホバーの効果。
@@ -58,7 +63,7 @@ public class ParaIpadInputModule: Module {
 		}
 
 		Function("setKeyCommands") { (specs: [ParaKeyCommandSpec]) in
-			let copied = specs.map { (id: $0.id, input: $0.input, modifiers: $0.modifiers, title: $0.title) }
+			let copied: [ParaKeyCommandValue] = specs.map { (id: $0.id, input: $0.input, modifiers: $0.modifiers, title: $0.title, priority: $0.priority) }
 			DispatchQueue.main.async {
 				ParaKeyCommandCenter.shared.apply(copied)
 			}
@@ -122,7 +127,8 @@ public class ParaIpadInputModule: Module {
  *
  * 何もフォーカスを持っていないとチェーンの起点が無く、ルートの画面まで届かない。そのときだけ、ルートの
  * view の中に置いた見えない `ParaKeyCommandAnchor` をファーストレスポンダにしてチェーンの起点にする。
- * 入力欄の編集が終わったとき・アプリが前面に戻ったときに、誰もフォーカスを持っていなければ付け直す。
+ * 入力欄の編集が終わったとき・キーボードが下がったとき（WKWebView から外れた場合）・アプリが前面に戻ったときに、
+ * 誰もフォーカスを持っていなければ付け直す。
  */
 final class ParaKeyCommandCenter {
 	static let shared = ParaKeyCommandCenter()
@@ -133,13 +139,15 @@ final class ParaKeyCommandCenter {
 	private weak var owner: UIViewController?
 	private var anchor: ParaKeyCommandAnchor?
 	private var observers: [NSObjectProtocol] = []
-	private var lastSpecs: [(id: String, input: String, modifiers: [String], title: String)] = []
+	private var lastSpecs: [ParaKeyCommandValue] = []
 
 	private init() {
 		let center = NotificationCenter.default
 		let reclaim: (Notification) -> Void = { [weak self] _ in self?.scheduleReclaim() }
 		observers.append(center.addObserver(forName: UITextField.textDidEndEditingNotification, object: nil, queue: .main, using: reclaim))
 		observers.append(center.addObserver(forName: UITextView.textDidEndEditingNotification, object: nil, queue: .main, using: reclaim))
+		// 会話・ターミナルの WKWebView からフォーカスが外れても、上の2つは来ない。キーボードが下がったのを合図にする。
+		observers.append(center.addObserver(forName: UIResponder.keyboardDidHideNotification, object: nil, queue: .main, using: reclaim))
 		observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main, using: { [weak self] _ in
 			// 前面へ戻る間にルートの画面が作り直されていることがあるので、付け直しから行う。
 			guard let self else { return }
@@ -147,7 +155,7 @@ final class ParaKeyCommandCenter {
 		}))
 	}
 
-	func apply(_ specs: [(id: String, input: String, modifiers: [String], title: String)]) {
+	func apply(_ specs: [ParaKeyCommandValue]) {
 		lastSpecs = specs
 		guard let root = rootViewController() else {
 			return
@@ -198,7 +206,7 @@ final class ParaKeyCommandCenter {
 		onCommand?(id)
 	}
 
-	private func makeCommand(_ spec: (id: String, input: String, modifiers: [String], title: String)) -> UIKeyCommand? {
+	private func makeCommand(_ spec: ParaKeyCommandValue) -> UIKeyCommand? {
 		guard let input = keyInput(spec.input) else {
 			return nil
 		}
@@ -224,8 +232,9 @@ final class ParaKeyCommandCenter {
 			attributes: [],
 			state: .off
 		)
-		if #available(iOS 15.0, *) {
-			// 入力欄の標準の動き（⌘[ の字下げなど）より、こちらの割り当てを先に効かせる。
+		if #available(iOS 15.0, *), spec.priority {
+			// 入力欄の標準の動き（⌘[ の字下げなど）より、こちらの割り当てを先に効かせる。全部に付けると、
+			// 日本語の変換中の Esc（変換の取り消し）までシート・ドックを閉じる側が奪うので、JS が指定したものだけ。
 			command.wantsPriorityOverSystemBehavior = true
 		}
 		return command
@@ -330,12 +339,17 @@ extension UIViewController {
  *
  * そこで React の子は内側の `contentHost` に入れ、プレビューはその `contentHost` を、置き場所は自分自身を指す。
  * 効果のビューは自分の直下（React が番号で触らない階層）にだけ入る。
+ *
+ * **当たり判定は自分の枠で切らない。** 包んだボタン（Pressable）は hitSlop で見た目より広く（44pt）押せるように
+ * してあるが、RN の `betterHitTest` は子が枠からはみ出していないと枠の外の点を捨て、素の UIView の `contentHost`
+ * も自分の枠で切る。そのままだと iPad でだけ押せる範囲が見た目の大きさに縮むので、枠の外の点も React の子に
+ * 聞き直す（`hitTest(_:with:)` と `ParaPointerHoverContentHost`）。ポインタの効果の範囲（見た目）は変えない。
  */
 final class ParaPointerHoverView: ExpoView, UIPointerInteractionDelegate {
 	var effect: String = "highlight"
 	var hoverCornerRadius: CGFloat = 8
 	/// React の子を入れる中身。ポインタの効果はこれを写して、自分の直下に台を置く。
-	private let contentHost = UIView()
+	private let contentHost = ParaPointerHoverContentHost()
 
 	required init(appContext: AppContext? = nil) {
 		super.init(appContext: appContext)
@@ -360,6 +374,18 @@ final class ParaPointerHoverView: ExpoView, UIPointerInteractionDelegate {
 		childComponentView.removeFromSuperview()
 	}
 
+	override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+		// 枠の中は RN の既定どおり（pointerEvents なども RN が見る）。
+		if let hit = super.hitTest(point, with: event) {
+			return hit
+		}
+		// 枠の外は、hitSlop で広げた React の子が受けるかどうかだけを聞く（自分・contentHost は受けない）。
+		guard isUserInteractionEnabled, !isHidden, alpha >= 0.01 else {
+			return nil
+		}
+		return contentHost.hitTest(contentHost.convert(point, from: self), with: event)
+	}
+
 	func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
 		guard window != nil, contentHost.bounds.width > 0, contentHost.bounds.height > 0 else {
 			return nil
@@ -374,6 +400,24 @@ final class ParaPointerHoverView: ExpoView, UIPointerInteractionDelegate {
 		default:
 			return UIPointerStyle(effect: .highlight(preview))
 		}
+	}
+}
+
+/**
+ * `ParaPointerHoverView` の中身の入れ物。当たり判定を自分の枠で切らず、React の子（hitSlop で枠より広く
+ * 押せるボタン）に委ねる。子が受けなければ自分も受けない（外側の `ParaPointerHoverView` が RN の既定どおりに扱う）。
+ */
+final class ParaPointerHoverContentHost: UIView {
+	override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+		guard isUserInteractionEnabled, !isHidden, alpha >= 0.01 else {
+			return nil
+		}
+		for child in subviews.reversed() {
+			if let hit = child.hitTest(child.convert(point, from: self), with: event) {
+				return hit
+			}
+		}
+		return nil
 	}
 }
 
@@ -429,6 +473,10 @@ final class ParaWindowControlsObserver {
 
 	/// 見張りを敷いて、いまの値を（変わっていなくても）1回送る。主スレッドで呼ぶ。
 	func start() {
+		// ウィンドウ操作ボタンは iPad だけのもの。iPhone では見張りを敷かず、値（常に 0）も送らない。
+		guard UIDevice.current.userInterfaceIdiom == .pad else {
+			return
+		}
 		installProbe()
 		current = measure()
 		onChange?(current)
@@ -458,7 +506,7 @@ final class ParaWindowControlsObserver {
 	}
 
 	private func installProbe() {
-		guard let view = rootView() else {
+		guard UIDevice.current.userInterfaceIdiom == .pad, let view = rootView() else {
 			return
 		}
 		if let probe, probe.superview === view {

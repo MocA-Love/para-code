@@ -1,15 +1,16 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { Stack, useIsFocused, useLocalSearchParams } from 'expo-router';
+import { Stack, useIsFocused, useLocalSearchParams, useNavigation, useRoute } from 'expo-router';
 import { useAppStore } from '../../../src/appState.js';
 import { PcRouteContext } from '../../../src/features/pc/pcRouteContext.js';
 import { PcScreen } from '../../../src/features/pc/pcScreen.js';
+import { stackWithoutRoute } from '../../../src/features/pc/pcStackAnchor.js';
 import { hapticSelection } from '../../../src/haptics.js';
 import { useIsRegularWidth } from '../../../src/hooks/useSizeClass.js';
 import { ColumnResizeHandle } from '../../../src/ipad/columnResizeHandle.js';
-import { useDetailColumn } from '../../../src/ipad/detailColumn.js';
+import { DetailColumnKeyContext, useDetailColumnOpen } from '../../../src/ipad/detailColumn.js';
 import { sidebarWidthFor } from '../../../src/ipad/ipadLayout.js';
 import { useIpadLayout } from '../../../src/ipad/ipadLayoutStore.js';
 import { useShortcutSlot } from '../../../src/ipad/shortcutRegistry.js';
@@ -40,7 +41,23 @@ export default function PcLayout() {
 	const regular = useIsRegularWidth();
 	const focused = useIsFocused();
 	const pcId = firstParam(useLocalSearchParams<{ pcId?: string | string[] }>().pcId);
-	const detailOpen = useDetailColumn(s => s.open);
+	const navigation = useNavigation();
+	const routeKey = useRoute().key;
+	// `withAnchor` で器を積む Stack（`app/pc/_layout.tsx`）の下に敷かれた、PC の無い器なら自分を取り除く
+	// （`pcStackAnchor.ts`）。ルートの引数は後から変わらないので、PC の無い器が本物になることは無い。
+	useEffect(() => {
+		if (pcId !== undefined) {
+			return;
+		}
+		const state = navigation.getState();
+		const next = state !== undefined ? stackWithoutRoute(state, routeKey) : undefined;
+		if (next !== undefined) {
+			navigation.dispatch({ type: 'RESET', payload: next });
+		}
+	}, [pcId, navigation, routeKey]);
+	// 自分の詳細の列の印。PC の画面が2枚積まれても、それぞれ自分の列の様子だけを読む（`detailColumn.ts`）。
+	const columnKey = useId();
+	const detailOpen = useDetailColumnOpen(columnKey);
 	const collapsed = useAppStore(s => s.sidebarCollapsed);
 	const setCollapsed = useAppStore(s => s.setSidebarCollapsed);
 	const savedSidebarWidth = useIpadLayout(s => s.sidebarWidth);
@@ -60,10 +77,20 @@ export default function PcLayout() {
 	};
 	useShortcutSlot('sidebar', focused && canCollapse ? { toggle } : undefined);
 
+	if (pcId === undefined) {
+		// 上の片付けで消える器。PC の画面・詳細の列を作らない。
+		return null;
+	}
 	return (
 		<PcRouteContext.Provider value={pcId}>
+		<DetailColumnKeyContext.Provider value={columnKey}>
 		<View style={styles.root} onLayout={event => setContainerWidth(event.nativeEvent.layout.width)}>
-			<View style={[styles.sidebar, { width: showSidebar ? sidebarWidth : 0 }, showSidebar ? styles.sidebarBorder : undefined]}>
+			{/* 隠している間（幅 0）は、中の PC の画面を VoiceOver からも外す（見えない行を読み上げない・選べない）。 */}
+			<View
+				style={[styles.sidebar, { width: showSidebar ? sidebarWidth : 0 }, showSidebar ? styles.sidebarBorder : undefined]}
+				accessibilityElementsHidden={!showSidebar}
+				importantForAccessibility={showSidebar ? 'auto' : 'no-hide-descendants'}
+			>
 				{/* 中身の幅は常に保存した幅にしておく（隠している間に行が折り返して組み直されないように）。 */}
 				<View style={[styles.sidebarInner, { width: sidebarWidth }]}>
 					{regular ? <PcScreen placement="column" {...(canCollapse && !collapsed ? { onCollapse: toggle } : {})} /> : null}
@@ -93,6 +120,7 @@ export default function PcLayout() {
 				/>
 			) : null}
 		</View>
+		</DetailColumnKeyContext.Provider>
 		</PcRouteContext.Provider>
 	);
 }

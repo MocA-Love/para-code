@@ -24,7 +24,7 @@ import { hapticSelection } from '../../../../src/haptics.js';
 import { useKeyboardCoverage } from '../../../../src/hooks/useKeyboardVisible.js';
 import { useIsRegularWidth } from '../../../../src/hooks/useSizeClass.js';
 import { ColumnResizeHandle } from '../../../../src/ipad/columnResizeHandle.js';
-import { useDetailColumn } from '../../../../src/ipad/detailColumn.js';
+import { useDetailColumnKey, useDetailColumnOpen } from '../../../../src/ipad/detailColumn.js';
 import { canDockPanel, dockWidthFor } from '../../../../src/ipad/ipadLayout.js';
 import { useIpadLayout } from '../../../../src/ipad/ipadLayoutStore.js';
 import { SessionDock } from '../../../../src/ipad/sessionDock.js';
@@ -227,7 +227,8 @@ export default function SessionScreen() {
 	};
 	// 2列で左の列を隠しているときは、見出しの左端に戻すボタンを出す（⌘\ でも戻せる）。
 	const sidebarCollapsed = useAppStore(s => s.sidebarCollapsed);
-	const detailOwned = useDetailColumn(s => s.pcId === pcId && s.open);
+	// 自分のいる器の詳細の列だけを見る（PC の画面が2枚積まれていても、下の画面の様子に引きずられない）。
+	const detailOwned = useDetailColumnOpen(useDetailColumnKey());
 	const sidebarHidden = sidebarCollapsed && regular && detailOwned;
 	const setSidebarCollapsed = useAppStore(s => s.setSidebarCollapsed);
 

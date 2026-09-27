@@ -681,13 +681,19 @@ iPad対応で実際に手で当てた設定:
 設計で決めたこと（同種の実装で迷うところ）:
 
 - **1列 ⇄ 2列 で木の形を変えない**: 詳細の列の Stack は常に同じ位置にあり、左の列は幅だけで出し入れする。左の列の中身（PC の画面）は2列のときだけ描くが、これは Stack の兄弟なので Stack は作り直されない。詳細の列の根だけは `regular ? 置き場 : PC の画面` と中身を入れ替える（一覧の状態はそこで作り直されるが、セッションは残る）
-- **左の列の行を押すと、詳細の列は積み増さず入れ替える**: `openSession` が `resetDetailColumnFor(pcId)` で詳細の列を根まで戻してから積む。2列のときだけセッションの画面の `animation` を `none` にする（Orca と同じく、押し進む動きを付けない）
+- **左の列の行を押すと、詳細の列は積み増さず入れ替える**: `openSession`（と行の操作シートのソース管理・ファイル・メモ）が `resetDetailColumnFor(pcId)` で詳細の列を根まで戻してから積む。2列のときだけセッションの画面の `animation` を `none` にする（Orca と同じく、押し進む動きを付けない）
+- **詳細の列の様子（`detailColumn.ts`）は器ごとに置いた順で持つ**: ルートの Stack に PC の画面が2枚積まれることがある（通知の一覧を経由して別の PC のセッションへ入る、など）。1枠だけで持つと、上の画面が外れたときの片付けで枠が空になり、下の画面で左の列を隠すボタン・⌘\ が消えた。器（`_layout.tsx`）が `useId()` の印を `DetailColumnKeyContext` で根・セッションへ渡し、各自は自分の印の分だけを読む。入れ替え（`resetDetailColumnFor`）は最後に置いた＝前面の列にだけ効く
 - **左の列の「戻る」は `router.back()` を使わない**: `router.back()` は前面の（一番深い）Stack に効くので、2列で右にセッションが開いていると、PC の画面を閉じる代わりにセッションを閉じてしまう。`useNavigation().goBack()` で、自分のいる Stack から閉じる
-- **Esc は閉じるもの（シート・ドック）があるときだけ取る**: 常に登録すると、外付けキーボードの Esc がターミナルへ届かなくなる。ショートカットは「いまの画面で受け口があるもの」だけをネイティブへ渡す（⌘ 長押しの一覧にも、その画面で効くものだけが出る）
+- **Esc は閉じるもの（シート・ドック）があるときだけ取る**: ショートカットは「いまの画面で受け口があるもの」だけをネイティブへ渡す（⌘ 長押しの一覧にも、その画面で効くものだけが出る）。なお外付けキーボードの Esc をターミナルへ送る経路は元から無い
+- **入力欄より先に効かせる（`wantsPriorityOverSystemBehavior`）のは、入力欄の標準の動きとぶつかるものだけ**（`shortcuts.ts` の `overridesTextInput`。⌘[ ⌘]・⌘Return・⌥⌘↑↓）。全部に付けると、日本語の変換中の Esc（変換の取り消し）までシート・ドックを閉じる側が奪う
 - **UIKeyCommand はルートの UIViewController に付け、何もフォーカスを持っていないときだけ見えない起点をファーストレスポンダにする**（`ParaKeyCommandAnchor`）。入力欄や WebView がフォーカスを持っているときは、そこからチェーンをたどってルートの画面まで届く
 - **ターミナルの文字の既定は iPad だけ 12pt**（`defaultTerminalFontSize`）。保存済みの設定に文字サイズがあればそちらを使う
 - **ポインタの効果（UIPointerInteraction）の置き場所を React の管理するビューにしない**: 効果が出ている間（押した後に消えていく約0.5秒も含む）、UIKit は台やポータルのビューを `UITargetedPreview` の `target.container` へ `insertSubview(_:at:)` で差し込む。置き場所を指定しないと包んだビューの親になり、React が番号で子を足し外しする階層に余計なビューが挟まる。その間にドックを開いてつまみを足すと1つ手前に入り、閉じるときに `Attempt to unmount a view which has a different index` で落ちた（2026-09-27、ヘッダーのソース管理ボタンを2回押して再現）。`ParaPointerHoverView` は React の子を内側の `contentHost` に入れ、効果の置き場所を自分自身にしている。ネイティブのビューで同じ効果（`UIContextMenuInteraction` のプレビューなども同類）を足すときは同じ形にする
+- **ネイティブの入れ物で包むと、中の Pressable の hitSlop が効かなくなる**: RN の `betterHitTest` は子が枠からはみ出していないと枠の外の点を捨て、素の UIView も自分の枠で切る。`ParaPointerHover` で包んだ見出しのボタンが、iPad でだけ 44pt から見た目の大きさ（24〜36pt）に縮んでいた。`ParaPointerHoverView` と中身の入れ物（`ParaPointerHoverContentHost`）の `hitTest(_:with:)` で、枠の外の点も React の子に聞き直している。lldb でアプリにアタッチし、Swift の式で `view.window!.hitTest(view.convert(点, to: window), with: nil)` を呼ぶと、画面を触らずに確かめられる
 - **PC の外からセッションへ直接入るときは `withAnchor: true` で押す**（通知のタップ・ホームの「再開」・`/open-session`・起動のシート・通知の一覧）。付けないと PC の中の Stack が `[session]` だけになり、詳細の列の根（`index.tsx`）が無いので、2列の入れ替え・左の列を隠すボタンが効かず、1列では戻るとホームまで飛ぶ
+- **PC の器は `app/pc/_layout.tsx` の Stack に積む（画面名を `[pcId]` にする）**: Expo Router は遷移先の置き場所を「今の画面と遷移先の画面名がどの階層で食い違うか」で決め、動的な引数を比べるのは画面名が `[pcId]` のように括弧だけのときに限る（`findDivergentState` / `matchDynamicName`）。この入れ物が無いとルートの Stack での画面名が `pc/[pcId]` になり、PC A のセッションの上から PC B のセッションを開くと B のセッションが A の器に積まれた（左の列は A の一覧のまま、1列で戻ると A の一覧へ）。main はルートの Stack が平らだったので起きていなかった。あわせて次の2つが要る
+  - `[pcId]` に `dangerouslySingular`（id は `pcId`）。起動中に届くリンクなどの `navigate` は、前面の画面と画面名が同じならそのルートを使い回して引数だけ差し替えるため
+  - `withAnchor` は全階層に `initial: false` を付けるので、器を積む Stack にも先頭の画面（`[pcId]`）が引数なしで1枚敷かれる。器（`[pcId]/_layout.tsx`）は `pcId` が無ければ何も描かず、`src/features/pc/pcStackAnchor.ts` で自分を Stack から取り除く
 - **`withAnchor` で敷かれた根のルートの引数には `pcId` が入らない**。PC の画面と根は `usePcRouteId()`（`src/features/pc/pcRouteContext.ts`。器が自分の引数から渡す）で PC を引く
 
 シミュレータでの確認の手順と落とし穴（2026-09-27）:

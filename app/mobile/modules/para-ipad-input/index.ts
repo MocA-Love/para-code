@@ -12,6 +12,8 @@ export interface KeyCommandSpec {
 	readonly modifiers: readonly ('command' | 'alternate' | 'shift' | 'control')[];
 	/** ⌘ を長押ししたときの一覧に出す名前。 */
 	readonly title: string;
+	/** 入力欄の標準の動きより先に効かせるか（`UIKeyCommand.wantsPriorityOverSystemBehavior`）。 */
+	readonly priority: boolean;
 }
 
 interface NativeModuleShape {

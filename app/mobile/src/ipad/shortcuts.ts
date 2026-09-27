@@ -37,6 +37,11 @@ export interface ShortcutDef {
 	/** ⌘ を長押ししたときの一覧に出す名前。 */
 	readonly title: string;
 	readonly action: ShortcutAction;
+	/**
+	 * 入力欄の標準の動き（⌘[ の字下げ、⌘Return の改行、矢印の移動）とぶつかるので、こちらを先に効かせるもの。
+	 * それ以外には付けない（Esc に付けると、日本語の変換中の Esc＝変換の取り消しまでこちらが奪う）。
+	 */
+	readonly overridesTextInput?: true;
 }
 
 const TAB_SHORTCUTS: readonly ShortcutDef[] = Array.from({ length: 9 }, (_, index): ShortcutDef => ({
@@ -50,15 +55,15 @@ const TAB_SHORTCUTS: readonly ShortcutDef[] = Array.from({ length: 9 }, (_, inde
 /** すべてのショートカット（モックの一覧と同じ並び）。 */
 export const SHORTCUTS: readonly ShortcutDef[] = [
 	...TAB_SHORTCUTS,
-	{ id: 'tab.prev', input: '[', modifiers: ['command'], title: '前のタブ', action: { kind: 'stepTab', delta: -1 } },
-	{ id: 'tab.next', input: ']', modifiers: ['command'], title: '次のタブ', action: { kind: 'stepTab', delta: 1 } },
+	{ id: 'tab.prev', input: '[', modifiers: ['command'], title: '前のタブ', action: { kind: 'stepTab', delta: -1 }, overridesTextInput: true },
+	{ id: 'tab.next', input: ']', modifiers: ['command'], title: '次のタブ', action: { kind: 'stepTab', delta: 1 }, overridesTextInput: true },
 	{ id: 'quick', input: 'k', modifiers: ['command'], title: 'クイックコマンド', action: { kind: 'quick' } },
-	{ id: 'send', input: 'Enter', modifiers: ['command'], title: '送信', action: { kind: 'send' } },
+	{ id: 'send', input: 'Enter', modifiers: ['command'], title: '送信', action: { kind: 'send' }, overridesTextInput: true },
 	{ id: 'panel.scm', input: '1', modifiers: ['alternate', 'command'], title: 'ソース管理', action: { kind: 'panel', panel: 'scm' } },
 	{ id: 'panel.files', input: '2', modifiers: ['alternate', 'command'], title: 'ファイル', action: { kind: 'panel', panel: 'files' } },
 	{ id: 'panel.note', input: '3', modifiers: ['alternate', 'command'], title: 'メモ', action: { kind: 'panel', panel: 'note' } },
-	{ id: 'agent.prev', input: 'ArrowUp', modifiers: ['alternate', 'command'], title: '前のエージェントを開く', action: { kind: 'stepAgent', delta: -1 } },
-	{ id: 'agent.next', input: 'ArrowDown', modifiers: ['alternate', 'command'], title: '次のエージェントを開く', action: { kind: 'stepAgent', delta: 1 } },
+	{ id: 'agent.prev', input: 'ArrowUp', modifiers: ['alternate', 'command'], title: '前のエージェントを開く', action: { kind: 'stepAgent', delta: -1 }, overridesTextInput: true },
+	{ id: 'agent.next', input: 'ArrowDown', modifiers: ['alternate', 'command'], title: '次のエージェントを開く', action: { kind: 'stepAgent', delta: 1 }, overridesTextInput: true },
 	{ id: 'launch', input: 'n', modifiers: ['command'], title: 'エージェントを起動', action: { kind: 'launch' } },
 	{ id: 'sidebar', input: '\\', modifiers: ['command'], title: 'サイドバーを隠す・出す', action: { kind: 'toggleSidebar' } },
 	{ id: 'settings', input: ',', modifiers: ['command'], title: '設定', action: { kind: 'settings' } },
@@ -108,7 +113,7 @@ export function isShortcutAvailable(action: ShortcutAction, context: ShortcutCon
 		case 'notifications':
 			return !context.inNotifications;
 		case 'escape':
-			// Esc はターミナルでも使うキーなので、閉じるものがあるときだけ取る。
+			// Esc は入力欄でも使うキー（日本語の変換の取り消しなど）なので、閉じるものがあるときだけ取る。
 			return context.escape;
 	}
 }
