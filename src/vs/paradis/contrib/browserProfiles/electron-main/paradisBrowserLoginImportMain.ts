@@ -14,8 +14,10 @@
 //  - 鍵を読むのは importCookies のときだけ。列挙（listSources/listDomains）では読まない
 //    ＝キーチェーンの確認ダイアログを不用意に出さない。
 //  - キーチェーンへは書き込まない（読み取りのみ）。
-//  - 復号した値と鍵は取り込みが終わるまでしかメモリに置かず、終わったらバッファを潰す。
-//  - 取り込み先は名前付きプロファイルの partition だけ（profileId → partition が唯一の経路）。
+//  - 導出鍵と `security` の stdout Buffer は取り込みの最後に fill(0) で潰す。JS 文字列になった
+//    Cookie の値は GC まで残る（プロセス内・main のみ・外へは件数しか出さない）。
+//  - 取り込み先は名前付きプロファイルの partition だけ。さらに main 側でも台帳と照合し、
+//    実在すること・エージェントが作ったものでないことを確かめてから書く。
 
 import { session } from 'electron';
 import { execFile } from 'child_process';
@@ -23,7 +25,10 @@ import { stat } from 'fs/promises';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { join } from '../../../../base/common/path.js';
+import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IApplicationStorageMainService } from '../../../../platform/storage/electron-main/storageMainService.js';
+import { StorageScope } from '../../../../platform/storage/common/storage.js';
 import {
 	IParadisBrowserLoginImportMainService,
 	IParadisImportDomainListing,
@@ -35,37 +40,41 @@ import {
 	PARADIS_BROWSER_LOGIN_IMPORT_CHANNEL,
 } from '../common/paradisBrowserLoginImport.js';
 import { paradisBrowserProfilePartition, PARADIS_BROWSER_PROFILE_SCOPE } from '../common/paradisBrowserProfileId.js';
+import { paradisDeserializeProfiles, PARADIS_BROWSER_PROFILES_STORAGE_KEY } from '../common/paradisBrowserProfileModel.js';
 import {
 	IParadisChromiumEnvironment,
 	paradisBrowserCatalogEntry,
 	paradisChromiumUserDataRoot,
+	paradisCleanupCookieImportScratch,
 	paradisCopyCookieDb,
 	paradisDecryptCookieValueV10,
 	paradisDefaultChromiumEnvironment,
 	paradisDeriveMacCookieKey,
 	paradisGroupCookieDomains,
-	paradisReadCookieRows,
+	paradisReadCookieDatabase,
 	paradisResolveBrowsers,
 	paradisToImportableCookie,
 } from '../node/paradisChromiumCookies.js';
 
 /** macOS の Safe Storage パスワードを取り出す口。テストと本番で差し替える。 */
 export interface IParadisSafeStoragePasswordProvider {
-	/** キーチェーンから Safe Storage パスワードを読む。確認ダイアログはここで出る。 */
-	getPassword(service: string, account: string): Promise<string | undefined>;
+	/** キーチェーンから Safe Storage パスワードを Buffer で読む。確認ダイアログはここで出る。 */
+	getPassword(service: string, account: string): Promise<Buffer | undefined>;
 }
 
 /** `/usr/bin/security` でキーチェーンから読む本番実装（macOS のみ）。書き込みはしない。 */
 class ParadisSecurityCommandPasswordProvider implements IParadisSafeStoragePasswordProvider {
-	getPassword(service: string, account: string): Promise<string | undefined> {
+	getPassword(service: string, account: string): Promise<Buffer | undefined> {
 		return new Promise(resolve => {
-			execFile('/usr/bin/security', ['find-generic-password', '-w', '-s', service, '-a', account], (error, stdout) => {
-				if (error) {
+			// encoding を指定しないと stdout は Buffer。文字列化を避け、使い終わったら潰せるようにする。
+			execFile('/usr/bin/security', ['find-generic-password', '-w', '-s', service, '-a', account], { encoding: 'buffer' }, (error, stdout) => {
+				if (error || !Buffer.isBuffer(stdout)) {
 					resolve(undefined);
 					return;
 				}
-				const password = stdout.replace(/\n$/, '');
-				resolve(password.length > 0 ? password : undefined);
+				// 末尾の改行を落とす。
+				const end = stdout.length > 0 && stdout[stdout.length - 1] === 0x0a ? stdout.length - 1 : stdout.length;
+				resolve(end > 0 ? stdout.subarray(0, end) : undefined);
 			});
 		});
 	}
@@ -78,6 +87,7 @@ export class ParadisBrowserLoginImportMainService implements IParadisBrowserLogi
 	constructor(
 		private readonly _userDataPath: string,
 		private readonly _logService: ILogService,
+		private readonly _applicationStorageMainService: IApplicationStorageMainService,
 		private readonly _passwordProvider: IParadisSafeStoragePasswordProvider = new ParadisSecurityCommandPasswordProvider(),
 		env?: IParadisChromiumEnvironment,
 	) {
@@ -96,21 +106,16 @@ export class ParadisBrowserLoginImportMainService implements IParadisBrowserLogi
 	async listDomains(browserId: ParadisImportBrowserId, sourceDirectory: string): Promise<IParadisImportDomainListing> {
 		const needsKeychainConsent = this._env.platform === 'darwin';
 		if (this._env.platform !== 'darwin') {
-			return {
-				domains: [],
-				needsKeychainConsent,
-				unsupportedReason: this._env.platform === 'win32'
-					? 'Windows からの取り込みは現在サポートしていません。'
-					: 'このプラットフォームからの取り込みは現在サポートしていません。',
-			};
+			return { domains: [], needsKeychainConsent, unsupportedReason: this._unsupportedPlatformReason() };
 		}
 		const dbPath = await this._cookieDbPath(browserId, sourceDirectory);
 		if (!dbPath) {
-			return { domains: [], needsKeychainConsent, unsupportedReason: '選んだプロファイルの Cookie が見つかりませんでした。' };
+			return { domains: [], needsKeychainConsent, unsupportedReason: localize('paradis.loginImport.noCookies', "選んだプロファイルの Cookie が見つかりませんでした。") };
 		}
-		const copy = await paradisCopyCookieDb(dbPath, this._userDataPath);
+		let copy: { readonly path: string; readonly dispose: () => Promise<void> } | undefined;
 		try {
-			const rows = await paradisReadCookieRows(copy.path);
+			copy = await paradisCopyCookieDb(dbPath, this._userDataPath);
+			const { rows } = await paradisReadCookieDatabase(copy.path);
 			const groups = paradisGroupCookieDomains(rows);
 			const domains = [...groups.entries()]
 				.map(([domain, info]) => ({ domain, cookieCount: info.count, importable: info.importable, ...(info.reason ? { reason: info.reason } : {}) }))
@@ -118,51 +123,67 @@ export class ParadisBrowserLoginImportMainService implements IParadisBrowserLogi
 			return { domains, needsKeychainConsent };
 		} catch (error) {
 			this._logService.warn('[ParadisLoginImport] could not read the cookie database', error);
-			return { domains: [], needsKeychainConsent, unsupportedReason: 'Cookie を読み取れませんでした。' };
+			return { domains: [], needsKeychainConsent, unsupportedReason: localize('paradis.loginImport.readFailed', "Cookie を読み取れませんでした。") };
 		} finally {
-			await copy.dispose();
+			await copy?.dispose();
 		}
 	}
 
 	async importCookies(request: IParadisImportRequest): Promise<IParadisImportResult> {
 		const empty: IParadisImportResult = { importedCookies: 0, importedDomains: 0, skipped: 0, failedDomains: [] };
 		if (this._env.platform !== 'darwin') {
-			return { ...empty, error: 'このプラットフォームからの取り込みは現在サポートしていません。' };
+			return { ...empty, error: this._unsupportedPlatformReason() };
 		}
 		// 取り込み先は名前付きプロファイルだけ。partition を解けなければ弾く。
 		const partition = paradisBrowserProfilePartition({ scope: PARADIS_BROWSER_PROFILE_SCOPE, profileId: request.destinationProfileId });
 		if (!partition) {
-			return { ...empty, error: '取り込み先は名前付きプロファイルにしてください。' };
+			return { ...empty, error: localize('paradis.loginImport.destInvalid', "取り込み先は名前付きプロファイルにしてください。") };
+		}
+		// main 側でも台帳と照合する。renderer を信用しない。実在し、かつエージェントが作ったもので
+		// ないことを確かめる（エージェント所有プロファイルへは書かない）。
+		if (!(await this._isImportableDestination(request.destinationProfileId))) {
+			return { ...empty, error: localize('paradis.loginImport.destNotAllowed', "取り込み先のプロファイルが見つからないか、取り込みできない種類です。") };
 		}
 		const catalog = paradisBrowserCatalogEntry(request.browserId);
 		const dbPath = catalog ? await this._cookieDbPath(request.browserId, request.sourceDirectory) : undefined;
 		if (!catalog || !dbPath) {
-			return { ...empty, error: '取り込み元の Cookie が見つかりませんでした。' };
+			return { ...empty, error: localize('paradis.loginImport.srcNotFound', "取り込み元の Cookie が見つかりませんでした。") };
 		}
 		const selectedDomains = new Set(request.domains);
 		if (selectedDomains.size === 0) {
 			return empty;
 		}
 
-		// 鍵はここで初めて読む（＝確認ダイアログが出る）。読めなければ「今回だけ許可」が
-		// 押されなかったとみなす。
+		// 先に DB をコピーする。コピーに失敗したらキーチェーンの確認を出さずに終わる。
+		let copy: { readonly path: string; readonly dispose: () => Promise<void> };
+		try {
+			copy = await paradisCopyCookieDb(dbPath, this._userDataPath);
+		} catch (error) {
+			this._logService.warn('[ParadisLoginImport] could not copy the cookie database', error);
+			return { ...empty, error: localize('paradis.loginImport.copyFailed', "Cookie を読み取れませんでした。") };
+		}
+
+		// 鍵はここで初めて読む（＝確認ダイアログが出る）。読めなければ「今回だけ許可」が押されなかった
+		// とみなす。
 		const password = await this._passwordProvider.getPassword(catalog.keychain.service, catalog.keychain.account);
 		if (password === undefined) {
-			return { ...empty, error: 'キーチェーンの許可が下りなかったため取り込めませんでした。もう一度お試しのうえ「許可」を押してください。' };
+			await copy.dispose();
+			return { ...empty, error: localize('paradis.loginImport.keychainDenied', "キーチェーンの許可が下りなかったため取り込めませんでした。もう一度お試しのうえ「許可」を押してください。") };
 		}
 		const macKey = paradisDeriveMacCookieKey(password);
+		password.fill(0); // 鍵を導出したら元のパスワード Buffer は潰す。
 
-		const copy = await paradisCopyCookieDb(dbPath, this._userDataPath);
 		const targetSession = session.fromPartition(partition.partition);
 		let importedCookies = 0;
 		let skipped = 0;
+		let sessionCookies = 0;
 		const importedDomains = new Set<string>();
 		const failedDomains = new Set<string>();
 		try {
-			const rows = await paradisReadCookieRows(copy.path);
+			const { schemaVersion, rows } = await paradisReadCookieDatabase(copy.path);
 			for (const row of rows) {
 				const domain = paradisCookieHostToDomain(row.hostKey);
-				const cookie = paradisToImportableCookie(row, selectedDomains, current => paradisDecryptCookieValueV10(current.encryptedValue, macKey, current.hostKey));
+				const cookie = paradisToImportableCookie(row, selectedDomains, current => paradisDecryptCookieValueV10(current.encryptedValue, macKey, current.hostKey, schemaVersion));
 				if (!cookie) {
 					// 選択外は集計しない。選択内で写せなかった分だけ skipped に数える。
 					if (selectedDomains.has(domain)) {
@@ -184,31 +205,64 @@ export class ParadisBrowserLoginImportMainService implements IParadisBrowserLogi
 					});
 					importedCookies++;
 					importedDomains.add(domain);
+					if (cookie.expirationDate === undefined) {
+						sessionCookies++;
+					}
 				} catch {
 					// 値はログに載せない。ドメイン名だけ残す。
 					this._logService.warn('[ParadisLoginImport] failed to write a cookie for a domain');
 					failedDomains.add(domain);
 				}
 			}
+			// クラッシュで取り込み分が失われないよう、ここでディスクへ流す。
+			try {
+				await targetSession.cookies.flushStore();
+			} catch { /* ベストエフォート。 */ }
 			return {
 				importedCookies,
 				importedDomains: importedDomains.size,
 				skipped,
 				failedDomains: [...failedDomains],
+				...(sessionCookies > 0 ? { sessionCookies } : {}),
 			};
 		} catch (error) {
 			this._logService.warn('[ParadisLoginImport] import failed while reading the source database', error);
-			return { ...empty, error: '取り込み中に Cookie を読み取れませんでした。' };
+			return { ...empty, error: localize('paradis.loginImport.importReadFailed', "取り込み中に Cookie を読み取れませんでした。") };
 		} finally {
-			// 鍵と一時 DB は取り込みが終わったここで手放す。
+			// 導出鍵と一時 DB は取り込みが終わったここで手放す。
 			macKey.fill(0);
 			await copy.dispose();
 		}
 	}
 
+	/** 台帳を読み、その profileId が実在し、かつエージェントが作ったものでないことを確かめる。 */
+	private async _isImportableDestination(profileId: string): Promise<boolean> {
+		try {
+			await this._applicationStorageMainService.whenReady;
+			const profiles = paradisDeserializeProfiles(this._applicationStorageMainService.get(PARADIS_BROWSER_PROFILES_STORAGE_KEY, StorageScope.APPLICATION));
+			const profile = profiles.find(candidate => candidate.id === profileId);
+			return profile !== undefined && !profile.createdByAgent;
+		} catch (error) {
+			this._logService.warn('[ParadisLoginImport] could not read the profile ledger', error);
+			return false;
+		}
+	}
+
+	private _unsupportedPlatformReason(): string {
+		return this._env.platform === 'win32'
+			? localize('paradis.loginImport.unsupported.win', "Windows からの取り込みは現在サポートしていません。")
+			: localize('paradis.loginImport.unsupported.other', "このプラットフォームからの取り込みは現在サポートしていません。");
+	}
+
 	private async _cookieDbPath(browserId: ParadisImportBrowserId, sourceDirectory: string): Promise<string | undefined> {
 		const catalog = paradisBrowserCatalogEntry(browserId);
-		if (!catalog) {
+		// renderer から来た sourceDirectory は列挙で返したものだけを受ける。区切り文字や `..` は拒否し、
+		// さらに実在するプロファイルのディレクトリ名に含まれることを確かめる（パストラバーサル対策）。
+		if (!catalog || !paradisIsSafeProfileDirectory(sourceDirectory)) {
+			return undefined;
+		}
+		const browser = await this._resolveBrowserOrUndefined(browserId);
+		if (!browser?.profiles.some(profile => profile.directory === sourceDirectory)) {
 			return undefined;
 		}
 		const userDataRoot = paradisChromiumUserDataRoot(catalog, this._env);
@@ -224,6 +278,16 @@ export class ParadisBrowserLoginImportMainService implements IParadisBrowserLogi
 		}
 		return undefined;
 	}
+
+	private async _resolveBrowserOrUndefined(browserId: ParadisImportBrowserId) {
+		const browsers = await paradisResolveBrowsers(this._env);
+		return browsers.find(browser => browser.id === browserId);
+	}
+}
+
+/** ディレクトリ名として安全か（区切り文字・`..`・空を弾く）。 */
+function paradisIsSafeProfileDirectory(directory: string): boolean {
+	return directory.length > 0 && !directory.includes('/') && !directory.includes('\\') && directory !== '..' && !directory.includes('..');
 }
 
 /** 既存の paradisRegisterBrowserProfiles から呼ばれる channel 登録。 */
@@ -231,9 +295,12 @@ export function paradisRegisterBrowserLoginImport(
 	channelHost: { registerChannel(channelName: string, channel: IServerChannel<string>): void },
 	userDataPath: string,
 	logService: ILogService,
+	applicationStorageMainService: IApplicationStorageMainService,
 ): IDisposable {
 	const disposables = new DisposableStore();
-	const service = new ParadisBrowserLoginImportMainService(userDataPath, logService);
+	// 前回のクラッシュで残った一時コピーを掃除する（ベストエフォート）。
+	void paradisCleanupCookieImportScratch(userDataPath);
+	const service = new ParadisBrowserLoginImportMainService(userDataPath, logService, applicationStorageMainService);
 	channelHost.registerChannel(PARADIS_BROWSER_LOGIN_IMPORT_CHANNEL, ProxyChannel.fromService(service, disposables));
 	return disposables;
 }

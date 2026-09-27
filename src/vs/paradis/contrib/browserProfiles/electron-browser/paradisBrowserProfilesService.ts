@@ -49,6 +49,7 @@ import { paradisIsValidProfileId, paradisProfileIdFromUuid } from '../common/par
 import {
 	IParadisBrowserProfile,
 	PARADIS_BROWSER_PROFILE_COLORS,
+	PARADIS_BROWSER_PROFILES_STORAGE_KEY,
 	paradisDeserializeProfiles,
 	paradisFindProfileByName,
 	paradisIsDuplicateProfileName,
@@ -58,7 +59,7 @@ import {
 import { paradisRegisterBrowserProfileRouter } from '../common/paradisBrowserProfileRouting.js';
 
 /** プロファイル台帳（表示名・色・時刻）。マシン固有なので同期しない。 */
-const PROFILES_STORAGE_KEY = 'paradis.browser.profiles';
+const PROFILES_STORAGE_KEY = PARADIS_BROWSER_PROFILES_STORAGE_KEY;
 /** viewId → profileId の対応。ワークスペースの working set と寿命を揃える。 */
 const PROFILE_VIEWS_STORAGE_KEY = 'paradis.browser.profileViews';
 /** 対応表に残す上限。閉じたビューをシャットダウン中に消さない設計なので、際限なく増やさない。 */
