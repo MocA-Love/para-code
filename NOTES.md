@@ -1293,6 +1293,37 @@ upstream由来の`pr.yml`/`pr-node-modules.yml`/`copilot-setup-steps.yml`（と�
 - 片方のプローブだけ失敗した回は、その資源の前回値を残す。ただしリセット時刻を過ぎた前回値は捨てる（窓が回った後の `remaining` は意味を持たず、残すとステータスバーの%と警告色が固まる）
 - 将来 GitHub が `/rate_limit` を直したとしても、ヘッダ方式のほうが正確（プローブ分のコストだけが差分）なので戻す必要はない
 
+## 他のブラウザからのログイン取り込み（browserProfiles/loginImport、2026-09-27、フェーズ7 B4）
+
+Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選んだドメインだけ内蔵ブラウザの名前付きプロファイルへ取り込む（q.html Q65・Q66 の回答 A）。実装は既存の `src/vs/paradis/contrib/browserProfiles/` へ足した。新しい contrib ディレクトリも app.ts への追加 import も作らず、channel は既存の `paradisRegisterBrowserProfiles` から一緒に立てている。
+
+### 層の役割
+
+- `common/paradisBrowserLoginImport.ts` — renderer ⇔ main の契約と、プラットフォーム非依存の純粋関数（samesite の写し、`expires_utc` の変換、`__Host-`/`__Secure-` 接頭辞の規則、Google サインインホストの判定、`cookies.set` の url 生成）。鍵も復号値も通さない。
+- `node/paradisChromiumCookies.ts` — 復号アルゴリズムと DB 読み取り。macOS の v10（PBKDF2 `saltysalt`・1003 回・SHA1 で AES-128 鍵を導出、AES-128-CBC、IV は空白 16、PKCS#7）。復号後の先頭 32 バイト（schema 24+ の `SHA-256(host_key)` または Chromium 127+ の HMAC）を剥がす。ブラウザのカタログ（パス・キーチェーン項目）、プロファイル列挙、DB の一時コピー（0600）もここ。テストはこの層を合成 DB＋既知鍵で叩く。
+- `electron-main/paradisBrowserLoginImportMain.ts` — 鍵の取得（`/usr/bin/security find-generic-password -w`）と、取り込み先の Electron セッション（`session.fromPartition().cookies.set()`）への書き込み。鍵の取得口は `IParadisSafeStoragePasswordProvider` で差し替えられる。
+- `electron-browser/paradisBrowserLoginImportDialog.ts` — ダイアログ（案A）。プロファイルのドロップダウン下部の「他のブラウザから取り込む…」から開く（`paradisBrowserProfileDropdown.ts` の footer に3行目を追加、`paradisBrowserProfilePill.ts` で配線）。取り込み先は利用者の名前付きプロファイルだけを出す（`createdByAgent` は除外）。
+
+### 安全の決め事
+
+- 鍵を読むのは取り込み実行のときだけ。ブラウザ・プロファイル・ドメインの列挙では読まない（キーチェーンの確認ダイアログを不用意に出さない）。ダイアログは実行前に「今回だけ許可を押してください（『常に許可』は不要）」と案内する。
+- キーチェーンへは書き込まない（読み取りのみ）。macOS の「常に許可」を押させないため、案内では毎回の「許可」を促す。
+- 復号した値と導出鍵は取り込みが終わるまでしかメモリに置かず、終わりに鍵バッファを `fill(0)` する。復号値はログ・例外メッセージ・モバイル・Sentry・エージェントへ一切出さない（失敗時もドメイン名と件数だけ）。
+- 他ブラウザの Cookie DB はロック中でも読めるよう、`userData/paracode-cookie-import-<rand>/` の下へ 0600 でコピーして読み、終わったらディレクトリごと消す（WAL/journal/shm も一緒に写す）。
+- Cookie の属性（secure/httpOnly/sameSite/期限/`__Host-`・`__Secure-` 接頭辞規則）を正しく写し、期限切れは取り込まない。
+- 取り込み先は名前付きプロファイルだけ。`profileId → partition` が唯一の経路なので、global/workspace/ephemeral は原理的に選べない。エージェントが作ったプロファイルは既定で取り込み先に出さない（利用者のプロファイルだけ）。
+- 起動はユーザー操作（プロファイルメニュー）だけ。MCP の面（`paradisBrowserProfileMcp`）には取り込みメソッドを一切足していない。Cookie の読み書きをエージェントへ許さない既存方針（Q69）は変えていない。
+
+### プラットフォームの対応範囲（判断）
+
+- macOS を実装。Chrome / Edge / Brave / Arc / Vivaldi / Chromium を対象にした（`~/Library/Application Support/<rel>`、Safe Storage はキーチェーン）。
+- Windows は今回は取り込まない。Chrome / Edge 140+ は app-bound encryption（v20）で writing browser 以外は復号できず（`Local State` の `os_crypt.app_bound_encrypted_key` で検知して理由を表示）、それ未満の DPAPI + v10 も DPAPI 復号にネイティブアドオンが要るため見送った。ダイアログは理由を表示する。
+- Linux も今回は取り込まない（gnome-keyring / kwallet 依存のため後回し）。
+
+### コメントを書けないファイルへの変更
+
+無し（追加した依存は既に許可済みの `@vscode/sqlite3`・`electron`・Node 標準のみ。`eslint.config.js` の変更も不要だった）。
+
 ## 今後の方針候補（未確定、要議論）
 
 - 優先実装ターゲットの選定（機能1〜3のうちfork版でしか解決できない部分から着手すべきか）
