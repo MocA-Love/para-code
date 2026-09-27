@@ -64,7 +64,8 @@ export class ParadisClaudeCliLoginRunner implements IParadisClaudeLoginRunner {
 	private async resolveClaude(env: NodeJS.ProcessEnv): Promise<string> {
 		const isWindows = process.platform === 'win32';
 		const names = isWindows ? ['claude.exe', 'claude.cmd'] : ['claude'];
-		const pathDirs = (env.PATH ?? env.Path ?? '').split(path.delimiter).filter(dir => dir.length > 0);
+		// 相対パスの要素は除く（存在を確かめる場所と、一時ディレクトリで起動する場所で指す先がずれるため）。
+		const pathDirs = (env.PATH ?? env.Path ?? '').split(path.delimiter).filter(dir => dir.length > 0 && path.isAbsolute(dir));
 		// GUI から起動した Para Code はログインシェルの PATH を継がないことがあるので、よくある場所も見る。
 		const commonDirs = isWindows
 			? [path.join(this.homedir, '.local', 'bin'), path.join(this.homedir, 'AppData', 'Roaming', 'npm')]

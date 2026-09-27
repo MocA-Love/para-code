@@ -9,7 +9,7 @@
 // Claude のアカウントと使用量のチャネル（shared process）の型。
 //
 // 使用量の取得とアカウントの保存・切り替えは shared process の1か所にまとめ、全ウィンドウへ同じ
-// 結果を配る（設問 Q7: アカウントの選択は全ウィンドウ共通）。SSH で接続先に繋いでいる間も
+// 結果を配る（アカウントの選択は全ウィンドウ共通、という決定）。SSH で接続先に繋いでいる間も
 // このチャネルは手元の shared process に聞く。切り替えるのは「この PC」の Claude のログインで、
 // 接続先の Claude のログインには触らない。
 
@@ -31,6 +31,11 @@ export interface IParadisClaudeStateRequest {
 	 * 取り直した結果は `onDidChangeState` で届く。
 	 */
 	readonly refresh?: boolean;
+	/**
+	 * 変更の通知を受けて読み直すだけの問い合わせ。「誰かが見ている」とは数えない（数えると、通知 →
+	 * 読み直し → 取得 → 通知…の輪で、誰も見ていなくても取得が止まらなくなる）。
+	 */
+	readonly passive?: boolean;
 }
 
 /** 切り替えの結果。IPC 越しに例外の種類を運べないので、結果の値で返す。 */
@@ -65,7 +70,15 @@ export interface IParadisClaudeSwitchResult {
 }
 
 /** いまログインしているアカウントを Para Code に登録した結果。 */
-export type ParadisClaudeRegisterOutcome = 'registered' | 'updated' | 'no_live_login' | 'not_oauth' | 'busy' | 'failed';
+export type ParadisClaudeRegisterOutcome =
+	| 'registered'
+	| 'updated'
+	| 'no_live_login'
+	| 'not_oauth'
+	| 'busy'
+	/** トークンの持ち主を確かめられなかった（通信できない、またはログインの途中で書き換わった）。 */
+	| 'unverified'
+	| 'failed';
 
 export interface IParadisClaudeRegisterResult {
 	readonly outcome: ParadisClaudeRegisterOutcome;

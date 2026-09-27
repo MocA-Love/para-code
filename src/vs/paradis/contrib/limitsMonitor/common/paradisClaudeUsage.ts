@@ -21,6 +21,8 @@
 import { IParadisLimitsWindow } from './paradisLimitsMonitor.js';
 
 export const PARADIS_CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+/** アクセストークンの持ち主を返す API（claude-swap の `fetch_oauth_profile` と同じ）。 */
+export const PARADIS_CLAUDE_PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile';
 export const PARADIS_CLAUDE_OAUTH_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
 /** Claude Code の公開 OAuth クライアント ID（インストール済みの claude 2.1.283 と Orca・claude-swap で確認）。 */
 export const PARADIS_CLAUDE_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
@@ -174,6 +176,28 @@ export function paradisClaudeRefreshToken(credentialsJson: string | undefined): 
 }
 
 /**
+ * credentials JSON から `claudeAiOauth` だけを取り出した JSON にする。
+ *
+ * `Claude Code-credentials` には MCP サーバーの OAuth トークン（`mcpOAuth`）などアカウントと関係の
+ * 無い秘密も入る。Para Code が保存するのはアカウントのトークン（`claudeAiOauth`）だけにし、
+ * 切り替えではいまの JSON の `claudeAiOauth` だけを差し替える（{@link paradisReplaceClaudeOAuth}）。
+ */
+export function paradisClaudeOAuthOnly(credentialsJson: string | undefined): string | undefined {
+	const oauth = paradisParseClaudeOAuthBlob(credentialsJson);
+	return oauth ? JSON.stringify({ claudeAiOauth: oauth }) : undefined;
+}
+
+/**
+ * `baseJson`（いまの credentials JSON）の `claudeAiOauth` だけを `oauthOnlyJson` のものに差し替える。
+ * いまの JSON が無い・壊れているときは `claudeAiOauth` だけの JSON を返す。
+ */
+export function paradisReplaceClaudeOAuth(baseJson: string | undefined, oauthOnlyJson: string): string {
+	const oauth = paradisParseClaudeOAuthBlob(oauthOnlyJson);
+	const base = baseJson !== undefined ? paradisParseJsonObject(baseJson) : undefined;
+	return JSON.stringify({ ...(base ?? {}), claudeAiOauth: oauth });
+}
+
+/**
  * 切り替えに使える OAuth の認証情報か（アクセストークンとリフレッシュトークンの両方がある）。
  *
  * Claude Code は更新を拒否されると、その場でトークンの欄を空にする。空になった認証情報を
@@ -238,6 +262,23 @@ export interface IParadisClaudeIdentity {
 	readonly email?: string;
 	readonly organizationUuid?: string;
 	readonly organizationName?: string;
+}
+
+/** `/api/oauth/profile` の応答から身元を取り出す。account.uuid が無ければ undefined。 */
+export function paradisClaudeIdentityFromProfile(data: unknown): IParadisClaudeIdentity | undefined {
+	if (!data || typeof data !== 'object') {
+		return undefined;
+	}
+	const json = data as { account?: { uuid?: unknown; email?: unknown; email_address?: unknown }; organization?: { uuid?: unknown } };
+	const accountUuid = paradisNonEmptyString(json.account?.uuid)?.trim();
+	if (!accountUuid) {
+		return undefined;
+	}
+	return {
+		accountUuid,
+		email: (paradisNonEmptyString(json.account?.email) ?? paradisNonEmptyString(json.account?.email_address))?.trim(),
+		organizationUuid: paradisNonEmptyString(json.organization?.uuid)?.trim(),
+	};
 }
 
 /** `oauthAccount`（Claude Code が `~/.claude.json` に書くもの）から身元を取り出す。 */

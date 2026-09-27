@@ -28,7 +28,7 @@
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from '../../../../base/common/path.js';
-import { IParadisClaudeIdentity, paradisClaudeIdentityFromOauthAccount } from '../common/paradisClaudeUsage.js';
+import { IParadisClaudeIdentity, paradisClaudeIdentityFromOauthAccount, paradisReplaceClaudeOAuth } from '../common/paradisClaudeUsage.js';
 import { IParadisKeychain } from './paradisClaudeKeychain.js';
 
 export const PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE = 'Claude Code-credentials';
@@ -227,9 +227,10 @@ export class ParadisClaudeLiveAuth {
 
 	/**
 	 * `~/.claude.json` の `oauthAccount` を読む。ファイルは数 MB になることがあるので、更新時刻と
-	 * 大きさが変わっていなければ前回の結果を使う。
+	 * 大きさが変わっていなければ前回の結果を使う。`fresh` のときは必ず読み直す（トークンを取り込む
+	 * 前の身元の確認など、同じ秒のうちに書き換わった可能性を捨てられないとき）。
 	 */
-	async readOauthAccount(): Promise<unknown> {
+	async readOauthAccount(fresh = false): Promise<unknown> {
 		const configPath = await this.globalConfigPath();
 		let stat: fs.Stats;
 		try {
@@ -239,7 +240,7 @@ export class ParadisClaudeLiveAuth {
 			return undefined;
 		}
 		const cached = this.configCache;
-		if (cached && cached.path === configPath && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+		if (!fresh && cached && cached.path === configPath && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
 			return cached.oauthAccount;
 		}
 		let oauthAccount: unknown;
@@ -254,8 +255,8 @@ export class ParadisClaudeLiveAuth {
 		return oauthAccount;
 	}
 
-	async readIdentity(): Promise<IParadisClaudeIdentity | undefined> {
-		return paradisClaudeIdentityFromOauthAccount(await this.readOauthAccount());
+	async readIdentity(fresh = false): Promise<IParadisClaudeIdentity | undefined> {
+		return paradisClaudeIdentityFromOauthAccount(await this.readOauthAccount(fresh));
 	}
 
 	/**
@@ -302,11 +303,12 @@ export class ParadisClaudeLiveAuth {
 	}
 
 	/**
-	 * いまのログインを `credentialsJson` / `oauthAccount` のアカウントに書き換える。
-	 * {@link withLocks} の中から、{@link captureSnapshot} の後に呼ぶこと。途中で失敗したら投げる
+	 * いまのログインを `oauthOnlyJson`（`claudeAiOauth` だけの JSON）/ `oauthAccount` のアカウントに
+	 * 書き換える。いまの credentials JSON の `claudeAiOauth` だけを差し替え、`mcpOAuth` などほかの欄は
+	 * 残す。{@link withLocks} の中から、{@link captureSnapshot} の後に呼ぶこと。途中で失敗したら投げる
 	 * （書いた分は呼び出し側が {@link restore} で戻す）。
 	 */
-	async activate(credentialsJson: string, oauthAccount: unknown, snapshot: IParadisClaudeLiveSnapshot): Promise<void> {
+	async activate(oauthOnlyJson: string, oauthAccount: unknown, snapshot: IParadisClaudeLiveSnapshot): Promise<void> {
 		// `~/.claude.json` が壊れていたら、何も書く前に止める。
 		const configPath = await this.globalConfigPath();
 		let config: Record<string, unknown> = {};
@@ -323,14 +325,16 @@ export class ParadisClaudeLiveAuth {
 		}
 
 		if (this.usesKeychain) {
-			await this.options.keychain!.write(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, snapshot.keychainAccount ?? this.keychainAccountNames()[0], credentialsJson);
+			await this.options.keychain!.write(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, snapshot.keychainAccount ?? this.keychainAccountNames()[0], paradisReplaceClaudeOAuth(snapshot.keychainValue, oauthOnlyJson));
 			// キーチェーンだけ書き換えると、動いている Claude Code は覚えているトークンを使い続ける。
-			// `.credentials.json` が既にあるなら書き直して更新時刻を変え、読み直させる（無ければ作らない）。
+			// `.credentials.json` が既にあるなら更新時刻だけ変えて読み直させる。macOS では中身は書かない
+			// （最新のトークンを平文のファイルへ置かないため。無ければ作らない）。
 			if (snapshot.credentialsFile !== undefined) {
-				await paradisWriteFileAtomically(this.credentialsPath, credentialsJson, this.options.platform);
+				const time = new Date();
+				await fs.promises.utimes(this.credentialsPath, time, time);
 			}
 		} else {
-			await paradisWriteFileAtomically(this.credentialsPath, credentialsJson, this.options.platform);
+			await paradisWriteFileAtomically(this.credentialsPath, paradisReplaceClaudeOAuth(snapshot.credentialsFile, oauthOnlyJson), this.options.platform);
 		}
 
 		config.oauthAccount = oauthAccount;
@@ -408,36 +412,6 @@ export class ParadisClaudeLiveAuth {
 			for (const account of this.keychainAccountNames()) {
 				await this.options.keychain!.delete(ParadisClaudeLiveAuth.scopedKeychainService(dir), account).catch(() => undefined);
 			}
-		}
-	}
-
-	/**
-	 * macOS: いまのログインのキーチェーン項目だけを控える。古い Claude Code は `CLAUDE_CONFIG_DIR` を
-	 * 指定しても既定の項目へ書くことがあるので、アカウント追加の前後で比べて戻すのに使う。
-	 * macOS 以外は undefined。キーチェーンが読めなければ投げる。
-	 */
-	async snapshotKeychainItem(): Promise<IParadisClaudeLiveSnapshot | undefined> {
-		if (!this.usesKeychain) {
-			return undefined;
-		}
-		for (const account of this.keychainAccountNames()) {
-			const value = await this.options.keychain!.read(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, account);
-			if (value !== undefined) {
-				return { keychainValue: value, keychainAccount: account };
-			}
-		}
-		return { keychainAccount: this.keychainAccountNames()[0] };
-	}
-
-	/** {@link snapshotKeychainItem} の状態へ、キーチェーンの項目だけを戻す。 */
-	async restoreKeychainItem(snapshot: IParadisClaudeLiveSnapshot): Promise<void> {
-		if (!this.usesKeychain || !snapshot.keychainAccount) {
-			return;
-		}
-		if (snapshot.keychainValue !== undefined) {
-			await this.options.keychain!.write(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, snapshot.keychainAccount, snapshot.keychainValue);
-		} else {
-			await this.options.keychain!.delete(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, snapshot.keychainAccount);
 		}
 	}
 

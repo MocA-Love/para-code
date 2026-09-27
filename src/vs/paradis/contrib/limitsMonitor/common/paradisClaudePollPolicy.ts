@@ -14,12 +14,14 @@
 // 窓から抜けるまで戻らないので、一度に使い切ると 1 時間まるごと取れなくなる。
 // そのため平均で 3 分に 1 回以下（1 時間に 20 回）に抑え、残りを手動更新や復帰直後の取り直しに回す。
 //
-// 決め方（設問 Q8 の決定）:
-//  - 取得結果は 180 秒キャッシュして配る。どれだけ多くのウィンドウが見ていても、
-//    1 アカウントあたり 180 秒に 1 回を超えて呼ばない
-//  - 通常は利用の変化で 3〜10 分: 使用率が動いていれば間隔を半分（下限 3 分）、
+// 決め方（claude-swap と同じ適応型にする、という決定）:
+//  - 取得結果は 180 秒キャッシュして配る。ウィンドウからの問い合わせや手動の更新では、180 秒より
+//    新しい結果を取り直さない（何枚のウィンドウが見ていても呼ぶ回数は増えない）
+//  - 予定による取得は、通常は利用の変化で 3〜10 分: 使用率が動いていれば間隔を半分（下限 3 分）、
 //    動いていなければ 1.5 倍（使用中のアカウントは 5 分、控えは 10 分まで）
-//  - 使用中のアカウントが上限の近くで動いている間だけ 1 分（緊急）
+//  - 使用中のアカウントが上限の近くで動いている間だけ 1 分（緊急）。ただし直近 1 時間の取得が
+//    {@link PARADIS_CLAUDE_URGENT_HOURLY_BUDGET} 回に達したら緊急をやめて 3 分に戻す（上限は約 28〜30 回
+//    なので、Para Code の自動取得だけで上限を踏まない）
 //  - 使い切ったアカウントも 10 分ごとには見る（予告より早く枠が戻ることがあるため）
 //  - HTTP 429: Retry-After があればそれに余裕を足して待つ。無ければ 5 分待ってから試す。
 //    429 を受けてから 1 時間は、成功しても間隔を 6 分以上に保ち、成功のたびに 1.5 倍して
@@ -53,6 +55,8 @@ export const PARADIS_CLAUDE_RECENT_429_WINDOW_S = 3600;
 /** 429 が続く間に成功するたび間隔に掛ける倍率と、その上限。 */
 export const PARADIS_CLAUDE_POST_429_BACKOFF_MULT = 1.5;
 export const PARADIS_CLAUDE_POST_429_MAX_INTERVAL_S = 1800;
+/** 直近 1 時間にこの回数まで取ったら、緊急の 1 分間隔を使わない。 */
+export const PARADIS_CLAUDE_URGENT_HOURLY_BUDGET = 20;
 /** 上限（100%）からこの幅に入ったら緊急の間隔を使う。 */
 export const PARADIS_CLAUDE_ESCALATION_MARGIN_PCT = 15;
 /** 予定時刻は窓のリセット + この秒数より後にしない。 */
@@ -132,6 +136,8 @@ export interface IParadisClaudePlanAfterFetchInput {
 	readonly isActive: boolean;
 	/** 直近 {@link PARADIS_CLAUDE_RECENT_429_WINDOW_S} 秒以内に 429 を受けたか。 */
 	readonly recent429: boolean;
+	/** 今回を含む、直近 1 時間にこのアカウントを取った回数。 */
+	readonly fetchesInLastHour?: number;
 	/** epoch ms。 */
 	readonly now: number;
 	/** 0 以上 1 未満の乱数（テストで固定する）。 */
@@ -159,7 +165,8 @@ export function paradisClaudePlanAfterFetch(input: IParadisClaudePlanAfterFetchI
 		// 下限で丸めるのは、緊急の 60 秒から 90 秒・135 秒…と刻まずに通常の間隔へ戻すため。
 		interval = Math.min(ceiling, Math.max(PARADIS_CLAUDE_MIN_INTERVAL_S, base * 1.5));
 	}
-	if (input.isActive && moving && !input.recent429 && newPercent !== undefined && newPercent >= 100 - PARADIS_CLAUDE_ESCALATION_MARGIN_PCT) {
+	const withinBudget = (input.fetchesInLastHour ?? 0) < PARADIS_CLAUDE_URGENT_HOURLY_BUDGET;
+	if (input.isActive && moving && withinBudget && !input.recent429 && newPercent !== undefined && newPercent >= 100 - PARADIS_CLAUDE_ESCALATION_MARGIN_PCT) {
 		interval = PARADIS_CLAUDE_URGENT_INTERVAL_S;
 	}
 	if (input.recent429) {
@@ -178,6 +185,10 @@ export function paradisClaudePlanAfterFetch(input: IParadisClaudePlanAfterFetchI
 		: paradisClaudeEarliestFutureResetAt(input.newUsage, input.now);
 	if (resetAt !== undefined && resetAt > input.now) {
 		nextPollAt = Math.min(nextPollAt, resetAt + PARADIS_CLAUDE_RESET_SLACK_S * 1000);
+	}
+	if (input.recent429) {
+		// リセットが近くても、429 の後は 6 分より詰めない。
+		nextPollAt = Math.max(nextPollAt, input.now + PARADIS_CLAUDE_POST_429_MIN_INTERVAL_S * 1000);
 	}
 	return { nextPollAt, intervalS: interval };
 }
@@ -215,9 +226,17 @@ export function paradisClaudeFailureBackoffS(consecutiveFailures: number, retryA
  * 成功の時点で既に 1 時間が過ぎていて、間隔を広げる仕組みが働かなくなるため（cswap の `recent_429`）。
  */
 export function paradisClaudeRecent429(last429At: number | undefined, backoffUntil: number | undefined, now: number): boolean {
+	const anchor = paradisClaudeRecent429Anchor(last429At, backoffUntil);
+	return anchor !== undefined && now - anchor < PARADIS_CLAUDE_RECENT_429_WINDOW_S * 1000;
+}
+
+/**
+ * 「最近 429 を受けた」を数える起点。429 を受けたときに決めて、成功しても消さずに持っておく
+ * （成功で待ちの時刻を消すと、2 回目の成功から起点が 429 の時刻に戻って 1 時間の枠が縮むため）。
+ */
+export function paradisClaudeRecent429Anchor(last429At: number | undefined, backoffUntil: number | undefined): number | undefined {
 	if (last429At === undefined) {
-		return false;
+		return undefined;
 	}
-	const anchor = backoffUntil !== undefined && backoffUntil > last429At ? backoffUntil : last429At;
-	return now - anchor < PARADIS_CLAUDE_RECENT_429_WINDOW_S * 1000;
+	return backoffUntil !== undefined && backoffUntil > last429At ? backoffUntil : last429At;
 }

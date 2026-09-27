@@ -129,6 +129,8 @@ suite('ParadisClaudeAccountService usage', () => {
 		harness.oauth.refreshByToken.set('bob-r1', { kind: 'ok', credentialsJson: bobRotated });
 		harness.oauth.usageByToken.set('alice-live', { kind: 'ok', usage: paradisTestUsage(50) });
 		harness.oauth.usageByToken.set('bob-new', { kind: 'ok', usage: paradisTestUsage(5) });
+		// 取り込む前にトークンの持ち主を確かめる
+		harness.oauth.setProfile('alice-live', 'u-alice', 'alice@example.com');
 
 		assert.deepStrictEqual(await poll(harness), [
 			{ id: `para-claude:${ALICE_ID}`, email: 'alice@example.com', active: true, managed: true, status: 'ok', unavailableReason: undefined, fiveHour: 50 },

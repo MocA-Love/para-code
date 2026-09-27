@@ -15,8 +15,9 @@
 //   Electron / Node の中からキーチェーン API を直接呼ぶと、項目のアクセス権が Para Code の
 //   実行ファイルに結び付き、更新のたびに許可ダイアログが出るおそれがある
 // - 書き込みは値を16進にして `security -i` の標準入力で渡す。秘密の値を引数（ps で見える）に載せない。
-//   標準入力の1行は 4096 バイトまでなので、それを超えるときだけ引数に落とす（切り詰められて
-//   項目が壊れるよりはよい。16進なので単純な文字列検索には掛からない）
+//   標準入力の1行は 4096 バイトまでなので、それを超える値は書かずに失敗させる（引数に落とすと、
+//   同じユーザーの別のプロセスや EDR のログから読める。保存するのは `claudeAiOauth` だけなので、
+//   通常はこの上限に届かない）
 // - PATH 上の偽の `security` に秘密を渡さないよう、絶対パスで起動する
 //
 // テストではこのインターフェースをメモリ実装に差し替え、本物のキーチェーンには触れない。
@@ -74,9 +75,10 @@ export class ParadisSecurityCliKeychain implements IParadisKeychain {
 	async write(service: string, account: string, value: string): Promise<void> {
 		const hex = Buffer.from(value, 'utf8').toString('hex');
 		const command = `add-generic-password -U -a ${quoteForSecurityStdin(account)} -s ${quoteForSecurityStdin(service)} -X ${hex}\n`;
-		const result = Buffer.byteLength(command, 'utf8') <= SECURITY_STDIN_LINE_LIMIT
-			? await this.run(['-i'], command)
-			: await this.run(['add-generic-password', '-U', '-a', account, '-s', service, '-X', hex]);
+		if (Buffer.byteLength(command, 'utf8') > SECURITY_STDIN_LINE_LIMIT) {
+			throw new ParadisKeychainError('the value is too large to pass to security through stdin');
+		}
+		const result = await this.run(['-i'], command);
 		// `security -i` は中のコマンドが失敗しても 0 で終わることがあるので、エラー出力も見る。
 		if (result.code !== 0 || /error|failed/i.test(result.stderr)) {
 			throw new ParadisKeychainError(`security add-generic-password failed (code ${result.code})`);

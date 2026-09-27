@@ -56,6 +56,7 @@ suite('ParadisClaudeAccountService switching', () => {
 		const dirs = await paradisCreateClaudeTestHome();
 		cleanup = dirs.dispose;
 		const keychain = new ParadisMemoryKeychain();
+		const oauth = new ParadisFakeClaudeOAuth();
 		const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'accounts.json'), platform);
 		await registry.save([record(ALICE_ID, 'u-alice', 'alice@example.com'), record(BOB_ID, 'u-bob', 'bob@example.com')]);
 		const liveAuthOptions = { homedir: dirs.home, platform, keychain: platform === 'darwin' ? keychain : undefined, userName: USER, lockTimeoutMs: 300 };
@@ -63,14 +64,14 @@ suite('ParadisClaudeAccountService switching', () => {
 			liveAuth: failAfterWrite ? new ParadisFailAfterWriteLiveAuth(liveAuthOptions) : new ParadisClaudeLiveAuth(liveAuthOptions),
 			registry,
 			secrets: new ParadisKeychainClaudeSecretStore(keychain),
-			oauth: new ParadisFakeClaudeOAuth(),
+			oauth,
 			logService: new NullLogService(),
 		}));
 		const aliceStored = paradisTestCredentials('alice-1', 'alice-r1', Date.now() + HOUR);
 		const bobStored = paradisTestCredentials('bob-1', 'bob-r1', Date.now() + 8 * HOUR);
 		keychain.set(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, ALICE_ID, aliceStored);
 		keychain.set(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, BOB_ID, bobStored);
-		return { ...dirs, keychain, registry, service, aliceStored, bobStored };
+		return { ...dirs, keychain, oauth, registry, service, aliceStored, bobStored };
 	}
 
 	test('switches the PC-wide login and keeps the outgoing account\'s refreshed token', async () => {
@@ -78,6 +79,7 @@ suite('ParadisClaudeAccountService switching', () => {
 		// Claude Code が Alice のトークンを更新して書き戻した状態
 		const aliceRefreshed = paradisTestCredentials('alice-2', 'alice-r2', Date.now() + 2 * HOUR);
 		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, aliceRefreshed);
+		harness.oauth.setProfile('alice-2', 'u-alice', 'alice@example.com');
 		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com'), projects: { '/work': { allowedTools: [] } }, numStartups: 3 });
 
 		const result = await harness.service.switchAccount(BOB);

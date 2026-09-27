@@ -44,17 +44,18 @@ suite('ParadisClaudeAccountService setup', () => {
 		await fs.promises.mkdir(tmp);
 		const keychain = new ParadisMemoryKeychain();
 		const runner = new ParadisFakeClaudeLoginRunner((configDir, signal) => onLogin(configDir, keychain, signal));
+		const oauth = new ParadisFakeClaudeOAuth();
 		const registry = new ParadisClaudeAccountRegistry(path.join(dirs.userData, 'accounts.json'), 'darwin');
 		const service = disposables.add(new ParadisClaudeAccountService({
 			liveAuth: new ParadisClaudeLiveAuth({ homedir: dirs.home, platform: 'darwin', keychain, userName: USER }),
 			registry,
 			secrets: new ParadisKeychainClaudeSecretStore(keychain),
-			oauth: new ParadisFakeClaudeOAuth(),
+			oauth,
 			logService: new NullLogService(),
 			loginRunner: runner,
 			tmpdir: tmp,
 		}));
-		return { ...dirs, tmp, keychain, runner, registry, service };
+		return { ...dirs, tmp, keychain, runner, registry, service, oauth };
 	}
 
 	async function waitForSetup(service: ParadisClaudeAccountService, sessionId: string): Promise<IParadisLimitsSetupState> {
@@ -106,22 +107,24 @@ suite('ParadisClaudeAccountService setup', () => {
 		});
 	});
 
-	test('restores the default keychain item when an older Claude Code wrote the new login there', async () => {
+	test('ignores the default keychain item even when it changed during the login', async () => {
+		// ログインを待つ間に既定の項目（いまのログイン）が変わっても、それを今回のログインとはみなさない
+		// （Claude Code の更新や切り替えでも変わるため）。
 		const liveCredentials = paradisTestCredentials('alice-live', 'alice-r', Date.now() + HOUR);
-		const bobCredentials = paradisTestCredentials('bob-token', 'bob-r', Date.now() + HOUR);
+		const refreshedLive = paradisTestCredentials('alice-refreshed', 'alice-r2', Date.now() + 2 * HOUR);
 		const harness = await createHarness(async (configDir, keychain) => {
-			keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, bobCredentials);
+			keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, refreshedLive);
 			await fs.promises.writeFile(path.join(configDir, '.claude.json'), JSON.stringify({ oauthAccount: paradisTestOauthAccount('u-bob', 'bob@example.com') }));
 		});
 		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, liveCredentials);
 
 		const state = await waitForSetup(harness.service, harness.service.startLogin(undefined).sessionId);
-		const [record] = await harness.registry.load();
 		assert.deepStrictEqual({
-			phase: state.phase,
-			stored: harness.keychain.get(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, record.id),
-			live: harness.keychain.get(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER),
-		}, { phase: 'done', stored: bobCredentials, live: liveCredentials });
+			error: state.error,
+			records: await harness.registry.load(),
+			// いまのログインを古いトークンへ書き戻さない
+			live: harness.keychain.get(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER) === refreshedLive,
+		}, { error: 'no_credentials', records: [], live: true });
 	});
 
 	test('re-login keeps the account id and refuses a different account', async () => {
@@ -179,6 +182,11 @@ suite('ParadisClaudeAccountService setup', () => {
 		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, liveCredentials);
 		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });
 
+		// トークンの持ち主を確かめられなければ登録しない
+		const unverified = await harness.service.registerLiveAccount();
+		harness.oauth.setProfile('alice-live', 'u-bob', 'bob@example.com');
+		const otherOwner = await harness.service.registerLiveAccount();
+		harness.oauth.setProfile('alice-live', 'u-alice', 'alice@example.com');
 		const first = await harness.service.registerLiveAccount();
 		const second = await harness.service.registerLiveAccount();
 		const [record] = await harness.registry.load();
@@ -187,6 +195,8 @@ suite('ParadisClaudeAccountService setup', () => {
 		const removed = await harness.service.removeAccount(`para-claude:${record.id}`);
 
 		assert.deepStrictEqual({
+			unverified,
+			otherOwner,
 			first,
 			second,
 			stored: stored === liveCredentials,
@@ -197,6 +207,8 @@ suite('ParadisClaudeAccountService setup', () => {
 			liveAfter: harness.keychain.get(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER) === liveCredentials,
 			rejectsBadId: await harness.service.removeAccount('../../etc'),
 		}, {
+			unverified: { outcome: 'unverified' },
+			otherOwner: { outcome: 'unverified' },
 			first: { outcome: 'registered', email: 'alice@example.com' },
 			second: { outcome: 'updated', email: 'alice@example.com' },
 			stored: true,
@@ -217,8 +229,10 @@ suite('ParadisEncryptedFileClaudeSecretStore', () => {
 		const dirs = await paradisCreateClaudeTestHome();
 		try {
 			let available = true;
+			let provider = 'keychain_access';
 			const encryption = {
 				isEncryptionAvailable: async () => available,
+				getKeyStorageProvider: async () => provider,
 				encrypt: async (value: string) => `enc:${Buffer.from(value).toString('base64')}`,
 				decrypt: async (value: string) => Buffer.from(value.slice(4), 'base64').toString(),
 			};
@@ -229,6 +243,10 @@ suite('ParadisEncryptedFileClaudeSecretStore', () => {
 			await store.write(id, secret);
 			const onDisk = await fs.promises.readFile(path.join(directory, `${id}.enc`), 'utf8');
 			const readBack = await store.read(id);
+			// `--password-store=basic` は「使える」と答えるが固定鍵なので断る
+			provider = 'basic_text';
+			const refusedBasic = await store.write(id, 'other').then(() => 'stored', () => 'refused');
+			provider = 'keychain_access';
 			available = false;
 			const refused = await store.write(id, 'other').then(() => 'stored', () => 'refused');
 			const foreign = await store.read('../../escape').then(() => 'read', () => 'rejected');
@@ -236,11 +254,12 @@ suite('ParadisEncryptedFileClaudeSecretStore', () => {
 			assert.deepStrictEqual({
 				plaintextOnDisk: onDisk.includes('claudeAiOauth'),
 				readBack: readBack === secret,
+				refusedBasic,
 				refused,
 				foreign,
 				afterDelete: await store.read(id),
 				fileMode: process.platform === 'win32' ? 0o600 : (await fs.promises.stat(directory)).mode & 0o077,
-			}, { plaintextOnDisk: false, readBack: true, refused: 'refused', foreign: 'rejected', afterDelete: undefined, fileMode: process.platform === 'win32' ? 0o600 : 0 });
+			}, { plaintextOnDisk: false, readBack: true, refusedBasic: 'refused', refused: 'refused', foreign: 'rejected', afterDelete: undefined, fileMode: process.platform === 'win32' ? 0o600 : 0 });
 		} finally {
 			await dirs.dispose();
 		}
