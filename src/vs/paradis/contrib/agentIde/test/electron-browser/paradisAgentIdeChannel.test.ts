@@ -48,6 +48,10 @@ interface IFakeTerminal {
 	/** 前面で動いているコマンド（エージェントなら 'claude'）。 */
 	executing: string | undefined;
 	bracketedPaste: boolean;
+	/** Text shown on the second screen line (default `line <n>`). */
+	screenText?: string;
+	/** Whether shell integration (command detection) is present. */
+	shellIntegration: boolean;
 	disposed: boolean;
 }
 
@@ -59,19 +63,19 @@ suite('ParadisAgentIdeChannel', () => {
 		const instances = new Map<number, ITerminalInstance>();
 		const onDidDisposeInstance = store.add(new Emitter<ITerminalInstance>());
 		const add = (instanceId: number, space: string, status?: ParadisAgentStatus, executing: string | null = 'claude') => {
-			const fake: IFakeTerminal = { instanceId, token: `token-${instanceId}`, space, sent: [], status, executing: executing ?? undefined, bracketedPaste: true, disposed: false };
+			const fake: IFakeTerminal = { instanceId, token: `token-${instanceId}`, space, sent: [], status, executing: executing ?? undefined, bracketedPaste: true, shellIntegration: true, disposed: false };
 			terminals.push(fake);
 			const instance = upcastPartial<ITerminalInstance>({
 				instanceId,
 				title: `Terminal ${instanceId}`,
 				get isDisposed() { return fake.disposed; },
 				capabilities: upcastPartial<ITerminalInstance['capabilities']>({
-					get: ((capability: TerminalCapability) => capability === TerminalCapability.CommandDetection ? { executingCommand: fake.executing } : undefined) as ITerminalInstance['capabilities']['get'],
+					get: ((capability: TerminalCapability) => capability === TerminalCapability.CommandDetection && fake.shellIntegration ? { executingCommand: fake.executing } : undefined) as ITerminalInstance['capabilities']['get'],
 				}),
 				xterm: {
 					raw: {
 						rows: 2,
-						buffer: { active: { length: 2, getLine: (y: number) => ({ isWrapped: false, translateToString: () => `line ${y}` }) } },
+						buffer: { active: { length: 2, getLine: (y: number) => ({ isWrapped: false, translateToString: () => y === 1 && fake.screenText ? fake.screenText : `line ${y}` }) } },
 						get modes() { return { bracketedPasteMode: fake.bracketedPaste, applicationCursorKeysMode: false }; },
 					},
 				} as unknown as ITerminalInstance['xterm'],
@@ -203,15 +207,22 @@ suite('ParadisAgentIdeChannel', () => {
 		const blocked = setup();
 		const shell = blocked.add(4, REPOSITORY.id, undefined, null);
 		const busy = blocked.add(5, REPOSITORY.id, 'working');
+		// Without shell integration Para Code cannot tell an agent is running, so it counts as a plain shell.
+		const noIntegration = blocked.add(6, REPOSITORY.id);
+		noIntegration.shellIntegration = false;
+		const prompting = blocked.add(7, REPOSITORY.id);
+		prompting.screenText = 'Do you want to proceed?';
 		const allowed = setup({ shellCommands: true });
 		const allowedShell = allowed.add(4, REPOSITORY.id, undefined, null);
 		assert.deepStrictEqual([
 			(await blocked.channel.run(blocked.caller.token, { op: 'sendKey', terminal: id(shell), key: 'enter' })).ok,
 			(await blocked.channel.run(blocked.caller.token, { op: 'sendKey', terminal: id(shell), key: 'ctrl_c' })).ok,
 			(await blocked.channel.run(blocked.caller.token, { op: 'sendKey', terminal: id(busy), key: 'enter' })).ok,
+			(await blocked.channel.run(blocked.caller.token, { op: 'sendKey', terminal: id(noIntegration), key: 'enter' })).ok,
+			(await blocked.channel.run(blocked.caller.token, { op: 'sendKey', terminal: id(prompting), key: 'enter' })).ok,
 			(await allowed.channel.run(allowed.caller.token, { op: 'sendKey', terminal: id(allowedShell), key: 'enter' })).ok,
 			(await blocked.channel.run(blocked.caller.token, { op: 'createTerminal' })).ok,
-		], [false, true, false, true, false]);
+		], [false, true, false, false, false, true, false]);
 	});
 
 	test('multi-line text is only pasted into an agent in the foreground', async () => {

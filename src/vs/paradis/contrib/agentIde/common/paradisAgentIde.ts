@@ -247,6 +247,27 @@ export function paradisAgentIdeUntrustedTitle(title: string): string {
 	return characters.length > PARADIS_AGENT_IDE_MAX_TITLE_LENGTH ? `${characters.slice(0, PARADIS_AGENT_IDE_MAX_TITLE_LENGTH).join('')}...` : flattened;
 }
 
+/**
+ * 画面の末尾に、確認の選択肢（許可の質問など）が出ているように見えるか。
+ *
+ * Enter を送る直前の最後の備え。hook の状態は遅れて届くことがあり、偽装もされうるので、画面そのものも見る。
+ * 【要確認】文言は Claude Code 2.1.283 / codex-cli 0.155.1 の確認画面から拾った目安で、版が変わると
+ * 外れうる（外れても hook の状態の確認は残る）。誤って当たったときは Enter を送らないだけ（安全側）。
+ */
+export function paradisAgentIdeScreenShowsPrompt(screen: string): boolean {
+	const tail = screen.split('\n').slice(-30).join('\n');
+	return PROMPT_PATTERNS.some(pattern => pattern.test(tail));
+}
+
+const PROMPT_PATTERNS: readonly RegExp[] = [
+	/Do you want to (?:proceed|make this edit|create|delete|allow|run|use)/i,
+	/Would you like to (?:run|make|apply|allow|proceed)/i,
+	/\bYes, (?:proceed|and don't ask again|allow)/i,
+	/Press enter to confirm/i,
+	/Enter to select/i,
+	/\(y\/n\)/i,
+];
+
 /** キーの名前 → 送るバイト列。矢印キーはアプリケーションモードで別の列になる。 */
 export function paradisAgentIdeKeySequence(key: ParadisAgentIdeKey, applicationCursorKeys: boolean): string {
 	const arrow = (final: string) => applicationCursorKeys ? `\x1bO${final}` : `\x1b[${final}`;

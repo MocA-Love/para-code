@@ -21,7 +21,7 @@
 // 設定（送信・作成の可否）は shared process でも見ているが、ここでも見る（どちらか片方の
 // 取りこぼしで送らないように）。
 
-import { Sequencer } from '../../../../base/common/async.js';
+import { disposableTimeout, Sequencer } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import { StringSHA1 } from '../../../../base/common/hash.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
@@ -75,6 +75,7 @@ import {
 	paradisAgentIdeKeySequence,
 	paradisAgentIdeMessagePrefix,
 	paradisAgentIdeNeedsHuman,
+	paradisAgentIdeScreenShowsPrompt,
 	paradisAgentIdeStatusLabel,
 	paradisAgentIdeTailLines,
 	paradisAgentIdeUntrustedTitle,
@@ -82,8 +83,11 @@ import {
 
 /** 台帳の保存先（ワークスペースの保存領域）。中身はターミナル ID とスペースのキーだけで、トークンは入れない。 */
 const LEDGER_STORAGE_KEY = 'paradis.agentIde.ledger';
-/** 台帳に残す呼び出し元の数の上限（古いものから捨てる）。 */
+/** 台帳に残す呼び出し元の数・子の数の上限（古いものから捨てる）。 */
 const MAX_LEDGER_CALLERS = 200;
+const MAX_LEDGER_CHILDREN = 500;
+/** 起動・再読み込みの後、台帳を生きているペインと突き合わせるまでの時間（常駐ターミナルの再接続を待つ）。 */
+const LEDGER_PRUNE_DELAY_MS = 60_000;
 
 /** ペイントークンからエージェントへ見せる ID を作る。トークンは推測できない乱数なので、ハッシュから元へは戻せない。 */
 export function paradisAgentIdeTerminalId(paneToken: string): string {
@@ -165,6 +169,9 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 	) {
 		super();
 		this._loadLedger();
+		// 再読み込みの直後は、前のセッションで作ったターミナルがまだ一覧に戻っていない（常駐から再接続する）。
+		// 戻るのを待ってから、もう居ないものを台帳から掃除する（ツールを一度も呼ばないまま閉じた子など）
+		this._register(disposableTimeout(() => this._pruneLedger(), LEDGER_PRUNE_DELAY_MS));
 		this._register(this.terminalService.onDidDisposeInstance(instance => {
 			// ウィンドウを閉じる・再読み込みするときの破棄では消さない（ターミナルは常駐して戻ってくる）
 			if (this.lifecycleService.willShutdown) {
@@ -224,7 +231,7 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 			case 'resolveWriteTarget': {
 				const target = this._resolveWritable(callerToken, request.terminal);
 				return target.ok
-					? { ok: true, data: { terminal: target.value.id }, internal: { paneToken: target.value.token, status: this._status(target.value), agent: this._runsAgent(target.value) } }
+					? { ok: true, data: { terminal: target.value.id }, internal: { paneToken: target.value.token, status: this._status(target.value), agent: this._runsAgent(target.value), screen: this._screen(target.value.instance, 0) ?? '' } }
 					: target;
 			}
 			case 'sendInput': return this._sendInput(callerToken, request.terminal, request.text);
@@ -278,7 +285,7 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		for (const [callerId, ledger] of entries) {
 			callers[callerId] = { terminals: [...ledger.terminals], spaces: [...ledger.spaces] };
 		}
-		this.storageService.store(LEDGER_STORAGE_KEY, JSON.stringify({ callers, children: [...this._children] }), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		this.storageService.store(LEDGER_STORAGE_KEY, JSON.stringify({ callers, children: [...this._children].slice(-MAX_LEDGER_CHILDREN) }), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
 	private _ledger(callerId: string): ICallerLedger {
@@ -301,6 +308,34 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		this._launchedAt.delete(id);
 		for (const ledger of this._ledgers.values()) {
 			changed = ledger.terminals.delete(id) || changed;
+		}
+		if (changed) {
+			this._saveLedger();
+		}
+	}
+
+	/** 生きているペインに居ない ID を台帳から消す。 */
+	private _pruneLedger(): void {
+		const live = new Set(this._terminals().map(terminal => terminal.id));
+		let changed = false;
+		for (const [callerId, ledger] of [...this._ledgers]) {
+			for (const id of [...ledger.terminals]) {
+				if (!live.has(id)) {
+					ledger.terminals.delete(id);
+					changed = true;
+				}
+			}
+			if (!live.has(callerId) && ledger.terminals.size === 0) {
+				// 呼び出し元のペインが居なくなり、作ったターミナルも残っていない（スペースは残すと閉じられないだけ）
+				this._ledgers.delete(callerId);
+				changed = true;
+			}
+		}
+		for (const id of [...this._children]) {
+			if (!live.has(id)) {
+				this._children.delete(id);
+				changed = true;
+			}
 		}
 		if (changed) {
 			this._saveLedger();
@@ -361,7 +396,7 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 	}
 
 	private _runsAgent(terminal: IResolvedTerminal): boolean {
-		return paradisTerminalRunsAgent(terminal.instance, this.agentStatusStore.isAgentInstance(terminal.instance.instanceId));
+		return paradisTerminalRunsAgent(terminal.instance);
 	}
 
 	/** 自分自身・自分が作ったもの・自分のスペースのもの（設定でウィンドウ全体）だけ読める。 */
@@ -653,10 +688,23 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 				}
 			} else if (status === 'working') {
 				return fail('The agent in that terminal is working right now, so Para Code does not press Enter there.');
+			} else if (paradisAgentIdeScreenShowsPrompt(this._screen(target.instance, 0) ?? '')) {
+				return fail('That terminal shows a confirmation prompt on screen, so Para Code does not press Enter there. Tell the user instead.');
 			}
 		}
 		const applicationMode = target.instance.xterm?.raw.modes.applicationCursorKeysMode === true;
 		await target.instance.sendText(paradisAgentIdeKeySequence(key, applicationMode), false);
+		// Enter（指示の送信・コマンドの実行）と中断は、利用者の目に見える形で知らせる
+		if (key === 'enter' || key === 'ctrl_c') {
+			this.notificationService.notify({
+				severity: Severity.Info,
+				message: key === 'enter'
+					// allow-any-unicode-next-line
+					? localize('paradis.agentIde.notify.enter', "エージェント「{0}」がターミナル「{1}」で Enter を押しました。", this._describeCaller(callerToken), paradisAgentIdeUntrustedTitle(target.instance.title))
+					// allow-any-unicode-next-line
+					: localize('paradis.agentIde.notify.interrupt', "エージェント「{0}」がターミナル「{1}」を中断しました（Ctrl+C）。", this._describeCaller(callerToken), paradisAgentIdeUntrustedTitle(target.instance.title)),
+			});
+		}
 		return { ok: true, data: { terminal: id, key } };
 	}
 

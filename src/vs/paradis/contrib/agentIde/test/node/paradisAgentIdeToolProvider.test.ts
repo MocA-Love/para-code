@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
+import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, ParadisMcpCallerKind, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisAgentIdeInternal, ParadisAgentIdeRequest, ParadisAgentIdeResult } from '../../common/paradisAgentIde.js';
 import { IParadisAgentIdeClock, IParadisAgentIdeSettings, ParadisAgentIdeToolProvider } from '../../node/paradisAgentIdeToolProvider.js';
 
@@ -34,7 +34,7 @@ function text(result: unknown): { readonly isError: boolean; readonly body: stri
 suite('ParadisAgentIdeToolProvider', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(options: { actionsEnabled?: boolean; shellCommands?: boolean; verified?: boolean } = {}) {
+	function setup(options: { actionsEnabled?: boolean; shellCommands?: boolean; caller?: ParadisMcpCallerKind } = {}) {
 		const statuses = new Map<string, IParadisMcpPaneAgentStatus>();
 		const hookTokens = new Set<string>([TARGET]);
 		const calls: ParadisAgentIdeRequest[] = [];
@@ -59,7 +59,7 @@ suite('ParadisAgentIdeToolProvider', () => {
 			},
 			getPaneAgentStatus: token => statuses.get(token),
 			hasAgentHookHistory: token => hookTokens.has(token),
-			verifyCallerProcess: async () => options.verified ?? true,
+			classifyCaller: async () => options.caller ?? 'pane',
 		};
 		const clock = new FakeClock();
 		const settings: IParadisAgentIdeSettings = {
@@ -90,12 +90,34 @@ suite('ParadisAgentIdeToolProvider', () => {
 
 	test('actions are refused when turned off, or when the caller process is not in its pane', async () => {
 		const off = setup({ actionsEnabled: false });
-		const unverified = setup({ verified: false });
+		const unverified = setup({ caller: 'unverified' });
+		const tunnel = setup({ caller: 'tunnel' });
 		const results = [
 			text(await off.provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: 'go', press_enter: true }, undefined, off.context)).isError,
 			text(await unverified.provider.callTool(CALLER, 'launch_agent', { agent: 'claude' }, undefined, unverified.context)).isError,
+			text(await tunnel.provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'enter' }, undefined, tunnel.context)).isError,
 		];
-		assert.deepStrictEqual({ results, calls: [off.calls.length, unverified.calls.length] }, { results: [true, true], calls: [0, 0] });
+		assert.deepStrictEqual({ results, calls: [off.calls.length, unverified.calls.length, tunnel.calls.length] }, { results: [true, true, true], calls: [0, 0, 0] });
+	});
+
+	test('reading also needs a verified caller; over the SSH return path it works but actions are shown as unavailable', async () => {
+		const unverified = setup({ caller: 'unverified' });
+		const tunnel = setup({ caller: 'tunnel' });
+		const refusedRead = text(await unverified.provider.callTool(CALLER, 'list_terminals', {}, undefined, unverified.context));
+		const refusedWait = text(await unverified.provider.callTool(CALLER, 'wait_for_terminal', { terminal: 't_1', until: 'needs_input' }, undefined, unverified.context));
+		const listed = JSON.parse(text(await tunnel.provider.callTool(CALLER, 'list_terminals', {}, undefined, tunnel.context)).body);
+		assert.deepStrictEqual({
+			refused: [refusedRead.isError, refusedWait.isError, unverified.calls.length],
+			actionsEnabled: listed.actions_enabled,
+			note: typeof listed.actions_note,
+		}, { refused: [true, true, 0], actionsEnabled: false, note: 'string' });
+	});
+
+	test('Enter is refused while a confirmation prompt is on screen', async () => {
+		const { provider, context, state, calls } = setup();
+		state.screen = 'Bash command\n  rm -rf build\nDo you want to proceed?\n\u276f 1. Yes\n  2. No';
+		const result = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'enter' }, undefined, context));
+		assert.deepStrictEqual({ isError: result.isError, ops: ops(calls) }, { isError: true, ops: ['resolveWriteTarget'] });
 	});
 
 	test('paste and Enter are separate calls, and the status is checked again before Enter', async () => {

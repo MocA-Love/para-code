@@ -36,6 +36,7 @@ import {
 	ParadisAgentIdeWaitCondition,
 	ParadisAgentStopWatcher,
 	paradisAgentIdeNeedsHuman,
+	paradisAgentIdeScreenShowsPrompt,
 	paradisAgentIdeStatusLabel,
 	paradisParseAgentIdeCall,
 } from '../common/paradisAgentIde.js';
@@ -89,7 +90,9 @@ const OPEN_TERMINAL_TIMEOUT_MS = 30_000;
 const NEEDS_HUMAN_MESSAGE = 'That terminal is waiting for the user to answer a permission request or a question, so Para Code does not send anything to it. Tell the user which terminal is waiting (its id and title from list_terminals) and let them answer.';
 const WORKING_MESSAGE = 'The agent in that terminal is working right now, so Para Code does not press Enter there (a permission prompt could appear at any moment and Enter would answer it). Wait with wait_for_terminal until="agent_stopped" and send again.';
 const NO_HOOKS_MESSAGE = 'Para Code cannot see the status of the agent in that terminal (its hooks have never reported), so it cannot tell whether a permission prompt is on screen and does not press Enter there. Ask the user to turn on the agent hooks in Para Code settings, or to send it themselves.';
-const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside your own terminal pane, so it refuses actions (this also happens for agents connected over SSH). Reading tools still work.';
+const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside your own terminal pane, so it refuses actions. This always happens for agents connected over SSH; reading tools still work there.';
+const READ_CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside a Para Code terminal pane, so it refuses the request. Start this agent CLI from a terminal inside Para Code.';
+const PROMPT_ON_SCREEN_MESSAGE = 'That terminal shows a confirmation prompt on screen (for example a permission question), so Para Code does not press Enter there. Tell the user instead.';
 const TOO_MANY_WAITS_MESSAGE = 'Too many wait_for_terminal calls are running at once. Wait for the current ones to return before starting another.';
 
 function toolText(value: string | object): unknown {
@@ -146,17 +149,19 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		if (!context) {
 			return toolError('This Para Code build cannot route IDE tools to its window. Update Para Code.');
 		}
-		if (parsed.kind === 'wait') {
-			return this._withWaitSlot(paneToken, () => this._wait(paneToken, parsed.terminal, parsed.until, parsed.text, parsed.timeoutSeconds, context, signal));
+		const action = parsed.kind === 'input' || (parsed.kind === 'window' && parsed.action);
+		if (action && !this.settings.actionsEnabled()) {
+			return toolError(PARADIS_AGENT_IDE_ACTIONS_DISABLED_MESSAGE);
 		}
-		const action = parsed.kind === 'input' || parsed.action;
-		if (action) {
-			if (!this.settings.actionsEnabled()) {
-				return toolError(PARADIS_AGENT_IDE_ACTIONS_DISABLED_MESSAGE);
-			}
-			if (!(await context.verifyCallerProcess())) {
-				return toolError(CALLER_UNVERIFIED_MESSAGE);
-			}
+		// トークンだけでは本人と言えないので、読み取りも含めて接続元のプロセスを確かめる。
+		// 操作はそのペインの中のプロセスだけ、読み取りは SSH の戻り経路（どのペインかは確かめられない）も許す
+		const caller = await context.classifyCaller();
+		if (caller === 'unverified' || (action && caller !== 'pane')) {
+			return toolError(action ? CALLER_UNVERIFIED_MESSAGE : READ_CALLER_UNVERIFIED_MESSAGE);
+		}
+		if (parsed.kind === 'wait') {
+			// 待機の枠は、接続元を確かめた後で数える（偽のトークンで枠を埋められないように）
+			return this._withWaitSlot(paneToken, () => this._wait(paneToken, parsed.terminal, parsed.until, parsed.text, parsed.timeoutSeconds, context, signal));
 		}
 		if (parsed.kind === 'input') {
 			return this._sendInput(paneToken, parsed.terminal, parsed.text, parsed.pressEnter, context, signal);
@@ -173,12 +178,17 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 			return toolError(result.error);
 		}
 		if (request.op === 'listSpaces' || request.op === 'listTerminals') {
+			// 設定がオンでも、このペインの中から来たと確かめられない接続（SSH の戻り経路）では操作できない
+			const actionsAvailable = this.settings.actionsEnabled() && caller === 'pane';
+			const data = result.data as { terminals?: readonly object[] };
 			return toolText({
-				actions_enabled: this.settings.actionsEnabled(),
+				actions_enabled: actionsAvailable,
+				...(this.settings.actionsEnabled() && !actionsAvailable ? { actions_note: 'Actions are allowed in Para Code settings, but not over this connection (for example an agent on an SSH host). Only reading works here.' } : {}),
 				action_scope: this.settings.actionScope(),
 				read_other_spaces: this.settings.readOtherSpaces(),
 				shell_commands: this.settings.shellCommands(),
 				...result.data,
+				...(Array.isArray(data.terminals) && !actionsAvailable ? { terminals: data.terminals.map(terminal => ({ ...terminal, can_send: false })) } : {}),
 			});
 		}
 		return toolText(result.data);
@@ -205,6 +215,10 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		}
 		if (status === 'working') {
 			return WORKING_MESSAGE;
+		}
+		// 状態が正しくても、画面に確認の選択肢が出ていたら Enter を送らない（hook の遅れや偽装への備え）
+		if (paradisAgentIdeScreenShowsPrompt(target.internal?.screen ?? '')) {
+			return PROMPT_ON_SCREEN_MESSAGE;
 		}
 		// hook が一度も届いていない相手は、許可待ちかどうかを確かめられない（安全側に倒す）
 		const token = target.internal?.paneToken;
