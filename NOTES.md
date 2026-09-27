@@ -402,56 +402,88 @@ CDP ゲートウェイ（`paradisCdpFilterProxy.ts`、ページ直結とブラ�
 - 別のウィンドウの台帳を取り込むときも、印は「外す」向きだけを通す（古い写しで印が戻らないように）
 - 切替は「エージェントが自分で開いたタブ」に限り、ネットワークの制限が有効な間は断る（`open_browser_profile` と同じ判断）。`open_browser_profile` で開いたタブもエージェントのタブとして台帳に載り、上限 5 枚に数える
 
-## para-browser MCP の追加のブラウザ操作は、共有中のタブ1枚にだけ効かせ、ネットワークの上書きはエージェント用の保存領域に限る（agentBrowser、2026-09-27、フェーズ7 B7）
+## para-browser MCP の追加のブラウザ操作は共有中のタブ1枚にだけ効かせ、ネットワークの上書きはそのペイン専用の保存領域に限る（agentBrowser、2026-09-27、フェーズ7 B7）
 
-Orca の B7 に当たる8個のツールを para-browser MCP に足した。ツールの定義は `agentBrowser/node/paradisBrowserPageOpsTools.ts`（オフラインのシムも同じ配列を読む）、shared process 側の処理は `node/paradisBrowserPageOps.ts`、タブへ掛ける処理は electron-main の `electron-main/paradisBrowserPageOpsController.ts` で、既存の `PARADIS_CDP_TARGET_CHANNEL`（`paradisCdpTargetService.ts`）にメソッドを足して呼ぶ。検証の関数は両側で同じもの（`common/paradisBrowserPageOps.ts`）を通し、electron-main でも受け取った値を検証し直す。レビュー（`phase7-b7/review-findings.md`、High 1・Medium 7・Low 8）を受けて線引きを直した。
+Orca の B7 に当たる8個のツールを para-browser MCP に足した。ツールの定義は `agentBrowser/node/paradisBrowserPageOpsTools.ts`（オフラインのシムも同じ配列を読む）、shared process 側の処理は `node/paradisBrowserPageOps.ts`、タブへ掛ける処理は electron-main の `electron-main/paradisBrowserPageOpsController.ts` で、既存の `PARADIS_CDP_TARGET_CHANNEL`（`paradisCdpTargetService.ts`）にメソッドを足して呼ぶ。検証の関数は両側で同じもの（`common/paradisBrowserPageOps.ts`）を通し、electron-main でも受け取った値を検証し直す。2回のレビュー（`phase7-b7/review-findings.md` と `phase7-b7/verify.md`）を受けて線引きを直した。
 
 | ツール | 中身 | 決め事 |
 |---|---|---|
 | `mouse_action` | move / down / up / context_click / middle_click / drag / wheel、修飾キー | 既存の入力の通り道（`dispatchExactViewInput`）で送るので、利用者がそのタブにフォーカスしていれば断られ、カーソル演出も出る。uid の要素が覆われている・iframe の中・画面外なら押さない。途中で断られて押したままになったボタンは離しに行き、それも断られたら次のマウスの入力の前に送る |
-| `save_page_as_pdf` | `webContents.printToPDF` | ダウンロードと同じフォルダへ `wx` で書き、同名があれば ` (1)` を足す（上書きしない）。一覧にエージェント由来として載せ、隔離の印も付ける。ファイル名は区切り文字・制御文字・双方向制御を落とし、Windows の予約名（拡張子付き・上付き数字を含む）を避けて `.pdf` にそろえる |
+| `save_page_as_pdf` | `webContents.printToPDF` | ダウンロードと同じフォルダへ `wx` で書き、同名があれば ` (1)` を足す（上書きしない）。一覧にエージェント由来として載せ、隔離の印も付ける。ファイル名は区切り文字・制御文字・双方向制御を落とし、Windows の予約名（拡張子付き・上付き数字を含む）を避けて `.pdf` にそろえる。指定が無ければ main が今のページのタイトルから決める |
 | `set_extra_http_headers` | Fetch で止めた要求に、相手の origin を見て足す | 既定は掛けた時点のトップフレームの origin だけ（第三者の CDN・計測へは出さない）。`origins` で最大 10 個まで指定できる。Cookie 系・接続のヘッダ・`Proxy-*` は断る |
-| `set_http_credentials` | webContents の `login` に答える | 答えるのは指定した origin（https、http は localhost だけ）の求めだけで、プロキシの求めには答えない。同じ realm へは1分に2回まで。パスワードは electron-main のメモリにだけ置き、外すときは保存領域の認証のキャッシュも消す（`clearAuthCache`） |
-| `set_request_rules` | 同じセッションで `Fetch.enable`（requestStage は Request だけ） | block / set_headers / redirect / respond。redirect は 307 を返してブラウザに辿らせる。respond の応答ヘッダは許可リストで、Set-Cookie・Clear-Site-Data・HSTS などは断り、`Cache-Control: no-store` を必ず付ける |
+| `set_http_credentials` | webContents の `login` に答える | 答えるのは指定した origin（https、http は localhost だけ）の求めだけで、プロキシの求めには答えない。同じ realm へは1分に2回まで。パスワードは electron-main のメモリにだけ置く |
+| `set_request_rules` | 同じセッションで `Fetch.enable`（requestStage は Request だけ） | block / set_headers / redirect / respond。redirect は 307 を返してブラウザに辿らせ、要求に Origin があれば CORS で許す（別 origin の fetch も辿れる）。respond の応答ヘッダは許可リストで、Set-Cookie・Clear-Site-Data・HSTS などは断り、`Cache-Control: no-store` を必ず付ける。`remove_headers` はネットワーク層が後で足すヘッダ（Accept-Language・Accept-Encoding・クライアントヒントなど）は消せない（ツールの説明に書いた） |
 | `get_page_network_overrides` | 掛かっている上書きの要約 | ヘッダは名前と送り先の origin、認証は origin だけ、ルールは当たった回数。値とパスワードは返さない |
 | `download_by_click` | クリックの前に「このタブのダウンロードを待つ」と登録し、クリックして待つ | 保存先・「開く」を出さない扱いはダウンロード一覧（`browserDownloads`）の規則のまま。クリックを送り終える前に始まったダウンロードも取りこぼさない（始まった id を受け取りに来るまで 60 秒残す）。子タブで始まったものも拾う |
-| `highlight_element` | 使い捨ての CDP セッションで `Overlay.highlightRect` | ページの DOM は変えない。時間が来るか次のハイライトで、セッションごと外して消す |
+| `highlight_element` | タブ専用のセッションで `Overlay.highlightRect` | ページの DOM は変えない。ページの拡大率を掛けて渡す（`Overlay.highlightRect` は拡大前の座標で受ける）。時間切れ・`clear`・次のハイライトで `Overlay.hideHighlight` を送って消す |
 
 - 既存ツールとの分担: 左クリック・ダブルクリック（`click` / `click_at` の `dblClick`）、要素へのホバー（`hover`）、要素間の HTML のドラッグ＆ドロップ（`drag`）は chrome-devtools-mcp のものを使う。`mouse_action` はそれで出来ない右・中クリック、座標へのホバー、ボタンを押したままの移動（スライダーや canvas）、ホイールだけを持つ
-- **ネットワークの上書き（追加ヘッダ・HTTP 認証・リクエストのルール）は、エージェント用の保存領域のタブだけに掛ける**。対象はエージェントが自分で開いたタブ（Agent スコープ）、エフェメラル（タブごと）、エージェントが作った印の付いたプロファイル（印は renderer が `setAgentProfiles` で main へ知らせている一覧で見る）。利用者の保存領域のタブ（共有された利用者のタブ）では `userStorage` として断り、自分のタブを開くよう案内する。理由は2つ: HTTP 認証のキャッシュは保存領域単位なので、答えた資格情報が利用者の他のタブにも使われ続ける（F2）。`Network.setCacheDisabled` はキャッシュを読まないだけで書き込みは止めない見込みで、書き換えた要求への応答が利用者の他のタブへ出うる（F3、【要確認】は実機で見ていない）。エージェント用の保存領域なら、どちらも残ってもエージェントのタブの中だけになる。`mouse_action`・`save_page_as_pdf`・`download_by_click`・`highlight_element` は利用者の共有タブでも使える
-- 上書きはタブ（webContents）1枚に付けた専用の CDP セッションに掛ける。CDP の Network / Fetch はセッションごとなので、同じ保存領域の他のタブや他のペインのタブには届かない。セッションを外せば Chromium がすべて元に戻す（止めていたリクエストも流れる）。1枚のタブに上書きを掛けられるのは1つのペインだけで、別のペインは `ownedByAnotherPane` で断る
-- 外す契機は3つ。(1) shared process がそのペインのバインドの世代を進めた（`_activateBindingGeneration` から `releasePageOverridesOwner`。electron-main は持ち主ごとに世代の高水位を持ち、古い世代の要求を `stale` で断る）。(2) エージェントがタブを手放した（`setExactViewBackgroundThrottling(true)` の合図）。(3) タブが閉じた（`destroyed`）。持ち主は electron-main へトークンそのものではなく SHA-256 の先頭 32 桁で渡す。shared process が異常終了したときは `app.ts` がアプリごと再起動するので、上書きは残らない
-- 上書きを掛けている間は、そのタブのキャッシュと Service Worker を通さない（`Network.setCacheDisabled`・`Network.setBypassServiceWorker`）。キャッシュの応答と Service Worker の応答はページのセッションの Fetch を通らず、ルールとヘッダがすり抜けるため（F12）
-- エージェントのネットワークの制限: redirect はブラウザが辿り直す要求になるので、Electron の `webRequest` の制限にもう一度掛かる。加えて shared process が、制限が有効なら行き先を `AgentNetworkFilterService` で確かめて先に断る。【要確認】Chromium が Fetch で返した 307 を辿るときに `webRequest.onBeforeRequest` が改めて呼ばれることは実機で確かめていない（推測）
-- エージェントの右クリック（右ボタンの押下・離し、ContextMenu キー、Shift+F10）では、Para Code の OS の右クリックメニューを出さない（F7）。`paradisCdpTargetService.ts` が送る直前に webContents に印を付け（`paradisAgentContextMenu.ts`、2 秒・1 回だけ）、upstream の `browserViewMainService.ts` の `showContextMenu` の PARA-PATCH 1 行がそれを見て何もしない。ページの `contextmenu` イベントは届くので、ページ自前の右クリックメニューは動く。chrome-devtools-mcp の生の CDP で送った右クリックも同じ扱いになる
+
+### ネットワークの上書きは、呼んだペインだけが使う保存領域のタブに限る
+
+**追加ヘッダ・HTTP 認証・リクエストのルールは、呼んだペインだけが使う保存領域のタブにだけ掛ける**。判定は保存領域の種類ではなく、誰の保存領域かで行う。
+
+| タブ | 扱い | 判定 |
+|---|---|---|
+| `open_browser_tab` に `private: true` を付けて開いたタブ | 掛けられる | そのペイン専用の保存領域（Agent スコープ、affinity は `paradis-pane-` + ペインのトークンの SHA-256 の先頭 32 桁）。main は BrowserSession の id が、そのペインの affinity から upstream の `getOrCreateAgent` と同じ式で作った id と一致するかを見る。ほかのペインや利用者のタブがこの保存領域を使うことは無い。メモリだけで、ネットワークの制限も掛かる |
+| そのペインが作り、ほかが使っていないプロファイル | 掛けられる | main がエージェントの印（renderer が `setAgentProfiles` で知らせる一覧）を見て、shared process が renderer の台帳（`isPaneOwnedProfile`: そのペインが作り、利用者がまだ使っておらず、開いているタブがすべてそのペインのもの）で確かめ、main がその ID と一致するときだけ受ける |
+| それ以外 | 断る（`userStorage`、「`private: true` の自分専用のタブを開いて使う」よう案内） | 利用者のタブ（保存領域の種類が Ephemeral や Agent でも、利用者が開いたもの）、`private` を付けずに開いたエージェントのタブ（ワークスペースの全ペインで保存領域を共有する）、ほかのペイン・利用者も使うプロファイル |
+
+- 理由: HTTP 認証のキャッシュと HTTP キャッシュは保存領域単位。答えた資格情報はその保存領域のほかのタブに先回りで使われ（R2、実機で確認）、`Network.setCacheDisabled` はキャッシュを読まないだけで書き込みは止めないので、書き換えた要求への応答がほかのタブ・ほかのペインへ出る（R3、実機で確認）。ワークスペースで共有するエージェントの保存領域は、同じワークスペースの全ペインのエージェントのタブが使う
+- 外すときは、掛けた時点の保存領域に対して認証のキャッシュ（資格情報を置いていたとき）と HTTP キャッシュ（ヘッダかルールを置いていたとき）を消す。閉じたタブでも、掛けた時点に控えた session に対して消す。ヘッダやルールを置き換えたときも、前のもので書き換えた応答を残さないよう HTTP キャッシュを消す。消えるのはそのペイン専用の保存領域（またはそのペインだけが使うプロファイル）の中だけ
+- プロファイルのタブに掛けた上書きは、同じ保存領域に別のタブが開かれたら外す（`onDidCreateBrowserView` を見る）。利用者や別のペインがプロファイルを使い始めた合図で、そのペイン自身が同じプロファイルで2枚目を開いたときも外れる（安全側）。利用者が既にあるエージェントのタブを画面で操作し始めただけでは検知できない（L5 の残り）
+- 上書きはタブ（webContents）1枚に付けた専用の CDP セッションに掛ける。CDP の Network / Fetch はセッションごとなので、同じ保存領域の他のタブには届かない。1枚のタブに上書きを掛けられるのは1つのペインだけで、別のペインは `ownedByAnotherPane` で断る
+- 上書きを掛けている間は、そのタブのキャッシュと Service Worker を通さない（`Network.setCacheDisabled`・`Network.setBypassServiceWorker`）。キャッシュの応答と Service Worker の応答はページのセッションの Fetch を通らず、ルールとヘッダがすり抜けるため
+- エージェントのネットワークの制限: redirect はブラウザが辿り直す要求になるので、Electron の `webRequest` の制限にもう一度掛かる（実機で確認。止まる先への `respond` も `ERR_BLOCKED_BY_CLIENT`）。加えて shared process が、制限が有効なら行き先を `AgentNetworkFilterService` で確かめて先に断る
+
+### 外すときは有効にしたものを自分で戻す
+
+**upstream の `BrowserViewDebugger` は、セッションを dispose しても `Target.detachFromTarget` が空の session id で失敗し（`browserViewDebugger.ts` の `registerSession`、失敗は握りつぶされる）、セッションが付いたまま残る**。そのまま Fetch が有効だと、そのタブの要求は止まったままになる（R1、実機で確認）。upstream の不具合には頼らず、B7 側で有効にしたものを戻す。
+
+- ネットワークの上書きを外すとき（`set_request_rules []`・ヘッダを空にする・資格情報だけが残る・共有の切替・タブを手放す・閉じる）: `Fetch.disable`、`Network.setExtraHTTPHeaders({})`、`Network.setCacheDisabled(false)`、`Network.setBypassServiceWorker(false)`、`Network.disable` を順に送る
+- ハイライトを消すとき（`clear`・時間切れ・次のハイライト）: `Overlay.hideHighlight`。タブを手放すときは加えて `Overlay.disable`、`DOM.disable`
+- 戻せなかったものは main のログ（`console.warn`）と Sentry（`page-ops-teardown`、手順の名前だけ）に出す。閉じたタブへのものは出さない
+- 専用のセッションは上書きとハイライトで共用し、タブを手放すか閉じるまで使い回す（付け直すたびに外れないセッションが増えないように）
+- テスト（`test/electron-main/paradisBrowserPageOpsController.test.ts`）の偽のセッションは、dispose しても有効にしたものが残る（実物と同じ）ように作り、外した後に要求が止まらないことを経路ごとに確かめている
+
+### エージェントの右クリックでは Para Code のメニューを出さない
+
+- `paradisCdpTargetService.ts` が、メニューを開きうる入力（右ボタンの押下・離し、Control を押した左ボタンの押下・離し（macOS の右クリック）、ContextMenu キー（仮想キー 93）、Shift+F10）を送るたびに、その入力の印（座標、またはキーであること）を webContents に付ける（`paradisAgentContextMenu.ts`）
+- upstream の `browserViewMainService.ts` の `showContextMenu` の PARA-PATCH 1 行が、`context-menu` の引数（座標と `menuSourceType`）を印と突き合わせ、一致した1つだけを消費してメニューを出さない。座標はページの CSS ピクセルと、拡大率を掛けたものの両方で比べる（誤差 3）。印は 1 秒で捨てる
+- 時間の窓で一律に止めないので、エージェントの右クリックの直後でも、利用者の別の場所での右クリックでは Para Code のメニューが出る（R5）。ページの `contextmenu` イベントは届くので、ページ自前の右クリックメニューは動く
+- `eslint.config.js` の許可は、platform からこの1ファイル（Electron にもほかのモジュールにも依存しない）への import だけ（L3）
 
 ### Cookie は読み書きとも塞ぐ。ただしページの JS から読める範囲は守れない
 
-q.html Q69 のとおり、エージェントは Cookie を読み書きできない。守れているのは次の範囲。
+q.html Q69 のとおり、エージェントは Cookie を読み書きできない。守れているのは次の範囲（読み取りの除去は実機で漏れが無いことを確認）。
 
 - 新しいツールは Cookie のヘッダを送る・消す・Set-Cookie を返すのどれもできない
-- 生の CDP の書き込み（`paradisCdpCookieFilter.ts` の `paradisCookieAndRewriteDeniedMessage`、ゲートウェイのページ直結・ブラウザ経由の両方）: `Network.setExtraHTTPHeaders` の Cookie、`Fetch.continueRequest` の `url` と Cookie、`Fetch.fulfillRequest` / `continueResponse` の Set-Cookie・Clear-Site-Data・`binaryResponseHeaders`、`Network.continueInterceptedRequest` / `setRequestInterception` を断る。`Page.getCookies`・`Page.deleteCookie`・`Network.setCookieControls`・`Network.loadNetworkResource`（ページの Cookie 付きで取りに行き、応答のヘッダを返す）も拒否リストに足した（F1）
-- 読み取り（F1、既存の穴）: ゲートウェイが Network / Fetch / Audits のイベントから、`headers` / `requestHeaders` / `responseHeaders` の Cookie・Cookie2・Set-Cookie・Set-Cookie2、`headersText` / `requestHeadersText`、`associatedCookies` / `blockedCookies` / `exemptedCookies` / `cookies`（空の配列にする）、Audits の `rawCookieLine` を落とす（`paradisSanitizeCookieBearingEvent`）。`requestWillBeSentExtraInfo`・`responseReceivedExtraInfo`・`Fetch.requestPaused` の Response 段・WebSocket の握手が対象。chrome-devtools-mcp の `get_network_request` はこのイベントからヘッダを組み立てるので、ここで落ちる。加えて子プロセスへ `--redactNetworkHeaders=true`（vendored の 1.5.0 が持つ。許可リストに無いヘッダを `<redacted>` にする）を渡す二重の備えにした
+- 生の CDP の書き込み（`paradisCdpCookieFilter.ts` の `paradisCookieAndRewriteDeniedMessage`、ゲートウェイのページ直結・ブラウザ経由の両方）: `Network.setExtraHTTPHeaders` の Cookie、`Fetch.continueRequest` の `url` と Cookie、`Fetch.fulfillRequest` / `continueResponse` の Set-Cookie・Clear-Site-Data・`binaryResponseHeaders`、`Network.continueInterceptedRequest` / `setRequestInterception` を断る。`Page.getCookies`・`Page.deleteCookie`・`Network.setCookieControls`・`Network.loadNetworkResource`（ページの Cookie 付きで取りに行き、応答のヘッダを返す）も拒否リストに入れた
+- 読み取り: ゲートウェイが Network / Fetch / Audits のイベントから、`headers` / `requestHeaders` / `responseHeaders` の Cookie・Cookie2・Set-Cookie・Set-Cookie2、`headersText` / `requestHeadersText`、`associatedCookies` / `blockedCookies` / `exemptedCookies` / `cookies`（空の配列にする）、Audits の `rawCookieLine` を落とす（`paradisSanitizeCookieBearingEvent`）。chrome-devtools-mcp の `get_network_request` はこのイベントからヘッダを組み立てるので、ここで落ちる。加えて子プロセスへ `--redactNetworkHeaders=true`（vendored の 1.5.0 が持つ）を渡す二重の備えにした
+- `--redactNetworkHeaders` は許可リスト方式なので、`sec-fetch-*`・`keep-alive` なども `<redacted>` になり、エージェントは `get_network_request` で自分の追加ヘッダの値を確かめられない（L7）。Cookie はゲートウェイでも落としているが、Authorization など Cookie 以外の秘密のヘッダを出さない効果もあるので外さない。追加ヘッダが付いたかは、`get_page_network_overrides` と、相手のサーバー側（エコーするページなど）で確かめる
 - コマンドの結果でヘッダを返すのは `Network.loadNetworkResource` だけと読んだ（`getResponseBody` などは本文だけ）ので、結果は選別していない
-- 守れないもの: `evaluate_script` などページの JS から読める HttpOnly でない `document.cookie`、`respond` で返したページの JS が読む同じ範囲。これは chrome-devtools-mcp の既存のツールで元からできることで、塞ぐにはページの JS の実行そのものを止めるしかない。「全面禁止」は HttpOnly の Cookie と、ヘッダ・CDP の Cookie の API に対して成り立つ
+- 守れないもの: `evaluate_script` などページの JS から読める HttpOnly でない `document.cookie`、`respond` で返したページの JS が読む同じ範囲。chrome-devtools-mcp の既存のツールで元からできることで、塞ぐにはページの JS の実行そのものを止めるしかない。「全面禁止」は HttpOnly の Cookie と、ヘッダ・CDP の Cookie の API に対して成り立つ
 
 ### ダウンロードの由来と、パスワードを出さない経路
 
-- エージェントに共有中のタブ（利用者のタブでも）から始まったダウンロードは、すべてエージェント由来にした（`paradisAgentDownloads.ts` の `paradisSetWebContentsHeldByAgent`。`will-download` の第3引数の webContents で見分ける）。子タブ（`target=_blank`・`window.open`・中クリック）は、`onDidCreateBrowserView` の `parentViewId` から開いた元を覚え（`paradisRecordChildWebContents`）、元を辿って判定する。元がエージェントの手にあるときに開かれた子タブは、後で元が手放されても印を持ち続ける（F6）。利用者が共有中のタブで自分で落としたものも同じ扱いになる（安全側）
-- HTTP 認証のパスワードは、hook の `tool_input`（`paradisSanitizeAgentHookPayload`、モバイルの承認カードの元）、会話の記録からチャット表示・モバイルへ出す tool_use（`paradisAgentTranscriptParser.ts` の Claude と Codex の両方）、Codex のサブエージェントの詳細（`paradisCodexLiveClient.ts` の `readThreadMessages`、F9）で `[hidden]` にする（`paradisRedactToolInputSecrets`）
-- 消せない経路（F10）: エージェント CLI 自身の会話ログ（`~/.claude` / `~/.codex`）と、Claude Code / Codex が端末に出す許可の確認（ツールの引数をそのまま表示し、端末のスクロールバックとモバイルの端末表示にも流れる）。Para Code は端末の表示を書き換えないので、ここには出る。値ではなく参照（環境変数の名前など）を渡す形は今回は作っていない
+- エージェントに共有中のタブ（利用者のタブでも）から始まったダウンロードは、すべてエージェント由来にした（`paradisAgentDownloads.ts` の `paradisSetWebContentsHeldByAgent`。`will-download` の第3引数の webContents で見分ける）
+- 子タブ（`target=_blank`・`window.open`・中クリック）は、`onDidCreateBrowserView` の `parentViewId` から開いた元を覚え（`paradisRecordChildWebContents`）、元を辿って判定する（最大 16 段）。そのため、共有中のタブから開かれた子タブ・孫タブで始まったものは、利用者が自分で開いたものでもエージェント由来になる。元がエージェントの手にあるときに開かれた子タブは、後で元が手放されても印を持ち続ける。`download_by_click` の待ちが残っている間（始まってから最長 60 秒、始まらなければ最長 15 秒）のそのタブと子タブのダウンロードも同じ（L6、どれも安全側）
+- HTTP 認証のパスワードは、hook の `tool_input`（`paradisSanitizeAgentHookPayload`、モバイルの承認カードの元）、会話の記録からチャット表示・モバイルへ出す tool_use（`paradisAgentTranscriptParser.ts` の Claude と Codex の両方）、Codex のサブエージェントの詳細（`paradisCodexLiveClient.ts` の `readThreadMessages`）で `[hidden]` にする（`paradisRedactToolInputSecrets`）
+- 消せない経路: エージェント CLI 自身の会話ログ（`~/.claude` / `~/.codex`）と、Claude Code / Codex が端末に出す許可の確認（ツールの引数をそのまま表示し、端末のスクロールバックとモバイルの端末表示にも流れる）。Para Code は端末の表示を書き換えないので、ここには出る。値ではなく参照（環境変数の名前など）を渡す形は今回は作っていない
 
 ### 見送った指摘と限界
 
-- F11（利用者のタブに上書きが掛かっていることが見えない）: ネットワークの上書きを利用者のタブでは断るようにしたので、利用者のタブに上書きが掛かることは無くなった。エージェントのタブに印を出す UI は作っていない
+- F11（上書きが掛かっていることが見えない）: ネットワークの上書きはそのペイン専用の保存領域のタブにしか掛からないので、利用者のタブに掛かることは無い。エージェントのタブに印を出す UI は作っていない
+- L5 の残り: 利用者がエージェントのプロファイルの既存のタブを画面で使い始めただけ（新しいタブを開かない）では検知できず、上書きは残る。プロファイルの印は利用者が開く・切り替える・名前を変えると外れ、その後の上書きは断る
 - 途中で共有が入れ替わったときの押したままのボタン: 共有が変わった後は元のタブへ入力を送れないので、送れなかった離しは諦める（ページに押下が残りうる。利用者が一度クリックすれば解ける）
 - 上書きはトップのフレームのセッションだけに掛かり、別プロセスの iframe（cross-origin）の要求には効かない（効かない側に倒れる）。`login` は webContents 単位なので、iframe の認証の求めにも origin が一致すれば答える
+- そのペイン専用の保存領域の id は、upstream の `BrowserSession.getOrCreateAgent` の式を写して作っている。upstream が式を変えると一致しなくなり、上書きは断られる側に倒れる（upstream 取り込み時に確かめる）
 - PDF はダウンロードの自動保存を切っていても同じフォルダへ置く（保存先を聞くダイアログを出せないため）
 
 | upstream のファイル | 行 | 内容 |
 |---|---|---|
-| `src/vs/platform/browserView/electron-main/browserViewMainService.ts` | import 1行 + 1行 | `showContextMenu` の先頭で `paradisConsumeAgentContextMenuSuppression` を見て、エージェントの右クリックでは OS のメニューを出さない |
-| `eslint.config.js` | 1行 | `src/vs/platform/*/~` から `vs/paradis/contrib/agentBrowser/~` への逆方向 import を許す |
+| `src/vs/platform/browserView/electron-main/browserViewMainService.ts` | import 1行 + 1行 | `showContextMenu` の先頭で `paradisConsumeAgentContextMenuSuppression(view.webContents, params)` を見て、エージェントの入力で開いたメニューだけを出さない |
+| `eslint.config.js` | 1行 | `src/vs/platform/*/~` から `vs/paradis/contrib/agentBrowser/electron-main/paradisAgentContextMenu.js` の1ファイルへの逆方向 import を許す |
 
 ## 内蔵ブラウザの Design Mode とスクリーンショットへの書き込み（browserDesignMode、2026-09-27、フェーズ7 担当B）
 
