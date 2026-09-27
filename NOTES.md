@@ -427,7 +427,7 @@ Design Mode の送信（`paradisDesignModeSender.ts`）は、フェーズ5（エ
 プリセットとの違いは2つあり、寄せた後も残している。
 
 - 改行: プリセットの `_insertAgentPrompt` は貼り付けモードかつ前面のコマンドがエージェントなら改行を残す（`keepNewlines`）。Design Mode はページ由来の値が入るので常に1行へ均す
-- 回答待ちの確認: 状態は hook を送らないエージェント（Codex 等）でも transcript から届く。プリセットの「挿入だけ」は `requireAgentInstance = true` で、hook の実績（`isAgentInstance`）があるペインだけを止める。Design Mode は `false` で、hook の実績が無いペインでも回答待ちなら止める（hook が無いペインには入れる前に確認のダイアログも出す）。どちらも写しの時点の挙動のままで、`paradisPresetAction.test.ts` で両方を押さえている
+- 回答待ちの確認: 状態は hook の実績が無いペイン（hook を切っている・WSL の中・Codex の hook が届かない構成など）にも transcript から届くことがある。プリセットの「挿入だけ」は `requireAgentInstance = true` で、hook の実績（`isAgentInstance`）があるペインだけを止める。Design Mode は `false` で、hook の実績が無いペインでも回答待ちなら止める（hook が無いペインには入れる前に確認のダイアログも出す）。どちらも写しの時点の挙動のままで、`paradisPresetAction.test.ts` で両方を押さえている
 
 upstream 取り込み時に確認すること:
 

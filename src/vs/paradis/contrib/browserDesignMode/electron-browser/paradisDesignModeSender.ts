@@ -370,9 +370,10 @@ export class ParadisDesignModeSender {
 		}
 		for (const path of paths) {
 			await timeout(PASTE_GAP_MS);
-			this._throwIfAwaitingAnswer(instance);
 			const quoted = await preparePathForShell(path, instance.shellLaunchConfig.executable ?? 'sh', instance.title, instance.shellType, undefined, instance.os);
 			const pasted = paradisBuildPresetInsertText(quoted, false);
+			// 確かめてから送るまでの間に await を挟まない（パスの整形を待つ間にも状態は変わりうる）
+			this._throwIfAwaitingAnswer(instance);
 			if (pasted !== undefined) {
 				await instance.sendText(' ', false, false);
 				await instance.sendText(pasted, false, true);
