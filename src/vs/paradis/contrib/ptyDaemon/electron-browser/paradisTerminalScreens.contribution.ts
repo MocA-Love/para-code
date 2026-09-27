@@ -6,16 +6,18 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 常駐ターミナルの画面のディスク保存と、PC 再起動後の復元（Q49 A / TM14）。
+// 常駐ターミナルの画面のディスク保存と、PC 再起動後の復元（TM14）。
 // 何を・なぜは `../common/paradisTerminalScreens.ts` の冒頭。ここは実際の読み書き。
 //
-// - 保存: 常駐を使っている間、1分ごとに（出力があったときだけ。無くても10分に1回）、ターミナルを
-//   閉じたとき、アプリを閉じるときに、pty ホストの `serializeTerminalState` を
-//   `workspaceStorage/<ワークスペース>/paradisTerminalScreens.json` へ書く。ターミナルが
-//   1本も無くなったらファイルを消す（閉じたターミナルの画面は、次の保存で消える）
+// - 保存: **常駐へ実際に繋がっている間だけ**、5分ごとに（出力があったときだけ。無くても30分に1回）、
+//   ターミナルを閉じたとき、アプリを閉じるときに、pty ホストの `serializeTerminalState` を
+//   main プロセス経由（`terminalPrivateFiles`、0600）で `<ユーザーデータ>/paradisTerminalScreens/`
+//   へ書く。保存時の常駐（pid と起動時刻）も一緒に書く。ターミナルが1本も無くなったらファイルを
+//   消す（閉じたターミナルの画面は、次の保存で消える）。間隔が長めなのは、直列化が端末ごとに
+//   cwd の取得（macOS では lsof）とバッファ全体の書き出しを伴うため
 // - 復元: upstream の `getTerminalLayoutInfo` から（PARA-PATCH 1行）`take` が呼ばれる。
-//   保存したときの常駐がもう居なければ中身を渡し、ファイルは消す（upstream がストレージの
-//   保存物を使ったあと消すのと同じ。2回使うと、起こし直したシェルを次の起動でまた起こす）
+//   保存したときの常駐がもうどこにも居なければ中身を渡し、ファイルは消す（2回使うと、起こし直した
+//   シェルを次の起動でまた起こす）。渡す前に、落としておいたペイン用の環境変数を付け直す
 // - 期限: 30日より古い保存物は使わずに消す。開かれなくなったワークスペースの分も、
 //   起動してしばらくしてから一度だけ見回って消す
 //
@@ -25,42 +27,40 @@
 import { IntervalTimer, raceTimeout } from '../../../../base/common/async.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { isWindows } from '../../../../base/common/platform.js';
-import { joinPath } from '../../../../base/common/resources.js';
-import { URI } from '../../../../base/common/uri.js';
-import { VSBuffer } from '../../../../base/common/buffer.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
-import { FileOperationError, FileOperationResult, IFileService } from '../../../../platform/files/common/files.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { ILocalPtyService } from '../../../../platform/terminal/common/terminal.js';
+import { ILocalPtyService, IShellLaunchConfig } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
+import { IParadisTerminalPrivateFiles, PARADIS_TERMINAL_PRIVATE_FILES_CHANNEL } from '../../terminalPrivateFiles/common/paradisTerminalPrivateFiles.js';
 import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
-import { IParadisPtyDaemonStatusService, PARADIS_PTY_DAEMON_CHANNEL } from '../common/paradisPtyDaemonStatus.js';
+import { IParadisPtyDaemonStatus, IParadisPtyDaemonStatusService, PARADIS_PTY_DAEMON_CHANNEL } from '../common/paradisPtyDaemonStatus.js';
 import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_SAVE_SCREENS, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 import {
+	IParadisDaemonStatusLike,
+	paradisDaemonIdentityForSave,
 	paradisDecideSavedScreens,
 	paradisDecodeTerminalScreens,
 	paradisEncodeTerminalScreens,
 	ParadisSavedScreensDecision,
-	PARADIS_TERMINAL_SCREENS_FILE,
 	PARADIS_TERMINAL_SCREENS_MAX_AGE,
 } from '../common/paradisTerminalScreens.js';
 import { paradisSetTerminalScreenSource } from './paradisTerminalScreenRestore.js';
 
 /** 出力があったときの保存間隔。 */
-const SAVE_INTERVAL = 60_000;
+const SAVE_INTERVAL = 5 * 60_000;
 /** 出力が無くても保存する間隔（非表示のスペースに置いた端末の出力は数えられないため）。 */
-const SAVE_FALLBACK_INTERVAL = 10 * 60_000;
+const SAVE_FALLBACK_INTERVAL = 30 * 60_000;
 /** ターミナルを閉じてから保存するまでの待ち（続けて閉じたときに1回へまとめる）。 */
 const SAVE_AFTER_CLOSE_DELAY = 2_000;
 /** 閉じるときの保存にかけてよい時間（upstream の persistTerminalState と同じ上限）。 */
 const SAVE_ON_SHUTDOWN_TIMEOUT = 2_000;
-/** 常駐の状態を聞くのにかけてよい時間。越えたら「分からない」として戻さない。 */
+/** 常駐の状態を聞くのにかけてよい時間。越えたら「分からない」として保存も復元もしない。 */
 const DAEMON_STATUS_TIMEOUT = 3_000;
 /**
  * 復元（`take`）が一度も呼ばれないときに、保存を始めてよいとみなすまでの時間。
@@ -70,8 +70,8 @@ const RESTORE_SETTLE_FALLBACK = 2 * 60_000;
 /** 古い保存物の見回りを始めるまでの時間。 */
 const SWEEP_DELAY = 5 * 60_000;
 
-/** 保存・復元を働かせるか。 */
-function paradisScreensActive(configurationService: IConfigurationService): boolean {
+/** 設定の上で保存・復元を働かせるか（実際に常駐へ繋がっているかは、使う直前に状態で確かめる）。 */
+function paradisScreensEnabled(configurationService: IConfigurationService): boolean {
 	if (isWindows || configurationService.getValue<boolean>(PARADIS_PTY_DAEMON_SAVE_SCREENS) === false) {
 		return false;
 	}
@@ -79,8 +79,12 @@ function paradisScreensActive(configurationService: IConfigurationService): bool
 		|| configurationService.getValue<boolean>(PARADIS_PTY_HOST_DAEMON_ENABLED) === true;
 }
 
-function screensFile(environmentService: IEnvironmentService, workspaceId: string): URI {
-	return joinPath(environmentService.workspaceStorageHome, workspaceId, PARADIS_TERMINAL_SCREENS_FILE);
+function toStatusLike(status: IParadisPtyDaemonStatus | undefined): IParadisDaemonStatusLike | undefined {
+	return status ? { running: status.running, pid: status.pid, startedAt: status.startedAt, foreign: status.foreign } : undefined;
+}
+
+async function readDaemonStatus(service: IParadisPtyDaemonStatusService): Promise<IParadisDaemonStatusLike | undefined> {
+	return toStatusLike(await raceTimeout(service.getStatus().catch(() => undefined), DAEMON_STATUS_TIMEOUT));
 }
 
 /** 復元が済んだ（または復元の出番が無いと分かった）か。保存はそれまで始めない。 */
@@ -89,23 +93,24 @@ let restoreSettled = false;
 /**
  * 保存画面を upstream の復元へ渡す役。ターミナルが繋ぎ直しを始めるより前に居る必要があるので、
  * 起動の最初（BlockStartup）に差し込む。依存は軽いものだけにしてある（ここで ITerminalService を
- * 取ると、ターミナルのサービスを起動の最初に作らせてしまう）。
+ * 取ると、ターミナルのサービスを起動の最初に作らせてしまう。ペイントークンのサービスは遅延生成）。
  */
 class ParadisTerminalScreenSourceContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisTerminalScreenSource';
 
 	private readonly _status: IParadisPtyDaemonStatusService;
+	private readonly _files: IParadisTerminalPrivateFiles;
 
 	constructor(
-		@IFileService private readonly _fileService: IFileService,
-		@IEnvironmentService private readonly _environmentService: IEnvironmentService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IMainProcessService mainProcessService: IMainProcessService,
+		@IParadisPaneTokenService private readonly _paneTokenService: IParadisPaneTokenService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
 		this._status = ProxyChannel.toService<IParadisPtyDaemonStatusService>(mainProcessService.getChannel(PARADIS_PTY_DAEMON_CHANNEL));
+		this._files = ProxyChannel.toService<IParadisTerminalPrivateFiles>(mainProcessService.getChannel(PARADIS_TERMINAL_PRIVATE_FILES_CHANNEL));
 		this._register(paradisSetTerminalScreenSource({ take: workspaceId => this._take(workspaceId) }));
 		const fallback = setTimeout(() => restoreSettled = true, RESTORE_SETTLE_FALLBACK);
 		this._register(toDisposable(() => clearTimeout(fallback)));
@@ -113,54 +118,61 @@ class ParadisTerminalScreenSourceContribution extends Disposable implements IWor
 
 	private async _take(workspaceId: string): Promise<string | undefined> {
 		try {
-			if (!paradisScreensActive(this._configurationService)) {
+			if (!paradisScreensEnabled(this._configurationService)) {
 				return undefined;
 			}
-			const file = screensFile(this._environmentService, workspaceId);
-			let content: string;
-			try {
-				content = (await this._fileService.readFile(file)).value.toString();
-			} catch (error) {
-				if (!(error instanceof FileOperationError && error.fileOperationResult === FileOperationResult.FILE_NOT_FOUND)) {
-					this._logService.warn('[ParadisTerminalScreens] could not read the saved screens', error);
-				}
+			const content = await this._files.readScreens(workspaceId);
+			if (content === undefined) {
 				return undefined;
 			}
 			const saved = paradisDecodeTerminalScreens(content);
 			if (!saved) {
-				await this._delete(file);
+				await this._files.deleteScreens(workspaceId);
 				return undefined;
 			}
-			const status = await raceTimeout(this._status.getStatus().catch(() => undefined), DAEMON_STATUS_TIMEOUT);
-			const decision = paradisDecideSavedScreens(saved, Date.now(), status ? { running: status.running, startedAt: status.startedAt } : undefined);
+			const decision = paradisDecideSavedScreens(saved, Date.now(), await readDaemonStatus(this._status));
 			this._logService.info(`[ParadisTerminalScreens] saved screens from ${new Date(saved.savedAt).toISOString()}: ${decision}`);
 			switch (decision) {
 				case ParadisSavedScreensDecision.Revive:
-					await this._delete(file);
-					return saved.state;
+					await this._files.deleteScreens(workspaceId);
+					return this._restorePaneEnvironment(saved.state);
 				case ParadisSavedScreensDecision.Expired:
-					await this._delete(file);
+					await this._files.deleteScreens(workspaceId);
 					return undefined;
 				default:
 					// 保存したときの常駐がまだ抱えている（または分からない）。ファイルは残し、
 					// 次の保存で今の状態に書き換わるのに任せる。
 					return undefined;
 			}
+		} catch (error) {
+			this._logService.warn('[ParadisTerminalScreens] could not read the saved screens', error);
+			return undefined;
 		} finally {
 			restoreSettled = true;
 		}
 	}
 
-	private async _delete(file: URI): Promise<void> {
+	/**
+	 * 保存するときに落としたペイン用の環境変数（ペイントークンなど）を、起こし直す前に付け直す。
+	 * トークンはシェル統合の nonce から決まるので、新しく作るターミナルと同じ値になる。
+	 * 付け直さないと、起こし直したシェルで起動したエージェントが内蔵ブラウザと結び付かない。
+	 */
+	private _restorePaneEnvironment(serialized: string): string {
 		try {
-			await this._fileService.del(file);
+			const value = JSON.parse(serialized) as { state?: { shellLaunchConfig?: IShellLaunchConfig }[] };
+			for (const entry of value.state ?? []) {
+				if (entry.shellLaunchConfig && !entry.shellLaunchConfig.attachPersistentProcess) {
+					this._paneTokenService.prepareShellLaunchConfig(entry.shellLaunchConfig);
+				}
+			}
+			return JSON.stringify(value);
 		} catch {
-			// 既に無い
+			return serialized;
 		}
 	}
 }
 
-/** 常駐を使っている間、画面を定期的に保存する役。 */
+/** 常駐へ繋がっている間、画面を定期的に保存する役。 */
 class ParadisTerminalScreenSaverContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisTerminalScreenSaver';
@@ -169,19 +181,22 @@ class ParadisTerminalScreenSaverContribution extends Disposable implements IWork
 	private _lastSavedAt = 0;
 	private _saving: Promise<void> | undefined;
 	private _closeTimer: ReturnType<typeof setTimeout> | undefined;
+	private readonly _status: IParadisPtyDaemonStatusService;
+	private readonly _files: IParadisTerminalPrivateFiles;
 
 	constructor(
 		@ITerminalService private readonly _terminalService: ITerminalService,
 		@ITerminalGroupService private readonly _terminalGroupService: ITerminalGroupService,
 		@ILocalPtyService private readonly _localPtyService: ILocalPtyService,
-		@IFileService private readonly _fileService: IFileService,
-		@IEnvironmentService private readonly _environmentService: IEnvironmentService,
+		@IMainProcessService mainProcessService: IMainProcessService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@ILifecycleService private readonly _lifecycleService: ILifecycleService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
+		this._status = ProxyChannel.toService<IParadisPtyDaemonStatusService>(mainProcessService.getChannel(PARADIS_PTY_DAEMON_CHANNEL));
+		this._files = ProxyChannel.toService<IParadisTerminalPrivateFiles>(mainProcessService.getChannel(PARADIS_TERMINAL_PRIVATE_FILES_CHANNEL));
 		if (isWindows) {
 			return;
 		}
@@ -189,7 +204,7 @@ class ParadisTerminalScreenSaverContribution extends Disposable implements IWork
 		this._register(this._terminalService.onDidCreateInstance(() => this._dirty = true));
 		this._register(this._terminalService.onDidDisposeInstance(() => this._scheduleSaveAfterClose()));
 		this._register(new IntervalTimer()).cancelAndSet(() => this._tick(), SAVE_INTERVAL);
-		const sweep = setTimeout(() => void this._sweepExpired(), SWEEP_DELAY);
+		const sweep = setTimeout(() => void this._files.sweepScreens(PARADIS_TERMINAL_SCREENS_MAX_AGE).catch(() => { }), SWEEP_DELAY);
 		this._register(toDisposable(() => {
 			clearTimeout(sweep);
 			if (this._closeTimer !== undefined) {
@@ -199,19 +214,23 @@ class ParadisTerminalScreenSaverContribution extends Disposable implements IWork
 		// 設定で止めたら、今のワークスペースの保存物もすぐ消す（残しておく理由が無い）
 		this._register(this._configurationService.onDidChangeConfiguration(e => {
 			if ((e.affectsConfiguration(PARADIS_PTY_DAEMON_SAVE_SCREENS) || e.affectsConfiguration(PARADIS_PTY_DAEMON_ENABLED) || e.affectsConfiguration(PARADIS_PTY_HOST_DAEMON_ENABLED))
-				&& !paradisScreensActive(this._configurationService)) {
-				void this._fileService.del(screensFile(this._environmentService, this._workspaceContextService.getWorkspace().id)).catch(() => { });
+				&& !paradisScreensEnabled(this._configurationService)) {
+				void this._files.deleteScreens(this._workspaceId()).catch(() => { });
 			}
 		}));
 		this._register(this._lifecycleService.onBeforeShutdown(e => {
-			if (restoreSettled && paradisScreensActive(this._configurationService)) {
+			if (restoreSettled && paradisScreensEnabled(this._configurationService)) {
 				e.veto(raceTimeout(this._save(), SAVE_ON_SHUTDOWN_TIMEOUT).then(() => false), 'paradis.saveTerminalScreens');
 			}
 		}));
 	}
 
+	private _workspaceId(): string {
+		return this._workspaceContextService.getWorkspace().id;
+	}
+
 	private _tick(): void {
-		if (this._lifecycleService.willShutdown || !restoreSettled || !paradisScreensActive(this._configurationService)) {
+		if (this._lifecycleService.willShutdown || !restoreSettled || !paradisScreensEnabled(this._configurationService)) {
 			return;
 		}
 		if (this._dirty || Date.now() - this._lastSavedAt >= SAVE_FALLBACK_INTERVAL) {
@@ -251,46 +270,26 @@ class ParadisTerminalScreenSaverContribution extends Disposable implements IWork
 	}
 
 	private async _doSave(): Promise<void> {
-		const file = screensFile(this._environmentService, this._workspaceContextService.getWorkspace().id);
+		const workspaceId = this._workspaceId();
 		this._dirty = false;
 		try {
+			// **常駐へ実際に繋がっているときだけ書く。** アプリの中の pty ホストが端末を持っている
+			// ときに書くと、ウィンドウの再読み込みで生きているシェルを起こし直してしまう
+			const daemon = paradisDaemonIdentityForSave(await readDaemonStatus(this._status));
+			if (!daemon) {
+				return;
+			}
 			const ids = this._instances().map(instance => instance.persistentProcessId!);
 			if (ids.length === 0) {
-				if (await this._fileService.exists(file)) {
-					await this._fileService.del(file);
-				}
+				await this._files.deleteScreens(workspaceId);
 			} else {
 				const state = await this._localPtyService.serializeTerminalState(ids);
-				await this._fileService.writeFile(file, VSBuffer.fromString(paradisEncodeTerminalScreens(Date.now(), state)));
+				await this._files.writeScreens(workspaceId, paradisEncodeTerminalScreens(Date.now(), daemon, state));
 			}
 			this._lastSavedAt = Date.now();
 		} catch (error) {
 			this._dirty = true;
 			this._logService.warn('[ParadisTerminalScreens] could not save the terminal screens', error);
-		}
-	}
-
-	/** 30日より古い保存物を、全ワークスペースぶん消す（開かれなくなったワークスペースの分を残さない）。 */
-	private async _sweepExpired(): Promise<void> {
-		try {
-			const root = await this._fileService.resolve(this._environmentService.workspaceStorageHome);
-			const now = Date.now();
-			for (const child of root.children ?? []) {
-				if (!child.isDirectory || this._store.isDisposed) {
-					continue;
-				}
-				const file = joinPath(child.resource, PARADIS_TERMINAL_SCREENS_FILE);
-				try {
-					const stat = await this._fileService.stat(file);
-					if (now - stat.mtime > PARADIS_TERMINAL_SCREENS_MAX_AGE) {
-						await this._fileService.del(file);
-					}
-				} catch {
-					// 無い
-				}
-			}
-		} catch (error) {
-			this._logService.trace('[ParadisTerminalScreens] sweep skipped', error);
 		}
 	}
 }

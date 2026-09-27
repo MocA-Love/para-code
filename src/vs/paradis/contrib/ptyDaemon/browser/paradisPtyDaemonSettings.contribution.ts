@@ -46,7 +46,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.terminal.daemon.saveScreens', "常駐を使っている間、ターミナルの画面を定期的にディスクへ保存し、PC を再起動した後に開いたとき、直前の画面とタブの配置を戻します（シェルは起動し直されます）。{0} または「更新をまたいで繋ぎ直す」が有効なときに意味を持ちます。\n\n保存した画面は30日で消え、ターミナルを閉じるとすぐに消えます。画面に写っていた秘密情報もその間ディスクに残るため、気になる場合はオフにしてください。", `\`#${PARADIS_PTY_DAEMON_ENABLED}#\``),
+			markdownDescription: localize('paradis.terminal.daemon.saveScreens', "常駐を使っている間、ターミナルの画面を定期的にディスクへ保存し、PC を再起動した後に開いたとき、直前の画面とタブの配置を戻します（シェルは起動し直されます）。{0} または「更新をまたいで繋ぎ直す」が有効なときに意味を持ちます。\n\n常駐へ実際に繋がっている間だけ保存します。保存するのは画面の中身に加えて、シェルの起動条件（環境変数を含む。Para Code 内部用の値とペイントークンは除きます）で、本人だけが読める権限のファイルに書きます。保存した画面は30日で消え、ターミナルを閉じるとすぐに消えます。画面や環境変数に含まれていた秘密情報もその間ディスクに残るため、気になる場合はオフにしてください。", `\`#${PARADIS_PTY_DAEMON_ENABLED}#\``),
 		},
 		[PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE]: {
 			type: 'string',
