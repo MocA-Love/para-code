@@ -9,6 +9,7 @@
 // 歯車メニュー →「定期実行」で開くモーダル（Q78 案A）。左に定期実行の一覧、右に中身と実行履歴。
 // 形は使用量ダイアログ（左ナビ＋本文）に揃えている。
 //
+// 内蔵ブラウザの裏に隠れないよう、backdrop に共通の印 `paradis-modal-backdrop`（overlayManager.ts に登録済み）を付ける。
 // 重ね順はワークベンチのモーダル（2575）より下に置く。削除の確認に IDialogService を使うため
 // （dialogStyle が custom のときの確認ダイアログは 2575 に出る）。
 
@@ -230,7 +231,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
-		this.backdrop = $('.paradis-scheduled-runs-backdrop');
+		this.backdrop = $('.paradis-scheduled-runs-backdrop.paradis-modal-backdrop');
 		this.modal = dom.append(this.backdrop, $('.paradis-scheduled-runs'));
 		this.modal.setAttribute('role', 'dialog');
 		this.modal.setAttribute('aria-modal', 'true');

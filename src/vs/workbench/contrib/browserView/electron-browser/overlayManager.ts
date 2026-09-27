@@ -50,6 +50,8 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	{ className: 'paradis-settings-dialog-backdrop', type: BrowserOverlayType.Dialog },
 	// PARA-PATCH: the fork's combined usage dashboard dialog (paradisUsageDashboardDialog.ts).
 	{ className: 'paradis-usage-dashboard-backdrop', type: BrowserOverlayType.Dialog },
+	// PARA-PATCH: shared marker class for fork DOM modals (scheduled runs, skills, and later ones), so new modals need no further edit here.
+	{ className: 'paradis-modal-backdrop', type: BrowserOverlayType.Dialog },
 	// PARA-PATCH: the fork's browser profile management / creation dialogs
 	// (vs/paradis/contrib/browserProfiles).
 	{ className: 'paradis-browser-profile-backdrop', type: BrowserOverlayType.Dialog },

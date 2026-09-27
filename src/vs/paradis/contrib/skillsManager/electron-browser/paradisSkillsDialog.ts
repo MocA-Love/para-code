@@ -10,6 +10,7 @@
 // 形は使用量ダイアログ・定期実行のモーダル（左ナビ＋本文）に揃えている。
 //
 // ファイルを書き換えるのは「削除」「導入」のボタンを押して確認に「はい」と答えたときだけ。
+// 内蔵ブラウザの裏に隠れないよう、backdrop に共通の印 `paradis-modal-backdrop`（overlayManager.ts に登録済み）を付ける。
 // 重ね順はワークベンチのモーダル（2575）より下に置き、確認に IDialogService を使う。
 
 import './media/paradisSkills.css';
@@ -74,7 +75,7 @@ export class ParadisSkillsDialog extends Disposable {
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
-		this.backdrop = $('.paradis-skills-backdrop');
+		this.backdrop = $('.paradis-skills-backdrop.paradis-modal-backdrop');
 		this.modal = dom.append(this.backdrop, $('.paradis-skills'));
 		this.modal.setAttribute('role', 'dialog');
 		this.modal.setAttribute('aria-modal', 'true');
