@@ -1,0 +1,98 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* ---------- prompt cache countdown in the editor terminal (paradisPromptCacheBadge.ts) ----------
+ *
+ * Sits just left of the browser-share dot (.paradis-pane-indicator: top 4px, right 6px, 16px wide),
+ * inside the same `position: relative` overflow guard. Selectors carry the workbench and container
+ * classes so upstream terminal rules (xterm layers use z-index up to ~30) do not bury the badge.
+ */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-prompt-cache-badge {
+	position: absolute;
+	top: 4px;
+	right: 26px;
+	height: 16px;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	padding: 0 4px;
+	border-radius: var(--vscode-cornerRadius-small);
+	font-size: var(--vscode-fontSize-label3);
+	font-variant-numeric: tabular-nums;
+	line-height: 16px;
+	color: var(--vscode-descriptionForeground);
+	background-color: color-mix(in srgb, var(--vscode-terminal-background, var(--vscode-editor-background)) 80%, transparent);
+	z-index: 35;
+	pointer-events: auto;
+	user-select: none;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-prompt-cache-badge.hidden {
+	display: none;
+}
+
+/* The terminal find widget (.simple-find-part-wrapper, right: 18px, z-index 10..33) opens over the
+ * same corner. Step aside while it is shown so the badge never covers its buttons or eats the clicks
+ * meant for them; the share dot at right: 6px stays clear of the widget and is left alone. */
+.monaco-workbench .terminal-overflow-guard.terminal-editor:has(.simple-find-part.visible) .paradis-prompt-cache-badge {
+	display: none;
+}
+
+/* High contrast themes: the translucent background alone does not separate the badge from the
+ * terminal text behind it. */
+.monaco-workbench.hc-black .terminal-overflow-guard.terminal-editor .paradis-prompt-cache-badge,
+.monaco-workbench.hc-light .terminal-overflow-guard.terminal-editor .paradis-prompt-cache-badge {
+	border: var(--vscode-strokeThickness) solid var(--vscode-contrastBorder);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-prompt-cache-badge > .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+	color: inherit;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-prompt-cache-badge.warning {
+	color: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow));
+}
+
+/* ---------- prompt cache countdown in the Workspaces row meta (paradisPromptCacheChips.ts) ---------- */
+.monaco-workbench .paradis-workspaces-list .paradis-worktree-meta > .paradis-worktree-prompt-cache {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	flex-shrink: 1;
+	min-width: 0;
+	overflow: hidden;
+	font-size: 0.8em;
+	line-height: 1;
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-workspaces-list .paradis-worktree-meta > .paradis-worktree-prompt-cache.hidden {
+	display: none;
+}
+
+.monaco-workbench .paradis-workspaces-list .paradis-worktree-meta > .paradis-worktree-prompt-cache > .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+	color: inherit;
+}
+
+.monaco-workbench .paradis-workspaces-list .paradis-worktree-meta > .paradis-worktree-prompt-cache.warning {
+	color: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow));
+}
+
+/* Not counting (the agent is responding, or the cache has expired): keep a dimmed flame so the row
+ * keeps its height instead of growing and shrinking every turn. */
+.monaco-workbench .paradis-workspaces-list .paradis-worktree-meta > .paradis-worktree-prompt-cache.paused {
+	color: var(--vscode-disabledForeground);
+}
+
+/* The selected / focused row paints its own foreground; keep the countdown readable there. */
+.monaco-workbench .paradis-workspaces-list .monaco-list-row.selected .paradis-worktree-meta > .paradis-worktree-prompt-cache:not(.warning):not(.paused),
+.monaco-workbench .paradis-workspaces-list .monaco-list-row.focused .paradis-worktree-meta > .paradis-worktree-prompt-cache:not(.warning):not(.paused) {
+	color: inherit;
+}

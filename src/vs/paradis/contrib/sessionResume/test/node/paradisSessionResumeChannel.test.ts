@@ -104,6 +104,29 @@ suite('ParadisSessionResume', () => {
 		}
 	}
 
+	test('marks sessions without a prompt as empty and returns the log path and the full first prompt as details', async () => {
+		const longPrompt = `First prompt ${'x'.repeat(20_000)}`;
+		const withPrompt = join(claudeProject, 'with-prompt.jsonl');
+		const emptySession = join(claudeProject, 'empty-session.jsonl');
+		await Promise.all([
+			writeLines(withPrompt, [claudeMessage('user', longPrompt), claudeMessage('assistant', 'Done')]),
+			writeLines(emptySession, [JSON.stringify({ type: 'summary', summary: 'nothing' })]),
+		]);
+		const service = createService();
+		const sessions = await listSessions(service);
+		const byId = new Map(sessions.map(session => [session.id, session]));
+		const details = await service.details(byId.get('with-prompt')!.catalogId);
+		assert.deepStrictEqual({
+			empty: { withPrompt: byId.get('with-prompt')?.empty, emptySession: byId.get('empty-session')?.empty },
+			details: { transcriptPath: details.transcriptPath, firstPromptLength: details.firstPrompt?.length },
+			unknown: await service.details('session-unknown').then(() => 'resolved', (error: Error) => error.message),
+		}, {
+			empty: { withPrompt: false, emptySession: true },
+			details: { transcriptPath: withPrompt, firstPromptLength: longPrompt.length },
+			unknown: 'Session is no longer available.',
+		});
+	});
+
 	test('lists Claude and Codex transcripts with workspace metadata, agent, mtime, and opaque catalog ids', async () => {
 		const claudePath = join(claudeProject, 'claude-session.jsonl');
 		const codexPath = join(codexSessions, 'rollout-codex-session.jsonl');

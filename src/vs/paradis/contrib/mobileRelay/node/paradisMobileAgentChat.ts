@@ -51,6 +51,7 @@ import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, 
 import { paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
 export type ParadisAgentKind = 'claude' | 'codex';
@@ -2298,6 +2299,11 @@ class TranscriptTailer {
 	effort: string | undefined;
 	/** transcript の行が書かれた CLI のバージョン。計測にのみ使う（モバイルへは送らない）。 */
 	cliVersion: string | undefined;
+	/**
+	 * Claude のプロンプトキャッシュを最後に使ったリクエストの時刻と有効期限の長さ
+	 * （デスクトップのスペース一覧・ターミナルの残り時間表示用。モバイルへは送らない）。
+	 */
+	promptCache: IParadisAgentPromptCache | undefined;
 	/** 初回読み込みが完了したら resolve (attach応答はこれを待つ)。 */
 	readonly ready: Promise<void>;
 
@@ -2598,6 +2604,7 @@ class TranscriptTailer {
 				continue;
 			}
 			if (this.agent === 'claude') {
+				this.observePromptCache(obj);
 				const progress = parseClaudeProgress(obj);
 				if (progress !== undefined) {
 					latestProgress = progress;
@@ -2674,6 +2681,31 @@ class TranscriptTailer {
 		if (emitDelta) {
 			this.delegate.onDelta(added);
 		}
+	}
+
+	/** 直前の user 行（ユーザーの発言か tool_result）の時刻＝次のリクエストを送った時刻の近似。 */
+	private promptRequestStartedAt: number | undefined;
+
+	/**
+	 * assistant 行の usage からプロンプトキャッシュの使い方を拾う（デスクトップ表示専用）。
+	 * 起点は応答を書き終えた時刻ではなく、その応答を求めたリクエストの時刻（直前の user 行）。
+	 * 読み込みだけのリクエストは有効期限の長さを変えないので、直前に書いたときの長さを引き継ぐ。
+	 */
+	private observePromptCache(line: Record<string, unknown>): void {
+		const requestStart = paradisReadClaudeRequestStart(line);
+		if (requestStart !== undefined) {
+			this.promptRequestStartedAt = requestStart;
+			return;
+		}
+		const usage = paradisReadClaudePromptCacheUsage(line);
+		if (usage === undefined) {
+			return;
+		}
+		const usedAt = this.promptRequestStartedAt !== undefined && this.promptRequestStartedAt <= usage.at ? this.promptRequestStartedAt : usage.at;
+		if (this.promptCache !== undefined && usedAt < this.promptCache.lastUsedAt) {
+			return;
+		}
+		this.promptCache = { lastUsedAt: usedAt, ttlMs: usage.ttlMs ?? this.promptCache?.ttlMs ?? PARADIS_PROMPT_CACHE_TTL_5M };
 	}
 
 	/** 直近に注入した承認要求の内容キー（PermissionRequest hookの再発火による重複注入の抑止）。 */
@@ -3105,6 +3137,21 @@ export class ParadisMobileAgentChat extends Disposable {
 	private lastConfirmedAgentPaneTokens: readonly string[] = [];
 	private lastAgentPaneTokensOutsideHookReach: readonly string[] = [];
 
+	// ---- デスクトップ UI 向けの読み取り口（モバイルへ送るものには一切影響しない） ----
+	private readonly _onDidChangeDesktopPaneInsights = this._register(new Emitter<void>());
+	/** どれかのペインの様子（サブエージェント・最後の発言・待っている内容・キャッシュ）が変わった。 */
+	readonly onDidChangeDesktopPaneInsights = this._onDidChangeDesktopPaneInsights.event;
+	/**
+	 * hook から拾った「いま待っている内容」。モバイル向けの質問/承認の注入はペアリング済みの
+	 * モバイルがあるときだけ動くため、デスクトップはそれに頼らず hook から直接覚えておく。
+	 */
+	private readonly desktopInteractions = new Map<string, IParadisAgentPaneInteraction>();
+	/** tailer から作った待ち内容を最初に見た時刻（内容が変わるまで同じ時刻を返すため）。 */
+	private readonly desktopTailerInteractionSeenAt = new Map<string, { readonly key: string; readonly at: number }>();
+	/** 前回知らせた時点の様子の指紋。変わったペインがあるときだけ知らせる。 */
+	private readonly desktopInsightSignatures = new Map<string, string>();
+	private desktopInsightTimer: ReturnType<typeof setTimeout> | undefined;
+
 	/** ペイントークン → 既知のセッション情報 (hookバスから学習、購読の有無に関わらず保持)。 */
 	private readonly paneSessions = new Map<string, IPaneSessionInfo>();
 	/**
@@ -3232,6 +3279,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		super();
 		this.codexDirectoryWalkLedger = codexDirectoryWalkBudget ?? new ParadisDirectoryWalkLedger(PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS, PARADIS_CODEX_DIRECTORY_WALK_LIMIT);
 		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService));
+		this._register(toDisposable(() => clearTimeout(this.desktopInsightTimer)));
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
 		void this.loadPersistedSessions();
 		this._register(onParadisAgentNestedHookEvent(event => this.onNestedHookEvent(event)));
@@ -5130,6 +5178,193 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
+	// ---- デスクトップ UI 向けの読み取り口 ----------------------------------------------------------
+	//
+	// ここから下はモバイルへ何も送らない。既に読んでいる transcript・hook・活動ツリーの結果を、
+	// デスクトップが引ける形に写すだけ（IParadisAgentPaneInsightSource、agentInsights 参照）。
+
+	/**
+	 * 指定したペインの様子。セッションが確定していない・もう生きていないペインは返さない。
+	 * モバイル連携の有効/無効には依存しない（status 用の tail はモバイル接続から独立して動いている）。
+	 */
+	getDesktopPaneInsights(tokens: readonly string[]): IParadisAgentPaneInsight[] {
+		const insights: IParadisAgentPaneInsight[] = [];
+		for (const token of tokens) {
+			const insight = this.desktopPaneInsight(token);
+			if (insight !== undefined) {
+				insights.push(insight);
+			}
+		}
+		return insights;
+	}
+
+	private desktopPaneInsight(token: string): IParadisAgentPaneInsight | undefined {
+		const session = this.paneSessions.get(token);
+		if (session === undefined || !this.isLiveToken(token)) {
+			return undefined;
+		}
+		const tailer = this.tailers.get(token);
+		const subagents = paradisSelectInsightSubagents((this.activityTrackers.get(token)?.snapshot()?.agents ?? []).map(agent => ({
+			id: agent.id,
+			label: agent.label,
+			role: agent.role,
+			status: agent.status,
+			startedAt: agent.startedAt,
+			updatedAt: agent.updatedAt,
+			...(agent.depth !== undefined ? { depth: agent.depth } : {}),
+		})));
+		let lastMessage: IParadisAgentPaneInsight['lastMessage'];
+		for (let index = (tailer?.messages.length ?? 0) - 1; index >= 0 && tailer !== undefined; index--) {
+			const message = tailer.messages[index];
+			if (message.role === 'assistant' && message.kind === 'text' && message.text.trim().length > 0) {
+				lastMessage = { text: paradisOneLine(message.text, 300), ...(message.ts !== undefined ? { at: message.ts } : {}) };
+				break;
+			}
+		}
+		const interaction = this.desktopInteractions.get(token) ?? (tailer !== undefined ? this.desktopInteractionFromTailer(token, tailer) : undefined);
+		const promptCache = session.agent === 'claude' ? tailer?.promptCache : undefined;
+		return {
+			token,
+			agent: session.agent,
+			subagents,
+			...(lastMessage !== undefined ? { lastMessage } : {}),
+			...(interaction !== undefined ? { interaction } : {}),
+			...(promptCache !== undefined ? { promptCache } : {}),
+		};
+	}
+
+	/** hook から拾えなかったとき（再起動直後など）に、tailer が持っている未決着の質問・承認から作る。 */
+	private desktopInteractionFromTailer(token: string, tailer: TranscriptTailer): IParadisAgentPaneInteraction | undefined {
+		let found: Omit<IParadisAgentPaneInteraction, 'at'> & { readonly at?: number } | undefined;
+		if (tailer.pendingQuestions.size > 0) {
+			for (let index = tailer.messages.length - 1; index >= 0; index--) {
+				const message = tailer.messages[index];
+				if (message.kind === 'question' && message.toolUseId !== undefined && tailer.pendingQuestions.has(message.toolUseId)) {
+					found = { kind: 'question', text: paradisOneLine(message.text, 200), ...(message.ts !== undefined ? { at: message.ts } : {}) };
+					break;
+				}
+			}
+		}
+		const current = found === undefined ? tailer.currentInteraction() : null;
+		if (current?.kind === 'approval') {
+			const text = [current.title, current.detail].filter((part): part is string => part !== undefined && part.length > 0).join(': ');
+			if (text.length > 0) {
+				found = { kind: 'permission', text: paradisOneLine(text, 200) };
+			}
+		}
+		if (found === undefined) {
+			this.desktopTailerInteractionSeenAt.delete(token);
+			return undefined;
+		}
+		// 時刻が記録に無いものは「最初に見えた時刻」を覚えて使い回す。毎回 Date.now() を入れると
+		// 指紋が確認のたびに変わり、変化の知らせが出続けて全ウィンドウが取り直してしまう。
+		const key = `${found.kind}\0${found.text}`;
+		let seen = this.desktopTailerInteractionSeenAt.get(token);
+		if (seen?.key !== key) {
+			seen = { key, at: found.at ?? Date.now() };
+			this.desktopTailerInteractionSeenAt.set(token, seen);
+		}
+		return { kind: found.kind, text: found.text, at: found.at ?? seen.at };
+	}
+
+	/**
+	 * hook から「いま待っている内容」を覚える。質問は AskUserQuestion の PreToolUse、許可は
+	 * PermissionRequest で始まり、ツールの完了・拒否・次の依頼・ターン終了で消える。
+	 */
+	private recordDesktopInteraction(event: IParadisAgentHookEvent): void {
+		const token = event.token;
+		const current = this.desktopInteractions.get(token);
+		let next: IParadisAgentPaneInteraction | undefined = current;
+		switch (event.event) {
+			case 'PreToolUse': {
+				if (event.toolName === 'AskUserQuestion') {
+					const text = paradisSummarizeQuestionInput(event.toolInput);
+					next = text !== undefined ? { kind: 'question', text, at: event.at } : current;
+				}
+				break;
+			}
+			case 'PermissionRequest': {
+				if (event.toolName !== 'AskUserQuestion') {
+					const text = paradisSummarizePermissionInput(event.toolName, event.toolInput);
+					next = text !== undefined ? { kind: 'permission', text, at: event.at } : current;
+				}
+				break;
+			}
+			case 'PostToolUse':
+			case 'PostToolUseFailure':
+				next = current !== undefined && (current.kind === 'question') === (event.toolName === 'AskUserQuestion') ? undefined : current;
+				break;
+			case 'PermissionDenied':
+				next = current?.kind === 'permission' ? undefined : current;
+				break;
+			case 'UserPromptSubmit':
+			case 'SessionStart':
+			case 'SessionEnd':
+				next = undefined;
+				break;
+			default:
+				if (paradisIsTurnEndHookEvent(event.event)) {
+					next = undefined;
+				}
+		}
+		if (next === current) {
+			if (event.event !== 'MessageDisplay') {
+				this.scheduleDesktopInsightCheck();
+			}
+			return;
+		}
+		if (next === undefined) {
+			this.desktopInteractions.delete(token);
+		} else {
+			this.desktopInteractions.set(token, next);
+		}
+		this.scheduleDesktopInsightCheck();
+	}
+
+	/** 変化の知らせをまとめる。知らせるのは指紋が変わったペインがあるときだけ。 */
+	private scheduleDesktopInsightCheck(): void {
+		if (this.desktopInsightTimer !== undefined || this._store.isDisposed) {
+			return;
+		}
+		this.desktopInsightTimer = setTimeout(() => {
+			this.desktopInsightTimer = undefined;
+			this.checkDesktopInsights();
+		}, 250);
+	}
+
+	private checkDesktopInsights(): void {
+		const live = this.allLiveTokens();
+		for (const token of [...this.desktopInteractions.keys()]) {
+			if (!live.has(token)) {
+				this.desktopInteractions.delete(token);
+			}
+		}
+		for (const token of [...this.desktopTailerInteractionSeenAt.keys()]) {
+			if (!live.has(token)) {
+				this.desktopTailerInteractionSeenAt.delete(token);
+			}
+		}
+		let changed = false;
+		const seen = new Set<string>();
+		for (const insight of this.getDesktopPaneInsights([...this.paneSessions.keys()])) {
+			seen.add(insight.token);
+			const signature = JSON.stringify(insight);
+			if (this.desktopInsightSignatures.get(insight.token) !== signature) {
+				this.desktopInsightSignatures.set(insight.token, signature);
+				changed = true;
+			}
+		}
+		for (const token of [...this.desktopInsightSignatures.keys()]) {
+			if (!seen.has(token)) {
+				this.desktopInsightSignatures.delete(token);
+				changed = true;
+			}
+		}
+		if (changed) {
+			this._onDidChangeDesktopPaneInsights.fire();
+		}
+	}
+
 	private activityTracker(token: string): ParadisAgentActivityTracker {
 		let tracker = this.activityTrackers.get(token);
 		if (tracker === undefined) {
@@ -5295,6 +5530,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private pushActivityToSubscribers(token: string): void {
+		this.scheduleDesktopInsightCheck();
 		const terminalId = this.terminalIdForToken(token);
 		const tailer = this.tailers.get(token);
 		if (terminalId !== undefined && tailer !== undefined) {
@@ -5306,6 +5542,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private onHookEvent(event: IParadisAgentHookEvent): void {
+		this.recordDesktopInteraction(event);
 		// hook はペインの環境変数を継承したプロセスからしか届かない。届いた時点で
 		// 「今このペインでエージェントが動いている」証拠になる（transcript の有無は問わない）。
 		if (this.isLiveToken(event.token)) {
@@ -5858,6 +6095,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.disposeTailer(token);
 		}
 		const pushActivity = () => {
+			this.scheduleDesktopInsightCheck();
 			setParadisAgentPaneActivity(token, {
 				backgroundTasks: new Map(tailer.backgroundTasks),
 				pendingQuestion: tailer.pendingQuestions.size > 0,
@@ -5867,6 +6105,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		};
 		const tailer = new TranscriptTailer(session.transcriptPath, session.agent, {
 			onDelta: messages => {
+				this.scheduleDesktopInsightCheck();
 				const live = this.liveStates.get(token);
 				if (live?.phase === 'message' && live.final && messages.some(message => message.role === 'assistant' && message.kind === 'text')) {
 					// MessageDisplayの最終バッチはtranscript本文が届くまで表示し、確定本文との二重表示を避ける。
@@ -5953,6 +6192,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}, this.logService, this.isRemoteAgentPane(token) || paradisIsRemoteAgentTranscriptMirrorPath(session.transcriptPath));
 		this.tailers.set(token, tailer);
 		tailer.ready.then(() => {
+			this.scheduleDesktopInsightCheck();
 			if (this.tailers.get(token) === tailer) { this.schedulePersistedAgentActivityReconcile(token, 0); }
 		}).catch(error => this.logService.trace('[paradisAgentChat] initial persisted activity recovery failed', String(error)));
 		return tailer;
@@ -5967,6 +6207,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const tailer = this.tailers.get(token);
 		if (tailer !== undefined) {
+			this.scheduleDesktopInsightCheck();
 			tailer.dispose();
 			this.tailers.delete(token);
 			setParadisAgentPaneActivity(token, { backgroundTasks: new Map(), pendingQuestion: false, pendingApproval: false });

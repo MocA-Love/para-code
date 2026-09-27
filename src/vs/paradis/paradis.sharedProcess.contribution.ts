@@ -25,6 +25,10 @@ import { ILogService } from '../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from './common/paradisProcessContributions.js';
 
 // --- 登録（新しいチャネルはこの下に副作用 import を1行足す） ---
+import './contrib/agentHookTrust/node/paradisCodexHookTrust.js';
+import './contrib/agentModelCatalog/node/paradisAgentModelCatalog.js';
+
+import './contrib/agentActivity/node/paradisAgentActivityChannel.js';
 
 /**
  * 登録済みの shared process 向け contribution をすべて呼ぶ。

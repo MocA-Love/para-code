@@ -10,6 +10,7 @@ import { Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { paradisSpaceInfoLabel } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisAgentPaneInsight } from '../../agentInsights/common/paradisAgentInsights.js';
 
 /**
  * ライブウィンドウが扱う状態。エージェント実績はあるが hook 上は何も走っていない端末を
@@ -97,7 +98,17 @@ export type ParadisAgentLiveSort = 'attention' | 'status' | 'elapsed' | 'updated
 
 export type ParadisAgentLiveGroup = 'none' | 'space' | 'status';
 
+/**
+ * 見せ方。tiles = 各エージェントの端末をそのまま並べる（従来）、board = 状態ごとの列、
+ * list = 1行1エージェントの文章要約。絞り込み・並び替え・ピン・非表示は3つで共通。
+ */
+export type ParadisAgentLiveLayout = 'tiles' | 'board' | 'list';
+
+export const PARADIS_AGENT_LIVE_LAYOUTS: readonly ParadisAgentLiveLayout[] = ['tiles', 'board', 'list'];
+
 export interface IParadisAgentLiveViewState {
+	/** 見せ方。既定はタイル（従来の表示）。 */
+	layout: ParadisAgentLiveLayout;
 	/** 空 = 全状態を表示 */
 	statuses: ParadisAgentLiveStatus[];
 	/** undefined = 全スペースを表示 */
@@ -168,6 +179,7 @@ export function paradisClampAgentLiveFontSize(value: number): number {
 
 export function paradisDefaultAgentLiveViewState(): IParadisAgentLiveViewState {
 	return {
+		layout: 'tiles',
 		statuses: [],
 		spaces: undefined,
 		attentionOnly: false,
@@ -213,6 +225,9 @@ export function paradisParseAgentLiveViewState(raw: string | undefined): IParadi
 		return state;
 	}
 
+	if (typeof parsed.layout === 'string' && (PARADIS_AGENT_LIVE_LAYOUTS as readonly string[]).includes(parsed.layout)) {
+		state.layout = parsed.layout as ParadisAgentLiveLayout;
+	}
 	const statuses = stringArray(parsed.statuses);
 	if (statuses) {
 		state.statuses = statuses.filter((status): status is ParadisAgentLiveStatus => (PARADIS_AGENT_LIVE_STATUS_ORDER as readonly string[]).includes(status));
@@ -422,4 +437,42 @@ export function paradisFormatAgentLiveDuration(milliseconds: number): string {
 		return `${Math.floor(total / 60)}分${String(total % 60).padStart(2, '0')}秒`;
 	}
 	return `${Math.floor(total / 3600)}時間${Math.floor((total % 3600) / 60)}分`;
+}
+
+// ---- ボード・リスト --------------------------------------------------------------------------
+
+/** ボードの列。要対応 = 許可待ち + 質問中、作業中 = 実行中、完了、待機。 */
+export type ParadisAgentLiveBoardColumnId = 'attention' | 'working' | 'review' | 'idle';
+
+export const PARADIS_AGENT_LIVE_BOARD_COLUMNS: readonly { readonly id: ParadisAgentLiveBoardColumnId; readonly statuses: readonly ParadisAgentLiveStatus[] }[] = [
+	{ id: 'attention', statuses: ['permission', 'question'] },
+	{ id: 'working', statuses: ['working'] },
+	{ id: 'review', statuses: ['review'] },
+	{ id: 'idle', statuses: ['idle'] },
+];
+
+/**
+ * 並び替え済みのエントリを、順序を保ったままボードの列へ振り分ける。空の列も必ず返す
+ * （列の位置が件数で入れ替わらないようにするため）。
+ */
+export function paradisAgentLiveBoardColumns(entries: readonly IParadisAgentLiveEntry[]): { readonly id: ParadisAgentLiveBoardColumnId; readonly entries: readonly IParadisAgentLiveEntry[] }[] {
+	return PARADIS_AGENT_LIVE_BOARD_COLUMNS.map(column => ({
+		id: column.id,
+		entries: entries.filter(entry => column.statuses.includes(entry.status)),
+	}));
+}
+
+/**
+ * カード・行に出す1行の文章。要対応のエージェントは「何を待っているか」を、それ以外は
+ * 最後の発言を出す。待っている内容が取れないとき（hook が届かない構成など）は最後の発言へ落とす。
+ */
+export function paradisAgentLiveSummary(status: ParadisAgentLiveStatus, insight: IParadisAgentPaneInsight | undefined): { readonly kind: 'permission' | 'question' | 'message'; readonly text: string } | undefined {
+	const interaction = insight?.interaction;
+	if (paradisIsAttentionStatus(status) && interaction !== undefined) {
+		return { kind: interaction.kind, text: interaction.text };
+	}
+	if (insight?.lastMessage !== undefined) {
+		return { kind: 'message', text: insight.lastMessage.text };
+	}
+	return undefined;
 }

@@ -28,13 +28,13 @@ suite('ParadisWorktreeRowMeta', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	const presence = (overrides: Partial<IParadisWorktreeMetaPresence> = {}): IParadisWorktreeMetaPresence =>
-		({ pr: false, issues: false, diff: false, notes: false, ...overrides });
+		({ pr: false, issues: false, diff: false, notes: false, promptCache: false, ...overrides });
 
 	test('row height follows whether a visible meta item is actually present', () => {
 		const defaults = PARADIS_DEFAULT_WORKTREE_ROW_META;
 		// メモだけを非表示にした設定 (他はそのまま)
 		const notesHidden = paradisSetWorktreeMetaVisible(defaults, 'notes', false);
-		// 4項目すべて非表示 =「今までどおりに戻せる出口」
+		// 全項目を非表示 =「今までどおりに戻せる出口」
 		const allHidden = PARADIS_WORKTREE_META_IDS.reduce<readonly IParadisWorktreeMetaEntry[]>(
 			(entries, id) => paradisSetWorktreeMetaVisible(entries, id, false), defaults);
 
@@ -47,13 +47,16 @@ suite('ParadisWorktreeRowMeta', () => {
 			// 持っている情報が非表示にされていれば2段のまま
 			paradisWorktreeRowHeight(notesHidden, presence({ notes: true })),
 			// すべて非表示なら、どれだけ情報を持っていても2段
-			paradisWorktreeRowHeight(allHidden, presence({ pr: true, issues: true, diff: true, notes: true })),
+			paradisWorktreeRowHeight(allHidden, presence({ pr: true, issues: true, diff: true, notes: true, promptCache: true })),
+			// プロンプトキャッシュの残り時間も、出ている間は3段になる
+			paradisWorktreeRowHeight(defaults, presence({ promptCache: true })),
 		], [
 			PARADIS_WORKTREE_ROW_HEIGHT,
 			PARADIS_WORKTREE_ROW_HEIGHT_WITH_META,
 			PARADIS_WORKTREE_ROW_HEIGHT_WITH_META,
 			PARADIS_WORKTREE_ROW_HEIGHT,
 			PARADIS_WORKTREE_ROW_HEIGHT,
+			PARADIS_WORKTREE_ROW_HEIGHT_WITH_META,
 		]);
 	});
 
@@ -66,13 +69,19 @@ suite('ParadisWorktreeRowMeta', () => {
 			// 重複は最初の1件だけ残す
 			{ id: 'diff', visible: false, align: 'left' },
 			{ id: 'notes', visible: false, align: 'left' },
-			// pr / issues は書かれていないので既定の順序のまま末尾へ足される
+			// pr / issues / promptCache は書かれていないので既定の順序のまま末尾へ足される。
+			// 後から足した promptCache だけは、自分で並びを決めた人の行を勝手に伸ばさないよう非表示で足す
 		]), [
 			{ id: 'diff', visible: true, align: 'right' },
 			{ id: 'notes', visible: false, align: 'left' },
 			{ id: 'pr', visible: true, align: 'left' },
 			{ id: 'issues', visible: true, align: 'left' },
+			{ id: 'promptCache', visible: false, align: 'left' },
 		]);
+		// 設定を触っていない人 (未設定・空配列) には既定どおり表示で出る
+		assert.deepStrictEqual(
+			[undefined, []].map(value => paradisNormalizeWorktreeRowMeta(value).find(entry => entry.id === 'promptCache')?.visible),
+			[true, true]);
 	});
 
 	test('moving an item changes the left/right layout order', () => {
@@ -83,24 +92,26 @@ suite('ParadisWorktreeRowMeta', () => {
 			// 端では並びが変わらない
 			paradisWorktreeMetaOrder(paradisMoveWorktreeMeta(PARADIS_DEFAULT_WORKTREE_ROW_META, 'pr', -1)),
 		], [
-			{ left: ['pr', 'issues'], right: ['diff', 'notes'] },
-			{ left: ['issues', 'pr'], right: ['diff', 'notes'] },
-			{ left: ['pr', 'issues'], right: ['diff', 'notes'] },
+			{ left: ['pr', 'issues', 'promptCache'], right: ['diff', 'notes'] },
+			{ left: ['issues', 'pr', 'promptCache'], right: ['diff', 'notes'] },
+			{ left: ['pr', 'issues', 'promptCache'], right: ['diff', 'notes'] },
 		]);
 	});
 
 	test('a move only ever swaps within the same side, so an enabled menu item always changes something', () => {
-		// 既定は [pr(左), issues(左), diff(右), notes(右)]。issues を「下へ」は、素朴に配列の隣と
-		// 入れ替えると [pr, diff, issues, notes] になるが、左群も右群も並びは元のまま =
+		// 既定は [pr(左), issues(左), diff(右), notes(右), promptCache(左)]。notes を「下へ」は、素朴に
+		// 配列の隣と入れ替えると [.., promptCache, notes] になるが、左群も右群も並びは元のまま =
 		// 押しても見た目が変わらない。同じ寄せの中を探すので、ここでは相手がおらず動かない
-		const acrossSides = paradisMoveWorktreeMeta(PARADIS_DEFAULT_WORKTREE_ROW_META, 'issues', 1);
+		const acrossSides = paradisMoveWorktreeMeta(PARADIS_DEFAULT_WORKTREE_ROW_META, 'notes', 1);
 		assert.deepStrictEqual([
 			acrossSides === PARADIS_DEFAULT_WORKTREE_ROW_META,
-			paradisCanMoveWorktreeMeta(PARADIS_DEFAULT_WORKTREE_ROW_META, 'issues', 1),
+			paradisCanMoveWorktreeMeta(PARADIS_DEFAULT_WORKTREE_ROW_META, 'notes', 1),
 			paradisCanMoveWorktreeMeta(PARADIS_DEFAULT_WORKTREE_ROW_META, 'issues', -1),
 			paradisCanMoveWorktreeMeta(PARADIS_DEFAULT_WORKTREE_ROW_META, 'pr', -1),
 			paradisCanMoveWorktreeMeta(PARADIS_DEFAULT_WORKTREE_ROW_META, 'diff', 1),
-		], [true, false, true, false, true]);
+			// issues の下は右群を飛び越えた先の promptCache (同じ左群) と入れ替わる
+			paradisWorktreeMetaOrder(paradisMoveWorktreeMeta(PARADIS_DEFAULT_WORKTREE_ROW_META, 'issues', 1)).left,
+		], [true, false, true, false, true, ['pr', 'promptCache', 'issues']]);
 
 		// 間に別の寄せの項目が挟まっていても、同じ寄せの相手まで飛んで入れ替える
 		const interleaved = [
@@ -136,6 +147,6 @@ suite('ParadisWorktreeRowMeta', () => {
 		const moved = paradisSetWorktreeMetaAlign(PARADIS_DEFAULT_WORKTREE_ROW_META, 'issues', 'right');
 		assert.deepStrictEqual(
 			paradisWorktreeMetaOrder(moved),
-			{ left: ['pr'], right: ['issues', 'diff', 'notes'] });
+			{ left: ['pr', 'promptCache'], right: ['issues', 'diff', 'notes'] });
 	});
 });

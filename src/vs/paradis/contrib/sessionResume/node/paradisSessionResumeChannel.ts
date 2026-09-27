@@ -24,12 +24,22 @@ import { paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrow
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisSessionSearchTextCache } from './paradisSessionSearchTextCache.js';
 import {
+	paradisIsCodexRootSource as isCodexRootSource,
+	paradisParseCodexSessionMeta,
+	paradisParseTranscriptLine as parseLine,
+	paradisTranscriptClipped as clipped,
+	paradisTranscriptNumber as number,
+	paradisTranscriptRecord as record,
+	paradisTranscriptString as string,
+} from '../common/paradisSessionTranscript.js';
+import {
 	IParadisResumeLatestMessage,
 	IParadisResumeListRequest,
 	IParadisResumeMessage,
 	IParadisResumePreview,
 	IParadisResumeSearchResult,
 	IParadisResumeSession,
+	IParadisResumeSessionDetails,
 	IParadisResumeSpace,
 	PARADIS_RESUME_SESSION_ID_PATTERN,
 	PARADIS_SESSION_RESUME_CHANNEL,
@@ -40,7 +50,8 @@ const nodeRequire = createRequire(import.meta.url);
 const MAX_SESSIONS = 600;
 const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_PREVIEW_MESSAGES = 200;
-const MAX_MESSAGE_CHARS = 12_000;
+/** コピーする「最初の依頼」の上限。貼り付けた長文もそのまま写せるよう、一覧用より長くする。 */
+const MAX_DETAILS_PROMPT_CHARS = 256 * 1024;
 const MAX_CLAUDE_SESSIONS_PER_SPACE = 200;
 // 一覧行の「最新の会話」プレビュー用に transcript の末尾から読む量。
 // 最後のメッセージ行がこの長さを超えると採取できないが、その場合は preview(最初のプロンプト)へフォールバックする。
@@ -71,20 +82,10 @@ interface INormalizedParadisResumeListRequest extends IParadisResumeListRequest<
 	readonly includeArchived: boolean;
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-function string(value: unknown): string | undefined {
-	return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function number(value: unknown): number | undefined {
-	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function clipped(value: string, limit = MAX_MESSAGE_CHARS): string {
-	return value.length > limit ? `${value.slice(0, limit)}…` : value;
+/** 一覧に出すのはユーザーが起動したスレッドだけ。サブエージェントの rollout は読まなかったことにする。 */
+function parseCodexSessionMeta(line: string): { id: string; cwd: string } | undefined {
+	const meta = paradisParseCodexSessionMeta(line);
+	return meta && !meta.subagent ? { id: meta.id, cwd: meta.cwd } : undefined;
 }
 
 function countSearchTermOccurrences(lowercaseValue: string, terms: readonly string[]): number {
@@ -112,120 +113,6 @@ function createSearchSnippet(value: string, terms: readonly string[]): string {
 	const start = Math.max(0, firstMatch - 70);
 	const end = Math.min(normalized.length, firstMatch + 170);
 	return `${start > 0 ? '…' : ''}${normalized.slice(start, end)}${end < normalized.length ? '…' : ''}`;
-}
-
-function parseTimestamp(value: unknown): number | undefined {
-	const raw = string(value);
-	if (!raw) {
-		return undefined;
-	}
-	const parsed = Date.parse(raw);
-	return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function flattenText(value: unknown): string {
-	if (typeof value === 'string') {
-		return value;
-	}
-	if (!Array.isArray(value)) {
-		return '';
-	}
-	const parts: string[] = [];
-	for (const item of value) {
-		const block = record(item);
-		if (!block) {
-			continue;
-		}
-		const type = string(block.type);
-		if (type === 'text' || type === 'input_text' || type === 'output_text') {
-			const text = string(block.text);
-			if (text) {
-				parts.push(text);
-			}
-		}
-	}
-	return parts.join('\n');
-}
-
-function isInjectedCodexContext(text: string): boolean {
-	const value = text.trim();
-	return /^<(environment_context|user_instructions|ENVIRONMENT_CONTEXT|INSTRUCTIONS)/.test(value)
-		|| value.startsWith('# AGENTS.md instructions for');
-}
-
-function isCodexRootSource(source: string | undefined): boolean {
-	if (!source) {
-		return true;
-	}
-	try {
-		const parsed = record(JSON.parse(source));
-		return record(record(parsed?.subagent)?.thread_spawn) === undefined;
-	} catch {
-		return true;
-	}
-}
-
-function parseCodexSessionMeta(line: string): { id: string; cwd: string } | undefined {
-	try {
-		const item = record(JSON.parse(line));
-		const payload = record(item?.payload);
-		if (item?.type !== 'session_meta' || !payload) {
-			return undefined;
-		}
-		const id = string(payload.id) ?? string(payload.session_id);
-		const cwd = string(payload.cwd);
-		const sourceSpawn = record(record(record(payload.source)?.subagent)?.thread_spawn);
-		const parentThreadId = string(payload.parent_thread_id) ?? string(sourceSpawn?.parent_thread_id);
-		const ownThreadId = string(payload.id) ?? id;
-		const subagent = sourceSpawn !== undefined || string(payload.thread_source) === 'subagent'
-			|| (parentThreadId !== undefined && parentThreadId !== ownThreadId);
-		return id && cwd && !subagent ? { id, cwd } : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function parseLine(line: string, agent: 'claude' | 'codex'): IParadisResumeMessage | undefined {
-	let item: Record<string, unknown> | undefined;
-	try {
-		item = record(JSON.parse(line));
-	} catch {
-		return undefined;
-	}
-	if (!item) {
-		return undefined;
-	}
-	if (agent === 'claude') {
-		if (item.isSidechain === true || item.isMeta === true) {
-			return undefined;
-		}
-		const type = string(item.type);
-		if (type !== 'user' && type !== 'assistant') {
-			return undefined;
-		}
-		const message = record(item.message);
-		const text = flattenText(message?.content);
-		if (!text.trim()) {
-			return undefined;
-		}
-		return { role: type, text: clipped(text), timestamp: parseTimestamp(item.timestamp) };
-	}
-	if (item.type !== 'response_item') {
-		return undefined;
-	}
-	const payload = record(item.payload);
-	if (payload?.type !== 'message') {
-		return undefined;
-	}
-	const role = string(payload.role);
-	if (role !== 'user' && role !== 'assistant') {
-		return undefined;
-	}
-	const text = flattenText(payload.content);
-	if (!text.trim() || (role === 'user' && isInjectedCodexContext(text))) {
-		return undefined;
-	}
-	return { role, text: clipped(text), timestamp: parseTimestamp(item.timestamp) };
 }
 
 interface IFileIdentity {
@@ -346,6 +233,14 @@ function pathInside(root: string, candidate: string): boolean {
 	const normalizedRoot = normalizePath(root);
 	const normalizedCandidate = normalizePath(candidate);
 	return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}/`);
+}
+
+/**
+ * transcript の置き場所から一覧用の catalogId を作る。同じファイルなら常に同じ値になるので、
+ * 全文索引（別の worker）がヒットしたファイルを、一覧の行へ突き合わせるのにも使う。
+ */
+export function paradisSessionCatalogId(agent: ParadisResumeAgent, transcriptPath: string): string {
+	return `session-${createHash('sha256').update(`${agent}\0${normalizePath(transcriptPath)}`).digest('hex').slice(0, 32)}`;
 }
 
 export class ParadisSessionResumeService {
@@ -528,6 +423,28 @@ export class ParadisSessionResumeService {
 		this.latestMessageCache.set(catalogId, { revision, message });
 	}
 
+	/**
+	 * 「…」メニューのコピー・開く操作に使う、ログの置き場所と最初の依頼の全文。
+	 * 一覧には最初の依頼を切り詰めて載せているので、コピー用はここで読み直す。
+	 */
+	async details(catalogId: string): Promise<IParadisResumeSessionDetails> {
+		const entry = this.catalog.get(catalogId);
+		if (!entry || !pathInside(entry.allowedRoot, entry.transcriptPath)) {
+			throw new Error('Session is no longer available.');
+		}
+		entry.touchedAt = Date.now();
+		const data = await this.readBoundedFile(entry.transcriptPath, entry.allowedRoot, this.beforeTranscriptRead);
+		let firstPrompt: string | undefined;
+		for (const line of data.text.split('\n')) {
+			const message = parseLine(line, entry.session.agent, MAX_DETAILS_PROMPT_CHARS);
+			if (message?.role === 'user') {
+				firstPrompt = message.text;
+				break;
+			}
+		}
+		return { transcriptPath: entry.transcriptPath, firstPrompt };
+	}
+
 	async preview(catalogId: string, rawQuery?: string): Promise<IParadisResumePreview> {
 		const entry = this.catalog.get(catalogId);
 		if (!entry || !pathInside(entry.allowedRoot, entry.transcriptPath)) {
@@ -670,7 +587,7 @@ export class ParadisSessionResumeService {
 		if (!PARADIS_RESUME_SESSION_ID_PATTERN.test(session.id) || !isAbsolute(transcriptPath) || !pathInside(allowedRoot, transcriptPath)) {
 			return;
 		}
-		const catalogId = `session-${createHash('sha256').update(`${session.agent}\0${normalizePath(transcriptPath)}`).digest('hex').slice(0, 32)}`;
+		const catalogId = paradisSessionCatalogId(session.agent, transcriptPath);
 		const complete: IParadisResumeSession = { ...session, catalogId };
 		const previous = this.catalog.get(catalogId);
 		if (previous?.session.updatedAt !== complete.updatedAt) {
@@ -758,7 +675,7 @@ export class ParadisSessionResumeService {
 					this.addSession({
 						id: candidate.id, agent: 'claude', title: clipped(display, 160), preview: clipped(firstPrompt ?? display, 260),
 						cwd: space.cwd, spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
-						createdAt, updatedAt: candidate.updatedAt, archived: false,
+						createdAt, updatedAt: candidate.updatedAt, archived: false, empty: firstPrompt === undefined,
 					}, candidate.transcriptPath, claudeHome, target);
 				} catch (error) {
 					this.logService.debug('[ParadisSessionResume] unable to read Claude session', error);
@@ -840,7 +757,7 @@ export class ParadisSessionResumeService {
 					id, agent: 'codex', title: clipped(title, 160), preview: clipped(preview, 260), cwd: space.cwd,
 					spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
 					createdAt: number(row?.created_at_value), updatedAt: number(row?.updated_at_value) || Date.now(),
-					archived: number(row?.archived) === 1, gitBranch: string(row?.git_branch),
+					archived: number(row?.archived) === 1, empty: !string(row?.name) && !string(row?.title) && !string(row?.first_user_message) && !string(row?.preview), gitBranch: string(row?.git_branch),
 				}, transcriptPath, codexHome, target);
 				accepted++;
 				if (accepted >= MAX_SESSIONS) {
@@ -922,7 +839,7 @@ export class ParadisSessionResumeService {
 					this.addSession({
 						id: meta.id, agent: 'codex', title: clipped(display, 160), preview: clipped(display, 260), cwd: space.cwd,
 						spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
-						createdAt: firstPrompt?.timestamp, updatedAt: candidate.updatedAt, archived: false,
+						createdAt: firstPrompt?.timestamp, updatedAt: candidate.updatedAt, archived: false, empty: firstPrompt === undefined,
 					}, candidate.path, codexHome, target);
 				} catch (error) {
 					this.logService.debug('[ParadisSessionResume] unable to read Codex rollout', error);
@@ -958,6 +875,7 @@ export class ParadisSessionResumeChannel<TContext = string> implements IServerCh
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'list': return this.service.list((args[0] ?? {}) as IParadisResumeListRequest<string>) as Promise<T>;
+			case 'details': return this.service.details(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
 			case 'preview': return this.service.preview(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined) as Promise<T>;
 			case 'search': return this.service.search(clientIdFrom(ctx), typeof args[0] === 'string' ? args[0] : '', Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
 			default: throw new Error(`Method not found: ${command}`);

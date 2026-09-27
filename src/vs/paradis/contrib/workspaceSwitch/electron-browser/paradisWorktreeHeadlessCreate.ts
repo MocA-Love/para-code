@@ -36,12 +36,12 @@ import {
 	PARADIS_COPILOT_UTILITY_CHANNEL,
 } from '../../copilotUtility/common/paradisCopilotUtility.js';
 import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
+import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import {
 	IParadisAddWorktreeRequest,
 	IParadisAgentCommandTemplate,
 	IParadisGitBranches,
-	PARADIS_DEFAULT_AGENT_COMMANDS,
 	paradisBuildAgentCommand,
 	paradisBuildWorktreeNames,
 	paradisParseWorktreeNaming,
@@ -156,13 +156,9 @@ function paradisDescribeLaunchedAgent(paneTokenService: IParadisPaneTokenService
 	return { instanceId: instance.instanceId, paneToken: paneTokenService.getTokenForInstance(instance.instanceId) };
 }
 
-/** 設定 paradis.workspaceSwitch.agents（無ければ既定）からエージェント定義を得る（ダイアログの _agents と同じ規則）。 */
-export function paradisConfiguredAgents(configurationService: IConfigurationService): readonly IParadisAgentCommandTemplate[] {
-	const configured = configurationService.getValue<IParadisAgentCommandTemplate[]>('paradis.workspaceSwitch.agents');
-	if (Array.isArray(configured) && configured.length > 0) {
-		return configured.filter(agent => agent && typeof agent.id === 'string' && agent.id !== 'none' && typeof agent.command === 'string');
-	}
-	return PARADIS_DEFAULT_AGENT_COMMANDS;
+/** 設定 paradis.workspaceSwitch.agents（無ければ既定＋CLI から取ったモデル候補）からエージェント定義を得る（ダイアログの _agents と同じ規則）。 */
+export function paradisConfiguredAgents(modelCatalogService: IParadisAgentModelCatalogService): readonly IParadisAgentCommandTemplate[] {
+	return modelCatalogService.getAgentTemplates();
 }
 
 /** worktree の作成先ディレクトリを決める（ダイアログの _computeWorktreeUri と同じ規則）。 */
@@ -328,7 +324,7 @@ function fallbackBranchName(seeds: readonly (string | undefined)[]): string {
 /** 作成フォームの材料（リポジトリ一覧＋各ブランチ＋エージェント定義）を集める。 */
 export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor): Promise<IParadisWorktreeCreateFormData> {
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
-	const configurationService = accessor.get(IConfigurationService);
+	const modelCatalogService = accessor.get(IParadisAgentModelCatalogService);
 	const fileService = accessor.get(IFileService);
 	const logService = accessor.get(ILogService);
 	// リポジトリごとに git を動かすマシンが違いうる（接続中でも手元のリポジトリを混ぜられる）
@@ -357,7 +353,7 @@ export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor): 
 	}));
 	// エージェント定義はテンプレートごと渡す（モバイル側がモデル/エフォート/権限の選択UIと
 	// コマンドプレビューをPC側と同じ材料で組み立てるため）。設定由来のplain JSONなのでそのまま送れる。
-	const agents = paradisConfiguredAgents(configurationService).map(agent => ({ ...agent }));
+	const agents = paradisConfiguredAgents(modelCatalogService).map(agent => ({ ...agent }));
 	return { repos, agents };
 }
 
@@ -381,13 +377,13 @@ export interface IParadisAgentLaunchInWorkspaceRequest {
  * ワークスペース作成を伴わない分だけを切り出したもの。
  */
 export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, request: IParadisAgentLaunchInWorkspaceRequest): Promise<IParadisLaunchedAgentTerminal> {
-	const configurationService = accessor.get(IConfigurationService);
+	const modelCatalogService = accessor.get(IParadisAgentModelCatalogService);
 	const paneTokenService = accessor.get(IParadisPaneTokenService);
 	const terminalService = accessor.get(ITerminalService);
 	const terminalEditorService = accessor.get(ITerminalEditorService);
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
-	const agent = paradisConfiguredAgents(configurationService).find(candidate => candidate.id === request.agentId);
+	const agent = paradisConfiguredAgents(modelCatalogService).find(candidate => candidate.id === request.agentId);
 	if (!agent) {
 		throw new Error(`unknown agent: ${request.agentId}`);
 	}
@@ -493,6 +489,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	// ブランチと worktree を作ってしまう）。
 	const resolveGitHost = paradisWorktreeGitWriteHostResolver(accessor);
 	const configurationService = accessor.get(IConfigurationService);
+	const modelCatalogService = accessor.get(IParadisAgentModelCatalogService);
 	const languageModelsService = accessor.get(ILanguageModelsService);
 	const authenticationService = accessor.get(IAuthenticationService);
 	const terminalService = accessor.get(ITerminalService);
@@ -632,7 +629,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 				terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
 			},
 			launchAgent: async () => {
-				const agent = paradisConfiguredAgents(configurationService).find(candidate => candidate.id === agentId);
+				const agent = paradisConfiguredAgents(modelCatalogService).find(candidate => candidate.id === agentId);
 				if (!agent) {
 					return;
 				}

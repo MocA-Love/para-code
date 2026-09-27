@@ -56,6 +56,16 @@ export interface IParadisResumeSession {
 	readonly updatedAt: number;
 	readonly archived: boolean;
 	readonly gitBranch?: string;
+	/** ユーザーの依頼が1つも無い会話（起動しただけで閉じたもの）。「空を隠す」で隠す。 */
+	readonly empty?: boolean;
+}
+
+/** 「…」メニューのコピー・開く操作に使う詳細。 */
+export interface IParadisResumeSessionDetails {
+	/** 会話ログの絶対パス（その会話があるマシンの上のもの）。 */
+	readonly transcriptPath: string;
+	/** 最初の依頼の全文（読めなければ undefined）。 */
+	readonly firstPrompt?: string;
 }
 
 export interface IParadisResumeMessage {
@@ -80,6 +90,7 @@ export interface IParadisResumeSearchResult {
 export interface IParadisSessionResumeService {
 	list(request: IParadisResumeListRequest): Promise<readonly IParadisResumeSession[]>;
 	preview(catalogId: string, query?: string): Promise<IParadisResumePreview>;
+	details(catalogId: string): Promise<IParadisResumeSessionDetails>;
 	search(query: string, catalogIds: readonly string[]): Promise<readonly IParadisResumeSearchResult[]>;
 }
 

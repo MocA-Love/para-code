@@ -186,7 +186,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'array',
 			scope: ConfigurationScope.WINDOW,
 			// allow-any-unicode-next-line
-			description: localize('paradis.workspaceSwitch.rowMeta', "Workspaces ビューのスペース行に出す情報（プルリクエスト・Issue 件数・未コミットの差分・メモの未完了件数）と、その並び順・左右の寄せ方を指定します。ここで表示にした情報を1つでも持つ行だけが3段になり、すべて非表示にすると従来どおりの2段表示に戻ります。行を右クリックした「表示する情報」からも変更できます。\n\n書かなかった情報は既定のまま末尾に足されます（空の配列にしても全部消えるのではなく、既定に戻ります）。隠したい情報は `visible` に false を指定してください。"),
+			description: localize('paradis.workspaceSwitch.rowMeta', "Workspaces ビューのスペース行に出す情報（プルリクエスト・Issue 件数・未コミットの差分・メモの未完了件数・プロンプトキャッシュの残り時間）と、その並び順・左右の寄せ方を指定します。ここで表示にした情報を1つでも持つ行だけが3段になり、すべて非表示にすると従来どおりの2段表示に戻ります。行を右クリックした「表示する情報」からも変更できます。\n\n書かなかった情報は既定のまま末尾に足されます（空の配列にしても全部消えるのではなく、既定に戻ります）。隠したい情報は `visible` に false を指定してください。"),
 			default: PARADIS_DEFAULT_WORKTREE_ROW_META,
 			items: {
 				type: 'object',

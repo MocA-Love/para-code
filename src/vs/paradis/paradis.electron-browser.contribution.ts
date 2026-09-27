@@ -50,9 +50,11 @@ import './contrib/usageDashboard/electron-browser/paradisUsageDashboard.contribu
 import './contrib/ccusage/electron-browser/paradisCcusage.contribution.js';
 import './contrib/rtk/electron-browser/paradisRtk.contribution.js';
 import './contrib/sessionResume/electron-browser/paradisSessionResume.contribution.js';
+import './contrib/agentActivity/electron-browser/paradisSessionIndex.contribution.js';
 import './contrib/githubMetrics/electron-browser/paradisGithubMetrics.contribution.js';
 import './contrib/codexTerminalTitle/electron-browser/paradisCodexTerminalTitle.contribution.js';
 import './contrib/agentLiveWindow/electron-browser/paradisAgentLiveWindow.contribution.js';
+import './contrib/agentInsights/electron-browser/paradisAgentInsights.contribution.js';
 import './contrib/browserLiveWindow/electron-browser/paradisBrowserLiveWindow.contribution.js';
 import './contrib/browserZoomIndicator/electron-browser/paradisBrowserZoomIndicator.contribution.js';
 import './contrib/healthBeacon/electron-browser/paradisHealthBeacon.contribution.js';
@@ -61,6 +63,8 @@ import './contrib/workspaceSwitch/electron-browser/paradisRemoteDefaultWorkspace
 import './contrib/agentBrowser/electron-browser/paradisRemoteAgentTunnel.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisRemoteAgentHooks.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentHooksSettings.contribution.js';
+import './contrib/agentHookTrust/electron-browser/paradisCodexHookTrust.contribution.js';
+import './contrib/agentModelCatalog/electron-browser/paradisAgentModelCatalog.contribution.js';
 import { registerParadisRemoteTranscriptMirrorContribution } from './contrib/mobileRelay/electron-browser/paradisRemoteTranscriptMirror.contribution.js';
 
 registerParadisRemoteTranscriptMirrorContribution();
