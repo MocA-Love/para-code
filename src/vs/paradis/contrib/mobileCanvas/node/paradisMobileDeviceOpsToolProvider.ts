@@ -16,16 +16,24 @@
 // どのツールも端末の ID を引数に取らず、そのペインに割り当てられた端末だけを台帳から引く
 // （既存の mobile_tap などと同じ）。要求だけは端末を名指しするが、ほかのペインが使っている端末は断る。
 //
-// 接続元の確認: 状態を変える操作はすべて `context.classifyCaller()` を通す。SSH の接続先のペイン（`tunnel`）は、
-// 既存の方針（利用者がダイアログでそのペインに渡した端末は、画面の入力で操作できる）に合わせて回転と
-// ジェスチャーだけ通す。要求・インストール・起動・権限の付与は SSH の接続先からは断る（方針が無いため）。
+// 接続元の確認（`context.classifyCaller()`）は、要求・インストール・起動・権限の付与だけに掛ける。
+// 回転とジェスチャーは既存の mobile_tap などと同じく、利用者がその端末をそのペインへ渡した後の画面の操作
+// なので、トークンだけで動かす（tmux・WSL・採用した Codex app-server では確認を通らないため）。
+// SSH の接続先のペイン（`tunnel`）は、要求・インストール・起動・権限の付与を断る（既存の方針が無いため）。
+//
+// インストールは毎回、別に承認を取る。入れたアプリは Para Code の権限で動き、エージェントのサンドボックス
+// （作業フォルダの制限）の外に出られるため。起動は入っているアプリを動かすだけなので承認しない。
 
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, ParadisMcpCallerKind } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileAttachment, IParadisMobileDevice } from '../common/paradisMobileCanvas.js';
 import {
 	IParadisMobileDeviceRequestPrompt,
+	IParadisMobileInstallPrompt,
+	PARADIS_MOBILE_APPROVAL_TIMEOUT_MS,
+	PARADIS_MOBILE_INSTALL_APPROVAL_METHOD,
+	ParadisMobileDeviceRequestOutcome,
+	paradisDeviceHeldByAnotherPane,
 	IParadisPoint,
 	IParadisPointSize,
 	PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL,
@@ -33,7 +41,6 @@ import {
 	ParadisMobileOrientation,
 	ParadisMobilePlatform,
 	paradisIsInsideScreen,
-	paradisIsSystemAppId,
 	paradisIsValidAppId,
 	paradisIsValidNativeDeviceId,
 	paradisMobilePermissionNames,
@@ -54,7 +61,8 @@ export interface IParadisMobileDeviceLedger {
 	getAttachment(paneToken: string): IParadisMobileAttachment | undefined;
 	listAttachments(): readonly IParadisMobileAttachment[];
 	listDevices(signal?: AbortSignal): Promise<IParadisMobileDevice[]>;
-	attach(paneToken: string, deviceId: string, stateKey: string | undefined, signal?: AbortSignal): Promise<IParadisMobileAttachment>;
+	/** ほかのペインが使っていなければ割り当てる（確かめと書き込みの間に await を挟まない）。使っていれば undefined。 */
+	attachIfFree(paneToken: string, deviceId: string, stateKey: string | undefined, signal?: AbortSignal): Promise<IParadisMobileAttachment | undefined>;
 }
 
 /** Mobile Canvas ホストの REST（ParadisMobileCanvasHostClient が満たす）。 */
@@ -81,9 +89,11 @@ const realSleep: ParadisMobileSleep = (ms, signal) => new Promise<void>(resolve 
 });
 
 const NO_DEVICE_ATTACHED_MESSAGE = 'No mobile device is attached to this terminal pane. Call mobile_request_device to ask the user for one (or ask them to attach it from Para Code), then try again.';
-const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside your own terminal pane, so it refuses to change the device. Start this agent CLI from a terminal inside Para Code.';
+const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside your own terminal pane, so it does not attach devices, install or launch apps, or grant permissions for it. This happens inside tmux, screen, zellij, WSL or a container. Ask the user to do it from Para Code; screen tools such as mobile_tap keep working on a device already attached to this pane.';
 const SSH_REFUSED_MESSAGE = 'This terminal pane runs on an SSH host. Para Code does not let an agent on an SSH host request a device on this computer, install apps, launch apps or grant permissions there. Ask the user to do it on this computer.';
-const REQUEST_TIMEOUT_MESSAGE = 'The user did not answer in time, so the device was not attached. Ask the user in the conversation before requesting it again.';
+const REQUEST_TIMEOUT_MESSAGE = 'The user did not answer in time. Ask the user in the conversation before asking again.';
+const REQUEST_CANCELLED_MESSAGE = 'The request was cancelled before the user answered.';
+const REQUEST_UNANSWERED_MESSAGE = 'Para Code could not get a clear answer: the dialog was answered right after it appeared or with a keyboard shortcut. Ask the user to click a button in the dialog, then ask again.';
 
 /** 回転の後、画面の寸法が新しい向きに変わるのを待つ回数と間隔（ホストは寸法が変わる前に応答する）。 */
 const ROTATE_SETTLE_ATTEMPTS = 20;
@@ -93,11 +103,13 @@ const PINCH_STEPS = 12;
 const PINCH_STEP_INTERVAL_MS = 16;
 const LONG_PRESS_DEFAULT_SECONDS = 1;
 const LONG_PRESS_MAX_SECONDS = 10;
+const SWIPE_MIN_SECONDS = 0.05;
+const SWIPE_MAX_SECONDS = 10;
 
 export const PARADIS_MOBILE_DEVICE_OPS_TOOLS: readonly IParadisMcpToolDefinition[] = [
 	{
 		name: 'mobile_request_device',
-		description: 'Ask the user to attach a mobile device (iOS simulator or Android emulator on this computer) to this terminal pane. Para Code shows the user an approval dialog and attaches the device only if they approve. Call mobile_list_devices first and pass the id or the exact name of a device. You cannot request a device that another terminal pane is using. If this pane already has a different device, approving replaces it. If the user declines, do not ask again straight away: Para Code turns down further requests from this pane for a few minutes.',
+		description: 'Ask the user to attach a mobile device (iOS simulator or Android emulator on this computer) to this terminal pane. Para Code shows the user an approval dialog and attaches the device only if they approve. Call mobile_list_devices first and pass the id or the exact name of a device. You cannot request a device that another terminal pane is using (usedByAnotherPane). If this pane already has a different device, approving replaces it. If the user declines, do not ask for the same device again straight away: Para Code turns down further requests from this pane for that device for a few minutes.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -143,7 +155,7 @@ export const PARADIS_MOBILE_DEVICE_OPS_TOOLS: readonly IParadisMcpToolDefinition
 	},
 	{
 		name: 'mobile_install_app',
-		description: 'Install an app you built onto the mobile device attached to this terminal pane. path must be an absolute path on this computer: a .app bundle (or an .ipa) for an iOS simulator, an .apk for an Android emulator. An app that is already installed is replaced and keeps its data. Returns the bundle id when Para Code can read it, so you can pass it to mobile_launch_app.',
+		description: 'Install an app you built onto the mobile device attached to this terminal pane. The user approves every install in a Para Code dialog, so call this only once the build is ready. path must be an absolute path on this computer: a .app bundle (or an .ipa) for an iOS simulator, an .apk for an Android emulator. An app that is already installed is replaced and keeps its data. Returns the bundle id when Para Code can read it, so you can pass it to mobile_launch_app.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -170,7 +182,7 @@ export const PARADIS_MOBILE_DEVICE_OPS_TOOLS: readonly IParadisMcpToolDefinition
 	},
 	{
 		name: 'mobile_grant_permission',
-		description: `Grant one permission to one app installed on the mobile device attached to this terminal pane, so you can reach a screen that needs it without answering the system prompt. Only apps that are installed on that device can be given permissions, and never the system's own apps. iOS simulator permissions: ${paradisMobilePermissionNames('ios').join(', ')}. Android emulator permissions: ${paradisMobilePermissionNames('android').join(', ')}.`,
+		description: `Grant one permission to one app installed on the mobile device attached to this terminal pane, so you can reach a screen that needs it without answering the system prompt. Only apps the user installed on that device can be given permissions, never the system's own apps. iOS simulator permissions: ${paradisMobilePermissionNames('ios').join(', ')}. Android emulator permissions: ${paradisMobilePermissionNames('android').join(', ')} (runtime permissions only).`,
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -186,8 +198,11 @@ export const PARADIS_MOBILE_DEVICE_OPS_TOOLS: readonly IParadisMcpToolDefinition
 
 const TOOL_NAMES: ReadonlySet<string> = new Set(PARADIS_MOBILE_DEVICE_OPS_TOOLS.map(tool => tool.name));
 
-/** 手元のペインだけに許すツール（SSH の接続先の `tunnel` からは断る）。 */
-const LOCAL_ONLY_TOOLS: ReadonlySet<string> = new Set(['mobile_request_device', 'mobile_install_app', 'mobile_launch_app', 'mobile_grant_permission']);
+/**
+ * 接続元を確かめるツール（端末の割り当て・アプリの操作）。`unverified` と SSH の接続先（`tunnel`）は断る。
+ * ここに無いツール（回転・ジェスチャー）は画面の操作なので、既存の mobile_tap などと同じくトークンだけで動く。
+ */
+const CALLER_CHECKED_TOOLS: ReadonlySet<string> = new Set(['mobile_request_device', 'mobile_install_app', 'mobile_launch_app', 'mobile_grant_permission']);
 
 interface IToolResult {
 	content: { type: 'text'; text: string }[];
@@ -223,13 +238,15 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		}
 		const record = args && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
 		try {
-			// どれも状態を変えるので、トークンだけでなく接続元のプロセスを確かめる
-			const caller: ParadisMcpCallerKind = context ? await context.classifyCaller() : 'unverified';
-			if (caller === 'unverified') {
-				return errorResult(CALLER_UNVERIFIED_MESSAGE);
-			}
-			if (caller === 'tunnel' && LOCAL_ONLY_TOOLS.has(name)) {
-				return errorResult(SSH_REFUSED_MESSAGE);
+			if (CALLER_CHECKED_TOOLS.has(name)) {
+				// 端末を割り当てる・アプリを入れる操作は、トークンだけでなく接続元のプロセスを確かめる
+				const caller: ParadisMcpCallerKind = context ? await context.classifyCaller() : 'unverified';
+				if (caller === 'unverified') {
+					return errorResult(CALLER_UNVERIFIED_MESSAGE);
+				}
+				if (caller === 'tunnel') {
+					return errorResult(SSH_REFUSED_MESSAGE);
+				}
 			}
 			switch (name) {
 				case 'mobile_request_device':
@@ -239,7 +256,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 				case 'mobile_gesture':
 					return await this._gesture(paneToken, record, signal);
 				case 'mobile_install_app':
-					return await this._install(paneToken, record, signal);
+					return await this._install(paneToken, record, context!, signal);
 				case 'mobile_launch_app':
 					return await this._launch(paneToken, record, signal);
 				case 'mobile_grant_permission':
@@ -273,11 +290,12 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		if (current?.deviceId === device.id) {
 			return jsonResult({ attached: true, alreadyAttached: true, device: describeDevice(device) });
 		}
-		if (this._isUsedByAnotherPane(paneToken, device.id)) {
+		if (paradisDeviceHeldByAnotherPane(paneToken, device, devices, this._ledger.listAttachments())) {
 			return errorResult(`${device.name} is being used by another terminal pane, so it cannot be requested. Pick a device that no other pane is using, or ask the user.`);
 		}
 
 		const prompt: IParadisMobileDeviceRequestPrompt = {
+			deviceId: device.id,
 			deviceName: device.name,
 			...(device.runtime ? { runtime: device.runtime } : {}),
 			...(reason ? { reason } : {}),
@@ -289,39 +307,23 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 			args: [paneToken, prompt],
 			failureLabel: 'mobile_request_device',
 			failureMessage: 'Para Code could not show the approval dialog in its window. Retry once; if it keeps failing, ask the user to attach the device from Para Code.',
-			timeoutMs: PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS,
+			timeoutMs: PARADIS_MOBILE_APPROVAL_TIMEOUT_MS,
 			timeoutMessage: REQUEST_TIMEOUT_MESSAGE,
 		}, signal);
 		if (!call.ok) {
 			return errorResult(call.error);
 		}
 		const answer = paradisParseMobileDeviceRequestAnswer(call.value);
-		switch (answer?.outcome) {
-			case 'approved':
-				break;
-			case 'denied':
-				return jsonResult({ attached: false, approved: false, message: 'The user declined. Do not request a device again for now; Para Code turns down requests from this pane for a few minutes.' });
-			case 'recentlyDenied':
-				return errorResult('The user declined a request from this pane a short while ago, so Para Code turned this one down without asking. Wait a few minutes, or ask the user in the conversation.');
-			case 'busy':
-				return errorResult('Another request from this pane is still waiting for the user\'s answer.');
-			case 'paneUnresolved':
-				return errorResult('Para Code could not find this terminal pane in its window (it may be restoring). Retry in a few seconds.');
-			default:
-				// 取り消し・時間切れ・速すぎる承認の打ち切り・形の違う応答は、どれも割り当てない
-				return jsonResult({ attached: false, approved: false, timedOut: true, message: REQUEST_TIMEOUT_MESSAGE });
+		if (answer?.outcome !== 'approved') {
+			return refusal(answer?.outcome, 'The user declined to attach this device. Do not ask for the same device again for now: Para Code turns down requests from this pane for this device for a few minutes (other devices and browser pages are not affected).', 'The user declined a request from this pane for this device a short while ago, so Para Code turned this one down without asking. Wait a few minutes, or ask the user in the conversation.');
 		}
-		// 承認を待つ間に、別のペインへ渡っていたら割り当てない（ほかのペインの端末は奪わない）
-		if (this._isUsedByAnotherPane(paneToken, device.id)) {
-			return errorResult(`${device.name} was given to another terminal pane while the user was answering, so it was not attached.`);
+		// 承認を待つ間に別のペインへ渡っていたら割り当てない（ほかのペインの端末は奪わない）。確かめと書き込みは台帳が一度に行う
+		const attachment = await this._ledger.attachIfFree(paneToken, device.id, answer.stateKey, signal);
+		if (!attachment) {
+			return errorResult(`${device.name} was given to another terminal pane (or disappeared) while the user was answering, so it was not attached.`);
 		}
-		const attachment = await this._ledger.attach(paneToken, device.id, answer.stateKey, signal);
 		this._logService?.info(`[paradis-mobile-canvas] the user approved attaching ${attachment.deviceName} to a terminal pane`);
 		return jsonResult({ attached: true, approved: true, device: describeDevice(device), replaced: current ? current.deviceName : undefined });
-	}
-
-	private _isUsedByAnotherPane(paneToken: string, deviceId: string): boolean {
-		return this._ledger.listAttachments().some(entry => entry.deviceId === deviceId && entry.paneToken !== paneToken);
 	}
 
 	// --- 画面の入力（Mobile Canvas ホスト） ---
@@ -381,7 +383,8 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 				return errorResult('swipe needs "direction": up, down, left or right. To swipe between two exact points use mobile_swipe.');
 			}
 			const { start, end } = paradisSwipeEndpoints(direction, size, point, optionalNumber(args, 'distance'));
-			const duration = optionalNumber(args, 'duration');
+			const requested = optionalNumber(args, 'duration');
+			const duration = requested === undefined ? undefined : clamp(requested, SWIPE_MIN_SECONDS, SWIPE_MAX_SECONDS);
 			await this._host.request('POST', `/api/v1/devices/${id}/input/swipe`, { startX: start.x, startY: start.y, endX: end.x, endY: end.y, duration }, signal);
 			return textResult(`Swiped ${direction} on ${attachment.deviceName} from (${start.x}, ${start.y}) to (${end.x}, ${end.y}).`);
 		}
@@ -406,26 +409,32 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		const down = new Map<number, IParadisPoint>();
 		const touch = (fingerId: number, point: IParadisPoint, phase: 'down' | 'move' | 'up') =>
 			this._host.request('POST', `/api/v1/devices/${encodedId}/input/touch`, { x: point.x, y: point.y, phase, fingerId }, signal);
+		// 記録は要求を送る前に付ける（ホストが受け付けたのに応答だけ失敗した指も、必ず上げるため。
+		// 下ろしていない指への「上げる」は余分に送っても害が無い）
+		const send = async (fingerId: number, point: IParadisPoint, phase: 'down' | 'move') => {
+			down.set(fingerId, point);
+			await touch(fingerId, point, phase);
+		};
 		try {
 			const [first0, first1] = frames[0];
-			await touch(0, first0, 'down');
-			down.set(0, first0);
-			await touch(1, first1, 'down');
-			down.set(1, first1);
+			await send(0, first0, 'down');
+			await send(1, first1, 'down');
 			for (let index = 1; index < frames.length; index++) {
 				if (signal?.aborted) {
-					throw new Error('The gesture was cancelled.');
+					break;
 				}
 				await this._sleep(PINCH_STEP_INTERVAL_MS, signal);
 				const [point0, point1] = frames[index];
-				await touch(0, point0, 'move');
-				down.set(0, point0);
-				await touch(1, point1, 'move');
-				down.set(1, point1);
+				await send(0, point0, 'move');
+				await send(1, point1, 'move');
 			}
 		} catch (error) {
+			if (signal?.aborted) {
+				throw new Error('The gesture was cancelled.');
+			}
 			throw new Error(`The two-finger gesture failed (${toMessage(error)}). This device may not accept two-finger input from Para Code.`);
 		} finally {
+			// 取り消しで抜けたときも、ここで指を上げる
 			for (const [fingerId, point] of down) {
 				try {
 					// 取り消し後も指は上げたいので、ここでは signal を渡さない
@@ -435,13 +444,38 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 				}
 			}
 		}
+		if (signal?.aborted) {
+			throw new Error('The gesture was cancelled.');
+		}
 	}
 
 	// --- アプリ（simctl / adb） ---
 
-	private async _install(paneToken: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
+	private async _install(paneToken: string, args: Record<string, unknown>, context: IParadisMcpToolCallContext, signal?: AbortSignal): Promise<IToolResult> {
 		const resolved = await this._resolve(paneToken, signal);
 		const target = await this._commands.resolveInstallTarget(resolved.platform, args.path);
+		// 入れたアプリは Para Code の権限で動き、エージェントのサンドボックスの外に出られるので、毎回利用者に聞く
+		const prompt: IParadisMobileInstallPrompt = { deviceId: resolved.device.id, deviceName: resolved.device.name, path: target.path };
+		const call = await context.callOwningWindow<unknown>({
+			channelName: PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL,
+			method: PARADIS_MOBILE_INSTALL_APPROVAL_METHOD,
+			args: [paneToken, prompt],
+			failureLabel: 'mobile_install_app',
+			failureMessage: 'Para Code could not show the install approval dialog in its window. Retry once; if it keeps failing, ask the user to install the app.',
+			timeoutMs: PARADIS_MOBILE_APPROVAL_TIMEOUT_MS,
+			timeoutMessage: REQUEST_TIMEOUT_MESSAGE,
+		}, signal);
+		if (!call.ok) {
+			return errorResult(call.error);
+		}
+		const answer = paradisParseMobileDeviceRequestAnswer(call.value);
+		if (answer?.outcome !== 'approved') {
+			return refusal(answer?.outcome, 'The user declined to install this app. Do not try again straight away: Para Code turns down installs from this pane onto this device for a few minutes.', 'The user declined an install from this pane onto this device a short while ago, so Para Code turned this one down without asking. Wait a few minutes, or ask the user in the conversation.');
+		}
+		// 承認を待つ間に割り当てが変わっていたら入れない（利用者が見た端末と違う端末へ入れないように）
+		if (this._ledger.getAttachment(paneToken)?.deviceId !== resolved.device.id) {
+			return errorResult('The device attached to this pane changed while the user was answering, so nothing was installed.');
+		}
 		await this._commands.install(resolved.platform, resolved.nativeId, target, signal);
 		const bundleId = await this._commands.readBundleId(target, signal).catch(() => undefined);
 		this._logService?.info(`[paradis-mobile-canvas] installed an app on ${resolved.device.name}`);
@@ -458,16 +492,18 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 	private async _grant(paneToken: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
 		const resolved = await this._resolve(paneToken, signal);
 		const appId = requireAppId(resolved.platform, args.appId);
-		if (paradisIsSystemAppId(resolved.platform, appId)) {
-			return errorResult(`${appId} is part of the operating system. Para Code only grants permissions to your own apps.`);
-		}
 		const permission = paradisResolveMobilePermission(resolved.platform, args.permission);
 		if (!permission) {
 			return errorResult(`"permission" must be one of: ${paradisMobilePermissionNames(resolved.platform).join(', ')}.`);
 		}
-		// 付けるのは、その端末に実際に入っているそのアプリだけ（入っていない ID へ前もって付けておくことはしない）
-		if (!await this._commands.isInstalled(resolved.platform, resolved.nativeId, appId, signal)) {
+		// 付けるのは、その端末に利用者が入れたそのアプリだけ。OS のアプリかどうかは名前ではなく端末に聞く。
+		// 入っていない ID へ前もって付けておくこともしない
+		const kind = await this._commands.appKind(resolved.platform, resolved.nativeId, appId, signal);
+		if (kind === 'missing') {
 			return errorResult(`${appId} is not installed on ${resolved.device.name}. Install it with mobile_install_app first.`);
+		}
+		if (kind === 'system') {
+			return errorResult(`${appId} is part of the operating system. Para Code only grants permissions to apps the user installed.`);
 		}
 		await this._commands.grantPermission(resolved.platform, resolved.nativeId, appId, permission, signal);
 		this._logService?.info(`[paradis-mobile-canvas] granted a permission on ${resolved.device.name}`);
@@ -514,6 +550,27 @@ function orientationSettled(target: ParadisMobileOrientation, display: IParadisP
 	}
 	// 向きを返さないホストでは、縦横の比で判断する
 	return target.startsWith('landscape') ? display.width > display.height : display.height > display.width;
+}
+
+/** 承認されなかったときの返事。拒否と自動の断りの文だけ呼び出し側が決める。 */
+function refusal(outcome: ParadisMobileDeviceRequestOutcome | undefined, denied: string, recentlyDenied: string): IToolResult {
+	switch (outcome) {
+		case 'denied':
+			return jsonResult({ approved: false, message: denied });
+		case 'recentlyDenied':
+			return errorResult(recentlyDenied);
+		case 'busy':
+			return errorResult('Another request from this pane is still waiting for the user\'s answer.');
+		case 'paneUnresolved':
+			return errorResult('Para Code could not find this terminal pane in its window (it may be restoring, or it was closed). Retry in a few seconds.');
+		case 'unanswered':
+			return jsonResult({ approved: false, message: REQUEST_UNANSWERED_MESSAGE });
+		case 'cancelled':
+			return jsonResult({ approved: false, message: REQUEST_CANCELLED_MESSAGE });
+		default:
+			// 時間切れ・形の違う応答は、どれも承認として扱わない
+			return jsonResult({ approved: false, timedOut: true, message: REQUEST_TIMEOUT_MESSAGE });
+	}
 }
 
 function describeDevice(device: IParadisMobileDevice): object {

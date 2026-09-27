@@ -13,12 +13,24 @@
 // Android の `adb shell` は引数をつないで端末側のシェルに解釈させるので、引数配列で呼んでも
 // 値に空白や `;` があれば端末側でコマンドとして動いてしまう。形の検査がその唯一の防ぎになる。
 
-/** 端末の割り当ての承認を、呼び出し元ペインを所有するウィンドウへ頼むチャネル。 */
+import { IParadisMobileAttachment, IParadisMobileDevice } from './paradisMobileCanvas.js';
+
+/** 端末の割り当てとアプリのインストールの承認を、呼び出し元ペインを所有するウィンドウへ頼むチャネル。 */
 export const PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL = 'paradisMobileDeviceRequest';
 export const PARADIS_MOBILE_DEVICE_REQUEST_METHOD = 'requestDevice';
+export const PARADIS_MOBILE_INSTALL_APPROVAL_METHOD = 'approveInstall';
+
+/**
+ * shared process で承認の答えを待つ上限。renderer の締め切り（ダイアログを含めて 50 秒、
+ * `PARADIS_AGENT_APPROVAL_DEADLINE_MS`）より少し長い。ページ共有の定数とは別に持つ
+ * （ページの都合で値が変わっても、端末の承認の締め切りとの差が崩れないように）。
+ */
+export const PARADIS_MOBILE_APPROVAL_TIMEOUT_MS = 55_000;
 
 /** 承認ダイアログに出す中身（shared process が端末一覧から組み立てる。表示前に renderer で無害化する）。 */
 export interface IParadisMobileDeviceRequestPrompt {
+	/** 拒否の後の自動の断りを、端末ごとに数えるために使う（表示はしない）。 */
+	readonly deviceId: string;
 	readonly deviceName: string;
 	/** 例: `iOS 26.5`。 */
 	readonly runtime?: string;
@@ -39,6 +51,15 @@ export interface IParadisMobileDeviceRequestPrompt {
  *  - paneUnresolved: そのペインがこのウィンドウに見つからない
  */
 export type ParadisMobileDeviceRequestOutcome = 'approved' | 'denied' | 'cancelled' | 'unanswered' | 'busy' | 'recentlyDenied' | 'paneUnresolved';
+
+/** アプリのインストールの承認ダイアログに出す中身。 */
+export interface IParadisMobileInstallPrompt {
+	/** 拒否の後の自動の断りを、端末ごとに数えるために使う（表示はしない）。 */
+	readonly deviceId: string;
+	readonly deviceName: string;
+	/** インストールするもの（シンボリックリンクを解いた後のパス）。 */
+	readonly path: string;
+}
 
 export interface IParadisMobileDeviceRequestAnswer {
 	readonly outcome: ParadisMobileDeviceRequestOutcome;
@@ -124,15 +145,6 @@ export function paradisIsValidAppId(platform: ParadisMobilePlatform, appId: unkn
 		: /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(appId);
 }
 
-/** OS に入っているアプリか。権限はこれらへは付けない（作業中のアプリに限るため）。 */
-export function paradisIsSystemAppId(platform: ParadisMobilePlatform, appId: string): boolean {
-	const lower = appId.toLowerCase();
-	if (platform === 'ios') {
-		return lower.startsWith('com.apple.');
-	}
-	return lower === 'android' || lower.startsWith('android.') || lower.startsWith('com.android.') || lower.startsWith('com.google.android.');
-}
-
 // --- 権限 ---
 
 /** `xcrun simctl privacy` が受ける項目のうち、1つのアプリへの付与として意味があるもの（`all` は入れない）。 */
@@ -159,7 +171,11 @@ export function paradisMobilePermissionNames(platform: ParadisMobilePlatform): r
 	return platform === 'ios' ? [...IOS_PRIVACY_SERVICES] : [...ANDROID_PERMISSION_ALIASES.keys(), 'android.permission.<NAME>'];
 }
 
-/** 権限の名前をその端末のコマンドへ渡す名前にする。付与できない名前なら undefined。 */
+/**
+ * 権限の名前をその端末のコマンドへ渡す名前にする。付与できない名前なら undefined。
+ * Android はここで形だけを見る。実際に付けてよいのは、その端末の dangerous（実行時の確認が出る）権限だけで、
+ * それは `pm list permissions -g -d` の結果（{@link paradisParseDangerousPermissions}）と突き合わせて確かめる。
+ */
 export function paradisResolveMobilePermission(platform: ParadisMobilePlatform, permission: unknown): string | undefined {
 	if (typeof permission !== 'string') {
 		return undefined;
@@ -174,6 +190,70 @@ export function paradisResolveMobilePermission(platform: ParadisMobilePlatform, 
 		return alias;
 	}
 	return /^android\.permission\.[A-Z][A-Z0-9_]*$/.test(trimmed) ? trimmed : undefined;
+}
+
+/** `pm list permissions -g -d` の出力から、dangerous 権限の名前を集める。 */
+export function paradisParseDangerousPermissions(output: string): ReadonlySet<string> {
+	const names = new Set<string>();
+	for (const match of output.matchAll(/^\s*permission:(?<name>[A-Za-z0-9_.]+)\s*$/gm)) {
+		names.add(match.groups!.name);
+	}
+	return names;
+}
+
+// --- 利用者が入れたアプリか ---
+
+/** アプリがその端末でどういう扱いか。`user` は利用者が入れたアプリ、`system` は OS のもの。 */
+export type ParadisMobileAppKind = 'user' | 'system' | 'missing';
+
+/** `pm list packages -3`（利用者が入れたアプリだけ）の出力に、そのパッケージがちょうど含まれるか。 */
+export function paradisPackageListIncludes(output: string, packageName: string): boolean {
+	return output.split(/\r?\n/).some(line => line.trim() === `package:${packageName}`);
+}
+
+/**
+ * `xcrun simctl listapps <udid>` の出力（OpenStep 形式の plist）から、そのアプリの `ApplicationType` を読む。
+ * 最上位の項目は4つの空白、中の値は8つの空白で字下げされている（Xcode 27 で確認）。見つからなければ undefined。
+ */
+export function paradisListappsApplicationType(output: string, bundleId: string): string | undefined {
+	const lines = output.split(/\r?\n/);
+	const start = lines.findIndex(line => {
+		const match = /^ {4}(?:"(?<quoted>[^"]*)"|(?<bare>[^\s"=]+)) = +\{\s*$/.exec(line);
+		return (match?.groups?.quoted ?? match?.groups?.bare) === bundleId;
+	});
+	if (start < 0) {
+		return undefined;
+	}
+	for (let index = start + 1; index < lines.length; index++) {
+		const line = lines[index];
+		if (/^ {4}\};?\s*$/.test(line)) {
+			return undefined;
+		}
+		const type = /^ {8}ApplicationType = (?<type>[A-Za-z]+);\s*$/.exec(line);
+		if (type) {
+			return type.groups!.type;
+		}
+	}
+	return undefined;
+}
+
+// --- ほかのペインが使っているか ---
+
+/**
+ * その端末がほかのペインに割り当てられているか。ID が同じものに加えて、端末の番号（UDID / シリアル）が同じものも
+ * 同じ端末とみなす（ホストが同じ実体を別の ID で並べても、操作は番号で行うため）。
+ */
+export function paradisDeviceHeldByAnotherPane(paneToken: string, device: IParadisMobileDevice, devices: readonly IParadisMobileDevice[], attachments: readonly IParadisMobileAttachment[]): boolean {
+	return attachments.some(entry => {
+		if (entry.paneToken === paneToken) {
+			return false;
+		}
+		if (entry.deviceId === device.id) {
+			return true;
+		}
+		const held = devices.find(candidate => candidate.id === entry.deviceId);
+		return !!device.udid && held?.udid === device.udid;
+	});
 }
 
 // --- インストールするファイル ---

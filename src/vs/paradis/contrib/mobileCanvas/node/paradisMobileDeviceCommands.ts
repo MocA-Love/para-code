@@ -17,7 +17,7 @@ import { execFile } from 'child_process';
 import { realpath, stat } from 'fs/promises';
 import { homedir } from 'os';
 import { isAbsolute, join } from '../../../../base/common/path.js';
-import { ParadisMobileInstallKind, ParadisMobilePlatform, paradisMobileInstallKindFor } from '../common/paradisMobileDeviceOps.js';
+import { ParadisMobileAppKind, ParadisMobileInstallKind, ParadisMobilePlatform, paradisListappsApplicationType, paradisMobileInstallKindFor, paradisPackageListIncludes, paradisParseDangerousPermissions } from '../common/paradisMobileDeviceOps.js';
 
 export interface IParadisMobileCommandResult {
 	readonly code: number;
@@ -57,7 +57,11 @@ export const paradisNodeMobileFileProbe: IParadisMobileFileProbe = {
 	},
 };
 
-/** adb の置き場所の候補（先に見つかったものを使う。どれも無ければ PATH の `adb`）。 */
+/**
+ * adb の置き場所の候補（先に見つかったものを使う）。SDK の環境変数 → 既定の SDK フォルダ → PATH の各項目の順。
+ * PATH は絶対パスの項目だけを自前でたどり、見つけた絶対パスで起動する（裸の `adb` を渡すと、Windows では
+ * 今のフォルダが先に探されうる）。環境変数は shared process のもので、ペインの環境は見ない。
+ */
 export function paradisAdbCandidates(env: { readonly [name: string]: string | undefined }, platform: NodeJS.Platform, home: string): string[] {
 	const executable = platform === 'win32' ? 'adb.exe' : 'adb';
 	const roots: string[] = [];
@@ -77,7 +81,8 @@ export function paradisAdbCandidates(env: { readonly [name: string]: string | un
 	} else {
 		roots.push(join(home, 'Android', 'Sdk'));
 	}
-	return roots.map(root => join(root, 'platform-tools', executable));
+	const pathEntries = (env.PATH ?? env.Path ?? '').split(platform === 'win32' ? ';' : ':').filter(entry => entry && isAbsolute(entry));
+	return [...roots.map(root => join(root, 'platform-tools', executable)), ...pathEntries.map(entry => join(entry, executable))];
 }
 
 /** 失敗の理由として返す出力（長すぎる分は切る）。 */
@@ -101,7 +106,7 @@ const COMMAND_TIMEOUT_MS = 20_000;
  */
 export class ParadisMobileDeviceCommands {
 
-	private _adb: Promise<string> | undefined;
+	private _adb: string | undefined;
 
 	constructor(
 		private readonly _run: ParadisMobileCommandRunner = paradisExecFileMobileCommand,
@@ -112,13 +117,19 @@ export class ParadisMobileDeviceCommands {
 	) { }
 
 	/**
-	 * インストールするパスを確かめる。絶対パスで、実在し、種類（`.app` はフォルダで中に `Info.plist`、
+	 * インストールするパスを確かめる。
+	 * **これはセキュリティの境界ではない**: 確かめた後、simctl / adb が読むまでの間にパスを差し替えられるし、
+	 * `.app` の中身も見ていない。利用者に分かりやすいエラーを返すためのもので、守りはインストールごとの承認が担う。絶対パスで、実在し、種類（`.app` はフォルダで中に `Info.plist`、
 	 * `.ipa` / `.apk` は普通のファイル）がその端末に合うものだけを通す。拡張子はリンクを解いた先でも見る。
 	 * 通らなければ理由の英文を投げる。
 	 */
 	async resolveInstallTarget(platform: ParadisMobilePlatform, path: unknown): Promise<IParadisMobileInstallTarget> {
 		if (typeof path !== 'string' || path.length === 0 || path.includes('\0')) {
 			throw new Error('"path" must be a non-empty string.');
+		}
+		// UNC（`\\host\share`、`\\?\`、`//host`）は断る。`realpath` だけで SMB へ繋ぎ、認証情報を送りうるため
+		if (/^[\\/]{2}/.test(path)) {
+			throw new Error('"path" must be on a local disk, not a network share.');
 		}
 		if (!isAbsolute(path)) {
 			throw new Error('"path" must be an absolute path on this computer.');
@@ -197,14 +208,29 @@ export class ParadisMobileDeviceCommands {
 		}
 	}
 
-	/** そのアプリがその端末に入っているか。 */
-	async isInstalled(platform: ParadisMobilePlatform, deviceId: string, appId: string, signal?: AbortSignal): Promise<boolean> {
+	/**
+	 * そのアプリがその端末でどういう扱いか（名前ではなく端末に聞く）。
+	 * iOS は `simctl listapps` の `ApplicationType`、Android は `pm list packages -3`（利用者が入れたもの）に入っているか。
+	 */
+	async appKind(platform: ParadisMobilePlatform, deviceId: string, appId: string, signal?: AbortSignal): Promise<ParadisMobileAppKind> {
 		if (platform === 'ios') {
-			const result = await this._run(this._xcrun(), ['simctl', 'get_app_container', deviceId, appId, 'app'], { timeoutMs: COMMAND_TIMEOUT_MS, signal });
-			return result.code === 0 && result.stdout.trim().length > 0;
+			const result = await this._run(this._xcrun(), ['simctl', 'listapps', deviceId], { timeoutMs: COMMAND_TIMEOUT_MS, signal });
+			if (result.code !== 0) {
+				throw new Error(describeFailure('simctl listapps', result));
+			}
+			const type = paradisListappsApplicationType(result.stdout, appId);
+			return type === undefined ? 'missing' : type === 'User' ? 'user' : 'system';
 		}
-		const result = await this._run(await this._adbPath(), ['-s', deviceId, 'shell', 'pm', 'path', appId], { timeoutMs: COMMAND_TIMEOUT_MS, signal });
-		return result.code === 0 && /^package:/m.test(result.stdout);
+		const adb = await this._adbPath();
+		const user = await this._run(adb, ['-s', deviceId, 'shell', 'pm', 'list', 'packages', '-3'], { timeoutMs: COMMAND_TIMEOUT_MS, signal });
+		if (user.code !== 0) {
+			throw new Error(describeFailure('adb pm list packages', user));
+		}
+		if (paradisPackageListIncludes(user.stdout, appId)) {
+			return 'user';
+		}
+		const path = await this._run(adb, ['-s', deviceId, 'shell', 'pm', 'path', appId], { timeoutMs: COMMAND_TIMEOUT_MS, signal });
+		return path.code === 0 && /^package:/m.test(path.stdout) ? 'system' : 'missing';
 	}
 
 	/** その端末のそのアプリへ1つの権限を付ける（取り消し・全部の初期化はしない）。 */
@@ -216,7 +242,16 @@ export class ParadisMobileDeviceCommands {
 			}
 			return;
 		}
-		const result = await this._run(await this._adbPath(), ['-s', deviceId, 'shell', 'pm', 'grant', appId, permission], { timeoutMs: COMMAND_TIMEOUT_MS, signal });
+		const adb = await this._adbPath();
+		// 付けてよいのは実行時の確認が出る dangerous 権限だけ（development 権限の WRITE_SECURE_SETTINGS・READ_LOGS などは断る）
+		const listed = await this._run(adb, ['-s', deviceId, 'shell', 'pm', 'list', 'permissions', '-g', '-d'], { timeoutMs: COMMAND_TIMEOUT_MS, signal });
+		if (listed.code !== 0) {
+			throw new Error(describeFailure('adb pm list permissions', listed));
+		}
+		if (!paradisParseDangerousPermissions(listed.stdout).has(permission)) {
+			throw new Error(`${permission} is not a runtime (dangerous) permission on this device, so Para Code does not grant it.`);
+		}
+		const result = await this._run(adb, ['-s', deviceId, 'shell', 'pm', 'grant', appId, permission], { timeoutMs: COMMAND_TIMEOUT_MS, signal });
 		// pm grant も失敗を出力にだけ書くことがある
 		if (result.code !== 0 || /Exception|not a changeable permission|Unknown permission/i.test(`${result.stdout}${result.stderr}`)) {
 			throw new Error(describeFailure('adb pm grant', result));
@@ -231,15 +266,19 @@ export class ParadisMobileDeviceCommands {
 		return '/usr/bin/xcrun';
 	}
 
-	private _adbPath(): Promise<string> {
-		this._adb ??= (async () => {
+	/** 見つかった adb の絶対パス。見つからなければ投げ、覚えない（後から SDK を入れても再起動なしで使えるように）。 */
+	private async _adbPath(): Promise<string> {
+		if (this._adb === undefined) {
 			for (const candidate of paradisAdbCandidates(this._env, this._platform, this._home)) {
 				if (await this._files.kind(candidate) === 'file') {
-					return candidate;
+					this._adb = candidate;
+					break;
 				}
 			}
-			return this._platform === 'win32' ? 'adb.exe' : 'adb';
-		})();
+		}
+		if (this._adb === undefined) {
+			throw new Error('Para Code could not find adb. Install the Android SDK platform-tools, or set ANDROID_HOME for Para Code, and try again.');
+		}
 		return this._adb;
 	}
 }
