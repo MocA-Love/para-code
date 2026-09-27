@@ -617,7 +617,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.sharedPanelCwd', "共通ターミナルを開くフォルダ"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.sharedPanelCwdDesc', "空のときはホームフォルダで開きます。"),
+		description: localize('paradis.settings.sharedPanelCwdDesc', "空のときはホームフォルダで開きます。フォルダが無いときもホームフォルダで開きます。"),
 		placeholder: '~',
 		keywords: 'terminal panel shared cwd folder home start',
 	},
@@ -627,7 +627,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.historyPerSpace', "シェルの履歴をスペースごとに分ける"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.historyPerSpaceDesc', "↑ キーで出る履歴がスペースごとになります。スペースを削除すると履歴も消えます。下部パネルの共通ターミナルは対象外です。"),
+		description: localize('paradis.settings.historyPerSpaceDesc', "↑ キーで出る履歴がスペースごとになります。スペースを削除すると履歴も消えます（fish でデータフォルダを変えている場合は消えません）。下部パネルの共通ターミナルは対象外です。"),
 		keywords: 'terminal shell history histfile space zsh bash fish',
 	},
 	{
