@@ -36,6 +36,13 @@ export interface IParadisKeychain {
 /** キーチェーンが読めない・書けない（項目が無いのとは別）。 */
 export class ParadisKeychainError extends Error { }
 
+/**
+ * 値が大きすぎて、標準入力（`security -i` の1行 4096 バイト）では渡せない。引数に載せる経路は
+ * 使わないので書けない。Claude Code の `Claude Code-credentials` は MCP サーバーのトークン
+ * （`mcpOAuth`）を含むため、数 KB になり得る。
+ */
+export class ParadisKeychainValueTooLargeError extends ParadisKeychainError { }
+
 const SECURITY_BINARY = '/usr/bin/security';
 /** `security find/delete-generic-password` が「項目が無い」ときに返す終了コード（errSecItemNotFound）。 */
 const NOT_FOUND_EXIT_CODE = 44;
@@ -76,7 +83,7 @@ export class ParadisSecurityCliKeychain implements IParadisKeychain {
 		const hex = Buffer.from(value, 'utf8').toString('hex');
 		const command = `add-generic-password -U -a ${quoteForSecurityStdin(account)} -s ${quoteForSecurityStdin(service)} -X ${hex}\n`;
 		if (Buffer.byteLength(command, 'utf8') > SECURITY_STDIN_LINE_LIMIT) {
-			throw new ParadisKeychainError('the value is too large to pass to security through stdin');
+			throw new ParadisKeychainValueTooLargeError('the value is too large to pass to security through stdin');
 		}
 		const result = await this.run(['-i'], command);
 		// `security -i` は中のコマンドが失敗しても 0 で終わることがあるので、エラー出力も見る。

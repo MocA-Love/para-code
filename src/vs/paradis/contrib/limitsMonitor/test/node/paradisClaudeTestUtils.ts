@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from '../../../../../base/common/path.js';
 import { IParadisClaudeUsageWindows } from '../../common/paradisClaudeUsage.js';
-import { IParadisKeychain, ParadisKeychainError } from '../../node/paradisClaudeKeychain.js';
+import { IParadisKeychain, ParadisKeychainError, ParadisKeychainValueTooLargeError } from '../../node/paradisClaudeKeychain.js';
 import { IParadisClaudeOAuthClient, ParadisClaudeProfileResult, ParadisClaudeRefreshResult, ParadisClaudeUsageFetchResult } from '../../node/paradisClaudeOAuthClient.js';
 
 export class ParadisMemoryKeychain implements IParadisKeychain {
@@ -23,6 +23,8 @@ export class ParadisMemoryKeychain implements IParadisKeychain {
 	locked = false;
 	/** 次の write をこの回数だけ失敗させる。 */
 	failWrites = 0;
+	/** これより大きい値の write を、本物と同じく「大きすぎる」で失敗させる。 */
+	maxValueBytes: number | undefined;
 
 	private key(service: string, account: string): string {
 		return `${service}\u0000${account}`;
@@ -47,6 +49,9 @@ export class ParadisMemoryKeychain implements IParadisKeychain {
 		if (this.locked || this.failWrites > 0) {
 			this.failWrites = Math.max(0, this.failWrites - 1);
 			throw new ParadisKeychainError('write failed');
+		}
+		if (this.maxValueBytes !== undefined && Buffer.byteLength(value, 'utf8') > this.maxValueBytes) {
+			throw new ParadisKeychainValueTooLargeError('too large');
 		}
 		this.items.set(this.key(service, account), value);
 	}

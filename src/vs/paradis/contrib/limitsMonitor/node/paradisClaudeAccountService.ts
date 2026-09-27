@@ -72,7 +72,7 @@ import {
 	ParadisLimitsUnavailableReason
 } from '../common/paradisLimitsMonitor.js';
 import { IParadisClaudeAccountRecord, IParadisClaudeSecretStore, ParadisClaudeAccountRegistry, paradisIsClaudeAccountId } from './paradisClaudeAccountStore.js';
-import { ParadisKeychainError } from './paradisClaudeKeychain.js';
+import { ParadisKeychainError, ParadisKeychainValueTooLargeError } from './paradisClaudeKeychain.js';
 import { ParadisClaudeConfigUnreadableError, ParadisClaudeLiveAuth, ParadisClaudeLockTimeoutError } from './paradisClaudeLiveAuth.js';
 import { IParadisClaudeLoginRunner, paradisOauthAccountFromClaudeStatus } from './paradisClaudeLogin.js';
 import { IParadisClaudeOAuthClient } from './paradisClaudeOAuthClient.js';
@@ -101,6 +101,19 @@ const LOGIN_DIR_PREFIX = 'paradis-claude-login-';
 const STALE_LOGIN_DIR_MS = 30 * 60_000;
 /** claude-swap と同じトークンの系列を持っている控えのアカウントを取りに行く間隔。 */
 const SHARED_LINEAGE_RETRY_S = 600;
+/** いまのログインの持ち主を確かめられなかった後、定期の取り込みで確かめ直すまでの間。 */
+const ADOPT_RETRY_AFTER_MS = 10 * 60_000;
+
+/** {@link ParadisClaudeAccountService.refreshStoredCredentialsNow} の結果。 */
+type ParadisClaudeRefreshOutcome =
+	/** 更新後（または更新が要らなかった）の JSON。 */
+	| string
+	/** リフレッシュトークンが拒否された。再ログインでしか直らない。 */
+	| 'dead'
+	/** いまのログインと同じトークンの系列なので更新しなかった（使用中を控えと取り違えている）。 */
+	| 'live_lineage'
+	/** 一時的に失敗した・切り替えを挟んだので更新しなかった。 */
+	| undefined;
 
 /** ダイアログが日本語の説明に置き換える失敗（メッセージは種類の値そのもの）。 */
 function paradisClaudeSetupError(code: ParadisClaudeSetupErrorCode): Error {
@@ -228,7 +241,8 @@ export class ParadisClaudeAccountService extends Disposable {
 	private skipAdoptPasses = 0;
 	/** 進行中のアカウント追加（キャンセルした後も、後片付けが終わるまで次を始めない）。 */
 	private loginInFlight: Promise<unknown> | undefined;
-	private staleLoginsCleaned = false;
+	/** 定期の取り込みで持ち主を確かめられなかったアカウント → 次に確かめる時刻。 */
+	private readonly adoptRetryAfter = new Map<string, number>();
 
 	constructor(options: IParadisClaudeAccountServiceOptions) {
 		super();
@@ -242,6 +256,10 @@ export class ParadisClaudeAccountService extends Disposable {
 		this.legacyCswapDirs = options.legacyCswapDirs ?? [];
 		this.now = options.now ?? Date.now;
 		this.random = options.random ?? Math.random;
+		// 前回の終了で消し損ねたアカウント追加の一時ディレクトリを、起動のたびに（パネルを開かなくても）消す。
+		if (this.loginRunner) {
+			void this.cleanStaleLogins();
+		}
 		this._register(toDisposable(() => {
 			for (const session of this.setupSessions.values()) {
 				session.abort.abort();
@@ -305,12 +323,9 @@ export class ParadisClaudeAccountService extends Disposable {
 	protected async readSecret(accountId: string): Promise<string | undefined> {
 		const pending = this.pendingSecrets.get(accountId);
 		if (pending !== undefined) {
-			try {
-				await this.secrets.write(accountId, pending);
-				this.pendingSecrets.delete(accountId);
-			} catch {
-				// まだ保存できない。手元の新しい方を使い続ける
-			}
+			// 保存し直しはほかの書き換えと同じ列に並べる（並ばずに書くと、後から保存された新しい値を
+			// 古い値で上書きしうる）。
+			void this.serialize(() => this.flushPendingSecret(accountId, pending));
 			this.knownSecrets.set(accountId, pending);
 			return pending;
 		}
@@ -321,6 +336,21 @@ export class ParadisClaudeAccountService extends Disposable {
 			this.knownSecrets.delete(accountId);
 		}
 		return value;
+	}
+
+	/** 保存できていなかった更新を保存し直す。{@link serialize} の中から呼ぶ。 */
+	private async flushPendingSecret(accountId: string, value: string): Promise<void> {
+		if (this.pendingSecrets.get(accountId) !== value) {
+			return;
+		}
+		try {
+			await this.secrets.write(accountId, value);
+			if (this.pendingSecrets.get(accountId) === value) {
+				this.pendingSecrets.delete(accountId);
+			}
+		} catch {
+			// まだ保存できない。手元の新しい方を使い続け、次に読むときにまた試す
+		}
 	}
 
 	protected async writeSecret(accountId: string, credentialsJson: string): Promise<void> {
@@ -359,7 +389,6 @@ export class ParadisClaudeAccountService extends Disposable {
 		if (!request?.passive) {
 			this.markDemand();
 		}
-		this.cleanStaleLoginsOnce();
 		const targets = await this.resolveTargets();
 		const now = this.now();
 		let due = false;
@@ -502,7 +531,21 @@ export class ParadisClaudeAccountService extends Disposable {
 			if (!state || state.active !== target.active) {
 				// 使用中と控えが入れ替わった（外で `claude /login` した等）。控えのときに「再ログインが要る」で
 				// 止めていたアカウントも、使用中になれば取り直す。
-				state = { status: 'unavailable', unavailableReason: 'not_fetched', nextPollAt: 0, failures: 0, active: target.active, fetchTimes: [], recent429Anchor: state?.recent429Anchor, last429At: state?.last429At };
+				// 取得の回数予算・429 の履歴・直前の値は引き継ぐ。180 秒以内に取った値があれば取り直さない。
+				const recentFetch = state?.fetchedAt !== undefined && this.now() - state.fetchedAt < PARADIS_CLAUDE_SERVE_TTL_S * 1000;
+				state = {
+					status: recentFetch ? state!.status : 'unavailable',
+					unavailableReason: recentFetch ? state!.unavailableReason : 'not_fetched',
+					windows: recentFetch ? state!.windows : undefined,
+					fetchedAt: recentFetch ? state!.fetchedAt : undefined,
+					nextPollAt: recentFetch ? state!.fetchedAt! + PARADIS_CLAUDE_SERVE_TTL_S * 1000 : 0,
+					failures: 0,
+					active: target.active,
+					fetchTimes: state?.fetchTimes ?? [],
+					recent429Anchor: state?.recent429Anchor,
+					last429At: state?.last429At,
+					backoffUntil: state?.backoffUntil,
+				};
 				this.usage.set(target.key, state);
 			}
 			const now = this.now();
@@ -610,9 +653,13 @@ export class ParadisClaudeAccountService extends Disposable {
 					this.setStatus(state, 'unavailable', SHARED_LINEAGE_RETRY_S, 'not_fetched', 'shared with claude-swap');
 					return;
 				}
-				const refreshed = await this.refreshStoredCredentials(target.record);
+				const refreshed = await this.refreshStoredCredentials(target.record, false, context.epoch);
 				if (refreshed === 'dead') {
 					this.setStatus(state, 'relogin_required', Number.POSITIVE_INFINITY);
+					return;
+				}
+				if (refreshed === 'live_lineage') {
+					this.setStatus(state, 'unavailable', ACTIVE_EXPIRED_RETRY_S, 'not_fetched', 'same lineage as the current login');
 					return;
 				}
 				credentials = refreshed ?? credentials;
@@ -628,9 +675,13 @@ export class ParadisClaudeAccountService extends Disposable {
 		let result = await this.oauth.fetchUsage(accessToken);
 		if (result.kind === 'http' && result.status === 401 && !target.active && target.record && !sharedLineage) {
 			// 期限より前に失効していた。1回だけ更新して取り直す。
-			const refreshed = await this.refreshStoredCredentials(target.record, true);
+			const refreshed = await this.refreshStoredCredentials(target.record, true, context.epoch);
 			if (refreshed === 'dead') {
 				this.setStatus(state, 'relogin_required', Number.POSITIVE_INFINITY);
+				return;
+			}
+			if (refreshed === 'live_lineage') {
+				this.setStatus(state, 'unavailable', ACTIVE_EXPIRED_RETRY_S, 'not_fetched', 'same lineage as the current login');
 				return;
 			}
 			const retryToken = paradisClaudeAccessToken(refreshed);
@@ -745,10 +796,18 @@ export class ParadisClaudeAccountService extends Disposable {
 		if (!oauthOnly || !paradisIsUsableClaudeCredentials(oauthOnly) || this.knownSecrets.get(record.id) === oauthOnly) {
 			return;
 		}
-		const verified = await this.verifyLiveCredentials(recordIdentity(record), liveCredentials);
-		if (!verified) {
+		const retryAt = this.adoptRetryAfter.get(record.id);
+		if (retryAt !== undefined && this.now() < retryAt) {
 			return;
 		}
+		const verified = await this.verifyLiveCredentials(recordIdentity(record), liveCredentials);
+		if (!verified) {
+			// 値は出さない。確かめ直すのは一定時間後（毎回の取得で profile API を呼ばない）。
+			this.logService.info('[ParadisClaudeAccounts] could not confirm the owner of the current Claude login; its refreshed token was not saved');
+			this.adoptRetryAfter.set(record.id, this.now() + ADOPT_RETRY_AFTER_MS);
+			return;
+		}
+		this.adoptRetryAfter.delete(record.id);
 		await this.serialize(async () => {
 			// 並んでいる間に切り替えがあったら取り込まない。
 			if (this.switching || epoch !== this.switchEpoch) {
@@ -782,19 +841,31 @@ export class ParadisClaudeAccountService extends Disposable {
 	 * @returns 更新後の JSON。更新しなかった・一時的に失敗したときは undefined。
 	 * リフレッシュトークンが拒否されたときは 'dead'。
 	 */
-	protected refreshStoredCredentials(record: IParadisClaudeAccountRecord, force = false): Promise<string | 'dead' | undefined> {
+	protected refreshStoredCredentials(record: IParadisClaudeAccountRecord, force: boolean, epoch: number): Promise<ParadisClaudeRefreshOutcome> {
 		// 並んでいる間に別の処理が更新したかもしれないので、並んだ後で保存場所から読み直す。
-		return this.serialize(() => this.refreshStoredCredentialsNow(record, force));
+		// 並んでいる間に切り替えがあったら更新しない（控えだったこのアカウントが使用中になっていれば、
+		// ここで更新すると Claude Code の手元のトークンが無効になる）。
+		return this.serialize(() => this.switching || epoch !== this.switchEpoch ? Promise.resolve(undefined) : this.refreshStoredCredentialsNow(record, force));
 	}
 
 	/** {@link refreshStoredCredentials} の本体。{@link serialize} の中から呼ぶ。 */
-	private async refreshStoredCredentialsNow(record: IParadisClaudeAccountRecord, force: boolean): Promise<string | 'dead' | undefined> {
+	private async refreshStoredCredentialsNow(record: IParadisClaudeAccountRecord, force: boolean): Promise<ParadisClaudeRefreshOutcome> {
 		const current = await this.readSecret(record.id);
 		if (!current) {
 			return 'dead';
 		}
 		if (!force && !paradisIsClaudeTokenExpiring(current, this.now())) {
 			return current;
+		}
+		// いまのログインと同じ系列なら更新しない（`~/.claude.json` を一瞬読めずに使用中を控えと
+		// 取り違えた場合でも、Claude Code の手元のトークンを無効にしない）。確かめられなければ更新しない。
+		const live = await this.liveAuth.readCredentials();
+		if (live.keychainUnavailable) {
+			return undefined;
+		}
+		const liveRefreshToken = paradisClaudeRefreshToken(live.value);
+		if (liveRefreshToken !== undefined && liveRefreshToken === paradisClaudeRefreshToken(current)) {
+			return 'live_lineage';
 		}
 		const result = await this.oauth.refresh(current);
 		switch (result.kind) {
@@ -914,15 +985,28 @@ export class ParadisClaudeAccountService extends Disposable {
 				this.resetUsage(target.id);
 				return { outcome: 'no_credentials', email: target.email };
 			}
-			targetCredentials = refreshed ?? targetCredentials;
+			targetCredentials = typeof refreshed === 'string' ? refreshed : targetCredentials;
 		}
 
-		// いまのアカウントの最新のトークン（Claude Code が更新したもの）を、持ち主を確かめてから控える。
-		// 確かめられなければ保存し直さずに進む（保存してあるトークンが古いままになるだけで、別の
-		// アカウントのトークンで上書きするよりは安全）。
-		const outgoingVerified = outgoing && this.knownSecrets.get(outgoing.id) !== paradisClaudeOAuthOnly(liveBefore.value)
-			? await this.verifyLiveCredentials(recordIdentity(outgoing))
-			: undefined;
+		// いまのアカウントの最新のトークン（Claude Code が更新したもの）が保存分と違うなら、持ち主を
+		// 確かめて保存し直してから切り替える。確かめられなければ切り替えない（切り替えるとその最新の
+		// リフレッシュトークンが失われ、そのアカウントは再ログインが要るようになる）。トークンの欄が空に
+		// なっている（Claude Code が更新を拒否された跡）など、守るものが無いときは確かめずに進む。
+		let outgoingStored: string | undefined;
+		let outgoingVerified: IParadisClaudeVerifiedLive | undefined;
+		if (outgoing && liveUsable) {
+			try {
+				outgoingStored = await this.readSecret(outgoing.id);
+			} catch {
+				return { outcome: 'failed', email: target.email, rolledBack: true, detail: 'keychain' };
+			}
+			if (paradisClaudeOAuthOnly(liveBefore.value) !== outgoingStored) {
+				outgoingVerified = await this.verifyLiveCredentials(recordIdentity(outgoing));
+				if (!outgoingVerified) {
+					return { outcome: 'unverified', email: target.email, previousEmail: outgoing.email };
+				}
+			}
+		}
 
 		try {
 			return await this.liveAuth.withLocks(async (): Promise<IParadisClaudeSwitchResult> => {
@@ -936,8 +1020,18 @@ export class ParadisClaudeAccountService extends Disposable {
 				if (!ownerInLock && paradisIsUsableClaudeCredentials(live.value)) {
 					return { outcome: 'unmanaged_live', email: target.email, previousEmail: identityInLock?.email };
 				}
-				if (outgoing && outgoingVerified && ownerInLock?.id === outgoing.id && paradisClaudeOAuthOnly(live.value) === outgoingVerified.oauthOnly) {
-					await this.adoptVerifiedCredentials(outgoing, outgoingVerified);
+				if (outgoing && paradisIsUsableClaudeCredentials(live.value)) {
+					const liveInLock = paradisClaudeOAuthOnly(live.value);
+					// ロックの外で確かめた後に持ち主やトークンが変わっていたら、確かめ直すためにやめる。
+					if (ownerInLock?.id !== outgoing.id) {
+						return { outcome: 'unverified', email: target.email, previousEmail: outgoing.email };
+					}
+					if (liveInLock !== outgoingStored) {
+						if (!outgoingVerified || liveInLock !== outgoingVerified.oauthOnly) {
+							return { outcome: 'unverified', email: target.email, previousEmail: outgoing.email };
+						}
+						await this.adoptVerifiedCredentials(outgoing, outgoingVerified);
+					}
 				}
 				const snapshot = await this.liveAuth.captureSnapshot();
 				try {
@@ -966,6 +1060,9 @@ export class ParadisClaudeAccountService extends Disposable {
 
 	/** 失敗の種類を固定の英語にする（パスや秘密の値を含めない）。 */
 	private classifySwitchError(error: unknown): string {
+		if (error instanceof ParadisKeychainValueTooLargeError) {
+			return 'too_large';
+		}
 		if (error instanceof ParadisClaudeConfigUnreadableError) {
 			return 'config_unreadable';
 		}
@@ -1155,38 +1252,32 @@ export class ParadisClaudeAccountService extends Disposable {
 	}
 
 	/**
-	 * 前回の終了で消し損ねたアカウント追加の一時ディレクトリと、そのキーチェーン項目を消す（1回だけ）。
-	 * 追加したアカウントのリフレッシュトークンが残っているため。
+	 * 前回の終了で消し損ねたアカウント追加の一時ディレクトリと、そのキーチェーン項目を消す（起動のたび）。
+	 * 追加したアカウントのリフレッシュトークンが残っているため。テストからも待てるように Promise を返す。
 	 */
-	private cleanStaleLoginsOnce(): void {
-		if (this.staleLoginsCleaned || !this.loginRunner) {
+	async cleanStaleLogins(): Promise<void> {
+		let entries: string[];
+		try {
+			entries = await fs.promises.readdir(this.tmpdir);
+		} catch {
 			return;
 		}
-		this.staleLoginsCleaned = true;
-		void (async () => {
-			let entries: string[];
-			try {
-				entries = await fs.promises.readdir(this.tmpdir);
-			} catch {
-				return;
+		for (const entry of entries) {
+			if (!entry.startsWith(LOGIN_DIR_PREFIX)) {
+				continue;
 			}
-			for (const entry of entries) {
-				if (!entry.startsWith(LOGIN_DIR_PREFIX)) {
+			const dir = path.join(this.tmpdir, entry);
+			try {
+				const stat = await fs.promises.lstat(dir);
+				if (!stat.isDirectory() || stat.isSymbolicLink() || this.now() - stat.mtimeMs < STALE_LOGIN_DIR_MS) {
 					continue;
 				}
-				const dir = path.join(this.tmpdir, entry);
-				try {
-					const stat = await fs.promises.lstat(dir);
-					if (!stat.isDirectory() || stat.isSymbolicLink() || this.now() - stat.mtimeMs < STALE_LOGIN_DIR_MS) {
-						continue;
-					}
-					await this.liveAuth.deleteScopedCredentials(dir);
-					await fs.promises.rm(dir, { recursive: true, force: true });
-				} catch {
-					// 次の起動でまた試す
-				}
+				await this.liveAuth.deleteScopedCredentials(dir);
+				await fs.promises.rm(dir, { recursive: true, force: true });
+			} catch {
+				// 次の起動でまた試す
 			}
-		})();
+		}
 	}
 
 	getSetupState(sessionId: string): IParadisLimitsSetupState {

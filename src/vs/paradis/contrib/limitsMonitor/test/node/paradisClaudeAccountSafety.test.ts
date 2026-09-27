@@ -241,6 +241,8 @@ suite('ParadisClaudeAccountService safety', () => {
 	test('removes login directories and keychain items left behind by an earlier run', async () => {
 		const harness = await createHarness([], { withLoginRunner: true });
 		const stale = path.join(harness.tmp, 'paradis-claude-login-stale');
+		// 起動時の掃除と競っても取りこぼさないよう、項目はディレクトリより先に置く
+		harness.keychain.set(ParadisClaudeLiveAuth.scopedKeychainService(stale), USER, 'left-behind');
 		const fresh = path.join(harness.tmp, 'paradis-claude-login-fresh');
 		const unrelated = path.join(harness.tmp, 'something-else');
 		for (const dir of [stale, fresh, unrelated]) {
@@ -250,12 +252,9 @@ suite('ParadisClaudeAccountService safety', () => {
 		await fs.promises.utimes(stale, old, old);
 		await fs.promises.utimes(fresh, new Date(harness.clock.now), new Date(harness.clock.now));
 		await fs.promises.utimes(unrelated, old, old);
-		harness.keychain.set(ParadisClaudeLiveAuth.scopedKeychainService(stale), USER, 'left-behind');
 
-		await harness.service.getState(undefined);
-		for (let i = 0; i < 50 && fs.existsSync(stale); i++) {
-			await new Promise(resolve => setTimeout(resolve, 5));
-		}
+		// 次の起動（サービスを作ったとき）と同じ掃除を呼ぶ
+		await harness.service.cleanStaleLogins();
 		assert.deepStrictEqual({
 			entries: (await fs.promises.readdir(harness.tmp)).sort(),
 			item: harness.keychain.get(ParadisClaudeLiveAuth.scopedKeychainService(stale), USER),
