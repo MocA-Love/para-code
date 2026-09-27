@@ -300,21 +300,3 @@
 .paradis-session-resume .paradis-session-resume-row .row-more:hover,
 .paradis-session-resume .paradis-session-resume-row.menu-open .row-more { background: var(--vscode-toolbar-hoverBackground); }
 .paradis-session-resume .paradis-session-resume-row.selected .row-more { color: inherit; }
-
-/* allow-any-unicode-next-line */
-/* 全文検索の初回の案内。答えるまで一覧の上に1回だけ出る。 */
-.paradis-session-resume .paradis-session-index-consent {
-	flex: none; display: flex; flex-direction: column; gap: 8px; margin: 8px 10px; padding: 10px 12px;
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border)); border-radius: 6px;
-	background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
-}
-.paradis-session-resume .paradis-session-index-consent .title { font-weight: 600; color: var(--vscode-foreground); }
-.paradis-session-resume .paradis-session-index-consent .body { margin-top: 4px; font-size: 12px; line-height: 1.5; color: var(--vscode-descriptionForeground); }
-.paradis-session-resume .paradis-session-index-consent .actions { display: flex; justify-content: flex-end; gap: 8px; }
-.paradis-session-resume .paradis-session-index-consent .actions button {
-	padding: 4px 12px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 4px; font-family: inherit; font-size: 12px; cursor: pointer;
-	background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);
-}
-.paradis-session-resume .paradis-session-index-consent .actions button:hover { background: var(--vscode-button-secondaryHoverBackground); }
-.paradis-session-resume .paradis-session-index-consent .actions button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
-.paradis-session-resume .paradis-session-index-consent .actions button.primary:hover { background: var(--vscode-button-hoverBackground); }

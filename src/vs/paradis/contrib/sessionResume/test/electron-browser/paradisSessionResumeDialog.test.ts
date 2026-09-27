@@ -449,12 +449,11 @@ function createDialogStubs(client: TestResumeClient, indexSearch?: (query: strin
 		},
 		setDefaultCodeBlockRenderer() { },
 	};
-	// 全文索引はオフ（案内も出さない）、行メニューは開かない。ダイアログの一覧・検索・再開の検証に絞る。
+	// 全文索引はオフ、行メニューは開かない。ダイアログの一覧・検索・再開の検証に絞る。
 	const indexController = {
 		onDidChange: BaseEvent.None,
 		state: indexSearch ? 'on' : 'off',
 		isUpdating: false,
-		renderConsent() { },
 		renderStatus() { },
 		requestUpdate() { },
 		search: async (query: string) => indexSearch?.(query),

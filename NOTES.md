@@ -53,7 +53,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - 読むのは手元の `~/.claude/projects/*/*.jsonl`・`*/<session>/subagents/*.jsonl` と `~/.codex/sessions/**/rollout-*.jsonl` だけ。SSH で接続しているウィンドウでは「スペース別」は出さない（ccusage は接続先を数えるので、手元の会話ログで按分すると合わない）。REH サーバーには登録していない
 - shared process はファイルごとの集計結果を（大きさ・更新日時・inode が同じなら）使い回す。期間の開始より前に最後に更新されたファイルは読まない
 - 金額の按分（Q27）は ccusage の日別・モデル別の金額を、同じ日・同じモデルのトークン比率で分ける。トークンは種類ごとに重みを付ける（入力 1・出力 5・キャッシュ書き込み 1.25・キャッシュ読み取り 0.1）。生のトークン数で割ると、量は多いが安いキャッシュ読み取りで按分がほぼ決まってしまうため。価格表は持たない
-- 全文索引は `<userData>/paradis/sessionIndex/sessionIndex.sqlite`。`node:sqlite` の FTS5 の trigram トークナイザを使う（Electron 同梱の Node 24.20 / SQLite 3.53.4 で動作確認）。3 文字未満の検索語は FTS の表を LIKE でなめる。既定はオフで、履歴ダイアログの初回の案内（`paradis.sessionIndex.consentAnswered`、APPLICATION ストレージ）でオンにする。設定をオフにすると索引ファイルを消す
+- 全文索引は `<userData>/paradis/sessionIndex/sessionIndex.sqlite`。`node:sqlite` の FTS5 の trigram トークナイザを使う（Electron 同梱の Node 24.20 / SQLite 3.53.4 で動作確認）。3 文字未満の検索語は FTS の表を LIKE でなめる。既定はオン（q.html Q15 の回答 A「最初からオン」。確認は出さない）。会話ログの全文のコピーになるので、そのことを設定の説明に明記している。設定 `paradis.sessionIndex.enabled` をオフにすると索引ファイルを消し、コマンド「会話の全文索引を削除」は削除して設定もオフにする。保存日数（`paradis.sessionIndex.retentionDays`、既定 90）とツール出力を入れるか（`paradis.sessionIndex.includeToolOutput`、既定オフ）も設定で変えられる
 - 索引はファイルごとに「どこまで読んだか」をバイト位置で持ち、伸びた分だけ足す。inode が変わった・縮んだファイルは読み直し、一覧から消えたファイル（削除、保存日数切れ）の分は消す。一覧の行との突き合わせは `paradisSessionCatalogId`（agent と正規化したパスのハッシュ）。Codex の一覧は state DB の `rollout_path` から作るので、`CODEX_HOME` をシンボリックリンクにしているとパスの綴りがずれて索引が効かない（その会話は従来の先頭・末尾の読み取りで探す）
 
 ## リポジトリ構成

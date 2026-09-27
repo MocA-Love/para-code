@@ -235,7 +235,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.sessionIndex', "セッション履歴で会話の全文を検索する"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.sessionIndexDesc', "会話の本文から検索用の索引をこの PC の中に作ります。会話に貼った秘密情報も索引に残ります。オフにすると索引は消えます。"),
+		description: localize('paradis.settings.sessionIndexDesc', "会話ログの全文を検索用に Para Code 内へ保存します（会話に貼った秘密情報もコピーされます）。オフにすると保存した索引は消えます。"),
 		keywords: 'session history full text search index sqlite fts trigram',
 	},
 	{
