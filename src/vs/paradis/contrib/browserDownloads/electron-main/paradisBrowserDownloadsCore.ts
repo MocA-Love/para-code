@@ -8,7 +8,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as fs from 'fs';
-import type { DownloadItem, Session } from 'electron';
+import type { DownloadItem, Session, WebContents } from 'electron';
 import { basename, extname, isAbsolute, join } from '../../../../base/common/path.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -27,18 +27,19 @@ export function paradisConfigureBrowserDownloadsWithPath(
 	session: Session,
 	configurationService: IConfigurationService,
 	defaultDownloadsPath: () => string,
-	onDownload?: (item: DownloadItem, session: Session) => void,
+	onDownload?: (item: DownloadItem, session: Session, webContents: WebContents | undefined) => void,
 ): void {
 	if (configuredSessions.has(session)) {
 		return;
 	}
 	configuredSessions.add(session);
 
-	session.on('will-download', (_event, item) => {
+	session.on('will-download', (_event, item, webContents) => {
 		paradisAssignDownloadSavePath(item, configurationService, defaultDownloadsPath);
 		// 一覧（URL バー右のボタン）への登録は、自動保存が無効で保存ダイアログを出す場合も行う。
 		// 保存先を決めた後に登録するのは、一覧の最初の1回目から保存先が見えるようにするため。
-		onDownload?.(item, session);
+		// webContents はどのタブから始まったか（エージェントに共有中のタブかの判定に使う）。
+		onDownload?.(item, session, webContents ?? undefined);
 	});
 }
 

@@ -15,6 +15,7 @@ import * as electron from 'electron';
 import type { NativeImage, WebContents } from 'electron';
 import { timeout } from '../../../../base/common/async.js';
 import { encodeBase64 } from '../../../../base/common/buffer.js';
+import { basename } from '../../../../base/common/path.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
@@ -41,6 +42,19 @@ import {
 } from '../common/paradisExactViewFrameKeepalive.js';
 import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
 import { ParadisCursorOverlayController } from './paradisCursorOverlayController.js';
+import {
+	IParadisAgentDownloadResult,
+	IParadisCdpPageOpsService,
+	IParadisPageOverridesResult,
+	IParadisPdfResult,
+	PARADIS_PAGE_OPS_MAX_HIGHLIGHT_MS,
+	paradisIsPageOpsOwnerKey,
+	paradisParseHighlightRect,
+	paradisParsePageOverridesRequest,
+	paradisParsePdfOptions,
+} from '../common/paradisBrowserPageOps.js';
+import { IParadisPageOpsTarget, ParadisBrowserPageOpsController } from './paradisBrowserPageOpsController.js';
+import { paradisAwaitAgentDownloadStart, paradisCancelAgentDownloadExpectation, paradisExpectAgentDownload, paradisGetAgentDownloadsTracker, paradisSaveAgentFile, paradisSetWebContentsHeldByAgent } from '../../browserDownloads/electron-main/paradisAgentDownloads.js';
 
 /** 上流ポートの問い合わせに答えるまでの上限。確定が間に合わなければ「まだ無い」と返す。 */
 const UPSTREAM_PORT_ANSWER_TIMEOUT_MS = 1_500;
@@ -81,7 +95,7 @@ interface IParadisCursorViewport {
  */
 const CURSOR_VIEWPORT_TTL_MS = 2_000;
 
-export class ParadisCdpTargetService implements IParadisCdpExactViewService {
+export class ParadisCdpTargetService implements IParadisCdpExactViewService, IParadisCdpPageOpsService {
 
 	private readonly frameSubs = new Map<string, IFrameSubState>();
 	/** Hidden agent-bound views that need a periodic draw so viz keeps sending them BeginFrames. */
@@ -112,6 +126,9 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 	 * 座標だけをここから流して、縮小映像の上へ描き直せるようにする。
 	 */
 	readonly onDidChangeAgentCursor: Event<IParadisAgentCursorEvent> = this._onDidChangeAgentCursor.event;
+
+	/** 追加のブラウザ操作（追加ヘッダ・HTTP 認証・リクエストのルール・PDF・ハイライト）。 */
+	private readonly pageOps = new ParadisBrowserPageOpsController();
 
 	constructor(
 		private readonly browserViewMainService: IBrowserViewMainService,
@@ -478,6 +495,12 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 		} catch {
 			return false;
 		}
+		// 同じ合図が「エージェントがこのタブを手にした・手放した」を意味する。手にしている間のダウンロードは
+		// エージェント由来として扱い、手放したらタブへ掛けた上書き（ヘッダ・認証・ルール）とハイライトを外す。
+		paradisSetWebContentsHeldByAgent(view.webContents, !enabledValue);
+		if (enabledValue) {
+			this.pageOps.releaseTarget(view as unknown as IParadisPageOpsTarget);
+		}
 		// Throttling is disabled exactly while an agent holds this view, which is also exactly when
 		// the view needs the periodic nudge. Ride that signal instead of adding a second lifecycle.
 		if (enabledValue) {
@@ -674,6 +697,159 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 				automationRegistration?.cancel();
 			}
 		}
+	}
+
+	// --- 追加のブラウザ操作（para-browser MCP の B7） --------------------------------------------
+
+	async applyExactViewPageOverrides(descriptorValue: unknown, ownerKeyValue: unknown, generationValue: unknown, requestJsonValue: unknown): Promise<IParadisPageOverridesResult> {
+		const target = this.resolvePageOpsTarget(descriptorValue);
+		if (!paradisIsPageOpsOwnerKey(ownerKeyValue) || typeof generationValue !== 'number' || !Number.isSafeInteger(generationValue) || typeof requestJsonValue !== 'string' || requestJsonValue.length > 8 * 1024 * 1024) {
+			return { ok: false, reason: 'invalid' };
+		}
+		if (!target) {
+			return { ok: false, reason: 'unavailable' };
+		}
+		let raw: unknown;
+		try {
+			raw = JSON.parse(requestJsonValue);
+		} catch {
+			return { ok: false, reason: 'invalid' };
+		}
+		// shared process で検証済みでも、ここで受け取った値をもう一度同じ関数で確かめる。
+		const request = paradisParsePageOverridesRequest(raw);
+		if (!request.ok) {
+			return { ok: false, reason: 'invalid', message: request.error };
+		}
+		return this.pageOps.apply(target, ownerKeyValue, generationValue, request.value);
+	}
+
+	async getExactViewPageOverrides(descriptorValue: unknown, ownerKeyValue: unknown): Promise<IParadisPageOverridesResult> {
+		const target = this.resolvePageOpsTarget(descriptorValue);
+		if (!paradisIsPageOpsOwnerKey(ownerKeyValue)) {
+			return { ok: false, reason: 'invalid' };
+		}
+		return target ? this.pageOps.summary(target, ownerKeyValue) : { ok: false, reason: 'unavailable' };
+	}
+
+	async releasePageOverridesOwner(ownerKeyValue: unknown, generationValue: unknown): Promise<void> {
+		if (paradisIsPageOpsOwnerKey(ownerKeyValue) && typeof generationValue === 'number' && Number.isSafeInteger(generationValue)) {
+			this.pageOps.releaseOwner(ownerKeyValue, generationValue);
+		}
+	}
+
+	async printExactViewToPdf(descriptorValue: unknown, optionsJsonValue: unknown): Promise<IParadisPdfResult> {
+		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
+		const view = descriptor ? this.resolveExistingExactView(descriptor) : undefined;
+		if (!descriptor || !view) {
+			return { ok: false, reason: 'unavailable' };
+		}
+		let raw: unknown;
+		try {
+			raw = typeof optionsJsonValue === 'string' && optionsJsonValue.length <= 64 * 1024 ? JSON.parse(optionsJsonValue) : undefined;
+		} catch {
+			raw = undefined;
+		}
+		// 内部形（camelCase）で届くので、ツールの引数の形へ戻して同じ検証を通す。
+		const record = raw && typeof raw === 'object' ? raw as Record<string, unknown> : undefined;
+		const options = record ? paradisParsePdfOptions({
+			file_name: record.fileName,
+			landscape: record.landscape,
+			print_background: record.printBackground,
+			paper_format: record.paperFormat,
+			scale: record.scale,
+			page_ranges: record.pageRanges,
+		}, 'page') : undefined;
+		if (!options?.ok) {
+			return { ok: false, reason: 'invalid', message: options && !options.ok ? options.error : undefined };
+		}
+		const tracker = paradisGetAgentDownloadsTracker();
+		if (!tracker) {
+			return { ok: false, reason: 'failed', message: 'The download folder is not ready yet.' };
+		}
+		let data: Uint8Array;
+		let sourceUrl: string;
+		try {
+			sourceUrl = view.webContents.getURL();
+			data = await this.pageOps.printToPdf(view as unknown as IParadisPageOpsTarget, options.value);
+		} catch (error) {
+			return { ok: false, reason: 'failed', message: error instanceof Error ? error.message.slice(0, 300) : undefined };
+		}
+		if (this.resolveExistingExactView(descriptor) !== view) {
+			return { ok: false, reason: 'unavailable' };
+		}
+		try {
+			const path = await paradisSaveAgentFile(tracker, options.value.fileName, data, sourceUrl);
+			const fileName = basename(path);
+			return { ok: true, path, fileName, bytes: data.byteLength };
+		} catch (error) {
+			return { ok: false, reason: 'failed', message: error instanceof Error ? error.message.slice(0, 300) : undefined };
+		}
+	}
+
+	async expectExactViewDownload(descriptorValue: unknown, startTimeoutMsValue: unknown): Promise<string | null> {
+		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
+		const view = descriptor ? this.resolveExistingExactView(descriptor) : undefined;
+		if (!view || typeof startTimeoutMsValue !== 'number' || !Number.isFinite(startTimeoutMsValue)) {
+			return null;
+		}
+		return paradisExpectAgentDownload(view.webContents, Math.max(1_000, Math.min(60_000, startTimeoutMsValue)));
+	}
+
+	async awaitExactViewDownload(expectationIdValue: unknown, settleTimeoutMsValue: unknown): Promise<IParadisAgentDownloadResult> {
+		if (typeof expectationIdValue !== 'string' || expectationIdValue.length > 64 || typeof settleTimeoutMsValue !== 'number' || !Number.isFinite(settleTimeoutMsValue)) {
+			return { ok: false, reason: 'invalid' };
+		}
+		// 始まるまで待った分は、終わるまで待つ時間から引く（呼び出し全体を締め切りの中に収める）。
+		const waitStartedAt = Date.now();
+		const entryId = await paradisAwaitAgentDownloadStart(expectationIdValue);
+		const tracker = paradisGetAgentDownloadsTracker();
+		if (entryId === undefined || !tracker) {
+			return { ok: true, started: false };
+		}
+		const remainingMs = settleTimeoutMsValue - (Date.now() - waitStartedAt);
+		const item = await tracker.whenSettled(entryId, Math.max(0, Math.min(120_000, remainingMs)));
+		if (!item) {
+			return { ok: true, started: false };
+		}
+		return {
+			ok: true,
+			started: true,
+			state: item.state,
+			fileName: item.filename,
+			path: item.savePath,
+			receivedBytes: item.receivedBytes,
+			totalBytes: item.totalBytes,
+		};
+	}
+
+	async cancelExactViewDownload(expectationIdValue: unknown): Promise<void> {
+		if (typeof expectationIdValue === 'string' && expectationIdValue.length <= 64) {
+			paradisCancelAgentDownloadExpectation(expectationIdValue);
+		}
+	}
+
+	async highlightExactView(descriptorValue: unknown, rectValue: unknown, durationMsValue: unknown): Promise<boolean> {
+		const target = this.resolvePageOpsTarget(descriptorValue);
+		if (!target || typeof durationMsValue !== 'number' || !Number.isFinite(durationMsValue)) {
+			return false;
+		}
+		const rect = rectValue === null ? undefined : paradisParseHighlightRect(rectValue);
+		if (rectValue !== null && !rect) {
+			return false;
+		}
+		try {
+			await this.pageOps.highlight(target, rect, Math.max(500, Math.min(PARADIS_PAGE_OPS_MAX_HIGHLIGHT_MS, durationMsValue)));
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	private resolvePageOpsTarget(descriptorValue: unknown): IParadisPageOpsTarget | undefined {
+		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
+		const view = descriptor ? this.resolveExistingExactView(descriptor) : undefined;
+		// BrowserView は IParadisPageOpsTarget の構造を持つ（webContents と debugger.attach）。
+		return view ? view as unknown as IParadisPageOpsTarget : undefined;
 	}
 
 	private getOrCreateViewLease(view: BrowserView): string | undefined {

@@ -15,6 +15,7 @@
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { PARADIS_AGENT_BACKGROUND_TASK_STALE_MS } from '../common/paradisAgentStatusStale.js';
+import { paradisRedactToolInputSecrets } from '../common/paradisBrowserPageOps.js';
 
 /** notify.sh (v2) がPOSTするhook JSONから抽出した、1回のhook発火の内容。 */
 export interface IParadisAgentHookEvent {
@@ -101,7 +102,11 @@ export function paradisSanitizeAgentHookPayload(value: unknown): Readonly<Record
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		return undefined;
 	}
-	return sanitizeHookValue(value, 0) as Readonly<Record<string, unknown>>;
+	const sanitized = sanitizeHookValue(value, 0) as Readonly<Record<string, unknown>>;
+	// 資格情報を引数に持つツール（set_http_credentials）の password は、モバイルの承認カードや
+	// デスクトップの表示へ流さない。
+	const redacted = paradisRedactToolInputSecrets(sanitized.tool_name, sanitized.tool_input);
+	return redacted === sanitized.tool_input ? sanitized : Object.freeze({ ...sanitized, tool_input: redacted });
 }
 
 const emitter = new Emitter<IParadisAgentHookEvent>();

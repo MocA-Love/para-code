@@ -58,7 +58,10 @@ import { IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsM
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
 import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
-import { PARADIS_FILE_DROP_MAX_BYTES_LABEL, ParadisFileDropStaging, paradisBuildFileDropDragCancelCommand, paradisBuildFileDropDragCommands, paradisDecodeFileDropContent, paradisParseResolvedDropTarget, paradisSanitizeFileDropName } from './paradisFileDropUpload.js';
+import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps } from './paradisBrowserPageOps.js';
+import { URI } from '../../../../base/common/uri.js';
+import { AgentNetworkFilterService } from '../../../../platform/networkFilter/common/networkFilterService.js';
+import { IParadisResolvedDropTarget, PARADIS_FILE_DROP_MAX_BYTES_LABEL, PARADIS_RESOLVE_ELEMENT_CENTER_FUNCTION, ParadisFileDropStaging, paradisBuildFileDropDragCancelCommand, paradisBuildFileDropDragCommands, paradisDecodeFileDropContent, paradisParseResolvedDropTarget, paradisSanitizeFileDropName } from './paradisFileDropUpload.js';
 
 /**
  * PlaywrightChannel（vs/platform/browserView/node/playwrightChannel.ts）の `call` と構造的に一致する
@@ -267,6 +270,9 @@ const PARADIS_CALLER_VERIFIED_TOOL_NAMES: ReadonlySet<string> = new Set([
 	'open_browser_profile', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile',
 	'open_browser_tab', 'select_browser_tab', 'close_browser_tab', 'request_browser_page',
 ]);
+
+/** 追加のブラウザ操作（B7）で接続元を確かめられなかったときの文。 */
+const CALLER_UNVERIFIED_PAGE_OPS_MESSAGE = 'Para Code could not confirm that this request comes from a process inside a Para Code terminal pane (or from Para Code\'s SSH port forwarding), so it does not send mouse input, change headers, credentials or request rules, save files or draw on the shared page for it. Start this agent CLI from a terminal inside Para Code.';
 
 const CALLER_UNVERIFIED_BROWSER_MESSAGE = 'Para Code could not confirm that this request comes from a process inside a Para Code terminal pane (or from Para Code\'s SSH port forwarding), so it does not open, switch or delete browser pages or profiles for it. Start this agent CLI from a terminal inside Para Code.';
 
@@ -491,6 +497,10 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _screenshotHandoff = new ParadisScreenshotHandoff(() => randomUUID());
 	/** upload_file_to_drop_zone がbase64本文を一時ファイルへ書き出すためのステージング領域。 */
 	private readonly _fileDropStaging = new ParadisFileDropStaging();
+	/** 追加のブラウザ操作（マウス・PDF・ヘッダ・HTTP 認証・リクエストのルール・ダウンロード・ハイライト）。 */
+	private readonly _pageOps: ParadisBrowserPageOps;
+	/** エージェントのネットワークの制限（redirect のルールの行き先を確かめる）。設定が無いテストでは undefined。 */
+	private readonly _agentNetworkFilter: AgentNetworkFilterService | undefined;
 	private readonly _devtoolsGenerationCoordinator: ParadisDevtoolsGenerationCoordinator;
 	private readonly _mcpSetupController: ParadisMcpSetupController;
 	/** 現renderer IPC connection。ctxだけではreload前後を区別できないためobject identityをauthorityにする。 */
@@ -563,6 +573,26 @@ export class ParadisAgentBrowserService extends Disposable {
 			logService,
 		));
 		this._devtoolsProxy = this._register(new ParadisDevtoolsMcpProxy(RESERVED_TOOL_NAMES, logService));
+		this._agentNetworkFilter = configurationService ? this._register(new AgentNetworkFilterService(configurationService)) : undefined;
+		this._pageOps = new ParadisBrowserPageOps({
+			// ingress が止まっているペイン（終了済み・隔離中）には共有が無いものとして扱う
+			binding: token => this.captureIngressLease(token) === undefined ? undefined : this._bindings.get(token),
+			notBoundMessage: NOT_BOUND_MESSAGE,
+			callMain: <T>(method: string, args: unknown[]) => this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL).call<T>(method, args),
+			dispatchInput: (token, binding, method, paramsJson) => this._dispatchBoundPageInput(token, {}, binding.exactView.targetId, method, paramsJson, () => true).response,
+			networkFilter: () => {
+				const filter = this._agentNetworkFilter;
+				return filter?.isEnabled() ? {
+					isUriAllowed: (url: string) => {
+						try {
+							return filter.isUriAllowed(URI.parse(url));
+						} catch {
+							return false;
+						}
+					},
+				} : undefined;
+			},
+		});
 		// エージェントCLI (Claude Code / Codex) の通知hookを冪等に自動設置する
 		// (Superset の setupAgentHooks 相当。失敗しても起動は妨げない)。
 		const cachedShellEnv = new ParadisCachedShellEnv(
@@ -1413,6 +1443,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._runNonThrowingCleanup('generation', () => this._devtoolsGenerationCoordinator.setGeneration(token, generation, cancelPendingForget));
 		this._runNonThrowingCleanup('gateway-connections', () => this._cdpGateway.closeConnectionsForToken(token));
 		this._runNonThrowingCleanup('devtools-retire', () => this._devtoolsProxy.retire(token, generation));
+		// 共有が入れ替わったら、そのペインがタブへ掛けた上書き（ヘッダ・認証・ルール）を外す
+		this._runNonThrowingCleanup('page-ops-release', () => this._pageOps.releaseOwner(token, generation));
 	}
 
 	private _dispatchBackgroundThrottlingEffects(effects: readonly IParadisExactViewBackgroundThrottlingEffect[]): void {
@@ -2738,6 +2770,17 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 		}
 
+		if (PARADIS_PAGE_OPS_TOOL_NAME_SET.has(name)) {
+			// 追加のブラウザ操作はどれも状態を変えるか、タブへ掛けた上書きを返すので、一覧も含めて
+			// 接続元（pane か tunnel）を確かめる。
+			const caller = await this._classifyCaller(token, socket);
+			this._requireIngressLease(ingressLease);
+			if (caller === 'unverified') {
+				return this._toolError(CALLER_UNVERIFIED_PAGE_OPS_MESSAGE);
+			}
+			return this._callPageOpsTool(ingressLease, name, params?.arguments, signal);
+		}
+
 		if (name === 'preview_file') {
 			const toolArgs = params?.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : undefined;
 			const path = typeof toolArgs?.path === 'string' ? toolArgs.path : undefined;
@@ -2807,6 +2850,50 @@ export class ParadisAgentBrowserService extends Disposable {
 			default:
 				throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
 		}
+	}
+
+	/**
+	 * 追加のブラウザ操作（B7）の実体（paradisBrowserPageOps.ts）を呼ぶ。引数（HTTP 認証のパスワードを含む）は
+	 * ログにも Sentry にも出さない。失敗の詳細も返さず、ツール名だけを残す。
+	 */
+	private async _callPageOpsTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
+		this._requireIngressLease(ingressLease);
+		try {
+			return await this._pageOps.call({
+				token: ingressLease.token,
+				signal,
+				requireCurrent: () => this._requireIngressLease(ingressLease),
+				resolveElement: uid => this._resolveElementForPageOps(ingressLease, uid, signal),
+			}, name, args);
+		} catch (error) {
+			if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
+				throw new ParadisIngressLeaseError();
+			}
+			this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] ${name} failed for pane ${this._tokenFingerprint(ingressLease.token)}`));
+			return this._toolError(`PARA_BROWSER_RETRYABLE: ${name} failed inside Para Code. Retry once; if it keeps failing, call get_session_health.`);
+		}
+	}
+
+	/** uid の要素の中心座標などを evaluate_script で求める（upload_file_to_drop_zone と同じ関数）。 */
+	private async _resolveElementForPageOps(ingressLease: IParadisAgentBrowserIngressLease, uid: string, signal?: AbortSignal): Promise<{ readonly ok: true; readonly target: IParadisResolvedDropTarget } | { readonly ok: false; readonly result: unknown }> {
+		let evaluation: unknown;
+		try {
+			evaluation = await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: PARADIS_RESOLVE_ELEMENT_CENTER_FUNCTION, args: [uid] }, signal);
+		} catch (error) {
+			if (error instanceof ParadisIngressLeaseError) {
+				throw error;
+			}
+			return { ok: false, result: this._toolError('The position of the element could not be resolved because the embedded DevTools bridge is unavailable right now. Call get_session_health to check its status, then retry (or pass x/y coordinates instead of a uid).') };
+		}
+		this._requireIngressLease(ingressLease);
+		if ((evaluation as { isError?: unknown } | undefined)?.isError === true) {
+			return { ok: false, result: evaluation };
+		}
+		const target = paradisParseResolvedDropTarget(evaluation);
+		if (!target) {
+			return { ok: false, result: this._toolError(`Could not resolve the position of uid "${uid}". Take a fresh take_snapshot and make sure the uid still refers to a visible element.`) };
+		}
+		return { ok: true, target };
 	}
 
 	/**
@@ -2915,7 +3002,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		let evaluation: unknown;
 		try {
 			evaluation = await this._callDevtoolsTool(ingressLease, 'evaluate_script', {
-				function: '(el) => { el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" }); const r = el.getBoundingClientRect(); const cx = r.left + r.width / 2, cy = r.top + r.height / 2; const hit = document.elementFromPoint(cx, cy); return { x: cx, y: cy, width: r.width, height: r.height, inMainFrame: window.top === window, viewW: innerWidth, viewH: innerHeight, occluded: !(hit && (el === hit || el.contains(hit) || hit.contains(el))) }; }',
+				function: PARADIS_RESOLVE_ELEMENT_CENTER_FUNCTION,
 				args: [uid],
 			}, signal);
 		} catch (error) {
