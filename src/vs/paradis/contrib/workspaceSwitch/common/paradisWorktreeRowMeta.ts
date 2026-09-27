@@ -52,10 +52,16 @@ export const PARADIS_DEFAULT_WORKTREE_ROW_META: readonly IParadisWorktreeMetaEnt
 	Object.freeze({ id: 'issues', visible: true, align: 'left' }),
 	Object.freeze({ id: 'diff', visible: true, align: 'right' }),
 	Object.freeze({ id: 'notes', visible: true, align: 'right' }),
-	// 左寄せの末尾 (PR・Issue の右、差分の左) に並ぶ。既存の設定に書かれていない項目は末尾へ
-	// 足されるので、並びを変えていない人にも同じ位置に出る
+	// 左寄せの末尾 (PR・Issue の右、差分の左) に並ぶ
 	Object.freeze({ id: 'promptCache', visible: true, align: 'left' }),
 ] as const);
+
+/**
+ * 後から足した項目。設定を自分で書いた (「表示する情報」を触った) 人の並びにこれが無いときは、
+ * **非表示で**末尾へ足す。すべて非表示にして 2 段表示を選んでいた人の行が、更新しただけで
+ * 勝手に 3 段へ伸びないようにするため。設定を触っていない人には既定どおり表示で出る。
+ */
+const PARADIS_WORKTREE_META_ADDED_LATER: ReadonlySet<ParadisWorktreeMetaId> = new Set(['promptCache']);
 
 /** メタ段を持たない行 (2段) の高さ。 */
 export const PARADIS_WORKTREE_ROW_HEIGHT = 44;
@@ -109,9 +115,11 @@ export function paradisNormalizeWorktreeRowMeta(value: unknown): readonly IParad
 		});
 	}
 	// 設定に書かれていない項目は既定の順序を保ったまま末尾へ足す (項目が消えたままにしない)
+	// 有効な項目が1つでも書かれていれば、利用者が自分で選んだ並び (空配列は「指定なし」)
+	const userConfigured = entries.length > 0;
 	for (const fallback of PARADIS_DEFAULT_WORKTREE_ROW_META) {
 		if (!seen.has(fallback.id)) {
-			entries.push(fallback);
+			entries.push(userConfigured && PARADIS_WORKTREE_META_ADDED_LATER.has(fallback.id) ? { ...fallback, visible: false } : fallback);
 		}
 	}
 	return entries;

@@ -35,6 +35,20 @@
 	display: none;
 }
 
+/* The terminal find widget (.simple-find-part-wrapper, right: 18px, z-index 10..33) opens over the
+ * same corner. Step aside while it is shown so the badge never covers its buttons or eats the clicks
+ * meant for them; the share dot at right: 6px stays clear of the widget and is left alone. */
+.monaco-workbench .terminal-overflow-guard.terminal-editor:has(.simple-find-part.visible) .paradis-prompt-cache-badge {
+	display: none;
+}
+
+/* High contrast themes: the translucent background alone does not separate the badge from the
+ * terminal text behind it. */
+.monaco-workbench.hc-black .terminal-overflow-guard.terminal-editor .paradis-prompt-cache-badge,
+.monaco-workbench.hc-light .terminal-overflow-guard.terminal-editor .paradis-prompt-cache-badge {
+	border: var(--vscode-strokeThickness) solid var(--vscode-contrastBorder);
+}
+
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-prompt-cache-badge > .codicon {
 	font-size: var(--vscode-codiconFontSize-compact);
 	color: inherit;
@@ -71,8 +85,14 @@
 	color: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow));
 }
 
+/* Not counting (the agent is responding, or the cache has expired): keep a dimmed flame so the row
+ * keeps its height instead of growing and shrinking every turn. */
+.monaco-workbench .paradis-workspaces-list .paradis-worktree-meta > .paradis-worktree-prompt-cache.paused {
+	color: var(--vscode-disabledForeground);
+}
+
 /* The selected / focused row paints its own foreground; keep the countdown readable there. */
-.monaco-workbench .paradis-workspaces-list .monaco-list-row.selected .paradis-worktree-meta > .paradis-worktree-prompt-cache:not(.warning),
-.monaco-workbench .paradis-workspaces-list .monaco-list-row.focused .paradis-worktree-meta > .paradis-worktree-prompt-cache:not(.warning) {
+.monaco-workbench .paradis-workspaces-list .monaco-list-row.selected .paradis-worktree-meta > .paradis-worktree-prompt-cache:not(.warning):not(.paused),
+.monaco-workbench .paradis-workspaces-list .monaco-list-row.focused .paradis-worktree-meta > .paradis-worktree-prompt-cache:not(.warning):not(.paused) {
 	color: inherit;
 }

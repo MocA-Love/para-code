@@ -16,8 +16,8 @@ import { localize } from '../../../../nls.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { paradisFormatPromptCacheRemaining } from '../common/paradisAgentInsights.js';
-import { paradisPromptCacheTooltip, paradisPromptCacheTtlLabel } from './paradisAgentInsightsPresentation.js';
-import { IParadisScopePromptCacheReading, ParadisPromptCacheClock } from './paradisPromptCacheClock.js';
+import { paradisPromptCachePausedTooltip, paradisPromptCacheTooltip, paradisPromptCacheTtlLabel } from './paradisAgentInsightsPresentation.js';
+import { ParadisPromptCacheClock, ParadisScopePromptCacheState } from './paradisPromptCacheClock.js';
 import './media/paradisAgentInsights.css';
 
 /** スペース一覧の行ごとの残り時間表示（メタ段の1項目）。 */
@@ -32,15 +32,19 @@ export interface IParadisPromptCacheChip {
  *
  * 行のテンプレートは使い回されるので、枠（chip）はテンプレートごとに1つ作り、描く行が
  * 変わるたびに {@link IParadisPromptCacheChip.setScope} で差し替える。数字の書き換えは
- * 時計の合図で全枠をまとめて行い、ツリーの組み直しは「出る・消える」ときだけに絞る
- * （組み直すと行の高さが 44px ⇔ 60px で変わるため）。
+ * 時計の合図で全枠をまとめて行う。
+ *
+ * 行の高さ（44px ⇔ 60px）はターンごとに揺らさない。枠を出すかどうかは「Claude のペインに
+ * キャッシュの記録があるか」で決め、応答中や切れた後は数字を消して炎を薄く残す。応答が
+ * 始まるたびに枠ごと消すと、メタ段を他に持たない行から下が 16px 上下し、押そうとした行が
+ * ずれて別のスペースへ切り替わってしまう。
  */
 export class ParadisPromptCacheChips extends Disposable {
 
 	private readonly clock: ParadisPromptCacheClock;
 	private readonly chips = new Map<HTMLElement, { stateKey: string | undefined; readonly render: () => void }>();
 
-	/** 出る・消えるが変わった（行の高さが変わるので、ツリーを組み直す合図）。 */
+	/** 枠を出すスペースが変わった（行の高さが変わるので、ツリーを組み直す合図）。 */
 	readonly onDidChangeVisibility: Event<void>;
 
 	constructor(
@@ -49,7 +53,7 @@ export class ParadisPromptCacheChips extends Disposable {
 	) {
 		super();
 		this.clock = this._register(instantiationService.createInstance(ParadisPromptCacheClock));
-		this.onDidChangeVisibility = this.clock.onDidChangeVisibility;
+		this.onDidChangeVisibility = this.clock.onDidChangeCandidates;
 		this._register(this.clock.onDidTick(() => {
 			for (const chip of this.chips.values()) {
 				chip.render();
@@ -57,9 +61,9 @@ export class ParadisPromptCacheChips extends Disposable {
 		}));
 	}
 
-	/** そのスペースに出すものがあるか（行の高さの判定に使う）。 */
+	/** そのスペースに枠を出すか（行の高さの判定に使う）。応答中・期限切れでも true のまま。 */
 	hasScope(stateKey: string): boolean {
-		return this.clock.readScope(stateKey) !== undefined;
+		return this.clock.readScopeState(stateKey) !== undefined;
 	}
 
 	create(container: HTMLElement, disposables: DisposableStore): IParadisPromptCacheChip {
@@ -69,15 +73,17 @@ export class ParadisPromptCacheChips extends Disposable {
 		const state = {
 			stateKey: undefined as string | undefined,
 			render: () => {
-				const reading = state.stateKey !== undefined ? this.clock.readScope(state.stateKey) : undefined;
+				const scopeState = state.stateKey !== undefined ? this.clock.readScopeState(state.stateKey) : undefined;
+				const reading = scopeState?.kind === 'counting' ? scopeState.reading : undefined;
 				element.classList.toggle('warning', !!reading?.warning);
+				element.classList.toggle('paused', scopeState?.kind === 'paused');
 				label.textContent = reading ? paradisFormatPromptCacheRemaining(reading.remainingMs) : '';
-				element.ariaLabel = reading ? paradisPromptCacheTooltip(reading.remainingMs, reading.ttlMs) : '';
+				element.ariaLabel = scopeState ? scopeTooltip(scopeState) : '';
 			},
 		};
 		disposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), element, () => {
-			const reading = state.stateKey !== undefined ? this.clock.readScope(state.stateKey) : undefined;
-			return reading ? scopeTooltip(reading) : '';
+			const scopeState = state.stateKey !== undefined ? this.clock.readScopeState(state.stateKey) : undefined;
+			return scopeState ? scopeTooltip(scopeState) : '';
 		}));
 		this.chips.set(element, state);
 		disposables.add({ dispose: () => this.chips.delete(element) });
@@ -92,7 +98,11 @@ export class ParadisPromptCacheChips extends Disposable {
 }
 
 /** 複数ペインがあるときは内訳を並べる（行に出ているのは最も早く切れるペイン）。 */
-function scopeTooltip(reading: IParadisScopePromptCacheReading): string {
+function scopeTooltip(scopeState: ParadisScopePromptCacheState): string {
+	if (scopeState.kind === 'paused') {
+		return paradisPromptCachePausedTooltip(scopeState.reason);
+	}
+	const reading = scopeState.reading;
 	const head = paradisPromptCacheTooltip(reading.remainingMs, reading.ttlMs);
 	if (reading.panes.length < 2) {
 		return head;

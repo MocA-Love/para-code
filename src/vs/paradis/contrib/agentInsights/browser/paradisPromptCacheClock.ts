@@ -27,6 +27,14 @@ export interface IParadisScopePromptCacheReading extends IParadisPromptCacheRead
 }
 
 /**
+ * スペース一覧の行に出す状態。行の高さを揺らさないため、Claude のペインにキャッシュの記録が
+ * ある間は、応答中や切れた後も枠を残して「止まっている」ことを表す。
+ */
+export type ParadisScopePromptCacheState =
+	| { readonly kind: 'counting'; readonly reading: IParadisScopePromptCacheReading }
+	| { readonly kind: 'paused'; readonly reason: 'working' | 'expired' };
+
+/**
  * プロンプトキャッシュの残り時間を秒単位で配る時計。
  *
  * - {@link onDidChangeVisibility}: 表示するペインの集合が変わった（新しく出た・切れた・応答を
@@ -42,10 +50,17 @@ export class ParadisPromptCacheClock extends Disposable {
 	readonly onDidChangeVisibility = this._onDidChangeVisibility.event;
 	private readonly _onDidTick = this._register(new Emitter<void>());
 	readonly onDidTick = this._onDidTick.event;
+	/**
+	 * キャッシュの記録を持つ Claude ペインの集合が変わった。応答の開始・終了や期限切れでは
+	 * 変わらないので、スペース一覧はこれだけで行の高さを組み直す（ターンごとに揺らさない）。
+	 */
+	private readonly _onDidChangeCandidates = this._register(new Emitter<void>());
+	readonly onDidChangeCandidates = this._onDidChangeCandidates.event;
 
 	private readonly ticker = this._register(new IntervalTimer());
 	private readonly expiryTimer = this._register(new TimeoutTimer());
 	private visibleSignature = '';
+	private candidateSignature = '';
 	private ticking = false;
 
 	constructor(
@@ -80,6 +95,23 @@ export class ParadisPromptCacheClock extends Disposable {
 		return { ...panes[0], panes };
 	}
 
+	/**
+	 * スペース一覧の行の状態。Claude のペインにキャッシュの記録が1つも無ければ undefined
+	 * （枠ごと出さない）。数えているペインがあれば最も早く切れるもの、無ければ止まっている理由。
+	 */
+	readScopeState(stateKey: string, now = Date.now()): ParadisScopePromptCacheState | undefined {
+		const candidates = this.insightsService.getScopePanes(stateKey).filter(pane => pane.insight.agent === 'claude' && pane.insight.promptCache !== undefined);
+		if (candidates.length === 0) {
+			return undefined;
+		}
+		const reading = this.readScope(stateKey, now);
+		if (reading) {
+			return { kind: 'counting', reading };
+		}
+		const working = candidates.some(pane => this.agentStatusStore.getInstanceStatus(pane.instanceId) === 'working');
+		return { kind: 'paused', reason: working ? 'working' : 'expired' };
+	}
+
 	private read(insight: IParadisAgentPaneInsight | undefined, instanceId: number, now: number): IParadisPromptCacheReading | undefined {
 		const working = this.agentStatusStore.getInstanceStatus(instanceId) === 'working';
 		const remainingMs = paradisVisiblePromptCacheRemainingMs(insight, working, now);
@@ -92,9 +124,14 @@ export class ParadisPromptCacheClock extends Disposable {
 	private reevaluate(): void {
 		const now = Date.now();
 		const visible: string[] = [];
+		const candidates: string[] = [];
 		let nextExpiry: number | undefined;
 		for (const { instanceId, token } of this.paneTokenService.listPaneTokens()) {
-			const reading = this.read(this.insightsService.getForToken(token), instanceId, now);
+			const insight = this.insightsService.getForToken(token);
+			if (insight?.agent === 'claude' && insight.promptCache) {
+				candidates.push(token);
+			}
+			const reading = this.read(insight, instanceId, now);
 			if (!reading) {
 				continue;
 			}
@@ -120,6 +157,11 @@ export class ParadisPromptCacheClock extends Disposable {
 		if (signature !== this.visibleSignature) {
 			this.visibleSignature = signature;
 			this._onDidChangeVisibility.fire();
+		}
+		const candidateSignature = candidates.sort().join('\n');
+		if (candidateSignature !== this.candidateSignature) {
+			this.candidateSignature = candidateSignature;
+			this._onDidChangeCandidates.fire();
 		}
 		this._onDidTick.fire();
 	}
