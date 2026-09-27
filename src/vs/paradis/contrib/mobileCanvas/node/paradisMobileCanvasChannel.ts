@@ -12,9 +12,12 @@
 import { Event } from '../../../../base/common/event.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { PARADIS_MOBILE_CANVAS_CHANNEL } from '../common/paradisMobileCanvas.js';
 import { ParadisMobileCanvasHostClient } from './paradisMobileCanvasHostClient.js';
 import { ParadisMobileCanvasService } from './paradisMobileCanvasService.js';
+import { ParadisMobileDeviceCommands } from './paradisMobileDeviceCommands.js';
+import { ParadisMobileDeviceOpsToolProvider } from './paradisMobileDeviceOpsToolProvider.js';
 
 export class ParadisMobileCanvasChannel implements IServerChannel<string> {
 
@@ -64,6 +67,10 @@ export function registerParadisMobileCanvas(
 	const service = new ParadisMobileCanvasService(hostClient, logService);
 	server.registerChannel(PARADIS_MOBILE_CANVAS_CHANNEL, new ParadisMobileCanvasChannel(service));
 	registerToolProvider(service);
+	// 端末の要求・回転・ジェスチャー・アプリの操作（B13）は別のプロバイダにして、登録口から足す。
+	// 台帳（service）とホストへの接続（hostClient）はここにしか無いので、ここで組み立てる
+	const deviceOps = new ParadisMobileDeviceOpsToolProvider(service, hostClient, new ParadisMobileDeviceCommands(), logService);
+	service.own(paradisRegisterMcpToolProvider(deviceOps));
 	return service;
 }
 
