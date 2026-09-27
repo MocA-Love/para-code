@@ -30,9 +30,6 @@ import { ChatSpeechToTextState, IChatSpeechToTextService } from '../../../../wor
 import { ISpeechService } from '../../../../workbench/contrib/speech/common/speechService.js';
 import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
 
-export type ParadisDictationSpeechToText = Pick<IChatSpeechToTextService, 'state' | 'isPreparingModel' | 'onDidChangeState' | 'onDidChangePreparingModel'>;
-export type ParadisDictationSpeech = Pick<ISpeechService, 'hasActiveSpeechToTextSession' | 'onDidStartSpeechToTextSession' | 'onDidEndSpeechToTextSession'>;
-
 export class ParadisDictationAudioHold extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisDictationAudioHold';
@@ -40,8 +37,8 @@ export class ParadisDictationAudioHold extends Disposable implements IWorkbenchC
 	private active = false;
 
 	constructor(
-		@IChatSpeechToTextService private readonly speechToTextService: ParadisDictationSpeechToText,
-		@ISpeechService private readonly speechService: ParadisDictationSpeech,
+		@IChatSpeechToTextService private readonly speechToTextService: IChatSpeechToTextService,
+		@ISpeechService private readonly speechService: ISpeechService,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@ILogService private readonly logService: ILogService,
 	) {
