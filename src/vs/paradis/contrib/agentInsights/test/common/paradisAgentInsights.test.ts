@@ -15,6 +15,7 @@ import {
 	PARADIS_PROMPT_CACHE_TTL_5M,
 	paradisFormatPromptCacheRemaining,
 	paradisReadClaudePromptCacheUsage,
+	paradisReadClaudeRequestStart,
 	paradisSelectInsightSubagents,
 	paradisSummarizePermissionInput,
 	paradisSummarizeQuestionInput,
@@ -63,6 +64,16 @@ suite('ParadisAgentInsights', () => {
 			undefined,
 			undefined,
 		]);
+	});
+
+	test('treats user and tool_result lines as the moment the next request was sent', () => {
+		assert.deepStrictEqual([
+			paradisReadClaudeRequestStart({ type: 'user', timestamp: AT, message: { content: 'hi' } }),
+			paradisReadClaudeRequestStart({ type: 'user', timestamp: AT, message: { content: [{ type: 'tool_result', tool_use_id: 'x' }] } }),
+			paradisReadClaudeRequestStart({ type: 'user', timestamp: AT, isSidechain: true }),
+			paradisReadClaudeRequestStart(assistantLine({ cache_read_input_tokens: 1 })),
+			paradisReadClaudeRequestStart({ type: 'user', timestamp: 'nonsense' }),
+		], [AT_MS, AT_MS, undefined, undefined, undefined]);
 	});
 
 	test('shows the remaining time only for idle Claude panes whose cache is still alive', () => {

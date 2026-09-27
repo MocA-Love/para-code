@@ -126,9 +126,10 @@ function positive(value: unknown): boolean {
  *   長さが分からないので `ttl: undefined` を返し、呼び出し側が直前の長さを引き継ぐ
  * - どちらも 0 → キャッシュを使っていないリクエスト。残り時間は延びないので undefined
  *
- * 時刻は行の `timestamp`（応答を書き終えた時刻）。実際の有効期限の起点はリクエスト時刻なので、
- * 応答にかかった時間ぶんだけ長めに見積もる。サブエージェントの行（isSidechain）は親の
- * キャッシュとは別物なので読まない。
+ * 返す時刻は行の `timestamp`（応答を書き終えた時刻）。有効期限の起点はリクエストを送った時刻
+ * なので、呼び出し側は直前の user 行（{@link paradisReadClaudeRequestStart}）の時刻があれば
+ * そちらを使う（生成に2分かかった応答で、5分の残りを2分長く見積もらないため）。
+ * サブエージェントの行（isSidechain）は親のキャッシュとは別物なので読まない。
  */
 export function paradisReadClaudePromptCacheUsage(line: Readonly<Record<string, unknown>>): { readonly at: number; readonly ttlMs: number | undefined } | undefined {
 	if (line.type !== 'assistant' || line.isSidechain === true) {
@@ -159,6 +160,18 @@ export function paradisReadClaudePromptCacheUsage(line: Readonly<Record<string, 
 		return { at: timestamp, ttlMs: undefined };
 	}
 	return undefined;
+}
+
+/**
+ * Claude の transcript 1行が、次のリクエストを送った時点を表すか（ユーザーの発言か tool_result）。
+ * 表すならその時刻を返す。assistant の応答はこの直後に送られたリクエストへの返事になる。
+ */
+export function paradisReadClaudeRequestStart(line: Readonly<Record<string, unknown>>): number | undefined {
+	if (line.type !== 'user' || line.isSidechain === true) {
+		return undefined;
+	}
+	const timestamp = typeof line.timestamp === 'string' ? Date.parse(line.timestamp) : NaN;
+	return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 /** 残り時間（ms）。切れていれば 0。 */
