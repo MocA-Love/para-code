@@ -18,7 +18,7 @@ const RIGHT_TO_LEFT_OVERRIDE = '\u202E';
 suite('ParadisMobileDeviceRequestChannel', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(outcome: ParadisAgentApprovalOutcome, onAsk?: () => void) {
+	function setup(outcome: ParadisAgentApprovalOutcome, onAsk?: () => void, clock = { now: 1_000_000 }) {
 		const asked: { token: string; message: string; detail: readonly string[]; alternative: string | undefined; cooldownKey: string | undefined; cancellable: boolean }[] = [];
 		const panes = new Map([['pane-a', 7]]);
 		const channel = new ParadisMobileDeviceRequestChannel(
@@ -31,9 +31,10 @@ suite('ParadisMobileDeviceRequestChannel', () => {
 			},
 			{ getInstanceForToken: token => panes.get(token) },
 			{ getStateKeyForInstance: instanceId => instanceId === 7 ? 'space-1' : undefined },
+			() => clock.now,
 		);
 		const call = (method: string, token: string, prompt: object) => channel.call<IParadisMobileDeviceRequestAnswer>(undefined, method, [token, prompt]);
-		return { asked, call, panes };
+		return { asked, call, panes, clock };
 	}
 
 	test('asks through the shared approval dialog with sanitised text, counts denials per device, and returns the space on approval', async () => {
@@ -46,15 +47,44 @@ suite('ParadisMobileDeviceRequestChannel', () => {
 		assert.ok(asked[0].detail.every(line => !line.includes(RIGHT_TO_LEFT_OVERRIDE) && !line.includes('\n')));
 	});
 
-	test('asks separately before every install, showing the path, with its own cooldown key', async () => {
+	test('asks separately before every install, showing the copied app id and the end of a long path, with its own cooldown key', async () => {
 		const { asked, call } = setup('approve');
-		const answer = await call('approveInstall', 'pane-a', { deviceId: 'ios:iphone', deviceName: 'iPhone 17', path: '/Users/example/DerivedData/Build/My.app' });
-		assert.deepStrictEqual({ answer, cooldownKey: asked[0].cooldownKey, showsPath: asked[0].detail.some(line => line.includes('/Users/example/DerivedData/Build/My.app')), lines: asked[0].detail.length }, {
+		const deepPath = `/Users/example/${'Library/Developer/Xcode/DerivedData/'.repeat(8)}Build/Products/Debug-iphonesimulator/My.app`;
+		const answer = await call('approveInstall', 'pane-a', { deviceId: 'ios:iphone', deviceName: 'iPhone 17', path: deepPath, appId: 'com.example.myapp', appName: 'My App' });
+		const unknown = setup('approve');
+		await unknown.call('approveInstall', 'pane-a', { deviceId: 'ios:iphone', deviceName: 'iPhone 17', path: '/b/app.apk' });
+		assert.deepStrictEqual({
+			answer,
+			cooldownKey: asked[0].cooldownKey,
+			showsApp: asked[0].detail.some(line => line.includes('com.example.myapp') && line.includes('My App')),
+			keepsFileName: asked[0].detail.some(line => line.includes('\u2026') && line.endsWith('Debug-iphonesimulator/My.app')),
+			lines: asked[0].detail.length,
+			unknownSaysSo: unknown.asked[0].detail[0] !== asked[0].detail[0] && !unknown.asked[0].detail[0].includes('com.'),
+		}, {
 			answer: { outcome: 'approved', stateKey: 'space-1' },
 			cooldownKey: 'mobile-install:ios:iphone',
-			showsPath: true,
-			lines: 3,
+			showsApp: true,
+			keepsFileName: true,
+			lines: 5,
+			unknownSaysSo: true,
 		});
+	});
+
+	test('right after a denied device request, requests for other devices from that pane are refused without a dialog for 10 seconds', async () => {
+		const { asked, call, clock } = setup('denied');
+		const first = await call('requestDevice', 'pane-a', { deviceId: 'ios:iphone', deviceName: 'iPhone 17' });
+		clock.now += 9_000;
+		const otherDeviceSoon = await call('requestDevice', 'pane-a', { deviceId: 'android:pixel', deviceName: 'Pixel 9' });
+		const installSoon = await call('approveInstall', 'pane-a', { deviceId: 'ios:iphone', deviceName: 'iPhone 17', path: '/b/My.app' });
+		clock.now += 2_000;
+		const otherDeviceLater = await call('requestDevice', 'pane-a', { deviceId: 'android:pixel', deviceName: 'Pixel 9' });
+		assert.deepStrictEqual([first, otherDeviceSoon, installSoon, otherDeviceLater, asked.map(entry => entry.cooldownKey)], [
+			{ outcome: 'denied' },
+			{ outcome: 'recentlyDenied' },
+			{ outcome: 'denied' },
+			{ outcome: 'denied' },
+			['mobile-device:ios:iphone', 'mobile-install:ios:iphone', 'mobile-device:android:pixel'],
+		]);
 	});
 
 	test('passes refusals through, never asks for a pane that is not in this window, and drops an approval for a pane closed meanwhile', async () => {

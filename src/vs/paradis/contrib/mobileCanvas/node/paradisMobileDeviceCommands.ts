@@ -14,9 +14,10 @@
 // - 実行とファイルの確認は差し替えられる（テストでは本物の端末に触らない）
 
 import { execFile } from 'child_process';
-import { realpath, stat } from 'fs/promises';
-import { homedir } from 'os';
-import { isAbsolute, join } from '../../../../base/common/path.js';
+import { constants as fsConstants } from 'fs';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, realpath, rm, stat } from 'fs/promises';
+import { homedir, tmpdir } from 'os';
+import { basename, dirname, isAbsolute, join } from '../../../../base/common/path.js';
 import { ParadisMobileAppKind, ParadisMobileInstallKind, ParadisMobilePlatform, paradisListappsApplicationType, paradisMobileInstallKindFor, paradisPackageListIncludes, paradisParseDangerousPermissions } from '../common/paradisMobileDeviceOps.js';
 
 export interface IParadisMobileCommandResult {
@@ -33,6 +34,76 @@ export interface IParadisMobileFileProbe {
 	realpath(path: string): Promise<string>;
 	/** 無ければ undefined。 */
 	kind(path: string): Promise<'file' | 'directory' | 'other' | undefined>;
+}
+
+/**
+ * インストールするものを、Para Code だけが書ける一時フォルダへ写す口（テストで差し替える）。
+ * 承認の後に元のパスの中身や行き先を差し替えられても、写しは変わらない。
+ */
+export interface IParadisMobileStagingFs {
+	/** 所有者だけが読み書きできる（0700）新しい一時フォルダを作る。 */
+	makePrivateDir(): Promise<string>;
+	/** `source` を `destination` へ写す。中にシンボリックリンクがあれば投げる。大きすぎても投げる。 */
+	copy(source: string, destination: string, signal?: AbortSignal): Promise<void>;
+	remove(path: string): Promise<void>;
+	/** フォルダの中の名前の一覧（無ければ空）。 */
+	list(path: string): Promise<string[]>;
+}
+
+/** 写すものの上限。壊れた・悪意のある成果物で一時フォルダを埋めないため。 */
+const STAGING_MAX_BYTES = 4 * 1024 * 1024 * 1024;
+const STAGING_MAX_ENTRIES = 200_000;
+
+export const paradisNodeMobileStagingFs: IParadisMobileStagingFs = {
+	makePrivateDir: async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'paradis-mobile-install-'));
+		await chmod(dir, 0o700);
+		return dir;
+	},
+	copy: async (source, destination, signal) => {
+		const budget = { bytes: STAGING_MAX_BYTES, entries: STAGING_MAX_ENTRIES };
+		const walk = async (from: string, to: string): Promise<void> => {
+			if (signal?.aborted) {
+				throw new Error('The install was cancelled.');
+			}
+			if (--budget.entries < 0) {
+				throw new Error('The app has too many files to install.');
+			}
+			// リンクは辿らない。写しの外（あとで書き換えられる場所）を指したまま入れることになるため
+			const info = await lstat(from);
+			if (info.isSymbolicLink()) {
+				throw new Error(`The app contains a symbolic link (${basename(from)}). Para Code only installs apps without symbolic links.`);
+			}
+			if (info.isDirectory()) {
+				await mkdir(to, { mode: 0o700 });
+				for (const name of await readdir(from)) {
+					await walk(join(from, name), join(to, name));
+				}
+				return;
+			}
+			if (!info.isFile()) {
+				throw new Error(`The app contains something that is not a file or a folder (${basename(from)}).`);
+			}
+			budget.bytes -= info.size;
+			if (budget.bytes < 0) {
+				throw new Error('The app is too large to install.');
+			}
+			await copyFile(from, to, fsConstants.COPYFILE_EXCL);
+		};
+		await walk(source, destination);
+	},
+	remove: path => rm(path, { recursive: true, force: true }),
+	list: async path => readdir(path).catch(() => []),
+};
+
+/** 承認の前に写したインストールするもの。承認ダイアログにはここから読んだ中身を出す。 */
+export interface IParadisMobileStagedInstall extends IParadisMobileInstallTarget {
+	/** 写しから読んだバンドル ID / パッケージ名。読めなければ undefined。 */
+	readonly appId: string | undefined;
+	/** 写しから読んだ表示名（iOS の `.app` だけ）。 */
+	readonly appName: string | undefined;
+	/** 写しを消す。 */
+	dispose(): Promise<void>;
 }
 
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -114,6 +185,7 @@ export class ParadisMobileDeviceCommands {
 		private readonly _env: { readonly [name: string]: string | undefined } = process.env,
 		private readonly _platform: NodeJS.Platform = process.platform,
 		private readonly _home: string = homedir(),
+		private readonly _staging: IParadisMobileStagingFs = paradisNodeMobileStagingFs,
 	) { }
 
 	/**
@@ -175,14 +247,57 @@ export class ParadisMobileDeviceCommands {
 		}
 	}
 
-	/** `.app` の Info.plist からバンドル ID を読む（起動に使えるよう返すだけ。読めなければ undefined）。 */
-	async readBundleId(target: IParadisMobileInstallTarget, signal?: AbortSignal): Promise<string | undefined> {
-		if (target.kind !== 'app' || this._platform !== 'darwin') {
+	/**
+	 * インストールするものを Para Code だけが書ける一時フォルダ（0700）へ写し、写しから中身（ID と名前）を読む。
+	 * 承認ダイアログにはこの中身を出し、インストールするのも写し。終わったら `dispose()` で消す。
+	 */
+	async stageInstall(target: IParadisMobileInstallTarget, signal?: AbortSignal): Promise<IParadisMobileStagedInstall> {
+		const dir = await this._staging.makePrivateDir();
+		const dispose = () => this._staging.remove(dir);
+		try {
+			const path = join(dir, basename(target.path));
+			await this._staging.copy(target.path, path, signal);
+			const staged = { path, kind: target.kind };
+			const [appId, appName] = target.kind === 'app'
+				? [await this._readPlistString(path, 'CFBundleIdentifier', signal), await this._readPlistString(path, 'CFBundleDisplayName', signal) ?? await this._readPlistString(path, 'CFBundleName', signal)]
+				: target.kind === 'apk' ? [await this._readApkPackage(path, signal), undefined] : [undefined, undefined];
+			return { ...staged, appId, appName, dispose };
+		} catch (error) {
+			await dispose().catch(() => undefined);
+			throw error;
+		}
+	}
+
+	private async _readPlistString(app: string, key: string, signal?: AbortSignal): Promise<string | undefined> {
+		if (this._platform !== 'darwin') {
 			return undefined;
 		}
-		const result = await this._run('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', join(target.path, 'Info.plist')], { timeoutMs: COMMAND_TIMEOUT_MS, signal });
+		const result = await this._run('/usr/bin/plutil', ['-extract', key, 'raw', '-o', '-', join(app, 'Info.plist')], { timeoutMs: COMMAND_TIMEOUT_MS, signal });
 		const value = result.stdout.trim();
 		return result.code === 0 && value ? value : undefined;
+	}
+
+	/** SDK の build-tools の aapt2 でパッケージ名を読む（adb と同じ SDK の、いちばん新しい版）。無ければ undefined。 */
+	private async _readApkPackage(apk: string, signal?: AbortSignal): Promise<string | undefined> {
+		let adb: string;
+		try {
+			adb = await this._adbPath();
+		} catch {
+			return undefined;
+		}
+		const buildTools = join(dirname(dirname(adb)), 'build-tools');
+		const versions = (await this._staging.list(buildTools)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+		const executable = this._platform === 'win32' ? 'aapt2.exe' : 'aapt2';
+		for (const version of versions) {
+			const aapt2 = join(buildTools, version, executable);
+			if (await this._files.kind(aapt2) !== 'file') {
+				continue;
+			}
+			const result = await this._run(aapt2, ['dump', 'packagename', apk], { timeoutMs: COMMAND_TIMEOUT_MS, signal });
+			const value = result.stdout.trim();
+			return result.code === 0 && /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(value) ? value : undefined;
+		}
+		return undefined;
 	}
 
 	async launch(platform: ParadisMobilePlatform, deviceId: string, appId: string, relaunch: boolean, signal?: AbortSignal): Promise<void> {

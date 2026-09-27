@@ -31,6 +31,7 @@ import {
 	IParadisMobileDeviceRequestPrompt,
 	IParadisMobileInstallPrompt,
 	PARADIS_MOBILE_APPROVAL_TIMEOUT_MS,
+	PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS,
 	PARADIS_MOBILE_INSTALL_APPROVAL_METHOD,
 	ParadisMobileDeviceRequestOutcome,
 	paradisDeviceHeldByAnotherPane,
@@ -50,6 +51,8 @@ import {
 	paradisParseMobileDeviceRequestAnswer,
 	paradisParseSwipeDirection,
 	paradisPinchFrames,
+	paradisPngSize,
+	paradisScreenSizeFromScreenshot,
 	paradisResolveMobilePermission,
 	paradisSwipeEndpoints,
 } from '../common/paradisMobileDeviceOps.js';
@@ -68,6 +71,13 @@ export interface IParadisMobileDeviceLedger {
 /** Mobile Canvas ホストの REST（ParadisMobileCanvasHostClient が満たす）。 */
 export interface IParadisMobileHostRequester {
 	request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<unknown>;
+	requestBinary(path: string, signal?: AbortSignal): Promise<Uint8Array>;
+}
+
+/** 入力の座標に使う画面の大きさ。`fromScreenshot` が false なら端末の向き（`/display`）からの推定で、ずれうる。 */
+interface IParadisScreen extends IParadisPointSize {
+	readonly scale: number | undefined;
+	readonly fromScreenshot: boolean;
 }
 
 export type ParadisMobileSleep = (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -95,9 +105,9 @@ const REQUEST_TIMEOUT_MESSAGE = 'The user did not answer in time. Ask the user i
 const REQUEST_CANCELLED_MESSAGE = 'The request was cancelled before the user answered.';
 const REQUEST_UNANSWERED_MESSAGE = 'Para Code could not get a clear answer: the dialog was answered right after it appeared or with a keyboard shortcut. Ask the user to click a button in the dialog, then ask again.';
 
-/** 回転の後、画面の寸法が新しい向きに変わるのを待つ回数と間隔（ホストは寸法が変わる前に応答する）。 */
-const ROTATE_SETTLE_ATTEMPTS = 20;
-const ROTATE_SETTLE_INTERVAL_MS = 100;
+/** 回転の後、画面（スクショ）が新しい向きに変わるのを待つ回数と間隔（ホストは画面が回る前に応答する）。 */
+const ROTATE_SETTLE_ATTEMPTS = 10;
+const ROTATE_SETTLE_INTERVAL_MS = 150;
 /** ピンチの指を動かす回数と間隔。 */
 const PINCH_STEPS = 12;
 const PINCH_STEP_INTERVAL_MS = 16;
@@ -145,7 +155,7 @@ export const PARADIS_MOBILE_DEVICE_OPS_TOOLS: readonly IParadisMcpToolDefinition
 				y: { type: 'number', description: 'Vertical coordinate in device points.' },
 				direction: { type: 'string', enum: ['up', 'down', 'left', 'right'], description: 'swipe only.' },
 				distance: { type: 'number', description: 'swipe only: how far to move, in points. Defaults to 40% of the shorter side of the screen.' },
-				duration: { type: 'number', description: 'Seconds. long_press: how long to hold (default 1, at most 10). swipe: how long the movement takes.' },
+				duration: { type: 'number', description: 'Seconds. long_press: how long to hold (default 1, at most 10). swipe: how long the movement takes (default 0.4; much faster swipes may not register).' },
 				scale: { type: 'number', description: 'pinch only: between 0.2 and 5. 2 doubles the distance between the fingers, 0.5 halves it.' },
 			},
 			required: ['kind'],
@@ -315,7 +325,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		}
 		const answer = paradisParseMobileDeviceRequestAnswer(call.value);
 		if (answer?.outcome !== 'approved') {
-			return refusal(answer?.outcome, 'The user declined to attach this device. Do not ask for the same device again for now: Para Code turns down requests from this pane for this device for a few minutes (other devices and browser pages are not affected).', 'The user declined a request from this pane for this device a short while ago, so Para Code turned this one down without asking. Wait a few minutes, or ask the user in the conversation.');
+			return refusal(answer?.outcome, 'The user declined to attach this device. Do not ask for the same device again for now: Para Code turns down requests from this pane for this device for a few minutes (other devices and browser pages are not affected).', 'The user declined a request from this pane a short while ago (for this device in the last few minutes, or for any device in the last few seconds), so Para Code turned this one down without asking. Do not switch to another device to ask again; wait, or ask the user in the conversation.');
 		}
 		// 承認を待つ間に別のペインへ渡っていたら割り当てない（ほかのペインの端末は奪わない）。確かめと書き込みは台帳が一度に行う
 		const attachment = await this._ledger.attachIfFree(paneToken, device.id, answer.stateKey, signal);
@@ -336,20 +346,37 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		const attachment = this._requireAttachment(paneToken);
 		const id = encodeURIComponent(attachment.deviceId);
 		await this._host.request('POST', `/api/v1/devices/${id}/input/rotate`, { orientation }, signal);
-		// ホストは向きが変わる前に応答するので、寸法が新しい向きになるまで少し待つ
-		let display = undefined as ReturnType<typeof paradisParseDisplaySize>;
+		// ホストは画面が回る前に応答するので、スクショの縦横が新しい向きになるまで少し待つ。
+		// 前面のアプリがその向きに回らないこと（縦しか無いアプリ、上下逆さに回らない iPhone）もあるので、
+		// 返すのは端末の向きではなく、実際の画面（スクショ）の大きさ
+		let screen: IParadisScreen | undefined;
 		for (let attempt = 0; attempt < ROTATE_SETTLE_ATTEMPTS && !signal?.aborted; attempt++) {
-			display = paradisParseDisplaySize(await this._host.request('GET', `/api/v1/devices/${id}/display`, undefined, signal));
-			if (display && orientationSettled(orientation, display)) {
-				return jsonResult({ orientation, screen: { pointWidth: display.width, pointHeight: display.height, scale: display.scale } });
+			screen = await this._screen(id, signal);
+			if (screen && orientationSettled(orientation, screen)) {
+				return jsonResult({ orientation, screen: describeScreen(screen) });
 			}
 			await this._sleep(ROTATE_SETTLE_INTERVAL_MS, signal);
 		}
 		return jsonResult({
 			orientation,
-			screen: display ? { pointWidth: display.width, pointHeight: display.height, scale: display.scale } : null,
-			note: 'The rotation was sent, but the screen had not reported the new orientation yet. Take a screenshot before using coordinates.',
+			screen: screen ? describeScreen(screen) : null,
+			note: 'The device was turned, but the screen did not change to that orientation: the app on screen probably does not support it. Coordinates for input tools follow the screen size above, which matches the screenshot.',
 		});
+	}
+
+	/**
+	 * 入力の座標に使う画面の大きさ。スクショの画素数を `scale` で割って出す（mobile_tap と同じ基準）。
+	 * スクショを取れないときだけ `/display`（端末の向き）で代える。
+	 */
+	private async _screen(encodedId: string, signal?: AbortSignal): Promise<IParadisScreen | undefined> {
+		const display = paradisParseDisplaySize(await this._host.request('GET', `/api/v1/devices/${encodedId}/display`, undefined, signal).catch(() => undefined));
+		const png = display?.scale !== undefined
+			? await this._host.requestBinary(`/api/v1/devices/${encodedId}/screenshot`, signal).then(paradisPngSize, () => undefined)
+			: undefined;
+		if (png && display?.scale !== undefined) {
+			return { ...paradisScreenSizeFromScreenshot(png, display.scale), scale: display.scale, fromScreenshot: true };
+		}
+		return display ? { width: display.width, height: display.height, scale: display.scale, fromScreenshot: false } : undefined;
 	}
 
 	private async _gesture(paneToken: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
@@ -359,10 +386,13 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		}
 		const attachment = this._requireAttachment(paneToken);
 		const id = encodeURIComponent(attachment.deviceId);
-		const size = paradisParseDisplaySize(await this._host.request('GET', `/api/v1/devices/${id}/display`, undefined, signal).catch(() => undefined));
+		const size = await this._screen(id, signal);
 		const point = optionalPoint(args);
-		if (point && size && !paradisIsInsideScreen(point, size)) {
-			return errorResult(`(${point.x}, ${point.y}) is outside the screen, which is ${size.width}x${size.height} points.`);
+		// スクショから大きさが分かったときだけ範囲を確かめる。端末の向きからの推定は画面とずれうるので、
+		// そのときは縦横どちらの向きでも入る正方形で見る（ホストに任せる寄り）
+		const bounds = size && !size.fromScreenshot ? { width: Math.max(size.width, size.height), height: Math.max(size.width, size.height) } : size;
+		if (point && bounds && !paradisIsInsideScreen(point, bounds)) {
+			return errorResult(`(${point.x}, ${point.y}) is outside the screen, which is ${size!.width}x${size!.height} points (the same size as the screenshot divided by its scale).`);
 		}
 
 		if (kind === 'long_press') {
@@ -384,7 +414,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 			}
 			const { start, end } = paradisSwipeEndpoints(direction, size, point, optionalNumber(args, 'distance'));
 			const requested = optionalNumber(args, 'duration');
-			const duration = requested === undefined ? undefined : clamp(requested, SWIPE_MIN_SECONDS, SWIPE_MAX_SECONDS);
+			const duration = clamp(requested ?? PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS, SWIPE_MIN_SECONDS, SWIPE_MAX_SECONDS);
 			await this._host.request('POST', `/api/v1/devices/${id}/input/swipe`, { startX: start.x, startY: start.y, endX: end.x, endY: end.y, duration }, signal);
 			return textResult(`Swiped ${direction} on ${attachment.deviceName} from (${start.x}, ${start.y}) to (${end.x}, ${end.y}).`);
 		}
@@ -454,32 +484,50 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 	private async _install(paneToken: string, args: Record<string, unknown>, context: IParadisMcpToolCallContext, signal?: AbortSignal): Promise<IToolResult> {
 		const resolved = await this._resolve(paneToken, signal);
 		const target = await this._commands.resolveInstallTarget(resolved.platform, args.path);
-		// 入れたアプリは Para Code の権限で動き、エージェントのサンドボックスの外に出られるので、毎回利用者に聞く
-		const prompt: IParadisMobileInstallPrompt = { deviceId: resolved.device.id, deviceName: resolved.device.name, path: target.path };
-		const call = await context.callOwningWindow<unknown>({
-			channelName: PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL,
-			method: PARADIS_MOBILE_INSTALL_APPROVAL_METHOD,
-			args: [paneToken, prompt],
-			failureLabel: 'mobile_install_app',
-			failureMessage: 'Para Code could not show the install approval dialog in its window. Retry once; if it keeps failing, ask the user to install the app.',
-			timeoutMs: PARADIS_MOBILE_APPROVAL_TIMEOUT_MS,
-			timeoutMessage: REQUEST_TIMEOUT_MESSAGE,
-		}, signal);
-		if (!call.ok) {
-			return errorResult(call.error);
+		// 承認の前に Para Code だけが書ける一時フォルダへ写し、ダイアログには写しの中身を出して、写しを入れる。
+		// 元のパスは承認の後にも中身や行き先を差し替えられるので、元のパスからは入れない
+		const staged = await this._commands.stageInstall(target, signal);
+		try {
+			// 入れたアプリは Para Code の権限で動き、エージェントのサンドボックスの外に出られるので、毎回利用者に聞く
+			const prompt: IParadisMobileInstallPrompt = {
+				deviceId: resolved.device.id,
+				deviceName: resolved.device.name,
+				path: target.path,
+				...(staged.appId ? { appId: staged.appId } : {}),
+				...(staged.appName ? { appName: staged.appName } : {}),
+			};
+			const call = await context.callOwningWindow<unknown>({
+				channelName: PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL,
+				method: PARADIS_MOBILE_INSTALL_APPROVAL_METHOD,
+				args: [paneToken, prompt],
+				failureLabel: 'mobile_install_app',
+				failureMessage: 'Para Code could not show the install approval dialog in its window. Retry once; if it keeps failing, ask the user to install the app.',
+				timeoutMs: PARADIS_MOBILE_APPROVAL_TIMEOUT_MS,
+				timeoutMessage: REQUEST_TIMEOUT_MESSAGE,
+			}, signal);
+			if (!call.ok) {
+				return errorResult(call.error);
+			}
+			const answer = paradisParseMobileDeviceRequestAnswer(call.value);
+			if (answer?.outcome !== 'approved') {
+				return refusal(answer?.outcome, 'The user declined to install this app. Do not try again straight away: Para Code turns down installs from this pane onto this device for a few minutes.', 'The user declined an install from this pane onto this device a short while ago, so Para Code turned this one down without asking. Wait a few minutes, or ask the user in the conversation.');
+			}
+			// 承認を待つ間に割り当てが変わっていたら入れない（利用者が見た端末と違う端末へ入れないように）
+			if (this._ledger.getAttachment(paneToken)?.deviceId !== resolved.device.id) {
+				return errorResult('The device attached to this pane changed while the user was answering, so nothing was installed.');
+			}
+			await this._commands.install(resolved.platform, resolved.nativeId, staged, signal);
+			this._logService?.info(`[paradis-mobile-canvas] installed an app on ${resolved.device.name}`);
+			return jsonResult({
+				installed: true,
+				device: resolved.device.name,
+				path: target.path,
+				note: 'Para Code installed a copy it made of this path before asking the user; later changes to the path are not included.',
+				...(staged.appId ? { appId: staged.appId } : {}),
+			});
+		} finally {
+			await staged.dispose().catch(error => this._logService?.warn('[paradis-mobile-canvas] could not remove the staged install copy', error));
 		}
-		const answer = paradisParseMobileDeviceRequestAnswer(call.value);
-		if (answer?.outcome !== 'approved') {
-			return refusal(answer?.outcome, 'The user declined to install this app. Do not try again straight away: Para Code turns down installs from this pane onto this device for a few minutes.', 'The user declined an install from this pane onto this device a short while ago, so Para Code turned this one down without asking. Wait a few minutes, or ask the user in the conversation.');
-		}
-		// 承認を待つ間に割り当てが変わっていたら入れない（利用者が見た端末と違う端末へ入れないように）
-		if (this._ledger.getAttachment(paneToken)?.deviceId !== resolved.device.id) {
-			return errorResult('The device attached to this pane changed while the user was answering, so nothing was installed.');
-		}
-		await this._commands.install(resolved.platform, resolved.nativeId, target, signal);
-		const bundleId = await this._commands.readBundleId(target, signal).catch(() => undefined);
-		this._logService?.info(`[paradis-mobile-canvas] installed an app on ${resolved.device.name}`);
-		return jsonResult({ installed: true, device: resolved.device.name, path: target.path, ...(bundleId ? { appId: bundleId } : {}) });
 	}
 
 	private async _launch(paneToken: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
@@ -543,13 +591,13 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 	}
 }
 
-function orientationSettled(target: ParadisMobileOrientation, display: IParadisPointSize & { readonly orientation?: string }): boolean {
-	const reported = display.orientation?.toLowerCase();
-	if (reported) {
-		return target.startsWith('landscape') ? reported.startsWith('landscape') : reported === target;
-	}
-	// 向きを返さないホストでは、縦横の比で判断する
-	return target.startsWith('landscape') ? display.width > display.height : display.height > display.width;
+/** 画面（スクショ）の縦横が、頼んだ向きに合っているか。上下逆さは縦と区別できないので縦として見る。 */
+function orientationSettled(target: ParadisMobileOrientation, screen: IParadisScreen): boolean {
+	return target.startsWith('landscape') ? screen.width > screen.height : screen.height > screen.width;
+}
+
+function describeScreen(screen: IParadisScreen): object {
+	return { pointWidth: screen.width, pointHeight: screen.height, scale: screen.scale, ...(screen.fromScreenshot ? {} : { note: 'Estimated from the device orientation because no screenshot was available; take a screenshot to confirm.' }) };
 }
 
 /** 承認されなかったときの返事。拒否と自動の断りの文だけ呼び出し側が決める。 */

@@ -26,7 +26,7 @@ import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileAttachment, IParadisMobileCanvasSnapshot, IParadisMobileDevice, IParadisMobileDisplay } from '../common/paradisMobileCanvas.js';
-import { paradisDeviceHeldByAnotherPane } from '../common/paradisMobileDeviceOps.js';
+import { PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS, paradisDeviceHeldByAnotherPane } from '../common/paradisMobileDeviceOps.js';
 import { ParadisMobileCanvasHostClient, ParadisMobileCanvasUnavailableError } from './paradisMobileCanvasHostClient.js';
 import { IParadisMobileDeviceLedger } from './paradisMobileDeviceOpsToolProvider.js';
 
@@ -82,7 +82,7 @@ const TOOLS: IParadisMcpToolDefinition[] = [
 				startY: { type: 'number' },
 				endX: { type: 'number' },
 				endY: { type: 'number' },
-				duration: { type: 'number', description: 'Gesture duration in seconds. Defaults to a natural swipe.' },
+				duration: { type: 'number', description: 'Gesture duration in seconds. Defaults to 0.4; much faster swipes may not register (for example, a home screen page does not turn).' },
 			},
 			required: ['startX', 'startY', 'endX', 'endY'],
 			additionalProperties: false,
@@ -367,7 +367,8 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 					startY: requireNumber(args, 'startY'),
 					endX: requireNumber(args, 'endX'),
 					endY: requireNumber(args, 'endY'),
-					duration: optionalNumber(args, 'duration'),
+					// 省いたときにホストの既定（速すぎてページが送られない）に任せない。mobile_gesture と同じ値
+					duration: optionalNumber(args, 'duration') ?? PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS,
 				};
 				await this._hostClient.request('POST', `/api/v1/devices/${id}/input/swipe`, body, signal);
 				return textResult(`Swiped ${attachment.deviceName} from (${body.startX}, ${body.startY}) to (${body.endX}, ${body.endY}).`);
