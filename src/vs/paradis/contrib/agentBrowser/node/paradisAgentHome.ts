@@ -50,6 +50,8 @@ let codexAccountHomesEnabled = false;
 /** 設定で足したホーム（正規化済み）。 */
 let configuredCodexHomes: readonly string[] = [];
 let codexHomesCache: { readonly at: number; readonly key: string; readonly candidates: readonly string[]; readonly signedIn: readonly string[] } | undefined;
+/** 前回の走査で見つけたログイン済みのホーム。Para Code の外でログイン・ログアウトしたことに気付くため。 */
+let lastSignedInKey: string | undefined;
 
 export interface IParadisCodexHomesOptions {
 	/** テスト用。指定したときはキャッシュも有効化の状態も使わず、`<homeDirectory>/.codex` を既定とする。 */
@@ -68,6 +70,8 @@ export const onDidChangeParadisCodexHomes: Event<void> = onDidChangeCodexHomesEm
  */
 export function paradisNotifyCodexHomesChanged(): void {
 	codexHomesCache = undefined;
+	// この通知で聞き手が読み直すので、次の走査で同じ変化をもう一度知らせない
+	lastSignedInKey = undefined;
 	onDidChangeCodexHomesEmitter.fire();
 }
 
@@ -143,6 +147,14 @@ function scanCodexHomes(options: IParadisCodexHomesOptions): { readonly primary:
 	const signedIn = [primary, ...candidates.slice(1).filter(isSignedIn)];
 	if (!testing) {
 		codexHomesCache = { at: now, key, candidates, signedIn };
+		// Para Code の外で `CODEX_HOME=~/.codex-3 codex login` した・ログアウトしたときは、使用量パネルからの
+		// 通知が来ない。走査（hook の定期監査・選択の見直しが定期的に呼ぶ）で一覧が変わっていたら知らせる。
+		// 呼び出しの途中で聞き手がまたこの関数を呼ぶので、知らせるのは後にする。
+		const signedInKey = JSON.stringify(signedIn);
+		if (lastSignedInKey !== undefined && lastSignedInKey !== signedInKey) {
+			setTimeout(() => onDidChangeCodexHomesEmitter.fire(), 0);
+		}
+		lastSignedInKey = signedInKey;
 	}
 	return { primary, candidates, signedIn };
 }
