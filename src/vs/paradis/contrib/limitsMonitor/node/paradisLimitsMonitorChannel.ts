@@ -41,6 +41,7 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../.
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
+import { paradisNormalizeCodexHomePath } from '../../agentBrowser/node/paradisAgentHome.js';
 import {
 	IParadisLimitsAccount,
 	IParadisLimitsCodexRemovalTarget,
@@ -319,8 +320,10 @@ export class ParadisLimitsMonitorService {
 			homes.add(process.env['CODEX_HOME']);
 		}
 		for (const extra of extraHomes ?? []) {
-			if (typeof extra === 'string' && extra.trim().length > 0) {
-				homes.add(extra.startsWith('~') ? path.join(home, extra.slice(1)) : extra);
+			// 切替（codexAccounts）と同じ正規化を通し、同じホームを同じ id（絶対パス）で扱う。
+			const normalized = paradisNormalizeCodexHomePath(extra, home);
+			if (normalized !== undefined) {
+				homes.add(normalized);
 			}
 		}
 		const result: string[] = [];
@@ -735,7 +738,8 @@ export class ParadisLimitsMonitorService {
 		for (let index = 2; index <= MAX_CODEX_HOME_INDEX; index++) {
 			const candidate = path.join(home, `.codex-${index}`);
 			try {
-				await fs.promises.mkdir(candidate);
+				// 会話ログや認証情報が入るので、同じ PC の別ユーザーから読めないようにする。
+				await fs.promises.mkdir(candidate, { mode: 0o700 });
 				return candidate;
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
