@@ -26,8 +26,14 @@ func paradisSelfSigningIdentity() -> ParadisSigningIdentity {
 	return paradisSigningInformation(of: code) ?? ParadisSigningIdentity(identifier: nil, teamIdentifier: nil)
 }
 
+/** 受け入れた相手の pid と、その親（Para Code の main）の pid。 */
+struct ParadisPeerProcesses {
+	let peerPid: pid_t
+	let parentPid: pid_t?
+}
+
 /** 相手の事実を集める。 */
-func paradisCollectPeerFacts(socket fd: Int32, helper: ParadisSigningIdentity) -> ParadisPeerFacts? {
+func paradisCollectPeerFacts(socket fd: Int32, helper: ParadisSigningIdentity) -> (ParadisPeerFacts, ParadisPeerProcesses)? {
 	var peerUid = uid_t(0)
 	var peerGid = gid_t(0)
 	guard getpeereid(fd, &peerUid, &peerGid) == 0 else {
@@ -49,18 +55,46 @@ func paradisCollectPeerFacts(socket fd: Int32, helper: ParadisSigningIdentity) -
 	let peer = paradisValidatedIdentity(attributes: [kSecGuestAttributeAudit: tokenData], requirement: requirement)
 	let parentPid = paradisParentPid(of: pid)
 	let parent = parentPid.flatMap { paradisValidatedIdentity(attributes: [kSecGuestAttributePid: NSNumber(value: $0)], requirement: requirement) }
-	let parentBundleIdentifier = parentPid.flatMap { parentPid in
-		paradisOnMain { NSRunningApplication(processIdentifier: parentPid)?.bundleIdentifier }
-	}
-	let parentParentPid = parentPid.flatMap { paradisParentPid(of: $0) }
-	return ParadisPeerFacts(
+	let peerArguments = paradisProcessArguments(pid: pid)
+	let parentArguments = parentPid.flatMap { paradisProcessArguments(pid: $0) }
+	let facts = ParadisPeerFacts(
 		helper: helper,
 		peer: peer,
 		parent: parent,
-		parentBundleIdentifier: parentBundleIdentifier,
-		parentParentPid: parentParentPid,
+		peerBundleIdentifier: peerArguments.flatMap { paradisBundleIdentifier(containing: $0.executablePath) },
+		parentBundleIdentifier: parentArguments.flatMap { paradisBundleIdentifier(containing: $0.executablePath) },
+		peerArguments: peerArguments,
+		parentArguments: parentArguments,
+		parentParentPid: parentPid.flatMap { paradisParentPid(of: $0) },
 		sameUser: peerUid == getuid()
 	)
+	return (facts, ParadisPeerProcesses(peerPid: pid, parentPid: parentPid))
+}
+
+/** 起動時の引数と環境変数（同じユーザーのプロセスなら読める）。 */
+func paradisProcessArguments(pid: pid_t) -> ParadisProcessArguments? {
+	var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+	var size = 0
+	guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0, size < 4 * 1024 * 1024 else {
+		return nil
+	}
+	var buffer = [UInt8](repeating: 0, count: size)
+	guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else {
+		return nil
+	}
+	return paradisParseProcessArguments(Array(buffer.prefix(size)))
+}
+
+/** 実行ファイルを含む一番内側の .app の bundle id。 */
+func paradisBundleIdentifier(containing executablePath: String) -> String? {
+	var url = URL(fileURLWithPath: executablePath)
+	while url.path != "/" {
+		if url.pathExtension == "app" {
+			return Bundle(url: url)?.bundleIdentifier
+		}
+		url.deleteLastPathComponent()
+	}
+	return nil
 }
 
 /** 親の pid。取れなければ nil。 */
