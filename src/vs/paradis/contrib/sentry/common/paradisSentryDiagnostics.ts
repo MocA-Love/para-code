@@ -144,7 +144,11 @@ const nodeInternalStackLine = /^\s+at (?:[^()]* \()?node:[\w/.-]+:\d+:\d+\)?$/;
  * the install location nor a user's own `node_modules` (which does not match) leaves the process.
  */
 const shippedDependencyStackLine = /^(?<prefix>\s+at (?:[^()]* \()?)[^()]*\/resources\/app\/node_modules(?:\.asar(?:\.unpacked)?)?\/(?<module>[^()]+:\d+:\d+)(?<suffix>\)?)$/i;
-const MAX_SAFE_STACK_LINES = 20;
+/** Own (`out/vs`) frames and foreign (Node, shipped dependency) frames are capped separately, so a deep dependency stack cannot push our own frames out. */
+const MAX_SAFE_OWN_STACK_LINES = 20;
+const MAX_SAFE_FOREIGN_STACK_LINES = 10;
+/** Stack lines are cut to this before matching: a minified frame can be very long, and the patterns scan it. */
+const MAX_STACK_LINE_LENGTH = 1_000;
 // 50 covers Node's longest error code (`ERR_SINGLE_EXECUTABLE_APPLICATION_ASSET_NOT_FOUND`, 49)
 // and keeps a 64-hex hash from passing as a name.
 const identifierLike = /^[A-Za-z_$][\w$]{0,49}$/;
@@ -167,9 +171,13 @@ export function paradisSafeErrorName(error: unknown): string {
 					return value;
 				}
 			}
-			// A class instance thrown as-is (an event, a result object) is told apart by its class.
-			const constructorName: unknown = Object.getPrototypeOf(error)?.constructor?.name;
-			if (typeof constructorName === 'string' && constructorName !== 'Object' && identifierLike.test(constructorName)) {
+			// A built-in instance thrown as-is (an `Event`, a `DOMException`-like host object) is told
+			// apart by its class. Only built-ins: our own classes are renamed by minification, so their
+			// name would change with every release and split the issue each time.
+			const constructor: unknown = Object.getPrototypeOf(error)?.constructor;
+			const constructorName: unknown = typeof constructor === 'function' ? constructor.name : undefined;
+			if (typeof constructorName === 'string' && constructorName !== 'Object' && identifierLike.test(constructorName)
+				&& (globalThis as Record<string, unknown>)[constructorName] === constructor) {
 				return constructorName;
 			}
 			return 'object';
@@ -180,18 +188,19 @@ export function paradisSafeErrorName(error: unknown): string {
 	}
 }
 
-/** The sanitized form of one stack line, or `undefined` when the line must not leave the process. */
-function toParadisSafeStackLine(line: string): string | undefined {
+/** The sanitized form of one stack line and whether it is ours, or `undefined` when the line must not leave the process. */
+function toParadisSafeStackLine(rawLine: string): { readonly line: string; readonly own: boolean } | undefined {
+	const line = rawLine.length > MAX_STACK_LINE_LENGTH ? rawLine.slice(0, MAX_STACK_LINE_LENGTH) : rawLine;
 	const forwardSlashed = line.replace(/\\/g, '/');
 	if (ownStackLine.test(forwardSlashed)) {
-		return paradisSanitizeSentryText(line);
+		return { line: paradisSanitizeSentryText(line), own: true };
 	}
 	if (nodeInternalStackLine.test(line)) {
-		return paradisSanitizeSentryText(line);
+		return { line: paradisSanitizeSentryText(line), own: false };
 	}
 	const dependency = shippedDependencyStackLine.exec(forwardSlashed);
 	if (dependency?.groups) {
-		return paradisSanitizeSentryText(`${dependency.groups.prefix}app:///node_modules/${dependency.groups.module}${dependency.groups.suffix}`);
+		return { line: paradisSanitizeSentryText(`${dependency.groups.prefix}app:///node_modules/${dependency.groups.module}${dependency.groups.suffix}`), own: false };
 	}
 	return undefined;
 }
@@ -226,13 +235,18 @@ export function toParadisSentrySafeError(
 		return safeError;
 	}
 	const frames: string[] = [];
+	let ownCount = 0;
+	let foreignCount = 0;
 	for (const line of stack.split('\n')) {
-		if (frames.length >= MAX_SAFE_STACK_LINES) {
+		if (ownCount >= MAX_SAFE_OWN_STACK_LINES && foreignCount >= MAX_SAFE_FOREIGN_STACK_LINES) {
 			break;
 		}
 		const safeLine = toParadisSafeStackLine(line);
-		if (safeLine !== undefined) {
-			frames.push(safeLine);
+		if (safeLine === undefined) {
+			continue;
+		}
+		if (safeLine.own ? ownCount++ < MAX_SAFE_OWN_STACK_LINES : foreignCount++ < MAX_SAFE_FOREIGN_STACK_LINES) {
+			frames.push(safeLine.line);
 		}
 	}
 	if (frames.length > 0) {
@@ -342,12 +356,19 @@ export function paradisErrorMessageHash(error: unknown): string | undefined {
 			return undefined;
 		}
 		const normalized = message
-			.replace(/(['"`]).*?\1/g, '_')
+			// A quote only opens after a non-word character, so the apostrophe in "can't" is kept.
+			.replace(/(?<!\w)(['"`])[^'"`\n]*\1/g, '_')
 			.replace(/\b(?:[a-z][\w+.-]*:\/\/|file:)\S*/gi, '_')
-			.replace(/(?:[A-Za-z]:)?[\\/][^\s'"`,;:()]+/g, '_')
+			// Any token with a separator, which also covers the pieces of a path with spaces in it.
+			.replace(/\S*[\\/]\S*/g, '_')
+			// Host names, file names, dotted identifiers.
+			.replace(/\b[\w-]+(?:\.[\w-]+)+\b/g, '_')
+			// Branch and worktree names, UUIDs and other hyphenated tokens.
+			.replace(/\b\w+(?:-\w+)+\b/g, '_')
 			.replace(/\b0x[0-9a-f]+\b|\b[0-9a-f]{8,}\b|\d+/gi, '0')
 			.replace(/\s+/g, ' ')
-			.trim();
+			.trim()
+			.slice(0, 120);
 		// FNV-1a, 32 bit: stable across processes and releases, and too short to be worth reversing.
 		let hash = 0x811c9dc5;
 		for (let index = 0; index < normalized.length; index++) {

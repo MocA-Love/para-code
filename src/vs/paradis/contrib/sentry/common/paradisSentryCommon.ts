@@ -83,6 +83,11 @@ interface IParadisSentryRateLimitEntry {
 
 const PARADIS_SENTRY_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1_000;
 const PARADIS_SENTRY_RATE_LIMIT_MAX_EVENTS = 3;
+/**
+ * Fingerprints remembered per process. The message hash in fingerprints of frame-less errors makes
+ * the key space open-ended, so the least recently used entries are forgotten past this.
+ */
+const PARADIS_SENTRY_RATE_LIMIT_MAX_ENTRIES = 500;
 const PARADIS_SENTRY_MAX_TEXT_LENGTH = 2_000;
 
 /**
@@ -136,16 +141,20 @@ function isParadisSafeContextKey(key: string): boolean {
 export class ParadisSentryRateLimiter {
 	private readonly entries = new Map<string, IParadisSentryRateLimitEntry>();
 
-	constructor(private readonly now: () => number = Date.now) { }
+	constructor(private readonly now: () => number = Date.now, private readonly maxEntries: number = PARADIS_SENTRY_RATE_LIMIT_MAX_ENTRIES) { }
 
 	consume(fingerprint: string): IParadisSentryRateLimitResult {
 		const currentTime = this.now();
 		const existing = this.entries.get(fingerprint);
+		// Re-insert so the map's insertion order doubles as recency order.
+		this.entries.delete(fingerprint);
 		if (!existing || currentTime - existing.windowStartedAt >= PARADIS_SENTRY_RATE_LIMIT_WINDOW_MS) {
 			const suppressed = existing?.suppressed ?? 0;
 			this.entries.set(fingerprint, { windowStartedAt: currentTime, sent: 1, suppressed: 0 });
+			this.evictLeastRecentlyUsed();
 			return { allowed: true, suppressed };
 		}
+		this.entries.set(fingerprint, existing);
 
 		if (existing.sent < PARADIS_SENTRY_RATE_LIMIT_MAX_EVENTS) {
 			existing.sent++;
@@ -154,6 +163,15 @@ export class ParadisSentryRateLimiter {
 
 		existing.suppressed++;
 		return { allowed: false, suppressed: existing.suppressed };
+	}
+
+	private evictLeastRecentlyUsed(): void {
+		for (const key of this.entries.keys()) {
+			if (this.entries.size <= this.maxEntries) {
+				return;
+			}
+			this.entries.delete(key);
+		}
 	}
 }
 
@@ -188,7 +206,7 @@ export function paradisSanitizeSentryText(value: string): string {
 export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 	const exception = event.exception?.values?.[0];
 	const frames = exception?.stacktrace?.frames;
-	const topFrame = frames?.[frames.length - 1];
+	const topFrame = paradisFingerprintFrame(event, frames);
 	// Explicit reports replace the exception type with a fixed label, so the original error's
 	// name travels as a tag; without it every unhandled error shared one issue. Appended only
 	// when present so automatic captures and native crashes keep their existing issue history.
@@ -207,6 +225,35 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 		...(errorName !== undefined ? [errorName] : []),
 		...(messageHash !== undefined ? [messageHash] : []),
 	].map(value => paradisSanitizeSentryText(String(value))).join('|');
+}
+
+/**
+ * Node's own frames and the shipped dependencies that `toParadisSentrySafeError` keeps since 2026-09.
+ * They are not where our code went wrong, and letting them become the innermost frame would re-key
+ * every existing explicit report whose stack now also carries them.
+ */
+function isParadisForeignKeptFrame(frame: IParadisSentryFrame): boolean {
+	const filename = frame.filename ?? frame.abs_path ?? '';
+	return filename.startsWith('node:') || filename.startsWith('app:///node_modules/');
+}
+
+/**
+ * The frame the fingerprint is keyed on: the innermost one, except that an explicit report (it has
+ * `para.error_name`) prefers its innermost own frame over the foreign frames above. Automatic
+ * captures are left alone so their keys do not change.
+ */
+function paradisFingerprintFrame(event: IParadisSentryEvent, frames: IParadisSentryFrame[] | undefined): IParadisSentryFrame | undefined {
+	if (!frames?.length) {
+		return undefined;
+	}
+	if (event.tags?.['para.error_name'] !== undefined) {
+		for (let index = frames.length - 1; index >= 0; index--) {
+			if (!isParadisForeignKeptFrame(frames[index])) {
+				return frames[index];
+			}
+		}
+	}
+	return frames[frames.length - 1];
 }
 
 /**
@@ -255,6 +302,12 @@ export function paradisIsCancellationEvent(event: IParadisSentryEvent): boolean 
  * crashes explain our own `endpoint-not-ready` reports, so it counts as ours too.
  */
 const paradisOwnNativeModulePatterns: readonly RegExp[] = [/para[ _-]?code/i, /electron/i, /@openai\/codex/i];
+/**
+ * The Codex CLI installed some other way (Homebrew cask, a standalone download: `.../codex`,
+ * `codex-aarch64-apple-darwin`, `codex.exe`). Its app-server is still a child we spawn. Checked only
+ * against the crashed executable, never against every loaded module, where it would be too loose.
+ */
+const paradisOwnExecutableName = /(?:^|[\\/])codex(?:-[\w.-]+)?(?:\.exe)?$/i;
 
 /** Collects every module path a native event names, ignoring the SDK's JavaScript sourcemap image. */
 function paradisNativeModulePaths(event: IParadisSentryEvent): string[] {
@@ -300,7 +353,8 @@ function paradisNativeModulePaths(event: IParadisSentryEvent): string[] {
  */
 export function paradisIsForeignNativeCrash(event: IParadisSentryEvent, executablePath?: string): boolean {
 	if (executablePath) {
-		return !paradisOwnNativeModulePatterns.some(pattern => pattern.test(executablePath));
+		return !paradisOwnNativeModulePatterns.some(pattern => pattern.test(executablePath))
+			&& !paradisOwnExecutableName.test(executablePath);
 	}
 	const paths = paradisNativeModulePaths(event);
 	if (paths.length === 0) {
