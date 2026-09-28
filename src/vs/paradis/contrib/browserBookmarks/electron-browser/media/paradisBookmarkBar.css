@@ -125,6 +125,12 @@
 	outline: none;
 }
 
+/* The dialog takes focus (tabindex="-1") for Escape handling and when its background is clicked. Keep the workbench's focus outline
+	(`.monaco-workbench [tabindex="-1"]:focus`) off its frame; the controls inside still show it. */
+.monaco-workbench .paradis-bookmark-dialog[tabindex="-1"]:focus {
+	outline: none;
+}
+
 .paradis-bookmark-dialog .pbm-header {
 	padding: 14px 16px;
 	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
