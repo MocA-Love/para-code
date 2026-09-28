@@ -137,3 +137,27 @@ export function paradisCodexThreadIdFromTitle(title: string): string | undefined
 export function paradisRestoredShellWasRestarted(previousPid: number | undefined, currentPid: number | undefined, adopted: boolean): boolean {
 	return !adopted && previousPid !== undefined && previousPid > 0 && currentPid !== undefined && currentPid !== previousPid;
 }
+
+/**
+ * 会話を始めたフォルダ（台帳の `cwd`）と、タブのシェルの今のフォルダが違うか。
+ *
+ * 違うまま `claude --resume` を送ると、Claude Code は会話を今のフォルダのプロジェクトへ複製して
+ * 続けてしまう（別のスペースのフォルダで起き直したタブで実際に起きた）。記録が無ければ比べようが
+ * ないので違わない扱い、今のフォルダが分からなければ違う扱い（移ってから再開する方が安全）にする。
+ * 末尾の区切りは無視し、Windows のパス（ドライブ文字）は大文字小文字を区別しない。
+ */
+export function paradisResumeNeedsFolderChange(recordedCwd: string | undefined, currentCwd: string | undefined): boolean {
+	if (recordedCwd === undefined || recordedCwd.length === 0) {
+		return false;
+	}
+	if (currentCwd === undefined || currentCwd.length === 0) {
+		return true;
+	}
+	return comparablePath(recordedCwd) !== comparablePath(currentCwd);
+}
+
+function comparablePath(path: string): string {
+	const trimmed = path.length > 1 ? path.replace(/[\\/]+$/, '') : path;
+	const normalized = trimmed.length === 0 ? path : trimmed;
+	return /^[a-zA-Z]:/.test(normalized) ? normalized.replace(/\//g, '\\').toLowerCase() : normalized;
+}
