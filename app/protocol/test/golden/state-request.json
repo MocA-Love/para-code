@@ -3,7 +3,7 @@
 	"current": {
 		"protocolVersion": 3,
 		"minCompatiblePc": 3,
-		"capabilities": ["state.gzip.v1", "term.sync.v1", "fs.upload-binary.v1", "voice.clips.v1"],
+		"capabilities": ["state.gzip.v1", "term.sync.v1", "fs.upload-binary.v1", "voice.clips.v1", "term.viewport.takeback.v1"],
 		"stateEncoding": "json-gzip-v1"
 	},
 	"preW217": {
