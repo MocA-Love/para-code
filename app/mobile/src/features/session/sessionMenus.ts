@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { GitCompare, Globe, MessageSquare, Monitor, NotebookPen, Pencil, Siren, Smartphone, SquareTerminal, Users, X } from 'lucide-react-native';
+import { GitCompare, Globe, History, MessageSquare, Monitor, NotebookPen, Pencil, Siren, Smartphone, SquareTerminal, Users, X } from 'lucide-react-native';
 import type { ActionSheetAction } from '../../ui/index.js';
 import type { SessionTabItem } from './sessionTabs.js';
 import type { SessionView } from './sessionViewMode.js';
@@ -78,6 +78,8 @@ export function moreActions(options: {
 	/** サブエージェントの補足（`activityMenuHint`）。undefined なら「サブエージェント」を出さない。 */
 	readonly activityHint?: string;
 	readonly onActivity?: () => void;
+	/** 過去の会話を開く（W2-29。対応した PC のときだけ渡す）。 */
+	readonly onHistory?: () => void;
 }): ActionSheetAction[] {
 	const actions: ActionSheetAction[] = [];
 	if (options.attentionCount > 0) {
@@ -87,6 +89,9 @@ export function moreActions(options: {
 	actions.push({ label: 'メモ', hint: options.noteOpen > 0 ? `未完了 ${options.noteOpen} 件` : 'このスペースのメモ', icon: NotebookPen, onPress: options.onNote });
 	if (options.activityHint !== undefined && options.onActivity !== undefined) {
 		actions.push({ label: 'サブエージェント', hint: options.activityHint, icon: Users, onPress: options.onActivity });
+	}
+	if (options.onHistory !== undefined) {
+		actions.push({ label: '過去の会話', hint: '終わった会話を開いて続きを頼めます', icon: History, onPress: options.onHistory });
 	}
 	return actions;
 }

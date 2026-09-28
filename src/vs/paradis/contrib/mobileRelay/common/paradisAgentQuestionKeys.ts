@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { paradisApprovalOptionKey, paradisParseApprovalOptionChoice, paradisParseApprovalOptions } from './paradisAgentApprovalOptions.js';
+
 /**
  * モバイルからの AskUserQuestion 回答を、Claude Code のTUIへ流し込むキー列に変換する。
  *
@@ -163,7 +165,21 @@ export function paradisAgentQuestionNeedsReviewSubmit(questions: readonly IParad
  * モバイルとデスクトップのチャット表示が同じ関数を使う（Codex の app-server 経由の承認は
  * キーではなく構造化された回答で返すので、ここは通らない）。
  */
-export function paradisAgentApprovalKeySequence(agent: 'claude' | 'codex', choice: 'yes' | 'no', options?: { readonly screen?: string; readonly confirmWithEnter?: boolean }): string[] {
+export function paradisAgentApprovalKeySequence(agent: 'claude' | 'codex', choice: 'yes' | 'no' | `opt:${number}`, options?: { readonly screen?: string; readonly confirmWithEnter?: boolean }): string[] {
+	// 画面の番号付きの選択肢から選んだ回答（W2-21）。Claude は数字 1 文字だけ（Enter は付けない）。
+	// Codex は画面の行末の近道が要るので、画面が無い・読めない・近道の無い行なら空（呼び出し側は断る）。
+	const optionNumber = choice === 'yes' || choice === 'no' ? undefined : paradisParseApprovalOptionChoice(choice);
+	if (choice !== 'yes' && choice !== 'no') {
+		if (optionNumber === undefined) {
+			return [];
+		}
+		if (agent === 'claude') {
+			return [String(optionNumber)];
+		}
+		const option = options?.screen !== undefined ? paradisParseApprovalOptions(options.screen)?.find(candidate => candidate.n === optionNumber) : undefined;
+		const key = option !== undefined ? paradisApprovalOptionKey('codex', option) : undefined;
+		return key !== undefined ? [key] : [];
+	}
 	if (agent === 'codex') {
 		return [choice === 'yes' ? 'y' : paradisCodexApprovalDenyKey(options?.screen)];
 	}

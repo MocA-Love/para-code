@@ -29,12 +29,14 @@ const LINK_HEIGHT = 20;
  * 見た目はモックに合わせ、主ボタン（最初の許可）を主ボタンの色（設定 → 色）の塗りで先頭に置き、その他・拒否の順に並べる。
  * 取り消しの利かない操作を含むコマンドは赤いラベルで示し、長い詳細は「全文を表示」でシートに開く。
  */
-export function PermissionCard({ interactionId, onApprove, title, detail, choices, refreshing }: {
+export function PermissionCard({ interactionId, onApprove, title, detail, choices, note, refreshing }: {
 	interactionId: string;
 	onApprove: (interactionId: string, choice: string) => Promise<AgentMessageSendResult>;
 	title?: string;
 	detail?: string;
 	choices?: readonly AgentApprovalChoice[];
+	/** 選択肢の下に添える補足（「今後確認しない候補」など）。 */
+	note?: string;
 	refreshing: boolean;
 }) {
 	const submission = useAnswerSubmission(interactionId);
@@ -116,6 +118,7 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 					))}
 				</View>
 			) : null}
+			{note !== undefined && !locked ? <Text style={cardStyles.hint}>{note}</Text> : null}
 			{error !== undefined ? <Text style={cardStyles.error}>{error}</Text> : null}
 			{refreshing ? <Text style={cardStyles.error}>最新の内容を取得しています。届くまで回答できません</Text> : null}
 			{!locked ? <Text style={cardStyles.hint}>{effectiveChoices.length > 0 ? 'PC 側で回答した場合も自動的に閉じます' : 'PC の Codex の画面で承認内容を確認してください'}</Text> : null}

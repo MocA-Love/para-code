@@ -45,6 +45,7 @@ import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
 import { stepKey } from '../../ipad/shortcuts.js';
 import { useParaToast } from '../../paraToast.js';
 import { isPairingRejected, shouldShowBattery } from '../../pcStatus.js';
+import { QueuedSendsBanner } from '../session/queuedSends.js';
 import { routes } from '../../routes.js';
 import type { WorkspaceState } from '../../store.js';
 import { space } from '../../theme.js';
@@ -344,6 +345,8 @@ export function PcScreen({ placement, onCollapse }: {
 				)}
 				{...(searching ? { search: <PcSearchBar value={query} onChange={next => { if (pcId !== undefined) { setListQuery(pcId, next); } }} autoFocus={openedSearchHere} /> } : {})}
 			/>
+			{/* PC に届かない間に預かったエージェントへの送信（W2-29）。確かめが要るものもここから開ける */}
+			<QueuedSendsBanner pcId={pcId} />
 			<View style={styles.body}>{renderBody()}</View>
 			<LaunchFab disabled={!canLaunch} onPress={() => setSheet('launch')} />
 			<FilterDrawer

@@ -856,6 +856,8 @@ export interface AgentSessionInfo {
 	model?: string;
 	/** reasoning effort（Codex: turn_context、Claude: settings.json の既定値 + /effort の実行記録）。 */
 	effort?: string;
+	/** 会話の指紋（W2-29）。ターミナルが閉じた後に「再開して送る」ときの宛先。 */
+	resumeKey?: string;
 }
 
 /** Codexモデルが広告するreasoning effort 1件。 */
@@ -1122,6 +1124,11 @@ export interface AgentChatState {
 	capabilities?: { agentActions: true; claudeSettings?: true };
 	interaction?: AgentInteraction;
 	/**
+	 * PC からこの会話の snapshot / delta / none を最後に受け取った時刻。つながり直した後に、切れる前の古い状態で判断しない
+	 * ために使う（預かった送信の宛先の確かめ。W2-29 のシミュレータ確認の NG-2）。
+	 */
+	syncedAt?: number;
+	/**
 	 * 再取得を要求した直後で、表示中の内容がPC側の現状と一致している保証がない。
 	 * カードは描いたまま操作だけを止めるための印で、PCからの応答（snapshot/delta/none）で落ちる。
 	 */
@@ -1134,6 +1141,8 @@ export interface AgentInteraction {
 	title?: string;
 	detail?: string;
 	choices?: AgentApprovalChoice[];
+	/** hook の「今後は確認しない」の候補を短くしたもの（表示の補助。W2-21）。 */
+	suggestions?: string[];
 }
 
 export interface AgentApprovalChoice {
@@ -1183,7 +1192,13 @@ function parseAgentInteraction(value: unknown): AgentInteraction | undefined {
 		}
 		choices = parsed;
 	}
-	return { kind: 'approval', id: raw['id'], ...(title !== undefined ? { title } : {}), ...(detail !== undefined ? { detail } : {}), ...(choices !== undefined ? { choices } : {}) };
+	const suggestions = Array.isArray(raw['suggestions'])
+		? raw['suggestions'].filter((item): item is string => typeof item === 'string' && item.length > 0 && item.length <= 200).slice(0, 5)
+		: undefined;
+	return {
+		kind: 'approval', id: raw['id'], ...(title !== undefined ? { title } : {}), ...(detail !== undefined ? { detail } : {}), ...(choices !== undefined ? { choices } : {}),
+		...(suggestions !== undefined && suggestions.length > 0 ? { suggestions } : {}),
+	};
 }
 
 /**
@@ -1462,6 +1477,8 @@ export class MobileController {
 	/** ツール出力の全文取得（展開時オンデマンド）。rev単位で1件だけ在庫させる。 */
 	private readonly pendingToolFulls = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly rev: number; readonly resolve: (text: string) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingToolImages = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly rev: number; readonly index: number; readonly resolve: (image: AgentToolImage) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
+	/** {@link requestAgentReply} の返事待ち（requestId → 待ち）。 */
+	private readonly pendingAgentReplies = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly replyType: string; readonly resolve: (reply: Record<string, unknown>) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingAgentLiveResyncs = new Set<string>();
 	private readonly terminalOperationOutbox = new Map<string, { readonly operationRun: number; readonly operationSeq: number; readonly payload: Uint8Array; state: 'pending' | 'unknown'; durable: boolean }>();
 	private terminalOperationSeq = 0;
@@ -2170,7 +2187,7 @@ export class MobileController {
 	}
 
 	/** session検証付きAgent Action。 */
-	sendAgentMessage(terminalKey: string, text: string): Promise<AgentMessageSendResult> {
+	sendAgentMessage(terminalKey: string, text: string, sendId?: string): Promise<AgentMessageSendResult> {
 		const chat = this.state.agentChats.get(terminalKey);
 		if (!this.isLiveAvailable()) {
 			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
@@ -2180,6 +2197,7 @@ export class MobileController {
 		}
 		return this.sendAgentActionResult(terminalKey, {
 			t: 'action/sendMessage', token: this.agentToken(terminalKey), epoch: chat.epoch, text,
+			...(sendId !== undefined ? { sendId } : {}),
 		});
 	}
 
@@ -2202,7 +2220,13 @@ export class MobileController {
 		}, 60_000);
 	}
 
-	answerAgentApproval(terminalKey: string, interactionId: string, choice: string): Promise<AgentMessageSendResult> {
+	/**
+	 * 承認に答える。`option` は画面の番号付きの選択肢（`opt:<n>`、W2-21）で答えるときだけ付ける（押したときの文言と、
+	 * 選択肢を読んだときの確認の見出しまでの指紋）。PC は送る直前に画面が同じ確認で、その番号が同じ文言かを確かめ、
+	 * 違えば送らずに断る。
+	 */
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }): Promise<AgentMessageSendResult> {
+		const optionLabel = option?.label;
 		const chat = this.state.agentChats.get(terminalKey);
 		if (!this.isLiveAvailable()) {
 			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
@@ -2213,14 +2237,16 @@ export class MobileController {
 		if (chat.interaction?.kind !== 'approval' || chat.interaction.id !== interactionId) {
 			return Promise.resolve({ status: 'rejected', message: '確認の対象が変わりました。最新の内容を確認してください。' });
 		}
-		const choiceIsValid = chat.interaction.choices !== undefined
+		const screenOption = /^opt:[1-9]$/.test(choice) && optionLabel !== undefined && optionLabel.length > 0 && optionLabel.length <= 500;
+		const choiceIsValid = screenOption || (chat.interaction.choices !== undefined
 			? chat.interaction.choices.some(candidate => candidate.id === choice)
-			: choice === 'yes' || choice === 'no';
+			: choice === 'yes' || choice === 'no');
 		if (!choiceIsValid) {
 			return Promise.resolve({ status: 'rejected', message: 'この選択肢は送信できません' });
 		}
 		return this.sendAgentActionResult(terminalKey, {
 			t: 'action/answerApproval', token: this.agentToken(terminalKey), epoch: chat.epoch, interactionId, choice,
+			...(screenOption ? { optionLabel, ...(option?.promptHash !== undefined && /^[0-9a-f]{40}$/.test(option.promptHash) ? { promptHash: option.promptHash } : {}) } : {}),
 		}, 60_000);
 	}
 
@@ -2309,6 +2335,51 @@ export class MobileController {
 		});
 	}
 
+	/**
+	 * agent チャネルへ要求を送り、同じ `requestId` の `replyType` の返事の本文で resolve する（W2-21 以降の新しい種類の
+	 * 送信口）。返事の中身の検査は呼び出し側で行う。切断・PC 画面の再接続・時間切れでは reject する。
+	 */
+	requestAgentReply(terminalKey: string, body: { readonly t: string; readonly [key: string]: unknown }, replyType: string, timeoutMs = 15_000): Promise<Record<string, unknown>> {
+		const chat = this.state.agentChats.get(terminalKey);
+		const terminal = this.terminalForKey(terminalKey);
+		const rendererTarget = this.rendererTargetFor(terminalKey);
+		if (!this.isLiveAvailable() || rendererTarget === undefined || chat === undefined || terminal === undefined) {
+			return Promise.reject(new Error('PCへ再接続してから開いてください'));
+		}
+		const requestId = `${this.requestPrefix}-agent-reply-${this.requestCounter++}`;
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.pendingAgentReplies.delete(requestId);
+				reject(new Error('PC からの応答がありませんでした'));
+			}, timeoutMs);
+			this.pendingAgentReplies.set(requestId, { terminalKey, rendererTarget, replyType, resolve, reject, timer });
+			this.client?.send('agent', encoder.encode(JSON.stringify({ ...body, id: terminal.id, token: this.agentToken(terminalKey), requestId })));
+		});
+	}
+
+	/** {@link requestAgentReply} の返事なら渡して true。 */
+	private settleAgentReply(terminalKey: string, rendererTarget: string, msg: Record<string, unknown>): boolean {
+		const requestId = msg['requestId'];
+		const pending = typeof requestId === 'string' ? this.pendingAgentReplies.get(requestId) : undefined;
+		if (pending === undefined || pending.replyType !== msg['t'] || pending.terminalKey !== terminalKey || pending.rendererTarget !== rendererTarget) {
+			return false;
+		}
+		clearTimeout(pending.timer);
+		this.pendingAgentReplies.delete(requestId as string);
+		pending.resolve(msg);
+		return true;
+	}
+
+	private rejectAgentReplies(message: string, filter: (pending: { readonly terminalKey: string; readonly rendererTarget: string }) => boolean): void {
+		for (const [requestId, pending] of this.pendingAgentReplies) {
+			if (filter(pending)) {
+				clearTimeout(pending.timer);
+				this.pendingAgentReplies.delete(requestId);
+				pending.reject(new Error(message));
+			}
+		}
+	}
+
 	private sendAgentAction(terminalKey: string, body: Record<string, unknown>, timeoutMs = 30_000): Promise<boolean> {
 		return this.sendAgentActionResult(terminalKey, body, timeoutMs).then(result => result.status === 'accepted');
 	}
@@ -2355,6 +2426,7 @@ export class MobileController {
 			pending.reject(new Error('接続が切断されました'));
 		}
 		this.pendingToolImages.clear();
+		this.rejectAgentReplies('接続が切断されました', () => true);
 	}
 
 	/** PC側に新規ターミナルを作成する（ws指定でそのリポジトリをcwdに）。 */
@@ -3360,6 +3432,7 @@ export class MobileController {
 				pending.reject(new Error('PC画面が再接続されたため取得を中断しました'));
 			}
 		}
+		this.rejectAgentReplies('PC画面が再接続されたため取得を中断しました', pending => !this.isLiveAvailable() || this.rendererTargetFor(pending.terminalKey) !== pending.rendererTarget);
 		for (const [terminalKey, pending] of this.agentControlTimers) {
 			if (!this.isLiveAvailable() || this.rendererTargetFor(terminalKey) !== pending.rendererTarget) {
 				clearTimeout(pending.timer);
@@ -4230,6 +4303,9 @@ export class MobileController {
 			if (rendererTarget === undefined || this.attachedAgentTargets.get(terminalKey) !== rendererTarget) {
 				return; // pending/交代済みRendererから遅れて届いた応答
 			}
+			if (typeof msg.requestId === 'string' && this.settleAgentReply(terminalKey, rendererTarget, msg as unknown as Record<string, unknown>)) {
+				return;
+			}
 			const parsedActivity = msg.activity !== null ? parseAgentActivityState(msg.activity) : undefined;
 			const parsedInteraction = msg.interaction !== null ? parseAgentInteraction(msg.interaction) : undefined;
 			if (msg.t === 'activity-detail' && typeof msg.requestId === 'string' && typeof msg.activityId === 'string') {
@@ -4289,7 +4365,7 @@ export class MobileController {
 				this.clearAgentControlTimeout(terminalKey);
 				this.clearAgentCommandCatalogTimeout(terminalKey);
 				this.pendingAgentLiveResyncs.delete(terminalKey);
-				this.state.agentChats.set(terminalKey, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true });
+				this.state.agentChats.set(terminalKey, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true, syncedAt: Date.now() });
 				this.emit({ agentChats: true });
 				return;
 			}
@@ -4301,6 +4377,7 @@ export class MobileController {
 					this.clearAgentCommandCatalogTimeout(terminalKey);
 				}
 				this.state.agentChats.set(terminalKey, {
+					syncedAt: Date.now(),
 					agent: msg.agent ?? 'claude',
 					epoch: msg.epoch ?? '',
 					rev: msg.rev ?? -1,
@@ -4369,10 +4446,14 @@ export class MobileController {
 				const base = msg.interaction !== undefined
 					? (({ stale: _stale, ...rest }) => rest)(withoutInteraction)
 					: withoutInteraction;
+				const merged = [...existing.messages, ...fresh];
 				this.state.agentChats.set(terminalKey, {
 					...base,
 					rev: msg.rev ?? existing.rev,
-					messages: [...existing.messages, ...fresh].slice(-500),
+					messages: merged.slice(-500),
+					syncedAt: Date.now(),
+					// 500 件で切ったら、前が省略されていることを示す（さかのぼって読む案内を出すため。レビュー M5）。
+					...(merged.length > 500 ? { truncated: true } : {}),
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 					...(msg.live !== undefined && isNonNegativeSafeInteger(msg.liveRevision) ? { liveRevision: msg.liveRevision } : {}),

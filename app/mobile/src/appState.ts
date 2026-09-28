@@ -34,7 +34,7 @@ import type { ConnectionState, PairedCredentials } from './relayClient.js';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
 import { setMobileDiagnosticCorrelationTag } from './mobileDiagnostics.js';
-import { configureNotificationHandler, createTerminalOperationOutboxStore, deleteLegacyNotifyKey, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, migrateLegacyTerminalOperationOutbox, persistNotifyKey, rnSocketFactory, secureKeyStore } from './platform.js';
+import { configureNotificationHandler, createAgentSendOutboxStore, createTerminalOperationOutboxStore, deleteLegacyNotifyKey, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, migrateLegacyTerminalOperationOutbox, persistNotifyKey, rnSocketFactory, secureKeyStore } from './platform.js';
 import { notifyCollapseKey } from './notificationTray.js';
 import { TrayReconcileRequests, dismissTrayHandledByPc, presentCollapsedNotification, reconcileTrayWithState } from './notificationTraySync.js';
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
@@ -286,10 +286,13 @@ interface AppState extends StoreState {
 	sendArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left'): void;
 	/** テキスト入力を送る（PC側でbracketed paste対応。execute=trueで実行）。 */
 	sendTextInput(terminalKey: string, text: string, execute: boolean): Promise<boolean>;
-	sendAgentMessage(terminalKey: string, text: string): Promise<AgentMessageSendResult>;
+	/** `sendId` は預かった送信の id（PC は同じ id を二度送らない。W2-29）。 */
+	sendAgentMessage(terminalKey: string, text: string, sendId?: string): Promise<AgentMessageSendResult>;
 	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<AgentMessageSendResult>;
-	answerAgentApproval(terminalKey: string, interactionId: string, choice: string): Promise<AgentMessageSendResult>;
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }): Promise<AgentMessageSendResult>;
 	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult>;
+	/** agent チャネルの新しい種類の要求（`MobileController.requestAgentReply`）。 */
+	requestAgentReply(terminalKey: string, body: { readonly t: string; readonly [key: string]: unknown }, replyType: string, timeoutMs?: number): Promise<Record<string, unknown>>;
 	requestAgentActivityDetail(terminalKey: string, activityId: string): Promise<AgentActivityDetailMessage[]>;
 	requestAgentToolFullText(terminalKey: string, rev: number): Promise<string>;
 	requestAgentToolImage(terminalKey: string, rev: number, index: number): Promise<AgentToolImage>;
@@ -660,6 +663,22 @@ function retireLegacyNotifyKey(): void {
  * ターミナル）も復元できないため通知をタップしてもホームのままになる。接続方針と切り離して
  * 「ペアリング済みの全PCぶん」を確保する。
  */
+/**
+ * PC に届かない間に預かったエージェントへの送信（W2-29）を暗号化する鍵。ターミナル操作のアウトボックスと同じく
+ * この端末の鍵とその PC の公開鍵から作る（ペアリングし直すと変わり、前の預かりは読めなくなる）。
+ */
+export function agentSendQueueKey(pcId: string): Uint8Array | undefined {
+	const pc = runtimes.get(pcId)?.pc;
+	if (identity === undefined || pc === undefined) {
+		return undefined;
+	}
+	try {
+		return deriveNotifyKey(identity.secretKey, pc.creds.pcPublicKey);
+	} catch {
+		return undefined;
+	}
+}
+
 function persistNotifyKeyFor(pc: PairedPc): void {
 	if (identity === undefined) {
 		return;
@@ -1468,6 +1487,8 @@ export const useAppStore = create<AppState>(set => ({
 			throw error;
 		}
 		runtimes.delete(id);
+		// PC に届かない間に預かった送信（W2-29）も捨てる。
+		await createAgentSendOutboxStore(id).clear().catch(err => console.warn('[appState] failed to clear the agent send outbox', err));
 		pcOrder = remaining.map(pc => pc.id);
 		if (remaining.length === 0) {
 			applyPairingCorrelationTag(undefined);
@@ -1679,8 +1700,8 @@ export const useAppStore = create<AppState>(set => ({
 		return controller?.sendTextInput(terminalKey, text, execute) ?? Promise.resolve(false);
 	},
 
-	sendAgentMessage(terminalKey: string, text: string) {
-		return controller?.sendAgentMessage(terminalKey, text) ?? Promise.resolve({ status: 'rejected' as const });
+	sendAgentMessage(terminalKey: string, text: string, sendId?: string) {
+		return controller?.sendAgentMessage(terminalKey, text, sendId) ?? Promise.resolve({ status: 'rejected' as const });
 	},
 
 	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]) {
@@ -1688,9 +1709,13 @@ export const useAppStore = create<AppState>(set => ({
 			?? Promise.resolve<AgentMessageSendResult>({ status: 'rejected', message: 'PCとの接続が切れています' });
 	},
 
-	answerAgentApproval(terminalKey: string, interactionId: string, choice: string) {
-		return controller?.answerAgentApproval(terminalKey, interactionId, choice)
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }) {
+		return controller?.answerAgentApproval(terminalKey, interactionId, choice, option)
 			?? Promise.resolve<AgentMessageSendResult>({ status: 'rejected', message: 'PCとの接続が切れています' });
+	},
+
+	requestAgentReply(terminalKey: string, body: { readonly t: string; readonly [key: string]: unknown }, replyType: string, timeoutMs?: number) {
+		return controller?.requestAgentReply(terminalKey, body, replyType, timeoutMs) ?? Promise.reject(new Error('PCとの接続が切れています'));
 	},
 
 	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string) {
