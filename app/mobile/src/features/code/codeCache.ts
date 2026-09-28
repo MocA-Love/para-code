@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { create } from 'zustand';
-import type { IParadisMobileReviewMark } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileDiffReview.js';
+import type { IParadisMobileReviewMark, IParadisMobileReviewNote } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileDiffReview.js';
 import type { ScmStatusResult } from '../../store.js';
 
 /** 確認済みの印（パスごと）。`identity` が今の変更と違えば「確認後に変更あり」。 */
@@ -23,12 +23,15 @@ export type ReviewMarks = Readonly<Record<string, IParadisMobileReviewMark>>;
 interface CodeCacheStore {
 	readonly status: Readonly<Record<string, ScmStatusResult>>;
 	readonly reviewed: Readonly<Record<string, ReviewMarks>>;
+	/** 差分の行へのメモ（PC の保存の写し。`review.notes.v1` の PC だけ。Orca W2-28）。 */
+	readonly reviewNotes: Readonly<Record<string, readonly IParadisMobileReviewNote[]>>;
 	readonly pendingReveal: Readonly<Record<string, string>>;
 	setStatus(key: string, status: ScmStatusResult): void;
 	/** 1件の印を付ける（`undefined` で外す）。 */
 	setReviewMark(key: string, path: string, mark: IParadisMobileReviewMark | undefined): void;
 	/** 印をまとめて置き換える（PC から読んだとき）。 */
 	replaceReviewMarks(key: string, marks: ReviewMarks): void;
+	replaceReviewNotes(key: string, notes: readonly IParadisMobileReviewNote[]): void;
 	requestReveal(key: string, path: string): void;
 	/** 受け取ったら消す（2回目は undefined）。 */
 	takeReveal(key: string): string | undefined;
@@ -39,10 +42,12 @@ export function codeCacheKey(pcId: string | undefined, spaceId: string | undefin
 }
 
 const NO_MARKS: ReviewMarks = {};
+const NO_NOTES: readonly IParadisMobileReviewNote[] = [];
 
 export const useCodeCache = create<CodeCacheStore>()((set, get) => ({
 	status: {},
 	reviewed: {},
+	reviewNotes: {},
 	pendingReveal: {},
 	setStatus(key, status) {
 		set(state => {
@@ -69,6 +74,9 @@ export const useCodeCache = create<CodeCacheStore>()((set, get) => ({
 	replaceReviewMarks(key, marks) {
 		set(state => ({ reviewed: { ...state.reviewed, [key]: marks } }));
 	},
+	replaceReviewNotes(key, notes) {
+		set(state => ({ reviewNotes: { ...state.reviewNotes, [key]: notes } }));
+	},
 	requestReveal(key, path) {
 		set(state => ({ pendingReveal: { ...state.pendingReveal, [key]: path } }));
 	},
@@ -86,4 +94,9 @@ export const useCodeCache = create<CodeCacheStore>()((set, get) => ({
 /** 確認済みの印（参照が変わらない限り同じものを返す）。 */
 export function useReviewMarks(key: string): ReviewMarks {
 	return useCodeCache(state => state.reviewed[key] ?? NO_MARKS);
+}
+
+/** 差分の行へのメモ（参照が変わらない限り同じ配列を返す）。 */
+export function useReviewNotes(key: string): readonly IParadisMobileReviewNote[] {
+	return useCodeCache(state => state.reviewNotes[key] ?? NO_NOTES);
 }

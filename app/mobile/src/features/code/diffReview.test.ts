@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseUnifiedDiff } from '../../components/diffParser.js';
 import type { ReviewMarks } from './codeCache.js';
-import { canOpenWorkingFile, diffLineNumber, diffSign, diffSourceOf, diffStats, nextUnreviewed, parseReviewMarks, reviewQueue, reviewStateOf, reviewedCount, stepReview } from './diffReview.js';
+import { canOpenWorkingFile, diffLineNumber, diffSign, diffSourceOf, diffStats, nextUnreviewed, parseReviewMarks, reviewQueue, reviewStateOf, reviewedCount, stageableEntries, stepReview } from './diffReview.js';
 import { scmEntries, scmEntry } from './scmModel.js';
 
 const entries = scmEntries({
@@ -46,6 +46,16 @@ describe('確認後に変更あり', () => {
 			todo: reviewQueue([after], marks, 'todo').map(entry => entry.path),
 			count: reviewedCount([after], marks),
 		}).toEqual({ same: 'reviewed', changed: 'changed', none: 'todo', todo: ['a.ts'], count: 0 });
+	});
+});
+
+describe('stageableEntries', () => {
+	it('確認済みで、まだステージしていない変更だけを選ぶ', () => {
+		const staged = scmEntry({ x: 'M', y: ' ', path: 'staged.ts' });
+		const conflict = scmEntry({ x: 'U', y: 'U', path: 'conflict.ts' });
+		const all = [...entries, staged, conflict];
+		const marks: ReviewMarks = Object.fromEntries(all.map(entry => [entry.path, { identity: entry.identity, reviewedAt: 1 }]));
+		expect(stageableEntries(all, { ...marks, 'a.ts': { identity: 'old', reviewedAt: 1 } }).map(entry => entry.path)).toEqual(['b.ts', 'c.ts']);
 	});
 });
 

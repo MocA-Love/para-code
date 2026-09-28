@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { IParadisMobileReviewMark } from './paradisMobileDiffReview.js';
+import { IParadisMobileReviewMark, IParadisMobileReviewNote } from './paradisMobileDiffReview.js';
 
 /**
  * モバイルの差分レビューの記録を PC に保存する形（Orca W2-14）。スペースのメモと同じく、ウィンドウの
@@ -26,19 +26,31 @@ export const PARADIS_MOBILE_REVIEW_MAX_MARKS_PER_REQUEST = 500;
 const MAX_PATH_LENGTH = 1_024;
 const MAX_KEY_LENGTH = 1_024;
 const IDENTITY_PATTERN = /^[0-9a-f]{1,64}$/;
+/** 1スペースのメモの上限。 */
+export const PARADIS_MOBILE_REVIEW_MAX_NOTES = 100;
+/** メモの本文の上限（文字）。 */
+export const PARADIS_MOBILE_REVIEW_NOTE_BODY_MAX = 2_000;
+/** メモに控える行の中身の上限（文字）。長い行は切り詰めて控える（追いかけるときは切り詰めた長さで比べる）。 */
+export const PARADIS_MOBILE_REVIEW_NOTE_LINE_TEXT_MAX = 500;
+/** 1回の要求で指定できるメモの数。 */
+export const PARADIS_MOBILE_REVIEW_MAX_NOTE_IDS = PARADIS_MOBILE_REVIEW_MAX_NOTES;
+const NOTE_ID_PATTERN = /^[0-9A-Za-z-]{1,64}$/;
+const MAX_LINE_NUMBER = 10_000_000;
 /** 全体の上限（JSON の文字数）。超えたら古いスペースから捨てる。 */
 const MAX_STORAGE_LENGTH = 2_000_000;
 
 /** 1スペースぶんの記録。 */
 export interface IParadisMobileReviewSpace {
 	readonly marks: Readonly<Record<string, IParadisMobileReviewMark>>;
+	/** 差分の行へのメモ（Orca W2-28）。書いた順。 */
+	readonly notes: readonly IParadisMobileReviewNote[];
 	/** 最後に変えた時刻。スペースが多すぎるときに古いものから捨てるのに使う。 */
 	readonly updatedAt: number;
 }
 
 export type ParadisMobileReviewStore = ReadonlyMap<string, IParadisMobileReviewSpace>;
 
-const EMPTY_SPACE: IParadisMobileReviewSpace = { marks: {}, updatedAt: 0 };
+const EMPTY_SPACE: IParadisMobileReviewSpace = { marks: {}, notes: [], updatedAt: 0 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -77,6 +89,47 @@ function parseMarks(value: unknown): Record<string, IParadisMobileReviewMark> {
 	return marks;
 }
 
+/** メモの本文として受け付けるか（前後の空白を除いて空でない・長すぎない）。 */
+export function paradisIsReviewNoteBody(value: unknown): value is string {
+	return typeof value === 'string' && value.trim().length > 0 && value.length <= PARADIS_MOBILE_REVIEW_NOTE_BODY_MAX;
+}
+
+export function paradisIsReviewNoteLine(value: unknown): value is number {
+	return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= MAX_LINE_NUMBER;
+}
+
+export function paradisIsReviewNoteId(value: unknown): value is string {
+	return typeof value === 'string' && NOTE_ID_PATTERN.test(value);
+}
+
+function parseNote(value: unknown): IParadisMobileReviewNote | undefined {
+	if (!isRecord(value) || !paradisIsReviewNoteId(value.id) || !paradisIsReviewPath(value.path) || !paradisIsReviewNoteLine(value.line)
+		|| typeof value.lineText !== 'string' || value.lineText.length > PARADIS_MOBILE_REVIEW_NOTE_LINE_TEXT_MAX || !paradisIsReviewNoteBody(value.body)) {
+		return undefined;
+	}
+	const createdAt = validTime(value.createdAt);
+	const updatedAt = validTime(value.updatedAt);
+	const sentAt = value.sentAt === undefined ? undefined : validTime(value.sentAt);
+	if (createdAt === undefined || updatedAt === undefined || (value.sentAt !== undefined && sentAt === undefined)) {
+		return undefined;
+	}
+	return { id: value.id, path: value.path, line: value.line, lineText: value.lineText, body: value.body, createdAt, updatedAt, ...(sentAt !== undefined ? { sentAt } : {}) };
+}
+
+function parseNotes(value: unknown): IParadisMobileReviewNote[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	const notes: IParadisMobileReviewNote[] = [];
+	for (const candidate of value) {
+		const note = parseNote(candidate);
+		if (note !== undefined && notes.length < PARADIS_MOBILE_REVIEW_MAX_NOTES && !notes.some(existing => existing.id === note.id)) {
+			notes.push(note);
+		}
+	}
+	return notes;
+}
+
 /** 保存された全体を読む。読めない値は空として扱う（スペース単位・印単位で壊れたものだけ飛ばす）。 */
 export function paradisParseMobileReviewStore(raw: string | undefined): Map<string, IParadisMobileReviewSpace> {
 	const store = new Map<string, IParadisMobileReviewSpace>();
@@ -99,14 +152,14 @@ export function paradisParseMobileReviewStore(raw: string | undefined): Map<stri
 		if (ws.length === 0 || ws.length > MAX_KEY_LENGTH || !isRecord(entry)) {
 			continue;
 		}
-		store.set(ws, { marks: parseMarks(entry.marks), updatedAt: validTime(entry.updatedAt) ?? 0 });
+		store.set(ws, { marks: parseMarks(entry.marks), notes: parseNotes(entry.notes), updatedAt: validTime(entry.updatedAt) ?? 0 });
 	}
 	return store;
 }
 
 /** 上限に収まるよう古いスペースから捨てて JSON にする。 */
 export function paradisSerializeMobileReviewStore(store: ParadisMobileReviewStore): string {
-	const spaces = [...store].filter(([, space]) => Object.keys(space.marks).length > 0)
+	const spaces = [...store].filter(([, space]) => Object.keys(space.marks).length > 0 || space.notes.length > 0)
 		.sort(([, a], [, b]) => b.updatedAt - a.updatedAt)
 		.slice(0, PARADIS_MOBILE_REVIEW_MAX_SPACES);
 	let serialized = JSON.stringify(Object.fromEntries(spaces));
@@ -162,7 +215,7 @@ export function paradisApplyMobileReviewMarkChanges(space: IParadisMobileReviewS
 	const kept = entries.length <= PARADIS_MOBILE_REVIEW_MAX_MARKS
 		? marks
 		: Object.fromEntries(entries.sort(([, a], [, b]) => b.reviewedAt - a.reviewedAt).slice(0, PARADIS_MOBILE_REVIEW_MAX_MARKS));
-	return { marks: kept, updatedAt: now };
+	return { marks: kept, notes: space.notes, updatedAt: now };
 }
 
 /**
@@ -172,5 +225,71 @@ export function paradisApplyMobileReviewMarkChanges(space: IParadisMobileReviewS
 export function paradisPruneMobileReviewSpace(space: IParadisMobileReviewSpace, changedPaths: ReadonlySet<string>): IParadisMobileReviewSpace {
 	const entries = Object.entries(space.marks);
 	const kept = entries.filter(([path]) => changedPaths.has(path));
-	return kept.length === entries.length ? space : { marks: Object.fromEntries(kept), updatedAt: space.updatedAt };
+	return kept.length === entries.length ? space : { marks: Object.fromEntries(kept), notes: space.notes, updatedAt: space.updatedAt };
+}
+
+/**
+ * 確認済みのファイルをステージした後、印の識別をステージ後の識別へ付け替える（ステージすると状態と行数の側が
+ * 変わり、識別が変わるため）。`restaged` はパスごとの「ステージ前の識別 → ステージ後の識別」。
+ * ステージ前の識別と一致する印だけを付け替える（その間に誰かが印を変えていれば触らない）。
+ */
+export function paradisRemapMobileReviewMarks(space: IParadisMobileReviewSpace, restaged: ReadonlyMap<string, { readonly before: string; readonly after: string }>): IParadisMobileReviewSpace {
+	let changed = false;
+	const marks: Record<string, IParadisMobileReviewMark> = { ...space.marks };
+	for (const [path, { before, after }] of restaged) {
+		const mark = marks[path];
+		if (mark !== undefined && mark.identity === before && before !== after) {
+			marks[path] = { identity: after, reviewedAt: mark.reviewedAt };
+			changed = true;
+		}
+	}
+	return changed ? { ...space, marks } : space;
+}
+
+/** メモを1件足す。上限に達していれば undefined。 */
+export function paradisAddMobileReviewNote(space: IParadisMobileReviewSpace, note: { readonly id: string; readonly path: string; readonly line: number; readonly lineText: string; readonly body: string }, now: number): IParadisMobileReviewSpace | undefined {
+	if (space.notes.length >= PARADIS_MOBILE_REVIEW_MAX_NOTES) {
+		return undefined;
+	}
+	const added: IParadisMobileReviewNote = {
+		id: note.id,
+		path: note.path,
+		line: note.line,
+		lineText: note.lineText.slice(0, PARADIS_MOBILE_REVIEW_NOTE_LINE_TEXT_MAX),
+		body: note.body.trim(),
+		createdAt: now,
+		updatedAt: now,
+	};
+	return { ...space, notes: [...space.notes, added], updatedAt: now };
+}
+
+/** メモの本文を書き換える。送信済みのものを書き換えたら、もう一度送れるよう未送信に戻す。見つからなければ undefined。 */
+export function paradisEditMobileReviewNote(space: IParadisMobileReviewSpace, id: string, body: string, now: number): IParadisMobileReviewSpace | undefined {
+	const index = space.notes.findIndex(note => note.id === id);
+	const note = space.notes[index];
+	if (note === undefined) {
+		return undefined;
+	}
+	const { sentAt: _sentAt, ...unsent } = note;
+	const notes = [...space.notes];
+	notes[index] = { ...unsent, body: body.trim(), updatedAt: now };
+	return { ...space, notes, updatedAt: now };
+}
+
+/** 指定したメモを消す。 */
+export function paradisDeleteMobileReviewNotes(space: IParadisMobileReviewSpace, ids: ReadonlySet<string>, now: number): IParadisMobileReviewSpace {
+	return { ...space, notes: space.notes.filter(note => !ids.has(note.id)), updatedAt: now };
+}
+
+/** 指定したメモに送った時刻を付ける。 */
+export function paradisMarkMobileReviewNotesSent(space: IParadisMobileReviewSpace, ids: ReadonlySet<string>, now: number): IParadisMobileReviewSpace {
+	return { ...space, notes: space.notes.map(note => ids.has(note.id) ? { ...note, sentAt: now } : note), updatedAt: now };
+}
+
+/** `ids` の配列を読む。形が違えば undefined。 */
+export function paradisParseMobileReviewNoteIds(value: unknown): Set<string> | undefined {
+	if (!Array.isArray(value) || value.length === 0 || value.length > PARADIS_MOBILE_REVIEW_MAX_NOTE_IDS || !value.every(paradisIsReviewNoteId)) {
+		return undefined;
+	}
+	return new Set(value);
 }
