@@ -391,6 +391,9 @@ export type NotifyControlMessage =
 	| { readonly t: 'dismissed'; readonly id: string }
 	| { readonly t: 'dismissed-token'; readonly token: string };
 
+// W2-27: アプリは1件ずつの `dismiss` に `opened: true` を付ける（「すべて消去」では付けない）。上の読み手は
+// この項目を落とすので、PC は `paradisNotifyDismissLedger.ts` の `paradisNotifyDismissOpened` で読む。
+//
 // W2-34 の notify チャネルの `visibility` / `visibility-ack`（アプリが裏に回った・前面に戻った）は、
 // `paradisMobileVisibility.ts` に `app/protocol/src/notify.ts` から逐語で写してある（上の制御メッセージの
 // 読み手はどちらも `t` を知らないものとして捨てる）。
