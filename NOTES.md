@@ -187,7 +187,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 
 | ファイル | 変更内容 | 理由 |
 |---|---|---|
-| `ThirdPartyNotices.txt` | Orca（stablyai/orca、Copyright (c) 2026 Lovecast Inc.、MIT）の項目を PowerShell/EditorSyntax の前に追加 | xterm の IME パッチ（`build/npm/paradisXtermImePatch.ts`）が Orca 由来のコードを製品の `lib/xterm.js` に入れるため。コメント構文が無いのでここに記録する |
+| `ThirdPartyNotices.txt` | Orca（stablyai/orca、Copyright (c) 2026 Lovecast Inc.、MIT）の項目を PowerShell/EditorSyntax の前に追加。2026-09-28 に見出しへ Computer Use の補助アプリを足した | xterm の IME パッチ（`build/npm/paradisXtermImePatch.ts`）が Orca 由来のコードを製品の `lib/xterm.js` に入れるため。Computer Use の補助アプリ（`src/vs/paradis/contrib/computerUse/native/macos/`）もパスワード欄の判定語と ScreenCaptureKit の単一ウィンドウ撮影の設定を Orca の `native/computer-use-macos` にそろえている。コメント構文が無いのでここに記録する |
 | `product.json` | `nameShort`/`nameLong`/`applicationName`/`dataFolderName`/`win32*`/`darwinBundleIdentifier`等ブランディング全般を「Para Code」向けに変更、`extensionsGallery`を追加（Open VSX）、`voiceWsUrl`を削除。upstream 1.139 で追加された `linuxDesktopName`（Linux の `.desktop`/appdata のファイル名と `StartupWMClass`）は `ltd.paradis.ParaCode` にした | Phase 2ブランディング + Open VSX切り替え |
 | `product.json` | `quality: "stable"` / `updateUrl` / `downloadUrl` を追加。`updateUrl`はカスタムドメイン`https://paracode-updates.paradis.ltd`（初期デプロイ時の`https://para-code-update-server.cloudflare8234.workers.dev`から切り替え済み、動作確認済み）。**`downloadUrl`のみ`https://updates.paradis.ltd/download`の暫定プレースホルダーのまま**（linux用の「更新あり時に開く案内ページ」で必須ではない） | 自動アップデート基盤の有効化。`quality`未設定だと`abstractUpdateService.ts`の`getProductQuality()`がundefinedを返し更新機構自体が無効化される |
 | （現在は差分なし。下の経緯参照） | `builtInExtensions` の `ms-vscode.vscode-js-profile-table` の `sha256` は現在 upstream記録値（marketplace版 `a962a1e6…`）のまま | 2026-08-11時点ではOpen VSX版がmarketplace版と再パッケージによりバイト不一致（差分は`extension.vsixmanifest`・`package.json`整形・同梱ライセンスファイル名・`telemetry.json`有無のみ、実行コードはバイト単位で同一と確認済み）だったため、forkは`extensionsGallery`をOpen VSXに向けている都合上、Open VSX実測値`50d00270…`に**意図的に差し替えていた**。2026-08-27、Open VSXが再度パッケージを更新し**marketplace版とバイト完全一致**（`shasum -a 256`一致を確認）するようになったため、この差し替えは不要になり撤回した（リリースCIが`Checksum mismatch`で落ちたのを機に発覚）。**upstreamがこの拡張のバージョンを上げるたびに再発しうる**: `curl -fsSL https://open-vsx.org/vscode/gallery/publishers/ms-vscode/vsextensions/vscode-js-profile-table/<版>/vspackage \| shasum -a 256` と `curl -fsSL https://marketplace.visualstudio.com/_apis/public/gallery/publishers/ms-vscode/vsextensions/vscode-js-profile-table/<版>/vspackage \| shasum -a 256` を突き合わせ、不一致ならOpen VSX実測値に差し替える（一致するようになったら差し替えは戻してよい） |
@@ -248,6 +248,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/mobile/native/ParaCodeWidgets/ParaCodeWidgets.entitlements` | 新規追加（fork所有）。Widget Extension の entitlements（追跡用コピー。実体は gitignore された `ios/ParaCodeWidgets/`）。App Group `group.ltd.paradis.paracode.mobile` だけを持つ | ホーム画面・ロック画面のウィジェットが、アプリ・通知拡張と App Group の要約（`widget-snapshot.json` / `widget-settings.json` / `widget-outbox.json`）を受け渡すため（復元手順は同ディレクトリ README 参照）。plist のためマーカーを埋め込めない |
 | `app/mobile/native/NotifyExtension/NotifyExtension.entitlements` | `com.apple.security.application-groups`（`group.ltd.paradis.paracode.mobile`）を追加 | 通知拡張がアプリの閉じている間にウィジェットの要約の要対応を書き換えるため（`WidgetShared.swift` の `WidgetStore.applyNotification`）。実体の `ios/NotifyExtension/` にも同じものを当てる。plist のためマーカーを埋め込めない |
 | `app/mobile/package.json` / `app/pnpm-lock.yaml` | `lucide-react-native@^1.48.0` を依存に追加 | モバイルの画面の作り直し（Orca に合わせたアイコン）で使うアイコン集。JS だけのパッケージで、描画は既存の `react-native-svg` を使う |
+| `build/paradis/computerUse/paradis-computer-use-entitlements.plist` | 新規追加（fork所有）。中身は空の `<dict/>` | Computer Use の補助アプリ（`Para Code Computer Use.app`）に渡す entitlements。アクセシビリティと画面収録は entitlements ではなく TCC で決まるので何も要らない。`build/darwin/sign.ts` の PARA-PATCH と CI の「Pre-notarize Computer Use helper」が参照する。plist のためマーカーを書かない。補助アプリの `Info.plist` は `buildHelper.ts` がビルドのたびに生成するのでリポジトリに置いていない |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 
@@ -657,6 +658,97 @@ upstream 取り込み時に確認すること:
 
 実機（iOS 27 シミュレータ、2026-09-27 の再レビュー）で確かめたこと: ピンチが2本の指として効く（ホストの `input/touch` の `fingerId`）、向きの名前4つ、インストールのたびの承認、OS のアプリへの権限の拒否、ペインの外からの要求・インストール・起動・権限の拒否。指は要求を送る前に「下ろした」と記録し、失敗・取り消しでも必ず上げる（押したままだとその後の入力を受け付けなくなる）。
 
+## Computer Use は同梱の補助アプリに TCC の許可を閉じ込める（computerUse、2026-09-28、フェーズ7 B3）
+
+設計は研究リポジトリの `phase7-b3/design.md`。読み取りと操作の両方を入れた。設問 Q97〜Q101 はすべて案 A（2026-09-28）。許可したアプリの一覧と取り消し、OS の許可のやり直し（`tccutil reset`）はまだ無い。
+
+| 層 | 置き場所 | 中身 |
+|---|---|---|
+| 補助アプリ（Swift） | `src/vs/paradis/contrib/computerUse/native/macos/` | `Para Code Computer Use.app`（bundle id `ltd.paradis.paracode.computeruse`、`LSUIElement`、macOS 14 以上、universal、約束の版 2）。読み取りの命令は `handshake`・`status`・`permissions`・`listApps`・`listWindows`・`screenshotWindow`（ScreenCaptureKit の単一ウィンドウ）・`accessibilityTree`、操作の命令は `activateApp`・`click`・`drag`・`scroll`・`typeText`・`pasteText`・`pressKey`・`hotkey` |
+| ビルド | `build/paradis/computerUse/buildHelper.ts`・`embedHelper.ts` | swiftc で arm64 と x86_64 を作って `lipo`、`.app` に包んで ad-hoc 署名。`--test` で Swift のテスト、`--if-stale` で古いときだけ作る |
+| shared process | `contrib/computerUse/node/` | 補助アプリの起動と接続（`paradisComputerUseHelperClient.ts`）、ペインとアプリの組ごとの許可の台帳（メモリだけ）、MCP ツール 12 件（読み取り 4 件と、`computer_activate_app`・`computer_click`（右・ダブル・トリプルも）・`computer_drag`・`computer_scroll`・`computer_type_text`・`computer_paste_text`・`computer_press_key`・`computer_hotkey`）、状態のチャネル |
+| 画面 | `contrib/computerUse/electron-browser/`・`browser/` | 承認ダイアログ（ページ共有と同じ `askApproval`、`cooldownKey` は `computer:<bundle id>`）、状態を見るコマンド `paradis.computerUse.showStatus`、設定 `paradis.computerUse.enabled`（既定オフ、APPLICATION）、設定画面の「Computer Use」節 |
+
+補助アプリは shared process から `open -n -g -j` で起動する。Para Code の子として exec すると TCC の許可が Para Code 本体で評価されうるため。手元（macOS 27、ad-hoc 署名）で `open -n` から起動した補助アプリは `responsibility_get_pid_responsible_for_pid` が自分自身を返した（Developer ID 署名と公証の後も同じかは未確認）。この関数が見つからない OS では確認を飛ばし、自分以外が返ったら `misattributed` で機能を止める。
+
+補助アプリに命令できる者はアプリごとの承認を飛ばせるので、次を全部行う: ソケットとトークンは userData の下の 0700 のフォルダ（パスが 103 バイトを超えるときは一時フォルダの `mkdtemp`）、トークンは 256 bit の乱数で補助アプリが読んだ直後に消す、最初の要求のトークンが違えば答えずに終わる。接続相手は Para Code の shared process そのものに絞る（レビュー H1）。相手は `<main>.helper`（Plugin・Renderer・GPU の helper は断る）で `--type=utility`、環境変数の `VSCODE_ESM_ENTRYPOINT` が `vs/code/electron-utility/sharedProcess/sharedProcessMain`、`VSCODE_CRASH_REPORTER_PROCESS_TYPE` が `shared-process` であること（upstream の `utilityProcess.ts` の `createEnv` が、渡された環境の上から必ず書く。拡張機能ホストへ `--extensionEnvironment` で渡した値でも上書きできず、拡張機能ホスト・pty host と見分けられる。upstream のファイルは触っていない）。引数と環境変数は `sysctl(KERN_PROCARGS2)` で読み、同じ名前が 2 つあれば断る。相手の親は Para Code の main で、相手と main のどちらにも `--inspect*`・`--debug*`・`--remote-debugging*`・`--js-flags`・`--extensionDevelopmentPath`・`--extensionTestsPath`・`--enable-proposed-api`・`--remote-allow-origins` の引数と、`ELECTRON_RUN_AS_NODE`・`NODE_OPTIONS`・`VSCODE_NODE_OPTIONS`・`DYLD_INSERT_LIBRARIES` の環境変数が無いこと（launchctl で `NODE_OPTIONS` を全体に設定している Mac では使えなくなる）。補助アプリにチーム ID がある（リリース）ときは、さらに相手と main が同じチームの Developer ID で署名され、main の親が launchd であることを求める。ad-hoc の補助アプリ（手元のビルドだけ）は、署名の検証と main の親の確認だけを飛ばし、識別子は実行ファイルを含む .app の bundle id で見る（素の Electron `com.github.Electron` は通さない。レビュー L1）。確かめに落ちた接続はその接続だけを閉じて待ち続け（30 秒・20 本まで）、通った 1 本を受けたら listen をやめてソケットのファイルも消す（レビュー L2）。受け入れた相手と main の pid は、命令の的にさせない。
+
+パッケージ版の Electron fuses（2026-09-28、`/Applications/Para Code.app` 1.135.0 と手元の `.build/electron` の `Electron Framework` を読んで確認）: `RunAsNode` 有効、`EnableNodeOptionsEnvironmentVariable` 有効、`EnableNodeCliInspectArguments` 有効、`EnableCookieEncryption` 無効、`EnableEmbeddedAsarIntegrityValidation` 無効、`OnlyLoadAppFromAsar` 無効。fork はビルドで fuses を切り替えていない。inspect の引数と `NODE_OPTIONS` が効くので、上のとおり補助アプリが相手と main の引数と環境変数を見て断る。`RunAsNode` は `resources/darwin/bin/code.sh` が使うので切れない。
+
+起動時の argv と環境変数の外にある経路と、その扱い（再レビュー N2）:
+
+| 経路 | 扱い |
+|---|---|
+| argv.json（`~/.para-code/argv.json`）から main が実行中に足すスイッチ | 補助アプリが接続を受けるときに、main が読んだはずの argv.json（main の環境の `VSCODE_PORTABLE`・`VSCODE_DEV` に合わせる）を読み、`remote-debugging-port`・`remote-debugging-pipe`・`js-flags`・`enable-proposed-api` と `inspect*`・`debug*` のキーがあれば断る。読めない（JSON5 としても読めない）ときも断る。ただし main が起動時に読んだ中身と、補助アプリが後で読む中身が同じとは限らない（起動の後に消されれば通る）。`js-flags` は utility process の引数にも写るので、相手の argv の確認でも拾える |
+| `RunAsNode` の fuse（有効） | 塞げない（`resources/darwin/bin/code.sh` が使う）。同じユーザーのプロセスは Para Code の署名のまま任意のコードを動かせる。そのプロセスが相手や main の親子関係を満たすことは、起動時の環境変数（`ELECTRON_RUN_AS_NODE`）の確認で断るが、`KERN_PROCARGS2` はそのプロセスのメモリから読むので、すでに任意のコードが動いているプロセスについては証拠にならない |
+| 後から開く inspector（`EnableNodeCliInspectArguments` が有効で、SIGUSR1・`process._debugProcess` で開ける） | 相手と main が inspector の既定のポート 9229 で待ち受けていれば、接続を受けるときと要求のたびに断る（`proc_pidinfo` の `PROC_PIDFDSOCKETINFO`）。既定のポートは `--inspect-port`（argv で断る）でしか変えられない。Node の中から `inspector.open(<別のポート>)` を呼ぶには、すでにその中でコードが動いている必要がある |
+| アプリの中の JS の書き換え（`EnableEmbeddedAsarIntegrityValidation`・`OnlyLoadAppFromAsar` は無効） | リリースでは、接続を受けるときに Para Code.app を `SecStaticCodeCheckValidityWithErrors`（`kSecCSCheckNestedCode`・`kSecCSStrictValidate`）で読み直し、封印されたファイルの書き換え・追加・削除があれば断る（手元の 1.135.0 で `codesign --verify --strict` は 1.3〜2 秒）。例外は内蔵ブラウザの拡張機能の `_metadata/` の下だけ。Chromium が読み込むときに `verified_contents.json` を消すので、手元の `/Applications/Para Code.app` もこのファイルが無いために `codesign --verify --strict` が失敗していた。その分だけを許す。検査の後に書き換えられた JS は、次に補助アプリが起動するまで分からない |
+| renderer の remote debugging（常に開いている CDP、再レビュー N1） | 利用者の判断待ちで、まだ直していない。CDP のポートが開いている間は、同じユーザーのプロセスが承認ダイアログのある renderer でコードを動かせるので、承認を飛ばせる。補助アプリの起動時の argv の確認では、実行中に足されたこのスイッチを見られない |
+
+上の表で拾えない残りの穴: 同じユーザーのプロセスが、Para Code の shared process か、承認ダイアログを出す renderer の中でコードを動かせる場合（上の表の塞げない行と、再レビュー N1 の CDP）は防げない。
+
+2 つ目の Para Code: 禁止の引数を付けずに普通に起動した 2 つ目のインスタンス（別の `--user-data-dir` など）の shared process は、相手の確認を通る。main が 2 つ以上動いているときに断ることはしていない（開発で 2 つ動かす使い方を止めないため）。その場合の承認ダイアログは、要求したペインを持つ、2 つ目のインスタンスのウィンドウに出る（MCP サーバーとペイントークンの台帳はインスタンスの shared process ごとにあり、`callOwningWindow` はその台帳でペインを持つウィンドウへだけ送る。コードを読んで確かめた。Para Code を起動しての確認はしていない）。2 つ目のインスタンスを `open -g -j` で隠して起動した場合、ダイアログが利用者に見えないまま待つことはありうる（推測）が、答えが無ければ 2 分で断るので、承認のクリックなしに許可にはならない。
+
+常に断るアプリはパスワードマネージャーとワンタイムコードのアプリ 23 件（Orca の 8 件との和に、KeePassXC・Enpass・Keeper・Strongbox・MacPass・RoboForm・Authy などを足した。各 id は【要確認】）、キーチェーンアクセス、Para Code 自身（`ltd.paradis.paracode` とその下。素の Electron `com.github.Electron` は入れない）、システム設定と認証・同意のダイアログ（Q97 A、`PARADIS_COMPUTER_USE_SYSTEM_SURFACES`）。一覧は TS と Swift に同じものを持ち、テストで突き合わせる。ターミナル類・ターミナルを内蔵したエディタ・ランチャー・スクリプトエディタ・Finder（`PARADIS_COMPUTER_USE_COMMAND_APPS`）は断らず、承認ダイアログに「このアプリを操作すると、コマンドをあなたの権限で実行できます」を足す（Q98 A、再レビュー N12）。SSH 接続先のペインは設定で変えられない固定の拒否（Q99 A）。
+
+承認は「拒否」「読み取りのみ許可」「操作も許可」の 3 つ。読み取りを許可済みのアプリへの操作の求めは格上げとして「拒否」「操作も許可」の 2 つにする。初回の操作の求めに「読み取りのみ」を選んだ・格上げを拒否したときは読み取りの許可を残し、そのペインのそのアプリへの操作は聞き直さずに断る（台帳の `operateRefused`）。読み取りだけのアプリには入力を一切送らない。
+
+入力の守り（設計書 6.3、補助アプリ側）: どの操作もアクセシビリティの許可が無ければ OS に触れる前に断る。常に操作させないアプリ（`ParadisBlocklist.swift`、TS と同じ一覧をテストで突き合わせる）と Para Code の main・shared process の pid も補助アプリの側で断り、shared process の判定と二重にする（レビュー M1）。pid を取る命令は shared process が解いたときの bundle id も受け取り、今のその pid の bundle id と違えば断る（pid の使い回し対策）。送る直前と各イベントの間に、前面のアプリが目的の pid か、マウスなら的の点を覆う一番手前のウィンドウ（透明なものも含む。レビュー L8。Dock と WindowServer の層は除く）と AX の当たり判定の持ち主が目的の pid かを確かめる。キーは、さらに OS に聞いたフォーカスのあるアプリと要素の持ち主（`AXUIElementCreateSystemWide` の `kAXFocusedApplicationAttribute`・`kAXFocusedUIElementAttribute`）が目的の pid であることを求める（詳しくは下の再レビュー N3〜N5 の段落）。認証・同意・ロックの画面（SecurityAgent・coreautha・UserNotificationCenter・CoreServicesUIAgent・loginwindow・ScreenSaverEngine・universalAccessAuthWarn）が画面のどこかに出ていれば、マウスもキーも `system_dialog` で止める（レビュー M3。これらは通常のアプリとして一覧に出ないので、拒否の一覧ではなくこのフェンスが守る）。押したボタンとキーは止めるときも必ず離す（ドラッグは `defer`。レビュー L7）。送らない組み合わせは ⌘Space・⌃Space・⌘Tab・⌘`・⌘⌥Esc・⌃⌘Q・⌘⇧Q・⌘⇧3/4/5/6・⌃矢印・Fn の組み合わせ、⌃ とファンクションキー（⌃F1〜F12。メニューバー・Dock・ツールバーへのキーボード操作）、⌘F5 と ⌘⌥F5（VoiceOver とアクセシビリティのパネル）、⌘⌥D（Dock）、⌘⌥8・⌃⌥⌘8・⌘⌥=・⌘⌥-・⌃⌥⌘,・⌃⌥⌘.（ズーム・色の反転・コントラスト）、⌘V の仲間（⌘V・⌘⇧V・⌘⌥⇧V など。貼り付けは `pasteText` の中だけで送る。レビュー M4・M5）。修飾キーはイベントのフラグで付け、イベントの元は `privateState`。`typeText` は 4,000 文字まで（改行は Return、タブは Tab のキー）、`pasteText` は 20,000 文字まで。クリックとキーは HID のタップへ、スクロールだけ `postToPid`。AX の問い合わせは全体に 1 秒の上限を付け、ツリーを読むのは 20 秒で打ち切る。shared process は応答の締め切りを過ぎた補助アプリを終わらせる（レビュー L5）。番号でのクリックは、ツリーの応答の `snapshotId` を添えさせ、そのペインが最後に読んだツリーの番号だけを使わせる（ほかのペインが読み直した後の番号を使わない。レビュー L6）。
+
+利用者の操作中（Q101 A、レビュー M2）: 補助アプリがセッションのイベントタップ（聞くだけ）で、キー・修飾キー・マウスのボタン・移動・ドラッグ・スクロールを見張る。補助アプリが送るイベントには `eventSourceUserData` に目印を入れ、目印の無いものを利用者の物理的な入力として時刻を覚える。直前 1 秒以内にあれば、長い `typeText`・`drag`・`scroll` の途中でも `user_active` で止め、どこまで送ったかをエージェントへ返す。自分の分を時刻で除く判定はやめた（連続した入力の間の利用者の入力を見逃すため）。タップを作れないときは OS のハードウェアの入力の数（`hidSystemState`）で代え、自分の合成入力で止まる側に倒れる。前面に出す（`activateApp`）も同じ判定を通す。
+
+キーボードの見張りの判断（再レビュー N6・N7）: 聞くだけのイベントタップにキーのイベントが届くには、アクセシビリティとは別に入力監視（ListenEvent）の許可が要る場合があり、実機で確かめていない。そこで、タップにキーのイベントが一度でも届く（補助アプリ自身が送ったキーも数える）までは、キーボードの分は OS の HID の数（`CGEventSource.secondsSinceLastEventType(.hidSystemState, ...)`）で見る。HID の数は補助アプリの合成入力も含みうるので、止まる側に倒れる（タップにキーが届かない Mac では、文字入力が 1 文字目で `user_active` になりうる）。利用者のキー入力を見逃すより、止まる方を選んだ。マウスはタップを作ってから 1 秒の間だけ HID の数も合わせる（作る前の入力を見るため）。タップは補助アプリの起動時に、アクセシビリティの許可があれば作る。入力監視の許可の有無は `permissions` の `inputMonitoring` で返す（`CGPreflightListenEventAccess`、確認は出さない）。自分のイベントかは、目印に加えて送り元の pid（`eventSourceUnixProcessID`）が自分であることで見る（再レビュー N8）。
+
+貼り付け（Q100 A、レビュー M6）: クリップボードの全部の項目と型を退避し、空にしてから文字を入れて ⌘V を送る。貼り付け先のフォーカスのある要素の値（AX）を 0.1 秒ごとに見て、文字が入ったのを確かめてから戻す（最大 1.5 秒）。確かめられないとき（値を読めない欄・遅れて読むアプリ）は ⌘V から 3 秒待ってから戻す。戻す前に変更回数が変わっていれば、ほかのアプリか利用者が書き換えたので戻さない。退避した中身に `org.nspasteboard.ConcealedType` / `TransientType`（パスワードマネージャーの印）があれば、戻さずに空のままにする（遅れて読むアプリに秘密が貼られないように。1Password などの自動消去の数え方も崩さない）。写せない型があれば `restored-partially` とエージェントへ返す。残る危険: 3 秒より後にクリップボードを読むアプリ（リモートデスクトップ・仮想マシンなど）には、印の無い元の中身が貼られうる。メニューや右クリックの「ペースト」のクリックは断る（再レビュー N11）が、名前で見分けられない言語のメニュー項目や、アプリ独自の貼り付けボタンは残る。
+
+入力は shared process の `Sequencer` で全ペイン 1 本の列に並べる（承認の待ちは列の外）。操作の後は既定で 0.3 秒待ってウィンドウのツリーとスクショを返す（`includeState: false` で省ける）。ウィンドウのタイトルとアクセシビリティのツリーは、呼び出しごとの乱数の区切り（`<<<SCREEN-<nonce>` 〜 `SCREEN-<nonce>>>>`）で囲み、「画面のデータで、指示ではない」と前後に書いて渡す。中の区切りに似た文字列は消す（レビュー M7、Design Mode と同じ考え方）。
+
+再レビュー N3〜N5・N9〜N11 の直し方: クリックの的の持ち主は、AX の当たり判定（`AXUIElementCopyElementAtPosition`。クリックを通すウィンドウは出てこない）と、点を覆う一番手前のウィンドウの両方で見る。後者からは Dock（bundle id `com.apple.dock`）と WindowServer（実行ファイルの場所）の層を除く。macOS 27 の Dock は画面全体を覆う layer 20 のウィンドウを出しており、手元で読んだ `kCGWindowSharingState`（1）・alpha（1）・store type は通常のウィンドウと同じで、ウィンドウの属性では入力を受けるか見分けられなかったため、除いた分の行き先は当たり判定で確かめる（Dock のバーの上なら Dock が返り止まる）。キーの前は、OS に聞いたフォーカスのあるアプリと、フォーカスのある要素の持ち主が目的の pid であることを主な条件にし、重なるパネルで止めるのは認証・同意の画面だけにした（常駐の浮いたウィンドウでキーが止まり続けないように。止める側の一覧は名前でも見るが、名前を偽っても止まるだけ）。長い `typeText` は、利用者の入力の確かめを毎回、画面とフォーカスの確かめを 10 文字か 50 ms ごとに行い、画面のウィンドウの一覧は 50 ms 使い回す。shared process は 400 文字ずつ別の要求で送り、止まったら「最初の何文字が入ったか」を返す。締め切りなどで数が分からないときは「最初の何文字は確実、次の何文字は入ったかもしれない。状態を読んでから続け、全体を送り直さない」と返す。補助アプリは SIGTERM を受けたら、押したままのボタンとキーを離してから終わる。区切りに似た文字列は変わらなくなるまで消し、`computer_list_apps` のアプリ名は制御文字を除いて 60 文字で切る。エージェントの貼る文字は `TransientType` と `ConcealedType` を付けて書き、クリップボードの履歴に残させない。メニューや右クリックの「ペースト」は（⌘ 付きの V の割り当てか、よくある名前で見分けて）クリックしない。名前で見分けられない言語のメニュー項目は残る。
+
+同梱: 手元の `npm run gulp vscode-darwin-<arch>-min` は `build/gulpfile.vscode.ts` の PARA-PATCH から `paradisComputerUseHelperPackageTask` を呼び、補助アプリを作って `Contents/Helpers/` に入れる（失敗は警告だけ。`PARADIS_COMPUTER_USE_HELPER=0` で飛ばせる）。CI（`CI` がある）では gulp は何もせず、`para-release.yml` の 3 段（Build / Pre-notarize / Embed）に任せる。ステーブルでは 3 段とも `continue-on-error` で、失敗したら補助アプリを外して出荷する。ベータ（Q102）では失敗でビルドを止め、署名と公証の後に zip の中の補助アプリを確かめる（下の「ベータ版の配布経路」）。Embed は Pre-notarize が Apple に受け入れられたとき書く目印（`.build/paradis/computerUse/prenotarized`）があるときだけ入れる。`workflow_dispatch` の `computer_use_helper` を false にすると、ステーブルでは 3 段とも飛ばす（ベータでは効かない）。`build/darwin/sign.ts` の PARA-PATCH は補助アプリに空の entitlements を渡す 3 行だけ。本体の公証が補助アプリのせいで拒否された場合に補助アプリを外して出し直す段は無い（Pre-notarize で先に潰す前提）。
+
+手元で試すとき: `node build/paradis/computerUse/buildHelper.ts --out <どこか> --allow-any-peer-for-testing` で接続相手の確認を外したビルドを作れる（node から直接つなぐため）。既定の出力先には書けず、`Info.plist` に `ParadisTestingBuild` が付いて `embedHelper.ts` が埋め込みを断る。ad-hoc の補助アプリはビルドのたびに TCC から別物と見なされる。ビルドのテストは `node --test build/paradis/computerUse/*.test.ts`（`build/package.json` の `test` の対象には入れていない）。
+
+設定 `paradis.computerUse.enabled` のオン・オフは守りの境界ではない。ペインのエージェントは同じユーザーなので `settings.json` を書き換えてオンにできる（`APPLICATION` と `restricted` はワークスペースの設定を防ぐだけ）。境界はアプリごとの承認ダイアログで、オフからオンに変わったときは各ウィンドウに 1 回通知を出す（レビュー L14）。パッケージ版は開発用の `<appRoot>/.build/paradis/computerUse/` を探さない（レビュー L4）。認証の画面の日本語のラベル（パスワード・暗証番号・認証コード・確認コード・セキュリティコード・ワンタイム）も値を伏せる（レビュー L9）。システム設定は `com.apple.systempreferences` の前方一致（レビュー L10）。承認ダイアログのコマンドの警告は、ターミナルを内蔵したエディタ（VS Code・Cursor・Zed・Xcode・JetBrains）とショートカット・Raycast・Alfred にも出す（レビュー L11、各 id は【要確認】）。CI の Pre-notarize は `timeout-minutes: 25` と `notarytool --timeout 20m`、埋め込みの前に `lipo -verify_arch arm64 x86_64`（レビュー L12・L13）。
+
+### ベータ（`v1.139.1-paracode-146-beta.2`）の実機で見つかった不具合と直し方（2026-09-28）
+
+署名したベータを macOS 27.0（Apple Silicon）で試し、補助アプリへの接続・TCC の付き先・承認・スクショ・AX ツリー・nonce の区切り・利用者の入力で止まる判定・日本語の貼り付けとクリップボードの復元・⌘V の拒否は期待どおりだった。次の 4 件を直した。
+
+| 不具合 | 原因（推測を含む） | 直し方 |
+|---|---|---|
+| `computer_type_text` で約 2 割の文字と空白が落ち、それでも `typed: 64` と返した（TextEdit に `abc…xyz ABC…XYZ 0123456789` を送り、`abdefgiklmoprsuvwyzABCDEFGHIJLMNOQRSUWXY 0134689` が入った） | 推測: 1 文字ごとに仮想キー 0 の keyDown と keyUp を間を置かずに HID のタップへ送り、イベントの元もイベントごとに作り直していた。入力ソースが日本語の IME だと、IME がキーのイベントを取り込むので落ちやすい。送った後に確かめていなかったので、落ちても成功と返した | 1. フォーカスのある欄が `AXSelectedText` の置き換えを受け付けるなら、AX で入れる（キーも IME も通らない。TextEdit はこの経路）。2. だめなら、入力ソースが IME（`kTISPropertyInputSourceType` が `TISTypeKeyboardLayout` 以外、または id に `.inputmethod.`）のときは英数字でも貼り付けに寄せる。3. それ以外はキーを送る。イベントの元を 1 つにし、押してから離すまで 12 ms、文字の間 20 ms を置く。どの経路でも入れた後に欄の値を読み戻し、入れる前の値と選択範囲から期待した値になったかを確かめる（`paradisTypingOutcome`）。そのままでなければ、どこまで入ったかを返して止める（入れ直すと二重になるので送り直さない）。読み戻せない欄は「確かめられない」と返す。改行とタブの扱い・入れ直しの条件・読み戻しの比べ方は、下の「ベータ 3 のレビュー」で直した |
+| 既定のウィンドウに、画面に出ていない 53×48 のウィンドウが選ばれた（TextEdit） | 手前からの順で最初の「画面に出ている」ものを選んでいたが、CGWindowList の `kCGWindowIsOnscreen` と実際の見え方が食い違う補助のウィンドウがあった | 補助アプリが AX でウィンドウの種類（`AXStandardWindow` か）としまわれているかを返す。shared process は、画面に出ている標準のウィンドウ、画面に出ている大きなもの、しまわれた・画面の外の大きなもの、100 ポイント未満の小さなもの、の順に並べ直して番号を振り直す（`paradisRankWindows`）。`computer_list_windows` の順と `windowIndex` も同じ基準 |
+| Finder のサイドバーの全部の `AXCell` に `focused` が付いた | 要素ごとの `AXFocused` を読んでいた。表の中のセルは表がフォーカスを持つと true を返すアプリがある | アプリの `AXFocusedUIElement` と同じ要素（`CFEqual`）にだけ `focused` を付ける。選ばれている行・項目は `AXSelected` から `selected` として別に出す |
+| Proton Authenticator（`me.proton.authenticator`）が拒否されていなかった | 2 段階認証のアプリが一覧に無かった | パスワードマネージャーと同じ扱いの一覧を足した（`authenticator`）。Proton Authenticator・Authy・Google Authenticator・Microsoft Authenticator・Bitwarden Authenticator・Ente Auth と、bundle id に `authenticator`・`2fas`・`raivo`・`otpauth`・`steptwo` を含むもの全部（前後が `*` の一覧の書き方を足した）。各 id は【要確認】。Swift と TS の一覧はテストで突き合わせる |
+
+補助アプリとの約束の版は 6（`typeText` がテキストそのものを受け取り、`method`・`verified`・`inserted`・`rewritten` を返す。`pasteText` の `pasteVerified` は確かめられないとき null）。
+
+ベータ 3 のレビュー（`beta3-review.md`、High 1・Medium 3・Low 7）で直したこと:
+
+- **AX で入れた後の入れ直し（H1）**: 次の経路（貼り付け・キー）へ落ちるのは、書き込みが起きていないと言い切れるときだけにした。欄が選択範囲の置き換えを受け付けない・値か選択範囲を読めない（書く前にやめる）・書き込みが `kAXErrorAttributeUnsupported`・`IllegalArgument`・`NotImplemented`・`InvalidUIElement`・`APIDisabled`・`ActionUnsupported` で失敗したとき。成功・締め切り（`CannotComplete`）・一般の失敗のときは、50 ms ごとに最長 1 秒読み直し、変わらなければ「確かめられない（遅れて入るかもしれない）」と返して止める。選択範囲と同じ文字列で置き換えた場合は、変わらないのが正しいので成功。判断は Core の `paradisAXWriteCertainlyDidNothing` と `paradisAXReadbackStep` に置いてテストした
+- **改行とタブ（M1）**: 改行はどの経路でも改行の文字として入れ、Return は押さない（送信は `computer_press_key` の return、と利用者と合意した内容に合わせた）。キーの経路は改行を送れないので、改行を含む文字列は貼り付けに回す。タブは断る（キーでは次の欄へ移り、AX と貼り付けではタブ文字が入るので、`ユーザー名\tパスワード` でパスワードが普通の欄に文字として入りうる）。読み戻しは、入れる前にフォーカスのあった同じ要素から行う。AX と貼り付けに渡す前に `\r\n` と `\r` を `\n` にそろえる（L2）
+- **読み戻しの比べ方（M2・L1）**: 選択範囲の外（前後）が残っていれば、その間を入った部分として取り出して比べる。完全に同じなら成功。スマート引用符・ダッシュ・省略記号・空白・大文字小文字・数字の区切りを畳んで同じか、入った部分が送った文字列を含む（補完で後ろが伸びた）なら成功で `rewritten`。長さが同じで中身が違う（自動修正）なら失敗で `rewritten`、それ以外で送った文字列が見つからなければ「欄が送った文字列と違う」（落ちたとは言い切らない）。前後が崩れた・選択範囲が読めないときは、送った文字列の出てくる回数が入れる前より増えたかで見る（前からあった同じ文字列では成功にしない）。値が変わらなければ確かめられない。貼り付けの確かめも同じ関数で行う
+- **エージェントへの返し方（L3・L5）**: 確かめられなかったときの要約は `verified: null`（false と書くと「入らなかった」と読まれて送り直される）。止めたときに、前の塊が確かめられていなければ「送った（全部は確かめられていない）」と書き分ける。塊ごとのクリップボードの戻し方の理由は全部伝える。IME が有効なときと改行を含むときは `computer_type_text` もクリップボードを使う（Q100 の退避・印付きなら空にする・他者の書き換えを優先・貼る文字への印はそのまま効く。3 秒より後に読むアプリに元の中身が貼られうる既知の穴も、`type_text` に広がった）。ツールの説明にそう書いた
+- **キャレット（L4）**: AX で入れた後、入れた文字列の直後にキャレットが無ければ `AXSelectedTextRange` で直す。直せなければ「確かめられない」にする（次の塊が前の塊の手前に入りうるため）
+- **ダイアログ（M3）**: 補助アプリが、アプリの `AXFocusedWindow`（無ければ `AXMainWindow`）に `focused` を付ける。並べ直しは、前に出しているウィンドウを先頭にし、画面に出ている `AXDialog`・`AXSystemDialog`・`AXSheet` を標準のウィンドウと同じ段に入れる（手前からの順で書類より先に来る）。`windowId` の説明に、続けて使うなら `windowIndex` より `windowId` を、と書いた
+- **2 段階認証（L6）**: `*twofas*`・Duo Mobile（`com.duosecurity.DuoMobile`・`*duomobile*`）・Authy の iPhone 版（`com.authy`）・Okta Verify（`com.okta.mobile`）・Yubico Authenticator の旧版（`com.yubico.yubioath`・`*yubioath*`）を足した（各 id は【要確認】）。設定画面の検索語に `authenticator two-factor 2fa otp` を足した
+- **ツリーの読み取り（L7）**: 要素の属性は `AXUIElementCopyMultipleAttributeValues` でまとめて 1 回で読む
+
+利用者向けの注意（ベータの実機で分かったこと）:
+
+- システム設定の「アクセシビリティ」の一覧に古い「Para Code Computer Use」の項目が残っていると、スイッチがオンでも `AXIsProcessTrusted()` が false のままになる（推測: 別の署名の補助アプリ、たとえば手元の ad-hoc のビルドで付けた項目が残っているとき）。直し方は、その項目を「−」で消してから「＋」で `Para Code.app/Contents/Helpers/Para Code Computer Use.app` を足し直す
+- シェルの `mv` で `/Applications` に置いたアプリは、ダウンロードの隔離の印が残ったまま App Translocation（読み取り専用の仮の場所）で動き、自動更新ができない。Finder でドラッグして置き直すか、`xattr -d com.apple.quarantine "/Applications/Para Code.app"` で印を外す
+
+レビューの Low で見送ったもの:
+
+| ID | 見送った理由 |
+|---|---|
+| L3（shared process が、つないだ先が本物の補助アプリかを確かめない） | 同じユーザーがセッションのフォルダに先にソケットを作れる場合、偽のサーバーが受け取れるのはエージェントが送る文字と承認済みのアプリの名前で、承認と TCC の迂回にはならない。Node からソケットの相手の pid を取る手段が無く（`LOCAL_PEERPID` は Node に無い）、`lsof` を毎回起動するのは重い。フォルダは毎回 `mkdtemp` の乱数の名前で、0700 の userData の下にある |
+| L12 の後半（公証を片方のジョブだけで行う） | x64 と arm64 のジョブの間で成果物を受け渡す段が要り、ワークフローの形が変わる。ベータのワークフローへまとめる担当に任せる |
+| H1 の直し方 4（接続中にメニューバーへ項目を出す） | 指示の範囲外。拡張機能ホスト・pty host・renderer からの接続は断る。普通に起動した 2 つ目のインスタンスの shared process は通る（上の「2 つ目の Para Code」） |
+| 再レビュー N14 の候補の実在 | AuthenticationServicesAgent・AuthKitUI・PassKit・BluetoothUIServer・CoreLocationAgent の名前と bundle id を止める側の一覧に足したが、実機での確認はしていない（【要確認】） |
+
 ## 機能1: ワークスペース即時切り替え（workspaceSwitch、2026-07-02追加）
 
 `src/vs/paradis/contrib/workspaceSwitch/` に実装。単一ウィンドウ・単一 `.code-workspace`（identity固定）のまま `updateFolders` で folders を丸ごと入れ替え、エディタ/ターミナル/ブラウザの状態をリポジトリごとに退避・復元する（Superset方式: 破棄せず隠す）。実装時に判明した落とし穴:
@@ -888,10 +980,10 @@ wrangler kv key put --namespace-id "$NS" --remote changelog:beta --path /tmp/cha
 
 wrangler の成否は出力全体で確かめる（パイプで握りつぶさない）。確かめ方は手順 5 と同じで、`beta` のフィードにベータの commit を名乗ると、そのステーブルの JSON が返る。
 
-B3（Computer Use）の補助アプリの段は、このワークフローにはまだ無い（`para/phase7-computer-use` 側にあり、ベータ用ブランチで合わせる）。合わせるときに次の 2 点を足す。Q102 の 7 で「ベータでは補助アプリの失敗で止める（ステーブルは外して出荷のまま）」と決めているため。
+B3（Computer Use）の補助アプリの段は、ベータ用ブランチ `para/beta-computer-use` で合わせた（2026-09-28）。Q102 の 7 で「ベータでは補助アプリの失敗で止める（ステーブルは外して出荷のまま）」と決めているため、次の 2 点を入れた。
 
-- 補助アプリを作る・単独で公証する・埋め込む段の `continue-on-error: true` を `continue-on-error: ${{ needs.classify.outputs.is_beta != 'true' }}` にする（macOS のジョブには env `PARA_RELEASE_IS_BETA` もある）。公証の印が無いときに埋め込みを黙って飛ばす分岐も、ベータでは失敗にする
-- ベータのときだけ、`build-darwin` の最後（`Compute sha256` の前）に、zip の中に `Contents/Helpers/Para Code Computer Use.app` があるかを確かめる段を足す（例: `if: ${{ needs.classify.outputs.is_beta == 'true' }}` で `unzip -l "darwin-${{ matrix.arch }}.zip" | grep -F 'Contents/Helpers/Para Code Computer Use.app/'`）
+- 補助アプリを作る・単独で公証する・埋め込む段は `continue-on-error: ${{ needs.classify.outputs.is_beta != 'true' }}` で、`if` は `is_beta == 'true' || computer_use_helper != 'false'`（ベータでは入力で飛ばせない）。補助アプリが作られていない・公証の印が無いときに埋め込みを黙って飛ばす分岐は、ジョブの env `PARA_RELEASE_IS_BETA` が `true` なら失敗にする。ステーブルの動き（外して出荷）は変えていない
+- ベータのときだけ、`build-darwin` の `Notarize + staple` の後・`Compute sha256` の前に、出荷する zip の中に `Contents/Helpers/Para Code Computer Use.app/Contents/MacOS/ParadisComputerUse` があるかを `unzip -l` で確かめる段を足した（`Verify the Computer Use helper is in the beta zip`）
 
 `para-reh.yml` は、タグ（ステーブル／ベータ）からの実行だけが `reh` に公開する。ブランチからの手動起動はビルドと artifact までで止まる。
 

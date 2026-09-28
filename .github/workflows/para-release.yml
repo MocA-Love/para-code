@@ -56,6 +56,14 @@ on:
         required: false
         type: boolean
         default: false
+      computer_use_helper:
+        # The Swift helper app for Computer Use (B3). For stable, its build, pre-notarization and embedding
+        # use continue-on-error, so a failure ships Para Code without it; false skips it entirely. A beta
+        # always builds it and fails on any helper error (beta tags come from tag pushes, not this input).
+        description: 'Build, pre-notarize and embed the Computer Use helper app (macOS). False ships without it (stable only).'
+        required: false
+        type: boolean
+        default: true
 
 env:
   PARA_UPDATE_ACCESS_CLIENT_ID: ${{ secrets.PARA_UPDATE_ACCESS_CLIENT_ID }}
@@ -204,6 +212,18 @@ jobs:
       - name: Package (vscode-darwin-${{ matrix.arch }}-min)
         run: npm run gulp "vscode-darwin-${{ matrix.arch }}-min"
 
+      # Computer Use helper (B3), step 1 of 3. A universal Swift app built with swiftc; the same helper goes
+      # into both the x64 and the arm64 package. Must run after "Package": the gulp task skips the helper on CI
+      # (CI env) so that only a pre-notarized helper is embedded below. A stable release ships without the
+      # helper when any of the 3 steps fails; a beta (Q102) fails the build instead, because the helper is
+      # what the beta is for.
+      - name: Build Computer Use helper
+        if: ${{ needs.classify.outputs.is_beta == 'true' || github.event.inputs.computer_use_helper != 'false' }}
+        continue-on-error: ${{ needs.classify.outputs.is_beta != 'true' }}
+        run: |
+          xcrun swiftc --version
+          node build/paradis/computerUse/buildHelper.ts --out .build/paradis/computerUse
+
       - name: Upload desktop source maps to Sentry
         run: node build/sentry/upload-desktop-sourcemaps.ts darwin "${{ matrix.arch }}"
         env:
@@ -237,6 +257,87 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$RUNNER_TEMP/buildagent.keychain"
           rm -f "$RUNNER_TEMP/cert.p12"
 
+      # Computer Use helper, step 2 of 3: sign the helper alone with the release identity (hardened runtime,
+      # timestamp, empty entitlements) and notarize it by itself, so a rejection caused by the helper shows up
+      # here with its log instead of failing the notarization of the whole app. Writes the "prenotarized"
+      # marker only when Apple accepted it; without the marker the helper is not embedded.
+      - name: Pre-notarize Computer Use helper
+        if: ${{ needs.classify.outputs.is_beta == 'true' || github.event.inputs.computer_use_helper != 'false' }}
+        continue-on-error: ${{ needs.classify.outputs.is_beta != 'true' }}
+        # Apple's queue can be slow; never let the helper hold the release job for long.
+        timeout-minutes: 25
+        env:
+          CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          HELPER_DIR=".build/paradis/computerUse"
+          HELPER="$HELPER_DIR/Para Code Computer Use.app"
+          rm -f "$HELPER_DIR/prenotarized"
+          if [ ! -d "$HELPER" ]; then
+            if [ "$PARA_RELEASE_IS_BETA" = "true" ]; then
+              echo "::error::Computer Use helper was not built; a beta must include it"
+              exit 1
+            fi
+            echo "::warning::Computer Use helper was not built; shipping without it"
+            exit 0
+          fi
+          reject() {
+            if [ "$PARA_RELEASE_IS_BETA" = "true" ]; then
+              echo "::error::Computer Use helper pre-notarization failed ($1); a beta must include it"
+            else
+              echo "::warning::Computer Use helper pre-notarization failed ($1); shipping without it"
+            fi
+            rm -rf "$HELPER"
+            exit 1
+          }
+          codesign --force --options runtime --timestamp \
+            --entitlements build/paradis/computerUse/paradis-computer-use-entitlements.plist \
+            --keychain "$RUNNER_TEMP/buildagent.keychain" --sign "$CODESIGN_IDENTITY" "$HELPER" || reject "codesign"
+          codesign --verify --strict --verbose=2 "$HELPER" || reject "codesign --verify"
+          ditto -c -k --keepParent "$HELPER" "$RUNNER_TEMP/computer-use-helper.zip" || reject "zip"
+          SUBMIT_JSON="$(xcrun notarytool submit "$RUNNER_TEMP/computer-use-helper.zip" \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 20m --output-format json)" || reject "notarytool submit"
+          echo "$SUBMIT_JSON"
+          SUBMISSION_ID="$(node -p 'JSON.parse(process.argv[1]).id' "$SUBMIT_JSON")"
+          SUBMISSION_STATUS="$(node -p 'JSON.parse(process.argv[1]).status' "$SUBMIT_JSON")"
+          if [ "$SUBMISSION_STATUS" != "Accepted" ]; then
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" || true
+            reject "status $SUBMISSION_STATUS"
+          fi
+          touch "$HELPER_DIR/prenotarized"
+
+      # Computer Use helper, step 3 of 3: copy the pre-notarized helper into Contents/Helpers. The next step
+      # (sign.ts) re-signs it with the rest of the app. On any failure nothing half-copied is left behind.
+      - name: Embed Computer Use helper
+        id: embed_computer_use_helper
+        if: ${{ needs.classify.outputs.is_beta == 'true' || github.event.inputs.computer_use_helper != 'false' }}
+        continue-on-error: ${{ needs.classify.outputs.is_beta != 'true' }}
+        run: |
+          set -euo pipefail
+          HELPER_DIR=".build/paradis/computerUse"
+          HELPER="$HELPER_DIR/Para Code Computer Use.app"
+          APP="$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}/$(node -p "require('./product.json').nameLong").app"
+          if [ -f "$HELPER_DIR/prenotarized" ] && [ -d "$HELPER" ]; then
+            # Both architectures must be present: the same helper ships in the x64 and the arm64 package.
+            lipo "$HELPER/Contents/MacOS/ParadisComputerUse" -verify_arch arm64 x86_64
+            node build/paradis/computerUse/embedHelper.ts "$APP" --helper "$HELPER"
+          elif [ "$PARA_RELEASE_IS_BETA" = "true" ]; then
+            echo "::error::No pre-notarized Computer Use helper; a beta must include it"
+            exit 1
+          else
+            echo "::notice::No pre-notarized Computer Use helper; shipping without it"
+          fi
+
+      - name: Remove a partially embedded Computer Use helper
+        if: ${{ steps.embed_computer_use_helper.outcome == 'failure' }}
+        run: rm -rf "$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}/$(node -p "require('./product.json').nameLong").app/Contents/Helpers/Para Code Computer Use.app"
+
+      # sign.ts carries one PARA-PATCH: it gives the Computer Use helper empty entitlements.
       - name: Code sign app (build/darwin/sign.ts, reused as-is — see CLAUDE.md)
         env:
           AGENT_TEMPDIRECTORY: ${{ runner.temp }}
@@ -276,6 +377,18 @@ jobs:
           # Re-zip so the shipped artifact carries the stapled ticket.
           cd "$APP_DIR"
           ditto -c -k --sequesterRsrc --keepParent "$(node -p "require('${{ github.workspace }}/product.json').nameLong").app" "$GITHUB_WORKSPACE/darwin-${{ matrix.arch }}.zip"
+
+      # Beta only (Q102): the signed, notarized zip that ships must contain the Computer Use helper.
+      # A stable release may ship without it, so this step does not run there.
+      - name: Verify the Computer Use helper is in the beta zip
+        if: ${{ needs.classify.outputs.is_beta == 'true' }}
+        run: |
+          set -euo pipefail
+          if ! unzip -l "darwin-${{ matrix.arch }}.zip" | grep -qF 'Contents/Helpers/Para Code Computer Use.app/Contents/MacOS/ParadisComputerUse'; then
+            echo "::error::darwin-${{ matrix.arch }}.zip does not contain Contents/Helpers/Para Code Computer Use.app"
+            exit 1
+          fi
+          echo "Computer Use helper found in darwin-${{ matrix.arch }}.zip"
 
       - name: Compute sha256
         run: shasum -a 256 "darwin-${{ matrix.arch }}.zip" | cut -d' ' -f1 > "darwin-${{ matrix.arch }}.zip.sha256"

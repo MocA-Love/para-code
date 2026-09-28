@@ -35,6 +35,8 @@ import globCallback from 'glob';
 import rceditCallback from 'rcedit';
 import { spawnTsgo } from './lib/tsgo.ts';
 import { runEsbuildTranspile, runEsbuildBundle, getBootstrapEntryPointsForTarget } from './lib/esbuild.ts';
+// PARA-PATCH: Computer Use helper app, embedded into Contents/Helpers of local macOS packages (see build/paradis/computerUse/embedHelper.ts).
+import { paradisComputerUseHelperPackageTask } from './paradis/computerUse/embedHelper.ts';
 
 
 const glob = promisify(globCallback);
@@ -669,7 +671,9 @@ BUILD_TARGETS.forEach(buildTarget => {
 			// PARA-PATCH: Inject Sentry Debug IDs into minified output before packaging (see injectParadisSentrySourceMapsTask).
 			...(minified ? [injectParadisSentrySourceMapsTask] : []),
 			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts),
-			prepareCopilotRipgrepShimTask(platform, arch, destinationFolderName)
+			prepareCopilotRipgrepShimTask(platform, arch, destinationFolderName),
+			// PARA-PATCH: build and embed the Computer Use helper (macOS local builds only; CI uses its own steps, failures only warn).
+			paradisComputerUseHelperPackageTask(platform, path.join(buildRoot, destinationFolderName, `${product.nameLong}.app`))
 		];
 
 		if (platform === 'win32') {
