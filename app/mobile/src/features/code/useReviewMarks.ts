@@ -8,6 +8,7 @@ import { usePcCapability } from '../../hooks/usePcCapability.js';
 import { useParaToast } from '../../paraToast.js';
 import { codeCacheKey, useCodeCache, useReviewMarks, type ReviewMarks } from './codeCache.js';
 import { parseReviewMarks } from './diffReview.js';
+import { parseReviewNotes } from './reviewNotes.js';
 import type { ScmEntry } from './scmModel.js';
 import { currentRendererTarget, type CodeSpace } from './useCodeSpace.js';
 
@@ -29,12 +30,13 @@ export interface ReviewMarksController {
 	setReviewed(entry: ScmEntry, reviewed: boolean): void;
 	/** PC の保存を読み直す（PC 側の操作で印が変わった後など）。 */
 	reload(): Promise<void>;
-	/** PC から届いた応答（`{ t: 'review', marks }` を含むもの）を反映する。 */
+	/** PC から届いた応答（`{ t: 'review', marks, notes }` を含むもの）を反映する。 */
 	applyReply(reply: { readonly marks?: unknown }): void;
 }
 
 interface ReviewReply {
 	readonly marks?: unknown;
+	readonly notes?: unknown;
 }
 
 export function useReviewMarksController(space: CodeSpace): ReviewMarksController {
@@ -42,6 +44,7 @@ export function useReviewMarksController(space: CodeSpace): ReviewMarksControlle
 	const marks = useReviewMarks(key);
 	const setReviewMark = useCodeCache(s => s.setReviewMark);
 	const replaceReviewMarks = useCodeCache(s => s.replaceReviewMarks);
+	const replaceReviewNotes = useCodeCache(s => s.replaceReviewNotes);
 	const stored = usePcCapability(PARADIS_MOBILE_REVIEW_STORE_CAPABILITY);
 	const { pcId, wsId, rendererTarget } = space;
 	/** 要求の順番。後から出した要求（読み直し・付け外し）の応答だけを反映する。 */
@@ -51,7 +54,11 @@ export function useReviewMarksController(space: CodeSpace): ReviewMarksControlle
 		if (reply.marks !== undefined) {
 			replaceReviewMarks(key, parseReviewMarks(reply.marks));
 		}
-	}, [key, replaceReviewMarks]);
+		// メモは review.notes.v1 の PC だけが返す（古い PC の応答には無いので、手元のものを消さない）
+		if (reply.notes !== undefined) {
+			replaceReviewNotes(key, parseReviewNotes(reply.notes));
+		}
+	}, [key, replaceReviewMarks, replaceReviewNotes]);
 
 	const reload = useCallback(async () => {
 		if (!stored || wsId === undefined || rendererTarget === undefined) {

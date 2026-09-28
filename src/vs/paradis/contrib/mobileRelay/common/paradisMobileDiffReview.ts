@@ -133,3 +133,83 @@ export function paradisMobileReviewState(identity: string, mark: IParadisMobileR
 	}
 	return mark.identity === identity ? 'reviewed' : 'changed';
 }
+
+// --- 差分の行へのメモ（Orca W2-28） ------------------------------------------------
+
+/** PC が差分の行へのメモを保存し、エージェントへ送れる（`reviewNoteAdd` など）。 */
+export const PARADIS_MOBILE_REVIEW_NOTES_CAPABILITY = 'review.notes.v1';
+/** PC が確認済みのファイルだけをステージできる（`reviewStage`）。 */
+export const PARADIS_MOBILE_REVIEW_STAGE_CAPABILITY = 'review.stage.v1';
+
+/** 差分の行へのメモ1件。PC に保存し、iPhone と iPad で同じものを見る。 */
+export interface IParadisMobileReviewNote {
+	readonly id: string;
+	readonly path: string;
+	/** 書いたときの新しい側の行番号（1 から）。 */
+	readonly line: number;
+	/** 書いたときのその行の中身。行が上下に動いても、中身で追いかける。 */
+	readonly lineText: string;
+	readonly body: string;
+	readonly createdAt: number;
+	readonly updatedAt: number;
+	/** エージェントへ送った時刻。送った後も「送信済み」として残す（Q120 A）。 */
+	readonly sentAt?: number;
+}
+
+/** 行を探す範囲（書いたときの行番号の前後）。これより遠くへ動いた行は「古いメモ」にする。 */
+export const PARADIS_MOBILE_REVIEW_NOTE_SEARCH_RADIUS = 50;
+
+/**
+ * メモの行がいまどこにあるか。書いたときの行番号の中身が同じならそこ、違えば前後
+ * {@link PARADIS_MOBILE_REVIEW_NOTE_SEARCH_RADIUS} 行から中身が同じ行（近い方）を探す。
+ * 見つからなければ undefined（「古いメモ」。直されて行が変わった）。
+ *
+ * `textAt` は行番号（1 から）からその行の中身を返す。アプリは差分の行から、PC は作業ツリーのファイルから引く。
+ */
+export function paradisLocateReviewNoteLine(textAt: (line: number) => string | undefined, line: number, lineText: string): number | undefined {
+	if (textAt(line) === lineText) {
+		return line;
+	}
+	for (let distance = 1; distance <= PARADIS_MOBILE_REVIEW_NOTE_SEARCH_RADIUS; distance++) {
+		if (line - distance >= 1 && textAt(line - distance) === lineText) {
+			return line - distance;
+		}
+		if (textAt(line + distance) === lineText) {
+			return line + distance;
+		}
+	}
+	return undefined;
+}
+
+/** 送るメモ1件と、いまの行（見つからなければ undefined）。 */
+export interface IParadisMobileReviewNoteToSend {
+	readonly note: IParadisMobileReviewNote;
+	readonly currentLine: number | undefined;
+}
+
+/** 依頼文に入れる行の中身の長さの上限。 */
+const PROMPT_LINE_TEXT_MAX = 200;
+
+function indentContinuation(text: string, indent: string): string {
+	return text.split('\n').map((line, index) => index === 0 ? line : `${indent}${line}`).join('\n');
+}
+
+/**
+ * エージェントへ送る依頼文。PC が保存済みのメモから組み立てる（スマホから届いた文章をそのまま打ち込まない）。
+ * 行が見つからなくなったメモは、書いたときの行番号を添えて送る。
+ */
+export function paradisBuildReviewNotesPrompt(notes: readonly IParadisMobileReviewNoteToSend[]): string {
+	const items = notes.map(({ note, currentLine }, index) => {
+		const where = currentLine !== undefined
+			? `${note.path}:${currentLine}`
+			: `${note.path}（メモを書いた後に行が変わっています。書いたときは ${note.line} 行目）`;
+		const lineText = note.lineText.trim();
+		const shown = lineText.length > PROMPT_LINE_TEXT_MAX ? `${lineText.slice(0, PROMPT_LINE_TEXT_MAX)}…` : lineText;
+		return [
+			`${index + 1}. ${where}`,
+			`   対象の行: ${shown}`,
+			`   メモ: ${indentContinuation(note.body.trim(), '         ')}`,
+		].join('\n');
+	});
+	return ['差分レビューのメモです。それぞれの場所を確かめて、メモに沿って直してください。', '', ...items].join('\n');
+}

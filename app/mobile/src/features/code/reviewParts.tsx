@@ -11,6 +11,8 @@ import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
 import { HeaderButton, Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import type { ReviewMarks } from './codeCache.js';
 import { ChangeBadge } from './codeParts.js';
+import { NoteBubble, StaleNotes } from './reviewNoteParts.js';
+import { canAnnotateRow, type DiffLineItem, type PlacedNotes, type ReviewNote } from './reviewNotes.js';
 import { REVIEW_FILTERS, diffLineNumber, diffSign, reviewStateOf, type ReviewFilter } from './diffReview.js';
 import { splitPath, type ScmEntry } from './scmModel.js';
 
@@ -20,7 +22,7 @@ import { splitPath, type ScmEntry } from './scmModel.js';
  */
 
 /** 見出しの下の「n/m 確認済み」と絞り込みのチップ。 */
-export function ReviewSummary({ reviewed, total, synced, position, filter, onFilter }: {
+export function ReviewSummary({ reviewed, total, synced, position, filter, onFilter, stage }: {
 	reviewed: number;
 	total: number;
 	/** 確認の印を PC に保存しているか（`review.store.v1` の PC だけ。古い PC では出さない）。 */
@@ -29,6 +31,11 @@ export function ReviewSummary({ reviewed, total, synced, position, filter, onFil
 	position: { readonly index: number; readonly count: number } | undefined;
 	filter: ReviewFilter;
 	onFilter: (filter: ReviewFilter) => void;
+	/**
+	 * 「確認済みをステージ」（`review.stage.v1` の PC で、まだステージしていない確認済みがあるときだけ渡す。
+	 * 確認した後に書き換えられたファイルは対象にしない。Orca W2-28）。
+	 */
+	stage?: { readonly count: number; readonly busy: boolean; readonly onPress: () => void };
 }) {
 	return (
 		<View style={styles.summary}>
@@ -53,6 +60,19 @@ export function ReviewSummary({ reviewed, total, synced, position, filter, onFil
 					);
 				})}
 			</View>
+			{stage !== undefined ? (
+				<Pressable
+					onPress={() => { hapticImpact('light'); stage.onPress(); }}
+					disabled={stage.busy}
+					hitSlop={hitSlopToMinimum(CHIP_HEIGHT)}
+					style={({ pressed }) => [styles.stage, pressed || stage.busy ? styles.pressed : undefined]}
+					accessibilityRole="button"
+					accessibilityLabel={`確認済みの ${stage.count} 件をステージ`}
+				>
+					<Icon icon={Check} size={iconSize.sm} color={colors.green} strokeWidth={2.4} />
+					<Text style={styles.stageText}>{stage.busy ? 'ステージしています…' : `確認済みの ${stage.count} 件をステージ`}</Text>
+				</Pressable>
+			) : null}
 		</View>
 	);
 }
@@ -83,30 +103,57 @@ export function ReviewFileSummary({ entry, path, stats, state }: {
 	);
 }
 
-/** 差分の行（行番号 40・記号 12・本文。追加と削除は地の色で分ける）。 */
-export function DiffLines({ rows }: { rows: readonly DiffRow[] }) {
+/**
+ * 差分の行（行番号 40・記号 12・本文。追加と削除は地の色で分ける）。
+ * `notes` を渡すと、メモを付いた行のすぐ下に、行が見つからないメモを差分の上に出す（Orca W2-28）。
+ * `onLongPressRow` を渡すと、削除行と見出し以外の行を長押しでメモを書ける。
+ */
+export function DiffLines({ rows, notes, onLongPressRow, onPressNote }: {
+	rows: readonly DiffRow[];
+	notes?: PlacedNotes;
+	onLongPressRow?: (row: DiffRow & { newNo: number }) => void;
+	onPressNote?: (note: ReviewNote) => void;
+}) {
+	const items: readonly DiffLineItem[] = notes?.items ?? rows.map((row, index) => ({ kind: 'row' as const, row, index }));
 	return (
 		<FlatList
-			data={rows}
-			keyExtractor={(_, index) => String(index)}
+			data={items}
+			keyExtractor={item => item.kind === 'row' ? String(item.index) : `note-${item.note.id}`}
 			style={styles.lines}
 			contentContainerStyle={styles.linesContent}
 			initialNumToRender={60}
 			maxToRenderPerBatch={80}
 			windowSize={15}
-			renderItem={({ item }) => <DiffLine row={item} />}
+			ListHeaderComponent={notes !== undefined && onPressNote !== undefined ? <StaleNotes notes={notes.stale} onPress={onPressNote} /> : null}
+			renderItem={({ item }) => item.kind === 'row'
+				? <DiffLine row={item.row} onLongPress={onLongPressRow} />
+				: <NoteBubble note={item.note} onPress={note => onPressNote?.(note)} />}
 		/>
 	);
 }
 
-function DiffLine({ row }: { row: DiffRow }) {
+function DiffLine({ row, onLongPress }: { row: DiffRow; onLongPress?: (row: DiffRow & { newNo: number }) => void }) {
 	const number = diffLineNumber(row);
-	return (
-		<View style={[styles.line, row.kind === 'add' ? styles.lineAdd : row.kind === 'del' ? styles.lineDel : undefined]}>
+	const body = (
+		<>
 			<Text style={styles.lineNo}>{number !== undefined ? String(number) : ''}</Text>
 			<Text style={styles.lineSign}>{diffSign(row)}</Text>
 			<Text style={[styles.lineText, row.kind === 'hunk' ? styles.lineHunk : undefined]}>{row.text.length > 0 ? row.text : ' '}</Text>
-		</View>
+		</>
+	);
+	const lineStyle = [styles.line, row.kind === 'add' ? styles.lineAdd : row.kind === 'del' ? styles.lineDel : undefined];
+	if (onLongPress === undefined || !canAnnotateRow(row)) {
+		return <View style={lineStyle}>{body}</View>;
+	}
+	return (
+		<Pressable
+			onLongPress={() => { hapticImpact('light'); onLongPress(row); }}
+			delayLongPress={350}
+			style={({ pressed }) => [...lineStyle, pressed ? styles.linePressed : undefined]}
+			accessibilityHint="長押しでこの行にメモを書けます"
+		>
+			{body}
+		</Pressable>
 	);
 }
 
@@ -172,9 +219,11 @@ export function ReviewFooter({ reviewed, changed, canOpen, canMove, bottomInset,
 }
 
 /** 変更のファイルの一覧（iPad は右から、iPhone は下から出すシートの中身）。押すとそのファイルへ移る。 */
-export function ReviewFileList({ entries, marks, currentPath, onPick, onClose }: {
+export function ReviewFileList({ entries, marks, noteCounts, currentPath, onPick, onClose }: {
 	entries: readonly ScmEntry[];
 	marks: ReviewMarks;
+	/** ファイルごとのメモの数（メモを扱える PC だけ）。 */
+	noteCounts?: ReadonlyMap<string, number>;
 	currentPath: string | undefined;
 	onPick: (path: string) => void;
 	onClose: () => void;
@@ -208,7 +257,7 @@ export function ReviewFileList({ entries, marks, currentPath, onPick, onClose }:
 									<ChangeBadge symbol={entry.meta.symbol} color={entry.meta.color} small />
 									<View style={styles.listRowCol}>
 										<Text style={styles.listRowName} numberOfLines={1}>{name}</Text>
-										<Text style={styles.listRowSub} numberOfLines={1}>{`${dir.length > 0 ? dir : '/'} · ${entry.meta.label}`}</Text>
+										<Text style={styles.listRowSub} numberOfLines={1}>{[dir.length > 0 ? dir : '/', entry.meta.label, (noteCounts?.get(entry.path) ?? 0) > 0 ? `メモ ${noteCounts?.get(entry.path)}` : undefined].filter(Boolean).join(' · ')}</Text>
 									</View>
 									{state === 'reviewed' ? <Icon icon={Check} size={iconSize.md} color={colors.green} strokeWidth={2.4} /> : null}
 									{state === 'changed' ? <Icon icon={RefreshCw} size={iconSize.sm} color={colors.yellow} strokeWidth={2.2} /> : null}
@@ -274,6 +323,22 @@ const styles = StyleSheet.create({
 	},
 	chipTextOn: {
 		color: colors.bg,
+	},
+	stage: {
+		minHeight: CHIP_HEIGHT,
+		flexDirection: 'row',
+		alignItems: 'center',
+		alignSelf: 'flex-start',
+		gap: space.xs,
+		marginTop: space.sm,
+		paddingHorizontal: space.md,
+		borderRadius: radius.button,
+		backgroundColor: colors.raised,
+	},
+	stageText: {
+		fontSize: type.meta,
+		fontWeight: '700',
+		color: colors.text,
 	},
 	fileSummary: {
 		flexDirection: 'row',
@@ -354,6 +419,9 @@ const styles = StyleSheet.create({
 	},
 	lineHunk: {
 		color: colors.textMuted,
+	},
+	linePressed: {
+		backgroundColor: colors.raised,
 	},
 	footer: {
 		flexDirection: 'row',

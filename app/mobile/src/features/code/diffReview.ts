@@ -81,6 +81,14 @@ export function parseReviewMarks(value: unknown): ReviewMarks {
 	return marks;
 }
 
+/**
+ * 「確認済みをステージ」の対象。確認済みで（確認した後に変わっていない）、作業ツリーにまだステージしていない
+ * 変更があるもの。最終の判定（中身が同じか）は PC がステージの直前に行う。
+ */
+export function stageableEntries(entries: readonly ScmEntry[], marks: ReviewMarks): ScmEntry[] {
+	return entries.filter(entry => entry.group !== 'staged' && entry.kind !== 'conflict' && isReviewed(entry, marks));
+}
+
 /** 確認済みの件数（いまの一覧に残っていて、確認した後に変わっていないものだけ数える）。 */
 export function reviewedCount(entries: readonly ScmEntry[], marks: ReviewMarks): number {
 	return entries.filter(entry => isReviewed(entry, marks)).length;

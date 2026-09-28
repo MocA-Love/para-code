@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisMobileDiffIdentity, paradisMobileReviewState, paradisParseMobilePorcelainStatus, paradisParseNumstatZ, paradisWithMobileLineCounts } from '../../common/paradisMobileDiffReview.js';
+import { paradisBuildReviewNotesPrompt, paradisLocateReviewNoteLine, paradisMobileDiffIdentity, paradisMobileReviewState, paradisParseMobilePorcelainStatus, paradisParseNumstatZ, paradisWithMobileLineCounts } from '../../common/paradisMobileDiffReview.js';
 
 suite('ParadisMobileDiffReview', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -57,5 +57,34 @@ suite('ParadisMobileDiffReview', () => {
 			paradisMobileReviewState('abc', { identity: 'abc', reviewedAt: 1 }),
 			paradisMobileReviewState('abd', { identity: 'abc', reviewedAt: 1 }),
 		], ['todo', 'reviewed', 'changed']);
+	});
+
+	test('follows a note to its line by content, within the search radius', () => {
+		const lines = ['a', 'target', 'b'];
+		const textAt = (line: number) => lines[line - 1];
+		const shifted = ['new', ...lines];
+		const far = [...Array.from({ length: 60 }, () => 'pad'), ...lines];
+		assert.deepStrictEqual([
+			paradisLocateReviewNoteLine(textAt, 2, 'target'),
+			paradisLocateReviewNoteLine(line => shifted[line - 1], 2, 'target'),
+			paradisLocateReviewNoteLine(line => far[line - 1], 2, 'target'),
+			paradisLocateReviewNoteLine(textAt, 2, 'rewritten'),
+		], [2, 3, undefined, undefined]);
+	});
+
+	test('builds the request from the stored notes, marking notes whose line moved away', () => {
+		const note = { id: 'n1', path: 'src/a.ts', line: 10, lineText: '  const a = 1;  ', body: 'use let\nand rename', createdAt: 1, updatedAt: 1 };
+		assert.strictEqual(paradisBuildReviewNotesPrompt([{ note, currentLine: 12 }, { note: { ...note, id: 'n2' }, currentLine: undefined }]), [
+			'差分レビューのメモです。それぞれの場所を確かめて、メモに沿って直してください。',
+			'',
+			'1. src/a.ts:12',
+			'   対象の行: const a = 1;',
+			'   メモ: use let',
+			'         and rename',
+			'2. src/a.ts（メモを書いた後に行が変わっています。書いたときは 10 行目）',
+			'   対象の行: const a = 1;',
+			'   メモ: use let',
+			'         and rename',
+		].join('\n'));
 	});
 });
