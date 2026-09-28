@@ -255,6 +255,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/package.json` / `app/pnpm-lock.yaml` | `pnpm.patchedDependencies` に `react-native@0.86.0` → `patches/react-native@0.86.0.patch` を追加（lock は peer の添え字に `patch_hash` が付くだけで版は変わらない） | ライブ入力で iOS の変換中の範囲（marked text）を JS へ渡すため（W2-24）。react-native を上げたらパッチを作り直し、キーの版も書き換える |
 | `app/mobile/package.json` / `app/pnpm-lock.yaml` | `expo-network@~57.0.2` を依存に追加（W2-05） | 回線の変化で即座に繋ぎ直すため。JS からは `requireOptionalNativeModule('ExpoNetwork')` で引くので、ネイティブ部品が入る前のバイナリでも落ちない。反映には `app/mobile/ios` で `pod install` と再ビルドが要る（prebuild は使わない） |
 | `app/patches/react-native@0.86.0.patch` | 新規追加（fork所有。パッチ形式なのでマーカーを書けない。当てた先の3ファイルには `Para Code:` のコメントが入る） | TextInput の変更イベントに `isComposing` を足す（Orca の `react-native@0.83.10.patch` の該当部分を 0.86.0 に合わせた）。RN はソースからビルドしている（`ios.buildReactNativeFromSource`）ので、ネイティブの再ビルドで効く |
+| `app/protocol/test/golden/state.json` / `state-request.json` / `term.json` / `agent.json` | 新規追加（fork所有。JSON なのでマーカーの代わりに各ファイル先頭の `$comment` に用途を書いた）（W2-17） | PC ⇔ モバイルの公開ワイヤの固定形。PC（`paradisMobileWireGolden.test.ts`）とアプリ（`app/mobile/src/wireGolden.test.ts`）の両方が読み、形が黙って変わったら落とす。形を変えるときは同じ変更でここも直す |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 
@@ -1096,6 +1097,37 @@ B3（Computer Use）の補助アプリの段は、ベータ用ブランチ `para
 - **クリップボード**: ExpoClipboard のネイティブ関数は options の引数を省けない（`getStringAsync(options)` / `setStringAsync(text, options)`）。JS の expo-clipboard は既定値を埋めるが、ネイティブ部品を optional に直接引く `app/mobile/src/nativeClipboard.ts` では `{}` を渡す（省いていてターミナルの貼付が常に空振りしていた）
 - **通知の送り主（PC）**: エージェントの状態のポーラーはスコープの内訳とペイン単位の状態を `batchUpdates` の中で入れ、変化通知を1回にまとめる（間で通知が出ると、ペイン単位の状態を1回古いまま読む）。`detectAndNotify` はペインごとの前回の状態を覚え、今回 permission / review へ変わったペインを送り主にする
 - **ネイティブの反映（3つとも prebuild 不要）**: (1) `app/` で `pnpm install`（RN パッチが node_modules に当たり、`expo-network` が入る）。(2) `app/mobile/native/NotifyExtension/NotificationService.swift` を `app/mobile/ios/NotifyExtension/` へ写す。(3) `app/mobile/ios` で `pod install`（`expo-network` の pod を足すため。RN パッチだけなら不要）→ Xcode で再ビルド。RN はソースからビルドしている（`ios.buildReactNativeFromSource`）ので、パッチは再ビルドで効く
+
+### PC とアプリの互換の窓（Orca W2-17、2026-09-29）
+
+版は 3 のまま、State（PC → アプリ）に `minCompatibleMobile` と `capabilities`、State の要求（アプリ → PC）に `minCompatiblePc` と `capabilities` を任意項目として足した。判定は `src/vs/paradis/contrib/mobileRelay/common/paradisMobileCompat.ts`（`paradisEvaluateMobileCompat`）の 1 か所で、アプリはこのファイルを相対パスで直接 import する（依存ゼロに保つこと。`metro.config.js` の `watchFolders` に `mobileRelay/common` を足した）。PC とアプリが同じ関数で判定するので、「PC は通すがアプリは拒む」のずれが起きない。
+
+版の上げ方の規則は次の 4 つ。
+
+1. 任意項目・新しいメッセージの種類・無視できるイベントを足すだけなら版を上げない。capability（`<領域>.<機能>.v<N>`、例 `scm.push.v1`）を 1 つ足し、相手が広告しているときだけ使う
+2. メッセージや必須項目の削除、既存項目の意味（単位・null の可否）の変更、フレーミング・暗号・認証の変更をしたときだけ `PARADIS_MOBILE_PROTOCOL_VERSION` を上げる
+3. 上げても古い相手と話し続けられるなら `PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE` / `_PC` は据え置く。古い相手を切るときだけ上げる
+4. 送る内容を変えるだけでも旧版は壊れうる。既存の種類の意味は変えず、新しい種類か新しい capability の版で足す
+
+**PC から送る側は、今は版を下げて話せない。** 判定の `wireVersion`（窓の中で古い方の版）を使っているのはアプリ → PC の個々の操作だけで、PC → アプリの State・term・agent は常に PC 自身の版の形で送っている。そのため PC の版を上げても `minCompatibleMobile` を据え置く（旧アプリを切らない）なら、旧アプリへは v3 の形で送り続ける必要がある。版で送る形を分けるときは、セッションごとの版を `IParadisMobileRelayService.getMobileWireVersion(mobileId)`（shared process では `MobileSession.wireVersion`、登録表の処理では `context.mobileWireVersion()`）で引いて分岐する。State は全台へ同じバイト列を配っているので、分けるなら宛先ごとに組み立て直す必要がある
+
+`minCompatible*` を送らない相手（W2-17 より前）は、これまでどおり版の完全一致しか受け付けないものとして判定する。版が読めない相手は版 0 とみなす。
+
+| 組み合わせ | 結果 |
+|---|---|
+| 旧アプリ × 新PC（どちらも版 3） | 通る。PC はアプリの capability を「持っていない」扱いにする |
+| 新アプリ × 旧PC（どちらも版 3） | 通る。アプリは PC の capability を「持っていない」扱いにし、W2-17 より後の機能のボタンを出さない |
+| 将来のアプリ v4（`minCompatiblePc: 3`）× 新PC v3 | 通る。個々の操作は古い方の版 3 で話す（判定の `wireVersion`） |
+| 将来のアプリ v4 × 旧PC v3 | アプリに「PC の更新が必要」。旧PC は完全一致しか受けないため |
+| 将来のPC v4（`minCompatibleMobile: 3`）× 旧アプリ v3 | 旧アプリは版の不一致で従来の案内を出す。PC は「アプリが古い」と判定する |
+| 将来のPC v4（`minCompatibleMobile: 4`）× 新アプリ v3 | アプリに「アプリの更新が必要」 |
+
+- **アプリの表示**: 版が合わないと `StoreState.updateRequired`（`app` / `pc`）が立ち、`PcSummary.updateRequired` を通して PC の画面（`PcUpdateRequiredState`）・ホームの PC カード・設定の PC 一覧に「アプリの更新が必要」「PC の更新が必要」を出す。以前の「両方を最新版へ」は使っていない。`ConnectionGate` はどの画面からも使われていないので、`protocolError` の文だけでは画面に出なかった（接続中のまま止まって見えていた）
+- **PC の診断**: 版が合わないと Sentry の `mobile-e2e/protocol-mismatch` に `safe_reason`（`mobile-too-old` / `pc-too-old`）を付けて送る（アプリは State を何度も求めるので、同じセッションで 1 回だけ）。PC の画面にはまだ出していない
+- **capability を見る場所**: アプリは `usePcCapability(name)`（いま見ている PC）/ `pcHasCapabilityFor(pcId, name)`。PC は `IParadisMobileRelayService.getMobileCapabilities(mobileId)`、登録表の処理なら `context.hasMobileCapability(name)`。広告の一覧は `PARADIS_MOBILE_PC_CAPABILITIES` / `PARADIS_MOBILE_APP_CAPABILITIES`（同じファイル）
+- **新しい種類を足す手順（後続の担当向け）**: PC は新しいファイルで `registerParadisMobileRequestHandler('scm' | 'fs', kind, handler)` を呼び、`electron-browser/paradisMobileRequestHandlerRegistrations.ts` に副作用 import を 1 行足す（provider の分岐は触らない）。provider は既存の分岐で処理しなかった要求だけを登録表へ回す（scm はスペースの検査より前、fs はパス解決より前）。既存の種類は `common/paradisMobileRequestKinds.ts` に予約してあり、登録すると例外になる（provider に種類を足したらそこにも足す。`paradisMobileRequestKinds.test.ts` が provider のソースと突き合わせる）。応答の `id` は本文より後に置くので、処理が本文に `id` を入れても宛先は変わらない。アプリは `sendPcRequest(pcId, 'scm', { t: kind, ws, ... })`（`appState.ts`）か `MobileController.requestPc` で送る。`ws` を付けなければスペースを選ばず、いま前面のウィンドウ宛て（`rendererGeneration`）で送り、PC 側の `root` は undefined になる（shared process は予約に無い種類だけ ws 無しで通す）。id の無い知らせは `onPcMessage` で受ける（`pcId` を省くといま見ている PC に付いて行き、PC の切り替えやコントローラの作り直しで付け替わる）。どちらも capability を 1 つ足して、広告の無い PC にはボタンを出さない。agent チャネルの新しい種類は shared process の agentChat が受けるので、この登録表の対象外
+- **固定形（ゴールデン）**: `app/protocol/test/golden/` の state / state-request / term / agent。PC の組み立てる State がゴールデンと同じ形か、アプリが送る形を PC が受けるか、PC が送る形をアプリが受けるかを両側のテストが確かめる。版・`minCompatible*`・`capabilities`・`fsUploadEncoding`・`voiceClips` は値まで比べるので、capability を足したらゴールデンの `state.json` / `state-request.json` も同じ変更で直す
+- **版を上げるときに一緒に直す場所**: 2 進アップロードの枠（`app/protocol/src/fileUpload.ts` と PC の `paradisMobileFileUpload.ts`）は `protocolVersion: 3` を固定で検査している。`IParadisMobileDesktopStateV3` の名前と型も版 3 のまま
 
 ## Codexペインapp-serverのWindows対応（loopback ws方式、2026-07-21）
 
