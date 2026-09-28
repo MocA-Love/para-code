@@ -15,8 +15,10 @@ import type { PcSummary } from './appState.js';
 export function pcStatusText(pc: PcSummary, active: boolean): string {
 	const state = pc.connection === 'online' && pc.pcOnline
 		? (active ? '接続中' : '待機中')
-		: pc.connection === 'online' || pc.connection === 'handshaking' ? 'PCオフライン'
-			: pc.connection === 'connecting' ? '接続しています…' : 'オフライン';
+		// リレーが資格を拒んだ。待っても直らないので「オフライン」と並べない
+		: pc.pairingRejected ? '再ペアリングが必要'
+			: pc.connection === 'online' || pc.connection === 'handshaking' ? 'PCオフライン'
+				: pc.connection === 'connecting' ? '接続しています…' : 'オフライン';
 	const detail = active ? '使用中' : pc.waiting > 0 ? `要対応 ${pc.waiting}件` : undefined;
 	return detail !== undefined ? `${state} · ${detail}` : state;
 }

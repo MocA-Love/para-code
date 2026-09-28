@@ -65,8 +65,8 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 	const canGoBack = router.canGoBack();
 	// workspace 本体ではなく「キャッシュがあるか」だけを購読する（判定に使うのは有無のみ）。
 	// 本体を購読すると、PCからのstate再送のたびに全タブの中身が再構築される。
-	const { connection, pcOnline, sessionProtocolReady, hasWorkspace, paired, ready, manualOffline, protocolError, initializing, initError, connectRelay } = useAppStore(useShallow(s => ({
-		connection: s.connection, pcOnline: s.pcOnline, paired: s.paired, ready: s.ready,
+	const { connection, pcOnline, pairingRejected, sessionProtocolReady, hasWorkspace, paired, ready, manualOffline, protocolError, initializing, initError, connectRelay } = useAppStore(useShallow(s => ({
+		connection: s.connection, pcOnline: s.pcOnline, pairingRejected: s.pairingRejected, paired: s.paired, ready: s.ready,
 		sessionProtocolReady: s.sessionProtocolReady, hasWorkspace: s.workspace !== undefined,
 		manualOffline: s.manualOffline, protocolError: s.protocolError,
 		initializing: s.initializing, initError: s.initError, connectRelay: s.connectRelay,
@@ -119,22 +119,32 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 	// タイムアウト→再接続を繰り返すため、「接続しています…」のまま固まって見せず
 	// 「PCがオフライン」と的確に伝える。
 	const pcOffline = !manualOffline && !pcOnline && (connection === 'online' || connection === 'handshaking');
-	const connecting = !manualOffline && !pcOffline && (connection === 'connecting' || connection === 'handshaking');
+	// リレーがこの端末の資格を拒んだ（PCでペアリングを解除された等）。再接続では直らないので、
+	// 「接続中」「再接続」を出さずに再ペアリングへ案内する（旧リレーではこの状態にならない）。
+	const rejected = !manualOffline && pairingRejected;
+	const connecting = !manualOffline && !rejected && !pcOffline && (connection === 'connecting' || connection === 'handshaking');
 	const message = manualOffline
 		? '接続を切断しています'
-		: pcOffline
-			? 'PCがオフラインです。PCの Para Code が起動しているか確認してください。'
-			: connecting
-				? 'PCに接続しています…'
-				: 'PCに接続できていません';
+		: rejected
+			? 'この端末のペアリングは PC で解除されたか、使えなくなっています。PC の Para Code で QR コードを出し直し、ペアリングし直してください。'
+			: pcOffline
+				? 'PCがオフラインです。PCの Para Code が起動しているか確認してください。'
+				: connecting
+					? 'PCに接続しています…'
+					: 'PCに接続できていません';
 
 	return (
 		<View style={styles.gated}><View style={styles.center} accessibilityLiveRegion="polite">
-			{connecting ? <ActivityIndicator accessibilityLabel="PCへ接続中" size="large" color={colors.accent} /> : <Ionicons name="cloud-offline-outline" size={40} color={colors.textDim} />}
-			<Text style={styles.title}>{connecting ? '接続中' : '未接続'}</Text>
+			{connecting ? <ActivityIndicator accessibilityLabel="PCへ接続中" size="large" color={colors.accent} /> : <Ionicons name={rejected ? 'key-outline' : 'cloud-offline-outline'} size={40} color={rejected ? colors.red : colors.textDim} />}
+			<Text style={styles.title}>{rejected ? '再ペアリングが必要です' : connecting ? '接続中' : '未接続'}</Text>
 			<Text style={styles.dim}>{message}</Text>
 			{!connecting ? (
-				<Button label={manualOffline ? '接続する' : '再接続'} variant="primary" style={styles.btn} onPress={() => { hapticImpact('light'); connectRelay(); }} />
+				<Button
+					label={rejected ? 'ペアリングし直す' : manualOffline ? '接続する' : '再接続'}
+					variant="primary"
+					style={styles.btn}
+					onPress={() => { hapticImpact('light'); if (rejected) { router.push('/pair'); } else { connectRelay(); } }}
+				/>
 			) : null}
 		</View>{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>
 	);
