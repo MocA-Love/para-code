@@ -30,6 +30,7 @@ import { IWorkbenchEnvironmentService } from '../../../../workbench/services/env
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { paradisRemoteUserHome } from '../../agentBrowser/common/paradisRemoteUserHome.js';
+import { paradisWriteRollingBackupUri } from '../../../common/paradisRollingFileBackupUri.js';
 import { ParadisCodexAccountsClient } from '../../codexAccounts/electron-browser/paradisCodexAccountsClient.js';
 import type { IParadisCodexHome } from '../../codexAccounts/common/paradisCodexAccounts.js';
 import {
@@ -644,6 +645,10 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 			: '';
 		const nextConfig = replaceTerminalTitleInTuiSection(currentConfig);
 		if (nextConfig !== currentConfig) {
+			// config.toml は利用者の設定なので、書き換える前の中身を1つだけ隣へ控える（写せなくても止めない）
+			if (currentConfig.length > 0) {
+				await paradisWriteRollingBackupUri(this.fileService, configFile, error => this.logService.warn('[ParadisCodexTerminalTitle] could not back up config.toml', error));
+			}
 			await this.fileService.writeFile(configFile, VSBuffer.fromString(nextConfig));
 		}
 	}

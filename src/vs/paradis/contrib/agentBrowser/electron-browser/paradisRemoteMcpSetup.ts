@@ -26,6 +26,7 @@ import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupRe
 import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml } from '../common/paradisMcpConfigStatus.js';
 import { paradisCodexMcpTableBody, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
 import { paradisMergeRemoteClaudeMcpJson } from './paradisRemoteAgentHooks.contribution.js';
+import { paradisWriteRollingBackupUri } from '../../../common/paradisRollingFileBackupUri.js';
 
 // ~/.claude.json は会話履歴などを含みうるため大きくなりやすい。node/paradisMcpSetup.ts の
 // ローカル版と同じ上限に揃える（読むのは判定のためだけで、際限なくSSH越しに転送しない）。
@@ -133,6 +134,8 @@ export class ParadisRemoteMcpSetupController {
 			if (updated === current) {
 				return { cli: 'claude', cliAvailable: true, target: file.path, servers: [{ server: 'para-browser', outcome: 'already' }] };
 			}
+			// 接続先の利用者の設定なので、書き換える前の中身を1つだけ隣へ控える（写せなくても止めない）
+			await paradisWriteRollingBackupUri(this.fileService, file);
 			await this.fileService.writeFile(file, VSBuffer.fromString(updated), ATOMIC_WRITE_OPTIONS);
 			return { cli: 'claude', cliAvailable: true, target: file.path, servers: [{ server: 'para-browser', outcome: 'success' }] };
 		} catch {
@@ -161,6 +164,7 @@ export class ParadisRemoteMcpSetupController {
 				if (inspection.state === 'needsFix' && inspection.staleServerName !== undefined && inspection.staleServerName !== 'para-browser') {
 					const rewritten = computeParadisCodexTableRewrite(current, inspection.staleServerName, paradisCodexMcpTableBody(port));
 					if (rewritten !== undefined && rewritten !== current) {
+						await paradisWriteRollingBackupUri(this.fileService, file);
 						await this.fileService.writeFile(file, VSBuffer.fromString(rewritten), ATOMIC_WRITE_OPTIONS);
 						return { cli: 'codex', cliAvailable: true, target: file.path, servers: [{ server: inspection.staleServerName, outcome: 'success' }] };
 					}
@@ -170,6 +174,9 @@ export class ParadisRemoteMcpSetupController {
 			const updated = paradisUpsertCodexMcpToml(current ?? '', port);
 			if (updated === current) {
 				return { cli: 'codex', cliAvailable: true, target: file.path, servers: [{ server: 'para-browser', outcome: 'already' }] };
+			}
+			if (current !== undefined) {
+				await paradisWriteRollingBackupUri(this.fileService, file);
 			}
 			await this.fileService.writeFile(file, VSBuffer.fromString(updated), ATOMIC_WRITE_OPTIONS);
 			return { cli: 'codex', cliAvailable: true, target: file.path, servers: [{ server: 'para-browser', outcome: 'success' }] };

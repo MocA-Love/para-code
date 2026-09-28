@@ -17,6 +17,7 @@ import { FileService } from '../../../../../platform/files/common/fileService.js
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisRemoteAgentHookFilesHost, ParadisRemoteAgentHookFiles, ParadisRemoteAgentHooksController, paradisMergeRemoteClaudeMcpJson } from '../../electron-browser/paradisRemoteAgentHooks.contribution.js';
+import { paradisRollingBackupUri } from '../../../../common/paradisRollingFileBackupUri.js';
 
 interface IDeferred {
 	readonly promise: Promise<void>;
@@ -315,6 +316,7 @@ suite('ParadisRemoteAgentHookFiles', () => {
 			fileService: {
 				exists: resource => fileService.exists(resource),
 				writeFile: (resource, content) => fileService.writeFile(resource, content),
+				copy: (source, target, overwrite) => fileService.copy(source, target, overwrite),
 				readFile: resource => state.unreadable.has(resource.toString())
 					? Promise.reject(new Error('permission denied'))
 					: fileService.readFile(resource),
@@ -376,9 +378,11 @@ suite('ParadisRemoteAgentHookFiles', () => {
 		state.resolvedHome = home;
 		await files.retryPending();
 
-		assert.deepStrictEqual({ whileUnresolved, claude: await read(claudeSettings), pending: files.pendingChange }, {
+		assert.deepStrictEqual({ whileUnresolved, claude: await read(claudeSettings), backup: await read(paradisRollingBackupUri(claudeSettings)), pending: files.pendingChange }, {
 			whileUnresolved: { claude: HOOKED, pending: 'remove' },
 			claude: JSON.stringify({ hooks: {} }),
+			// 書き換える前の中身を隣へ1つ控える
+			backup: HOOKED,
 			pending: undefined,
 		});
 	});
