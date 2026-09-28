@@ -8,7 +8,8 @@
 		{ "t": "action/answerApproval", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-3", "epoch": "golden-agent-epoch", "interactionId": "approval-1", "choice": "allow" },
 		{ "t": "tool-full", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-4", "epoch": "golden-agent-epoch", "rev": 1 },
 		{ "t": "approval-options", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-5", "epoch": "golden-agent-epoch", "interactionId": "approval-1" },
-		{ "t": "action/answerApproval", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-6", "epoch": "golden-agent-epoch", "interactionId": "approval-1", "choice": "opt:2", "optionLabel": "Yes, and don't ask again for npm test commands" },
+		{ "t": "action/answerApproval", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-6", "epoch": "golden-agent-epoch", "interactionId": "approval-1", "choice": "opt:2", "optionLabel": "Yes, and don't ask again for npm test commands", "promptHash": "0123456789abcdef0123456789abcdef01234567" },
+		{ "t": "action/sendMessage", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-9", "epoch": "golden-agent-epoch", "text": "続きをお願い", "sendId": "send-golden-1" },
 		{ "t": "history", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-7", "epoch": "golden-agent-epoch", "beforeRev": 0, "limit": 60 },
 		{ "t": "history", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-8", "epoch": "golden-agent-epoch", "beforeRev": -60, "cursor": "f:1024:0", "limit": 60 },
 		{ "t": "detach", "id": 7, "token": "agent-token-1" }
@@ -31,7 +32,7 @@
 			"capabilities": { "agentActions": true, "claudeSettings": true }
 		},
 		{ "t": "action-result", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-1", "status": "accepted", "consumed": true },
-		{ "t": "approval-options", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-5", "interactionId": "approval-1", "options": [{ "n": 1, "label": "Yes" }, { "n": 2, "label": "Yes, and don't ask again for npm test commands" }, { "n": 3, "label": "No, and tell Claude what to do differently (esc)" }] },
+		{ "t": "approval-options", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-5", "interactionId": "approval-1", "options": [{ "n": 1, "label": "Yes" }, { "n": 2, "label": "Yes, and don't ask again for npm test commands" }, { "n": 3, "label": "No, and tell Claude what to do differently (esc)" }], "promptHash": "0123456789abcdef0123456789abcdef01234567" },
 		{ "t": "history", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-8", "epoch": "golden-agent-epoch", "messages": [{ "rev": -1, "role": "user", "kind": "text", "text": "最初の依頼", "ts": 1759990000000 }], "hasMore": true, "cursor": "f:512:0" },
 		{ "t": "none", "id": 7, "token": "agent-token-1" }
 	]
