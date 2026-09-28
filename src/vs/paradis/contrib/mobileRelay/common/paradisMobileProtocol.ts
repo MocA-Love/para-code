@@ -166,6 +166,7 @@ export type RelayControlMessage =
 	// HMAC等）でなければならない。collapseId は `apns-collapse-id`（同じ値の通知は端末上で
 	// 置き換わる）、threadId は `aps.thread-id`（通知センターでまとまる）になる。
 	// 形式は PARADIS_PUSH_ID_PATTERN。外れた値はリレーが黙って捨てる（プッシュ自体は送る）。
+	// threadId は aps.thread-id として平文で出るので、同じスペースの通知どうしの紐付けはリレーと Apple に見える。
 	| { readonly type: 'push-notify'; readonly mobileId: string; readonly payload: string; readonly collapseId?: string; readonly threadId?: string }
 	// リレー→PC: モバイル自身がペアリングを解除した（self-revoke）。PCは登録一覧から取り除く
 	| { readonly type: 'mobile-revoked'; readonly mobileId: string }
@@ -182,6 +183,16 @@ export const PARADIS_RELAY_KEEPALIVE_PONG = '{"type":"pong"}';
 
 /** push-notify の collapseId / threadId として受け付ける形（base64url 8〜64文字）。 */
 export const PARADIS_PUSH_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+
+/**
+ * リレーがモバイルのWebSocketを閉じるときの理由コード（PCは使わないが、複製を揃えておく）。
+ * 資格を認めないモバイルを upgrade 前の HTTP 401 ではなく、受理してからこのコードで閉じる。
+ * どちらも再ペアリングだけが解決策。
+ */
+export const PARADIS_RELAY_CLOSE_CODE = Object.freeze({
+	CREDENTIAL_REFUSED: 4401,
+	UNKNOWN_MOBILE: 4404,
+} as const);
 
 export function encodeRelayControl(message: RelayControlMessage): string {
 	return JSON.stringify(message);
