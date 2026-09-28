@@ -194,7 +194,8 @@ final class NotificationService: UNNotificationServiceExtension {
 	/// `notifyCollapseKey` と同じ規則**（SHA-256 の16進先頭32桁）。変えるときは両方直すこと。
 	/// 同じ入力で両者が一致することは notificationTray.test.ts の値で固定している。
 	/// 許可・質問（agent-question）は置き換えない。未回答の許可が次の通知の下に隠れると気づけないため
-	/// （PC も許可・質問のプッシュには apns-collapse-id を付けない）。
+	/// （PC も許可・質問のプッシュには apns-collapse-id を付けない。リレーはその代わりに通知ごとの乱数を
+	/// 付けるが、これは同じ通知の再送どうしを1件にするだけで、別の通知を置き換えない）。
 	private static func collapseKey(pcId: String, kind: String?, agentToken: String?, terminalKey: String?) -> String? {
 		if kind == "agent-question" {
 			return nil

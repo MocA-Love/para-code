@@ -557,7 +557,8 @@ export class DeviceDO implements DurableObject {
 		// 実際に何か受け取った時刻で判断していて、リレーより確かな材料を持っている）。
 		const expiresAtSeconds = Math.floor(Date.now() / 1000) + PUSH_EXPIRATION_SECONDS;
 		// PC が collapseId を付けない通知（許可・質問）には、この通知だけの乱数を付けて送る。応答の無い
-		// 通信失敗の後に送り直しても、APNs が先の1通を受理していれば端末上で置き換わるので二重に鳴らない。
+		// 通信失敗の後に送り直して APNs が先の1通も受理していた場合、通知センターでは1件に置き換わる
+		// （ただし届くたびにバナーと音が出うる。鳴らないことまでは保証しない）。
 		// 通知ごとの乱数なので、別の通知どうしを紐付ける手掛かりにはならない（置き換えもしない）。
 		const pushCollapseId = collapseId ?? randomTokenB64u(16);
 		const result = await this.sendPushOnce({ mobileId, payload, collapseId: pushCollapseId, threadId, expiresAtSeconds });
