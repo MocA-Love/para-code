@@ -20,7 +20,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -106,6 +106,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	private readonly windowLeasePromise: Promise<IParadisMobileWindowLease>;
 	private readonly rendererReadyPromise: Promise<void>;
 	private previousOnlineMobiles = 0;
+	/** このウィンドウで案内済みの「鍵と台帳を読めない」理由（同じ理由で何度も出さない）。 */
+	private announcedStoreProblem: IParadisMobileStatus['storeProblem'];
 	constructor(
 		@ISharedProcessService sharedProcessService: ISharedProcessService,
 		@IMainProcessService mainProcessService: IMainProcessService,
@@ -706,6 +708,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 	private renderStatusbar(status: IParadisMobileStatus): void {
 		this.applyDiagnosticCorrelation(status.deviceId);
+		this.announceStoreProblem(status);
 		// 表示可否は「設定でリレーが有効か」だけで決める。shared process の state に依存すると、
 		// 初期化前・再接続中・ウィンドウリロード直後などに一瞬 'disabled'/'disconnected' が
 		// 返ってきた時に項目が消えてしまう（「接続状態表示が出ない時がある」の原因）。
@@ -720,7 +723,11 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		let tooltip = localize('paradis.mobile.statusbar.tooltip', "Para Code Mobile のリレー接続状態。クリックでメニューを開きます。");
 		// 認証切れは待っても復帰しない（再ペアリングが要る）。「切断中」と同じ見た目にすると
 		// 30秒ごとに切断中↔接続中…を往復するだけで、何をすればよいか分からなかった。
-		if (status.unauthorized === true) {
+		if (status.storeProblem === 'unreadable' || status.storeProblem === 'undecryptable') {
+			label = localize('paradis.mobile.statusbar.storeUnreadable', "モバイル: 鍵を読み込めません");
+			icon = '$(warning)';
+			tooltip = localize('paradis.mobile.statusbar.storeUnreadableTooltip', "保存したペアリングの鍵を読み込めないため、接続を止めています。クリックしてメニューから再試行するか、ペアリングし直してください。");
+		} else if (status.unauthorized === true) {
 			label = localize('paradis.mobile.statusbar.unauthorized', "モバイル: 再ペアリングが必要");
 			icon = '$(warning)';
 			tooltip = localize('paradis.mobile.statusbar.unauthorizedTooltip', "リレーがこのPCの資格情報を受け付けませんでした。クリックしてメニューから再度ペアリングしてください。");
@@ -750,11 +757,80 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		}
 	}
 
+	/**
+	 * 保存した鍵とペアリング台帳を読めなかったことを、理由が変わったときに一度だけ知らせる。
+	 * 以前は黙って作り直していたので、スマホが全部外れた理由が利用者には分からなかった。
+	 */
+	private announceStoreProblem(status: IParadisMobileStatus): void {
+		const problem = status.storeProblem;
+		if (problem === this.announcedStoreProblem) {
+			return;
+		}
+		this.announcedStoreProblem = problem;
+		if (problem === undefined || !this.isEnabled()) {
+			return;
+		}
+		if (problem === 'corrupt') {
+			this.notificationService.prompt(
+				Severity.Warning,
+				localize('paradis.mobile.storeCorrupt', "モバイル連携の保存データが壊れていたため、別名で退避しました。モバイルデバイスをペアリングし直してください。"),
+				[{ label: localize('paradis.mobile.storeCorrupt.pair', "ペアリングする"), run: () => { void this.runPairing(); } }],
+			);
+			return;
+		}
+		this.notificationService.prompt(
+			Severity.Warning,
+			problem === 'undecryptable'
+				? localize('paradis.mobile.storeUndecryptable', "モバイル連携の鍵を復号できないため、接続を止めています。キーチェーンへのアクセスを許可してから再試行してください。直らない場合はペアリングし直してください（接続済みのモバイル {0} 台はすべて解除されます）。", status.pairedDevices.length)
+				: localize('paradis.mobile.storeUnreadable', "モバイル連携の保存データを読み込めないため、接続を止めています。再試行するか、ペアリングし直してください（接続済みのモバイルはすべて解除されます）。"),
+			[
+				{ label: localize('paradis.mobile.storeRetry', "再試行"), run: () => { void this.retryStoreLoad(); } },
+				{ label: localize('paradis.mobile.storeRepair', "ペアリングし直す"), run: () => { void this.runPairing(); } },
+			],
+		);
+	}
+
+	private async retryStoreLoad(): Promise<void> {
+		try {
+			await this.service.retryLoadState();
+		} catch (err) {
+			this.logService.warn('[paradisMobileRelay] retry of the pairing state failed', err);
+		}
+		const status = await this.service.getStatus();
+		if (status.storeProblem === 'unreadable' || status.storeProblem === 'undecryptable') {
+			// 同じ理由のままなら通知は出し直さないので、結果だけ伝える。
+			this.notificationService.warn(localize('paradis.mobile.storeRetryFailed', "まだ読み込めません。キーチェーンへのアクセスを確かめるか、ペアリングし直してください。"));
+		}
+	}
+
 	/** ペアリングフロー（コマンドから呼ばれる）。 */
 	async runPairing(): Promise<void> {
 		// 有効化されていなければ先に有効化する。
 		if (!this.isEnabled()) {
 			await this.configurationService.updateValue(PARADIS_MOBILE_ENABLED_KEY, true);
+		}
+
+		// 保存した鍵を読めないまま新しい鍵を作ると、その鍵でペアリングした端末が全部外れる。
+		// 黙って作り直さず、退避して作り直すことに同意を取る。
+		const storeStatus = await this.service.getStatus();
+		if (storeStatus.storeProblem === 'unreadable' || storeStatus.storeProblem === 'undecryptable') {
+			const { confirmed } = await this.dialogService.confirm({
+				type: 'warning',
+				message: localize('paradis.mobile.discardStore', "モバイル連携の鍵を作り直しますか？"),
+				detail: storeStatus.pairedDevices.length > 0
+					? localize('paradis.mobile.discardStoreDetail', "保存した鍵を読み込めません。作り直すと、接続済みのモバイル {0} 台はすべて解除され、各端末で再ペアリングが必要になります。読めなかったデータは消さずに別名で残します。", storeStatus.pairedDevices.length)
+					: localize('paradis.mobile.discardStoreDetailEmpty', "保存した鍵を読み込めません。作り直してからペアリングします。読めなかったデータは消さずに別名で残します。"),
+				primaryButton: localize('paradis.mobile.discardStoreConfirm', "作り直す"),
+			});
+			if (!confirmed) {
+				return;
+			}
+			try {
+				await this.service.discardUnreadableState();
+			} catch (err) {
+				this.notificationService.error(localize('paradis.mobile.discardStoreFailed', "読み込めなかったデータを退避できなかったため、作り直しを中止しました: {0}", String(err)));
+				return;
+			}
 		}
 
 		// リレーがこのPCの資格情報を拒否している場合、同じ資格情報のままでは何度試しても
@@ -914,8 +990,15 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	async showActionMenu(): Promise<void> {
 		const status = await this.service.getStatus();
 		const enabled = this.isEnabled();
-		type MenuItem = IQuickPickItem & { readonly action: 'pair' | 'manage' | 'disable' | 'enable' };
+		type MenuItem = IQuickPickItem & { readonly action: 'retryStore' | 'pair' | 'manage' | 'disable' | 'enable' };
 		const items: MenuItem[] = [];
+		if (enabled && (status.storeProblem === 'unreadable' || status.storeProblem === 'undecryptable')) {
+			items.push({
+				action: 'retryStore',
+				label: localize('paradis.mobile.menu.retryStore', "保存した鍵を読み込み直す"),
+				description: localize('paradis.mobile.menu.retryStoreDesc', "キーチェーンへのアクセスを許可した後に使います"),
+			});
+		}
 		if (enabled) {
 			items.push({
 				action: 'pair',
@@ -948,6 +1031,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			return;
 		}
 		switch (picked.action) {
+			case 'retryStore':
+				await this.retryStoreLoad();
+				break;
 			case 'pair':
 				await this.runPairing();
 				break;
