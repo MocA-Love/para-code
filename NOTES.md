@@ -1279,6 +1279,26 @@ macOS/Linuxの「ペインごとのCodex app-server」（`resources/paradis/bin/
 - **後始末**: TUI終了時にランチャーが所有するapp-serverをkill（Windowsは`taskkill /T /F`）。Windows Terminalのタブ閉じはNodeがSIGHUP（CTRL_CLOSE_EVENT）として受けるためそこでも掃除する。それでも残った孤児は「pidが死んでいるendpointファイルの起動時sweep」と「同一ペインの次回起動時のowner死亡検出→採用(adopt)→終了時掃除」で回収する
 - **梱包**: `build/gulpfile.vscode.ts` で win32 のみ `.cmd`/`.ps1`/`.js` の3点を、非win32はshランチャーのみを同梱（PARA-PATCH済）
 
+### 接続と通知（Orca W2 の L5: W2-25 / W2-22 / W2-34 / W2-27 / W2-35、2026-09-29）
+
+デプロイは**リレー → PC → アプリ**の順。リレーのデプロイが要るのは W2-35 だけで、W2-25 と W2-22 はアプリだけ、W2-34 と W2-27 は PC とアプリ（リレーは変えていない）。どれも足すだけの変更で、版（3）は上げていない。
+
+| 組み合わせ | W2-34（裏で30秒保つ） | W2-27（次のプッシュで消す） | W2-35（取り消しの送り直し・失効） |
+|---|---|---|---|
+| 旧アプリ × 新PC | 旧アプリは `visibility` を送らないので今までどおり即座に閉じる | 旧 NSE は `dismiss` を読まない（何も消えない） | PC の送り直しは効く。失効を有効にした後は、旧アプリ（W2-04 より前）は理由の分からない再接続を続ける |
+| 新アプリ × 旧PC | PC が `conn.background-grace.v1` を広告しないので送らず、即座に閉じる | PC が `dismiss` を載せないので何も消えない | 旧PCは一度きりの取り消しのまま |
+| 新アプリ × 新PC × 旧リレー | 効く（リレーは素通し） | 効く（暗号文の中なのでリレーに関係ない） | PC の送り直しは効く（旧リレーも `mobile/revoke` は同じ）。`lastSeenAt` と失効は無い |
+| 新アプリ × 新PC × 新リレー | 効く | 効く | 効く。失効は `MOBILE_CREDENTIAL_TTL_DAYS` を入れるまで無効 |
+
+- **W2-25 前回の一覧**: `app/mobile/src/lastKnownPcs.ts`（純関数）と `lastKnownPcStore.ts`（ファイル）。State を受けたとき、完全な State（`complete`・`sessionProtocolReady`・版が合う）だけからスペース名と件数・状態を作り、outbox と同じ通知鍵（`deriveNotifyKey`）で封緘して `documentDirectory/last-known-pc.v1.<pcId>` へ書く（1.5秒まとめ、同じ中身は1分に1回まで）。封緘の中に `purpose` と `pcId` を入れ、別の PC・別の用途のファイルは開けない扱いにする。題名は残さない（Q118 A）。`PcSummary.lastKnown` は表示専用で、件数・`totalAttention`・起動の ＋ の判定には使わない。ホームの PC のカードと PC の画面（`features/pc/lastKnownPcList.tsx`、押せない一覧）に出し、画面は AuthGate の内側にしか無いので Face ID の前には描かれない（読み込み自体は `init` で行う）。解除した PC のファイルは消す
+- **W2-22 接続の記録**: `RelayClient` の `onConnectionEvent` → `MobileController.onConnectionEvent` → `connectionLog`（`connectionLog.ts` / `connectionLogStore.ts`）。PC ごとに 200 件、`documentDirectory/connection-log.v1.<pcId>`、500ms まとめて書き、裏に回るときに書き出す。OS のエラー文は URL・長い英数字・16進・IP・メールを伏せる。回線の変化（W2-05）と W2-34 の保持の出来事も残す。診断（`connectionDiagnostics.ts`）は PC の数・インターネット（`expo-network` の `isInternetReachable`。外部サイトへは問い合わせない）・リレー（ルートへの GET。**リレーに `/health` は無く 404 が返る**ので、HTTP の応答があれば「届いた」、5xx は注意）・PC がオンラインか・版。報告はクリップボードへのコピーだけで、PC の名前・リレーの URL・識別子を入れない。画面は `/settings/connection-log`（設定の「PC」の下）
+- **W2-34 裏で30秒保つ**: アプリは裏に回ったとき、PC が `conn.background-grace.v1` を広告していれば notify チャネルに `{ t: 'visibility', state: 'background', id }` を送り、`{ t: 'visibility-ack' }` を 2 秒待つ（`backgroundGrace.ts`）。確認が来た PC だけ `RelayClient.holdInBackground()` で保ち、それ以外は今までどおり `suspend`。**保っている間は張り直さない**: 切れた・張り直そうとした（PC の再起動、生存確認、回線の変化）ときは suspend と同じ状態に落とす（新しい接続は PC から前面のアプリに見え、裏の通知がプッシュにならないため）。PC は `MobileSession.backgrounded` を立て、`paradisResolveNotifyDelivery` の `appBackgrounded` で受信が新しくても信用しない（プッシュ＋フレームは `quiet: 'pushed'`）。アプリは裏ではバナーを出さない（`notificationPolicy.ts` のまま）。前面に戻ったら `{ t: 'visibility', state: 'foreground' }` を送り、PC は取り置きを鳴らさない形で流し直す。期限は時刻で持ち、裏でタイマーが止まって過ぎていたら閉じてから張り直す。音声通知で接続を保っている間はこの仕組みを通さない。コーデックは `app/protocol/src/notify.ts` と PC の `common/paradisMobileVisibility.ts`（逐語、`app/protocol/test/visibilitySync.test.ts` が突き合わせる）
+- **W2-27 次のプッシュで消す**: PC は出した通知と片付いた通知を `common/paradisNotifyDismissLedger.ts` に覚える（200 件）。片付いたとみなすのは、スマホがその通知を開いた・消した（`dismiss`）ときと、PC がそのエージェントのペインを確認済みにした・ターミナルが終わった（`onDidAcknowledgePane`）とき（**確認より前に出した通知だけ**。後から出た許可・質問は消させない）。次のプッシュの暗号文に `dismiss`（片付いてから24時間以内、新しい順に10件）を載せる。値は通知 ID を通知鍵から用途別に作った鍵で HMAC にした16進32桁（`paradisMobileDismissTags`。鍵が全バイト 1 のとき `n1` → `f6bbbd12fc1fd39b8cddf0d5c0f1f5df`、Swift の CryptoKit でも同じ値になることを確認済み）。載せると上限（3800B）を超えるときは載せない（本文を削ってまで載せない）。NSE は復号に使えた鍵で通知センターの `notifyId`（プッシュは userInfo の最上位、ローカル通知は `userInfo["body"]`）から同じ値を作って消す。サイレントプッシュ・`expo-task-manager` は使っていない（Q119 A）
+- **W2-35 取り消しの送り直しと失効**: PC は「デバイスの管理」で外したスマホの取り消しを、台帳から外すのと同じ書き込みで `pendingRelayRevokes`（`common/paradisRelayRevokeOutbox.ts`、最大64件）に積み、リレーへつながったときと、30秒〜10分の揺らぎ付きの間隔で送り直す。済んだとみなすのは 2xx と 404 だけ（**以前は 401 や 5xx も成功扱いだった**）。400 などの 4xx は捨て、登録し直した（deviceId が変わった）後の古い分も捨てる。リレーは `mobiles.lastSeenAt` を記録する（列を足したときに既存の行へ今の時刻を入れる。モバイルの接続と TURN の発行で、1時間に1回まで書く）。失効は環境変数 `MOBILE_CREDENTIAL_TTL_DAYS`（下限7日）を入れたときだけ、alarm で1日1回行い、行を消して 4404 で閉じ、PC がつながっていれば `mobile-revoked`、いなければ `pc_notices` に積んで次に PC がつながったときに送る。**既定は無効**。W2-04 を載せたアプリが行き渡ってから 90 を入れる。資格の定期的な入れ替えは入れていない（Q127 A）
+- **ネイティブの反映**: `app/mobile/native/NotifyExtension/NotificationService.swift` を `app/mobile/ios/NotifyExtension/` へ写して再ビルドする（W2-27）。新しいネイティブ依存・pod は無い。prebuild は不要
+- **リレーのデプロイ（未実施）**: W2-35 の分はデプロイが要る。`app/relay` で `CLOUDFLARE_ACCOUNT_ID=<アカウントID> npx wrangler deploy`（`wrangler.jsonc` は account_id を持たない）。DO のスキーマは列とテーブルを足すだけで、`migrations` の追加は要らない
+- **残した課題**: スマホ側で解除したときのリレーへの取り消しの送り直し（設計の手順2）と、PC がリレーの一覧と突き合わせる `GET /device/:id/mobiles`（手順4）は入れていない。失効を有効にした後に PC がつながっていなかった分は `pc_notices` で補う
+
 ## モバイルアプリの配信手順（2026-08-06整備、アーカイブ前に必ず読む）
 
 `app/mobile/ios/` は `app/.gitignore` で**まるごと無視されている**（Expo prebuild の成果物という扱いのため）。したがって **`app.json` の `version` を上げても、実際にアーカイブされるバイナリのバージョンは変わらない**。`npx expo prebuild` は禁止（手動追加の `NotifyExtension` と `ParaCodeWidgets` が消える）なので、`ios/` 側は手で合わせる。
