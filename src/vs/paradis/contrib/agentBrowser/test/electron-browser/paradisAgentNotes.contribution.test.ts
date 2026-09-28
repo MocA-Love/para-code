@@ -34,6 +34,10 @@ class FakeSpaceNotesService implements IParadisSpaceNotesService {
 		return this.notes.get(stateKey)?.text ?? '';
 	}
 
+	readEntry(stateKey: string): IParadisSpaceNote | undefined {
+		return this.notes.get(stateKey);
+	}
+
 	summary(stateKey: string): IParadisSpaceNoteSummary {
 		return paradisSpaceNoteSummary(this.read(stateKey));
 	}

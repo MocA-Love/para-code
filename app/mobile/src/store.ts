@@ -248,6 +248,19 @@ export function mergeWorkspaceState(previous: WorkspaceState | undefined, incomi
 export interface SpaceNoteResult {
 	ws: string;
 	text: string;
+	/** メモの版（書くたびに増える。メモが無ければ 0）。`note.cas.v1` より前の PC は送らない。 */
+	updatedAt?: number;
+	/** 版が合わない・切り替える行がもう無いので書かなかった。`text` / `updatedAt` は PC の最新。 */
+	conflict?: boolean;
+}
+/**
+ * noteSet の任意項目（`note.cas.v1` を広告する PC だけが見る。古い PC は無視して `text` で上書きする）。
+ * - `op`: チェックの切り替え・1件の追加を、PC のいまの本文に当てる（読んだ後の PC の書き足しを消さない）
+ * - `base`: 読んだときの版。PC の版と違えば書かずに最新を返す
+ */
+export interface SpaceNoteSetOptions {
+	base?: number;
+	op?: { kind: 'toggle'; line: number; lineText: string } | { kind: 'append'; entry: string };
 }
 /** コマンドプリセットの1タスク（＝PC側で1つ作られるターミナル）。 */
 export interface PresetTask {
@@ -3463,8 +3476,12 @@ export class MobileController {
 	}
 
 	/** スペースのメモ本文を更新する。PC側の表示・未完了バッジにも即反映される。 */
-	noteSet(ws: string, text: string): Promise<SpaceNoteResult> {
-		return this.request<SpaceNoteResult>('scm', { t: 'noteSet', ws, text });
+	noteSet(ws: string, text: string, options?: SpaceNoteSetOptions): Promise<SpaceNoteResult> {
+		return this.request<SpaceNoteResult>('scm', {
+			t: 'noteSet', ws, text,
+			...(options?.base !== undefined ? { base: options.base } : {}),
+			...(options?.op !== undefined ? { op: options.op } : {}),
+		});
 	}
 
 	/** ディレクトリ一覧（ワークスペースルート相対パス）。 */
