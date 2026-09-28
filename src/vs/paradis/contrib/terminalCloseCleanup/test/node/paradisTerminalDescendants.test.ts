@@ -13,10 +13,10 @@ import { isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisProcessRow } from '../../common/paradisTerminalCloseCleanup.js';
-import { IParadisDescendantStopDeps, paradisCaptureShellDescendants, paradisDescendantStopDeps, paradisStopCapturedDescendants } from '../../node/paradisTerminalDescendants.js';
+import { IParadisDescendantStopDeps, paradisCaptureShellDescendants, paradisDescendantStopDeps, ParadisShutdownOrder, paradisShutdownStoppingDescendants, paradisStopCapturedDescendants } from '../../node/paradisTerminalDescendants.js';
 
 function row(pid: number, ppid: number, command: string, startedAt: number = 100): IParadisProcessRow {
-	return { pid, ppid, pgid: pid, startedAt, command };
+	return { pid, ppid, pgid: pid, startedAt, command, tty: '??' };
 }
 
 /** 偽の外の世界。表は段階ごとに差し替える。 */
@@ -71,11 +71,27 @@ suite('paradisTerminalDescendants', () => {
 			kept: report.kept.map(r => r.pid),
 		}, {
 			captured: [11, 12, 13, 14],
-			events: ['wait 2000', 'lookup 11,12,13,14', 'probe 11,12,13', 'SIGTERM 11', 'SIGTERM 13', 'wait 2000', 'lookup 11,13'],
+			events: ['wait 2000', 'lookup 11,12,13,14', 'probe 11,12,13', 'SIGTERM 11', 'SIGTERM 13', 'wait 8000', 'lookup 11,13'],
 			terminated: [11, 13],
 			killed: [],
 			kept: [12],
 		});
+	});
+
+	// レビュー H2: アプリの中の pty ホストでは、シェルへの終了を表の撮影で遅らせない。常駐の中でだけ待つ。
+	test('the in-app order ends the shell right away; the daemon order ends it once the table is taken', async () => {
+		const order: string[] = [];
+		const make = () => {
+			const { deps } = fakeDeps({ snapshot: [row(10, 1, 'zsh')], looks: [], ignored: new Map() });
+			return { ...deps, snapshot: async () => { order.push('snapshot'); return deps.snapshot(); } };
+		};
+		const alongside = paradisShutdownStoppingDescendants(10, () => order.push('end:alongside'), Promise.resolve(), new NullLogService(), ParadisShutdownOrder.CaptureAlongside, make());
+		order.push('returned:alongside');
+		await alongside.done;
+		const first = paradisShutdownStoppingDescendants(10, () => order.push('end:first'), Promise.resolve(), new NullLogService(), ParadisShutdownOrder.CaptureFirst, make());
+		order.push('returned:first');
+		await first.done;
+		assert.deepStrictEqual(order, ['snapshot', 'end:alongside', 'returned:alongside', 'snapshot', 'returned:first', 'end:first']);
 	});
 
 	test('does nothing when the process table cannot be read again', async () => {
@@ -124,7 +140,7 @@ suite('paradisTerminalDescendants', () => {
 	});
 	// 本物のシグナルで一巡させる。対象はこのテストが起こしたシェルの子だけ。
 	(isWindows ? test.skip : test)('stops a background job of a dead shell for real and keeps the one that ignores hangup', async function () {
-		this.timeout(20_000);
+		this.timeout(30_000);
 		const shell = spawn('/bin/sh', ['-c', 'sleep 30 & (trap "" HUP; exec sleep 31) & wait'], { stdio: 'ignore' });
 		const alive = (pid: number) => {
 			try {

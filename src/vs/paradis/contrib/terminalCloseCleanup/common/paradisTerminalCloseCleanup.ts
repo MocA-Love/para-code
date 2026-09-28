@@ -18,6 +18,10 @@
 //     （同じ秒の中で pid が再利用されると見分けられないため）。
 //  4. SIGHUP を無視しているもの（`nohup`）と、その下にいるものは残す。無視しているかが
 //     読めないときも残す（分からないものは止めない）。
+//  5. シェルとは別の端末（pty）を持つプロセスを含む部分木には触らない。GNU screen の SCREEN は
+//     シェルの子孫のまま残り、SIGHUP も無視していない（実測）ので、4 だけでは中のセッションごと
+//     止めてしまう。保険として screen / dtach / abduco / tmux の名前の部分木も外す。端末を持たない
+//     もの（`detached` で起動された裏タスクなど）はこの規則では外さない。
 
 import { IProcessEnvironment, isWindows } from '../../../../base/common/platform.js';
 
@@ -35,8 +39,8 @@ export const PARADIS_TERMINAL_KEEP_BACKGROUND_ENV = 'PARA_CODE_TERMINAL_KEEP_BAC
 
 /** シェルが終わってから、残ったものに SIGTERM を送るまでの猶予。 */
 export const PARADIS_CLOSE_CLEANUP_GRACE_MS = 2_000;
-/** SIGTERM から SIGKILL までの猶予。 */
-export const PARADIS_CLOSE_CLEANUP_KILL_GRACE_MS = 2_000;
+/** SIGTERM から SIGKILL までの猶予。後片付けに時間のかかるサーバーもあるので長めに取る。 */
+export const PARADIS_CLOSE_CLEANUP_KILL_GRACE_MS = 8_000;
 /** シェルの終了を待つ上限。来なくても猶予の後に進む。 */
 export const PARADIS_CLOSE_CLEANUP_EXIT_WAIT_MS = 10_000;
 /** `ps` の打ち切り。 */
@@ -77,20 +81,29 @@ export interface IParadisProcessRow {
 	readonly startedAt: number;
 	/** 実行ファイル名（パスを除いた名前だけ）。ログに書くのはこれだけで、引数は持たない。 */
 	readonly command: string;
+	/** 制御端末（macOS は `ttys003`、Linux は `pts/3`。持たないものは `??` / `?`）。 */
+	readonly tty: string;
+	/** セッション ID（Linux だけ。macOS の `ps` には無い）。 */
+	readonly sid?: number;
 }
 
-/** `ps -A -o pid=,ppid=,pgid=,lstart=,comm=` を `LC_ALL=C` で撮ったときの引数。macOS と Linux で共通。 */
-export const PARADIS_PS_COLUMNS = 'pid=,ppid=,pgid=,lstart=,comm=';
+/** `ps -A -o <これ>` を `LC_ALL=C` で撮る。macOS の `ps` には `sid` が無いので Linux だけ足す。 */
+export function paradisPsColumns(withSid: boolean): string {
+	return withSid ? 'pid=,ppid=,pgid=,sid=,tty=,lstart=,comm=' : 'pid=,ppid=,pgid=,tty=,lstart=,comm=';
+}
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-const PS_LINE = /^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<pgid>\d+)\s+[A-Z][a-z]{2}\s+(?<month>[A-Z][a-z]{2})\s+(?<day>\d{1,2})\s+(?<hour>\d{1,2}):(?<minute>\d{2}):(?<second>\d{2})\s+(?<year>\d{4})\s*(?<command>.*)$/;
+const PS_DATE = String.raw`[A-Z][a-z]{2}\s+(?<month>[A-Z][a-z]{2})\s+(?<day>\d{1,2})\s+(?<hour>\d{1,2}):(?<minute>\d{2}):(?<second>\d{2})\s+(?<year>\d{4})\s*(?<command>.*)$`;
+const PS_LINE = new RegExp(String.raw`^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<pgid>\d+)\s+(?<tty>\S+)\s+` + PS_DATE);
+const PS_LINE_WITH_SID = new RegExp(String.raw`^\s*(?<pid>\d+)\s+(?<ppid>\d+)\s+(?<pgid>\d+)\s+(?<sid>\d+)\s+(?<tty>\S+)\s+` + PS_DATE);
 
-/** `ps` の出力を読む。読めない行は捨てる（1 行の崩れで全部を諦めない）。 */
-export function paradisParsePsRows(output: string): IParadisProcessRow[] {
+/** `ps` の出力を読む。読めない行は捨てる（1 行の崩れで全部を諦めない）。`withSid` は {@link paradisPsColumns} と揃える。 */
+export function paradisParsePsRows(output: string, withSid: boolean = false): IParadisProcessRow[] {
+	const pattern = withSid ? PS_LINE_WITH_SID : PS_LINE;
 	const rows: IParadisProcessRow[] = [];
 	for (const line of output.split('\n')) {
-		const groups = PS_LINE.exec(line)?.groups;
+		const groups = pattern.exec(line)?.groups;
 		if (!groups) {
 			continue;
 		}
@@ -109,19 +122,38 @@ export function paradisParsePsRows(output: string): IParadisProcessRow[] {
 			pgid: Number(groups.pgid),
 			startedAt,
 			command: command.slice(command.lastIndexOf('/') + 1),
+			tty: groups.tty,
+			...(groups.sid !== undefined ? { sid: Number(groups.sid) } : {}),
 		});
 	}
 	return rows;
 }
 
+/** 制御端末を持っているか（`??`・`?`・`-` は持っていない）。 */
+function paradisHasTerminal(tty: string): boolean {
+	return tty.length > 0 && !/^[?-]+$/.test(tty);
+}
+
+/** 端末を多重化する道具（中のセッションごと止めてしまうので、部分木ごと触らない）。 */
+const TERMINAL_MULTIPLEXERS = /^(?:screen|dtach|abduco|tmux)(?:[:\s-].*)?$/i;
+
 /**
  * シェルの子孫を集める（シェル自身は含めない）。
  *
- * `bornBefore`（epoch 秒）以降に生まれたものは入れない。表を撮った秒に生まれたものは、同じ秒の
- * 中で pid が再利用されると開始時刻で見分けられないため。`excluded` は自分や親など、決して
- * 止めてはいけない pid。上限を超えたら何も返さない（異常な木に手を出さない）。
+ * - 親子関係はシェルから辿る。Linux ではシェルと同じセッション（sid）のものも足す。シェルが先に
+ *   終わると子は引き取られて親子では辿れなくなるので、表を撮るのがシェルの終了と競ったときの保険。
+ * - `bornBefore`（epoch 秒）以降に生まれたものは入れない。表を撮った秒に生まれたものは、同じ秒の
+ *   中で pid が再利用されると開始時刻で見分けられないため。`excluded` は自分や親など、決して
+ *   止めてはいけない pid。
+ * - シェルと別の端末を持つもの（screen の中のシェル等）がいれば、それと、シェルの端末を持つ祖先の
+ *   手前までの祖先（screen の SCREEN 等）と、それらの下の木を外す。シェルの端末を持つ祖先（その
+ *   screen を起動したエージェント等）とその兄弟は外さない（外しすぎない）。端末を持たないもの
+ *   （`detached` で起動された裏タスク）は外さない。screen / dtach / abduco / tmux の名前の部分木も外す。
+ * - 上限を超えたら何も返さない（異常な木に手を出さない）。
  */
 export function paradisCollectShellDescendants(rows: readonly IParadisProcessRow[], shellPid: number, bornBefore: number, excluded: ReadonlySet<number>): IParadisProcessRow[] {
+	const byPid = new Map(rows.map(row => [row.pid, row]));
+	const shell = byPid.get(shellPid);
 	const children = new Map<number, IParadisProcessRow[]>();
 	for (const row of rows) {
 		if (row.pid === row.ppid) {
@@ -134,28 +166,64 @@ export function paradisCollectShellDescendants(rows: readonly IParadisProcessRow
 		}
 		list.push(row);
 	}
-	const result: IParadisProcessRow[] = [];
-	const seen = new Set<number>([shellPid]);
-	const queue = [shellPid];
+	const eligible = (row: IParadisProcessRow) => row.pid > 1 && row.pid !== shellPid && !excluded.has(row.pid) && row.startedAt < bornBefore;
+
+	// 候補を集める。親子で辿ったものと、（Linux では）同じセッションのものの木。
+	const candidates = new Map<number, IParadisProcessRow>();
+	const queue: number[] = [shellPid];
+	for (const row of rows) {
+		if (shellPid > 1 && row.sid === shellPid && eligible(row)) {
+			candidates.set(row.pid, row);
+			queue.push(row.pid);
+		}
+	}
 	while (queue.length > 0) {
 		const parent = queue.shift()!;
 		for (const child of children.get(parent) ?? []) {
-			if (seen.has(child.pid)) {
+			if (candidates.has(child.pid) || !eligible(child)) {
+				// 生まれた秒が新しすぎるものは、その下も同じく新しいので辿らない。
 				continue;
 			}
-			seen.add(child.pid);
-			// 生まれた秒が新しすぎるものは、その下も同じく新しいので辿らない。
-			if (child.pid <= 1 || excluded.has(child.pid) || child.startedAt >= bornBefore) {
-				continue;
-			}
-			result.push(child);
-			if (result.length > PARADIS_CLOSE_CLEANUP_MAX_TARGETS) {
+			candidates.set(child.pid, child);
+			if (candidates.size > PARADIS_CLOSE_CLEANUP_MAX_TARGETS) {
 				return [];
 			}
 			queue.push(child.pid);
 		}
 	}
-	return result;
+
+	// 触らない木の根を決める。
+	const shellTty = shell !== undefined && paradisHasTerminal(shell.tty) ? shell.tty : undefined;
+	const untouchable = new Set<number>();
+	for (const row of candidates.values()) {
+		if (TERMINAL_MULTIPLEXERS.test(row.command)) {
+			untouchable.add(row.pid);
+		}
+		if (!paradisHasTerminal(row.tty) || row.tty === shellTty) {
+			continue;
+		}
+		// シェルと別の端末を持つ。シェルの端末を持つ祖先の手前まで遡って外す（シェルの端末が
+		// 分からないときは、候補の中の祖先を全部外す＝止めない側へ倒す）。
+		for (let current: IParadisProcessRow | undefined = row, depth = 0; current !== undefined && candidates.has(current.pid) && depth <= PARADIS_CLOSE_CLEANUP_MAX_TARGETS; current = candidates.get(current.ppid), depth++) {
+			if (current !== row && shellTty !== undefined && current.tty === shellTty) {
+				break;
+			}
+			untouchable.add(current.pid);
+		}
+	}
+	const dropped = new Set<number>();
+	const dropQueue = [...untouchable];
+	while (dropQueue.length > 0) {
+		const pid = dropQueue.shift()!;
+		if (dropped.has(pid)) {
+			continue;
+		}
+		dropped.add(pid);
+		for (const child of children.get(pid) ?? []) {
+			dropQueue.push(child.pid);
+		}
+	}
+	return [...candidates.values()].filter(row => !dropped.has(row.pid));
 }
 
 /** 撮ったときと同じプロセスか（pid の再利用を見分ける）。親は引き取りで変わるので見ない。 */

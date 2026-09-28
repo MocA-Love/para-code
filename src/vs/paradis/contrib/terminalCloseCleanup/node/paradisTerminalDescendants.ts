@@ -19,7 +19,7 @@
 import { execFile } from 'child_process';
 import { promises as fs } from 'fs';
 import { raceTimeout, timeout } from '../../../../base/common/async.js';
-import { isMacintosh } from '../../../../base/common/platform.js';
+import { isLinux, isMacintosh } from '../../../../base/common/platform.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
 	IParadisProcessRow,
@@ -34,7 +34,7 @@ import {
 	PARADIS_CLOSE_CLEANUP_GRACE_MS,
 	PARADIS_CLOSE_CLEANUP_KILL_GRACE_MS,
 	PARADIS_CLOSE_CLEANUP_PS_TIMEOUT_MS,
-	PARADIS_PS_COLUMNS,
+	paradisPsColumns,
 } from '../common/paradisTerminalCloseCleanup.js';
 
 /** 表 1 枚。 */
@@ -124,20 +124,42 @@ export async function paradisStopCapturedDescendants(captured: readonly IParadis
 	return report;
 }
 
+/** 本来の終了と、表の撮影の順序。 */
+export const enum ParadisShutdownOrder {
+	/**
+	 * 表を撮り始めてから、すぐに本来の終了を呼ぶ（待たない）。アプリの中の pty ホストはアプリと一緒に
+	 * 落ちうるので、シェルへの終了を遅らせない。撮り始めた時点でシェルはまだ生きているので、通常の
+	 * 閉じ方（出力を流し切ってから終わらせる）なら取りこぼさない。
+	 */
+	CaptureAlongside,
+	/**
+	 * 表を撮り終えてから本来の終了を呼ぶ（最大 1 秒遅れる）。アプリより長く生きる常駐の中でだけ使う。
+	 * 常駐はシェルを SIGKILL で終わらせることがあり、そのときは撮る前に子が引き取られてしまうため。
+	 */
+	CaptureFirst,
+}
+
 /**
- * 本来の終了（`shutdown`）を、撮る処理と止める処理で挟む。`shutdown` は必ず呼ぶ。
- * 止める処理はシェルの終了を待ってから裏で走るので、呼び出し側は待たない。
+ * 本来の終了（`shutdown`）と、撮る処理・止める処理を組み合わせる。`shutdown` は必ず 1 回呼ぶ。
+ * 止める処理はシェルの終了を待ってから裏で走るので、呼び出し側は待たない。返す約束は、止める処理まで
+ * 終わったときに解ける（常駐が、手放す前に待つのに使う）。
  */
-export function paradisShutdownStoppingDescendants(shellPid: number, shutdown: () => void, exited: Promise<unknown>, logService: ILogService, deps: IParadisDescendantStopDeps = paradisDescendantStopDeps(logService)): void {
-	void (async () => {
-		let captured: readonly IParadisProcessRow[] = [];
-		try {
-			captured = await paradisCaptureShellDescendants(shellPid, deps);
-		} catch (error) {
-			logService.trace(`${LOG_PREFIX} capture failed`, error);
-		} finally {
-			shutdown();
-		}
+export function paradisShutdownStoppingDescendants(shellPid: number, shutdown: () => void, exited: Promise<unknown>, logService: ILogService, order: ParadisShutdownOrder, deps: IParadisDescendantStopDeps = paradisDescendantStopDeps(logService)): { readonly ended: Promise<void>; readonly done: Promise<void> } {
+	// 撮影はここで同期的に始まる（`ps` を起こすところまでが同期）。
+	const capturing = paradisCaptureShellDescendants(shellPid, deps).catch(error => {
+		logService.trace(`${LOG_PREFIX} capture failed`, error);
+		return [] as readonly IParadisProcessRow[];
+	});
+	let ended: Promise<void>;
+	if (order === ParadisShutdownOrder.CaptureAlongside) {
+		shutdown();
+		ended = Promise.resolve();
+	} else {
+		ended = capturing.then(() => shutdown(), () => shutdown());
+	}
+	const done = (async () => {
+		const captured = await capturing;
+		await ended;
 		if (captured.length === 0) {
 			return;
 		}
@@ -147,11 +169,13 @@ export function paradisShutdownStoppingDescendants(shellPid: number, shutdown: (
 			logService.warn(`${LOG_PREFIX} could not stop background processes`, error);
 		}
 	})();
+	return { ended, done };
 }
 
 function runPs(args: readonly string[]): Promise<{ stdout: string; code: number | undefined } | undefined> {
 	return new Promise(resolve => {
-		execFile('ps', [...args], {
+		// PATH に置かれた別の `ps` を使わない。
+		execFile('/bin/ps', [...args], {
 			timeout: PARADIS_CLOSE_CLEANUP_PS_TIMEOUT_MS,
 			maxBuffer: 16 * 1024 * 1024,
 			env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
@@ -172,15 +196,18 @@ function runPs(args: readonly string[]): Promise<{ stdout: string; code: number 
  * 進行中の表の撮影。同時に閉じたターミナルが続けて撮らないよう、撮っている最中なら相乗りする。
  * 撮り終えた表は再利用しない（その後に生まれたものを見落とすため）。
  */
+/** macOS の `ps` には `sid` が無い。 */
+const WITH_SID = isLinux;
+
 let inFlightSnapshot: Promise<IParadisProcessSnapshot | undefined> | undefined;
 
 async function takeSnapshot(): Promise<IParadisProcessSnapshot | undefined> {
 	const bornBefore = Math.floor(Date.now() / 1000);
-	const result = await runPs(['-A', '-o', PARADIS_PS_COLUMNS]);
+	const result = await runPs(['-A', '-o', paradisPsColumns(WITH_SID)]);
 	if (!result || result.code !== 0) {
 		return undefined;
 	}
-	return { rows: paradisParsePsRows(result.stdout), bornBefore };
+	return { rows: paradisParsePsRows(result.stdout, WITH_SID), bornBefore };
 }
 
 function snapshot(): Promise<IParadisProcessSnapshot | undefined> {
@@ -196,8 +223,8 @@ async function lookup(pids: readonly number[]): Promise<readonly IParadisProcess
 	if (pids.length === 0) {
 		return [];
 	}
-	const result = await runPs(['-o', PARADIS_PS_COLUMNS, '-p', pids.join(',')]);
-	return result ? paradisParsePsRows(result.stdout) : undefined;
+	const result = await runPs(['-o', paradisPsColumns(WITH_SID), '-p', pids.join(',')]);
+	return result ? paradisParsePsRows(result.stdout, WITH_SID) : undefined;
 }
 
 /**
@@ -234,7 +261,7 @@ const DARWIN_HANGUP_PROBE = [
 /** 調べ役の打ち切り。`osascript` の起動は 0.1 秒ほど。 */
 const DARWIN_PROBE_TIMEOUT_MS = 3_000;
 
-function probeDarwin(rows: readonly IParadisProcessRow[]): Promise<Map<number, boolean | undefined>> {
+function runDarwinProbe(rows: readonly IParadisProcessRow[]): Promise<Map<number, boolean | undefined>> {
 	return new Promise(resolve => {
 		execFile('/usr/bin/osascript', ['-l', 'JavaScript', '-e', DARWIN_HANGUP_PROBE, ...rows.map(row => String(row.pid))], {
 			timeout: DARWIN_PROBE_TIMEOUT_MS,
@@ -243,6 +270,25 @@ function probeDarwin(rows: readonly IParadisProcessRow[]): Promise<Map<number, b
 			resolve(paradisParseDarwinHangupProbe(error ? '' : stdout, rows));
 		});
 	});
+}
+
+/** 近い時刻に来た問い合わせを束ねる待ち時間（まとめて閉じたターミナルの分を `osascript` 1 回で読む）。 */
+const DARWIN_PROBE_BATCH_MS = 100;
+
+let pendingDarwinProbe: { readonly rows: IParadisProcessRow[]; readonly result: Promise<Map<number, boolean | undefined>> } | undefined;
+
+function probeDarwin(rows: readonly IParadisProcessRow[]): Promise<Map<number, boolean | undefined>> {
+	if (pendingDarwinProbe === undefined) {
+		const batch: IParadisProcessRow[] = [];
+		const result = timeout(DARWIN_PROBE_BATCH_MS).then(() => {
+			pendingDarwinProbe = undefined;
+			return runDarwinProbe(batch);
+		});
+		pendingDarwinProbe = { rows: batch, result };
+	}
+	pendingDarwinProbe.rows.push(...rows);
+	const wanted = new Set(rows.map(row => row.pid));
+	return pendingDarwinProbe.result.then(all => new Map([...all].filter(([pid]) => wanted.has(pid))));
 }
 
 async function probeLinux(rows: readonly IParadisProcessRow[]): Promise<Map<number, boolean | undefined>> {
