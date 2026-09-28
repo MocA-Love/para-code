@@ -1014,9 +1014,9 @@ suite('Paradis CDP screenshot filter', () => {
 				{ id: 10, sessionId: 'session-1', result: { value: 1 } },
 			],
 			reports: [
-				{ operation: 'cdp-frame-dropped', extra: { transport: 'browser', safe_method: 'Network.getResponseBody', safe_frame_mib: 33, safe_is_response: true } },
-				{ operation: 'cdp-frame-dropped', extra: { transport: 'browser', safe_method: 'Runtime.consoleAPICalled', safe_frame_mib: 33, safe_is_response: false } },
-				{ operation: 'cdp-frame-dropped', extra: { transport: 'browser', safe_method: 'Target.attachToTarget', safe_frame_mib: 33, safe_is_response: true } },
+				{ operation: 'cdp-frame-dropped', extra: { transport: 'browser', safe_method: 'Network.getResponseBody', safe_frame_mib: 33, safe_is_response: true, safe_dropped_events: 0 } },
+				{ operation: 'cdp-event-dropped', extra: { transport: 'browser', safe_method: 'Runtime.consoleAPICalled', safe_frame_mib: 33 } },
+				{ operation: 'cdp-frame-dropped', extra: { transport: 'browser', safe_method: 'Target.attachToTarget', safe_frame_mib: 33, safe_is_response: true, safe_dropped_events: 1 } },
 			],
 		});
 	});
