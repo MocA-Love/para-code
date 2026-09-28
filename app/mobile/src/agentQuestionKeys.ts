@@ -140,3 +140,22 @@ export function agentQuestionKeySequence(
 export function agentQuestionNeedsReviewSubmit(questions: readonly AgentQuestionShape[]): boolean {
 	return !(questions.length === 1 && questions[0]?.multiSelect === false);
 }
+
+/**
+ * 回答APIを持たない古いPCへ許可・拒否を直接打鍵で送るときのキー列（1要素＝1回ぶんの入力）。
+ *  - Claude の許可: `1` だけ。Claude Code の許可ダイアログは番号キーで即確定するので、Enter を足すと
+ *    確定後のプロンプトへ改行が落ちる（Q93。PC側の打鍵と同じ）
+ *  - Claude の拒否: Esc（選択肢の数に依らずキャンセル＝拒否になる。番号固定だと、「Always Allow」の
+ *    無いプロンプトでは範囲外になって拒否が黙って失敗する）
+ *  - Codex: y / d のショートカット1文字（Enter 不要）
+ * 送れない選択肢なら undefined。
+ */
+export function agentApprovalKeySequence(agent: string | undefined, choice: string): readonly string[] | undefined {
+	if (choice !== 'yes' && choice !== 'no') {
+		return undefined;
+	}
+	if (agent === 'codex') {
+		return [choice === 'yes' ? 'y' : 'd'];
+	}
+	return choice === 'yes' ? ['1'] : ['\u001b'];
+}

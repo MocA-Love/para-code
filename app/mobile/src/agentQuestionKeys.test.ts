@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { agentQuestionKeySequence } from './agentQuestionKeys.js';
+import { agentApprovalKeySequence, agentQuestionKeySequence } from './agentQuestionKeys.js';
 
 const DOWN = '\u001b[B';
 const single = (optionCount: number) => ({ optionCount, multiSelect: false });
@@ -78,5 +78,18 @@ describe('agentQuestionKeySequence', () => {
 		expect(parts.filter(part => part.includes('\t'))).toEqual([]);
 		// 本文は失われず、タブが空白に置き換わって残る。
 		expect(parts.filter(part => part.startsWith('タブ'))).toEqual(['タブ を含む回答', 'タブ を含む回答']);
+	});
+});
+
+describe('agentApprovalKeySequence', () => {
+	it('Claude の許可は 1 だけ（Enter を足さない）、拒否は Esc、Codex は y / d', () => {
+		expect([
+			agentApprovalKeySequence('claude', 'yes'),
+			agentApprovalKeySequence('claude', 'no'),
+			agentApprovalKeySequence('codex', 'yes'),
+			agentApprovalKeySequence('codex', 'no'),
+			agentApprovalKeySequence(undefined, 'yes'),
+			agentApprovalKeySequence('claude', 'always'),
+		]).toEqual([['1'], ['\u001b'], ['y'], ['d'], ['1'], undefined]);
 	});
 });
