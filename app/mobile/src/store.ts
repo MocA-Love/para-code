@@ -856,6 +856,8 @@ export interface AgentSessionInfo {
 	model?: string;
 	/** reasoning effort（Codex: turn_context、Claude: settings.json の既定値 + /effort の実行記録）。 */
 	effort?: string;
+	/** 会話の指紋（W2-29）。ターミナルが閉じた後に「再開して送る」ときの宛先。 */
+	resumeKey?: string;
 }
 
 /** Codexモデルが広告するreasoning effort 1件。 */

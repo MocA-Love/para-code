@@ -34,7 +34,7 @@ import type { ConnectionState, PairedCredentials } from './relayClient.js';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
 import { setMobileDiagnosticCorrelationTag } from './mobileDiagnostics.js';
-import { configureNotificationHandler, createTerminalOperationOutboxStore, deleteLegacyNotifyKey, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, migrateLegacyTerminalOperationOutbox, persistNotifyKey, rnSocketFactory, secureKeyStore } from './platform.js';
+import { configureNotificationHandler, createAgentSendOutboxStore, createTerminalOperationOutboxStore, deleteLegacyNotifyKey, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, migrateLegacyTerminalOperationOutbox, persistNotifyKey, rnSocketFactory, secureKeyStore } from './platform.js';
 import { notifyCollapseKey } from './notificationTray.js';
 import { TrayReconcileRequests, dismissTrayHandledByPc, presentCollapsedNotification, reconcileTrayWithState } from './notificationTraySync.js';
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
@@ -662,6 +662,22 @@ function retireLegacyNotifyKey(): void {
  * ターミナル）も復元できないため通知をタップしてもホームのままになる。接続方針と切り離して
  * 「ペアリング済みの全PCぶん」を確保する。
  */
+/**
+ * PC に届かない間に預かったエージェントへの送信（W2-29）を暗号化する鍵。ターミナル操作のアウトボックスと同じく
+ * この端末の鍵とその PC の公開鍵から作る（ペアリングし直すと変わり、前の預かりは読めなくなる）。
+ */
+export function agentSendQueueKey(pcId: string): Uint8Array | undefined {
+	const pc = runtimes.get(pcId)?.pc;
+	if (identity === undefined || pc === undefined) {
+		return undefined;
+	}
+	try {
+		return deriveNotifyKey(identity.secretKey, pc.creds.pcPublicKey);
+	} catch {
+		return undefined;
+	}
+}
+
 function persistNotifyKeyFor(pc: PairedPc): void {
 	if (identity === undefined) {
 		return;
@@ -1470,6 +1486,8 @@ export const useAppStore = create<AppState>(set => ({
 			throw error;
 		}
 		runtimes.delete(id);
+		// PC に届かない間に預かった送信（W2-29）も捨てる。
+		await createAgentSendOutboxStore(id).clear().catch(err => console.warn('[appState] failed to clear the agent send outbox', err));
 		pcOrder = remaining.map(pc => pc.id);
 		if (remaining.length === 0) {
 			applyPairingCorrelationTag(undefined);

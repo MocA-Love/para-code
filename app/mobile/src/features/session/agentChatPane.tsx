@@ -8,6 +8,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { shouldShowQuickReplies } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
 import { approvalSuggestionNote } from '../../approvalOptions.js';
+import { AGENT_RESUME_CAPABILITY } from '../../agentSessions.js';
+import { enqueueAgentSend, useAgentSendLive } from '../../agentSendQueue.js';
+import { usePcCapability } from '../../hooks/usePcCapability.js';
 import { findLatestApprovalRequest } from '../../components/attentionStack.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { hapticImpact } from '../../haptics.js';
@@ -15,7 +18,7 @@ import { useAgentActions } from '../../hooks/useAgentActions.js';
 import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import type { SpaceTerminal } from '../../navigationTargets.js';
 import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../../pendingAgentMessages.js';
-import { pinKeyForTerminal, type AgentChatMessage } from '../../store.js';
+import { pinKeyForTerminal, type AgentChatMessage, type AgentMessageSendResult } from '../../store.js';
 import { colors, space, type } from '../../theme.js';
 import { EmptyState } from '../../ui/index.js';
 import { cardStyles } from './answerCardStyles.js';
@@ -24,6 +27,7 @@ import { ChatChromeRow, PendingMessagesDrawer, QuickReplies } from './chatChrome
 import { ChatList, type ChatListHandle } from './chatList.js';
 import { buildChatRows, questionRowId, splitPinnedQuestion } from './chatRows.js';
 import { PermissionCard } from './permissionCard.js';
+import { QueuedSendsBanner } from './queuedSends.js';
 import { SessionComposer, type SessionComposerHandle } from './sessionComposer.js';
 import { useAgentHistory } from './useAgentHistory.js';
 import { useApprovalOptions } from './useApprovalOptions.js';
@@ -94,16 +98,30 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	workingRef.current = working;
 	const chatEpoch = chat?.epoch;
 	const sendTextAction = actions.sendText;
+	// PC に届かない間の送信は、この端末に預かってつながったら送る（W2-29。対応した PC だけ）。
+	const live = useAgentSendLive();
+	const canQueue = usePcCapability(AGENT_RESUME_CAPABILITY);
+	const activePcId = useAppStore(s => s.activePcId);
+	const sourceId = useAppStore(s => s.workspace?.workspaces.find(space => space.id === terminal.ws)?.sourceId);
+	const resumeKey = chat?.info?.resumeKey;
 	const sendText = useCallback((text: string) => {
 		const afterRev = (messagesRef.current ?? []).reduce((max, message) => Math.max(max, message.rev), 0);
 		const wasWorking = workingRef.current;
+		if (!live && canQueue && activePcId !== undefined) {
+			return enqueueAgentSend(activePcId, text, {
+				kind: 'live', terminalKey, ...(sourceId !== undefined ? { ws: sourceId } : {}), ...(resumeKey !== undefined ? { resumeKey } : {}), title: terminal.title,
+			}).then(
+				(): AgentMessageSendResult => ({ status: 'accepted' }),
+				(error: unknown): AgentMessageSendResult => ({ status: 'rejected', message: error instanceof Error ? error.message : '送信を預かれませんでした' }),
+			);
+		}
 		return sendTextAction(text).then(result => {
 			if (wasWorking && result.status === 'accepted' && chatEpoch !== undefined) {
 				usePendingAgentMessages.getState().add(terminalKey, text, afterRev, chatEpoch);
 			}
 			return result;
 		});
-	}, [sendTextAction, terminalKey, chatEpoch]);
+	}, [sendTextAction, terminalKey, chatEpoch, live, canQueue, activePcId, sourceId, resumeKey, terminal.title]);
 	const messages = chat?.messages;
 	useEffect(() => {
 		usePendingAgentMessages.getState().reconcile(
@@ -234,6 +252,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 					</ScrollView>
 				) : null}
 				{showQuickReplies ? <QuickReplies onPick={insertQuickReply} /> : null}
+				<QueuedSendsBanner pcId={activePcId} terminalKey={terminalKey} />
 				{chatReady ? (
 					<ChatChromeRow
 						working={working}

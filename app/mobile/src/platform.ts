@@ -97,13 +97,21 @@ interface OutboxPaths {
 	readonly commit: string;
 }
 
+/**
+ * PC に届かない間に預かったエージェントへの送信（W2-29）の置き場。中身の暗号化と保存の手順はターミナル操作の
+ * アウトボックスと同じで、ファイルだけを分ける（あちらは PC の起動世代が変わると捨てる作りなので混ぜない）。
+ */
+const AGENT_SEND_OUTBOX_BASE = LegacyFileSystem.documentDirectory
+	? `${LegacyFileSystem.documentDirectory}agent-send-outbox.v1`
+	: undefined;
+
 /** ファイル名に使えるようPC識別子を正規化する（deviceId は base64url なので `-`/`_` を含む）。 */
-function outboxPathsFor(pcId: string): OutboxPaths | undefined {
-	if (TERMINAL_OPERATION_OUTBOX_BASE === undefined) {
+function outboxPathsFor(pcId: string, base: string | undefined = TERMINAL_OPERATION_OUTBOX_BASE): OutboxPaths | undefined {
+	if (base === undefined) {
 		return undefined;
 	}
 	const suffix = pcId.replace(/[^A-Za-z0-9._-]/g, '_');
-	const primary = suffix.length > 0 ? `${TERMINAL_OPERATION_OUTBOX_BASE}.${suffix}` : TERMINAL_OPERATION_OUTBOX_BASE;
+	const primary = suffix.length > 0 ? `${base}.${suffix}` : base;
 	return { primary, next: `${primary}.next`, backup: `${primary}.backup`, commit: `${primary}.next.commit` };
 }
 
@@ -167,8 +175,8 @@ async function promoteCommittedOperationOutboxNext(paths: OutboxPaths | undefine
  * 指定PC専用の操作アウトボックスを作る。payloadはMobileControllerがidentity由来鍵で
  * AEAD暗号化してから渡す（このレイヤーは中身を見ない）。
  */
-export function createTerminalOperationOutboxStore(pcId: string): TerminalOperationOutboxStore {
-	const paths = outboxPathsFor(pcId);
+export function createTerminalOperationOutboxStore(pcId: string, base: string | undefined = TERMINAL_OPERATION_OUTBOX_BASE): TerminalOperationOutboxStore {
+	const paths = outboxPathsFor(pcId, base);
 	return {
 		async loadCandidates(): Promise<readonly string[]> {
 			const [next, marker, primary, backup] = await Promise.all([
@@ -213,6 +221,11 @@ export function createTerminalOperationOutboxStore(pcId: string): TerminalOperat
 			]);
 		},
 	};
+}
+
+/** 指定PCの、預かったエージェントへの送信の置き場（W2-29）。中身は呼び出し側が暗号化してから渡す。 */
+export function createAgentSendOutboxStore(pcId: string): TerminalOperationOutboxStore {
+	return createTerminalOperationOutboxStore(pcId, AGENT_SEND_OUTBOX_BASE);
 }
 
 /**

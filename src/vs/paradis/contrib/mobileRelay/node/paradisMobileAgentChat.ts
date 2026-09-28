@@ -51,6 +51,8 @@ import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, p
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
+import { paradisAgentSessionKey } from '../common/paradisMobileAgentResume.js';
+import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/paradisSessionResume.js';
 import { IParadisHistoryCursor, PARADIS_HISTORY_FILE_CAP, PARADIS_HISTORY_PAGE_LIMIT, paradisDecodeHistoryCursor, paradisEncodeHistoryCursor, paradisHistoryCursorHasMore, paradisReadTranscriptHistory } from './paradisAgentChatHistory.js';
 import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -6006,12 +6008,16 @@ export class ParadisMobileAgentChat extends Disposable {
 		const settings = this.codexThreadSettings.get(token);
 		const model = settings?.model ?? tailer.model;
 		const effort = settings?.effort ?? tailer.effort;
-		if (model === undefined && effort === undefined) {
+		// ターミナルが閉じた後にスマホから再開するための指紋（W2-29）。セッション ID そのものは送らない。
+		const sessionId = this.paneSessions.get(token)?.sessionId;
+		const resumeKey = sessionId !== undefined && PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId) ? paradisAgentSessionKey(tailer.agent, sessionId) : undefined;
+		if (model === undefined && effort === undefined && resumeKey === undefined) {
 			return undefined;
 		}
 		return {
 			...(model !== undefined ? { model } : {}),
 			...(effort !== undefined ? { effort } : {}),
+			...(resumeKey !== undefined ? { resumeKey } : {}),
 		};
 	}
 
