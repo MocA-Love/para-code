@@ -61,6 +61,11 @@ export interface IParadisMainHangWatchdogOptions {
 	readonly sleepGapMs: number;
 	/** 止まっている間に印を書き足す間隔。 */
 	readonly markerUpdateMs: number;
+	/**
+	 * `pause` のまま心拍がこれだけ続いたら、`resume` を取りこぼしたとみなして数え直す。機械が本当に
+	 * 眠っている間は心拍も止まるので、心拍が来ている＝起きている。
+	 */
+	readonly maxPauseMs: number;
 	readonly onRecovered: (recovery: IParadisMainHangRecovery) => void;
 	/** worker を起こせなかった・worker が落ちた。見張りが無いだけで、本体には影響しない。 */
 	readonly onError?: (error: unknown) => void;
@@ -73,6 +78,7 @@ export const PARADIS_MAIN_HANG_DEFAULTS = {
 	pollMs: 1_000,
 	sleepGapMs: 15_000,
 	markerUpdateMs: 10_000,
+	maxPauseMs: 60_000,
 } as const;
 
 /** 共有メモリの並び。 */
@@ -162,9 +168,12 @@ export class ParadisMainHangWatchdog extends Disposable {
 
 	private readonly shared: Float64Array;
 	private readonly worker: Worker;
+	private readonly maxPauseMs: number;
+	private pausedAt: number | undefined;
 
 	constructor(options: IParadisMainHangWatchdogOptions) {
 		super();
+		this.maxPauseMs = options.maxPauseMs;
 		this.shared = new Float64Array(new SharedArrayBuffer(Slot.Length * Float64Array.BYTES_PER_ELEMENT));
 		const now = Date.now();
 		this.shared[Slot.StartedAt] = now;
@@ -208,16 +217,23 @@ export class ParadisMainHangWatchdog extends Disposable {
 
 	/** OS がスリープに入る。戻るまで数えない。 */
 	pause(): void {
+		this.pausedAt = Date.now();
 		this.shared[Slot.Paused] = 1;
 	}
 
 	/** スリープから戻った。心拍を今に合わせてから数え直す。 */
 	resume(): void {
+		this.pausedAt = undefined;
 		this.beat(Date.now());
 		this.shared[Slot.Paused] = 0;
 	}
 
 	private beat(now: number): void {
+		// resume を取りこぼした（OS が知らせなかった）ときに、見張りが止まったままにならないようにする。
+		if (this.pausedAt !== undefined && now - this.pausedAt >= this.maxPauseMs) {
+			this.pausedAt = undefined;
+			this.shared[Slot.Paused] = 0;
+		}
 		const memory = process.memoryUsage();
 		this.shared[Slot.HeapUsed] = memory.heapUsed;
 		this.shared[Slot.Rss] = memory.rss;

@@ -44,6 +44,7 @@ suite('ParadisMainHangWatchdog', () => {
 			pollMs: 20,
 			sleepGapMs: 5_000,
 			markerUpdateMs: 50,
+			maxPauseMs: 400,
 			onRecovered: recovery => recoveries.push(recovery),
 		}));
 	}
@@ -96,6 +97,19 @@ suite('ParadisMainHangWatchdog', () => {
 		watchdog.resume();
 		await timeout(200);
 		assert.deepStrictEqual({ recoveries: recoveries.length, marker: existsSync(markerPath) }, { recoveries: 0, marker: false });
+	});
+
+	test('a missed resume does not leave the watchdog paused forever', async function () {
+		this.timeout(10_000);
+		const markerPath = join(dir, 'hang.json');
+		const recoveries: IParadisMainHangRecovery[] = [];
+		const watchdog = start(markerPath, recoveries);
+		watchdog.pause();
+		// resume は来ない。心拍が続くうちに数え直しへ戻る。
+		await timeout(600);
+		blockFor(600);
+		await timeout(300);
+		assert.deepStrictEqual(recoveries.length, 1);
 	});
 
 	test('an unreadable or foreign marker is dropped', async () => {
