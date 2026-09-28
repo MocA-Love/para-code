@@ -23,6 +23,7 @@
 // - 許可待ち・質問中・作業中のペインへは Enter を送らない。Enter を送るかは毎回明示させる
 
 import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
+import type { ParadisAgentStartupScreenState } from './paradisAgentStartupScreen.js';
 
 /** ウィンドウが shared process の IPCServer へ登録するチャネル名。 */
 export const PARADIS_AGENT_IDE_CHANNEL = 'paradisAgentIde';
@@ -153,6 +154,8 @@ export interface IParadisAgentIdeInternal {
 	readonly remote?: boolean;
 	/** エージェントのツールで作ったターミナルなら、作った時刻（起動待ちの猶予に使う）。 */
 	readonly launchedAt?: number;
+	/** エージェントのツールがプロンプト無しで起動したエージェント（準備ができたら、それ以上は動き出さない）。 */
+	readonly launchedIdle?: boolean;
 }
 
 // --- 状態の変換 -----------------------------------------------------------------------------
@@ -187,7 +190,9 @@ export type ParadisAgentStopVerdict =
 	/** 許可待ち・質問中になった。 */
 	| 'needs_input'
 	/** 猶予の間に一度も作業中にならなかった（hook の届かない相手・素のシェルなど）。「終わった」とは言えない。 */
-	| 'no_agent_status';
+	| 'no_agent_status'
+	/** プロンプト無しで起動したエージェントが、空の入力欄で指示を待っている（画面から判定）。 */
+	| 'ready';
 
 /**
  * MCP の `wait_for_terminal(until="agent_stopped")` の判定。
@@ -204,14 +209,19 @@ export type ParadisAgentStopVerdict =
 export class ParadisAgentStopWatcher {
 	private _sawWorking = false;
 
-	constructor(private readonly _startedAt: number, private readonly _graceMs: number = PARADIS_AGENT_IDE_START_GRACE_MS) { }
+	/**
+	 * @param _launchedIdle プロンプト無しで起動したエージェントか。そうなら、画面で準備ができたと
+	 * 分かった時点で `ready` を返す（それ以上は待っても作業を始めない）
+	 */
+	constructor(private readonly _startedAt: number, private readonly _graceMs: number = PARADIS_AGENT_IDE_START_GRACE_MS, private readonly _launchedIdle = false) { }
 
 	/**
-	 * @param status 今の状態
+	 * @param status 今の状態（信頼の確認が画面に出ていれば、呼び出し側が答え待ちにしてある）
 	 * @param statusChangedAt その状態になった時刻（hook の記録。分からなければ undefined）
 	 * @param now 今の時刻
+	 * @param screenState 画面から読んだ起動時の状態
 	 */
-	observe(status: ParadisAgentIdeTerminalStatus, statusChangedAt: number | undefined, now: number): ParadisAgentStopVerdict {
+	observe(status: ParadisAgentIdeTerminalStatus, statusChangedAt: number | undefined, now: number, screenState?: ParadisAgentStartupScreenState): ParadisAgentStopVerdict {
 		if (status === 'working') {
 			this._sawWorking = true;
 			return 'waiting';
@@ -221,6 +231,9 @@ export class ParadisAgentStopWatcher {
 		}
 		if (this._sawWorking || (statusChangedAt !== undefined && statusChangedAt >= this._startedAt)) {
 			return 'stopped';
+		}
+		if (this._launchedIdle && screenState === 'ready') {
+			return 'ready';
 		}
 		return now - this._startedAt >= this._graceMs ? 'no_agent_status' : 'waiting';
 	}
@@ -391,7 +404,7 @@ export const PARADIS_AGENT_IDE_TOOLS: readonly IParadisAgentIdeToolDefinition[] 
 	},
 	{
 		name: 'wait_for_terminal',
-		description: `Wait until a terminal reaches a state, then return its status and the end of its screen. until="agent_stopped": the agent's turn ended ("reason": "stopped") or it now waits for a permission/question answer ("reason": "needs_input"); if it never started working, it returns "reason": "no_agent_status" after 5 seconds (90 seconds for a terminal you just launched) - that does NOT mean it finished (use until="text" for terminals whose list_terminals "agent" is false). until="needs_input": the agent waits for a permission or question answer. until="text": the given text is on the visible screen (plain substring, case-sensitive; text already on screen matches immediately). Returns "met": false with "timed_out": true when the time runs out - call it again. Keep timeout_seconds below your MCP client's tool timeout (default ${PARADIS_AGENT_IDE_DEFAULT_WAIT_SECONDS}, maximum ${PARADIS_AGENT_IDE_MAX_WAIT_SECONDS}).`,
+		description: `Wait until a terminal reaches a state, then return its status and the end of its screen. until="agent_stopped": the agent's turn ended ("reason": "stopped") or it now waits for a permission/question answer ("reason": "needs_input"); if it never started working, it returns "reason": "no_agent_status" after 5 seconds (90 seconds for a terminal you just launched) - that does NOT mean it finished (use until="text" for terminals whose list_terminals "agent" is false). An agent you launched without a prompt returns "reason": "ready" once its empty input box shows. An agent stopped at its startup folder-trust dialog returns "reason": "needs_input" with "blocked_by": "trust_dialog" (only the user can answer it). until="needs_input": the agent waits for a permission or question answer. until="text": the given text is on the visible screen (plain substring, case-sensitive; text already on screen matches immediately). Returns "met": false with "timed_out": true when the time runs out - call it again. Keep timeout_seconds below your MCP client's tool timeout (default ${PARADIS_AGENT_IDE_DEFAULT_WAIT_SECONDS}, maximum ${PARADIS_AGENT_IDE_MAX_WAIT_SECONDS}).`,
 		inputSchema: {
 			type: 'object',
 			properties: {
