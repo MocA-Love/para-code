@@ -283,6 +283,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '許可は番号キーだけで確定します。拒否と Codex の送り方は変わりません。',
 				tone: 'green',
 			},
+			{
+				icon: 'arrow-up-circle-outline',
+				title: 'PC とアプリの版が合わないとき、アプリと PC のどちらを更新すればよいかを出すようにしました',
+				body: 'これまでは「接続しています…」のまま止まって見えていました。PC の画面と PC の一覧に「アプリの更新が必要」「PC の更新が必要」と出ます。片方が少し新しいだけなら、今後はそのまま使い続けられます。',
+			},
 		],
 	},
 	{
