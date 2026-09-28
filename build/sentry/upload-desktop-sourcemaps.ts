@@ -25,8 +25,36 @@ const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const packageJson = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8')) as { version: string };
 const release = `para-code@${packageJson.version}+${process.env.GITHUB_SHA}`;
 const sentryCli = join(repositoryRoot, 'node_modules', '@sentry', 'cli', 'bin', 'sentry-cli');
-const result = spawnSync(process.execPath, [
-	sentryCli,
+
+function runSentryCli(args: string[], label: string): void {
+	const result = spawnSync(process.execPath, [sentryCli, ...args], {
+		cwd: repositoryRoot,
+		env: process.env,
+		stdio: 'inherit',
+	});
+	if (result.error) {
+		throw result.error;
+	}
+	if (result.status !== 0) {
+		throw new Error(`sentry-cli ${label} exited with code ${result.status}`);
+	}
+}
+
+// Create the release explicitly before anything else. The project has "release auto-creation
+// from telemetry" turned off (`enableAutoReleaseCreation: false`), and with that setting Sentry
+// strips `release` and `dist` from every event whose release does not already exist. The upload
+// below does not create it: with Debug IDs, `sourcemaps upload --release` only tags the artifact
+// bundle. That is why every 1.139.1 event arrived without a release while the SDK did send one.
+// `releases new` is idempotent, so each platform/arch job can run it.
+runSentryCli([
+	'releases',
+	'new',
+	release,
+	'--org', 'maguro-bot-corp',
+	'--project', 'para-code-desktop',
+], 'releases new');
+
+runSentryCli([
 	'sourcemaps',
 	'upload',
 	'out-vscode-min',
@@ -42,15 +70,4 @@ const result = spawnSync(process.execPath, [
 	// budget, and that budget repeatedly expired *after* the upload itself had already succeeded,
 	// failing whole release builds over telemetry post-processing. Sentry processes the bundle
 	// asynchronously either way; --validate/--strict still catch bad source maps locally.
-], {
-	cwd: repositoryRoot,
-	env: process.env,
-	stdio: 'inherit',
-});
-
-if (result.error) {
-	throw result.error;
-}
-if (result.status !== 0) {
-	throw new Error(`sentry-cli sourcemaps upload exited with code ${result.status}`);
-}
+], 'sourcemaps upload');
