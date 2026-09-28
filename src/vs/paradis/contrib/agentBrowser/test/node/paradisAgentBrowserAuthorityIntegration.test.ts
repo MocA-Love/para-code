@@ -136,6 +136,9 @@ function createFixture(): {
 		_hookSpoolPruned: Promise.resolve(),
 		_hookSpoolCheckedTokens: new Set<string>(),
 		_replayedPrompts: new Map<string, unknown>(),
+		_hookSpoolReplayAfter: 0,
+		_recentHookIds: new Set<string>(),
+		_hookSyncGraceSince: 0,
 		_agentHookTokens: new Set<string>(),
 		_hookReportedTokens: new Set<string>(),
 		_unconfirmedReleaseTokens: new Set<string>(),
@@ -683,9 +686,14 @@ suite('ParadisAgentBrowser authority integration', () => {
 			await spool('stale', [{ event: 'PermissionRequest', t: now - 3_600, payload: null }]);
 			await spool('live', [{ event: 'Stop', t: now - 5, payload: null }]);
 			Reflect.get(fixture.service, '_hookReportedTokens').add('live');
+			// 前の Para Code が生きていた間（返事が遅れて控えた重複の恐れ）と、この起動で既に届いた ID は流さない。
+			await spool('before-exit', [{ event: 'Stop', t: now - 50, payload: null }]);
+			await spool('duplicate', [{ id: 'already-seen', event: 'Stop', t: now - 20, payload: null }]);
+			Reflect.set(fixture.service, '_hookSpoolReplayAfter', (now - 45) * 1000);
+			Reflect.get(fixture.service, '_recentHookIds').add('already-seen');
 			const connection = {};
 			fixture.service.registerRendererConnection('window:1', connection);
-			await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'done' }, { token: 'asking' }, { token: 'stale' }, { token: 'live' }]));
+			await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'done' }, { token: 'asking' }, { token: 'stale' }, { token: 'live' }, { token: 'before-exit' }, { token: 'duplicate' }]));
 			for (let attempt = 0; attempt < 100 && (await fs.readdir(dir)).length > 0; attempt++) {
 				await new Promise(resolve => setTimeout(resolve, 20));
 			}
@@ -718,6 +726,18 @@ suite('ParadisAgentBrowser authority integration', () => {
 			subscription.dispose();
 			await fs.rm(dir, { recursive: true, force: true });
 		}
+	});
+
+	// レビュー M3: 知らないトークンの hook に「まだ同期していない」（503、控える）と答えるのは、起動とウィンドウの
+	// 接続の直後だけ。終わったペインと、猶予を過ぎて知らないペインは 404（控えない）。
+	test('tells a not-yet-synced pane from an unknown or retired one', () => {
+		const fixture = createFixture();
+		const possiblyUnsynced = (token: string) => Reflect.apply(Reflect.get(fixture.service, '_isHookTokenPossiblyUnsynced'), fixture.service, [token]) as boolean;
+		fixture.service.registerRendererConnection('window:1', {});
+		Reflect.get(fixture.service, '_terminalExitedTokens').add('exited');
+		const justConnected = { unknown: possiblyUnsynced('unknown'), exited: possiblyUnsynced('exited') };
+		Reflect.set(fixture.service, '_hookSyncGraceSince', Date.now() - 61_000);
+		assert.deepStrictEqual({ justConnected, later: possiblyUnsynced('unknown') }, { justConnected: { unknown: true, exited: false }, later: false });
 	});
 
 	test('resolves eligibility and sweeps stale fallback status once for one atomic snapshot', async () => {

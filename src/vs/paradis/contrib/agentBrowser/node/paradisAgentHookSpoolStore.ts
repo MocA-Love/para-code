@@ -12,7 +12,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
 import { join } from '../../../../base/common/path.js';
-import { IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_SPOOL_MAX_AGE_MS, PARADIS_AGENT_HOOK_SPOOL_MAX_FILE_BYTES, paradisParseAgentHookSpool } from '../common/paradisAgentHookSpool.js';
+import { IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE, PARADIS_AGENT_HOOK_SPOOL_MAX_AGE_MS, PARADIS_AGENT_HOOK_SPOOL_MAX_FILE_BYTES, paradisParseAgentHookSpool } from '../common/paradisAgentHookSpool.js';
 
 /** ペイントークンのハッシュ（控えのファイル名と照合に使う）。スクリプトの `shasum -a 256` と同じ。 */
 export function paradisAgentHookSpoolHash(token: string): string {
@@ -29,7 +29,7 @@ function spoolFile(dir: string, token: string): string {
  * 先に名前を変えてから読む。読んでいる間にスクリプトが書き足した分は、元の名前の新しいファイルに
  * 入るので失われない（次の同期で読む）。
  */
-export async function paradisTakeAgentHookSpool(dir: string, token: string, now: number = Date.now()): Promise<IParadisSpooledAgentHook[]> {
+export async function paradisTakeAgentHookSpool(dir: string, token: string, now: number = Date.now(), after: number = 0): Promise<IParadisSpooledAgentHook[]> {
 	const file = spoolFile(dir, token);
 	const claimed = `${file}.replaying-${randomBytes(4).toString('hex')}`;
 	try {
@@ -43,7 +43,7 @@ export async function paradisTakeAgentHookSpool(dir: string, token: string, now:
 		if (stat.size > PARADIS_AGENT_HOOK_SPOOL_MAX_FILE_BYTES * 2) {
 			return [];
 		}
-		return paradisParseAgentHookSpool(await fs.readFile(claimed, 'utf8'), now);
+		return paradisParseAgentHookSpool(await fs.readFile(claimed, 'utf8'), now, after);
 	} catch {
 		return [];
 	} finally {
@@ -79,4 +79,26 @@ export async function paradisPruneAgentHookSpool(dir: string, now: number = Date
 		}
 	}));
 	return removed;
+}
+
+/**
+ * 「この Para Code は今も生きている」を控えのフォルダに書く。前に書かれていた時刻（前の Para Code が
+ * 最後に生きていた時刻）を返す。起動時に 1 度、その後は一定の間隔で呼ぶ。書けなくても投げない。
+ */
+export async function paradisStampAgentHookSpoolAlive(dir: string, now: number = Date.now()): Promise<number | undefined> {
+	const file = join(dir, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE);
+	let previous: number | undefined;
+	try {
+		const value = Number((await fs.readFile(file, 'utf8')).trim());
+		previous = Number.isFinite(value) && value > 0 ? value : undefined;
+	} catch {
+		previous = undefined;
+	}
+	try {
+		await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+		await fs.writeFile(file, String(now), { mode: 0o600 });
+	} catch {
+		// 書けなければ、次の起動は時刻で絞らずに 1 時間以内の分だけを流す。
+	}
+	return previous;
 }
