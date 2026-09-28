@@ -65,6 +65,7 @@ suite('ParadisSentryUtility', () => {
 					'para.error_name': 'Error',
 					'para.error_message_hash': 'd461d7fd',
 				},
+				fingerprint: ['para.dedupe', 'Error', 'd461d7fd'],
 				extra: { attempt: 2 },
 			},
 		}, {
@@ -77,6 +78,7 @@ suite('ParadisSentryUtility', () => {
 					'para.error_name': 'Error',
 					'para.error_message_hash': '9e61942b',
 				},
+				fingerprint: ['para.dedupe', 'Error', '9e61942b'],
 				extra: { duration_ms: 321, phase: 'resolve' },
 			},
 		}]);

@@ -15,6 +15,7 @@ export interface IFakeSentryCaptureContext {
 	readonly tags?: Record<string, unknown>;
 	readonly extra?: Record<string, unknown>;
 	readonly level?: string;
+	readonly fingerprint?: readonly string[];
 }
 
 export interface IFakeSentryCapture {
