@@ -7,11 +7,14 @@
 
 // 入力（クリック・キー・文字）の決まり（設計書 6.3）。OS に触れない純粋な判断だけをここに置き、テストで確かめる。
 //
-//  - 送らないキーの組み合わせ（Spotlight・アプリの切替・強制終了・画面ロック・画面収録・操作スペースの切替・ログアウト・Fn）
+//  - 送らないキーの組み合わせ（Spotlight・アプリの切替・強制終了・画面ロック・画面収録・操作スペースの切替・ログアウト・Fn、
+//    メニューバー・Dock へのキーボード操作、アクセシビリティの切り替え、貼り付け）
 //  - 修飾キーはイベントのフラグで付ける（押しっぱなしのイベントは作らない）。ここでは組み合わせを表すだけ
 //  - 文字入力は 4,000 文字まで。改行は Return、タブは Tab のキーとして送る
-//  - 利用者の物理的な入力が直前 1 秒以内にあれば送らない（Q101）
+//  - 利用者の物理的な入力が直前 1 秒以内にあれば送らない（Q101）。長い操作の途中も確かめる
+//  - キーの前に、認証・同意のダイアログや、目的のウィンドウに重なるほかのプロセスのパネルが無いことを確かめる
 
+import CoreGraphics
 import Foundation
 
 // MARK: - 修飾キーとキー
@@ -75,6 +78,13 @@ let paradisKeyCodeV: UInt16 = 9
 private let paradisKeyCodeQ: UInt16 = 12
 private let paradisArrowKeyCodes: Set<UInt16> = [123, 124, 125, 126]
 private let paradisScreenshotKeyCodes: Set<UInt16> = [20, 21, 23, 22] // 3 4 5 6
+/** F1〜F12。 */
+private let paradisFunctionKeyCodes: Set<UInt16> = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111]
+private let paradisKeyCodeF5: UInt16 = 96
+private let paradisKeyCodeD: UInt16 = 2
+private let paradisKeyCode8: UInt16 = 28
+/** = - , .（ズームとコントラストのショートカット）。 */
+private let paradisZoomKeyCodes: Set<UInt16> = [24, 27, 43, 47]
 
 /** 1 回で押すキーの組み合わせ。 */
 struct ParadisKeyChord: Equatable {
@@ -109,12 +119,29 @@ func paradisParseChord(_ keys: [String]) throws -> ParadisKeyChord {
 }
 
 /**
- * 送らない組み合わせなら理由を返す（設計書 6.3）。任意のアプリの起動・アプリの切替・画面の外への操作に
- * つながるものは、承認したアプリの中の操作という前提を崩すため。
+ * 送らない組み合わせなら理由を返す（設計書 6.3、レビュー M4・M5）。任意のアプリの起動・アプリの切替・
+ * メニューバーや Dock へのキーボード操作・アクセシビリティの切り替えなど、承認したアプリの中の操作という
+ * 前提を崩すもの。⌘V の仲間は、利用者のクリップボード（パスワードなど）を承認済みのアプリへ貼って読めるので、
+ * 貼り付けの命令（pasteText）の中でだけ使う（`allowPaste`）。
  */
-func paradisBlockedChordReason(_ chord: ParadisKeyChord) -> String? {
+func paradisBlockedChordReason(_ chord: ParadisKeyChord, allowPaste: Bool = false) -> String? {
 	let m = chord.modifiers
 	let key = chord.keyCode
+	if !allowPaste && key == paradisKeyCodeV && m.contains(.command) {
+		return "paste shortcuts are never sent; use pasteText"
+	}
+	if m.contains(.control) && paradisFunctionKeyCodes.contains(key) {
+		return "keyboard navigation to the menu bar, Dock and other system areas is never sent"
+	}
+	if m.contains(.command) && key == paradisKeyCodeF5 {
+		return "VoiceOver and accessibility shortcuts are never sent"
+	}
+	if m.contains(.command) && m.contains(.option) && key == paradisKeyCodeD {
+		return "Dock shortcuts are never sent"
+	}
+	if m.contains(.command) && m.contains(.option) && (key == paradisKeyCode8 || paradisZoomKeyCodes.contains(key)) {
+		return "zoom, color and contrast accessibility shortcuts are never sent"
+	}
 	if m.contains(.function) {
 		return "Fn / Globe key combinations are never sent"
 	}
@@ -187,18 +214,26 @@ func paradisTypedUnits(_ text: String) throws -> [ParadisTypedUnit] {
 let paradisUserActivityWindow: Double = 1.0
 
 /**
- * 利用者が操作中か。`secondsSinceLastInput` は OS が数えた最後の入力からの秒数、
- * `secondsSinceOurLastEvent` はこの補助アプリが最後に送った合成入力からの秒数（まだ送っていなければ nil）。
- * 合成入力も OS の数に入ることがあるので、最後の入力が自分の送ったもの以前なら利用者の入力とみなさない。
+ * 補助アプリが送るイベントに付ける目印（`eventSourceUserData`）。入力の見張り（イベントタップ）は、
+ * この目印の無いイベントを利用者の物理的な入力とみなす。自分の分を時刻で除く判定はしない
+ * （連続した入力の間に利用者の入力を見逃すため。レビュー M2）。
  */
-func paradisUserIsActive(secondsSinceLastInput: Double, secondsSinceOurLastEvent: Double?, margin: Double = 0.05) -> Bool {
-	guard secondsSinceLastInput < paradisUserActivityWindow else {
+let paradisSyntheticEventMarker: Int64 = 0x5041_5241_4355 // "PARACU"
+
+/** そのイベントが補助アプリの送ったものか。 */
+func paradisIsOurEvent(userData: Int64) -> Bool {
+	return userData == paradisSyntheticEventMarker
+}
+
+/**
+ * 利用者が操作中か。`secondsSincePhysicalInput` は、目印の無い最後の入力からの秒数（見張りが無ければ、
+ * OS が数えたハードウェアの入力からの秒数）。自分の合成入力は含めない。
+ */
+func paradisUserIsActive(secondsSincePhysicalInput: Double?) -> Bool {
+	guard let seconds = secondsSincePhysicalInput else {
 		return false
 	}
-	if let ours = secondsSinceOurLastEvent, secondsSinceLastInput + margin >= ours {
-		return false
-	}
-	return true
+	return seconds < paradisUserActivityWindow
 }
 
 // MARK: - 前面の確認（フェンス）
@@ -213,6 +248,53 @@ func paradisFenceFailure(targetPid: Int32, frontmostPid: Int32?, ownerAtTarget: 
 	}
 	guard ownerAtTarget == targetPid else {
 		return ParadisHelperError(code: "point_obscured", message: "another window covers the target")
+	}
+	return nil
+}
+
+// MARK: - キーの前の確かめ（レビュー M3）
+
+/** 画面に出ているウィンドウ 1 つ。 */
+struct ParadisScreenWindow {
+	let pid: Int32
+	let ownerName: String
+	let bundleId: String?
+	let layer: Int
+	let bounds: CGRect
+}
+
+/** 認証・同意・ロックの画面を出すプロセスの bundle id と名前。出ている間は入力を送らない。 */
+let paradisSensitiveOverlayBundleIds: Set<String> = [
+	"com.apple.SecurityAgent", "com.apple.LocalAuthentication.UIAgent", "com.apple.UserNotificationCenter",
+	"com.apple.coreservices.uiagent", "com.apple.loginwindow", "com.apple.ScreenSaver.Engine", "com.apple.universalaccessAuthWarn",
+]
+let paradisSensitiveOverlayOwnerNames: Set<String> = [
+	"SecurityAgent", "coreautha", "UserNotificationCenter", "CoreServicesUIAgent", "loginwindow", "ScreenSaverEngine", "universalAccessAuthWarn",
+]
+/** 目的のウィンドウに重なっていてもキーを取らない、画面の常設の部品。 */
+let paradisIgnoredOverlayOwnerNames: Set<String> = ["Window Server", "Dock", "SystemUIServer", "Control Center", "ControlCenter"]
+
+/**
+ * キー（とマウス）を送ってよいか。認証・同意のダイアログがどこかに出ていれば止める。キーのときは
+ * （`targetBounds` を渡す）、目的のウィンドウに重なる、layer 0 以外のほかのプロセスのウィンドウがあっても止める。
+ * キーの行き先はメニューやパネルが取りうるので、前面のアプリと一番手前のウィンドウだけでは足りない。
+ */
+func paradisOverlayFailure(targetPid: Int32, windows: [ParadisScreenWindow], targetBounds: CGRect?) -> ParadisHelperError? {
+	for window in windows where window.pid != targetPid {
+		if paradisSensitiveOverlayOwnerNames.contains(window.ownerName) || window.bundleId.map({ paradisSensitiveOverlayBundleIds.contains($0) }) == true {
+			return ParadisHelperError(code: "system_dialog", message: "an authentication or permission dialog is on screen")
+		}
+		if let targetBounds, window.layer != 0, !paradisIgnoredOverlayOwnerNames.contains(window.ownerName), window.bounds.intersects(targetBounds) {
+			return ParadisHelperError(code: "point_obscured", message: "a panel of another app covers the window")
+		}
+	}
+	return nil
+}
+
+/** キーの行き先（OS に聞いたフォーカスのあるアプリ）が目的の pid か。 */
+func paradisFocusFailure(targetPid: Int32, focusedPid: Int32?) -> ParadisHelperError? {
+	guard focusedPid == targetPid else {
+		return ParadisHelperError(code: "window_not_focused", message: "keyboard focus is not in the application")
 	}
 	return nil
 }
@@ -257,10 +339,36 @@ func paradisDragPath(from: (x: Double, y: Double), to: (x: Double, y: Double), s
 
 // MARK: - 貼り付け（Q100）
 
+/** 貼り付けの後、クリップボードをどうするか。 */
+enum ParadisClipboardPlan: String {
+	/** 元の中身へ戻す。 */
+	case restore = "restored"
+	/** 戻すが、写せなかった型がある。 */
+	case restorePartial = "restored-partially"
+	/** ほかのアプリか利用者が書き換えたので、そちらを残す。 */
+	case keepOthers = "changed-by-others"
+	/** 元の中身がパスワードマネージャーの印付きだったので、戻さずに空にする（遅れて貼られても秘密が出ないように）。 */
+	case clear = "cleared"
+}
+
 /**
- * 貼った後にクリップボードを元へ戻すか。自分が書いた後の変更回数から変わっていれば、
- * ほかのアプリか利用者が書き換えたので、そちらを優先して戻さない。
+ * 貼った後のクリップボードの扱い（Q100、レビュー M6）。自分が書いた後に変更回数が変わっていれば、
+ * ほかのアプリか利用者が書き換えたのでそちらを優先する。
  */
-func paradisShouldRestoreClipboard(changeCountAfterOurWrite: Int, currentChangeCount: Int) -> Bool {
-	return changeCountAfterOurWrite == currentChangeCount
+func paradisClipboardRestorePlan(changeCountAfterOurWrite: Int, currentChangeCount: Int, savedIsConcealed: Bool, savedIsComplete: Bool) -> ParadisClipboardPlan {
+	guard changeCountAfterOurWrite == currentChangeCount else {
+		return .keepOthers
+	}
+	if savedIsConcealed {
+		return .clear
+	}
+	return savedIsComplete ? .restore : .restorePartial
+}
+
+/** 貼り付け先の値に、貼った文字が入ったか。値が読めないときは確かめられない（false）。 */
+func paradisPasteLanded(before: String?, after: String?, text: String) -> Bool {
+	guard let after, after != before else {
+		return false
+	}
+	return after.contains(text)
 }
