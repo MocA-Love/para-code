@@ -73,6 +73,7 @@ import { type IParadisMobileRequestHost, paradisDispatchMobileRequest } from './
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
+import { paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts } from '../common/paradisMobileDiffReview.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
 import { paradisSendAgentInteractionKeys, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
@@ -1802,16 +1803,19 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		try {
 			if (msg.t === 'status') {
-				const [status, branch] = await Promise.all([
+				const [status, branch, unstagedCounts, stagedCounts] = await Promise.all([
 					this.runGit(repoUri, ['status', '--porcelain=v1']),
 					this.runGit(repoUri, ['rev-parse', '--abbrev-ref', 'HEAD']),
+					// ファイルごとの行数（差分レビューの「確認後に変更あり」の判定に使う。Orca W2-14）。
+					// 任意項目なので、数えられなくても一覧はそのまま返す
+					this.runGit(repoUri, ['diff', '--numstat', '-z']).catch(() => undefined),
+					this.runGit(repoUri, ['diff', '--cached', '--numstat', '-z']).catch(() => undefined),
 				]);
-				const files = status.stdout.split('\n').filter(l => l.length > 3).map(line => ({
-					// porcelain v1: XY <path> （リネームは "old -> new"）
-					x: line[0],
-					y: line[1],
-					path: line.slice(3).includes(' -> ') ? line.slice(3).split(' -> ')[1] : line.slice(3),
-				}));
+				const files = paradisWithMobileLineCounts(
+					paradisParseMobilePorcelainStatus(status.stdout),
+					unstagedCounts?.code === 0 ? unstagedCounts.stdout : undefined,
+					stagedCounts?.code === 0 ? stagedCounts.stdout : undefined,
+				);
 				reply({ t: 'status', branch: branch.stdout.trim(), files });
 			} else if (msg.t === 'diff') {
 				const args = msg.staged ? ['diff', '--cached'] : ['diff'];
