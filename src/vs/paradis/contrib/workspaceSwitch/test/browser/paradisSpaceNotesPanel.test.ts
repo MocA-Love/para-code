@@ -164,7 +164,7 @@ suite('ParadisSpaceNotesPanel editing while the note changes elsewhere', () => {
 
 	test('does not overwrite an overlapping change and lets the user choose', () => {
 		const notification = new TestNotificationService();
-		const { notes, panel, container } = createPanel(store, undefined, notification as INotificationService);
+		const { notes, panel, container } = createPanel(store, undefined, notification as Partial<INotificationService> as INotificationService);
 		notes.write('worktree:b', '- [ ] one');
 		panel.setSpace('worktree:b', 'b', undefined);
 		const editor = startEditing(container);
@@ -180,7 +180,7 @@ suite('ParadisSpaceNotesPanel editing while the note changes elsewhere', () => {
 
 	test('writes directly when nothing else changed the note', () => {
 		const notification = new TestNotificationService();
-		const { notes, panel, container } = createPanel(store, undefined, notification as INotificationService);
+		const { notes, panel, container } = createPanel(store, undefined, notification as Partial<INotificationService> as INotificationService);
 		panel.setSpace('worktree:a', 'a', undefined);
 		const editor = startEditing(container);
 
