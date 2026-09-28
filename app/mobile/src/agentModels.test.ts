@@ -29,7 +29,7 @@ describe('Claude のモデル候補', () => {
 		expect(summary(agentModelOptions('claude'))).toEqual([
 			'fable|Fable 5.1|claude-fable-5-1|5',
 			'opus|Opus 5.5|claude-opus-5-5|5',
-			'sonnet|Sonnet 5|claude-sonnet-5|5',
+			'sonnet|Sonnet 5.5|claude-sonnet-5-5|5',
 			'haiku|Haiku 4.5|claude-haiku-4-5|0',
 		]);
 		expect(agentModelOptions('codex')).toEqual([]);
