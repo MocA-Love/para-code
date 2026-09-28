@@ -116,6 +116,12 @@
 	font-size: 13px;
 }
 
+/* The dropdown can take focus itself (tabindex="-1") when its background is clicked. Keep the workbench's focus outline
+	(`.monaco-workbench [tabindex="-1"]:focus`) off its frame; the controls inside still show it. */
+.monaco-workbench .paradis-browser-profile-dropdown[tabindex="-1"]:focus {
+	outline: none;
+}
+
 .paradis-browser-profile-dropdown .pbp-list {
 	flex: 1;
 	min-height: 0;
@@ -152,9 +158,16 @@
 	border-left-color: var(--vscode-focusBorder);
 }
 
-/* High contrast themes draw selection with borders rather than fills. */
-.hc-black .paradis-browser-profile-dropdown .pbp-row.is-focused,
-.hc-light .paradis-browser-profile-dropdown .pbp-row.is-focused {
+/* Rows take focus (tabindex="-1") as the keyboard moves; `.is-focused` above marks them, so keep the
+	workbench's focus outline (`.monaco-workbench [tabindex="-1"]:focus`) off the rows. */
+.monaco-workbench .paradis-browser-profile-dropdown .pbp-row[tabindex="-1"]:focus {
+	outline: none;
+}
+
+/* High contrast themes draw selection with borders rather than fills (the focus background is unset there).
+	Same specificity as the rule above (0,5,0) and placed after it, so this outline wins on focused rows. */
+.monaco-workbench.hc-black .paradis-browser-profile-dropdown .pbp-row.is-focused,
+.monaco-workbench.hc-light .paradis-browser-profile-dropdown .pbp-row.is-focused {
 	outline: 1px dotted var(--vscode-contrastActiveBorder, var(--vscode-focusBorder));
 	outline-offset: -1px;
 }
@@ -268,6 +281,12 @@
 	border-radius: var(--vscode-cornerRadius-medium, 6px);
 	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
 	font-size: 13px;
+}
+
+/* The modal takes focus itself (tabindex="-1") for Escape handling and the Tab trap. Keep the workbench's focus outline
+	(`.monaco-workbench [tabindex="-1"]:focus`) off its frame; the controls inside still show it. */
+.monaco-workbench .paradis-browser-profile-modal[tabindex="-1"]:focus {
+	outline: none;
 }
 
 .paradis-browser-profile-modal .pbpm-header {
