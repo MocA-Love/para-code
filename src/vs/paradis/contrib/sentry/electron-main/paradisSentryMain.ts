@@ -13,7 +13,7 @@ import { app, protocol } from 'electron';
 import type * as SentryMain from '@sentry/electron/main';
 import { ParadisPrivilegedSchemeRecorder } from '../common/paradisPrivilegedSchemes.js';
 import { PARADIS_SENTRY_DESKTOP_DSN, PARADIS_SENTRY_ENVIRONMENT, paradisSentryRelease } from '../common/paradisSentryConfiguration.js';
-import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, ParadisDiagnosticSeverity, paradisSafeErrorName, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, ParadisDiagnosticSeverity, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 import { registerParadisProcessGoneDiagnostics } from './paradisProcessGoneDiagnostics.js';
 
@@ -85,7 +85,9 @@ export function initializeParadisSentryMain(commit: string | undefined, onUnavai
 			enableLogs: false,
 			tracesSampler: context => context.name.startsWith('para.') ? 1 : 0,
 			beforeBreadcrumb: breadcrumb => paradisPrepareSentryBreadcrumb(breadcrumb),
-			beforeSend: event => paradisPrepareSentryEvent(event, 'main'),
+			// The hint carries the minidump attachment, the only place a native crash names its process
+			// before Sentry symbolicates it (see paradisMinidumpModules.ts).
+			beforeSend: (event, hint) => paradisPrepareSentryEvent(event, 'main', hint),
 			beforeSendTransaction: event => paradisPrepareSentryTransaction(event, 'main'),
 		});
 
@@ -203,14 +205,19 @@ export function captureParadisMainException(
 	// crash dump from the previous run (see stripLeakedScopeFromNativeEvent in
 	// paradisSentryEvent.ts). The capture hint attaches the context to this one event only.
 	Sentry.addBreadcrumb({ category: `para.${feature}`, message: operation, data: safeExtra });
+	const errorTags = paradisSafeErrorTags(error);
 	return Sentry.captureException(toParadisSentrySafeError(feature, operation, error), {
 		tags: {
 			'para.scope': scope,
 			'para.feature': feature,
 			'para.operation': operation,
-			'para.error_name': paradisSafeErrorName(error),
+			...errorTags,
 		},
-		...(safeExtra ? { extra: safeExtra } : {}),
+		// Only for the SDK's Dedupe, which runs before beforeSend (see paradisDedupeFingerprint).
+		fingerprint: paradisDedupeFingerprint(errorTags),
+		// The error itself is dropped (toParadisSentrySafeError); these content-free facts about it
+		// are what is left to diagnose with. The caller's own extras win on a key clash.
+		extra: { ...paradisSafeErrorExtra(error), ...safeExtra },
 		...(severity ? { level: severity } : {}),
 	});
 }

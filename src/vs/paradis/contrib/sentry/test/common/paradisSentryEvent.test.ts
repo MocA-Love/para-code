@@ -10,6 +10,7 @@ import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisSentryFingerprint, type IParadisSentryEvent } from '../../common/paradisSentryCommon.js';
 import { paradisPrepareSentryEvent } from '../../common/paradisSentryEvent.js';
+import { createParadisTestMinidump } from './paradisMinidumpFixture.js';
 
 suite('ParadisSentryEvent', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -159,6 +160,7 @@ suite('ParadisSentryEvent', () => {
 			tags: {
 				'event.environment': 'native',
 				'para.pairing': '95501db8',
+				'para.native_origin': 'unattributed',
 				'para.scope': 'unknown',
 				'process.type': 'main',
 				'para.prepared': '1',
@@ -180,5 +182,26 @@ suite('ParadisSentryEvent', () => {
 				}],
 			},
 		}, 'main'), null);
+	});
+
+	test('attributes a minidump by the executable in the attached dump, since the event itself names no module', () => {
+		// The SDK sends a minidump as an empty native event; frames and images only exist after
+		// Sentry symbolicates it, so the dump is the only thing that says which process crashed.
+		const minidumpEvent = (): IParadisSentryEvent => ({ platform: 'native', tags: { 'event.environment': 'native' } });
+		const attach = (executable: string) => ({ attachments: [{ attachmentType: 'event.minidump', data: createParadisTestMinidump([executable, '/usr/lib/libSystem.B.dylib']) }] });
+
+		const foreign = paradisPrepareSentryEvent(minidumpEvent(), 'main', attach('/opt/homebrew/Cellar/node/24.1.0/bin/node'));
+		const own = paradisPrepareSentryEvent(minidumpEvent(), 'main', attach('/Applications/Para Code.app/Contents/Frameworks/Para Code Helper (Renderer).app/Contents/MacOS/Para Code Helper (Renderer)'));
+		const unreadable = paradisPrepareSentryEvent(minidumpEvent(), 'main', { attachments: [{ attachmentType: 'event.minidump', data: new Uint8Array([1, 2, 3]) }] });
+
+		assert.deepStrictEqual({
+			foreign,
+			own: own?.tags?.['para.native_origin'],
+			unreadable: unreadable?.tags?.['para.native_origin'],
+		}, {
+			foreign: null,
+			own: 'executable',
+			unreadable: 'unattributed',
+		});
 	});
 });

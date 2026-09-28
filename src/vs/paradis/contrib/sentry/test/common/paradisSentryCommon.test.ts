@@ -131,6 +131,72 @@ suite('ParadisSentryCommon', () => {
 		assert.deepStrictEqual(limiter.consume('same'), { allowed: true, suppressed: 2 });
 	});
 
+	test('forgets the least recently used fingerprints past its capacity', () => {
+		const limiter = new ParadisSentryRateLimiter(() => 1_000, 2);
+		limiter.consume('a');
+		limiter.consume('a');
+		limiter.consume('a');
+		limiter.consume('b');
+		// Touching `a` again keeps it; `b` is now the oldest and goes when `c` arrives.
+		assert.deepStrictEqual(limiter.consume('a'), { allowed: false, suppressed: 1 });
+		limiter.consume('c');
+		assert.deepStrictEqual({
+			a: limiter.consume('a'),
+			b: limiter.consume('b'),
+		}, {
+			a: { allowed: false, suppressed: 2 },
+			b: { allowed: true, suppressed: 0 },
+		});
+	});
+
+	test('keys an explicit report on its innermost own frame, so the kept Node and dependency frames do not re-key it', () => {
+		const tags = { 'para.scope': 'owned', 'para.feature': 'f', 'para.operation': 'o', 'para.error_name': 'Error' };
+		const ownOnly = paradisSentryFingerprint({
+			tags,
+			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename: 'app:///out/vs/a.js', function: 'outer' }, { filename: 'app:///out/vs/b.js', function: 'inner' }] } }] },
+		});
+		const withForeign = paradisSentryFingerprint({
+			tags,
+			exception: {
+				values: [{
+					type: 'Error', stacktrace: {
+						frames: [
+							{ filename: 'app:///out/vs/a.js', function: 'outer' },
+							{ filename: 'app:///out/vs/b.js', function: 'inner' },
+							{ filename: 'app:///node_modules/ws/lib/websocket.js', function: 'send' },
+							{ filename: 'node:internal/stream_base_commons', function: 'afterWriteDispatched' },
+						],
+					},
+				}],
+			},
+		});
+		const foreignOnly = (messageHash: string) => paradisSentryFingerprint({
+			tags: { ...tags, 'para.error_message_hash': messageHash },
+			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename: 'node:internal/stream_base_commons', function: 'afterWriteDispatched' }] } }] },
+		});
+		// An own frame decides the key on its own; the message hash does not join it.
+		const ownWithHash = paradisSentryFingerprint({
+			tags: { ...tags, 'para.error_message_hash': 'aaaaaaaa' },
+			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename: 'app:///out/vs/b.js', function: 'inner' }, { filename: 'node:internal/timers', function: 'listOnTimeout' }] } }] },
+		});
+		// Automatic captures keep keying on the innermost frame, whatever it is.
+		const automatic = paradisSentryFingerprint({
+			tags: { 'para.scope': 'owned', 'para.feature': 'f', 'para.operation': 'o' },
+			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename: 'app:///out/vs/b.js', function: 'inner' }, { filename: 'node:internal/timers', function: 'listOnTimeout' }] } }] },
+		});
+		assert.deepStrictEqual({ ownOnly, withForeign, foreignOnly: [foreignOnly('aaaaaaaa'), foreignOnly('bbbbbbbb')], ownWithHash, automatic }, {
+			ownOnly: 'owned|f|o|Error|app:///out/vs/b.js|inner|Error',
+			withForeign: 'owned|f|o|Error|app:///out/vs/b.js|inner|Error',
+			// Only foreign frames: two different messages must not share one key.
+			foreignOnly: [
+				'owned|f|o|Error|node:internal/stream_base_commons|afterWriteDispatched|Error|aaaaaaaa',
+				'owned|f|o|Error|node:internal/stream_base_commons|afterWriteDispatched|Error|bbbbbbbb',
+			],
+			ownWithHash: 'owned|f|o|Error|app:///out/vs/b.js|inner|Error',
+			automatic: 'owned|f|o|Error|node:internal/timers|listOnTimeout',
+		});
+	});
+
 	test('builds a stable fingerprint from scope, feature, operation, exception type, and top frame', () => {
 		const first = paradisSentryFingerprint({
 			tags: { 'para.scope': 'owned', 'para.feature': 'codex-app-server', 'para.operation': 'connect' },
@@ -249,6 +315,19 @@ suite('ParadisSentryCommon', () => {
 				}],
 			},
 		}), undefined);
+	});
+
+	test('attributes a minidump by its executable, counting any Codex CLI binary as ours', () => {
+		const classify = (executable: string) => paradisClassifySentryEvent({ platform: 'native' }, executable);
+		assert.deepStrictEqual([
+			'/opt/homebrew/Caskroom/codex/0.155.1/codex-aarch64-apple-darwin',
+			'/opt/homebrew/bin/codex',
+			'C:\\Users\\a\\AppData\\Local\\codex\\codex.exe',
+			'/Applications/Para Code.app/Contents/MacOS/Para Code',
+			'/opt/homebrew/Cellar/node/24.1.0/bin/node',
+			'/usr/local/bin/my-codex',
+			'/usr/local/bin/codexfoo',
+		].map(classify), ['unknown', 'unknown', 'unknown', 'unknown', undefined, undefined, undefined]);
 	});
 
 	test('keeps native crashes from the app itself and from the Codex app-server we spawn', () => {

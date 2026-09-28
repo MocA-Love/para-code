@@ -15,6 +15,7 @@ import {
 	paradisSanitizeSentryText,
 	paradisSentryFingerprint,
 } from './paradisSentryCommon.js';
+import { IParadisSentryAttachment, paradisMinidumpExecutablePath } from './paradisMinidumpModules.js';
 
 const limiter = new ParadisSentryRateLimiter();
 
@@ -71,9 +72,26 @@ function stripLeakedScopeFromNativeEvent<T extends IParadisSentryEvent>(event: T
 	return Object.assign({}, event, { tags, extra: undefined });
 }
 
+function isNativeEvent(event: IParadisSentryEvent): boolean {
+	return event.platform === 'native' || event.tags?.['event.environment'] === 'native';
+}
+
+/**
+ * How the native crash was attributed, as a tag so a Sentry inbound filter or search can separate
+ * the two cases: `executable` (the attached minidump named an executable of ours) or `unattributed`
+ * (no readable minidump, e.g. a renderer OOM; kept because dropping a real crash costs more).
+ */
+function nativeOriginTag(event: IParadisSentryEvent, executablePath: string | undefined): Record<string, string> {
+	if (!isNativeEvent(event)) {
+		return {};
+	}
+	return { 'para.native_origin': executablePath ? 'executable' : 'unattributed' };
+}
+
 export function paradisPrepareSentryEvent<T extends IParadisSentryEvent>(
 	incoming: T,
 	processType: string,
+	hint?: { readonly attachments?: readonly IParadisSentryAttachment[] },
 ): T | null {
 	const event = stripLeakedScopeFromNativeEvent(incoming);
 	// 分類より先に落とす。転送されてきたイベントにも効かせたいので isAlreadyPrepared より前に置く。
@@ -83,7 +101,10 @@ export function paradisPrepareSentryEvent<T extends IParadisSentryEvent>(
 	if (isAlreadyPrepared(event)) {
 		return sanitizeForwardedEvent(event);
 	}
-	const scope = paradisClassifySentryEvent(event);
+	// minidump は送信前のイベントにフレームもモジュールも無い。落ちたプロセスは添付の dmp から読む。
+	// パスは判定にだけ使い、イベントには載せない。
+	const executablePath = isNativeEvent(event) ? paradisMinidumpExecutablePath(hint?.attachments) : undefined;
+	const scope = paradisClassifySentryEvent(event, executablePath);
 	if (scope === undefined) {
 		return null;
 	}
@@ -91,6 +112,7 @@ export function paradisPrepareSentryEvent<T extends IParadisSentryEvent>(
 	const withClassification = Object.assign({}, event, {
 		tags: {
 			...event.tags,
+			...nativeOriginTag(event, executablePath),
 			'para.scope': scope,
 			'process.type': processType,
 			[PARADIS_PREPARED_TAG]: '1',

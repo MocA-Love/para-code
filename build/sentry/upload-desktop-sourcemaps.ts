@@ -25,8 +25,43 @@ const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const packageJson = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8')) as { version: string };
 const release = `para-code@${packageJson.version}+${process.env.GITHUB_SHA}`;
 const sentryCli = join(repositoryRoot, 'node_modules', '@sentry', 'cli', 'bin', 'sentry-cli');
-const result = spawnSync(process.execPath, [
-	sentryCli,
+
+function runSentryCli(args: string[], label: string): string | undefined {
+	const result = spawnSync(process.execPath, [sentryCli, ...args], {
+		cwd: repositoryRoot,
+		env: process.env,
+		stdio: 'inherit',
+	});
+	if (result.error) {
+		return `sentry-cli ${label} failed to start: ${result.error.message}`;
+	}
+	return result.status === 0 ? undefined : `sentry-cli ${label} exited with code ${result.status}`;
+}
+
+/** Fails the release build, like every step whose output the shipped app depends on. */
+function runRequired(args: string[], label: string): void {
+	const failure = runSentryCli(args, label);
+	if (failure !== undefined) {
+		throw new Error(failure);
+	}
+}
+
+// Create the release explicitly before anything else. The project has "release auto-creation
+// from telemetry" turned off (`enableAutoReleaseCreation: false`), and with that setting Sentry
+// strips `release` and `dist` from every event whose release does not already exist. The upload
+// below does not create it: with Debug IDs, `sourcemaps upload --release` only tags the artifact
+// bundle. That is why every 1.139.1 event arrived without a release while the SDK did send one.
+// `releases new` is idempotent, so each platform/arch job can run it. A failure fails the build, as
+// the upload's does: without the release every event of this version loses its release.
+runRequired([
+	'releases',
+	'new',
+	release,
+	'--org', 'maguro-bot-corp',
+	'--project', 'para-code-desktop',
+], 'releases new');
+
+runRequired([
 	'sourcemaps',
 	'upload',
 	'out-vscode-min',
@@ -42,15 +77,17 @@ const result = spawnSync(process.execPath, [
 	// budget, and that budget repeatedly expired *after* the upload itself had already succeeded,
 	// failing whole release builds over telemetry post-processing. Sentry processes the bundle
 	// asynchronously either way; --validate/--strict still catch bad source maps locally.
-], {
-	cwd: repositoryRoot,
-	env: process.env,
-	stdio: 'inherit',
-});
+], 'sourcemaps upload');
 
-if (result.error) {
-	throw result.error;
-}
-if (result.status !== 0) {
-	throw new Error(`sentry-cli sourcemaps upload exited with code ${result.status}`);
+// Marks the release as released (its date shows in Sentry's release list). Only bookkeeping, so a
+// failure is a warning and does not stop the release. Idempotent across the platform/arch jobs.
+const finalizeFailure = runSentryCli([
+	'releases',
+	'finalize',
+	release,
+	'--org', 'maguro-bot-corp',
+	'--project', 'para-code-desktop',
+], 'releases finalize');
+if (finalizeFailure !== undefined) {
+	console.warn(`::warning::${finalizeFailure}; the release stays unfinalized in Sentry`);
 }

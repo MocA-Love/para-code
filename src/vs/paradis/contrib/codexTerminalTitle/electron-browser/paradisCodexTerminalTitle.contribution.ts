@@ -22,7 +22,7 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ICommandDetectionCapability, ITerminalCommand, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
-import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisFileOperationResultName, reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ITerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ITerminalContributionContext, registerTerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminalExtensions.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
@@ -554,10 +554,28 @@ function replaceTerminalTitleInTuiSection(config: string): string {
 	return `${config.slice(0, sectionStart + titleKeyMatch.index)}${titleLine}${config.slice(sectionStart + valueEnd)}`;
 }
 
+/**
+ * Writes the setting into every signed-in account home other than the default one. A failure in one
+ * home does not stop the rest; the result says whether every home was written, so the caller only
+ * records the home set as done (and stops retrying) when nothing failed.
+ */
+export async function writeCodexAccountHomes(homes: readonly IParadisCodexHome[], write: (home: URI) => Promise<boolean>): Promise<boolean> {
+	let allWritten = true;
+	for (const home of homes) {
+		if (!home.isDefault && home.signedIn) {
+			allWritten = await write(URI.file(home.homePath)) && allWritten;
+		}
+	}
+	return allWritten;
+}
+
 /** ログイン済みのアカウント用ホームの顔ぶれ（並び順に依らない）。 */
 function accountHomesKey(homes: readonly IParadisCodexHome[]): string {
 	return JSON.stringify(homes.filter(home => !home.isDefault && home.signedIn).map(home => home.homePath).sort());
 }
+
+type ParadisCodexConfigTarget = 'default-home' | 'account-home';
+type ParadisCodexConfigStep = 'mkdir' | 'read' | 'write';
 
 class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkbenchContribution {
 
@@ -566,6 +584,7 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 	private writeQueue = Promise.resolve();
 	/** 最後に書いたアカウント用ホームの顔ぶれ。 */
 	private writtenAccountHomesKey: string | undefined;
+	private readonly reportedWriteFailures = new Set<string>();
 	private readonly codexAccountsClient: ParadisCodexAccountsClient;
 
 	constructor(
@@ -605,8 +624,7 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 			}).catch(error => {
 				// This is the main way the feature dies silently: a failed config.toml write leaves
 				// `[tui].terminal_title` unset forever, since nothing else retries it.
-				reportParadisDiagnosticError('owned', 'codex-terminal-title', 'config-write-failed', error);
-				this.logService.warn('[ParadisCodexTerminalTitle] failed to update Codex terminal title', error);
+				this.reportWriteFailure(error, 'default-home', 'prepare');
 			});
 		}
 	}
@@ -619,38 +637,68 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 			return;
 		}
 		const codexHome = joinPath(userHome, '.codex');
-		if (!(await this.fileService.exists(codexHome))) {
-			await this.fileService.createFolder(codexHome);
-		}
-		await this.writeTerminalTitleConfig(codexHome);
+		await this.tryWriteTerminalTitleConfig(codexHome, 'default-home', true);
 		// Codex のアカウントを切り替えると、Codex は ~/.codex-2 のような別のホームの config.toml を
 		// 読む。手元のウィンドウでは、ログイン済みのアカウント用ホームにも同じ設定を入れる。
+		// 1つのホームで失敗しても残りのホームには書く（以前は最初の失敗で全部止まっていた）。
 		if (this.environmentService.remoteAuthority === undefined) {
 			const state = await this.codexAccountsClient.getState().catch(() => undefined);
-			for (const home of state?.homes ?? []) {
-				if (!home.isDefault && home.signedIn) {
-					await this.writeTerminalTitleConfig(URI.file(home.homePath));
-				}
-			}
-			if (state !== undefined) {
+			const allWritten = await writeCodexAccountHomes(state?.homes ?? [], home => this.tryWriteTerminalTitleConfig(home, 'account-home', false));
+			// 失敗したホームがあれば記録しない。次にアカウントの状態が届いたとき、もう一度書きに行く。
+			if (state !== undefined && allWritten) {
 				this.writtenAccountHomesKey = accountHomesKey(state.homes);
 			}
 		}
 	}
 
-	private async writeTerminalTitleConfig(codexHome: URI): Promise<void> {
-		const configFile = joinPath(codexHome, 'config.toml');
-		const currentConfig = (await this.fileService.exists(configFile))
-			? (await this.fileService.readFile(configFile)).value.toString()
-			: '';
-		const nextConfig = replaceTerminalTitleInTuiSection(currentConfig);
-		if (nextConfig !== currentConfig) {
-			// config.toml は利用者の設定なので、書き換える前の中身を1つだけ隣へ控える（写せなくても止めない）
-			if (currentConfig.length > 0) {
-				await paradisWriteRollingBackupUri(this.fileService, configFile, error => this.logService.warn('[ParadisCodexTerminalTitle] could not back up config.toml', error));
+	/**
+	 * Writes one home's config.toml. A failure is reported with where it failed and why, then
+	 * swallowed so the other homes still get written; the result says whether it succeeded.
+	 */
+	private async tryWriteTerminalTitleConfig(codexHome: URI, target: ParadisCodexConfigTarget, createHome: boolean): Promise<boolean> {
+		let step: ParadisCodexConfigStep = 'mkdir';
+		try {
+			if (createHome && !(await this.fileService.exists(codexHome))) {
+				await this.fileService.createFolder(codexHome);
 			}
-			await this.fileService.writeFile(configFile, VSBuffer.fromString(nextConfig));
+			const configFile = joinPath(codexHome, 'config.toml');
+			step = 'read';
+			const currentConfig = (await this.fileService.exists(configFile))
+				? (await this.fileService.readFile(configFile)).value.toString()
+				: '';
+			const nextConfig = replaceTerminalTitleInTuiSection(currentConfig);
+			if (nextConfig !== currentConfig) {
+				// config.toml は利用者の設定なので、書き換える前の中身を1つだけ隣へ控える（写せなくても止めない）
+				if (currentConfig.length > 0) {
+					await paradisWriteRollingBackupUri(this.fileService, configFile, error => this.logService.warn('[ParadisCodexTerminalTitle] could not back up config.toml', error));
+				}
+				step = 'write';
+				await this.fileService.writeFile(configFile, VSBuffer.fromString(nextConfig));
+			}
+			return true;
+		} catch (error) {
+			this.reportWriteFailure(error, target, step);
+			return false;
 		}
+	}
+
+	/**
+	 * Reports a failed update once per target, step and reason for this window. The same failure
+	 * recurs on every account-list change (a read-only config.toml stays read-only), and repeating it
+	 * would only use up the rate limiter's budget for this operation.
+	 */
+	private reportWriteFailure(error: unknown, target: ParadisCodexConfigTarget, step: ParadisCodexConfigStep | 'prepare'): void {
+		this.logService.warn(`[ParadisCodexTerminalTitle] failed to update the Codex terminal title config (${target}, ${step})`, error);
+		// The error reaches Sentry only as content-free facts (file result, errno); see paradisSafeErrorExtra.
+		const reason = `${target}|${step}|${paradisFileOperationResultName(error) ?? ''}|${error instanceof Error ? error.name : typeof error}`;
+		if (this.reportedWriteFailures.has(reason)) {
+			return;
+		}
+		this.reportedWriteFailures.add(reason);
+		reportParadisDiagnosticError('owned', 'codex-terminal-title', 'config-write-failed', error, {
+			safe_target: target,
+			safe_step: step,
+		});
 	}
 }
 
