@@ -13,7 +13,7 @@ import { AGENT_LIVE_APPEND_ENCODING, applyAgentLiveAppendPatch } from './agentLi
 import { ContentHashResponseCache, type PreparedContentHashRequest } from './contentHashCache.js';
 import { terminalViewportEquals, type TerminalViewport } from './terminalViewport.js';
 import { isValidPresetDef } from './presets.js';
-import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
+import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type RelayConnectionEvent, type SocketFactory } from './relayClient.js';
 import { reuseWorkspaceState } from './workspaceIdentity.js';
 import { ResumeFrameBuffer } from './resumeFrameBuffer.js';
 import type { RelayWindowHost } from './relayHosts.js';
@@ -1506,6 +1506,8 @@ export class MobileController {
 	 * アプリ内の一覧は store 自身が消す。これは通知センターに残ったものを消すための口。
 	 */
 	onNotifyHandled: ((handled: { readonly ids: readonly string[]; readonly tokens: readonly string[] }) => void) | undefined;
+	/** 接続の出来事（W2-22 の「接続の記録」へ残す口。記録するだけ）。 */
+	onConnectionEvent: ((event: RelayConnectionEvent) => void) | undefined;
 	private static readonly LIVENESS_IDLE_MS = 45_000;
 	private static readonly LIVENESS_CHECK_INTERVAL_MS = 20_000;
 	private outboxReplayEpoch: string | undefined;
@@ -1801,6 +1803,7 @@ export class MobileController {
 				this.state.pairingRejected = rejected;
 				this.emit();
 			},
+			onConnectionEvent: event => this.onConnectionEvent?.(event),
 		});
 		this.client.connect();
 		// presence遷移が届かないPC再起動（リレーがPC切断を検知し損ねた場合等）でも自己修復する
