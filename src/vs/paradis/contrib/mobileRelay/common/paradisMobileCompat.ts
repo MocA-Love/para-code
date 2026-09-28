@@ -65,6 +65,16 @@ export const ParadisMobileCapability = {
 	AgentHistoryPage: 'agent.history.page.v1',
 	/** 終わった会話を開き直して続きを頼める（scm の `agentSessions` / `agentSessionPreview` / `agentSessionResume`。W2-29）。 */
 	AgentResume: 'agent.resume.v1',
+	/** status の `upstream` / `ahead` / `behind` と、`push` / `fetch` / `pull`（W2-15。`paradisMobileScmSync.ts`）。 */
+	ScmSync: 'scm.sync.v1',
+	/** `commitSafe`（失敗したらステージを戻して要約を返す）と `commitFix`（エージェントに直してもらう）（W2-15）。 */
+	ScmCommitRecover: 'scm.commit-recover.v1',
+	/** ファイルごとの `stage` / `unstage`（W2-15）。 */
+	ScmStageFile: 'scm.stage-file.v1',
+	/** `prView`（PR の状態と CI のチェック）と `prFixChecks`（W2-36。`paradisMobilePullRequest.ts`）。 */
+	PrView: 'pr.view.v1',
+	/** `prMerge`（見た時点の head に固定してマージ）（W2-36）。 */
+	PrMerge: 'pr.merge.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -83,6 +93,11 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentApprovalOptions,
 	ParadisMobileCapability.AgentHistoryPage,
 	ParadisMobileCapability.AgentResume,
+	ParadisMobileCapability.ScmSync,
+	ParadisMobileCapability.ScmCommitRecover,
+	ParadisMobileCapability.ScmStageFile,
+	ParadisMobileCapability.PrView,
+	ParadisMobileCapability.PrMerge,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

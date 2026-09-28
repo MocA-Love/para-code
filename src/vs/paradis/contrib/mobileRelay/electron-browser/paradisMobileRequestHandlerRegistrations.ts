@@ -14,5 +14,7 @@ import './paradisMobileDiffReviewRequests.js'; // 差分レビューの印・行
 import './paradisMobileOpenUrl.js';
 // 終わった会話の一覧・中身・再開（W2-29）
 import './paradisMobileAgentSessions.js';
+import './paradisMobileScmSyncRequests.js'; // push / fetch / pull・コミットの失敗からの立て直し・ファイルごとのステージ（W2-15）
+import './paradisMobilePullRequestRequests.js'; // PR の状態・CI の失敗をエージェントへ・マージ（W2-36）
 
 export { };
