@@ -2,7 +2,6 @@
 
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
-import { isAgentWaiting } from './store.js';
 
 /**
  * iOS の通知センター（ロック画面を含む）に残っている Para Code の通知の後始末。
@@ -12,8 +11,11 @@ import { isAgentWaiting } from './store.js';
  *
  * 消す根拠は2つ（W2-02。Orca の push-tray-dismissal.ts / push-dismissal-reconciliation.ts に倣う）:
  *  1. PCが「処理済み」と知らせてきた（`dismissed` の通知ID、`dismissed-token` のエージェント）
- *  2. 前面復帰・再接続のあとに届いた**いまのPCの状態**で、そのエージェントがもう待っていない
- *     （完了通知なら PC で確認済み、質問なら回答済み）
+ *  2. 前面復帰・再接続のあとに届いた**いまのPCの状態**で、完了通知のエージェントがもう確認済み
+ *     （`review` でなくなった）
+ *
+ * 許可・質問の通知は 2 では消さない。hook が来ないと状態が `working` のまま残ることがあり、
+ * 状態だけでは「回答済み」と言い切れない（未回答の許可を消すと気づけなくなる）。これらは 1 だけで消す。
  *
  * 2 は PC に問い合わせない（PC側の変更が要らず、旧PCでも効く）。代わりに誤って消さないよう
  * 次の条件を全部満たすものだけにする:
@@ -110,8 +112,8 @@ export function selectSettledByState(presented: readonly TrayNotification[], sna
 			if (notification.date >= snapshot.before || !mayBelongTo(notification.data, snapshot.pcId)) {
 				return false;
 			}
-			const kind = text(notification.data, 'kind');
-			if (kind !== 'agent-done' && kind !== 'agent-question') {
+			// 許可・質問は状態からは消さない（上のコメント）。
+			if (text(notification.data, 'kind') !== 'agent-done') {
 				return false;
 			}
 			const agentToken = text(notification.data, 'agentToken');
@@ -124,7 +126,7 @@ export function selectSettledByState(presented: readonly TrayNotification[], sna
 			if (terminal === undefined) {
 				return false;
 			}
-			return kind === 'agent-done' ? terminal.agentStatus !== 'review' : !isAgentWaiting(terminal.agentStatus);
+			return terminal.agentStatus !== 'review';
 		})
 		.map(notification => notification.identifier);
 }

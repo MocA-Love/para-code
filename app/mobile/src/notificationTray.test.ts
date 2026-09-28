@@ -57,7 +57,7 @@ describe('selectSettledByState', () => {
 	];
 	const before = T0 + 10;
 
-	it('removes only notifications whose agent is provably no longer waiting', () => {
+	it('removes only completion notifications the PC has acknowledged, never permission or question ones', () => {
 		const presented = [
 			tray('done-acknowledged', { kind: 'agent-done', agentToken: 'ack', pcId: PC }),
 			tray('done-still-unread', { kind: 'agent-done', agentToken: 'open', pcId: PC }),
@@ -72,9 +72,9 @@ describe('selectSettledByState', () => {
 			tray('other-pc', { kind: 'agent-done', agentToken: 'ack', pcId: 'pc-b' }),
 			tray('newer-than-state', { kind: 'agent-done', agentToken: 'ack', pcId: PC }, before),
 		];
+		// question-answered は状態が working でも消さない（hook が来ないと working のまま残るため）
 		expect(selectSettledByState(presented, { pcId: PC, terminals, before })).toEqual([
 			'done-acknowledged',
-			'question-answered',
 			'by-key-same-pc',
 		]);
 	});
