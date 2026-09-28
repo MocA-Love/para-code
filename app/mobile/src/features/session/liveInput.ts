@@ -41,9 +41,18 @@ export interface LiveInputState {
 	readonly sent: string;
 	/** 変換中として送らずに持っている末尾。 */
 	readonly held: string;
+	/**
+	 * Enter で送り終え、もう使わない入力欄か。画面は新しい入力欄へフォーカスを移すが、移る前（または
+	 * 移れなかったとき）にこの入力欄へ届いた打鍵は捨てる。この入力欄は前の行を持ったままなので、
+	 * 写すと前の行ごと新しいプロンプトへ送ってしまう。
+	 */
+	readonly retired?: true;
 }
 
 export const LIVE_INPUT_EMPTY: LiveInputState = { text: '', sent: '', held: '' };
+
+/** Enter で送り終えた入力欄の状態（以後の出来事は何も送らない）。 */
+export const LIVE_INPUT_RETIRED: LiveInputState = { text: '', sent: '', held: '', retired: true };
 
 /** 変換中かどうかが分からない環境で、止まった末尾を送るまでの待ち時間。 */
 export const HELD_PREEDIT_COMMIT_DELAY_MS = 300;
@@ -53,7 +62,7 @@ export type LiveInputEvent =
 	/** 入力欄が変わった。`composing` は入力欄に変換中の範囲があるか（分からなければ undefined）。 */
 	| { readonly kind: 'change'; readonly text: string; readonly composing?: boolean }
 	| { readonly kind: 'key'; readonly key: string }
-	/** Enter。持っている末尾も送ってから CR を送り、状態は空に戻る（画面側は入力欄を作り直す）。 */
+	/** Enter。持っている末尾も送ってから CR を送り、この入力欄は引退する（画面側は入力欄を作り直す）。 */
 	| { readonly kind: 'submit' }
 	/** 持っている末尾を送る（変換中かどうか分からないまま止まったとき・フォーカスが外れたとき）。 */
 	| { readonly kind: 'flush' };
@@ -142,6 +151,10 @@ function commit(state: LiveInputState): LiveInputStep {
 
 /** ライブ入力の1つの出来事を受けて、次の状態と PC へ送るものを返す。 */
 export function liveInputStep(state: LiveInputState, event: LiveInputEvent): LiveInputStep {
+	// 引退した入力欄に届いたものは何も送らない（retired のコメント）。
+	if (state.retired === true) {
+		return { state, send: [] };
+	}
 	switch (event.kind) {
 		case 'change':
 			return onChange(state, event.text, event.composing);
@@ -155,7 +168,7 @@ export function liveInputStep(state: LiveInputState, event: LiveInputEvent): Liv
 		}
 		case 'submit': {
 			const flushed = commit(state);
-			return { state: LIVE_INPUT_EMPTY, send: [...flushed.send, LIVE_ENTER] };
+			return { state: LIVE_INPUT_RETIRED, send: [...flushed.send, LIVE_ENTER] };
 		}
 		case 'flush':
 			return commit(state);

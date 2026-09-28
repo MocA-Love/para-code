@@ -47,15 +47,34 @@ export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitt
 	const [liveFocused, setLiveFocused] = useState(false);
 	// 外付けキーボードの ⌘↩（iPad）。送信ボタンと同じ（空なら Enter を送る）。
 	const focused = useIsFocused();
-	useShortcutSlot('send', focused && !submitting ? { send: () => { hapticImpact('medium'); onSubmit(); } } : undefined);
+	// ライブ入力中は、見えない入力欄の Return と同じ（持っている末尾を送って CR、入力欄を作り直す）。
+	const liveSubmitRef = useRef<(() => void) | undefined>(undefined);
+	useShortcutSlot('send', focused && !submitting ? {
+		send: () => {
+			hapticImpact('medium');
+			if (live && liveSubmitRef.current !== undefined) {
+				liveSubmitRef.current();
+			} else {
+				onSubmit();
+			}
+		},
+	} : undefined);
 	const [lastTyped, setLastTyped] = useState('');
 	// 外付けキーボードの矢印（iPad）。ライブ入力にフォーカスがある間は、入力欄ではなく PC のターミナルへ。
-	useShortcutSlot('terminalArrows', live && liveFocused && focused ? { arrow: key => onLiveArrow(key) } : undefined);
+	// 日本語の変換中は受け口を置かない（矢印は変換の候補や文節の移動に使うので、入力欄に任せる）。
+	const [liveComposing, setLiveComposing] = useState(false);
+	useShortcutSlot('terminalArrows', live && liveFocused && focused && !liveComposing ? { arrow: key => onLiveArrow(key) } : undefined);
 	// ライブ入力の見えない入力欄の世代。Enter で送ったら新しい世代を足してフォーカスを移し、移ったら
 	// 古いものを外す（入力欄を1行ぶんに保つ。clear() は RN 0.86 の iOS で捨てられることがあるので使わない）。
 	// 2つを一瞬並べるのは、フォーカスを入力欄から入力欄へ直接渡してキーボードを閉じさせないため。
 	const [captures, setCaptures] = useState<readonly number[]>([0]);
 	const currentCapture = captures[captures.length - 1]!;
+	// ライブ入力を切り替えたら入力欄は最初の世代から（autoFocus で勝手にキーボードを出さない）。
+	useEffect(() => {
+		setCaptures([0]);
+		setLiveFocused(false);
+		setLiveComposing(false);
+	}, [live]);
 	const onLiveSend = (data: string) => {
 		if (data === LIVE_ENTER) {
 			onLiveKey(data);
@@ -106,7 +125,12 @@ export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitt
 					<LiveCapture
 						key={generation}
 						inputRef={generation === currentCapture ? liveRef : undefined}
+						submitRef={generation === currentCapture ? liveSubmitRef : undefined}
 						autoFocus={generation === currentCapture && generation > 0}
+						onComposingChange={generation === currentCapture ? setLiveComposing : undefined}
+						// 引退した入力欄に打鍵が届いた（新しい入力欄がまだ・またはフォーカスを取れなかった）。
+						// 打鍵は捨て、いまの入力欄へフォーカスを移し直す。
+						onRetiredInput={() => liveRef.current?.focus()}
 						onFocusChange={value => {
 							setLiveFocused(value);
 							// 新しい入力欄にフォーカスが移ったら、古い入力欄を外す
@@ -183,12 +207,18 @@ export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitt
  * 変換中かどうかは `onChange` の `isComposing`（RN へのパッチで iOS の marked text を渡している）で
  * 受け取る。`onChangeText` は文字列しか渡さないので使わない。
  */
-function LiveCapture({ inputRef, autoFocus, onFocusChange, onSend, onSubmitted }: {
+function LiveCapture({ inputRef, submitRef, autoFocus, onFocusChange, onComposingChange, onSend, onSubmitted, onRetiredInput }: {
 	inputRef: RefObject<TextInput | null> | undefined;
+	/** いまの世代だけ受け取る。⌘↩ から Return と同じ送り方をさせる。 */
+	submitRef: RefObject<(() => void) | undefined> | undefined;
 	autoFocus: boolean;
 	onFocusChange: (focused: boolean) => void;
+	/** いまの世代だけ受け取る。変換中かどうかが変わった。 */
+	onComposingChange: ((composing: boolean) => void) | undefined;
 	onSend: (data: string) => void;
 	onSubmitted: () => void;
+	/** Enter で送り終えた後のこの入力欄に、まだ打鍵が届いた。 */
+	onRetiredInput: () => void;
 }) {
 	const localRef = useRef<TextInput | null>(null);
 	const stateRef = useRef<LiveInputState>(LIVE_INPUT_EMPTY);
@@ -204,8 +234,17 @@ function LiveCapture({ inputRef, autoFocus, onFocusChange, onSend, onSubmitted }
 		}
 	};
 	useEffect(() => cancelHeldTimer, []);
+	// 新しい世代は変換していない状態から始まる（前の世代の「変換中」を引き継がない）。
+	useEffect(() => {
+		onComposingChange?.(false);
+	}, [onComposingChange]);
 	const dispatch = (event: LiveInputEvent) => {
 		cancelHeldTimer();
+		if (stateRef.current.retired === true && (event.kind === 'change' || event.kind === 'key')) {
+			// 前の行を持ったままの入力欄なので写さない（liveInput.ts の retired）。
+			onRetiredInput();
+			return;
+		}
 		const step = liveInputStep(stateRef.current, event);
 		stateRef.current = step.state;
 		for (const data of step.send) {
@@ -218,6 +257,21 @@ function LiveCapture({ inputRef, autoFocus, onFocusChange, onSend, onSubmitted }
 			}, HELD_PREEDIT_COMMIT_DELAY_MS);
 		}
 	};
+	const submit = () => {
+		dispatch({ kind: 'submit' });
+		onSubmitted();
+	};
+	useEffect(() => {
+		if (submitRef === undefined) {
+			return;
+		}
+		submitRef.current = submit;
+		return () => {
+			if (submitRef.current === submit) {
+				submitRef.current = undefined;
+			}
+		};
+	});
 	return (
 		<TextInput
 			ref={instance => {
@@ -242,11 +296,14 @@ function LiveCapture({ inputRef, autoFocus, onFocusChange, onSend, onSubmitted }
 			onFocus={() => onFocusChange(true)}
 			onBlur={() => {
 				onFocusChange(false);
+				composingRef.current = undefined;
+				onComposingChange?.(false);
 				dispatch({ kind: 'flush' });
 			}}
 			onChange={event => {
 				rawTextRef.current = event.nativeEvent.text;
 				composingRef.current = readComposing(event.nativeEvent);
+				onComposingChange?.(composingRef.current === true);
 				dispatch({ kind: 'change', text: event.nativeEvent.text, composing: composingRef.current });
 			}}
 			onSelectionChange={event => {
@@ -261,8 +318,9 @@ function LiveCapture({ inputRef, autoFocus, onFocusChange, onSend, onSubmitted }
 			}}
 			onKeyPress={event => dispatch({ kind: 'key', key: event.nativeEvent.key })}
 			onSubmitEditing={() => {
-				dispatch({ kind: 'submit' });
-				onSubmitted();
+				if (stateRef.current.retired !== true) {
+					submit();
+				}
 			}}
 			accessibilityElementsHidden
 			importantForAccessibility="no-hide-descendants"
