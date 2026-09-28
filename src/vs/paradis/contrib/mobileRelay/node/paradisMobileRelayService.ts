@@ -169,6 +169,11 @@ const PARADIS_MOBILE_RESYNC_MARKER_BYTES = 8;
  */
 const PARADIS_MOBILE_RESYNC_AFTER_FAILURES = 3;
 /**
+ * ハンドシェイク中・直後の旧鍵フレームは想定内として Sentry へ送らないが、確立してから一度も
+ * 復号できないまま、この件数に届いたら本当の異常として1回だけ送る（張り替えが回っていない）。
+ */
+const PARADIS_MOBILE_STALE_FRAME_REPORT_AFTER = 30;
+/**
  * PC本体のCPU/メモリ/ディスクをサンプリングする間隔。CPU使用率はこの区間の平均になる。
  * 短くしても丸め（5%刻み）で潰れるだけで再送が増えるだけなので、これ以上は詰めない。
  */
@@ -279,6 +284,9 @@ export class MobileSession {
 		// 1フレーム捨てれば済んだものがモバイルの再接続に化ける。FrameMux は復号失敗を
 		// onError で握り潰すので、ここに落ちる例外はハンドラ由来と復号由来が混ざる。
 		let cryptoFailure = false;
+		// 失敗したときに「想定内の旧鍵フレーム」とみなせるか。確立してから1つも復号できていない間
+		// （ハンドシェイク中・直後）は、張り替え前の鍵で封緘されたフレームが遅れて届くのが普通。
+		const settledAtStart = this.confirmed && this.decryptedSinceConfirm;
 		try {
 			if (!this.channel) {
 				cryptoFailure = true;
@@ -301,6 +309,9 @@ export class MobileSession {
 				await this.pendingVerify!(payload);
 				cryptoFailure = false;
 				this.confirmed = true;
+				this.decryptedSinceConfirm = false;
+				this.staleFrameFailures = 0;
+				this.staleFrameLogged = false;
 				this.mux = new FrameMux(this.channel, {
 					sendSealed: (sealed: Uint8Array) => this.sendToRelay(sealed),
 					// FrameMux は onError を渡すと復号失敗を握り潰して throw しない。ここで捕まえて
@@ -329,6 +340,8 @@ export class MobileSession {
 			}
 			// ここまで来たら復号できている。単発の迷子フレームで畳まないための連続カウンタを戻す。
 			this.consecutiveCryptoFailures = 0;
+			this.decryptedSinceConfirm = true;
+			this.staleFrameFailures = 0;
 		} catch (err) {
 			// 自己回復: ハンドシェイク確立中/確立後に処理できない32Bのペイロードが届いた場合、
 			// それはモバイルが再接続して送り直した新しい hello（ephemeral公開鍵32B）である
@@ -346,6 +359,9 @@ export class MobileSession {
 			// ここに来るのは復号にも hello 解釈にも失敗した本物の異常（鍵の固着、フレーム破損、
 			// 受信ハンドラ自体の例外）で、それらを検知する唯一の窓口になる。鍵やペイロードは載せない。
 			const resync = this.resyncIfSessionDiverged(cryptoFailure);
+			if (cryptoFailure && !settledAtStart && this.recordStaleFrameFailure(payload.length, resync)) {
+				return;
+			}
 			reportParadisDiagnosticError('owned', 'mobile-e2e', 'frame-open-failed', err, {
 				phase: this.confirmed ? 'online' : 'handshaking',
 				transport: 'websocket',
@@ -364,6 +380,39 @@ export class MobileSession {
 	private resyncRequested = false;
 	/** 復号に失敗し続けている回数。1回でも復号できたら戻す。 */
 	private consecutiveCryptoFailures = 0;
+	/** 今のセッションを確立してから、1つでもフレームを復号できたか。 */
+	private decryptedSinceConfirm = false;
+	/** ハンドシェイク中・直後に開けなかった旧鍵フレームの数（復号できたら戻す）。 */
+	private staleFrameFailures = 0;
+	/** 旧鍵フレームのことを、このセッションの確立までに一度ログへ残したか。 */
+	private staleFrameLogged = false;
+
+	/**
+	 * ハンドシェイク中・直後に届いた旧鍵のフレームを、Sentry へ送らずに片付ける（7S）。
+	 *
+	 * モバイルが再接続して張り替える間、張り替え前の鍵で封緘したフレームが遅れて届くのは想定内で、
+	 * 開けなければ {@link resyncIfSessionDiverged} がやり直しを促して自己回復する。1件ずつ
+	 * error として送ると、本当の異常（確立して復号できていたセッションが続けて開けなくなる）が
+	 * その中に埋もれる。ログは確立ごとに1回だけ info にし、残りは trace にする。
+	 *
+	 * ただし何十件続いても一度も復号できないなら、張り替えが回っていない本当の異常なので
+	 * 送る側へ回す（false を返す）。
+	 * @returns 片付けた（送らない）なら true
+	 */
+	private recordStaleFrameFailure(payloadBytes: number, resync: string): boolean {
+		this.staleFrameFailures++;
+		if (this.staleFrameFailures === PARADIS_MOBILE_STALE_FRAME_REPORT_AFTER) {
+			return false;
+		}
+		const message = `[paradisMobileRelay] session ${this.mobileId}: dropped a ${payloadBytes}B frame sealed with the previous session key (resync: ${resync})`;
+		if (this.staleFrameLogged) {
+			this.logService.trace(message);
+		} else {
+			this.staleFrameLogged = true;
+			this.logService.info(message);
+		}
+		return true;
+	}
 
 	/**
 	 * 食い違ったセッションだけを畳んで、モバイルへ「やり直せ」と伝える。
@@ -423,6 +472,7 @@ export class MobileSession {
 	/** ハンドシェイク前の状態へ戻す。次の hello から作り直せるようにするためだけのもの。 */
 	private resetSessionState(): void {
 		this.consecutiveCryptoFailures = 0;
+		this.decryptedSinceConfirm = false;
 		this.channel = undefined;
 		this.mux = undefined;
 		this.confirmed = false;

@@ -7,6 +7,7 @@
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { generateMobileIdentity, SecureChannel } from '../../common/paradisMobileCrypto.js';
 import { FrameMux } from '../../common/paradisMobileMux.js';
 import { IParadisMobileRendererManifest, IParadisMobileWindowLease } from '../../common/paradisMobileWindowLease.js';
@@ -221,6 +222,66 @@ suite('ParadisMobileRelay State delivery', () => {
 			channelCleared: true,
 			confirmedCleared: false,
 		});
+	});
+
+	test('ハンドシェイク中・直後の旧鍵フレームは Sentry へ送らず、確立後に続けて開けないものだけ送る', async () => {
+		const reports: string[] = [];
+		configureParadisDiagnosticReporter((_scope, _feature, operation, _error, extras) => reports.push(`${operation}:${extras?.phase}`));
+		try {
+			const pcIdentity = await generateMobileIdentity();
+			const mobileIdentity = await generateMobileIdentity();
+			const infos: string[] = [];
+			const logService = new class extends NullLogService {
+				override info(message: string): void { infos.push(message); }
+			};
+			const session = new MobileSession('mobile', new Uint8Array(16), mobileIdentity.publicKey, pcIdentity, () => true, () => { }, undefined, logService);
+			const access = session as unknown as { channel: SecureChannel | undefined; mux: FrameMux | undefined; confirmed: boolean; decryptedSinceConfirm: boolean; lastMuxError: unknown };
+			const staleFrame = new Uint8Array(88);
+
+			// 1. セッションが無いところへ旧鍵のフレーム（本番の 7S の形）が続けて届く
+			await session.enqueuePayload(staleFrame);
+			await session.enqueuePayload(staleFrame);
+			const whileHandshaking = { reports: [...reports], infos: infos.length };
+
+			// 2. 確立はしたが、まだ1つも復号できていない（直後）
+			let decryptOk = false;
+			// 本物の FrameMux と同じく、復号の失敗は onError（lastMuxError）で知らせる
+			const mux = { receive: async () => { if (!decryptOk) { access.lastMuxError = new Error('stale key'); } } } as unknown as FrameMux;
+			Object.assign(access, { channel: {} as SecureChannel, mux, confirmed: true, decryptedSinceConfirm: false });
+			await session.enqueuePayload(staleFrame);
+			const justAfterConfirm = [...reports];
+
+			// 3. 復号できるようになった後に続けて開けないのは本当の異常
+			decryptOk = true;
+			await session.enqueuePayload(staleFrame);
+			decryptOk = false;
+			Object.assign(access, { channel: {} as SecureChannel, mux, confirmed: true });
+			await session.enqueuePayload(staleFrame);
+
+			assert.deepStrictEqual({ whileHandshaking, justAfterConfirm, afterSettled: reports }, {
+				whileHandshaking: { reports: [], infos: 1 },
+				justAfterConfirm: [],
+				afterSettled: ['frame-open-failed:online'],
+			});
+		} finally {
+			configureParadisDiagnosticReporter(() => { });
+		}
+	});
+
+	test('確立してから一度も復号できない旧鍵フレームが続いたら、1回だけ送る', async () => {
+		const reports: string[] = [];
+		configureParadisDiagnosticReporter((_scope, _feature, operation) => reports.push(operation));
+		try {
+			const pcIdentity = await generateMobileIdentity();
+			const mobileIdentity = await generateMobileIdentity();
+			const session = new MobileSession('mobile', new Uint8Array(16), mobileIdentity.publicKey, pcIdentity, () => true, () => { }, undefined, new NullLogService());
+			for (let index = 0; index < 40; index++) {
+				await session.enqueuePayload(new Uint8Array(88));
+			}
+			assert.deepStrictEqual(reports, ['frame-open-failed']);
+		} finally {
+			configureParadisDiagnosticReporter(() => { });
+		}
 	});
 
 	test('切断レポートにはクリア前のモバイルセッション数を記録する', () => {
