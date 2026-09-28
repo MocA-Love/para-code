@@ -36,6 +36,8 @@ import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagn
 import { paradisParseTerminalActiveGroups, paradisTerminalGroupIdentity, paradisUpdateTerminalActiveGroup } from '../common/paradisTerminalActiveGroup.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { paradisIsSharedPanelShell, paradisSharedPanelEnabledAtStartup } from '../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
+import { paradisForgetRestartedTerminal, paradisWasTerminalShellRestarted } from '../common/paradisTerminalLaunchPreparers.js';
+import { paradisPickRestartedShellScope, paradisRegisterRestartedShellScopeLookup, paradisRestartedShellRecordScope } from '../common/paradisTerminalSpaceFolder.js';
 
 /**
  * ターミナルグループをリポジトリ単位でスコープする (機能1 Phase 2)。
@@ -161,6 +163,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * しかも書き換えが非同期なため判定を引く時刻次第で答えが変わる。
 	 */
 	private readonly _restoredInstances = new Set<number>();
+	/**
+	 * 繋ぎ直しに失敗してシェルを起こし直した端末 → そのとき根拠から引けた持ち主。
+	 * 起こし直したシェルはこのスペースのフォルダで起きている（`paradisTerminalSpaceCwd.contribution.ts`）。
+	 */
+	private readonly _restartedShellScopes = new Map<number, string>();
 	private readonly _candidateCapturedInstances = new Set<number>();
 	private readonly _initialCwds = new Map<number, string>();
 	private readonly _initialCwdResolvedInstances = new Set<number>();
@@ -306,6 +313,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			listOrphanPtyIdsByNonce: () => this.listOrphanPtyIdsByNonce(),
 			listHeldPtyIds: () => this.listHeldPtyIds(),
 		}));
+		// 繋ぎ直しに失敗した復元タブのシェルを、持ち主のスペースのフォルダで起こすための問い合わせ口。
+		this._register(paradisRegisterRestartedShellScopeLookup((instanceId, nonce) => this.resolveRestartedShellScope(instanceId, nonce)));
 
 		const loadedMapping = this.loadMapping();
 		const initialPartition = paradisPartitionPersistentProcessScopesByKnownScope(loadedMapping, this.knownStateKeys());
@@ -997,6 +1006,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			this._activeFallbackInstances.delete(instanceId);
 			this._inheritedGroupScopes.delete(instanceId);
 			this._restoredInstances.delete(instanceId);
+			this._restartedShellScopes.delete(instanceId);
+			paradisForgetRestartedTerminal(instanceId);
 			this._sharedPanelInstanceIds.delete(instanceId);
 			this._seenOutsideSharedPanel.delete(instanceId);
 			this._stableScopeTracker.retire(instanceId);
@@ -1188,6 +1199,21 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			this._activeFallbackInstances.delete(instance.instanceId);
 			return;
 		}
+		// 繋ぎ直しに失敗して起こし直したシェルの cwd は、持ち主ではなく「そのとき開いていたフォルダ」
+		// （切り替え中なら切り替え元）で決まっている。cwd を証拠に採る前に、出てきた working set と
+		// 固定した補助ウィンドウを引く。どちらも無いとき（起動時のメインウィンドウ）だけ従来どおり cwd へ進む。
+		if (this._restoredInstances.has(instance.instanceId) && paradisWasTerminalShellRestarted(instance.instanceId)) {
+			const restartedStateKey = paradisRestartedShellRecordScope({
+				restartOwner: this._restartedShellScopes.get(instance.instanceId),
+				workingSet: this.editorContainerStateKey(instance),
+				pinnedWindow: this.pinnedWindowStateKey(instance),
+			});
+			if (restartedStateKey !== undefined) {
+				this._instanceScopes.set(instance.instanceId, restartedStateKey);
+				this._activeFallbackInstances.delete(instance.instanceId);
+				return;
+			}
+		}
 		const initialCwdStateKey = this.resolveInstanceInitialCwdScope(instance);
 		const candidate = paradisResolveTerminalScopeCandidate({
 			initialCwdResolved: this._initialCwdResolvedInstances.has(instance.instanceId),
@@ -1239,6 +1265,60 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return undefined;
 		}
 		return this._restoreScopeCandidates.get(instance.instanceId);
+	}
+
+	/**
+	 * エディタのタブが、別のスペースに固定した補助ウィンドウに居るならそのスペース。
+	 * メインウィンドウは「今アクティブなスペース」を答えるだけで根拠にならないので除く。
+	 */
+	private pinnedWindowStateKey(instance: ITerminalInstance): string | undefined {
+		if (!this.terminalEditorService.instances.includes(instance)) {
+			return undefined;
+		}
+		// 入力の登録と一覧の更新がずれる瞬間は引けない（upstream は投げる）。そのときは根拠なしとして扱う。
+		try {
+			const input = this.terminalEditorService.getInputFromResource(instance.resource);
+			const group = input.group ?? this.editorGroupsService.groups?.find(candidate => candidate.contains(input));
+			if (group === undefined || group.windowId === this.editorGroupsService.mainPart.windowId) {
+				return undefined;
+			}
+			const scope = this.auxiliaryWindowScopeService.resolveGroup(group);
+			return scope.kind === 'managed' ? scope.stateKey : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * 繋ぎ直しに失敗した復元タブの持ち主を、推測を交えずに引く（無ければ undefined）。
+	 * 起こし直すシェルの開始フォルダを決めるために、PTY を起こす直前に呼ばれる。
+	 */
+	private resolveRestartedShellScope(instanceId: number, nonce: string): string | undefined {
+		const instance = this.findLiveInstance(instanceId);
+		if (instance !== undefined) {
+			if (this.isSharedPanelInstance(instance)) {
+				// 共通ターミナルに持ち主は無い。開始フォルダは upstream（共通ターミナルの設定）に任せる。
+				return undefined;
+			}
+			// 端末が一覧に現れた直後で、まだ誰も控えていないことがある。容れ物はこの瞬間にしか読めない。
+			this.ensureScopeCandidate(instance);
+		}
+		const guessed = this._activeFallbackInstances.has(instanceId) || this._inheritedGroupScopes.has(instanceId);
+		const processStateKey = instance === undefined
+			? undefined
+			: paradisLookupInstanceScope(EMPTY_INSTANCE_SCOPES, this._restoredPersistentProcessScopes, [this.toRestoredScopedInstance(instance)]);
+		const stateKey = paradisPickRestartedShellScope({
+			recorded: guessed ? undefined : this._instanceScopes.get(instanceId),
+			parked: this.getParkedEditorStateKey(instanceId),
+			ledger: paradisResolveNonceScope(this._restoredNonceScopes, nonce, processStateKey) ?? this._nonceScopes.get(nonce),
+			restoreContext: paradisTerminalRestoreStateKey(nonce),
+			workingSet: this._restoreScopeCandidates.get(instanceId),
+			pinnedWindow: instance === undefined ? undefined : this.pinnedWindowStateKey(instance),
+		});
+		if (stateKey !== undefined) {
+			this._restartedShellScopes.set(instanceId, stateKey);
+		}
+		return stateKey;
 	}
 
 	/**

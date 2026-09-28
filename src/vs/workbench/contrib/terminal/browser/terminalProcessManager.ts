@@ -46,6 +46,7 @@ import { IAccessibilityService } from '../../../../platform/accessibility/common
 import { BugIndicatingError } from '../../../../base/common/errors.js';
 import type { MaybePromise } from '../../../../base/common/async.js';
 import { isString } from '../../../../base/common/types.js';
+import { paradisPrepareRestartedTerminalLaunch } from '../../../../paradis/contrib/workspaceSwitch/common/paradisTerminalLaunchPreparers.js'; // PARA-PATCH: start a re-created shell in its own space's folder
 
 const enum ProcessConstants {
 	/**
@@ -300,6 +301,7 @@ export class TerminalProcessManager extends Disposable implements ITerminalProce
 					} else {
 						// Warn and just create a new terminal if attach failed for some reason
 						this._logService.warn(`Attach to process failed for terminal`, shellLaunchConfig.attachPersistentProcess);
+						await paradisPrepareRestartedTerminalLaunch(shellLaunchConfig, this._instanceId, this.shellIntegrationNonce, this.remoteAuthority); // PARA-PATCH: the new shell starts in the tab's own space, not whichever folder is open now
 						shellLaunchConfig.attachPersistentProcess = undefined;
 					}
 				}
@@ -353,6 +355,7 @@ export class TerminalProcessManager extends Disposable implements ITerminalProce
 					} else {
 						// Warn and just create a new terminal if attach failed for some reason
 						this._logService.warn(`Attach to process failed for terminal`, shellLaunchConfig.attachPersistentProcess);
+						await paradisPrepareRestartedTerminalLaunch(shellLaunchConfig, this._instanceId, this.shellIntegrationNonce, this.remoteAuthority); // PARA-PATCH: the new shell starts in the tab's own space, not whichever folder is open now
 						shellLaunchConfig.attachPersistentProcess = undefined;
 					}
 				}
