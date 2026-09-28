@@ -10,7 +10,10 @@
 // 読み取り（状態・許可の確認・アプリとウィンドウの一覧・単一ウィンドウのスクショ・アクセシビリティのツリー）と、
 // 操作（前面に出す・クリック・ドラッグ・スクロール・文字入力・貼り付け・キー・ホットキー）を受ける。
 // 引数の形と、送らないキーの組み合わせはここで確かめ、OS に触れる前に断る。
-// どのアプリを操作してよいか（承認）は shared process が決める。補助アプリは受けた pid に送るだけ。
+// どのアプリを操作してよいか（承認）は shared process が決める。ただし常に操作させないアプリ・Para Code の main と
+// shared process・補助アプリ自身は、ここでも断る（レビュー M1。shared process の判定と二重にする）。
+// pid を取る命令は、shared process が解いたときの bundle id も受け取り、今のその pid の bundle id と比べる
+// （pid の使い回しで別のアプリへ届かないように）。
 
 import Foundation
 
@@ -73,7 +76,8 @@ struct ParadisPermissionSnapshot: Equatable {
 /** クリックなどの的。ウィンドウ左上を原点とするポイントか、直前に読んだツリーの番号。 */
 enum ParadisPointerTarget: Equatable {
 	case point(x: Double, y: Double)
-	case element(Int)
+	/** 番号と、その番号を振ったツリーの id（ほかのペインが読み直した後の古い番号を使わないため）。 */
+	case element(Int, snapshotId: Int)
 }
 
 enum ParadisMouseButton: String {
@@ -81,6 +85,8 @@ enum ParadisMouseButton: String {
 }
 
 protocol ParadisDesktopBackend: AnyObject {
+	/** 今その pid で動いているアプリの bundle id。無ければ nil。 */
+	func bundleIdentifier(pid: Int32) -> String?
 	func permissions() -> ParadisPermissionSnapshot
 	func responsibility() -> (ParadisResponsibility, Int32?)
 	func osVersion() -> String
@@ -120,6 +126,8 @@ final class ParadisRequestHandler {
 	private let expectedToken: String
 	private let selfPid: Int32
 	private(set) var authenticated = false
+	/** 的にしてはいけない pid（接続相手の shared process と、その親の Para Code の main）。受け入れた後に入れる。 */
+	var protectedPids: Set<Int32> = []
 
 	init(backend: ParadisDesktopBackend, expectedToken: String, selfPid: Int32) {
 		self.backend = backend
@@ -186,18 +194,18 @@ final class ParadisRequestHandler {
 		case "click":
 			let button = try enumParam(params, "button", ParadisMouseButton.init(rawValue:)) ?? .left
 			let clickCount = try optionalIntParam(params, "clickCount", minimum: 1, maximum: 3) ?? 1
-			return try backend.click(pid: try pidParam(params), windowId: try windowIdParam(params, required: true)!, target: try targetParam(params), button: button, clickCount: clickCount, modifiers: try modifiersParam(params))
+			return try backend.click(pid: try pidParam(params), windowId: try windowIdParam(params, required: true)!, target: try targetParam(params, snapshot: params), button: button, clickCount: clickCount, modifiers: try modifiersParam(params))
 		case "drag":
 			guard let from = params["from"] as? [String: Any], let to = params["to"] as? [String: Any] else {
 				throw ParadisHelperError.invalidArgument("\"from\" and \"to\" must be objects with elementIndex or x and y")
 			}
-			return try backend.drag(pid: try pidParam(params), windowId: try windowIdParam(params, required: true)!, from: try targetParam(from), to: try targetParam(to))
+			return try backend.drag(pid: try pidParam(params), windowId: try windowIdParam(params, required: true)!, from: try targetParam(from, snapshot: params), to: try targetParam(to, snapshot: params))
 		case "scroll":
 			guard let direction = try enumParam(params, "direction", ParadisScrollDirection.init(rawValue:)) else {
 				throw ParadisHelperError.invalidArgument("\"direction\" must be up, down, left or right")
 			}
 			let pages = try optionalNumberParam(params, "pages", minimum: 0.1, maximum: 10) ?? 1
-			let target = params["elementIndex"] != nil || params["x"] != nil || params["y"] != nil ? try targetParam(params) : nil
+			let target = params["elementIndex"] != nil || params["x"] != nil || params["y"] != nil ? try targetParam(params, snapshot: params) : nil
 			return try backend.scroll(pid: try pidParam(params), windowId: try windowIdParam(params, required: true)!, target: target, direction: direction, pages: pages)
 		case "typeText":
 			guard let text = params["text"] as? String else {
@@ -252,14 +260,27 @@ final class ParadisRequestHandler {
 	}
 
 	private func pidParam(_ params: [String: Any]) throws -> Int32 {
-		guard let pid = paradisExactInt(params["pid"]), pid > 0, pid <= Int(Int32.max) else {
+		guard let rawPid = paradisExactInt(params["pid"]), rawPid > 0, rawPid <= Int(Int32.max) else {
 			throw ParadisHelperError.invalidArgument("\"pid\" must be a positive integer")
 		}
-		// 自分自身は読ませない（補助アプリのウィンドウは無いが、念のため）
-		guard pid != Int(selfPid) else {
-			throw ParadisHelperError(code: "app_blocked", message: "the Computer Use helper cannot be inspected")
+		let pid = Int32(rawPid)
+		// 自分自身と、Para Code の main・shared process は的にしない
+		guard pid != selfPid, !protectedPids.contains(pid) else {
+			throw ParadisHelperError(code: "app_blocked", message: "Computer Use never reads or operates Para Code")
 		}
-		return Int32(pid)
+		guard let expected = params["bundleId"] as? String, !expected.isEmpty else {
+			throw ParadisHelperError.invalidArgument("\"bundleId\" is required")
+		}
+		guard let current = backend.bundleIdentifier(pid: pid) else {
+			throw ParadisHelperError(code: "app_not_found", message: "no application with a bundle id has pid \(pid)")
+		}
+		guard current.lowercased() == expected.lowercased() else {
+			throw ParadisHelperError(code: "app_not_found", message: "pid \(pid) now belongs to another application")
+		}
+		if let reason = paradisBlockReason(bundleId: current) {
+			throw ParadisHelperError(code: "app_blocked", message: "Computer Use never reads or operates this application (\(reason.rawValue))")
+		}
+		return pid
 	}
 
 	private func windowIdParam(_ params: [String: Any], required: Bool) throws -> UInt32? {
@@ -282,12 +303,15 @@ final class ParadisRequestHandler {
 		return chord
 	}
 
-	private func targetParam(_ params: [String: Any]) throws -> ParadisPointerTarget {
+	private func targetParam(_ params: [String: Any], snapshot: [String: Any]) throws -> ParadisPointerTarget {
 		if let raw = params["elementIndex"] {
 			guard let index = paradisExactInt(raw), index >= 0, index < paradisMaxAXMaxNodes else {
 				throw ParadisHelperError.invalidArgument("\"elementIndex\" must be an element number from the last accessibility tree")
 			}
-			return .element(index)
+			guard let snapshotId = paradisExactInt(snapshot["snapshotId"]), snapshotId > 0 else {
+				throw ParadisHelperError(code: "stale_element", message: "element numbers need the snapshot id of the accessibility tree they came from")
+			}
+			return .element(index, snapshotId: snapshotId)
 		}
 		guard let x = paradisFiniteNumber(params["x"]), let y = paradisFiniteNumber(params["y"]), x >= 0, y >= 0, x <= 100_000, y <= 100_000 else {
 			throw ParadisHelperError.invalidArgument("give either \"elementIndex\" or \"x\" and \"y\" in points from the window's top-left corner")
