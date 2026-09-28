@@ -21,51 +21,48 @@
  * already treats `.titlebar-right` (min-width: min-content). The center (min-width: 0) absorbs
  * the difference instead of being painted over.
  *
- * Not applied when the custom menu bar lives in the left container (Windows/Linux custom title
- * bar): the menu bar collapses its menus by measuring its own width, and a min-content left side
- * would include every menu and stop it from collapsing.
+ * Not applied while the custom menu bar is visible in the left container (Windows/Linux custom
+ * title bar): the menu bar collapses its menus by measuring its own width, and a min-content left
+ * side would include every menu and stop it from collapsing. The `.menubar` element stays in the
+ * DOM even when the menu is hidden or toggled away, so paradisTitlebarFit.ts reports the actual
+ * visibility as `paradis-fit-menubar-visible` on the title bar container.
  */
-.monaco-workbench .part.titlebar > .titlebar-container.has-center > .titlebar-left:has(> .paradis-resource-monitor-trigger, > .paradis-limits-trigger, > .paradis-service-status-trigger, > .paradis-port-list-trigger):not(:has(> .menubar)) {
+.monaco-workbench .part.titlebar > .titlebar-container.has-center:not(.paradis-fit-menubar-visible) > .titlebar-left:has(> .paradis-resource-monitor-trigger, > .paradis-limits-trigger, > .paradis-service-status-trigger, > .paradis-port-list-trigger) {
 	min-width: min-content;
 }
 
 /* The widgets used to shrink into each other (the service status chips got squeezed to 15px). */
-.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left > :is(.paradis-resource-monitor-trigger, .paradis-limits-trigger, .paradis-service-status-trigger, .paradis-port-list-trigger) {
+.monaco-workbench .part.titlebar > .titlebar-container:not(.paradis-fit-menubar-visible) > .titlebar-left > :is(.paradis-resource-monitor-trigger, .paradis-limits-trigger, .paradis-service-status-trigger, .paradis-port-list-trigger) {
 	flex-shrink: 0;
 }
 
-/* ---------- 2. fold lower-priority widgets as the window narrows ---------- */
+/* ---------- 2. fold lower-priority widgets as the title bar narrows ---------- */
 
 /*
- * Keeps the command center usable in narrow windows. The title bar always spans its window
- * (auxiliary windows evaluate these queries against their own viewport), so viewport widths are
- * the title bar widths. A container query is not used: `container-type` on the title bar would add
- * layout containment, which turns it into the containing block of the fixed-position menu bar
- * dropdowns and changes its stacking.
+ * Keeps the command center usable in narrow windows. The `paradis-fit-<width>` classes come from
+ * paradisTitlebarFit.ts, which measures the title bar itself. Viewport media queries would be off
+ * when zoomed out, because the title bar is then counter-zoomed back to 100%. A container query is
+ * not used either: `container-type` on the title bar would add layout containment, which turns it
+ * into the containing block of the fixed-position menu bar dropdowns and changes its stacking.
  *
- * Everything folded here stays reachable: the list buttons keep their icon and hover text, service
- * chips come back whenever a service reports an incident, the CPU/RAM button still opens the
- * breakdown, and the port list returns once the window is wider than 1200px.
+ * Everything folded here stays reachable: the list buttons keep their icon and hover text, the
+ * CPU/RAM button still opens the breakdown, service chips come back whenever a service reports an
+ * incident, and the port list is never folded (it has no other entry point). The steps do not
+ * change while a left-side panel or popover is open (see paradisTitlebarFit.ts), so an open panel
+ * never loses or drifts away from the trigger it was positioned from.
  */
 
 /* 1400px or less: the agent list and browser list buttons become icon-only. */
-@media (max-width: 1400px) {
-	.monaco-workbench .part.titlebar :is(.paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label, .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label) {
-		display: none;
-	}
+.monaco-workbench .part.titlebar > .titlebar-container.paradis-fit-1400 :is(.paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label, .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label) {
+	display: none;
 }
 
-/* 1200px or less: hide the port list and the service chips that have nothing to report. */
-@media (max-width: 1200px) {
-	.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left > .paradis-port-list-trigger,
-	.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left > .paradis-service-status-trigger:has(> .paradis-service-status-dot:is(.ok, .unknown)) {
-		display: none;
-	}
+/* 1200px or less: the CPU/RAM button shows only its icon (and the severity dot). */
+.monaco-workbench .part.titlebar > .titlebar-container.paradis-fit-1200 > .titlebar-left > .paradis-resource-monitor-trigger > .paradis-resource-monitor-trigger-text {
+	display: none;
 }
 
-/* 1000px or less: the CPU/RAM button shows only its icon (and the severity dot). */
-@media (max-width: 1000px) {
-	.monaco-workbench .part.titlebar .paradis-resource-monitor-trigger > .paradis-resource-monitor-trigger-text {
-		display: none;
-	}
+/* 1000px or less: hide the service chips that have nothing to report. */
+.monaco-workbench .part.titlebar > .titlebar-container.paradis-fit-1000 > .titlebar-left > .paradis-service-status-trigger:has(> .paradis-service-status-dot:is(.ok, .unknown)) {
+	display: none;
 }
