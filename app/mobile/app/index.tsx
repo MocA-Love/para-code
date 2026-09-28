@@ -99,7 +99,7 @@ export default function HomeScreen() {
 								id={pc.id}
 								name={pc.name}
 								kind={kind}
-								connectionText={pcConnectionLine(kind, pc.lastOnlineAt, now, isPairingRejected(pc))}
+								connectionText={pcConnectionLine(kind, pc.lastOnlineAt, now, isPairingRejected(pc), pc.updateRequired)}
 								pairingRejected={isPairingRejected(pc)}
 								detail={shouldShowBattery(pc) && pc.battery !== undefined ? batteryLine(pc.battery) : undefined}
 								// 見ていない PC のターミナルは届かないので、件数は台帳の要約から出す。

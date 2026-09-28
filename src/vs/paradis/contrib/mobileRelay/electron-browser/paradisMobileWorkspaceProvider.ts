@@ -47,7 +47,7 @@ import { Channels, decodeParadisMobileWarmLeaseRequest, encodeNotify, NotifyKind
 import { decodeParadisMobileOfficeRequest, getParadisMobileOfficeHostFeatureBits, PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, type ParadisMobileOfficeRequest, type ParadisMobileOfficeResponse } from '../common/paradisMobileOfficeProtocol.js';
 import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { paradisPickNotifyInstance } from '../common/paradisNotifySource.js';
-import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
+import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 // PARA-PATCH: RTK節約データのモバイル配信
@@ -68,6 +68,8 @@ import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.j
 import { PARADIS_TERMINAL_BINARY_DATA_ENCODING, paradisEncodeNegotiatedBinaryTerminalData } from '../common/paradisMobileTerminalData.js';
 import { IParadisMobileTerminalViewport, paradisIsValidTerminalViewportMessage, paradisReadTerminalViewport, paradisResolveTerminalViewport } from '../common/paradisMobileTerminalViewport.js';
 import { paradisEncodeJsonResponsePayload } from '../common/paradisMobileGzipJson.js';
+import { paradisIsAcceptedMobileWireVersion } from '../common/paradisMobileCompat.js';
+import { type IParadisMobileRequestHost, paradisDispatchMobileRequest } from './paradisMobileRequestHandlers.js';
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
@@ -300,7 +302,7 @@ function paradisRemoteAbsolutePath(uri: URI, os: OperatingSystem): string {
 }
 
 /** ターミナルのサブプロトコル（termチャネルのペイロード、JSON）。 */
-type TermInboundBase = { protocolVersion: 3; desktopEpoch: string; operationId: string };
+type TermInboundBase = { protocolVersion: number; desktopEpoch: string; operationId: string };
 type TermInbound = TermInboundBase & (
 	// epoch はモバイルが attach ごとに採番する世代番号。指定があると同期プロトコル
 	// （seq 付与・ACKフロー制御・リサイズ時スナップショット再同期）が有効になる。
@@ -729,6 +731,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// (rtk/ccusage/rate limit/GitHub API)向け。ラベルは拡張機能のフォーマッタ登録が遅れて届くため、
 		// 呼び出し元（contribution）が onDidChangeFormatters で pushState() を呼び直す前提のコールバック。
 		private readonly resolveWindowHost?: () => IParadisMobileWindowHost,
+		// 登録表（paradisMobileRequestHandlers.ts）で受ける新しい種類に、サービスとモバイルの capability を渡す口。
+		// 未指定（テスト等）なら登録表は引かない。
+		private readonly requestHandlerServices?: Pick<IParadisMobileRequestHost, 'invokeFunction' | 'getMobileCapabilities'>,
 	) {
 		super();
 		this.mobileWarmLeases = this._register(new ParadisMobileWarmLeaseProvider(setUsageWarmLease, setSpaceDiskWarmLease));
@@ -1386,6 +1391,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			this.handleAgentAction(frame.payload, frame.mobileId).catch(err => this.logService.warn('[paradisMobileRelay] agent action failed', err));
 			return;
 		}
+		// 別ファイルで登録した新しい種類（W2-17 の登録表）。既存の種類は登録されていないので、下の既存の処理へ進む。
+		if ((frame.ch === Channels.Scm || frame.ch === Channels.Fs) && this.dispatchRegisteredRequest(frame)) {
+			return;
+		}
 		if (frame.ch === Channels.Scm) {
 			this.handleScmInbound(frame.payload, frame.mobileId).catch(err => this.logService.warn('[paradisMobileRelay] scm request failed', err));
 			return;
@@ -1400,6 +1409,25 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			this.handleFsInbound(frame.payload, frame.mobileId).catch(err => this.logService.warn('[paradisMobileRelay] fs request failed', err));
 		}
+	}
+
+	private dispatchRegisteredRequest(frame: InboundFrame): boolean {
+		const services = this.requestHandlerServices;
+		if (services === undefined) {
+			return false;
+		}
+		const channel = frame.ch === Channels.Scm ? 'scm' : 'fs';
+		return paradisDispatchMobileRequest(channel, frame.payload.buffer, frame.mobileId, {
+			invokeFunction: fn => services.invokeFunction(fn),
+			getMobileCapabilities: mobileId => services.getMobileCapabilities(mobileId),
+			resolveRoot: ws => this.repoUriForWs(ws),
+			runGit: (root, args) => this.runGit(root, args),
+			resolvePath: async (ws, relativePath) => {
+				const root = this.repoUriForWs(ws);
+				return root !== undefined ? paradisResolveMobileWorkspacePath(this.fileService, root, relativePath) : undefined;
+			},
+			send: (ch, mobileId, payload) => this.sendFrame({ ch: ch === 'scm' ? Channels.Scm : Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(payload), mobileId: mobileId || undefined }),
+		});
 	}
 
 	private async handleAgentAction(payload: VSBuffer, mobileId: string | undefined): Promise<void> {
@@ -2503,7 +2531,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		} catch {
 			return;
 		}
-		if (msg.protocolVersion !== PARADIS_MOBILE_PROTOCOL_VERSION || typeof msg.desktopEpoch !== 'string' || typeof msg.operationId !== 'string' || mobileId === undefined) {
+		if (!paradisIsAcceptedMobileWireVersion(msg.protocolVersion) || typeof msg.desktopEpoch !== 'string' || typeof msg.operationId !== 'string' || mobileId === undefined) {
 			return;
 		}
 		const complete = (status: ParadisMobileTerminalOperationStatus) => this.completeTerminalOperation(mobileId, msg.operationId, status);

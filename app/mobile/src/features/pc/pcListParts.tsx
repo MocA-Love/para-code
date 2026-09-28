@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChevronDown, ChevronRight, Folder, KeyRound, Pin, Plus, TriangleAlert, Unplug } from 'lucide-react-native';
+import { ChevronDown, ChevronRight, CircleArrowUp, Folder, KeyRound, Pin, Plus, TriangleAlert, Unplug } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { hapticImpact, hapticSelection } from '../../haptics.js';
 import type { HomeStatusBucket } from '../../homeSort.js';
@@ -9,6 +9,7 @@ import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { EmptyState, Icon, agentDotColor, iconSize, useThemeColors } from '../../ui/index.js';
 import { PAIRING_REJECTED_HINT, PAIRING_REJECTED_LABEL } from '../../pcStatus.js';
+import { updateRequiredCopy, type UpdateTarget } from '../../pcCompat.js';
 
 /** 状態のまとまり → 点の色（theme の状態の色。待機は薄めた灰）。 */
 export function bucketDotColor(bucket: HomeStatusBucket): string {
@@ -108,6 +109,33 @@ export function PcOfflineState({ name, lastOnline, onReconnect, pairingRejected 
 				title={pairingRejected ? `${PAIRING_REJECTED_LABEL}です` : 'デスクトップに届きません'}
 				body={pairingRejected ? PAIRING_REJECTED_HINT : 'PC の電源と Para Code が起動しているかを確かめて、再接続してください。'}
 				action={pairingRejected && onRepair !== undefined ? { label: 'ペアリングし直す', onPress: onRepair } : { label: '再接続', onPress: onReconnect }}
+			/>
+		</View>
+	);
+}
+
+/**
+ * PC と版が合わないときの中身（W2-17）。再接続しても直らないので、どちらを更新すべきかを言い分ける。
+ * `target` が `app` ならこのアプリ、`pc` なら PC の Para Code を更新する。
+ * 更新した後は「確かめ直す」でつなぎ直せば、合う版の State が届いた時点で一覧に戻る。
+ */
+export function PcUpdateRequiredState({ name, target, onRecheck }: {
+	name: string;
+	target: UpdateTarget;
+	onRecheck: () => void;
+}) {
+	const copy = updateRequiredCopy(target, name);
+	return (
+		<View style={styles.offline}>
+			<View style={styles.banner}>
+				<Icon icon={TriangleAlert} size={iconSize.sm} color={colors.amber} />
+				<Text style={styles.bannerText}>{`${name} とは通信の版が合いません。`}</Text>
+			</View>
+			<EmptyState
+				icon={CircleArrowUp}
+				title={copy.title}
+				body={copy.body}
+				action={{ label: '確かめ直す', onPress: onRecheck }}
 			/>
 		</View>
 	);
