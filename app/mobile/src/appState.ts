@@ -298,7 +298,7 @@ interface AppState extends StoreState {
 	scmLog(ws: string, opts?: { limit?: number; skip?: number }): Promise<ScmLogResult>;
 	scmCommitFiles(ws: string, hash: string): Promise<ScmCommitFilesResult>;
 	/** worktree（スペース）作成フォームの材料。 */
-	worktreeForm(): Promise<WorktreeFormResult>;
+	worktreeForm(options?: { agentsOnly?: boolean }): Promise<WorktreeFormResult>;
 	/** worktree（スペース）を作成する（PC版の作成ダイアログと同じ処理がPC側で走る）。 */
 	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string; model?: string; effort?: string; permission?: string; runSetup?: boolean }): Promise<WorktreeCreateResult>;
 	/** 既存ワークスペースで新しいターミナルを作ってエージェントCLIを起動する（ホームの＋ボタン）。 */
@@ -1772,9 +1772,9 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.scmCommitFiles(ws, hash);
 	},
 
-	worktreeForm() {
+	worktreeForm(options?: { agentsOnly?: boolean }) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		return controller.worktreeForm();
+		return controller.worktreeForm(options);
 	},
 
 	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string; model?: string; effort?: string; permission?: string; runSetup?: boolean }) {

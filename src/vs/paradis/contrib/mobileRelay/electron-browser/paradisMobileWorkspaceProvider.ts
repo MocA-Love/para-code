@@ -358,7 +358,8 @@ type ScmInbound =
 	// worktree（スペース）作成のフォーム材料と作成本体。他のscmメッセージと違い特定の
 	// ワークスペースに紐づかないため ws を持たない（repo はリポジトリid）。
 	// model/effort/permission はエージェント定義（worktreeForm の agents）の各オプションid。
-	| { t: 'worktreeForm'; id: string; ws?: undefined }
+	// agentsOnly: モデル候補だけでよい（モバイルのチャットのモデル選択）。古いモバイルは付けない
+	| { t: 'worktreeForm'; id: string; ws?: undefined; agentsOnly?: boolean }
 	| { t: 'createWorktree'; id: string; ws?: undefined; repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string; model?: string; effort?: string; permission?: string; runSetup?: boolean }
 	// 既存ワークスペース（スペース）でのエージェント起動（モバイルのホーム＋ボタン）。
 	// 新しいターミナルを作ってエージェントCLIコマンドを送る。
@@ -699,7 +700,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly fetchGithubMetrics: (bypassCache: boolean) => Promise<IParadisGithubMetricsSnapshot>,
 		// worktree（スペース）作成。実体は paradisWorktreeHeadlessCreate.ts（contribution側で
 		// instantiationService.invokeFunction に束ねて渡される。runGit等と同じコールバック方式）
-		private readonly getWorktreeCreateForm: () => Promise<IParadisWorktreeCreateFormData>,
+		// agentsOnly: モバイルのチャットがモデルの候補だけを取りに来たとき（リポジトリ一覧は空で返す）
+		private readonly getWorktreeCreateForm: (options?: { readonly agentsOnly?: boolean }) => Promise<IParadisWorktreeCreateFormData>,
 		private readonly createWorktree: (request: IParadisHeadlessWorktreeRequest) => Promise<IParadisHeadlessWorktreeResult>,
 		// 既存ワークスペースへのエージェント起動。実体は paradisLaunchAgentInWorkspace
 		private readonly launchAgentInWorkspace: (request: IParadisAgentLaunchInWorkspaceRequest) => Promise<void>,
@@ -1586,7 +1588,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (msg.t === 'worktreeForm' || msg.t === 'createWorktree') {
 			try {
 				if (msg.t === 'worktreeForm') {
-					reply({ t: 'worktreeForm', ...(await this.getWorktreeCreateForm()) });
+					reply({ t: 'worktreeForm', ...(await this.getWorktreeCreateForm({ agentsOnly: msg.agentsOnly === true })) });
 				} else {
 					if (typeof msg.repo !== 'string' || msg.repo.length === 0) {
 						reply({ error: 'repo is required' });

@@ -336,14 +336,16 @@ function fallbackBranchName(seeds: readonly (string | undefined)[]): string {
 }
 
 /** 作成フォームの材料（リポジトリ一覧＋各ブランチ＋エージェント定義）を集める。 */
-export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor): Promise<IParadisWorktreeCreateFormData> {
+export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor, options?: { readonly agentsOnly?: boolean }): Promise<IParadisWorktreeCreateFormData> {
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
 	const modelCatalogService = accessor.get(IParadisAgentModelCatalogService);
 	const fileService = accessor.get(IFileService);
 	const logService = accessor.get(ILogService);
 	// リポジトリごとに git を動かすマシンが違いうる（接続中でも手元のリポジトリを混ぜられる）
 	const resolveGitHost = paradisWorktreeGitHostResolver(accessor);
-	const repos = await Promise.all(switchService.repositories.map(async r => {
+	// モバイルのチャットがモデルの候補だけを欲しいときは、リポジトリごとの git を動かさない
+	const repositories = options?.agentsOnly ? [] : switchService.repositories;
+	const repos = await Promise.all(repositories.map(async r => {
 		const host = resolveGitHost(r.uri);
 		let branches: IParadisGitBranches = { branches: [], head: undefined };
 		try {
