@@ -158,25 +158,28 @@ extension ParadisDesktop {
 
 	/**
 	 * 文字を入れる（ベータの実機で、1 文字ずつのキーでは約 2 割の文字と空白が落ち、それでも全部入ったと返していた）。
-	 *  1. フォーカスのある欄が選択範囲の置き換え（`AXSelectedText`）を受け付けるなら、AX で入れる。キーも IME も通らない
-	 *  2. だめなら、入力ソースが IME のときは英数字でも貼り付けに寄せる（IME がキーを取り込んで落とす・変えるため）
+	 *  1. フォーカスのある欄が選択範囲の置き換え（`AXSelectedText`）を受け付けるなら、AX で入れる。キーも IME も通らない。
+	 *     書き込みが起きていないと言い切れる失敗のときだけ次の経路へ落ちる。それ以外は最長 1 秒読み直し、変わらなければ
+	 *     「確かめられない」で止める（遅れて入る・非同期に反映するアプリで二重に入れないため。ベータ 3 のレビュー H1）
+	 *  2. 入力ソースが IME のとき、または改行を含むときは貼り付け（改行はどの経路でも改行の文字で、Return は押さない）
 	 *  3. それ以外はキーを送る。1 つのイベントの元を使い回し、押すと離すの間と文字の間に間を置く
-	 * どの経路でも、入れた後に欄の値を読み戻して、そのまま入ったかを返す（読めなければ確かめられない）。
+	 * どの経路でも、入れる前にフォーカスのあった同じ要素を読み戻して、入ったかを返す（読めなければ確かめられない）。
 	 */
 	func typeText(pid: Int32, text: String, units: [ParadisTypedUnit]) throws -> [String: Any] {
 		try requireInputPermission()
 		try keyFence(pid: pid)
-		if let check = paradisInsertViaAccessibility(pid: pid, text: text) {
+		let normalized = paradisNormalizeTypedText(text)
+		if case .finished(let check) = paradisInsertViaAccessibility(pid: pid, text: normalized) {
 			return paradisTypeResult(method: .accessibility, check: check, count: units.count)
 		}
-		if paradisOnMain({ paradisInputMethodIsActive() }) {
-			let pasted = try pasteText(pid: pid, text: text)
-			var result = paradisTypeResult(method: .paste, check: ParadisTypingCheck(verified: (pasted["pasteVerified"] as? Bool) == true ? true : nil, inserted: nil), count: units.count)
-			result["clipboard"] = pasted["clipboard"]
-			result["clipboardRestored"] = pasted["clipboardRestored"]
+		if normalized.contains("\n") || paradisOnMain({ paradisInputMethodIsActive() }) {
+			let (pasted, check) = try pasteAndCheck(pid: pid, text: normalized)
+			var result = paradisTypeResult(method: .paste, check: check, count: units.count)
+			result["clipboard"] = pasted.rawValue
+			result["clipboardRestored"] = pasted == .restore
 			return result
 		}
-		let (before, selection) = paradisFocusedTextState(pid: pid)
+		let target = paradisFocusedTextTarget(pid: pid)
 		var lastFullFence: Date?
 		for (typed, unit) in units.enumerated() {
 			let full = paradisNeedsFullFence(unitIndex: typed, secondsSinceLastFullFence: lastFullFence.map { Date().timeIntervalSince($0) })
@@ -186,20 +189,18 @@ extension ParadisDesktop {
 			if full {
 				lastFullFence = Date()
 			}
-			switch unit {
-			case .text(let text):
-				let utf16 = Array(text.utf16)
+			if case .text(let character) = unit {
+				let utf16 = Array(character.utf16)
 				try postKey(virtualKey: 0) { event in
 					event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
 				}
-			case .key(let keyCode):
-				try postKey(virtualKey: keyCode) { _ in }
 			}
 			usleep(paradisInterCharacterMicroseconds)
 		}
 		usleep(80_000)
-		let after = paradisFocusedTextState(pid: pid).value
-		return paradisTypeResult(method: .keys, check: paradisTypingOutcome(before: before, selection: selection, after: after, text: text), count: units.count)
+		// 入れる前にフォーカスのあった同じ要素を読み戻す（その時点のフォーカスではなく）
+		let after = target.element.flatMap { paradisCopy($0, kAXValueAttribute) as? String }
+		return paradisTypeResult(method: .keys, check: paradisTypingOutcome(before: target.value, selection: target.selection, after: after, text: normalized), count: units.count)
 	}
 
 	/** 1 つのキーを押して離す。押すと離すの間に間を置く（間が無いと落とすアプリがある）。 */
@@ -225,11 +226,24 @@ extension ParadisDesktop {
 
 	func pasteText(pid: Int32, text: String) throws -> [String: Any] {
 		try requireInputPermission()
+		let (plan, check) = try pasteAndCheck(pid: pid, text: paradisNormalizeTypedText(text))
+		var result: [String: Any] = ["pasted": true, "pasteVerified": check.verified.map { $0 as Any } ?? NSNull(), "clipboardRestored": plan == .restore, "clipboard": plan.rawValue]
+		if check.rewritten {
+			result["rewritten"] = true
+		}
+		return result
+	}
+
+	/**
+	 * クリップボードに文字を入れて ⌘V を送り、クリップボードを戻す（Q100、レビュー M6）。入れる前にフォーカスのあった
+	 * 同じ要素を読み戻して、入ったかを確かめる（ベータ 3 のレビュー L1）。確かめられないときは長めに待ってから戻す。
+	 */
+	private func pasteAndCheck(pid: Int32, text: String) throws -> (ParadisClipboardPlan, ParadisTypingCheck) {
 		// クリップボードに触る前に確かめる（送れないなら書き換えもしない）
 		try keyFence(pid: pid)
 		let pasteboard = NSPasteboard.general
 		let saved = paradisOnMain { paradisSavePasteboard(pasteboard) }
-		let before = paradisFocusedValue(pid: pid)
+		let target = paradisFocusedTextTarget(pid: pid)
 		let ourChangeCount = paradisOnMain { () -> Int in
 			pasteboard.clearContents()
 			// クリップボードの履歴を取るアプリに、エージェントの貼る文字を残させない（レビュー N10）
@@ -242,19 +256,20 @@ extension ParadisDesktop {
 			return pasteboard.changeCount
 		}
 		var pasteFailure: Error?
-		var verified = false
+		var check = ParadisTypingCheck(verified: nil, inserted: nil)
 		let pastedAt = Date()
 		do {
 			try sendChord(pid: pid, chord: ParadisKeyChord(keyCode: paradisKeyCodeV, modifiers: .command), allowPaste: true)
-			// 貼り付け先の値に文字が入るのを待つ。確かめられないとき（値を読めない欄など）は長めに待ってから戻す
+			// 貼り付け先の値が変わるのを待つ。確かめられないとき（値を読めない欄など）は長めに待ってから戻す
 			while Date().timeIntervalSince(pastedAt) < paradisPasteVerifySeconds {
 				usleep(100_000)
-				if paradisPasteLanded(before: before, after: paradisFocusedValue(pid: pid), text: text) {
-					verified = true
+				let after = target.element.flatMap { paradisCopy($0, kAXValueAttribute) as? String }
+				check = paradisTypingOutcome(before: target.value, selection: target.selection, after: after, text: text)
+				if check.verified != nil {
 					break
 				}
 			}
-			if !verified {
+			if check.verified == nil {
 				let remaining = paradisPasteUnverifiedDelaySeconds - Date().timeIntervalSince(pastedAt)
 				if remaining > 0 {
 					usleep(UInt32(remaining * 1_000_000))
@@ -278,7 +293,7 @@ extension ParadisDesktop {
 		if let pasteFailure {
 			throw pasteFailure
 		}
-		return ["pasted": true, "pasteVerified": verified, "clipboardRestored": plan == .restore, "clipboard": plan.rawValue]
+		return (plan, check)
 	}
 
 	private func sendChord(pid: Int32, chord: ParadisKeyChord, allowPaste: Bool) throws {
@@ -599,6 +614,9 @@ private func paradisTypeResult(method: ParadisTypeMethod, check: ParadisTypingCh
 	if let inserted = check.inserted {
 		result["inserted"] = inserted
 	}
+	if check.rewritten {
+		result["rewritten"] = true
+	}
 	return result
 }
 
@@ -609,12 +627,18 @@ private func paradisFocusedElement(pid: Int32) -> AXUIElement? {
 	return paradisElement(application, kAXFocusedUIElementAttribute)
 }
 
-/** フォーカスのある欄の値と選択範囲（UTF-16）。パスワード欄らしければ読まない。 */
-private func paradisFocusedTextState(pid: Int32) -> (value: String?, selection: (location: Int, length: Int)?) {
+/** 入れる前にフォーカスのあった欄と、その値と選択範囲（UTF-16）。パスワード欄らしければ読まない。 */
+private struct ParadisTextTarget {
+	let element: AXUIElement?
+	let value: String?
+	let selection: (location: Int, length: Int)?
+}
+
+private func paradisFocusedTextTarget(pid: Int32) -> ParadisTextTarget {
 	guard let element = paradisFocusedElement(pid: pid), !paradisElementLooksSecret(element) else {
-		return (nil, nil)
+		return ParadisTextTarget(element: nil, value: nil, selection: nil)
 	}
-	return (paradisCopy(element, kAXValueAttribute) as? String, paradisSelectedRange(element))
+	return ParadisTextTarget(element: element, value: paradisCopy(element, kAXValueAttribute) as? String, selection: paradisSelectedRange(element))
 }
 
 private func paradisSelectedRange(_ element: AXUIElement) -> (location: Int, length: Int)? {
@@ -638,30 +662,56 @@ private func paradisElementLooksSecret(_ element: AXUIElement) -> Bool {
 	)
 }
 
+/** AX で入れた結果。 */
+private enum ParadisAXInsert {
+	/** 書き込みが起きていないと言い切れる。貼り付けかキーで入れてよい。 */
+	case fallBack
+	/** 書き込んだ（か、書き込んだかもしれない）。入れ直してはいけない。 */
+	case finished(ParadisTypingCheck)
+}
+
 /**
- * フォーカスのある欄の選択範囲を、AX で文字列に置き換える。欄が受け付けない・値を読めない・何も変わらなかった
- * ときは nil（キーか貼り付けで入れ直してよい）。変わったがそのままではなかったときは、入れ直すと二重になるので
- * 結果（verified: false）を返す。
+ * フォーカスのある欄の選択範囲を、AX で文字列に置き換える（ベータ 3 のレビュー H1）。
+ * 入れ直してよいのは、欄が置き換えを受け付けない・値や選択範囲を読めない（書く前にやめる）・書き込みが起きていないと
+ * 言い切れる失敗のときだけ。成功・締め切り・一般の失敗のときは最長 1 秒読み直し、変わらなければ「確かめられない」。
  */
-private func paradisInsertViaAccessibility(pid: Int32, text: String) -> ParadisTypingCheck? {
+private func paradisInsertViaAccessibility(pid: Int32, text: String) -> ParadisAXInsert {
 	guard let element = paradisFocusedElement(pid: pid), !paradisElementLooksSecret(element) else {
-		return nil
+		return .fallBack
 	}
 	var settable = DarwinBoolean(false)
 	guard AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable) == .success, settable.boolValue,
 		let before = paradisCopy(element, kAXValueAttribute) as? String, let selection = paradisSelectedRange(element)
 	else {
-		return nil
+		return .fallBack
 	}
-	guard AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success else {
-		return nil
+	let error = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString)
+	if error != .success && paradisAXWriteCertainlyDidNothing(error: error.rawValue) {
+		return .fallBack
 	}
-	usleep(50_000)
-	let after = paradisCopy(element, kAXValueAttribute) as? String
-	if after == before {
-		return nil
+	let deadline = Date().addingTimeInterval(paradisAXReadbackLimitSeconds)
+	var check: ParadisTypingCheck?
+	var latest: String?
+	repeat {
+		usleep(paradisAXReadbackIntervalMicroseconds)
+		latest = paradisCopy(element, kAXValueAttribute) as? String
+		check = paradisAXReadbackStep(before: before, selection: selection, latest: latest, text: text)
+	} while check == nil && Date() < deadline
+	guard let result = check else {
+		return .finished(ParadisTypingCheck(verified: nil, inserted: nil))
 	}
-	return paradisTypingOutcome(before: before, selection: selection, after: after, text: text)
+	// 入れた文字列の直後にキャレットが無ければ直す。直せなければ、次の塊がずれて入りうるので「確かめられない」にする（レビュー L4）
+	if result.verified == true, let latest {
+		let caret = latest.utf16.count - (before.utf16.count - (selection.location + selection.length))
+		if let now = paradisSelectedRange(element), now.location != caret || now.length != 0 {
+			var range = CFRange(location: caret, length: 0)
+			let moved = AXValueCreate(.cfRange, &range).map { AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, $0) == .success } ?? false
+			if !moved {
+				return .finished(ParadisTypingCheck(verified: nil, inserted: result.inserted, rewritten: result.rewritten))
+			}
+		}
+	}
+	return .finished(result)
 }
 
 /** 今の入力ソースが IME か（main スレッドで呼ぶ）。 */
@@ -796,15 +846,6 @@ private func paradisFocusedPids() -> (application: Int32?, element: Int32?) {
 	return (pid(of: paradisElement(systemWide, kAXFocusedApplicationAttribute)), pid(of: paradisElement(systemWide, kAXFocusedUIElementAttribute)))
 }
 
-/** 目的のアプリのフォーカスのある要素の値（貼り付けが入ったかを見るため）。読めなければ nil。 */
-private func paradisFocusedValue(pid: Int32) -> String? {
-	let application = AXUIElementCreateApplication(pid)
-	AXUIElementSetMessagingTimeout(application, 0.5)
-	guard let element = paradisElement(application, kAXFocusedUIElementAttribute) else {
-		return nil
-	}
-	return paradisCopy(element, kAXValueAttribute) as? String
-}
 
 private func paradisWindowPointJson(_ point: CGPoint, _ window: CGRect) -> [String: Double] {
 	return ["x": Double(point.x - window.minX), "y": Double(point.y - window.minY)]

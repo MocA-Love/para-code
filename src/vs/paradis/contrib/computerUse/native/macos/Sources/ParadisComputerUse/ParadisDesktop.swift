@@ -101,6 +101,8 @@ final class ParadisDesktop: ParadisDesktopBackend {
 			]
 			if let kind = accessibility[info.windowId] {
 				entry["standard"] = kind.subrole == "AXStandardWindow"
+				// アプリが前に出しているウィンドウ（ダイアログ・シートなど）。既定の対象はこれを先にする（ベータ 3 のレビュー M3）
+				entry["focused"] = kind.focused
 				if let subrole = kind.subrole {
 					entry["subrole"] = subrole
 				}
@@ -228,14 +230,19 @@ final class ParadisDesktop: ParadisDesktopBackend {
 	}
 
 	private func paradisDescribe(_ element: AXUIElement, index: Int, depth: Int, origin: CGPoint, focusedElement: AXUIElement?) -> ParadisAXNode {
-		let role = paradisString(element, kAXRoleAttribute) ?? "AXUnknown"
-		let subrole = paradisString(element, kAXSubroleAttribute)
-		let title = paradisString(element, kAXTitleAttribute)
-		let label = paradisString(element, kAXDescriptionAttribute)
-		let placeholder = paradisString(element, kAXPlaceholderValueAttribute)
+		// 属性はまとめて 1 回で読む（要素ごとに問い合わせを重ねると、大きなツリーで締め切りに近づく。ベータ 3 のレビュー L7）
+		let values = paradisCopyMultiple(element, [
+			kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXPlaceholderValueAttribute,
+			kAXValueAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXEnabledAttribute, kAXSelectedAttribute,
+		])
+		let role = values[kAXRoleAttribute] as? String ?? "AXUnknown"
+		let subrole = values[kAXSubroleAttribute] as? String
+		let title = values[kAXTitleAttribute] as? String
+		let label = values[kAXDescriptionAttribute] as? String
+		let placeholder = values[kAXPlaceholderValueAttribute] as? String
 		let secure = paradisIsSecureLike(role: role, subrole: subrole, title: title, label: label, placeholder: placeholder)
-		let value = secure ? nil : paradisValueText(element)
-		var frame = paradisFrame(element)
+		let rawValue = values[kAXValueAttribute]
+		var frame = paradisFrame(position: values[kAXPositionAttribute], size: values[kAXSizeAttribute])
 		if let absolute = frame {
 			frame = CGRect(x: absolute.origin.x - origin.x, y: absolute.origin.y - origin.y, width: absolute.size.width, height: absolute.size.height)
 		}
@@ -247,14 +254,14 @@ final class ParadisDesktop: ParadisDesktopBackend {
 			role: role,
 			subrole: subrole,
 			title: title,
-			value: value,
+			value: secure ? nil : paradisValueText(rawValue),
 			label: label,
 			frame: frame,
-			enabled: paradisBool(element, kAXEnabledAttribute),
+			enabled: (values[kAXEnabledAttribute] as? NSNumber)?.boolValue,
 			focused: focusedElement.map { CFEqual($0, element) } ?? false,
-			selected: paradisBool(element, kAXSelectedAttribute) == true,
+			selected: (values[kAXSelectedAttribute] as? NSNumber)?.boolValue == true,
 			actions: actionNames,
-			redacted: secure && paradisHasValue(element)
+			redacted: secure && rawValue != nil
 		)
 	}
 }
@@ -404,13 +411,10 @@ func paradisElements(_ element: AXUIElement, _ attribute: String) -> [AXUIElemen
 	}
 }
 
-private func paradisHasValue(_ element: AXUIElement) -> Bool {
-	return paradisCopy(element, kAXValueAttribute) != nil
-}
 
 /** 値を文字にする。文字・数・真偽値だけ（ほかの型は出さない）。 */
-private func paradisValueText(_ element: AXUIElement) -> String? {
-	guard let value = paradisCopy(element, kAXValueAttribute) else {
+private func paradisValueText(_ value: CFTypeRef?) -> String? {
+	guard let value else {
 		return nil
 	}
 	if let text = value as? String {
@@ -423,9 +427,32 @@ private func paradisValueText(_ element: AXUIElement) -> String? {
 }
 
 func paradisFrame(_ element: AXUIElement) -> CGRect? {
-	guard let positionValue = paradisCopy(element, kAXPositionAttribute), let sizeValue = paradisCopy(element, kAXSizeAttribute),
-		CFGetTypeID(positionValue) == AXValueGetTypeID(), CFGetTypeID(sizeValue) == AXValueGetTypeID()
+	return paradisFrame(position: paradisCopy(element, kAXPositionAttribute), size: paradisCopy(element, kAXSizeAttribute))
+}
+
+/** いくつかの属性をまとめて読む。読めなかった属性（値が AXError のもの）は入れない。 */
+func paradisCopyMultiple(_ element: AXUIElement, _ attributes: [String]) -> [String: CFTypeRef] {
+	var values: CFArray?
+	guard AXUIElementCopyMultipleAttributeValues(element, attributes as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &values) == .success,
+		let array = values as [AnyObject]?
 	else {
+		return [:]
+	}
+	var result: [String: CFTypeRef] = [:]
+	for (attribute, value) in zip(attributes, array) {
+		if CFGetTypeID(value) == AXValueGetTypeID() && AXValueGetType(value as! AXValue) == .axError {
+			continue
+		}
+		if value is NSNull {
+			continue
+		}
+		result[attribute] = value
+	}
+	return result
+}
+
+func paradisFrame(position positionValue: CFTypeRef?, size sizeValue: CFTypeRef?) -> CGRect? {
+	guard let positionValue, let sizeValue, CFGetTypeID(positionValue) == AXValueGetTypeID(), CFGetTypeID(sizeValue) == AXValueGetTypeID() else {
 		return nil
 	}
 	var position = CGPoint.zero
@@ -440,6 +467,8 @@ func paradisFrame(_ element: AXUIElement) -> CGRect? {
 struct ParadisAXWindowKind {
 	let subrole: String?
 	let minimized: Bool
+	/** アプリの AXFocusedWindow（無ければ AXMainWindow）。 */
+	let focused: Bool
 }
 
 func paradisAXWindowKinds(pid: Int32) -> [UInt32: ParadisAXWindowKind] {
@@ -449,6 +478,7 @@ func paradisAXWindowKinds(pid: Int32) -> [UInt32: ParadisAXWindowKind] {
 	let application = AXUIElementCreateApplication(pid)
 	AXUIElementSetMessagingTimeout(application, 1.0)
 	var kinds: [UInt32: ParadisAXWindowKind] = [:]
+	let front = paradisElement(application, kAXFocusedWindowAttribute) ?? paradisElement(application, kAXMainWindowAttribute)
 	for window in paradisElements(application, kAXWindowsAttribute) {
 		var windowId: CGWindowID = 0
 		guard lookup(window, &windowId) == .success else {
@@ -456,7 +486,8 @@ func paradisAXWindowKinds(pid: Int32) -> [UInt32: ParadisAXWindowKind] {
 		}
 		kinds[windowId] = ParadisAXWindowKind(
 			subrole: paradisCopy(window, kAXSubroleAttribute) as? String,
-			minimized: (paradisCopy(window, kAXMinimizedAttribute) as? NSNumber)?.boolValue ?? false
+			minimized: (paradisCopy(window, kAXMinimizedAttribute) as? NSNumber)?.boolValue ?? false,
+			focused: front.map { CFEqual($0, window) } ?? false
 		)
 	}
 	return kinds

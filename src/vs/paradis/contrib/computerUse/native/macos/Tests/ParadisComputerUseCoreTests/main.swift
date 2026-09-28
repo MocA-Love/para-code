@@ -321,7 +321,8 @@ do {
 	check((try? paradisParseChord(["cmd", "nope"])) == nil, "unknown keys are refused")
 	check(paradisKeyCode(named: "Enter") == 36 && paradisKeyCode(named: "ArrowUp") == 126 && paradisKeyCode(named: "backspace") == 51, "reads key aliases")
 
-	check((try? paradisTypedUnits("a\r\nb\tc")) == [.text("a"), .key(paradisKeyCodeReturn), .text("b"), .key(paradisKeyCodeTab), .text("c")], "turns newlines and tabs into keys")
+	check((try? paradisTypedUnits("a\r\nb")) == [.text("a"), .text("\n"), .text("b")], "keeps newlines as line breaks, never Return")
+	check((try? paradisTypedUnits("user\tpassword")) == nil, "refuses tabs so a password never lands in the wrong field")
 	check((try? paradisTypedUnits("\u{1B}[2J")) == nil, "refuses control characters")
 	check((try? paradisTypedUnits("")) == nil, "refuses empty text")
 	check((try? paradisTypedUnits("日本語👍🏽"))?.count == 4, "types one grapheme at a time")
@@ -369,9 +370,6 @@ do {
 	check(paradisClipboardRestorePlan(changeCountAfterOurWrite: 7, currentChangeCount: 8, savedIsConcealed: false, savedIsComplete: true) == .keepOthers, "keeps a clipboard someone else changed")
 	check(paradisClipboardRestorePlan(changeCountAfterOurWrite: 7, currentChangeCount: 7, savedIsConcealed: true, savedIsComplete: true) == .clear, "clears instead of restoring a concealed secret")
 	check(paradisClipboardRestorePlan(changeCountAfterOurWrite: 7, currentChangeCount: 7, savedIsConcealed: false, savedIsComplete: false) == .restorePartial, "reports a partial restore")
-	check(paradisPasteLanded(before: "ab", after: "abhello", text: "hello"), "sees the pasted text")
-	check(!paradisPasteLanded(before: "hello", after: "hello", text: "hello"), "an unchanged value is not a paste")
-	check(!paradisPasteLanded(before: nil, after: nil, text: "hello"), "an unreadable value cannot be verified")
 
 	// レビュー M3: 認証・同意のダイアログと、目的のウィンドウに重なるパネル
 	let target = CGRect(x: 100, y: 100, width: 400, height: 300)
@@ -485,8 +483,26 @@ do {
 	check(paradisTypingOutcome(before: "a", selection: (1, 0), after: "a\nb", text: "\r\nb") == ParadisTypingCheck(verified: true, inserted: 2), "treats typed newlines as line breaks")
 	check(paradisTypingOutcome(before: "日本", selection: (2, 0), after: "日本語👍🏽", text: "語👍🏽") == ParadisTypingCheck(verified: true, inserted: 2), "counts characters, not UTF-16 units")
 	check(paradisTypingOutcome(before: nil, selection: nil, after: "x", text: "x") == ParadisTypingCheck(verified: nil, inserted: nil), "cannot verify an unreadable field")
-	check(paradisTypingOutcome(before: "ab", selection: nil, after: "abcd", text: "cd").verified == true, "without a selection, checks the growth and the content")
-	check(paradisTypingOutcome(before: "ab", selection: nil, after: "abc", text: "cd").verified == false, "without a selection, a short growth is a failure")
+	check(paradisTypingOutcome(before: "ab", selection: nil, after: "abcd", text: "cd").verified == true, "without a selection, sees the text appear")
+	check(paradisTypingOutcome(before: "ab", selection: nil, after: "abc", text: "cd").verified == false, "without a selection, text that never appears is a failure")
+	// ベータ 3 のレビュー L1: 前からあった同じ文字列では成功にしない
+	check(paradisTypingOutcome(before: "hello", selection: nil, after: "helloxyzab", text: "hello").verified == false, "text that was already there does not count")
+
+	// ベータ 3 のレビュー M2: アプリの書き換えでは止めない。落ちたときだけ止める
+	check(paradisTypingOutcome(before: "", selection: (0, 0), after: "\u{201C}Hi\u{201D} \u{2014} it\u{2019}s", text: "\"Hi\" -- it's") == ParadisTypingCheck(verified: true, inserted: 11, rewritten: true), "smart quotes and dashes are fine")
+	check(paradisTypingOutcome(before: "", selection: (0, 0), after: "github.com", text: "gith").verified == true, "an inline completion is fine")
+	check(paradisTypingOutcome(before: "", selection: (0, 0), after: "(090) 1234-5678", text: "09012345678").verified == true, "a formatted phone number is fine")
+	check(paradisTypingOutcome(before: "", selection: (0, 0), after: "The", text: "teh") == ParadisTypingCheck(verified: false, inserted: 3, rewritten: true), "an autocorrected word is reported as rewritten, not dropped")
+	check(paradisTypingOutcome(before: "", selection: (0, 0), after: "hlo", text: "hello") == ParadisTypingCheck(verified: false, inserted: 3), "dropped characters are still a failure")
+
+	// ベータ 3 のレビュー H1: 変わらないだけでは「入っていない」と言わない
+	check(paradisTypingOutcome(before: "abc", selection: (0, 3), after: "abc", text: "abc") == ParadisTypingCheck(verified: true, inserted: 3), "replacing a selection with the same text is a success")
+	check(paradisTypingOutcome(before: "ab", selection: (2, 0), after: "ab", text: "cd").verified == nil, "an unchanged value is unconfirmed, never a failure")
+	check(paradisAXReadbackStep(before: "ab", selection: (2, 0), latest: "ab", text: "cd") == nil, "keeps reading back while the value has not changed")
+	check(paradisAXReadbackStep(before: "ab", selection: (2, 0), latest: nil, text: "cd") == nil, "keeps reading back while the value cannot be read")
+	check(paradisAXReadbackStep(before: "ab", selection: (2, 0), latest: "abcd", text: "cd")?.verified == true, "stops reading back once the text is in")
+	check(paradisAXWriteCertainlyDidNothing(error: -25205) && paradisAXWriteCertainlyDidNothing(error: -25201) && paradisAXWriteCertainlyDidNothing(error: -25208), "unsupported writes may fall back to another route")
+	check(!paradisAXWriteCertainlyDidNothing(error: 0) && !paradisAXWriteCertainlyDidNothing(error: -25204) && !paradisAXWriteCertainlyDidNothing(error: -25200), "success, timeouts and general failures never fall back (the text may arrive later)")
 }
 
 // MARK: - 起動時の argv の外（レビュー N2）
@@ -520,6 +536,7 @@ do {
 	check(paradisBlockReason(bundleId: "me.proton.authenticator") == .authenticator, "blocks Proton Authenticator")
 	check(paradisBlockReason(bundleId: "com.microsoft.azureauthenticator") == .authenticator && paradisBlockReason(bundleId: "com.example.SomeAuthenticator") == .authenticator, "blocks authenticator apps by name")
 	check(paradisBlockReason(bundleId: "com.twofasapp.2fas") == .authenticator && paradisBlockReason(bundleId: "de.example.otpauth") == .authenticator, "blocks 2FAS and OTP Auth")
+	check(paradisBlockReason(bundleId: "com.example.twofas") == .authenticator && paradisBlockReason(bundleId: "com.duosecurity.DuoMobile") == .authenticator && paradisBlockReason(bundleId: "com.yubico.yubioath") == .authenticator, "blocks twofas, Duo Mobile and Yubico")
 	check(paradisBlockReason(bundleId: "ltd.paradis.paracode.helper") == .paraCode, "blocks Para Code helpers")
 	check(paradisBlockReason(bundleId: "com.apple.systempreferences.legacyLoader.x86_64") == .system, "blocks System Settings panes")
 	check(paradisBlockReason(bundleId: "com.apple.finder") == nil && paradisBlockReason(bundleId: "ltd.paradis.paracodex") == nil, "allows other apps")
