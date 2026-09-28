@@ -63,6 +63,24 @@ export function nextUnreviewed(entries: readonly ScmEntry[], marks: ReviewMarks,
 	return ordered.find(entry => entry.path !== currentPath && !isReviewed(entry, marks))?.path;
 }
 
+/**
+ * PC から届いた印（`reviewGet` / `reviewSet` の応答の `marks`）を読む。形の違う1件は飛ばす
+ * （PC の不具合で1件おかしくても、残りの進み具合は見せる）。
+ */
+export function parseReviewMarks(value: unknown): ReviewMarks {
+	const marks: Record<string, { identity: string; reviewedAt: number }> = {};
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		return marks;
+	}
+	for (const [path, raw] of Object.entries(value as Record<string, unknown>)) {
+		const mark = raw as { identity?: unknown; reviewedAt?: unknown } | null;
+		if (mark !== null && typeof mark === 'object' && typeof mark.identity === 'string' && typeof mark.reviewedAt === 'number') {
+			marks[path] = { identity: mark.identity, reviewedAt: mark.reviewedAt };
+		}
+	}
+	return marks;
+}
+
 /** 確認済みの件数（いまの一覧に残っていて、確認した後に変わっていないものだけ数える）。 */
 export function reviewedCount(entries: readonly ScmEntry[], marks: ReviewMarks): number {
 	return entries.filter(entry => isReviewed(entry, marks)).length;

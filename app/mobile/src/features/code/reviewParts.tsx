@@ -20,9 +20,11 @@ import { splitPath, type ScmEntry } from './scmModel.js';
  */
 
 /** 見出しの下の「n/m 確認済み」と絞り込みのチップ。 */
-export function ReviewSummary({ reviewed, total, position, filter, onFilter }: {
+export function ReviewSummary({ reviewed, total, synced, position, filter, onFilter }: {
 	reviewed: number;
 	total: number;
+	/** 確認の印を PC に保存しているか（`review.store.v1` の PC だけ。古い PC では出さない）。 */
+	synced: boolean;
 	/** いまのファイルが絞り込んだ一覧の何件目か（入っていなければ undefined）。 */
 	position: { readonly index: number; readonly count: number } | undefined;
 	filter: ReviewFilter;
@@ -31,7 +33,7 @@ export function ReviewSummary({ reviewed, total, position, filter, onFilter }: {
 	return (
 		<View style={styles.summary}>
 			<View style={styles.progress}>
-				<Text style={styles.progressText}>{`${reviewed}/${total} 確認済み`}</Text>
+				<Text style={styles.progressText}>{`${reviewed}/${total} 確認済み${synced ? ' · PC と同期' : ''}`}</Text>
 				{position !== undefined ? <Text style={styles.progressText}>{`${position.index + 1} / ${position.count} 件目`}</Text> : null}
 			</View>
 			<View style={styles.chips}>

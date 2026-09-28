@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseUnifiedDiff } from '../../components/diffParser.js';
 import type { ReviewMarks } from './codeCache.js';
-import { canOpenWorkingFile, diffLineNumber, diffSign, diffSourceOf, diffStats, nextUnreviewed, reviewQueue, reviewStateOf, reviewedCount, stepReview } from './diffReview.js';
+import { canOpenWorkingFile, diffLineNumber, diffSign, diffSourceOf, diffStats, nextUnreviewed, parseReviewMarks, reviewQueue, reviewStateOf, reviewedCount, stepReview } from './diffReview.js';
 import { scmEntries, scmEntry } from './scmModel.js';
 
 const entries = scmEntries({
@@ -46,6 +46,13 @@ describe('確認後に変更あり', () => {
 			todo: reviewQueue([after], marks, 'todo').map(entry => entry.path),
 			count: reviewedCount([after], marks),
 		}).toEqual({ same: 'reviewed', changed: 'changed', none: 'todo', todo: ['a.ts'], count: 0 });
+	});
+});
+
+describe('parseReviewMarks', () => {
+	it('PC から届いた印のうち、形の合うものだけを読む', () => {
+		expect(parseReviewMarks({ 'a.ts': { identity: 'x', reviewedAt: 1 }, 'b.ts': { identity: 1 }, 'c.ts': null })).toEqual({ 'a.ts': { identity: 'x', reviewedAt: 1 } });
+		expect(parseReviewMarks([])).toEqual({});
 	});
 });
 
