@@ -40,7 +40,10 @@ useAppStore.subscribe((state, previous) => {
 			continue;
 		}
 		const previousLive = before !== undefined && before.epoch === chat?.epoch ? before.messages : NO_MESSAGES;
-		const absorbed = absorbTrimmedIntoHistory(history, chat?.epoch, previousLive, chat?.messages ?? NO_MESSAGES);
+		// この更新で切られた発言（前の状態と同じ印なら、もう繰り入れ済み）。
+		const trim = chat?.trimmedByDelta;
+		const trimmedByUpdate = trim !== undefined && trim !== before?.trimmedByDelta && trim.epoch === chat?.epoch ? trim.messages : NO_MESSAGES;
+		const absorbed = absorbTrimmedIntoHistory(history, chat?.epoch, previousLive, chat?.messages ?? NO_MESSAGES, trimmedByUpdate);
 		const next = reconcileAgentHistory(absorbed, chat?.epoch, chat?.messages ?? NO_MESSAGES);
 		if (next !== history) {
 			store.put(terminalKey, next);
