@@ -900,8 +900,9 @@
 /* パネル本体は tabIndex=-1 にして Esc / クリック外しの受け口にしているだけなので、
 	フォーカスリングは見せない。workbench の `.monaco-workbench [tabindex="-1"]:focus`
 	(vs/workbench/browser/media/style.css) が focusBorder のアウトラインを描くため、
-	同等以上の詳細度で打ち消す必要がある（クラス単独の `outline: none` では負ける）。 */
-.monaco-workbench .paradis-agent-live-pop:focus,
-.monaco-workbench .paradis-agent-live-pop:focus-visible {
+	詳細度で上回って打ち消す（クラス単独の `outline: none` では負け、同点の 0,3,0 では
+	CSS の読み込み順で勝ち負けが変わるため `[tabindex="-1"]` を足して 0,4,0 にする）。 */
+.monaco-workbench .paradis-agent-live-pop[tabindex="-1"]:focus,
+.monaco-workbench .paradis-agent-live-pop[tabindex="-1"]:focus-visible {
 	outline: none;
 }

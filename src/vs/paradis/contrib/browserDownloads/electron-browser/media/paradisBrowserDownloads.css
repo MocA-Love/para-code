@@ -105,6 +105,12 @@
 	outline: none;
 }
 
+/* The popover takes focus itself (tabindex="-1") so it can close on blur. Keep the workbench's focus outline
+	(`.monaco-workbench [tabindex="-1"]:focus`) off its frame; the controls inside still show it. */
+.monaco-workbench .paradis-browser-downloads-popover[tabindex="-1"]:focus {
+	outline: none;
+}
+
 .monaco-workbench .paradis-browser-downloads-popover .pbd-message {
 	padding: 6px 12px;
 	font-size: 12px;
