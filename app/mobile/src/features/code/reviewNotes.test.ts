@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { parseUnifiedDiff } from '../../components/diffParser.js';
-import { canAnnotateRow, noteAnchorOf, noteCountsByPath, parseReviewNotes, placeReviewNotes, reviewSendTargets, unsentNoteIds, type ReviewNote } from './reviewNotes.js';
+import { canAnnotateRow, noteAnchorOf, noteCountsByPath, noteLocationLabel, parseReviewNotes, placeReviewNotes, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type ReviewNote } from './reviewNotes.js';
 
 function note(id: string, line: number, lineText: string, extra: Partial<ReviewNote> = {}): ReviewNote {
 	return { id, path: 'a.ts', line, lineText, body: `note ${id}`, createdAt: 1, updatedAt: 1, ...extra };
@@ -35,6 +35,22 @@ describe('placeReviewNotes', () => {
 		});
 	});
 
+	it('動いたメモは、いまの行と書いた時の行を並べて出す', () => {
+		const moved = note('moved', 1, 'more');
+		const placed = placeReviewNotes(rows, [moved, note('same', 2, 'new')], 'a.ts');
+		expect({
+			lines: [...placed.currentLines],
+			moved: noteLocationLabel(moved, placed.currentLines.get('moved'), 'a.ts'),
+			same: noteLocationLabel(note('same', 2, 'new'), placed.currentLines.get('same'), 'a.ts'),
+			unknown: noteLocationLabel(moved, undefined, 'a.ts'),
+		}).toEqual({
+			lines: [['moved', 3], ['same', 2]],
+			moved: 'a.ts:3（書いた時は 1 行目）',
+			same: 'a.ts:2',
+			unknown: 'a.ts:1',
+		});
+	});
+
 	it('削除行と見出しにはメモを付けない', () => {
 		expect(rows.map(row => canAnnotateRow(row))).toEqual([false, true, false, true, true, true]);
 		const added = rows[3]!;
@@ -51,6 +67,14 @@ describe('メモの一覧', () => {
 	it('送っていないメモを選び、ファイルごとに数える', () => {
 		const notes = [note('a', 1, 'x'), note('b', 2, 'y', { sentAt: 3 }), { ...note('c', 1, 'z'), path: 'b.ts' }];
 		expect({ unsent: unsentNoteIds(notes), counts: [...noteCountsByPath(notes)] }).toEqual({ unsent: ['a', 'c'], counts: [['a.ts', 2], ['b.ts', 1]] });
+	});
+
+	it('片付けで消えたメモは選択から落とす', () => {
+		const selected = new Set(['a', 'gone']);
+		const notes = [note('a', 1, 'x'), note('b', 2, 'y')];
+		expect([...selectedExistingNotes(selected, notes)]).toEqual(['a']);
+		const unchanged = new Set(['a']);
+		expect(selectedExistingNotes(unchanged, notes)).toBe(unchanged);
 	});
 
 	it('送り先はそのスペースのエージェントだけで、作業中・確認待ちは送れない', () => {

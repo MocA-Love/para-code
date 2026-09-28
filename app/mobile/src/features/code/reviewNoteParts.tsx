@@ -8,7 +8,8 @@ import { monoFamily } from '../../monoFont.js';
 import type { WorktreeAgentDef } from '../../store.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { BottomDrawer, Button, DrawerTitle, HeaderButton, Icon, iconSize, useThemeColors } from '../../ui/index.js';
-import { REVIEW_NOTE_BODY_MAX, sendTargetStatusLabel, type ReviewNote, type ReviewSendTarget } from './reviewNotes.js';
+import { InlineError } from './codeParts.js';
+import { REVIEW_NOTE_BODY_MAX, noteLocationLabel, sendTargetStatusLabel, type ReviewNote, type ReviewSendTarget } from './reviewNotes.js';
 import { splitPath } from './scmModel.js';
 
 /**
@@ -59,9 +60,13 @@ export type NoteComposerTarget =
  * メモを書く・書き直すシート（どの幅でも下から出す。iPad の広い幅では BottomDrawer が幅を絞る）。
  * 開くと入力欄にフォーカスし、キーボードの上にシートが持ち上がる。
  */
-export function NoteComposer({ target, busy, onSubmit, onDelete, onClose }: {
+export function NoteComposer({ target, busy, error, currentLines, onSubmit, onDelete, onClose }: {
 	target: NoteComposerTarget | undefined;
 	busy: boolean;
+	/** 保存・削除の失敗（シートは Modal なので、トーストではなくシートの中に出す）。 */
+	error: string | undefined;
+	/** 差分の中で見つかったメモのいまの行番号。 */
+	currentLines: ReadonlyMap<string, number> | undefined;
 	onSubmit: (body: string) => void;
 	onDelete: (note: ReviewNote) => void;
 	onClose: () => void;
@@ -75,14 +80,16 @@ export function NoteComposer({ target, busy, onSubmit, onDelete, onClose }: {
 		setValue(target.mode === 'edit' ? target.note.body : '');
 	}
 	const current = target ?? shown;
-	const line = current === undefined ? undefined : current.mode === 'add' ? { path: current.path, line: current.line, text: current.lineText } : { path: current.note.path, line: current.note.line, text: current.note.lineText };
+	const line = current === undefined ? undefined
+		: current.mode === 'add' ? { label: `${splitPath(current.path).name}:${current.line}`, text: current.lineText }
+			: { label: noteLocationLabel(current.note, currentLines?.get(current.note.id), splitPath(current.note.path).name), text: current.note.lineText };
 	const trimmed = value.trim();
 	return (
 		<BottomDrawer visible={target !== undefined} onClose={onClose} accessibilityLabel="メモ">
 			<DrawerTitle title={current?.mode === 'edit' ? 'メモを書き直す' : 'メモを書く'} />
 			{line !== undefined ? (
 				<View style={styles.anchor}>
-					<Text style={styles.anchorPath} numberOfLines={1}>{`${splitPath(line.path).name}:${line.line}`}</Text>
+					<Text style={styles.anchorPath} numberOfLines={1}>{line.label}</Text>
 					<Text style={styles.anchorText} numberOfLines={2}>{line.text.trim().length > 0 ? line.text : ' '}</Text>
 				</View>
 			) : null}
@@ -100,6 +107,7 @@ export function NoteComposer({ target, busy, onSubmit, onDelete, onClose }: {
 				accessibilityLabel="メモの本文"
 			/>
 			{current?.mode === 'edit' && current.note.sentAt !== undefined ? <Text style={styles.hint}>書き直すと未送信に戻り、もう一度送れます。</Text> : null}
+			<InlineError message={error} style={styles.sheetError} />
 			<View style={styles.buttons}>
 				{current?.mode === 'edit' ? (
 					<Button label="消す" icon={Trash2} variant="danger" onPress={() => onDelete(current.note)} disabled={busy} style={styles.button} />
@@ -116,15 +124,21 @@ export function NoteComposer({ target, busy, onSubmit, onDelete, onClose }: {
  * メモの一覧と送信（iPad は右から、iPhone は下から出すシートの中身）。送っていないメモを選んでおき、
  * そのスペースで入力を待っているエージェントへ送るか、新しいエージェントを起動して送る。
  */
-export function ReviewNotesPanel({ notes, selected, onToggle, onOpenNote, targets, agents, busy, onSend, onLaunch, onClear, onClose }: {
+export function ReviewNotesPanel({ notes, selected, currentLines, onToggle, onOpenNote, targets, agents, busy, error, notice, onSend, onLaunch, onClear, onClose }: {
 	notes: readonly ReviewNote[];
 	selected: ReadonlySet<string>;
+	/** 差分の中で見つかったメモのいまの行番号（いま開いているファイルのぶんだけ）。 */
+	currentLines: ReadonlyMap<string, number> | undefined;
 	onToggle: (id: string) => void;
 	onOpenNote: (note: ReviewNote) => void;
 	targets: readonly ReviewSendTarget[];
 	/** 新しく起動できるエージェント（PC の定義。読めていなければ空）。 */
 	agents: readonly WorktreeAgentDef[];
 	busy: boolean;
+	/** 送信・片付けの失敗（シートは Modal なので、トーストではなくシートの中に出す）。 */
+	error: string | undefined;
+	/** 片付けの結果など、シートの中に出すお知らせ。 */
+	notice: string | undefined;
 	onSend: (target: ReviewSendTarget) => void;
 	onLaunch: (agent: WorktreeAgentDef) => void;
 	onClear: () => void;
@@ -140,6 +154,8 @@ export function ReviewNotesPanel({ notes, selected, onToggle, onOpenNote, target
 				<Text style={styles.listCount}>{choosing ? `${selected.size} 件を送る` : `${notes.length} 件`}</Text>
 				<HeaderButton icon={X} label="閉じる" onPress={onClose} />
 			</View>
+			<InlineError message={error} style={styles.sheetError} />
+			{notice !== undefined && error === undefined ? <Text style={styles.notice}>{notice}</Text> : null}
 			{choosing ? (
 				<View style={styles.group}>
 					{targets.length === 0 ? <Text style={styles.empty}>このスペースで動いているエージェントはありません。</Text> : null}
@@ -202,7 +218,7 @@ export function ReviewNotesPanel({ notes, selected, onToggle, onOpenNote, target
 											</Pressable>
 											<Pressable onPress={() => onOpenNote(note)} style={styles.rowCol} accessibilityRole="button" accessibilityLabel={`${note.path} ${note.line} 行目のメモ: ${note.body}`}>
 												<Text style={styles.rowTitle} numberOfLines={2}>{note.body}</Text>
-												<Text style={styles.rowSub} numberOfLines={1}>{`${splitPath(note.path).name}:${note.line}${note.sentAt !== undefined ? ' · 送信済み' : ''}`}</Text>
+												<Text style={styles.rowSub} numberOfLines={1}>{`${noteLocationLabel(note, currentLines?.get(note.id), splitPath(note.path).name)}${note.sentAt !== undefined ? ' · 送信済み' : ''}`}</Text>
 											</Pressable>
 										</View>
 									</View>
@@ -301,6 +317,16 @@ const styles = StyleSheet.create({
 		paddingBottom: space.sm + 2,
 		fontSize: type.input,
 		textAlignVertical: 'top',
+	},
+	sheetError: {
+		marginTop: space.sm,
+		marginBottom: space.sm,
+	},
+	notice: {
+		fontSize: type.meta,
+		color: colors.textDim,
+		paddingHorizontal: space.xs,
+		paddingBottom: space.sm,
 	},
 	hint: {
 		fontSize: type.meta,

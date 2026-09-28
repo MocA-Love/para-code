@@ -56,6 +56,8 @@ export type DiffLineItem =
 
 export interface PlacedNotes {
 	readonly items: readonly DiffLineItem[];
+	/** 差分の中で見つかったメモの、いまの行番号（書いたときの行番号と違うことがある）。 */
+	readonly currentLines: ReadonlyMap<string, number>;
 	/** 差分の中に行が見つからないメモ（直されて行が変わった、または差分から外れた）。 */
 	readonly stale: readonly ReviewNote[];
 }
@@ -76,6 +78,7 @@ export function placeReviewNotes(rows: readonly DiffRow[], notes: readonly Revie
 		return index !== undefined ? rows[index]?.text.slice(0, LINE_TEXT_MAX) : undefined;
 	};
 	const byRow = new Map<number, ReviewNote[]>();
+	const currentLines = new Map<string, number>();
 	const stale: ReviewNote[] = [];
 	for (const note of notes) {
 		if (note.path !== path) {
@@ -87,6 +90,9 @@ export function placeReviewNotes(rows: readonly DiffRow[], notes: readonly Revie
 			stale.push(note);
 		} else {
 			byRow.set(index, [...(byRow.get(index) ?? []), note]);
+			if (line !== undefined) {
+				currentLines.set(note.id, line);
+			}
 		}
 	}
 	const items: DiffLineItem[] = [];
@@ -96,7 +102,19 @@ export function placeReviewNotes(rows: readonly DiffRow[], notes: readonly Revie
 			items.push({ kind: 'note', note });
 		}
 	});
-	return { items, stale };
+	return { items, currentLines, stale };
+}
+
+/** メモの場所の表記。いまの行が書いたときと違えば両方を出す（例「a.ts:13（書いた時は 10 行目）」）。 */
+export function noteLocationLabel(note: ReviewNote, currentLine: number | undefined, fileName: string): string {
+	return currentLine === undefined || currentLine === note.line ? `${fileName}:${note.line}` : `${fileName}:${currentLine}（書いた時は ${note.line} 行目）`;
+}
+
+/** 選んでいたメモのうち、まだ一覧にあるものだけ（片付け・別の端末での削除で消えたものを落とす）。 */
+export function selectedExistingNotes(selected: ReadonlySet<string>, notes: readonly ReviewNote[]): ReadonlySet<string> {
+	const existing = new Set(notes.map(note => note.id));
+	const kept = [...selected].filter(id => existing.has(id));
+	return kept.length === selected.size ? selected : new Set(kept);
 }
 
 /** 行を探す範囲（PC と同じ）。表示の説明に使う。 */
