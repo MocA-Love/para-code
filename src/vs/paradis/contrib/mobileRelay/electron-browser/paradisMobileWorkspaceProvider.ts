@@ -46,6 +46,7 @@ import { loadParadisMobileWordDiffBundle, renderParadisMobileWordDiffHtml } from
 import { Channels, decodeParadisMobileWarmLeaseRequest, encodeNotify, NotifyKind, NotifyPayload, ParadisMobileWarmLeaseRequest } from '../common/paradisMobileProtocol.js';
 import { decodeParadisMobileOfficeRequest, getParadisMobileOfficeHostFeatureBits, PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, type ParadisMobileOfficeRequest, type ParadisMobileOfficeResponse } from '../common/paradisMobileOfficeProtocol.js';
 import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
+import { paradisPickNotifyInstance } from '../common/paradisNotifySource.js';
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
@@ -1154,7 +1155,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// transcript ミラーが質問本文・選択肢つきの通知を別経路で全モバイルへ
 				// 送るため、状態遷移ベースの汎用通知と二重になるのを防ぐ。
 				if (status === 'permission' || status === 'review') {
-					this.emitNotify(status === 'permission' ? 'agent-question' : 'agent-done', inst.instanceId, stateKey, inst.title);
+					// スコープの状態は配下のまとめなので、実際にその状態になったペインを送り主にする
+					// （同じスペースの別のエージェントのトークンで通知しない。paradisPickNotifyInstance）。
+					const sourceId = paradisPickNotifyInstance(this.allInstances().map(candidate => ({
+						instanceId: candidate.instanceId,
+						stateKey: this.terminalScopeService.getStateKeyForInstance(candidate.instanceId),
+						status: this.agentStatusStore.getInstanceStatus(candidate.instanceId),
+					})), stateKey, status);
+					const source = this.allInstances().find(candidate => candidate.instanceId === sourceId) ?? inst;
+					this.emitNotify(status === 'permission' ? 'agent-question' : 'agent-done', source.instanceId, stateKey, source.title);
 				}
 			}
 			if (status) {
