@@ -60,6 +60,12 @@ function parsePanelState(raw: string | undefined): IPanelState {
 	}
 }
 
+/** 描き直しをまたいでフォーカスを戻す先のチェックリスト行。text が undefined なら行番号だけで探す。 */
+interface IFocusedTask {
+	readonly index: number;
+	readonly text: string | undefined;
+}
+
 /**
  * Workspaces ビュー下部に常駐する「いま開いているスペースのメモ」欄。
  *
@@ -100,6 +106,15 @@ export class ParadisSpaceNotesPanel extends Disposable {
 	/** 「この項目を編集」で1行だけ入力状態にしているチェックリストの行番号。 */
 	private editingTaskIndex: number | undefined;
 	private availableHeight = 0;
+	/** 本文を最後に描いたときのスペース。別のスペースへ切り替えた描き直しではスクロール位置を持ち越さない。 */
+	private renderedStateKey: string | undefined;
+	/** 描いたチェックボックスを行番号で引く。描き直しの後に同じ行へフォーカスを戻すのに使う。 */
+	private readonly taskChecks = new Map<number, { readonly check: HTMLElement; readonly text: string }>();
+	/**
+	 * 次の描き直しでフォーカスを置く行。1行編集を Enter / Escape で閉じたとき、消える入力欄の代わりに
+	 * その行のチェックボックスへ戻すために使う (確定の保存が描き直しを同期で起こすので、保存の前に置く)。
+	 */
+	private pendingTaskFocus: IFocusedTask | undefined;
 
 	constructor(
 		container: HTMLElement,
@@ -365,11 +380,25 @@ export class ParadisSpaceNotesPanel extends Disposable {
 
 		this.bodyElement.classList.toggle('hidden', this.editing);
 		this.editorElement.classList.toggle('hidden', !this.editing);
+		// 1行編集を閉じたときに置いた戻り先は、この描き直しで使わなくても持ち越さない (全体の編集へ移った後や、
+		// 後の別の描き直しで古い行番号へフォーカスを戻さないため)
+		const pendingTaskFocus = this.pendingTaskFocus;
+		this.pendingTaskFocus = undefined;
 		if (this.editing) {
 			return;
 		}
 
+		// 本文は毎回作り直す。フォーカス中の要素 (チェックボックスや入力欄) を消すと、Chromium は
+		// その場で blur を配って同期レイアウトを走らせ、行が抜けて高さの無い本文の scrollTop を 0 に
+		// 丸める。後から行を足し直しても戻らないので、同じスペースの描き直しなら位置とフォーカスを
+		// 消す前に控えて書き戻す (トグル・他ウィンドウやモバイルからの更新・1行編集の確定で共通)
+		const sameSpace = this.renderedStateKey !== undefined && this.renderedStateKey === this.stateKey;
+		const scrollTop = sameSpace ? this.bodyElement.scrollTop : 0;
+		const focusedTask = sameSpace ? (pendingTaskFocus ?? this.focusedTask()) : undefined;
+		this.renderedStateKey = this.stateKey;
+
 		this.bodyDisposables.clear();
+		this.taskChecks.clear();
 		DOM.clearNode(this.bodyElement);
 		if (this.stateKey === undefined) {
 			// allow-any-unicode-next-line
@@ -385,6 +414,67 @@ export class ParadisSpaceNotesPanel extends Disposable {
 			}
 		}
 		this.renderAddRow();
+		this.restoreScrollAndFocus(scrollTop, focusedTask);
+	}
+
+	/**
+	 * 本文内のチェックボックスにフォーカスがあれば、その行を返す。ウィンドウが前面に無いときに
+	 * 届く外部更新でも読めるよう、前面の document ではなくこの本文が属する document を見る。
+	 */
+	private focusedTask(): IFocusedTask | undefined {
+		const active = this.bodyElement.ownerDocument.activeElement;
+		for (const [index, task] of this.taskChecks) {
+			if (task.check === active) {
+				return { index, text: task.text };
+			}
+		}
+		return undefined;
+	}
+
+	/**
+	 * 描き直した後のどのチェックボックスへフォーカスを戻すか。行番号だけで戻すと、他ウィンドウで
+	 * 上の行が消えたときに別のタスクへフォーカスが乗り、続く Space で違う項目を切り替えてしまう。
+	 * 同じ行番号で文言も同じ → 文言が同じ行 (元の行番号に近いもの) の順で探し、無ければ戻さない。
+	 */
+	private findTaskCheck(task: IFocusedTask): HTMLElement | undefined {
+		const sameIndex = this.taskChecks.get(task.index);
+		if (sameIndex && (task.text === undefined || sameIndex.text === task.text)) {
+			return sameIndex.check;
+		}
+		if (task.text === undefined) {
+			return undefined;
+		}
+		let nearest: { readonly check: HTMLElement; readonly distance: number } | undefined;
+		for (const [index, candidate] of this.taskChecks) {
+			const distance = Math.abs(index - task.index);
+			if (candidate.text === task.text && (!nearest || distance < nearest.distance)) {
+				nearest = { check: candidate.check, distance };
+			}
+		}
+		return nearest?.check;
+	}
+
+	private restoreScrollAndFocus(scrollTop: number, focusedTask: IFocusedTask | undefined): void {
+		if (focusedTask !== undefined) {
+			// キーボードで続けて操作できるようにフォーカスを戻す。位置は下で書き戻すのでここでは動かさない
+			this.findTaskCheck(focusedTask)?.focus({ preventScroll: true });
+		}
+		// 別のスペースへ切り替えた描き直しでは 0 (先頭) を書く。フォーカスが無いと clearNode でも
+		// 位置が丸められず、前のスペースのスクロール位置のまま開いてしまうため
+		this.bodyElement.scrollTop = scrollTop;
+		// 「やることを追加」や1行編集の入力欄は描き直しの中でフォーカスされる。書き戻した位置で
+		// 入力欄が見えなくならないよう、本文の中だけで見える位置まで動かす (scrollIntoView は
+		// 外側の overflow: hidden の祖先まで動かしてしまうので使わない)
+		const active = this.bodyElement.ownerDocument.activeElement;
+		if (DOM.isHTMLElement(active) && active !== this.bodyElement && this.bodyElement.contains(active) && !active.classList.contains('paradis-space-notes-check')) {
+			const bodyRect = this.bodyElement.getBoundingClientRect();
+			const activeRect = active.getBoundingClientRect();
+			if (activeRect.bottom > bodyRect.bottom) {
+				this.bodyElement.scrollTop += activeRect.bottom - bodyRect.bottom;
+			} else if (activeRect.top < bodyRect.top) {
+				this.bodyElement.scrollTop -= bodyRect.top - activeRect.top;
+			}
+		}
 	}
 
 	/**
@@ -463,7 +553,8 @@ export class ParadisSpaceNotesPanel extends Disposable {
 			this.render();
 		}));
 
-		input.focus();
+		// 見える位置へは描き直しの最後 (restoreScrollAndFocus) で本文の中だけ動かす
+		input.focus({ preventScroll: true });
 		autoGrow();
 	}
 
@@ -486,6 +577,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 				const row = DOM.append(this.bodyElement, DOM.$('.paradis-space-notes-task'));
 				row.classList.toggle('done', line.done);
 				const check = this.appendTaskCheck(row);
+				this.taskChecks.set(line.index, { check, text: line.text });
 				check.tabIndex = 0;
 				check.setAttribute('role', 'checkbox');
 				check.setAttribute('aria-checked', String(line.done));
@@ -615,7 +707,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 
 		// 確定・取り消しのどちらでも行を組み直すため、外れた入力欄からの blur で二重に走らせない
 		let finished = false;
-		const finish = (commit: boolean) => {
+		const finish = (commit: boolean, returnFocus: boolean) => {
 			// 他ウィンドウの更新などで編集が閉じられた後に届いた blur では書き戻さない
 			// (行番号が指す先が変わっている可能性があるため)
 			if (finished || this.editingTaskIndex !== line.index) {
@@ -625,6 +717,11 @@ export class ParadisSpaceNotesPanel extends Disposable {
 			finished = true;
 			const value = input.value;
 			this.editingTaskIndex = undefined;
+			// Enter / Escape で閉じたときは、消える入力欄の代わりにその行のチェックボックスへ戻す
+			// (blur で閉じたときはフォーカスが既に他所へ移っているので奪わない)
+			if (returnFocus) {
+				this.pendingTaskFocus = { index: line.index, text: undefined };
+			}
 			if (commit && this.stateKey !== undefined) {
 				this.notesService.updateTaskText(this.stateKey, line.index, value);
 			}
@@ -636,17 +733,18 @@ export class ParadisSpaceNotesPanel extends Disposable {
 			// 1行のやることを直す場所なので、Shift+Enter でも行は増やさない
 			if (keyboardEvent.equals(KeyCode.Enter) || keyboardEvent.equals(KeyMod.Shift | KeyCode.Enter)) {
 				DOM.EventHelper.stop(event, true);
-				finish(true);
+				finish(true, true);
 				return;
 			}
 			if (keyboardEvent.equals(KeyCode.Escape)) {
 				DOM.EventHelper.stop(event, true);
-				finish(false);
+				finish(false, true);
 			}
 		}));
-		this.bodyDisposables.add(DOM.addDisposableListener(input, DOM.EventType.BLUR, () => finish(true)));
+		this.bodyDisposables.add(DOM.addDisposableListener(input, DOM.EventType.BLUR, () => finish(true, false)));
 
-		input.focus();
+		// 見える位置へは描き直しの最後 (restoreScrollAndFocus) で本文の中だけ動かす
+		input.focus({ preventScroll: true });
 		input.setSelectionRange(input.value.length, input.value.length);
 		autoGrow();
 	}

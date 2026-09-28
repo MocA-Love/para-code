@@ -1,0 +1,68 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Keeps the fork's title bar widgets from overlapping the centered command center.
+ *
+ * Upstream sizes `.has-center > .titlebar-left` at `width: 20%` without `min-width`, so the
+ * flex automatic minimum lets it shrink below its content (upstream only expects an empty left
+ * side on macOS, or the menu bar on Windows/Linux). The fork appends the CPU/RAM, AI limits,
+ * service status and port list triggers there (NativeTitlebarPart.createContentArea), which
+ * then overflowed the 20% box and painted over the command center at the same z-index.
+ */
+
+/* ---------- 1. never let the left side overflow into the center ---------- */
+
+/*
+ * Size the left container to its content when it holds fork widgets, the same way upstream
+ * already treats `.titlebar-right` (min-width: min-content). The center (min-width: 0) absorbs
+ * the difference instead of being painted over.
+ *
+ * Not applied while the custom menu bar is visible in the left container (Windows/Linux custom
+ * title bar): the menu bar collapses its menus by measuring its own width, and a min-content left
+ * side would include every menu and stop it from collapsing. The `.menubar` element stays in the
+ * DOM even when the menu is hidden or toggled away, so paradisTitlebarFit.ts reports the actual
+ * visibility as `paradis-fit-menubar-visible` on the title bar container.
+ */
+.monaco-workbench .part.titlebar > .titlebar-container.has-center:not(.paradis-fit-menubar-visible) > .titlebar-left:has(> .paradis-resource-monitor-trigger, > .paradis-limits-trigger, > .paradis-service-status-trigger, > .paradis-port-list-trigger) {
+	min-width: min-content;
+}
+
+/* The widgets used to shrink into each other (the service status chips got squeezed to 15px). */
+.monaco-workbench .part.titlebar > .titlebar-container:not(.paradis-fit-menubar-visible) > .titlebar-left > :is(.paradis-resource-monitor-trigger, .paradis-limits-trigger, .paradis-service-status-trigger, .paradis-port-list-trigger) {
+	flex-shrink: 0;
+}
+
+/* ---------- 2. fold lower-priority widgets as the title bar narrows ---------- */
+
+/*
+ * Keeps the command center usable in narrow windows. The `paradis-fit-<width>` classes come from
+ * paradisTitlebarFit.ts, which measures the title bar itself. Viewport media queries would be off
+ * when zoomed out, because the title bar is then counter-zoomed back to 100%. A container query is
+ * not used either: `container-type` on the title bar would add layout containment, which turns it
+ * into the containing block of the fixed-position menu bar dropdowns and changes its stacking.
+ *
+ * Everything folded here stays reachable: the list buttons keep their icon and hover text, the
+ * CPU/RAM button still opens the breakdown, service chips come back whenever a service reports an
+ * incident, and the port list is never folded (it has no other entry point). The steps do not
+ * change while a left-side panel or popover is open (see paradisTitlebarFit.ts), so an open panel
+ * never loses or drifts away from the trigger it was positioned from.
+ */
+
+/* 1400px or less: the agent list and browser list buttons become icon-only. */
+.monaco-workbench .part.titlebar > .titlebar-container.paradis-fit-1400 :is(.paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label, .paradis-browser-live-titlebar-widget > .paradis-browser-live-titlebar-label) {
+	display: none;
+}
+
+/* 1200px or less: the CPU/RAM button shows only its icon (and the severity dot). */
+.monaco-workbench .part.titlebar > .titlebar-container.paradis-fit-1200 > .titlebar-left > .paradis-resource-monitor-trigger > .paradis-resource-monitor-trigger-text {
+	display: none;
+}
+
+/* 1000px or less: hide the service chips that have nothing to report. */
+.monaco-workbench .part.titlebar > .titlebar-container.paradis-fit-1000 > .titlebar-left > .paradis-service-status-trigger:has(> .paradis-service-status-dot:is(.ok, .unknown)) {
+	display: none;
+}
