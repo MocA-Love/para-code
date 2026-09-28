@@ -37,6 +37,11 @@ import {
 export const PARADIS_COMPUTER_USE_REQUEST_TIMEOUT_MS = 60_000;
 /** 起動してからソケットが開くまで待つ上限。 */
 export const PARADIS_COMPUTER_USE_LAUNCH_TIMEOUT_MS = 10_000;
+/**
+ * 接続してから handshake の応答までの上限。補助アプリはこの間に相手を確かめる（リリースではアプリの封印を
+ * 読み直すので、手元の計測で 1〜2 秒かかる。レビュー N2）。
+ */
+export const PARADIS_COMPUTER_USE_HANDSHAKE_TIMEOUT_MS = 30_000;
 /** 応答 1 行の上限（スクショの base64 を含む）。 */
 const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 /** Unix ソケットのパスの上限（`sockaddr_un.sun_path` は 104 バイトで、末尾の NUL を含む）。 */
@@ -46,6 +51,9 @@ const MAX_CONSECUTIVE_CRASHES = 2;
 
 /** 補助アプリが返した失敗、または接続の失敗。`code` はエージェントへの説明の出し分けに使う。 */
 export class ParadisComputerUseHelperError extends Error {
+	/** 長い入力を途中で止めたとき、送り終えた数（補助アプリが返す）。 */
+	progress?: number;
+
 	constructor(readonly code: string, message: string) {
 		super(message);
 		this.name = 'ParadisComputerUseHelperError';
@@ -269,10 +277,14 @@ class ParadisHelperConnection {
 			return;
 		}
 		const error = record.error && typeof record.error === 'object' ? record.error as Record<string, unknown> : {};
-		pending.reject(new ParadisComputerUseHelperError(
+		const failure = new ParadisComputerUseHelperError(
 			typeof error.code === 'string' ? error.code : 'helper_error',
 			typeof error.message === 'string' ? error.message : 'The Computer Use helper returned an error.',
-		));
+		);
+		if (typeof error.progress === 'number' && Number.isInteger(error.progress) && error.progress >= 0) {
+			failure.progress = error.progress;
+		}
+		pending.reject(failure);
 	}
 
 	private _close(): void {
@@ -453,7 +465,7 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 			});
 			let hello: unknown;
 			try {
-				hello = await connection.send('handshake', { token, protocolVersion: PARADIS_COMPUTER_USE_PROTOCOL_VERSION }, this._launchTimeoutMs);
+				hello = await connection.send('handshake', { token, protocolVersion: PARADIS_COMPUTER_USE_PROTOCOL_VERSION }, Math.max(this._launchTimeoutMs, PARADIS_COMPUTER_USE_HANDSHAKE_TIMEOUT_MS));
 			} catch (error) {
 				fail('launch-failed', `handshake failed: ${toMessage(error)}${await this._helperLogTail(runtimeDirectory)}`);
 			}

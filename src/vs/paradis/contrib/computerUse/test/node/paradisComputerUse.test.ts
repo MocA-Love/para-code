@@ -34,14 +34,14 @@ suite('ParadisComputerUse common', () => {
 		assert.deepStrictEqual({
 			defaults: ids.map(id => paradisComputerUseBlockReason(id) ?? ''),
 			withoutSystem: ids.map(id => paradisComputerUseBlockReason(id, { blockSystemSurfaces: false }) ?? ''),
-			commands: ['com.apple.Terminal', 'com.googlecode.iterm2', 'com.mitchellh.ghostty', 'dev.warp.Warp-Stable', 'com.apple.ScriptEditor2', 'com.jetbrains.intellij', 'com.microsoft.VSCode', 'com.apple.finder'].map(paradisComputerUseRunsCommands),
+			commands: ['com.apple.Terminal', 'com.googlecode.iterm2', 'com.mitchellh.ghostty', 'dev.warp.Warp-Stable', 'com.apple.ScriptEditor2', 'com.jetbrains.intellij', 'com.microsoft.VSCode', 'com.apple.finder', 'com.apple.Notes'].map(paradisComputerUseRunsCommands),
 		}, {
 			// Q97 の回答 A: システム設定と認証のダイアログも既定で断る
 			// 素の Electron は Para Code とみなさない（レビュー L1）
 			defaults: ['password-manager', 'password-manager', 'password-manager', 'keychain', 'para-code', 'para-code', 'para-code', '', 'password-manager', 'system', '', 'system', 'system', 'system', ''],
 			withoutSystem: ['password-manager', 'password-manager', 'password-manager', 'keychain', 'para-code', 'para-code', 'para-code', '', 'password-manager', '', '', '', '', '', ''],
 			// Q98 の回答 A: ターミナル類は断らず、ダイアログで警告する
-			commands: [true, true, true, true, true, true, true, false],
+			commands: [true, true, true, true, true, true, true, true, false],
 		});
 	});
 
