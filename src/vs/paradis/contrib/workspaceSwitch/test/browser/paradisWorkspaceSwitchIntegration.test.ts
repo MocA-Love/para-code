@@ -50,6 +50,8 @@ import { ILifecycleService } from '../../../../../workbench/services/lifecycle/c
 import { ParadisWorkspaceSwitchService } from '../../browser/paradisWorkspaceSwitchService.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../../common/paradisWorkspaceSwitch.js';
 import { PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, paradisSerializeWorkspaceSwitchTransactions } from '../../common/paradisWorkspaceSwitchTransaction.js';
+import { paradisPrepareRestartedTerminalLaunch, paradisRegisterRestartedTerminalCwdResolver, paradisResetRestartedTerminalsForTest } from '../../common/paradisTerminalLaunchPreparers.js';
+import { paradisLookupRestartedShellScope } from '../../common/paradisTerminalSpaceFolder.js';
 
 suite('ParadisWorkspaceSwitchService integration', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -1848,6 +1850,65 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			paradisResetSharedPanelStartupValueForTest();
 			testDisposables.dispose();
 		}
+	});
+
+	// 復元したタブが PTY へ繋げずシェルを起こし直すと、upstream はそのとき開いているフォルダ
+	// （切り替え中なら切り替え元）で起こし、その cwd が所属の証拠になって台帳へ焼き付いていた。
+	test('starts a shell that could not reattach in its own space and records that space, not the folder that happened to be open', async () => {
+		const run = async (variant: 'restarted' | 'restartedWithoutResolver' | 'reattached') => {
+			const testDisposables = new DisposableStore();
+			const processReady = new DeferredPromise<void>();
+			try {
+				// 起こし直したシェルの cwd は、切り替え元の space-a のフォルダだったとする。
+				const instance = createRestoredTerminalInstance(4501, { initialCwd: '/workspace-a' });
+				Object.assign(instance, { processReady: processReady.p, resource: URI.from({ scheme: 'vscode-terminal', path: '/4501' }) });
+				const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+				await harness.workspaceSwitchService.switchRepository('space-a');
+				// space-b への切り替えで working set を復元している最中（フォルダはまだ space-a）。
+				const restoreContext = testDisposables.add(await paradisRefreshTerminalReviveIndex('space-b', { skipLookup: true, expectedNonces: new Set(['nonce-4501']) }));
+				if (variant === 'restarted') {
+					testDisposables.add(paradisRegisterRestartedTerminalCwdResolver(async launch => {
+						const stateKey = paradisLookupRestartedShellScope(launch.instanceId, launch.nonce);
+						return stateKey === undefined ? undefined : URI.file(`/workspace-${stateKey.slice('space-'.length)}`);
+					}));
+				}
+				const scope = harness.installTerminalScope(async () => { }, { editorInstances: [instance], worktreeReady: true });
+				await settle();
+				harness.fireInstancesChanged();
+				await settle();
+				if (variant !== 'reattached') {
+					// terminalProcessManager の attach 失敗の分岐と同じ順（問い合わせてから attach 情報を消す）。
+					await paradisPrepareRestartedTerminalLaunch(instance.shellLaunchConfig, 4501, 'nonce-4501', undefined);
+					instance.shellLaunchConfig.attachPersistentProcess = undefined;
+				}
+				// シェルが起動を知らせる前に切り替えは終わっている。
+				restoreContext.dispose();
+				processReady.complete();
+				await settle();
+				return {
+					cwd: instance.shellLaunchConfig.cwd?.toString(),
+					stateKey: scope.getStateKeyForInstance(4501),
+					persistedNonces: harness.persistedNonceScopes(),
+				};
+			} finally {
+				processReady.complete();
+				paradisResetRestartedTerminalsForTest();
+				paradisClearTerminalReviveIndex();
+				testDisposables.dispose();
+			}
+		};
+
+		assert.deepStrictEqual({
+			restarted: await run('restarted'),
+			restartedWithoutResolver: await run('restartedWithoutResolver'),
+			reattached: await run('reattached'),
+		}, {
+			restarted: { cwd: 'file:///workspace-b', stateKey: 'space-b', persistedNonces: [['nonce-4501', 'space-b']] },
+			// フォルダを決められなかった回でも、起こし直したシェルの cwd は証拠にせず、出てきた working set を採る。
+			restartedWithoutResolver: { cwd: undefined, stateKey: 'space-b', persistedNonces: [['nonce-4501', 'space-b']] },
+			// 繋ぎ直せたシェルの cwd は、そのシェルが作られた場所なので従来どおり証拠になる。
+			reattached: { cwd: undefined, stateKey: 'space-a', persistedNonces: [['nonce-4501', 'space-a']] },
+		});
 	});
 
 });
