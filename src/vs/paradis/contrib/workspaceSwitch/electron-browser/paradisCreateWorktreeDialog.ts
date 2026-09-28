@@ -384,8 +384,8 @@ class ParadisCreateWorktreeDialog extends Disposable {
 			: 'none';
 		this._agentsFixedBySettings = this.modelCatalogService.isFixedBySettings();
 		this._renderAgentSegment();
-		// 一覧が設定で固定されているときは、その旨と「既定に戻す」を出す
-		this._register(paradisAppendAgentListLockNotice(agentBlock, this.modelCatalogService));
+		// 一覧が設定で固定されているときは、その旨と「既定に戻す」を出す（settings.json を開くときはこのダイアログを閉じる）
+		this._register(paradisAppendAgentListLockNotice(agentBlock, this.modelCatalogService, () => this.dispose()));
 
 		// エージェント詳細オプション（モデル/エフォート/権限＋コマンドプレビュー）。
 		// 「実行しない」選択時は囲みごと非表示にする

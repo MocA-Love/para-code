@@ -13,15 +13,18 @@ import './media/paradisAgentListLockNotice.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
-import { IParadisAgentModelCatalogService, PARADIS_WORKSPACE_AGENTS_SETTING } from '../common/paradisAgentModelCatalog.js';
+import { IParadisAgentModelCatalogService, PARADIS_WORKSPACE_AGENTS_SETTING, ParadisAgentListResetResult } from '../common/paradisAgentModelCatalog.js';
 
 const $ = dom.$;
 
 /**
  * `container` の末尾に「設定で固定中」の行を足す。固定されていない間は隠す。
  * 返した IDisposable を捨てると行も消える。
+ *
+ * 確認で「settings.json を開く」が選ばれたら、`closeHost` で行を置いているダイアログを閉じてから開く。
+ * 先に開くと、エディタが前面のダイアログ（新しいスペース・定期実行）の背面に出て編集できない。
  */
-export function paradisAppendAgentListLockNotice(container: HTMLElement, modelCatalogService: IParadisAgentModelCatalogService): IDisposable {
+export function paradisAppendAgentListLockNotice(container: HTMLElement, modelCatalogService: IParadisAgentModelCatalogService, closeHost: () => void): IDisposable {
 	const store = new DisposableStore();
 	const notice = dom.append(container, $('.paradis-agent-list-lock'));
 	dom.append(notice, $('span.codicon.codicon-lock'));
@@ -38,11 +41,18 @@ export function paradisAppendAgentListLockNotice(container: HTMLElement, modelCa
 	store.add(modelCatalogService.onDidChange(update));
 	store.add(dom.addDisposableListener(button, 'click', async () => {
 		button.disabled = true;
+		let result: ParadisAgentListResetResult = 'unchanged';
 		try {
-			await modelCatalogService.resetToDefault();
+			result = await modelCatalogService.resetToDefault();
 		} finally {
-			button.disabled = false;
-			update();
+			if (!store.isDisposed) {
+				button.disabled = false;
+				update();
+			}
+		}
+		if (result === 'openSettings') {
+			closeHost();
+			await modelCatalogService.openSettingsJson();
 		}
 	}));
 	store.add(toDisposable(() => notice.remove()));

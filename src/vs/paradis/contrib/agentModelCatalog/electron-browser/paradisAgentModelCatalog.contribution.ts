@@ -33,6 +33,7 @@ import {
 	PARADIS_AGENT_MODEL_CATALOG_CHANNEL,
 	PARADIS_WORKSPACE_AGENTS_SETTING,
 	ParadisAgentListBlockedLayer,
+	ParadisAgentListResetResult,
 	paradisAgentListResetPlan,
 	paradisAgentListUsesCatalog,
 	paradisIsAgentListUserDefined,
@@ -75,7 +76,11 @@ class ParadisAgentModelCatalogService extends Disposable implements IParadisAgen
 		return paradisIsAgentListUserDefined(this.configurationService);
 	}
 
-	async resetToDefault(): Promise<boolean> {
+	async openSettingsJson(): Promise<void> {
+		await this.preferencesService.openUserSettings({ jsonEditor: true, revealSetting: { key: PARADIS_WORKSPACE_AGENTS_SETTING, edit: false } });
+	}
+
+	async resetToDefault(): Promise<ParadisAgentListResetResult> {
 		const plan = paradisAgentListResetPlan(this.configurationService);
 		const lines: string[] = [
 			// allow-any-unicode-next-line
@@ -112,11 +117,11 @@ class ParadisAgentModelCatalogService extends Disposable implements IParadisAgen
 		});
 		const choice = await result;
 		if (choice === 'open') {
-			await this.preferencesService.openUserSettings({ jsonEditor: true, revealSetting: { key: PARADIS_WORKSPACE_AGENTS_SETTING, edit: false } });
-			return false;
+			// ここでは開かない。呼んだ画面が自分のダイアログを閉じてから openSettingsJson を呼ぶ
+			return 'openSettings';
 		}
 		if (choice !== 'reset') {
-			return false;
+			return 'unchanged';
 		}
 		try {
 			await paradisResetAgentListSetting(this.configurationService);
@@ -124,7 +129,7 @@ class ParadisAgentModelCatalogService extends Disposable implements IParadisAgen
 			this.logService.warn('[ParadisAgentModelCatalog] could not reset the agent list setting', error);
 			// allow-any-unicode-next-line
 			await this.dialogService.error(localize('paradis.agentModelCatalog.resetFailed', "設定を既定に戻せませんでした。settings.json の {0} を消してください。", PARADIS_WORKSPACE_AGENTS_SETTING));
-			return false;
+			return 'unchanged';
 		}
 		if (this.isFixedBySettings()) {
 			// 消せない層に残っている。何もしなかったように見えないよう、理由を伝える
@@ -133,9 +138,9 @@ class ParadisAgentModelCatalogService extends Disposable implements IParadisAgen
 				?? localize('paradis.agentModelCatalog.resetIncompleteUnknown', "ほかの場所の設定に一覧が残っています。");
 			// allow-any-unicode-next-line
 			await this.dialogService.info(localize('paradis.agentModelCatalog.resetIncomplete', "一覧を既定に戻しきれませんでした"), reason);
-			return false;
+			return 'unchanged';
 		}
-		return true;
+		return 'reset';
 	}
 
 	/** Para Code から消せない層に値があるとき、その場所と消し方の説明。無ければ undefined。 */
