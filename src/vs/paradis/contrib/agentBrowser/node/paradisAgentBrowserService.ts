@@ -585,7 +585,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			.then(() => paradisStampAgentHookSpoolAlive(this._hookSpoolDir))
 			.then(previous => { this._hookSpoolReplayAfter = previous ?? 0; })
 			.catch(() => undefined);
-		// 「生きている」を書き足し続け、閉じるときにも書く。次の起動は、これより後の控えだけを流す。
+		// 「生きている」を 15 秒ごとに書き足す。次の起動は、これより後の控えだけを流す。閉じるときにも
+		// 書こうとするが、shared process の終了では dispose が呼ばれないことがあるので当てにしない。
 		const hookSpoolDir = this._hookSpoolDir;
 		const aliveTimer = setInterval(() => void paradisStampAgentHookSpoolAlive(hookSpoolDir), PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS);
 		this._register(toDisposable(() => {
