@@ -233,6 +233,14 @@ describe('wire golden (app side)', () => {
 			reclaimed: { viewCols: 50, reclaim: true },
 			afterReclaim: false,
 		});
+		// 申告していない（「スマホの幅に合わせる」をオフにした）ときも、［再び合わせる］は reclaim を送る。
+		pcMux.send(Channels.Terminal, encode(termGolden.toMobile.find(message => message.t === 'viewport-revoked')));
+		await flush();
+		controller.setTerminalViewport(undefined);
+		controller.reclaimTerminalViewport('terminal-key-1');
+		await flush();
+		const bare = sent.term!.at(-1);
+		expect({ t: bare?.t, viewCols: bare?.viewCols, reclaim: bare?.reclaim }).toEqual({ t: 'viewport', viewCols: undefined, reclaim: true });
 		controller.disconnect();
 	});
 
