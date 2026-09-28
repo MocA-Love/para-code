@@ -1110,7 +1110,8 @@ fork の後始末を `sentry/common/paradisTeardownTiming.ts` で名前付きで
 
 - 選択肢は PC の画面から読む（`mobileRelay/common/paradisAgentApprovalOptions.ts`）。画面の下端 30 行で、1 から連番で並ぶいちばん下の並びを採り、深く字下げされた続きの行は折り返しとしてつなぐ。10 個以上・連番が切れる・2 つ未満は「読めない」。Codex は全部の行に行末の近道（`(y)` / `(p)` / `(esc)`）が無ければ出さない（数字で確定するかを確かめていないため）
 - 流れ: アプリが agent の `approval-options` を求める → shared process（agentChat）が今の承認かを確かめて所有ウィンドウへ `action/approvalOptions` を回す → ウィンドウが許可の画面（`paradisScreenShowsPermissionPrompt`）を最大 3 秒待って読み、agent チャネルでアプリへ直接返す。登録表（scm / fs）は agent チャネルを通らないので、agentChat と provider に種類を 1 つずつ足した
-- 回答は `choice: 'opt:<n>'` と、押したときの文言 `optionLabel`（無ければ `invalid-answer`）。ウィンドウは**送る直前**（最後の `beforeEachKey`）に画面を読み直し、その番号が同じ文言（空白と大文字小文字は見ない）のときだけ、Claude は数字 1 文字（Enter 無し）、Codex は行末の近道を送る。違えば `options-changed` で断る
+- 選択肢は許可の確認の見出し（`paradisPermissionPromptParts`、`agentChat/browser/paradisAgentTuiInput.ts`）より後の行からだけ読む。返事には見出しとその上のコマンドの行（枠の上端の横線か空行 2 つまで、最大 8 行）の指紋 `promptHash`（空白を除いた SHA-1）を付け、アプリは回答で返す
+- 回答は `choice: 'opt:<n>'` と、押したときの文言 `optionLabel`（無ければ `invalid-answer`）と `promptHash`。ウィンドウは**送る直前**（最後の `beforeEachKey`）に画面を読み直し、許可の確認が出ていて、見出しまでの指紋が同じで、その番号が同じ文言（空白と大文字小文字は見ない）のときだけ、Claude は数字 1 文字（Enter 無し）、Codex は行末の近道を送る。違えば `options-changed` で断る。番号の回答は 1 打鍵でなければ断る
 - アプリは行末が `(esc)` の選択肢（「No, and tell Claude what to do differently」）を今までの `no`（Esc）で送る（数字で選んだときの動きを確かめていないので、実機で確かめた経路に寄せた）。読めないとき・古い PC・Codex の app-server 経由の承認は今までどおり
 - hook の `permission_suggestions` は、承認の interaction の `suggestions`（例 `Bash(npm test:*)`）としてカードの補足に出すだけ。【要確認】Claude Code の hook 入力の実物でこの形（`addRules` / `setMode` / `addDirectories`）を確かめていない
 - 【要確認】Claude Code の許可の画面の選択肢の並び（折り返しの字下げ、下の操作説明との間の空行）は 2.1 系の表示からの推測で、実機の画面では確かめていない。外れると選択肢が出ない（「許可 / 拒否」のまま）方へ倒れる
@@ -1118,7 +1119,8 @@ fork の後始末を `sentry/common/paradisTeardownTiming.ts` で名前付きで
 ### 会話をさかのぼって読む（W2-30、Q122 案 A）
 
 - agent の `history { beforeRev, cursor?, limit? }`。`cursor` が無ければ PC のメモリのリング（400 件）から `beforeRev` より前を返し、読み切ったら記録ファイルの位置を `cursor`（`f:<バイト位置>:<keep>`）で添える。`cursor` があれば記録ファイルを後ろから読む（`node/paradisAgentChatHistory.ts`、1 回 2MB・1 ペインで同時に 1 本・4MB を超える行は飛ばす）
-- tailer はリングの発言ごとに、元の行の頭のバイト位置を持つ（モバイルへは送らない）。1 行から発言が複数できるので、リングが行の途中で押し出した数（`keep`）も覚え、ファイルの読み取りはそこから続ける。開いたときに末尾 4MB だけ読んだ記録（8MB 超）でも、最初まで読める
+- tailer はリングの発言ごとに、元の行の頭のバイト位置と、その行を解釈して出た発言の中での順番（パーサーの単位。読み取りが同じ行を解釈し直して先頭から `keep` 件を採るのと揃える）を持つ（モバイルへは送らない）。開いたときに末尾 4MB だけ読んだ記録（8MB 超）でも、最初まで読める
+- アプリは差分で 500 件まで持ち、PC のリングは 400 件なので、アプリのいちばん古い発言はリングから押し出されていることがある。押し出した発言の位置を 2000 件まで残し、`beforeRev` がリングに無ければそこからすぐに記録ファイルを読む（保持件数を揃える案は、PC 側の新しい発言が届く前の一瞬で必ずずれるので採らなかった）。アプリは 500 件で切ったら `truncated` を立てる
 - ファイルから読んだ発言の rev は負の数（-1 から古い方へ）。1 ペインで 2000 件まで（`capped`）。全文・画像の取り寄せは rev で引く仕組みなので、古い発言には付けない（切り詰めた本文は「…」のまま）
 - アプリは古い発言を会話の状態とは別に持つ（`src/agentHistory.ts`、epoch が変わったら捨てる。PC のメモリから読んだ分と新しい発言の間が空いたら捨てる）。一覧は上端 60pt で読み込み、`maintainVisibleContentPosition`（先頭の案内の行があるので 1 から）で位置を保つ
 - 【要確認】`maintainVisibleContentPosition` で先頭に足したときに位置が保たれるかを、iPhone / iPad の実機で確かめていない
@@ -1128,8 +1130,11 @@ fork の後始末を `sentry/common/paradisTeardownTiming.ts` で名前付きで
 - PC は登録表で scm の `agentSessions` / `agentSessionPreview` / `agentSessionResume` を受ける（`electron-browser/paradisMobileAgentSessions.ts`、登録は `paradisMobileRequestHandlerRegistrations.ts`）。一覧はセッション履歴（`ParadisSessionResumeClient`）そのままで、30 件ずつ。今ターミナルで動いている会話（状態のスナップショットの `paneSessions`）には `terminalKey` を付ける（二重に再開しない）
 - スマホへ渡すのは会話の指紋 `key`（SHA-1、`common/paradisMobileAgentResume.ts`）だけで、セッション ID・パス・`catalogId` は渡さない。開いている会話の agent の `info.resumeKey` にも同じ指紋を載せる（ターミナルが閉じた後の「再開して送る」の宛先）
 - 再開は `paradisResumeAgentInWorkspace` に `preserveFocus: true`（足した任意項目。裏のタブで開き、今のスペースでもフォーカスを移さない）と `dangerouslyBypassPermissions: false` を渡す。画面が準備完了（`paradisAgentStartupScreenState`、最大 60 秒）になったら依頼を貼り付けて Enter。信頼の確認が出ていれば渡さずに `needs-trust`。PC に「スマホから再開しました」の通知（「表示」でそのスペースへ移る）
-- 再開の依頼の `requestId` は、ウィンドウの `IStorageService`（APPLICATION）に最近 500 件・3 日ぶん残し、同じ ID の送り直しは `duplicate` で返す
-- アプリの預かり（`src/agentSendQueue.ts`）は PC ごとのファイル `agent-send-outbox.v1.<pcId>`（`platform.ts`。中身はターミナル操作のアウトボックスと同じ鍵で封をする）。24 時間で期限切れ。つながったら開いているエージェントのターミナル宛てだけを送り、閉じていたもの・過去の会話宛ては「再開して送る」を押すまで送らない。預かりの宛先のスペースは PC の `sourceId` で持ち、送るときにアプリの画面の id を引き直す（PC を再起動すると画面の id は変わる）
+- 同じ会話・同じ依頼の再開が重ならないよう、指紋と `requestId` を最初の await より前にメモリの「再開中」に入れ、台帳（ウィンドウの `IStorageService`（APPLICATION）、最近 500 件・3 日）の `started` も同期で書く。同じ ID の送り直しは `duplicate`（ターミナルを開く前に失敗したものだけはやり直せる）。再開した直後の指紋 → ターミナルを 5 分覚え、hook が届く前でも「開いている」とみなす
+- 「PC で開いている会話」は、hook が報告した会話（`paneSessions`）、各ターミナルのシェル統合の実行中のコマンド（`claude --resume <id>` / `codex resume <id>`、`paradisResumedSessionOfCommand`）、再開した直後の記録の 3 つで見る。【要確認】タブの復元の案内（前回の会話を「このタブで再開」）の情報とは照らし合わせていない。シェル統合が無いターミナルで、hook も届いていない会話は見分けられない
+- 再開した会話へ依頼を渡すのは W2-28 の差分メモの送信と同じ規則: 改行以外の制御文字を落とし、シェル統合で前面が Claude Code / Codex と確かめられ、複数行なら貼り付けの囲みが有効で、確認や質問の画面が出ていないときだけ。PC の通知は準備を待った後に出す
+- アプリの預かり（`src/agentSendQueue.ts`）は PC ごとのファイル `agent-send-outbox.v1.<pcId>`（`platform.ts`。中身はターミナル操作のアウトボックスと同じ鍵で封をする）。24 時間で期限切れ（本文を消し、印も 1 日後に消す）。つながったら、開いているエージェントのターミナル宛てで、預けてから 15 分以内で、そのターミナルの会話の指紋（`info.resumeKey`）が預けたときと同じものだけを送る。それ以外は「このターミナルへ送る」か「再開して送る」を押すまで送らない
+- 預かりから送るときは `action/sendMessage` に預かりの id（`sendId`）を付け、PC（agentChat）は同じ id をウィンドウへ一度しか渡さない（最近 500 件・24 時間、メモリだけ。ウィンドウが受け取らなかったものは忘れる）。送っている途中でアプリが落ちたものは、ターミナル宛ては同じ id で送り直し、再開は確かめ直しに戻す。【要確認】PC も同時に再起動していると、この重複の記録は残っていない預かりの宛先のスペースは PC の `sourceId` で持ち、送るときにアプリの画面の id を引き直す（PC を再起動すると画面の id は変わる）
 - 【要確認】別のスペースへ退避した（park された）ターミナルでも xterm の画面を読めるかを確かめていない。読めないと準備完了を待ちきれず、依頼は渡さずに「会話の画面から送ってください」と返し、アプリは依頼を開いた会話の入力欄へ移す
 - 【要確認】Codex の `codex resume <id>` が再開の後に「? for shortcuts」相当の準備完了の表示を出すかを、0.155 系の実機で確かめていない
 
