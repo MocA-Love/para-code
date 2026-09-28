@@ -60,6 +60,7 @@ import {
 	toBase64Url,
 	unpackPcData,
 } from '../common/paradisMobileProtocol.js';
+import { PARADIS_MOBILE_BUILTIN_REQUEST_KINDS } from '../common/paradisMobileRequestKinds.js';
 import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, paradisEvaluateMobileCompat, paradisIsAcceptedMobileWireVersion, paradisParseMobileCapabilities } from '../common/paradisMobileCompat.js';
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyPcFocusQuiet, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
 import { paradisAgentLabel, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
@@ -238,6 +239,14 @@ export class MobileSession {
 
 	private negotiatedCapabilities: readonly string[] | undefined;
 
+	/** このセッションで話している版（窓の中で PC とアプリの古い方）。未交渉・版が合わないなら `undefined`。 */
+	get wireVersion(): number | undefined {
+		return this.negotiatedProtocolVersion;
+	}
+
+	/** 版の不一致をこのセッションで Sentry へ送ったか（アプリは State を何度も求めるので、1回に絞る）。 */
+	private protocolMismatchReported = false;
+
 	/**
 	 * このモバイルがDesktop Stateの圧縮を明示的に要求したか（旧アプリは何も送らない）。
 	 * **既定は必ず非圧縮**。gzipを無条件に送ると、旧アプリの `JSON.parse` が例外になり、
@@ -268,7 +277,8 @@ export class MobileSession {
 		this.negotiatedStateEncoding = verdict.kind === 'ok' && request.stateEncoding === PARADIS_JSON_GZIP_RESPONSE_ENCODING
 			? PARADIS_JSON_GZIP_RESPONSE_ENCODING
 			: undefined;
-		if (verdict.kind === 'blocked') {
+		if (verdict.kind === 'blocked' && !this.protocolMismatchReported) {
+			this.protocolMismatchReported = true;
 			// 版数不一致は「繋がっているのに何も表示されない」形で現れる（アプリだけ更新した等）。
 			// 無言で undefined にすると、片側の nonce エラーしか手掛かりが残らない。
 			// どちらが古いかはアプリも State の minCompatibleMobile から同じ結論を出し、画面で案内する。
@@ -501,6 +511,7 @@ export class MobileSession {
 		this.confirmed = false;
 		this.negotiatedProtocolVersion = undefined;
 		this.negotiatedCapabilities = undefined;
+		this.protocolMismatchReported = false;
 		// **必ず一緒に落とすこと。** セッションは mobileId で再接続をまたいで再利用されるため、
 		// ここに前回の交渉結果が残ると、アプリを古い版へ入れ直した端末に対して、次の requestState
 		// が届く前のブロードキャストで gzip を送ってしまう（旧アプリはJSON.parseで例外になり、
@@ -1185,6 +1196,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	// --- 公開API（IPC） -------------------------------------------------------
+
+	async getMobileWireVersion(mobileId: string): Promise<number | undefined> {
+		return this.sessions.get(mobileId)?.wireVersion;
+	}
 
 	async getMobileCapabilities(mobileId: string): Promise<readonly string[] | undefined> {
 		const session = this.sessions.get(mobileId);
@@ -2307,8 +2322,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// 必要とする操作（upload・worktree作成等）へ誤って使われないようにするため
 		// （provider側は t で分岐するだけで ws の有無自体はここまで来ると検証しないため、
 		// 許可リストが無いと「ws を送らなければ検証を素通りできる」形になってしまう）。
+		// 登録表（paradisMobileRequestHandlers.ts）で受ける新しい種類も ws 無しで通す。そちらは ws が無ければ
+		// スペースを持たない（root が undefined）ので、所有権の検証を素通りして既存の操作に届くことはない。
 		const hasRendererGeneration = typeof message.rendererGeneration === 'number' && Number.isInteger(message.rendererGeneration)
-			&& typeof message.t === 'string' && PARADIS_WORKSPACE_LESS_REQUEST_TYPES.has(message.t);
+			&& typeof message.t === 'string' && (PARADIS_WORKSPACE_LESS_REQUEST_TYPES.has(message.t)
+				|| !PARADIS_MOBILE_BUILTIN_REQUEST_KINDS[frame.ch === Channels.Scm ? 'scm' : 'fs'].includes(message.t));
 		if (!hasWorkspace && !hasRendererGeneration) {
 			this.sendWindowFrameError(frame, message.id, 'PC画面の状態が更新されました。もう一度お試しください');
 			return;

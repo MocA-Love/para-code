@@ -312,6 +312,11 @@ export interface IParadisMobileRelayService {
 	 * アプリは `undefined`（`paradisHasMobileCapability` に渡すと false になる）。
 	 */
 	getMobileCapabilities(mobileId: string): Promise<readonly string[] | undefined>;
+	/**
+	 * そのモバイルとのセッションで話している版（窓の中で PC とアプリの古い方）。オフライン・未交渉は `undefined`。
+	 * PC から送る形を版で変えるときの判断に使う（今は版 3 しか無い）。
+	 */
+	getMobileWireVersion(mobileId: string): Promise<number | undefined>;
 
 	// 有効/無効
 	setEnabled(enabled: boolean): Promise<void>;

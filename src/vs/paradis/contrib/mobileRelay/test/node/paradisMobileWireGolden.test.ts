@@ -102,7 +102,10 @@ suite('ParadisMobileWireGolden', () => {
 		registry.setHostResources({ cpu: 25, memUsed: 8589934592, memTotal: 17179869184, diskFree: 107374182400, diskTotal: 494384795648 });
 		registry.setPcName('MacBook-Pro');
 		const built = JSON.parse(JSON.stringify(registry.desktopState()));
-		assert.deepStrictEqual(shapeOf(built), shapeOf(golden.current));
+		// 版・互換の窓・機能の広告・既存の能力の印は、形だけでなく値まで一致させる
+		// （PC がこれらを変えたら、アプリの判定が変わるのでゴールデンも同じ変更で直す）。
+		const pick = (state: Record<string, unknown>) => Object.fromEntries(['protocolVersion', 'minCompatibleMobile', 'capabilities', 'fsUploadEncoding', 'voiceClips'].map(key => [key, state[key]]));
+		assert.deepStrictEqual({ shape: shapeOf(built), values: pick(built) }, { shape: shapeOf(golden.current), values: pick(golden.current) });
 	});
 
 	test('State の要求: 今のアプリも W2-17 より前のアプリも通り、今のアプリの capability を覚える', function () {

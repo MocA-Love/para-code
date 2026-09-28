@@ -3154,7 +3154,7 @@ export class MobileController {
 			};
 		}
 		const id = `${this.requestPrefix}-r-${this.requestCounter++}`;
-		const payload = encodePayload?.(id, requestBody) ?? encoder.encode(JSON.stringify({ id, ...requestBody }));
+		const payload = encodePayload?.(id, requestBody) ?? encoder.encode(JSON.stringify({ ...requestBody, id }));
 		return new Promise<T>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
@@ -3169,12 +3169,26 @@ export class MobileController {
 	 * 新しい種類の要求を PC へ送る公開口（W2-17 の土台）。store 本体を触らずに、別ファイルの機能が
 	 * PC の登録表（`paradisMobileRequestHandlers.ts` の `registerParadisMobileRequestHandler`）へ届く要求を送れる。
 	 *
-	 * - `ws` を付けるとそのスペースの PC 画面へ、付けなければ応答できる PC 画面のどれかへ届く
+	 * - `ws` を付けるとそのスペースの PC 画面へ届く。付けなければスペースを選ばずに、いま前面のスペースの
+	 *   PC 画面（無ければ応答できるどれか）へ届き、PC 側の処理にはスペースが渡らない（`root` が undefined）
 	 * - PC の応答 `{ id, ...body }` の body で resolve、`{ error }` なら reject、`timeoutMs`（既定30秒）で reject
 	 * - 古い PC は知らない種類に答えないので、送る前に {@link hasPcCapability} で確かめること
 	 */
 	requestPc<T = Record<string, unknown>>(channel: 'scm' | 'fs', body: { readonly t: string; readonly ws?: string; readonly [key: string]: unknown }, options?: { readonly timeoutMs?: number }): Promise<T> {
-		return this.request<T>(channel, body, options?.timeoutMs ?? 30_000);
+		const timeoutMs = options?.timeoutMs ?? 30_000;
+		if (body.ws !== undefined) {
+			return this.request<T>(channel, body, timeoutMs);
+		}
+		// ws を付けないと request() は任意のスペースを選んで ws を足してしまうので、ウィンドウ宛てで送る
+		// （PC の shared process は rendererGeneration でウィンドウを検証する）。
+		const desktop = this.state.workspace;
+		const activeWindowId = desktop?.workspaces.find(workspace => workspace.id === desktop.activeWs)?.windowId;
+		const renderer = desktop?.renderers.find(candidate => candidate.ready && candidate.windowId === activeWindowId)
+			?? desktop?.renderers.find(candidate => candidate.ready);
+		if (renderer === undefined) {
+			return Promise.reject(new Error('PC画面の再接続が完了してから操作してください'));
+		}
+		return this.request<T>(channel, body, timeoutMs, undefined, undefined, renderer.windowId);
 	}
 
 	/**

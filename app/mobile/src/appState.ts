@@ -416,6 +416,17 @@ let activePcId: string | undefined;
  */
 let controller: MobileController | undefined;
 
+/** `onPcMessage` の購読。コントローラの作り直し・PC の切り替えで付け替えるため、ここで持つ。 */
+interface PcMessageSubscription {
+	/** 名指しした PC。`undefined` ならいま見ている PC に付いて行く。 */
+	readonly pcId: string | undefined;
+	readonly channel: 'scm' | 'fs';
+	readonly listener: (message: PcPushMessage) => void;
+	attached: { readonly controller: MobileController; readonly disposable: MobileDisposable } | undefined;
+}
+
+const pcMessageSubscriptions = new Set<PcMessageSubscription>();
+
 /** active controller と Zustand へ公開する revision を同じ遷移で更新する appState 境界。 */
 export class MobileWarmLeaseAppStateBridge<T extends MobileWarmLeaseController = MobileWarmLeaseController> {
 	private controller: T | undefined;
@@ -443,6 +454,8 @@ const warmLeaseAppState = new MobileWarmLeaseAppStateBridge<MobileController>();
 function replaceActiveController(next: MobileController | undefined): number {
 	const transition = warmLeaseAppState.replace(next);
 	controller = transition.controller;
+	// pcId を省いた購読（いま見ている PC）を新しい PC のコントローラへ付け替える。
+	attachPcMessageSubscriptions(subscription => subscription.pcId === undefined, controller);
 	return transition.controllerRevision;
 }
 /** ピン留め・アーカイブのPC別記録（保存形はPC ID → キー配列）。 */
@@ -693,6 +706,8 @@ function createRuntime(pc: PairedPc, operationRun: number, persistedOutbox: read
 		dismissTrayHandledByPc(pc.id, handled).catch(err => console.warn('[appState] failed to clear handled notifications', err));
 	};
 	pending = { pc, controller, state: createEmptyStoreState(), lastOnlineAt: undefined, started: false, drafts: {} };
+	// その PC を名指しした購読は、ペアリングし直しで作り直したコントローラへも付け直す。
+	attachPcMessageSubscriptions(subscription => subscription.pcId === pc.id, controller);
 	return pending;
 }
 
@@ -2075,10 +2090,32 @@ export function sendPcRequest<T = Record<string, unknown>>(pcId: string | undefi
 	return target !== undefined ? target.requestPc<T>(channel, body, options) : Promise.reject(new Error('not initialized'));
 }
 
+/** 条件に合う購読を、そのコントローラへ付け替える（同じコントローラなら何もしない）。 */
+function attachPcMessageSubscriptions(matches: (subscription: PcMessageSubscription) => boolean, target: MobileController | undefined): void {
+	for (const subscription of pcMessageSubscriptions) {
+		if (!matches(subscription) || subscription.attached?.controller === target) {
+			continue;
+		}
+		subscription.attached?.disposable.dispose();
+		subscription.attached = target !== undefined ? { controller: target, disposable: target.onPcMessage(subscription.channel, subscription.listener) } : undefined;
+	}
+}
+
 /**
  * PC が `id` を付けずに送ってくるメッセージを購読する（`MobileController.onPcMessage`）。
- * 購読は呼んだ時点のその PC に結びつく（`pcId` を省いたときも、あとで PC を切り替えても付いて行かない）。
+ * `pcId` を名指しするとその PC に（ペアリングし直してコントローラが作り直されても）付いて行き、
+ * 省くといま見ている PC に付いて行く（PC を切り替えると付け替わる）。コントローラがまだ無くても、
+ * できた時点で付く。返り値の dispose で外す。
  */
 export function onPcMessage(pcId: string | undefined, channel: 'scm' | 'fs', listener: (message: PcPushMessage) => void): MobileDisposable {
-	return runtimeControllerOf(pcId)?.onPcMessage(channel, listener) ?? { dispose: () => { } };
+	const subscription: PcMessageSubscription = { pcId, channel, listener, attached: undefined };
+	pcMessageSubscriptions.add(subscription);
+	attachPcMessageSubscriptions(candidate => candidate === subscription, runtimeControllerOf(pcId));
+	return {
+		dispose: () => {
+			pcMessageSubscriptions.delete(subscription);
+			subscription.attached?.disposable.dispose();
+			subscription.attached = undefined;
+		},
+	};
 }

@@ -17,7 +17,7 @@ import { Channels, FrameMux, generateIdentity, respondHandshake, type Identity }
 import { describe, expect, it } from 'vitest';
 import { MobileController, type PcPushMessage, type StoreState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
-import { PcCapability } from './pcCompat.js';
+import { PcCapability, stateRequestFields } from './pcCompat.js';
 
 type Golden = Record<string, unknown>;
 
@@ -116,22 +116,24 @@ const termGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[] }>('term.json
 const agentGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[] }>('agent.json');
 
 describe('wire golden (app side)', () => {
-	it('State の要求はゴールデンの current と同じ形で、今の PC の State を受け付けて機能を覚える', async () => {
+	it('State の要求はゴールデンの current と値まで同じで、今の PC の State を受け付けて機能を覚える', async () => {
 		const { controller, pcMux, sent, latest } = await connect();
 		pcMux.send(Channels.State, encode(stateGolden.current));
 		await flush();
+		// 版・受け入れる PC の最低版・機能の広告を変えたら、ゴールデンも同じ変更で直す（値まで比べる）。
+		const { stateEncoding: _stateEncoding, ...goldenFields } = stateRequestGolden.current;
 		expect({
-			request: shapeOf(sent.state![0]),
+			request: sent.state![0],
+			fields: stateRequestFields(),
 			ready: latest()?.sessionProtocolReady,
 			updateRequired: latest()?.updateRequired,
-			capabilities: latest()?.workspace?.capabilities,
 			termSync: controller.hasPcCapability(PcCapability.TermSync),
 			unknown: controller.hasPcCapability('scm.push.v1'),
 		}).toEqual({
-			request: shapeOf(stateRequestGolden.current),
+			request: stateRequestGolden.current,
+			fields: goldenFields,
 			ready: true,
 			updateRequired: undefined,
-			capabilities: stateGolden.current.capabilities,
 			termSync: true,
 			unknown: false,
 		});
@@ -223,8 +225,8 @@ describe('wire golden (app side)', () => {
 		await flush();
 		const pushed: PcPushMessage[] = [];
 		const subscription = controller.onPcMessage('scm', message => pushed.push(message));
-		const ok = controller.requestPc<{ t: string; ok: boolean }>('scm', { t: 'goldenPush', ws: '1:repo', remote: 'origin' });
-		const failed = controller.requestPc('scm', { t: 'goldenPush', ws: '1:repo' }).then(() => 'resolved', (error: Error) => error.message);
+		const ok = controller.requestPc<{ t: string; ok: boolean }>('scm', { t: 'goldenPush', ws: '1:repo', remote: 'origin', id: 'spoofed' });
+		const failed = controller.requestPc('scm', { t: 'goldenWsLess' }).then(() => 'resolved', (error: Error) => error.message);
 		await flush();
 		const [first, second] = sent.scm!;
 		pcMux.send(Channels.Scm, encode({ t: 'goldenProgress', step: 1 }));
@@ -235,12 +237,15 @@ describe('wire golden (app side)', () => {
 		pcMux.send(Channels.Scm, encode({ t: 'goldenProgress', step: 2 }));
 		await flush();
 		expect({
-			request: first !== undefined ? { ...first, id: typeof first.id } : undefined,
+			request: first !== undefined ? { ...first, id: typeof first.id === 'string' && first.id !== 'spoofed' } : undefined,
+			// ws を付けない要求はスペースを選ばず、ウィンドウ宛て（rendererGeneration）で送る
+			wsLess: second,
 			ok: await ok,
 			failed: await failed,
 			pushed,
 		}).toEqual({
-			request: { id: 'string', t: 'goldenPush', ws: 'repo', remote: 'origin', protocolVersion: 3, desktopEpoch: 'golden-desktop-epoch', windowId: 1 },
+			request: { id: true, t: 'goldenPush', ws: 'repo', remote: 'origin', protocolVersion: 3, desktopEpoch: 'golden-desktop-epoch', windowId: 1 },
+			wsLess: { id: second?.id, t: 'goldenWsLess', protocolVersion: 3, desktopEpoch: 'golden-desktop-epoch', windowId: 1, rendererGeneration: 2 },
 			ok: { id: first?.id, t: 'goldenPush', ok: true },
 			failed: 'rejected by PC',
 			pushed: [{ t: 'goldenProgress', step: 1 }],
