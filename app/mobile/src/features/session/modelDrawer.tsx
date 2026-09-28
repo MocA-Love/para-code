@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Check, ChevronDown, X } from 'lucide-react-native';
-import { agentModelOptions, matchAgentModel } from '../../agentModels.js';
+import { claudeModelDisplayName, matchAgentModel } from '../../agentModels.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { hapticSelection } from '../../haptics.js';
+import { useClaudeModelOptions } from '../../hooks/useClaudeModelOptions.js';
 import type { AgentMessageSendResult, AgentModelControlState } from '../../store.js';
 import { HIT_SIZE, colors, radius, space, squircle, type } from '../../theme.js';
 import { BottomDrawer, Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
@@ -27,7 +28,8 @@ interface ModelOption {
  * コンポーザーのモデルと effort のピル（モックの `.pill`）と、押すと開く「モデルを選ぶ」のシート。
  *
  * 送り方は旧部品（`components/modelPill.tsx`）と同じ:
- *  - Claude: 既存の対応表から選び、確定したら `onClaudeSetting('model' | 'effort', …)` を順に送る
+ *  - Claude: PC が Claude Code から取った一覧（取れなければ固定の対応表）から選び、確定したら
+ *    `onClaudeSetting('model' | 'effort', …)` を順に送る
  *    （入力待ちでなければ PC が拒否する。理由はそのまま出す）
  *  - Codex: PC から届くモデルの一覧（model/list）を正本にし、確定したら model と effort を一度に送る
  * シートの中の選択は仮のもので、「適用」を押すまで何も送らない。
@@ -66,6 +68,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 		}
 	}, [codexUpdatePending, modelControl?.errorMessage, modelControl?.status, open]);
 
+	const claudeCatalog = useClaudeModelOptions(agent);
 	const codexModels = modelControl?.models ?? [];
 	const options: readonly ModelOption[] = agent === 'codex'
 		? codexModels.map(option => ({
@@ -74,10 +77,10 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 			aliases: option.id === option.model ? [] : [option.id],
 			efforts: option.efforts.map(item => item.value),
 		}))
-		: agentModelOptions(agent);
+		: claudeCatalog.options;
 	const currentModel = agent === 'codex'
 		? options.find(option => option.id === model || option.aliases.includes(model ?? ''))
-		: matchAgentModel(agent, model);
+		: matchAgentModel(agent, model, options);
 	const defaultCodexModel = agent === 'codex' ? codexModels.find(option => option.isDefault)?.model : undefined;
 	const selected = (pickedModelId !== undefined ? options.find(option => option.id === pickedModelId) : undefined)
 		?? currentModel
@@ -86,7 +89,10 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 	const effectiveEffort = selected !== undefined && candidateEffort !== undefined && !selected.efforts.includes(candidateEffort)
 		? selected.efforts[0]
 		: candidateEffort;
-	const label = [currentModel?.label ?? model, effort].filter(Boolean).join(' · ') || 'モデル';
+	const modelName = currentModel?.label ?? (agent === 'claude' && model !== undefined ? claudeModelDisplayName(model) : undefined) ?? model;
+	// effort 非対応のモデル（Haiku）では、前のモデルの effort が残っていても出さない
+	const shownEffort = currentModel !== undefined && currentModel.efforts.length === 0 ? undefined : effort;
+	const label = [modelName, shownEffort].filter(Boolean).join(' · ') || 'モデル';
 	const isCodexBusy = agent === 'codex' && modelControl?.status !== 'ready';
 	const locked = isCodexBusy || submitting;
 
@@ -97,6 +103,8 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 		setOpen(true);
 		if (agent === 'codex') {
 			onRequestCodexCatalog();
+		} else {
+			claudeCatalog.request();
 		}
 	};
 	const close = () => {
