@@ -43,24 +43,36 @@ describe('liveInputStep', () => {
 		expect(run([change('ls', false), { kind: 'submit' }]).sent).toEqual(['ls', LIVE_ENTER]);
 	});
 
-	it('keeps the field after Enter and mirrors only what comes after it', () => {
-		const { sent, state } = run([change('ls', false), { kind: 'submit' }, change('lsp', false), change('lspw', false)]);
-		expect({ sent, state }).toEqual({ sent: ['ls', LIVE_ENTER, 'p', 'w'], state: { text: 'lspw', offset: 2, sent: 'pw', held: '' } });
+	// Enter のあと、画面は入力欄を作り直す（空の入力欄から始まる）。状態も空に戻る。
+	it('starts the next line from an empty state after Enter', () => {
+		const { sent, state } = run([change('ls', false), { kind: 'submit' }]);
+		expect({ sent, state }).toEqual({ sent: ['ls', LIVE_ENTER], state: LIVE_INPUT_EMPTY });
 	});
 
-	it('sends one DEL per ⌫ after Enter instead of resending the previous line', () => {
-		// 以前は clear() が捨てられた後の ⌫ で「ls」を丸ごと送り直していた（レビュー M2 (a)）
-		expect(run([change('ls', false), { kind: 'submit' }, backspace, change('l', false), backspace, change('', false), backspace]).sent)
-			.toEqual(['ls', LIVE_ENTER, LIVE_DEL, LIVE_DEL, LIVE_DEL]);
+	it('sends a single DEL for ⌫ right after Enter instead of resending the previous line', () => {
+		// 以前は clear() が捨てられた後の ⌫ で「ls」を丸ごと送り直していた（前回レビュー (a)）
+		expect(run([change('ls', false), { kind: 'submit' }, backspace]).sent).toEqual(['ls', LIVE_ENTER, LIVE_DEL]);
 	});
 
 	it('sends the whole of a long input that happens to start with the previous line', () => {
-		// 以前は「前の行の続き」と見なして後ろだけ送っていた（レビュー M2 (b)）
-		expect(run([change('ls', false), { kind: 'submit' }, change('lslsof -i', false)]).sent).toEqual(['ls', LIVE_ENTER, 'lsof -i']);
+		// 以前は「前の行の続き」と見なして後ろだけ送っていた（前回レビュー (b)）
+		expect(run([change('ls', false), { kind: 'submit' }, change('lsof -i', false)]).sent).toEqual(['ls', LIVE_ENTER, 'lsof -i']);
 	});
 
-	it('handles typing into the new line after ⌫ ate into the previous one', () => {
-		expect(run([change('ls', false), { kind: 'submit' }, change('l', false), change('lx', false)]).sent).toEqual(['ls', LIVE_ENTER, LIVE_DEL, 'x']);
+	it('erases everything typed on the current line when it is deleted at once', () => {
+		// H1: echo hi ⏎ → git → 単語削除。以前は Enter の前の部分へ食い込むと、今の行の送信済み分が PC に残った
+		expect(run([change('echo hi', false), { kind: 'submit' }, change('git', false), change('', false)]).sent)
+			.toEqual(['echo hi', LIVE_ENTER, 'git', LIVE_DEL.repeat(3)]);
+		expect(run([change('echo hi', false), { kind: 'submit' }, change('git st', false), change('git ', false), change('', false)]).sent)
+			.toEqual(['echo hi', LIVE_ENTER, 'git st', LIVE_DEL.repeat(2), LIVE_DEL.repeat(4)]);
+	});
+
+	it('never resends earlier lines, even if the caret ends up in the middle', () => {
+		// H2: 以前は入力欄に前の行（パスワードを含む）を残していたので、キャレットが前へ動くと送り直しえた。
+		// いまは入力欄に今の行しか無い。途中を書き換えても、今の行の食い違った末尾だけを直す。
+		const { sent } = run([change('s3cret', false), { kind: 'submit' }, change('lsx', false), change('lax', false)]);
+		expect(sent).toEqual(['s3cret', LIVE_ENTER, 'lsx', LIVE_DEL + LIVE_DEL, 'ax']);
+		expect(sent.slice(2).join('')).not.toContain('s3cret');
 	});
 
 	it('turns smart punctuation back into what was typed', () => {
@@ -82,7 +94,7 @@ describe('liveInputStep with the reported marked text (iOS)', () => {
 			change('かんj', true), change('かんじ', true), change('漢字', true),
 			change('漢字', false),
 		]);
-		expect({ sent, state }).toEqual({ sent: ['漢字'], state: { text: '漢字', offset: 0, sent: '漢字', held: '' } });
+		expect({ sent, state }).toEqual({ sent: ['漢字'], state: { text: '漢字', sent: '漢字', held: '' } });
 	});
 
 	it('sends kana typed on the kana keyboard once confirmed', () => {

@@ -27,11 +27,13 @@ export type ShortcutAction =
 	| { readonly kind: 'toggleSidebar' }
 	| { readonly kind: 'settings' }
 	| { readonly kind: 'notifications' }
-	| { readonly kind: 'escape' };
+	| { readonly kind: 'escape' }
+	/** ライブ入力中の矢印キー。入力欄のキャレットを動かさず、PC のターミナルへ送る。 */
+	| { readonly kind: 'terminalArrow'; readonly key: 'up' | 'down' | 'left' | 'right' };
 
 export interface ShortcutDef {
 	readonly id: string;
-	/** 1文字、または `Enter` / `Escape` / `ArrowUp` / `ArrowDown`。 */
+	/** 1文字、または `Enter` / `Escape` / `ArrowUp` / `ArrowDown` / `ArrowLeft` / `ArrowRight`。 */
 	readonly input: string;
 	readonly modifiers: readonly ShortcutModifier[];
 	/** ⌘ を長押ししたときの一覧に出す名前。 */
@@ -69,6 +71,12 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
 	{ id: 'settings', input: ',', modifiers: ['command'], title: '設定', action: { kind: 'settings' } },
 	{ id: 'notifications', input: 'n', modifiers: ['shift', 'command'], title: '通知', action: { kind: 'notifications' } },
 	{ id: 'escape', input: 'Escape', modifiers: [], title: '閉じる', action: { kind: 'escape' } },
+	// ライブ入力の見えない入力欄は1行ぶんしか持たず、キャレットは常に末尾に置く。矢印は入力欄ではなく
+	// PC のターミナルへ（シェルの履歴・カーソル移動）。ライブ入力にフォーカスがある間だけ効く。
+	{ id: 'terminal.up', input: 'ArrowUp', modifiers: [], title: 'ターミナルへ ↑', action: { kind: 'terminalArrow', key: 'up' }, overridesTextInput: true },
+	{ id: 'terminal.down', input: 'ArrowDown', modifiers: [], title: 'ターミナルへ ↓', action: { kind: 'terminalArrow', key: 'down' }, overridesTextInput: true },
+	{ id: 'terminal.left', input: 'ArrowLeft', modifiers: [], title: 'ターミナルへ ←', action: { kind: 'terminalArrow', key: 'left' }, overridesTextInput: true },
+	{ id: 'terminal.right', input: 'ArrowRight', modifiers: [], title: 'ターミナルへ →', action: { kind: 'terminalArrow', key: 'right' }, overridesTextInput: true },
 ];
 
 /** いまの画面で受け口があるもの（`shortcutRegistry.ts` が集める）。 */
@@ -88,6 +96,8 @@ export interface ShortcutContext {
 	/** 設定・通知の画面にいるか（いれば同じ画面を重ねない）。 */
 	readonly inSettings: boolean;
 	readonly inNotifications: boolean;
+	/** ライブ入力にフォーカスがあるか（矢印を PC のターミナルへ回す）。 */
+	readonly terminalArrows: boolean;
 }
 
 /** その操作がいまの画面で効くか。 */
@@ -115,6 +125,8 @@ export function isShortcutAvailable(action: ShortcutAction, context: ShortcutCon
 		case 'escape':
 			// Esc は入力欄でも使うキー（日本語の変換の取り消しなど）なので、閉じるものがあるときだけ取る。
 			return context.escape;
+		case 'terminalArrow':
+			return context.terminalArrows;
 	}
 }
 
