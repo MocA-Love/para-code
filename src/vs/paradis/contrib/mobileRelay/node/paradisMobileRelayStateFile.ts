@@ -13,6 +13,7 @@
 // ここでは「まだ無い（初回）」と「あるのに読めない」を分け、読めないファイルは上書きしない。
 
 import { promises as fs } from 'fs';
+import { basename, dirname, join } from '../../../../base/common/path.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 
 export interface IParadisRelayPairedMobile {
@@ -112,20 +113,53 @@ export function paradisRelayStateAsidePath(filePath: string, problem: ParadisRel
 	return `${filePath}.${problem}-${now.toISOString().replace(/[:.]/g, '-')}`;
 }
 
+/** 退避したファイルを残す数。古いものから消す（読めない状態が繰り返されても増え続けないように）。 */
+export const PARADIS_RELAY_STATE_ASIDE_KEEP = 3;
+
 /**
  * 読めなかった台帳を日時付きの名前へ移す（消さない。キーチェーンが戻れば手で戻せるように）。
- * 移せたら退避先を、移せなければ undefined を返す（そのときは呼び出し側が上書きを諦める）。
+ * 移せたら退避先を返す。元のファイルがもう無い（別の読み込みが先に退避した）なら undefined で、
+ * 呼び出し側は「無い」と同じに扱う。そのほかの理由で移せなければ投げる（上書きを諦める）。
  */
 export async function paradisMoveRelayStateAside(filePath: string, problem: ParadisRelayStoreProblem, now: Date = new Date()): Promise<string | undefined> {
 	const aside = paradisRelayStateAsidePath(filePath, problem, now);
 	try {
 		await fs.rename(filePath, aside);
-		return aside;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
 			return undefined;
 		}
 		throw error;
+	}
+	await paradisPruneRelayStateLeftovers(filePath).catch(() => undefined);
+	return aside;
+}
+
+/**
+ * 退避したファイルは新しい {@link PARADIS_RELAY_STATE_ASIDE_KEEP} 個だけ残し、書きかけで残った
+ * 一時ファイル（`paradisWriteFileAtomic` の `.<名前>.paradis-*.tmp`）は消す。書き込みの最中に
+ * 呼ばないこと（呼び出し側が読み書きを1本に並べている間に呼ぶ）。
+ */
+export async function paradisPruneRelayStateLeftovers(filePath: string, keep: number = PARADIS_RELAY_STATE_ASIDE_KEEP): Promise<void> {
+	const directory = dirname(filePath);
+	const name = basename(filePath);
+	const entries = await fs.readdir(directory);
+	const asidePattern = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.(?:corrupt|unreadable|undecryptable)-(?<time>.+)$`);
+	const temporaryPrefix = `.${name}.paradis-`;
+	// 並べるのは名前の日時で（rename は元のファイルの更新時刻を保つので、更新時刻では退避の順にならない）
+	const asides: { readonly path: string; readonly time: string }[] = [];
+	for (const entry of entries) {
+		const path = join(directory, entry);
+		const time = asidePattern.exec(entry)?.groups?.time;
+		if (entry.startsWith(temporaryPrefix) && entry.endsWith('.tmp')) {
+			await fs.rm(path, { force: true });
+		} else if (time !== undefined) {
+			asides.push({ path, time });
+		}
+	}
+	asides.sort((a, b) => b.time.localeCompare(a.time));
+	for (const old of asides.slice(keep)) {
+		await fs.rm(old.path, { force: true });
 	}
 }
 

@@ -207,6 +207,18 @@ export interface IParadisInputModeTerminal {
 	write(data: string, callback?: () => void): void;
 }
 
+/**
+ * 止められた（Ctrl+Z など）ときの終了コード（128 + シグナル番号）。SIGTSTP / SIGSTOP / SIGTTIN / SIGTTOU は
+ * macOS で 18 / 17 / 21 / 22、Linux で 20 / 19 / 21 / 22。止まったエージェントは `fg` で戻るので、
+ * そのモードは戻さない。
+ */
+const STOPPED_EXIT_CODES: ReadonlySet<number> = new Set([145, 146, 147, 148, 149, 150]);
+
+/** コマンドが終わったのではなく、止められた（ジョブとして休んでいる）か。 */
+export function paradisCommandWasStopped(exitCode: number | undefined): boolean {
+	return exitCode !== undefined && STOPPED_EXIT_CODES.has(exitCode);
+}
+
 /** 133;D の後、シェルがプロンプトを描き終えるのを待つ時間。 */
 export const PARADIS_INPUT_MODE_SETTLE_MS = 300;
 
@@ -246,8 +258,15 @@ export class ParadisTerminalInputModeGuard {
 		this.model.commandStarted();
 	}
 
-	/** エージェントのコマンドが終わった（133;D）。シェルに戻ったので、様子を見てから残りを戻す。 */
-	commandFinished(): void {
+	/**
+	 * エージェントのコマンドが終わった（133;D）。シェルに戻ったので、様子を見てから残りを戻す。
+	 * Ctrl+Z などで止められただけ（{@link paradisCommandWasStopped}）なら、`fg` で戻ったエージェントが
+	 * まだ使うので何もしない（覚えたモードも捨てない）。
+	 */
+	commandFinished(exitCode?: number): void {
+		if (paradisCommandWasStopped(exitCode)) {
+			return;
+		}
 		if (!this.model.commandFinished()) {
 			return;
 		}

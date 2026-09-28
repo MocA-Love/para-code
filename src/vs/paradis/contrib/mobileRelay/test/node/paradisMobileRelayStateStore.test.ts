@@ -186,6 +186,88 @@ suite('ParadisMobileRelayService pairing state store', () => {
 		}
 	});
 
+	test('reads the ledger once: a later window neither reloads nor rolls back a pairing, and a transient read failure does not stop it', async () => {
+		await writeStoredIdentity();
+		const service = createService(new FakeEncryptionService());
+		try {
+			await service.initialize(false, undefined);
+			const internals = service as unknown as { state: { mobiles: { name: string }[] }; save(): Promise<void> };
+			internals.state.mobiles.push({ name: 'iPad' } as never);
+			// 別のウィンドウの initialize の時点でファイルが読めなくなっていても、止めない・巻き戻さない
+			await fs.chmod(statePath, 0o000);
+			await service.initialize(false, undefined);
+			await fs.chmod(statePath, 0o600);
+			assert.deepStrictEqual(statusOf(await service.getStatus()), { state: 'disabled', pairedDevices: ['iPhone', 'iPad'], storeProblem: undefined });
+		} finally {
+			await fs.chmod(statePath, 0o600).catch(() => undefined);
+			service.dispose();
+		}
+	});
+
+	test('serializes saves and writes the latest ledger, even when saves are fired and forgotten', async () => {
+		const service = createService(new FakeEncryptionService());
+		try {
+			await service.initialize(false, undefined);
+			const internals = service as unknown as { state: { mobiles: { mobileId: string; name: string; pubKey: string }[] }; save(): Promise<void> };
+			const saves: Promise<void>[] = [];
+			for (let index = 0; index < 5; index++) {
+				internals.state.mobiles.push({ mobileId: `m${index}`, name: `phone ${index}`, pubKey: 'AAAA' });
+				saves.push(internals.save());
+			}
+			await Promise.all(saves);
+			const saved = paradisParseRelayState(await fs.readFile(statePath, 'utf8'));
+			assert.deepStrictEqual({ names: saved?.mobiles.map(mobile => mobile.name), leftovers: (await fs.readdir(userData)).filter(name => name.endsWith('.tmp')) }, {
+				names: ['phone 0', 'phone 1', 'phone 2', 'phone 3', 'phone 4'],
+				leftovers: [],
+			});
+		} finally {
+			service.dispose();
+		}
+	});
+
+	test('keeps only the newest three set-aside files and removes leftover temporary files', async () => {
+		for (const [index, time] of ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04'].entries()) {
+			await fs.writeFile(`${statePath}.${index % 2 === 0 ? 'corrupt' : 'undecryptable'}-${time}T00-00-00-000Z`, 'old');
+		}
+		await fs.writeFile(join(userData, '.paradis-mobile-relay.json.paradis-crashed.tmp'), 'half');
+		await fs.writeFile(join(userData, 'unrelated.json.corrupt-2026-01-01T00-00-00-000Z'), 'keep');
+		await fs.writeFile(statePath, 'not json');
+		const service = createService(new FakeEncryptionService());
+		try {
+			await service.initialize(false, undefined);
+			const entries = (await fs.readdir(userData)).filter(name => name.includes('.json')).sort()
+				.map(name => name.replace(/^(paradis-mobile-relay\.json\.corrupt-)(?!2026-09-0[1-4]T).*$/, '$1<now>'));
+			assert.deepStrictEqual(entries, [
+				'paradis-mobile-relay.json.corrupt-2026-09-03T00-00-00-000Z',
+				'paradis-mobile-relay.json.corrupt-<now>',
+				'paradis-mobile-relay.json.undecryptable-2026-09-04T00-00-00-000Z',
+				'unrelated.json.corrupt-2026-01-01T00-00-00-000Z',
+			]);
+		} finally {
+			service.dispose();
+		}
+	});
+
+	test('hands the unreadable-key notice to one window only, and again after the problem changes', async () => {
+		await writeStoredIdentity();
+		const encryption = new FakeEncryptionService();
+		encryption.failDecrypt = true;
+		const service = createService(encryption);
+		try {
+			await service.initialize(false, undefined);
+			const first = [await service.claimStoreProblemNotice('undecryptable'), await service.claimStoreProblemNotice('undecryptable'), await service.claimStoreProblemNotice('unreadable')];
+			encryption.failDecrypt = false;
+			await service.retryLoadState();
+			encryption.failDecrypt = true;
+			(service as unknown as { stateLoaded: boolean }).stateLoaded = false;
+			await service.initialize(false, undefined);
+			const again = await service.claimStoreProblemNotice('undecryptable');
+			assert.deepStrictEqual({ first, again }, { first: [true, false, false], again: true });
+		} finally {
+			service.dispose();
+		}
+	});
+
 	test('validates the shape of the stored state', () => {
 		assert.deepStrictEqual([
 			paradisParseRelayState('{}')?.mobiles,
@@ -279,6 +361,51 @@ suite('ParadisMobileRelayService reconnect pacing', () => {
 		fixture.awaitingPong = false;
 		await new Promise(resolve => setTimeout(resolve, 6_000));
 		assert.deepStrictEqual(events, []);
+	}));
+
+	test('the periodic keepalive check does not close a healthy connection while the resume probe waits, and the probe does not count toward giving up', () => runWithFakedTimers({}, async () => {
+		const socket = fakeSocket();
+		const service = Object.assign(Object.create(ParadisMobileRelayService.prototype) as object, {
+			socket,
+			keepaliveAcknowledged: true,
+			awaitingPong: false,
+			consecutiveKeepaliveTimeouts: 0,
+			lastPingSentAt: 0,
+			keepaliveTimer: undefined,
+			resumeProbeTimer: undefined,
+			stableConnectionTimer: undefined,
+			enabled: true,
+			storeProblem: undefined,
+			state: { mobiles: [], device: { deviceId: 'd', pcToken: 't' } },
+			reconnectAttempt: 0,
+			handleDisconnected: () => undefined,
+		}) as unknown as {
+			startKeepalive(socket: unknown): void;
+			stopKeepalive(): void;
+			handleSystemResume(): Promise<void>;
+			awaitingPong: boolean;
+			consecutiveKeepaliveTimeouts: number;
+			socket: unknown;
+		};
+		service.startKeepalive(socket);
+		service.awaitingPong = false; // 接続直後の ping に pong が返った
+		await new Promise(resolve => setTimeout(resolve, 44_000));
+		await service.handleSystemResume(); // 定期チェックの 1 秒前に復帰の ping
+		await new Promise(resolve => setTimeout(resolve, 2_000)); // 定期チェックが来る（まだ返事待ち）
+		const afterTick = { closed: socket.closed.length, socket: service.socket === socket };
+		service.awaitingPong = false; // 復帰の ping に返事が来た
+		await new Promise(resolve => setTimeout(resolve, 4_000));
+		const healthy = { closed: socket.closed.length, socket: service.socket === socket };
+		// 次は復帰のプローブが見切る
+		await service.handleSystemResume();
+		await new Promise(resolve => setTimeout(resolve, 6_000));
+		service.stopKeepalive();
+		assert.deepStrictEqual({ afterTick, healthy, closed: socket.closed, timeouts: service.consecutiveKeepaliveTimeouts }, {
+			afterTick: { closed: 0, socket: true },
+			healthy: { closed: 0, socket: true },
+			closed: [[4001, 'keepalive timeout']],
+			timeouts: 0,
+		});
 	}));
 
 	test('replaces a connection it cannot probe and dials at once when it was waiting to retry', async () => {

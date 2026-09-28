@@ -134,6 +134,21 @@ suite('ParadisTerminalInputModeGuard', () => {
 		});
 	}));
 
+	test('leaves the modes alone when the agent was only suspended with Ctrl+Z, and resets them when it really ends', () => runWithFakedTimers({}, async () => {
+		const terminal = new FakeTerminal();
+		const guard = new ParadisTerminalInputModeGuard(terminal, undefined, 100);
+		guard.commandStarted();
+		terminal.feed('?h', [1000]);
+		guard.commandFinished(148); // Linux の SIGTSTP
+		guard.commandFinished(146); // macOS の SIGTSTP
+		await new Promise(resolve => setTimeout(resolve, 150));
+		const whileSuspended = [...terminal.written];
+		guard.commandFinished(137); // fg の後に kill された
+		await new Promise(resolve => setTimeout(resolve, 150));
+		guard.dispose();
+		assert.deepStrictEqual({ whileSuspended, written: terminal.written }, { whileSuspended: [], written: ['\x1b[?1000l'] });
+	}));
+
 	test('drops a pending reset when the next agent command starts or the terminal goes away', () => runWithFakedTimers({}, async () => {
 		const terminal = new FakeTerminal();
 		const guard = new ParadisTerminalInputModeGuard(terminal, undefined, 100);
