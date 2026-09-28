@@ -7,15 +7,17 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { IContextMenuDelegate } from '../../../../../base/browser/contextmenu.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
+import { IAction } from '../../../../../base/common/actions.js';
 import { Emitter } from '../../../../../base/common/event.js';
-import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { DisposableStore, isDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { InMemoryStorageService } from '../../../../../platform/storage/common/storage.js';
-import { IParadisSpaceNotesService, IParadisSpaceNoteSummary, paradisSpaceNoteSummary, paradisToggleSpaceNoteTask } from '../../common/paradisSpaceNotes.js';
+import { IParadisSpaceNotesService, IParadisSpaceNoteSummary, paradisRemoveSpaceNoteTask, paradisReplaceSpaceNoteTaskText, paradisSpaceNoteSummary, paradisToggleSpaceNoteTask } from '../../common/paradisSpaceNotes.js';
 import { ParadisSpaceNotesPanel } from '../../browser/paradisSpaceNotesPanel.js';
 
 const TASK_COUNT = 40;
@@ -64,6 +66,82 @@ suite('ParadisSpaceNotesPanel', () => {
 
 		assert.strictEqual(body.scrollTop, 0);
 	});
+
+	test('follows the focused task by its text when another window removes a line above it', () => {
+		const { notes, panel, body } = createPanel(store);
+		panel.setSpace('worktree:a', 'a', undefined);
+		checkAt(body, 20).focus();
+
+		// 上の行が消えると同じ行番号 (20) には次のタスクが来る。そこへフォーカスを乗せると Space で誤って切り替わる
+		notes.write('worktree:a', notes.read('worktree:a').split('\n').slice(1).join('\n'));
+		const afterShift = focusedTaskText(body);
+
+		// フォーカスしていた行そのものが消えたら、どこにも戻さない
+		notes.write('worktree:a', notes.read('worktree:a').split('\n').filter(line => line !== '- [ ] task 20').join('\n'));
+
+		assert.deepStrictEqual({ afterShift, afterRemoval: focusedTaskText(body) }, { afterShift: 'task 20', afterRemoval: undefined });
+	});
+
+	test('does not take focus from outside the panel on updates from another window', () => {
+		const { notes, panel, body } = createPanel(store);
+		panel.setSpace('worktree:a', 'a', undefined);
+		const outside = mainWindow.document.createElement('input');
+		mainWindow.document.body.appendChild(outside);
+		store.add({ dispose: () => outside.remove() });
+		outside.focus();
+
+		notes.write('worktree:a', notes.read('worktree:a').replace('- [ ] task 3', '- [x] task 3'));
+
+		assert.strictEqual(body.ownerDocument.activeElement, outside);
+	});
+
+	test('keeps the add input visible after adding a task', () => {
+		const { notes, panel, body } = createPanel(store);
+		panel.setSpace('worktree:a', 'a', undefined);
+		scrollToBottom(body);
+
+		body.getElementsByClassName('paradis-space-notes-add')[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		const input = body.getElementsByClassName('paradis-space-notes-add-input')[0] as HTMLTextAreaElement;
+		input.value = 'new task';
+		input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+
+		const active = body.ownerDocument.activeElement as HTMLElement;
+		const bodyRect = body.getBoundingClientRect();
+		const activeRect = active.getBoundingClientRect();
+		assert.deepStrictEqual({
+			lastLine: notes.read('worktree:a').split('\n').at(-1),
+			focused: active.classList.contains('paradis-space-notes-add-input'),
+			visible: activeRect.top >= bodyRect.top && activeRect.bottom <= bodyRect.bottom,
+		}, { lastLine: '- [ ] new task', focused: true, visible: true });
+	});
+
+	test('returns focus to the checkbox when a single-line edit is closed from the keyboard', () => {
+		const contextMenu = new TestContextMenuService();
+		const { notes, panel, body } = createPanel(store, contextMenu as Partial<IContextMenuService> as IContextMenuService);
+		panel.setSpace('worktree:a', 'a', undefined);
+		scrollToBottom(body);
+
+		const editLine = (lineIndex: number, key: 'Enter' | 'Escape', value?: string) => {
+			checkAt(body, lineIndex).parentElement!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+			contextMenu.run('paradis.spaceNotes.task.edit');
+			const input = body.getElementsByClassName('paradis-space-notes-task-input')[0] as HTMLTextAreaElement;
+			if (value !== undefined) {
+				input.value = value;
+			}
+			input.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, keyCode: key === 'Enter' ? 13 : 27, bubbles: true }));
+			return focusedTaskText(body);
+		};
+
+		assert.deepStrictEqual({
+			committed: editLine(TASK_COUNT - 2, 'Enter', 'renamed'),
+			cancelled: editLine(TASK_COUNT - 3, 'Escape'),
+			line: notes.read('worktree:a').split('\n')[TASK_COUNT - 2],
+		}, {
+			committed: 'renamed',
+			cancelled: `task ${TASK_COUNT - 3}`,
+			line: '- [ ] renamed',
+		});
+	});
 });
 
 function createTasks(): string {
@@ -92,7 +170,16 @@ function focusedLineIndex(body: HTMLElement): number | undefined {
 	return index === -1 ? undefined : index;
 }
 
-function createPanel(store: Pick<DisposableStore, 'add'>) {
+/** フォーカスのあるチェックボックスの行の文言。チェックボックス以外にフォーカスがあれば undefined。 */
+function focusedTaskText(body: HTMLElement): string | undefined {
+	const active = body.ownerDocument.activeElement as HTMLElement | null;
+	if (!active || !checks(body).includes(active)) {
+		return undefined;
+	}
+	return active.nextElementSibling?.textContent ?? undefined;
+}
+
+function createPanel(store: Pick<DisposableStore, 'add'>, contextMenu: IContextMenuService = {} as Partial<IContextMenuService> as IContextMenuService) {
 	const notes = store.add(new TestSpaceNotesService());
 	notes.write('worktree:a', createTasks());
 
@@ -106,7 +193,7 @@ function createPanel(store: Pick<DisposableStore, 'add'>) {
 		notes,
 		storage,
 		new NullLogService(),
-		{} as Partial<IContextMenuService> as IContextMenuService,
+		contextMenu,
 		{} as Partial<IClipboardService> as IClipboardService,
 	));
 	panel.layout(600);
@@ -147,9 +234,19 @@ class TestSpaceNotesService implements IParadisSpaceNotesService {
 		}
 	}
 
-	removeTask(): void { }
+	removeTask(stateKey: string, lineIndex: number): void {
+		const removed = paradisRemoveSpaceNoteTask(this.read(stateKey), lineIndex);
+		if (removed !== undefined) {
+			this.write(stateKey, removed);
+		}
+	}
 
-	updateTaskText(): void { }
+	updateTaskText(stateKey: string, lineIndex: number, taskText: string): void {
+		const replaced = paradisReplaceSpaceNoteTaskText(this.read(stateKey), lineIndex, taskText);
+		if (replaced !== undefined) {
+			this.write(stateKey, replaced);
+		}
+	}
 
 	remove(stateKey: string): void {
 		this.notes.delete(stateKey);
@@ -157,5 +254,27 @@ class TestSpaceNotesService implements IParadisSpaceNotesService {
 
 	dispose(): void {
 		this._onDidChangeNotes.dispose();
+	}
+}
+
+/** 右クリックメニューを出さずに、最後に渡された項目を ID で実行できるようにする。 */
+class TestContextMenuService implements Partial<IContextMenuService> {
+	private actions: readonly IAction[] = [];
+
+	showContextMenu(delegate: IContextMenuDelegate): void {
+		this.actions = delegate.getActions();
+	}
+
+	run(id: string): void {
+		const action = this.actions.find(candidate => candidate.id === id);
+		assert.ok(action, `menu item ${id}`);
+		action.run();
+		// 本物のメニューと同じく項目はメニューを開くたびに作られるので、使い終わったら片付ける
+		for (const candidate of this.actions) {
+			if (isDisposable(candidate)) {
+				candidate.dispose();
+			}
+		}
+		this.actions = [];
 	}
 }
