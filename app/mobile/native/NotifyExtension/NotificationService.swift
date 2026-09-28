@@ -35,7 +35,14 @@ final class NotificationService: UNNotificationServiceExtension {
 		}
 
 		// フォールバック: 何が起きても届いた固定文のまま返す。
+		// 復号できなかったのに APNs の生ペイロードに識別子が載っていたら、それはリレーが差し込んだもの。
+		// アプリはタップの遷移と通知センターの後始末で userInfo の識別子を読むので、ここで捨てる。
 		func deliverFallback() {
+			var userInfo = bestAttempt.userInfo
+			for key in Self.appReadKeys {
+				userInfo.removeValue(forKey: key)
+			}
+			bestAttempt.userInfo = userInfo
 			contentHandler(bestAttempt)
 		}
 
@@ -72,9 +79,11 @@ final class NotificationService: UNNotificationServiceExtension {
 
 		// ディープリンクと対象検証に必要な識別子を userInfo へ残す。
 		var userInfo = bestAttempt.userInfo
-		// APNs の生ペイロードに載っていた送信元は必ず捨てる。そこはリレーが差し込めるため、
+		// APNs の生ペイロードに載っていた識別子（送信元を含む）は必ず捨てる。そこはリレーが差し込めるため、
 		// 採用してよいのは封緘を開けて得たもの（鍵の名前・復号できた本文）だけ。
-		userInfo.removeValue(forKey: "pcId")
+		for key in Self.appReadKeys {
+			userInfo.removeValue(forKey: key)
+		}
 		if let ws = json["ws"] { userInfo["ws"] = ws }
 		if let terminalId = json["terminalId"] { userInfo["terminalId"] = terminalId }
 		if let terminalKey = json["terminalKey"] { userInfo["terminalKey"] = terminalKey }
@@ -136,6 +145,10 @@ final class NotificationService: UNNotificationServiceExtension {
 			contentHandler(bestAttemptContent)
 		}
 	}
+
+	/// アプリが userInfo から読む識別子（app/mobile/src/notificationTray.ts の readTrayData と、
+	/// notificationNavigation.ts の readNotificationDeepLink）。復号できたときだけ、ここで書く。
+	private static let appReadKeys = ["pcId", "ws", "terminalId", "terminalKey", "agentToken", "windowId", "kind", "notifyId", "collapse"]
 
 	// MARK: - Collapse / thread keys
 

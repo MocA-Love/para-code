@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkspaceState } from './store.js';
-import { notificationDestination, notificationNavigationDecision } from './notificationNavigation.js';
+import { notificationDestination, notificationNavigationDecision, readNotificationDeepLink } from './notificationNavigation.js';
 
 describe('notificationNavigationDecision', () => {
 	it('keeps a target pending until a complete desktop snapshot arrives', () => {
@@ -46,5 +46,32 @@ describe('notificationDestination', () => {
 			href: { pathname: '/pc/[pcId]', params: { pcId: 'pc-a' } },
 			spaceId: undefined,
 		});
+	});
+});
+
+describe('readNotificationDeepLink', () => {
+	it('reads a local notification from content.data', () => {
+		expect(readNotificationDeepLink({ content: { data: { ws: '1:w1', terminalKey: 'k1', agentToken: 'tok', pcId: 'pc-a' } }, trigger: null }))
+			.toEqual({ ws: '1:w1', terminalKey: 'k1', agentToken: 'tok', pcId: 'pc-a' });
+	});
+
+	it('reads a push from trigger.payload, where the NSE writes the decrypted ids (content.data is empty)', () => {
+		// expo の iOS 実装はリモート通知の content.data に userInfo["body"] しか入れない。
+		const push = {
+			content: { data: null },
+			trigger: { type: 'push', payload: { aps: { alert: { title: 'Para Code' } }, e: 'cipher', ws: '1:w2', terminalKey: 'k2', terminalId: 3, kind: 'agent-done', pcId: 'pc-b' } },
+		};
+		expect(readNotificationDeepLink(push)).toEqual({ ws: '1:w2', terminalKey: 'k2', pcId: 'pc-b' });
+	});
+
+	it('prefers the push userInfo when both carry the same key, and drops malformed values', () => {
+		expect(readNotificationDeepLink({
+			content: { data: { ws: 'from-data', pcId: 'pc-a' } },
+			trigger: { type: 'push', payload: { ws: 'from-payload', terminalKey: 42, agentToken: 'x'.repeat(201) } },
+		})).toEqual({ ws: 'from-payload', pcId: 'pc-a' });
+	});
+
+	it('returns nothing for a push the NSE could not decrypt (no ids)', () => {
+		expect(readNotificationDeepLink({ content: { data: null }, trigger: { type: 'push', payload: { aps: {}, e: 'cipher' } } })).toBeUndefined();
 	});
 });

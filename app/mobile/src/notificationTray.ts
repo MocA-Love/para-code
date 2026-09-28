@@ -40,20 +40,29 @@ export interface TrayTerminal {
 }
 
 /**
- * expo-notifications の通知から、載せた識別子を取り出す。
- * iOS のリモートプッシュは `content.data` が空（expo は userInfo["body"] しか見ない）で、
- * userInfo 全体は `trigger.payload` にある。ローカル通知は `content.data`。
+ * expo-notifications の通知から、載せた識別子を取り出す（通知センターの後始末と、タップの遷移の両方が使う）。
+ *
+ * **`content.data` だけを見てはいけない。** expo の iOS 実装（NotificationRecords.swift の
+ * `serializedNotificationData`）は、リモートプッシュの `content.data` に userInfo["body"] しか入れない。
+ * Para Code のプッシュは暗号文 `e` だけを載せ、通知拡張（NSE）が復号して識別子を userInfo の
+ * 最上位に書き足すので、`content.data` は空になる。userInfo 全体（NSE が書き換えた後のもの）は
+ * `trigger.payload`（trigger.type === 'push'）にある。ローカル通知は `content.data` に入る。
+ * 両方を読み、重なる項目はプッシュの userInfo を採る。
  */
 export function readTrayData(request: { readonly content: { readonly data?: unknown }; readonly trigger?: unknown }): Readonly<Record<string, unknown>> | undefined {
+	const data = asRecord(request.content.data);
 	const trigger = request.trigger;
-	if (trigger !== null && typeof trigger === 'object' && (trigger as { type?: unknown }).type === 'push') {
-		const payload = (trigger as { payload?: unknown }).payload;
-		if (payload !== null && typeof payload === 'object') {
-			return payload as Record<string, unknown>;
-		}
+	const payload = trigger !== null && typeof trigger === 'object' && (trigger as { type?: unknown }).type === 'push'
+		? asRecord((trigger as { payload?: unknown }).payload)
+		: undefined;
+	if (data === undefined || payload === undefined) {
+		return payload ?? data;
 	}
-	const data = request.content.data;
-	return data !== null && typeof data === 'object' ? data as Record<string, unknown> : undefined;
+	return { ...data, ...payload };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 /** iOS は届いた時刻を秒で返す（Android はミリ秒）。ミリ秒へ揃える。 */

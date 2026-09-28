@@ -25,7 +25,8 @@ describe('readTrayData', () => {
 			readTrayData({ content: { data: null }, trigger: { type: 'push', payload: { agentToken: 'tok', aps: {} } } }),
 			readTrayData({ content: { data: { agentToken: 'local' } }, trigger: null }),
 			readTrayData({ content: {}, trigger: { type: 'push' } }),
-		]).toEqual([{ agentToken: 'tok', aps: {} }, { agentToken: 'local' }, undefined]);
+			readTrayData({ content: { data: { a: 1, b: 1 } }, trigger: { type: 'push', payload: { b: 2 } } }),
+		]).toEqual([{ agentToken: 'tok', aps: {} }, { agentToken: 'local' }, undefined, { a: 1, b: 2 }]);
 		expect([trayDateMs(1_800_000_000), trayDateMs(T0)]).toEqual([T0, T0]);
 	});
 });
