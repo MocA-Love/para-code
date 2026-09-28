@@ -70,6 +70,8 @@ export const ChatList = forwardRef<ChatListHandle, {
 	// セッションが変わったら（epoch）隠し直して最下部から見せ直す。
 	useEffect(() => {
 		scrollState.reset();
+		// 前の会話の内容の高さで送らないよう、測り直すまで 0 にしておく（0 の間は送りを見送る）。
+		metricsRef.current.contentHeight = 0;
 		syncSticky();
 		setRevealed(false);
 		revealGate.begin();
