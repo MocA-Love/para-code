@@ -86,6 +86,11 @@ export class ParadisNotifyDismissLedger {
 		}
 	}
 
+	/** その通知がもう片付いたか（裏に回ったときのプッシュし直しで、片付いたものを送らないため）。 */
+	isSettled(id: string | undefined): boolean {
+		return id !== undefined && this.entries.some(entry => entry.id === id && entry.handledAt !== undefined);
+	}
+
 	/** 次のプッシュに載せる通知 ID（新しく片付いた順）。`except` はいま送る通知自身。 */
 	dismissable(now: number, except?: string): string[] {
 		return this.entries

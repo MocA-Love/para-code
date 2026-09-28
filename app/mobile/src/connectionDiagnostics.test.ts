@@ -38,7 +38,7 @@ describe('connection diagnostics (W2-22)', () => {
 		const items = await runConnectionDiagnostics({
 			pcs: [
 				pc({}),
-				pc({ id: 'pc-2', name: 'iMac', pcOnline: false }),
+				pc({ id: 'pc-2', name: 'iMac', connection: 'handshaking', pcOnline: false }),
 				pc({ id: 'pc-3', name: 'Old', connection: 'offline', pcOnline: false, updateRequired: 'pc' }),
 				pc({ id: 'pc-4', name: 'Gone', connection: 'offline', pcOnline: false, pairingRejected: true }),
 			],
@@ -49,6 +49,7 @@ describe('connection diagnostics (W2-22)', () => {
 		expect(items.map(item => `${item.key}=${item.status}`)).toEqual([
 			'pcs=ok', 'internet=ok', 'relay:https://relay.example/=ok',
 			'pc:pc-1=ok', 'compat:pc-1=ok',
+			// PC がいないと握手が終わらず handshaking のまま。「接続しています…」ではなく PC が応答していないと出す
 			'pc:pc-2=warn', 'compat:pc-2=unknown',
 			'pc:pc-3=fail', 'compat:pc-3=fail',
 			'pc:pc-4=fail', 'compat:pc-4=unknown',

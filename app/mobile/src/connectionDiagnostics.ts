@@ -89,9 +89,11 @@ export function diagnosePc(pc: DiagnosticPc): { readonly online: DiagnosticItem;
 		online = { key: `pc:${pc.id}`, label: pc.name, status: 'fail', detail: 'リレーがこの端末の資格を拒んでいます。PC とペアリングし直してください' };
 	} else if (pc.connection === 'online' && pc.pcOnline) {
 		online = { key: `pc:${pc.id}`, label: pc.name, status: 'ok', detail: 'オンライン' };
-	} else if (pc.connection === 'online') {
+	} else if (pc.connection === 'online' || pc.connection === 'handshaking') {
+		// PC がいないと暗号の握手が終わらないので、接続は handshaking のまま止まる。リレーが PC の不在を
+		// 伝えてきている（pcOnline が false）なら、「接続しています…」ではなく PC 側の問題として出す。
 		online = { key: `pc:${pc.id}`, label: pc.name, status: 'warn', detail: 'リレーにはつながっていますが、PC の Para Code が応答していません（スリープ中・終了している）' };
-	} else if (pc.connection === 'connecting' || pc.connection === 'handshaking') {
+	} else if (pc.connection === 'connecting') {
 		online = { key: `pc:${pc.id}`, label: pc.name, status: 'unknown', detail: '接続しています…' };
 	} else {
 		online = { key: `pc:${pc.id}`, label: pc.name, status: 'fail', detail: 'リレーにつながっていません' };
