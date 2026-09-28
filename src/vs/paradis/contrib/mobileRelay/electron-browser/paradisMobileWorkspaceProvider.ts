@@ -63,6 +63,7 @@ import { IParadisPresetService, IParadisResolvedPreset, paradisGetPresetTasks, p
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
 import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
+import { paradisTerminalEscapeTail } from '../common/paradisTerminalEscapeTail.js';
 import { type ParadisBinaryFsResponseType, paradisEncodeNegotiatedBinaryFsResponse } from '../common/paradisMobileFileResponse.js';
 import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.js';
 import { PARADIS_TERMINAL_BINARY_DATA_ENCODING, paradisEncodeNegotiatedBinaryTerminalData } from '../common/paradisMobileTerminalData.js';
@@ -631,6 +632,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private readonly serializeAddons = new WeakMap<object, { serialize(options?: { scrollback?: number }): string }>();
 	// mobileId + ターミナルID → 独立したepoch/seq/ACK状態。
 	private readonly termSyncStates = new Map<string, TermSyncState>();
+	// ターミナルID → これまでに流れた出力の末尾で閉じていない制御シーケンス（W2-18）。snapshot の後の
+	// 最初のチャンクの前に付けて送る（snapshot には PC の xterm の解析途中の状態が載らないため）。
+	// 出力を購読している間だけ追う（購読を始める前に読まれた分は分からない）。
+	private readonly termEscapeTails = new Map<number, string>();
 	// mobileId + ターミナルID → そのモバイルが読める画面寸法（申告があったものだけ）と、
 	// 最後に申告を受け取った時刻。申告はリース制で、更新が途絶えたら期限切れで捨てる。
 	// instanceId を値に持たせているのは、期限切れの掃除でキー文字列を再パースしないため
@@ -2661,6 +2666,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const store = new DisposableStore();
 				const relayConsumer = (data: string) => this.sendTermData(id, data);
 				store.add(instance.onData(paradisCreateTerminalOutputConsumer(relayConsumer, undefined)!));
+				store.add(toDisposable(() => this.termEscapeTails.delete(id)));
 				store.add(instance.onExit(() => {
 					for (const subscriber of this.terminalSubscribers.get(id) ?? []) {
 						const key = this.termSubscriptionKey(id, subscriber);
@@ -3027,6 +3033,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * suspend中は破棄し（ptyは止めない）、ACKが追いついた時点のスナップショットで追いつく。
 	 */
 	private sendTermData(id: number, data: string): void {
+		// PC の xterm はこのチャンクを読み終えてから onData を出すので、ここで追う末尾は
+		// 次に撮る snapshot の時点の解析途中の状態と一致する（snapshot は書き込みのバリアを待ってから撮る）。
+		const previousTail = this.termEscapeTails.get(id) ?? '';
+		const tail = paradisTerminalEscapeTail(previousTail, data);
+		if (tail.length > 0) {
+			this.termEscapeTails.set(id, tail);
+		} else if (previousTail.length > 0) {
+			this.termEscapeTails.delete(id);
+		}
 		for (const mobileId of this.terminalSubscribers.get(id) ?? []) {
 			this.queueTermData(id, mobileId, data);
 		}
@@ -3160,6 +3175,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			// 送るだけ帯域の無駄になる）。resizeTimer はここでは触らない（serialize待ちの間に
 			// 発生した新しいリサイズの再同期予約を消してしまうため）。
 			this.clearTermCoalesce(sync);
+			// 直前のチャンクが制御シーケンスの途中で終わっていたら、その断片を次のチャンクの前に付ける
+			// （モバイルの xterm は snapshot で reset するので、続きだけが文字として出てしまう）。
+			// まとめ送りの保留の先頭に置くだけで、送るのは次の出力と一緒（出力が来なければ送らない）。
+			const carry = this.termEscapeTails.get(id);
+			if (carry !== undefined) {
+				sync.pending.push(carry);
+				sync.pendingChars += carry.length;
+			}
 			const seq = ++sync.seq;
 			sync.inflight.push({ seq, chars: data.length });
 			sync.unackedChars += data.length;
