@@ -29,6 +29,23 @@ test('the Swift helper and the TypeScript client agree on the protocol version, 
 	assert.deepStrictEqual({ swiftVersion, tsAppName, tsExecutable }, { swiftVersion: tsVersion, tsAppName: PARADIS_COMPUTER_USE_APP_NAME, tsExecutable: PARADIS_COMPUTER_USE_EXECUTABLE });
 });
 
+test('the Swift helper and the TypeScript client block the same apps', () => {
+	const swift = readFileSync(join(PARADIS_COMPUTER_USE_SOURCE_ROOT, 'Sources', 'ParadisComputerUseCore', 'ParadisBlocklist.swift'), 'utf8');
+	const swiftList = (name: string) => [...(new RegExp(`let ${name}: \\[String\\] = \\[(?<body>[^\\]]*)\\]`).exec(swift)?.groups?.body ?? '').matchAll(/"(?<id>[^"]+)"/g)].map(match => match.groups!.id);
+	const tsList = (name: string) => [...(new RegExp(`${name}: readonly string\\[\\] = \\[(?<body>[^\\]]*)\\]`).exec(commonTs)?.groups?.body ?? '').matchAll(/'(?<id>[^']+)'/g)].map(match => match.groups!.id);
+	const pairs: [string, string][] = [
+		['paradisBlockedPasswordManagers', 'PARADIS_COMPUTER_USE_PASSWORD_MANAGERS'],
+		['paradisBlockedKeychainApps', 'PARADIS_COMPUTER_USE_KEYCHAIN_APPS'],
+		['paradisBlockedParaCodeApps', 'PARADIS_COMPUTER_USE_PARA_CODE_APPS'],
+		['paradisBlockedSystemSurfaces', 'PARADIS_COMPUTER_USE_SYSTEM_SURFACES'],
+	];
+	for (const [swiftName, tsName] of pairs) {
+		const fromSwift = swiftList(swiftName);
+		assert.ok(fromSwift.length > 0, swiftName);
+		assert.deepStrictEqual(fromSwift, tsList(tsName), `${swiftName} and ${tsName} differ`);
+	}
+});
+
 test('the Info.plist makes a background app for macOS 14 that sign.ts does not mistake for an Electron helper', () => {
 	const plist = paradisComputerUseInfoPlist('ltd.paradis.paracode', '1.2.3');
 	assert.ok(plist.includes('<key>CFBundleIdentifier</key>\n\t<string>ltd.paradis.paracode.computeruse</string>'));
