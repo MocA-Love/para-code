@@ -47,6 +47,23 @@ suite('paradisResolveNotifyDelivery', () => {
 		assert.strictEqual(paradisResolveNotifyDelivery(input({ msSinceLastInbound: undefined })).push, true);
 	});
 
+	// W2-34: アプリは裏に回ってもソケットを最大30秒保つ。その間は受信が新しくてもバナーを出さないので、
+	// PC はプッシュで鳴らす（鳴らすかは PC が決める、の方針）。PC操作中などの抑制はそのまま効く。
+	test('裏に回ったと知らせてきたアプリは、受信が新しくても信用せずプッシュを送る', () => {
+		assert.deepStrictEqual(
+			[
+				paradisResolveNotifyDelivery(input({ appBackgrounded: true })),
+				paradisResolveNotifyDelivery(input({ appBackgrounded: true, kind: 'agent-done', pcFocused: true, prefs: { pcFocusQuiet: true } })),
+				paradisResolveNotifyDelivery(input({ appBackgrounded: false })),
+			],
+			[
+				{ frame: true, quiet: 'pushed', push: true },
+				{ frame: true, quiet: 'muted', push: false },
+				{ frame: true, quiet: undefined, push: false },
+			],
+		);
+	});
+
 	test('アプリ未起動（セッション無し）はプッシュだけ', () => {
 		assert.deepStrictEqual(
 			paradisResolveNotifyDelivery(input({ sessionReady: false, msSinceLastInbound: undefined })),

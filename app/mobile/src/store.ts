@@ -8,7 +8,7 @@
  * （本番は expo-secure-store、テストはメモリ実装）。
  */
 
-import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, isGzipJsonResponse, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeNotify, decodeNotifyControl, decodeNotifyVisibility, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, encodeNotifyVisibility, generateIdentity, isBinaryBrowserJpegFrame, isGzipJsonResponse, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
 import { AGENT_LIVE_APPEND_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
 import { ContentHashResponseCache, type PreparedContentHashRequest } from './contentHashCache.js';
 import { terminalViewportEquals, type TerminalViewport } from './terminalViewport.js';
@@ -17,6 +17,7 @@ import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCrede
 import { reuseWorkspaceState } from './workspaceIdentity.js';
 import { ResumeFrameBuffer } from './resumeFrameBuffer.js';
 import type { RelayWindowHost } from './relayHosts.js';
+import { BACKGROUND_GRACE_CAPABILITY } from './backgroundGraceCapability.js';
 import { APP_PROTOCOL_VERSION, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -1508,6 +1509,11 @@ export class MobileController {
 	onNotifyHandled: ((handled: { readonly ids: readonly string[]; readonly tokens: readonly string[] }) => void) | undefined;
 	/** 接続の出来事（W2-22 の「接続の記録」へ残す口。記録するだけ）。 */
 	onConnectionEvent: ((event: RelayConnectionEvent) => void) | undefined;
+	/** 「裏に回った」の確認待ち（W2-34。id → 結果を返す関数）。 */
+	private readonly visibilityAcks = new Map<string, (acked: boolean) => void>();
+	private visibilityCounter = 0;
+	/** この接続で PC へ「裏に回った」を送ったか（前面に戻ったら取り消しを送る）。 */
+	private backgroundVisibilitySent = false;
 	private static readonly LIVENESS_IDLE_MS = 45_000;
 	private static readonly LIVENESS_CHECK_INTERVAL_MS = 20_000;
 	private outboxReplayEpoch: string | undefined;
@@ -1760,6 +1766,8 @@ export class MobileController {
 					this.state.pairingRejected = false;
 				}
 				if (s !== 'online') {
+					this.settleVisibilityAcks();
+					this.backgroundVisibilitySent = false;
 					this.state.sessionProtocolReady = false;
 					this.liveFsUploadEncoding = undefined;
 					this.outboxReplayEpoch = undefined;
@@ -1950,6 +1958,54 @@ export class MobileController {
 		this.cancelPendingAgentActions();
 		this.cancelPendingRequests();
 		this.client.suspend();
+	}
+
+	/**
+	 * 裏に回っても接続を保てるか（W2-34）。つながっていて、PC が `conn.background-grace.v1` を広告しているときだけ。
+	 * 接続が本当に生きているかは、この後の確認の往復（2秒）で確かめる。
+	 */
+	canHoldInBackground(): boolean {
+		return this.client !== undefined && this.state.connection === 'online' && this.state.pcOnline && this.state.sessionProtocolReady
+			&& this.hasPcCapability(BACKGROUND_GRACE_CAPABILITY);
+	}
+
+	/**
+	 * 「裏に回った」を PC へ送り、確認を待つ（W2-34）。送る前に RelayClient を保持に入れる
+	 * （待っている間に張り直すと、新しい接続は PC から前面のアプリに見えるため）。確認が来たら true。
+	 * 来なければ false で、呼び出し側は今までどおり閉じる。
+	 */
+	requestBackgroundGrace(timeoutMs: number): Promise<boolean> {
+		const client = this.client;
+		if (client === undefined || !this.canHoldInBackground() || !client.holdInBackground()) {
+			return Promise.resolve(false);
+		}
+		const id = `v${++this.visibilityCounter}`;
+		return new Promise<boolean>(resolve => {
+			const timer = setTimeout(() => settle(false), timeoutMs);
+			const settle = (acked: boolean) => {
+				clearTimeout(timer);
+				this.visibilityAcks.delete(id);
+				resolve(acked);
+			};
+			this.visibilityAcks.set(id, settle);
+			this.backgroundVisibilitySent = true;
+			client.send('notify', encodeNotifyVisibility('background', id));
+		});
+	}
+
+	/** 前面に戻ったことを PC へ伝える（「裏に回った」を送っていたときだけ。W2-34）。 */
+	sendForegroundVisibility(): void {
+		if (!this.backgroundVisibilitySent) {
+			return;
+		}
+		this.backgroundVisibilitySent = false;
+		this.client?.send('notify', encodeNotifyVisibility('foreground'));
+	}
+
+	private settleVisibilityAcks(): void {
+		for (const settle of [...this.visibilityAcks.values()]) {
+			settle(false);
+		}
 	}
 
 	/** 復帰時は旧ソケットを再利用せず、新しい接続から購読中データだけを再同期する。 */
@@ -4192,6 +4248,14 @@ export class MobileController {
 				}
 			} catch { /* ignore */ }
 		} else if (frame.ch === 'notify') {
+			// 「裏に回った」の確認（W2-34）。通知の一覧には入れない。
+			const visibility = decodeNotifyVisibility(frame.payload);
+			if (visibility !== undefined) {
+				if (visibility.t === 'visibility-ack' && visibility.id !== undefined) {
+					this.visibilityAcks.get(visibility.id)?.(visibility.state === 'background');
+				}
+				return;
+			}
 			const control = decodeNotifyControl(frame.payload);
 			if (control?.t === 'dismissed') {
 				this.pendingNotificationDismissals.delete(control.id);

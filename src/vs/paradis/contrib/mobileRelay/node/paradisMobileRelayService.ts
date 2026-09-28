@@ -63,6 +63,7 @@ import {
 import { PARADIS_MOBILE_BUILTIN_REQUEST_KINDS } from '../common/paradisMobileRequestKinds.js';
 import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, paradisEvaluateMobileCompat, paradisIsAcceptedMobileWireVersion, paradisParseMobileCapabilities } from '../common/paradisMobileCompat.js';
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyPcFocusQuiet, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
+import { decodeNotifyVisibility, encodeNotifyVisibilityAck } from '../common/paradisMobileVisibility.js';
 import { paradisAgentLabel, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInsightSource } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatView } from '../../agentChat/common/paradisAgentChat.js';
@@ -217,6 +218,12 @@ export class MobileSession {
 	get isOnline(): boolean {
 		return this.confirmed;
 	}
+
+	/**
+	 * アプリが「裏に回った」と知らせてきて、まだ「前面に戻った」を受けていない（W2-34）。
+	 * セッションごとに持つので、張り直した接続では必ず前面扱いから始まる（アプリは裏で張り直さない）。
+	 */
+	backgrounded = false;
 
 	private _lastInboundAt = 0;
 
@@ -1499,6 +1506,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				pcFocused,
 				sessionReady: session?.hasCurrentProtocol === true,
 				msSinceLastInbound: session?.msSinceLastInbound(now),
+				appBackgrounded: session?.backgrounded === true,
 			});
 			// フレームは通知一覧のためのもの。鳴らす必要が無い通知も、あとからスマホで
 			// 「PCの前にいた間に何があったか」を追えるように送る（以前は配信自体を止めていた）。
@@ -1649,6 +1657,25 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		for (const entry of this.missedNotify.take(mobileId)) {
 			session.sendFrame(Channels.Notify, undefined, entry.bytes)
 				.catch(err => this.logService.warn('[paradisMobileRelay] missed notify replay failed', err));
+		}
+	}
+
+	/**
+	 * アプリが裏に回った・前面に戻った（W2-34）。裏に回った印はこのセッションの間だけ持ち、
+	 * 立っている間の通知は受信が新しくてもプッシュで送る（`paradisResolveNotifyDelivery` の `appBackgrounded`）。
+	 * 確認を返すのは印を立て終えてから（確認を受けたアプリは接続を保つので、先に返すと取りこぼす）。
+	 * 前面に戻ったら、裏にいた間の通知を鳴らさない形で流し直す（握手をやり直さないので、握手のときの流し直しが走らない）。
+	 */
+	private handleNotifyVisibility(mobileId: string, session: MobileSession, state: 'background' | 'foreground', id: string | undefined): void {
+		if (this.sessions.get(mobileId) !== session) {
+			return;
+		}
+		const wasBackgrounded = session.backgrounded;
+		session.backgrounded = state === 'background';
+		session.sendFrame(Channels.Notify, undefined, encodeNotifyVisibilityAck(state, id))
+			.catch(err => this.logService.warn('[paradisMobileRelay] visibility ack failed', err));
+		if (wasBackgrounded && state === 'foreground' && session.hasCurrentProtocol) {
+			this.flushMissedNotify(mobileId, session);
 		}
 	}
 
@@ -2859,6 +2886,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 						return;
 					}
 					if (frame.ch === Channels.Notify) {
+						// アプリが裏に回った・前面に戻った（W2-34）。確認を返したときだけ、アプリは接続を保つ。
+						const visibility = decodeNotifyVisibility(frame.payload.buffer);
+						if (visibility?.t === 'visibility') {
+							this.handleNotifyVisibility(idStr, session!, visibility.state, visibility.id);
+							return;
+						}
 						// M→PC方向のnotifyチャネル: 通知設定の同期 or 既読(dismiss)メッセージ。
 						const control = decodeNotifyControl(frame.payload.buffer);
 						if (control?.t === 'dismiss') {

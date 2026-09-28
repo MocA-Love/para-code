@@ -102,4 +102,33 @@ describe('RelayClient connection log events (W2-22)', () => {
 		h.sockets[0]!.onclose?.({ code: 4401 });
 		expect(h.events.map(event => event.kind)).toEqual(['connecting', 'auth-rejected', 'reconnect-scheduled']);
 	});
+
+	it('holds the socket in the background without reconnecting; a drop becomes a suspend (W2-34)', () => {
+		const h = lifecycleHarness();
+		expect(h.client.holdInBackground()).toBe(false);
+		h.client.connect();
+		h.establish();
+		expect(h.client.holdInBackground()).toBe(true);
+		h.sockets[0]!.onclose?.({ code: 1006 });
+		// 張り直さない（新しい接続は PC から前面のアプリに見える）
+		expect([h.sockets.length, h.client.connectionState, [...h.timers.pending.values()].some(timer => timer.ms !== 12_000)]).toEqual([1, 'offline', false]);
+		h.client.ensureConnected();
+		expect(h.sockets.length).toBe(1);
+		// 前面に戻れば張り直す
+		h.client.resume();
+		expect(h.sockets.length).toBe(2);
+	});
+
+	it('a reopen attempt while holding (PC restart, liveness probe) suspends instead', () => {
+		const h = lifecycleHarness();
+		h.client.connect();
+		h.establish();
+		h.client.holdInBackground();
+		h.sockets[0]!.onmessage?.({ data: encodeRelayControl({ type: 'presence', peer: 'pc', online: false }) });
+		h.sockets[0]!.onmessage?.({ data: encodeRelayControl({ type: 'presence', peer: 'pc', online: true }) });
+		expect([h.sockets.length, h.client.connectionState, h.events.at(-1)?.kind]).toEqual([1, 'offline', 'suspended']);
+		// resume で保持は解け、以後は普通に張り直す
+		h.client.resume();
+		expect(h.sockets.length).toBe(2);
+	});
 });
