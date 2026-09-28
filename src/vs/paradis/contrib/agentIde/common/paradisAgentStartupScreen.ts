@@ -38,7 +38,17 @@ interface IParadisAgentStartupScreenRule {
 	 * ソースコードを表示している画面では当たらない。
 	 */
 	readonly choices?: readonly [RegExp, RegExp];
+	/** 空白と罫線を落とした画面の末尾に、どれかが現れたら当てない（準備完了を信頼の確認の最中に言わない）。 */
+	readonly noneOf?: readonly RegExp[];
+	/** 中身の無い入力欄（横罫線のすぐ下に、`❯` だけか `❯ Try "…"` の案内だけの行）が見えているときだけ当てる。 */
+	readonly emptyPromptBox?: boolean;
 }
+
+/** 信頼の確認の見出し（空白と罫線を落とした形）。準備完了の判定から外すために使う。 */
+const TRUST_DIALOG_HEADERS: readonly RegExp[] = [
+	/Quicksafetycheck:Isthisaprojectyoucreatedoroneyoutrust\?|Accessingworkspace:/,
+	/Doyoutrustthecontentsofthisdirectory\?/,
+];
 
 /**
  * 判定の表。上から順に見て、最初に当たったものを返す（信頼の確認を先に置く）。
@@ -52,7 +62,7 @@ export const PARADIS_AGENT_STARTUP_SCREEN_RULES: readonly IParadisAgentStartupSc
 		agent: 'claude',
 		state: 'trust_dialog',
 		observedIn: 'Claude Code 2.1.283',
-		allOf: [/Quicksafetycheck:Isthisaprojectyoucreatedoroneyoutrust\?|Accessingworkspace:/],
+		allOf: [TRUST_DIALOG_HEADERS[0]],
 		choices: [/^Yes, I trust this folder$/, /^No, (?:exit|continue without these permissions)$/],
 	},
 	{
@@ -60,7 +70,7 @@ export const PARADIS_AGENT_STARTUP_SCREEN_RULES: readonly IParadisAgentStartupSc
 		agent: 'codex',
 		state: 'trust_dialog',
 		observedIn: 'codex-cli 0.155.1',
-		allOf: [/Doyoutrustthecontentsofthisdirectory\?/],
+		allOf: [TRUST_DIALOG_HEADERS[1]],
 		choices: [/^Yes, continue$/, /^No\b/],
 	},
 	{
@@ -69,6 +79,20 @@ export const PARADIS_AGENT_STARTUP_SCREEN_RULES: readonly IParadisAgentStartupSc
 		state: 'ready',
 		observedIn: 'Claude Code 2.1.283',
 		allOf: [/\?forshortcuts/],
+		noneOf: TRUST_DIALOG_HEADERS,
+	},
+	{
+		// 権限モードが既定以外（2.1.283 は auto mode が既定のことがある）だと、入力欄の下の案内は
+		// 「? for shortcuts」ではなく「⏵⏵ auto mode on (shift+tab to cycle) · ← for agents」のような
+		// モードの表示になる（実機の NG）。モードの名前は 2.1.283 の `accept edits on` / `plan mode on` /
+		// `auto mode on`（バイナリの文字列）と、以前の版の `bypass permissions on`。表示だけでは
+		// 作業中と区別できないので、中身の無い入力欄が見えていることも条件にする。
+		agent: 'claude',
+		state: 'ready',
+		observedIn: 'Claude Code 2.1.283',
+		allOf: [/(?:acceptedits|planmode|automode|bypasspermissions)on\(shift\+tabtocycle\)/],
+		noneOf: TRUST_DIALOG_HEADERS,
+		emptyPromptBox: true,
 	},
 	{
 		// 空の入力欄の案内「Ask Codex to do anything」。
@@ -76,6 +100,7 @@ export const PARADIS_AGENT_STARTUP_SCREEN_RULES: readonly IParadisAgentStartupSc
 		state: 'ready',
 		observedIn: 'codex-cli 0.155.1',
 		allOf: [/AskCodextodoanything/],
+		noneOf: TRUST_DIALOG_HEADERS,
 	},
 ];
 
@@ -110,6 +135,18 @@ function showsChoicePair(lines: readonly string[], [first, second]: readonly [Re
 	return false;
 }
 
+/** 横罫線（U+2500 が 8 文字以上）のすぐ下（空行は飛ばす）に、`❯` だけ（か入力例の案内だけ）の行があるか。 */
+function showsEmptyPromptBox(lines: readonly string[]): boolean {
+	const filled = lines.map(line => line.trim()).filter(line => line.length > 0);
+	for (let index = 1; index < filled.length; index++) {
+		const prompt = filled[index].replace(/^[\u2502|]\s*|\s*[\u2502|]$/g, '');
+		if (/^\u276f(?:\s+Try ".*)?$/.test(prompt) && /\u2500{8,}/.test(filled[index - 1])) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /**
  * 画面の末尾から、起動時の状態を読む。分からなければ undefined。
  * 画面の文字はターミナルの中のプログラムが自由に書けるので、「止めて人に任せる」側
@@ -123,7 +160,10 @@ export function paradisAgentStartupScreenState(screen: string | undefined): Para
 	const lines = screen.split('\n').slice(-STARTUP_SCREEN_TAIL_LINES);
 	const tail = compactScreen(lines.join('\n'));
 	for (const rule of PARADIS_AGENT_STARTUP_SCREEN_RULES) {
-		if (rule.allOf.every(pattern => pattern.test(tail)) && (rule.choices === undefined || showsChoicePair(lines, rule.choices))) {
+		if (rule.allOf.every(pattern => pattern.test(tail))
+			&& !(rule.noneOf ?? []).some(pattern => pattern.test(tail))
+			&& (rule.choices === undefined || showsChoicePair(lines, rule.choices))
+			&& (rule.emptyPromptBox !== true || showsEmptyPromptBox(lines))) {
 			return rule.state;
 		}
 	}
