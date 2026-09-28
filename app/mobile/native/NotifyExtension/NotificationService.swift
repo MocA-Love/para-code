@@ -113,9 +113,13 @@ final class NotificationService: UNNotificationServiceExtension {
 			userInfo["collapse"] = collapse
 		}
 		bestAttempt.threadIdentifier = Self.threadKey(pcId: keyPcId, ws: json["ws"] as? String)
-		bestAttempt.userInfo = userInfo
+		// userInfo の書き換えと印は同じ鍵の区間で行う。期限切れの側がその間に割り込んで、
+		// 書きかけの userInfo を剥がしたり、書いた後に剥がしたりしないように。
 		deliverLock.lock()
-		wroteDecryptedIds = true
+		if !delivered {
+			bestAttempt.userInfo = userInfo
+			wroteDecryptedIds = true
+		}
 		deliverLock.unlock()
 
 		// ホーム画面・ロック画面のウィジェットの要約（App Group）の要対応を書き換えて描き直させる
@@ -152,11 +156,10 @@ final class NotificationService: UNNotificationServiceExtension {
 			return
 		}
 		deliverLock.lock()
-		let decrypted = wroteDecryptedIds
-		deliverLock.unlock()
-		if !decrypted {
+		if !wroteDecryptedIds && !delivered {
 			Self.stripAppReadKeys(bestAttemptContent)
 		}
+		deliverLock.unlock()
 		deliver(bestAttemptContent)
 	}
 
