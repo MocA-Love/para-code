@@ -81,7 +81,7 @@ export const PcCard = memo(function PcCard({ id, name, kind, connectionText, pai
 							) : null}
 						</>
 					) : (
-						<Text style={styles.offlineHint}>{pairingRejected ? '押すと、ペアリングし直す手順を開きます' : 'PC の Para Code を起動すると、ここから再接続できます'}</Text>
+						<Text style={styles.offlineHint}>{pairingRejected ? '押すと PC の画面が開き、そこからペアリングし直せます' : 'PC の Para Code を起動すると、ここから再接続できます'}</Text>
 					)}
 				</View>
 			</Pressable>

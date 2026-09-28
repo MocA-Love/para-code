@@ -17,10 +17,12 @@ import { Icon, connectionColor, iconSize, useThemeColors, type ConnectionKind, t
  *  - 上段: 戻る（32）・状態の点と PC 名（15/600）・その下の補足（12）・切れているときの「再接続」
  *  - 下段（ツールバー）: 絞り込みのチップ・並び順・グループ・右端のアイコン（アーカイブ・使用量・通知・検索）
  */
-export function PcHeader({ name, kind, detail, onReconnect, onBack, onCollapse, toolbar, search }: {
+export function PcHeader({ name, kind, detail, pairingRejected = false, onReconnect, onBack, onCollapse, toolbar, search }: {
 	name: string;
 	kind: ConnectionKind;
 	detail: string;
+	/** リレーがこの端末の資格を拒んだ（`isPairingRejected`）。定期的な再確認の間も点を赤のままにする。 */
+	pairingRejected?: boolean;
 	/** 渡すと右上に「再接続」を出す（つながっていないとき）。 */
 	onReconnect?: () => void;
 	/** 戻る（PC の一覧へ）。省略すると前の画面へ。 */
@@ -61,7 +63,7 @@ export function PcHeader({ name, kind, detail, onReconnect, onBack, onCollapse, 
 				</Pressable>
 				<View style={styles.identity}>
 					<View style={styles.nameLine}>
-						<View style={[styles.dot, { backgroundColor: kind === 'connected' ? connectionColor(kind) : kind === 'connecting' ? colors.amber : colors.red }]} />
+						<View style={[styles.dot, { backgroundColor: kind === 'connected' ? connectionColor(kind) : kind === 'connecting' && !pairingRejected ? colors.amber : colors.red }]} />
 						<Text style={styles.name} numberOfLines={1} accessibilityRole="header">{name}</Text>
 					</View>
 					<Text style={styles.detail} numberOfLines={1}>{detail}</Text>

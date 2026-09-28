@@ -42,6 +42,8 @@ describe('pcRowHint', () => {
 
 	it('つながっていない PC は最後につながっていた時刻を添える', () => {
 		expect(pcRowHint(pc({ connection: 'offline', pcOnline: false, lastOnlineAt: NOW - 2 * 3_600_000 }), false, NOW)).toBe('オフライン · 2時間前まで接続');
+		// 資格を拒まれた PC は再ペアリングしかないので、最終接続時刻は付けない
+		expect(pcRowHint(pc({ connection: 'offline', pcOnline: false, pairingRejected: true, lastOnlineAt: NOW - 2 * 3_600_000 }), false, NOW)).toBe('再ペアリングが必要');
 	});
 
 	it('つながっていない PC の古いバッテリーは出さない', () => {
