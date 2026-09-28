@@ -25,6 +25,7 @@ import { ChatList, type ChatListHandle } from './chatList.js';
 import { buildChatRows, questionRowId, splitPinnedQuestion } from './chatRows.js';
 import { PermissionCard } from './permissionCard.js';
 import { SessionComposer, type SessionComposerHandle } from './sessionComposer.js';
+import { useAgentHistory } from './useAgentHistory.js';
 import { useApprovalOptions } from './useApprovalOptions.js';
 
 /** 回答カードの高さの上限。選択肢が多いと会話が見えなくなるので、超えたぶんはカードの中でスクロールする。 */
@@ -117,7 +118,10 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 		}
 	}, [pendingMessages.length]);
 
-	const rows = useMemo(() => buildChatRows(messages ?? []), [messages]);
+	// 古い発言（上へさかのぼって読んだぶん。W2-30）を会話の前につなぐ。
+	const history = useAgentHistory(terminalKey, chat);
+	const olderMessages = history.messages;
+	const rows = useMemo(() => buildChatRows(olderMessages.length > 0 ? [...olderMessages, ...(messages ?? [])] : messages ?? []), [olderMessages, messages]);
 	const interactionKind = chat?.interaction?.kind;
 	const interactionId = chat?.interaction?.id;
 	const { pinned, listRows } = useMemo(
@@ -218,7 +222,8 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 					epoch={chat.epoch}
 					terminalKey={terminalKey}
 					latest={latest}
-					truncated={chat.truncated}
+					history={history.header}
+					onLoadOlder={history.loadOlder}
 					allToolsOpen={allToolsOpen}
 				/>
 			)}

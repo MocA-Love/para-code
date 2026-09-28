@@ -1,8 +1,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 import { ChevronDown } from 'lucide-react-native';
+import type { AgentHistoryHeader } from '../../agentHistory.js';
 import { AgentInitialRevealGate } from '../../agentInitialReveal.js';
 import { shouldHandleLatestEntry } from '../../agentNavigation.js';
 import { AgentStickyScroll, agentScrollEndOffset } from '../../agentStickyScroll.js';
@@ -12,6 +13,9 @@ import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
 import { Icon } from '../../ui/index.js';
 import { ChatRowView } from './chatItems.js';
 import { chatRowKey, type ChatRow } from './chatRows.js';
+
+/** 一覧の上端からこの距離に入ったら古い発言を読み込む（W2-30。Orca と同じ 60pt）。 */
+const LOAD_OLDER_THRESHOLD = 60;
 
 export interface ChatListHandle {
 	/** 最新まで送って追従を再開する（送信の直後など）。 */
@@ -24,15 +28,20 @@ export interface ChatListHandle {
  *  - 開いた直後は最下部へ届くまで見せない（履歴が上から流れ落ちて見えないように。`agentInitialReveal.ts`）
  *  - 通知やホームから「新しく開いた」印（`latest`）が来たら最新まで送る
  *  - 遡っている間は右下に「最新へ」のボタンと新着の件数を出す
+ *  - 上端に近づいたら古い発言を読み込み（W2-30）、先頭に足しても見ている位置を動かさない
+ *    （`maintainVisibleContentPosition`。先頭の案内の行を数えないよう 1 から）
  */
 export const ChatList = forwardRef<ChatListHandle, {
 	rows: readonly ChatRow[];
 	epoch: string;
 	terminalKey: string;
 	latest: string | undefined;
-	truncated: boolean;
+	/** 先頭の案内（古い発言の読み込み・省略・上限）。 */
+	history: AgentHistoryHeader;
+	/** 古い発言を読み込む（さかのぼれない PC では何もしない）。 */
+	onLoadOlder: () => void;
 	allToolsOpen: boolean;
-}>(function ChatList({ rows, epoch, terminalKey, latest, truncated, allToolsOpen }, ref) {
+}>(function ChatList({ rows, epoch, terminalKey, latest, history, onLoadOlder, allToolsOpen }, ref) {
 	const listRef = useRef<FlatList<ChatRow>>(null);
 	const column = useContentColumnStyle();
 	const scrollState = useRef(new AgentStickyScroll()).current;
@@ -90,14 +99,21 @@ export const ChatList = forwardRef<ChatListHandle, {
 		return () => cancelAnimationFrame(frame);
 	}, [latest, scrollState, syncSticky, scrollToBottom]);
 
-	const previousCountRef = useRef(rows.length);
+	// 新着の数は、前回いちばん下にあった行より後ろに増えた行だけを数える（古い発言を先頭に足しても数えない）。
+	const previousLastKeyRef = useRef<string | undefined>(undefined);
 	useEffect(() => {
-		const delta = rows.length - previousCountRef.current;
-		previousCountRef.current = rows.length;
-		if (delta > 0 && !scrollState.sticky) {
+		const previousLast = previousLastKeyRef.current;
+		const last = rows.at(-1);
+		previousLastKeyRef.current = last !== undefined ? chatRowKey(last, epoch) : undefined;
+		if (previousLast === undefined || scrollState.sticky) {
+			return;
+		}
+		const index = rows.findIndex(row => chatRowKey(row, epoch) === previousLast);
+		const delta = index >= 0 ? rows.length - 1 - index : 0;
+		if (delta > 0) {
 			setNewCount(count => count + delta);
 		}
-	}, [rows.length, scrollState]);
+	}, [rows, epoch, scrollState]);
 
 	const scrollToLatest = useCallback(() => {
 		scrollState.followNow();
@@ -117,6 +133,10 @@ export const ChatList = forwardRef<ChatListHandle, {
 		const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
 		if (scrollState.handleScroll({ offsetY: contentOffset.y, layoutHeight: layoutMeasurement.height, contentHeight: contentSize.height })) {
 			syncSticky();
+		}
+		// 上端に近づいたら古い発言を読み込む。開いた直後（最下部へ送る前）の位置では読まない。
+		if (revealed && contentOffset.y < LOAD_OLDER_THRESHOLD && history.kind === 'more' && !history.loading && contentSize.height > layoutMeasurement.height) {
+			onLoadOlder();
 		}
 	};
 	// キーボードで一覧が縮んだとき、追従中なら最下部に張り付き直す（最新の行がキーボードの裏に隠れないように）。
@@ -140,7 +160,8 @@ export const ChatList = forwardRef<ChatListHandle, {
 				keyExtractor={row => chatRowKey(row, epoch)}
 				renderItem={({ item }) => <ChatRowView row={item} terminalKey={terminalKey} allToolsOpen={allToolsOpen} />}
 				extraData={allToolsOpen}
-				ListHeaderComponent={truncated ? <Text style={styles.truncated}>古い履歴は省略しています</Text> : null}
+				ListHeaderComponent={<HistoryHeader header={history} onLoadOlder={onLoadOlder} />}
+				maintainVisibleContentPosition={MAINTAIN_POSITION}
 				ListEmptyComponent={(
 					<View style={styles.empty}>
 						<Text style={styles.emptyTitle}>まだ会話がありません</Text>
@@ -174,7 +195,49 @@ export const ChatList = forwardRef<ChatListHandle, {
 	);
 });
 
+/** 先頭に古い発言を足しても、見ている行の位置を保つ（0 番目は先頭の案内の行なので 1 から）。 */
+const MAINTAIN_POSITION = { minIndexForVisible: 1 } as const;
+
+/** 一覧の先頭の案内。行の数を変えないよう、何も出さないときも空の行を置く（位置の保持が 1 番目から数えるため）。 */
+function HistoryHeader({ header, onLoadOlder }: { header: AgentHistoryHeader; onLoadOlder: () => void }) {
+	switch (header.kind) {
+		case 'truncated':
+			return <Text style={styles.truncated}>古い履歴は省略しています</Text>;
+		case 'capped':
+			return <Text style={styles.truncated}>これより前の発言は PC で見てください</Text>;
+		case 'error':
+			return <Text style={styles.truncated}>{header.message}</Text>;
+		case 'more':
+			return header.loading ? (
+				<View style={styles.older} accessibilityLabel="古い発言を読み込んでいます">
+					<ActivityIndicator size="small" color={colors.textMuted} />
+				</View>
+			) : (
+				<Pressable
+					style={styles.older}
+					onPress={() => { hapticSelection(); onLoadOlder(); }}
+					accessibilityRole="button"
+				>
+					<Text style={styles.olderText}>さらに前の発言を読み込む</Text>
+				</Pressable>
+			);
+		default:
+			return <View />;
+	}
+}
+
 const styles = StyleSheet.create({
+	older: {
+		alignItems: 'center',
+		justifyContent: 'center',
+		minHeight: HIT_SIZE,
+		paddingVertical: space.xs,
+	},
+	olderText: {
+		fontSize: type.meta,
+		fontWeight: '600',
+		color: colors.textDim,
+	},
 	root: {
 		flex: 1,
 		minHeight: 0,

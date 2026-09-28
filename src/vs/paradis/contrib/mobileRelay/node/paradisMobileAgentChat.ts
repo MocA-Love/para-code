@@ -51,6 +51,7 @@ import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, p
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
+import { IParadisHistoryCursor, PARADIS_HISTORY_FILE_CAP, PARADIS_HISTORY_PAGE_LIMIT, paradisDecodeHistoryCursor, paradisEncodeHistoryCursor, paradisHistoryCursorHasMore, paradisReadTranscriptHistory } from './paradisAgentChatHistory.js';
 import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
@@ -123,7 +124,12 @@ type AgentInbound =
 	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string }
 	| { t: 'activity-detail'; id: number; token?: string; requestId: string; epoch: string; activityId: string }
 	| { t: 'tool-full'; id: number; token?: string; requestId: string; epoch: string; rev: number }
-	| { t: 'tool-image'; id: number; token?: string; requestId: string; epoch: string; rev: number; index: number };
+	| { t: 'tool-image'; id: number; token?: string; requestId: string; epoch: string; rev: number; index: number }
+	/**
+	 * 古い発言を求める（W2-30、`agent.history.page.v1`）。`beforeRev` はモバイルが持っているいちばん古い発言の rev。
+	 * `cursor` が無ければ PC のメモリ（リング）から、あれば前回の返事の `cursor` の位置から記録ファイルを後ろへ読む。
+	 */
+	| { t: 'history'; id: number; token?: string; requestId: string; epoch: string; beforeRev: number; cursor?: string; limit?: number };
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
@@ -143,6 +149,12 @@ type AgentOutbound =
 	 * 求めが古い・画面を読めない相手のときの `error` だけ。
 	 */
 	| { t: 'approval-options'; id: number; requestId: string; interactionId: string; options?: readonly IParadisAgentApprovalOption[]; error?: string }
+	/**
+	 * 古い発言（W2-30）。messages は古い順。記録ファイルから読んだものの rev は負の数（-1 から古い方へ減る）で、全文・画像の
+	 * 取り寄せはできない。`cursor` があれば続きがあり、次の求めにそのまま付ける。`hasMore` が false ならこれより前は無いか、
+	 * `capped`（1 ペインで読める上限に達した）。
+	 */
+	| { t: 'history'; id: number; requestId: string; epoch: string; messages?: readonly IParadisAgentChatMessage[]; cursor?: string; hasMore?: boolean; capped?: true; error?: string }
 	| { t: 'none'; id: number };
 
 type AgentQuestionAnswer =
@@ -682,6 +694,15 @@ function isValidToolImageRequest(msg: AgentInboundCandidate): msg is AgentInboun
 		&& isValidControlRequest(msg);
 }
 
+function isValidHistoryRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'history' }> {
+	return msg.t === 'history'
+		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& typeof msg.beforeRev === 'number' && Number.isSafeInteger(msg.beforeRev) && msg.beforeRev >= -PARADIS_HISTORY_FILE_CAP - 1
+		&& (msg.cursor === undefined || (typeof msg.cursor === 'string' && paradisDecodeHistoryCursor(msg.cursor) !== undefined))
+		&& (msg.limit === undefined || (typeof msg.limit === 'number' && Number.isInteger(msg.limit) && msg.limit >= 1 && msg.limit <= PARADIS_HISTORY_PAGE_LIMIT))
+		&& isValidControlRequest(msg);
+}
+
 function parseAgentInbound(value: unknown): AgentInbound | undefined {
 	const msg = rec(value);
 	if (msg === undefined) {
@@ -701,6 +722,7 @@ function parseAgentInbound(value: unknown): AgentInbound | undefined {
 		case 'activity-detail': return isValidActivityDetailRequest(msg) ? msg : undefined;
 		case 'tool-full': return isValidToolFullRequest(msg) ? msg : undefined;
 		case 'tool-image': return isValidToolImageRequest(msg) ? msg : undefined;
+		case 'history': return isValidHistoryRequest(msg) ? msg : undefined;
 		default: return undefined;
 	}
 }
@@ -1517,12 +1539,17 @@ class TranscriptTailer {
 			const length = stat.size - start;
 			const buffer = Buffer.alloc(length);
 			const { bytesRead } = await handle.read(buffer, 0, length, start);
-			let text = this.decoder.decode(buffer.subarray(0, bytesRead), { stream: true });
+			let body = buffer.subarray(0, bytesRead);
+			let lineBase = start;
 			if (start > 0) {
-				// 途中から読んだ場合、最初の不完全行を捨てる
-				const firstNewline = text.indexOf('\n');
-				text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
+				// 途中から読んだ場合、最初の不完全行を捨てる。行の頭のバイト位置を覚えるため、文字にする前のバイト列で探す
+				// （古い発言をファイルから読むときの境目になる。W2-30）。
+				const firstNewline = body.indexOf(0x0a);
+				lineBase = firstNewline >= 0 ? start + firstNewline + 1 : start + bytesRead;
+				body = body.subarray(firstNewline >= 0 ? firstNewline + 1 : bytesRead);
 			}
+			const text = this.decoder.decode(body, { stream: true });
+			this.lineBase = lineBase;
 			this.offset = start + bytesRead;
 			// ここまで来て初めて「現在の末尾」を掴めた。open に失敗した回はここを通らず
 			// offset が 0 のままなので、次の読みは追記ではなく全文の読み直しになる。
@@ -1538,6 +1565,54 @@ class TranscriptTailer {
 
 	/** {@link initialLoad} で現在の末尾を掴めたか。掴む前の読みは追記ではない。 */
 	private sawInitialEof = false;
+
+	/** 持ち越している不完全な行（remainder）の頭のバイト位置。行の頭の位置を数える起点（W2-30）。 */
+	private lineBase = 0;
+	/** 記録ファイルから作った発言の rev → その行の頭のバイト位置（リングにある間だけ。モバイルへは送らない）。 */
+	private readonly lineStartByRev = new Map<number, number>();
+	/**
+	 * リングのいちばん古い「ファイルから作った発言」の行から、リングの外へ押し出した発言の数。1 行から発言が複数できるので、
+	 * 行の途中で押し出されたぶんを古い発言の読み取りに含めるために覚える。
+	 */
+	private evictedAtLine: { readonly offset: number; readonly count: number } | undefined;
+
+	/** リングを上限まで縮める。押し出した発言の行の位置は捨て、境目の行から押し出した数を覚える。 */
+	private trimRing(): void {
+		if (this.messages.length <= MESSAGE_RING_LIMIT) {
+			return;
+		}
+		const evicted = this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
+		const evictedStarts: number[] = [];
+		for (const message of evicted) {
+			const start = this.lineStartByRev.get(message.rev);
+			if (start !== undefined) {
+				evictedStarts.push(start);
+				this.lineStartByRev.delete(message.rev);
+			}
+		}
+		const boundary = this.messages.find(message => this.lineStartByRev.has(message.rev));
+		const boundaryStart = boundary !== undefined ? this.lineStartByRev.get(boundary.rev) : undefined;
+		if (boundaryStart === undefined) {
+			this.evictedAtLine = undefined;
+			return;
+		}
+		const count = evictedStarts.filter(start => start === boundaryStart).length;
+		const previous = this.evictedAtLine?.offset === boundaryStart ? this.evictedAtLine.count : 0;
+		this.evictedAtLine = count + previous > 0 ? { offset: boundaryStart, count: count + previous } : undefined;
+	}
+
+	/**
+	 * リングより前の発言がファイルのどこから前にあるか（W2-30 の 2 段目の起点）。リングにファイルから作った発言が
+	 * 無ければ、読み終えたところ（それより前の行からは、リングに残る発言が 1 つもできなかった）。
+	 */
+	historyFloor(): IParadisHistoryCursor {
+		const boundary = this.messages.find(message => this.lineStartByRev.has(message.rev));
+		const boundaryStart = boundary !== undefined ? this.lineStartByRev.get(boundary.rev) : undefined;
+		if (boundaryStart === undefined) {
+			return { offset: this.lineBase, keep: 0 };
+		}
+		return { offset: boundaryStart, keep: this.evictedAtLine?.offset === boundaryStart ? this.evictedAtLine.count : 0 };
+	}
 
 	private async readAppended(): Promise<void> {
 		let handle: fs.FileHandle;
@@ -1557,6 +1632,9 @@ class TranscriptTailer {
 				this.messages.length = 0;
 				this.offset = 0;
 				this.remainder = '';
+				this.lineBase = 0;
+				this.lineStartByRev.clear();
+				this.evictedAtLine = undefined;
 				// offset 0 から読み直すので、前のバイト境界を持ち越したデコーダは捨てる。
 				this.decoder = new TextDecoder();
 				this.initialTruncated = false;
@@ -1679,13 +1757,18 @@ class TranscriptTailer {
 	private consumeText(text: string, emitDelta: boolean): void {
 		const combined = this.remainder + text;
 		const lines = combined.split('\n');
-		this.remainder = (lines.pop() ?? '').slice(-MAX_TRANSCRIPT_LINE_BYTES);
+		const lastPiece = lines.pop() ?? '';
+		this.remainder = lastPiece.slice(-MAX_TRANSCRIPT_LINE_BYTES);
+		// 行の頭のバイト位置（古い発言をファイルから読むときの境目。W2-30）。
+		let lineOffset = this.lineBase;
 		// fullText / imageData はここでだけ通過する（この直後に退避して送信対象から外す）。
 		const added: (IParadisAgentChatMessage & { fullText?: string; imageData?: readonly IFlattenedImage[] })[] = [];
 		const signals = newParseSignals();
 		let latestProgress: ITranscriptProgress | undefined;
 		let issueUrlsChanged = false;
 		for (const line of lines) {
+			const lineStart = lineOffset;
+			lineOffset += Buffer.byteLength(line, 'utf8') + 1;
 			const trimmed = line.trim();
 			if (trimmed.length === 0) {
 				continue;
@@ -1740,14 +1823,17 @@ class TranscriptTailer {
 						this.liveQuestionRealIds.delete(message.toolUseId);
 						for (const syntheticId of syntheticIds) {
 							signals.answeredIds.push(syntheticId);
+							this.lineStartByRev.set(this.rev, lineStart);
 							added.push({ ...message, toolUseId: syntheticId, rev: this.rev++ });
 						}
 						continue;
 					}
 				}
+				this.lineStartByRev.set(this.rev, lineStart);
 				added.push({ ...message, rev: this.rev++ });
 			}
 		}
+		this.lineBase = lineOffset + (lastPiece.length > this.remainder.length ? Buffer.byteLength(lastPiece.slice(0, lastPiece.length - this.remainder.length), 'utf8') : 0);
 		// fullText / 画像の実体は送信メッセージから外し、rev 単位でここに退避する
 		// （'tool-full' / 'tool-image' の取り寄せ用）。画像はメタ情報だけをメッセージに残す。
 		for (let i = 0; i < added.length; i++) {
@@ -1801,9 +1887,7 @@ class TranscriptTailer {
 			return;
 		}
 		this.messages.push(...added);
-		if (this.messages.length > MESSAGE_RING_LIMIT) {
-			this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
-		}
+		this.trimRing();
 		if (emitDelta) {
 			this.delegate.onDelta(added);
 		}
@@ -1920,9 +2004,7 @@ class TranscriptTailer {
 				text: truncateText(text, TOOL_TEXT_LIMIT), ts: Date.now(), rev: this.rev++, toolUseId: interactionId,
 			};
 			this.messages.push(message);
-			if (this.messages.length > MESSAGE_RING_LIMIT) {
-				this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
-			}
+			this.trimRing();
 			this.delegate.onDelta([message]);
 			this.delegate.onActivity();
 		});
@@ -1952,9 +2034,7 @@ class TranscriptTailer {
 				ts: Date.now(), rev: this.rev++, toolUseId: interaction.id,
 			};
 			this.messages.push(message);
-			if (this.messages.length > MESSAGE_RING_LIMIT) {
-				this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
-			}
+			this.trimRing();
 			this.delegate.onDelta([message]);
 			this.delegate.onActivity();
 		});
@@ -2246,9 +2326,7 @@ class TranscriptTailer {
 			// 消すと handleApprovalAction の daemon 経路に乗らず Codex が永久にブロックされる。
 			this.removeApprovals(entry => !paradisIsCodexDaemonApprovalInteraction(entry.interaction.id));
 			this.messages.push(...added);
-			if (this.messages.length > MESSAGE_RING_LIMIT) {
-				this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
-			}
+			this.trimRing();
 			this.delegate.onDelta(added, quiet ? { quiet: true } : undefined);
 			this.delegate.onActivity();
 		});
@@ -2548,6 +2626,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	/** 計測専用: キー注入後に質問が消えたかを確かめる遅延チェック。 */
 	private readonly questionSettleTimers = new Set<ReturnType<typeof setTimeout>>();
 	private readonly activityDetailRequests = new Map<string, string>();
+	/** 記録ファイルから古い発言を読んでいるペイン（1 ペインで同時に 1 本。W2-30）。 */
+	private readonly historyReads = new Set<string>();
 	/** 送信中の 'tool-image': `mobileId\0requestId` → token。1件あたり数MBのため同時数を抑える。 */
 	private readonly toolImageRequests = new Map<string, string>();
 	private readonly persistedActivityTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -3209,6 +3289,94 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'tool-image':
 				this.handleToolImageRequest(mobileId, msg);
 				break;
+			case 'history':
+				this.handleHistoryRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] history failed', err));
+				break;
+		}
+	}
+
+	/**
+	 * 古い発言を返す（W2-30、Q122）。
+	 *
+	 * 1 段目: `cursor` が無ければ、PC のメモリにある発言（ペインごとに 400 件のリング）のうち `beforeRev` より前を返す。
+	 * リングを読み切ったら、その手前の記録ファイルの位置を `cursor` として添える。
+	 * 2 段目: `cursor` があれば、記録ファイルをその位置から後ろへ読んで返す（1 回 2MB まで）。rev は負の数を振り、1 ペインで
+	 * {@link PARADIS_HISTORY_FILE_CAP} 件まで。重いので 1 ペインで同時に 1 本だけ。
+	 */
+	private async handleHistoryRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'history' }>): Promise<void> {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const reply = (body: Omit<Extract<AgentOutbound, { t: 'history' }>, 't' | 'id' | 'requestId' | 'epoch'>) => {
+			this.sendTo(mobileId, { t: 'history', id: msg.id, requestId: msg.requestId, epoch: msg.epoch, ...body }, token ?? msg.token);
+		};
+		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)) {
+			reply({ error: 'stale-session' });
+			return;
+		}
+		const limit = msg.limit ?? 60;
+		if (msg.cursor === undefined) {
+			const ring = tailer.messages;
+			const oldestRingRev = ring[0]?.rev;
+			// モバイルの持っているいちばん古い発言が、もうリングから押し出されている（読んでいる間に新しい発言が大量に来た）。
+			// ここからファイルを読むと、モバイルが持っている発言と重なる。
+			if (msg.beforeRev < 0 || (oldestRingRev !== undefined && msg.beforeRev < oldestRingRev)) {
+				reply({ error: 'history-moved' });
+				return;
+			}
+			const older = ring.filter(message => message.rev < msg.beforeRev);
+			const page = older.slice(-limit);
+			if (older.length > page.length) {
+				reply({ messages: page, hasMore: true });
+				return;
+			}
+			const floor = tailer.historyFloor();
+			const cursor = paradisHistoryCursorHasMore(floor) ? paradisEncodeHistoryCursor(floor) : undefined;
+			reply({ messages: page, hasMore: cursor !== undefined, ...(cursor !== undefined ? { cursor } : {}) });
+			return;
+		}
+		const cursor = paradisDecodeHistoryCursor(msg.cursor)!;
+		// ファイルから読んだ発言の rev は負の数。最初のページはモバイルの持っている rev（0 以上）の手前の -1 から振る。
+		const newestRev = Math.min(msg.beforeRev, 0) - 1;
+		const remaining = PARADIS_HISTORY_FILE_CAP + newestRev + 1;
+		if (remaining <= 0) {
+			reply({ messages: [], hasMore: false, capped: true });
+			return;
+		}
+		if (this.historyReads.has(token)) {
+			reply({ error: 'busy' });
+			return;
+		}
+		this.historyReads.add(token);
+		let handle: fs.FileHandle | undefined;
+		try {
+			handle = await fs.open(tailer.transcriptPath, 'r');
+			if (!await isAllowedOpenTranscriptPath(handle, tailer.transcriptPath)) {
+				reply({ error: 'unavailable' });
+				return;
+			}
+			const stat = await handle.stat();
+			if (cursor.offset > stat.size) {
+				reply({ error: 'history-moved' });
+				return;
+			}
+			const page = await paradisReadTranscriptHistory(handle, tailer.agent, cursor, Math.min(limit, remaining), newestRev);
+			// 読んでいる間に会話が読み直された（ファイルが縮んだ等）なら、位置の意味が変わっている。
+			if (this.tailers.get(token) !== tailer || tailer.epoch !== msg.epoch) {
+				reply({ error: 'stale-session' });
+				return;
+			}
+			const capped = page.next !== undefined && remaining - page.messages.length <= 0;
+			reply({
+				messages: page.messages,
+				hasMore: page.next !== undefined && !capped,
+				...(page.next !== undefined && !capped ? { cursor: paradisEncodeHistoryCursor(page.next) } : {}),
+				...(capped ? { capped: true } : {}),
+			});
+		} catch {
+			reply({ error: 'unavailable' });
+		} finally {
+			this.historyReads.delete(token);
+			await handle?.close().catch(() => { /* ignore */ });
 		}
 	}
 
