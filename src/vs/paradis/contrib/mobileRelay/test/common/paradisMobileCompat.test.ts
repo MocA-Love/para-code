@@ -17,6 +17,8 @@ import {
 	paradisParseMobileCapabilities,
 	type IParadisMobileCompatInput,
 } from '../../common/paradisMobileCompat.js';
+import { PARADIS_MOBILE_PR_MERGE_CAPABILITY, PARADIS_MOBILE_PR_VIEW_CAPABILITY } from '../../common/paradisMobilePullRequest.js';
+import { PARADIS_MOBILE_SCM_COMMIT_RECOVER_CAPABILITY, PARADIS_MOBILE_SCM_STAGE_FILE_CAPABILITY, PARADIS_MOBILE_SCM_SYNC_CAPABILITY } from '../../common/paradisMobileScmSync.js';
 
 suite('ParadisMobileCompat', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -70,6 +72,16 @@ suite('ParadisMobileCompat', () => {
 			legacyPeer: false,
 			ownListsAreWellFormed: true,
 		});
+	});
+
+	test('PC は W2-15（同期・コミットの立て直し・ファイルごとのステージ）と W2-36（PR の画面・マージ）を広告する', () => {
+		assert.deepStrictEqual([
+			PARADIS_MOBILE_SCM_SYNC_CAPABILITY,
+			PARADIS_MOBILE_SCM_COMMIT_RECOVER_CAPABILITY,
+			PARADIS_MOBILE_SCM_STAGE_FILE_CAPABILITY,
+			PARADIS_MOBILE_PR_VIEW_CAPABILITY,
+			PARADIS_MOBILE_PR_MERGE_CAPABILITY,
+		].map(name => PARADIS_MOBILE_PC_CAPABILITIES.includes(name)), [true, true, true, true, true]);
 	});
 
 	test('個々の操作の版は窓の中（最低版〜自分の版）だけを受け付ける', () => {

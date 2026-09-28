@@ -13,10 +13,11 @@
 // 同じ execFile('git', ...) 直叩き。upstream サービスの改変を避けるため fork 側に独立させている。
 
 import * as cp from 'child_process';
-import { existsSync, promises as fs } from 'fs';
+import { constants as fsConstants, existsSync, promises as fs } from 'fs';
 import { homedir } from 'os';
 import { CancellationError } from '../../../../base/common/errors.js';
-import { basename, dirname, join } from '../../../../base/common/path.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
+import { basename, dirname, isAbsolute, join } from '../../../../base/common/path.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -32,6 +33,8 @@ import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IPar
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisParseGhIssueStatus, paradisParseIssueUrl } from '../../../common/paradisIssueDetection.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
 import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
+import { PARADIS_GIT_NETWORK_SUBCOMMANDS, paradisRestrictedGitArgsError } from '../common/paradisGitRestrictedArgs.js';
+import { PARADIS_PR_DETAIL_FIELDS, PARADIS_PR_FAILED_LOG_JOBS, ParadisPullRequestLookup, paradisParseGhPullRequestDetail, paradisPickMergeMethod, paradisTailFailedJobLog } from '../../mobileRelay/common/paradisMobilePullRequest.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { getWslExePath } from '../../../../platform/agentHost/node/wslRemoteAgentHostHelpers.js';
 import { ParadisCommandArgument, paradisBuildWslInvocationArgs, paradisMergeWslEnvNames, paradisParseWslLoginPath, paradisParseWslUncPath, paradisPlanWslCommand, paradisWslLoginPathProbeArgs, paradisWslPathArg } from '../../../common/paradisWslPath.js';
@@ -104,6 +107,48 @@ const PARADIS_ISSUE_STATUS_LOOKUPS_PER_CALL = 8;
 const PARADIS_WSL_COMMAND_TIMEOUT_MS = 30_000;
 
 /**
+ * モバイルからの push / fetch / pull と commit（フックが動く）の上限時間。大きなリポジトリの push や、
+ * lint・テストを走らせる pre-commit は 30 秒を超えることがある（Orca W2-15）。
+ */
+const PARADIS_GIT_LONG_COMMAND_TIMEOUT_MS = 120_000;
+
+/** 時間切れの SIGTERM の後、SIGKILL するまでの猶予（git が index.lock を片付ける時間）。 */
+const PARADIS_GIT_KILL_GRACE_MS = 5_000;
+
+/** 控えたインデックスを捨てるまでの時間（コミットの待ち時間より十分長く）。 */
+const PARADIS_INDEX_BACKUP_TTL_MS = 10 * 60_000;
+
+/** runGit が集める出力の上限（標準出力と標準エラーの合計、文字）。 */
+const PARADIS_RUN_GIT_MAX_OUTPUT = 4 * 1024 * 1024;
+
+/** 控えのファイル名の印（`index.paradis-mobile-<uuid>`）。 */
+const PARADIS_INDEX_BACKUP_INFIX = '.paradis-mobile-';
+
+/** 戻すときに `index.lock` の取得をやり直す時間と間隔。 */
+const PARADIS_INDEX_LOCK_RETRY_MS = 1_500;
+const PARADIS_INDEX_LOCK_RETRY_INTERVAL_MS = 100;
+
+/**
+ * 子プロセスを止める。`group` なら（detached で起動した）プロセスグループごと止め、フックの孫プロセスも残さない。
+ */
+function paradisKillProcessTree(child: cp.ChildProcess | undefined, signal: NodeJS.Signals, group: boolean): void {
+	const pid = child?.pid;
+	if (group && typeof pid === 'number') {
+		try {
+			process.kill(-pid, signal);
+			return;
+		} catch {
+			// グループが既に無い。子だけを止めてみる
+		}
+	}
+	try {
+		child?.kill?.(signal);
+	} catch {
+		// 既に終わっている
+	}
+}
+
+/**
  * シェルが「そんなコマンドは無い」で終わるときの終了コード。WSL へ振り分けた実行では
  * 実行ファイル不在が spawn の ENOENT ではなくこの終了コードとして現れる（起動しているのは
  * 必ず存在する wsl.exe のため）。
@@ -137,6 +182,8 @@ export class ParadisWorktreeGitService {
 		private readonly isWindowsHost: boolean = isWindows,
 		/** git clone の起動口。テストからのみ差し替える。 */
 		private readonly spawn: typeof cp.spawn = cp.spawn,
+		/** runGit の待ち時間（通常・長い操作・SIGTERM から SIGKILL までの猶予）。テストからのみ差し替える。 */
+		private readonly gitTimeouts: { readonly short: number; readonly long: number; readonly grace: number } = { short: PARADIS_WSL_COMMAND_TIMEOUT_MS, long: PARADIS_GIT_LONG_COMMAND_TIMEOUT_MS, grace: PARADIS_GIT_KILL_GRACE_MS },
 	) {
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
@@ -226,7 +273,9 @@ export class ParadisWorktreeGitService {
 		});
 	}
 
-	private static readonly RUN_GIT_ALLOWED_SUBCOMMANDS: ReadonlySet<string> = new Set(['status', 'diff', 'add', 'commit', 'log', 'rev-parse', 'branch', 'restore', 'remote', 'show']);
+	// push / fetch / pull（Orca W2-15 のスマホからの同期）は、許すオプションだけを列挙した追加の検査に掛ける
+	// （paradisRestrictedGitArgsError）。強制 push（`--force` 系・`-f`・`+refspec`）とリモートのブランチの削除はそこで弾く。
+	private static readonly RUN_GIT_ALLOWED_SUBCOMMANDS: ReadonlySet<string> = new Set(['status', 'diff', 'add', 'commit', 'log', 'rev-parse', 'branch', 'restore', 'remote', 'show', 'push', 'fetch', 'pull']);
 	// 外部コマンド実行やリポジトリ差し替えに繋がるオプションを拒否する。`-C`/`-c` は自前で
 	// 先頭に足すので、呼び出し元が渡す args の側からは常に禁止する。`--output` は diff/log/show が
 	// 受け付け、値に任意パスを渡せば任意ファイル書き込みに使える。
@@ -255,17 +304,238 @@ export class ParadisWorktreeGitService {
 				throw new Error(`ParadisWorktreeGit: git argument not allowed: ${arg}`);
 			}
 		}
+		const restricted = paradisRestrictedGitArgsError(args);
+		if (restricted !== undefined) {
+			throw new Error(`ParadisWorktreeGit: ${restricted}`);
+		}
 		const env = await this.cachedShellEnv.getEnv();
 		// core.quotepath=false: 既定では非ASCIIパスが八進エスケープ+引用符("\345...")で出力され、
 		// モバイルのソース管理タブで文字化け表示になるため無効化する。
 		const gitArgs: ParadisCommandArgument[] = ['-C', paradisWslPathArg(repoPath), '-c', 'core.quotepath=false', ...args];
-		const invocation = await this.resolveInvocation('git', gitArgs, undefined, ['GIT_TERMINAL_PROMPT'], { ...env, GIT_TERMINAL_PROMPT: '0' });
-		return new Promise<IParadisWorktreeGitCommandResult>(resolve => {
-			this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', timeout: PARADIS_WSL_COMMAND_TIMEOUT_MS, killSignal: 'SIGKILL', windowsHide: true, env: invocation.env, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
-				const rawCode: unknown = err ? (err as NodeJS.ErrnoException & { code?: unknown }).code ?? 1 : 0;
-				resolve({ code: typeof rawCode === 'number' ? rawCode : 1, stdout: String(stdout), stderr: String(stderr) });
+		// GCM_INTERACTIVE=never: Git Credential Manager が PC の画面に認証のウィンドウを出して、誰もいない PC で
+		// push / fetch を待たせ続けないようにする（端末の問い合わせは GIT_TERMINAL_PROMPT=0 で止めている）
+		const invocation = await this.resolveInvocation('git', gitArgs, undefined, ['GIT_TERMINAL_PROMPT', 'GCM_INTERACTIVE'], { ...env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' });
+		// リモートとの通信とコミットのフック（lint やテストを走らせる pre-commit）は 30 秒では終わらないことがある
+		const timeout = PARADIS_GIT_NETWORK_SUBCOMMANDS.has(args[0]) || args[0] === 'commit' ? this.gitTimeouts.long : this.gitTimeouts.short;
+		// 時間切れは execFile の timeout（子の git だけを SIGKILL する）に任せない。SIGKILL だと git が index.lock を
+		// 消せず、フックが起こした孫プロセス（lint・テスト・post-commit の sleep）も残る。execFile は `detached` を spawn へ
+		// 渡さないのでプロセスグループも作られない。POSIX では spawn の `detached: true` で git を新しいプロセスグループの
+		// 先頭にし、グループごと SIGTERM → 猶予の後 SIGKILL で止める（Windows は子を止めるだけ）
+		const result = await this.spawnGitWithTimeout(invocation, timeout, !this.isWindowsHost);
+		if (!result.timedOut) {
+			return { code: result.code, stdout: result.stdout, stderr: result.stderr };
+		}
+		// 時間切れで止めたことと、ロックが残ったかを、呼び出し側（失敗の要約）が見分けられるように出力へ足す
+		const lockRemains = await this.gitIndexHostPath(repoPath).then(index => index !== undefined && existsSync(`${index}.lock`), () => false);
+		return {
+			code: result.code === 0 ? 1 : result.code,
+			stdout: result.stdout,
+			stderr: `${result.stderr}\nParadisWorktreeGit: timed out after ${timeout / 1000}s${lockRemains ? '\nParadisWorktreeGit: index.lock remains' : ''}`,
+		};
+	}
+
+	/**
+	 * git を spawn し、出力を集め（合わせて {@link PARADIS_RUN_GIT_MAX_OUTPUT} 字まで）、時間切れならプロセスグループごと
+	 * 止める。時間切れの後は、孫プロセスが出力のパイプを握ったままでも、子が終わるか SIGKILL の猶予が過ぎた時点で返す
+	 * （応答は上限＋猶予の 2 倍までで返る）。
+	 */
+	private spawnGitWithTimeout(invocation: { readonly file: string; readonly args: readonly string[]; readonly cwd: string | undefined; readonly env: NodeJS.ProcessEnv }, timeout: number, ownGroup: boolean): Promise<IParadisWorktreeGitCommandResult & { readonly timedOut: boolean }> {
+		return new Promise(resolve => {
+			const stdout: string[] = [];
+			const stderr: string[] = [];
+			const timers: { main?: Timeout; kill?: Timeout; final?: Timeout } = {};
+			let size = 0;
+			let overflow = false;
+			let timedOut = false;
+			let settled = false;
+			let child: cp.ChildProcess;
+			const finish = (code: number, extra?: string) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				clearTimeout(timers.main);
+				clearTimeout(timers.kill);
+				clearTimeout(timers.final);
+				child?.stdout?.destroy();
+				child?.stderr?.destroy();
+				resolve({ code, stdout: stdout.join(''), stderr: `${stderr.join('')}${overflow ? '\nParadisWorktreeGit: output exceeded the limit' : ''}${extra ?? ''}`, timedOut });
+			};
+			try {
+				child = this.spawn(invocation.file, [...invocation.args], { cwd: invocation.cwd, env: invocation.env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...(ownGroup ? { detached: true } : {}) });
+			} catch (error) {
+				resolve({ code: 1, stdout: '', stderr: error instanceof Error ? error.message : String(error), timedOut: false });
+				return;
+			}
+			const collect = (sink: string[]) => (chunk: string | Buffer) => {
+				const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+				if (overflow) {
+					return;
+				}
+				size += text.length;
+				if (size > PARADIS_RUN_GIT_MAX_OUTPUT) {
+					overflow = true;
+					paradisKillProcessTree(child, 'SIGTERM', ownGroup);
+					return;
+				}
+				sink.push(text);
+			};
+			child.stdout?.setEncoding('utf8');
+			child.stderr?.setEncoding('utf8');
+			child.stdout?.on('data', collect(stdout));
+			child.stderr?.on('data', collect(stderr));
+			child.on('error', error => finish(1, `\n${error.message}`));
+			// 普段は出力を読み切った `close` で返す。時間切れの後は `exit`（孫が出力のパイプを握っていても）で返す
+			child.on('exit', (code) => {
+				if (timedOut) {
+					finish(typeof code === 'number' && code !== 0 ? code : 1);
+				}
 			});
+			child.on('close', (code) => finish(typeof code === 'number' ? code : 1));
+			timers.main = setTimeout(() => {
+				timedOut = true;
+				paradisKillProcessTree(child, 'SIGTERM', ownGroup);
+				timers.kill = setTimeout(() => {
+					paradisKillProcessTree(child, 'SIGKILL', ownGroup);
+					timers.final = setTimeout(() => finish(1), this.gitTimeouts.grace);
+				}, this.gitTimeouts.grace);
+			}, timeout);
 		});
+	}
+
+	/**
+	 * そのリポジトリ（worktree を含む）のインデックスのファイルを、このプロセスから触れるパスで返す。
+	 * `--path-format=absolute`（git 2.31 以降）は使わず、`--git-path index` の相対パスをリポジトリのパスに繋ぐ
+	 * （worktree では絶対パスが返る）。WSL のリポジトリは、ディストロの中のパスを UNC へ書き戻す。
+	 */
+	private async gitIndexHostPath(repoPath: string): Promise<string | undefined> {
+		const indexPath = (await this.exec(['-C', paradisWslPathArg(repoPath), 'rev-parse', '--git-path', 'index'])).trim();
+		if (indexPath.length === 0) {
+			return undefined;
+		}
+		const wsl = this.isWindowsHost ? paradisParseWslUncPath(repoPath) : undefined;
+		if (wsl !== undefined) {
+			const linuxPath = indexPath.startsWith('/') ? indexPath : `${wsl.linuxPath.replace(/\/+$/, '')}/${indexPath}`;
+			return `\\\\${wsl.host}\\${wsl.distro}${linuxPath.replace(/\//g, '\\')}`;
+		}
+		return isAbsolute(indexPath) ? indexPath : join(repoPath, indexPath);
+	}
+
+	/** 控えたインデックス（token → 控えの場所と、控えたときの元の時刻）。コミットの間だけ持つので、古いものは捨てる。 */
+	private readonly indexBackups = new Map<string, { readonly indexPath: string; readonly backupPath: string | undefined; readonly times: { readonly atime: Date; readonly mtime: Date } | undefined; readonly createdAt: number }>();
+
+	/**
+	 * インデックスのファイルをそのまま控える（モバイルの commitSafe が `git add -A` の前に呼ぶ。Orca W2-15 の Q114 A）。
+	 * ツリー（write-tree / read-tree）で戻すと、sparse-checkout の skip-worktree や intent-to-add などの印が消えるため、
+	 * ファイルごと控える。インデックスがまだ無ければ「無かった」ことを控える。
+	 */
+	async backupIndex(repoPath: string): Promise<{ readonly token: string }> {
+		if (typeof repoPath !== 'string' || repoPath.length === 0) {
+			throw new Error('invalid path');
+		}
+		const now = Date.now();
+		for (const [token, entry] of this.indexBackups) {
+			if (now - entry.createdAt > PARADIS_INDEX_BACKUP_TTL_MS) {
+				this.indexBackups.delete(token);
+			}
+		}
+		const indexPath = await this.gitIndexHostPath(repoPath);
+		if (indexPath === undefined) {
+			throw new Error('cannot locate the git index');
+		}
+		// 途中でプロセスが落ちるなどして残った古い控えを片付ける（このプロセスの台帳に無いものも含む）
+		await this.removeStaleIndexBackups(indexPath, now);
+		const token = generateUuid();
+		const backupPath = `${indexPath}${PARADIS_INDEX_BACKUP_INFIX}${token}`;
+		let existed = true;
+		let times: { atime: Date; mtime: Date } | undefined;
+		try {
+			const stat = await fs.stat(indexPath);
+			times = { atime: stat.atime, mtime: stat.mtime };
+			await fs.copyFile(indexPath, backupPath, fsConstants.COPYFILE_EXCL);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || existsSync(backupPath)) {
+				throw error;
+			}
+			existed = false;
+			times = undefined;
+		}
+		this.indexBackups.set(token, { indexPath, backupPath: existed ? backupPath : undefined, times, createdAt: now });
+		return { token };
+	}
+
+	private async removeStaleIndexBackups(indexPath: string, now: number): Promise<void> {
+		const prefix = `${basename(indexPath)}${PARADIS_INDEX_BACKUP_INFIX}`;
+		const dir = dirname(indexPath);
+		const names = await fs.readdir(dir).catch(() => [] as string[]);
+		for (const name of names) {
+			if (!name.startsWith(prefix)) {
+				continue;
+			}
+			const path = join(dir, name);
+			const stat = await fs.stat(path).catch(() => undefined);
+			if (stat !== undefined && now - stat.mtimeMs > PARADIS_INDEX_BACKUP_TTL_MS) {
+				await fs.rm(path, { force: true }).catch(() => undefined);
+			}
+		}
+	}
+
+	/**
+	 * 控えたインデックスへ戻す。git と同じく `index.lock` を排他で作ってから差し替える。ほかの git がロックを
+	 * 持っていれば短い間隔でやり直し、1.5 秒たっても取れなければ戻さずに `locked` を返す。戻したファイルの時刻は
+	 * 控えたときの元の時刻にする（git の stat の情報と揃え、次の status で全ファイルを読み直させない）。
+	 */
+	async restoreIndex(repoPath: string, token: string): Promise<{ readonly restored: boolean; readonly reason?: 'locked' | 'gone' }> {
+		const entry = typeof token === 'string' && /^[0-9a-f-]{36}$/.test(token) ? this.indexBackups.get(token) : undefined;
+		if (entry === undefined || typeof repoPath !== 'string') {
+			return { restored: false, reason: 'gone' };
+		}
+		const lockPath = `${entry.indexPath}.lock`;
+		let lock: fs.FileHandle | undefined;
+		const deadline = Date.now() + PARADIS_INDEX_LOCK_RETRY_MS;
+		for (; ;) {
+			try {
+				lock = await fs.open(lockPath, 'wx');
+				break;
+			} catch {
+				if (Date.now() >= deadline) {
+					return { restored: false, reason: 'locked' };
+				}
+				await new Promise<void>(resolve => setTimeout(resolve, PARADIS_INDEX_LOCK_RETRY_INTERVAL_MS));
+			}
+		}
+		try {
+			if (entry.backupPath !== undefined) {
+				await lock.writeFile(await fs.readFile(entry.backupPath));
+				await lock.close();
+				if (entry.times !== undefined) {
+					await fs.utimes(lockPath, entry.times.atime, entry.times.mtime).catch(() => undefined);
+				}
+				await fs.rename(lockPath, entry.indexPath);
+			} else {
+				await lock.close();
+				await fs.rm(entry.indexPath, { force: true });
+				await fs.rm(lockPath, { force: true });
+			}
+		} catch (error) {
+			await lock.close().catch(() => undefined);
+			await fs.rm(lockPath, { force: true }).catch(() => undefined);
+			throw error;
+		}
+		await this.discardIndexBackup(repoPath, token);
+		return { restored: true };
+	}
+
+	/** 控えを捨てる（コミットできたとき）。 */
+	async discardIndexBackup(_repoPath: string, token: string): Promise<void> {
+		const entry = typeof token === 'string' ? this.indexBackups.get(token) : undefined;
+		if (entry === undefined) {
+			return;
+		}
+		this.indexBackups.delete(token);
+		if (entry.backupPath !== undefined) {
+			await fs.rm(entry.backupPath, { force: true });
+		}
 	}
 
 	/**
@@ -291,7 +561,7 @@ export class ParadisWorktreeGitService {
 		return false;
 	}
 
-	private async execGh(args: string[], cwd: string): Promise<string> {
+	private async execGh(args: string[], cwd: string, options?: { readonly timeout?: number; readonly maxBuffer?: number }): Promise<string> {
 		const env = await this.cachedShellEnv.getEnv();
 		// GitHub API 利用状況ビュー用の計測。gh CLI 経由の呼び出しはすべてここを通るので、
 		// 「どの処理がどれだけ gh を呼んでいるか」はこの1箇所で数えられる
@@ -304,7 +574,7 @@ export class ParadisWorktreeGitService {
 		return new Promise<string>((resolve, reject) => {
 			// gh はネットワーク I/O のためタイムアウト必須。無いとプロキシ環境等でハングしたとき
 			// 呼び出し側 (Workspaces ビュー) の in-flight ガードが永久に解除されなくなる
-			this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', windowsHide: true, env: invocation.env }, (err, stdout, stderr) => {
+			this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', timeout: options?.timeout ?? 15_000, killSignal: 'SIGKILL', windowsHide: true, env: invocation.env, ...(options?.maxBuffer !== undefined ? { maxBuffer: options.maxBuffer } : {}) }, (err, stdout, stderr) => {
 				if (err) {
 					// 「gh が入っていない」の現れ方は実行経路で違う。ローカルは spawn の ENOENT、
 					// WSL へ振り分けた場合は（起動するのが必ず存在する wsl.exe なので）挟んだ
@@ -383,6 +653,89 @@ export class ParadisWorktreeGitService {
 			this.logService.trace(`[ParadisWorktreeGit] gh pr view failed for ${worktreePath}: ${error instanceof Error ? error.message : String(error)}`);
 			return undefined;
 		}
+	}
+
+	/**
+	 * 作業ツリーの現在ブランチの PR を、CI のチェックとマージの判断に要る項目まで含めて返す（スマホの PR の画面、
+	 * Orca W2-36）。`getPrStatus` と違い、出せない理由（gh が無い・未ログイン・PR が無い）を返す。
+	 * スマホが PR の画面を開いている間だけ呼ばれる（定期の取得は getPrStatus のまま）。
+	 */
+	async getPullRequestDetail(worktreePath: string): Promise<ParadisPullRequestLookup> {
+		if (typeof worktreePath !== 'string' || worktreePath.length === 0) {
+			return { kind: 'none', reason: 'error', message: 'invalid path' };
+		}
+		if (this.isGhUnavailable(worktreePath)) {
+			return { kind: 'none', reason: 'no-gh' };
+		}
+		let branch: string;
+		try {
+			branch = (await this.exec(['-C', paradisWslPathArg(worktreePath), 'rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+		} catch (error) {
+			return { kind: 'none', reason: 'error', message: error instanceof Error ? error.message : String(error) };
+		}
+		if (!branch || branch === 'HEAD') {
+			return { kind: 'none', reason: 'detached' };
+		}
+		try {
+			const stdout = await this.execGh(['pr', 'view', '--json', PARADIS_PR_DETAIL_FIELDS], worktreePath);
+			const detail = paradisParseGhPullRequestDetail(stdout, branch);
+			return detail !== undefined ? { kind: 'ok', detail } : { kind: 'none', reason: 'no-pr' };
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (paradisIsGithubNoPullRequestMessage(message)) {
+				return { kind: 'none', reason: 'no-pr' };
+			}
+			if (this.isGhUnavailable(worktreePath) || /\bENOENT\b|command not found/i.test(message)) {
+				return { kind: 'none', reason: 'no-gh' };
+			}
+			if (/gh auth login|not logged in|authentication|GH_TOKEN/i.test(message)) {
+				return { kind: 'none', reason: 'no-auth' };
+			}
+			return { kind: 'none', reason: 'error', message };
+		}
+	}
+
+	/**
+	 * 失敗した Actions のジョブのログの末尾（`gh run view --job <id> --log-failed`）。ジョブごとに成否を返し、
+	 * 1 件の失敗で他を止めない。末尾を切るのはここ（IPC で大きなログを運ばない）。
+	 */
+	async getFailedJobLogs(worktreePath: string, jobs: readonly { readonly jobId: string; readonly repo: string }[]): Promise<{ readonly jobId: string; readonly log?: string; readonly error?: string }[]> {
+		if (typeof worktreePath !== 'string' || worktreePath.length === 0 || !Array.isArray(jobs) || this.isGhUnavailable(worktreePath)) {
+			return [];
+		}
+		const results: { jobId: string; log?: string; error?: string }[] = [];
+		for (const job of jobs.slice(0, PARADIS_PR_FAILED_LOG_JOBS)) {
+			// 呼び出し側（renderer）の値でも、gh に渡すのは数字の id と owner/repo の形のものだけ
+			if (typeof job?.jobId !== 'string' || !/^\d{1,20}$/.test(job.jobId) || typeof job.repo !== 'string' || !/^(?:[A-Za-z0-9.-]+(?::\d+)?\/)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(job.repo)) {
+				continue;
+			}
+			try {
+				const stdout = await this.execGh(['run', 'view', '--job', job.jobId, '--log-failed', '-R', job.repo], worktreePath, { timeout: 30_000, maxBuffer: 32 * 1024 * 1024 });
+				results.push({ jobId: job.jobId, log: paradisTailFailedJobLog(stdout) });
+			} catch (error) {
+				results.push({ jobId: job.jobId, error: error instanceof Error ? error.message : String(error) });
+			}
+		}
+		return results;
+	}
+
+	/**
+	 * PR をマージする（スマホの PR の画面、Orca W2-36）。`--match-head-commit` で、スマホが見た後に push された
+	 * 内容を黙ってマージしない。方式はリポジトリの既定（`viewerDefaultMergeMethod`）。`--admin`（保護の規則を
+	 * 飛ばす）と `--delete-branch`（作業ツリーがまだそのブランチを使っている）は使わない。
+	 */
+	async mergePullRequest(worktreePath: string, request: { readonly repo: string; readonly number: number; readonly headSha: string }): Promise<{ readonly method: 'merge' | 'squash' | 'rebase' }> {
+		if (typeof worktreePath !== 'string' || worktreePath.length === 0 || typeof request?.repo !== 'string' || !/^(?:[A-Za-z0-9.-]+(?::\d+)?\/)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(request.repo)
+			|| typeof request.number !== 'number' || !Number.isSafeInteger(request.number) || request.number <= 0 || typeof request.headSha !== 'string' || !/^[0-9a-f]{40}$/i.test(request.headSha)) {
+			throw new Error('invalid merge request');
+		}
+		const repoJson = await this.execGh(['repo', 'view', request.repo, '--json', 'viewerDefaultMergeMethod,mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed'], worktreePath);
+		const method = paradisPickMergeMethod(repoJson);
+		if (method === undefined) {
+			throw new Error('このリポジトリで使えるマージの方式が分かりませんでした。');
+		}
+		await this.execGh(['pr', 'merge', String(request.number), '-R', request.repo, `--${method}`, '--match-head-commit', request.headSha], worktreePath, { timeout: 60_000 });
+		return { method };
 	}
 
 	/**
@@ -978,6 +1331,12 @@ export class ParadisWorktreeGitChannel<TContext extends ParadisCloneOwner = stri
 			case 'readWorktreeLock': return this.service.readWorktreeLock(args[0] as IParadisWorktreeLockQuery<string>) as Promise<T>;
 			case 'runLifecycleScript': return this.service.runLifecycleScript(args[0] as IParadisRunLifecycleScriptRequest<string>) as Promise<T>;
 			case 'runGit': return this.service.runGit(String(args[0]), Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
+			case 'getPullRequestDetail': return this.service.getPullRequestDetail(String(args[0])) as Promise<T>;
+			case 'getFailedJobLogs': return this.service.getFailedJobLogs(String(args[0]), Array.isArray(args[1]) ? args[1] : []) as Promise<T>;
+			case 'backupIndex': return this.service.backupIndex(String(args[0])) as Promise<T>;
+			case 'restoreIndex': return this.service.restoreIndex(String(args[0]), String(args[1])) as Promise<T>;
+			case 'discardIndexBackup': return this.service.discardIndexBackup(String(args[0]), String(args[1])) as Promise<T>;
+			case 'mergePullRequest': return this.service.mergePullRequest(String(args[0]), args[1] as { repo: string; number: number; headSha: string }) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}

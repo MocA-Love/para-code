@@ -10,6 +10,7 @@ import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js'
 import { URI } from '../../../../base/common/uri.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { paradisHasMobileCapability } from '../common/paradisMobileCompat.js';
+import { paradisRedactMobileCommandOutput } from '../common/paradisMobileOutputRedaction.js';
 import { PARADIS_MOBILE_BUILTIN_REQUEST_KINDS } from '../common/paradisMobileRequestKinds.js';
 import { IParadisGitResult } from '../common/paradisMobileRelay.js';
 
@@ -72,6 +73,8 @@ export interface IParadisMobileRequestContext {
 	mobileWireVersion(): Promise<number | undefined>;
 	/** 手元の状態（ターミナルの一覧など）をすぐモバイルへ送り直す（ターミナルを作った直後など）。 */
 	pushState(): void;
+	/** 各スペースのブランチ名を読み直し、変わっていれば状態を送り直す（コミット・pull の後など）。 */
+	refreshBranches(): void;
 }
 
 export interface IParadisMobileRequestHandler {
@@ -94,6 +97,8 @@ export interface IParadisMobileRequestHost {
 	send(channel: ParadisMobileRequestChannel, mobileId: string | undefined, payload: Uint8Array): void;
 	/** 状態をすぐ送り直す（無ければ何もしない。変化の知らせでいずれ送られる）。 */
 	pushState?(): void;
+	/** ブランチ名を読み直す（無ければ何もしない）。 */
+	refreshBranches?(): void;
 }
 
 const handlers = new Map<string, IParadisMobileRequestHandler>();
@@ -165,8 +170,10 @@ export function paradisDispatchMobileRequest(channel: ParadisMobileRequestChanne
 		hasMobileCapability: async name => mobileId !== undefined && paradisHasMobileCapability(await host.getMobileCapabilities(mobileId), name),
 		mobileWireVersion: async () => mobileId !== undefined ? host.getMobileWireVersion(mobileId) : undefined,
 		pushState: () => host.pushState?.(),
+		refreshBranches: () => host.refreshBranches?.(),
 	};
-	const fail = (error: unknown) => context.reply({ error: error instanceof Error ? error.message : String(error) });
+	// 例外の文には git の出力（remote の URL の資格情報など）が混ざりうるので、伏せ字を通してから返す
+	const fail = (error: unknown) => context.reply({ error: paradisRedactMobileCommandOutput(error instanceof Error ? error.message : String(error)) });
 	try {
 		const result = host.invokeFunction(accessor => handler.handle(accessor, request, context));
 		if (result instanceof Promise) {

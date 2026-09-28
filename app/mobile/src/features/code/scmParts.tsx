@@ -1,8 +1,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View, type LayoutChangeEvent } from 'react-native';
-import { ChevronDown, ChevronRight, ExternalLink, FileText, GitBranch, GitCommitHorizontal } from 'lucide-react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from 'react-native';
+import { ChevronDown, ChevronRight, CircleAlert, ExternalLink, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Minus, Plus, Sparkles, X } from 'lucide-react-native';
+import type { ParadisMobileSyncOperation } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileScmSync.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { hapticImpact, hapticSelection } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
@@ -10,9 +11,10 @@ import { commitFileKind, scmChangeMeta } from '../../scmChangeKind.js';
 import type { ScmLogResult } from '../../store.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
 import { formatRelativeTime } from '../../time.js';
-import { Icon, iconSize, useThemeColors } from '../../ui/index.js';
+import { Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import type { CommitAction, ScmCounts, ScmEntry } from './scmModel.js';
 import { splitPath } from './scmModel.js';
+import type { AgentHandoffResult, CommitFailureView, ScmSyncSummary } from './scmSync.js';
 import type { CommitFiles } from './useScmData.js';
 
 /**
@@ -21,11 +23,17 @@ import type { CommitFiles } from './useScmData.js';
  */
 
 /** ブランチのカード（ブランチ名・同期の状態・件数）。 */
-export function BranchCard({ branch, sync, counts }: {
+export function BranchCard({ branch, sync, counts, syncSummary, syncing, onSync, pr }: {
 	branch: string | undefined;
-	/** 右上の同期の状態（PC から先行・遅れの数が届かないので、最新のコミットの時刻を出す）。 */
+	/** 右上の同期の状態（先行・遅れの数が届かない PC では、最新のコミットの時刻を出す）。 */
 	sync: string | undefined;
 	counts: ScmCounts | undefined;
+	/** PC が同期を扱えるときの上流と先行・遅れ、並べる操作（Orca W2-15）。 */
+	syncSummary?: ScmSyncSummary;
+	syncing?: ParadisMobileSyncOperation;
+	onSync?: (operation: ParadisMobileSyncOperation) => void;
+	/** このブランチの PR（押すと PR の区分へ。Orca W2-36）。 */
+	pr?: { readonly number: number; readonly state: string; readonly onPress: () => void };
 }) {
 	return (
 		<View style={styles.card}>
@@ -34,20 +42,68 @@ export function BranchCard({ branch, sync, counts }: {
 					<Icon icon={GitBranch} size={iconSize.md} color={colors.textDim} />
 					<Text style={styles.branch} numberOfLines={1}>{branch ?? 'ブランチ不明'}</Text>
 				</View>
-				{sync !== undefined ? <Text style={styles.sync} numberOfLines={1}>{sync}</Text> : null}
+				{pr !== undefined ? (
+					<Pressable
+						onPress={() => { hapticSelection(); pr.onPress(); }}
+						hitSlop={hitSlopToMinimum(PR_CHIP_HEIGHT)}
+						style={({ pressed }) => [styles.prChip, { borderColor: prStateColor(pr.state) }, pressed ? styles.fileRowPressed : undefined]}
+						accessibilityRole="button"
+						accessibilityLabel={`プルリクエスト #${pr.number}（${prStateLabel(pr.state)}）を見る`}
+					>
+						<Icon icon={GitPullRequest} size={iconSize.sm} color={prStateColor(pr.state)} />
+						<Text style={[styles.prChipText, { color: prStateColor(pr.state) }]}>{`#${pr.number}`}</Text>
+					</Pressable>
+				) : sync !== undefined && syncSummary === undefined ? <Text style={styles.sync} numberOfLines={1}>{sync}</Text> : null}
 			</View>
 			<View style={styles.counts}>
 				<Text style={styles.countText}>{counts !== undefined ? `${counts.unstaged} 件の変更` : '変更を読み込み中'}</Text>
 				{counts !== undefined ? <Text style={styles.countText}>{counts.staged} 件ステージ済み</Text> : null}
 			</View>
+			{syncSummary !== undefined ? (
+				<View style={styles.syncRow}>
+					<Text style={[styles.syncText, syncSummary.diverged ? styles.syncWarn : undefined]} numberOfLines={2}>
+						{syncSummary.diverged ? `${syncSummary.text}・履歴が分かれています（PC で解決）` : syncSummary.text}
+					</Text>
+					{onSync !== undefined ? syncSummary.actions.map(operation => (
+						<Pressable
+							key={operation}
+							onPress={() => { hapticImpact('light'); onSync(operation); }}
+							disabled={syncing !== undefined}
+							hitSlop={hitSlopToMinimum(SYNC_BUTTON_HEIGHT)}
+							style={({ pressed }) => [styles.syncButton, pressed ? styles.fileRowPressed : undefined, syncing !== undefined && syncing !== operation ? styles.dim : undefined]}
+							accessibilityRole="button"
+							accessibilityLabel={SYNC_LABELS[operation]}
+							accessibilityState={{ disabled: syncing !== undefined, busy: syncing === operation }}
+						>
+							{syncing === operation ? <ActivityIndicator size="small" color={colors.textDim} /> : <Text style={styles.syncButtonText}>{SYNC_LABELS[operation]}</Text>}
+						</Pressable>
+					)) : null}
+				</View>
+			) : null}
 		</View>
 	);
 }
 
+const SYNC_LABELS: Record<ParadisMobileSyncOperation, string> = { fetch: 'フェッチ', pull: '取り込む', push: 'プッシュ' };
+
+function prStateLabel(state: string): string {
+	return state === 'merged' ? 'マージ済み' : state === 'closed' ? 'クローズ' : state === 'draft' ? '下書き' : 'オープン';
+}
+
+function prStateColor(state: string): string {
+	return state === 'merged' ? colors.purple : state === 'closed' ? colors.red : state === 'draft' ? colors.textDim : colors.green;
+}
+
 /** 変更の行（モックの `.frow`。状態の記号・ファイル名・フォルダ）。押すと差分レビューへ。 */
-export function ScmFileRow({ entry, disabled, onPress }: { entry: ScmEntry; disabled: boolean; onPress: () => void }) {
+export function ScmFileRow({ entry, disabled, onPress, stage }: {
+	entry: ScmEntry;
+	disabled: boolean;
+	onPress: () => void;
+	/** ファイルごとのステージ（PC が扱えるときだけ。Orca W2-15）。 */
+	stage?: { readonly busy: boolean; readonly disabled: boolean; readonly onPress: () => void };
+}) {
 	const { name, dir } = splitPath(entry.path);
-	return (
+	const row = (
 		<Pressable
 			onPress={() => { hapticSelection(); onPress(); }}
 			disabled={disabled}
@@ -65,14 +121,104 @@ export function ScmFileRow({ entry, disabled, onPress }: { entry: ScmEntry; disa
 			<Icon icon={ChevronRight} size={iconSize.md} color={colors.textMuted} />
 		</Pressable>
 	);
+	if (stage === undefined) {
+		return row;
+	}
+	return (
+		<View style={styles.fileRowWrap}>
+			<View style={styles.fileRowMain}>{row}</View>
+			<StageToggle staged={entry.staged} busy={stage.busy} disabled={stage.disabled} onPress={stage.onPress} path={entry.path} style={styles.stageCell} />
+		</View>
+	);
+}
+
+/** ファイルごとのステージのボタン（＋でステージ、−で外す）。差分レビューの見出しでも使う。 */
+export function StageToggle({ staged, busy, disabled, onPress, path, style }: { staged: boolean; busy: boolean; disabled: boolean; onPress: () => void; path: string; style?: StyleProp<ViewStyle> }) {
+	return (
+		<Pressable
+			onPress={() => { hapticImpact('light'); onPress(); }}
+			disabled={disabled || busy}
+			style={({ pressed }) => [styles.stageButton, style, pressed ? styles.fileRowPressed : undefined, disabled ? styles.dim : undefined]}
+			accessibilityRole="button"
+			accessibilityLabel={staged ? `ステージを外す: ${path}` : `ステージする: ${path}`}
+			accessibilityState={{ disabled: disabled || busy, busy }}
+		>
+			{busy ? <ActivityIndicator size="small" color={colors.textDim} /> : <Icon icon={staged ? Minus : Plus} size={iconSize.md} color={colors.textDim} />}
+		</Pressable>
+	);
+}
+
+/** コミットはできたが、その後のフックが失敗・時間切れだったときの一言（行を切らずに全文を出す）。 */
+export function CommitWarning({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+	return (
+		<View style={[styles.failure, styles.warningRow]} accessibilityRole="alert">
+			<Icon icon={CircleAlert} size={iconSize.md} color={colors.amber} />
+			<Text style={styles.warningText}>{text}</Text>
+			<Pressable onPress={onDismiss} hitSlop={hitSlopToMinimum(24)} accessibilityRole="button" accessibilityLabel="閉じる">
+				<Icon icon={X} size={iconSize.sm} color={colors.textMuted} />
+			</Pressable>
+		</View>
+	);
+}
+
+/**
+ * コミットの失敗（Orca W2-15 の立て直し）。要約・ステージを戻したこと・出力（開いて読む）と、
+ * 「AI に直してもらう」を出す。作業中のエージェントしかいないと言われたら、新しいエージェントで頼む口を出す。
+ */
+export function CommitFailureCard({ view, handoff, onFix, onFixWithNewAgent, onDismiss }: {
+	view: CommitFailureView;
+	handoff: { readonly sending: boolean; readonly result: AgentHandoffResult | undefined };
+	onFix: (() => void) | undefined;
+	onFixWithNewAgent: () => void;
+	onDismiss: () => void;
+}) {
+	const [open, setOpen] = useState(false);
+	const theme = useThemeColors();
+	return (
+		<View style={styles.failure} accessibilityRole="alert">
+			<View style={styles.failureHead}>
+				<Icon icon={CircleAlert} size={iconSize.md} color={colors.red} />
+				<Text style={styles.failureTitle}>{view.title}</Text>
+				<Pressable onPress={onDismiss} hitSlop={hitSlopToMinimum(24)} accessibilityRole="button" accessibilityLabel="閉じる">
+					<Icon icon={X} size={iconSize.sm} color={colors.textMuted} />
+				</Pressable>
+			</View>
+			{view.note !== undefined ? <Text style={styles.failureNote}>{view.note}</Text> : null}
+			{view.output.length > 0 ? (
+				<Pressable onPress={() => { hapticSelection(); setOpen(!open); }} accessibilityRole="button" accessibilityState={{ expanded: open }}>
+					<Text style={[styles.failureToggle, { color: theme.accent }]}>{open ? '出力を閉じる' : '出力を見る'}</Text>
+				</Pressable>
+			) : null}
+			{open ? (
+				<ScrollView style={styles.failureOutput} nestedScrollEnabled>
+					<Text style={styles.failureOutputText} selectable>{view.output}</Text>
+				</ScrollView>
+			) : null}
+			{handoff.result !== undefined ? (
+				<Text style={[styles.failureNote, handoff.result.delivered ? styles.handoffDone : styles.handoffFailed]}>{handoff.result.text}</Text>
+			) : null}
+			{view.fixable && onFix !== undefined ? (
+				<View style={styles.failureButtons}>
+					{handoff.result?.delivered === true ? null : (
+						<Button label="AI に直してもらう" size="sm" icon={Sparkles} onPress={onFix} loading={handoff.sending} style={styles.failureButton} />
+					)}
+					{handoff.result?.delivered === false && handoff.result.busy ? (
+						<Button label="新しいエージェントで" size="sm" variant="secondary" onPress={onFixWithNewAgent} disabled={handoff.sending} style={styles.failureButton} />
+					) : null}
+				</View>
+			) : null}
+		</View>
+	);
 }
 
 /**
  * 下に固定のコミットバー（モックの `.commitbar`）。メッセージの入力欄と、状況で決まる主ボタン。
  * コミットするものが無いときは入力欄の代わりに点線の札を出す。
  */
-export function CommitBar({ action, message, onChangeMessage, onCommit, onBlocked, bottomInset, onLayout }: {
+export function CommitBar({ action, message, onChangeMessage, onCommit, onBlocked, bottomInset, onLayout, hint }: {
 	action: CommitAction;
+	/** 下の注記（無ければ「すべての変更をまとめてコミット」の説明）。 */
+	hint?: string;
 	message: string;
 	onChangeMessage: (text: string) => void;
 	onCommit: () => void;
@@ -127,7 +273,7 @@ export function CommitBar({ action, message, onChangeMessage, onCommit, onBlocke
 					<Text style={[styles.primaryText, { color: theme.onPrimary }]} numberOfLines={1}>{action.label}</Text>
 				</Pressable>
 			</View>
-			<Text style={styles.commitHint}>ステージの操作は PC で行います。ここからは未追跡を含むすべての変更をまとめてコミットします。</Text>
+			<Text style={styles.commitHint}>{hint ?? 'ステージの操作は PC で行います。ここからは未追跡を含むすべての変更をまとめてコミットします。'}</Text>
 		</View>
 	);
 }
@@ -210,6 +356,9 @@ const COMMIT_BAR_CONTROL = 42;
 const PRIMARY_MIN_WIDTH = 88;
 /** 状態の記号の列の幅（pt。モックの `.fst`）。 */
 const SYMBOL_WIDTH = 24;
+/** ブランチのカードの同期のボタンと PR の札の高さ（pt。当たり判定は 44 に広げる）。 */
+const SYNC_BUTTON_HEIGHT = 30;
+const PR_CHIP_HEIGHT = 26;
 
 const styles = StyleSheet.create({
 	card: {
@@ -417,5 +566,140 @@ const styles = StyleSheet.create({
 		flex: 1,
 		fontSize: type.meta,
 		color: colors.textDim,
+	},
+	prChip: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.xs,
+		minHeight: PR_CHIP_HEIGHT,
+		paddingHorizontal: space.sm,
+		borderRadius: radius.pill,
+		borderWidth: 1,
+	},
+	prChipText: {
+		fontSize: type.meta,
+		fontWeight: '600',
+		fontFamily: monoFamily,
+	},
+	syncRow: {
+		flexDirection: 'row',
+		flexWrap: 'wrap',
+		alignItems: 'center',
+		gap: space.sm,
+		marginTop: space.sm,
+	},
+	syncText: {
+		flexGrow: 1,
+		flexShrink: 1,
+		minWidth: 120,
+		fontSize: type.meta,
+		color: colors.textDim,
+		fontFamily: monoFamily,
+	},
+	syncWarn: {
+		color: colors.amber,
+	},
+	syncButton: {
+		minHeight: SYNC_BUTTON_HEIGHT,
+		minWidth: 64,
+		paddingHorizontal: space.md,
+		borderRadius: radius.button,
+		borderWidth: StyleSheet.hairlineWidth,
+		borderColor: colors.borderStrong,
+		alignItems: 'center',
+		justifyContent: 'center',
+	},
+	syncButtonText: {
+		fontSize: type.meta,
+		fontWeight: '600',
+		color: colors.text,
+	},
+	fileRowWrap: {
+		flexDirection: 'row',
+		alignItems: 'stretch',
+	},
+	fileRowMain: {
+		flex: 1,
+		minWidth: 0,
+	},
+	stageButton: {
+		width: HIT_SIZE,
+		minHeight: HIT_SIZE,
+		alignItems: 'center',
+		justifyContent: 'center',
+		borderRadius: radius.row,
+	},
+	stageCell: {
+		borderRadius: 0,
+		borderBottomWidth: StyleSheet.hairlineWidth,
+		borderBottomColor: colors.border,
+	},
+	failure: {
+		gap: space.xs,
+		marginHorizontal: space.lg,
+		marginBottom: space.sm,
+		padding: space.md,
+		borderRadius: radius.card,
+		borderWidth: StyleSheet.hairlineWidth,
+		borderColor: colors.border,
+		backgroundColor: colors.panel,
+	},
+	failureHead: {
+		flexDirection: 'row',
+		alignItems: 'flex-start',
+		gap: space.sm,
+	},
+	failureTitle: {
+		flex: 1,
+		fontSize: type.body,
+		fontWeight: '600',
+		color: colors.text,
+	},
+	failureNote: {
+		fontSize: type.meta,
+		color: colors.textDim,
+	},
+	failureToggle: {
+		fontSize: type.meta,
+		fontWeight: '600',
+		paddingVertical: space.xs,
+	},
+	failureOutput: {
+		maxHeight: 180,
+		borderRadius: radius.input,
+		backgroundColor: colors.bg,
+		padding: space.sm,
+	},
+	failureOutputText: {
+		fontSize: type.caption,
+		lineHeight: 16,
+		fontFamily: monoFamily,
+		color: colors.textDim,
+	},
+	failureButtons: {
+		flexDirection: 'row',
+		flexWrap: 'wrap',
+		gap: space.sm,
+		marginTop: space.xs,
+	},
+	failureButton: {
+		flexGrow: 1,
+	},
+	warningRow: {
+		flexDirection: 'row',
+		alignItems: 'flex-start',
+		gap: space.sm,
+	},
+	warningText: {
+		flex: 1,
+		fontSize: type.meta,
+		lineHeight: 17,
+		color: colors.text,
+	},
+	handoffDone: {
+		color: colors.green,
+	},
+	handoffFailed: {
+		color: colors.amber,
 	},
 });

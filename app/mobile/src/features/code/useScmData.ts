@@ -2,10 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
-import { useAppStore } from '../../appState.js';
+import { PARADIS_MOBILE_SCM_COMMIT_RECOVER_CAPABILITY, type IParadisMobileCommitFailure } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileScmSync.js';
+import { sendPcRequest, useAppStore } from '../../appState.js';
+import { usePcCapability } from '../../hooks/usePcCapability.js';
 import type { ScmLogResult, ScmStatusResult } from '../../store.js';
 import { codeCacheKey, useCodeCache } from './codeCache.js';
 import { errorMessage } from './scmModel.js';
+import { parseCommitFailure, type CommitScope } from './scmSync.js';
 import { currentRendererTarget, type CodeSpace } from './useCodeSpace.js';
 
 /**
@@ -184,46 +187,94 @@ export interface CommitState {
 	readonly error: string | undefined;
 	/** PC の出力（成功したとき）。 */
 	readonly output: string | undefined;
-	/** すべての変更をまとめてコミットする（`git add -A` のあとコミット）。成功したら true。 */
-	readonly commit: (message: string) => Promise<boolean>;
+	/** コミットはできたが、その後のフックが失敗・時間切れだった（PC からの一言）。 */
+	readonly warning: string | undefined;
+	/**
+	 * コミットの失敗（PC が `scm.commit-recover.v1` を扱えるときだけ。要約・出力・「AI に直してもらう」の材料）。
+	 * 扱えない PC の失敗は `error` に1行で入る。
+	 */
+	readonly failure: IParadisMobileCommitFailure | undefined;
+	/**
+	 * コミットする（`scope` が `all` なら `git add -A` のあとコミット、`staged` ならステージ済みだけ）。
+	 * 成功したら `ok: true` と、フックの失敗・時間切れの一言（あれば）。
+	 */
+	readonly commit: (message: string, scope?: CommitScope) => Promise<CommitOutcome>;
 	readonly clearError: () => void;
+	/** コミットの失敗のカードを閉じる（次のコミットでも消える）。 */
+	readonly dismissFailure: () => void;
+}
+
+export type CommitOutcome = { readonly ok: false } | { readonly ok: true; readonly warning: string | undefined };
+
+const FAILED: CommitOutcome = { ok: false };
+
+interface CommitSafeReply {
+	readonly ok?: unknown;
+	readonly output?: unknown;
+	readonly warning?: unknown;
+	readonly failure?: unknown;
 }
 
 export function useScmCommit(space: CodeSpace): CommitState {
 	const scmCommit = useAppStore(s => s.scmCommit);
+	const recoverable = usePcCapability(PARADIS_MOBILE_SCM_COMMIT_RECOVER_CAPABILITY);
 	const [committing, setCommitting] = useState(false);
 	const [error, setError] = useState<string | undefined>(undefined);
 	const [output, setOutput] = useState<string | undefined>(undefined);
+	const [warning, setWarning] = useState<string | undefined>(undefined);
+	const [failure, setFailure] = useState<IParadisMobileCommitFailure | undefined>(undefined);
 	const genRef = useRef(0);
-	const { wsId, rendererTarget } = space;
+	const { pcId, wsId, rendererTarget } = space;
 
-	const commit = useCallback(async (message: string) => {
+	const commit = useCallback(async (message: string, scope: CommitScope = 'all') => {
 		const text = message.trim();
 		if (wsId === undefined || rendererTarget === undefined || text.length === 0 || committing) {
-			return false;
+			return FAILED;
 		}
 		const gen = ++genRef.current;
 		const current = () => genRef.current === gen && currentRendererTarget(wsId) === rendererTarget;
 		setCommitting(true);
 		setError(undefined);
 		setOutput(undefined);
+		setWarning(undefined);
+		setFailure(undefined);
 		try {
-			const result = await scmCommit(wsId, text, true);
-			if (current()) {
-				setOutput(result.output);
+			if (!recoverable) {
+				const result = await scmCommit(wsId, text, true);
+				if (current()) {
+					setOutput(result.output);
+				}
+				return current() ? { ok: true, warning: undefined } : FAILED;
 			}
-			return current();
+			// フックが動くので長めに待つ（PC 側はコミットだけで 120 秒、HEAD の確認・控え・ステージ・戻しを足した合計より長く）
+			const reply = await sendPcRequest<CommitSafeReply>(pcId, 'scm', { t: 'commitSafe', ws: wsId, message: text, all: scope === 'all' }, { timeoutMs: 310_000 });
+			if (!current()) {
+				return FAILED;
+			}
+			if (reply.ok === true) {
+				const warned = typeof reply.warning === 'string' && reply.warning.length > 0 ? reply.warning : undefined;
+				setOutput(typeof reply.output === 'string' ? reply.output : '');
+				setWarning(warned);
+				return { ok: true, warning: warned };
+			}
+			const parsed = parseCommitFailure(reply.failure);
+			if (parsed !== undefined) {
+				setFailure(parsed);
+			} else {
+				setError('コミットに失敗しました');
+			}
+			return FAILED;
 		} catch (e) {
 			if (current()) {
 				setError(errorMessage(e));
 			}
-			return false;
+			return FAILED;
 		} finally {
 			if (current()) {
 				setCommitting(false);
 			}
 		}
-	}, [scmCommit, wsId, rendererTarget, committing]);
+	}, [scmCommit, recoverable, pcId, wsId, rendererTarget, committing]);
 
 	useEffect(() => {
 		// 接続が切れる・ウィンドウが作り直されると応答は届かない。押せない状態のまま残さない。
@@ -232,6 +283,7 @@ export function useScmCommit(space: CodeSpace): CommitState {
 	}, [rendererTarget]);
 
 	const clearError = useCallback(() => setError(undefined), []);
+	const dismissFailure = useCallback(() => setFailure(undefined), []);
 
-	return { committing, error, output, commit, clearError };
+	return { committing, error, output, warning, failure, commit, clearError, dismissFailure };
 }

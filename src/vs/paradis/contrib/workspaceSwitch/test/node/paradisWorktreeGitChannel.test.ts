@@ -8,9 +8,13 @@
 
 import assert from 'assert';
 import * as cp from 'child_process';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
+import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { isCancellationError } from '../../../../../base/common/errors.js';
+import { isWindows } from '../../../../../base/common/platform.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -33,6 +37,42 @@ function createExecFile(calls: IExecFileCall[]): typeof cp.execFile {
 		queueMicrotask(() => callback(null, '', ''));
 		return {} as cp.ChildProcess;
 	}) as typeof cp.execFile;
+}
+
+/** runGit が spawn する git の代わり。`respond` が子の終わり方を決める（呼ばなければ止められるまで動き続ける）。 */
+class FakeGitChild extends EventEmitter {
+	readonly stdout = new PassThrough();
+	readonly stderr = new PassThrough();
+	readonly signals: string[] = [];
+	constructor(private readonly onKill: (child: FakeGitChild, signal: string) => void = () => undefined) {
+		super();
+	}
+	kill(signal: string): boolean {
+		this.signals.push(signal);
+		this.onKill(this, signal);
+		return true;
+	}
+	finish(code: number | null, stdout = '', stderr = ''): void {
+		this.stdout.end(stdout);
+		this.stderr.end(stderr);
+		this.emit('exit', code);
+		setTimeout(() => this.emit('close', code), 0);
+	}
+}
+
+interface ISpawnCall {
+	readonly args: readonly string[];
+	readonly options: cp.SpawnOptions;
+	readonly child: FakeGitChild;
+}
+
+function createSpawn(calls: ISpawnCall[], start: (child: FakeGitChild, args: readonly string[]) => void, onKill?: (child: FakeGitChild, signal: string) => void): typeof cp.spawn {
+	return ((_command: string, args: readonly string[], options: cp.SpawnOptions) => {
+		const child = new FakeGitChild(onKill);
+		calls.push({ args, options, child });
+		queueMicrotask(() => start(child, args));
+		return child as unknown as cp.ChildProcess;
+	}) as unknown as typeof cp.spawn;
 }
 
 suite('ParadisWorktreeGitService', () => {
@@ -347,25 +387,177 @@ suite('ParadisWorktreeGitService', () => {
 	});
 
 	suite('runGit', () => {
-		test('runs an allowed subcommand with -C and core.quotepath=false, returning exit code 0', async () => {
-			const calls: IExecFileCall[] = [];
-			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile(calls));
+		test('runs an allowed subcommand with -C and core.quotepath=false in its own process group, returning exit code 0', async () => {
+			const calls: ISpawnCall[] = [];
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile([]), async () => ({}), false, createSpawn(calls, child => child.finish(0, ' M a.ts\n')));
 
 			const result = await service.runGit('/repo', ['status', '--porcelain=v1']);
 
-			assert.deepStrictEqual(calls.map(call => ({ command: call.command, args: call.args })), [
-				{ command: 'git', args: ['-C', '/repo', '-c', 'core.quotepath=false', 'status', '--porcelain=v1'] },
-			]);
-			assert.deepStrictEqual(result, { code: 0, stdout: '', stderr: '' });
+			assert.deepStrictEqual({ args: calls.map(call => call.args), detached: calls[0].options.detached, env: `${calls[0].options.env?.GIT_TERMINAL_PROMPT}/${calls[0].options.env?.GCM_INTERACTIVE}`, result }, {
+				args: [['-C', '/repo', '-c', 'core.quotepath=false', 'status', '--porcelain=v1']],
+				detached: true,
+				env: '0/never',
+				result: { code: 0, stdout: ' M a.ts\n', stderr: '' },
+			});
 		});
 
 		test('rejects a subcommand outside the allow list without spawning a process', async () => {
 			const calls: IExecFileCall[] = [];
 			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile(calls));
 
-			await assert.rejects(service.runGit('/repo', ['push', 'origin', 'main']), /subcommand not allowed/);
+			await assert.rejects(service.runGit('/repo', ['reset', '--hard']), /subcommand not allowed/);
 
 			assert.strictEqual(calls.length, 0);
+		});
+
+		test('rejects force pushes, remote branch deletion and merging pulls without spawning a process (Orca W2-15)', async () => {
+			const calls: IExecFileCall[] = [];
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile(calls));
+
+			const rejected: string[] = [];
+			for (const args of [
+				['push', '--force', 'origin', 'HEAD:refs/heads/main'],
+				['push', '-fu', 'origin', 'main'],
+				['push', '--force-with-lease', 'origin', 'main'],
+				['push', 'origin', '+main'],
+				['push', 'origin', ':main'],
+				['push', '--mirror'],
+				['push', 'ext::sh -c evil', 'main'],
+				['pull', 'origin', 'main'],
+				['pull', '--ff-only', '--rebase'],
+				['fetch', 'origin', '+refs/heads/*:refs/heads/*'],
+				['read-tree', '-m', '-u', 'HEAD'],
+			]) {
+				await service.runGit('/repo', args).then(() => undefined, (error: Error) => rejected.push(args.join(' ')));
+			}
+
+			assert.deepStrictEqual({ rejected: rejected.length, spawned: calls.length }, { rejected: 11, spawned: 0 });
+		});
+
+		test('stops a timed-out git with SIGTERM then SIGKILL and reports it and a leftover index.lock, even while a grandchild holds the output', async () => {
+			const dir = join(tmpdir(), `paradis-rungit-${generateUuid()}`);
+			await fs.mkdir(dir, { recursive: true });
+			const index = join(dir, 'index');
+			await fs.writeFile(`${index}.lock`, '');
+			const calls: ISpawnCall[] = [];
+			// git の代わり。SIGTERM を無視し、SIGKILL で終わる。孫が出力のパイプを握っている想定で `close` は出さない
+			const spawn = createSpawn(calls, (child, args) => {
+				if (!args.includes('pull')) {
+					child.finish(0);
+				} else {
+					child.stderr.write('remote: working');
+				}
+			}, (child, signal) => {
+				if (signal === 'SIGKILL') {
+					child.emit('exit', null);
+				}
+			});
+			const execFile = ((_command: string, _args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
+				queueMicrotask(() => callback(null, `${index}\n`, ''));
+				return {} as cp.ChildProcess;
+			}) as typeof cp.execFile;
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile, async () => ({}), false, spawn, { short: 1_000, long: 30, grace: 20 });
+
+			try {
+				await service.runGit('/repo', ['status', '--porcelain=v1']);
+				const startedAt = Date.now();
+				const timedOut = await service.runGit('/repo', ['pull', '--ff-only', '--no-rebase', '--quiet']);
+
+				assert.deepStrictEqual({ signals: calls[1].child.signals, timedOut, quick: Date.now() - startedAt < 1_000 }, {
+					signals: ['SIGTERM', 'SIGKILL'],
+					timedOut: { code: 1, stdout: '', stderr: 'remote: working\nParadisWorktreeGit: timed out after 0.03s\nParadisWorktreeGit: index.lock remains' },
+					quick: true,
+				});
+			} finally {
+				await fs.rm(dir, { recursive: true, force: true });
+			}
+		});
+
+		test('kills the hook grandchildren of a timed-out commit and answers within the limit plus the grace (real git)', async function () {
+			if (isWindows) {
+				this.skip();
+			}
+			const dir = join(tmpdir(), `paradis-rungit-hook-${generateUuid()}`);
+			await fs.mkdir(dir, { recursive: true });
+			const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
+			await fs.writeFile(join(dir, 'gitconfig'), '[user]\n\tname = t\n\temail = t@example.com\n');
+			const pidFile = join(dir, 'sleep.pid');
+			try {
+				cp.execFileSync('git', ['init', '-q', dir], { env: gitEnv });
+				// post-commit フックが長い孫プロセス（sleep 30）を起こして待つ
+				await fs.writeFile(join(dir, '.git', 'hooks', 'post-commit'), `#!/bin/sh\nsleep 30 &\necho $! > '${pidFile}'\nwait\n`, { mode: 0o755 });
+			} catch {
+				this.skip();
+			}
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, cp.execFile, async () => gitEnv, false, cp.spawn, { short: 5_000, long: 1_000, grace: 300 });
+			try {
+				const startedAt = Date.now();
+				const result = await service.runGit(dir, ['commit', '--allow-empty', '-m', 'x']);
+				const elapsed = Date.now() - startedAt;
+				const sleepPid = Number((await fs.readFile(pidFile, 'utf8')).trim());
+				await new Promise<void>(resolve => setTimeout(resolve, 200));
+				let sleepAlive = true;
+				try {
+					process.kill(sleepPid, 0);
+				} catch {
+					sleepAlive = false;
+				}
+				if (sleepAlive) {
+					process.kill(sleepPid, 'SIGKILL');
+				}
+				assert.deepStrictEqual({ timedOut: result.stderr.includes('timed out after 1s'), withinLimit: elapsed < 1_000 + 300 * 2 + 1_000, sleepAlive }, { timedOut: true, withinLimit: true, sleepAlive: false });
+			} finally {
+				await fs.rm(dir, { recursive: true, force: true });
+			}
+		});
+
+		test('backs up the index file as it is and restores it under index.lock, refusing while another git holds the lock', async () => {
+			const dir = join(tmpdir(), `paradis-index-${generateUuid()}`);
+			await fs.mkdir(dir, { recursive: true });
+			const index = join(dir, 'index');
+			await fs.writeFile(index, 'before');
+			// `--git-path index` はリポジトリからの相対パスを返す（`--path-format=absolute` は git 2.31 以降なので使わない）
+			const gitArgs: string[][] = [];
+			const execFile = ((_command: string, args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
+				gitArgs.push([...args]);
+				queueMicrotask(() => callback(null, 'index\n', ''));
+				return {} as cp.ChildProcess;
+			}) as typeof cp.execFile;
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile, async () => ({}));
+			// 前に落ちたプロセスが残した古い控え（消される）
+			const stale = `${index}.paradis-mobile-00000000-0000-0000-0000-000000000000`;
+			await fs.writeFile(stale, 'old');
+			await fs.utimes(stale, new Date(0), new Date(0));
+			const originalTime = new Date(1_700_000_000_000);
+			await fs.utimes(index, originalTime, originalTime);
+
+			try {
+				const first = await service.backupIndex(dir);
+				await fs.writeFile(index, 'after add -A');
+				await fs.writeFile(`${index}.lock`, '');
+				const locked = await service.restoreIndex(dir, first.token);
+				// ほかの git がすぐにロックを外せば、やり直して戻せる
+				setTimeout(() => void fs.rm(`${index}.lock`), 200);
+				const restored = await service.restoreIndex(dir, first.token);
+				const content = await fs.readFile(index, 'utf8');
+				const mtime = (await fs.stat(index)).mtimeMs;
+				const again = await service.restoreIndex(dir, first.token);
+				const second = await service.backupIndex(dir);
+				await service.discardIndexBackup(dir, second.token);
+				const leftovers = (await fs.readdir(dir)).sort();
+
+				assert.deepStrictEqual({ locked, restored, content, mtime, again, leftovers, gitPath: gitArgs[0] }, {
+					locked: { restored: false, reason: 'locked' },
+					restored: { restored: true },
+					content: 'before',
+					mtime: originalTime.getTime(),
+					again: { restored: false, reason: 'gone' },
+					leftovers: ['index'],
+					gitPath: ['-C', dir, 'rev-parse', '--git-path', 'index'],
+				});
+			} finally {
+				await fs.rm(dir, { recursive: true, force: true });
+			}
 		});
 
 		test('rejects a forbidden option even inside an allowed subcommand, without spawning a process', async () => {
@@ -378,15 +570,92 @@ suite('ParadisWorktreeGitService', () => {
 		});
 
 		test('returns a non-zero exit code instead of rejecting when git itself fails', async () => {
-			const execFile = ((_command: string, _args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
-				callback(Object.assign(new Error('exit 128'), { code: 128 }), '', 'fatal: not a git repository');
-				return {} as cp.ChildProcess;
-			}) as typeof cp.execFile;
-			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile);
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile([]), async () => ({}), false, createSpawn([], child => child.finish(128, '', 'fatal: not a git repository')));
 
 			const result = await service.runGit('/repo', ['status', '--porcelain=v1']);
 
 			assert.deepStrictEqual(result, { code: 128, stdout: '', stderr: 'fatal: not a git repository' });
+		});
+	});
+
+	suite('pull request (Orca W2-36)', () => {
+		const HEAD_SHA = 'a'.repeat(40);
+
+		function createGhService(respond: (command: string, args: readonly string[]) => { stdout?: string; error?: string }, calls: string[][]): ParadisWorktreeGitService {
+			const execFile = ((command: string, args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
+				calls.push([command, ...args]);
+				const response = respond(command, args);
+				queueMicrotask(() => response.error !== undefined
+					? callback(Object.assign(new Error('exit 1'), { code: 1 }), '', response.error)
+					: callback(null, response.stdout ?? '', ''));
+				return {} as cp.ChildProcess;
+			}) as typeof cp.execFile;
+			return new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile);
+		}
+
+		test('reads the pull request of the current branch with its checks, and tells why it cannot', async () => {
+			const calls: string[][] = [];
+			let ghResponse: { stdout?: string; error?: string } = {
+				stdout: JSON.stringify({
+					number: 12, title: 'Add sync', url: 'https://github.com/o/r/pull/12', state: 'OPEN', isDraft: false, headRefName: 'feature', headRefOid: HEAD_SHA,
+					baseRefName: 'main', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
+					statusCheckRollup: [{ __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/5/job/77', workflowName: 'CI' }],
+				}),
+			};
+			const service = createGhService(command => command === 'git' ? { stdout: 'feature\n' } : ghResponse, calls);
+
+			const found = await service.getPullRequestDetail('/repo');
+			ghResponse = { error: 'no pull requests found for branch "feature"' };
+			const none = await service.getPullRequestDetail('/repo');
+			ghResponse = { error: 'To get started with GitHub CLI, please run:  gh auth login' };
+			const auth = await service.getPullRequestDetail('/repo');
+
+			assert.deepStrictEqual({
+				found: found.kind === 'ok' ? { number: found.detail.number, repo: found.detail.repo, checks: found.detail.checks } : found,
+				none, auth,
+				ghArgs: calls[1].slice(1),
+			}, {
+				found: { number: 12, repo: 'o/r', checks: [{ name: 'build', workflow: 'CI', bucket: 'fail', url: 'https://github.com/o/r/actions/runs/5/job/77', jobId: '77', repo: 'o/r' }] },
+				none: { kind: 'none', reason: 'no-pr' },
+				auth: { kind: 'none', reason: 'no-auth' },
+				ghArgs: ['pr', 'view', '--json', 'number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup'],
+			});
+		});
+
+		test('merges with the repository default method pinned to the head commit, and never with --admin or --delete-branch', async () => {
+			const calls: string[][] = [];
+			const service = createGhService((_command, args) => args[0] === 'repo'
+				? { stdout: JSON.stringify({ viewerDefaultMergeMethod: 'REBASE', mergeCommitAllowed: true, squashMergeAllowed: true, rebaseMergeAllowed: true }) }
+				: { stdout: '' }, calls);
+
+			const result = await service.mergePullRequest('/repo', { repo: 'o/r', number: 12, headSha: HEAD_SHA });
+			await assert.rejects(service.mergePullRequest('/repo', { repo: 'o/r; rm -rf ~', number: 12, headSha: HEAD_SHA }), /invalid merge request/);
+
+			assert.deepStrictEqual({ result, merge: calls[1] }, {
+				result: { method: 'rebase' },
+				merge: ['gh', 'pr', 'merge', '12', '-R', 'o/r', '--rebase', '--match-head-commit', HEAD_SHA],
+			});
+		});
+
+		test('keeps only the tail of each failed job log and skips malformed job ids', async () => {
+			const calls: string[][] = [];
+			const log = Array.from({ length: 300 }, (_, index) => `build\tRun tests\t2026-09-29T00:00:00.0000000Z line ${index}`).join('\n');
+			const service = createGhService(() => ({ stdout: log }), calls);
+
+			const results = await service.getFailedJobLogs('/repo', [{ jobId: '77', repo: 'o/r' }, { jobId: '1; echo', repo: 'o/r' }]);
+
+			assert.deepStrictEqual({
+				jobs: results.map(result => result.jobId),
+				lines: results[0].log?.split('\n').length,
+				first: results[0].log?.split('\n')[1],
+				args: calls.map(call => call.slice(1)),
+			}, {
+				jobs: ['77'],
+				// 見出し（--- Run tests ---）1 行と末尾 200 行
+				lines: 201,
+				first: 'line 100',
+				args: [['run', 'view', '--job', '77', '--log-failed', '-R', 'o/r']],
+			});
 		});
 	});
 

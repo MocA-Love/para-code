@@ -321,7 +321,9 @@ export function paradisEditMobileReviewNote(space: IParadisMobileReviewSpace, id
 	}
 	const { sentAt: _sentAt, ...unsent } = note;
 	const notes = [...space.notes];
-	notes[index] = { ...unsent, body: body.trim(), updatedAt: now };
+	// 書いたのと同じミリ秒に書き直しても版が変わるようにする（送信中に書き直されたメモを「送信済み」にしないため。
+	// 送信は読んだときの版と比べる）
+	notes[index] = { ...unsent, body: body.trim(), updatedAt: Math.max(now, note.updatedAt + 1) };
 	return { ...space, notes, updatedAt: now };
 }
 
