@@ -100,6 +100,15 @@ suite('ParadisSentryDiagnostics', () => {
 		}, { foreign: 10, own: 20 });
 	});
 
+	test('hashes a very long message in bounded time', () => {
+		// Several normalization patterns are quadratic; unbounded, 40k characters took seconds.
+		const message = `${'/a.b-c'.repeat(4_000)} ${'x.y '.repeat(4_000)}`;
+		const started = Date.now();
+		const hash = paradisErrorMessageHash(new Error(message));
+		const elapsed = Date.now() - started;
+		assert.deepStrictEqual({ hashed: typeof hash, fast: elapsed < 50 }, { hashed: 'string', fast: true });
+	});
+
 	test('extracts content-free facts about the error for the report extras', () => {
 		const fileError = Object.assign(new Error(`Unable to write file '/Users/alice/EFOO/config.toml' (Error: EACCES: permission denied, open '/Users/alice/EFOO/config.toml')`), { fileOperationResult: 6 });
 		const nodeError = Object.assign(new Error('write EPIPE'), { code: 'EPIPE', errno: -32, syscall: 'write' });
