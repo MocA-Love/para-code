@@ -2,12 +2,18 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
-import { ActivityIndicator, Alert, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import { useRouter } from 'expo-router';
+import { ActivityIndicator, Alert, Linking, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../../appState.js';
+import { pcHasCapabilityFor, sendPcRequest, useAppStore } from '../../appState.js';
 import { appendUploadedPath } from '../../components/agentComposerDraft.js';
 import { useTerminalKeyInput } from '../../components/terminalKeyRow.js';
 import { TermView } from '../../components/termView.js';
+import { WorkspaceFileViewer } from '../../components/workspaceFileViewer.js';
+import type { LocalFileTarget } from '../../localFileTarget.js';
+import { PcCapability } from '../../pcCompat.js';
+import { encodeSessionTab } from '../../routes.js';
+import { terminalUrlDestination, type TerminalLinkTarget } from '../../terminalLinks.js';
 import { terminalSubmitPlan } from '../../terminalKeys.js';
 import { terminalViewportForPrefs, type TerminalGrid } from '../../terminalViewport.js';
 import type { SpaceTerminal } from '../../navigationTargets.js';
@@ -19,6 +25,7 @@ import { createTerminalAttachments } from './terminalAttachments.js';
 import { terminalDraftKey, useTerminalDrafts } from './terminalDrafts.js';
 import { TerminalInputBar } from './terminalInputBar.js';
 import { liveInputEnabled, useTerminalLiveInputChoices } from './terminalLiveInputChoice.js';
+import { openUrlInPcBrowser } from './terminalLinkOpen.js';
 import { readClipboardText } from '../../nativeClipboard.js';
 
 /**
@@ -42,6 +49,10 @@ const terminalAttachments = createTerminalAttachments(
  *
  * キーボードを開いてもターミナルの高さは変えない（縮めると PC 側がリサイズされ、TUI が開閉のたびに
  * 全画面を描き直す）。枠だけを縮めて下端で揃え、はみ出した上側を切る。
+ *
+ * ターミナルに出たリンクを押すと開く（W2-31、Q123 A）。URL は `localhost` やプライベートアドレスなら
+ * PC の内蔵ブラウザで開いてブラウザのタブで映し、それ以外は Safari。ファイルパスはこのターミナルの
+ * 作業フォルダを基準に PC が解決し、ワークスペースの中のファイルだけをファイルビューアで開く（外なら何もしない）。
  */
 export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }: {
 	terminal: SpaceTerminal;
@@ -92,6 +103,65 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 		outputWidthRef.current = nextWidth;
 		if (!keyboardVisible || next > outputHeight || widthChanged) {
 			setOutputHeight(next);
+		}
+	};
+
+	// ターミナルに出たリンク（W2-31）。
+	const router = useRouter();
+	const [viewer, setViewer] = useState<{ ws: string; path: string; line?: number } | undefined>(undefined);
+	const openGeneration = useRef(0);
+	useEffect(() => () => { openGeneration.current++; }, []);
+	const openFile = (target: LocalFileTarget) => {
+		const ws = terminal.ws ?? useAppStore.getState().workspace?.activeWs;
+		if (ws === undefined) {
+			return;
+		}
+		const generation = ++openGeneration.current;
+		// terminalKey を付けると、新しい PC はこのターミナルの作業フォルダを基準に相対パスを解決する
+		// （古い PC は無視してワークスペースの根から解決する）。外のファイル・無いファイルは何もしない。
+		sendPcRequest<{ path?: unknown }>(activePcId, 'fs', { t: 'resolveLink', ws, path: target.path, terminalKey }).then(resolved => {
+			if (openGeneration.current === generation && typeof resolved.path === 'string') {
+				setViewer({ ws, path: resolved.path, ...(target.line !== undefined ? { line: target.line } : {}) });
+			}
+		}).catch(() => { /* ワークスペースの外・存在しないパス */ });
+	};
+	const openUrlOnPc = async (url: string) => {
+		if (!pcHasCapabilityFor(activePcId, PcCapability.BrowserOpenUrl)) {
+			Alert.alert('PC のブラウザで開けません', 'PC の Para Code を更新すると、PC の中でしか見られない URL（localhost など）をスマホから開けます。');
+			return;
+		}
+		const generation = ++openGeneration.current;
+		let target: { targetId: string; url: string } | undefined;
+		try {
+			target = await openUrlInPcBrowser(url, {
+				open: () => sendPcRequest(activePcId, 'fs', { t: 'openUrl', url }),
+				listTargets: async () => (await useAppStore.getState().browserTargets()).targets,
+				wait: ms => new Promise(resolve => setTimeout(resolve, ms)),
+			});
+		} catch (err) {
+			console.warn('[session] opening a terminal URL on the PC failed', errorKind(err));
+			Alert.alert('PC のブラウザで開けませんでした', 'PC との接続を確認して、もう一度お試しください。');
+			return;
+		}
+		if (openGeneration.current !== generation) {
+			return;
+		}
+		const desktopEpoch = useAppStore.getState().workspace?.desktopEpoch;
+		if (target !== undefined && desktopEpoch !== undefined) {
+			useAppStore.getState().setBrowserSelection({ targetId: target.targetId, url: target.url, desktopEpoch });
+		}
+		router.setParams({ tab: encodeSessionTab({ kind: 'browser' }) });
+	};
+	const openLink = (link: TerminalLinkTarget) => {
+		if (link.kind === 'file') {
+			openFile(link.target);
+			return;
+		}
+		const destination = terminalUrlDestination(link.url);
+		if (destination === 'external') {
+			void Linking.openURL(link.url).catch(() => { /* 開けない URL は無視 */ });
+		} else if (destination === 'pc') {
+			void openUrlOnPc(link.url);
 		}
 	};
 
@@ -195,6 +265,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 						fontSize={active && terminalPrefs.matchPcWidth ? terminalPrefs.fontSize : undefined}
 						onGridChange={setGrid}
 						onScroll={(dir, lines) => scrollTerminal(terminalKey, dir, lines)}
+						onOpenLink={openLink}
 					/>
 				</View>
 			</View>
@@ -223,6 +294,9 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 				onLiveArrow={key => sendArrowKey(terminalKey, key)}
 			/>
 			<View style={[styles.bottom, { height: bottomInset }]} />
+			{viewer !== undefined ? (
+				<WorkspaceFileViewer ws={viewer.ws} path={viewer.path} focusLine={viewer.line} backLabel="ターミナル" onClose={() => setViewer(undefined)} />
+			) : null}
 		</View>
 	);
 }
