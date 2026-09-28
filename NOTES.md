@@ -704,7 +704,7 @@ upstream 取り込み時に確認すること:
 
 再レビュー N3〜N5・N9〜N11 の直し方: クリックの的の持ち主は、AX の当たり判定（`AXUIElementCopyElementAtPosition`。クリックを通すウィンドウは出てこない）と、点を覆う一番手前のウィンドウの両方で見る。後者からは Dock（bundle id `com.apple.dock`）と WindowServer（実行ファイルの場所）の層を除く。macOS 27 の Dock は画面全体を覆う layer 20 のウィンドウを出しており、手元で読んだ `kCGWindowSharingState`（1）・alpha（1）・store type は通常のウィンドウと同じで、ウィンドウの属性では入力を受けるか見分けられなかったため、除いた分の行き先は当たり判定で確かめる（Dock のバーの上なら Dock が返り止まる）。キーの前は、OS に聞いたフォーカスのあるアプリと、フォーカスのある要素の持ち主が目的の pid であることを主な条件にし、重なるパネルで止めるのは認証・同意の画面だけにした（常駐の浮いたウィンドウでキーが止まり続けないように。止める側の一覧は名前でも見るが、名前を偽っても止まるだけ）。長い `typeText` は、利用者の入力の確かめを毎回、画面とフォーカスの確かめを 10 文字か 50 ms ごとに行い、画面のウィンドウの一覧は 50 ms 使い回す。shared process は 400 文字ずつ別の要求で送り、止まったら「最初の何文字が入ったか」を返す。締め切りなどで数が分からないときは「最初の何文字は確実、次の何文字は入ったかもしれない。状態を読んでから続け、全体を送り直さない」と返す。補助アプリは SIGTERM を受けたら、押したままのボタンとキーを離してから終わる。区切りに似た文字列は変わらなくなるまで消し、`computer_list_apps` のアプリ名は制御文字を除いて 60 文字で切る。エージェントの貼る文字は `TransientType` と `ConcealedType` を付けて書き、クリップボードの履歴に残させない。メニューや右クリックの「ペースト」は（⌘ 付きの V の割り当てか、よくある名前で見分けて）クリックしない。名前で見分けられない言語のメニュー項目は残る。
 
-同梱: 手元の `npm run gulp vscode-darwin-<arch>-min` は `build/gulpfile.vscode.ts` の PARA-PATCH から `paradisComputerUseHelperPackageTask` を呼び、補助アプリを作って `Contents/Helpers/` に入れる（失敗は警告だけ。`PARADIS_COMPUTER_USE_HELPER=0` で飛ばせる）。CI（`CI` がある）では gulp は何もせず、`para-release.yml` の 3 段（Build / Pre-notarize / Embed、どれも `continue-on-error`）に任せる。Embed は Pre-notarize が Apple に受け入れられたとき書く目印（`.build/paradis/computerUse/prenotarized`）があるときだけ入れる。`workflow_dispatch` の `computer_use_helper` を false にすると 3 段とも飛ばす。`build/darwin/sign.ts` の PARA-PATCH は補助アプリに空の entitlements を渡す 3 行だけ。本体の公証が補助アプリのせいで拒否された場合に補助アプリを外して出し直す段は無い（Pre-notarize で先に潰す前提）。
+同梱: 手元の `npm run gulp vscode-darwin-<arch>-min` は `build/gulpfile.vscode.ts` の PARA-PATCH から `paradisComputerUseHelperPackageTask` を呼び、補助アプリを作って `Contents/Helpers/` に入れる（失敗は警告だけ。`PARADIS_COMPUTER_USE_HELPER=0` で飛ばせる）。CI（`CI` がある）では gulp は何もせず、`para-release.yml` の 3 段（Build / Pre-notarize / Embed）に任せる。ステーブルでは 3 段とも `continue-on-error` で、失敗したら補助アプリを外して出荷する。ベータ（Q102）では失敗でビルドを止め、署名と公証の後に zip の中の補助アプリを確かめる（下の「ベータ版の配布経路」）。Embed は Pre-notarize が Apple に受け入れられたとき書く目印（`.build/paradis/computerUse/prenotarized`）があるときだけ入れる。`workflow_dispatch` の `computer_use_helper` を false にすると、ステーブルでは 3 段とも飛ばす（ベータでは効かない）。`build/darwin/sign.ts` の PARA-PATCH は補助アプリに空の entitlements を渡す 3 行だけ。本体の公証が補助アプリのせいで拒否された場合に補助アプリを外して出し直す段は無い（Pre-notarize で先に潰す前提）。
 
 手元で試すとき: `node build/paradis/computerUse/buildHelper.ts --out <どこか> --allow-any-peer-for-testing` で接続相手の確認を外したビルドを作れる（node から直接つなぐため）。既定の出力先には書けず、`Info.plist` に `ParadisTestingBuild` が付いて `embedHelper.ts` が埋め込みを断る。ad-hoc の補助アプリはビルドのたびに TCC から別物と見なされる。ビルドのテストは `node --test build/paradis/computerUse/*.test.ts`（`build/package.json` の `test` の対象には入れていない）。
 
@@ -950,10 +950,10 @@ wrangler kv key put --namespace-id "$NS" --remote changelog:beta --path /tmp/cha
 
 wrangler の成否は出力全体で確かめる（パイプで握りつぶさない）。確かめ方は手順 5 と同じで、`beta` のフィードにベータの commit を名乗ると、そのステーブルの JSON が返る。
 
-B3（Computer Use）の補助アプリの段は、このワークフローにはまだ無い（`para/phase7-computer-use` 側にあり、ベータ用ブランチで合わせる）。合わせるときに次の 2 点を足す。Q102 の 7 で「ベータでは補助アプリの失敗で止める（ステーブルは外して出荷のまま）」と決めているため。
+B3（Computer Use）の補助アプリの段は、ベータ用ブランチ `para/beta-computer-use` で合わせた（2026-09-28）。Q102 の 7 で「ベータでは補助アプリの失敗で止める（ステーブルは外して出荷のまま）」と決めているため、次の 2 点を入れた。
 
-- 補助アプリを作る・単独で公証する・埋め込む段の `continue-on-error: true` を `continue-on-error: ${{ needs.classify.outputs.is_beta != 'true' }}` にする（macOS のジョブには env `PARA_RELEASE_IS_BETA` もある）。公証の印が無いときに埋め込みを黙って飛ばす分岐も、ベータでは失敗にする
-- ベータのときだけ、`build-darwin` の最後（`Compute sha256` の前）に、zip の中に `Contents/Helpers/Para Code Computer Use.app` があるかを確かめる段を足す（例: `if: ${{ needs.classify.outputs.is_beta == 'true' }}` で `unzip -l "darwin-${{ matrix.arch }}.zip" | grep -F 'Contents/Helpers/Para Code Computer Use.app/'`）
+- 補助アプリを作る・単独で公証する・埋め込む段は `continue-on-error: ${{ needs.classify.outputs.is_beta != 'true' }}` で、`if` は `is_beta == 'true' || computer_use_helper != 'false'`（ベータでは入力で飛ばせない）。補助アプリが作られていない・公証の印が無いときに埋め込みを黙って飛ばす分岐は、ジョブの env `PARA_RELEASE_IS_BETA` が `true` なら失敗にする。ステーブルの動き（外して出荷）は変えていない
+- ベータのときだけ、`build-darwin` の `Notarize + staple` の後・`Compute sha256` の前に、出荷する zip の中に `Contents/Helpers/Para Code Computer Use.app/Contents/MacOS/ParadisComputerUse` があるかを `unzip -l` で確かめる段を足した（`Verify the Computer Use helper is in the beta zip`）
 
 `para-reh.yml` は、タグ（ステーブル／ベータ）からの実行だけが `reh` に公開する。ブランチからの手動起動はビルドと artifact までで止まる。
 
