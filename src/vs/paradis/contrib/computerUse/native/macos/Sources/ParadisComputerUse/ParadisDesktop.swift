@@ -90,6 +90,8 @@ final class ParadisDesktop: ParadisDesktopBackend {
 
 	func listWindows(pid: Int32) throws -> [[String: Any]] {
 		try requireRunningApp(pid)
+		// AX で分かれば、標準のウィンドウか（小さな補助のウィンドウやパネルと分けるため）と、しまわれているかも付ける
+		let accessibility = AXIsProcessTrusted() ? paradisAXWindowKinds(pid: pid) : [:]
 		return paradisWindowInfos(pid: pid).enumerated().map { index, info in
 			var entry: [String: Any] = [
 				"windowId": Int(info.windowId),
@@ -97,6 +99,13 @@ final class ParadisDesktop: ParadisDesktopBackend {
 				"bounds": paradisRectJson(info.bounds),
 				"onScreen": info.onScreen,
 			]
+			if let kind = accessibility[info.windowId] {
+				entry["standard"] = kind.subrole == "AXStandardWindow"
+				if let subrole = kind.subrole {
+					entry["subrole"] = subrole
+				}
+				entry["minimized"] = kind.minimized
+			}
 			// 画面収録の許可が無いとタイトルは OS から返らない
 			if let title = info.title, !title.isEmpty {
 				entry["title"] = paradisSanitizeText(title, maxLength: 200)
@@ -156,6 +165,9 @@ final class ParadisDesktop: ParadisDesktopBackend {
 		var elements: [AXUIElement] = []
 		var truncated = false
 		// 深さ優先で番号を振る（画面の上から下の順に近くなる）
+		// 「フォーカスあり」は、アプリが今フォーカスを持つと答えた要素だけに付ける。要素ごとの AXFocused は、
+		// 表の中の全部のセルが true を返すアプリがある（Finder のサイドバー）
+		let focusedElement = paradisElement(application, kAXFocusedUIElementAttribute)
 		var stack: [(AXUIElement, Int)] = [(window, 0)]
 		// ツリー全体の締め切り。過ぎたら読めた分だけ返す
 		let deadline = Date().addingTimeInterval(paradisTreeDeadlineSeconds)
@@ -164,7 +176,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 				truncated = true
 				break
 			}
-			nodes.append(paradisDescribe(element, index: nodes.count, depth: depth, origin: windowFrame.origin))
+			nodes.append(paradisDescribe(element, index: nodes.count, depth: depth, origin: windowFrame.origin, focusedElement: focusedElement))
 			elements.append(element)
 			if depth + 1 > maxDepth {
 				if !paradisElements(element, kAXChildrenAttribute).isEmpty {
@@ -215,7 +227,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 		throw ParadisHelperError(code: "window_not_found", message: "the window \(windowId) is not accessible")
 	}
 
-	private func paradisDescribe(_ element: AXUIElement, index: Int, depth: Int, origin: CGPoint) -> ParadisAXNode {
+	private func paradisDescribe(_ element: AXUIElement, index: Int, depth: Int, origin: CGPoint, focusedElement: AXUIElement?) -> ParadisAXNode {
 		let role = paradisString(element, kAXRoleAttribute) ?? "AXUnknown"
 		let subrole = paradisString(element, kAXSubroleAttribute)
 		let title = paradisString(element, kAXTitleAttribute)
@@ -239,7 +251,8 @@ final class ParadisDesktop: ParadisDesktopBackend {
 			label: label,
 			frame: frame,
 			enabled: paradisBool(element, kAXEnabledAttribute),
-			focused: paradisBool(element, kAXFocusedAttribute),
+			focused: focusedElement.map { CFEqual($0, element) } ?? false,
+			selected: paradisBool(element, kAXSelectedAttribute) == true,
 			actions: actionNames,
 			redacted: secure && paradisHasValue(element)
 		)
@@ -421,4 +434,30 @@ func paradisFrame(_ element: AXUIElement) -> CGRect? {
 		return nil
 	}
 	return CGRect(origin: position, size: size)
+}
+
+/** AX で見たウィンドウの種類。CGWindowID ごと。 */
+struct ParadisAXWindowKind {
+	let subrole: String?
+	let minimized: Bool
+}
+
+func paradisAXWindowKinds(pid: Int32) -> [UInt32: ParadisAXWindowKind] {
+	guard let lookup = paradisAXWindowIdFunction() else {
+		return [:]
+	}
+	let application = AXUIElementCreateApplication(pid)
+	AXUIElementSetMessagingTimeout(application, 1.0)
+	var kinds: [UInt32: ParadisAXWindowKind] = [:]
+	for window in paradisElements(application, kAXWindowsAttribute) {
+		var windowId: CGWindowID = 0
+		guard lookup(window, &windowId) == .success else {
+			continue
+		}
+		kinds[windowId] = ParadisAXWindowKind(
+			subrole: paradisCopy(window, kAXSubroleAttribute) as? String,
+			minimized: (paradisCopy(window, kAXMinimizedAttribute) as? NSNumber)?.boolValue ?? false
+		)
+	}
+	return kinds
 }

@@ -26,6 +26,8 @@ struct ParadisAXNode {
 	let frame: CGRect?
 	let enabled: Bool?
 	let focused: Bool?
+	/** 選ばれている（表の行・サイドバーの項目など）。フォーカスとは別。 */
+	var selected: Bool = false
 	let actions: [String]
 	/** パスワード欄らしいので値を出さなかった。 */
 	let redacted: Bool
@@ -98,6 +100,9 @@ func paradisRenderAXTree(_ nodes: [ParadisAXNode], truncated: Bool) -> String {
 		}
 		if node.focused == true {
 			parts.append("focused")
+		}
+		if node.selected {
+			parts.append("selected")
 		}
 		if !node.actions.isEmpty {
 			parts.append("actions=" + node.actions.map { paradisSanitizeText($0, maxLength: 40) }.joined(separator: ","))

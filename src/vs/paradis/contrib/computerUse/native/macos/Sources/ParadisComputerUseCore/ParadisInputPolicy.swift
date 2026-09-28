@@ -425,3 +425,68 @@ func paradisPasteLanded(before: String?, after: String?, text: String) -> Bool {
 	}
 	return after.contains(text)
 }
+
+// MARK: - 文字入力の確かめ（ベータの実機で文字が落ちた件）
+
+/** 文字入力をどの経路で入れたか。 */
+enum ParadisTypeMethod: String {
+	/** フォーカスのある欄の選択範囲を AX で置き換えた（キーも IME も通らない）。 */
+	case accessibility
+	/** クリップボード経由で貼り付けた（IME が有効なとき）。 */
+	case paste
+	/** 1 文字ずつキーのイベントを送った。 */
+	case keys
+}
+
+/**
+ * 今の入力ソースが IME（日本語入力など）か。IME はキーのイベントを取り込んで変換するので、英数字でも
+ * 1 文字ずつのキーでは文字が落ちたり変わったりしうる。そのときは貼り付けに寄せる。
+ * `sourceType` は `kTISPropertyInputSourceType` の値、`sourceId` は `kTISPropertyInputSourceID` の値。
+ */
+func paradisIsInputMethodActive(sourceType: String?, sourceId: String?) -> Bool {
+	if let sourceType, sourceType != "TISTypeKeyboardLayout" {
+		return true
+	}
+	return sourceId?.lowercased().contains(".inputmethod.") == true
+}
+
+/** 入れた後に読み戻した結果。`verified` が nil なら確かめられなかった。 */
+struct ParadisTypingCheck: Equatable {
+	let verified: Bool?
+	/** 実際に増えた文字数（読み戻せたときだけ）。 */
+	let inserted: Int?
+}
+
+/** 改行は Return のキーとして送るので、欄には `\n` として入る。比べる前にそろえる。 */
+func paradisNormalizeTypedText(_ text: String) -> String {
+	return text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+}
+
+/**
+ * 入れる前の値と選択範囲（UTF-16 の位置と長さ）、入れた後の値から、文字列がそのまま入ったかを判断する。
+ * 読めなければ確かめられない（nil）。
+ */
+func paradisTypingOutcome(before: String?, selection: (location: Int, length: Int)?, after: String?, text: String) -> ParadisTypingCheck {
+	guard let before, let after else {
+		return ParadisTypingCheck(verified: nil, inserted: nil)
+	}
+	let typed = paradisNormalizeTypedText(text)
+	let beforeUnits = Array(before.utf16)
+	var removedCount = 0
+	var expected: String?
+	if let selection {
+		let start = max(0, min(selection.location, beforeUnits.count))
+		let end = max(start, min(start + selection.length, beforeUnits.count))
+		let prefix = String(utf16CodeUnits: Array(beforeUnits[0..<start]), count: start)
+		let removed = String(utf16CodeUnits: Array(beforeUnits[start..<end]), count: end - start)
+		let suffix = String(utf16CodeUnits: Array(beforeUnits[end...]), count: beforeUnits.count - end)
+		removedCount = removed.count
+		expected = prefix + typed + suffix
+	}
+	let inserted = max(0, after.count - (before.count - removedCount))
+	if let expected {
+		return ParadisTypingCheck(verified: after == expected, inserted: inserted)
+	}
+	// 選択範囲が読めないときは、増えた数と、文字列が含まれるかで見る
+	return ParadisTypingCheck(verified: inserted == typed.count && after.contains(typed), inserted: inserted)
+}

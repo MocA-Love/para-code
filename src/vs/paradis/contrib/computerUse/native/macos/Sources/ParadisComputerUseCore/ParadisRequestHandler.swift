@@ -104,7 +104,7 @@ protocol ParadisDesktopBackend: AnyObject {
 	func click(pid: Int32, windowId: UInt32, target: ParadisPointerTarget, button: ParadisMouseButton, clickCount: Int, modifiers: ParadisModifiers) throws -> [String: Any]
 	func drag(pid: Int32, windowId: UInt32, from: ParadisPointerTarget, to: ParadisPointerTarget) throws -> [String: Any]
 	func scroll(pid: Int32, windowId: UInt32, target: ParadisPointerTarget?, direction: ParadisScrollDirection, pages: Double) throws -> [String: Any]
-	func typeText(pid: Int32, units: [ParadisTypedUnit]) throws -> [String: Any]
+	func typeText(pid: Int32, text: String, units: [ParadisTypedUnit]) throws -> [String: Any]
 	func pasteText(pid: Int32, text: String) throws -> [String: Any]
 	func pressChord(pid: Int32, chord: ParadisKeyChord) throws -> [String: Any]
 }
@@ -217,7 +217,7 @@ final class ParadisRequestHandler {
 			guard let text = params["text"] as? String else {
 				throw ParadisHelperError.invalidArgument("\"text\" must be a string")
 			}
-			return try backend.typeText(pid: try pidParam(params), units: try paradisTypedUnits(text))
+			return try backend.typeText(pid: try pidParam(params), text: text, units: try paradisTypedUnits(text))
 		case "pasteText":
 			guard let text = params["text"] as? String, !text.isEmpty else {
 				throw ParadisHelperError.invalidArgument("\"text\" must be a non-empty string")

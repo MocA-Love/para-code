@@ -35,6 +35,7 @@ test('the Swift helper and the TypeScript client block the same apps', () => {
 	const tsList = (name: string) => [...(new RegExp(`${name}: readonly string\\[\\] = \\[(?<body>[^\\]]*)\\]`).exec(commonTs)?.groups?.body ?? '').matchAll(/'(?<id>[^']+)'/g)].map(match => match.groups!.id);
 	const pairs: [string, string][] = [
 		['paradisBlockedPasswordManagers', 'PARADIS_COMPUTER_USE_PASSWORD_MANAGERS'],
+		['paradisBlockedAuthenticators', 'PARADIS_COMPUTER_USE_AUTHENTICATORS'],
 		['paradisBlockedKeychainApps', 'PARADIS_COMPUTER_USE_KEYCHAIN_APPS'],
 		['paradisBlockedParaCodeApps', 'PARADIS_COMPUTER_USE_PARA_CODE_APPS'],
 		['paradisBlockedSystemSurfaces', 'PARADIS_COMPUTER_USE_SYSTEM_SURFACES'],

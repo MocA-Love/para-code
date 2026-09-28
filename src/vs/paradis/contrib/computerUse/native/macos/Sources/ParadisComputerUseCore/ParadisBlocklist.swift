@@ -9,7 +9,7 @@
 // （レビュー M1）。補助アプリにつながれる経路がもし残っていても、最悪の的は守るため。
 //
 // 一覧は TS 側と同じにする。build/paradis/computerUse/buildHelper.test.ts が突き合わせる。
-// 末尾が `*` のものは、その手前で始まる bundle id 全部に当たる。
+// 末尾が `*` のものは、その手前で始まる bundle id 全部に当たる。前後が `*` のものは、その間を含む bundle id 全部に当たる。
 
 import Foundation
 
@@ -37,7 +37,24 @@ let paradisBlockedPasswordManagers: [String] = [
 	"com.markmcguill.strongbox.mac",
 	"com.hicknhacksoftware.MacPass",
 	"com.siber.roboform",
+]
+
+/**
+ * 2 段階認証（ワンタイムコード）のアプリ。パスワードマネージャーと同じ扱い（ベータの実機で Proton Authenticator が
+ * 通っていた）。`*x*` は bundle id に x を含むもの全部。【要確認】各 id の実在。
+ */
+let paradisBlockedAuthenticators: [String] = [
+	"me.proton.authenticator",
 	"com.authy.authy-mac",
+	"com.google.Authenticator",
+	"com.microsoft.azureauthenticator",
+	"com.bitwarden.authenticator",
+	"io.ente.auth",
+	"*authenticator*",
+	"*2fas*",
+	"*raivo*",
+	"*otpauth*",
+	"*steptwo*",
 ]
 
 /** キーチェーンアクセス。 */
@@ -65,6 +82,7 @@ let paradisBlockedSystemSurfaces: [String] = [
 
 enum ParadisBlockReason: String {
 	case passwordManager = "password-manager"
+	case authenticator = "authenticator"
 	case keychain = "keychain"
 	case paraCode = "para-code"
 	case system = "system"
@@ -74,6 +92,9 @@ private func paradisMatches(_ bundleId: String, _ patterns: [String]) -> Bool {
 	let id = bundleId.lowercased()
 	return patterns.contains { pattern in
 		let lower = pattern.lowercased()
+		if lower.count > 2 && lower.hasPrefix("*") && lower.hasSuffix("*") {
+			return id.contains(String(lower.dropFirst().dropLast()))
+		}
 		return lower.hasSuffix("*") ? id.hasPrefix(String(lower.dropLast())) : id == lower
 	}
 }
@@ -82,6 +103,9 @@ private func paradisMatches(_ bundleId: String, _ patterns: [String]) -> Bool {
 func paradisBlockReason(bundleId: String) -> ParadisBlockReason? {
 	if paradisMatches(bundleId, paradisBlockedPasswordManagers) {
 		return .passwordManager
+	}
+	if paradisMatches(bundleId, paradisBlockedAuthenticators) {
+		return .authenticator
 	}
 	if paradisMatches(bundleId, paradisBlockedKeychainApps) {
 		return .keychain
