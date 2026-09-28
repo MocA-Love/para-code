@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from 'react-native';
-import { ChevronDown, ChevronRight, CircleAlert, ExternalLink, FileText, GitBranch, GitCommitHorizontal, Minus, Plus, Sparkles, X } from 'lucide-react-native';
+import { ChevronDown, ChevronRight, CircleAlert, ExternalLink, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Minus, Plus, Sparkles, X } from 'lucide-react-native';
 import type { ParadisMobileSyncOperation } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileScmSync.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { hapticImpact, hapticSelection } from '../../haptics.js';
@@ -23,7 +23,7 @@ import type { CommitFiles } from './useScmData.js';
  */
 
 /** ブランチのカード（ブランチ名・同期の状態・件数）。 */
-export function BranchCard({ branch, sync, counts, syncSummary, syncing, onSync }: {
+export function BranchCard({ branch, sync, counts, syncSummary, syncing, onSync, pr }: {
 	branch: string | undefined;
 	/** 右上の同期の状態（先行・遅れの数が届かない PC では、最新のコミットの時刻を出す）。 */
 	sync: string | undefined;
@@ -32,6 +32,8 @@ export function BranchCard({ branch, sync, counts, syncSummary, syncing, onSync 
 	syncSummary?: ScmSyncSummary;
 	syncing?: ParadisMobileSyncOperation;
 	onSync?: (operation: ParadisMobileSyncOperation) => void;
+	/** このブランチの PR（押すと PR の区分へ。Orca W2-36）。 */
+	pr?: { readonly number: number; readonly state: string; readonly onPress: () => void };
 }) {
 	return (
 		<View style={styles.card}>
@@ -40,7 +42,18 @@ export function BranchCard({ branch, sync, counts, syncSummary, syncing, onSync 
 					<Icon icon={GitBranch} size={iconSize.md} color={colors.textDim} />
 					<Text style={styles.branch} numberOfLines={1}>{branch ?? 'ブランチ不明'}</Text>
 				</View>
-				{sync !== undefined && syncSummary === undefined ? <Text style={styles.sync} numberOfLines={1}>{sync}</Text> : null}
+				{pr !== undefined ? (
+					<Pressable
+						onPress={() => { hapticSelection(); pr.onPress(); }}
+						hitSlop={hitSlopToMinimum(PR_CHIP_HEIGHT)}
+						style={({ pressed }) => [styles.prChip, { borderColor: prStateColor(pr.state) }, pressed ? styles.fileRowPressed : undefined]}
+						accessibilityRole="button"
+						accessibilityLabel={`プルリクエスト #${pr.number}（${prStateLabel(pr.state)}）を見る`}
+					>
+						<Icon icon={GitPullRequest} size={iconSize.sm} color={prStateColor(pr.state)} />
+						<Text style={[styles.prChipText, { color: prStateColor(pr.state) }]}>{`#${pr.number}`}</Text>
+					</Pressable>
+				) : sync !== undefined && syncSummary === undefined ? <Text style={styles.sync} numberOfLines={1}>{sync}</Text> : null}
 			</View>
 			<View style={styles.counts}>
 				<Text style={styles.countText}>{counts !== undefined ? `${counts.unstaged} 件の変更` : '変更を読み込み中'}</Text>
@@ -72,6 +85,14 @@ export function BranchCard({ branch, sync, counts, syncSummary, syncing, onSync 
 }
 
 const SYNC_LABELS: Record<ParadisMobileSyncOperation, string> = { fetch: 'フェッチ', pull: '取り込む', push: 'プッシュ' };
+
+function prStateLabel(state: string): string {
+	return state === 'merged' ? 'マージ済み' : state === 'closed' ? 'クローズ' : state === 'draft' ? '下書き' : 'オープン';
+}
+
+function prStateColor(state: string): string {
+	return state === 'merged' ? colors.purple : state === 'closed' ? colors.red : state === 'draft' ? colors.textDim : colors.green;
+}
 
 /** 変更の行（モックの `.frow`。状態の記号・ファイル名・フォルダ）。押すと差分レビューへ。 */
 export function ScmFileRow({ entry, disabled, onPress, stage }: {
@@ -322,8 +343,9 @@ const COMMIT_BAR_CONTROL = 42;
 const PRIMARY_MIN_WIDTH = 88;
 /** 状態の記号の列の幅（pt。モックの `.fst`）。 */
 const SYMBOL_WIDTH = 24;
-/** ブランチのカードの同期のボタンの高さ（pt。当たり判定は 44 に広げる）。 */
+/** ブランチのカードの同期のボタンと PR の札の高さ（pt。当たり判定は 44 に広げる）。 */
 const SYNC_BUTTON_HEIGHT = 30;
+const PR_CHIP_HEIGHT = 26;
 
 const styles = StyleSheet.create({
 	card: {
@@ -531,6 +553,20 @@ const styles = StyleSheet.create({
 		flex: 1,
 		fontSize: type.meta,
 		color: colors.textDim,
+	},
+	prChip: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.xs,
+		minHeight: PR_CHIP_HEIGHT,
+		paddingHorizontal: space.sm,
+		borderRadius: radius.pill,
+		borderWidth: 1,
+	},
+	prChipText: {
+		fontSize: type.meta,
+		fontWeight: '600',
+		fontFamily: monoFamily,
 	},
 	syncRow: {
 		flexDirection: 'row',

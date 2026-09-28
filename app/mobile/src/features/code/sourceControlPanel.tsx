@@ -7,38 +7,43 @@ import { CircleCheck, CircleAlert, CloudOff, GitCommitHorizontal, RefreshCw } fr
 import { hapticImpact } from '../../haptics.js';
 import { useKeyboardCoverage } from '../../hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
+import { useAppStore } from '../../appState.js';
 import { useParaToast } from '../../paraToast.js';
 import { routes } from '../../routes.js';
 import { colors, space } from '../../theme.js';
 import { formatRelativeTime, useNow } from '../../time.js';
-import { Button, EmptyState, HeaderButton, Screen, ScreenHeader, type LucideIcon } from '../../ui/index.js';
+import { Button, ConfirmDrawer, EmptyState, HeaderButton, Screen, ScreenHeader, type LucideIcon } from '../../ui/index.js';
 import { X } from 'lucide-react-native';
 import { CenterSpinner, GroupHeading, InlineError, OfflineBanner, Segments, SpaceGateBody, useReadableColumn } from './codeParts.js';
 import { BranchCard, CommitBar, CommitFailureCard, HistoryList, ScmFileRow } from './scmParts.js';
 import {
-	SCM_SEGMENTS,
 	groupScmEntries,
 	listBodyState,
 	scmCounts,
 	scmEntries,
+	scmSegments,
 	type ListBodyState,
 	type ScmEntry,
 	type ScmSegment,
 } from './scmModel.js';
 import { branchSyncOf, commitFailureView, commitHint, commitScope, scmPrimaryAction, scmSyncSummary } from './scmSync.js';
+import { mergeConfirmMessage, type PrDetail } from './pullRequest.js';
+import { PullRequestPanel } from './pullRequestParts.js';
 import { useCodeSpace, type CodeSpaceTarget } from './useCodeSpace.js';
 import type { PanelDock } from './panelDock.js';
+import { usePullRequest } from './usePullRequest.js';
 import { useScmCommit, useScmHistory, useScmStatus } from './useScmData.js';
 import { useAgentHandoff, useScmSync, useStageFile } from './useScmSync.js';
 
 /**
  * ソース管理（`/pc/[pcId]/source-control/[spaceId]`）。Orca の MobileSourceControlPanel に合わせ、
- * 上に区分の切り替え（変更 / コミット）、その下にブランチのカードと変更の一覧、下端にコミットバーを置く。
+ * 上に区分の切り替え（変更 / プルリクエスト / コミット）、その下にブランチのカードと変更の一覧、下端にコミットバーを置く。
  *
  * PC が扱えれば（Orca W2-15）、ブランチのカードに上流と先行・遅れ、フェッチ・取り込み・プッシュを出し、主ボタンは
  * 変更が無ければプッシュ・取り込み・公開に変わる（強制 push は出さない）。変更の行の右でファイルごとにステージでき、
  * ステージ済みがあればそれだけをコミットする。コミットが失敗したら、要約と「AI に直してもらう」を出す。
  * 扱えない PC では「すべての変更をまとめてコミット」だけで、その旨をコミットバーの下に書く。
+ * PC が PR の詳細を返せれば（Orca W2-36）「プルリクエスト」の区分を出す。
  * 変更の行を押すと差分レビュー（`/pc/[pcId]/review/[spaceId]`）へ進む。
  *
  * ルート（`app/pc/[pcId]/source-control/[spaceId].tsx`）と、iPad のセッションの右のドック（`dock`）の両方で使う。
@@ -54,15 +59,23 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	const [actionError, setActionError] = useState<string | undefined>(undefined);
 	const stageFile = useStageFile(codeSpace, setActionError);
 	const commitHandoff = useAgentHandoff(codeSpace);
+	const prHandoff = useAgentHandoff(codeSpace);
 	const [segment, setSegment] = useState<ScmSegment>('changes');
-	const shown = segment;
+	const pullRequest = usePullRequest(codeSpace, segment === 'pr');
+	// PC が PR の詳細を返せなくなったら（古い PC に切り替えたなど）変更の区分に戻す
+	const shown: ScmSegment = segment === 'pr' && !pullRequest.enabled ? 'changes' : segment;
 	const [message, setMessage] = useState('');
+	const [confirmMerge, setConfirmMerge] = useState<PrDetail | undefined>(undefined);
 	const now = useNow();
 	const insets = useStableInsets();
 	// ドックではセッションの画面がキーボードの分を空けているので、ここでは足さない。
 	const keyboardCover = useKeyboardCoverage();
 	const ownKeyboardCover = dock !== undefined ? 0 : keyboardCover;
 	const column = useReadableColumn();
+	// PC が 5 分ごとに取っている PR（State の workspaces[].pr）。全体は購読せず、値だけを取る
+	const prNumber = useAppStore(s => s.workspace?.workspaces.find(workspace => workspace.id === codeSpace.wsId)?.pr?.number);
+	const prState = useAppStore(s => s.workspace?.workspaces.find(workspace => workspace.id === codeSpace.wsId)?.pr?.state);
+	const prUrl = useAppStore(s => s.workspace?.workspaces.find(workspace => workspace.id === codeSpace.wsId)?.pr?.url);
 
 	const entries = scmEntries(statusState.status);
 	const counts = statusState.status !== undefined ? scmCounts(entries) : undefined;
@@ -79,6 +92,9 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 		hapticImpact('light');
 		void statusState.refresh();
 		void history.refresh();
+		if (shown === 'pr') {
+			void pullRequest.refresh();
+		}
 	};
 
 	const commit = async () => {
@@ -124,6 +140,13 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 		}
 	};
 
+	const merge = async (pr: PrDetail) => {
+		if (await pullRequest.merge(pr)) {
+			useParaToast.getState().show({ key: 'scm-pr-merged', text: `#${pr.number} をマージしました`, icon: 'git-merge', tone: 'done' }, 2_400);
+			void history.refresh();
+		}
+	};
+
 	const openReview = (path: string) => {
 		if (codeSpace.pcId === undefined || codeSpace.spaceId === undefined) {
 			return;
@@ -148,7 +171,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 				{...(dock !== undefined ? { safeTop: false, backIcon: X, backLabel: 'ソース管理を閉じる', onBack: dock.close } : {})}
 				right={<HeaderButton icon={RefreshCw} label="最新の状態に更新" onPress={refreshAll} disabled={!codeSpace.live} />}
 			>
-				<Segments items={SCM_SEGMENTS} value={shown} onChange={setSegment} />
+				<Segments items={scmSegments(pullRequest.enabled)} value={shown} onChange={setSegment} />
 			</ScreenHeader>
 			<SpaceGateBody gate={codeSpace.gate}>
 				<View style={[styles.body, { paddingBottom: ownKeyboardCover }]}>
@@ -172,6 +195,10 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 							counts={counts}
 							{...(branchSync !== undefined ? { syncSummary: scmSyncSummary(branchSync), syncing: sync.syncing } : {})}
 							{...(branchSync !== undefined && codeSpace.live ? { onSync: (operation: 'push' | 'pull' | 'fetch') => void runSync(operation) } : {})}
+							{...(prNumber !== undefined && prState !== undefined
+								// PR の区分を出せない PC では、これまでの札と同じくブラウザで開く
+								? { pr: { number: prNumber, state: prState, onPress: () => pullRequest.enabled ? setSegment('pr') : prUrl !== undefined ? void Linking.openURL(prUrl).catch(() => undefined) : undefined } }
+								: {})}
 						/>
 						<InlineError message={sync.error} style={styles.inset} />
 						{shown === 'changes' ? (
@@ -201,6 +228,21 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 									))}
 								</ListBody>
 							</>
+						) : shown === 'pr' ? (
+							<PullRequestPanel
+								view={pullRequest.view}
+								loading={pullRequest.loading}
+								error={pullRequest.error}
+								offline={codeSpace.unavailable}
+								canMerge={pullRequest.canMerge}
+								merging={pullRequest.merging}
+								mergeError={pullRequest.mergeError}
+								handoff={prHandoff}
+								onRetry={codeSpace.live ? () => void pullRequest.refresh() : undefined}
+								onFix={pr => void prHandoff.send({ t: 'prFixChecks', number: pr.number }, 'auto')}
+								onFixWithNewAgent={pr => void prHandoff.send({ t: 'prFixChecks', number: pr.number }, 'new')}
+								onMerge={pr => setConfirmMerge(pr)}
+							/>
 						) : (
 							<>
 								<InlineError message={history.log !== undefined && history.error !== undefined ? `続きを読み込めませんでした: ${history.error}` : undefined} style={styles.inset} />
@@ -260,6 +302,21 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 					) : null}
 				</View>
 			</SpaceGateBody>
+			<ConfirmDrawer
+				visible={confirmMerge !== undefined}
+				title="プルリクエストをマージしますか？"
+				message={confirmMerge !== undefined ? mergeConfirmMessage(confirmMerge) : undefined}
+				confirmLabel="マージ"
+				destructive={false}
+				onConfirm={() => {
+					const pr = confirmMerge;
+					setConfirmMerge(undefined);
+					if (pr !== undefined) {
+						void merge(pr);
+					}
+				}}
+				onClose={() => setConfirmMerge(undefined)}
+			/>
 		</Screen>
 	);
 }

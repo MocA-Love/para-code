@@ -439,6 +439,87 @@ suite('ParadisWorktreeGitService', () => {
 		});
 	});
 
+	suite('pull request (Orca W2-36)', () => {
+		const HEAD_SHA = 'a'.repeat(40);
+
+		function createGhService(respond: (command: string, args: readonly string[]) => { stdout?: string; error?: string }, calls: string[][]): ParadisWorktreeGitService {
+			const execFile = ((command: string, args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
+				calls.push([command, ...args]);
+				const response = respond(command, args);
+				queueMicrotask(() => response.error !== undefined
+					? callback(Object.assign(new Error('exit 1'), { code: 1 }), '', response.error)
+					: callback(null, response.stdout ?? '', ''));
+				return {} as cp.ChildProcess;
+			}) as typeof cp.execFile;
+			return new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile);
+		}
+
+		test('reads the pull request of the current branch with its checks, and tells why it cannot', async () => {
+			const calls: string[][] = [];
+			let ghResponse: { stdout?: string; error?: string } = {
+				stdout: JSON.stringify({
+					number: 12, title: 'Add sync', url: 'https://github.com/o/r/pull/12', state: 'OPEN', isDraft: false, headRefName: 'feature', headRefOid: HEAD_SHA,
+					baseRefName: 'main', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
+					statusCheckRollup: [{ __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/5/job/77', workflowName: 'CI' }],
+				}),
+			};
+			const service = createGhService(command => command === 'git' ? { stdout: 'feature\n' } : ghResponse, calls);
+
+			const found = await service.getPullRequestDetail('/repo');
+			ghResponse = { error: 'no pull requests found for branch "feature"' };
+			const none = await service.getPullRequestDetail('/repo');
+			ghResponse = { error: 'To get started with GitHub CLI, please run:  gh auth login' };
+			const auth = await service.getPullRequestDetail('/repo');
+
+			assert.deepStrictEqual({
+				found: found.kind === 'ok' ? { number: found.detail.number, repo: found.detail.repo, checks: found.detail.checks } : found,
+				none, auth,
+				ghArgs: calls[1].slice(1),
+			}, {
+				found: { number: 12, repo: 'o/r', checks: [{ name: 'build', workflow: 'CI', bucket: 'fail', url: 'https://github.com/o/r/actions/runs/5/job/77', jobId: '77', repo: 'o/r' }] },
+				none: { kind: 'none', reason: 'no-pr' },
+				auth: { kind: 'none', reason: 'no-auth' },
+				ghArgs: ['pr', 'view', '--json', 'number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup'],
+			});
+		});
+
+		test('merges with the repository default method pinned to the head commit, and never with --admin or --delete-branch', async () => {
+			const calls: string[][] = [];
+			const service = createGhService((_command, args) => args[0] === 'repo'
+				? { stdout: JSON.stringify({ viewerDefaultMergeMethod: 'REBASE', mergeCommitAllowed: true, squashMergeAllowed: true, rebaseMergeAllowed: true }) }
+				: { stdout: '' }, calls);
+
+			const result = await service.mergePullRequest('/repo', { repo: 'o/r', number: 12, headSha: HEAD_SHA });
+			await assert.rejects(service.mergePullRequest('/repo', { repo: 'o/r; rm -rf ~', number: 12, headSha: HEAD_SHA }), /invalid merge request/);
+
+			assert.deepStrictEqual({ result, merge: calls[1] }, {
+				result: { method: 'rebase' },
+				merge: ['gh', 'pr', 'merge', '12', '-R', 'o/r', '--rebase', '--match-head-commit', HEAD_SHA],
+			});
+		});
+
+		test('keeps only the tail of each failed job log and skips malformed job ids', async () => {
+			const calls: string[][] = [];
+			const log = Array.from({ length: 300 }, (_, index) => `build\tRun tests\t2026-09-29T00:00:00.0000000Z line ${index}`).join('\n');
+			const service = createGhService(() => ({ stdout: log }), calls);
+
+			const results = await service.getFailedJobLogs('/repo', [{ jobId: '77', repo: 'o/r' }, { jobId: '1; echo', repo: 'o/r' }]);
+
+			assert.deepStrictEqual({
+				jobs: results.map(result => result.jobId),
+				lines: results[0].log?.split('\n').length,
+				first: results[0].log?.split('\n')[1],
+				args: calls.map(call => call.slice(1)),
+			}, {
+				jobs: ['77'],
+				// 見出し（--- Run tests ---）1 行と末尾 200 行
+				lines: 201,
+				first: 'line 100',
+				args: [['run', 'view', '--job', '77', '--log-failed', '-R', 'o/r']],
+			});
+		});
+	});
+
 	// clone は他のコマンドと違って長く走り続けるうえ、進捗を見ている相手が居なくなっても
 	// 自分では止まらない。畳む道を塞ぐと、接続先で git clone だけが走り続ける。
 	suite('clone lifetime', () => {

@@ -88,15 +88,26 @@ export function splitPath(path: string): { readonly name: string; readonly dir: 
 }
 
 /**
- * 上の区分（Orca は「変更 / プルリクエスト / コミット」の3つ）。PC からプルリクエストの詳細が
- * 届かないので、いまは2つだけ並べる。足すときはここに1件加え、画面の出し分けに1分岐足す。
+ * 上の区分（Orca と同じ「変更 / プルリクエスト / コミット」）。プルリクエストは PC が PR の詳細を
+ * 返せる（`pr.view.v1`、Orca W2-36）ときだけ出す。
  */
-export type ScmSegment = 'changes' | 'history';
+export type ScmSegment = 'changes' | 'pr' | 'history';
 
 export const SCM_SEGMENTS: readonly { readonly key: ScmSegment; readonly label: string }[] = [
 	{ key: 'changes', label: '変更' },
 	{ key: 'history', label: 'コミット' },
 ];
+
+const SCM_SEGMENTS_WITH_PR: readonly { readonly key: ScmSegment; readonly label: string }[] = [
+	{ key: 'changes', label: '変更' },
+	{ key: 'pr', label: 'プルリクエスト' },
+	{ key: 'history', label: 'コミット' },
+];
+
+/** 並べる区分（PC が PR の詳細を返せなければ「プルリクエスト」を出さない）。 */
+export function scmSegments(withPullRequest: boolean): readonly { readonly key: ScmSegment; readonly label: string }[] {
+	return withPullRequest ? SCM_SEGMENTS_WITH_PR : SCM_SEGMENTS;
+}
 
 export interface CommitActionInput {
 	/** PC へ要求を出せるか。 */
