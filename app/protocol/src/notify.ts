@@ -59,7 +59,18 @@ export interface NotifyPayload {
 	 *   成否を知らないので、プッシュを受け取れないと分かっている端末は自分で鳴らしてよい
 	 */
 	readonly quiet?: NotifyQuiet;
+	/**
+	 * もう片付いた通知の印（W2-27。**プッシュの暗号文にだけ載る**）。PC が片付いたと知っている通知
+	 * （スマホで開いた・PC で確認済みにしたエージェントの確認より前の通知）の `id` を、通知鍵から用途別に
+	 * 作った鍵で HMAC-SHA256 にした16進先頭32桁。通知拡張（NSE）が同じ値を作って通知センターから消す。
+	 * PC は10件まで載せる。旧アプリ・旧 NSE は読まずに無視する。
+	 */
+	readonly dismiss?: readonly string[];
 }
+
+/** `dismiss` の1件の形（16進32桁）と、読む件数の上限。 */
+const NOTIFY_DISMISS_TAG_PATTERN = /^[0-9a-f]{32}$/;
+const NOTIFY_DISMISS_MAX_TAGS = 32;
 
 export function encodeNotify(payload: NotifyPayload): Uint8Array {
 	return new TextEncoder().encode(JSON.stringify(payload));
@@ -87,7 +98,11 @@ export function decodeNotify(bytes: Uint8Array): NotifyPayload {
 	const windowId = typeof raw['windowId'] === 'number' && Number.isInteger(raw['windowId']) ? raw['windowId'] : undefined;
 	const agentToken = typeof raw['agentToken'] === 'string' && raw['agentToken'].length <= 200 ? raw['agentToken'] : undefined;
 	const quiet = raw['quiet'] === 'muted' || raw['quiet'] === 'pushed' ? raw['quiet'] : undefined;
-	return { kind, id, title, body, at, ...(subtitle !== undefined ? { subtitle } : {}), ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}), ...(terminalKey !== undefined ? { terminalKey } : {}), ...(windowId !== undefined ? { windowId } : {}), ...(agentToken !== undefined ? { agentToken } : {}), ...(pcId !== undefined ? { pcId } : {}), ...(pcName !== undefined ? { pcName } : {}), ...(quiet !== undefined ? { quiet } : {}) };
+	const dismissRaw = raw['dismiss'];
+	const dismiss = Array.isArray(dismissRaw)
+		? dismissRaw.slice(0, NOTIFY_DISMISS_MAX_TAGS).filter((tag): tag is string => typeof tag === 'string' && NOTIFY_DISMISS_TAG_PATTERN.test(tag))
+		: undefined;
+	return { kind, id, title, body, at, ...(dismiss !== undefined && dismiss.length > 0 ? { dismiss } : {}), ...(subtitle !== undefined ? { subtitle } : {}), ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}), ...(terminalKey !== undefined ? { terminalKey } : {}), ...(windowId !== undefined ? { windowId } : {}), ...(agentToken !== undefined ? { agentToken } : {}), ...(pcId !== undefined ? { pcId } : {}), ...(pcName !== undefined ? { pcName } : {}), ...(quiet !== undefined ? { quiet } : {}) };
 }
 
 function isNotifyKind(value: string): value is NotifyKind {

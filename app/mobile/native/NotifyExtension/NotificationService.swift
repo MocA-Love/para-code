@@ -131,16 +131,30 @@ final class NotificationService: UNNotificationServiceExtension {
 			WidgetStore.applyNotification(json, pcId: widgetPcId)
 		}
 
-		guard let collapse = collapse else {
+		// PC が片付いたと知らせてきた通知（W2-27）。印は通知 ID を「この PC との鍵」で HMAC にしたもので、
+		// 別の PC の通知には一致しない。PC が片付いたと知っているもの（スマホで開いた、PC で確認済みにした
+		// エージェントの確認より前の通知）だけが載る。
+		let dismissTags = Self.dismissTags(json["dismiss"])
+		guard collapse != nil || !dismissTags.isEmpty else {
 			deliver(bestAttempt)
 			return
 		}
-		// 同じエージェントの前の通知（プッシュ・アプリが出したローカル通知の両方）を消してから出す。
+		let idKey = Self.pushIdKey(opened.key)
+		// 同じエージェントの前の通知（プッシュ・アプリが出したローカル通知の両方）と、片付いた通知を消してから出す。
 		// 消せなくても通知は必ず出す（取得が返ってこない場合は serviceExtensionTimeWillExpire が出す）。
 		let center = UNUserNotificationCenter.current()
 		center.getDeliveredNotifications { [weak self] deliveredNotifications in
 			let previous = deliveredNotifications
-				.filter { ($0.request.content.userInfo["collapse"] as? String) == collapse }
+				.filter { notification in
+					let info = notification.request.content.userInfo
+					if let collapse = collapse, (info["collapse"] as? String) == collapse {
+						return true
+					}
+					guard !dismissTags.isEmpty, let notifyId = Self.notifyId(of: info) else {
+						return false
+					}
+					return dismissTags.contains(Self.dismissTag(idKey: idKey, notifyId: notifyId))
+				}
 				.map { $0.request.identifier }
 			if !previous.isEmpty {
 				center.removeDeliveredNotifications(withIdentifiers: previous)
@@ -220,6 +234,51 @@ final class NotificationService: UNNotificationServiceExtension {
 	private static func hashKey(_ input: String) -> String {
 		let digest = SHA256.hash(data: Data(input.utf8))
 		return String(digest.map { String(format: "%02x", $0) }.joined().prefix(32))
+	}
+
+	// MARK: - Dismiss tags (W2-27)
+
+	/// 1回のプッシュで受け付ける印の数の上限（PC は10件まで送る。多すぎるものは切る）。
+	private static let maxDismissTags = 32
+
+	/// 本文の `dismiss`（32桁の16進の配列）を読む。形の合わないものは捨てる。
+	private static func dismissTags(_ raw: Any?) -> Set<String> {
+		guard let values = raw as? [Any] else {
+			return []
+		}
+		var tags = Set<String>()
+		for value in values.prefix(maxDismissTags) {
+			if let tag = value as? String, tag.count == 32, tag.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) {
+				tags.insert(tag)
+			}
+		}
+		return tags
+	}
+
+	/// 通知センターの通知の通知 ID。プッシュは userInfo の最上位（この拡張が書く）、アプリが出した
+	/// ローカル通知は expo が userInfo["body"] に入れた data の中にある。
+	private static func notifyId(of info: [AnyHashable: Any]) -> String? {
+		if let id = info["notifyId"] as? String, !id.isEmpty {
+			return id
+		}
+		if let body = info["body"] as? [String: Any], let id = body["notifyId"] as? String, !id.isEmpty {
+			return id
+		}
+		return nil
+	}
+
+	/// 印を作るための用途別の鍵。**PC の `paradisMobilePushIds.ts` の `pushIdHasher` と同じ規則**
+	/// （HMAC-SHA256(通知鍵, "paradis-push-id-v1")）。
+	private static func pushIdKey(_ notifyKey: SymmetricKey) -> SymmetricKey {
+		let mac = HMAC<SHA256>.authenticationCode(for: Data("paradis-push-id-v1".utf8), using: notifyKey)
+		return SymmetricKey(data: Data(mac))
+	}
+
+	/// 通知 ID の印（HMAC-SHA256(用途別の鍵, "dismiss\0" + 通知 ID) の16進先頭32桁）。
+	/// 値は PC の `paradisMobilePushIds.test.ts` で固定している（鍵が全バイト 1 のとき "n1" → f6bbbd12fc1fd39b8cddf0d5c0f1f5df）。
+	private static func dismissTag(idKey: SymmetricKey, notifyId: String) -> String {
+		let mac = HMAC<SHA256>.authenticationCode(for: Data("dismiss\u{0}\(notifyId)".utf8), using: idKey)
+		return String(Data(mac).map { String(format: "%02x", $0) }.joined().prefix(32))
 	}
 
 	// MARK: - Crypto
@@ -309,16 +368,17 @@ final class NotificationService: UNNotificationServiceExtension {
 		return nil
 	}
 
-	/// 保存されている鍵を順に試して復号する。復号できた鍵のPC識別子と、試した鍵の本数を一緒に返す。
+	/// 保存されている鍵を順に試して復号する。復号できた鍵のPC識別子と、試した鍵の本数と、その鍵を一緒に返す
+	/// （鍵は W2-27 の印の突き合わせに使う）。
 	/// 本数は「何台のPCとペアリングしているか」として副題の組み立てに使う。
-	private static func decryptWithAnyKey(combined: Data) -> (plaintext: Data, pcId: String?, keyCount: Int)? {
+	private static func decryptWithAnyKey(combined: Data) -> (plaintext: Data, pcId: String?, keyCount: Int, key: SymmetricKey)? {
 		guard let sealedBox = try? AES.GCM.SealedBox(combined: combined) else {
 			return nil
 		}
 		let candidates = loadNotifyKeys()
 		for candidate in candidates {
 			if let plaintext = try? AES.GCM.open(sealedBox, using: candidate.key) {
-				return (plaintext: plaintext, pcId: candidate.pcId, keyCount: candidates.count)
+				return (plaintext: plaintext, pcId: candidate.pcId, keyCount: candidates.count, key: candidate.key)
 			}
 		}
 		return nil

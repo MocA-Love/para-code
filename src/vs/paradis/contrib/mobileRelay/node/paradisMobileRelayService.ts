@@ -35,7 +35,7 @@ import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.j
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from './paradisRemoteTranscriptMirror.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
-import { paradisMobilePushIds } from './paradisMobilePushIds.js';
+import { paradisMobileDismissTags, paradisMobilePushIds } from './paradisMobilePushIds.js';
 import { IParadisRelayPersistedState, ParadisRelayStoreProblem, paradisMoveRelayStateAside, paradisPruneRelayStateLeftovers, paradisReadRelayState, paradisWriteRelayState } from './paradisMobileRelayStateFile.js';
 import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
 import { ParadisMobileTerminalRegistry } from './paradisMobileTerminalRegistry.js';
@@ -64,6 +64,7 @@ import { PARADIS_MOBILE_BUILTIN_REQUEST_KINDS } from '../common/paradisMobileReq
 import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, paradisEvaluateMobileCompat, paradisIsAcceptedMobileWireVersion, paradisParseMobileCapabilities } from '../common/paradisMobileCompat.js';
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyPcFocusQuiet, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
 import { decodeNotifyVisibility, encodeNotifyVisibilityAck } from '../common/paradisMobileVisibility.js';
+import { ParadisNotifyDismissLedger, paradisWithNotifyDismiss } from '../common/paradisNotifyDismissLedger.js';
 import { paradisAgentLabel, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInsightSource } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatView } from '../../agentChat/common/paradisAgentChat.js';
@@ -1445,6 +1446,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	/** 届いたか分からない通知の取り置き（次に繋がったら通知一覧へ流し直す）。 */
 	private readonly missedNotify = new ParadisMissedNotifyQueue();
 
+	/** 出した通知と、片付いた通知（W2-27。次のプッシュでロック画面から消してもらう）。 */
+	private readonly dismissLedger = new ParadisNotifyDismissLedger();
+
 	private notifyKeyFor(mobileId: string, pubKeyB64: string): Promise<Uint8Array> {
 		let cached = this.notifyKeyCache.get(mobileId);
 		if (!cached) {
@@ -1488,6 +1492,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		const meta = peekNotifyMeta(bytes);
 		const now = Date.now();
 		const pcFocused = this.pcFocused;
+		if (meta.id !== undefined) {
+			this.dismissLedger.record(meta.id, meta.agentToken, now);
+		}
+		// 次のプッシュで消してもらう、片付いた通知（W2-27）。どのスマホにも同じ一覧を載せる（印は鍵ごとに作る）。
+		const dismissIds = this.dismissLedger.dismissable(now, meta.id);
 		// 台数分の再エンコードを避けるため理由ごとに1回だけ作る。
 		const quietCache = new Map<ParadisNotifyQuiet, Uint8Array>();
 		const quietBytes = (reason: ParadisNotifyQuiet) => {
@@ -1524,7 +1533,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				continue;
 			}
 			this.notifyKeyFor(mobile.mobileId, mobile.pubKey).then(async key => {
-				const encoded = await this.sealNotifyForPush(key, bytes);
+				// 印を載せると上限を超える場合は印を諦める（本文を削ってまで載せない。印は次のプッシュでも載る）。
+				const withDismiss = paradisWithNotifyDismiss(bytes, paradisMobileDismissTags(key, dismissIds));
+				let encoded: string | undefined;
+				if (withDismiss !== bytes) {
+					const sealed = toBase64Url(await sealNotify(key, withDismiss));
+					encoded = sealed.length <= PARADIS_PUSH_PAYLOAD_LIMIT_BYTES ? sealed : undefined;
+				}
+				encoded ??= await this.sealNotifyForPush(key, bytes);
 				if (encoded === undefined) {
 					return;
 				}
@@ -1718,6 +1734,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private handleNotifyDismiss(fromMobileId: string, notifyId: string): void {
 		// 取り置きからも外す。残すと、あとで繋がったときに処理済みの通知が未読として蘇る。
 		this.missedNotify.drop({ id: notifyId });
+		// 裏にいるスマホのロック画面からは、次のプッシュで消してもらう（W2-27）。
+		this.dismissLedger.markDismissed(notifyId, Date.now());
 		const bytes = encodeNotifyDismissed(notifyId);
 		for (const mobile of this.state.mobiles) {
 			if (mobile.mobileId === fromMobileId) {
@@ -1739,6 +1757,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private dispatchAgentDismiss(token: string): void {
 		// PCで確認済みにした分は、まだ届けていない取り置きからも外す。
 		this.missedNotify.drop({ agentToken: token });
+		// 確認より前に出した同じエージェントの通知は、次のプッシュでロック画面から消してもらう（W2-27）。
+		this.dismissLedger.markAcknowledged(token, Date.now());
 		const bytes = encodeNotifyDismissedByToken(token);
 		for (const mobile of this.state.mobiles) {
 			const session = this.sessions.get(mobile.mobileId);
