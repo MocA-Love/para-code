@@ -28,15 +28,17 @@ export const CONNECTION_LOG_LIMIT = 200;
 const DETAIL_MAX_LENGTH = 160;
 
 /**
- * OS のエラー文から秘密になりうるものを伏せる。URL（クエリにトークンが載りうる）、長い英数字
- * （トークン・識別子・鍵）、16進の並び、IP アドレス、メールアドレス。
+ * OS のエラー文から秘密になりうるものを伏せる。URL（クエリにトークンが載りうる）、スキームの無いホスト名
+ * （自前のリレーの場所）、長い英数字（トークン・識別子・鍵。mobileId は 22 文字）、16進の並び、IP アドレス、
+ * メールアドレス。
  */
 export function redactConnectionDetail(text: string): string {
 	return text
 		.replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, '<url>')
 		.replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, '<email>')
 		.replace(/\b\d{1,3}(\.\d{1,3}){3}(:\d+)?\b/g, '<ip>')
-		.replace(/[A-Za-z0-9_-]{24,}/g, '<id>')
+		.replace(/\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d+)?(?:\/\S*)?/gi, '<host>')
+		.replace(/[A-Za-z0-9_-]{20,}/g, '<id>')
 		.replace(/\b[0-9a-fA-F]{12,}\b/g, '<hex>')
 		.replace(/\s+/g, ' ')
 		.trim()

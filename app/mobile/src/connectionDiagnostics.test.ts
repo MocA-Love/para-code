@@ -14,7 +14,8 @@ describe('connection diagnostics (W2-22)', () => {
 			relayProbeUrl('ws://127.0.0.1:8787/'),
 			relayProbeUrl('https://relay.example/path?q=1'),
 			relayProbeUrl('not a url'),
-		]).toEqual(['https://para-mobile-relay.example.workers.dev/', 'http://127.0.0.1:8787/', 'https://relay.example/', undefined]);
+			relayProbeUrl('wss://user:secret@relay.example/ws'),
+		]).toEqual(['https://para-mobile-relay.example.workers.dev/', 'http://127.0.0.1:8787/', 'https://relay.example/', undefined, 'https://relay.example/']);
 		expect([
 			classifyRelayProbe({ status: 404 }).status,
 			classifyRelayProbe({ status: 503 }).status,

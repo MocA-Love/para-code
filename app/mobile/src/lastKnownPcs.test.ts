@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from 'vitest';
 import { deriveNotifyKey, generateIdentity, sealNotify, toBase64Url } from '@para/protocol';
-import { LAST_KNOWN_MAX_NAME_LENGTH, LAST_KNOWN_MAX_SPACES, LastKnownPcWriter, buildLastKnownSnapshot, lastKnownLabelFor, lastKnownTotals, openLastKnownSnapshot, sealLastKnownSnapshot, type LastKnownPcStorage } from './lastKnownPcs.js';
+import { LAST_KNOWN_MAX_NAME_LENGTH, LAST_KNOWN_MAX_SPACES, LastKnownPcWriter, buildLastKnownSnapshot, lastKnownSealKey, lastKnownLabelFor, lastKnownTotals, openLastKnownSnapshot, sealLastKnownSnapshot, type LastKnownPcStorage } from './lastKnownPcs.js';
 
 function key(): Uint8Array {
 	const mobile = generateIdentity();
@@ -47,9 +47,11 @@ describe('last known PC list (W2-25)', () => {
 			openLastKnownSnapshot(key(), sealed, 'pc-1'),
 			openLastKnownSnapshot(k, sealed, 'pc-2'),
 			openLastKnownSnapshot(k, `${sealed.slice(0, -2)}AA`, 'pc-1'),
-			openLastKnownSnapshot(k, toBase64Url(sealNotify(k, new TextEncoder().encode(JSON.stringify({ v: 1, purpose: 'other', ...snapshot })))), 'pc-1'),
-			openLastKnownSnapshot(k, toBase64Url(sealNotify(k, new TextEncoder().encode(JSON.stringify({ v: 1, purpose: 'para.last-known-pc', pcId: 'pc-1', savedAt: 1, spaces: [{ name: 'x', terminals: -1, waiting: 0, working: 0, review: 0, idle: 0 }] })))), 'pc-1'),
-		]).toEqual([undefined, undefined, undefined, undefined, undefined]);
+			openLastKnownSnapshot(k, toBase64Url(sealNotify(lastKnownSealKey(k), new TextEncoder().encode(JSON.stringify({ v: 1, purpose: 'other', ...snapshot })))), 'pc-1'),
+			openLastKnownSnapshot(k, toBase64Url(sealNotify(lastKnownSealKey(k), new TextEncoder().encode(JSON.stringify({ v: 1, purpose: 'para.last-known-pc', pcId: 'pc-1', savedAt: 1, spaces: [{ name: 'x', terminals: -1, waiting: 0, working: 0, review: 0, idle: 0 }] })))), 'pc-1'),
+			// 通知鍵そのもので封緘したもの（用途別の鍵を導いていない）は開けない
+			openLastKnownSnapshot(k, toBase64Url(sealNotify(k, new TextEncoder().encode(JSON.stringify({ v: 1, purpose: 'para.last-known-pc', ...snapshot })))), 'pc-1'),
+		]).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
 	});
 
 	test('bounds the number of spaces and the name length', () => {
