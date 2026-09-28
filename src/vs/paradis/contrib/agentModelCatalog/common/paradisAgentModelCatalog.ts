@@ -15,9 +15,9 @@
 // - Codex: `codex app-server` の `model/list`
 //
 // 置き換えるのは「既定のエージェント定義」のモデル候補だけ。設定 `paradis.workspaceSwitch.agents` を
-// 利用者が自分で書いている場合は、その内容を変えない（CLI が受け付けなくなった Codex のフラグだけは
-// 読み替える）。過去の既定値をそのまま書き写しただけの値は「書いていない」とみなす。取れなかったときは
-// 今の固定の候補を使う。
+// 利用者が自分で書いた行は、その内容を変えない（CLI が受け付けなくなった Codex のフラグだけは
+// 読み替える）。今か過去の既定の行をそのまま書き写しただけの行は、CLI の候補を当てはめた今の既定の行に
+// 差し替える。取れなかったときは今の固定の候補を使う。
 
 import { Event } from '../../../../base/common/event.js';
 import { equals } from '../../../../base/common/objects.js';
@@ -140,11 +140,10 @@ function claudeModelName(entry: Record<string, unknown>, resolvedModel: string |
 	if (fromId !== undefined) {
 		return fromId;
 	}
-	const head = claudeDescriptionHead(entry.description);
-	if (head !== undefined) {
-		return head;
-	}
-	return typeof entry.displayName === 'string' && entry.displayName.trim().length > 0 && entry.displayName.length <= 40 ? entry.displayName.trim() : undefined;
+	const name = claudeDescriptionHead(entry.description)
+		?? (typeof entry.displayName === 'string' && entry.displayName.trim().length > 0 && entry.displayName.length <= 40 ? entry.displayName.trim() : undefined);
+	// ラベルは `opus[1m] (<名前>)` の形にするので、名前の末尾の括弧（`Opus (1M context)`）は ` · ` に替えて二重にしない
+	return name?.replace(/\s*\((?<note>[^()]+)\)$/, ' · $<note>');
 }
 
 /**
@@ -237,15 +236,18 @@ export function paradisNormalizeClaudeModelId(modelId: string): string {
 /**
  * Claude の各モデルに「既定」を選んだときのエフォートを添える。Claude Code は `--effort` が無いと
  * 環境変数 → `modelSettings` のそのモデルの値 → `effortLevel` → モデルごとの既定、の順に決める。
- * 最後の「モデルごとの既定」は `list_models` に無いので、ここでは足さない（既定の候補の値を引き継ぐ）。
+ * そのモデルが選べない値は飛ばして次を見る。最後の「モデルごとの既定」は `list_models` に無いので、
+ * ここでは足さない（既定の候補の値を引き継ぐ）。
+ *
+ * 限界: 読むのは環境変数と利用者の `settings.json` だけ。プロジェクトの設定（`.claude/settings*.json`）と
+ * 組織の managed settings、`maxEffortLevel` による上限は見ないので、そこで決めている人には実際と違う値が出る。
  */
 export function paradisApplyClaudeDefaultEfforts(models: readonly IParadisDiscoveredModel[], settings: IParadisClaudeEffortSettings): IParadisDiscoveredModel[] {
 	return models.map(model => {
 		const resolved = model.resolvedModel !== undefined ? paradisNormalizeClaudeModelId(model.resolvedModel) : undefined;
-		const candidate = settings.envEffortLevel
-			?? (resolved !== undefined ? settings.modelEffortLevels?.[resolved] : undefined)
-			?? settings.effortLevel;
-		return candidate !== undefined && model.efforts.includes(candidate) ? { ...model, defaultEffort: candidate } : model;
+		const candidates = [settings.envEffortLevel, resolved !== undefined ? settings.modelEffortLevels?.[resolved] : undefined, settings.effortLevel];
+		const effort = candidates.find(candidate => candidate !== undefined && model.efforts.includes(candidate));
+		return effort !== undefined ? { ...model, defaultEffort: effort } : model;
 	});
 }
 
@@ -329,40 +331,111 @@ export function paradisApplyDiscoveredModels(templates: readonly IParadisAgentCo
 
 // ---------- 画面側が使う入口 ----------
 
-/**
- * 設定の値が、今か過去の既定値をそのまま書き写したものか。設定エディタの「settings.json で編集」は
- * その時点の既定値を丸ごと書き写すので、これは利用者が決めた一覧ではない。
- */
-export function paradisIsKnownDefaultAgentList(value: unknown): boolean {
-	if (!Array.isArray(value)) {
-		return false;
+/** 今と過去の既定値に含まれていた行を id ごとに並べたもの（settings.json に書き写されたときの JSON の形）。 */
+let knownDefaultRows: Map<string, unknown[]> | undefined;
+
+function defaultRowsById(): Map<string, unknown[]> {
+	if (knownDefaultRows === undefined) {
+		knownDefaultRows = new Map();
+		const current: unknown[] = JSON.parse(JSON.stringify(PARADIS_DEFAULT_AGENT_COMMANDS));
+		for (const row of [...current, ...PARADIS_PAST_DEFAULT_AGENT_COMMANDS.flat()]) {
+			const id = isRecord(row) && typeof row.id === 'string' ? row.id : undefined;
+			if (id !== undefined) {
+				knownDefaultRows.set(id, [...knownDefaultRows.get(id) ?? [], row]);
+			}
+		}
 	}
-	const current: unknown = JSON.parse(JSON.stringify(PARADIS_DEFAULT_AGENT_COMMANDS));
-	return equals(value, current) || PARADIS_PAST_DEFAULT_AGENT_COMMANDS.some(past => equals(value, past));
+	return knownDefaultRows;
 }
 
 /**
- * 利用者が `paradis.workspaceSwitch.agents` を自分で書いているか。
- * `getValue` は未設定でもスキーマの既定値（既定の定義）を返すので、どの層に値があるかで判断する。
- * 今か過去の既定値と同じ値は、書いていないものとして数える。
+ * 設定の1行が、同じ id の今か過去の既定の行をそのまま書き写したものか。設定エディタの
+ * 「settings.json で編集」はその時点の既定値を丸ごと書き写すので、そういう行は利用者が決めたものではない。
+ */
+export function paradisIsKnownDefaultAgentRow(row: unknown): boolean {
+	const id = isRecord(row) && typeof row.id === 'string' ? row.id : undefined;
+	return id !== undefined && (defaultRowsById().get(id) ?? []).some(known => equals(row, known));
+}
+
+/** 'none' は「実行しない」を表す予約識別子（セグメントの固定項目）なので、設定に書かれていても使わない。 */
+function isUsableRow(row: unknown): row is IParadisAgentCommandTemplate {
+	return isRecord(row) && typeof row.id === 'string' && row.id !== 'none' && typeof row.command === 'string';
+}
+
+/** 設定に書かれた一覧。どの層にも値が無い・配列でない・空なら undefined（既定の一覧を使う）。 */
+function configuredAgentRows(configurationService: IConfigurationService): readonly IParadisAgentCommandTemplate[] | undefined {
+	// `getValue` は未設定でもスキーマの既定値を返すので、どこかの層に値があるときだけ読む
+	const inspected = configurationService.inspect<unknown>(PARADIS_WORKSPACE_AGENTS_SETTING);
+	const layers = [
+		inspected.applicationValue, inspected.userValue, inspected.userLocalValue, inspected.userRemoteValue,
+		inspected.workspaceValue, inspected.workspaceFolderValue, inspected.memoryValue, inspected.policyValue,
+	];
+	if (layers.every(value => value === undefined)) {
+		return undefined;
+	}
+	const configured = configurationService.getValue<unknown>(PARADIS_WORKSPACE_AGENTS_SETTING);
+	return Array.isArray(configured) && configured.length > 0 ? configured.filter(isUsableRow) : undefined;
+}
+
+/**
+ * 設定に書かれた行のうち、利用者が自分で書いた（既定の行を書き写しただけではない）もの。
+ * 既定に無い id の行と、既定の行を書き換えた行が入る。
+ */
+export function paradisCustomAgentRows(configurationService: IConfigurationService): readonly IParadisAgentCommandTemplate[] {
+	return (configuredAgentRows(configurationService) ?? []).filter(row => !paradisIsKnownDefaultAgentRow(row));
+}
+
+/**
+ * 利用者が `paradis.workspaceSwitch.agents` に、既定と違う行を書いているか（ダイアログの「設定で固定中」）。
+ * 既定の行を書き写しただけの行は数えない。行を消したり並べ替えたりしただけなら固定とはみなさない。
  */
 export function paradisIsAgentListUserDefined(configurationService: IConfigurationService): boolean {
+	return paradisCustomAgentRows(configurationService).length > 0;
+}
+
+/** CLI から取ったモデル一覧を使う行があるか（無ければ CLI を起こさない）。 */
+export function paradisAgentListUsesCatalog(configurationService: IConfigurationService): boolean {
+	const rows = configuredAgentRows(configurationService);
+	return rows === undefined || rows.some(row => (row.id === 'claude' || row.id === 'codex') && paradisIsKnownDefaultAgentRow(row));
+}
+
+/** 既定へ戻すときに消せない層（利用者に理由を伝えるため）。 */
+export type ParadisAgentListBlockedLayer = 'workspaceFolder' | 'policy' | 'application';
+
+/** 既定へ戻すと消える行と、戻せない層。 */
+export interface IParadisAgentListResetPlan {
+	/** 既定に無い id の行（利用者が足したエージェント）。 */
+	readonly addedIds: readonly string[];
+	/** 既定にある id だが、中身を書き換えた行。 */
+	readonly modifiedIds: readonly string[];
+	/** 値があっても Para Code からは消せない層。 */
+	readonly blockedLayers: readonly ParadisAgentListBlockedLayer[];
+}
+
+export function paradisAgentListResetPlan(configurationService: IConfigurationService): IParadisAgentListResetPlan {
+	const custom = paradisCustomAgentRows(configurationService);
+	const defaults = defaultRowsById();
 	const inspected = configurationService.inspect<unknown>(PARADIS_WORKSPACE_AGENTS_SETTING);
-	return [
-		inspected.applicationValue,
-		inspected.userValue,
-		inspected.userLocalValue,
-		inspected.userRemoteValue,
-		inspected.workspaceValue,
-		inspected.workspaceFolderValue,
-		inspected.memoryValue,
-		inspected.policyValue,
-	].some(value => value !== undefined && !paradisIsKnownDefaultAgentList(value));
+	const blockedLayers: ParadisAgentListBlockedLayer[] = [];
+	if (inspected.workspaceFolderValue !== undefined) {
+		blockedLayers.push('workspaceFolder');
+	}
+	if (inspected.policyValue !== undefined) {
+		blockedLayers.push('policy');
+	}
+	if (inspected.applicationValue !== undefined) {
+		blockedLayers.push('application');
+	}
+	return {
+		addedIds: custom.filter(row => !defaults.has(row.id)).map(row => row.id),
+		modifiedIds: custom.filter(row => defaults.has(row.id)).map(row => row.id),
+		blockedLayers,
+	};
 }
 
 /**
- * 設定に書かれた一覧を既定へ戻す（利用者の設定と、ワークスペースの設定にあればそちらも消す）。
- * ポリシーで決められている値は消せない。
+ * 設定に書かれた一覧を消して既定へ戻す（利用者の設定・ワークスペースの設定・メモリ上の値）。
+ * フォルダの設定・ポリシー・アプリケーションの層の値は消せない（{@link paradisAgentListResetPlan} の blockedLayers）。
  */
 export async function paradisResetAgentListSetting(configurationService: IConfigurationService): Promise<void> {
 	const inspected = configurationService.inspect<unknown>(PARADIS_WORKSPACE_AGENTS_SETTING);
@@ -384,51 +457,137 @@ export async function paradisResetAgentListSetting(configurationService: IConfig
 	}
 }
 
-/** Codex の起動コマンドか（`codex` か、パスの末尾が codex の実行ファイル）。 */
-function isCodexCommand(command: string): boolean {
-	const executable = command.trim().split(/\s+/, 1)[0] ?? '';
-	return /(^|[\\/])codex(\.cmd|\.exe|\.ps1)?$/i.test(executable);
+/** シェルの語に分ける（引用符は外す）。コマンドの形を見るためだけのもので、厳密な解釈はしない。 */
+function shellWords(command: string): string[] {
+	const words: string[] = [];
+	let word: string | undefined;
+	let quote: '"' | '\'' | undefined;
+	for (const character of command.trim()) {
+		if (quote !== undefined) {
+			if (character === quote) {
+				quote = undefined;
+			} else {
+				word = (word ?? '') + character;
+			}
+		} else if (character === '"' || character === '\'') {
+			quote = character;
+			word ??= '';
+		} else if (/\s/.test(character)) {
+			if (word !== undefined) {
+				words.push(word);
+				word = undefined;
+			}
+		} else {
+			word = (word ?? '') + character;
+		}
+	}
+	if (word !== undefined) {
+		words.push(word);
+	}
+	return words;
+}
+
+/** Codex の値を取るオプション（`resources/paradis/bin/codex` の一覧と同じ）。サブコマンドを探すときに値を飛ばす。 */
+const CODEX_OPTIONS_WITH_VALUE = new Set(['-c', '--config', '--enable', '--disable', '--remote', '--remote-auth-token-env', '-i', '--image', '-m', '--model', '--local-provider', '-p', '--profile', '-s', '--sandbox', '-C', '--cd', '--add-dir', '-a', '--ask-for-approval']);
+
+/**
+ * Codex を起動するコマンドなら、その後ろの引数（Codex 自身に渡る部分）の位置を返す。
+ * `codex` / パスの末尾が codex / 引用符で包んだパス / 先頭の `env X=1` と `X=1` / `npx`・`bunx`・`pnpm dlx` 経由
+ * （`codex` か `@openai/codex[@版]`）を見分ける。Codex でなければ undefined。
+ */
+function codexArgumentsIndex(words: readonly string[]): number | undefined {
+	let index = 0;
+	if (words[index] === 'env') {
+		index++;
+	}
+	while (index < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index])) {
+		index++;
+	}
+	const runner = words[index];
+	if (runner === 'npx' || runner === 'bunx' || (runner === 'pnpm' && words[index + 1] === 'dlx')) {
+		index += runner === 'pnpm' ? 2 : 1;
+		while (index < words.length && words[index].startsWith('-')) {
+			index++;
+		}
+		return /^(codex|@openai\/codex)(@[^\s]+)?$/i.test(words[index] ?? '') ? index + 1 : undefined;
+	}
+	return /(^|[\\/])codex(\.cmd|\.exe|\.ps1)?$/i.test(words[index] ?? '') ? index + 1 : undefined;
+}
+
+/** Codex の非対話のサブコマンド（`exec` / `e`）で起動するか。`exec` は `--ask-for-approval` を受け付けない。 */
+function isCodexExec(words: readonly string[], argumentsIndex: number): boolean {
+	for (let index = argumentsIndex; index < words.length; index++) {
+		const word = words[index];
+		if (word === '--' || word.startsWith('{')) {
+			return false;
+		}
+		if (!word.startsWith('-')) {
+			return word === 'exec' || word === 'e';
+		}
+		if (!word.includes('=') && CODEX_OPTIONS_WITH_VALUE.has(word)) {
+			index++;
+		}
+	}
+	return false;
 }
 
 /**
- * 利用者が書いた Codex の定義にある、codex-cli 0.155.1 が受け付けないフラグを読み替える。
- * `--effort <id>` は `-c model_reasoning_effort=<id>` に、`--full-auto` は同じ意味の sandbox と承認の組に替える。
- * どちらも渡すと Codex が起動しないので、書いた内容よりも起動できることを優先する。
+ * フラグ文字列の中の、codex-cli 0.155.1 が受け付けない指定を読み替える。
+ * - `--effort <id>`（`--effort=<id>`、引用符付き、`--effort {effort}` を含む）→ `-c model_reasoning_effort=<id>`
+ * - `--full-auto` → `--sandbox workspace-write --ask-for-approval on-request`。`exec` は `--ask-for-approval` を
+ *   拒否するので、`exec` のときは `--sandbox workspace-write` だけにする
+ */
+function upgradeCodexFlagText(text: string, exec: boolean): string {
+	return text
+		.replace(/(^|\s)--effort(?:\s+|=)(["']?)(?<value>\{effort\}|[A-Za-z0-9_-]+)\2(?=\s|$)/g, (...args) => {
+			const groups = args[args.length - 1] as { value: string };
+			return `${args[1]}${paradisCodexEffortFlag(groups.value)}`;
+		})
+		.replace(/(^|\s)--full-auto(?=\s|$)/g, (_all, lead: string) => `${lead}${exec ? '--sandbox workspace-write' : PARADIS_CODEX_FULL_AUTO_FLAGS}`);
+}
+
+/**
+ * 利用者が書いた Codex の定義にある、codex-cli 0.155.1 が受け付けないフラグを読み替える
+ * （コマンド・モデル・エフォート・権限のフラグすべて）。どちらも渡すと Codex が起動しないので、
+ * 書いた内容よりも起動できることを優先する。Codex のコマンドでなければそのまま返す。
  */
 export function paradisUpgradeLegacyCodexFlags(template: IParadisAgentCommandTemplate): IParadisAgentCommandTemplate {
-	if (typeof template.command !== 'string' || !isCodexCommand(template.command)) {
+	if (typeof template.command !== 'string') {
 		return template;
 	}
-	const upgrade = (flag: string) => typeof flag === 'string'
-		? flag.replace(/(^|\s)--effort(?:\s+|=)([A-Za-z0-9_-]+)(?=\s|$)/g, (_all, lead: string, effort: string) => `${lead}${paradisCodexEffortFlag(effort)}`)
-			.replace(/(^|\s)--full-auto(?=\s|$)/g, (_all, lead: string) => `${lead}${PARADIS_CODEX_FULL_AUTO_FLAGS}`)
-		: flag;
+	const words = shellWords(template.command);
+	const argumentsIndex = codexArgumentsIndex(words);
+	if (argumentsIndex === undefined) {
+		return template;
+	}
+	const exec = isCodexExec(words, argumentsIndex);
+	const upgrade = (flag: unknown) => typeof flag === 'string' ? upgradeCodexFlagText(flag, exec) : flag;
+	const mapFlags = <T extends { readonly flag: string }>(options: readonly T[] | undefined) => Array.isArray(options)
+		? options.map(option => isRecord(option) ? { ...option, flag: upgrade(option.flag) } : option)
+		: options;
 	return {
 		...template,
-		command: upgrade(template.command),
-		...(Array.isArray(template.efforts) ? { efforts: template.efforts.map(effort => ({ ...effort, flag: upgrade(effort.flag) })) } : {}),
-		...(Array.isArray(template.permissions) ? { permissions: template.permissions.map(permission => ({ ...permission, flag: upgrade(permission.flag) })) } : {}),
+		command: upgradeCodexFlagText(template.command, exec),
+		...(template.models !== undefined ? { models: mapFlags(template.models) } : {}),
+		...(template.efforts !== undefined ? { efforts: mapFlags(template.efforts) } : {}),
+		...(template.permissions !== undefined ? { permissions: mapFlags(template.permissions) } : {}),
 	};
 }
 
 /**
  * 新しいスペースで選べるエージェント定義。ダイアログとモバイルからの作成で同じ規則を使う。
- * - 利用者が設定を書いていれば、その内容（'none' は予約語なので除く。Codex の古いフラグは読み替える）
- * - 書いていなければ既定の定義に、CLI から取れたモデル候補を当てはめたもの
+ * - 設定に一覧が無ければ、既定の定義に CLI から取れたモデル候補を当てはめたもの
+ * - 一覧があれば、その並びのまま行ごとに決める。既定の行を書き写しただけの行（今か過去の既定と同じ）は、
+ *   CLI の候補を当てはめた今の既定の行に差し替える。利用者が足した行・書き換えた行はそのまま使う
+ *   （Codex の古いフラグだけ読み替える）。消した行は足さない
  */
 export function paradisResolveAgentTemplates(configurationService: IConfigurationService, catalogs: readonly IParadisAgentModelCatalog[]): readonly IParadisAgentCommandTemplate[] {
-	if (paradisIsAgentListUserDefined(configurationService)) {
-		const configured = configurationService.getValue<IParadisAgentCommandTemplate[]>(PARADIS_WORKSPACE_AGENTS_SETTING);
-		if (Array.isArray(configured) && configured.length > 0) {
-			// 'none' は「実行しない」を表す予約識別子（セグメントの固定項目）のため、
-			// 設定で誤って同じ id が指定されても既定端末とエージェント端末の二重起動を避けるため除外する
-			return configured
-				.filter(agent => agent && typeof agent.id === 'string' && agent.id !== 'none' && typeof agent.command === 'string')
-				.map(paradisUpgradeLegacyCodexFlags);
-		}
-		return PARADIS_DEFAULT_AGENT_COMMANDS;
+	const defaults = catalogs.length > 0 ? paradisApplyDiscoveredModels(PARADIS_DEFAULT_AGENT_COMMANDS, catalogs) : PARADIS_DEFAULT_AGENT_COMMANDS;
+	const configured = configuredAgentRows(configurationService);
+	if (configured === undefined) {
+		return defaults;
 	}
-	return catalogs.length > 0 ? paradisApplyDiscoveredModels(PARADIS_DEFAULT_AGENT_COMMANDS, catalogs) : PARADIS_DEFAULT_AGENT_COMMANDS;
+	return configured.map(row => (paradisIsKnownDefaultAgentRow(row) ? defaults.find(candidate => candidate.id === row.id) : undefined) ?? paradisUpgradeLegacyCodexFlags(row));
 }
 
 export const IParadisAgentModelCatalogService = createDecorator<IParadisAgentModelCatalogService>('paradisAgentModelCatalogService');
@@ -446,7 +605,7 @@ export interface IParadisAgentModelCatalogService {
 	 */
 	refresh(): void;
 	/**
-	 * 一覧が設定 `paradis.workspaceSwitch.agents` で決められていて、CLI から取った候補を使っていないか
+	 * 設定 `paradis.workspaceSwitch.agents` に既定と違う行があり、その行は CLI から取った候補を使わないか
 	 * （{@link paradisIsAgentListUserDefined}）。変わったときも {@link onDidChange} が来る。
 	 */
 	isFixedBySettings(): boolean;

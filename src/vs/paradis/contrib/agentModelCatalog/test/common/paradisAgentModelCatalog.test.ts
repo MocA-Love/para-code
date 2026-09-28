@@ -9,11 +9,14 @@
 import assert from 'assert';
 import { stringHash } from '../../../../../base/common/hash.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IConfigurationValue } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { PARADIS_DEFAULT_AGENT_COMMANDS, paradisResolveAgentLaunchFlags } from '../../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { PARADIS_PAST_DEFAULT_AGENT_COMMANDS } from '../../common/paradisAgentListPastDefaults.js';
 import {
 	IParadisAgentModelCatalog,
+	paradisAgentListResetPlan,
+	paradisAgentListUsesCatalog,
 	paradisApplyClaudeDefaultEfforts,
 	paradisApplyDiscoveredModels,
 	paradisClaudeModelDisplayName,
@@ -114,7 +117,8 @@ suite('ParadisAgentModelCatalog', () => {
 			settings: { effortLevel: 'high', modelEffortLevels: { 'claude-fable-5-1': 'low', 'claude-haiku-4-5': 'low' } },
 			// haiku はエフォート非対応なので設定があっても添えない。opus[1m] は選べる中に high がある
 			fromSettings: ['opus=high', 'claude-fable-5-1=low', 'sonnet=high', 'opus[1m]=high', 'custom-model=-', 'haiku=-'],
-			fromEnv: ['opus=xhigh', 'claude-fable-5-1=xhigh', 'sonnet=xhigh', 'opus[1m]=-', 'custom-model=-', 'haiku=-'],
+			// 環境変数の xhigh を選べない opus[1m] は、次の effortLevel（high）を使う
+			fromEnv: ['opus=xhigh', 'claude-fable-5-1=xhigh', 'sonnet=xhigh', 'opus[1m]=high', 'custom-model=-', 'haiku=-'],
 			none: ['opus=-', 'claude-fable-5-1=-', 'sonnet=-', 'opus[1m]=-', 'custom-model=-', 'haiku=-'],
 		});
 	});
@@ -182,6 +186,79 @@ suite('ParadisAgentModelCatalog', () => {
 			mine: '/opt/bin/codex --sandbox workspace-write --ask-for-approval on-request {prompt}',
 			other: ['--effort high'],
 		});
+	});
+
+	test('既定の行を書き写した行だけを今の既定に差し替え、足した行・消した行・並べ替えはそのまま残す', () => {
+		const catalogs: IParadisAgentModelCatalog[] = [{ agentId: 'codex', cliVersion: 'v', fetchedAt: 0, models: paradisParseCodexModelList(CODEX_RESULT) }];
+		const past = PARADIS_PAST_DEFAULT_AGENT_COMMANDS[2] as readonly { id: string }[];
+		const row = (id: string) => JSON.parse(JSON.stringify(past.find(candidate => candidate.id === id)));
+		const modifiedClaude = { ...row('claude'), label: 'My Claude' };
+		const describe = (value: unknown) => {
+			const configurationService = new TestConfigurationService({ 'paradis.workspaceSwitch.agents': value });
+			return {
+				agents: paradisResolveAgentTemplates(configurationService, catalogs).map(agent => `${agent.id}:${agent.label}:${agent.models?.map(model => model.id).join(',') ?? '-'}`),
+				fixed: paradisIsAgentListUserDefined(configurationService),
+				usesCatalog: paradisAgentListUsesCatalog(configurationService),
+				plan: paradisAgentListResetPlan(configurationService),
+			};
+		};
+		assert.deepStrictEqual({
+			reorderedWithAdded: describe([row('codex'), { id: 'mine', label: 'Mine', command: 'mine {prompt}' }, row('claude')]),
+			deletedOnly: describe([row('codex')]),
+			modified: describe([modifiedClaude, { id: 'gemini', label: 'Gemini CLI', command: 'gemini {prompt}' }]),
+		}, {
+			reorderedWithAdded: {
+				agents: ['codex:Codex:gpt-6-astra,gpt-5.5', 'mine:Mine:-', 'claude:Claude Code:fable,opus,sonnet,haiku,opusplan'],
+				fixed: true, usesCatalog: true, plan: { addedIds: ['mine'], modifiedIds: [], blockedLayers: [] },
+			},
+			deletedOnly: {
+				agents: ['codex:Codex:gpt-6-astra,gpt-5.5'],
+				fixed: false, usesCatalog: true, plan: { addedIds: [], modifiedIds: [], blockedLayers: [] },
+			},
+			modified: {
+				agents: ['claude:My Claude:fable,opus,sonnet,haiku,opusplan', 'gemini:Gemini CLI:-'],
+				fixed: true, usesCatalog: false, plan: { addedIds: [], modifiedIds: ['claude', 'gemini'], blockedLayers: [] },
+			},
+		});
+	});
+
+	test('既定へ戻せない層（フォルダの設定・ポリシー）に値があれば、それを知らせる材料を返す', () => {
+		class LayeredConfigurationService extends TestConfigurationService {
+			override inspect<T>(key: string): IConfigurationValue<T> {
+				return { ...super.inspect<T>(key), userValue: undefined, userLocalValue: undefined, workspaceFolderValue: [] as T, policyValue: [] as T };
+			}
+		}
+		const configurationService = new LayeredConfigurationService({ 'paradis.workspaceSwitch.agents': [{ id: 'mine', label: 'Mine', command: 'mine' }] });
+		assert.deepStrictEqual(paradisAgentListResetPlan(configurationService), { addedIds: ['mine'], modifiedIds: [], blockedLayers: ['workspaceFolder', 'policy'] });
+	});
+
+	test('Codex の読み替えは、モデルのフラグ・引用符付き・{effort}・env や npx 経由・引用符付きパス・exec にも効く', () => {
+		const effortFlag = (id: string) => ({ id, flag: `--effort ${id}` });
+		const rows = [
+			{ id: 'a', label: 'A', command: 'env CODEX_HOME=/tmp/x codex --effort {effort} {prompt}', models: [{ id: 'm', flag: '--model m --effort "high"' }], efforts: [{ id: 'high', flag: 'high' }] },
+			{ id: 'b', label: 'B', command: 'npx -y @openai/codex@0.155.1 {prompt}', efforts: [{ id: 'low', flag: `--effort='low'` }], permissions: [{ id: 'auto', label: 'auto', flag: '--full-auto' }] },
+			{ id: 'c', label: 'C', command: '"/Applications/My Tools/codex" {prompt}', efforts: [effortFlag('max')] },
+			{ id: 'd', label: 'D', command: 'codex -m gpt-5.5 exec --full-auto {prompt}', permissions: [{ id: 'auto', label: 'auto', flag: '--full-auto' }] },
+			{ id: 'e', label: 'E', command: 'X=1 codex-wrapper --full-auto {prompt}', efforts: [effortFlag('max')] },
+		];
+		const templates = paradisResolveAgentTemplates(new TestConfigurationService({ 'paradis.workspaceSwitch.agents': rows }), []);
+		assert.deepStrictEqual(templates.map(agent => ({
+			command: agent.command,
+			flags: [...agent.models ?? [], ...agent.efforts ?? [], ...agent.permissions ?? []].map(option => option.flag),
+		})), [
+			{ command: 'env CODEX_HOME=/tmp/x codex -c model_reasoning_effort={effort} {prompt}', flags: ['--model m -c model_reasoning_effort=high', 'high'] },
+			{ command: 'npx -y @openai/codex@0.155.1 {prompt}', flags: ['-c model_reasoning_effort=low', '--sandbox workspace-write --ask-for-approval on-request'] },
+			{ command: '"/Applications/My Tools/codex" {prompt}', flags: ['-c model_reasoning_effort=max'] },
+			// exec は --ask-for-approval を受け付けない
+			{ command: 'codex -m gpt-5.5 exec --sandbox workspace-write {prompt}', flags: ['--sandbox workspace-write'] },
+			// Codex ではないコマンドは変えない
+			{ command: 'X=1 codex-wrapper --full-auto {prompt}', flags: ['--effort max'] },
+		]);
+	});
+
+	test('古い CLI の displayName の括弧は二重にしない', () => {
+		const stdout = JSON.stringify({ type: 'control_response', response: { subtype: 'success', response: { models: [{ value: 'opus[1m]', displayName: 'Opus (1M context)', description: 'For long sessions' }] } } });
+		assert.deepStrictEqual(paradisParseClaudeModelList(stdout).map(model => model.label), ['opus[1m] (Opus · 1M context)']);
 	});
 
 	test('既定の定義を変えたら、変える前の値を過去の既定値（paradisAgentListPastDefaults.ts）の末尾に足す', () => {

@@ -16,7 +16,7 @@
 // 入れず、返すたびに `settings.json` から当てはめる。
 
 import { promises as fs } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { Event } from '../../../../base/common/event.js';
 import { isAbsolute, join } from '../../../../base/common/path.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -197,6 +197,17 @@ function isCachedCatalog(value: unknown, agentId: string): value is ICachedCatal
 		&& entry.models.every(model => typeof model?.id === 'string' && Array.isArray(model.efforts) && (model.resolvedModel === undefined || typeof model.resolvedModel === 'string'));
 }
 
+/**
+ * 取得に使う CLI と同じ Claude Code の設定ディレクトリ（シェルで `CLAUDE_CONFIG_DIR` を変えている人がいる）。
+ * `~` で始まる値はシェルが展開しないまま渡ってくることがある（引用符で包んで export した場合）ので展開する。
+ * 相対パスなど使えない値なら、この shared process の既定（{@link paradisClaudeConfigDir}）を使う。
+ */
+export function paradisClaudeConfigDirFor(env: NodeJS.ProcessEnv, homeDirectory: string = homedir()): string {
+	const raw = env.CLAUDE_CONFIG_DIR?.trim();
+	const configured = raw !== undefined && /^~(?=$|[\\/])/.test(raw) ? join(homeDirectory, raw.slice(1)) : raw;
+	return configured && isAbsolute(configured) ? configured : paradisClaudeConfigDir();
+}
+
 /** CLI を1回動かす関数（テストでは偽物に差し替える）。 */
 export type ParadisAgentCliRunner = (command: string, args: readonly string[], options: IParadisRunAgentCliOptions) => Promise<IParadisRunAgentCliResult>;
 
@@ -297,9 +308,7 @@ export function createParadisAgentModelCatalogBackend(userDataPath: string, getE
 		},
 		writeCache: cache => paradisWriteFileAtomic(cachePath, Buffer.from(JSON.stringify({ version: CACHE_FORMAT_VERSION, entries: cache }, undefined, '\t'))),
 		async claudeEffortSettings(cli) {
-			// 取得に使う CLI と同じ設定ディレクトリを読む（シェルで CLAUDE_CONFIG_DIR を変えている人がいる）
-			const configured = cli.env.CLAUDE_CONFIG_DIR?.trim();
-			const configDir = configured && isAbsolute(configured) ? configured : paradisClaudeConfigDir();
+			const configDir = paradisClaudeConfigDirFor(cli.env);
 			let settings: unknown;
 			try {
 				settings = JSON.parse(await fs.readFile(join(configDir, 'settings.json'), 'utf8'));

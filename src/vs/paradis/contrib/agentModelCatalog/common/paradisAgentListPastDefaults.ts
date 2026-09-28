@@ -9,8 +9,8 @@
 // 設定 `paradis.workspaceSwitch.agents` の過去の既定値（スキーマの default に出していた値）。
 //
 // 設定エディタの「settings.json で編集」は、その時点の既定値を丸ごと settings.json へ書き写す。
-// 書き写された値は利用者が自分で決めた一覧ではないので、これと同じ値は「書いていない」とみなし、
-// インストール済みの CLI から取ったモデル一覧を使う（paradisIsAgentListUserDefined）。
+// 書き写された行は利用者が自分で決めたものではないので、同じ id のここの行と同じ行は、インストール済みの
+// CLI から取ったモデル一覧を当てはめた今の既定の行に差し替える（paradisResolveAgentTemplates）。
 //
 // 既定のエージェント定義（PARADIS_DEFAULT_AGENT_COMMANDS）を変えたら、変える前の値を JSON に
 // 直した形でここの末尾へ足す。足し忘れはテスト（paradisAgentModelCatalog.test.ts）が既定値の

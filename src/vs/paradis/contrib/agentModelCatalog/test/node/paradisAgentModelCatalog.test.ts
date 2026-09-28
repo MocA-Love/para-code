@@ -14,7 +14,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisRunAgentCliOptions } from '../../../../node/paradisAgentCli.js';
 import { IParadisClaudeEffortSettings, PARADIS_CLAUDE_MODEL_LIST_ARGS, PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG } from '../../common/paradisAgentModelCatalog.js';
-import { IParadisAgentModelCatalogBackend, ParadisAgentModelCatalogService, paradisProbeClaudeModels, paradisWithPrivateWorkDir } from '../../node/paradisAgentModelCatalog.js';
+import { IParadisAgentModelCatalogBackend, ParadisAgentModelCatalogService, paradisClaudeConfigDirFor, paradisProbeClaudeModels, paradisWithPrivateWorkDir } from '../../node/paradisAgentModelCatalog.js';
 
 suite('ParadisAgentModelCatalogService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -109,6 +109,14 @@ suite('ParadisAgentModelCatalogService', () => {
 			cachedClaude: ['-', '-'],
 			probes: ['claude', 'codex'],
 		});
+	});
+
+	test('CLAUDE_CONFIG_DIR の ~ は展開し、使えない値なら既定の場所を使う', () => {
+		const fallback = paradisClaudeConfigDirFor({});
+		assert.deepStrictEqual(
+			[{ CLAUDE_CONFIG_DIR: '~/.claude-work' }, { CLAUDE_CONFIG_DIR: '~' }, { CLAUDE_CONFIG_DIR: '/abs/dir ' }, { CLAUDE_CONFIG_DIR: 'relative' }, { CLAUDE_CONFIG_DIR: '~other/x' }].map(env => paradisClaudeConfigDirFor(env, '/home/me')),
+			[join('/home/me', '.claude-work'), join('/home/me'), '/abs/dir', fallback, fallback],
+		);
 	});
 
 	const CLAUDE_OK = JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: 'x', response: { models: [{ value: 'opus', description: 'Opus 5.5 · x', supportsEffort: true, supportedEffortLevels: ['low'] }] } } }) + '\n';
