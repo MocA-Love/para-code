@@ -8,7 +8,7 @@ function escapeHandler(calls: string[], name: string): { current: SlotHandlers['
 }
 
 afterEach(() => {
-	useShortcutRegistry.setState({ slots: { session: [], send: [], list: [], launch: [], sidebar: [], escape: [] } });
+	useShortcutRegistry.setState({ slots: { session: [], send: [], list: [], launch: [], sidebar: [], escape: [], terminalArrows: [] } });
 });
 
 describe('shortcutRegistry', () => {

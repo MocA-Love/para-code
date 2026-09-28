@@ -231,6 +231,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 				onAttachImage={() => { void attachImage(); }}
 				onLiveText={sendLiveText}
 				onLiveKey={data => send(data)}
+				onLiveArrow={key => sendArrowKey(terminalKey, key)}
 			/>
 			<View style={[styles.bottom, { height: bottomInset }]} />
 		</View>

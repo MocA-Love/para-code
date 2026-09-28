@@ -7,11 +7,11 @@
  * PC へ送った分（`sent`）と入力欄を比べ、食い違った末尾を DEL で消して、足りない分を送る。
  * 自動修正や候補の選択で途中が置き換わっても、PC 側は入力欄と同じになる。
  *
- * **入力欄は空に戻さない。** Enter で送ったところまでを `offset`（コードポイント数）として覚え、
- * それより後ろだけを写す。以前は Enter とフォーカスが外れたときに `clear()` していたが、RN 0.86 の
- * iOS は変更イベントの数え方次第で `clear()` を黙って捨てるため、「空になったか」を文字列の長さと
- * 前方一致で推し量るしかなく、捨てられた後の ⌫ で前の行を丸ごと送り直したり、前の行で始まる
- * 文字列を一度に入れると後ろだけ送ったりしていた。
+ * **入力欄は1行ぶんしか持たない。** Enter で送ったら、画面側（terminalInputBar.tsx）が入力欄を
+ * 作り直し、この状態も空から始める。`clear()` は使わない: RN 0.86 の iOS は変更イベントの数え方次第で
+ * `clear()` を黙って捨てるため、「空になったか」を推し量ると、捨てられた後の ⌫ で前の行を丸ごと
+ * 送り直したり、前の行で始まる文字列の後ろだけ送ったりした。入力欄に前の行を残す方式も、キャレットが
+ * 前の行へ動くと過去の行（パスワードを含む）を送り直しうるうえ、入力欄が際限なく伸びるのでやめた。
  *
  * 日本語などの変換（IME）で**変換中の文字は送らない**。どこまでが変換中かは入力欄が知っている
  * （iOS の marked text。RN にパッチを当てて変更イベントの `isComposing` で受け取る。
@@ -22,8 +22,7 @@
  *  - 分からない（composing: undefined。パッチの無いネイティブ）: 末尾の ASCII でない続きを変換中と
  *    みなす。止まったままなら画面側が 300ms 後に `flush` で送る（HELD_PREEDIT_COMMIT_DELAY_MS）
  *
- * ⌫ は入力欄が縮んだ分として変更イベントで写す。Enter で送った後の部分まで縮んだら、縮んだ数だけ
- * DEL を送る（新しいプロンプトで ⌫ を押したのと同じ）。入力欄が空のときの ⌫ だけは変更イベントが
+ * ⌫ は入力欄が縮んだ分として変更イベントで写す。入力欄が空のときの ⌫ だけは変更イベントが
  * 来ないので、`onKeyPress` で DEL を送る。
  *
  * DEL はコードポイント1つにつき1つ送る。zsh の行編集はコードポイント単位で消す（2026-09-28 に
@@ -38,15 +37,13 @@
 export interface LiveInputState {
 	/** 前回見た入力欄の文字列（スマート句読点などを ASCII に戻したもの）。 */
 	readonly text: string;
-	/** Enter で送り終えたところ（`text` の先頭からのコードポイント数）。これより後ろを写す。 */
-	readonly offset: number;
-	/** `offset` より後ろのうち PC へ送った先頭部分（PC のプロンプトにいま載っているはずのもの）。 */
+	/** そのうち PC へ送った先頭部分（PC のプロンプトにいま載っているはずのもの）。 */
 	readonly sent: string;
 	/** 変換中として送らずに持っている末尾。 */
 	readonly held: string;
 }
 
-export const LIVE_INPUT_EMPTY: LiveInputState = { text: '', offset: 0, sent: '', held: '' };
+export const LIVE_INPUT_EMPTY: LiveInputState = { text: '', sent: '', held: '' };
 
 /** 変換中かどうかが分からない環境で、止まった末尾を送るまでの待ち時間。 */
 export const HELD_PREEDIT_COMMIT_DELAY_MS = 300;
@@ -56,6 +53,7 @@ export type LiveInputEvent =
 	/** 入力欄が変わった。`composing` は入力欄に変換中の範囲があるか（分からなければ undefined）。 */
 	| { readonly kind: 'change'; readonly text: string; readonly composing?: boolean }
 	| { readonly kind: 'key'; readonly key: string }
+	/** Enter。持っている末尾も送ってから CR を送り、状態は空に戻る（画面側は入力欄を作り直す）。 */
 	| { readonly kind: 'submit' }
 	/** 持っている末尾を送る（変換中かどうか分からないまま止まったとき・フォーカスが外れたとき）。 */
 	| { readonly kind: 'flush' };
@@ -132,25 +130,13 @@ function mirror(sent: string, text: string, commitHeld: boolean, composing: bool
 
 function onChange(state: LiveInputState, raw: string, composing: boolean | undefined): LiveInputStep {
 	const next = normalizeLiveText(raw);
-	const field = Array.from(next);
-	const previous = Array.from(state.text);
-	// Enter で送った部分まで書き換わった・縮んだ（⌫ で前の行へ食い込んだ）。PC ではもう新しい
-	// プロンプトなので、食い込んだ数だけ DEL を送り、そこから写し直す。
-	const intact = commonPrefixLength(previous.slice(0, state.offset), field);
-	if (intact < state.offset) {
-		const step = mirror('', field.slice(intact).join(''), false, composing);
-		return {
-			state: { text: next, offset: intact, sent: step.sent, held: step.held },
-			send: [LIVE_DEL.repeat(state.offset - intact), ...step.send],
-		};
-	}
-	const step = mirror(state.sent, field.slice(state.offset).join(''), false, composing);
-	return { state: { text: next, offset: state.offset, sent: step.sent, held: step.held }, send: step.send };
+	const step = mirror(state.sent, next, false, composing);
+	return { state: { text: next, sent: step.sent, held: step.held }, send: step.send };
 }
 
 /** 持っている末尾も含めて全部写す（Enter の前・止まった変換・フォーカスが外れたとき）。 */
 function commit(state: LiveInputState): LiveInputStep {
-	const step = mirror(state.sent, Array.from(state.text).slice(state.offset).join(''), true, false);
+	const step = mirror(state.sent, state.text, true, false);
 	return { state: { ...state, sent: step.sent, held: '' }, send: step.send };
 }
 
@@ -169,10 +155,7 @@ export function liveInputStep(state: LiveInputState, event: LiveInputEvent): Liv
 		}
 		case 'submit': {
 			const flushed = commit(state);
-			return {
-				state: { text: flushed.state.text, offset: Array.from(flushed.state.text).length, sent: '', held: '' },
-				send: [...flushed.send, LIVE_ENTER],
-			};
+			return { state: LIVE_INPUT_EMPTY, send: [...flushed.send, LIVE_ENTER] };
 		}
 		case 'flush':
 			return commit(state);

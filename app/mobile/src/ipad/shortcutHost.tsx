@@ -35,6 +35,7 @@ function ShortcutHostInner() {
 		escape: slots.escape.length > 0,
 		inSettings: pathname.startsWith('/settings'),
 		inNotifications: pathname === '/notifications',
+		terminalArrows: slots.terminalArrows.length > 0,
 	};
 	const specs: KeyCommandSpec[] = availableShortcuts(context).map(def => ({
 		id: def.id, input: def.input, modifiers: def.modifiers, title: def.title, priority: def.overridesTextInput === true,
@@ -96,6 +97,9 @@ function runShortcut(action: ShortcutAction, router: ReturnType<typeof useRouter
 			return;
 		case 'escape':
 			topSlot('escape')?.escape();
+			return;
+		case 'terminalArrow':
+			topSlot('terminalArrows')?.arrow(action.key);
 			return;
 	}
 }
