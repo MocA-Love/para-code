@@ -1862,6 +1862,9 @@ export default defineConfig(
 						// PARA-PATCH: 同titlebarPart.ts がポート一覧のタイトルバーウィジェット
 						// (createParadisPortListWidget)を呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/portList/~',
+						// PARA-PATCH: 同titlebarPart.ts が上の部品を幅に合わせて畳む制御
+						// (createParadisTitlebarFit)を呼ぶための唯一の逆方向 import
+						'vs/paradis/contrib/titlebarFit/~',
 						'assert',
 						{
 							'when': 'test',

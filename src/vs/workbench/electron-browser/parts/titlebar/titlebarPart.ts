@@ -15,6 +15,8 @@ import { createParadisLimitsMonitorWidget } from '../../../../paradis/contrib/li
 import { createParadisServiceStatusWidget } from '../../../../paradis/contrib/serviceStatus/electron-browser/paradisServiceStatusWidget.js';
 // PARA-PATCH: local/remote listening-port list (title bar right side, ahead of window controls)
 import { createParadisPortListWidget } from '../../../../paradis/contrib/portList/electron-browser/paradisPortListWidget.js';
+// PARA-PATCH: keep the fork's title bar widgets from overlapping the command center (width steps, menu bar visibility)
+import { createParadisTitlebarFit } from '../../../../paradis/contrib/titlebarFit/browser/paradisTitlebarFit.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IConfigurationService, IConfigurationChangeEvent } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -74,6 +76,8 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 	private readonly paradisServiceStatusWidget = this._register(new MutableDisposable<IDisposable>());
 	// PARA-PATCH: local/remote listening-port list (title bar right side)
 	private readonly paradisPortListWidget = this._register(new MutableDisposable<IDisposable>());
+	// PARA-PATCH: keep the fork's title bar widgets from overlapping the command center
+	private readonly paradisTitlebarFit = this._register(new MutableDisposable<IDisposable>());
 
 	private cachedWindowControlStyles: { bgColor: string; fgColor: string } | undefined;
 	private cachedWindowControlHeight: number | undefined;
@@ -189,6 +193,8 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 		// status widgets instead of the right side (right side ended up isolated next to
 		// the window controls depending on whether actionToolBarElement existed yet).
 		this.paradisPortListWidget.value = createParadisPortListWidget(this.instantiationService, this.leftContent);
+		// PARA-PATCH: fold the widgets above by the title bar's own width so they never overlap the command center
+		this.paradisTitlebarFit.value = createParadisTitlebarFit(this.rootContainer, this.leftContent);
 
 		// Native menu controller
 		if (isMacintosh || hasNativeMenu(this.configurationService)) {
