@@ -31,6 +31,8 @@ export interface SlotHandlers {
 	sidebar: { toggle(): void };
 	/** 閉じる（シート・ドック）。 */
 	escape: { escape(): void };
+	/** ライブ入力中の矢印を PC のターミナルへ送る。 */
+	terminalArrows: { arrow(key: 'up' | 'down' | 'left' | 'right'): void };
 }
 
 export type SlotName = keyof SlotHandlers;
@@ -51,7 +53,7 @@ interface ShortcutRegistry {
 	setMeta(slot: SlotName, token: number, meta: number): void;
 }
 
-const EMPTY_SLOTS: Slots = { session: [], send: [], list: [], launch: [], sidebar: [], escape: [] };
+const EMPTY_SLOTS: Slots = { session: [], send: [], list: [], launch: [], sidebar: [], escape: [], terminalArrows: [] };
 
 export const useShortcutRegistry = create<ShortcutRegistry>()(set => ({
 	slots: EMPTY_SLOTS,

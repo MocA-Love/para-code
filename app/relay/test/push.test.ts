@@ -5,14 +5,18 @@
  *  - register-push の保存とトークンバリデーション
  *  - push-notify の登録token送信（ソケットのonline状態によらず送る）
  *  - APNs fetch のモックによるヘッダ/ボディ形状の検証と JWTキャッシュ再利用
- *  - 410 Unregistered でのトークン削除
+ *  - 410 Unregistered / 400 BadDeviceToken でのトークン削除
+ *  - 429 / 5xx の再送（SQLの待ち行列 + alarm。Retry-After の尊重と回数上限）
+ *  - apns-collapse-id / thread-id の受け渡し（形の外れた値は捨てる）
  *
  * APNsシークレットは vitest.config.ts の miniflare.bindings に使い捨てP-256鍵で注入している。
  */
 
-import { SELF } from 'cloudflare:test';
+import { SELF, env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import { decodeRelayControl, encodeRelayControl, generateIdentity, toBase64Url } from '@para/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { classifyApnsFailure, parseRetryAfter } from '../src/apns.js';
+import { PUSH_MAX_RETRIES, PUSH_RETRY_AFTER_MAX_MS, pushRetryDelayMs } from '../src/pushRetry.js';
 
 class BufferedSocket {
 	readonly ws: WebSocket;
@@ -123,8 +127,37 @@ async function connectMobile(deviceId: string, mobileId: string, mobileToken: st
 
 const VALID_APNS_TOKEN = 'a'.repeat(64);
 
-function stubFetch(status = 200): ReturnType<typeof vi.spyOn> {
-	return vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, { status }));
+function stubFetch(status = 200, reason?: string, headers?: Record<string, string>): ReturnType<typeof vi.spyOn> {
+	return vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(reason !== undefined ? JSON.stringify({ reason }) : null, { status, headers }));
+}
+
+function deviceStub(deviceId: string) {
+	return env.DEVICES.get(env.DEVICES.idFromString(deviceId));
+}
+
+interface QueueRow { attempt: number; nextAt: number; expiresAt: number; collapseId: string | null }
+
+async function readQueue(deviceId: string): Promise<QueueRow[]> {
+	return runInDurableObject(deviceStub(deviceId), (_instance, state) =>
+		state.storage.sql.exec('SELECT attempt, nextAt, expiresAt, collapseId FROM push_queue ORDER BY id').toArray() as unknown as QueueRow[]);
+}
+
+/** 再送待ちを「今が送信時刻」にしてから alarm を走らせる（実時間の待ちを省く）。 */
+async function runDueRetries(deviceId: string): Promise<void> {
+	await runInDurableObject(deviceStub(deviceId), (_instance, state) => {
+		state.storage.sql.exec('UPDATE push_queue SET nextAt = 0');
+	});
+	await runDurableObjectAlarm(deviceStub(deviceId));
+}
+
+/** register-push 済みのオフラインのモバイルを用意する。 */
+async function offlineMobileWithToken(): Promise<{ deviceId: string; pcWs: BufferedSocket; mobileId: string }> {
+	const { deviceId, pcWs, mobileId, mobileToken } = await pairMobile();
+	const mobileWs = await connectMobile(deviceId, mobileId, mobileToken, pcWs);
+	mobileWs.send(encodeRelayControl({ type: 'register-push', token: VALID_APNS_TOKEN }));
+	mobileWs.close();
+	await pcWs.nextControlOfType('presence');
+	return { deviceId, pcWs, mobileId };
 }
 
 async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
@@ -231,5 +264,201 @@ describe('relay APNs push', () => {
 		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'BBBB' }));
 		await new Promise(r => setTimeout(r, 150));
 		expect(after).not.toHaveBeenCalled();
+	});
+
+	it('drops the apns token on 400 BadDeviceToken as well', async () => {
+		const { pcWs, mobileId } = await offlineMobileWithToken();
+
+		const bad = stubFetch(400, 'BadDeviceToken');
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA' }));
+		await waitFor(() => bad.mock.calls.length >= 1);
+		vi.restoreAllMocks();
+
+		const after = stubFetch(200);
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'BBBB' }));
+		await new Promise(r => setTimeout(r, 150));
+		expect(after).not.toHaveBeenCalled();
+	});
+
+	it('keeps the token and does not retry on other 400s', async () => {
+		const { deviceId, pcWs, mobileId } = await offlineMobileWithToken();
+
+		const bad = stubFetch(400, 'PayloadTooLarge');
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA' }));
+		await waitFor(() => bad.mock.calls.length >= 1);
+		await new Promise(r => setTimeout(r, 50));
+		expect(await readQueue(deviceId)).toEqual([]);
+		vi.restoreAllMocks();
+
+		const after = stubFetch(200);
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'BBBB' }));
+		await waitFor(() => after.mock.calls.length >= 1);
+	});
+
+	it('retries a 503 from the alarm with the same expiration, then clears the queue', async () => {
+		const { deviceId, pcWs, mobileId } = await offlineMobileWithToken();
+
+		const failing = stubFetch(503, 'ServiceUnavailable');
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA' }));
+		await waitFor(() => failing.mock.calls.length >= 1);
+		await new Promise(r => setTimeout(r, 50));
+		const queued = await readQueue(deviceId);
+		expect(queued.map(row => row.attempt)).toEqual([1]);
+		const alarm = await runInDurableObject(deviceStub(deviceId), (_instance, state) => state.storage.getAlarm());
+		expect(alarm).not.toBeNull();
+		const firstExpiration = ((failing.mock.calls[0]![1] as RequestInit).headers as Record<string, string>)['apns-expiration'];
+		vi.restoreAllMocks();
+
+		const ok = stubFetch(200);
+		await runDueRetries(deviceId);
+		expect(ok).toHaveBeenCalledTimes(1);
+		const retried = (ok.mock.calls[0]![1] as RequestInit);
+		expect((retried.headers as Record<string, string>)['apns-expiration']).toBe(firstExpiration);
+		expect((JSON.parse(retried.body as string) as { e: string }).e).toBe('AAAA');
+		expect(await readQueue(deviceId)).toEqual([]);
+	});
+
+	it('honors Retry-After when scheduling the retry', async () => {
+		const { deviceId, pcWs, mobileId } = await offlineMobileWithToken();
+
+		const before = Date.now();
+		const limited = stubFetch(429, 'TooManyRequests', { 'retry-after': '120' });
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA' }));
+		await waitFor(() => limited.mock.calls.length >= 1);
+		await new Promise(r => setTimeout(r, 50));
+		const [row] = await readQueue(deviceId);
+		expect(row!.nextAt).toBeGreaterThanOrEqual(before + 120_000);
+	});
+
+	it('gives up after the retry limit', async () => {
+		const { deviceId, pcWs, mobileId } = await offlineMobileWithToken();
+
+		const failing = stubFetch(500, 'InternalServerError');
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA' }));
+		await waitFor(() => failing.mock.calls.length >= 1);
+		await new Promise(r => setTimeout(r, 50));
+		for (let i = 0; i < PUSH_MAX_RETRIES; i++) {
+			await runDueRetries(deviceId);
+		}
+		expect(failing).toHaveBeenCalledTimes(1 + PUSH_MAX_RETRIES);
+		expect(await readQueue(deviceId)).toEqual([]);
+	});
+
+	it('does not resend a queued push once the mobile has been revoked', async () => {
+		const { deviceId, pcToken, pcWs, mobileId } = await (async () => {
+			const paired = await pairMobile();
+			const mobileWs = await connectMobile(paired.deviceId, paired.mobileId, paired.mobileToken, paired.pcWs);
+			mobileWs.send(encodeRelayControl({ type: 'register-push', token: VALID_APNS_TOKEN }));
+			mobileWs.close();
+			await paired.pcWs.nextControlOfType('presence');
+			return paired;
+		})();
+
+		const failing = stubFetch(503);
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA' }));
+		await waitFor(() => failing.mock.calls.length >= 1);
+		await new Promise(r => setTimeout(r, 50));
+		vi.restoreAllMocks();
+		const revoke = await SELF.fetch(`https://relay/device/${deviceId}/mobile/revoke`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` }, body: JSON.stringify({ mobileId }) });
+		expect(revoke.ok).toBe(true);
+
+		const after = stubFetch(200);
+		await runDueRetries(deviceId);
+		expect(after).not.toHaveBeenCalled();
+	});
+
+	it('resends after a transport failure with the same collapse id, adding a random one when the PC gave none', async () => {
+		// 応答が無い失敗は APNs が受理済みかもしれない。同じ apns-collapse-id で送り直せば、端末上で
+		// 置き換わるので二重に鳴らない。PC が付けない許可・質問にはリレーが通知ごとの乱数を付ける。
+		const { deviceId, pcWs, mobileId } = await offlineMobileWithToken();
+
+		const broken = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => { throw new Error('connection reset'); });
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA' }));
+		await waitFor(() => broken.mock.calls.length >= 1);
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'BBBB' }));
+		await waitFor(() => broken.mock.calls.length >= 2);
+		await new Promise(r => setTimeout(r, 50));
+		const collapseOf = (call: unknown[]) => ((call[1] as RequestInit).headers as Record<string, string>)['apns-collapse-id'];
+		const first = collapseOf(broken.mock.calls[0]!);
+		const second = collapseOf(broken.mock.calls[1]!);
+		const queued = await readQueue(deviceId);
+		expect({
+			pattern: [first, second].every(value => /^[A-Za-z0-9_-]{22}$/.test(value ?? '')),
+			distinct: first !== second,
+			queued: queued.map(row => row.collapseId),
+		}).toEqual({ pattern: true, distinct: true, queued: [first, second] });
+		vi.restoreAllMocks();
+
+		const ok = stubFetch(200);
+		await runDueRetries(deviceId);
+		expect(ok.mock.calls.map(collapseOf).sort()).toEqual([first, second].sort());
+	});
+
+	it('passes an opaque collapse id and thread id through, and ignores malformed ones', async () => {
+		const { pcWs, mobileId } = await offlineMobileWithToken();
+
+		const fetchMock = stubFetch(200);
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA', collapseId: 'c0llapse_Id-123', threadId: 'thread-0123456789' }));
+		await waitFor(() => fetchMock.mock.calls.length >= 1);
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'BBBB', collapseId: 'has space', threadId: 'x'.repeat(65) }));
+		await waitFor(() => fetchMock.mock.calls.length >= 2);
+
+		const shape = (call: unknown[]) => {
+			const init = call[1] as RequestInit;
+			const body = JSON.parse(init.body as string) as { aps: Record<string, unknown> };
+			return { collapse: (init.headers as Record<string, string>)['apns-collapse-id'], thread: body.aps['thread-id'] };
+		};
+		const malformed = shape(fetchMock.mock.calls[1]!);
+		expect([shape(fetchMock.mock.calls[0]!), { collapseIsRandom: /^[A-Za-z0-9_-]{22}$/.test(malformed.collapse ?? ''), thread: malformed.thread }]).toEqual([
+			{ collapse: 'c0llapse_Id-123', thread: 'thread-0123456789' },
+			// 形の外れた collapseId は使わず、リレーが通知ごとの乱数を付ける。threadId は付けない
+			{ collapseIsRandom: true, thread: undefined },
+		]);
+	});
+});
+
+describe('APNs failure classification', () => {
+	it('sorts status codes into drop / retry / fail', () => {
+		const now = Date.parse('2026-09-28T00:00:00Z');
+		expect([
+			classifyApnsFailure(410, 'Unregistered', null, now).kind,
+			classifyApnsFailure(400, 'BadDeviceToken', null, now).kind,
+			classifyApnsFailure(400, 'DeviceTokenNotForTopic', null, now).kind,
+			classifyApnsFailure(400, 'BadCollapseId', null, now).kind,
+			classifyApnsFailure(403, 'InvalidProviderToken', null, now).kind,
+			classifyApnsFailure(403, 'ExpiredProviderToken', null, now).kind,
+			classifyApnsFailure(429, 'TooManyRequests', '3', now),
+			classifyApnsFailure(500, 'InternalServerError', null, now).kind,
+			classifyApnsFailure(503, 'ServiceUnavailable', 'Sun, 28 Sep 2026 00:00:10 GMT', now),
+		]).toEqual([
+			'drop-token',
+			'drop-token',
+			'drop-token',
+			'failed',
+			'failed',
+			'retry',
+			{ kind: 'retry', status: 429, reason: 'TooManyRequests', retryAfterMs: 3_000 },
+			'retry',
+			{ kind: 'retry', status: 503, reason: 'ServiceUnavailable', retryAfterMs: 10_000 },
+		]);
+		expect([parseRetryAfter(null, now), parseRetryAfter('garbage', now), parseRetryAfter('-5', now)]).toEqual([undefined, undefined, 0]);
+	});
+
+	it('backs off 1s -> 2s -> 4s with half jitter and never goes under Retry-After', () => {
+		expect([
+			[pushRetryDelayMs(1, undefined, 0), pushRetryDelayMs(1, undefined, 0.999)],
+			[pushRetryDelayMs(2, undefined, 0), pushRetryDelayMs(2, undefined, 0.999)],
+			[pushRetryDelayMs(3, undefined, 0), pushRetryDelayMs(3, undefined, 0.999)],
+			pushRetryDelayMs(20, undefined, 0.999),
+			pushRetryDelayMs(1, 120_000, 0.5),
+			pushRetryDelayMs(1, 24 * 3600_000, 0.5),
+		]).toEqual([
+			[500, 999],
+			[1_000, 1_999],
+			[2_000, 3_998],
+			29_985,
+			120_000,
+			PUSH_RETRY_AFTER_MAX_MS,
+		]);
 	});
 });

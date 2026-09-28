@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { SELF } from 'cloudflare:test';
-import { PARADIS_RELAY_KEEPALIVE_PING, PARADIS_RELAY_KEEPALIVE_PONG, decodeRelayControl, encodeRelayControl, generateIdentity, mobileIdFromString, packPcData, toBase64Url, unpackPcData } from '@para/protocol';
+import { PARADIS_RELAY_CLOSE_CODE, PARADIS_RELAY_KEEPALIVE_PING, PARADIS_RELAY_KEEPALIVE_PONG, decodeRelayControl, encodeRelayControl, generateIdentity, mobileIdFromString, packPcData, toBase64Url, unpackPcData } from '@para/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 /**
@@ -194,11 +194,9 @@ describe('relay pairing + routing', () => {
 		const revoked = decodeRelayControl(await pcWs.next() as string);
 		expect(revoked).toEqual({ type: 'mobile-revoked', mobileId: paired.mobileId });
 
-		// 失効後は同じ資格情報で接続できない
-		const res = await SELF.fetch(`https://relay/device/${deviceId}/ws?role=mobile&mobileId=${paired.mobileId}&token=${paired.mobileToken}`, {
-			headers: { Upgrade: 'websocket' },
-		});
-		expect(res.status).toBe(401);
+		// 失効後は同じ資格情報で接続できない。登録が無いことを close code で伝える（W2-04）
+		const rejected = await openWs(`https://relay/device/${deviceId}/ws?role=mobile&mobileId=${paired.mobileId}&token=${paired.mobileToken}`);
+		expect((await rejected.closed()).code).toBe(PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE);
 	});
 
 	it('answers the keepalive ping and flaps pc presence when a pc socket is superseded', async () => {
@@ -254,12 +252,28 @@ describe('relay pairing + routing', () => {
 		await expect(pcWs.next(100)).rejects.toThrow('ws message timeout');
 	});
 
-	it('rejects mobile connection with a bad token', async () => {
+	it('closes an unknown mobile with 4404 instead of an HTTP 401 the phone cannot see', async () => {
 		const { deviceId } = await provisionDevice();
-		const res = await SELF.fetch(`https://relay/device/${deviceId}/ws?role=mobile&mobileId=AAAAAAAAAAAAAAAAAAAAAA&token=wrong`, {
-			headers: { Upgrade: 'websocket' },
-		});
-		expect(res.status).toBe(401);
+		const rejected = await openWs(`https://relay/device/${deviceId}/ws?role=mobile&mobileId=AAAAAAAAAAAAAAAAAAAAAA&token=wrong`);
+		const event = await rejected.closed();
+		expect({ code: event.code, reason: event.reason }).toEqual({ code: PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE, reason: 'unknown mobile' });
+	});
+
+	it('closes a paired mobile presenting the wrong token with 4401 and leaves the pc untouched', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		const pair = await (await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` } })).json<{ pairId: string; pairingToken: string }>();
+		const pairWs = await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
+		pairWs.send(encodeRelayControl({ type: 'pairing-msg', data: 'aGVsbG8' }));
+		await pcWs.next(); // pairing-msg
+		pcWs.send(encodeRelayControl({ type: 'pairing-approve', pairId: pair.pairId, name: 'iPhone' }));
+		const paired = decodeRelayControl(await pairWs.next() as string) as { mobileId: string };
+		await pcWs.next(); // paired(pc向け)
+
+		const rejected = await openWs(`https://relay/device/${deviceId}/ws?role=mobile&mobileId=${paired.mobileId}&token=wrong`);
+		expect((await rejected.closed()).code).toBe(PARADIS_RELAY_CLOSE_CODE.CREDENTIAL_REFUSED);
+		// 拒否した接続でPCへ presence を流さない（在席の誤表示にしない）
+		await expect(pcWs.next(100)).rejects.toThrow('ws message timeout');
 	});
 
 	it('rejects pairing connection with a bad token without consuming the valid token', async () => {

@@ -47,6 +47,31 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 	/** スコープ (worktree/repository の stateKey) → 検出済み Issue URL (出現順)。 */
 	private _issueUrls = new Map<string, readonly string[]>();
 
+	/** batchUpdates の入れ子の深さと、その間に出そうとした変化通知。 */
+	private _batchDepth = 0;
+	private _changedInBatch = false;
+
+	batchUpdates(update: () => void): void {
+		this._batchDepth++;
+		try {
+			update();
+		} finally {
+			this._batchDepth--;
+			if (this._batchDepth === 0 && this._changedInBatch) {
+				this._changedInBatch = false;
+				this._onDidChangeAgentStatuses.fire();
+			}
+		}
+	}
+
+	private _fireChanged(): void {
+		if (this._batchDepth > 0) {
+			this._changedInBatch = true;
+			return;
+		}
+		this._onDidChangeAgentStatuses.fire();
+	}
+
 	getScopeStatus(stateKey: string): ParadisAgentStatus | undefined {
 		return this._statuses.get(stateKey);
 	}
@@ -84,7 +109,7 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 			return;
 		}
 		this._discoveredAgentPaneTokens = new Set(paneTokens);
-		this._onDidChangeAgentStatuses.fire();
+		this._fireChanged();
 	}
 
 	setScopeBreakdowns(breakdowns: ReadonlyMap<string, readonly ParadisAgentStatus[]>): void {
@@ -107,7 +132,7 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 				this._statuses.set(key, aggregated);
 			}
 		}
-		this._onDidChangeAgentStatuses.fire();
+		this._fireChanged();
 	}
 
 	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>, acknowledgedInstanceIds?: ReadonlySet<number>, stoppedForUserInstanceIds?: ReadonlySet<number>): void {
@@ -130,13 +155,13 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 		const agentsUnchanged = this._agentInstanceIds.size === agentInstanceIds.size && [...agentInstanceIds].every(id => this._agentInstanceIds.has(id));
 		if (statusesUnchanged && agentsUnchanged) {
 			if (acknowledgedChanged) {
-				this._onDidChangeAgentStatuses.fire();
+				this._fireChanged();
 			}
 			return;
 		}
 		this._instanceStatuses = new Map(statuses);
 		this._agentInstanceIds = new Set(agentInstanceIds);
-		this._onDidChangeAgentStatuses.fire();
+		this._fireChanged();
 	}
 
 	setScopeIssueUrls(issueUrls: ReadonlyMap<string, ReadonlySet<string>>): void {
@@ -150,6 +175,6 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 			return;
 		}
 		this._issueUrls = next;
-		this._onDidChangeAgentStatuses.fire();
+		this._fireChanged();
 	}
 }

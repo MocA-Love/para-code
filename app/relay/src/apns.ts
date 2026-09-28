@@ -33,9 +33,26 @@ export interface ApnsJwtCache {
 }
 
 const JWT_TTL_SECONDS = 45 * 60;
-const PUSH_EXPIRATION_SECONDS = 4 * 3600;
+/** プッシュの有効期限（APNsがオフライン端末のために保持する時間）。再送しても延ばさない。 */
+export const PUSH_EXPIRATION_SECONDS = 4 * 3600;
 
-export type ApnsSendResult = 'sent' | 'unregistered' | 'skipped' | 'error';
+/**
+ * トークンそのものが使えないことを示す 400 の理由。410 Unregistered と同じくトークンを捨てる。
+ * 開発ビルドのトークンを本番へ送った場合もここに入るが、アプリは接続のたびに register-push で
+ * 登録し直すので、正しい環境のトークンがすぐ戻る。
+ */
+const DEAD_TOKEN_REASONS = new Set(['BadDeviceToken', 'DeviceTokenNotForTopic', 'Unregistered']);
+
+export type ApnsSendResult =
+	| { readonly kind: 'sent' }
+	/** シークレット未設定（開発環境）。 */
+	| { readonly kind: 'skipped' }
+	/** トークンが失効・不正。呼び出し側でトークンを削除する。 */
+	| { readonly kind: 'drop-token'; readonly status: number; readonly reason: string }
+	/** 一時的な失敗（429 / 5xx / 通信失敗 / 期限切れJWT）。retryAfterMs は APNs の Retry-After。 */
+	| { readonly kind: 'retry'; readonly status: number | undefined; readonly reason: string; readonly retryAfterMs?: number }
+	/** 再送しても直らない失敗（その他の 4xx、ペイロード不正など）。 */
+	| { readonly kind: 'failed'; readonly status: number | undefined; readonly reason: string };
 
 export interface ApnsNotification {
 	/** APNsデバイストークン（16進）。 */
@@ -43,16 +60,24 @@ export interface ApnsNotification {
 	readonly env: 'prod' | 'dev';
 	/** E2E暗号文（base64url文字列のまま載せる）。 */
 	readonly payload: string;
+	/**
+	 * `apns-collapse-id`。同じ値の通知は端末上で置き換わる。PCが作る中身の推測できない値
+	 * （PARADIS_PUSH_ID_PATTERN を満たすもの）だけを渡すこと。
+	 */
+	readonly collapseId?: string;
+	/** `aps.thread-id`。通知センターでまとめる単位。collapseId と同じ条件。 */
+	readonly threadId?: string;
+	/** `apns-expiration`（epoch秒）。再送のたびに延ばさないよう最初の送信時刻から決めて渡す。 */
+	readonly expiresAtSeconds?: number;
 }
 
 /**
- * 対象デバイスへAPNs通知を1件送信する。シークレット未設定なら 'skipped' を返す。
- * 410 Unregistered のときは 'unregistered' を返す（呼び出し側でトークンを削除する）。
+ * 対象デバイスへAPNs通知を1件送信する（再送はしない。再送の判断は呼び出し側が持つ）。
  */
 export async function sendApnsNotification(env: ApnsEnv, notification: ApnsNotification, cache: ApnsJwtCache): Promise<ApnsSendResult> {
 	if (!env.APNS_KEY_P8 || !env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_TOPIC) {
 		console.warn('[apns] secrets not configured; skipping push-notify');
-		return 'skipped';
+		return { kind: 'skipped' };
 	}
 
 	let jwt: string;
@@ -60,16 +85,18 @@ export async function sendApnsNotification(env: ApnsEnv, notification: ApnsNotif
 		jwt = await getJwt(env, cache);
 	} catch (err) {
 		console.warn('[apns] failed to build auth JWT:', err);
-		return 'error';
+		return { kind: 'failed', status: undefined, reason: 'jwt' };
 	}
 
 	const host = notification.env === 'dev' ? 'https://api.sandbox.push.apple.com' : 'https://api.push.apple.com';
 	const nowSeconds = Math.floor(Date.now() / 1000);
+	const expiresAtSeconds = notification.expiresAtSeconds ?? nowSeconds + PUSH_EXPIRATION_SECONDS;
 	const body = JSON.stringify({
 		aps: {
 			alert: { title: 'Para Code', body: '新しい通知があります' },
 			sound: 'default',
 			'mutable-content': 1,
+			...(notification.threadId !== undefined ? { 'thread-id': notification.threadId } : {}),
 		},
 		e: notification.payload,
 	});
@@ -83,23 +110,62 @@ export async function sendApnsNotification(env: ApnsEnv, notification: ApnsNotif
 				'apns-topic': env.APNS_TOPIC,
 				'apns-push-type': 'alert',
 				'apns-priority': '10',
-				'apns-expiration': String(nowSeconds + PUSH_EXPIRATION_SECONDS),
+				'apns-expiration': String(expiresAtSeconds),
+				...(notification.collapseId !== undefined ? { 'apns-collapse-id': notification.collapseId } : {}),
 			},
 			body,
 		});
 	} catch (err) {
 		console.warn('[apns] request failed:', err);
-		return 'error';
+		return { kind: 'retry', status: undefined, reason: 'transport' };
 	}
 
-	if (res.status === 410) {
-		return 'unregistered';
+	if (res.ok) {
+		return { kind: 'sent' };
 	}
-	if (!res.ok) {
-		console.warn(`[apns] push rejected: ${res.status}`);
-		return 'error';
+	const reason = await readReason(res);
+	const result = classifyApnsFailure(res.status, reason, res.headers.get('retry-after'), Date.now());
+	if (result.kind === 'retry' && reason === 'ExpiredProviderToken') {
+		// 手元のJWTが古いと見なされた。次の送信で作り直させる。
+		cache.token = undefined;
+		cache.iat = undefined;
 	}
-	return 'sent';
+	console.warn(`[apns] push rejected: ${res.status} ${reason}`);
+	return result;
+}
+
+/**
+ * APNs の失敗応答（200以外）を「トークンを捨てる / 再送する / 諦める」に振り分ける。
+ * 純関数にしてあるので、状態コードと理由の組み合わせをテストで固定できる。
+ */
+export function classifyApnsFailure(status: number, reason: string, retryAfterHeader: string | null, nowMs: number): Exclude<ApnsSendResult, { kind: 'sent' } | { kind: 'skipped' }> {
+	if (status === 410 || (status === 400 && DEAD_TOKEN_REASONS.has(reason))) {
+		return { kind: 'drop-token', status, reason };
+	}
+	if (status === 429 || status >= 500 || (status === 403 && reason === 'ExpiredProviderToken')) {
+		const retryAfterMs = parseRetryAfter(retryAfterHeader, nowMs);
+		return { kind: 'retry', status, reason, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) };
+	}
+	return { kind: 'failed', status, reason };
+}
+
+/** Retry-After（秒数またはHTTP日付）をミリ秒へ。読めなければ undefined。 */
+export function parseRetryAfter(value: string | null, nowMs: number): number | undefined {
+	if (value === null || value.trim() === '') {
+		return undefined;
+	}
+	const seconds = Number(value);
+	const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - nowMs;
+	return Number.isFinite(delay) ? Math.max(0, delay) : undefined;
+}
+
+async function readReason(res: Response): Promise<string> {
+	try {
+		const parsed = await res.json<{ reason?: unknown }>();
+		return typeof parsed.reason === 'string' ? parsed.reason : 'unknown';
+	} catch {
+		return 'unparseable';
+	}
 }
 
 /** キャッシュが45分以内なら再利用し、そうでなければ新しいES256 JWTを署名する。 */

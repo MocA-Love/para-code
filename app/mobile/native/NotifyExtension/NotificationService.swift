@@ -17,6 +17,13 @@ final class NotificationService: UNNotificationServiceExtension {
 
 	private var contentHandler: ((UNNotificationContent) -> Void)?
 	private var bestAttemptContent: UNMutableNotificationContent?
+	/// contentHandler を一度だけ呼ぶための印。通知センターの問い合わせの返事と期限切れ
+	/// （serviceExtensionTimeWillExpire）は別のスレッドから来うるので、鍵で守る。
+	private let deliverLock = NSLock()
+	private var delivered = false
+	/// 復号した識別子を userInfo へ書き終えたか。期限切れで出すとき、書き終えていなければ
+	/// 生ペイロードの識別子（リレーが差し込めるもの）を剥がしてから出す。
+	private var wroteDecryptedIds = false
 
 	// 共有 Keychain の座標。メインアプリ側の保存条件と一致させること。
 	// expo-secure-store は requireAuthentication=false のとき kSecAttrService に
@@ -30,13 +37,16 @@ final class NotificationService: UNNotificationServiceExtension {
 		self.bestAttemptContent = (request.content.mutableCopy() as? UNMutableNotificationContent)
 
 		guard let bestAttempt = bestAttemptContent else {
-			contentHandler(request.content)
+			deliver(request.content)
 			return
 		}
 
 		// フォールバック: 何が起きても届いた固定文のまま返す。
+		// 復号できなかったのに APNs の生ペイロードに識別子が載っていたら、それはリレーが差し込んだもの。
+		// アプリはタップの遷移と通知センターの後始末で userInfo の識別子を読むので、ここで捨てる。
 		func deliverFallback() {
-			contentHandler(bestAttempt)
+			Self.stripAppReadKeys(bestAttempt)
+			deliver(bestAttempt)
 		}
 
 		guard let cipherText = request.content.userInfo["e"] as? String,
@@ -72,9 +82,11 @@ final class NotificationService: UNNotificationServiceExtension {
 
 		// ディープリンクと対象検証に必要な識別子を userInfo へ残す。
 		var userInfo = bestAttempt.userInfo
-		// APNs の生ペイロードに載っていた送信元は必ず捨てる。そこはリレーが差し込めるため、
+		// APNs の生ペイロードに載っていた識別子（送信元を含む）は必ず捨てる。そこはリレーが差し込めるため、
 		// 採用してよいのは封緘を開けて得たもの（鍵の名前・復号できた本文）だけ。
-		userInfo.removeValue(forKey: "pcId")
+		for key in Self.appReadKeys {
+			userInfo.removeValue(forKey: key)
+		}
 		if let ws = json["ws"] { userInfo["ws"] = ws }
 		if let terminalId = json["terminalId"] { userInfo["terminalId"] = terminalId }
 		if let terminalKey = json["terminalKey"] { userInfo["terminalKey"] = terminalKey }
@@ -88,25 +100,126 @@ final class NotificationService: UNNotificationServiceExtension {
 		if let pcId = opened.pcId ?? (json["pcId"] as? String), !pcId.isEmpty {
 			userInfo["pcId"] = pcId
 		}
-		bestAttempt.userInfo = userInfo
+		// 通知ID: PCが「処理済み」と知らせてきたとき、アプリが通知センターから消す手がかり
+		// （app/mobile/src/notificationTray.ts）。
+		if let notifyId = json["id"] as? String, !notifyId.isEmpty {
+			userInfo["notifyId"] = notifyId
+		}
+		// 同じエージェントの通知は1件に置き換え、同じPC・スペースの通知はまとめる（W2-08）。
+		// 鍵は端末の中で作るだけで、リレーやAPNsへは出ない。
+		let keyPcId = (userInfo["pcId"] as? String) ?? ""
+		let collapse = Self.collapseKey(pcId: keyPcId, kind: json["kind"] as? String, agentToken: json["agentToken"] as? String, terminalKey: json["terminalKey"] as? String)
+		if let collapse = collapse {
+			userInfo["collapse"] = collapse
+		}
+		bestAttempt.threadIdentifier = Self.threadKey(pcId: keyPcId, ws: json["ws"] as? String)
+		// userInfo の書き換えと印は同じ鍵の区間で行う。期限切れの側がその間に割り込んで、
+		// 書きかけの userInfo を剥がしたり、書いた後に剥がしたりしないように。
+		deliverLock.lock()
+		if !delivered {
+			bestAttempt.userInfo = userInfo
+			wroteDecryptedIds = true
+		}
+		deliverLock.unlock()
 
 		// ホーム画面・ロック画面のウィジェットの要約（App Group）の要対応を書き換えて描き直させる
 		// （アプリが閉じている間にウィジェットを新しくできる唯一の経路）。要約がまだ無い・App Group が
 		// 使えないときは何もしない。通知の表示はこの成否に関わらず行う。
 		// 書き換える PC は鍵の項目名から分かったものだけにする。封緘の中で PC が名乗った pcId は、ペアリング済みの
 		// PC 同士なら騙れるので、別の PC の行を書き換えさせない（分からなければ要約はそのまま）。
-		if let keyPcId = opened.pcId, !keyPcId.isEmpty {
-			WidgetStore.applyNotification(json, pcId: keyPcId)
+		if let widgetPcId = opened.pcId, !widgetPcId.isEmpty {
+			WidgetStore.applyNotification(json, pcId: widgetPcId)
 		}
 
-		contentHandler(bestAttempt)
+		guard let collapse = collapse else {
+			deliver(bestAttempt)
+			return
+		}
+		// 同じエージェントの前の通知（プッシュ・アプリが出したローカル通知の両方）を消してから出す。
+		// 消せなくても通知は必ず出す（取得が返ってこない場合は serviceExtensionTimeWillExpire が出す）。
+		let center = UNUserNotificationCenter.current()
+		center.getDeliveredNotifications { [weak self] deliveredNotifications in
+			let previous = deliveredNotifications
+				.filter { ($0.request.content.userInfo["collapse"] as? String) == collapse }
+				.map { $0.request.identifier }
+			if !previous.isEmpty {
+				center.removeDeliveredNotifications(withIdentifiers: previous)
+			}
+			self?.deliver(bestAttempt)
+		}
 	}
 
 	override func serviceExtensionTimeWillExpire() {
-		// 復号が間に合わなかった場合は現時点の内容をそのまま返す。
-		if let contentHandler = contentHandler, let bestAttemptContent = bestAttemptContent {
-			contentHandler(bestAttemptContent)
+		// 復号が間に合わなかった場合は現時点の内容で出す。復号した識別子を書き終えていなければ、
+		// 生ペイロードの識別子は剥がす（フォールバックと同じ扱い）。
+		guard let bestAttemptContent = bestAttemptContent else {
+			return
 		}
+		deliverLock.lock()
+		if !wroteDecryptedIds && !delivered {
+			Self.stripAppReadKeys(bestAttemptContent)
+		}
+		deliverLock.unlock()
+		deliver(bestAttemptContent)
+	}
+
+	/// contentHandler を一度だけ呼ぶ（2回目以降は何もしない）。
+	private func deliver(_ content: UNNotificationContent) {
+		deliverLock.lock()
+		let first = !delivered
+		delivered = true
+		let handler = contentHandler
+		deliverLock.unlock()
+		if first {
+			handler?(content)
+		}
+	}
+
+	/// APNs の生ペイロードに載っていたアプリ向けの識別子を捨てる（リレーが差し込めるため）。
+	private static func stripAppReadKeys(_ content: UNMutableNotificationContent) {
+		var userInfo = content.userInfo
+		for key in appReadKeys {
+			userInfo.removeValue(forKey: key)
+		}
+		content.userInfo = userInfo
+	}
+
+	/// アプリが userInfo から読む識別子（app/mobile/src/notificationTray.ts の readTrayData と、
+	/// notificationNavigation.ts の readNotificationDeepLink）。復号できたときだけ、ここで書く。
+	private static let appReadKeys = ["pcId", "ws", "terminalId", "terminalKey", "agentToken", "windowId", "kind", "notifyId", "collapse"]
+
+	// MARK: - Collapse / thread keys
+
+	/// 同じエージェントの通知を置き換える鍵。**`app/mobile/src/notificationTray.ts` の
+	/// `notifyCollapseKey` と同じ規則**（SHA-256 の16進先頭32桁）。変えるときは両方直すこと。
+	/// 同じ入力で両者が一致することは notificationTray.test.ts の値で固定している。
+	/// 許可・質問（agent-question）は置き換えない。未回答の許可が次の通知の下に隠れると気づけないため
+	/// （PC も許可・質問のプッシュには apns-collapse-id を付けない。リレーはその代わりに通知ごとの乱数を
+	/// 付けるが、これは同じ通知の再送どうしを1件にするだけで、別の通知を置き換えない）。
+	private static func collapseKey(pcId: String, kind: String?, agentToken: String?, terminalKey: String?) -> String? {
+		if kind == "agent-question" {
+			return nil
+		}
+		let subject: String
+		if let token = agentToken, !token.isEmpty {
+			subject = "a:\(token)"
+		} else if let key = terminalKey, !key.isEmpty {
+			subject = "t:\(key)"
+		} else {
+			return nil
+		}
+		return hashKey("para.notify.collapse\n\(pcId)\n\(subject)")
+	}
+
+	/// 通知センターでまとめる単位（PC × スペース）。アプリのローカル通知は expo が
+	/// threadIdentifier を渡せないので、まとまるのはプッシュで届いたものだけ。
+	private static func threadKey(pcId: String, ws: String?) -> String {
+		return hashKey("para.notify.thread\n\(pcId)\n\(ws ?? "")")
+	}
+
+	private static func hashKey(_ input: String) -> String {
+		let digest = SHA256.hash(data: Data(input.utf8))
+		return String(digest.map { String(format: "%02x", $0) }.joined().prefix(32))
 	}
 
 	// MARK: - Crypto

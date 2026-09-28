@@ -80,6 +80,8 @@ vi.mock('./platform.js', () => ({
 		deleteItem: async (key: string) => { componentHarness.storage.delete(key); },
 	},
 }));
+// 回線の変化の購読は expo-modules-core（ネイティブ）を引くので差し替える。
+vi.mock('./networkRevival.js', () => ({ subscribeNetworkRevival: () => () => undefined }));
 vi.mock('./pairingClient.js', () => ({
 	PairingClient: class {
 		cancel(): void { }
