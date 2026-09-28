@@ -16,6 +16,10 @@ import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from
 import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../node/paradisAgentHookBus.js';
 import { IParadisMcpToolCallContext } from '../../common/paradisMcpToolProvider.js';
 import { ParadisAgentHookOwnership } from '../../node/paradisAgentHookOwnership.js';
+import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
+import { join } from '../../../../../base/common/path.js';
+import { paradisAgentHookSpoolHash } from '../../node/paradisAgentHookSpoolStore.js';
 
 interface ITestBinding {
 	readonly windowCtx: string;
@@ -127,6 +131,11 @@ function createFixture(): {
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set<string>(),
 		_awaitingUserTokens: new Set<string>(),
+		// hook の控え（W2-20）。無いフォルダを指すので、流し直しは何も読まない。
+		_hookSpoolDir: '/nonexistent/paradis-agent-hook-spool',
+		_hookSpoolPruned: Promise.resolve(),
+		_hookSpoolCheckedTokens: new Set<string>(),
+		_replayedPrompts: new Map<string, unknown>(),
 		_agentHookTokens: new Set<string>(),
 		_hookReportedTokens: new Set<string>(),
 		_unconfirmedReleaseTokens: new Set<string>(),
@@ -654,6 +663,61 @@ suite('ParadisAgentBrowser authority integration', () => {
 			{ token: 'claude-a', agent: 'claude', sessionId: 'session-claude', cwd: '/repo/a', at: 'number' },
 			{ token: 'codex-a', agent: 'codex', sessionId: 'session-codex', at: 'number' },
 		]);
+	});
+
+	// Para Code が止まっている間の hook の控え（W2-20）は、ペインの同期の後に流し直す。完了は鳴らさない印、
+	// 許可要求は画面を確かめてもらうまで状態にもカードにもしない。この起動で本物の hook が届いたペインと
+	// 古すぎる許可要求は触らない。
+	test('replays spooled hooks after the pane sync: a quiet completion mark, and a permission only once the screen shows it', async function () {
+		this.timeout(10_000);
+		const fixture = createFixture();
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-replay-'));
+		const events: IParadisAgentHookEvent[] = [];
+		const subscription = onParadisAgentHookEvent(event => events.push(event));
+		try {
+			Reflect.set(fixture.service, '_hookSpoolDir', dir);
+			const now = Math.floor(Date.now() / 1000);
+			const spool = (token: string, lines: readonly object[]) => fs.writeFile(join(dir, `pane-${paradisAgentHookSpoolHash(token)}.jsonl`), lines.map(line => JSON.stringify({ v: 1, ...line })).join('\n') + '\n');
+			await spool('done', [{ event: 'UserPromptSubmit', t: now - 60, payload: { session_id: 's-done' } }, { event: 'Stop', t: now - 30, payload: { session_id: 's-done', cwd: '/repo' } }]);
+			await spool('asking', [{ event: 'PermissionRequest', t: now - 10, payload: { tool_name: 'Bash', tool_input: { command: 'ls' } } }]);
+			await spool('stale', [{ event: 'PermissionRequest', t: now - 3_600, payload: null }]);
+			await spool('live', [{ event: 'Stop', t: now - 5, payload: null }]);
+			Reflect.get(fixture.service, '_hookReportedTokens').add('live');
+			const connection = {};
+			fixture.service.registerRendererConnection('window:1', connection);
+			await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'done' }, { token: 'asking' }, { token: 'stale' }, { token: 'live' }]));
+			for (let attempt = 0; attempt < 100 && (await fs.readdir(dir)).length > 0; attempt++) {
+				await new Promise(resolve => setTimeout(resolve, 20));
+			}
+			await new Promise(resolve => setTimeout(resolve, 20));
+
+			const before = await fixture.service.listAgentStatusSnapshot(connection);
+			const confirmedUnknown = await fixture.service.confirmReplayedPrompt(connection, 'stale');
+			const confirmed = await fixture.service.confirmReplayedPrompt(connection, 'asking');
+			const after = await fixture.service.listAgentStatusSnapshot(connection);
+			assert.deepStrictEqual({
+				left: await fs.readdir(dir),
+				statusesBefore: before.paneStatuses,
+				promptsBefore: before.replayedPrompts,
+				confirmedUnknown,
+				confirmed,
+				statusesAfter: after.paneStatuses.map(status => ({ token: status.token, status: status.status, quiet: status.quiet })),
+				promptsAfter: after.replayedPrompts,
+				events: events.map(event => ({ token: event.token, event: event.event, toolName: event.toolName })),
+			}, {
+				left: [],
+				statusesBefore: [{ token: 'done', status: 'review', changedAt: (now - 30) * 1000, cwd: '/repo', quiet: true }],
+				promptsBefore: [{ token: 'asking', status: 'permission' }],
+				confirmedUnknown: false,
+				confirmed: true,
+				statusesAfter: [{ token: 'done', status: 'review', quiet: true }, { token: 'asking', status: 'permission', quiet: undefined }],
+				promptsAfter: undefined,
+				events: [{ token: 'asking', event: 'PermissionRequest', toolName: 'Bash' }],
+			});
+		} finally {
+			subscription.dispose();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
 	});
 
 	test('resolves eligibility and sweeps stale fallback status once for one atomic snapshot', async () => {

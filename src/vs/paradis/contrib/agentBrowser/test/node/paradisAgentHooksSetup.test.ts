@@ -112,7 +112,7 @@ suite('ParadisAgentHooksSetup', () => {
 		const existing = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: schema1Command }, userHook] }] } });
 		const merged = paradisMergeAgentHooksJson(existing, [{ eventName: 'Stop' }]);
 
-		assert.strictEqual(PARADIS_AGENT_HOOK_SCHEMA_VERSION, 3);
+		assert.strictEqual(PARADIS_AGENT_HOOK_SCHEMA_VERSION, 4);
 		assert.ok(merged !== undefined);
 		const parsed = JSON.parse(merged) as { hooks: Record<string, readonly { hooks: readonly { command: string }[] }[]> };
 		assert.deepStrictEqual(parsed.hooks.Stop.flatMap(definition => definition.hooks.map(hook => hook.command)), [

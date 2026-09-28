@@ -78,6 +78,7 @@ import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } fr
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { PARADIS_OFFICE_CHANNEL, marshalParadisOfficeRequest, unmarshalParadisOfficeResponse, type ParadisOfficeV1Negotiation } from '../../fileViewers/common/paradisOfficeChannel.js';
 import type { ParadisOfficeSourceDescriptor } from '../../fileViewers/common/paradisOfficeProtocol.js';
+import { paradisIsQuietReplayedPane } from '../../agentBrowser/browser/paradisQuietReplayedPanes.js';
 
 // 画面の目印の照合は、デスクトップのチャット表示と共有するため agentChat/browser へ切り出した。
 export { paradisScreenShowsMarker } from '../../agentChat/browser/paradisAgentTuiInput.js';
@@ -1173,7 +1174,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					// （同じスペースの別のエージェントのトークンで通知しない。paradisPickNotifyInstance）。
 					const sourceId = paradisPickNotifyInstance(candidates, stateKey, status);
 					const source = instances.find(candidate => candidate.instanceId === sourceId) ?? inst;
-					this.emitNotify(status === 'permission' ? 'agent-question' : 'agent-done', source.instanceId, stateKey, source.title);
+					// Para Code が止まっている間の完了を流し直したもの（W2-20）は、印だけでプッシュしない。
+					if (status !== 'review' || !paradisIsQuietReplayedPane(this.paneTokenService.getTokenForInstance(source.instanceId))) {
+						this.emitNotify(status === 'permission' ? 'agent-question' : 'agent-done', source.instanceId, stateKey, source.title);
+					}
 				}
 			}
 			if (status) {
