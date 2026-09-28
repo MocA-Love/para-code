@@ -1,7 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useState } from 'react';
-import { requireOptionalNativeModule } from 'expo-modules-core';
 import { Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
 import { useAppStore } from '../appState.js';
 import type { AgentChatMessage } from '../store.js';
@@ -11,6 +10,7 @@ import { monoFamily } from '../monoFont.js';
 import { hapticSelection } from '../haptics.js';
 import { clipForDisplay } from './agentIoClip.js';
 import { useThemeColors } from '../ui/themeColorsStore.js';
+import { isClipboardAvailable, writeClipboardText } from '../nativeClipboard.js';
 
 /**
  * タイムラインのステップを開いたときに出す「入力／結果」の枠。
@@ -19,21 +19,6 @@ import { useThemeColors } from '../ui/themeColorsStore.js';
  * - 縦は上限を決めて枠内スクロール（会話本文の流れを押し流さない）
  * - PC側で切り詰められている場合だけ、下端から全文をオンデマンド取得する
  */
-
-/**
- * expo-clipboard は build/ExpoClipboard.js のトップレベルで requireNativeModule() を呼ぶため、
- * ネイティブ側にモジュールが入っていないアプリ（依存追加後に再ビルドしていない状態）では
- * **import しただけで例外**になり、この画面を開いた瞬間にアプリごと落ちる。
- * Native module をoptionalに引き、解決できなければコピーボタンを出さないだけにする
- * （screenCornerRadius.ts の requireOptionalNativeModule と同じ考え方）。
- */
-let clipboardModule: { setStringAsync(text: string): Promise<boolean> } | null | undefined;
-function clipboard(): { setStringAsync(text: string): Promise<boolean> } | undefined {
-	if (clipboardModule === undefined) {
-		clipboardModule = requireOptionalNativeModule<{ setStringAsync(text: string): Promise<boolean> }>('ExpoClipboard');
-	}
-	return clipboardModule ?? undefined;
-}
 
 /**
  * PC側で切り詰められた本文の全文取り寄せ。展開したときだけ通信するので、
@@ -92,13 +77,16 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 	// 全文取得後は取得結果（＝元の生テキスト）へ切り替える。
 	const body = (full ?? text ?? message.text).replace(/\n+$/, '');
 	const lineCount = body.length === 0 ? 0 : body.split('\n').length;
-	const clip = clipboard();
+	// クリップボードのネイティブ部品が無いビルドではコピーのボタンを出さない（nativeClipboard.ts）。
+	const canCopy = isClipboardAvailable();
 	const copy = () => {
 		hapticSelection();
-		void clip?.setStringAsync(body).then(() => {
-			setCopied(true);
-			setTimeout(() => setCopied(false), 1200);
-		}).catch(() => { /* コピー不可の環境では黙って何もしない */ });
+		void writeClipboardText(body).then(copied => {
+			if (copied) {
+				setCopied(true);
+				setTimeout(() => setCopied(false), 1200);
+			}
+		});
 	};
 	// 表示は上限ぶんだけ測らせる（Yogaの測定コストは全文サイズに比例する）。コピーは全文。
 	const { text: displayBody, omittedLines } = clipForDisplay(body);
@@ -115,7 +103,7 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 				>
 					<Text style={[styles.ioActionText, wrap ? { color: theme.accent } : null]}>折り返し</Text>
 				</Pressable>
-				{clip !== undefined ? (
+				{canCopy ? (
 					<Pressable onPress={copy} accessibilityRole="button" accessibilityLabel="内容をコピー" style={styles.ioAction} hitSlop={IO_ACTION_HIT_SLOP}>
 						<Text style={[styles.ioActionText, copied ? styles.ioActionDone : null]}>{copied ? 'コピー済' : 'コピー'}</Text>
 					</Pressable>
