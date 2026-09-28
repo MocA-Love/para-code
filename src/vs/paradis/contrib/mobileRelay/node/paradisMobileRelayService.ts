@@ -1722,7 +1722,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			});
 			// 裏に回る直前の約1往復の間に、信用してプッシュしなかった通知をプッシュし直す。
 			const mobile = this.state.mobiles.find(candidate => candidate.mobileId === mobileId);
-			const recent = this.recentTrustedNotifies.take(mobileId, Date.now());
+			// PC で確認済みにした・別の端末で開いたなど、もう片付いた通知は鳴らし直さない。
+			const recent = this.recentTrustedNotifies.take(mobileId, Date.now()).filter(bytes => !this.dismissLedger.isSettled(peekNotifyMeta(bytes).id));
 			if (mobile !== undefined && recent.length > 0) {
 				const dismissIds = this.dismissLedger.dismissable(Date.now());
 				for (const bytes of recent) {

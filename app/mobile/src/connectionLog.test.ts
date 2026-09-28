@@ -63,7 +63,7 @@ describe('connection log (W2-22)', () => {
 			describeConnectionEntry({ kind: 'auth-rejected', code: 4404, at: 0 }),
 		]).toEqual([
 			'切断されました（コード 1006: 経路の異常（応答なしで切れた））',
-			'2.5 秒後に再接続します',
+			'最大 2.5 秒後に再接続します',
 			'リレーがこの端末の資格を拒みました（コード 4404: リレーに登録が無い）。PC とペアリングし直す必要があります',
 		]);
 		const report = formatConnectionReport({

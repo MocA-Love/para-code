@@ -21,7 +21,7 @@ suite('ParadisNotifyDismissLedger (W2-27)', () => {
 		ledger.markAcknowledged('tok-a', 300);
 		ledger.record('d2', 'tok-a', 'agent-done', 400);
 		// 許可・質問は確認済みにしても消させない（ID を指定した dismiss でだけ消す）。確認の後の通知も対象外
-		assert.deepStrictEqual(ledger.dismissable(500), ['d1']);
+		assert.deepStrictEqual({ dismissable: ledger.dismissable(500), settled: ['d1', 'q1', 'd2', 'nope', undefined].map(id => ledger.isSettled(id)) }, { dismissable: ['d1'], settled: [true, false, false, false, false] });
 	});
 
 	test('only an opened dismiss settles a prompt or an unknown notification; clear-all settles the rest', () => {

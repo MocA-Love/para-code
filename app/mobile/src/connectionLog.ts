@@ -255,7 +255,8 @@ export function describeConnectionEntry(entry: ConnectionLogEntry): string {
 			return `リレーがこの端末の資格を拒みました${codeText !== undefined ? `（${codeText}）` : ''}。PC とペアリングし直す必要があります`;
 		case 'reconnect-scheduled': {
 			const delayMs = (entry as { delayMs?: number }).delayMs ?? 0;
-			return `${formatDelay(delayMs)}後に再接続します`;
+			// 前面復帰・回線の変化・心拍で、待たずに前倒しで繋ぎ直すことがあるので「最大」と書く。
+			return `最大 ${formatDelay(delayMs)}後に再接続します`;
 		}
 		case 'suspended':
 			return 'アプリが裏に回ったので接続を閉じました';
