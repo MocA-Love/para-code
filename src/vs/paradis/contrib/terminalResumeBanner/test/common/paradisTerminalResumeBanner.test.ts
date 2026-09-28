@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_RESUME_LEDGER_TTL_MS, paradisCodexThreadIdFromTitle, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeLedgerKey, paradisResumeTitleFromTab, paradisSerializeResumeLedger } from '../../common/paradisTerminalResumeBanner.js';
+import { PARADIS_RESUME_LEDGER_TTL_MS, paradisCodexThreadIdFromTitle, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeLedgerKey, paradisResumeNeedsFolderChange, paradisResumeTitleFromTab, paradisSerializeResumeLedger } from '../../common/paradisTerminalResumeBanner.js';
 
 suite('paradisTerminalResumeBanner', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -93,6 +93,30 @@ suite('paradisTerminalResumeBanner', () => {
 			adoptedByDaemon: false,
 			unknownPrevious: false,
 			notReady: false,
+		});
+	});
+
+	// 違うフォルダで `claude --resume` すると会話がそのフォルダのプロジェクトへ複製される。
+	// 今のフォルダが分からないときは、移ってから再開する側へ倒す。
+	test('decides whether the tab has to move to the conversation folder before resuming', () => {
+		assert.deepStrictEqual({
+			same: paradisResumeNeedsFolderChange('/Users/example/app', '/Users/example/app'),
+			trailingSlash: paradisResumeNeedsFolderChange('/Users/example/app/', '/Users/example/app'),
+			elsewhere: paradisResumeNeedsFolderChange('/Users/example/app', '/Users/example/other'),
+			unknownNow: paradisResumeNeedsFolderChange('/Users/example/app', undefined),
+			notRecorded: paradisResumeNeedsFolderChange(undefined, '/Users/example/other'),
+			root: paradisResumeNeedsFolderChange('/', '/'),
+			windowsCase: paradisResumeNeedsFolderChange('C:\\Users\\Example\\App', 'c:/users/example/app/'),
+			caseMatters: paradisResumeNeedsFolderChange('/Users/example/App', '/Users/example/app'),
+		}, {
+			same: false,
+			trailingSlash: false,
+			elsewhere: true,
+			unknownNow: true,
+			notRecorded: false,
+			root: false,
+			windowsCase: false,
+			caseMatters: true,
 		});
 	});
 });
