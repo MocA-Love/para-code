@@ -6,6 +6,7 @@ import { formatRelativeTime } from '../../time.js';
 import type { ConnectionKind } from '../../ui/statusColors.js';
 import { PAIRING_REJECTED_LABEL } from '../../pcStatus.js';
 import { updateRequiredLabel, type UpdateTarget } from '../../pcCompat.js';
+import { lastKnownTotals, type LastKnownPcSnapshot } from '../../lastKnownPcs.js';
 
 /**
  * ホーム（`/`）の数字を決める純関数。統計カード3枚と、PC のカードの件数・接続の一文。
@@ -100,6 +101,21 @@ export function pcCardCounts(
 		agents,
 		buckets: BUCKET_ORDER
 			.map(bucket => ({ bucket, count: counts.get(bucket) ?? 0 }))
+			.filter(entry => entry.count > 0),
+	};
+}
+
+/**
+ * つながっていない PC のカードに出す、前回の一覧の件数（W2-25）。**表示だけ**に使い、
+ * 要対応の合計（`totalAttention`）には足さない（その間に答えられているかもしれない）。
+ */
+export function lastKnownCardCounts(snapshot: LastKnownPcSnapshot): PcCardCounts {
+	const totals = lastKnownTotals(snapshot);
+	return {
+		spaces: totals.spaces,
+		agents: totals.agents,
+		buckets: BUCKET_ORDER
+			.map(bucket => ({ bucket, count: totals[bucket] }))
 			.filter(entry => entry.count > 0),
 	};
 }
