@@ -182,7 +182,7 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 	 *  回答APIを持たない古いPCでは打鍵で送る。キー列は agentApprovalKeySequence（Claude の許可は '1' だけ、
 	 *  拒否は Esc、Codex は y / d）。
 	 */
-	const approve = useCallback((interactionId: string, choice: string): Promise<AgentMessageSendResult> => {
+	const approve = useCallback((interactionId: string, choice: string, optionLabel?: string): Promise<AgentMessageSendResult> => {
 		if (stale) {
 			return Promise.resolve(REFRESHING_RESULT);
 		}
@@ -193,7 +193,7 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 			return Promise.resolve(NO_TARGET_RESULT);
 		}
 		if (supportsAgentActions) {
-			return answerAgentApproval(terminalKey, interactionId, choice);
+			return answerAgentApproval(terminalKey, interactionId, choice, optionLabel);
 		}
 		const keys = agentApprovalKeySequence(agent, choice);
 		if (keys === undefined) {

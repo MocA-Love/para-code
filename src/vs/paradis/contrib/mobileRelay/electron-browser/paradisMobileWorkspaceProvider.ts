@@ -78,7 +78,8 @@ import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMob
 import { paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts, paradisWithUntrackedFileStats } from '../common/paradisMobileDiffReview.js';
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
-import { paradisSendAgentInteractionKeys, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
+import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionsForMobile, paradisParseApprovalOptions, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
+import { paradisScreenShowsPermissionPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { PARADIS_OFFICE_CHANNEL, marshalParadisOfficeRequest, unmarshalParadisOfficeResponse, type ParadisOfficeV1Negotiation } from '../../fileViewers/common/paradisOfficeChannel.js';
@@ -1467,11 +1468,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (mobileId === undefined) {
 			return;
 		}
-		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown };
+		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown; interactionId?: unknown; agent?: unknown; expectOption?: unknown };
 		let interactionAccepted = false;
 		try {
 			msg = JSON.parse(payload.toString());
 		} catch {
+			return;
+		}
+		if (msg.t === 'action/approvalOptions') {
+			await this.replyApprovalOptions(msg, mobileId);
 			return;
 		}
 		const sendMessage = msg.t === 'action/sendMessage' && typeof msg.text === 'string'
@@ -1529,16 +1534,41 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// Codex の承認の「拒否」は版でキーが違う（0.155.1 は Esc、それより前は `d`）。中継は画面を
 				// 見られないので `d` を送ってくる。画面の選択肢の表記に合わせて差し替える（`d` の版はそのまま）。
 				const interactionKind = typeof msg.interaction === 'object' && msg.interaction !== null ? (msg.interaction as { kind?: unknown }).kind : undefined;
-				if (interactionKind === 'approval' && parts.length === 1 && parts[0] === 'd') {
+				const expectOption = interactionKind === 'approval' ? paradisReadExpectedApprovalOption(msg.expectOption) : undefined;
+				const optionAgent = msg.agent === 'codex' ? 'codex' : 'claude';
+				if (interactionKind === 'approval' && expectOption === undefined && parts.length === 1 && parts[0] === 'd') {
 					parts = [paradisCodexApprovalDenyKey(paradisVisibleTerminalText(instance))];
 				}
+				// 画面の番号付きの選択肢で答えたとき（W2-21）は、送る直前に画面を読み直し、その番号が同じ文言のままかを
+				// 確かめる。違えば送らない（押したものと違う選択肢を確定させないため）。キーもここで画面から決める。
+				let optionCheckPending = expectOption !== undefined;
+				const checkExpectedOption = (): boolean => {
+					if (expectOption === undefined || !optionCheckPending) {
+						return true;
+					}
+					optionCheckPending = false;
+					const screenOption = paradisParseApprovalOptions(paradisVisibleTerminalText(instance))?.find(candidate => candidate.n === expectOption.n);
+					const key = screenOption !== undefined && paradisApprovalOptionLabelsMatch(screenOption.label, expectOption.label) ? paradisApprovalOptionKey(optionAgent, screenOption) : undefined;
+					if (key === undefined) {
+						return false;
+					}
+					parts = [key];
+					return true;
+				};
 				// 先頭の打鍵の前に画面を確かめ、各キーの直前に作り直しと差し替えを確かめる
 				// （paradisSendAgentInteractionKeys。待ちの間に PC で答えられた・別の質問に変わった場合に、
 				// 消えた質問の跡地へ打鍵しないため）。
 				const stopped: { reason?: { readonly code: string; readonly message: string } } = {};
-				const sent = await paradisSendAgentInteractionKeys(instance, parts, msg.delayMs as number, {
+				const sendTarget = expectOption === undefined ? instance : {
+					// 送る直前に確かめたキー（Codex は行末の近道）へ差し替えて送る。
+					sendText: (_text: string, shouldExecute: boolean) => instance.sendText(parts[0], shouldExecute),
+				};
+				const sent = await paradisSendAgentInteractionKeys(sendTarget, parts, msg.delayMs as number, {
 					readScreen: () => paradisVisibleTerminalText(instance),
-					ready: msg.readyMarker as string | undefined,
+					// 選択肢が画面に出るまで待つ（出なければ待ちの上限の後、直前の確かめで断る）。
+					ready: expectOption !== undefined
+						? (screen: string) => paradisParseApprovalOptions(screen)?.some(candidate => candidate.n === expectOption.n) === true
+						: msg.readyMarker as string | undefined,
 					strict: false,
 					source: 'mobile',
 				}, async () => {
@@ -1554,6 +1584,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					}
 					if (continuation === 'stale') {
 						stopped.reason = { code: 'stale-interaction', message: '回答対象の質問または承認要求が変わりました' };
+						return false;
+					}
+					if (!checkExpectedOption()) {
+						stopped.reason = { code: 'options-changed', message: 'PC の選択肢が変わっていたため送りませんでした。選択肢を確かめてから選び直してください' };
 						return false;
 					}
 					return true;
@@ -1574,6 +1608,40 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				await this.finalizeAgentInteraction(mobileId, msg.requestId, msg.token, interactionAccepted ? 'accepted' : 'failed').catch(err => this.logService.warn('[paradisMobileRelay] finalize agent interaction failed', err));
 			}
 		}
+	}
+
+	/**
+	 * 承認の画面の番号付きの選択肢を読んでモバイルへ返す（W2-21）。shared process が求めの新しさを確かめてから
+	 * 回してくる。確認の画面が出るまで少し待ち（hook は画面より先に届く）、読めなければ `error` を返す
+	 * （アプリは「許可 / 拒否」のまま）。
+	 */
+	private async replyApprovalOptions(msg: { id?: unknown; token?: unknown; requestId?: unknown; interactionId?: unknown; agent?: unknown; windowId?: unknown }, mobileId: string): Promise<void> {
+		if (typeof msg.id !== 'number' || typeof msg.token !== 'string' || typeof msg.requestId !== 'string' || typeof msg.interactionId !== 'string'
+			|| typeof msg.windowId !== 'number') {
+			return;
+		}
+		const instance = this.findAuthoritativePaneInstance(msg.id, msg.token);
+		if (instance === undefined) {
+			return; // 所有していないウィンドウは黙る（所有ウィンドウが答える）
+		}
+		const agent = msg.agent === 'codex' ? 'codex' : 'claude';
+		let options: readonly IParadisAgentApprovalOption[] | undefined;
+		const deadline = Date.now() + PARADIS_APPROVAL_OPTIONS_WAIT_MS;
+		for (; ;) {
+			const screen = paradisVisibleTerminalText(instance);
+			options = paradisScreenShowsPermissionPrompt(screen) ? paradisApprovalOptionsForMobile(agent, paradisParseApprovalOptions(screen)) : undefined;
+			if (options !== undefined || Date.now() >= deadline || this.findAuthoritativePaneInstance(msg.id, msg.token) !== instance) {
+				break;
+			}
+			await new Promise<void>(resolve => setTimeout(resolve, 200));
+		}
+		this.sendFrame({
+			ch: Channels.Agent, ws: undefined, seq: 0, mobileId,
+			payload: VSBuffer.fromString(JSON.stringify({
+				t: 'approval-options', id: msg.id, token: msg.token, requestId: msg.requestId, interactionId: msg.interactionId,
+				...(options !== undefined ? { options } : { error: 'unreadable' }),
+			})),
+		});
 	}
 
 	private sendAgentActionResult(mobileId: string, id: number, token: string, requestId: string, status: 'accepted' | 'rejected', code?: string, message?: string, consumed?: boolean): void {

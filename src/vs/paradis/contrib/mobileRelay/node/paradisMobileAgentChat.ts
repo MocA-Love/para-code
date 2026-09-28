@@ -50,6 +50,7 @@ import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirro
 import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
+import { IParadisAgentApprovalOption, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
 import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
@@ -113,7 +114,9 @@ type AgentInbound =
 	| { t: 'detach'; id: number; token?: string }
 	| { t: 'action/sendMessage'; id: number; token?: string; requestId: string; epoch: string; text: string }
 	| { t: 'action/answerQuestion'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; answers: readonly AgentQuestionAnswer[] }
-	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: string }
+	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: string; optionLabel?: string }
+	/** 承認の画面に出ている番号付きの選択肢を求める（W2-21、`agent.approval.options.v1`）。答えは所有ウィンドウが直接返す。 */
+	| { t: 'approval-options'; id: number; token?: string; requestId: string; epoch: string; interactionId: string }
 	| { t: 'action/claudeSetting'; id: number; token?: string; requestId: string; epoch: string; setting: 'model' | 'effort'; value: string }
 	| { t: 'model-catalog'; id: number; token?: string; requestId: string }
 	| { t: 'command-catalog'; id: number; token?: string; requestId: string }
@@ -135,6 +138,11 @@ type AgentOutbound =
 	| { t: 'tool-full'; id: number; requestId: string; rev: number; text?: string; error?: string }
 	| { t: 'tool-image'; id: number; requestId: string; rev: number; index: number; mediaType?: string; data?: string; error?: string }
 	| { t: 'model-control-error'; id: number; requestId: string; code: string; message: string }
+	/**
+	 * 承認の選択肢（W2-21）。ふつうは所有ウィンドウ（画面を読める renderer）が直接返し、ここから送るのは
+	 * 求めが古い・画面を読めない相手のときの `error` だけ。
+	 */
+	| { t: 'approval-options'; id: number; requestId: string; interactionId: string; options?: readonly IParadisAgentApprovalOption[]; error?: string }
 	| { t: 'none'; id: number };
 
 type AgentQuestionAnswer =
@@ -617,6 +625,14 @@ function isValidApprovalAction(msg: AgentInboundCandidate): msg is AgentInboundC
 		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
 		&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
 		&& typeof msg.choice === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(msg.choice)
+		&& (msg.optionLabel === undefined || (typeof msg.optionLabel === 'string' && msg.optionLabel.length > 0 && msg.optionLabel.length <= 500))
+		&& isValidControlRequest(msg);
+}
+
+function isValidApprovalOptionsRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'approval-options' }> {
+	return msg.t === 'approval-options'
+		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
 		&& isValidControlRequest(msg);
 }
 
@@ -677,6 +693,7 @@ function parseAgentInbound(value: unknown): AgentInbound | undefined {
 		case 'action/sendMessage': return isValidSendMessageAction(msg) ? msg : undefined;
 		case 'action/answerQuestion': return isValidQuestionAction(msg) ? msg : undefined;
 		case 'action/answerApproval': return isValidApprovalAction(msg) ? msg : undefined;
+		case 'approval-options': return isValidApprovalOptionsRequest(msg) ? msg : undefined;
 		case 'action/claudeSetting': return isValidClaudeSettingAction(msg) ? msg : undefined;
 		case 'model-catalog': return isValidModelCatalogRequest(msg) ? msg : undefined;
 		case 'command-catalog': return isValidCommandCatalogRequest(msg) ? msg : undefined;
@@ -1866,7 +1883,7 @@ class TranscriptTailer {
 	 * transcript に現れないため、hook が唯一のライブな供給源。モバイル側はこのメッセージの
 	 * 内容を承認バー（許可/拒否）に添えて表示する。
 	 */
-	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string, desktopOnly = false, waitKey?: string, sameContentLimit = 1): void {
+	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string, desktopOnly = false, waitKey?: string, sameContentLimit = 1, suggestions?: readonly string[]): void {
 		this.enqueue(async () => {
 			// ここで pendingQuestions を見て注入自体を捨ててはいけない。PermissionRequest hook は
 			// 1プロンプトにつき1回しか来ないため、落とすと承認要求が永久に復元されない。
@@ -1892,6 +1909,7 @@ class TranscriptTailer {
 						{ id: 'yes', label: '許可', tone: 'approve' },
 						{ id: 'no', label: '拒否', tone: 'deny' },
 					],
+					...(suggestions !== undefined ? { suggestions } : {}),
 				},
 				key,
 				desktopOnly,
@@ -3167,6 +3185,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'action/answerApproval':
 				this.handleApprovalAction(mobileId, msg);
 				break;
+			case 'approval-options':
+				this.handleApprovalOptionsRequest(mobileId, msg);
+				break;
 			case 'action/claudeSetting':
 				this.handleClaudeSettingAction(mobileId, msg);
 				break;
@@ -3511,12 +3532,49 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		const agent = session?.agent;
-		if (msg.choice !== 'yes' && msg.choice !== 'no') {
+		// 画面の番号付きの選択肢から選んだ回答（W2-21）は `opt:<n>` と、そのとき見えていた文言で届く。
+		// 文言が無いものは確かめようが無いので受け付けない。
+		const optionNumber = paradisParseApprovalOptionChoice(msg.choice);
+		const validOption = optionNumber !== undefined && msg.optionLabel !== undefined;
+		if (msg.choice !== 'yes' && msg.choice !== 'no' && !validOption) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: '承認の選択肢が更新されました' }, token ?? msg.token);
 			return;
 		}
-		const parts = paradisAgentApprovalKeySequence(agent === 'codex' ? 'codex' : 'claude', msg.choice);
+		if (validOption) {
+			// キーは送る直前に所有ウィンドウが画面を読み直して決める（Codex は行末の近道が要る）。ここでは
+			// 番号を仮に置き、確かめる文言を添える。
+			this.dispatchInteractionAction(mobileId, msg, { kind: 'approval', id: msg.interactionId }, [String(optionNumber)], undefined,
+				{ expectOption: { n: optionNumber, label: msg.optionLabel as string }, agent: agent === 'codex' ? 'codex' : 'claude' });
+			return;
+		}
+		const parts = paradisAgentApprovalKeySequence(agent === 'codex' ? 'codex' : 'claude', msg.choice as 'yes' | 'no');
 		this.dispatchInteractionAction(mobileId, msg, { kind: 'approval', id: msg.interactionId }, parts);
+	}
+
+	/**
+	 * 承認の画面の選択肢を求められた（W2-21）。画面は所有ウィンドウでしか読めないので、確かめてから
+	 * ウィンドウへ回す。答え（選択肢か「読めない」）はウィンドウがモバイルへ直接返す。
+	 *
+	 * ここで断るのは、求めが古い（別の承認・別の会話）か、Codex の app-server 経由の承認（選択肢は
+	 * 最初から構造化されて届く）のとき。
+	 */
+	private handleApprovalOptionsRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'approval-options' }>): void {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
+		const interaction = tailer?.currentInteraction();
+		if (token === undefined || session === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined
+			|| !this.hasSubscriber(token, mobileId) || interaction?.kind !== 'approval' || interaction.id !== msg.interactionId
+			|| paradisIsCodexDaemonApprovalInteraction(msg.interactionId)
+			|| (session.agent === 'codex' && session.sessionId !== undefined && this.codexLiveClient.hasPendingApproval(session.sessionId, msg.interactionId))) {
+			this.sendTo(mobileId, { t: 'approval-options', id: msg.id, requestId: msg.requestId, interactionId: msg.interactionId, error: 'stale-interaction' }, token ?? msg.token);
+			return;
+		}
+		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
+			t: 'action/approvalOptions', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch, interactionId: msg.interactionId,
+			agent: session.agent, windowId: owner.windowId,
+		})));
 	}
 
 	private async handleCodexApprovalAction(
@@ -3587,6 +3645,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		interaction: IParadisAgentInteraction,
 		parts: readonly string[],
 		readyMarker?: string,
+		/** 画面の番号付きの選択肢で答えたとき（W2-21）: 送る直前に確かめる番号と文言、キーを決めるためのエージェントの種類。 */
+		approvalOption?: { readonly expectOption: IParadisAgentApprovalOption; readonly agent: 'claude' | 'codex' },
 	): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
@@ -3620,6 +3680,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
 			t: 'action/interaction', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch, interaction, parts, delayMs: 300, windowId: owner.windowId,
 			...(readyMarker !== undefined ? { readyMarker } : {}),
+			...(approvalOption !== undefined ? { expectOption: approvalOption.expectOption, agent: approvalOption.agent } : {}),
 		})));
 	}
 
@@ -5747,7 +5808,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& (event.toolName !== undefined || event.toolInput !== undefined)
 			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
 			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
-			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, approvalTarget.toolUseId, !mobileWants, approvalTarget.waitKey, approvalTarget.sameContentLimit);
+			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, approvalTarget.toolUseId, !mobileWants, approvalTarget.waitKey, approvalTarget.sameContentLimit,
+				paradisApprovalSuggestionLabels(event.payload?.permission_suggestions));
 		}
 		const forceApprovalClear = event.event === 'PermissionDenied';
 		const matchingApprovalClear = (event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined;
