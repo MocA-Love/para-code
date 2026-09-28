@@ -39,6 +39,7 @@ import {
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { paradisSyncSelectOptions } from '../../agentModelCatalog/browser/paradisSyncSelectOptions.js';
+import { paradisAppendAgentListLockNotice } from '../../agentModelCatalog/browser/paradisAgentListLockNotice.js';
 import { paradisReadWorkspaceLifecycleConfig } from './paradisWorkspaceLifecycleService.js';
 import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { IParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
@@ -201,6 +202,8 @@ class ParadisCreateWorktreeDialog extends Disposable {
 	private readonly _agentListeners = this._register(new DisposableStore());
 	/** 選択中のエージェント id（'none' = 実行しない）。 */
 	private _selectedAgentId: string = 'none';
+	/** 今並べているエージェント定義が設定で固定されたものか（変わったら権限まで組み直す）。 */
+	private _agentsFixedBySettings = false;
 	/** エージェントセグメントのボタン（描画順は _agents + 'none'）。 */
 	private _agentButtons: { id: string; button: HTMLButtonElement }[] = [];
 	/** 権限セグメントボタンのリスナー（エージェント切り替えのたびに作り直すため個別管理）。 */
@@ -252,7 +255,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		layoutService.activeContainer.appendChild(this._backdrop);
 		this._renderForm(preselectedRepositoryId ?? prefill?.repositoryId, prefill);
 		// インストール済み CLI のモデル候補を取り直し、届いたら選択を保ったまま並べ直す
-		this._register(this.modelCatalogService.onDidChange(() => this._refreshModelOptions()));
+		this._register(this.modelCatalogService.onDidChange(() => this._onAgentTemplatesChanged()));
 		this.modelCatalogService.refresh();
 	}
 
@@ -379,7 +382,10 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		this._selectedAgentId = lastAgentId && (lastAgentId === 'none' || this._agents.some(agent => agent.id === lastAgentId))
 			? lastAgentId
 			: 'none';
+		this._agentsFixedBySettings = this.modelCatalogService.isFixedBySettings();
 		this._renderAgentSegment();
+		// 一覧が設定で固定されているときは、その旨と「既定に戻す」を出す（settings.json を開くときはこのダイアログを閉じる）
+		this._register(paradisAppendAgentListLockNotice(agentBlock, this.modelCatalogService, () => this.dispose()));
 
 		// エージェント詳細オプション（モデル/エフォート/権限＋コマンドプレビュー）。
 		// 「実行しない」選択時は囲みごと非表示にする
@@ -535,6 +541,30 @@ class ParadisCreateWorktreeDialog extends Disposable {
 			{ value: '', label: STR_OPTION_DEFAULT },
 			...(agent.models ?? []).map(model => ({ value: model.id, label: model.label ?? model.id })),
 		]);
+	}
+
+	/**
+	 * エージェント定義が変わったとき。設定の一覧を消した（既定に戻した）などでエージェントの顔ぶれが
+	 * 変わったらセグメントから組み直し、同じならモデル候補だけを並べ直す。
+	 */
+	private _onAgentTemplatesChanged(): void {
+		if (!this._agentSeg) {
+			return;
+		}
+		const rendered = this._agentButtons.map(entry => entry.id).filter(id => id !== 'none');
+		const current = this._agents.map(agent => agent.id);
+		const fixedBySettings = this.modelCatalogService.isFixedBySettings();
+		const sourceChanged = fixedBySettings !== this._agentsFixedBySettings;
+		this._agentsFixedBySettings = fixedBySettings;
+		if (!sourceChanged && rendered.length === current.length && rendered.every((id, index) => id === current[index])) {
+			this._refreshModelOptions();
+			return;
+		}
+		if (this._selectedAgentId !== 'none' && !current.includes(this._selectedAgentId)) {
+			this._selectedAgentId = 'none';
+		}
+		this._renderAgentSegment();
+		this._onAgentChanged(undefined);
 	}
 
 	/** モデル候補が届き直したとき: 選んでいるモデルとエフォートを保ったまま並べ直す。 */

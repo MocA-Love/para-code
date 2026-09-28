@@ -11,11 +11,14 @@
 // CLI を起こすのは重いので、結果は `<userData>/paradis-agent-models.json` に残し、CLI の
 // `--version` が変わったとき（と、念のため1日経ったとき）だけ取り直す。取れなかったときは
 // 前回の結果を返し、それも無ければ何も返さない（画面側は固定の候補のまま）。
+//
+// Claude の「既定」のエフォートは一覧に無く、利用者の Claude Code の設定で変わるので、キャッシュには
+// 入れず、返すたびに `settings.json` から当てはめる。
 
 import { promises as fs } from 'fs';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { Event } from '../../../../base/common/event.js';
-import { join } from '../../../../base/common/path.js';
+import { isAbsolute, join } from '../../../../base/common/path.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
@@ -26,18 +29,21 @@ import { IParadisRunAgentCliOptions, IParadisRunAgentCliResult, paradisDetachedA
 import { paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
+import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
 import {
 	IParadisAgentModelCatalog,
+	IParadisClaudeEffortSettings,
 	IParadisDiscoveredModel,
 	PARADIS_AGENT_MODEL_CATALOG_CHANNEL,
 	PARADIS_CLAUDE_MODEL_LIST_ARGS,
 	PARADIS_CLAUDE_MODEL_LIST_STDIN,
 	PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG,
 	ParadisCatalogAgentId,
+	paradisApplyClaudeDefaultEfforts,
 	paradisCodexModelListNextCursor,
 	paradisParseClaudeModelList,
 	paradisParseCodexModelList,
+	paradisReadClaudeEffortSettings,
 } from '../common/paradisAgentModelCatalog.js';
 
 const AGENTS: readonly ParadisCatalogAgentId[] = ['claude', 'codex'];
@@ -68,6 +74,8 @@ export interface IParadisAgentModelCatalogBackend {
 	probe(agentId: ParadisCatalogAgentId, cli: IParadisResolvedCli): Promise<IParadisDiscoveredModel[]>;
 	readCache(): Promise<Record<string, ICachedCatalog>>;
 	writeCache(cache: Record<string, ICachedCatalog>): Promise<void>;
+	/** Claude Code の設定のうち、`--effort` を付けないときのエフォートを決める部分。読めなければ空。 */
+	claudeEffortSettings(cli: IParadisResolvedCli): Promise<IParadisClaudeEffortSettings>;
 	now(): number;
 }
 
@@ -110,6 +118,15 @@ export class ParadisAgentModelCatalogService {
 		if (cli === undefined) {
 			return undefined;
 		}
+		const catalog = await this.cachedOrProbed(agentId, cli);
+		if (catalog === undefined || agentId !== 'claude') {
+			return catalog;
+		}
+		const settings = await this.backend.claudeEffortSettings(cli).catch(() => ({}));
+		return { ...catalog, models: paradisApplyClaudeDefaultEfforts(catalog.models, settings) };
+	}
+
+	private async cachedOrProbed(agentId: ParadisCatalogAgentId, cli: IParadisResolvedCli): Promise<IParadisAgentModelCatalog | undefined> {
 		const cached = (await this.readCache())[agentId];
 		const version = await this.backend.version(cli);
 		if (version === undefined) {
@@ -161,6 +178,11 @@ export class ParadisAgentModelCatalogChannel implements IServerChannel<string> {
 // ---------- 実物の backend ----------
 
 const CACHE_FILE_NAME = 'paradis-agent-models.json';
+/**
+ * キャッシュの形の版。一覧の読み方を変えたら上げる（古い版の中身は捨てて取り直す）。
+ * 2: Claude の名前を正式なモデル id から作り、`resolvedModel` を残すようにした。
+ */
+const CACHE_FORMAT_VERSION = 2;
 
 function isCachedCatalog(value: unknown, agentId: string): value is ICachedCatalog {
 	if (typeof value !== 'object' || value === null) {
@@ -172,7 +194,18 @@ function isCachedCatalog(value: unknown, agentId: string): value is ICachedCatal
 		&& typeof entry.command === 'string'
 		&& typeof entry.fetchedAt === 'number'
 		&& Array.isArray(entry.models)
-		&& entry.models.every(model => typeof model?.id === 'string' && Array.isArray(model.efforts));
+		&& entry.models.every(model => typeof model?.id === 'string' && Array.isArray(model.efforts) && (model.resolvedModel === undefined || typeof model.resolvedModel === 'string'));
+}
+
+/**
+ * 取得に使う CLI と同じ Claude Code の設定ディレクトリ（シェルで `CLAUDE_CONFIG_DIR` を変えている人がいる）。
+ * `~` で始まる値はシェルが展開しないまま渡ってくることがある（引用符で包んで export した場合）ので展開する。
+ * 相対パスなど使えない値なら、この shared process の既定（{@link paradisClaudeConfigDir}）を使う。
+ */
+export function paradisClaudeConfigDirFor(env: NodeJS.ProcessEnv, homeDirectory: string = homedir()): string {
+	const raw = env.CLAUDE_CONFIG_DIR?.trim();
+	const configured = raw !== undefined && /^~(?=$|[\\/])/.test(raw) ? join(homeDirectory, raw.slice(1)) : raw;
+	return configured && isAbsolute(configured) ? configured : paradisClaudeConfigDir();
 }
 
 /** CLI を1回動かす関数（テストでは偽物に差し替える）。 */
@@ -258,7 +291,10 @@ export function createParadisAgentModelCatalogBackend(userDataPath: string, getE
 				return {};
 			}
 			const parsed: unknown = JSON.parse(raw);
-			const entries = typeof parsed === 'object' && parsed !== null ? (parsed as { entries?: unknown }).entries : undefined;
+			if (typeof parsed !== 'object' || parsed === null || (parsed as { version?: unknown }).version !== CACHE_FORMAT_VERSION) {
+				return {};
+			}
+			const entries = (parsed as { entries?: unknown }).entries;
 			const cache: Record<string, ICachedCatalog> = {};
 			if (typeof entries === 'object' && entries !== null) {
 				for (const agentId of AGENTS) {
@@ -270,7 +306,17 @@ export function createParadisAgentModelCatalogBackend(userDataPath: string, getE
 			}
 			return cache;
 		},
-		writeCache: cache => paradisWriteFileAtomic(cachePath, Buffer.from(JSON.stringify({ version: 1, entries: cache }, undefined, '\t'))),
+		writeCache: cache => paradisWriteFileAtomic(cachePath, Buffer.from(JSON.stringify({ version: CACHE_FORMAT_VERSION, entries: cache }, undefined, '\t'))),
+		async claudeEffortSettings(cli) {
+			const configDir = paradisClaudeConfigDirFor(cli.env);
+			let settings: unknown;
+			try {
+				settings = JSON.parse(await fs.readFile(join(configDir, 'settings.json'), 'utf8'));
+			} catch {
+				settings = undefined;
+			}
+			return paradisReadClaudeEffortSettings(settings, cli.env.CLAUDE_CODE_EFFORT_LEVEL);
+		},
 		now: () => Date.now(),
 	};
 }

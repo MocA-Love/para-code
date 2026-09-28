@@ -5,7 +5,8 @@ import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheet } from './bottomSheet.js';
 import { EffortSlider } from './effortSlider.js';
-import { agentModelOptions, matchAgentModel } from '../agentModels.js';
+import { claudeModelDisplayName, matchAgentModel } from '../agentModels.js';
+import { useClaudeModelOptions } from '../hooks/useClaudeModelOptions.js';
 import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { hitSlopToMinimum } from './hitSlop.js';
 import { monoFamily } from '../monoFont.js';
@@ -54,6 +55,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 		}
 	}, [codexUpdatePending, modelControl?.errorMessage, modelControl?.status, open]);
 
+	const claudeCatalog = useClaudeModelOptions(agent);
 	const codexModels = modelControl?.models ?? [];
 	const agentAccent = agent === 'claude' ? colors.claude : colors.accent;
 	const agentAccentWash = agent === 'claude' ? tint(colors.claude, alpha.wash) : colors.accentWash;
@@ -64,10 +66,10 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 			aliases: option.id === option.model ? [] : [option.id],
 			efforts: option.efforts.map(item => item.value),
 		}))
-		: agentModelOptions(agent);
+		: claudeCatalog.options;
 	const currentModel = agent === 'codex'
 		? options.find(option => option.id === model || option.aliases.includes(model ?? ''))
-		: matchAgentModel(agent, model);
+		: matchAgentModel(agent, model, options);
 	const defaultCodexModel = agent === 'codex' ? codexModels.find(option => option.isDefault)?.model : undefined;
 	const selected = (pickedModelId !== undefined ? options.find(option => option.id === pickedModelId) : undefined)
 		?? currentModel
@@ -78,7 +80,10 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 		? selected.efforts[0]
 		: candidateEffort;
 
-	const label = [currentModel?.label ?? model, effort].filter(Boolean).join(' · ') || 'model / effort';
+	const modelName = currentModel?.label ?? (agent === 'claude' && model !== undefined ? claudeModelDisplayName(model) : undefined) ?? model;
+	// effort 非対応のモデル（Haiku）では、前のモデルの effort が残っていても出さない
+	const shownEffort = currentModel !== undefined && currentModel.efforts.length === 0 ? undefined : effort;
+	const label = [modelName, shownEffort].filter(Boolean).join(' · ') || 'model / effort';
 
 	const applyModel = (id: string) => {
 		hapticSelection();
@@ -94,6 +99,8 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 		setOpen(true);
 		if (agent === 'codex') {
 			onRequestCodexCatalog();
+		} else {
+			claudeCatalog.request();
 		}
 	};
 	const cancelSheet = () => {
@@ -211,7 +218,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 						);
 					})}
 
-					{selected !== undefined ? (
+					{selected !== undefined && selected.efforts.length > 0 ? (
 						<>
 							<Text style={[styles.sectionLabel, styles.sectionLabelGap]}>Effort（{selected.label}）</Text>
 							<EffortSlider

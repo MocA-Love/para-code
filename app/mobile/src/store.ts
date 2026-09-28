@@ -312,6 +312,8 @@ export interface WorktreeAgentModel {
 	efforts?: string[];
 	/** 「既定」表示に添える、そのモデルの実際の既定エフォート。 */
 	defaultEffort?: string;
+	/** id が別名のとき、PCの CLI でそれが指す正式なモデルid（例: opus → claude-opus-5-5）。CLI から取れた候補にだけ付く（旧PCは未配信）。 */
+	resolvedModel?: string;
 }
 /** エージェント定義の権限モード選択肢（PC側 IParadisAgentPermissionOption と同形）。 */
 export interface WorktreeAgentPermission {
@@ -3297,9 +3299,12 @@ export class MobileController {
 		return this.request<ScmCommitFilesResult>('scm', { t: 'commitFiles', ws, hash });
 	}
 
-	/** worktree（スペース）作成フォームの材料（リポジトリ一覧・ブランチ・エージェント定義）。 */
-	worktreeForm(): Promise<WorktreeFormResult> {
-		return this.request<WorktreeFormResult>('scm', { t: 'worktreeForm' });
+	/**
+	 * worktree（スペース）作成フォームの材料（リポジトリ一覧・ブランチ・エージェント定義）。
+	 * agentsOnly はエージェント定義だけでよいとき（PCはリポジトリごとの git を動かさず repos を空で返す。旧PCは無視して全部返す）。
+	 */
+	worktreeForm(options?: { agentsOnly?: boolean }): Promise<WorktreeFormResult> {
+		return this.request<WorktreeFormResult>('scm', { t: 'worktreeForm', ...(options?.agentsOnly === true ? { agentsOnly: true } : {}) });
 	}
 
 	/**

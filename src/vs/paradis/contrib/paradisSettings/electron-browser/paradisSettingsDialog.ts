@@ -244,7 +244,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.agents', "エージェントの一覧"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.agentsDesc', "新しいスペースで選べるエージェントと、モデル・エフォート・権限の候補を編集します。"),
+		description: localize('paradis.settings.agentsDesc', "新しいスペースで選べるエージェントと、モデル・エフォート・権限の候補を編集します。書き換えると、インストール済みの Claude Code と Codex から取るモデルの一覧は使わなくなります。"),
 		keywords: 'agents claude codex gemini model effort permission',
 	},
 	{

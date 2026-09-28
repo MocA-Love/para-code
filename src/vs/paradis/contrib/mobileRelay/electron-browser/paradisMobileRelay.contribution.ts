@@ -291,7 +291,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			bypassCache => limitsClient.getSnapshot(bypassCache).then(snapshot => codexLimitsFields.addTo(snapshot)),
 			bypassCache => githubClient.getSnapshot(bypassCache),
 			// worktree（スペース）作成。実体はヘッドレス版のPC作成ダイアログ相当処理
-			() => instantiationService.invokeFunction(paradisGetWorktreeCreateForm),
+			options => instantiationService.invokeFunction(paradisGetWorktreeCreateForm, options),
 			request => instantiationService.invokeFunction(paradisCreateWorktreeHeadless, request),
 			// 既存スペースへのエージェント起動（モバイルのホーム＋ボタン）
 			// 起動したペインの識別子（ペイントークンを含む）はモバイルへ渡さないので捨てる
