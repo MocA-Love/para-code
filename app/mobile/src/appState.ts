@@ -556,7 +556,7 @@ function startConnectionHeartbeat(): void {
 			// 未接続なら再接続クライアント自身のバックオフに任せる。全台を毎回叩き起こすと、
 			// 到達できないPCへ25秒ごとに接続を試み続けることになる。
 			if (runtime.pc.id === activePcId || runtime.state.connection === 'online') {
-				runtime.controller.ensureConnected();
+				runtime.controller.ensureConnected(true);
 			}
 		}
 	}, 25_000);

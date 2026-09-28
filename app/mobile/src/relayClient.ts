@@ -200,11 +200,11 @@ export class RelayClient {
 	 * フォアグラウンド復帰時など「今すぐ繋がってほしい」場面用。
 	 * すでにonlineなら何もしない。ユーザーが明示的に切断した状態は維持する。
 	 */
-	ensureConnected(): void {
+	ensureConnected(options?: { readonly keepBackoff?: boolean }): void {
 		if (this.closedByUser || this.suspended || this.state === 'online') {
 			return;
 		}
-		this.reopenSocket();
+		this.reopenSocket(options?.keepBackoff === true);
 	}
 
 	/**
@@ -229,8 +229,12 @@ export class RelayClient {
 		}, timeoutMs);
 	}
 
-	/** バックオフ待ちを打ち切り、既存ソケットを黙って破棄して接続し直す。 */
-	private reopenSocket(): void {
+	/**
+	 * バックオフ待ちを打ち切り、既存ソケットを黙って破棄して接続し直す。
+	 * `keepBackoff` なら再試行の回数を戻さない（25秒おきの心拍から来たとき。人が待っている
+	 * 前面復帰やネットワークの復帰と違い、繋がらない相手へ何度でも最短の間隔から始めることになる）。
+	 */
+	private reopenSocket(keepBackoff = false): void {
 		if (this.suspended) {
 			return;
 		}
@@ -243,7 +247,9 @@ export class RelayClient {
 			this.timers.clearTimeout(this.reconnectHandle);
 			this.reconnectHandle = null;
 		}
-		this.reconnectAttempt = 0;
+		if (!keepBackoff) {
+			this.reconnectAttempt = 0;
+		}
 		// 死んでいる可能性のあるソケットを黙って破棄する（oncloseからの
 		// 二重再接続を防ぐためハンドラを外してから閉じる）。
 		this.disposeSocket(4002, 'superseded');
