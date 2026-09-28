@@ -132,6 +132,18 @@ export function reportParadisDiagnosticError(
 
 /** Stack lines that point into our own compiled sources. Anything else (extensions, node_modules, user code) is dropped. */
 const ownStackLine = /^\s+at .*\/vs\/(?:base|platform|editor|workbench|sessions|paradis|code|server)\//;
+/**
+ * Node's own frames (`at afterWriteDispatched (node:internal/stream_base_commons:161:15)`). They name
+ * no user file, and for errors raised inside Node — an `EPIPE` relayed over IPC, for instance — they
+ * are the only frames there are.
+ */
+const nodeInternalStackLine = /^\s+at (?:[^()]* \()?node:[\w/.-]+:\d+:\d+\)?$/;
+/**
+ * A dependency shipped inside the app (`.../Contents/Resources/app/node_modules[.asar]/...`,
+ * `...\resources\app\node_modules\...`). Rewritten to `app:///node_modules/<package>/<file>`, so neither
+ * the install location nor a user's own `node_modules` (which does not match) leaves the process.
+ */
+const shippedDependencyStackLine = /^(?<prefix>\s+at (?:[^()]* \()?)[^()]*\/resources\/app\/node_modules(?:\.asar(?:\.unpacked)?)?\/(?<module>[^()]+:\d+:\d+)(?<suffix>\)?)$/i;
 const MAX_SAFE_STACK_LINES = 20;
 // 50 covers Node's longest error code (`ERR_SINGLE_EXECUTABLE_APPLICATION_ASSET_NOT_FOUND`, 49)
 // and keeps a 64-hex hash from passing as a name.
@@ -155,12 +167,33 @@ export function paradisSafeErrorName(error: unknown): string {
 					return value;
 				}
 			}
+			// A class instance thrown as-is (an event, a result object) is told apart by its class.
+			const constructorName: unknown = Object.getPrototypeOf(error)?.constructor?.name;
+			if (typeof constructorName === 'string' && constructorName !== 'Object' && identifierLike.test(constructorName)) {
+				return constructorName;
+			}
 			return 'object';
 		}
 		return typeof error;
 	} catch {
 		return 'unknown';
 	}
+}
+
+/** The sanitized form of one stack line, or `undefined` when the line must not leave the process. */
+function toParadisSafeStackLine(line: string): string | undefined {
+	const forwardSlashed = line.replace(/\\/g, '/');
+	if (ownStackLine.test(forwardSlashed)) {
+		return paradisSanitizeSentryText(line);
+	}
+	if (nodeInternalStackLine.test(line)) {
+		return paradisSanitizeSentryText(line);
+	}
+	const dependency = shippedDependencyStackLine.exec(forwardSlashed);
+	if (dependency?.groups) {
+		return paradisSanitizeSentryText(`${dependency.groups.prefix}app:///node_modules/${dependency.groups.module}${dependency.groups.suffix}`);
+	}
+	return undefined;
 }
 
 /**
@@ -197,14 +230,146 @@ export function toParadisSentrySafeError(
 		if (frames.length >= MAX_SAFE_STACK_LINES) {
 			break;
 		}
-		if (ownStackLine.test(line.replace(/\\/g, '/'))) {
-			frames.push(paradisSanitizeSentryText(line));
+		const safeLine = toParadisSafeStackLine(line);
+		if (safeLine !== undefined) {
+			frames.push(safeLine);
 		}
 	}
 	if (frames.length > 0) {
 		safeError.stack = header + '\n' + frames.join('\n');
 	}
 	return safeError;
+}
+
+/**
+ * Names for `FileOperationResult` (`vs/platform/files/common/files.ts`), in declaration order.
+ *
+ * Never send the number: if upstream inserts a member mid-enum, every past event would silently
+ * change meaning. It is a `const enum`, so there is no runtime reverse mapping to use instead.
+ * Update this when the enum changes; an out-of-range value is sent as a number so drift shows.
+ */
+const FILE_OPERATION_RESULT_NAMES: readonly string[] = [
+	'FILE_IS_DIRECTORY', 'FILE_NOT_FOUND', 'FILE_NOT_MODIFIED_SINCE', 'FILE_MODIFIED_SINCE',
+	'FILE_MOVE_CONFLICT', 'FILE_WRITE_LOCKED', 'FILE_PERMISSION_DENIED', 'FILE_TOO_LARGE',
+	'FILE_INVALID_PATH', 'FILE_NOT_DIRECTORY', 'FILE_OTHER_ERROR',
+];
+
+/** The name of a `FileOperationError`'s `fileOperationResult`, or `undefined` for any other value. */
+export function paradisFileOperationResultName(error: unknown): string | undefined {
+	try {
+		const result = typeof error === 'object' && error !== null ? (error as { readonly fileOperationResult?: unknown }).fileOperationResult : undefined;
+		if (typeof result !== 'number') {
+			return undefined;
+		}
+		return FILE_OPERATION_RESULT_NAMES[result] ?? `fileOperationResult:${result}`;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Node's system error codes worth telling apart. Only these are ever extracted from a message, so a
+ * word in a user's path that happens to look like one (`/Users/x/EFOO/`) is never sent.
+ */
+const knownErrnoCodes = new Set([
+	'EACCES', 'EPERM', 'EROFS', 'ENOSPC', 'EDQUOT', 'EBUSY', 'EEXIST', 'ENOENT', 'ENOTDIR', 'EISDIR',
+	'EMFILE', 'ENFILE', 'EIO', 'EAGAIN', 'ELOOP', 'ENAMETOOLONG', 'EXDEV', 'EINVAL', 'ETIMEDOUT',
+	'EPIPE', 'ECONNRESET', 'ECONNREFUSED', 'ENOTEMPTY', 'ETXTBSY', 'ECANCELED',
+]);
+
+function readStringProperty(error: object, key: string): string | undefined {
+	const value = (error as Record<string, unknown>)[key];
+	return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * Content-free facts about an error for the report's `extra`, merged under the caller's own extras
+ * by the process adapters. The error itself never reaches Sentry (see `toParadisSentrySafeError`),
+ * so without these a `FileOperationError` or a Node system error arrives as a bare `Error`:
+ * - `safe_file_result`: the `FileOperationResult` name
+ * - `safe_errno`: a known Node error code, from `code` or, for errors whose code only survives in
+ *   the text (`FileOperationError` wraps the provider error's message), from the message
+ * - `safe_syscall`: Node's `syscall` (`write`, `open`, ...) when identifier-shaped
+ * - `safe_error_keys`: for a thrown non-`Error` object, its identifier-shaped property names, which
+ *   tell a JSON-transported error from an event object or a result record
+ */
+export function paradisSafeErrorExtra(error: unknown): Record<`safe_${string}`, string> {
+	const extra: Record<`safe_${string}`, string> = {};
+	if (typeof error !== 'object' || error === null) {
+		return extra;
+	}
+	try {
+		const fileResult = paradisFileOperationResultName(error);
+		if (fileResult !== undefined) {
+			extra.safe_file_result = fileResult;
+		}
+		const code = readStringProperty(error, 'code');
+		const errno = code !== undefined && knownErrnoCodes.has(code)
+			? code
+			: Array.from((readStringProperty(error, 'message') ?? '').matchAll(/\b(?<code>E[A-Z]{2,14})\b/g), match => match.groups?.code)
+				.find(candidate => candidate !== undefined && knownErrnoCodes.has(candidate));
+		if (errno !== undefined) {
+			extra.safe_errno = errno;
+		}
+		const syscall = readStringProperty(error, 'syscall');
+		if (syscall !== undefined && /^[a-z_]{1,20}$/.test(syscall)) {
+			extra.safe_syscall = syscall;
+		}
+		if (!(error instanceof Error)) {
+			const keys = Object.keys(error).filter(key => identifierLike.test(key) && key.length <= 24).sort().slice(0, 8);
+			if (keys.length > 0) {
+				extra.safe_error_keys = keys.join(',');
+			}
+		}
+	} catch {
+		// A throwing getter must not break the report it is decorating.
+	}
+	return extra;
+}
+
+/**
+ * A short hash of the error's message with its variable parts removed, sent as the
+ * `para.error_message_hash` tag. It exists for errors that arrive with no usable stack (a Node error
+ * relayed over IPC, an error from code outside `out/vs`): without it they all share one fingerprint
+ * and one "10 minutes, 3 events" bucket, however unrelated they are (7B, 2026-09: 120 events in one
+ * issue). The message itself is never sent; quoted text, paths, URLs and numbers are removed before
+ * hashing so the same failure on different files still groups together.
+ */
+export function paradisErrorMessageHash(error: unknown): string | undefined {
+	try {
+		const message = typeof error === 'object' && error !== null ? readStringProperty(error, 'message') : undefined;
+		if (!message) {
+			return undefined;
+		}
+		const normalized = message
+			.replace(/(['"`]).*?\1/g, '_')
+			.replace(/\b(?:[a-z][\w+.-]*:\/\/|file:)\S*/gi, '_')
+			.replace(/(?:[A-Za-z]:)?[\\/][^\s'"`,;:()]+/g, '_')
+			.replace(/\b0x[0-9a-f]+\b|\b[0-9a-f]{8,}\b|\d+/gi, '0')
+			.replace(/\s+/g, ' ')
+			.trim();
+		// FNV-1a, 32 bit: stable across processes and releases, and too short to be worth reversing.
+		let hash = 0x811c9dc5;
+		for (let index = 0; index < normalized.length; index++) {
+			hash ^= normalized.charCodeAt(index);
+			hash = Math.imul(hash, 0x01000193) >>> 0;
+		}
+		return hash.toString(16).padStart(8, '0');
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Tags every process adapter attaches to an explicit report. `para.error_message_hash` only joins the
+ * grouping key when the event has no frames (see `paradisSentryFingerprint`).
+ */
+export function paradisSafeErrorTags(error: unknown): Record<string, string> {
+	const messageHash = paradisErrorMessageHash(error);
+	return {
+		'para.error_name': paradisSafeErrorName(error),
+		...(messageHash !== undefined ? { 'para.error_message_hash': messageHash } : {}),
+	};
 }
 
 /**

@@ -30,7 +30,7 @@
 //  6. **タグで集計しない。** tag/context はプロセス内で共有される可変の袋で非同期作業へ漏れる。
 //     Discover では operation 名で絞ること。
 
-import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisFileOperationResultName, reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /** どの面で起きたか。Discover でこの4値だけ見れば切り分けが済むようにしてある。 */
 export type ParadisOfficeDiagnosticSurface = 'word-view' | 'word-diff' | 'excel-view' | 'excel-diff';
@@ -104,20 +104,6 @@ function paradisOfficeByteBucket(totalBytes: number): string {
 }
 
 /**
- * `FileOperationResult`(`vs/platform/files/common/files.ts`)の並び順に対応する名前。
- *
- * **数値のまま送ってはいけない。** upstream が列挙の途中にメンバを挿入すると、過去に送った
- * イベントの意味が黙って変わる。`const enum` なので実行時の逆引きオブジェクトが存在せず
- * （`FileOperationResult[n]` は書けない）、こちらで表を持つしかない。
- * 並びを変えたときはここも直すこと。範囲外の値は数値のまま出して、ズレに気づけるようにする。
- */
-const FILE_OPERATION_RESULT_NAMES: readonly string[] = [
-	'FILE_IS_DIRECTORY', 'FILE_NOT_FOUND', 'FILE_NOT_MODIFIED_SINCE', 'FILE_MODIFIED_SINCE',
-	'FILE_MOVE_CONFLICT', 'FILE_WRITE_LOCKED', 'FILE_PERMISSION_DENIED', 'FILE_TOO_LARGE',
-	'FILE_INVALID_PATH', 'FILE_NOT_DIRECTORY', 'FILE_OTHER_ERROR',
-];
-
-/**
  * 例外から、パスも利用者の内容も含まない識別子だけを取り出す。
  *
  * 例外そのものは Sentry へ届かない（冒頭 1）ので、**ここで畳んだものが唯一の手掛かりになる**。
@@ -133,12 +119,9 @@ function describeParadisOfficeError(error: unknown): { readonly safe_error_name:
 	if (!(error instanceof Error)) {
 		return { safe_error_name: typeof error };
 	}
-	const candidate = error as Error & { readonly fileOperationResult?: unknown };
-	if (typeof candidate.fileOperationResult === 'number') {
-		const name = FILE_OPERATION_RESULT_NAMES[candidate.fileOperationResult];
-		return { safe_error_name: error.name, safe_error_code: name ?? `fileOperationResult:${candidate.fileOperationResult}` };
-	}
-	return { safe_error_name: error.name };
+	// 名前の表（数値のまま送らない理由も）は Sentry 側の共通処理に一本化してある。
+	const fileResult = paradisFileOperationResultName(error);
+	return fileResult !== undefined ? { safe_error_name: error.name, safe_error_code: fileResult } : { safe_error_name: error.name };
 }
 
 /** 終端で1件にまとめて送るための観測。 */
