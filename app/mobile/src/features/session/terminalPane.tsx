@@ -19,6 +19,7 @@ import { errorKind } from './errorKind.js';
 import { createTerminalAttachments } from './terminalAttachments.js';
 import { terminalDraftKey, useTerminalDrafts } from './terminalDrafts.js';
 import { TerminalInputBar } from './terminalInputBar.js';
+import { liveInputEnabled, useTerminalLiveInputChoices } from './terminalLiveInputChoice.js';
 
 /**
  * expo-clipboard はネイティブ側に無いビルドでは import しただけで落ちるので、optional で引く
@@ -111,7 +112,9 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 	const input = useTerminalDrafts(s => s.drafts[draftKey] ?? '');
 	const setInput = (next: string | ((current: string) => string)) => useTerminalDrafts.getState().update(draftKey, next);
 	const [enterless, setEnterless] = useState(false);
-	const [live, setLive] = useState(false);
+	// ライブ入力は既定でオン。自分で切り替えたターミナルはその選択を覚えている（terminalLiveInputChoice.ts）。
+	const live = useTerminalLiveInputChoices(s => liveInputEnabled(s.choices, draftKey));
+	useEffect(() => useTerminalLiveInputChoices.getState().load(), []);
 	const [submitting, setSubmitting] = useState(false);
 	const [uploading, setUploading] = useState(false);
 	const send = (data: string) => { void sendInput(terminalKey, data); };
@@ -213,7 +216,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 				ctrlLatched={keyInput.ctrlLatched}
 				onKey={keyInput.pressKey}
 				onToggleDisplay={() => setTerminalPref('matchPcWidth', !terminalPrefs.matchPcWidth)}
-				onToggleLive={() => setLive(value => !value)}
+				onToggleLive={() => useTerminalLiveInputChoices.getState().choose(draftKey, !live)}
 				onPaste={() => { void paste(); }}
 			/>
 			<TerminalInputBar
