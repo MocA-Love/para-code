@@ -1,11 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { WebView } from 'react-native-webview';
-import { CircleAlert, CircleCheck, CloudOff, FileX, List } from 'lucide-react-native';
-import { parseUnifiedDiff } from '../../../../src/components/diffParser.js';
+import { CircleAlert, CircleCheck, CloudOff, FileX, List, MessageSquare } from 'lucide-react-native';
+import { useAppStore } from '../../../../src/appState.js';
+import { parseUnifiedDiff, type DiffRow } from '../../../../src/components/diffParser.js';
 import { guardWebViewNavigation } from '../../../../src/components/webViewLinkGuard.js';
 import { isDiffViewerJavaScriptEnabled } from '../../../../src/components/webViewScriptPolicy.js';
 import { useIsRegularWidth } from '../../../../src/hooks/useSizeClass.js';
@@ -14,16 +15,20 @@ import { monoFamily } from '../../../../src/monoFont.js';
 import { useParaToast } from '../../../../src/paraToast.js';
 import { firstParam } from '../../../../src/routes.js';
 import { colors, space, type } from '../../../../src/theme.js';
+import type { WorktreeAgentDef } from '../../../../src/store.js';
 import { BottomDrawer, EmptyState, HeaderButton, Screen, ScreenHeader } from '../../../../src/ui/index.js';
-import { codeCacheKey, useCodeCache, useReviewedPaths } from '../../../../src/features/code/codeCache.js';
 import { CenterSpinner, OfflineBanner, SpaceGateBody } from '../../../../src/features/code/codeParts.js';
 import { fileViewerHref } from '../../../../src/features/code/codeRoutes.js';
-import { canOpenWorkingFile, diffStats, nextUnreviewed, reviewQueue, reviewedCount, stepReview, type ReviewFilter } from '../../../../src/features/code/diffReview.js';
+import { canOpenWorkingFile, diffStats, nextUnreviewed, reviewQueue, reviewStateOf, reviewedCount, stageableEntries, stepReview, type ReviewFilter } from '../../../../src/features/code/diffReview.js';
+import { NoteComposer, ReviewNotesPanel, type NoteComposerTarget } from '../../../../src/features/code/reviewNoteParts.js';
+import { noteAnchorOf, noteCountsByPath, placeReviewNotes, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type PlacedNotes, type ReviewNote } from '../../../../src/features/code/reviewNotes.js';
 import { DiffLines, ReviewFileList, ReviewFileSummary, ReviewFooter, ReviewSummary } from '../../../../src/features/code/reviewParts.js';
 import { RightDrawer } from '../../../../src/features/code/rightDrawer.js';
 import { orderedScmEntries, scmEntries } from '../../../../src/features/code/scmModel.js';
 import { useCodeSpace } from '../../../../src/features/code/useCodeSpace.js';
 import { useDiffContent, type DiffContent } from '../../../../src/features/code/useDiffContent.js';
+import { useReviewMarksController } from '../../../../src/features/code/useReviewMarks.js';
+import { useReviewNotesController } from '../../../../src/features/code/useReviewNotes.js';
 import { useScmStatus } from '../../../../src/features/code/useScmData.js';
 
 /**
@@ -32,7 +37,12 @@ import { useScmStatus } from '../../../../src/features/code/useScmData.js';
  * 「確認済みにする」を置く。ファイルの一覧は見出しの右のボタンから（iPad は右から、iPhone は下から）。
  *
  * いま見ているファイルはクエリの `path` が持つ（`router.setParams` で差し替えるので戻る履歴は増えない）。
- * 「確認済み」は PC に記録が無いので、アプリを開いている間だけ端末の中で持つ（`codeCache.ts`）。
+ * 「確認済み」は確認したときの中身の識別と一緒に持ち、確認後に書き換えられたファイルは「確認後に変更あり」にする
+ * （`useReviewMarks.ts`、Orca W2-14）。
+ *
+ * PC がメモを扱えれば（`review.notes.v1`）、差分の行を長押ししてメモを書け、見出しの「メモ」から選んだメモを
+ * そのスペースのエージェントへ送れる。送ったメモは「送信済み」として残し、送信済みと古いメモはまとめて消せる。
+ * PC が扱えれば（`review.stage.v1`）、確認済みのファイルだけをまとめてステージできる（Orca W2-28）。
  */
 export default function ReviewScreen() {
 	const router = useRouter();
@@ -43,24 +53,42 @@ export default function ReviewScreen() {
 	const insets = useStableInsets();
 	const [filter, setFilter] = useState<ReviewFilter>('all');
 	const [listOpen, setListOpen] = useState(false);
-	const key = codeCacheKey(codeSpace.pcId, codeSpace.spaceId);
-	const reviewedPaths = useReviewedPaths(key);
-	const setReviewed = useCodeCache(s => s.setReviewed);
-	const reviewed = new Set(reviewedPaths);
+	const review = useReviewMarksController(codeSpace);
+	const { marks } = review;
+	const notes = useReviewNotesController(codeSpace, review);
+	const [notesOpen, setNotesOpen] = useState(false);
+	const [composer, setComposer] = useState<NoteComposerTarget | undefined>(undefined);
+	const [pickedNotes, setSelectedNotes] = useState<ReadonlySet<string>>(new Set());
+	// 片付け・別の端末での削除で消えたメモは選択から落とす（件数と送る対象に残さない）
+	const selectedNotes = useMemo(() => selectedExistingNotes(pickedNotes, notes.notes), [pickedNotes, notes.notes]);
+	/** 確認済みのステージを待っている間（メモの保存・送信とは別に持つ）。 */
+	const [staging, setStaging] = useState(false);
+	/** シートの中に出すお知らせ（片付けの結果）。 */
+	const [panelNotice, setPanelNotice] = useState<string | undefined>(undefined);
+	/** シートを閉じ切った後に出すトースト（Modal の裏に隠れないように、閉じてから出す）。 */
+	const afterCloseToast = useRef<string | undefined>(undefined);
+	const [agents, setAgents] = useState<readonly WorktreeAgentDef[]>([]);
+	const [agentsRequested, setAgentsRequested] = useState(false);
+	const terminals = useAppStore(s => s.workspace?.terminals);
+	const sendTargets = useMemo(() => reviewSendTargets(terminals ?? [], codeSpace.wsId), [terminals, codeSpace.wsId]);
 
 	const entries = orderedScmEntries(scmEntries(statusState.status));
 	const requested = firstParam(params.path);
 	// クエリに無ければ（ソース管理以外から開いた）先頭のファイルから見る。
 	const path = requested ?? entries[0]?.path;
 	const entry = entries.find(candidate => candidate.path === path);
-	const diff = useDiffContent(codeSpace, path, entry?.staged ?? false);
+	// 識別もキーにする（確認した後に書き換えられたら差分を取り直す）
+	const diff = useDiffContent(codeSpace, path, entry?.staged ?? false, entry?.identity);
 	// 差分の解析は重いので、差分の本文が変わったときだけやり直す（再描画のたびに解析しない）。
 	const diffText = diff.text;
 	const rows = useMemo(() => (diffText !== undefined ? parseUnifiedDiff(diffText) : undefined), [diffText]);
 	const stats = rows !== undefined ? diffStats(rows) : undefined;
-	const queue = reviewQueue(entries, reviewed, filter);
+	const placedNotes: PlacedNotes | undefined = useMemo(() => (notes.enabled && rows !== undefined && path !== undefined ? placeReviewNotes(rows, notes.notes, path) : undefined), [notes.enabled, notes.notes, rows, path]);
+	const stageable = notes.canStage ? stageableEntries(entries, marks) : [];
+	const queue = reviewQueue(entries, marks, filter);
 	const at = queue.findIndex(candidate => candidate.path === path);
-	const isReviewed = path !== undefined && reviewed.has(path);
+	const reviewState = entry !== undefined ? reviewStateOf(entry, marks) : 'todo';
+	const isReviewed = reviewState === 'reviewed';
 	const subtitle = [codeSpace.name, statusState.status?.branch ?? codeSpace.branch].filter(part => part !== undefined && part.length > 0).join(' · ');
 
 	const show = (next: string | undefined) => {
@@ -70,15 +98,15 @@ export default function ReviewScreen() {
 	};
 
 	const toggleReviewed = () => {
-		if (path === undefined) {
+		if (path === undefined || entry === undefined) {
 			return;
 		}
-		setReviewed(key, path, !isReviewed);
+		review.setReviewed(entry, !isReviewed);
 		if (isReviewed) {
 			return;
 		}
 		useParaToast.getState().show({ key: 'review-marked', text: '確認済みにしました', icon: 'checkmark-circle-outline', tone: 'done' }, 1_500);
-		show(nextUnreviewed(entries, new Set([...reviewedPaths, path]), path));
+		show(nextUnreviewed(entries, { ...marks, [path]: { identity: entry.identity, reviewedAt: Date.now() } }, path));
 	};
 
 	const openFile = () => {
@@ -87,10 +115,124 @@ export default function ReviewScreen() {
 		}
 	};
 
+	const openNotes = () => {
+		// 送っていないメモを選んでおく（送った後にまた開いたときは、そのとき未送信のものを選び直す）
+		setSelectedNotes(new Set(unsentNoteIds(notes.notes)));
+		notes.clearError();
+		setPanelNotice(undefined);
+		setNotesOpen(true);
+	};
+
+	const openComposer = (target: NoteComposerTarget) => {
+		notes.clearError();
+		setComposer(target);
+	};
+
+	const showAfterCloseToast = () => {
+		const text = afterCloseToast.current;
+		afterCloseToast.current = undefined;
+		if (text !== undefined) {
+			useParaToast.getState().show({ key: 'review-note-sent', text, icon: 'checkmark-circle-outline', tone: 'done' }, 2_000);
+		}
+	};
+
+	const toggleSelected = (id: string) => {
+		setSelectedNotes(previous => {
+			const next = new Set(previous);
+			if (!next.delete(id)) {
+				next.add(id);
+			}
+			return next;
+		});
+	};
+
+	const submitNote = async (body: string) => {
+		if (composer === undefined) {
+			return;
+		}
+		const saved = composer.mode === 'add'
+			? await notes.add(composer.path, composer.line, composer.lineText, body)
+			: await notes.edit(composer.note.id, body);
+		if (saved) {
+			setComposer(undefined);
+		}
+	};
+
+	const deleteNote = async (note: ReviewNote) => {
+		if (await notes.remove([note.id])) {
+			setComposer(undefined);
+		}
+	};
+
+	const sendNotes = async (target: { readonly terminalKey: string } | { readonly agent: string }) => {
+		// 選んだ後に別の端末で消されたメモは送らない
+		const ids = notes.notes.filter(note => selectedNotes.has(note.id)).map(note => note.id);
+		if (ids.length > 0 && await notes.send(ids, target)) {
+			afterCloseToast.current = `メモを ${ids.length} 件送りました`;
+			setNotesOpen(false);
+		}
+	};
+
+	const clearNotes = async () => {
+		setPanelNotice(undefined);
+		const removed = await notes.clear();
+		if (removed !== undefined) {
+			// シートの中に出す（トーストはシートの裏に隠れる）
+			setPanelNotice(removed > 0 ? `メモを ${removed} 件消しました。` : '消せるメモはありませんでした。');
+		}
+	};
+
+	const stageReviewed = async () => {
+		setStaging(true);
+		const result = await notes.stage(stageable).finally(() => setStaging(false));
+		if (result === undefined) {
+			return;
+		}
+		void statusState.refresh();
+		useParaToast.getState().show({
+			key: 'review-staged',
+			text: `${result.staged} 件をステージしました`,
+			...(result.skipped > 0 ? { sub: `${result.skipped} 件は確認した後に変わっていたなどの理由でステージしていません。` } : {}),
+			icon: 'checkmark-circle-outline',
+			tone: result.skipped > 0 ? 'warn' : 'done',
+		}, 3_000);
+	};
+
+	// 起動できるエージェントは、メモの一覧を初めて開いたときに PC から読む（開かなければ読まない）
+	useEffect(() => {
+		if (!notesOpen || agentsRequested || !notes.enabled) {
+			return;
+		}
+		setAgentsRequested(true);
+		useAppStore.getState().worktreeForm({ agentsOnly: true })
+			.then(result => setAgents(result.agents))
+			.catch(() => undefined);
+	}, [notesOpen, agentsRequested, notes.enabled]);
+
+	const notesPanel = (
+		<ReviewNotesPanel
+			notes={notes.notes}
+			selected={selectedNotes}
+			currentLines={placedNotes?.currentLines}
+			onToggle={toggleSelected}
+			onOpenNote={note => { setNotesOpen(false); openComposer({ mode: 'edit', note }); }}
+			targets={sendTargets}
+			agents={agents}
+			busy={notes.busy}
+			error={notes.error}
+			notice={panelNotice}
+			onSend={target => void sendNotes({ terminalKey: target.terminalKey })}
+			onLaunch={agent => void sendNotes({ agent: agent.id })}
+			onClear={() => void clearNotes()}
+			onClose={() => setNotesOpen(false)}
+		/>
+	);
+
 	const fileList = (
 		<ReviewFileList
 			entries={entries}
-			reviewed={reviewed}
+			marks={marks}
+			{...(notes.enabled ? { noteCounts: noteCountsByPath(notes.notes) } : {})}
 			currentPath={path}
 			onPick={picked => { setListOpen(false); show(picked); }}
 			onClose={() => setListOpen(false)}
@@ -103,17 +245,24 @@ export default function ReviewScreen() {
 				title="変更"
 				subtitle={subtitle.length > 0 ? subtitle : undefined}
 				surface="panel"
-				right={<HeaderButton icon={List} label="ファイルの一覧" onPress={() => setListOpen(true)} active={listOpen} />}
+				right={(
+					<>
+						{notes.enabled ? <HeaderButton icon={MessageSquare} label="メモ" onPress={openNotes} active={notesOpen} {...(notes.notes.length > 0 ? { badge: notes.notes.length, badgeTone: 'neutral' as const } : {})} /> : null}
+						<HeaderButton icon={List} label="ファイルの一覧" onPress={() => setListOpen(true)} active={listOpen} />
+					</>
+				)}
 			/>
 			<SpaceGateBody gate={codeSpace.gate}>
 				<View style={styles.body}>
 					<OfflineBanner reason={codeSpace.unavailable} />
 					<ReviewSummary
-						reviewed={reviewedCount(entries, reviewed)}
+						reviewed={reviewedCount(entries, marks)}
 						total={entries.length}
+						synced={review.stored}
 						position={at >= 0 ? { index: at, count: queue.length } : undefined}
 						filter={filter}
 						onFilter={setFilter}
+						{...(stageable.length > 0 ? { stage: { count: stageable.length, busy: staging, onPress: () => void stageReviewed() } } : {})}
 					/>
 					{path === undefined ? (
 						statusState.status === undefined
@@ -121,10 +270,18 @@ export default function ReviewScreen() {
 							: <EmptyState icon={CircleCheck} title="変更はありません" body="作業ツリーは最後のコミットと同じ状態です。" />
 					) : (
 						<>
-							<ReviewFileSummary entry={entry} path={path} stats={stats} reviewed={isReviewed} />
-							<DiffBody diff={diff} rows={rows} unavailable={codeSpace.unavailable} />
+							<ReviewFileSummary entry={entry} path={path} stats={stats} state={reviewState} />
+							<DiffBody
+								diff={diff}
+								rows={rows}
+								unavailable={codeSpace.unavailable}
+								notes={placedNotes}
+								onLongPressRow={notes.enabled ? row => openComposer({ mode: 'add', path, ...noteAnchorOf(row) }) : undefined}
+								onPressNote={note => openComposer({ mode: 'edit', note })}
+							/>
 							<ReviewFooter
 								reviewed={isReviewed}
+								changed={reviewState === 'changed'}
 								canOpen={canOpenWorkingFile(entry)}
 								canMove={entries.length > 1 || (entries.length === 1 && entries[0]?.path !== path)}
 								bottomInset={insets.bottom}
@@ -144,12 +301,34 @@ export default function ReviewScreen() {
 			<RightDrawer visible={listOpen && regular} onClose={() => setListOpen(false)} accessibilityLabel="ファイルの一覧">
 				{fileList}
 			</RightDrawer>
+			<BottomDrawer visible={notesOpen && !regular} onClose={() => setNotesOpen(false)} onAfterClose={showAfterCloseToast} accessibilityLabel="メモ">
+				{notesPanel}
+			</BottomDrawer>
+			<RightDrawer visible={notesOpen && regular} onClose={() => setNotesOpen(false)} onAfterClose={showAfterCloseToast} accessibilityLabel="メモ">
+				{notesPanel}
+			</RightDrawer>
+			<NoteComposer
+				target={composer}
+				busy={notes.busy}
+				error={notes.error}
+				currentLines={placedNotes?.currentLines}
+				onSubmit={body => void submitNote(body)}
+				onDelete={note => void deleteNote(note)}
+				onClose={() => setComposer(undefined)}
+			/>
 		</Screen>
 	);
 }
 
 /** 差分の本文（読み込み中・切断・失敗・差分なし・表計算の差分・テキストの差分）。 */
-function DiffBody({ diff, rows, unavailable }: { diff: DiffContent; rows: ReturnType<typeof parseUnifiedDiff> | undefined; unavailable: string | undefined }) {
+function DiffBody({ diff, rows, unavailable, notes, onLongPressRow, onPressNote }: {
+	diff: DiffContent;
+	rows: ReturnType<typeof parseUnifiedDiff> | undefined;
+	unavailable: string | undefined;
+	notes: PlacedNotes | undefined;
+	onLongPressRow: ((row: DiffRow & { newNo: number }) => void) | undefined;
+	onPressNote: (note: ReviewNote) => void;
+}) {
 	if (diff.error !== undefined) {
 		const office = diff.source === 'officeUnavailable';
 		return <EmptyState icon={office ? FileX : CircleAlert} title={office ? '差分を表示できません' : '差分を読み込めませんでした'} body={office ? '「開く」でファイルそのものを見られます。' : diff.error} />;
@@ -181,7 +360,7 @@ function DiffBody({ diff, rows, unavailable }: { diff: DiffContent; rows: Return
 			</ScrollView>
 		);
 	}
-	return <DiffLines rows={rows} />;
+	return <DiffLines rows={rows} {...(notes !== undefined ? { notes, onPressNote } : {})} {...(onLongPressRow !== undefined ? { onLongPressRow } : {})} />;
 }
 
 const styles = StyleSheet.create({

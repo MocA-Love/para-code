@@ -49,6 +49,20 @@ suite('ParadisSpaceNotesService', () => {
 		assert.deepStrictEqual(JSON.parse(context.storage.value!), {});
 	});
 
+	test('gives every write a newer version, even within the same millisecond', () => {
+		const context = createContext(store, JSON.stringify({ 'worktree:a': { text: '- [ ] a', updatedAt: Number.MAX_SAFE_INTEGER - 10 } }));
+		const service = context.create();
+
+		const before = service.readEntry('worktree:a')!.updatedAt;
+		service.write('worktree:a', '- [ ] a\n- [ ] b');
+		const afterWrite = service.readEntry('worktree:a')!.updatedAt;
+		service.toggleTask('worktree:a', 0);
+		const afterToggle = service.readEntry('worktree:a')!.updatedAt;
+
+		assert.deepStrictEqual([afterWrite > before, afterToggle > afterWrite, service.readEntry('worktree:missing')], [true, true, undefined]);
+		service.dispose();
+	});
+
 	test('toggles a checklist line in place', () => {
 		const context = createContext(store, JSON.stringify({ 'worktree:a': { text: '- [ ] a\n- [ ] b', updatedAt: 1 } }));
 		const service = store.add(context.create());

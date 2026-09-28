@@ -16,8 +16,9 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { INotificationHandle, INotificationService, IPromptChoice, Severity } from '../../../../../platform/notification/common/notification.js';
 import { InMemoryStorageService } from '../../../../../platform/storage/common/storage.js';
-import { IParadisSpaceNotesService, IParadisSpaceNoteSummary, paradisRemoveSpaceNoteTask, paradisReplaceSpaceNoteTaskText, paradisSpaceNoteSummary, paradisToggleSpaceNoteTask } from '../../common/paradisSpaceNotes.js';
+import { IParadisSpaceNote, IParadisSpaceNotesService, IParadisSpaceNoteSummary, paradisRemoveSpaceNoteTask, paradisReplaceSpaceNoteTaskText, paradisSpaceNoteSummary, paradisToggleSpaceNoteTask } from '../../common/paradisSpaceNotes.js';
 import { ParadisSpaceNotesPanel } from '../../browser/paradisSpaceNotesPanel.js';
 
 const TASK_COUNT = 40;
@@ -144,6 +145,75 @@ suite('ParadisSpaceNotesPanel', () => {
 	});
 });
 
+suite('ParadisSpaceNotesPanel editing while the note changes elsewhere', () => {
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('keeps a change made elsewhere when the edited lines do not overlap', () => {
+		const { notes, panel, container } = createPanel(store);
+		notes.write('worktree:b', '- [ ] one\n- [ ] two');
+		panel.setSpace('worktree:b', 'b', undefined);
+		const editor = startEditing(container);
+
+		// 編集中にモバイルが1件足し、こちらは1行目を書き換える
+		notes.write('worktree:b', '- [ ] one\n- [ ] two\n- [ ] from phone');
+		editor.value = '- [ ] one (edited)\n- [ ] two';
+		finishEditing(editor);
+
+		assert.strictEqual(notes.read('worktree:b'), '- [ ] one (edited)\n- [ ] two\n- [ ] from phone');
+	});
+
+	test('does not overwrite an overlapping change and lets the user choose', () => {
+		const notification = new TestNotificationService();
+		const { notes, panel, container } = createPanel(store, undefined, notification as Partial<INotificationService> as INotificationService);
+		notes.write('worktree:b', '- [ ] one');
+		panel.setSpace('worktree:b', 'b', undefined);
+		const editor = startEditing(container);
+
+		notes.write('worktree:b', '- [x] one');
+		editor.value = '- [ ] one, but longer';
+		finishEditing(editor);
+		const kept = notes.read('worktree:b');
+		notification.choose(0);
+
+		assert.deepStrictEqual({ kept, prompts: notification.prompts.length, afterOverwrite: notes.read('worktree:b') }, { kept: '- [x] one', prompts: 1, afterOverwrite: '- [ ] one, but longer' });
+	});
+
+	test('asks again instead of overwriting when the note changed after the prompt was shown', () => {
+		const notification = new TestNotificationService();
+		const { notes, panel, container } = createPanel(store, undefined, notification as Partial<INotificationService> as INotificationService);
+		notes.write('worktree:b', '- [ ] one');
+		panel.setSpace('worktree:b', 'b', undefined);
+		const editor = startEditing(container);
+
+		notes.write('worktree:b', '- [x] one');
+		editor.value = '- [ ] one, but longer';
+		finishEditing(editor);
+		// 知らせを見ている間に、さらにスマホが書き換える
+		notes.write('worktree:b', '- [x] one\n- [ ] from phone');
+		notification.choose(0);
+		const afterFirst = notes.read('worktree:b');
+		notification.choose(0);
+
+		assert.deepStrictEqual({ afterFirst, prompts: notification.prompts.length, afterSecond: notes.read('worktree:b') }, {
+			afterFirst: '- [x] one\n- [ ] from phone',
+			prompts: 2,
+			afterSecond: '- [ ] one, but longer',
+		});
+	});
+
+	test('writes directly when nothing else changed the note', () => {
+		const notification = new TestNotificationService();
+		const { notes, panel, container } = createPanel(store, undefined, notification as Partial<INotificationService> as INotificationService);
+		panel.setSpace('worktree:a', 'a', undefined);
+		const editor = startEditing(container);
+
+		editor.value = '- [ ] only';
+		finishEditing(editor);
+
+		assert.deepStrictEqual({ text: notes.read('worktree:a'), prompts: notification.prompts.length }, { text: '- [ ] only', prompts: 0 });
+	});
+});
+
 function createTasks(): string {
 	return Array.from({ length: TASK_COUNT }, (_, index) => `- [ ] task ${index}`).join('\n');
 }
@@ -179,7 +249,7 @@ function focusedTaskText(body: HTMLElement): string | undefined {
 	return active.nextElementSibling?.textContent ?? undefined;
 }
 
-function createPanel(store: Pick<DisposableStore, 'add'>, contextMenu: IContextMenuService = {} as Partial<IContextMenuService> as IContextMenuService) {
+function createPanel(store: Pick<DisposableStore, 'add'>, contextMenu: IContextMenuService = {} as Partial<IContextMenuService> as IContextMenuService, notification: INotificationService = {} as Partial<INotificationService> as INotificationService) {
 	const notes = store.add(new TestSpaceNotesService());
 	notes.write('worktree:a', createTasks());
 
@@ -195,6 +265,7 @@ function createPanel(store: Pick<DisposableStore, 'add'>, contextMenu: IContextM
 		new NullLogService(),
 		contextMenu,
 		{} as Partial<IClipboardService> as IClipboardService,
+		notification,
 	));
 	panel.layout(600);
 
@@ -203,7 +274,37 @@ function createPanel(store: Pick<DisposableStore, 'add'>, contextMenu: IContextM
 	assert.ok(body);
 	body.style.height = '100px';
 	body.style.overflowY = 'auto';
-	return { notes, panel, body };
+	return { notes, panel, body, container };
+}
+
+/** ヘッダーのペンで全体の編集を始め、編集欄を返す。 */
+function startEditing(container: HTMLElement): HTMLTextAreaElement {
+	const pen = container.querySelector('.paradis-space-notes-actions .action-label') as HTMLElement | null;
+	assert.ok(pen);
+	pen.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+	const editor = container.getElementsByClassName('paradis-space-notes-editor')[0] as HTMLTextAreaElement | undefined;
+	assert.ok(editor);
+	return editor;
+}
+
+function finishEditing(editor: HTMLTextAreaElement): void {
+	editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+}
+
+/** 最後に出た知らせの文と選択肢を控え、選択肢を名前で押せるようにする。 */
+class TestNotificationService implements Partial<INotificationService> {
+	prompts: { readonly message: string; readonly choices: readonly IPromptChoice[] }[] = [];
+
+	prompt(_severity: Severity, message: string, choices: IPromptChoice[]): INotificationHandle {
+		this.prompts.push({ message, choices });
+		return {} as INotificationHandle;
+	}
+
+	choose(index: number): void {
+		const choice = this.prompts.at(-1)?.choices[index];
+		assert.ok(choice);
+		choice.run();
+	}
 }
 
 /** 本物のサービスと同じく、変更を同期で通知するメモ置き場。 */
@@ -211,11 +312,18 @@ class TestSpaceNotesService implements IParadisSpaceNotesService {
 	declare readonly _serviceBrand: undefined;
 
 	private readonly notes = new Map<string, string>();
+	private readonly versions = new Map<string, number>();
+	private version = 0;
 	private readonly _onDidChangeNotes = new Emitter<readonly string[]>();
 	readonly onDidChangeNotes = this._onDidChangeNotes.event;
 
 	read(stateKey: string): string {
 		return this.notes.get(stateKey) ?? '';
+	}
+
+	readEntry(stateKey: string): IParadisSpaceNote | undefined {
+		const text = this.notes.get(stateKey);
+		return text !== undefined ? { text, updatedAt: this.versions.get(stateKey) ?? 0 } : undefined;
 	}
 
 	summary(stateKey: string): IParadisSpaceNoteSummary {
@@ -224,6 +332,7 @@ class TestSpaceNotesService implements IParadisSpaceNotesService {
 
 	write(stateKey: string, text: string): void {
 		this.notes.set(stateKey, text);
+		this.versions.set(stateKey, ++this.version);
 		this._onDidChangeNotes.fire([stateKey]);
 	}
 

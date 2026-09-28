@@ -1,7 +1,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { paradisMobileReviewState, type ParadisMobileReviewState } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileDiffReview.js';
 import type { DiffRow } from '../../components/diffParser.js';
 import { classifyMobileFileKind } from '../../components/officeCapability.js';
+import type { ReviewMarks } from './codeCache.js';
 import type { ScmEntry } from './scmModel.js';
 
 /**
@@ -18,12 +20,24 @@ export const REVIEW_FILTERS: readonly { readonly key: ReviewFilter; readonly lab
 	{ key: 'done', label: '確認済み' },
 ];
 
+/**
+ * そのファイルの確認の状態。確認した後に中身が変わった（識別が違う）ものは `changed` で、
+ * 「確認済み」には数えない（もう一度見てほしいので「未確認」の絞り込みに入る）。
+ */
+export function reviewStateOf(entry: ScmEntry, marks: ReviewMarks): ParadisMobileReviewState {
+	return paradisMobileReviewState(entry.identity, marks[entry.path]);
+}
+
+export function isReviewed(entry: ScmEntry, marks: ReviewMarks): boolean {
+	return reviewStateOf(entry, marks) === 'reviewed';
+}
+
 /** 絞り込んだ一覧（前後の移動・ファイルの一覧の対象）。 */
-export function reviewQueue(entries: readonly ScmEntry[], reviewed: ReadonlySet<string>, filter: ReviewFilter): ScmEntry[] {
+export function reviewQueue(entries: readonly ScmEntry[], marks: ReviewMarks, filter: ReviewFilter): ScmEntry[] {
 	if (filter === 'all') {
 		return [...entries];
 	}
-	return entries.filter(entry => reviewed.has(entry.path) === (filter === 'done'));
+	return entries.filter(entry => isReviewed(entry, marks) === (filter === 'done'));
 }
 
 /**
@@ -43,15 +57,41 @@ export function stepReview(entries: readonly ScmEntry[], queue: readonly ScmEntr
 }
 
 /** 確認済みにした後に進む先（いまのファイルより後ろの未確認 → 先頭からの未確認）。無ければ undefined。 */
-export function nextUnreviewed(entries: readonly ScmEntry[], reviewed: ReadonlySet<string>, currentPath: string): string | undefined {
+export function nextUnreviewed(entries: readonly ScmEntry[], marks: ReviewMarks, currentPath: string): string | undefined {
 	const at = entries.findIndex(entry => entry.path === currentPath);
 	const ordered = at < 0 ? entries : [...entries.slice(at + 1), ...entries.slice(0, at)];
-	return ordered.find(entry => entry.path !== currentPath && !reviewed.has(entry.path))?.path;
+	return ordered.find(entry => entry.path !== currentPath && !isReviewed(entry, marks))?.path;
 }
 
-/** 確認済みの件数（いまの一覧に残っているものだけ数える）。 */
-export function reviewedCount(entries: readonly ScmEntry[], reviewed: ReadonlySet<string>): number {
-	return entries.filter(entry => reviewed.has(entry.path)).length;
+/**
+ * PC から届いた印（`reviewGet` / `reviewSet` の応答の `marks`）を読む。形の違う1件は飛ばす
+ * （PC の不具合で1件おかしくても、残りの進み具合は見せる）。
+ */
+export function parseReviewMarks(value: unknown): ReviewMarks {
+	const marks: Record<string, { identity: string; reviewedAt: number }> = {};
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		return marks;
+	}
+	for (const [path, raw] of Object.entries(value as Record<string, unknown>)) {
+		const mark = raw as { identity?: unknown; reviewedAt?: unknown } | null;
+		if (mark !== null && typeof mark === 'object' && typeof mark.identity === 'string' && typeof mark.reviewedAt === 'number') {
+			marks[path] = { identity: mark.identity, reviewedAt: mark.reviewedAt };
+		}
+	}
+	return marks;
+}
+
+/**
+ * 「確認済みをステージ」の対象。確認済みで（確認した後に変わっていない）、作業ツリーにまだステージしていない
+ * 変更があるもの。最終の判定（中身が同じか）は PC がステージの直前に行う。
+ */
+export function stageableEntries(entries: readonly ScmEntry[], marks: ReviewMarks): ScmEntry[] {
+	return entries.filter(entry => entry.group !== 'staged' && entry.kind !== 'conflict' && isReviewed(entry, marks));
+}
+
+/** 確認済みの件数（いまの一覧に残っていて、確認した後に変わっていないものだけ数える）。 */
+export function reviewedCount(entries: readonly ScmEntry[], marks: ReviewMarks): number {
+	return entries.filter(entry => isReviewed(entry, marks)).length;
 }
 
 export function diffStats(rows: readonly DiffRow[]): { readonly add: number; readonly del: number } {

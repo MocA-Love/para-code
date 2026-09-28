@@ -1,5 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { paradisMobileDiffIdentity } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileDiffReview.js';
 import { scmChangeKind, scmChangeMeta, type ScmChangeKind, type ScmChangeMeta } from '../../scmChangeKind.js';
 import type { ScmStatusResult } from '../../store.js';
 
@@ -19,6 +20,11 @@ export interface ScmEntry {
 	readonly staged: boolean;
 	readonly kind: ScmChangeKind;
 	readonly meta: ScmChangeMeta;
+	/**
+	 * 変更の中身の識別（状態・パス・行数から PC と同じ関数で作る）。差分レビューで確認した後に
+	 * 書き換えられたかを、確認したときの値と比べて見分ける。
+	 */
+	readonly identity: string;
 }
 
 /** 区分の見出しと並び順（Orca と同じ: 変更 → 未追跡 → ステージ済み）。 */
@@ -39,11 +45,12 @@ export function scmEntry(file: ScmStatusResult['files'][number]): ScmEntry {
 	const kind = scmChangeKind(file.x, file.y);
 	const letter = (file.x !== ' ' && file.x !== '?' ? file.x : file.y) || '?';
 	const meta = scmChangeMeta(kind, letter);
+	const identity = paradisMobileDiffIdentity(file);
 	if (kind === 'untracked') {
-		return { path: file.path, group: 'untracked', staged: false, kind, meta };
+		return { path: file.path, group: 'untracked', staged: false, kind, meta, identity };
 	}
 	const indexOnly = file.x !== ' ' && file.x !== '' && (file.y === ' ' || file.y === '') && kind !== 'conflict';
-	return { path: file.path, group: indexOnly ? 'staged' : 'changes', staged: indexOnly, kind, meta };
+	return { path: file.path, group: indexOnly ? 'staged' : 'changes', staged: indexOnly, kind, meta, identity };
 }
 
 export function scmEntries(status: ScmStatusResult | undefined): ScmEntry[] {

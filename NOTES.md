@@ -1165,6 +1165,29 @@ fork の後始末を `sentry/common/paradisTeardownTiming.ts` で名前付きで
 - **固定形（ゴールデン）**: `app/protocol/test/golden/` の state / state-request / term / agent。PC の組み立てる State がゴールデンと同じ形か、アプリが送る形を PC が受けるか、PC が送る形をアプリが受けるかを両側のテストが確かめる。版・`minCompatible*`・`capabilities`・`fsUploadEncoding`・`voiceClips` は値まで比べるので、capability を足したらゴールデンの `state.json` / `state-request.json` も同じ変更で直す
 - **版を上げるときに一緒に直す場所**: 2 進アップロードの枠（`app/protocol/src/fileUpload.ts` と PC の `paradisMobileFileUpload.ts`）は `protocolVersion: 3` を固定で検査している。`IParadisMobileDesktopStateV3` の名前と型も版 3 のまま
 
+### スペースのメモの版と差分レビューの記録（Orca W2-16 / W2-14 / W2-28、2026-09-29）
+
+モバイルからの書き込みで PC 側の変更を黙って消さないことが共通の主題。どれも任意項目・新しい種類の追加だけで、版は上げていない。
+
+| capability | 中身 | 置き場所 |
+|---|---|---|
+| `note.cas.v1` | `noteGet` / `noteSet` の応答に `updatedAt`（メモの版）。`noteSet` の任意の `base`（読んだときの版。違えば書かずに `conflict: true` と最新を返す）と `op`（`toggle { line, lineText }` / `append { entry }` を PC の最新に当てる） | `common/paradisMobileSpaceNoteSet.ts`、provider の noteGet/noteSet の分岐 |
+| `review.store.v1` | `reviewGet` / `reviewSet`（確認済みの印を1件ずつ付け外し）。status の応答に任意の `oldPath` と両側の行数（`added` / `removed` / `stagedAdded` / `stagedRemoved`、バイナリは -1）、未追跡のファイルの `size` / `mtime`（先頭 100 件まで。ルートの realpath を1回にまとめて調べる `paradisStatMobileWorkspaceFiles`）。応答に記録の版 `revision`（保存のたびに増える。アプリは手元より古い版の応答を捨てる） | `electron-browser/paradisMobileDiffReviewRequests.ts`（登録表） |
+| `review.notes.v1` | `reviewNoteAdd` / `reviewNoteEdit`（メモの id は `noteId`。`id` は応答の宛先）/ `reviewNoteDelete` / `reviewNotesClear` / `reviewNotesSend` | 同上 |
+| `review.stage.v1` | `reviewStage { entries: [{ path, identity }] }` | 同上 |
+
+- **メモの版**: `IParadisSpaceNotesService.readEntry` の `updatedAt`。書くたびに `max(Date.now(), 前の版 + 1)` にして、同じミリ秒の2回の書き込みでも版が変わるようにした。比べて書くまでは await を挟まない（レンダラーは1本のスレッドなので、それで一続きになる）。古い PC は `base` / `op` を無視して `text` で上書きするので、アプリは `text` にも操作を当てた後の全文を入れて送る
+- **PC のメモ欄**: 編集を始めたときの本文と版を控え、終えるときに版が変わっていれば行単位で合わせる（`paradisMergeSpaceNoteEdits`。重ならなければ両方、重なれば保存せずに通知で「自分の編集で上書き」「自分の編集をコピー」）。storage の定期の書き出し（`onWillSaveState` の SHUTDOWN 以外）では、他で変わっていれば書かない。ウィンドウを閉じるときは知らせる先が無いので、重なれば今までどおり編集欄の中身で書く
+- **差分の識別**: `common/paradisMobileDiffReview.ts`（依存ゼロ。アプリが相対パスで直接 import する）の `paradisMobileDiffIdentity`。状態・パス・元のパス・両側の行数・未追跡のファイルの大きさと時刻の FNV-1a（種を変えて2回、16桁）。**追跡中のファイルで行数が同じ書き換えは見分けられない**（Orca と同じ弱点）。未追跡のフォルダ（`dir/`）は大きさも時刻も持たない。ステージすると状態と行数の側が変わるので、`reviewStage` は `git add` の後、足した中身がスマホの見たものと同じだと確かめられたもの（`paradisStagedConsistently`: 作業ツリー側だけの変更はステージ後の行数が同じ、未追跡は `A ` で、足した後に調べ直した大きさと時刻が同じ（追跡中になると status に大きさが載らないため、`reviewStage` が別に調べて渡す）。`MM` は確かめられないので付け替えない）の印だけをステージ後の識別へ付け替える。PC の画面で手でステージした場合は付け替えないので「確認後に変更あり」になる
+- **保存**: ウィンドウの WORKSPACE ストレージの `paradis.mobileRelay.diffReview.v1`（スペースのメモと同じ置き場）。スペース 32 件・印 500 件・メモ 100 件（本文 2,000 字、控える行は 500 字）・全体 2,000,000 字まで。全体の上限を超えたら、スペースを丸ごと捨てる前に、最も長く触っていないスペースの古い記録（送信済みのメモ → 印 → 送っていないメモの順）から半分ずつ削る。`reviewGet` は status に無いパスの印を外す。印は1件ずつ変えるので、iPhone と iPad が同時に別のファイルへ付けても消し合わない
+- **行への追従**: メモは書いたときの新しい側の行番号と行の中身（`lineText`）を持ち、同じ番号の中身が違えば前後 50 行から同じ中身の行を探す（`paradisLocateReviewNoteLine`。アプリは差分の行から、PC は作業ツリーのファイルから引く）。アプリは差分の中だけを見るので、行が差分の外に出たメモも「古いメモ」に出る。PC の `reviewNotesClear` はファイルで判定するので、差分の外でもファイルにあれば消さない。ただし変更の一覧（`status -uall`。未追跡のフォルダの中も1件ずつ）に無いファイル（コミット・破棄された）のメモは、行が残っていても消す
+- **送信**: 依頼文は PC が保存済みのメモから組み立てる（`paradisBuildReviewNotesPrompt`。スマホから届いた文章は打ち込まない）。依頼文は改行以外の制御文字を落としてから送る（`paradisStripTerminalControlCharacters`。メモの本文と控えた行の中身はリポジトリ由来になりうり、`ESC [201~` で貼り付けの囲みを抜けられるため）。既にあるターミナルへは `paradisSendAgentMessageToTui`（貼り付け → Enter の前に確かめ直す）で送り、送ってよいのは「そのスペースのエージェントのペイン」かつ「park 中でない」かつ「作業中・許可・質問でない」かつ `paradisCanPasteMultiline`（貼り付けの囲みが有効で、シェル統合の実行中のコマンドが claude / codex）のときだけ（`paradisReviewNotesTargetVerdict`。Enter の前の確かめ直しも同じ判定）。**エージェントを抜けた後のシェル・ssh・python などに依頼文が渡ると、行やコマンド置換が実行されるため**。確かめられないターミナル（シェル統合の無い WSL・SSH の一部など）には送らず、新しいエージェントの起動を案内する。新しく起動するときは `paradisLaunchAgentInWorkspace` の `prompt`（`preserveFocus: true`。起動を待つのは 45 秒までで、超えたら未送信のまま返して送信中の印を外す。起動後に登録表の `context.pushState()` で状態をすぐ送る。シェルの種類が分からず `\` を含むと起動できないので、その旨を返す）。依頼文は 16,000 字まで。同じスペースへの送信は1本ずつ（送信中なら断る）。送れたメモは `sentAt` を付けて残す（Q120 A）が、送る間に書き直されたメモ（読んだときの `updatedAt` と違うもの）は送信済みにしない
+- **ステージ**: 許可リストの既存の `add` を使い、`git add -- :(literal)<path> …` を1回だけ実行する（許可リストは変えていない。`:(literal)` でパスの記法を読ませない）。PC が status と行数を読み直して、識別がスマホの見たものと同じで、しかも **PC に保存した確認済みの印が今の識別と一致する**ファイルだけを足す（スマホが送ってきた識別だけは信じない）。競合・インデックス側だけの変更・引用付きのパス・未追跡のフォルダ（`dir/`。確認後に中に足されたファイルまで入る）・大きさの無い未追跡のファイル（調べる上限より後ろ・読めなかった。足した中身を確かめられない）は足さない
+- **登録表の `context.pushState()`**: 登録表の処理から State をすぐ送り直す口（W2-28 で追加。provider の `pushState` につながる。無い host では何もしない）。ターミナルの増減は変化の知らせでもいずれ送られる
+- **アプリのメモの保存の順番**: `useSpaceNote` は保存を1本ずつ送り、前の保存の応答で版が進んでから次の全文の保存に版を付ける（切り替え・追加の直後の編集が、自分の保存と食い違って書かれない事故を防ぐ）。PC のメモ欄の「自分の編集で上書き」は、知らせを出したときの版から変わっていれば上書きせずにもう一度知らせる
+- **シートの中の失敗はシートの中に出す**: `BottomDrawer` / `RightDrawer` は RN の `Modal` で出るので、アプリの上端のトースト（`app/_layout.tsx` の `<ToastHost />`）はその裏に隠れて見えない。差分レビューのメモのシート（書く・一覧・送る・片付け）は `useReviewNotes` の `error` をシートの中の `InlineError` に出し、送れたお知らせはシートを閉じ切った後（`onAfterClose`）にトーストで出す。【要確認】ほかの画面でも、シートを開いたまま `useParaToast` で失敗を知らせている所は同じく見えていない可能性がある（この担当では差分レビューの範囲だけ直した。共通の仕組みにするなら、Modal の中に ToastHost をもう1つ置くか、シートに失敗の行を持たせる）
+- **PC のメモの画面は未実装**（Q120 A）。保存先は共有しているので、PC に画面を足すときは `paradisReadMobileReviewStore` を読めばよい
+
 ## Codexペインapp-serverのWindows対応（loopback ws方式、2026-07-21）
 
 macOS/Linuxの「ペインごとのCodex app-server」（`resources/paradis/bin/codex`のshランチャー + `unix://`ソケット）はWindowsでは使えないため、Windowsだけ別トランスポートで同等機能を実装した。判断根拠はすべてWindows 10.0.26100 / codex-cli 0.144.6 実機での事前調査に基づく。

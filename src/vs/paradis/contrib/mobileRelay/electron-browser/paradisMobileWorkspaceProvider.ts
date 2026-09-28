@@ -72,6 +72,9 @@ import { paradisIsAcceptedMobileWireVersion } from '../common/paradisMobileCompa
 import { type IParadisMobileRequestHost, paradisDispatchMobileRequest } from './paradisMobileRequestHandlers.js';
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
+import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
+import { paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts, paradisWithUntrackedFileStats } from '../common/paradisMobileDiffReview.js';
+import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
 import { paradisSendAgentInteractionKeys, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
@@ -371,7 +374,8 @@ type ScmInbound =
 	// スペースのメモ（PC版 Workspaces ビュー下部のメモ欄と同じ本文）の取得・更新。
 	// git 実行を伴わないが、ws 単位のリクエストという点で他の scm メッセージと同じ扱いにする。
 	| { t: 'noteGet'; id: string; ws: string }
-	| { t: 'noteSet'; id: string; ws: string; text: string }
+	// base（読んだときの版）と op（切り替え・追加）は任意。無ければ今までどおり text で上書きする
+	| { t: 'noteSet'; id: string; ws: string; text: string; base?: number; op?: unknown }
 	// コマンドプリセット（PC版のターミナルタブバー右のボタンと同じもの）の一覧と実行。
 	// launchAgent と同じく「そのスペースで新しいターミナルを作る」操作なので ws 単位。
 	| { t: 'presets'; id: string; ws: string }
@@ -1431,6 +1435,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				return root !== undefined ? paradisResolveMobileWorkspacePath(this.fileService, root, relativePath) : undefined;
 			},
 			send: (ch, mobileId, payload) => this.sendFrame({ ch: ch === 'scm' ? Channels.Scm : Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(payload), mobileId: mobileId || undefined }),
+			pushState: () => this.pushState(),
 		});
 	}
 
@@ -1677,14 +1682,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				reply({ error: `unknown workspace: ${msg.ws}` });
 				return;
 			}
-			if (msg.t === 'noteSet') {
-				if (typeof msg.text !== 'string') {
-					reply({ error: 'text is required' });
-					return;
-				}
-				this.spaceNotesService.write(msg.ws, msg.text);
-			}
-			reply({ t: 'note', ws: msg.ws, text: this.spaceNotesService.read(msg.ws) });
+			// 版（updatedAt）と、base / op による上書きの確認は paradisMobileSpaceNoteSet.ts（Orca W2-16）
+			reply(msg.t === 'noteSet' ? paradisMobileNoteSet(this.spaceNotesService, msg.ws, msg) : paradisMobileNoteGet(this.spaceNotesService, msg.ws));
 			return;
 		}
 		// 既存ワークスペースへのエージェント起動。git実行を伴わないため repoPath 解決より先に処理する
@@ -1806,16 +1805,20 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		try {
 			if (msg.t === 'status') {
-				const [status, branch] = await Promise.all([
+				const [status, branch, unstagedCounts, stagedCounts] = await Promise.all([
 					this.runGit(repoUri, ['status', '--porcelain=v1']),
 					this.runGit(repoUri, ['rev-parse', '--abbrev-ref', 'HEAD']),
+					// ファイルごとの行数（差分レビューの「確認後に変更あり」の判定に使う。Orca W2-14）。
+					// 任意項目なので、数えられなくても一覧はそのまま返す
+					this.runGit(repoUri, ['diff', '--numstat', '-z']).catch(() => undefined),
+					this.runGit(repoUri, ['diff', '--cached', '--numstat', '-z']).catch(() => undefined),
 				]);
-				const files = status.stdout.split('\n').filter(l => l.length > 3).map(line => ({
-					// porcelain v1: XY <path> （リネームは "old -> new"）
-					x: line[0],
-					y: line[1],
-					path: line.slice(3).includes(' -> ') ? line.slice(3).split(' -> ')[1] : line.slice(3),
-				}));
+				// 未追跡のファイルは行数を数えられないので、大きさと時刻を足す（書き換えを見分けるため）
+				const files = await paradisWithUntrackedFileStats(paradisWithMobileLineCounts(
+					paradisParseMobilePorcelainStatus(status.stdout),
+					unstagedCounts?.code === 0 ? unstagedCounts.stdout : undefined,
+					stagedCounts?.code === 0 ? stagedCounts.stdout : undefined,
+				), paths => paradisStatMobileWorkspaceFiles(this.fileService, repoUri, paths));
 				reply({ t: 'status', branch: branch.stdout.trim(), files });
 			} else if (msg.t === 'diff') {
 				const args = msg.staged ? ['diff', '--cached'] : ['diff'];
