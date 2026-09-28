@@ -64,19 +64,25 @@ export interface IParadisCurrentBranchUpstream {
 	/** 上流の remote の名前と、そこでの ref（`refs/heads/…`）。上流が無ければ undefined。remote が `.` なら手元のブランチが上流。 */
 	readonly upstreamRemote: string | undefined;
 	readonly upstreamRef: string | undefined;
-	/** git が決める push 先（決められなければ undefined。`push.default=simple` で上流が別名のときなど）。 */
+	/** push する remote（`branch.<name>.pushRemote`・`remote.pushDefault`・上流の remote の順）。 */
 	readonly pushRemote: string | undefined;
+	/**
+	 * push 先のリモートでの ref（`%(push:remoteref)`）。**`remote.<name>.push` の refspec を設定していないと空**
+	 * （git 2.54 で実測。同名の上流・既定の simple でも空）。
+	 */
 	readonly pushRef: string | undefined;
+	/** push 先の追跡ブランチ（`%(push)`。例 `refs/remotes/origin/feat`）。git が push 先を決められなければ空。 */
+	readonly pushTracking: string | undefined;
 }
 
 /** `git branch` に渡す書式（区切りは NUL）。 */
-export const PARADIS_MOBILE_BRANCH_FORMAT = '--format=%(HEAD)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(push:remotename)%00%(push:remoteref)%00%(refname)';
+export const PARADIS_MOBILE_BRANCH_FORMAT = '--format=%(HEAD)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(push:remotename)%00%(push:remoteref)%00%(push)%00%(refname)';
 
 /** {@link PARADIS_MOBILE_BRANCH_FORMAT} で出した一覧から、いまのブランチ（`*` の行）を読む。detached なら undefined。 */
 export function paradisParseCurrentBranchUpstream(stdout: string): IParadisCurrentBranchUpstream | undefined {
 	const orUndefined = (value: string | undefined) => value !== undefined && value.length > 0 ? value : undefined;
 	for (const line of stdout.split('\n')) {
-		const [head, upstreamRemote, upstreamRef, pushRemote, pushRef, refname] = line.split('\0');
+		const [head, upstreamRemote, upstreamRef, pushRemote, pushRef, pushTracking, refname] = line.split('\0');
 		if (head !== '*' || refname === undefined || !refname.startsWith('refs/heads/') || refname.length <= 'refs/heads/'.length) {
 			continue;
 		}
@@ -86,9 +92,15 @@ export function paradisParseCurrentBranchUpstream(stdout: string): IParadisCurre
 			upstreamRef: orUndefined(upstreamRef),
 			pushRemote: orUndefined(pushRemote),
 			pushRef: orUndefined(pushRef),
+			pushTracking: orUndefined(pushTracking),
 		};
 	}
 	return undefined;
+}
+
+/** `git branch --format` が `%(push:…)` を知らない古い git の失敗か。 */
+export function paradisIsUnsupportedBranchFormat(stderr: string): boolean {
+	return /unknown field name|unrecognized %\(push|unknown %\(push|push:remote/i.test(stderr);
 }
 
 /** スマホからの push の宛先。断るときは理由と、PC で push してもらう案内。 */
@@ -96,31 +108,45 @@ export type ParadisMobilePushPlan =
 	| { readonly kind: 'push'; readonly remote: string; readonly ref: string; readonly publish: boolean }
 	| { readonly kind: 'refuse'; readonly code: 'local-upstream' | 'renamed-upstream' | 'no-push-target' | 'unknown-remote' | 'no-remote'; readonly message: string };
 
+const RENAMED: ParadisMobilePushPlan = { kind: 'refuse', code: 'renamed-upstream', message: '上流が別名です。PC で push してください。' };
+const UNKNOWN_REMOTE: ParadisMobilePushPlan = { kind: 'refuse', code: 'unknown-remote', message: 'push 先のリモートが見つかりません。PC で push してください。' };
+
 /**
  * push の宛先を決める。git の `@{push}`（push 先）に従い、**push 先のブランチ名がローカルのブランチ名と違う**
  * （`git switch -c feat origin/main` のように上流が別名）ときと、上流・push 先が手元（remote が `.`）のときは断る。
- * スマホの「プッシュ」一つで別の名前のブランチ（main など）へ直接送ってしまわないため。remote は `git remote` の
- * 名前だけを受ける（URL・scp 形式・ローカルのパスを名指しさせない）。上流が無ければ push 先の remote（無ければ
- * origin、それも無ければ唯一の remote）へ同じ名前で公開する。
+ * スマホの「プッシュ」一つで別の名前のブランチ（main など）へ直接送ってしまわないため。
+ *
+ * 上流があるとき:
+ * - `%(push:remoteref)` が空でなければ（`remote.<name>.push` の refspec がある）、`refs/heads/<ブランチ>` と同じときだけ送る
+ * - 空なら、`%(push)` が `refs/remotes/<pushRemote>/<ブランチ>` と同じときだけ送る（simple で上流が別名・`nothing` は
+ *   `%(push)` が空、`upstream` で別名は別の名前になり、どれも断る。`current`・`matching`・同名の上流の simple は通る）
+ *
+ * remote は `git remote` の名前だけを受ける（URL・scp 形式・ローカルのパスを名指しさせない）。上流が無ければ push する
+ * remote（無ければ origin、それも無ければ唯一の remote）へ同じ名前で公開する。
  */
 export function paradisMobilePushPlan(current: IParadisCurrentBranchUpstream, remotes: readonly string[]): ParadisMobilePushPlan {
 	const own = `refs/heads/${current.branch}`;
 	if (current.upstreamRemote === '.' || current.pushRemote === '.') {
 		return { kind: 'refuse', code: 'local-upstream', message: '上流が手元のブランチです。PC で push してください。' };
 	}
-	if (current.pushRef !== undefined && current.pushRef !== own) {
-		return { kind: 'refuse', code: 'renamed-upstream', message: '上流が別名です。PC で push してください。' };
-	}
 	if (current.upstreamRemote !== undefined && current.upstreamRef !== undefined) {
-		if (current.pushRemote === undefined || current.pushRef === undefined) {
-			return current.upstreamRef !== own
-				? { kind: 'refuse', code: 'renamed-upstream', message: '上流が別名です。PC で push してください。' }
-				: { kind: 'refuse', code: 'no-push-target', message: 'git の push の設定から push 先を決められません。PC で push してください。' };
+		const remote = current.pushRemote;
+		if (remote === undefined) {
+			return { kind: 'refuse', code: 'no-push-target', message: 'git の push の設定から push 先を決められません。PC で push してください。' };
 		}
-		if (!remotes.includes(current.pushRemote)) {
-			return { kind: 'refuse', code: 'unknown-remote', message: 'push 先のリモートが見つかりません。PC で push してください。' };
+		if (current.pushRef !== undefined) {
+			if (current.pushRef !== own) {
+				return RENAMED;
+			}
+		} else if (current.pushTracking !== `refs/remotes/${remote}/${current.branch}`) {
+			return current.pushTracking !== undefined || current.upstreamRef !== own
+				? RENAMED
+				: { kind: 'refuse', code: 'no-push-target', message: 'git の push の設定（push.default など）から push 先を決められません。PC で push してください。' };
 		}
-		return { kind: 'push', remote: current.pushRemote, ref: own, publish: false };
+		return remotes.includes(remote) ? { kind: 'push', remote, ref: own, publish: false } : UNKNOWN_REMOTE;
+	}
+	if (current.pushRef !== undefined && current.pushRef !== own) {
+		return RENAMED;
 	}
 	const remote = current.pushRemote !== undefined ? current.pushRemote : remotes.includes('origin') ? 'origin' : remotes.length === 1 ? remotes[0] : undefined;
 	if (remote === undefined) {
@@ -128,10 +154,7 @@ export function paradisMobilePushPlan(current: IParadisCurrentBranchUpstream, re
 			? { kind: 'refuse', code: 'no-remote', message: 'リモートがありません。PC でリモートを設定してください。' }
 			: { kind: 'refuse', code: 'no-push-target', message: 'push 先のリモートを決められません。PC で上流を設定してください。' };
 	}
-	if (!remotes.includes(remote)) {
-		return { kind: 'refuse', code: 'unknown-remote', message: 'push 先のリモートが見つかりません。PC で push してください。' };
-	}
-	return { kind: 'push', remote, ref: own, publish: true };
+	return remotes.includes(remote) ? { kind: 'push', remote, ref: own, publish: true } : UNKNOWN_REMOTE;
 }
 
 /** 同期の操作。 */

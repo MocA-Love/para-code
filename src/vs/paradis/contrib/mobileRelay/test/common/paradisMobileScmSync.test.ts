@@ -36,45 +36,55 @@ suite('ParadisMobileScmSync', () => {
 		]);
 	});
 
+	// 下の出力は git 2.54 の実測（`remote.<name>.push` が無いと %(push:remoteref) は空、%(push) は push.default で変わる）
 	test('reads the current branch, its upstream and its push destination from git branch --format', () => {
 		assert.deepStrictEqual([
-			paradisParseCurrentBranchUpstream(' \0origin\0refs/heads/main\0origin\0refs/heads/main\0refs/heads/main\n*\0fork/x\0refs/heads/feat\0fork/x\0refs/heads/feat\0refs/heads/feat\n'),
-			paradisParseCurrentBranchUpstream('*\0\0\0\0\0refs/heads/new-branch\n'),
-			paradisParseCurrentBranchUpstream('*\0\0\0\0\0(HEAD detached at abc)\n'),
+			paradisParseCurrentBranchUpstream(' \0origin\0refs/heads/main\0origin\0\0refs/remotes/origin/main\0refs/heads/main\n*\0origin\0refs/heads/same\0origin\0\0refs/remotes/origin/same\0refs/heads/same\n'),
+			paradisParseCurrentBranchUpstream('*\0\0\0\0\0\0refs/heads/lonely\n'),
+			paradisParseCurrentBranchUpstream('*\0\0\0\0\0\0(HEAD detached at abc)\n'),
 		], [
-			{ branch: 'feat', upstreamRemote: 'fork/x', upstreamRef: 'refs/heads/feat', pushRemote: 'fork/x', pushRef: 'refs/heads/feat' },
-			{ branch: 'new-branch', upstreamRemote: undefined, upstreamRef: undefined, pushRemote: undefined, pushRef: undefined },
+			{ branch: 'same', upstreamRemote: 'origin', upstreamRef: 'refs/heads/same', pushRemote: 'origin', pushRef: undefined, pushTracking: 'refs/remotes/origin/same' },
+			{ branch: 'lonely', upstreamRemote: undefined, upstreamRef: undefined, pushRemote: undefined, pushRef: undefined, pushTracking: undefined },
 			undefined,
 		]);
 	});
 
 	test('pushes only to a same-named branch at the git push destination, and refuses renamed or local upstreams', () => {
 		const remotes = ['origin', 'fork'];
-		const branch = (overrides: Partial<Parameters<typeof paradisMobilePushPlan>[0]>) => ({ branch: 'feat', upstreamRemote: 'origin', upstreamRef: 'refs/heads/feat', pushRemote: 'origin', pushRef: 'refs/heads/feat', ...overrides });
-		const plans = [
-			paradisMobilePushPlan(branch({}), remotes),
-			// `git switch -c feat origin/main`（push.default=simple では push 先が決まらない）
-			paradisMobilePushPlan(branch({ upstreamRef: 'refs/heads/main', pushRemote: undefined, pushRef: undefined }), remotes),
-			// push.default=upstream で上流が別名（push 先が main になる）
-			paradisMobilePushPlan(branch({ upstreamRef: 'refs/heads/main', pushRef: 'refs/heads/main' }), remotes),
-			// branch.feat.pushRemote=fork（三角のワークフロー）: 上流は origin/main でも push 先は fork の同じ名前
-			paradisMobilePushPlan(branch({ upstreamRef: 'refs/heads/main', pushRemote: 'fork', pushRef: 'refs/heads/feat' }), remotes),
-			paradisMobilePushPlan(branch({ upstreamRemote: '.', upstreamRef: 'refs/heads/main', pushRemote: undefined, pushRef: undefined }), remotes),
-			paradisMobilePushPlan(branch({ pushRemote: 'git@evil.example:repo.git' }), remotes),
-			paradisMobilePushPlan(branch({ upstreamRemote: undefined, upstreamRef: undefined, pushRemote: undefined, pushRef: undefined }), remotes),
-			paradisMobilePushPlan(branch({ upstreamRemote: undefined, upstreamRef: undefined, pushRemote: undefined, pushRef: undefined }), []),
+		const branch = (branchName: string, overrides: Partial<Parameters<typeof paradisMobilePushPlan>[0]>) => ({ branch: branchName, upstreamRemote: 'origin', upstreamRef: `refs/heads/${branchName}`, pushRemote: 'origin', pushRef: undefined, pushTracking: `refs/remotes/origin/${branchName}`, ...overrides });
+		const cases: [string, Parameters<typeof paradisMobilePushPlan>[0], readonly string[]][] = [
+			['simple, same-named upstream', branch('same', {}), remotes],
+			['simple, renamed upstream (git switch -c feat origin/main)', branch('feat', { upstreamRef: 'refs/heads/main', pushTracking: undefined }), remotes],
+			['upstream, renamed upstream', branch('feat', { upstreamRef: 'refs/heads/main', pushTracking: 'refs/remotes/origin/main' }), remotes],
+			['nothing', branch('same', { pushTracking: undefined }), remotes],
+			['current, renamed upstream', branch('feat', { upstreamRef: 'refs/heads/main', pushTracking: 'refs/remotes/origin/feat' }), remotes],
+			['matching', branch('same', {}), remotes],
+			['triangular with current (pushRemote=fork)', branch('feat', { upstreamRef: 'refs/heads/main', pushRemote: 'fork', pushTracking: 'refs/remotes/fork/feat' }), remotes],
+			['remote.<name>.push refspec to the same name', branch('same', { pushRef: 'refs/heads/same' }), remotes],
+			['remote.<name>.push refspec to another name', branch('same', { pushRef: 'refs/heads/main' }), remotes],
+			['local upstream', branch('feat', { upstreamRemote: '.', upstreamRef: 'refs/heads/main', pushRemote: '.', pushTracking: undefined }), remotes],
+			['push remote not in git remote', branch('same', { pushRemote: 'git@evil.example:repo.git', pushTracking: 'refs/remotes/git@evil.example:repo.git/same' }), remotes],
+			['no upstream (publish)', branch('lonely', { upstreamRemote: undefined, upstreamRef: undefined, pushRemote: undefined, pushTracking: undefined }), remotes],
+			['no upstream, no remote', branch('lonely', { upstreamRemote: undefined, upstreamRef: undefined, pushRemote: undefined, pushTracking: undefined }), []],
 		];
-		assert.deepStrictEqual(plans.map(plan => plan.kind === 'push' ? `${plan.remote} ${plan.ref}${plan.publish ? ' publish' : ''}` : plan.code), [
-			'origin refs/heads/feat',
-			'renamed-upstream',
-			'renamed-upstream',
-			'fork refs/heads/feat',
-			'local-upstream',
-			'unknown-remote',
-			'origin refs/heads/feat publish',
-			'no-remote',
+		assert.deepStrictEqual(cases.map(([name, current, names]) => {
+			const plan = paradisMobilePushPlan(current, names);
+			return `${name}: ${plan.kind === 'push' ? `${plan.remote} ${plan.ref}${plan.publish ? ' publish' : ''}` : plan.code}`;
+		}), [
+			'simple, same-named upstream: origin refs/heads/same',
+			'simple, renamed upstream (git switch -c feat origin/main): renamed-upstream',
+			'upstream, renamed upstream: renamed-upstream',
+			'nothing: no-push-target',
+			'current, renamed upstream: origin refs/heads/feat',
+			'matching: origin refs/heads/same',
+			'triangular with current (pushRemote=fork): fork refs/heads/feat',
+			'remote.<name>.push refspec to the same name: origin refs/heads/same',
+			'remote.<name>.push refspec to another name: renamed-upstream',
+			'local upstream: local-upstream',
+			'push remote not in git remote: unknown-remote',
+			'no upstream (publish): origin refs/heads/lonely publish',
+			'no upstream, no remote: no-remote',
 		]);
-		assert.strictEqual(plans[1].kind === 'refuse' ? plans[1].message : '', '上流が別名です。PC で push してください。');
 	});
 
 	test('classifies sync failures without ever suggesting a force push', () => {

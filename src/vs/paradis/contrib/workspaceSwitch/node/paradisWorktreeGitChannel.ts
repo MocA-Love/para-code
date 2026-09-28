@@ -118,6 +118,13 @@ const PARADIS_GIT_KILL_GRACE_MS = 5_000;
 /** 控えたインデックスを捨てるまでの時間（コミットの待ち時間より十分長く）。 */
 const PARADIS_INDEX_BACKUP_TTL_MS = 10 * 60_000;
 
+/** 控えのファイル名の印（`index.paradis-mobile-<uuid>`）。 */
+const PARADIS_INDEX_BACKUP_INFIX = '.paradis-mobile-';
+
+/** 戻すときに `index.lock` の取得をやり直す時間と間隔。 */
+const PARADIS_INDEX_LOCK_RETRY_MS = 1_500;
+const PARADIS_INDEX_LOCK_RETRY_INTERVAL_MS = 100;
+
 /**
  * 子プロセスを止める。`group` なら（detached で起動した）プロセスグループごと止め、フックの孫プロセスも残さない。
  */
@@ -346,22 +353,24 @@ export class ParadisWorktreeGitService {
 
 	/**
 	 * そのリポジトリ（worktree を含む）のインデックスのファイルを、このプロセスから触れるパスで返す。
-	 * WSL のリポジトリは、ディストロの中の絶対パスを UNC へ書き戻す。
+	 * `--path-format=absolute`（git 2.31 以降）は使わず、`--git-path index` の相対パスをリポジトリのパスに繋ぐ
+	 * （worktree では絶対パスが返る）。WSL のリポジトリは、ディストロの中のパスを UNC へ書き戻す。
 	 */
 	private async gitIndexHostPath(repoPath: string): Promise<string | undefined> {
-		const indexPath = (await this.exec(['-C', paradisWslPathArg(repoPath), 'rev-parse', '--path-format=absolute', '--git-path', 'index'])).trim();
+		const indexPath = (await this.exec(['-C', paradisWslPathArg(repoPath), 'rev-parse', '--git-path', 'index'])).trim();
 		if (indexPath.length === 0) {
 			return undefined;
 		}
 		const wsl = this.isWindowsHost ? paradisParseWslUncPath(repoPath) : undefined;
 		if (wsl !== undefined) {
-			return indexPath.startsWith('/') ? `\\\\${wsl.host}\\${wsl.distro}${indexPath.replace(/\//g, '\\')}` : undefined;
+			const linuxPath = indexPath.startsWith('/') ? indexPath : `${wsl.linuxPath.replace(/\/+$/, '')}/${indexPath}`;
+			return `\\\\${wsl.host}\\${wsl.distro}${linuxPath.replace(/\//g, '\\')}`;
 		}
-		return isAbsolute(indexPath) ? indexPath : undefined;
+		return isAbsolute(indexPath) ? indexPath : join(repoPath, indexPath);
 	}
 
-	/** 控えたインデックス（token → 控えの場所）。コミットの間だけ持つので、古いものは捨てる。 */
-	private readonly indexBackups = new Map<string, { readonly indexPath: string; readonly backupPath: string | undefined; readonly createdAt: number }>();
+	/** 控えたインデックス（token → 控えの場所と、控えたときの元の時刻）。コミットの間だけ持つので、古いものは捨てる。 */
+	private readonly indexBackups = new Map<string, { readonly indexPath: string; readonly backupPath: string | undefined; readonly times: { readonly atime: Date; readonly mtime: Date } | undefined; readonly createdAt: number }>();
 
 	/**
 	 * インデックスのファイルをそのまま控える（モバイルの commitSafe が `git add -A` の前に呼ぶ。Orca W2-15 の Q114 A）。
@@ -376,33 +385,53 @@ export class ParadisWorktreeGitService {
 		for (const [token, entry] of this.indexBackups) {
 			if (now - entry.createdAt > PARADIS_INDEX_BACKUP_TTL_MS) {
 				this.indexBackups.delete(token);
-				if (entry.backupPath !== undefined) {
-					void fs.rm(entry.backupPath, { force: true }).catch(() => undefined);
-				}
 			}
 		}
 		const indexPath = await this.gitIndexHostPath(repoPath);
 		if (indexPath === undefined) {
 			throw new Error('cannot locate the git index');
 		}
+		// 途中でプロセスが落ちるなどして残った古い控えを片付ける（このプロセスの台帳に無いものも含む）
+		await this.removeStaleIndexBackups(indexPath, now);
 		const token = generateUuid();
-		const backupPath = `${indexPath}.paradis-mobile-${token}`;
+		const backupPath = `${indexPath}${PARADIS_INDEX_BACKUP_INFIX}${token}`;
 		let existed = true;
+		let times: { atime: Date; mtime: Date } | undefined;
 		try {
+			const stat = await fs.stat(indexPath);
+			times = { atime: stat.atime, mtime: stat.mtime };
 			await fs.copyFile(indexPath, backupPath, fsConstants.COPYFILE_EXCL);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || existsSync(backupPath)) {
 				throw error;
 			}
 			existed = false;
+			times = undefined;
 		}
-		this.indexBackups.set(token, { indexPath, backupPath: existed ? backupPath : undefined, createdAt: now });
+		this.indexBackups.set(token, { indexPath, backupPath: existed ? backupPath : undefined, times, createdAt: now });
 		return { token };
 	}
 
+	private async removeStaleIndexBackups(indexPath: string, now: number): Promise<void> {
+		const prefix = `${basename(indexPath)}${PARADIS_INDEX_BACKUP_INFIX}`;
+		const dir = dirname(indexPath);
+		const names = await fs.readdir(dir).catch(() => [] as string[]);
+		for (const name of names) {
+			if (!name.startsWith(prefix)) {
+				continue;
+			}
+			const path = join(dir, name);
+			const stat = await fs.stat(path).catch(() => undefined);
+			if (stat !== undefined && now - stat.mtimeMs > PARADIS_INDEX_BACKUP_TTL_MS) {
+				await fs.rm(path, { force: true }).catch(() => undefined);
+			}
+		}
+	}
+
 	/**
-	 * 控えたインデックスへ戻す。git と同じく `index.lock` を排他で作ってから差し替えるので、ほかの git が
-	 * インデックスを書いている最中なら戻さずに `locked` を返す。
+	 * 控えたインデックスへ戻す。git と同じく `index.lock` を排他で作ってから差し替える。ほかの git がロックを
+	 * 持っていれば短い間隔でやり直し、1.5 秒たっても取れなければ戻さずに `locked` を返す。戻したファイルの時刻は
+	 * 控えたときの元の時刻にする（git の stat の情報と揃え、次の status で全ファイルを読み直させない）。
 	 */
 	async restoreIndex(repoPath: string, token: string): Promise<{ readonly restored: boolean; readonly reason?: 'locked' | 'gone' }> {
 		const entry = typeof token === 'string' && /^[0-9a-f-]{36}$/.test(token) ? this.indexBackups.get(token) : undefined;
@@ -410,16 +439,26 @@ export class ParadisWorktreeGitService {
 			return { restored: false, reason: 'gone' };
 		}
 		const lockPath = `${entry.indexPath}.lock`;
-		let lock: fs.FileHandle;
-		try {
-			lock = await fs.open(lockPath, 'wx');
-		} catch {
-			return { restored: false, reason: 'locked' };
+		let lock: fs.FileHandle | undefined;
+		const deadline = Date.now() + PARADIS_INDEX_LOCK_RETRY_MS;
+		for (; ;) {
+			try {
+				lock = await fs.open(lockPath, 'wx');
+				break;
+			} catch {
+				if (Date.now() >= deadline) {
+					return { restored: false, reason: 'locked' };
+				}
+				await new Promise<void>(resolve => setTimeout(resolve, PARADIS_INDEX_LOCK_RETRY_INTERVAL_MS));
+			}
 		}
 		try {
 			if (entry.backupPath !== undefined) {
 				await lock.writeFile(await fs.readFile(entry.backupPath));
 				await lock.close();
+				if (entry.times !== undefined) {
+					await fs.utimes(lockPath, entry.times.atime, entry.times.mtime).catch(() => undefined);
+				}
 				await fs.rename(lockPath, entry.indexPath);
 			} else {
 				await lock.close();

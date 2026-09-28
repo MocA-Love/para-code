@@ -437,31 +437,44 @@ suite('ParadisWorktreeGitService', () => {
 			await fs.mkdir(dir, { recursive: true });
 			const index = join(dir, 'index');
 			await fs.writeFile(index, 'before');
-			const execFile = ((_command: string, _args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
-				queueMicrotask(() => callback(null, `${index}\n`, ''));
+			// `--git-path index` はリポジトリからの相対パスを返す（`--path-format=absolute` は git 2.31 以降なので使わない）
+			const gitArgs: string[][] = [];
+			const execFile = ((_command: string, args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
+				gitArgs.push([...args]);
+				queueMicrotask(() => callback(null, 'index\n', ''));
 				return {} as cp.ChildProcess;
 			}) as typeof cp.execFile;
 			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile, async () => ({}));
+			// 前に落ちたプロセスが残した古い控え（消される）
+			const stale = `${index}.paradis-mobile-00000000-0000-0000-0000-000000000000`;
+			await fs.writeFile(stale, 'old');
+			await fs.utimes(stale, new Date(0), new Date(0));
+			const originalTime = new Date(1_700_000_000_000);
+			await fs.utimes(index, originalTime, originalTime);
 
 			try {
-				const first = await service.backupIndex('/repo');
+				const first = await service.backupIndex(dir);
 				await fs.writeFile(index, 'after add -A');
 				await fs.writeFile(`${index}.lock`, '');
-				const locked = await service.restoreIndex('/repo', first.token);
-				await fs.rm(`${index}.lock`);
-				const restored = await service.restoreIndex('/repo', first.token);
+				const locked = await service.restoreIndex(dir, first.token);
+				// ほかの git がすぐにロックを外せば、やり直して戻せる
+				setTimeout(() => void fs.rm(`${index}.lock`), 200);
+				const restored = await service.restoreIndex(dir, first.token);
 				const content = await fs.readFile(index, 'utf8');
-				const again = await service.restoreIndex('/repo', first.token);
-				const second = await service.backupIndex('/repo');
-				await service.discardIndexBackup('/repo', second.token);
+				const mtime = (await fs.stat(index)).mtimeMs;
+				const again = await service.restoreIndex(dir, first.token);
+				const second = await service.backupIndex(dir);
+				await service.discardIndexBackup(dir, second.token);
 				const leftovers = (await fs.readdir(dir)).sort();
 
-				assert.deepStrictEqual({ locked, restored, content, again, leftovers }, {
+				assert.deepStrictEqual({ locked, restored, content, mtime, again, leftovers, gitPath: gitArgs[0] }, {
 					locked: { restored: false, reason: 'locked' },
 					restored: { restored: true },
 					content: 'before',
+					mtime: originalTime.getTime(),
 					again: { restored: false, reason: 'gone' },
 					leftovers: ['index'],
+					gitPath: ['-C', dir, 'rev-parse', '--git-path', 'index'],
 				});
 			} finally {
 				await fs.rm(dir, { recursive: true, force: true });

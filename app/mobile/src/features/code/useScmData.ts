@@ -246,8 +246,8 @@ export function useScmCommit(space: CodeSpace): CommitState {
 				}
 				return current() ? { ok: true, warning: undefined } : FAILED;
 			}
-			// フックが動くので長めに待つ（PC 側はコミットだけで 120 秒、控え・ステージ・戻しを足した合計より長く）
-			const reply = await sendPcRequest<CommitSafeReply>(pcId, 'scm', { t: 'commitSafe', ws: wsId, message: text, all: scope === 'all' }, { timeoutMs: 240_000 });
+			// フックが動くので長めに待つ（PC 側はコミットだけで 120 秒、HEAD の確認・控え・ステージ・戻しを足した合計より長く）
+			const reply = await sendPcRequest<CommitSafeReply>(pcId, 'scm', { t: 'commitSafe', ws: wsId, message: text, all: scope === 'all' }, { timeoutMs: 310_000 });
 			if (!current()) {
 				return FAILED;
 			}

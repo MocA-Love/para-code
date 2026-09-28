@@ -25,6 +25,7 @@ import {
 	paradisClassifyMobileSyncFailure,
 	paradisMobileCommitFailureIsFixable,
 	paradisParseCurrentBranchUpstream,
+	paradisIsUnsupportedBranchFormat,
 	paradisMobilePushPlan,
 	paradisParseMobileBranchSync,
 	paradisSummarizeMobileCommitFailure,
@@ -141,6 +142,10 @@ function replySyncFailure(context: IParadisMobileRequestContext, operation: Para
 
 registerGitOperation('push', async (_request, context, ws) => {
 	const [branches, remotes] = await Promise.all([context.runGit(['branch', PARADIS_MOBILE_BRANCH_FORMAT]), context.runGit(['remote'])]);
+	if (branches.code !== 0 && paradisIsUnsupportedBranchFormat(branches.stderr)) {
+		context.reply({ error: 'PC の git が古いため push 先を確かめられません。PC で push してください（スマホからの push には git 2.22 以降が要ります）。', code: 'old-git' });
+		return;
+	}
 	const current = branches.code === 0 ? paradisParseCurrentBranchUpstream(branches.stdout) : undefined;
 	if (current === undefined) {
 		context.reply({ error: 'いまのブランチが分からないため push できません（detached HEAD など）。PC で確かめてください。', code: 'no-branch' });
@@ -195,10 +200,31 @@ async function changedFiles(context: IParadisMobileRequestContext): Promise<{ re
 	return { files: paths.slice(0, PROMPT_FILES), more: Math.max(0, paths.length - PROMPT_FILES) };
 }
 
-/** HEAD のコミット（まだコミットが無ければ undefined）。 */
-async function headCommit(context: IParadisMobileRequestContext): Promise<string | undefined> {
+/**
+ * HEAD のコミット。`rev-parse --verify --quiet HEAD` が終了コード 1 で何も出さなければまだコミットが無い（`unborn`）。
+ * それ以外の失敗・時間切れは `error`（HEAD が動いたかを見分けられないので、コミットを始めない・結果を決めない）。
+ */
+async function headCommit(context: IParadisMobileRequestContext): Promise<{ readonly kind: 'ok'; readonly sha: string } | { readonly kind: 'unborn' } | { readonly kind: 'error' }> {
 	const result = await context.runGit(['rev-parse', '--verify', '--quiet', 'HEAD']).catch(() => undefined);
-	return result?.code === 0 && result.stdout.trim().length > 0 ? result.stdout.trim() : undefined;
+	if (result === undefined) {
+		return { kind: 'error' };
+	}
+	const sha = result.stdout.trim();
+	if (result.code === 0 && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha)) {
+		return { kind: 'ok', sha };
+	}
+	return result.code === 1 && sha.length === 0 && result.stderr.trim().length === 0 ? { kind: 'unborn' } : { kind: 'error' };
+}
+
+/** `git commit -m` の既定の整形（`--cleanup=whitespace`）に揃える: 行末の空白・前後の空行・続く空行をまとめる。 */
+export function paradisNormalizeCommitMessage(message: string): string {
+	return message.replace(/\r\n?/g, '\n').split('\n').map(line => line.trimEnd()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** HEAD のコミットのメッセージが、送ったメッセージと同じか（HEAD を動かしたのが自分のコミットか）。 */
+async function headHasMessage(context: IParadisMobileRequestContext, message: string): Promise<boolean> {
+	const result = await context.runGit(['log', '-1', '--format=%B', 'HEAD']).catch(() => undefined);
+	return result?.code === 0 && paradisNormalizeCommitMessage(result.stdout) === paradisNormalizeCommitMessage(message);
 }
 
 registerGitOperation('commitSafe', async (request, context, ws, index) => {
@@ -208,8 +234,13 @@ registerGitOperation('commitSafe', async (request, context, ws, index) => {
 		return;
 	}
 	const all = request.all === true;
-	// フックの途中で止まってもコミット自体はできていることがある（post-commit の時間切れなど）。HEAD が動いたかで見分ける
+	// フックの途中で止まってもコミット自体はできていることがある（post-commit の時間切れなど）。HEAD が動いたかで見分ける。
+	// HEAD を読めなければ、後で見分けられないのでコミットを始めない
 	const headBefore = await headCommit(context);
+	if (headBefore.kind === 'error') {
+		context.reply({ error: 'いまの HEAD を確かめられなかったため、コミットしませんでした。PC で確かめてください。', code: 'head-unknown' });
+		return;
+	}
 	// `git add -A` の前のインデックスをファイルごと控える（部分的なステージや sparse-checkout の印まで、そのまま戻せるように）
 	let backup: string | undefined;
 	if (all) {
@@ -240,7 +271,16 @@ registerGitOperation('commitSafe', async (request, context, ws, index) => {
 		stderr = error instanceof Error ? error.message : String(error);
 	}
 	const headAfter = committed ? undefined : await headCommit(context);
-	if (committed || (headAfter !== undefined && headAfter !== headBefore)) {
+	const headMoved = headAfter !== undefined && (headAfter.kind === 'error' || (headAfter.kind === 'ok' && (headBefore.kind !== 'ok' || headAfter.sha !== headBefore.sha)));
+	// HEAD が動いた（または読めない）のに、それが送ったメッセージのコミットと確かめられなければ、ほかの誰かのコミットか
+	// 分からない。控えから戻すとその後のインデックスを壊しうるので、戻さずに PC で確かめてもらう
+	const ownCommit = headMoved && headAfter?.kind === 'ok' && await headHasMessage(context, message);
+	if (headMoved && !ownCommit) {
+		// 控えは消さない（`index.paradis-mobile-<uuid>` として残り、git channel が 10 分後に片付ける）
+		await replyCommitFailure(context, ws, message, stderr, stdout, backup !== undefined, false);
+		return;
+	}
+	if (committed || ownCommit) {
 		if (backup !== undefined) {
 			await index?.discard(backup).catch(() => undefined);
 		}
