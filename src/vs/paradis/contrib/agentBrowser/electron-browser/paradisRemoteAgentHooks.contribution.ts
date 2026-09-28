@@ -167,7 +167,7 @@ export class ParadisRemoteAgentHooksController extends Disposable {
 
 /** {@link ParadisRemoteAgentHookFiles} が接続先とやり取りするための口。 */
 export interface IParadisRemoteAgentHookFilesHost {
-	readonly fileService: Pick<IFileService, 'exists' | 'readFile' | 'writeFile' | 'copy'>;
+	readonly fileService: Pick<IFileService, 'exists' | 'readFile' | 'writeFile' | 'copy' | 'realpath' | 'stat'>;
 	readonly logService: Pick<ILogService, 'info' | 'warn'>;
 	/** 接続先の名前（ログ用）。 */
 	readonly remoteAuthority: string | undefined;
