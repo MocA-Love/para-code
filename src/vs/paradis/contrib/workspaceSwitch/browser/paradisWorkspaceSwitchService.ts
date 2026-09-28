@@ -749,7 +749,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			}
 			await this.editorScopeService.restoreScope(stateKey);
 			await this.editorScopeService.restoreBackups();
-			this.restorePanelVisibilityFor(stateKey);
+			// パネルの表示は完了参加者（パネル端末の入れ替え）の後で戻す（`restorePanelVisibilityAfterScope`）。
 			recoveredKey = stateKey;
 			// Older attempts for the same endpoint pair are superseded by this recovery. Transactions for
 			// another pair may belong to another window sharing WORKSPACE storage and are left untouched.
@@ -779,6 +779,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				this._onDidSwitchScope.fire(notifyKey);
 			} catch (notifyError) {
 				this.logService.error('[ParadisWorkspaceSwitch] Failed to notify listeners after an interrupted switch recovery', notifyError);
+			} finally {
+				this.restorePanelVisibilityAfterScope(recoveredKey);
 			}
 		}
 	}
@@ -1458,7 +1460,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					this.auxiliaryWindowScopeService.setMainScope(stateKey, true, false);
 					await timePhase('restore_scope', () => this.editorScopeService.restoreScope(stateKey));
 					await timePhase('restore_backups', () => this.editorScopeService.restoreBackups());
-					timeSyncPhase('restore_panels', () => this.restorePanelVisibilityFor(stateKey));
+					// パネルの表示はここでは戻さない。下の finally で完了参加者の後に戻す
+					// （`restorePanelVisibilityAfterScope` のコメント参照）。
 					completed = true;
 					if (switchTransaction !== undefined) {
 						try {
@@ -1496,11 +1499,6 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 								this.clearActiveEntry();
 							}
 						},
-						() => {
-							if (previousKey !== undefined && sourceCaptured) {
-								this.restorePanelVisibilityFor(previousKey);
-							}
-						},
 						() => this.editorScopeService.rollbackSwitch(previousKey, previousUri),
 						() => this.auxiliaryWindowScopeService.setMainScope(previousKey, this.isManagedWorkspaceWindow, false),
 						() => this.editorScopeService.restoreBackups(),
@@ -1534,13 +1532,20 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					// onWillSwitchScope で退避済みの状態 (SCM入力の下書き・park済みターミナル) は
 					// onDidSwitchScope を受け皿として復元されるため、失敗時に発火しないと迷子のまま残る
 					const restoreKey = completed ? stateKey : switchError !== undefined ? previousKey : undefined;
+					// 失敗時にパネルの表示を戻すのは、切り替え元を退避し終えていた回だけ（従来のロールバックと同じ条件）。
+					const panelKey = completed || sourceCaptured ? restoreKey : undefined;
 					if (restoreKey !== undefined) {
 						// 制御フローを担う非同期 participant を先に完走させてから、完了通知を配る。
 						// この await 中も Sequencer のスロットは保持されるので、次の切り替えは始まらない。
-						await timePhase('notify_scope_switched', async () => {
-							await this.runSwitchCompletionParticipants(restoreKey);
-							this._onDidSwitchScope.fire(restoreKey);
-						});
+						try {
+							await timePhase('notify_scope_switched', async () => {
+								await this.runSwitchCompletionParticipants(restoreKey);
+								this._onDidSwitchScope.fire(restoreKey);
+							});
+						} finally {
+							// パネル端末の入れ替えが済んでから開閉を戻す（`restorePanelVisibilityAfterScope`）。
+							timeSyncPhase('restore_panels', () => this.restorePanelVisibilityAfterScope(panelKey));
+						}
 					}
 
 					// 台帳の保険。破棄は `update_folders` の finally にあるが、そこへ到達する前に
@@ -1860,6 +1865,27 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	private savePanelVisibilityFor(stateKey: string): void {
 		this._panelVisibility.set(stateKey, this.layoutService.isVisible(Parts.PANEL_PART));
+	}
+
+	/**
+	 * パネルの開閉を、パネル端末の入れ替え（完了参加者の `applyScope`）が済んだ後で戻す。
+	 *
+	 * 先に戻すと、パネルが開く瞬間に並んでいるのは切り替え元のグループで、行き先のグループはまだ
+	 * 待避中のまま。切り替え元にパネル端末が無ければ0件に見え、upstream のターミナルビューが空の
+	 * シェルを自動で1本作る（`terminalView.ts` の `_initializeTerminal`）。作られたシェルは行き先の
+	 * 持ち物になり、往復のたびに1本ずつ溜まっていた。閉じる側は順番に関係なく何も作らない。
+	 *
+	 * ロールバック・中断した切り替えの復旧も同じ順にする。投げない（切り替えの結果を変えない）。
+	 */
+	private restorePanelVisibilityAfterScope(stateKey: string | undefined): void {
+		if (stateKey === undefined) {
+			return;
+		}
+		try {
+			this.restorePanelVisibilityFor(stateKey);
+		} catch (error) {
+			this.logService.error('[ParadisWorkspaceSwitch] Failed to restore the panel visibility after a switch', error);
+		}
 	}
 
 	private restorePanelVisibilityFor(stateKey: string): void {
