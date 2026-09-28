@@ -29,15 +29,22 @@
  * - 入力は使わない（既存のネイティブ入力バーから送る）。表示専用。
  * - iOSがメモリ圧でWebViewのコンテンツプロセスを落とした場合は自動reloadし、
  *   onNeedResync で最新snapshotを取り直す（画面状態はWebView内にしか無いため）。
+ * - 出力の書き込みは 48ms の窓でまとめて inject する（`termWriteCoalescer.ts`）。inject の連番は
+ *   まとめた単位で振る。snapshot・破棄・裏に回る直前は溜まった分を先に流す。
+ * - 準備完了が 15 秒来なければ 1 回だけ読み直し、それでも来なければエラーと［再試行］を出す
+ *   （`termReadyWatchdog.ts`。裏に回っている間は判定しない）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { StyleSheet } from 'react-native';
+import { AppState, StyleSheet, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import xtermBundle from '../../assets/xterm/xtermBundle.json';
 import type { TermStreamEvent } from '../store.js';
 import { TERMINAL_FOLLOW_MIN_FONT_SIZE, TERMINAL_FONT_SIZE_MIN, terminalGridFor, type TerminalGrid } from '../terminalViewport.js';
 import { colors } from '../theme.js';
+import { EmptyState } from './emptyState.js';
+import { createTermReadyWatchdog } from './termReadyWatchdog.js';
+import { createTermWriteCoalescer } from './termWriteCoalescer.js';
 
 interface TermViewProps {
 	/** レガシーモード（旧PC）用: これまでに受信した出力バッファ全体（差分書き込みする）。 */
@@ -105,6 +112,25 @@ function buildHtml(): string {
 <script>${xtermBundle.unicode11Js}</script>
 <script>
 (function () {
+	// 開発ビルドだけ: xterm は描く面が画面と重なっていないと IntersectionObserver から知らされると
+	// 描画を止め、重なったと知らされるまで溜める（RenderService の _handleIntersectionChange）。
+	// 「キーボードを出している間だけ真っ黒で、閉じると出る」報告の原因候補なので、止められたら
+	// RN 側へ警告を送る（console.warn で Metro のログに出る）。本番の動きは変えない。
+	if (${__DEV__ ? 'true' : 'false'} && typeof window.IntersectionObserver === 'function') {
+		var NativeIntersectionObserver = window.IntersectionObserver;
+		window.IntersectionObserver = function (callback, options) {
+			return new NativeIntersectionObserver(function (entries, observer) {
+				var last = entries[entries.length - 1];
+				if (last && !last.isIntersecting) {
+					window.ReactNativeWebView.postMessage(JSON.stringify({
+						t: 'warn',
+						text: 'xterm paused rendering: not intersecting the viewport (root ' + JSON.stringify(last.rootBounds) + ', target ' + JSON.stringify(last.boundingClientRect) + ')',
+					}));
+				}
+				callback(entries, observer);
+			}, options);
+		};
+	}
 	var term = new Terminal({
 		cols: 80, rows: 24,
 		disableStdin: true,
@@ -558,6 +584,54 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 		webRef.current?.injectJavaScript(`${script}; true;`);
 	};
 
+	// 出力のまとめ役。流す単位 1 つが inject 1 回で、連番もこの単位で振る（WebView 側の欠落検出と対）。
+	const coalescerRef = useRef<ReturnType<typeof createTermWriteCoalescer> | undefined>(undefined);
+	coalescerRef.current ??= createTermWriteCoalescer(data => {
+		const n = ++injectSeqRef.current;
+		inject(`window.__para.write(${n}, ${JSON.stringify(data)})`);
+	});
+	const coalescer = coalescerRef.current;
+
+	// 準備完了の見張り。時間切れで 1 回だけ読み直し、だめならエラーと［再試行］を出す。
+	const [loadFailed, setLoadFailed] = useState(false);
+	/** WebView を読み直す。画面は WebView の中にしか無いので、準備完了の後に snapshot を取り直す。 */
+	const reloadWebView = () => {
+		readyRef.current = false;
+		setReady(false);
+		coalescer.clear();
+		webRef.current?.reload();
+	};
+	const watchdogRef = useRef<ReturnType<typeof createTermReadyWatchdog> | undefined>(undefined);
+	watchdogRef.current ??= createTermReadyWatchdog({
+		isForeground: () => AppState.currentState === 'active',
+		reload: reloadWebView,
+		fail: () => setLoadFailed(true),
+		setTimeout: (callback, ms) => setTimeout(callback, ms),
+		clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+	});
+	const watchdog = watchdogRef.current;
+	useEffect(() => {
+		watchdog.arm();
+		return () => {
+			watchdog.dispose();
+			coalescer.clear();
+		};
+	}, [watchdog, coalescer]);
+	const retryLoad = () => {
+		setLoadFailed(false);
+		watchdog.retry();
+	};
+
+	// 裏に回る直前に溜まった分を流す（戻ったときに、止まる前の出力が欠けて見えないように）。
+	useEffect(() => {
+		const subscription = AppState.addEventListener('change', state => {
+			if (state !== 'active') {
+				coalescer.flushNow();
+			}
+		});
+		return () => subscription.remove();
+	}, [coalescer]);
+
 	/**
 	 * 実測値と設定から固定モードの寸法を決め、WebViewへ適用して上へ通知する。
 	 * 追従モードのときは固定を解除し、`undefined` を通知する（PCへの申告も取り下げられる）。
@@ -607,12 +681,13 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 			return;
 		}
 		if (ev.kind === 'snapshot') {
+			// 溜まった分を先に流してから置き換える（順序を崩さない。流した分は reset で消える）。
+			coalescer.flushNow();
 			streamModeRef.current = true;
 			const n = ++injectSeqRef.current;
 			inject(`window.__para.snapshot(${n}, ${JSON.stringify(ev.data)}, ${ev.cols ?? 0}, ${ev.rows ?? 0}, ${JSON.stringify(ev.unicode ?? '')})`);
 		} else {
-			const n = ++injectSeqRef.current;
-			inject(`window.__para.write(${n}, ${JSON.stringify(ev.data)})`);
+			coalescer.write(ev.data);
 		}
 	};
 
@@ -655,9 +730,10 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 		// レガシー経路は連番検証をしない（injectSeq は同期モード専用。write の第1引数は
 		// WebView 側 checkSeq を通すため、レガシーでも連番を進める）。
 		if (written.length > 0 && output.startsWith(written)) {
-			const n = ++injectSeqRef.current;
-			inject(`window.__para.write(${n}, ${JSON.stringify(output.slice(written.length))})`);
+			coalescer.write(output.slice(written.length));
 		} else {
+			// 書き直しの前に溜まった差分を流す（reset の後に古い差分が届かないように）。
+			coalescer.flushNow();
 			const n = ++injectSeqRef.current;
 			inject(`window.__para.reset(); window.__para.write(${n}, ${JSON.stringify(output)})`);
 		}
@@ -682,9 +758,8 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 			onContentProcessDidTerminate={() => {
 				// iOSがメモリ圧でコンテンツプロセスを落とした。画面状態はWebView内にしか
 				// 無いため、reloadして ready を待ち、再attach（snapshot再同期）で復旧する。
-				readyRef.current = false;
-				setReady(false);
-				webRef.current?.reload();
+				reloadWebView();
+				watchdog.arm();
 			}}
 			onMessage={event => {
 				// 実測値の報告はJSON。旧形式の 'ready' / 'desync' と混ざらないよう先頭で振り分ける。
@@ -706,6 +781,10 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 					return;
 				}
 				if (event.nativeEvent.data === 'ready') {
+					watchdog.ready();
+					setLoadFailed(false);
+					// 読み直す前のページ宛てに溜まっていた分は、新しいページには流さない（snapshot で取り直す）。
+					coalescer.clear();
 					writtenRef.current = '';
 					injectSeqRef.current = 0;
 					readyRef.current = true;
@@ -734,9 +813,31 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 		/>
 	), []);
 
-	return webView;
+	// WebView は常に同じ位置に置き、失敗の表示はその上に重ねるだけにする（木の形を変えると WebView が作り直される）。
+	return (
+		<View style={styles.root}>
+			{webView}
+			{loadFailed ? (
+				<View style={styles.failed}>
+					<EmptyState
+						icon="alert-circle-outline"
+						title="ターミナルを表示できませんでした"
+						message="画面の読み込みが終わりませんでした。［再試行］で読み込み直します。"
+						action={{ label: '再試行', onPress: retryLoad }}
+					/>
+				</View>
+			) : null}
+		</View>
+	);
 }
 
 const styles = StyleSheet.create({
+	root: { flex: 1, backgroundColor: colors.terminalBg },
 	web: { flex: 1, backgroundColor: colors.terminalBg },
+	failed: {
+		...StyleSheet.absoluteFill,
+		alignItems: 'center',
+		justifyContent: 'center',
+		backgroundColor: colors.terminalBg,
+	},
 });
