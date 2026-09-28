@@ -324,6 +324,11 @@ function peekOversizedFrame(data: wsTypes.RawData): IParadisOversizedFramePeek {
  */
 const droppedEventCounts = new Map<string, number>();
 
+/** Forgets the dropped-event counts. For tests, which otherwise depend on which test ran first. */
+export function resetParadisCdpDroppedEventCounts(): void {
+	droppedEventCounts.clear();
+}
+
 function reportOversizedFrame(transport: 'page' | 'browser', peek: IParadisOversizedFramePeek, pendingMethod: string | undefined, frameBytes: number, logService: ILogService): void {
 	const method = pendingMethod ?? peek.method ?? 'unknown';
 	const isResponse = peek.id !== undefined;
