@@ -45,6 +45,7 @@ import {
 	paradisBuildHealthTags,
 	paradisNormalizeHealthRole,
 } from '../common/paradisHealthBeacon.js';
+import { paradisStartMainHangWatchdog } from './paradisMainHangMain.js';
 
 /** 終了時の送信を待ち切る上限。これを超えたら諦めて終了を進める。 */
 const SHUTDOWN_FLUSH_TIMEOUT_MS = 2_000;
@@ -295,5 +296,7 @@ export function paradisRegisterHealthBeacon(
 	const beacon = disposables.add(new ParadisHealthBeacon(windowsMainService, browserViewMainService, lifecycleMainService));
 	channelHost.registerChannel(PARADIS_HEALTH_BEACON_CHANNEL, ProxyChannel.fromService(new ParadisHealthBeaconMainService(beacon), disposables));
 	beacon.start();
+	// main の固まりの見張り（W2-33）も同じ入り口から起こす。配布版でだけ動く。
+	disposables.add(paradisStartMainHangWatchdog());
 	return disposables;
 }
