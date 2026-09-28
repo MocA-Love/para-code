@@ -11,5 +11,6 @@
 // 使い方は paradisMobileRequestHandlers.ts の先頭を参照。
 
 import './paradisMobileDiffReviewRequests.js'; // 差分レビューの印・行のメモ・確認済みのステージ（W2-14 / W2-28）
+import './paradisMobileOpenUrl.js';
 
 export { };

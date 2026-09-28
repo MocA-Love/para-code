@@ -196,6 +196,46 @@ describe('wire golden (app side)', () => {
 		controller.disconnect();
 	});
 
+	it('term: PC の viewport-revoked で寸法の申告を止め、［再び合わせる］はゴールデンと同じ形で送る（W2-19）', async () => {
+		const { controller, pcMux, sent } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		const changes: Array<[string, boolean]> = [];
+		controller.onTerminalViewportRevoked((terminalKey, revoked) => changes.push([terminalKey, revoked]));
+		controller.setTerminalViewport({ cols: 54, rows: 28 });
+		controller.subscribeTerminal('terminal-key-1', () => { });
+		controller.attachTerminal('terminal-key-1');
+		await flush();
+		pcMux.send(Channels.Terminal, encode(termGolden.toMobile.find(message => message.t === 'viewport-revoked')));
+		await flush();
+		const before = sent.term!.length;
+		// 戻された後は、寸法が変わっても再 attach（取りこぼしからの復旧）でも申告しない。
+		controller.setTerminalViewport({ cols: 50, rows: 20 });
+		controller.attachTerminal('terminal-key-1');
+		await flush();
+		const whileRevoked = sent.term!.slice(before).map(message => ({ t: message.t, declared: message.viewCols !== undefined }));
+		const revokedFlag = controller.isTerminalViewportRevoked('terminal-key-1');
+		controller.reclaimTerminalViewport('terminal-key-1');
+		await flush();
+		const reclaim = sent.term!.at(-1);
+		expect({
+			changes,
+			whileRevoked,
+			revokedFlag,
+			reclaim: shapeOf(reclaim),
+			reclaimed: { viewCols: reclaim?.viewCols, reclaim: reclaim?.reclaim },
+			afterReclaim: controller.isTerminalViewportRevoked('terminal-key-1'),
+		}).toEqual({
+			changes: [['terminal-key-1', true], ['terminal-key-1', false]],
+			whileRevoked: [{ t: 'attach', declared: false }],
+			revokedFlag: true,
+			reclaim: shapeOf(termGolden.toPc.find(message => message.t === 'viewport' && message.reclaim === true)),
+			reclaimed: { viewCols: 50, reclaim: true },
+			afterReclaim: false,
+		});
+		controller.disconnect();
+	});
+
 	it('agent: attach はゴールデンと同じ形で、PC が送る snapshot / delta を会話へ積む', async () => {
 		const { controller, pcMux, sent, latest } = await connect();
 		pcMux.send(Channels.State, encode(stateGolden.current));
