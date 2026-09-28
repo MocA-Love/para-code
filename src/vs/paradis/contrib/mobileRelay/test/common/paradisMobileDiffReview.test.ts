@@ -8,7 +8,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBuildReviewNotesPrompt, paradisLocateReviewNoteLine, paradisMobileDiffIdentity, paradisMobileReviewState, paradisParseMobilePorcelainStatus, paradisParseNumstatZ, paradisWithMobileLineCounts } from '../../common/paradisMobileDiffReview.js';
+import { PARADIS_MOBILE_PC_CAPABILITIES } from '../../common/paradisMobileCompat.js';
+import { PARADIS_MOBILE_REVIEW_NOTES_CAPABILITY, PARADIS_MOBILE_REVIEW_STAGE_CAPABILITY, PARADIS_MOBILE_REVIEW_STORE_CAPABILITY, paradisBuildReviewNotesPrompt, paradisLocateReviewNoteLine, paradisMobileDiffIdentity, paradisMobileReviewState, paradisParseMobilePorcelainStatus, paradisParseNumstatZ, paradisWithMobileLineCounts } from '../../common/paradisMobileDiffReview.js';
 
 suite('ParadisMobileDiffReview', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -86,5 +87,12 @@ suite('ParadisMobileDiffReview', () => {
 			'   メモ: use let',
 			'         and rename',
 		].join('\n'));
+	});
+	test('the PC advertises the review capabilities the app looks for', () => {
+		// アプリはこのファイルの名前で PC の広告を調べる（paradisMobileCompat.ts は依存ゼロのため、名前はここと二重に持つ）
+		assert.deepStrictEqual(
+			[PARADIS_MOBILE_REVIEW_STORE_CAPABILITY, PARADIS_MOBILE_REVIEW_NOTES_CAPABILITY, PARADIS_MOBILE_REVIEW_STAGE_CAPABILITY].map(name => PARADIS_MOBILE_PC_CAPABILITIES.includes(name)),
+			[true, true, true],
+		);
 	});
 });

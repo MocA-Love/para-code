@@ -1,5 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { ParadisMobileCapability } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileCompat.js';
 import { appendSpaceNoteEntry, spaceNoteEntry, toggleSpaceNoteTask } from '../../spaceNote.js';
 import type { SpaceNoteSetOptions } from '../../store.js';
 
@@ -17,7 +18,7 @@ import type { SpaceNoteSetOptions } from '../../store.js';
  */
 
 /** PC が noteSet の `base` / `op` と応答の版（`updatedAt`）を扱えることの印。 */
-export const NOTE_CAS_CAPABILITY = 'note.cas.v1';
+export const NOTE_CAS_CAPABILITY = ParadisMobileCapability.NoteCas;
 
 /** 保存する1回ぶんの変更。`next` は手元で当てた後の全文（楽観更新と古い PC への送信に使う）。 */
 export interface SpaceNoteChange {
