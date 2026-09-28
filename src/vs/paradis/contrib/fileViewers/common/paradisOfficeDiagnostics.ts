@@ -196,7 +196,10 @@ export class ParadisOfficeFailureLatch {
 			'owned', FEATURE,
 			// 面を operation に入れる理由は冒頭 2 を参照。ここを縮めると4面が同じ枠を食い合う。
 			`failed:${this.surface}`,
-			new Error(`Office ${this.surface} failed to display (${observation.cause})`),
+			// 元の例外があればそれを渡す。送られるのは `out/vs` と同梱の依存のフレームだけだが、
+			// 以前は常に新しい Error を渡していたので、解析の途中で投げられた TypeError でも
+			// この報告の呼び出し元しか残らず、どこで落ちたのかが分からなかった（8A, 2026-09）。
+			observation.error instanceof Error ? observation.error : new Error(`Office ${this.surface} failed to display (${observation.cause})`),
 			{
 				safe_surface: this.surface,
 				safe_engine: engine,
