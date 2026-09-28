@@ -284,10 +284,19 @@ function paradisNativeModulePaths(event: IParadisSentryEvent): string[] {
  * A Homebrew `ffplay` failing to load a dylib produced nine "Para Code crashes" this way, complete
  * with the user's own paths.
  *
+ * `executablePath` is the crashed process's executable as read from the attached minidump
+ * (`paradisMinidumpExecutablePath`). It is the only reliable input for minidumps: the SDK sends them
+ * as an empty event and Sentry builds the frames and images server-side, so without it every
+ * minidump fell through to the fail-open branch below (27 foreign crashes in 30 days, 2026-09).
+ * When known, it decides alone — the executable is what identifies the process.
+ *
  * Fails open: an event that names no module at all (renderer OOM, for instance) is kept, because
  * losing a real crash costs far more than keeping a foreign one.
  */
-export function paradisIsForeignNativeCrash(event: IParadisSentryEvent): boolean {
+export function paradisIsForeignNativeCrash(event: IParadisSentryEvent, executablePath?: string): boolean {
+	if (executablePath) {
+		return !paradisOwnNativeModulePatterns.some(pattern => pattern.test(executablePath));
+	}
 	const paths = paradisNativeModulePaths(event);
 	if (paths.length === 0) {
 		return false;
@@ -299,7 +308,7 @@ export function paradisIsForeignNativeCrash(event: IParadisSentryEvent): boolean
  * Keeps explicitly classified patched code and automatic errors whose stack enters fork-owned
  * source. Upstream-only VS Code errors are deliberately not sent to the Para Code project.
  */
-export function paradisClassifySentryEvent(event: IParadisSentryEvent): ParadisSentryScope | undefined {
+export function paradisClassifySentryEvent(event: IParadisSentryEvent, nativeExecutablePath?: string): ParadisSentryScope | undefined {
 	const explicitScope = event.tags?.['para.scope'];
 	if (explicitScope === 'owned' || explicitScope === 'patched') {
 		return explicitScope;
@@ -319,7 +328,7 @@ export function paradisClassifySentryEvent(event: IParadisSentryEvent): ParadisS
 	// debug image to *every* JavaScript event — accepting any image at all let the whole upstream
 	// error stream through, which is exactly what happened until paracode-70.
 	if (event.platform === 'native' || event.tags?.['event.environment'] === 'native') {
-		return paradisIsForeignNativeCrash(event) ? undefined : 'unknown';
+		return paradisIsForeignNativeCrash(event, nativeExecutablePath) ? undefined : 'unknown';
 	}
 
 	// Debug images are only consulted as an allow-list, for events shaped by something other than
@@ -329,7 +338,7 @@ export function paradisClassifySentryEvent(event: IParadisSentryEvent): ParadisS
 	if (!hasNativeImage) {
 		return undefined;
 	}
-	return paradisIsForeignNativeCrash(event) ? undefined : 'unknown';
+	return paradisIsForeignNativeCrash(event, nativeExecutablePath) ? undefined : 'unknown';
 }
 
 /**
