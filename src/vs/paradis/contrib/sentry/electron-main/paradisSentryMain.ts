@@ -85,7 +85,9 @@ export function initializeParadisSentryMain(commit: string | undefined, onUnavai
 			enableLogs: false,
 			tracesSampler: context => context.name.startsWith('para.') ? 1 : 0,
 			beforeBreadcrumb: breadcrumb => paradisPrepareSentryBreadcrumb(breadcrumb),
-			beforeSend: event => paradisPrepareSentryEvent(event, 'main'),
+			// The hint carries the minidump attachment, the only place a native crash names its process
+			// before Sentry symbolicates it (see paradisMinidumpModules.ts).
+			beforeSend: (event, hint) => paradisPrepareSentryEvent(event, 'main', hint),
 			beforeSendTransaction: event => paradisPrepareSentryTransaction(event, 'main'),
 		});
 
