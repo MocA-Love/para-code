@@ -24,6 +24,7 @@ import { paradisSpawnNodePty } from './paradisNodePtySpawner.js';
 import { ParadisPtyDaemonHost } from './paradisPtyDaemonHost.js';
 import { paradisRunPtyDaemonLifecycle } from './paradisPtyDaemonLifecycle.js';
 import { paradisServePtyDaemon } from './paradisPtyDaemonServer.js';
+import { ParadisShutdownOrder, paradisShutdownStoppingDescendants } from '../../terminalCloseCleanup/node/paradisTerminalDescendants.js';
 
 /**
  * 先回りで包ませないイベント。
@@ -65,7 +66,9 @@ export async function paradisRunPtyHostDaemon(options: IParadisPtyHostDaemonOpti
 	const disposables = new DisposableStore();
 	disposables.add(served.server);
 
-	const host = disposables.add(new ParadisPtyDaemonHost(paradisSpawnNodePty));
+	// 閉じたターミナルの裏のプロセスを止める（W2-32）。常駐の中で撮ってから終わらせる。
+	const host = disposables.add(new ParadisPtyDaemonHost(paradisSpawnNodePty, (shellPid, end, exited) =>
+		paradisShutdownStoppingDescendants(shellPid, end, exited, logService, ParadisShutdownOrder.CaptureFirst)));
 	served.server.registerChannel(
 		PARADIS_PTY_HOST_CHANNEL,
 		ProxyChannel.fromService(host, disposables, { unbufferedEvents: PARADIS_UNBUFFERED_EVENTS }),

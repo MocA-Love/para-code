@@ -23,6 +23,16 @@ suite('ParadisAgentStatusNotificationTracker', () => {
 		assert.deepStrictEqual(fixture.notifications, [{ token: 'pane-a', status: 'review' }]);
 	});
 
+	test('a completion replayed from the hook spool is marked but never notified, even when a live one follows', () => {
+		const fixture = createFixture();
+		fixture.tracker.accept([{ ...status('pane-a', 'review'), quiet: true }]);
+		fixture.tracker.accept([status('pane-a', 'review')]);
+		fixture.tracker.accept([status('pane-a', 'working')]);
+		fixture.tracker.accept([status('pane-a', 'review')]);
+
+		assert.deepStrictEqual(fixture.notifications, [{ token: 'pane-a', status: 'review' }]);
+	});
+
 	test('notifies a transition from working to review immediately', () => {
 		const fixture = createFixture();
 		fixture.tracker.accept([status('pane-a', 'working')]);

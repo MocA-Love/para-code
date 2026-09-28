@@ -30,6 +30,7 @@ import { IParadisCodexPaneRuntime, paradisCodexPaneEndpointFilePath, paradisCode
 import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
 import { paradisListCurrentPaneTokens } from './paradisLivePaneInstances.js';
 import { IParadisCodexLaunchHomeService, paradisApplyCodexLaunchHome, PARADIS_CODEX_HOME_ENV_VAR } from '../../codexAccounts/browser/paradisCodexLaunchHomeService.js';
+import { paradisPrepareTerminalCloseCleanupEnv } from '../../terminalCloseCleanup/browser/paradisTerminalCloseCleanupEnv.js';
 
 export const IParadisPaneTokenService = createDecorator<IParadisPaneTokenService>('paradisPaneTokenService');
 
@@ -323,4 +324,6 @@ export function paradisPrepareTerminalPaneEnv(instantiationService: IInstantiati
 	} catch {
 		// env注入に失敗してもターミナル生成自体は続行させる
 	}
+	// 閉じたときに裏のプロセスを止めるか（W2-32）の印も、同じ生成の関門で env へ写す。
+	paradisPrepareTerminalCloseCleanupEnv(instantiationService, shellLaunchConfig);
 }

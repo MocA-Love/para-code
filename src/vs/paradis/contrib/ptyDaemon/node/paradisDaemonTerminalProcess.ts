@@ -54,6 +54,7 @@ import { IProcessEnvironment } from '../../../../base/common/platform.js';
 import { IParadisPtyAttachment, IParadisPtyHost } from '../common/paradisPtyProtocol.js';
 import { paradisEncodeTerminalMetadata } from '../common/paradisTerminalMetadata.js';
 import { ParadisPtyDispatch } from './paradisPtyDispatch.js';
+import { paradisShouldStopBackgroundOnClose, paradisWithoutCloseCleanupMarker } from '../../terminalCloseCleanup/common/paradisTerminalCloseCleanup.js';
 import { paradisShellTypeFromTitle } from './paradisShellType.js';
 
 /** ターミナルの持ち主。常駐へ預けて、引き取るときに読み戻す。 */
@@ -212,7 +213,9 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			return invalid;
 		}
 
-		const env: IProcessEnvironment = { ...this.env };
+		// 閉じたときの後始末（W2-32）の印はシェルへ渡さない。`this.env` には残す（台帳に残して、
+		// 引き取るときに読み戻すため）。
+		const env: IProcessEnvironment = { ...paradisWithoutCloseCleanupMarker(this.env) };
 		const injection = await getShellIntegrationInjection(this.shellLaunchConfig, this.options, env, this.logService, this.productService);
 		let injectedArgs: string[] | undefined;
 		if (injection.type === 'injection') {
@@ -463,7 +466,10 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			this.fireExitOnce(undefined);
 			return;
 		}
-		this.tell('shutdown', this.host.kill(this.handle, immediate ? 'SIGKILL' : undefined));
+		// 閉じたときに裏のプロセスを止める（W2-32）かどうかも一緒に伝える。止める処理（表の撮影と
+		// SIGTERM / SIGKILL）は常駐の中で行う。常駐は pty を持ち、アプリより長く生きるので、アプリが
+		// 閉じる途中で落ちても最後まで届く。終了の依頼そのものは今までどおりすぐ送る。
+		this.tell('shutdown', this.host.kill(this.handle, immediate ? 'SIGKILL' : undefined, paradisShouldStopBackgroundOnClose(this.env)));
 		// **終わったことを必ず伝える。** SIGHUP を握り潰すプロセスだと exit が来ないことがあり、
 		// 来ないと器が畳まれず、タブが閉じないまま台帳に残り続ける。upstream も、pty が本当に
 		// 死んだかに関わらず最後は必ず exit を出す。

@@ -60,7 +60,10 @@ export class ParadisAgentStatusNotificationTracker extends Disposable {
 
 			this._pendingActionTimers.deleteAndDispose(paneStatus.token);
 			if (paneStatus.status === 'review') {
-				this._notify(paneStatus.token, paneStatus.status, previous !== undefined ? previousChangedAt : undefined);
+				// Para Code が止まっている間の完了を流し直したもの（W2-20）は、印だけで鳴らさない。
+				if (paneStatus.quiet !== true) {
+					this._notify(paneStatus.token, paneStatus.status, previous !== undefined ? previousChangedAt : undefined);
+				}
 				continue;
 			}
 			if (paneStatus.status !== 'permission' && paneStatus.status !== 'question') {

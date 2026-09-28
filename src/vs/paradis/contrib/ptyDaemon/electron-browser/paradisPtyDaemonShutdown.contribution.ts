@@ -30,6 +30,7 @@ import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../.
 import { IParadisShutdownTerminal, paradisRegisterTerminalShutdownPolicy } from '../../../../workbench/contrib/terminal/browser/paradisTerminalShutdownPolicy.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { paradisTimeTeardownStep } from '../../sentry/common/paradisTeardownTiming.js';
 import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { paradisDaemonHandlesTerminal, paradisParseKeepTerminalsChoice, paradisPlanTerminalKeep, paradisRememberedKeepChoice } from '../../../common/paradisTerminalKeepPlan.js';
 import { IParadisPtyDaemonStatusService, PARADIS_PTY_DAEMON_CHANNEL } from '../common/paradisPtyDaemonStatus.js';
@@ -92,6 +93,7 @@ class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribut
 		this.status = ProxyChannel.toService<IParadisPtyDaemonStatusService>(mainProcessService.getChannel(PARADIS_PTY_DAEMON_CHANNEL));
 
 		this._register(paradisRegisterTerminalShutdownPolicy({
+			name: 'pty-daemon',
 			prepare: reason => this.prepare(reason),
 			shouldKeepProcessesAlive: reason => this.decision?.reason === reason && this.decision.keep,
 			shouldKeepProcessAlive: (reason, terminal) => this.shouldKeepProcessAlive(reason, terminal),
@@ -149,14 +151,16 @@ class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribut
 
 		// ここまで来て初めて聞く。設定より先に確かめるのは、`always` にしている人へ
 		// 「残した」と言って実際には消える、を避けるため。
-		const running = await this.isDaemonRunning();
+		// 閉じる処理の直列パス上の待ちなので、所要時間を測る（W2-26）。
+		const running = await paradisTimeTeardownStep('pty-daemon.status', this.isDaemonRunning(), { log: this.logService });
 		if (!running) {
 			return;
 		}
 		// `running` をそのまま渡す。ここに `true` と書くと、`paradisPlanTerminalKeep` が
 		// `canOutliveWindow` を見る条件を1つでも増やした瞬間、この呼び出しだけが嘘をつく。
 		const plan = paradisPlanTerminalKeep({ ...input, canOutliveWindow: running });
-		this.decision = { reason, keep: plan === 'keep' ? true : await this.askUser(keepable) };
+		// 尋ねた時間も測るが、ユーザーの返事待ちなので Sentry へは出さない（ログにだけ残す）。
+		this.decision = { reason, keep: plan === 'keep' ? true : await paradisTimeTeardownStep('pty-daemon.ask-keep', this.askUser(keepable), { log: this.logService, waitsForUser: true }) };
 		// 閉じた後のウィンドウには何も残らないので、ここで書かないと後から追えない。
 		this.logService.info(`[paradisPtyDaemonShutdown] closing (reason ${reason}, ${keepable} keepable terminal(s)): ${this.decision.keep ? 'leaving them with the daemon' : 'ending them'}`);
 	}
