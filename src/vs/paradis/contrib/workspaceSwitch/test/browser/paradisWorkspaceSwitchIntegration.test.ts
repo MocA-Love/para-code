@@ -15,12 +15,13 @@ import { Disposable, DisposableStore } from '../../../../../base/common/lifecycl
 import { URI } from '../../../../../base/common/uri.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/virtualScheduling/runWithFakedTimers.js';
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { paradisResetSharedPanelStartupValueForTest } from '../../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
+import { paradisResetSharedPanelStartupValueForTest, paradisSharedPanelEnabledAtStartup } from '../../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
 import { IWorkspaceContextService, toWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { Workspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
@@ -28,7 +29,7 @@ import { IWorkspaceFolderCreationData } from '../../../../../platform/workspaces
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../../workbench/common/editor.js';
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IWorkbenchLayoutService } from '../../../../../workbench/services/layout/browser/layoutService.js';
+import { IWorkbenchLayoutService, Parts } from '../../../../../workbench/services/layout/browser/layoutService.js';
 import { FileOperationError, FileOperationResult, IFileService, IFileStat } from '../../../../../platform/files/common/files.js';
 import { paradisIsTerminalInputBlocked, paradisResetTerminalInputGateForTest } from '../../browser/paradisTerminalInputGate.js';
 import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from '../../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
@@ -50,6 +51,9 @@ import { ILifecycleService } from '../../../../../workbench/services/lifecycle/c
 import { ParadisWorkspaceSwitchService } from '../../browser/paradisWorkspaceSwitchService.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../../common/paradisWorkspaceSwitch.js';
 import { PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, paradisSerializeWorkspaceSwitchTransactions } from '../../common/paradisWorkspaceSwitchTransaction.js';
+import { paradisPrepareRestartedTerminalLaunch, paradisRegisterRestartedTerminalCwdResolver, paradisResetRestartedTerminalsForTest } from '../../common/paradisTerminalLaunchPreparers.js';
+import { paradisLookupRestartedShellScope } from '../../common/paradisTerminalSpaceFolder.js';
+import { TerminalCapability } from '../../../../../platform/terminal/common/capabilities/capabilities.js';
 
 suite('ParadisWorkspaceSwitchService integration', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -1850,6 +1854,181 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	// 共通ターミナルを切っていると、パネルのターミナルはスペースごとに入れ替わる。パネルを開くのが
+	// 入れ替えより先だと、切り替え元の（空の）並びが見えた瞬間に upstream が空のシェルを1本作り、
+	// 往復のたびに溜まっていた。開閉は入れ替え（完了参加者）の後に戻す。失敗して戻す時も同じ順。
+	test('restores the panel visibility only after the panel terminals of the destination are back', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			paradisResetSharedPanelStartupValueForTest();
+			paradisSharedPanelEnabledAtStartup({ getValue: () => false });
+			let failNextSwitchToA = false;
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables, async (phase, uri) => {
+				if (failNextSwitchToA && phase === 'end' && uri.path === '/workspace-a') {
+					throw new Error('target deleted');
+				}
+			});
+			let panelVisible = false;
+			const events: string[] = [];
+			Object.assign(harness.layoutService, {
+				isVisible: (part: Parts) => part === Parts.PANEL_PART ? panelVisible : true,
+				setPartHidden: async (hidden: boolean, part: Parts) => {
+					if (part === Parts.PANEL_PART) {
+						panelVisible = !hidden;
+						events.push(hidden ? 'panel:hidden' : 'panel:shown');
+					}
+				},
+			});
+			testDisposables.add(harness.workspaceSwitchService.registerSwitchCompletionParticipant(stateKey => { events.push(`participants:${stateKey}`); }));
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			panelVisible = true;
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			failNextSwitchToA = true;
+			const failed = await Promise.allSettled([harness.workspaceSwitchService.switchRepository('space-a')]);
+
+			assert.deepStrictEqual({ events, failed: failed[0].status, activeStateKey: harness.workspaceSwitchService.activeStateKey }, {
+				events: [
+					'participants:space-b',
+					'participants:space-a', 'panel:hidden',
+					'participants:space-b', 'panel:shown',
+					// ロールバックでも、元のスペースのパネル端末を戻してから開く。
+					'participants:space-b', 'panel:shown',
+				],
+				failed: 'rejected',
+				activeStateKey: 'space-b',
+			});
+		} finally {
+			paradisResetSharedPanelStartupValueForTest();
+			testDisposables.dispose();
+		}
+	});
+
+	// 復元したタブが PTY へ繋げずシェルを起こし直すと、upstream はそのとき開いているフォルダ
+	// （切り替え中なら切り替え元）で起こし、その cwd が所属の証拠になって台帳へ焼き付いていた。
+	test('starts a shell that could not reattach in its own space and records that space, not the folder that happened to be open', async () => {
+		const run = async (variant: 'restarted' | 'restartedWithStalePidLedger' | 'restartedWithoutResolver' | 'reattached') => {
+			const testDisposables = new DisposableStore();
+			const processReady = new DeferredPromise<void>();
+			try {
+				// 起こし直したシェルの cwd は、切り替え元の space-a のフォルダだったとする。
+				const instance = createRestoredTerminalInstance(4501, { initialCwd: '/workspace-a' });
+				Object.assign(instance, { processReady: processReady.p, resource: URI.from({ scheme: 'vscode-terminal', path: '/4501' }) });
+				const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+				await harness.workspaceSwitchService.switchRepository('space-a');
+				// space-b への切り替えで working set を復元している最中（フォルダはまだ space-a）。
+				const restoreContext = testDisposables.add(await paradisRefreshTerminalReviveIndex('space-b', { skipLookup: true, expectedNonces: new Set(['nonce-4501']) }));
+				if (variant === 'restarted' || variant === 'restartedWithStalePidLedger') {
+					testDisposables.add(paradisRegisterRestartedTerminalCwdResolver(async launch => {
+						const stateKey = paradisLookupRestartedShellScope(launch.instanceId, launch.nonce);
+						return stateKey === undefined ? undefined : URI.file(`/workspace-${stateKey.slice('space-'.length)}`);
+					}));
+				}
+				const scope = harness.installTerminalScope(async () => { }, {
+					editorInstances: [instance],
+					worktreeReady: true,
+					// 何世代も前の working set の ID は、前回たまたま同じ番号だった別のスペースの端末を指しうる。
+					persistentProcessScopes: variant === 'restartedWithStalePidLedger' ? [[4501, 'space-a']] : undefined,
+				});
+				await settle();
+				harness.fireInstancesChanged();
+				await settle();
+				if (variant !== 'reattached') {
+					// terminalProcessManager の attach 失敗の分岐と同じ順（問い合わせてから attach 情報を消す）。
+					await paradisPrepareRestartedTerminalLaunch(instance.shellLaunchConfig, 4501, 'nonce-4501', undefined);
+					instance.shellLaunchConfig.attachPersistentProcess = undefined;
+				}
+				// シェルが起動を知らせる前に切り替えは終わっている。
+				restoreContext.dispose();
+				processReady.complete();
+				await settle();
+				return {
+					cwd: instance.shellLaunchConfig.cwd?.toString(),
+					stateKey: scope.getStateKeyForInstance(4501),
+					persistedNonces: harness.persistedNonceScopes(),
+				};
+			} finally {
+				processReady.complete();
+				paradisResetRestartedTerminalsForTest();
+				paradisClearTerminalReviveIndex();
+				testDisposables.dispose();
+			}
+		};
+
+		assert.deepStrictEqual({
+			restarted: await run('restarted'),
+			restartedWithStalePidLedger: await run('restartedWithStalePidLedger'),
+			restartedWithoutResolver: await run('restartedWithoutResolver'),
+			reattached: await run('reattached'),
+		}, {
+			restarted: { cwd: 'file:///workspace-b', stateKey: 'space-b', persistedNonces: [['nonce-4501', 'space-b']] },
+			// pid 台帳の古い番号より、タブが出てきた working set を採る（記録もそちらへ直す）。
+			restartedWithStalePidLedger: { cwd: 'file:///workspace-b', stateKey: 'space-b', persistedNonces: [['nonce-4501', 'space-b']] },
+			// フォルダを決められなかった回でも、起こし直したシェルの cwd は証拠にせず、出てきた working set を採る。
+			restartedWithoutResolver: { cwd: undefined, stateKey: 'space-b', persistedNonces: [['nonce-4501', 'space-b']] },
+			// 繋ぎ直せたシェルの cwd は、そのシェルが作られた場所なので従来どおり証拠になる。
+			reattached: { cwd: undefined, stateKey: 'space-a', persistedNonces: [['nonce-4501', 'space-a']] },
+		});
+	});
+
+	// 更新前のバージョンで溜まった空のシェルが、共通ターミナルへ移した直後にまとめて並ぶ。
+	// 知らせから、使われていないものだけを閉じられるようにする（通知は 3 秒まとめてから出る）。
+	test('offers to close only the never-used shells that moved into the shared panel', () => runWithFakedTimers({ maxTaskCount: 10_000 }, async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			paradisResetSharedPanelStartupValueForTest();
+			const panelShell = (instanceId: number, commandCount: number, title = 'zsh') => {
+				const instance = createRestoredTerminalInstance(instanceId, { initialCwd: '/workspace-b' });
+				const commandDetection = { commands: new Array(commandCount).fill({}), executingCommand: undefined, promptInputModel: { value: '' } };
+				const lines = ['', '~/workspace-b %', ''];
+				Object.assign(instance, {
+					target: TerminalLocation.Panel,
+					title,
+					hasChildProcesses: false,
+					processId: 7000 + instanceId,
+					shellLaunchConfig: { attachPersistentProcess: { id: instanceId, pid: 7000 + instanceId } },
+					capabilities: { get: (capability: TerminalCapability) => capability === TerminalCapability.CommandDetection ? commandDetection : undefined },
+					xterm: { raw: { buffer: { normal: { length: lines.length, getLine: (y: number) => ({ translateToString: () => lines[y] }) } } } },
+				});
+				return instance;
+			};
+			const idle = panelShell(4601, 0);
+			const used = panelShell(4602, 3);
+			const agent = panelShell(4603, 0, 'Fix the login flow');
+			// PC の再起動後に画面ごと起こし直したシェルは、コマンドの履歴を持たないので空に見える。
+			const revived = panelShell(4604, 0);
+			Object.assign(revived.shellLaunchConfig.attachPersistentProcess!, { paradisRevivedFromPersistentProcessId: 44 });
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			harness.installTerminalScope(async () => { }, {
+				groups: [createTerminalGroup([idle]), createTerminalGroup([used]), createTerminalGroup([agent]), createTerminalGroup([revived])],
+				worktreeReady: true,
+				connected: true,
+				connectionState: TerminalConnectionState.Connected,
+				persistentProcessScopes: [[4601, 'space-b'], [4602, 'space-b'], [4603, 'space-b'], [4604, 'space-b']],
+			});
+			await settle();
+			harness.fireGroupsChanged();
+			// 知らせは 3 秒まとめてから出る。仮想時間で進める。
+			await timeout(3_100);
+			const notice = harness.notifications.find(notification => notification.message.includes('共通ターミナル'));
+			notice?.choices[0]?.run();
+			await settle();
+
+			assert.deepStrictEqual({
+				choices: notice?.choices.map(choice => choice.label),
+				closed: harness.safeDisposedTerminalIds,
+			}, {
+				choices: ['使われていない空のシェル 1 個を閉じる'],
+				closed: [4601],
+			});
+		} finally {
+			paradisResetSharedPanelStartupValueForTest();
+			testDisposables.dispose();
+		}
+	}));
+
 });
 
 interface IWorkspaceSwitchIntegrationHarness {
@@ -1859,6 +2038,10 @@ interface IWorkspaceSwitchIntegrationHarness {
 	readonly parts: IEditorGroupsService;
 	readonly terminalEditorService: Pick<ITerminalEditorService, 'instances'>;
 	readonly storageService: IStorageService;
+	/** パネルの開閉を見るテストが差し替える（既定の TestLayoutService は開閉を覚えない）。 */
+	readonly layoutService: IWorkbenchLayoutService;
+	/** `safeDisposeTerminal` で閉じられたターミナル。 */
+	readonly safeDisposedTerminalIds: readonly number[];
 	readonly detachedTerminalInstanceIds: readonly number[];
 	/** park 中のグループ。待避されたかを見るのに使う。 */
 	readonly parkedGroups: ReadonlySet<ITerminalGroup>;
@@ -2139,6 +2322,8 @@ async function createHarness(
 
 	const notifications: IRecordedNotification[] = [];
 	const notificationService = new RecordingNotificationService(notifications) as unknown as INotificationService;
+	const layoutService = instantiationService.get(IWorkbenchLayoutService);
+	const safeDisposedTerminalIds: number[] = [];
 
 	const workspaceSwitchService = testDisposables.add(new ParadisWorkspaceSwitchService(
 		storageService,
@@ -2146,7 +2331,7 @@ async function createHarness(
 		workspaceEditingService,
 		workspaceTrustManagementService as unknown as IWorkspaceTrustManagementService,
 		parts,
-		instantiationService.get(IWorkbenchLayoutService),
+		layoutService,
 		terminalEditorService as unknown as ITerminalEditorService,
 		// 切り替え先フォルダの事前確認。ディレクトリを返せば upstream 側の stat が省かれる経路に
 		// 入り、返さなければ従来どおり upstream が自分で確かめる。
@@ -2182,6 +2367,8 @@ async function createHarness(
 		workspaceSwitchService,
 		configurationService,
 		storageService,
+		layoutService,
+		safeDisposedTerminalIds,
 		parkedGroups,
 		persistedNonceScopes(): readonly (readonly [string, string])[] {
 			const raw = storageService.get('paradis.workspaceSwitch.terminalScopesByNonce', StorageScope.WORKSPACE);
@@ -2272,6 +2459,7 @@ async function createHarness(
 				onDidChangeInstances: onDidChangeInstances.event,
 				onDidChangeConnectionState: onDidChangeConnectionState.event,
 				onAnyInstanceProcessIdReady: Event.None,
+				safeDisposeTerminal: async (instance: ITerminalInstance) => { safeDisposedTerminalIds.push(instance.instanceId); },
 			} satisfies Partial<ITerminalService> as unknown as ITerminalService;
 			const worktreeService = {
 				initializationBarrier: options.worktreeReady === true ? Promise.resolve() : new Promise<void>(() => { }),

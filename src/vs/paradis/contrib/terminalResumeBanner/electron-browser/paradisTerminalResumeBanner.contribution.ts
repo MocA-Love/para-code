@@ -14,17 +14,18 @@
 //    終わった）」ものについて、台帳に前の会話があればバナーを出す
 // 3. バナーから、このタブで続ける／CLI の fork で分岐する／会話 ID をコピーする
 
-import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { Emitter } from '../../../../base/common/event.js';
+import { raceTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
+import { ICommandDetectionCapability, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { TerminalExitReason, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalEditorService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
@@ -35,12 +36,15 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { IParadisAgentStatusSnapshot } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
+import { paradisChangeDirectoryCommand } from '../../workspaceSwitch/common/paradisTerminalSpaceFolder.js';
 import { createParadisTerminalResumeBanner, IParadisResumeBannerHost } from '../browser/paradisTerminalResumeBannerView.js';
-import { IParadisResumeLedgerEntry, paradisCodexThreadIdFromTitle, paradisResumeLedgerKey, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
+import { IParadisResumeLedgerEntry, paradisCodexThreadIdFromTitle, paradisResumeLedgerKey, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
 
 const LEDGER_STORAGE_KEY = 'paradis.terminal.resumeSessions';
 /** 台帳の書き出しをまとめる間隔。hook はツールを使うたびに届くので、毎回は書かない。 */
 const PERSIST_DELAY_MS = 2_000;
+/** 今のフォルダを尋ねる上限。答えなければ「分からない」として扱う。 */
+const CWD_QUERY_TIMEOUT_MS = 2_000;
 
 class ParadisTerminalResumeBannerContribution extends Disposable implements IWorkbenchContribution, IParadisResumeBannerHost {
 	static readonly ID = 'workbench.contrib.paradisTerminalResumeBanner';
@@ -60,6 +64,8 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	readonly onDidChange = this._onDidChange.event;
 	private readonly _persistScheduler = this._register(new RunOnceScheduler(() => this.persist(), PERSIST_DELAY_MS));
 	private _shuttingDown = false;
+	/** 会話のフォルダへ移っている最中のタブ。ボタンの連打で `cd` と再開を二重に送らない。 */
+	private readonly _resuming = new Set<number>();
 
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
@@ -68,6 +74,7 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@ITerminalEditorService private readonly terminalEditorService: ITerminalEditorService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
+		@IFileService private readonly fileService: IFileService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@ILifecycleService lifecycleService: ILifecycleService,
@@ -272,10 +279,30 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	}
 
 	resume(instanceId: number): void {
+		if (this._resuming.has(instanceId)) {
+			return;
+		}
+		this._resuming.add(instanceId);
+		void this.resumeInConversationFolder(instanceId).catch(error => {
+			this.logService.error('[paradisTerminalResumeBanner] could not resume the conversation', error);
+		}).finally(() => this._resuming.delete(instanceId));
+	}
+
+	/**
+	 * このタブで前の会話を続ける。タブのシェルが会話を始めたフォルダと違う場所に居るなら、先に
+	 * そこへ移り、移れたことを確かめてから再開する。
+	 *
+	 * 違うフォルダのまま再開すると、Claude Code は会話をそのフォルダのプロジェクトへ複製して続ける。
+	 * 繋ぎ直しに失敗して別のスペースのフォルダで起き直したタブでこれが実際に起きたので、確かめられ
+	 * ない（フォルダが無い、`cd` が失敗・時間切れ）ときは再開せずに知らせる。新しいタブを開いて
+	 * 再開する方法（分岐と同じ）は取らない。元のタブが空のシェルとして残り、同じ会話のタブが2つに
+	 * 見えるため。
+	 */
+	private async resumeInConversationFolder(instanceId: number): Promise<void> {
 		const offer = this._offers.get(instanceId);
 		const instance = this.terminalService.instances.find(candidate => candidate.instanceId === instanceId);
 		const command = offer === undefined ? undefined : paradisResumeCommandLine(offer.entry.agent, offer.entry.sessionId, 'resume');
-		if (instance === undefined || command === undefined) {
+		if (offer === undefined || instance === undefined || command === undefined) {
 			return;
 		}
 		// コマンドと Enter を送るので、シェルが入力を待っていて入力欄が空のときだけにする。別の
@@ -287,13 +314,81 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 			this.notificationService.info(localize('paradis.resumeBanner.noShellIntegration', "このターミナルではシェルの状態が分からないため、自動では再開しません。シェルのプロンプトで次のコマンドを実行してください: {0}", command));
 			return;
 		}
-		if (commandDetection.executingCommand !== undefined || commandDetection.promptInputModel.value.trim().length > 0) {
+		if (!this.isAtEmptyPrompt(commandDetection)) {
 			this.notificationService.info(localize('paradis.resumeBanner.notAtPrompt', "シェルが入力を待っていて入力欄が空のときに押してください。いま動いているプログラムを終えるか、入力欄を空にしてからもう一度押します。"));
+			return;
+		}
+		const recordedCwd = offer.entry.cwd;
+		const currentCwd = await raceTimeout(instance.getSpeculativeCwd().catch(() => undefined), CWD_QUERY_TIMEOUT_MS);
+		if (recordedCwd !== undefined && paradisResumeNeedsFolderChange(recordedCwd, currentCwd)) {
+			const exists = await this.fileService.stat(this.toCwdUri(recordedCwd)).then(stat => stat.isDirectory, () => false);
+			if (!exists) {
+				this.notificationService.warn(localize('paradis.resumeBanner.folderMissing', "会話を始めたフォルダ {0} が見つからないため、再開しません。別のフォルダで再開すると、会話がそのフォルダのプロジェクトへ複製されます。", recordedCwd));
+				return;
+			}
+			const changeDirectory = paradisChangeDirectoryCommand(instance.shellType, recordedCwd);
+			if (changeDirectory === undefined) {
+				// 引用の仕方が分からないシェルへ自動で `cd` を送ると、パスの一部が別の意味に取られうる。
+				this.notificationService.warn(localize('paradis.resumeBanner.unknownShell', "このシェルでは会話を始めたフォルダ {0} へ自動で移れないため、再開しません。そのフォルダへ移ってから、もう一度押してください。", recordedCwd));
+				return;
+			}
+			const outcome = instance.isDisposed || !this.isAtEmptyPrompt(commandDetection)
+				? 'failed'
+				: await this.changeDirectory(instance, commandDetection, changeDirectory, recordedCwd);
+			if (outcome === 'typed') {
+				// `cd` の最中に打たれた文字に再開コマンドをつなげると、Enter を押していないのに実行される。
+				this.notificationService.info(localize('paradis.resumeBanner.typedDuringMove', "会話を始めたフォルダへ移りましたが、その間に入力された文字があるため再開していません。入力欄を空にしてから、もう一度押してください。"));
+				return;
+			}
+			if (outcome !== 'moved') {
+				this.notificationService.warn(localize('paradis.resumeBanner.folderChangeFailed', "会話を始めたフォルダ {0} へ移れなかったため、再開を取りやめました。そのフォルダへ移ってから、もう一度押してください。", recordedCwd));
+				return;
+			}
+		}
+		if (instance.isDisposed || this._offers.get(instanceId) !== offer) {
+			return;
+		}
+		// `cd` を待っている間に打ち始めた文字や、動き出したプログラムがあれば、そこへ混ぜない。
+		if (!this.isAtEmptyPrompt(commandDetection)) {
+			this.notificationService.info(localize('paradis.resumeBanner.notAtPromptAfterMove', "会話を始めたフォルダへ移りましたが、入力欄が空でないため再開していません。入力欄を空にしてから、もう一度押してください。"));
 			return;
 		}
 		this.withdrawOffer(instanceId);
 		void instance.sendText(command, true);
 		instance.focus();
+	}
+
+	private isAtEmptyPrompt(commandDetection: ICommandDetectionCapability): boolean {
+		return commandDetection.executingCommand === undefined && commandDetection.promptInputModel.value.trim().length === 0;
+	}
+
+	/**
+	 * `cd` を送り、次のプロンプトが入力を待つまで見届ける（`paradisChangeDirectoryBeforeResume`）。
+	 *
+	 * フォルダの確認: シェル統合はコマンドの終了を知らせた後にフォルダの変化を知らせる（zsh / bash の
+	 * precmd の順）。終了の時点ではまだ古いフォルダが見えることがあるので、フォルダの知らせも少し待つ。
+	 */
+	private async changeDirectory(instance: ITerminalInstance, commandDetection: ICommandDetectionCapability, changeDirectory: string, path: string): Promise<ParadisChangeDirectoryOutcome> {
+		const cwdDetection = instance.capabilities.get(TerminalCapability.CwdDetection);
+		const arrived = cwdDetection === undefined ? undefined : Event.toPromise(Event.filter(cwdDetection.onDidChangeCwd, cwd => !paradisResumeNeedsFolderChange(path, cwd)));
+		try {
+			return await paradisChangeDirectoryBeforeResume({
+				onCommandFinished: commandDetection.onCommandFinished,
+				onPromptInputStarted: commandDetection.promptInputModel.onDidStartInput,
+				onInput: instance.onDidInputData,
+				send: text => instance.sendText(text, true),
+				isAtEmptyPrompt: () => this.isAtEmptyPrompt(commandDetection),
+				confirmFolder: async () => {
+					const currentCwd = await raceTimeout(instance.getSpeculativeCwd().catch(() => undefined), CWD_QUERY_TIMEOUT_MS);
+					if (currentCwd !== undefined && !paradisResumeNeedsFolderChange(path, currentCwd)) {
+						return true;
+					}
+					return arrived !== undefined && await raceTimeout(arrived, CWD_QUERY_TIMEOUT_MS) !== undefined;
+				},
+			}, changeDirectory);
+		} finally {
+			arrived?.cancel();
+		}
 	}
 
 	fork(instanceId: number): void {

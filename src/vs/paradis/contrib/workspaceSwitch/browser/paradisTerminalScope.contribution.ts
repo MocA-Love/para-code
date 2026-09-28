@@ -15,6 +15,7 @@ import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationHandle, INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { TerminalExitReason, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
+import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { IProcessDetails } from '../../../../platform/terminal/common/terminalProcess.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -35,7 +36,9 @@ import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTe
 import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisParseTerminalActiveGroups, paradisTerminalGroupIdentity, paradisUpdateTerminalActiveGroup } from '../common/paradisTerminalActiveGroup.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { paradisIsSharedPanelShell, paradisSharedPanelEnabledAtStartup } from '../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
+import { paradisIsIdleEmptyShell, paradisIsSharedPanelShell, paradisSharedPanelEnabledAtStartup } from '../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
+import { paradisForgetRestartedTerminal, paradisWasTerminalShellRestarted } from '../common/paradisTerminalLaunchPreparers.js';
+import { paradisPickRestartedShellScope, paradisRegisterRestartedShellScopeLookup, paradisRestartedShellRecordScope } from '../common/paradisTerminalSpaceFolder.js';
 
 /**
  * ターミナルグループをリポジトリ単位でスコープする (機能1 Phase 2)。
@@ -161,6 +164,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * しかも書き換えが非同期なため判定を引く時刻次第で答えが変わる。
 	 */
 	private readonly _restoredInstances = new Set<number>();
+	/**
+	 * 繋ぎ直しに失敗してシェルを起こし直した端末 → そのとき根拠から引けた持ち主。
+	 * 起こし直したシェルはこのスペースのフォルダで起きている（`paradisTerminalSpaceCwd.contribution.ts`）。
+	 */
+	private readonly _restartedShellScopes = new Map<number, string>();
 	private readonly _candidateCapturedInstances = new Set<number>();
 	private readonly _initialCwds = new Map<number, string>();
 	private readonly _initialCwdResolvedInstances = new Set<number>();
@@ -266,6 +274,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private readonly _seenOutsideSharedPanel = new Set<number>();
 	/** このウィンドウで共通ターミナルへ移した（元の所属を消した）ターミナルの数。1度だけ知らせる。 */
 	private _sharedPanelMigratedCount = 0;
+	/** 共通ターミナルへ移したターミナル。知らせから空のシェルを片付けるときの対象（これ以外は閉じない）。 */
+	private readonly _sharedPanelMigratedInstanceIds = new Set<number>();
 	private readonly _sharedPanelMigrationNotice = this._register(new RunOnceScheduler(() => this.notifySharedPanelMigration(), 3_000));
 	/** 共通ターミナルへ移す前の所属（nonce → stateKey）。設定をオフに戻したときに戻す。 */
 	private static readonly SHARED_PANEL_FORMER_SCOPES_STORAGE_KEY = 'paradis.workspaceSwitch.sharedPanelFormerScopes';
@@ -306,6 +316,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			listOrphanPtyIdsByNonce: () => this.listOrphanPtyIdsByNonce(),
 			listHeldPtyIds: () => this.listHeldPtyIds(),
 		}));
+		// 繋ぎ直しに失敗した復元タブのシェルを、持ち主のスペースのフォルダで起こすための問い合わせ口。
+		this._register(paradisRegisterRestartedShellScopeLookup((instanceId, nonce) => this.resolveRestartedShellScope(instanceId, nonce)));
 
 		const loadedMapping = this.loadMapping();
 		const initialPartition = paradisPartitionPersistentProcessScopesByKnownScope(loadedMapping, this.knownStateKeys());
@@ -997,7 +1009,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			this._activeFallbackInstances.delete(instanceId);
 			this._inheritedGroupScopes.delete(instanceId);
 			this._restoredInstances.delete(instanceId);
+			this._restartedShellScopes.delete(instanceId);
+			paradisForgetRestartedTerminal(instanceId);
 			this._sharedPanelInstanceIds.delete(instanceId);
+			this._sharedPanelMigratedInstanceIds.delete(instanceId);
 			this._seenOutsideSharedPanel.delete(instanceId);
 			this._stableScopeTracker.retire(instanceId);
 			this.persistMapping();
@@ -1188,6 +1203,21 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			this._activeFallbackInstances.delete(instance.instanceId);
 			return;
 		}
+		// 繋ぎ直しに失敗して起こし直したシェルの cwd は、持ち主ではなく「そのとき開いていたフォルダ」
+		// （切り替え中なら切り替え元）で決まっている。cwd を証拠に採る前に、出てきた working set と
+		// 固定した補助ウィンドウを引く。どちらも無いとき（起動時のメインウィンドウ）だけ従来どおり cwd へ進む。
+		if (this._restoredInstances.has(instance.instanceId) && paradisWasTerminalShellRestarted(instance.instanceId)) {
+			const restartedStateKey = paradisRestartedShellRecordScope({
+				restartOwner: this._restartedShellScopes.get(instance.instanceId),
+				workingSet: this.editorContainerStateKey(instance),
+				pinnedWindow: this.pinnedWindowStateKey(instance),
+			});
+			if (restartedStateKey !== undefined) {
+				this._instanceScopes.set(instance.instanceId, restartedStateKey);
+				this._activeFallbackInstances.delete(instance.instanceId);
+				return;
+			}
+		}
 		const initialCwdStateKey = this.resolveInstanceInitialCwdScope(instance);
 		const candidate = paradisResolveTerminalScopeCandidate({
 			initialCwdResolved: this._initialCwdResolvedInstances.has(instance.instanceId),
@@ -1239,6 +1269,72 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return undefined;
 		}
 		return this._restoreScopeCandidates.get(instance.instanceId);
+	}
+
+	/**
+	 * エディタのタブが、別のスペースに固定した補助ウィンドウに居るならそのスペース。
+	 * メインウィンドウは「今アクティブなスペース」を答えるだけで根拠にならないので除く。
+	 */
+	private pinnedWindowStateKey(instance: ITerminalInstance): string | undefined {
+		if (!this.terminalEditorService.instances.includes(instance)) {
+			return undefined;
+		}
+		// 入力の登録と一覧の更新がずれる瞬間は引けない（upstream は投げる）。そのときは根拠なしとして扱う。
+		try {
+			const input = this.terminalEditorService.getInputFromResource(instance.resource);
+			const group = input.group ?? this.editorGroupsService.groups?.find(candidate => candidate.contains(input));
+			if (group === undefined || group.windowId === this.editorGroupsService.mainPart.windowId) {
+				return undefined;
+			}
+			const scope = this.auxiliaryWindowScopeService.resolveGroup(group);
+			return scope.kind === 'managed' ? scope.stateKey : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * 繋ぎ直しに失敗した復元タブの持ち主を、推測を交えずに引く（無ければ undefined）。
+	 * 起こし直すシェルの開始フォルダを決めるために、PTY を起こす直前に呼ばれる。
+	 */
+	private resolveRestartedShellScope(instanceId: number, nonce: string): string | undefined {
+		const instance = this.findLiveInstance(instanceId);
+		if (instance !== undefined) {
+			if (this.isSharedPanelInstance(instance)) {
+				// 共通ターミナルに持ち主は無い。開始フォルダは upstream（共通ターミナルの設定）に任せる。
+				return undefined;
+			}
+			// 端末が一覧に現れた直後で、まだ誰も控えていないことがある。容れ物はこの瞬間にしか読めない。
+			this.ensureScopeCandidate(instance);
+		}
+		const guessed = this._activeFallbackInstances.has(instanceId) || this._inheritedGroupScopes.has(instanceId);
+		// pid 台帳は引かない（`IParadisRestartedShellScopeEvidence.ledger` の注意を参照）。
+		const stateKey = paradisPickRestartedShellScope({
+			restoreContext: paradisTerminalRestoreStateKey(nonce),
+			workingSet: this._restoreScopeCandidates.get(instanceId),
+			parked: this.getParkedEditorStateKey(instanceId),
+			ledger: this._restoredNonceScopes.get(nonce) ?? this._nonceScopes.get(nonce),
+			recorded: guessed ? undefined : this._instanceScopes.get(instanceId),
+			pinnedWindow: instance === undefined ? undefined : this.pinnedWindowStateKey(instance),
+		});
+		if (stateKey !== undefined) {
+			this._restartedShellScopes.set(instanceId, stateKey);
+		}
+		// 復元の直後に pid 台帳から付けた所属は、attach に失敗した古い ID で引いた値であり得る。
+		// タブが出てきた working set が分かっていて食い違うなら、そちらへ直す（容れ物の方が確かな根拠）。
+		const containerStateKey = paradisTerminalRestoreStateKey(nonce) ?? this._restoreScopeCandidates.get(instanceId);
+		const recordedStateKey = this._instanceScopes.get(instanceId);
+		if (instance !== undefined && containerStateKey !== undefined && recordedStateKey !== undefined && recordedStateKey !== containerStateKey) {
+			this.logService.warn(`[paradisTerminalScope] terminal ${instanceId} could not reattach and was recorded in another space than the working set it came from; keeping the working set's space`);
+			this._instanceScopes.set(instanceId, containerStateKey);
+			this._activeFallbackInstances.delete(instanceId);
+			this._inheritedGroupScopes.delete(instanceId);
+			// pid 台帳はここでは書かない。この時点の ID は失敗した古い番号で、新しいシェルの ID が
+			// 決まったとき（`onAnyInstanceProcessIdReady`）に書き直される。
+			this.recordNonceScopes([instance]);
+			this._stableScopeTracker.observe(instanceId, this.resolveScope(instanceId));
+		}
+		return stateKey;
 	}
 
 	/**
@@ -2285,6 +2381,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		// エディタのタブからパネルへ移した端末は、ユーザー自身の操作なので数えない。
 		if (!this._seenOutsideSharedPanel.has(instance.instanceId)) {
 			this._sharedPanelMigratedCount++;
+			this._sharedPanelMigratedInstanceIds.add(instance.instanceId);
 			this._sharedPanelMigrationNotice.schedule();
 		}
 		const nonce = this.instanceNonce(instance);
@@ -2327,7 +2424,76 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return;
 		}
 		this.storageService.store(key, true, StorageScope.APPLICATION, StorageTarget.USER);
-		this.notificationService.info(localize('paradis.sharedPanel.migrated', "下部パネルの {0} 個のターミナルを、どのスペースにも属さない共通ターミナルにしました。元に戻すには、Para Code の設定の「ターミナル」で「下部パネルのターミナルをスペース共通にする」をオフにして、ウィンドウを再読み込みします。", this._sharedPanelMigratedCount));
+		const message = localize('paradis.sharedPanel.migrated', "下部パネルの {0} 個のターミナルを、どのスペースにも属さない共通ターミナルにしました。元に戻すには、Para Code の設定の「ターミナル」で「下部パネルのターミナルをスペース共通にする」をオフにして、ウィンドウを再読み込みします。", this._sharedPanelMigratedCount);
+		const idle = this.idleMigratedSharedPanelShells();
+		if (idle.length === 0) {
+			this.notificationService.info(message);
+			return;
+		}
+		// 前のバージョンでは、スペースを行き来するたびにパネルへ空のシェルが作られて溜まっていた。
+		// 移した直後に一度に並ぶので、使われていないものだけをまとめて閉じる口を添える。
+		this.notificationService.prompt(Severity.Info, message, [{
+			label: localize('paradis.sharedPanel.closeIdleShells', "使われていない空のシェル {0} 個を閉じる", idle.length),
+			run: () => this.closeIdleMigratedSharedPanelShells(),
+		}]);
+	}
+
+	/**
+	 * 共通ターミナルへ移したもののうち、一度も使われていない空のシェル。
+	 * 判定は `paradisIsIdleEmptyShell`（分からないものは閉じない側へ倒す）。
+	 */
+	private idleMigratedSharedPanelShells(): ITerminalInstance[] {
+		return this.terminalService.instances.filter(instance => {
+			if (!this._sharedPanelMigratedInstanceIds.has(instance.instanceId) || !this.isSharedPanelInstance(instance)) {
+				return false;
+			}
+			const commandDetection = instance.capabilities.get(TerminalCapability.CommandDetection);
+			const attach = instance.shellLaunchConfig.attachPersistentProcess;
+			const shellReplaced = attach === undefined
+				|| attach.paradisRevivedFromPersistentProcessId !== undefined
+				|| paradisWasTerminalShellRestarted(instance.instanceId)
+				|| (attach.paradisAdopted !== true && attach.pid !== undefined && instance.processId !== undefined && attach.pid !== instance.processId);
+			const buffer = this.readBufferShape(instance, commandDetection?.currentCommand?.promptStartMarker?.line);
+			return paradisIsIdleEmptyShell({
+				hasShellIntegration: commandDetection !== undefined,
+				hasChildProcesses: instance.hasChildProcesses,
+				commandCount: commandDetection?.commands.length ?? 0,
+				isExecuting: commandDetection?.executingCommand !== undefined,
+				hasPendingInput: (commandDetection?.promptInputModel.value.trim().length ?? 0) > 0,
+				title: instance.title,
+				reattachedToSameShell: !shellReplaced,
+				nonEmptyLinesBeforePrompt: buffer?.beforePrompt,
+				nonEmptyLines: buffer?.total,
+			});
+		});
+	}
+
+	/** 画面の空でない行を数える。読めなければ undefined（閉じない側へ倒れる）。 */
+	private readBufferShape(instance: ITerminalInstance, promptStartLine: number | undefined): { readonly total: number; readonly beforePrompt: number | undefined } | undefined {
+		const buffer = instance.xterm?.raw.buffer.normal;
+		if (buffer === undefined) {
+			return undefined;
+		}
+		let total = 0;
+		let beforePrompt = 0;
+		for (let y = 0; y < buffer.length; y++) {
+			if ((buffer.getLine(y)?.translateToString(true).trim().length ?? 0) > 0) {
+				total++;
+				if (promptStartLine !== undefined && y < promptStartLine) {
+					beforePrompt++;
+				}
+			}
+		}
+		return { total, beforePrompt: promptStartLine !== undefined && promptStartLine >= 0 ? beforePrompt : undefined };
+	}
+
+	/** ボタンを押した時点で改めて判定し直し、その時点でも空のものだけを閉じる。 */
+	private closeIdleMigratedSharedPanelShells(): void {
+		const idle = this.idleMigratedSharedPanelShells();
+		for (const instance of idle) {
+			void this.terminalService.safeDisposeTerminal(instance);
+		}
+		this.logService.info(`[paradisTerminalScope] closed ${idle.length} idle shell(s) that were moved into the shared panel`);
 	}
 
 	/**
