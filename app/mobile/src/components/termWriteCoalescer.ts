@@ -10,6 +10,7 @@
  * - 暇なときの最初の 1 件はすぐ流す（キーのこだまを遅らせない）
  * - 以降は 48ms の窓ごとに 1 回だけ流す
  * - 溜まった量が 512K 文字を超えたら窓を待たずに流す（PC のフロー制御が壊れても膨らみ続けない）
+ * - 次の 1 件が来た時点で窓を過ぎていれば、タイマーを待たずにまとめて流す（JS が詰まってタイマーが遅れても止まらない）
  *
  * 流す単位 1 つが WebView への書き込み 1 回になるので、取りこぼし検出の連番（`injectSeq`）は
  * 呼び出し側がこの単位で振る。snapshot・破棄・裏に回る直前は、呼び出し側が `flushNow()` で
@@ -84,7 +85,9 @@ export function createTermWriteCoalescer(deliver: (data: string) => void, clock:
 			}
 			pending.push(data);
 			pendingChars += data.length;
-			if (pendingChars > TERM_WRITE_MAX_PENDING_CHARS) {
+			// 窓を過ぎているのに溜まったまま（JS が詰まってタイマーが動けていない）なら、タイマーを待たずに流す。
+			// 詰まりが続く間はタイマーの順番が回ってこず、出力が何秒も止まって見える。
+			if (pendingChars > TERM_WRITE_MAX_PENDING_CHARS || now - lastFlushAt >= TERM_WRITE_FLUSH_WINDOW_MS) {
 				flushNow();
 				return;
 			}

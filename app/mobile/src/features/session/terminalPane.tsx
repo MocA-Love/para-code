@@ -66,7 +66,11 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 	bottomInset: number;
 }) {
 	const terminalKey = terminal.terminalKey;
-	const output = useAppStore(s => s.terminalOutput.get(terminalKey) ?? '');
+	// 旧 PC の経路（出力の文字列を丸ごと渡す）でだけ使う。同期ストリームの snapshot を一度受けたら、TermView は
+	// これを見ない。見ない値を購読し続けると、出力 1 フレームごとにこのペイン全体が再描画され、大量出力の間
+	// JS が詰まる（出力は TermView がストリームから直接受けるので、ここで追う必要は無い）。
+	const streamingRef = useRef(false);
+	const output = useAppStore(s => streamingRef.current ? '' : (s.terminalOutput.get(terminalKey) ?? ''));
 	const { attachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, scrollTerminal, terminalPrefs, setTerminalPref, setTerminalViewport, activePcId, fsUpload } = useAppStore(useShallow(s => ({
 		attachTerminal: s.attachTerminal,
 		subscribeTerminal: s.subscribeTerminal,
@@ -85,6 +89,14 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 	// 別の画面がまだ見ていれば解かない。
 	useEffect(() => terminalAttachments.hold(terminalKey), [terminalKey]);
 	const subscribe = useMemo(() => (listener: Parameters<typeof subscribeTerminal>[1]) => subscribeTerminal(terminalKey, listener), [terminalKey, subscribeTerminal]);
+	useEffect(() => {
+		streamingRef.current = false;
+		return subscribeTerminal(terminalKey, event => {
+			if (event.kind === 'snapshot') {
+				streamingRef.current = true;
+			}
+		});
+	}, [terminalKey, subscribeTerminal]);
 	const resync = useMemo(() => () => attachTerminal(terminalKey), [terminalKey, attachTerminal]);
 
 	// TermView が実測したグリッドと設定から、PC への寸法の申告を組み立てる（旧画面と同じ）。

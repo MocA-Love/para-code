@@ -111,23 +111,27 @@ suite('ParadisMobileWorkspaceProvider viewport take-back', () => {
 	});
 
 	test('keeps the phone size for a few seconds after the phone leaves, and does not resize when it comes back', () => runWithFakedTimers({}, async () => {
-		const { provider, inbound, resized, subscribers, restoredAs } = createFixture();
+		const { provider, inbound, resized, restoredAs } = createFixture();
 		await inbound({ t: 'viewport', viewCols: 50, viewRows: 20 });
 		// タブを離れる（申告の取り下げと detach）。
 		await inbound({ t: 'viewport' });
 		await inbound({ t: 'detach' });
 		await new Promise(resolve => setTimeout(resolve, 1000));
 		const whileAway = { resized: restoredAs(resized), status: paradisMobileTerminalViewportStatus.get(1) };
-		// すぐ戻ってきた。
-		subscribers.set(1, new Set(['phone']));
+		// すぐ戻ってきた。スマホは測り直すまで寸法を付けずに attach する。元の猶予（4 秒）が切れても、
+		// attach で数え直した猶予のうちは戻さず、測り直した寸法が来れば何も起きない。
+		await inbound({ t: 'attach', epoch: 3 });
+		await new Promise(resolve => setTimeout(resolve, 3500));
+		const whileMeasuring = restoredAs(resized);
 		await inbound({ t: 'viewport', viewCols: 50, viewRows: 20 });
 		await new Promise(resolve => setTimeout(resolve, 10_000));
 		const cameBack = restoredAs(resized);
 		// 今度は離れたまま。
 		await inbound({ t: 'detach' });
 		await new Promise(resolve => setTimeout(resolve, 10_000));
-		assert.deepStrictEqual({ whileAway, cameBack, left: restoredAs(resized), status: paradisMobileTerminalViewportStatus.get(1) }, {
+		assert.deepStrictEqual({ whileAway, whileMeasuring, cameBack, left: restoredAs(resized), status: paradisMobileTerminalViewportStatus.get(1) }, {
 			whileAway: { resized: '50x20 exact', status: { cols: 50, rows: 20 } },
+			whileMeasuring: '50x20 exact',
 			cameBack: '50x20 exact',
 			left: '50x20 exact | PC',
 			status: undefined,

@@ -89,6 +89,22 @@ describe('createTermWriteCoalescer', () => {
 		expect(delivered).toEqual(['a', 'fresh']);
 	});
 
+	it('flushes on the next write once the window has passed, even when the timer has not run (a busy JS thread)', () => {
+		const { clock, advance, pendingTimers } = fakeClock();
+		const delivered: string[] = [];
+		const coalescer = createTermWriteCoalescer(data => delivered.push(data), clock);
+		coalescer.write('a');
+		coalescer.write('b');
+		// 時計だけ進み、タイマーは JS が詰まっていて走らない。
+		const now = clock.now;
+		const late = now() + TERM_WRITE_FLUSH_WINDOW_MS * 3;
+		clock.now = () => late;
+		coalescer.write('c');
+		clock.now = now;
+		expect({ delivered, timers: pendingTimers() }).toEqual({ delivered: ['a', 'bc'], timers: 0 });
+		advance(1);
+	});
+
 	it('does not wait longer than one window when the clock jumps backwards', () => {
 		const { clock, advance } = fakeClock();
 		const delivered: string[] = [];
