@@ -113,13 +113,24 @@ export function absorbTrimmedIntoHistory(
 	epoch: string | undefined,
 	previousLive: readonly AgentChatMessage[],
 	nextLive: readonly AgentChatMessage[],
+	/**
+	 * この更新で切られた発言（切る前の結合結果 = 直前の発言 + 届いた差分 のうち、500 件からはみ出した古い側）。1 回の差分に
+	 * 500 件を超える発言が載ると、差分自身の古い側も切られ、直前の発言だけからでは繰り入れきれないため（統合確認の NG）。
+	 */
+	trimmedByUpdate: readonly AgentChatMessage[] = [],
 ): AgentHistoryState | undefined {
 	const oldestNext = nextLive[0]?.rev;
 	if (history === undefined || epoch === undefined || history.epoch !== epoch || oldestNext === undefined) {
 		return history;
 	}
 	const newestHistory = history.messages.at(-1)?.rev;
-	const trimmed = previousLive.filter(message => message.rev < oldestNext && (newestHistory === undefined || message.rev > newestHistory));
+	const candidates = new Map<number, AgentChatMessage>();
+	for (const message of [...previousLive, ...trimmedByUpdate]) {
+		if (message.rev < oldestNext && (newestHistory === undefined || message.rev > newestHistory) && !candidates.has(message.rev)) {
+			candidates.set(message.rev, message);
+		}
+	}
+	const trimmed = [...candidates.values()].sort((a, b) => a.rev - b.rev);
 	if (trimmed.length === 0) {
 		return history;
 	}

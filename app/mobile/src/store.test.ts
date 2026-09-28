@@ -1627,6 +1627,47 @@ describe('MobileController agent approval', () => {
 		await expect(answer).resolves.toEqual({ status: 'accepted' });
 	});
 
+	it('hands over the messages a large delta trimmed, including the old side of the delta itself', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
+		const message = (rev: number) => ({ rev, role: 'user', kind: 'text', text: `m${rev}` });
+		pcMux.send(Channels.State, encode(desktopState([{ id: 7, title: 'claude', agentToken: 'agent-7' }])));
+		await flush();
+		controller.attachAgent('terminal-7');
+		await flush();
+		pcMux.send(Channels.Agent, encode({
+			t: 'snapshot', id: 7, token: 'agent-7', agent: 'claude', epoch: 'e1', rev: 500,
+			messages: Array.from({ length: 300 }, (_, index) => message(200 + index)), capabilities: { agentActions: true },
+		}));
+		await flush();
+		// 1 回の差分に 600 件（rev 500〜1099）
+		pcMux.send(Channels.Agent, encode({
+			t: 'delta', id: 7, token: 'agent-7', agent: 'claude', epoch: 'e1', rev: 1100,
+			messages: Array.from({ length: 600 }, (_, index) => message(500 + index)),
+		}));
+		await flush();
+		const chat = latest?.agentChats.get('terminal-7');
+		expect({
+			live: [chat?.messages[0]?.rev, chat?.messages.at(-1)?.rev, chat?.messages.length],
+			trimmed: [chat?.trimmedByDelta?.epoch, chat?.trimmedByDelta?.messages[0]?.rev, chat?.trimmedByDelta?.messages.at(-1)?.rev, chat?.trimmedByDelta?.messages.length],
+			truncated: chat?.truncated,
+		}).toEqual({ live: [600, 1099, 500], trimmed: ['e1', 200, 599, 400], truncated: true });
+		// 切らなかった次の差分では持ち越さない
+		pcMux.send(Channels.Agent, encode({ t: 'delta', id: 7, token: 'agent-7', agent: 'claude', epoch: 'e1', rev: 1100, messages: [], info: { model: 'opus' } }));
+		await flush();
+		expect(latest?.agentChats.get('terminal-7')?.trimmedByDelta).toBeUndefined();
+	});
+
 	it('reads the numbered approval options from the PC and answers with opt:<n> and the label (W2-21)', async () => {
 		const mobile = generateIdentity();
 		const pc = generateIdentity();

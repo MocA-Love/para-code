@@ -59,6 +59,28 @@ describe('agentHistory (W2-30)', () => {
 		expect(absorbTrimmedIntoHistory(history, 'e2', previousLive, nextLive)).toBe(history);
 	});
 
+	it.each([600, 520, 1500])('keeps the history and a continuous order when one delta carries %i messages', count => {
+		// 古い発言 100〜199、手元の新しい発言 200〜699（500 件）。1 回の差分で 700 から count 件が届く
+		const history: AgentHistoryState = { epoch: 'e1', messages: Array.from({ length: 100 }, (_, index) => message(100 + index)), hasMore: true, capped: false, loading: false };
+		const previousLive = Array.from({ length: 500 }, (_, index) => message(200 + index));
+		const fresh = Array.from({ length: count }, (_, index) => message(700 + index));
+		// ストア（store.ts の delta）と同じ切り方: 結合して新しい 500 件を残し、はみ出した古い側を渡す
+		const merged = [...previousLive, ...fresh];
+		const nextLive = merged.slice(-500);
+		const trimmedByDelta = merged.slice(0, merged.length - 500);
+		const absorbed = absorbTrimmedIntoHistory(history, 'e1', previousLive, nextLive, trimmedByDelta);
+		const reconciled = reconcileAgentHistory(absorbed, 'e1', nextLive);
+		const revs = [...(reconciled?.messages ?? []), ...nextLive].map(entry => entry.rev);
+		expect({
+			kept: reconciled !== undefined,
+			first: revs[0],
+			last: revs.at(-1),
+			continuous: revs.every((rev, index) => index === 0 || rev === revs[index - 1]! + 1),
+		}).toEqual({ kept: true, first: 100, last: 699 + count, continuous: true });
+		// 直前の発言だけからでは、差分の中で切られた分が抜けて古い発言が捨てられていた
+		expect(reconcileAgentHistory(absorbTrimmedIntoHistory(history, 'e1', previousLive, nextLive), 'e1', nextLive)).toBeUndefined();
+	});
+
 	it('keeps at most the history limit and then says the rest is on the PC', () => {
 		const history: AgentHistoryState = { epoch: 'e1', messages: Array.from({ length: AGENT_HISTORY_KEEP_LIMIT }, (_, index) => message(index)), cursor: 'f:1:0', hasMore: true, capped: false, loading: false };
 		const previousLive = [message(AGENT_HISTORY_KEEP_LIMIT), message(AGENT_HISTORY_KEEP_LIMIT + 1)];
