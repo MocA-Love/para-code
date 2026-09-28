@@ -47,6 +47,7 @@ suite('ParadisMobileDiffReviewRequests', () => {
 
 	function createHost(services: Map<unknown, unknown>, sent: IReply[], git: FakeGit, files: Record<string, string> = {}): IParadisMobileRequestHost {
 		services.set(IFileService, {
+			realpath: async (uri: URI) => uri,
 			stat: async (uri: URI) => {
 				const text = files[uri.path.slice('/repo/'.length)];
 				if (text === undefined) {
@@ -72,7 +73,12 @@ suite('ParadisMobileDiffReviewRequests', () => {
 		return new Map<unknown, unknown>([[IStorageService, store.add(new InMemoryStorageService())]]);
 	}
 
-	const flush = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+	/** 処理の await（ファイルを読む・起動を待つ）が一巡するまで待つ（送信中の印が次のテストへ残らないように）。 */
+	const flush = async () => {
+		for (let turn = 0; turn < 5; turn++) {
+			await new Promise<void>(resolve => setTimeout(resolve, 0));
+		}
+	};
 	const dispatch = (host: IParadisMobileRequestHost, body: Record<string, unknown>) => paradisDispatchMobileRequest('scm', { ws: 'repo', ...body }, 'phone', host);
 
 	test('marks files one at a time, keeps them in the workspace storage and drops committed ones on read', async () => {
@@ -109,7 +115,7 @@ suite('ParadisMobileDiffReviewRequests', () => {
 		await flush();
 
 		assert.deepStrictEqual(sent.slice(1), [
-			{ t: 'review', ws: 'repo', marks: {}, notes: [], id: '2' },
+			{ t: 'review', ws: 'repo', revision: 2, marks: {}, notes: [], id: '2' },
 			{ error: 'invalid marks', id: '3' },
 			{ error: 'invalid marks', id: '4' },
 			{ error: 'unknown workspace: elsewhere', id: '5' },
@@ -219,6 +225,33 @@ suite('ParadisMobileDiffReviewRequests', () => {
 				{ path: 'gone.ts', reason: 'gone' },
 			],
 			mark: true,
+		});
+	});
+
+	test('stages a reviewed new file and keeps it reviewed by re-checking its size and time after git add', async () => {
+		const status = '?? n.ts\n?? big.ts\n';
+		const git = new FakeGit(status, '', '', { status: 'A  n.ts\n?? big.ts\n', unstaged: '', staged: '2\t0\tn.ts\0' });
+		const files = { 'n.ts': 'a\nb' };
+		const sent: IReply[] = [];
+		const host = createHost(createServices(), sent, git, files);
+		// big.ts は大きさを調べられなかった（上限より後ろ・読めない）新しいファイルの代わり
+		const reviewed = paradisMobileDiffIdentity({ x: '?', y: '?', path: 'n.ts', size: files['n.ts'].length, mtime: 1 });
+		const noSize = paradisMobileDiffIdentity({ x: '?', y: '?', path: 'big.ts' });
+		dispatch(host, { t: 'reviewSet', id: '1', marks: [{ path: 'n.ts', identity: reviewed }, { path: 'big.ts', identity: noSize }] });
+		dispatch(host, { t: 'reviewStage', id: '2', entries: [{ path: 'n.ts', identity: reviewed }, { path: 'big.ts', identity: noSize }] });
+		await flush();
+
+		const reply = sent.find(candidate => candidate.id === '2')!;
+		assert.deepStrictEqual({
+			add: git.calls.filter(call => call.startsWith('add')),
+			skipped: reply.skipped,
+			remapped: reply.marks!['n.ts'].identity === paradisMobileDiffIdentity({ x: 'A', y: ' ', path: 'n.ts', stagedAdded: 2, stagedRemoved: 0 }),
+			revisions: [sent[0].revision, reply.revision],
+		}, {
+			add: ['add -- :(literal)n.ts'],
+			skipped: [{ path: 'big.ts', reason: 'unsupported' }],
+			remapped: true,
+			revisions: [1, 2],
 		});
 	});
 

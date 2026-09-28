@@ -74,6 +74,7 @@ import { paradisContentHashResponse } from '../common/paradisMobileContentHash.j
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
 import { paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts, paradisWithUntrackedFileStats } from '../common/paradisMobileDiffReview.js';
+import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
 import { paradisSendAgentInteractionKeys, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
@@ -1418,16 +1419,6 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * 既存の分岐で処理しなかった要求を、別ファイルで登録した新しい種類（W2-17 の登録表）へ回す。
 	 * 既存の種類は登録できない（PARADIS_MOBILE_BUILTIN_REQUEST_KINDS）ので、既存の処理を置き換えることはない。
 	 */
-	/** スペースの中のファイルの大きさと最終更新時刻（外へ出るリンク・フォルダ・読めないものは undefined）。 */
-	private async statMobileWorkspaceFile(root: URI, relativePath: string): Promise<{ size: number; mtime: number } | undefined> {
-		const uri = await paradisResolveMobileWorkspacePath(this.fileService, root, relativePath);
-		if (uri === undefined) {
-			return undefined;
-		}
-		const stat = await this.fileService.stat(uri);
-		return stat.isDirectory ? undefined : { size: stat.size, mtime: stat.mtime };
-	}
-
 	private dispatchRegisteredRequest(channel: 'scm' | 'fs', message: unknown, mobileId: string | undefined): boolean {
 		const services = this.requestHandlerServices;
 		if (services === undefined) {
@@ -1827,7 +1818,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					paradisParseMobilePorcelainStatus(status.stdout),
 					unstagedCounts?.code === 0 ? unstagedCounts.stdout : undefined,
 					stagedCounts?.code === 0 ? stagedCounts.stdout : undefined,
-				), path => this.statMobileWorkspaceFile(repoUri, path));
+				), paths => paradisStatMobileWorkspaceFiles(this.fileService, repoUri, paths));
 				reply({ t: 'status', branch: branch.stdout.trim(), files });
 			} else if (msg.t === 'diff') {
 				const args = msg.staged ? ['diff', '--cached'] : ['diff'];

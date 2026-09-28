@@ -35,6 +35,7 @@ export interface ReviewMarksController {
 }
 
 interface ReviewReply {
+	readonly revision?: unknown;
 	readonly marks?: unknown;
 	readonly notes?: unknown;
 }
@@ -50,7 +51,20 @@ export function useReviewMarksController(space: CodeSpace): ReviewMarksControlle
 	/** 要求の順番。後から出した要求（読み直し・付け外し）の応答だけを反映する。 */
 	const sequenceRef = useRef(0);
 
+	/**
+	 * 最後に反映した記録の版（PC がスペースごとに保存のたびに増やす）。後から届いた古い版の応答（別の要求の応答が
+	 * 追い越した・iPhone と iPad が同時に変えた）で手元を巻き戻さない。
+	 */
+	const revisionRef = useRef<{ readonly key: string; readonly revision: number } | undefined>(undefined);
+
 	const applyReply = useCallback((reply: ReviewReply) => {
+		if (typeof reply.revision === 'number') {
+			const last = revisionRef.current;
+			if (last !== undefined && last.key === key && reply.revision < last.revision) {
+				return;
+			}
+			revisionRef.current = { key, revision: reply.revision };
+		}
 		if (reply.marks !== undefined) {
 			replaceReviewMarks(key, parseReviewMarks(reply.marks));
 		}

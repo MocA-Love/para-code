@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
 	PARADIS_MOBILE_REVIEW_NOTES_CAPABILITY,
 	PARADIS_MOBILE_REVIEW_STAGE_CAPABILITY,
@@ -58,8 +58,6 @@ export function useReviewNotesController(space: CodeSpace, review: ReviewMarksCo
 	/** 応答を待っている要求の数（重なっても最後の応答が返るまで busy）。 */
 	const [pending, setPending] = useState(0);
 	const busy = pending > 0;
-	/** 要求の順番。先に出した要求の応答が後から届いても、新しい応答の中身で上書きしない。 */
-	const sequenceRef = useRef(0);
 	const { pcId, wsId } = space;
 	const { applyReply } = review;
 
@@ -68,13 +66,11 @@ export function useReviewNotesController(space: CodeSpace, review: ReviewMarksCo
 		if (wsId === undefined) {
 			return undefined;
 		}
-		const sequence = ++sequenceRef.current;
 		setPending(count => count + 1);
 		try {
 			const reply = await sendPcRequest<ReviewReply>(pcId, 'scm', { ...body, ws: wsId }, timeoutMs !== undefined ? { timeoutMs } : undefined);
-			if (sequence === sequenceRef.current) {
-				applyReply(reply);
-			}
+			// 古い版の応答は applyReply が捨てる（PC がスペースの記録の版を返す）
+			applyReply(reply);
 			return reply;
 		} catch (error) {
 			showFailure(failure, error);

@@ -98,13 +98,16 @@ suite('ParadisMobileDiffReview', () => {
 	test('untracked files carry their size and time so that a rewrite changes the identity; folders do not', async () => {
 		const files = paradisParseMobilePorcelainStatus('?? a.ts\n?? dir/\n M b.ts\n');
 		const stats = new Map([['a.ts', { size: 10, mtime: 5 }]]);
-		const withStats = await paradisWithUntrackedFileStats(files, async path => stats.get(path));
-		const rewritten = await paradisWithUntrackedFileStats(files, async path => path === 'a.ts' ? { size: 10, mtime: 6 } : undefined);
+		const asked: (readonly string[])[] = [];
+		const withStats = await paradisWithUntrackedFileStats(files, async paths => { asked.push(paths); return new Map([...stats].filter(([path]) => paths.includes(path))); });
+		const rewritten = await paradisWithUntrackedFileStats(files, async () => new Map([['a.ts', { size: 10, mtime: 6 }]]));
 		assert.deepStrictEqual({
 			files: withStats,
+			asked,
 			changed: paradisMobileDiffIdentity(withStats[0]!) !== paradisMobileDiffIdentity(rewritten[0]!),
 		}, {
 			files: [{ x: '?', y: '?', path: 'a.ts', size: 10, mtime: 5 }, { x: '?', y: '?', path: 'dir/' }, { x: ' ', y: 'M', path: 'b.ts' }],
+			asked: [['a.ts']],
 			changed: true,
 		});
 	});
@@ -116,9 +119,11 @@ suite('ParadisMobileDiffReview', () => {
 			paradisStagedConsistently(worktree, { x: 'M', y: ' ', path: 'a.ts', stagedAdded: 3, stagedRemoved: 1 }),
 			paradisStagedConsistently(worktree, { x: 'M', y: ' ', path: 'a.ts', stagedAdded: 4, stagedRemoved: 1 }),
 			paradisStagedConsistently(worktree, { x: 'M', y: 'M', path: 'a.ts', stagedAdded: 3, stagedRemoved: 1, added: 1, removed: 0 }),
-			paradisStagedConsistently(untracked, { x: 'A', y: ' ', path: 'n.ts', size: 4, mtime: 9 }),
-			paradisStagedConsistently(untracked, { x: 'A', y: ' ', path: 'n.ts', size: 4, mtime: 10 }),
+			// 追跡中になった後の status には大きさが載らないので、調べ直した大きさと時刻で比べる
+			paradisStagedConsistently(untracked, { x: 'A', y: ' ', path: 'n.ts' }, { size: 4, mtime: 9 }),
+			paradisStagedConsistently(untracked, { x: 'A', y: ' ', path: 'n.ts' }, { size: 4, mtime: 10 }),
+			paradisStagedConsistently(untracked, { x: 'A', y: ' ', path: 'n.ts' }),
 			paradisStagedConsistently({ x: 'M', y: 'M', path: 'm.ts' }, { x: 'M', y: ' ', path: 'm.ts' }),
-		], [true, false, false, true, false, false]);
+		], [true, false, false, true, false, false, false]);
 	});
 });

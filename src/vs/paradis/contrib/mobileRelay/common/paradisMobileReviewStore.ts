@@ -46,11 +46,16 @@ export interface IParadisMobileReviewSpace {
 	readonly notes: readonly IParadisMobileReviewNote[];
 	/** 最後に変えた時刻。スペースが多すぎるときに古いものから捨てるのに使う。 */
 	readonly updatedAt: number;
+	/**
+	 * 記録の版。保存するたびに1ずつ増える（{@link paradisNextMobileReviewRevision}）。応答に載せ、アプリは
+	 * 手元より新しい版の応答だけを反映する（後から届いた古い応答で巻き戻さないため）。
+	 */
+	readonly revision: number;
 }
 
 export type ParadisMobileReviewStore = ReadonlyMap<string, IParadisMobileReviewSpace>;
 
-const EMPTY_SPACE: IParadisMobileReviewSpace = { marks: {}, notes: [], updatedAt: 0 };
+const EMPTY_SPACE: IParadisMobileReviewSpace = { marks: {}, notes: [], updatedAt: 0, revision: 0 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -152,7 +157,13 @@ export function paradisParseMobileReviewStore(raw: string | undefined): Map<stri
 		if (ws.length === 0 || ws.length > MAX_KEY_LENGTH || !isRecord(entry)) {
 			continue;
 		}
-		store.set(ws, { marks: parseMarks(entry.marks), notes: parseNotes(entry.notes), updatedAt: validTime(entry.updatedAt) ?? 0 });
+		const revision = entry.revision;
+		store.set(ws, {
+			marks: parseMarks(entry.marks),
+			notes: parseNotes(entry.notes),
+			updatedAt: validTime(entry.updatedAt) ?? 0,
+			revision: typeof revision === 'number' && Number.isSafeInteger(revision) && revision >= 0 ? revision : 0,
+		});
 	}
 	return store;
 }
@@ -177,6 +188,7 @@ export function paradisTrimMobileReviewSpace(space: IParadisMobileReviewSpace): 
 		marks: Object.fromEntries(Object.entries(space.marks).filter(([path]) => !droppedMarks.has(path))),
 		notes: space.notes.filter(note => !droppedNotes.has(note.id)),
 		updatedAt: space.updatedAt,
+		revision: space.revision,
 	};
 }
 
@@ -204,6 +216,11 @@ export function paradisSerializeMobileReviewStore(store: ParadisMobileReviewStor
 
 export function paradisMobileReviewSpace(store: ParadisMobileReviewStore, ws: string): IParadisMobileReviewSpace {
 	return store.get(ws) ?? EMPTY_SPACE;
+}
+
+/** 保存する記録に、いま保存されているものの次の版を付ける。 */
+export function paradisNextMobileReviewRevision(stored: IParadisMobileReviewSpace, next: IParadisMobileReviewSpace): IParadisMobileReviewSpace {
+	return { ...next, revision: stored.revision + 1 };
 }
 
 /** 印を1件変える要求。`identity` が null なら外す。 */
@@ -247,7 +264,7 @@ export function paradisApplyMobileReviewMarkChanges(space: IParadisMobileReviewS
 	const kept = entries.length <= PARADIS_MOBILE_REVIEW_MAX_MARKS
 		? marks
 		: Object.fromEntries(entries.sort(([, a], [, b]) => b.reviewedAt - a.reviewedAt).slice(0, PARADIS_MOBILE_REVIEW_MAX_MARKS));
-	return { marks: kept, notes: space.notes, updatedAt: now };
+	return { ...space, marks: kept, updatedAt: now };
 }
 
 /**
@@ -257,7 +274,7 @@ export function paradisApplyMobileReviewMarkChanges(space: IParadisMobileReviewS
 export function paradisPruneMobileReviewSpace(space: IParadisMobileReviewSpace, changedPaths: ReadonlySet<string>): IParadisMobileReviewSpace {
 	const entries = Object.entries(space.marks);
 	const kept = entries.filter(([path]) => changedPaths.has(path));
-	return kept.length === entries.length ? space : { marks: Object.fromEntries(kept), notes: space.notes, updatedAt: space.updatedAt };
+	return kept.length === entries.length ? space : { ...space, marks: Object.fromEntries(kept) };
 }
 
 /**
