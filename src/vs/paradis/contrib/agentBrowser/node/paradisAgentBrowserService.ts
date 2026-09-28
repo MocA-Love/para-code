@@ -44,6 +44,8 @@ import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } f
 import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
+import { IParadisReplayedAgentPrompt, IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, paradisPlanAgentHookReplay } from '../common/paradisAgentHookSpool.js';
+import { paradisPruneAgentHookSpool, paradisTakeAgentHookSpool } from './paradisAgentHookSpoolStore.js';
 import { onDidChangeParadisCodexHomes, paradisCodexHome, paradisCodexHomes } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from './paradisAgentHooksSetup.js';
 import { ParadisAgentHooksAutoInstall } from './paradisAgentHooksAutoInstall.js';
@@ -134,6 +136,11 @@ interface IParadisPaneStatusEntry {
 	readonly cwd?: string;
 	/** Stop後のバックグラウンドタスク補正によるworkingだけがstale降格の対象。 */
 	readonly backgroundCompletionFallback?: boolean;
+	/**
+	 * Para Code が止まっている間の hook を控えから流し直して付けた「確認待ち」（W2-20）。印は出すが
+	 * 鳴らさない。次に本物の hook で状態が書き換わると消える（書き換える側はこの項目を持ち越さない）。
+	 */
+	readonly quiet?: true;
 }
 
 function isExactRecord(value: unknown): value is Record<string, unknown> {
@@ -449,6 +456,17 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 状態の消滅を完了（タブの緑の点）と数えないようにする。
 	 */
 	private readonly _awaitingUserTokens = new Set<string>();
+	/** hook の控え（W2-20）の置き場。ポートファイルと同じフォルダの下。 */
+	private readonly _hookSpoolDir: string;
+	/** 起動時の控えの掃除。流し直しはこれが済んでから読む（読みかけのファイルを消させない）。 */
+	private _hookSpoolPruned: Promise<unknown> = Promise.resolve();
+	/** 控えを読みに行ったペイン（1 つのペインにつき 1 度だけ読む）。 */
+	private readonly _hookSpoolCheckedTokens = new Set<string>();
+	/**
+	 * 控えから流し直した許可要求・質問のうち、ウィンドウ側で画面を確かめてもらう前のもの（W2-20）。
+	 * 確かめられるまで状態にも承認カードにもしない。本物の hook が来たら捨てる。
+	 */
+	private readonly _replayedPrompts = new Map<string, { readonly status: 'permission' | 'question'; readonly record: IParadisSpooledAgentHook }>();
 	/**
 	 * 一度でもエージェントhook (POST /agent-hook) を発火したペイントークンの集合。
 	 * 「そのターミナルでエージェントCLIが動いた実績」の判定に使う（プレーンなターミナルと
@@ -552,6 +570,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	) {
 		super();
 		this._portFilePath = join(this._userDataPath, PARADIS_MCP_PORT_FILE_NAME);
+		this._hookSpoolDir = join(this._userDataPath, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME);
+		this._hookSpoolPruned = paradisPruneAgentHookSpool(this._hookSpoolDir).catch(() => undefined);
 		this._cdpGateway = this._register(new ParadisCdpGateway(
 			{
 				captureIngressLease: token => this.captureIngressLease(token),
@@ -1073,7 +1093,111 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 		}
 		this._processOwnerRelease(acceptance);
+		// Para Code が止まっている間の hook の控えを流し直す（W2-20）。受け口はトークンが今生きている
+		// ペインのものかを確かめるので、ペインの同期が済んだこの時点で読む。
+		for (const pane of acceptedManifest.panes) {
+			this._scheduleAgentHookSpoolReplay(pane.token);
+		}
 		return { accepted: true, revision: acceptance.revision };
+	}
+
+	private _scheduleAgentHookSpoolReplay(token: string): void {
+		if (this._hookSpoolCheckedTokens.has(token) || this._terminalExitedTokens.has(token)) {
+			return;
+		}
+		this._hookSpoolCheckedTokens.add(token);
+		void this._replayAgentHookSpool(token).catch(error => {
+			this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] could not replay spooled agent hooks', error));
+		});
+	}
+
+	/**
+	 * 1 つのペインの控えを流し直す。控えは読んだら消す。
+	 *
+	 * - 本物の hook がこの起動で既に届いたペインは、控えより新しいので状態を触らない。
+	 * - 控えの hook は発信元のプロセスを確かめられないので、所有者の判定は transcript だけで行う
+	 *   （pid 無しの hook と同じ fail-closed の判定）。
+	 * - 状態を触るのは、まだ状態が付いていないペインだけ（transcript から分かった状態を上書きしない）。
+	 * - hook のバスへは流さない。完了は鳴らさずに印だけを付け、許可要求・質問は画面を確かめて
+	 *   もらってから（`confirmReplayedPrompt`）ライブと同じ経路へ出す。
+	 */
+	private async _replayAgentHookSpool(token: string): Promise<void> {
+		await this._hookSpoolPruned;
+		const ingressLease = this.captureIngressLease(token);
+		if (ingressLease === undefined) {
+			return;
+		}
+		const records = await paradisTakeAgentHookSpool(this._hookSpoolDir, token);
+		if (records.length === 0 || !this.isIngressLeaseCurrent(ingressLease) || this._hookReportedTokens.has(token)) {
+			return;
+		}
+		const accepted: IParadisSpooledAgentHook[] = [];
+		for (const record of records) {
+			const field = (name: string): string | undefined => {
+				const value = record.payload?.[name];
+				return typeof value === 'string' ? value : undefined;
+			};
+			const transcriptPath = field('transcript_path');
+			const origin = await this._hookOwnership.classify({ token, hookPid: undefined, transcriptPath, at: record.at });
+			if (!this.isIngressLeaseCurrent(ingressLease) || this._hookReportedTokens.has(token)) {
+				return;
+			}
+			if (origin.origin !== 'owner') {
+				continue;
+			}
+			accepted.push(record);
+			this._recordPaneSession(token, record.event, field('session_id'), transcriptPath, field('cwd'));
+		}
+		if (accepted.length === 0) {
+			return;
+		}
+		this._agentHookTokens.add(token);
+		const plan = paradisPlanAgentHookReplay(accepted, Date.now());
+		const alreadyKnown = this._paneStatuses.has(token);
+		if (!alreadyKnown && plan.kind === 'status' && plan.status !== 'idle') {
+			const cwd = [...accepted].reverse().map(record => record.payload?.cwd).find((value): value is string => typeof value === 'string');
+			this._paneStatuses.set(token, {
+				status: plan.status,
+				changedAt: plan.at,
+				...(cwd !== undefined ? { cwd } : {}),
+				...(plan.quiet ? { quiet: true } : {}),
+			});
+		} else if (!alreadyKnown && plan.kind === 'prompt') {
+			this._replayedPrompts.set(token, { status: plan.status, record: plan.record });
+		}
+		this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] replayed ${accepted.length} spooled agent hook(s) for a pane: ${plan.kind === 'none' ? 'no state' : `${plan.kind === 'prompt' ? 'waiting for a screen check: ' : ''}${plan.status}`}${alreadyKnown ? ' (state already known; left alone)' : ''}`));
+	}
+
+	/**
+	 * ウィンドウ側が、流し直した許可要求・質問の確認が画面に今も出ていると確かめた（W2-20）。
+	 * ここで初めて状態を付け、hook のバスへ流して承認カードと通知をライブと同じ経路で出す。
+	 */
+	async confirmReplayedPrompt(connection: object, token: string): Promise<boolean> {
+		if (!this._isEligibleToken(connection, token)) {
+			return false;
+		}
+		const pending = this._replayedPrompts.get(token);
+		this._replayedPrompts.delete(token);
+		const ingressLease = this.captureIngressLease(token);
+		if (pending === undefined || ingressLease === undefined || this._hookReportedTokens.has(token) || this._paneStatuses.has(token)
+			|| Date.now() - pending.record.at > PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS) {
+			return false;
+		}
+		const { record } = pending;
+		const field = (name: string): string | undefined => {
+			const value = record.payload?.[name];
+			return typeof value === 'string' ? value : undefined;
+		};
+		const cwd = field('cwd');
+		const now = Date.now();
+		this._paneStatuses.set(token, { status: pending.status, changedAt: now, ...(cwd !== undefined ? { cwd } : {}) });
+		fireParadisAgentHookEvent({
+			token, event: record.event, sessionId: field('session_id'), transcriptPath: field('transcript_path'), cwd,
+			toolName: field('tool_name'), toolInput: record.payload?.tool_input, toolUseId: field('tool_use_id'),
+			payload: record.payload, at: now,
+		});
+		this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] a replayed ${pending.status} is still on screen; showing it`));
+		return true;
 	}
 
 	private _validateProjectedShellPids(windowCtx: string, manifest: IParadisBindingAuthorityManifest): void {
@@ -1431,6 +1555,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._awaitingUserTokens.delete(token);
 		this._agentHookTokens.delete(token);
 		this._hookReportedTokens.delete(token);
+		this._replayedPrompts.delete(token);
+		this._hookSpoolCheckedTokens.delete(token);
 		this._unconfirmedReleaseTokens.delete(token);
 		this._unconfirmableTokens.delete(token);
 		this._seenTokens.delete(token);
@@ -2498,6 +2624,8 @@ export class ParadisAgentBrowserService extends Disposable {
 					this._agentHookTokens.add(token);
 					this._hookReportedTokens.add(token);
 				}
+				// 本物の hook が届いたら、控えから流し直して画面の確認を待っていたものは古い（W2-20）。
+				this._replayedPrompts.delete(token);
 				this._recordPaneSession(token, eventType, sessionId, transcriptPath, cwd);
 				fireParadisAgentHookEvent({
 					token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput,
@@ -2625,7 +2753,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._sweepStalePaneStatuses(eligibleTokens);
 		return [...this._paneStatuses]
 			.filter(([token]) => eligibleTokens.has(token))
-			.map(([token, entry]) => ({ token, status: entry.status, changedAt: entry.changedAt, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) }));
+			.map(([token, entry]) => ({ token, status: entry.status, changedAt: entry.changedAt, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}), ...(entry.quiet && entry.status === 'review' ? { quiet: true as const } : {}) }));
 	}
 
 	/** workbench の共有producer用: statusとhook実績を同じowner同期点で返す。 */
@@ -2634,7 +2762,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._sweepStalePaneStatuses(eligibleTokens);
 		const paneStatuses = [...this._paneStatuses]
 			.filter(([token]) => eligibleTokens.has(token))
-			.map(([token, entry]) => Object.freeze({ token, status: entry.status, changedAt: entry.changedAt, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) }));
+			.map(([token, entry]) => Object.freeze({ token, status: entry.status, changedAt: entry.changedAt, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}), ...(entry.quiet && entry.status === 'review' ? { quiet: true as const } : {}) }));
 		const agentHookTokens = [...this._agentHookTokens].filter(token => eligibleTokens.has(token));
 		// hook実績のある全ペインぶんの Issue URL を同梱する。getParadisAgentPaneIssueUrls は
 		// アイドル化しても消えない (paneToken 終了時のみ) ため、ワークスペース一覧側で
@@ -2659,11 +2787,21 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 		}
 		const awaitingUserTokens = [...this._awaitingUserTokens].filter(token => eligibleTokens.has(token));
+		// 画面の確認を待っている、控えから流し直した許可要求・質問（W2-20）。古くなったものはここで捨てる。
+		const replayedPrompts: IParadisReplayedAgentPrompt[] = [];
+		for (const [token, pending] of [...this._replayedPrompts]) {
+			if (Date.now() - pending.record.at > PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS) {
+				this._replayedPrompts.delete(token);
+			} else if (eligibleTokens.has(token)) {
+				replayedPrompts.push(Object.freeze({ token, status: pending.status }));
+			}
+		}
 		return Object.freeze({
 			paneStatuses: Object.freeze(paneStatuses),
 			agentHookTokens: Object.freeze(agentHookTokens),
 			...(paneSessions.length > 0 ? { paneSessions: Object.freeze(paneSessions) } : {}),
 			...(awaitingUserTokens.length > 0 ? { awaitingUserTokens: Object.freeze(awaitingUserTokens) } : {}),
+			...(replayedPrompts.length > 0 ? { replayedPrompts: Object.freeze(replayedPrompts) } : {}),
 			...(agentHookTokenIssueUrls.length > 0 ? { agentHookTokenIssueUrls: Object.freeze(agentHookTokenIssueUrls) } : {}),
 		});
 	}
@@ -4068,6 +4206,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._awaitingUserTokens.clear();
 		this._agentHookTokens.clear();
 		this._hookReportedTokens.clear();
+		this._replayedPrompts.clear();
 		this._unconfirmedReleaseTokens.clear();
 		this._unconfirmableTokens.clear();
 		this._seenTokens.clear();

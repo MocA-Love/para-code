@@ -107,6 +107,11 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				const args = requireArgs(arg, 1);
 				return this.service.acknowledgePaneStatus(this.rendererConnection, requireToken(args[0])) as Promise<T>;
 			}
+			// 控えから流し直した許可要求・質問が、画面に今も出ていると確かめた（W2-20）
+			case 'confirmReplayedPrompt': {
+				const args = requireArgs(arg, 1);
+				return this.service.confirmReplayedPrompt(this.rendererConnection, requireToken(args[0])) as Promise<T>;
+			}
 			case 'getVoiceIngressToken':
 				requireArgs(arg, 0);
 				return this.service.getVoiceIngressToken() as Promise<T>;
