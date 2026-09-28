@@ -144,14 +144,25 @@ export function trimSpaceNoteTrailingEmptyTask(text: string): string {
  * ぶら下げの継続行に畳む。1件のつもりの追加でチェックボックスが増えないようにするため。
  */
 export function appendSpaceNoteEntry(text: string, label: string, kind: 'task' | 'text'): string | undefined {
+	const entry = spaceNoteEntry(label, kind);
+	if (entry === undefined) {
+		return undefined;
+	}
+	const base = text.replace(/\s+$/, '');
+	return base.length === 0 ? entry : `${base}\n${entry}`;
+}
+
+/**
+ * 末尾に足す1件の行（{@link appendSpaceNoteEntry} が足すもの）。中身が空なら undefined。
+ * PC へは「この行を足す」という操作として送る（読んだ後に PC で書き足された分を消さないため）。
+ */
+export function spaceNoteEntry(label: string, kind: 'task' | 'text'): string | undefined {
 	const [first, ...rest] = label.split('\n').map(line => line.trim());
 	if ((first ?? '').length === 0) {
 		return undefined;
 	}
 	const continuation = rest.filter(line => line.length > 0).map(line => `${CONTINUATION_INDENT}${line}`);
-	const entry = [kind === 'task' ? `- [ ] ${first}` : first, ...continuation].join('\n');
-	const base = text.replace(/\s+$/, '');
-	return base.length === 0 ? entry : `${base}\n${entry}`;
+	return [kind === 'task' ? `- [ ] ${first}` : first, ...continuation].join('\n');
 }
 
 /** 指定行のチェックボックスを反転した本文。対象行がチェックリストでなければ undefined。 */

@@ -5,7 +5,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_SPACE_NOTE_MAX_LENGTH, paradisAppendSpaceNoteTask, paradisContinueSpaceNoteList, paradisNormalizeSpaceNoteText, paradisParseSpaceNote, paradisParseSpaceNotes, paradisRemoveSpaceNoteTask, paradisReplaceSpaceNoteTaskText, paradisSerializeSpaceNotes, paradisSpaceNoteSummary, paradisToggleSpaceNoteListMarkers, paradisToggleSpaceNoteTask } from '../../common/paradisSpaceNotes.js';
+import { PARADIS_SPACE_NOTE_MAX_LENGTH, paradisAppendSpaceNoteTask, paradisApplySpaceNoteOp, paradisMergeSpaceNoteEdits, paradisContinueSpaceNoteList, paradisNormalizeSpaceNoteText, paradisParseSpaceNote, paradisParseSpaceNotes, paradisRemoveSpaceNoteTask, paradisReplaceSpaceNoteTaskText, paradisSerializeSpaceNotes, paradisSpaceNoteSummary, paradisToggleSpaceNoteListMarkers, paradisToggleSpaceNoteTask } from '../../common/paradisSpaceNotes.js';
 
 suite('ParadisSpaceNotes', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -166,5 +166,44 @@ suite('ParadisSpaceNotes', () => {
 		assert.strictEqual(paradisSerializeSpaceNotes(new Map([['a', { text: 'x'.repeat(PARADIS_SPACE_NOTE_MAX_LENGTH + 1), updatedAt: 0 }]])), undefined);
 		const tooMany = new Map(Array.from({ length: 513 }, (_, index) => [`key-${index}`, { text: 'x', updatedAt: 0 }] as const));
 		assert.strictEqual(paradisSerializeSpaceNotes(tooMany), undefined);
+	});
+	test('applies a toggle to the line the sender saw, following it when lines were added above', () => {
+		const sent = { kind: 'toggle', line: 1, lineText: '- [ ] b' } as const;
+		assert.deepStrictEqual({
+			same: paradisApplySpaceNoteOp('- [ ] a\n- [ ] b', sent),
+			shifted: paradisApplySpaceNoteOp('- [ ] new\n- [ ] a\n- [ ] b', sent),
+			alreadyToggled: paradisApplySpaceNoteOp('- [ ] a\n- [x] b', sent),
+			gone: paradisApplySpaceNoteOp('- [ ] a', sent),
+		}, {
+			same: '- [ ] a\n- [x] b',
+			shifted: '- [ ] new\n- [ ] a\n- [x] b',
+			alreadyToggled: undefined,
+			gone: undefined,
+		});
+	});
+
+	test('appends an entry to the latest text', () => {
+		assert.deepStrictEqual([
+			paradisApplySpaceNoteOp('- [ ] a\n\n', { kind: 'append', entry: '- [ ] b\n  more' }),
+			paradisApplySpaceNoteOp('', { kind: 'append', entry: '- [ ] b' }),
+			paradisApplySpaceNoteOp('- [ ] a', { kind: 'append', entry: '  ' }),
+		], ['- [ ] a\n- [ ] b\n  more', '- [ ] b', undefined]);
+	});
+
+	test('merges edits that touch different lines and refuses overlapping ones', () => {
+		const base = '- [ ] a\n- [ ] b\n- [ ] c';
+		assert.deepStrictEqual({
+			separate: paradisMergeSpaceNoteEdits(base, '- [ ] a (edited)\n- [ ] b\n- [ ] c', '- [ ] a\n- [ ] b\n- [x] c\n- [ ] d'),
+			appendOnly: paradisMergeSpaceNoteEdits(base, base, `${base}\n- [ ] d`),
+			sameLine: paradisMergeSpaceNoteEdits(base, '- [ ] a\n- [ ] B\n- [ ] c', '- [ ] a\n- [x] b\n- [ ] c'),
+			sameEdit: paradisMergeSpaceNoteEdits(base, '- [ ] a\n- [x] b\n- [ ] c', '- [ ] a\n- [x] b\n- [ ] c'),
+			bothAppend: paradisMergeSpaceNoteEdits(base, `${base}\n- [ ] mine`, `${base}\n- [ ] theirs`),
+		}, {
+			separate: '- [ ] a (edited)\n- [ ] b\n- [x] c\n- [ ] d',
+			appendOnly: `${base}\n- [ ] d`,
+			sameLine: undefined,
+			sameEdit: '- [ ] a\n- [x] b\n- [ ] c',
+			bothAppend: undefined,
+		});
 	});
 });

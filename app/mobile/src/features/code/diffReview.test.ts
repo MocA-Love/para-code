@@ -2,8 +2,9 @@
 
 import { describe, expect, it } from 'vitest';
 import { parseUnifiedDiff } from '../../components/diffParser.js';
-import { canOpenWorkingFile, diffLineNumber, diffSign, diffSourceOf, diffStats, nextUnreviewed, reviewQueue, reviewedCount, stepReview } from './diffReview.js';
-import { scmEntries } from './scmModel.js';
+import type { ReviewMarks } from './codeCache.js';
+import { canOpenWorkingFile, diffLineNumber, diffSign, diffSourceOf, diffStats, nextUnreviewed, parseReviewMarks, reviewQueue, reviewStateOf, reviewedCount, stageableEntries, stepReview } from './diffReview.js';
+import { scmEntries, scmEntry } from './scmModel.js';
 
 const entries = scmEntries({
 	branch: 'main',
@@ -14,8 +15,13 @@ const entries = scmEntries({
 	],
 });
 
+/** いまの中身のまま確認済みにした印。 */
+function marksFor(...paths: string[]): ReviewMarks {
+	return Object.fromEntries(paths.map(path => [path, { identity: entries.find(entry => entry.path === path)?.identity ?? 'gone', reviewedAt: 1 }]));
+}
+
 describe('reviewQueue', () => {
-	const reviewed = new Set(['b.ts']);
+	const reviewed = marksFor('b.ts');
 
 	it('絞り込む', () => {
 		expect(reviewQueue(entries, reviewed, 'all').map(entry => entry.path)).toEqual(['a.ts', 'b.ts', 'c.ts']);
@@ -24,7 +30,48 @@ describe('reviewQueue', () => {
 	});
 
 	it('確認済みの件数は一覧に残っているものだけ数える', () => {
-		expect(reviewedCount(entries, new Set(['b.ts', 'gone.ts']))).toBe(1);
+		expect(reviewedCount(entries, { ...marksFor('b.ts'), 'gone.ts': { identity: 'x', reviewedAt: 1 } })).toBe(1);
+	});
+});
+
+describe('確認後に変更あり', () => {
+	it('確認した後に行数が変われば、確認済みから外して「未確認」に入れる', () => {
+		const before = scmEntry({ x: ' ', y: 'M', path: 'a.ts', added: 3, removed: 1 });
+		const after = scmEntry({ x: ' ', y: 'M', path: 'a.ts', added: 5, removed: 1 });
+		const marks: ReviewMarks = { 'a.ts': { identity: before.identity, reviewedAt: 1 } };
+		expect({
+			same: reviewStateOf(before, marks),
+			changed: reviewStateOf(after, marks),
+			none: reviewStateOf(after, {}),
+			todo: reviewQueue([after], marks, 'todo').map(entry => entry.path),
+			count: reviewedCount([after], marks),
+		}).toEqual({ same: 'reviewed', changed: 'changed', none: 'todo', todo: ['a.ts'], count: 0 });
+	});
+
+	it('新しく作ったファイルは、大きさか時刻が変われば「確認後に変更あり」にする', () => {
+		const before = scmEntry({ x: '?', y: '?', path: 'new.ts', size: 10, mtime: 1 });
+		const marks: ReviewMarks = { 'new.ts': { identity: before.identity, reviewedAt: 1 } };
+		expect([
+			reviewStateOf(scmEntry({ x: '?', y: '?', path: 'new.ts', size: 10, mtime: 1 }), marks),
+			reviewStateOf(scmEntry({ x: '?', y: '?', path: 'new.ts', size: 10, mtime: 2 }), marks),
+		]).toEqual(['reviewed', 'changed']);
+	});
+});
+
+describe('stageableEntries', () => {
+	it('確認済みで、まだステージしていない変更だけを選ぶ', () => {
+		const staged = scmEntry({ x: 'M', y: ' ', path: 'staged.ts' });
+		const conflict = scmEntry({ x: 'U', y: 'U', path: 'conflict.ts' });
+		const all = [...entries, staged, conflict];
+		const marks: ReviewMarks = Object.fromEntries(all.map(entry => [entry.path, { identity: entry.identity, reviewedAt: 1 }]));
+		expect(stageableEntries(all, { ...marks, 'a.ts': { identity: 'old', reviewedAt: 1 } }).map(entry => entry.path)).toEqual(['b.ts', 'c.ts']);
+	});
+});
+
+describe('parseReviewMarks', () => {
+	it('PC から届いた印のうち、形の合うものだけを読む', () => {
+		expect(parseReviewMarks({ 'a.ts': { identity: 'x', reviewedAt: 1 }, 'b.ts': { identity: 1 }, 'c.ts': null })).toEqual({ 'a.ts': { identity: 'x', reviewedAt: 1 } });
+		expect(parseReviewMarks([])).toEqual({});
 	});
 });
 
@@ -49,9 +96,9 @@ describe('stepReview', () => {
 
 describe('nextUnreviewed', () => {
 	it('いまのファイルより後ろ → 先頭から の順で未確認を探す', () => {
-		expect(nextUnreviewed(entries, new Set(['b.ts']), 'b.ts')).toBe('c.ts');
-		expect(nextUnreviewed(entries, new Set(['c.ts']), 'c.ts')).toBe('a.ts');
-		expect(nextUnreviewed(entries, new Set(['a.ts', 'b.ts', 'c.ts']), 'a.ts')).toBeUndefined();
+		expect(nextUnreviewed(entries, marksFor('b.ts'), 'b.ts')).toBe('c.ts');
+		expect(nextUnreviewed(entries, marksFor('c.ts'), 'c.ts')).toBe('a.ts');
+		expect(nextUnreviewed(entries, marksFor('a.ts', 'b.ts', 'c.ts'), 'a.ts')).toBeUndefined();
 	});
 });
 

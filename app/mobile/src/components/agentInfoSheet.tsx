@@ -9,7 +9,9 @@ import { useAppStore } from '../appState.js';
 import { pinKeyForTerminal } from '../store.js';
 import { BottomSheet, useSheetCloseThen } from './bottomSheet.js';
 import { AgentBadge } from './agentRow.js';
-import { appendSpaceNoteEntry, parseSpaceNote, spaceNoteSummary, SPACE_NOTE_MAX_LENGTH, toggleSpaceNoteTask } from '../spaceNote.js';
+import { parseSpaceNote, spaceNoteSummary, SPACE_NOTE_MAX_LENGTH } from '../spaceNote.js';
+import { appendNoteChange, NOTE_CAS_CAPABILITY, spaceNoteConflictKind, spaceNoteConflictMessage, spaceNoteSetOptions, toggleNoteChange, type SpaceNoteChange } from '../features/note/spaceNoteSave.js';
+import { usePcCapability } from '../hooks/usePcCapability.js';
 import { promptTerminalName } from '../promptTerminalName.js';
 import { CHIP_HEIGHT } from './agentRow.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
@@ -127,17 +129,25 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 		return () => { requestGeneration.current++; };
 	}, [visible, wsId, noteGet]);
 
-	const saveNote = useCallback(async (next: string, previous: string) => {
+	// 切り替えと追加は「何をしたか」で送り、開いた後の PC の書き足しを消さない（spaceNoteSave.ts）
+	const pcHasNoteCas = usePcCapability(NOTE_CAS_CAPABILITY);
+	const pcHasNoteCasRef = useRef(pcHasNoteCas);
+	pcHasNoteCasRef.current = pcHasNoteCas;
+	const saveNote = useCallback(async (change: SpaceNoteChange, previous: string) => {
 		if (wsId === undefined) {
 			return;
 		}
+		const { next } = change;
 		const generation = requestGeneration.current;
 		const sequence = ++saveSequence.current;
 		setNoteBusy(true);
 		try {
-			const result = await noteSet(wsId, next);
+			const result = await noteSet(wsId, next, spaceNoteSetOptions(change, undefined, pcHasNoteCas));
 			if (generation === requestGeneration.current && sequence === saveSequence.current) {
 				setNote(result.text ?? next);
+				if (result.conflict === true) {
+					setNoteError(spaceNoteConflictMessage(spaceNoteConflictKind(change, false)));
+				}
 			}
 		} catch (err) {
 			if (generation === requestGeneration.current && sequence === saveSequence.current) {
@@ -150,17 +160,17 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 				setNoteBusy(false);
 			}
 		}
-	}, [wsId, noteSet]);
+	}, [wsId, noteSet, pcHasNoteCas]);
 
 	const toggleTask = (lineIndex: number) => {
-		const next = toggleSpaceNoteTask(note, lineIndex);
-		if (next === undefined) {
+		const change = toggleNoteChange(note, lineIndex);
+		if (change === undefined) {
 			return;
 		}
 		hapticSelection();
 		const previous = note;
-		setNote(next);
-		void saveNote(next, previous);
+		setNote(change.next);
+		void saveNote(change, previous);
 	};
 
 	/**
@@ -168,19 +178,19 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 	 * （space-note.tsx の一覧末尾の追加行と同じ挙動）。
 	 */
 	const commitAdd = useCallback((close = false) => {
-		const next = appendSpaceNoteEntry(note, addDraft.current, 'task');
-		if (next === undefined) {
+		const change = appendNoteChange(note, addDraft.current, 'task');
+		if (change === undefined) {
 			setAdding(false);
 			return;
 		}
-		if (next.length > SPACE_NOTE_MAX_LENGTH) {
+		if (change.next.length > SPACE_NOTE_MAX_LENGTH) {
 			setNoteError('メモが上限に達しているため追加できません。');
 			return;
 		}
 		hapticSelection();
 		setNoteError(undefined);
 		const previous = note;
-		setNote(next);
+		setNote(change.next);
 		// 追記は末尾に入る。入力欄を閉じた後もプレビューを末尾側に保ち、足した項目を見せ続ける
 		setTailPreview(true);
 		addDraft.current = '';
@@ -188,7 +198,7 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 		if (close) {
 			setAdding(false);
 		}
-		void saveNote(next, previous);
+		void saveNote(change, previous);
 	}, [note, saveNote]);
 
 	/**
@@ -203,17 +213,17 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 		if (draft.trim().length === 0 || wsId === undefined) {
 			return;
 		}
-		const next = appendSpaceNoteEntry(noteRef.current, draft, 'task');
+		const change = appendNoteChange(noteRef.current, draft, 'task');
 		// 保存できない形（上限超過など）のときは下書きを残す。ここで捨てると、次に開いたときに
 		// 打った内容が黙って消えている状態になる（commitAdd 側はエラーを出して入力欄に残す）。
 		// ただし復元するUIは無く、次に保存できる状態になったときへ持ち越されるだけである点に注意
-		if (next === undefined || next.length > SPACE_NOTE_MAX_LENGTH) {
+		if (change === undefined || change.next.length > SPACE_NOTE_MAX_LENGTH) {
 			return;
 		}
 		addDraft.current = '';
 		// 飛んでいる saveNote の応答がこの追記より後に届いても、本文を巻き戻さないよう順番を進める
 		saveSequence.current++;
-		void useAppStore.getState().noteSet(wsId, next).catch(() => undefined);
+		void useAppStore.getState().noteSet(wsId, change.next, spaceNoteSetOptions(change, undefined, pcHasNoteCasRef.current)).catch(() => undefined);
 	}, [wsId]);
 	// 依存が wsId なので、スペースが切り替わる瞬間にも cleanup が走って「切り替え前のスペースへ」
 	// 回収される（意図した動作。依存を増やすときはこの性質を壊さないこと）。

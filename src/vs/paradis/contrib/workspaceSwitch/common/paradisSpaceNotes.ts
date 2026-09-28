@@ -245,6 +245,147 @@ export function paradisAppendSpaceNoteTask(text: string, task: string): string |
 	return body.length === 0 ? entry : `${body}\n${entry}`;
 }
 
+/**
+ * 本文全体ではなく「何をしたか」で送る更新 (モバイルのチェック切り替えと項目の追加)。
+ * 送る側が読んだ後に PC やエージェントが書き足していても、その書き足しを消さずに当てられる。
+ */
+export type ParadisSpaceNoteOp =
+	/** `line` 行目 (0-based) のチェックを切り替える。`lineText` は送る側が見ていたその行の中身。 */
+	| { readonly kind: 'toggle'; readonly line: number; readonly lineText: string }
+	/** 末尾に1件足す。`entry` は足す行そのもの (`- [ ] …` と継続行。送る側が組み立て済み)。 */
+	| { readonly kind: 'append'; readonly entry: string };
+
+/** 行を探す範囲。行の中身が同じでも、遠く離れた別の行を同じものとみなさない。 */
+const SPACE_NOTE_OP_SEARCH_RADIUS = 200;
+
+/**
+ * `line` 行目の中身が `lineText` と同じならその行、違えば中身が同じ行のうち最も近いものを返す。
+ * 見つからなければ undefined (送る側が見ていた行が、もう無い)。
+ */
+function locateSpaceNoteLine(lines: readonly string[], line: number, lineText: string): number | undefined {
+	if (lines[line] === lineText) {
+		return line;
+	}
+	let nearest: number | undefined;
+	for (let index = Math.max(0, line - SPACE_NOTE_OP_SEARCH_RADIUS); index < Math.min(lines.length, line + SPACE_NOTE_OP_SEARCH_RADIUS + 1); index++) {
+		if (lines[index] === lineText && (nearest === undefined || Math.abs(index - line) < Math.abs(nearest - line))) {
+			nearest = index;
+		}
+	}
+	return nearest;
+}
+
+/**
+ * いまの本文に操作を当てた結果。当てられない (切り替える行がもう無い・チェック項目でない・
+ * 足す中身が空) ときは undefined を返し、呼び出し側は書かずに最新を返す。
+ */
+export function paradisApplySpaceNoteOp(text: string, op: ParadisSpaceNoteOp): string | undefined {
+	if (op.kind === 'toggle') {
+		const index = locateSpaceNoteLine(text.split('\n'), op.line, op.lineText);
+		return index !== undefined ? paradisToggleSpaceNoteTask(text, index) : undefined;
+	}
+	const entry = op.entry.replace(/\s+$/, '');
+	if (entry.trim().length === 0) {
+		return undefined;
+	}
+	const body = text.replace(/\s+$/, '');
+	return body.length === 0 ? entry : `${body}\n${entry}`;
+}
+
+/** 本文の一部を置き換える編集 (`base` の [start, end) 行を `lines` にする)。 */
+interface ISpaceNoteLineEdit {
+	readonly start: number;
+	readonly end: number;
+	readonly lines: readonly string[];
+}
+
+/** 比べる行数の積の上限。メモは 8,000 文字までなので通常は届かない (届いたら合成を諦める)。 */
+const MAX_MERGE_CELLS = 4_000_000;
+
+/** `base` を `other` にする行単位の編集の並び (最長共通部分列から作る)。大きすぎれば undefined。 */
+function spaceNoteLineEdits(base: readonly string[], other: readonly string[]): ISpaceNoteLineEdit[] | undefined {
+	const n = base.length;
+	const m = other.length;
+	if ((n + 1) * (m + 1) > MAX_MERGE_CELLS) {
+		return undefined;
+	}
+	const width = m + 1;
+	// common[i * width + j] = base[i..] と other[j..] の最長共通部分列の長さ
+	const common = new Uint32Array((n + 1) * width);
+	for (let i = n - 1; i >= 0; i--) {
+		for (let j = m - 1; j >= 0; j--) {
+			common[i * width + j] = base[i] === other[j]
+				? common[(i + 1) * width + j + 1] + 1
+				: Math.max(common[(i + 1) * width + j], common[i * width + j + 1]);
+		}
+	}
+	const edits: ISpaceNoteLineEdit[] = [];
+	let i = 0;
+	let j = 0;
+	while (i < n || j < m) {
+		if (i < n && j < m && base[i] === other[j]) {
+			i++;
+			j++;
+			continue;
+		}
+		const start = i;
+		const from = j;
+		while ((i < n || j < m) && !(i < n && j < m && base[i] === other[j])) {
+			if (j < m && (i === n || common[i * width + j + 1] >= common[(i + 1) * width + j])) {
+				j++;
+			} else {
+				i++;
+			}
+		}
+		edits.push({ start, end: i, lines: other.slice(from, j) });
+	}
+	return edits;
+}
+
+function sameLineEdit(a: ISpaceNoteLineEdit, b: ISpaceNoteLineEdit): boolean {
+	return a.start === b.start && a.end === b.end && a.lines.length === b.lines.length && a.lines.every((line, index) => line === b.lines[index]);
+}
+
+/**
+ * 同じ本文 (`base`) から別々に直した2つ (`mine` と `theirs`) を、行単位で合わせる。
+ * 直した場所が重ならなければ両方を当てた本文を、同じ場所を別々に直していれば undefined を返す。
+ *
+ * PC のメモ欄で編集している間に、モバイルやエージェントが同じメモを書き換えた場合に使う
+ * (どちらかの変更を黙って消さないため)。
+ */
+export function paradisMergeSpaceNoteEdits(base: string, mine: string, theirs: string): string | undefined {
+	if (mine === theirs || theirs === base) {
+		return mine;
+	}
+	if (mine === base) {
+		return theirs;
+	}
+	const baseLines = base.split('\n');
+	const mineEdits = spaceNoteLineEdits(baseLines, mine.split('\n'));
+	const theirEdits = spaceNoteLineEdits(baseLines, theirs.split('\n'));
+	if (mineEdits === undefined || theirEdits === undefined) {
+		return undefined;
+	}
+	const edits: ISpaceNoteLineEdit[] = [...mineEdits];
+	for (const theirEdit of theirEdits) {
+		const overlapping = mineEdits.filter(mineEdit => mineEdit.start === theirEdit.start || (mineEdit.start < theirEdit.end && theirEdit.start < mineEdit.end));
+		if (overlapping.length === 0) {
+			edits.push(theirEdit);
+		} else if (!overlapping.every(mineEdit => sameLineEdit(mineEdit, theirEdit))) {
+			return undefined;
+		}
+	}
+	edits.sort((a, b) => a.start - b.start || a.end - b.end);
+	const merged: string[] = [];
+	let position = 0;
+	for (const edit of edits) {
+		merged.push(...baseLines.slice(position, edit.start), ...edit.lines);
+		position = edit.end;
+	}
+	merged.push(...baseLines.slice(position));
+	return merged.join('\n');
+}
+
 /** 保存前に本文を上限へ丸める (入力側の maxlength をすり抜けた経路への保険)。 */
 export function paradisNormalizeSpaceNoteText(text: string): string {
 	return text.length > PARADIS_SPACE_NOTE_MAX_LENGTH ? text.slice(0, PARADIS_SPACE_NOTE_MAX_LENGTH) : text;
@@ -321,6 +462,12 @@ export interface IParadisSpaceNotesService {
 
 	/** 未設定なら空文字列を返す。 */
 	read(stateKey: string): string;
+
+	/**
+	 * 本文と、最後に変わった時刻 (版) を返す。未設定なら undefined (版は 0 とみなす)。
+	 * 版はスペースごとに必ず増えるので、読んだ後に誰かが書いたかを比べるのに使える。
+	 */
+	readEntry(stateKey: string): IParadisSpaceNote | undefined;
 
 	summary(stateKey: string): IParadisSpaceNoteSummary;
 
