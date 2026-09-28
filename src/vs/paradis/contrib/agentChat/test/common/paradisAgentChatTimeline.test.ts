@@ -146,13 +146,13 @@ suite('paradisAgentChatTimeline', () => {
 		const interaction = { kind: 'approval' as const, id: 'now' };
 		const items = paradisBuildAgentChatItems(messages, interaction);
 		const shape = (entries: ParadisAgentChatEntry[]) => entries.map(entry => entry.kind === 'item' ? entry.item.key : [entry.key, entry.items.map(item => item.key), [...entry.pinned]]);
-		const busy = paradisGroupAgentChatItems(items, interaction, true);
+		const busy = paradisGroupAgentChatItems(items, { interaction, busy: true });
 		const firstGroup = busy[1].kind === 'group' ? busy[1].items : [];
 		assert.deepStrictEqual({
 			busy: shape(busy),
-			idlePinned: paradisGroupAgentChatItems(items, interaction, false).flatMap(entry => entry.kind === 'group' ? [...entry.pinned] : []),
+			idlePinned: paradisGroupAgentChatItems(items, { interaction, busy: false }).flatMap(entry => entry.kind === 'group' ? [...entry.pinned] : []),
 			// 答え終えた承認はまとまりに入り、回答待ちの承認がまとまりを区切る。回答待ちが無くなれば、同じ行はまとまりに入る。
-			resolved: shape(paradisGroupAgentChatItems(paradisBuildAgentChatItems(messages, null), null, false)).slice(-1),
+			resolved: shape(paradisGroupAgentChatItems(paradisBuildAgentChatItems(messages, null), { interaction: null, busy: false })).slice(-1),
 			summary: paradisSummarizeAgentChatGroup(firstGroup),
 		}, {
 			busy: [
@@ -168,7 +168,55 @@ suite('paradisAgentChatTimeline', () => {
 			],
 			idlePinned: [],
 			resolved: [['g:m14', ['m14', 'm15', 'm17'], []]],
-			summary: { count: 5, names: ['考えた内容', 'Read', 'Bash', 'Edit'], failed: 1, running: ['Edit', 'Read'], fileChanges: 1 },
+			summary: { count: 5, names: ['考えた内容', 'Read', 'Bash', 'Edit'], failed: 1, files: [] },
+		});
+	});
+
+	test('keeps a waiting Codex question outside even when the turn looks idle', () => {
+		const messages: IParadisAgentChatMessage[] = [
+			message(0, { role: 'user', kind: 'text', text: '計画して' }),
+			message(1, { role: 'assistant', kind: 'thinking', text: '聞く' }),
+			message(2, { role: 'assistant', kind: 'tool_use', tool: 'request_user_input', text: '{"questions":[]}', toolUseId: 'call_1' }),
+		];
+		const entries = paradisGroupAgentChatItems(paradisBuildAgentChatItems(messages, null), { interaction: null, busy: false, pendingCodexQuestion: paradisPendingCodexQuestion(messages) });
+		assert.deepStrictEqual(entries.map(entry => entry.kind === 'item' ? entry.item.key : entry.key), ['m0', 'm1', 'm2']);
+	});
+
+	test('pins running tools only in the current turn, and rows the user has opened', () => {
+		const messages: IParadisAgentChatMessage[] = [
+			message(0, { role: 'user', kind: 'text', text: '前のターン' }),
+			message(1, { role: 'assistant', kind: 'tool_use', tool: 'Bash', text: '{"command":"sleep 99"}', toolUseId: 'old' }),
+			message(2, { role: 'assistant', kind: 'tool_use', tool: 'Read', text: '{"file_path":"/repo/a.ts"}', toolUseId: 'r1' }),
+			message(3, { role: 'tool', kind: 'tool_result', text: 'x', toolUseId: 'r1' }),
+			message(4, { role: 'user', kind: 'text', text: '今のターン' }),
+			message(5, { role: 'assistant', kind: 'tool_use', tool: 'Read', text: '{"file_path":"/repo/b.ts"}', toolUseId: 'r2' }),
+			message(6, { role: 'tool', kind: 'tool_result', text: 'y', toolUseId: 'r2' }),
+			message(7, { role: 'assistant', kind: 'tool_use', tool: 'Bash', text: '{"command":"npm test"}', toolUseId: 'now' }),
+		];
+		const items = paradisBuildAgentChatItems(messages, null);
+		const pinned = (expanded: ReadonlySet<string>) => paradisGroupAgentChatItems(items, { interaction: null, busy: true, expanded }).map(entry => entry.kind === 'group' ? [entry.key, [...entry.pinned]] : entry.item.key);
+		assert.deepStrictEqual({ busy: pinned(new Set()), opened: pinned(new Set(['m2', 'm5'])) }, {
+			busy: ['m0', ['g:m1', []], 'm4', ['g:m5', ['m7']]],
+			opened: ['m0', ['g:m1', ['m2']], 'm4', ['g:m5', ['m5', 'm7']]],
+		});
+	});
+
+	test('counts changed files once and leaves out failed edits', () => {
+		const edit = (rev: number, id: string, path: string) => message(rev, { role: 'assistant', kind: 'tool_use', tool: 'Edit', text: JSON.stringify({ file_path: path, old_string: 'a', new_string: 'b' }), toolUseId: id });
+		const messages: IParadisAgentChatMessage[] = [
+			edit(0, 'e1', '/repo/src/login.ts'),
+			message(1, { role: 'tool', kind: 'tool_result', text: 'String to replace not found in file.', toolUseId: 'e1', isError: true }),
+			edit(2, 'e2', '/repo/src/login.ts'),
+			message(3, { role: 'tool', kind: 'tool_result', text: 'ok', toolUseId: 'e2' }),
+			edit(4, 'e3', '/repo/src/login.ts'),
+			message(5, { role: 'tool', kind: 'tool_result', text: 'ok', toolUseId: 'e3' }),
+			edit(6, 'e4', '/repo/src/failed-only.ts'),
+			message(7, { role: 'tool', kind: 'tool_result', text: 'boom', toolUseId: 'e4', isError: true }),
+			message(8, { role: 'assistant', kind: 'tool_use', tool: 'apply_patch', text: '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-x\n+y\n*** Add File: src/b.ts\n+z\n*** End Patch', toolUseId: 'p1' }),
+			message(9, { role: 'tool', kind: 'tool_result', text: 'Success', toolUseId: 'p1' }),
+		];
+		assert.deepStrictEqual(paradisSummarizeAgentChatGroup(paradisBuildAgentChatItems(messages, null)), {
+			count: 5, names: ['Edit', 'Patch'], failed: 2, files: ['/repo/src/login.ts', 'src/a.ts', 'src/b.ts'],
 		});
 	});
 });

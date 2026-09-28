@@ -180,9 +180,20 @@ export type ParadisAgentChatEntry =
 		/** まとまりの鍵。先頭の単位の鍵から作るので、後ろに単位が足されても変わらない（開いた状態を保てる）。 */
 		readonly key: string;
 		readonly items: readonly ParadisAgentChatItem[];
-		/** 畳んでいても見せる単位（作業中の会話で、まだ結果の無いツール）。 */
+		/** 畳んでいても見せる単位（今のターンの実行中のツールと、利用者が開いている行）。 */
 		readonly pinned: ReadonlySet<string>;
 	};
+
+/** まとまりの組み方を決める会話の状態。 */
+export interface IParadisAgentChatGroupOptions {
+	readonly interaction: IParadisAgentInteraction | null;
+	/** エージェントが作業中か。作業中だけ、今のターンの実行中のツールを畳んでも見せる。 */
+	readonly busy: boolean;
+	/** 答えを待っている Codex の `request_user_input` の呼び出し（`paradisPendingCodexQuestion`）。まとまりを区切る。 */
+	readonly pendingCodexQuestion?: IParadisAgentChatMessage;
+	/** 利用者が開いている行の鍵。まとまりに入っても畳まずに見せる（読んでいる途中の行を消さない）。 */
+	readonly expanded?: ReadonlySet<string>;
+}
 
 /** ツールの実行中か（呼び出しがあって結果がまだ無い）。 */
 export function paradisIsRunningToolItem(item: ParadisAgentChatItem): boolean {
@@ -191,16 +202,17 @@ export function paradisIsRunningToolItem(item: ParadisAgentChatItem): boolean {
 
 /**
  * まとまりに入れる単位か。本文（ユーザー・エージェントの発言、別のエージェントからのメッセージ）、質問のカード、
- * 回答待ちの許可の確認のカードはまとまりを区切り、畳まずに出す。Web 検索もモバイルと同じく独立した行にする。
+ * 回答待ちの許可の確認のカード、答えを待っている Codex の質問はまとまりを区切り、畳まずに出す。Web 検索も
+ * モバイルと同じく独立した行にする。
  */
-export function paradisIsFoldableAgentChatItem(item: ParadisAgentChatItem, interaction: IParadisAgentInteraction | null): boolean {
+export function paradisIsFoldableAgentChatItem(item: ParadisAgentChatItem, options: IParadisAgentChatGroupOptions): boolean {
 	switch (item.kind) {
 		case 'thinking':
 			return true;
 		case 'tool':
-			return item.use?.tool !== 'web_search';
+			return item.use?.tool !== 'web_search' && (item.use === undefined || item.use !== options.pendingCodexQuestion);
 		case 'approval':
-			return !paradisIsPendingApprovalItem(item, interaction);
+			return !paradisIsPendingApprovalItem(item, options.interaction);
 		default:
 			return false;
 	}
@@ -208,30 +220,46 @@ export function paradisIsFoldableAgentChatItem(item: ParadisAgentChatItem, inter
 
 /**
  * 画面の単位を折りたたむまとまりへ組む。まとまりに入る単位が2つ以上続いたところだけをまとめ、1つだけなら
- * そのまま出す（畳んでも1行が1行になるだけで、中身が見えなくなるだけのため）。`busy`（エージェントが作業中）の
- * ときは、結果の無いツールを畳んでも見せる印を付ける（作業していない会話の結果の無いツールは、中断や履歴の
- * 切り詰めで結果が欠けたもので、畳んだままでよい）。
+ * そのまま出す（畳んでも1行が1行になるだけで、中身が見えなくなるだけのため）。作業中は、最後のユーザーの発言より
+ * 後ろ（今のターン）の結果の無いツールを畳んでも見せる印を付ける。それより前の結果の無いツールと、作業していない
+ * 会話の結果の無いツールは、中断や履歴の切り詰めで結果が欠けたもので、畳んだままでよい。
  */
-export function paradisGroupAgentChatItems(items: readonly ParadisAgentChatItem[], interaction: IParadisAgentInteraction | null, busy: boolean): ParadisAgentChatEntry[] {
+export function paradisGroupAgentChatItems(items: readonly ParadisAgentChatItem[], options: IParadisAgentChatGroupOptions): ParadisAgentChatEntry[] {
+	let turnStart = 0;
+	for (let index = items.length - 1; index >= 0; index--) {
+		if (items[index].kind === 'user') {
+			turnStart = index + 1;
+			break;
+		}
+	}
 	const entries: ParadisAgentChatEntry[] = [];
 	let run: ParadisAgentChatItem[] = [];
+	let runStart = 0;
 	const flush = () => {
 		if (run.length === 1) {
 			entries.push({ kind: 'item', item: run[0] });
 		} else if (run.length > 1) {
-			const pinned = new Set(busy ? run.filter(paradisIsRunningToolItem).map(item => item.key) : []);
+			const pinned = new Set<string>();
+			run.forEach((item, offset) => {
+				if ((options.busy && runStart + offset >= turnStart && paradisIsRunningToolItem(item)) || options.expanded?.has(item.key)) {
+					pinned.add(item.key);
+				}
+			});
 			entries.push({ kind: 'group', key: `g:${run[0].key}`, items: run, pinned });
 		}
 		run = [];
 	};
-	for (const item of items) {
-		if (paradisIsFoldableAgentChatItem(item, interaction)) {
+	items.forEach((item, index) => {
+		if (paradisIsFoldableAgentChatItem(item, options)) {
+			if (run.length === 0) {
+				runStart = index;
+			}
 			run.push(item);
 		} else {
 			flush();
 			entries.push({ kind: 'item', item });
 		}
-	}
+	});
 	flush();
 	return entries;
 }
@@ -244,10 +272,8 @@ export interface IParadisAgentChatGroupSummary {
 	readonly names: readonly string[];
 	/** 失敗したツールの数。 */
 	readonly failed: number;
-	/** 実行中のツールの名前（出てきた順）。 */
-	readonly running: readonly string[];
-	/** ファイルを書き換えたツールの数。 */
-	readonly fileChanges: number;
+	/** 成功した変更で書き換えたファイルのパス（重ねずに出てきた順）。 */
+	readonly files: readonly string[];
 }
 
 /** ファイルを書き換えるツールの呼び出しか（差分カードを出す対象）。 */
@@ -256,45 +282,72 @@ export function paradisIsFileWriteTool(use: IParadisAgentChatMessage): boolean {
 	return tool === 'Edit' || tool === 'MultiEdit' || tool === 'Write' || tool === 'apply_patch' || use.text.includes('*** Begin Patch');
 }
 
+/** ファイルを書き換えるツールの呼び出しが対象にしたファイルのパス。差分は作らず、パスだけを読む。 */
+export function paradisFileWritePaths(use: IParadisAgentChatMessage): string[] {
+	const tool = use.tool ?? '';
+	if (tool === 'Edit' || tool === 'MultiEdit' || tool === 'Write' || tool === 'NotebookEdit') {
+		const input = paradisParseToolInput(use.text);
+		const path = nonEmpty(input?.file_path) ?? nonEmpty(input?.notebook_path);
+		return path !== undefined ? [path] : [];
+	}
+	if (tool === 'apply_patch' || use.text.includes('*** Begin Patch')) {
+		const patch = paradisApplyPatchText(use.text);
+		if (patch === undefined) {
+			return [];
+		}
+		const paths: string[] = [];
+		for (const line of splitLines(patch)) {
+			const header = /^\*\*\* (?:Update|Add|Delete) File: (?<path>.+)$/.exec(line);
+			if (header?.groups !== undefined) {
+				paths.push(header.groups.path.trim());
+			}
+		}
+		return paths;
+	}
+	return [];
+}
+
+function toolFailed(result: IParadisAgentChatMessage): boolean {
+	return result.isError === true || looksLikeError(result.text);
+}
+
 /** まとまりの見出しを作る。 */
 export function paradisSummarizeAgentChatGroup(items: readonly ParadisAgentChatItem[]): IParadisAgentChatGroupSummary {
 	const names: string[] = [];
-	const running: string[] = [];
+	const files: string[] = [];
 	let failed = 0;
-	let fileChanges = 0;
-	const addName = (name: string) => {
-		if (!names.includes(name)) {
-			names.push(name);
+	const addOnce = (list: string[], value: string) => {
+		if (!list.includes(value)) {
+			list.push(value);
 		}
 	};
 	for (const item of items) {
 		switch (item.kind) {
 			case 'thinking':
-				addName(localize('paradisAgentChat.groupThinking', "考えた内容"));
+				addOnce(names, localize('paradisAgentChat.groupThinking', "考えた内容"));
 				break;
 			case 'approval':
-				addName(localize('paradisAgentChat.groupApproval', "許可の確認"));
+				addOnce(names, localize('paradisAgentChat.groupApproval', "許可の確認"));
 				break;
 			case 'tool': {
-				// 見出しには名前だけが要る。結果の行数や差分（describeMeta）は作らない（描き直しのたびに差分を計算しないため）。
-				const label = item.use !== undefined
-					? describeTool(item.use.tool ?? 'tool', paradisParseToolInput(item.use.text), item.use).label
-					: localize('paradisAgentChat.groupToolResult', "ツールの結果");
-				addName(label);
-				if (item.result !== undefined && (item.result.isError === true || looksLikeError(item.result.text))) {
+				// 見出しには名前だけが要る。入力の解析や差分（describeTool / describeMeta）は作らない
+				// （作業中は最後のまとまりの見出しをツールごとに作り直すため）。
+				addOnce(names, item.use !== undefined ? toolLabel(item.use.tool ?? 'tool') : toolResultLabel());
+				const itemFailed = item.result !== undefined && toolFailed(item.result);
+				if (itemFailed) {
 					failed++;
 				}
-				if (paradisIsRunningToolItem(item)) {
-					running.push(label);
-				}
-				if (item.use !== undefined && paradisIsFileWriteTool(item.use)) {
-					fileChanges++;
+				// ファイルの変更は、結果が届いて失敗していないものだけ数える（失敗した Edit と重ねて数えない）。
+				if (item.use !== undefined && item.result !== undefined && !itemFailed) {
+					for (const path of paradisFileWritePaths(item.use)) {
+						addOnce(files, path);
+					}
 				}
 				break;
 			}
 		}
 	}
-	return { count: items.length, names, failed, running, fileChanges };
+	return { count: items.length, names, failed, files };
 }
 
 // ---- ツールの行の見出し ------------------------------------------------------------------------
@@ -384,10 +437,10 @@ function commandArg(input: Record<string, unknown> | undefined, raw: string): st
 
 /** ツールの行の見出しを決める。 */
 export function paradisDescribeAgentChatTool(use: IParadisAgentChatMessage | undefined, result: IParadisAgentChatMessage | undefined): IParadisAgentChatToolSummary {
-	const failed = result !== undefined && (result.isError === true || looksLikeError(result.text));
+	const failed = result !== undefined && toolFailed(result);
 	const state: IParadisAgentChatToolSummary['state'] = result === undefined ? 'running' : failed ? 'failed' : 'done';
 	if (use === undefined) {
-		return { label: localize('paradisAgentChat.toolResult', "ツールの結果"), icon: 'output', arg: oneLine(result?.text ?? ''), state };
+		return { label: toolResultLabel(), icon: 'output', arg: oneLine(result?.text ?? ''), state };
 	}
 	const tool = use.tool ?? 'tool';
 	const input = paradisParseToolInput(use.text);
@@ -395,12 +448,64 @@ export function paradisDescribeAgentChatTool(use: IParadisAgentChatMessage | und
 }
 
 /** ツールの見出しのうち、結果に依らない部分（名前・引数・アイコン）。 */
+/** ツールの行の主な名前。入力を読まずに決まるので、まとまりの見出しはこれだけを使う。 */
+function toolLabel(tool: string): string {
+	const mcp = /^mcp__(.+?)__(.+)$/.exec(tool);
+	if (mcp !== null) {
+		return mcp[2];
+	}
+	switch (tool) {
+		case 'Bash':
+		case 'BashOutput':
+			return 'Bash';
+		case 'shell':
+		case 'exec_command':
+		case 'local_shell':
+			return 'Shell';
+		case 'Read':
+		case 'Write':
+		case 'Edit':
+		case 'Glob':
+		case 'Grep':
+			return tool;
+		case 'MultiEdit':
+		case 'NotebookEdit':
+			return 'Edit';
+		case 'apply_patch':
+			return 'Patch';
+		case 'web_search':
+			return localize('paradisAgentChat.webSearch', "Web 検索");
+		case 'WebFetch':
+			return localize('paradisAgentChat.webFetch', "ページ取得");
+		case 'TodoWrite':
+			return localize('paradisAgentChat.todo', "タスク更新");
+		case 'Task':
+		case 'Agent':
+			return localize('paradisAgentChat.subagent', "サブエージェント");
+		case 'Skill':
+			return localize('paradisAgentChat.skill', "スキル");
+		case 'ToolSearch':
+		case 'tool_search':
+			return localize('paradisAgentChat.toolSearch', "ツール検索");
+		case 'view_image':
+			return localize('paradisAgentChat.viewImage', "画像を見る");
+		default:
+			return tool;
+	}
+}
+
+/** 呼び出しと対にならなかったツールの結果の名前。 */
+function toolResultLabel(): string {
+	return localize('paradisAgentChat.toolResult', "ツールの結果");
+}
+
 function describeTool(tool: string, input: Record<string, unknown> | undefined, use: IParadisAgentChatMessage): Omit<IParadisAgentChatToolSummary, 'meta' | 'state'> {
+	const label = toolLabel(tool);
 	const mcp = /^mcp__(.+?)__(.+)$/.exec(tool);
 	if (mcp !== null) {
 		const arg = input === undefined ? oneLine(use.text) : ['query', 'q', 'command', 'code', 'url', 'path', 'file_path', 'name', 'pattern', 'prompt']
 			.map(key => nonEmpty(input[key])).find(value => value !== undefined) ?? oneLine(use.text);
-		return { label: mcp[2], namespace: mcp[1], arg: oneLine(arg), icon: 'extensions' };
+		return { label, namespace: mcp[1], arg: oneLine(arg), icon: 'extensions' };
 	}
 	switch (tool) {
 		case 'Bash':
@@ -408,47 +513,47 @@ function describeTool(tool: string, input: Record<string, unknown> | undefined, 
 		case 'shell':
 		case 'exec_command':
 		case 'local_shell':
-			return { label: tool === 'BashOutput' ? 'Bash' : tool === 'Bash' ? 'Bash' : 'Shell', icon: 'terminal', arg: commandArg(input, use.text) };
+			return { label, icon: 'terminal', arg: commandArg(input, use.text) };
 		case 'Read':
-			return { label: 'Read', icon: 'file', arg: filePathArg(input) };
+			return { label, icon: 'file', arg: filePathArg(input) };
 		case 'Write':
-			return { label: 'Write', icon: 'new-file', arg: filePathArg(input) };
+			return { label, icon: 'new-file', arg: filePathArg(input) };
 		case 'Edit':
 		case 'MultiEdit':
 		case 'NotebookEdit':
-			return { label: 'Edit', icon: 'edit', arg: filePathArg(input) };
+			return { label, icon: 'edit', arg: filePathArg(input) };
 		case 'apply_patch':
-			return { label: 'Patch', icon: 'edit', arg: paradisParseApplyPatch(paradisApplyPatchText(use.text) ?? '').map(file => paradisPathBasename(file.path)).join(', ') || undefined };
+			return { label, icon: 'edit', arg: paradisParseApplyPatch(paradisApplyPatchText(use.text) ?? '').map(file => paradisPathBasename(file.path)).join(', ') || undefined };
 		case 'Glob':
-			return { label: 'Glob', icon: 'search', arg: nonEmpty(input?.pattern) ?? oneLine(use.text) };
+			return { label, icon: 'search', arg: nonEmpty(input?.pattern) ?? oneLine(use.text) };
 		case 'Grep': {
 			const pattern = nonEmpty(input?.pattern);
 			const where = nonEmpty(input?.glob) ?? nonEmpty(input?.path);
-			return { label: 'Grep', icon: 'search', arg: pattern !== undefined ? (where !== undefined ? `${pattern} · ${paradisPathBasename(where)}` : pattern) : oneLine(use.text) };
+			return { label, icon: 'search', arg: pattern !== undefined ? (where !== undefined ? `${pattern} · ${paradisPathBasename(where)}` : pattern) : oneLine(use.text) };
 		}
 		case 'web_search':
-			return { label: localize('paradisAgentChat.webSearch', "Web 検索"), icon: 'globe', arg: oneLine(use.text) };
+			return { label, icon: 'globe', arg: oneLine(use.text) };
 		case 'WebFetch':
-			return { label: localize('paradisAgentChat.webFetch', "ページ取得"), icon: 'globe', arg: nonEmpty(input?.url)?.replace(/^https?:\/\//, '') ?? oneLine(use.text) };
+			return { label, icon: 'globe', arg: nonEmpty(input?.url)?.replace(/^https?:\/\//, '') ?? oneLine(use.text) };
 		case 'TodoWrite': {
 			const todos = input?.todos;
 			const arg = Array.isArray(todos)
 				? localize('paradisAgentChat.todoProgress', "{0}件中 {1}件完了", todos.length, todos.filter(item => typeof item === 'object' && item !== null && (item as Record<string, unknown>).status === 'completed').length)
 				: undefined;
-			return { label: localize('paradisAgentChat.todo', "タスク更新"), icon: 'checklist', arg };
+			return { label, icon: 'checklist', arg };
 		}
 		case 'Task':
 		case 'Agent':
-			return { label: localize('paradisAgentChat.subagent', "サブエージェント"), icon: 'person', arg: oneLine(use.text) };
+			return { label, icon: 'person', arg: oneLine(use.text) };
 		case 'Skill':
-			return { label: localize('paradisAgentChat.skill', "スキル"), icon: 'sparkle', arg: nonEmpty(input?.skill) ?? oneLine(use.text) };
+			return { label, icon: 'sparkle', arg: nonEmpty(input?.skill) ?? oneLine(use.text) };
 		case 'ToolSearch':
 		case 'tool_search':
-			return { label: localize('paradisAgentChat.toolSearch', "ツール検索"), icon: 'search', arg: nonEmpty(input?.query) ?? oneLine(use.text) };
+			return { label, icon: 'search', arg: nonEmpty(input?.query) ?? oneLine(use.text) };
 		case 'view_image':
-			return { label: localize('paradisAgentChat.viewImage', "画像を見る"), icon: 'file-media', arg: filePathArg(input) };
+			return { label, icon: 'file-media', arg: filePathArg(input) };
 		default:
-			return { label: tool, icon: 'tools', arg: oneLine(use.text) };
+			return { label, icon: 'tools', arg: oneLine(use.text) };
 	}
 }
 

@@ -12,6 +12,8 @@ import { Emitter, Event } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
+import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
+import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IMarkdownRendererService, MarkdownRendererService } from '../../../../../platform/markdown/browser/markdownRenderer.js';
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
@@ -73,7 +75,7 @@ function sourceReturning(views: IParadisAgentChatView[]): IParadisAgentChatSourc
 suite('ParadisAgentChatView', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	async function createView(views: IParadisAgentChatView[]): Promise<{ view: ParadisAgentChatView; host: TestHost; container: HTMLElement; disposables: DisposableStore }> {
+	async function createView(views: IParadisAgentChatView[]): Promise<{ view: ParadisAgentChatView; host: TestHost; container: HTMLElement; disposables: DisposableStore; session: ParadisAgentChatSession }> {
 		const disposables = store.add(new DisposableStore());
 		const container = mainWindow.document.createElement('div');
 		container.className = 'terminal-overflow-guard terminal-editor';
@@ -81,6 +83,7 @@ suite('ParadisAgentChatView', () => {
 		disposables.add({ dispose: () => container.remove() });
 		const instantiationService = disposables.add(new TestInstantiationService());
 		instantiationService.set(IOpenerService, NullOpenerService);
+		instantiationService.set(IHoverService, NullHoverService);
 		instantiationService.set(IMarkdownRendererService, instantiationService.createInstance(MarkdownRendererService));
 		const session = disposables.add(new ParadisAgentChatSession('pane', sourceReturning(views), new NullLogService()));
 		const host = new TestHost(session);
@@ -90,7 +93,7 @@ suite('ParadisAgentChatView', () => {
 		await session.refresh();
 		// 描画は次のタスクへまとめられる。
 		await new Promise(resolve => setTimeout(resolve, 0));
-		return { view, host, container, disposables };
+		return { view, host, container, disposables, session };
 	}
 
 	test('renders the conversation, a tool row with its diff card and the pending question, and answers through the host', async () => {
@@ -195,5 +198,55 @@ suite('ParadisAgentChatView', () => {
 			opened: { group: ['3×考えた内容, Bash'], expanded: 'true', steps: ['考える', 'npm ci', 'npm test'], focused: true },
 			restored: { group: ['3×考えた内容, Bash'], expanded: 'true', steps: ['考える', 'npm ci', 'npm test'] },
 		});
+	});
+
+	test('keeps a row the user opened visible when the next tool folds it into a group', async () => {
+		const tool = (rev: number, id: string, command: string) => ({ rev, role: 'assistant' as const, kind: 'tool_use' as const, tool: 'Bash', toolUseId: id, text: JSON.stringify({ command }) });
+		const result = (rev: number, id: string, text: string) => ({ rev, role: 'tool' as const, kind: 'tool_result' as const, toolUseId: id, text });
+		const first = [{ rev: 0, role: 'user' as const, kind: 'text' as const, text: 'ビルドして' }, tool(1, 't1', 'npm run build'), result(2, 't1', 'error TS2304: Cannot find name')];
+		const before: IParadisAgentChatView = { token: 'pane', agent: 'claude', epoch: 'e', rev: 3, reset: true, busy: true, live: null, messages: first, interaction: null };
+		// 表示の切り替え（setTarget）と createView がそれぞれ1回ずつ取り直すので、最初の状態を2回返す。
+		const { container, session } = await createView([
+			before,
+			before,
+			{ token: 'pane', agent: 'claude', epoch: 'e', rev: 4, reset: true, busy: true, live: null, messages: [...first, tool(3, 't2', 'npm run lint')], interaction: null },
+		]);
+		container.querySelector<HTMLButtonElement>('.paradis-agent-chat-step.tool .paradis-agent-chat-step-row')!.click();
+		await session.refresh();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const text = (selector: string) => [...container.querySelectorAll<HTMLElement>(selector)].map(element => element.textContent);
+		assert.deepStrictEqual({
+			group: text('.paradis-agent-chat-group-row'),
+			visibleArgs: text('.paradis-agent-chat-grouped .paradis-agent-chat-step-arg'),
+			openedOutput: text('.paradis-agent-chat-grouped .paradis-agent-chat-step-detail'),
+		}, {
+			group: ['2×Bash失敗 1 件'],
+			visibleArgs: ['npm run build', 'npm run lint'],
+			openedOutput: ['{"command":"npm run build"}', 'error TS2304: Cannot find name'],
+		});
+	});
+
+	test('draws a pending approval between tools as a card outside the groups', async () => {
+		const tool = (rev: number, id: string, command: string) => ({ rev, role: 'assistant' as const, kind: 'tool_use' as const, tool: 'Bash', toolUseId: id, text: JSON.stringify({ command }) });
+		const result = (rev: number, id: string) => ({ rev, role: 'tool' as const, kind: 'tool_result' as const, toolUseId: id, text: 'ok' });
+		const { container } = await createView([{
+			token: 'pane', agent: 'claude', epoch: 'e', rev: 9, reset: true, busy: true, live: null,
+			messages: [
+				tool(0, 't1', 'ls'), result(1, 't1'),
+				tool(2, 't2', 'pwd'), result(3, 't2'),
+				{ rev: 4, role: 'assistant', kind: 'tool_use', tool: 'approval_request', toolUseId: 'toolu_9', text: 'Bash: rm -rf dist' },
+				tool(5, 't3', 'cat a'), result(6, 't3'),
+				tool(7, 't4', 'cat b'), result(8, 't4'),
+			],
+			interaction: { kind: 'approval', id: 'toolu_9', choices: [{ id: 'yes', label: '許可', tone: 'approve' }, { id: 'no', label: '拒否', tone: 'deny' }] },
+		}]);
+		const list = container.querySelector<HTMLElement>('.paradis-agent-chat-list')!;
+		assert.deepStrictEqual([...list.children].filter(child => !child.classList.contains('paradis-agent-chat-notice')).map(child => child.classList.contains('paradis-agent-chat-group')
+			? `group:${child.textContent}`
+			: `card:${[...child.querySelectorAll('button')].map(button => button.textContent).join('/')}`), [
+			'group:2×Bash',
+			'card:許可/拒否',
+			'group:2×Bash',
+		]);
 	});
 });
