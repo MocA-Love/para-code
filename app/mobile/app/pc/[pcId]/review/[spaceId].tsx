@@ -111,6 +111,7 @@ export default function ReviewScreen() {
 					<ReviewSummary
 						reviewed={reviewedCount(entries, marks)}
 						total={entries.length}
+						synced={review.stored}
 						position={at >= 0 ? { index: at, count: queue.length } : undefined}
 						filter={filter}
 						onFilter={setFilter}
