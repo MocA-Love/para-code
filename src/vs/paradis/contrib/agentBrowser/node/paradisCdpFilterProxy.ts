@@ -316,14 +316,43 @@ function peekOversizedFrame(data: wsTypes.RawData): IParadisOversizedFramePeek {
 	};
 }
 
+/**
+ * Oversized protocol *events* dropped so far in this process, by method. Only the first per method is
+ * reported: an event nobody asked for fails no tool call, and one page that inlines a large source map
+ * sends a `Debugger.scriptParsed` of that size on every navigation — 456 reports in 30 days
+ * (2026-09), all of that one kind, crowding out the drops that matter.
+ */
+const droppedEventCounts = new Map<string, number>();
+
+/** Forgets the dropped-event counts. For tests, which otherwise depend on which test ran first. */
+export function resetParadisCdpDroppedEventCounts(): void {
+	droppedEventCounts.clear();
+}
+
 function reportOversizedFrame(transport: 'page' | 'browser', peek: IParadisOversizedFramePeek, pendingMethod: string | undefined, frameBytes: number, logService: ILogService): void {
 	const method = pendingMethod ?? peek.method ?? 'unknown';
-	logNonThrowing(logService, 'warn', `[ParadisCdpGateway] dropped a ${Math.round(frameBytes / 1048576)} MiB ${transport} upstream frame (${peek.id !== undefined ? 'response to ' : ''}${method})`);
+	const isResponse = peek.id !== undefined;
+	logNonThrowing(logService, 'warn', `[ParadisCdpGateway] dropped a ${Math.round(frameBytes / 1048576)} MiB ${transport} upstream frame (${isResponse ? 'response to ' : ''}${method})`);
+	if (!isResponse) {
+		const dropped = (droppedEventCounts.get(method) ?? 0) + 1;
+		droppedEventCounts.set(method, dropped);
+		if (dropped > 1) {
+			return;
+		}
+		reportParadisDiagnosticError('owned', 'agent-browser', 'cdp-event-dropped', new Error('CDP upstream event exceeded the forwarding limit'), {
+			transport,
+			safe_method: method,
+			safe_frame_mib: Math.round(frameBytes / 1048576),
+		}, 'info');
+		return;
+	}
+	// A dropped response fails the agent's tool call (it gets a retryable error), so each one is reported.
 	reportParadisDiagnosticError('owned', 'agent-browser', 'cdp-frame-dropped', new Error('CDP upstream frame exceeded the forwarding limit'), {
 		transport,
 		safe_method: method,
 		safe_frame_mib: Math.round(frameBytes / 1048576),
-		safe_is_response: peek.id !== undefined,
+		safe_is_response: true,
+		safe_dropped_events: Array.from(droppedEventCounts.values()).reduce((sum, count) => sum + count, 0),
 	}, 'warning');
 }
 

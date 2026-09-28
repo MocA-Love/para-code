@@ -59,6 +59,7 @@ export interface IUtilitySentryChildResult {
 			readonly tags?: Record<string, unknown>;
 			readonly extra?: Record<string, unknown>;
 			readonly level?: string;
+			readonly fingerprint?: readonly string[];
 		} | undefined;
 	}>;
 	readonly breadcrumbs: unknown[];
