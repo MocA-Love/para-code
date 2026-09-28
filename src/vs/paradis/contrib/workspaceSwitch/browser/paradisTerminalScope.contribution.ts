@@ -15,6 +15,7 @@ import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationHandle, INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { TerminalExitReason, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
+import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { IProcessDetails } from '../../../../platform/terminal/common/terminalProcess.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -35,7 +36,7 @@ import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTe
 import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisParseTerminalActiveGroups, paradisTerminalGroupIdentity, paradisUpdateTerminalActiveGroup } from '../common/paradisTerminalActiveGroup.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { paradisIsSharedPanelShell, paradisSharedPanelEnabledAtStartup } from '../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
+import { paradisIsIdleEmptyShell, paradisIsSharedPanelShell, paradisSharedPanelEnabledAtStartup } from '../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
 import { paradisForgetRestartedTerminal, paradisWasTerminalShellRestarted } from '../common/paradisTerminalLaunchPreparers.js';
 import { paradisPickRestartedShellScope, paradisRegisterRestartedShellScopeLookup, paradisRestartedShellRecordScope } from '../common/paradisTerminalSpaceFolder.js';
 
@@ -273,6 +274,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private readonly _seenOutsideSharedPanel = new Set<number>();
 	/** このウィンドウで共通ターミナルへ移した（元の所属を消した）ターミナルの数。1度だけ知らせる。 */
 	private _sharedPanelMigratedCount = 0;
+	/** 共通ターミナルへ移したターミナル。知らせから空のシェルを片付けるときの対象（これ以外は閉じない）。 */
+	private readonly _sharedPanelMigratedInstanceIds = new Set<number>();
 	private readonly _sharedPanelMigrationNotice = this._register(new RunOnceScheduler(() => this.notifySharedPanelMigration(), 3_000));
 	/** 共通ターミナルへ移す前の所属（nonce → stateKey）。設定をオフに戻したときに戻す。 */
 	private static readonly SHARED_PANEL_FORMER_SCOPES_STORAGE_KEY = 'paradis.workspaceSwitch.sharedPanelFormerScopes';
@@ -1009,6 +1012,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			this._restartedShellScopes.delete(instanceId);
 			paradisForgetRestartedTerminal(instanceId);
 			this._sharedPanelInstanceIds.delete(instanceId);
+			this._sharedPanelMigratedInstanceIds.delete(instanceId);
 			this._seenOutsideSharedPanel.delete(instanceId);
 			this._stableScopeTracker.retire(instanceId);
 			this.persistMapping();
@@ -2365,6 +2369,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		// エディタのタブからパネルへ移した端末は、ユーザー自身の操作なので数えない。
 		if (!this._seenOutsideSharedPanel.has(instance.instanceId)) {
 			this._sharedPanelMigratedCount++;
+			this._sharedPanelMigratedInstanceIds.add(instance.instanceId);
 			this._sharedPanelMigrationNotice.schedule();
 		}
 		const nonce = this.instanceNonce(instance);
@@ -2407,7 +2412,48 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return;
 		}
 		this.storageService.store(key, true, StorageScope.APPLICATION, StorageTarget.USER);
-		this.notificationService.info(localize('paradis.sharedPanel.migrated', "下部パネルの {0} 個のターミナルを、どのスペースにも属さない共通ターミナルにしました。元に戻すには、Para Code の設定の「ターミナル」で「下部パネルのターミナルをスペース共通にする」をオフにして、ウィンドウを再読み込みします。", this._sharedPanelMigratedCount));
+		const message = localize('paradis.sharedPanel.migrated', "下部パネルの {0} 個のターミナルを、どのスペースにも属さない共通ターミナルにしました。元に戻すには、Para Code の設定の「ターミナル」で「下部パネルのターミナルをスペース共通にする」をオフにして、ウィンドウを再読み込みします。", this._sharedPanelMigratedCount);
+		const idle = this.idleMigratedSharedPanelShells();
+		if (idle.length === 0) {
+			this.notificationService.info(message);
+			return;
+		}
+		// 前のバージョンでは、スペースを行き来するたびにパネルへ空のシェルが作られて溜まっていた。
+		// 移した直後に一度に並ぶので、使われていないものだけをまとめて閉じる口を添える。
+		this.notificationService.prompt(Severity.Info, message, [{
+			label: localize('paradis.sharedPanel.closeIdleShells', "使われていない空のシェル {0} 個を閉じる", idle.length),
+			run: () => this.closeIdleMigratedSharedPanelShells(),
+		}]);
+	}
+
+	/**
+	 * 共通ターミナルへ移したもののうち、一度も使われていない空のシェル。
+	 * 判定は `paradisIsIdleEmptyShell`（分からないものは閉じない側へ倒す）。
+	 */
+	private idleMigratedSharedPanelShells(): ITerminalInstance[] {
+		return this.terminalService.instances.filter(instance => {
+			if (!this._sharedPanelMigratedInstanceIds.has(instance.instanceId) || !this.isSharedPanelInstance(instance)) {
+				return false;
+			}
+			const commandDetection = instance.capabilities.get(TerminalCapability.CommandDetection);
+			return paradisIsIdleEmptyShell({
+				hasShellIntegration: commandDetection !== undefined,
+				hasChildProcesses: instance.hasChildProcesses,
+				commandCount: commandDetection?.commands.length ?? 0,
+				isExecuting: commandDetection?.executingCommand !== undefined,
+				hasPendingInput: (commandDetection?.promptInputModel.value.trim().length ?? 0) > 0,
+				title: instance.title,
+			});
+		});
+	}
+
+	/** ボタンを押した時点で改めて判定し直し、その時点でも空のものだけを閉じる。 */
+	private closeIdleMigratedSharedPanelShells(): void {
+		const idle = this.idleMigratedSharedPanelShells();
+		for (const instance of idle) {
+			void this.terminalService.safeDisposeTerminal(instance);
+		}
+		this.logService.info(`[paradisTerminalScope] closed ${idle.length} idle shell(s) that were moved into the shared panel`);
 	}
 
 	/**

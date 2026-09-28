@@ -10,7 +10,7 @@ import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IShellLaunchConfig, TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
-import { paradisIsTerminalSharedPanelEnabled, paradisResolveSharedPanelCwd, paradisShouldApplySharedPanelCwd } from '../../common/paradisTerminalSharedPanel.js';
+import { paradisIsIdleEmptyShell, paradisIsTerminalSharedPanelEnabled, paradisResolveSharedPanelCwd, paradisShouldApplySharedPanelCwd } from '../../common/paradisTerminalSharedPanel.js';
 
 suite('paradisTerminalSharedPanel', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -63,6 +63,33 @@ suite('paradisTerminalSharedPanel', () => {
 			hidden: false,
 			enabledByDefault: true,
 			disabled: false,
+		});
+	});
+
+	// 閉じると戻せないので、どれか1つでも「使われた」「分からない」なら閉じない。
+	test('treats only a never-used, idle, plain shell as an empty shell to close', () => {
+		const idle = { hasShellIntegration: true, hasChildProcesses: false, commandCount: 0, isExecuting: false, hasPendingInput: false, title: 'zsh' };
+		assert.deepStrictEqual({
+			idle: paradisIsIdleEmptyShell(idle),
+			windowsShell: paradisIsIdleEmptyShell({ ...idle, title: 'pwsh.exe' }),
+			noShellIntegration: paradisIsIdleEmptyShell({ ...idle, hasShellIntegration: false }),
+			childProcess: paradisIsIdleEmptyShell({ ...idle, hasChildProcesses: true }),
+			ranCommands: paradisIsIdleEmptyShell({ ...idle, commandCount: 1 }),
+			executing: paradisIsIdleEmptyShell({ ...idle, isExecuting: true }),
+			typing: paradisIsIdleEmptyShell({ ...idle, hasPendingInput: true }),
+			// 繋ぎ直した直後は子プロセスが「無し」に見えるので、見出しでも確かめる。
+			agentTitle: paradisIsIdleEmptyShell({ ...idle, title: 'Fix the login flow' }),
+			renamed: paradisIsIdleEmptyShell({ ...idle, title: 'server' }),
+		}, {
+			idle: true,
+			windowsShell: true,
+			noShellIntegration: false,
+			childProcess: false,
+			ranCommands: false,
+			executing: false,
+			typing: false,
+			agentTitle: false,
+			renamed: false,
 		});
 	});
 });
