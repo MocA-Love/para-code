@@ -174,13 +174,15 @@ let paradisMaxTypeTextLength = 4_000
 let paradisMaxPasteTextLength = 20_000
 
 enum ParadisTypedUnit: Equatable {
-	/** 1 文字（書記素）をそのまま打つ。 */
+	/** 1 文字（書記素）をそのまま打つ。改行は改行の文字（`\n`）で、Return は押さない。 */
 	case text(String)
-	/** キーとして押す（改行・タブ）。 */
-	case key(UInt16)
 }
 
-/** 文字列を打つ単位に分ける。制御文字（改行とタブ以外）は断る。 */
+/**
+ * 文字列を打つ単位に分ける。改行はどの経路でも改行の文字として入れる（送信は `pressKey` の return で行う、と
+ * 利用者と合意している）。タブは断る: キーでは次の欄へ移り、AX と貼り付けでは欄にタブ文字が入るので、
+ * `ユーザー名\tパスワード` のような文字列でパスワードが普通の欄に文字として入りうるため（ベータ 3 のレビュー M1）。
+ */
 func paradisTypedUnits(_ text: String) throws -> [ParadisTypedUnit] {
 	guard !text.isEmpty else {
 		throw ParadisHelperError.invalidArgument("\"text\" must not be empty")
@@ -192,9 +194,9 @@ func paradisTypedUnits(_ text: String) throws -> [ParadisTypedUnit] {
 	for character in text {
 		switch character {
 		case "\n", "\r\n", "\r":
-			units.append(.key(paradisKeyCodeReturn))
+			units.append(.text("\n"))
 		case "\t":
-			units.append(.key(paradisKeyCodeTab))
+			throw ParadisHelperError.invalidArgument("\"text\" must not contain tabs; press tab with pressKey to move between fields")
 		default:
 			let isControl = character.unicodeScalars.contains { scalar in
 				scalar.properties.generalCategory == .control || scalar.properties.generalCategory == .lineSeparator || scalar.properties.generalCategory == .paragraphSeparator
@@ -418,14 +420,6 @@ func paradisClipboardRestorePlan(changeCountAfterOurWrite: Int, currentChangeCou
 	return savedIsComplete ? .restore : .restorePartial
 }
 
-/** 貼り付け先の値に、貼った文字が入ったか。値が読めないときは確かめられない（false）。 */
-func paradisPasteLanded(before: String?, after: String?, text: String) -> Bool {
-	guard let after, after != before else {
-		return false
-	}
-	return after.contains(text)
-}
-
 // MARK: - 文字入力の確かめ（ベータの実機で文字が落ちた件）
 
 /** 文字入力をどの経路で入れたか。 */
@@ -455,38 +449,141 @@ struct ParadisTypingCheck: Equatable {
 	let verified: Bool?
 	/** 実際に増えた文字数（読み戻せたときだけ）。 */
 	let inserted: Int?
+	/** アプリが書き換えた（スマート引用符・自動修正・補完・整形など）。`verified` が true でも付く。 */
+	var rewritten: Bool = false
 }
 
-/** 改行は Return のキーとして送るので、欄には `\n` として入る。比べる前にそろえる。 */
+/** 改行を `\n` にそろえる（AX と貼り付けへ渡す前にも、比べる前にもかける。ベータ 3 のレビュー L2）。 */
 func paradisNormalizeTypedText(_ text: String) -> String {
 	return text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
 }
 
 /**
- * 入れる前の値と選択範囲（UTF-16 の位置と長さ）、入れた後の値から、文字列がそのまま入ったかを判断する。
- * 読めなければ確かめられない（nil）。
+ * アプリが自動で書き換えうる違いを畳む（スマート引用符・ダッシュ・省略記号・空白・大文字小文字・
+ * 数字の整形の区切り）。比べるためだけに使う。
+ */
+func paradisLooseText(_ text: String) -> String {
+	var result = ""
+	for scalar in text.precomposedStringWithCompatibilityMapping.lowercased().unicodeScalars {
+		switch scalar {
+		case "\u{201C}", "\u{201D}", "\u{201E}", "\u{00AB}", "\u{00BB}":
+			result.append("\"")
+		case "\u{2018}", "\u{2019}", "\u{201A}":
+			result.append("'")
+		case "\u{2013}", "\u{2014}", "\u{2212}", "-":
+			// ダッシュは数字の区切りと同じく落とす（`--` が `—` になる書き換えを畳む）
+			continue
+		case "\u{2026}", ".":
+			continue
+		default:
+			// 空白と、電話番号・カード番号の欄が足す区切りは落とす
+			if scalar.properties.isWhitespace || "()/".unicodeScalars.contains(scalar) {
+				continue
+			}
+			result.unicodeScalars.append(scalar)
+		}
+	}
+	return result
+}
+
+private func paradisOccurrences(of needle: String, in haystack: String) -> Int {
+	guard !needle.isEmpty else {
+		return 0
+	}
+	var count = 0
+	var range = haystack.startIndex..<haystack.endIndex
+	while let found = haystack.range(of: needle, range: range) {
+		count += 1
+		range = found.upperBound..<haystack.endIndex
+	}
+	return count
+}
+
+/**
+ * 入れる前の値と選択範囲（UTF-16 の位置と長さ）、入れた後の値から、文字列が入ったかを判断する（ベータ 3 のレビュー M2・L1）。
+ *  - 前後（選択範囲の外）が残っていれば、その間を「入った部分」として取り出し、送った文字列と比べる。完全に同じなら成功。
+ *    アプリの書き換えを畳んで同じか、入った部分が送った文字列を含む（補完で後ろが伸びた）なら、成功で `rewritten`
+ *  - 長さが同じで中身だけ違えば、アプリが書き換えた（自動修正など）として失敗で `rewritten`
+ *  - 前後が崩れた・選択範囲が読めないときは、送った文字列の出てくる回数が増えたかで見る
+ *  - 値が変わっていなければ確かめられない（遅れて入るかもしれない）。読めなくても確かめられない
+ * 「入っていない」と言うのは、値が変わって、しかも送った文字列が見つからないときだけ（入れ直すと二重になるため）。
  */
 func paradisTypingOutcome(before: String?, selection: (location: Int, length: Int)?, after: String?, text: String) -> ParadisTypingCheck {
 	guard let before, let after else {
 		return ParadisTypingCheck(verified: nil, inserted: nil)
 	}
 	let typed = paradisNormalizeTypedText(text)
-	let beforeUnits = Array(before.utf16)
-	var removedCount = 0
-	var expected: String?
 	if let selection {
+		let beforeUnits = Array(before.utf16)
 		let start = max(0, min(selection.location, beforeUnits.count))
 		let end = max(start, min(start + selection.length, beforeUnits.count))
 		let prefix = String(utf16CodeUnits: Array(beforeUnits[0..<start]), count: start)
-		let removed = String(utf16CodeUnits: Array(beforeUnits[start..<end]), count: end - start)
 		let suffix = String(utf16CodeUnits: Array(beforeUnits[end...]), count: beforeUnits.count - end)
-		removedCount = removed.count
-		expected = prefix + typed + suffix
+		if prefix + typed + suffix == before {
+			// 選択範囲と同じ文字列で置き換えた。変わらないのが正しい
+			return ParadisTypingCheck(verified: true, inserted: typed.count)
+		}
+		if after == before {
+			return ParadisTypingCheck(verified: nil, inserted: nil)
+		}
+		let prefixCount = prefix.utf16.count
+		let suffixCount = suffix.utf16.count
+		if after.hasPrefix(prefix), after.hasSuffix(suffix), after.utf16.count >= prefixCount + suffixCount {
+			let afterUnits = Array(after.utf16)
+			let middleUnits = Array(afterUnits[prefixCount..<(afterUnits.count - suffixCount)])
+			let middle = String(utf16CodeUnits: middleUnits, count: middleUnits.count)
+			if middle == typed {
+				return ParadisTypingCheck(verified: true, inserted: middle.count)
+			}
+			let looseMiddle = paradisLooseText(middle)
+			let looseTyped = paradisLooseText(typed)
+			if middle.contains(typed) || looseMiddle == looseTyped || (!looseTyped.isEmpty && looseMiddle.contains(looseTyped)) {
+				return ParadisTypingCheck(verified: true, inserted: middle.count, rewritten: true)
+			}
+			return ParadisTypingCheck(verified: false, inserted: middle.count, rewritten: middle.count == typed.count)
+		}
+	} else if after == before {
+		return ParadisTypingCheck(verified: nil, inserted: nil)
 	}
-	let inserted = max(0, after.count - (before.count - removedCount))
-	if let expected {
-		return ParadisTypingCheck(verified: after == expected, inserted: inserted)
+	// 前後が読めない・崩れた: 送った文字列が 1 回以上多く現れたかで見る（前からあった同じ文字列では成功にしない。レビュー L1）
+	let exactGrew = paradisOccurrences(of: typed, in: after) > paradisOccurrences(of: typed, in: before)
+	let looseTyped = paradisLooseText(typed)
+	let looseGrew = paradisOccurrences(of: looseTyped, in: paradisLooseText(after)) > paradisOccurrences(of: looseTyped, in: paradisLooseText(before))
+	return ParadisTypingCheck(verified: exactGrew || looseGrew, inserted: max(0, after.count - before.count), rewritten: !exactGrew && looseGrew)
+}
+
+// MARK: - AX で入れた後に入れ直してよいか（ベータ 3 のレビュー H1）
+
+/** 書き込みが起きていないと言い切れる `AXError`（ApplicationServices の定数と同じ値）。 */
+private let paradisAXErrorsThatWriteNothing: Set<Int32> = [
+	-25205, // kAXErrorAttributeUnsupported
+	-25201, // kAXErrorIllegalArgument
+	-25208, // kAXErrorNotImplemented
+	-25202, // kAXErrorInvalidUIElement
+	-25211, // kAXErrorAPIDisabled
+	-25206, // kAXErrorActionUnsupported
+]
+
+/**
+ * AX の書き込みの結果から、書き込みが起きていないと言い切れるか。言い切れるときだけ、貼り付けやキーで入れ直してよい。
+ * 成功・締め切り（kAXErrorCannotComplete）・一般の失敗は、要求が取り消されないので後で入りうる。入れ直すと二重になる。
+ */
+func paradisAXWriteCertainlyDidNothing(error: Int32) -> Bool {
+	return paradisAXErrorsThatWriteNothing.contains(error)
+}
+
+/** AX で入れた後に値を読み直す間隔と上限。 */
+let paradisAXReadbackIntervalMicroseconds: UInt32 = 50_000
+let paradisAXReadbackLimitSeconds: Double = 1.0
+
+/**
+ * AX で入れた後に読み直すたびに呼ぶ。結論が出たらその結果、まだ変わっていなければ nil（読み直しを続ける）。
+ * 上限まで変わらなければ、呼び出し側は「確かめられない（遅れて入るかもしれない）」で止め、入れ直さない。
+ */
+func paradisAXReadbackStep(before: String, selection: (location: Int, length: Int), latest: String?, text: String) -> ParadisTypingCheck? {
+	guard let latest else {
+		return nil
 	}
-	// 選択範囲が読めないときは、増えた数と、文字列が含まれるかで見る
-	return ParadisTypingCheck(verified: inserted == typed.count && after.contains(typed), inserted: inserted)
+	let check = paradisTypingOutcome(before: before, selection: selection, after: latest, text: text)
+	return check.verified == nil ? nil : check
 }

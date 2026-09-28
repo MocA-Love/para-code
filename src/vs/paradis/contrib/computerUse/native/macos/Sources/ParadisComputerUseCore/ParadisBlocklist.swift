@@ -55,6 +55,13 @@ let paradisBlockedAuthenticators: [String] = [
 	"*raivo*",
 	"*otpauth*",
 	"*steptwo*",
+	"*twofas*",
+	"com.duosecurity.DuoMobile",
+	"*duomobile*",
+	"com.authy",
+	"com.okta.mobile",
+	"com.yubico.yubioath",
+	"*yubioath*",
 ]
 
 /** キーチェーンアクセス。 */
