@@ -5,7 +5,7 @@ import { FlatList, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, ty
 import { ChevronDown } from 'lucide-react-native';
 import { AgentInitialRevealGate } from '../../agentInitialReveal.js';
 import { shouldHandleLatestEntry } from '../../agentNavigation.js';
-import { AgentStickyScroll } from '../../agentStickyScroll.js';
+import { AgentStickyScroll, agentScrollEndOffset } from '../../agentStickyScroll.js';
 import { hapticSelection } from '../../haptics.js';
 import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
@@ -39,9 +39,23 @@ export const ChatList = forwardRef<ChatListHandle, {
 	const [sticky, setSticky] = useState(true);
 	const [newCount, setNewCount] = useState(0);
 	const [revealed, setRevealed] = useState(false);
+	// 末尾へ送るときの計算に使う、内容の高さ（onContentSizeChange）と一覧の高さ（onLayout）。
+	const metricsRef = useRef({ contentHeight: 0, viewportHeight: 0 });
+	/**
+	 * 最下部へ送る。末尾へ送る経路（開いた直後・追従・「最新へ」・送信の直後・キーボード）は
+	 * すべてここを通す。FlatList の scrollToEnd() は最後の行の位置を見積もるので使わない
+	 * （外れる理由は agentScrollEndOffset を参照）。
+	 */
+	const scrollToBottom = useCallback((animated: boolean) => {
+		const { contentHeight, viewportHeight } = metricsRef.current;
+		if (contentHeight <= 0 || viewportHeight <= 0) {
+			return; // まだ測れていない。測れた時点で onContentSizeChange / onLayout が送り直す
+		}
+		listRef.current?.scrollToOffset({ offset: agentScrollEndOffset(contentHeight, viewportHeight), animated });
+	}, []);
 	const revealGate = useRef(new AgentInitialRevealGate(() => {
 		if (scrollState.sticky) {
-			listRef.current?.scrollToEnd({ animated: false });
+			scrollToBottom(false);
 		}
 		setRevealed(true);
 	})).current;
@@ -56,6 +70,8 @@ export const ChatList = forwardRef<ChatListHandle, {
 	// セッションが変わったら（epoch）隠し直して最下部から見せ直す。
 	useEffect(() => {
 		scrollState.reset();
+		// 前の会話の内容の高さで送らないよう、測り直すまで 0 にしておく（0 の間は送りを見送る）。
+		metricsRef.current.contentHeight = 0;
 		syncSticky();
 		setRevealed(false);
 		revealGate.begin();
@@ -70,9 +86,9 @@ export const ChatList = forwardRef<ChatListHandle, {
 		handledLatestRef.current = latest;
 		scrollState.followFromNavigation();
 		syncSticky();
-		const frame = requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
+		const frame = requestAnimationFrame(() => scrollToBottom(false));
 		return () => cancelAnimationFrame(frame);
-	}, [latest, scrollState, syncSticky]);
+	}, [latest, scrollState, syncSticky, scrollToBottom]);
 
 	const previousCountRef = useRef(rows.length);
 	useEffect(() => {
@@ -86,13 +102,14 @@ export const ChatList = forwardRef<ChatListHandle, {
 	const scrollToLatest = useCallback(() => {
 		scrollState.followNow();
 		syncSticky();
-		listRef.current?.scrollToEnd({ animated: true });
-	}, [scrollState, syncSticky]);
+		scrollToBottom(true);
+	}, [scrollState, syncSticky, scrollToBottom]);
 	useImperativeHandle(ref, () => ({ scrollToLatest }), [scrollToLatest]);
 
 	const onContentSizeChange = (_width: number, height: number) => {
+		metricsRef.current.contentHeight = height;
 		if (scrollState.handleContentSize(height)) {
-			listRef.current?.scrollToEnd({ animated: false });
+			scrollToBottom(false);
 			revealGate.noteGrowth();
 		}
 	};
@@ -103,13 +120,13 @@ export const ChatList = forwardRef<ChatListHandle, {
 		}
 	};
 	// キーボードで一覧が縮んだとき、追従中なら最下部に張り付き直す（最新の行がキーボードの裏に隠れないように）。
-	const heightRef = useRef(0);
+	// 初めて高さが測れたときも同じ（それまでは末尾の位置を計算できず、送りを見送っているため）。
 	const onLayout = (event: LayoutChangeEvent) => {
 		const height = event.nativeEvent.layout.height;
-		const shrank = height < heightRef.current;
-		heightRef.current = height;
-		if (shrank && scrollState.shouldPinOnViewportShrink()) {
-			listRef.current?.scrollToEnd({ animated: false });
+		const previous = metricsRef.current.viewportHeight;
+		metricsRef.current.viewportHeight = height;
+		if ((previous === 0 || height < previous) && scrollState.shouldPinOnViewportShrink()) {
+			scrollToBottom(false);
 		}
 	};
 

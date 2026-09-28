@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { AgentStickyScroll, type IAgentScrollSample } from './agentStickyScroll.js';
+import { AgentStickyScroll, agentScrollEndOffset, type IAgentScrollSample } from './agentStickyScroll.js';
 
 const VIEWPORT = 800;
 
@@ -228,5 +228,26 @@ describe('AgentStickyScroll', () => {
 		expect(scroll.shouldPinOnViewportShrink()).toBe(true);
 		scroll.handleScroll(at(300, 2_000));
 		expect(scroll.shouldPinOnViewportShrink()).toBe(false);
+	});
+});
+
+describe('agentScrollEndOffset', () => {
+	it('returns the largest scrollable offset, counting the bottom inset and never going negative', () => {
+		expect([
+			// 内容の高さは下の余白を含む値なので、差がそのまま最大の位置になる
+			agentScrollEndOffset(17_646.5, 503.5),
+			agentScrollEndOffset(2_000, 800, 24),
+			// 内容が一覧より短いときは 0（上端）
+			agentScrollEndOffset(300, 800),
+			agentScrollEndOffset(0, 0),
+		]).toEqual([17_143, 1_224, 0, 0]);
+	});
+
+	it('lands where handleScroll counts as pinned, so sending the list to the end keeps following', () => {
+		const scroll = streaming();
+		scroll.handleScroll(atBottom(2_000));
+		// 本文が伸び、計算した末尾へ送った直後のサンプル。追従は外れない。
+		scroll.handleScroll(at(agentScrollEndOffset(2_600, VIEWPORT), 2_600));
+		expect(scroll.sticky).toBe(true);
 	});
 });
