@@ -37,6 +37,7 @@ import { configureNotificationHandler, createTerminalOperationOutboxStore, delet
 import { notifyCollapseKey } from './notificationTray.js';
 import { TrayReconcileRequests, dismissTrayHandledByPc, presentCollapsedNotification, reconcileTrayWithState } from './notificationTraySync.js';
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
+import { subscribeNetworkRevival } from './networkRevival.js';
 import { shouldPresentNotifyBanner } from './notificationPolicy.js';
 import { notifySubtitle } from './notifyPresentation.js';
 import { defaultTerminalPrefs, normalizeTerminalPrefs, type TerminalPrefs, type TerminalViewport } from './terminalViewport.js';
@@ -535,6 +536,8 @@ let prefsSyncSubscribed = false;
 let voiceNativeChain: Promise<void> = Promise.resolve();
 /** 接続復帰で購読を送り直す購読の多重登録防止。 */
 let voiceResubscribeSubscribed = false;
+/** 回線の変化の購読の多重登録防止（init()失敗リトライ対策）。 */
+let networkRevivalSubscribed = false;
 let connectionHeartbeat: ReturnType<typeof setInterval> | undefined;
 
 function stopConnectionHeartbeat(): void {
@@ -1218,6 +1221,20 @@ export const useAppStore = create<AppState>(set => ({
 			});
 			if (shouldRunForegroundWork(RNAppState.currentState)) {
 				startConnectionHeartbeat();
+			}
+			// 回線が戻った・切り替わった（Wi-Fi ⇄ セルラー）ら、バックオフや心拍を待たずに繋ぎ直す（W2-05）。
+			// 前面にいるときだけ。資格を拒まれているPCは RelayClient が決めた時刻まで待つ（急かさない）。
+			// expo-network のネイティブ部品が無いビルドでは何もしない（networkRevival.ts）。
+			if (!networkRevivalSubscribed) {
+				networkRevivalSubscribed = true;
+				subscribeNetworkRevival(() => {
+					if (!shouldRunForegroundWork(RNAppState.currentState) || useAppStore.getState().manualOffline) {
+						return;
+					}
+					for (const runtime of connectedRuntimes()) {
+						runtime.controller.ensureConnected();
+					}
+				});
 			}
 			set({
 				initializing: false,
