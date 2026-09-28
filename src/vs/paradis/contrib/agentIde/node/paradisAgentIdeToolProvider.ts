@@ -445,7 +445,17 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 						return report(true, { reason: verdict, ...blockedBy() });
 					}
 					if (verdict === 'ready') {
-						return report(true, { reason: verdict, hint: 'The agent started and waits for its first prompt. Send it with send_terminal_input (press_enter=true).' });
+						// Enter は hook が一度でも届いたペインにしか送らない（_checkTarget）。画面の見た目だけで
+						// その規則を外すと、hook の届かない相手で許可ダイアログかどうかを確かめられないまま送ることに
+						// なるので、外さずに案内の方を実際の挙動に合わせる。
+						const token = probe.internal?.paneToken;
+						const enterAccepted = token !== undefined && context.hasAgentHookHistory(token);
+						return report(true, {
+							reason: verdict,
+							hint: enterAccepted
+								? 'The agent started and waits for its first prompt. Send it with send_terminal_input (press_enter=true).'
+								: 'The agent started and waits for its first prompt, but its hooks have not reported yet, so Para Code will not press Enter there. Type the prompt with send_terminal_input (press_enter=false) and ask the user to press Enter, or launch the agent again with the prompt (launch_agent "prompt").',
+						});
 					}
 					if (verdict === 'no_agent_status') {
 						return report(false, { reason: verdict, hint: 'The agent never reported that it started working. This does not mean it finished: read_terminal to see the screen, or use until="text".' });

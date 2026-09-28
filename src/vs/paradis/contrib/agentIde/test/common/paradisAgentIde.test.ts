@@ -121,6 +121,7 @@ suite('paradisAgentIde (common)', () => {
 	test('startup screen: the trust dialogs and empty input boxes of the installed CLIs, and nothing else', () => {
 		// 選択肢の文言はこのソースを表示した画面で判定が当たらないよう、単語を連ねて組み立てる
 		const words = (...parts: string[]) => parts.join(' ');
+		const rule = '\u2500'.repeat(40);
 		const claudeYes = words('Yes,', 'I', 'trust', 'this', 'folder');
 		const claudeNo = words('No,', 'exit');
 		const claudeHeader = '\u2502 Accessing workspace:\n\u2502 Quick safety check: Is this a project you created or one you\n\u2502 trust? (Like your own code)\n';
@@ -133,6 +134,15 @@ suite('paradisAgentIde (common)', () => {
 			// codex-cli 0.155.1
 			codexTrust: `${codexHeader}\u203a 1. ${words('Yes,', 'continue')}\n  2. ${words('No,', 'quit')}`,
 			claudeReady: '\u256d\u2500\u256e\n\u2502 \u276f \u2502\n\u2570\u2500\u256f\n  ? for shortcuts',
+			// 2.1.283 を auto mode（既定）で起動した実機の画面の末尾（入力欄の下が権限モードの表示になる）
+			claudeReadyAutoMode: `${rule}\n\u276f \n${rule}\n  \u23f5\u23f5 auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents`,
+			claudeReadyPlaceholder: `${rule}\n\u276f Try "fix lint errors"\n${rule}\n  \u23f8 plan mode on (shift+tab to cycle)`,
+			// モードの表示だけで入力欄が見えない（作業中の出力が流れている等）なら当てない
+			claudeModeOnly: '\u23fa Working on it\n  \u23f5\u23f5 auto mode on (shift+tab to cycle)',
+			// 入力欄に文字が入っているなら当てない
+			claudeModeTyped: `${rule}\n\u276f fix the bug\n${rule}\n  \u23f5\u23f5 accept edits on (shift+tab to cycle)`,
+			// 信頼の確認の見出しが出ている間は、準備完了と言わない
+			claudeModeUnderTrust: `${claudeHeader}${rule}\n\u276f \n${rule}\n  \u23f5\u23f5 auto mode on (shift+tab to cycle)`,
 			codexReady: '\u203a Ask Codex to do anything\n\n  100% context left',
 			// 見出しと選択肢の文言が画面にあっても、選択肢の形（隣り合う2行・カーソル）でなければ当てない
 			mentionOnly: `${claudeHeader}The dialog offers "${claudeYes}" and "${claudeNo}".`,
@@ -149,6 +159,11 @@ suite('paradisAgentIde (common)', () => {
 			claudeTrustMoved: 'trust_dialog',
 			codexTrust: 'trust_dialog',
 			claudeReady: 'ready',
+			claudeReadyAutoMode: 'ready',
+			claudeReadyPlaceholder: 'ready',
+			claudeModeOnly: null,
+			claudeModeTyped: null,
+			claudeModeUnderTrust: null,
 			codexReady: 'ready',
 			mentionOnly: null,
 			noCursor: null,

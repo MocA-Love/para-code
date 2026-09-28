@@ -55,6 +55,13 @@ const CODEX_TRUST_DIALOG = [
 	`\u203a 1. ${words('Yes,', 'continue')}`,
 	`  2. ${words('No,', 'quit')}`,
 ].join('\n');
+// 2.1.283 を auto mode（既定）で起動した実機の画面の末尾。入力欄の下は「? for shortcuts」ではなく権限モードの表示
+const CLAUDE_READY_AUTO_MODE = [
+	'\u2500'.repeat(40),
+	'\u276f ',
+	'\u2500'.repeat(40),
+	'  \u23f5\u23f5 auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents',
+].join('\n');
 const CLAUDE_READY = [
 	'\u256d\u2500\u2500\u256e',
 	'\u2502 \u276f  \u2502',
@@ -289,16 +296,26 @@ suite('ParadisAgentIdeToolProvider', () => {
 		idle.clock.onSleep = () => { idle.state.screen = CLAUDE_READY; };
 		const ready = JSON.parse(text(await idle.provider.callTool(CALLER, 'wait_for_terminal', { terminal: 't_1', until: 'agent_stopped' }, undefined, idle.context)).body);
 
+		// hook がまだ届いていない相手（Codex の初回など）には Enter を促さない（送っても断られる）
+		const autoMode = setup({ actionsEnabled: false });
+		autoMode.hookTokens.clear();
+		autoMode.state.launchedAt = autoMode.clock.time;
+		autoMode.state.launchedIdle = true;
+		autoMode.state.screen = CLAUDE_READY_AUTO_MODE;
+		const readyWithoutHooks = JSON.parse(text(await autoMode.provider.callTool(CALLER, 'wait_for_terminal', { terminal: 't_1', until: 'agent_stopped' }, undefined, autoMode.context)).body);
+
 		const prompted = setup({ actionsEnabled: false });
 		prompted.state.launchedAt = prompted.clock.time;
 		prompted.state.screen = CLAUDE_READY;
 		const starting = JSON.parse(text(await prompted.provider.callTool(CALLER, 'wait_for_terminal', { terminal: 't_1', until: 'agent_stopped', timeout_seconds: 10 }, undefined, prompted.context)).body);
 
 		assert.deepStrictEqual([
-			{ met: ready.met, reason: ready.reason, waited: ready.waited_seconds },
+			{ met: ready.met, reason: ready.reason, waited: ready.waited_seconds, promptsEnter: ready.hint.includes('press_enter=true') },
+			{ met: readyWithoutHooks.met, reason: readyWithoutHooks.reason, waited: readyWithoutHooks.waited_seconds, promptsEnter: readyWithoutHooks.hint.includes('press_enter=true') },
 			{ met: starting.met, timedOut: starting.timed_out },
 		], [
-			{ met: true, reason: 'ready', waited: 1 },
+			{ met: true, reason: 'ready', waited: 1, promptsEnter: true },
+			{ met: true, reason: 'ready', waited: 0, promptsEnter: false },
 			{ met: false, timedOut: true },
 		]);
 	});
