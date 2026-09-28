@@ -1,15 +1,17 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Check, ChevronLeft, ChevronRight, FileText, X } from 'lucide-react-native';
+import { Check, ChevronLeft, ChevronRight, FileText, RefreshCw, X } from 'lucide-react-native';
+import type { ParadisMobileReviewState } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileDiffReview.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import type { DiffRow } from '../../components/diffParser.js';
 import { hapticImpact, hapticSelection } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
 import { HeaderButton, Icon, iconSize, useThemeColors } from '../../ui/index.js';
+import type { ReviewMarks } from './codeCache.js';
 import { ChangeBadge } from './codeParts.js';
-import { REVIEW_FILTERS, diffLineNumber, diffSign, type ReviewFilter } from './diffReview.js';
+import { REVIEW_FILTERS, diffLineNumber, diffSign, reviewStateOf, type ReviewFilter } from './diffReview.js';
 import { splitPath, type ScmEntry } from './scmModel.js';
 
 /**
@@ -54,11 +56,12 @@ export function ReviewSummary({ reviewed, total, position, filter, onFilter }: {
 }
 
 /** いま見ているファイル（状態の札・パス・増減・確認済みの印）。 */
-export function ReviewFileSummary({ entry, path, stats, reviewed }: {
+export function ReviewFileSummary({ entry, path, stats, state }: {
 	entry: ScmEntry | undefined;
 	path: string;
 	stats: { readonly add: number; readonly del: number } | undefined;
-	reviewed: boolean;
+	/** `changed` は確認した後に中身が変わった（Orca W2-14）。 */
+	state: ParadisMobileReviewState;
 }) {
 	const parts = [
 		entry?.staged === true ? 'ステージ済み' : undefined,
@@ -72,7 +75,8 @@ export function ReviewFileSummary({ entry, path, stats, reviewed }: {
 				<Text style={styles.fileSummaryPath} numberOfLines={2}>{path}</Text>
 				{parts.length > 0 ? <Text style={styles.fileSummarySub} numberOfLines={1}>{parts.join(' · ')}</Text> : null}
 			</View>
-			{reviewed ? <Text style={styles.reviewedMark}>確認済み</Text> : null}
+			{state === 'reviewed' ? <Text style={styles.reviewedMark}>確認済み</Text> : null}
+			{state === 'changed' ? <Text style={styles.changedMark}>確認後に変更あり</Text> : null}
 		</View>
 	);
 }
@@ -108,8 +112,10 @@ function DiffLine({ row }: { row: DiffRow }) {
  * 下のフッター（モックの `.rvfoot`）。前後のファイル・実ファイルを開く・確認済みにする。
  * ステージと破棄は PC 側に操作が無いので置かない。
  */
-export function ReviewFooter({ reviewed, canOpen, canMove, bottomInset, onPrev, onNext, onOpen, onToggleReviewed }: {
+export function ReviewFooter({ reviewed, changed, canOpen, canMove, bottomInset, onPrev, onNext, onOpen, onToggleReviewed }: {
 	reviewed: boolean;
+	/** 確認した後に中身が変わった（押すと今の中身で確認済みにし直す）。 */
+	changed: boolean;
 	canOpen: boolean;
 	canMove: boolean;
 	bottomInset: number;
@@ -145,10 +151,10 @@ export function ReviewFooter({ reviewed, canOpen, canMove, bottomInset, onPrev, 
 				style={({ pressed }) => [styles.mark, { backgroundColor: theme.primary }, reviewed ? styles.markDone : undefined, pressed ? styles.markPressed : undefined]}
 				accessibilityRole="button"
 				accessibilityState={{ checked: reviewed }}
-				accessibilityLabel={reviewed ? '確認済み（押すと未確認に戻す）' : '確認済みにする'}
+				accessibilityLabel={reviewed ? '確認済み（押すと未確認に戻す）' : changed ? '変更後の中身を確認済みにする' : '確認済みにする'}
 			>
 				<Icon icon={Check} size={iconSize.md} color={reviewed ? colors.green : theme.onPrimary} strokeWidth={2.4} />
-				<Text style={[styles.markText, { color: theme.onPrimary }, reviewed ? styles.markTextDone : undefined]}>{reviewed ? '確認済み' : '確認済みにする'}</Text>
+				<Text style={[styles.markText, { color: theme.onPrimary }, reviewed ? styles.markTextDone : undefined]}>{reviewed ? '確認済み' : changed ? 'もう一度確認済みにする' : '確認済みにする'}</Text>
 			</Pressable>
 			<Pressable
 				onPress={() => { hapticSelection(); onNext(); }}
@@ -164,14 +170,14 @@ export function ReviewFooter({ reviewed, canOpen, canMove, bottomInset, onPrev, 
 }
 
 /** 変更のファイルの一覧（iPad は右から、iPhone は下から出すシートの中身）。押すとそのファイルへ移る。 */
-export function ReviewFileList({ entries, reviewed, currentPath, onPick, onClose }: {
+export function ReviewFileList({ entries, marks, currentPath, onPick, onClose }: {
 	entries: readonly ScmEntry[];
-	reviewed: ReadonlySet<string>;
+	marks: ReviewMarks;
 	currentPath: string | undefined;
 	onPick: (path: string) => void;
 	onClose: () => void;
 }) {
-	const done = entries.filter(entry => reviewed.has(entry.path)).length;
+	const done = entries.filter(entry => reviewStateOf(entry, marks) === 'reviewed').length;
 	return (
 		<View>
 			<View style={styles.listHead}>
@@ -186,6 +192,7 @@ export function ReviewFileList({ entries, reviewed, currentPath, onPick, onClose
 					{entries.map((entry, index) => {
 						const { name, dir } = splitPath(entry.path);
 						const on = entry.path === currentPath;
+						const state = reviewStateOf(entry, marks);
 						return (
 							<View key={entry.path}>
 								{index > 0 ? <View style={styles.separator} /> : null}
@@ -193,15 +200,16 @@ export function ReviewFileList({ entries, reviewed, currentPath, onPick, onClose
 									onPress={() => { hapticSelection(); onPick(entry.path); }}
 									style={({ pressed }) => [styles.listRow, on || pressed ? styles.listRowOn : undefined]}
 									accessibilityRole="button"
-									accessibilityState={{ selected: on, checked: reviewed.has(entry.path) }}
-									accessibilityLabel={`${entry.meta.label}: ${entry.path}`}
+									accessibilityState={{ selected: on, checked: state === 'reviewed' }}
+									accessibilityLabel={`${entry.meta.label}: ${entry.path}${state === 'changed' ? '（確認後に変更あり）' : ''}`}
 								>
 									<ChangeBadge symbol={entry.meta.symbol} color={entry.meta.color} small />
 									<View style={styles.listRowCol}>
 										<Text style={styles.listRowName} numberOfLines={1}>{name}</Text>
 										<Text style={styles.listRowSub} numberOfLines={1}>{`${dir.length > 0 ? dir : '/'} · ${entry.meta.label}`}</Text>
 									</View>
-									{reviewed.has(entry.path) ? <Icon icon={Check} size={iconSize.md} color={colors.green} strokeWidth={2.4} /> : null}
+									{state === 'reviewed' ? <Icon icon={Check} size={iconSize.md} color={colors.green} strokeWidth={2.4} /> : null}
+									{state === 'changed' ? <Icon icon={RefreshCw} size={iconSize.sm} color={colors.yellow} strokeWidth={2.2} /> : null}
 								</Pressable>
 							</View>
 						);
@@ -293,6 +301,11 @@ const styles = StyleSheet.create({
 		fontSize: type.meta,
 		fontWeight: '700',
 		color: colors.green,
+	},
+	changedMark: {
+		fontSize: type.meta,
+		fontWeight: '700',
+		color: colors.yellow,
 	},
 	lines: {
 		flex: 1,

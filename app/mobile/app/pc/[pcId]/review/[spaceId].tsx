@@ -15,15 +15,15 @@ import { useParaToast } from '../../../../src/paraToast.js';
 import { firstParam } from '../../../../src/routes.js';
 import { colors, space, type } from '../../../../src/theme.js';
 import { BottomDrawer, EmptyState, HeaderButton, Screen, ScreenHeader } from '../../../../src/ui/index.js';
-import { codeCacheKey, useCodeCache, useReviewedPaths } from '../../../../src/features/code/codeCache.js';
 import { CenterSpinner, OfflineBanner, SpaceGateBody } from '../../../../src/features/code/codeParts.js';
 import { fileViewerHref } from '../../../../src/features/code/codeRoutes.js';
-import { canOpenWorkingFile, diffStats, nextUnreviewed, reviewQueue, reviewedCount, stepReview, type ReviewFilter } from '../../../../src/features/code/diffReview.js';
+import { canOpenWorkingFile, diffStats, nextUnreviewed, reviewQueue, reviewStateOf, reviewedCount, stepReview, type ReviewFilter } from '../../../../src/features/code/diffReview.js';
 import { DiffLines, ReviewFileList, ReviewFileSummary, ReviewFooter, ReviewSummary } from '../../../../src/features/code/reviewParts.js';
 import { RightDrawer } from '../../../../src/features/code/rightDrawer.js';
 import { orderedScmEntries, scmEntries } from '../../../../src/features/code/scmModel.js';
 import { useCodeSpace } from '../../../../src/features/code/useCodeSpace.js';
 import { useDiffContent, type DiffContent } from '../../../../src/features/code/useDiffContent.js';
+import { useReviewMarksController } from '../../../../src/features/code/useReviewMarks.js';
 import { useScmStatus } from '../../../../src/features/code/useScmData.js';
 
 /**
@@ -32,7 +32,8 @@ import { useScmStatus } from '../../../../src/features/code/useScmData.js';
  * 「確認済みにする」を置く。ファイルの一覧は見出しの右のボタンから（iPad は右から、iPhone は下から）。
  *
  * いま見ているファイルはクエリの `path` が持つ（`router.setParams` で差し替えるので戻る履歴は増えない）。
- * 「確認済み」は PC に記録が無いので、アプリを開いている間だけ端末の中で持つ（`codeCache.ts`）。
+ * 「確認済み」は確認したときの中身の識別と一緒に持ち、確認後に書き換えられたファイルは「確認後に変更あり」にする
+ * （`useReviewMarks.ts`、Orca W2-14）。
  */
 export default function ReviewScreen() {
 	const router = useRouter();
@@ -43,10 +44,8 @@ export default function ReviewScreen() {
 	const insets = useStableInsets();
 	const [filter, setFilter] = useState<ReviewFilter>('all');
 	const [listOpen, setListOpen] = useState(false);
-	const key = codeCacheKey(codeSpace.pcId, codeSpace.spaceId);
-	const reviewedPaths = useReviewedPaths(key);
-	const setReviewed = useCodeCache(s => s.setReviewed);
-	const reviewed = new Set(reviewedPaths);
+	const review = useReviewMarksController(codeSpace);
+	const { marks } = review;
 
 	const entries = orderedScmEntries(scmEntries(statusState.status));
 	const requested = firstParam(params.path);
@@ -58,9 +57,10 @@ export default function ReviewScreen() {
 	const diffText = diff.text;
 	const rows = useMemo(() => (diffText !== undefined ? parseUnifiedDiff(diffText) : undefined), [diffText]);
 	const stats = rows !== undefined ? diffStats(rows) : undefined;
-	const queue = reviewQueue(entries, reviewed, filter);
+	const queue = reviewQueue(entries, marks, filter);
 	const at = queue.findIndex(candidate => candidate.path === path);
-	const isReviewed = path !== undefined && reviewed.has(path);
+	const reviewState = entry !== undefined ? reviewStateOf(entry, marks) : 'todo';
+	const isReviewed = reviewState === 'reviewed';
 	const subtitle = [codeSpace.name, statusState.status?.branch ?? codeSpace.branch].filter(part => part !== undefined && part.length > 0).join(' · ');
 
 	const show = (next: string | undefined) => {
@@ -70,15 +70,15 @@ export default function ReviewScreen() {
 	};
 
 	const toggleReviewed = () => {
-		if (path === undefined) {
+		if (path === undefined || entry === undefined) {
 			return;
 		}
-		setReviewed(key, path, !isReviewed);
+		review.setReviewed(entry, !isReviewed);
 		if (isReviewed) {
 			return;
 		}
 		useParaToast.getState().show({ key: 'review-marked', text: '確認済みにしました', icon: 'checkmark-circle-outline', tone: 'done' }, 1_500);
-		show(nextUnreviewed(entries, new Set([...reviewedPaths, path]), path));
+		show(nextUnreviewed(entries, { ...marks, [path]: { identity: entry.identity, reviewedAt: Date.now() } }, path));
 	};
 
 	const openFile = () => {
@@ -90,7 +90,7 @@ export default function ReviewScreen() {
 	const fileList = (
 		<ReviewFileList
 			entries={entries}
-			reviewed={reviewed}
+			marks={marks}
 			currentPath={path}
 			onPick={picked => { setListOpen(false); show(picked); }}
 			onClose={() => setListOpen(false)}
@@ -109,7 +109,7 @@ export default function ReviewScreen() {
 				<View style={styles.body}>
 					<OfflineBanner reason={codeSpace.unavailable} />
 					<ReviewSummary
-						reviewed={reviewedCount(entries, reviewed)}
+						reviewed={reviewedCount(entries, marks)}
 						total={entries.length}
 						position={at >= 0 ? { index: at, count: queue.length } : undefined}
 						filter={filter}
@@ -121,10 +121,11 @@ export default function ReviewScreen() {
 							: <EmptyState icon={CircleCheck} title="変更はありません" body="作業ツリーは最後のコミットと同じ状態です。" />
 					) : (
 						<>
-							<ReviewFileSummary entry={entry} path={path} stats={stats} reviewed={isReviewed} />
+							<ReviewFileSummary entry={entry} path={path} stats={stats} state={reviewState} />
 							<DiffBody diff={diff} rows={rows} unavailable={codeSpace.unavailable} />
 							<ReviewFooter
 								reviewed={isReviewed}
+								changed={reviewState === 'changed'}
 								canOpen={canOpenWorkingFile(entry)}
 								canMove={entries.length > 1 || (entries.length === 1 && entries[0]?.path !== path)}
 								bottomInset={insets.bottom}
