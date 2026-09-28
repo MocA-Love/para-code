@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
+	IParadisMobileReviewSpace,
 	PARADIS_MOBILE_REVIEW_MAX_MARKS,
 	PARADIS_MOBILE_REVIEW_MAX_SPACES,
 	paradisApplyMobileReviewMarkChanges,
@@ -30,7 +31,7 @@ suite('ParadisMobileReviewStore', () => {
 	});
 
 	test('keeps the most recently used spaces and drops empty ones when serializing', () => {
-		const spaces = new Map(Array.from({ length: PARADIS_MOBILE_REVIEW_MAX_SPACES + 2 }, (_, index) => [`ws-${index}`, { marks: { 'a.ts': { identity: '00aa', reviewedAt: index } }, notes: [], updatedAt: index }] as const));
+		const spaces = new Map<string, IParadisMobileReviewSpace>(Array.from({ length: PARADIS_MOBILE_REVIEW_MAX_SPACES + 2 }, (_, index) => [`ws-${index}`, { marks: { 'a.ts': { identity: '00aa', reviewedAt: index } }, notes: [], updatedAt: index }]));
 		spaces.set('empty', { marks: {}, notes: [], updatedAt: 1_000 });
 		const kept = Object.keys(JSON.parse(paradisSerializeMobileReviewStore(spaces)));
 		assert.deepStrictEqual({ count: kept.length, oldestDropped: !kept.includes('ws-0') && !kept.includes('ws-1'), empty: kept.includes('empty') }, { count: PARADIS_MOBILE_REVIEW_MAX_SPACES, oldestDropped: true, empty: false });
