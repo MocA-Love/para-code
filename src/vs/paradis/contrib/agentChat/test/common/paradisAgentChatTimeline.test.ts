@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisAgentChatMessage } from '../../common/paradisAgentChat.js';
-import { paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisPendingCodexQuestion, paradisDescribeAgentChatTool, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, paradisLineDiffRows, paradisParseApplyPatch } from '../../common/paradisAgentChatTimeline.js';
+import { paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisPendingCodexQuestion, paradisDescribeAgentChatTool, paradisGroupAgentChatItems, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, paradisLineDiffRows, paradisParseApplyPatch, paradisSummarizeAgentChatGroup, ParadisAgentChatEntry } from '../../common/paradisAgentChatTimeline.js';
 
 function message(rev: number, fields: Omit<IParadisAgentChatMessage, 'rev'>): IParadisAgentChatMessage {
 	return { rev, ...fields };
@@ -119,6 +119,56 @@ suite('paradisAgentChatTimeline', () => {
 			askedAgain: [['liveg:1', true], ['liveg:2', false]],
 			codexPending: 'call_1',
 			codexAnswered: undefined,
+		});
+	});
+
+	test('folds runs of tool calls and thinking into groups, keeping text, cards, web searches and single steps outside', () => {
+		const messages: IParadisAgentChatMessage[] = [
+			message(0, { role: 'user', kind: 'text', text: '直して' }),
+			message(1, { role: 'assistant', kind: 'thinking', text: '読む' }),
+			message(2, { role: 'assistant', kind: 'tool_use', tool: 'Read', text: '{"file_path":"/repo/a.ts"}', toolUseId: 't1' }),
+			message(3, { role: 'tool', kind: 'tool_result', text: 'x', toolUseId: 't1' }),
+			message(4, { role: 'assistant', kind: 'tool_use', tool: 'Bash', text: '{"command":"npm test"}', toolUseId: 't2' }),
+			message(5, { role: 'tool', kind: 'tool_result', text: 'boom', toolUseId: 't2', isError: true }),
+			message(6, { role: 'assistant', kind: 'tool_use', tool: 'Edit', text: '{"file_path":"/repo/a.ts","old_string":"a","new_string":"b"}', toolUseId: 't3' }),
+			message(7, { role: 'assistant', kind: 'tool_use', tool: 'Read', text: '{"file_path":"/repo/b.ts"}', toolUseId: 't4' }),
+			message(8, { role: 'assistant', kind: 'text', text: '途中経過' }),
+			message(9, { role: 'assistant', kind: 'thinking', text: 'ひとつだけ' }),
+			message(10, { role: 'assistant', kind: 'text', text: '次へ' }),
+			message(11, { role: 'assistant', kind: 'tool_use', tool: 'Grep', text: '{"pattern":"x"}', toolUseId: 't5' }),
+			message(12, { role: 'tool', kind: 'tool_result', text: 'a.ts', toolUseId: 't5' }),
+			message(13, { role: 'assistant', kind: 'tool_use', tool: 'web_search', text: 'vscode', toolUseId: 't6' }),
+			message(14, { role: 'assistant', kind: 'tool_use', tool: 'approval_request', text: 'Bash: ls', toolUseId: 'old' }),
+			message(15, { role: 'assistant', kind: 'tool_use', tool: 'Bash', text: '{"command":"ls"}', toolUseId: 't7' }),
+			message(16, { role: 'tool', kind: 'tool_result', text: 'a.ts', toolUseId: 't7' }),
+			message(17, { role: 'assistant', kind: 'tool_use', tool: 'approval_request', text: 'Bash: rm -rf dist', toolUseId: 'now' }),
+		];
+		const interaction = { kind: 'approval' as const, id: 'now' };
+		const items = paradisBuildAgentChatItems(messages, interaction);
+		const shape = (entries: ParadisAgentChatEntry[]) => entries.map(entry => entry.kind === 'item' ? entry.item.key : [entry.key, entry.items.map(item => item.key), [...entry.pinned]]);
+		const busy = paradisGroupAgentChatItems(items, interaction, true);
+		const firstGroup = busy[1].kind === 'group' ? busy[1].items : [];
+		assert.deepStrictEqual({
+			busy: shape(busy),
+			idlePinned: paradisGroupAgentChatItems(items, interaction, false).flatMap(entry => entry.kind === 'group' ? [...entry.pinned] : []),
+			// 答え終えた承認はまとまりに入り、回答待ちの承認がまとまりを区切る。回答待ちが無くなれば、同じ行はまとまりに入る。
+			resolved: shape(paradisGroupAgentChatItems(paradisBuildAgentChatItems(messages, null), null, false)).slice(-1),
+			summary: paradisSummarizeAgentChatGroup(firstGroup),
+		}, {
+			busy: [
+				'm0',
+				['g:m1', ['m1', 'm2', 'm4', 'm6', 'm7'], ['m6', 'm7']],
+				'm8',
+				'm9',
+				'm10',
+				'm11',
+				'm13',
+				['g:m14', ['m14', 'm15'], []],
+				'm17',
+			],
+			idlePinned: [],
+			resolved: [['g:m14', ['m14', 'm15', 'm17'], []]],
+			summary: { count: 5, names: ['考えた内容', 'Read', 'Bash', 'Edit'], failed: 1, running: ['Edit', 'Read'], fileChanges: 1 },
 		});
 	});
 });
