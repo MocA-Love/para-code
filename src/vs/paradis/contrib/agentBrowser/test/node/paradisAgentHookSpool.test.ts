@@ -74,36 +74,38 @@ suite('paradisAgentHookSpool (node)', () => {
 		});
 	}
 
-	test('keeps hooks that cannot reach Para Code, privately, under a hash of the pane token, and never tool churn', async function () {
+	test('keeps only unreachable and not-yet-synced hooks, privately, under a hash of the pane token, with only the fields that tell the state', async function () {
 		if (process.platform === 'win32') {
 			this.skip();
 		}
 		this.timeout(30_000);
 		const spoolDir = join(root, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME);
-		// 1) ポートファイルが無い（Para Code が止まっている）
+		// 1) ポートファイルが無い（Para Code が止まっている）。依頼の文面は控えに残さない。
 		const portFilePath = join(root, 'mcp-port.json');
-		await runHook('{"hook_event_name":"UserPromptSubmit","session_id":"s1",\n"cwd":"/repo"}', portFilePath);
-		// 2) ポートファイルはあるが誰も聞いていない
+		await runHook('{"session_id":"s1",\n"cwd":"/repo","hook_event_name":"UserPromptSubmit","prompt":"secret plan"}', portFilePath);
+		// 2) ポートファイルはあるが誰も聞いていない。ツールの開始は控えない。
 		const closed = await listen(200);
 		await close(closed.server);
 		await fs.writeFile(portFilePath, JSON.stringify({ port: closed.port }));
 		await runHook('{"hook_event_name":"PreToolUse","tool_name":"Bash"}', portFilePath);
-		await runHook('{"hook_event_name":"Stop","session_id":"s1"}', portFilePath);
-		// 3) 受け口はあるが、ペインがまだ同期されていない（404）
-		const notYet = await listen(404);
+		await runHook('{"hook_event_name":"Stop","session_id":"s1","transcript_path":"/Users/example/.claude/projects/x \\"q\\".jsonl"}', portFilePath);
+		// 3) ペインがまだ同期されていない（503）。ツールの入力は控えに残さない。
+		const notYet = await listen(503);
 		try {
 			await fs.writeFile(portFilePath, JSON.stringify({ port: notYet.port }));
-			await runHook('{"hook_event_name":"PermissionRequest","tool_name":"Bash"}', portFilePath);
+			await runHook('{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -rf secret"}}', portFilePath);
 		} finally {
 			await close(notYet.server);
 		}
-		// 4) 届いた hook は控えない
-		const ok = await listen(200);
-		try {
-			await fs.writeFile(portFilePath, JSON.stringify({ port: ok.port }));
-			await runHook('{"hook_event_name":"Notification","message":"hello"}', portFilePath);
-		} finally {
-			await close(ok.server);
+		// 4) 知らない・終わったペイン（404）と、届いた hook は控えない。
+		for (const status of [404, 200]) {
+			const server = await listen(status);
+			try {
+				await fs.writeFile(portFilePath, JSON.stringify({ port: server.port }));
+				await runHook('{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash"}', portFilePath);
+			} finally {
+				await close(server.server);
+			}
 		}
 
 		const fileName = `pane-${paradisAgentHookSpoolHash(TOKEN)}.jsonl`;
@@ -115,19 +117,23 @@ suite('paradisAgentHookSpool (node)', () => {
 			files: [fileName],
 			dirMode: dirMode.toString(8),
 			fileMode: fileMode.toString(8),
-			tokenOnDisk: raw.includes(TOKEN),
+			secretsOnDisk: [TOKEN, 'secret plan', 'rm -rf'].filter(secret => raw.includes(secret)),
 			events: records.map(record => record.event),
-			firstPayload: records[0]?.payload,
-			reached: ok.hits.length,
+			payloads: records.map(record => record.payload),
+			idsDistinct: new Set(records.map(record => record.id)).size === records.length && records.every(record => typeof record.id === 'string'),
 			afterTake: await fs.readdir(spoolDir),
 		}, {
 			files: [fileName],
 			dirMode: '700',
 			fileMode: '600',
-			tokenOnDisk: false,
+			secretsOnDisk: [],
 			events: ['UserPromptSubmit', 'Stop', 'PermissionRequest'],
-			firstPayload: { hook_event_name: 'UserPromptSubmit', session_id: 's1', cwd: '/repo' },
-			reached: 1,
+			payloads: [
+				{ hook_event_name: 'UserPromptSubmit', session_id: 's1', cwd: '/repo' },
+				{ hook_event_name: 'Stop', session_id: 's1', transcript_path: '/Users/example/.claude/projects/x "q".jsonl' },
+				{ hook_event_name: 'PermissionRequest', tool_name: 'Bash' },
+			],
+			idsDistinct: true,
 			afterTake: [],
 		});
 	});

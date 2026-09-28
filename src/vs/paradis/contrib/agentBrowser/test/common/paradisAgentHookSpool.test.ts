@@ -12,8 +12,8 @@ import { IParadisSpooledAgentHook, paradisParseAgentHookSpool, paradisPlanAgentH
 
 const NOW = 1_800_000_000_000;
 
-function line(event: string, secondsAgo: number, payload: unknown = null): string {
-	return JSON.stringify({ v: 1, event, t: Math.floor(NOW / 1000) - secondsAgo, payload });
+function line(event: string, secondsAgo: number, payload: unknown = null, id?: string): string {
+	return JSON.stringify({ v: 1, ...(id !== undefined ? { id } : {}), event, t: Math.floor(NOW / 1000) - secondsAgo, payload });
 }
 
 function hook(event: string, msAgo: number, payload?: Record<string, unknown>): IParadisSpooledAgentHook {
@@ -41,7 +41,19 @@ suite('paradisAgentHookSpool', () => {
 		]);
 	});
 
-	test('the last state-changing hook decides: completion is a quiet mark, a recent prompt waits for the screen, an old prompt does nothing', () => {
+	test('only replays hooks after the previous run was last alive and within an hour, once per hook ID', () => {
+		const text = [
+			line('Stop', 4_000, null, 'too-old'),         // older than an hour
+			line('Stop', 600, null, 'while-alive'),       // before the previous run was last alive (a slow reply)
+			line('Stop', 60, null, 'a'),
+			line('Stop', 50, null, 'a'),                  // the same hook written twice
+			line('Notification', 40, null, 'b'),
+		].join('\n');
+		const after = NOW - 300_000;
+		assert.deepStrictEqual(paradisParseAgentHookSpool(text, NOW, after).map(record => record.id), ['a', 'b']);
+	});
+
+	test('the last state-changing hook decides: completion is a quiet mark, a recent prompt waits for the screen, an old prompt and working do nothing', () => {
 		const recentPermission = hook('PermissionRequest', 60_000, { tool_name: 'Bash' });
 		const question = paradisPlanAgentHookReplay([hook('PermissionRequest', 10_000, { tool_name: 'AskUserQuestion' })], NOW);
 		assert.deepStrictEqual([
@@ -56,7 +68,7 @@ suite('paradisAgentHookSpool', () => {
 			{ kind: 'prompt', status: 'permission', record: recentPermission },
 			'question',
 			{ kind: 'none' },
-			{ kind: 'status', status: 'working', at: NOW - 5_000, quiet: false },
+			{ kind: 'none' },
 			{ kind: 'none' },
 		]);
 	});

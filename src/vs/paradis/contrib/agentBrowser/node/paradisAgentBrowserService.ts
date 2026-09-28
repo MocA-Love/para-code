@@ -18,9 +18,10 @@
 import type * as http from 'http';
 import type { Socket } from 'net';
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
+import { writeFileSync } from 'fs';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { isAbsolute, join } from '../../../../base/common/path.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -44,8 +45,8 @@ import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } f
 import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
-import { IParadisReplayedAgentPrompt, IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, paradisPlanAgentHookReplay } from '../common/paradisAgentHookSpool.js';
-import { paradisPruneAgentHookSpool, paradisTakeAgentHookSpool } from './paradisAgentHookSpoolStore.js';
+import { IParadisReplayedAgentPrompt, IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_ID_PATTERN, PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE, PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SYNC_GRACE_MS, paradisPlanAgentHookReplay } from '../common/paradisAgentHookSpool.js';
+import { paradisPruneAgentHookSpool, paradisStampAgentHookSpoolAlive, paradisTakeAgentHookSpool } from './paradisAgentHookSpoolStore.js';
 import { onDidChangeParadisCodexHomes, paradisCodexHome, paradisCodexHomes } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from './paradisAgentHooksSetup.js';
 import { ParadisAgentHooksAutoInstall } from './paradisAgentHooksAutoInstall.js';
@@ -462,6 +463,15 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _hookSpoolPruned: Promise<unknown> = Promise.resolve();
 	/** 控えを読みに行ったペイン（1 つのペインにつき 1 度だけ読む）。 */
 	private readonly _hookSpoolCheckedTokens = new Set<string>();
+	/** これより前（前の Para Code が最後に生きていた時刻）の控えは流さない（W2-20 レビュー M5）。 */
+	private _hookSpoolReplayAfter = 0;
+	/** この起動で届いた hook の ID（控えとの重複を除く。新しいものから一定数だけ持つ）。 */
+	private readonly _recentHookIds = new Set<string>();
+	/**
+	 * 知らないトークンの hook に「まだ同期していない」（503）と答える期間の起点。起動した時刻と、
+	 * ウィンドウがつながった時刻（W2-20 レビュー M3）。
+	 */
+	private _hookSyncGraceSince = Date.now();
 	/**
 	 * 控えから流し直した許可要求・質問のうち、ウィンドウ側で画面を確かめてもらう前のもの（W2-20）。
 	 * 確かめられるまで状態にも承認カードにもしない。本物の hook が来たら捨てる。
@@ -571,7 +581,21 @@ export class ParadisAgentBrowserService extends Disposable {
 		super();
 		this._portFilePath = join(this._userDataPath, PARADIS_MCP_PORT_FILE_NAME);
 		this._hookSpoolDir = join(this._userDataPath, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME);
-		this._hookSpoolPruned = paradisPruneAgentHookSpool(this._hookSpoolDir).catch(() => undefined);
+		this._hookSpoolPruned = paradisPruneAgentHookSpool(this._hookSpoolDir)
+			.then(() => paradisStampAgentHookSpoolAlive(this._hookSpoolDir))
+			.then(previous => { this._hookSpoolReplayAfter = previous ?? 0; })
+			.catch(() => undefined);
+		// 「生きている」を書き足し続け、閉じるときにも書く。次の起動は、これより後の控えだけを流す。
+		const hookSpoolDir = this._hookSpoolDir;
+		const aliveTimer = setInterval(() => void paradisStampAgentHookSpoolAlive(hookSpoolDir), PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS);
+		this._register(toDisposable(() => {
+			clearInterval(aliveTimer);
+			try {
+				writeFileSync(join(hookSpoolDir, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE), String(Date.now()), { mode: 0o600 });
+			} catch {
+				// フォルダが無い・書けない。次の起動は 1 時間以内の分だけを流す。
+			}
+		}));
 		this._cdpGateway = this._register(new ParadisCdpGateway(
 			{
 				captureIngressLease: token => this.captureIngressLease(token),
@@ -960,6 +984,8 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	/** IPCServerのconnection identityをrenderer世代authorityとして登録する。 */
 	registerRendererConnection(windowCtx: string, connection: object): boolean {
+		// 新しいウィンドウのペインは、同期が済むまで hook の受け口が知らない（W2-20 レビュー M3）。
+		this._hookSyncGraceSince = Date.now();
 		const parsed = parseRendererWindowContext(windowCtx);
 		if (this._authorityFaulted
 			|| parsed === undefined
@@ -1101,6 +1127,31 @@ export class ParadisAgentBrowserService extends Disposable {
 		return { accepted: true, revision: acceptance.revision };
 	}
 
+	/**
+	 * 知らないトークンが「まだ同期していないだけ」かもしれないか。終わったペイン・隔離したペインは違う。
+	 * 起動とウィンドウの接続から一定時間だけそう扱う。
+	 */
+	private _isHookTokenPossiblyUnsynced(token: string): boolean {
+		return typeof token === 'string'
+			&& token.length > 0
+			&& token.length <= MAX_PANE_TOKEN_LENGTH
+			&& !this._serverDisposed
+			&& !this._terminalExitedTokens.has(token)
+			&& !this._faultedTokens.has(token)
+			&& Date.now() - this._hookSyncGraceSince < PARADIS_AGENT_HOOK_SYNC_GRACE_MS;
+	}
+
+	private _rememberHookId(id: string): void {
+		this._recentHookIds.delete(id);
+		this._recentHookIds.add(id);
+		if (this._recentHookIds.size > 4096) {
+			const oldest = this._recentHookIds.values().next().value;
+			if (oldest !== undefined) {
+				this._recentHookIds.delete(oldest);
+			}
+		}
+	}
+
 	private _scheduleAgentHookSpoolReplay(token: string): void {
 		if (this._hookSpoolCheckedTokens.has(token) || this._terminalExitedTokens.has(token)) {
 			return;
@@ -1127,7 +1178,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (ingressLease === undefined) {
 			return;
 		}
-		const records = await paradisTakeAgentHookSpool(this._hookSpoolDir, token);
+		const records = (await paradisTakeAgentHookSpool(this._hookSpoolDir, token, Date.now(), this._hookSpoolReplayAfter))
+			// 受け口の返事が遅れて控えてしまった重複（この起動で既に届いたもの）は流さない。
+			.filter(record => record.id === undefined || !this._recentHookIds.has(record.id));
 		if (records.length === 0 || !this.isIngressLeaseCurrent(ingressLease) || this._hookReportedTokens.has(token)) {
 			return;
 		}
@@ -2464,6 +2517,13 @@ export class ParadisAgentBrowserService extends Disposable {
 		const requestedToken = this._extractToken(req);
 		const ingressLease = requestedToken === undefined ? undefined : this.captureIngressLease(requestedToken);
 		if (ingressLease === undefined) {
+			// まだ同期していないだけかもしれないペインには 503 で答え、notify スクリプトに控えさせる。
+			// 知らない・終わったペインには 404（控えない）。W2-20 レビュー M3。
+			if (requestedToken !== undefined && this._isHookTokenPossiblyUnsynced(requestedToken)) {
+				res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+				res.end(JSON.stringify({ error: 'Pane not synced yet.' }));
+				return;
+			}
 			this._sendIngressRejected(res);
 			return;
 		}
@@ -2471,6 +2531,11 @@ export class ParadisAgentBrowserService extends Disposable {
 
 		const url = new URL(req.url ?? '/', 'http://127.0.0.1');
 		const eventType = url.searchParams.get('event') ?? '';
+		// hook の ID を覚える。受け口の返事が遅れて notify スクリプトが控えてしまっても、流し直しで二重にしない。
+		const hookId = url.searchParams.get(PARADIS_AGENT_HOOK_ID_PARAM);
+		if (hookId !== null && PARADIS_AGENT_HOOK_ID_PATTERN.test(hookId)) {
+			this._rememberHookId(hookId);
+		}
 		// SSH の接続先へ置いた notify スクリプトだけが名乗る印。これが付いていれば、載っている
 		// transcript_path は接続先のディスクのもので、手元では開けない（同じ綴りが手元にあっても別物）。
 		// 印の無い hook は従来どおり手元のものとして扱う（旧版のスクリプトが残っていても壊さない）。
