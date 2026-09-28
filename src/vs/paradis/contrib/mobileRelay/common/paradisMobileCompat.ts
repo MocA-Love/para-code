@@ -45,6 +45,14 @@ export const ParadisMobileCapability = {
 	FsUploadBinary: 'fs.upload-binary.v1',
 	/** 音声通知の MP3 をリレー経由で配る（従来の `voiceClips: 'relay-v1'` と同じ意味）。 */
 	VoiceClips: 'voice.clips.v1',
+	/** スペースのメモの版（`updatedAt`）と、noteSet の `base` / `op`（W2-16。`paradisMobileSpaceNoteSet.ts`）。 */
+	NoteCas: 'note.cas.v1',
+	/** 差分レビューの確認済みの印を PC に保存する（W2-14。`reviewGet` / `reviewSet`）。 */
+	ReviewStore: 'review.store.v1',
+	/** 差分の行へのメモと、エージェントへの送信（W2-28。`reviewNoteAdd` など）。 */
+	ReviewNotes: 'review.notes.v1',
+	/** 確認済みのファイルだけのステージ（W2-28。`reviewStage`）。 */
+	ReviewStage: 'review.stage.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -53,6 +61,10 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.TermSync,
 	ParadisMobileCapability.FsUploadBinary,
 	ParadisMobileCapability.VoiceClips,
+	ParadisMobileCapability.NoteCas,
+	ParadisMobileCapability.ReviewStore,
+	ParadisMobileCapability.ReviewNotes,
+	ParadisMobileCapability.ReviewStage,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
