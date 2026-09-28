@@ -148,6 +148,11 @@ function reuseTerminal(previous: Terminal, next: Terminal): Terminal {
 		: next;
 }
 
+/** PC の機能の広告（W2-17）が中身まで同じか。State は毎回新しい配列で届くので参照では比べない。 */
+function sameCapabilities(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+	return a === b || (a !== undefined && b !== undefined && a.length === b.length && a.every((name, index) => name === b[index]));
+}
+
 /**
  * `next` と値が等しい範囲で `previous` の参照を再利用した WorkspaceState を返す。
  * 全体が等しければ `previous` そのものを返すので、購読側は参照比較だけで無変化を判定できる。
@@ -167,6 +172,8 @@ export function reuseWorkspaceState(previous: WorkspaceState | undefined, next: 
 		&& battery === previous.battery
 		&& resources === previous.resources
 		&& previous.protocolVersion === next.protocolVersion
+		&& previous.minCompatibleMobile === next.minCompatibleMobile
+		&& sameCapabilities(previous.capabilities, next.capabilities)
 		&& previous.fsUploadEncoding === next.fsUploadEncoding
 		&& previous.voiceClips === next.voiceClips
 		&& previous.desktopEpoch === next.desktopEpoch

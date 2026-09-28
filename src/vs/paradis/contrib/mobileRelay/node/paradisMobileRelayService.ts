@@ -60,6 +60,8 @@ import {
 	toBase64Url,
 	unpackPcData,
 } from '../common/paradisMobileProtocol.js';
+import { PARADIS_MOBILE_BUILTIN_REQUEST_KINDS } from '../common/paradisMobileRequestKinds.js';
+import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, paradisEvaluateMobileCompat, paradisIsAcceptedMobileWireVersion, paradisParseMobileCapabilities } from '../common/paradisMobileCompat.js';
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyPcFocusQuiet, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
 import { paradisAgentLabel, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInsightSource } from '../../agentInsights/common/paradisAgentInsights.js';
@@ -224,8 +226,26 @@ export class MobileSession {
 	}
 
 	get hasCurrentProtocol(): boolean {
-		return this.negotiatedProtocolVersion === PARADIS_MOBILE_PROTOCOL_VERSION;
+		return this.negotiatedProtocolVersion !== undefined;
 	}
+
+	/**
+	 * このモバイルが State の要求で広告した capability（W2-17）。W2-17 より前のアプリ・未交渉は
+	 * `undefined`（＝何も持っていない扱い。`paradisHasMobileCapability` は false を返す）。
+	 */
+	get capabilities(): readonly string[] | undefined {
+		return this.negotiatedCapabilities;
+	}
+
+	private negotiatedCapabilities: readonly string[] | undefined;
+
+	/** このセッションで話している版（窓の中で PC とアプリの古い方）。未交渉・版が合わないなら `undefined`。 */
+	get wireVersion(): number | undefined {
+		return this.negotiatedProtocolVersion;
+	}
+
+	/** 版の不一致をこのセッションで Sentry へ送ったか（アプリは State を何度も求めるので、1回に絞る）。 */
+	private protocolMismatchReported = false;
 
 	/**
 	 * このモバイルがDesktop Stateの圧縮を明示的に要求したか（旧アプリは何も送らない）。
@@ -235,28 +255,39 @@ export class MobileSession {
 	private negotiatedStateEncoding: string | undefined;
 
 	negotiateProtocol(payload: Uint8Array): boolean {
-		let received: unknown;
+		let request: { protocolVersion?: unknown; minCompatiblePc?: unknown; capabilities?: unknown; stateEncoding?: unknown } = {};
 		try {
-			const request = JSON.parse(new TextDecoder().decode(payload)) as { protocolVersion?: unknown; stateEncoding?: unknown };
-			received = request.protocolVersion;
-			this.negotiatedProtocolVersion = request.protocolVersion === PARADIS_MOBILE_PROTOCOL_VERSION
-				? PARADIS_MOBILE_PROTOCOL_VERSION
-				: undefined;
-			this.negotiatedStateEncoding = request.stateEncoding === PARADIS_JSON_GZIP_RESPONSE_ENCODING
-				? PARADIS_JSON_GZIP_RESPONSE_ENCODING
-				: undefined;
+			const parsed: unknown = JSON.parse(new TextDecoder().decode(payload));
+			if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+				request = parsed;
+			}
 		} catch {
-			this.negotiatedProtocolVersion = undefined;
-			this.negotiatedStateEncoding = undefined;
+			// 読めない要求は版 0 のアプリとして扱う（下の判定で「アプリが古い」になる）。
 		}
-		if (!this.hasCurrentProtocol) {
+		// 版の窓の判定はアプリと同じ関数で行う（paradisMobileCompat.ts）。minCompatiblePc を送らない
+		// W2-17 より前のアプリは、これまでどおり版の完全一致だけが通る。
+		const verdict = paradisEvaluateMobileCompat({
+			mobileProtocolVersion: request.protocolVersion,
+			mobileMinCompatiblePc: request.minCompatiblePc,
+			pcProtocolVersion: PARADIS_MOBILE_PROTOCOL_VERSION,
+			pcMinCompatibleMobile: PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE,
+		});
+		this.negotiatedProtocolVersion = verdict.kind === 'ok' ? verdict.wireVersion : undefined;
+		this.negotiatedCapabilities = verdict.kind === 'ok' ? paradisParseMobileCapabilities(request.capabilities) : undefined;
+		this.negotiatedStateEncoding = verdict.kind === 'ok' && request.stateEncoding === PARADIS_JSON_GZIP_RESPONSE_ENCODING
+			? PARADIS_JSON_GZIP_RESPONSE_ENCODING
+			: undefined;
+		if (verdict.kind === 'blocked' && !this.protocolMismatchReported) {
+			this.protocolMismatchReported = true;
 			// 版数不一致は「繋がっているのに何も表示されない」形で現れる（アプリだけ更新した等）。
 			// 無言で undefined にすると、片側の nonce エラーしか手掛かりが残らない。
+			// どちらが古いかはアプリも State の minCompatibleMobile から同じ結論を出し、画面で案内する。
 			reportParadisDiagnosticError('owned', 'mobile-e2e', 'protocol-mismatch', new Error('Mobile protocol version mismatch'), {
 				phase: 'handshaking',
 				transport: 'websocket',
 				safe_expected: PARADIS_MOBILE_PROTOCOL_VERSION,
-				safe_received: typeof received === 'number' ? received : -1,
+				safe_received: typeof request.protocolVersion === 'number' ? request.protocolVersion : -1,
+				safe_reason: verdict.reason,
 			});
 		}
 		return this.hasCurrentProtocol;
@@ -479,6 +510,8 @@ export class MobileSession {
 		this.mux = undefined;
 		this.confirmed = false;
 		this.negotiatedProtocolVersion = undefined;
+		this.negotiatedCapabilities = undefined;
+		this.protocolMismatchReported = false;
 		// **必ず一緒に落とすこと。** セッションは mobileId で再接続をまたいで再利用されるため、
 		// ここに前回の交渉結果が残ると、アプリを古い版へ入れ直した端末に対して、次の requestState
 		// が届く前のブロードキャストで gzip を送ってしまう（旧アプリはJSON.parseで例外になり、
@@ -1163,6 +1196,15 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	// --- 公開API（IPC） -------------------------------------------------------
+
+	async getMobileWireVersion(mobileId: string): Promise<number | undefined> {
+		return this.sessions.get(mobileId)?.wireVersion;
+	}
+
+	async getMobileCapabilities(mobileId: string): Promise<readonly string[] | undefined> {
+		const session = this.sessions.get(mobileId);
+		return session?.hasCurrentProtocol ? session.capabilities : undefined;
+	}
 
 	async getStatus(): Promise<IParadisMobileStatus> {
 		return this.snapshot();
@@ -2171,7 +2213,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			return;
 		}
 
-		if (message.protocolVersion !== PARADIS_MOBILE_PROTOCOL_VERSION || message.desktopEpoch !== this.terminalRegistry.desktopEpoch) {
+		if (!paradisIsAcceptedMobileWireVersion(message.protocolVersion) || message.desktopEpoch !== this.terminalRegistry.desktopEpoch) {
 			this.finishTerminalOperation(mobileId, operationId, 'stale-epoch');
 			return;
 		}
@@ -2268,7 +2310,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (typeof message.id !== 'string' || message.id.length === 0 || message.id.length > 200) {
 			return;
 		}
-		if (message.protocolVersion !== PARADIS_MOBILE_PROTOCOL_VERSION || message.desktopEpoch !== this.terminalRegistry.desktopEpoch
+		if (!paradisIsAcceptedMobileWireVersion(message.protocolVersion) || message.desktopEpoch !== this.terminalRegistry.desktopEpoch
 			|| typeof message.windowId !== 'number' || !Number.isInteger(message.windowId)) {
 			this.sendWindowFrameError(frame, message.id, 'PC画面の状態が更新されました。もう一度お試しください');
 			return;
@@ -2280,8 +2322,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// 必要とする操作（upload・worktree作成等）へ誤って使われないようにするため
 		// （provider側は t で分岐するだけで ws の有無自体はここまで来ると検証しないため、
 		// 許可リストが無いと「ws を送らなければ検証を素通りできる」形になってしまう）。
+		// 登録表（paradisMobileRequestHandlers.ts）で受ける新しい種類も ws 無しで通す。そちらは ws が無ければ
+		// スペースを持たない（root が undefined）ので、所有権の検証を素通りして既存の操作に届くことはない。
 		const hasRendererGeneration = typeof message.rendererGeneration === 'number' && Number.isInteger(message.rendererGeneration)
-			&& typeof message.t === 'string' && PARADIS_WORKSPACE_LESS_REQUEST_TYPES.has(message.t);
+			&& typeof message.t === 'string' && (PARADIS_WORKSPACE_LESS_REQUEST_TYPES.has(message.t)
+				|| !PARADIS_MOBILE_BUILTIN_REQUEST_KINDS[frame.ch === Channels.Scm ? 'scm' : 'fs'].includes(message.t));
 		if (!hasWorkspace && !hasRendererGeneration) {
 			this.sendWindowFrameError(frame, message.id, 'PC画面の状態が更新されました。もう一度お試しください');
 			return;

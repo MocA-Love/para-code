@@ -62,6 +62,8 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
 config.watchFolders = [
 	...(config.watchFolders ?? []),
 	path.join(__dirname, '..', '..', 'src', 'vs', 'paradis', 'contrib', 'fileViewers', 'common'),
+	// PC とアプリの互換の窓と capability の判定（paradisMobileCompat.ts、W2-17）
+	path.join(__dirname, '..', '..', 'src', 'vs', 'paradis', 'contrib', 'mobileRelay', 'common'),
 ];
 
 module.exports = config;
