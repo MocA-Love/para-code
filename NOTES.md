@@ -1066,6 +1066,30 @@ B3（Computer Use）の補助アプリの段は、ベータ用ブランチ `para
 
 ログイン情報（`.credentials.json`・Codex の `auth.json`）は、秘密をもう1か所に置くことになるので控えを作らない。ただし `~/.claude.json` と `config.toml` の MCP の設定には、利用者が書いた API キーやトークン（`env`・`headers`）が入っていることがあり、その控えにも同じものが入る（控えは元と同じ権限）。ヘルパーは `src/vs/paradis/node/paradisRollingFileBackup.ts`（Node）と `src/vs/paradis/common/paradisRollingFileBackupUri.ts`（`IFileService`）。
 
+## Orca 取り込み第二弾の PC 側 L1（W2-26 / W2-32 / W2-33 / W2-20、2026-09-29）
+
+新しい PARA-PATCH は無い。触ったのは fork 所有のファイルだけ（W2-33 は上の Sentry の節）。
+
+### 終了処理の計測（W2-26）
+
+fork の後始末を `sentry/common/paradisTeardownTiming.ts` で名前付きで測る。期限は足さず、各ステップが元から持っていた上限だけを使い、打ち切られたかも記録する。1 秒以上・失敗・打ち切りは warn ログ（`[paradisTeardown] <名前>: ...`）と Sentry（`quit-teardown` / `slow:<名前>`、warning）へ出す。ユーザーの返事を待つもの（常駐へ残すかのダイアログ、`terminal-shutdown.prepare.*`）はログだけにする。名前は `health-beacon.shutdown-snapshot`・`workspace-switch.finish-switch`・`pty-daemon.save-terminal-screens`・`pty-daemon.status`・`pty-daemon.ask-keep`・`terminal-shutdown.prepare.<役>`・`terminal-shutdown.keep-detaches`。main の beacon は ILogService を持たないので標準エラーへ書き、遅かったときだけ報告を送るためにもう一度 0.5 秒 flush する。全体に期限を付けるかは、この計測で原因が分かってから決める（Q119）。
+
+### ターミナルを閉じたら裏のプロセスを止める（W2-32）
+
+- 差し込み口は `ptyDaemon/node/paradisTerminalProcessFactory.ts` の `TerminalProcess` の代わりの `ParadisCleaningTerminalProcess`（`shutdown` の上書き）と、`ParadisDaemonTerminalProcess.shutdown`。どちらも本来の終了を、`ps` の表を撮り終える（最大 1 秒）まで遅らせる。スペースの退避・別ウィンドウへの移動・切り離しは `shutdown` を通らない
+- 設定（`paradis.terminal.stopBackgroundProcessesOnClose`、既定オン）は pty ホストから読めないので、ウィンドウがターミナルを作るときに env の印 `PARA_CODE_TERMINAL_KEEP_BACKGROUND_ON_CLOSE=1`（オフのときだけ）を入れ、pty ホストが読んでからシェルへ渡す前に外す。常駐（薄い方）では印を台帳の env に残し、引き取るときに読み戻す。印を入れるのは `paradisPrepareTerminalPaneEnv`（既存の PARA-PATCH の呼び出し先）の中
+- 止め方: シェルの終了から 2 秒後に撮り直し、pid・プロセスグループ・開始時刻（`lstart`、1 秒単位）が撮ったときと同じものだけに SIGTERM、さらに 2 秒後にまだ同じものへ SIGKILL。撮った秒以降に生まれたものは最初から外す。SIGHUP を無視しているもの（`nohup`）とその下の木は残す。無視しているかが読めないものも残す
+- SIGHUP を無視しているかの読み方: Linux は `/proc/<pid>/status` の `SigIgn`。**macOS の `ps` には無視しているシグナルの列が無い**（`ignored` / `sigignore` とも `keyword not found`）ので、`osascript -l JavaScript` から `sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID)` を呼び、`struct kinfo_proc`（648 バイト）の `kp_proc.p_sigignore`（オフセット 232）を読む。`p_pid`（40）が一致したときだけ採り、`kp_eproc.e_pgid`（564）も表と照合する。オフセットは SDK の `sys/sysctl.h` から `offsetof` で求めた（arm64 で実行して確認、x86_64 も同じ LP64 の並び）
+- **Node は起動時にシグナルの扱いを既定へ戻す**ので、`nohup node server.js` の node は SIGHUP を無視していない（2026-09-29 実測: `nohup node` は `kill -HUP` で終わる）。今でもシェルが閉じるときの SIGHUP で終わるので、止めても振る舞いは変わらない
+- Windows は対象外。アプリの終了で pty ホストごと落ちるときは、止める処理（2 秒後）まで届かない
+
+### Para Code が止まっている間の hook の控え（W2-20）
+
+- notify.sh / notify.ps1 はスキーマ v4。手元の版だけが、受け口に届かなかった hook（ポートファイル無し、接続できない、404（ペインがまだ同期されていない）、429、5xx）を `<userData>/agent-hook-spool/pane-<ペイントークンの SHA-256>.jsonl` に 1 行 `{"v":1,"event","t":<秒>,"payload"}` で書く。フォルダ 0700・ファイル 0600、1 ファイル 5MB・1024 ファイルまで、payload は 256KB まで（超えたら null）。Pre/PostToolUse・PostToolUseFailure・MessageDisplay は書かない。SSH の接続先の版は控えない（流し直す口が無い）
+- 読むのは shared process（`agentBrowser/node/paradisAgentHookSpoolStore.ts`）。起動時に 7 日より古いものを消し、ウィンドウがペインを同期した（`syncBindingAuthority`）後に、そのペインの控えを 1 度だけ名前を変えてから読んで消す。この起動で本物の hook が届いたペイン・既に状態があるペインは状態を触らない。所有者の判定は pid 無しの hook と同じ（transcript だけで見る fail-closed）
+- 状態は最後の 1 件で決める。完了は `quiet` 付きの review（`IParadisAgentPaneStatus.quiet`）にして、デスクトップの通知（`paradisAgentStatusNotificationTracker.ts`）とモバイルのプッシュ（`paradisMobileWorkspaceProvider.ts` の `detectAndNotify`、`paradisQuietReplayedPanes.ts` を見る）が鳴らさない。許可要求と質問は 10 分以内の最後の 1 件だけを `replayedPrompts` としてスナップショットに載せ、ウィンドウ（`paradisAgentHookReplay.contribution.ts`）が画面の下端にその種類の確認が出ていると確かめて `confirmReplayedPrompt` を呼んだときに初めて状態を付け、hook のバスへ流す（承認カードと通知はライブと同じ経路）
+- 【要確認】別のスペースへ退避したターミナルは xterm の画面が読めないことがあり、その間は確かめられずに 10 分で捨てる（推測）
+
 ## モバイルリレー: Cloudflare Workers/DOデプロイ（2026-07-05）
 
 「Para Code Mobile」（iPhone遠隔操作機能、`src/vs/paradis/contrib/mobileRelay/`）がPCとモバイルの間を中継するリレーサーバー（`app/relay/`、Cloudflare Workers + Durable Objects）を、開発時のプレースホルダーURLのまま放置していたのを本番デプロイした。設計・実装の詳細は設計書（`app/design/mobile-design.md`）参照。ここには配置場所と再開に必要な情報のみ記す。
@@ -1750,6 +1774,17 @@ node_modules を解決できない**ため、main のトップレベル import �
 なお `paradisDaemonPtyHostStarter.ts` と `paradisPtyDaemonStatusService.ts` には、常駐の台帳・認証・
 制御クライアントを読むための `electron-main/` → `node/` の import が残っている（いずれもネイティブ依存を
 持たない葉）。これらは上記テストの探索範囲に入っているので、その先に外部依存が生えれば検出される。
+
+## Sentry の既製の固まり検知（eventLoopBlockIntegration）は配布版で動かない（W2-33、2026-09-29）
+
+main の固まりの検知は、`@sentry/electron/native` の `eventLoopBlockIntegration` を使う案（Q125 A）で始めたが、配布版では動かないことが分かり、fork 所有の自作の見張りに切り替えた（`healthBeacon/node/paradisMainHangWatchdog.ts`）。インストール済みの配布版（Electron 43.6.0、Node 24.20、`process.versions.modules` 148）を `ELECTRON_RUN_AS_NODE=1` で動かして確かめた理由は 2 つ。
+
+1. **`@sentry/node-native-stacktrace` の Electron 用のビルドが無い。** Electron の上では `lib/index.js` が `../build/Release/stack-trace.node`（`@electron/rebuild` で作るもの）しか読まない。インストールスクリプト（`scripts/check-build.mjs`）は Node 用の同梱バイナリ（ABI 108〜147）が読めた時点でビルドを飛ばすので、`build/Release` は `node_modules` にも配布版（`node_modules.asar.unpacked`）にも無い。`import('@sentry/electron/native')` は main で例外になる
+2. **見張りの worker が `@sentry/core` を解決できない。** `@sentry/node-native` は `new Worker(new URL('./event-loop-block-watchdog.js', import.meta.url))` で worker を起こす。そのファイルは `node_modules.asar` の中にあり、中で `@sentry/core` と `@sentry/node` を素の名前で import する。`bootstrap-esm.ts` の `registerHooks` による asar の解決は worker へ引き継がれない（main に同じフックを登録して worker を起こしても `ERR_MODULE_NOT_FOUND '@sentry/core'`）
+
+使うには、Electron 向けに stacktrace をビルドして同梱し、見張りの worker を 1 ファイルに束ねる（`build/next/index.ts` への PARA-PATCH）必要がある。なお `@sentry/electron/native` の包みは `powerMonitor` の suspend / lock-screen で見張りを止める作りで、worker から送る事象には main の `beforeSend`（`paradisPrepareSentryEvent`）が効かない。
+
+自作の見張りは worker を文字列から起こす（`eval: true`、Node の組み込みだけを使う）ので、上の 2 つを踏まない。main が 2 秒ごとに共有メモリへ時刻とヒープの大きさを書き、worker が 10 秒途切れたら `<userData>/paradis-main-hang.json` に印を書き、戻れば `main-hang` / `blocked` で報告して消す。戻らずに終了されたら次の起動の 60 秒後に `blocked-until-exit` で報告する。スタックは取れない。配布版だけで動かす（開発版はデバッガの停止を誤検知する）。スリープは `powerMonitor` の suspend / resume と、worker 自身の見回りの間隔（15 秒）の両方で除く。
 
 ## ビルド環境（macOS / Apple Silicon）
 
