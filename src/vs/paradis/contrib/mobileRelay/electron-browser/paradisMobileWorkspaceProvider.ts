@@ -72,6 +72,7 @@ import { paradisIsAcceptedMobileWireVersion } from '../common/paradisMobileCompa
 import { type IParadisMobileRequestHost, paradisDispatchMobileRequest } from './paradisMobileRequestHandlers.js';
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
+import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
 import { paradisSendAgentInteractionKeys, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
@@ -371,7 +372,8 @@ type ScmInbound =
 	// スペースのメモ（PC版 Workspaces ビュー下部のメモ欄と同じ本文）の取得・更新。
 	// git 実行を伴わないが、ws 単位のリクエストという点で他の scm メッセージと同じ扱いにする。
 	| { t: 'noteGet'; id: string; ws: string }
-	| { t: 'noteSet'; id: string; ws: string; text: string }
+	// base（読んだときの版）と op（切り替え・追加）は任意。無ければ今までどおり text で上書きする
+	| { t: 'noteSet'; id: string; ws: string; text: string; base?: number; op?: unknown }
 	// コマンドプリセット（PC版のターミナルタブバー右のボタンと同じもの）の一覧と実行。
 	// launchAgent と同じく「そのスペースで新しいターミナルを作る」操作なので ws 単位。
 	| { t: 'presets'; id: string; ws: string }
@@ -1677,14 +1679,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				reply({ error: `unknown workspace: ${msg.ws}` });
 				return;
 			}
-			if (msg.t === 'noteSet') {
-				if (typeof msg.text !== 'string') {
-					reply({ error: 'text is required' });
-					return;
-				}
-				this.spaceNotesService.write(msg.ws, msg.text);
-			}
-			reply({ t: 'note', ws: msg.ws, text: this.spaceNotesService.read(msg.ws) });
+			// 版（updatedAt）と、base / op による上書きの確認は paradisMobileSpaceNoteSet.ts（Orca W2-16）
+			reply(msg.t === 'noteSet' ? paradisMobileNoteSet(this.spaceNotesService, msg.ws, msg) : paradisMobileNoteGet(this.spaceNotesService, msg.ws));
 			return;
 		}
 		// 既存ワークスペースへのエージェント起動。git実行を伴わないため repoPath 解決より先に処理する

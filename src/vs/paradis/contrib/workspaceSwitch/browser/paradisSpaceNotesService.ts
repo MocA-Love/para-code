@@ -76,6 +76,18 @@ export class ParadisSpaceNotesService extends Disposable implements IParadisSpac
 		return this.notes.get(stateKey)?.text ?? '';
 	}
 
+	readEntry(stateKey: string): IParadisSpaceNote | undefined {
+		return this.notes.get(stateKey);
+	}
+
+	/**
+	 * 次の版。時計どおりの時刻を使うが、同じミリ秒に2回書いても・時計が戻っても前の版より必ず大きくする
+	 * (版を比べて「読んだ後に誰かが書いたか」を判定するため。同じ値が続くと上書きを見逃す)。
+	 */
+	private nextUpdatedAt(stateKey: string): number {
+		return Math.max(Date.now(), (this.notes.get(stateKey)?.updatedAt ?? 0) + 1);
+	}
+
 	summary(stateKey: string): IParadisSpaceNoteSummary {
 		const text = this.notes.get(stateKey)?.text;
 		return text ? paradisSpaceNoteSummary(text) : EMPTY_SUMMARY;
@@ -99,7 +111,7 @@ export class ParadisSpaceNotesService extends Disposable implements IParadisSpac
 		if (!this.canAccept(stateKey)) {
 			return;
 		}
-		this.notes.set(stateKey, { text: normalized, updatedAt: Date.now() });
+		this.notes.set(stateKey, { text: normalized, updatedAt: this.nextUpdatedAt(stateKey) });
 		this.markDirty([stateKey]);
 	}
 
@@ -125,7 +137,7 @@ export class ParadisSpaceNotesService extends Disposable implements IParadisSpac
 		if (toggled === undefined) {
 			return;
 		}
-		this.notes.set(stateKey, { text: toggled, updatedAt: Date.now() });
+		this.notes.set(stateKey, { text: toggled, updatedAt: this.nextUpdatedAt(stateKey) });
 		this.markDirty([stateKey]);
 	}
 

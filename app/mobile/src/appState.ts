@@ -8,7 +8,7 @@
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
-import { MobileController, MobileWarmLeaseControllerRegistry, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type PcPushMessage, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, MobileWarmLeaseControllerRegistry, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type PcPushMessage, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type SpaceNoteSetOptions, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import type { UpdateTarget } from './pcCompat.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
@@ -322,7 +322,7 @@ interface AppState extends StoreState {
 	/** スペースのメモ本文（PC版 Workspaces ビュー下部のメモ欄と同じ内容）。 */
 	noteGet(ws: string): Promise<SpaceNoteResult>;
 	/** スペースのメモ本文を更新する。 */
-	noteSet(ws: string, text: string): Promise<SpaceNoteResult>;
+	noteSet(ws: string, text: string, options?: SpaceNoteSetOptions): Promise<SpaceNoteResult>;
 	fsList(ws: string, path: string): Promise<FsListResult>;
 	fsResolveLink(ws: string, path: string): Promise<FsResolveLinkResult>;
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult>;
@@ -1888,10 +1888,10 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.noteGet(ws);
 	},
 
-	noteSet(ws: string, text: string) {
+	noteSet(ws: string, text: string, options?: SpaceNoteSetOptions) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
-		return controller.noteSet(ws, text);
+		return controller.noteSet(ws, text, options);
 	},
 
 	fsList(ws: string, path: string) {

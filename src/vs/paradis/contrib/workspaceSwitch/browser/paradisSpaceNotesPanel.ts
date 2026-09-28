@@ -21,8 +21,9 @@ import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { IParadisSpaceNoteLine, IParadisSpaceNotesService, PARADIS_SPACE_NOTE_MAX_LENGTH, paradisAppendSpaceNoteTask, paradisContinueSpaceNoteList, paradisParseSpaceNote, paradisToggleSpaceNoteListMarkers } from '../common/paradisSpaceNotes.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { IStorageService, StorageScope, StorageTarget, WillSaveStateReason } from '../../../../platform/storage/common/storage.js';
+import { IParadisSpaceNoteLine, IParadisSpaceNotesService, PARADIS_SPACE_NOTE_MAX_LENGTH, paradisAppendSpaceNoteTask, paradisContinueSpaceNoteList, paradisMergeSpaceNoteEdits, paradisParseSpaceNote, paradisToggleSpaceNoteListMarkers } from '../common/paradisSpaceNotes.js';
 
 const HEADER_HEIGHT = 26;
 const MIN_BODY_HEIGHT = 72;
@@ -59,6 +60,14 @@ function parsePanelState(raw: string | undefined): IPanelState {
 		return fallback;
 	}
 }
+
+/**
+ * 編集欄の中身を書き出すきっかけ。
+ * - `finish`: 編集を終えた (フォーカスアウト・Escape・スペースの切り替え)。重なる変更があれば書かずに知らせる
+ * - `interim`: 編集を続けたまま storage が書き出す前。他で変わっていれば書かない (終えるときに合わせる)
+ * - `shutdown`: ウィンドウを閉じる直前。知らせる先が無いので、重なる変更があれば今までどおり編集欄の中身で書く
+ */
+type EditorSaveMode = 'finish' | 'interim' | 'shutdown';
 
 /** 描き直しをまたいでフォーカスを戻す先のチェックリスト行。text が undefined なら行番号だけで探す。 */
 interface IFocusedTask {
@@ -115,6 +124,11 @@ export class ParadisSpaceNotesPanel extends Disposable {
 	 * その行のチェックボックスへ戻すために使う (確定の保存が描き直しを同期で起こすので、保存の前に置く)。
 	 */
 	private pendingTaskFocus: IFocusedTask | undefined;
+	/**
+	 * 編集を始めたとき (と途中で書き出したとき) のメモの本文と版。編集中に別の場所 (モバイル・エージェント・
+	 * 他のウィンドウ) が同じメモを書き換えていたら、終えるときにそれを消さずに合わせるために使う (Orca W2-16)。
+	 */
+	private editBase: { readonly text: string; readonly updatedAt: number } = { text: '', updatedAt: 0 };
 
 	constructor(
 		container: HTMLElement,
@@ -123,6 +137,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 		@ILogService private readonly logService: ILogService,
 		@IContextMenuService private readonly contextMenuService: IContextMenuService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
+		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super();
 
@@ -223,9 +238,9 @@ export class ParadisSpaceNotesPanel extends Disposable {
 
 		// 編集中の入力は blur まで textarea の中にしかない。ウィンドウの再読み込み・終了で
 		// storage が閉じる前に書き出す (サービス側の onWillSaveState からは見えないため)
-		this._register(this.storageService.onWillSaveState(() => {
+		this._register(this.storageService.onWillSaveState(event => {
 			if (this.editing && this.stateKey !== undefined) {
-				this.notesService.write(this.stateKey, this.editorElement.value);
+				this.saveEditor(this.stateKey, this.editorElement.value, event.reason === WillSaveStateReason.SHUTDOWN ? 'shutdown' : 'interim');
 			}
 		}));
 
@@ -348,7 +363,9 @@ export class ParadisSpaceNotesPanel extends Disposable {
 			this.editing = true;
 			this.adding = false;
 			this.editingTaskIndex = undefined;
-			this.editorElement.value = this.notesService.read(this.stateKey);
+			const entry = this.notesService.readEntry(this.stateKey);
+			this.editBase = { text: entry?.text ?? '', updatedAt: entry?.updatedAt ?? 0 };
+			this.editorElement.value = this.editBase.text;
 			this.render();
 			this.editorElement.focus();
 			const end = this.editorElement.value.length;
@@ -357,9 +374,52 @@ export class ParadisSpaceNotesPanel extends Disposable {
 		}
 		this.editing = false;
 		if (this.stateKey !== undefined) {
-			this.notesService.write(this.stateKey, this.editorElement.value);
+			this.saveEditor(this.stateKey, this.editorElement.value, 'finish');
 		}
 		this.render();
+	}
+
+	/**
+	 * 編集欄の中身を書き出す。編集を始めてから誰も書いていなければそのまま書く。別の場所が書いていれば、
+	 * 直した行が重ならない限り両方を合わせて書く。重なっていれば `mode` に従う ({@link EditorSaveMode})。
+	 */
+	private saveEditor(stateKey: string, value: string, mode: EditorSaveMode): void {
+		const current = this.notesService.readEntry(stateKey);
+		const currentText = current?.text ?? '';
+		const changedElsewhere = (current?.updatedAt ?? 0) !== this.editBase.updatedAt;
+		if (changedElsewhere && mode === 'interim') {
+			return;
+		}
+		const merged = changedElsewhere ? paradisMergeSpaceNoteEdits(this.editBase.text, value, currentText) : value;
+		if (merged === undefined && mode === 'finish') {
+			this.editBase = { text: currentText, updatedAt: current?.updatedAt ?? 0 };
+			this.notifyConflict(stateKey, value);
+			return;
+		}
+		this.notesService.write(stateKey, merged ?? value);
+		const written = this.notesService.readEntry(stateKey);
+		this.editBase = { text: written?.text ?? '', updatedAt: written?.updatedAt ?? 0 };
+	}
+
+	/** 同じ行が別の場所でも直されていて合わせられなかったので、編集を保存せずに選んでもらう。 */
+	private notifyConflict(stateKey: string, value: string): void {
+		this.notificationService.prompt(
+			Severity.Warning,
+			// allow-any-unicode-next-line
+			localize('paradis.spaceNotes.conflict', "メモを編集している間に、同じ行がスマホやエージェントからも書き換えられていたため、編集を保存していません。いまの表示は書き換えた後のメモです。"),
+			[
+				{
+					// allow-any-unicode-next-line
+					label: localize('paradis.spaceNotes.conflictOverwrite', "自分の編集で上書き"),
+					run: () => this.notesService.write(stateKey, value),
+				},
+				{
+					// allow-any-unicode-next-line
+					label: localize('paradis.spaceNotes.conflictCopy', "自分の編集をコピー"),
+					run: () => this.clipboardService.writeText(value),
+				},
+			],
+		);
 	}
 
 	private render(): void {
@@ -769,7 +829,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 	override dispose(): void {
 		// 編集途中で閉じられても入力を失わない
 		if (this.editing && this.stateKey !== undefined) {
-			this.notesService.write(this.stateKey, this.editorElement.value);
+			this.saveEditor(this.stateKey, this.editorElement.value, 'shutdown');
 			this.editing = false;
 		}
 		super.dispose();

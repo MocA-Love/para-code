@@ -8,12 +8,10 @@ import { useKeyboardCoverage } from '../../hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import {
 	SPACE_NOTE_MAX_LENGTH,
-	appendSpaceNoteEntry,
 	applySpaceNotePrefix,
 	continueSpaceNoteChecklist,
 	parseSpaceNote,
 	spaceNoteSummary,
-	toggleSpaceNoteTask,
 	trimSpaceNoteTrailingEmptyTask,
 	type SpaceNotePrefix,
 } from '../../spaceNote.js';
@@ -23,6 +21,7 @@ import { CenterSpinner, InlineError, OfflineBanner, SpaceGateBody, useReadableCo
 import type { PanelDock } from '../code/panelDock.js';
 import { useCodeSpace, type CodeSpaceTarget } from '../code/useCodeSpace.js';
 import { NoteAddButton, NoteAddInput, NoteLines, NoteToolbar, type NoteToolbarAction } from './noteParts.js';
+import { appendNoteChange, replaceNoteChange, toggleNoteChange } from './spaceNoteSave.js';
 import { spaceNoteErrorMessage, useSpaceNote } from './useSpaceNote.js';
 
 /**
@@ -70,12 +69,12 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 	const subtitle = [codeSpace.name, codeSpace.branch].filter((part): part is string => part !== undefined && part.length > 0).join(' · ');
 
 	const toggle = (lineIndex: number) => {
-		const next = toggleSpaceNoteTask(text, lineIndex);
-		if (next === undefined) {
+		const change = toggleNoteChange(text, lineIndex);
+		if (change === undefined) {
 			return;
 		}
 		hapticSelection();
-		note.commit(next);
+		note.commit(change);
 	};
 
 	/**
@@ -131,7 +130,7 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 		note.holdDraft(undefined);
 		setEditing(false);
 		if (next !== text) {
-			note.commit(next);
+			note.commit(replaceNoteChange(next));
 		}
 	};
 
@@ -147,12 +146,12 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 	};
 	/** 足す欄の中身を1件として確定する。既定では欄を空にして残す（`close` なら閉じる）。 */
 	const commitAdding = (kind: 'task' | 'text', close = false) => {
-		const next = appendSpaceNoteEntry(text, addDraft.current, kind);
-		if (next === undefined) {
+		const change = appendNoteChange(text, addDraft.current, kind);
+		if (change === undefined) {
 			stopAdding();
 			return;
 		}
-		if (next.length > SPACE_NOTE_MAX_LENGTH) {
+		if (change.next.length > SPACE_NOTE_MAX_LENGTH) {
 			note.setError('full');
 			return;
 		}
@@ -164,7 +163,7 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 		} else {
 			requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
 		}
-		note.commit(next);
+		note.commit(change);
 	};
 	/** フォーカスが外れたら、書きかけを捨てずに1件として確定する（黙って消さない）。 */
 	const onAddBlur = () => {
