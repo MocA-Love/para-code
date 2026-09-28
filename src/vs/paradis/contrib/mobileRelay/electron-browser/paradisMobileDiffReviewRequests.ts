@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { raceTimeout } from '../../../../base/common/async.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -37,6 +38,7 @@ import {
 	paradisWithUntrackedFileStats,
 } from '../common/paradisMobileDiffReview.js';
 import { paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
+import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
 import {
 	IParadisMobileReviewSpace,
 	PARADIS_MOBILE_REVIEW_MAX_MARKS_PER_REQUEST,
@@ -53,6 +55,7 @@ import {
 	paradisIsReviewPath,
 	paradisMarkMobileReviewNotesSent,
 	paradisMobileReviewSpace,
+	paradisNextMobileReviewRevision,
 	paradisParseMobileReviewMarkChanges,
 	paradisParseMobileReviewNoteIds,
 	paradisParseMobileReviewStore,
@@ -90,8 +93,16 @@ export function paradisWriteMobileReviewStore(storage: IStorageService, store: R
 }
 
 /** 応答の本文（どの要求でも共通の部分）。 */
-export function paradisMobileReviewReply(ws: string, space: IParadisMobileReviewSpace): { readonly t: 'review'; readonly ws: string; readonly marks: IParadisMobileReviewSpace['marks']; readonly notes: IParadisMobileReviewSpace['notes'] } {
-	return { t: 'review', ws, marks: space.marks, notes: space.notes };
+export function paradisMobileReviewReply(ws: string, space: IParadisMobileReviewSpace): { readonly t: 'review'; readonly ws: string; readonly revision: number; readonly marks: IParadisMobileReviewSpace['marks']; readonly notes: IParadisMobileReviewSpace['notes'] } {
+	return { t: 'review', ws, revision: space.revision, marks: space.marks, notes: space.notes };
+}
+
+/** 変えた記録を次の版にして保存し、保存したものを返す（同期で読んでから書く呼び出し側の中で使う）。 */
+function saveSpace(storage: IStorageService, store: Map<string, IParadisMobileReviewSpace>, ws: string, next: IParadisMobileReviewSpace): IParadisMobileReviewSpace {
+	const saved = paradisNextMobileReviewRevision(paradisMobileReviewSpace(store, ws), next);
+	store.set(ws, saved);
+	paradisWriteMobileReviewStore(storage, store);
+	return saved;
 }
 
 /** `ws` が解決できるスペースか確かめる。できなければ応答して undefined。 */
@@ -111,23 +122,11 @@ function updateSpace(storage: IStorageService, ws: string, context: IParadisMobi
 		context.reply({ error });
 		return;
 	}
-	store.set(ws, space);
-	paradisWriteMobileReviewStore(storage, store);
-	context.reply({ ...paradisMobileReviewReply(ws, space), ...extra });
-}
-
-/** スペースの中のファイルの大きさと最終更新時刻（フォルダ・読めないものは undefined）。 */
-async function statWorkspaceFile(context: IParadisMobileRequestContext, fileService: IFileService, path: string): Promise<{ size: number; mtime: number } | undefined> {
-	const uri = await context.resolvePath(path);
-	if (uri === undefined) {
-		return undefined;
-	}
-	const stat = await fileService.stat(uri);
-	return stat.isDirectory ? undefined : { size: stat.size, mtime: stat.mtime };
+	context.reply({ ...paradisMobileReviewReply(ws, saveSpace(storage, store, ws, space)), ...extra });
 }
 
 /** status と両側の行数、未追跡のファイルの大きさと時刻を読む（scm `status` 応答と同じ材料）。 */
-async function readStatusWithCounts(context: IParadisMobileRequestContext, fileService: IFileService): Promise<IParadisMobileStatusFile[] | undefined> {
+async function readStatusWithCounts(context: IParadisMobileRequestContext, fileService: IFileService, root: URI): Promise<IParadisMobileStatusFile[] | undefined> {
 	const [status, unstaged, staged] = await Promise.all([
 		context.runGit(['status', '--porcelain=v1']),
 		context.runGit(['diff', '--numstat', '-z']).catch(() => undefined),
@@ -137,7 +136,7 @@ async function readStatusWithCounts(context: IParadisMobileRequestContext, fileS
 		return undefined;
 	}
 	const files = paradisWithMobileLineCounts(paradisParseMobilePorcelainStatus(status.stdout), unstaged?.code === 0 ? unstaged.stdout : undefined, staged?.code === 0 ? staged.stdout : undefined);
-	return paradisWithUntrackedFileStats(files, path => statWorkspaceFile(context, fileService, path));
+	return paradisWithUntrackedFileStats(files, paths => paradisStatMobileWorkspaceFiles(fileService, root, paths));
 }
 
 /** 行を追いかけるために読むファイルの上限。これより大きいファイルのメモは「古い」と判定しない。 */
@@ -216,6 +215,9 @@ const TARGET_ERRORS: Record<Exclude<ParadisReviewNotesTargetVerdict, 'ready'>, s
 	'not-running': 'このターミナルでエージェントが入力を待っていることを確かめられません。新しいエージェントで送ってください。',
 };
 
+/** 新しいエージェントの起動を待つ上限。 */
+const LAUNCH_TIMEOUT_MS = 45_000;
+
 /** 送信中のスペース（同じスペースへの二重送信を防ぐ）。 */
 const sendingSpaces = new Set<string>();
 
@@ -235,9 +237,7 @@ registerParadisMobileRequestHandler('scm', 'reviewGet', {
 		if (status.code === 0) {
 			const pruned = paradisPruneMobileReviewSpace(space, new Set(paradisParseMobilePorcelainStatus(status.stdout).map(file => file.path)));
 			if (pruned !== space) {
-				space = pruned;
-				store.set(ws, space);
-				paradisWriteMobileReviewStore(storage, store);
+				space = saveSpace(storage, store, ws, pruned);
 			}
 		}
 		context.reply(paradisMobileReviewReply(ws, space));
@@ -318,8 +318,9 @@ registerParadisMobileRequestHandler('scm', 'reviewNotesClear', {
 		if (ws === undefined) {
 			return;
 		}
-		// コミット・破棄されて変更の一覧から消えたファイルのメモも片付ける（ファイルに行が残っていても、もう差分には出ない）
-		const status = await context.runGit(['status', '--porcelain=v1']);
+		// コミット・破棄されて変更の一覧から消えたファイルのメモも片付ける（ファイルに行が残っていても、もう差分には出ない）。
+		// 未追跡のフォルダの中のファイルのメモを「一覧に無い」と誤らないよう、フォルダの中まで1件ずつ出す（-uall）
+		const status = await context.runGit(['status', '--porcelain=v1', '-uall']);
 		const changedPaths = status.code === 0 ? new Set(paradisParseMobilePorcelainStatus(status.stdout).map(file => file.path)) : undefined;
 		const unsent = paradisMobileReviewSpace(paradisReadMobileReviewStore(storage), ws).notes.filter(note => note.sentAt === undefined);
 		const committed = new Set(changedPaths === undefined ? [] : unsent.filter(note => !changedPaths.has(note.path)).map(note => note.id));
@@ -329,9 +330,7 @@ registerParadisMobileRequestHandler('scm', 'reviewNotesClear', {
 		const store = paradisReadMobileReviewStore(storage);
 		const current = paradisMobileReviewSpace(store, ws);
 		const ids = new Set(current.notes.filter(note => note.sentAt !== undefined || stale.has(note.id)).map(note => note.id));
-		const space = paradisDeleteMobileReviewNotes(current, ids, Date.now());
-		store.set(ws, space);
-		paradisWriteMobileReviewStore(storage, store);
+		const space = saveSpace(storage, store, ws, paradisDeleteMobileReviewNotes(current, ids, Date.now()));
 		context.reply({ ...paradisMobileReviewReply(ws, space), removed: ids.size });
 	},
 });
@@ -412,7 +411,13 @@ async function sendReviewNotes(services: IReviewNotesSendServices, context: IPar
 	} else {
 		try {
 			// 利用者が PC で作業している最中に前へ出さない（エージェントの IDE 操作や定期実行と同じ扱い）
-			await services.instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, { rootUri: root, stateKey: ws, agentId: target.agent, prompt, preserveFocus: true });
+			const launch = services.instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, { rootUri: root, stateKey: ws, agentId: target.agent, prompt, preserveFocus: true });
+			// 起動が返ってこなくても送信中の印が外れるよう、待つ時間に上限を付ける（後から失敗しても未処理の例外にしない）
+			launch.catch(() => undefined);
+			if (await raceTimeout(launch.then(() => true), LAUNCH_TIMEOUT_MS) !== true) {
+				context.reply({ error: 'エージェントの起動に時間がかかっています。起動したかを PC で確かめてください（メモは未送信のまま残しています）。', code: 'timeout' });
+				return;
+			}
 		} catch (error) {
 			if (error instanceof ParadisAgentPromptQuotingError) {
 				context.reply({ error: 'メモにバックスラッシュ（\\）が含まれていて、PC のシェルの種類が分からないため、新しいエージェントへは安全に渡せません。動いているエージェントへ送るか、PC で起動してください。', code: 'quoting' });
@@ -476,7 +481,8 @@ registerParadisMobileRequestHandler('scm', 'reviewStage', {
 	async handle(accessor, request, context) {
 		const storage = accessor.get(IStorageService);
 		const ws = requireWorkspace(request, context);
-		if (ws === undefined) {
+		const root = context.root;
+		if (ws === undefined || root === undefined) {
 			return;
 		}
 		const entries = Array.isArray(request.entries) && request.entries.length > 0 && request.entries.length <= PARADIS_MOBILE_REVIEW_MAX_MARKS_PER_REQUEST
@@ -487,7 +493,7 @@ registerParadisMobileRequestHandler('scm', 'reviewStage', {
 			return;
 		}
 		const fileService = accessor.get(IFileService);
-		const before = await readStatusWithCounts(context, fileService);
+		const before = await readStatusWithCounts(context, fileService, root);
 		if (before === undefined) {
 			context.reply({ error: 'git status failed' });
 			return;
@@ -509,7 +515,8 @@ registerParadisMobileRequestHandler('scm', 'reviewStage', {
 							: file.y === ' ' ? 'staged'
 								// 引用付きのパス（特殊な文字）は status の表記と実際の名前が違う。未追跡のフォルダ（`dir/`）は、
 								// 確認した後に中に足されたファイルまで入るので扱わない
-								: entry.path.startsWith('"') || (file.x === '?' && !paradisIsUntrackedFile(file)) ? 'unsupported'
+								// 大きさの無い未追跡のファイル（調べる上限より後ろ・読めなかった）は、足した中身を確かめられない
+								: entry.path.startsWith('"') || (file.x === '?' && (!paradisIsUntrackedFile(file) || file.size === undefined)) ? 'unsupported'
 									: undefined;
 			if (reason !== undefined) {
 				skipped.push({ path: entry.path, reason });
@@ -526,13 +533,16 @@ registerParadisMobileRequestHandler('scm', 'reviewStage', {
 				return;
 			}
 		}
-		const after = await readStatusWithCounts(context, fileService);
+		const after = await readStatusWithCounts(context, fileService, root);
+		// 未追跡だったファイルは足した後の status に大きさが載らない（追跡中になる）ので、調べ直して渡す
+		const wasUntracked = toStage.filter(path => byPath.get(path)?.x === '?');
+		const afterStats = await paradisStatMobileWorkspaceFiles(fileService, root, wasUntracked);
 		const restaged = new Map<string, { before: string; after: string }>();
 		for (const file of after ?? []) {
 			const previous = identities.get(file.path);
 			const original = byPath.get(file.path);
 			// 足した中身がスマホの見たものと同じだと行数（未追跡は大きさと時刻）で確かめられたものだけ付け替える
-			if (previous !== undefined && original !== undefined && paradisStagedConsistently(original, file)) {
+			if (previous !== undefined && original !== undefined && paradisStagedConsistently(original, file, afterStats.get(file.path))) {
 				restaged.set(file.path, { before: previous, after: paradisMobileDiffIdentity(file) });
 			}
 		}

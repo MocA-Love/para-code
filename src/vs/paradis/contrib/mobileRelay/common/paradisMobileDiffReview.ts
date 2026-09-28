@@ -104,7 +104,7 @@ export function paradisWithMobileLineCounts(files: readonly IParadisMobileStatus
 }
 
 /** 未追跡のファイルの大きさと時刻を調べる数の上限（多すぎる一覧で status の応答を遅くしない）。 */
-export const PARADIS_MOBILE_UNTRACKED_STAT_LIMIT = 200;
+export const PARADIS_MOBILE_UNTRACKED_STAT_LIMIT = 100;
 
 /** 大きさと時刻を調べる未追跡のファイルか（フォルダ `dir/` は除く）。 */
 export function paradisIsUntrackedFile(file: IParadisMobileStatusFile): boolean {
@@ -113,33 +113,35 @@ export function paradisIsUntrackedFile(file: IParadisMobileStatusFile): boolean 
 
 /**
  * 未追跡のファイルに大きさと時刻を足す（先頭から {@link PARADIS_MOBILE_UNTRACKED_STAT_LIMIT} 件まで）。
- * `stat` が undefined を返したもの（読めない・消えた）には付けない。
+ * `stats` はパスの一覧をまとめて調べる（ルートの realpath を1回にまとめるため）。結果に無いもの（読めない・消えた）
+ * と上限より後ろのものには付けない（大きさの無い未追跡のファイルは、確認済みのステージの対象にしない）。
  */
-export async function paradisWithUntrackedFileStats(files: readonly IParadisMobileStatusFile[], stat: (path: string) => Promise<{ readonly size: number; readonly mtime: number } | undefined>): Promise<IParadisMobileStatusFile[]> {
-	let budget = PARADIS_MOBILE_UNTRACKED_STAT_LIMIT;
-	return Promise.all(files.map(async file => {
-		if (!paradisIsUntrackedFile(file) || budget <= 0) {
-			return file;
-		}
-		budget--;
-		const found = await stat(file.path).catch(() => undefined);
-		return found !== undefined ? { ...file, size: found.size, mtime: found.mtime } : file;
-	}));
+export async function paradisWithUntrackedFileStats(files: readonly IParadisMobileStatusFile[], stats: (paths: readonly string[]) => Promise<ReadonlyMap<string, { readonly size: number; readonly mtime: number }>>): Promise<IParadisMobileStatusFile[]> {
+	const paths = files.filter(paradisIsUntrackedFile).slice(0, PARADIS_MOBILE_UNTRACKED_STAT_LIMIT).map(file => file.path);
+	if (paths.length === 0) {
+		return [...files];
+	}
+	const found = await stats(paths).catch(() => new Map<string, { readonly size: number; readonly mtime: number }>());
+	return files.map(file => {
+		const stat = paradisIsUntrackedFile(file) ? found.get(file.path) : undefined;
+		return stat !== undefined ? { ...file, size: stat.size, mtime: stat.mtime } : file;
+	});
 }
 
 /**
  * `git add` の前後で、足した中身がスマホの見たものと同じだと言えるか（印をステージ後の識別へ付け替えてよいか）。
  * - 作業ツリー側だけの変更だったもの: ステージ後の行数が、前の作業ツリー側の行数と同じ
- * - 未追跡だったもの: 新しく足された（`A `）うえで、大きさと時刻が同じ
+ * - 未追跡だったもの: 新しく足された（`A `）うえで、足した後に調べ直した大きさと時刻（`afterStat`。追跡中になった
+ *   ファイルの status には大きさが載らないので、呼び出し側が別に調べて渡す）が前と同じ
  * - 両側に変更があったもの（`MM` など）: 行数を足し合わせて比べられないので、付け替えない
  * どれも、足した後に作業ツリー側へ変更が残っていれば（その間に書き換えられた）付け替えない。
  */
-export function paradisStagedConsistently(before: IParadisMobileStatusFile, after: IParadisMobileStatusFile): boolean {
+export function paradisStagedConsistently(before: IParadisMobileStatusFile, after: IParadisMobileStatusFile, afterStat?: { readonly size: number; readonly mtime: number }): boolean {
 	if (after.y !== ' ') {
 		return false;
 	}
 	if (before.x === '?' && before.y === '?') {
-		return after.x === 'A' && before.size !== undefined && before.mtime !== undefined && after.size === before.size && after.mtime === before.mtime;
+		return after.x === 'A' && before.size !== undefined && before.mtime !== undefined && afterStat !== undefined && afterStat.size === before.size && afterStat.mtime === before.mtime;
 	}
 	if (before.x === ' ') {
 		return before.added !== undefined && before.removed !== undefined && after.stagedAdded === before.added && after.stagedRemoved === before.removed;
