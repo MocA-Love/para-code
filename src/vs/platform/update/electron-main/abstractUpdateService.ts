@@ -22,6 +22,8 @@ import { StorageScope, StorageTarget } from '../../storage/common/storage.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
 import { AvailableForDownload, DisablementReason, IUpdate, IUpdateService, State, StateType, UpdateType } from '../common/update.js';
+// PARA-PATCH: beta builds follow the channel stamped into product.json instead of quality (see CLAUDE.md).
+import { resolveParadisUpdateChannel } from '../common/paradisUpdateChannel.js';
 
 const LAST_KNOWN_VERSION_STORAGE_KEY = 'abstractUpdateService/lastKnownVersion';
 
@@ -483,7 +485,8 @@ export abstract class AbstractUpdateService extends Disposable implements IUpdat
 	}
 
 	private getProductQuality(updateMode: string): string | undefined {
-		return updateMode === 'none' ? undefined : this.productService.quality;
+		// PARA-PATCH: resolve the update channel (stamped paradisUpdateChannel, else quality) for the feed URL.
+		return updateMode === 'none' ? undefined : resolveParadisUpdateChannel(this.productService);
 	}
 
 	private scheduleCheckForUpdates(delay = 60 * 60 * 1000, repeat = true): void {

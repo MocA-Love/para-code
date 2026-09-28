@@ -130,6 +130,8 @@ export interface IProductConfiguration {
 	// PARA-PATCH: Cloudflare Access service token headers for the self-hosted update feed. Stamped at release build time only (see CLAUDE.md).
 	readonly updateAccessClientId?: string;
 	readonly updateAccessClientSecret?: string;
+	// PARA-PATCH: update channel stamped only into beta builds (quality stays stable). See platform/update/common/paradisUpdateChannel.ts.
+	readonly paradisUpdateChannel?: string;
 	readonly webUrl?: string;
 	readonly webEndpointUrlTemplate?: string;
 	readonly webviewContentExternalBaseUrlTemplate?: string;

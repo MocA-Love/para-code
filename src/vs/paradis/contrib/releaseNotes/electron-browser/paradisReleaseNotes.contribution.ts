@@ -20,6 +20,7 @@ import { ServicesAccessor } from '../../../../platform/instantiation/common/inst
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
+import { getParadisChangelogFeedUrl } from '../../../../platform/update/common/paradisUpdateChannel.js';
 import { asText, IRequestService } from '../../../../platform/request/common/request.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -90,7 +91,8 @@ registerAction2(ParadisShowChangelogAction);
  * モーダル(案B: バージョンナビゲーター型)で更新履歴を開く。
  *
  * 基本データは「このビルドに同梱された md」。そこへ update サーバー
- * (cloudflare/update-server の GET /api/changelog/:quality)から最新の md を取得し、
+ * (cloudflare/update-server の GET /api/changelog/:quality。:quality は更新フィードと同じ
+ * チャネルで、ベータのビルドでは beta になる)から最新の md を取得し、
  * 同梱より新しいバージョンを「利用可能な更新」として一覧に足す。これにより、まだ
  * 更新していないユーザーも次回リリースの中身を読める。取得結果は APPLICATION スコープに
  * キャッシュし、オフライン時・取得失敗時は同梱分だけを静かに表示する。
@@ -103,13 +105,6 @@ const PARADIS_CHANGELOG_LAST_READ_KEY = 'paradis.changelog.lastReadVersion';
 const CHANGELOG_SANITY_RE = /^##\s+paracode-\d+/m;
 
 const changelogLifecycle = new ParadisChangelogLifecycle<ParadisChangelogModal>();
-
-function changelogFeedUrl(productService: IProductService): string | undefined {
-	if (!productService.updateUrl) {
-		return undefined;
-	}
-	return `${productService.updateUrl}/api/changelog/${productService.quality ?? 'stable'}`;
-}
 
 // abstractUpdateService.getUpdateAccessHeaders と同じ契約(CF Access サービストークン)。
 // electron-main 層の関数は renderer から import できないため、同じヘッダーをここで組む。
@@ -136,7 +131,7 @@ async function fetchRemoteChangelogMd(
 	productService: IProductService,
 	token: CancellationToken
 ): Promise<string | undefined> {
-	const url = changelogFeedUrl(productService);
+	const url = getParadisChangelogFeedUrl(productService);
 	if (!url) {
 		return undefined;
 	}
@@ -214,7 +209,7 @@ function openParadisChangelogModal(
 	}
 
 	// updateUrl 未設定(開発ビルド等)ではサーバー問い合わせをしない
-	if (!changelogFeedUrl(productService)) {
+	if (!getParadisChangelogFeedUrl(productService)) {
 		generation.finishFetch();
 		return;
 	}

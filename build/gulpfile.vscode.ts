@@ -246,6 +246,16 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 					json.updateAccessClientId = updateAccessClientId;
 					json.updateAccessClientSecret = updateAccessClientSecret;
 				}
+				// PARA-PATCH: beta builds keep quality=stable and only follow the beta update feed/changelog
+				// (src/vs/platform/update/common/paradisUpdateChannel.ts). .github/workflows/para-release.yml sets
+				// PARA_UPDATE_CHANNEL=beta for beta tags; stable and local builds stamp nothing.
+				const updateChannel = process.env['PARA_UPDATE_CHANNEL']?.trim();
+				if (updateChannel && updateChannel !== 'stable') {
+					if (!/^[a-z][a-z0-9-]*$/.test(updateChannel)) {
+						throw new Error(`Invalid PARA_UPDATE_CHANNEL: ${updateChannel}`);
+					}
+					json.paradisUpdateChannel = updateChannel;
+				}
 				return json;
 			}))
 			.pipe(es.through(function (file) {
