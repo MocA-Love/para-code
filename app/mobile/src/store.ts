@@ -1893,8 +1893,11 @@ export class MobileController {
 		this.disconnect();
 	}
 
-	/** 未接続なら即座に接続、'online' 表示中は生存確認する（フォアグラウンド復帰時用）。 */
-	ensureConnected(): void {
+	/**
+	 * 未接続なら即座に接続、'online' 表示中は生存確認する（フォアグラウンド復帰時用）。
+	 * `fromHeartbeat` は25秒おきの心拍から呼ぶとき（再試行の回数を戻さない）。
+	 */
+	ensureConnected(fromHeartbeat = false): void {
 		const client = this.client;
 		if (!client) {
 			return;
@@ -1904,7 +1907,7 @@ export class MobileController {
 			this.requestState();
 			client.probeLiveness();
 		} else {
-			client.ensureConnected();
+			client.ensureConnected({ keepBackoff: fromHeartbeat });
 		}
 	}
 

@@ -217,3 +217,25 @@ describe('RelayClient credential refusal', () => {
 		h.client.close();
 	});
 });
+
+describe('RelayClient heartbeat nudges', () => {
+	it('redials on a heartbeat without resetting the backoff, while a foreground nudge resets it', async () => {
+		const h = await harness(0.999);
+		h.client.connect();
+		h.sockets[0]!.onclose?.({ code: 1006 });
+		h.timers.runReconnect();
+		h.sockets[1]!.onclose?.({ code: 1006 });
+		expect(h.timers.reconnectDelays()).toEqual([999]);
+
+		// 心拍: すぐ張り直すが、回数は戻さない（次の待ちは伸びたまま）
+		h.client.ensureConnected({ keepBackoff: true });
+		h.sockets[2]!.onclose?.({ code: 1006 });
+		expect(h.timers.reconnectDelays()).toEqual([1_998]);
+
+		// 前面復帰などの人が待っている張り直し: 最短から
+		h.client.ensureConnected();
+		h.sockets[3]!.onclose?.({ code: 1006 });
+		expect(h.timers.reconnectDelays()).toEqual([499]);
+		h.client.close();
+	});
+});
