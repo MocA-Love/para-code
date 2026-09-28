@@ -91,6 +91,10 @@ do {
 // MARK: - 振り分け
 
 final class FakeDesktop: ParadisDesktopBackend {
+	var bundles: [Int32: String] = [100: "com.apple.finder", 300: "com.1password.1password", 400: "com.apple.systempreferences", 500: "ltd.paradis.paracode"]
+	func bundleIdentifier(pid: Int32) -> String? {
+		return bundles[pid]
+	}
 	var screenshotCalls: [(Int32, UInt32, Int)] = []
 	var treeCalls: [(Int32, UInt32?, Int, Int)] = []
 	var inputCalls: [String] = []
@@ -208,16 +212,16 @@ do {
 	let selfPid = reply(handler.handle(line: Data(#"{"id":5,"method":"listWindows","params":{"pid":42}}"#.utf8)))
 	check((selfPid?["error"] as? [String: Any])?["code"] as? String == "app_blocked", "refuses to inspect itself")
 
-	let noWindow = reply(handler.handle(line: Data(#"{"id":6,"method":"screenshotWindow","params":{"pid":100}}"#.utf8)))
+	let noWindow = reply(handler.handle(line: Data(#"{"id":6,"method":"screenshotWindow","params":{"pid":100,"bundleId":"com.apple.finder"}}"#.utf8)))
 	check((noWindow?["error"] as? [String: Any])?["code"] as? String == "invalid_argument", "screenshot requires a window id")
 
-	let tooLarge = reply(handler.handle(line: Data(#"{"id":7,"method":"screenshotWindow","params":{"pid":100,"windowId":7,"maxLongEdge":5000}}"#.utf8)))
+	let tooLarge = reply(handler.handle(line: Data(#"{"id":7,"method":"screenshotWindow","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"maxLongEdge":5000}}"#.utf8)))
 	check((tooLarge?["error"] as? [String: Any])?["code"] as? String == "invalid_argument", "screenshot caps the long edge")
 
-	_ = handler.handle(line: Data(#"{"id":8,"method":"screenshotWindow","params":{"pid":100,"windowId":7}}"#.utf8))
+	_ = handler.handle(line: Data(#"{"id":8,"method":"screenshotWindow","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7}}"#.utf8))
 	check(desktop.screenshotCalls.count == 1 && desktop.screenshotCalls[0].2 == paradisDefaultScreenshotLongEdge, "screenshot uses the default long edge")
 
-	let tree = reply(handler.handle(line: Data(#"{"id":9,"method":"accessibilityTree","params":{"pid":100}}"#.utf8)))
+	let tree = reply(handler.handle(line: Data(#"{"id":9,"method":"accessibilityTree","params":{"pid":100,"bundleId":"com.apple.finder"}}"#.utf8)))
 	check((tree?["error"] as? [String: Any])?["code"] as? String == "accessibility_not_granted", "passes the backend error code through")
 	check(desktop.treeCalls.first?.1 == nil && desktop.treeCalls.first?.2 == paradisDefaultAXMaxNodes, "tree uses the defaults")
 
@@ -241,32 +245,45 @@ do {
 		let result = reply(handler.handle(line: Data(json.utf8)))
 		return result?["ok"] as? Bool == true ? "ok" : (result?["error"] as? [String: Any])?["code"] as? String
 	}
-	check(code(#"{"id":2,"method":"click","params":{"pid":100,"windowId":7,"x":10,"y":20.5}}"#) == "ok", "clicks a point")
-	check(code(#"{"id":3,"method":"click","params":{"pid":100,"windowId":7,"elementIndex":4,"button":"right","clickCount":2,"modifiers":["cmd","shift"]}}"#) == "ok", "right double clicks an element with modifiers")
-	check(code(#"{"id":4,"method":"click","params":{"pid":100,"x":1,"y":1}}"#) == "invalid_argument", "click needs a window")
-	check(code(#"{"id":5,"method":"click","params":{"pid":100,"windowId":7}}"#) == "invalid_argument", "click needs a target")
-	check(code(#"{"id":6,"method":"click","params":{"pid":100,"windowId":7,"x":-1,"y":1}}"#) == "invalid_argument", "click refuses negative coordinates")
-	check(code(#"{"id":7,"method":"click","params":{"pid":100,"windowId":7,"x":1,"y":1,"modifiers":["fn"]}}"#) == "invalid_argument", "click refuses the Fn modifier")
-	check(code(#"{"id":8,"method":"click","params":{"pid":100,"windowId":7,"x":1,"y":1,"clickCount":4}}"#) == "invalid_argument", "click caps the click count")
-	check(code(#"{"id":9,"method":"drag","params":{"pid":100,"windowId":7,"from":{"x":1,"y":2},"to":{"elementIndex":3}}}"#) == "ok", "drags")
-	check(code(#"{"id":10,"method":"scroll","params":{"pid":100,"windowId":7,"direction":"down"}}"#) == "ok", "scrolls the window center")
-	check(code(#"{"id":11,"method":"scroll","params":{"pid":100,"windowId":7,"direction":"sideways"}}"#) == "invalid_argument", "scroll needs a direction")
-	check(code(#"{"id":12,"method":"scroll","params":{"pid":100,"windowId":7,"direction":"up","pages":50}}"#) == "invalid_argument", "scroll caps the pages")
-	check(code(#"{"id":13,"method":"typeText","params":{"pid":100,"text":"a\nb"}}"#) == "ok", "types text")
+	check(code(#"{"id":2,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":10,"y":20.5}}"#) == "ok", "clicks a point")
+	check(code(#"{"id":3,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"elementIndex":4,"snapshotId":9,"button":"right","clickCount":2,"modifiers":["cmd","shift"]}}"#) == "ok", "right double clicks an element with modifiers")
+	check(code(#"{"id":4,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","x":1,"y":1}}"#) == "invalid_argument", "click needs a window")
+	check(code(#"{"id":5,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7}}"#) == "invalid_argument", "click needs a target")
+	check(code(#"{"id":6,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":-1,"y":1}}"#) == "invalid_argument", "click refuses negative coordinates")
+	check(code(#"{"id":7,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1,"modifiers":["fn"]}}"#) == "invalid_argument", "click refuses the Fn modifier")
+	check(code(#"{"id":8,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1,"clickCount":4}}"#) == "invalid_argument", "click caps the click count")
+	check(code(#"{"id":9,"method":"drag","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"from":{"x":1,"y":2},"to":{"elementIndex":3},"snapshotId":9}}"#) == "ok", "drags")
+	check(code(#"{"id":10,"method":"scroll","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"direction":"down"}}"#) == "ok", "scrolls the window center")
+	check(code(#"{"id":11,"method":"scroll","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"direction":"sideways"}}"#) == "invalid_argument", "scroll needs a direction")
+	check(code(#"{"id":12,"method":"scroll","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"direction":"up","pages":50}}"#) == "invalid_argument", "scroll caps the pages")
+	check(code(#"{"id":13,"method":"typeText","params":{"pid":100,"bundleId":"com.apple.finder","text":"a\nb"}}"#) == "ok", "types text")
 	let long = String(repeating: "x", count: paradisMaxTypeTextLength + 1)
-	check(code(#"{"id":14,"method":"typeText","params":{"pid":100,"text":"\#(long)"}}"#) == "invalid_argument", "type text is limited to 4,000 characters")
-	check(code(#"{"id":15,"method":"pasteText","params":{"pid":100,"text":"\#(long)"}}"#) == "ok", "paste takes longer text")
-	check(code(#"{"id":16,"method":"pressKey","params":{"pid":100,"key":"return"}}"#) == "ok", "presses a key")
-	check(code(#"{"id":17,"method":"pressKey","params":{"pid":100,"key":"cmd"}}"#) == "invalid_argument", "press key refuses a lone modifier")
-	check(code(#"{"id":18,"method":"hotkey","params":{"pid":100,"keys":["cmd","s"]}}"#) == "ok", "presses a hotkey")
-	check(code(#"{"id":19,"method":"hotkey","params":{"pid":100,"keys":["cmd","space"]}}"#) == "key_blocked", "blocks Spotlight")
-	check(code(#"{"id":20,"method":"hotkey","params":{"pid":100,"keys":["cmd","option","escape"]}}"#) == "key_blocked", "blocks Force Quit")
-	check(code(#"{"id":21,"method":"hotkey","params":{"pid":100,"keys":["s"]}}"#) == "invalid_argument", "hotkey needs modifiers")
-	check(code(#"{"id":22,"method":"activateApp","params":{"pid":100}}"#) == "ok", "activates an app")
+	check(code(#"{"id":14,"method":"typeText","params":{"pid":100,"bundleId":"com.apple.finder","text":"\#(long)"}}"#) == "invalid_argument", "type text is limited to 4,000 characters")
+	check(code(#"{"id":15,"method":"pasteText","params":{"pid":100,"bundleId":"com.apple.finder","text":"\#(long)"}}"#) == "ok", "paste takes longer text")
+	check(code(#"{"id":16,"method":"pressKey","params":{"pid":100,"bundleId":"com.apple.finder","key":"return"}}"#) == "ok", "presses a key")
+	check(code(#"{"id":17,"method":"pressKey","params":{"pid":100,"bundleId":"com.apple.finder","key":"cmd"}}"#) == "invalid_argument", "press key refuses a lone modifier")
+	check(code(#"{"id":18,"method":"hotkey","params":{"pid":100,"bundleId":"com.apple.finder","keys":["cmd","s"]}}"#) == "ok", "presses a hotkey")
+	check(code(#"{"id":19,"method":"hotkey","params":{"pid":100,"bundleId":"com.apple.finder","keys":["cmd","space"]}}"#) == "key_blocked", "blocks Spotlight")
+	check(code(#"{"id":20,"method":"hotkey","params":{"pid":100,"bundleId":"com.apple.finder","keys":["cmd","option","escape"]}}"#) == "key_blocked", "blocks Force Quit")
+	check(code(#"{"id":21,"method":"hotkey","params":{"pid":100,"bundleId":"com.apple.finder","keys":["s"]}}"#) == "invalid_argument", "hotkey needs modifiers")
+	check(code(#"{"id":22,"method":"activateApp","params":{"pid":100,"bundleId":"com.apple.finder"}}"#) == "ok", "activates an app")
+	// 常に操作させないアプリ・Para Code・pid の使い回しは、補助アプリの側でも断る（レビュー M1）
+	check(code(#"{"id":23,"method":"click","params":{"pid":300,"bundleId":"com.1password.1password","windowId":7,"x":1,"y":1}}"#) == "app_blocked", "blocks password managers in the helper")
+	check(code(#"{"id":24,"method":"typeText","params":{"pid":400,"bundleId":"com.apple.systempreferences","text":"a"}}"#) == "app_blocked", "blocks System Settings in the helper")
+	check(code(#"{"id":25,"method":"listWindows","params":{"pid":500,"bundleId":"ltd.paradis.paracode"}}"#) == "app_blocked", "blocks Para Code in the helper")
+	handler.protectedPids = [100]
+	check(code(#"{"id":26,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1}}"#) == "app_blocked", "blocks the Para Code main process by pid")
+	handler.protectedPids = []
+	check(code(#"{"id":27,"method":"click","params":{"pid":100,"bundleId":"com.apple.Notes","windowId":7,"x":1,"y":1}}"#) == "app_not_found", "refuses a pid that now belongs to another app")
+	check(code(#"{"id":28,"method":"click","params":{"pid":100,"windowId":7,"x":1,"y":1}}"#) == "invalid_argument", "requires the bundle id")
+	check(code(#"{"id":29,"method":"click","params":{"pid":999,"bundleId":"x.y","windowId":7,"x":1,"y":1}}"#) == "app_not_found", "refuses a pid without an app")
+	check(code(#"{"id":30,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"elementIndex":1}}"#) == "stale_element", "element numbers need a snapshot id")
+	check(code(#"{"id":31,"method":"hotkey","params":{"pid":100,"bundleId":"com.apple.finder","keys":["cmd","v"]}}"#) == "key_blocked", "blocks paste shortcuts")
+	check(code(#"{"id":32,"method":"hotkey","params":{"pid":100,"bundleId":"com.apple.finder","keys":["ctrl","f2"]}}"#) == "key_blocked", "blocks menu bar navigation")
 	check(desktop.inputCalls == [
 		"click 100 7 point(x: 10.0, y: 20.5) left 1 0",
-		"click 100 7 element(4) right 2 3",
-		"drag point(x: 1.0, y: 2.0) element(3)",
+		"click 100 7 element(4, snapshotId: 9) right 2 3",
+		"drag point(x: 1.0, y: 2.0) element(3, snapshotId: 9)",
 		"scroll center down 1.0",
 		"type 3",
 		"paste 4001",
@@ -289,10 +306,17 @@ do {
 		["cmd", "space"], ["ctrl", "space"], ["cmd", "option", "space"], ["cmd", "tab"], ["cmd", "shift", "tab"], ["cmd", "`"],
 		["cmd", "option", "esc"], ["ctrl", "cmd", "q"], ["cmd", "shift", "q"], ["cmd", "shift", "3"], ["cmd", "shift", "4"], ["cmd", "shift", "5"],
 		["ctrl", "up"], ["ctrl", "left"], ["ctrl", "right"], ["ctrl", "down"], ["fn", "f"], ["globe", "e"],
+		// レビュー M4: メニューバー・Dock・アクセシビリティ
+		["ctrl", "f1"], ["ctrl", "f2"], ["ctrl", "f3"], ["ctrl", "f7"], ["ctrl", "f8"], ["ctrl", "shift", "f12"], ["cmd", "f5"], ["cmd", "option", "f5"],
+		["cmd", "option", "d"], ["cmd", "option", "8"], ["ctrl", "option", "cmd", "8"], ["cmd", "option", "="], ["cmd", "option", "-"], ["ctrl", "option", "cmd", "."],
+		// レビュー M5: 貼り付け
+		["cmd", "v"], ["cmd", "shift", "v"], ["cmd", "option", "shift", "v"],
 	]
 	check(blockedChords.allSatisfy(blocked), "blocks the listed shortcuts")
 	let allowedChords: [[String]] = [["cmd", "s"], ["cmd", "q"], ["cmd", "shift", "k"], ["option", "left"], ["cmd", "c"], ["shift", "tab"], ["cmd", "3"]]
 	check(!allowedChords.contains(where: blocked), "allows ordinary shortcuts")
+	check(paradisBlockedChordReason(ParadisKeyChord(keyCode: paradisKeyCodeV, modifiers: .command), allowPaste: true) == nil, "the paste command may send cmd-v")
+	check(paradisBlockedChordReason(ParadisKeyChord(keyCode: 122, modifiers: []), allowPaste: false) == nil, "a plain function key is allowed")
 	check((try? paradisParseChord(["cmd", "a", "b"])) == nil, "a chord has one key")
 	check((try? paradisParseChord(["cmd", "nope"])) == nil, "unknown keys are refused")
 	check(paradisKeyCode(named: "Enter") == 36 && paradisKeyCode(named: "ArrowUp") == 126 && paradisKeyCode(named: "backspace") == 51, "reads key aliases")
@@ -302,10 +326,11 @@ do {
 	check((try? paradisTypedUnits("")) == nil, "refuses empty text")
 	check((try? paradisTypedUnits("日本語👍🏽"))?.count == 4, "types one grapheme at a time")
 
-	check(!paradisUserIsActive(secondsSinceLastInput: 5, secondsSinceOurLastEvent: nil), "idle user")
-	check(paradisUserIsActive(secondsSinceLastInput: 0.3, secondsSinceOurLastEvent: nil), "recent input with no synthetic input is the user")
-	check(!paradisUserIsActive(secondsSinceLastInput: 0.3, secondsSinceOurLastEvent: 0.3), "our own input is not the user")
-	check(paradisUserIsActive(secondsSinceLastInput: 0.1, secondsSinceOurLastEvent: 0.6), "input after ours is the user")
+	// レビュー M2: 自分の分を時刻で除かない。見張りが目印の無い入力だけを数える
+	check(!paradisUserIsActive(secondsSincePhysicalInput: 5), "idle user")
+	check(!paradisUserIsActive(secondsSincePhysicalInput: nil), "no physical input yet")
+	check(paradisUserIsActive(secondsSincePhysicalInput: 0.3), "physical input within a second is the user, even right after our own input")
+	check(paradisIsOurEvent(userData: paradisSyntheticEventMarker) && !paradisIsOurEvent(userData: 0), "marks our own events")
 
 	check(paradisFenceFailure(targetPid: 5, frontmostPid: 5, ownerAtTarget: 5) == nil, "front window of the target passes")
 	check(paradisFenceFailure(targetPid: 5, frontmostPid: 9, ownerAtTarget: 5)?.code == "window_not_focused", "another app in front stops input")
@@ -319,8 +344,27 @@ do {
 	let path = paradisDragPath(from: (0, 0), to: (10, 20), steps: 2)
 	check(path.count == 2 && path[0].x == 5 && path[0].y == 10 && path[1].x == 10 && path[1].y == 20, "interpolates the drag path")
 
-	check(paradisShouldRestoreClipboard(changeCountAfterOurWrite: 7, currentChangeCount: 7), "restores an untouched clipboard")
-	check(!paradisShouldRestoreClipboard(changeCountAfterOurWrite: 7, currentChangeCount: 8), "keeps a clipboard someone else changed")
+	check(paradisClipboardRestorePlan(changeCountAfterOurWrite: 7, currentChangeCount: 7, savedIsConcealed: false, savedIsComplete: true) == .restore, "restores an untouched clipboard")
+	check(paradisClipboardRestorePlan(changeCountAfterOurWrite: 7, currentChangeCount: 8, savedIsConcealed: false, savedIsComplete: true) == .keepOthers, "keeps a clipboard someone else changed")
+	check(paradisClipboardRestorePlan(changeCountAfterOurWrite: 7, currentChangeCount: 7, savedIsConcealed: true, savedIsComplete: true) == .clear, "clears instead of restoring a concealed secret")
+	check(paradisClipboardRestorePlan(changeCountAfterOurWrite: 7, currentChangeCount: 7, savedIsConcealed: false, savedIsComplete: false) == .restorePartial, "reports a partial restore")
+	check(paradisPasteLanded(before: "ab", after: "abhello", text: "hello"), "sees the pasted text")
+	check(!paradisPasteLanded(before: "hello", after: "hello", text: "hello"), "an unchanged value is not a paste")
+	check(!paradisPasteLanded(before: nil, after: nil, text: "hello"), "an unreadable value cannot be verified")
+
+	// レビュー M3: 認証・同意のダイアログと、目的のウィンドウに重なるパネル
+	let target = CGRect(x: 100, y: 100, width: 400, height: 300)
+	let dialog = ParadisScreenWindow(pid: 50, ownerName: "SecurityAgent", bundleId: "com.apple.SecurityAgent", layer: 1000, bounds: CGRect(x: 900, y: 900, width: 10, height: 10))
+	let consent = ParadisScreenWindow(pid: 51, ownerName: "UserNotificationCenter", bundleId: nil, layer: 0, bounds: .zero)
+	let panel = ParadisScreenWindow(pid: 52, ownerName: "Spotlight", bundleId: "com.apple.Spotlight", layer: 25, bounds: CGRect(x: 200, y: 150, width: 100, height: 50))
+	let menuBar = ParadisScreenWindow(pid: 53, ownerName: "Window Server", bundleId: nil, layer: 24, bounds: CGRect(x: 0, y: 0, width: 2000, height: 1000))
+	let ownMenu = ParadisScreenWindow(pid: 5, ownerName: "Notes", bundleId: "com.apple.Notes", layer: 101, bounds: target)
+	check(paradisOverlayFailure(targetPid: 5, windows: [dialog], targetBounds: nil)?.code == "system_dialog", "an authentication dialog anywhere stops input")
+	check(paradisOverlayFailure(targetPid: 5, windows: [consent], targetBounds: target)?.code == "system_dialog", "a consent dialog stops input")
+	check(paradisOverlayFailure(targetPid: 5, windows: [panel], targetBounds: target)?.code == "point_obscured", "another app's panel over the window stops keys")
+	check(paradisOverlayFailure(targetPid: 5, windows: [panel], targetBounds: nil) == nil, "a panel does not stop a click whose point is checked separately")
+	check(paradisOverlayFailure(targetPid: 5, windows: [menuBar, ownMenu], targetBounds: target) == nil, "the menu bar and the app's own menus do not stop keys")
+	check(paradisFocusFailure(targetPid: 5, focusedPid: 5) == nil && paradisFocusFailure(targetPid: 5, focusedPid: 9)?.code == "window_not_focused" && paradisFocusFailure(targetPid: 5, focusedPid: nil) != nil, "keys need keyboard focus in the app")
 }
 
 // MARK: - 引数
@@ -333,28 +377,81 @@ do {
 	check(paradisParseArguments(["--permission-status"]) == .permissionStatus, "parses the permission status mode")
 }
 
-// MARK: - 接続相手の判断
+// MARK: - 接続相手の判断（レビュー H1）
 
 do {
 	let main = "ltd.paradis.paracode"
 	let release = ParadisSigningIdentity(identifier: "ltd.paradis.paracode.computeruse", teamIdentifier: "TEAM123")
 	let peer = ParadisSigningIdentity(identifier: "ltd.paradis.paracode.helper", teamIdentifier: "TEAM123")
 	let parent = ParadisSigningIdentity(identifier: main, teamIdentifier: "TEAM123")
-	func facts(helper: ParadisSigningIdentity = release, peer: ParadisSigningIdentity? = peer, parent: ParadisSigningIdentity? = parent, parentBundle: String? = main, grandparent: Int32? = 1, sameUser: Bool = true) -> ParadisPeerFacts {
-		return ParadisPeerFacts(helper: helper, peer: peer, parent: parent, parentBundleIdentifier: parentBundle, parentParentPid: grandparent, sameUser: sameUser)
+	let sharedEnvironment = ["HOME=/Users/example", "VSCODE_ESM_ENTRYPOINT=\(paradisSharedProcessEntryPoint)", "VSCODE_CRASH_REPORTER_PROCESS_TYPE=shared-process"]
+	let sharedProcess = ParadisProcessArguments(executablePath: "/Applications/Para Code.app/Contents/Frameworks/Para Code Helper.app/Contents/MacOS/Para Code Helper", arguments: ["Para Code Helper", "--type=utility", "--utility-sub-type=node.mojom.NodeService"], environment: sharedEnvironment)
+	let mainProcess = ParadisProcessArguments(executablePath: "/Applications/Para Code.app/Contents/MacOS/Para Code", arguments: ["/Applications/Para Code.app/Contents/MacOS/Para Code"], environment: ["HOME=/Users/example"])
+	func facts(helper: ParadisSigningIdentity = release, peer: ParadisSigningIdentity? = peer, parent: ParadisSigningIdentity? = parent, peerBundle: String? = "ltd.paradis.paracode.helper", parentBundle: String? = main, peerArguments: ParadisProcessArguments? = sharedProcess, parentArguments: ParadisProcessArguments? = mainProcess, grandparent: Int32? = 1, sameUser: Bool = true) -> ParadisPeerFacts {
+		return ParadisPeerFacts(helper: helper, peer: peer, parent: parent, peerBundleIdentifier: peerBundle, parentBundleIdentifier: parentBundle, peerArguments: peerArguments, parentArguments: parentArguments, parentParentPid: grandparent, sameUser: sameUser)
+	}
+	func environment(_ entryPoint: String, _ type: String) -> ParadisProcessArguments {
+		return ParadisProcessArguments(executablePath: sharedProcess.executablePath, arguments: sharedProcess.arguments, environment: ["VSCODE_ESM_ENTRYPOINT=\(entryPoint)", "VSCODE_CRASH_REPORTER_PROCESS_TYPE=\(type)"])
+	}
+	func withArgument(_ process: ParadisProcessArguments, _ argument: String) -> ParadisProcessArguments {
+		return ParadisProcessArguments(executablePath: process.executablePath, arguments: process.arguments + [argument], environment: process.environment)
+	}
+	func withEnvironment(_ process: ParadisProcessArguments, _ entry: String) -> ParadisProcessArguments {
+		return ParadisProcessArguments(executablePath: process.executablePath, arguments: process.arguments, environment: process.environment + [entry])
 	}
 	check(paradisDecidePeer(facts(), mainBundleIdentifier: main) == .allow, "release: accepts the shared process of Para Code")
 	check(paradisDecidePeer(facts(peer: nil), mainBundleIdentifier: main) != .allow, "release: rejects an unsigned peer")
 	check(paradisDecidePeer(facts(peer: ParadisSigningIdentity(identifier: "ltd.paradis.paracode.helper", teamIdentifier: "OTHER")), mainBundleIdentifier: main) != .allow, "release: rejects another team")
-	check(paradisDecidePeer(facts(peer: ParadisSigningIdentity(identifier: "com.example.tool", teamIdentifier: "TEAM123")), mainBundleIdentifier: main) != .allow, "release: rejects a non-helper process of the same team")
+	check(paradisDecidePeer(facts(peer: ParadisSigningIdentity(identifier: "ltd.paradis.paracode.helper.Plugin", teamIdentifier: "TEAM123")), mainBundleIdentifier: main) != .allow, "release: rejects the extension host helper")
+	check(paradisDecidePeer(facts(peer: ParadisSigningIdentity(identifier: "ltd.paradis.paracode.helper.Renderer", teamIdentifier: "TEAM123")), mainBundleIdentifier: main) != .allow, "release: rejects a renderer")
+	check(paradisDecidePeer(facts(peerArguments: environment("vs/platform/terminal/node/ptyHostMain", "ptyHost")), mainBundleIdentifier: main) != .allow, "rejects the pty host")
+	check(paradisDecidePeer(facts(peerArguments: environment("vs/workbench/api/node/extensionHostProcess", "extensionHost")), mainBundleIdentifier: main) != .allow, "rejects an extension host")
+	check(paradisDecidePeer(facts(peerArguments: withEnvironment(sharedProcess, "VSCODE_ESM_ENTRYPOINT=\(paradisSharedProcessEntryPoint)")), mainBundleIdentifier: main) != .allow, "rejects a duplicated entry point")
+	check(paradisDecidePeer(facts(peerArguments: ParadisProcessArguments(executablePath: sharedProcess.executablePath, arguments: ["Para Code Helper"], environment: sharedEnvironment)), mainBundleIdentifier: main) != .allow, "rejects a helper that is not a utility process")
+	check(paradisDecidePeer(facts(peerArguments: withEnvironment(sharedProcess, "ELECTRON_RUN_AS_NODE=1")), mainBundleIdentifier: main) != .allow, "rejects a helper run as node")
+	check(paradisDecidePeer(facts(parentArguments: withArgument(mainProcess, "--inspect=9229")), mainBundleIdentifier: main) != .allow, "rejects a main started with --inspect")
+	check(paradisDecidePeer(facts(parentArguments: withArgument(mainProcess, "--inspect-sharedprocess=5879")), mainBundleIdentifier: main) != .allow, "rejects a main that inspects the shared process")
+	check(paradisDecidePeer(facts(parentArguments: withArgument(mainProcess, "--remote-debugging-port=9222")), mainBundleIdentifier: main) != .allow, "rejects a main with remote debugging")
+	check(paradisDecidePeer(facts(parentArguments: withArgument(mainProcess, "--js-flags=--allow-natives-syntax")), mainBundleIdentifier: main) != .allow, "rejects a main with js flags")
+	check(paradisDecidePeer(facts(parentArguments: withArgument(mainProcess, "--extensionDevelopmentPath=/tmp/x")), mainBundleIdentifier: main) != .allow, "rejects an extension development host")
+	check(paradisDecidePeer(facts(parentArguments: withEnvironment(mainProcess, "NODE_OPTIONS=--require /tmp/x.js")), mainBundleIdentifier: main) != .allow, "rejects a main with NODE_OPTIONS")
+	check(paradisDecidePeer(facts(peerArguments: withArgument(sharedProcess, "--inspect=5879")), mainBundleIdentifier: main) != .allow, "rejects an inspected shared process")
+	check(paradisDecidePeer(facts(parentArguments: nil), mainBundleIdentifier: main) != .allow, "rejects when the arguments cannot be read")
 	check(paradisDecidePeer(facts(parent: ParadisSigningIdentity(identifier: "ltd.paradis.paracode.helper", teamIdentifier: "TEAM123")), mainBundleIdentifier: main) != .allow, "release: rejects a peer whose parent is not the main process")
 	check(paradisDecidePeer(facts(grandparent: 4242), mainBundleIdentifier: main) != .allow, "release: rejects a main process not started by launchd")
 	check(paradisDecidePeer(facts(sameUser: false), mainBundleIdentifier: main) != .allow, "rejects another user")
 	let adhoc = ParadisSigningIdentity(identifier: "ltd.paradis.paracode.computeruse", teamIdentifier: nil)
-	check(paradisDecidePeer(facts(helper: adhoc, peer: nil, parent: nil, parentBundle: "com.github.Electron", grandparent: 900), mainBundleIdentifier: main) == .allow, "development: accepts Electron as the parent")
-	check(paradisDecidePeer(facts(helper: adhoc, peer: nil, parent: nil, parentBundle: main, grandparent: 900), mainBundleIdentifier: main) == .allow, "development: accepts a local Para Code build")
+	check(paradisDecidePeer(facts(helper: adhoc, peer: nil, parent: nil, grandparent: 900), mainBundleIdentifier: main) == .allow, "development: accepts the shared process of a local build")
+	check(paradisDecidePeer(facts(helper: adhoc, peer: nil, parent: nil, parentBundle: "com.github.Electron", grandparent: 900), mainBundleIdentifier: main) != .allow, "development: rejects a plain Electron parent")
+	check(paradisDecidePeer(facts(helper: adhoc, peer: nil, parent: nil, peerBundle: "ltd.paradis.paracode.helper.Plugin"), mainBundleIdentifier: main) != .allow, "development: rejects the extension host")
+	check(paradisDecidePeer(facts(helper: adhoc, peer: nil, parent: nil, peerArguments: environment("vs/platform/terminal/node/ptyHostMain", "ptyHost")), mainBundleIdentifier: main) != .allow, "development: rejects the pty host")
 	check(paradisDecidePeer(facts(helper: adhoc, peer: nil, parent: nil, parentBundle: "com.apple.Terminal"), mainBundleIdentifier: main) != .allow, "development: rejects a terminal as the parent")
-	check(paradisDecidePeer(facts(helper: adhoc, peer: nil, parent: nil, parentBundle: nil), mainBundleIdentifier: main) != .allow, "development: rejects a parent that is not an application")
+}
+
+do {
+	// KERN_PROCARGS2 の形: argc・実行ファイル・詰め物・argv・環境変数
+	var bytes: [UInt8] = [2, 0, 0, 0]
+	bytes += Array("/bin/x".utf8) + [0, 0, 0]
+	bytes += Array("x".utf8) + [0] + Array("--type=utility".utf8) + [0]
+	bytes += Array("A=1".utf8) + [0] + Array("B=2".utf8) + [0, 0]
+	let parsed = paradisParseProcessArguments(bytes)
+	check(parsed == ParadisProcessArguments(executablePath: "/bin/x", arguments: ["x", "--type=utility"], environment: ["A=1", "B=2"]), "parses KERN_PROCARGS2")
+	check(paradisParseProcessArguments([1, 0]) == nil, "rejects a short buffer")
+	if let parsed {
+		let duplicated = ParadisProcessArguments(executablePath: "", arguments: [], environment: ["A=1", "A=2"])
+		check(parsed.environmentValue("A") == .some("1") && parsed.environmentValue("C") == .none && duplicated.environmentValue("A") == .some(.none), "reads environment values and refuses duplicates")
+	}
+}
+
+// MARK: - 常に操作させないアプリ（レビュー M1・M8）
+
+do {
+	check(paradisBlockReason(bundleId: "org.keepassxc.keepassxc") == .passwordManager, "blocks KeePassXC")
+	check(paradisBlockReason(bundleId: "COM.1PASSWORD.1PASSWORD") == .passwordManager, "matches case-insensitively")
+	check(paradisBlockReason(bundleId: "com.apple.keychainaccess") == .keychain, "blocks Keychain Access")
+	check(paradisBlockReason(bundleId: "ltd.paradis.paracode.helper") == .paraCode, "blocks Para Code helpers")
+	check(paradisBlockReason(bundleId: "com.apple.systempreferences.legacyLoader.x86_64") == .system, "blocks System Settings panes")
+	check(paradisBlockReason(bundleId: "com.apple.finder") == nil && paradisBlockReason(bundleId: "ltd.paradis.paracodex") == nil, "allows other apps")
 }
 
 do {

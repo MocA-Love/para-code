@@ -21,17 +21,37 @@ import UniformTypeIdentifiers
 
 /** 直前に読んだツリーの要素（番号でクリックするため）。番号は次に読むまで有効。 */
 struct ParadisElementSnapshot {
+	/** ツリーの応答で返す id。番号でのクリックはこの id を添えて来る（レビュー L6）。 */
+	let id: Int
 	let pid: Int32
 	let windowId: UInt32?
 	let elements: [AXUIElement]
 }
 
+/** ツリーを読む全体の締め切り。 */
+private let paradisTreeDeadlineSeconds: TimeInterval = 20
+
 final class ParadisDesktop: ParadisDesktopBackend {
 
 	/** 直前に読んだツリー。要求は 1 本の接続で順に処理するので、鍵は要らない。 */
 	var lastSnapshot: ParadisElementSnapshot?
-	/** この補助アプリが最後に合成入力を送った時刻（Q101 の判定で自分の入力を除くため）。 */
-	var lastSyntheticEventAt: Date?
+	private var nextSnapshotId = 1
+	/** 利用者の物理的な入力の見張り（入力の命令を初めて受けたときに作る）。 */
+	let inputMonitor = ParadisInputMonitor()
+
+	init() {
+		// AX の問い合わせ全体に上限を付ける。固まったアプリで補助アプリが長く止まり、切断に気づかず残らないように（レビュー L5）
+		AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1.0)
+	}
+
+	func bundleIdentifier(pid: Int32) -> String? {
+		return paradisOnMain {
+			guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else {
+				return nil
+			}
+			return app.bundleIdentifier
+		}
+	}
 
 	func permissions() -> ParadisPermissionSnapshot {
 		return ParadisPermissionSnapshot(accessibility: AXIsProcessTrusted(), screenRecording: CGPreflightScreenCaptureAccess())
@@ -137,8 +157,10 @@ final class ParadisDesktop: ParadisDesktopBackend {
 		var truncated = false
 		// 深さ優先で番号を振る（画面の上から下の順に近くなる）
 		var stack: [(AXUIElement, Int)] = [(window, 0)]
+		// ツリー全体の締め切り。過ぎたら読めた分だけ返す
+		let deadline = Date().addingTimeInterval(paradisTreeDeadlineSeconds)
 		while let (element, depth) = stack.popLast() {
-			if nodes.count >= maxNodes {
+			if nodes.count >= maxNodes || Date() > deadline {
 				truncated = true
 				break
 			}
@@ -154,8 +176,11 @@ final class ParadisDesktop: ParadisDesktopBackend {
 				stack.append((child, depth + 1))
 			}
 		}
-		lastSnapshot = ParadisElementSnapshot(pid: pid, windowId: windowId, elements: elements)
+		let snapshotId = nextSnapshotId
+		nextSnapshotId += 1
+		lastSnapshot = ParadisElementSnapshot(id: snapshotId, pid: pid, windowId: windowId, elements: elements)
 		return [
+			"snapshotId": snapshotId,
 			"text": paradisRenderAXTree(nodes, truncated: truncated),
 			"nodeCount": nodes.count,
 			"truncated": truncated,

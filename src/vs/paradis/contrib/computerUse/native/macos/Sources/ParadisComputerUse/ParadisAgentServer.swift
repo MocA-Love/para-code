@@ -8,8 +8,9 @@
 // Unix ソケットで shared process からの接続を 1 本だけ受ける（設計書 6.1）。
 //
 //  - ソケットの置き場所は、自分のユーザーだけが入れる（0700）フォルダに限る
-//  - 最初の 1 本を受けたら listen をやめ、ソケットのファイルも消す
-//  - 相手の署名と親を確かめ、合わなければ何も返さずに終わる
+//  - 相手の署名・親・引数・環境変数を確かめ、合わなければその接続だけを閉じて待ち続ける（レビュー L2。
+//    先に割り込んだ偽の接続で補助アプリを終わらせ、本物の shared process を締め出させない）
+//  - 確かめに通った 1 本を受けたら listen をやめ、ソケットのファイルも消す
 //  - 最初の要求（handshake）のトークンが違えば終わる
 //  - 接続が切れたら終わる。要求が 10 分来なくても終わる
 
@@ -18,6 +19,8 @@ import Foundation
 
 /** 起動から接続が来るまで待つ時間。 */
 private let paradisAcceptTimeoutMs: Int32 = 30_000
+/** 確かめに落ちた接続をいくつまで我慢するか。 */
+private let paradisMaxRejectedPeers = 20
 /** 接続から handshake が来るまで待つ時間。 */
 private let paradisHandshakeTimeoutMs: Int32 = 10_000
 /** 要求が来ないまま待つ時間。過ぎたら終わる（shared process は次の呼び出しで起動し直す）。 */
@@ -88,8 +91,7 @@ final class ParadisAgentServer {
 
 	func run() -> Never {
 		let listener = listen()
-		let connection = acceptOne(listener)
-		verifyPeer(connection)
+		let connection = acceptVerified(listener)
 		serve(connection)
 	}
 
@@ -136,38 +138,62 @@ final class ParadisAgentServer {
 		return fd
 	}
 
-	private func acceptOne(_ listener: Int32) -> Int32 {
-		guard paradisWaitReadable(listener, timeoutMs: paradisAcceptTimeoutMs) else {
+	/** 確かめに通る接続が来るまで受ける。通ったら listen をやめ、ソケットのファイルを消す。 */
+	private func acceptVerified(_ listener: Int32) -> Int32 {
+		let deadline = Date().addingTimeInterval(Double(paradisAcceptTimeoutMs) / 1000)
+		var rejected = 0
+		while true {
+			let remaining = Int32(max(0, deadline.timeIntervalSinceNow * 1000))
+			guard remaining > 0, paradisWaitReadable(listener, timeoutMs: remaining) else {
+				unlink(socketPath)
+				paradisExit(.noConnection, "no accepted connection arrived")
+			}
+			let connection = accept(listener, nil, nil)
+			guard connection >= 0 else {
+				if errno == EINTR || errno == ECONNABORTED {
+					continue
+				}
+				unlink(socketPath)
+				paradisExit(.socketError, "accept() failed: \(errno)")
+			}
+			_ = fcntl(connection, F_SETFD, FD_CLOEXEC)
+			var noSigPipe: Int32 = 1
+			setsockopt(connection, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+			if let reason = verifyPeer(connection) {
+				close(connection)
+				rejected += 1
+				fputs("[paradis-computer-use] peer rejected: \(reason)\n", stderr)
+				if rejected >= paradisMaxRejectedPeers {
+					unlink(socketPath)
+					paradisExit(.peerRejected, "too many rejected peers")
+				}
+				continue
+			}
+			// 受けるのは 1 本だけ。すぐに listen をやめ、ソケットのファイルも消す
+			close(listener)
 			unlink(socketPath)
-			paradisExit(.noConnection, "no connection arrived")
+			return connection
 		}
-		let connection = accept(listener, nil, nil)
-		// 受けるのは 1 本だけ。すぐに listen をやめ、ソケットのファイルも消す
-		close(listener)
-		unlink(socketPath)
-		guard connection >= 0 else {
-			paradisExit(.socketError, "accept() failed: \(errno)")
-		}
-		_ = fcntl(connection, F_SETFD, FD_CLOEXEC)
-		var noSigPipe: Int32 = 1
-		setsockopt(connection, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
-		return connection
 	}
 
-	private func verifyPeer(_ connection: Int32) {
-		guard let facts = paradisCollectPeerFacts(socket: connection, helper: helperIdentity) else {
-			paradisExit(.peerRejected, "peer could not be identified")
+	/** 相手を確かめる。通れば nil、断るなら理由。通ったら、相手と Para Code の main を的にさせないよう覚える。 */
+	private func verifyPeer(_ connection: Int32) -> String? {
+		guard let (facts, processes) = paradisCollectPeerFacts(socket: connection, helper: helperIdentity) else {
+			return "peer could not be identified"
 		}
+		var decision = paradisDecidePeer(facts, mainBundleIdentifier: mainBundleIdentifier)
 		#if PARADIS_ALLOW_ANY_PEER
 		// テスト用のビルドだけ（buildHelper.ts --allow-any-peer-for-testing）。チーム ID のある署名では効かせない
 		if helperIdentity.teamIdentifier == nil {
 			fputs("[paradis-computer-use] peer check skipped (testing build)\n", stderr)
-			return
+			decision = .allow
 		}
 		#endif
-		if case .deny(let reason) = paradisDecidePeer(facts, mainBundleIdentifier: mainBundleIdentifier) {
-			paradisExit(.peerRejected, "peer rejected: \(reason)")
+		if case .deny(let reason) = decision {
+			return reason
 		}
+		handler.protectedPids = Set([processes.peerPid] + (processes.parentPid.map { [$0] } ?? []))
+		return nil
 	}
 
 	// MARK: - 要求を受ける
