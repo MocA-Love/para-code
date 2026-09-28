@@ -81,12 +81,16 @@ final class ParadisAgentServer {
 	private let handler: ParadisRequestHandler
 	private let helperIdentity: ParadisSigningIdentity
 	private let mainBundleIdentifier: String
+	private let dataFolderName: String
+	/** 受け入れた相手と main の pid（要求のたびに inspector が開いていないかを見る）。 */
+	private var peerProcesses: ParadisPeerProcesses?
 
-	init(socketPath: String, handler: ParadisRequestHandler, helperIdentity: ParadisSigningIdentity, mainBundleIdentifier: String) {
+	init(socketPath: String, handler: ParadisRequestHandler, helperIdentity: ParadisSigningIdentity, mainBundleIdentifier: String, dataFolderName: String) {
 		self.socketPath = socketPath
 		self.handler = handler
 		self.helperIdentity = helperIdentity
 		self.mainBundleIdentifier = mainBundleIdentifier
+		self.dataFolderName = dataFolderName
 	}
 
 	func run() -> Never {
@@ -192,8 +196,71 @@ final class ParadisAgentServer {
 		if case .deny(let reason) = decision {
 			return reason
 		}
+		#if !PARADIS_ALLOW_ANY_PEER
+		if let reason = runtimeIntegrityProblem(facts: facts, processes: processes, checkSeal: true) {
+			return reason
+		}
+		#endif
+		peerProcesses = processes
 		handler.protectedPids = Set([processes.peerPid] + (processes.parentPid.map { [$0] } ?? []))
 		return nil
+	}
+
+	/**
+	 * 起動時の argv の外にある経路を拾える範囲で拾う（レビュー N2）: argv.json で実行中に足されるスイッチ、
+	 * 後から開いた inspector、アプリの中のファイルの書き換え（リリースだけ。ad-hoc の手元のビルドは封印が無い）。
+	 */
+	private func runtimeIntegrityProblem(facts: ParadisPeerFacts, processes: ParadisPeerProcesses, checkSeal: Bool) -> String? {
+		if let reason = inspectorProblem(processes) {
+			return reason
+		}
+		guard let parentArguments = facts.parentArguments else {
+			return "the arguments of Para Code could not be read"
+		}
+		if let reason = argvJsonProblem(parentArguments) {
+			return reason
+		}
+		if checkSeal, let team = helperIdentity.teamIdentifier, !team.isEmpty {
+			guard let bundle = paradisBundlePath(containing: parentArguments.executablePath) else {
+				return "the Para Code app could not be found"
+			}
+			if let reason = paradisVerifyAppSeal(bundlePath: bundle, requirement: team) {
+				return reason
+			}
+		}
+		return nil
+	}
+
+	private func inspectorProblem(_ processes: ParadisPeerProcesses) -> String? {
+		var ports: [String: Set<Int>] = [:]
+		for (label, pid) in [("the shared process", Optional(processes.peerPid)), ("Para Code", processes.parentPid)] {
+			guard let pid else {
+				continue
+			}
+			guard let listening = paradisListeningTcpPorts(pid: pid) else {
+				return "the sockets of \(label) could not be read"
+			}
+			ports[label] = listening
+		}
+		return paradisInspectorProblem(listeningPorts: ports)
+	}
+
+	/** main が読んだはずの argv.json（main の環境の VSCODE_PORTABLE と VSCODE_DEV に合わせる）。 */
+	private func argvJsonProblem(_ parent: ParadisProcessArguments) -> String? {
+		let path: String
+		if case .some(.some(let portable)) = parent.environmentValue("VSCODE_PORTABLE"), !portable.isEmpty {
+			path = (portable as NSString).appendingPathComponent("argv.json")
+		} else {
+			let folder = parent.hasEnvironment("VSCODE_DEV") ? dataFolderName + "-dev" : dataFolderName
+			path = (NSHomeDirectory() as NSString).appendingPathComponent("\(folder)/argv.json")
+		}
+		guard let data = FileManager.default.contents(atPath: path) else {
+			return nil
+		}
+		guard let keys = paradisForbiddenArgvJsonEntries(data) else {
+			return "argv.json could not be read"
+		}
+		return keys.first.map { "argv.json sets \($0)" }
 	}
 
 	// MARK: - 要求を受ける
@@ -224,6 +291,10 @@ final class ParadisAgentServer {
 				paradisExit(handler.authenticated ? .normal : .authenticationFailed, "request line too long")
 			}
 			for line in lines {
+				// 受け入れた後に inspector を開かれていないか、要求のたびに見る（レビュー N2）
+				if handler.authenticated, let processes = peerProcesses, let reason = inspectorProblem(processes) {
+					paradisExit(.peerRejected, "peer changed: \(reason)")
+				}
 				switch handler.handle(line: line) {
 				case .reply(let data):
 					guard paradisWriteAll(data, to: connection) else {
