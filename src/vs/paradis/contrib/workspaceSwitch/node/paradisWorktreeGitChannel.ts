@@ -118,6 +118,9 @@ const PARADIS_GIT_KILL_GRACE_MS = 5_000;
 /** 控えたインデックスを捨てるまでの時間（コミットの待ち時間より十分長く）。 */
 const PARADIS_INDEX_BACKUP_TTL_MS = 10 * 60_000;
 
+/** runGit が集める出力の上限（標準出力と標準エラーの合計、文字）。 */
+const PARADIS_RUN_GIT_MAX_OUTPUT = 4 * 1024 * 1024;
+
 /** 控えのファイル名の印（`index.paradis-mobile-<uuid>`）。 */
 const PARADIS_INDEX_BACKUP_INFIX = '.paradis-mobile-';
 
@@ -315,30 +318,10 @@ export class ParadisWorktreeGitService {
 		// リモートとの通信とコミットのフック（lint やテストを走らせる pre-commit）は 30 秒では終わらないことがある
 		const timeout = PARADIS_GIT_NETWORK_SUBCOMMANDS.has(args[0]) || args[0] === 'commit' ? this.gitTimeouts.long : this.gitTimeouts.short;
 		// 時間切れは execFile の timeout（子の git だけを SIGKILL する）に任せない。SIGKILL だと git が index.lock を
-		// 消せず、フックが起こした孫プロセス（lint・テスト）も残る。POSIX では git を新しいプロセスグループの先頭にして、
-		// グループごと SIGTERM → 猶予の後 SIGKILL で止める（Windows は子を止めるだけ）
-		const ownGroup = !this.isWindowsHost;
-		const result = await new Promise<IParadisWorktreeGitCommandResult & { readonly timedOut: boolean }>(resolve => {
-			let timedOut = false;
-			let settled = false;
-			// 子が同期で終わることもある（テストの代役など）ので、先に入れ物を作ってから待ち時間を仕掛ける
-			const timers: { main?: Timeout; kill?: Timeout } = {};
-			const child = this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', killSignal: 'SIGTERM', windowsHide: true, env: invocation.env, maxBuffer: 4 * 1024 * 1024, ...(ownGroup ? { detached: true } : {}) }, (err, stdout, stderr) => {
-				settled = true;
-				clearTimeout(timers.main);
-				clearTimeout(timers.kill);
-				const rawCode: unknown = err ? (err as NodeJS.ErrnoException & { code?: unknown }).code ?? 1 : 0;
-				resolve({ code: typeof rawCode === 'number' ? rawCode : 1, stdout: String(stdout), stderr: String(stderr), timedOut: timedOut || (err !== null && (err as { killed?: unknown }).killed === true) });
-			});
-			if (settled) {
-				return;
-			}
-			timers.main = setTimeout(() => {
-				timedOut = true;
-				paradisKillProcessTree(child, 'SIGTERM', ownGroup);
-				timers.kill = setTimeout(() => paradisKillProcessTree(child, 'SIGKILL', ownGroup), this.gitTimeouts.grace);
-			}, timeout);
-		});
+		// 消せず、フックが起こした孫プロセス（lint・テスト・post-commit の sleep）も残る。execFile は `detached` を spawn へ
+		// 渡さないのでプロセスグループも作られない。POSIX では spawn の `detached: true` で git を新しいプロセスグループの
+		// 先頭にし、グループごと SIGTERM → 猶予の後 SIGKILL で止める（Windows は子を止めるだけ）
+		const result = await this.spawnGitWithTimeout(invocation, timeout, !this.isWindowsHost);
 		if (!result.timedOut) {
 			return { code: result.code, stdout: result.stdout, stderr: result.stderr };
 		}
@@ -349,6 +332,75 @@ export class ParadisWorktreeGitService {
 			stdout: result.stdout,
 			stderr: `${result.stderr}\nParadisWorktreeGit: timed out after ${timeout / 1000}s${lockRemains ? '\nParadisWorktreeGit: index.lock remains' : ''}`,
 		};
+	}
+
+	/**
+	 * git を spawn し、出力を集め（合わせて {@link PARADIS_RUN_GIT_MAX_OUTPUT} 字まで）、時間切れならプロセスグループごと
+	 * 止める。時間切れの後は、孫プロセスが出力のパイプを握ったままでも、子が終わるか SIGKILL の猶予が過ぎた時点で返す
+	 * （応答は上限＋猶予の 2 倍までで返る）。
+	 */
+	private spawnGitWithTimeout(invocation: { readonly file: string; readonly args: readonly string[]; readonly cwd: string | undefined; readonly env: NodeJS.ProcessEnv }, timeout: number, ownGroup: boolean): Promise<IParadisWorktreeGitCommandResult & { readonly timedOut: boolean }> {
+		return new Promise(resolve => {
+			const stdout: string[] = [];
+			const stderr: string[] = [];
+			const timers: { main?: Timeout; kill?: Timeout; final?: Timeout } = {};
+			let size = 0;
+			let overflow = false;
+			let timedOut = false;
+			let settled = false;
+			let child: cp.ChildProcess;
+			const finish = (code: number, extra?: string) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				clearTimeout(timers.main);
+				clearTimeout(timers.kill);
+				clearTimeout(timers.final);
+				child?.stdout?.destroy();
+				child?.stderr?.destroy();
+				resolve({ code, stdout: stdout.join(''), stderr: `${stderr.join('')}${overflow ? '\nParadisWorktreeGit: output exceeded the limit' : ''}${extra ?? ''}`, timedOut });
+			};
+			try {
+				child = this.spawn(invocation.file, [...invocation.args], { cwd: invocation.cwd, env: invocation.env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...(ownGroup ? { detached: true } : {}) });
+			} catch (error) {
+				resolve({ code: 1, stdout: '', stderr: error instanceof Error ? error.message : String(error), timedOut: false });
+				return;
+			}
+			const collect = (sink: string[]) => (chunk: string | Buffer) => {
+				const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+				if (overflow) {
+					return;
+				}
+				size += text.length;
+				if (size > PARADIS_RUN_GIT_MAX_OUTPUT) {
+					overflow = true;
+					paradisKillProcessTree(child, 'SIGTERM', ownGroup);
+					return;
+				}
+				sink.push(text);
+			};
+			child.stdout?.setEncoding('utf8');
+			child.stderr?.setEncoding('utf8');
+			child.stdout?.on('data', collect(stdout));
+			child.stderr?.on('data', collect(stderr));
+			child.on('error', error => finish(1, `\n${error.message}`));
+			// 普段は出力を読み切った `close` で返す。時間切れの後は `exit`（孫が出力のパイプを握っていても）で返す
+			child.on('exit', (code) => {
+				if (timedOut) {
+					finish(typeof code === 'number' && code !== 0 ? code : 1);
+				}
+			});
+			child.on('close', (code) => finish(typeof code === 'number' ? code : 1));
+			timers.main = setTimeout(() => {
+				timedOut = true;
+				paradisKillProcessTree(child, 'SIGTERM', ownGroup);
+				timers.kill = setTimeout(() => {
+					paradisKillProcessTree(child, 'SIGKILL', ownGroup);
+					timers.final = setTimeout(() => finish(1), this.gitTimeouts.grace);
+				}, this.gitTimeouts.grace);
+			}, timeout);
+		});
 	}
 
 	/**

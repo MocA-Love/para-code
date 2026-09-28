@@ -116,7 +116,7 @@ export function commitScope(counts: ScmCounts | undefined, canStageFiles: boolea
 /** コミットバーの下の注記。 */
 export function commitHint(scope: CommitScope, counts: ScmCounts | undefined, canStageFiles: boolean): string {
 	if (scope === 'staged' && counts !== undefined) {
-		return `ステージ済みの ${counts.staged} 件だけをコミットします。`;
+		return `ステージ済みの ${counts.staged} 件の、ステージした分だけをコミットします（一部だけステージしたファイルの残りは入れません）。`;
 	}
 	return canStageFiles
 		? 'ステージしたものが無いので、未追跡を含むすべての変更をまとめてコミットします。'

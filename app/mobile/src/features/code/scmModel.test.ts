@@ -50,6 +50,12 @@ describe('groupScmEntries / orderedScmEntries', () => {
 		expect(scmCounts(entries)).toEqual({ unstaged: 2, staged: 1, total: 3 });
 		expect(scmCounts([])).toEqual({ unstaged: 0, staged: 0, total: 0 });
 	});
+
+	it('一部だけステージしたファイル（MM）は、変更にもステージ済みにも数える', () => {
+		const partial = scmEntries({ branch: 'main', files: [{ x: 'M', y: 'M', path: 'a.ts' }, { x: ' ', y: 'M', path: 'b.ts' }] });
+		expect(partial.map(entry => entry.partiallyStaged)).toEqual([true, false]);
+		expect(scmCounts(partial)).toEqual({ unstaged: 2, staged: 1, total: 2 });
+	});
 });
 
 describe('splitPath', () => {
