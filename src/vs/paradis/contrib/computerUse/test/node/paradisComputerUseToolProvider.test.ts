@@ -12,7 +12,7 @@ import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpC
 import { IParadisComputerUseApprovalPrompt, ParadisComputerUseApprovalOutcome, ParadisComputerUseAvailability } from '../../common/paradisComputerUse.js';
 import { ParadisComputerUseGrantLedger } from '../../node/paradisComputerUseGrantLedger.js';
 import { IParadisComputerUseHelper, IParadisComputerUseHelperStatus, ParadisComputerUseHelperError } from '../../node/paradisComputerUseHelperClient.js';
-import { PARADIS_COMPUTER_USE_TOOLS, ParadisComputerUseToolProvider, paradisScreenDataBlock } from '../../node/paradisComputerUseToolProvider.js';
+import { PARADIS_COMPUTER_USE_TOOLS, ParadisComputerUseToolProvider, paradisRankWindows, paradisScreenDataBlock } from '../../node/paradisComputerUseToolProvider.js';
 
 interface IResult {
 	content: ({ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string })[];
@@ -187,8 +187,9 @@ suite('ParadisComputerUseToolProvider', () => {
 			prompts: [{ method: 'requestAccess', token: 'pane-a', prompt: { appName: 'Finder', bundleId: 'com.apple.finder', requested: 'read', upgrade: false, offerOperate: true }, timeoutMs: 120_000 }],
 			firstError: undefined,
 			// タイトルは JSON から外し、画面のデータとして区切って渡す（レビュー M7）
-			windows: [[71, ''], [72, '']],
-			titles: ['window 71 title: Hidden', 'window 72 title: Desktop'],
+			// 画面に出ている大きなウィンドウが先、画面に出ていない小さなものは後（ベータの実機の件）
+			windows: [[72, ''], [71, '']],
+			titles: ['window 72 title: Desktop', 'window 71 title: Hidden'],
 			grants: [{ bundleId: 'com.apple.finder', grant: 'read' }],
 			calls: ['listApps', 'listApps', 'listWindows:100', 'listApps', 'listWindows:100'],
 		});
@@ -252,7 +253,7 @@ suite('ParadisComputerUseToolProvider', () => {
 			image: result.content[2],
 			calls: helper.calls,
 		}, {
-			header: { app: { name: 'Notes', bundleId: 'com.apple.Notes', pid: 200 }, window: { windowId: 72, index: 1, bounds: { x: 5, y: 6, width: 800, height: 600 } }, scale: 2 },
+			header: { app: { name: 'Notes', bundleId: 'com.apple.Notes', pid: 200 }, window: { windowId: 72, index: 0, bounds: { x: 5, y: 6, width: 800, height: 600 } }, scale: 2 },
 			screen: ['window title: Desktop', '[0] AXWindow "Desktop"'],
 			image: { type: 'image', data: 'UE5H', mimeType: 'image/png' },
 			calls: ['listApps', 'listWindows:200', 'permissions', 'accessibilityTree:200/72', 'screenshotWindow:200/72'],
@@ -264,7 +265,7 @@ suite('ParadisComputerUseToolProvider', () => {
 		ledger.set('pane-a', 'com.apple.Notes', 'read');
 		const context = createContext('pane', []).context;
 		helper.permissions = { accessibility: 'granted', screenRecording: 'not-granted' };
-		const treeOnly = await provider.callTool('pane-a', 'computer_get_app_state', { app: 'Notes', windowIndex: 0 }, undefined, context) as IResult;
+		const treeOnly = await provider.callTool('pane-a', 'computer_get_app_state', { app: 'Notes', windowIndex: 1 }, undefined, context) as IResult;
 		helper.permissions = { accessibility: 'not-granted', screenRecording: 'not-granted' };
 		const nothing = await provider.callTool('pane-a', 'computer_get_app_state', { app: 'Notes' }, undefined, context);
 		const unknownWindow = await provider.callTool('pane-a', 'computer_get_app_state', { app: 'Notes', windowId: 99 }, undefined, context);
@@ -358,7 +359,7 @@ suite('ParadisComputerUseToolProvider', () => {
 			if (sizes.length === failAt) {
 				throw failure;
 			}
-			return { typed: 1 };
+			return { typed: 1, method: 'keys', verified: true };
 		};
 		const known = text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: longText, includeState: false }, undefined, context));
 		const knownSizes = sizes.splice(0);
@@ -368,13 +369,48 @@ suite('ParadisComputerUseToolProvider', () => {
 		failAt = 99;
 		const done = JSON.parse(text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: longText, includeState: false }, undefined, context)));
 		const tooLong = text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'x'.repeat(4_001), includeState: false }, undefined, context));
-		assert.deepStrictEqual({ knownSizes, known: known.split('stopped. ')[1], unknown: unknown.split('loop. ')[1] ?? unknown, typed: done.typed, tooLong }, {
+		assert.deepStrictEqual({ knownSizes, known: known.split('stopped. ')[1], unknown: unknown.split('loop. ')[1] ?? unknown, typed: done.typed, verified: done.verified, tooLong }, {
 			knownSizes: [400, 400],
 			known: 'They are already in the app: if you continue, send only the remaining 450 characters (from character 451) and do not retype the first part.',
 			unknown: 'The Computer Use helper did not respond. Retry once; if it keeps failing, ask the user to check Computer Use in Para Code settings. The first 800 of 900 characters were typed for sure, and some of the next 100 may also have been typed. Read the app with computer_get_app_state before continuing, and do not resend the whole text.',
 			typed: 900,
+			verified: true,
 			tooLong: '"text" is longer than 4000 characters; use computer_paste_text for long text.',
 		});
+	});
+
+	test('stops and says what arrived when the field does not show the typed text, and flags text it could not read back', async () => {
+		const { helper, ledger, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const context = createContext('pane', []).context;
+		const replies = [{ typed: 400, method: 'keys', verified: true, inserted: 400 }, { typed: 64, method: 'keys', verified: false, inserted: 48 }];
+		helper.onInput = async () => replies.shift() ?? {};
+		const dropped = text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'x'.repeat(464), includeState: false }, undefined, context));
+		helper.onInput = async () => ({ typed: 5, method: 'paste', verified: null, clipboard: 'restored' });
+		const unread = JSON.parse(text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'hello', includeState: false }, undefined, context)));
+		assert.deepStrictEqual({ dropped, unread }, {
+			dropped: 'The text did not arrive intact. Para Code sent characters 401 to 464 of 464, but the field shows 48 new characters. The first 400 characters had arrived correctly. Read the app with computer_get_app_state and fix the text there before continuing; do not resend the whole text. Consider computer_paste_text for the rest.',
+			unread: {
+				app: { name: 'Notes', bundleId: 'com.apple.Notes', pid: 200 },
+				action: 'type_text',
+				typed: 5,
+				verified: false,
+				method: 'paste',
+				note: 'Para Code could not read the field back, so it could not confirm that the text arrived exactly. Check the state before continuing.',
+			},
+		});
+	});
+
+	test('ranks visible standard windows first and small helper windows last', () => {
+		const window = (windowId: number, onScreen: boolean, width: number, extra: object = {}) => ({ windowId, index: windowId, onScreen, bounds: { x: 0, y: 0, width, height: width }, ...extra });
+		assert.deepStrictEqual(paradisRankWindows([
+			window(1, false, 53),
+			window(2, true, 600, { standard: false }),
+			window(3, true, 800, { standard: true }),
+			window(4, false, 800, { standard: true, minimized: true }),
+			window(5, true, 60, { standard: true }),
+			window(6, true, 700),
+		]).map(entry => [entry.windowId, entry.index]), [[3, 0], [6, 1], [2, 2], [4, 3], [1, 4], [5, 5]]);
 	});
 
 	test('keeps the tool list in sync with the handler', () => {

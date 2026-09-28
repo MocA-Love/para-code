@@ -30,6 +30,8 @@ suite('ParadisComputerUse common', () => {
 			'com.apple.settings.PrivacySecurity.extension',
 			'com.apple.SecurityAgent',
 			'com.apple.finder',
+			'me.proton.authenticator',
+			'com.example.2FAS',
 		];
 		assert.deepStrictEqual({
 			defaults: ids.map(id => paradisComputerUseBlockReason(id) ?? ''),
@@ -38,8 +40,8 @@ suite('ParadisComputerUse common', () => {
 		}, {
 			// Q97 の回答 A: システム設定と認証のダイアログも既定で断る
 			// 素の Electron は Para Code とみなさない（レビュー L1）
-			defaults: ['password-manager', 'password-manager', 'password-manager', 'keychain', 'para-code', 'para-code', 'para-code', '', 'password-manager', 'system', '', 'system', 'system', 'system', ''],
-			withoutSystem: ['password-manager', 'password-manager', 'password-manager', 'keychain', 'para-code', 'para-code', 'para-code', '', 'password-manager', '', '', '', '', '', ''],
+			defaults: ['password-manager', 'password-manager', 'password-manager', 'keychain', 'para-code', 'para-code', 'para-code', '', 'password-manager', 'system', '', 'system', 'system', 'system', '', 'authenticator', 'authenticator'],
+			withoutSystem: ['password-manager', 'password-manager', 'password-manager', 'keychain', 'para-code', 'para-code', 'para-code', '', 'password-manager', '', '', '', '', '', '', 'authenticator', 'authenticator'],
 			// Q98 の回答 A: ターミナル類は断らず、ダイアログで警告する
 			commands: [true, true, true, true, true, true, true, true, false],
 		});
