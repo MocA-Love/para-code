@@ -27,8 +27,8 @@ import { IRequestService } from '../../../request/common/request.js';
 import { IApplicationStorageMainService } from '../../../storage/electron-main/storageMainService.js';
 import { NullTelemetryService } from '../../../telemetry/common/telemetryUtils.js';
 import { DisablementReason, IUpdate, State, StateType } from '../../common/update.js';
-// PARA-PATCH: +getUpdateAccessHeaders for the fork's Cloudflare Access header tests
-import { AbstractUpdateService, getUpdateAccessHeaders, IUpdateURLOptions } from '../../electron-main/abstractUpdateService.js';
+// PARA-PATCH: +getUpdateAccessHeaders/+createUpdateURL for the fork's Cloudflare Access header and update channel tests
+import { AbstractUpdateService, createUpdateURL, getUpdateAccessHeaders, IUpdateURLOptions } from '../../electron-main/abstractUpdateService.js';
 
 class TestMeteredConnectionService extends Disposable implements IMeteredConnectionService {
 	declare readonly _serviceBrand: undefined;
@@ -89,7 +89,11 @@ class TestUpdateService extends AbstractUpdateService {
 		}
 	}
 
+	// PARA-PATCH: records the channel the feed URL was built for (fork update channel tests).
+	feedQuality: string | undefined;
+
 	protected buildUpdateFeedUrl(_quality: string, _commit: string, _options?: IUpdateURLOptions): string | undefined {
+		this.feedQuality = _quality; // PARA-PATCH: see feedQuality
 		return this.feedUrl;
 	}
 
@@ -316,6 +320,27 @@ suite('AbstractUpdateService', () => {
 		} else {
 			assert.strictEqual(userAgent, undefined);
 		}
+	});
+
+	// PARA-PATCH: fork-only tests for the beta update channel stamped into product.json (paradisUpdateChannel).
+	for (const [name, productService, expected] of [
+		['a stable build follows quality', {}, 'https://update.example/api/update/darwin-arm64/stable/abc123?u=none'],
+		['a beta build follows the stamped channel', { paradisUpdateChannel: 'beta' }, 'https://update.example/api/update/darwin-arm64/beta/abc123?u=none'],
+		['an empty stamp falls back to quality', { paradisUpdateChannel: '' }, 'https://update.example/api/update/darwin-arm64/stable/abc123?u=none'],
+	] satisfies [string, Partial<IProductService>, string][]) {
+		test(`update feed channel: ${name}`, async () => {
+			const service = createService('default', { productService });
+			await service.whenInitialized;
+
+			assert.strictEqual(createUpdateURL('https://update.example', 'darwin-arm64', service.feedQuality!, 'abc123'), expected);
+		});
+	}
+
+	test('update feed channel: mode none disables the feed even for a beta build', async () => {
+		const service = createService('none', { productService: { paradisUpdateChannel: 'beta' } });
+		await service.whenInitialized;
+
+		assert.deepStrictEqual({ feedQuality: service.feedQuality, state: service.state.type }, { feedQuality: undefined, state: StateType.Disabled });
 	});
 
 	for (const [statusCode, expected] of [[204, true], [200, false]] as const) {
