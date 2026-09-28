@@ -848,20 +848,51 @@ win/mac/linuxへの配布と自動アップデートの実装。設計の経緯�
 | KV（フィード） | `stable:*` の 5 キー | `beta:darwin`・`beta:darwin-arm64` だけ。`stable:*` は書かない |
 | KV（更新履歴） | `changelog:stable`（改名済みの md） | `changelog:beta`（`## 未リリース` を含む md をそのまま） |
 | GitHub Release | 従来どおり（Latest になる） | `--prerelease --latest=false`。既にあれば `gh release edit` で付け直す |
-| REH（`reh` Release） | 従来どおり `--clobber` で積む | 同じ `reh` に commit 名で積む。同名のファイルが既にあれば上書きしない |
+| REH（`reh` Release） | 従来どおり `--clobber` で積む | 同じ `reh` に commit 名で積む。同名のファイルが既にあれば上書きしない（一覧を取れなければ止まる） |
 
-ステーブルの出力が変わっていないことは、`build/lib/test/paradisReleaseContract.test.ts` が publish ジョブのスクリプトを bash でスタブ実行し、R2 のキー・KV のキーと値・`gh` の呼び出しを 1 行ずつ固定して確かめている（`cd build && npm test`）。
+ステーブルの出力で変わったのは 1 点だけで、`gh release create` に `--notes-start-tag <前のステーブルのタグ>` が付く。GitHub は `--generate-notes` の起点の選び方を文書にしておらず、main の外にあるベータのタグが起点になると、本文から PR が抜けるおそれがあるため。前のタグは `gh release list`（プレリリースと下書きを除く）の中から `paracode-N` が今より小さい最大のものを `build/lib/paradisReleaseChannel.ts previous-stable` で選ぶ。無ければ付けない。R2 のキー、KV のキーと値、アップロードするファイルは変わらない。
+
+これらは `build/lib/test/paradisReleaseContract.test.ts` が固定している（`cd build && npm test`）。publish ジョブの 2 段と `para-reh.yml` の公開の段を bash でスタブ実行して、R2・KV・`gh` の呼び出しを 1 行ずつ比べる（Release が既にある場合の `gh release edit` の経路を含む）。あわせて、本物の分類の出力を YAML の `outputs:`・`if:`・`env:` の式に通し、各ジョブが動くか・刻まれるチャネル・`CHANNEL` を確かめる（ブランチからの実行、ビルドの失敗、出力が空のときに公開されないことを含む）。分類の出力が空なら `classify` ジョブ自体が失敗する。
 
 ベータを出す手順:
 
-1. このワークフローの変更が入った main の上に、ベータ用ブランチ（例: B3 の Computer Use を載せたもの）を作って push する。ワークフローはタグの commit にある `para-release.yml` で動くので、ブランチ側にも同じ変更が要る
-2. `## 未リリース` は改名しない。タグ `v{upstream}-paracode-{次のステーブルの N}-beta.{M}` をブランチの commit に打って push する
-3. 走り終わったら、プレリリースの本文をベータの説明に書き換える（`gh release edit <タグ> --notes-file <ファイル>`）
-4. 確かめること: `beta` のフィードに旧 commit を名乗って 200、ベータの commit で 204。`stable` のフィードに最新ステーブルの commit で 204（ステーブル利用者に何も届いていない）。Releases ページの Latest が最新ステーブルのまま
+1. このワークフローの変更が入った main の上に、ベータ用ブランチ（例: B3 の Computer Use を載せたもの）を作って push する。ワークフローはタグの commit にある `para-release.yml` で動くので、ブランチ側にも同じ変更が要る。B3 側も `para-release.yml` を変えているので衝突が見込まれる。解消の途中で `classify` の配線を落とさないこと
+2. タグを打つ前に、必ず次を実行して `All checks passed` を確かめる。ベータの経路を持たない commit にベータのタグを打つと、古いワークフローが `stable:*` と `changelog:stable` を書き、ステーブルの全員に配信される
 
-テスターはベータを入れている間、ステーブルの修正を受け取らない。ベータを含むステーブルを出したら、`beta:darwin`・`beta:darwin-arm64` をそのステーブルのレコードで上書きする（卒業の操作）。ステーブルのビルドにはチャネルが刻まれていないので、次の更新でテスターはステーブルのフィードへ戻る。今は手作業の `wrangler kv key put`（`CLOUDFLARE_ACCOUNT_ID` 必須）で行う。更新サーバー（Worker）は `quality` を制限していないので、ベータのために変更もデプロイも要らない。
+   ```bash
+   git fetch origin
+   node build/lib/paradisCheckBetaTag.ts <タグを打つ commit> v1.139.1-paracode-146-beta.1
+   ```
 
-【要確認】ステーブルの `gh release create --generate-notes` が、間に挟まったベータのタグを起点に差分を作るかは未確認。気になる場合はステーブル側に `--notes-start-tag` を足す。
+   スクリプトは、タグがベータの形式で未作成か、commit がリモートのブランチに載っているか、その commit の `para-release.yml` と `para-reh.yml` に `classify` の配線があり `build/lib/paradisReleaseChannel.ts` があるか（`git grep` / `git cat-file`）を見る。最後に、その commit を一時的な sparse worktree に取り出し、その commit の契約テスト 2 本（`paradisReleaseChannel.test.ts`・`paradisReleaseContract.test.ts`）を実行する。依存はこのチェックアウトの `build/node_modules` を使うので、先に `build` で `npm ci` 済みであること
+3. `## 未リリース` は改名しない。タグ `v{upstream}-paracode-{次のステーブルの N}-beta.{M}` をその commit に打って push する
+4. 走り終わったら、プレリリースの本文をベータの説明に書き換える（`gh release edit <タグ> --notes-file <ファイル>`）。Release を手でタグより先に作らないこと（`gh release create` はタグが無ければ既定ブランチの先端にタグを作り、main の先端でワークフローが走る）
+5. 確かめること: `beta` のフィードに旧 commit を名乗って 200、ベータの commit で 204。`stable` のフィードに最新ステーブルの commit で 204（ステーブル利用者に何も届いていない）。Releases ページの Latest が最新ステーブルのまま
+
+テスターはベータを入れている間、ステーブルの修正を受け取らない。ベータを含むステーブルを出したら、`beta:darwin`・`beta:darwin-arm64` をそのステーブルのレコードで、`changelog:beta` を `changelog:stable` で上書きする（卒業の操作）。`changelog:beta` を残すと、テスターが更新するまで更新履歴の「利用可能な更新」に新しいステーブルが出ない。ステーブルのビルドにはチャネルが刻まれていないので、次の更新でテスターはステーブルのフィードへ戻る。更新サーバー（Worker）は `quality` を制限していないので、ベータのために変更もデプロイも要らない。
+
+卒業の操作は今は手作業で、書き込み先が `beta:` で始まることを必ず見てから実行する（`stable:` を書き換えるとステーブルの全員に影響する）。`<NAMESPACE_ID>` は GitHub Secrets の `CF_KV_NAMESPACE_ID` と同じ値:
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID=<アカウント ID>   # 無いとローカルの wrangler は非対話でエラーになる
+NS=<NAMESPACE_ID>
+for p in darwin darwin-arm64; do
+  wrangler kv key get --namespace-id "$NS" --remote "stable:$p" > "/tmp/stable-$p.json"
+  cat "/tmp/stable-$p.json"   # 中身が B3 を含むステーブルの commit であることを確かめる
+  wrangler kv key put --namespace-id "$NS" --remote "beta:$p" --path "/tmp/stable-$p.json"
+done
+wrangler kv key get --namespace-id "$NS" --remote changelog:stable > /tmp/changelog-stable.md
+wrangler kv key put --namespace-id "$NS" --remote changelog:beta --path /tmp/changelog-stable.md
+```
+
+wrangler の成否は出力全体で確かめる（パイプで握りつぶさない）。確かめ方は手順 5 と同じで、`beta` のフィードにベータの commit を名乗ると、そのステーブルの JSON が返る。
+
+B3（Computer Use）の補助アプリの段は、このワークフローにはまだ無い（`para/phase7-computer-use` 側にあり、ベータ用ブランチで合わせる）。合わせるときに次の 2 点を足す。Q102 の 7 で「ベータでは補助アプリの失敗で止める（ステーブルは外して出荷のまま）」と決めているため。
+
+- 補助アプリを作る・単独で公証する・埋め込む段の `continue-on-error: true` を `continue-on-error: ${{ needs.classify.outputs.is_beta != 'true' }}` にする（macOS のジョブには env `PARA_RELEASE_IS_BETA` もある）。公証の印が無いときに埋め込みを黙って飛ばす分岐も、ベータでは失敗にする
+- ベータのときだけ、`build-darwin` の最後（`Compute sha256` の前）に、zip の中に `Contents/Helpers/Para Code Computer Use.app` があるかを確かめる段を足す（例: `if: ${{ needs.classify.outputs.is_beta == 'true' }}` で `unzip -l "darwin-${{ matrix.arch }}.zip" | grep -F 'Contents/Helpers/Para Code Computer Use.app/'`）
+
+`para-reh.yml` は、タグ（ステーブル／ベータ）からの実行だけが `reh` に公開する。ブランチからの手動起動はビルドと artifact までで止まる。
 
 ## モバイルリレー: Cloudflare Workers/DOデプロイ（2026-07-05）
 
