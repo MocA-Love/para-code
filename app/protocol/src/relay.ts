@@ -70,6 +70,7 @@ export type RelayControlMessage =
 	// HMAC等）でなければならない。collapseId は `apns-collapse-id`（同じ値の通知は端末上で
 	// 置き換わる）、threadId は `aps.thread-id`（通知センターでまとまる）になる。
 	// 形式は PARADIS_PUSH_ID_PATTERN。外れた値はリレーが黙って捨てる（プッシュ自体は送る）。
+	// threadId は aps.thread-id として平文で出るので、同じスペースの通知どうしの紐付けはリレーと Apple に見える。
 	| { readonly type: 'push-notify'; readonly mobileId: string; readonly payload: string; readonly collapseId?: string; readonly threadId?: string }
 	// リレー→PC: モバイル自身がペアリングを解除した（self-revoke）。PCは登録デバイス一覧から
 	// この mobileId を取り除く。
