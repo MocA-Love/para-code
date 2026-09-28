@@ -389,6 +389,21 @@ export function paradisErrorMessageHash(error: unknown): string | undefined {
 }
 
 /**
+ * The fingerprint every process adapter puts on the capture context of an explicit report, for the
+ * SDK's `Dedupe` integration and nothing else (`paradisPrepareSentryEvent` replaces it with the real
+ * grouping key in beforeSend, which runs after Dedupe).
+ *
+ * Dedupe drops an event equal to the previous one by exception type and value, fingerprint and
+ * frames. Every explicit report has the same type and value per operation (`Para Code diagnostic:
+ * <feature>.<operation>`), so two different frame-less errors in a row looked identical to it and the
+ * second was silently dropped before our fingerprint existed. Keying on the error's name and message
+ * hash keeps a true repeat deduplicated and lets a different error through.
+ */
+export function paradisDedupeFingerprint(errorTags: Record<string, string>): string[] {
+	return ['para.dedupe', errorTags['para.error_name'] ?? '', errorTags['para.error_message_hash'] ?? ''];
+}
+
+/**
  * Tags every process adapter attaches to an explicit report. `para.error_message_hash` only joins the
  * grouping key when the event has no frames (see `paradisSentryFingerprint`).
  */

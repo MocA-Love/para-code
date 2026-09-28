@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as Sentry from '@sentry/electron/renderer';
-import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisDiagnosticSeverity, ParadisSpanAttributes, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisDiagnosticSeverity, ParadisSpanAttributes, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 
@@ -93,13 +93,16 @@ export function captureParadisRendererException(
 	// damage). Attach the context to this one event via the capture hint instead; that
 	// path clones a scope without notifying listeners.
 	Sentry.addBreadcrumb({ category: `para.${feature}`, message: operation, data: safeExtra });
+	const errorTags = paradisSafeErrorTags(error);
 	return Sentry.captureException(toParadisSentrySafeError(feature, operation, error), {
 		tags: {
 			'para.scope': scope,
 			'para.feature': feature,
 			'para.operation': operation,
-			...paradisSafeErrorTags(error),
+			...errorTags,
 		},
+		// Only for the SDK's Dedupe, which runs before beforeSend (see paradisDedupeFingerprint).
+		fingerprint: paradisDedupeFingerprint(errorTags),
 		// The error itself is dropped (toParadisSentrySafeError); these content-free facts about it
 		// are what is left to diagnose with. The caller's own extras win on a key clash.
 		extra: { ...paradisSafeErrorExtra(error), ...safeExtra },
