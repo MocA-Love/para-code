@@ -228,6 +228,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '長い返答や表のある返答で、最下部まで送り切れずに手前で止まり、末尾にいても「最新へ」のボタンが出ていました。開いた直後も返答が伸びたときも、最後の行まで届きます。',
 				tone: 'green',
 			},
+			{
+				icon: 'sparkles-outline',
+				title: 'Claude Code のモデルの切り替えで、Opus 5.5 が「Opus 5」と出ていたのを直しました',
+				body: '候補は PC の Claude Code から取った一覧を使い、古い PC では Fable 5.1・Opus 5.5・Sonnet 5・Haiku 4.5 を出します。effort のない Haiku では effort を出しません。',
+				tone: 'green',
+			},
 		],
 	},
 	{

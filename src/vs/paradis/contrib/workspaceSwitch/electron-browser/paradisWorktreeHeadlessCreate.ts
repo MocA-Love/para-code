@@ -336,14 +336,16 @@ function fallbackBranchName(seeds: readonly (string | undefined)[]): string {
 }
 
 /** 作成フォームの材料（リポジトリ一覧＋各ブランチ＋エージェント定義）を集める。 */
-export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor): Promise<IParadisWorktreeCreateFormData> {
+export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor, options?: { readonly agentsOnly?: boolean }): Promise<IParadisWorktreeCreateFormData> {
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
 	const modelCatalogService = accessor.get(IParadisAgentModelCatalogService);
 	const fileService = accessor.get(IFileService);
 	const logService = accessor.get(ILogService);
 	// リポジトリごとに git を動かすマシンが違いうる（接続中でも手元のリポジトリを混ぜられる）
 	const resolveGitHost = paradisWorktreeGitHostResolver(accessor);
-	const repos = await Promise.all(switchService.repositories.map(async r => {
+	// モバイルのチャットがモデルの候補だけを欲しいときは、リポジトリごとの git を動かさない
+	const repositories = options?.agentsOnly ? [] : switchService.repositories;
+	const repos = await Promise.all(repositories.map(async r => {
 		const host = resolveGitHost(r.uri);
 		let branches: IParadisGitBranches = { branches: [], head: undefined };
 		try {
@@ -368,6 +370,9 @@ export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor): 
 	// エージェント定義はテンプレートごと渡す（モバイル側がモデル/エフォート/権限の選択UIと
 	// コマンドプレビューをPC側と同じ材料で組み立てるため）。設定由来のplain JSONなのでそのまま送れる。
 	const agents = paradisConfiguredAgents(modelCatalogService).map(agent => ({ ...agent }));
+	// 今わかっている一覧で答え、裏で CLI の一覧を取り直す（次に取りに来たときに新しい候補が並ぶように）。
+	// 取り直しは同時に1つだけで、shared process は 60 秒は同じ結果を使い回すので、毎回呼んでよい
+	modelCatalogService.refresh();
 	return { repos, agents };
 }
 

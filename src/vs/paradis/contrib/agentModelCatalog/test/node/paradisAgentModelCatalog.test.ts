@@ -13,8 +13,8 @@ import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisRunAgentCliOptions } from '../../../../node/paradisAgentCli.js';
-import { PARADIS_CLAUDE_MODEL_LIST_ARGS, PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG } from '../../common/paradisAgentModelCatalog.js';
-import { IParadisAgentModelCatalogBackend, ParadisAgentModelCatalogService, paradisProbeClaudeModels, paradisWithPrivateWorkDir } from '../../node/paradisAgentModelCatalog.js';
+import { IParadisClaudeEffortSettings, PARADIS_CLAUDE_MODEL_LIST_ARGS, PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG } from '../../common/paradisAgentModelCatalog.js';
+import { IParadisAgentModelCatalogBackend, ParadisAgentModelCatalogService, paradisClaudeConfigDirFor, paradisProbeClaudeModels, paradisWithPrivateWorkDir } from '../../node/paradisAgentModelCatalog.js';
 
 suite('ParadisAgentModelCatalogService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -27,6 +27,7 @@ suite('ParadisAgentModelCatalogService', () => {
 			failProbe: false,
 			probes: [] as string[],
 			cache: {} as Record<string, unknown>,
+			claudeSettings: {} as IParadisClaudeEffortSettings,
 		};
 		const backend: IParadisAgentModelCatalogBackend = {
 			resolve: async agentId => state.installed.has(agentId) ? { command: `/bin/${agentId}`, env: {} } : undefined,
@@ -40,6 +41,7 @@ suite('ParadisAgentModelCatalogService', () => {
 			},
 			readCache: async () => JSON.parse(JSON.stringify(state.cache)),
 			writeCache: async cache => { state.cache = JSON.parse(JSON.stringify(cache)); },
+			claudeEffortSettings: async () => state.claudeSettings,
 			now: () => state.now,
 		};
 		return { state, backend };
@@ -85,6 +87,36 @@ suite('ParadisAgentModelCatalogService', () => {
 			later: ['codex:codex-model-2'],
 			probes: ['codex@codex-cli 0.155.1', 'codex@codex-cli 0.155.1'],
 		});
+	});
+
+	test('Claude の「既定」のエフォートは返すたびに設定から当てはめ、キャッシュには残さない', async () => {
+		const { state, backend } = setup();
+		backend.probe = async agentId => {
+			state.probes.push(agentId);
+			return agentId === 'claude'
+				? [{ id: 'opus', resolvedModel: 'claude-opus-5-5', efforts: ['low', 'medium', 'high'] }, { id: 'haiku', resolvedModel: 'claude-haiku-4-5-20251001', efforts: [] }]
+				: [{ id: 'gpt-6-astra', efforts: ['low', 'medium'], defaultEffort: 'medium' }];
+		};
+		state.claudeSettings = { effortLevel: 'high' };
+		const first = await new ParadisAgentModelCatalogService(backend, new NullLogService()).getCatalogs();
+		state.claudeSettings = { effortLevel: 'high', modelEffortLevels: { 'claude-opus-5-5': 'low' } };
+		const second = await new ParadisAgentModelCatalogService(backend, new NullLogService()).getCatalogs();
+		const efforts = (catalogs: typeof first) => catalogs.map(catalog => `${catalog.agentId}:${catalog.models.map(model => `${model.id}=${model.defaultEffort ?? '-'}`).join(',')}`);
+		const cachedClaude = (state.cache.claude as { models: { defaultEffort?: string }[] }).models.map(model => model.defaultEffort ?? '-');
+		assert.deepStrictEqual({ first: efforts(first), second: efforts(second), cachedClaude, probes: state.probes }, {
+			first: ['claude:opus=high,haiku=-', 'codex:gpt-6-astra=medium'],
+			second: ['claude:opus=low,haiku=-', 'codex:gpt-6-astra=medium'],
+			cachedClaude: ['-', '-'],
+			probes: ['claude', 'codex'],
+		});
+	});
+
+	test('CLAUDE_CONFIG_DIR の ~ は展開し、使えない値なら既定の場所を使う', () => {
+		const fallback = paradisClaudeConfigDirFor({});
+		assert.deepStrictEqual(
+			[{ CLAUDE_CONFIG_DIR: '~/.claude-work' }, { CLAUDE_CONFIG_DIR: '~' }, { CLAUDE_CONFIG_DIR: '/abs/dir ' }, { CLAUDE_CONFIG_DIR: 'relative' }, { CLAUDE_CONFIG_DIR: '~other/x' }].map(env => paradisClaudeConfigDirFor(env, '/home/me')),
+			[join('/home/me', '.claude-work'), join('/home/me'), '/abs/dir', fallback, fallback],
+		);
 	});
 
 	const CLAUDE_OK = JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: 'x', response: { models: [{ value: 'opus', description: 'Opus 5.5 · x', supportsEffort: true, supportedEffortLevels: ['low'] }] } } }) + '\n';

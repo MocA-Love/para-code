@@ -99,7 +99,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 							required: ['id', 'flag'],
 							properties: {
 								id: { type: 'string' },
-								flag: { type: 'string', description: localize('paradis.workspaceSwitch.agents.efforts.flag', "選択時にコマンドへ付与するフラグ。例: --effort high") }
+								flag: { type: 'string', description: localize('paradis.workspaceSwitch.agents.efforts.flag', "選択時にコマンドへ付与するフラグ。例: Claude Code は --effort high、Codex は -c model_reasoning_effort=high") }
 							}
 						}
 					},
