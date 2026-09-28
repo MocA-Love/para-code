@@ -38,15 +38,13 @@ import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-
 import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 import { paradisChangeDirectoryCommand } from '../../workspaceSwitch/common/paradisTerminalSpaceFolder.js';
 import { createParadisTerminalResumeBanner, IParadisResumeBannerHost } from '../browser/paradisTerminalResumeBannerView.js';
-import { IParadisResumeLedgerEntry, paradisCodexThreadIdFromTitle, paradisResumeLedgerKey, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeNeedsFolderChange, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
+import { IParadisResumeLedgerEntry, paradisCodexThreadIdFromTitle, paradisResumeLedgerKey, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
 
 const LEDGER_STORAGE_KEY = 'paradis.terminal.resumeSessions';
 /** 台帳の書き出しをまとめる間隔。hook はツールを使うたびに届くので、毎回は書かない。 */
 const PERSIST_DELAY_MS = 2_000;
 /** 今のフォルダを尋ねる上限。答えなければ「分からない」として扱う。 */
 const CWD_QUERY_TIMEOUT_MS = 2_000;
-/** 会話のフォルダへ移る `cd` の完了を待つ上限。過ぎたら再開しない。 */
-const CHANGE_DIRECTORY_TIMEOUT_MS = 5_000;
 
 class ParadisTerminalResumeBannerContribution extends Disposable implements IWorkbenchContribution, IParadisResumeBannerHost {
 	static readonly ID = 'workbench.contrib.paradisTerminalResumeBanner';
@@ -334,7 +332,15 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 				this.notificationService.warn(localize('paradis.resumeBanner.unknownShell', "このシェルでは会話を始めたフォルダ {0} へ自動で移れないため、再開しません。そのフォルダへ移ってから、もう一度押してください。", recordedCwd));
 				return;
 			}
-			if (instance.isDisposed || !this.isAtEmptyPrompt(commandDetection) || !await this.changeDirectory(instance, commandDetection, changeDirectory, recordedCwd)) {
+			const outcome = instance.isDisposed || !this.isAtEmptyPrompt(commandDetection)
+				? 'failed'
+				: await this.changeDirectory(instance, commandDetection, changeDirectory, recordedCwd);
+			if (outcome === 'typed') {
+				// `cd` の最中に打たれた文字に再開コマンドをつなげると、Enter を押していないのに実行される。
+				this.notificationService.info(localize('paradis.resumeBanner.typedDuringMove', "会話を始めたフォルダへ移りましたが、その間に入力された文字があるため再開していません。入力欄を空にしてから、もう一度押してください。"));
+				return;
+			}
+			if (outcome !== 'moved') {
 				this.notificationService.warn(localize('paradis.resumeBanner.folderChangeFailed', "会話を始めたフォルダ {0} へ移れなかったため、再開を取りやめました。そのフォルダへ移ってから、もう一度押してください。", recordedCwd));
 				return;
 			}
@@ -357,28 +363,30 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	}
 
 	/**
-	 * `cd` を送り、その完了を待ってから今のフォルダを確かめる。移れたときだけ true。
+	 * `cd` を送り、次のプロンプトが入力を待つまで見届ける（`paradisChangeDirectoryBeforeResume`）。
 	 *
-	 * シェル統合はコマンドの終了を知らせた後にフォルダの変化を知らせる（zsh / bash の precmd の順）。
-	 * 終了の時点ではまだ古いフォルダが見えることがあるので、フォルダの知らせも少し待つ。
+	 * フォルダの確認: シェル統合はコマンドの終了を知らせた後にフォルダの変化を知らせる（zsh / bash の
+	 * precmd の順）。終了の時点ではまだ古いフォルダが見えることがあるので、フォルダの知らせも少し待つ。
 	 */
-	private async changeDirectory(instance: ITerminalInstance, commandDetection: ICommandDetectionCapability, changeDirectory: string, path: string): Promise<boolean> {
+	private async changeDirectory(instance: ITerminalInstance, commandDetection: ICommandDetectionCapability, changeDirectory: string, path: string): Promise<ParadisChangeDirectoryOutcome> {
 		const cwdDetection = instance.capabilities.get(TerminalCapability.CwdDetection);
-		const finished = Event.toPromise(commandDetection.onCommandFinished);
 		const arrived = cwdDetection === undefined ? undefined : Event.toPromise(Event.filter(cwdDetection.onDidChangeCwd, cwd => !paradisResumeNeedsFolderChange(path, cwd)));
 		try {
-			await instance.sendText(changeDirectory, true);
-			const result = await raceTimeout(finished, CHANGE_DIRECTORY_TIMEOUT_MS);
-			if (result === undefined || (result.exitCode !== undefined && result.exitCode !== 0)) {
-				return false;
-			}
-			const currentCwd = await raceTimeout(instance.getSpeculativeCwd().catch(() => undefined), CWD_QUERY_TIMEOUT_MS);
-			if (currentCwd !== undefined && !paradisResumeNeedsFolderChange(path, currentCwd)) {
-				return true;
-			}
-			return arrived !== undefined && await raceTimeout(arrived, CWD_QUERY_TIMEOUT_MS) !== undefined;
+			return await paradisChangeDirectoryBeforeResume({
+				onCommandFinished: commandDetection.onCommandFinished,
+				onPromptInputStarted: commandDetection.promptInputModel.onDidStartInput,
+				onInput: instance.onDidInputData,
+				send: text => instance.sendText(text, true),
+				isAtEmptyPrompt: () => this.isAtEmptyPrompt(commandDetection),
+				confirmFolder: async () => {
+					const currentCwd = await raceTimeout(instance.getSpeculativeCwd().catch(() => undefined), CWD_QUERY_TIMEOUT_MS);
+					if (currentCwd !== undefined && !paradisResumeNeedsFolderChange(path, currentCwd)) {
+						return true;
+					}
+					return arrived !== undefined && await raceTimeout(arrived, CWD_QUERY_TIMEOUT_MS) !== undefined;
+				},
+			}, changeDirectory);
 		} finally {
-			finished.cancel();
 			arrived?.cancel();
 		}
 	}

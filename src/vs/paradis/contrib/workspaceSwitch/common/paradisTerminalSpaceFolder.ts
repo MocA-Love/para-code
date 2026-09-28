@@ -154,7 +154,9 @@ export function paradisReviewTerminalSpaces(terminals: readonly IParadisTerminal
 		if (owner !== undefined && cwdStateKey !== undefined && cwdStateKey !== owner) {
 			actions.push({ kind: 'cd', stateKey: owner });
 		}
-		if (cwdStateKey !== undefined && cwdStateKey !== terminal.stateKey && (terminal.stateKey !== undefined || terminal.container !== undefined)) {
+		// 所属が既にフォルダのスペースでも、タブが別のスペースに見えているなら、タブごとそちらへ移せる。
+		const tabElsewhere = terminal.container !== undefined && terminal.container !== cwdStateKey;
+		if (cwdStateKey !== undefined && (cwdStateKey !== terminal.stateKey || tabElsewhere) && (terminal.stateKey !== undefined || terminal.container !== undefined)) {
 			actions.push({ kind: 'move', stateKey: cwdStateKey });
 		}
 		if (actions.length > 0) {

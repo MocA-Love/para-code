@@ -12,7 +12,10 @@
 // Claude Code / Codex は終了してシェルに戻っている。そのタブで何の会話が動いていたかを、
 // ペイントークン（シェル統合の nonce。再起動をまたいで変わらない）ごとに控えておく。
 
+import { DeferredPromise, raceTimeout, timeout } from '../../../../base/common/async.js';
+import { Event } from '../../../../base/common/event.js';
 import { StringSHA1 } from '../../../../base/common/hash.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, paradisAgentResumeCommandLine } from '../../sessionResume/common/paradisSessionResume.js';
 import { paradisCodexThreadIdFromTerminalTitle } from '../../codexTerminalTitle/common/paradisCodexTerminalTitle.js';
 
@@ -160,4 +163,96 @@ function comparablePath(path: string): string {
 	const trimmed = path.length > 1 ? path.replace(/[\\/]+$/, '') : path;
 	const normalized = trimmed.length === 0 ? path : trimmed;
 	return /^[a-zA-Z]:/.test(normalized) ? normalized.replace(/\//g, '\\').toLowerCase() : normalized;
+}
+
+/** 再開の前に会話のフォルダへ移るとき、シェルとのやりとりに使う口（テストで差し替えられるように分けてある）。 */
+export interface IParadisChangeDirectoryDriver {
+	/** コマンドが終わった（シェル統合の終了の知らせ）。 */
+	readonly onCommandFinished: Event<{ readonly exitCode: number | undefined }>;
+	/** 次のプロンプトで入力を受け付け始めた（シェル統合の入力開始の知らせ）。 */
+	readonly onPromptInputStarted: Event<unknown>;
+	/** ターミナルへ入った入力。自分で送ったコマンドも流れてくる。 */
+	readonly onInput: Event<string>;
+	send(text: string): Promise<void>;
+	/** 前面にプログラムが居らず、入力欄が空か。 */
+	isAtEmptyPrompt(): boolean;
+	/** 今のフォルダが移り先になっているか（少し待ってよい）。 */
+	confirmFolder(): Promise<boolean>;
+}
+
+/**
+ * - `moved`: 移れて、次のプロンプトが入力を待っていて、その間に打たれた文字も無い
+ * - `failed`: `cd` が失敗した、時間切れ、フォルダが変わらなかった
+ * - `typed`: 移れたが、その間に打たれた文字がある（再開コマンドを続けて送ると、その文字とつながって実行される）
+ * - `not-ready`: 移れたが、次のプロンプトが入力を受け付け始めたことを確かめられなかった
+ */
+export type ParadisChangeDirectoryOutcome = 'moved' | 'failed' | 'typed' | 'not-ready';
+
+export interface IParadisChangeDirectoryTiming {
+	readonly finishMs: number;
+	readonly promptMs: number;
+	/** プロンプトの入力開始の後に待つ時間。先に打たれていた文字をシェルが読み込んで表示し終えるまで。 */
+	readonly settleMs: number;
+}
+
+export const PARADIS_CHANGE_DIRECTORY_TIMING: IParadisChangeDirectoryTiming = { finishMs: 5_000, promptMs: 2_000, settleMs: 250 };
+
+/**
+ * `cd` を送り、次のプロンプトが入力を待つ状態になって落ち着くまで見届ける。
+ *
+ * `cd` の終了だけ見て再開コマンドを送ってはいけない。`cd` の最中に打たれた文字は端末の入力
+ * バッファに溜まっていて、シェルが次のプロンプトで読み込むまで入力欄には現れない。その時点で
+ * 「空」と判定して送ると、先打ちの文字と再開コマンドがつながり、Enter を押していないのに実行
+ * される（実機で確認）。速い `cd` でも、プロンプトの描画前に送るとエコーが1行余分に出る。
+ * そこで、終了 → 次のプロンプトの入力開始 → 少し待つ、の後で、途中に打たれた文字が無く入力欄が
+ * 空であることを確かめる。打たれた文字の判定は入力そのものも見る（入力欄の読み取りより早く分かる）。
+ * エスケープで始まる入力（端末の自動応答、フォーカスの知らせ、矢印キー）は文字として数えない。
+ * 矢印キーで履歴を呼び出した場合は、最後の入力欄の確認で止まる。
+ */
+export async function paradisChangeDirectoryBeforeResume(driver: IParadisChangeDirectoryDriver, command: string, timing: IParadisChangeDirectoryTiming = PARADIS_CHANGE_DIRECTORY_TIMING): Promise<ParadisChangeDirectoryOutcome> {
+	const store = new DisposableStore();
+	const finished = new DeferredPromise<{ readonly exitCode: number | undefined }>();
+	const promptStarted = new DeferredPromise<void>();
+	let finishSeen = false;
+	let typed = false;
+	let ownInput: string | undefined = command.endsWith('\r') ? command : `${command}\r`;
+	store.add(driver.onCommandFinished(result => {
+		if (!finishSeen) {
+			finishSeen = true;
+			void finished.complete(result);
+		}
+	}));
+	// 終了と次のプロンプトの入力開始は同じデータのかたまりで届くことが多いので、終了を見てから
+	// 購読したのでは取りこぼす。先に購読しておき、終了より後のものだけを数える。
+	store.add(driver.onPromptInputStarted(() => {
+		if (finishSeen) {
+			void promptStarted.complete();
+		}
+	}));
+	store.add(driver.onInput(data => {
+		if (ownInput !== undefined && data === ownInput) {
+			ownInput = undefined;
+			return;
+		}
+		if (data.length > 0 && !data.startsWith('\x1b')) {
+			typed = true;
+		}
+	}));
+	try {
+		await driver.send(command);
+		const result = await raceTimeout(finished.p, timing.finishMs);
+		if (result === undefined || (result.exitCode !== undefined && result.exitCode !== 0)) {
+			return 'failed';
+		}
+		if (!await driver.confirmFolder()) {
+			return 'failed';
+		}
+		if (await raceTimeout(promptStarted.p.then(() => true), timing.promptMs) !== true) {
+			return 'not-ready';
+		}
+		await timeout(timing.settleMs);
+		return typed || !driver.isAtEmptyPrompt() ? 'typed' : 'moved';
+	} finally {
+		store.dispose();
+	}
 }

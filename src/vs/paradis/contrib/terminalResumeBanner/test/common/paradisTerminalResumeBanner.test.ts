@@ -7,8 +7,10 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_RESUME_LEDGER_TTL_MS, paradisCodexThreadIdFromTitle, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeLedgerKey, paradisResumeNeedsFolderChange, paradisResumeTitleFromTab, paradisSerializeResumeLedger } from '../../common/paradisTerminalResumeBanner.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/virtualScheduling/runWithFakedTimers.js';
+import { PARADIS_RESUME_LEDGER_TTL_MS, paradisCodexThreadIdFromTitle, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeLedgerKey, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger } from '../../common/paradisTerminalResumeBanner.js';
 
 suite('paradisTerminalResumeBanner', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -119,4 +121,81 @@ suite('paradisTerminalResumeBanner', () => {
 			caseMatters: true,
 		});
 	});
+
+	// `cd` の最中に打った文字は、シェルが次のプロンプトで読むまで入力欄に出てこない。終了だけ見て
+	// 再開コマンドを送ると、先打ちの文字とつながって Enter を押していないのに実行された（実機で 2/2）。
+	test('resumes only after the next prompt is ready and nothing was typed while moving', () => runWithFakedTimers({}, async () => {
+		const run = async (script: 'normal' | 'typed' | 'typedAfterPrompt' | 'failed' | 'noPrompt' | 'pendingInput' | 'sameChunk') => {
+			const onCommandFinished = new Emitter<{ readonly exitCode: number | undefined }>();
+			const onPromptInputStarted = new Emitter<void>();
+			const onInput = new Emitter<string>();
+			const log: string[] = [];
+			let promptText = '';
+			try {
+				const outcome = paradisChangeDirectoryBeforeResume({
+					onCommandFinished: onCommandFinished.event,
+					onPromptInputStarted: onPromptInputStarted.event,
+					onInput: onInput.event,
+					send: async text => {
+						log.push(`send:${text}`);
+						onInput.fire(`${text}\r`);
+						// 端末の自動応答（カーソル位置の報告など）は打った文字ではない。
+						onInput.fire('\x1b[12;1R');
+						if (script === 'typed') {
+							onInput.fire('echo typed');
+						}
+						if (script === 'sameChunk') {
+							// 終了と次のプロンプトの入力開始が同じかたまりで届く。
+							onCommandFinished.fire({ exitCode: 0 });
+							onPromptInputStarted.fire();
+							return;
+						}
+						setTimeout(() => {
+							onCommandFinished.fire({ exitCode: script === 'failed' ? 1 : 0 });
+							if (script !== 'noPrompt' && script !== 'failed') {
+								setTimeout(() => {
+									onPromptInputStarted.fire();
+									log.push('prompt');
+									if (script === 'typedAfterPrompt') {
+										onInput.fire('l');
+									}
+									if (script === 'pendingInput') {
+										promptText = 'ls';
+									}
+								}, 30);
+							}
+						}, 20);
+					},
+					isAtEmptyPrompt: () => promptText.length === 0,
+					confirmFolder: async () => true,
+				}, `cd '/Users/example/app'`, { finishMs: 5_000, promptMs: 2_000, settleMs: 250 });
+				const result: ParadisChangeDirectoryOutcome = await outcome;
+				log.push(`outcome:${result}`);
+				return log;
+			} finally {
+				onCommandFinished.dispose();
+				onPromptInputStarted.dispose();
+				onInput.dispose();
+			}
+		};
+
+		assert.deepStrictEqual({
+			normal: await run('normal'),
+			sameChunk: await run('sameChunk'),
+			typed: await run('typed'),
+			typedAfterPrompt: await run('typedAfterPrompt'),
+			pendingInput: await run('pendingInput'),
+			failed: await run('failed'),
+			noPrompt: await run('noPrompt'),
+		}, {
+			// 次のプロンプトが入力を待ち始めてから結果が出る（その前に再開コマンドを送らない）。
+			normal: [`send:cd '/Users/example/app'`, 'prompt', 'outcome:moved'],
+			sameChunk: [`send:cd '/Users/example/app'`, 'outcome:moved'],
+			typed: [`send:cd '/Users/example/app'`, 'prompt', 'outcome:typed'],
+			typedAfterPrompt: [`send:cd '/Users/example/app'`, 'prompt', 'outcome:typed'],
+			pendingInput: [`send:cd '/Users/example/app'`, 'prompt', 'outcome:typed'],
+			failed: [`send:cd '/Users/example/app'`, 'outcome:failed'],
+			noPrompt: [`send:cd '/Users/example/app'`, 'outcome:not-ready'],
+		});
+	}));
 });

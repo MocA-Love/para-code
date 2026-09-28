@@ -101,7 +101,7 @@ suite('paradisTerminalSpaceFolder', () => {
 			{ instanceId: 6, stateKey: undefined, container: undefined, cwd: '/Users/example/lib' },
 		], roots), [
 			{ instanceId: 1, stateKey: 'app', container: 'app', cwdStateKey: 'lib', actions: [{ kind: 'cd', stateKey: 'app' }, { kind: 'move', stateKey: 'lib' }] },
-			{ instanceId: 4, stateKey: 'lib', container: 'app', cwdStateKey: 'lib', actions: [{ kind: 'claim', stateKey: 'app' }, { kind: 'cd', stateKey: 'app' }] },
+			{ instanceId: 4, stateKey: 'lib', container: 'app', cwdStateKey: 'lib', actions: [{ kind: 'claim', stateKey: 'app' }, { kind: 'cd', stateKey: 'app' }, { kind: 'move', stateKey: 'lib' }] },
 			{ instanceId: 5, stateKey: 'app', container: undefined, cwdStateKey: 'feature', actions: [{ kind: 'cd', stateKey: 'app' }, { kind: 'move', stateKey: 'feature' }] },
 		]);
 	});
