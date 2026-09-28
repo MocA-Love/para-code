@@ -15,8 +15,9 @@
  * ソケットのtagはhibernation復帰後も getTags() で復元できるので、ルーティングはtagのみに依存する。
  */
 
-import { PARADIS_RELAY_KEEPALIVE_PING, PARADIS_RELAY_KEEPALIVE_PONG, decodeRelayControl, encodeRelayControl, mobileIdFromString, mobileIdToString, packPcData, unpackPcData, type RelayControlMessage } from '@para/protocol';
-import { sendApnsNotification, type ApnsEnv, type ApnsJwtCache } from './apns.js';
+import { PARADIS_PUSH_ID_PATTERN, PARADIS_RELAY_CLOSE_CODE, PARADIS_RELAY_KEEPALIVE_PING, PARADIS_RELAY_KEEPALIVE_PONG, decodeRelayControl, encodeRelayControl, mobileIdFromString, mobileIdToString, packPcData, unpackPcData, type RelayControlMessage } from '@para/protocol';
+import { PUSH_EXPIRATION_SECONDS, sendApnsNotification, type ApnsEnv, type ApnsJwtCache, type ApnsSendResult } from './apns.js';
+import { pushRetryDelayMs, PUSH_MAX_RETRIES } from './pushRetry.js';
 import { extractToken, hashToken, randomTokenB64u, subprotocolAuthHeader, timingSafeEqualHex } from './auth.js';
 
 interface DeviceRecord {
@@ -43,6 +44,25 @@ const PAIRING_SWEEP_MARGIN_MS = 1_000;
 // APNsのペイロード上限は4KB。base64url暗号文はそのまま `e` に載るため、余裕をみて上限を設ける。
 const MAX_PUSH_PAYLOAD_BYTES = 3800;
 
+/**
+ * APNs再送待ちの行数の上限（DO単位）。PCが暴走しても永続ストレージが際限なく増えないようにする。
+ * 溢れたら古いものから捨てる（古い通知ほど鳴らす価値が低い）。
+ */
+const MAX_PUSH_QUEUE_ROWS = 50;
+
+/** 再送待ちのプッシュ1件（push_queue の1行）。 */
+interface QueuedPush {
+	readonly id: number;
+	readonly mobileId: string;
+	readonly payload: string;
+	readonly collapseId: string | undefined;
+	readonly threadId: string | undefined;
+	/** これまでに失敗した回数（最初の送信を含む）。 */
+	readonly attempt: number;
+	/** apns-expiration（epoch秒）。再送しても延ばさない。 */
+	readonly expiresAtSeconds: number;
+}
+
 /** TURN資格情報発行のレート制限（デバイスDO単位、スライディングウィンドウ）。 */
 const TURN_RATE_WINDOW_MS = 60 * 1000;
 const TURN_RATE_MAX_PER_WINDOW = 6;
@@ -59,6 +79,9 @@ export class DeviceDO implements DurableObject {
 		this.sql.exec(`CREATE TABLE IF NOT EXISTS device (id INTEGER PRIMARY KEY CHECK (id = 1), pcPublicKey TEXT, pcTokenHash TEXT)`);
 		this.sql.exec(`CREATE TABLE IF NOT EXISTS mobiles (mobileId TEXT PRIMARY KEY, name TEXT, tokenHash TEXT, createdAt INTEGER)`);
 		this.sql.exec(`CREATE TABLE IF NOT EXISTS pending (pairId TEXT PRIMARY KEY, tokenHash TEXT, expiresAt INTEGER)`);
+		// APNsの一時的な失敗（429 / 5xx / 通信失敗）を後で送り直すための待ち行列。
+		// DOは再送を待つ間に退避（evict）されうるので、メモリではなくSQLへ置いてalarmで起こす。
+		this.sql.exec(`CREATE TABLE IF NOT EXISTS push_queue (id INTEGER PRIMARY KEY, mobileId TEXT, payload TEXT, collapseId TEXT, threadId TEXT, attempt INTEGER, nextAt INTEGER, expiresAt INTEGER)`);
 		// 後方互換マイグレーション: 既存DOの mobiles テーブルにAPNs列を追加する。
 		// SQLiteは `ADD COLUMN IF NOT EXISTS` を持たないため、既に存在する場合の例外は握りつぶす。
 		this.migrateMobilesForPush();
@@ -168,7 +191,7 @@ export class DeviceDO implements DurableObject {
 		const pairingToken = randomTokenB64u(32);
 		const tokenHash = await hashToken(pairingToken);
 		this.sql.exec('INSERT INTO pending (pairId, tokenHash, expiresAt) VALUES (?, ?, ?)', pairId, tokenHash, Date.now() + PAIRING_TTL_MS);
-		await this.schedulePairingSweep();
+		await this.scheduleAlarm();
 		return Response.json({ pairId, pairingToken, expiresAt: Date.now() + PAIRING_TTL_MS });
 	}
 
@@ -204,17 +227,26 @@ export class DeviceDO implements DurableObject {
 	}
 
 	/**
-	 * 次の pending 失効時刻に alarm を張り、TTL切れの掃除を起こさせる。
-	 * cleanupPairings が呼ばれるのは PC/モバイル起点のリクエスト時だけなので、誰も
-	 * リクエストしなくても失効時に確実に掃除が走るようにするためのもの。
+	 * alarm を「次に何かすべき時刻」に張る。対象は2つ:
+	 *  - pending の失効（TTL切れの掃除。cleanupPairings はPC/モバイル起点のリクエスト時にしか
+	 *    呼ばれないので、誰もリクエストしなくても失効時に確実に掃除が走るようにする）
+	 *  - APNs再送待ちの次の送信時刻
+	 * DOの alarm は1本しか持てないので、両方の早い方に合わせる。
 	 */
-	private async schedulePairingSweep(): Promise<void> {
-		const row = this.sql.exec('SELECT MIN(expiresAt) AS next FROM pending').toArray()[0] as { next?: unknown } | undefined;
-		const next = row?.next;
-		if (typeof next !== 'number' || !Number.isFinite(next)) {
+	private async scheduleAlarm(): Promise<void> {
+		const pairingRow = this.sql.exec('SELECT MIN(expiresAt) AS next FROM pending').toArray()[0] as { next?: unknown } | undefined;
+		const pushRow = this.sql.exec('SELECT MIN(nextAt) AS next FROM push_queue').toArray()[0] as { next?: unknown } | undefined;
+		const candidates: number[] = [];
+		if (typeof pairingRow?.next === 'number' && Number.isFinite(pairingRow.next)) {
+			candidates.push(pairingRow.next + PAIRING_SWEEP_MARGIN_MS);
+		}
+		if (typeof pushRow?.next === 'number' && Number.isFinite(pushRow.next)) {
+			candidates.push(pushRow.next);
+		}
+		if (candidates.length === 0) {
 			return;
 		}
-		const target = next + PAIRING_SWEEP_MARGIN_MS;
+		const target = Math.min(...candidates);
 		// アラームは storage 配下のAPIで管理する（state 直下には存在しない）。
 		const current = await this.state.storage.getAlarm();
 		if (current === null || current > target) {
@@ -222,10 +254,11 @@ export class DeviceDO implements DurableObject {
 		}
 	}
 
-	/** Durable Objects のアラーム。pending のTTL切れ掃除（pair ソケット close 含む）に使う。 */
+	/** Durable Objects のアラーム。pending のTTL切れ掃除（pair ソケット close 含む）と、APNsの再送。 */
 	async alarm(): Promise<void> {
 		this.cleanupPairings();
-		await this.schedulePairingSweep();
+		await this.flushPushQueue();
+		await this.scheduleAlarm();
 	}
 
 	// M-1: PC(pcToken保持者)からのデバイス失効。資格情報を削除し、既存のモバイル接続を切断する。
@@ -340,8 +373,15 @@ export class DeviceDO implements DurableObject {
 
 	private async acceptMobile(mobileIdStr: string, token: string, echoSubprotocol?: string): Promise<Response> {
 		const record = this.mobile(mobileIdStr);
-		if (!record || !timingSafeEqualHex(await hashToken(token), record.tokenHash)) {
-			return new Response('unauthorized', { status: 401 });
+		// 資格を認めないモバイルは、upgrade前のHTTP 401ではなく、受理してから理由コードで閉じる。
+		// 401 だとスマホからは経路断と同じ close 1006 にしか見えず、取り消された端末が
+		// 「再接続中」のまま永久に再試行していた（W2-04）。旧アプリは未知のcloseとして
+		// 従来どおり再接続するだけで、401 のときと振る舞いは変わらない。
+		if (!record) {
+			return this.rejectWithClose(PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE, 'unknown mobile', echoSubprotocol);
+		}
+		if (!timingSafeEqualHex(await hashToken(token), record.tokenHash)) {
+			return this.rejectWithClose(PARADIS_RELAY_CLOSE_CODE.CREDENTIAL_REFUSED, 'unauthorized', echoSubprotocol);
 		}
 		// 同一モバイルの既存ソケットは閉じる（1本に限定）。iOSがバックグラウンドで
 		// ソケットをhalf-openのまま放置した場合、これが残っていると再接続時に
@@ -374,6 +414,20 @@ export class DeviceDO implements DurableObject {
 	private mobile(mobileIdStr: string): MobileRecord | null {
 		const row = this.sql.exec('SELECT mobileId, name, tokenHash, createdAt FROM mobiles WHERE mobileId = ?', mobileIdStr).toArray()[0];
 		return row ? { mobileId: row.mobileId as string, name: row.name as string, tokenHash: row.tokenHash as string, createdAt: row.createdAt as number } : null;
+	}
+
+	/**
+	 * WebSocketを受理した直後に理由コード付きで閉じる。hibernation 用の acceptWebSocket は使わない
+	 * （タグを付けて残す理由が無い。閉じたソケットはDOに何も残さない）。
+	 */
+	private rejectWithClose(code: number, reason: string, echoSubprotocol?: string): Response {
+		const pair = new WebSocketPair();
+		const client = pair[0];
+		const server = pair[1];
+		server.accept();
+		server.close(code, reason);
+		const headers = echoSubprotocol ? { 'Sec-WebSocket-Protocol': echoSubprotocol } : undefined;
+		return new Response(null, { status: 101, webSocket: client, headers });
 	}
 
 	private upgrade(accept: (ws: WebSocket) => void, onOpen: (() => void) | undefined, echoSubprotocol?: string): Response {
@@ -469,7 +523,7 @@ export class DeviceDO implements DurableObject {
 					try { ws.close(1000, 'rejected'); } catch { /* ignore */ }
 				}
 			} else if (msg.type === 'push-notify') {
-				await this.pushNotify(msg.mobileId, msg.payload);
+				await this.pushNotify(msg.mobileId, msg.payload, pushIdOrUndefined(msg.collapseId), pushIdOrUndefined(msg.threadId));
 			}
 			// 注: PC→pairing方向のpairing-msg中継は行わない（現行プロトコルはpairing→PCの一方向）。
 		}
@@ -489,7 +543,7 @@ export class DeviceDO implements DurableObject {
 		this.sql.exec('UPDATE mobiles SET apnsToken = ?, apnsEnv = ? WHERE mobileId = ?', token, apnsEnv, mobileId);
 	}
 
-	private async pushNotify(mobileId: string, payload: string): Promise<void> {
+	private async pushNotify(mobileId: string, payload: string, collapseId: string | undefined, threadId: string | undefined): Promise<void> {
 		if (typeof payload !== 'string' || new TextEncoder().encode(payload).length > MAX_PUSH_PAYLOAD_BYTES) {
 			console.warn('[push] payload missing or too large; dropping');
 			return;
@@ -501,15 +555,95 @@ export class DeviceDO implements DurableObject {
 		// リレーが無言で捨て、通知が誰にも届かないまま消えていた。
 		// 送るかどうかはPCが決める（`paradisNotifyDelivery.ts`。PCは最後にモバイルから
 		// 実際に何か受け取った時刻で判断していて、リレーより確かな材料を持っている）。
-		const row = this.sql.exec('SELECT apnsToken, apnsEnv FROM mobiles WHERE mobileId = ?', mobileId).toArray()[0];
+		const expiresAtSeconds = Math.floor(Date.now() / 1000) + PUSH_EXPIRATION_SECONDS;
+		// PC が collapseId を付けない通知（許可・質問）には、この通知だけの乱数を付けて送る。応答の無い
+		// 通信失敗の後に送り直して APNs が先の1通も受理していた場合、通知センターでは1件に置き換わる
+		// （ただし届くたびにバナーと音が出うる。鳴らないことまでは保証しない）。
+		// 通知ごとの乱数なので、別の通知どうしを紐付ける手掛かりにはならない（置き換えもしない）。
+		const pushCollapseId = collapseId ?? randomTokenB64u(16);
+		const result = await this.sendPushOnce({ mobileId, payload, collapseId: pushCollapseId, threadId, expiresAtSeconds });
+		if (result?.kind === 'retry') {
+			// PCはこの通知を「プッシュで鳴らすからフレームでは鳴らすな」と送り済みのことがある。
+			// ここで落とすとその通知は一度も鳴らないので、一時的な失敗は後で送り直す（W2-07）。
+			// 送り直しでも同じ collapseId を使う（行に保存する）。
+			this.enqueuePushRetry({ mobileId, payload, collapseId: pushCollapseId, threadId, attempt: 1, expiresAtSeconds }, result.retryAfterMs);
+			await this.scheduleAlarm();
+		}
+	}
+
+	/**
+	 * 登録済みトークンへ1回だけ送る。トークンが無い（未登録・削除済み・モバイル自体が解除済み）
+	 * なら undefined。トークンが失効していれば、ここで消す。
+	 */
+	private async sendPushOnce(push: Omit<QueuedPush, 'id' | 'attempt'>): Promise<ApnsSendResult | undefined> {
+		const row = this.sql.exec('SELECT apnsToken, apnsEnv FROM mobiles WHERE mobileId = ?', push.mobileId).toArray()[0];
 		if (!row || !row.apnsToken) {
+			return undefined;
+		}
+		const token = row.apnsToken as string;
+		const apnsEnv = (row.apnsEnv as string | null) === 'dev' ? 'dev' : 'prod';
+		const result = await sendApnsNotification(this.env as ApnsEnv, {
+			token,
+			env: apnsEnv,
+			payload: push.payload,
+			expiresAtSeconds: push.expiresAtSeconds,
+			...(push.collapseId !== undefined ? { collapseId: push.collapseId } : {}),
+			...(push.threadId !== undefined ? { threadId: push.threadId } : {}),
+		}, this.apnsJwtCache);
+		if (result.kind === 'drop-token') {
+			// 410 Unregistered / 400 BadDeviceToken: 失効・不正なトークンをDBから消す。
+			// 送った後にアプリが別のトークンを登録し直していたら、そちらは消さない。
+			this.sql.exec('UPDATE mobiles SET apnsToken = NULL, apnsEnv = NULL WHERE mobileId = ? AND apnsToken = ?', push.mobileId, token);
+		}
+		return result;
+	}
+
+	private enqueuePushRetry(push: Omit<QueuedPush, 'id'>, retryAfterMs: number | undefined): void {
+		if (push.attempt > PUSH_MAX_RETRIES) {
+			console.warn('[push] giving up after retries');
 			return;
 		}
-		const apnsEnv = (row.apnsEnv as string | null) === 'dev' ? 'dev' : 'prod';
-		const result = await sendApnsNotification(this.env as ApnsEnv, { token: row.apnsToken as string, env: apnsEnv, payload }, this.apnsJwtCache);
-		if (result === 'unregistered') {
-			// 410 Unregistered: 失効したトークンをDBから消す。
-			this.sql.exec('UPDATE mobiles SET apnsToken = NULL, apnsEnv = NULL WHERE mobileId = ?', mobileId);
+		const nextAt = Date.now() + pushRetryDelayMs(push.attempt, retryAfterMs, Math.random());
+		// 次の送信が有効期限を過ぎるなら、APNsはどのみち配送しない。
+		if (nextAt >= push.expiresAtSeconds * 1000) {
+			return;
+		}
+		this.sql.exec(
+			'INSERT INTO push_queue (mobileId, payload, collapseId, threadId, attempt, nextAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?)',
+			push.mobileId, push.payload, push.collapseId ?? null, push.threadId ?? null, push.attempt, nextAt, push.expiresAtSeconds,
+		);
+		this.sql.exec('DELETE FROM push_queue WHERE id NOT IN (SELECT id FROM push_queue ORDER BY id DESC LIMIT ?)', MAX_PUSH_QUEUE_ROWS);
+	}
+
+	/**
+	 * 送信時刻が来た再送待ちを送る（alarm から呼ぶ）。行は送る前に消す: 送信中に例外で
+	 * alarm が打ち切られても、同じ通知を二重に鳴らすより1回落とす方がまし。
+	 */
+	private async flushPushQueue(): Promise<void> {
+		const now = Date.now();
+		const due = this.sql.exec('SELECT id, mobileId, payload, collapseId, threadId, attempt, expiresAt FROM push_queue WHERE nextAt <= ? ORDER BY nextAt LIMIT ?', now, MAX_PUSH_QUEUE_ROWS).toArray();
+		for (const raw of due) {
+			const push: QueuedPush = {
+				id: raw.id as number,
+				mobileId: raw.mobileId as string,
+				payload: raw.payload as string,
+				collapseId: (raw.collapseId as string | null) ?? undefined,
+				threadId: (raw.threadId as string | null) ?? undefined,
+				attempt: raw.attempt as number,
+				expiresAtSeconds: raw.expiresAt as number,
+			};
+			this.sql.exec('DELETE FROM push_queue WHERE id = ?', push.id);
+			if (push.expiresAtSeconds * 1000 <= Date.now()) {
+				continue;
+			}
+			try {
+				const result = await this.sendPushOnce(push);
+				if (result?.kind === 'retry') {
+					this.enqueuePushRetry({ ...push, attempt: push.attempt + 1 }, result.retryAfterMs);
+				}
+			} catch (err) {
+				console.warn('[push] retry failed:', err);
+			}
 		}
 	}
 
@@ -597,4 +731,9 @@ export class DeviceDO implements DurableObject {
 	async webSocketError(ws: WebSocket): Promise<void> {
 		await this.webSocketClose(ws);
 	}
+}
+
+/** PCが付けてきた collapseId / threadId を検証する。形が外れていれば使わない（プッシュ自体は送る）。 */
+function pushIdOrUndefined(value: unknown): string | undefined {
+	return typeof value === 'string' && PARADIS_PUSH_ID_PATTERN.test(value) ? value : undefined;
 }

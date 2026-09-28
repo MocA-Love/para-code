@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from './appState.js';
 import { colors } from './theme.js';
+import { PAIRING_REJECTED_LABEL } from './pcStatus.js';
 
 /**
  * 「いまPCと繋がっていない」を**新しい部品を出さずに**伝えるための派生値。
@@ -27,9 +28,10 @@ export interface OfflineNotice {
 }
 
 export function useOfflineNotice(): OfflineNotice | undefined {
-	const { connection, pcOnline, sessionProtocolReady, manualOffline, pendingRendererCount } = useAppStore(useShallow(s => ({
+	const { connection, pcOnline, pairingRejected, sessionProtocolReady, manualOffline, pendingRendererCount } = useAppStore(useShallow(s => ({
 		connection: s.connection,
 		pcOnline: s.pcOnline,
+		pairingRejected: s.pairingRejected,
 		sessionProtocolReady: s.sessionProtocolReady,
 		manualOffline: s.manualOffline,
 		pendingRendererCount: s.workspace?.renderers.filter(renderer => !renderer.ready).length ?? 0,
@@ -47,9 +49,13 @@ export function useOfflineNotice(): OfflineNotice | undefined {
 		if (manualOffline) {
 			return { text: '切断中 — 最後の画面', color: colors.orange };
 		}
+		// 待っても直らない。島をタップして開くドロワーに「ペアリングし直す」がある
+		if (pairingRejected) {
+			return { text: PAIRING_REJECTED_LABEL, color: colors.red };
+		}
 		if (!pcOnline && (connection === 'online' || connection === 'handshaking')) {
 			return { text: 'PCオフライン — 最後の画面', color: colors.orange };
 		}
 		return { text: '再接続中 — 最後の画面', color: colors.orange };
-	}, [live, pendingRendererCount, manualOffline, pcOnline, connection]);
+	}, [live, pendingRendererCount, manualOffline, pairingRejected, pcOnline, connection]);
 }

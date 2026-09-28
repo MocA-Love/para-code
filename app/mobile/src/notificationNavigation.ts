@@ -3,6 +3,33 @@
 import type { WorkspaceState } from './store.js';
 import { spaceIdOfTerminal } from './navigationTargets.js';
 import { routes, type RouteHref } from './routes.js';
+import { readTrayData } from './notificationTray.js';
+
+/**
+ * 通知のタップで開く先の手がかり（ローカル通知の data・プッシュを NSE が復号して書いた userInfo）。
+ * `pcId` はどのPCから届いた通知か。プッシュでは NSE が復号できた鍵の名前から補う。
+ */
+export interface NotificationDeepLinkData {
+	readonly ws?: string;
+	readonly terminalKey?: string;
+	readonly agentToken?: string;
+	readonly pcId?: string;
+}
+
+/**
+ * タップされた通知から開く先の手がかりを読む。プッシュは `content.data` が空なので
+ * `trigger.payload` も読む（readTrayData）。文字列でない値・長すぎる値は捨てる。
+ * 手がかりが1つも無ければ undefined（どこへも遷移しない）。
+ */
+export function readNotificationDeepLink(request: { readonly content: { readonly data?: unknown }; readonly trigger?: unknown }): NotificationDeepLinkData | undefined {
+	const data = readTrayData(request);
+	const pick = (key: keyof NotificationDeepLinkData) => {
+		const value = data?.[key];
+		return typeof value === 'string' && value.length > 0 && value.length <= 200 ? { [key]: value } : {};
+	};
+	const link: NotificationDeepLinkData = { ...pick('ws'), ...pick('terminalKey'), ...pick('agentToken'), ...pick('pcId') };
+	return Object.keys(link).length > 0 ? link : undefined;
+}
 
 export type NotificationNavigationDecision = 'wait' | 'open' | 'missing';
 

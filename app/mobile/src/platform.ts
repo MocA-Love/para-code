@@ -8,6 +8,7 @@
 
 import * as SecureStore from 'expo-secure-store';
 import * as Notifications from 'expo-notifications';
+import { readTrayData, trayDateMs, type TrayNotification } from './notificationTray.js';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import type { KeyStore, TerminalOperationOutboxStore } from './store.js';
 import type { SocketFactory, SocketLike } from './relayClient.js';
@@ -390,9 +391,34 @@ export async function getApnsDeviceToken(): Promise<string | undefined> {
  * オフライン時の APNs リモート通知は、リレー→APNs→Notification Service Extension で別途配送する
  * （設計書 §5.2。NSE はネイティブ実装。ios/ の NotifyExtension ターゲット参照）。
  */
-export async function presentLocalNotification(title: string, subtitle: string | undefined, body: string, data: Record<string, unknown>): Promise<void> {
+export async function presentLocalNotification(title: string, subtitle: string | undefined, body: string, data: Record<string, unknown>, identifier?: string): Promise<void> {
 	await Notifications.scheduleNotificationAsync({
+		// 同じ identifier で出し直すと、iOS は通知センターの前の1件を置き換える（W2-08）。
+		...(identifier !== undefined ? { identifier } : {}),
 		content: { title, ...(subtitle !== undefined ? { subtitle } : {}), body, data },
 		trigger: null, // 即時
 	});
+}
+
+/**
+ * 通知センターに残っている通知の一覧（判断は notificationTray.ts）。取得できない環境では空。
+ */
+export async function listPresentedNotifications(): Promise<TrayNotification[]> {
+	try {
+		const presented = await Notifications.getPresentedNotificationsAsync();
+		return presented.map(notification => ({
+			identifier: notification.request.identifier,
+			date: trayDateMs(notification.date),
+			data: readTrayData(notification.request),
+		}));
+	} catch (err) {
+		console.warn('[platform] failed to read presented notifications', err);
+		return [];
+	}
+}
+
+/** 通知センターから指定の通知を消す。1件の失敗で残りを止めない。 */
+export async function dismissPresentedNotifications(identifiers: readonly string[]): Promise<void> {
+	await Promise.all(identifiers.map(identifier => Notifications.dismissNotificationAsync(identifier)
+		.catch(err => console.warn('[platform] failed to dismiss a notification', err))));
 }

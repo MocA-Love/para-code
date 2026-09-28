@@ -20,7 +20,7 @@ import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { startWidgetSync } from '../src/widgets/widgetSync.js';
 import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
-import { notificationDestination, notificationNavigationDecision } from '../src/notificationNavigation.js';
+import { notificationDestination, notificationNavigationDecision, readNotificationDeepLink, type NotificationDeepLinkData } from '../src/notificationNavigation.js';
 import { loadSessionViewSettings } from '../src/features/session/useSessionView.js';
 import { useQuickReplies } from '../src/features/settings/quickRepliesStore.js';
 import { loadThemeColors } from '../src/features/settings/themeColorSettings.js';
@@ -30,18 +30,6 @@ import { loadThemeColors } from '../src/features/settings/themeColorSettings.js'
  * 戻る操作でアプリの外へ落ちずにホームへ戻れるように。
  */
 export const unstable_settings = { initialRouteName: 'index' };
-
-/**
- * notify通知(platform.tsのpresentLocalNotification)が積むペイロード形状。
- * `pcId` はどのPCから届いた通知かで、アプリ未起動時のプッシュでは通知拡張
- * (ios/NotifyExtension) が復号できた鍵の名前から補う。
- */
-interface NotificationDeepLinkData {
-	ws?: string;
-	terminalKey?: string;
-	agentToken?: string;
-	pcId?: string;
-}
 
 /**
  * このアプリは常時ダークテーマのみ（ライトモード非対応）。expo-routerの既定テーマは
@@ -191,14 +179,15 @@ function RootLayout() {
 
 	useEffect(() => {
 		const sub = Notifications.addNotificationResponseReceivedListener(response => {
-			pendingRef.current = response.notification.request.content.data as NotificationDeepLinkData;
+			// プッシュは content.data が空（中身は trigger.payload）。両方から読む（readNotificationDeepLink）。
+			pendingRef.current = readNotificationDeepLink(response.notification.request);
 			switchedForPendingRef.current = undefined;
 			tryNavigate();
 		});
 		// コールドスタート（通知タップでアプリが起動された）対応
 		void Notifications.getLastNotificationResponseAsync().then(response => {
 			if (response) {
-				pendingRef.current = response.notification.request.content.data as NotificationDeepLinkData;
+				pendingRef.current = readNotificationDeepLink(response.notification.request);
 				switchedForPendingRef.current = undefined;
 				tryNavigate();
 			}

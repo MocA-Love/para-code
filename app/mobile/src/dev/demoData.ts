@@ -110,8 +110,8 @@ export function installDemoData(): void {
 		paired: true,
 		initializing: false,
 		pcs: [
-			{ id: MBP, name: 'MacBook Pro', hue: 210, connection: 'online', pcOnline: true, workspaces: 3, terminals: 8, waiting: 2, lastOnlineAt: now, battery: { level: 82, charging: true } },
-			{ id: MINI, name: 'Mac mini', hue: 30, connection: 'offline', pcOnline: false, workspaces: 0, terminals: 0, waiting: 0, lastOnlineAt: now - 2 * 3_600_000, battery: undefined },
+			{ id: MBP, name: 'MacBook Pro', hue: 210, connection: 'online', pcOnline: true, pairingRejected: false, workspaces: 3, terminals: 8, waiting: 2, lastOnlineAt: now, battery: { level: 82, charging: true } },
+			{ id: MINI, name: 'Mac mini', hue: 30, connection: 'offline', pcOnline: false, pairingRejected: false, workspaces: 0, terminals: 0, waiting: 0, lastOnlineAt: now - 2 * 3_600_000, battery: undefined },
 		],
 		activePcId: MBP,
 		connection: 'online',

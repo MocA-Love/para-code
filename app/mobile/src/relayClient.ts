@@ -8,7 +8,7 @@
  *  - イニシエータとして E2E ハンドシェイク（相手=PCの静的公開鍵は保存済み前提）
  *  - 確立後は FrameMux で state/term/scm/fs/browser/notify を多重化
  *  - presence 制御メッセージ（PCのオンライン状態）の反映
- *  - 切断時の指数バックオフ再接続
+ *  - 切断時の再接続（間隔は relayRetryDelays.ts。リレーが資格を拒んだら分単位の遅い再確認へ落とす）
  *
  * WebSocket 実装は注入する（React Native の global WebSocket / テストのfake双方に対応）。
  */
@@ -23,6 +23,7 @@ import {
 	encodeRelayControl,
 } from '@para/protocol';
 import { reportMobileDiagnosticError } from './mobileDiagnostics.js';
+import { RELAY_STABLE_CONNECTION_MS, isRelayAuthRejection, relayAuthGateDelayMs, relayReconnectDelayMs } from './relayRetryDelays.js';
 
 /** 最小限の WebSocket インターフェース（RNのWebSocketと互換）。 */
 export interface SocketLike {
@@ -57,6 +58,11 @@ export interface RelayClientCallbacks {
 	readonly onPcPresence?: (online: boolean) => void;
 	readonly onFrame?: (frame: Frame) => void;
 	readonly onError?: (error: unknown) => void;
+	/**
+	 * リレーがこの端末の資格を認めなかった（4401 / 4404 で閉じた）/ 再び繋がった。
+	 * true の間は再ペアリングが必要で、再接続は1〜15分おきの確認に落ちる。
+	 */
+	readonly onAuthRejected?: (rejected: boolean) => void;
 }
 
 export interface Timers {
@@ -64,8 +70,6 @@ export interface Timers {
 	clearTimeout(handle: unknown): void;
 }
 
-const MAX_BACKOFF_MS = 30_000;
-const BASE_BACKOFF_MS = 500;
 // 接続開始〜E2E確立までの上限。RNのWebSocketは接続失敗やPC不在時にonclose/oncloseが
 // 届かないまま黙り込むことがあり、これが無いと'connecting'/'handshaking'で永久に止まる。
 const CONNECT_TIMEOUT_MS = 12_000;
@@ -101,6 +105,12 @@ export class RelayClient {
 	private reconnectAttempt = 0;
 	private reconnectHandle: unknown = null;
 	private connectTimeoutHandle: unknown = null;
+	/** いまの接続がE2E確立した時刻。短命な接続で再試行の回数を戻さないために使う。 */
+	private onlineSince: number | undefined;
+	/** リレーに続けて資格を拒まれた回数（0 = 拒まれていない）。 */
+	private authRejectedStreak = 0;
+	/** 認証拒否のあと、次に確かめてよい時刻。これより前は前面復帰や心拍でも繋ぎ直さない。 */
+	private authGateUntil: number | undefined;
 	/** 最後に何かを受信した時刻（onlineのまま死んだソケットの検出用）。 */
 	private lastReceivedAt = 0;
 	/**
@@ -119,10 +129,17 @@ export class RelayClient {
 		private readonly socketFactory: SocketFactory,
 		private readonly callbacks: RelayClientCallbacks = {},
 		private readonly timers: Timers = globalThis,
+		private readonly random: () => number = Math.random,
+		private readonly now: () => number = Date.now,
 	) { }
 
 	get connectionState(): ConnectionState {
 		return this.state;
+	}
+
+	/** リレーがこの端末の資格を拒んでいる（再ペアリングが必要）。 */
+	get authRejected(): boolean {
+		return this.authRejectedStreak > 0;
 	}
 
 	connect(): void {
@@ -172,6 +189,9 @@ export class RelayClient {
 		}
 		this.suspended = false;
 		this.reconnectAttempt = 0;
+		if (this.waitForAuthGate()) {
+			return;
+		}
 		this.openSocket();
 	}
 
@@ -180,11 +200,11 @@ export class RelayClient {
 	 * フォアグラウンド復帰時など「今すぐ繋がってほしい」場面用。
 	 * すでにonlineなら何もしない。ユーザーが明示的に切断した状態は維持する。
 	 */
-	ensureConnected(): void {
+	ensureConnected(options?: { readonly keepBackoff?: boolean }): void {
 		if (this.closedByUser || this.suspended || this.state === 'online') {
 			return;
 		}
-		this.reopenSocket();
+		this.reopenSocket(options?.keepBackoff === true);
 	}
 
 	/**
@@ -209,16 +229,27 @@ export class RelayClient {
 		}, timeoutMs);
 	}
 
-	/** バックオフ待ちを打ち切り、既存ソケットを黙って破棄して接続し直す。 */
-	private reopenSocket(): void {
+	/**
+	 * バックオフ待ちを打ち切り、既存ソケットを黙って破棄して接続し直す。
+	 * `keepBackoff` なら再試行の回数を戻さない（25秒おきの心拍から来たとき。人が待っている
+	 * 前面復帰やネットワークの復帰と違い、繋がらない相手へ何度でも最短の間隔から始めることになる）。
+	 */
+	private reopenSocket(keepBackoff = false): void {
 		if (this.suspended) {
+			return;
+		}
+		// 資格を拒まれている間は、前面復帰や心拍（25秒おき）で叩き直さない。拒否は待っても
+		// 直らないので、決めた時刻まで待つ（再ペアリングすれば新しいクライアントに替わる）。
+		if (this.waitForAuthGate()) {
 			return;
 		}
 		if (this.reconnectHandle !== null) {
 			this.timers.clearTimeout(this.reconnectHandle);
 			this.reconnectHandle = null;
 		}
-		this.reconnectAttempt = 0;
+		if (!keepBackoff) {
+			this.reconnectAttempt = 0;
+		}
 		// 死んでいる可能性のあるソケットを黙って破棄する（oncloseからの
 		// 二重再接続を防ぐためハンドラを外してから閉じる）。
 		this.disposeSocket(4002, 'superseded');
@@ -241,6 +272,30 @@ export class RelayClient {
 		try {
 			stale.close(code, reason);
 		} catch { /* ignore */ }
+	}
+
+	/**
+	 * 認証拒否の待ち時間の途中なら、その終わりに再確認の予約を置いて true を返す
+	 * （予約が既にあれば置き直さない）。待たなくてよければ false。
+	 */
+	private waitForAuthGate(): boolean {
+		if (this.authGateUntil === undefined) {
+			return false;
+		}
+		const remaining = this.authGateUntil - this.now();
+		if (remaining <= 0) {
+			return false;
+		}
+		if (this.reconnectHandle === null) {
+			this.setState('offline');
+			this.reconnectHandle = this.timers.setTimeout(() => {
+				this.reconnectHandle = null;
+				if (!this.closedByUser && !this.suspended) {
+					this.openSocket();
+				}
+			}, remaining);
+		}
+		return true;
 	}
 
 	private clearConnectTimeout(): void {
@@ -370,8 +425,14 @@ export class RelayClient {
 						}
 					}
 					established = true;
-					this.reconnectAttempt = 0;
+					// 回数はここでは戻さない（RELAY_STABLE_CONNECTION_MS 続いた接続が切れたときに戻す）。
+					this.onlineSince = this.now();
 					this.clearConnectTimeout();
+					if (this.authRejectedStreak > 0) {
+						this.authRejectedStreak = 0;
+						this.authGateUntil = undefined;
+						this.callbacks.onAuthRejected?.(false);
+					}
 					this.setState('online');
 				} catch (error) {
 					// ここへ来る最頻ケースは「PCがまだ再接続に気づいていない」ことによる取りこぼしで、
@@ -406,6 +467,16 @@ export class RelayClient {
 		};
 		socket.onclose = event => {
 			if (isCurrent()) {
+				if (isRelayAuthRejection(event?.code)) {
+					// 異常系ではなく「再ペアリングが必要」という確定した状態なので、エラーとして積まない
+					// （拒否は1〜15分おきに確かめ直すたびに起きる）。
+					this.authRejectedStreak++;
+					if (this.authRejectedStreak === 1) {
+						this.callbacks.onAuthRejected?.(true);
+					}
+					this.onClosed();
+					return;
+				}
 				// onerror を伴わない切断（リレー側の superseded、iOS のバックグラウンド回収）は
 				// これまで一切記録が残らず、同じ事象がPC側の close code だけで語られる非対称に
 				// なっていた。onerror 済みのときと、自分がタイムアウトで閉じたとき（直前に
@@ -499,6 +570,11 @@ export class RelayClient {
 		this.clearConnectTimeout();
 		this.mux = null;
 		this.socket = null;
+		// 十分長く続いた接続が切れたのなら、それは一過性の切断。最短の間隔からやり直す。
+		if (this.onlineSince !== undefined && this.now() - this.onlineSince >= RELAY_STABLE_CONNECTION_MS) {
+			this.reconnectAttempt = 0;
+		}
+		this.onlineSince = undefined;
 		if (this.closedByUser || this.suspended) {
 			this.setState('offline');
 			return;
@@ -508,7 +584,13 @@ export class RelayClient {
 	}
 
 	private scheduleReconnect(): void {
-		const delay = Math.min(BASE_BACKOFF_MS * 2 ** this.reconnectAttempt, MAX_BACKOFF_MS);
+		let delay: number;
+		if (this.authRejectedStreak > 0) {
+			delay = relayAuthGateDelayMs(this.authRejectedStreak - 1, this.random());
+			this.authGateUntil = this.now() + delay;
+		} else {
+			delay = relayReconnectDelayMs(this.reconnectAttempt, this.random());
+		}
 		this.reconnectAttempt++;
 		this.reconnectHandle = this.timers.setTimeout(() => {
 			this.reconnectHandle = null;

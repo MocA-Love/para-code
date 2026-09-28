@@ -646,6 +646,13 @@ export interface IParadisAgentStatusStore {
 	setDiscoveredAgentPaneTokens(paneTokens: ReadonlySet<string>): void;
 	/** ポーラー専用（スコープごとに検出済み Issue URL の一括更新）。 */
 	setScopeIssueUrls(issueUrls: ReadonlyMap<string, ReadonlySet<string>>): void;
+	/**
+	 * `update` の中で行った更新の変化通知を、全部終わってから1回にまとめる。
+	 * スコープの内訳とペイン単位の状態を続けて更新すると、間で通知が出た時点では片方だけが新しい
+	 * （受け側がペイン単位の状態を読むと1回古い）。ポーラーは1回の取得ぶんをこの中で入れる。
+	 * 省略可能にしてあるのは、テスト用の差し替えを壊さないため（無ければ呼び出し側がそのまま更新する）。
+	 */
+	batchUpdates?(update: () => void): void;
 }
 
 /**

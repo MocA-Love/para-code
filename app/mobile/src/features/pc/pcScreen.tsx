@@ -44,7 +44,7 @@ import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
 import { stepKey } from '../../ipad/shortcuts.js';
 import { useParaToast } from '../../paraToast.js';
-import { shouldShowBattery } from '../../pcStatus.js';
+import { isPairingRejected, shouldShowBattery } from '../../pcStatus.js';
 import { routes } from '../../routes.js';
 import type { WorkspaceState } from '../../store.js';
 import { space } from '../../theme.js';
@@ -128,13 +128,16 @@ export function PcScreen({ placement, onCollapse }: {
 	const [openedSearchHere, setOpenedSearchHere] = useState(false);
 
 	const kind = pc !== undefined ? connectionKind(pc.connection, pc.pcOnline) : 'offline';
+	// 資格を拒まれた PC は、1〜15分おきの確認の間だけ「接続しています…」になる。そこで一覧や
+	// 読み込み中の表示へ揺れないよう、繋がるまでは再ペアリングの案内に固定する。
+	const rejected = pc !== undefined && isPairingRejected(pc);
 	// 一時的に再接続している間は一覧を消さない（行が点滅すると押し間違える）。
-	const showList = active && loaded && (kind === 'connected' || kind === 'connecting');
+	const showList = active && loaded && !rejected && (kind === 'connected' || kind === 'connecting');
 	const sections = buildPcList({ terminals, spaces, activeWs, archivedKeys, pinnedKeys, preferences, group, filter });
 	const archived = archivedTerminals(terminals, archivedKeys);
 	const unread = unreadQuestionNotificationCount(notifications);
 	const detail = [
-		pcConnectionLine(kind, pc?.lastOnlineAt, now),
+		pcConnectionLine(kind, pc?.lastOnlineAt, now, rejected),
 		pc !== undefined && shouldShowBattery(pc) && pc.battery !== undefined ? batteryLine(pc.battery) : undefined,
 	].filter((part): part is string => part !== undefined).join(' · ');
 
@@ -217,7 +220,7 @@ export function PcScreen({ placement, onCollapse }: {
 			return <EmptyState title="この PC は見つかりません" body="ペアリングを解除した PC かもしれません。" />;
 		}
 		if (!showList) {
-			if (kind === 'connecting' || status === 'inactive' || (active && !loaded && kind === 'connected')) {
+			if (!rejected && (kind === 'connecting' || status === 'inactive' || (active && !loaded && kind === 'connected'))) {
 				return <EmptyState title="接続しています…" body={`${pc?.name ?? 'PC'} の状態を読み込んでいます。`} />;
 			}
 			return (
@@ -225,6 +228,8 @@ export function PcScreen({ placement, onCollapse }: {
 					name={pc?.name ?? 'PC'}
 					lastOnline={pc?.lastOnlineAt !== undefined ? formatRelativeTime(pc.lastOnlineAt, now) : undefined}
 					onReconnect={reconnect}
+					pairingRejected={rejected}
+					onRepair={() => { hapticSelection(); router.push(routes.pair()); }}
 				/>
 			);
 		}
@@ -305,7 +310,8 @@ export function PcScreen({ placement, onCollapse }: {
 				name={pc?.name ?? 'PC'}
 				kind={kind}
 				detail={detail}
-				{...(kind !== 'connected' && status !== 'unknown' ? { onReconnect: reconnect } : {})}
+				{...(kind !== 'connected' && status !== 'unknown' && !rejected ? { onReconnect: reconnect } : {})}
+				pairingRejected={rejected}
 				onBack={leave}
 				{...(placement === 'column' && onCollapse !== undefined ? { onCollapse } : {})}
 				toolbar={(

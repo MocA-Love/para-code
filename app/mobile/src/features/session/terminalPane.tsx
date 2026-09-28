@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
-import { requireOptionalNativeModule } from 'expo-modules-core';
 import { ActivityIndicator, Alert, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../appState.js';
@@ -19,18 +18,8 @@ import { errorKind } from './errorKind.js';
 import { createTerminalAttachments } from './terminalAttachments.js';
 import { terminalDraftKey, useTerminalDrafts } from './terminalDrafts.js';
 import { TerminalInputBar } from './terminalInputBar.js';
-
-/**
- * expo-clipboard はネイティブ側に無いビルドでは import しただけで落ちるので、optional で引く
- * （`components/agentIoBlock.tsx` と同じ考え方）。引けなければ貼付は何もしない。
- */
-let clipboardModule: { getStringAsync(options?: object): Promise<string> } | null | undefined;
-function clipboard(): { getStringAsync(options?: object): Promise<string> } | undefined {
-	if (clipboardModule === undefined) {
-		clipboardModule = requireOptionalNativeModule<{ getStringAsync(options?: object): Promise<string> }>('ExpoClipboard');
-	}
-	return clipboardModule ?? undefined;
-}
+import { liveInputEnabled, useTerminalLiveInputChoices } from './terminalLiveInputChoice.js';
+import { readClipboardText } from '../../nativeClipboard.js';
 
 /**
  * 画面のペインが持つターミナルの出力購読。同じターミナルのセッションが2枚積まれても、上を閉じたときに
@@ -111,7 +100,9 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 	const input = useTerminalDrafts(s => s.drafts[draftKey] ?? '');
 	const setInput = (next: string | ((current: string) => string)) => useTerminalDrafts.getState().update(draftKey, next);
 	const [enterless, setEnterless] = useState(false);
-	const [live, setLive] = useState(false);
+	// ライブ入力は既定でオン。自分で切り替えたターミナルはその選択を覚えている（terminalLiveInputChoice.ts）。
+	const live = useTerminalLiveInputChoices(s => liveInputEnabled(s.choices, draftKey));
+	useEffect(() => useTerminalLiveInputChoices.getState().load(), []);
 	const [submitting, setSubmitting] = useState(false);
 	const [uploading, setUploading] = useState(false);
 	const send = (data: string) => { void sendInput(terminalKey, data); };
@@ -153,7 +144,8 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 	};
 
 	const paste = async () => {
-		const text = await clipboard()?.getStringAsync().catch(() => '') ?? '';
+		// 読めなければ空文字（nativeClipboard.ts。クリップボードのネイティブ部品が無いビルドでも落ちない）。
+		const text = await readClipboardText();
 		if (text.length === 0) {
 			return;
 		}
@@ -213,7 +205,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 				ctrlLatched={keyInput.ctrlLatched}
 				onKey={keyInput.pressKey}
 				onToggleDisplay={() => setTerminalPref('matchPcWidth', !terminalPrefs.matchPcWidth)}
-				onToggleLive={() => setLive(value => !value)}
+				onToggleLive={() => useTerminalLiveInputChoices.getState().choose(draftKey, !live)}
 				onPaste={() => { void paste(); }}
 			/>
 			<TerminalInputBar
@@ -228,6 +220,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 				onAttachImage={() => { void attachImage(); }}
 				onLiveText={sendLiveText}
 				onLiveKey={data => send(data)}
+				onLiveArrow={key => sendArrowKey(terminalKey, key)}
 			/>
 			<View style={[styles.bottom, { height: bottomInset }]} />
 		</View>

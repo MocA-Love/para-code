@@ -25,11 +25,13 @@ const BUCKET_LABEL = {
  *  - つながっていれば「3 スペース · 7 エージェント」と状態ごとの件数、切れていれば再接続の案内
  *  - 右端の ⋮ と長押しで PC のメニュー
  */
-export const PcCard = memo(function PcCard({ id, name, kind, connectionText, detail, counts, onOpen, onMenu }: {
+export const PcCard = memo(function PcCard({ id, name, kind, connectionText, pairingRejected = false, detail, counts, onOpen, onMenu }: {
 	id: string;
 	name: string;
 	kind: ConnectionKind;
 	connectionText: string;
+	/** リレーがこの端末の資格を拒んだ（`isPairingRejected`）。再接続ではなく再ペアリングへ案内する。 */
+	pairingRejected?: boolean;
 	/** 名前の下の補足（バッテリーなど）。無ければ出さない。 */
 	detail: string | undefined;
 	counts: PcCardCounts;
@@ -59,7 +61,7 @@ export const PcCard = memo(function PcCard({ id, name, kind, connectionText, det
 					<Text style={[styles.name, connected ? undefined : styles.nameOffline]} numberOfLines={1}>{name}</Text>
 					{detail !== undefined ? <Text style={styles.detail} numberOfLines={1}>{detail}</Text> : null}
 					<View style={styles.meta}>
-						<View style={[styles.dot, { backgroundColor: connected ? connectionColor(kind) : kind === 'connecting' ? colors.amber : colors.textMuted }]} />
+						<View style={[styles.dot, { backgroundColor: connected ? connectionColor(kind) : pairingRejected ? colors.red : kind === 'connecting' ? colors.amber : colors.textMuted }]} />
 						<Text style={styles.metaText} numberOfLines={1}>{connectionText}</Text>
 					</View>
 					{connected ? (
@@ -79,7 +81,7 @@ export const PcCard = memo(function PcCard({ id, name, kind, connectionText, det
 							) : null}
 						</>
 					) : (
-						<Text style={styles.offlineHint}>PC の Para Code を起動すると、ここから再接続できます</Text>
+						<Text style={styles.offlineHint}>{pairingRejected ? '押すと PC の画面が開き、そこからペアリングし直せます' : 'PC の Para Code を起動すると、ここから再接続できます'}</Text>
 					)}
 				</View>
 			</Pressable>

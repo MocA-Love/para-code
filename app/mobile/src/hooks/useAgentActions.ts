@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
-import { agentQuestionKeySequence, type AgentQuestionKeyAnswer, type AgentQuestionShape } from '../agentQuestionKeys.js';
+import { agentApprovalKeySequence, agentQuestionKeySequence, type AgentQuestionKeyAnswer, type AgentQuestionShape } from '../agentQuestionKeys.js';
 import type { AgentMessageSendResult } from '../store.js';
 
 /**
@@ -179,11 +179,8 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 
 	/**
 	 * 承認クイックアクション。
-	 *  - Claude 許可: '1'（Yes、選択肢構成に依らず先頭がYes）+250ms+CR。
-	 *    拒否は番号ではなく Esc を注入する（「Always Allow」が無いプロンプトでは選択肢が
-	 *    2つになり、'3' 固定注入だと範囲外で拒否が黙って失敗するため。Esc は選択肢数に
-	 *    依存せずキャンセル=拒否として機能する）。
-	 *  - Codex: y / d のショートカット1文字（Enter不要）。
+	 *  回答APIを持たない古いPCでは打鍵で送る。キー列は agentApprovalKeySequence（Claude の許可は '1' だけ、
+	 *  拒否は Esc、Codex は y / d）。
 	 */
 	const approve = useCallback((interactionId: string, choice: string): Promise<AgentMessageSendResult> => {
 		if (stale) {
@@ -198,16 +195,13 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 		if (supportsAgentActions) {
 			return answerAgentApproval(terminalKey, interactionId, choice);
 		}
-		if (choice !== 'yes' && choice !== 'no') {
+		const keys = agentApprovalKeySequence(agent, choice);
+		if (keys === undefined) {
 			return Promise.resolve({ status: 'rejected', message: 'この選択肢は送信できません' });
 		}
-		if (agent === 'codex') {
-			return Promise.resolve(fromInjection(send(choice === 'yes' ? 'y' : 'd')));
-		} else if (choice === 'yes') {
-			return sendSequence(['1', '\r']).then(fromInjection);
-		} else {
-			return Promise.resolve(fromInjection(send('\u001b')));
-		}
+		return keys.length === 1
+			? Promise.resolve(fromInjection(send(keys[0]!)))
+			: sendSequence([...keys]).then(fromInjection);
 	}, [terminalKey, agent, interaction, stale, supportsAgentActions, answerAgentApproval, send, sendSequence]);
 
 	const updateClaudeSetting = useCallback((setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult> => {

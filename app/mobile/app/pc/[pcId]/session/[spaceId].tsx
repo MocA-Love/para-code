@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import { useIsFocused, useRouter } from 'expo-router';
-import { Ellipsis, Folder, GitBranch, NotebookPen, PanelLeftOpen, SquareTerminal, Unplug } from 'lucide-react-native';
+import { ChevronRight, Ellipsis, Folder, GitBranch, NotebookPen, PanelLeftOpen, SquareTerminal, Unplug } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { nextAttentionAgent } from '../../../../src/agentConversationUx.js';
 import { launchAgentInBackground } from '../../../../src/agentLaunch.js';
@@ -38,12 +38,14 @@ import { spaceColor } from '../../../../src/features/pc/spaceColor.js';
 import type { SpaceTerminal } from '../../../../src/navigationTargets.js';
 import { encodeSessionTab, routes, type RouteHref, type SessionTab } from '../../../../src/routes.js';
 import { colors } from '../../../../src/theme.js';
+import { PAIRING_REJECTED_LABEL, isPairingRejected } from '../../../../src/pcStatus.js';
 import {
 	ActionSheet,
 	ConfirmDrawer,
 	EmptyState,
 	HeaderButton,
 	HeaderMetaText,
+	Icon,
 	Screen,
 	ScreenHeader,
 	StatusDot,
@@ -101,8 +103,9 @@ export default function SessionScreen() {
 	const keyboardCover = useKeyboardCoverage();
 	const keyboardVisible = keyboardCover > 0;
 	const bottomInset = keyboardVisible ? 0 : insets.bottom;
-	const { connection, pcOnline, connectRelay, createTerminal, renameTerminal, closeTerminal, setSelectedTerminalKey, terminalPrefs, setTerminalPref } = useAppStore(useShallow(s => ({
+	const { connection, pcOnline, pairingRejected, connectRelay, createTerminal, renameTerminal, closeTerminal, setSelectedTerminalKey, terminalPrefs, setTerminalPref } = useAppStore(useShallow(s => ({
 		connection: s.connection,
+		pairingRejected: s.pairingRejected,
 		pcOnline: s.pcOnline,
 		connectRelay: s.connectRelay,
 		createTerminal: s.createTerminal,
@@ -256,8 +259,24 @@ export default function SessionScreen() {
 	useShortcutSlot('escape', focused && dockPanel !== undefined ? { escape: () => setDockPanel(undefined) } : undefined);
 
 	const kind = pc !== undefined ? connectionKind(connection, pcOnline) : 'offline';
+	// 資格を拒まれた PC は再接続では直らない。見出しの行から再ペアリングへ案内する（判定は pcStatus.ts）。
+	const rejected = isPairingRejected({ connection, pcOnline, pairingRejected });
 	const meta = kind === 'connected'
 		? <><StatusDot kind={kind} /><HeaderMetaText>{`${terminals.length} タブ · ${pc?.name ?? ''}`}</HeaderMetaText></>
+		: rejected ? (
+			<Pressable
+				style={styles.metaButton}
+				hitSlop={hitSlopToMinimum(META_HEIGHT)}
+				onPress={() => { hapticSelection(); router.push(routes.pair()); }}
+				accessibilityRole="button"
+				accessibilityLabel={`${PAIRING_REJECTED_LABEL}。押すとペアリングし直す画面を開きます`}
+			>
+				{/* 狭い iPhone でも切れないよう文言は短く、押せることは右の山括弧で示す。点は他の場所と同じ赤 */}
+				<View style={styles.rejectedDot} />
+				<HeaderMetaText>{PAIRING_REJECTED_LABEL}</HeaderMetaText>
+				<Icon icon={ChevronRight} size={META_HEIGHT - 2} color={colors.red} />
+			</Pressable>
+		)
 		: kind === 'offline' ? (
 			<Pressable
 				style={styles.metaButton}
@@ -521,5 +540,12 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		minHeight: META_HEIGHT,
+	},
+	rejectedDot: {
+		width: 8,
+		height: 8,
+		borderRadius: 4,
+		marginRight: 5,
+		backgroundColor: colors.red,
 	},
 });

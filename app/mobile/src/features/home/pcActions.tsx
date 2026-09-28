@@ -1,10 +1,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useState } from 'react';
-import { ArrowLeftRight, Pencil, RefreshCw, Trash2, Unplug } from 'lucide-react-native';
+import { ArrowLeftRight, Pencil, QrCode, RefreshCw, Trash2, Unplug } from 'lucide-react-native';
+import { useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../appState.js';
 import { useParaToast } from '../../paraToast.js';
+import { isPairingRejected } from '../../pcStatus.js';
+import { routes } from '../../routes.js';
 import { ActionSheet, ConfirmDrawer, TextInputDrawer, connectionKind, type ActionSheetAction } from '../../ui/index.js';
 import { useLastSession } from './lastSessionStore.js';
 
@@ -23,6 +26,7 @@ export function PcActions({ pcId, onClose }: {
 		connectRelay: s.connectRelay, disconnectRelay: s.disconnectRelay, renamePc: s.renamePc, removePc: s.removePc,
 	})));
 	const toast = useParaToast(s => s.show);
+	const router = useRouter();
 	// シートを閉じても、名前の変更・解除の確認のために対象を持ち続ける。
 	const [heldId, setHeldId] = useState<string | undefined>(pcId);
 	if (pcId !== undefined && pcId !== heldId) {
@@ -42,7 +46,12 @@ export function PcActions({ pcId, onClose }: {
 			disabled: active,
 			onPress: () => switchPc(pc.id),
 		},
-		{
+		// 資格を拒まれた PC は再接続しても直らないので、ペアリングし直す画面へ案内する。
+		isPairingRejected(pc) ? {
+			label: 'ペアリングし直す',
+			icon: QrCode,
+			onPress: () => router.push(routes.pair()),
+		} : {
 			label: kind === 'connected' ? '再接続' : '今すぐ再接続',
 			icon: RefreshCw,
 			onPress: () => {

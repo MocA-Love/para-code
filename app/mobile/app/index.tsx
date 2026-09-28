@@ -20,7 +20,7 @@ import { startStatusSinceTracking } from '../src/features/pc/statusSinceStore.js
 import { hapticSelection } from '../src/haptics.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { useShortcutSlot } from '../src/ipad/shortcutRegistry.js';
-import { shouldShowBattery } from '../src/pcStatus.js';
+import { isPairingRejected, shouldShowBattery } from '../src/pcStatus.js';
 import { routes } from '../src/routes.js';
 import { colors, space, type } from '../src/theme.js';
 import { useNow } from '../src/time.js';
@@ -99,7 +99,8 @@ export default function HomeScreen() {
 								id={pc.id}
 								name={pc.name}
 								kind={kind}
-								connectionText={pcConnectionLine(kind, pc.lastOnlineAt, now)}
+								connectionText={pcConnectionLine(kind, pc.lastOnlineAt, now, isPairingRejected(pc))}
+								pairingRejected={isPairingRejected(pc)}
 								detail={shouldShowBattery(pc) && pc.battery !== undefined ? batteryLine(pc.battery) : undefined}
 								// 見ていない PC のターミナルは届かないので、件数は台帳の要約から出す。
 								counts={pcCardCounts(pc, pc.id === activePcId ? terminals : undefined, archivedKeys)}

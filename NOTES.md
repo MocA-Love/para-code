@@ -252,6 +252,9 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/mobile/native/NotifyExtension/NotifyExtension.entitlements` | `com.apple.security.application-groups`（`group.ltd.paradis.paracode.mobile`）を追加 | 通知拡張がアプリの閉じている間にウィジェットの要約の要対応を書き換えるため（`WidgetShared.swift` の `WidgetStore.applyNotification`）。実体の `ios/NotifyExtension/` にも同じものを当てる。plist のためマーカーを埋め込めない |
 | `app/mobile/package.json` / `app/pnpm-lock.yaml` | `lucide-react-native@^1.48.0` を依存に追加 | モバイルの画面の作り直し（Orca に合わせたアイコン）で使うアイコン集。JS だけのパッケージで、描画は既存の `react-native-svg` を使う |
 | `build/paradis/computerUse/paradis-computer-use-entitlements.plist` | 新規追加（fork所有）。中身は空の `<dict/>` | Computer Use の補助アプリ（`Para Code Computer Use.app`）に渡す entitlements。アクセシビリティと画面収録は entitlements ではなく TCC で決まるので何も要らない。`build/darwin/sign.ts` の PARA-PATCH と CI の「Pre-notarize Computer Use helper」が参照する。plist のためマーカーを書かない。補助アプリの `Info.plist` は `buildHelper.ts` がビルドのたびに生成するのでリポジトリに置いていない |
+| `app/package.json` / `app/pnpm-lock.yaml` | `pnpm.patchedDependencies` に `react-native@0.86.0` → `patches/react-native@0.86.0.patch` を追加（lock は peer の添え字に `patch_hash` が付くだけで版は変わらない） | ライブ入力で iOS の変換中の範囲（marked text）を JS へ渡すため（W2-24）。react-native を上げたらパッチを作り直し、キーの版も書き換える |
+| `app/mobile/package.json` / `app/pnpm-lock.yaml` | `expo-network@~57.0.2` を依存に追加（W2-05） | 回線の変化で即座に繋ぎ直すため。JS からは `requireOptionalNativeModule('ExpoNetwork')` で引くので、ネイティブ部品が入る前のバイナリでも落ちない。反映には `app/mobile/ios` で `pod install` と再ビルドが要る（prebuild は使わない） |
+| `app/patches/react-native@0.86.0.patch` | 新規追加（fork所有。パッチ形式なのでマーカーを書けない。当てた先の3ファイルには `Para Code:` のコメントが入る） | TextInput の変更イベントに `isComposing` を足す（Orca の `react-native@0.83.10.patch` の該当部分を 0.86.0 に合わせた）。RN はソースからビルドしている（`ios.buildReactNativeFromSource`）ので、ネイティブの再ビルドで効く |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 
@@ -1072,6 +1075,27 @@ B3（Computer Use）の補助アプリの段は、ベータ用ブランチ `para
 - デプロイVersion IDはCloudflare側で確認し、公開文書へ固定値を記録しない
 - デプロイ確認: `curl -X POST https://para-mobile-relay.cloudflare8234.workers.dev/device/new/provision`が200 `{"ok":true,"deviceId":"..."}`を返すことを確認済み
 - DeviceDO（SQLite-backed、`app/relay/wrangler.jsonc`の`migrations`で`new_sqlite_classes`指定）は初回デプロイ時に自動でマイグレーションされる。以降の再デプロイでスキーマ変更が必要な場合は`migrations`に新しい`tag`エントリを追加すること
+
+### リレーとモバイルの接続・通知の取り込み（Orca W2、2026-09-28）
+
+デプロイは**リレー → PC → アプリ**の順。どの組み合わせでも従来より悪くならないように、取り決めは足すだけにしてある。
+
+| 組み合わせ | 取り消された端末 | APNs の再送・トークン破棄 | 通知の置き換え・まとめ |
+|---|---|---|---|
+| 旧アプリ × 新リレー | リレーは 4404 / 4401 で閉じる。旧アプリは未知の close として従来どおり再接続を続ける（HTTP 401 のときと同じ。Sentry の分類が `socket-error` から `unexpected-close-4401/4404` に変わるだけ） | 効く（リレーだけの変更） | 効かない（通知拡張の更新が要る） |
+| 新アプリ × 旧リレー | 旧リレーは HTTP 401 のまま＝1006 にしか見えないので、「再ペアリングが必要」は出ず従来の再接続（間隔はジッタ付きになる） | 効かない | 効く（端末の中だけで決める） |
+| 新アプリ × 新リレー | 「再ペアリングが必要」を出し、1〜15分おきの確認に落とす | 効く | 効く |
+
+- **リレー**: 資格を認めないモバイルは受理してから close（4404 = 登録が無い、4401 = トークン不一致。`PARADIS_RELAY_CLOSE_CODE`）。PC とペアリング用のソケットは HTTP 401 のまま（PC は `pc/check` で判別している）。APNs は 429 / 5xx / `ExpiredProviderToken` を SQL の待ち行列（`push_queue`、DO あたり50行）と alarm で最大3回送り直す。応答の無い通信失敗は APNs が受理済みかもしれないので、送り直しは必ず同じ `apns-collapse-id` で行う（先の1通も届いていた場合、通知センターでは1件に置き換わる。届くたびにバナーと音は出うる）。PC が `collapseId` を付けない通知（許可・質問）には、リレーが通知ごとの乱数（16バイト）を付けて待ち行列の行に保存する（通知どうしの紐付けにはならず、別の通知を置き換えもしない）（1秒→2秒→4秒を半分揺らす、Retry-After はそれより早くしない・上限10分、`apns-expiration` は最初の送信から延ばさない）。400 `BadDeviceToken` / `DeviceTokenNotForTopic` と 410 でトークンを消す（送った後に登録し直されたトークンは消さない）。alarm はペアリングの掃除と共用で、早い方に張る
+- **push-notify の `collapseId` / `threadId`**: 任意項目。リレーは `PARADIS_PUSH_ID_PATTERN` に合うときだけ `apns-collapse-id` / `aps.thread-id` に載せる。PC は完了通知にだけ `collapseId`（通知鍵の HMAC）を付け、許可・質問には付けない方針（送る場所の `paradisMobileRelayService.ts` は別の担当）。エージェントトークンは PC の MCP 接続に使う値なので、そのままでも素のハッシュでも外へ出さない。`threadId` は `aps.thread-id` として平文で出るので、同じスペースの通知どうしの紐付けはリレーと Apple に見える
+- **置き換えとまとめ（W2-08）は端末の中で決める**: 通知拡張とアプリが同じ規則で鍵を作る（`para.notify.collapse\n<pcId>\na:<agentToken>`（トークンが無ければ `t:<terminalKey>`）の SHA-256 の16進先頭32桁。値は `notificationTray.test.ts` で固定、Swift の CryptoKit で同じ値になることを確認済み）。通知拡張は同じ鍵の前の通知を消してから出し、`threadIdentifier` は PC × スペース。**許可・質問（`agent-question`）には鍵を付けない**（前の通知を消さず、あとの通知に消されもしない。未回答の許可を隠さないため）。通知拡張は `contentHandler` を鍵付きの印で一度だけ呼び、期限切れで出すときも復号した識別子を書き終えていなければ生ペイロードの識別子を剥がす。アプリのローカル通知は expo が `threadIdentifier` を渡せないので、まとまるのはプッシュだけ
+- **通知センターの後始末（W2-02）**: PC からの `dismissed` / `dismissed-token` を受けたら通知センターからも消す。前面復帰・再接続のあとは、頼んだ後に届いた State で PC が確認済みにした**完了通知だけ**を消す（エージェントトークンで一致したものだけ、頼んだ時刻の5秒前までに届いたものだけ）。許可・質問の通知は状態からは消さない（hook が来ないと状態が `working` のまま残り、未回答でも消してしまう）。iOS のリモート通知は `content.data` が空で、userInfo は `trigger.payload` にある（expo の `serializedNotificationData` は userInfo["body"] しか `content.data` に入れない）。**通知タップの遷移も同じ理由で、プッシュからは一度も効いていなかった**（2026-09-28 に `readNotificationDeepLink` で両方を読むよう修正）。通知拡張は復号できなかったときも、生ペイロードに載った識別子を捨てる（リレーが差し込めるため）
+- **回線の変化（W2-05）**: `expo-network` の `onNetworkStateChanged` で、オフライン → オンラインと Wi-Fi ⇄ セルラーのとき（750ms の間の変化は1回にまとめる）に、手動で切断していなければ繋いでいる全PCの `ensureConnected()` を呼ぶ（前面かどうかは見ない。音声通知でバックグラウンドでもソケットを開けているときにも効かせる。畳んだ接続は suspend 中なので何もしない）（切れていれば即張り直してバックオフを打ち切る、繋がっていれば死んだソケットかを5秒で確かめる）。資格を拒まれているPCは決めた時刻まで待つ。25秒おきの心拍からの張り直しは再試行の回数を戻さない
+- **ライブ入力の見えない入力欄は1行ぶんだけ**: Enter で送ったら新しい世代の入力欄を `autoFocus` で足し、フォーカスが移ったら古い方を外す（入力欄から入力欄へフォーカスを渡すのでキーボードは閉じない）。`clear()` は RN 0.86 の iOS で捨てられることがあり、前の行を入力欄に残す方式はキャレットが前の行へ動くと過去の行（パスワードを含む）を送り直しうるので、どちらもやめた。送り終えた入力欄は引退させ（前の行を持ったままなので）、フォーカスが移る前・移れなかったときに届いた打鍵は捨てて今の入力欄へフォーカスし直す。キャレットは変換中を除き常に末尾へ戻し、iPad の外付けキーボードの矢印（修飾なし）はライブ入力にフォーカスがあり変換中でない間だけ `sendArrowKey` で PC へ送る。ライブ入力中の ⌘↩ は見えない入力欄の Return と同じに扱う
+- **「再ペアリングが必要」の表示**: 判定と文言は `app/mobile/src/pcStatus.ts`（`isPairingRejected` / `PAIRING_REJECTED_LABEL` / `PAIRING_REJECTED_HINT`）に一本化。表示する場所はホームの PC カードと ⋮ メニュー（「ペアリングし直す」）・PC の画面（iPad の左列を含む `PcOfflineState`。ヘッダーの「再接続」は出さず、再確認の間も点は赤）・セッションの見出し・設定の PC 一覧（最終接続時刻は付けない）。`ConnectionGate` / ドロワー（`PcSwitcher` を含む）/ 島の下の行（`useOfflineNotice`）は 2026-09-28 時点でどの画面からも使われていないが、同じ定数で扱うようにして残した
+- **クリップボード**: ExpoClipboard のネイティブ関数は options の引数を省けない（`getStringAsync(options)` / `setStringAsync(text, options)`）。JS の expo-clipboard は既定値を埋めるが、ネイティブ部品を optional に直接引く `app/mobile/src/nativeClipboard.ts` では `{}` を渡す（省いていてターミナルの貼付が常に空振りしていた）
+- **通知の送り主（PC）**: エージェントの状態のポーラーはスコープの内訳とペイン単位の状態を `batchUpdates` の中で入れ、変化通知を1回にまとめる（間で通知が出ると、ペイン単位の状態を1回古いまま読む）。`detectAndNotify` はペインごとの前回の状態を覚え、今回 permission / review へ変わったペインを送り主にする
+- **ネイティブの反映（3つとも prebuild 不要）**: (1) `app/` で `pnpm install`（RN パッチが node_modules に当たり、`expo-network` が入る）。(2) `app/mobile/native/NotifyExtension/NotificationService.swift` を `app/mobile/ios/NotifyExtension/` へ写す。(3) `app/mobile/ios` で `pod install`（`expo-network` の pod を足すため。RN パッチだけなら不要）→ Xcode で再ビルド。RN はソースからビルドしている（`ios.buildReactNativeFromSource`）ので、パッチは再ビルドで効く
 
 ## Codexペインapp-serverのWindows対応（loopback ws方式、2026-07-21）
 

@@ -3,43 +3,73 @@
 /**
  * ターミナルのライブ入力（打った文字をそのまま PC へ送る）の差分計算。画面から切り離した純関数。
  *
- * 見えない入力欄に溜まっていく文字列と、前回までに見た文字列を比べて、送る分だけを出す:
- *  - 伸びた分（前回の続きに文字が足された）: 足された分を送る
- *  - 縮んだ分（⌫）: ここでは送らない。⌫ は `onKeyPress` の DEL で送る（空の入力欄でも届くように）
- *  - 途中の置き換え（自動修正・候補の選択など）: 送らない。PC 側と食い違うので捨てる
+ * 見えない入力欄の文字列を PC のプロンプトへ**写す**（Orca の terminal-live-preedit-mirror.ts に倣った）。
+ * PC へ送った分（`sent`）と入力欄を比べ、食い違った末尾を DEL で消して、足りない分を送る。
+ * 自動修正や候補の選択で途中が置き換わっても、PC 側は入力欄と同じになる。
  *
- * 入力欄を空に戻すのは変更イベントの外（Enter・フォーカスが外れたとき）で行う。RN 0.86 の iOS では
- * 変更イベントの中の `clear()` がネイティブ側で捨てられる（イベントの数え方が食い違う）ため。
- * 空に戻す指示のあとも、ネイティブ側で捨てられた可能性を考えて `clearing` で両方を受け付ける。
+ * **入力欄は1行ぶんしか持たない。** Enter で送ったら、画面側（terminalInputBar.tsx）が入力欄を
+ * 作り直し、この状態も空から始める。`clear()` は使わない: RN 0.86 の iOS は変更イベントの数え方次第で
+ * `clear()` を黙って捨てるため、「空になったか」を推し量ると、捨てられた後の ⌫ で前の行を丸ごと
+ * 送り直したり、前の行で始まる文字列の後ろだけ送ったりした。入力欄に前の行を残す方式も、キャレットが
+ * 前の行へ動くと過去の行（パスワードを含む）を送り直しうるうえ、入力欄が際限なく伸びるのでやめた。
  *
- * iOS のスマート句読点（' → ’、-- → —）は ASCII に戻してから比べる。日本語入力（外付けキーボードの
- * IME）の変換途中の文字は ASCII でないので送らない。変換の最初のローマ字（k・ky など）は変換が
- * 始まるまで区別できず送ってしまうので、かなに置き換わった時点で送った分だけ DEL で取り消す。
+ * 日本語などの変換（IME）で**変換中の文字は送らない**。どこまでが変換中かは入力欄が知っている
+ * （iOS の marked text。RN にパッチを当てて変更イベントの `isComposing` で受け取る。
+ * `app/patches/react-native@0.86.0.patch`）。文字の種類では決めない（中国語のピンインのように
+ * 変換中でも ASCII のことがあり、確定した日本語や絵文字は ASCII でなくても送るべきだから）。
+ *  - 変換中（composing: true）: 送った分と一致しない末尾は全部「変換中」として持っておく
+ *  - 変換していない（composing: false）: 全部写す
+ *  - 分からない（composing: undefined。パッチの無いネイティブ）: 末尾の ASCII でない続きを変換中と
+ *    みなす。止まったままなら画面側が 300ms 後に `flush` で送る（HELD_PREEDIT_COMMIT_DELAY_MS）
+ *
+ * ⌫ は入力欄が縮んだ分として変更イベントで写す。入力欄が空のときの ⌫ だけは変更イベントが
+ * 来ないので、`onKeyPress` で DEL を送る。
+ *
+ * DEL はコードポイント1つにつき1つ送る。zsh の行編集はコードポイント単位で消す（2026-09-28 に
+ * `zsh -f` で確認: 👍🏽 は ⌫ 1回で 👍 が残る）。Claude Code の入力欄は書記素単位で消すので、
+ * 複数のコードポイントからなる絵文字をそこで消すと、手前の文字まで消えうる（両立できないので
+ * シェルに合わせている）。
+ *
+ * iOS のスマート句読点（' → ’、-- → —）と全角スペースは ASCII に戻してから比べる。
  */
 
 /** 見えない入力欄の状態。 */
 export interface LiveInputState {
-	/** 前回見た入力欄の文字列（スマート句読点を ASCII に戻したもの）。 */
+	/** 前回見た入力欄の文字列（スマート句読点などを ASCII に戻したもの）。 */
 	readonly text: string;
-	/** `text` の各文字（UTF-16 単位）を PC へ送ったか（'1' 送った / '0' 送っていない）。 */
+	/** そのうち PC へ送った先頭部分（PC のプロンプトにいま載っているはずのもの）。 */
 	readonly sent: string;
-	/** 入力欄を空に戻す指示を出した直後か（ネイティブ側で捨てられていれば前の文字列が続いて届く）。 */
-	readonly clearing: boolean;
+	/** 変換中として送らずに持っている末尾。 */
+	readonly held: string;
+	/**
+	 * Enter で送り終え、もう使わない入力欄か。画面は新しい入力欄へフォーカスを移すが、移る前（または
+	 * 移れなかったとき）にこの入力欄へ届いた打鍵は捨てる。この入力欄は前の行を持ったままなので、
+	 * 写すと前の行ごと新しいプロンプトへ送ってしまう。
+	 */
+	readonly retired?: true;
 }
 
-export const LIVE_INPUT_EMPTY: LiveInputState = { text: '', sent: '', clearing: false };
+export const LIVE_INPUT_EMPTY: LiveInputState = { text: '', sent: '', held: '' };
+
+/** Enter で送り終えた入力欄の状態（以後の出来事は何も送らない）。 */
+export const LIVE_INPUT_RETIRED: LiveInputState = { text: '', sent: '', held: '', retired: true };
+
+/** 変換中かどうかが分からない環境で、止まった末尾を送るまでの待ち時間。 */
+export const HELD_PREEDIT_COMMIT_DELAY_MS = 300;
 
 /** ライブ入力で起きたこと。 */
 export type LiveInputEvent =
-	| { readonly kind: 'change'; readonly text: string }
+	/** 入力欄が変わった。`composing` は入力欄に変換中の範囲があるか（分からなければ undefined）。 */
+	| { readonly kind: 'change'; readonly text: string; readonly composing?: boolean }
 	| { readonly kind: 'key'; readonly key: string }
+	/** Enter。持っている末尾も送ってから CR を送り、この入力欄は引退する（画面側は入力欄を作り直す）。 */
 	| { readonly kind: 'submit' }
-	/** 入力欄を空に戻す指示を出した（`clear()` を呼んだ）。 */
-	| { readonly kind: 'cleared' };
+	/** 持っている末尾を送る（変換中かどうか分からないまま止まったとき・フォーカスが外れたとき）。 */
+	| { readonly kind: 'flush' };
 
 export interface LiveInputStep {
 	readonly state: LiveInputState;
-	/** PC へ順に送るもの（文字・DEL・CR）。 */
+	/** PC へ順に送るもの（文字・DEL の並び・CR）。 */
 	readonly send: readonly string[];
 }
 
@@ -52,6 +82,8 @@ const SMART_PUNCTUATION: ReadonlyArray<readonly [RegExp, string]> = [
 	// スマートダッシュは「--」を「—」に置き換える。
 	[/[—–]/g, '--'],
 	[/…/g, '...'],
+	// 日本語キーボードの空白は、変換していないと全角スペースになる。
+	[/\u3000/g, ' '],
 ];
 
 /** iOS のスマート句読点を、打ったとおりの ASCII に戻す。 */
@@ -59,78 +91,86 @@ export function normalizeLiveText(text: string): string {
 	return SMART_PUNCTUATION.reduce((value, [pattern, ascii]) => value.replace(pattern, ascii), text);
 }
 
-/** そのまま送ってよい文字だけか（印字できる ASCII とタブ）。 */
-function isSendable(text: string): boolean {
-	return /^[\x20-\x7E\t]*$/.test(text);
-}
+const LAST_ASCII_CODE_POINT = 0x7f;
 
-function commonPrefixLength(a: string, b: string): number {
-	const max = Math.min(a.length, b.length);
+function commonPrefixLength(a: readonly string[], b: readonly string[]): number {
 	let i = 0;
-	while (i < max && a.charCodeAt(i) === b.charCodeAt(i)) {
+	while (i < a.length && i < b.length && a[i] === b[i]) {
 		i++;
 	}
 	return i;
 }
 
-function countSent(flags: string): number {
-	let count = 0;
-	for (const flag of flags) {
-		if (flag === '1') {
-			count++;
-		}
+/** 入力欄の末尾のうち、変換中として送らずに持つ長さ（コードポイント数）。 */
+function heldLength(field: readonly string[], stable: number, composing: boolean | undefined): number {
+	if (composing !== undefined) {
+		return composing ? field.length - stable : 0;
 	}
-	return count;
+	let held = 0;
+	while (held < field.length && (field[field.length - 1 - held]?.codePointAt(0) ?? 0) > LAST_ASCII_CODE_POINT) {
+		held++;
+	}
+	// 送り済みの部分まで遡って持つと、それを DEL で消して打ち直すことになる。
+	return Math.min(held, field.length - stable);
 }
 
-function onChange(state: LiveInputState, raw: string): LiveInputStep {
-	const next = normalizeLiveText(raw);
-	// 空に戻す指示のあとに届いた文字列: 前の文字列の続きなら指示は捨てられている、そうでなければ空になった。
-	const base = state.clearing && !(next.length > state.text.length && next.startsWith(state.text))
-		? LIVE_INPUT_EMPTY
-		: state;
-	const prefix = commonPrefixLength(base.text, next);
-	const removedFlags = base.sent.slice(prefix);
-	const added = next.slice(prefix);
-	const keptFlags = base.sent.slice(0, prefix);
-	const sendable = isSendable(added);
+/**
+ * 入力欄を PC へ写す1歩。数えるのはコードポイント単位（絵文字のサロゲートペアを割らない。
+ * シェルの ⌫ も1文字＝1コードポイントで消す）。
+ */
+function mirror(sent: string, text: string, commitHeld: boolean, composing: boolean | undefined): { readonly sent: string; readonly held: string; readonly send: string[] } {
+	const field = Array.from(text);
+	const sentPoints = Array.from(sent);
+	const stable = commonPrefixLength(sentPoints, field);
+	const held = commitHeld ? 0 : heldLength(field, stable, composing);
+	const target = field.slice(0, field.length - held);
+	const kept = Math.min(stable, target.length);
+	const erase = sentPoints.length - kept;
+	const append = target.slice(kept).join('');
+	const send: string[] = [];
+	if (erase > 0) {
+		send.push(LIVE_DEL.repeat(erase));
+	}
+	if (append.length > 0) {
+		send.push(append);
+	}
+	return { sent: target.join(''), held: field.slice(field.length - held).join(''), send };
+}
 
-	if (removedFlags.length === 0) {
-		// 伸びた分。ASCII でなければ変換途中（または変換した結果）なので送らない。
-		return {
-			state: { text: next, sent: keptFlags + (sendable ? '1' : '0').repeat(added.length), clearing: false },
-			send: sendable && added.length > 0 ? [added] : [],
-		};
-	}
-	if (added.length === 0) {
-		// 縮んだ分。DEL は onKeyPress で送っている。
-		return { state: { text: next, sent: keptFlags, clearing: false }, send: [] };
-	}
-	// 途中の置き換え。送らない。ただし日本語の変換が始まった（ローマ字がかなに置き換わった）ときは、
-	// 先に送ってしまったローマ字を DEL で取り消す。
-	const undo = sendable ? 0 : countSent(removedFlags);
-	return {
-		state: { text: next, sent: keptFlags + '0'.repeat(added.length), clearing: false },
-		send: undo > 0 ? [LIVE_DEL.repeat(undo)] : [],
-	};
+function onChange(state: LiveInputState, raw: string, composing: boolean | undefined): LiveInputStep {
+	const next = normalizeLiveText(raw);
+	const step = mirror(state.sent, next, false, composing);
+	return { state: { text: next, sent: step.sent, held: step.held }, send: step.send };
+}
+
+/** 持っている末尾も含めて全部写す（Enter の前・止まった変換・フォーカスが外れたとき）。 */
+function commit(state: LiveInputState): LiveInputStep {
+	const step = mirror(state.sent, state.text, true, false);
+	return { state: { ...state, sent: step.sent, held: '' }, send: step.send };
 }
 
 /** ライブ入力の1つの出来事を受けて、次の状態と PC へ送るものを返す。 */
 export function liveInputStep(state: LiveInputState, event: LiveInputEvent): LiveInputStep {
+	// 引退した入力欄に届いたものは何も送らない（retired のコメント）。
+	if (state.retired === true) {
+		return { state, send: [] };
+	}
 	switch (event.kind) {
 		case 'change':
-			return onChange(state, event.text);
+			return onChange(state, event.text, event.composing);
 		case 'key': {
 			if (event.key !== 'Backspace') {
 				return { state, send: [] };
 			}
-			// 送っていない文字（変換途中のかな）を消す ⌫ は PC へ送らない。空の入力欄での ⌫ は送る。
-			const last = state.clearing ? undefined : state.sent.at(-1);
-			return { state, send: last === '0' ? [] : [LIVE_DEL] };
+			// 入力欄に文字があれば、縮んだ分は変更イベントで写す（変換中の文字を消す ⌫ は PC へ届かない）。
+			// 空の入力欄の ⌫ は変更イベントが来ないので、ここで送る。
+			return { state, send: state.text.length === 0 ? [LIVE_DEL] : [] };
 		}
-		case 'submit':
-			return { state, send: [LIVE_ENTER] };
-		case 'cleared':
-			return { state: { ...state, clearing: true }, send: [] };
+		case 'submit': {
+			const flushed = commit(state);
+			return { state: LIVE_INPUT_RETIRED, send: [...flushed.send, LIVE_ENTER] };
+		}
+		case 'flush':
+			return commit(state);
 	}
 }

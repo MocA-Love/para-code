@@ -12,13 +12,25 @@ const NOTHING: ShortcutContext = {
 	escape: false,
 	inSettings: false,
 	inNotifications: false,
+	terminalArrows: false,
 };
 
 const ids = (context: ShortcutContext) => availableShortcuts(context).map(def => def.id);
 
+describe('terminal arrows', () => {
+	test('矢印はライブ入力にフォーカスがある間だけ PC のターミナルへ回す', () => {
+		const arrows = ['terminal.up', 'terminal.down', 'terminal.left', 'terminal.right'];
+		expect([
+			ids(NOTHING).filter(id => arrows.includes(id)),
+			ids({ ...NOTHING, terminalArrows: true }).filter(id => arrows.includes(id)),
+			shortcutById('terminal.left')?.action,
+		]).toEqual([[], arrows, { kind: 'terminalArrow', key: 'left' }]);
+	});
+});
+
 describe('SHORTCUTS', () => {
 	test('入力欄より先に効かせるのは、入力欄の標準の動きとぶつかるものだけ（Esc は変換の取り消しを奪わない）', () => {
-		expect(SHORTCUTS.filter(def => def.overridesTextInput === true).map(def => def.id)).toEqual(['tab.prev', 'tab.next', 'send', 'agent.prev', 'agent.next']);
+		expect(SHORTCUTS.filter(def => def.overridesTextInput === true).map(def => def.id)).toEqual(['tab.prev', 'tab.next', 'send', 'agent.prev', 'agent.next', 'terminal.up', 'terminal.down', 'terminal.left', 'terminal.right']);
 	});
 
 	test('同じキーの組み合わせを2つに割り当てない', () => {

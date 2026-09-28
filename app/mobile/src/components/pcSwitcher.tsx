@@ -18,6 +18,7 @@ import { Badge } from './badge.js';
 import { SectionHeader } from './sectionHeader.js';
 import { hapticSelection } from '../haptics.js';
 import { useNow } from '../time.js';
+import { PAIRING_REJECTED_LABEL, isPairingRejected } from '../pcStatus.js';
 
 /**
  * ペアリング済みPCの切り替え。
@@ -35,6 +36,9 @@ const POPOVER_WIDTH = 288;
 function pcStateLabel(pc: PcSummary, active: boolean): { text: string; tone: 'live' | 'dim' | 'warn' } {
 	if (pc.connection === 'online' && pc.pcOnline) {
 		return active ? { text: '● 接続中', tone: 'live' } : { text: '● 待機中', tone: 'live' };
+	}
+	if (isPairingRejected(pc)) {
+		return { text: `○ ${PAIRING_REJECTED_LABEL}`, tone: 'warn' };
 	}
 	if (pc.connection === 'online' || pc.connection === 'handshaking') {
 		return { text: '○ PCオフライン', tone: 'dim' };

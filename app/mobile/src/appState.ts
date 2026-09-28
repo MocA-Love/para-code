@@ -33,8 +33,11 @@ import type { ConnectionState, PairedCredentials } from './relayClient.js';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
 import { setMobileDiagnosticCorrelationTag } from './mobileDiagnostics.js';
-import { configureNotificationHandler, createTerminalOperationOutboxStore, deleteLegacyNotifyKey, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, migrateLegacyTerminalOperationOutbox, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
+import { configureNotificationHandler, createTerminalOperationOutboxStore, deleteLegacyNotifyKey, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, migrateLegacyTerminalOperationOutbox, persistNotifyKey, rnSocketFactory, secureKeyStore } from './platform.js';
+import { notifyCollapseKey } from './notificationTray.js';
+import { TrayReconcileRequests, dismissTrayHandledByPc, presentCollapsedNotification, reconcileTrayWithState } from './notificationTraySync.js';
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
+import { subscribeNetworkRevival } from './networkRevival.js';
 import { shouldPresentNotifyBanner } from './notificationPolicy.js';
 import { notifySubtitle } from './notifyPresentation.js';
 import { defaultTerminalPrefs, normalizeTerminalPrefs, type TerminalPrefs, type TerminalViewport } from './terminalViewport.js';
@@ -76,6 +79,8 @@ export interface PcSummary {
 	readonly connection: ConnectionState;
 	/** リレーの向こうでPara Codeが動いているか。 */
 	readonly pcOnline: boolean;
+	/** リレーがこの端末の資格を拒んだ（そのPCとは再ペアリングが必要）。 */
+	readonly pairingRejected: boolean;
 	readonly workspaces: number;
 	readonly terminals: number;
 	/** 応答待ち（質問・承認）のエージェント数。 */
@@ -462,6 +467,7 @@ function summarizeRuntime(runtime: PcRuntime): PcSummary {
 		hue: pcHue(runtime.pc),
 		connection: runtime.state.connection,
 		pcOnline: runtime.state.pcOnline,
+		pairingRejected: runtime.state.pairingRejected,
 		workspaces: workspace?.workspaces.length ?? 0,
 		terminals: terminals.length,
 		// 要対応の数え方はタブのバッジ・ドロワーと同じ（`attentionCount.ts`）。
@@ -482,6 +488,7 @@ function pcHue(pc: PairedPc): number {
 
 function sameSummary(a: PcSummary, b: PcSummary): boolean {
 	return a.id === b.id && a.name === b.name && a.hue === b.hue && a.connection === b.connection && a.pcOnline === b.pcOnline
+		&& a.pairingRejected === b.pairingRejected
 		&& a.workspaces === b.workspaces && a.terminals === b.terminals && a.waiting === b.waiting
 		&& a.lastOnlineAt === b.lastOnlineAt
 		// battery はオブジェクトなので中身で比べる（参照比較だと毎回「変わった」ことになり、
@@ -529,6 +536,8 @@ let prefsSyncSubscribed = false;
 let voiceNativeChain: Promise<void> = Promise.resolve();
 /** 接続復帰で購読を送り直す購読の多重登録防止。 */
 let voiceResubscribeSubscribed = false;
+/** 回線の変化の購読の多重登録防止（init()失敗リトライ対策）。 */
+let networkRevivalSubscribed = false;
 let connectionHeartbeat: ReturnType<typeof setInterval> | undefined;
 
 function stopConnectionHeartbeat(): void {
@@ -550,7 +559,7 @@ function startConnectionHeartbeat(): void {
 			// 未接続なら再接続クライアント自身のバックオフに任せる。全台を毎回叩き起こすと、
 			// 到達できないPCへ25秒ごとに接続を試み続けることになる。
 			if (runtime.pc.id === activePcId || runtime.state.connection === 'online') {
-				runtime.controller.ensureConnected();
+				runtime.controller.ensureConnected(true);
 			}
 		}
 	}, 25_000);
@@ -576,6 +585,20 @@ function isActiveWorkspace(ws: string): boolean {
 /** 上の判定に引っかかったときに返す拒否理由（画面にはそのまま出る）。 */
 function wrongPcWorkspaceError(): Error {
 	return new Error('このワークスペースは、いま接続しているPCのものではありません');
+}
+
+/** 通知センターの突き合わせを「次に届くPCの状態」まで待たせる台帳（W2-02）。 */
+const trayReconcile = new TrayReconcileRequests();
+
+/**
+ * 前面へ戻ったときの突き合わせを頼む。繋がったままのPCには状態を求め直す（繋ぎ直すPCは
+ * 繋がった時点で applyControllerState が頼み直す）。
+ */
+function requestTrayReconcile(runtime: PcRuntime): void {
+	trayReconcile.request(runtime.pc.id, runtime.controller.stateFramesReceived, Date.now());
+	if (runtime.state.connection === 'online') {
+		runtime.controller.ensureConnected();
+	}
 }
 
 /** いま接続を保つべきPC（アクティブ＋設定が許すなら残り全部）。 */
@@ -661,6 +684,10 @@ function createRuntime(pc: PairedPc, operationRun: number, persistedOutbox: read
 		persistedOutbox,
 		pc.creds,
 	);
+	// PCが「処理済み」と知らせてきた通知は、通知センター（ロック画面）からも消す（W2-02）。
+	controller.onNotifyHandled = handled => {
+		dismissTrayHandledByPc(pc.id, handled).catch(err => console.warn('[appState] failed to clear handled notifications', err));
+	};
 	pending = { pc, controller, state: createEmptyStoreState(), lastOnlineAt: undefined, started: false, drafts: {} };
 	return pending;
 }
@@ -674,6 +701,17 @@ function applyControllerState(runtime: PcRuntime, next: StoreState): void {
 	runtime.state = next;
 	if (next.pcOnline) {
 		runtime.lastOnlineAt = Date.now();
+	}
+	// 繋がり直したら、その後に届くPCの状態で通知センターを突き合わせる（W2-02）。
+	if (!wasOnline && next.connection === 'online') {
+		trayReconcile.request(runtime.pc.id, runtime.controller.stateFramesReceived, Date.now());
+	}
+	if (next.sessionProtocolReady && next.workspace?.complete === true) {
+		const requestedAt = trayReconcile.take(runtime.pc.id, runtime.controller.stateFramesReceived);
+		if (requestedAt !== undefined) {
+			reconcileTrayWithState(runtime.pc.id, next.workspace.terminals, requestedAt)
+				.catch(err => console.warn('[appState] failed to reconcile the notification center', err));
+		}
 	}
 	// 見ていないPCにも、繋がった時点で同じ通知設定を持たせる（PC側はこの値でアプリ未起動時の
 	// プッシュを送るか決めるため、届いていないと裏のPCだけ設定を無視して鳴り続ける）。
@@ -767,12 +805,17 @@ function handleNotify(runtime: PcRuntime, payload: NotifyPayload): void {
 	// タイトルはPCが決めたワークツリー名のまま出す。2台以上と繋いでいるときに「どのPCの話か」を
 	// 足すのは電話側の仕事で、細い行の末尾へ回す（notifyPresentation.ts）。台帳の名前を渡すのは、
 	// ユーザーが付け替えた名前をPCが知らないため。
-	void presentLocalNotification(payload.title, notifySubtitle(payload.subtitle, runtime.pc.name, runtimes.size > 1), payload.body, {
+	// notifyId / kind は通知センターの後始末（notificationTray.ts）が、同じエージェントの前の通知を
+	// 置き換える鍵は W2-08 が使う。プッシュ側は通知拡張（NSE）が同じ項目を userInfo に載せる。
+	void presentCollapsedNotification(payload.title, notifySubtitle(payload.subtitle, runtime.pc.name, runtimes.size > 1), payload.body, {
 		ws: payload.ws,
 		terminalKey: payload.terminalKey,
 		agentToken: payload.agentToken,
 		pcId: runtime.pc.id,
-	});
+		notifyId: payload.id,
+		kind: payload.kind,
+	}, notifyCollapseKey(runtime.pc.id, payload.kind, payload.agentToken, payload.terminalKey))
+		.catch(err => console.warn('[appState] failed to present a notification', err));
 }
 
 /**
@@ -925,6 +968,7 @@ function endVoiceNotifications(): void {
 export const useAppStore = create<AppState>(set => ({
 	connection: 'offline',
 	pcOnline: false,
+	pairingRejected: false,
 	sessionProtocolReady: false,
 	pushRegistered: undefined,
 	workspace: undefined,
@@ -1149,6 +1193,8 @@ export const useAppStore = create<AppState>(set => ({
 						// 見ていないPCも繋いだままにしている場合は、そちらも一緒に起こす。
 						for (const runtime of connectedRuntimes()) {
 							runtime.controller.resumeFromBackground();
+							// PCで既に見た通知をロック画面・通知センターから消す（W2-02）
+							requestTrayReconcile(runtime);
 						}
 					}
 					startConnectionHeartbeat();
@@ -1175,6 +1221,22 @@ export const useAppStore = create<AppState>(set => ({
 			});
 			if (shouldRunForegroundWork(RNAppState.currentState)) {
 				startConnectionHeartbeat();
+			}
+			// 回線が戻った・切り替わった（Wi-Fi ⇄ セルラー）ら、バックオフや心拍を待たずに繋ぎ直す（W2-05）。
+			// 前面かどうかは見ない: 音声通知のためにバックグラウンドでもソケットを開けているときも効かせる。
+			// バックグラウンドで畳んだ接続は RelayClient が suspend 中として何もしない。資格を拒まれている
+			// PCは RelayClient が決めた時刻まで待つ（急かさない）。
+			// expo-network のネイティブ部品が無いビルドでは何もしない（networkRevival.ts）。
+			if (!networkRevivalSubscribed) {
+				networkRevivalSubscribed = true;
+				subscribeNetworkRevival(() => {
+					if (useAppStore.getState().manualOffline) {
+						return;
+					}
+					for (const runtime of connectedRuntimes()) {
+						runtime.controller.ensureConnected();
+					}
+				});
 			}
 			set({
 				initializing: false,

@@ -46,6 +46,7 @@ import { loadParadisMobileWordDiffBundle, renderParadisMobileWordDiffHtml } from
 import { Channels, decodeParadisMobileWarmLeaseRequest, encodeNotify, NotifyKind, NotifyPayload, ParadisMobileWarmLeaseRequest } from '../common/paradisMobileProtocol.js';
 import { decodeParadisMobileOfficeRequest, getParadisMobileOfficeHostFeatureBits, PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, type ParadisMobileOfficeRequest, type ParadisMobileOfficeResponse } from '../common/paradisMobileOfficeProtocol.js';
 import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
+import { paradisPickNotifyInstance } from '../common/paradisNotifySource.js';
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
@@ -614,6 +615,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private readonly terminalSubscribers = new Map<number, Set<string>>();
 	// エージェント状態の遷移検知用（stateKey → 直近の状態）。
 	private readonly previousScopeStatus = new Map<string, string>();
+	/** ペインごとの前回の状態（通知の送り主を「今回その状態へ変わったペイン」にするため）。 */
+	private readonly previousInstanceStatus = new Map<number, string>();
 	// attach時のVTスナップショット生成に使う serialize addon（PC側xtermの現画面を
 	// エスケープシーケンス込みでシリアライズし、モバイルのxtermで完全再現するため）。
 	private readonly xtermAddonImporter = new XtermAddonImporter();
@@ -1142,7 +1145,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * これがモバイルの「エージェントの質問通知」の供給源。全オンラインモバイルへ届ける。
 	 */
 	private detectAndNotify(): void {
-		for (const inst of this.allInstances()) {
+		const instances = this.allInstances();
+		const candidates = instances.map(candidate => ({
+			instanceId: candidate.instanceId,
+			stateKey: this.terminalScopeService.getStateKeyForInstance(candidate.instanceId),
+			status: this.agentStatusStore.getInstanceStatus(candidate.instanceId),
+			previousStatus: this.previousInstanceStatus.get(candidate.instanceId),
+		}));
+		for (const inst of instances) {
 			const stateKey = this.terminalScopeService.getStateKeyForInstance(inst.instanceId);
 			if (!stateKey) {
 				continue;
@@ -1154,13 +1164,23 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// transcript ミラーが質問本文・選択肢つきの通知を別経路で全モバイルへ
 				// 送るため、状態遷移ベースの汎用通知と二重になるのを防ぐ。
 				if (status === 'permission' || status === 'review') {
-					this.emitNotify(status === 'permission' ? 'agent-question' : 'agent-done', inst.instanceId, stateKey, inst.title);
+					// スコープの状態は配下のまとめなので、実際にその状態になったペインを送り主にする
+					// （同じスペースの別のエージェントのトークンで通知しない。paradisPickNotifyInstance）。
+					const sourceId = paradisPickNotifyInstance(candidates, stateKey, status);
+					const source = instances.find(candidate => candidate.instanceId === sourceId) ?? inst;
+					this.emitNotify(status === 'permission' ? 'agent-question' : 'agent-done', source.instanceId, stateKey, source.title);
 				}
 			}
 			if (status) {
 				this.previousScopeStatus.set(stateKey, status);
 			} else {
 				this.previousScopeStatus.delete(stateKey);
+			}
+		}
+		this.previousInstanceStatus.clear();
+		for (const candidate of candidates) {
+			if (candidate.status !== undefined) {
+				this.previousInstanceStatus.set(candidate.instanceId, candidate.status);
 			}
 		}
 	}
