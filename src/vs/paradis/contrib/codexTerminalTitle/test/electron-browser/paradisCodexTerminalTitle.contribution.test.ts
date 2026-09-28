@@ -7,10 +7,34 @@ import { deepStrictEqual, strictEqual } from 'assert';
 import { Schemas } from '../../../../../base/common/network.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { classifyTrackableCodexCommand, createCodexTerminalTitle, ICodexTrackableCommand, isCodexTuiCommand, resolveWritableCodexHome } from '../../electron-browser/paradisCodexTerminalTitle.contribution.js';
+import { classifyTrackableCodexCommand, createCodexTerminalTitle, ICodexTrackableCommand, isCodexTuiCommand, resolveWritableCodexHome, writeCodexAccountHomes } from '../../electron-browser/paradisCodexTerminalTitle.contribution.js';
 
 suite('ParadisCodexTerminalTitle', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	suite('writeCodexAccountHomes', () => {
+		const home = (homePath: string, overrides: { isDefault?: boolean; signedIn?: boolean } = {}) => ({ homePath, label: homePath, isDefault: false, signedIn: true, ...overrides });
+
+		test('keeps writing the other homes after one fails, and reports that not every home was written', async () => {
+			const attempted: string[] = [];
+			const allWritten = await writeCodexAccountHomes([
+				home('/h/.codex', { isDefault: true }),
+				home('/h/.codex-2'),
+				home('/h/.codex-3'),
+				home('/h/.codex-4', { signedIn: false }),
+				home('/h/.codex-5'),
+			], async uri => {
+				attempted.push(uri.path);
+				return uri.path !== '/h/.codex-3';
+			});
+			// false tells the caller not to record the home set, so the next account state retries it.
+			deepStrictEqual({ attempted, allWritten }, { attempted: ['/h/.codex-2', '/h/.codex-3', '/h/.codex-5'], allWritten: false });
+		});
+
+		test('reports success when every home was written, which lets the caller stop retrying', async () => {
+			strictEqual(await writeCodexAccountHomes([home('/h/.codex-2'), home('/h/.codex-3')], async () => true), true);
+		});
+	});
 
 	suite('isCodexTuiCommand', () => {
 		for (const command of [
