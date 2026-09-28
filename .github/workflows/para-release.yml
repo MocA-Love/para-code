@@ -261,6 +261,8 @@ jobs:
       - name: Pre-notarize Computer Use helper
         if: ${{ github.event.inputs.computer_use_helper != 'false' }}
         continue-on-error: true
+        # Apple's queue can be slow; never let the optional helper hold the release job.
+        timeout-minutes: 25
         env:
           CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -287,7 +289,7 @@ jobs:
           ditto -c -k --keepParent "$HELPER" "$RUNNER_TEMP/computer-use-helper.zip" || reject "zip"
           SUBMIT_JSON="$(xcrun notarytool submit "$RUNNER_TEMP/computer-use-helper.zip" \
             --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" \
-            --wait --output-format json)" || reject "notarytool submit"
+            --wait --timeout 20m --output-format json)" || reject "notarytool submit"
           echo "$SUBMIT_JSON"
           SUBMISSION_ID="$(node -p 'JSON.parse(process.argv[1]).id' "$SUBMIT_JSON")"
           SUBMISSION_STATUS="$(node -p 'JSON.parse(process.argv[1]).status' "$SUBMIT_JSON")"
@@ -310,8 +312,9 @@ jobs:
           HELPER="$HELPER_DIR/Para Code Computer Use.app"
           APP="$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}/$(node -p "require('./product.json').nameLong").app"
           if [ -f "$HELPER_DIR/prenotarized" ] && [ -d "$HELPER" ]; then
+            # Both architectures must be present: the same helper ships in the x64 and the arm64 package.
+            lipo "$HELPER/Contents/MacOS/ParadisComputerUse" -verify_arch arm64 x86_64
             node build/paradis/computerUse/embedHelper.ts "$APP" --helper "$HELPER"
-            lipo -archs "$APP/Contents/Helpers/Para Code Computer Use.app/Contents/MacOS/ParadisComputerUse"
           else
             echo "::notice::No pre-notarized Computer Use helper; shipping without it"
           fi

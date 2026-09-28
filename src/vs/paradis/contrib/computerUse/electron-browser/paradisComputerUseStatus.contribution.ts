@@ -12,19 +12,29 @@
 // 許可は Para Code 本体ではなく「Para Code Computer Use」に付ける、と必ず書く（本体に付けると、ターミナルの
 // 全プロセスが同じ許可を使えてしまい、アプリごとの承認を素通りできる。設計書 4 章）。
 // 許可したアプリの一覧と取り消し、OS の許可のやり直しは後の段（設計書 7 章 S4）で足す。
+//
+// 設定がオフからオンに変わったら 1 回知らせる（レビュー L14）。ペインのエージェントは同じユーザーなので
+// settings.json を書き換えてオンにできる。オン・オフは守りの境界ではなく、境界はアプリごとの承認だが、
+// 知らないうちにオンになっていたら利用者が気づけるようにする。
 
+import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import {
 	IParadisComputerUseStatus,
+	PARADIS_COMPUTER_USE_ENABLED_SETTING,
 	PARADIS_COMPUTER_USE_REFRESH_METHOD,
 	PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID,
 	PARADIS_COMPUTER_USE_STATUS_CHANNEL,
 	ParadisComputerUseAvailability,
+	paradisComputerUseEnabled,
 	paradisParseComputerUseStatus,
 } from '../common/paradisComputerUse.js';
 
@@ -99,3 +109,31 @@ class ParadisShowComputerUseStatusAction extends Action2 {
 }
 
 registerAction2(ParadisShowComputerUseStatusAction);
+
+/** 設定がオフからオンに変わったら 1 回知らせる。 */
+class ParadisComputerUseEnabledNotice extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'workbench.contrib.paradisComputerUseEnabledNotice';
+
+	constructor(
+		@IConfigurationService configurationService: IConfigurationService,
+		@INotificationService notificationService: INotificationService,
+	) {
+		super();
+		let enabled = paradisComputerUseEnabled(configurationService.getValue(PARADIS_COMPUTER_USE_ENABLED_SETTING));
+		this._register(configurationService.onDidChangeConfiguration(event => {
+			if (!event.affectsConfiguration(PARADIS_COMPUTER_USE_ENABLED_SETTING)) {
+				return;
+			}
+			const now = paradisComputerUseEnabled(configurationService.getValue(PARADIS_COMPUTER_USE_ENABLED_SETTING));
+			if (now && !enabled) {
+				notificationService.notify({
+					severity: Severity.Info,
+					message: localize('paradis.computerUse.enabledNotice', "Computer Use がオンになりました。エージェントは、あなたが承認したアプリの画面を読み、操作できます。心当たりが無ければ、Para Code の設定の「Computer Use」でオフにしてください。"),
+				});
+			}
+			enabled = now;
+		}));
+	}
+}
+
+registerWorkbenchContribution2(ParadisComputerUseEnabledNotice.ID, ParadisComputerUseEnabledNotice, WorkbenchPhase.AfterRestored);
