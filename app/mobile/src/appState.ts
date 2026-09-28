@@ -1223,12 +1223,14 @@ export const useAppStore = create<AppState>(set => ({
 				startConnectionHeartbeat();
 			}
 			// 回線が戻った・切り替わった（Wi-Fi ⇄ セルラー）ら、バックオフや心拍を待たずに繋ぎ直す（W2-05）。
-			// 前面にいるときだけ。資格を拒まれているPCは RelayClient が決めた時刻まで待つ（急かさない）。
+			// 前面かどうかは見ない: 音声通知のためにバックグラウンドでもソケットを開けているときも効かせる。
+			// バックグラウンドで畳んだ接続は RelayClient が suspend 中として何もしない。資格を拒まれている
+			// PCは RelayClient が決めた時刻まで待つ（急かさない）。
 			// expo-network のネイティブ部品が無いビルドでは何もしない（networkRevival.ts）。
 			if (!networkRevivalSubscribed) {
 				networkRevivalSubscribed = true;
 				subscribeNetworkRevival(() => {
-					if (!shouldRunForegroundWork(RNAppState.currentState) || useAppStore.getState().manualOffline) {
+					if (useAppStore.getState().manualOffline) {
 						return;
 					}
 					for (const runtime of connectedRuntimes()) {

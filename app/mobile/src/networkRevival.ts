@@ -3,7 +3,8 @@
 import { requireOptionalNativeModule } from 'expo-modules-core';
 
 /**
- * 回線が戻った・切り替わった（オフライン → オンライン、Wi-Fi ⇄ セルラー）ことを知らせる（W2-05。
+ * 回線が戻った・切り替わった（オフライン → オンライン、Wi-Fi ⇄ セルラー）ことを、短い間の変化を
+ * まとめて1回知らせる（W2-05。
  * Orca の connection-revival-triggers.ts に倣った）。
  *
  * 回線が切り替わると古いソケットの経路は死ぬが、iOS は onclose を返さないことが多い。これが無いと
@@ -45,6 +46,12 @@ export function shouldNudgeForNetworkChange(previous: NetworkSnapshot | undefine
 	return cameOnline || switchedNetworks;
 }
 
+/**
+ * 変化のイベントをまとめる時間。回線の切り替えでは「切れた・繋がった・種類が変わった」が
+ * 短い間に続けて届くので、1回ずつ繋ぎ直すと張ったばかりのソケットを自分で捨てることになる。
+ */
+export const NETWORK_REVIVAL_DEBOUNCE_MS = 750;
+
 function loadNetworkModule(): NetworkModuleLike | undefined {
 	try {
 		return requireOptionalNativeModule<NetworkModuleLike>('ExpoNetwork') ?? undefined;
@@ -57,12 +64,24 @@ function loadNetworkModule(): NetworkModuleLike | undefined {
  * 回線の変化を購読し、繋ぎ直すべき変化のたびに `onNudge` を呼ぶ。解除する関数を返す。
  * ネイティブ部品が無ければ何もしない（解除関数も何もしない）。
  */
-export function subscribeNetworkRevival(onNudge: () => void, module: NetworkModuleLike | undefined = loadNetworkModule()): () => void {
+export function subscribeNetworkRevival(onNudge: () => void, module: NetworkModuleLike | undefined = loadNetworkModule(), debounceMs = NETWORK_REVIVAL_DEBOUNCE_MS): () => void {
 	if (module === undefined) {
 		return () => undefined;
 	}
 	let last: NetworkSnapshot | undefined;
 	let disposed = false;
+	let pending: ReturnType<typeof setTimeout> | undefined;
+	const schedule = () => {
+		if (pending !== undefined) {
+			clearTimeout(pending);
+		}
+		pending = setTimeout(() => {
+			pending = undefined;
+			if (!disposed) {
+				onNudge();
+			}
+		}, debounceMs);
+	};
 	// 変化のイベントしか来ないので、最初の状態を読んでおく（読む前の変化はそのまま基準にする）。
 	module.getNetworkStateAsync().then(state => {
 		if (!disposed && last === undefined) {
@@ -76,7 +95,7 @@ export function subscribeNetworkRevival(onNudge: () => void, module: NetworkModu
 			const previous = last;
 			last = next;
 			if (!disposed && shouldNudgeForNetworkChange(previous, next)) {
-				onNudge();
+				schedule();
 			}
 		});
 	} catch (err) {
@@ -84,6 +103,9 @@ export function subscribeNetworkRevival(onNudge: () => void, module: NetworkModu
 	}
 	return () => {
 		disposed = true;
+		if (pending !== undefined) {
+			clearTimeout(pending);
+		}
 		subscription?.remove();
 	};
 }
