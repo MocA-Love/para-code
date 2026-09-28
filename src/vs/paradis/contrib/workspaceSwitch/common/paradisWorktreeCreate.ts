@@ -298,6 +298,11 @@ export interface IParadisAgentModelOption {
 	readonly id: string;
 	/** 選択肢として表示する名前。無ければ id を表示する。 */
 	readonly label?: string;
+	/**
+	 * id が別名のとき、今の CLI でそれが指す正式なモデル id（例: opus → claude-opus-5-5）。CLI から
+	 * 取れた候補にだけ付く。モバイルのチャットが、動いているモデルを候補と突き合わせるのに使う。
+	 */
+	readonly resolvedModel?: string;
 	/** 選択時にコマンドへ付与するフラグ（例: --model opus）。 */
 	readonly flag: string;
 	/**
@@ -355,9 +360,26 @@ export interface IParadisAgentLaunchOptions {
 
 /** Claude Code のエフォート語彙（2026-07時点の公式ドキュメント準拠）。 */
 const CLAUDE_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-/** Codex GPT-5.6 系のエフォート語彙。旧世代モデルは ultra 非対応。 */
+/** Codex のエフォート語彙（gpt-6-astra / gpt-5.6-sol / gpt-5.6-terra が選べる全部）。 */
 const CODEX_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-const CODEX_LEGACY_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** gpt-5.6-luna は ultra が無い。 */
+const CODEX_MAX_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** gpt-5.5 は max も無い。 */
+const CODEX_XHIGH_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh'];
+
+/**
+ * Codex のエフォートを渡すフラグ。codex-cli 0.155.1 には `--effort` が無く（渡すと起動しない）、
+ * 設定の上書き `-c model_reasoning_effort=<id>` で渡す。値は TOML として読めなければ文字列のまま使われる。
+ */
+export function paradisCodexEffortFlag(effortId: string): string {
+	return `-c model_reasoning_effort=${effortId}`;
+}
+
+/**
+ * Codex の full-auto に当たるフラグ。0.155.1 で `--full-auto` は無くなった（渡すと起動しない）ので、
+ * 同じ意味だった「作業ツリーへの書き込みを許す sandbox」と「確認はモデルが要ると判断したときだけ」を並べる。
+ */
+export const PARADIS_CODEX_FULL_AUTO_FLAGS = '--sandbox workspace-write --ask-for-approval on-request';
 
 // allow-any-unicode-next-line
 const STR_PERMISSION_DEFAULT = localize('paradis.agentPermission.default', "通常（確認あり）");
@@ -371,12 +393,13 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
 	{
 		id: 'claude', label: 'Claude Code', command: 'claude {prompt}',
 		models: [
-			{ id: 'fable', label: 'fable (Fable 5)', flag: '--model fable', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
-			{ id: 'opus', label: 'opus (Opus 5)', flag: '--model opus', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
+			// 別名が指す先と既定のエフォートは Claude Code 2.1.283 のもの。CLI から一覧を取れたときは使わない
+			{ id: 'fable', label: 'fable (Fable 5.1)', flag: '--model fable', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
+			{ id: 'opus', label: 'opus (Opus 5.5)', flag: '--model opus', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'medium' },
 			{ id: 'sonnet', label: 'sonnet (Sonnet 5)', flag: '--model sonnet', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
 			// Haiku 4.5 はエフォート非対応（efforts: [] でエフォート欄を無効化する）
 			{ id: 'haiku', label: 'haiku (Haiku 4.5)', flag: '--model haiku', efforts: [] },
-			{ id: 'opusplan', label: 'opusplan', flag: '--model opusplan', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
+			{ id: 'opusplan', label: 'opusplan', flag: '--model opusplan', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'medium' },
 		],
 		efforts: CLAUDE_EFFORT_IDS.map(id => ({ id, flag: `--effort ${id}` })),
 		permissions: [
@@ -387,19 +410,20 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
 	{
 		id: 'codex', label: 'Codex', command: 'codex {prompt}',
 		models: [
-			{ id: 'gpt-5.6-sol', flag: '--model gpt-5.6-sol', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
+			// codex-cli 0.155.1 の model/list（2026-09-28）。CLI から一覧を取れたときは使わない
+			{ id: 'gpt-6-astra', flag: '--model gpt-6-astra', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
+			{ id: 'gpt-5.6-sol', flag: '--model gpt-5.6-sol', efforts: CODEX_EFFORT_IDS, defaultEffort: 'low' },
 			{ id: 'gpt-5.6-terra', flag: '--model gpt-5.6-terra', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
-			{ id: 'gpt-5.6-luna', flag: '--model gpt-5.6-luna', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
-			{ id: 'gpt-5.5', flag: '--model gpt-5.5', efforts: CODEX_LEGACY_EFFORT_IDS, defaultEffort: 'medium' },
-			{ id: 'gpt-5.4', flag: '--model gpt-5.4', efforts: CODEX_LEGACY_EFFORT_IDS, defaultEffort: 'medium' },
+			{ id: 'gpt-5.6-luna', flag: '--model gpt-5.6-luna', efforts: CODEX_MAX_EFFORT_IDS, defaultEffort: 'medium' },
+			{ id: 'gpt-5.5', flag: '--model gpt-5.5', efforts: CODEX_XHIGH_EFFORT_IDS, defaultEffort: 'medium' },
 		],
-		efforts: CODEX_EFFORT_IDS.map(id => ({ id, flag: `--effort ${id}` })),
+		efforts: CODEX_EFFORT_IDS.map(id => ({ id, flag: paradisCodexEffortFlag(id) })),
 		permissions: [
 			{ id: 'default', label: STR_PERMISSION_DEFAULT, flag: '' },
 			{
-				id: 'full-auto', label: 'full-auto', flag: '--full-auto',
+				id: 'full-auto', label: 'full-auto', flag: PARADIS_CODEX_FULL_AUTO_FLAGS,
 				// allow-any-unicode-next-line
-				hint: localize('paradis.agentPermission.fullAutoHint', "sandbox内で自動実行し、失敗時のみ確認します")
+				hint: localize('paradis.agentPermission.fullAutoHint', "sandbox内で自動実行し、必要なときだけ確認します")
 			},
 			{
 				// allow-any-unicode-next-line
