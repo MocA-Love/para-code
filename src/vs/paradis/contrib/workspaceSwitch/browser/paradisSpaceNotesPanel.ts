@@ -380,6 +380,10 @@ export class ParadisSpaceNotesPanel extends Disposable {
 
 		this.bodyElement.classList.toggle('hidden', this.editing);
 		this.editorElement.classList.toggle('hidden', !this.editing);
+		// 1行編集を閉じたときに置いた戻り先は、この描き直しで使わなくても持ち越さない (全体の編集へ移った後や、
+		// 後の別の描き直しで古い行番号へフォーカスを戻さないため)
+		const pendingTaskFocus = this.pendingTaskFocus;
+		this.pendingTaskFocus = undefined;
 		if (this.editing) {
 			return;
 		}
@@ -390,8 +394,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 		// 消す前に控えて書き戻す (トグル・他ウィンドウやモバイルからの更新・1行編集の確定で共通)
 		const sameSpace = this.renderedStateKey !== undefined && this.renderedStateKey === this.stateKey;
 		const scrollTop = sameSpace ? this.bodyElement.scrollTop : 0;
-		const focusedTask = sameSpace ? (this.pendingTaskFocus ?? this.focusedTask()) : undefined;
-		this.pendingTaskFocus = undefined;
+		const focusedTask = sameSpace ? (pendingTaskFocus ?? this.focusedTask()) : undefined;
 		this.renderedStateKey = this.stateKey;
 
 		this.bodyDisposables.clear();
