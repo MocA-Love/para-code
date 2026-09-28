@@ -795,7 +795,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.stopBackgroundProcessesOnClose', "ターミナルを閉じたら裏で動くプロセスも止める"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.stopBackgroundProcessesOnCloseDesc', "閉じたターミナルから起動されて残っている開発サーバーなどを止めます。nohup で起動したものは残します。macOS と Linux で働き、変更は新しく開いたターミナルから反映されます。"),
+		description: localize('paradis.settings.stopBackgroundProcessesOnCloseDesc', "閉じたターミナルから起動されて残っている開発サーバーなどを止めます。nohup で起動したものと screen・tmux などの中のものは残し、disown・&!・NO_HUP で残したものは止めます。タブやウィンドウを閉じたときに働き（終了や exit では働きません）、macOS と Linux が対象です。変更は新しく開いたターミナルから反映されます。"),
 		keywords: 'terminal close background process kill stop nohup dev server port orphan',
 	},
 	{
