@@ -170,3 +170,83 @@ func paradisOnMain<T>(_ work: () -> T) -> T {
 	}
 	return DispatchQueue.main.sync(execute: work)
 }
+
+// MARK: - 待ち受けのポート（レビュー N2）
+
+/** そのプロセスが TCP で待ち受けているポート。読めなければ nil。 */
+func paradisListeningTcpPorts(pid: pid_t) -> Set<Int>? {
+	let bufferSize = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+	guard bufferSize > 0 else {
+		return nil
+	}
+	let stride = MemoryLayout<proc_fdinfo>.stride
+	var descriptors = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(bufferSize) / stride + 16)
+	let used = descriptors.withUnsafeMutableBytes { raw in
+		proc_pidinfo(pid, PROC_PIDLISTFDS, 0, raw.baseAddress, Int32(raw.count))
+	}
+	guard used > 0 else {
+		return nil
+	}
+	var ports = Set<Int>()
+	for descriptor in descriptors.prefix(Int(used) / stride) where descriptor.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+		var info = socket_fdinfo()
+		let size = Int32(MemoryLayout<socket_fdinfo>.size)
+		guard proc_pidfdinfo(pid, descriptor.proc_fd, PROC_PIDFDSOCKETINFO, &info, size) == size else {
+			continue
+		}
+		guard info.psi.soi_kind == Int32(SOCKINFO_TCP), info.psi.soi_proto.pri_tcp.tcpsi_state == Int32(TSI_S_LISTEN) else {
+			continue
+		}
+		let port = Int(UInt16(bigEndian: UInt16(truncatingIfNeeded: info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport)))
+		ports.insert(port)
+	}
+	return ports
+}
+
+// MARK: - アプリの封印（レビュー N2）
+
+/**
+ * Para Code.app の封印（署名と、封印された resources）を読み直して確かめる。アプリの中の JS を書き換えると、
+ * 本物の shared process で他人のコードが動くため。`_metadata/` の下の出入りだけは許す（`paradisSealProblem`）。
+ * 問題が無ければ nil。
+ */
+func paradisVerifyAppSeal(bundlePath: String, requirement teamIdentifier: String) -> String? {
+	var staticCode: SecStaticCode?
+	guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: bundlePath) as CFURL, SecCSFlags(), &staticCode) == errSecSuccess, let staticCode else {
+		return "the Para Code app could not be opened for verification"
+	}
+	var requirement: SecRequirement?
+	let text = "anchor apple generic and certificate leaf[subject.OU] = \"\(teamIdentifier)\"" as CFString
+	guard SecRequirementCreateWithString(text, SecCSFlags(), &requirement) == errSecSuccess else {
+		return "the signing requirement could not be built"
+	}
+	var error: Unmanaged<CFError>?
+	let flags = SecCSFlags(rawValue: kSecCSCheckNestedCode | kSecCSStrictValidate)
+	let status = SecStaticCodeCheckValidityWithErrors(staticCode, flags, requirement, &error)
+	if status == errSecSuccess {
+		return nil
+	}
+	let info = (error?.takeRetainedValue()).flatMap { CFErrorCopyUserInfo($0) as? [String: Any] } ?? [:]
+	func paths(_ key: CFString) -> [String] {
+		return (info[key as String] as? [Any] ?? []).compactMap { ($0 as? URL)?.path ?? ($0 as? String) }
+	}
+	let added = paths(kSecCFErrorResourceAdded)
+	let altered = paths(kSecCFErrorResourceAltered)
+	let missing = paths(kSecCFErrorResourceMissing)
+	if added.isEmpty && altered.isEmpty && missing.isEmpty {
+		return "the Para Code app signature is not valid (\(status))"
+	}
+	return paradisSealProblem(added: added, altered: altered, missing: missing)
+}
+
+/** 実行ファイルを含む一番内側の .app の場所。 */
+func paradisBundlePath(containing executablePath: String) -> String? {
+	var url = URL(fileURLWithPath: executablePath)
+	while url.path != "/" {
+		if url.pathExtension == "app" {
+			return url.path
+		}
+		url.deleteLastPathComponent()
+	}
+	return nil
+}

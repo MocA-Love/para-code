@@ -54,7 +54,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 	}
 
 	func permissions() -> ParadisPermissionSnapshot {
-		return ParadisPermissionSnapshot(accessibility: AXIsProcessTrusted(), screenRecording: CGPreflightScreenCaptureAccess())
+		return ParadisPermissionSnapshot(accessibility: AXIsProcessTrusted(), screenRecording: CGPreflightScreenCaptureAccess(), inputMonitoring: CGPreflightListenEventAccess())
 	}
 
 	func responsibility() -> (ParadisResponsibility, Int32?) {
