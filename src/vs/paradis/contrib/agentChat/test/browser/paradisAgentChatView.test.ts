@@ -39,8 +39,15 @@ class TestHost implements IParadisAgentChatViewHost {
 	async getFullText(): Promise<string | undefined> { return undefined; }
 	async getImage(): Promise<IParadisAgentChatImageData | undefined> { return { mediaType: 'image/png', data: 'AAAA' }; }
 	getToggleKeybindingLabel(): string | undefined { return '⌘⇧J'; }
-	private readonly states: IParadisAgentChatCardStates = { questions: new Map(), approvals: new Map(), composer: { sending: false } };
-	cardStates(): IParadisAgentChatCardStates { return this.states; }
+	private readonly states = new Map<string, IParadisAgentChatCardStates>();
+	cardStates(token: string): IParadisAgentChatCardStates {
+		let states = this.states.get(token);
+		if (states === undefined) {
+			states = { questions: new Map(), approvals: new Map(), composer: { sending: false }, openGroups: new Set() };
+			this.states.set(token, states);
+		}
+		return states;
+	}
 	getSendKey(): ParadisAgentChatSendKey { return 'enter'; }
 	getDraft(): string { return ''; }
 	setDraft(): void { }
@@ -152,6 +159,41 @@ suite('ParadisAgentChatView', () => {
 				live: ['許可を待っています'],
 			},
 			approvals: [{ id: 'toolu_9', choice: 'yes' }],
+		});
+	});
+
+	test('folds consecutive tool calls into a closed group, keeps a running tool visible, and remembers the open group across panes', async () => {
+		const tool = (rev: number, id: string, command: string) => ({ rev, role: 'assistant' as const, kind: 'tool_use' as const, tool: 'Bash', toolUseId: id, text: JSON.stringify({ command }) });
+		const result = (rev: number, id: string) => ({ rev, role: 'tool' as const, kind: 'tool_result' as const, toolUseId: id, text: 'ok' });
+		const { view, container } = await createView([{
+			token: 'pane', agent: 'claude', epoch: 'e', rev: 7, reset: true, busy: true, live: null,
+			messages: [
+				{ rev: 0, role: 'user', kind: 'text', text: 'テストして' },
+				{ rev: 1, role: 'assistant', kind: 'thinking', text: '考える' },
+				tool(2, 't1', 'npm ci'), result(3, 't1'),
+				tool(4, 't2', 'npm test'),
+				{ rev: 5, role: 'assistant', kind: 'text', text: '実行しています' },
+			],
+			interaction: null,
+		}]);
+		const text = (selector: string) => [...container.querySelectorAll<HTMLElement>(selector)].map(element => element.textContent);
+		const snapshot = () => ({
+			group: text('.paradis-agent-chat-group-row'),
+			expanded: container.querySelector('.paradis-agent-chat-group-row')?.getAttribute('aria-expanded'),
+			steps: text('.paradis-agent-chat-grouped .paradis-agent-chat-step-arg'),
+		});
+		const closed = snapshot();
+		container.querySelector<HTMLButtonElement>('.paradis-agent-chat-group-row')!.focus();
+		container.querySelector<HTMLButtonElement>('.paradis-agent-chat-group-row')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+		const opened = { ...snapshot(), focused: mainWindow.document.activeElement?.classList.contains('paradis-agent-chat-group-row') };
+		// 別のペインへ切り替えて戻っても、開いたまとまりは開いたまま。
+		view.setTarget(1, 'other');
+		view.setTarget(1, 'pane');
+		const restored = snapshot();
+		assert.deepStrictEqual({ closed, opened, restored }, {
+			closed: { group: ['3×考えた内容, Bash'], expanded: 'false', steps: ['npm test'] },
+			opened: { group: ['3×考えた内容, Bash'], expanded: 'true', steps: ['考える', 'npm ci', 'npm test'], focused: true },
+			restored: { group: ['3×考えた内容, Bash'], expanded: 'true', steps: ['考える', 'npm ci', 'npm test'] },
 		});
 	});
 });

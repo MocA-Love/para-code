@@ -345,6 +345,62 @@
 	margin-left: 0;
 }
 
+/* ---- ツールのまとまり（連続するツールと考えた内容を1行に畳む） ---- */
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-group {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-group-count {
+	flex: none;
+	color: var(--vscode-foreground);
+	font-family: var(--monaco-monospace-font);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	font-variant-numeric: tabular-nums;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-group-names {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-group-meta {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size20);
+	font-variant-numeric: tabular-nums;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-group-meta > .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-group-failed {
+	color: var(--vscode-errorForeground);
+}
+
+/* まとまりの中の行は、見出しより一段下げる。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-grouped {
+	margin-left: var(--vscode-spacing-size200);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor button.paradis-agent-chat-step-row:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench.hc-black .terminal-overflow-guard.terminal-editor button.paradis-agent-chat-step-row:hover:not(:focus-visible),
+.monaco-workbench.hc-light .terminal-overflow-guard.terminal-editor button.paradis-agent-chat-step-row:hover:not(:focus-visible) {
+	outline: var(--vscode-strokeThickness) dashed var(--vscode-contrastActiveBorder);
+	outline-offset: -1px;
+}
+
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-link {
 	align-self: flex-start;
 	padding: 0;

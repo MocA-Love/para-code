@@ -477,7 +477,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	cardStates(token: string): IParadisAgentChatCardStates {
 		let states = this.cardStateByToken.get(token);
 		if (states === undefined) {
-			states = { questions: new Map(), approvals: new Map(), composer: { sending: false } };
+			states = { questions: new Map(), approvals: new Map(), composer: { sending: false }, openGroups: new Set() };
 			this.cardStateByToken.set(token, states);
 		}
 		return states;
