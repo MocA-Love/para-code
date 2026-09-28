@@ -28,15 +28,16 @@ export interface IParadisMobilePushIds {
 
 /**
  * 通知の本文（JSON）から、push-notify に載せる ID を作る。
- * - collapseId: 同じエージェント（`agentToken`）の通知を置き換える。トークンが無い通知には付けない
+ * - collapseId: 同じエージェント（`agentToken`）の完了・エラーの通知を置き換える。トークンが無い通知と、
+ *   許可待ち・質問（`agent-question`）には付けない（未回答の許可が後の通知に置き換わって見えなくならないように）
  * - threadId: 同じスペース（`ws`）の通知をまとめる。`ws` が無ければこの PC の通知としてまとめる
  */
 export function paradisMobilePushIds(notifyKey: Uint8Array, notifyBytes: Uint8Array): IParadisMobilePushIds {
 	let agentToken: string | undefined;
 	let ws: string | undefined;
 	try {
-		const parsed = JSON.parse(new TextDecoder().decode(notifyBytes)) as { agentToken?: unknown; ws?: unknown };
-		agentToken = typeof parsed.agentToken === 'string' && parsed.agentToken.length > 0 ? parsed.agentToken : undefined;
+		const parsed = JSON.parse(new TextDecoder().decode(notifyBytes)) as { kind?: unknown; agentToken?: unknown; ws?: unknown };
+		agentToken = parsed.kind !== 'agent-question' && typeof parsed.agentToken === 'string' && parsed.agentToken.length > 0 ? parsed.agentToken : undefined;
 		ws = typeof parsed.ws === 'string' && parsed.ws.length > 0 ? parsed.ws : undefined;
 	} catch {
 		return {};

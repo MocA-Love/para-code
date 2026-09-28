@@ -22,6 +22,7 @@ suite('paradisMobilePushIds', () => {
 		const keyA = new Uint8Array(32).fill(1);
 		const keyB = new Uint8Array(32).fill(2);
 		const question = paradisMobilePushIds(keyA, notify({ kind: 'agent-question', agentToken: 'tok-1', ws: 'w1:space-a' }));
+		const error = paradisMobilePushIds(keyA, notify({ kind: 'agent-error', agentToken: 'tok-1', ws: 'w1:space-a' }));
 		const done = paradisMobilePushIds(keyA, notify({ agentToken: 'tok-1', ws: 'w1:space-a' }));
 		const otherAgent = paradisMobilePushIds(keyA, notify({ agentToken: 'tok-2', ws: 'w1:space-a' }));
 		const otherSpace = paradisMobilePushIds(keyA, notify({ agentToken: 'tok-3', ws: 'w1:space-b' }));
@@ -30,7 +31,9 @@ suite('paradisMobilePushIds', () => {
 		const all = [question, done, otherAgent, otherSpace, otherPairing, noToken].flatMap(ids => [ids.collapseId, ids.threadId]).filter((id): id is string => id !== undefined);
 
 		assert.deepStrictEqual({
-			sameAgentCollapses: question.collapseId === done.collapseId,
+			sameAgentCollapses: error.collapseId === done.collapseId,
+			// 許可待ち・質問は置き換えない（未回答のものが隠れないように）。まとまりには入れる
+			questionNotCollapsed: question.collapseId === undefined && question.threadId === done.threadId,
 			otherAgentDoesNot: otherAgent.collapseId !== done.collapseId,
 			sameSpaceThread: otherAgent.threadId === done.threadId,
 			otherSpaceThread: otherSpace.threadId !== done.threadId,
@@ -42,6 +45,7 @@ suite('paradisMobilePushIds', () => {
 			malformed: paradisMobilePushIds(keyA, new Uint8Array([0xff, 0x7b])),
 		}, {
 			sameAgentCollapses: true,
+			questionNotCollapsed: true,
 			otherAgentDoesNot: true,
 			sameSpaceThread: true,
 			otherSpaceThread: true,

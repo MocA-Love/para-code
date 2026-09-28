@@ -314,8 +314,14 @@ export interface IParadisMobileRelayService {
 	cancelPairing(): Promise<void>;
 	/** 承認済みデバイスを失効させる。 */
 	revokeDevice(deviceName: string): Promise<void>;
-	/** 読めなかった鍵とペアリング台帳を読み直す（キーチェーンが一時的に拒んだときなど）。 */
+	/**
+	 * 読めなかった鍵とペアリング台帳を読み直す（ファイルの権限を直したときなど）。復号できなかった
+	 * （`undecryptable`）ときは、macOS の safeStorage が失敗をプロセスが終わるまで覚えているので、
+	 * Para Code を再起動するまで読み直せない。
+	 */
 	retryLoadState(): Promise<void>;
+	/** 「鍵を読めない」の通知を出す役を1つのウィンドウにだけ渡す（その理由で true を返すのは1回だけ）。 */
+	claimStoreProblemNotice(problem: string): Promise<boolean>;
 	/**
 	 * 読めなかった鍵とペアリング台帳を日時付きの名前へ退避し、空の状態から作り直せるようにする。
 	 * 接続済みのモバイルはすべて再ペアリングが要るので、呼び出し側で同意を取ってから呼ぶこと。
