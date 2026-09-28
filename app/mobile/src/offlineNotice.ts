@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from './appState.js';
 import { colors } from './theme.js';
+import { PAIRING_REJECTED_LABEL } from './pcStatus.js';
 
 /**
  * 「いまPCと繋がっていない」を**新しい部品を出さずに**伝えるための派生値。
@@ -50,7 +51,7 @@ export function useOfflineNotice(): OfflineNotice | undefined {
 		}
 		// 待っても直らない。島をタップして開くドロワーに「ペアリングし直す」がある
 		if (pairingRejected) {
-			return { text: '再ペアリングが必要', color: colors.red };
+			return { text: PAIRING_REJECTED_LABEL, color: colors.red };
 		}
 		if (!pcOnline && (connection === 'online' || connection === 'handshaking')) {
 			return { text: 'PCオフライン — 最後の画面', color: colors.orange };

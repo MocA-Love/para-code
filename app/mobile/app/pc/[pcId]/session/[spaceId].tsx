@@ -38,6 +38,7 @@ import { spaceColor } from '../../../../src/features/pc/spaceColor.js';
 import type { SpaceTerminal } from '../../../../src/navigationTargets.js';
 import { encodeSessionTab, routes, type RouteHref, type SessionTab } from '../../../../src/routes.js';
 import { colors } from '../../../../src/theme.js';
+import { PAIRING_REJECTED_LABEL, isPairingRejected } from '../../../../src/pcStatus.js';
 import {
 	ActionSheet,
 	ConfirmDrawer,
@@ -101,8 +102,9 @@ export default function SessionScreen() {
 	const keyboardCover = useKeyboardCoverage();
 	const keyboardVisible = keyboardCover > 0;
 	const bottomInset = keyboardVisible ? 0 : insets.bottom;
-	const { connection, pcOnline, connectRelay, createTerminal, renameTerminal, closeTerminal, setSelectedTerminalKey, terminalPrefs, setTerminalPref } = useAppStore(useShallow(s => ({
+	const { connection, pcOnline, pairingRejected, connectRelay, createTerminal, renameTerminal, closeTerminal, setSelectedTerminalKey, terminalPrefs, setTerminalPref } = useAppStore(useShallow(s => ({
 		connection: s.connection,
+		pairingRejected: s.pairingRejected,
 		pcOnline: s.pcOnline,
 		connectRelay: s.connectRelay,
 		createTerminal: s.createTerminal,
@@ -256,8 +258,22 @@ export default function SessionScreen() {
 	useShortcutSlot('escape', focused && dockPanel !== undefined ? { escape: () => setDockPanel(undefined) } : undefined);
 
 	const kind = pc !== undefined ? connectionKind(connection, pcOnline) : 'offline';
+	// 資格を拒まれた PC は再接続では直らない。見出しの行から再ペアリングへ案内する（判定は pcStatus.ts）。
+	const rejected = isPairingRejected({ connection, pcOnline, pairingRejected });
 	const meta = kind === 'connected'
 		? <><StatusDot kind={kind} /><HeaderMetaText>{`${terminals.length} タブ · ${pc?.name ?? ''}`}</HeaderMetaText></>
+		: rejected ? (
+			<Pressable
+				style={styles.metaButton}
+				hitSlop={hitSlopToMinimum(META_HEIGHT)}
+				onPress={() => { hapticSelection(); router.push(routes.pair()); }}
+				accessibilityRole="button"
+				accessibilityLabel={`${PAIRING_REJECTED_LABEL}。押すとペアリングし直す画面を開きます`}
+			>
+				<StatusDot kind="offline" />
+				<HeaderMetaText>{`${PAIRING_REJECTED_LABEL} · タップでペアリング`}</HeaderMetaText>
+			</Pressable>
+		)
 		: kind === 'offline' ? (
 			<Pressable
 				style={styles.metaButton}
