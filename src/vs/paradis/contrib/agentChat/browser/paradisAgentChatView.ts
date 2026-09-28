@@ -28,13 +28,14 @@ import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { CodeDataTransfers, containsDragType, getPathForFile, LocalSelectionTransfer } from '../../../../platform/dnd/browser/dnd.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IMarkdownRendererService } from '../../../../platform/markdown/browser/markdownRenderer.js';
 import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier } from '../../../../workbench/browser/dnd.js';
 import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentInteraction, IParadisAgentLiveState, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisAgentChatImagesToLinks } from '../common/paradisAgentChatMarkdown.js';
 import { IParadisAgentChatState } from '../common/paradisAgentChatState.js';
-import { IParadisAgentChatEditDiff, paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisPendingCodexQuestion, paradisDescribeAgentChatTool, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, ParadisAgentChatItem } from '../common/paradisAgentChatTimeline.js';
+import { IParadisAgentChatEditDiff, paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisPendingCodexQuestion, paradisDescribeAgentChatTool, paradisGroupAgentChatItems, paradisIsFileWriteTool, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, paradisPathBasename, paradisSummarizeAgentChatGroup, ParadisAgentChatEntry, ParadisAgentChatItem } from '../common/paradisAgentChatTimeline.js';
 import { IParadisAgentChatComposerHost, ParadisAgentChatComposer } from './paradisAgentChatComposer.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
 
@@ -102,6 +103,8 @@ export interface IParadisAgentChatCardStates {
 	readonly composer: { sending: boolean };
 	/** 読んでいた位置（別のペインへ切り替えて戻ったときに戻す）。 */
 	scroll?: { readonly top: number; readonly stick: boolean };
+	/** 開いているツールのまとまり（`<epoch>:<まとまりの鍵>`）。既定は畳む。 */
+	readonly openGroups: Set<string>;
 }
 
 export class ParadisAgentChatView extends Disposable {
@@ -127,6 +130,8 @@ export class ParadisAgentChatView extends Disposable {
 	private session: ParadisAgentChatSession | undefined;
 	private readonly sessionListener = this._register(new MutableDisposable());
 	private readonly rendered = new Map<string, IRenderedItem>();
+	/** 描いた単位の、開閉の行（作り直したときにフォーカスを移す先）。 */
+	private readonly toggleRows = new WeakMap<HTMLElement, HTMLButtonElement>();
 	private readonly expanded = new Set<string>();
 	private readonly fullTexts = new Map<string, string>();
 	private fullTextChars = 0;
@@ -141,7 +146,7 @@ export class ParadisAgentChatView extends Disposable {
 	/** 一度取り寄せ終えた画像（捨てた後に自動で取り直して、取り直すたびに別の画像を捨て続けないため）。 */
 	private readonly settledImages = new Set<string>();
 	private readonly pendingImages = new Set<string>();
-	private readonly emptyCardStates: IParadisAgentChatCardStates = { questions: new Map(), approvals: new Map(), composer: { sending: false } };
+	private readonly emptyCardStates: IParadisAgentChatCardStates = { questions: new Map(), approvals: new Map(), composer: { sending: false }, openGroups: new Set() };
 	private liveClock: HTMLElement | undefined;
 	private readonly liveMarkdown = this._register(new MutableDisposable<IDisposable>());
 	private readonly fallbackStore = this._register(new DisposableStore());
@@ -161,6 +166,7 @@ export class ParadisAgentChatView extends Disposable {
 		@IMarkdownRendererService private readonly markdownRenderer: IMarkdownRendererService,
 		@IContextMenuService private readonly contextMenuService: IContextMenuService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 		this.element = append(container, $('.paradis-agent-chat'));
@@ -259,6 +265,10 @@ export class ParadisAgentChatView extends Disposable {
 
 	private get approvalStates(): Map<string, IParadisAgentChatApprovalCardState> {
 		return this.token !== undefined ? this.host.cardStates(this.token).approvals : this.emptyCardStates.approvals;
+	}
+
+	private get openGroups(): Set<string> {
+		return this.token !== undefined ? this.host.cardStates(this.token).openGroups : this.emptyCardStates.openGroups;
 	}
 
 	/**
@@ -514,29 +524,64 @@ export class ParadisAgentChatView extends Disposable {
 			}
 			this.rendered.clear();
 			this.renderedEpoch = state.epoch;
+			// 前の会話のまとまりの開いた状態は、もう使わない。
+			for (const key of [...this.openGroups]) {
+				if (!key.startsWith(`${state.epoch}:`)) {
+					this.openGroups.delete(key);
+				}
+			}
 		}
 		const items = paradisBuildAgentChatItems(state.messages, state.interaction);
 		this.recentKeys = new Set(items.slice(-RECENT_ITEM_COUNT).map(item => item.key));
 		const seen = new Set<string>();
 		let previous: HTMLElement = this.notice;
-		for (const item of items) {
-			seen.add(item.key);
-			const signature = this.itemSignature(item, state.interaction);
-			let rendered = this.rendered.get(item.key);
+		const place = (key: string, signature: string, create: (store: DisposableStore) => HTMLElement) => {
+			seen.add(key);
+			let rendered = this.rendered.get(key);
 			if (rendered === undefined || rendered.signature !== signature) {
 				const store = new DisposableStore();
-				const element = this.renderItem(item, state, store);
+				const element = create(store);
 				if (rendered !== undefined) {
+					// 開閉の行にキーボードのフォーカスがあったら、作り直した行へ移す（Enter で開閉を続けられるように）。
+					const previousRow = this.toggleRows.get(rendered.element);
+					const refocus = previousRow !== undefined && previousRow === rendered.element.ownerDocument.activeElement;
 					rendered.element.replaceWith(element);
 					rendered.store.dispose();
+					if (refocus) {
+						this.toggleRows.get(element)?.focus();
+					}
 				}
 				rendered = { element, signature, store };
-				this.rendered.set(item.key, rendered);
+				this.rendered.set(key, rendered);
 			}
 			if (previous.nextSibling !== rendered.element) {
 				previous.after(rendered.element);
 			}
 			previous = rendered.element;
+		};
+		const entries = paradisGroupAgentChatItems(items, {
+			interaction: state.interaction,
+			busy: state.busy,
+			pendingCodexQuestion: state.agent === 'codex' ? paradisPendingCodexQuestion(state.messages) : undefined,
+			expanded: this.expanded,
+		});
+		for (const entry of entries) {
+			if (entry.kind === 'item') {
+				place(entry.item.key, this.itemSignature(entry.item, state.interaction, false), store => this.renderItem(entry.item, state, store));
+				continue;
+			}
+			// 畳んだまとまりは見出しの1行だけを出す。作業中の会話の実行中のツールは、畳んでいても見出しの下に出す。
+			const open = this.isGroupOpen(entry);
+			place(entry.key, this.groupSignature(entry, open), store => this.renderGroup(entry, open, store));
+			for (const item of entry.items) {
+				if (open || entry.pinned.has(item.key)) {
+					place(item.key, this.itemSignature(item, state.interaction, true), store => {
+						const element = this.renderItem(item, state, store);
+						element.classList.add('paradis-agent-chat-grouped');
+						return element;
+					});
+				}
+			}
 		}
 		for (const [key, rendered] of [...this.rendered]) {
 			if (!seen.has(key)) {
@@ -547,8 +592,13 @@ export class ParadisAgentChatView extends Disposable {
 		}
 	}
 
-	/** 描き直しが要るかを決める指紋。 */
-	private itemSignature(item: ParadisAgentChatItem, interaction: IParadisAgentInteraction | null): string {
+	/** 描き直しが要るかを決める指紋。`grouped` はまとまりの中に描くか（字下げが変わる）。 */
+	private itemSignature(item: ParadisAgentChatItem, interaction: IParadisAgentInteraction | null, grouped: boolean): string {
+		const signature = this.itemContentSignature(item, interaction);
+		return grouped ? `g${signature}` : signature;
+	}
+
+	private itemContentSignature(item: ParadisAgentChatItem, interaction: IParadisAgentInteraction | null): string {
 		const expanded = this.expanded.has(item.key);
 		switch (item.kind) {
 			case 'tool': {
@@ -624,6 +674,7 @@ export class ParadisAgentChatView extends Disposable {
 		row.type = 'button';
 		const expanded = this.expanded.has(key);
 		row.setAttribute('aria-expanded', String(expanded));
+		this.toggleRows.set(element, row);
 		row.append(renderIcon(expanded ? Codicon.chevronDown : Codicon.chevronRight), renderIcon(icon), $('span.paradis-agent-chat-step-label', undefined, label));
 		if (!expanded) {
 			append(row, $('span.paradis-agent-chat-step-arg')).textContent = text.replace(/\s+/g, ' ').trim();
@@ -633,6 +684,87 @@ export class ParadisAgentChatView extends Disposable {
 			append(element, $('pre.paradis-agent-chat-step-detail')).textContent = text;
 		}
 		return element;
+	}
+
+	// ---- ツールのまとまり ----------------------------------------------------------------------------
+
+	/** 開いた状態を覚える鍵。まとまりの鍵は rev から作るので、会話が始め直されたら別のものとして扱う。 */
+	private groupStateKey(key: string): string {
+		return `${this.session?.state?.epoch ?? ''}:${key}`;
+	}
+
+	/**
+	 * まとまりが開いているか。答え終えた許可の確認で前後のまとまりがつながると先頭の鍵だけが残るので、つながった
+	 * どれかのまとまりを開いていれば開いたままにする。
+	 */
+	private isGroupOpen(entry: Extract<ParadisAgentChatEntry, { kind: 'group' }>): boolean {
+		return entry.items.some(item => this.openGroups.has(this.groupStateKey(`g:${item.key}`)));
+	}
+
+	private groupSignature(entry: Extract<ParadisAgentChatEntry, { kind: 'group' }>, open: boolean): string {
+		return JSON.stringify(['group', open, entry.items.map(item => item.kind === 'tool' ? `${item.key}:${item.result?.rev ?? ''}` : item.key)]);
+	}
+
+	/** まとまりの見出しの1行（押すと開閉する）。 */
+	private renderGroup(entry: Extract<ParadisAgentChatEntry, { kind: 'group' }>, open: boolean, store: DisposableStore): HTMLElement {
+		const summary = paradisSummarizeAgentChatGroup(entry.items);
+		const element = $('.paradis-agent-chat-group');
+		// 見出しは中身が増えるたびに作り直すので、一覧の読み上げ（role="log"）で同じ見出しを読み直させない。
+		element.setAttribute('aria-live', 'off');
+		const row = append(element, $('button.paradis-agent-chat-step-row.paradis-agent-chat-group-row')) as HTMLButtonElement;
+		row.type = 'button';
+		row.setAttribute('aria-expanded', String(open));
+		this.toggleRows.set(element, row);
+		// ボタンに aria-label を付けると中の文字は読まれないので、見出しに出す件数はすべてここに入れる。
+		const aria = [localize('paradisAgentChat.groupAria', "{0} 件の手順（{1}）", summary.count, summary.names.join(', '))];
+		if (summary.files.length > 0) {
+			aria.push(localize('paradisAgentChat.groupAriaFiles', "変更したファイル {0} 件", summary.files.length));
+		}
+		if (summary.failed > 0) {
+			aria.push(localize('paradisAgentChat.groupAriaFailed', "失敗 {0} 件", summary.failed));
+		}
+		row.setAttribute('aria-label', aria.join(localize('paradisAgentChat.groupAriaSeparator', "、")));
+		row.append(renderIcon(open ? Codicon.chevronDown : Codicon.chevronRight));
+		append(row, $('span.paradis-agent-chat-group-count')).textContent = localize('paradisAgentChat.groupCount', "{0}×", summary.count);
+		append(row, $('span.paradis-agent-chat-group-names')).textContent = summary.names.join(', ');
+		if (summary.files.length > 0) {
+			// ファイル名は3件まで出し、それより多ければ2件と残りの件数にする。すべてのパスはホバーで見せる。
+			const shown = summary.files.length <= 3 ? summary.files : summary.files.slice(0, 2);
+			const names = shown.map(path => paradisPathBasename(path)).join(', ');
+			const files = append(row, $('span.paradis-agent-chat-group-meta.paradis-agent-chat-group-files'));
+			files.append(renderIcon(Codicon.edit), $('span', undefined, summary.files.length > shown.length
+				? localize('paradisAgentChat.groupFilesMore', "{0} ほか {1} 件", names, summary.files.length - shown.length)
+				: names));
+			store.add(this.hoverService.setupDelayedHover(files, { content: summary.files.join('\n') }));
+		}
+		if (summary.failed > 0) {
+			const failed = append(row, $('span.paradis-agent-chat-group-meta.paradis-agent-chat-group-failed'));
+			failed.append(renderIcon(Codicon.error), $('span', undefined, localize('paradisAgentChat.groupFailed', "失敗 {0} 件", summary.failed)));
+		}
+		store.add(addDisposableListener(row, EventType.CLICK, () => this.toggleGroup(entry, open)));
+		// ツリーと同じく、→ で開き ← で畳む（Enter / Space はボタンとして開閉する）。
+		store.add(addDisposableListener(row, EventType.KEY_DOWN, (e: KeyboardEvent) => {
+			if ((e.key === 'ArrowRight' && !open) || (e.key === 'ArrowLeft' && open)) {
+				e.preventDefault();
+				e.stopPropagation();
+				this.toggleGroup(entry, open);
+			}
+		}));
+		return element;
+	}
+
+	private toggleGroup(entry: Extract<ParadisAgentChatEntry, { kind: 'group' }>, open: boolean): void {
+		if (open) {
+			// つながる前のまとまりの鍵も外す（isGroupOpen）。
+			for (const item of entry.items) {
+				this.openGroups.delete(this.groupStateKey(`g:${item.key}`));
+			}
+		} else {
+			this.openGroups.add(this.groupStateKey(entry.key));
+		}
+		// 開いて下へ伸びても、読んでいる位置から飛ばさない。
+		this.stickToBottom = false;
+		this.render();
 	}
 
 	private toggleExpanded(key: string): void {
@@ -700,6 +832,7 @@ export class ParadisAgentChatView extends Disposable {
 		row.type = 'button';
 		const expanded = this.expanded.has(item.key);
 		row.setAttribute('aria-expanded', String(expanded));
+		this.toggleRows.set(element, row);
 		const stateIcon = summary.state === 'running' ? ThemeIcon.modify(Codicon.loading, 'spin') : summary.state === 'failed' ? Codicon.error : Codicon.check;
 		const statusIcon = renderIcon(stateIcon);
 		statusIcon.classList.add('paradis-agent-chat-step-status');
@@ -720,10 +853,11 @@ export class ParadisAgentChatView extends Disposable {
 		}
 		store.add(addDisposableListener(row, EventType.CLICK, () => this.toggleExpanded(item.key)));
 
-		// 差分カードは畳まずに見せる（何を変えたかがチャットで一番知りたいことなので）。
+		// 差分カードは、ツールの行の中では畳まずに見せる（何を変えたかがチャットで一番知りたいことなので）。
+		// 行がまとまりに入っていれば、まとまりを開いたときに見える（見出しに「ファイル変更 N 件」と出す）。
 		if (item.use !== undefined) {
 			const use = item.use;
-			if (this.isFileWrite(use)) {
+			if (paradisIsFileWriteTool(use)) {
 				// 切り詰められた入力の全文は、最近の行か「差分を読み込む」を押した行だけ取り寄せる
 				// （古い行まで一度に取りに行くと、長い会話を開いたときに IPC とメモリが膨らむ）。
 				const diffSource = !use.truncated || this.recentKeys.has(item.key) || this.expanded.has(`${item.key}:load`) || this.fullTexts.has(this.fullTextKey(use.rev)) ? this.fullTextOf(use) : undefined;
@@ -759,12 +893,6 @@ export class ParadisAgentChatView extends Disposable {
 			}
 		}
 		return element;
-	}
-
-	/** ファイルを書き換えるツールか（差分カードを出す対象）。 */
-	private isFileWrite(use: IParadisAgentChatMessage): boolean {
-		const tool = use.tool ?? '';
-		return tool === 'Edit' || tool === 'MultiEdit' || tool === 'Write' || tool === 'apply_patch' || use.text.includes('*** Begin Patch');
 	}
 
 	private appendLongText(parent: HTMLElement, message: IParadisAgentChatMessage, store: DisposableStore): void {
