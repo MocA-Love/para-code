@@ -505,6 +505,34 @@ export function packageCopilotExtensionDependenciesStream(): Stream {
 		.pipe(util2.setExecutableBit(['**/*.sh']));
 }
 
+/**
+ * PARA-PATCH: copies the copilot extension's `@github/copilot` SDK (package.json
+ * and `sdk/`) into the build output. Since 1.139 `build/.moduleignore` drops
+ * `@github/copilot/**` wholesale (the Agent Host now uses @github/copilot-sdk),
+ * and packageCopilotExtensionDependenciesStream() applies that file to the
+ * extension's own node_modules too. Upstream CI never hits this because it
+ * ships copilot from a prebuilt VSIX (build/azure-pipelines/common/downloadCopilotVsix.ts),
+ * but this local-build path then has no `sdk/` and prepareBuiltInCopilotRipgrepShim
+ * fails. The extension imports `@github/copilot/sdk` at runtime for Copilot CLI
+ * sessions, so restore the part its .vscodeignore ships in the VSIX.
+ * Platform prebuilds/tgrep are pruned and re-materialized for the target by
+ * prepareBuiltInCopilotRipgrepShim afterwards. See NOTES.md.
+ */
+export function packageCopilotExtensionSdkStream(): Stream {
+	const copilotPackageDir = path.join(root, 'extensions', 'copilot', 'node_modules', '@github', 'copilot');
+	if (!fs.existsSync(path.join(copilotPackageDir, 'sdk'))) {
+		return es.readArray([]);
+	}
+
+	const relativeDir = path.relative(root, copilotPackageDir).split(path.sep).join('/');
+	return gulp.src([
+		`${relativeDir}/package.json`,
+		`${relativeDir}/sdk/**`,
+		`!${relativeDir}/sdk/**/*.d.ts`,
+	], { base: '.', dot: true })
+		.pipe(util2.setExecutableBit(['**/*.sh']));
+}
+
 export function packageMarketplaceExtensionsStream(forWeb: boolean): Stream {
 	const marketplaceExtensionsDescriptions = [
 		...builtInExtensions.filter(({ name }) => (forWeb ? !marketplaceWebExtensionsExclude.has(name) : true)),
