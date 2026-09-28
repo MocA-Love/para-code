@@ -367,6 +367,22 @@ describe('relay APNs push', () => {
 		expect(after).not.toHaveBeenCalled();
 	});
 
+	it('does not resend after a transport failure unless the push can replace itself (collapseId)', async () => {
+		// 応答が無い失敗は APNs が受理済みかもしれない。置き換わらない通知を送り直すと二重に鳴る。
+		const { deviceId, pcWs, mobileId } = await offlineMobileWithToken();
+
+		const broken = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => { throw new Error('connection reset'); });
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA' }));
+		await waitFor(() => broken.mock.calls.length >= 1);
+		await new Promise(r => setTimeout(r, 50));
+		expect(await readQueue(deviceId)).toEqual([]);
+
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'BBBB', collapseId: 'c0llapse_Id-123' }));
+		await waitFor(() => broken.mock.calls.length >= 2);
+		await new Promise(r => setTimeout(r, 50));
+		expect((await readQueue(deviceId)).map(row => ({ attempt: row.attempt, collapseId: row.collapseId }))).toEqual([{ attempt: 1, collapseId: 'c0llapse_Id-123' }]);
+	});
+
 	it('passes an opaque collapse id and thread id through, and ignores malformed ones', async () => {
 		const { pcWs, mobileId } = await offlineMobileWithToken();
 

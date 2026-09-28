@@ -557,7 +557,7 @@ export class DeviceDO implements DurableObject {
 		// 実際に何か受け取った時刻で判断していて、リレーより確かな材料を持っている）。
 		const expiresAtSeconds = Math.floor(Date.now() / 1000) + PUSH_EXPIRATION_SECONDS;
 		const result = await this.sendPushOnce({ mobileId, payload, collapseId, threadId, expiresAtSeconds });
-		if (result?.kind === 'retry') {
+		if (shouldRetryPush(result, collapseId)) {
 			// PCはこの通知を「プッシュで鳴らすからフレームでは鳴らすな」と送り済みのことがある。
 			// ここで落とすとその通知は一度も鳴らないので、一時的な失敗は後で送り直す（W2-07）。
 			this.enqueuePushRetry({ mobileId, payload, collapseId, threadId, attempt: 1, expiresAtSeconds }, result.retryAfterMs);
@@ -632,7 +632,7 @@ export class DeviceDO implements DurableObject {
 			}
 			try {
 				const result = await this.sendPushOnce(push);
-				if (result?.kind === 'retry') {
+				if (shouldRetryPush(result, push.collapseId)) {
 					this.enqueuePushRetry({ ...push, attempt: push.attempt + 1 }, result.retryAfterMs);
 				}
 			} catch (err) {
@@ -725,6 +725,21 @@ export class DeviceDO implements DurableObject {
 	async webSocketError(ws: WebSocket): Promise<void> {
 		await this.webSocketClose(ws);
 	}
+}
+
+/**
+ * 送り直すか。APNs が明示的に断った（429 / 5xx / 期限切れJWT）なら送り直す。
+ *
+ * 応答が返らなかった通信失敗は、APNs が受理して端末へ届けている可能性がある。同じ通知を
+ * もう一度送ると二重にバナーが出るので、端末上で置き換わる（collapseId の付いた）通知だけ
+ * 送り直す。PC は許可・質問の通知には collapseId を付けない（未回答の許可を置き換えで隠さないため）
+ * ので、それらは通信失敗では送り直さない（W2-07 のレビュー M4）。
+ */
+function shouldRetryPush(result: ApnsSendResult | undefined, collapseId: string | undefined): result is Extract<ApnsSendResult, { kind: 'retry' }> {
+	if (result?.kind !== 'retry') {
+		return false;
+	}
+	return result.status !== undefined || collapseId !== undefined;
 }
 
 /** PCが付けてきた collapseId / threadId を検証する。形が外れていれば使わない（プッシュ自体は送る）。 */
