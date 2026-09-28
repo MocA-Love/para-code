@@ -711,6 +711,24 @@ upstream 取り込み時に確認すること:
 
 設定 `paradis.computerUse.enabled` のオン・オフは守りの境界ではない。ペインのエージェントは同じユーザーなので `settings.json` を書き換えてオンにできる（`APPLICATION` と `restricted` はワークスペースの設定を防ぐだけ）。境界はアプリごとの承認ダイアログで、オフからオンに変わったときは各ウィンドウに 1 回通知を出す（レビュー L14）。パッケージ版は開発用の `<appRoot>/.build/paradis/computerUse/` を探さない（レビュー L4）。認証の画面の日本語のラベル（パスワード・暗証番号・認証コード・確認コード・セキュリティコード・ワンタイム）も値を伏せる（レビュー L9）。システム設定は `com.apple.systempreferences` の前方一致（レビュー L10）。承認ダイアログのコマンドの警告は、ターミナルを内蔵したエディタ（VS Code・Cursor・Zed・Xcode・JetBrains）とショートカット・Raycast・Alfred にも出す（レビュー L11、各 id は【要確認】）。CI の Pre-notarize は `timeout-minutes: 25` と `notarytool --timeout 20m`、埋め込みの前に `lipo -verify_arch arm64 x86_64`（レビュー L12・L13）。
 
+### ベータ（`v1.139.1-paracode-146-beta.2`）の実機で見つかった不具合と直し方（2026-09-28）
+
+署名したベータを macOS 27.0（Apple Silicon）で試し、補助アプリへの接続・TCC の付き先・承認・スクショ・AX ツリー・nonce の区切り・利用者の入力で止まる判定・日本語の貼り付けとクリップボードの復元・⌘V の拒否は期待どおりだった。次の 4 件を直した。
+
+| 不具合 | 原因（推測を含む） | 直し方 |
+|---|---|---|
+| `computer_type_text` で約 2 割の文字と空白が落ち、それでも `typed: 64` と返した（TextEdit に `abc…xyz ABC…XYZ 0123456789` を送り、`abdefgiklmoprsuvwyzABCDEFGHIJLMNOQRSUWXY 0134689` が入った） | 推測: 1 文字ごとに仮想キー 0 の keyDown と keyUp を間を置かずに HID のタップへ送り、イベントの元もイベントごとに作り直していた。入力ソースが日本語の IME だと、IME がキーのイベントを取り込むので落ちやすい。送った後に確かめていなかったので、落ちても成功と返した | 1. フォーカスのある欄が `AXSelectedText` の置き換えを受け付けるなら、AX で入れる（キーも IME も通らない。TextEdit はこの経路）。2. だめなら、入力ソースが IME（`kTISPropertyInputSourceType` が `TISTypeKeyboardLayout` 以外、または id に `.inputmethod.`）のときは英数字でも貼り付けに寄せる。3. それ以外はキーを送る。イベントの元を 1 つにし、押してから離すまで 12 ms、文字の間 20 ms を置く。どの経路でも入れた後に欄の値を読み戻し、入れる前の値と選択範囲から期待した値になったかを確かめる（`paradisTypingOutcome`）。そのままでなければ、どこまで入ったかを返して止める（入れ直すと二重になるので送り直さない）。読み戻せない欄は「確かめられない」と返す。改行は、AX と貼り付けでは改行として入り、キーでは Return を押す。送信したいときは `computer_press_key` の return を使うよう説明を直した |
+| 既定のウィンドウに、画面に出ていない 53×48 のウィンドウが選ばれた（TextEdit） | 手前からの順で最初の「画面に出ている」ものを選んでいたが、CGWindowList の `kCGWindowIsOnscreen` と実際の見え方が食い違う補助のウィンドウがあった | 補助アプリが AX でウィンドウの種類（`AXStandardWindow` か）としまわれているかを返す。shared process は、画面に出ている標準のウィンドウ、画面に出ている大きなもの、しまわれた・画面の外の大きなもの、100 ポイント未満の小さなもの、の順に並べ直して番号を振り直す（`paradisRankWindows`）。`computer_list_windows` の順と `windowIndex` も同じ基準 |
+| Finder のサイドバーの全部の `AXCell` に `focused` が付いた | 要素ごとの `AXFocused` を読んでいた。表の中のセルは表がフォーカスを持つと true を返すアプリがある | アプリの `AXFocusedUIElement` と同じ要素（`CFEqual`）にだけ `focused` を付ける。選ばれている行・項目は `AXSelected` から `selected` として別に出す |
+| Proton Authenticator（`me.proton.authenticator`）が拒否されていなかった | 2 段階認証のアプリが一覧に無かった | パスワードマネージャーと同じ扱いの一覧を足した（`authenticator`）。Proton Authenticator・Authy・Google Authenticator・Microsoft Authenticator・Bitwarden Authenticator・Ente Auth と、bundle id に `authenticator`・`2fas`・`raivo`・`otpauth`・`steptwo` を含むもの全部（前後が `*` の一覧の書き方を足した）。各 id は【要確認】。Swift と TS の一覧はテストで突き合わせる |
+
+補助アプリとの約束の版は 5（`typeText` がテキストそのものを受け取り、`method`・`verified`・`inserted` を返す）。
+
+利用者向けの注意（ベータの実機で分かったこと）:
+
+- システム設定の「アクセシビリティ」の一覧に古い「Para Code Computer Use」の項目が残っていると、スイッチがオンでも `AXIsProcessTrusted()` が false のままになる（推測: 別の署名の補助アプリ、たとえば手元の ad-hoc のビルドで付けた項目が残っているとき）。直し方は、その項目を「−」で消してから「＋」で `Para Code.app/Contents/Helpers/Para Code Computer Use.app` を足し直す
+- シェルの `mv` で `/Applications` に置いたアプリは、ダウンロードの隔離の印が残ったまま App Translocation（読み取り専用の仮の場所）で動き、自動更新ができない。Finder でドラッグして置き直すか、`xattr -d com.apple.quarantine "/Applications/Para Code.app"` で印を外す
+
 レビューの Low で見送ったもの:
 
 | ID | 見送った理由 |

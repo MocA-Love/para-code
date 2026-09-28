@@ -710,9 +710,9 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		label: localize('paradis.settings.computerUseBlocked', "常に使わせないアプリ"),
 		description: PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES
 			// allow-any-unicode-next-line
-			? localize('paradis.settings.computerUseBlockedWithSystem', "パスワードマネージャー、キーチェーンアクセス、Para Code 自身、システム設定、認証のダイアログ（変更できません）。")
+			? localize('paradis.settings.computerUseBlockedWithSystem', "パスワードマネージャー、2 段階認証のアプリ、キーチェーンアクセス、Para Code 自身、システム設定、認証のダイアログ（変更できません）。")
 			// allow-any-unicode-next-line
-			: localize('paradis.settings.computerUseBlockedDesc', "パスワードマネージャー、キーチェーンアクセス、Para Code 自身（変更できません）。"),
+			: localize('paradis.settings.computerUseBlockedDesc', "パスワードマネージャー、2 段階認証のアプリ、キーチェーンアクセス、Para Code 自身（変更できません）。"),
 		keywords: 'computer use blocked password manager keychain',
 	},
 

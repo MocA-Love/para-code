@@ -35,7 +35,7 @@ export const PARADIS_COMPUTER_USE_EXECUTABLE = 'ParadisComputerUse';
  * 補助アプリとの約束の版。Swift 側の `ParadisComputerUseVersion.protocolVersion`
  * （native/macos/Sources/ParadisComputerUseCore/ParadisProtocol.swift）と同じ値にする。
  */
-export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 4;
+export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 5;
 /** 対応する macOS の最低の Darwin の版（macOS 14 = Darwin 23）。ScreenCaptureKit の単一ウィンドウ撮影に要る。 */
 export const PARADIS_COMPUTER_USE_MIN_DARWIN_MAJOR = 23;
 
@@ -147,11 +147,11 @@ export function paradisParseComputerUseApprovalOutcome(value: unknown): ParadisC
 // --- 常に操作させないアプリ（設計書 6.2） ---
 
 /** 拒否の分類。エージェントへの説明と設定画面の表示に使う。 */
-export type ParadisComputerUseBlockReason = 'password-manager' | 'keychain' | 'para-code' | 'system';
+export type ParadisComputerUseBlockReason = 'password-manager' | 'authenticator' | 'keychain' | 'para-code' | 'system';
 
 // 一覧は補助アプリの側（native/macos/Sources/ParadisComputerUseCore/ParadisBlocklist.swift）と同じにする（レビュー M1。
 // 補助アプリも同じ判定をして二重にする）。build/paradis/computerUse/buildHelper.test.ts が突き合わせる。
-// 末尾が `*` のものは、その手前で始まる bundle id 全部に当たる。
+// 末尾が `*` のものは、その手前で始まる bundle id 全部に当たる。前後が `*` のものは、その間を含む bundle id 全部に当たる。
 
 /**
  * パスワードマネージャーとワンタイムコードのアプリ（Q64 で決定）。Orca の 8 件（main.swift:523-550）との和に、
@@ -181,7 +181,24 @@ export const PARADIS_COMPUTER_USE_PASSWORD_MANAGERS: readonly string[] = [
 	'com.markmcguill.strongbox.mac',
 	'com.hicknhacksoftware.MacPass',
 	'com.siber.roboform',
+];
+
+/**
+ * 2 段階認証（ワンタイムコード）のアプリ。パスワードマネージャーと同じ扱い（ベータの実機で Proton Authenticator が
+ * 通っていた）。前後が `*` のものは、その間を含む bundle id 全部に当たる。【要確認】各 id の実在。
+ */
+export const PARADIS_COMPUTER_USE_AUTHENTICATORS: readonly string[] = [
+	'me.proton.authenticator',
 	'com.authy.authy-mac',
+	'com.google.Authenticator',
+	'com.microsoft.azureauthenticator',
+	'com.bitwarden.authenticator',
+	'io.ente.auth',
+	'*authenticator*',
+	'*2fas*',
+	'*raivo*',
+	'*otpauth*',
+	'*steptwo*',
 ];
 
 /** キーチェーンアクセス（Q64 で決定）。 */
@@ -229,6 +246,9 @@ export function paradisComputerUseMatchesBundle(bundleId: string, patterns: read
 	const id = bundleId.toLowerCase();
 	return patterns.some(pattern => {
 		const lower = pattern.toLowerCase();
+		if (lower.length > 2 && lower.startsWith('*') && lower.endsWith('*')) {
+			return id.includes(lower.slice(1, -1));
+		}
 		return lower.endsWith('*') ? id.startsWith(lower.slice(0, -1)) : id === lower;
 	});
 }
@@ -237,6 +257,9 @@ export function paradisComputerUseMatchesBundle(bundleId: string, patterns: read
 export function paradisComputerUseBlockReason(bundleId: string, options: IParadisComputerUseBlockOptions = {}): ParadisComputerUseBlockReason | undefined {
 	if (paradisComputerUseMatchesBundle(bundleId, PARADIS_COMPUTER_USE_PASSWORD_MANAGERS)) {
 		return 'password-manager';
+	}
+	if (paradisComputerUseMatchesBundle(bundleId, PARADIS_COMPUTER_USE_AUTHENTICATORS)) {
+		return 'authenticator';
 	}
 	if (paradisComputerUseMatchesBundle(bundleId, PARADIS_COMPUTER_USE_KEYCHAIN_APPS)) {
 		return 'keychain';

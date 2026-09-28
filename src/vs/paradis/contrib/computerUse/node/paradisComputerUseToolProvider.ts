@@ -13,7 +13,7 @@
 //  2. 設定 `paradis.computerUse.enabled` がオン（既定オフ）
 //  3. 補助アプリの状態が `ok`
 // アプリを名指しするツールは、さらに次を通す:
-//  4. 常に操作させないアプリ（パスワードマネージャー・キーチェーンアクセス・Para Code 自身・システム設定・認証のダイアログ）でない
+//  4. 常に操作させないアプリ（パスワードマネージャー・2 段階認証のアプリ・キーチェーンアクセス・Para Code 自身・システム設定・認証のダイアログ）でない
 //  5. このペインとこのアプリの組に、読み取り（読むツール）か操作（入力を送るツール）の許可がある。無ければ、
 //     呼び出し元ペインのウィンドウに承認ダイアログを出す（ページ共有と同じ askApproval）。拒否もそのペインが閉じるまで覚える。
 //     読み取りだけを許されたアプリには入力を一切送らない
@@ -74,7 +74,7 @@ export const PARADIS_COMPUTER_USE_TOOLS: readonly IParadisMcpToolDefinition[] = 
 	},
 	{
 		name: 'computer_list_apps',
-		description: 'List the running macOS apps with their name, bundle id and pid. "blocked" apps (password managers, Keychain Access, Para Code itself, System Settings and authentication dialogs) can never be used. "access" is what the user allowed this terminal pane for that app: none (not asked yet), read, operate or denied.',
+		description: 'List the running macOS apps with their name, bundle id and pid. "blocked" apps (password managers, two-factor authentication apps, Keychain Access, Para Code itself, System Settings and authentication dialogs) can never be used. "access" is what the user allowed this terminal pane for that app: none (not asked yet), read, operate or denied.',
 		inputSchema: { type: 'object', properties: {} },
 		annotations: READ_ONLY,
 	},
@@ -159,7 +159,7 @@ export const PARADIS_COMPUTER_USE_TOOLS: readonly IParadisMcpToolDefinition[] = 
 	},
 	{
 		name: 'computer_type_text',
-		description: `Type text into the focused field of an app, one character at a time (up to 4000 characters; newlines press Return). For Japanese or other text that an input method might change, and for long text, use computer_paste_text. ${OPERATE_NOTE}`,
+		description: `Type text into the focused field of an app (up to 4000 characters). Para Code inserts it through accessibility when the field allows it, pastes it when an input method (such as Japanese input) is active, and otherwise sends keys; newlines become line breaks. It reads the field back and says whether the text arrived exactly. To submit a form, use computer_press_key with return. ${OPERATE_NOTE}`,
 		inputSchema: { type: 'object', properties: { app: APP_ARGUMENT, text: { type: 'string' }, includeState: INCLUDE_STATE_ARGUMENT }, required: ['app', 'text'] },
 		annotations: OPERATE,
 	},
@@ -232,6 +232,7 @@ const AVAILABILITY_MESSAGES: Readonly<Record<Exclude<ParadisComputerUseAvailabil
 
 const BLOCK_MESSAGES: Readonly<Record<ParadisComputerUseBlockReason, string>> = {
 	'password-manager': 'is a password manager. Computer Use never reads or operates password managers.',
+	'authenticator': 'is a two-factor authentication app. Computer Use never reads or operates it.',
 	'keychain': 'is Keychain Access. Computer Use never reads or operates it.',
 	'para-code': 'is Para Code itself. Computer Use never reads or operates Para Code.',
 	'system': 'is part of macOS settings or authentication. Computer Use never reads or operates it.',
@@ -260,10 +261,13 @@ type IBundledApp = IRunningApp & { readonly bundleId: string };
 /** アプリを解いた結果、または断る理由。 */
 type IResolved = { readonly ok: true; readonly app: IBundledApp } | { readonly ok: false; readonly error: IToolResult };
 
-interface IWindowInfo {
+export interface IWindowInfo {
 	readonly windowId: number;
 	readonly index: number;
 	readonly title?: string;
+	/** AX で標準のウィンドウ（AXStandardWindow）か。AX の許可が無ければ分からない（undefined）。 */
+	readonly standard?: boolean;
+	readonly minimized?: boolean;
 	readonly bounds?: unknown;
 	readonly onScreen: boolean;
 }
@@ -496,14 +500,16 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		const method = OPERATE_METHODS[name];
 		// 入力は全ペインで 1 本の列に並べる。状態の読み取りまで列の中で行い、次の入力と混ざらないようにする
 		return this._inputQueue.queue(async () => {
+			let typedSummary: Record<string, unknown> | undefined;
 			if (name === 'computer_type_text') {
 				const typed = await this._typeInChunks(app, params.text as string, signal);
 				if (!typed.ok) {
 					return typed.error;
 				}
+				typedSummary = typed.summary;
 			}
 			const snapshotId = window.ok && usesElementNumbers(args) ? this._snapshots.get(snapshotKey(paneToken, app.pid, window.window.windowId)) : undefined;
-			const result = name === 'computer_type_text' ? { typed: splitGraphemes(params.text as string).length } : await this._helper.request(method, {
+			const result = typedSummary ?? await this._helper.request(method, {
 				...params,
 				pid: app.pid,
 				bundleId: app.bundleId,
@@ -513,7 +519,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			this._logService?.info(`[ParadisComputerUse] ${method} in ${app.bundleId}`);
 			const record = result && typeof result === 'object' ? result as Record<string, unknown> : {};
 			const summary: Record<string, unknown> = { app: describeApp(app), action: name.replace(/^computer_/, ''), ...record };
-			const note = pasteNote(record);
+			const note = [typeof record.note === 'string' ? record.note : undefined, pasteNote(record)].filter(Boolean).join(' ');
 			if (note) {
 				summary.note = note;
 			}
@@ -534,16 +540,36 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 	 * 長い文字列を {@link TYPE_TEXT_CHUNK} 文字ずつ分けて送る（1 回の要求が締め切りを越えないように。レビュー N5）。
 	 * 途中で止まったら、どこまで入ったかをエージェントへ返し、送り直しで二重に入らないようにする。
 	 */
-	private async _typeInChunks(app: IBundledApp, text: string, signal?: AbortSignal): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: IToolResult }> {
+	private async _typeInChunks(app: IBundledApp, text: string, signal?: AbortSignal): Promise<{ readonly ok: true; readonly summary: Record<string, unknown> } | { readonly ok: false; readonly error: IToolResult }> {
 		const graphemes = splitGraphemes(text);
 		if (graphemes.length > TYPE_TEXT_MAX_LENGTH) {
 			throw new ParadisComputerUseHelperError('invalid_argument', `"text" is longer than ${TYPE_TEXT_MAX_LENGTH} characters; use computer_paste_text for long text.`);
 		}
 		let typed = 0;
+		let unconfirmed = false;
+		let clipboard: string | undefined;
+		const methods = new Set<string>();
 		for (let start = 0; start < graphemes.length; start += TYPE_TEXT_CHUNK) {
 			const chunk = graphemes.slice(start, start + TYPE_TEXT_CHUNK);
 			try {
-				await this._helper.request('typeText', { text: chunk.join(''), pid: app.pid, bundleId: app.bundleId }, signal);
+				const result = await this._helper.request('typeText', { text: chunk.join(''), pid: app.pid, bundleId: app.bundleId }, signal);
+				const check = paradisParseTypeCheck(result);
+				if (check.method) {
+					methods.add(check.method);
+				}
+				// IME が有効で貼り付けに寄せたときは、クリップボードの戻し方も伝える
+				if (check.clipboard && check.clipboard !== 'restored') {
+					clipboard = check.clipboard;
+				}
+				// 送った後に欄を読み戻して、そのまま入っていなければ止める（ベータの実機で約 2 割の文字が落ちても
+				// 全部入ったと返していた）。入れ直すと二重になるので、どこまで入ったかを伝えて状態を読ませる
+				if (check.verified === false) {
+					const arrived = check.inserted !== undefined ? `the field shows ${check.inserted} new characters` : 'the field does not show them as sent';
+					return {
+						ok: false, error: errorResult(`The text did not arrive intact. Para Code sent characters ${typed + 1} to ${typed + chunk.length} of ${graphemes.length}, but ${arrived}. The first ${typed} characters had arrived correctly. Read the app with computer_get_app_state and fix the text there before continuing; do not resend the whole text. Consider computer_paste_text for the rest.`),
+					};
+				}
+				unconfirmed = unconfirmed || check.verified !== true;
 				typed += chunk.length;
 			} catch (error) {
 				if (!(error instanceof ParadisComputerUseHelperError)) {
@@ -561,7 +587,15 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				};
 			}
 		}
-		return { ok: true };
+		return {
+			ok: true, summary: {
+				typed,
+				verified: !unconfirmed,
+				method: [...methods].join('+') || undefined,
+				...(clipboard ? { clipboard } : {}),
+				...(unconfirmed ? { note: 'Para Code could not read the field back, so it could not confirm that the text arrived exactly. Check the state before continuing.' } : {}),
+			},
+		};
 	}
 
 	// --- 承認 ---
@@ -704,7 +738,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			? windows.find(candidate => candidate.windowId === requestedWindowId)
 			: requestedWindowIndex !== undefined
 				? windows[requestedWindowIndex]
-				: windows.find(candidate => candidate.onScreen) ?? windows[0];
+				: windows[0];
 		if (!window) {
 			return {
 				ok: false, error: errorResult(windows.length === 0
@@ -764,9 +798,11 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				...(typeof record.title === 'string' ? { title: record.title } : {}),
 				...(record.bounds && typeof record.bounds === 'object' ? { bounds: record.bounds } : {}),
 				onScreen: record.onScreen === true,
+				...(typeof record.standard === 'boolean' ? { standard: record.standard } : {}),
+				...(typeof record.minimized === 'boolean' ? { minimized: record.minimized } : {}),
 			});
 		}
-		return windows;
+		return paradisRankWindows(windows);
 	}
 }
 
@@ -823,6 +859,45 @@ function shortAppName(name: string): string {
 	const flattened = name.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ').trim();
 	const characters = Array.from(flattened);
 	return characters.length > 60 ? `${characters.slice(0, 60).join('')}\u2026` : flattened;
+}
+
+/** 補助の小さなウィンドウとみなす大きさ（ポイント）。 */
+const SMALL_WINDOW_POINTS = 100;
+
+/**
+ * ウィンドウを、既定で選ぶ順に並べ直して番号を振り直す（ベータの実機で、画面に出ていない 53×48 の
+ * ウィンドウが既定に選ばれた）。画面に出ている標準のウィンドウ、画面に出ている大きなもの、しまわれた・
+ * 画面の外の大きなもの、小さな補助のウィンドウ、の順。同じ段の中は手前からの順を保つ。
+ */
+export function paradisRankWindows(windows: readonly IWindowInfo[]): IWindowInfo[] {
+	const small = (window: IWindowInfo) => {
+		const bounds = window.bounds && typeof window.bounds === 'object' ? window.bounds as Record<string, unknown> : {};
+		return typeof bounds.width === 'number' && typeof bounds.height === 'number' && (bounds.width < SMALL_WINDOW_POINTS || bounds.height < SMALL_WINDOW_POINTS);
+	};
+	const tier = (window: IWindowInfo) => {
+		if (small(window) || window.standard === false && !window.onScreen) {
+			return 3;
+		}
+		if (window.onScreen && window.standard !== false && !window.minimized) {
+			return 0;
+		}
+		return window.onScreen && !window.minimized ? 1 : 2;
+	};
+	return windows
+		.map((window, order) => ({ window, order, tier: tier(window) }))
+		.sort((a, b) => a.tier - b.tier || a.order - b.order)
+		.map(({ window }, index) => ({ ...window, index }));
+}
+
+/** 文字入力の 1 回分の結果。 */
+function paradisParseTypeCheck(value: unknown): { readonly verified: boolean | null; readonly inserted?: number; readonly method?: string; readonly clipboard?: string } {
+	const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+	return {
+		verified: typeof record.verified === 'boolean' ? record.verified : null,
+		...(typeof record.inserted === 'number' ? { inserted: record.inserted } : {}),
+		...(typeof record.method === 'string' ? { method: record.method } : {}),
+		...(typeof record.clipboard === 'string' ? { clipboard: record.clipboard } : {}),
+	};
 }
 
 function snapshotKey(paneToken: string, pid: number, windowId: number): string {
