@@ -18,8 +18,9 @@
 // `VSCODE_ESM_ENTRYPOINT` と `VSCODE_CRASH_REPORTER_PROCESS_TYPE` を、渡された環境の上から必ず書く。
 // 拡張機能ホストへ利用者が渡す環境（`--extensionEnvironment`）でも上書きできない。
 //
-// 残る穴: 同じユーザーのプロセスが Para Code の shared process 自体の中でコードを動かせる場合は防げない
-// （Para Code 自体が乗っ取られた状態と同じ）。
+// 起動時の argv と環境変数の確認は補助にすぎない。実行中に足されるスイッチ（argv.json）、後から開く inspector、
+// アプリの中の JS の書き換えは、それぞれ下の argv.json の確認・inspector の待ち受けの確認・封印の確認で拾える範囲だけ拾う。
+// 拾えない範囲は NOTES.md の「残る穴」に書いてある。
 
 import Foundation
 
@@ -210,4 +211,61 @@ func paradisClassifyResponsibility(selfPid: Int32, responsiblePid: Int32?) -> Pa
 		return .unknown
 	}
 	return responsiblePid == selfPid ? .selfProcess : .other
+}
+
+// MARK: - argv.json（レビュー N2）
+
+/**
+ * argv.json（`~/<dataFolderName>/argv.json`）にあれば断るキー。main は起動時にこのファイルを読んで、実行中に
+ * スイッチを足す（`src/main.ts` の `configureCommandlineSwitchesSync`）ので、起動時の argv には出ない。
+ * `js-flags` は utility process の引数にも写るので、相手の argv の確認でも拾える。
+ */
+let paradisForbiddenArgvJsonKeys = ["remote-debugging-port", "remote-debugging-pipe", "js-flags", "enable-proposed-api"]
+
+/**
+ * argv.json の中身から、断るキーを返す。読めない（JSON でも JSON5 でもない、オブジェクトでない）ときは nil。
+ * main も読めないファイルは無視するが、どちらに読まれたかを確かめられないので、呼び出し側は断る側に倒す。
+ */
+func paradisForbiddenArgvJsonEntries(_ data: Data) -> [String]? {
+	guard let object = try? JSONSerialization.jsonObject(with: data, options: [.json5Allowed]), let dictionary = object as? [String: Any] else {
+		return nil
+	}
+	return dictionary.keys.filter { key in
+		paradisForbiddenArgvJsonKeys.contains(key) || paradisForbiddenArgumentPrefixes.contains { "--" + key == $0 || ("--" + key).hasPrefix($0) }
+	}.sorted()
+}
+
+// MARK: - アプリの封印（レビュー N2）
+
+/**
+ * `SecStaticCodeCheckValidity` が報告した、封印された resources の食い違いを判断する。書き換え（altered）は
+ * どこであっても断る。足された・消えたファイルは、内蔵ブラウザの拡張機能を Chromium が読み込むときに
+ * `_metadata/` の下を作り直す（`verified_contents.json` を消す・`computed_hashes.json` を足す）ので、そこだけ許す。
+ */
+func paradisSealProblem(added: [String], altered: [String], missing: [String]) -> String? {
+	if let path = altered.first {
+		return "a sealed file of Para Code was modified (\((path as NSString).lastPathComponent))"
+	}
+	let tolerated = { (path: String) in path.contains("/_metadata/") }
+	if let path = (added + missing).first(where: { !tolerated($0) }) {
+		return "a sealed file of Para Code was added or removed (\((path as NSString).lastPathComponent))"
+	}
+	return nil
+}
+
+// MARK: - 後から開いた inspector（レビュー N2）
+
+/**
+ * Node の inspector が既定で待ち受けるポート。`EnableNodeCliInspectArguments` の fuse が有効なので、SIGUSR1
+ * （`process._debugProcess`）で起動後に inspector を開けるプロセスがありうる。その既定のポートは `--inspect-port`
+ * （argv で断る）でしか変えられない。
+ */
+let paradisInspectorPorts: Set<Int> = [9229]
+
+/** 相手か main が inspector の既定のポートで待ち受けていれば理由を返す。 */
+func paradisInspectorProblem(listeningPorts: [String: Set<Int>]) -> String? {
+	for (label, ports) in listeningPorts.sorted(by: { $0.key < $1.key }) where !ports.isDisjoint(with: paradisInspectorPorts) {
+		return "\(label) has a debugger (inspector) listening"
+	}
+	return nil
 }

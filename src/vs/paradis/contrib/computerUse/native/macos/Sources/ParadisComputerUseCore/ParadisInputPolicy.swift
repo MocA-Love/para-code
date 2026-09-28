@@ -220,9 +220,29 @@ let paradisUserActivityWindow: Double = 1.0
  */
 let paradisSyntheticEventMarker: Int64 = 0x5041_5241_4355 // "PARACU"
 
-/** そのイベントが補助アプリの送ったものか。 */
-func paradisIsOurEvent(userData: Int64) -> Bool {
-	return userData == paradisSyntheticEventMarker
+/** そのイベントが補助アプリの送ったものか（目印と、送り元のプロセスが自分であること。レビュー N8）。 */
+func paradisIsOurEvent(userData: Int64, sourcePid: Int64, selfPid: Int32) -> Bool {
+	return userData == paradisSyntheticEventMarker && sourcePid == Int64(selfPid)
+}
+
+/**
+ * 利用者の最後の物理的な入力からの秒数を、見張り（イベントタップ）と OS の HID の数から決める（レビュー N6・N7）。
+ *  - キーボード: タップにキーのイベントが一度でも届いた（自分の送ったものを含む）なら、タップの値。まだなら
+ *    HID の値（タップにキーが届かない構成＝入力監視の許可が無いなどで、利用者のキー入力を見逃さないため）。
+ *    HID の値は自分の合成入力を含みうるので、止まる側に倒れる
+ *  - マウス: タップを作ってから 1 秒の間は、作る前の入力を見るため HID の値も合わせる
+ *  - タップが無ければ、どちらも HID の値
+ */
+func paradisPhysicalInputAge(tapKeyboard: Double?, tapPointer: Double?, hidKeyboard: Double?, hidPointer: Double?, tapSawKeyboard: Bool, secondsSinceTapStarted: Double?) -> Double? {
+	func minimum(_ values: Double?...) -> Double? {
+		return values.compactMap { $0 }.min()
+	}
+	guard let tapAge = secondsSinceTapStarted else {
+		return minimum(hidKeyboard, hidPointer)
+	}
+	let keyboard = tapSawKeyboard ? tapKeyboard : hidKeyboard
+	let pointer = tapAge < paradisUserActivityWindow ? minimum(tapPointer, hidPointer) : tapPointer
+	return minimum(keyboard, pointer)
 }
 
 /**
@@ -263,40 +283,73 @@ struct ParadisScreenWindow {
 	let bounds: CGRect
 }
 
-/** 認証・同意・ロックの画面を出すプロセスの bundle id と名前。出ている間は入力を送らない。 */
+/**
+ * 認証・同意・ロックの画面を出すプロセスの bundle id と名前。出ている間は入力を送らない。名前でも見るのは
+ * 止める側だけ（名前を偽っても止まるだけで、通るようにはならない）。
+ * 【要確認】AuthenticationServicesAgent 以降（レビュー N14）の名前と bundle id の実在。
+ */
 let paradisSensitiveOverlayBundleIds: Set<String> = [
 	"com.apple.SecurityAgent", "com.apple.LocalAuthentication.UIAgent", "com.apple.UserNotificationCenter",
 	"com.apple.coreservices.uiagent", "com.apple.loginwindow", "com.apple.ScreenSaver.Engine", "com.apple.universalaccessAuthWarn",
+	"com.apple.AuthenticationServicesCore.AuthenticationServicesAgent", "com.apple.AuthKitUI.AKAuthorizationRemoteViewService",
+	"com.apple.PassKit.PaymentAuthorizationUIExtension", "com.apple.BluetoothUIServer", "com.apple.CoreLocationAgent",
 ]
 let paradisSensitiveOverlayOwnerNames: Set<String> = [
 	"SecurityAgent", "coreautha", "UserNotificationCenter", "CoreServicesUIAgent", "loginwindow", "ScreenSaverEngine", "universalAccessAuthWarn",
+	"AuthenticationServicesAgent", "AuthKitUIService", "PassKitUIService", "BluetoothUIServer", "CoreLocationAgent",
 ]
-/** 目的のウィンドウに重なっていてもキーを取らない、画面の常設の部品。 */
-let paradisIgnoredOverlayOwnerNames: Set<String> = ["Window Server", "Dock", "SystemUIServer", "Control Center", "ControlCenter"]
 
 /**
- * キー（とマウス）を送ってよいか。認証・同意のダイアログがどこかに出ていれば止める。キーのときは
- * （`targetBounds` を渡す）、目的のウィンドウに重なる、layer 0 以外のほかのプロセスのウィンドウがあっても止める。
- * キーの行き先はメニューやパネルが取りうるので、前面のアプリと一番手前のウィンドウだけでは足りない。
+ * 認証・同意の画面がどこかに出ていれば止める（レビュー M3）。重なるだけのほかのパネル（常駐の浮いたウィンドウなど）では
+ * 止めない。キーの行き先は、OS に聞いたフォーカスのある要素で確かめる（レビュー N4）。
  */
-func paradisOverlayFailure(targetPid: Int32, windows: [ParadisScreenWindow], targetBounds: CGRect?) -> ParadisHelperError? {
+func paradisOverlayFailure(targetPid: Int32, windows: [ParadisScreenWindow]) -> ParadisHelperError? {
 	for window in windows where window.pid != targetPid {
 		if paradisSensitiveOverlayOwnerNames.contains(window.ownerName) || window.bundleId.map({ paradisSensitiveOverlayBundleIds.contains($0) }) == true {
 			return ParadisHelperError(code: "system_dialog", message: "an authentication or permission dialog is on screen")
-		}
-		if let targetBounds, window.layer != 0, !paradisIgnoredOverlayOwnerNames.contains(window.ownerName), window.bounds.intersects(targetBounds) {
-			return ParadisHelperError(code: "point_obscured", message: "a panel of another app covers the window")
 		}
 	}
 	return nil
 }
 
-/** キーの行き先（OS に聞いたフォーカスのあるアプリ）が目的の pid か。 */
-func paradisFocusFailure(targetPid: Int32, focusedPid: Int32?) -> ParadisHelperError? {
-	guard focusedPid == targetPid else {
+/**
+ * キーの行き先が目的の pid か。OS に聞いたフォーカスのあるアプリと、フォーカスのある要素の持ち主の両方が
+ * 目的の pid であること（要素はほかのプロセスのパネルがキーを取っているときに違う pid になる）。
+ */
+func paradisFocusFailure(targetPid: Int32, focusedApplicationPid: Int32?, focusedElementPid: Int32?) -> ParadisHelperError? {
+	guard focusedApplicationPid == targetPid, focusedElementPid == targetPid else {
 		return ParadisHelperError(code: "window_not_focused", message: "keyboard focus is not in the application")
 	}
 	return nil
+}
+
+/** 長い入力で、画面とフォーカスの確かめを行う間隔（利用者の入力は毎回見る。レビュー N5）。 */
+let paradisFullFenceEveryUnits = 10
+let paradisFullFenceEverySeconds: Double = 0.05
+
+/** その単位の前に、画面とフォーカスを確かめ直すか。 */
+func paradisNeedsFullFence(unitIndex: Int, secondsSinceLastFullFence: Double?) -> Bool {
+	guard let elapsed = secondsSinceLastFullFence else {
+		return true
+	}
+	return unitIndex % paradisFullFenceEveryUnits == 0 || elapsed >= paradisFullFenceEverySeconds
+}
+
+/**
+ * クリックの的がメニューの「ペースト」か（レビュー N11）。⌘V を断っても、メニューや右クリックの「ペースト」を
+ * クリックすれば利用者のクリップボードを貼れるので、これも断る。キーの割り当てが V で ⌘ を含む項目と、よくある名前。
+ */
+func paradisIsPasteMenuItem(role: String?, commandCharacter: String?, commandModifiers: Int?, title: String?) -> Bool {
+	guard role == "AXMenuItem" else {
+		return false
+	}
+	// AXMenuItemCmdModifiers は ⌘ を「付けない」ときに 8（kAXMenuItemModifierNoCommand）を立てる
+	if commandCharacter?.uppercased() == "V", (commandModifiers ?? 0) & 8 == 0 {
+		return true
+	}
+	let names = ["paste", "ペースト", "貼り付け", "貼付け"]
+	let lower = (title ?? "").lowercased()
+	return names.contains { lower.hasPrefix($0) }
 }
 
 // MARK: - スクロールとドラッグ
