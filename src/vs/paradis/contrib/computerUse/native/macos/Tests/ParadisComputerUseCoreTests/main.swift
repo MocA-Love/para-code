@@ -138,7 +138,7 @@ final class FakeDesktop: ParadisDesktopBackend {
 		inputCalls.append("scroll \(target.map { "\($0)" } ?? "center") \(direction.rawValue) \(pages)")
 		return [:]
 	}
-	func typeText(pid: Int32, units: [ParadisTypedUnit]) throws -> [String: Any] {
+	func typeText(pid: Int32, text: String, units: [ParadisTypedUnit]) throws -> [String: Any] {
 		inputCalls.append("type \(units.count)")
 		return [:]
 	}
@@ -468,6 +468,27 @@ do {
 	}
 }
 
+// MARK: - 文字入力の確かめ（ベータの実機で文字が落ちた件）
+
+do {
+	check(paradisIsInputMethodActive(sourceType: "TISTypeKeyboardInputMode", sourceId: "com.apple.inputmethod.Kotoeri.RomajiTyping.Roman"), "Japanese input in its alphanumeric mode is an input method")
+	check(paradisIsInputMethodActive(sourceType: nil, sourceId: "com.google.inputmethod.Japanese.base"), "a third-party input method is detected by its id")
+	check(!paradisIsInputMethodActive(sourceType: "TISTypeKeyboardLayout", sourceId: "com.apple.keylayout.US"), "a plain keyboard layout is not an input method")
+	check(!paradisIsInputMethodActive(sourceType: nil, sourceId: nil), "unknown sources are treated as keyboard layouts")
+
+	let sent = "abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789"
+	// 実機で TextEdit に入った文字列（約 2 割が落ち、空白も消えた）
+	let arrived = "abdefgiklmoprsuvwyzABCDEFGHIJLMNOQRSUWXY 0134689"
+	check(paradisTypingOutcome(before: "", selection: (0, 0), after: arrived, text: sent) == ParadisTypingCheck(verified: false, inserted: arrived.count), "reports dropped characters instead of claiming success")
+	check(paradisTypingOutcome(before: "Hello ", selection: (6, 0), after: "Hello world", text: "world") == ParadisTypingCheck(verified: true, inserted: 5), "verifies text inserted at the caret")
+	check(paradisTypingOutcome(before: "Hello there", selection: (6, 5), after: "Hello world", text: "world") == ParadisTypingCheck(verified: true, inserted: 5), "verifies text that replaced a selection")
+	check(paradisTypingOutcome(before: "a", selection: (1, 0), after: "a\nb", text: "\r\nb") == ParadisTypingCheck(verified: true, inserted: 2), "treats typed newlines as line breaks")
+	check(paradisTypingOutcome(before: "日本", selection: (2, 0), after: "日本語👍🏽", text: "語👍🏽") == ParadisTypingCheck(verified: true, inserted: 2), "counts characters, not UTF-16 units")
+	check(paradisTypingOutcome(before: nil, selection: nil, after: "x", text: "x") == ParadisTypingCheck(verified: nil, inserted: nil), "cannot verify an unreadable field")
+	check(paradisTypingOutcome(before: "ab", selection: nil, after: "abcd", text: "cd").verified == true, "without a selection, checks the growth and the content")
+	check(paradisTypingOutcome(before: "ab", selection: nil, after: "abc", text: "cd").verified == false, "without a selection, a short growth is a failure")
+}
+
 // MARK: - 起動時の argv の外（レビュー N2）
 
 do {
@@ -496,6 +517,9 @@ do {
 	check(paradisBlockReason(bundleId: "org.keepassxc.keepassxc") == .passwordManager, "blocks KeePassXC")
 	check(paradisBlockReason(bundleId: "COM.1PASSWORD.1PASSWORD") == .passwordManager, "matches case-insensitively")
 	check(paradisBlockReason(bundleId: "com.apple.keychainaccess") == .keychain, "blocks Keychain Access")
+	check(paradisBlockReason(bundleId: "me.proton.authenticator") == .authenticator, "blocks Proton Authenticator")
+	check(paradisBlockReason(bundleId: "com.microsoft.azureauthenticator") == .authenticator && paradisBlockReason(bundleId: "com.example.SomeAuthenticator") == .authenticator, "blocks authenticator apps by name")
+	check(paradisBlockReason(bundleId: "com.twofasapp.2fas") == .authenticator && paradisBlockReason(bundleId: "de.example.otpauth") == .authenticator, "blocks 2FAS and OTP Auth")
 	check(paradisBlockReason(bundleId: "ltd.paradis.paracode.helper") == .paraCode, "blocks Para Code helpers")
 	check(paradisBlockReason(bundleId: "com.apple.systempreferences.legacyLoader.x86_64") == .system, "blocks System Settings panes")
 	check(paradisBlockReason(bundleId: "com.apple.finder") == nil && paradisBlockReason(bundleId: "ltd.paradis.paracodex") == nil, "allows other apps")
@@ -523,6 +547,8 @@ do {
 		ParadisAXNode(index: 1, depth: 1, role: "AXTextField", subrole: nil, title: "Password", value: nil, label: nil, frame: nil, enabled: true, focused: true, actions: ["AXConfirm"], redacted: true),
 		ParadisAXNode(index: 2, depth: 1, role: "AXButton", subrole: nil, title: "OK", value: nil, label: nil, frame: CGRect(x: 10.4, y: 20.6, width: 30, height: 12), enabled: false, focused: nil, actions: ["AXPress"], redacted: false),
 	]
+	let selectedCell = ParadisAXNode(index: 3, depth: 1, role: "AXCell", subrole: nil, title: "Desktop", value: nil, label: nil, frame: nil, enabled: nil, focused: false, selected: true, actions: [], redacted: false)
+	check(paradisRenderAXTree([selectedCell], truncated: false) == "  [3] AXCell \"Desktop\" selected", "shows selection separately from focus")
 	let text = paradisRenderAXTree(nodes, truncated: true)
 	check(text == "[0] AXWindow \"Doc\" @0,0 100x50\n  [1] AXTextField \"Password\" value=<redacted> focused actions=AXConfirm\n  [2] AXButton \"OK\" @10,21 30x12 disabled actions=AXPress\n... (tree truncated)", "renders the tree")
 }

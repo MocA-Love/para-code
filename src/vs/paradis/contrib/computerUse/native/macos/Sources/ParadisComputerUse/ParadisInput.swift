@@ -25,6 +25,7 @@
 
 import AppKit
 import ApplicationServices
+import Carbon
 import CoreGraphics
 import Foundation
 
@@ -155,8 +156,27 @@ extension ParadisDesktop {
 
 	// MARK: - キーボード
 
-	func typeText(pid: Int32, units: [ParadisTypedUnit]) throws -> [String: Any] {
+	/**
+	 * 文字を入れる（ベータの実機で、1 文字ずつのキーでは約 2 割の文字と空白が落ち、それでも全部入ったと返していた）。
+	 *  1. フォーカスのある欄が選択範囲の置き換え（`AXSelectedText`）を受け付けるなら、AX で入れる。キーも IME も通らない
+	 *  2. だめなら、入力ソースが IME のときは英数字でも貼り付けに寄せる（IME がキーを取り込んで落とす・変えるため）
+	 *  3. それ以外はキーを送る。1 つのイベントの元を使い回し、押すと離すの間と文字の間に間を置く
+	 * どの経路でも、入れた後に欄の値を読み戻して、そのまま入ったかを返す（読めなければ確かめられない）。
+	 */
+	func typeText(pid: Int32, text: String, units: [ParadisTypedUnit]) throws -> [String: Any] {
 		try requireInputPermission()
+		try keyFence(pid: pid)
+		if let check = paradisInsertViaAccessibility(pid: pid, text: text) {
+			return paradisTypeResult(method: .accessibility, check: check, count: units.count)
+		}
+		if paradisOnMain({ paradisInputMethodIsActive() }) {
+			let pasted = try pasteText(pid: pid, text: text)
+			var result = paradisTypeResult(method: .paste, check: ParadisTypingCheck(verified: (pasted["pasteVerified"] as? Bool) == true ? true : nil, inserted: nil), count: units.count)
+			result["clipboard"] = pasted["clipboard"]
+			result["clipboardRestored"] = pasted["clipboardRestored"]
+			return result
+		}
+		let (before, selection) = paradisFocusedTextState(pid: pid)
 		var lastFullFence: Date?
 		for (typed, unit) in units.enumerated() {
 			let full = paradisNeedsFullFence(unitIndex: typed, secondsSinceLastFullFence: lastFullFence.map { Date().timeIntervalSince($0) })
@@ -169,22 +189,32 @@ extension ParadisDesktop {
 			switch unit {
 			case .text(let text):
 				let utf16 = Array(text.utf16)
-				for keyDown in [true, false] {
-					let event = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: 0, keyDown: keyDown)
-					event?.flags = []
-					event?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-					try post(event)
+				try postKey(virtualKey: 0) { event in
+					event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
 				}
 			case .key(let keyCode):
-				for keyDown in [true, false] {
-					let event = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: keyCode, keyDown: keyDown)
-					event?.flags = []
-					try post(event)
-				}
+				try postKey(virtualKey: keyCode) { _ in }
 			}
-			usleep(8_000)
+			usleep(paradisInterCharacterMicroseconds)
 		}
-		return ["typed": units.count]
+		usleep(80_000)
+		let after = paradisFocusedTextState(pid: pid).value
+		return paradisTypeResult(method: .keys, check: paradisTypingOutcome(before: before, selection: selection, after: after, text: text), count: units.count)
+	}
+
+	/** 1 つのキーを押して離す。押すと離すの間に間を置く（間が無いと落とすアプリがある）。 */
+	private func postKey(virtualKey: UInt16, configure: (CGEvent) -> Void) throws {
+		for keyDown in [true, false] {
+			let event = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: virtualKey, keyDown: keyDown)
+			event?.flags = []
+			if let event {
+				configure(event)
+			}
+			try post(event)
+			if keyDown {
+				usleep(paradisKeyHoldMicroseconds)
+			}
+		}
 	}
 
 	func pressChord(pid: Int32, chord: ParadisKeyChord) throws -> [String: Any] {
@@ -549,9 +579,103 @@ let paradisPressedInput = ParadisPressedInput()
 
 // MARK: - 小道具
 
+/**
+ * イベントの元。利用者のキーボードの修飾キーの状態を混ぜないよう、自分だけの状態で作り、全部のイベントで使い回す
+ * （イベントごとに作ると、押すと離すが別々の状態から出ることになる）。
+ */
+private let paradisSharedEventSource = CGEventSource(stateID: .privateState)
+
 func paradisEventSource() -> CGEventSource? {
-	// 利用者のキーボードの修飾キーの状態を混ぜないよう、自分だけの状態で作る
-	return CGEventSource(stateID: .privateState)
+	return paradisSharedEventSource
+}
+
+/** キーを押してから離すまでと、文字と文字の間。 */
+private let paradisKeyHoldMicroseconds: UInt32 = 12_000
+private let paradisInterCharacterMicroseconds: UInt32 = 20_000
+
+/** 文字入力の結果。 */
+private func paradisTypeResult(method: ParadisTypeMethod, check: ParadisTypingCheck, count: Int) -> [String: Any] {
+	var result: [String: Any] = ["typed": count, "method": method.rawValue, "verified": check.verified.map { $0 as Any } ?? NSNull()]
+	if let inserted = check.inserted {
+		result["inserted"] = inserted
+	}
+	return result
+}
+
+/** 目的のアプリのフォーカスのある要素。 */
+private func paradisFocusedElement(pid: Int32) -> AXUIElement? {
+	let application = AXUIElementCreateApplication(pid)
+	AXUIElementSetMessagingTimeout(application, 0.5)
+	return paradisElement(application, kAXFocusedUIElementAttribute)
+}
+
+/** フォーカスのある欄の値と選択範囲（UTF-16）。パスワード欄らしければ読まない。 */
+private func paradisFocusedTextState(pid: Int32) -> (value: String?, selection: (location: Int, length: Int)?) {
+	guard let element = paradisFocusedElement(pid: pid), !paradisElementLooksSecret(element) else {
+		return (nil, nil)
+	}
+	return (paradisCopy(element, kAXValueAttribute) as? String, paradisSelectedRange(element))
+}
+
+private func paradisSelectedRange(_ element: AXUIElement) -> (location: Int, length: Int)? {
+	guard let value = paradisCopy(element, kAXSelectedTextRangeAttribute), CFGetTypeID(value) == AXValueGetTypeID() else {
+		return nil
+	}
+	var range = CFRange(location: 0, length: 0)
+	guard AXValueGetValue(value as! AXValue, .cfRange, &range) else {
+		return nil
+	}
+	return (range.location, range.length)
+}
+
+private func paradisElementLooksSecret(_ element: AXUIElement) -> Bool {
+	return paradisIsSecureLike(
+		role: paradisCopy(element, kAXRoleAttribute) as? String ?? "",
+		subrole: paradisCopy(element, kAXSubroleAttribute) as? String,
+		title: paradisCopy(element, kAXTitleAttribute) as? String,
+		label: paradisCopy(element, kAXDescriptionAttribute) as? String,
+		placeholder: paradisCopy(element, kAXPlaceholderValueAttribute) as? String
+	)
+}
+
+/**
+ * フォーカスのある欄の選択範囲を、AX で文字列に置き換える。欄が受け付けない・値を読めない・何も変わらなかった
+ * ときは nil（キーか貼り付けで入れ直してよい）。変わったがそのままではなかったときは、入れ直すと二重になるので
+ * 結果（verified: false）を返す。
+ */
+private func paradisInsertViaAccessibility(pid: Int32, text: String) -> ParadisTypingCheck? {
+	guard let element = paradisFocusedElement(pid: pid), !paradisElementLooksSecret(element) else {
+		return nil
+	}
+	var settable = DarwinBoolean(false)
+	guard AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &settable) == .success, settable.boolValue,
+		let before = paradisCopy(element, kAXValueAttribute) as? String, let selection = paradisSelectedRange(element)
+	else {
+		return nil
+	}
+	guard AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFString) == .success else {
+		return nil
+	}
+	usleep(50_000)
+	let after = paradisCopy(element, kAXValueAttribute) as? String
+	if after == before {
+		return nil
+	}
+	return paradisTypingOutcome(before: before, selection: selection, after: after, text: text)
+}
+
+/** 今の入力ソースが IME か（main スレッドで呼ぶ）。 */
+private func paradisInputMethodIsActive() -> Bool {
+	guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else {
+		return false
+	}
+	func property(_ key: CFString) -> String? {
+		guard let pointer = TISGetInputSourceProperty(source, key) else {
+			return nil
+		}
+		return Unmanaged<CFString>.fromOpaque(pointer).takeUnretainedValue() as String
+	}
+	return paradisIsInputMethodActive(sourceType: property(kTISPropertyInputSourceType), sourceId: property(kTISPropertyInputSourceID))
 }
 
 func paradisMouseEvent(_ type: CGEventType, at point: CGPoint, button: CGMouseButton, flags: CGEventFlags) -> CGEvent? {
