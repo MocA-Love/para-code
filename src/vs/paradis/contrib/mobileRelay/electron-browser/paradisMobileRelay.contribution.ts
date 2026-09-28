@@ -330,6 +330,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			{
 				invokeFunction: fn => instantiationService.invokeFunction(fn),
 				getMobileCapabilities: mobileId => this.service.getMobileCapabilities(mobileId),
+				getMobileWireVersion: mobileId => this.service.getMobileWireVersion(mobileId),
 			},
 		));
 		const rendererLifecycle = new ParadisMobileRelayRendererLifecycle(

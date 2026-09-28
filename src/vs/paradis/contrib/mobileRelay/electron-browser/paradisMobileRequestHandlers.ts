@@ -10,6 +10,7 @@ import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js'
 import { URI } from '../../../../base/common/uri.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { paradisHasMobileCapability } from '../common/paradisMobileCompat.js';
+import { PARADIS_MOBILE_BUILTIN_REQUEST_KINDS } from '../common/paradisMobileRequestKinds.js';
 import { IParadisGitResult } from '../common/paradisMobileRelay.js';
 
 /**
@@ -23,8 +24,10 @@ import { IParadisGitResult } from '../common/paradisMobileRelay.js';
  *    `ParadisMobileCapability` と `PARADIS_MOBILE_PC_CAPABILITIES` に1行ずつ）。アプリは
  *    広告が無い PC にはその種類を送らない（ボタンごと出さない）
  *
- * 既存の種類（`status` / `diff` / `read` など provider が switch で持っているもの）は登録しないこと。
- * 登録表は provider の switch より先に引かれるので、既存の種類を登録すると置き換わる。
+ * 既存の種類（`status` / `diff` / `read` など provider が自分の分岐で持っているもの）は登録できない
+ * （`PARADIS_MOBILE_BUILTIN_REQUEST_KINDS`、登録すると例外）。provider は既存の分岐で処理しなかった
+ * 要求だけを登録表へ回す。scm はスペースの検査（unknown workspace）より前に回すので、`ws` を持たない
+ * 種類も登録できる。
  *
  * 受け取る前に shared process がウィンドウと Renderer の世代・`protocolVersion`・`desktopEpoch` を
  * 検査済み（`paradisMobileRelayService.ts` の handleWindowFrame）。形の検査は各処理が自分で行う
@@ -62,6 +65,11 @@ export interface IParadisMobileRequestContext {
 	resolvePath(relativePath: string): Promise<URI | undefined>;
 	/** 要求を送ってきたモバイルがその capability を広告しているか（W2-17 より前のアプリは false）。 */
 	hasMobileCapability(name: string): Promise<boolean>;
+	/**
+	 * このモバイルとのセッションで話している版（窓の中で古い方）。オフラインなら `undefined`。
+	 * PC から送る形を版で変えるときに使う（今は版 3 しか無いので常に 3）。
+	 */
+	mobileWireVersion(): Promise<number | undefined>;
 }
 
 export interface IParadisMobileRequestHandler {
@@ -80,6 +88,7 @@ export interface IParadisMobileRequestHost {
 	runGit(root: URI, args: readonly string[]): Promise<IParadisGitResult>;
 	resolvePath(ws: string, relativePath: string): Promise<URI | undefined>;
 	getMobileCapabilities(mobileId: string): Promise<readonly string[] | undefined>;
+	getMobileWireVersion(mobileId: string): Promise<number | undefined>;
 	send(channel: ParadisMobileRequestChannel, mobileId: string | undefined, payload: Uint8Array): void;
 }
 
@@ -89,8 +98,14 @@ function handlerKey(channel: ParadisMobileRequestChannel, kind: string): string 
 	return `${channel}\u0000${kind}`;
 }
 
-/** 新しい種類の処理を登録する。同じ種類を二重に登録すると例外（2つの担当が同じ名前を選んだ事故を早く見つける）。 */
+/**
+ * 新しい種類の処理を登録する。既存の種類（provider が持っているもの）と、同じ種類の二重登録は例外
+ * （既存の処理を黙って置き換えない。2つの担当が同じ名前を選んだ事故も早く見つける）。
+ */
 export function registerParadisMobileRequestHandler(channel: ParadisMobileRequestChannel, kind: string, handler: IParadisMobileRequestHandler): IDisposable {
+	if (PARADIS_MOBILE_BUILTIN_REQUEST_KINDS[channel].includes(kind)) {
+		throw new Error(`Mobile request kind is handled by the provider itself: ${channel}/${kind}`);
+	}
 	const key = handlerKey(channel, kind);
 	if (handlers.has(key)) {
 		throw new Error(`Mobile request handler already registered: ${channel}/${kind}`);
@@ -103,49 +118,31 @@ export function registerParadisMobileRequestHandler(channel: ParadisMobileReques
 	});
 }
 
-function hasHandlersFor(channel: ParadisMobileRequestChannel): boolean {
-	const prefix = `${channel}\u0000`;
-	for (const key of handlers.keys()) {
-		if (key.startsWith(prefix)) {
-			return true;
-		}
-	}
-	return false;
-}
-
-const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
-/** JSON の要求で、登録された種類のものだけを取り出す（それ以外は provider の既存の処理へ回す）。 */
-function peekRegisteredRequest(channel: ParadisMobileRequestChannel, payload: Uint8Array): { readonly request: IParadisMobileRequest; readonly handler: IParadisMobileRequestHandler } | undefined {
-	// 登録が無い間は JSON を読まない（fs のアップロードのような 2 進の要求も素通しする）。
-	if (!hasHandlersFor(channel) || payload[0] !== 0x7b /* { */) {
+/** provider が JSON として読んだ要求のうち、登録された種類のものだけを取り出す。 */
+function findRegisteredRequest(channel: ParadisMobileRequestChannel, message: unknown): { readonly request: IParadisMobileRequest; readonly handler: IParadisMobileRequestHandler } | undefined {
+	if (message === null || typeof message !== 'object' || Array.isArray(message)) {
 		return undefined;
 	}
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(decoder.decode(payload));
-	} catch {
-		return undefined;
-	}
-	if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-		return undefined;
-	}
-	const candidate = parsed as Record<string, unknown>;
-	if (typeof candidate.t !== 'string' || typeof candidate.id !== 'string' || candidate.id.length === 0 || candidate.id.length > 200
-		|| (candidate.ws !== undefined && typeof candidate.ws !== 'string')) {
+	const candidate = message as Record<string, unknown>;
+	if (typeof candidate.t !== 'string') {
 		return undefined;
 	}
 	const handler = handlers.get(handlerKey(channel, candidate.t));
-	return handler !== undefined ? { request: candidate as IParadisMobileRequest, handler } : undefined;
+	if (handler === undefined || typeof candidate.id !== 'string' || candidate.id.length === 0 || candidate.id.length > 200
+		|| (candidate.ws !== undefined && typeof candidate.ws !== 'string')) {
+		return undefined;
+	}
+	return { request: candidate as IParadisMobileRequest, handler };
 }
 
 /**
- * 登録された種類なら処理して true を返す。provider の受信の分岐は、既存の switch へ渡す前に
- * これを1回だけ呼ぶ。
+ * 登録された種類なら処理して true を返す。provider は、既存の分岐で処理しなかった要求（すでに JSON として
+ * 読んだもの）についてだけ、チャネルごとに1か所でこれを呼ぶ。
  */
-export function paradisDispatchMobileRequest(channel: ParadisMobileRequestChannel, payload: Uint8Array, mobileId: string | undefined, host: IParadisMobileRequestHost): boolean {
-	const found = peekRegisteredRequest(channel, payload);
+export function paradisDispatchMobileRequest(channel: ParadisMobileRequestChannel, message: unknown, mobileId: string | undefined, host: IParadisMobileRequestHost): boolean {
+	const found = findRegisteredRequest(channel, message);
 	if (found === undefined) {
 		return false;
 	}
@@ -156,11 +153,13 @@ export function paradisDispatchMobileRequest(channel: ParadisMobileRequestChanne
 		channel,
 		mobileId,
 		root,
-		reply: body => send({ id: request.id, ...body }),
+		// id は本文より後に置く（処理が本文に id を入れても応答の宛先を変えさせない）。
+		reply: body => send({ ...body, id: request.id }),
 		push: body => send(body),
 		runGit: args => root !== undefined ? host.runGit(root, args) : Promise.reject(new Error(`unknown workspace: ${request.ws ?? ''}`)),
 		resolvePath: relativePath => request.ws !== undefined ? host.resolvePath(request.ws, relativePath) : Promise.resolve(undefined),
 		hasMobileCapability: async name => mobileId !== undefined && paradisHasMobileCapability(await host.getMobileCapabilities(mobileId), name),
+		mobileWireVersion: async () => mobileId !== undefined ? host.getMobileWireVersion(mobileId) : undefined,
 	};
 	const fail = (error: unknown) => context.reply({ error: error instanceof Error ? error.message : String(error) });
 	try {

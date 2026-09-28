@@ -733,7 +733,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly resolveWindowHost?: () => IParadisMobileWindowHost,
 		// 登録表（paradisMobileRequestHandlers.ts）で受ける新しい種類に、サービスとモバイルの capability を渡す口。
 		// 未指定（テスト等）なら登録表は引かない。
-		private readonly requestHandlerServices?: Pick<IParadisMobileRequestHost, 'invokeFunction' | 'getMobileCapabilities'>,
+		private readonly requestHandlerServices?: Pick<IParadisMobileRequestHost, 'invokeFunction' | 'getMobileCapabilities' | 'getMobileWireVersion'>,
 	) {
 		super();
 		this.mobileWarmLeases = this._register(new ParadisMobileWarmLeaseProvider(setUsageWarmLease, setSpaceDiskWarmLease));
@@ -1391,10 +1391,6 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			this.handleAgentAction(frame.payload, frame.mobileId).catch(err => this.logService.warn('[paradisMobileRelay] agent action failed', err));
 			return;
 		}
-		// 別ファイルで登録した新しい種類（W2-17 の登録表）。既存の種類は登録されていないので、下の既存の処理へ進む。
-		if ((frame.ch === Channels.Scm || frame.ch === Channels.Fs) && this.dispatchRegisteredRequest(frame)) {
-			return;
-		}
 		if (frame.ch === Channels.Scm) {
 			this.handleScmInbound(frame.payload, frame.mobileId).catch(err => this.logService.warn('[paradisMobileRelay] scm request failed', err));
 			return;
@@ -1411,15 +1407,19 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 	}
 
-	private dispatchRegisteredRequest(frame: InboundFrame): boolean {
+	/**
+	 * 既存の分岐で処理しなかった要求を、別ファイルで登録した新しい種類（W2-17 の登録表）へ回す。
+	 * 既存の種類は登録できない（PARADIS_MOBILE_BUILTIN_REQUEST_KINDS）ので、既存の処理を置き換えることはない。
+	 */
+	private dispatchRegisteredRequest(channel: 'scm' | 'fs', message: unknown, mobileId: string | undefined): boolean {
 		const services = this.requestHandlerServices;
 		if (services === undefined) {
 			return false;
 		}
-		const channel = frame.ch === Channels.Scm ? 'scm' : 'fs';
-		return paradisDispatchMobileRequest(channel, frame.payload.buffer, frame.mobileId, {
+		return paradisDispatchMobileRequest(channel, message, mobileId, {
 			invokeFunction: fn => services.invokeFunction(fn),
 			getMobileCapabilities: mobileId => services.getMobileCapabilities(mobileId),
+			getMobileWireVersion: mobileId => services.getMobileWireVersion(mobileId),
 			resolveRoot: ws => this.repoUriForWs(ws),
 			runGit: (root, args) => this.runGit(root, args),
 			resolvePath: async (ws, relativePath) => {
@@ -1788,6 +1788,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				this.logService.warn('[paradisMobileRelay] preset request failed', err);
 				reply({ error: String(err) });
 			}
+			return;
+		}
+		// ここまでで ws を持たない既存の種類は処理済み。残りの既存の種類は登録できないので、登録表が
+		// 受けるのは新しい種類だけ（ws を持たない新しい種類が下の unknown workspace に捕まらないよう、ここで回す）。
+		if (this.dispatchRegisteredRequest('scm', msg, mobileId)) {
 			return;
 		}
 		const repoUri = this.repoUriForWs(msg.ws);
@@ -2432,6 +2437,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			} catch {
 				reply({ error: 'file link could not be resolved' });
 			}
+			return;
+		}
+		// 別ファイルで登録した新しい種類（W2-17 の登録表）。残りの既存の種類は登録できないので置き換えは起きない。
+		if (binaryUpload === undefined && this.dispatchRegisteredRequest('fs', msg, mobileId)) {
 			return;
 		}
 		// ここまでで処理されなかった = このPCが知らないサブタイプ。パス解決へ落とすと
