@@ -51,6 +51,9 @@ importers:
       expo-local-authentication:
         specifier: ~57.0.0
         version: 57.0.0(expo@57.0.4)
+      expo-network:
+        specifier: ~57.0.2
+        version: 57.0.2(expo@57.0.4)(react@19.2.3)
       expo-notifications:
         specifier: ~57.0.3
         version: 57.0.3(expo@57.0.4)(react-native@0.86.0(patch_hash=5adbea2356161c09df8709b74302c75e87b79d99fe1a2d571c724612af235902)(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)(typescript@6.0.3)
@@ -2629,6 +2632,12 @@ packages:
     resolution: {integrity: sha512-dECN3pOFv+KrQcGrOhJKEBc1/ob7SBjTTYGRB1bc84zmQ65La0FSrAPxpvnEQf8g9giLB5y9RLqwGxHspjXigQ==}
     peerDependencies:
       react-native: '*'
+
+  expo-network@57.0.2:
+    resolution: {integrity: sha512-BfK1kdftZcM6o9o1FAG7/y0l6vWX0n8td0M5lwkvaMeRXZ9LkRwOi9CQXwvsMTQGQiPwtQXgwiAze13cqjt75g==}
+    peerDependencies:
+      expo: '*'
+      react: '*'
 
   expo-notifications@57.0.3:
     resolution: {integrity: sha512-BTfrlnWF4EQZ0Oufsj00OesdxxlXCaC3OexnJTWKdQJ2a26w/bIAM3kXIxHsizmBWaHt5EJc5LvuDzVeUt7JJA==}
@@ -6912,6 +6921,11 @@ snapshots:
   expo-modules-jsi@57.0.1(react-native@0.86.0(patch_hash=5adbea2356161c09df8709b74302c75e87b79d99fe1a2d571c724612af235902)(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)):
     dependencies:
       react-native: 0.86.0(patch_hash=5adbea2356161c09df8709b74302c75e87b79d99fe1a2d571c724612af235902)(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)
+
+  expo-network@57.0.2(expo@57.0.4)(react@19.2.3):
+    dependencies:
+      expo: 57.0.4(9723afc4e9c84289252044c2402280a3)
+      react: 19.2.3
 
   expo-notifications@57.0.3(expo@57.0.4)(react-native@0.86.0(patch_hash=5adbea2356161c09df8709b74302c75e87b79d99fe1a2d571c724612af235902)(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)(typescript@6.0.3):
     dependencies:
