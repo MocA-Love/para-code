@@ -745,6 +745,8 @@ git push origin v1.128.0-paracode-3
 - タグは**push済みのcommit**に打つこと。ビルド失敗でタグを付け直す場合は `git tag -d <tag> && git push origin :refs/tags/<tag>` で消してから再作成（このワークフローはタグの上書きを検知しない）
 - 進捗確認: `gh run list --workflow=para-release.yml`、失敗調査: `gh run view <id> --log-failed`
 - 単一プラットフォームだけ再検証したい場合: `gh workflow run para-release.yml -f platforms=win32`（`darwin`/`linux`も可、カンマ区切り。publishはスキップされる）
+- 2026-09-28 から、publish するのはタグからの実行だけ。ブランチ上の `workflow_dispatch` は `platforms` が空でもビルドだけで止まる（以前はブランチからでも `stable:*` を書き換えられた）。復旧で同じタグを回し直すときは `gh workflow run para-release.yml --ref <タグ>` を使う
+- ステーブル（`v{upstream}-paracode-{N}`）とベータ（`...-beta.{M}`）以外の形式のタグは、ビルド前に失敗する。ベータの出し方は下記「ベータ版の配布経路」
 - リリース後の動作確認（フィードが新commitを配信しているか）:
   ```bash
   # 1つ前のリリースのcommitを名乗って照会 → 新commitのURLを含むJSONが返ればOK（要Accessヘッダー、値はGitHub Secrets参照）
@@ -821,6 +823,45 @@ win/mac/linuxへの配布と自動アップデートの実装。設計の経緯�
 - GitHub Actions側のsecrets登録一式（Apple署名・公証用6種、`CF_API_TOKEN`/`CF_ACCOUNT_ID`/`CF_R2_BUCKET`/`CF_R2_PUBLIC_BASE_URL`/`CF_KV_NAMESPACE_ID`/`PARA_UPDATE_ACCESS_CLIENT_ID`/`_SECRET`）。具体値はGitHub Secretsとデプロイ設定で管理し、公開文書へ重複記載しない
 
 **当時の次アクション（履歴）**: GitHub Actions secrets登録 → Access Application作成 → 実リリースでのE2E確認。secrets登録と初回リリースのE2E確認は上記のとおり完了済み。
+
+### ベータ版の配布経路（2026-09-28）
+
+ベータは「ステーブルと同じ挙動のビルドが、ベータ用の更新先だけを見る」形で、GitHub のプレリリースから手動で入れてもらう。設計の比較（`quality` を `beta` にしない理由など）は調査メモ `beta-channel/design.md`（リポジトリ外）にある。
+
+ビルドの見分け方は `product.json` の `paradisUpdateChannel` で、`quality` は `stable` のままにする。`quality` を変えると `src/` の `quality === 'stable'` 分岐（拡張のプレリリース優先、実験設定の既定値など）までベータ寄りになり、試したい機能以外の差分が混ざるため。
+
+| 箇所 | ベータのときの動き | ステーブル（値なし）のとき |
+|---|---|---|
+| `build/gulpfile.vscode.ts` | env `PARA_UPDATE_CHANNEL=beta` を `paradisUpdateChannel` に刻む | `stable` か未設定なら何も刻まない |
+| `src/vs/platform/update/common/paradisUpdateChannel.ts` | `resolveParadisUpdateChannel` が `beta` を返す | `quality` を返す（従来どおり） |
+| `abstractUpdateService.ts`（PARA-PATCH 1 行） | フィード `/api/update/{platform}/beta/{commit}` | `/api/update/{platform}/stable/{commit}` |
+| `paradisReleaseNotes.contribution.ts` | 更新履歴 `/api/changelog/beta` | `/api/changelog/stable` |
+
+チャネルの優先順は「設定 > 刻んだ値 > `quality`」。将来 `paradis.update.channel` を足すときは、その値を `resolveParadisUpdateChannel` の第 2 引数に渡し、設定の変更で `reconfigure()` を呼べばよい（今は設定を作っていない）。Windows の更新キャッシュ名は `productService.quality` を直接使うので、ベータでも `stable` のまま。
+
+ワークフロー側は、最初の `classify` ジョブが `build/lib/paradisReleaseChannel.ts` でタグを分類し、以降のジョブはその出力だけを見る（`needs.classify.outputs.channel` / `is_beta` / `publish`、ビルドジョブには env `PARA_UPDATE_CHANNEL` と macOS に `PARA_RELEASE_IS_BETA`）。
+
+| | ステーブルのタグ | ベータのタグ |
+|---|---|---|
+| ビルド | 5 プラットフォーム | macOS の arm64・x64 だけ |
+| R2 | `stable/{platdir}/{commit}/{file}` | `beta/{platdir}/{commit}/{file}` |
+| KV（フィード） | `stable:*` の 5 キー | `beta:darwin`・`beta:darwin-arm64` だけ。`stable:*` は書かない |
+| KV（更新履歴） | `changelog:stable`（改名済みの md） | `changelog:beta`（`## 未リリース` を含む md をそのまま） |
+| GitHub Release | 従来どおり（Latest になる） | `--prerelease --latest=false`。既にあれば `gh release edit` で付け直す |
+| REH（`reh` Release） | 従来どおり `--clobber` で積む | 同じ `reh` に commit 名で積む。同名のファイルが既にあれば上書きしない |
+
+ステーブルの出力が変わっていないことは、`build/lib/test/paradisReleaseContract.test.ts` が publish ジョブのスクリプトを bash でスタブ実行し、R2 のキー・KV のキーと値・`gh` の呼び出しを 1 行ずつ固定して確かめている（`cd build && npm test`）。
+
+ベータを出す手順:
+
+1. このワークフローの変更が入った main の上に、ベータ用ブランチ（例: B3 の Computer Use を載せたもの）を作って push する。ワークフローはタグの commit にある `para-release.yml` で動くので、ブランチ側にも同じ変更が要る
+2. `## 未リリース` は改名しない。タグ `v{upstream}-paracode-{次のステーブルの N}-beta.{M}` をブランチの commit に打って push する
+3. 走り終わったら、プレリリースの本文をベータの説明に書き換える（`gh release edit <タグ> --notes-file <ファイル>`）
+4. 確かめること: `beta` のフィードに旧 commit を名乗って 200、ベータの commit で 204。`stable` のフィードに最新ステーブルの commit で 204（ステーブル利用者に何も届いていない）。Releases ページの Latest が最新ステーブルのまま
+
+テスターはベータを入れている間、ステーブルの修正を受け取らない。ベータを含むステーブルを出したら、`beta:darwin`・`beta:darwin-arm64` をそのステーブルのレコードで上書きする（卒業の操作）。ステーブルのビルドにはチャネルが刻まれていないので、次の更新でテスターはステーブルのフィードへ戻る。今は手作業の `wrangler kv key put`（`CLOUDFLARE_ACCOUNT_ID` 必須）で行う。更新サーバー（Worker）は `quality` を制限していないので、ベータのために変更もデプロイも要らない。
+
+【要確認】ステーブルの `gh release create --generate-notes` が、間に挟まったベータのタグを起点に差分を作るかは未確認。気になる場合はステーブル側に `--notes-start-tag` を足す。
 
 ## モバイルリレー: Cloudflare Workers/DOデプロイ（2026-07-05）
 

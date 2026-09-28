@@ -73,7 +73,16 @@ PC版・モバイルアプリ版のそれぞれに、ユーザーが読む更新
 - 表示はモーダル（バージョン一覧ナビゲーター、`paradisChangelogModal.ts`）。起動時に update サーバーの `GET /api/changelog/:quality`（cloudflare/update-server、リリース時に para-release.yml が KV へアップロード）から最新の md も取得し、同梱より新しいバージョンを「利用可能な更新」として表示する。取得できない場合は同梱分のみで静かに動く
 - **ユーザー向けの機能追加・改善・修正を実装したら、その作業の中で `## 未リリース` セクションに箇条書きを1行追記する**（コミットに含める）。内部整備のみ（ビルド修正・リファクタ等）は書かない
 - **リリースタグ（`v1.x.y-paracode-N`）を打つ前に、`## 未リリース` を `## paracode-N（YYYY-MM-DD）` に改名して確定する**（新しいバージョンが上）
+- 例外として、**ベータのタグ（`v1.x.y-paracode-N-beta.M`）では `## 未リリース` を改名しない**。ベータはどの N で確定するか決まっておらず、`## paracode-N` にすると後で本物の N と中身がずれるため。ワークフローは `## 未リリース` を含む md をそのまま `changelog:beta` に載せる。ベータで試してもらう内容は、ワークフローが作った GitHub のプレリリースの本文に書く（`gh release edit <タグ> --notes-file <ファイル>`）
 - 書き方: ユーザー視点で「何ができるようになったか / 何が直ったか」を日本語の箇条書きで書く。項目が多いリリースは `### 新機能` / `### 改善` / `### 修正` に分ける。ファイル名・クラス名など内部実装の用語は書かない。項目本文で使える装飾は `` `コード` `` と **太字** のみ（リンク・画像・見出しなどはそのまま文字として表示される）
+
+### ベータ版のタグの打ち方（2026-09-28整備）
+
+- 形式は `v{upstream}-paracode-{次に出すステーブルの N}-beta.{M}`（例 `v1.139.1-paracode-146-beta.1`）。ステーブル `v{upstream}-paracode-{N}` とベータ以外の形式のタグは、`para-release.yml` と `para-reh.yml` がビルドも公開もせず失敗する（判定は `build/lib/paradisReleaseChannel.ts`）
+- 打つのは push 済みのベータ用ブランチの commit。ワークフローは macOS（arm64・x64）だけをビルドし、`product.json` に `paradisUpdateChannel: "beta"` を刻み（`quality` は `stable` のまま）、R2 の `beta/`、KV の `beta:darwin`・`beta:darwin-arm64`・`changelog:beta`、Latest にならないプレリリースへ出す。`stable:*` には触れない
+- ベータの途中でステーブルの N が出たら、次のベータは `N+1` の `-beta.1` から数え直す
+- ブランチ上の `workflow_dispatch` は公開しない。公開はタグからの実行だけ
+- 手順の詳細と、テスターをステーブルへ戻す操作（卒業）は `NOTES.md` の「ベータ版の配布経路」を読む
 
 ### モバイルアプリ版（Para Code Mobile）
 
