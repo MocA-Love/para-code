@@ -1,13 +1,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChevronDown, ChevronRight, Folder, Pin, Plus, TriangleAlert, Unplug } from 'lucide-react-native';
+import { ChevronDown, ChevronRight, Folder, KeyRound, Pin, Plus, TriangleAlert, Unplug } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { hapticImpact, hapticSelection } from '../../haptics.js';
 import type { HomeStatusBucket } from '../../homeSort.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { EmptyState, Icon, agentDotColor, iconSize, useThemeColors } from '../../ui/index.js';
+import { PAIRING_REJECTED_HINT, PAIRING_REJECTED_LABEL } from '../../pcStatus.js';
 
 /** 状態のまとまり → 点の色（theme の状態の色。待機は薄めた灰）。 */
 export function bucketDotColor(bucket: HomeStatusBucket): string {
@@ -81,26 +82,32 @@ export const FAB_SIZE = 48;
  * つながっていない PC を開いたときの中身（モックの Mac mini）。上に帯で「接続できません」、
  * 真ん中に「デスクトップに届きません」と再接続。
  */
-export function PcOfflineState({ name, lastOnline, onReconnect }: {
+export function PcOfflineState({ name, lastOnline, onReconnect, pairingRejected = false, onRepair }: {
 	name: string;
 	/** 最後につながっていた時刻の相対表記（「2時間前」）。分からなければ undefined。 */
 	lastOnline: string | undefined;
 	onReconnect: () => void;
+	/**
+	 * リレーがこの端末の資格を拒んだ（`isPairingRejected`）。再接続しても直らないので、
+	 * 同じ形のまま文言とボタンを再ペアリングへ差し替える。
+	 */
+	pairingRejected?: boolean;
+	onRepair?: () => void;
 }) {
 	return (
 		<View style={styles.offline}>
 			<View style={styles.banner}>
-				<Icon icon={TriangleAlert} size={iconSize.sm} color={colors.amber} />
+				<Icon icon={TriangleAlert} size={iconSize.sm} color={pairingRejected ? colors.red : colors.amber} />
 				<Text style={styles.bannerText}>
-					{`${name} に接続できません。`}
-					{lastOnline !== undefined ? `最後に接続したのは ${lastOnline}です。` : ''}
+					{pairingRejected ? `${name} とのペアリングが使えなくなっています。` : `${name} に接続できません。`}
+					{!pairingRejected && lastOnline !== undefined ? `最後に接続したのは ${lastOnline}です。` : ''}
 				</Text>
 			</View>
 			<EmptyState
-				icon={Unplug}
-				title="デスクトップに届きません"
-				body="PC の電源と Para Code が起動しているかを確かめて、再接続してください。"
-				action={{ label: '再接続', onPress: onReconnect }}
+				icon={pairingRejected ? KeyRound : Unplug}
+				title={pairingRejected ? `${PAIRING_REJECTED_LABEL}です` : 'デスクトップに届きません'}
+				body={pairingRejected ? PAIRING_REJECTED_HINT : 'PC の電源と Para Code が起動しているかを確かめて、再接続してください。'}
+				action={pairingRejected && onRepair !== undefined ? { label: 'ペアリングし直す', onPress: onRepair } : { label: '再接続', onPress: onReconnect }}
 			/>
 		</View>
 	);

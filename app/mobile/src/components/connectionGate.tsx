@@ -17,6 +17,7 @@ import { hapticImpact } from '../haptics.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { ConnectionStatusBanner } from './connectionStatusBanner.js';
 import { Button } from './button.js';
+import { PAIRING_REJECTED_HINT, PAIRING_REJECTED_LABEL } from '../pcStatus.js';
 
 /**
  * 未ペアリング時の案内。ConnectionGateと、ホーム画面（独自に接続状態を出す都合上
@@ -126,7 +127,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 	const message = manualOffline
 		? '接続を切断しています'
 		: rejected
-			? 'この端末のペアリングは PC で解除されたか、使えなくなっています。PC の Para Code で QR コードを出し直し、ペアリングし直してください。'
+			? PAIRING_REJECTED_HINT
 			: pcOffline
 				? 'PCがオフラインです。PCの Para Code が起動しているか確認してください。'
 				: connecting
@@ -136,7 +137,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 	return (
 		<View style={styles.gated}><View style={styles.center} accessibilityLiveRegion="polite">
 			{connecting ? <ActivityIndicator accessibilityLabel="PCへ接続中" size="large" color={colors.accent} /> : <Ionicons name={rejected ? 'key-outline' : 'cloud-offline-outline'} size={40} color={rejected ? colors.red : colors.textDim} />}
-			<Text style={styles.title}>{rejected ? '再ペアリングが必要です' : connecting ? '接続中' : '未接続'}</Text>
+			<Text style={styles.title}>{rejected ? `${PAIRING_REJECTED_LABEL}です` : connecting ? '接続中' : '未接続'}</Text>
 			<Text style={styles.dim}>{message}</Text>
 			{!connecting ? (
 				<Button

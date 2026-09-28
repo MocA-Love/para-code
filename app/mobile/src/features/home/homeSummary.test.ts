@@ -61,6 +61,12 @@ describe('PC のカード', () => {
 		expect(pcConnectionLine('connecting', now - 10_000, now)).toBe('接続しています…');
 		expect(pcConnectionLine('offline', now - 2 * 60 * 60_000, now)).toBe('オフライン · 2時間前まで接続');
 		expect(pcConnectionLine('pcOffline', undefined, now)).toBe('PCオフライン');
+		// 資格を拒まれた PC は接続の語と最終接続時刻を出さず、再ペアリングが必要と出す（設定の PC 一覧と同じ文言）
+		expect([
+			pcConnectionLine('offline', now - 60_000, now, true),
+			pcConnectionLine('connecting', undefined, now, true),
+			pcConnectionLine('connected', now, now, true),
+		]).toEqual(['再ペアリングが必要', '再ペアリングが必要', '接続中 · リレー経由']);
 		expect(batteryLine({ level: 81.6, charging: true })).toBe('バッテリー 82%（充電中）');
 	});
 });

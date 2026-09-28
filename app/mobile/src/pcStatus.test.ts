@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { pcStatusText, shouldShowBattery } from './pcStatus.js';
+import { PAIRING_REJECTED_LABEL, isPairingRejected, pcStatusText, shouldShowBattery } from './pcStatus.js';
 import type { PcSummary } from './appState.js';
 
 function pc(overrides: Partial<PcSummary> = {}): PcSummary {
@@ -45,6 +45,19 @@ describe('pcStatusText', () => {
 	test('見ていないPCで待っている件数は添えるが、使用中のPCには出さない', () => {
 		expect([pcStatusText(pc({ waiting: 2 }), false), pcStatusText(pc({ waiting: 2 }), true)])
 			.toStrictEqual(['待機中 · 要対応 2件', '接続中 · 使用中']);
+	});
+});
+
+describe('isPairingRejected', () => {
+	test('資格を拒まれていて、いまも繋がっていないときだけ再ペアリングが必要と見なす', () => {
+		expect([
+			isPairingRejected(pc({ connection: 'offline', pcOnline: false, pairingRejected: true })),
+			isPairingRejected(pc({ connection: 'connecting', pcOnline: false, pairingRejected: true })),
+			// 繋がった（拒否は解けている。印が落ちる前の1回の描画でも「接続中」を優先する）
+			isPairingRejected(pc({ connection: 'online', pcOnline: true, pairingRejected: true })),
+			isPairingRejected(pc({ connection: 'offline', pcOnline: false, pairingRejected: false })),
+		]).toStrictEqual([true, true, false, false]);
+		expect(PAIRING_REJECTED_LABEL).toBe('再ペアリングが必要');
 	});
 });
 
