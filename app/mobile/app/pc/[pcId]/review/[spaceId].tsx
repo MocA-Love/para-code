@@ -30,6 +30,7 @@ import { useDiffContent, type DiffContent } from '../../../../src/features/code/
 import { useReviewMarksController } from '../../../../src/features/code/useReviewMarks.js';
 import { useReviewNotesController } from '../../../../src/features/code/useReviewNotes.js';
 import { useScmStatus } from '../../../../src/features/code/useScmData.js';
+import { useStageFile } from '../../../../src/features/code/useScmSync.js';
 
 /**
  * 差分レビュー（`/pc/[pcId]/review/[spaceId]?path=…`）。Orca の MobileDiffReview に合わせ、
@@ -70,6 +71,7 @@ export default function ReviewScreen() {
 	const [agents, setAgents] = useState<readonly WorktreeAgentDef[]>([]);
 	const [agentsRequested, setAgentsRequested] = useState(false);
 	const terminals = useAppStore(s => s.workspace?.terminals);
+	const stageFile = useStageFile(codeSpace, showStageFailure);
 	const sendTargets = useMemo(() => reviewSendTargets(terminals ?? [], codeSpace.wsId), [terminals, codeSpace.wsId]);
 
 	const entries = orderedScmEntries(scmEntries(statusState.status));
@@ -182,6 +184,26 @@ export default function ReviewScreen() {
 		}
 	};
 
+	/**
+	 * いまのファイルだけをステージする・外す（Orca W2-15）。確認済みで確認後に変わっていないファイルは、確認済みの印ごと
+	 * ステージ後の中身へ付け替える `reviewStage` を使う（ただのステージだと「確認後に変更あり」に変わるため）。
+	 */
+	const toggleStageCurrent = async () => {
+		if (entry === undefined) {
+			return;
+		}
+		if (!entry.staged && reviewState === 'reviewed' && notes.canStage) {
+			const result = await notes.stage([entry]);
+			if (result !== undefined && result.staged > 0) {
+				void statusState.refresh();
+				return;
+			}
+		}
+		if (await stageFile.toggle(entry)) {
+			void statusState.refresh();
+		}
+	};
+
 	const stageReviewed = async () => {
 		setStaging(true);
 		const result = await notes.stage(stageable).finally(() => setStaging(false));
@@ -270,7 +292,15 @@ export default function ReviewScreen() {
 							: <EmptyState icon={CircleCheck} title="変更はありません" body="作業ツリーは最後のコミットと同じ状態です。" />
 					) : (
 						<>
-							<ReviewFileSummary entry={entry} path={path} stats={stats} state={reviewState} />
+							<ReviewFileSummary
+								entry={entry}
+								path={path}
+								stats={stats}
+								state={reviewState}
+								{...(stageFile.enabled && entry !== undefined && entry.kind !== 'conflict'
+									? { stage: { busy: stageFile.pending.has(entry.path) || staging, disabled: !codeSpace.live, onPress: () => void toggleStageCurrent() } }
+									: {})}
+							/>
 							<DiffBody
 								diff={diff}
 								rows={rows}
@@ -318,6 +348,11 @@ export default function ReviewScreen() {
 			/>
 		</Screen>
 	);
+}
+
+/** ステージの失敗（差分レビューの画面はシートの外なので、トーストで出す）。 */
+function showStageFailure(text: string): void {
+	useParaToast.getState().show({ key: 'review-stage-file-failed', text, icon: 'alert-circle', tone: 'warn' }, 4_000);
 }
 
 /** 差分の本文（読み込み中・切断・失敗・差分なし・表計算の差分・テキストの差分）。 */

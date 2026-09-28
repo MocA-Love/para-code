@@ -14,27 +14,32 @@ import { formatRelativeTime, useNow } from '../../time.js';
 import { Button, EmptyState, HeaderButton, Screen, ScreenHeader, type LucideIcon } from '../../ui/index.js';
 import { X } from 'lucide-react-native';
 import { CenterSpinner, GroupHeading, InlineError, OfflineBanner, Segments, SpaceGateBody, useReadableColumn } from './codeParts.js';
-import { BranchCard, CommitBar, HistoryList, ScmFileRow } from './scmParts.js';
+import { BranchCard, CommitBar, CommitFailureCard, HistoryList, ScmFileRow } from './scmParts.js';
 import {
 	SCM_SEGMENTS,
-	commitAction,
 	groupScmEntries,
 	listBodyState,
 	scmCounts,
 	scmEntries,
 	type ListBodyState,
+	type ScmEntry,
 	type ScmSegment,
 } from './scmModel.js';
+import { branchSyncOf, commitFailureView, commitHint, commitScope, scmPrimaryAction, scmSyncSummary } from './scmSync.js';
 import { useCodeSpace, type CodeSpaceTarget } from './useCodeSpace.js';
 import type { PanelDock } from './panelDock.js';
 import { useScmCommit, useScmHistory, useScmStatus } from './useScmData.js';
+import { useAgentHandoff, useScmSync, useStageFile } from './useScmSync.js';
 
 /**
  * ソース管理（`/pc/[pcId]/source-control/[spaceId]`）。Orca の MobileSourceControlPanel に合わせ、
  * 上に区分の切り替え（変更 / コミット）、その下にブランチのカードと変更の一覧、下端にコミットバーを置く。
  *
- * PC 側にあるのは「すべての変更をまとめてコミット」だけなので、ステージ・破棄・プッシュの操作は出さず、
- * コミットバーの下にその旨を書く。変更の行を押すと差分レビュー（`/pc/[pcId]/review/[spaceId]`）へ進む。
+ * PC が扱えれば（Orca W2-15）、ブランチのカードに上流と先行・遅れ、フェッチ・取り込み・プッシュを出し、主ボタンは
+ * 変更が無ければプッシュ・取り込み・公開に変わる（強制 push は出さない）。変更の行の右でファイルごとにステージでき、
+ * ステージ済みがあればそれだけをコミットする。コミットが失敗したら、要約と「AI に直してもらう」を出す。
+ * 扱えない PC では「すべての変更をまとめてコミット」だけで、その旨をコミットバーの下に書く。
+ * 変更の行を押すと差分レビュー（`/pc/[pcId]/review/[spaceId]`）へ進む。
  *
  * ルート（`app/pc/[pcId]/source-control/[spaceId].tsx`）と、iPad のセッションの右のドック（`dock`）の両方で使う。
  * ドックでは見出しの左が戻るではなく閉じる（X）になり、差分へ進むときはドックを閉じて詳細の列で押し進める。
@@ -45,7 +50,12 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	const statusState = useScmStatus(codeSpace);
 	const history = useScmHistory(codeSpace);
 	const commitState = useScmCommit(codeSpace);
+	const sync = useScmSync(codeSpace);
+	const [actionError, setActionError] = useState<string | undefined>(undefined);
+	const stageFile = useStageFile(codeSpace, setActionError);
+	const commitHandoff = useAgentHandoff(codeSpace);
 	const [segment, setSegment] = useState<ScmSegment>('changes');
+	const shown = segment;
 	const [message, setMessage] = useState('');
 	const now = useNow();
 	const insets = useStableInsets();
@@ -56,10 +66,12 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 
 	const entries = scmEntries(statusState.status);
 	const counts = statusState.status !== undefined ? scmCounts(entries) : undefined;
-	const action = commitAction({ live: codeSpace.live, total: counts?.total, message, committing: commitState.committing });
-	const latest = history.log?.commits[0];
-	const sync = latest === undefined ? undefined : `最新のコミット ${latest.at !== undefined ? formatRelativeTime(latest.at, now) : latest.when}`;
 	const branch = statusState.status?.branch ?? codeSpace.branch;
+	const branchSync = sync.enabled && statusState.status !== undefined ? branchSyncOf(statusState.status) : undefined;
+	const scope = commitScope(counts, stageFile.enabled);
+	const action = scmPrimaryAction({ live: codeSpace.live, total: counts?.total, message, committing: commitState.committing, sync: branchSync, syncing: sync.syncing, branch });
+	const latest = history.log?.commits[0];
+	const syncText = latest === undefined ? undefined : `最新のコミット ${latest.at !== undefined ? formatRelativeTime(latest.at, now) : latest.when}`;
 	const subtitle = [codeSpace.name, branch].filter(part => part !== undefined && part.length > 0).join(' · ');
 	const webUrl = history.log?.webUrl;
 
@@ -70,14 +82,46 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	};
 
 	const commit = async () => {
-		const ok = await commitState.commit(message);
+		commitHandoff.reset();
+		setActionError(undefined);
+		const ok = await commitState.commit(message, scope);
 		if (!ok) {
+			// 失敗でもステージを戻したので、一覧を読み直す
+			void statusState.refresh();
 			return;
 		}
 		setMessage('');
 		useParaToast.getState().show({ key: 'scm-commit', text: 'コミットしました', sub: branch, icon: 'checkmark-circle-outline', tone: 'done' }, 1_900);
 		void statusState.refresh();
 		void history.refresh();
+	};
+
+	const runSync = async (operation: 'push' | 'pull' | 'fetch') => {
+		setActionError(undefined);
+		const done = await sync.run(operation);
+		void statusState.refresh();
+		if (done === undefined) {
+			return;
+		}
+		useParaToast.getState().show({ key: 'scm-sync', text: done, sub: branch, icon: 'checkmark-circle-outline', tone: 'done' }, 1_900);
+		if (operation !== 'fetch') {
+			void history.refresh();
+		}
+	};
+
+	const primary = () => {
+		if (action.kind === 'commit') {
+			void commit();
+		} else {
+			void runSync(action.kind === 'pull' ? 'pull' : 'push');
+		}
+	};
+
+	const toggleStage = async (entry: ScmEntry) => {
+		setActionError(undefined);
+		if (await stageFile.toggle(entry)) {
+			void statusState.refresh();
+		}
 	};
 
 	const openReview = (path: string) => {
@@ -104,7 +148,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 				{...(dock !== undefined ? { safeTop: false, backIcon: X, backLabel: 'ソース管理を閉じる', onBack: dock.close } : {})}
 				right={<HeaderButton icon={RefreshCw} label="最新の状態に更新" onPress={refreshAll} disabled={!codeSpace.live} />}
 			>
-				<Segments items={SCM_SEGMENTS} value={segment} onChange={setSegment} />
+				<Segments items={SCM_SEGMENTS} value={shown} onChange={setSegment} />
 			</ScreenHeader>
 			<SpaceGateBody gate={codeSpace.gate}>
 				<View style={[styles.body, { paddingBottom: ownKeyboardCover }]}>
@@ -122,10 +166,18 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 						)}
 					>
 						<OfflineBanner reason={codeSpace.unavailable} style={styles.banner} />
-						<BranchCard branch={branch} sync={sync} counts={counts} />
-						{segment === 'changes' ? (
+						<BranchCard
+							branch={branch}
+							sync={syncText}
+							counts={counts}
+							{...(branchSync !== undefined ? { syncSummary: scmSyncSummary(branchSync), syncing: sync.syncing } : {})}
+							{...(branchSync !== undefined && codeSpace.live ? { onSync: (operation: 'push' | 'pull' | 'fetch') => void runSync(operation) } : {})}
+						/>
+						<InlineError message={sync.error} style={styles.inset} />
+						{shown === 'changes' ? (
 							<>
 								<InlineError message={statusState.status !== undefined && statusState.error !== undefined ? `読み直せませんでした: ${statusState.error}` : undefined} style={styles.inset} />
+								<InlineError message={actionError} style={styles.inset} />
 								<ListBody
 									state={changesState}
 									emptyTitle="ローカルの変更はありません"
@@ -137,7 +189,13 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 										<View key={section.group}>
 											<GroupHeading title={section.title} count={section.entries.length} />
 											{section.entries.map(entry => (
-												<ScmFileRow key={entry.path} entry={entry} disabled={codeSpace.pcId === undefined} onPress={() => openReview(entry.path)} />
+												<ScmFileRow
+													key={entry.path}
+													entry={entry}
+													disabled={codeSpace.pcId === undefined}
+													onPress={() => openReview(entry.path)}
+													{...(stageFile.enabled && entry.kind !== 'conflict' ? { stage: { busy: stageFile.pending.has(entry.path), disabled: !codeSpace.live, onPress: () => void toggleStage(entry) } } : {})}
+												/>
 											))}
 										</View>
 									))}
@@ -177,16 +235,26 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 							</>
 						)}
 					</ScrollView>
-					{segment === 'changes' ? (
+					{shown === 'changes' ? (
 						<>
 							<InlineError message={commitState.error !== undefined ? `コミットに失敗しました: ${commitState.error}` : undefined} />
+							{commitState.failure !== undefined ? (
+								<CommitFailureCard
+									view={commitFailureView(commitState.failure)}
+									handoff={commitHandoff}
+									onFix={codeSpace.live ? () => void commitHandoff.send({ t: 'commitFix', failureId: commitState.failure?.id }, 'auto') : undefined}
+									onFixWithNewAgent={() => void commitHandoff.send({ t: 'commitFix', failureId: commitState.failure?.id }, 'new')}
+									onDismiss={() => { commitHandoff.reset(); commitState.dismissFailure(); }}
+								/>
+							) : null}
 							<CommitBar
 								action={action}
 								message={message}
 								onChangeMessage={text => { setMessage(text); commitState.clearError(); }}
-								onCommit={() => { void commit(); }}
+								onCommit={primary}
 								onBlocked={reason => useParaToast.getState().show({ key: 'scm-commit-blocked', text: reason, icon: 'alert-circle-outline', tone: 'warn' }, 1_900)}
 								bottomInset={keyboardCover > 0 ? 0 : insets.bottom}
+								{...(branchSync !== undefined || stageFile.enabled ? { hint: commitHint(scope, counts, stageFile.enabled) } : {})}
 							/>
 						</>
 					) : null}

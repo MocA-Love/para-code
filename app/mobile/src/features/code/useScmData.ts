@@ -2,10 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
-import { useAppStore } from '../../appState.js';
+import { PARADIS_MOBILE_SCM_COMMIT_RECOVER_CAPABILITY, type IParadisMobileCommitFailure } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileScmSync.js';
+import { sendPcRequest, useAppStore } from '../../appState.js';
+import { usePcCapability } from '../../hooks/usePcCapability.js';
 import type { ScmLogResult, ScmStatusResult } from '../../store.js';
 import { codeCacheKey, useCodeCache } from './codeCache.js';
 import { errorMessage } from './scmModel.js';
+import { parseCommitFailure, type CommitScope } from './scmSync.js';
 import { currentRendererTarget, type CodeSpace } from './useCodeSpace.js';
 
 /**
@@ -184,20 +187,37 @@ export interface CommitState {
 	readonly error: string | undefined;
 	/** PC の出力（成功したとき）。 */
 	readonly output: string | undefined;
-	/** すべての変更をまとめてコミットする（`git add -A` のあとコミット）。成功したら true。 */
-	readonly commit: (message: string) => Promise<boolean>;
+	/**
+	 * コミットの失敗（PC が `scm.commit-recover.v1` を扱えるときだけ。要約・出力・「AI に直してもらう」の材料）。
+	 * 扱えない PC の失敗は `error` に1行で入る。
+	 */
+	readonly failure: IParadisMobileCommitFailure | undefined;
+	/**
+	 * コミットする（`scope` が `all` なら `git add -A` のあとコミット、`staged` ならステージ済みだけ）。成功したら true。
+	 */
+	readonly commit: (message: string, scope?: CommitScope) => Promise<boolean>;
 	readonly clearError: () => void;
+	/** コミットの失敗のカードを閉じる（次のコミットでも消える）。 */
+	readonly dismissFailure: () => void;
+}
+
+interface CommitSafeReply {
+	readonly ok?: unknown;
+	readonly output?: unknown;
+	readonly failure?: unknown;
 }
 
 export function useScmCommit(space: CodeSpace): CommitState {
 	const scmCommit = useAppStore(s => s.scmCommit);
+	const recoverable = usePcCapability(PARADIS_MOBILE_SCM_COMMIT_RECOVER_CAPABILITY);
 	const [committing, setCommitting] = useState(false);
 	const [error, setError] = useState<string | undefined>(undefined);
 	const [output, setOutput] = useState<string | undefined>(undefined);
+	const [failure, setFailure] = useState<IParadisMobileCommitFailure | undefined>(undefined);
 	const genRef = useRef(0);
-	const { wsId, rendererTarget } = space;
+	const { pcId, wsId, rendererTarget } = space;
 
-	const commit = useCallback(async (message: string) => {
+	const commit = useCallback(async (message: string, scope: CommitScope = 'all') => {
 		const text = message.trim();
 		if (wsId === undefined || rendererTarget === undefined || text.length === 0 || committing) {
 			return false;
@@ -207,12 +227,31 @@ export function useScmCommit(space: CodeSpace): CommitState {
 		setCommitting(true);
 		setError(undefined);
 		setOutput(undefined);
+		setFailure(undefined);
 		try {
-			const result = await scmCommit(wsId, text, true);
-			if (current()) {
-				setOutput(result.output);
+			if (!recoverable) {
+				const result = await scmCommit(wsId, text, true);
+				if (current()) {
+					setOutput(result.output);
+				}
+				return current();
 			}
-			return current();
+			// フックが動くので長めに待つ（PC 側の上限は 120 秒）
+			const reply = await sendPcRequest<CommitSafeReply>(pcId, 'scm', { t: 'commitSafe', ws: wsId, message: text, all: scope === 'all' }, { timeoutMs: 130_000 });
+			if (!current()) {
+				return false;
+			}
+			if (reply.ok === true) {
+				setOutput(typeof reply.output === 'string' ? reply.output : '');
+				return true;
+			}
+			const parsed = parseCommitFailure(reply.failure);
+			if (parsed !== undefined) {
+				setFailure(parsed);
+			} else {
+				setError('コミットに失敗しました');
+			}
+			return false;
 		} catch (e) {
 			if (current()) {
 				setError(errorMessage(e));
@@ -223,7 +262,7 @@ export function useScmCommit(space: CodeSpace): CommitState {
 				setCommitting(false);
 			}
 		}
-	}, [scmCommit, wsId, rendererTarget, committing]);
+	}, [scmCommit, recoverable, pcId, wsId, rendererTarget, committing]);
 
 	useEffect(() => {
 		// 接続が切れる・ウィンドウが作り直されると応答は届かない。押せない状態のまま残さない。
@@ -232,6 +271,7 @@ export function useScmCommit(space: CodeSpace): CommitState {
 	}, [rendererTarget]);
 
 	const clearError = useCallback(() => setError(undefined), []);
+	const dismissFailure = useCallback(() => setFailure(undefined), []);
 
-	return { committing, error, output, commit, clearError };
+	return { committing, error, output, failure, commit, clearError, dismissFailure };
 }

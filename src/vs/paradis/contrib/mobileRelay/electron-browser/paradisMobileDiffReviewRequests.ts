@@ -6,23 +6,11 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { raceTimeout } from '../../../../base/common/async.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { paradisCollectAllTerminalInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
 import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
-import { paradisCanPasteMultiline } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
-import { paradisScreenShowsAgentPrompt, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
-import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { ParadisAgentPromptQuotingError } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
-import { paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
-import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
-import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import {
 	IParadisMobileReviewNote,
 	IParadisMobileReviewNoteToSend,
@@ -37,7 +25,6 @@ import {
 	paradisWithMobileLineCounts,
 	paradisWithUntrackedFileStats,
 } from '../common/paradisMobileDiffReview.js';
-import { paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
 import {
 	IParadisMobileReviewSpace,
@@ -63,6 +50,7 @@ import {
 	paradisRemapMobileReviewMarks,
 	paradisSerializeMobileReviewStore,
 } from '../common/paradisMobileReviewStore.js';
+import { IParadisAgentPromptServices, ParadisAgentPromptTarget, ParadisMobileSendGate, paradisAgentPromptServices, paradisDeliverAgentPrompt, paradisParseAgentPromptTarget } from './paradisMobileAgentPromptDelivery.js';
 import { IParadisMobileRequest, IParadisMobileRequestContext, registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
 
 /**
@@ -175,51 +163,8 @@ async function locateNotes(notes: readonly IParadisMobileReviewNote[], context: 
 	return located;
 }
 
-/** エージェントのターミナルへ送ってよいか。 */
-export type ParadisReviewNotesTargetVerdict = 'ready' | 'not-agent' | 'busy' | 'parked' | 'not-running';
-
-/**
- * 既にあるターミナルへ依頼文を貼り付けてよいかの判定。**貼り付けた後に Enter を送る**ので、エージェントが
- * 抜けてシェル（や ssh・python など別のプログラム）に戻っていると、依頼文がそのプログラムへの入力として
- * 実行される。複数行の貼り付けの判定はエージェント向けの IDE 操作ツールと同じ `paradisCanPasteMultiline`
- * （貼り付けの囲みが有効で、シェル統合で前面のコマンドが Claude Code / Codex と確かめられたときだけ）を使う。
- * 確かめられないターミナルには送らない（新しいエージェントを起動してもらう）。
- */
-export function paradisReviewNotesTargetVerdict(input: {
-	/** そのスペースのターミナルで、エージェントが動いた実績がある。 */
-	readonly isAgent: boolean;
-	readonly status: ParadisAgentStatus | undefined;
-	/** PC の画面から外れていて（park 中）、画面の中身を読めない。 */
-	readonly parked: boolean;
-	/** 複数行を貼り付けてよい（`paradisCanPasteMultiline`）。 */
-	readonly canPasteMultiline: boolean;
-	/** 画面に許可の確認や質問の選択肢が出ている（Enter が選択肢を確定してしまう）。 */
-	readonly screenShowsPrompt: boolean;
-}): ParadisReviewNotesTargetVerdict {
-	if (!input.isAgent) {
-		return 'not-agent';
-	}
-	if (input.parked) {
-		return 'parked';
-	}
-	if (input.status === 'working' || input.status === 'permission' || input.status === 'question' || input.screenShowsPrompt) {
-		return 'busy';
-	}
-	return input.canPasteMultiline ? 'ready' : 'not-running';
-}
-
-const TARGET_ERRORS: Record<Exclude<ParadisReviewNotesTargetVerdict, 'ready'>, string> = {
-	'not-agent': 'このターミナルではエージェントが動いていません。',
-	'busy': 'エージェントが作業中か、確認を待っています。終わってから送ってください。',
-	'parked': 'このターミナルは PC の画面に出ていないため、エージェントの状態を確かめられません。新しいエージェントで送ってください。',
-	'not-running': 'このターミナルでエージェントが入力を待っていることを確かめられません。新しいエージェントで送ってください。',
-};
-
-/** 新しいエージェントの起動を待つ上限。 */
-const LAUNCH_TIMEOUT_MS = 45_000;
-
 /** 送信中のスペース（同じスペースへの二重送信を防ぐ）。 */
-const sendingSpaces = new Set<string>();
+const sendGate = new ParadisMobileSendGate();
 
 /** 依頼文の上限（文字）。これを超えるなら何回かに分けて送ってもらう。 */
 const MAX_PROMPT_LENGTH = 16_000;
@@ -336,22 +281,13 @@ registerParadisMobileRequestHandler('scm', 'reviewNotesClear', {
 });
 
 /** 送信に使うサービス（要求の処理の同期的な先頭で accessor から取り出す）。 */
-interface IReviewNotesSendServices {
+interface IReviewNotesSendServices extends IParadisAgentPromptServices {
 	readonly storage: IStorageService;
 	readonly fileService: IFileService;
-	readonly terminalService: ITerminalService;
-	readonly terminalGroupService: ITerminalGroupService;
-	readonly identityService: IParadisTerminalIdentityService;
-	readonly scopeService: IParadisTerminalScopeService;
-	readonly switchService: IParadisWorkspaceSwitchService;
-	readonly agentStatusStore: IParadisAgentStatusStore;
-	readonly instantiationService: IInstantiationService;
 }
 
-type ReviewNotesSendTarget = { readonly kind: 'terminal'; readonly terminalKey: string } | { readonly kind: 'launch'; readonly agent: string };
-
 /** 送信の本体。呼び出し側がスペースごとの送信中の印を持つ。 */
-async function sendReviewNotes(services: IReviewNotesSendServices, context: IParadisMobileRequestContext, ws: string, root: URI, ids: ReadonlySet<string>, target: ReviewNotesSendTarget): Promise<void> {
+async function sendReviewNotes(services: IReviewNotesSendServices, context: IParadisMobileRequestContext, ws: string, root: URI, ids: ReadonlySet<string>, target: ParadisAgentPromptTarget): Promise<void> {
 	const notes = paradisMobileReviewSpace(paradisReadMobileReviewStore(services.storage), ws).notes.filter(note => ids.has(note.id));
 	if (notes.length === 0) {
 		context.reply({ error: 'メモが見つかりません。一覧を読み直してください。', code: 'gone' });
@@ -372,61 +308,12 @@ async function sendReviewNotes(services: IReviewNotesSendServices, context: IPar
 		context.reply({ error: 'メモが長すぎます。何回かに分けて送ってください。', code: 'too-long' });
 		return;
 	}
-
-	if (target.kind === 'terminal') {
-		const findInstance = (): ITerminalInstance | undefined => {
-			const instanceId = services.identityService.getInstanceId(target.terminalKey);
-			return instanceId === undefined ? undefined : paradisCollectAllTerminalInstances(services.terminalService, services.terminalGroupService).find(candidate => candidate.instanceId === instanceId);
-		};
-		const verdictOf = (instance: ITerminalInstance | undefined): ParadisReviewNotesTargetVerdict => {
-			if (instance === undefined || instance.isDisposed) {
-				return 'not-agent';
-			}
-			const stateKey = paradisResolveMobileTerminalStateKey(services.scopeService.getStateKeyForInstance(instance.instanceId), services.scopeService.resolveScope(instance.instanceId), services.switchService.activeStateKey);
-			return paradisReviewNotesTargetVerdict({
-				isAgent: stateKey === ws && services.agentStatusStore.isAgentInstance(instance.instanceId),
-				status: services.agentStatusStore.getInstanceStatus(instance.instanceId),
-				parked: instance.xterm === undefined,
-				canPasteMultiline: paradisCanPasteMultiline(instance),
-				screenShowsPrompt: paradisScreenShowsAgentPrompt(paradisVisibleTerminalText(instance)),
-			});
-		};
-		const instance = findInstance();
-		const verdict = verdictOf(instance);
-		if (instance === undefined || verdict !== 'ready') {
-			// アプリは `error` の文をそのまま出す（`code` は判定用）
-			context.reply({ error: TARGET_ERRORS[verdict === 'ready' ? 'not-agent' : verdict], code: verdict });
-			return;
-		}
-		// 貼り付けの前と Enter の前に、同じ判定で同じターミナルがまだ受け取れる状態かを確かめ直す
-		const outcome = await paradisSendAgentMessageToTui(
-			prompt,
-			(text, execute, bracketedPasteMode) => instance.sendText(text, execute ?? false, bracketedPasteMode),
-			async () => findInstance() === instance && verdictOf(instance) === 'ready',
-		);
-		if (!outcome.executed) {
-			context.reply({ error: outcome.consumed ? '貼り付けた後にエージェントの状態が変わったため、送信の確定をしませんでした。PC で確かめてください。' : '送る直前にエージェントの状態が変わりました。', code: 'changed', consumed: outcome.consumed });
-			return;
-		}
-	} else {
-		try {
-			// 利用者が PC で作業している最中に前へ出さない（エージェントの IDE 操作や定期実行と同じ扱い）
-			const launch = services.instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, { rootUri: root, stateKey: ws, agentId: target.agent, prompt, preserveFocus: true });
-			// 起動が返ってこなくても送信中の印が外れるよう、待つ時間に上限を付ける（後から失敗しても未処理の例外にしない）
-			launch.catch(() => undefined);
-			if (await raceTimeout(launch.then(() => true), LAUNCH_TIMEOUT_MS) !== true) {
-				context.reply({ error: 'エージェントの起動に時間がかかっています。起動したかを PC で確かめてください（メモは未送信のまま残しています）。', code: 'timeout' });
-				return;
-			}
-		} catch (error) {
-			if (error instanceof ParadisAgentPromptQuotingError) {
-				context.reply({ error: 'メモにバックスラッシュ（\\）が含まれていて、PC のシェルの種類が分からないため、新しいエージェントへは安全に渡せません。動いているエージェントへ送るか、PC で起動してください。', code: 'quoting' });
-				return;
-			}
-			throw error;
-		}
-		// 新しいターミナルをすぐスマホの送り先・一覧に出す
-		context.pushState();
+	// 既にあるターミナルへの貼り付けと新しいエージェントの起動（paradisMobileAgentPromptDelivery.ts）
+	const outcome = await paradisDeliverAgentPrompt(services, ws, root, prompt, target, () => context.pushState());
+	if (!outcome.ok) {
+		// アプリは `error` の文をそのまま出す（`code` は判定用）
+		context.reply({ error: outcome.error, code: outcome.code, ...(outcome.consumed !== undefined ? { consumed: outcome.consumed } : {}) });
+		return;
 	}
 
 	updateSpace(services.storage, ws, context, space => paradisMarkMobileReviewNotesSent(space, new Set(space.notes.filter(note => readVersions.get(note.id) === note.updatedAt).map(note => note.id)), Date.now()), 'unreachable', { sent: notes.map(note => note.id) });
@@ -435,41 +322,29 @@ async function sendReviewNotes(services: IReviewNotesSendServices, context: IPar
 registerParadisMobileRequestHandler('scm', 'reviewNotesSend', {
 	async handle(accessor, request, context) {
 		const services: IReviewNotesSendServices = {
+			...paradisAgentPromptServices(accessor),
 			storage: accessor.get(IStorageService),
 			fileService: accessor.get(IFileService),
-			terminalService: accessor.get(ITerminalService),
-			terminalGroupService: accessor.get(ITerminalGroupService),
-			identityService: accessor.get(IParadisTerminalIdentityService),
-			scopeService: accessor.get(IParadisTerminalScopeService),
-			switchService: accessor.get(IParadisWorkspaceSwitchService),
-			agentStatusStore: accessor.get(IParadisAgentStatusStore),
-			instantiationService: accessor.get(IInstantiationService),
 		};
 		const ws = requireWorkspace(request, context);
 		if (ws === undefined || context.root === undefined) {
 			return;
 		}
 		const ids = paradisParseMobileReviewNoteIds(request.ids);
-		const raw = request.target as { readonly terminalKey?: unknown; readonly agent?: unknown } | undefined;
-		const terminalKey = typeof raw?.terminalKey === 'string' && raw.terminalKey.length > 0 && raw.terminalKey.length <= 200 ? raw.terminalKey : undefined;
-		const agent = typeof raw?.agent === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(raw.agent) ? raw.agent : undefined;
-		const target: ReviewNotesSendTarget | undefined = terminalKey !== undefined && agent === undefined ? { kind: 'terminal', terminalKey }
-			: agent !== undefined && terminalKey === undefined ? { kind: 'launch', agent }
-				: undefined;
-		if (ids === undefined || target === undefined) {
+		// メモの送り先は、選んだターミナルか、選んだエージェントの起動（W2-28 の形）
+		const target = paradisParseAgentPromptTarget(request.target);
+		if (ids === undefined || target === undefined || target.kind === 'auto' || target.kind === 'new') {
 			context.reply({ error: 'invalid request' });
 			return;
 		}
+		const root = context.root;
 		// iPhone と iPad から同時に（または連打で）送ると、同じメモを二度貼り付けることになる
-		if (sendingSpaces.has(ws)) {
+		const done = await sendGate.run(ws, async () => {
+			await sendReviewNotes(services, context, ws, root, ids, target);
+			return true;
+		});
+		if (done === undefined) {
 			context.reply({ error: 'このスペースのメモを送っている最中です。終わってからもう一度送ってください。', code: 'sending' });
-			return;
-		}
-		sendingSpaces.add(ws);
-		try {
-			await sendReviewNotes(services, context, ws, context.root, ids, target);
-		} finally {
-			sendingSpaces.delete(ws);
 		}
 	},
 });
