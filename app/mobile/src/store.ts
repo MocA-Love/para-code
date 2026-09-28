@@ -1208,6 +1208,12 @@ const MAX_TERMINAL_OPERATION_OUTBOX = 256;
 export interface StoreState {
 	connection: ConnectionState;
 	pcOnline: boolean;
+	/**
+	 * リレーがこの端末の資格を拒んだ（PCでペアリングを解除された、PCがリレーへ登録し直した等）。
+	 * 待っても直らないので、画面は「再ペアリングが必要」を出す。旧リレーは理由を返さないので
+	 * その組み合わせでは立たない（従来どおり再接続中に見える）。
+	 */
+	pairingRejected: boolean;
 	/** 現在の暗号セッションでv3 State handshakeまで完了した。 */
 	sessionProtocolReady: boolean;
 	workspace: WorkspaceState | undefined;
@@ -1246,6 +1252,7 @@ export function createEmptyStoreState(): StoreState {
 	return {
 		connection: 'offline',
 		pcOnline: false,
+		pairingRejected: false,
 		sessionProtocolReady: false,
 		workspace: undefined,
 		protocolError: undefined,
@@ -1421,6 +1428,16 @@ export class MobileController {
 	/** 最後に何らかのframeを受信した時刻。presence欠落時のPC再起動検出（死活監視）に使う。 */
 	private lastFrameAt = 0;
 	private livenessTimer: ReturnType<typeof setInterval> | undefined;
+	/**
+	 * PCから受け取った有効なStateの数。通知センターの突き合わせ（notificationTray.ts）が
+	 * 「頼んだあとに届いた、いまのPCの状態」を待つための目印。
+	 */
+	stateFramesReceived = 0;
+	/**
+	 * PCが「その通知はもう処理された」と知らせてきた（`dismissed` / `dismissed-token`）。
+	 * アプリ内の一覧は store 自身が消す。これは通知センターに残ったものを消すための口。
+	 */
+	onNotifyHandled: ((handled: { readonly ids: readonly string[]; readonly tokens: readonly string[] }) => void) | undefined;
 	private static readonly LIVENESS_IDLE_MS = 45_000;
 	private static readonly LIVENESS_CHECK_INTERVAL_MS = 20_000;
 	private outboxReplayEpoch: string | undefined;
@@ -1668,6 +1685,10 @@ export class MobileController {
 					this.releaseAllWarmLeases();
 				}
 				this.state.connection = s;
+				if (s === 'online') {
+					// 繋がった＝資格は通った（作り直したクライアントは前の拒否を知らないので、ここで落とす）。
+					this.state.pairingRejected = false;
+				}
 				if (s !== 'online') {
 					this.state.sessionProtocolReady = false;
 					this.liveFsUploadEncoding = undefined;
@@ -1708,6 +1729,10 @@ export class MobileController {
 				this.emit(agentChatsChanged ? { agentChats: true } : undefined);
 			},
 			onFrame: frame => { this.lastFrameAt = Date.now(); this.handleFrame(frame); },
+			onAuthRejected: rejected => {
+				this.state.pairingRejected = rejected;
+				this.emit();
+			},
 		});
 		this.client.connect();
 		// presence遷移が届かないPC再起動（リレーがPC切断を検知し損ねた場合等）でも自己修復する
@@ -3757,6 +3782,7 @@ export class MobileController {
 					return;
 				}
 				this.state.protocolError = undefined;
+				this.stateFramesReceived++;
 				// PC名は後から足したフィールド。文字列でない値が来ても表示側で落ちないよう、
 				// ここで型を確かめて捨てる（PCは信用しない相手として扱う）。
 				if (incoming.pcName !== undefined && typeof incoming.pcName !== 'string') {
@@ -3918,6 +3944,7 @@ export class MobileController {
 			const control = decodeNotifyControl(frame.payload);
 			if (control?.t === 'dismissed') {
 				this.pendingNotificationDismissals.delete(control.id);
+				this.onNotifyHandled?.({ ids: [control.id], tokens: [] });
 				// 他端末がこの通知を処理済みにした（本機の一覧からも消す。無ければ何もしない）。
 				if (this.state.notifications.some(n => n.id === control.id)) {
 					this.state.notifications = this.state.notifications.filter(n => n.id !== control.id);
@@ -3926,6 +3953,7 @@ export class MobileController {
 				return;
 			}
 			if (control?.t === 'dismissed-token') {
+				this.onNotifyHandled?.({ ids: [], tokens: [control.token] });
 				// PC自身がそのエージェント(agentToken)のペインを確認済みにした。
 				// 同じagentTokenを持つ通知は全てまとめて一覧から消す。
 				if (this.state.notifications.some(n => n.agentToken === control.token)) {
@@ -4350,6 +4378,7 @@ export class MobileController {
 		const next: StoreState = {
 			connection: this.state.connection,
 			pcOnline: this.state.pcOnline,
+			pairingRejected: this.state.pairingRejected,
 			sessionProtocolReady: this.state.sessionProtocolReady,
 			pushRegistered: this.state.pushRegistered,
 			workspace: this.state.workspace,

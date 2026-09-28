@@ -7,7 +7,7 @@ import type { PcSummary } from './appState.js';
 function pc(overrides: Partial<PcSummary> = {}): PcSummary {
 	return {
 		id: 'pc1', name: 'Para Code', hue: 0,
-		connection: 'online', pcOnline: true,
+		connection: 'online', pcOnline: true, pairingRejected: false,
 		workspaces: 3, terminals: 5, waiting: 0, lastOnlineAt: 1,
 		battery: { level: 62, charging: false },
 		...overrides,
@@ -27,6 +27,8 @@ describe('pcStatusText', () => {
 			pcStatusText(pc({ connection: 'handshaking', pcOnline: false }), false),
 			pcStatusText(pc({ connection: 'connecting', pcOnline: false }), false),
 			pcStatusText(pc({ connection: 'offline', pcOnline: false }), false),
+			pcStatusText(pc({ connection: 'offline', pcOnline: false, pairingRejected: true }), true),
+			pcStatusText(pc({ connection: 'connecting', pcOnline: false, pairingRejected: true }), false),
 		]).toStrictEqual([
 			'接続中 · 使用中',
 			'待機中',
@@ -34,6 +36,9 @@ describe('pcStatusText', () => {
 			'PCオフライン',
 			'接続しています…',
 			'オフライン',
+			// リレーが資格を拒んだPCは、待っても直らないので「オフライン」と並べない
+			'再ペアリングが必要 · 使用中',
+			'再ペアリングが必要',
 		]);
 	});
 

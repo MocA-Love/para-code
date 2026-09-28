@@ -19,6 +19,7 @@ import { useStableInsets } from '../hooks/useStableInsets.js';
 import { shouldReturnHomeOnSpaceChange } from '../ipad/ipadTabs.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
 import { useOfflineNotice } from '../offlineNotice.js';
+import { routes } from '../routes.js';
 import { useParaHeader, useParaHeaderStore, PARA_HEADER_HIDDEN, type ParaHeaderIcon, type ParaHeaderSpec } from '../paraHeader.js';
 import { GlassSurface } from './glassSurface.js';
 import { WsHeaderActions, WsHeaderIsland } from './nativeHeaderItems.js';
@@ -307,13 +308,13 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 	const pathname = usePathname();
 	const {
 		workspace, selectedWs, setSelectedWs, homeShowAllWorkspaces, setHomeShowAllWorkspaces, connection, pcOnline, sessionProtocolReady,
-		disconnectRelay, connectRelay, removePc, pcs, activePcId,
+		disconnectRelay, connectRelay, removePc, pcs, activePcId, pairingRejected,
 	} = useAppStore(useShallow(s => ({
 		workspace: s.workspace, selectedWs: s.selectedWs, setSelectedWs: s.setSelectedWs,
 		homeShowAllWorkspaces: s.homeShowAllWorkspaces, setHomeShowAllWorkspaces: s.setHomeShowAllWorkspaces,
 		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
 		disconnectRelay: s.disconnectRelay, connectRelay: s.connectRelay, removePc: s.removePc,
-		pcs: s.pcs, activePcId: s.activePcId,
+		pcs: s.pcs, activePcId: s.activePcId, pairingRejected: s.pairingRejected,
 	})));
 
 	// PC切り替え（iPhoneはシート、iPadはこの位置にぶら下がるポップオーバー）の表示位置。
@@ -644,6 +645,14 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 						<Pressable style={styles.footerBtnHit} onPress={() => { hapticImpact('light'); disconnectRelay(); }} accessibilityLabel="切断">
 							<Ionicons name="power-outline" size={13} color={colors.red} />
 							<Text style={[styles.footerBtnText, { color: colors.red }]}>切断</Text>
+						</Pressable>
+					</GlassSurface>
+				) : pairingRejected ? (
+					// リレーが資格を拒んでいる間は「接続」を押しても繋がらない。再ペアリングへ案内する
+					<GlassSurface style={styles.footerBtn} interactive>
+						<Pressable style={styles.footerBtnHit} onPress={() => { hapticImpact('light'); onClose(); router.push(routes.pair()); }} accessibilityLabel="ペアリングし直す">
+							<Ionicons name="qr-code-outline" size={13} color={colors.red} />
+							<Text style={[styles.footerBtnText, { color: colors.red }]}>ペアリングし直す</Text>
 						</Pressable>
 					</GlassSurface>
 				) : (

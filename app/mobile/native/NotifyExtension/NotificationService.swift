@@ -88,6 +88,19 @@ final class NotificationService: UNNotificationServiceExtension {
 		if let pcId = opened.pcId ?? (json["pcId"] as? String), !pcId.isEmpty {
 			userInfo["pcId"] = pcId
 		}
+		// 通知ID: PCが「処理済み」と知らせてきたとき、アプリが通知センターから消す手がかり
+		// （app/mobile/src/notificationTray.ts）。
+		if let notifyId = json["id"] as? String, !notifyId.isEmpty {
+			userInfo["notifyId"] = notifyId
+		}
+		// 同じエージェントの通知は1件に置き換え、同じPC・スペースの通知はまとめる（W2-08）。
+		// 鍵は端末の中で作るだけで、リレーやAPNsへは出ない。
+		let keyPcId = (userInfo["pcId"] as? String) ?? ""
+		let collapse = Self.collapseKey(pcId: keyPcId, agentToken: json["agentToken"] as? String, terminalKey: json["terminalKey"] as? String)
+		if let collapse = collapse {
+			userInfo["collapse"] = collapse
+		}
+		bestAttempt.threadIdentifier = Self.threadKey(pcId: keyPcId, ws: json["ws"] as? String)
 		bestAttempt.userInfo = userInfo
 
 		// ホーム画面・ロック画面のウィジェットの要約（App Group）の要対応を書き換えて描き直させる
@@ -95,11 +108,26 @@ final class NotificationService: UNNotificationServiceExtension {
 		// 使えないときは何もしない。通知の表示はこの成否に関わらず行う。
 		// 書き換える PC は鍵の項目名から分かったものだけにする。封緘の中で PC が名乗った pcId は、ペアリング済みの
 		// PC 同士なら騙れるので、別の PC の行を書き換えさせない（分からなければ要約はそのまま）。
-		if let keyPcId = opened.pcId, !keyPcId.isEmpty {
-			WidgetStore.applyNotification(json, pcId: keyPcId)
+		if let widgetPcId = opened.pcId, !widgetPcId.isEmpty {
+			WidgetStore.applyNotification(json, pcId: widgetPcId)
 		}
 
-		contentHandler(bestAttempt)
+		guard let collapse = collapse else {
+			contentHandler(bestAttempt)
+			return
+		}
+		// 同じエージェントの前の通知（プッシュ・アプリが出したローカル通知の両方）を消してから出す。
+		// 消せなくても通知は必ず出す（取得が返ってこない場合は serviceExtensionTimeWillExpire が出す）。
+		let center = UNUserNotificationCenter.current()
+		center.getDeliveredNotifications { delivered in
+			let previous = delivered
+				.filter { ($0.request.content.userInfo["collapse"] as? String) == collapse }
+				.map { $0.request.identifier }
+			if !previous.isEmpty {
+				center.removeDeliveredNotifications(withIdentifiers: previous)
+			}
+			contentHandler(bestAttempt)
+		}
 	}
 
 	override func serviceExtensionTimeWillExpire() {
@@ -107,6 +135,34 @@ final class NotificationService: UNNotificationServiceExtension {
 		if let contentHandler = contentHandler, let bestAttemptContent = bestAttemptContent {
 			contentHandler(bestAttemptContent)
 		}
+	}
+
+	// MARK: - Collapse / thread keys
+
+	/// 同じエージェントの通知を置き換える鍵。**`app/mobile/src/notificationTray.ts` の
+	/// `notifyCollapseKey` と同じ規則**（SHA-256 の16進先頭32桁）。変えるときは両方直すこと。
+	/// 同じ入力で両者が一致することは notificationTray.test.ts の値で固定している。
+	private static func collapseKey(pcId: String, agentToken: String?, terminalKey: String?) -> String? {
+		let subject: String
+		if let token = agentToken, !token.isEmpty {
+			subject = "a:\(token)"
+		} else if let key = terminalKey, !key.isEmpty {
+			subject = "t:\(key)"
+		} else {
+			return nil
+		}
+		return hashKey("para.notify.collapse\n\(pcId)\n\(subject)")
+	}
+
+	/// 通知センターでまとめる単位（PC × スペース）。アプリのローカル通知は expo が
+	/// threadIdentifier を渡せないので、まとまるのはプッシュで届いたものだけ。
+	private static func threadKey(pcId: String, ws: String?) -> String {
+		return hashKey("para.notify.thread\n\(pcId)\n\(ws ?? "")")
+	}
+
+	private static func hashKey(_ input: String) -> String {
+		let digest = SHA256.hash(data: Data(input.utf8))
+		return String(digest.map { String(format: "%02x", $0) }.joined().prefix(32))
 	}
 
 	// MARK: - Crypto
