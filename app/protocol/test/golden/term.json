@@ -1,5 +1,5 @@
 {
-	"$comment": "term チャネルの固定形。toPc はアプリが送る操作（operationId / operationRun / operationSeq は送るたびに変わる値の例）、toMobile は PC が送る JSON の枠（2進の terminal-binary-v1 は terminalData.test.ts が固定する）。desktopEpoch と terminalKey は state.json の current と揃えてある。",
+	"$comment": "term チャネルの固定形。viewport の reclaim と viewport-revoked は W2-19（PC の［PC の幅に戻す］）。toPc はアプリが送る操作（operationId / operationRun / operationSeq は送るたびに変わる値の例）、toMobile は PC が送る JSON の枠（2進の terminal-binary-v1 は terminalData.test.ts が固定する）。desktopEpoch と terminalKey は state.json の current と揃えてある。",
 	"toPc": [
 		{ "protocolVersion": 3, "desktopEpoch": "golden-desktop-epoch", "t": "create", "windowId": 1, "ws": "repo", "operationId": "golden-term-1-0", "operationRun": 1, "operationSeq": 0 },
 		{ "protocolVersion": 3, "desktopEpoch": "golden-desktop-epoch", "terminalKey": "terminal-key-1", "t": "attach", "epoch": 1, "dataEncoding": "terminal-binary-v1", "viewCols": 54, "viewRows": 28, "operationId": "golden-term-1-1", "operationRun": 1, "operationSeq": 1 },
@@ -11,12 +11,14 @@
 		{ "protocolVersion": 3, "desktopEpoch": "golden-desktop-epoch", "terminalKey": "terminal-key-1", "t": "rename", "title": "build", "operationId": "golden-term-1-7", "operationRun": 1, "operationSeq": 7 },
 		{ "protocolVersion": 3, "desktopEpoch": "golden-desktop-epoch", "terminalKey": "terminal-key-1", "t": "ackStatus", "operationId": "golden-term-1-8", "operationRun": 1, "operationSeq": 8 },
 		{ "protocolVersion": 3, "desktopEpoch": "golden-desktop-epoch", "terminalKey": "terminal-key-1", "t": "detach", "operationId": "golden-term-1-9", "operationRun": 1, "operationSeq": 9 },
-		{ "protocolVersion": 3, "desktopEpoch": "golden-desktop-epoch", "terminalKey": "terminal-key-1", "t": "close", "operationId": "golden-term-1-10", "operationRun": 1, "operationSeq": 10 }
+		{ "protocolVersion": 3, "desktopEpoch": "golden-desktop-epoch", "terminalKey": "terminal-key-1", "t": "close", "operationId": "golden-term-1-10", "operationRun": 1, "operationSeq": 10 },
+		{ "protocolVersion": 3, "desktopEpoch": "golden-desktop-epoch", "terminalKey": "terminal-key-1", "t": "viewport", "viewCols": 54, "viewRows": 28, "reclaim": true, "operationId": "golden-term-1-11", "operationRun": 1, "operationSeq": 11 }
 	],
 	"toMobile": [
 		{ "t": "operation-result", "operationId": "golden-term-1-1", "status": "accepted" },
 		{ "t": "data", "data": "\u001b[2J$ ", "snapshot": true, "epoch": 1, "seq": 1, "cols": 120, "rows": 40, "unicode": "11", "terminalKey": "terminal-key-1" },
 		{ "t": "data", "data": "ls\r\n", "epoch": 1, "seq": 2, "terminalKey": "terminal-key-1" },
+		{ "t": "viewport-revoked", "terminalKey": "terminal-key-1" },
 		{ "t": "exit", "epoch": 1, "terminalKey": "terminal-key-1" }
 	]
 }

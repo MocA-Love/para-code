@@ -53,6 +53,12 @@ export const ParadisMobileCapability = {
 	ReviewNotes: 'review.notes.v1',
 	/** 確認済みのファイルだけのステージ（W2-28。`reviewStage`）。 */
 	ReviewStage: 'review.stage.v1',
+	/** fs の `openUrl` で、URL を PC の内蔵ブラウザで開ける（W2-31。スマホのターミナルで押した localhost など）。 */
+	BrowserOpenUrl: 'browser.open-url.v1',
+	/** fs の `resolveLink` が任意の `terminalKey` を受け、そのターミナルの作業フォルダを基準に相対パスを解く（W2-31）。 */
+	FsResolveLinkTerminal: 'fs.resolve-link.terminal.v1',
+	/** PC の［PC の幅に戻す］: PC は `viewport-revoked` を送り `viewport` の `reclaim` を受ける／アプリはそれを受けて［再び合わせる］を出す（W2-19）。 */
+	TermViewportTakeback: 'term.viewport.takeback.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -65,6 +71,9 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.ReviewStore,
 	ParadisMobileCapability.ReviewNotes,
 	ParadisMobileCapability.ReviewStage,
+	ParadisMobileCapability.BrowserOpenUrl,
+	ParadisMobileCapability.FsResolveLinkTerminal,
+	ParadisMobileCapability.TermViewportTakeback,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
@@ -73,6 +82,7 @@ export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.TermSync,
 	ParadisMobileCapability.FsUploadBinary,
 	ParadisMobileCapability.VoiceClips,
+	ParadisMobileCapability.TermViewportTakeback,
 ];
 
 /** 受け取る capability の上限。相手は信用しない前提で、表を無制限に膨らませない。 */

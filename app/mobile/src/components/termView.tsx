@@ -29,15 +29,26 @@
  * - 入力は使わない（既存のネイティブ入力バーから送る）。表示専用。
  * - iOSがメモリ圧でWebViewのコンテンツプロセスを落とした場合は自動reloadし、
  *   onNeedResync で最新snapshotを取り直す（画面状態はWebView内にしか無いため）。
+ * - 出力の書き込みは 48ms の窓でまとめて inject する（`termWriteCoalescer.ts`）。inject の連番は
+ *   まとめた単位で振る。snapshot・破棄・裏に回る直前は溜まった分を先に流す。
+ * - 準備完了が 15 秒来なければ 1 回だけ読み直し、それでも来なければエラーと［再試行］を出す
+ *   （`termReadyWatchdog.ts`。裏に回っている間は判定しない）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { StyleSheet } from 'react-native';
+import { AppState, StyleSheet, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import xtermBundle from '../../assets/xterm/xtermBundle.json';
 import type { TermStreamEvent } from '../store.js';
 import { TERMINAL_FOLLOW_MIN_FONT_SIZE, TERMINAL_FONT_SIZE_MIN, terminalGridFor, type TerminalGrid } from '../terminalViewport.js';
 import { colors } from '../theme.js';
+import { hapticSelection, hapticSuccess } from '../haptics.js';
+import { writeClipboardText } from '../nativeClipboard.js';
+import { useParaToast } from '../paraToast.js';
+import { findTerminalLinkAt, findTerminalLinks, terminalOsc8Link, type TerminalLinkTarget } from '../terminalLinks.js';
+import { EmptyState } from './emptyState.js';
+import { createTermReadyWatchdog } from './termReadyWatchdog.js';
+import { createTermWriteCoalescer } from './termWriteCoalescer.js';
 
 interface TermViewProps {
 	/** レガシーモード（旧PC）用: これまでに受信した出力バッファ全体（差分書き込みする）。 */
@@ -61,13 +72,33 @@ interface TermViewProps {
 	 * シーケンスを送るかはPC側が決める（この端末のモードはPCのミラーでしかないため）。
 	 */
 	onScroll?: (dir: 'up' | 'down', lines: number) => void;
+	/**
+	 * ターミナルに出た URL・ファイルパス・OSC 8 のリンクが押された（指のタップか iPad のポインタのクリック）。
+	 * どこで開くかは呼び出し側が決める。渡さなければリンクは押せない。
+	 */
+	onOpenLink?: (link: TerminalLinkTarget) => void;
 }
 
 /** WebView から来るメッセージ（旧形式の 'ready' / 'desync' も引き続き受ける）。 */
 type TermViewMessage =
 	| { t: 'metrics'; width: number; height: number; charWidth100: number; lineHeight100: number; rowHeights?: Record<string, number> }
 	| { t: 'scroll'; dir: 'up' | 'down'; lines: number }
-	| { t: 'warn'; text: string };
+	| { t: 'warn'; text: string }
+	/** 指のタップ。押した論理行の文字と位置（`index` は -1 なら文字の無い所）、OSC 8 のリンクがあればその行き先。 */
+	| { t: 'tap'; token: number; text: string; index: number; osc8?: string; osc8Label?: string }
+	/** iPad のポインタが乗った行のリンクの問い合わせ。`window.__para.links(id, ranges)` で答える。 */
+	| { t: 'links'; id: number; text: string }
+	/** iPad のポインタで、下線の付いたリンクが押された。 */
+	| { t: 'activate'; text: string; index: number }
+	/** iPad のポインタで OSC 8 のリンクが押された。 */
+	| { t: 'osc8'; uri: string; label?: string }
+	/** 長押しで選んだ文字の「コピー」。 */
+	| { t: 'copy'; text: string }
+	/** 長押しで選択に入った（触覚で知らせる）。 */
+	| { t: 'selection' };
+
+/** 押したリンクを一瞬示してから開くまでの間（ms）。押した位置のずれに気づけるように。 */
+const LINK_FLASH_MS = 140;
 
 /** WebView に流す HTML/CSS 用の地色。RN 側のスタイルは `colors.terminalBg`（同じ値）を使う。 */
 const TERM_BG = '#1e1e1e';
@@ -99,12 +130,48 @@ function buildHtml(): string {
 	body.clip-top #wrap { display: flex; flex-direction: column; justify-content: flex-end; }
 	body.clip-top #term { flex: none; }
 	.xterm .xterm-viewport { background-color: ${TERM_BG} !important; }
+	/* 長押しは自前の選択に使う。iOS の標準の選択・拡大鏡・吹き出しを出さない。 */
+	body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+	/* 押したリンクを一瞬示す枠と、選択のつまみ・メニュー（画面座標で重ねる）。 */
+	.para-flash { position: fixed; pointer-events: none; background: rgba(88, 166, 255, 0.35); border-radius: 2px; z-index: 5; }
+	.para-handle { position: fixed; width: 28px; height: 28px; margin: -14px 0 0 -14px; z-index: 7; touch-action: none; }
+	.para-handle::after { content: ''; position: absolute; left: 9px; top: 9px; width: 10px; height: 10px; border-radius: 5px; background: #58a6ff; }
+	.para-menu { position: fixed; z-index: 8; display: flex; border-radius: 8px; overflow: hidden; background: #3a3a3c; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5); }
+	.para-menu button { appearance: none; border: 0; background: transparent; color: #fff; font: 14px -apple-system, sans-serif; padding: 9px 14px; }
+	.para-menu button + button { border-left: 1px solid rgba(255, 255, 255, 0.2); }
 </style>
 </head><body><div id="wrap"><div id="term"></div></div>
 <script>${xtermBundle.js}</script>
 <script>${xtermBundle.unicode11Js}</script>
 <script>
 (function () {
+	// 開発ビルドだけ: xterm は描く面が画面と重なっていないと IntersectionObserver から知らされると
+	// 描画を止め、重なったと知らされるまで溜める（RenderService の _handleIntersectionChange）。
+	// 「キーボードを出している間だけ真っ黒で、閉じると出る」報告の原因候補なので、止められたら
+	// RN 側へ警告を送る（console.warn で Metro のログに出る）。本番の動きは変えない。
+	if (${__DEV__ ? 'true' : 'false'} && typeof window.IntersectionObserver === 'function') {
+		var NativeIntersectionObserver = window.IntersectionObserver;
+		window.IntersectionObserver = function (callback, options) {
+			return new NativeIntersectionObserver(function (entries, observer) {
+				var last = entries[entries.length - 1];
+				if (last && !last.isIntersecting) {
+					window.ReactNativeWebView.postMessage(JSON.stringify({
+						t: 'warn',
+						text: 'xterm paused rendering: not intersecting the viewport (root ' + JSON.stringify(last.rootBounds) + ', target ' + JSON.stringify(last.boundingClientRect) + ')',
+					}));
+				}
+				callback(entries, observer);
+			}, options);
+		};
+	}
+	// リンクと選択（下の W2-31 の節）が使う状態。xterm の設定や書き込みからも見るので先に置く。
+	var selecting = false;
+	var dragging = null;
+	var lastTouchAt = 0;
+	// 指のタップの直後に届く、iOS が合成したマウスのクリックでリンクを二重に開かない。
+	function pointerActivationAllowed() {
+		return Date.now() - lastTouchAt > 1000;
+	}
 	var term = new Terminal({
 		cols: 80, rows: 24,
 		disableStdin: true,
@@ -112,6 +179,19 @@ function buildHtml(): string {
 		fontFamily: 'Menlo, monospace',
 		fontSize: 11,
 		theme: { background: '${TERM_BG}' },
+		// OSC 8 のリンクを xterm の既定（confirm → window.open）で開かせない。iPad のポインタで押した
+		// ときだけ RN へ渡す（指のタップは下の自前の判定が受け持つ）。
+		linkHandler: {
+			allowNonHttpProtocols: true,
+			activate: function (event, uri, range) {
+				if (!pointerActivationAllowed()) {
+					return;
+				}
+				// 見えている文字（ラベル）も渡す。行き先と違えば、RN が開く前に確かめる。
+				var label = range ? osc8LabelAt(range.start.y - 1, range.start.x - 1) : '';
+				window.ReactNativeWebView.postMessage(JSON.stringify({ t: 'osc8', uri: uri, label: label }));
+			},
+		},
 	});
 	// PC側（VS Code）は既定で Unicode 11 の文字幅で描画する。モバイルも同じ幅表に
 	// しないと絵文字・一部CJK記号の桁数が食い違い、行レイアウトがずれる。
@@ -396,7 +476,13 @@ function buildHtml(): string {
 			if (!checkSeq(n)) {
 				return;
 			}
-			term.write(data, function () { term.scrollToBottom(); followCursor(); });
+			term.write(data, function () {
+				// 選択中は最下部へ引き戻さない（選んでいる行が逃げないように）。
+				if (!selecting) {
+					term.scrollToBottom();
+					followCursor();
+				}
+			});
 		},
 		// snapshot: バッファ全体の置き換え。reset→unicode→resize→write を原子的に行い、
 		// inject 連番もここで張り直す（desync からの復帰点でもある）。
@@ -460,7 +546,7 @@ function buildHtml(): string {
 		}
 	}, { passive: true });
 	document.addEventListener('touchmove', function (ev) {
-		if (!touchTracking || ev.touches.length !== 1) {
+		if (!touchTracking || ev.touches.length !== 1 || selecting || dragging) {
 			return;
 		}
 		var y = ev.touches[0].clientY;
@@ -498,6 +584,501 @@ function buildHtml(): string {
 	// 着信バナーやシステムジェスチャに奪われると touchend が来ない。
 	document.addEventListener('touchcancel', endTouch, { passive: true });
 
+	// --- リンクのタップ・長押しの選択（W2-31） ---
+	//
+	// 指のタップ: 押した位置のセルから「論理行」（折り返しでつながった行を 1 本にしたもの）の文字と、
+	// その中の位置を RN へ渡す。URL とパスの判定は RN 側の純関数（terminalLinks.ts）が持つ。
+	// RN がリンクを見つけたら、その文字を一瞬示してから開く（flash）。
+	// iPad のポインタ: xterm 標準のリンクの仕組み（registerLinkProvider と OSC 8 の linkHandler）に任せ、
+	// ホバーの下線と押したときの処理は xterm が持つ。行のリンクは RN に問い合わせる。
+	// 長押し: 単語を選び、つまみで範囲を変えてコピーする。選択中は指の動きを TUI のスクロールに使わない。
+	var TAP_SLOP_PX = 10;
+	var TAP_MAX_MS = 450;
+	var LONG_PRESS_MS = 500;
+	var LOGICAL_LINE_MAX_ROWS = 40;
+	function post(message) {
+		window.ReactNativeWebView.postMessage(JSON.stringify(message));
+	}
+	function screenRect() {
+		var screen = document.querySelector('.xterm-screen');
+		if (!screen) {
+			return null;
+		}
+		var rect = screen.getBoundingClientRect();
+		return rect.width > 0 && rect.height > 0 ? rect : null;
+	}
+	// 画面上の点 → バッファのセル（行はスクロールバックを含む通し番号）。
+	function cellAtPoint(clientX, clientY, clamp) {
+		var rect = screenRect();
+		if (!rect) {
+			return null;
+		}
+		var cellW = rect.width / term.cols;
+		var cellH = rect.height / term.rows;
+		var col = Math.floor((clientX - rect.left) / cellW);
+		var viewportRow = Math.floor((clientY - rect.top) / cellH);
+		if (clamp) {
+			col = Math.max(0, Math.min(term.cols - 1, col));
+			viewportRow = Math.max(0, Math.min(term.rows - 1, viewportRow));
+		} else if (col < 0 || col >= term.cols || viewportRow < 0 || viewportRow >= term.rows) {
+			return null;
+		}
+		return { col: col, row: viewportRow + term.buffer.active.viewportY };
+	}
+	// row 行目を含む論理行の文字と、1 文字ずつのセル（[行, 桁, 幅]）。col を渡すとその位置の文字番号も返す。
+	// 全角・絵文字は 1 文字で 2 セル、後ろ半分（幅 0）を押したら前の文字として扱う。
+	function logicalLine(row, col) {
+		var buffer = term.buffer.active;
+		var start = row;
+		while (start > 0 && row - start < LOGICAL_LINE_MAX_ROWS) {
+			var line = buffer.getLine(start);
+			if (!line || !line.isWrapped) {
+				break;
+			}
+			start--;
+		}
+		var end = row;
+		while (end - row < LOGICAL_LINE_MAX_ROWS) {
+			var next = buffer.getLine(end + 1);
+			if (!next || !next.isWrapped) {
+				break;
+			}
+			end++;
+		}
+		var text = '';
+		var cells = [];
+		var index = -1;
+		var cell;
+		for (var y = start; y <= end; y++) {
+			var bufferLine = buffer.getLine(y);
+			if (!bufferLine) {
+				break;
+			}
+			for (var x = 0; x < term.cols; x++) {
+				cell = bufferLine.getCell(x, cell);
+				if (!cell) {
+					break;
+				}
+				var width = cell.getWidth();
+				if (width === 0) {
+					if (y === row && x === col) {
+						index = text.length - 1;
+					}
+					continue;
+				}
+				var chars = cell.getChars() || ' ';
+				if (y === row && x === col) {
+					index = text.length;
+				}
+				for (var k = 0; k < chars.length; k++) {
+					cells.push([y, x, width]);
+				}
+				text += chars;
+			}
+		}
+		// 最後の行の右の余白は落とす（余白を押しても何も見つからないように）。
+		var trimmed = text.replace(/\\s+$/, '');
+		cells.length = trimmed.length;
+		if (index >= trimmed.length) {
+			index = -1;
+		}
+		return { text: trimmed, cells: cells, index: index };
+	}
+	// OSC 8 のハイパーリンク。行き先は xterm の内部（_oscLinkService）にしか無いので、読めなければ諦める。
+	function osc8IdAt(row, col) {
+		try {
+			var line = term.buffer.active.getLine(row);
+			var cell = line && line.getCell(col);
+			return (cell && cell.extended && cell.extended.urlId) || 0;
+		} catch (e) {
+			return 0;
+		}
+	}
+	function osc8At(row, col) {
+		try {
+			var core = term._core;
+			var service = core && (core._oscLinkService || (core._inputHandler && core._inputHandler._oscLinkService));
+			var id = osc8IdAt(row, col);
+			var data = id && service && service.getLinkData(id);
+			return data && typeof data.uri === 'string' ? data.uri : '';
+		} catch (e) {
+			return '';
+		}
+	}
+	// OSC 8 のリンクとして見えている文字（同じリンクの続くセル）。折り返しをまたいでもつなぐ。
+	function osc8Label(info, row, col) {
+		var id = osc8IdAt(row, col);
+		if (!id || info.index < 0) {
+			return '';
+		}
+		var from = info.index;
+		var to = info.index + 1;
+		while (from > 0 && osc8IdAt(info.cells[from - 1][0], info.cells[from - 1][1]) === id) {
+			from--;
+		}
+		while (to < info.cells.length && osc8IdAt(info.cells[to][0], info.cells[to][1]) === id) {
+			to++;
+		}
+		return info.text.slice(from, to);
+	}
+	function osc8LabelAt(row, col) {
+		return osc8Label(logicalLine(row, col), row, col);
+	}
+	// タップで調べた論理行（flash の座標に使う）。直近の数件だけ持つ。
+	var tapLines = {};
+	var tapSeq = 0;
+	function sendTap(clientX, clientY) {
+		var hit = cellAtPoint(clientX, clientY, false);
+		if (!hit) {
+			return;
+		}
+		var info = logicalLine(hit.row, hit.col);
+		var uri = osc8At(hit.row, hit.col);
+		if (info.index < 0 && !uri) {
+			return;
+		}
+		var token = ++tapSeq;
+		tapLines[token] = info.cells;
+		delete tapLines[token - 4];
+		post({ t: 'tap', token: token, text: info.text, index: info.index, osc8: uri, osc8Label: uri ? osc8Label(info, hit.row, hit.col) : '' });
+	}
+	// セルの範囲を画面座標の矩形（行ごと）にする。見えていない行は外す。
+	function cellRects(cells, from, to) {
+		var rect = screenRect();
+		if (!rect) {
+			return [];
+		}
+		var cellW = rect.width / term.cols;
+		var cellH = rect.height / term.rows;
+		var top = term.buffer.active.viewportY;
+		var rects = [];
+		var current = null;
+		for (var i = from; i < to; i++) {
+			var cell = cells[i];
+			if (!cell) {
+				continue;
+			}
+			var viewportRow = cell[0] - top;
+			if (viewportRow < 0 || viewportRow >= term.rows) {
+				continue;
+			}
+			var left = rect.left + cell[1] * cellW;
+			var right = left + cell[2] * cellW;
+			if (current && current.row === viewportRow) {
+				current.right = Math.max(current.right, right);
+			} else {
+				current = { row: viewportRow, left: left, right: right, top: rect.top + viewportRow * cellH, height: cellH };
+				rects.push(current);
+			}
+		}
+		return rects;
+	}
+	function flash(token, from, to) {
+		var cells = tapLines[token];
+		if (!cells) {
+			return;
+		}
+		cellRects(cells, from, to).forEach(function (r) {
+			var el = document.createElement('div');
+			el.className = 'para-flash';
+			el.style.left = r.left + 'px';
+			el.style.top = r.top + 'px';
+			el.style.width = (r.right - r.left) + 'px';
+			el.style.height = r.height + 'px';
+			document.body.appendChild(el);
+			setTimeout(function () { el.remove(); }, 260);
+		});
+	}
+	// iPad のポインタのホバー。xterm がマウスの乗った行を聞いてくるので、RN にその行のリンクを問い合わせる。
+	var linkRequests = {};
+	var linkRequestSeq = 0;
+	term.registerLinkProvider({
+		provideLinks: function (y, callback) {
+			var info = logicalLine(y - 1, -1);
+			if (info.text.trim().length === 0) {
+				callback(undefined);
+				return;
+			}
+			var id = ++linkRequestSeq;
+			linkRequests[id] = { callback: callback, cells: info.cells, text: info.text };
+			post({ t: 'links', id: id, text: info.text });
+			setTimeout(function () {
+				var pending = linkRequests[id];
+				if (pending) {
+					delete linkRequests[id];
+					pending.callback(undefined);
+				}
+			}, 1500);
+		},
+	});
+	function answerLinks(id, ranges) {
+		var request = linkRequests[id];
+		if (!request) {
+			return;
+		}
+		delete linkRequests[id];
+		var links = [];
+		ranges.forEach(function (range) {
+			var first = request.cells[range.start];
+			var last = request.cells[range.end - 1];
+			if (!first || !last) {
+				return;
+			}
+			links.push({
+				range: { start: { x: first[1] + 1, y: first[0] + 1 }, end: { x: last[1] + last[2], y: last[0] + 1 } },
+				text: request.text.slice(range.start, range.end),
+				decorations: { pointerCursor: true, underline: true },
+				activate: function () {
+					if (pointerActivationAllowed()) {
+						post({ t: 'activate', text: request.text, index: range.start });
+					}
+				},
+			});
+		});
+		request.callback(links.length > 0 ? links : undefined);
+	}
+
+	// 長押しの選択。範囲はセルの通し番号（行 × 桁数 + 桁）で持ち、xterm の選択へ写す。
+	var selectAnchor = 0;
+	var selectFocus = 0;
+	var selectedAll = false;
+	// iPad のポインタ（マウス）で xterm 自身が選んだ範囲。つまみは出さず、同じメニューだけを出す。
+	var pointerSelected = false;
+	var longPressTimer = 0;
+	var gesture = null;
+	var handleStart = document.createElement('div');
+	var handleEnd = document.createElement('div');
+	var menu = document.createElement('div');
+	handleStart.className = handleEnd.className = 'para-handle';
+	menu.className = 'para-menu';
+	var copyButton = document.createElement('button');
+	copyButton.textContent = 'コピー';
+	var selectAllButton = document.createElement('button');
+	selectAllButton.textContent = 'すべて選択';
+	menu.appendChild(copyButton);
+	menu.appendChild(selectAllButton);
+	[handleStart, handleEnd, menu].forEach(function (el) {
+		el.style.display = 'none';
+		document.body.appendChild(el);
+	});
+	function isOverlay(target) {
+		return target === handleStart || target === handleEnd || menu.contains(target);
+	}
+	function linearAt(cell) {
+		return cell.row * term.cols + cell.col;
+	}
+	function applySelection() {
+		var from = Math.min(selectAnchor, selectFocus);
+		var to = Math.max(selectAnchor, selectFocus);
+		term.select(from % term.cols, Math.floor(from / term.cols), to - from + 1);
+		placeSelectionChrome();
+	}
+	function placeSelectionChrome() {
+		if (!selecting) {
+			return;
+		}
+		var rect = screenRect();
+		if (!rect) {
+			return;
+		}
+		var cellW = rect.width / term.cols;
+		var cellH = rect.height / term.rows;
+		var top = term.buffer.active.viewportY;
+		var from = Math.min(selectAnchor, selectFocus);
+		var to = Math.max(selectAnchor, selectFocus);
+		var startRow = Math.floor(from / term.cols) - top;
+		var endRow = Math.floor(to / term.cols) - top;
+		function place(el, viewportRow, x, y) {
+			var visible = !selectedAll && !pointerSelected && viewportRow >= 0 && viewportRow < term.rows;
+			el.style.display = visible ? 'block' : 'none';
+			el.style.left = x + 'px';
+			el.style.top = y + 'px';
+		}
+		place(handleStart, startRow, rect.left + (from % term.cols) * cellW, rect.top + startRow * cellH);
+		place(handleEnd, endRow, rect.left + ((to % term.cols) + 1) * cellW, rect.top + (endRow + 1) * cellH);
+		// メニューは選択の上。上に余地が無ければ下に出す。見えている範囲に収める。
+		menu.style.display = 'flex';
+		var menuWidth = menu.offsetWidth;
+		var menuHeight = menu.offsetHeight;
+		var anchorRow = Math.max(0, Math.min(term.rows - 1, startRow));
+		var y = rect.top + anchorRow * cellH - menuHeight - 14;
+		if (y < 4) {
+			y = rect.top + (Math.max(0, Math.min(term.rows - 1, endRow)) + 1) * cellH + 14;
+		}
+		var x = rect.left + (from % term.cols) * cellW;
+		x = Math.max(4, Math.min(document.documentElement.clientWidth - menuWidth - 4, x));
+		y = Math.max(4, Math.min(document.documentElement.clientHeight - menuHeight - 4, y));
+		menu.style.left = x + 'px';
+		menu.style.top = y + 'px';
+	}
+	function exitSelection() {
+		selecting = false;
+		selectedAll = false;
+		pointerSelected = false;
+		stopDrag();
+		[handleStart, handleEnd, menu].forEach(function (el) { el.style.display = 'none'; });
+		if (term.hasSelection()) {
+			term.clearSelection();
+		}
+		// 選択を外しても、描いた行の地の色がそのまま残ることがある（コピーの直後など）。見えている行を描き直す。
+		term.refresh(0, term.rows - 1);
+	}
+	// 単語（空白と括弧・引用符で区切ったまとまり）を選ぶ。パスや URL を丸ごと選べるよう、/ : . は区切りにしない。
+	function selectWordAt(cell) {
+		var info = logicalLine(cell.row, cell.col);
+		if (info.index < 0) {
+			return false;
+		}
+		var stop = /[\\s"'\`<>()\\[\\]{}|,;]/;
+		var from = info.index;
+		var to = info.index + 1;
+		if (!stop.test(info.text[from])) {
+			while (from > 0 && !stop.test(info.text[from - 1])) {
+				from--;
+			}
+			while (to < info.text.length && !stop.test(info.text[to])) {
+				to++;
+			}
+		}
+		var first = info.cells[from];
+		var last = info.cells[to - 1];
+		if (!first || !last) {
+			return false;
+		}
+		selectAnchor = first[0] * term.cols + first[1];
+		selectFocus = last[0] * term.cols + last[1] + last[2] - 1;
+		selecting = true;
+		selectedAll = false;
+		pointerSelected = false;
+		applySelection();
+		post({ t: 'selection' });
+		return true;
+	}
+	term.onSelectionChange(function () {
+		// snapshot の reset などで xterm が選択を消したら、つまみとメニューも片付ける。
+		if (selecting && !term.hasSelection()) {
+			exitSelection();
+			return;
+		}
+		// iPad のポインタでドラッグして選んだ（指の長押しは自前で term.select するので selecting が先に立っている）。
+		var position = term.getSelectionPosition();
+		if (!position || (selecting && !pointerSelected) || !pointerActivationAllowed()) {
+			return;
+		}
+		// start は選択の先頭のセル、end はその次の桁（どちらも 0 始まり、行はスクロールバックを含む通し番号）。
+		selectAnchor = position.start.y * term.cols + position.start.x;
+		selectFocus = Math.max(selectAnchor, position.end.y * term.cols + position.end.x - 1);
+		selecting = true;
+		pointerSelected = true;
+		selectedAll = false;
+		placeSelectionChrome();
+	});
+	term.onRender(placeSelectionChrome);
+	term.onScroll(placeSelectionChrome);
+	copyButton.addEventListener('click', function () {
+		var text = term.getSelection();
+		exitSelection();
+		if (text) {
+			post({ t: 'copy', text: text });
+		}
+	});
+	selectAllButton.addEventListener('click', function () {
+		term.selectAll();
+		selectedAll = true;
+		placeSelectionChrome();
+	});
+	// つまみを動かしている間だけ、指の動きでページが動かないよう止める。止められる（passive でない）
+	// touchmove を常に置くと、通常のスクロールまで JS を待つようになるので、ドラッグの間だけ付ける。
+	function onDragMove(ev) {
+		if (!dragging || ev.touches.length !== 1) {
+			return;
+		}
+		ev.preventDefault();
+		// 指の下の文字が隠れないよう、少し上の文字を指す。
+		var cell = cellAtPoint(ev.touches[0].clientX, ev.touches[0].clientY - 18, true);
+		if (!cell) {
+			return;
+		}
+		var linear = linearAt(cell);
+		var anchorIsStart = selectAnchor <= selectFocus;
+		if ((dragging === 'start') === anchorIsStart) {
+			selectAnchor = linear;
+		} else {
+			selectFocus = linear;
+		}
+		applySelection();
+	}
+	function stopDrag() {
+		dragging = null;
+		document.removeEventListener('touchmove', onDragMove);
+	}
+	function startDrag(which) {
+		return function (ev) {
+			ev.preventDefault();
+			ev.stopPropagation();
+			dragging = which;
+			touchTracking = false;
+			document.addEventListener('touchmove', onDragMove, { passive: false });
+		};
+	}
+	handleStart.addEventListener('touchstart', startDrag('start'), { passive: false });
+	handleEnd.addEventListener('touchstart', startDrag('end'), { passive: false });
+	document.addEventListener('touchmove', function (ev) {
+		if (gesture && ev.touches.length === 1) {
+			var dx = ev.touches[0].clientX - gesture.x;
+			var dy = ev.touches[0].clientY - gesture.y;
+			if (dx * dx + dy * dy > TAP_SLOP_PX * TAP_SLOP_PX) {
+				gesture.moved = true;
+				clearTimeout(longPressTimer);
+			}
+		}
+	}, { passive: true });
+	document.addEventListener('touchstart', function (ev) {
+		lastTouchAt = Date.now();
+		clearTimeout(longPressTimer);
+		if (ev.touches.length !== 1 || isOverlay(ev.target)) {
+			gesture = null;
+			return;
+		}
+		var touch = ev.touches[0];
+		gesture = { x: touch.clientX, y: touch.clientY, at: Date.now(), moved: false, long: false };
+		var current = gesture;
+		longPressTimer = setTimeout(function () {
+			if (gesture !== current || current.moved) {
+				return;
+			}
+			var cell = cellAtPoint(current.x, current.y, false);
+			if (cell && selectWordAt(cell)) {
+				current.long = true;
+				// 選択に入ったら、この指の動きは TUI のスクロールに使わない。
+				touchTracking = false;
+			}
+		}, LONG_PRESS_MS);
+	}, { passive: true });
+	function endGesture(ev) {
+		lastTouchAt = Date.now();
+		clearTimeout(longPressTimer);
+		if (dragging) {
+			stopDrag();
+			return;
+		}
+		var current = gesture;
+		gesture = null;
+		if (!current || current.moved || current.long || ev.type !== 'touchend' || Date.now() - current.at > TAP_MAX_MS) {
+			return;
+		}
+		if (selecting) {
+			// 選択中のタップは選択を解くだけ（リンクは開かない）。
+			exitSelection();
+			return;
+		}
+		sendTap(current.x, current.y);
+	}
+	document.addEventListener('touchend', endGesture, { passive: true });
+	document.addEventListener('touchcancel', endGesture, { passive: true });
+	window.__para.flash = flash;
+	window.__para.links = answerLinks;
+
 	// キーボード開閉・回転などでWebViewの高さが変わったら、フォントを合わせ直した上で
 	// 最下部（プロンプト行）が見える位置までスクロールする。固定モードでは新しい表示領域を
 	// RNへ報告し、桁数・行数を決め直してもらう（PCへの再申告もRN側が行う）。
@@ -531,7 +1112,7 @@ function termHtmlSource(): { readonly html: string } {
 	return termSource;
 }
 
-export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize, onGridChange, onScroll }: TermViewProps) {
+export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize, onGridChange, onScroll, onOpenLink }: TermViewProps) {
 	const webRef = useRef<WebView>(null);
 	const [ready, setReady] = useState(false);
 	const writtenRef = useRef('');
@@ -549,6 +1130,8 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 	onGridChangeRef.current = onGridChange;
 	const onScrollRef = useRef(onScroll);
 	onScrollRef.current = onScroll;
+	const onOpenLinkRef = useRef(onOpenLink);
+	onOpenLinkRef.current = onOpenLink;
 	// WebView が最後に報告した表示領域とフォント実寸（回転・キーボード開閉のたびに更新される）。
 	const metricsRef = useRef<{ width: number; height: number; charWidth100: number; lineHeight100: number; rowHeights?: Record<string, number> } | undefined>(undefined);
 	// 固定モードで最後に適用したグリッド（同じ値の再適用・再申告を避ける）。
@@ -557,6 +1140,121 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 	const inject = (script: string) => {
 		webRef.current?.injectJavaScript(`${script}; true;`);
 	};
+
+	// 出力のまとめ役。流す単位 1 つが inject 1 回で、連番もこの単位で振る（WebView 側の欠落検出と対）。
+	const coalescerRef = useRef<ReturnType<typeof createTermWriteCoalescer> | undefined>(undefined);
+	coalescerRef.current ??= createTermWriteCoalescer(data => {
+		const n = ++injectSeqRef.current;
+		inject(`window.__para.write(${n}, ${JSON.stringify(data)})`);
+	});
+	const coalescer = coalescerRef.current;
+
+	// 準備完了の見張り。時間切れで 1 回だけ読み直し、だめならエラーと［再試行］を出す。
+	const [loadFailed, setLoadFailed] = useState(false);
+	// WebView を作り直した回数（`key`）。`source={{ html }}` の WebView は `reload()` では HTML を読み直さず
+	// `about:blank` のまま戻らないので、読み直しは要素ごと作り直して行う。
+	const [webViewGeneration, setWebViewGeneration] = useState(0);
+	/** WebView を作り直す。画面は WebView の中にしか無いので、準備完了の後に snapshot を取り直す。 */
+	const reloadWebView = () => {
+		readyRef.current = false;
+		setReady(false);
+		coalescer.clear();
+		setWebViewGeneration(generation => generation + 1);
+	};
+	const watchdogRef = useRef<ReturnType<typeof createTermReadyWatchdog> | undefined>(undefined);
+	watchdogRef.current ??= createTermReadyWatchdog({
+		isForeground: () => AppState.currentState === 'active',
+		reload: reloadWebView,
+		fail: () => setLoadFailed(true),
+		setTimeout: (callback, ms) => setTimeout(callback, ms),
+		clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+	});
+	const watchdog = watchdogRef.current;
+	useEffect(() => {
+		watchdog.arm();
+		return () => {
+			watchdog.dispose();
+			coalescer.clear();
+		};
+	}, [watchdog, coalescer]);
+	const retryLoad = () => {
+		setLoadFailed(false);
+		watchdog.retry();
+	};
+
+	/** リンクのタップ・ホバー・コピーの知らせ（W2-31）。判定は terminalLinks.ts の純関数に任せる。 */
+	const handleLinkMessage = (msg: TermViewMessage) => {
+		const open = onOpenLinkRef.current;
+		switch (msg.t) {
+			case 'tap': {
+				if (open === undefined || typeof msg.text !== 'string' || typeof msg.index !== 'number') {
+					return;
+				}
+				const osc8 = typeof msg.osc8 === 'string' && msg.osc8.length > 0 ? terminalOsc8Link(msg.osc8, typeof msg.osc8Label === 'string' ? msg.osc8Label : undefined) : undefined;
+				if (osc8 !== undefined) {
+					hapticSelection();
+					open(osc8);
+					return;
+				}
+				const link = findTerminalLinkAt(msg.text, msg.index);
+				if (link === undefined) {
+					return;
+				}
+				hapticSelection();
+				inject(`window.__para.flash(${Number(msg.token)}, ${link.start}, ${link.end})`);
+				setTimeout(() => open(link.kind === 'url' ? { kind: 'url', url: link.url } : { kind: 'file', target: link.target }), LINK_FLASH_MS);
+				return;
+			}
+			case 'links': {
+				const ranges = open === undefined || typeof msg.text !== 'string'
+					? []
+					: findTerminalLinks(msg.text).map(link => ({ start: link.start, end: link.end }));
+				inject(`window.__para.links(${Number(msg.id)}, ${JSON.stringify(ranges)})`);
+				return;
+			}
+			case 'activate': {
+				const link = typeof msg.text === 'string' && typeof msg.index === 'number' ? findTerminalLinkAt(msg.text, msg.index) : undefined;
+				if (open !== undefined && link !== undefined) {
+					open(link.kind === 'url' ? { kind: 'url', url: link.url } : { kind: 'file', target: link.target });
+				}
+				return;
+			}
+			case 'osc8': {
+				const link = typeof msg.uri === 'string' ? terminalOsc8Link(msg.uri, typeof msg.label === 'string' ? msg.label : undefined) : undefined;
+				if (open !== undefined && link !== undefined) {
+					open(link);
+				}
+				return;
+			}
+			case 'copy': {
+				if (typeof msg.text !== 'string' || msg.text.length === 0) {
+					return;
+				}
+				void writeClipboardText(msg.text).then(copied => {
+					if (copied) {
+						hapticSuccess();
+						useParaToast.getState().show({ key: 'terminal-copy', text: 'コピーしました', icon: 'copy-outline', tone: 'done' }, 1500);
+					}
+				});
+				return;
+			}
+			case 'selection':
+				hapticSelection();
+				return;
+			default:
+				return;
+		}
+	};
+
+	// 裏に回る直前に溜まった分を流す（戻ったときに、止まる前の出力が欠けて見えないように）。
+	useEffect(() => {
+		const subscription = AppState.addEventListener('change', state => {
+			if (state !== 'active') {
+				coalescer.flushNow();
+			}
+		});
+		return () => subscription.remove();
+	}, [coalescer]);
 
 	/**
 	 * 実測値と設定から固定モードの寸法を決め、WebViewへ適用して上へ通知する。
@@ -607,12 +1305,13 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 			return;
 		}
 		if (ev.kind === 'snapshot') {
+			// 溜まった分を先に流してから置き換える（順序を崩さない。流した分は reset で消える）。
+			coalescer.flushNow();
 			streamModeRef.current = true;
 			const n = ++injectSeqRef.current;
 			inject(`window.__para.snapshot(${n}, ${JSON.stringify(ev.data)}, ${ev.cols ?? 0}, ${ev.rows ?? 0}, ${JSON.stringify(ev.unicode ?? '')})`);
 		} else {
-			const n = ++injectSeqRef.current;
-			inject(`window.__para.write(${n}, ${JSON.stringify(ev.data)})`);
+			coalescer.write(ev.data);
 		}
 	};
 
@@ -655,9 +1354,10 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 		// レガシー経路は連番検証をしない（injectSeq は同期モード専用。write の第1引数は
 		// WebView 側 checkSeq を通すため、レガシーでも連番を進める）。
 		if (written.length > 0 && output.startsWith(written)) {
-			const n = ++injectSeqRef.current;
-			inject(`window.__para.write(${n}, ${JSON.stringify(output.slice(written.length))})`);
+			coalescer.write(output.slice(written.length));
 		} else {
+			// 書き直しの前に溜まった差分を流す（reset の後に古い差分が届かないように）。
+			coalescer.flushNow();
 			const n = ++injectSeqRef.current;
 			inject(`window.__para.reset(); window.__para.write(${n}, ${JSON.stringify(output)})`);
 		}
@@ -666,10 +1366,11 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 
 	// **WebView要素は端末ごとに1回だけ作る。** `source` に41万文字が載っているため、要素を
 	// 作り直すとそのぶんの文字列変換がJSスレッドで走る（`termHtmlSource` の説明を読むこと）。
-	// 中で使うものは全てref経由か安定した参照なので、依存は空でよい。`applyStreamEvent` も
-	// refしか触らないので初回の参照を捕まえたままで正しい（購読側の :438 と同じ理由）。
+	// 中で使うものは全てref経由か安定した参照なので、依存は作り直しの回数だけでよい（読み直しの
+	// 見張り・プロセス死のときだけ変わる）。`applyStreamEvent` もrefしか触らないので、その時点の参照で正しい。
 	const webView = useMemo(() => (
 		<WebView
+			key={webViewGeneration}
 			ref={webRef}
 			style={styles.web}
 			source={termHtmlSource()}
@@ -682,9 +1383,8 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 			onContentProcessDidTerminate={() => {
 				// iOSがメモリ圧でコンテンツプロセスを落とした。画面状態はWebView内にしか
 				// 無いため、reloadして ready を待ち、再attach（snapshot再同期）で復旧する。
-				readyRef.current = false;
-				setReady(false);
-				webRef.current?.reload();
+				reloadWebView();
+				watchdog.arm();
 			}}
 			onMessage={event => {
 				// 実測値の報告はJSON。旧形式の 'ready' / 'desync' と混ざらないよう先頭で振り分ける。
@@ -702,10 +1402,16 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 						onScrollRef.current?.(msg.dir, msg.lines);
 					} else if (msg.t === 'warn' && __DEV__) {
 						console.warn('[termView]', msg.text);
+					} else {
+						handleLinkMessage(msg);
 					}
 					return;
 				}
 				if (event.nativeEvent.data === 'ready') {
+					watchdog.ready();
+					setLoadFailed(false);
+					// 読み直す前のページ宛てに溜まっていた分は、新しいページには流さない（snapshot で取り直す）。
+					coalescer.clear();
 					writtenRef.current = '';
 					injectSeqRef.current = 0;
 					readyRef.current = true;
@@ -732,11 +1438,34 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 				}
 			}}
 		/>
-	), []);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	), [webViewGeneration]);
 
-	return webView;
+	// WebView は常に同じ位置に置き、失敗の表示はその上に重ねるだけにする（木の形を変えると WebView が作り直される）。
+	return (
+		<View style={styles.root}>
+			{webView}
+			{loadFailed ? (
+				<View style={styles.failed}>
+					<EmptyState
+						icon="alert-circle-outline"
+						title="ターミナルを表示できませんでした"
+						message="画面の読み込みが終わりませんでした。［再試行］で読み込み直します。"
+						action={{ label: '再試行', onPress: retryLoad }}
+					/>
+				</View>
+			) : null}
+		</View>
+	);
 }
 
 const styles = StyleSheet.create({
+	root: { flex: 1, backgroundColor: colors.terminalBg },
 	web: { flex: 1, backgroundColor: colors.terminalBg },
+	failed: {
+		...StyleSheet.absoluteFill,
+		alignItems: 'center',
+		justifyContent: 'center',
+		backgroundColor: colors.terminalBg,
+	},
 });

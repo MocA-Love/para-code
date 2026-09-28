@@ -63,12 +63,14 @@ import { IParadisPresetService, IParadisResolvedPreset, paradisGetPresetTasks, p
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
 import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
+import { paradisTerminalEscapeTail } from '../common/paradisTerminalEscapeTail.js';
+import { paradisMobileTerminalViewportStatus } from '../common/paradisMobileTerminalViewportStatus.js';
 import { type ParadisBinaryFsResponseType, paradisEncodeNegotiatedBinaryFsResponse } from '../common/paradisMobileFileResponse.js';
 import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.js';
 import { PARADIS_TERMINAL_BINARY_DATA_ENCODING, paradisEncodeNegotiatedBinaryTerminalData } from '../common/paradisMobileTerminalData.js';
 import { IParadisMobileTerminalViewport, paradisIsValidTerminalViewportMessage, paradisReadTerminalViewport, paradisResolveTerminalViewport } from '../common/paradisMobileTerminalViewport.js';
 import { paradisEncodeJsonResponsePayload } from '../common/paradisMobileGzipJson.js';
-import { paradisIsAcceptedMobileWireVersion } from '../common/paradisMobileCompat.js';
+import { ParadisMobileCapability, paradisHasMobileCapability, paradisIsAcceptedMobileWireVersion } from '../common/paradisMobileCompat.js';
 import { type IParadisMobileRequestHost, paradisDispatchMobileRequest } from './paradisMobileRequestHandlers.js';
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
@@ -316,7 +318,8 @@ type TermInbound = TermInboundBase & (
 	| { t: 'detach'; terminalKey: string }
 	// attach 済みのまま画面寸法だけ変わったとき（回転・キーボード開閉・設定変更）。
 	// 両方省略すると寸法の寄せをやめて PC 側の寸法へ戻す。
-	| { t: 'viewport'; terminalKey: string; viewCols?: number; viewRows?: number }
+	// reclaim（任意、W2-19）: PC で［PC の幅に戻す］を押された後に、スマホで［再び合わせる］が押された。
+	| { t: 'viewport'; terminalKey: string; viewCols?: number; viewRows?: number; reclaim?: boolean }
 	// 受信済み最終 seq の確認応答（epoch 対応クライアントのみ）。フロー制御の材料。
 	| { t: 'ack'; terminalKey: string; epoch: number; seq: number }
 	// input は3形態:
@@ -352,7 +355,10 @@ type TermOutbound =
 	// epoch/seq は同期プロトコル有効時のみ付与（seq は送信順に1ずつ増える。モバイルは
 	// ギャップ検出で再attachする）。snapshot には適用すべき cols/rows と unicode 幅版も同梱する。
 	| { t: 'data'; data: string; snapshot?: boolean; epoch: number; seq: number; cols?: number; rows?: number; unicode?: string }
-	| { t: 'exit'; epoch?: number };
+	| { t: 'exit'; epoch?: number }
+	// W2-19: PC で［PC の幅に戻す］が押された。スマホは開き直すか［再び合わせる］を押すまで寸法を申告しない
+	// （申告しても PC は使わない）。知らない t は旧アプリが黙って捨てる（0.2.0〜0.9.0 の term の分岐で確認済み）。
+	| { t: 'viewport-revoked' };
 
 /** scm チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type ScmInbound =
@@ -461,7 +467,8 @@ function paradisDescribePresetForMobile(preset: IParadisResolvedPreset, qualifie
 /** fs チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type FsInbound =
 	| { t: 'list'; id: string; ws: string; path: string }
-	| { t: 'resolveLink'; id: string; ws: string; path: string }
+	// terminalKey（任意、W2-31）: スマホのターミナルで押したパス。そのターミナルの作業フォルダを基準に相対パスを解く。
+	| { t: 'resolveLink'; id: string; ws: string; path: string; terminalKey?: string }
 	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean; responseEncoding?: string; cacheEncoding?: string; ifContentHash?: string }
 	| { t: 'xlsx'; id: string; ws: string; path: string; sheet?: number; responseEncoding?: string; cacheEncoding?: string; ifContentHash?: string }
 	| { t: 'pdf'; id: string; ws: string; path: string; responseEncoding?: string }
@@ -569,6 +576,10 @@ const TERMINAL_CREATE_READY_TIMEOUT_MS = 10_000; // 非表示スペース向け�
 // そこでモバイルには申告を定期更新させ、更新が途絶えたらPC側の判断で寸法を戻す。
 const TERM_VIEWPORT_LEASE_MS = 60_000;       // この時間更新が無ければ申告を捨てる
 const TERM_VIEWPORT_SWEEP_MS = 15_000;       // 満了チェックの周期
+// スマホがターミナルを離れた（detach・申告の取り下げ）後も、この間は縮めた寸法を保つ（W2-19）。タブを
+// 行き来するたびに PC のターミナルが伸び縮みし、TUI が全画面を描き直すのを避ける。戻る前に同じ寸法で
+// 申告し直されれば、PTY には何も起きない。
+const TERM_VIEWPORT_RELEASE_GRACE_MS = 4_000;
 // スワイプ1回で送れるスクロール行数の上限。速くなぞったときに大量のキーを撃ち込まない。
 const TERM_SCROLL_MAX_LINES = 40;
 // マウスホイール1刻みで進む行数の目安（多くのTUIが採用する慣習値）。モバイル側は行数で
@@ -631,6 +642,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private readonly serializeAddons = new WeakMap<object, { serialize(options?: { scrollback?: number }): string }>();
 	// mobileId + ターミナルID → 独立したepoch/seq/ACK状態。
 	private readonly termSyncStates = new Map<string, TermSyncState>();
+	// ターミナルID → これまでに流れた出力の末尾で閉じていない制御シーケンス（W2-18）。snapshot の後の
+	// 最初のチャンクの前に付けて送る（snapshot には PC の xterm の解析途中の状態が載らないため）。
+	// 出力を購読している間だけ追う（購読を始める前に読まれた分は分からない）。
+	private readonly termEscapeTails = new Map<number, string>();
 	// mobileId + ターミナルID → そのモバイルが読める画面寸法（申告があったものだけ）と、
 	// 最後に申告を受け取った時刻。申告はリース制で、更新が途絶えたら期限切れで捨てる。
 	// instanceId を値に持たせているのは、期限切れの掃除でキー文字列を再パースしないため
@@ -647,6 +662,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	// 寸法の上書きを「自分が」掛けているターミナルID。拡張機能が握っている override を
 	// 解除時に巻き込まないよう、自分で掛けた分だけを覚えておく。
 	private readonly termOverriddenInstanceIds = new Set<number>();
+	// mobileId + ターミナルID → PC で［PC の幅に戻す］が押された購読（W2-19）。その購読の申告は、
+	// スマホが detach する（ターミナルを開き直す）か reclaim 付きで申告し直すまで使わない。
+	private readonly termViewportRevoked = new Set<string>();
+	// ターミナルID → 離れた後に PC の寸法へ戻すまでの猶予のタイマー（W2-19）。
+	private readonly termViewportReleaseTimers = new Map<number, ReturnType<typeof setTimeout>>();
 	// モバイル発の /model・/effort 切替でClaude TUIが出す確認ダイアログを自動確定するガード。
 	private readonly modelSwitchGuard = this._register(new ParadisAgentModelSwitchGuard(this.logService));
 	// PC本体のバッテリー状態（Battery Status API）。未対応環境ではundefinedのまま＝state未配信。
@@ -745,6 +765,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		let markInitialAgentPanesReady!: () => void;
 		this.initialAgentPanesReady = new Promise<void>(resolve => { markInitialAgentPanesReady = resolve; });
 		this.markInitialAgentPanesReady = markInitialAgentPanesReady;
+		// PC の画面の［PC の幅に戻す］（W2-19、paradisMobileViewportBanner.contribution.ts）を受ける。
+		this._register(paradisMobileTerminalViewportStatus.setController({ takeBack: instanceId => this.takeBackTerminalViewport(instanceId) }));
 
 		// 状態が変わったらスナップショットを再送。エージェント状態の変化は通知判定も行う。
 		// 再送はイベント起点では100msに集約する（特にウィンドウリサイズ中の
@@ -1364,6 +1386,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this.termSyncStates.clear();
 		this.attachedTerminals.clearAndDisposeAll();
 		this.terminalSubscribers.clear();
+		// 購読が全部無くなったので、PC で戻された印（W2-19）も外す。
+		this.termViewportRevoked.clear();
 		// detach が届かないまま切れた場合でも、ここでPTY寸法をPC側へ戻す。
 		this.clearAllTerminalViewports();
 	}
@@ -1931,6 +1955,43 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	// --- fs チャネル ------------------------------------------------------------
 
 	/**
+	 * スマホのターミナルで押した相対パスを、そのターミナルの作業フォルダ（cd した先）を基準に解く（W2-31）。
+	 * 作業フォルダがワークスペースの中にあり、解いた先がワークスペースの中の既存のファイルのときだけ、
+	 * ワークスペースの根からの相対パスを返す。それ以外は `undefined`（呼び出し側が根からの解決に落とす）。
+	 */
+	private async resolveTerminalRelativeLink(ws: string, root: URI, terminalKey: unknown, rawPath: string): Promise<string | undefined> {
+		if (typeof terminalKey !== 'string' || terminalKey.length === 0 || terminalKey.length > 200) {
+			return undefined;
+		}
+		const instanceId = this.terminalIdentityService.getInstanceId(terminalKey);
+		const instance = instanceId === undefined ? undefined : this.allInstances().find(candidate => candidate.instanceId === instanceId);
+		if (instance === undefined) {
+			return undefined;
+		}
+		try {
+			const cwd = await instance.getCwdResource();
+			if (cwd === undefined || !extUriBiasedIgnorePathCase.isEqualOrParent(cwd, root)) {
+				return undefined;
+			}
+			const candidate = extUriBiasedIgnorePathCase.resolvePath(cwd, rawPath.replace(/\\/g, '/'));
+			if (!extUriBiasedIgnorePathCase.isEqualOrParent(candidate, root)) {
+				return undefined;
+			}
+			const relative = extUriBiasedIgnorePathCase.relativePath(root, candidate);
+			if (relative === undefined || relative.length === 0) {
+				return undefined;
+			}
+			const resolved = await this.resolveWorkspacePathReal(ws, relative);
+			if (resolved === undefined || (await this.fileService.stat(resolved)).isDirectory) {
+				return undefined;
+			}
+			return relative;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
 	 * 相対パスに加え、シンボリックリンク経由でのワークスペース外脱出も検査する
 	 * （設計書 §8）。'list'の子要素フィルタだけでは対象自体やパス途中のシンボリックリンクを
 	 * 防げないため、実パスを解決してリポジトリルート配下に収まっているかを確認する。
@@ -2429,7 +2490,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						relativePath = normalizeRelative(rawPath.slice(1));
 					}
 				} else {
-					relativePath = normalizeRelative(rawPath);
+					relativePath = await this.resolveTerminalRelativeLink(msg.ws, root, msg.terminalKey, rawPath)
+						?? normalizeRelative(rawPath);
 				}
 				if (relativePath === undefined || relativePath.length === 0) {
 					reply({ error: 'file link is outside the workspace' });
@@ -2651,8 +2713,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// 画面寸法の申告はスナップショットより先に反映する。ここで PTY を細くしておくと、
 				// 直後のスナップショットが既に新しい寸法で撮られ、モバイルが一度も
 				// 「PC幅のまま潰れた画面」を描かずに済む。
-				this.setTerminalViewport(instance, id, mobileId,
-					paradisIsValidTerminalViewportMessage(msg) ? paradisReadTerminalViewport(msg) : undefined);
+				const attachViewport = paradisIsValidTerminalViewportMessage(msg) ? paradisReadTerminalViewport(msg) : undefined;
+				// 離れてから猶予のうちに戻ってきた（W2-19）。スマホは画面を測り直すまで寸法を付けずに attach するので、
+				// ここで戻すと PC の幅へ広げた直後にまた縮むことになる。猶予中の寸法を保ったまま猶予を数え直し、
+				// 測り直した寸法（viewport）が届くのを待つ（届かなければ猶予が切れた時点で戻す）。
+				const keepDuringGrace = attachViewport === undefined && this.termViewportReleaseTimers.has(id);
+				if (keepDuringGrace) {
+					this.cancelTerminalViewportRelease(id);
+				}
+				this.setTerminalViewport(instance, id, mobileId, attachViewport, { grace: keepDuringGrace });
 				this.sendTerminalSnapshot(instance, id, mobileId, 'attach');
 				if (this.attachedTerminals.has(id)) {
 					await complete('accepted');
@@ -2661,6 +2730,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const store = new DisposableStore();
 				const relayConsumer = (data: string) => this.sendTermData(id, data);
 				store.add(instance.onData(paradisCreateTerminalOutputConsumer(relayConsumer, undefined)!));
+				store.add(toDisposable(() => this.termEscapeTails.delete(id)));
 				store.add(instance.onExit(() => {
 					for (const subscriber of this.terminalSubscribers.get(id) ?? []) {
 						const key = this.termSubscriptionKey(id, subscriber);
@@ -2668,6 +2738,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						this.clearTermSync(key);
 						this.termSyncStates.delete(key);
 						this.termViewports.delete(key);
+						this.termViewportRevoked.delete(key);
 						this.sendTerm(id, subscriber, { t: 'exit', ...(epoch !== undefined ? { epoch } : {}) });
 					}
 					this.attachedTerminals.deleteAndDispose(id);
@@ -2681,7 +2752,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				this.attachedTerminals.set(id, store);
 			} else if (msg.t === 'viewport') {
 				// attach したまま画面寸法だけ変わった（回転・キーボード開閉・設定変更）。
-				this.setTerminalViewport(instance, id, mobileId, paradisReadTerminalViewport(msg));
+				// 申告の取り下げ（ターミナルの画面を離れた）は、猶予を置いてから戻す。
+				const viewport = paradisReadTerminalViewport(msg);
+				this.setTerminalViewport(instance, id, mobileId, viewport, { reclaim: msg.reclaim === true, grace: viewport === undefined });
 			} else if (msg.t === 'detach') {
 				this.clearTermSync(subscriptionKey);
 				this.termSyncStates.delete(subscriptionKey);
@@ -2691,8 +2764,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					this.attachedTerminals.deleteAndDispose(id);
 					this.terminalSubscribers.delete(id);
 				}
-				// 見るのをやめたら PC 側の寸法へ戻す（残る購読者が居ればその寸法で決め直す）。
-				this.setTerminalViewport(instance, id, mobileId, undefined);
+				// 開き直したら縮めてよい（W2-19。PC で戻された印はここで外す）。
+				this.termViewportRevoked.delete(subscriptionKey);
+				// 見るのをやめたら PC 側の寸法へ戻す（残る購読者が居ればその寸法で決め直す）。すぐには戻さず猶予を置く。
+				this.setTerminalViewport(instance, id, mobileId, undefined, { grace: true });
 			} else if (msg.t === 'ack') {
 				this.handleTerminalAck(instance, id, mobileId, msg);
 			} else if (msg.t === 'input') {
@@ -2785,29 +2860,51 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * レイアウト幅を無視して指定値を返し、そこから `_resize()` → PTY の TIOCSWINSZ まで流れる。
 	 * パネル／エディタ領域のどちらに居ても同じ経路なので、置き場所による分岐は要らない。
 	 */
-	private setTerminalViewport(instance: ITerminalInstance, id: number, mobileId: string, viewport: IParadisMobileTerminalViewport | undefined): void {
+	private setTerminalViewport(instance: ITerminalInstance, id: number, mobileId: string, viewport: IParadisMobileTerminalViewport | undefined, options?: { readonly reclaim?: boolean; readonly grace?: boolean }): void {
 		const subscriptionKey = this.termSubscriptionKey(id, mobileId);
+		if (options?.reclaim === true) {
+			this.termViewportRevoked.delete(subscriptionKey);
+		}
 		// 購読していないモバイルの申告は保持しない（誰にも読まれないまま台帳に残るのを防ぐ）。
-		if (viewport === undefined || this.terminalSubscribers.get(id)?.has(mobileId) !== true) {
+		// PC で戻された購読の申告も使わない（W2-19。旧アプリは戻されたことを知らずに申告し続ける）。
+		if (viewport === undefined || this.terminalSubscribers.get(id)?.has(mobileId) !== true || this.termViewportRevoked.has(subscriptionKey)) {
 			this.termViewports.delete(subscriptionKey);
 		} else {
 			// 同じ値の再申告（リースの更新）でも時刻だけは必ず進める。
 			this.termViewports.set(subscriptionKey, { instanceId: id, viewport, renewedAt: Date.now() });
 		}
 		this.updateViewportLeaseSweeper();
-		this.applyTerminalViewport(instance, id);
+		this.applyTerminalViewport(instance, id, options?.grace === true);
 	}
 
-	/** いま購読中のモバイル全員の申告からPTY寸法を決め、instanceへ反映する。 */
-	private applyTerminalViewport(instance: ITerminalInstance, id: number): void {
+	/**
+	 * いま購読中のモバイル全員の申告からPTY寸法を決め、instanceへ反映する。
+	 * `grace` のときは、申告が無くなっても {@link TERM_VIEWPORT_RELEASE_GRACE_MS} の間は今の寸法を保つ。
+	 */
+	private applyTerminalViewport(instance: ITerminalInstance, id: number, grace = false): void {
 		const subscribers = this.terminalSubscribers.get(id) ?? [];
 		const resolved = paradisResolveTerminalViewport(
 			[...subscribers].map(subscriber => this.termViewports.get(this.termSubscriptionKey(id, subscriber))?.viewport),
 		);
 		if (resolved === undefined) {
+			if (grace && this.termOverriddenInstanceIds.has(id)) {
+				if (!this.termViewportReleaseTimers.has(id) && !this._store.isDisposed) {
+					this.termViewportReleaseTimers.set(id, setTimeout(() => {
+						this.termViewportReleaseTimers.delete(id);
+						const current = this.allInstances().find(candidate => candidate.instanceId === id);
+						if (current !== undefined) {
+							this.applyTerminalViewport(current, id);
+						} else {
+							this.forgetTerminalViewport(id);
+						}
+					}, TERM_VIEWPORT_RELEASE_GRACE_MS));
+				}
+				return;
+			}
 			this.clearTerminalViewport(instance, id);
 			return;
 		}
+		this.cancelTerminalViewportRelease(id);
 		// 拡張機能のPseudoterminalは自分で寸法を配信する（ProcessPropertyType.OverrideDimensions が
 		// 同じ口を使う）。奪うと拡張側の表示が壊れるため触らない。
 		if (instance.shellLaunchConfig.customPtyImplementation !== undefined) {
@@ -2830,13 +2927,64 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		this.termAppliedDimensions.set(id, dimensions);
 		instance.setOverrideDimensions({ ...dimensions, forceExactSize: true }, true);
+		paradisMobileTerminalViewportStatus.set(id, resolved);
 	}
 
 	/** 自分が掛けた寸法の上書きだけを解除する（拡張機能が握っている override は触らない）。 */
 	private clearTerminalViewport(instance: ITerminalInstance, id: number): void {
+		this.cancelTerminalViewportRelease(id);
 		if (this.termOverriddenInstanceIds.delete(id)) {
 			this.restoreInstanceDimensions(instance);
 		}
+		paradisMobileTerminalViewportStatus.set(id, undefined);
+	}
+
+	private cancelTerminalViewportRelease(id: number): void {
+		const timer = this.termViewportReleaseTimers.get(id);
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			this.termViewportReleaseTimers.delete(id);
+		}
+	}
+
+	/** 端末自体が消えたときに、寸法の上書きの追跡をすべて終える。 */
+	private forgetTerminalViewport(id: number): void {
+		this.cancelTerminalViewportRelease(id);
+		this.termOverriddenInstanceIds.delete(id);
+		this.termAppliedDimensions.delete(id);
+		paradisMobileTerminalViewportStatus.set(id, undefined);
+	}
+
+	/**
+	 * PC の画面の［PC の幅に戻す］（W2-19）。今そのターミナルを縮めているスマホの購読に「PC で戻された」
+	 * 印を付けて申告を捨て、すぐに PC の寸法へ戻し、スマホへ `viewport-revoked` を送る。印はスマホが
+	 * ターミナルを開き直す（detach）か［再び合わせる］（reclaim）まで残る。
+	 */
+	takeBackTerminalViewport(id: number): void {
+		const instance = this.allInstances().find(candidate => candidate.instanceId === id);
+		const revokedMobiles: string[] = [];
+		for (const mobileId of this.terminalSubscribers.get(id) ?? []) {
+			const key = this.termSubscriptionKey(id, mobileId);
+			if (this.termViewports.delete(key)) {
+				this.termViewportRevoked.add(key);
+				revokedMobiles.push(mobileId);
+			}
+		}
+		this.updateViewportLeaseSweeper();
+		if (instance !== undefined) {
+			this.clearTerminalViewport(instance, id);
+		} else {
+			this.forgetTerminalViewport(id);
+		}
+		// 知らせるのは受け取れるアプリだけ（旧アプリも知らない t は捨てるが、送らずに済むなら送らない）。
+		for (const mobileId of revokedMobiles) {
+			void this.requestHandlerServices?.getMobileCapabilities(mobileId).then(capabilities => {
+				if (paradisHasMobileCapability(capabilities, ParadisMobileCapability.TermViewportTakeback) && this.terminalSubscribers.get(id)?.has(mobileId)) {
+					this.sendTerm(id, mobileId, { t: 'viewport-revoked' });
+				}
+			}, () => { /* 相手の機能が分からなければ送らない */ });
+		}
+		this.logService.info(`[paradisMobileRelay] terminal ${id} taken back to PC dimensions (${revokedMobiles.length} phone(s) revoked)`);
 	}
 
 	/**
@@ -2889,8 +3037,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				this.applyTerminalViewport(instance, instanceId);
 			} else {
 				// 端末自体が消えている。台帳だけ落として override の追跡も終わらせる。
-				this.termOverriddenInstanceIds.delete(instanceId);
-				this.termAppliedDimensions.delete(instanceId);
+				this.forgetTerminalViewport(instanceId);
 			}
 		}
 		this.updateViewportLeaseSweeper();
@@ -2919,7 +3066,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * PC のターミナルが細いまま取り残されるのを防ぐ、最後の砦。
 	 */
 	clearAllTerminalViewports(): void {
+		// PC で戻された印（W2-19）はここでは外さない。スマホが 1 台減っただけのときにも呼ばれ、
+		// 残ったスマホの購読の印まで消すと、戻したターミナルがまた縮む。印は購読が消えたとき
+		// （detach・exit・detachAll）だけ外す。
 		this.termViewports.clear();
+		for (const timer of this.termViewportReleaseTimers.values()) {
+			clearTimeout(timer);
+		}
+		this.termViewportReleaseTimers.clear();
 		this.updateViewportLeaseSweeper();
 		if (this.termOverriddenInstanceIds.size === 0) {
 			return;
@@ -2932,6 +3086,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			if (instance !== undefined) {
 				this.restoreInstanceDimensions(instance);
 			}
+			paradisMobileTerminalViewportStatus.set(id, undefined);
 		}
 	}
 
@@ -3027,6 +3182,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * suspend中は破棄し（ptyは止めない）、ACKが追いついた時点のスナップショットで追いつく。
 	 */
 	private sendTermData(id: number, data: string): void {
+		// PC の xterm はこのチャンクを読み終えてから onData を出すので、ここで追う末尾は
+		// 次に撮る snapshot の時点の解析途中の状態と一致する（snapshot は書き込みのバリアを待ってから撮る）。
+		const previousTail = this.termEscapeTails.get(id) ?? '';
+		const tail = paradisTerminalEscapeTail(previousTail, data);
+		if (tail.length > 0) {
+			this.termEscapeTails.set(id, tail);
+		} else if (previousTail.length > 0) {
+			this.termEscapeTails.delete(id);
+		}
 		for (const mobileId of this.terminalSubscribers.get(id) ?? []) {
 			this.queueTermData(id, mobileId, data);
 		}
@@ -3160,6 +3324,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			// 送るだけ帯域の無駄になる）。resizeTimer はここでは触らない（serialize待ちの間に
 			// 発生した新しいリサイズの再同期予約を消してしまうため）。
 			this.clearTermCoalesce(sync);
+			// 直前のチャンクが制御シーケンスの途中で終わっていたら、その断片を次のチャンクの前に付ける
+			// （モバイルの xterm は snapshot で reset するので、続きだけが文字として出てしまう）。
+			// まとめ送りの保留の先頭に置くだけで、送るのは次の出力と一緒（出力が来なければ送らない）。
+			const carry = this.termEscapeTails.get(id);
+			if (carry !== undefined) {
+				sync.pending.push(carry);
+				sync.pendingChars += carry.length;
+			}
 			const seq = ++sync.seq;
 			sync.inflight.push({ seq, chars: data.length });
 			sync.unackedChars += data.length;
