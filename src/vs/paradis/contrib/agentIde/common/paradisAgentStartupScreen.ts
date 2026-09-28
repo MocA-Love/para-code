@@ -32,28 +32,36 @@ interface IParadisAgentStartupScreenRule {
 	readonly observedIn: string;
 	/** 空白と罫線を落とした画面の末尾に、すべてが現れたら当てる。 */
 	readonly allOf: readonly RegExp[];
+	/**
+	 * 選択肢の2行。画面の中で隣り合う2行（順番は問わない）の文言がそれぞれに当たり、どちらかの行頭に
+	 * 選択のカーソルがあるときだけ当てる。会話の中で文言に触れただけの画面や、この表のような
+	 * ソースコードを表示している画面では当たらない。
+	 */
+	readonly choices?: readonly [RegExp, RegExp];
 }
 
 /**
  * 判定の表。上から順に見て、最初に当たったものを返す（信頼の確認を先に置く）。
- * 文言は空白と罫線（U+2500〜U+257F）を落とした形で書く（入力欄の枠と折り返しをまたいで照合するため）。
+ * `allOf` は空白と罫線（U+2500〜U+257F）を落とした形で書く（入力欄の枠と折り返しをまたいで照合するため）。
+ * `choices` は1行分の文言を、行頭のカーソル・番号と前後の空白・罫線を落とした形で書く。
  */
 export const PARADIS_AGENT_STARTUP_SCREEN_RULES: readonly IParadisAgentStartupScreenRule[] = [
 	{
-		// 「Accessing workspace: … Quick safety check: Is this a project you created or one you trust? …
-		// ❯ 1. Yes, I trust this folder / 2. No, exit」
+		// 見出しは「Accessing workspace:」と「Quick safety check: …」。選択肢は番号無しで、既定で
+		// 断る側にカーソルがある（2.1.283 の `hideIndexes` / `cancelFirst` / `focus: "cancel"`）。
 		agent: 'claude',
 		state: 'trust_dialog',
 		observedIn: 'Claude Code 2.1.283',
-		allOf: [/Yes,Itrustthisfolder/, /Quicksafetycheck:Isthisaprojectyoucreatedoroneyoutrust\?|Accessingworkspace:/],
+		allOf: [/Quicksafetycheck:Isthisaprojectyoucreatedoroneyoutrust\?|Accessingworkspace:/],
+		choices: [/^Yes, I trust this folder$/, /^No, (?:exit|continue without these permissions)$/],
 	},
 	{
-		// 「> You are in <dir> / Do you trust the contents of this directory? Working with untrusted contents
-		// comes with higher risk of prompt injection. … › 1. Yes, continue / 2. No, quit」
+		// 見出しは「Do you trust the contents of this directory?」。承諾の選択肢の次の行が断る側。
 		agent: 'codex',
 		state: 'trust_dialog',
 		observedIn: 'codex-cli 0.155.1',
-		allOf: [/Doyoutrustthecontentsofthisdirectory\?/, /Yes,continue|Trustingthedirectoryallows/],
+		allOf: [/Doyoutrustthecontentsofthisdirectory\?/],
+		choices: [/^Yes, continue$/, /^No\b/],
 	},
 	{
 		// 入力欄の下の「? for shortcuts」。入力が空で、作業していないときだけ出る。
@@ -76,21 +84,46 @@ const STARTUP_SCREEN_TAIL_LINES = 30;
 
 /** 空白（改行を含む）と罫線の文字を落とす。 */
 function compactScreen(text: string): string {
-	return text.replace(/[\s─-╿]+/g, '');
+	return text.replace(/[\s\u2500-\u257f]+/g, '');
+}
+
+/** 選択肢の1行を、カーソルの有無と文言に分ける（前後の空白と枠の罫線、番号は落とす）。 */
+const CHOICE_LINE = /^(?<cursor>[\u276f\u203a>]\s*)?(?:\d+\.\s*)?(?<label>\S.*?)$/;
+
+function parseChoiceLine(line: string): { readonly cursor: boolean; readonly label: string } | undefined {
+	const trimmed = line.replace(/^[\s\u2500-\u257f]+|[\s\u2500-\u257f]+$/g, '');
+	const match = CHOICE_LINE.exec(trimmed);
+	return match?.groups ? { cursor: match.groups.cursor !== undefined, label: match.groups.label } : undefined;
+}
+
+/** 隣り合う2行（空行は飛ばす）が、選択肢の2つにそれぞれ当たり、どちらかにカーソルがあるか。 */
+function showsChoicePair(lines: readonly string[], [first, second]: readonly [RegExp, RegExp]): boolean {
+	const choices = lines.map(parseChoiceLine).filter((line): line is { readonly cursor: boolean; readonly label: string } => line !== undefined);
+	for (let index = 0; index + 1 < choices.length; index++) {
+		const a = choices[index];
+		const b = choices[index + 1];
+		const pairs = (first.test(a.label) && second.test(b.label)) || (second.test(a.label) && first.test(b.label));
+		if (pairs && (a.cursor || b.cursor)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 /**
  * 画面の末尾から、起動時の状態を読む。分からなければ undefined。
  * 画面の文字はターミナルの中のプログラムが自由に書けるので、「止めて人に任せる」側
- * （信頼の確認）にだけ強く使い、「送ってよい」の根拠にはしない。
+ * （信頼の確認）にだけ強く使い、「送ってよい」の根拠にはしない。呼び出し側は、hook の状態を
+ * まだ受け取っていないペインか、起動した直後のペインにだけ使うこと。
  */
 export function paradisAgentStartupScreenState(screen: string | undefined): ParadisAgentStartupScreenState | undefined {
 	if (screen === undefined || screen.length === 0) {
 		return undefined;
 	}
-	const tail = compactScreen(screen.split('\n').slice(-STARTUP_SCREEN_TAIL_LINES).join('\n'));
+	const lines = screen.split('\n').slice(-STARTUP_SCREEN_TAIL_LINES);
+	const tail = compactScreen(lines.join('\n'));
 	for (const rule of PARADIS_AGENT_STARTUP_SCREEN_RULES) {
-		if (rule.allOf.every(pattern => pattern.test(tail))) {
+		if (rule.allOf.every(pattern => pattern.test(tail)) && (rule.choices === undefined || showsChoicePair(lines, rule.choices))) {
 			return rule.state;
 		}
 	}

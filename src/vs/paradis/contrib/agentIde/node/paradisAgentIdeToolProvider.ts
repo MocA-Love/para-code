@@ -307,11 +307,19 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		return internal?.status ?? 'idle';
 	}
 
-	/** 前面のエージェントが起動直後の信頼の確認を出しているか（hook が作業中と言っているときは見ない）。 */
+	/**
+	 * 前面のエージェントが起動直後の信頼の確認を出しているか。画面の文字は中のプログラムが書けるので、
+	 * hook の状態をまだ一度も受け取っていないペインか、エージェントのツールで起動してから猶予の間の
+	 * ペインでだけ見る（動いているエージェントが画面に同じ文言を出しても、止めない）。
+	 */
 	private _showsTrustDialog(internal: IParadisAgentIdeInternal | undefined, context: IParadisMcpToolCallContext): boolean {
-		return internal?.agent === true
-			&& this._reportedStatusOf(internal, context) !== 'working'
-			&& paradisAgentStartupScreenState(internal.screen) === 'trust_dialog';
+		if (internal?.agent !== true || this._reportedStatusOf(internal, context) === 'working') {
+			return false;
+		}
+		const token = internal.paneToken;
+		const neverReported = token === undefined || !context.hasAgentHookHistory(token);
+		const justLaunched = internal.launchedAt !== undefined && this.clock.now() - internal.launchedAt <= PARADIS_AGENT_IDE_LAUNCH_GRACE_MS;
+		return (neverReported || justLaunched) && paradisAgentStartupScreenState(internal.screen) === 'trust_dialog';
 	}
 
 	private async _callWindow(paneToken: string, request: ParadisAgentIdeRequest, toolName: string, context: IParadisMcpToolCallContext, signal: AbortSignal | undefined): Promise<ParadisAgentIdeResult> {

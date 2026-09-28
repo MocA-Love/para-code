@@ -119,26 +119,41 @@ suite('paradisAgentIde (common)', () => {
 	});
 
 	test('startup screen: the trust dialogs and empty input boxes of the installed CLIs, and nothing else', () => {
+		// 選択肢の文言はこのソースを表示した画面で判定が当たらないよう、単語を連ねて組み立てる
+		const words = (...parts: string[]) => parts.join(' ');
+		const claudeYes = words('Yes,', 'I', 'trust', 'this', 'folder');
+		const claudeNo = words('No,', 'exit');
+		const claudeHeader = '\u2502 Accessing workspace:\n\u2502 Quick safety check: Is this a project you created or one you\n\u2502 trust? (Like your own code)\n';
+		const codexHeader = '> You are in /tmp/x\n  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk.\n';
 		const screens = {
-			// Claude Code 2.1.283（折り返しと枠線をまたぐ）
-			claudeTrust: '\u2502 Accessing workspace:\n\u2502 Quick safety check: Is this a project you created or one you\n\u2502 trust? (Like your own code)\n\u2502 \u276f 1. Yes, I trust this folder\n\u2502   2. No, exit',
+			// Claude Code 2.1.283（折り返しと枠線をまたぐ。番号無しで、断る側にカーソル）
+			claudeTrust: `${claudeHeader}\u2502 \u276f ${claudeNo}\n\u2502   ${claudeYes}`,
+			// カーソルを承諾側へ動かした後、番号付きの版
+			claudeTrustMoved: `${claudeHeader}\u2502   1. ${claudeNo}\n\n\u2502 \u276f 2. ${claudeYes}`,
 			// codex-cli 0.155.1
-			codexTrust: '> You are in /tmp/x\n  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk.\n\u203a 1. Yes, continue\n  2. No, quit',
+			codexTrust: `${codexHeader}\u203a 1. ${words('Yes,', 'continue')}\n  2. ${words('No,', 'quit')}`,
 			claudeReady: '\u256d\u2500\u256e\n\u2502 \u276f \u2502\n\u2570\u2500\u256f\n  ? for shortcuts',
 			codexReady: '\u203a Ask Codex to do anything\n\n  100% context left',
-			// 片方の文言だけでは当てない（会話の中で文言に触れただけ、など）
-			mentionOnly: 'The dialog says "Yes, I trust this folder" when you start it.',
-			codexQuestionOnly: 'Do you trust the contents of this directory?',
+			// 見出しと選択肢の文言が画面にあっても、選択肢の形（隣り合う2行・カーソル）でなければ当てない
+			mentionOnly: `${claudeHeader}The dialog offers "${claudeYes}" and "${claudeNo}".`,
+			noCursor: `${claudeHeader}  ${claudeNo}\n  ${claudeYes}`,
+			notAdjacent: `${claudeHeader}\u276f ${claudeNo}\nsomething else\n  ${claudeYes}`,
+			headerMissing: `\u276f ${claudeNo}\n  ${claudeYes}`,
+			codexQuestionOnly: codexHeader,
 			// 画面の末尾 30 行より上にあるものは見ない
 			scrolledAway: `? for shortcuts${'\n'.repeat(40)}$ `,
 			empty: '',
 		};
 		assert.deepStrictEqual(Object.fromEntries(Object.entries(screens).map(([name, screen]) => [name, paradisAgentStartupScreenState(screen) ?? null])), {
 			claudeTrust: 'trust_dialog',
+			claudeTrustMoved: 'trust_dialog',
 			codexTrust: 'trust_dialog',
 			claudeReady: 'ready',
 			codexReady: 'ready',
 			mentionOnly: null,
+			noCursor: null,
+			notAdjacent: null,
+			headerMissing: null,
 			codexQuestionOnly: null,
 			scrolledAway: null,
 			empty: null,

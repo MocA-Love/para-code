@@ -31,7 +31,10 @@ function text(result: unknown): { readonly isError: boolean; readonly body: stri
 	return { isError: value.isError === true, body: value.content[0].text };
 }
 
-// Claude Code 2.1.283 / codex-cli 0.155.1 の実際の画面の形（文言は CLI の文字列から拾った）
+// Claude Code 2.1.283 / codex-cli 0.155.1 の実際の画面の形（文言は CLI の文字列から拾った）。
+// 選択肢の文言はこのソースを表示した画面で判定が当たらないよう、単語を連ねて組み立てる。
+const words = (...parts: string[]) => parts.join(' ');
+const CURSOR = '\u276f';
 const CLAUDE_TRUST_DIALOG = [
 	'\u256d\u2500\u2500\u2500\u2500\u256e',
 	' Accessing workspace:',
@@ -41,16 +44,16 @@ const CLAUDE_TRUST_DIALOG = [
 	' Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known',
 	' open source project, or work from your team). If not, take a moment to review what\'s in this folder first.',
 	'',
-	' \u276f 1. Yes, I trust this folder',
-	'   2. No, exit',
+	` ${CURSOR} ${words('No,', 'exit')}`,
+	`   ${words('Yes,', 'I', 'trust', 'this', 'folder')}`,
 ].join('\n');
 const CODEX_TRUST_DIALOG = [
 	'> You are in /Users/example/projects/demo',
 	'',
 	'  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt injection.',
 	'',
-	'\u203a 1. Yes, continue',
-	'  2. No, quit',
+	`\u203a 1. ${words('Yes,', 'continue')}`,
+	`  2. ${words('No,', 'quit')}`,
 ].join('\n');
 const CLAUDE_READY = [
 	'\u256d\u2500\u2500\u256e',
@@ -266,6 +269,17 @@ suite('ParadisAgentIdeToolProvider', () => {
 			stopped: { met: true, reason: 'needs_input', blockedBy: 'trust_dialog', status: 'waiting_for_permission', waited: 0 },
 			needsInput: { met: true, blockedBy: 'trust_dialog' },
 		});
+	});
+
+	test('a trust dialog text on screen does not block a pane that already reported hooks, unless it was just launched', async () => {
+		const reported = setup();
+		reported.state.screen = CLAUDE_TRUST_DIALOG;
+		const typed = text(await reported.provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: 'go', press_enter: false }, undefined, reported.context));
+		const launched = setup();
+		launched.state.screen = CLAUDE_TRUST_DIALOG;
+		launched.state.launchedAt = launched.clock.time;
+		const refused = text(await launched.provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: 'go', press_enter: false }, undefined, launched.context));
+		assert.deepStrictEqual({ typed: typed.isError, refused: refused.isError }, { typed: false, refused: true });
 	});
 
 	test('an agent launched without a prompt is reported ready once its input box shows', async () => {
