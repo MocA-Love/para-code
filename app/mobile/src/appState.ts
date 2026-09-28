@@ -48,6 +48,8 @@ import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoice
 import { usePcListView } from './features/pc/pcListViewStore.js';
 import { buildLastKnownSnapshot, openLastKnownSnapshot, sameLastKnownContent, type LastKnownPcSnapshot } from './lastKnownPcs.js';
 import { lastKnownPcStorage, lastKnownPcWriter } from './lastKnownPcStore.js';
+import { connectionLog } from './connectionLogStore.js';
+import type { DiagnosticPc } from './connectionDiagnostics.js';
 
 /**
  * PC側とモバイル側の Sentry イベントを突き合わせる相関IDを設定する。
@@ -731,6 +733,9 @@ function createRuntime(pc: PairedPc, operationRun: number, persistedOutbox: read
 		persistedOutbox,
 		pc.creds,
 	);
+	// 接続の出来事を「接続の記録」へ残す（W2-22）。保存分は裏で読み、読むより前の出来事は後ろへ続く。
+	controller.onConnectionEvent = event => connectionLog.append(pc.id, event);
+	void connectionLog.load(pc.id);
 	// PCが「処理済み」と知らせてきた通知は、通知センター（ロック画面）からも消す（W2-02）。
 	controller.onNotifyHandled = handled => {
 		dismissTrayHandledByPc(pc.id, handled).catch(err => console.warn('[appState] failed to clear handled notifications', err));
@@ -1312,6 +1317,7 @@ export const useAppStore = create<AppState>(set => ({
 					const state = useAppStore.getState();
 					// 裏に回ると間もなく止められるので、予約中の書き込みは今のうちに済ませる。
 					void lastKnownPcWriter.flush();
+					void connectionLog.flush();
 					for (const runtime of runtimes.values()) {
 						try {
 							runtime.controller.releaseAllWarmLeases();
@@ -1346,6 +1352,7 @@ export const useAppStore = create<AppState>(set => ({
 						return;
 					}
 					for (const runtime of connectedRuntimes()) {
+						connectionLog.append(runtime.pc.id, { kind: 'network-change' });
 						runtime.controller.ensureConnected();
 					}
 				});
@@ -1581,6 +1588,7 @@ export const useAppStore = create<AppState>(set => ({
 		usePcListView.getState().forgetPc(id);
 		// 前回の一覧（スペース名が入る）も残さない。
 		void lastKnownPcWriter.forget(id);
+		void connectionLog.forget(id);
 		// PC画面の一部が写り込んだ画像をメモリに残さない（取得済みの画像はストア外のキャッシュにある）。
 		toolImageCache.clear();
 		if (id === activePcId) {
@@ -2166,6 +2174,25 @@ export const useAppStore = create<AppState>(set => ({
 		return controller?.fetchTurnIceServers() ?? Promise.resolve([]);
 	},
 }));
+
+/**
+ * 「接続の記録」（W2-22）の診断に渡す PC の一覧。リレーの URL は台帳の資格情報から取る
+ * （画面と報告には出さず、到達の確認にだけ使う）。
+ */
+export function connectionDiagnosticPcs(): DiagnosticPc[] {
+	return pcOrder
+		.map(id => runtimes.get(id))
+		.filter((runtime): runtime is PcRuntime => runtime !== undefined)
+		.map(runtime => ({
+			id: runtime.pc.id,
+			name: runtime.pc.name,
+			relayUrl: runtime.pc.creds.relayUrl,
+			connection: runtime.state.connection,
+			pcOnline: runtime.state.pcOnline,
+			pairingRejected: runtime.state.pairingRejected,
+			updateRequired: runtime.state.updateRequired,
+		}));
+}
 
 // --- 新しい機能から PC へ要求を送る公開口（W2-17 の土台） -----------------------------------------
 //
