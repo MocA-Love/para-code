@@ -32,7 +32,7 @@ import {
 } from './pcList.js';
 import { EMPTY_PC_LIST_VIEW_OF_PC, effectivePcListFilter, pcListViewOf } from './pcListView.js';
 import { EMPTY_PC_LIST_TRANSIENT, ensurePcListViewLoaded, usePcListView } from './pcListViewStore.js';
-import { FAB_SIZE, LaunchFab, PcOfflineState, SectionToggle } from './pcListParts.js';
+import { FAB_SIZE, LaunchFab, PcOfflineState, PcUpdateRequiredState, SectionToggle } from './pcListParts.js';
 import { RowActions, type RowActionTarget } from './rowActions.js';
 import { spaceColor } from './spaceColor.js';
 import { startStatusSinceTracking } from './statusSinceStore.js';
@@ -131,13 +131,15 @@ export function PcScreen({ placement, onCollapse }: {
 	// 資格を拒まれた PC は、1〜15分おきの確認の間だけ「接続しています…」になる。そこで一覧や
 	// 読み込み中の表示へ揺れないよう、繋がるまでは再ペアリングの案内に固定する。
 	const rejected = pc !== undefined && isPairingRejected(pc);
+	// 版が合わない PC（W2-17）。再接続しても直らないので、どちらを更新するかの案内に固定する。
+	const updateRequired = pc?.updateRequired;
 	// 一時的に再接続している間は一覧を消さない（行が点滅すると押し間違える）。
-	const showList = active && loaded && !rejected && (kind === 'connected' || kind === 'connecting');
+	const showList = active && loaded && !rejected && updateRequired === undefined && (kind === 'connected' || kind === 'connecting');
 	const sections = buildPcList({ terminals, spaces, activeWs, archivedKeys, pinnedKeys, preferences, group, filter });
 	const archived = archivedTerminals(terminals, archivedKeys);
 	const unread = unreadQuestionNotificationCount(notifications);
 	const detail = [
-		pcConnectionLine(kind, pc?.lastOnlineAt, now, rejected),
+		pcConnectionLine(kind, pc?.lastOnlineAt, now, rejected, updateRequired),
 		pc !== undefined && shouldShowBattery(pc) && pc.battery !== undefined ? batteryLine(pc.battery) : undefined,
 	].filter((part): part is string => part !== undefined).join(' · ');
 
@@ -220,6 +222,9 @@ export function PcScreen({ placement, onCollapse }: {
 			return <EmptyState title="この PC は見つかりません" body="ペアリングを解除した PC かもしれません。" />;
 		}
 		if (!showList) {
+			if (updateRequired !== undefined) {
+				return <PcUpdateRequiredState name={pc?.name ?? 'PC'} target={updateRequired} onRecheck={reconnect} />;
+			}
 			if (!rejected && (kind === 'connecting' || status === 'inactive' || (active && !loaded && kind === 'connected'))) {
 				return <EmptyState title="接続しています…" body={`${pc?.name ?? 'PC'} の状態を読み込んでいます。`} />;
 			}

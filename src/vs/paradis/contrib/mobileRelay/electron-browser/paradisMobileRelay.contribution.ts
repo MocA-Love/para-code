@@ -72,6 +72,8 @@ import { IParadisAgentTerminalHintConsumer, paradisCreateAgentTerminalHintConsum
 import { setParadisDiagnosticCorrelationTag } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisMobilePcFocusHeartbeatCoordinator } from './paradisMobilePcFocusHeartbeat.js';
 import { ParadisMobileRelayRendererLifecycle } from './paradisMobileRelayRendererLifecycle.js';
+// モバイルの scm / fs の新しい種類を別ファイルで受ける処理（登録表。W2-17）
+import './paradisMobileRequestHandlerRegistrations.js';
 
 const STATUSBAR_ID = 'paradis.mobile.relay';
 const PAIR_COMMAND = 'paradis.mobile.connectDevice';
@@ -324,6 +326,12 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// をそのまま返す（未整形）ので、その場合は undefined を渡して paradisResolveMobileWindowHost の
 			// フォールバック整形に任せる（下の onDidChangeFormatters 購読で、フォーマッタが届いたら再送する）。
 			() => this.resolveWindowHost(),
+			// 登録表（paradisMobileRequestHandlers.ts）で受ける新しい種類へ、サービスと送信元モバイルの capability を渡す
+			{
+				invokeFunction: fn => instantiationService.invokeFunction(fn),
+				getMobileCapabilities: mobileId => this.service.getMobileCapabilities(mobileId),
+				getMobileWireVersion: mobileId => this.service.getMobileWireVersion(mobileId),
+			},
 		));
 		const rendererLifecycle = new ParadisMobileRelayRendererLifecycle(
 			focusHeartbeat,

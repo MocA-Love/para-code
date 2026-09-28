@@ -5,6 +5,7 @@ import { pinKeyForTerminal } from '../../store.js';
 import { formatRelativeTime } from '../../time.js';
 import type { ConnectionKind } from '../../ui/statusColors.js';
 import { PAIRING_REJECTED_LABEL } from '../../pcStatus.js';
+import { updateRequiredLabel, type UpdateTarget } from '../../pcCompat.js';
 
 /**
  * ホーム（`/`）の数字を決める純関数。統計カード3枚と、PC のカードの件数・接続の一文。
@@ -116,10 +117,14 @@ const CONNECTION_WORD: Record<ConnectionKind, string> = {
  * リレー経由でつながる。モックの「LAN」に当たる欄）、切れているときは最後につながっていた時刻を添える
  * （「オフライン · 2時間前まで接続」）。
  */
-export function pcConnectionLine(kind: ConnectionKind, lastOnlineAt: number | undefined, now: number, pairingRejected = false): string {
+export function pcConnectionLine(kind: ConnectionKind, lastOnlineAt: number | undefined, now: number, pairingRejected = false, updateRequired?: UpdateTarget): string {
 	// 資格を拒まれた PC は、待っても直らないので接続の語を出さない（`isPairingRejected` の結果を渡す）。
 	if (pairingRejected && kind !== 'connected') {
 		return PAIRING_REJECTED_LABEL;
+	}
+	// 版が合わない PC も、待っても直らない。どちらを更新するかを出す（`PcSummary.updateRequired`）。
+	if (updateRequired !== undefined) {
+		return updateRequiredLabel(updateRequired);
 	}
 	const word = CONNECTION_WORD[kind];
 	if (kind === 'connected') {

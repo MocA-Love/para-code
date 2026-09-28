@@ -19,6 +19,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IParadisWorktreeGitCommandResult } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { IParadisMobileWindowHost } from './paradisMobileHost.js';
 import { ChannelId } from './paradisMobileProtocol.js';
+import { PARADIS_MOBILE_PROTOCOL_VERSION } from './paradisMobileCompat.js';
 import { IParadisMobileWindowLease } from './paradisMobileWindowLease.js';
 import { ParadisAgentCommandDeliveryResult } from './paradisAgentCommandLifecycle.js';
 import type { ParadisBindingScope } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
@@ -57,8 +58,11 @@ export const PARADIS_MOBILE_DEFAULT_RELAY_URL = 'wss://para-mobile-relay.cloudfl
 // ---- IPC チャネル ----
 
 export const PARADIS_MOBILE_RELAY_CHANNEL = 'paradisMobileRelay';
-/** complete/operation sequence/Renderer世代を必須化した公開PC↔mobile契約。 */
-export const PARADIS_MOBILE_PROTOCOL_VERSION = 3;
+/**
+ * complete/operation sequence/Renderer世代を必須化した公開PC↔mobile契約。
+ * 実体と互換の窓（どの版の相手まで話せるか）は paradisMobileCompat.ts（アプリと共有）が持つ。
+ */
+export { PARADIS_MOBILE_PROTOCOL_VERSION };
 
 /** Keeps pending terminal ownership unassigned instead of guessing the active space. */
 export function paradisResolveMobileTerminalStateKey(
@@ -185,7 +189,14 @@ export interface IParadisMobileRendererStateV3 {
 
 /** protocol v3: モバイルへ送る全PCウィンドウの統合状態。 */
 export interface IParadisMobileDesktopStateV3 {
-	readonly protocolVersion: 3;
+	readonly protocolVersion: typeof PARADIS_MOBILE_PROTOCOL_VERSION;
+	/**
+	 * このPCが受け入れる、いちばん古いアプリの版（W2-17。旧PCでは未配信＝版の完全一致しか受けない）。
+	 * アプリはこれと自分の版から「アプリが古い／PCが古い」を判定する（paradisEvaluateMobileCompat）。
+	 */
+	readonly minCompatibleMobile: number;
+	/** このPCが実装している capability（W2-17。旧PCでは未配信＝何も持っていない扱い）。 */
+	readonly capabilities: readonly string[];
 	readonly fsUploadEncoding: 'fs-binary-v1';
 	/** protocol v3内の追加能力。未指定の旧PCへモバイルが音声通知の購読を送らないための判定用。 */
 	readonly voiceClips: 'relay-v1';
@@ -296,6 +307,16 @@ export interface IParadisMobileRelayService {
 	// 状態
 	readonly onDidChangeStatus: Event<IParadisMobileStatus>;
 	getStatus(): Promise<IParadisMobileStatus>;
+	/**
+	 * そのモバイルが State の要求で広告した capability（W2-17）。オフライン・未交渉・W2-17 より前の
+	 * アプリは `undefined`（`paradisHasMobileCapability` に渡すと false になる）。
+	 */
+	getMobileCapabilities(mobileId: string): Promise<readonly string[] | undefined>;
+	/**
+	 * そのモバイルとのセッションで話している版（窓の中で PC とアプリの古い方）。オフライン・未交渉は `undefined`。
+	 * PC から送る形を版で変えるときの判断に使う（今は版 3 しか無い）。
+	 */
+	getMobileWireVersion(mobileId: string): Promise<number | undefined>;
 
 	// 有効/無効
 	setEnabled(enabled: boolean): Promise<void>;

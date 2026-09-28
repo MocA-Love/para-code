@@ -17,6 +17,7 @@ import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCrede
 import { reuseWorkspaceState } from './workspaceIdentity.js';
 import { ResumeFrameBuffer } from './resumeFrameBuffer.js';
 import type { RelayWindowHost } from './relayHosts.js';
+import { APP_PROTOCOL_VERSION, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
 export interface WorkspacePrStatus {
@@ -33,7 +34,15 @@ export interface WorkspaceNoteSummary {
 
 /** PCから届くワークスペース状態（stateチャネルのJSON）。 */
 export interface WorkspaceState {
-	protocolVersion: 3;
+	/** PCが話す公開ワイヤの版。アプリの版と窓が合うかは pcCompat.ts（PCと同じ判定）で決める。 */
+	protocolVersion: number;
+	/** PCが受け入れるいちばん古いアプリの版（W2-17。旧PCでは未配信＝版の完全一致しか受けない）。 */
+	minCompatibleMobile?: number;
+	/**
+	 * PCが実装している機能（W2-17。旧PCでは未配信＝何も持っていない扱い）。
+	 * 画面は直接読まず pcHasCapability / usePcCapability を通す。
+	 */
+	capabilities?: readonly string[];
 	/** 新PCだけが通知する任意能力。旧PCではundefined。 */
 	fsUploadEncoding?: 'fs-binary-v1';
 	/** 音声通知（PCが作ったMP3のリレー配信）。旧PCではundefined。 */
@@ -65,6 +74,12 @@ export interface WorkspaceState {
 	// このPCの表示名（旧PCでは未配信）。複数のPCとペアリングしているときの見分けに使う。
 	// PC側の設定が空ならホスト名が入る。ユーザーがアプリ側で名前を付け直していれば、そちらが優先。
 	pcName?: string;
+}
+
+/** PC が `id` を付けずに scm / fs で送ってくるメッセージ（`MobileController.onPcMessage`）。 */
+export interface PcPushMessage {
+	readonly t: string;
+	readonly [key: string]: unknown;
 }
 
 interface RendererRequestTarget {
@@ -181,7 +196,15 @@ export function mergeWorkspaceState(previous: WorkspaceState | undefined, incomi
 		if (!incoming.renderers.some(renderer => renderer.ready)) {
 			// 表示データは旧epochを保持してちらつきを防ぐが、能力bitは新PCの値を即採用する。
 			// ここで旧new-PCのbitを残すと、ダウングレード直後の旧PCへ未知の音声購読を送ってしまう。
-			return { ...previous, voiceClips: incoming.voiceClips };
+			// 版と機能の広告（W2-17）も同じ理由で新PCの値を即採用する（新PCが送らなければ消す）。
+			const kept: WorkspaceState = { ...previous, voiceClips: incoming.voiceClips, protocolVersion: incoming.protocolVersion };
+			delete kept.minCompatibleMobile;
+			delete kept.capabilities;
+			return {
+				...kept,
+				...(incoming.minCompatibleMobile !== undefined ? { minCompatibleMobile: incoming.minCompatibleMobile } : {}),
+				...(incoming.capabilities !== undefined ? { capabilities: incoming.capabilities } : {}),
+			};
 		}
 		const readyWindows = new Set(incoming.renderers.filter(renderer => renderer.ready).map(renderer => renderer.windowId));
 		const workspaces = new Map(previous.workspaces.filter(workspace => !readyWindows.has(workspace.windowId)).map(workspace => [workspace.id, workspace]));
@@ -1219,6 +1242,8 @@ export interface StoreState {
 	workspace: WorkspaceState | undefined;
 	/** PC/モバイルの公開プロトコル不一致。黙って操作不能にせず更新案内へ使う。 */
 	protocolError: string | undefined;
+	/** 版が合わないとき、どちらを更新すべきか（`app` はこのアプリ、`pc` はPCのPara Code）。 */
+	updateRequired: UpdateTarget | undefined;
 	/** 結果不明になったmutation。新IDで自動再実行せずUIへ明示する。 */
 	terminalOperationIssue: string | undefined;
 	unknownTerminalOperationCount: number;
@@ -1256,6 +1281,7 @@ export function createEmptyStoreState(): StoreState {
 		sessionProtocolReady: false,
 		workspace: undefined,
 		protocolError: undefined,
+		updateRequired: undefined,
 		terminalOperationIssue: undefined,
 		unknownTerminalOperationCount: 0,
 		terminalOutput: new Map(),
@@ -1425,6 +1451,13 @@ export class MobileController {
 	private operationOutboxScope: string | undefined;
 	private operationOutboxDirty = false;
 	private resetting = false;
+	/**
+	 * 個々の操作（term / scm / fs）に書く版。窓の中で PC と版が違うときは古い方の版で話す
+	 * （paradisEvaluateMobileCompat の wireVersion）。State を受け入れるたびに更新する。
+	 */
+	private wireProtocolVersion: number = APP_PROTOCOL_VERSION;
+	/** `onPcMessage` の購読者（チャネルごと）。 */
+	private readonly pcMessageListeners = { scm: new Set<(message: PcPushMessage) => void>(), fs: new Set<(message: PcPushMessage) => void>() };
 	/** 最後に何らかのframeを受信した時刻。presence欠落時のPC再起動検出（死活監視）に使う。 */
 	private lastFrameAt = 0;
 	private livenessTimer: ReturnType<typeof setInterval> | undefined;
@@ -1839,6 +1872,8 @@ export class MobileController {
 			this.liveFsUploadEncoding = undefined;
 			this.state.workspace = undefined;
 			this.state.protocolError = undefined;
+			this.state.updateRequired = undefined;
+			this.wireProtocolVersion = APP_PROTOCOL_VERSION;
 			this.refreshTerminalOperationIssue();
 			this.state.terminalOutput = new Map();
 			this.state.notifications = [];
@@ -2268,7 +2303,7 @@ export class MobileController {
 			return;
 		}
 		void this.sendTerminalOperation({
-			protocolVersion: 3,
+			protocolVersion: this.wireProtocolVersion,
 			desktopEpoch: desktop.desktopEpoch,
 			t: 'create',
 			windowId: workspace.windowId,
@@ -2305,7 +2340,8 @@ export class MobileController {
 	 * 旧アプリへ gzip を送ると、JSON.parse の例外が握り潰されてホームが空のまま固まるため）。
 	 */
 	requestState(): void {
-		this.client?.send('state', encoder.encode(JSON.stringify({ protocolVersion: 3, stateEncoding: JSON_GZIP_RESPONSE_ENCODING })));
+		// 版と、受け入れる PC の最低版・このアプリの機能を広告する（W2-17。旧PCは知らない項目を読まない）。
+		this.client?.send('state', encoder.encode(JSON.stringify({ ...stateRequestFields(), stateEncoding: JSON_GZIP_RESPONSE_ENCODING })));
 	}
 
 	private resumeLiveSessionSubscriptions(): void {
@@ -2402,7 +2438,7 @@ export class MobileController {
 			return Promise.resolve(false);
 		}
 		return this.sendTerminalOperation({
-			protocolVersion: 3,
+			protocolVersion: this.wireProtocolVersion,
 			desktopEpoch: workspace.desktopEpoch,
 			terminalKey,
 			...msg,
@@ -3090,7 +3126,7 @@ export class MobileController {
 			rendererTarget = { desktopEpoch: desktop.desktopEpoch, windowId: renderer.windowId, rendererGeneration: renderer.rendererGeneration };
 			requestBody = {
 				...requestBody,
-				protocolVersion: 3,
+				protocolVersion: this.wireProtocolVersion,
 				desktopEpoch: desktop.desktopEpoch,
 				windowId: renderer.windowId,
 				rendererGeneration: renderer.rendererGeneration,
@@ -3111,14 +3147,14 @@ export class MobileController {
 			rendererTarget = { desktopEpoch: desktop.desktopEpoch, windowId: renderer.windowId, rendererGeneration: renderer.rendererGeneration };
 			requestBody = {
 				...requestBody,
-				protocolVersion: 3,
+				protocolVersion: this.wireProtocolVersion,
 				desktopEpoch: desktop.desktopEpoch,
 				windowId: workspace.windowId,
 				ws: workspace.sourceId,
 			};
 		}
 		const id = `${this.requestPrefix}-r-${this.requestCounter++}`;
-		const payload = encodePayload?.(id, requestBody) ?? encoder.encode(JSON.stringify({ id, ...requestBody }));
+		const payload = encodePayload?.(id, requestBody) ?? encoder.encode(JSON.stringify({ ...requestBody, id }));
 		return new Promise<T>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
@@ -3129,7 +3165,48 @@ export class MobileController {
 		});
 	}
 
-	private settleResponse(payload: Uint8Array): void {
+	/**
+	 * 新しい種類の要求を PC へ送る公開口（W2-17 の土台）。store 本体を触らずに、別ファイルの機能が
+	 * PC の登録表（`paradisMobileRequestHandlers.ts` の `registerParadisMobileRequestHandler`）へ届く要求を送れる。
+	 *
+	 * - `ws` を付けるとそのスペースの PC 画面へ届く。付けなければスペースを選ばずに、いま前面のスペースの
+	 *   PC 画面（無ければ応答できるどれか）へ届き、PC 側の処理にはスペースが渡らない（`root` が undefined）
+	 * - PC の応答 `{ id, ...body }` の body で resolve、`{ error }` なら reject、`timeoutMs`（既定30秒）で reject
+	 * - 古い PC は知らない種類に答えないので、送る前に {@link hasPcCapability} で確かめること
+	 */
+	requestPc<T = Record<string, unknown>>(channel: 'scm' | 'fs', body: { readonly t: string; readonly ws?: string; readonly [key: string]: unknown }, options?: { readonly timeoutMs?: number }): Promise<T> {
+		const timeoutMs = options?.timeoutMs ?? 30_000;
+		if (body.ws !== undefined) {
+			return this.request<T>(channel, body, timeoutMs);
+		}
+		// ws を付けないと request() は任意のスペースを選んで ws を足してしまうので、ウィンドウ宛てで送る
+		// （PC の shared process は rendererGeneration でウィンドウを検証する）。
+		const desktop = this.state.workspace;
+		const activeWindowId = desktop?.workspaces.find(workspace => workspace.id === desktop.activeWs)?.windowId;
+		const renderer = desktop?.renderers.find(candidate => candidate.ready && candidate.windowId === activeWindowId)
+			?? desktop?.renderers.find(candidate => candidate.ready);
+		if (renderer === undefined) {
+			return Promise.reject(new Error('PC画面の再接続が完了してから操作してください'));
+		}
+		return this.request<T>(channel, body, timeoutMs, undefined, undefined, renderer.windowId);
+	}
+
+	/**
+	 * PC が `id` を付けずに scm / fs で送ってくるメッセージ（登録表の処理の `push`）を購読する。
+	 * 返り値の dispose で外す。接続が切れても購読は残り、つながり直した後のメッセージも届く。
+	 */
+	onPcMessage(channel: 'scm' | 'fs', listener: (message: PcPushMessage) => void): MobileDisposable {
+		const listeners = this.pcMessageListeners[channel];
+		listeners.add(listener);
+		return { dispose: () => { listeners.delete(listener); } };
+	}
+
+	/** このPCがその機能を広告しているか（切断中は最後に届いた State の広告）。 */
+	hasPcCapability(name: string): boolean {
+		return pcHasCapability(this.state.workspace, name);
+	}
+
+	private settleResponse(payload: Uint8Array, channel?: 'scm' | 'fs'): void {
 		const binary = decodeBinaryFsResponse(payload);
 		if (binary !== undefined) {
 			const entry = this.pending.get(binary.id);
@@ -3143,8 +3220,16 @@ export class MobileController {
 		}
 		const jsonPayload = decodeGzipJsonResponse(payload) ?? payload;
 		try {
-			const msg = JSON.parse(decoder.decode(jsonPayload)) as { id?: string; error?: string };
+			const msg = JSON.parse(decoder.decode(jsonPayload)) as { id?: string; error?: string; t?: unknown };
 			if (!msg.id) {
+				// id の無いメッセージは PC からの知らせ（登録表の処理の push）。種類を持つものだけ配る。
+				if (channel !== undefined && typeof msg.t === 'string') {
+					for (const listener of [...this.pcMessageListeners[channel]]) {
+						try {
+							listener(msg as PcPushMessage);
+						} catch { /* 購読者の失敗で他の購読者と受信を止めない */ }
+					}
+				}
 				return;
 			}
 			const entry = this.pending.get(msg.id);
@@ -3429,6 +3514,8 @@ export class MobileController {
 	fsUpload(name: string, dataBase64: string): Promise<FsUploadResult> {
 		const binaryEncoder = this.liveFsUploadEncoding === FS_BINARY_UPLOAD_ENCODING
 			? (id: string, requestBody: object) => {
+				// 2進アップロードの枠は版 3 の形で固定（app/protocol の fileUpload.ts と PC の複製）。
+				// 版を上げるときはこの枠の検査も合わせて直す（NOTES.md「PC とアプリの互換の窓」）。
 				const request = requestBody as { protocolVersion: 3; desktopEpoch: string; windowId: number; ws: string };
 				return encodeBinaryFsUpload({ id, protocolVersion: request.protocolVersion, desktopEpoch: request.desktopEpoch, windowId: request.windowId, ws: request.ws, name }, dataBase64);
 			}
@@ -3688,7 +3775,7 @@ export class MobileController {
 			return;
 		}
 		if (frame.ch === 'scm' || frame.ch === 'fs') {
-			this.settleResponse(frame.payload);
+			this.settleResponse(frame.payload, frame.ch);
 			return;
 		}
 		if (frame.ch === 'agent') {
@@ -3747,10 +3834,17 @@ export class MobileController {
 					return;
 				}
 				const incoming = JSON.parse(decoder.decode(raw)) as WorkspaceState;
-				if (incoming.protocolVersion !== 3) {
+				// 版の窓の判定は PC と同じ関数（pcCompat.ts → paradisMobileCompat.ts）。
+				// minCompatibleMobile を送らない旧PCは、これまでどおり版の完全一致だけが通る。
+				const verdict = evaluatePcCompat(incoming);
+				if (verdict.kind === 'blocked') {
 					this.state.sessionProtocolReady = false;
 					this.liveFsUploadEncoding = undefined;
-					this.state.protocolError = 'PC版とモバイル版の通信バージョンが一致しません。両方を最新版へ更新してください。';
+					this.state.updateRequired = updateTargetOf(verdict);
+					// どちらを更新すべきかを言い分ける（画面は updateRequired を見て案内する。これは文章で要る場所向け）。
+					this.state.protocolError = verdict.reason === 'mobile-too-old'
+						? 'PC版と通信バージョンが合いません。このアプリを最新版へ更新してください（PCはそのままで大丈夫です）。'
+						: 'PC版と通信バージョンが合いません。PCのPara Codeを最新版へ更新してください（このアプリはそのままで大丈夫です）。';
 					// 版数が合わないPCから預かったぶんは適用先が無い。抱えたままにしない。
 					this.resumeFrames.clear();
 					this.state.workspace = undefined;
@@ -3785,6 +3879,15 @@ export class MobileController {
 					return;
 				}
 				this.state.protocolError = undefined;
+				this.state.updateRequired = undefined;
+				this.wireProtocolVersion = verdict.wireVersion;
+				// 機能の広告は後から足した任意項目。形の合わない値は捨て、配列でなければ「持っていない」にする。
+				const capabilities = parseCapabilities((incoming as { capabilities?: unknown }).capabilities);
+				if (capabilities !== undefined) {
+					incoming.capabilities = capabilities;
+				} else {
+					delete incoming.capabilities;
+				}
 				this.stateFramesReceived++;
 				// PC名は後から足したフィールド。文字列でない値が来ても表示側で落ちないよう、
 				// ここで型を確かめて捨てる（PCは信用しない相手として扱う）。
@@ -4386,6 +4489,7 @@ export class MobileController {
 			pushRegistered: this.state.pushRegistered,
 			workspace: this.state.workspace,
 			protocolError: this.state.protocolError,
+			updateRequired: this.state.updateRequired,
 			terminalOperationIssue: this.state.terminalOperationIssue,
 			unknownTerminalOperationCount: this.state.unknownTerminalOperationCount,
 			browserFrame: this.state.browserFrame,

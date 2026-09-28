@@ -1,0 +1,67 @@
+{
+	"$comment": "PC -> mobile の state チャネル（Desktop State）の固定形。current は今の PC、preW217 は W2-17 より前の PC（minCompatibleMobile / capabilities を送らない）。current の形は PC の組み立て（paradisMobileTerminalRegistry.desktopState）と完全に一致させる。形を変えたらここと NOTES.md「PC とアプリの互換の窓」を同じ変更で直す。",
+	"current": {
+		"protocolVersion": 3,
+		"minCompatibleMobile": 3,
+		"capabilities": ["state.gzip.v1", "term.sync.v1", "fs.upload-binary.v1", "voice.clips.v1"],
+		"fsUploadEncoding": "fs-binary-v1",
+		"voiceClips": "relay-v1",
+		"desktopEpoch": "golden-desktop-epoch",
+		"revision": 3,
+		"complete": true,
+		"renderers": [
+			{ "windowId": 1, "rendererGeneration": 2, "ready": true, "host": { "kind": "remote", "id": "ssh-remote+devbox", "label": "devbox" } }
+		],
+		"activeWs": "1:repo",
+		"workspaces": [
+			{
+				"id": "1:repo",
+				"name": "para-code",
+				"color": "#0969da",
+				"branch": "main",
+				"parent": "1:parent",
+				"pr": { "number": 135, "state": "open", "url": "https://github.com/example/para-code/pull/135" },
+				"note": { "open": 2, "done": 1 },
+				"pinned": true,
+				"sourceId": "repo",
+				"windowId": 1
+			}
+		],
+		"terminals": [
+			{
+				"terminalKey": "terminal-key-1",
+				"id": 7,
+				"title": "claude",
+				"ws": "1:repo",
+				"agent": true,
+				"agentToken": "agent-token-1",
+				"agentStatus": "working",
+				"cols": 120,
+				"rows": 40,
+				"windowId": 1,
+				"rendererGeneration": 2
+			}
+		],
+		"battery": { "level": 80, "charging": true },
+		"resources": { "cpu": 25, "memUsed": 8589934592, "memTotal": 17179869184, "diskFree": 107374182400, "diskTotal": 494384795648 },
+		"pcName": "MacBook-Pro"
+	},
+	"preW217": {
+		"protocolVersion": 3,
+		"fsUploadEncoding": "fs-binary-v1",
+		"voiceClips": "relay-v1",
+		"desktopEpoch": "golden-desktop-epoch",
+		"revision": 3,
+		"complete": true,
+		"renderers": [
+			{ "windowId": 1, "rendererGeneration": 2, "ready": true }
+		],
+		"activeWs": "1:repo",
+		"workspaces": [
+			{ "id": "1:repo", "name": "para-code", "branch": "main", "sourceId": "repo", "windowId": 1 }
+		],
+		"terminals": [
+			{ "terminalKey": "terminal-key-1", "id": 7, "title": "claude", "ws": "1:repo", "agent": true, "agentToken": "agent-token-1", "cols": 120, "rows": 40, "windowId": 1, "rendererGeneration": 2 }
+		]
+	}
+}
