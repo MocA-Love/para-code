@@ -8,6 +8,7 @@
 
 import { promises as fs } from 'fs';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 
 /**
  * ディスクへ永続化するエージェントセッション1件。ペイントークン（terminalKey由来のUUID、
@@ -112,7 +113,8 @@ export class ParadisAgentSessionStore {
 		if (entries !== undefined) {
 			this.pending = undefined;
 			this.writing = this.writing
-				.then(() => fs.writeFile(this.filePath, JSON.stringify(entries), { encoding: 'utf8', mode: 0o600 }))
+				// 書きかけで落ちても前の対応表が残るよう、一時ファイルから置き換える。
+				.then(() => paradisWriteFileAtomic(this.filePath, JSON.stringify(entries), { newFileMode: 0o600 }))
 				.catch(err => this.logService.warn('[paradisAgentSessionStore] failed to persist agent sessions', err));
 		}
 		return this.writing;

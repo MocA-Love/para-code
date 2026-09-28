@@ -150,9 +150,11 @@ export function paradisAgentQuestionNeedsReviewSubmit(questions: readonly IParad
 /**
  * 許可の確認（Claude Code の「Do you want to proceed?」、Codex の承認プロンプト）への回答をキー列にする。
  *
- * Claude は `1`（Yes）で許可、Esc で拒否。モバイルは以前から `1` の後に Enter も送っている
- * （`confirmWithEnter`）。デスクトップのチャット表示は Enter を送らない: Claude Code 2.1.283 では `1` だけで
- * 確定し、後から送った Enter が次に出た同じ内容の許可を確定した（フェーズ6の実機確認 NG-2）。
+ * Claude は `1`（Yes）で許可、Esc で拒否。`1` だけを送り、Enter は送らない: Claude Code 2.1.283 の許可画面は
+ * 数字キーで即確定するので、後から送った Enter が次の入力に漏れ、次に出た同じ内容の許可を確定した
+ * （フェーズ6の実機確認 NG-2）。以前はモバイルだけ `1` の後に Enter も送っていたが、デスクトップのチャット表示と
+ * 揃えた（Orca の `mobile-native-chat-permission-send.ts` も `1` だけ）。`confirmWithEnter: true` は、
+ * 数字で確定しない版のための逃げ道として残す（今は使っていない）。
  *
  * Codex は `y` で許可。拒否のキーは版で違う: codex-cli 0.155.1 の画面は
  * `3. No, and tell Codex what to do differently (esc)` で Esc、それより前の版は `d`。画面の文字が
@@ -168,7 +170,7 @@ export function paradisAgentApprovalKeySequence(agent: 'claude' | 'codex', choic
 	if (choice === 'no') {
 		return ['\u001b'];
 	}
-	return options?.confirmWithEnter === false ? ['1'] : ['1', ENTER];
+	return options?.confirmWithEnter === true ? ['1', ENTER] : ['1'];
 }
 
 /**

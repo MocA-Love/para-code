@@ -58,6 +58,7 @@ import {
 	PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING,
 	PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING,
 	PARADIS_AGENT_IDE_CONTEXT_LINES,
+	PARADIS_AGENT_IDE_LAUNCH_GRACE_MS,
 	PARADIS_AGENT_IDE_MAX_CREATED_PER_CALLER,
 	PARADIS_AGENT_IDE_MAX_CREATED_PER_WINDOW,
 	PARADIS_AGENT_IDE_MAX_SCROLLBACK_LINES,
@@ -80,6 +81,7 @@ import {
 	paradisAgentIdeTailLines,
 	paradisAgentIdeUntrustedTitle,
 } from '../common/paradisAgentIde.js';
+import { PARADIS_AGENT_TRUST_DIALOG_MESSAGE, paradisAgentStartupScreenState } from '../common/paradisAgentStartupScreen.js';
 
 /** 台帳の保存先（ワークスペースの保存領域）。中身はターミナル ID とスペースのキーだけで、トークンは入れない。 */
 const LEDGER_STORAGE_KEY = 'paradis.agentIde.ledger';
@@ -140,6 +142,8 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 	private readonly _children = new Set<string>();
 	/** エージェントのツールで作ったペインを作った時刻（起動待ちの猶予に使う。保存しない）。 */
 	private readonly _launchedAt = new Map<string, number>();
+	/** プロンプト無しで起動したエージェントのターミナル（準備ができたら、それ以上は動き出さない）。 */
+	private readonly _launchedIdle = new Set<string>();
 	/** ペイントークン → ID の計算結果。 */
 	private readonly _idCache = new Map<string, string>();
 	/** インスタンス → ID（閉じたときに台帳を掃除するため。閉じた後はトークンを引けない）。 */
@@ -316,6 +320,7 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		let changed = this._ledgers.delete(id);
 		changed = this._children.delete(id) || changed;
 		this._launchedAt.delete(id);
+		this._launchedIdle.delete(id);
 		for (const ledger of this._ledgers.values()) {
 			changed = ledger.terminals.delete(id) || changed;
 		}
@@ -346,10 +351,13 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		}
 	}
 
-	private _recordCreatedTerminal(callerToken: string, id: string, child: boolean): void {
+	private _recordCreatedTerminal(callerToken: string, id: string, child: boolean, idleAgent = false): void {
 		this._ledger(this._id(callerToken)).terminals.add(id);
 		if (child) {
 			this._children.add(id);
+		}
+		if (idleAgent) {
+			this._launchedIdle.add(id);
 		}
 		this._launchedAt.set(id, Date.now());
 		this._saveLedger();
@@ -396,7 +404,26 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 	}
 
 	private _status(terminal: IResolvedTerminal): ParadisAgentIdeTerminalStatus {
-		return paradisAgentIdeStatusLabel(this.agentStatusStore.getInstanceStatus(terminal.instance.instanceId));
+		const status = paradisAgentIdeStatusLabel(this.agentStatusStore.getInstanceStatus(terminal.instance.instanceId));
+		// フォルダの信頼の確認は hook が届く前に出る。利用者の答え待ちとして扱う
+		return this._showsTrustDialog(terminal, status) ? 'waiting_for_permission' : status;
+	}
+
+	/**
+	 * 起動直後の信頼の確認が画面に出ているか（作業中・答え待ちと分かっているときは見ない）。
+	 * 画面の文字は中のプログラムが書けるので、hook の状態をまだ一度も受け取っていないペインか、
+	 * エージェントのツールで起動してから猶予の間のペインでだけ見る。
+	 */
+	private _showsTrustDialog(terminal: IResolvedTerminal, status = paradisAgentIdeStatusLabel(this.agentStatusStore.getInstanceStatus(terminal.instance.instanceId))): boolean {
+		if (status === 'working' || paradisAgentIdeNeedsHuman(status) || !this._runsAgent(terminal)) {
+			return false;
+		}
+		const launchedAt = this._launchedAt.get(terminal.id);
+		const justLaunched = launchedAt !== undefined && Date.now() - launchedAt <= PARADIS_AGENT_IDE_LAUNCH_GRACE_MS;
+		if (!justLaunched && this.agentStatusStore.isAgentInstance(terminal.instance.instanceId)) {
+			return false;
+		}
+		return paradisAgentStartupScreenState(this._screen(terminal.instance, 0)) === 'trust_dialog';
 	}
 
 	private _runsAgent(terminal: IResolvedTerminal): boolean {
@@ -642,6 +669,7 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 				agent: this._runsAgent(target),
 				screen: this._screen(target.instance, 0) ?? '',
 				...(launchedAt !== undefined ? { launchedAt } : {}),
+				...(this._launchedIdle.has(target.id) ? { launchedIdle: true } : {}),
 			},
 		};
 	}
@@ -655,6 +683,10 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 			return resolved;
 		}
 		const target = resolved.value;
+		// 信頼の確認へ文字を貼ると、数字が選択肢を選んでしまう
+		if (this._showsTrustDialog(target)) {
+			return fail(PARADIS_AGENT_TRUST_DIALOG_MESSAGE);
+		}
 		if (paradisAgentIdeNeedsHuman(this._status(target))) {
 			return fail(NEEDS_HUMAN);
 		}
@@ -681,6 +713,10 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 			return resolved;
 		}
 		const target = resolved.value;
+		// 信頼の確認では Esc も矢印も答えになる（Esc は終了を選ぶ）
+		if (this._showsTrustDialog(target)) {
+			return fail(PARADIS_AGENT_TRUST_DIALOG_MESSAGE);
+		}
 		const status = this._status(target);
 		if (paradisAgentIdeNeedsHuman(status)) {
 			return fail(NEEDS_HUMAN);
@@ -769,7 +805,7 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		const id = launched.paneToken !== undefined ? this._id(launched.paneToken) : undefined;
 		if (id !== undefined) {
 			this._instanceIds.set(launched.instanceId, id);
-			this._recordCreatedTerminal(callerToken, id, true);
+			this._recordCreatedTerminal(callerToken, id, true, !request.prompt);
 		}
 		// allow-any-unicode-next-line
 		this._notifyCreated(localize('paradis.agentIde.notify.launched', "エージェント「{0}」が {1} を起動しました（{2}）。", this._describeCaller(callerToken), agent.value.label, space.value.name));
@@ -871,7 +907,7 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		const agentTerminal = result.agent?.paneToken !== undefined ? this._id(result.agent.paneToken) : undefined;
 		if (agentTerminal !== undefined && result.agent) {
 			this._instanceIds.set(result.agent.instanceId, agentTerminal);
-			this._recordCreatedTerminal(callerToken, agentTerminal, true);
+			this._recordCreatedTerminal(callerToken, agentTerminal, true, !request.prompt);
 		} else {
 			this._saveLedger();
 		}

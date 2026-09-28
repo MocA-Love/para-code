@@ -70,6 +70,7 @@ function createStateBroadcastMetricsFixture(): { service: IStateBroadcastMetrics
 		disconnectReporter: { setEnabled: () => undefined },
 		logService: { info: (message: string) => logs.push(message) },
 		load: async () => undefined,
+		ensureLoaded: async () => undefined,
 		updateDiagnosticCorrelation: () => undefined,
 		updateEagerTailing: () => undefined,
 		setConnectionState: () => undefined,

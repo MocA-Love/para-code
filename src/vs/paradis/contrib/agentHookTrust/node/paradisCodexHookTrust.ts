@@ -35,6 +35,7 @@ import { ParadisSharedProcessContributions } from '../../../common/paradisProces
 import { paradisDetachedAgentCliEnv, paradisResolveAgentCli, paradisRunAgentCli } from '../../../node/paradisAgentCli.js';
 import { IParadisCodexAppServerRpc, ParadisCodexRpcMethodNotFoundError, paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
+import { paradisWriteRollingBackup } from '../../../node/paradisRollingFileBackup.js';
 import { paradisManagedAgentHookCommand, paradisManagedAgentHookCommandWindows } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { onDidChangeParadisCodexHomes, paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
@@ -212,6 +213,9 @@ export async function paradisGrantCodexHookTrust(target: IParadisCodexHookTrustT
 		}
 		const before = await readUserHooksState(rpc);
 		attempted = { written, before: before.state };
+		// config.toml は利用者の設定。Codex に書かせる前に、今の中身を1つだけ隣へ控える
+		// （取り消しの書き込みでは控えを取り直さない。信頼を付ける前の中身を残すため）。
+		await paradisWriteRollingBackup(join(target.codexHome, 'config.toml')).catch(() => false);
 		await rpc.request('config/batchWrite', {
 			edits: [{ keyPath: 'hooks.state', value: written, mergeStrategy: 'upsert' }],
 			...(before.version !== undefined ? { expectedVersion: before.version } : {}),

@@ -14,6 +14,7 @@ import { Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { paradisWriteRollingBackupUri } from '../../../common/paradisRollingFileBackupUri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -166,7 +167,7 @@ export class ParadisRemoteAgentHooksController extends Disposable {
 
 /** {@link ParadisRemoteAgentHookFiles} が接続先とやり取りするための口。 */
 export interface IParadisRemoteAgentHookFilesHost {
-	readonly fileService: Pick<IFileService, 'exists' | 'readFile' | 'writeFile'>;
+	readonly fileService: Pick<IFileService, 'exists' | 'readFile' | 'writeFile' | 'copy' | 'realpath' | 'stat'>;
 	readonly logService: Pick<ILogService, 'info' | 'warn'>;
 	/** 接続先の名前（ログ用）。 */
 	readonly remoteAuthority: string | undefined;
@@ -339,6 +340,10 @@ export class ParadisRemoteAgentHookFiles {
 			}
 			if (stillWanted && !stillWanted()) {
 				return true;
+			}
+			// 接続先の利用者の設定なので、書き換える前の中身を1つだけ隣へ控える（写せなくても止めない）
+			if (read.text !== undefined) {
+				await paradisWriteRollingBackupUri(this.host.fileService, file, error => this.host.logService.warn(`[ParadisRemoteAgentHooks] could not back up ${file.path}: ${error}`));
 			}
 			await this.host.fileService.writeFile(file, VSBuffer.fromString(updated));
 			return true;

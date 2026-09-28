@@ -13,6 +13,7 @@ import { extname, join } from '../../../../base/common/path.js';
 import { findExecutable, killTree } from '../../../../base/node/processes.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
+import { paradisWriteRollingBackup } from '../../../node/paradisRollingFileBackup.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
 import { inspectParadisMcpTomlSection, paradisCodexMcpTableBody, paradisMcpServerUrl, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
 import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml } from './paradisMcpConfigStatus.js';
@@ -388,6 +389,10 @@ async function writeConfigAtomic(
 	content: string,
 	fileSystem: IConfigReadFileSystem = defaultConfigReadFileSystem,
 ): Promise<void> {
+	// 利用者の設定なので、書き換える前の中身を1つだけ隣へ控える。控えは保険なので、写せなくても止めない。
+	if (original.exists) {
+		await paradisWriteRollingBackup(path).catch(() => false);
+	}
 	await paradisWriteFileAtomic(path, content, {
 		newFileMode: original.mode ?? 0o600,
 		createParentMode: 0o777,

@@ -987,6 +987,78 @@ B3（Computer Use）の補助アプリの段は、ベータ用ブランチ `para
 
 `para-reh.yml` は、タグ（ステーブル／ベータ）からの実行だけが `reh` に公開する。ブランチからの手動起動はビルドと artifact までで止まる。
 
+## Orca 取り込み第二弾の PC 側（W2-01/03/06/09/10/11、2026-09-28）
+
+調査レポートは `orca-wave2.md`（W2 の表）。どれも fork 所有のファイルだけで完結し、upstream のファイルは触っていない。
+
+### 鍵とペアリング台帳は、読めなければ上書きしない（W2-01）
+
+`paradis-mobile-relay.json` の読み書きは `mobileRelay/node/paradisMobileRelayStateFile.ts` にまとめた。以前は読めない・復号できないときに空の台帳と新しい鍵で黙って上書きし、全スマホのペアリングが外れていた。
+
+| 状態 | 扱い | `IParadisMobileStatus.storeProblem` |
+|---|---|---|
+| ファイルが無い（ENOENT） | 初回として作る | なし |
+| JSON として壊れている・形が違う | `<名前>.corrupt-<ISO日時>` へ rename して空から。新しい台帳を保存できたら案内を消す | `corrupt` |
+| 読めない（EACCES など） | ファイルを残して接続を止める | `unreadable` |
+| 鍵を復号できない（safeStorage の拒否など） | 台帳（端末名）は見せたまま、ファイルを残して接続を止める | `undecryptable` |
+
+止めている間は `save()` と `ensureIdentity()` が例外を投げ、ファイルには触らない。利用者は通知・メニューから「再試行」（`retryLoadState`。`unreadable` のとき）、「再起動」（`undecryptable` のとき）、「ペアリングし直す」（確認ダイアログの後 `discardUnreadableState` → `<名前>.<理由>-<日時>` へ退避 → 通常のペアリング）を選ぶ。退避に失敗したら作り直さない。保存は `paradisWriteFileAtomic`（0600 固定・symlink 拒否・その場書き込みへ落とさない）。エージェントのセッション対応表（`paradisAgentSessionStore.ts`）も原子的に書くようにした。
+
+レビュー（2026-09-28）で直したこと:
+
+- 読むのは一度だけ（`ensureLoaded`）。`initialize` はウィンドウごとに呼ばれるが、一度読めたら以後は読み直さない（止めている間だけ読み直す）。以前は別のウィンドウの一時的な読み取りの失敗で稼働中の接続が落ち、復号を待つ間に `this.state` を差し替えて直前のペアリングを巻き戻しえた。台帳は鍵を戻せてから採る。退避しようとしたら元のファイルがもう無かった（ENOENT）ときは「無い」と同じに扱う
+- 読み書きは1本の列（`enqueueStore`）に並べ、中身は書く時点で文字列にする（通知設定の保存などが投げっぱなしで呼ばれるため）。鍵の生成も同時に呼ばれて2つ作らないよう1つにまとめた
+- 退避したファイル（`.corrupt-*`・`.unreadable-*`・`.undecryptable-*`）は名前の日時で新しい3つだけ残し、書きかけで残った一時ファイルは読むときに消す
+- **macOS の safeStorage は、キーチェーンから鍵を取れなかった結果をプロセスが終わるまで覚える**。Chromium の `components/os_crypt/sync/os_crypt_mac.mm` の `OSCryptImpl::DeriveKey()` は、`GetPassword()` の成否にかかわらず `try_keychain_ = false` にし、以後は鍵が無ければ即座に失敗を返す（main ブランチのソースで確認。Electron 43 の Chromium でも同じかは【要確認】。推測: 以前の版の `g_key_is_cached` も失敗を覚える作りだった）。復号は main プロセスの `encryption` チャネルで行うので、`undecryptable` は Para Code を再起動しないと読み直せない。案内とメニューは「キーチェーンへのアクセスを許可してから再起動」にした
+- 通知はウィンドウ1つだけから出す（`claimStoreProblemNotice` が理由ごとに1回だけ true を返す。理由が変わるか解消したら戻す）
+
+### スリープ復帰と再接続の間隔（W2-03 / W2-06）
+
+- shared process は main の `nativeHost` チャネルの `onDidResumeOS`（`NativeHostService(-1, mainProcessService)`、`sharedProcessMain.ts` と同じ作り方）を `paradisMobileRelayChannel.ts` で購読し、`handleSystemResume()` を呼ぶ。pong を返すと分かっているリレーなら即 ping して 5 秒で見切り、確かめようのない接続（保活未対応のリレー・ハンドシェイク中）は close 4003 で張り直す。再接続待ちならタイマーを捨てて即接続。回数は 0 に戻す
+- 復帰の ping を撃った直後に保活の定期チェックが来ても、健全な接続を閉じない（ping を撃った時刻を持ち、定期チェックは間隔の半分より古い ping だけを見切る）。復帰のプローブの見切りは、保活未対応のリレーだと学習し直すための連続タイムアウトに数えない
+- 再接続の間隔は Orca `mobile-relay-retry-delays.ts` と同じ完全ジッタ（`common/paradisRelayReconnectDelay.ts`。n 回目は [0, min(30秒, 500ms×2^(n-1))) の一様乱数、下限 250ms）。認証切れの 5 分間隔にも ±25% の揺らぎ。回数は `onopen` ではなく接続が 30 秒続いてから 0 に戻す（切断レポートと認証プローブは回数の差分で見るので影響しない）
+- モバイルアプリ側の同じ変更（W2-05/06 のモバイル分）は別担当
+
+### 旧鍵フレームの 7S を Sentry へ送らない、通知の置き換え ID（2026-09-28 追加）
+
+- 7S `mobile-e2e.frame-open-failed`: モバイルの張り替え中・直後に旧鍵で封緘したフレームが届いて開けないのは想定内（再ハンドシェイクの要求で自己回復する）。`MobileSession` は新しいセッションで1つも復号できていない間の暗号層の失敗を送らず、確立ごとに1回だけ info、以降は trace にする。復号できた後に続けて開けないもの、アプリ層の例外、確立から一度も復号できないまま 30 件に届いたもの（張り替えが回っていない）は今までどおり送る
+- W2-08 の PC 側: `push-notify` に `collapseId`（エージェントのトークン。許可待ち・質問の `agent-question` には付けない。未回答の許可が後の通知に置き換わって隠れないように）と `threadId`（スペースの `ws`。無ければこの PC）を載せる。値は通知鍵から用途別に作った鍵の HMAC-SHA256 の hex 先頭 32 桁（`node/paradisMobilePushIds.ts`）。リレーと APNs からは元の値を推測できず、ペアリングごとに違う。NSE の ID（SHA-256(PC id + トークン)）と一致させる必要は無い。型と `PARADIS_PUSH_ID_PATTERN` は `app/protocol/src/relay.ts`（リレー担当のレーン）から逐語で写した。統合のときに重複を片付ける
+
+### 落ちたエージェントが残した入力モードを戻す（W2-09）
+
+`mobileRelay/common/paradisTerminalArmedInputModes.ts`。モバイルリレーの contribution（`paradisAgentTerminalRecovery.ts` の onCommandExecuted / onCommandFinished）から、エージェントのコマンドのあるターミナルにだけ掛ける。
+
+- xterm の公開 API では Kitty のフラグを読めない（`Terminal.modes` にあるのはマウス・フォーカス・キーパッドなど）。そのためパーサーに見るだけのフック（`registerCsiHandler` で false を返す）を掛け、133;C の後に有効になった `?9/1000/1002/1003/1004/1005/1006/1015/1016/66` と `CSI > u` の積み数を覚える
+- 133;D で残りがあれば 300ms 待ち、`write('', cb)` で受信済みの出力を読み終えてから、その間にシェルが入れ直したモード（fish のフォーカス報告や Kitty の push など）を除いて `CSI ? … l` と `CSI < n u` を xterm へ書く（PTY には送らない）。Orca は出力の流れを止めて 133;D の位置へ差し込むが、ここでは流れに手を入れない代わりに後ろへ書く
+- Ctrl+Z などで止めただけ（終了コード 145〜150 = 128 + SIGTSTP / SIGSTOP / SIGTTIN / SIGTTOU。macOS と Linux の番号の両方）は戻さない（`fg` で戻ったエージェントがまだ使う）
+- bracketed paste（`?2004`）と application cursor keys（`?1`）はシェルがプロンプトで入れ直すので戻さない（Orca と同じ）。代替画面（`?1049`）は後ろへ書くとシェルが代替画面に描いたプロンプトごと消えるので戻さない
+- 既知の限界: 窓の再読み込みで開始（133;C）の後から見張り始めたコマンドは、それ以前に有効になったモードを知らない。pty ホスト側の headless xterm（常駐・復元用）とモバイルの端末には書いていないので、復元した画面やモバイルの表示ではモードが残りうる（【要確認】）。`CSI = flags ; mode u`（Kitty の上書き）と xterm の modifyOtherKeys（`CSI > 4 ; n m`）は追っていない（Claude Code 2.1.283 は `CSI > 1 u` / `CSI > 5 u` / `CSI < u`、codex-cli 0.155.1 は push と `CSI < 1 u` を使う）
+
+### 起動直後の信頼の確認と準備完了を画面から読む（W2-10）
+
+`agentIde/common/paradisAgentStartupScreen.ts` の固定の表（`PARADIS_AGENT_STARTUP_SCREEN_RULES`）。文言はインストール済みの Claude Code 2.1.283 と codex-cli 0.155.1 のバイナリの文字列から拾った（読み取りのみ）。画面の末尾 30 行を見る。信頼の確認は、見出しの文言（空白と罫線を落として照合）に加えて、選択肢の2行が隣り合い（順番と番号の有無は問わない）どちらかの行頭に選択のカーソル（`❯` / `›` / `>`）があるときだけ当てる。Claude Code 2.1.283 の確認は選択肢に番号が無く、断る側が先でそこにカーソルがある。さらに、hook の状態をまだ一度も受け取っていないペイン（shared process は `hasAgentHookHistory`、ウィンドウは `isAgentInstance`）か、エージェントのツールで起動してから 90 秒以内のペインでだけ判定する（動いているエージェントが画面に同じ文言を出しても止めない）。テストの画面は、ソースを表示した画面で当たらないよう選択肢の文言を単語から組み立てる
+
+- 信頼の確認: 前面がエージェントで hook が作業中でなければ、状態を `waiting_for_permission` にする（ウィンドウ側の `_status` と shared process の `_statusOf` の両方）。`send_terminal_input`（Enter 無しの貼り付けも）・`send_terminal_key` は専用の文言で断る（数字は選択肢を選び、Esc は終了を選ぶため）。待機は `needs_input` + `blocked_by: "trust_dialog"` で返す
+- 準備完了: `launch_agent` / `create_space` でプロンプト無しで起動したペインだけ（`_launchedIdle`）、「? for shortcuts」「Ask Codex to do anything」が出たら `reason: "ready"` を返す。プロンプト付きの起動は、準備完了の後に作業を始めるので今までどおり待つ
+- Claude Code 2.1.283 は権限モードが既定以外（auto mode など）だと、入力欄の下が「? for shortcuts」ではなく `⏵⏵ auto mode on (shift+tab to cycle) · ← for agents` のようなモードの表示になる（実機確認の NG）。モードの名前（`accept edits on` / `plan mode on` / `auto mode on`。以前の版の `bypass permissions on`）の表示と、中身の無い入力欄（横罫線のすぐ下の `❯` だけの行。入力例の案内 `Try "…"` は可）がそろったときも準備完了とする。モードの表示は作業中にも出るので、入力欄の条件は外さない。どの準備完了の規則も、信頼の確認の見出しが画面にある間は当てない
+- 準備完了を返すときの案内: hook がまだ届いていないペインには `press_enter=true` を促さない（Enter は hook が一度でも届いたペインにしか送らない規則のままで、画面が準備完了に見えることを理由に外さない。hook の届かない相手では許可ダイアログかどうかを確かめられないため）。代わりに Enter 無しで入れて利用者に送ってもらうか、`launch_agent` の `prompt` で起動し直すよう案内する
+- CLI を更新して文言が変わったら表を足し直す（外れても hook の状態の判断が残るだけで、送ってしまう方向には倒れない）
+
+### 利用者の設定を書き換える前の控え（W2-11）
+
+書き換える前に、今の中身を隣の `<名前>.paradis.bak` へ1つだけ写す（Orca `rolling-file-backup.ts` と同じく一時ファイルから rename、控えの場所が symlink なら拒否、権限は copy で引き継ぐ）。SSH の接続先の設定が symlink なら `IFileService.realpath` で実体を写す（`copy` はリンクをリンクのまま写すため）。控えは保険なので、写せなくても書き換えは止めない。
+
+| 書き手 | 対象 |
+|---|---|
+| `agentBrowser/node/paradisAgentHooksSetup.ts`（同期） | `~/.claude/settings.json`・`~/.codex/hooks.json`（設置と取り外し） |
+| `agentBrowser/node/paradisMcpSetup.ts` | `~/.claude.json`・`~/.codex/config.toml` |
+| `limitsMonitor/node/paradisClaudeLiveAuth.ts` | `~/.claude.json`（アカウント切替の `oauthAccount`） |
+| `agentHookTrust/node/paradisCodexHookTrust.ts` | `config.toml`（Codex に `config/batchWrite` させる前。取り消しの書き込みでは取り直さない） |
+| `agentBrowser/electron-browser/paradisRemoteAgentHooks.contribution.ts`・`paradisRemoteMcpSetup.ts` | SSH の接続先の同じファイル（`IFileService.copy`） |
+| `codexTerminalTitle/electron-browser/paradisCodexTerminalTitle.contribution.ts` | 各 Codex ホームの `config.toml` |
+
+ログイン情報（`.credentials.json`・Codex の `auth.json`）は、秘密をもう1か所に置くことになるので控えを作らない。ただし `~/.claude.json` と `config.toml` の MCP の設定には、利用者が書いた API キーやトークン（`env`・`headers`）が入っていることがあり、その控えにも同じものが入る（控えは元と同じ権限）。ヘルパーは `src/vs/paradis/node/paradisRollingFileBackup.ts`（Node）と `src/vs/paradis/common/paradisRollingFileBackupUri.ts`（`IFileService`）。
+
 ## モバイルリレー: Cloudflare Workers/DOデプロイ（2026-07-05）
 
 「Para Code Mobile」（iPhone遠隔操作機能、`src/vs/paradis/contrib/mobileRelay/`）がPCとモバイルの間を中継するリレーサーバー（`app/relay/`、Cloudflare Workers + Durable Objects）を、開発時のプレースホルダーURLのまま放置していたのを本番デプロイした。設計・実装の詳細は設計書（`app/design/mobile-design.md`）参照。ここには配置場所と再開に必要な情報のみ記す。

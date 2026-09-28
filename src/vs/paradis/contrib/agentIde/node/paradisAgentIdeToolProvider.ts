@@ -41,6 +41,7 @@ import {
 	paradisParseAgentIdeCall,
 } from '../common/paradisAgentIde.js';
 import { PARADIS_AGENT_IDE_SERVER_INSTRUCTIONS, paradisAgentIdeGuide } from '../common/paradisAgentIdeGuide.js';
+import { PARADIS_AGENT_TRUST_DIALOG_MESSAGE, paradisAgentStartupScreenState } from '../common/paradisAgentStartupScreen.js';
 
 /** 設定の読み手（shared process の IConfigurationService を包む。テストでは差し替える）。 */
 export interface IParadisAgentIdeSettings {
@@ -210,6 +211,10 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		if (!target.ok) {
 			return target.error;
 		}
+		// 起動直後の信頼の確認には、貼り付けも Enter も送らない（数字は選択肢を選び、Enter は既定の答えを選ぶ）
+		if (this._showsTrustDialog(target.internal, context)) {
+			return PARADIS_AGENT_TRUST_DIALOG_MESSAGE;
+		}
 		const status = this._statusOf(target.internal, context);
 		if (paradisAgentIdeNeedsHuman(status)) {
 			return NEEDS_HUMAN_MESSAGE;
@@ -286,13 +291,35 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		return toolText({ terminal, typed: text.length > 0, pressed_enter: true });
 	}
 
-	/** 状態は hook（shared process）を優先し、無ければウィンドウの見立てを使う。 */
+	/**
+	 * 状態は hook（shared process）を優先し、無ければウィンドウの見立てを使う。
+	 * 起動直後の信頼の確認は hook が届く前に出るので、画面に出ていれば答え待ちとする。
+	 */
 	private _statusOf(internal: IParadisAgentIdeInternal | undefined, context: IParadisMcpToolCallContext): ParadisAgentIdeTerminalStatus {
+		return this._showsTrustDialog(internal, context) ? 'waiting_for_permission' : this._reportedStatusOf(internal, context);
+	}
+
+	private _reportedStatusOf(internal: IParadisAgentIdeInternal | undefined, context: IParadisMcpToolCallContext): ParadisAgentIdeTerminalStatus {
 		const hookStatus = internal?.paneToken !== undefined ? context.getPaneAgentStatus(internal.paneToken) : undefined;
 		if (hookStatus !== undefined) {
 			return paradisAgentIdeStatusLabel(hookStatus.status);
 		}
 		return internal?.status ?? 'idle';
+	}
+
+	/**
+	 * 前面のエージェントが起動直後の信頼の確認を出しているか。画面の文字は中のプログラムが書けるので、
+	 * hook の状態をまだ一度も受け取っていないペインか、エージェントのツールで起動してから猶予の間の
+	 * ペインでだけ見る（動いているエージェントが画面に同じ文言を出しても、止めない）。
+	 */
+	private _showsTrustDialog(internal: IParadisAgentIdeInternal | undefined, context: IParadisMcpToolCallContext): boolean {
+		if (internal?.agent !== true || this._reportedStatusOf(internal, context) === 'working') {
+			return false;
+		}
+		const token = internal.paneToken;
+		const neverReported = token === undefined || !context.hasAgentHookHistory(token);
+		const justLaunched = internal.launchedAt !== undefined && this.clock.now() - internal.launchedAt <= PARADIS_AGENT_IDE_LAUNCH_GRACE_MS;
+		return (neverReported || justLaunched) && paradisAgentStartupScreenState(internal.screen) === 'trust_dialog';
 	}
 
 	private async _callWindow(paneToken: string, request: ParadisAgentIdeRequest, toolName: string, context: IParadisMcpToolCallContext, signal: AbortSignal | undefined): Promise<ParadisAgentIdeResult> {
@@ -358,6 +385,9 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		let lastStatus: ParadisAgentIdeTerminalStatus = 'idle';
 		let lastScreen: string | undefined;
 		let probedOnce = false;
+		let lastBlockedByTrustDialog = false;
+		/** 信頼の確認で止まっているなら、それを返り値に載せる。 */
+		const blockedBy = () => lastBlockedByTrustDialog ? { blocked_by: 'trust_dialog', hint: PARADIS_AGENT_TRUST_DIALOG_MESSAGE } : {};
 
 		const report = (met: boolean, extra: object = {}) => toolText({
 			terminal,
@@ -386,13 +416,14 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 			probedOnce = true;
 			lastScreen = probe.internal?.screen;
 			lastStatus = this._statusOf(probe.internal, context);
+			lastBlockedByTrustDialog = this._showsTrustDialog(probe.internal, context);
 			const hookStatus = probe.internal?.paneToken !== undefined ? context.getPaneAgentStatus(probe.internal.paneToken) : undefined;
 			const now = this.clock.now();
 
 			switch (until) {
 				case 'needs_input':
 					if (paradisAgentIdeNeedsHuman(lastStatus)) {
-						return report(true, { reason: 'needs_input' });
+						return report(true, { reason: 'needs_input', ...blockedBy() });
 					}
 					break;
 				case 'text':
@@ -407,11 +438,24 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 						const grace = launchedAt !== undefined
 							? Math.max(PARADIS_AGENT_IDE_START_GRACE_MS, launchedAt + PARADIS_AGENT_IDE_LAUNCH_GRACE_MS - startedAt)
 							: PARADIS_AGENT_IDE_START_GRACE_MS;
-						stopWatcher = new ParadisAgentStopWatcher(startedAt, grace);
+						stopWatcher = new ParadisAgentStopWatcher(startedAt, grace, probe.internal?.launchedIdle === true);
 					}
-					const verdict = stopWatcher.observe(lastStatus, hookStatus?.changedAt, now);
+					const verdict = stopWatcher.observe(lastStatus, hookStatus?.changedAt, now, paradisAgentStartupScreenState(lastScreen));
 					if (verdict === 'stopped' || verdict === 'needs_input') {
-						return report(true, { reason: verdict });
+						return report(true, { reason: verdict, ...blockedBy() });
+					}
+					if (verdict === 'ready') {
+						// Enter は hook が一度でも届いたペインにしか送らない（_checkTarget）。画面の見た目だけで
+						// その規則を外すと、hook の届かない相手で許可ダイアログかどうかを確かめられないまま送ることに
+						// なるので、外さずに案内の方を実際の挙動に合わせる。
+						const token = probe.internal?.paneToken;
+						const enterAccepted = token !== undefined && context.hasAgentHookHistory(token);
+						return report(true, {
+							reason: verdict,
+							hint: enterAccepted
+								? 'The agent started and waits for its first prompt. Send it with send_terminal_input (press_enter=true).'
+								: 'The agent started and waits for its first prompt, but its hooks have not reported yet, so Para Code will not press Enter there. Type the prompt with send_terminal_input (press_enter=false) and ask the user to press Enter, or launch the agent again with the prompt (launch_agent "prompt").',
+						});
 					}
 					if (verdict === 'no_agent_status') {
 						return report(false, { reason: verdict, hint: 'The agent never reported that it started working. This does not mean it finished: read_terminal to see the screen, or use until="text".' });

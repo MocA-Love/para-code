@@ -22,6 +22,7 @@ import { Disposable, IDisposable, toDisposable } from '../../../../base/common/l
 import { findExecutable } from '../../../../base/node/processes.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { paradisWriteFileAtomicSync } from '../../../node/paradisWriteFileAtomic.js';
+import { paradisWriteRollingBackupSync } from '../../../node/paradisRollingFileBackup.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
@@ -430,6 +431,15 @@ const defaultAgentHooksFileIO: IParadisAgentHooksFileIO = {
 		// 比較後にイベントループへ制御を返さず直ちに保存し、外部writerとの競合窓を
 		// 最小化する。非協調プロセスとの完全なCASは通常ファイルAPIでは不可能だが、
 		// 少なくともPara Code自身が非同期処理を挟んで古い内容を書くことはない。
+		// 利用者の設定なので、書き換える前の中身を1つだけ隣へ控える（マージの不具合で壊したときに戻せる）。
+		// 控えは保険なので、写せなくても書き換えは止めない。
+		if (current !== undefined) {
+			try {
+				paradisWriteRollingBackupSync(filePath);
+			} catch {
+				// 控えの場所が symlink・書き込めない など
+			}
+		}
 		// 読む側が書きかけの中身を見ないよう、一時ファイル経由で差し替える。
 		paradisWriteFileAtomicSync(filePath, content);
 		return true;
