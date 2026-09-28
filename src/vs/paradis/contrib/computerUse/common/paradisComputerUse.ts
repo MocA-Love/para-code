@@ -35,7 +35,7 @@ export const PARADIS_COMPUTER_USE_EXECUTABLE = 'ParadisComputerUse';
  * 補助アプリとの約束の版。Swift 側の `ParadisComputerUseVersion.protocolVersion`
  * （native/macos/Sources/ParadisComputerUseCore/ParadisProtocol.swift）と同じ値にする。
  */
-export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 5;
+export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 6;
 /** 対応する macOS の最低の Darwin の版（macOS 14 = Darwin 23）。ScreenCaptureKit の単一ウィンドウ撮影に要る。 */
 export const PARADIS_COMPUTER_USE_MIN_DARWIN_MAJOR = 23;
 
@@ -199,6 +199,13 @@ export const PARADIS_COMPUTER_USE_AUTHENTICATORS: readonly string[] = [
 	'*raivo*',
 	'*otpauth*',
 	'*steptwo*',
+	'*twofas*',
+	'com.duosecurity.DuoMobile',
+	'*duomobile*',
+	'com.authy',
+	'com.okta.mobile',
+	'com.yubico.yubioath',
+	'*yubioath*',
 ];
 
 /** キーチェーンアクセス（Q64 で決定）。 */

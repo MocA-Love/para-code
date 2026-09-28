@@ -713,7 +713,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			? localize('paradis.settings.computerUseBlockedWithSystem', "パスワードマネージャー、2 段階認証のアプリ、キーチェーンアクセス、Para Code 自身、システム設定、認証のダイアログ（変更できません）。")
 			// allow-any-unicode-next-line
 			: localize('paradis.settings.computerUseBlockedDesc', "パスワードマネージャー、2 段階認証のアプリ、キーチェーンアクセス、Para Code 自身（変更できません）。"),
-		keywords: 'computer use blocked password manager keychain',
+		keywords: 'computer use blocked password manager keychain authenticator two-factor 2fa otp',
 	},
 
 	// --- ターミナル ---

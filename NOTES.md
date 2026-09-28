@@ -717,12 +717,23 @@ upstream 取り込み時に確認すること:
 
 | 不具合 | 原因（推測を含む） | 直し方 |
 |---|---|---|
-| `computer_type_text` で約 2 割の文字と空白が落ち、それでも `typed: 64` と返した（TextEdit に `abc…xyz ABC…XYZ 0123456789` を送り、`abdefgiklmoprsuvwyzABCDEFGHIJLMNOQRSUWXY 0134689` が入った） | 推測: 1 文字ごとに仮想キー 0 の keyDown と keyUp を間を置かずに HID のタップへ送り、イベントの元もイベントごとに作り直していた。入力ソースが日本語の IME だと、IME がキーのイベントを取り込むので落ちやすい。送った後に確かめていなかったので、落ちても成功と返した | 1. フォーカスのある欄が `AXSelectedText` の置き換えを受け付けるなら、AX で入れる（キーも IME も通らない。TextEdit はこの経路）。2. だめなら、入力ソースが IME（`kTISPropertyInputSourceType` が `TISTypeKeyboardLayout` 以外、または id に `.inputmethod.`）のときは英数字でも貼り付けに寄せる。3. それ以外はキーを送る。イベントの元を 1 つにし、押してから離すまで 12 ms、文字の間 20 ms を置く。どの経路でも入れた後に欄の値を読み戻し、入れる前の値と選択範囲から期待した値になったかを確かめる（`paradisTypingOutcome`）。そのままでなければ、どこまで入ったかを返して止める（入れ直すと二重になるので送り直さない）。読み戻せない欄は「確かめられない」と返す。改行は、AX と貼り付けでは改行として入り、キーでは Return を押す。送信したいときは `computer_press_key` の return を使うよう説明を直した |
+| `computer_type_text` で約 2 割の文字と空白が落ち、それでも `typed: 64` と返した（TextEdit に `abc…xyz ABC…XYZ 0123456789` を送り、`abdefgiklmoprsuvwyzABCDEFGHIJLMNOQRSUWXY 0134689` が入った） | 推測: 1 文字ごとに仮想キー 0 の keyDown と keyUp を間を置かずに HID のタップへ送り、イベントの元もイベントごとに作り直していた。入力ソースが日本語の IME だと、IME がキーのイベントを取り込むので落ちやすい。送った後に確かめていなかったので、落ちても成功と返した | 1. フォーカスのある欄が `AXSelectedText` の置き換えを受け付けるなら、AX で入れる（キーも IME も通らない。TextEdit はこの経路）。2. だめなら、入力ソースが IME（`kTISPropertyInputSourceType` が `TISTypeKeyboardLayout` 以外、または id に `.inputmethod.`）のときは英数字でも貼り付けに寄せる。3. それ以外はキーを送る。イベントの元を 1 つにし、押してから離すまで 12 ms、文字の間 20 ms を置く。どの経路でも入れた後に欄の値を読み戻し、入れる前の値と選択範囲から期待した値になったかを確かめる（`paradisTypingOutcome`）。そのままでなければ、どこまで入ったかを返して止める（入れ直すと二重になるので送り直さない）。読み戻せない欄は「確かめられない」と返す。改行とタブの扱い・入れ直しの条件・読み戻しの比べ方は、下の「ベータ 3 のレビュー」で直した |
 | 既定のウィンドウに、画面に出ていない 53×48 のウィンドウが選ばれた（TextEdit） | 手前からの順で最初の「画面に出ている」ものを選んでいたが、CGWindowList の `kCGWindowIsOnscreen` と実際の見え方が食い違う補助のウィンドウがあった | 補助アプリが AX でウィンドウの種類（`AXStandardWindow` か）としまわれているかを返す。shared process は、画面に出ている標準のウィンドウ、画面に出ている大きなもの、しまわれた・画面の外の大きなもの、100 ポイント未満の小さなもの、の順に並べ直して番号を振り直す（`paradisRankWindows`）。`computer_list_windows` の順と `windowIndex` も同じ基準 |
 | Finder のサイドバーの全部の `AXCell` に `focused` が付いた | 要素ごとの `AXFocused` を読んでいた。表の中のセルは表がフォーカスを持つと true を返すアプリがある | アプリの `AXFocusedUIElement` と同じ要素（`CFEqual`）にだけ `focused` を付ける。選ばれている行・項目は `AXSelected` から `selected` として別に出す |
 | Proton Authenticator（`me.proton.authenticator`）が拒否されていなかった | 2 段階認証のアプリが一覧に無かった | パスワードマネージャーと同じ扱いの一覧を足した（`authenticator`）。Proton Authenticator・Authy・Google Authenticator・Microsoft Authenticator・Bitwarden Authenticator・Ente Auth と、bundle id に `authenticator`・`2fas`・`raivo`・`otpauth`・`steptwo` を含むもの全部（前後が `*` の一覧の書き方を足した）。各 id は【要確認】。Swift と TS の一覧はテストで突き合わせる |
 
-補助アプリとの約束の版は 5（`typeText` がテキストそのものを受け取り、`method`・`verified`・`inserted` を返す）。
+補助アプリとの約束の版は 6（`typeText` がテキストそのものを受け取り、`method`・`verified`・`inserted`・`rewritten` を返す。`pasteText` の `pasteVerified` は確かめられないとき null）。
+
+ベータ 3 のレビュー（`beta3-review.md`、High 1・Medium 3・Low 7）で直したこと:
+
+- **AX で入れた後の入れ直し（H1）**: 次の経路（貼り付け・キー）へ落ちるのは、書き込みが起きていないと言い切れるときだけにした。欄が選択範囲の置き換えを受け付けない・値か選択範囲を読めない（書く前にやめる）・書き込みが `kAXErrorAttributeUnsupported`・`IllegalArgument`・`NotImplemented`・`InvalidUIElement`・`APIDisabled`・`ActionUnsupported` で失敗したとき。成功・締め切り（`CannotComplete`）・一般の失敗のときは、50 ms ごとに最長 1 秒読み直し、変わらなければ「確かめられない（遅れて入るかもしれない）」と返して止める。選択範囲と同じ文字列で置き換えた場合は、変わらないのが正しいので成功。判断は Core の `paradisAXWriteCertainlyDidNothing` と `paradisAXReadbackStep` に置いてテストした
+- **改行とタブ（M1）**: 改行はどの経路でも改行の文字として入れ、Return は押さない（送信は `computer_press_key` の return、と利用者と合意した内容に合わせた）。キーの経路は改行を送れないので、改行を含む文字列は貼り付けに回す。タブは断る（キーでは次の欄へ移り、AX と貼り付けではタブ文字が入るので、`ユーザー名\tパスワード` でパスワードが普通の欄に文字として入りうる）。読み戻しは、入れる前にフォーカスのあった同じ要素から行う。AX と貼り付けに渡す前に `\r\n` と `\r` を `\n` にそろえる（L2）
+- **読み戻しの比べ方（M2・L1）**: 選択範囲の外（前後）が残っていれば、その間を入った部分として取り出して比べる。完全に同じなら成功。スマート引用符・ダッシュ・省略記号・空白・大文字小文字・数字の区切りを畳んで同じか、入った部分が送った文字列を含む（補完で後ろが伸びた）なら成功で `rewritten`。長さが同じで中身が違う（自動修正）なら失敗で `rewritten`、それ以外で送った文字列が見つからなければ「欄が送った文字列と違う」（落ちたとは言い切らない）。前後が崩れた・選択範囲が読めないときは、送った文字列の出てくる回数が入れる前より増えたかで見る（前からあった同じ文字列では成功にしない）。値が変わらなければ確かめられない。貼り付けの確かめも同じ関数で行う
+- **エージェントへの返し方（L3・L5）**: 確かめられなかったときの要約は `verified: null`（false と書くと「入らなかった」と読まれて送り直される）。止めたときに、前の塊が確かめられていなければ「送った（全部は確かめられていない）」と書き分ける。塊ごとのクリップボードの戻し方の理由は全部伝える。IME が有効なときと改行を含むときは `computer_type_text` もクリップボードを使う（Q100 の退避・印付きなら空にする・他者の書き換えを優先・貼る文字への印はそのまま効く。3 秒より後に読むアプリに元の中身が貼られうる既知の穴も、`type_text` に広がった）。ツールの説明にそう書いた
+- **キャレット（L4）**: AX で入れた後、入れた文字列の直後にキャレットが無ければ `AXSelectedTextRange` で直す。直せなければ「確かめられない」にする（次の塊が前の塊の手前に入りうるため）
+- **ダイアログ（M3）**: 補助アプリが、アプリの `AXFocusedWindow`（無ければ `AXMainWindow`）に `focused` を付ける。並べ直しは、前に出しているウィンドウを先頭にし、画面に出ている `AXDialog`・`AXSystemDialog`・`AXSheet` を標準のウィンドウと同じ段に入れる（手前からの順で書類より先に来る）。`windowId` の説明に、続けて使うなら `windowIndex` より `windowId` を、と書いた
+- **2 段階認証（L6）**: `*twofas*`・Duo Mobile（`com.duosecurity.DuoMobile`・`*duomobile*`）・Authy の iPhone 版（`com.authy`）・Okta Verify（`com.okta.mobile`）・Yubico Authenticator の旧版（`com.yubico.yubioath`・`*yubioath*`）を足した（各 id は【要確認】）。設定画面の検索語に `authenticator two-factor 2fa otp` を足した
+- **ツリーの読み取り（L7）**: 要素の属性は `AXUIElementCopyMultipleAttributeValues` でまとめて 1 回で読む
 
 利用者向けの注意（ベータの実機で分かったこと）:
 

@@ -49,7 +49,7 @@ const APP_ARGUMENT = {
 	type: 'string',
 	description: 'The app: its bundle id (preferred, e.g. com.apple.finder), its exact name, or pid:<number>, as returned by computer_list_apps.',
 };
-const WINDOW_ID_ARGUMENT = { type: 'integer', description: 'The window id from computer_list_windows. Defaults to the frontmost visible window of the app.' };
+const WINDOW_ID_ARGUMENT = { type: 'integer', description: 'The window id from computer_list_windows. Defaults to the window the app has in front (a dialog or sheet in front of a document if there is one). Prefer windowId over windowIndex for follow-up calls; the order can change between calls.' };
 const WINDOW_INDEX_ARGUMENT = { type: 'integer', description: 'The window index from computer_list_windows, as an alternative to windowId.' };
 const ELEMENT_INDEX_ARGUMENT = { type: 'integer', description: 'An element number from the latest computer_get_app_state of the same window (preferred over coordinates). Numbers go stale after every action.' };
 const X_ARGUMENT = { type: 'number', description: 'Points from the window\'s left edge (screenshot pixels divided by "scale"). Use only when there is no element number.' };
@@ -159,7 +159,7 @@ export const PARADIS_COMPUTER_USE_TOOLS: readonly IParadisMcpToolDefinition[] = 
 	},
 	{
 		name: 'computer_type_text',
-		description: `Type text into the focused field of an app (up to 4000 characters). Para Code inserts it through accessibility when the field allows it, pastes it when an input method (such as Japanese input) is active, and otherwise sends keys; newlines become line breaks. It reads the field back and says whether the text arrived exactly. To submit a form, use computer_press_key with return. ${OPERATE_NOTE}`,
+		description: `Type text into the focused field of an app (up to 4000 characters). Newlines are always inserted as line breaks and never press Return; tabs are not allowed. To submit, or to move to the next field, use computer_press_key with return or tab. Para Code inserts the text through accessibility when the field allows it; otherwise it pastes it through the clipboard (when an input method such as Japanese input is active, or the text has line breaks) or sends keys. It reads the field back and reports whether the text arrived, whether the app changed it (autocorrect, smart quotes, formatting), or that it could not confirm. ${OPERATE_NOTE}`,
 		inputSchema: { type: 'object', properties: { app: APP_ARGUMENT, text: { type: 'string' }, includeState: INCLUDE_STATE_ARGUMENT }, required: ['app', 'text'] },
 		annotations: OPERATE,
 	},
@@ -265,6 +265,10 @@ export interface IWindowInfo {
 	readonly windowId: number;
 	readonly index: number;
 	readonly title?: string;
+	/** アプリが前に出しているウィンドウ（AXFocusedWindow、無ければ AXMainWindow）。 */
+	readonly focused?: boolean;
+	/** AX のサブロール（AXDialog・AXSheet など）。 */
+	readonly subrole?: string;
 	/** AX で標準のウィンドウ（AXStandardWindow）か。AX の許可が無ければ分からない（undefined）。 */
 	readonly standard?: boolean;
 	readonly minimized?: boolean;
@@ -547,29 +551,38 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		}
 		let typed = 0;
 		let unconfirmed = false;
-		let clipboard: string | undefined;
+		let rewritten = false;
+		const clipboardNotes = new Set<string>();
 		const methods = new Set<string>();
 		for (let start = 0; start < graphemes.length; start += TYPE_TEXT_CHUNK) {
 			const chunk = graphemes.slice(start, start + TYPE_TEXT_CHUNK);
+			const sentBefore = unconfirmed
+				? `The first ${typed} characters were sent, but not all of them could be confirmed.`
+				: `The first ${typed} characters had arrived.`;
 			try {
 				const result = await this._helper.request('typeText', { text: chunk.join(''), pid: app.pid, bundleId: app.bundleId }, signal);
 				const check = paradisParseTypeCheck(result);
 				if (check.method) {
 					methods.add(check.method);
 				}
-				// IME が有効で貼り付けに寄せたときは、クリップボードの戻し方も伝える
+				// IME が有効で貼り付けに寄せたときは、クリップボードの戻し方も塊ごとに集めて全部伝える（ベータ 3 のレビュー L5）
 				if (check.clipboard && check.clipboard !== 'restored') {
-					clipboard = check.clipboard;
+					clipboardNotes.add(check.clipboard);
 				}
-				// 送った後に欄を読み戻して、そのまま入っていなければ止める（ベータの実機で約 2 割の文字が落ちても
-				// 全部入ったと返していた）。入れ直すと二重になるので、どこまで入ったかを伝えて状態を読ませる
+				// 読み戻した値が送った文字列と違えば止める。入れ直すと二重になるので、どこまで送ったかを伝えて状態を読ませる。
+				// 落ちたとは言い切らない（アプリが書き換えた場合もある。ベータ 3 のレビュー M2）
 				if (check.verified === false) {
-					const arrived = check.inserted !== undefined ? `the field shows ${check.inserted} new characters` : 'the field does not show them as sent';
+					const what = check.rewritten
+						? `the app changed the text as it arrived (for example autocorrect)`
+						: check.inserted !== undefined
+							? `the field does not show them as sent (it shows ${check.inserted} new characters)`
+							: 'the field does not show them as sent';
 					return {
-						ok: false, error: errorResult(`The text did not arrive intact. Para Code sent characters ${typed + 1} to ${typed + chunk.length} of ${graphemes.length}, but ${arrived}. The first ${typed} characters had arrived correctly. Read the app with computer_get_app_state and fix the text there before continuing; do not resend the whole text. Consider computer_paste_text for the rest.`),
+						ok: false, error: errorResult(`Para Code sent characters ${typed + 1} to ${typed + chunk.length} of ${graphemes.length}, but ${what}. ${sentBefore} Read the app with computer_get_app_state and fix the text there if needed before continuing; do not resend the whole text.`),
 					};
 				}
 				unconfirmed = unconfirmed || check.verified !== true;
+				rewritten = rewritten || check.rewritten === true;
 				typed += chunk.length;
 			} catch (error) {
 				if (!(error instanceof ParadisComputerUseHelperError)) {
@@ -587,13 +600,18 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				};
 			}
 		}
+		// 確かめられなかったときは null にする（false と書くと「入らなかった」と読まれて送り直され、二重になる。ベータ 3 のレビュー L3）
+		const notes = [
+			...(unconfirmed ? ['Para Code could not confirm that all of the text arrived (the field could not be read back, or the app has not shown it yet). Check the state before continuing, and do not resend the text.'] : []),
+			...(rewritten ? ['The app changed the text slightly as it arrived (for example autocorrect, smart quotes or formatting).'] : []),
+			...[...clipboardNotes].map(reason => pasteNote({ clipboard: reason })).filter((note): note is string => !!note),
+		];
 		return {
 			ok: true, summary: {
 				typed,
-				verified: !unconfirmed,
+				verified: unconfirmed ? null : true,
 				method: [...methods].join('+') || undefined,
-				...(clipboard ? { clipboard } : {}),
-				...(unconfirmed ? { note: 'Para Code could not read the field back, so it could not confirm that the text arrived exactly. Check the state before continuing.' } : {}),
+				...(notes.length > 0 ? { note: notes.join(' ') } : {}),
 			},
 		};
 	}
@@ -800,6 +818,8 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				onScreen: record.onScreen === true,
 				...(typeof record.standard === 'boolean' ? { standard: record.standard } : {}),
 				...(typeof record.minimized === 'boolean' ? { minimized: record.minimized } : {}),
+				...(record.focused === true ? { focused: true } : {}),
+				...(typeof record.subrole === 'string' ? { subrole: record.subrole } : {}),
 			});
 		}
 		return paradisRankWindows(windows);
@@ -831,6 +851,10 @@ function operateParams(name: string, args: Record<string, unknown>): Record<stri
 		case 'computer_paste_text':
 			if (typeof args.text !== 'string' || args.text.length === 0) {
 				throw new ParadisComputerUseHelperError('invalid_argument', '"text" must be a non-empty string.');
+			}
+			// タブは断る。キーでは次の欄へ移り、AX と貼り付けではタブ文字が入るので、パスワードが普通の欄に入りうる（ベータ 3 のレビュー M1）
+			if (name === 'computer_type_text' && args.text.includes('\t')) {
+				throw new ParadisComputerUseHelperError('invalid_argument', '"text" must not contain tabs. Type each field separately and press tab with computer_press_key to move between fields.');
 			}
 			return { text: args.text };
 		case 'computer_press_key':
@@ -864,10 +888,14 @@ function shortAppName(name: string): string {
 /** 補助の小さなウィンドウとみなす大きさ（ポイント）。 */
 const SMALL_WINDOW_POINTS = 100;
 
+/** アプリが書類の前に出すウィンドウのサブロール。 */
+const FRONT_DIALOG_SUBROLES: ReadonlySet<string> = new Set(['AXDialog', 'AXSystemDialog', 'AXSheet']);
+
 /**
  * ウィンドウを、既定で選ぶ順に並べ直して番号を振り直す（ベータの実機で、画面に出ていない 53×48 の
- * ウィンドウが既定に選ばれた）。画面に出ている標準のウィンドウ、画面に出ている大きなもの、しまわれた・
- * 画面の外の大きなもの、小さな補助のウィンドウ、の順。同じ段の中は手前からの順を保つ。
+ * ウィンドウが既定に選ばれた）。アプリが前に出しているウィンドウ、画面に出ている標準のウィンドウとダイアログ・シート、
+ * 画面に出ている大きなもの、しまわれた・画面の外の大きなもの、小さな補助のウィンドウ、の順。同じ段の中は手前からの順を保つ
+ * （ダイアログが書類より手前にあれば先に来る。ベータ 3 のレビュー M3）。
  */
 export function paradisRankWindows(windows: readonly IWindowInfo[]): IWindowInfo[] {
 	const small = (window: IWindowInfo) => {
@@ -878,7 +906,10 @@ export function paradisRankWindows(windows: readonly IWindowInfo[]): IWindowInfo
 		if (small(window) || window.standard === false && !window.onScreen) {
 			return 3;
 		}
-		if (window.onScreen && window.standard !== false && !window.minimized) {
+		if (window.onScreen && window.focused && !window.minimized) {
+			return -1;
+		}
+		if (window.onScreen && !window.minimized && (window.standard !== false || FRONT_DIALOG_SUBROLES.has(window.subrole ?? ''))) {
 			return 0;
 		}
 		return window.onScreen && !window.minimized ? 1 : 2;
@@ -890,13 +921,14 @@ export function paradisRankWindows(windows: readonly IWindowInfo[]): IWindowInfo
 }
 
 /** 文字入力の 1 回分の結果。 */
-function paradisParseTypeCheck(value: unknown): { readonly verified: boolean | null; readonly inserted?: number; readonly method?: string; readonly clipboard?: string } {
+function paradisParseTypeCheck(value: unknown): { readonly verified: boolean | null; readonly inserted?: number; readonly method?: string; readonly clipboard?: string; readonly rewritten?: boolean } {
 	const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
 	return {
 		verified: typeof record.verified === 'boolean' ? record.verified : null,
 		...(typeof record.inserted === 'number' ? { inserted: record.inserted } : {}),
 		...(typeof record.method === 'string' ? { method: record.method } : {}),
 		...(typeof record.clipboard === 'string' ? { clipboard: record.clipboard } : {}),
+		...(record.rewritten === true ? { rewritten: true } : {}),
 	};
 }
 
@@ -942,7 +974,12 @@ export function paradisScreenDataBlock(bundleId: string, lines: readonly string[
 function pasteNote(record: Record<string, unknown>): string | undefined {
 	const notes: string[] = [];
 	if (record.pasteVerified === false) {
+		notes.push('The field does not show the pasted text as sent; check the state before continuing.');
+	} else if (record.pasteVerified === null) {
 		notes.push('Para Code could not confirm that the text arrived in the field; check the state before continuing.');
+	}
+	if (record.rewritten === true && record.pasteVerified === true) {
+		notes.push('The app changed the text slightly as it arrived (for example autocorrect, smart quotes or formatting).');
 	}
 	switch (record.clipboard) {
 		case 'changed-by-others':
