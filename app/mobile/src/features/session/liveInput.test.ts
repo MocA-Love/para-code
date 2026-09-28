@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { LIVE_DEL, LIVE_ENTER, LIVE_INPUT_EMPTY, liveInputStep, normalizeLiveText, type LiveInputEvent, type LiveInputState } from './liveInput.js';
+import { LIVE_DEL, LIVE_ENTER, LIVE_INPUT_EMPTY, LIVE_INPUT_RETIRED, liveInputStep, normalizeLiveText, type LiveInputEvent, type LiveInputState } from './liveInput.js';
 
 /** 出来事を順に流して、送ったものを並べる。 */
 function run(events: readonly LiveInputEvent[], initial: LiveInputState = LIVE_INPUT_EMPTY): { state: LiveInputState; sent: string[] } {
@@ -10,6 +10,18 @@ function run(events: readonly LiveInputEvent[], initial: LiveInputState = LIVE_I
 	for (const event of events) {
 		const step = liveInputStep(state, event);
 		state = step.state;
+		sent.push(...step.send);
+	}
+	return { state, sent };
+}
+
+/** 画面と同じく、Enter のあとは新しい入力欄（空の状態）で続ける。 */
+function runLines(events: readonly LiveInputEvent[]): { state: LiveInputState; sent: string[] } {
+	let state = LIVE_INPUT_EMPTY;
+	const sent: string[] = [];
+	for (const event of events) {
+		const step = liveInputStep(state, event);
+		state = step.state.retired === true ? LIVE_INPUT_EMPTY : step.state;
 		sent.push(...step.send);
 	}
 	return { state, sent };
@@ -43,34 +55,41 @@ describe('liveInputStep', () => {
 		expect(run([change('ls', false), { kind: 'submit' }]).sent).toEqual(['ls', LIVE_ENTER]);
 	});
 
-	// Enter のあと、画面は入力欄を作り直す（空の入力欄から始まる）。状態も空に戻る。
-	it('starts the next line from an empty state after Enter', () => {
+	// Enter のあと、画面は新しい入力欄を作る（空の状態から始まる）。送り終えた入力欄は引退する。
+	it('retires the field on Enter', () => {
 		const { sent, state } = run([change('ls', false), { kind: 'submit' }]);
-		expect({ sent, state }).toEqual({ sent: ['ls', LIVE_ENTER], state: LIVE_INPUT_EMPTY });
+		expect({ sent, state }).toEqual({ sent: ['ls', LIVE_ENTER], state: LIVE_INPUT_RETIRED });
+	});
+
+	it('sends nothing for input that still reaches the retired field', () => {
+		// 新しい入力欄へフォーカスが移る前の打鍵は、前の行を持った古い入力欄に届く。写すと前の行ごと送ってしまう
+		const retired = run([change('echo hi', false), { kind: 'submit' }]).state;
+		expect(run([change('echo hix', false), change('echo hi', false), backspace, { kind: 'flush' }, { kind: 'submit' }, change('', false)], retired))
+			.toEqual({ sent: [], state: LIVE_INPUT_RETIRED });
 	});
 
 	it('sends a single DEL for ⌫ right after Enter instead of resending the previous line', () => {
 		// 以前は clear() が捨てられた後の ⌫ で「ls」を丸ごと送り直していた（前回レビュー (a)）
-		expect(run([change('ls', false), { kind: 'submit' }, backspace]).sent).toEqual(['ls', LIVE_ENTER, LIVE_DEL]);
+		expect(runLines([change('ls', false), { kind: 'submit' }, backspace]).sent).toEqual(['ls', LIVE_ENTER, LIVE_DEL]);
 	});
 
 	it('sends the whole of a long input that happens to start with the previous line', () => {
 		// 以前は「前の行の続き」と見なして後ろだけ送っていた（前回レビュー (b)）
-		expect(run([change('ls', false), { kind: 'submit' }, change('lsof -i', false)]).sent).toEqual(['ls', LIVE_ENTER, 'lsof -i']);
+		expect(runLines([change('ls', false), { kind: 'submit' }, change('lsof -i', false)]).sent).toEqual(['ls', LIVE_ENTER, 'lsof -i']);
 	});
 
 	it('erases everything typed on the current line when it is deleted at once', () => {
 		// H1: echo hi ⏎ → git → 単語削除。以前は Enter の前の部分へ食い込むと、今の行の送信済み分が PC に残った
-		expect(run([change('echo hi', false), { kind: 'submit' }, change('git', false), change('', false)]).sent)
+		expect(runLines([change('echo hi', false), { kind: 'submit' }, change('git', false), change('', false)]).sent)
 			.toEqual(['echo hi', LIVE_ENTER, 'git', LIVE_DEL.repeat(3)]);
-		expect(run([change('echo hi', false), { kind: 'submit' }, change('git st', false), change('git ', false), change('', false)]).sent)
+		expect(runLines([change('echo hi', false), { kind: 'submit' }, change('git st', false), change('git ', false), change('', false)]).sent)
 			.toEqual(['echo hi', LIVE_ENTER, 'git st', LIVE_DEL.repeat(2), LIVE_DEL.repeat(4)]);
 	});
 
 	it('never resends earlier lines, even if the caret ends up in the middle', () => {
 		// H2: 以前は入力欄に前の行（パスワードを含む）を残していたので、キャレットが前へ動くと送り直しえた。
 		// いまは入力欄に今の行しか無い。途中を書き換えても、今の行の食い違った末尾だけを直す。
-		const { sent } = run([change('s3cret', false), { kind: 'submit' }, change('lsx', false), change('lax', false)]);
+		const { sent } = runLines([change('s3cret', false), { kind: 'submit' }, change('lsx', false), change('lax', false)]);
 		expect(sent).toEqual(['s3cret', LIVE_ENTER, 'lsx', LIVE_DEL + LIVE_DEL, 'ax']);
 		expect(sent.slice(2).join('')).not.toContain('s3cret');
 	});
