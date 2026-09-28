@@ -72,6 +72,7 @@ import './contrib/workspaceSwitch/electron-browser/paradisRemoteDefaultWorkspace
 import './contrib/agentBrowser/electron-browser/paradisRemoteAgentTunnel.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisRemoteAgentHooks.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentHooksSettings.contribution.js';
+import './contrib/agentBrowser/electron-browser/paradisAgentHookReplay.contribution.js';
 import './contrib/agentHookTrust/electron-browser/paradisCodexHookTrust.contribution.js';
 import './contrib/agentModelCatalog/electron-browser/paradisAgentModelCatalog.contribution.js';
 import './contrib/agentIde/electron-browser/paradisAgentIde.contribution.js';

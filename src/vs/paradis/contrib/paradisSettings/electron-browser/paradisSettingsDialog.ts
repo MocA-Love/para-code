@@ -791,6 +791,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-terminal',
+		key: 'paradis.terminal.stopBackgroundProcessesOnClose',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.stopBackgroundProcessesOnClose', "ターミナルを閉じたら裏で動くプロセスも止める"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.stopBackgroundProcessesOnCloseDesc', "閉じたターミナルから起動されて残っている開発サーバーなどを止めます。nohup で起動したものは残します。macOS と Linux で働き、変更は新しく開いたターミナルから反映されます。"),
+		keywords: 'terminal close background process kill stop nohup dev server port orphan',
+	},
+	{
+		sectionId: 'psd-sec-terminal',
 		key: 'paradis.terminal.renderRepair.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.renderRepair', "ターミナルの文字の欠けを自動で直す"),
