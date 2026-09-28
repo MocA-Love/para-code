@@ -58,6 +58,7 @@ import {
 	PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING,
 	PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING,
 	PARADIS_AGENT_IDE_CONTEXT_LINES,
+	PARADIS_AGENT_IDE_LAUNCH_GRACE_MS,
 	PARADIS_AGENT_IDE_MAX_CREATED_PER_CALLER,
 	PARADIS_AGENT_IDE_MAX_CREATED_PER_WINDOW,
 	PARADIS_AGENT_IDE_MAX_SCROLLBACK_LINES,
@@ -408,12 +409,21 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		return this._showsTrustDialog(terminal, status) ? 'waiting_for_permission' : status;
 	}
 
-	/** 起動直後の信頼の確認が画面に出ているか（作業中・答え待ちと分かっているときは見ない）。 */
+	/**
+	 * 起動直後の信頼の確認が画面に出ているか（作業中・答え待ちと分かっているときは見ない）。
+	 * 画面の文字は中のプログラムが書けるので、hook の状態をまだ一度も受け取っていないペインか、
+	 * エージェントのツールで起動してから猶予の間のペインでだけ見る。
+	 */
 	private _showsTrustDialog(terminal: IResolvedTerminal, status = paradisAgentIdeStatusLabel(this.agentStatusStore.getInstanceStatus(terminal.instance.instanceId))): boolean {
-		return status !== 'working'
-			&& !paradisAgentIdeNeedsHuman(status)
-			&& this._runsAgent(terminal)
-			&& paradisAgentStartupScreenState(this._screen(terminal.instance, 0)) === 'trust_dialog';
+		if (status === 'working' || paradisAgentIdeNeedsHuman(status) || !this._runsAgent(terminal)) {
+			return false;
+		}
+		const launchedAt = this._launchedAt.get(terminal.id);
+		const justLaunched = launchedAt !== undefined && Date.now() - launchedAt <= PARADIS_AGENT_IDE_LAUNCH_GRACE_MS;
+		if (!justLaunched && this.agentStatusStore.isAgentInstance(terminal.instance.instanceId)) {
+			return false;
+		}
+		return paradisAgentStartupScreenState(this._screen(terminal.instance, 0)) === 'trust_dialog';
 	}
 
 	private _runsAgent(terminal: IResolvedTerminal): boolean {
