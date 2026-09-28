@@ -12,6 +12,7 @@ import { useLastSession } from '../home/lastSessionStore.js';
 import { LaunchDrawer, type LaunchPreset } from '../launch/launchDrawer.js';
 import { AgentListRow, EmptySpaceRow, RowSeparator } from './agentListRow.js';
 import { ArchiveDrawer } from './archiveDrawer.js';
+import { LastKnownPcList } from './lastKnownPcList.js';
 import { FilterDrawer } from './filterDrawer.js';
 import { openSession } from './openSession.js';
 import { usePcRouteId } from './pcRouteContext.js';
@@ -226,7 +227,12 @@ export function PcScreen({ placement, onCollapse }: {
 			if (updateRequired !== undefined) {
 				return <PcUpdateRequiredState name={pc?.name ?? 'PC'} target={updateRequired} onRecheck={reconnect} />;
 			}
-			if (!rejected && (kind === 'connecting' || status === 'inactive' || (active && !loaded && kind === 'connected'))) {
+			const connectingNow = kind === 'connecting' || status === 'inactive' || (active && !loaded && kind === 'connected');
+			// 前回の一覧があれば、つながるまでそれを読み取り専用で出す（W2-25）。資格を拒まれた PC には出さない。
+			if (!rejected && pc?.lastKnown !== undefined) {
+				return <LastKnownPcList snapshot={pc.lastKnown} now={now} connecting={connectingNow} onReconnect={reconnect} />;
+			}
+			if (!rejected && connectingNow) {
 				return <EmptyState title="接続しています…" body={`${pc?.name ?? 'PC'} の状態を読み込んでいます。`} />;
 			}
 			return (

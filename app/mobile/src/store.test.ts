@@ -829,11 +829,23 @@ describe('MobileController', () => {
 
 		// mobile → dismiss: ローカルの一覧から消え、PCへdismissメッセージが送られる
 		const pcNotifyGot: import('@para/protocol').NotifyControlMessage[] = [];
-		pcMux.on(Channels.Notify, f => { const c = decodeNotifyControl(f.payload); if (c) { pcNotifyGot.push(c); } });
+		const pcNotifyRaw: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Notify, f => { const c = decodeNotifyControl(f.payload); if (c) { pcNotifyGot.push(c); pcNotifyRaw.push(JSON.parse(new TextDecoder().decode(f.payload))); } });
 		controller.dismissNotification('q1');
 		await flush();
 		expect(latest?.notifications.length).toBe(0);
 		expect(pcNotifyGot).toEqual([{ t: 'dismiss', id: 'q1' }]);
+		// 1件ずつの操作は「ID で指定して開いた・消した」印を付ける（W2-27。旧PCは読まずに無視する）
+		expect(pcNotifyRaw).toEqual([{ t: 'dismiss', id: 'q1', opened: true }]);
+
+		// 「すべて消去」は完了などの通知だけを PC へ伝え、許可・質問はこの端末の一覧からだけ消す（W2-27）
+		pcNotifyRaw.length = 0;
+		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-question', id: 'qa', title: 'x', body: 'y', at: 2 }));
+		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-done', id: 'da', title: 'x', body: 'y', at: 2 }));
+		await flush();
+		controller.clearNotifications();
+		await flush();
+		expect([latest?.notifications.length, pcNotifyRaw]).toEqual([0, [{ t: 'dismiss', id: 'da' }]]);
 
 		// PC → dismissed（他端末が処理済みにした）: 一覧にあれば消える。無ければ何もしない
 		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-question', id: 'q2', title: 'x', body: 'y', at: 3 }));
@@ -864,7 +876,7 @@ describe('MobileController', () => {
 		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-done', id: 'q3', title: 'done', body: '完了', at: 4, quiet: 'muted' }));
 		await flush();
 		expect(latest?.notifications.map(n => n.id)).toEqual(['q3']);
-		expect(notified.map(n => n.id)).toEqual(['q1', 'q2', 'q3']);
+		expect(notified.map(n => n.id)).toEqual(['q1', 'qa', 'da', 'q2', 'q3']);
 	});
 
 	it('scm/fs request-response resolves and rejects by id', async () => {

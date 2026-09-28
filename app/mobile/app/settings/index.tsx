@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'expo-router';
-import { Activity, Bell, Info, LayoutGrid, ListChecks, MessageSquare, MessageSquareReply, Monitor, Palette, Terminal } from 'lucide-react-native';
+import { Activity, Bell, Info, LayoutGrid, ListChecks, MessageSquare, MessageSquareReply, Monitor, Palette, ScrollText, Terminal } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { APP_VERSION } from '../../src/components/updateSheet.js';
@@ -22,8 +22,8 @@ import { settingsRoutes } from '../../src/features/settings/settingsRoutes.js';
  * 並びはモックに合わせる（ターミナル → チャット UI → 通知と音声 → …）。チャット UI の下に、モックに無い
  * クイック返信（会話画面の入力欄の上のチップ）と色（主ボタン・自分の発言・リンクの色）と、ホーム画面・ロック画面の
  * ウィジェットの見た目を足している。モックの「音声」「通知」は
- * Para Code では1ページ（通知と音声）にまとまっている。Para Code に無いもの（トラブルシューティング・
- * プライバシーポリシー・サポート）は置かず、モックに無いコマンドプリセットを足している。
+ * Para Code では1ページ（通知と音声）にまとまっている。Para Code に無いもの（プライバシーポリシー・
+ * サポート）は置かず、トラブルシューティングは「接続の記録」（W2-22）として PC の下に置いている。モックに無いコマンドプリセットを足している。
  */
 export default function SettingsScreenRoute() {
 	const router = useRouter();
@@ -73,6 +73,7 @@ export default function SettingsScreenRoute() {
 				<ListRow icon={ListChecks} label="コマンドプリセット" trailing="chevron" onPress={() => open(routes.settings('presets'))} />
 				<ListRow icon={Activity} label="使用量" trailing="chevron" onPress={() => open(routes.settings('usage'))} />
 				<ListRow icon={Monitor} label="PC" value={pcCount > 0 ? `${pcCount} 台` : undefined} trailing="chevron" onPress={() => open(routes.settings('pcs'))} />
+				<ListRow icon={ScrollText} label="接続の記録" trailing="chevron" onPress={() => open(settingsRoutes.connectionLog())} />
 				<ListRow icon={Info} label="このアプリについて" value={APP_VERSION} trailing="chevron" onPress={() => open(routes.settings('about'))} />
 			</ListGroup>
 		</SettingsScreen>

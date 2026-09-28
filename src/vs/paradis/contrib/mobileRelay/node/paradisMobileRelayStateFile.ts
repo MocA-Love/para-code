@@ -38,6 +38,11 @@ export interface IParadisRelayPersistedState {
 	identity?: { pubKey: string; encSecret?: string; pkcs8?: string };
 	device?: { deviceId: string; pcToken: string };
 	mobiles: IParadisRelayPairedMobile[];
+	/**
+	 * リレーへの取り消しを待っているスマホ（W2-35。`paradisRelayRevokeOutbox.ts`）。読むときは
+	 * `paradisSanitizeRevokeOutbox` で検証する（旧版の台帳には無い）。
+	 */
+	pendingRelayRevokes?: readonly unknown[];
 }
 
 /**

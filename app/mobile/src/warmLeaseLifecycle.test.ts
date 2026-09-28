@@ -82,6 +82,15 @@ vi.mock('./platform.js', () => ({
 }));
 // 回線の変化の購読は expo-modules-core（ネイティブ）を引くので差し替える。
 vi.mock('./networkRevival.js', () => ({ subscribeNetworkRevival: () => () => undefined }));
+// 前回の一覧（W2-25）と接続の記録（W2-22）のファイルは expo のネイティブ部品を引くので、メモリの代わりに置く。
+vi.mock('./lastKnownPcStore.js', () => ({
+	lastKnownPcStorage: { read: async () => null, write: async () => undefined, remove: async () => undefined },
+	lastKnownPcWriter: { schedule: () => undefined, flush: async () => undefined, forget: async () => undefined },
+}));
+vi.mock('./connectionLogStore.js', () => ({
+	connectionLog: { append: () => undefined, load: async () => undefined, flush: async () => undefined, forget: async () => undefined, list: () => [], subscribe: () => () => undefined, revision: 0 },
+	readNetworkState: async () => undefined,
+}));
 vi.mock('./pairingClient.js', () => ({
 	PairingClient: class {
 		cancel(): void { }
