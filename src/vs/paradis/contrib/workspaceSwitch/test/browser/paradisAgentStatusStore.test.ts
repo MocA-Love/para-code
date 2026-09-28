@@ -25,6 +25,20 @@ suite('ParadisAgentStatusStore', () => {
 		return new Map(entries);
 	}
 
+	test('batchUpdates fires once, after both the scope and the pane states are in', () => {
+		const { store, fired } = createStore();
+		const seen: (ParadisAgentStatus | undefined)[] = [];
+		disposables.add(store.onDidChangeAgentStatuses(() => seen.push(store.getInstanceStatus(7))));
+		store.batchUpdates(() => {
+			store.setScopeBreakdowns(breakdowns([['space-a', ['permission']]]));
+			store.setInstanceStates(new Map([[7, 'permission']]), new Set([7]));
+		});
+		// 間で通知が出ると、受け側はペインの状態を1回古いまま（undefined）読んでしまう
+		assert.deepStrictEqual({ fired: fired(), seen }, { fired: 1, seen: ['permission'] });
+		store.batchUpdates(() => store.setScopeBreakdowns(breakdowns([['space-a', ['permission']]])));
+		assert.strictEqual(fired(), 1, 'no change, no event');
+	});
+
 	test('keeps the breakdown and derives the representative status from it', () => {
 		const { store } = createStore();
 		store.setScopeBreakdowns(breakdowns([['space-a', ['working', 'review', 'working']]]));
