@@ -55,35 +55,44 @@ suite('ParadisMobileWorkspaceProvider viewport take-back', () => {
 			completeTerminalOperation: async () => { },
 			logService: { info: () => { }, warn: () => { } },
 			sendTerm: (_id: number, mobileId: string, msg: { t: string }) => { sent.push(`${mobileId} ${msg.t}`); },
+			requestHandlerServices: { getMobileCapabilities: async (mobileId: string) => mobileId === 'phone' ? ['term.viewport.takeback.v1'] : undefined },
 		}) as unknown as ITakebackFixture;
 		let operation = 0;
-		const inbound = (message: Record<string, unknown>) => provider.handleTerminalInbound(
+		const inbound = (message: Record<string, unknown>, mobileId = 'phone') => provider.handleTerminalInbound(
 			VSBuffer.fromString(JSON.stringify({ protocolVersion: 3, desktopEpoch: 'epoch', operationId: `op-${++operation}`, terminalKey: 'terminal-1', ...message })),
-			'phone',
+			mobileId,
 		);
 		// PC の restore は「無害な override を挟んでから外す」の 2 段なので、1 回の戻しは 2 行になる。
 		const restoredAs = (lines: string[]) => lines.join(' | ').replace(/120x40 \| restore/g, 'PC');
 		return { provider, inbound, resized, sent, subscribers, restoredAs };
 	}
 
-	test('takes the terminal back, ignores the phone until it reopens or reclaims, and tells the phone', async () => {
+	test('takes the terminal back, ignores the phone until it reopens or reclaims, and tells only phones that understand it', async () => {
 		const { provider, inbound, resized, sent, subscribers, restoredAs } = createFixture();
+		subscribers.get(1)!.add('old-app');
 		await inbound({ t: 'viewport', viewCols: 50, viewRows: 20 });
+		await inbound({ t: 'viewport', viewCols: 60, viewRows: 20 }, 'old-app');
 		const shrunk = paradisMobileTerminalViewportStatus.get(1);
 		provider.takeBackTerminalViewport(1);
 		const afterTakeBack = paradisMobileTerminalViewportStatus.get(1);
+		// スマホが 1 台減った（どれかは分からない）。寸法の台帳だけを消し、戻した印は残す。
+		provider.clearAllTerminalViewports();
 		// 旧アプリは戻されたことを知らずに申告を送り続ける。
+		await inbound({ t: 'viewport', viewCols: 60, viewRows: 20 }, 'old-app');
 		await inbound({ t: 'viewport', viewCols: 50, viewRows: 20 });
 		await inbound({ t: 'attach', epoch: 2, viewCols: 50, viewRows: 20 }).catch(() => { /* attach の snapshot は fixture に無い */ });
 		const ignored = [...resized];
-		// ［再び合わせる］。
+		// ［再び合わせる］。旧アプリの購読は戻されたまま。
 		await inbound({ t: 'viewport', viewCols: 50, viewRows: 20, reclaim: true });
 		provider.takeBackTerminalViewport(1);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		subscribers.get(1)!.delete('old-app');
 		// 開き直す（detach → attach）と、また縮めてよい。
 		await inbound({ t: 'detach' });
 		subscribers.set(1, new Set(['phone']));
 		await inbound({ t: 'viewport', viewCols: 44, viewRows: 18 });
 		provider.clearAllTerminalViewports();
+		await new Promise(resolve => setTimeout(resolve, 0));
 		assert.deepStrictEqual({
 			shrunk,
 			afterTakeBack,

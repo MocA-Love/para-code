@@ -29,6 +29,10 @@ suite('paradisTerminalEscapeTail', () => {
 			['\x1b(', '\x1b('],
 			['\x1b7', ''],
 			['\x1b[3\x18', ''],
+			// DEL は ESC・CSI の途中では読み飛ばされる（シーケンスは閉じていない）。
+			['\x1b\x7f', '\x1b\x7f'],
+			['\x1b[3\x7f', '\x1b[3\x7f'],
+			['\x1b\x7f7', ''],
 		];
 		assert.deepStrictEqual(cases.map(([data]) => paradisTerminalEscapeTail('', data)), cases.map(([, tail]) => tail));
 	});

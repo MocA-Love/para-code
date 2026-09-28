@@ -70,7 +70,7 @@ import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.j
 import { PARADIS_TERMINAL_BINARY_DATA_ENCODING, paradisEncodeNegotiatedBinaryTerminalData } from '../common/paradisMobileTerminalData.js';
 import { IParadisMobileTerminalViewport, paradisIsValidTerminalViewportMessage, paradisReadTerminalViewport, paradisResolveTerminalViewport } from '../common/paradisMobileTerminalViewport.js';
 import { paradisEncodeJsonResponsePayload } from '../common/paradisMobileGzipJson.js';
-import { paradisIsAcceptedMobileWireVersion } from '../common/paradisMobileCompat.js';
+import { ParadisMobileCapability, paradisHasMobileCapability, paradisIsAcceptedMobileWireVersion } from '../common/paradisMobileCompat.js';
 import { type IParadisMobileRequestHost, paradisDispatchMobileRequest } from './paradisMobileRequestHandlers.js';
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
@@ -1386,6 +1386,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this.termSyncStates.clear();
 		this.attachedTerminals.clearAndDisposeAll();
 		this.terminalSubscribers.clear();
+		// 購読が全部無くなったので、PC で戻された印（W2-19）も外す。
+		this.termViewportRevoked.clear();
 		// detach が届かないまま切れた場合でも、ここでPTY寸法をPC側へ戻す。
 		this.clearAllTerminalViewports();
 	}
@@ -1953,11 +1955,6 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	// --- fs チャネル ------------------------------------------------------------
 
 	/**
-	 * 相対パスに加え、シンボリックリンク経由でのワークスペース外脱出も検査する
-	 * （設計書 §8）。'list'の子要素フィルタだけでは対象自体やパス途中のシンボリックリンクを
-	 * 防げないため、実パスを解決してリポジトリルート配下に収まっているかを確認する。
-	 */
-	/**
 	 * スマホのターミナルで押した相対パスを、そのターミナルの作業フォルダ（cd した先）を基準に解く（W2-31）。
 	 * 作業フォルダがワークスペースの中にあり、解いた先がワークスペースの中の既存のファイルのときだけ、
 	 * ワークスペースの根からの相対パスを返す。それ以外は `undefined`（呼び出し側が根からの解決に落とす）。
@@ -1994,6 +1991,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 	}
 
+	/**
+	 * 相対パスに加え、シンボリックリンク経由でのワークスペース外脱出も検査する
+	 * （設計書 §8）。'list'の子要素フィルタだけでは対象自体やパス途中のシンボリックリンクを
+	 * 防げないため、実パスを解決してリポジトリルート配下に収まっているかを確認する。
+	 */
 	private async resolveWorkspacePathReal(ws: string, relPath: string): Promise<URI | undefined> {
 		const root = this.resolveWsRoot(ws);
 		if (!root) {
@@ -2967,8 +2969,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		} else {
 			this.forgetTerminalViewport(id);
 		}
+		// 知らせるのは受け取れるアプリだけ（旧アプリも知らない t は捨てるが、送らずに済むなら送らない）。
 		for (const mobileId of revokedMobiles) {
-			this.sendTerm(id, mobileId, { t: 'viewport-revoked' });
+			void this.requestHandlerServices?.getMobileCapabilities(mobileId).then(capabilities => {
+				if (paradisHasMobileCapability(capabilities, ParadisMobileCapability.TermViewportTakeback) && this.terminalSubscribers.get(id)?.has(mobileId)) {
+					this.sendTerm(id, mobileId, { t: 'viewport-revoked' });
+				}
+			}, () => { /* 相手の機能が分からなければ送らない */ });
 		}
 		this.logService.info(`[paradisMobileRelay] terminal ${id} taken back to PC dimensions (${revokedMobiles.length} phone(s) revoked)`);
 	}
@@ -3052,8 +3059,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * PC のターミナルが細いまま取り残されるのを防ぐ、最後の砦。
 	 */
 	clearAllTerminalViewports(): void {
+		// PC で戻された印（W2-19）はここでは外さない。スマホが 1 台減っただけのときにも呼ばれ、
+		// 残ったスマホの購読の印まで消すと、戻したターミナルがまた縮む。印は購読が消えたとき
+		// （detach・exit・detachAll）だけ外す。
 		this.termViewports.clear();
-		this.termViewportRevoked.clear();
 		for (const timer of this.termViewportReleaseTimers.values()) {
 			clearTimeout(timer);
 		}

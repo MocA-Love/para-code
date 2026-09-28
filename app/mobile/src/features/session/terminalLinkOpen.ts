@@ -29,9 +29,10 @@ function originOf(url: string): string {
 }
 
 /**
- * 開いたページを選ぶ。開く前に無かったページを優先し、その中で URL が同じもの → オリジンが同じもの →
- * （リダイレクトで別の所へ行った場合に備えて）新しいページの先頭、の順。新しいページが無ければ、
- * すでに開いていた同じ URL のページ（内蔵ブラウザが既存のタブを前に出した場合）。
+ * 開いたページを選ぶ。開く前に無かったページを優先し、その中で URL が同じもの → オリジンが同じもの、の順。
+ * 新しいページが無ければ、すでに開いていた同じ URL のページ（内蔵ブラウザが既存のタブを前に出した場合）。
+ * オリジンが違う新しいページは選ばない（同じ時にほかで開いたページを映さないため。リダイレクトで別の
+ * オリジンへ移った場合は見つからず、ブラウザのタブは既定の選び方で映す）。
  */
 export function pickOpenedBrowserTarget<T extends BrowserTargetLike>(targets: readonly T[], url: string, before: ReadonlySet<string>): T | undefined {
 	const wanted = normalizeUrl(url);
@@ -39,7 +40,6 @@ export function pickOpenedBrowserTarget<T extends BrowserTargetLike>(targets: re
 	const fresh = targets.filter(target => !before.has(target.targetId));
 	return fresh.find(target => normalizeUrl(target.url) === wanted)
 		?? fresh.find(target => originOf(target.url) === origin)
-		?? fresh[0]
 		?? targets.find(target => normalizeUrl(target.url) === wanted);
 }
 

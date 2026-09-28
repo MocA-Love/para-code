@@ -85,13 +85,13 @@ type TermViewMessage =
 	| { t: 'scroll'; dir: 'up' | 'down'; lines: number }
 	| { t: 'warn'; text: string }
 	/** 指のタップ。押した論理行の文字と位置（`index` は -1 なら文字の無い所）、OSC 8 のリンクがあればその行き先。 */
-	| { t: 'tap'; token: number; text: string; index: number; osc8?: string }
+	| { t: 'tap'; token: number; text: string; index: number; osc8?: string; osc8Label?: string }
 	/** iPad のポインタが乗った行のリンクの問い合わせ。`window.__para.links(id, ranges)` で答える。 */
 	| { t: 'links'; id: number; text: string }
 	/** iPad のポインタで、下線の付いたリンクが押された。 */
 	| { t: 'activate'; text: string; index: number }
 	/** iPad のポインタで OSC 8 のリンクが押された。 */
-	| { t: 'osc8'; uri: string }
+	| { t: 'osc8'; uri: string; label?: string }
 	/** 長押しで選んだ文字の「コピー」。 */
 	| { t: 'copy'; text: string }
 	/** 長押しで選択に入った（触覚で知らせる）。 */
@@ -183,11 +183,13 @@ function buildHtml(): string {
 		// ときだけ RN へ渡す（指のタップは下の自前の判定が受け持つ）。
 		linkHandler: {
 			allowNonHttpProtocols: true,
-			activate: function (event, uri) {
+			activate: function (event, uri, range) {
 				if (!pointerActivationAllowed()) {
 					return;
 				}
-				window.ReactNativeWebView.postMessage(JSON.stringify({ t: 'osc8', uri: uri }));
+				// 見えている文字（ラベル）も渡す。行き先と違えば、RN が開く前に確かめる。
+				var label = range ? osc8LabelAt(range.start.y - 1, range.start.x - 1) : '';
+				window.ReactNativeWebView.postMessage(JSON.stringify({ t: 'osc8', uri: uri, label: label }));
 			},
 		},
 	});
@@ -683,18 +685,44 @@ function buildHtml(): string {
 		return { text: trimmed, cells: cells, index: index };
 	}
 	// OSC 8 のハイパーリンク。行き先は xterm の内部（_oscLinkService）にしか無いので、読めなければ諦める。
+	function osc8IdAt(row, col) {
+		try {
+			var line = term.buffer.active.getLine(row);
+			var cell = line && line.getCell(col);
+			return (cell && cell.extended && cell.extended.urlId) || 0;
+		} catch (e) {
+			return 0;
+		}
+	}
 	function osc8At(row, col) {
 		try {
 			var core = term._core;
 			var service = core && (core._oscLinkService || (core._inputHandler && core._inputHandler._oscLinkService));
-			var line = term.buffer.active.getLine(row);
-			var cell = line && line.getCell(col);
-			var id = cell && cell.extended && cell.extended.urlId;
+			var id = osc8IdAt(row, col);
 			var data = id && service && service.getLinkData(id);
 			return data && typeof data.uri === 'string' ? data.uri : '';
 		} catch (e) {
 			return '';
 		}
+	}
+	// OSC 8 のリンクとして見えている文字（同じリンクの続くセル）。折り返しをまたいでもつなぐ。
+	function osc8Label(info, row, col) {
+		var id = osc8IdAt(row, col);
+		if (!id || info.index < 0) {
+			return '';
+		}
+		var from = info.index;
+		var to = info.index + 1;
+		while (from > 0 && osc8IdAt(info.cells[from - 1][0], info.cells[from - 1][1]) === id) {
+			from--;
+		}
+		while (to < info.cells.length && osc8IdAt(info.cells[to][0], info.cells[to][1]) === id) {
+			to++;
+		}
+		return info.text.slice(from, to);
+	}
+	function osc8LabelAt(row, col) {
+		return osc8Label(logicalLine(row, col), row, col);
 	}
 	// タップで調べた論理行（flash の座標に使う）。直近の数件だけ持つ。
 	var tapLines = {};
@@ -712,7 +740,7 @@ function buildHtml(): string {
 		var token = ++tapSeq;
 		tapLines[token] = info.cells;
 		delete tapLines[token - 4];
-		post({ t: 'tap', token: token, text: info.text, index: info.index, osc8: uri });
+		post({ t: 'tap', token: token, text: info.text, index: info.index, osc8: uri, osc8Label: uri ? osc8Label(info, hit.row, hit.col) : '' });
 	}
 	// セルの範囲を画面座標の矩形（行ごと）にする。見えていない行は外す。
 	function cellRects(cells, from, to) {
@@ -814,6 +842,8 @@ function buildHtml(): string {
 	var selectAnchor = 0;
 	var selectFocus = 0;
 	var selectedAll = false;
+	// iPad のポインタ（マウス）で xterm 自身が選んだ範囲。つまみは出さず、同じメニューだけを出す。
+	var pointerSelected = false;
 	var longPressTimer = 0;
 	var gesture = null;
 	var handleStart = document.createElement('div');
@@ -859,7 +889,7 @@ function buildHtml(): string {
 		var startRow = Math.floor(from / term.cols) - top;
 		var endRow = Math.floor(to / term.cols) - top;
 		function place(el, viewportRow, x, y) {
-			var visible = !selectedAll && viewportRow >= 0 && viewportRow < term.rows;
+			var visible = !selectedAll && !pointerSelected && viewportRow >= 0 && viewportRow < term.rows;
 			el.style.display = visible ? 'block' : 'none';
 			el.style.left = x + 'px';
 			el.style.top = y + 'px';
@@ -884,6 +914,7 @@ function buildHtml(): string {
 	function exitSelection() {
 		selecting = false;
 		selectedAll = false;
+		pointerSelected = false;
 		stopDrag();
 		[handleStart, handleEnd, menu].forEach(function (el) { el.style.display = 'none'; });
 		if (term.hasSelection()) {
@@ -916,6 +947,7 @@ function buildHtml(): string {
 		selectFocus = last[0] * term.cols + last[1] + last[2] - 1;
 		selecting = true;
 		selectedAll = false;
+		pointerSelected = false;
 		applySelection();
 		post({ t: 'selection' });
 		return true;
@@ -924,7 +956,20 @@ function buildHtml(): string {
 		// snapshot の reset などで xterm が選択を消したら、つまみとメニューも片付ける。
 		if (selecting && !term.hasSelection()) {
 			exitSelection();
+			return;
 		}
+		// iPad のポインタでドラッグして選んだ（指の長押しは自前で term.select するので selecting が先に立っている）。
+		var position = term.getSelectionPosition();
+		if (!position || (selecting && !pointerSelected) || !pointerActivationAllowed()) {
+			return;
+		}
+		// start は選択の先頭のセル、end はその次の桁（どちらも 0 始まり、行はスクロールバックを含む通し番号）。
+		selectAnchor = position.start.y * term.cols + position.start.x;
+		selectFocus = Math.max(selectAnchor, position.end.y * term.cols + position.end.x - 1);
+		selecting = true;
+		pointerSelected = true;
+		selectedAll = false;
+		placeSelectionChrome();
 	});
 	term.onRender(placeSelectionChrome);
 	term.onScroll(placeSelectionChrome);
@@ -1140,7 +1185,7 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 				if (open === undefined || typeof msg.text !== 'string' || typeof msg.index !== 'number') {
 					return;
 				}
-				const osc8 = typeof msg.osc8 === 'string' && msg.osc8.length > 0 ? terminalOsc8Link(msg.osc8) : undefined;
+				const osc8 = typeof msg.osc8 === 'string' && msg.osc8.length > 0 ? terminalOsc8Link(msg.osc8, typeof msg.osc8Label === 'string' ? msg.osc8Label : undefined) : undefined;
 				if (osc8 !== undefined) {
 					hapticSelection();
 					open(osc8);
@@ -1170,7 +1215,7 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 				return;
 			}
 			case 'osc8': {
-				const link = typeof msg.uri === 'string' ? terminalOsc8Link(msg.uri) : undefined;
+				const link = typeof msg.uri === 'string' ? terminalOsc8Link(msg.uri, typeof msg.label === 'string' ? msg.label : undefined) : undefined;
 				if (open !== undefined && link !== undefined) {
 					open(link);
 				}
