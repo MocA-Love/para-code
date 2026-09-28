@@ -40,7 +40,7 @@ func paradisIsSecureLike(role: String, subrole: String?, title: String?, label: 
 		return true
 	}
 	let haystack = [role, subrole ?? "", title ?? "", label ?? "", placeholder ?? ""].joined(separator: " ").lowercased()
-	let needles = ["secure", "password", "passcode", "verification code", "one-time code"]
+	let needles = ["secure", "password", "passcode", "verification code", "one-time code", "パスワード", "暗証番号", "認証コード", "確認コード", "セキュリティコード", "ワンタイム"]
 	return needles.contains { haystack.contains($0) }
 }
 
