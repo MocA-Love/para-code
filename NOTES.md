@@ -1076,18 +1076,27 @@ fork の後始末を `sentry/common/paradisTeardownTiming.ts` で名前付きで
 
 ### ターミナルを閉じたら裏のプロセスを止める（W2-32）
 
-- 差し込み口は `ptyDaemon/node/paradisTerminalProcessFactory.ts` の `TerminalProcess` の代わりの `ParadisCleaningTerminalProcess`（`shutdown` の上書き）と、`ParadisDaemonTerminalProcess.shutdown`。どちらも本来の終了を、`ps` の表を撮り終える（最大 1 秒）まで遅らせる。スペースの退避・別ウィンドウへの移動・切り離しは `shutdown` を通らない
+- 差し込み口は `ptyDaemon/node/paradisTerminalProcessFactory.ts` の `TerminalProcess` の代わりの `ParadisCleaningTerminalProcess`（`shutdown` の上書き）と、薄い常駐の `ParadisPtyDaemonHost.kill`。スペースの退避・別ウィンドウへの移動・切り離しは `shutdown` を通らない
+- **アプリの中の pty ホストではシェルへの終了を遅らせない**（レビュー H2）。`ps` を起こしてから、待たずに本来の終了を呼ぶ（`ParadisShutdownOrder.CaptureAlongside`）。遅らせている間にアプリごと落ちると、閉じたはずのシェルが残るため。通常の閉じ方は出力を流し切る 0.25 秒の後に終わらせるので表は間に合う。すぐ終わらせる閉じ方では間に合わないことがあり、Linux ではシェルのセッション（sid）の一員として拾い直す。macOS は親子関係しか無いので取りこぼしうる
+- 薄い常駐では、アプリ側（`ParadisDaemonTerminalProcess.shutdown`）は終了の依頼を今までどおりすぐ送り、`kill` の第 3 引数 `stopDescendants` で後始末を頼む。常駐（`paradisPtyHostDaemonMain.ts`）が表を撮ってからシェルを終わらせ（`CaptureFirst`、常駐はアプリより長く生きる）、残りを止める。`release` はそれが終わるまで待つ。古い常駐は第 3 引数を無視する（シェルだけを終わらせる）
 - 設定（`paradis.terminal.stopBackgroundProcessesOnClose`、既定オン）は pty ホストから読めないので、ウィンドウがターミナルを作るときに env の印 `PARA_CODE_TERMINAL_KEEP_BACKGROUND_ON_CLOSE=1`（オフのときだけ）を入れ、pty ホストが読んでからシェルへ渡す前に外す。常駐（薄い方）では印を台帳の env に残し、引き取るときに読み戻す。印を入れるのは `paradisPrepareTerminalPaneEnv`（既存の PARA-PATCH の呼び出し先）の中
-- 止め方: シェルの終了から 2 秒後に撮り直し、pid・プロセスグループ・開始時刻（`lstart`、1 秒単位）が撮ったときと同じものだけに SIGTERM、さらに 2 秒後にまだ同じものへ SIGKILL。撮った秒以降に生まれたものは最初から外す。SIGHUP を無視しているもの（`nohup`）とその下の木は残す。無視しているかが読めないものも残す
+- 止め方: シェルの終了から 2 秒後に撮り直し、pid・プロセスグループ・開始時刻（`lstart`、1 秒単位）が撮ったときと同じものだけに SIGTERM、さらに 8 秒後にまだ同じものへ SIGKILL。撮った秒以降に生まれたものは最初から外す。SIGHUP を無視しているもの（`nohup`）とその下の木は残す。無視しているかが読めないものも残す
+- **シェルと別の端末を持つものを含む部分木には触らない**（レビュー H1）。GNU screen の SCREEN はシェルの子孫のまま残り、SIGHUP も無視しない（実測）。`ps` の `tty` を読み、シェルと別の端末を持つもの（screen の中のシェル）から、シェルの端末を持つ祖先の手前まで（SCREEN）を根として、その下の木ごと外す。シェルの端末を持つ祖先（screen を起動したエージェント）とその他の子は外さない。端末を持たないもの（`detached` で起動した裏タスク）は止める。保険として screen / dtach / abduco / tmux の名前の部分木も外す。dtach が screen と同じ形かは推測（実測は screen だけ）
+- 止まるもの: `disown`・zsh の `&!`・`setopt NO_HUP` で残したもの（SIGHUP を無視していない）
+- 働くのはタブやウィンドウでターミナルを閉じたとき（`shutdown` が呼ばれる）だけ。Para Code の終了（アプリの中の pty ホストごと落ちる）と、シェルで `exit` したとき（`shutdown` を通らない）は働かない
+- `ps` は `/bin/ps` を使う。macOS の調べ役（`osascript`）は、0.1 秒以内に来た問い合わせを 1 回にまとめる。印を書くときは shell launch の env を写してから書く（プロファイルなどと共有している物を書き換えない）
 - SIGHUP を無視しているかの読み方: Linux は `/proc/<pid>/status` の `SigIgn`。**macOS の `ps` には無視しているシグナルの列が無い**（`ignored` / `sigignore` とも `keyword not found`）ので、`osascript -l JavaScript` から `sysctl(CTL_KERN, KERN_PROC, KERN_PROC_PID)` を呼び、`struct kinfo_proc`（648 バイト）の `kp_proc.p_sigignore`（オフセット 232）を読む。`p_pid`（40）が一致したときだけ採り、`kp_eproc.e_pgid`（564）も表と照合する。オフセットは SDK の `sys/sysctl.h` から `offsetof` で求めた（arm64 で実行して確認、x86_64 も同じ LP64 の並び）
 - **Node は起動時にシグナルの扱いを既定へ戻す**ので、`nohup node server.js` の node は SIGHUP を無視していない（2026-09-29 実測: `nohup node` は `kill -HUP` で終わる）。今でもシェルが閉じるときの SIGHUP で終わるので、止めても振る舞いは変わらない
 - Windows は対象外。アプリの終了で pty ホストごと落ちるときは、止める処理（2 秒後）まで届かない
 
 ### Para Code が止まっている間の hook の控え（W2-20）
 
-- notify.sh / notify.ps1 はスキーマ v4。手元の版だけが、受け口に届かなかった hook（ポートファイル無し、接続できない、404（ペインがまだ同期されていない）、429、5xx）を `<userData>/agent-hook-spool/pane-<ペイントークンの SHA-256>.jsonl` に 1 行 `{"v":1,"event","t":<秒>,"payload"}` で書く。フォルダ 0700・ファイル 0600、1 ファイル 5MB・1024 ファイルまで、payload は 256KB まで（超えたら null）。Pre/PostToolUse・PostToolUseFailure・MessageDisplay は書かない。SSH の接続先の版は控えない（流し直す口が無い）
+- notify.sh / notify.ps1 はスキーマ v4。手元の版だけが、受け口に届かなかった hook（ポートファイル無し・接続できない）と、受け口が 503（ペインがまだ同期されていない）と答えた hook を `<userData>/agent-hook-spool/pane-<ペイントークンの SHA-256>.jsonl` に 1 行 `{"v":1,"id","event","t":<秒>,"payload"}` で書く。404（知らない・終わったペイン）は控えない。受け口は、起動とウィンドウの接続から 60 秒の間だけ、知らないトークンに 503 と答える（レビュー M3）
+- payload に残すのは `hook_event_name`・`session_id`・`transcript_path`・`cwd`・`tool_name` と、Notification が許可要求かどうか（`"message":"permission"`）だけ。依頼の文面やツールの入力は書かない（レビュー M4）。sh は `grep -oE` で JSON の文字列値を（エスケープごと）抜き出し、1 行を変数で組み立てて 1 回で追記する（一時ファイルを使わない）
+- フォルダ 0700・ファイル 0600、1 ファイル 5MB・1024 ファイルまで。Pre/PostToolUse・PostToolUseFailure・MessageDisplay は書かない。SSH の接続先の版は控えない（流し直す口が無い）
+- hook ごとに ID（`hid`）を振る。受け口は最近の ID を覚え、流し直しで同じ ID を捨てる。shared process は `agent-hook-spool/alive` に生きている時刻を 1 分ごとと閉じるときに書き、次の起動はそれより後で、しかも 1 時間以内の控えだけを流す（受け口の返事が遅れて控えてしまった重複を除くため、レビュー M5）
 - 読むのは shared process（`agentBrowser/node/paradisAgentHookSpoolStore.ts`）。起動時に 7 日より古いものを消し、ウィンドウがペインを同期した（`syncBindingAuthority`）後に、そのペインの控えを 1 度だけ名前を変えてから読んで消す。この起動で本物の hook が届いたペイン・既に状態があるペインは状態を触らない。所有者の判定は pid 無しの hook と同じ（transcript だけで見る fail-closed）
-- 状態は最後の 1 件で決める。完了は `quiet` 付きの review（`IParadisAgentPaneStatus.quiet`）にして、デスクトップの通知（`paradisAgentStatusNotificationTracker.ts`）とモバイルのプッシュ（`paradisMobileWorkspaceProvider.ts` の `detectAndNotify`、`paradisQuietReplayedPanes.ts` を見る）が鳴らさない。許可要求と質問は 10 分以内の最後の 1 件だけを `replayedPrompts` としてスナップショットに載せ、ウィンドウ（`paradisAgentHookReplay.contribution.ts`）が画面の下端にその種類の確認が出ていると確かめて `confirmReplayedPrompt` を呼んだときに初めて状態を付け、hook のバスへ流す（承認カードと通知はライブと同じ経路）
+- 状態は最後の 1 件で決める。作業中（working）は流し直さない。完了は `quiet` 付きの review（`IParadisAgentPaneStatus.quiet`）にして、デスクトップの通知（`paradisAgentStatusNotificationTracker.ts`）とモバイルのプッシュ（`paradisMobileWorkspaceProvider.ts` の `detectAndNotify`、`paradisQuietReplayedPanes.ts` を見る）が鳴らさない。許可要求と質問は 10 分以内の最後の 1 件だけを `replayedPrompts` としてスナップショットに載せ、ウィンドウ（`paradisAgentHookReplay.contribution.ts`）が画面の下端にその種類の確認が出ていると確かめて `confirmReplayedPrompt` を呼んだときに初めて状態を付け、hook のバスへ流す（承認カードと通知はライブと同じ経路）
 - 【要確認】別のスペースへ退避したターミナルは xterm の画面が読めないことがあり、その間は確かめられずに 10 分で捨てる（推測）
 
 ## モバイルリレー: Cloudflare Workers/DOデプロイ（2026-07-05）
@@ -1784,7 +1793,7 @@ main の固まりの検知は、`@sentry/electron/native` の `eventLoopBlockInt
 
 使うには、Electron 向けに stacktrace をビルドして同梱し、見張りの worker を 1 ファイルに束ねる（`build/next/index.ts` への PARA-PATCH）必要がある。なお `@sentry/electron/native` の包みは `powerMonitor` の suspend / lock-screen で見張りを止める作りで、worker から送る事象には main の `beforeSend`（`paradisPrepareSentryEvent`）が効かない。
 
-自作の見張りは worker を文字列から起こす（`eval: true`、Node の組み込みだけを使う）ので、上の 2 つを踏まない。main が 2 秒ごとに共有メモリへ時刻とヒープの大きさを書き、worker が 10 秒途切れたら `<userData>/paradis-main-hang.json` に印を書き、戻れば `main-hang` / `blocked` で報告して消す。戻らずに終了されたら次の起動の 60 秒後に `blocked-until-exit` で報告する。スタックは取れない。配布版だけで動かす（開発版はデバッガの停止を誤検知する）。スリープは `powerMonitor` の suspend / resume と、worker 自身の見回りの間隔（15 秒）の両方で除く。
+自作の見張りは worker を文字列から起こす（`eval: true`、Node の組み込みだけを使う）ので、上の 2 つを踏まない。main が 2 秒ごとに共有メモリへ時刻とヒープの大きさを書き、worker が 10 秒途切れたら `<userData>/paradis-main-hang.json` に印を書き、戻れば `main-hang` / `blocked` で報告して消す。戻らずに終了されたら次の起動の 60 秒後に `blocked-until-exit` で報告する。スタックは取れない。配布版だけで動かす（開発版はデバッガの停止を誤検知する）。スリープは `powerMonitor` の suspend / resume と、worker 自身の見回りの間隔（15 秒）の両方で除く。resume が来ないまま 1 分心拍が続いたら、取りこぼしとみなして数え直す。
 
 ## ビルド環境（macOS / Apple Silicon）
 
