@@ -65,7 +65,9 @@ describe('commitScope / commitHint', () => {
 
 	it('ファイルごとにステージできる PC で、ステージ済みがあればそれだけをコミットする', () => {
 		expect([commitScope(counts, true), commitScope({ ...counts, staged: 0 }, true), commitScope(counts, false)]).toEqual(['staged', 'all', 'all']);
-		expect(commitHint('staged', counts, true)).toBe('ステージ済みの 1 件だけをコミットします。');
+		expect(commitHint('staged', counts, true)).toBe('ステージ済みの 1 件の、ステージした分だけをコミットします（一部だけステージしたファイルの残りは入れません）。');
+		// 一部だけステージしたファイル（MM）しか無くても、ステージ済みだけのコミットにする（git add -A で残りまで入れない）
+		expect(commitScope({ unstaged: 1, staged: 1, total: 1 }, true)).toBe('staged');
 		expect(commitHint('all', counts, false)).toContain('ステージの操作は PC で行います');
 	});
 });

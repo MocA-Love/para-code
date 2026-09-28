@@ -8,10 +8,13 @@
 
 import assert from 'assert';
 import * as cp from 'child_process';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { isCancellationError } from '../../../../../base/common/errors.js';
+import { isWindows } from '../../../../../base/common/platform.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -34,6 +37,42 @@ function createExecFile(calls: IExecFileCall[]): typeof cp.execFile {
 		queueMicrotask(() => callback(null, '', ''));
 		return {} as cp.ChildProcess;
 	}) as typeof cp.execFile;
+}
+
+/** runGit が spawn する git の代わり。`respond` が子の終わり方を決める（呼ばなければ止められるまで動き続ける）。 */
+class FakeGitChild extends EventEmitter {
+	readonly stdout = new PassThrough();
+	readonly stderr = new PassThrough();
+	readonly signals: string[] = [];
+	constructor(private readonly onKill: (child: FakeGitChild, signal: string) => void = () => undefined) {
+		super();
+	}
+	kill(signal: string): boolean {
+		this.signals.push(signal);
+		this.onKill(this, signal);
+		return true;
+	}
+	finish(code: number | null, stdout = '', stderr = ''): void {
+		this.stdout.end(stdout);
+		this.stderr.end(stderr);
+		this.emit('exit', code);
+		setTimeout(() => this.emit('close', code), 0);
+	}
+}
+
+interface ISpawnCall {
+	readonly args: readonly string[];
+	readonly options: cp.SpawnOptions;
+	readonly child: FakeGitChild;
+}
+
+function createSpawn(calls: ISpawnCall[], start: (child: FakeGitChild, args: readonly string[]) => void, onKill?: (child: FakeGitChild, signal: string) => void): typeof cp.spawn {
+	return ((_command: string, args: readonly string[], options: cp.SpawnOptions) => {
+		const child = new FakeGitChild(onKill);
+		calls.push({ args, options, child });
+		queueMicrotask(() => start(child, args));
+		return child as unknown as cp.ChildProcess;
+	}) as unknown as typeof cp.spawn;
 }
 
 suite('ParadisWorktreeGitService', () => {
@@ -348,16 +387,18 @@ suite('ParadisWorktreeGitService', () => {
 	});
 
 	suite('runGit', () => {
-		test('runs an allowed subcommand with -C and core.quotepath=false, returning exit code 0', async () => {
-			const calls: IExecFileCall[] = [];
-			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile(calls));
+		test('runs an allowed subcommand with -C and core.quotepath=false in its own process group, returning exit code 0', async () => {
+			const calls: ISpawnCall[] = [];
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile([]), async () => ({}), false, createSpawn(calls, child => child.finish(0, ' M a.ts\n')));
 
 			const result = await service.runGit('/repo', ['status', '--porcelain=v1']);
 
-			assert.deepStrictEqual(calls.map(call => ({ command: call.command, args: call.args })), [
-				{ command: 'git', args: ['-C', '/repo', '-c', 'core.quotepath=false', 'status', '--porcelain=v1'] },
-			]);
-			assert.deepStrictEqual(result, { code: 0, stdout: '', stderr: '' });
+			assert.deepStrictEqual({ args: calls.map(call => call.args), detached: calls[0].options.detached, env: `${calls[0].options.env?.GIT_TERMINAL_PROMPT}/${calls[0].options.env?.GCM_INTERACTIVE}`, result }, {
+				args: [['-C', '/repo', '-c', 'core.quotepath=false', 'status', '--porcelain=v1']],
+				detached: true,
+				env: '0/never',
+				result: { code: 0, stdout: ' M a.ts\n', stderr: '' },
+			});
 		});
 
 		test('rejects a subcommand outside the allow list without spawning a process', async () => {
@@ -393,40 +434,78 @@ suite('ParadisWorktreeGitService', () => {
 			assert.deepStrictEqual({ rejected: rejected.length, spawned: calls.length }, { rejected: 11, spawned: 0 });
 		});
 
-		test('stops a timed-out git with SIGTERM then SIGKILL, reports it and a leftover index.lock, without interactive credential prompts', async () => {
+		test('stops a timed-out git with SIGTERM then SIGKILL and reports it and a leftover index.lock, even while a grandchild holds the output', async () => {
 			const dir = join(tmpdir(), `paradis-rungit-${generateUuid()}`);
 			await fs.mkdir(dir, { recursive: true });
 			const index = join(dir, 'index');
 			await fs.writeFile(`${index}.lock`, '');
-			const runs: { args: string; env: string; detached: unknown }[] = [];
-			const signals: string[] = [];
-			const execFile = ((_command: string, args: readonly string[], options: cp.ExecFileOptions & { detached?: boolean }, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
-				if (args.includes('--git-path')) {
-					queueMicrotask(() => callback(null, `${index}\n`, ''));
-					return {} as cp.ChildProcess;
+			const calls: ISpawnCall[] = [];
+			// git の代わり。SIGTERM を無視し、SIGKILL で終わる。孫が出力のパイプを握っている想定で `close` は出さない
+			const spawn = createSpawn(calls, (child, args) => {
+				if (!args.includes('pull')) {
+					child.finish(0);
+				} else {
+					child.stderr.write('remote: working');
 				}
-				runs.push({ args: args.slice(4).join(' '), env: `${(options.env as NodeJS.ProcessEnv).GIT_TERMINAL_PROMPT}/${(options.env as NodeJS.ProcessEnv).GCM_INTERACTIVE}`, detached: options.detached });
-				const hangs = args.includes('pull');
-				if (!hangs) {
-					queueMicrotask(() => callback(null, '', ''));
+			}, (child, signal) => {
+				if (signal === 'SIGKILL') {
+					child.emit('exit', null);
 				}
-				// フックが SIGTERM を無視して動き続ける git の代わり。SIGKILL でだけ終わる
-				return { kill: (signal: string) => { signals.push(signal); if (hangs && signal === 'SIGKILL') { callback(Object.assign(new Error('killed'), { code: null }), '', 'remote: working'); } return true; } } as unknown as cp.ChildProcess;
+			});
+			const execFile = ((_command: string, _args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
+				queueMicrotask(() => callback(null, `${index}\n`, ''));
+				return {} as cp.ChildProcess;
 			}) as typeof cp.execFile;
-			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile, async () => ({}), false, cp.spawn, { short: 1_000, long: 30, grace: 20 });
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile, async () => ({}), false, spawn, { short: 1_000, long: 30, grace: 20 });
 
 			try {
 				await service.runGit('/repo', ['status', '--porcelain=v1']);
+				const startedAt = Date.now();
 				const timedOut = await service.runGit('/repo', ['pull', '--ff-only', '--no-rebase', '--quiet']);
 
-				assert.deepStrictEqual({ runs, signals, timedOut }, {
-					runs: [
-						{ args: 'status --porcelain=v1', env: '0/never', detached: true },
-						{ args: 'pull --ff-only --no-rebase --quiet', env: '0/never', detached: true },
-					],
+				assert.deepStrictEqual({ signals: calls[1].child.signals, timedOut, quick: Date.now() - startedAt < 1_000 }, {
 					signals: ['SIGTERM', 'SIGKILL'],
 					timedOut: { code: 1, stdout: '', stderr: 'remote: working\nParadisWorktreeGit: timed out after 0.03s\nParadisWorktreeGit: index.lock remains' },
+					quick: true,
 				});
+			} finally {
+				await fs.rm(dir, { recursive: true, force: true });
+			}
+		});
+
+		test('kills the hook grandchildren of a timed-out commit and answers within the limit plus the grace (real git)', async function () {
+			if (isWindows) {
+				this.skip();
+			}
+			const dir = join(tmpdir(), `paradis-rungit-hook-${generateUuid()}`);
+			await fs.mkdir(dir, { recursive: true });
+			const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
+			await fs.writeFile(join(dir, 'gitconfig'), '[user]\n\tname = t\n\temail = t@example.com\n');
+			const pidFile = join(dir, 'sleep.pid');
+			try {
+				cp.execFileSync('git', ['init', '-q', dir], { env: gitEnv });
+				// post-commit フックが長い孫プロセス（sleep 30）を起こして待つ
+				await fs.writeFile(join(dir, '.git', 'hooks', 'post-commit'), `#!/bin/sh\nsleep 30 &\necho $! > '${pidFile}'\nwait\n`, { mode: 0o755 });
+			} catch {
+				this.skip();
+			}
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, cp.execFile, async () => gitEnv, false, cp.spawn, { short: 5_000, long: 1_000, grace: 300 });
+			try {
+				const startedAt = Date.now();
+				const result = await service.runGit(dir, ['commit', '--allow-empty', '-m', 'x']);
+				const elapsed = Date.now() - startedAt;
+				const sleepPid = Number((await fs.readFile(pidFile, 'utf8')).trim());
+				await new Promise<void>(resolve => setTimeout(resolve, 200));
+				let sleepAlive = true;
+				try {
+					process.kill(sleepPid, 0);
+				} catch {
+					sleepAlive = false;
+				}
+				if (sleepAlive) {
+					process.kill(sleepPid, 'SIGKILL');
+				}
+				assert.deepStrictEqual({ timedOut: result.stderr.includes('timed out after 1s'), withinLimit: elapsed < 1_000 + 300 * 2 + 1_000, sleepAlive }, { timedOut: true, withinLimit: true, sleepAlive: false });
 			} finally {
 				await fs.rm(dir, { recursive: true, force: true });
 			}
@@ -491,11 +570,7 @@ suite('ParadisWorktreeGitService', () => {
 		});
 
 		test('returns a non-zero exit code instead of rejecting when git itself fails', async () => {
-			const execFile = ((_command: string, _args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
-				callback(Object.assign(new Error('exit 128'), { code: 128 }), '', 'fatal: not a git repository');
-				return {} as cp.ChildProcess;
-			}) as typeof cp.execFile;
-			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile);
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile([]), async () => ({}), false, createSpawn([], child => child.finish(128, '', 'fatal: not a git repository')));
 
 			const result = await service.runGit('/repo', ['status', '--porcelain=v1']);
 

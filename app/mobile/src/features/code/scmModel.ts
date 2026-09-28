@@ -25,6 +25,11 @@ export interface ScmEntry {
 	 * 書き換えられたかを、確認したときの値と比べて見分ける。
 	 */
 	readonly identity: string;
+	/**
+	 * 一部だけステージされている（`MM` など。インデックス側にも作業ツリー側にも変化がある）。一覧では「変更」に出すが、
+	 * ステージ済みの数にも入れる（コミットはステージ済みだけを対象にし、未ステージの分まで入れない）。
+	 */
+	readonly partiallyStaged: boolean;
 }
 
 /** 区分の見出しと並び順（Orca と同じ: 変更 → 未追跡 → ステージ済み）。 */
@@ -47,10 +52,11 @@ export function scmEntry(file: ScmStatusResult['files'][number]): ScmEntry {
 	const meta = scmChangeMeta(kind, letter);
 	const identity = paradisMobileDiffIdentity(file);
 	if (kind === 'untracked') {
-		return { path: file.path, group: 'untracked', staged: false, kind, meta, identity };
+		return { path: file.path, group: 'untracked', staged: false, kind, meta, identity, partiallyStaged: false };
 	}
-	const indexOnly = file.x !== ' ' && file.x !== '' && (file.y === ' ' || file.y === '') && kind !== 'conflict';
-	return { path: file.path, group: indexOnly ? 'staged' : 'changes', staged: indexOnly, kind, meta, identity };
+	const indexChanged = file.x !== ' ' && file.x !== '' && kind !== 'conflict';
+	const indexOnly = indexChanged && (file.y === ' ' || file.y === '');
+	return { path: file.path, group: indexOnly ? 'staged' : 'changes', staged: indexOnly, kind, meta, identity, partiallyStaged: indexChanged && !indexOnly };
 }
 
 export function scmEntries(status: ScmStatusResult | undefined): ScmEntry[] {
@@ -70,15 +76,17 @@ export function orderedScmEntries(entries: readonly ScmEntry[]): ScmEntry[] {
 }
 
 export interface ScmCounts {
-	/** まだステージされていないもの（未追跡を含む）。 */
+	/** まだステージされていない変更があるもの（未追跡・一部だけステージされたものを含む）。 */
 	readonly unstaged: number;
+	/** ステージされた変更があるもの（一部だけステージされたものを含む）。 */
 	readonly staged: number;
 	readonly total: number;
 }
 
 export function scmCounts(entries: readonly ScmEntry[]): ScmCounts {
-	const staged = entries.filter(entry => entry.group === 'staged').length;
-	return { unstaged: entries.length - staged, staged, total: entries.length };
+	const stagedOnly = entries.filter(entry => entry.group === 'staged').length;
+	const partial = entries.filter(entry => entry.partiallyStaged).length;
+	return { unstaged: entries.length - stagedOnly, staged: stagedOnly + partial, total: entries.length };
 }
 
 /** パスをファイル名と、それを含むフォルダに分ける（フォルダが無ければ空文字）。 */

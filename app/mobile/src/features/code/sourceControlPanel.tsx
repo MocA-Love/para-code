@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { Linking, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { CircleCheck, CircleAlert, CloudOff, GitCommitHorizontal, RefreshCw } from 'lucide-react-native';
@@ -15,7 +15,8 @@ import { formatRelativeTime, useNow } from '../../time.js';
 import { Button, ConfirmDrawer, EmptyState, HeaderButton, Screen, ScreenHeader, type LucideIcon } from '../../ui/index.js';
 import { X } from 'lucide-react-native';
 import { CenterSpinner, GroupHeading, InlineError, OfflineBanner, Segments, SpaceGateBody, useReadableColumn } from './codeParts.js';
-import { BranchCard, CommitBar, CommitFailureCard, HistoryList, ScmFileRow } from './scmParts.js';
+import { BranchCard, CommitBar, CommitFailureCard, CommitWarning, HistoryList, ScmFileRow } from './scmParts.js';
+import { ConfirmTarget } from './confirmTarget.js';
 import {
 	groupScmEntries,
 	listBodyState,
@@ -65,7 +66,10 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	// PC が PR の詳細を返せなくなったら（古い PC に切り替えたなど）変更の区分に戻す
 	const shown: ScmSegment = segment === 'pr' && !pullRequest.enabled ? 'changes' : segment;
 	const [message, setMessage] = useState('');
-	const [confirmMerge, setConfirmMerge] = useState<PrDetail | undefined>(undefined);
+	// 確認のシートの見え隠れと、確認している PR は別に持つ（閉じた後に onConfirm が走るので、対象を閉じる時に消さない）
+	const [confirmingMerge, setConfirmingMerge] = useState<PrDetail | undefined>(undefined);
+	const mergeTarget = useRef(new ConfirmTarget<PrDetail>()).current;
+	const [commitWarning, setCommitWarning] = useState<string | undefined>(undefined);
 	const now = useNow();
 	const insets = useStableInsets();
 	// ドックではセッションの画面がキーボードの分を空けているので、ここでは足さない。
@@ -100,6 +104,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	const commit = async () => {
 		commitHandoff.reset();
 		setActionError(undefined);
+		setCommitWarning(undefined);
 		const outcome = await commitState.commit(message, scope);
 		if (!outcome.ok) {
 			// 失敗でもステージを戻したので、一覧を読み直す
@@ -107,9 +112,9 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 			return;
 		}
 		setMessage('');
-		useParaToast.getState().show(outcome.warning !== undefined
-			? { key: 'scm-commit', text: 'コミットしました', sub: outcome.warning, icon: 'alert-circle-outline', tone: 'warn' }
-			: { key: 'scm-commit', text: 'コミットしました', sub: branch, icon: 'checkmark-circle-outline', tone: 'done' }, outcome.warning !== undefined ? 5_000 : 1_900);
+		// フックの失敗・時間切れの一言は長いので、トーストの1行ではなくコミットバーの上に全文を出す
+		setCommitWarning(outcome.warning);
+		useParaToast.getState().show({ key: 'scm-commit', text: 'コミットしました', sub: branch, icon: 'checkmark-circle-outline', tone: 'done' }, 1_900);
 		void statusState.refresh();
 		void history.refresh();
 	};
@@ -243,7 +248,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 								onRetry={codeSpace.live ? () => void pullRequest.refresh() : undefined}
 								onFix={pr => void prHandoff.send({ t: 'prFixChecks', number: pr.number }, 'auto')}
 								onFixWithNewAgent={pr => void prHandoff.send({ t: 'prFixChecks', number: pr.number }, 'new')}
-								onMerge={pr => setConfirmMerge(pr)}
+								onMerge={pr => { mergeTarget.hold(pr); setConfirmingMerge(pr); }}
 							/>
 						) : (
 							<>
@@ -282,6 +287,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 					{shown === 'changes' ? (
 						<>
 							<InlineError message={commitState.error !== undefined ? `コミットに失敗しました: ${commitState.error}` : undefined} />
+							{commitWarning !== undefined ? <CommitWarning text={commitWarning} onDismiss={() => setCommitWarning(undefined)} /> : null}
 							{commitState.failure !== undefined ? (
 								<CommitFailureCard
 									view={commitFailureView(commitState.failure)}
@@ -305,19 +311,18 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 				</View>
 			</SpaceGateBody>
 			<ConfirmDrawer
-				visible={confirmMerge !== undefined}
+				visible={confirmingMerge !== undefined}
 				title="プルリクエストをマージしますか？"
-				message={confirmMerge !== undefined ? mergeConfirmMessage(confirmMerge) : undefined}
+				message={confirmingMerge !== undefined ? mergeConfirmMessage(confirmingMerge) : undefined}
 				confirmLabel="マージ"
 				destructive={false}
 				onConfirm={() => {
-					const pr = confirmMerge;
-					setConfirmMerge(undefined);
+					const pr = mergeTarget.take();
 					if (pr !== undefined) {
 						void merge(pr);
 					}
 				}}
-				onClose={() => setConfirmMerge(undefined)}
+				onClose={() => setConfirmingMerge(undefined)}
 			/>
 		</Screen>
 	);

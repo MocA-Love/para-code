@@ -148,6 +148,19 @@ export function StageToggle({ staged, busy, disabled, onPress, path, style }: { 
 	);
 }
 
+/** コミットはできたが、その後のフックが失敗・時間切れだったときの一言（行を切らずに全文を出す）。 */
+export function CommitWarning({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+	return (
+		<View style={[styles.failure, styles.warningRow]} accessibilityRole="alert">
+			<Icon icon={CircleAlert} size={iconSize.md} color={colors.amber} />
+			<Text style={styles.warningText}>{text}</Text>
+			<Pressable onPress={onDismiss} hitSlop={hitSlopToMinimum(24)} accessibilityRole="button" accessibilityLabel="閉じる">
+				<Icon icon={X} size={iconSize.sm} color={colors.textMuted} />
+			</Pressable>
+		</View>
+	);
+}
+
 /**
  * コミットの失敗（Orca W2-15 の立て直し）。要約・ステージを戻したこと・出力（開いて読む）と、
  * 「AI に直してもらう」を出す。作業中のエージェントしかいないと言われたら、新しいエージェントで頼む口を出す。
@@ -671,6 +684,17 @@ const styles = StyleSheet.create({
 	},
 	failureButton: {
 		flexGrow: 1,
+	},
+	warningRow: {
+		flexDirection: 'row',
+		alignItems: 'flex-start',
+		gap: space.sm,
+	},
+	warningText: {
+		flex: 1,
+		fontSize: type.meta,
+		lineHeight: 17,
+		color: colors.text,
 	},
 	handoffDone: {
 		color: colors.green,
