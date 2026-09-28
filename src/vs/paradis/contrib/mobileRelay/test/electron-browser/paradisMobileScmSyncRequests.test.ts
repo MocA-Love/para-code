@@ -89,7 +89,8 @@ suite('ParadisMobileScmSyncRequests', () => {
 	const reply = (sent: readonly IReply[], id: string) => sent.find(candidate => candidate.id === id);
 
 	test('pushes to the git push destination by name, publishes a new branch, and refuses a renamed upstream or a rejection', async () => {
-		let branches = ' \0origin\0refs/heads/main\0origin\0refs/heads/main\0refs/heads/main\n*\0origin\0refs/heads/feature\0origin\0refs/heads/feature\0refs/heads/feature\n';
+		// git 2.54 の実際の出力（%(push:remoteref) は空、%(push) が push 先の追跡ブランチ）
+		let branches = ' \0origin\0refs/heads/main\0origin\0\0refs/remotes/origin/main\0refs/heads/main\n*\0origin\0refs/heads/feature\0origin\0\0refs/remotes/origin/feature\0refs/heads/feature\n';
 		let pushResult: Partial<GitResult> = {};
 		const git = new FakeGit(args => args[0] === 'branch' ? { stdout: branches }
 			: args[0] === 'remote' ? { stdout: 'upstream\norigin\n' }
@@ -100,15 +101,15 @@ suite('ParadisMobileScmSyncRequests', () => {
 
 		dispatch(host, { t: 'push', id: '1' });
 		await flush();
-		branches = '*\0\0\0\0\0refs/heads/new-branch\n';
+		branches = '*\0\0\0\0\0\0refs/heads/new-branch\n';
 		dispatch(host, { t: 'push', id: '2' });
 		await flush();
 		// `git switch -c feat origin/main`: 上流が origin/main で、push.default=simple では push 先が決まらない
-		branches = '*\0origin\0refs/heads/main\0\0\0refs/heads/feat\n';
+		branches = '*\0origin\0refs/heads/main\0origin\0\0\0refs/heads/feat\n';
 		dispatch(host, { t: 'push', id: 'renamed' });
 		await flush();
 		pushResult = { code: 1, stdout: 'To github.com:o/r.git\n!\tHEAD:refs/heads/feature\t[rejected] (fetch first)\n', stderr: 'error: failed to push some refs' };
-		branches = '*\0origin\0refs/heads/feature\0origin\0refs/heads/feature\0refs/heads/feature\n';
+		branches = '*\0origin\0refs/heads/feature\0origin\0\0refs/remotes/origin/feature\0refs/heads/feature\n';
 		dispatch(host, { t: 'push', id: '3' });
 		await flush();
 
@@ -198,7 +199,9 @@ suite('ParadisMobileScmSyncRequests', () => {
 	});
 
 	test('commits staged changes only without touching the index, and does not restore on success', async () => {
-		const git = new FakeGit(args => args[0] === 'commit' ? { stdout: '[main abc] feat\n 1 file changed\n' } : undefined);
+		const git = new FakeGit(args => args[0] === 'commit' ? { stdout: '[main abc] feat\n 1 file changed\n' }
+			// まだコミットの無いリポジトリ（終了コード 1 で何も出さない）
+			: args[0] === 'rev-parse' ? { code: 1 } : undefined);
 		const sent: IReply[] = [];
 		const host = createHost(git, sent);
 
@@ -214,16 +217,22 @@ suite('ParadisMobileScmSyncRequests', () => {
 		});
 	});
 
-	test('treats a commit whose post-commit hook timed out as done, and reports when the staged state could not be restored', async () => {
+	test('treats a moved HEAD with our message as a commit, and neither restores nor commits when HEAD is unknown or moved by someone else', async () => {
 		let head = HEAD;
+		let commitsMade = 0;
+		let headMessage = 'feat\n';
+		let headFails = false;
 		let commitOutcome: Partial<GitResult> = {};
 		const git = new FakeGit(args => {
 			if (args[0] === 'commit') {
 				// コミットは作られ、その後のフックの途中で時間切れになった
-				head = commitOutcome.code === undefined ? 'd'.repeat(40) : head;
+				head = commitOutcome.code === undefined ? (++commitsMade).toString(16).padStart(40, 'd') : head;
 				return commitOutcome.code === undefined ? { code: 1, stderr: 'ParadisWorktreeGit: timed out after 120s' } : commitOutcome;
 			}
-			return args[0] === 'rev-parse' ? { stdout: `${head}\n` } : undefined;
+			if (args[0] === 'rev-parse' && args.includes('--verify')) {
+				return headFails ? { code: 1, stderr: 'ParadisWorktreeGit: timed out after 30s' } : { stdout: `${head}\n` };
+			}
+			return args[0] === 'log' ? { stdout: headMessage } : undefined;
 		});
 		const index = new FakeIndexChannel();
 		const refreshed: string[] = [];
@@ -232,28 +241,47 @@ suite('ParadisMobileScmSyncRequests', () => {
 
 		dispatch(host, { t: 'commitSafe', id: 'moved', message: 'feat', all: true });
 		await flush();
+		// HEAD が動いたが、送ったメッセージのコミットではない（同じ時に PC でもコミットされた）
+		commitOutcome = {};
+		headMessage = 'someone else\n';
+		dispatch(host, { t: 'commitSafe', id: 'other', message: 'feat', all: true });
+		await flush();
 		commitOutcome = { code: 1, stderr: 'pre-commit hook failed' };
 		index.restoreResult = { restored: false, reason: 'locked' };
 		dispatch(host, { t: 'commitSafe', id: 'locked', message: 'feat', all: true });
 		await flush();
+		headFails = true;
+		dispatch(host, { t: 'commitSafe', id: 'unknown', message: 'feat', all: true });
+		await flush();
+		headFails = false;
 		index.missing = true;
 		dispatch(host, { t: 'commitSafe', id: 'old', message: 'feat', all: true });
 		await flush();
 
 		const moved = reply(sent, 'moved');
-		const locked = reply(sent, 'locked')?.failure as { restored: boolean; restoreFailed?: boolean };
+		const failureOf = (id: string) => {
+			const failure = reply(sent, id)?.failure as { restored: boolean; restoreFailed?: boolean };
+			return { restored: failure.restored, restoreFailed: failure.restoreFailed };
+		};
 		assert.deepStrictEqual({
 			moved: { ok: moved?.ok, warning: typeof moved?.warning === 'string' },
+			other: { ok: reply(sent, 'other')?.ok, ...failureOf('other') },
+			locked: failureOf('locked'),
+			unknown: reply(sent, 'unknown')?.code,
+			old: reply(sent, 'old')?.code,
 			indexCalls: index.calls,
 			refreshed,
-			locked: { restored: locked.restored, restoreFailed: locked.restoreFailed },
-			old: reply(sent, 'old')?.code,
+			commits: git.calls.filter(call => call.startsWith('commit')).length,
 		}, {
 			moved: { ok: true, warning: true },
-			indexCalls: ['backupIndex', 'discardIndexBackup token-1', 'backupIndex', 'restoreIndex token-1', 'backupIndex'],
-			refreshed: ['refresh'],
+			other: { ok: false, restored: false, restoreFailed: true },
 			locked: { restored: false, restoreFailed: true },
+			unknown: 'head-unknown',
 			old: 'old-server',
+			// HEAD を読めなかった回は控えもコミットもしない。ほかの誰かのコミットのときは戻さない
+			indexCalls: ['backupIndex', 'discardIndexBackup token-1', 'backupIndex', 'backupIndex', 'restoreIndex token-1', 'backupIndex'],
+			refreshed: ['refresh'],
+			commits: 3,
 		});
 	});
 
