@@ -15,6 +15,7 @@ import { NoteBubble, StaleNotes } from './reviewNoteParts.js';
 import { canAnnotateRow, type DiffLineItem, type PlacedNotes, type ReviewNote } from './reviewNotes.js';
 import { REVIEW_FILTERS, diffLineNumber, diffSign, reviewStateOf, type ReviewFilter } from './diffReview.js';
 import { splitPath, type ScmEntry } from './scmModel.js';
+import { StageToggle } from './scmParts.js';
 
 /**
  * 差分レビューの部品（Orca の MobileDiffReviewHeader / FileSummary / Line / Footer と、
@@ -78,12 +79,14 @@ export function ReviewSummary({ reviewed, total, synced, position, filter, onFil
 }
 
 /** いま見ているファイル（状態の札・パス・増減・確認済みの印）。 */
-export function ReviewFileSummary({ entry, path, stats, state }: {
+export function ReviewFileSummary({ entry, path, stats, state, stage }: {
 	entry: ScmEntry | undefined;
 	path: string;
 	stats: { readonly add: number; readonly del: number } | undefined;
 	/** `changed` は確認した後に中身が変わった（Orca W2-14）。 */
 	state: ParadisMobileReviewState;
+	/** ファイルごとのステージ（PC が扱えるときだけ。Orca W2-15）。 */
+	stage?: { readonly busy: boolean; readonly disabled: boolean; readonly onPress: () => void };
 }) {
 	const parts = [
 		entry?.staged === true ? 'ステージ済み' : undefined,
@@ -99,6 +102,7 @@ export function ReviewFileSummary({ entry, path, stats, state }: {
 			</View>
 			{state === 'reviewed' ? <Text style={styles.reviewedMark}>確認済み</Text> : null}
 			{state === 'changed' ? <Text style={styles.changedMark}>確認後に変更あり</Text> : null}
+			{stage !== undefined && entry !== undefined ? <StageToggle staged={entry.staged} busy={stage.busy} disabled={stage.disabled} onPress={stage.onPress} path={path} /> : null}
 		</View>
 	);
 }

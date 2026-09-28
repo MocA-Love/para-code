@@ -15,7 +15,9 @@ import { IInstantiationService, ServicesAccessor } from '../../../../../platform
 import { InMemoryStorageService, IStorageService, StorageScope } from '../../../../../platform/storage/common/storage.js';
 import { paradisMobileDiffIdentity, paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts } from '../../common/paradisMobileDiffReview.js';
 import { PARADIS_MOBILE_REVIEW_STORAGE_KEY } from '../../common/paradisMobileReviewStore.js';
-import { paradisReviewNotesTargetVerdict } from '../../electron-browser/paradisMobileDiffReviewRequests.js';
+import { paradisReviewNotesTargetVerdict } from '../../electron-browser/paradisMobileAgentPromptDelivery.js';
+// 差分レビューの処理を登録表へ載せる（副作用 import）
+import '../../electron-browser/paradisMobileDiffReviewRequests.js';
 import { IParadisMobileRequestHost, paradisDispatchMobileRequest } from '../../electron-browser/paradisMobileRequestHandlers.js';
 
 interface IReply {

@@ -363,9 +363,58 @@ suite('ParadisWorktreeGitService', () => {
 			const calls: IExecFileCall[] = [];
 			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile(calls));
 
-			await assert.rejects(service.runGit('/repo', ['push', 'origin', 'main']), /subcommand not allowed/);
+			await assert.rejects(service.runGit('/repo', ['reset', '--hard']), /subcommand not allowed/);
 
 			assert.strictEqual(calls.length, 0);
+		});
+
+		test('rejects force pushes, remote branch deletion and merging pulls without spawning a process (Orca W2-15)', async () => {
+			const calls: IExecFileCall[] = [];
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile(calls));
+
+			const rejected: string[] = [];
+			for (const args of [
+				['push', '--force', 'origin', 'HEAD:refs/heads/main'],
+				['push', '-fu', 'origin', 'main'],
+				['push', '--force-with-lease', 'origin', 'main'],
+				['push', 'origin', '+main'],
+				['push', 'origin', ':main'],
+				['push', '--mirror'],
+				['push', 'ext::sh -c evil', 'main'],
+				['pull', 'origin', 'main'],
+				['pull', '--ff-only', '--rebase'],
+				['fetch', 'origin', '+refs/heads/*:refs/heads/*'],
+				['read-tree', '-m', '-u', 'HEAD'],
+			]) {
+				await service.runGit('/repo', args).then(() => undefined, (error: Error) => rejected.push(args.join(' ')));
+			}
+
+			assert.deepStrictEqual({ rejected: rejected.length, spawned: calls.length }, { rejected: 11, spawned: 0 });
+		});
+
+		test('runs push / pull with a longer timeout and without interactive credential prompts', async () => {
+			const timeouts: (number | undefined)[] = [];
+			const envs: (string | undefined)[] = [];
+			const execFile = ((_command: string, _args: readonly string[], options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
+				timeouts.push(options.timeout);
+				envs.push(`${(options.env as NodeJS.ProcessEnv).GIT_TERMINAL_PROMPT}/${(options.env as NodeJS.ProcessEnv).GCM_INTERACTIVE}`);
+				queueMicrotask(() => timeouts.length === 3
+					// Node は timeout 到達時に子プロセスを kill し、killed=true・code=null のエラーを返す
+					? callback(Object.assign(new Error('killed'), { killed: true, signal: 'SIGKILL' as NodeJS.Signals }), '', 'remote: working')
+					: callback(null, '', ''));
+				return {} as cp.ChildProcess;
+			}) as typeof cp.execFile;
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile);
+
+			await service.runGit('/repo', ['push', '--porcelain', 'origin', 'HEAD:refs/heads/feature']);
+			await service.runGit('/repo', ['status', '--porcelain=v1']);
+			const timedOut = await service.runGit('/repo', ['pull', '--ff-only', '--no-rebase', '--quiet']);
+
+			assert.deepStrictEqual({ timeouts, envs, timedOut }, {
+				timeouts: [120_000, 30_000, 120_000],
+				envs: ['0/never', '0/never', '0/never'],
+				timedOut: { code: 1, stdout: '', stderr: 'remote: working\nParadisWorktreeGit: timed out after 120s' },
+			});
 		});
 
 		test('rejects a forbidden option even inside an allowed subcommand, without spawning a process', async () => {

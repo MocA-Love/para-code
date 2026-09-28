@@ -32,6 +32,7 @@ import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IPar
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisParseGhIssueStatus, paradisParseIssueUrl } from '../../../common/paradisIssueDetection.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
 import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
+import { PARADIS_GIT_NETWORK_SUBCOMMANDS, paradisRestrictedGitArgsError } from '../common/paradisGitRestrictedArgs.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { getWslExePath } from '../../../../platform/agentHost/node/wslRemoteAgentHostHelpers.js';
 import { ParadisCommandArgument, paradisBuildWslInvocationArgs, paradisMergeWslEnvNames, paradisParseWslLoginPath, paradisParseWslUncPath, paradisPlanWslCommand, paradisWslLoginPathProbeArgs, paradisWslPathArg } from '../../../common/paradisWslPath.js';
@@ -102,6 +103,12 @@ const PARADIS_ISSUE_STATUS_LOOKUPS_PER_CALL = 8;
  * いるため、1本詰まると diff も PR もアプリを再起動するまで止まる。
  */
 const PARADIS_WSL_COMMAND_TIMEOUT_MS = 30_000;
+
+/**
+ * モバイルからの push / fetch / pull と commit（フックが動く）の上限時間。大きなリポジトリの push や、
+ * lint・テストを走らせる pre-commit は 30 秒を超えることがある（Orca W2-15）。
+ */
+const PARADIS_GIT_LONG_COMMAND_TIMEOUT_MS = 120_000;
 
 /**
  * シェルが「そんなコマンドは無い」で終わるときの終了コード。WSL へ振り分けた実行では
@@ -226,7 +233,10 @@ export class ParadisWorktreeGitService {
 		});
 	}
 
-	private static readonly RUN_GIT_ALLOWED_SUBCOMMANDS: ReadonlySet<string> = new Set(['status', 'diff', 'add', 'commit', 'log', 'rev-parse', 'branch', 'restore', 'remote', 'show']);
+	// push / fetch / pull（Orca W2-15 のスマホからの同期）と write-tree / read-tree（コミットに失敗したときに
+	// ステージの状態を戻す）は、許すオプションだけを列挙した追加の検査に掛ける（paradisRestrictedGitArgsError）。
+	// 強制 push（`--force` 系・`-f`・`+refspec`）とリモートのブランチの削除はそこで弾く。
+	private static readonly RUN_GIT_ALLOWED_SUBCOMMANDS: ReadonlySet<string> = new Set(['status', 'diff', 'add', 'commit', 'log', 'rev-parse', 'branch', 'restore', 'remote', 'show', 'push', 'fetch', 'pull', 'write-tree', 'read-tree']);
 	// 外部コマンド実行やリポジトリ差し替えに繋がるオプションを拒否する。`-C`/`-c` は自前で
 	// 先頭に足すので、呼び出し元が渡す args の側からは常に禁止する。`--output` は diff/log/show が
 	// 受け付け、値に任意パスを渡せば任意ファイル書き込みに使える。
@@ -255,15 +265,25 @@ export class ParadisWorktreeGitService {
 				throw new Error(`ParadisWorktreeGit: git argument not allowed: ${arg}`);
 			}
 		}
+		const restricted = paradisRestrictedGitArgsError(args);
+		if (restricted !== undefined) {
+			throw new Error(`ParadisWorktreeGit: ${restricted}`);
+		}
 		const env = await this.cachedShellEnv.getEnv();
 		// core.quotepath=false: 既定では非ASCIIパスが八進エスケープ+引用符("\345...")で出力され、
 		// モバイルのソース管理タブで文字化け表示になるため無効化する。
 		const gitArgs: ParadisCommandArgument[] = ['-C', paradisWslPathArg(repoPath), '-c', 'core.quotepath=false', ...args];
-		const invocation = await this.resolveInvocation('git', gitArgs, undefined, ['GIT_TERMINAL_PROMPT'], { ...env, GIT_TERMINAL_PROMPT: '0' });
+		// GCM_INTERACTIVE=never: Git Credential Manager が PC の画面に認証のウィンドウを出して、誰もいない PC で
+		// push / fetch を待たせ続けないようにする（端末の問い合わせは GIT_TERMINAL_PROMPT=0 で止めている）
+		const invocation = await this.resolveInvocation('git', gitArgs, undefined, ['GIT_TERMINAL_PROMPT', 'GCM_INTERACTIVE'], { ...env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' });
+		// リモートとの通信とコミットのフック（lint やテストを走らせる pre-commit）は 30 秒では終わらないことがある
+		const timeout = PARADIS_GIT_NETWORK_SUBCOMMANDS.has(args[0]) || args[0] === 'commit' ? PARADIS_GIT_LONG_COMMAND_TIMEOUT_MS : PARADIS_WSL_COMMAND_TIMEOUT_MS;
 		return new Promise<IParadisWorktreeGitCommandResult>(resolve => {
-			this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', timeout: PARADIS_WSL_COMMAND_TIMEOUT_MS, killSignal: 'SIGKILL', windowsHide: true, env: invocation.env, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+			this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', timeout, killSignal: 'SIGKILL', windowsHide: true, env: invocation.env, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
 				const rawCode: unknown = err ? (err as NodeJS.ErrnoException & { code?: unknown }).code ?? 1 : 0;
-				resolve({ code: typeof rawCode === 'number' ? rawCode : 1, stdout: String(stdout), stderr: String(stderr) });
+				// 時間切れで止めたことを呼び出し側（失敗の要約）が見分けられるように出力へ足す
+				const timedOut = err !== null && (err as { killed?: unknown }).killed === true;
+				resolve({ code: typeof rawCode === 'number' ? rawCode : 1, stdout: String(stdout), stderr: timedOut ? `${String(stderr)}\nParadisWorktreeGit: timed out after ${timeout / 1000}s` : String(stderr) });
 			});
 		});
 	}
