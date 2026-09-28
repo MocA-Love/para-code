@@ -2,6 +2,7 @@
 
 import type { PcSummary } from './appState.js';
 import type { ConnectionState } from './relayClient.js';
+import { updateRequiredLabel } from './pcCompat.js';
 
 /**
  * リレーがこの端末の資格を拒んだPC（PCでペアリングを解除された、PCがリレーへ登録し直した等）の
@@ -28,7 +29,8 @@ export function isPairingRejected(pc: { readonly connection: ConnectionState; re
  * 繋がってはいるがPara Codeが落ちている状態を「オフライン」と一緒にすると原因が分からなくなる。
  */
 export function pcStatusText(pc: PcSummary, active: boolean): string {
-	const state = pc.connection === 'online' && pc.pcOnline
+	// 版が合わない PC は、待っても直らないので、どちらを更新するかを出す
+	const state = pc.updateRequired !== undefined ? updateRequiredLabel(pc.updateRequired) : pc.connection === 'online' && pc.pcOnline
 		? (active ? '接続中' : '待機中')
 		// リレーが資格を拒んだ。待っても直らないので「オフライン」と並べない
 		: isPairingRejected(pc) ? PAIRING_REJECTED_LABEL

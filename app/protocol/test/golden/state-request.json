@@ -1,0 +1,13 @@
+{
+	"$comment": "mobile -> PC の state チャネル（State の要求）の固定形。current は今のアプリ、preW217 は W2-17 より前のアプリ（minCompatiblePc / capabilities を送らない）。current の形はアプリの requestState（app/mobile/src/store.ts）と完全に一致させる。",
+	"current": {
+		"protocolVersion": 3,
+		"minCompatiblePc": 3,
+		"capabilities": ["state.gzip.v1", "term.sync.v1", "fs.upload-binary.v1", "voice.clips.v1"],
+		"stateEncoding": "json-gzip-v1"
+	},
+	"preW217": {
+		"protocolVersion": 3,
+		"stateEncoding": "json-gzip-v1"
+	}
+}

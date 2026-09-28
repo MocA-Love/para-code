@@ -8,8 +8,9 @@
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
-import { MobileController, MobileWarmLeaseControllerRegistry, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, MobileWarmLeaseControllerRegistry, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type PcPushMessage, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
+import type { UpdateTarget } from './pcCompat.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
 import { countAttentionAgents } from './attentionCount.js';
 import { toolImageCache } from './agentToolImages.js';
@@ -81,6 +82,8 @@ export interface PcSummary {
 	readonly pcOnline: boolean;
 	/** リレーがこの端末の資格を拒んだ（そのPCとは再ペアリングが必要）。 */
 	readonly pairingRejected: boolean;
+	/** そのPCと版が合わず、どちらかの更新が必要（`app` はこのアプリ、`pc` はPCのPara Code）。 */
+	readonly updateRequired?: UpdateTarget | undefined;
 	readonly workspaces: number;
 	readonly terminals: number;
 	/** 応答待ち（質問・承認）のエージェント数。 */
@@ -468,6 +471,7 @@ function summarizeRuntime(runtime: PcRuntime): PcSummary {
 		connection: runtime.state.connection,
 		pcOnline: runtime.state.pcOnline,
 		pairingRejected: runtime.state.pairingRejected,
+		updateRequired: runtime.state.updateRequired,
 		workspaces: workspace?.workspaces.length ?? 0,
 		terminals: terminals.length,
 		// 要対応の数え方はタブのバッジ・ドロワーと同じ（`attentionCount.ts`）。
@@ -488,7 +492,7 @@ function pcHue(pc: PairedPc): number {
 
 function sameSummary(a: PcSummary, b: PcSummary): boolean {
 	return a.id === b.id && a.name === b.name && a.hue === b.hue && a.connection === b.connection && a.pcOnline === b.pcOnline
-		&& a.pairingRejected === b.pairingRejected
+		&& a.pairingRejected === b.pairingRejected && a.updateRequired === b.updateRequired
 		&& a.workspaces === b.workspaces && a.terminals === b.terminals && a.waiting === b.waiting
 		&& a.lastOnlineAt === b.lastOnlineAt
 		// battery はオブジェクトなので中身で比べる（参照比較だと毎回「変わった」ことになり、
@@ -973,6 +977,7 @@ export const useAppStore = create<AppState>(set => ({
 	pushRegistered: undefined,
 	workspace: undefined,
 	protocolError: undefined,
+	updateRequired: undefined,
 	terminalOperationIssue: undefined,
 	unknownTerminalOperationCount: 0,
 	terminalOutput: new Map(),
@@ -2046,3 +2051,34 @@ export const useAppStore = create<AppState>(set => ({
 		return controller?.fetchTurnIceServers() ?? Promise.resolve([]);
 	},
 }));
+
+// --- 新しい機能から PC へ要求を送る公開口（W2-17 の土台） -----------------------------------------
+//
+// 新しい機能は store.ts / 上の AppState を触らずに、ここの 3 つだけで PC の登録表
+// （`paradisMobileRequestHandlers.ts`）とやり取りする。`pcId` を省くといま見ている PC。
+
+function runtimeControllerOf(pcId: string | undefined): MobileController | undefined {
+	return pcId === undefined || pcId === activePcId ? controller : runtimes.get(pcId)?.controller;
+}
+
+/** その PC がその機能を広告しているか。広告の無い古い PC・知らない PC は false。 */
+export function pcHasCapabilityFor(pcId: string | undefined, name: string): boolean {
+	return runtimeControllerOf(pcId)?.hasPcCapability(name) ?? false;
+}
+
+/**
+ * 新しい種類の要求を PC へ送り、応答の本文で resolve する（`MobileController.requestPc`）。
+ * 送る前に {@link pcHasCapabilityFor}（画面なら `usePcCapability`）で PC が受けられるかを確かめること。
+ */
+export function sendPcRequest<T = Record<string, unknown>>(pcId: string | undefined, channel: 'scm' | 'fs', body: { readonly t: string; readonly ws?: string; readonly [key: string]: unknown }, options?: { readonly timeoutMs?: number }): Promise<T> {
+	const target = runtimeControllerOf(pcId);
+	return target !== undefined ? target.requestPc<T>(channel, body, options) : Promise.reject(new Error('not initialized'));
+}
+
+/**
+ * PC が `id` を付けずに送ってくるメッセージを購読する（`MobileController.onPcMessage`）。
+ * 購読は呼んだ時点のその PC に結びつく（`pcId` を省いたときも、あとで PC を切り替えても付いて行かない）。
+ */
+export function onPcMessage(pcId: string | undefined, channel: 'scm' | 'fs', listener: (message: PcPushMessage) => void): MobileDisposable {
+	return runtimeControllerOf(pcId)?.onPcMessage(channel, listener) ?? { dispose: () => { } };
+}

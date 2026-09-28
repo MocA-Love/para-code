@@ -1,0 +1,32 @@
+{
+	"$comment": "agent チャネルの固定形。id はターミナルの数値 ID、token はペイントークン（state.json の current の terminals[0] と揃えてある）。toPc はアプリが送る要求、toMobile は PC が送る応答。",
+	"toPc": [
+		{ "t": "attach", "id": 7, "token": "agent-token-1", "liveEncoding": "agent-live-append-v1" },
+		{ "t": "attach", "id": 7, "token": "agent-token-1", "epoch": "golden-agent-epoch", "afterRev": 1, "liveEncoding": "agent-live-append-v1" },
+		{ "t": "action/sendMessage", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-1", "epoch": "golden-agent-epoch", "text": "テストを流して" },
+		{ "t": "action/answerQuestion", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-2", "epoch": "golden-agent-epoch", "interactionId": "question-1", "answers": [{ "kind": "option", "index": 0 }] },
+		{ "t": "action/answerApproval", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-3", "epoch": "golden-agent-epoch", "interactionId": "approval-1", "choice": "allow" },
+		{ "t": "tool-full", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-4", "epoch": "golden-agent-epoch", "rev": 1 },
+		{ "t": "detach", "id": 7, "token": "agent-token-1" }
+	],
+	"toMobile": [
+		{
+			"t": "snapshot", "id": 7, "token": "agent-token-1", "agent": "claude", "epoch": "golden-agent-epoch", "rev": 1,
+			"messages": [
+				{ "rev": 0, "role": "user", "kind": "text", "text": "テストを流して", "ts": 1760000000000 },
+				{ "rev": 1, "role": "assistant", "kind": "tool_use", "text": "npm test", "tool": "Bash", "toolUseId": "tool-1", "ts": 1760000001000 }
+			],
+			"truncated": false,
+			"capabilities": { "agentActions": true, "claudeSettings": true }
+		},
+		{
+			"t": "delta", "id": 7, "token": "agent-token-1", "agent": "claude", "epoch": "golden-agent-epoch", "rev": 2,
+			"messages": [
+				{ "rev": 2, "role": "tool", "kind": "tool_result", "text": "ok", "toolUseId": "tool-1", "ts": 1760000002000 }
+			],
+			"capabilities": { "agentActions": true, "claudeSettings": true }
+		},
+		{ "t": "action-result", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-1", "status": "accepted", "consumed": true },
+		{ "t": "none", "id": 7, "token": "agent-token-1" }
+	]
+}
