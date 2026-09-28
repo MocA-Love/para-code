@@ -39,6 +39,7 @@ import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../.
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
+import { paradisTimeBoundedTeardownStep } from '../../sentry/common/paradisTeardownTiming.js';
 import { IParadisTerminalPrivateFiles, PARADIS_TERMINAL_PRIVATE_FILES_CHANNEL } from '../../terminalPrivateFiles/common/paradisTerminalPrivateFiles.js';
 import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisPtyDaemonStatus, IParadisPtyDaemonStatusService, PARADIS_PTY_DAEMON_CHANNEL } from '../common/paradisPtyDaemonStatus.js';
@@ -261,7 +262,8 @@ class ParadisTerminalScreenSaverContribution extends Disposable implements IWork
 		}));
 		this._register(this._lifecycleService.onBeforeShutdown(e => {
 			if (restoreSettled && paradisScreensEnabled(this._configurationService)) {
-				e.veto(raceTimeout(this._save(), SAVE_ON_SHUTDOWN_TIMEOUT).then(() => false), 'paradis.saveTerminalScreens');
+				// 所要時間を測る（W2-26）。上限は元からある SAVE_ON_SHUTDOWN_TIMEOUT。
+				e.veto(paradisTimeBoundedTeardownStep('pty-daemon.save-terminal-screens', this._save(), SAVE_ON_SHUTDOWN_TIMEOUT, { log: this._logService }).then(() => false), 'paradis.saveTerminalScreens');
 			}
 		}));
 	}

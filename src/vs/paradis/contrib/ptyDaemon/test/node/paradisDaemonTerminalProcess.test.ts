@@ -24,6 +24,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IParadisPtySpawnRequest } from '../../common/paradisPtyProtocol.js';
 import { paradisDecodeTerminalMetadata } from '../../common/paradisTerminalMetadata.js';
 import { ParadisDaemonTerminalProcess } from '../../node/paradisDaemonTerminalProcess.js';
+import { PARADIS_TERMINAL_KEEP_BACKGROUND_ENV } from '../../../terminalCloseCleanup/common/paradisTerminalCloseCleanup.js';
 import { paradisHandleOf } from '../../node/paradisTerminalProcessFactory.js';
 import { ParadisPtyDaemonHost } from '../../node/paradisPtyDaemonHost.js';
 import { IParadisPtyProcess } from '../../node/paradisPtyHolder.js';
@@ -79,7 +80,9 @@ suite('ParadisDaemonTerminalProcess', () => {
 			shellLaunchConfig,
 			cwd,
 			80, 24,
-			{ PATH: '/usr/bin', EMPTY: undefined } as unknown as Record<string, string>,
+			// 閉じたときの後始末（W2-32）は切っておく。偽の pid 7777 は手元の本物のプロセスを指しうるので、
+			// その子孫を `ps` で探して止めに行かせない。
+			{ PATH: '/usr/bin', EMPTY: undefined, [PARADIS_TERMINAL_KEEP_BACKGROUND_ENV]: '1' } as unknown as Record<string, string>,
 			{},
 			OPTIONS,
 			new NullLogService(),
@@ -106,6 +109,8 @@ suite('ParadisDaemonTerminalProcess', () => {
 				metadataIsOpaqueString: typeof request.metadata === 'string',
 				// TERM を渡さないと node-pty の既定 `xterm` に落ち、色付きプロンプトが黙って死ぬ。
 				term: request.term,
+				// 後始末の印はシェルへ渡さない（台帳には残す）。
+				marker: request.env[PARADIS_TERMINAL_KEEP_BACKGROUND_ENV],
 			},
 			{
 				shape: ['args', 'cols', 'cwd', 'env', 'file', 'metadata', 'rows', 'term'],
@@ -113,6 +118,7 @@ suite('ParadisDaemonTerminalProcess', () => {
 				envHasOnlyStrings: true,
 				metadataIsOpaqueString: true,
 				term: 'xterm-256color',
+				marker: undefined,
 			},
 		);
 	});

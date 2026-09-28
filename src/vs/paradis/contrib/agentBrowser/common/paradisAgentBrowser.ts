@@ -881,6 +881,11 @@ export interface IParadisAgentPaneStatus {
 	 * スコープ解決フォールバック (cwd→リポジトリ/worktreeルートの最長一致) に使う。
 	 */
 	readonly cwd?: string;
+	/**
+	 * Para Code が止まっている間の hook を控えから流し直して付けた「確認待ち」（W2-20）。印は出すが、
+	 * 完了の通知（音・モバイルのプッシュ）は出さない。status が review のときだけ付く。
+	 */
+	readonly quiet?: true;
 }
 
 /**
@@ -918,6 +923,12 @@ export interface IParadisAgentStatusSnapshot {
 	 * 古い shared process は送らないので省略可能にしてある。
 	 */
 	readonly awaitingUserTokens?: readonly string[];
+	/**
+	 * Para Code が止まっている間に届かなかった許可要求・質問を控えから流し直したもののうち、画面にその確認が
+	 * 今も出ているかをウィンドウ側で確かめてほしいペイン（W2-20）。確かめたら `confirmReplayedPrompt` を呼ぶ。
+	 * 古い shared process は送らないので省略可能にしてある。
+	 */
+	readonly replayedPrompts?: readonly { readonly token: string; readonly status: 'permission' | 'question' }[];
 }
 
 // --- ワンボタンMCPセットアップ（バインディングダイアログの「自動セットアップ」用） -----------------

@@ -247,7 +247,11 @@ export interface IParadisPtyHost {
 	 * 効かせないと、消したはずの出力が繋ぎ直したときに戻ってくる。
 	 */
 	clearScrollback(handle: number): Promise<void>;
-	kill(handle: number, signal?: string): Promise<void>;
+	/**
+	 * `stopDescendants` は、閉じるときにそのターミナルから起動されて裏に残ったプロセスも止めるか（W2-32）。
+	 * 古い常駐はこの引数を知らずに無視する（今までどおりシェルだけを終わらせる）。
+	 */
+	kill(handle: number, signal?: string, stopDescendants?: boolean): Promise<void>;
 	/** 抱えるのをやめる。終わったものを片付ける合図。 */
 	release(handle: number): Promise<void>;
 

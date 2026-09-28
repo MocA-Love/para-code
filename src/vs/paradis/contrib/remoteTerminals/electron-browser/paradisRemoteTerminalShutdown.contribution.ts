@@ -104,6 +104,7 @@ class ParadisRemoteTerminalShutdown extends Disposable implements IWorkbenchCont
 	) {
 		super();
 		this._register(paradisRegisterTerminalShutdownPolicy({
+			name: 'remote-terminals',
 			prepare: reason => this.prepare(reason),
 			shouldKeepProcessesAlive: reason => this._decision?.reason === reason && this._decision.keep,
 			shouldKeepProcessAlive: (reason, terminal) => this.shouldKeepProcessAlive(reason, terminal),

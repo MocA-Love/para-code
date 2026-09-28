@@ -18,10 +18,11 @@
 // 尋ねるのは非同期なので、閉じる処理の前段（veto できる `onBeforeShutdown`）で `prepare` を
 // 済ませ、実際にプロセスを畳む段（同期の `onWillShutdown`）では答えを読むだけにする。
 
-import { Promises, raceTimeout } from '../../../../base/common/async.js';
+import { Promises } from '../../../../base/common/async.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ShutdownReason } from '../../../services/lifecycle/common/lifecycle.js';
+import { IParadisTeardownLog, paradisTimeBoundedTeardownStep, paradisTimeTeardownStep } from '../../../../paradis/contrib/sentry/common/paradisTeardownTiming.js';
 
 /**
  * 端末のうち、残せるかどうかの判断に要る部分だけ。`ITerminalInstance` を持ち込まないのは、
@@ -49,6 +50,11 @@ export interface IParadisShutdownTerminal {
  *    `true` を返すと、**自分が一切関わっていない端末の復元を壊す**。
  */
 export interface IParadisTerminalShutdownPolicy {
+	/**
+	 * 終了処理の計測（W2-26）でこの役を見分ける名前。パスや利用者の内容を含めないこと。
+	 * 省略すると `unnamed` として記録される。
+	 */
+	readonly name?: string;
 	/**
 	 * 閉じる前に一度だけ呼ばれる。ここで設定を読み、必要ならユーザーに尋ねて答えを決めておく。
 	 * 閉じる処理を止めないよう、失敗しても投げないこと。
@@ -87,13 +93,27 @@ export async function paradisPrepareTerminalShutdown(reason: ShutdownReason): Pr
 	//
 	// 1つずつ包むのは、投げた1つで残りの `prepare` を止めないため。止めると、尋ねてもいない
 	// 答えで端末を畳むことになる。
+	//
+	// 1つずつ所要時間を測る（W2-26）。`prepare` はユーザーへの問い合わせを含むので、ここではログに
+	// 残すだけにする。問い合わせ以外の待ち（常駐の状態の問い合わせ等）は各役の中で別に測っている。
 	for (const current of policies) {
 		try {
-			await current.prepare(reason);
+			await paradisTimeTeardownStep(`terminal-shutdown.prepare.${current.name ?? 'unnamed'}`, current.prepare(reason), {
+				log: paradisPolicyTeardownLog(current),
+				waitsForUser: true,
+			});
 		} catch (error) {
 			onUnexpectedError(error);
 		}
 	}
+}
+
+/** 計測のログを役の `warn` へ流す。役は trace を持たないので、遅くないステップは書かない。 */
+function paradisPolicyTeardownLog(policy: IParadisTerminalShutdownPolicy): IParadisTeardownLog {
+	return {
+		trace: () => { },
+		warn: message => policy.warn(message),
+	};
 }
 
 /**
@@ -165,9 +185,12 @@ export function paradisJoinKeptDetaches(detaches: readonly Promise<void>[]): Pro
 			}
 		}
 	};
-	return raceTimeout(
+	// 所要時間を測る（W2-26）。上限は元からあるもので、計測が足したものではない。
+	const log: IParadisTeardownLog = { trace: () => { }, warn };
+	return paradisTimeBoundedTeardownStep(
+		'terminal-shutdown.keep-detaches',
 		Promises.settled(detaches.slice()).then(() => undefined, error => warn(`Para Code could not ask for every terminal to be kept: ${error}`)),
 		PARADIS_KEEP_DETACH_TIMEOUT_MS,
-		() => warn('Para Code could not ask for its terminals to be kept in time; closing anyway'),
+		{ log, onTimeout: () => warn('Para Code could not ask for its terminals to be kept in time; closing anyway') },
 	).then(() => undefined);
 }

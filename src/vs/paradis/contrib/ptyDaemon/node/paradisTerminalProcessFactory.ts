@@ -24,12 +24,13 @@ import { IProcessEnvironment } from '../../../../base/common/platform.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IShellLaunchConfig, ITerminalProcessOptions } from '../../../../platform/terminal/common/terminal.js';
-import { TerminalProcess } from '../../../../platform/terminal/node/terminalProcess.js';
 import { IParadisTerminalProcessLike } from '../common/paradisTerminalProcessLike.js';
 import { paradisWithoutPtyDaemonEnv } from '../common/paradisPtyEnvHygiene.js';
 import { IParadisPtyHostConnection } from './paradisEnsurePtyHost.js';
 import { IParadisTerminalOrigin, ParadisDaemonTerminalProcess } from './paradisDaemonTerminalProcess.js';
 import { ParadisPtyDispatch } from './paradisPtyDispatch.js';
+import { paradisShouldStopBackgroundOnClose, paradisWithoutCloseCleanupMarker } from '../../terminalCloseCleanup/common/paradisTerminalCloseCleanup.js';
+import { ParadisCleaningTerminalProcess } from '../../terminalCloseCleanup/node/paradisCleaningTerminalProcess.js';
 
 /** 引き取る相手。常駐が抱えている1本を名指しする。 */
 export interface IParadisAdoptTarget {
@@ -243,5 +244,7 @@ export async function paradisCreateTerminalProcess(
 	if (adoptTarget) {
 		throw new Error('cannot adopt a terminal without a daemon to adopt it from');
 	}
-	return new TerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, logService, productService);
+	// 閉じたときに裏のプロセスを止める器（W2-32）。設定の印は env で届くので、読んだらシェルへは渡さない。
+	// 常駐側（上の分岐）は印を env に残したまま渡す。常駐の台帳に残り、引き取るときに読み戻せるようにするため。
+	return new ParadisCleaningTerminalProcess(paradisShouldStopBackgroundOnClose(env), shellLaunchConfig, cwd, cols, rows, paradisWithoutCloseCleanupMarker(env), executableEnv, options, logService, productService);
 }

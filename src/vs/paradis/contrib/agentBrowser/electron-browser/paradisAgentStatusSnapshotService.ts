@@ -13,6 +13,7 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisAgentStatusSnapshot, PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
+import { paradisRememberQuietReplayedPanes } from '../browser/paradisQuietReplayedPanes.js';
 
 const STATUS_POLL_INTERVAL_MS = 2_000;
 
@@ -152,6 +153,10 @@ export class ParadisAgentStatusSnapshotService extends Disposable implements IPa
 
 	private _publish(outcome: IParadisAgentStatusSnapshotOutcome): void {
 		this._latest = outcome;
+		// 受け手へ配る前に、流し直した完了（鳴らさない印）を覚え直す（W2-20）。
+		if (outcome.snapshot !== undefined) {
+			paradisRememberQuietReplayedPanes(outcome.snapshot.paneStatuses);
+		}
 		this._onDidOutcome.fire(outcome);
 	}
 

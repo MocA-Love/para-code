@@ -119,6 +119,41 @@ suite('ParadisPtyDaemonHost', () => {
 		);
 	});
 
+	// レビュー H2: 裏のプロセスを止める処理（W2-32）は常駐の中で行い、手放しはそれが終わるまで待つ。
+	test('閉じるときの後始末は常駐の中で行い、終わるまで手放さない', async () => {
+		const disposables = store.add(new DisposableStore());
+		const ptys: FakePty[] = [];
+		const calls: string[] = [];
+		let finish: () => void = () => { };
+		let end: () => void = () => { };
+		const host = disposables.add(new ParadisPtyDaemonHost(() => {
+			const pty = new FakePty(1000 + ptys.length, disposables);
+			ptys.push(pty);
+			return pty;
+		}, (shellPid, endShell) => {
+			calls.push(`cleanup ${shellPid}`);
+			end = endShell;
+			return { done: new Promise<void>(resolve => finish = resolve) };
+		}));
+		const stopped = (await host.spawn(request('stopped'))).handle;
+		const plain = (await host.spawn(request('plain'))).handle;
+
+		await host.kill(stopped, undefined, true);
+		await host.kill(plain, undefined, false);
+		const released = host.release(stopped).then(() => calls.push('released'));
+		await Promise.resolve();
+		const killedBeforeEnd = ptys[0].killed;
+		end();
+		calls.push(`killed ${ptys[0].killed}`);
+		finish();
+		await released;
+
+		assert.deepStrictEqual(
+			{ calls, killedBeforeEnd, plainKilled: ptys[1].killed, listed: (await host.list()).map(summary => summary.handle) },
+			{ calls: ['cleanup 1000', 'killed true', 'released'], killedBeforeEnd: false, plainKilled: true, listed: [plain] },
+		);
+	});
+
 	test('まだ生きているものを手放すときは殺してから外す', async () => {
 		const { host, ptys } = create();
 		const handle = (await host.spawn(request('running'))).handle;

@@ -82,7 +82,17 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 	private readonly _onDidChangeTitle = this._register(new Emitter<IParadisPtyTitleEvent>());
 	readonly onDidChangeTitle = this._onDidChangeTitle.event;
 
-	constructor(private readonly spawner: ParadisPtySpawner) {
+	/** 裏のプロセスを止めている最中の handle（W2-32）。 */
+	private readonly closing = new Map<number, Promise<unknown>>();
+
+	constructor(
+		private readonly spawner: ParadisPtySpawner,
+		/**
+		 * 閉じるときに裏のプロセスを止める役（W2-32）。`end` で本来の終了を行わせる。省略したら止めない
+		 * （テストや、止める手段の無い環境）。
+		 */
+		private readonly closeCleanup?: (shellPid: number, end: () => void, exited: Promise<unknown>) => { readonly done: Promise<void> },
+	) {
 		super();
 	}
 
@@ -226,8 +236,23 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 		this.holders.get(handle)?.clearScrollback();
 	}
 
-	async kill(handle: number, signal?: string): Promise<void> {
-		this.holders.get(handle)?.kill(signal);
+	async kill(handle: number, signal?: string, stopDescendants?: boolean): Promise<void> {
+		const holder = this.holders.get(handle);
+		if (!holder) {
+			return;
+		}
+		// 閉じるときに裏のプロセスも止める（W2-32）。表を撮ってからシェルを終わらせるので、終わらせるのは
+		// 最大 1 秒遅れる（常駐はアプリより長く生きるので、遅れても最後まで届く）。手放し（release）は
+		// これが終わるまで待つ。
+		if (stopDescendants === true && this.closeCleanup !== undefined && holder.exited === undefined && !this.closing.has(handle)) {
+			// 購読はこの handle の持ち物に入れる（手放すときに一緒に畳む）。
+			const exited = new Promise<void>(resolve => this.perHandle.get(handle)?.add(holder.onDidExit(() => resolve())));
+			const { done } = this.closeCleanup(holder.summary().pid, () => holder.kill(signal), exited);
+			const settled = done.catch(() => undefined).finally(() => this.closing.delete(handle));
+			this.closing.set(handle, settled);
+			return;
+		}
+		holder.kill(signal);
 	}
 
 	/**
@@ -237,6 +262,8 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 	 * 言っている以上、走らせたまま行方不明にする方が悪い。
 	 */
 	async release(handle: number): Promise<void> {
+		// 裏のプロセスを止めている最中なら、それが終わるまで手放さない（畳むとシェルの pid を見失う）。
+		await this.closing.get(handle);
 		const holder = this.holders.get(handle);
 		if (!holder) {
 			return;
