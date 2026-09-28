@@ -34,6 +34,10 @@ interface Env {
 	APNS_KEY_ID?: string;
 	APNS_TEAM_ID?: string;
 	APNS_TOPIC?: string;
+	// W2-35: 使われていないモバイルの資格を失効させるまでの日数（DeviceDO が参照する）。未設定・0 なら
+	// 失効させない（既定）。理由付きの切断（W2-04）を載せたアプリが行き渡ってから `wrangler.jsonc` の
+	// vars か `wrangler secret put` で 90 を入れる。最後に使った時刻の記録は、未設定の間も続く。
+	MOBILE_CREDENTIAL_TTL_DAYS?: string;
 }
 
 function doStubFor(env: Env, deviceId: string | null): DurableObjectStub | null {
