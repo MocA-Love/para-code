@@ -22,17 +22,24 @@ export function paradisRollingBackupUri(file: URI): URI {
 
 /**
  * 利用者の設定を書き換える直前に、今の中身を1つだけ控えへ写す（上書きなので増え続けない）。
- * 写すのは `copy` なので、元のファイルの権限をそのまま引き継ぐ。
+ * 写すのは `copy` なので、元のファイルの権限をそのまま引き継ぐ。設定が symlink（dotfiles の管理など）
+ * なら実体を写す（`copy` はリンクをリンクのまま写すので、そのままでは控えもリンクになり、中身を
+ * 残せない）。控えの場所が symlink なら写さない。
  *
  * 控えは保険なので、写せなくても書き換えは止めない（写せない理由はログへ）。
  * @returns 写したか（元のファイルが無い・写せなければ false）
  */
-export async function paradisWriteRollingBackupUri(fileService: Pick<IFileService, 'exists' | 'copy'>, file: URI, onError?: (error: unknown) => void): Promise<boolean> {
+export async function paradisWriteRollingBackupUri(fileService: Pick<IFileService, 'exists' | 'copy' | 'realpath' | 'stat'>, file: URI, onError?: (error: unknown) => void): Promise<boolean> {
 	try {
 		if (!(await fileService.exists(file))) {
 			return false;
 		}
-		await fileService.copy(file, paradisRollingBackupUri(file), true);
+		const backup = paradisRollingBackupUri(file);
+		if (await fileService.exists(backup) && (await fileService.stat(backup)).isSymbolicLink) {
+			throw new Error(`Refusing to overwrite a symlinked backup: ${backup.path}`);
+		}
+		const source = await fileService.realpath(file) ?? file;
+		await fileService.copy(source, backup, true);
 		return true;
 	} catch (error) {
 		onError?.(error);

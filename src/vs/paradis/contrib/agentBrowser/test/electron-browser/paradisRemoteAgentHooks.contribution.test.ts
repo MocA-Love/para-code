@@ -317,6 +317,8 @@ suite('ParadisRemoteAgentHookFiles', () => {
 				exists: resource => fileService.exists(resource),
 				writeFile: (resource, content) => fileService.writeFile(resource, content),
 				copy: (source, target, overwrite) => fileService.copy(source, target, overwrite),
+				realpath: resource => fileService.realpath(resource),
+				stat: resource => fileService.stat(resource),
 				readFile: resource => state.unreadable.has(resource.toString())
 					? Promise.reject(new Error('permission denied'))
 					: fileService.readFile(resource),
