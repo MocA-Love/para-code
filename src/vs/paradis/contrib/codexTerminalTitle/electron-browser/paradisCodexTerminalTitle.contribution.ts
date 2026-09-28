@@ -555,6 +555,21 @@ function replaceTerminalTitleInTuiSection(config: string): string {
 }
 
 /** ログイン済みのアカウント用ホームの顔ぶれ（並び順に依らない）。 */
+/**
+ * Writes the setting into every signed-in account home other than the default one. A failure in one
+ * home does not stop the rest; the result says whether every home was written, so the caller only
+ * records the home set as done (and stops retrying) when nothing failed.
+ */
+export async function writeCodexAccountHomes(homes: readonly IParadisCodexHome[], write: (home: URI) => Promise<boolean>): Promise<boolean> {
+	let allWritten = true;
+	for (const home of homes) {
+		if (!home.isDefault && home.signedIn) {
+			allWritten = await write(URI.file(home.homePath)) && allWritten;
+		}
+	}
+	return allWritten;
+}
+
 function accountHomesKey(homes: readonly IParadisCodexHome[]): string {
 	return JSON.stringify(homes.filter(home => !home.isDefault && home.signedIn).map(home => home.homePath).sort());
 }
@@ -628,12 +643,7 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 		// 1つのホームで失敗しても残りのホームには書く（以前は最初の失敗で全部止まっていた）。
 		if (this.environmentService.remoteAuthority === undefined) {
 			const state = await this.codexAccountsClient.getState().catch(() => undefined);
-			let allWritten = true;
-			for (const home of state?.homes ?? []) {
-				if (!home.isDefault && home.signedIn) {
-					allWritten = await this.tryWriteTerminalTitleConfig(URI.file(home.homePath), 'account-home', false) && allWritten;
-				}
-			}
+			const allWritten = await writeCodexAccountHomes(state?.homes ?? [], home => this.tryWriteTerminalTitleConfig(home, 'account-home', false));
 			// 失敗したホームがあれば記録しない。次にアカウントの状態が届いたとき、もう一度書きに行く。
 			if (state !== undefined && allWritten) {
 				this.writtenAccountHomesKey = accountHomesKey(state.homes);
