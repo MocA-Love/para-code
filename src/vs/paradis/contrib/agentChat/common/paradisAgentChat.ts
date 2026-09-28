@@ -126,6 +126,11 @@ export interface IParadisAgentSessionInfo {
 	readonly model?: string;
 	/** reasoning effort（Codex: turn_context.effort、Claude: settings.json の既定値 + /effort の実行記録）。 */
 	readonly effort?: string;
+	/**
+	 * 会話の指紋（`paradisAgentSessionKey`、W2-29）。ターミナルが閉じた後にスマホから「再開して送る」ときの宛先。
+	 * セッション ID そのものは送らない。
+	 */
+	readonly resumeKey?: string;
 }
 
 export type IParadisAgentInteraction =

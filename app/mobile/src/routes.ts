@@ -130,6 +130,16 @@ export const routes = {
 		pathname: '/pc/[pcId]/session/[spaceId]/activity/[agentId]',
 		params: withOptional({ pcId, spaceId, agentId, terminal: terminalKey }, { epoch }),
 	}),
+	/** スペースの過去の会話（終わった会話を開き直して続きを頼む。W2-29）。 */
+	agentHistory: (pcId: string, spaceId: string): RouteHref => ({
+		pathname: '/pc/[pcId]/session/[spaceId]/history',
+		params: { pcId, spaceId },
+	}),
+	/** 過去の会話 1 つ（`key` は PC が付けた会話の指紋）。 */
+	agentHistorySession: (pcId: string, spaceId: string, key: string): RouteHref => ({
+		pathname: '/pc/[pcId]/session/[spaceId]/history/[key]',
+		params: { pcId, spaceId, key },
+	}),
 	notifications: (): RouteHref => '/notifications',
 	settings: (page?: SettingsPage): RouteHref => (page === undefined ? '/settings' : `/settings/${page}`),
 	pair: (): RouteHref => '/pair',

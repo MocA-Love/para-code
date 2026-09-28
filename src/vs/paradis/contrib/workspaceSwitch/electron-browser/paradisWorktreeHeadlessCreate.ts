@@ -521,6 +521,11 @@ export interface IParadisResumeAgentInWorkspaceRequest {
 	 * として渡し、選んでいるアカウントより優先する（その会話はそのホームにしか無いことがあるため）。
 	 */
 	readonly codexHome?: string;
+	/**
+	 * 利用者の操作を乱さずに開く（今のスペースでも裏のタブとして開き、フォーカスを移さない）。スマホから再開する
+	 * とき（W2-29）に使う。今の PC の画面を切り替えない。
+	 */
+	readonly preserveFocus?: boolean;
 }
 
 /** 検証済みのセッションIDで、指定スペースのエディタターミナルへresumeコマンドを送る。 */
@@ -537,8 +542,10 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 	const codexHome = request.agent === 'codex' && request.rootUri.scheme === Schemas.file && request.codexHome !== undefined && isAbsolute(request.codexHome)
 		? request.codexHome
 		: undefined;
+	const preserveFocus = request.preserveFocus === true;
+	const location = preserveFocus ? paradisBackgroundEditorLocation() : TerminalLocation.Editor;
 	const instance = await terminalService.createTerminal(wsl === undefined
-		? { cwd: request.rootUri, location: TerminalLocation.Editor, ...(codexHome !== undefined ? { config: { env: { CODEX_HOME: codexHome } } } : {}) }
+		? { cwd: request.rootUri, location, ...(codexHome !== undefined ? { config: { env: { CODEX_HOME: codexHome } } } : {}) }
 		: {
 			config: {
 				name: request.agent === 'claude' ? 'Claude Code' : 'Codex',
@@ -546,15 +553,15 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 				// cwdとdistroはargv/位置引数で渡す。シェル文字列へ埋め込まない。
 				args: ['-d', wsl.distro, '-e', 'sh', '-c', 'cd -- "$0" && exec "${SHELL:-/bin/bash}" -l', wsl.linuxCwd],
 			},
-			location: TerminalLocation.Editor,
+			location,
 		});
 	// createTerminal は Editor Terminal の openEditor 完了を待たない。スペース切り替え直後に
 	// setActiveInstance だけ行うと、切り替え先のエディタタブとして表示されないことがあるため、
 	// PTY とエディタの準備を明示的に待ってから対象スコープへ割り当てる。
 	await instance.processReady;
-	await terminalEditorService.openEditor(instance);
+	await terminalEditorService.openEditor(instance, preserveFocus ? paradisBackgroundEditorLocation() : undefined);
 	terminalScopeService.assignInstanceScope(instance.instanceId, request.stateKey);
-	if (request.stateKey === switchService.activeStateKey) {
+	if (!preserveFocus && request.stateKey === switchService.activeStateKey) {
 		terminalService.setActiveInstance(instance);
 	}
 	// IDは上のホワイトリストを通り、実行ファイルと引数位置も固定。シェル文字を含まない。

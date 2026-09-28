@@ -11,6 +11,7 @@ import { openPcRoute } from '../src/features/pc/openPcRoute.js';
 import { AuthGate } from '../src/components/authGate.js';
 import { OverlayHost } from '../src/components/overlayHost.js';
 import { UpdateSheetHost } from '../src/components/updateSheet.js';
+import { AgentSendQueueRunner } from '../src/agentSendQueue.js';
 import { ToastHost } from '../src/ui/toast.js';
 import { DevProbe } from '../src/devProbe.js';
 import { DevWidthFrame } from '../src/dev/devWidthFrame.js';
@@ -216,6 +217,8 @@ function RootLayout() {
 					<OverlayHost />
 					{/* 更新後の初回起動でだけ出るお知らせ。ロック中に出ないようAuthGateの内側に置く */}
 					<UpdateSheetHost />
+					{/* PC に届かない間に預かったエージェントへの送信を、つながったら送る（W2-29）。何も描かない */}
+					<AgentSendQueueRunner />
 					{/* 一時的なお知らせ（PC切替・起動完了）を出す唯一の場所。ロック中に出さないよう
 					    AuthGateの内側に置く */}
 					<ToastHost />
