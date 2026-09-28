@@ -46,6 +46,8 @@ import { isTablet } from './hooks/useSizeClass.js';
 import { MobileVoiceLifecycle } from './voiceLifecycle.js';
 import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
 import { usePcListView } from './features/pc/pcListViewStore.js';
+import { buildLastKnownSnapshot, openLastKnownSnapshot, sameLastKnownContent, type LastKnownPcSnapshot } from './lastKnownPcs.js';
+import { lastKnownPcStorage, lastKnownPcWriter } from './lastKnownPcStore.js';
 
 /**
  * PC側とモバイル側の Sentry イベントを突き合わせる相関IDを設定する。
@@ -90,6 +92,11 @@ export interface PcSummary {
 	readonly waiting: number;
 	/** 最後にPCがオンラインだと確認できた時刻（一度も繋がっていなければ undefined）。 */
 	readonly lastOnlineAt: number | undefined;
+	/**
+	 * 前回受け取った一覧の要約（W2-25。スペース名と件数・状態だけ）。**表示専用**で、操作してよいかの
+	 * 判断には使わない（件数・スペースの有無はいつも上の生きた値で決める）。
+	 */
+	readonly lastKnown?: LastKnownPcSnapshot | undefined;
 	/**
 	 * そのPCのバッテリー（ノートPCのみ。デスクトップや未対応の版では undefined）。
 	 * 一覧の行に出すため、いま見ているPCだけでなく全PCぶんをここに載せる。
@@ -400,6 +407,8 @@ interface PcRuntime {
 	/** そのコントローラが最後に報告した状態（アクティブなら画面と同じ内容）。 */
 	state: StoreState;
 	lastOnlineAt: number | undefined;
+	/** 前回の一覧の要約（W2-25。起動時にファイルから読み、State を受けるたびに作り直す）。 */
+	lastKnown: LastKnownPcSnapshot | undefined;
 	/**
 	 * 一度でも connect() を呼んだか。コントローラは初回だけ資格情報を渡す必要があり
 	 * （以後は自分で覚えている）、繋ぎ直しは reconnect() で行う。
@@ -492,7 +501,9 @@ function summarizeRuntime(runtime: PcRuntime): PcSummary {
 		terminals: terminals.length,
 		// 要対応の数え方はタブのバッジ・ドロワーと同じ（`attentionCount.ts`）。
 		waiting: countAttentionAgents(terminals),
-		lastOnlineAt: runtime.lastOnlineAt,
+		// 起動直後でまだ繋がっていなければ、前回の一覧を受け取った時刻を最後の接続として出す。
+		lastOnlineAt: runtime.lastOnlineAt ?? runtime.lastKnown?.savedAt,
+		lastKnown: runtime.lastKnown,
 		battery: workspace?.battery,
 	};
 }
@@ -510,7 +521,7 @@ function sameSummary(a: PcSummary, b: PcSummary): boolean {
 	return a.id === b.id && a.name === b.name && a.hue === b.hue && a.connection === b.connection && a.pcOnline === b.pcOnline
 		&& a.pairingRejected === b.pairingRejected && a.updateRequired === b.updateRequired
 		&& a.workspaces === b.workspaces && a.terminals === b.terminals && a.waiting === b.waiting
-		&& a.lastOnlineAt === b.lastOnlineAt
+		&& a.lastOnlineAt === b.lastOnlineAt && a.lastKnown === b.lastKnown
 		// battery はオブジェクトなので中身で比べる（参照比較だと毎回「変わった」ことになり、
 		// 一覧を購読しているUIとLive Activityの同期が状態更新のたびに走ってしまう）。
 		&& a.battery?.level === b.battery?.level && a.battery?.charging === b.battery?.charging;
@@ -724,7 +735,7 @@ function createRuntime(pc: PairedPc, operationRun: number, persistedOutbox: read
 	controller.onNotifyHandled = handled => {
 		dismissTrayHandledByPc(pc.id, handled).catch(err => console.warn('[appState] failed to clear handled notifications', err));
 	};
-	pending = { pc, controller, state: createEmptyStoreState(), lastOnlineAt: undefined, started: false, drafts: {} };
+	pending = { pc, controller, state: createEmptyStoreState(), lastOnlineAt: undefined, lastKnown: undefined, started: false, drafts: {} };
 	// その PC を名指しした購読は、ペアリングし直しで作り直したコントローラへも付け直す。
 	attachPcMessageSubscriptions(subscription => subscription.pcId === pc.id, controller);
 	return pending;
@@ -759,6 +770,7 @@ function applyControllerState(runtime: PcRuntime, next: StoreState): void {
 	}
 	// PCが名乗った名前を台帳へ取り込む（ユーザーが自分で付けた名前は上書きしない）。
 	adoptReportedPcName(runtime, next.workspace?.pcName);
+	rememberLastKnown(runtime, next);
 	if (runtime.pc.id !== activePcId) {
 		useAppStore.setState({ pcs: pcSummaries() });
 		return;
@@ -789,6 +801,57 @@ function adoptReportedPcName(runtime: PcRuntime, reported: string | undefined): 
 	runtime.pc = next;
 	persistPcs();
 	useAppStore.setState({ pcs: pcSummaries() });
+}
+
+/** そのPCの通知鍵（outbox・前回の一覧の封緘に使う。ペアリング済みなら接続せずに導ける）。 */
+function notifyKeyOf(pc: PairedPc): Uint8Array | undefined {
+	if (identity === undefined) {
+		return undefined;
+	}
+	try {
+		return deriveNotifyKey(identity.secretKey, pc.creds.pcPublicKey);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * いまのPCの状態を「前回の一覧」として覚えておく（W2-25）。今回の接続で確かめた完全な State だけを使う
+ * （版が合わない・資格を拒まれた・途中までの State は残さない）。
+ */
+function rememberLastKnown(runtime: PcRuntime, next: StoreState): void {
+	const workspace = next.workspace;
+	if (next.connection !== 'online' || !next.pcOnline || !next.sessionProtocolReady || next.updateRequired !== undefined
+		|| workspace === undefined || !workspace.complete) {
+		return;
+	}
+	const archived = scopedKeysFor(archivedRecord, runtime.pc.id);
+	const snapshot = buildLastKnownSnapshot(runtime.pc.id, workspace, key => archived.has(key), Date.now());
+	const key = notifyKeyOf(runtime.pc);
+	// 中身が同じなら参照を据え置く（一覧を購読している画面を State のたびに描き直さない）。
+	// 「最終確認」の時刻は1分おきに進める。
+	const previous = runtime.lastKnown;
+	if (previous === undefined || !sameLastKnownContent(previous, snapshot) || snapshot.savedAt - previous.savedAt >= 60_000) {
+		runtime.lastKnown = snapshot;
+	}
+	if (key !== undefined) {
+		lastKnownPcWriter.schedule(key, snapshot);
+	}
+}
+
+/** 起動時に前回の一覧を読む。読めない・開けないものは無いものとして扱う。 */
+async function loadLastKnown(pc: PairedPc): Promise<LastKnownPcSnapshot | undefined> {
+	const key = notifyKeyOf(pc);
+	if (key === undefined) {
+		return undefined;
+	}
+	try {
+		const sealed = await lastKnownPcStorage.read(pc.id);
+		return sealed !== null ? openLastKnownSnapshot(key, sealed, pc.id) : undefined;
+	} catch (err) {
+		console.warn('[appState] failed to read the last known list', err);
+		return undefined;
+	}
 }
 
 function persistPcPreferences(): void {
@@ -1189,6 +1252,14 @@ export const useAppStore = create<AppState>(set => ({
 				const persistedOutbox = await createTerminalOperationOutboxStore(pc.id).loadCandidates();
 				runtimes.set(pc.id, createRuntime(pc, operationRun, persistedOutbox));
 			}
+			// 前回の一覧（W2-25）。画面は AuthGate の内側にしか無いので、Face ID の前には描かれない。
+			await Promise.all(storedPcs.map(async pc => {
+				const lastKnown = await loadLastKnown(pc);
+				const runtime = runtimes.get(pc.id);
+				if (runtime !== undefined && runtime.lastKnown === undefined) {
+					runtime.lastKnown = lastKnown;
+				}
+			}));
 			pcOrder = storedPcs.map(pc => pc.id);
 			activePcId = initialActiveId;
 			const initialControllerRevision = replaceActiveController(initialActiveId !== undefined ? runtimes.get(initialActiveId)?.controller : undefined);
@@ -1239,6 +1310,8 @@ export const useAppStore = create<AppState>(set => ({
 					startConnectionHeartbeat();
 				} else if (action === 'suspend') {
 					const state = useAppStore.getState();
+					// 裏に回ると間もなく止められるので、予約中の書き込みは今のうちに済ませる。
+					void lastKnownPcWriter.flush();
 					for (const runtime of runtimes.values()) {
 						try {
 							runtime.controller.releaseAllWarmLeases();
@@ -1506,6 +1579,8 @@ export const useAppStore = create<AppState>(set => ({
 		secureKeyStore.setItem('presetApproved', JSON.stringify(presetApprovedRecord)).catch(err => console.warn('[appState] failed to save presetApproved', err));
 		// PC の画面の一覧の表示条件（絞り込み・畳んだ段・検索語）もその PC の分を消す。
 		usePcListView.getState().forgetPc(id);
+		// 前回の一覧（スペース名が入る）も残さない。
+		void lastKnownPcWriter.forget(id);
 		// PC画面の一部が写り込んだ画像をメモリに残さない（取得済みの画像はストア外のキャッシュにある）。
 		toolImageCache.clear();
 		if (id === activePcId) {

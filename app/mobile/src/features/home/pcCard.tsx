@@ -25,7 +25,7 @@ const BUCKET_LABEL = {
  *  - つながっていれば「3 スペース · 7 エージェント」と状態ごとの件数、切れていれば再接続の案内
  *  - 右端の ⋮ と長押しで PC のメニュー
  */
-export const PcCard = memo(function PcCard({ id, name, kind, connectionText, pairingRejected = false, detail, counts, onOpen, onMenu }: {
+export const PcCard = memo(function PcCard({ id, name, kind, connectionText, pairingRejected = false, detail, counts, lastKnown, onOpen, onMenu }: {
 	id: string;
 	name: string;
 	kind: ConnectionKind;
@@ -35,6 +35,11 @@ export const PcCard = memo(function PcCard({ id, name, kind, connectionText, pai
 	/** 名前の下の補足（バッテリーなど）。無ければ出さない。 */
 	detail: string | undefined;
 	counts: PcCardCounts;
+	/**
+	 * つながっていないときに出す前回の一覧（W2-25。「最終確認 ○分前」と件数）。読み取り専用の目安で、
+	 * つながったら上の生きた件数に切り替わる。
+	 */
+	lastKnown?: { readonly label: string; readonly counts: PcCardCounts } | undefined;
 	onOpen: (id: string) => void;
 	onMenu: (id: string) => void;
 }) {
@@ -73,6 +78,22 @@ export const PcCard = memo(function PcCard({ id, name, kind, connectionText, pai
 								<View style={styles.chips}>
 									{counts.buckets.map(entry => (
 										<View key={entry.bucket} style={styles.chip}>
+											<View style={[styles.chipDot, { backgroundColor: bucketDotColor(entry.bucket) }]} />
+											<Text style={styles.chipText}>{`${BUCKET_LABEL[entry.bucket]} ${entry.count}`}</Text>
+										</View>
+									))}
+								</View>
+							) : null}
+						</>
+					) : lastKnown !== undefined && !pairingRejected ? (
+						<>
+							<Text style={[styles.counts, styles.lastKnown]}>
+								{`${lastKnown.label} · ${lastKnown.counts.spaces} スペース${lastKnown.counts.agents !== undefined ? ` · ${lastKnown.counts.agents} エージェント` : ''}`}
+							</Text>
+							{lastKnown.counts.buckets.length > 0 ? (
+								<View style={styles.chips}>
+									{lastKnown.counts.buckets.map(entry => (
+										<View key={entry.bucket} style={[styles.chip, styles.lastKnown]}>
 											<View style={[styles.chipDot, { backgroundColor: bucketDotColor(entry.bucket) }]} />
 											<Text style={styles.chipText}>{`${BUCKET_LABEL[entry.bucket]} ${entry.count}`}</Text>
 										</View>
@@ -195,6 +216,10 @@ const styles = StyleSheet.create({
 	chipText: {
 		fontSize: type.meta,
 		color: colors.textMuted,
+	},
+	/** 前回の一覧（W2-25）は生きた件数と見分けがつくよう薄く出す。 */
+	lastKnown: {
+		opacity: 0.6,
 	},
 	offlineHint: {
 		marginTop: space.xs,
