@@ -1308,19 +1308,31 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			this.ensureScopeCandidate(instance);
 		}
 		const guessed = this._activeFallbackInstances.has(instanceId) || this._inheritedGroupScopes.has(instanceId);
-		const processStateKey = instance === undefined
-			? undefined
-			: paradisLookupInstanceScope(EMPTY_INSTANCE_SCOPES, this._restoredPersistentProcessScopes, [this.toRestoredScopedInstance(instance)]);
+		// pid 台帳は引かない（`IParadisRestartedShellScopeEvidence.ledger` の注意を参照）。
 		const stateKey = paradisPickRestartedShellScope({
-			recorded: guessed ? undefined : this._instanceScopes.get(instanceId),
-			parked: this.getParkedEditorStateKey(instanceId),
-			ledger: paradisResolveNonceScope(this._restoredNonceScopes, nonce, processStateKey) ?? this._nonceScopes.get(nonce),
 			restoreContext: paradisTerminalRestoreStateKey(nonce),
 			workingSet: this._restoreScopeCandidates.get(instanceId),
+			parked: this.getParkedEditorStateKey(instanceId),
+			ledger: this._restoredNonceScopes.get(nonce) ?? this._nonceScopes.get(nonce),
+			recorded: guessed ? undefined : this._instanceScopes.get(instanceId),
 			pinnedWindow: instance === undefined ? undefined : this.pinnedWindowStateKey(instance),
 		});
 		if (stateKey !== undefined) {
 			this._restartedShellScopes.set(instanceId, stateKey);
+		}
+		// 復元の直後に pid 台帳から付けた所属は、attach に失敗した古い ID で引いた値であり得る。
+		// タブが出てきた working set が分かっていて食い違うなら、そちらへ直す（容れ物の方が確かな根拠）。
+		const containerStateKey = paradisTerminalRestoreStateKey(nonce) ?? this._restoreScopeCandidates.get(instanceId);
+		const recordedStateKey = this._instanceScopes.get(instanceId);
+		if (instance !== undefined && containerStateKey !== undefined && recordedStateKey !== undefined && recordedStateKey !== containerStateKey) {
+			this.logService.warn(`[paradisTerminalScope] terminal ${instanceId} could not reattach and was recorded in another space than the working set it came from; keeping the working set's space`);
+			this._instanceScopes.set(instanceId, containerStateKey);
+			this._activeFallbackInstances.delete(instanceId);
+			this._inheritedGroupScopes.delete(instanceId);
+			// pid 台帳はここでは書かない。この時点の ID は失敗した古い番号で、新しいシェルの ID が
+			// 決まったとき（`onAnyInstanceProcessIdReady`）に書き直される。
+			this.recordNonceScopes([instance]);
+			this._stableScopeTracker.observe(instanceId, this.resolveScope(instanceId));
 		}
 		return stateKey;
 	}
@@ -2436,6 +2448,12 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				return false;
 			}
 			const commandDetection = instance.capabilities.get(TerminalCapability.CommandDetection);
+			const attach = instance.shellLaunchConfig.attachPersistentProcess;
+			const shellReplaced = attach === undefined
+				|| attach.paradisRevivedFromPersistentProcessId !== undefined
+				|| paradisWasTerminalShellRestarted(instance.instanceId)
+				|| (attach.paradisAdopted !== true && attach.pid !== undefined && instance.processId !== undefined && attach.pid !== instance.processId);
+			const buffer = this.readBufferShape(instance, commandDetection?.currentCommand?.promptStartMarker?.line);
 			return paradisIsIdleEmptyShell({
 				hasShellIntegration: commandDetection !== undefined,
 				hasChildProcesses: instance.hasChildProcesses,
@@ -2443,8 +2461,30 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				isExecuting: commandDetection?.executingCommand !== undefined,
 				hasPendingInput: (commandDetection?.promptInputModel.value.trim().length ?? 0) > 0,
 				title: instance.title,
+				reattachedToSameShell: !shellReplaced,
+				nonEmptyLinesBeforePrompt: buffer?.beforePrompt,
+				nonEmptyLines: buffer?.total,
 			});
 		});
+	}
+
+	/** 画面の空でない行を数える。読めなければ undefined（閉じない側へ倒れる）。 */
+	private readBufferShape(instance: ITerminalInstance, promptStartLine: number | undefined): { readonly total: number; readonly beforePrompt: number | undefined } | undefined {
+		const buffer = instance.xterm?.raw.buffer.normal;
+		if (buffer === undefined) {
+			return undefined;
+		}
+		let total = 0;
+		let beforePrompt = 0;
+		for (let y = 0; y < buffer.length; y++) {
+			if ((buffer.getLine(y)?.translateToString(true).trim().length ?? 0) > 0) {
+				total++;
+				if (promptStartLine !== undefined && y < promptStartLine) {
+					beforePrompt++;
+				}
+			}
+		}
+		return { total, beforePrompt: promptStartLine !== undefined && promptStartLine >= 0 ? beforePrompt : undefined };
 	}
 
 	/** ボタンを押した時点で改めて判定し直し、その時点でも空のものだけを閉じる。 */

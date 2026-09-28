@@ -12,7 +12,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IShellLaunchConfig } from '../../../../../platform/terminal/common/terminal.js';
 import { paradisPrepareRestartedTerminalLaunch, paradisRegisterRestartedTerminalCwdResolver, paradisResetRestartedTerminalsForTest, paradisWasTerminalShellRestarted } from '../../common/paradisTerminalLaunchPreparers.js';
-import { paradisFindTerminalSpaceMismatches, paradisPickRestartedShellScope, paradisRestartedShellRecordScope, paradisSpaceFolderForBackend, paradisUpstreamCwdConfigured } from '../../common/paradisTerminalSpaceFolder.js';
+import { paradisChangeDirectoryCommand, paradisPickRestartedShellScope, paradisReviewTerminalSpaces, paradisRestartedShellRecordScope, paradisSpaceFolderForBackend, paradisUpstreamCwdConfigured } from '../../common/paradisTerminalSpaceFolder.js';
 
 suite('paradisTerminalSpaceFolder', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -22,10 +22,12 @@ suite('paradisTerminalSpaceFolder', () => {
 	test('picks the owner of a re-created shell from evidence only, strongest first', () => {
 		assert.deepStrictEqual({
 			all: paradisPickRestartedShellScope({ recorded: 'r', parked: 'p', ledger: 'l', restoreContext: 'c', workingSet: 'w', pinnedWindow: 'x' }),
-			noRecord: paradisPickRestartedShellScope({ parked: 'p', ledger: 'l', restoreContext: 'c', workingSet: 'w' }),
-			ledgerOverRestore: paradisPickRestartedShellScope({ ledger: 'l', restoreContext: 'c', workingSet: 'w' }),
-			restoreOverWorkingSet: paradisPickRestartedShellScope({ restoreContext: 'c', workingSet: 'w', pinnedWindow: 'x' }),
-			workingSetOverWindow: paradisPickRestartedShellScope({ workingSet: 'w', pinnedWindow: 'x' }),
+			// 出てきた working set が分かっていれば、台帳や今セッションの記録（復元直後に pid 台帳から
+			// 付いた値であり得る）より先に採る。
+			workingSetOverLedger: paradisPickRestartedShellScope({ recorded: 'r', parked: 'p', ledger: 'l', workingSet: 'w', pinnedWindow: 'x' }),
+			parkedOverLedger: paradisPickRestartedShellScope({ recorded: 'r', parked: 'p', ledger: 'l', pinnedWindow: 'x' }),
+			ledgerOverRecord: paradisPickRestartedShellScope({ recorded: 'r', ledger: 'l', pinnedWindow: 'x' }),
+			recordOverWindow: paradisPickRestartedShellScope({ recorded: 'r', pinnedWindow: 'x' }),
 			windowOnly: paradisPickRestartedShellScope({ pinnedWindow: 'x' }),
 			nothing: paradisPickRestartedShellScope({}),
 			// 記録する側は、起こし直したシェルの cwd より容れ物と固定ウィンドウを先に引く。
@@ -33,11 +35,11 @@ suite('paradisTerminalSpaceFolder', () => {
 			recordWorkingSet: paradisRestartedShellRecordScope({ workingSet: 'w', pinnedWindow: 'x' }),
 			recordNothing: paradisRestartedShellRecordScope({}),
 		}, {
-			all: 'r',
-			noRecord: 'p',
-			ledgerOverRestore: 'l',
-			restoreOverWorkingSet: 'c',
-			workingSetOverWindow: 'w',
+			all: 'c',
+			workingSetOverLedger: 'w',
+			parkedOverLedger: 'p',
+			ledgerOverRecord: 'l',
+			recordOverWindow: 'r',
 			windowOnly: 'x',
 			nothing: undefined,
 			recordOwner: 'o',
@@ -76,25 +78,58 @@ suite('paradisTerminalSpaceFolder', () => {
 		);
 	});
 
-	test('lists terminals whose working folder lies in another registered space', () => {
+	// 取り違えは2通り。「所属は正しいがシェルだけ別のフォルダ」と「所属もフォルダも別のスペースに
+	// 焼き付き、タブだけ元のスペースに居る」。後者は所属と cwd を比べるだけでは見つからない。
+	test('lists terminals whose space, tab location and working folder disagree, with the ways to fix them', () => {
 		const roots = [
 			{ root: '/Users/example/app', stateKey: 'app' },
 			{ root: '/Users/example/app-worktrees/feature', stateKey: 'feature' },
 			{ root: '/Users/example/lib', stateKey: 'lib' },
 		];
-		assert.deepStrictEqual(paradisFindTerminalSpaceMismatches([
-			{ instanceId: 1, stateKey: 'app', cwd: '/Users/example/lib/src' },
-			{ instanceId: 2, stateKey: 'app', cwd: '/Users/example/app/src' },
-			// ホームなど、どのスペースにも属さないフォルダは移し先が無いので拾わない。
-			{ instanceId: 3, stateKey: 'app', cwd: '/Users/example' },
-			{ instanceId: 4, stateKey: undefined, cwd: '/Users/example/lib' },
-			{ instanceId: 5, stateKey: 'lib', cwd: undefined },
-			// 最長一致: worktree はリポジトリ本体の外に置かれていても中に置かれていても、より深い方を採る。
-			{ instanceId: 6, stateKey: 'app', cwd: '/Users/example/app-worktrees/feature' },
+		assert.deepStrictEqual(paradisReviewTerminalSpaces([
+			// 所属もタブも app だが、シェルは lib に居る。
+			{ instanceId: 1, stateKey: 'app', container: 'app', cwd: '/Users/example/lib/src' },
+			// 揃っている。
+			{ instanceId: 2, stateKey: 'app', container: 'app', cwd: '/Users/example/app/src' },
+			// ホームなど、どのスペースにも属さないフォルダは食い違いではない。
+			{ instanceId: 3, stateKey: 'app', container: 'app', cwd: '/Users/example' },
+			// 所属もフォルダも lib に焼き付き、タブは app に居る。
+			{ instanceId: 4, stateKey: 'lib', container: 'app', cwd: '/Users/example/lib' },
+			// パネル（居場所なし）で、所属と cwd が食い違う。最長一致で worktree を採る。
+			{ instanceId: 5, stateKey: 'app', container: undefined, cwd: '/Users/example/app-worktrees/feature' },
+			// 所属もフォルダも分からないパネルは何もしない。
+			{ instanceId: 6, stateKey: undefined, container: undefined, cwd: '/Users/example/lib' },
 		], roots), [
-			{ instanceId: 1, stateKey: 'app', cwdStateKey: 'lib' },
-			{ instanceId: 6, stateKey: 'app', cwdStateKey: 'feature' },
+			{ instanceId: 1, stateKey: 'app', container: 'app', cwdStateKey: 'lib', actions: [{ kind: 'cd', stateKey: 'app' }, { kind: 'move', stateKey: 'lib' }] },
+			{ instanceId: 4, stateKey: 'lib', container: 'app', cwdStateKey: 'lib', actions: [{ kind: 'claim', stateKey: 'app' }, { kind: 'cd', stateKey: 'app' }] },
+			{ instanceId: 5, stateKey: 'app', container: undefined, cwdStateKey: 'feature', actions: [{ kind: 'cd', stateKey: 'app' }, { kind: 'move', stateKey: 'feature' }] },
 		]);
+	});
+
+	test('builds a folder change only in a form the shell will not reinterpret', () => {
+		assert.deepStrictEqual({
+			zsh: paradisChangeDirectoryCommand('zsh', `/Users/example/R&D C# it's`),
+			bash: paradisChangeDirectoryCommand('bash', '/Users/example/$HOME `x`'),
+			wsl: paradisChangeDirectoryCommand('wsl', '/home/example/a b'),
+			fish: paradisChangeDirectoryCommand('fish', `/Users/example/a\\b's`),
+			pwsh: paradisChangeDirectoryCommand('pwsh', `C:\\Users\\example\\it's $(x)`),
+			cmd: paradisChangeDirectoryCommand('cmd', 'C:\\Users\\example\\R&D'),
+			cmdPercent: paradisChangeDirectoryCommand('cmd', 'C:\\Users\\%USERNAME%'),
+			csh: paradisChangeDirectoryCommand('csh', '/Users/example'),
+			unknown: paradisChangeDirectoryCommand(undefined, '/Users/example'),
+			newline: paradisChangeDirectoryCommand('zsh', '/Users/example/a\nrm -rf ~'),
+		}, {
+			zsh: `cd '/Users/example/R&D C# it'\\''s'`,
+			bash: `cd '/Users/example/$HOME \`x\`'`,
+			wsl: `cd '/home/example/a b'`,
+			fish: `cd '/Users/example/a\\\\b'\\''s'`,
+			pwsh: `Set-Location -LiteralPath 'C:\\Users\\example\\it''s $(x)'`,
+			cmd: 'cd /d "C:\\Users\\example\\R&D"',
+			cmdPercent: undefined,
+			csh: undefined,
+			unknown: undefined,
+			newline: undefined,
+		});
 	});
 
 	test('starts a re-created shell in the resolved folder and remembers that it was re-created', async () => {
