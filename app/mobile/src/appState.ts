@@ -2119,3 +2119,24 @@ export function onPcMessage(pcId: string | undefined, channel: 'scm' | 'fs', lis
 		},
 	};
 }
+
+// --- PC の［PC の幅に戻す］（W2-19） ------------------------------------------------------------------
+
+/** いま見ている PC で、そのターミナルの幅を PC 側で戻されたか。 */
+export function isTerminalViewportRevoked(terminalKey: string): boolean {
+	return controller?.isTerminalViewportRevoked(terminalKey) ?? false;
+}
+
+/**
+ * いま見ている PC で、ターミナルの幅を PC 側で戻された（`revoked: true`）・［再び合わせる］で戻した
+ * （`revoked: false`）ことを知らせる。PC を切り替えると付いていかないので、画面は PC ごとに付け直すこと
+ * （ターミナルの画面は PC とターミナルごとに作り直される）。
+ */
+export function onTerminalViewportRevoked(listener: (terminalKey: string, revoked: boolean) => void): MobileDisposable {
+	return controller?.onTerminalViewportRevoked(listener) ?? { dispose: () => { } };
+}
+
+/** ［再び合わせる］。PC に戻されたターミナルへ、いまの寸法を申告し直す。 */
+export function reclaimTerminalViewport(terminalKey: string): void {
+	controller?.reclaimTerminalViewport(terminalKey);
+}
