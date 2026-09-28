@@ -1102,6 +1102,37 @@ fork の後始末を `sentry/common/paradisTeardownTiming.ts` で名前付きで
 - 【要確認】`pty-daemon.save-terminal-screens` は「終了する」の返事より前に画面を保存するので、常駐が先に終わっていると次の起動でその保存物から戻りうる（この順序は W2-26 の前からのもの）
 - 【要確認】流し直しは MCP の待ち受けを始める約 1.5 秒前に済むことがあり、その間に控えられた hook は控えに残ったまま、その起動では流されない可能性がある（未検証）
 
+## Orca 取り込み第二弾の L3 エージェントの会話（W2-21 / W2-30 / W2-29、2026-09-29）
+
+新しい PARA-PATCH は無い。capability は `agent.approval.options.v1`・`agent.history.page.v1`・`agent.resume.v1`（PC とアプリの両方の一覧に足し、ゴールデンの state / state-request / agent も直した）。どれも足しただけで、版は 3 のまま。
+
+### 承認の番号付きの選択肢（W2-21、Q117 案 A）
+
+- 選択肢は PC の画面から読む（`mobileRelay/common/paradisAgentApprovalOptions.ts`）。画面の下端 30 行で、1 から連番で並ぶいちばん下の並びを採り、深く字下げされた続きの行は折り返しとしてつなぐ。10 個以上・連番が切れる・2 つ未満は「読めない」。Codex は全部の行に行末の近道（`(y)` / `(p)` / `(esc)`）が無ければ出さない（数字で確定するかを確かめていないため）
+- 流れ: アプリが agent の `approval-options` を求める → shared process（agentChat）が今の承認かを確かめて所有ウィンドウへ `action/approvalOptions` を回す → ウィンドウが許可の画面（`paradisScreenShowsPermissionPrompt`）を最大 3 秒待って読み、agent チャネルでアプリへ直接返す。登録表（scm / fs）は agent チャネルを通らないので、agentChat と provider に種類を 1 つずつ足した
+- 回答は `choice: 'opt:<n>'` と、押したときの文言 `optionLabel`（無ければ `invalid-answer`）。ウィンドウは**送る直前**（最後の `beforeEachKey`）に画面を読み直し、その番号が同じ文言（空白と大文字小文字は見ない）のときだけ、Claude は数字 1 文字（Enter 無し）、Codex は行末の近道を送る。違えば `options-changed` で断る
+- アプリは行末が `(esc)` の選択肢（「No, and tell Claude what to do differently」）を今までの `no`（Esc）で送る（数字で選んだときの動きを確かめていないので、実機で確かめた経路に寄せた）。読めないとき・古い PC・Codex の app-server 経由の承認は今までどおり
+- hook の `permission_suggestions` は、承認の interaction の `suggestions`（例 `Bash(npm test:*)`）としてカードの補足に出すだけ。【要確認】Claude Code の hook 入力の実物でこの形（`addRules` / `setMode` / `addDirectories`）を確かめていない
+- 【要確認】Claude Code の許可の画面の選択肢の並び（折り返しの字下げ、下の操作説明との間の空行）は 2.1 系の表示からの推測で、実機の画面では確かめていない。外れると選択肢が出ない（「許可 / 拒否」のまま）方へ倒れる
+
+### 会話をさかのぼって読む（W2-30、Q122 案 A）
+
+- agent の `history { beforeRev, cursor?, limit? }`。`cursor` が無ければ PC のメモリのリング（400 件）から `beforeRev` より前を返し、読み切ったら記録ファイルの位置を `cursor`（`f:<バイト位置>:<keep>`）で添える。`cursor` があれば記録ファイルを後ろから読む（`node/paradisAgentChatHistory.ts`、1 回 2MB・1 ペインで同時に 1 本・4MB を超える行は飛ばす）
+- tailer はリングの発言ごとに、元の行の頭のバイト位置を持つ（モバイルへは送らない）。1 行から発言が複数できるので、リングが行の途中で押し出した数（`keep`）も覚え、ファイルの読み取りはそこから続ける。開いたときに末尾 4MB だけ読んだ記録（8MB 超）でも、最初まで読める
+- ファイルから読んだ発言の rev は負の数（-1 から古い方へ）。1 ペインで 2000 件まで（`capped`）。全文・画像の取り寄せは rev で引く仕組みなので、古い発言には付けない（切り詰めた本文は「…」のまま）
+- アプリは古い発言を会話の状態とは別に持つ（`src/agentHistory.ts`、epoch が変わったら捨てる。PC のメモリから読んだ分と新しい発言の間が空いたら捨てる）。一覧は上端 60pt で読み込み、`maintainVisibleContentPosition`（先頭の案内の行があるので 1 から）で位置を保つ
+- 【要確認】`maintainVisibleContentPosition` で先頭に足したときに位置が保たれるかを、iPhone / iPad の実機で確かめていない
+
+### 終わった会話を開き直す（W2-29、Q121 案 A）
+
+- PC は登録表で scm の `agentSessions` / `agentSessionPreview` / `agentSessionResume` を受ける（`electron-browser/paradisMobileAgentSessions.ts`、登録は `paradisMobileRequestHandlerRegistrations.ts`）。一覧はセッション履歴（`ParadisSessionResumeClient`）そのままで、30 件ずつ。今ターミナルで動いている会話（状態のスナップショットの `paneSessions`）には `terminalKey` を付ける（二重に再開しない）
+- スマホへ渡すのは会話の指紋 `key`（SHA-1、`common/paradisMobileAgentResume.ts`）だけで、セッション ID・パス・`catalogId` は渡さない。開いている会話の agent の `info.resumeKey` にも同じ指紋を載せる（ターミナルが閉じた後の「再開して送る」の宛先）
+- 再開は `paradisResumeAgentInWorkspace` に `preserveFocus: true`（足した任意項目。裏のタブで開き、今のスペースでもフォーカスを移さない）と `dangerouslyBypassPermissions: false` を渡す。画面が準備完了（`paradisAgentStartupScreenState`、最大 60 秒）になったら依頼を貼り付けて Enter。信頼の確認が出ていれば渡さずに `needs-trust`。PC に「スマホから再開しました」の通知（「表示」でそのスペースへ移る）
+- 再開の依頼の `requestId` は、ウィンドウの `IStorageService`（APPLICATION）に最近 500 件・3 日ぶん残し、同じ ID の送り直しは `duplicate` で返す
+- アプリの預かり（`src/agentSendQueue.ts`）は PC ごとのファイル `agent-send-outbox.v1.<pcId>`（`platform.ts`。中身はターミナル操作のアウトボックスと同じ鍵で封をする）。24 時間で期限切れ。つながったら開いているエージェントのターミナル宛てだけを送り、閉じていたもの・過去の会話宛ては「再開して送る」を押すまで送らない。預かりの宛先のスペースは PC の `sourceId` で持ち、送るときにアプリの画面の id を引き直す（PC を再起動すると画面の id は変わる）
+- 【要確認】別のスペースへ退避した（park された）ターミナルでも xterm の画面を読めるかを確かめていない。読めないと準備完了を待ちきれず、依頼は渡さずに「会話の画面から送ってください」と返し、アプリは依頼を開いた会話の入力欄へ移す
+- 【要確認】Codex の `codex resume <id>` が再開の後に「? for shortcuts」相当の準備完了の表示を出すかを、0.155 系の実機で確かめていない
+
 ## モバイルリレー: Cloudflare Workers/DOデプロイ（2026-07-05）
 
 「Para Code Mobile」（iPhone遠隔操作機能、`src/vs/paradis/contrib/mobileRelay/`）がPCとモバイルの間を中継するリレーサーバー（`app/relay/`、Cloudflare Workers + Durable Objects）を、開発時のプレースホルダーURLのまま放置していたのを本番デプロイした。設計・実装の詳細は設計書（`app/design/mobile-design.md`）参照。ここには配置場所と再開に必要な情報のみ記す。

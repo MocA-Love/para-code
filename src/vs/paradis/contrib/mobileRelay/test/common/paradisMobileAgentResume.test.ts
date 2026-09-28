@@ -9,7 +9,9 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisResumeSession } from '../../../sessionResume/common/paradisSessionResume.js';
-import { PARADIS_AGENT_SESSION_KEY_PATTERN, paradisAgentSessionKey, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, paradisRecordResumeRequest } from '../../common/paradisMobileAgentResume.js';
+import { PARADIS_AGENT_APPROVAL_OPTIONS_CAPABILITY } from '../../common/paradisAgentApprovalOptions.js';
+import { ParadisMobileCapability, PARADIS_MOBILE_PC_CAPABILITIES } from '../../common/paradisMobileCompat.js';
+import { PARADIS_AGENT_RESUME_CAPABILITY, PARADIS_AGENT_SESSION_KEY_PATTERN, paradisAgentSessionKey, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, paradisRecordResumeRequest } from '../../common/paradisMobileAgentResume.js';
 
 suite('paradisMobileAgentResume (W2-29)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -20,6 +22,14 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 		cwd: '/Users/example/projects/demo', spaceStateKey: 'repo-1', spaceName: 'demo', currentSpace: false,
 		createdAt: 1_760_000_000_000, updatedAt: 1_760_000_100_000, archived: false, gitBranch: 'fix/login',
 	};
+
+	test('advertises the capabilities of lane L3 under the names the feature files use', () => {
+		assert.deepStrictEqual({
+			approval: PARADIS_AGENT_APPROVAL_OPTIONS_CAPABILITY === ParadisMobileCapability.AgentApprovalOptions,
+			resume: PARADIS_AGENT_RESUME_CAPABILITY === ParadisMobileCapability.AgentResume,
+			advertised: [ParadisMobileCapability.AgentApprovalOptions, ParadisMobileCapability.AgentHistoryPage, ParadisMobileCapability.AgentResume].every(name => PARADIS_MOBILE_PC_CAPABILITIES.includes(name)),
+		}, { approval: true, resume: true, advertised: true });
+	});
 
 	test('makes a stable fingerprint per agent and session that the phone cannot turn back into the id', () => {
 		const key = paradisAgentSessionKey('claude', '0f7c1d2e-session');

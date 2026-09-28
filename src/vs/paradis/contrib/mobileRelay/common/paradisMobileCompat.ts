@@ -59,6 +59,12 @@ export const ParadisMobileCapability = {
 	FsResolveLinkTerminal: 'fs.resolve-link.terminal.v1',
 	/** PC の［PC の幅に戻す］: PC は `viewport-revoked` を送り `viewport` の `reclaim` を受ける／アプリはそれを受けて［再び合わせる］を出す（W2-19）。 */
 	TermViewportTakeback: 'term.viewport.takeback.v1',
+	/** 承認に PC の画面の番号付きの選択肢で答えられる（agent の `approval-options` と `opt:<n>`。W2-21）。 */
+	AgentApprovalOptions: 'agent.approval.options.v1',
+	/** 会話の古い発言をさかのぼって読める（agent の `history`。W2-30）。 */
+	AgentHistoryPage: 'agent.history.page.v1',
+	/** 終わった会話を開き直して続きを頼める（scm の `agentSessions` / `agentSessionPreview` / `agentSessionResume`。W2-29）。 */
+	AgentResume: 'agent.resume.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -74,6 +80,9 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.BrowserOpenUrl,
 	ParadisMobileCapability.FsResolveLinkTerminal,
 	ParadisMobileCapability.TermViewportTakeback,
+	ParadisMobileCapability.AgentApprovalOptions,
+	ParadisMobileCapability.AgentHistoryPage,
+	ParadisMobileCapability.AgentResume,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
@@ -83,6 +92,9 @@ export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.FsUploadBinary,
 	ParadisMobileCapability.VoiceClips,
 	ParadisMobileCapability.TermViewportTakeback,
+	ParadisMobileCapability.AgentApprovalOptions,
+	ParadisMobileCapability.AgentHistoryPage,
+	ParadisMobileCapability.AgentResume,
 ];
 
 /** 受け取る capability の上限。相手は信用しない前提で、表を無制限に膨らませない。 */

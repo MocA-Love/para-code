@@ -2,9 +2,11 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-	AGENT_SEND_QUEUE_LIMIT, AGENT_SEND_QUEUE_TTL_MS, addAgentSendQueueItem, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentPastSessionPage,
+	AGENT_RESUME_CAPABILITY, AGENT_SEND_QUEUE_LIMIT, AGENT_SEND_QUEUE_TTL_MS, addAgentSendQueueItem, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentPastSessionPage,
 	parseAgentPastSessionPreview, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue, type AgentSendQueueItem,
 } from './agentSessions.js';
+import { AGENT_HISTORY_CAPABILITY } from './agentHistory.js';
+import { PcCapability } from './pcCompat.js';
 
 const KEY = 'a'.repeat(40);
 const item = (id: string, fields: Partial<AgentSendQueueItem> = {}): AgentSendQueueItem => ({
@@ -12,6 +14,10 @@ const item = (id: string, fields: Partial<AgentSendQueueItem> = {}): AgentSendQu
 });
 
 describe('agentSessions (W2-29)', () => {
+	it('uses the same capability names as the PC advertises', () => {
+		expect([AGENT_RESUME_CAPABILITY, AGENT_HISTORY_CAPABILITY]).toEqual([PcCapability.AgentResume, PcCapability.AgentHistoryPage]);
+	});
+
 	it('reads the past-session list, dropping entries without a valid fingerprint', () => {
 		expect(parseAgentPastSessionPage({
 			sessions: [
