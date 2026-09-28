@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { agentHistoryHeader, applyAgentHistoryPage, beginAgentHistoryLoad, historyBeforeRev, parseAgentHistoryReply, reconcileAgentHistory, type AgentHistoryState } from './agentHistory.js';
+import { AGENT_HISTORY_KEEP_LIMIT, absorbTrimmedIntoHistory, agentHistoryHeader, applyAgentHistoryPage, beginAgentHistoryLoad, historyBeforeRev, parseAgentHistoryReply, reconcileAgentHistory, type AgentHistoryState } from './agentHistory.js';
 import type { AgentChatMessage } from './store.js';
 
 const message = (rev: number, text = `m${rev}`): AgentChatMessage => ({ rev, role: 'user', kind: 'text', text });
@@ -41,6 +41,30 @@ describe('agentHistory (W2-30)', () => {
 		// 199 と 250 の間が抜けた（PC のメモリから押し出された）
 		expect(reconcileAgentHistory(state, 'e1', [message(250)])).toBeUndefined();
 		expect(reconcileAgentHistory(state, 'e2', [message(200)])).toBeUndefined();
+	});
+
+	it('moves the messages a delta trimmed off the live list into the history instead of dropping everything (NG-1)', () => {
+		// 古い発言 100〜199、手元の新しい発言 200〜699（500 件）。差分で 700〜709 が届き、手元は 210〜709 に切られた
+		const history: AgentHistoryState = { epoch: 'e1', messages: Array.from({ length: 100 }, (_, index) => message(100 + index)), hasMore: true, capped: false, loading: false };
+		const previousLive = Array.from({ length: 500 }, (_, index) => message(200 + index));
+		const nextLive = Array.from({ length: 500 }, (_, index) => message(210 + index));
+		const absorbed = absorbTrimmedIntoHistory(history, 'e1', previousLive, nextLive);
+		const reconciled = reconcileAgentHistory(absorbed, 'e1', nextLive);
+		// 並び（古い発言 + 新しい発言）は切る前と同じ 100〜709 のまま。一覧の行が変わらないので表示位置も動かない
+		const before = [...history.messages, ...previousLive, ...Array.from({ length: 10 }, (_, index) => message(700 + index))].map(entry => entry.rev);
+		const after = [...(reconciled?.messages ?? []), ...nextLive].map(entry => entry.rev);
+		expect({ same: JSON.stringify(after) === JSON.stringify(before), historyTail: reconciled?.messages.at(-1)?.rev, hasMore: reconciled?.hasMore }).toEqual({ same: true, historyTail: 209, hasMore: true });
+		// さかのぼっていなければ何もしない。別の会話の差分も繰り入れない
+		expect(absorbTrimmedIntoHistory(undefined, 'e1', previousLive, nextLive)).toBeUndefined();
+		expect(absorbTrimmedIntoHistory(history, 'e2', previousLive, nextLive)).toBe(history);
+	});
+
+	it('keeps at most the history limit and then says the rest is on the PC', () => {
+		const history: AgentHistoryState = { epoch: 'e1', messages: Array.from({ length: AGENT_HISTORY_KEEP_LIMIT }, (_, index) => message(index)), cursor: 'f:1:0', hasMore: true, capped: false, loading: false };
+		const previousLive = [message(AGENT_HISTORY_KEEP_LIMIT), message(AGENT_HISTORY_KEEP_LIMIT + 1)];
+		const absorbed = absorbTrimmedIntoHistory(history, 'e1', previousLive, [message(AGENT_HISTORY_KEEP_LIMIT + 1)])!;
+		expect({ length: absorbed.messages.length, first: absorbed.messages[0]?.rev, capped: absorbed.capped, hasMore: absorbed.hasMore, cursor: absorbed.cursor })
+			.toEqual({ length: AGENT_HISTORY_KEEP_LIMIT, first: 1, capped: true, hasMore: false, cursor: undefined });
 	});
 
 	it('keeps a busy PC retryable, and stops on errors that cannot be retried', () => {

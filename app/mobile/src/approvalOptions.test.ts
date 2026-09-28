@@ -54,6 +54,7 @@ describe('approvalOptions (W2-21)', () => {
 			choices: [
 				{ id: 'opt:1', label: 'Yes, proceed', tone: 'approve' },
 				{ id: 'opt:2', label: 'No, continue without running it', tone: 'deny' },
+				{ id: 'no', label: '拒否', tone: 'deny' },
 			],
 			labels: [['opt:1', 'Yes, proceed (y)'], ['opt:2', 'No, continue without running it (n)']],
 		});

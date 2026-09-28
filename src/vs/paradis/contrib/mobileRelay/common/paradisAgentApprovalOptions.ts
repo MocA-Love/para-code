@@ -92,7 +92,22 @@ export function paradisParseApprovalOptions(screen: string): readonly IParadisAg
 		}
 		current = undefined;
 	};
-	for (const rawLine of region) {
+	/** 空行より前に、次の番号（`next`）の選択肢の行が続くか。 */
+	const nextOptionFollows = (from: number, next: number): boolean => {
+		for (let index = from; index < region.length; index++) {
+			const candidate = stripBorders(region[index] ?? '');
+			if (candidate.replace(LEADING_BORDER, '').trim().length === 0) {
+				return false;
+			}
+			const groups = OPTION_LINE.exec(candidate)?.groups;
+			if (groups !== undefined) {
+				return Number(groups.n) === next;
+			}
+		}
+		return false;
+	};
+	for (let lineIndex = 0; lineIndex < region.length; lineIndex++) {
+		const rawLine = region[lineIndex] ?? '';
 		const line = stripBorders(rawLine);
 		if (TWO_DIGIT_OPTION_LINE.test(line)) {
 			// 10 番目以降がある並びは数字 1 文字で選べない。並びごと捨てる。
@@ -128,7 +143,9 @@ export function paradisParseApprovalOptions(screen: string): readonly IParadisAg
 			continue;
 		}
 		const indent = content.length - content.trimStart().length;
-		if (indent > numberColumn && indent >= Math.min(labelColumn, numberColumn + 2)) {
+		// 深く字下げされた行は折り返しの続き。浅い行（端末の自動折り返しで 0 桁目から続いた行など）も、空行より前に次の番号の
+		// 選択肢が続くなら、途中の選択肢の続きとみなす（シミュレータ確認の気づき (a)）。
+		if ((indent > numberColumn && indent >= Math.min(labelColumn, numberColumn + 2)) || nextOptionFollows(lineIndex + 1, current.length + 1)) {
 			const last = current[current.length - 1];
 			if (last !== undefined) {
 				last.label = `${last.label} ${content.trim()}`;

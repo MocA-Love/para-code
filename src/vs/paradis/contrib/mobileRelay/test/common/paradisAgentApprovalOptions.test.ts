@@ -70,6 +70,21 @@ suite('paradisAgentApprovalOptions (W2-21)', () => {
 		assert.deepStrictEqual(paradisParseApprovalOptions(screen), [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }]);
 	});
 
+	test('joins a label that the terminal wrapped to column 0 when a later option follows', () => {
+		const screen = [
+			' Do you want to proceed?',
+			' ❯ 1. Yes',
+			`   2. Yes, and don't ask again for git push commands in /Users/example/projects/a-very-long-`,
+			'directory-name',
+			'   3. No, and tell Claude what to do differently (esc)',
+		].join('\n');
+		assert.deepStrictEqual(paradisParseApprovalOptions(screen)?.map(option => option.label), [
+			'Yes',
+			`Yes, and don't ask again for git push commands in /Users/example/projects/a-very-long- directory-name`,
+			'No, and tell Claude what to do differently (esc)',
+		]);
+	});
+
 	test('returns undefined when fewer than two options, a broken sequence or ten or more options are on screen', () => {
 		const ten = Array.from({ length: 10 }, (_, index) => `  ${index + 1}. Option ${index + 1}`).join('\n');
 		assert.deepStrictEqual({

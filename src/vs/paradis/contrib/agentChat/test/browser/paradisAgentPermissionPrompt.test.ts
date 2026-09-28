@@ -8,7 +8,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisPermissionPromptHash, paradisPermissionPromptParts } from '../../browser/paradisAgentTuiInput.js';
+import type { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
 import { paradisParseApprovalOptions } from '../../../mobileRelay/common/paradisAgentApprovalOptions.js';
 
 suite('paradisPermissionPromptParts (W2-21 review M1 / M2)', () => {
@@ -48,6 +49,32 @@ suite('paradisPermissionPromptParts (W2-21 review M1 / M2)', () => {
 		const other = paradisPermissionPromptHash(paradisPermissionPromptParts(screen('git push --force'))!.context);
 		const rewrapped = paradisPermissionPromptHash(paradisPermissionPromptParts(screen('git push origin main').replace('   git push origin main', '   git push\n   origin main'))!.context);
 		assert.deepStrictEqual({ changed: base !== other, rewrapped: base === rewrapped }, { changed: true, rewrapped: true });
+	});
+
+	test('joins rows the terminal wrapped automatically so a wrapped option does not hide the ones after it', () => {
+		const rows = [
+			{ text: ' Do you want to proceed?', wrapped: false },
+			{ text: ' ❯ 1. Yes', wrapped: false },
+			{ text: `   2. Yes, and don't ask again for git push commands in /Users/exa`, wrapped: false },
+			{ text: 'mple/projects/demo', wrapped: true },
+			{ text: '   3. No, and tell Claude what to do differently (esc)', wrapped: false },
+		];
+		const instance = {
+			xterm: {
+				raw: {
+					rows: rows.length,
+					buffer: { active: { baseY: 0, getLine: (y: number) => ({ isWrapped: rows[y].wrapped, translateToString: () => rows[y].text }) } },
+				},
+			},
+		} as unknown as ITerminalInstance;
+		const text = paradisVisibleTerminalLogicalText(instance);
+		assert.deepStrictEqual({
+			lines: text.split('\n').length,
+			options: paradisParseApprovalOptions(paradisPermissionPromptParts(text)!.options)?.map(option => option.label),
+		}, {
+			lines: 4,
+			options: ['Yes', `Yes, and don't ask again for git push commands in /Users/example/projects/demo`, 'No, and tell Claude what to do differently (esc)'],
+		});
 	});
 
 	test('returns undefined when no permission prompt is on screen', () => {

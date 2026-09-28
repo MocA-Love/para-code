@@ -1124,6 +1124,11 @@ export interface AgentChatState {
 	capabilities?: { agentActions: true; claudeSettings?: true };
 	interaction?: AgentInteraction;
 	/**
+	 * PC からこの会話の snapshot / delta / none を最後に受け取った時刻。つながり直した後に、切れる前の古い状態で判断しない
+	 * ために使う（預かった送信の宛先の確かめ。W2-29 のシミュレータ確認の NG-2）。
+	 */
+	syncedAt?: number;
+	/**
 	 * 再取得を要求した直後で、表示中の内容がPC側の現状と一致している保証がない。
 	 * カードは描いたまま操作だけを止めるための印で、PCからの応答（snapshot/delta/none）で落ちる。
 	 */
@@ -4360,7 +4365,7 @@ export class MobileController {
 				this.clearAgentControlTimeout(terminalKey);
 				this.clearAgentCommandCatalogTimeout(terminalKey);
 				this.pendingAgentLiveResyncs.delete(terminalKey);
-				this.state.agentChats.set(terminalKey, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true });
+				this.state.agentChats.set(terminalKey, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true, syncedAt: Date.now() });
 				this.emit({ agentChats: true });
 				return;
 			}
@@ -4372,6 +4377,7 @@ export class MobileController {
 					this.clearAgentCommandCatalogTimeout(terminalKey);
 				}
 				this.state.agentChats.set(terminalKey, {
+					syncedAt: Date.now(),
 					agent: msg.agent ?? 'claude',
 					epoch: msg.epoch ?? '',
 					rev: msg.rev ?? -1,
@@ -4445,6 +4451,7 @@ export class MobileController {
 					...base,
 					rev: msg.rev ?? existing.rev,
 					messages: merged.slice(-500),
+					syncedAt: Date.now(),
 					// 500 件で切ったら、前が省略されていることを示す（さかのぼって読む案内を出すため。レビュー M5）。
 					...(merged.length > 500 ? { truncated: true } : {}),
 					...(msg.info !== undefined ? { info: msg.info } : {}),

@@ -4,7 +4,7 @@ import { useCallback, useEffect } from 'react';
 import { create } from 'zustand';
 import { useAppStore } from '../../appState.js';
 import {
-	AGENT_HISTORY_CAPABILITY, AGENT_HISTORY_PAGE_SIZE, agentHistoryErrorText, agentHistoryHeader, applyAgentHistoryPage, beginAgentHistoryLoad, historyBeforeRev,
+	absorbTrimmedIntoHistory, AGENT_HISTORY_CAPABILITY, AGENT_HISTORY_PAGE_SIZE, agentHistoryErrorText, agentHistoryHeader, applyAgentHistoryPage, beginAgentHistoryLoad, historyBeforeRev,
 	parseAgentHistoryReply, reconcileAgentHistory, type AgentHistoryHeader, type AgentHistoryState,
 } from '../../agentHistory.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
@@ -23,6 +23,30 @@ const useAgentHistoryStore = create<{
 }));
 
 const NO_MESSAGES: readonly AgentChatMessage[] = [];
+
+/**
+ * 会話の状態が変わるたびに、古い発言を合わせ直す（画面を開いていなくても）。差分で 500 件に切られた発言は古い発言の
+ * 末尾へ繰り入れてから合わせる（NG-1）。古い発言を持っているターミナルだけを見る。
+ */
+useAppStore.subscribe((state, previous) => {
+	if (state.agentChats === previous.agentChats) {
+		return;
+	}
+	const store = useAgentHistoryStore.getState();
+	for (const [terminalKey, history] of Object.entries(store.byTerminal)) {
+		const chat = state.agentChats.get(terminalKey);
+		const before = previous.agentChats.get(terminalKey);
+		if (history === undefined || chat === before) {
+			continue;
+		}
+		const previousLive = before !== undefined && before.epoch === chat?.epoch ? before.messages : NO_MESSAGES;
+		const absorbed = absorbTrimmedIntoHistory(history, chat?.epoch, previousLive, chat?.messages ?? NO_MESSAGES);
+		const next = reconcileAgentHistory(absorbed, chat?.epoch, chat?.messages ?? NO_MESSAGES);
+		if (next !== history) {
+			store.put(terminalKey, next);
+		}
+	}
+});
 
 /**
  * 会話の古い発言をさかのぼって読む（W2-30）。`loadOlder` は一覧の先頭に近づいたとき・案内を押したときに呼ぶ。

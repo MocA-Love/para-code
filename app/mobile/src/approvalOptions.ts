@@ -73,6 +73,7 @@ const TRAILING_SHORTCUT = /\s*\((?:esc|[a-z]|shift\+tab)\)\s*$/i;
  * 選択肢をカードのボタンにする。
  *
  * - 1 番は主ボタン（許可）。`opt:1` で送る（PC が文言を確かめてから `1` を送る）
+ * - 行末が `(esc)` の選択肢が無ければ、今までの「拒否」（`no`）を足す
  * - 行末が `(esc)` の選択肢（「No, and tell Claude what to do differently」など）は、今までの「拒否」と同じ
  *   `no`（Esc）で送る。数字で選んだときの動きを確かめていないため、実機で確かめてある経路に寄せる
  * - それ以外は `opt:<n>`。`No` で始まるものは拒否の見た目にする
@@ -93,6 +94,10 @@ export function approvalChoicesFromOptions(options: readonly ApprovalScreenOptio
 		const tone: AgentApprovalChoice['tone'] = option.n === 1 ? 'approve' : /^no\b/i.test(display) ? 'deny' : 'neutral';
 		choices.push({ id, label: display, tone });
 		labels.set(id, option.label);
+	}
+	// 拒否（Esc）は常に出す。行末の `(esc)` が折り返しなどで読めなかったときも、拒否できないカードにしない（シミュレータ確認の気づき (a)）。
+	if (!choices.some(choice => choice.id === 'no')) {
+		choices.push({ id: 'no', label: '拒否', tone: 'deny' });
 	}
 	return { choices, labels, ...(promptHash !== undefined ? { promptHash } : {}) };
 }

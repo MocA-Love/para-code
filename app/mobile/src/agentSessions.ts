@@ -248,6 +248,26 @@ export function agentSendConversationMatches(item: AgentSendQueueItem, currentRe
 	return item.target.kind === 'live' && item.target.resumeKey !== undefined && currentResumeKey !== undefined && item.target.resumeKey === currentResumeKey;
 }
 
+/**
+ * 預かりの 1 件を開いているターミナルへ送るときの判断（NG-2）。`since` は受け取り直しを頼んだ時刻で、それより前に
+ * 受け取った会話の状態（つながり直す前のもの）では判断しない（`wait`）。受け取り直した状態で、会話が無い・別の会話なら
+ * `confirm`（利用者が「このターミナルへ送る」を押した `confirmed` なら送る）。
+ */
+export function agentSendLiveDecision(
+	item: AgentSendQueueItem,
+	chat: { readonly syncedAt?: number; readonly none?: boolean; readonly capabilities?: { readonly agentActions?: boolean }; readonly info?: { readonly resumeKey?: string } } | undefined,
+	since: number,
+	confirmed: boolean,
+): 'wait' | 'send' | 'confirm' {
+	if (chat === undefined || (chat.syncedAt ?? 0) < since || (chat.none !== true && chat.capabilities?.agentActions !== true)) {
+		return 'wait';
+	}
+	if (confirmed && chat.none !== true) {
+		return 'send';
+	}
+	return chat.none !== true && agentSendConversationMatches(item, chat.info?.resumeKey) ? 'send' : 'confirm';
+}
+
 /** 預かりに足す（同じ PC の上限を超えたら古いものから捨てる）。 */
 export function addAgentSendQueueItem(items: readonly AgentSendQueueItem[], item: AgentSendQueueItem): readonly AgentSendQueueItem[] {
 	const samePc = items.filter(candidate => candidate.pcId === item.pcId);
