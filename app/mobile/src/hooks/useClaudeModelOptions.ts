@@ -11,9 +11,12 @@ import { useAppStore } from '../appState.js';
  *
  * PC 側も CLI を起こすのは版が変わったときだけだが、ここでも取りに行くのはシートを開いたときだけにし、
  * 同じ PC へは 5 分に1回までにする（旧 PC は agentsOnly を知らずリポジトリごとの git まで動かすため）。
+ * 使える一覧が来なかったとき（PC が CLI から取り直している途中など）だけは 30 秒で聞き直す。
  */
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+/** PC から使える一覧が来なかったとき（PC が CLI から取り直している途中など）は、早めに聞き直す。 */
+const RETRY_INTERVAL_MS = 30 * 1000;
 
 interface CatalogEntry {
 	readonly fetchedAt: number;
@@ -51,7 +54,7 @@ export function useClaudeModelOptions(agent: string | undefined): { readonly opt
 			return;
 		}
 		const current = catalogs.get(pcId);
-		if (current !== undefined && Date.now() - current.fetchedAt < REFRESH_INTERVAL_MS) {
+		if (current !== undefined && Date.now() - current.fetchedAt < (current.options !== undefined ? REFRESH_INTERVAL_MS : RETRY_INTERVAL_MS)) {
 			return;
 		}
 		inFlight.add(pcId);
