@@ -56,4 +56,19 @@ suite('Paradis editor open after its group was disposed', () => {
 		const result = await opening.then(pane => ({ settled: 'resolved', placeholder: pane !== undefined }), (error: Error) => ({ settled: 'rejected', error: error.message }));
 		assert.deepStrictEqual(result, { settled: 'resolved', placeholder: false });
 	});
+
+	// 同じ 7T の別経路: 開く先のグループを決めてから実際に開くまでの間（エディタの解決を待つ間）に
+	// スペースの切り替えがグループを破棄すると、破棄済みのグループへ開きに来る。タブを作る時点で
+	// 破棄済みのサービスに触っていた（`MultiEditorTabsControl.createTab`）。
+	test('does not open into a group that was already disposed', async () => {
+		const instantiationService = workbenchInstantiationService(undefined, disposables);
+		disposables.add(registerTestEditor('paradisEditorOpenAfterGroupDisposed.editor2', [new SyncDescriptor(TestFileEditorInput)], `${editorTypeId}.2`));
+		const part = await createEditorPart(instantiationService, disposables);
+		const group = part.addGroup(part.activeGroup, GroupDirection.RIGHT);
+		part.removeGroup(group, true);
+		const input = disposables.add(new TestFileEditorInput(URI.file('/workspace/late.txt'), `${editorTypeId}.2`));
+
+		const result = await group.openEditor(input, { pinned: true }).then(pane => ({ settled: 'resolved', pane, editors: group.count }), (error: Error) => ({ settled: 'rejected', error: error.message }));
+		assert.deepStrictEqual(result, { settled: 'resolved', pane: undefined, editors: 0 });
+	});
 });

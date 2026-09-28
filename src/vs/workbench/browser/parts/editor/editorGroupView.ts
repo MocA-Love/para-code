@@ -1202,8 +1202,8 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		if (!editor || editor.isDisposed()) {
 			return;
 		}
-		// PARA-PATCH: make scoped retirement crash-safe — suppress editor-open notifications while the group is fenced
-		if (paradisIsEditorOpenFenced(this.id)) {
+		// PARA-PATCH: make scoped retirement crash-safe — suppress editor-open notifications while the group is fenced, and never open into a group a space switch already disposed (Sentry 7T)
+		if (paradisIsEditorOpenFenced(this.id) || this._store.isDisposed) {
 			return;
 		}
 
