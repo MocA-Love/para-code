@@ -462,7 +462,8 @@ function paradisDescribePresetForMobile(preset: IParadisResolvedPreset, qualifie
 /** fs チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type FsInbound =
 	| { t: 'list'; id: string; ws: string; path: string }
-	| { t: 'resolveLink'; id: string; ws: string; path: string }
+	// terminalKey（任意、W2-31）: スマホのターミナルで押したパス。そのターミナルの作業フォルダを基準に相対パスを解く。
+	| { t: 'resolveLink'; id: string; ws: string; path: string; terminalKey?: string }
 	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean; responseEncoding?: string; cacheEncoding?: string; ifContentHash?: string }
 	| { t: 'xlsx'; id: string; ws: string; path: string; sheet?: number; responseEncoding?: string; cacheEncoding?: string; ifContentHash?: string }
 	| { t: 'pdf'; id: string; ws: string; path: string; responseEncoding?: string }
@@ -1940,6 +1941,43 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * （設計書 §8）。'list'の子要素フィルタだけでは対象自体やパス途中のシンボリックリンクを
 	 * 防げないため、実パスを解決してリポジトリルート配下に収まっているかを確認する。
 	 */
+	/**
+	 * スマホのターミナルで押した相対パスを、そのターミナルの作業フォルダ（cd した先）を基準に解く（W2-31）。
+	 * 作業フォルダがワークスペースの中にあり、解いた先がワークスペースの中の既存のファイルのときだけ、
+	 * ワークスペースの根からの相対パスを返す。それ以外は `undefined`（呼び出し側が根からの解決に落とす）。
+	 */
+	private async resolveTerminalRelativeLink(ws: string, root: URI, terminalKey: unknown, rawPath: string): Promise<string | undefined> {
+		if (typeof terminalKey !== 'string' || terminalKey.length === 0 || terminalKey.length > 200) {
+			return undefined;
+		}
+		const instanceId = this.terminalIdentityService.getInstanceId(terminalKey);
+		const instance = instanceId === undefined ? undefined : this.allInstances().find(candidate => candidate.instanceId === instanceId);
+		if (instance === undefined) {
+			return undefined;
+		}
+		try {
+			const cwd = await instance.getCwdResource();
+			if (cwd === undefined || !extUriBiasedIgnorePathCase.isEqualOrParent(cwd, root)) {
+				return undefined;
+			}
+			const candidate = extUriBiasedIgnorePathCase.resolvePath(cwd, rawPath.replace(/\\/g, '/'));
+			if (!extUriBiasedIgnorePathCase.isEqualOrParent(candidate, root)) {
+				return undefined;
+			}
+			const relative = extUriBiasedIgnorePathCase.relativePath(root, candidate);
+			if (relative === undefined || relative.length === 0) {
+				return undefined;
+			}
+			const resolved = await this.resolveWorkspacePathReal(ws, relative);
+			if (resolved === undefined || (await this.fileService.stat(resolved)).isDirectory) {
+				return undefined;
+			}
+			return relative;
+		} catch {
+			return undefined;
+		}
+	}
+
 	private async resolveWorkspacePathReal(ws: string, relPath: string): Promise<URI | undefined> {
 		const root = this.resolveWsRoot(ws);
 		if (!root) {
@@ -2434,7 +2472,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						relativePath = normalizeRelative(rawPath.slice(1));
 					}
 				} else {
-					relativePath = normalizeRelative(rawPath);
+					relativePath = await this.resolveTerminalRelativeLink(msg.ws, root, msg.terminalKey, rawPath)
+						?? normalizeRelative(rawPath);
 				}
 				if (relativePath === undefined || relativePath.length === 0) {
 					reply({ error: 'file link is outside the workspace' });
