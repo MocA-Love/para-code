@@ -35,6 +35,7 @@ import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.j
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from './paradisRemoteTranscriptMirror.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
+import { paradisMobilePushIds } from './paradisMobilePushIds.js';
 import { IParadisRelayPersistedState, ParadisRelayStoreProblem, paradisMoveRelayStateAside, paradisReadRelayState, paradisWriteRelayState } from './paradisMobileRelayStateFile.js';
 import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
 import { ParadisMobileTerminalRegistry } from './paradisMobileTerminalRegistry.js';
@@ -1399,12 +1400,15 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				if (encoded === undefined) {
 					return;
 				}
+				// 同じエージェントの通知はロック画面で置き換え、同じスペースの通知はまとめる（W2-08）。
+				// ID は通知鍵の HMAC なので、リレーと APNs からは中身を推測できない。旧リレーは読まずに無視する。
+				const push = { type: 'push-notify', mobileId: mobile.mobileId, payload: encoded, ...paradisMobilePushIds(key, bytes) } as const;
 				if (expectedOwner !== undefined) {
 					await this.withCurrentRegisteredLease(expectedOwner, async () => {
-						this.sendControl({ type: 'push-notify', mobileId: mobile.mobileId, payload: encoded });
+						this.sendControl(push);
 					});
 				} else {
-					this.sendControl({ type: 'push-notify', mobileId: mobile.mobileId, payload: encoded });
+					this.sendControl(push);
 				}
 			}).catch(err => this.logService.warn('[paradisMobileRelay] push-notify seal failed', err));
 		}

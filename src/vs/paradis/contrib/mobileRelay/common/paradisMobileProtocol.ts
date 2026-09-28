@@ -160,7 +160,13 @@ export type RelayControlMessage =
 	// APNsプッシュ: モバイルがトークンを登録し（register-push）、PCがオフラインのモバイル宛に
 	// 暗号文ペイロード（通知鍵で封緘済み・リレーは復号不可）のプッシュ配送を依頼する（push-notify）
 	| { readonly type: 'register-push'; readonly token: string; readonly env?: 'prod' | 'dev' }
-	| { readonly type: 'push-notify'; readonly mobileId: string; readonly payload: string }
+	//
+	// collapseId / threadId は任意（旧PCは送らない。旧リレーは読まずに無視する）。どちらも
+	// リレーとAPNsから見えるので、**中身から推測できない値**（通知鍵を知る者だけが作れる
+	// HMAC等）でなければならない。collapseId は `apns-collapse-id`（同じ値の通知は端末上で
+	// 置き換わる）、threadId は `aps.thread-id`（通知センターでまとまる）になる。
+	// 形式は PARADIS_PUSH_ID_PATTERN。外れた値はリレーが黙って捨てる（プッシュ自体は送る）。
+	| { readonly type: 'push-notify'; readonly mobileId: string; readonly payload: string; readonly collapseId?: string; readonly threadId?: string }
 	// リレー→PC: モバイル自身がペアリングを解除した（self-revoke）。PCは登録一覧から取り除く
 	| { readonly type: 'mobile-revoked'; readonly mobileId: string }
 	// 保活。pingにはリレーのDurable Objectを起こさずエッジが自動応答する（setWebSocketAutoResponse）
@@ -173,6 +179,9 @@ export type RelayControlMessage =
  */
 export const PARADIS_RELAY_KEEPALIVE_PING = '{"type":"ping"}';
 export const PARADIS_RELAY_KEEPALIVE_PONG = '{"type":"pong"}';
+
+/** push-notify の collapseId / threadId として受け付ける形（base64url 8〜64文字）。 */
+export const PARADIS_PUSH_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 
 export function encodeRelayControl(message: RelayControlMessage): string {
 	return JSON.stringify(message);
