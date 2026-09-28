@@ -48,6 +48,15 @@ function parseCheck(value: unknown): PrCheck | undefined {
 	};
 }
 
+/** 切る前の全件の数（無い・形が違えば何も足さない。マージの判断は画面に出すチェックから数え直す）。 */
+function parseCheckCounts(value: unknown): { readonly checkCounts?: Record<ParadisPullRequestCheckBucket, number> } {
+	const counts = value as Partial<Record<ParadisPullRequestCheckBucket, unknown>> | null | undefined;
+	if (counts === null || typeof counts !== 'object' || !BUCKETS.every(bucket => typeof counts[bucket] === 'number')) {
+		return {};
+	}
+	return { checkCounts: { pass: Number(counts.pass), fail: Number(counts.fail), pending: Number(counts.pending), skipping: Number(counts.skipping), cancel: Number(counts.cancel) } };
+}
+
 /** PC から届いた `prView` の応答を読む。形の違うものは「取得できなかった」にする。 */
 export function parsePrView(reply: { readonly pr?: unknown; readonly unavailable?: unknown; readonly message?: unknown }): PrViewResult {
 	const raw = reply.pr as Partial<Record<keyof PrDetail, unknown>> | null | undefined;
@@ -74,6 +83,8 @@ export function parsePrView(reply: { readonly pr?: unknown; readonly unavailable
 				...(mergeStateStatus !== undefined ? { mergeStateStatus } : {}),
 				...(reviewDecision !== undefined ? { reviewDecision } : {}),
 				checks: Array.isArray(raw.checks) ? raw.checks.map(parseCheck).filter((check): check is PrCheck => check !== undefined) : [],
+				...parseCheckCounts(raw.checkCounts),
+				...(raw.checksIncomplete === true ? { checksIncomplete: true } : {}),
 			},
 		};
 	}
@@ -105,11 +116,11 @@ export function orderedChecks(checks: readonly PrCheck[]): PrCheck[] {
 }
 
 /** チェックの数の一行（「失敗 1・実行中 2・成功 3」）。チェックが無ければ undefined。 */
-export function checkSummaryText(checks: readonly PrCheck[]): string | undefined {
-	if (checks.length === 0) {
+export function checkSummaryText(checks: readonly PrCheck[], allCounts?: Record<ParadisPullRequestCheckBucket, number>): string | undefined {
+	const counts = allCounts ?? paradisPullRequestCheckCounts(checks);
+	if (Object.values(counts).every(count => count === 0)) {
 		return undefined;
 	}
-	const counts = paradisPullRequestCheckCounts(checks);
 	return [
 		counts.fail > 0 ? `失敗 ${counts.fail}` : undefined,
 		counts.cancel > 0 ? `取り消し ${counts.cancel}` : undefined,
@@ -137,7 +148,7 @@ export function mergeConfirmMessage(pr: PrDetail): string {
 	return [
 		`#${pr.number} ${pr.title}`,
 		`${pr.headRefName}${pr.baseRefName !== undefined ? ` → ${pr.baseRefName}` : ''}`,
-		checkSummaryText(pr.checks) ?? 'CI のチェックはありません',
+		checkSummaryText(pr.checks, pr.checkCounts) ?? 'CI のチェックはありません',
 		`コミット ${pr.headSha.slice(0, 7)} をリポジトリの既定の方法でマージします。この操作は取り消せません。`,
 	].join('\n');
 }

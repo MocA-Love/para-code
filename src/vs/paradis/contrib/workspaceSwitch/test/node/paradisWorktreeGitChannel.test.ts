@@ -8,6 +8,7 @@
 
 import assert from 'assert';
 import * as cp from 'child_process';
+import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { isCancellationError } from '../../../../../base/common/errors.js';
@@ -392,29 +393,79 @@ suite('ParadisWorktreeGitService', () => {
 			assert.deepStrictEqual({ rejected: rejected.length, spawned: calls.length }, { rejected: 11, spawned: 0 });
 		});
 
-		test('runs push / pull with a longer timeout and without interactive credential prompts', async () => {
-			const timeouts: (number | undefined)[] = [];
-			const envs: (string | undefined)[] = [];
-			const execFile = ((_command: string, _args: readonly string[], options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
-				timeouts.push(options.timeout);
-				envs.push(`${(options.env as NodeJS.ProcessEnv).GIT_TERMINAL_PROMPT}/${(options.env as NodeJS.ProcessEnv).GCM_INTERACTIVE}`);
-				queueMicrotask(() => timeouts.length === 3
-					// Node は timeout 到達時に子プロセスを kill し、killed=true・code=null のエラーを返す
-					? callback(Object.assign(new Error('killed'), { killed: true, signal: 'SIGKILL' as NodeJS.Signals }), '', 'remote: working')
-					: callback(null, '', ''));
+		test('stops a timed-out git with SIGTERM then SIGKILL, reports it and a leftover index.lock, without interactive credential prompts', async () => {
+			const dir = join(tmpdir(), `paradis-rungit-${generateUuid()}`);
+			await fs.mkdir(dir, { recursive: true });
+			const index = join(dir, 'index');
+			await fs.writeFile(`${index}.lock`, '');
+			const runs: { args: string; env: string; detached: unknown }[] = [];
+			const signals: string[] = [];
+			const execFile = ((_command: string, args: readonly string[], options: cp.ExecFileOptions & { detached?: boolean }, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
+				if (args.includes('--git-path')) {
+					queueMicrotask(() => callback(null, `${index}\n`, ''));
+					return {} as cp.ChildProcess;
+				}
+				runs.push({ args: args.slice(4).join(' '), env: `${(options.env as NodeJS.ProcessEnv).GIT_TERMINAL_PROMPT}/${(options.env as NodeJS.ProcessEnv).GCM_INTERACTIVE}`, detached: options.detached });
+				const hangs = args.includes('pull');
+				if (!hangs) {
+					queueMicrotask(() => callback(null, '', ''));
+				}
+				// フックが SIGTERM を無視して動き続ける git の代わり。SIGKILL でだけ終わる
+				return { kill: (signal: string) => { signals.push(signal); if (hangs && signal === 'SIGKILL') { callback(Object.assign(new Error('killed'), { code: null }), '', 'remote: working'); } return true; } } as unknown as cp.ChildProcess;
+			}) as typeof cp.execFile;
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile, async () => ({}), false, cp.spawn, { short: 1_000, long: 30, grace: 20 });
+
+			try {
+				await service.runGit('/repo', ['status', '--porcelain=v1']);
+				const timedOut = await service.runGit('/repo', ['pull', '--ff-only', '--no-rebase', '--quiet']);
+
+				assert.deepStrictEqual({ runs, signals, timedOut }, {
+					runs: [
+						{ args: 'status --porcelain=v1', env: '0/never', detached: true },
+						{ args: 'pull --ff-only --no-rebase --quiet', env: '0/never', detached: true },
+					],
+					signals: ['SIGTERM', 'SIGKILL'],
+					timedOut: { code: 1, stdout: '', stderr: 'remote: working\nParadisWorktreeGit: timed out after 0.03s\nParadisWorktreeGit: index.lock remains' },
+				});
+			} finally {
+				await fs.rm(dir, { recursive: true, force: true });
+			}
+		});
+
+		test('backs up the index file as it is and restores it under index.lock, refusing while another git holds the lock', async () => {
+			const dir = join(tmpdir(), `paradis-index-${generateUuid()}`);
+			await fs.mkdir(dir, { recursive: true });
+			const index = join(dir, 'index');
+			await fs.writeFile(index, 'before');
+			const execFile = ((_command: string, _args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
+				queueMicrotask(() => callback(null, `${index}\n`, ''));
 				return {} as cp.ChildProcess;
 			}) as typeof cp.execFile;
-			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile);
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile, async () => ({}));
 
-			await service.runGit('/repo', ['push', '--porcelain', 'origin', 'HEAD:refs/heads/feature']);
-			await service.runGit('/repo', ['status', '--porcelain=v1']);
-			const timedOut = await service.runGit('/repo', ['pull', '--ff-only', '--no-rebase', '--quiet']);
+			try {
+				const first = await service.backupIndex('/repo');
+				await fs.writeFile(index, 'after add -A');
+				await fs.writeFile(`${index}.lock`, '');
+				const locked = await service.restoreIndex('/repo', first.token);
+				await fs.rm(`${index}.lock`);
+				const restored = await service.restoreIndex('/repo', first.token);
+				const content = await fs.readFile(index, 'utf8');
+				const again = await service.restoreIndex('/repo', first.token);
+				const second = await service.backupIndex('/repo');
+				await service.discardIndexBackup('/repo', second.token);
+				const leftovers = (await fs.readdir(dir)).sort();
 
-			assert.deepStrictEqual({ timeouts, envs, timedOut }, {
-				timeouts: [120_000, 30_000, 120_000],
-				envs: ['0/never', '0/never', '0/never'],
-				timedOut: { code: 1, stdout: '', stderr: 'remote: working\nParadisWorktreeGit: timed out after 120s' },
-			});
+				assert.deepStrictEqual({ locked, restored, content, again, leftovers }, {
+					locked: { restored: false, reason: 'locked' },
+					restored: { restored: true },
+					content: 'before',
+					again: { restored: false, reason: 'gone' },
+					leftovers: ['index'],
+				});
+			} finally {
+				await fs.rm(dir, { recursive: true, force: true });
+			}
 		});
 
 		test('rejects a forbidden option even inside an allowed subcommand, without spawning a process', async () => {

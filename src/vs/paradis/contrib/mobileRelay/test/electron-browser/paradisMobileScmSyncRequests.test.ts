@@ -13,6 +13,8 @@ import { IConfigurationService } from '../../../../../platform/configuration/com
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ITerminalGroupService, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisAgentModelCatalogService } from '../../../agentModelCatalog/common/paradisAgentModelCatalog.js';
+import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
+import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisMobileRequestHost, paradisDispatchMobileRequest } from '../../electron-browser/paradisMobileRequestHandlers.js';
 import { paradisDefaultMobileAgentId } from '../../electron-browser/paradisMobileAgentPromptDelivery.js';
 // W2-15 の処理を登録表へ載せる（副作用 import）
@@ -38,12 +40,32 @@ class FakeGit {
 	}
 }
 
-const TREE = 'c'.repeat(40);
+const HEAD = 'c'.repeat(40);
 
 suite('ParadisMobileScmSyncRequests', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	function createHost(git: FakeGit, sent: IReply[], services = new Map<unknown, unknown>()): IParadisMobileRequestHost {
+	/** git channel のインデックスの控え（`backupIndex` / `restoreIndex` / `discardIndexBackup`）の代わり。 */
+	class FakeIndexChannel {
+		readonly calls: string[] = [];
+		restoreResult: { restored: boolean; reason?: string } = { restored: true };
+		missing = false;
+		async call(command: string, args: readonly unknown[]): Promise<unknown> {
+			this.calls.push(`${command} ${args.slice(1).join(' ')}`.trim());
+			if (this.missing) {
+				throw new Error(`Method not found: ${command}`);
+			}
+			return command === 'backupIndex' ? { token: 'token-1' } : command === 'restoreIndex' ? this.restoreResult : undefined;
+		}
+	}
+
+	function withIndexChannel(services: Map<unknown, unknown>, channel: FakeIndexChannel): Map<unknown, unknown> {
+		services.set(IRemoteAgentService, { getConnection: () => null });
+		services.set(ISharedProcessService, { getChannel: () => channel });
+		return services;
+	}
+
+	function createHost(git: FakeGit, sent: IReply[], services = new Map<unknown, unknown>(), refreshed: string[] = []): IParadisMobileRequestHost {
 		return {
 			// 使わないサービスは空で埋める
 			invokeFunction: fn => fn({ get: id => services.get(id) ?? {} } as ServicesAccessor),
@@ -54,6 +76,7 @@ suite('ParadisMobileScmSyncRequests', () => {
 			getMobileWireVersion: async () => undefined,
 			send: (_channel, _mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))),
 			pushState: () => undefined,
+			refreshBranches: () => refreshed.push('refresh'),
 		};
 	}
 
@@ -65,8 +88,8 @@ suite('ParadisMobileScmSyncRequests', () => {
 	const dispatch = (host: IParadisMobileRequestHost, body: Record<string, unknown>) => paradisDispatchMobileRequest('scm', { ws: 'repo', ...body }, 'phone', host);
 	const reply = (sent: readonly IReply[], id: string) => sent.find(candidate => candidate.id === id);
 
-	test('pushes the current branch to its upstream by name, publishes a new branch to origin, and explains rejections', async () => {
-		let branches = ' \0origin\0refs/heads/main\0main\n*\0origin\0refs/heads/feature\0feature\n';
+	test('pushes to the git push destination by name, publishes a new branch, and refuses a renamed upstream or a rejection', async () => {
+		let branches = ' \0origin\0refs/heads/main\0origin\0refs/heads/main\0refs/heads/main\n*\0origin\0refs/heads/feature\0origin\0refs/heads/feature\0refs/heads/feature\n';
 		let pushResult: Partial<GitResult> = {};
 		const git = new FakeGit(args => args[0] === 'branch' ? { stdout: branches }
 			: args[0] === 'remote' ? { stdout: 'upstream\norigin\n' }
@@ -77,11 +100,15 @@ suite('ParadisMobileScmSyncRequests', () => {
 
 		dispatch(host, { t: 'push', id: '1' });
 		await flush();
-		branches = '*\0\0\0new-branch\n';
+		branches = '*\0\0\0\0\0refs/heads/new-branch\n';
 		dispatch(host, { t: 'push', id: '2' });
 		await flush();
+		// `git switch -c feat origin/main`: 上流が origin/main で、push.default=simple では push 先が決まらない
+		branches = '*\0origin\0refs/heads/main\0\0\0refs/heads/feat\n';
+		dispatch(host, { t: 'push', id: 'renamed' });
+		await flush();
 		pushResult = { code: 1, stdout: 'To github.com:o/r.git\n!\tHEAD:refs/heads/feature\t[rejected] (fetch first)\n', stderr: 'error: failed to push some refs' };
-		branches = '*\0origin\0refs/heads/feature\0feature\n';
+		branches = '*\0origin\0refs/heads/feature\0origin\0refs/heads/feature\0refs/heads/feature\n';
 		dispatch(host, { t: 'push', id: '3' });
 		await flush();
 
@@ -89,6 +116,7 @@ suite('ParadisMobileScmSyncRequests', () => {
 			pushes: git.calls.filter(call => call.startsWith('push')),
 			first: reply(sent, '1'),
 			published: reply(sent, '2')?.published,
+			renamed: reply(sent, 'renamed')?.error,
 			rejected: reply(sent, '3')?.code,
 		}, {
 			pushes: [
@@ -98,6 +126,7 @@ suite('ParadisMobileScmSyncRequests', () => {
 			],
 			first: { t: 'push', ws: 'repo', upstream: 'origin/feature', ahead: 0, behind: 0, id: '1' },
 			published: true,
+			renamed: '上流が別名です。PC で push してください。',
 			rejected: 'rejected',
 		});
 	});
@@ -123,10 +152,10 @@ suite('ParadisMobileScmSyncRequests', () => {
 	});
 
 	test('restores the staged state when the commit fails, returns a redacted summary, and hands it to the default agent', async () => {
-		const git = new FakeGit(args => args[0] === 'write-tree' ? { stdout: `${TREE}\n` }
-			: args[0] === 'commit' ? { code: 1, stderr: 'husky - pre-commit hook exited with code 1\nAPI_TOKEN=supersecretvalue123\n✖ eslint found 2 problems' }
-				: args[0] === 'rev-parse' ? { stdout: 'feature\n' }
-					: args[0] === 'status' ? { stdout: ' M a.ts\n?? b.ts\n' } : undefined);
+		const git = new FakeGit(args => args[0] === 'commit' ? { code: 1, stderr: 'husky - pre-commit hook exited with code 1\nAPI_TOKEN=supersecretvalue123\n✖ eslint found 2 problems' }
+			: args[0] === 'rev-parse' ? { stdout: args.includes('--verify') ? `${HEAD}\n` : 'feature\n' }
+				: args[0] === 'status' ? { stdout: ' M a.ts\n?? b.ts\n' } : undefined);
+		const index = new FakeIndexChannel();
 		const launched: { agentId: string; stateKey: string; prompt?: string }[] = [];
 		const services = new Map<unknown, unknown>([
 			[ITerminalService, { instances: [] }],
@@ -136,7 +165,7 @@ suite('ParadisMobileScmSyncRequests', () => {
 			[IInstantiationService, { invokeFunction: async (_fn: unknown, request: { agentId: string; stateKey: string; prompt?: string }) => { launched.push(request); } }],
 		]);
 		const sent: IReply[] = [];
-		const host = createHost(git, sent, services);
+		const host = createHost(git, sent, withIndexChannel(services, index));
 
 		dispatch(host, { t: 'commitSafe', id: '1', message: 'feat: x', all: true });
 		await flush();
@@ -147,6 +176,7 @@ suite('ParadisMobileScmSyncRequests', () => {
 
 		assert.deepStrictEqual({
 			sequence: git.calls.slice(0, 4),
+			index: index.calls,
 			ok: reply(sent, '1')?.ok,
 			kind: failure.kind,
 			restored: failure.restored,
@@ -155,7 +185,8 @@ suite('ParadisMobileScmSyncRequests', () => {
 			fixed: reply(sent, '3'),
 			launched: launched.map(request => ({ agentId: request.agentId, stateKey: request.stateKey, hasOutput: request.prompt?.includes('eslint found 2 problems'), leaked: request.prompt?.includes('supersecretvalue123') })),
 		}, {
-			sequence: ['write-tree', 'add -A', 'commit -m feat: x', `read-tree ${TREE}`],
+			sequence: ['rev-parse --verify --quiet HEAD', 'add -A', 'commit -m feat: x', 'rev-parse --verify --quiet HEAD'],
+			index: ['backupIndex', 'restoreIndex token-1'],
 			ok: false,
 			kind: 'lint',
 			restored: true,
@@ -177,9 +208,52 @@ suite('ParadisMobileScmSyncRequests', () => {
 		await flush();
 
 		assert.deepStrictEqual({ calls: git.calls, ok: reply(sent, '1'), empty: reply(sent, 'empty')?.error }, {
-			calls: ['commit -m feat'],
+			calls: ['rev-parse --verify --quiet HEAD', 'commit -m feat'],
 			ok: { t: 'commitSafe', ok: true, output: '[main abc] feat\n 1 file changed', id: '1' },
 			empty: 'empty commit message',
+		});
+	});
+
+	test('treats a commit whose post-commit hook timed out as done, and reports when the staged state could not be restored', async () => {
+		let head = HEAD;
+		let commitOutcome: Partial<GitResult> = {};
+		const git = new FakeGit(args => {
+			if (args[0] === 'commit') {
+				// コミットは作られ、その後のフックの途中で時間切れになった
+				head = commitOutcome.code === undefined ? 'd'.repeat(40) : head;
+				return commitOutcome.code === undefined ? { code: 1, stderr: 'ParadisWorktreeGit: timed out after 120s' } : commitOutcome;
+			}
+			return args[0] === 'rev-parse' ? { stdout: `${head}\n` } : undefined;
+		});
+		const index = new FakeIndexChannel();
+		const refreshed: string[] = [];
+		const sent: IReply[] = [];
+		const host = createHost(git, sent, withIndexChannel(new Map(), index), refreshed);
+
+		dispatch(host, { t: 'commitSafe', id: 'moved', message: 'feat', all: true });
+		await flush();
+		commitOutcome = { code: 1, stderr: 'pre-commit hook failed' };
+		index.restoreResult = { restored: false, reason: 'locked' };
+		dispatch(host, { t: 'commitSafe', id: 'locked', message: 'feat', all: true });
+		await flush();
+		index.missing = true;
+		dispatch(host, { t: 'commitSafe', id: 'old', message: 'feat', all: true });
+		await flush();
+
+		const moved = reply(sent, 'moved');
+		const locked = reply(sent, 'locked')?.failure as { restored: boolean; restoreFailed?: boolean };
+		assert.deepStrictEqual({
+			moved: { ok: moved?.ok, warning: typeof moved?.warning === 'string' },
+			indexCalls: index.calls,
+			refreshed,
+			locked: { restored: locked.restored, restoreFailed: locked.restoreFailed },
+			old: reply(sent, 'old')?.code,
+		}, {
+			moved: { ok: true, warning: true },
+			indexCalls: ['backupIndex', 'discardIndexBackup token-1', 'backupIndex', 'restoreIndex token-1', 'backupIndex'],
+			refreshed: ['refresh'],
+			locked: { restored: false, restoreFailed: true },
+			old: 'old-server',
 		});
 	});
 

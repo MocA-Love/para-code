@@ -100,14 +100,16 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	const commit = async () => {
 		commitHandoff.reset();
 		setActionError(undefined);
-		const ok = await commitState.commit(message, scope);
-		if (!ok) {
+		const outcome = await commitState.commit(message, scope);
+		if (!outcome.ok) {
 			// 失敗でもステージを戻したので、一覧を読み直す
 			void statusState.refresh();
 			return;
 		}
 		setMessage('');
-		useParaToast.getState().show({ key: 'scm-commit', text: 'コミットしました', sub: branch, icon: 'checkmark-circle-outline', tone: 'done' }, 1_900);
+		useParaToast.getState().show(outcome.warning !== undefined
+			? { key: 'scm-commit', text: 'コミットしました', sub: outcome.warning, icon: 'alert-circle-outline', tone: 'warn' }
+			: { key: 'scm-commit', text: 'コミットしました', sub: branch, icon: 'checkmark-circle-outline', tone: 'done' }, outcome.warning !== undefined ? 5_000 : 1_900);
 		void statusState.refresh();
 		void history.refresh();
 	};

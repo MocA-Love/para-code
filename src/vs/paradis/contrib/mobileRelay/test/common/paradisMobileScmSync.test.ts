@@ -12,6 +12,7 @@ import { paradisRedactMobileCommandOutput } from '../../common/paradisMobileOutp
 import {
 	paradisBuildCommitFixPrompt,
 	paradisClassifyMobileSyncFailure,
+	paradisMobilePushPlan,
 	paradisParseCurrentBranchUpstream,
 	paradisParseMobileBranchSync,
 	paradisSummarizeMobileCommitFailure,
@@ -35,16 +36,45 @@ suite('ParadisMobileScmSync', () => {
 		]);
 	});
 
-	test('reads the current branch and its upstream remote from git branch --format', () => {
+	test('reads the current branch, its upstream and its push destination from git branch --format', () => {
 		assert.deepStrictEqual([
-			paradisParseCurrentBranchUpstream(' \0origin\0refs/heads/main\0main\n*\0fork/x\0refs/heads/feat\0feat\n'),
-			paradisParseCurrentBranchUpstream('*\0\0\0new-branch\n'),
-			paradisParseCurrentBranchUpstream('*\0\0\0(HEAD detached at abc)\n'),
+			paradisParseCurrentBranchUpstream(' \0origin\0refs/heads/main\0origin\0refs/heads/main\0refs/heads/main\n*\0fork/x\0refs/heads/feat\0fork/x\0refs/heads/feat\0refs/heads/feat\n'),
+			paradisParseCurrentBranchUpstream('*\0\0\0\0\0refs/heads/new-branch\n'),
+			paradisParseCurrentBranchUpstream('*\0\0\0\0\0(HEAD detached at abc)\n'),
 		], [
-			{ branch: 'feat', remote: 'fork/x', remoteRef: 'refs/heads/feat' },
-			{ branch: 'new-branch', remote: undefined, remoteRef: undefined },
+			{ branch: 'feat', upstreamRemote: 'fork/x', upstreamRef: 'refs/heads/feat', pushRemote: 'fork/x', pushRef: 'refs/heads/feat' },
+			{ branch: 'new-branch', upstreamRemote: undefined, upstreamRef: undefined, pushRemote: undefined, pushRef: undefined },
 			undefined,
 		]);
+	});
+
+	test('pushes only to a same-named branch at the git push destination, and refuses renamed or local upstreams', () => {
+		const remotes = ['origin', 'fork'];
+		const branch = (overrides: Partial<Parameters<typeof paradisMobilePushPlan>[0]>) => ({ branch: 'feat', upstreamRemote: 'origin', upstreamRef: 'refs/heads/feat', pushRemote: 'origin', pushRef: 'refs/heads/feat', ...overrides });
+		const plans = [
+			paradisMobilePushPlan(branch({}), remotes),
+			// `git switch -c feat origin/main`（push.default=simple では push 先が決まらない）
+			paradisMobilePushPlan(branch({ upstreamRef: 'refs/heads/main', pushRemote: undefined, pushRef: undefined }), remotes),
+			// push.default=upstream で上流が別名（push 先が main になる）
+			paradisMobilePushPlan(branch({ upstreamRef: 'refs/heads/main', pushRef: 'refs/heads/main' }), remotes),
+			// branch.feat.pushRemote=fork（三角のワークフロー）: 上流は origin/main でも push 先は fork の同じ名前
+			paradisMobilePushPlan(branch({ upstreamRef: 'refs/heads/main', pushRemote: 'fork', pushRef: 'refs/heads/feat' }), remotes),
+			paradisMobilePushPlan(branch({ upstreamRemote: '.', upstreamRef: 'refs/heads/main', pushRemote: undefined, pushRef: undefined }), remotes),
+			paradisMobilePushPlan(branch({ pushRemote: 'git@evil.example:repo.git' }), remotes),
+			paradisMobilePushPlan(branch({ upstreamRemote: undefined, upstreamRef: undefined, pushRemote: undefined, pushRef: undefined }), remotes),
+			paradisMobilePushPlan(branch({ upstreamRemote: undefined, upstreamRef: undefined, pushRemote: undefined, pushRef: undefined }), []),
+		];
+		assert.deepStrictEqual(plans.map(plan => plan.kind === 'push' ? `${plan.remote} ${plan.ref}${plan.publish ? ' publish' : ''}` : plan.code), [
+			'origin refs/heads/feat',
+			'renamed-upstream',
+			'renamed-upstream',
+			'fork refs/heads/feat',
+			'local-upstream',
+			'unknown-remote',
+			'origin refs/heads/feat publish',
+			'no-remote',
+		]);
+		assert.strictEqual(plans[1].kind === 'refuse' ? plans[1].message : '', '上流が別名です。PC で push してください。');
 	});
 
 	test('classifies sync failures without ever suggesting a force push', () => {
@@ -56,14 +86,17 @@ suite('ParadisMobileScmSync', () => {
 			['pull', 'error: Your local changes to the following files would be overwritten by merge'],
 			['push', 'remote: error: GH006: Protected branch update failed'],
 			['push', 'ParadisWorktreeGit: timed out after 120s'],
+			['pull', 'ParadisWorktreeGit: timed out after 120s\nParadisWorktreeGit: index.lock remains'],
 		] as const;
 		const results = codes.map(([operation, output]) => paradisClassifyMobileSyncFailure(operation, output));
 		assert.deepStrictEqual({
 			codes: results.map(result => result.code),
 			mentionsForce: results.some(result => /force/i.test(result.message)),
+			lock: results[7].message.includes('index.lock'),
 		}, {
-			codes: ['rejected', 'diverged', 'auth', 'network', 'local-changes', 'protected', 'timeout'],
+			codes: ['rejected', 'diverged', 'auth', 'network', 'local-changes', 'protected', 'timeout', 'timeout'],
 			mentionsForce: false,
+			lock: true,
 		});
 	});
 
@@ -97,10 +130,12 @@ suite('ParadisMobileScmSync', () => {
 			'-----BEGIN RSA PRIVATE KEY-----',
 			'MIIEowIBAAKCAQEA7',
 			'-----END RSA PRIVATE KEY-----',
+			'DefaultEndpointsProtocol=https;AccountName=a;AccountKey=c2VjcmV0c2VjcmV0;EndpointSuffix=core.windows.net',
+			'curl -X POST https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXX',
 			'\u001b[31merror\u001b[0m kept',
 		].join('\n'));
 		assert.deepStrictEqual({
-			leaked: /ghp_|ghs_|MIIEow/.test(redacted),
+			leaked: /ghp_|ghs_|MIIEow|c2VjcmV0|XXXXXXXXXXXX/.test(redacted),
 			kept: redacted.includes('error kept'),
 			url: redacted.includes('https://***@github.com/o/r.git'),
 		}, { leaked: false, kept: true, url: true });
@@ -112,10 +147,8 @@ suite('ParadisMobileScmSync', () => {
 			paradisRestrictedGitArgsError(['push', '--porcelain', '--set-upstream', 'origin', 'HEAD:refs/heads/feature']),
 			paradisRestrictedGitArgsError(['pull', '--ff-only', '--no-rebase', '--quiet']),
 			paradisRestrictedGitArgsError(['fetch', '--quiet']),
-			paradisRestrictedGitArgsError(['write-tree']),
-			paradisRestrictedGitArgsError(['read-tree', 'a'.repeat(40)]),
 			paradisRestrictedGitArgsError(['status', '--porcelain=v1']),
-		], [undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
+		], [undefined, undefined, undefined, undefined, undefined]);
 		assert.deepStrictEqual([
 			paradisRestrictedGitArgsError(['push', '--force-if-includes', 'origin', 'main']) !== undefined,
 			paradisRestrictedGitArgsError(['push', 'origin', 'HEAD:']) !== undefined,

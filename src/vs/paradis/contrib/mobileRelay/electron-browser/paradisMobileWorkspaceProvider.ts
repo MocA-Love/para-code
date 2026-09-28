@@ -1462,6 +1462,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			},
 			send: (ch, mobileId, payload) => this.sendFrame({ ch: ch === 'scm' ? Channels.Scm : Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(payload), mobileId: mobileId || undefined }),
 			pushState: () => this.pushState(),
+			refreshBranches: () => this.refreshBranches(),
 		});
 	}
 

@@ -138,7 +138,7 @@ export function commitFailureView(failure: IParadisMobileCommitFailure): CommitF
 		title: failure.summary,
 		output: failure.output,
 		fixable: paradisMobileCommitFailureIsFixable(failure.kind),
-		note: failure.restored ? 'ステージの状態はコミットの前に戻しました。' : undefined,
+		note: failure.restoreFailed === true ? 'ステージを戻せませんでした。PC で確かめてください。' : failure.restored ? 'ステージの状態はコミットの前に戻しました。' : undefined,
 	};
 }
 
@@ -150,7 +150,7 @@ export function parseCommitFailure(value: unknown): IParadisMobileCommitFailure 
 	}
 	const kinds = ['hook', 'lint', 'nothing', 'identity', 'conflict', 'timeout', 'other'] as const;
 	const kind = kinds.find(candidate => candidate === failure.kind) ?? 'other';
-	return { id: failure.id, kind, summary: failure.summary, output: failure.output, restored: failure.restored === true };
+	return { id: failure.id, kind, summary: failure.summary, output: failure.output, restored: failure.restored === true, ...(failure.restoreFailed === true ? { restoreFailed: true } : {}) };
 }
 
 /** エージェントへ送った結果（`commitFix` / `prFixChecks` の応答）。 */

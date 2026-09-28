@@ -54,7 +54,7 @@ export function PullRequestPanel({ view, loading, error, offline, canMerge, merg
 		return <EmptyState icon={GitPullRequest} title={text.title} body={text.body} action={onRetry !== undefined ? { label: '再読み込み', onPress: onRetry } : undefined} style={styles.state} />;
 	}
 	const pr = view.pr;
-	const summary = checkSummaryText(pr.checks);
+	const summary = checkSummaryText(pr.checks, pr.checkCounts);
 	const merge = prMergeButton(pr);
 	const disabled = offline !== undefined;
 	return (
@@ -79,6 +79,7 @@ export function PullRequestPanel({ view, loading, error, offline, canMerge, merg
 			) : null}
 			<GroupHeading title={summary !== undefined ? `CI のチェック（${summary}）` : 'CI のチェック'} />
 			{pr.checks.length === 0 ? <Text style={styles.empty}>チェックはありません。</Text> : orderedChecks(pr.checks).map((check, index) => <CheckRow key={`${check.name}-${index}`} check={check} />)}
+			{pr.checksIncomplete === true ? <Text style={styles.empty}>チェックが多いため、一部だけを表示しています。</Text> : null}
 			{canMerge && merge.visible ? (
 				<View style={styles.merge}>
 					<InlineError message={mergeError !== undefined ? mergeError : undefined} style={styles.inset} />
