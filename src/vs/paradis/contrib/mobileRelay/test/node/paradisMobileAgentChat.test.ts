@@ -197,6 +197,75 @@ suite('ParadisMobileAgentChat', () => {
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'unknown', id: 1 }), false);
 	});
 
+	test('validates the approval options request and opt:<n> answers (W2-21)', () => {
+		assert.deepStrictEqual({
+			options: paradisIsValidAgentInboundForTest({ t: 'approval-options', id: 1, token: 'pane-1', requestId: 'request-1', epoch: 'epoch-1', interactionId: 'approval:1:0' }),
+			optionsWithoutInteraction: paradisIsValidAgentInboundForTest({ t: 'approval-options', id: 1, requestId: 'request-1', epoch: 'epoch-1' }),
+			optAnswer: paradisIsValidAgentInboundForTest({ t: 'action/answerApproval', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'approval:1:0', choice: 'opt:2', optionLabel: 'Yes, and don\'t ask again' }),
+			badLabel: paradisIsValidAgentInboundForTest({ t: 'action/answerApproval', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'approval:1:0', choice: 'opt:2', optionLabel: 3 }),
+			longLabel: paradisIsValidAgentInboundForTest({ t: 'action/answerApproval', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'approval:1:0', choice: 'opt:2', optionLabel: 'x'.repeat(501) }),
+		}, { options: true, optionsWithoutInteraction: false, optAnswer: true, badLabel: false, longLabel: false });
+	});
+
+	test('forwards approval option reads and opt:<n> answers to the owning window with the label to re-check (W2-21)', async () => {
+		const token = 'pane-approval-options';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'approval-options.jsonl');
+		const sent: Record<string, unknown>[] = [];
+		const actions: Record<string, unknown>[] = [];
+		const chat = new ParadisMobileAgentChat(
+			(_mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))),
+			(_mobileId, _windowId, _windowSession, _generation, payload) => actions.push(JSON.parse(new TextDecoder().decode(payload))),
+			() => { }, new NullLogService(),
+		);
+		const access = chat as unknown as {
+			tailers: Map<string, { readonly epoch: string; currentInteraction(): { readonly kind: string; readonly id: string; readonly suggestions?: readonly string[] } | null }>;
+		};
+		const inbound = (message: Record<string, unknown>) => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify(message)));
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'UserPromptSubmit', sessionId: 'session-approval-options', transcriptPath, cwd: '/workspace', at: Date.now() });
+			await waitFor(() => access.tailers.has(token), 'the pane session was not established');
+			inbound({ t: 'attach', id: 1, token });
+			await waitFor(() => sent.some(message => message.t === 'snapshot'), 'the attach did not answer with a snapshot');
+			fireParadisAgentHookEvent({
+				token, event: 'PermissionRequest', sessionId: 'session-approval-options', transcriptPath, cwd: '/workspace', at: Date.now(),
+				toolName: 'Bash', toolInput: { command: 'npm test' },
+				payload: { permission_suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'localSettings' }] },
+			});
+			await waitFor(() => access.tailers.get(token)?.currentInteraction()?.kind === 'approval', 'the approval was not injected');
+			const tailer = access.tailers.get(token)!;
+			const interaction = tailer.currentInteraction()!;
+			const base = { id: 1, token, epoch: tailer.epoch, interactionId: interaction.id };
+			sent.length = 0;
+
+			inbound({ t: 'approval-options', ...base, requestId: 'options-1' });
+			inbound({ t: 'approval-options', ...base, interactionId: 'approval:other', requestId: 'options-2' });
+			inbound({ t: 'action/answerApproval', ...base, requestId: 'answer-1', choice: 'opt:2' });
+			inbound({ t: 'action/answerApproval', ...base, requestId: 'answer-2', choice: 'opt:2', optionLabel: 'Yes, and don\'t ask again for npm test commands' });
+			// 断りの返事は所有ウィンドウの確認を待ってから送られる
+			await waitFor(() => sent.length >= 2, 'the rejections were not delivered');
+
+			assert.deepStrictEqual({
+				suggestions: interaction.suggestions,
+				actions: actions.map(action => ({ t: action.t, requestId: action.requestId, agent: action.agent, parts: action.parts, expectOption: action.expectOption })),
+				sent: sent.map(message => ({ t: message.t, requestId: message.requestId, code: message.code, error: message.error })),
+			}, {
+				suggestions: ['Bash(npm test:*)'],
+				actions: [
+					{ t: 'action/approvalOptions', requestId: 'options-1', agent: 'claude', parts: undefined, expectOption: undefined },
+					{ t: 'action/interaction', requestId: 'answer-2', agent: 'claude', parts: ['2'], expectOption: { n: 2, label: 'Yes, and don\'t ask again for npm test commands' } },
+				],
+				sent: [
+					{ t: 'approval-options', requestId: 'options-2', code: undefined, error: 'stale-interaction' },
+					{ t: 'action-result', requestId: 'answer-1', code: 'invalid-answer', error: undefined },
+				],
+			});
+		} finally {
+			chat.dispose();
+		}
+	});
+
 	test('uses the production five-minute directory walk budget', () => {
 		const clock = sinon.useFakeTimers({ now: 1_000 });
 		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());

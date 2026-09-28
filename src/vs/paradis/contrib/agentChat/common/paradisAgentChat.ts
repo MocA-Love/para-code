@@ -133,6 +133,11 @@ export type IParadisAgentInteraction =
 	| {
 		readonly kind: 'approval'; readonly id: string; readonly title?: string; readonly detail?: string;
 		readonly choices?: readonly IParadisAgentApprovalChoice[];
+		/**
+		 * PermissionRequest hook の `permission_suggestions` を短くしたもの（例 `Bash(npm test:*)`、W2-21）。
+		 * 「今後は確認しない」の対象を添えて見せるだけで、送るキーには使わない。
+		 */
+		readonly suggestions?: readonly string[];
 	};
 
 export function paradisIsCodexDaemonApprovalInteraction(interactionId: string): boolean {

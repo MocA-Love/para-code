@@ -288,8 +288,10 @@ interface AppState extends StoreState {
 	sendTextInput(terminalKey: string, text: string, execute: boolean): Promise<boolean>;
 	sendAgentMessage(terminalKey: string, text: string): Promise<AgentMessageSendResult>;
 	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<AgentMessageSendResult>;
-	answerAgentApproval(terminalKey: string, interactionId: string, choice: string): Promise<AgentMessageSendResult>;
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, optionLabel?: string): Promise<AgentMessageSendResult>;
 	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult>;
+	/** agent チャネルの新しい種類の要求（`MobileController.requestAgentReply`）。 */
+	requestAgentReply(terminalKey: string, body: { readonly t: string; readonly [key: string]: unknown }, replyType: string, timeoutMs?: number): Promise<Record<string, unknown>>;
 	requestAgentActivityDetail(terminalKey: string, activityId: string): Promise<AgentActivityDetailMessage[]>;
 	requestAgentToolFullText(terminalKey: string, rev: number): Promise<string>;
 	requestAgentToolImage(terminalKey: string, rev: number, index: number): Promise<AgentToolImage>;
@@ -1688,9 +1690,13 @@ export const useAppStore = create<AppState>(set => ({
 			?? Promise.resolve<AgentMessageSendResult>({ status: 'rejected', message: 'PCとの接続が切れています' });
 	},
 
-	answerAgentApproval(terminalKey: string, interactionId: string, choice: string) {
-		return controller?.answerAgentApproval(terminalKey, interactionId, choice)
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, optionLabel?: string) {
+		return controller?.answerAgentApproval(terminalKey, interactionId, choice, optionLabel)
 			?? Promise.resolve<AgentMessageSendResult>({ status: 'rejected', message: 'PCとの接続が切れています' });
+	},
+
+	requestAgentReply(terminalKey: string, body: { readonly t: string; readonly [key: string]: unknown }, replyType: string, timeoutMs?: number) {
+		return controller?.requestAgentReply(terminalKey, body, replyType, timeoutMs) ?? Promise.reject(new Error('PCとの接続が切れています'));
 	},
 
 	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string) {

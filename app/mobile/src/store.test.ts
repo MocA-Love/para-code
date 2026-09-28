@@ -1614,6 +1614,62 @@ describe('MobileController agent approval', () => {
 		pcMux.send(Channels.Agent, encode({ t: 'action-result', id: 7, token: 'agent-7', requestId: requests[0]?.requestId, status: 'accepted' }));
 		await expect(answer).resolves.toEqual({ status: 'accepted' });
 	});
+
+	it('reads the numbered approval options from the PC and answers with opt:<n> and the label (W2-21)', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
+		const requests: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Agent, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		pcMux.send(Channels.State, encode(desktopState([{ id: 7, title: 'claude', agentToken: 'agent-7' }])));
+		await flush();
+		controller.attachAgent('terminal-7');
+		await flush();
+		requests.length = 0;
+		pcMux.send(Channels.Agent, encode({
+			t: 'snapshot', id: 7, token: 'agent-7', agent: 'claude', epoch: 'e1', rev: 0, messages: [],
+			capabilities: { agentActions: true },
+			interaction: {
+				kind: 'approval', id: 'approval:e1:0', title: '操作の許可', detail: 'Bash: npm test',
+				choices: [{ id: 'yes', label: '許可', tone: 'approve' }, { id: 'no', label: '拒否', tone: 'deny' }],
+				suggestions: ['Bash(npm test:*)'],
+			},
+		}));
+		await flush();
+		expect(latest?.agentChats.get('terminal-7')?.interaction?.suggestions).toEqual(['Bash(npm test:*)']);
+
+		const reply = controller.requestAgentReply('terminal-7', { t: 'approval-options', epoch: 'e1', interactionId: 'approval:e1:0' }, 'approval-options');
+		await flush();
+		const optionsRequest = requests[0];
+		pcMux.send(Channels.Agent, encode({
+			t: 'approval-options', id: 7, token: 'agent-7', requestId: optionsRequest?.requestId, interactionId: 'approval:e1:0',
+			options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'Yes, and don\'t ask again' }],
+		}));
+		await expect(reply).resolves.toMatchObject({ options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'Yes, and don\'t ask again' }] });
+
+		const withoutLabel = await controller.answerAgentApproval('terminal-7', 'approval:e1:0', 'opt:2');
+		const answer = controller.answerAgentApproval('terminal-7', 'approval:e1:0', 'opt:2', 'Yes, and don\'t ask again');
+		await flush();
+		expect({ optionsRequest, withoutLabel, answerRequest: requests[1] }).toEqual({
+			optionsRequest: { t: 'approval-options', epoch: 'e1', interactionId: 'approval:e1:0', id: 7, token: 'agent-7', requestId: optionsRequest?.requestId },
+			withoutLabel: { status: 'rejected', message: 'この選択肢は送信できません' },
+			answerRequest: {
+				t: 'action/answerApproval', id: 7, token: 'agent-7', requestId: requests[1]?.requestId,
+				epoch: 'e1', interactionId: 'approval:e1:0', choice: 'opt:2', optionLabel: 'Yes, and don\'t ask again',
+			},
+		});
+		pcMux.send(Channels.Agent, encode({ t: 'action-result', id: 7, token: 'agent-7', requestId: requests[1]?.requestId, status: 'accepted' }));
+		await expect(answer).resolves.toEqual({ status: 'accepted' });
+	});
 });
 
 // --- ターミナル同期プロトコル（epoch/seq/ACK） ---

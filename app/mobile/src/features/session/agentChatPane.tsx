@@ -7,6 +7,7 @@ import { RotateCw } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { shouldShowQuickReplies } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
+import { approvalSuggestionNote } from '../../approvalOptions.js';
 import { findLatestApprovalRequest } from '../../components/attentionStack.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { hapticImpact } from '../../haptics.js';
@@ -24,6 +25,7 @@ import { ChatList, type ChatListHandle } from './chatList.js';
 import { buildChatRows, questionRowId, splitPinnedQuestion } from './chatRows.js';
 import { PermissionCard } from './permissionCard.js';
 import { SessionComposer, type SessionComposerHandle } from './sessionComposer.js';
+import { useApprovalOptions } from './useApprovalOptions.js';
 
 /** 回答カードの高さの上限。選択肢が多いと会話が見えなくなるので、超えたぶんはカードの中でスクロールする。 */
 const PINNED_CARD_MAX_HEIGHT = 380;
@@ -79,6 +81,8 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	const approvalUnavailable = chat?.interaction === undefined && terminal.agentStatus === 'permission';
 	const refreshing = chat?.stale === true;
 	const working = terminal.agentStatus === 'working' || chat?.live !== undefined;
+	// PC の画面と同じ番号付きの選択肢（読めた PC だけ。W2-21）
+	const approvalOptions = useApprovalOptions(terminalKey, chat?.epoch, approval, actions.approve);
 
 	// 送ったがまだ読まれていないメッセージの控え（作業中に送ったものだけ）。
 	const pendingMessages = usePendingAgentMessages(s => s.byTerminal[terminalKey]) ?? NO_PENDING_MESSAGES;
@@ -156,10 +160,11 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 		<PermissionCard
 			key={approval.id}
 			interactionId={approval.id}
-			onApprove={actions.approve}
+			onApprove={approvalOptions?.approve ?? actions.approve}
 			title={approval.title}
 			detail={approval.detail ?? findLatestApprovalRequest(chat)}
-			choices={approval.choices}
+			choices={approvalOptions?.choices ?? approval.choices}
+			note={approvalSuggestionNote(approval.suggestions)}
 			refreshing={refreshing}
 		/>
 	) : approvalUnavailable ? (
