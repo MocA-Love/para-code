@@ -143,6 +143,7 @@ export class EditorPanes extends Disposable {
 
 			// PARA-PATCH: a space switch can dispose this group while an editor is still opening; stop here instead of building an error placeholder with the group's disposed services (Sentry 7T)
 			if (this._store.isDisposed) {
+				this.logService.warn(`Stopped opening ${editor.typeId} because its editor group was disposed while it was opening`, error);
 				return { error, cancelled: true };
 			}
 

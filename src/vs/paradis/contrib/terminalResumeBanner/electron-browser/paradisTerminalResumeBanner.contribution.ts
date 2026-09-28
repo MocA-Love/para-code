@@ -26,7 +26,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { ICommandDetectionCapability, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
-import { GeneralShellType, TerminalExitReason, TerminalLocation, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
+import { TerminalExitReason, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalEditorService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
@@ -36,6 +36,7 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { IParadisAgentStatusSnapshot } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
+import { paradisChangeDirectoryCommand } from '../../workspaceSwitch/common/paradisTerminalSpaceFolder.js';
 import { createParadisTerminalResumeBanner, IParadisResumeBannerHost } from '../browser/paradisTerminalResumeBannerView.js';
 import { IParadisResumeLedgerEntry, paradisCodexThreadIdFromTitle, paradisResumeLedgerKey, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeNeedsFolderChange, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
 
@@ -327,12 +328,23 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 				this.notificationService.warn(localize('paradis.resumeBanner.folderMissing', "会話を始めたフォルダ {0} が見つからないため、再開しません。別のフォルダで再開すると、会話がそのフォルダのプロジェクトへ複製されます。", recordedCwd));
 				return;
 			}
-			if (instance.isDisposed || !this.isAtEmptyPrompt(commandDetection) || !await this.changeDirectory(instance, commandDetection, recordedCwd)) {
+			const changeDirectory = paradisChangeDirectoryCommand(instance.shellType, recordedCwd);
+			if (changeDirectory === undefined) {
+				// 引用の仕方が分からないシェルへ自動で `cd` を送ると、パスの一部が別の意味に取られうる。
+				this.notificationService.warn(localize('paradis.resumeBanner.unknownShell', "このシェルでは会話を始めたフォルダ {0} へ自動で移れないため、再開しません。そのフォルダへ移ってから、もう一度押してください。", recordedCwd));
+				return;
+			}
+			if (instance.isDisposed || !this.isAtEmptyPrompt(commandDetection) || !await this.changeDirectory(instance, commandDetection, changeDirectory, recordedCwd)) {
 				this.notificationService.warn(localize('paradis.resumeBanner.folderChangeFailed', "会話を始めたフォルダ {0} へ移れなかったため、再開を取りやめました。そのフォルダへ移ってから、もう一度押してください。", recordedCwd));
 				return;
 			}
 		}
 		if (instance.isDisposed || this._offers.get(instanceId) !== offer) {
+			return;
+		}
+		// `cd` を待っている間に打ち始めた文字や、動き出したプログラムがあれば、そこへ混ぜない。
+		if (!this.isAtEmptyPrompt(commandDetection)) {
+			this.notificationService.info(localize('paradis.resumeBanner.notAtPromptAfterMove', "会話を始めたフォルダへ移りましたが、入力欄が空でないため再開していません。入力欄を空にしてから、もう一度押してください。"));
 			return;
 		}
 		this.withdrawOffer(instanceId);
@@ -350,12 +362,12 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	 * シェル統合はコマンドの終了を知らせた後にフォルダの変化を知らせる（zsh / bash の precmd の順）。
 	 * 終了の時点ではまだ古いフォルダが見えることがあるので、フォルダの知らせも少し待つ。
 	 */
-	private async changeDirectory(instance: ITerminalInstance, commandDetection: ICommandDetectionCapability, path: string): Promise<boolean> {
+	private async changeDirectory(instance: ITerminalInstance, commandDetection: ICommandDetectionCapability, changeDirectory: string, path: string): Promise<boolean> {
 		const cwdDetection = instance.capabilities.get(TerminalCapability.CwdDetection);
 		const finished = Event.toPromise(commandDetection.onCommandFinished);
 		const arrived = cwdDetection === undefined ? undefined : Event.toPromise(Event.filter(cwdDetection.onDidChangeCwd, cwd => !paradisResumeNeedsFolderChange(path, cwd)));
 		try {
-			await instance.sendText(await this.changeDirectoryCommand(instance, path), true);
+			await instance.sendText(changeDirectory, true);
 			const result = await raceTimeout(finished, CHANGE_DIRECTORY_TIMEOUT_MS);
 			if (result === undefined || (result.exitCode !== undefined && result.exitCode !== 0)) {
 				return false;
@@ -369,20 +381,6 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 			finished.cancel();
 			arrived?.cancel();
 		}
-	}
-
-	/**
-	 * シェルに合わせた `cd`。パスはシェルが展開しない形で囲む（PowerShell は単一引用符、cmd は
-	 * `/d` 付きの二重引用符、それ以外は upstream の `preparePathForShell`）。
-	 */
-	private async changeDirectoryCommand(instance: ITerminalInstance, path: string): Promise<string> {
-		if (instance.shellType === GeneralShellType.PowerShell) {
-			return `Set-Location -LiteralPath '${path.replace(/['\u2018\u2019\u201a\u201b]/g, quote => quote + quote)}'`;
-		}
-		if (instance.shellType === WindowsShellType.CommandPrompt) {
-			return `cd /d "${path.replace(/"/g, '""')}"`;
-		}
-		return `cd ${await instance.preparePathForShell(path)}`;
 	}
 
 	fork(instanceId: number): void {

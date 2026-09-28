@@ -128,7 +128,20 @@ export interface IParadisIdleShellState {
 	readonly hasPendingInput: boolean;
 	/** タブの見出し。前面で何か（エージェント等）が動いていると、シェル名以外になる。 */
 	readonly title: string;
+	/**
+	 * 前のシェルへそのまま繋ぎ直した端末か。画面ごと起こし直したもの（PC の再起動後の復元）や、
+	 * 繋ぎ直せず新しいシェルを起こしたものは false。そういう端末はコマンドの履歴を持たないので、
+	 * 使われていたかどうかをコマンド数で判断できない。
+	 */
+	readonly reattachedToSameShell: boolean;
+	/** プロンプトより上にある、空でない行の数。プロンプトの位置が分からなければ undefined。 */
+	readonly nonEmptyLinesBeforePrompt: number | undefined;
+	/** 画面（スクロールバックを含む）にある空でない行の数。読めなければ undefined。 */
+	readonly nonEmptyLines: number | undefined;
 }
+
+/** プロンプトの位置が分からないとき、プロンプトだけと見なしてよい行数（2 行のプロンプトまで）。 */
+const PARADIS_IDLE_SHELL_MAX_PROMPT_LINES = 2;
 
 /**
  * 閉じてよい空のシェルか。消えると戻せないので、どれか1つでも分からない・当てはまらないなら閉じない。
@@ -144,5 +157,10 @@ export function paradisIsIdleEmptyShell(state: IParadisIdleShellState): boolean 
 		&& !state.isExecuting
 		&& !state.hasPendingInput
 		// 子プロセスの有無は、繋ぎ直した直後は pty host から届くまで「無し」に見える。見出しでも確かめる。
-		&& /^(?:zsh|bash|fish|sh|dash|ksh|nu|pwsh|powershell|cmd)(?:\.exe)?$/i.test(state.title.trim());
+		&& /^(?:zsh|bash|fish|sh|dash|ksh|nu|pwsh|powershell|cmd)(?:\.exe)?$/i.test(state.title.trim())
+		&& state.reattachedToSameShell
+		// 画面にプロンプト以外の行があれば、何かに使われていた。
+		&& (state.nonEmptyLinesBeforePrompt !== undefined
+			? state.nonEmptyLinesBeforePrompt === 0
+			: state.nonEmptyLines !== undefined && state.nonEmptyLines <= PARADIS_IDLE_SHELL_MAX_PROMPT_LINES);
 }

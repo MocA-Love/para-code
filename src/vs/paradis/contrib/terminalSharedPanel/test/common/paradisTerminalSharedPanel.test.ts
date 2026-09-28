@@ -68,7 +68,7 @@ suite('paradisTerminalSharedPanel', () => {
 
 	// 閉じると戻せないので、どれか1つでも「使われた」「分からない」なら閉じない。
 	test('treats only a never-used, idle, plain shell as an empty shell to close', () => {
-		const idle = { hasShellIntegration: true, hasChildProcesses: false, commandCount: 0, isExecuting: false, hasPendingInput: false, title: 'zsh' };
+		const idle = { hasShellIntegration: true, hasChildProcesses: false, commandCount: 0, isExecuting: false, hasPendingInput: false, title: 'zsh', reattachedToSameShell: true, nonEmptyLinesBeforePrompt: 0, nonEmptyLines: 1 };
 		assert.deepStrictEqual({
 			idle: paradisIsIdleEmptyShell(idle),
 			windowsShell: paradisIsIdleEmptyShell({ ...idle, title: 'pwsh.exe' }),
@@ -80,6 +80,13 @@ suite('paradisTerminalSharedPanel', () => {
 			// 繋ぎ直した直後は子プロセスが「無し」に見えるので、見出しでも確かめる。
 			agentTitle: paradisIsIdleEmptyShell({ ...idle, title: 'Fix the login flow' }),
 			renamed: paradisIsIdleEmptyShell({ ...idle, title: 'server' }),
+			// 画面ごと起こし直したシェル・起こし直したシェルは、コマンドの履歴を持たないので判断できない。
+			replacedShell: paradisIsIdleEmptyShell({ ...idle, reattachedToSameShell: false }),
+			outputAbovePrompt: paradisIsIdleEmptyShell({ ...idle, nonEmptyLinesBeforePrompt: 3 }),
+			// プロンプトの位置が分からなければ、画面が 2 行（2 行のプロンプト）までのときだけ空とみなす。
+			unknownPromptTwoLines: paradisIsIdleEmptyShell({ ...idle, nonEmptyLinesBeforePrompt: undefined, nonEmptyLines: 2 }),
+			unknownPromptMoreLines: paradisIsIdleEmptyShell({ ...idle, nonEmptyLinesBeforePrompt: undefined, nonEmptyLines: 5 }),
+			unreadableBuffer: paradisIsIdleEmptyShell({ ...idle, nonEmptyLinesBeforePrompt: undefined, nonEmptyLines: undefined }),
 		}, {
 			idle: true,
 			windowsShell: true,
@@ -90,6 +97,11 @@ suite('paradisTerminalSharedPanel', () => {
 			typing: false,
 			agentTitle: false,
 			renamed: false,
+			replacedShell: false,
+			outputAbovePrompt: false,
+			unknownPromptTwoLines: true,
+			unknownPromptMoreLines: false,
+			unreadableBuffer: false,
 		});
 	});
 });
