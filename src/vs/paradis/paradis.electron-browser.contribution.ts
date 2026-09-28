@@ -50,6 +50,7 @@ import './contrib/browserDownloads/electron-browser/paradisBrowserDownloads.cont
 import './contrib/releaseNotes/electron-browser/paradisReleaseNotes.contribution.js';
 import './contrib/keepAwake/electron-browser/paradisKeepAwake.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileRelay.contribution.js';
+import './contrib/mobileRelay/electron-browser/paradisMobileViewportBanner.contribution.js';
 import './contrib/browserMirror/electron-browser/paradisBrowserMirrorSpike.contribution.js';
 import './contrib/remoteHosts/electron-browser/paradisRemoteHostBrowser.js';
 import './contrib/paradisSettings/electron-browser/paradisSettingsDialog.contribution.js';

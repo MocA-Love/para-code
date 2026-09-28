@@ -1979,12 +1979,14 @@ export class MobileController {
 		void this.sendTerm(terminalKey, {
 			t: 'attach', epoch: stream.epoch, dataEncoding: TERMINAL_BINARY_DATA_ENCODING,
 			// 再attach（再接続・seq欠落からの復旧）でも申告し直す。attachは複数箇所から
-			// 呼ばれるため、寸法は呼び出し側ではなくここ1箇所で載せる。
-			...this.terminalViewportFields(),
+			// 呼ばれるため、寸法は呼び出し側ではなくここ1箇所で載せる。PC で戻されたターミナルには載せない。
+			...(this.revokedViewportTerminals.has(terminalKey) ? {} : this.terminalViewportFields()),
 		});
 	}
 
 	detachTerminal(terminalKey: string): void {
+		// 開き直したら、また PC の幅を合わせてよい（PC も detach で戻された印を外す。W2-19）。
+		this.revokedViewportTerminals.delete(terminalKey);
 		// ストリーム状態は消さない（cache をタブ再訪時の即時再描画に使う）。
 		// epoch はattach時に必ず更新されるため、detach後に届く残りフレームは無害。
 		void this.sendTerm(terminalKey, { t: 'detach' });
@@ -2020,10 +2022,10 @@ export class MobileController {
 		}
 	}
 
-	/** いまの申告を、購読中の全ターミナルへ送る（更新も同じ経路を通す）。 */
+	/** いまの申告を、購読中の全ターミナルへ送る（更新も同じ経路を通す）。PC で戻されたターミナルには送らない。 */
 	private sendTerminalViewport(): void {
 		for (const [terminalKey, stream] of this.termStreams) {
-			if (stream.listeners.size > 0) {
+			if (stream.listeners.size > 0 && !this.revokedViewportTerminals.has(terminalKey)) {
 				void this.sendTerm(terminalKey, { t: 'viewport', ...this.terminalViewportFields() });
 			}
 		}
@@ -2045,6 +2047,48 @@ export class MobileController {
 
 	private terminalViewport: TerminalViewport | undefined;
 	private terminalViewportRenewTimer: ReturnType<typeof setInterval> | undefined;
+
+	// --- PC の［PC の幅に戻す］（W2-19） ---
+	//
+	// PC で戻されたターミナル（`viewport-revoked` を受けた）には、開き直す（detach）か［再び合わせる］を
+	// 押すまで寸法を申告しない（申告しても PC は使わない）。画面はこの印を見て案内を出す。
+	private readonly revokedViewportTerminals = new Set<string>();
+	private readonly viewportRevokedListeners = new Set<(terminalKey: string, revoked: boolean) => void>();
+
+	private handleTerminalViewportRevoked(terminalKey: string): void {
+		if (this.revokedViewportTerminals.has(terminalKey)) {
+			return;
+		}
+		this.revokedViewportTerminals.add(terminalKey);
+		for (const listener of this.viewportRevokedListeners) {
+			listener(terminalKey, true);
+		}
+	}
+
+	/** PC で幅を戻されたターミナルか。 */
+	isTerminalViewportRevoked(terminalKey: string): boolean {
+		return this.revokedViewportTerminals.has(terminalKey);
+	}
+
+	/** PC で幅を戻された・［再び合わせる］で戻した、を知らせる。返り値の dispose で外す。 */
+	onTerminalViewportRevoked(listener: (terminalKey: string, revoked: boolean) => void): MobileDisposable {
+		this.viewportRevokedListeners.add(listener);
+		return { dispose: () => { this.viewportRevokedListeners.delete(listener); } };
+	}
+
+	/**
+	 * ［再び合わせる］。いまの申告を reclaim 付きで送り、PC に戻された印を外してもらう。寸法が無いとき
+	 * （いま申告していない）も reclaim だけは必ず送る（送らないと PC の印が残り、次の申告も使われない）。
+	 */
+	reclaimTerminalViewport(terminalKey: string): void {
+		if (!this.revokedViewportTerminals.delete(terminalKey)) {
+			return;
+		}
+		for (const listener of this.viewportRevokedListeners) {
+			listener(terminalKey, false);
+		}
+		void this.sendTerm(terminalKey, { t: 'viewport', ...this.terminalViewportFields(), reclaim: true });
+	}
 
 	/**
 	 * ターミナルの同期ストリームを購読する。購読時点のリプレイキャッシュ
@@ -2450,7 +2494,7 @@ export class MobileController {
 		})));
 	}
 
-	private sendTerm(terminalKey: string, msg: { t: string; data?: string; dataEncoding?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string; viewCols?: number; viewRows?: number; dir?: 'up' | 'down'; lines?: number }, durableMutation = true, expectedRendererTarget?: string, expectedAgentInputContext?: string): Promise<boolean> {
+	private sendTerm(terminalKey: string, msg: { t: string; data?: string; dataEncoding?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string; viewCols?: number; viewRows?: number; reclaim?: boolean; dir?: 'up' | 'down'; lines?: number }, durableMutation = true, expectedRendererTarget?: string, expectedAgentInputContext?: string): Promise<boolean> {
 		const workspace = this.state.workspace;
 		if (workspace === undefined || !workspace.terminals.some(terminal => terminal.terminalKey === terminalKey)) {
 			return Promise.resolve(false);
@@ -4049,12 +4093,15 @@ export class MobileController {
 					const next = (prev + msg.data).slice(-MAX_TERM_BUFFER);
 					this.state.terminalOutput.set(msg.terminalKey, next);
 					this.emit({ term: true });
+				} else if (msg.t === 'viewport-revoked') {
+					this.handleTerminalViewportRevoked(msg.terminalKey);
 				} else if (msg.t === 'exit') {
 					const stream = this.termStreams.get(msg.terminalKey);
 					if (stream === undefined || typeof msg.epoch !== 'number' || msg.epoch !== stream.epoch) {
 						return;
 					}
 					this.state.terminalOutput.delete(msg.terminalKey);
+					this.revokedViewportTerminals.delete(msg.terminalKey);
 					for (const listener of stream.listeners) {
 						listener({ kind: 'exit' });
 					}

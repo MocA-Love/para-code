@@ -2,23 +2,31 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
-import { ActivityIndicator, Alert, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import { useRouter } from 'expo-router';
+import { ActivityIndicator, Alert, Linking, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../../appState.js';
+import { isTerminalViewportRevoked, onTerminalViewportRevoked, pcHasCapabilityFor, reclaimTerminalViewport, sendPcRequest, useAppStore } from '../../appState.js';
 import { appendUploadedPath } from '../../components/agentComposerDraft.js';
+import { Button } from '../../components/button.js';
 import { useTerminalKeyInput } from '../../components/terminalKeyRow.js';
 import { TermView } from '../../components/termView.js';
+import { WorkspaceFileViewer } from '../../components/workspaceFileViewer.js';
+import type { LocalFileTarget } from '../../localFileTarget.js';
+import { PcCapability } from '../../pcCompat.js';
+import { encodeSessionTab } from '../../routes.js';
+import { terminalLinkNeedsConfirmation, terminalUrlDestination, terminalUrlHost, type TerminalLinkTarget } from '../../terminalLinks.js';
 import { terminalSubmitPlan } from '../../terminalKeys.js';
 import { terminalViewportForPrefs, type TerminalGrid } from '../../terminalViewport.js';
 import type { SpaceTerminal } from '../../navigationTargets.js';
 import { monoFamily } from '../../monoFont.js';
-import { colors, space, type } from '../../theme.js';
+import { colors, radius, space, type } from '../../theme.js';
 import { AccessoryKeyBar } from './commandDock.js';
 import { errorKind } from './errorKind.js';
 import { createTerminalAttachments } from './terminalAttachments.js';
 import { terminalDraftKey, useTerminalDrafts } from './terminalDrafts.js';
 import { TerminalInputBar } from './terminalInputBar.js';
 import { liveInputEnabled, useTerminalLiveInputChoices } from './terminalLiveInputChoice.js';
+import { openUrlInPcBrowser } from './terminalLinkOpen.js';
 import { readClipboardText } from '../../nativeClipboard.js';
 
 /**
@@ -42,6 +50,13 @@ const terminalAttachments = createTerminalAttachments(
  *
  * キーボードを開いてもターミナルの高さは変えない（縮めると PC 側がリサイズされ、TUI が開閉のたびに
  * 全画面を描き直す）。枠だけを縮めて下端で揃え、はみ出した上側を切る。
+ *
+ * ターミナルに出たリンクを押すと開く（W2-31、Q123 A）。URL は `localhost` やプライベートアドレスなら
+ * PC の内蔵ブラウザで開いてブラウザのタブで映し、それ以外は Safari。ファイルパスはこのターミナルの
+ * 作業フォルダを基準に PC が解決し、ワークスペースの中のファイルだけをファイルビューアで開く（外なら何もしない）。
+ *
+ * 「スマホの幅に合わせる」で PC のターミナルを縮めている間に PC で［PC の幅に戻す］が押されたら（W2-19）、
+ * ターミナルの上に「PC 側で元の幅に戻されました」と［再び合わせる］を出す。開き直すまではスマホから縮めない。
  */
 export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }: {
 	terminal: SpaceTerminal;
@@ -51,7 +66,11 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 	bottomInset: number;
 }) {
 	const terminalKey = terminal.terminalKey;
-	const output = useAppStore(s => s.terminalOutput.get(terminalKey) ?? '');
+	// 旧 PC の経路（出力の文字列を丸ごと渡す）でだけ使う。同期ストリームの snapshot を一度受けたら、TermView は
+	// これを見ない。見ない値を購読し続けると、出力 1 フレームごとにこのペイン全体が再描画され、大量出力の間
+	// JS が詰まる（出力は TermView がストリームから直接受けるので、ここで追う必要は無い）。
+	const streamingRef = useRef(false);
+	const output = useAppStore(s => streamingRef.current ? '' : (s.terminalOutput.get(terminalKey) ?? ''));
 	const { attachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, scrollTerminal, terminalPrefs, setTerminalPref, setTerminalViewport, activePcId, fsUpload } = useAppStore(useShallow(s => ({
 		attachTerminal: s.attachTerminal,
 		subscribeTerminal: s.subscribeTerminal,
@@ -70,6 +89,14 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 	// 別の画面がまだ見ていれば解かない。
 	useEffect(() => terminalAttachments.hold(terminalKey), [terminalKey]);
 	const subscribe = useMemo(() => (listener: Parameters<typeof subscribeTerminal>[1]) => subscribeTerminal(terminalKey, listener), [terminalKey, subscribeTerminal]);
+	useEffect(() => {
+		streamingRef.current = false;
+		return subscribeTerminal(terminalKey, event => {
+			if (event.kind === 'snapshot') {
+				streamingRef.current = true;
+			}
+		});
+	}, [terminalKey, subscribeTerminal]);
 	const resync = useMemo(() => () => attachTerminal(terminalKey), [terminalKey, attachTerminal]);
 
 	// TermView が実測したグリッドと設定から、PC への寸法の申告を組み立てる（旧画面と同じ）。
@@ -78,6 +105,18 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 		setTerminalViewport(terminalViewportForPrefs(grid, terminalPrefs));
 	}, [grid, terminalPrefs, activePcId, setTerminalViewport]);
 	useEffect(() => () => setTerminalViewport(undefined), [setTerminalViewport]);
+
+	// PC で幅を戻されたか（W2-19）。開き直す（このペインを作り直す）と PC も印を外すので、ペインの間だけ持つ。
+	const [viewportRevoked, setViewportRevoked] = useState(() => isTerminalViewportRevoked(terminalKey));
+	useEffect(() => {
+		setViewportRevoked(isTerminalViewportRevoked(terminalKey));
+		const subscription = onTerminalViewportRevoked((key, revoked) => {
+			if (key === terminalKey) {
+				setViewportRevoked(revoked);
+			}
+		});
+		return () => subscription.dispose();
+	}, [terminalKey, activePcId]);
 
 	// 枠の高さ。キーボードが閉じているときの高さを保つ（開閉で PTY をリサイズさせない）。
 	const [outputHeight, setOutputHeight] = useState(0);
@@ -92,6 +131,75 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 		outputWidthRef.current = nextWidth;
 		if (!keyboardVisible || next > outputHeight || widthChanged) {
 			setOutputHeight(next);
+		}
+	};
+
+	// ターミナルに出たリンク（W2-31）。
+	const router = useRouter();
+	const [viewer, setViewer] = useState<{ ws: string; path: string; line?: number } | undefined>(undefined);
+	const openGeneration = useRef(0);
+	useEffect(() => () => { openGeneration.current++; }, []);
+	const openFile = (target: LocalFileTarget) => {
+		const ws = terminal.ws ?? useAppStore.getState().workspace?.activeWs;
+		if (ws === undefined) {
+			return;
+		}
+		const generation = ++openGeneration.current;
+		// terminalKey を付けると、このターミナルの作業フォルダを基準に相対パスを解決する（受けられる PC にだけ付ける。
+		// 付けない PC はワークスペースの根から解決する）。外のファイル・無いファイルは何もしない。
+		const fromTerminal = pcHasCapabilityFor(activePcId, PcCapability.FsResolveLinkTerminal) ? { terminalKey } : {};
+		sendPcRequest<{ path?: unknown }>(activePcId, 'fs', { t: 'resolveLink', ws, path: target.path, ...fromTerminal }).then(resolved => {
+			if (openGeneration.current === generation && typeof resolved.path === 'string') {
+				setViewer({ ws, path: resolved.path, ...(target.line !== undefined ? { line: target.line } : {}) });
+			}
+		}).catch(() => { /* ワークスペースの外・存在しないパス */ });
+	};
+	const openUrlOnPc = async (url: string) => {
+		if (!pcHasCapabilityFor(activePcId, PcCapability.BrowserOpenUrl)) {
+			Alert.alert('PC のブラウザで開けません', 'PC の Para Code を更新すると、PC の中でしか見られない URL（localhost など）をスマホから開けます。');
+			return;
+		}
+		const generation = ++openGeneration.current;
+		let target: { targetId: string; url: string } | undefined;
+		try {
+			target = await openUrlInPcBrowser(url, {
+				open: () => sendPcRequest(activePcId, 'fs', { t: 'openUrl', url }),
+				listTargets: async () => (await useAppStore.getState().browserTargets()).targets,
+				wait: ms => new Promise(resolve => setTimeout(resolve, ms)),
+			});
+		} catch (err) {
+			console.warn('[session] opening a terminal URL on the PC failed', errorKind(err));
+			Alert.alert('PC のブラウザで開けませんでした', 'PC との接続を確認して、もう一度お試しください。');
+			return;
+		}
+		if (openGeneration.current !== generation) {
+			return;
+		}
+		const desktopEpoch = useAppStore.getState().workspace?.desktopEpoch;
+		if (target !== undefined && desktopEpoch !== undefined) {
+			useAppStore.getState().setBrowserSelection({ targetId: target.targetId, url: target.url, desktopEpoch });
+		}
+		router.setParams({ tab: encodeSessionTab({ kind: 'browser' }) });
+	};
+	const openLink = (link: TerminalLinkTarget) => {
+		if (link.kind === 'file') {
+			openFile(link.target);
+			return;
+		}
+		const destination = terminalUrlDestination(link.url);
+		if (destination === 'external') {
+			void Linking.openURL(link.url).catch(() => { /* 開けない URL は無視 */ });
+		} else if (destination === 'pc') {
+			if (terminalLinkNeedsConfirmation(link)) {
+				// OSC 8 のリンクは見えている文字と行き先が違いうる。PC の中を開くときだけ、行き先を見せて確かめる。
+				const shown = link.label !== undefined && link.label.length > 80 ? `${link.label.slice(0, 80)}…` : link.label;
+				Alert.alert('PC のブラウザで開きますか', `「${shown}」の行き先は ${terminalUrlHost(link.url) ?? link.url} です。\n${link.url}`, [
+					{ text: 'キャンセル', style: 'cancel' },
+					{ text: '開く', onPress: () => { void openUrlOnPc(link.url); } },
+				]);
+				return;
+			}
+			void openUrlOnPc(link.url);
 		}
 	};
 
@@ -195,8 +303,18 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 						fontSize={active && terminalPrefs.matchPcWidth ? terminalPrefs.fontSize : undefined}
 						onGridChange={setGrid}
 						onScroll={(dir, lines) => scrollTerminal(terminalKey, dir, lines)}
+						onOpenLink={openLink}
 					/>
 				</View>
+				{/* 高さを変えないよう、ターミナルの上に重ねる（枠の中で位置だけ決める）。 */}
+				{viewportRevoked && terminalPrefs.matchPcWidth ? (
+					<View style={styles.revokedWrap} pointerEvents="box-none">
+						<View style={styles.revoked}>
+							<Text style={styles.revokedText}>PC 側で元の幅に戻されました</Text>
+							<Button size="sm" variant="secondary" label="再び合わせる" onPress={() => reclaimTerminalViewport(terminalKey)} />
+						</View>
+					</View>
+				) : null}
 			</View>
 			<AccessoryKeyBar
 				keyboardVisible={keyboardVisible}
@@ -223,6 +341,9 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 				onLiveArrow={key => sendArrowKey(terminalKey, key)}
 			/>
 			<View style={[styles.bottom, { height: bottomInset }]} />
+			{viewer !== undefined ? (
+				<WorkspaceFileViewer ws={viewer.ws} path={viewer.path} focusLine={viewer.line} backLabel="ターミナル" onClose={() => setViewer(undefined)} />
+			) : null}
 		</View>
 	);
 }
@@ -258,6 +379,32 @@ const styles = StyleSheet.create({
 	},
 	bottom: {
 		backgroundColor: colors.panel,
+	},
+	revokedWrap: {
+		position: 'absolute',
+		top: space.sm,
+		left: space.sm,
+		right: space.sm,
+		alignItems: 'center',
+	},
+	// iPad の広い幅で横に伸びすぎないよう、幅は絶対値で抑える。
+	revoked: {
+		maxWidth: 420,
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.sm,
+		paddingVertical: space.xs,
+		paddingLeft: space.md,
+		paddingRight: space.xs,
+		borderRadius: radius.panel,
+		borderWidth: StyleSheet.hairlineWidth,
+		borderColor: colors.borderStrong,
+		backgroundColor: colors.panel,
+	},
+	revokedText: {
+		flexShrink: 1,
+		fontSize: type.meta,
+		color: colors.text,
 	},
 	center: {
 		alignItems: 'center',
