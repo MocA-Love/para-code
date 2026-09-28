@@ -211,10 +211,10 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 	// name travels as a tag; without it every unhandled error shared one issue. Appended only
 	// when present so automatic captures and native crashes keep their existing issue history.
 	const errorName = event.tags?.['para.error_name'];
-	// Only for an event with no frame at all: there the rest of the key is constant, so errors from
-	// unrelated places (a Node error relayed over IPC, code outside `out/vs`) all landed in one issue.
-	// Events with frames keep their existing key and issue history.
-	const messageHash = topFrame === undefined ? event.tags?.['para.error_message_hash'] : undefined;
+	// Only for an event with no own frame (none at all, or only the kept Node / dependency frames):
+	// there the rest of the key says little, so errors from unrelated places (a Node error relayed over
+	// IPC, code outside `out/vs`) landed in one issue. Events with an own frame keep their existing key.
+	const messageHash = topFrame === undefined || isParadisForeignKeptFrame(topFrame) ? event.tags?.['para.error_message_hash'] : undefined;
 	return [
 		event.tags?.['para.scope'] ?? 'unknown',
 		event.tags?.['para.feature'] ?? 'unknown',

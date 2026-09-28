@@ -207,12 +207,15 @@ function toParadisSafeStackLine(rawLine: string): { readonly line: string; reado
 
 /**
  * Replaces the reported error with one whose message is the fixed feature/operation label and
- * whose stack keeps only frames inside `out/vs/**`, each run through the text sanitizer. The
- * message, `cause` and any non-`vs/` frame are dropped, so response bodies, extension code and
- * user paths never leave the process. Automatic captures already ship the same `vs/` frames, so
- * this adds grouping information (see `paradisSentryFingerprint`) without a new exposure: until
- * 2026-09 every explicit report shared one frame-less stack, and 676 unhandled errors in 90 days
- * collapsed into a single undiagnosable issue.
+ * whose stack keeps three kinds of frames, each run through the text sanitizer: our own
+ * (`out/vs/**`), Node's internal ones (`node:...`) and dependencies shipped inside the app
+ * (rewritten to `app:///node_modules/<package>/<file>`). Own frames are capped at 20 and the other
+ * two together at 10, so a deep dependency stack cannot push ours out. The message, `cause` and
+ * every other frame (extensions, a user's own `node_modules`, user paths) are dropped, so response
+ * bodies, extension code and user paths never leave the process. This adds grouping information
+ * (see `paradisSentryFingerprint`) without a new exposure: until 2026-09 every explicit report
+ * shared one frame-less stack, and 676 unhandled errors in 90 days collapsed into a single
+ * undiagnosable issue.
  */
 export function toParadisSentrySafeError(
 	feature: string,
@@ -349,13 +352,17 @@ export function paradisSafeErrorExtra(error: unknown): Record<`safe_${string}`, 
  * issue). The message itself is never sent; quoted text, paths, URLs and numbers are removed before
  * hashing so the same failure on different files still groups together.
  */
+const MAX_HASHED_MESSAGE_LENGTH = 1_000;
+
 export function paradisErrorMessageHash(error: unknown): string | undefined {
 	try {
 		const message = typeof error === 'object' && error !== null ? readStringProperty(error, 'message') : undefined;
 		if (!message) {
 			return undefined;
 		}
-		const normalized = message
+		// Cut first: several of the patterns below are quadratic in the input length, and a message
+		// can be tens of kilobytes (a serialized response body). Only the head is hashed anyway.
+		const normalized = message.slice(0, MAX_HASHED_MESSAGE_LENGTH)
 			// A quote only opens after a non-word character, so the apostrophe in "can't" is kept.
 			.replace(/(?<!\w)(['"`])[^'"`\n]*\1/g, '_')
 			.replace(/\b(?:[a-z][\w+.-]*:\/\/|file:)\S*/gi, '_')

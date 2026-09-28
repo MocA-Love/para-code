@@ -170,19 +170,29 @@ suite('ParadisSentryCommon', () => {
 				}],
 			},
 		});
-		const foreignOnly = paradisSentryFingerprint({
-			tags,
+		const foreignOnly = (messageHash: string) => paradisSentryFingerprint({
+			tags: { ...tags, 'para.error_message_hash': messageHash },
 			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename: 'node:internal/stream_base_commons', function: 'afterWriteDispatched' }] } }] },
+		});
+		// An own frame decides the key on its own; the message hash does not join it.
+		const ownWithHash = paradisSentryFingerprint({
+			tags: { ...tags, 'para.error_message_hash': 'aaaaaaaa' },
+			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename: 'app:///out/vs/b.js', function: 'inner' }, { filename: 'node:internal/timers', function: 'listOnTimeout' }] } }] },
 		});
 		// Automatic captures keep keying on the innermost frame, whatever it is.
 		const automatic = paradisSentryFingerprint({
 			tags: { 'para.scope': 'owned', 'para.feature': 'f', 'para.operation': 'o' },
 			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename: 'app:///out/vs/b.js', function: 'inner' }, { filename: 'node:internal/timers', function: 'listOnTimeout' }] } }] },
 		});
-		assert.deepStrictEqual({ ownOnly, withForeign, foreignOnly, automatic }, {
+		assert.deepStrictEqual({ ownOnly, withForeign, foreignOnly: [foreignOnly('aaaaaaaa'), foreignOnly('bbbbbbbb')], ownWithHash, automatic }, {
 			ownOnly: 'owned|f|o|Error|app:///out/vs/b.js|inner|Error',
 			withForeign: 'owned|f|o|Error|app:///out/vs/b.js|inner|Error',
-			foreignOnly: 'owned|f|o|Error|node:internal/stream_base_commons|afterWriteDispatched|Error',
+			// Only foreign frames: two different messages must not share one key.
+			foreignOnly: [
+				'owned|f|o|Error|node:internal/stream_base_commons|afterWriteDispatched|Error|aaaaaaaa',
+				'owned|f|o|Error|node:internal/stream_base_commons|afterWriteDispatched|Error|bbbbbbbb',
+			],
+			ownWithHash: 'owned|f|o|Error|app:///out/vs/b.js|inner|Error',
 			automatic: 'owned|f|o|Error|node:internal/timers|listOnTimeout',
 		});
 	});
