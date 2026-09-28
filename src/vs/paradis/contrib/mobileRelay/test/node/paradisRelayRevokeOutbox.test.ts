@@ -15,10 +15,15 @@ suite('paradisRelayRevokeOutbox (W2-35)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	// 以前は fetch が返れば成功とみなし、401 や 5xx でも送り直さなかった。
-	test('only a 2xx (or a relay that no longer knows the device) confirms the revoke', () => {
+	test('only a 2xx (or the relay\'s own 404) confirms the revoke', () => {
 		assert.deepStrictEqual(
-			[200, 204, 404, 400, 401, 403, 408, 409, 429, 500, 503, undefined].map(paradisClassifyRevokeResponse),
-			['done', 'done', 'done', 'drop', 'retry', 'retry', 'retry', 'drop', 'retry', 'retry', 'retry', 'retry'],
+			[200, 204, 400, 401, 403, 408, 409, 429, 500, 503, undefined].map(status => paradisClassifyRevokeResponse(status)),
+			['done', 'done', 'drop', 'retry', 'retry', 'retry', 'drop', 'retry', 'retry', 'retry', 'retry'],
+		);
+		// 404 はリレー自身の本文のときだけ済んだとみなす（途中のプロキシの 404 は送り直す）
+		assert.deepStrictEqual(
+			[paradisClassifyRevokeResponse(404, 'not found'), paradisClassifyRevokeResponse(404, '<html>404</html>'), paradisClassifyRevokeResponse(404)],
+			['done', 'retry', 'retry'],
 		);
 	});
 

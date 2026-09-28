@@ -36,7 +36,7 @@ import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from './paradisRemoteTranscriptMirror.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { paradisMobileDismissTags, paradisMobilePushIds } from './paradisMobilePushIds.js';
-import { IParadisRelayPersistedState, ParadisRelayStoreProblem, paradisMoveRelayStateAside, paradisPruneRelayStateLeftovers, paradisReadRelayState, paradisWriteRelayState } from './paradisMobileRelayStateFile.js';
+import { IParadisRelayPairedMobile, IParadisRelayPersistedState, ParadisRelayStoreProblem, paradisMoveRelayStateAside, paradisPruneRelayStateLeftovers, paradisReadRelayState, paradisWriteRelayState } from './paradisMobileRelayStateFile.js';
 import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
 import { ParadisMobileTerminalRegistry } from './paradisMobileTerminalRegistry.js';
 import {
@@ -64,7 +64,8 @@ import { PARADIS_MOBILE_BUILTIN_REQUEST_KINDS } from '../common/paradisMobileReq
 import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, paradisEvaluateMobileCompat, paradisIsAcceptedMobileWireVersion, paradisParseMobileCapabilities } from '../common/paradisMobileCompat.js';
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyPcFocusQuiet, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
 import { decodeNotifyVisibility, encodeNotifyVisibilityAck } from '../common/paradisMobileVisibility.js';
-import { ParadisNotifyDismissLedger, paradisWithNotifyDismiss } from '../common/paradisNotifyDismissLedger.js';
+import { ParadisNotifyDismissLedger, paradisNotifyDismissOpened, paradisWithNotifyDismiss } from '../common/paradisNotifyDismissLedger.js';
+import { ParadisBackgroundSessionWatch, ParadisRecentTrustedNotifies } from '../common/paradisMobileBackgroundGrace.js';
 import { paradisClassifyRevokeResponse, paradisEnqueueRevoke, paradisRevokeRetried, paradisSanitizeRevokeOutbox, type IParadisRelayRevokeEntry } from '../common/paradisRelayRevokeOutbox.js';
 import { paradisAgentLabel, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInsightSource } from '../../agentInsights/common/paradisAgentInsights.js';
@@ -797,6 +798,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		));
 		this._register(toDisposable(() => { void agentSessionStore.flush(); }));
 		this._register(toDisposable(() => { if (this.revokeTimer !== undefined) { clearTimeout(this.revokeTimer); } }));
+		this._register(toDisposable(() => this.backgroundSessions.dispose()));
 		this._register(this.agentChat.onDidChangeDesktopPaneInsights(() => this._onDidChangeAgentPaneInsights.fire()));
 		this._register(this.agentChat.onDidChangeDesktopChat(tokens => this._onDidChangeAgentChat.fire(tokens)));
 		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(({ tokens, tokensOutsideHookReach }) => {
@@ -1451,6 +1453,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	/** 出した通知と、片付いた通知（W2-27。次のプッシュでロック画面から消してもらう）。 */
 	private readonly dismissLedger = new ParadisNotifyDismissLedger();
 
+	/** 裏に回ったスマホの期限（W2-34）と、裏に回る直前に信用してプッシュしなかった通知。 */
+	private readonly backgroundSessions = new ParadisBackgroundSessionWatch();
+	private readonly recentTrustedNotifies = new ParadisRecentTrustedNotifies();
+
 	private notifyKeyFor(mobileId: string, pubKeyB64: string): Promise<Uint8Array> {
 		let cached = this.notifyKeyCache.get(mobileId);
 		if (!cached) {
@@ -1495,7 +1501,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		const now = Date.now();
 		const pcFocused = this.pcFocused;
 		if (meta.id !== undefined) {
-			this.dismissLedger.record(meta.id, meta.agentToken, now);
+			this.dismissLedger.record(meta.id, meta.agentToken, meta.kind, now);
 		}
 		// 次のプッシュで消してもらう、片付いた通知（W2-27）。どのスマホにも同じ一覧を載せる（印は鍵ごとに作る）。
 		const dismissIds = this.dismissLedger.dismissable(now, meta.id);
@@ -1532,32 +1538,42 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// プッシュを受け取れない端末が復帰時に大昔の通知で鳴ってしまう。
 			this.missedNotify.add(mobile.mobileId, { id: meta.id, agentToken: meta.agentToken, bytes: quietBytes('muted') });
 			if (!delivery.push) {
+				// 鳴らすべきなのに、アプリが自分で出せると信用してプッシュしなかった。直後にアプリが
+				// 「裏に回った」と言ってきたら、プッシュし直す（W2-34。`paradisMobileBackgroundGrace.ts`）。
+				if (delivery.quiet === undefined && delivery.frame) {
+					this.recentTrustedNotifies.add(mobile.mobileId, bytes, now);
+				}
 				continue;
 			}
-			this.notifyKeyFor(mobile.mobileId, mobile.pubKey).then(async key => {
-				// 印を載せると上限を超える場合は印を諦める（本文を削ってまで載せない。印は次のプッシュでも載る）。
-				const withDismiss = paradisWithNotifyDismiss(bytes, paradisMobileDismissTags(key, dismissIds));
-				let encoded: string | undefined;
-				if (withDismiss !== bytes) {
-					const sealed = toBase64Url(await sealNotify(key, withDismiss));
-					encoded = sealed.length <= PARADIS_PUSH_PAYLOAD_LIMIT_BYTES ? sealed : undefined;
-				}
-				encoded ??= await this.sealNotifyForPush(key, bytes);
-				if (encoded === undefined) {
-					return;
-				}
-				// 同じエージェントの通知はロック画面で置き換え、同じスペースの通知はまとめる（W2-08）。
-				// ID は通知鍵の HMAC なので、リレーと APNs からは中身を推測できない。旧リレーは読まずに無視する。
-				const push = { type: 'push-notify', mobileId: mobile.mobileId, payload: encoded, ...paradisMobilePushIds(key, bytes) } as const;
-				if (expectedOwner !== undefined) {
-					await this.withCurrentRegisteredLease(expectedOwner, async () => {
-						this.sendControl(push);
-					});
-				} else {
-					this.sendControl(push);
-				}
-			}).catch(err => this.logService.warn('[paradisMobileRelay] push-notify seal failed', err));
+			this.pushNotifyTo(mobile, bytes, dismissIds, expectedOwner);
 		}
+	}
+
+	/** 1台のモバイルへ通知をプッシュで送る（通知鍵で封緘し、リレーへ push-notify を頼む）。 */
+	private pushNotifyTo(mobile: IParadisRelayPairedMobile, bytes: Uint8Array, dismissIds: readonly string[], expectedOwner?: IParadisMobileWindowLease): void {
+		this.notifyKeyFor(mobile.mobileId, mobile.pubKey).then(async key => {
+			// 印を載せると上限を超える場合は印を諦める（本文を削ってまで載せない。印は次のプッシュでも載る）。
+			const withDismiss = paradisWithNotifyDismiss(bytes, paradisMobileDismissTags(key, dismissIds));
+			let encoded: string | undefined;
+			if (withDismiss !== bytes) {
+				const sealed = toBase64Url(await sealNotify(key, withDismiss));
+				encoded = sealed.length <= PARADIS_PUSH_PAYLOAD_LIMIT_BYTES ? sealed : undefined;
+			}
+			encoded ??= await this.sealNotifyForPush(key, bytes);
+			if (encoded === undefined) {
+				return;
+			}
+			// 同じエージェントの通知はロック画面で置き換え、同じスペースの通知はまとめる（W2-08）。
+			// ID は通知鍵の HMAC なので、リレーと APNs からは中身を推測できない。旧リレーは読まずに無視する。
+			const push = { type: 'push-notify', mobileId: mobile.mobileId, payload: encoded, ...paradisMobilePushIds(key, bytes) } as const;
+			if (expectedOwner !== undefined) {
+				await this.withCurrentRegisteredLease(expectedOwner, async () => {
+					this.sendControl(push);
+				});
+			} else {
+				this.sendControl(push);
+			}
+		}).catch(err => this.logService.warn('[paradisMobileRelay] push-notify seal failed', err));
 	}
 
 	/**
@@ -1692,9 +1708,48 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		session.backgrounded = state === 'background';
 		session.sendFrame(Channels.Notify, undefined, encodeNotifyVisibilityAck(state, id))
 			.catch(err => this.logService.warn('[paradisMobileRelay] visibility ack failed', err));
-		if (wasBackgrounded && state === 'foreground' && session.hasCurrentProtocol) {
+		if (state === 'background') {
+			// 裏にいる間は画面が見えないので、ブラウザミラーのキャプチャはすぐ止める
+			// （アプリは前面に戻ったら張り直す）。
+			this.browserMirror.stopSession(mobileId);
+			// iOS は裏のアプリを数秒で止めるので、アプリの30秒のタイマーは当てにならない。
+			// 前面に戻らないまま期限が来たら、presence offline と同じ後始末をする。
+			this.backgroundSessions.begin(mobileId, () => {
+				if (this.sessions.get(mobileId) === session && session.backgrounded) {
+					this.logService.info('[paradisMobileRelay] backgrounded mobile did not come back; dropping its session');
+					this.dropMobileSession(mobileId);
+				}
+			});
+			// 裏に回る直前の約1往復の間に、信用してプッシュしなかった通知をプッシュし直す。
+			const mobile = this.state.mobiles.find(candidate => candidate.mobileId === mobileId);
+			const recent = this.recentTrustedNotifies.take(mobileId, Date.now());
+			if (mobile !== undefined && recent.length > 0) {
+				const dismissIds = this.dismissLedger.dismissable(Date.now());
+				for (const bytes of recent) {
+					this.pushNotifyTo(mobile, bytes, dismissIds.filter(dismissId => dismissId !== peekNotifyMeta(bytes).id));
+				}
+			}
+			return;
+		}
+		this.backgroundSessions.end(mobileId);
+		if (wasBackgrounded && session.hasCurrentProtocol) {
 			this.flushMissedNotify(mobileId, session);
 		}
+	}
+
+	/**
+	 * モバイル1台のセッションと、それに付いた配信（ブラウザミラー・チャットの購読・WebRTC・音声）を捨てる
+	 * （presence offline と、裏に回ったまま戻らなかったとき）。
+	 */
+	private dropMobileSession(mobileId: string): void {
+		this.sessions.delete(mobileId);
+		this.backgroundSessions.end(mobileId);
+		this.recentTrustedNotifies.forget(mobileId);
+		this.webrtcRendererLeases.delete(mobileId);
+		this.dropVoiceSubscriber(mobileId);
+		this.browserMirror.stopSession(mobileId);
+		this.agentChat.dropSubscriber(mobileId);
+		this._onDidChangeStatus.fire(this.snapshot());
 	}
 
 	/** モバイルから同期された通知設定（notifyチャネル M→PC）を保存する。 */
@@ -1733,11 +1788,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * （notifyチャネル M→PC→他M）。オフライン端末はAPNsで起こしてまで同期する話ではないため
 	 * オンラインのセッションにのみ配送する（次回オンライン化時は素直に残っていて構わない）。
 	 */
-	private handleNotifyDismiss(fromMobileId: string, notifyId: string): void {
+	private handleNotifyDismiss(fromMobileId: string, notifyId: string, opened: boolean): void {
 		// 取り置きからも外す。残すと、あとで繋がったときに処理済みの通知が未読として蘇る。
 		this.missedNotify.drop({ id: notifyId });
 		// 裏にいるスマホのロック画面からは、次のプッシュで消してもらう（W2-27）。
-		this.dismissLedger.markDismissed(notifyId, Date.now());
+		this.dismissLedger.markDismissed(notifyId, Date.now(), opened);
 		const bytes = encodeNotifyDismissed(notifyId);
 		for (const mobile of this.state.mobiles) {
 			if (mobile.mobileId === fromMobileId) {
@@ -1900,6 +1955,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.browserMirror.stopSession(m.mobileId);
 			this.agentChat.dropSubscriber(m.mobileId);
 			this.notifyKeyCache.delete(m.mobileId);
+			this.backgroundSessions.end(m.mobileId);
+			this.recentTrustedNotifies.forget(m.mobileId);
 		}
 		void this.drainRevokeOutbox(true);
 		this._onDidChangeStatus.fire(this.snapshot());
@@ -2104,7 +2161,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				next.push(entry);
 				continue;
 			}
-			const outcome = paradisClassifyRevokeResponse(await this.revokeOnRelay(device, entry.mobileId));
+			const response = await this.revokeOnRelay(device, entry.mobileId);
+			const outcome = paradisClassifyRevokeResponse(response?.status, response?.body);
 			changed = true;
 			if (outcome === 'retry') {
 				next.push(paradisRevokeRetried(entry, Date.now(), Math.random()));
@@ -2143,10 +2201,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	/**
-	 * リレーへ1回だけ取り消しを送り、HTTP の状態を返す（通信が失敗したら undefined）。
-	 * 以前は応答を見ず、401 や 5xx でも成功とみなしていた（W2-35）。
+	 * リレーへ1回だけ取り消しを送り、HTTP の状態を返す（通信が失敗したら undefined）。404 のときだけ、
+	 * リレー自身の応答かを見分けるために本文も読む。以前は応答を見ず、401 や 5xx でも成功とみなしていた（W2-35）。
 	 */
-	private async revokeOnRelay(device: { readonly deviceId: string; readonly pcToken: string }, mobileId: string): Promise<number | undefined> {
+	private async revokeOnRelay(device: { readonly deviceId: string; readonly pcToken: string }, mobileId: string): Promise<{ readonly status: number; readonly body?: string } | undefined> {
 		try {
 			const response = await fetch(`${this.relayHttpBase()}/device/${device.deviceId}/mobile/revoke`, {
 				method: 'POST',
@@ -2154,7 +2212,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				body: JSON.stringify({ mobileId }),
 				signal: AbortSignal.timeout(15_000),
 			});
-			return response.status;
+			if (response.status === 404) {
+				return { status: 404, body: (await response.text()).slice(0, 64) };
+			}
+			return { status: response.status };
 		} catch (err) {
 			this.logService.warn('[paradisMobileRelay] relay revoke failed', err);
 			return undefined;
@@ -3016,7 +3077,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 						// M→PC方向のnotifyチャネル: 通知設定の同期 or 既読(dismiss)メッセージ。
 						const control = decodeNotifyControl(frame.payload.buffer);
 						if (control?.t === 'dismiss') {
-							this.handleNotifyDismiss(idStr, control.id);
+							this.handleNotifyDismiss(idStr, control.id, paradisNotifyDismissOpened(frame.payload.buffer));
 							return;
 						}
 						this.handleNotifyPrefs(idStr, frame.payload.buffer);
@@ -3261,12 +3322,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// リレーが新しいモバイルソケットを受理したときにしか出ないので、破棄して取り違えはない。
 			// なお、この制御はリレーが新ソケットへ101を返す前にPCソケットへ書かれるため、同じ接続を
 			// 流れてくるモバイルのhelloより必ず先に届く（＝確立直後のセッションを消す心配はない）。
-			this.sessions.delete(msg.mobileId);
-			this.webrtcRendererLeases.delete(msg.mobileId);
-			this.dropVoiceSubscriber(msg.mobileId);
-			this.browserMirror.stopSession(msg.mobileId);
-			this.agentChat.dropSubscriber(msg.mobileId);
-			this._onDidChangeStatus.fire(this.snapshot());
+			this.dropMobileSession(msg.mobileId);
 		} else if (msg.type === 'mobile-revoked' && typeof msg.mobileId === 'string') {
 			await this.onMobileRevoked(msg.mobileId);
 		} else if (msg.type === 'pong') {

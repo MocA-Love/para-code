@@ -1522,6 +1522,12 @@ export class MobileController {
 	private terminalOperationEnqueueIssue: string | undefined;
 	private lastNotifyPrefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean } | undefined;
 	private readonly pendingNotificationDismissals = new Set<string>();
+	/**
+	 * 消した通知を PC へどう伝えるか（W2-27）。`opened` は ID で指定して開いた・消した（PC はほかの端末の
+	 * ロック画面からも消してよい）。`local` は「すべて消去」で消した許可・質問で、PC へは伝えない
+	 * （ほかの端末では未回答のまま残す）。無ければ `opened` を付けずに伝える。
+	 */
+	private readonly notificationDismissalModes = new Map<string, 'opened' | 'local'>();
 	private readonly fsContentHashCache = new ContentHashResponseCache();
 	private operationOutboxWrite = Promise.resolve();
 	private terminalOperationDispatchChain = Promise.resolve();
@@ -1924,6 +1930,7 @@ export class MobileController {
 			this.state.terminalOutput = new Map();
 			this.state.notifications = [];
 			this.pendingNotificationDismissals.clear();
+			this.notificationDismissalModes.clear();
 			this.state.browserFrame = undefined;
 			this.state.agentChats = new Map();
 			this.emit({ term: true, notifications: true, agentChats: true });
@@ -2551,7 +2558,7 @@ export class MobileController {
 			this.sendNotifyPrefs(this.lastNotifyPrefs);
 		}
 		for (const id of this.pendingNotificationDismissals) {
-			this.client?.send('notify', encodeNotifyDismiss(id));
+			this.sendNotificationDismissal(id);
 		}
 	}
 
@@ -3542,9 +3549,10 @@ export class MobileController {
 		this.state.notifications = [];
 		this.emit({ notifications: true });
 		for (const notification of cleared) {
-			this.rememberNotificationDismissal(notification.id);
+			// 許可・質問はこの端末の一覧からだけ消す。ほかの端末（ロック画面を含む）では未回答のまま残す（W2-27）。
+			this.rememberNotificationDismissal(notification.id, notification.kind === 'agent-question' ? 'local' : undefined);
 			if (this.isLiveAvailable()) {
-				this.client?.send('notify', encodeNotifyDismiss(notification.id));
+				this.sendNotificationDismissal(notification.id);
 			}
 		}
 	}
@@ -3559,9 +3567,16 @@ export class MobileController {
 		}
 		this.state.notifications = this.state.notifications.filter(n => n.id !== id);
 		this.emit({ notifications: true });
-		this.rememberNotificationDismissal(id);
+		this.rememberNotificationDismissal(id, 'opened');
 		if (this.isLiveAvailable()) {
-			this.client?.send('notify', encodeNotifyDismiss(id));
+			this.sendNotificationDismissal(id);
+		}
+	}
+
+	private sendNotificationDismissal(id: string): void {
+		const mode = this.notificationDismissalModes.get(id);
+		if (mode !== 'local') {
+			this.client?.send('notify', encodeNotifyDismiss(id, { opened: mode === 'opened' }));
 		}
 	}
 
@@ -3570,15 +3585,21 @@ export class MobileController {
 	 * PCは送信元へは `dismissed` を返さないのでこの記録は自然には減らない。再接続のたびに
 	 * 全件送り直す作りなので、際限なく増えないよう古い順に落とす。
 	 */
-	private rememberNotificationDismissal(id: string): void {
+	private rememberNotificationDismissal(id: string, mode?: 'opened' | 'local'): void {
 		this.pendingNotificationDismissals.delete(id);
 		this.pendingNotificationDismissals.add(id);
+		if (mode !== undefined) {
+			this.notificationDismissalModes.set(id, mode);
+		} else {
+			this.notificationDismissalModes.delete(id);
+		}
 		while (this.pendingNotificationDismissals.size > MAX_PENDING_NOTIFICATION_DISMISSALS) {
 			const oldest = this.pendingNotificationDismissals.values().next();
 			if (oldest.done === true) {
 				break;
 			}
 			this.pendingNotificationDismissals.delete(oldest.value);
+			this.notificationDismissalModes.delete(oldest.value);
 		}
 	}
 

@@ -122,8 +122,12 @@ export type NotifyControlMessage =
 	| { readonly t: 'dismissed'; readonly id: string }
 	| { readonly t: 'dismissed-token'; readonly token: string };
 
-export function encodeNotifyDismiss(id: string): Uint8Array {
-	return new TextEncoder().encode(JSON.stringify({ t: 'dismiss', id }));
+/**
+ * `opened`（任意）: その通知を ID で指定して開いた・消した（W2-27）。PC はこれが付いた許可・質問だけを、
+ * ほかの端末のロック画面から消してよい通知として扱う。「すべて消去」では付けない。旧PCは読まずに無視する。
+ */
+export function encodeNotifyDismiss(id: string, options?: { readonly opened?: boolean }): Uint8Array {
+	return new TextEncoder().encode(JSON.stringify({ t: 'dismiss', id, ...(options?.opened === true ? { opened: true } : {}) }));
 }
 
 export function encodeNotifyDismissed(id: string): Uint8Array {
