@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { PcSummary } from '../../appState.js';
-import { pcStatusText, shouldShowBattery } from '../../pcStatus.js';
+import { isPairingRejected, pcStatusText, shouldShowBattery } from '../../pcStatus.js';
 import { formatRelativeTime } from '../../time.js';
 
 /**
@@ -34,7 +34,8 @@ export function pcRowHint(pc: PcSummary, active: boolean, now: number): string {
 	const parts = [pcStatusText(pc, active)];
 	if (shouldShowBattery(pc) && pc.battery !== undefined) {
 		parts.push(`バッテリー ${pc.battery.level}%${pc.battery.charging ? '（充電中）' : ''}`);
-	} else if (!(pc.connection === 'online' && pc.pcOnline) && pc.lastOnlineAt !== undefined) {
+	} else if (!(pc.connection === 'online' && pc.pcOnline) && !isPairingRejected(pc) && pc.lastOnlineAt !== undefined) {
+		// 資格を拒まれた PC は、最後に繋がった時刻を出しても次の手掛かりにならない（再ペアリングしかない）
 		parts.push(`${formatRelativeTime(pc.lastOnlineAt, now)}まで接続`);
 	}
 	return parts.join(' · ');

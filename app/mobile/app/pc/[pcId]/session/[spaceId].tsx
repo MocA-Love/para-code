@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import { useIsFocused, useRouter } from 'expo-router';
-import { Ellipsis, Folder, GitBranch, NotebookPen, PanelLeftOpen, SquareTerminal, Unplug } from 'lucide-react-native';
+import { ChevronRight, Ellipsis, Folder, GitBranch, NotebookPen, PanelLeftOpen, SquareTerminal, Unplug } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { nextAttentionAgent } from '../../../../src/agentConversationUx.js';
 import { launchAgentInBackground } from '../../../../src/agentLaunch.js';
@@ -45,6 +45,7 @@ import {
 	EmptyState,
 	HeaderButton,
 	HeaderMetaText,
+	Icon,
 	Screen,
 	ScreenHeader,
 	StatusDot,
@@ -270,8 +271,10 @@ export default function SessionScreen() {
 				accessibilityRole="button"
 				accessibilityLabel={`${PAIRING_REJECTED_LABEL}。押すとペアリングし直す画面を開きます`}
 			>
-				<StatusDot kind="offline" />
-				<HeaderMetaText>{`${PAIRING_REJECTED_LABEL} · タップでペアリング`}</HeaderMetaText>
+				{/* 狭い iPhone でも切れないよう文言は短く、押せることは右の山括弧で示す。点は他の場所と同じ赤 */}
+				<View style={styles.rejectedDot} />
+				<HeaderMetaText>{PAIRING_REJECTED_LABEL}</HeaderMetaText>
+				<Icon icon={ChevronRight} size={META_HEIGHT - 2} color={colors.red} />
 			</Pressable>
 		)
 		: kind === 'offline' ? (
@@ -537,5 +540,12 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		minHeight: META_HEIGHT,
+	},
+	rejectedDot: {
+		width: 8,
+		height: 8,
+		borderRadius: 4,
+		marginRight: 5,
+		backgroundColor: colors.red,
 	},
 });

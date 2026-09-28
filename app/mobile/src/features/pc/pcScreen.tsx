@@ -310,7 +310,8 @@ export function PcScreen({ placement, onCollapse }: {
 				name={pc?.name ?? 'PC'}
 				kind={kind}
 				detail={detail}
-				{...(kind !== 'connected' && status !== 'unknown' ? { onReconnect: reconnect } : {})}
+				{...(kind !== 'connected' && status !== 'unknown' && !rejected ? { onReconnect: reconnect } : {})}
+				pairingRejected={rejected}
 				onBack={leave}
 				{...(placement === 'column' && onCollapse !== undefined ? { onCollapse } : {})}
 				toolbar={(
