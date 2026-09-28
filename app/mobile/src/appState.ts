@@ -49,6 +49,7 @@ import { usePcListView } from './features/pc/pcListViewStore.js';
 import { buildLastKnownSnapshot, openLastKnownSnapshot, sameLastKnownContent, type LastKnownPcSnapshot } from './lastKnownPcs.js';
 import { lastKnownPcStorage, lastKnownPcWriter } from './lastKnownPcStore.js';
 import { connectionLog } from './connectionLogStore.js';
+import { BackgroundGrace, type BackgroundGraceTarget } from './backgroundGrace.js';
 import type { DiagnosticPc } from './connectionDiagnostics.js';
 
 /**
@@ -620,6 +621,28 @@ function wrongPcWorkspaceError(): Error {
 	return new Error('このワークスペースは、いま接続しているPCのものではありません');
 }
 
+/**
+ * 裏に回っても30秒は接続を保つ（W2-34）。PC が「裏に回った」を確認した PC だけ保ち、残りは今までどおり閉じる。
+ * 出来事は「接続の記録」へ残す。
+ */
+const backgroundGrace = new BackgroundGrace(globalThis, Date.now, (pcId, event) => connectionLog.append(pcId, event));
+
+function graceTarget(runtime: PcRuntime): BackgroundGraceTarget {
+	const target = runtime.controller;
+	return {
+		id: runtime.pc.id,
+		canHold: () => target.canHoldInBackground(),
+		requestGrace: timeoutMs => target.requestBackgroundGrace(timeoutMs),
+		suspend: () => target.suspendForBackground(),
+		resume: () => target.resumeFromBackground(),
+		sendForeground: () => {
+			target.sendForegroundVisibility();
+			// 裏にいた間にソケットが黙って死んでいないかを確かめる（state 要求と生存確認）。
+			target.ensureConnected();
+		},
+	};
+}
+
 /** 通知センターの突き合わせを「次に届くPCの状態」まで待たせる台帳（W2-02）。 */
 const trayReconcile = new TrayReconcileRequests();
 
@@ -945,7 +968,8 @@ function applyConnectionPolicy(): void {
 			runtime.started = true;
 			runtime.controller.connect(runtime.pc.creds);
 		}
-		if (suspended) {
+		// 裏で保っている PC（W2-34）は閉じない（期限・前面復帰で BackgroundGrace が片付ける）。
+		if (suspended && !backgroundGrace.isHolding(runtime.pc.id)) {
 			runtime.controller.suspendForBackground();
 		}
 	}
@@ -1305,9 +1329,11 @@ export const useAppStore = create<AppState>(set => ({
 				const action = connectionActionForAppState(appState);
 				if (action === 'resume') {
 					if (!useAppStore.getState().manualOffline) {
-						// 見ていないPCも繋いだままにしている場合は、そちらも一緒に起こす。
-						for (const runtime of connectedRuntimes()) {
-							runtime.controller.resumeFromBackground();
+						// 見ていないPCも繋いだままにしている場合は、そちらも一緒に起こす。裏で保っていた PC は
+						// 張り直さず、「前面に戻った」を送って続きから使う（W2-34）。
+						const targets = connectedRuntimes();
+						backgroundGrace.enterForeground(targets.map(graceTarget));
+						for (const runtime of targets) {
 							// PCで既に見た通知をロック画面・通知センターから消す（W2-02）
 							requestTrayReconcile(runtime);
 						}
@@ -1331,9 +1357,8 @@ export const useAppStore = create<AppState>(set => ({
 						stopConnectionHeartbeat();
 					}
 					if (!state.manualOffline && !state.voiceNotifications.desired) {
-						for (const runtime of runtimes.values()) {
-							runtime.controller.suspendForBackground();
-						}
+						// PC が「裏に回った」を確認した PC だけ30秒保ち、残りは今までどおり閉じる（W2-34）。
+						backgroundGrace.enterBackground([...runtimes.values()].map(graceTarget));
 					}
 				}
 			});
@@ -1547,6 +1572,7 @@ export const useAppStore = create<AppState>(set => ({
 		if (id === activePcId) {
 			endVoiceNotifications();
 		}
+		backgroundGrace.end(id);
 		try {
 			// 台帳の更新が成功するまでコントローラへ触れない（失敗時にそのPCを完全に保持する）。
 			await savePairedPcs(secureKeyStore, remaining);

@@ -59,6 +59,11 @@ export interface IParadisNotifyDeliveryInput {
 	readonly sessionReady: boolean;
 	/** 最後にこのモバイルから何か受け取ってからの経過ms。受信実績が無ければ `undefined`。 */
 	readonly msSinceLastInbound: number | undefined;
+	/**
+	 * アプリが「裏に回った」と知らせてきて、まだ「前面に戻った」を受けていない（W2-34）。
+	 * このあいだアプリはソケットを保つだけでバナーを出さないので、受信が新しくても信用しない。
+	 */
+	readonly appBackgrounded?: boolean;
 }
 
 export interface IParadisNotifyDelivery {
@@ -89,6 +94,7 @@ export const PARADIS_PUSH_PAYLOAD_LIMIT_BYTES = 3800;
 export function paradisResolveNotifyDelivery(input: IParadisNotifyDeliveryInput): IParadisNotifyDelivery {
 	const wantsBanner = paradisWantsNotifyBanner(input.kind, input.prefs, input.pcFocused);
 	const trusted = input.sessionReady
+		&& input.appBackgrounded !== true
 		&& input.msSinceLastInbound !== undefined
 		&& input.msSinceLastInbound <= PARADIS_NOTIFY_TRUST_WINDOW_MS;
 	const push = wantsBanner && !trusted;

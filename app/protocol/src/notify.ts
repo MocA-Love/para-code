@@ -138,3 +138,43 @@ export function decodeNotifyControl(bytes: Uint8Array): NotifyControlMessage | u
 		return undefined;
 	}
 }
+
+/**
+ * アプリが裏に回った・前面に戻ったことを PC へ伝える（W2-34。notify チャネル M→PC）と、その確認（PC→M）。
+ *
+ * アプリは裏に回ったとき、PC がこの知らせを受けて確認を返したときだけ、ソケットを最大30秒保つ。
+ * 受けた PC は、そのスマホを「前面ではない」とみなし、最後に受信した時刻に関わらずプッシュを送る
+ * （鳴らすかは PC が決める、の方針を保つため。paradisNotifyDelivery.ts）。旧PCはこの `t` を知らず
+ * 確認を返さないので、アプリは今までどおり即座に閉じる。PC は `conn.background-grace.v1` を広告する。
+ *
+ * `id` は確認と突き合わせるためのもの（任意。前面の知らせには付けない）。
+ */
+export type NotifyVisibilityState = 'background' | 'foreground';
+
+export type NotifyVisibilityMessage =
+	| { readonly t: 'visibility'; readonly state: NotifyVisibilityState; readonly id?: string }
+	| { readonly t: 'visibility-ack'; readonly state: NotifyVisibilityState; readonly id?: string };
+
+const VISIBILITY_ID_MAX_LENGTH = 64;
+
+export function encodeNotifyVisibility(state: NotifyVisibilityState, id?: string): Uint8Array {
+	return new TextEncoder().encode(JSON.stringify({ t: 'visibility', state, ...(id !== undefined ? { id } : {}) }));
+}
+
+export function encodeNotifyVisibilityAck(state: NotifyVisibilityState, id?: string): Uint8Array {
+	return new TextEncoder().encode(JSON.stringify({ t: 'visibility-ack', state, ...(id !== undefined ? { id } : {}) }));
+}
+
+/** notify チャネルの受信バイト列を W2-34 の知らせとして読む。違えば undefined。 */
+export function decodeNotifyVisibility(bytes: Uint8Array): NotifyVisibilityMessage | undefined {
+	try {
+		const raw = JSON.parse(new TextDecoder().decode(bytes)) as { t?: unknown; state?: unknown; id?: unknown };
+		if ((raw.t !== 'visibility' && raw.t !== 'visibility-ack') || (raw.state !== 'background' && raw.state !== 'foreground')) {
+			return undefined;
+		}
+		const id = typeof raw.id === 'string' && raw.id.length > 0 && raw.id.length <= VISIBILITY_ID_MAX_LENGTH ? raw.id : undefined;
+		return { t: raw.t, state: raw.state, ...(id !== undefined ? { id } : {}) };
+	} catch {
+		return undefined;
+	}
+}

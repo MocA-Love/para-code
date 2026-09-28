@@ -115,6 +115,12 @@ export class RelayClient {
 	 */
 	private closedForPcRestart = false;
 	private suspended = false;
+	/**
+	 * 裏に回ったあとも、いまのソケットだけを保っている（W2-34）。この間は張り直さない:
+	 * 切れたら・張り直そうとしたら、その場で suspend と同じ状態に落とす。張り直した接続は PC から見て
+	 * 「前面のアプリ」になり、裏にいる間の通知がプッシュにならないため。
+	 */
+	private backgroundHold = false;
 	/** 破棄済みソケットにキューされていたコールバックを無効化する世代番号。 */
 	private socketGeneration = 0;
 	private reconnectAttempt = 0;
@@ -160,12 +166,14 @@ export class RelayClient {
 	connect(): void {
 		this.closedByUser = false;
 		this.suspended = false;
+		this.backgroundHold = false;
 		this.openSocket();
 	}
 
 	close(): void {
 		this.closedByUser = true;
 		this.suspended = false;
+		this.backgroundHold = false;
 		if (this.reconnectHandle !== null) {
 			this.timers.clearTimeout(this.reconnectHandle);
 			this.reconnectHandle = null;
@@ -176,6 +184,18 @@ export class RelayClient {
 	}
 
 	/**
+	 * 裏に回ったあとも、いまのソケットを保つ（W2-34。PC が「裏に回った」を確認したときだけ呼ぶ）。
+	 * 繋がっていなければ保てないので false。前面へ戻ったら {@link resume} で解く。
+	 */
+	holdInBackground(): boolean {
+		if (this.closedByUser || this.suspended || this.state !== 'online') {
+			return false;
+		}
+		this.backgroundHold = true;
+		return true;
+	}
+
+	/**
 	 * アプリがバックグラウンドへ移った時にフォアグラウンド用接続を明示的に止める。
 	 * 旧ソケットへキュー済みのフレームも世代番号とハンドラ解除で破棄する。
 	 */
@@ -183,6 +203,7 @@ export class RelayClient {
 		if (this.closedByUser || this.suspended) {
 			return;
 		}
+		this.backgroundHold = false;
 		this.suspended = true;
 		this.logEvent({ kind: 'suspended' });
 		if (this.reconnectHandle !== null) {
@@ -196,6 +217,7 @@ export class RelayClient {
 
 	/** フォアグラウンド復帰時に必ず有効なソケットを1本だけ確保する。 */
 	resume(): void {
+		this.backgroundHold = false;
 		if (this.closedByUser) {
 			return;
 		}
@@ -218,6 +240,10 @@ export class RelayClient {
 	 * すでにonlineなら何もしない。ユーザーが明示的に切断した状態は維持する。
 	 */
 	ensureConnected(options?: { readonly keepBackoff?: boolean }): void {
+		if (this.backgroundHold && this.state !== 'online') {
+			this.suspend();
+			return;
+		}
 		if (this.closedByUser || this.suspended || this.state === 'online') {
 			return;
 		}
@@ -253,6 +279,11 @@ export class RelayClient {
 	 */
 	private reopenSocket(keepBackoff = false): void {
 		if (this.suspended) {
+			return;
+		}
+		// 裏で保っている間は張り直さない（新しい接続は PC から前面のアプリに見える）。畳んで前面復帰を待つ。
+		if (this.backgroundHold) {
+			this.suspend();
 			return;
 		}
 		// 資格を拒まれている間は、前面復帰や心拍（25秒おき）で叩き直さない。拒否は待っても
@@ -602,6 +633,14 @@ export class RelayClient {
 			this.reconnectAttempt = 0;
 		}
 		this.onlineSince = undefined;
+		// 裏で保っていたソケットが切れた。張り直さず、suspend と同じ状態で前面復帰を待つ。
+		if (this.backgroundHold) {
+			this.backgroundHold = false;
+			this.suspended = true;
+			this.logEvent({ kind: 'suspended' });
+			this.setState('offline');
+			return;
+		}
 		if (this.closedByUser || this.suspended) {
 			this.setState('offline');
 			return;
