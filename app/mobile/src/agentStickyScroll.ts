@@ -30,6 +30,22 @@ const BOTTOM_THRESHOLD_PX = 80;
 const SCROLL_EPSILON_PX = 4;
 
 /**
+ * 一覧を最下部まで送ったときの offset（＝スクロールできる最大の位置）。負にはしない。
+ *
+ * 会話の一覧は、末尾へ送るときに FlatList の `scrollToEnd()` を使わず、これで求めた位置へ送る。
+ * `scrollToEnd()` は最後の行の位置を行ごとの測定値から見積もるので、2つの場面で外れる:
+ *  - 新しい行の `onLayout` より先に `onContentSizeChange` が届く（実測でこの順）。最後の行が
+ *    まだ測られていないと平均の行の長さで見積もり、長い返答だと数百 pt 手前で止まる
+ *  - 内容の下の余白（contentContainerStyle の padding）を数えず、最大の位置より手前を指す。
+ *    その差が {@link AgentStickyScroll.handleScroll} には「上へ遡った」に見え、追従が外れる
+ * `contentHeight` は `onContentSizeChange` の値（下の余白を含む内容全体の高さ）、`viewportHeight` は
+ * 一覧の `onLayout` の高さ。`bottomInset` は ScrollView の下の contentInset（使っていなければ 0）。
+ */
+export function agentScrollEndOffset(contentHeight: number, viewportHeight: number, bottomInset = 0): number {
+	return Math.max(0, contentHeight + bottomInset - viewportHeight);
+}
+
+/**
  * 追従状態を持つ小さな状態機械。React に依存しないので、画面を動かさずに挙動を検証できる。
  *
  * 呼び出し側は各メソッドの戻り値だけを見ればよい（`sticky` が変わったかは `handleScroll` の
@@ -108,7 +124,7 @@ export class AgentStickyScroll {
 		}
 		// 末尾に貼り付いている間の後退は、OS が offset を切り詰めただけ（本文の縮み、キーボードを
 		// 閉じてビューポートが伸びたとき、iOS のバウンスの戻り）で、読み手の操作ではない。
-		const maxOffsetY = Math.max(0, sample.contentHeight - sample.layoutHeight);
+		const maxOffsetY = agentScrollEndOffset(sample.contentHeight, sample.layoutHeight);
 		const pinnedAtEnd = sample.offsetY >= maxOffsetY - SCROLL_EPSILON_PX;
 		const movedDown = previous !== undefined && sample.offsetY - previous.offsetY >= SCROLL_EPSILON_PX;
 		// 下へ向き直したら、そこを新しい起点にする。ここで更新しないと、遡ったあと下端へ戻る途中も
