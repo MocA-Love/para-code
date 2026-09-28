@@ -556,11 +556,16 @@ export class DeviceDO implements DurableObject {
 		// 送るかどうかはPCが決める（`paradisNotifyDelivery.ts`。PCは最後にモバイルから
 		// 実際に何か受け取った時刻で判断していて、リレーより確かな材料を持っている）。
 		const expiresAtSeconds = Math.floor(Date.now() / 1000) + PUSH_EXPIRATION_SECONDS;
-		const result = await this.sendPushOnce({ mobileId, payload, collapseId, threadId, expiresAtSeconds });
-		if (shouldRetryPush(result, collapseId)) {
+		// PC が collapseId を付けない通知（許可・質問）には、この通知だけの乱数を付けて送る。応答の無い
+		// 通信失敗の後に送り直しても、APNs が先の1通を受理していれば端末上で置き換わるので二重に鳴らない。
+		// 通知ごとの乱数なので、別の通知どうしを紐付ける手掛かりにはならない（置き換えもしない）。
+		const pushCollapseId = collapseId ?? randomTokenB64u(16);
+		const result = await this.sendPushOnce({ mobileId, payload, collapseId: pushCollapseId, threadId, expiresAtSeconds });
+		if (result?.kind === 'retry') {
 			// PCはこの通知を「プッシュで鳴らすからフレームでは鳴らすな」と送り済みのことがある。
 			// ここで落とすとその通知は一度も鳴らないので、一時的な失敗は後で送り直す（W2-07）。
-			this.enqueuePushRetry({ mobileId, payload, collapseId, threadId, attempt: 1, expiresAtSeconds }, result.retryAfterMs);
+			// 送り直しでも同じ collapseId を使う（行に保存する）。
+			this.enqueuePushRetry({ mobileId, payload, collapseId: pushCollapseId, threadId, attempt: 1, expiresAtSeconds }, result.retryAfterMs);
 			await this.scheduleAlarm();
 		}
 	}
@@ -632,7 +637,7 @@ export class DeviceDO implements DurableObject {
 			}
 			try {
 				const result = await this.sendPushOnce(push);
-				if (shouldRetryPush(result, push.collapseId)) {
+				if (result?.kind === 'retry') {
 					this.enqueuePushRetry({ ...push, attempt: push.attempt + 1 }, result.retryAfterMs);
 				}
 			} catch (err) {
@@ -725,21 +730,6 @@ export class DeviceDO implements DurableObject {
 	async webSocketError(ws: WebSocket): Promise<void> {
 		await this.webSocketClose(ws);
 	}
-}
-
-/**
- * 送り直すか。APNs が明示的に断った（429 / 5xx / 期限切れJWT）なら送り直す。
- *
- * 応答が返らなかった通信失敗は、APNs が受理して端末へ届けている可能性がある。同じ通知を
- * もう一度送ると二重にバナーが出るので、端末上で置き換わる（collapseId の付いた）通知だけ
- * 送り直す。PC は許可・質問の通知には collapseId を付けない（未回答の許可を置き換えで隠さないため）
- * ので、それらは通信失敗では送り直さない（W2-07 のレビュー M4）。
- */
-function shouldRetryPush(result: ApnsSendResult | undefined, collapseId: string | undefined): result is Extract<ApnsSendResult, { kind: 'retry' }> {
-	if (result?.kind !== 'retry') {
-		return false;
-	}
-	return result.status !== undefined || collapseId !== undefined;
 }
 
 /** PCが付けてきた collapseId / threadId を検証する。形が外れていれば使わない（プッシュ自体は送る）。 */
