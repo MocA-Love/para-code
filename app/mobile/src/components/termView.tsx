@@ -920,6 +920,8 @@ function buildHtml(): string {
 		if (term.hasSelection()) {
 			term.clearSelection();
 		}
+		// 選択を外しても、描いた行の地の色がそのまま残ることがある（コピーの直後など）。見えている行を描き直す。
+		term.refresh(0, term.rows - 1);
 	}
 	// 単語（空白と括弧・引用符で区切ったまとまり）を選ぶ。パスや URL を丸ごと選べるよう、/ : . は区切りにしない。
 	function selectWordAt(cell) {
@@ -1149,12 +1151,15 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 
 	// 準備完了の見張り。時間切れで 1 回だけ読み直し、だめならエラーと［再試行］を出す。
 	const [loadFailed, setLoadFailed] = useState(false);
-	/** WebView を読み直す。画面は WebView の中にしか無いので、準備完了の後に snapshot を取り直す。 */
+	// WebView を作り直した回数（`key`）。`source={{ html }}` の WebView は `reload()` では HTML を読み直さず
+	// `about:blank` のまま戻らないので、読み直しは要素ごと作り直して行う。
+	const [webViewGeneration, setWebViewGeneration] = useState(0);
+	/** WebView を作り直す。画面は WebView の中にしか無いので、準備完了の後に snapshot を取り直す。 */
 	const reloadWebView = () => {
 		readyRef.current = false;
 		setReady(false);
 		coalescer.clear();
-		webRef.current?.reload();
+		setWebViewGeneration(generation => generation + 1);
 	};
 	const watchdogRef = useRef<ReturnType<typeof createTermReadyWatchdog> | undefined>(undefined);
 	watchdogRef.current ??= createTermReadyWatchdog({
@@ -1361,10 +1366,11 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 
 	// **WebView要素は端末ごとに1回だけ作る。** `source` に41万文字が載っているため、要素を
 	// 作り直すとそのぶんの文字列変換がJSスレッドで走る（`termHtmlSource` の説明を読むこと）。
-	// 中で使うものは全てref経由か安定した参照なので、依存は空でよい。`applyStreamEvent` も
-	// refしか触らないので初回の参照を捕まえたままで正しい（購読側の :438 と同じ理由）。
+	// 中で使うものは全てref経由か安定した参照なので、依存は作り直しの回数だけでよい（読み直しの
+	// 見張り・プロセス死のときだけ変わる）。`applyStreamEvent` もrefしか触らないので、その時点の参照で正しい。
 	const webView = useMemo(() => (
 		<WebView
+			key={webViewGeneration}
 			ref={webRef}
 			style={styles.web}
 			source={termHtmlSource()}
@@ -1432,7 +1438,8 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 				}
 			}}
 		/>
-	), []);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	), [webViewGeneration]);
 
 	// WebView は常に同じ位置に置き、失敗の表示はその上に重ねるだけにする（木の形を変えると WebView が作り直される）。
 	return (

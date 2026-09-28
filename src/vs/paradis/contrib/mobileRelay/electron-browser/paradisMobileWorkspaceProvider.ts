@@ -2713,8 +2713,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// 画面寸法の申告はスナップショットより先に反映する。ここで PTY を細くしておくと、
 				// 直後のスナップショットが既に新しい寸法で撮られ、モバイルが一度も
 				// 「PC幅のまま潰れた画面」を描かずに済む。
-				this.setTerminalViewport(instance, id, mobileId,
-					paradisIsValidTerminalViewportMessage(msg) ? paradisReadTerminalViewport(msg) : undefined);
+				const attachViewport = paradisIsValidTerminalViewportMessage(msg) ? paradisReadTerminalViewport(msg) : undefined;
+				// 離れてから猶予のうちに戻ってきた（W2-19）。スマホは画面を測り直すまで寸法を付けずに attach するので、
+				// ここで戻すと PC の幅へ広げた直後にまた縮むことになる。猶予中の寸法を保ったまま猶予を数え直し、
+				// 測り直した寸法（viewport）が届くのを待つ（届かなければ猶予が切れた時点で戻す）。
+				const keepDuringGrace = attachViewport === undefined && this.termViewportReleaseTimers.has(id);
+				if (keepDuringGrace) {
+					this.cancelTerminalViewportRelease(id);
+				}
+				this.setTerminalViewport(instance, id, mobileId, attachViewport, { grace: keepDuringGrace });
 				this.sendTerminalSnapshot(instance, id, mobileId, 'attach');
 				if (this.attachedTerminals.has(id)) {
 					await complete('accepted');
