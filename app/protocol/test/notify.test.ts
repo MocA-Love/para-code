@@ -21,6 +21,14 @@ describe('notify codec', () => {
 		expect(decoded.kind).toBe('disconnected');
 	});
 
+	test('marks a per-item dismiss as opened; old decoders ignore the flag', () => {
+		expect([
+			JSON.parse(new TextDecoder().decode(encodeNotifyDismiss('n1', { opened: true }))),
+			JSON.parse(new TextDecoder().decode(encodeNotifyDismiss('n1'))),
+			decodeNotifyControl(encodeNotifyDismiss('n1', { opened: true })),
+		]).toEqual([{ t: 'dismiss', id: 'n1', opened: true }, { t: 'dismiss', id: 'n1' }, { t: 'dismiss', id: 'n1' }]);
+	});
+
 	test('reads the W2-27 dismiss tags, keeping only well-formed ones', () => {
 		const tag = 'a'.repeat(32);
 		const raw = { kind: 'agent-done', id: 'n3', title: 't', body: 'b', at: 1, dismiss: [tag, 'NOT-HEX', 5, 'b'.repeat(31)] };

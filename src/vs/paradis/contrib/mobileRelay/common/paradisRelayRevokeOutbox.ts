@@ -67,16 +67,20 @@ export function paradisEnqueueRevoke(outbox: readonly IParadisRelayRevokeEntry[]
 
 export type ParadisRelayRevokeOutcome = 'done' | 'retry' | 'drop';
 
+/** リレー（`app/relay/src/worker.ts`）が道の無い要求に返す 404 の本文。 */
+export const PARADIS_RELAY_NOT_FOUND_BODY = 'not found';
+
 /**
  * リレーの応答から、取り消しが済んだかを決める。`status` が undefined なら通信が失敗した。
  * - 2xx: 済んだ（リレーは行が無くても 200 を返す）
- * - 404: 登録そのものがリレーに無い。取り消すものが無い
+ * - 404: リレー自身が返したもの（本文が {@link PARADIS_RELAY_NOT_FOUND_BODY}）なら、取り消しの口を持たない
+ *   リレーなので取り消すものが無い。途中のプロキシなどが返した 404 は一時的な失敗として送り直す
  * - 400: 形が悪い（壊れた deviceId など）。送り直しても変わらないので捨てる
  * - 401 / 403: PC の資格が拒まれた。認証切れは PC 側の別の仕組みが扱うので、ゆっくり送り直す
  * - 408 / 425 / 429 / 5xx / 通信の失敗: 一時的。送り直す
  * - それ以外の 4xx: 送り直しても変わらないので捨てる
  */
-export function paradisClassifyRevokeResponse(status: number | undefined): ParadisRelayRevokeOutcome {
+export function paradisClassifyRevokeResponse(status: number | undefined, body?: string): ParadisRelayRevokeOutcome {
 	if (status === undefined) {
 		return 'retry';
 	}
@@ -84,7 +88,7 @@ export function paradisClassifyRevokeResponse(status: number | undefined): Parad
 		return 'done';
 	}
 	if (status === 404) {
-		return 'done';
+		return body?.trim() === PARADIS_RELAY_NOT_FOUND_BODY ? 'done' : 'retry';
 	}
 	if (status === 401 || status === 403 || status === 408 || status === 425 || status === 429 || status >= 500) {
 		return 'retry';

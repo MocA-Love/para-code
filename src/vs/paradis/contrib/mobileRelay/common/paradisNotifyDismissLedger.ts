@@ -15,11 +15,12 @@
 // 次の通知が来るまでは消えないが、リレーの変更は要らない。
 //
 // **消してよいのは PC が片付いたと知っているものだけ:**
-// - スマホがその通知を開いた・消した（`dismiss`。通知 ID で1件）
-// - PC がそのエージェントのペインを確認済みにした、またはターミナルが終わった（`onDidAcknowledgePane`。
-//   エージェントのトークンで、確認した時刻より前に出した通知だけ）。確認済みになるのは完了（review）を
-//   見たときと、ペインが終わったときだけなので、その前に出た許可・質問はもう答えが済んでいる。
-//   確認より後に出た許可・質問は対象にしない（未回答のものを消さない）。
+// - スマホがその通知を ID を指定して開いた・消した（`dismiss` に `opened: true`。通知 ID で1件）。
+//   許可・質問（`agent-question`）はこれでだけ消す
+// - スマホが一覧を「すべて消去」した（`opened` の無い `dismiss`）: 完了などの通知だけ。許可・質問は消さない
+//   （旧アプリは1件ずつの操作にも `opened` を付けないので、旧アプリからの許可・質問は消さない側に倒れる）
+// - PC がそのエージェントのペインを確認済みにした、またはターミナルが終わった（`onDidAcknowledgePane`）:
+//   確認した時刻より前に出した、許可・質問以外の通知だけ
 // 状態（working など）からは推測しない（hook が来ないと状態が残り、未回答でも消してしまう）。
 
 /** 1回のプッシュに載せる印の数の上限（APNs の 4KB に収めるため）。 */
@@ -32,8 +33,15 @@ const LEDGER_LIMIT = 200;
 interface IEmitted {
 	readonly id: string;
 	readonly agentToken: string | undefined;
+	/** 通知の種別（分からなければ undefined。許可・質問として扱う）。 */
+	readonly kind: string | undefined;
 	readonly at: number;
 	handledAt: number | undefined;
+}
+
+/** 許可・質問（未回答かもしれない）か。種別が分からないものも、消さない側に倒してこちらに入れる。 */
+function isPrompt(kind: string | undefined): boolean {
+	return kind === undefined || kind === 'agent-question';
 }
 
 export class ParadisNotifyDismissLedger {
@@ -42,29 +50,37 @@ export class ParadisNotifyDismissLedger {
 	private readonly entries: IEmitted[] = [];
 
 	/** 通知を出した（プッシュ・フレームのどちらでも）。 */
-	record(id: string, agentToken: string | undefined, at: number): void {
+	record(id: string, agentToken: string | undefined, kind: string | undefined, at: number): void {
 		if (this.entries.some(entry => entry.id === id)) {
 			return;
 		}
-		this.entries.push({ id, agentToken, at, handledAt: undefined });
+		this.entries.push({ id, agentToken, kind, at, handledAt: undefined });
 		this.trim();
 	}
 
-	/** スマホがその通知を開いた・消した。この PC が出したと覚えていない通知（再起動前など）も対象にする。 */
-	markDismissed(id: string, at: number): void {
+	/**
+	 * スマホがその通知を消した。`opened` はその通知を ID で指定して開いた・消した（新しいアプリの1件ごとの
+	 * 操作）。`opened` が無い（「すべて消去」・旧アプリ）ときは、許可・質問と、この PC が出したと
+	 * 覚えていない通知（再起動前など。種別が分からない）は片付いたことにしない。
+	 */
+	markDismissed(id: string, at: number, opened: boolean): void {
 		const entry = this.entries.find(candidate => candidate.id === id);
 		if (entry !== undefined) {
-			entry.handledAt ??= at;
+			if (opened || !isPrompt(entry.kind)) {
+				entry.handledAt ??= at;
+			}
 			return;
 		}
-		this.entries.push({ id, agentToken: undefined, at, handledAt: at });
-		this.trim();
+		if (opened) {
+			this.entries.push({ id, agentToken: undefined, kind: undefined, at, handledAt: at });
+			this.trim();
+		}
 	}
 
-	/** PC がそのエージェントのペインを確認済みにした。確認より前に出した同じエージェントの通知が片付く。 */
+	/** PC がそのエージェントのペインを確認済みにした。確認より前に出した同じエージェントの、許可・質問以外の通知が片付く。 */
 	markAcknowledged(agentToken: string, at: number): void {
 		for (const entry of this.entries) {
-			if (entry.agentToken === agentToken && entry.at < at) {
+			if (entry.agentToken === agentToken && entry.at < at && !isPrompt(entry.kind)) {
 				entry.handledAt ??= at;
 			}
 		}
@@ -83,6 +99,16 @@ export class ParadisNotifyDismissLedger {
 		if (this.entries.length > LEDGER_LIMIT) {
 			this.entries.splice(0, this.entries.length - LEDGER_LIMIT);
 		}
+	}
+}
+
+/** スマホの `dismiss` が、その通知を ID で指定して開いた・消したものか（`opened: true`。旧アプリは付けない）。 */
+export function paradisNotifyDismissOpened(bytes: Uint8Array): boolean {
+	try {
+		const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { opened?: unknown } | null;
+		return parsed !== null && typeof parsed === 'object' && parsed.opened === true;
+	} catch {
+		return false;
 	}
 }
 
