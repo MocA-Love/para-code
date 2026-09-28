@@ -389,15 +389,38 @@ suite('ParadisComputerUseToolProvider', () => {
 		helper.onInput = async () => ({ typed: 5, method: 'paste', verified: null, clipboard: 'restored' });
 		const unread = JSON.parse(text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'hello', includeState: false }, undefined, context)));
 		assert.deepStrictEqual({ dropped, unread }, {
-			dropped: 'The text did not arrive intact. Para Code sent characters 401 to 464 of 464, but the field shows 48 new characters. The first 400 characters had arrived correctly. Read the app with computer_get_app_state and fix the text there before continuing; do not resend the whole text. Consider computer_paste_text for the rest.',
+			dropped: 'Para Code sent characters 401 to 464 of 464, but the field does not show them as sent (it shows 48 new characters). The first 400 characters had arrived. Read the app with computer_get_app_state and fix the text there if needed before continuing; do not resend the whole text.',
+			// 確かめられなかったときは false ではなく null（送り直しを誘わない。ベータ 3 のレビュー L3）
 			unread: {
 				app: { name: 'Notes', bundleId: 'com.apple.Notes', pid: 200 },
 				action: 'type_text',
 				typed: 5,
-				verified: false,
+				verified: null,
 				method: 'paste',
-				note: 'Para Code could not read the field back, so it could not confirm that the text arrived exactly. Check the state before continuing.',
+				note: 'Para Code could not confirm that all of the text arrived (the field could not be read back, or the app has not shown it yet). Check the state before continuing, and do not resend the text.',
 			},
+		});
+	});
+
+	test('refuses tabs, tells an app rewrite from a mismatch, and reports every clipboard reason', async () => {
+		const { helper, ledger, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const context = createContext('pane', []).context;
+		const tabs = text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'user\tsecret', includeState: false }, undefined, context));
+		const replies: object[] = [{ typed: 400, method: 'paste', verified: null, clipboard: 'cleared' }, { typed: 3, method: 'accessibility', verified: false, inserted: 3, rewritten: true }];
+		helper.onInput = async () => replies.shift() ?? {};
+		const rewritten = text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'x'.repeat(403), includeState: false }, undefined, context));
+		const mixed: object[] = [{ typed: 400, method: 'paste', verified: true, clipboard: 'cleared' }, { typed: 3, method: 'paste', verified: true, rewritten: true, clipboard: 'changed-by-others' }];
+		helper.onInput = async () => mixed.shift() ?? {};
+		const summary = JSON.parse(text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'y'.repeat(403), includeState: false }, undefined, context)));
+		assert.deepStrictEqual({ tabs, rewritten, summary: { verified: summary.verified, note: summary.note }, inputs: helper.inputs.filter(input => (input.params.text as string).includes('\t')).length }, {
+			tabs: '"text" must not contain tabs. Type each field separately and press tab with computer_press_key to move between fields.',
+			rewritten: 'Para Code sent characters 401 to 403 of 403, but the app changed the text as it arrived (for example autocorrect). The first 400 characters were sent, but not all of them could be confirmed. Read the app with computer_get_app_state and fix the text there if needed before continuing; do not resend the whole text.',
+			summary: {
+				verified: true,
+				note: 'The app changed the text slightly as it arrived (for example autocorrect, smart quotes or formatting). The user\'s clipboard held a password manager\'s secret, so Para Code cleared it instead of putting it back. Something else changed the clipboard while pasting, so the user\'s previous clipboard was not put back.',
+			},
+			inputs: 0,
 		});
 	});
 
@@ -411,6 +434,13 @@ suite('ParadisComputerUseToolProvider', () => {
 			window(5, true, 60, { standard: true }),
 			window(6, true, 700),
 		]).map(entry => [entry.windowId, entry.index]), [[3, 0], [6, 1], [2, 2], [4, 3], [1, 4], [5, 5]]);
+		// ベータ 3 のレビュー M3: アプリが前に出しているダイアログやシートが、後ろの書類より先
+		assert.deepStrictEqual(paradisRankWindows([
+			window(10, true, 400, { standard: false, subrole: 'AXDialog' }),
+			window(11, true, 900, { standard: true }),
+			window(12, true, 300, { standard: false, subrole: 'AXSheet', focused: true }),
+			window(13, true, 300, { standard: false, subrole: 'AXFloatingWindow' }),
+		]).map(entry => entry.windowId), [12, 10, 11, 13]);
 	});
 
 	test('keeps the tool list in sync with the handler', () => {
