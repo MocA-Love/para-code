@@ -2182,7 +2182,7 @@ export class MobileController {
 	}
 
 	/** session検証付きAgent Action。 */
-	sendAgentMessage(terminalKey: string, text: string): Promise<AgentMessageSendResult> {
+	sendAgentMessage(terminalKey: string, text: string, sendId?: string): Promise<AgentMessageSendResult> {
 		const chat = this.state.agentChats.get(terminalKey);
 		if (!this.isLiveAvailable()) {
 			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
@@ -2192,6 +2192,7 @@ export class MobileController {
 		}
 		return this.sendAgentActionResult(terminalKey, {
 			t: 'action/sendMessage', token: this.agentToken(terminalKey), epoch: chat.epoch, text,
+			...(sendId !== undefined ? { sendId } : {}),
 		});
 	}
 
@@ -2215,10 +2216,12 @@ export class MobileController {
 	}
 
 	/**
-	 * 承認に答える。`optionLabel` は画面の番号付きの選択肢（`opt:<n>`、W2-21）で答えるときだけ付ける。PC は送る直前に
-	 * 画面のその番号が同じ文言かを確かめ、違えば送らずに断る。
+	 * 承認に答える。`option` は画面の番号付きの選択肢（`opt:<n>`、W2-21）で答えるときだけ付ける（押したときの文言と、
+	 * 選択肢を読んだときの確認の見出しまでの指紋）。PC は送る直前に画面が同じ確認で、その番号が同じ文言かを確かめ、
+	 * 違えば送らずに断る。
 	 */
-	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, optionLabel?: string): Promise<AgentMessageSendResult> {
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }): Promise<AgentMessageSendResult> {
+		const optionLabel = option?.label;
 		const chat = this.state.agentChats.get(terminalKey);
 		if (!this.isLiveAvailable()) {
 			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
@@ -2238,7 +2241,7 @@ export class MobileController {
 		}
 		return this.sendAgentActionResult(terminalKey, {
 			t: 'action/answerApproval', token: this.agentToken(terminalKey), epoch: chat.epoch, interactionId, choice,
-			...(screenOption ? { optionLabel } : {}),
+			...(screenOption ? { optionLabel, ...(option?.promptHash !== undefined && /^[0-9a-f]{40}$/.test(option.promptHash) ? { promptHash: option.promptHash } : {}) } : {}),
 		}, 60_000);
 	}
 
@@ -4437,10 +4440,13 @@ export class MobileController {
 				const base = msg.interaction !== undefined
 					? (({ stale: _stale, ...rest }) => rest)(withoutInteraction)
 					: withoutInteraction;
+				const merged = [...existing.messages, ...fresh];
 				this.state.agentChats.set(terminalKey, {
 					...base,
 					rev: msg.rev ?? existing.rev,
-					messages: [...existing.messages, ...fresh].slice(-500),
+					messages: merged.slice(-500),
+					// 500 件で切ったら、前が省略されていることを示す（さかのぼって読む案内を出すため。レビュー M5）。
+					...(merged.length > 500 ? { truncated: true } : {}),
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 					...(msg.live !== undefined && isNonNegativeSafeInteger(msg.liveRevision) ? { liveRevision: msg.liveRevision } : {}),

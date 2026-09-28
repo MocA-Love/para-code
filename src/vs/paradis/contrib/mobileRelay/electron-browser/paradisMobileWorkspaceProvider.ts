@@ -79,7 +79,7 @@ import { paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts, paradis
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionsForMobile, paradisParseApprovalOptions, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
-import { paradisScreenShowsPermissionPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
+import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisSendAgentInteractionKeys, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { PARADIS_OFFICE_CHANNEL, marshalParadisOfficeRequest, unmarshalParadisOfficeResponse, type ParadisOfficeV1Negotiation } from '../../fileViewers/common/paradisOfficeChannel.js';
@@ -1468,7 +1468,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (mobileId === undefined) {
 			return;
 		}
-		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown; interactionId?: unknown; agent?: unknown; expectOption?: unknown };
+		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown; interactionId?: unknown; agent?: unknown; expectOption?: unknown; expectPromptHash?: unknown };
 		let interactionAccepted = false;
 		try {
 			msg = JSON.parse(payload.toString());
@@ -1535,6 +1535,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// 見られないので `d` を送ってくる。画面の選択肢の表記に合わせて差し替える（`d` の版はそのまま）。
 				const interactionKind = typeof msg.interaction === 'object' && msg.interaction !== null ? (msg.interaction as { kind?: unknown }).kind : undefined;
 				const expectOption = interactionKind === 'approval' ? paradisReadExpectedApprovalOption(msg.expectOption) : undefined;
+				const expectPromptHash = typeof msg.expectPromptHash === 'string' && /^[0-9a-f]{40}$/.test(msg.expectPromptHash) ? msg.expectPromptHash : undefined;
+				if (msg.expectOption !== undefined && (expectOption === undefined || parts.length !== 1)) {
+					// 番号の選択肢の回答は 1 打鍵だけ（L3）。形が違うものは送らない。
+					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'invalid-answer', '承認の選択肢が更新されました');
+					return;
+				}
 				const optionAgent = msg.agent === 'codex' ? 'codex' : 'claude';
 				if (interactionKind === 'approval' && expectOption === undefined && parts.length === 1 && parts[0] === 'd') {
 					parts = [paradisCodexApprovalDenyKey(paradisVisibleTerminalText(instance))];
@@ -1547,7 +1553,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						return true;
 					}
 					optionCheckPending = false;
-					const screenOption = paradisParseApprovalOptions(paradisVisibleTerminalText(instance))?.find(candidate => candidate.n === expectOption.n);
+					// 許可の確認が出ていて（M1）、見出しまでが選択肢を見せたときと同じで（M2）、その番号が同じ文言のときだけ送る。
+					const prompt = paradisPermissionPromptParts(paradisVisibleTerminalText(instance));
+					if (prompt === undefined || (expectPromptHash !== undefined && paradisPermissionPromptHash(prompt.context) !== expectPromptHash)) {
+						return false;
+					}
+					const screenOption = paradisParseApprovalOptions(prompt.options)?.find(candidate => candidate.n === expectOption.n);
 					const key = screenOption !== undefined && paradisApprovalOptionLabelsMatch(screenOption.label, expectOption.label) ? paradisApprovalOptionKey(optionAgent, screenOption) : undefined;
 					if (key === undefined) {
 						return false;
@@ -1567,7 +1578,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					readScreen: () => paradisVisibleTerminalText(instance),
 					// 選択肢が画面に出るまで待つ（出なければ待ちの上限の後、直前の確かめで断る）。
 					ready: expectOption !== undefined
-						? (screen: string) => paradisParseApprovalOptions(screen)?.some(candidate => candidate.n === expectOption.n) === true
+						? (screen: string) => {
+							const prompt = paradisPermissionPromptParts(screen);
+							return prompt !== undefined && paradisParseApprovalOptions(prompt.options)?.some(candidate => candidate.n === expectOption.n) === true;
+						}
 						: msg.readyMarker as string | undefined,
 					strict: false,
 					source: 'mobile',
@@ -1626,10 +1640,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		const agent = msg.agent === 'codex' ? 'codex' : 'claude';
 		let options: readonly IParadisAgentApprovalOption[] | undefined;
+		let promptHash: string | undefined;
 		const deadline = Date.now() + PARADIS_APPROVAL_OPTIONS_WAIT_MS;
 		for (; ;) {
-			const screen = paradisVisibleTerminalText(instance);
-			options = paradisScreenShowsPermissionPrompt(screen) ? paradisApprovalOptionsForMobile(agent, paradisParseApprovalOptions(screen)) : undefined;
+			// 選択肢は許可の確認の見出しより後の行からだけ読む（レビュー M1）。見出しまでの指紋を添え、回答で返させる（M2）。
+			const prompt = paradisPermissionPromptParts(paradisVisibleTerminalText(instance));
+			options = prompt !== undefined ? paradisApprovalOptionsForMobile(agent, paradisParseApprovalOptions(prompt.options)) : undefined;
+			promptHash = prompt !== undefined ? paradisPermissionPromptHash(prompt.context) : undefined;
 			if (options !== undefined || Date.now() >= deadline || this.findAuthoritativePaneInstance(msg.id, msg.token) !== instance) {
 				break;
 			}
@@ -1639,7 +1656,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			ch: Channels.Agent, ws: undefined, seq: 0, mobileId,
 			payload: VSBuffer.fromString(JSON.stringify({
 				t: 'approval-options', id: msg.id, token: msg.token, requestId: msg.requestId, interactionId: msg.interactionId,
-				...(options !== undefined ? { options } : { error: 'unreadable' }),
+				...(options !== undefined && promptHash !== undefined ? { options, promptHash } : { error: 'unreadable' }),
 			})),
 		});
 	}

@@ -242,24 +242,61 @@ suite('ParadisMobileAgentChat', () => {
 			inbound({ t: 'approval-options', ...base, requestId: 'options-1' });
 			inbound({ t: 'approval-options', ...base, interactionId: 'approval:other', requestId: 'options-2' });
 			inbound({ t: 'action/answerApproval', ...base, requestId: 'answer-1', choice: 'opt:2' });
-			inbound({ t: 'action/answerApproval', ...base, requestId: 'answer-2', choice: 'opt:2', optionLabel: 'Yes, and don\'t ask again for npm test commands' });
+			inbound({ t: 'action/answerApproval', ...base, requestId: 'answer-2', choice: 'opt:2', optionLabel: 'Yes, and don\'t ask again for npm test commands', promptHash: 'dddddddddddddddddddddddddddddddddddddddd' });
 			// 断りの返事は所有ウィンドウの確認を待ってから送られる
 			await waitFor(() => sent.length >= 2, 'the rejections were not delivered');
 
 			assert.deepStrictEqual({
 				suggestions: interaction.suggestions,
-				actions: actions.map(action => ({ t: action.t, requestId: action.requestId, agent: action.agent, parts: action.parts, expectOption: action.expectOption })),
+				actions: actions.map(action => ({ t: action.t, requestId: action.requestId, agent: action.agent, parts: action.parts, expectOption: action.expectOption, expectPromptHash: action.expectPromptHash })),
 				sent: sent.map(message => ({ t: message.t, requestId: message.requestId, code: message.code, error: message.error })),
 			}, {
 				suggestions: ['Bash(npm test:*)'],
 				actions: [
-					{ t: 'action/approvalOptions', requestId: 'options-1', agent: 'claude', parts: undefined, expectOption: undefined },
-					{ t: 'action/interaction', requestId: 'answer-2', agent: 'claude', parts: ['2'], expectOption: { n: 2, label: 'Yes, and don\'t ask again for npm test commands' } },
+					{ t: 'action/approvalOptions', requestId: 'options-1', agent: 'claude', parts: undefined, expectOption: undefined, expectPromptHash: undefined },
+					{ t: 'action/interaction', requestId: 'answer-2', agent: 'claude', parts: ['2'], expectOption: { n: 2, label: 'Yes, and don\'t ask again for npm test commands' }, expectPromptHash: 'dddddddddddddddddddddddddddddddddddddddd' },
 				],
 				sent: [
 					{ t: 'approval-options', requestId: 'options-2', code: undefined, error: 'stale-interaction' },
 					{ t: 'action-result', requestId: 'answer-1', code: 'invalid-answer', error: undefined },
 				],
+			});
+		} finally {
+			chat.dispose();
+		}
+	});
+
+	test('hands a queued send to the window once and answers its re-send as already accepted (W2-29 M4)', async () => {
+		const token = 'pane-send-dedupe';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'send-dedupe.jsonl');
+		const sent: Record<string, unknown>[] = [];
+		const actions: Record<string, unknown>[] = [];
+		const chat = new ParadisMobileAgentChat(
+			(_mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))),
+			(_mobileId, _windowId, _windowSession, _generation, payload) => actions.push(JSON.parse(new TextDecoder().decode(payload))),
+			() => { }, new NullLogService(),
+		);
+		const access = chat as unknown as { tailers: Map<string, { readonly epoch: string }> };
+		const inbound = (message: Record<string, unknown>) => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify(message)));
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'UserPromptSubmit', sessionId: 'session-send-dedupe', transcriptPath, cwd: '/workspace', at: Date.now() });
+			await waitFor(() => access.tailers.has(token), 'the pane session was not established');
+			inbound({ t: 'attach', id: 1, token });
+			await waitFor(() => sent.some(message => message.t === 'snapshot'), 'the attach did not answer with a snapshot');
+			const epoch = access.tailers.get(token)!.epoch;
+			sent.length = 0;
+			inbound({ t: 'action/sendMessage', id: 1, token, epoch, requestId: 'send-1', text: '続きをお願い', sendId: 'send-abc' });
+			assert.strictEqual(chat.claimSendMessageAction('mobile-1', 'send-1', token, epoch, 1, 'window-session'), 'claimed');
+			inbound({ t: 'action/sendMessage', id: 1, token, epoch, requestId: 'send-2', text: '続きをお願い', sendId: 'send-abc' });
+			await waitFor(() => sent.length >= 1, 'the re-send was not answered');
+			assert.deepStrictEqual({
+				dispatched: actions.filter(action => action.t === 'action/sendMessage').map(action => action.requestId),
+				reply: sent.map(message => ({ requestId: message.requestId, status: message.status, code: message.code })),
+			}, {
+				dispatched: ['send-1'],
+				reply: [{ requestId: 'send-2', status: 'accepted', code: 'duplicate' }],
 			});
 		} finally {
 			chat.dispose();

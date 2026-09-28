@@ -23,6 +23,14 @@ export interface ApprovalScreenOption {
 export interface ApprovalOptionChoices {
 	readonly choices: readonly AgentApprovalChoice[];
 	readonly labels: ReadonlyMap<string, string>;
+	/** PC が選択肢を読んだときの、確認の見出しまでの指紋。回答に添えて返す（PC が送る直前に照らし合わせる）。 */
+	readonly promptHash?: string;
+}
+
+/** `approval-options` の返事。 */
+export interface ApprovalOptionsReply {
+	readonly options: readonly ApprovalScreenOption[];
+	readonly promptHash?: string;
 }
 
 /**
@@ -38,7 +46,7 @@ export function shouldRequestApprovalOptions(interaction: AgentInteraction | und
 }
 
 /** PC の `approval-options` の返事から選択肢を取り出す。2 つ以上の正しい選択肢が無ければ undefined（読めなかった）。 */
-export function parseApprovalOptionsReply(reply: Record<string, unknown>): readonly ApprovalScreenOption[] | undefined {
+export function parseApprovalOptionsReply(reply: Record<string, unknown>): ApprovalOptionsReply | undefined {
 	const raw = reply['options'];
 	if (!Array.isArray(raw) || raw.length < 2 || raw.length > 9) {
 		return undefined;
@@ -54,7 +62,8 @@ export function parseApprovalOptionsReply(reply: Record<string, unknown>): reado
 		}
 		options.push({ n, label });
 	}
-	return options;
+	const promptHash = typeof reply['promptHash'] === 'string' && /^[0-9a-f]{40}$/.test(reply['promptHash']) ? reply['promptHash'] : undefined;
+	return { options, ...(promptHash !== undefined ? { promptHash } : {}) };
 }
 
 /** 画面の文言の末尾の `(esc)` など、キーの近道の表記。 */
@@ -69,7 +78,7 @@ const TRAILING_SHORTCUT = /\s*\((?:esc|[a-z]|shift\+tab)\)\s*$/i;
  * - それ以外は `opt:<n>`。`No` で始まるものは拒否の見た目にする
  * - ボタンの文字からはキーの近道の表記を外す（押すのはボタンなので）
  */
-export function approvalChoicesFromOptions(options: readonly ApprovalScreenOption[]): ApprovalOptionChoices {
+export function approvalChoicesFromOptions(options: readonly ApprovalScreenOption[], promptHash?: string): ApprovalOptionChoices {
 	const choices: AgentApprovalChoice[] = [];
 	const labels = new Map<string, string>();
 	for (const option of options) {
@@ -85,7 +94,7 @@ export function approvalChoicesFromOptions(options: readonly ApprovalScreenOptio
 		choices.push({ id, label: display, tone });
 		labels.set(id, option.label);
 	}
-	return { choices, labels };
+	return { choices, labels, ...(promptHash !== undefined ? { promptHash } : {}) };
 }
 
 /** hook の「今後は確認しない」の候補を、カードの補足の 1 行にする。 */

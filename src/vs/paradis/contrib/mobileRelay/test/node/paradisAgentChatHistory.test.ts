@@ -135,7 +135,7 @@ suite('paradisAgentChatHistory (W2-30)', () => {
 	});
 
 	/** 会話を開いて（snapshot）、古い方へ最後まで読み、集めた発言と要求の回数を返す。 */
-	async function readWholeConversation(lines: readonly string[]): Promise<{ readonly texts: readonly string[]; readonly revs: readonly number[]; readonly truncated: boolean | undefined; readonly ring: number; readonly requests: number }> {
+	async function readWholeConversation(lines: readonly string[], holdFrom?: number): Promise<{ readonly texts: readonly string[]; readonly revs: readonly number[]; readonly truncated: boolean | undefined; readonly ring: number; readonly requests: number }> {
 		const root = await realpath(await mkdtemp(join(tmpdir(), 'paradis-history-chat-')));
 		const previous = process.env['CLAUDE_CONFIG_DIR'];
 		process.env['CLAUDE_CONFIG_DIR'] = root;
@@ -169,7 +169,8 @@ suite('paradisAgentChatHistory (W2-30)', () => {
 			fireParadisAgentHookEvent({ token, event: 'UserPromptSubmit', sessionId: 'session-history', transcriptPath, cwd: '/workspace', at: Date.now() });
 			inbound({ t: 'attach', id: 1, token });
 			const snapshot = await waitForMessage(message => message.t === 'snapshot') as { epoch: string; messages: { rev: number; text: string }[]; truncated?: boolean };
-			const collected = [...snapshot.messages];
+			// holdFrom: モバイルが差分で集めてリングより多く持っている（いちばん古い rev がもうリングに無い）場合を真似る
+			const collected = holdFrom !== undefined ? lines.slice(holdFrom).map((_, index) => ({ rev: holdFrom + index, text: `held${holdFrom + index}` })) : [...snapshot.messages];
 			let cursor: string | undefined;
 			let hasMore = true;
 			let requests = 0;
@@ -221,6 +222,16 @@ suite('paradisAgentChatHistory (W2-30)', () => {
 			count: result.texts.length,
 			inOrder: result.texts.every((text, index) => text.startsWith(`m${index} `)),
 		}, { count: 900, inOrder: true });
+	});
+
+	test('reads the transcript before the oldest message the phone holds even when the ring has already pushed it out (H3)', async () => {
+		// 450 件。リングは rev 50〜449。モバイルは rev 20 から持っている（差分で 500 件まで持つため）
+		const result = await readWholeConversation(Array.from({ length: 450 }, (_, index) => userLine(`m${index}`)), 20);
+		assert.deepStrictEqual({
+			older: result.texts.slice(0, 20),
+			revs: result.revs.slice(0, 2),
+			held: result.texts[20],
+		}, { older: Array.from({ length: 20 }, (_, index) => `m${index}`), revs: [-20, -19], held: 'held20' });
 	});
 
 	test('keeps the half of a line that the ring pushed out when it split a two-message line', async () => {

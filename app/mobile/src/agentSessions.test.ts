@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-	AGENT_RESUME_CAPABILITY, AGENT_SEND_QUEUE_LIMIT, AGENT_SEND_QUEUE_TTL_MS, addAgentSendQueueItem, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentPastSessionPage,
+	AGENT_RESUME_CAPABILITY, AGENT_SEND_AUTO_WINDOW_MS, AGENT_SEND_QUEUE_LIMIT, agentSendConversationMatches, AGENT_SEND_QUEUE_TTL_MS, addAgentSendQueueItem, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentPastSessionPage,
 	parseAgentPastSessionPreview, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue, type AgentSendQueueItem,
 } from './agentSessions.js';
 import { AGENT_HISTORY_CAPABILITY } from './agentHistory.js';
@@ -52,19 +52,34 @@ describe('agentSessions (W2-29)', () => {
 			item('other-pc', { pcId: 'pc-2' }),
 			item('done', { status: 'failed' }),
 		];
-		expect(planAgentSendQueue(items, 'pc-1', [{ terminalKey: 'term-1', agent: true }]).map(plan => [plan.kind, plan.item.id])).toEqual([
+		expect(planAgentSendQueue(items, 'pc-1', [{ terminalKey: 'term-1', agent: true }], 10).map(plan => [plan.kind, plan.item.id])).toEqual([
 			['confirm', 'past'],
 			['confirm', 'closed'],
 			['send', 'open'],
 			['fail', 'closed-no-key'],
 		]);
 		// エージェントでなくなったターミナル（シェルに戻った）へは送らない
-		expect(planAgentSendQueue([item('open')], 'pc-1', [{ terminalKey: 'term-1', agent: false }]).map(plan => plan.kind)).toEqual(['confirm']);
+		expect(planAgentSendQueue([item('open')], 'pc-1', [{ terminalKey: 'term-1', agent: false }], 10).map(plan => plan.kind)).toEqual(['confirm']);
+		// 預けてから 15 分を過ぎたものは、開いているターミナル宛てでも確かめる（H2）
+		expect(planAgentSendQueue([item('old', { createdAt: 0 })], 'pc-1', [{ terminalKey: 'term-1', agent: true }], AGENT_SEND_AUTO_WINDOW_MS + 1)
+			.map(plan => plan.kind === 'confirm' ? [plan.kind, plan.reason] : [plan.kind])).toEqual([['confirm', 'stale']]);
+	});
+
+	it('only sends automatically when the terminal still runs the same conversation (H2)', () => {
+		expect({
+			same: agentSendConversationMatches(item('a'), KEY),
+			other: agentSendConversationMatches(item('a'), 'b'.repeat(40)),
+			unknownNow: agentSendConversationMatches(item('a'), undefined),
+			unknownThen: agentSendConversationMatches(item('a', { target: { kind: 'live', terminalKey: 'term-1' } }), KEY),
+		}).toEqual({ same: true, other: false, unknownNow: false, unknownThen: false });
 	});
 
 	it('expires items after 24 hours and keeps at most the limit per PC', () => {
 		const items = [item('old', { createdAt: 0 }), item('new', { createdAt: AGENT_SEND_QUEUE_TTL_MS })];
-		expect(expireAgentSendQueue(items, AGENT_SEND_QUEUE_TTL_MS + 1).map(entry => entry.status)).toEqual(['expired', 'waiting']);
+		const expired = expireAgentSendQueue(items, AGENT_SEND_QUEUE_TTL_MS + 1);
+		expect(expired.map(entry => [entry.status, entry.text])).toEqual([['expired', ''], ['waiting', 'text new']]);
+		// 期限切れの印も、さらに 1 日たったら消す（L5）
+		expect(expireAgentSendQueue(expired, 3 * AGENT_SEND_QUEUE_TTL_MS).map(entry => entry.id)).toEqual(['new']);
 		expect(expireAgentSendQueue(items, 10)).toBe(items);
 		let queue: readonly AgentSendQueueItem[] = [item('other', { pcId: 'pc-2' })];
 		for (let index = 0; index <= AGENT_SEND_QUEUE_LIMIT; index++) {
@@ -74,8 +89,14 @@ describe('agentSessions (W2-29)', () => {
 	});
 
 	it('round-trips the saved form per PC and turns an interrupted send back into waiting', () => {
-		const saved = serializeAgentSendQueue('pc-1', [item('a', { status: 'sending' }), item('b', { pcId: 'pc-2' }), item('c', { target: { kind: 'resume', ws: 'repo-1', key: KEY }, status: 'needs-confirm' })]);
-		expect(deserializeAgentSendQueue('pc-1', saved).map(entry => [entry.id, entry.status])).toEqual([['a', 'waiting'], ['c', 'needs-confirm']]);
+		const saved = serializeAgentSendQueue('pc-1', [
+			item('a', { status: 'sending' }), item('b', { pcId: 'pc-2' }), item('c', { target: { kind: 'resume', ws: 'repo-1', key: KEY }, status: 'needs-confirm', reason: 'closed' }),
+			item('d', { target: { kind: 'resume', ws: 'repo-1', key: KEY }, status: 'sending' }), item('e', { status: 'expired', text: '' }),
+		]);
+		// 送っている途中で止まったもの（M4）: ターミナル宛ては同じ id で送り直す待ちへ、再開は確かめ直しへ
+		expect(deserializeAgentSendQueue('pc-1', saved).map(entry => [entry.id, entry.status, entry.reason])).toEqual([
+			['a', 'waiting', undefined], ['c', 'needs-confirm', 'closed'], ['d', 'needs-confirm', 'closed'], ['e', 'expired', undefined],
+		]);
 		expect(deserializeAgentSendQueue('pc-2', saved)).toEqual([]);
 		expect(deserializeAgentSendQueue('pc-1', 'garbage')).toEqual([]);
 	});

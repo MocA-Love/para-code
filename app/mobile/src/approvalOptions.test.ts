@@ -17,12 +17,13 @@ describe('approvalOptions (W2-21)', () => {
 
 	it('accepts only a complete 1..n list from the reply', () => {
 		expect({
-			ok: parseApprovalOptionsReply({ options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }] }),
+			ok: parseApprovalOptionsReply({ options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }], promptHash: 'cccccccccccccccccccccccccccccccccccccccc' }),
+			badHash: parseApprovalOptionsReply({ options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }], promptHash: 'x' }),
 			error: parseApprovalOptionsReply({ error: 'unreadable' }),
 			single: parseApprovalOptionsReply({ options: [{ n: 1, label: 'Yes' }] }),
 			gap: parseApprovalOptionsReply({ options: [{ n: 1, label: 'Yes' }, { n: 3, label: 'No' }] }),
 			emptyLabel: parseApprovalOptionsReply({ options: [{ n: 1, label: 'Yes' }, { n: 2, label: '' }] }),
-		}).toEqual({ ok: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }], error: undefined, single: undefined, gap: undefined, emptyLabel: undefined });
+		}).toEqual({ ok: { options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }], promptHash: 'cccccccccccccccccccccccccccccccccccccccc' }, badHash: { options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }] }, error: undefined, single: undefined, gap: undefined, emptyLabel: undefined });
 	});
 
 	it('turns the options into buttons: 1 is the primary, (esc) stays the measured deny, others send opt:<n> with the label', () => {

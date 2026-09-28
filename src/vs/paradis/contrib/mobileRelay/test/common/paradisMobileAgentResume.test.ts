@@ -11,7 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import type { IParadisResumeSession } from '../../../sessionResume/common/paradisSessionResume.js';
 import { PARADIS_AGENT_APPROVAL_OPTIONS_CAPABILITY } from '../../common/paradisAgentApprovalOptions.js';
 import { ParadisMobileCapability, PARADIS_MOBILE_PC_CAPABILITIES } from '../../common/paradisMobileCompat.js';
-import { PARADIS_AGENT_RESUME_CAPABILITY, PARADIS_AGENT_SESSION_KEY_PATTERN, paradisAgentSessionKey, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, paradisRecordResumeRequest } from '../../common/paradisMobileAgentResume.js';
+import { PARADIS_AGENT_RESUME_CAPABILITY, PARADIS_AGENT_SESSION_KEY_PATTERN, paradisAgentSessionKey, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, paradisRecordResumeRequest, paradisResumedSessionOfCommand } from '../../common/paradisMobileAgentResume.js';
 
 suite('paradisMobileAgentResume (W2-29)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -66,6 +66,28 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 			branch: paradisMobileAgentSessionMatches(view, 'FIX/LOGIN'),
 			miss: paradisMobileAgentSessionMatches(view, 'ログイン 決済'),
 		}, { none: true, title: true, both: true, branch: true, miss: false });
+	});
+
+	test('recognizes a terminal that is resuming a session from its running command line (M6)', () => {
+		assert.deepStrictEqual({
+			claude: paradisResumedSessionOfCommand('claude --resume 0f7c1d2e-session'),
+			claudeShort: paradisResumedSessionOfCommand(`claude -r '0f7c1d2e-session' --model opus`),
+			claudeEquals: paradisResumedSessionOfCommand('claude --resume=0f7c1d2e-session'),
+			codex: paradisResumedSessionOfCommand('codex resume 019a-thread'),
+			fork: paradisResumedSessionOfCommand('claude --resume 0f7c1d2e-session --fork-session'),
+			picker: paradisResumedSessionOfCommand('claude --resume --model opus'),
+			fresh: paradisResumedSessionOfCommand('claude'),
+			other: paradisResumedSessionOfCommand('npm test'),
+		}, {
+			claude: { agent: 'claude', sessionId: '0f7c1d2e-session' },
+			claudeShort: { agent: 'claude', sessionId: '0f7c1d2e-session' },
+			claudeEquals: { agent: 'claude', sessionId: '0f7c1d2e-session' },
+			codex: { agent: 'codex', sessionId: '019a-thread' },
+			fork: undefined,
+			picker: undefined,
+			fresh: undefined,
+			other: undefined,
+		});
 	});
 
 	test('keeps the resume ledger to the latest 500 requests within three days and replaces the same id', () => {
