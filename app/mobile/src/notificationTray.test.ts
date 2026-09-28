@@ -82,28 +82,33 @@ describe('selectSettledByState', () => {
 
 describe('notifyCollapseKey', () => {
 	it('is a stable opaque key per PC and agent, falling back to the terminal', () => {
-		const byAgent = notifyCollapseKey(PC, 'tok-1', 'k1');
+		const byAgent = notifyCollapseKey(PC, 'agent-done', 'tok-1', 'k1');
 		expect({
 			byAgent,
-			sameAgentOtherTerminal: notifyCollapseKey(PC, 'tok-1', 'k2') === byAgent,
-			otherPc: notifyCollapseKey('pc-b', 'tok-1', 'k1') === byAgent,
-			byTerminal: notifyCollapseKey(PC, undefined, 'k1'),
-			nothing: notifyCollapseKey(PC, undefined, undefined),
+			sameAgentOtherTerminal: notifyCollapseKey(PC, 'agent-done', 'tok-1', 'k2') === byAgent,
+			otherPc: notifyCollapseKey('pc-b', 'agent-done', 'tok-1', 'k1') === byAgent,
+			byTerminal: notifyCollapseKey(PC, 'agent-done', undefined, 'k1'),
+			nothing: notifyCollapseKey(PC, 'agent-done', undefined, undefined),
 			leaksToken: byAgent?.includes('tok-1'),
 		}).toEqual({
 			// NSE（NotificationService.swift の collapseKey）と同じ値になること。変えるなら両方直す
 			byAgent: '34b89a13c42e76d9b1ae9ae72ea29a79',
 			sameAgentOtherTerminal: true,
 			otherPc: false,
-			byTerminal: notifyCollapseKey(PC, undefined, 'k1'),
+			byTerminal: notifyCollapseKey(PC, 'agent-done', undefined, 'k1'),
 			nothing: undefined,
 			leaksToken: false,
 		});
 		expect(byAgent).toMatch(/^[0-9a-f]{32}$/);
 	});
 
+	it('never replaces permission / question notifications', () => {
+		expect([notifyCollapseKey(PC, 'agent-question', 'tok-1', 'k1'), notifyCollapseKey(PC, 'agent-error', 'tok-1', 'k1') === notifyCollapseKey(PC, 'agent-done', 'tok-1', 'k1')])
+			.toEqual([undefined, true]);
+	});
+
 	it('finds the earlier notifications for the same agent', () => {
-		const key = notifyCollapseKey(PC, 'tok-1', undefined)!;
+		const key = notifyCollapseKey(PC, 'agent-done', 'tok-1', undefined)!;
 		expect(selectSameCollapse([
 			tray('old-push', { collapse: key }),
 			tray('other', { collapse: 'x' }),

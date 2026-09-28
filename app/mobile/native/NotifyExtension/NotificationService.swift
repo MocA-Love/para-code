@@ -105,7 +105,7 @@ final class NotificationService: UNNotificationServiceExtension {
 		// 同じエージェントの通知は1件に置き換え、同じPC・スペースの通知はまとめる（W2-08）。
 		// 鍵は端末の中で作るだけで、リレーやAPNsへは出ない。
 		let keyPcId = (userInfo["pcId"] as? String) ?? ""
-		let collapse = Self.collapseKey(pcId: keyPcId, agentToken: json["agentToken"] as? String, terminalKey: json["terminalKey"] as? String)
+		let collapse = Self.collapseKey(pcId: keyPcId, kind: json["kind"] as? String, agentToken: json["agentToken"] as? String, terminalKey: json["terminalKey"] as? String)
 		if let collapse = collapse {
 			userInfo["collapse"] = collapse
 		}
@@ -155,7 +155,12 @@ final class NotificationService: UNNotificationServiceExtension {
 	/// 同じエージェントの通知を置き換える鍵。**`app/mobile/src/notificationTray.ts` の
 	/// `notifyCollapseKey` と同じ規則**（SHA-256 の16進先頭32桁）。変えるときは両方直すこと。
 	/// 同じ入力で両者が一致することは notificationTray.test.ts の値で固定している。
-	private static func collapseKey(pcId: String, agentToken: String?, terminalKey: String?) -> String? {
+	/// 許可・質問（agent-question）は置き換えない。未回答の許可が次の通知の下に隠れると気づけないため
+	/// （PC も許可・質問のプッシュには apns-collapse-id を付けない）。
+	private static func collapseKey(pcId: String, kind: String?, agentToken: String?, terminalKey: String?) -> String? {
+		if kind == "agent-question" {
+			return nil
+		}
 		let subject: String
 		if let token = agentToken, !token.isEmpty {
 			subject = "a:\(token)"

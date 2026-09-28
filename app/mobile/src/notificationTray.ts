@@ -136,7 +136,12 @@ export function selectSettledByState(presented: readonly TrayNotification[], sna
  * 変えるときは両方直すこと。** 端末の中だけで使い、リレーやAPNsへは出さない（エージェント
  * トークンはPCのMCP接続に使う値なので、そのままでもハッシュでも外へ出さない）。
  */
-export function notifyCollapseKey(pcId: string, agentToken: string | undefined, terminalKey: string | undefined): string | undefined {
+export function notifyCollapseKey(pcId: string, kind: string | undefined, agentToken: string | undefined, terminalKey: string | undefined): string | undefined {
+	// 許可・質問の通知は置き換えない（前の通知を消さず、あとの通知に消されもしない）。未回答の許可が
+	// 次の通知の下に隠れると気づけない。PC も許可・質問のプッシュには apns-collapse-id を付けない。
+	if (kind === 'agent-question') {
+		return undefined;
+	}
 	const subject = agentToken !== undefined && agentToken.length > 0 ? `a:${agentToken}`
 		: terminalKey !== undefined && terminalKey.length > 0 ? `t:${terminalKey}` : undefined;
 	if (subject === undefined) {

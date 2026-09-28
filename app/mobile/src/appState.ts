@@ -811,7 +811,7 @@ function handleNotify(runtime: PcRuntime, payload: NotifyPayload): void {
 		pcId: runtime.pc.id,
 		notifyId: payload.id,
 		kind: payload.kind,
-	}, notifyCollapseKey(runtime.pc.id, payload.agentToken, payload.terminalKey))
+	}, notifyCollapseKey(runtime.pc.id, payload.kind, payload.agentToken, payload.terminalKey))
 		.catch(err => console.warn('[appState] failed to present a notification', err));
 }
 
