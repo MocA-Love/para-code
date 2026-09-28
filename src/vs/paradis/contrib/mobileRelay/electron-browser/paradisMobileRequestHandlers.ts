@@ -70,6 +70,8 @@ export interface IParadisMobileRequestContext {
 	 * PC から送る形を版で変えるときに使う（今は版 3 しか無いので常に 3）。
 	 */
 	mobileWireVersion(): Promise<number | undefined>;
+	/** 手元の状態（ターミナルの一覧など）をすぐモバイルへ送り直す（ターミナルを作った直後など）。 */
+	pushState(): void;
 }
 
 export interface IParadisMobileRequestHandler {
@@ -90,6 +92,8 @@ export interface IParadisMobileRequestHost {
 	getMobileCapabilities(mobileId: string): Promise<readonly string[] | undefined>;
 	getMobileWireVersion(mobileId: string): Promise<number | undefined>;
 	send(channel: ParadisMobileRequestChannel, mobileId: string | undefined, payload: Uint8Array): void;
+	/** 状態をすぐ送り直す（無ければ何もしない。変化の知らせでいずれ送られる）。 */
+	pushState?(): void;
 }
 
 const handlers = new Map<string, IParadisMobileRequestHandler>();
@@ -160,6 +164,7 @@ export function paradisDispatchMobileRequest(channel: ParadisMobileRequestChanne
 		resolvePath: relativePath => request.ws !== undefined ? host.resolvePath(request.ws, relativePath) : Promise.resolve(undefined),
 		hasMobileCapability: async name => mobileId !== undefined && paradisHasMobileCapability(await host.getMobileCapabilities(mobileId), name),
 		mobileWireVersion: async () => mobileId !== undefined ? host.getMobileWireVersion(mobileId) : undefined,
+		pushState: () => host.pushState?.(),
 	};
 	const fail = (error: unknown) => context.reply({ error: error instanceof Error ? error.message : String(error) });
 	try {

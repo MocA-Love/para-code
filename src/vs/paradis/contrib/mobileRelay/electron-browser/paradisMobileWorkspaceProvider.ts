@@ -73,7 +73,7 @@ import { type IParadisMobileRequestHost, paradisDispatchMobileRequest } from './
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
-import { paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts } from '../common/paradisMobileDiffReview.js';
+import { paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts, paradisWithUntrackedFileStats } from '../common/paradisMobileDiffReview.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
 import { paradisSendAgentInteractionKeys, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
@@ -1418,6 +1418,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * 既存の分岐で処理しなかった要求を、別ファイルで登録した新しい種類（W2-17 の登録表）へ回す。
 	 * 既存の種類は登録できない（PARADIS_MOBILE_BUILTIN_REQUEST_KINDS）ので、既存の処理を置き換えることはない。
 	 */
+	/** スペースの中のファイルの大きさと最終更新時刻（外へ出るリンク・フォルダ・読めないものは undefined）。 */
+	private async statMobileWorkspaceFile(root: URI, relativePath: string): Promise<{ size: number; mtime: number } | undefined> {
+		const uri = await paradisResolveMobileWorkspacePath(this.fileService, root, relativePath);
+		if (uri === undefined) {
+			return undefined;
+		}
+		const stat = await this.fileService.stat(uri);
+		return stat.isDirectory ? undefined : { size: stat.size, mtime: stat.mtime };
+	}
+
 	private dispatchRegisteredRequest(channel: 'scm' | 'fs', message: unknown, mobileId: string | undefined): boolean {
 		const services = this.requestHandlerServices;
 		if (services === undefined) {
@@ -1434,6 +1444,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				return root !== undefined ? paradisResolveMobileWorkspacePath(this.fileService, root, relativePath) : undefined;
 			},
 			send: (ch, mobileId, payload) => this.sendFrame({ ch: ch === 'scm' ? Channels.Scm : Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(payload), mobileId: mobileId || undefined }),
+			pushState: () => this.pushState(),
 		});
 	}
 
@@ -1811,11 +1822,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					this.runGit(repoUri, ['diff', '--numstat', '-z']).catch(() => undefined),
 					this.runGit(repoUri, ['diff', '--cached', '--numstat', '-z']).catch(() => undefined),
 				]);
-				const files = paradisWithMobileLineCounts(
+				// 未追跡のファイルは行数を数えられないので、大きさと時刻を足す（書き換えを見分けるため）
+				const files = await paradisWithUntrackedFileStats(paradisWithMobileLineCounts(
 					paradisParseMobilePorcelainStatus(status.stdout),
 					unstagedCounts?.code === 0 ? unstagedCounts.stdout : undefined,
 					stagedCounts?.code === 0 ? stagedCounts.stdout : undefined,
-				);
+				), path => this.statMobileWorkspaceFile(repoUri, path));
 				reply({ t: 'status', branch: branch.stdout.trim(), files });
 			} else if (msg.t === 'diff') {
 				const args = msg.staged ? ['diff', '--cached'] : ['diff'];

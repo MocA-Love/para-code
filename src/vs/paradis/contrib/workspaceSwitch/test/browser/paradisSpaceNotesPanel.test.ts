@@ -178,6 +178,29 @@ suite('ParadisSpaceNotesPanel editing while the note changes elsewhere', () => {
 		assert.deepStrictEqual({ kept, prompts: notification.prompts.length, afterOverwrite: notes.read('worktree:b') }, { kept: '- [x] one', prompts: 1, afterOverwrite: '- [ ] one, but longer' });
 	});
 
+	test('asks again instead of overwriting when the note changed after the prompt was shown', () => {
+		const notification = new TestNotificationService();
+		const { notes, panel, container } = createPanel(store, undefined, notification as Partial<INotificationService> as INotificationService);
+		notes.write('worktree:b', '- [ ] one');
+		panel.setSpace('worktree:b', 'b', undefined);
+		const editor = startEditing(container);
+
+		notes.write('worktree:b', '- [x] one');
+		editor.value = '- [ ] one, but longer';
+		finishEditing(editor);
+		// 知らせを見ている間に、さらにスマホが書き換える
+		notes.write('worktree:b', '- [x] one\n- [ ] from phone');
+		notification.choose(0);
+		const afterFirst = notes.read('worktree:b');
+		notification.choose(0);
+
+		assert.deepStrictEqual({ afterFirst, prompts: notification.prompts.length, afterSecond: notes.read('worktree:b') }, {
+			afterFirst: '- [x] one\n- [ ] from phone',
+			prompts: 2,
+			afterSecond: '- [ ] one, but longer',
+		});
+	});
+
 	test('writes directly when nothing else changed the note', () => {
 		const notification = new TestNotificationService();
 		const { notes, panel, container } = createPanel(store, undefined, notification as Partial<INotificationService> as INotificationService);

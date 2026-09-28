@@ -16,6 +16,7 @@ import {
 	paradisParseMobileReviewStore,
 	paradisPruneMobileReviewSpace,
 	paradisSerializeMobileReviewStore,
+	paradisTrimMobileReviewSpace,
 } from '../../common/paradisMobileReviewStore.js';
 
 suite('ParadisMobileReviewStore', () => {
@@ -48,5 +49,19 @@ suite('ParadisMobileReviewStore', () => {
 			pruned: Object.keys(pruned.marks),
 			unchanged: paradisPruneMobileReviewSpace(pruned, new Set(['f1.ts'])) === pruned,
 		}, { count: PARADIS_MOBILE_REVIEW_MAX_MARKS, dropsOldest: true, pruned: ['f1.ts'], unchanged: true });
+	});
+	test('trims the oldest records of a space before dropping the space', () => {
+		const note = (id: string, updatedAt: number, sentAt?: number) => ({ id, path: 'a.ts', line: 1, lineText: 'x', body: id, createdAt: 1, updatedAt, ...(sentAt !== undefined ? { sentAt } : {}) });
+		const space = {
+			marks: { 'old.ts': { identity: '00aa', reviewedAt: 1 }, 'new.ts': { identity: '00aa', reviewedAt: 9 } },
+			notes: [note('sent', 1, 2), note('open', 5)],
+			updatedAt: 9,
+		};
+		const trimmed = paradisTrimMobileReviewSpace(space);
+		assert.deepStrictEqual({
+			marks: Object.keys(trimmed!.marks),
+			notes: trimmed!.notes.map(item => item.id),
+			last: paradisTrimMobileReviewSpace({ marks: { 'a.ts': { identity: '00aa', reviewedAt: 1 } }, notes: [], updatedAt: 1 }),
+		}, { marks: ['new.ts'], notes: ['open'], last: undefined });
 	});
 });

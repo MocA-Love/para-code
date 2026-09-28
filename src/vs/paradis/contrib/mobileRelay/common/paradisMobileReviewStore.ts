@@ -157,14 +157,46 @@ export function paradisParseMobileReviewStore(raw: string | undefined): Map<stri
 	return store;
 }
 
-/** 上限に収まるよう古いスペースから捨てて JSON にする。 */
+/**
+ * スペースの記録を古いものから半分ほど削る。削る順は、送信済みのメモ（送った時刻の古い順）→ 確認済みの印
+ * （確認した時刻の古い順）→ 送っていないメモ（書き直した時刻の古い順）。残りが無くなるなら undefined。
+ */
+export function paradisTrimMobileReviewSpace(space: IParadisMobileReviewSpace): IParadisMobileReviewSpace | undefined {
+	type Item = { readonly rank: number; readonly time: number; readonly note?: string; readonly mark?: string };
+	const items: Item[] = [
+		...space.notes.map(note => note.sentAt !== undefined ? { rank: 0, time: note.sentAt, note: note.id } : { rank: 2, time: note.updatedAt, note: note.id }),
+		...Object.entries(space.marks).map(([path, mark]) => ({ rank: 1, time: mark.reviewedAt, mark: path })),
+	].sort((a, b) => a.rank - b.rank || a.time - b.time);
+	if (items.length <= 1) {
+		return undefined;
+	}
+	const dropped = items.slice(0, Math.ceil(items.length / 2));
+	const droppedNotes = new Set(dropped.flatMap(item => item.note !== undefined ? [item.note] : []));
+	const droppedMarks = new Set(dropped.flatMap(item => item.mark !== undefined ? [item.mark] : []));
+	return {
+		marks: Object.fromEntries(Object.entries(space.marks).filter(([path]) => !droppedMarks.has(path))),
+		notes: space.notes.filter(note => !droppedNotes.has(note.id)),
+		updatedAt: space.updatedAt,
+	};
+}
+
+/**
+ * 上限に収まるよう JSON にする。スペースの数を超えたら最も長く触っていないスペースから捨てる。大きさを超えたら、
+ * スペースを丸ごと捨てる前に、最も長く触っていないスペースの古い記録から削る（{@link paradisTrimMobileReviewSpace}）。
+ */
 export function paradisSerializeMobileReviewStore(store: ParadisMobileReviewStore): string {
 	const spaces = [...store].filter(([, space]) => Object.keys(space.marks).length > 0 || space.notes.length > 0)
 		.sort(([, a], [, b]) => b.updatedAt - a.updatedAt)
 		.slice(0, PARADIS_MOBILE_REVIEW_MAX_SPACES);
 	let serialized = JSON.stringify(Object.fromEntries(spaces));
 	while (serialized.length > MAX_STORAGE_LENGTH && spaces.length > 0) {
-		spaces.pop();
+		const last = spaces[spaces.length - 1];
+		const trimmed = last !== undefined ? paradisTrimMobileReviewSpace(last[1]) : undefined;
+		if (last !== undefined && trimmed !== undefined) {
+			spaces[spaces.length - 1] = [last[0], trimmed];
+		} else {
+			spaces.pop();
+		}
 		serialized = JSON.stringify(Object.fromEntries(spaces));
 	}
 	return serialized;

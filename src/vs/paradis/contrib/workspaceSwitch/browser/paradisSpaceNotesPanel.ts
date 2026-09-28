@@ -393,7 +393,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 		const merged = changedElsewhere ? paradisMergeSpaceNoteEdits(this.editBase.text, value, currentText) : value;
 		if (merged === undefined && mode === 'finish') {
 			this.editBase = { text: currentText, updatedAt: current?.updatedAt ?? 0 };
-			this.notifyConflict(stateKey, value);
+			this.notifyConflict(stateKey, value, current?.updatedAt ?? 0);
 			return;
 		}
 		this.notesService.write(stateKey, merged ?? value);
@@ -401,17 +401,31 @@ export class ParadisSpaceNotesPanel extends Disposable {
 		this.editBase = { text: written?.text ?? '', updatedAt: written?.updatedAt ?? 0 };
 	}
 
-	/** 同じ行が別の場所でも直されていて合わせられなかったので、編集を保存せずに選んでもらう。 */
-	private notifyConflict(stateKey: string, value: string): void {
+	/**
+	 * 同じ行が別の場所でも直されていて合わせられなかったので、編集を保存せずに選んでもらう。
+	 * `version` は知らせを出したときのメモの版。「上書き」を押すまでの間にさらに書き換えられていたら、
+	 * 見ていない変更を消さないよう、上書きせずにもう一度知らせる。
+	 */
+	private notifyConflict(stateKey: string, value: string, version: number, again = false): void {
 		this.notificationService.prompt(
 			Severity.Warning,
-			// allow-any-unicode-next-line
-			localize('paradis.spaceNotes.conflict', "メモを編集している間に、同じ行がスマホやエージェントからも書き換えられていたため、編集を保存していません。いまの表示は書き換えた後のメモです。"),
+			!again
+				// allow-any-unicode-next-line
+				? localize('paradis.spaceNotes.conflict', "メモを編集している間に、同じ行がスマホやエージェントからも書き換えられていたため、編集を保存していません。いまの表示は書き換えた後のメモです。")
+				// allow-any-unicode-next-line
+				: localize('paradis.spaceNotes.conflictAgain', "上書きする前に、メモがさらに書き換えられました。いまの表示を確かめてから選んでください。"),
 			[
 				{
 					// allow-any-unicode-next-line
 					label: localize('paradis.spaceNotes.conflictOverwrite', "自分の編集で上書き"),
-					run: () => this.notesService.write(stateKey, value),
+					run: () => {
+						const latest = this.notesService.readEntry(stateKey)?.updatedAt ?? 0;
+						if (latest !== version) {
+							this.notifyConflict(stateKey, value, latest, true);
+							return;
+						}
+						this.notesService.write(stateKey, value);
+					},
 				},
 				{
 					// allow-any-unicode-next-line
