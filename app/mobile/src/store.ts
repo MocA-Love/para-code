@@ -1130,6 +1130,11 @@ export interface AgentChatState {
 	 */
 	syncedAt?: number;
 	/**
+	 * 直近の差分で 500 件からはみ出して切った発言（切る前の結合結果の古い側）。さかのぼって読んだ古い発言へ繰り入れるために
+	 * 1 回だけ渡す（受け取る側は、前の状態と同じものなら使わない）。次の差分で置き換わる。
+	 */
+	trimmedByDelta?: { readonly epoch: string; readonly messages: readonly AgentChatMessage[] };
+	/**
 	 * 再取得を要求した直後で、表示中の内容がPC側の現状と一致している保証がない。
 	 * カードは描いたまま操作だけを止めるための印で、PCからの応答（snapshot/delta/none）で落ちる。
 	 */
@@ -4535,13 +4540,16 @@ export class MobileController {
 					? (({ stale: _stale, ...rest }) => rest)(withoutInteraction)
 					: withoutInteraction;
 				const merged = [...existing.messages, ...fresh];
+				// 前の差分で切った分は持ち越さない（1 回だけ渡す）。
+				const { trimmedByDelta: _previousTrim, ...kept } = base;
 				this.state.agentChats.set(terminalKey, {
-					...base,
+					...kept,
 					rev: msg.rev ?? existing.rev,
 					messages: merged.slice(-500),
 					syncedAt: Date.now(),
-					// 500 件で切ったら、前が省略されていることを示す（さかのぼって読む案内を出すため。レビュー M5）。
-					...(merged.length > 500 ? { truncated: true } : {}),
+					// 500 件で切ったら、前が省略されていることを示す（さかのぼって読む案内を出すため。レビュー M5）。切った分は
+					// 古い発言へ繰り入れられるように渡す（差分 1 回に 500 件を超える発言が載ると、差分自身の古い側も切れるため）。
+					...(merged.length > 500 ? { truncated: true, trimmedByDelta: { epoch: existing.epoch, messages: merged.slice(0, merged.length - 500) } } : {}),
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 					...(msg.live !== undefined && isNonNegativeSafeInteger(msg.liveRevision) ? { liveRevision: msg.liveRevision } : {}),
