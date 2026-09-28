@@ -64,6 +64,18 @@ const RAW_EDITOR_OPTIONS: IEditorConstructionOptions = {
  * Rendered/Raw を内蔵する EditorPane 基底。webview と埋め込みコードエディタのライフサイクル管理・
  * ファイル読込・自動再レンダリング・モード切替を担い、Rendered の HTML 生成はサブクラスの {@link renderDocument} に委ねる。
  */
+/**
+ * Whether a failed view-mode switch should go to `onUnexpectedError`. A missing file is the user's
+ * state, not a defect, and the editor shows the read error itself (the same policy as
+ * `renderResource`); a failure `renderResource` already reported would otherwise arrive twice.
+ */
+export function paradisShouldReportViewModeError(err: unknown, alreadyReported: WeakSet<object>): boolean {
+	if (typeof err === 'object' && err !== null && alreadyReported.has(err)) {
+		return false;
+	}
+	return !(err instanceof Error && toFileOperationResult(err) === FileOperationResult.FILE_NOT_FOUND);
+}
+
 export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	private _rootElement: HTMLElement | undefined;
@@ -111,6 +123,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	 * 変更通知（作り直された合図）だけは受けたいので、タブを閉じるのではなく再描画の抑止に使う。
 	 */
 	private _missingResource: URI | undefined;
+	/** Failures `renderResource` has sent to Sentry, so the caller that rethrows them does not send them again. */
+	private readonly _reportedRenderErrors = new WeakSet<object>();
 	private _mode: ParadisFileViewerMode = 'rendered';
 	/**
 	 * いま webview が保持している描画の元になったテキスト。
@@ -351,6 +365,9 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 				// レンダリング経路の失敗(読み込み・変換・setHtml)も白紙表示の原因候補なので
 				// Sentry へ送る(キャンセルは正常系)。呼出元のエラー処理はそのまま生かす。
 				reportParadisDiagnosticError('owned', 'file-viewers', 'render', err, { safe_viewer: this.getId() });
+				if (typeof err === 'object' && err !== null) {
+					this._reportedRenderErrors.add(err);
+				}
 			}
 			throw err;
 		}
@@ -532,15 +549,11 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		this.renderResource(resource, CancellationToken.None).catch(() => { /* reported by renderResource when needed */ });
 	}
 
-	/**
-	 * 表示モード切替の失敗を扱う。ファイルが消えているのはユーザー側の状態で、エディタが読み取り
-	 * エラーを自分で出すので、不具合としては送らない（renderResource と同じ方針）。
-	 */
+	/** 表示モード切替の失敗を扱う。送るかどうかは {@link paradisShouldReportViewModeError}。 */
 	private _onViewModeError(err: unknown): void {
-		if (err instanceof Error && toFileOperationResult(err) === FileOperationResult.FILE_NOT_FOUND) {
-			return;
+		if (paradisShouldReportViewModeError(err, this._reportedRenderErrors)) {
+			onUnexpectedError(err);
 		}
-		onUnexpectedError(err);
 	}
 
 	private ensureWebview(resource: URI): IOverlayWebview {
