@@ -5,5 +5,10 @@
 	"scripts": {
 		"test": "pnpm -r test",
 		"typecheck": "pnpm -r typecheck"
+	},
+	"pnpm": {
+		"patchedDependencies": {
+			"react-native@0.86.0": "patches/react-native@0.86.0.patch"
+		}
 	}
 }
