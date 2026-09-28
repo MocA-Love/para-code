@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { safeIntl } from '../../../../../base/common/date.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisComputerUseApprovalPrompt, ParadisComputerUseApprovalOutcome, ParadisComputerUseAvailability } from '../../common/paradisComputerUse.js';
@@ -327,7 +328,11 @@ suite('ParadisComputerUseToolProvider', () => {
 		await provider.callTool('pane-a', 'computer_click', { app: 'Notes', elementIndex: 0, includeState: false }, undefined, context);
 		await provider.callTool('pane-a', 'computer_drag', { app: 'Notes', from: { x: 1, y: 1 }, to: { elementIndex: 0 }, includeState: false }, undefined, context);
 		await provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 1, y: 1, includeState: false }, undefined, context);
-		helper.onInput = async () => { throw new ParadisComputerUseHelperError('user_active', 'the user is using the keyboard or mouse; stopped after typing 3 of 10 characters'); };
+		helper.onInput = async () => {
+			const failure = new ParadisComputerUseHelperError('user_active', 'the user is using the keyboard or mouse; stopped after typing 3 of 10 characters');
+			failure.progress = 3;
+			throw failure;
+		};
 		const stopped = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'abcdefghij', includeState: false }, undefined, context);
 		assert.deepStrictEqual({
 			snapshots: helper.inputs.slice(0, 3).map(input => input.params.snapshotId),
@@ -335,7 +340,40 @@ suite('ParadisComputerUseToolProvider', () => {
 		}, {
 			// ペイン B が読み直しても、ペイン A は自分の読んだツリーの id を添える
 			snapshots: [1, 1, undefined],
-			stopped: 'The user is using the keyboard or mouse right now, so Para Code did not send input. Wait a few seconds before trying again, and do not retry in a tight loop. Progress: stopped after typing 3 of 10 characters.',
+			stopped: 'The user is using the keyboard or mouse right now, so Para Code did not send input. Wait a few seconds before trying again, and do not retry in a tight loop. Para Code typed the first 3 of 10 characters before it stopped. They are already in the app: if you continue, send only the remaining 7 characters (from character 4) and do not retype the first part.',
+		});
+	});
+
+	test('types long text in chunks and says exactly how much went in when it stops', async () => {
+		const { helper, ledger, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const context = createContext('pane', []).context;
+		const longText = 'a'.repeat(899) + '👍🏽';
+		const sizes: number[] = [];
+		let failAt = 2;
+		let failure: ParadisComputerUseHelperError = new ParadisComputerUseHelperError('user_active', 'x');
+		failure.progress = 50;
+		helper.onInput = async (_method, params) => {
+			sizes.push(Array.from(safeIntl.Segmenter(undefined, { granularity: 'grapheme' }).value.segment(params.text as string)).length);
+			if (sizes.length === failAt) {
+				throw failure;
+			}
+			return { typed: 1 };
+		};
+		const known = text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: longText, includeState: false }, undefined, context));
+		const knownSizes = sizes.splice(0);
+		failAt = 3;
+		failure = new ParadisComputerUseHelperError('timeout', 'late');
+		const unknown = text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: longText, includeState: false }, undefined, context));
+		failAt = 99;
+		const done = JSON.parse(text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: longText, includeState: false }, undefined, context)));
+		const tooLong = text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'x'.repeat(4_001), includeState: false }, undefined, context));
+		assert.deepStrictEqual({ knownSizes, known: known.split('stopped. ')[1], unknown: unknown.split('loop. ')[1] ?? unknown, typed: done.typed, tooLong }, {
+			knownSizes: [400, 400],
+			known: 'They are already in the app: if you continue, send only the remaining 450 characters (from character 451) and do not retype the first part.',
+			unknown: 'The Computer Use helper did not respond. Retry once; if it keeps failing, ask the user to check Computer Use in Para Code settings. The first 800 of 900 characters were typed for sure, and some of the next 100 may also have been typed. Read the app with computer_get_app_state before continuing, and do not resend the whole text.',
+			typed: 900,
+			tooLong: '"text" is longer than 4000 characters; use computer_paste_text for long text.',
 		});
 	});
 
