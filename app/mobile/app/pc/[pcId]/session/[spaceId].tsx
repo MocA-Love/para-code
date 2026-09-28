@@ -7,6 +7,7 @@ import { ChevronRight, Ellipsis, Folder, GitBranch, NotebookPen, PanelLeftOpen, 
 import { useShallow } from 'zustand/react/shallow';
 import { nextAttentionAgent } from '../../../../src/agentConversationUx.js';
 import { launchAgentInBackground } from '../../../../src/agentLaunch.js';
+import { AGENT_RESUME_CAPABILITY } from '../../../../src/agentSessions.js';
 import { createAgentLatestEntryToken } from '../../../../src/agentNavigation.js';
 import { useAppStore } from '../../../../src/appState.js';
 import { BrowserPanel } from '../../../../src/components/browserPanel.js';
@@ -22,6 +23,7 @@ import { TerminalPane } from '../../../../src/features/session/terminalPane.js';
 import { useSessionView, useSessionViewReady } from '../../../../src/features/session/useSessionView.js';
 import { hapticSelection } from '../../../../src/haptics.js';
 import { useKeyboardCoverage } from '../../../../src/hooks/useKeyboardVisible.js';
+import { usePcCapability } from '../../../../src/hooks/usePcCapability.js';
 import { useIsRegularWidth } from '../../../../src/hooks/useSizeClass.js';
 import { ColumnResizeHandle } from '../../../../src/ipad/columnResizeHandle.js';
 import { useDetailColumnKey, useDetailColumnOpen } from '../../../../src/ipad/detailColumn.js';
@@ -74,6 +76,8 @@ const META_HEIGHT = 16;
  */
 export default function SessionScreen() {
 	const router = useRouter();
+	// 終わった会話を開き直せる PC か（W2-29）。
+	const historySupported = usePcCapability(AGENT_RESUME_CAPABILITY);
 	const route = useSessionRoute();
 	const { pcId, spaceId, pc, space, terminals, tab, latest } = route;
 	const focused = useIsFocused();
@@ -302,7 +306,10 @@ export default function SessionScreen() {
 			case 'loading':
 				return <View style={styles.center}><ActivityIndicator color={colors.textDim} /></View>;
 			case 'missing':
-				return <EmptyState title="このタブは閉じられました" body="PC 側で閉じられたか、終了したターミナルです。" action={{ label: 'ほかのタブを開く', onPress: () => openTab(undefined) }} />;
+				return historySupported && pcId !== undefined && spaceId !== undefined
+					// 閉じたエージェントの会話は「過去の会話」から開き直して続きを頼める（W2-29）。
+					? <EmptyState title="このタブは閉じられました" body="PC 側で閉じられたか、終了したターミナルです。エージェントの会話は「過去の会話」から続きを頼めます。" action={{ label: '過去の会話を開く', onPress: () => router.push(routes.agentHistory(pcId, spaceId)) }} />
+					: <EmptyState title="このタブは閉じられました" body="PC 側で閉じられたか、終了したターミナルです。" action={{ label: 'ほかのタブを開く', onPress: () => openTab(undefined) }} />;
 			case 'empty':
 				return <EmptyState icon={SquareTerminal} title="ターミナルがありません" body="＋ からターミナルかエージェントを開けます。" action={{ label: 'ターミナルを開く', onPress: () => { awaitNewTab(); createTerminal(spaceId); } }} />;
 			case 'browser':
@@ -463,6 +470,7 @@ export default function SessionScreen() {
 					noteOpen: space?.note?.open ?? 0,
 					onNote: () => openPanel('note'),
 					...(activityHint !== undefined ? { activityHint, onActivity: openActivity } : {}),
+					...(historySupported && pcId !== undefined && spaceId !== undefined ? { onHistory: () => router.push(routes.agentHistory(pcId, spaceId)) } : {}),
 				})}
 				onClose={() => setMoreOpen(false)}
 			/>

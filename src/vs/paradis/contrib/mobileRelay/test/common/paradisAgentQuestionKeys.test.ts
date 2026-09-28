@@ -138,4 +138,31 @@ suite('paradisAgentQuestionKeySequence', () => {
 			claudeMobile: ['1'],
 		});
 	});
+
+	// W2-21: 画面の番号付きの選択肢から選んだ回答。Claude は数字 1 文字だけ（Enter を付けると次の入力へ漏れる）。
+	// Codex は行末の近道を画面から読む。読めないものは空（呼び出し側が断る）。
+	test('answers a numbered approval option with the digit alone for Claude and the on-screen shortcut for Codex', () => {
+		const codex0155 = [
+			'Would you like to run the following command?',
+			'› 1. Yes, proceed (y)',
+			`  2. Yes, and don't ask again for commands that start with 'touch x' (p)`,
+			'  3. No, and tell Codex what to do differently (esc)',
+			'Press enter to confirm or esc to cancel',
+		].join('\n');
+		assert.deepStrictEqual({
+			claude: paradisAgentApprovalKeySequence('claude', 'opt:2'),
+			codex: paradisAgentApprovalKeySequence('codex', 'opt:2', { screen: codex0155 }),
+			codexDeny: paradisAgentApprovalKeySequence('codex', 'opt:3', { screen: codex0155 }),
+			codexNoScreen: paradisAgentApprovalKeySequence('codex', 'opt:2'),
+			codexMissing: paradisAgentApprovalKeySequence('codex', 'opt:4', { screen: codex0155 }),
+			outOfRange: paradisAgentApprovalKeySequence('claude', 'opt:0' as `opt:${number}`),
+		}, {
+			claude: ['2'],
+			codex: ['p'],
+			codexDeny: ['\u001b'],
+			codexNoScreen: [],
+			codexMissing: [],
+			outOfRange: [],
+		});
+	});
 });

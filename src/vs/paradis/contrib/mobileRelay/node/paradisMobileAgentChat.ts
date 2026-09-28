@@ -50,6 +50,10 @@ import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirro
 import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
+import { IParadisAgentApprovalOption, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
+import { paradisAgentSessionKey } from '../common/paradisMobileAgentResume.js';
+import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/paradisSessionResume.js';
+import { IParadisHistoryCursor, PARADIS_HISTORY_FILE_CAP, PARADIS_HISTORY_PAGE_LIMIT, paradisDecodeHistoryCursor, paradisEncodeHistoryCursor, paradisHistoryCursorHasMore, paradisReadTranscriptHistory } from './paradisAgentChatHistory.js';
 import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
@@ -111,16 +115,23 @@ export function paradisIsLateHookAfterTurnEnd(eventName: string, at: number, tur
 type AgentInbound =
 	| { t: 'attach'; id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }
 	| { t: 'detach'; id: number; token?: string }
-	| { t: 'action/sendMessage'; id: number; token?: string; requestId: string; epoch: string; text: string }
+	| { t: 'action/sendMessage'; id: number; token?: string; requestId: string; epoch: string; text: string; sendId?: string }
 	| { t: 'action/answerQuestion'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; answers: readonly AgentQuestionAnswer[] }
-	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: string }
+	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: string; optionLabel?: string; promptHash?: string }
+	/** 承認の画面に出ている番号付きの選択肢を求める（W2-21、`agent.approval.options.v1`）。答えは所有ウィンドウが直接返す。 */
+	| { t: 'approval-options'; id: number; token?: string; requestId: string; epoch: string; interactionId: string }
 	| { t: 'action/claudeSetting'; id: number; token?: string; requestId: string; epoch: string; setting: 'model' | 'effort'; value: string }
 	| { t: 'model-catalog'; id: number; token?: string; requestId: string }
 	| { t: 'command-catalog'; id: number; token?: string; requestId: string }
 	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string }
 	| { t: 'activity-detail'; id: number; token?: string; requestId: string; epoch: string; activityId: string }
 	| { t: 'tool-full'; id: number; token?: string; requestId: string; epoch: string; rev: number }
-	| { t: 'tool-image'; id: number; token?: string; requestId: string; epoch: string; rev: number; index: number };
+	| { t: 'tool-image'; id: number; token?: string; requestId: string; epoch: string; rev: number; index: number }
+	/**
+	 * 古い発言を求める（W2-30、`agent.history.page.v1`）。`beforeRev` はモバイルが持っているいちばん古い発言の rev。
+	 * `cursor` が無ければ PC のメモリ（リング）から、あれば前回の返事の `cursor` の位置から記録ファイルを後ろへ読む。
+	 */
+	| { t: 'history'; id: number; token?: string; requestId: string; epoch: string; beforeRev: number; cursor?: string; limit?: number };
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
@@ -135,6 +146,17 @@ type AgentOutbound =
 	| { t: 'tool-full'; id: number; requestId: string; rev: number; text?: string; error?: string }
 	| { t: 'tool-image'; id: number; requestId: string; rev: number; index: number; mediaType?: string; data?: string; error?: string }
 	| { t: 'model-control-error'; id: number; requestId: string; code: string; message: string }
+	/**
+	 * 承認の選択肢（W2-21）。ふつうは所有ウィンドウ（画面を読める renderer）が直接返し、ここから送るのは
+	 * 求めが古い・画面を読めない相手のときの `error` だけ。
+	 */
+	| { t: 'approval-options'; id: number; requestId: string; interactionId: string; options?: readonly IParadisAgentApprovalOption[]; promptHash?: string; error?: string }
+	/**
+	 * 古い発言（W2-30）。messages は古い順。記録ファイルから読んだものの rev は負の数（-1 から古い方へ減る）で、全文・画像の
+	 * 取り寄せはできない。`cursor` があれば続きがあり、次の求めにそのまま付ける。`hasMore` が false ならこれより前は無いか、
+	 * `capped`（1 ペインで読める上限に達した）。
+	 */
+	| { t: 'history'; id: number; requestId: string; epoch: string; messages?: readonly IParadisAgentChatMessage[]; cursor?: string; hasMore?: boolean; capped?: true; error?: string }
 	| { t: 'none'; id: number };
 
 type AgentQuestionAnswer =
@@ -163,6 +185,11 @@ const APPEND_READ_CHUNK_BYTES = 1024 * 1024;
 const MAX_TRANSCRIPT_LINE_BYTES = 4 * 1024 * 1024;
 /** 保持するメッセージ数の上限 (超過分は古いものから捨てる)。 */
 const MESSAGE_RING_LIMIT = 400;
+/** 預かりの送信の id を覚えておく数と時間（W2-29 のレビュー M4。アプリが預かるのは 24 時間まで）。 */
+const SEND_ID_LIMIT = 500;
+const SEND_ID_TTL_MS = 24 * 60 * 60 * 1000;
+/** リングから押し出した発言の位置を残す数（W2-30。モバイルが持つ 500 件を十分に上回る）。 */
+const EVICTED_POSITION_LIMIT = 2000;
 /**
  * 通知回数のカウンタを覚えておく上限（計測用。超過分は最後に触ったものから遠い順に捨てる）。
  *
@@ -600,6 +627,7 @@ function isValidSendMessageAction(msg: AgentInboundCandidate): msg is AgentInbou
 	return msg.t === 'action/sendMessage'
 		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
 		&& typeof msg.text === 'string' && msg.text.trim().length > 0 && msg.text.length <= 100_000
+		&& (msg.sendId === undefined || (typeof msg.sendId === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(msg.sendId)))
 		&& isValidControlRequest(msg);
 }
 
@@ -617,6 +645,15 @@ function isValidApprovalAction(msg: AgentInboundCandidate): msg is AgentInboundC
 		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
 		&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
 		&& typeof msg.choice === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(msg.choice)
+		&& (msg.optionLabel === undefined || (typeof msg.optionLabel === 'string' && msg.optionLabel.length > 0 && msg.optionLabel.length <= 500))
+		&& (msg.promptHash === undefined || (typeof msg.promptHash === 'string' && /^[0-9a-f]{40}$/.test(msg.promptHash)))
+		&& isValidControlRequest(msg);
+}
+
+function isValidApprovalOptionsRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'approval-options' }> {
+	return msg.t === 'approval-options'
+		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
 		&& isValidControlRequest(msg);
 }
 
@@ -666,6 +703,15 @@ function isValidToolImageRequest(msg: AgentInboundCandidate): msg is AgentInboun
 		&& isValidControlRequest(msg);
 }
 
+function isValidHistoryRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'history' }> {
+	return msg.t === 'history'
+		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& typeof msg.beforeRev === 'number' && Number.isSafeInteger(msg.beforeRev) && msg.beforeRev >= -PARADIS_HISTORY_FILE_CAP - 1
+		&& (msg.cursor === undefined || (typeof msg.cursor === 'string' && paradisDecodeHistoryCursor(msg.cursor) !== undefined))
+		&& (msg.limit === undefined || (typeof msg.limit === 'number' && Number.isInteger(msg.limit) && msg.limit >= 1 && msg.limit <= PARADIS_HISTORY_PAGE_LIMIT))
+		&& isValidControlRequest(msg);
+}
+
 function parseAgentInbound(value: unknown): AgentInbound | undefined {
 	const msg = rec(value);
 	if (msg === undefined) {
@@ -677,6 +723,7 @@ function parseAgentInbound(value: unknown): AgentInbound | undefined {
 		case 'action/sendMessage': return isValidSendMessageAction(msg) ? msg : undefined;
 		case 'action/answerQuestion': return isValidQuestionAction(msg) ? msg : undefined;
 		case 'action/answerApproval': return isValidApprovalAction(msg) ? msg : undefined;
+		case 'approval-options': return isValidApprovalOptionsRequest(msg) ? msg : undefined;
 		case 'action/claudeSetting': return isValidClaudeSettingAction(msg) ? msg : undefined;
 		case 'model-catalog': return isValidModelCatalogRequest(msg) ? msg : undefined;
 		case 'command-catalog': return isValidCommandCatalogRequest(msg) ? msg : undefined;
@@ -684,6 +731,7 @@ function parseAgentInbound(value: unknown): AgentInbound | undefined {
 		case 'activity-detail': return isValidActivityDetailRequest(msg) ? msg : undefined;
 		case 'tool-full': return isValidToolFullRequest(msg) ? msg : undefined;
 		case 'tool-image': return isValidToolImageRequest(msg) ? msg : undefined;
+		case 'history': return isValidHistoryRequest(msg) ? msg : undefined;
 		default: return undefined;
 	}
 }
@@ -1500,12 +1548,17 @@ class TranscriptTailer {
 			const length = stat.size - start;
 			const buffer = Buffer.alloc(length);
 			const { bytesRead } = await handle.read(buffer, 0, length, start);
-			let text = this.decoder.decode(buffer.subarray(0, bytesRead), { stream: true });
+			let body = buffer.subarray(0, bytesRead);
+			let lineBase = start;
 			if (start > 0) {
-				// 途中から読んだ場合、最初の不完全行を捨てる
-				const firstNewline = text.indexOf('\n');
-				text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
+				// 途中から読んだ場合、最初の不完全行を捨てる。行の頭のバイト位置を覚えるため、文字にする前のバイト列で探す
+				// （古い発言をファイルから読むときの境目になる。W2-30）。
+				const firstNewline = body.indexOf(0x0a);
+				lineBase = firstNewline >= 0 ? start + firstNewline + 1 : start + bytesRead;
+				body = body.subarray(firstNewline >= 0 ? firstNewline + 1 : bytesRead);
 			}
+			const text = this.decoder.decode(body, { stream: true });
+			this.lineBase = lineBase;
 			this.offset = start + bytesRead;
 			// ここまで来て初めて「現在の末尾」を掴めた。open に失敗した回はここを通らず
 			// offset が 0 のままなので、次の読みは追記ではなく全文の読み直しになる。
@@ -1521,6 +1574,66 @@ class TranscriptTailer {
 
 	/** {@link initialLoad} で現在の末尾を掴めたか。掴む前の読みは追記ではない。 */
 	private sawInitialEof = false;
+
+	/** 持ち越している不完全な行（remainder）の頭のバイト位置。行の頭の位置を数える起点（W2-30）。 */
+	private lineBase = 0;
+	/**
+	 * 記録ファイルから作った発言の rev → その発言の位置（行の頭のバイト位置と、その行を解釈して出た発言の中での順番）。
+	 * リングにある発言のぶん。モバイルへは送らない。順番はパーサーの単位で数える（古い発言の読み取り
+	 * `paradisReadTranscriptHistory` が同じ行を解釈し直して先頭から `keep` 件を採るのと揃えるため。L1）。
+	 */
+	private readonly positionByRev = new Map<number, IParadisHistoryCursor>();
+	/**
+	 * リングから押し出した発言の位置（新しい方から {@link EVICTED_POSITION_LIMIT} 件）。モバイルはリングより多く
+	 * （新しい発言の差分で 500 件まで）持つので、モバイルのいちばん古い発言がもうリングに無くても、そこから前を
+	 * 記録ファイルで読めるように残す（W2-30 のレビュー H3）。
+	 */
+	private readonly evictedPositions = new Map<number, IParadisHistoryCursor>();
+
+	/** リングを上限まで縮める。押し出した発言の位置は、上限付きで残す。 */
+	private trimRing(): void {
+		if (this.messages.length <= MESSAGE_RING_LIMIT) {
+			return;
+		}
+		const evicted = this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
+		for (const message of evicted) {
+			const position = this.positionByRev.get(message.rev);
+			if (position !== undefined) {
+				this.positionByRev.delete(message.rev);
+				this.evictedPositions.set(message.rev, position);
+			}
+		}
+		while (this.evictedPositions.size > EVICTED_POSITION_LIMIT) {
+			const oldest = this.evictedPositions.keys().next();
+			if (oldest.done === true) {
+				break;
+			}
+			this.evictedPositions.delete(oldest.value);
+		}
+	}
+
+	/**
+	 * rev `before` の発言より前の発言が、記録ファイルのどこから前にあるか（W2-30 の 2 段目の起点）。
+	 * `before` 以上でいちばん古い「ファイルから作った発言」の位置を使う（手前に hook から差し込んだ発言があっても、
+	 * それはファイルに無いので飛ばしてよい）。押し出した位置も残っていない（古すぎる）なら undefined。
+	 * 何も見つからなければ、読み終えたところ（それより前の行からは、残っている発言が 1 つもできなかった）。
+	 */
+	historyCursorBefore(before: number): IParadisHistoryCursor | undefined {
+		let best: { readonly rev: number; readonly position: IParadisHistoryCursor } | undefined;
+		for (const positions of [this.evictedPositions, this.positionByRev]) {
+			for (const [rev, position] of positions) {
+				if (rev >= before && (best === undefined || rev < best.rev)) {
+					best = { rev, position };
+				}
+			}
+		}
+		if (best !== undefined) {
+			return best.position;
+		}
+		const oldestKnown = Math.min(...this.evictedPositions.keys(), ...this.positionByRev.keys());
+		// 残している位置より古い発言を指されたら、どこから前かは分からない。
+		return Number.isFinite(oldestKnown) && before < oldestKnown ? undefined : { offset: this.lineBase, keep: 0 };
+	}
 
 	private async readAppended(): Promise<void> {
 		let handle: fs.FileHandle;
@@ -1540,6 +1653,9 @@ class TranscriptTailer {
 				this.messages.length = 0;
 				this.offset = 0;
 				this.remainder = '';
+				this.lineBase = 0;
+				this.positionByRev.clear();
+				this.evictedPositions.clear();
 				// offset 0 から読み直すので、前のバイト境界を持ち越したデコーダは捨てる。
 				this.decoder = new TextDecoder();
 				this.initialTruncated = false;
@@ -1662,13 +1778,18 @@ class TranscriptTailer {
 	private consumeText(text: string, emitDelta: boolean): void {
 		const combined = this.remainder + text;
 		const lines = combined.split('\n');
-		this.remainder = (lines.pop() ?? '').slice(-MAX_TRANSCRIPT_LINE_BYTES);
+		const lastPiece = lines.pop() ?? '';
+		this.remainder = lastPiece.slice(-MAX_TRANSCRIPT_LINE_BYTES);
+		// 行の頭のバイト位置（古い発言をファイルから読むときの境目。W2-30）。
+		let lineOffset = this.lineBase;
 		// fullText / imageData はここでだけ通過する（この直後に退避して送信対象から外す）。
 		const added: (IParadisAgentChatMessage & { fullText?: string; imageData?: readonly IFlattenedImage[] })[] = [];
 		const signals = newParseSignals();
 		let latestProgress: ITranscriptProgress | undefined;
 		let issueUrlsChanged = false;
 		for (const line of lines) {
+			const lineStart = lineOffset;
+			lineOffset += Buffer.byteLength(line, 'utf8') + 1;
 			const trimmed = line.trim();
 			if (trimmed.length === 0) {
 				continue;
@@ -1699,7 +1820,8 @@ class TranscriptTailer {
 				}
 			}
 			const raw = this.agent === 'claude' ? parseClaudeLine(obj, signals) : parseCodexLine(obj, signals);
-			for (const message of raw) {
+			for (const [rawIndex, message] of raw.entries()) {
+				const position: IParadisHistoryCursor = { offset: lineStart, keep: rawIndex };
 				// ライブ質問の決着処理: hookで注入済みの質問が決着後に transcript へ本物として
 				// 現れたら間引き（合成カードで表示済み）、対応する tool_result は合成IDへ
 				// 付け替える（モバイル側の合成カードが「回答済み」になる）。
@@ -1723,14 +1845,17 @@ class TranscriptTailer {
 						this.liveQuestionRealIds.delete(message.toolUseId);
 						for (const syntheticId of syntheticIds) {
 							signals.answeredIds.push(syntheticId);
+							this.positionByRev.set(this.rev, position);
 							added.push({ ...message, toolUseId: syntheticId, rev: this.rev++ });
 						}
 						continue;
 					}
 				}
+				this.positionByRev.set(this.rev, position);
 				added.push({ ...message, rev: this.rev++ });
 			}
 		}
+		this.lineBase = lineOffset + (lastPiece.length > this.remainder.length ? Buffer.byteLength(lastPiece.slice(0, lastPiece.length - this.remainder.length), 'utf8') : 0);
 		// fullText / 画像の実体は送信メッセージから外し、rev 単位でここに退避する
 		// （'tool-full' / 'tool-image' の取り寄せ用）。画像はメタ情報だけをメッセージに残す。
 		for (let i = 0; i < added.length; i++) {
@@ -1784,9 +1909,7 @@ class TranscriptTailer {
 			return;
 		}
 		this.messages.push(...added);
-		if (this.messages.length > MESSAGE_RING_LIMIT) {
-			this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
-		}
+		this.trimRing();
 		if (emitDelta) {
 			this.delegate.onDelta(added);
 		}
@@ -1866,7 +1989,7 @@ class TranscriptTailer {
 	 * transcript に現れないため、hook が唯一のライブな供給源。モバイル側はこのメッセージの
 	 * 内容を承認バー（許可/拒否）に添えて表示する。
 	 */
-	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string, desktopOnly = false, waitKey?: string, sameContentLimit = 1): void {
+	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string, desktopOnly = false, waitKey?: string, sameContentLimit = 1, suggestions?: readonly string[]): void {
 		this.enqueue(async () => {
 			// ここで pendingQuestions を見て注入自体を捨ててはいけない。PermissionRequest hook は
 			// 1プロンプトにつき1回しか来ないため、落とすと承認要求が永久に復元されない。
@@ -1892,6 +2015,7 @@ class TranscriptTailer {
 						{ id: 'yes', label: '許可', tone: 'approve' },
 						{ id: 'no', label: '拒否', tone: 'deny' },
 					],
+					...(suggestions !== undefined ? { suggestions } : {}),
 				},
 				key,
 				desktopOnly,
@@ -1902,9 +2026,7 @@ class TranscriptTailer {
 				text: truncateText(text, TOOL_TEXT_LIMIT), ts: Date.now(), rev: this.rev++, toolUseId: interactionId,
 			};
 			this.messages.push(message);
-			if (this.messages.length > MESSAGE_RING_LIMIT) {
-				this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
-			}
+			this.trimRing();
 			this.delegate.onDelta([message]);
 			this.delegate.onActivity();
 		});
@@ -1934,9 +2056,7 @@ class TranscriptTailer {
 				ts: Date.now(), rev: this.rev++, toolUseId: interaction.id,
 			};
 			this.messages.push(message);
-			if (this.messages.length > MESSAGE_RING_LIMIT) {
-				this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
-			}
+			this.trimRing();
 			this.delegate.onDelta([message]);
 			this.delegate.onActivity();
 		});
@@ -2228,9 +2348,7 @@ class TranscriptTailer {
 			// 消すと handleApprovalAction の daemon 経路に乗らず Codex が永久にブロックされる。
 			this.removeApprovals(entry => !paradisIsCodexDaemonApprovalInteraction(entry.interaction.id));
 			this.messages.push(...added);
-			if (this.messages.length > MESSAGE_RING_LIMIT) {
-				this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
-			}
+			this.trimRing();
 			this.delegate.onDelta(added, quiet ? { quiet: true } : undefined);
 			this.delegate.onActivity();
 		});
@@ -2501,7 +2619,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly codexLiveClient: ParadisCodexLiveClient;
 	/** ペアリング済みモバイル向けのライブ質問/承認注入を有効にする。status用tailは常時動作する。 */
 	private eagerTailing = false;
-	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly sendKey?: string; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly interactionClaims = new Map<string, string>();
 	/** 計測専用: `token\0questionGroup` → その質問グループで通知を送った回数。 */
@@ -2530,6 +2648,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	/** 計測専用: キー注入後に質問が消えたかを確かめる遅延チェック。 */
 	private readonly questionSettleTimers = new Set<ReturnType<typeof setTimeout>>();
 	private readonly activityDetailRequests = new Map<string, string>();
+	/** 記録ファイルから古い発言を読んでいるペイン（1 ペインで同時に 1 本。W2-30）。 */
+	private readonly historyReads = new Set<string>();
 	/** 送信中の 'tool-image': `mobileId\0requestId` → token。1件あたり数MBのため同時数を抑える。 */
 	private readonly toolImageRequests = new Map<string, string>();
 	private readonly persistedActivityTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -3167,6 +3287,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'action/answerApproval':
 				this.handleApprovalAction(mobileId, msg);
 				break;
+			case 'approval-options':
+				this.handleApprovalOptionsRequest(mobileId, msg);
+				break;
 			case 'action/claudeSetting':
 				this.handleClaudeSettingAction(mobileId, msg);
 				break;
@@ -3188,6 +3311,106 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'tool-image':
 				this.handleToolImageRequest(mobileId, msg);
 				break;
+			case 'history':
+				this.handleHistoryRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] history failed', err));
+				break;
+		}
+	}
+
+	/**
+	 * 古い発言を返す（W2-30、Q122）。
+	 *
+	 * 1 段目: `cursor` が無ければ、PC のメモリにある発言（ペインごとに 400 件のリング）のうち `beforeRev` より前を返す。
+	 * リングを読み切ったら、その手前の記録ファイルの位置を `cursor` として添える。`beforeRev` がもうリングに無い（モバイルは
+	 * 差分で 500 件まで持つ）ときは、押し出した発言の位置（2000 件まで残す）からすぐに記録ファイルを読む。
+	 * 2 段目: `cursor` があれば、記録ファイルをその位置から後ろへ読んで返す（1 回 2MB まで）。rev は負の数を振り、1 ペインで
+	 * {@link PARADIS_HISTORY_FILE_CAP} 件まで。重いので 1 ペインで同時に 1 本だけ。
+	 */
+	private async handleHistoryRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'history' }>): Promise<void> {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const reply = (body: Omit<Extract<AgentOutbound, { t: 'history' }>, 't' | 'id' | 'requestId' | 'epoch'>) => {
+			this.sendTo(mobileId, { t: 'history', id: msg.id, requestId: msg.requestId, epoch: msg.epoch, ...body }, token ?? msg.token);
+		};
+		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)) {
+			reply({ error: 'stale-session' });
+			return;
+		}
+		const limit = msg.limit ?? 60;
+		let cursor: IParadisHistoryCursor | undefined = msg.cursor !== undefined ? paradisDecodeHistoryCursor(msg.cursor) : undefined;
+		if (cursor === undefined) {
+			if (msg.beforeRev < 0) {
+				reply({ error: 'history-moved' });
+				return;
+			}
+			const ring = tailer.messages;
+			const oldestRingRev = ring[0]?.rev;
+			if (oldestRingRev !== undefined && msg.beforeRev >= oldestRingRev) {
+				const older = ring.filter(message => message.rev < msg.beforeRev);
+				const page = older.slice(-limit);
+				if (older.length > page.length) {
+					reply({ messages: page, hasMore: true });
+					return;
+				}
+				const floor = tailer.historyCursorBefore(page[0]?.rev ?? msg.beforeRev);
+				const next = floor !== undefined && paradisHistoryCursorHasMore(floor) ? paradisEncodeHistoryCursor(floor) : undefined;
+				reply({ messages: page, hasMore: next !== undefined, ...(next !== undefined ? { cursor: next } : {}) });
+				return;
+			}
+			// モバイルのいちばん古い発言がもうリングに無い（モバイルは差分で 500 件まで持つ。リングは 400 件）。
+			// 押し出した発言の位置が残っていれば、そこから前を記録ファイルで読む（レビュー H3）。
+			cursor = tailer.historyCursorBefore(msg.beforeRev);
+			if (cursor === undefined) {
+				reply({ error: 'history-moved' });
+				return;
+			}
+			if (!paradisHistoryCursorHasMore(cursor)) {
+				reply({ messages: [], hasMore: false });
+				return;
+			}
+		}
+		// ファイルから読んだ発言の rev は負の数。最初のページはモバイルの持っている rev（0 以上）の手前の -1 から振る。
+		const newestRev = Math.min(msg.beforeRev, 0) - 1;
+		const remaining = PARADIS_HISTORY_FILE_CAP + newestRev + 1;
+		if (remaining <= 0) {
+			reply({ messages: [], hasMore: false, capped: true });
+			return;
+		}
+		if (this.historyReads.has(token)) {
+			reply({ error: 'busy' });
+			return;
+		}
+		this.historyReads.add(token);
+		let handle: fs.FileHandle | undefined;
+		try {
+			handle = await fs.open(tailer.transcriptPath, 'r');
+			if (!await isAllowedOpenTranscriptPath(handle, tailer.transcriptPath)) {
+				reply({ error: 'unavailable' });
+				return;
+			}
+			const stat = await handle.stat();
+			if (cursor.offset > stat.size) {
+				reply({ error: 'history-moved' });
+				return;
+			}
+			const page = await paradisReadTranscriptHistory(handle, tailer.agent, cursor, Math.min(limit, remaining), newestRev);
+			// 読んでいる間に会話が読み直された（ファイルが縮んだ等）なら、位置の意味が変わっている。
+			if (this.tailers.get(token) !== tailer || tailer.epoch !== msg.epoch) {
+				reply({ error: 'stale-session' });
+				return;
+			}
+			const capped = page.next !== undefined && remaining - page.messages.length <= 0;
+			reply({
+				messages: page.messages,
+				hasMore: page.next !== undefined && !capped,
+				...(page.next !== undefined && !capped ? { cursor: paradisEncodeHistoryCursor(page.next) } : {}),
+				...(capped ? { capped: true } : {}),
+			});
+		} catch {
+			reply({ error: 'unavailable' });
+		} finally {
+			this.historyReads.delete(token);
+			await handle?.close().catch(() => { /* ignore */ });
 		}
 	}
 
@@ -3347,17 +3570,50 @@ export class ParadisMobileAgentChat extends Disposable {
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
 		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
 		const key = this.actionKey(mobileId, msg.requestId);
+		// 預かった送信（W2-29）の送り直し: 同じ id を一度ウィンドウへ渡したら、二度目は送らずに受け付け済みと答える
+		// （アプリが送っている途中で落ちて、起動し直して送り直したとき。レビュー M4）。
+		const sendKey = msg.sendId !== undefined ? `${mobileId}\0${msg.sendId}` : undefined;
+		if (sendKey !== undefined && this.dispatchedSendIds.has(sendKey)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted', code: 'duplicate' }, token ?? msg.token);
+			return;
+		}
 		if (token === undefined || session === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined || !this.hasSubscriber(token, mobileId) || this.pendingActions.has(key) || this.completedActions.has(key)) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' }, token ?? msg.token);
 			return;
 		}
 		const timer = setTimeout(() => {
 			if (this.pendingActions.delete(key)) {
+				this.forgetSendId(sendKey);
 				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: '操作対象のウィンドウが応答しませんでした' }, token);
 			}
 		}, 5_000);
-		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, timer });
+		this.rememberSendId(sendKey);
+		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, timer, ...(sendKey !== undefined ? { sendKey } : {}) });
 		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({ ...msg, token, windowId: owner.windowId })));
+	}
+
+	/** ウィンドウへ渡した預かりの送信の id（mobileId と組。最近 {@link SEND_ID_LIMIT} 件、24 時間）。 */
+	private readonly dispatchedSendIds = new Map<string, number>();
+
+	private rememberSendId(sendKey: string | undefined): void {
+		if (sendKey === undefined) {
+			return;
+		}
+		const now = Date.now();
+		this.dispatchedSendIds.set(sendKey, now);
+		for (const [candidate, at] of this.dispatchedSendIds) {
+			if (this.dispatchedSendIds.size <= SEND_ID_LIMIT && now - at < SEND_ID_TTL_MS) {
+				break;
+			}
+			this.dispatchedSendIds.delete(candidate);
+		}
+	}
+
+	/** ウィンドウが受け取らなかった（古い・時間切れ）送信は、送り直せるように忘れる。 */
+	private forgetSendId(sendKey: string | undefined): void {
+		if (sendKey !== undefined) {
+			this.dispatchedSendIds.delete(sendKey);
+		}
 	}
 
 	private handleClaudeSettingAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/claudeSetting' }>): void {
@@ -3511,12 +3767,49 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		const agent = session?.agent;
-		if (msg.choice !== 'yes' && msg.choice !== 'no') {
+		// 画面の番号付きの選択肢から選んだ回答（W2-21）は `opt:<n>` と、そのとき見えていた文言で届く。
+		// 文言が無いものは確かめようが無いので受け付けない。
+		const optionNumber = paradisParseApprovalOptionChoice(msg.choice);
+		const validOption = optionNumber !== undefined && msg.optionLabel !== undefined;
+		if (msg.choice !== 'yes' && msg.choice !== 'no' && !validOption) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: '承認の選択肢が更新されました' }, token ?? msg.token);
 			return;
 		}
-		const parts = paradisAgentApprovalKeySequence(agent === 'codex' ? 'codex' : 'claude', msg.choice);
+		if (validOption) {
+			// キーは送る直前に所有ウィンドウが画面を読み直して決める（Codex は行末の近道が要る）。ここでは
+			// 番号を仮に置き、確かめる文言を添える。
+			this.dispatchInteractionAction(mobileId, msg, { kind: 'approval', id: msg.interactionId }, [String(optionNumber)], undefined,
+				{ expectOption: { n: optionNumber, label: msg.optionLabel as string }, agent: agent === 'codex' ? 'codex' : 'claude', ...(msg.promptHash !== undefined ? { promptHash: msg.promptHash } : {}) });
+			return;
+		}
+		const parts = paradisAgentApprovalKeySequence(agent === 'codex' ? 'codex' : 'claude', msg.choice as 'yes' | 'no');
 		this.dispatchInteractionAction(mobileId, msg, { kind: 'approval', id: msg.interactionId }, parts);
+	}
+
+	/**
+	 * 承認の画面の選択肢を求められた（W2-21）。画面は所有ウィンドウでしか読めないので、確かめてから
+	 * ウィンドウへ回す。答え（選択肢か「読めない」）はウィンドウがモバイルへ直接返す。
+	 *
+	 * ここで断るのは、求めが古い（別の承認・別の会話）か、Codex の app-server 経由の承認（選択肢は
+	 * 最初から構造化されて届く）のとき。
+	 */
+	private handleApprovalOptionsRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'approval-options' }>): void {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
+		const interaction = tailer?.currentInteraction();
+		if (token === undefined || session === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined
+			|| !this.hasSubscriber(token, mobileId) || interaction?.kind !== 'approval' || interaction.id !== msg.interactionId
+			|| paradisIsCodexDaemonApprovalInteraction(msg.interactionId)
+			|| (session.agent === 'codex' && session.sessionId !== undefined && this.codexLiveClient.hasPendingApproval(session.sessionId, msg.interactionId))) {
+			this.sendTo(mobileId, { t: 'approval-options', id: msg.id, requestId: msg.requestId, interactionId: msg.interactionId, error: 'stale-interaction' }, token ?? msg.token);
+			return;
+		}
+		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
+			t: 'action/approvalOptions', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch, interactionId: msg.interactionId,
+			agent: session.agent, windowId: owner.windowId,
+		})));
 	}
 
 	private async handleCodexApprovalAction(
@@ -3587,6 +3880,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		interaction: IParadisAgentInteraction,
 		parts: readonly string[],
 		readyMarker?: string,
+		/** 画面の番号付きの選択肢で答えたとき（W2-21）: 送る直前に確かめる番号と文言、キーを決めるためのエージェントの種類。 */
+		approvalOption?: { readonly expectOption: IParadisAgentApprovalOption; readonly agent: 'claude' | 'codex'; readonly promptHash?: string },
 	): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
@@ -3620,6 +3915,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
 			t: 'action/interaction', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch, interaction, parts, delayMs: 300, windowId: owner.windowId,
 			...(readyMarker !== undefined ? { readyMarker } : {}),
+			...(approvalOption !== undefined ? { expectOption: approvalOption.expectOption, agent: approvalOption.agent, ...(approvalOption.promptHash !== undefined ? { expectPromptHash: approvalOption.promptHash } : {}) } : {}),
 		})));
 	}
 
@@ -3651,6 +3947,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& (pending.interactionKey === undefined || this.interactionClaims.get(pending.interactionKey) === key);
 		if (!valid) {
 			this.releaseInteractionClaim(pending.interactionKey, key);
+			this.forgetSendId(pending.sendKey);
 		}
 		return valid ? 'claimed' : 'stale';
 	}
@@ -5747,7 +6044,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& (event.toolName !== undefined || event.toolInput !== undefined)
 			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
 			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
-			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, approvalTarget.toolUseId, !mobileWants, approvalTarget.waitKey, approvalTarget.sameContentLimit);
+			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, approvalTarget.toolUseId, !mobileWants, approvalTarget.waitKey, approvalTarget.sameContentLimit,
+				paradisApprovalSuggestionLabels(event.payload?.permission_suggestions));
 		}
 		const forceApprovalClear = event.event === 'PermissionDenied';
 		const matchingApprovalClear = (event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined;
@@ -5776,12 +6074,16 @@ export class ParadisMobileAgentChat extends Disposable {
 		const settings = this.codexThreadSettings.get(token);
 		const model = settings?.model ?? tailer.model;
 		const effort = settings?.effort ?? tailer.effort;
-		if (model === undefined && effort === undefined) {
+		// ターミナルが閉じた後にスマホから再開するための指紋（W2-29）。セッション ID そのものは送らない。
+		const sessionId = this.paneSessions.get(token)?.sessionId;
+		const resumeKey = sessionId !== undefined && PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId) ? paradisAgentSessionKey(tailer.agent, sessionId) : undefined;
+		if (model === undefined && effort === undefined && resumeKey === undefined) {
 			return undefined;
 		}
 		return {
 			...(model !== undefined ? { model } : {}),
 			...(effort !== undefined ? { effort } : {}),
+			...(resumeKey !== undefined ? { resumeKey } : {}),
 		};
 	}
 

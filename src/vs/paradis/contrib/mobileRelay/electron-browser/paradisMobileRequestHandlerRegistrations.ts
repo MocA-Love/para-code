@@ -12,5 +12,7 @@
 
 import './paradisMobileDiffReviewRequests.js'; // 差分レビューの印・行のメモ・確認済みのステージ（W2-14 / W2-28）
 import './paradisMobileOpenUrl.js';
+// 終わった会話の一覧・中身・再開（W2-29）
+import './paradisMobileAgentSessions.js';
 
 export { };

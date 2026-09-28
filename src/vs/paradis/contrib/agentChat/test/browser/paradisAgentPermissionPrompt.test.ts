@@ -1,0 +1,83 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese test comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import assert from 'assert';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import type { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
+import { paradisParseApprovalOptions } from '../../../mobileRelay/common/paradisAgentApprovalOptions.js';
+
+suite('paradisPermissionPromptParts (W2-21 review M1 / M2)', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	// 【推測】Claude Code 2.1 系の許可の画面の形。上に会話の本文の番号付きの箇条書きが残っている。
+	const screen = (command: string) => [
+		'1. First step',
+		'2. Second step',
+		'────────────────────────────────────────',
+		' Bash command',
+		'',
+		`   ${command}`,
+		'   Push to the remote',
+		'',
+		' Do you want to proceed?',
+		' ❯ 1. Yes',
+		`   2. Yes, and don't ask again for git push commands`,
+		'   3. No, and tell Claude what to do differently (esc)',
+		'',
+		' Esc to cancel',
+	].join('\n');
+
+	test('reads the options only after the heading and keeps the command lines as the context', () => {
+		const parts = paradisPermissionPromptParts(screen('git push origin main'))!;
+		assert.deepStrictEqual({
+			context: parts.context.split('\n').map(line => line.trim()).filter(line => line.length > 0),
+			options: paradisParseApprovalOptions(parts.options)?.map(option => option.n),
+		}, {
+			context: ['Bash command', 'git push origin main', 'Push to the remote', 'Do you want to proceed?'],
+			options: [1, 2, 3],
+		});
+	});
+
+	test('changes the fingerprint when the command changes but not when only the wrapping changes', () => {
+		const base = paradisPermissionPromptHash(paradisPermissionPromptParts(screen('git push origin main'))!.context);
+		const other = paradisPermissionPromptHash(paradisPermissionPromptParts(screen('git push --force'))!.context);
+		const rewrapped = paradisPermissionPromptHash(paradisPermissionPromptParts(screen('git push origin main').replace('   git push origin main', '   git push\n   origin main'))!.context);
+		assert.deepStrictEqual({ changed: base !== other, rewrapped: base === rewrapped }, { changed: true, rewrapped: true });
+	});
+
+	test('joins rows the terminal wrapped automatically so a wrapped option does not hide the ones after it', () => {
+		const rows = [
+			{ text: ' Do you want to proceed?', wrapped: false },
+			{ text: ' ❯ 1. Yes', wrapped: false },
+			{ text: `   2. Yes, and don't ask again for git push commands in /Users/exa`, wrapped: false },
+			{ text: 'mple/projects/demo', wrapped: true },
+			{ text: '   3. No, and tell Claude what to do differently (esc)', wrapped: false },
+		];
+		const instance = {
+			xterm: {
+				raw: {
+					rows: rows.length,
+					buffer: { active: { baseY: 0, getLine: (y: number) => ({ isWrapped: rows[y].wrapped, translateToString: () => rows[y].text }) } },
+				},
+			},
+		} as unknown as ITerminalInstance;
+		const text = paradisVisibleTerminalLogicalText(instance);
+		assert.deepStrictEqual({
+			lines: text.split('\n').length,
+			options: paradisParseApprovalOptions(paradisPermissionPromptParts(text)!.options)?.map(option => option.label),
+		}, {
+			lines: 4,
+			options: ['Yes', `Yes, and don't ask again for git push commands in /Users/example/projects/demo`, 'No, and tell Claude what to do differently (esc)'],
+		});
+	});
+
+	test('returns undefined when no permission prompt is on screen', () => {
+		assert.strictEqual(paradisPermissionPromptParts('1. First step\n2. Second step\n'), undefined);
+	});
+});
