@@ -390,9 +390,12 @@
 	margin-left: var(--vscode-spacing-size200);
 }
 
-.monaco-workbench .terminal-overflow-guard.terminal-editor button.paradis-agent-chat-step-row:focus-visible {
-	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
-	outline-offset: -1px;
+/*
+ * 開閉した行は作り直した後もフォーカスを保つ（キーボードで続けて開閉できるように）。枠はワークベンチの
+ * `button:focus` が出すので、マウスで押したとき（:focus-visible でないとき）だけ消す。
+ */
+.monaco-workbench .terminal-overflow-guard.terminal-editor button.paradis-agent-chat-step-row:focus:not(:focus-visible) {
+	outline: none;
 }
 
 .monaco-workbench.hc-black .terminal-overflow-guard.terminal-editor button.paradis-agent-chat-step-row:hover:not(:focus-visible),
