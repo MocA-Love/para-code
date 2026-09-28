@@ -765,7 +765,8 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		const effort = this.select(agentLine, [], values.effortId);
 		const permission = this.select(agentLine, [], values.permissionId);
 		const permissionHint = dom.append(agentCell, $('.psr-muted'));
-		this.contentDisposables.add(paradisAppendAgentListLockNotice(agentCell, this.modelCatalogService));
+		// settings.json を開くときはこのダイアログを閉じる（開いたエディタが背面に隠れないように）
+		this.contentDisposables.add(paradisAppendAgentListLockNotice(agentCell, this.modelCatalogService, () => this.dispose()));
 
 		// 指示
 		const prompt = dom.append(this.formRow(form, localize('paradis.scheduledRuns.field.prompt', "指示")), $('textarea.psr-textarea')) as HTMLTextAreaElement;

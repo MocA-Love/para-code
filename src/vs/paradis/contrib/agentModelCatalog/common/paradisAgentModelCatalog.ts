@@ -609,6 +609,15 @@ export interface IParadisAgentModelCatalogService {
 	 * （{@link paradisIsAgentListUserDefined}）。変わったときも {@link onDidChange} が来る。
 	 */
 	isFixedBySettings(): boolean;
-	/** 確かめてから設定の一覧を消し、既定（CLI から取った候補）へ戻す。戻したら true。 */
-	resetToDefault(): Promise<boolean>;
+	/**
+	 * 確かめてから設定の一覧を消し、既定（CLI から取った候補）へ戻す。
+	 * 確認で「settings.json を開く」が選ばれたときは開かずに 'openSettings' を返す。呼び出した画面が
+	 * 自分のダイアログを閉じてから {@link openSettingsJson} を呼ぶ（ダイアログの背面に開くと編集できないため）。
+	 */
+	resetToDefault(): Promise<ParadisAgentListResetResult>;
+	/** 設定 `paradis.workspaceSwitch.agents` の場所で、利用者の settings.json を開く。 */
+	openSettingsJson(): Promise<void>;
 }
+
+/** {@link IParadisAgentModelCatalogService.resetToDefault} の結果。 */
+export type ParadisAgentListResetResult = 'reset' | 'openSettings' | 'unchanged';
