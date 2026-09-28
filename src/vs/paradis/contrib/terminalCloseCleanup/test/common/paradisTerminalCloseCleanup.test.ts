@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as assert from 'assert';
+import { IProcessEnvironment } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	IParadisProcessRow,
@@ -94,7 +95,7 @@ suite('paradisTerminalCloseCleanup', () => {
 	});
 
 	test('the preference travels as an env marker that the shell never sees', () => {
-		const env: { [key: string]: string | null | undefined } = { PATH: '/usr/bin' };
+		const env: IProcessEnvironment = { PATH: '/usr/bin' };
 		paradisApplyCloseCleanupPreference(env, false);
 		const off = { ...env };
 		paradisApplyCloseCleanupPreference(env, true);
