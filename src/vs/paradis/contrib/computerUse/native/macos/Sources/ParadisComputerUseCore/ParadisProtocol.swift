@@ -18,15 +18,17 @@ import Foundation
 
 enum ParadisComputerUseVersion {
 	/** shared process との約束の版。handshake で突き合わせる。 */
-	static let protocolVersion = 3
+	static let protocolVersion = 4
 	/** 補助アプリ自身の版（報告用）。 */
-	static let helperVersion = "0.3.0"
+	static let helperVersion = "0.4.0"
 }
 
 /** 補助アプリが返す失敗。code は TS 側がそのまま読む英字の識別子。 */
 struct ParadisHelperError: Error, Equatable {
 	let code: String
 	let message: String
+	/** 長い入力を途中で止めたとき、送り終えた単位の数（文字入力なら文字数）。 */
+	var progress: Int? = nil
 
 	static func invalidArgument(_ message: String) -> ParadisHelperError {
 		return ParadisHelperError(code: "invalid_argument", message: message)
@@ -79,7 +81,11 @@ func paradisEncodeSuccess(id: Int, result: Any) -> Data {
 /** 失敗の応答を 1 行にする。id が読めなかった要求には null を返す。 */
 func paradisEncodeFailure(id: Int?, error: ParadisHelperError) -> Data {
 	let idValue: Any = id.map { $0 as Any } ?? NSNull()
-	return paradisEncodeLine(["id": idValue, "ok": false, "error": ["code": error.code, "message": error.message]])
+	var errorJson: [String: Any] = ["code": error.code, "message": error.message]
+	if let progress = error.progress {
+		errorJson["progress"] = progress
+	}
+	return paradisEncodeLine(["id": idValue, "ok": false, "error": errorJson])
 }
 
 private func paradisEncodeLine(_ object: [String: Any]) -> Data {
