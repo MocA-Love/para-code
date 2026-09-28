@@ -2076,7 +2076,10 @@ export class MobileController {
 		return { dispose: () => { this.viewportRevokedListeners.delete(listener); } };
 	}
 
-	/** ［再び合わせる］。いまの申告を reclaim 付きで送り、PC に戻された印を外してもらう。 */
+	/**
+	 * ［再び合わせる］。いまの申告を reclaim 付きで送り、PC に戻された印を外してもらう。寸法が無いとき
+	 * （いま申告していない）も reclaim だけは必ず送る（送らないと PC の印が残り、次の申告も使われない）。
+	 */
 	reclaimTerminalViewport(terminalKey: string): void {
 		if (!this.revokedViewportTerminals.delete(terminalKey)) {
 			return;
@@ -2084,9 +2087,7 @@ export class MobileController {
 		for (const listener of this.viewportRevokedListeners) {
 			listener(terminalKey, false);
 		}
-		if (this.terminalViewport !== undefined) {
-			void this.sendTerm(terminalKey, { t: 'viewport', ...this.terminalViewportFields(), reclaim: true });
-		}
+		void this.sendTerm(terminalKey, { t: 'viewport', ...this.terminalViewportFields(), reclaim: true });
 	}
 
 	/**

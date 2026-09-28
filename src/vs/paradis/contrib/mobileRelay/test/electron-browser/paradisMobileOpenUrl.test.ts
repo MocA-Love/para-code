@@ -19,8 +19,8 @@ suite('ParadisMobileOpenUrl', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('accepts only http(s) URLs with a host', () => {
-		const values: unknown[] = ['http://localhost:3000/app', ' https://192.168.1.2/ ', 'javascript:alert(1)', 'file:///etc/passwd', 'http://', 'http://a\nb', 42, 'x'.repeat(5000)];
-		assert.deepStrictEqual(values.map(paradisMobileOpenableUrl), ['http://localhost:3000/app', 'https://192.168.1.2/', undefined, undefined, undefined, undefined, undefined, undefined]);
+		const values: unknown[] = ['http://localhost:3000/app', ' https://192.168.1.2/ ', 'javascript:alert(1)', 'file:///etc/passwd', 'http://', 'http://a\nb', 42, 'x'.repeat(5000), 'http://user:pass@localhost:3000/', 'http://user@localhost/'];
+		assert.deepStrictEqual(values.map(paradisMobileOpenableUrl), ['http://localhost:3000/app', 'https://192.168.1.2/', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
 	});
 
 	test('opens the URL in the built-in browser and answers, and refuses anything else', async () => {

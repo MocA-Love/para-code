@@ -27,6 +27,7 @@ const ESC = 0x1b;
 const BEL = 0x07;
 const CAN = 0x18;
 const SUB = 0x1a;
+const DEL = 0x7f;
 
 /**
  * これまでの断片 `previousTail` に今回のチャンク `data` を続けたとき、末尾に残る閉じていない
@@ -78,8 +79,8 @@ function isComplete(text: string, start: number): boolean {
 		if (code >= 0x20 && code <= 0x2f) {
 			continue;
 		}
-		if (code < 0x20) {
-			// 途中の C0 制御文字はその場で実行され、シーケンスは続く。
+		if (code < 0x20 || code === DEL) {
+			// 途中の C0 制御文字はその場で実行され、DEL は読み飛ばされる。どちらもシーケンスは続く。
 			continue;
 		}
 		return true;
@@ -96,11 +97,11 @@ function isCsiComplete(text: string, from: number): boolean {
 		if (code >= 0x40 && code <= 0x7e) {
 			return true;
 		}
-		if (code < 0x40) {
-			// 引数（0x30-0x3f）・中間文字（0x20-0x2f）・途中で実行される C0 制御文字。
+		if (code < 0x40 || code === DEL) {
+			// 引数（0x30-0x3f）・中間文字（0x20-0x2f）・途中で実行される C0 制御文字・読み飛ばされる DEL。
 			continue;
 		}
-		// DEL や 0x80 以上は、解析器が引数として受けないので、ここで途切れたものとして扱う。
+		// 0x80 以上は、解析器が引数として受けないので、ここで途切れたものとして扱う。
 		return true;
 	}
 	return false;

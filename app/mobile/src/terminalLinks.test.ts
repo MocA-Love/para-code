@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { findTerminalLinkAt, findTerminalLinks, terminalOsc8Link, terminalUrlDestination } from './terminalLinks.js';
+import { findTerminalLinkAt, findTerminalLinks, terminalLinkNeedsConfirmation, terminalOsc8Link, terminalUrlDestination } from './terminalLinks.js';
 
 /** 見つかったリンクを、比べやすい形（種類・中身・元の文字列）にする。 */
 function describeLinks(text: string) {
@@ -78,7 +78,7 @@ describe('terminalUrlDestination', () => {
 			'http://10.0.0.5', 'http://172.20.1.1', 'http://192.168.1.10:8000', 'http://169.254.1.1',
 			'http://100.101.102.103', 'http://[::1]:3000', 'http://[fd12::1]/', 'http://devbox:8080', 'http://printer.local',
 			'https://example.com', 'http://172.32.0.1', 'https://user:pass@github.com/o/r', 'http://8.8.8.8',
-			'javascript:alert(1)', 'ftp://example.com',
+			'javascript:alert(1)', 'ftp://example.com', 'http://example.com\\@localhost:3000/', 'http://localhost\\.example.com/',
 		];
 		expect(Object.fromEntries(urls.map(url => [url, terminalUrlDestination(url)]))).toEqual({
 			'http://localhost:3000': 'pc', 'http://app.localhost/': 'pc', 'http://127.0.0.1:8080/x': 'pc', 'http://0.0.0.0:5173': 'pc',
@@ -86,7 +86,23 @@ describe('terminalUrlDestination', () => {
 			'http://100.101.102.103': 'pc', 'http://[::1]:3000': 'pc', 'http://[fd12::1]/': 'pc', 'http://devbox:8080': 'pc', 'http://printer.local': 'pc',
 			'https://example.com': 'external', 'http://172.32.0.1': 'external', 'https://user:pass@github.com/o/r': 'external', 'http://8.8.8.8': 'external',
 			'javascript:alert(1)': undefined, 'ftp://example.com': undefined,
+			// `\` はブラウザでは `/` なので、行き先は `\` の前のホスト。
+			'http://example.com\\@localhost:3000/': 'external', 'http://localhost\\.example.com/': 'pc',
 		});
+	});
+});
+
+describe('terminalLinkNeedsConfirmation', () => {
+	it('asks only for an OSC 8 link whose shown text differs from a PC-only destination', () => {
+		const cases = [
+			terminalOsc8Link('http://localhost:3000/admin', 'Open the docs'),
+			terminalOsc8Link('http://localhost:3000/admin', ' http://localhost:3000/admin '),
+			terminalOsc8Link('https://example.com/pr/1', '#1'),
+			terminalOsc8Link('http://192.168.1.5/', undefined),
+			{ kind: 'url' as const, url: 'http://localhost:5173' },
+		];
+		expect(cases.map(link => link !== undefined && terminalLinkNeedsConfirmation(link))).toEqual([true, false, false, false, false]);
+		expect(cases[0]).toEqual({ kind: 'url', url: 'http://localhost:3000/admin', label: 'Open the docs' });
 	});
 });
 

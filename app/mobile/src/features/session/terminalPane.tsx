@@ -14,7 +14,7 @@ import { WorkspaceFileViewer } from '../../components/workspaceFileViewer.js';
 import type { LocalFileTarget } from '../../localFileTarget.js';
 import { PcCapability } from '../../pcCompat.js';
 import { encodeSessionTab } from '../../routes.js';
-import { terminalUrlDestination, type TerminalLinkTarget } from '../../terminalLinks.js';
+import { terminalLinkNeedsConfirmation, terminalUrlDestination, terminalUrlHost, type TerminalLinkTarget } from '../../terminalLinks.js';
 import { terminalSubmitPlan } from '../../terminalKeys.js';
 import { terminalViewportForPrefs, type TerminalGrid } from '../../terminalViewport.js';
 import type { SpaceTerminal } from '../../navigationTargets.js';
@@ -133,9 +133,10 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 			return;
 		}
 		const generation = ++openGeneration.current;
-		// terminalKey を付けると、新しい PC はこのターミナルの作業フォルダを基準に相対パスを解決する
-		// （古い PC は無視してワークスペースの根から解決する）。外のファイル・無いファイルは何もしない。
-		sendPcRequest<{ path?: unknown }>(activePcId, 'fs', { t: 'resolveLink', ws, path: target.path, terminalKey }).then(resolved => {
+		// terminalKey を付けると、このターミナルの作業フォルダを基準に相対パスを解決する（受けられる PC にだけ付ける。
+		// 付けない PC はワークスペースの根から解決する）。外のファイル・無いファイルは何もしない。
+		const fromTerminal = pcHasCapabilityFor(activePcId, PcCapability.FsResolveLinkTerminal) ? { terminalKey } : {};
+		sendPcRequest<{ path?: unknown }>(activePcId, 'fs', { t: 'resolveLink', ws, path: target.path, ...fromTerminal }).then(resolved => {
 			if (openGeneration.current === generation && typeof resolved.path === 'string') {
 				setViewer({ ws, path: resolved.path, ...(target.line !== undefined ? { line: target.line } : {}) });
 			}
@@ -177,6 +178,15 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 		if (destination === 'external') {
 			void Linking.openURL(link.url).catch(() => { /* 開けない URL は無視 */ });
 		} else if (destination === 'pc') {
+			if (terminalLinkNeedsConfirmation(link)) {
+				// OSC 8 のリンクは見えている文字と行き先が違いうる。PC の中を開くときだけ、行き先を見せて確かめる。
+				const shown = link.label !== undefined && link.label.length > 80 ? `${link.label.slice(0, 80)}…` : link.label;
+				Alert.alert('PC のブラウザで開きますか', `「${shown}」の行き先は ${terminalUrlHost(link.url) ?? link.url} です。\n${link.url}`, [
+					{ text: 'キャンセル', style: 'cancel' },
+					{ text: '開く', onPress: () => { void openUrlOnPc(link.url); } },
+				]);
+				return;
+			}
 			void openUrlOnPc(link.url);
 		}
 	};

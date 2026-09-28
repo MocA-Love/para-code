@@ -20,6 +20,7 @@ const MAX_URL_LENGTH = 4096;
 
 /**
  * 開いてよい URL か。http(s) でホストがあるものだけ（`javascript:` や `file:` は開かない）。
+ * ユーザー名・パスワードの付いた URL（`http://user:pass@host/`）も開かない（表示と行き先を取り違えさせる形のため）。
  * 開いてよければ、そのまま開く形（前後の空白を落としたもの）を返す。
  */
 export function paradisMobileOpenableUrl(value: unknown): string | undefined {
@@ -33,7 +34,7 @@ export function paradisMobileOpenableUrl(value: unknown): string | undefined {
 	}
 	try {
 		const parsed = new URL(url);
-		return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host.length > 0 ? url : undefined;
+		return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host.length > 0 && parsed.username.length === 0 && parsed.password.length === 0 ? url : undefined;
 	} catch {
 		return undefined;
 	}

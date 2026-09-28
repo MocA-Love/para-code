@@ -11,13 +11,13 @@ describe('pickOpenedBrowserTarget', () => {
 		expect(pickOpenedBrowserTarget(targets, 'http://localhost:3000', new Set(['old', 'other']))?.targetId).toBe('new');
 	});
 
-	it('falls back to a new page on the same origin, then to any new page after a redirect', () => {
+	it('falls back to a new page on the same origin, and never takes a new page on another origin', () => {
 		const sameOrigin = [existing, { targetId: 'new', url: 'http://localhost:3000/login?next=%2F' }];
-		const redirected = [existing, { targetId: 'new', url: 'https://auth.example.com/' }];
+		const otherOrigin = [existing, { targetId: 'new', url: 'https://auth.example.com/' }];
 		expect([
 			pickOpenedBrowserTarget(sameOrigin, 'http://localhost:3000/app', new Set(['old']))?.targetId,
-			pickOpenedBrowserTarget(redirected, 'http://localhost:3000/app', new Set(['old']))?.targetId,
-		]).toEqual(['new', 'new']);
+			pickOpenedBrowserTarget(otherOrigin, 'http://localhost:3000/app', new Set(['old']))?.targetId,
+		]).toEqual(['new', undefined]);
 	});
 
 	it('uses an already open page with the same URL when no page was added', () => {

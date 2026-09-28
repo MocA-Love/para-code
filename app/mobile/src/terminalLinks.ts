@@ -17,9 +17,12 @@ import { parseLocalFileTarget, type LocalFileTarget } from './localFileTarget.js
  * 依存は持たない（テストで WebView を立てずに確かめるため）。
  */
 
-/** リンクの行き先（押されたときに開くもの）。 */
+/**
+ * リンクの行き先（押されたときに開くもの）。`label` は OSC 8 のリンクで、見えている文字が行き先と
+ * 違うときだけ付く（開く前に確かめる材料。{@link terminalLinkNeedsConfirmation}）。
+ */
 export type TerminalLinkTarget =
-	| { readonly kind: 'url'; readonly url: string }
+	| { readonly kind: 'url'; readonly url: string; readonly label?: string }
 	| { readonly kind: 'file'; readonly target: LocalFileTarget };
 
 /** 論理行の中のリンクと、その文字の範囲（`start` から `end` の手前まで）。 */
@@ -142,12 +145,16 @@ export function findTerminalLinkAt(text: string, index: number): TerminalLink | 
 
 /**
  * OSC 8（ターミナルのハイパーリンク）の行き先。http(s) は URL、`file://` はファイルとして扱う。
- * それ以外のスキーム（`javascript:` など）は開かない。
+ * それ以外のスキーム（`javascript:` など）は開かない。`label` は画面に見えている文字で、行き先と
+ * 違うときだけ結果に残す。
  */
-export function terminalOsc8Link(uri: string): TerminalLinkTarget | undefined {
+export function terminalOsc8Link(uri: string, label?: string): TerminalLinkTarget | undefined {
 	const trimmed = uri.trim();
 	if (/^https?:\/\/[^/?#\s]+/i.test(trimmed)) {
-		return { kind: 'url', url: trimmed };
+		const shown = label?.trim();
+		return shown !== undefined && shown.length > 0 && shown !== trimmed
+			? { kind: 'url', url: trimmed, label: shown }
+			: { kind: 'url', url: trimmed };
 	}
 	if (/^file:\/\//i.test(trimmed)) {
 		const target = parseLocalFileTarget(trimmed);
@@ -164,12 +171,30 @@ export function terminalOsc8Link(uri: string): TerminalLinkTarget | undefined {
  * RN の `URL` はホスト名の取り出しが実装されていない版があるので、正規表現で読む。
  */
 export function terminalUrlDestination(url: string): 'pc' | 'external' | undefined {
-	const match = /^https?:\/\/(?:[^@/?#\s]*@)?(?<host>\[[^\]]*\]|[^:/?#\s]+)/i.exec(url.trim());
-	const host = match?.groups?.host?.toLowerCase();
-	if (host === undefined || host.length === 0) {
+	const host = terminalUrlHost(url);
+	if (host === undefined) {
 		return undefined;
 	}
 	return isPcOnlyHost(host) ? 'pc' : 'external';
+}
+
+/**
+ * URL のホスト（小文字、IPv6 は角括弧つき）。http(s) でなければ `undefined`。
+ * `\` はブラウザが `/` と同じに扱うので、ユーザー情報にもホストにも含めない（`http://a.com\@localhost` の
+ * 行き先は `a.com`）。
+ */
+export function terminalUrlHost(url: string): string | undefined {
+	const match = /^https?:\/\/(?:[^@/\\?#\s]*@)?(?<host>\[[^\]]*\]|[^:/\\?#\s]+)/i.exec(url.trim());
+	const host = match?.groups?.host?.toLowerCase();
+	return host === undefined || host.length === 0 ? undefined : host;
+}
+
+/**
+ * 開く前に確かめるか。OSC 8 のリンクで、見えている文字が行き先と違い、行き先が PC の内蔵ブラウザ
+ * （PC の中でしか見られない所）のときだけ。文字として見えている URL は確かめない（Q123 A）。
+ */
+export function terminalLinkNeedsConfirmation(link: TerminalLinkTarget): boolean {
+	return link.kind === 'url' && link.label !== undefined && terminalUrlDestination(link.url) === 'pc';
 }
 
 function isPcOnlyHost(host: string): boolean {
