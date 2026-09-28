@@ -25,6 +25,7 @@ import {
 	paradisParseAgentIdeCall,
 } from '../../common/paradisAgentIde.js';
 import { PARADIS_AGENT_IDE_SKILL_CONTENT, paradisAgentIdeGuide } from '../../common/paradisAgentIdeGuide.js';
+import { paradisAgentStartupScreenState } from '../../common/paradisAgentStartupScreen.js';
 
 suite('paradisAgentIde (common)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -105,6 +106,73 @@ suite('paradisAgentIde (common)', () => {
 			launched: launchedWatcher.observe('idle', undefined, 30_000),
 			needsHuman: new ParadisAgentStopWatcher(1000).observe('asking_question', 500, 1000),
 		}, { busy: ['waiting', 'waiting', 'stopped'], idle: ['waiting', 'no_agent_status'], launched: 'waiting', needsHuman: 'needs_input' });
+	});
+
+	test('stop watcher: an agent launched without a prompt is ready once its input box shows', () => {
+		const idleLaunch = new ParadisAgentStopWatcher(1000, 90_000, true);
+		const promptedLaunch = new ParadisAgentStopWatcher(1000, 90_000);
+		assert.deepStrictEqual({
+			idle: [idleLaunch.observe('idle', undefined, 2000), idleLaunch.observe('idle', undefined, 3000, 'ready')],
+			prompted: promptedLaunch.observe('idle', undefined, 3000, 'ready'),
+			trust: new ParadisAgentStopWatcher(1000, 90_000, true).observe('waiting_for_permission', undefined, 2000, 'trust_dialog'),
+		}, { idle: ['waiting', 'ready'], prompted: 'waiting', trust: 'needs_input' });
+	});
+
+	test('startup screen: the trust dialogs and empty input boxes of the installed CLIs, and nothing else', () => {
+		// 選択肢の文言はこのソースを表示した画面で判定が当たらないよう、単語を連ねて組み立てる
+		const words = (...parts: string[]) => parts.join(' ');
+		const rule = '\u2500'.repeat(40);
+		const claudeYes = words('Yes,', 'I', 'trust', 'this', 'folder');
+		const claudeNo = words('No,', 'exit');
+		const claudeHeader = '\u2502 Accessing workspace:\n\u2502 Quick safety check: Is this a project you created or one you\n\u2502 trust? (Like your own code)\n';
+		const codexHeader = '> You are in /tmp/x\n  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk.\n';
+		const screens = {
+			// Claude Code 2.1.283（折り返しと枠線をまたぐ。番号無しで、断る側にカーソル）
+			claudeTrust: `${claudeHeader}\u2502 \u276f ${claudeNo}\n\u2502   ${claudeYes}`,
+			// カーソルを承諾側へ動かした後、番号付きの版
+			claudeTrustMoved: `${claudeHeader}\u2502   1. ${claudeNo}\n\n\u2502 \u276f 2. ${claudeYes}`,
+			// codex-cli 0.155.1
+			codexTrust: `${codexHeader}\u203a 1. ${words('Yes,', 'continue')}\n  2. ${words('No,', 'quit')}`,
+			claudeReady: '\u256d\u2500\u256e\n\u2502 \u276f \u2502\n\u2570\u2500\u256f\n  ? for shortcuts',
+			// 2.1.283 を auto mode（既定）で起動した実機の画面の末尾（入力欄の下が権限モードの表示になる）
+			claudeReadyAutoMode: `${rule}\n\u276f \n${rule}\n  \u23f5\u23f5 auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents`,
+			claudeReadyPlaceholder: `${rule}\n\u276f Try "fix lint errors"\n${rule}\n  \u23f8 plan mode on (shift+tab to cycle)`,
+			// モードの表示だけで入力欄が見えない（作業中の出力が流れている等）なら当てない
+			claudeModeOnly: '\u23fa Working on it\n  \u23f5\u23f5 auto mode on (shift+tab to cycle)',
+			// 入力欄に文字が入っているなら当てない
+			claudeModeTyped: `${rule}\n\u276f fix the bug\n${rule}\n  \u23f5\u23f5 accept edits on (shift+tab to cycle)`,
+			// 信頼の確認の見出しが出ている間は、準備完了と言わない
+			claudeModeUnderTrust: `${claudeHeader}${rule}\n\u276f \n${rule}\n  \u23f5\u23f5 auto mode on (shift+tab to cycle)`,
+			codexReady: '\u203a Ask Codex to do anything\n\n  100% context left',
+			// 見出しと選択肢の文言が画面にあっても、選択肢の形（隣り合う2行・カーソル）でなければ当てない
+			mentionOnly: `${claudeHeader}The dialog offers "${claudeYes}" and "${claudeNo}".`,
+			noCursor: `${claudeHeader}  ${claudeNo}\n  ${claudeYes}`,
+			notAdjacent: `${claudeHeader}\u276f ${claudeNo}\nsomething else\n  ${claudeYes}`,
+			headerMissing: `\u276f ${claudeNo}\n  ${claudeYes}`,
+			codexQuestionOnly: codexHeader,
+			// 画面の末尾 30 行より上にあるものは見ない
+			scrolledAway: `? for shortcuts${'\n'.repeat(40)}$ `,
+			empty: '',
+		};
+		assert.deepStrictEqual(Object.fromEntries(Object.entries(screens).map(([name, screen]) => [name, paradisAgentStartupScreenState(screen) ?? null])), {
+			claudeTrust: 'trust_dialog',
+			claudeTrustMoved: 'trust_dialog',
+			codexTrust: 'trust_dialog',
+			claudeReady: 'ready',
+			claudeReadyAutoMode: 'ready',
+			claudeReadyPlaceholder: 'ready',
+			claudeModeOnly: null,
+			claudeModeTyped: null,
+			claudeModeUnderTrust: null,
+			codexReady: 'ready',
+			mentionOnly: null,
+			noCursor: null,
+			notAdjacent: null,
+			headerMissing: null,
+			codexQuestionOnly: null,
+			scrolledAway: null,
+			empty: null,
+		});
 	});
 
 	test('prompt detection ignores the text that was just typed, across wrapping and box borders', () => {

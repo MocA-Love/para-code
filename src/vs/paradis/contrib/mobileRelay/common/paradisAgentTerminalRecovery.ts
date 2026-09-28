@@ -25,7 +25,8 @@ export interface IParadisAgentTerminalRecoveryCallbacks<T extends IParadisAgentR
 	/** exact reverse-authority key。未割当や逆引き不一致時はundefined。 */
 	readonly getAuthorityKey: (instance: T) => string | undefined;
 	readonly onCommandExecuted: (instance: T, commandLine: string) => void;
-	readonly onCommandFinished: (instance: T, commandLine: string) => void;
+	/** @param exitCode シェル統合が報告した終了コード（分からなければ undefined） */
+	readonly onCommandFinished: (instance: T, commandLine: string, exitCode?: number) => void;
 }
 
 interface IRecoveredCommand {
@@ -88,7 +89,7 @@ class ParadisTrackedAgentTerminal<T extends IParadisAgentRecoveryTerminal> exten
 			}
 			this.callbacks.onCommandExecuted(this.instance, commandLine);
 		}));
-		listeners.add(capability.onCommandFinished(command => this.callbacks.onCommandFinished(this.instance, command.command ?? '')));
+		listeners.add(capability.onCommandFinished(command => this.callbacks.onCommandFinished(this.instance, command.command ?? '', command.exitCode)));
 		this.commandDetectionListeners.value = listeners;
 		this.recoverExecutingCommand();
 	}

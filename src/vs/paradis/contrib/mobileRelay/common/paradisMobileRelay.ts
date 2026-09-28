@@ -224,6 +224,14 @@ export interface IParadisMobileStatus {
 	 * 取れたときにだけ true になる（判別できない間は undefined のまま）。
 	 */
 	readonly unauthorized?: boolean;
+	/**
+	 * 保存した鍵とペアリング台帳を読めなかった（読めていれば undefined）。
+	 * - `corrupt`: 壊れていたので日時付きの名前へ退避した。ペアリングし直せば新しく作られる
+	 * - `unreadable` / `undecryptable`: ファイルを残したまま接続を止めている。
+	 *   {@link IParadisMobileRelayService.retryLoadState} で読み直すか、
+	 *   {@link IParadisMobileRelayService.discardUnreadableState} で退避して作り直す
+	 */
+	readonly storeProblem?: 'unreadable' | 'corrupt' | 'undecryptable';
 }
 
 /** ペアリング開始時に renderer へ返す、QR/検証コード表示用の情報。 */
@@ -306,6 +314,19 @@ export interface IParadisMobileRelayService {
 	cancelPairing(): Promise<void>;
 	/** 承認済みデバイスを失効させる。 */
 	revokeDevice(deviceName: string): Promise<void>;
+	/**
+	 * 読めなかった鍵とペアリング台帳を読み直す（ファイルの権限を直したときなど）。復号できなかった
+	 * （`undecryptable`）ときは、macOS の safeStorage が失敗をプロセスが終わるまで覚えているので、
+	 * Para Code を再起動するまで読み直せない。
+	 */
+	retryLoadState(): Promise<void>;
+	/** 「鍵を読めない」の通知を出す役を1つのウィンドウにだけ渡す（その理由で true を返すのは1回だけ）。 */
+	claimStoreProblemNotice(problem: string): Promise<boolean>;
+	/**
+	 * 読めなかった鍵とペアリング台帳を日時付きの名前へ退避し、空の状態から作り直せるようにする。
+	 * 接続済みのモバイルはすべて再ペアリングが要るので、呼び出し側で同意を取ってから呼ぶこと。
+	 */
+	discardUnreadableState(): Promise<void>;
 
 	// フレーム: shared process が復号したモバイル→PCフレームを renderer へ配送
 	readonly onInboundFrame: Event<ParadisMobileInboundFrameWire>;

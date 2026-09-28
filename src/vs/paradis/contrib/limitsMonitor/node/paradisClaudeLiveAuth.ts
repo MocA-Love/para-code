@@ -30,6 +30,7 @@ import * as fs from 'fs';
 import * as path from '../../../../base/common/path.js';
 import { IParadisClaudeIdentity, paradisClaudeIdentityFromOauthAccount, paradisParseClaudeOAuthBlob, paradisReplaceClaudeOAuth } from '../common/paradisClaudeUsage.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
+import { paradisWriteRollingBackup } from '../../../node/paradisRollingFileBackup.js';
 import { IParadisKeychain } from './paradisClaudeKeychain.js';
 
 export const PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE = 'Claude Code-credentials';
@@ -399,6 +400,9 @@ export class ParadisClaudeLiveAuth {
 		// Claude Code はプロジェクトの設定などをロックを取らずに `~/.claude.json` へ書くことがある。読んだ
 		// ときのままかを置き換える直前に確かめ、変わっていたら読み直して組み立て直す（その変更を消さない）。
 		let raw = snapshot.globalConfig;
+		// `~/.claude.json` は利用者（と Claude Code）の設定なので、書き換える前の中身を1つだけ隣へ控える。
+		// ログイン情報そのものは入っていない。控えは保険なので、写せなくても止めない。
+		await paradisWriteRollingBackup(configPath).catch(() => false);
 		for (let attempt = 0; ; attempt++) {
 			const config = parseGlobalConfig(raw);
 			config.oauthAccount = oauthAccount;

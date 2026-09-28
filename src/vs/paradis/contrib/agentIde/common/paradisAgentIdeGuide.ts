@@ -54,7 +54,7 @@ ${actions}
 
 1. list_spaces: check "actions_enabled" and pick an agent id from "agents".
 2. create_space with "prompt" and "agent" (new worktree + branch; the user's screen does not switch), or launch_agent in an existing space.
-3. wait_for_terminal on the returned terminal id with until="agent_stopped". For a terminal you just launched it waits up to 90 seconds for the agent to start. It returns "met": false with "timed_out": true after timeout_seconds; call it again to keep waiting. "reason": "no_agent_status" means the agent never reported that it started working - read_terminal to see what is on screen, it did not necessarily finish.
+3. wait_for_terminal on the returned terminal id with until="agent_stopped". For a terminal you just launched it waits up to 90 seconds for the agent to start. It returns "met": false with "timed_out": true after timeout_seconds; call it again to keep waiting. "reason": "no_agent_status" means the agent never reported that it started working - read_terminal to see what is on screen, it did not necessarily finish. An agent launched without a prompt returns "reason": "ready" once its input box shows. "blocked_by": "trust_dialog" means it stopped at its startup folder-trust dialog: tell the user, only they can answer it.
 4. read_terminal to see what the agent did. If "status" is waiting_for_permission or asking_question, tell the user.
 5. Follow up with send_terminal_input (press_enter=true) and wait again.
 
@@ -67,7 +67,7 @@ ${actions}
 
 ## Waiting
 
-- until="agent_stopped": "reason" is "stopped" (the turn ended), "needs_input" (waits for a permission/question answer) or "no_agent_status" (never started working within the grace period).
+- until="agent_stopped": "reason" is "stopped" (the turn ended), "needs_input" (waits for a permission/question answer, or for the user to answer the startup trust dialog when "blocked_by" is "trust_dialog"), "ready" (launched without a prompt and waiting for one) or "no_agent_status" (never started working within the grace period).
 - until="needs_input": the agent waits for a permission or question answer.
 - until="text": a plain, case-sensitive substring is on the visible screen. Text already on screen matches immediately, so read_terminal first and wait for something new.
 - Statuses come from the agents' hooks. A plain shell, or an agent whose hooks are off, stays "idle": use until="text" for those.

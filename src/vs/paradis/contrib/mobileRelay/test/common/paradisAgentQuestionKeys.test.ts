@@ -98,7 +98,7 @@ suite('paradisAgentQuestionKeySequence', () => {
 		assert.deepStrictEqual(parts.filter(part => part.startsWith('タブ')), ['タブ を含む回答', 'タブ を含む回答']);
 	});
 
-	// モバイルとデスクトップのチャット表示が同じ列を使う。モバイルが送っていた列から変えないこと。
+	// モバイルとデスクトップのチャット表示が同じ列を使う。Claude の許可は `1` だけ（Enter は次の入力に漏れる）。
 	test('許可の確認への回答はエージェントごとに決まったキー列になる', () => {
 		assert.deepStrictEqual({
 			claudeYes: paradisAgentApprovalKeySequence('claude', 'yes'),
@@ -106,14 +106,14 @@ suite('paradisAgentQuestionKeySequence', () => {
 			codexYes: paradisAgentApprovalKeySequence('codex', 'yes'),
 			codexNo: paradisAgentApprovalKeySequence('codex', 'no'),
 		}, {
-			claudeYes: ['1', '\r'],
+			claudeYes: ['1'],
 			claudeNo: ['\u001b'],
 			codexYes: ['y'],
 			codexNo: ['d'],
 		});
 	});
 	// codex-cli 0.155.1 の実画面の選択肢（フェーズ6の実機確認）。拒否は `(esc)`。古い版の `(d)` にも対応を残す。
-	test('picks the Codex deny key from the prompt on screen, and lets the desktop confirm a Claude approval with 1 alone', () => {
+	test('picks the Codex deny key from the prompt on screen, and confirms a Claude approval with 1 alone on both desktop and mobile', () => {
 		const codex0155 = [
 			'Would you like to run the following command?',
 			'$ touch p6-codex-made.txt',
@@ -135,7 +135,7 @@ suite('paradisAgentQuestionKeySequence', () => {
 			noScreen: 'd',
 			codexYes: ['y'],
 			claudeDesktop: ['1'],
-			claudeMobile: ['1', '\r'],
+			claudeMobile: ['1'],
 		});
 	});
 });
