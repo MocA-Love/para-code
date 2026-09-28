@@ -1767,6 +1767,34 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 
 無し（追加した依存は既に許可済みの `@vscode/sqlite3`・`electron`・Node 標準のみ。`eslint.config.js` の変更も不要だった）。
 
+## 繋ぎ直せなかったターミナルの開始フォルダとパネルの空シェル（2026-09-28、lane terms）
+
+調査は research の `triage-2026-09-28/space-terminal.md` と `panel-terminals.md`。
+
+### PARA-PATCH 点（この回で増えた upstream の変更）
+
+| ファイル | 変更 | 理由 |
+|---|---|---|
+| `src/vs/workbench/contrib/terminal/browser/terminalProcessManager.ts` | import 1 行と、attach 失敗の分岐（リモート・ローカルの2か所）に `paradisPrepareRestartedTerminalLaunch(...)` を1行ずつ | upstream は attach に失敗すると「その瞬間ウィンドウが開いているフォルダ」で新しいシェルを起こす。切り替え中は切り替え元のフォルダになり、その cwd が所属の証拠として nonce 台帳へ焼き付いていた |
+| `src/vs/workbench/browser/parts/editor/editorPanes.ts` | `openEditor` の catch で、`EditorPanes` が破棄済みなら警告を1行ログに残して `{ error, cancelled: true }` を返す |
+| `src/vs/workbench/browser/parts/editor/editorGroupView.ts` | 既存の PARA-PATCH（`doOpenEditor` 冒頭のフェンス判定）の条件に `|| this._store.isDisposed` を足しただけ（行は増やしていない） | Sentry 7T の別経路。`editorService.openEditor` は開く先のグループを決めた後にエディタの解決を await するので、その間に working set の適用がグループを破棄すると、破棄済みのグループの `openEditor` が呼ばれてタブ作成（`ResourceLabels.create`）で落ちる。破棄はこの await の内側で起きるので、端末エディタを開く fork 側の呼び出し元（upstream の `createTerminal` も含めて多数）からは見えず、グループの入口で止めるしかない | Sentry 7T。working set の適用でグループが破棄された後に、開きかけのエディタの失敗から ErrorPlaceholderEditor を破棄済みの InstantiationService で作ろうとしていた。`editorGroupView.ts` の既存フェンスは開き始めしか止めない |
+
+### 設計の要点
+
+- 口は `common/paradisTerminalLaunchPreparers.ts`（upstream のターミナルから import してよい fork の場所）。開始フォルダを決める関数は `browser/paradisTerminalSpaceCwd.contribution.ts`（BlockRestore）が登録し、所属は `ParadisTerminalWorkspaceScope` が自分で登録する問い合わせ口（`paradisRegisterRestartedShellScopeLookup`）から引く。**BlockRestore の contribution から所属サービスを DI で掴まないこと**。起動時の復元より前にインスタンス化させると、復元の索引（`paradisRegisterTerminalReviveIndexSource`）まで早まって挙動が変わる
+- 所属を引く順: 復元コンテキスト → 出てきた working set → park 台帳 → nonce 台帳 → 今セッションの確定値（推測・借り物を除く）→ 固定した補助ウィンドウ。推測（今のスペース）は使わない。分からなければ upstream の既定
+- **pid 台帳は引かない**。attach に失敗したばかりの ID は何世代も前の番号であり得て、前回たまたま同じ番号だった別のスペースの端末の所属を拾う。復元直後に pid 台帳から付いた今セッションの所属が、出てきた working set と食い違うときは working set の方へ直す（nonce 台帳だけ書き、pid 台帳は新しいシェルの ID が決まったときに書かれる）
+- 食い違い確認のコマンドは表示中のターミナルだけを扱う。待避中の所属を書き換えても park 台帳と working set は元のスペースのままで実際には移らず、そのスペースを削除したときに別のスペースで表示中の端末を PTY ごと破棄しうる。扱うなら台帳キーの付け替えと working set から外す口が先に要る
+- 再開前の `cd` は、終了 → 次のプロンプトの入力開始 → 250ms 待つ、の後で「途中に打たれた文字が無く入力欄が空」を確かめてから再開コマンドを送る（`paradisChangeDirectoryBeforeResume`）。終了だけ見て送ると、`cd` の最中に打った文字（tty バッファにあり、まだ入力欄に出ていない）とつながって Enter 無しで実行された（実機 2/2）
+- 【要確認】起動時に繋ぎ直しに失敗したタブには再開バナーが出ない。バナーの contribution が AfterRestored で、起動時の復元の方が先に終わるため（既存の挙動、今回は未対応）
+- 【要確認】共通ターミナルへの移行の知らせの件数が、実際の本数より多く出る（`paradisTerminalScope.contribution.ts` の `rememberFormerSharedPanelScope` が同じ端末を複数回数えている可能性。既存の挙動、今回は未対応）
+- 自動の `cd` は `paradisChangeDirectoryCommand` で作る。upstream の `preparePathForShell` は `C#`・`R&D` の文字を落とし、`'` で継続入力に入り、WSL で引用しないので使わない。シェルの種類が分からないときは送らない
+- 起動直後（所属サービスが立ち上がる前）の attach 失敗は従来どおり。メインウィンドウのフォルダは起動時のスペースなので合っているが、別のスペースに固定した補助ウィンドウのタブは【要確認】のまま
+- `terminal.integrated.cwd` を決めている人には手を出さない（相対パスも含む）
+- 起こし直したシェルの所属は、cwd より「出てきた working set」「固定した補助ウィンドウ」を先に採る（`paradisWasTerminalShellRestarted`）。繋ぎ直せたシェルの cwd は従来どおり証拠になる
+- 再開バナーの「このタブで再開」は、会話のフォルダと今のフォルダが違えば `cd` を送り、終了とフォルダの変化を確かめてから再開する。確かめられなければ再開しない（新しいタブで再開する案は、元のタブが空のシェルで残るので採らなかった）
+- パネルの開閉（`restorePanelVisibilityFor`）は、通常の切り替え・ロールバック・中断した切り替えの復旧のどれでも、完了参加者（`applyScope`）の後に戻す。閉じる側は順番に関係なく何も作らない
+
 ## 今後の方針候補（未確定、要議論）
 
 - 優先実装ターゲットの選定（機能1〜3のうちfork版でしか解決できない部分から着手すべきか）
