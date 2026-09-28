@@ -35,7 +35,7 @@ export const PARADIS_COMPUTER_USE_EXECUTABLE = 'ParadisComputerUse';
  * 補助アプリとの約束の版。Swift 側の `ParadisComputerUseVersion.protocolVersion`
  * （native/macos/Sources/ParadisComputerUseCore/ParadisProtocol.swift）と同じ値にする。
  */
-export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 2;
+export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 3;
 /** 対応する macOS の最低の Darwin の版（macOS 14 = Darwin 23）。ScreenCaptureKit の単一ウィンドウ撮影に要る。 */
 export const PARADIS_COMPUTER_USE_MIN_DARWIN_MAJOR = 23;
 
@@ -149,23 +149,39 @@ export function paradisParseComputerUseApprovalOutcome(value: unknown): ParadisC
 /** 拒否の分類。エージェントへの説明と設定画面の表示に使う。 */
 export type ParadisComputerUseBlockReason = 'password-manager' | 'keychain' | 'para-code' | 'system';
 
+// 一覧は補助アプリの側（native/macos/Sources/ParadisComputerUseCore/ParadisBlocklist.swift）と同じにする（レビュー M1。
+// 補助アプリも同じ判定をして二重にする）。build/paradis/computerUse/buildHelper.test.ts が突き合わせる。
+// 末尾が `*` のものは、その手前で始まる bundle id 全部に当たる。
+
 /**
- * パスワードマネージャー（Q64 で決定）。Orca の 8 件（main.swift:523-550）に、macOS 15 以降の「パスワード」と
- * 1Password 7・1Password の起動補助を足したもの。
- * 【要確認】`com.apple.Passwords` / `com.agilebits.onepassword7` / `com.1password.1password-launcher` の実在（設計書 8 章 6 番）。
+ * パスワードマネージャーとワンタイムコードのアプリ（Q64 で決定）。Orca の 8 件（main.swift:523-550）との和に、
+ * KeePassXC・Enpass・Keeper などを足したもの（レビュー M8）。
+ * 【要確認】各 id の実在（設計書 8 章 6 番。実機の `osascript -e 'id of app "..."'` で確かめる）。
  */
 export const PARADIS_COMPUTER_USE_PASSWORD_MANAGERS: readonly string[] = [
 	'com.1password.1password',
 	'com.1password.safari',
 	'com.1password.1password-launcher',
 	'com.agilebits.onepassword7',
+	'com.agilebits.onepassword-osx',
+	'com.agilebits.onepassword4',
 	'com.bitwarden.desktop',
+	'com.8bit.bitwarden',
 	'com.dashlane.dashlanephonefinal',
+	'com.dashlane.Dashlane',
 	'com.lastpass.LastPass',
+	'com.lastpass.lastpassmacdesktop',
 	'com.nordsec.nordpass',
 	'me.proton.pass.electron',
 	'me.proton.pass.catalyst',
 	'com.apple.Passwords',
+	'org.keepassxc.keepassxc',
+	'in.sinew.Enpass-Desktop',
+	'com.keepersecurity.passwordmanager',
+	'com.markmcguill.strongbox.mac',
+	'com.hicknhacksoftware.MacPass',
+	'com.siber.roboform',
+	'com.authy.authy-mac',
 ];
 
 /** キーチェーンアクセス（Q64 で決定）。 */
@@ -173,23 +189,31 @@ export const PARADIS_COMPUTER_USE_KEYCHAIN_APPS: readonly string[] = [
 	'com.apple.keychainaccess',
 ];
 
-/** Para Code 自身の bundle id（Q64 で決定）。この id と、その下（`<id>.helper` など）の全部。 */
-export const PARADIS_COMPUTER_USE_PARA_CODE_BUNDLE_ID = 'ltd.paradis.paracode';
-/** 開発時（`./scripts/code.sh`）の Para Code。 */
-export const PARADIS_COMPUTER_USE_DEVELOPMENT_BUNDLE_ID = 'com.github.Electron';
+/**
+ * Para Code 自身（Q64 で決定）。main と、その下の helper と Computer Use の補助アプリ。
+ * 開発時の `com.github.Electron` は入れない（手元の `.build/electron` も `ltd.paradis.paracode` で、素の Electron を
+ * Para Code とみなす理由が無いため。レビュー L1）。
+ */
+export const PARADIS_COMPUTER_USE_PARA_CODE_APPS: readonly string[] = [
+	'ltd.paradis.paracode',
+	'ltd.paradis.paracode.*',
+];
 
 /**
- * システム設定と認証のダイアログ（Q97 の回答 A で「常に操作させない」に入れた）。
+ * システム設定と認証・同意のダイアログ（Q97 の回答 A で「常に操作させない」に入れた）。
  * エージェントが「プライバシーとセキュリティ」で許可を足したり、管理者パスワードの入力欄に打ったりできないように。
- * `prefix` は、その id で始まるもの全部（`com.apple.settings.*` の拡張など）。
+ * 認証・同意のダイアログは通常のアプリとして一覧に出ないので、実際の守りは補助アプリの入力のフェンス
+ * （出ている間は入力を送らない。レビュー M3）が担う。
  */
-export const PARADIS_COMPUTER_USE_SYSTEM_SURFACES: readonly { readonly id: string; readonly prefix?: boolean }[] = [
-	{ id: 'com.apple.systempreferences' },
-	{ id: 'com.apple.settings.', prefix: true },
-	{ id: 'com.apple.SecurityAgent' },
-	{ id: 'com.apple.LocalAuthentication.UIAgent' },
-	{ id: 'com.apple.loginwindow' },
-	{ id: 'com.apple.coreservices.uiagent' },
+export const PARADIS_COMPUTER_USE_SYSTEM_SURFACES: readonly string[] = [
+	'com.apple.systempreferences*',
+	'com.apple.settings.*',
+	'com.apple.SecurityAgent',
+	'com.apple.LocalAuthentication.UIAgent',
+	'com.apple.loginwindow',
+	'com.apple.coreservices.uiagent',
+	'com.apple.UserNotificationCenter',
+	'com.apple.universalaccessAuthWarn',
 ];
 
 /** システム設定と認証のダイアログも常に断る（Q97 の回答 A）。 */
@@ -200,25 +224,28 @@ export interface IParadisComputerUseBlockOptions {
 	readonly blockSystemSurfaces?: boolean;
 }
 
-/** そのアプリを常に断るなら理由を返す。bundle id の大文字小文字は区別しない。 */
-export function paradisComputerUseBlockReason(bundleId: string, options: IParadisComputerUseBlockOptions = {}): ParadisComputerUseBlockReason | undefined {
+/** bundle id が一覧のどれかに当たるか（大文字小文字は区別しない。末尾の `*` は前方一致）。 */
+export function paradisComputerUseMatchesBundle(bundleId: string, patterns: readonly string[]): boolean {
 	const id = bundleId.toLowerCase();
-	if (PARADIS_COMPUTER_USE_PASSWORD_MANAGERS.some(candidate => candidate.toLowerCase() === id)) {
+	return patterns.some(pattern => {
+		const lower = pattern.toLowerCase();
+		return lower.endsWith('*') ? id.startsWith(lower.slice(0, -1)) : id === lower;
+	});
+}
+
+/** そのアプリを常に断るなら理由を返す。 */
+export function paradisComputerUseBlockReason(bundleId: string, options: IParadisComputerUseBlockOptions = {}): ParadisComputerUseBlockReason | undefined {
+	if (paradisComputerUseMatchesBundle(bundleId, PARADIS_COMPUTER_USE_PASSWORD_MANAGERS)) {
 		return 'password-manager';
 	}
-	if (PARADIS_COMPUTER_USE_KEYCHAIN_APPS.some(candidate => candidate.toLowerCase() === id)) {
+	if (paradisComputerUseMatchesBundle(bundleId, PARADIS_COMPUTER_USE_KEYCHAIN_APPS)) {
 		return 'keychain';
 	}
-	const self = PARADIS_COMPUTER_USE_PARA_CODE_BUNDLE_ID.toLowerCase();
-	const development = PARADIS_COMPUTER_USE_DEVELOPMENT_BUNDLE_ID.toLowerCase();
-	if (id === self || id.startsWith(`${self}.`) || id === development || id.startsWith(`${development}.`)) {
+	if (paradisComputerUseMatchesBundle(bundleId, PARADIS_COMPUTER_USE_PARA_CODE_APPS)) {
 		return 'para-code';
 	}
-	if (options.blockSystemSurfaces ?? PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES) {
-		const blocked = PARADIS_COMPUTER_USE_SYSTEM_SURFACES.some(surface => surface.prefix ? id.startsWith(surface.id.toLowerCase()) : id === surface.id.toLowerCase());
-		if (blocked) {
-			return 'system';
-		}
+	if ((options.blockSystemSurfaces ?? PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES) && paradisComputerUseMatchesBundle(bundleId, PARADIS_COMPUTER_USE_SYSTEM_SURFACES)) {
+		return 'system';
 	}
 	return undefined;
 }
@@ -244,10 +271,19 @@ export const PARADIS_COMPUTER_USE_COMMAND_APPS: readonly string[] = [
 	'com.raphaelamorim.rio',
 	'com.apple.ScriptEditor2',
 	'com.apple.Automator',
+	// ターミナルを内蔵したエディタと、シェルを実行できるランチャー（レビュー L11。【要確認】各 id の実在）
+	'com.microsoft.VSCode',
+	'com.microsoft.VSCodeInsiders',
+	'com.todesktop.230313mzl4w4u92',
+	'dev.zed.Zed',
+	'com.apple.dt.Xcode',
+	'com.jetbrains.*',
+	'com.apple.shortcuts',
+	'com.raycast.macos',
+	'com.runningwithcrayons.Alfred',
 ];
 
 /** 操作を許可するとコマンドを打てるアプリか（承認ダイアログの警告に使う）。 */
 export function paradisComputerUseRunsCommands(bundleId: string): boolean {
-	const id = bundleId.toLowerCase();
-	return PARADIS_COMPUTER_USE_COMMAND_APPS.some(candidate => candidate.toLowerCase() === id);
+	return paradisComputerUseMatchesBundle(bundleId, PARADIS_COMPUTER_USE_COMMAND_APPS);
 }
