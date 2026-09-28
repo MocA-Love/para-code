@@ -35,6 +35,7 @@ import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.j
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from './paradisRemoteTranscriptMirror.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
+import { IParadisRelayPersistedState, ParadisRelayStoreProblem, paradisMoveRelayStateAside, paradisReadRelayState, paradisWriteRelayState } from './paradisMobileRelayStateFile.js';
 import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
 import { ParadisMobileTerminalRegistry } from './paradisMobileTerminalRegistry.js';
 import {
@@ -88,12 +89,10 @@ import { paradisRoundMobileResources } from '../common/paradisMobileHostResource
 import { ParadisHostResourceSampler } from '../../resourceMonitor/node/paradisHostResources.js';
 import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.js';
 import { ParadisRelayDisconnectReporter } from '../common/paradisRelayDisconnectReport.js';
+import { PARADIS_RELAY_STABLE_CONNECTION_MS, paradisRelayJitteredDelayMs, paradisRelayReconnectDelayMs } from '../common/paradisRelayReconnectDelay.js';
 import { ParadisVoiceSubscriptions } from '../common/paradisVoiceSubscriptions.js';
 import { PARADIS_JSON_GZIP_RESPONSE_ENCODING, paradisEncodeNegotiatedGzipJsonResponse } from '../common/paradisMobileGzipJson.js';
 import { paradisDeliverVoiceClip } from './paradisVoiceClipDelivery.js';
-
-// Node（shared process）で使うファイルシステム / crypto。
-import { promises as fs } from 'fs';
 
 /**
  * リレー接続の保活間隔。経路のアイドルタイムアウトより十分短く、かつ常時接続の台数分だけ
@@ -122,7 +121,8 @@ const PARADIS_WORKSPACE_LESS_REQUEST_TYPES: ReadonlySet<string> = new Set(['usag
  * リレーが実際に死んでいるケース（トークン失効で毎回1006、Worker障害）に気づけない。
  * そこで「猶予内に復帰できたら報告しない、できなければ報告する」に振り分ける。
  *
- * 60秒はバックオフ（500ms×2^n、上限30秒）で7回試行できる長さ＝一過性の切断なら必ず復帰している。
+ * 60秒はバックオフ（完全ジッタ、上限は 500ms×2^n で最大30秒）で平均10回前後試行できる長さ＝
+ * 一過性の切断なら必ず復帰している。
  */
 const RELAY_DISCONNECT_REPORT_DELAY_MS = 60_000;
 /**
@@ -148,6 +148,8 @@ const RELAY_DISCONNECT_REPORT_AFTER_ATTEMPTS = 5;
 const RELAY_AUTH_PROBE_AFTER_ATTEMPTS = 3;
 /** 認証切れが確定した後の再接続間隔。復帰は再ペアリングでしか起きないので長く取る。 */
 const RELAY_UNAUTHORIZED_RETRY_MS = 5 * 60_000;
+/** スリープ復帰直後の ping に pong が返るのを待つ上限。平常の往復は数百ms。 */
+const RELAY_RESUME_PROBE_TIMEOUT_MS = 5_000;
 /**
  * 「このセッションはもう無い」とモバイルへ伝えるために送るバイト数。
  *
@@ -178,29 +180,7 @@ const HOST_RESOURCE_SAMPLE_INTERVAL_MS = 10_000;
  */
 const HOST_RESOURCE_BROADCAST_MIN_INTERVAL_MS = 60_000;
 
-interface PairedMobile {
-	readonly mobileId: string;
-	readonly name: string;
-	/** モバイルの長期公開鍵（base64url）。データ接続時のハンドシェイク相手鍵。 */
-	readonly pubKey: string;
-	/**
-	 * モバイルの通知設定（アプリの設定画面から notify チャネルで同期される）。
-	 * どれも「バナーを出さない」だけで、通知一覧へは常に届ける（`paradisNotifyDelivery.ts`）。
-	 *
-	 * `pcFocusQuiet` が「PC操作中は鳴らさない」。旧キー `suppressWhenPcFocused` を使い回さないのは、
-	 * 旧いPara Codeがそのキーを「配信そのものを止める」と解釈するため。ディスクに旧キーで true を
-	 * 残すと、PCを旧版へ巻き戻したときにその解釈が復活し、PCフォーカス中の通知がAPNsも含めて
-	 * 捨てられる。旧キーは**書かず**、旧アプリから受け取ったときの読み取りだけに使う。
-	 */
-	notifyPrefs?: { agentDone?: boolean; agentQuestion?: boolean; pcFocusQuiet?: boolean; suppressWhenPcFocused?: boolean };
-}
-
-interface PersistedState {
-	// encSecret: safeStorageで暗号化したpkcs8秘密鍵。pkcs8: 平文(旧形式/暗号化不可環境のフォールバック)。
-	identity?: { pubKey: string; encSecret?: string; pkcs8?: string };
-	device?: { deviceId: string; pcToken: string };
-	mobiles: PairedMobile[];
-}
+type PersistedState = IParadisRelayPersistedState;
 
 /** 1つのモバイルとのデータ接続（ハンドシェイク進行 + 確立後のFrameMux）。 */
 export class MobileSession {
@@ -562,6 +542,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	private state: PersistedState = { mobiles: [] };
 	private identity: MobileIdentity | undefined;
+	/** 保存した鍵と台帳を読めなかった理由（読めていれば undefined）。 */
+	private storeProblem: ParadisRelayStoreProblem | undefined;
 	private enabled = false;
 	private connectionState: ParadisMobileConnectionState = 'disabled';
 	// Mobile relay が有効な間だけ動かし、shared process の不要な定期起床を避ける。
@@ -575,6 +557,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly disconnectReporter: ParadisRelayDisconnectReporter;
 	private keepaliveTimer: ReturnType<typeof setInterval> | undefined;
 	private connectTimer: ReturnType<typeof setTimeout> | undefined;
+	/** 繋がってから一定時間後に失敗の回数を戻すタイマー。 */
+	private stableConnectionTimer: ReturnType<typeof setTimeout> | undefined;
+	/** スリープ復帰直後に撃った ping の返事を待つタイマー。 */
+	private resumeProbeTimer: ReturnType<typeof setTimeout> | undefined;
 	/** 連続でpongが返らなかった回数。リレー側の保活対応をいつ学習し直すかの判断に使う。 */
 	private consecutiveKeepaliveTimeouts = 0;
 	/** pcToken が失効していると確認できた状態。再ペアリングするまで復帰しない。 */
@@ -851,26 +837,147 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	// --- 永続化 ---------------------------------------------------------------
 
+	/**
+	 * 鍵とペアリング台帳を読む。
+	 *
+	 * 「まだ無い」（初回）と「あるのに読めない」を分ける。以前は読めない・復号できないときに空の台帳と
+	 * 新しい鍵で黙って上書きしていたので、キーチェーンの一時的な拒否や書き込み途中のクラッシュだけで
+	 * 全スマホのペアリングが一度に外れていた。いまは:
+	 * - 壊れている（JSON として読めない／形が違う）: 日時付きの名前へ退避し、作り直せる状態にして知らせる
+	 * - 読めない・復号できない: ファイルを残したまま接続を止め、再試行か作り直しの同意を待つ
+	 *   （{@link save} と {@link ensureIdentity} はこの間ファイルに触らない）
+	 */
 	private async load(): Promise<void> {
-		try {
-			const raw = await fs.readFile(this.statePath, 'utf8');
-			const parsed = JSON.parse(raw) as PersistedState;
-			this.state = { mobiles: parsed.mobiles ?? [], device: parsed.device, identity: parsed.identity };
-		} catch {
+		const read = await paradisReadRelayState(this.statePath);
+		if (read.kind === 'missing') {
 			this.state = { mobiles: [] };
+			this.identity = undefined;
+			// 壊れたファイルを退避した後は「無い」に見える。作り直すまでは案内を残す。
+			if (this.storeProblem !== 'corrupt') {
+				this.setStoreProblem(undefined);
+			}
+			return;
 		}
-		const stored = this.state.identity;
-		if (stored) {
-			const pkcs8B64 = await this.decryptSecret(stored);
-			if (pkcs8B64 !== undefined) {
-				this.identity = await importIdentity(fromBase64Url(pkcs8B64), fromBase64Url(stored.pubKey));
-				// 旧形式(平文pkcs8)で読めた場合は暗号化形式へ移行して保存し直す。
-				if (stored.pkcs8 !== undefined) {
-					await this.persistIdentitySecret(this.identity, fromBase64Url(pkcs8B64));
-					await this.save();
-				}
+		if (read.kind === 'unreadable') {
+			this.logService.error('[paradisMobileRelay] failed to read the pairing state; keeping it untouched', read.error);
+			this.blockOnUnreadableState('unreadable');
+			return;
+		}
+		if (read.kind === 'corrupt') {
+			let aside: string | undefined;
+			try {
+				aside = await paradisMoveRelayStateAside(this.statePath, 'corrupt');
+			} catch (err) {
+				this.logService.error('[paradisMobileRelay] failed to move the corrupt pairing state aside; keeping it untouched', err);
+			}
+			if (aside === undefined) {
+				// 退避できないものを上書きはしない。読めないのと同じ扱いで止める。
+				this.blockOnUnreadableState('unreadable');
+				return;
+			}
+			this.logService.error(`[paradisMobileRelay] the pairing state was corrupt and was moved to ${aside}`);
+			this.state = { mobiles: [] };
+			this.identity = undefined;
+			this.notifyKeyCache.clear();
+			this.setStoreProblem('corrupt');
+			return;
+		}
+		const parsed = read.state;
+		this.state = parsed;
+		const stored = parsed.identity;
+		if (!stored) {
+			this.identity = undefined;
+			this.setStoreProblem(undefined);
+			return;
+		}
+		const pkcs8B64 = await this.decryptSecret(stored);
+		let identity: MobileIdentity | undefined;
+		if (pkcs8B64 !== undefined) {
+			try {
+				identity = await importIdentity(fromBase64Url(pkcs8B64), fromBase64Url(stored.pubKey));
+			} catch (err) {
+				this.logService.error('[paradisMobileRelay] failed to import the stored identity', err);
 			}
 		}
+		if (!identity) {
+			// 台帳（ペアリング済みの端末名）は見せたまま、鍵が戻るまで接続も保存もしない。
+			this.blockOnUnreadableState('undecryptable', parsed);
+			return;
+		}
+		this.identity = identity;
+		this.setStoreProblem(undefined);
+		// 旧形式(平文pkcs8)で読めた場合は暗号化形式へ移行して保存し直す。
+		if (stored.pkcs8 !== undefined && pkcs8B64 !== undefined) {
+			await this.persistIdentitySecret(identity, fromBase64Url(pkcs8B64));
+			await this.save();
+		}
+	}
+
+	/** 読めない台帳を残したまま止める。接続は切り、鍵は持たない。 */
+	private blockOnUnreadableState(problem: 'unreadable' | 'undecryptable', state: PersistedState = { mobiles: [] }): void {
+		this.state = state;
+		this.identity = undefined;
+		this.notifyKeyCache.clear();
+		this.disconnect();
+		this.setStoreProblem(problem);
+	}
+
+	/** 読めない台帳を残したまま止めているか（この間は上書きも接続もしない）。 */
+	private isStoreBlocked(): boolean {
+		return this.storeProblem === 'unreadable' || this.storeProblem === 'undecryptable';
+	}
+
+	private setStoreProblem(problem: ParadisRelayStoreProblem | undefined): void {
+		if (this.storeProblem === problem) {
+			return;
+		}
+		this.storeProblem = problem;
+		this._onDidChangeStatus.fire(this.snapshot());
+	}
+
+	/** 有効かつペアリング済みなら繋ぎ、そうでなければ今の状態を表示に出す。 */
+	private connectIfReady(): void {
+		if (this.enabled && this.state.device && !this.isStoreBlocked()) {
+			this.connect();
+		} else {
+			this.setConnectionState(this.enabled ? 'disconnected' : 'disabled');
+		}
+	}
+
+	async retryLoadState(): Promise<void> {
+		if (!this.isStoreBlocked()) {
+			return;
+		}
+		await this.load();
+		this.updateDiagnosticCorrelation();
+		this.disconnectReporter.setEnabled(this.enabled);
+		this.connectIfReady();
+		this.updateEagerTailing();
+		this._onDidChangeStatus.fire(this.snapshot());
+	}
+
+	async discardUnreadableState(): Promise<void> {
+		const problem = this.storeProblem;
+		if (problem === undefined) {
+			return;
+		}
+		if (problem !== 'corrupt') {
+			// 退避できなければ作り直さない（上書きすると、キーチェーンが戻っても取り戻せない）。
+			const aside = await paradisMoveRelayStateAside(this.statePath, problem);
+			if (aside !== undefined) {
+				this.logService.warn(`[paradisMobileRelay] the unreadable pairing state was moved to ${aside} at the user's request`);
+			}
+		}
+		this.disconnect();
+		this.state = { mobiles: [] };
+		this.identity = undefined;
+		this.notifyKeyCache.clear();
+		this.storeProblem = undefined;
+		this.setUnauthorized(false);
+		this.disconnectReporter.setEnabled(this.enabled);
+		this.connectIfReady();
+		this.updateEagerTailing();
+		this._onDidChangeStatus.fire(this.snapshot());
 	}
 
 	private async decryptSecret(stored: NonNullable<PersistedState['identity']>): Promise<string | undefined> {
@@ -899,14 +1006,25 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	private async save(): Promise<void> {
-		// 秘密鍵は persistIdentitySecret で safeStorage 暗号化済み。ファイルも 0600 で作成する。
-		const json = JSON.stringify(this.state);
-		await fs.writeFile(this.statePath, json, { encoding: 'utf8', mode: 0o600 });
+		// 読めなかった台帳は上書きしない（キーチェーンが戻れば読めるかもしれない）。
+		if (this.isStoreBlocked()) {
+			throw new Error('The mobile pairing state could not be read; it is not overwritten until it is retried or discarded.');
+		}
+		// 秘密鍵は persistIdentitySecret で safeStorage 暗号化済み。ファイルは常に 0600。
+		await paradisWriteRelayState(this.statePath, this.state);
+		// 壊れた台帳を退避した後、新しい台帳を書けたら案内は役目を終える。
+		if (this.storeProblem === 'corrupt') {
+			this.setStoreProblem(undefined);
+		}
 	}
 
 	private async ensureIdentity(): Promise<MobileIdentity> {
 		if (this.identity) {
 			return this.identity;
+		}
+		// 鍵を読めないまま新しい鍵を作ると、保存した鍵でペアリングした端末が全部外れる。
+		if (this.isStoreBlocked()) {
+			throw new Error('The mobile pairing key could not be read. Retry, or re-pair to create a new key.');
 		}
 		const { identity, pkcs8 } = await generatePersistableIdentity();
 		this.identity = identity;
@@ -1005,6 +1123,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			pairedDevices: this.state.mobiles.map(m => m.name),
 			onlineMobiles: [...this.sessions.values()].filter(s => s.hasCurrentProtocol).length,
 			...(this.unauthorized ? { unauthorized: true } : {}),
+			...(this.storeProblem !== undefined ? { storeProblem: this.storeProblem } : {}),
 		};
 	}
 
@@ -1089,11 +1208,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.enabled = enabled;
 		this.setStateBroadcastMetricsEnabled(enabled);
 		this.disconnectReporter.setEnabled(enabled);
-		if (enabled && this.state.device) {
-			this.connect();
-		} else {
-			this.setConnectionState(enabled ? 'disconnected' : 'disabled');
-		}
+		this.connectIfReady();
 		this.updateEagerTailing();
 	}
 
@@ -1104,11 +1219,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.enabled = enabled;
 		this.setStateBroadcastMetricsEnabled(enabled);
 		if (enabled) {
-			if (this.state.device) {
-				this.connect();
-			} else {
-				this.setConnectionState('disconnected');
-			}
+			this.connectIfReady();
 		} else {
 			this.disconnect();
 			this.setConnectionState('disabled');
@@ -2173,7 +2284,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				return;
 			}
 			this.clearConnectTimer();
-			this.reconnectAttempt = 0;
+			// 失敗の回数は、この接続が一定時間続いてから 0 に戻す（繋がった直後に落ちる経路で
+			// 最短間隔の張り直しを繰り返さないため。Orca の RELAY_STABLE_CONNECTION_MS と同じ）。
+			this.armStableConnectionReset(socket);
 			// 復帰したので、次に断が起きたら改めて結論を残す。捨てないと「機体あたり1件」で
 			// 打ち止めになり、インシデントが何回起きたのかが数えられなくなる。
 			this.lastAuthProbeOutcome = undefined;
@@ -2301,7 +2414,84 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			clearInterval(this.keepaliveTimer);
 			this.keepaliveTimer = undefined;
 		}
+		this.clearResumeProbe();
 		this.awaitingPong = false;
+	}
+
+	/** 接続が {@link PARADIS_RELAY_STABLE_CONNECTION_MS} 続いたら、失敗の回数を 0 に戻す。 */
+	private armStableConnectionReset(socket: WebSocket): void {
+		this.clearStableConnectionReset();
+		const timer = setTimeout(() => {
+			if (this.stableConnectionTimer === timer) {
+				this.stableConnectionTimer = undefined;
+			}
+			if (this.socket === socket && socket.readyState === WebSocket.OPEN) {
+				this.reconnectAttempt = 0;
+			}
+		}, PARADIS_RELAY_STABLE_CONNECTION_MS);
+		this.stableConnectionTimer = timer;
+	}
+
+	private clearStableConnectionReset(): void {
+		if (this.stableConnectionTimer) {
+			clearTimeout(this.stableConnectionTimer);
+			this.stableConnectionTimer = undefined;
+		}
+	}
+
+	private clearResumeProbe(): void {
+		if (this.resumeProbeTimer) {
+			clearTimeout(this.resumeProbeTimer);
+			this.resumeProbeTimer = undefined;
+		}
+	}
+
+	/**
+	 * OS のスリープ復帰。リレーへの接続を今すぐ確かめ、死んでいれば張り直す。
+	 *
+	 * スリープ中は経路（NAT・リレーのエッジ）が接続を忘れていることが多いのに、保活の ping は 45 秒
+	 * ごとなので、切断に気づくまで最悪 90 秒かかり、その間スマホには「PC オフライン」が出て通知も
+	 * 届かなかった。pong を返すリレーなら今すぐ ping を撃って数秒で見切り、確かめようのない接続
+	 * （保活未対応のリレー・ハンドシェイク中）はスリープを跨いだものを信用せず張り直す。
+	 * 眠っていた間の失敗は数えず、最短の間隔から始める。
+	 */
+	async handleSystemResume(): Promise<void> {
+		if (!this.enabled || !this.state.device || this.isStoreBlocked()) {
+			return;
+		}
+		this.reconnectAttempt = 0;
+		const socket = this.socket;
+		if (!socket) {
+			if (this.reconnectTimer) {
+				clearTimeout(this.reconnectTimer);
+				this.reconnectTimer = undefined;
+			}
+			this.connect();
+			return;
+		}
+		if (socket.readyState === WebSocket.OPEN && this.keepaliveAcknowledged) {
+			this.clearResumeProbe();
+			this.sendKeepalivePing(socket);
+			const timer = setTimeout(() => {
+				if (this.resumeProbeTimer === timer) {
+					this.resumeProbeTimer = undefined;
+				}
+				if (this.socket === socket && this.awaitingPong) {
+					this.onKeepaliveTimeout(socket);
+				}
+			}, RELAY_RESUME_PROBE_TIMEOUT_MS);
+			this.resumeProbeTimer = timer;
+			return;
+		}
+		try { socket.close(4003, 'system resume'); } catch { /* すでに死んでいる */ }
+		this.socket = undefined;
+		this.clearConnectTimer();
+		this.stopKeepalive();
+		this.handleDisconnected('system-resume', 'Desktop relay connection was replaced after the system resumed', {
+			close_code: 4003,
+			safe_close_reason: 'system resume',
+			safe_socket_error: '',
+		});
 	}
 
 	private clearConnectTimer(): void {
@@ -2319,6 +2509,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// PC自身のリレーWSが切れた場合も、presence offline経路と同じ3点セットで
 		// per-mobileリソース（browserMirrorのcaptureTimer/上流CDPソケット、agentChatの購読）を解放する。
 		const mobileSessionCount = this.sessions.size;
+		this.clearStableConnectionReset();
 		for (const id of this.sessions.keys()) {
 			this.browserMirror.stopSession(id);
 			this.agentChat.dropSubscriber(id);
@@ -2385,6 +2576,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		this.stopKeepalive();
 		this.clearConnectTimer();
+		this.clearStableConnectionReset();
 		// 意図した切断なので、予約済みの切断レポートは破棄する（機能を無効化しただけで
 		// 「復帰できなかった」と報告してしまわないように）。
 		this.disconnectReporter.setEnabled(false);
@@ -2407,10 +2599,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			return;
 		}
 		// 認証切れが確定しているなら、30秒間隔で叩き続けても復帰しない（再ペアリング待ち）。
-		const delay = this.unauthorized
-			? RELAY_UNAUTHORIZED_RETRY_MS
-			: Math.min(500 * 2 ** this.reconnectAttempt, 30_000);
+		// どちらも揺らぎを入れ、リレーの更新で全 PC が同時に切れても同じ時刻に押し寄せないようにする。
 		this.reconnectAttempt++;
+		const delay = this.unauthorized
+			? paradisRelayJitteredDelayMs(RELAY_UNAUTHORIZED_RETRY_MS)
+			: paradisRelayReconnectDelayMs(this.reconnectAttempt);
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = undefined;
 			this.connect();

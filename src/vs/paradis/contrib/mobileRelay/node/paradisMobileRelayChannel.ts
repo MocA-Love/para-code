@@ -15,6 +15,8 @@ import { IEncryptionService } from '../../../../platform/encryption/common/encry
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { INativeHostService } from '../../../../platform/native/common/native.js';
+import { NativeHostService } from '../../../../platform/native/common/nativeHostService.js';
 import { IParadisCdpFrameSubscription, IParadisSharedPageBindings, PARADIS_CDP_TARGET_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../common/paradisMobileRelay.js';
 import { PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, ParadisMobileWindowLeaseClient } from '../common/paradisMobileWindowLease.js';
@@ -30,6 +32,7 @@ import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
  * ParadisAgentBrowserService 実体。targets応答の sharedToken 用）。
  * voiceClips は同一 shared process の通知サービスが発火する生成済みAivis音声（MP3）で、
  * 音声通知を開始しているモバイルへそのまま配るために注入する。
+ * OS のスリープ復帰は main の 'nativeHost' チャネルから受け、リレーの接続を即座に確かめさせる。
  */
 export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs, sharedPageBindings?: IParadisSharedPageBindings, voiceClips?: Event<VSBuffer>): IDisposable {
 	const store = new DisposableStore();
@@ -38,6 +41,12 @@ export function registerParadisMobileRelay(server: IPCServer, userDataPath: stri
 	const cdpFrames = ProxyChannel.toService<IParadisCdpFrameSubscription>(mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL));
 	const windowLeaseClient = new ParadisMobileWindowLeaseClient(mainProcessService.getChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL));
 	const service = store.add(new ParadisMobileRelayService(userDataPath, encryptionService, cdpFrames, sharedPageBindings, windowLeaseClient, logService, configurationService, args, voiceClips));
+	// OS のスリープ復帰（electron-main の powerMonitor）。shared process は眠っていた間に経路が
+	// 死んだことを保活の ping（45秒ごと）でしか知れないので、復帰したら今すぐ確かめさせる。
+	const nativeHostService = new NativeHostService(-1 /* shared process は window ではない */, mainProcessService) as INativeHostService;
+	store.add(nativeHostService.onDidResumeOS(() => {
+		service.handleSystemResume().catch(error => logService.warn('[paradisMobileRelay] resume probe failed', error));
+	}));
 	server.registerChannel(PARADIS_MOBILE_RELAY_CHANNEL, ProxyChannel.fromService(service, store));
 	return store;
 }
