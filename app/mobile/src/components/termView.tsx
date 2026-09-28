@@ -884,7 +884,7 @@ function buildHtml(): string {
 	function exitSelection() {
 		selecting = false;
 		selectedAll = false;
-		dragging = null;
+		stopDrag();
 		[handleStart, handleEnd, menu].forEach(function (el) { el.style.display = 'none'; });
 		if (term.hasSelection()) {
 			term.clearSelection();
@@ -940,34 +940,43 @@ function buildHtml(): string {
 		selectedAll = true;
 		placeSelectionChrome();
 	});
+	// つまみを動かしている間だけ、指の動きでページが動かないよう止める。止められる（passive でない）
+	// touchmove を常に置くと、通常のスクロールまで JS を待つようになるので、ドラッグの間だけ付ける。
+	function onDragMove(ev) {
+		if (!dragging || ev.touches.length !== 1) {
+			return;
+		}
+		ev.preventDefault();
+		// 指の下の文字が隠れないよう、少し上の文字を指す。
+		var cell = cellAtPoint(ev.touches[0].clientX, ev.touches[0].clientY - 18, true);
+		if (!cell) {
+			return;
+		}
+		var linear = linearAt(cell);
+		var anchorIsStart = selectAnchor <= selectFocus;
+		if ((dragging === 'start') === anchorIsStart) {
+			selectAnchor = linear;
+		} else {
+			selectFocus = linear;
+		}
+		applySelection();
+	}
+	function stopDrag() {
+		dragging = null;
+		document.removeEventListener('touchmove', onDragMove);
+	}
 	function startDrag(which) {
 		return function (ev) {
 			ev.preventDefault();
 			ev.stopPropagation();
 			dragging = which;
 			touchTracking = false;
+			document.addEventListener('touchmove', onDragMove, { passive: false });
 		};
 	}
 	handleStart.addEventListener('touchstart', startDrag('start'), { passive: false });
 	handleEnd.addEventListener('touchstart', startDrag('end'), { passive: false });
 	document.addEventListener('touchmove', function (ev) {
-		if (dragging && ev.touches.length === 1) {
-			ev.preventDefault();
-			// 指の下の文字が隠れないよう、少し上の文字を指す。
-			var cell = cellAtPoint(ev.touches[0].clientX, ev.touches[0].clientY - 18, true);
-			if (!cell) {
-				return;
-			}
-			var linear = linearAt(cell);
-			var anchorIsStart = selectAnchor <= selectFocus;
-			if ((dragging === 'start') === anchorIsStart) {
-				selectAnchor = linear;
-			} else {
-				selectFocus = linear;
-			}
-			applySelection();
-			return;
-		}
 		if (gesture && ev.touches.length === 1) {
 			var dx = ev.touches[0].clientX - gesture.x;
 			var dy = ev.touches[0].clientY - gesture.y;
@@ -976,7 +985,7 @@ function buildHtml(): string {
 				clearTimeout(longPressTimer);
 			}
 		}
-	}, { passive: false });
+	}, { passive: true });
 	document.addEventListener('touchstart', function (ev) {
 		lastTouchAt = Date.now();
 		clearTimeout(longPressTimer);
@@ -1003,7 +1012,7 @@ function buildHtml(): string {
 		lastTouchAt = Date.now();
 		clearTimeout(longPressTimer);
 		if (dragging) {
-			dragging = null;
+			stopDrag();
 			return;
 		}
 		var current = gesture;
