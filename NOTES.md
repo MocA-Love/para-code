@@ -1469,6 +1469,23 @@ upstream のディクテーションは Foundry Local のネイティブ部品�
 
 音声入力の間は Para Code の読み上げを止める（`notifications/electron-browser/paradisDictationAudioHold.contribution.ts`、音声入力を配布していなくても拡張機能や開発版の音声入力で働く）。shared process の `AudioScheduler.setHeld` が、再生中の afplay 等を止め、通知音を捨て、新しい発話を溜めて終わってから読む。止めるのはどれか1つのウィンドウでも音声入力中のとき（接続ごとに持ち、接続が切れたら外す。ウィンドウは起動時に自分の状態を送り直し、音声入力中は状態が動くたびに送り直す）。上限はウィンドウごとに 10 分で、過ぎたウィンドウだけを外す（モデルの初回ダウンロード中や、upstream のセッション数が戻らなかったときに通知が鳴らなくなり続けないため）。**Agent Sessions ウィンドウの音声入力では止まらない。** この仕組みは通常ウィンドウの集約ファイルからしか読み込まれず、Sessions ウィンドウのチャット入力にマイクが出るかは【要確認】（出るなら Sessions 側からも読み込む）。**外部の aivis-mcp は止めていない。** 止める口（`aivis --mute`）がおやすみモードと共有で、解除のときにおやすみモードのミュートやユーザー自身のミュートまで解いてしまうため。
 
+## タイトルバーの fork 部品は、タイトルバー自身の幅で段階的に畳む（titlebarFit、2026-09-28）
+
+upstream の `.has-center > .titlebar-left` は `width: 20%` で内容より狭くなれる。fork はここへ CPU/RAM・リミット・サービス状態・ポートを足しているので、1400px 未満で中央のコマンドセンターの上に重なっていた（同じ z-index 2500）。`src/vs/paradis/contrib/titlebarFit/browser/` の小さな制御と CSS で直した（Electron の API は使わないので browser 層に置き、`test/browser/paradisTitlebarFit.test.ts` で段の凍結・メニューバーの判定・後始末を検査している）。呼び出しは `electron-browser/parts/titlebar/titlebarPart.ts` の既存の PARA-PATCH 点（`createContentArea`）に1行で、逆方向 import の許可は `eslint.config.js` にある。
+
+- 左側は、fork の部品があってカスタムメニューバーが見えていないときだけ `min-width: min-content` にし、部品は縮めない（`flex-shrink: 0`）。重なりは起きず、中央が縮む
+- 段はタイトルバー自身の幅（`rootContainer.clientWidth`）を `ResizeObserver` で測り、`paradis-fit-1400/1200/1000` をタイトルバーに付ける。1400px 以下で「エージェント一覧」「ブラウザ一覧」をアイコンだけに、1200px 以下で CPU/RAM の数値を隠し、1000px 以下で正常・不明のサービス状態を隠す。ポート一覧は他に入口が無いので畳まない
+- ウィンドウのメディアクエリを使わない理由: ズームアウト（倍率 < 1）ではタイトルバーが `counter-zoom` で等倍に戻して描かれ、ウィンドウの CSS px とずれる。実機で確かめた値（zoom -2、ウィンドウ 900 DIP）: `innerWidth` 1296、タイトルバーの `clientWidth` と `getBoundingClientRect().width` はどちらも 900（タイトルバー自身の座標）。ズームイン（倍率 > 1）ではタイトルバーも拡大されるので CSS px のまま一致する
+- `container-type` による container query は使わない。タイトルバーにレイアウトの封じ込めが付き、メニューバーのドロップダウン（`position: fixed`）の基準と重なり順が変わるため
+- メニューバーの判定は要素の有無ではなく実際の表示（`offsetWidth > 0`）で見る。`.menubar` は `window.menuBarVisibility` が `hidden` / `toggle` でも `.titlebar-left` に残る。付け替えは `MutationObserver` で追う
+- 左側のパネル・ポップオーバーが開いている（部品に `active` が付いている）あいだは段を変えない。パネルは開いた時点のボタンの位置に置かれるので、段を変えるとボタンが隠れたり隣が畳まれてずれたりしてパネルだけが取り残される
+
+**upstream 取り込み時に確認すること**: タイトルバーの before/after を 900 / 1100 / 1300 / 1500px で撮って見比べる（Dark Modern と Light Modern、ズーム 0 / -2 / +1）。重なりが無いこと、段ごとに畳まれる部品が上の通りであることを見る。upstream が `.has-center > .titlebar-left/right` の幅・`min-width`、`counter-zoom` の付け方、`titlebar-left` 直下の構成（`.menubar` の置き場所）を変えていたら、`paradisTitlebarFit.css` のセレクタと `paradisTitlebarFit.ts` の測り方を見直す。
+
+【要確認】Windows / Linux のカスタムタイトルバーでメニューバーが見えているときは、左側を内容の幅に固定しないので、fork の部品は今までどおり左の枠からはみ出しうる（幅での畳みだけが効く）。Windows 実機が無く、この状態の見た目は確かめていない。`menuBarVisibility` が `hidden` / `toggle`（Alt で出す前）/ `compact` のときは macOS と同じ扱いになるはず（推測。CDP で偽の `.menubar` を足して、表示中はクラスが付き、`display: none` で外れることだけ確かめた）。
+
+別件: `Sign In` が `Customize Layout` に 8px 重なるのは upstream の `titlebarpart.css`（macOS の `.action-toolbar-container { position: relative; right: 8px }`）が原因で、fork の CSS ではない。右の枠が内容ぎりぎりまで縮んだときだけ出る。
+
 ## 定期実行とスキル管理（2026-09-27、フェーズ8 担当B、O3・O6）
 
 ### 定期実行（`src/vs/paradis/contrib/scheduledRuns/`）
