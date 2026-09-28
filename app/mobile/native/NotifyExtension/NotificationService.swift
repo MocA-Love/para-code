@@ -17,6 +17,13 @@ final class NotificationService: UNNotificationServiceExtension {
 
 	private var contentHandler: ((UNNotificationContent) -> Void)?
 	private var bestAttemptContent: UNMutableNotificationContent?
+	/// contentHandler を一度だけ呼ぶための印。通知センターの問い合わせの返事と期限切れ
+	/// （serviceExtensionTimeWillExpire）は別のスレッドから来うるので、鍵で守る。
+	private let deliverLock = NSLock()
+	private var delivered = false
+	/// 復号した識別子を userInfo へ書き終えたか。期限切れで出すとき、書き終えていなければ
+	/// 生ペイロードの識別子（リレーが差し込めるもの）を剥がしてから出す。
+	private var wroteDecryptedIds = false
 
 	// 共有 Keychain の座標。メインアプリ側の保存条件と一致させること。
 	// expo-secure-store は requireAuthentication=false のとき kSecAttrService に
@@ -30,7 +37,7 @@ final class NotificationService: UNNotificationServiceExtension {
 		self.bestAttemptContent = (request.content.mutableCopy() as? UNMutableNotificationContent)
 
 		guard let bestAttempt = bestAttemptContent else {
-			contentHandler(request.content)
+			deliver(request.content)
 			return
 		}
 
@@ -38,12 +45,8 @@ final class NotificationService: UNNotificationServiceExtension {
 		// 復号できなかったのに APNs の生ペイロードに識別子が載っていたら、それはリレーが差し込んだもの。
 		// アプリはタップの遷移と通知センターの後始末で userInfo の識別子を読むので、ここで捨てる。
 		func deliverFallback() {
-			var userInfo = bestAttempt.userInfo
-			for key in Self.appReadKeys {
-				userInfo.removeValue(forKey: key)
-			}
-			bestAttempt.userInfo = userInfo
-			contentHandler(bestAttempt)
+			Self.stripAppReadKeys(bestAttempt)
+			deliver(bestAttempt)
 		}
 
 		guard let cipherText = request.content.userInfo["e"] as? String,
@@ -111,6 +114,9 @@ final class NotificationService: UNNotificationServiceExtension {
 		}
 		bestAttempt.threadIdentifier = Self.threadKey(pcId: keyPcId, ws: json["ws"] as? String)
 		bestAttempt.userInfo = userInfo
+		deliverLock.lock()
+		wroteDecryptedIds = true
+		deliverLock.unlock()
 
 		// ホーム画面・ロック画面のウィジェットの要約（App Group）の要対応を書き換えて描き直させる
 		// （アプリが閉じている間にウィジェットを新しくできる唯一の経路）。要約がまだ無い・App Group が
@@ -122,28 +128,57 @@ final class NotificationService: UNNotificationServiceExtension {
 		}
 
 		guard let collapse = collapse else {
-			contentHandler(bestAttempt)
+			deliver(bestAttempt)
 			return
 		}
 		// 同じエージェントの前の通知（プッシュ・アプリが出したローカル通知の両方）を消してから出す。
 		// 消せなくても通知は必ず出す（取得が返ってこない場合は serviceExtensionTimeWillExpire が出す）。
 		let center = UNUserNotificationCenter.current()
-		center.getDeliveredNotifications { delivered in
-			let previous = delivered
+		center.getDeliveredNotifications { [weak self] deliveredNotifications in
+			let previous = deliveredNotifications
 				.filter { ($0.request.content.userInfo["collapse"] as? String) == collapse }
 				.map { $0.request.identifier }
 			if !previous.isEmpty {
 				center.removeDeliveredNotifications(withIdentifiers: previous)
 			}
-			contentHandler(bestAttempt)
+			self?.deliver(bestAttempt)
 		}
 	}
 
 	override func serviceExtensionTimeWillExpire() {
-		// 復号が間に合わなかった場合は現時点の内容をそのまま返す。
-		if let contentHandler = contentHandler, let bestAttemptContent = bestAttemptContent {
-			contentHandler(bestAttemptContent)
+		// 復号が間に合わなかった場合は現時点の内容で出す。復号した識別子を書き終えていなければ、
+		// 生ペイロードの識別子は剥がす（フォールバックと同じ扱い）。
+		guard let bestAttemptContent = bestAttemptContent else {
+			return
 		}
+		deliverLock.lock()
+		let decrypted = wroteDecryptedIds
+		deliverLock.unlock()
+		if !decrypted {
+			Self.stripAppReadKeys(bestAttemptContent)
+		}
+		deliver(bestAttemptContent)
+	}
+
+	/// contentHandler を一度だけ呼ぶ（2回目以降は何もしない）。
+	private func deliver(_ content: UNNotificationContent) {
+		deliverLock.lock()
+		let first = !delivered
+		delivered = true
+		let handler = contentHandler
+		deliverLock.unlock()
+		if first {
+			handler?(content)
+		}
+	}
+
+	/// APNs の生ペイロードに載っていたアプリ向けの識別子を捨てる（リレーが差し込めるため）。
+	private static func stripAppReadKeys(_ content: UNMutableNotificationContent) {
+		var userInfo = content.userInfo
+		for key in appReadKeys {
+			userInfo.removeValue(forKey: key)
+		}
+		content.userInfo = userInfo
 	}
 
 	/// アプリが userInfo から読む識別子（app/mobile/src/notificationTray.ts の readTrayData と、
