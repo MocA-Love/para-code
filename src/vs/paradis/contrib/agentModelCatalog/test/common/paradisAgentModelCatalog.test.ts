@@ -90,7 +90,7 @@ suite('ParadisAgentModelCatalog', () => {
 			{
 				id: 'claude',
 				// 既定の候補にあった opus / sonnet の既定エフォートは引き継ぐ。一覧に出ない opusplan は残す
-				models: ['--model opus|medium|5', '--model claude-fable-5-1|-|5', '--model sonnet|high|5', '--model "opus[1m]"|-|2', '--model custom-model|-|0', '--model haiku|-|0', '--model opusplan|medium|5'],
+				models: ['--model opus|medium|5', '--model claude-fable-5-1|-|5', '--model sonnet|medium|5', '--model "opus[1m]"|-|2', '--model custom-model|-|0', '--model haiku|-|0', '--model opusplan|medium|5'],
 				efforts: ['--effort low', '--effort medium', '--effort high', '--effort xhigh', '--effort max'],
 			},
 			{
@@ -161,6 +161,7 @@ suite('ParadisAgentModelCatalog', () => {
 		}, {
 			current: { userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
 			past: [
+				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
 				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
 				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
 				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
@@ -264,6 +265,6 @@ suite('ParadisAgentModelCatalog', () => {
 	test('既定の定義を変えたら、変える前の値を過去の既定値（paradisAgentListPastDefaults.ts）の末尾に足す', () => {
 		// この指紋が変わったら、変える前の PARADIS_DEFAULT_AGENT_COMMANDS を JSON の形で
 		// PARADIS_PAST_DEFAULT_AGENT_COMMANDS へ足してから、ここの値を新しい指紋に書き換える
-		assert.strictEqual(stringHash(JSON.stringify(PARADIS_DEFAULT_AGENT_COMMANDS), 0), 361081178);
+		assert.strictEqual(stringHash(JSON.stringify(PARADIS_DEFAULT_AGENT_COMMANDS), 0), -844608960);
 	});
 });
