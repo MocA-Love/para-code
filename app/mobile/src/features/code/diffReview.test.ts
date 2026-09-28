@@ -47,6 +47,15 @@ describe('確認後に変更あり', () => {
 			count: reviewedCount([after], marks),
 		}).toEqual({ same: 'reviewed', changed: 'changed', none: 'todo', todo: ['a.ts'], count: 0 });
 	});
+
+	it('新しく作ったファイルは、大きさか時刻が変われば「確認後に変更あり」にする', () => {
+		const before = scmEntry({ x: '?', y: '?', path: 'new.ts', size: 10, mtime: 1 });
+		const marks: ReviewMarks = { 'new.ts': { identity: before.identity, reviewedAt: 1 } };
+		expect([
+			reviewStateOf(scmEntry({ x: '?', y: '?', path: 'new.ts', size: 10, mtime: 1 }), marks),
+			reviewStateOf(scmEntry({ x: '?', y: '?', path: 'new.ts', size: 10, mtime: 2 }), marks),
+		]).toEqual(['reviewed', 'changed']);
+	});
 });
 
 describe('stageableEntries', () => {

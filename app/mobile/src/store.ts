@@ -314,10 +314,11 @@ export interface PresetRunResult extends PresetDef {
 export interface ScmStatusResult {
 	branch: string;
 	/**
-	 * `oldPath` と行数（`added` / `removed` は作業ツリー側、`staged*` はインデックス側。バイナリは -1）は
-	 * 任意項目で、W2-14 より前の PC は送らない（差分レビューの「確認後に変更あり」の判定に使う）。
+	 * `oldPath` と行数（`added` / `removed` は作業ツリー側、`staged*` はインデックス側。バイナリは -1）、
+	 * 未追跡のファイルの `size` / `mtime` は任意項目で、W2-14 より前の PC は送らない（差分レビューの
+	 * 「確認後に変更あり」の判定に使う）。
 	 */
-	files: { x: string; y: string; path: string; oldPath?: string; added?: number; removed?: number; stagedAdded?: number; stagedRemoved?: number }[];
+	files: { x: string; y: string; path: string; oldPath?: string; added?: number; removed?: number; stagedAdded?: number; stagedRemoved?: number; size?: number; mtime?: number }[];
 }
 /** scm diff 応答。 */
 export interface ScmDiffResult {

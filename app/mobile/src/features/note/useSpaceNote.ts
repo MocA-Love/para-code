@@ -61,8 +61,21 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 	/** 離れるときの比較に使う、いまの本文の控え。 */
 	const textRef = useRef('');
 	textRef.current = text;
-	/** 最後に PC から受け取ったメモの版（`note.cas.v1` より前の PC なら undefined）。全文の保存に付ける。 */
-	const versionRef = useRef<number | undefined>(undefined);
+	/**
+	 * 最後に PC から受け取ったメモの版（`note.cas.v1` より前の PC なら undefined）。全文の保存に付ける。
+	 * どのスペースの版かも持つ（スペースを切り替えた後に、前のスペースの応答で上書きしないため）。
+	 */
+	const versionRef = useRef<{ readonly wsId: string; version: number | undefined } | undefined>(undefined);
+	/**
+	 * 保存を1本ずつ送る列。切り替え・追加の応答で版が進む前に全文の保存を送ると、古い版を付けて送ることになり
+	 * 書かれない（自分の保存どうしで食い違う）ので、前の保存の応答を待ってから次を送り、送る直前の版を付ける。
+	 */
+	const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+	const enqueueSave = useCallback((task: () => Promise<void>) => {
+		const run = saveQueueRef.current.then(task, task);
+		saveQueueRef.current = run.catch(() => undefined);
+		return run;
+	}, []);
 	const pcHasCas = usePcCapability(NOTE_CAS_CAPABILITY);
 	const pcHasCasRef = useRef(pcHasCas);
 	pcHasCasRef.current = pcHasCas;
@@ -74,12 +87,14 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 		const generation = ++generationRef.current;
 		setLoading(true);
 		setError(undefined);
-		versionRef.current = undefined;
+		versionRef.current = { wsId, version: undefined };
 		useAppStore.getState().noteGet(wsId)
 			.then(result => {
 				if (generation === generationRef.current) {
 					setText(result.text ?? '');
-					versionRef.current = result.updatedAt;
+					if (versionRef.current?.wsId === wsId) {
+						versionRef.current.version = result.updatedAt;
+					}
 				}
 			})
 			.catch(() => {
@@ -105,17 +120,17 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 			if (trimmed !== textRef.current) {
 				// 画面はもう無いので、PC で先に書き換えられていたら書きかけをクリップボードへ逃がして知らせる
 				const change = replaceNoteChange(trimmed);
-				void useAppStore.getState().noteSet(wsId, trimmed, spaceNoteSetOptions(change, versionRef.current, pcHasCasRef.current))
-					.then(async result => {
-						if (result.conflict === true) {
-							const copied = await writeClipboardText(trimmed);
-							useParaToast.getState().show({ key: 'space-note-conflict', text: 'メモを保存しませんでした', sub: spaceNoteConflictMessage(spaceNoteConflictKind(change, copied)), icon: 'alert-circle', tone: 'warn' }, 6_000);
-						}
-					})
-					.catch(() => undefined);
+				void enqueueSave(async () => {
+					const version = versionRef.current?.wsId === wsId ? versionRef.current.version : undefined;
+					const result = await useAppStore.getState().noteSet(wsId, trimmed, spaceNoteSetOptions(change, version, pcHasCasRef.current)).catch(() => undefined);
+					if (result?.conflict === true) {
+						const copied = await writeClipboardText(trimmed);
+						useParaToast.getState().show({ key: 'space-note-conflict', text: 'メモを保存しませんでした', sub: spaceNoteConflictMessage(spaceNoteConflictKind(change, copied)), icon: 'alert-circle', tone: 'warn' }, 6_000);
+					}
+				});
 			}
 		};
-	}, [wsId, reloadCount]);
+	}, [wsId, reloadCount, enqueueSave]);
 
 	const commit = useCallback((change: SpaceNoteChange) => {
 		if (wsId === undefined) {
@@ -129,11 +144,12 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 		setBusy(true);
 		setError(undefined);
 		const current = () => generation === generationRef.current && sequence === saveSequenceRef.current;
-		useAppStore.getState().noteSet(wsId, next, spaceNoteSetOptions(change, versionRef.current, pcHasCas))
+		// 送るのは前の保存の応答を受けてから（その時点の版を付ける）
+		void enqueueSave(() => useAppStore.getState().noteSet(wsId, next, spaceNoteSetOptions(change, versionRef.current?.wsId === wsId ? versionRef.current.version : undefined, pcHasCas))
 			.then(async (result: SpaceNoteResult) => {
-				if (generation === generationRef.current) {
+				if (versionRef.current?.wsId === wsId) {
 					// 後から送った保存の応答より先に届いた応答でも、版は PC のその時点の最新なので控える
-					versionRef.current = result.updatedAt;
+					versionRef.current.version = result.updatedAt;
 				}
 				if (!current()) {
 					return;
@@ -158,8 +174,8 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 				if (current()) {
 					setBusy(false);
 				}
-			});
-	}, [wsId, pcHasCas]);
+			}));
+	}, [wsId, pcHasCas, enqueueSave]);
 
 	const holdDraft = useCallback((draft: string | undefined) => {
 		draftRef.current = draft;

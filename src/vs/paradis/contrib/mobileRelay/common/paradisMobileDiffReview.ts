@@ -30,6 +30,12 @@ export interface IParadisMobileStatusFile {
 	/** インデックスと HEAD の差（`git diff --cached --numstat`）の追加行・削除行。バイナリは -1。 */
 	readonly stagedAdded?: number;
 	readonly stagedRemoved?: number;
+	/**
+	 * 未追跡のファイルの大きさ（バイト）と最終更新時刻（epoch ms）。未追跡のファイルは行数を数えられないので、
+	 * 書き換えられたことをこれで見分ける。フォルダ（`dir/`）と、数えきれなかったものには付けない。
+	 */
+	readonly size?: number;
+	readonly mtime?: number;
 }
 
 /**
@@ -97,6 +103,50 @@ export function paradisWithMobileLineCounts(files: readonly IParadisMobileStatus
 	});
 }
 
+/** 未追跡のファイルの大きさと時刻を調べる数の上限（多すぎる一覧で status の応答を遅くしない）。 */
+export const PARADIS_MOBILE_UNTRACKED_STAT_LIMIT = 200;
+
+/** 大きさと時刻を調べる未追跡のファイルか（フォルダ `dir/` は除く）。 */
+export function paradisIsUntrackedFile(file: IParadisMobileStatusFile): boolean {
+	return file.x === '?' && file.y === '?' && !file.path.endsWith('/');
+}
+
+/**
+ * 未追跡のファイルに大きさと時刻を足す（先頭から {@link PARADIS_MOBILE_UNTRACKED_STAT_LIMIT} 件まで）。
+ * `stat` が undefined を返したもの（読めない・消えた）には付けない。
+ */
+export async function paradisWithUntrackedFileStats(files: readonly IParadisMobileStatusFile[], stat: (path: string) => Promise<{ readonly size: number; readonly mtime: number } | undefined>): Promise<IParadisMobileStatusFile[]> {
+	let budget = PARADIS_MOBILE_UNTRACKED_STAT_LIMIT;
+	return Promise.all(files.map(async file => {
+		if (!paradisIsUntrackedFile(file) || budget <= 0) {
+			return file;
+		}
+		budget--;
+		const found = await stat(file.path).catch(() => undefined);
+		return found !== undefined ? { ...file, size: found.size, mtime: found.mtime } : file;
+	}));
+}
+
+/**
+ * `git add` の前後で、足した中身がスマホの見たものと同じだと言えるか（印をステージ後の識別へ付け替えてよいか）。
+ * - 作業ツリー側だけの変更だったもの: ステージ後の行数が、前の作業ツリー側の行数と同じ
+ * - 未追跡だったもの: 新しく足された（`A `）うえで、大きさと時刻が同じ
+ * - 両側に変更があったもの（`MM` など）: 行数を足し合わせて比べられないので、付け替えない
+ * どれも、足した後に作業ツリー側へ変更が残っていれば（その間に書き換えられた）付け替えない。
+ */
+export function paradisStagedConsistently(before: IParadisMobileStatusFile, after: IParadisMobileStatusFile): boolean {
+	if (after.y !== ' ') {
+		return false;
+	}
+	if (before.x === '?' && before.y === '?') {
+		return after.x === 'A' && before.size !== undefined && before.mtime !== undefined && after.size === before.size && after.mtime === before.mtime;
+	}
+	if (before.x === ' ') {
+		return before.added !== undefined && before.removed !== undefined && after.stagedAdded === before.added && after.stagedRemoved === before.removed;
+	}
+	return false;
+}
+
 /** FNV-1a（32 ビット）。`seed` を変えて 2 回回し、64 ビットぶんの識別にする。 */
 function fnv1a(text: string, seed: number): string {
 	let hash = seed >>> 0;
@@ -108,12 +158,13 @@ function fnv1a(text: string, seed: number): string {
 }
 
 /**
- * 変更1件の「中身」の識別（Orca の diffIdentity と同じ考え方）。状態・パス・元のパス・両側の行数から作るので、
- * 確認した後にエージェントが書き換えて行数が変われば別の値になる（同じ行数の書き換えは見分けられない）。
+ * 変更1件の「中身」の識別（Orca の diffIdentity と同じ考え方）。状態・パス・元のパス・両側の行数（未追跡の
+ * ファイルは大きさと時刻）から作るので、確認した後にエージェントが書き換えて行数が変われば別の値になる
+ * （追跡中のファイルで行数が同じ書き換えは見分けられない）。
  * ステージすると状態と行数の側が変わるので別の値になる（PC が確認済みのステージを行ったときは印を付け替える）。
  */
 export function paradisMobileDiffIdentity(file: IParadisMobileStatusFile): string {
-	const key = JSON.stringify(['worktree', file.x, file.y, file.oldPath ?? '', file.path, file.added ?? '', file.removed ?? '', file.stagedAdded ?? '', file.stagedRemoved ?? '']);
+	const key = JSON.stringify(['worktree', file.x, file.y, file.oldPath ?? '', file.path, file.added ?? '', file.removed ?? '', file.stagedAdded ?? '', file.stagedRemoved ?? '', file.size ?? '', file.mtime ?? '']);
 	return fnv1a(key, 0x811c9dc5) + fnv1a(key, 0x2f5d8a3b);
 }
 

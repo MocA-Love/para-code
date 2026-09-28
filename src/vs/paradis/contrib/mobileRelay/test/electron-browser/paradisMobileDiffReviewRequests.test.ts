@@ -52,7 +52,7 @@ suite('ParadisMobileDiffReviewRequests', () => {
 				if (text === undefined) {
 					throw new Error('missing');
 				}
-				return { isDirectory: false, size: text.length };
+				return { isDirectory: false, size: text.length, mtime: 1 };
 			},
 			readFile: async (uri: URI) => ({ value: VSBuffer.fromString(files[uri.path.slice('/repo/'.length)] ?? '') }),
 		});
@@ -119,7 +119,7 @@ suite('ParadisMobileDiffReviewRequests', () => {
 	test('adds, edits and deletes notes, and clears sent and stale ones', async () => {
 		const services = createServices();
 		const sent: IReply[] = [];
-		const files = { 'a.ts': 'one\ntwo\nthree' };
+		const files = { 'a.ts': 'one\ntwo\nthree', 'done.ts': 'kept' };
 		const host = createHost(services, sent, new FakeGit(' M a.ts\n'), files);
 		dispatch(host, { t: 'reviewNoteAdd', id: '1', path: 'a.ts', line: 2, lineText: 'two', body: ' rename this ' });
 		dispatch(host, { t: 'reviewNoteAdd', id: '2', path: 'a.ts', line: 3, lineText: 'three', body: 'and this' });
@@ -131,6 +131,8 @@ suite('ParadisMobileDiffReviewRequests', () => {
 		const edited = sent[3].notes![0].body;
 		const emptyEdit = sent[4].error;
 
+		// コミット済み（変更の一覧に無い）のファイルのメモは、行が残っていても片付ける
+		dispatch(host, { t: 'reviewNoteAdd', id: '5b', path: 'done.ts', line: 1, lineText: 'kept', body: 'committed' });
 		// 2 件目の行（three）が直されて無くなった。1 件目は行が 1 つ下へ動いただけなので残る
 		files['a.ts'] = 'zero\none\ntwo\nTHREE';
 		dispatch(host, { t: 'reviewNotesClear', id: '6' });
@@ -152,7 +154,7 @@ suite('ParadisMobileDiffReviewRequests', () => {
 			badLine: 'invalid note',
 			edited: 'renamed',
 			emptyEdit: 'invalid note',
-			cleared: { removed: 1, left: [first.id] },
+			cleared: { removed: 2, left: [first.id] },
 			deleted: [],
 		});
 		assert.notStrictEqual(second.id, first.id);
@@ -189,18 +191,14 @@ suite('ParadisMobileDiffReviewRequests', () => {
 	});
 
 	test('stages only reviewed files whose content is unchanged, and moves their marks to the staged identity', async () => {
-		const status = ' M a.ts\n M b.ts\nUU c.ts\n';
-		const git = new FakeGit(status, '1\t0\ta.ts\0' + '2\t0\tb.ts\0', '', { status: 'M  a.ts\n M b.ts\nUU c.ts\n', unstaged: '2\t0\tb.ts\0', staged: '1\t0\ta.ts\0' });
-		const identities = new Map(paradisWithMobileLineCounts(paradisParseMobilePorcelainStatus(status), '1\t0\ta.ts\0' + '2\t0\tb.ts\0', '').map(file => [file.path, paradisMobileDiffIdentity(file)]));
+		const status = ' M a.ts\n M b.ts\nUU c.ts\n M e.ts\n?? dir/\n';
+		const git = new FakeGit(status, '1\t0\ta.ts\0' + '2\t0\tb.ts\0' + '1\t1\te.ts\0', '', { status: 'M  a.ts\n M b.ts\nUU c.ts\n M e.ts\n?? dir/\n', unstaged: '2\t0\tb.ts\0' + '1\t1\te.ts\0', staged: '1\t0\ta.ts\0' });
+		const identities = new Map(paradisWithMobileLineCounts(paradisParseMobilePorcelainStatus(status), '1\t0\ta.ts\0' + '2\t0\tb.ts\0' + '1\t1\te.ts\0', '').map(file => [file.path, paradisMobileDiffIdentity(file)]));
 		const sent: IReply[] = [];
 		const host = createHost(createServices(), sent, git);
-		dispatch(host, { t: 'reviewSet', id: '1', marks: [{ path: 'a.ts', identity: identities.get('a.ts') }] });
-		const entries = [
-			{ path: 'a.ts', identity: identities.get('a.ts') },
-			{ path: 'b.ts', identity: '00ff' },
-			{ path: 'c.ts', identity: identities.get('c.ts') },
-			{ path: 'gone.ts', identity: '00aa' },
-		];
+		// e.ts は確認済みにしていない（スマホが送ってきても足さない）
+		dispatch(host, { t: 'reviewSet', id: '1', marks: ['a.ts', 'c.ts', 'dir/'].map(path => ({ path, identity: identities.get(path) })) });
+		const entries = ['a.ts', 'b.ts', 'c.ts', 'e.ts', 'dir/', 'gone.ts'].map(path => ({ path, identity: path === 'b.ts' ? '00ff' : identities.get(path) ?? '00aa' }));
 		dispatch(host, { t: 'reviewStage', id: '2', entries });
 		await flush();
 
@@ -211,23 +209,58 @@ suite('ParadisMobileDiffReviewRequests', () => {
 			skipped: sent[1].skipped,
 			mark: sent[1].marks!['a.ts'].identity === staged,
 		}, {
-			add: ['add -- a.ts'],
+			add: ['add -- :(literal)a.ts'],
 			staged: ['a.ts'],
-			skipped: [{ path: 'b.ts', reason: 'changed' }, { path: 'c.ts', reason: 'conflict' }, { path: 'gone.ts', reason: 'gone' }],
+			skipped: [
+				{ path: 'b.ts', reason: 'changed' },
+				{ path: 'c.ts', reason: 'conflict' },
+				{ path: 'e.ts', reason: 'not-reviewed' },
+				{ path: 'dir/', reason: 'unsupported' },
+				{ path: 'gone.ts', reason: 'gone' },
+			],
 			mark: true,
 		});
 	});
 
 	test('sends to an existing terminal only while the agent is in the foreground and waiting', () => {
-		const ready = { isAgent: true, status: undefined, hasCommandDetection: true, executingCommand: 'claude', screenShowsPrompt: false } as const;
+		const ready = { isAgent: true, status: undefined, parked: false, canPasteMultiline: true, screenShowsPrompt: false } as const;
 		assert.deepStrictEqual([
 			paradisReviewNotesTargetVerdict(ready),
 			paradisReviewNotesTargetVerdict({ ...ready, status: 'review' }),
 			paradisReviewNotesTargetVerdict({ ...ready, status: 'working' }),
 			paradisReviewNotesTargetVerdict({ ...ready, screenShowsPrompt: true }),
-			paradisReviewNotesTargetVerdict({ ...ready, executingCommand: undefined }),
-			paradisReviewNotesTargetVerdict({ ...ready, hasCommandDetection: false }),
+			// エージェントを抜けた後のシェル・ssh・python など（前面が claude / codex と確かめられない）
+			paradisReviewNotesTargetVerdict({ ...ready, canPasteMultiline: false }),
+			paradisReviewNotesTargetVerdict({ ...ready, parked: true }),
 			paradisReviewNotesTargetVerdict({ ...ready, isAgent: false }),
-		], ['ready', 'ready', 'busy', 'busy', 'not-running', 'unknown-foreground', 'not-agent']);
+		], ['ready', 'ready', 'busy', 'busy', 'not-running', 'parked', 'not-agent']);
+	});
+
+	test('strips terminal control characters from the request, refuses a second send in flight, and does not mark notes edited meanwhile as sent', async () => {
+		const services = createServices();
+		const sent: IReply[] = [];
+		const hostRef: { current?: IParadisMobileRequestHost } = {};
+		const launched: string[] = [];
+		services.set(IInstantiationService, {
+			invokeFunction: async (_fn: unknown, request: { prompt: string }) => {
+				launched.push(request.prompt);
+				// 起動を待つ間に、別の端末がメモを書き直す
+				dispatch(hostRef.current!, { t: 'reviewNoteEdit', id: 'edit', noteId: sent[1].notes![0].id, body: 'edited while sending' });
+			},
+		});
+		const host = hostRef.current = createHost(services, sent, new FakeGit(' M a.ts\n'), { 'a.ts': 'x\n' });
+		dispatch(host, { t: 'reviewNoteAdd', id: '1', path: 'a.ts', line: 1, lineText: 'x\u001b[201~rm -rf ~\u001b[200~', body: 'first\u0003' });
+		dispatch(host, { t: 'reviewNoteAdd', id: '2', path: 'a.ts', line: 1, lineText: 'x', body: 'second' });
+		const ids = sent[1].notes!.map(note => note.id);
+		dispatch(host, { t: 'reviewNotesSend', id: 'send', ids, target: { agent: 'claude' } });
+		dispatch(host, { t: 'reviewNotesSend', id: 'again', ids, target: { agent: 'claude' } });
+		await flush();
+
+		const reply = (id: string) => sent.find(candidate => candidate.id === id)!;
+		assert.deepStrictEqual({
+			controlCharacters: launched.some(prompt => /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(prompt)),
+			again: reply('again').code,
+			sentAt: reply('send').notes!.map(note => note.sentAt !== undefined),
+		}, { controlCharacters: false, again: 'sending', sentAt: [false, true] });
 	});
 });
