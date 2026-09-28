@@ -65,6 +65,7 @@ import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, paradisEvaluateMobileCompat, para
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyPcFocusQuiet, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
 import { decodeNotifyVisibility, encodeNotifyVisibilityAck } from '../common/paradisMobileVisibility.js';
 import { ParadisNotifyDismissLedger, paradisWithNotifyDismiss } from '../common/paradisNotifyDismissLedger.js';
+import { paradisClassifyRevokeResponse, paradisEnqueueRevoke, paradisRevokeRetried, paradisSanitizeRevokeOutbox, type IParadisRelayRevokeEntry } from '../common/paradisRelayRevokeOutbox.js';
 import { paradisAgentLabel, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInsightSource } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatView } from '../../agentChat/common/paradisAgentChat.js';
@@ -795,6 +796,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.remoteTranscriptMirror,
 		));
 		this._register(toDisposable(() => { void agentSessionStore.flush(); }));
+		this._register(toDisposable(() => { if (this.revokeTimer !== undefined) { clearTimeout(this.revokeTimer); } }));
 		this._register(this.agentChat.onDidChangeDesktopPaneInsights(() => this._onDidChangeAgentPaneInsights.fire()));
 		this._register(this.agentChat.onDidChangeDesktopChat(tokens => this._onDidChangeAgentChat.fire(tokens)));
 		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(({ tokens, tokensOutsideHookReach }) => {
@@ -1877,6 +1879,16 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	async revokeDevice(deviceName: string): Promise<void> {
 		const removed = this.state.mobiles.filter(m => m.name === deviceName);
 		this.state.mobiles = this.state.mobiles.filter(m => m.name !== deviceName);
+		// リレーへの取り消しは、台帳から外すのと同じ書き込みで積む（W2-35）。書けた後は、リレーが
+		// 受け取ったと確かめるまで送り直す（落ちても次の起動で続きから送る）。
+		const device = this.state.device;
+		if (device !== undefined) {
+			let outbox = this.revokeOutbox();
+			for (const m of removed) {
+				outbox = paradisEnqueueRevoke(outbox, device.deviceId, m.mobileId, Date.now());
+			}
+			this.state.pendingRelayRevokes = outbox;
+		}
 		await this.save();
 		this.updateEagerTailing();
 		// M-1: リレー側の資格情報も失効させ、既存のモバイル接続を切断する。
@@ -1888,8 +1900,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.browserMirror.stopSession(m.mobileId);
 			this.agentChat.dropSubscriber(m.mobileId);
 			this.notifyKeyCache.delete(m.mobileId);
-			void this.revokeOnRelay(m.mobileId);
 		}
+		void this.drainRevokeOutbox(true);
 		this._onDidChangeStatus.fire(this.snapshot());
 	}
 
@@ -2047,18 +2059,105 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	// 両方に登録）へ移した。SSH 接続先のワークスペースを検索するには、ripgrep を接続先で
 	// 動かす必要があり、mobileRelay サービスは shared process 専用のため対応できない。
 
-	private async revokeOnRelay(mobileId: string): Promise<void> {
-		if (!this.state.device) {
+	/** 台帳の取り消し待ち（W2-35）。形の合わない項目は捨てて読む。 */
+	private revokeOutbox(): IParadisRelayRevokeEntry[] {
+		return paradisSanitizeRevokeOutbox(this.state.pendingRelayRevokes);
+	}
+
+	private revokeDrain: Promise<void> | undefined;
+	private revokeTimer: ReturnType<typeof setTimeout> | undefined;
+
+	/**
+	 * 取り消し待ちをリレーへ送る（W2-35）。済んだもの・送っても変わらないもの・今の登録ではないものは外し、
+	 * 一時的に失敗したものは間隔を空けて送り直す。`force` はリレーへつながった直後など、待ちを無視して送るとき。
+	 * 同時には1本だけ流す。
+	 */
+	private drainRevokeOutbox(force = false): Promise<void> {
+		if (this.revokeDrain !== undefined) {
+			return this.revokeDrain;
+		}
+		const run = this.drainRevokeOutboxNow(force).finally(() => {
+			this.revokeDrain = undefined;
+			this.scheduleRevokeRetry();
+		});
+		this.revokeDrain = run;
+		return run;
+	}
+
+	private async drainRevokeOutboxNow(force: boolean): Promise<void> {
+		if (this.isStoreBlocked() || this.state.pendingRelayRevokes === undefined) {
 			return;
 		}
+		const device = this.state.device;
+		const now = Date.now();
+		let changed = false;
+		const next: IParadisRelayRevokeEntry[] = [];
+		const snapshot = this.revokeOutbox();
+		const key = (entry: IParadisRelayRevokeEntry) => `${entry.deviceId}\n${entry.mobileId}`;
+		for (const entry of snapshot) {
+			if (device === undefined || entry.deviceId !== device.deviceId) {
+				// 登録し直した後の古い登録の取り消しは捨てる（古い登録には PC がもうつながらない）。
+				changed = true;
+				continue;
+			}
+			if (!force && entry.nextAt > now) {
+				next.push(entry);
+				continue;
+			}
+			const outcome = paradisClassifyRevokeResponse(await this.revokeOnRelay(device, entry.mobileId));
+			changed = true;
+			if (outcome === 'retry') {
+				next.push(paradisRevokeRetried(entry, Date.now(), Math.random()));
+			} else if (outcome === 'drop') {
+				this.logService.warn('[paradisMobileRelay] relay refused a revoke permanently; dropping it');
+			}
+		}
+		if (!changed) {
+			return;
+		}
+		// 送っている間に積まれた分（別の端末の解除）は、そのまま残す。
+		const processed = new Set(snapshot.map(key));
+		const merged = [...next, ...this.revokeOutbox().filter(entry => !processed.has(key(entry)))];
+		this.state.pendingRelayRevokes = merged.length > 0 ? merged : undefined;
+		await this.save().catch(err => this.logService.warn('[paradisMobileRelay] failed to save the revoke outbox', err));
+	}
+
+	/** いちばん早い送り直しの時刻にタイマーを張る。 */
+	private scheduleRevokeRetry(): void {
+		if (this.revokeTimer !== undefined) {
+			clearTimeout(this.revokeTimer);
+			this.revokeTimer = undefined;
+		}
+		if (this._store.isDisposed) {
+			return;
+		}
+		const outbox = this.revokeOutbox();
+		if (outbox.length === 0 || this.isStoreBlocked()) {
+			return;
+		}
+		const delay = Math.max(1_000, Math.min(...outbox.map(entry => entry.nextAt)) - Date.now());
+		this.revokeTimer = setTimeout(() => {
+			this.revokeTimer = undefined;
+			void this.drainRevokeOutbox();
+		}, delay);
+	}
+
+	/**
+	 * リレーへ1回だけ取り消しを送り、HTTP の状態を返す（通信が失敗したら undefined）。
+	 * 以前は応答を見ず、401 や 5xx でも成功とみなしていた（W2-35）。
+	 */
+	private async revokeOnRelay(device: { readonly deviceId: string; readonly pcToken: string }, mobileId: string): Promise<number | undefined> {
 		try {
-			await fetch(`${this.relayHttpBase()}/device/${this.state.device.deviceId}/mobile/revoke`, {
+			const response = await fetch(`${this.relayHttpBase()}/device/${device.deviceId}/mobile/revoke`, {
 				method: 'POST',
-				headers: { authorization: `Bearer ${this.state.device.pcToken}`, 'content-type': 'application/json' },
+				headers: { authorization: `Bearer ${device.pcToken}`, 'content-type': 'application/json' },
 				body: JSON.stringify({ mobileId }),
+				signal: AbortSignal.timeout(15_000),
 			});
+			return response.status;
 		} catch (err) {
 			this.logService.warn('[paradisMobileRelay] relay revoke failed', err);
+			return undefined;
 		}
 	}
 
@@ -2519,6 +2618,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.disconnectReporter.recovered();
 			this.setConnectionState('online');
 			this.startKeepalive(socket);
+			// リレーへつながったら、取り消し待ちを待ちの時刻に関わらず送る（W2-35）。
+			void this.drainRevokeOutbox(true);
 		};
 		// 張り替え直後は旧ソケットからもメッセージが届きうる。pongが現在の接続の死活状態を
 		// 書き換えてしまわないよう、現行ソケット以外のメッセージは捨てる。
@@ -3177,7 +3278,17 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	/** モバイル側からの自己ペアリング解除（リレー経由）。PC側の登録・セッションも掃除する。 */
 	private async onMobileRevoked(mobileId: string): Promise<void> {
+		// リレーが消したと知らせてきたので、同じスマホの取り消し待ちは要らない（W2-35）。
+		const outbox = this.revokeOutbox();
+		const remainingOutbox = outbox.filter(entry => entry.mobileId !== mobileId);
+		const outboxChanged = remainingOutbox.length !== outbox.length;
+		if (outboxChanged) {
+			this.state.pendingRelayRevokes = remainingOutbox.length > 0 ? remainingOutbox : undefined;
+		}
 		if (!this.state.mobiles.some(m => m.mobileId === mobileId)) {
+			if (outboxChanged) {
+				await this.save();
+			}
 			return;
 		}
 		this.state.mobiles = this.state.mobiles.filter(m => m.mobileId !== mobileId);
