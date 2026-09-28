@@ -61,10 +61,6 @@ const RAW_EDITOR_OPTIONS: IEditorConstructionOptions = {
 };
 
 /**
- * Rendered/Raw を内蔵する EditorPane 基底。webview と埋め込みコードエディタのライフサイクル管理・
- * ファイル読込・自動再レンダリング・モード切替を担い、Rendered の HTML 生成はサブクラスの {@link renderDocument} に委ねる。
- */
-/**
  * Whether a failed view-mode switch should go to `onUnexpectedError`. A missing file is the user's
  * state, not a defect, and the editor shows the read error itself (the same policy as
  * `renderResource`); a failure `renderResource` already reported would otherwise arrive twice.
@@ -76,6 +72,10 @@ export function paradisShouldReportViewModeError(err: unknown, alreadyReported: 
 	return !(err instanceof Error && toFileOperationResult(err) === FileOperationResult.FILE_NOT_FOUND);
 }
 
+/**
+ * Rendered/Raw を内蔵する EditorPane 基底。webview と埋め込みコードエディタのライフサイクル管理・
+ * ファイル読込・自動再レンダリング・モード切替を担い、Rendered の HTML 生成はサブクラスの {@link renderDocument} に委ねる。
+ */
 export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	private _rootElement: HTMLElement | undefined;

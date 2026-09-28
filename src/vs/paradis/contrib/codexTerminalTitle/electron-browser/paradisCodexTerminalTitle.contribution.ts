@@ -554,7 +554,6 @@ function replaceTerminalTitleInTuiSection(config: string): string {
 	return `${config.slice(0, sectionStart + titleKeyMatch.index)}${titleLine}${config.slice(sectionStart + valueEnd)}`;
 }
 
-/** ログイン済みのアカウント用ホームの顔ぶれ（並び順に依らない）。 */
 /**
  * Writes the setting into every signed-in account home other than the default one. A failure in one
  * home does not stop the rest; the result says whether every home was written, so the caller only
@@ -570,6 +569,7 @@ export async function writeCodexAccountHomes(homes: readonly IParadisCodexHome[]
 	return allWritten;
 }
 
+/** ログイン済みのアカウント用ホームの顔ぶれ（並び順に依らない）。 */
 function accountHomesKey(homes: readonly IParadisCodexHome[]): string {
 	return JSON.stringify(homes.filter(home => !home.isDefault && home.signedIn).map(home => home.homePath).sort());
 }
