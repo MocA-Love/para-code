@@ -367,20 +367,31 @@ describe('relay APNs push', () => {
 		expect(after).not.toHaveBeenCalled();
 	});
 
-	it('does not resend after a transport failure unless the push can replace itself (collapseId)', async () => {
-		// 応答が無い失敗は APNs が受理済みかもしれない。置き換わらない通知を送り直すと二重に鳴る。
+	it('resends after a transport failure with the same collapse id, adding a random one when the PC gave none', async () => {
+		// 応答が無い失敗は APNs が受理済みかもしれない。同じ apns-collapse-id で送り直せば、端末上で
+		// 置き換わるので二重に鳴らない。PC が付けない許可・質問にはリレーが通知ごとの乱数を付ける。
 		const { deviceId, pcWs, mobileId } = await offlineMobileWithToken();
 
 		const broken = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => { throw new Error('connection reset'); });
 		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA' }));
 		await waitFor(() => broken.mock.calls.length >= 1);
-		await new Promise(r => setTimeout(r, 50));
-		expect(await readQueue(deviceId)).toEqual([]);
-
-		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'BBBB', collapseId: 'c0llapse_Id-123' }));
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'BBBB' }));
 		await waitFor(() => broken.mock.calls.length >= 2);
 		await new Promise(r => setTimeout(r, 50));
-		expect((await readQueue(deviceId)).map(row => ({ attempt: row.attempt, collapseId: row.collapseId }))).toEqual([{ attempt: 1, collapseId: 'c0llapse_Id-123' }]);
+		const collapseOf = (call: unknown[]) => ((call[1] as RequestInit).headers as Record<string, string>)['apns-collapse-id'];
+		const first = collapseOf(broken.mock.calls[0]!);
+		const second = collapseOf(broken.mock.calls[1]!);
+		const queued = await readQueue(deviceId);
+		expect({
+			pattern: [first, second].every(value => /^[A-Za-z0-9_-]{22}$/.test(value ?? '')),
+			distinct: first !== second,
+			queued: queued.map(row => row.collapseId),
+		}).toEqual({ pattern: true, distinct: true, queued: [first, second] });
+		vi.restoreAllMocks();
+
+		const ok = stubFetch(200);
+		await runDueRetries(deviceId);
+		expect(ok.mock.calls.map(collapseOf).sort()).toEqual([first, second].sort());
 	});
 
 	it('passes an opaque collapse id and thread id through, and ignores malformed ones', async () => {
@@ -397,9 +408,11 @@ describe('relay APNs push', () => {
 			const body = JSON.parse(init.body as string) as { aps: Record<string, unknown> };
 			return { collapse: (init.headers as Record<string, string>)['apns-collapse-id'], thread: body.aps['thread-id'] };
 		};
-		expect([shape(fetchMock.mock.calls[0]!), shape(fetchMock.mock.calls[1]!)]).toEqual([
+		const malformed = shape(fetchMock.mock.calls[1]!);
+		expect([shape(fetchMock.mock.calls[0]!), { collapseIsRandom: /^[A-Za-z0-9_-]{22}$/.test(malformed.collapse ?? ''), thread: malformed.thread }]).toEqual([
 			{ collapse: 'c0llapse_Id-123', thread: 'thread-0123456789' },
-			{ collapse: undefined, thread: undefined },
+			// 形の外れた collapseId は使わず、リレーが通知ごとの乱数を付ける。threadId は付けない
+			{ collapseIsRandom: true, thread: undefined },
 		]);
 	});
 });
