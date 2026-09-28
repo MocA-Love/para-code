@@ -29,8 +29,10 @@ export function paradisPrepareTerminalCloseCleanupEnv(instantiationService: IIns
 		if (stopBackground && !shellLaunchConfig.env) {
 			return;
 		}
-		shellLaunchConfig.env ??= {};
-		paradisApplyCloseCleanupPreference(shellLaunchConfig.env, stopBackground);
+		// 写してから書く。env はプロファイルなど別のターミナルと共有している物のことがある。
+		const env = { ...shellLaunchConfig.env };
+		paradisApplyCloseCleanupPreference(env, stopBackground);
+		shellLaunchConfig.env = env;
 	} catch {
 		// 設定を読めなくても既定（止める）のまま作る。
 	}

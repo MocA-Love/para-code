@@ -24,7 +24,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.terminal.stopBackgroundProcessesOnClose', "ターミナルを閉じたとき、そのターミナルから起動されて裏で動き続けているプロセス（`&` で起動した開発サーバーや、エージェントが裏で起動したものなど）も止めます。`nohup` で起動したもの（SIGHUP を無視しているもの）とその下にあるものは残します。\n\nmacOS と Linux（SSH 先を含む）で働きます。変更は、その後に開いたターミナルから反映されます。"),
+			markdownDescription: localize('paradis.terminal.stopBackgroundProcessesOnClose', "ターミナルを閉じたとき、そのターミナルから起動されて裏で動き続けているプロセス（`&` で起動した開発サーバーや、エージェントが裏で起動したものなど）も止めます。`nohup` で起動したもの（SIGHUP を無視しているもの）とその下にあるもの、screen・tmux・dtach などの中で動いているものは残します。`disown`・zsh の `&!`・`setopt NO_HUP` で残したものは止まります。\n\nタブやウィンドウでターミナルを閉じたときに働きます（Para Code の終了や、シェルで `exit` したときは働きません）。macOS と Linux（SSH 先を含む）で働きます。変更は、その後に開いたターミナルから反映されます。"),
 		},
 	},
 });

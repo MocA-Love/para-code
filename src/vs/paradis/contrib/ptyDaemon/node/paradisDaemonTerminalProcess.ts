@@ -55,7 +55,6 @@ import { IParadisPtyAttachment, IParadisPtyHost } from '../common/paradisPtyProt
 import { paradisEncodeTerminalMetadata } from '../common/paradisTerminalMetadata.js';
 import { ParadisPtyDispatch } from './paradisPtyDispatch.js';
 import { paradisShouldStopBackgroundOnClose, paradisWithoutCloseCleanupMarker } from '../../terminalCloseCleanup/common/paradisTerminalCloseCleanup.js';
-import { paradisShutdownStoppingDescendants } from '../../terminalCloseCleanup/node/paradisTerminalDescendants.js';
 import { paradisShellTypeFromTitle } from './paradisShellType.js';
 
 /** ターミナルの持ち主。常駐へ預けて、引き取るときに読み戻す。 */
@@ -467,16 +466,10 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			this.fireExitOnce(undefined);
 			return;
 		}
-		const handle = this.handle;
-		const end = () => this.tell('shutdown', this.host.kill(handle, immediate ? 'SIGKILL' : undefined));
-		// 閉じたときに裏のプロセスを止める（W2-32）。常駐が `shutdown` を受けて SIGKILL するとシェルが
-		// 子へ SIGHUP を配る機会も無いので、ここで撮って後から止める。表を撮り終えるまで（最大 1 秒）
-		// 終了の依頼を遅らせる。シェルが死ぬと子は引き取られて辿れなくなるため。
-		if (this.pid > 1 && paradisShouldStopBackgroundOnClose(this.env)) {
-			paradisShutdownStoppingDescendants(this.pid, end, Event.toPromise(this.onProcessExit), this.logService);
-		} else {
-			end();
-		}
+		// 閉じたときに裏のプロセスを止める（W2-32）かどうかも一緒に伝える。止める処理（表の撮影と
+		// SIGTERM / SIGKILL）は常駐の中で行う。常駐は pty を持ち、アプリより長く生きるので、アプリが
+		// 閉じる途中で落ちても最後まで届く。終了の依頼そのものは今までどおりすぐ送る。
+		this.tell('shutdown', this.host.kill(this.handle, immediate ? 'SIGKILL' : undefined, paradisShouldStopBackgroundOnClose(this.env)));
 		// **終わったことを必ず伝える。** SIGHUP を握り潰すプロセスだと exit が来ないことがあり、
 		// 来ないと器が畳まれず、タブが閉じないまま台帳に残り続ける。upstream も、pty が本当に
 		// 死んだかに関わらず最後は必ず exit を出す。

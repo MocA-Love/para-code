@@ -24,8 +24,13 @@ import {
 	PARADIS_TERMINAL_KEEP_BACKGROUND_ENV,
 } from '../../common/paradisTerminalCloseCleanup.js';
 
-function row(pid: number, ppid: number, startedAt: number = 100, command: string = 'proc', pgid: number = pid): IParadisProcessRow {
-	return { pid, ppid, pgid, startedAt, command };
+function row(pid: number, ppid: number, startedAt: number = 100, command: string = 'proc', pgid: number = pid, tty: string = 'ttys003'): IParadisProcessRow {
+	return { pid, ppid, pgid, startedAt, command, tty };
+}
+
+/** 端末を持たないもの（`detached` で起動したもの、SCREEN の本体など）。 */
+function detached(pid: number, ppid: number, command: string = 'proc'): IParadisProcessRow {
+	return { ...row(pid, ppid, 100, command), tty: '??' };
 }
 
 suite('paradisTerminalCloseCleanup', () => {
@@ -33,16 +38,26 @@ suite('paradisTerminalCloseCleanup', () => {
 
 	test('reads ps rows on macOS and Linux, keeps only the executable name and skips broken lines', () => {
 		const output = [
-			'  501     1   501 Tue Sep 29 00:20:29 2026     /Applications/Some App.app/Contents/MacOS/node',
-			'  502   501   502 Tue Sep  9 07:05:01 2026 vite',
+			'  501     1   501 ttys003  Tue Sep 29 00:20:29 2026     /Applications/Some App.app/Contents/MacOS/node',
+			'  502   501   502 ??       Tue Sep  9 07:05:01 2026 vite',
 			'garbage',
-			'  503   501   502 Xyz Foo 29 00:20:29 2026 broken',
+			'  503   501   502 ??       Xyz Foo 29 00:20:29 2026 broken',
 		].join('\n');
 		const rows = paradisParsePsRows(output);
-		assert.deepStrictEqual(rows.map(({ pid, ppid, pgid, command }) => ({ pid, ppid, pgid, command })), [
-			{ pid: 501, ppid: 1, pgid: 501, command: 'node' },
-			{ pid: 502, ppid: 501, pgid: 502, command: 'vite' },
-		]);
+		const linux = paradisParsePsRows('  601     1   601   601 pts/3    Tue Sep 29 00:20:29 2026 bash\n  602     1   602   601 ?        Tue Sep 29 00:20:29 2026 node', true);
+		assert.deepStrictEqual({
+			mac: rows.map(({ pid, ppid, pgid, command, tty, sid }) => ({ pid, ppid, pgid, command, tty, sid })),
+			linux: linux.map(({ pid, sid, tty, command }) => ({ pid, sid, tty, command })),
+		}, {
+			mac: [
+				{ pid: 501, ppid: 1, pgid: 501, command: 'node', tty: 'ttys003', sid: undefined },
+				{ pid: 502, ppid: 501, pgid: 502, command: 'vite', tty: '??', sid: undefined },
+			],
+			linux: [
+				{ pid: 601, sid: 601, tty: 'pts/3', command: 'bash' },
+				{ pid: 602, sid: 601, tty: '?', command: 'node' },
+			],
+		});
 		assert.strictEqual(rows[0].startedAt, Math.floor(new Date(2026, 8, 29, 0, 20, 29).getTime() / 1000));
 	});
 
@@ -58,6 +73,38 @@ suite('paradisTerminalCloseCleanup', () => {
 			row(21, 20),
 		];
 		assert.deepStrictEqual(paradisCollectShellDescendants(rows, 10, 200, new Set([15])).map(r => r.pid), [11, 12]);
+	});
+
+	// レビュー H1: GNU screen の SCREEN はシェルの子孫のまま残り SIGHUP も無視しないので、端末で見分ける。
+	test('never touches a subtree that holds another terminal (screen), but still stops detached background tasks', () => {
+		const rows = [
+			row(10, 1, 100, 'zsh'),
+			row(11, 10, 100, 'node'),                          // the agent, on the shell's terminal
+			detached(12, 11, 'node'),                          // spawned with detached: true (setsid, no terminal)
+			detached(13, 11, 'SCREEN'),                        // screen server started by the agent
+			{ ...row(14, 13, 100, 'bash'), tty: 'ttys009' },   // the shell inside screen
+			{ ...row(15, 14, 100, 'vim'), tty: 'ttys009' },
+			detached(16, 10, 'dtach'),                          // named multiplexer, whole subtree kept
+			detached(17, 16, 'python'),
+			detached(20, 10, 'weird'),                          // an unknown holder of another terminal
+			{ ...row(21, 20, 100, 'sh'), tty: 'ttys010' },
+		];
+		assert.deepStrictEqual(paradisCollectShellDescendants(rows, 10, 200, new Set()).map(r => r.pid).sort((a, b) => a - b), [11, 12]);
+	});
+
+	test('when the shell is already gone and its terminal is unknown, anything on a terminal is kept with what lives under it', () => {
+		const rows = [row(11, 10, 100, 'node'), detached(12, 11, 'node'), detached(13, 10, 'vite')];
+		assert.deepStrictEqual(paradisCollectShellDescendants(rows, 10, 200, new Set()).map(r => r.pid), [13]);
+	});
+
+	test('on Linux, members of the shell session that were already reparented are still collected', () => {
+		const rows = [
+			{ ...row(10, 1, 100, 'bash', 10, 'pts/3'), sid: 10 },
+			{ ...row(11, 1, 100, 'node', 11, '?'), sid: 10 },   // shell's job, reparented before the snapshot
+			{ ...row(12, 11, 100, 'esbuild', 11, '?'), sid: 10 },
+			{ ...row(13, 1, 100, 'other', 13, '?'), sid: 99 },
+		];
+		assert.deepStrictEqual(paradisCollectShellDescendants(rows, 10, 200, new Set()).map(r => r.pid).sort((a, b) => a - b), [11, 12]);
 	});
 
 	test('a reused pid is not the same process', () => {
