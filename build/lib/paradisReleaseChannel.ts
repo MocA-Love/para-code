@@ -15,9 +15,13 @@
  * - Any other tag                             → rejected: nothing is built or published.
  * - A branch (workflow_dispatch)              → build only, never publish.
  *
- * CLI: `node build/lib/paradisReleaseChannel.ts` reads GitHub's GITHUB_EVENT_NAME / GITHUB_REF_TYPE /
- * GITHUB_REF_NAME plus PARA_RELEASE_PLATFORMS (the workflow_dispatch `platforms` input), appends the
- * plan to $GITHUB_OUTPUT and exits 1 for a rejected tag.
+ * CLI:
+ * - `node build/lib/paradisReleaseChannel.ts` reads GitHub's GITHUB_EVENT_NAME / GITHUB_REF_TYPE /
+ *   GITHUB_REF_NAME plus PARA_RELEASE_PLATFORMS (the workflow_dispatch `platforms` input), appends the
+ *   plan to $GITHUB_OUTPUT and exits 1 for a rejected tag.
+ * - `node build/lib/paradisReleaseChannel.ts previous-stable <tag>` reads release tag names (one per
+ *   line) from stdin and prints the stable tag that precedes <tag>, or nothing. The stable GitHub
+ *   Release passes it to `--notes-start-tag` so its notes never start from a beta tag.
  */
 
 import * as fs from 'fs';
@@ -88,19 +92,62 @@ export function planParadisRelease(ref: IParadisReleaseRef): IParadisReleasePlan
 	};
 }
 
-function toGitHubOutput(plan: IParadisReleasePlan): string {
-	return [
-		`kind=${plan.kind}`,
-		`channel=${plan.channel}`,
-		`is_beta=${plan.isBeta}`,
-		`publish=${plan.publish}`,
-		`build_darwin=${plan.buildDarwin}`,
-		`build_win32=${plan.buildWin32}`,
-		`build_linux=${plan.buildLinux}`,
-	].join('\n') + '\n';
+const PARADIS_STABLE_TAG_NUMBER_PATTERN = /-paracode-(?<number>\d+)$/;
+
+function getParadisStableTagNumber(tag: string): number | undefined {
+	if (classifyParadisReleaseTag(tag) !== 'stable') {
+		return undefined;
+	}
+	const match = PARADIS_STABLE_TAG_NUMBER_PATTERN.exec(tag);
+	return match?.groups ? Number(match.groups.number) : undefined;
 }
 
-if (import.meta.main) {
+/**
+ * The stable tag with the highest `paracode-<N>` below the one of `currentTag`. Beta tags, other tags
+ * and tags at or above the current number are ignored, so re-running an old tag still starts its
+ * notes at the stable release before it. `undefined` when there is none or `currentTag` is not stable.
+ */
+export function findPreviousParadisStableTag(currentTag: string, tags: readonly string[]): string | undefined {
+	const current = getParadisStableTagNumber(currentTag);
+	if (current === undefined) {
+		return undefined;
+	}
+	let previous: { readonly tag: string; readonly number: number } | undefined;
+	for (const tag of tags) {
+		const number = getParadisStableTagNumber(tag.trim());
+		if (number !== undefined && number < current && (!previous || number > previous.number)) {
+			previous = { tag: tag.trim(), number };
+		}
+	}
+	return previous?.tag;
+}
+
+/**
+ * The `classify` step outputs (`steps.plan.outputs.*`) the workflows read. Exported for the
+ * workflow contract test, which feeds them through the real `if:` and `env:` expressions.
+ */
+export function toParadisReleaseOutputs(plan: IParadisReleasePlan): Record<string, string> {
+	return {
+		kind: plan.kind,
+		channel: plan.channel,
+		is_beta: String(plan.isBeta),
+		publish: String(plan.publish),
+		build_darwin: String(plan.buildDarwin),
+		build_win32: String(plan.buildWin32),
+		build_linux: String(plan.buildLinux),
+	};
+}
+
+function toGitHubOutput(plan: IParadisReleasePlan): string {
+	return Object.entries(toParadisReleaseOutputs(plan)).map(([key, value]) => `${key}=${value}`).join('\n') + '\n';
+}
+
+if (import.meta.main && process.argv[2] === 'previous-stable') {
+	const previous = findPreviousParadisStableTag(process.argv[3] ?? '', fs.readFileSync(0, 'utf8').split('\n'));
+	if (previous) {
+		process.stdout.write(`${previous}\n`);
+	}
+} else if (import.meta.main) {
 	const plan = planParadisRelease({
 		eventName: process.env['GITHUB_EVENT_NAME'] ?? '',
 		refType: process.env['GITHUB_REF_TYPE'] ?? '',

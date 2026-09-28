@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { suite, test } from 'node:test';
-import { classifyParadisReleaseTag, planParadisRelease } from '../paradisReleaseChannel.ts';
+import { classifyParadisReleaseTag, findPreviousParadisStableTag, planParadisRelease } from '../paradisReleaseChannel.ts';
 
 suite('Para Code release channel', () => {
 	test('classifies release tags into stable, beta and other', () => {
@@ -76,6 +76,25 @@ suite('Para Code release channel', () => {
 			'dispatch on a beta tag, win32 asked': row('beta', 'beta', false, false, false, false),
 			'dispatch on a branch, all': row('branch', 'stable', false, true, true, true),
 			'dispatch on a branch, subset': row('branch', 'stable', false, false, true, false),
+		});
+	});
+
+	test('finds the stable tag the stable release notes start from', () => {
+		const tags = ['v1.139.1-paracode-147', 'reh', 'v1.139.1-paracode-146-beta.2', 'v1.135.0-paracode-145', 'v1.135.0-paracode-144', ' v1.128.0-paracode-9 ', 'v0.3.11'];
+		assert.deepStrictEqual({
+			next: findPreviousParadisStableTag('v1.139.1-paracode-146', tags),
+			rerunOld: findPreviousParadisStableTag('v1.135.0-paracode-145', tags),
+			numericNotLexical: findPreviousParadisStableTag('v1.128.0-paracode-10', tags),
+			first: findPreviousParadisStableTag('v1.128.0-paracode-1', tags),
+			beta: findPreviousParadisStableTag('v1.139.1-paracode-146-beta.1', tags),
+			noReleases: findPreviousParadisStableTag('v1.139.1-paracode-146', []),
+		}, {
+			next: 'v1.135.0-paracode-145',
+			rerunOld: 'v1.135.0-paracode-144',
+			numericNotLexical: 'v1.128.0-paracode-9',
+			first: undefined,
+			beta: undefined,
+			noReleases: undefined,
 		});
 	});
 });

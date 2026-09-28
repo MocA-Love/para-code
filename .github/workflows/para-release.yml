@@ -30,7 +30,8 @@
 # Channels (decided by the `classify` job, logic in build/lib/paradisReleaseChannel.ts):
 #   - Stable tag `v<ver>-paracode-<N>`: every platform, R2 `stable/...`, KV `stable:*` +
 #     `changelog:stable`, GitHub Release marked Latest. These outputs are exactly what this
-#     workflow wrote before channels existed; `$CHANNEL` below always expands to `stable`.
+#     workflow wrote before channels existed; `$CHANNEL` below always expands to `stable`. The one
+#     deliberate change is `--notes-start-tag <previous stable tag>` on `gh release create`.
 #   - Beta tag `v<ver>-paracode-<N>-beta.<M>`: macOS (x64 + arm64) only, product.json gets
 #     `paradisUpdateChannel: "beta"` (quality stays `stable`), R2 `beta/...`, KV `beta:darwin`,
 #     `beta:darwin-arm64` and `changelog:beta` only (`stable:*` is never touched), and the GitHub
@@ -45,7 +46,7 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: 'Comma-separated subset to build for debugging (darwin,win32,linux). Empty = all + publish.'
+        description: 'Comma-separated subset to build for debugging (darwin,win32,linux). Empty = all; publishes only when run on a release tag.'
         required: false
         default: ''
       dictation_runtime:
@@ -96,6 +97,19 @@ jobs:
         env:
           PARA_RELEASE_PLATFORMS: ${{ github.event.inputs.platforms }}
         run: node build/lib/paradisReleaseChannel.ts
+
+      # Empty outputs would skip every later job and leave a green run that published nothing.
+      # Fail loudly instead so a stable tag never silently goes unreleased.
+      - name: Fail on an empty plan
+        env:
+          KIND: ${{ steps.plan.outputs.kind }}
+          CHANNEL: ${{ steps.plan.outputs.channel }}
+          PUBLISH: ${{ steps.plan.outputs.publish }}
+        run: |
+          if [ -z "$KIND" ] || [ -z "$CHANNEL" ] || [ -z "$PUBLISH" ]; then
+            echo "::error::The release plan is empty (kind='$KIND' channel='$CHANNEL' publish='$PUBLISH'); nothing would be built or published."
+            exit 1
+          fi
 
   build-darwin:
     needs: classify
@@ -592,7 +606,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
+          set -e -o pipefail
           TAG="${GITHUB_REF#refs/tags/}"
           mkdir -p release-assets
           cp "artifacts/darwin-x64/darwin-x64.zip"               "release-assets/ParaCode-$TAG-darwin-x64.zip"
@@ -605,17 +619,26 @@ jobs:
           (cd release-assets && sha256sum -- * > "ParaCode-$TAG-SHA256SUMS.txt")
           if [ "$CHANNEL" = "beta" ]; then
             # A prerelease is never Latest, so the Releases page keeps pointing at the last stable.
-            # A release written by hand before the tag (to hold the beta's notes) is kept and only
-            # re-flagged, so it can never end up as a normal release.
+            # The beta's notes are written after this run with `gh release edit --notes-file`
+            # (CLAUDE.md). The edit branch is for re-running the same tag: it re-flags the existing
+            # release so it can never end up as a normal release.
             if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
               gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --prerelease --latest=false
             else
               gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false
             fi
           else
-            # Stable: unchanged.
+            # Stable: same as before except `--notes-start-tag`. GitHub does not document which tag
+            # generated notes start from when it is omitted, and a beta tag (off main) must never be
+            # that start, so pin it to the previous stable release (build/lib/paradisReleaseChannel.ts).
             if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+              PREV="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName' \
+                | node build/lib/paradisReleaseChannel.ts previous-stable "$TAG")"
+              NOTES_START=()
+              if [ -n "$PREV" ]; then
+                NOTES_START=(--notes-start-tag "$PREV")
+              fi
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes "${NOTES_START[@]}"
             fi
           fi
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber release-assets/*
