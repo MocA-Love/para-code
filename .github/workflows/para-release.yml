@@ -26,6 +26,17 @@
 #
 # Windows code signing is intentionally deferred (unsigned builds ship first,
 # see NOTES.md) — Azure Trusted Signing wiring is a follow-up phase.
+#
+# Channels (decided by the `classify` job, logic in build/lib/paradisReleaseChannel.ts):
+#   - Stable tag `v<ver>-paracode-<N>`: every platform, R2 `stable/...`, KV `stable:*` +
+#     `changelog:stable`, GitHub Release marked Latest. These outputs are exactly what this
+#     workflow wrote before channels existed; `$CHANNEL` below always expands to `stable`.
+#   - Beta tag `v<ver>-paracode-<N>-beta.<M>`: macOS (x64 + arm64) only, product.json gets
+#     `paradisUpdateChannel: "beta"` (quality stays `stable`), R2 `beta/...`, KV `beta:darwin`,
+#     `beta:darwin-arm64` and `changelog:beta` only (`stable:*` is never touched), and the GitHub
+#     Release is a prerelease that is never marked Latest.
+#   - Any other tag: rejected by `classify`, nothing is built or published.
+#   - A branch (workflow_dispatch): builds only; publishing happens from release tags only.
 
 on:
   push:
@@ -50,8 +61,45 @@ env:
   PARA_UPDATE_ACCESS_CLIENT_SECRET: ${{ secrets.PARA_UPDATE_ACCESS_CLIENT_SECRET }}
 
 jobs:
+  # Decides channel, platforms and whether this run may publish, before anything is built.
+  # Later jobs read these outputs (`needs.classify.outputs.*`); build jobs also get them as
+  # PARA_UPDATE_CHANNEL / PARA_RELEASE_IS_BETA so beta-only steps can key off them (for example
+  # a macOS helper step that must fail the beta but not the stable release:
+  # `continue-on-error: ${{ needs.classify.outputs.is_beta != 'true' }}`).
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      kind: ${{ steps.plan.outputs.kind }}
+      channel: ${{ steps.plan.outputs.channel }}
+      is_beta: ${{ steps.plan.outputs.is_beta }}
+      publish: ${{ steps.plan.outputs.publish }}
+      build_darwin: ${{ steps.plan.outputs.build_darwin }}
+      build_win32: ${{ steps.plan.outputs.build_win32 }}
+      build_linux: ${{ steps.plan.outputs.build_linux }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            .nvmrc
+            build/lib/paradisReleaseChannel.ts
+          sparse-checkout-cone-mode: false
+          lfs: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Classify the ref
+        id: plan
+        env:
+          PARA_RELEASE_PLATFORMS: ${{ github.event.inputs.platforms }}
+        run: node build/lib/paradisReleaseChannel.ts
+
   build-darwin:
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.platforms == '' || contains(github.event.inputs.platforms, 'darwin') }}
+    needs: classify
+    if: ${{ needs.classify.outputs.build_darwin == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -60,6 +108,9 @@ jobs:
     env:
       NPM_ARCH: ${{ matrix.arch }}
       VSCODE_ARCH: ${{ matrix.arch }}
+      # Read by build/gulpfile.vscode.ts: `beta` stamps product.json's paradisUpdateChannel, `stable` stamps nothing.
+      PARA_UPDATE_CHANNEL: ${{ needs.classify.outputs.channel }}
+      PARA_RELEASE_IS_BETA: ${{ needs.classify.outputs.is_beta }}
       # Read by build/gulpfile.vscode.ts to stamp product.json's dictationRuntime (see the step below).
       DICTATION_RUNTIME_RESULTS_FILE: ${{ github.workspace }}/.build/dictation-runtime/darwin-${{ matrix.arch }}.json
     steps:
@@ -224,7 +275,9 @@ jobs:
           retention-days: 7
 
   build-win32:
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.platforms == '' || contains(github.event.inputs.platforms, 'win32') }}
+    # Skipped for beta tags (macOS-only), otherwise the same platform selection as before.
+    needs: classify
+    if: ${{ needs.classify.outputs.build_win32 == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -236,6 +289,7 @@ jobs:
     env:
       NPM_ARCH: ${{ matrix.arch }}
       VSCODE_ARCH: ${{ matrix.arch }}
+      PARA_UPDATE_CHANNEL: ${{ needs.classify.outputs.channel }}
       DICTATION_RUNTIME_RESULTS_FILE: ${{ github.workspace }}/.build/dictation-runtime/win32-${{ matrix.arch }}.json
     steps:
       - name: Checkout
@@ -315,10 +369,13 @@ jobs:
           retention-days: 7
 
   build-linux:
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.platforms == '' || contains(github.event.inputs.platforms, 'linux') }}
+    # Skipped for beta tags (macOS-only), otherwise the same platform selection as before.
+    needs: classify
+    if: ${{ needs.classify.outputs.build_linux == 'true' }}
     runs-on: ubuntu-latest
     env:
       VSCODE_ARCH: x64
+      PARA_UPDATE_CHANNEL: ${{ needs.classify.outputs.channel }}
       DICTATION_RUNTIME_RESULTS_FILE: ${{ github.workspace }}/.build/dictation-runtime/linux-x64.json
     steps:
       - name: Checkout
@@ -423,10 +480,23 @@ jobs:
           retention-days: 7
 
   publish:
-    needs: [build-darwin, build-win32, build-linux]
+    needs: [classify, build-darwin, build-win32, build-linux]
+    # Only release tags publish (classify: `publish` is false for branches and `platforms` subsets).
+    # Stable keeps the old gate of every build job succeeding (before, a skipped or failed build
+    # skipped this job through the implicit success()). Beta skips win32/linux on purpose, so it
+    # only requires the macOS builds. `!cancelled()` is what lets a skipped need through at all.
+    if: >-
+      ${{ !cancelled()
+      && needs.classify.outputs.publish == 'true'
+      && needs.build-darwin.result == 'success'
+      && (needs.classify.outputs.channel == 'beta'
+      || (needs.build-win32.result == 'success' && needs.build-linux.result == 'success')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write # gh release create/upload (GitHub Release with artifacts)
+    env:
+      # `stable` or `beta`. Every R2 path, KV key and Release flag below branches on this only.
+      CHANNEL: ${{ needs.classify.outputs.channel }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -473,33 +543,45 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
         run: |
           set -e
+          case "$CHANNEL" in
+            stable|beta) ;;
+            *) echo "::error::Unexpected release channel '$CHANNEL'"; exit 1 ;;
+          esac
           export AWS_DEFAULT_REGION=auto AWS_REQUEST_CHECKSUM_CALCULATION=when_required AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
           aws configure set default.s3.multipart_threshold 1GB
           EP="https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com"
 
+          # For stable, kv_key is `stable:<platform>` and KEY is `stable/<platdir>/<commit>/<file>`,
+          # the same strings this step used to hard-code. For beta both move under `beta`.
           publish() {
-            local kv_key="$1" platdir="$2" file="$3" artdir="$4"
-            local KEY="stable/$platdir/${{ steps.meta.outputs.commit }}/$file"
+            local kv_key="$CHANNEL:$1" platdir="$2" file="$3" artdir="$4"
+            local KEY="$CHANNEL/$platdir/${{ steps.meta.outputs.commit }}/$file"
             aws s3 cp "artifacts/$artdir/$file" "s3://${{ secrets.CF_R2_BUCKET }}/$KEY" --endpoint-url "$EP" --no-progress
             local HASH=$(tr -d '[:space:]' < "artifacts/$artdir/$file.sha256")
             wrangler kv key put --namespace-id "${{ secrets.CF_KV_NAMESPACE_ID }}" --remote \
               "$kv_key" "{\"commit\":\"${{ steps.meta.outputs.commit }}\",\"version\":\"${{ steps.meta.outputs.version }}\",\"productVersion\":\"${{ steps.meta.outputs.version }}\",\"url\":\"${{ secrets.CF_R2_PUBLIC_BASE_URL }}/$KEY\",\"sha256hash\":\"$HASH\",\"timestamp\":${{ steps.meta.outputs.timestamp }}}"
           }
 
-          publish "stable:darwin"           "darwin-x64"       "darwin-x64.zip"             "darwin-x64"
-          publish "stable:darwin-arm64"     "darwin-arm64"     "darwin-arm64.zip"           "darwin-arm64"
-          publish "stable:win32-x64-user"   "win32-x64-user"   "win32-x64-user-setup.exe"   "win32-x64"
-          publish "stable:win32-arm64-user" "win32-arm64-user" "win32-arm64-user-setup.exe" "win32-arm64"
-          publish "stable:linux-x64"        "linux-x64"        "linux-x64.deb"              "linux-x64"
+          publish "darwin"           "darwin-x64"       "darwin-x64.zip"             "darwin-x64"
+          publish "darwin-arm64"     "darwin-arm64"     "darwin-arm64.zip"           "darwin-arm64"
+          # Beta is macOS-only (win32/linux were not built), so only stable publishes these.
+          if [ "$CHANNEL" = "stable" ]; then
+            publish "win32-x64-user"   "win32-x64-user"   "win32-x64-user-setup.exe"   "win32-x64"
+            publish "win32-arm64-user" "win32-arm64-user" "win32-arm64-user-setup.exe" "win32-arm64"
+            publish "linux-x64"        "linux-x64"        "linux-x64.deb"              "linux-x64"
+          fi
 
           # Publish the app changelog for the in-app modal
-          # (src/vs/paradis/contrib/releaseNotes/). The checkout's paradisChangelog.md is
-          # finalized before tagging, so it IS this release's notes. Clients fetch it via
-          # GET /api/changelog/:quality (cloudflare/update-server) to read what newer
-          # versions change before installing them.
+          # (src/vs/paradis/contrib/releaseNotes/). Clients fetch it via
+          # GET /api/changelog/:quality (cloudflare/update-server), where :quality is the
+          # build's update channel, to read what newer versions change before installing them.
+          # - stable (`changelog:stable`): the checkout's paradisChangelog.md is finalized
+          #   before tagging, so it IS this release's notes.
+          # - beta (`changelog:beta`): the same file as checked out, `## 未リリース` included and
+          #   not renamed (CLAUDE.md). The beta's own notes live in the GitHub prerelease body.
           wrangler kv key put --namespace-id "${{ secrets.CF_KV_NAMESPACE_ID }}" --remote \
             --path src/vs/paradis/contrib/releaseNotes/electron-browser/media/paradisChangelog.md \
-            "changelog:stable"
+            "changelog:$CHANNEL"
 
       # Also attach the artifacts to a GitHub Release on the tag, so first-time
       # installs can be downloaded from the Releases page without digging into
@@ -515,11 +597,25 @@ jobs:
           mkdir -p release-assets
           cp "artifacts/darwin-x64/darwin-x64.zip"               "release-assets/ParaCode-$TAG-darwin-x64.zip"
           cp "artifacts/darwin-arm64/darwin-arm64.zip"           "release-assets/ParaCode-$TAG-darwin-arm64.zip"
-          cp "artifacts/win32-x64/win32-x64-user-setup.exe"      "release-assets/ParaCode-$TAG-win32-x64-setup.exe"
-          cp "artifacts/win32-arm64/win32-arm64-user-setup.exe"  "release-assets/ParaCode-$TAG-win32-arm64-setup.exe"
-          cp "artifacts/linux-x64/linux-x64.deb"                 "release-assets/ParaCode-$TAG-linux-x64.deb"
+          if [ "$CHANNEL" = "stable" ]; then
+            cp "artifacts/win32-x64/win32-x64-user-setup.exe"      "release-assets/ParaCode-$TAG-win32-x64-setup.exe"
+            cp "artifacts/win32-arm64/win32-arm64-user-setup.exe"  "release-assets/ParaCode-$TAG-win32-arm64-setup.exe"
+            cp "artifacts/linux-x64/linux-x64.deb"                 "release-assets/ParaCode-$TAG-linux-x64.deb"
+          fi
           (cd release-assets && sha256sum -- * > "ParaCode-$TAG-SHA256SUMS.txt")
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          if [ "$CHANNEL" = "beta" ]; then
+            # A prerelease is never Latest, so the Releases page keeps pointing at the last stable.
+            # A release written by hand before the tag (to hold the beta's notes) is kept and only
+            # re-flagged, so it can never end up as a normal release.
+            if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --prerelease --latest=false
+            else
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false
+            fi
+          else
+            # Stable: unchanged.
+            if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+            fi
           fi
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber release-assets/*

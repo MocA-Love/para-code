@@ -6,9 +6,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import { createServer } from 'http';
+import { tmpdir } from 'os';
 import JSZip from 'jszip';
 import { load } from 'js-yaml';
 import * as path from 'path';
@@ -73,12 +75,57 @@ function expandUploadContract(contract: { readonly artifact: string; readonly fi
 function getPublishedArtifacts(workflow: IReleaseWorkflow): readonly { readonly platform: string; readonly directory: string; readonly file: string; readonly artifact: string }[] {
 	const publishScript = workflow.jobs['publish'].steps.find(step => step.name === 'Publish artifacts to R2 + update feed KV')?.run;
 	assert.ok(publishScript);
-	return [...publishScript.matchAll(/^\s*publish\s+"stable:(?<platform>[^"]+)"\s+"(?<directory>[^"]+)"\s+"(?<file>[^"]+)"\s+"(?<artifact>[^"]+)"/gm)].map(match => ({
+	// The KV key prefix is the channel (`$CHANNEL:<platform>`), so the call sites only carry the platform.
+	return [...publishScript.matchAll(/^\s*publish\s+"(?<platform>[^"]+)"\s+"(?<directory>[^"]+)"\s+"(?<file>[^"]+)"\s+"(?<artifact>[^"]+)"/gm)].map(match => ({
 		platform: match.groups!.platform,
 		directory: match.groups!.directory,
 		file: match.groups!.file,
 		artifact: match.groups!.artifact,
 	}));
+}
+
+function getPublishStepScript(workflow: IReleaseWorkflow, name: string): string {
+	const script = workflow.jobs.publish.steps.find(step => step.name === name)?.run;
+	assert.ok(script, name);
+	return script;
+}
+
+/**
+ * Runs publish-job step scripts in bash with `aws`, `wrangler`, `gh` and `sha256sum` replaced by
+ * functions that print their arguments, and returns the printed calls. `${{ expr }}` becomes
+ * `@expr@`. `gh release view` reports the release as missing so the create path is taken (its
+ * output goes to /dev/null in the workflow, so it does not show up in the returned calls).
+ */
+function simulatePublishSteps(workflow: IReleaseWorkflow, channel: string, tag: string): readonly string[] {
+	const stubs = [
+		'aws() { echo "aws $*"; }',
+		'wrangler() { echo "wrangler $*"; }',
+		'sha256sum() { echo "sha256sum $*" >&2; }',
+		'gh() { echo "gh $*"; if [ "$1 $2" = "release view" ]; then return 1; fi; }',
+	].join('\n');
+	const scripts = ['Publish artifacts to R2 + update feed KV', 'Create GitHub Release with artifacts']
+		.map(name => getPublishStepScript(workflow, name).replace(/\$\{\{\s*(?<expr>[^}]+?)\s*\}\}/g, (_match, expr: string) => `@${expr}@`));
+	const cwd = fs.mkdtempSync(path.join(tmpdir(), 'para-release-'));
+	try {
+		for (const [artifact, file] of [
+			['darwin-x64', 'darwin-x64.zip'],
+			['darwin-arm64', 'darwin-arm64.zip'],
+			['win32-x64', 'win32-x64-user-setup.exe'],
+			['win32-arm64', 'win32-arm64-user-setup.exe'],
+			['linux-x64', 'linux-x64.deb'],
+		]) {
+			fs.mkdirSync(path.join(cwd, 'artifacts', artifact), { recursive: true });
+			fs.writeFileSync(path.join(cwd, 'artifacts', artifact, file), file);
+			fs.writeFileSync(path.join(cwd, 'artifacts', artifact, `${file}.sha256`), `hash-${file}\n`);
+		}
+		return scripts.flatMap(script => execFileSync('bash', ['-c', `${stubs}\n${script}`], {
+			cwd,
+			encoding: 'utf8',
+			env: { PATH: process.env['PATH'], CHANNEL: channel, GITHUB_REF: `refs/tags/${tag}`, GITHUB_REPOSITORY: 'owner/repo', CLOUDFLARE_ACCOUNT_ID: 'account' },
+		}).split('\n').filter(line => line.length > 0));
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
 }
 
 async function createVsixFixture(): Promise<Buffer> {
@@ -158,6 +205,56 @@ suite('Para Code release contract', () => {
 			published.map(item => JSON.stringify({ artifact: item.artifact, file: item.file })).sort(),
 			uploaded.map(item => JSON.stringify(item)).sort(),
 		);
+	});
+
+	// The stable expectation spells out the exact R2 keys, KV keys/values and Release calls the
+	// workflow produced before channels existed (hard-coded `stable/...`, `stable:*`,
+	// `changelog:stable`, plain `gh release create`), so any drift on the stable path fails here.
+	test('publishes stable exactly as before and keeps beta under beta/ and beta:* only', () => {
+		const workflow = readReleaseWorkflow();
+		const r2 = (channel: string, platdir: string, file: string, artifact: string) =>
+			`aws s3 cp artifacts/${artifact}/${file} s3://@secrets.CF_R2_BUCKET@/${channel}/${platdir}/@steps.meta.outputs.commit@/${file} --endpoint-url https://account.r2.cloudflarestorage.com --no-progress`;
+		const kv = (channel: string, platform: string, platdir: string, file: string) =>
+			`wrangler kv key put --namespace-id @secrets.CF_KV_NAMESPACE_ID@ --remote ${channel}:${platform} {"commit":"@steps.meta.outputs.commit@","version":"@steps.meta.outputs.version@","productVersion":"@steps.meta.outputs.version@","url":"@secrets.CF_R2_PUBLIC_BASE_URL@/${channel}/${platdir}/@steps.meta.outputs.commit@/${file}","sha256hash":"hash-${file}","timestamp":@steps.meta.outputs.timestamp@}`;
+		const feed = (channel: string, platform: string, platdir: string, file: string, artifact: string) => [r2(channel, platdir, file, artifact), kv(channel, platform, platdir, file)];
+		const changelog = (channel: string) => `wrangler kv key put --namespace-id @secrets.CF_KV_NAMESPACE_ID@ --remote --path src/vs/paradis/contrib/releaseNotes/electron-browser/media/paradisChangelog.md changelog:${channel}`;
+		const setup = 'aws configure set default.s3.multipart_threshold 1GB';
+
+		const stableTag = 'v1.139.1-paracode-146';
+		assert.deepStrictEqual(simulatePublishSteps(workflow, 'stable', stableTag), [
+			setup,
+			...feed('stable', 'darwin', 'darwin-x64', 'darwin-x64.zip', 'darwin-x64'),
+			...feed('stable', 'darwin-arm64', 'darwin-arm64', 'darwin-arm64.zip', 'darwin-arm64'),
+			...feed('stable', 'win32-x64-user', 'win32-x64-user', 'win32-x64-user-setup.exe', 'win32-x64'),
+			...feed('stable', 'win32-arm64-user', 'win32-arm64-user', 'win32-arm64-user-setup.exe', 'win32-arm64'),
+			...feed('stable', 'linux-x64', 'linux-x64', 'linux-x64.deb', 'linux-x64'),
+			changelog('stable'),
+			`gh release create ${stableTag} --repo owner/repo --title ${stableTag} --generate-notes`,
+			`gh release upload ${stableTag} --repo owner/repo --clobber ${[
+				'ParaCode-v1.139.1-paracode-146-SHA256SUMS.txt',
+				'ParaCode-v1.139.1-paracode-146-darwin-arm64.zip',
+				'ParaCode-v1.139.1-paracode-146-darwin-x64.zip',
+				'ParaCode-v1.139.1-paracode-146-linux-x64.deb',
+				'ParaCode-v1.139.1-paracode-146-win32-arm64-setup.exe',
+				'ParaCode-v1.139.1-paracode-146-win32-x64-setup.exe',
+			].map(file => `release-assets/${file}`).join(' ')}`,
+		]);
+
+		const betaTag = 'v1.139.1-paracode-146-beta.1';
+		assert.deepStrictEqual(simulatePublishSteps(workflow, 'beta', betaTag), [
+			setup,
+			...feed('beta', 'darwin', 'darwin-x64', 'darwin-x64.zip', 'darwin-x64'),
+			...feed('beta', 'darwin-arm64', 'darwin-arm64', 'darwin-arm64.zip', 'darwin-arm64'),
+			changelog('beta'),
+			`gh release create ${betaTag} --repo owner/repo --title ${betaTag} --generate-notes --prerelease --latest=false`,
+			`gh release upload ${betaTag} --repo owner/repo --clobber ${[
+				'ParaCode-v1.139.1-paracode-146-beta.1-SHA256SUMS.txt',
+				'ParaCode-v1.139.1-paracode-146-beta.1-darwin-arm64.zip',
+				'ParaCode-v1.139.1-paracode-146-beta.1-darwin-x64.zip',
+			].map(file => `release-assets/${file}`).join(' ')}`,
+		]);
+
+		assert.throws(() => simulatePublishSteps(workflow, '', stableTag));
 	});
 
 	// This used to pin the digest Open VSX served when its repackaged bytes differed from the

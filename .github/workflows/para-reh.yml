@@ -27,6 +27,16 @@
 # エラーメッセージを変えられない。arch を増やす場合は、このジョブを matrix 化して
 # VSCODE_ARCH / NPM_ARCH と tarball 名の `linux-x64` を差し替えること（ネイティブ依存が
 # あるので arm64 は arm64 ランナーか正しくセットアップしたクロスコンパイルが要る）。
+#
+# ## ベータのタグ
+#
+# タグの判定は para-release.yml と同じ build/lib/paradisReleaseChannel.ts で行う。ステーブル
+# （v<ver>-paracode-<N>）とベータ（v<ver>-paracode-<N>-beta.<M>）のタグだけがビルド・公開され、
+# それ以外のタグは最初の段で止まる。ベータの REH も同じ `reh` リリースへ commit 名のファイルで
+# 積む（ベータのクライアントが SSH 先へ入れるため）。ファイル名が commit で分かれているので
+# ステーブルのクライアントが取りに来るファイルとは重ならない。さらにベータでは、同じ名前の
+# ファイルが既にあれば上書きしない（ステーブルと同じ commit にベータのタグを打った場合でも、
+# ステーブル用に置いた tarball を差し替えない）。
 name: Para Code REH (remote server)
 
 on:
@@ -60,6 +70,11 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
+
+      # ステーブル／ベータ以外のタグはここで失敗させ、ビルドも公開もしない。
+      - name: Classify the ref
+        id: plan
+        run: node build/lib/paradisReleaseChannel.ts
 
       - name: Setup system dependencies
         run: |
@@ -143,6 +158,8 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_BETA: ${{ steps.plan.outputs.is_beta }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
         run: |
           set -e
           if ! gh release view reh >/dev/null 2>&1; then
@@ -150,6 +167,11 @@ jobs:
               --title "Remote server (REH) builds" \
               --notes "SSH 接続先で動く Para Code サーバー本体。ファイル名の commit がクライアント側の commit と一致するものが自動で取得される。手動で入れる必要はない。対応しているのは linux-x64 (glibc) のみで、linux-arm64 (Graviton / Ampere / Raspberry Pi) や Alpine などの musl 系へ接続すると、ここに置いていないファイルを取りに行くため接続がサーバーのインストールで失敗する (SSH の設定や鍵の問題ではない)。" \
               --latest=false
+          fi
+          # ベータは既存のファイルを上書きしない（ステーブル側の成果物に触れないため）。
+          if [ "$IS_BETA" = "true" ] && gh release view reh --json assets --jq '.assets[].name' | grep -qxF "$TARBALL"; then
+            echo "::notice::$TARBALL is already in the reh release; the beta run leaves it as is."
+            exit 0
           fi
           gh release upload reh \
             "${{ steps.pack.outputs.tarball }}" \
