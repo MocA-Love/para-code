@@ -75,6 +75,8 @@ export const ParadisMobileCapability = {
 	PrView: 'pr.view.v1',
 	/** `prMerge`（見た時点の head に固定してマージ）（W2-36）。 */
 	PrMerge: 'pr.merge.v1',
+	/** notify の `visibility` に `visibility-ack` を返し、裏に回ったスマホへはプッシュで送る（W2-34。`paradisMobileVisibility.ts`）。 */
+	BackgroundGrace: 'conn.background-grace.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -98,6 +100,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.ScmStageFile,
 	ParadisMobileCapability.PrView,
 	ParadisMobileCapability.PrMerge,
+	ParadisMobileCapability.BackgroundGrace,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

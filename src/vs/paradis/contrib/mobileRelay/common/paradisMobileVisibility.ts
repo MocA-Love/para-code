@@ -42,9 +42,3 @@ export function decodeNotifyVisibility(bytes: Uint8Array): NotifyVisibilityMessa
 		return undefined;
 	}
 }
-
-/**
- * PC が広告する capability（W2-34）。アプリはこれを見てから「裏に回った」を送る。
- * 広告の一覧は `paradisMobileCompat.ts` の `PARADIS_MOBILE_PC_CAPABILITIES`。
- */
-export const PARADIS_MOBILE_BACKGROUND_GRACE_CAPABILITY = 'conn.background-grace.v1';
