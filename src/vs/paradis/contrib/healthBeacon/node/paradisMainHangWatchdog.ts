@@ -163,7 +163,7 @@ export class ParadisMainHangWatchdog extends Disposable {
 	private readonly shared: Float64Array;
 	private readonly worker: Worker;
 
-	constructor(private readonly options: IParadisMainHangWatchdogOptions) {
+	constructor(options: IParadisMainHangWatchdogOptions) {
 		super();
 		this.shared = new Float64Array(new SharedArrayBuffer(Slot.Length * Float64Array.BYTES_PER_ELEMENT));
 		const now = Date.now();
@@ -202,8 +202,7 @@ export class ParadisMainHangWatchdog extends Disposable {
 			clearInterval(heartbeat);
 			this.worker.postMessage('stop');
 			// 止める合図が届かなくても畳む（届けば worker が自分で閉じる）。
-			const terminate = setTimeout(() => void this.worker.terminate(), 1_000);
-			terminate.unref?.();
+			setTimeout(() => void this.worker.terminate(), 1_000);
 		}));
 	}
 
