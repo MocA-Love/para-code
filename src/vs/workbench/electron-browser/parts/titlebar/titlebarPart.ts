@@ -16,7 +16,7 @@ import { createParadisServiceStatusWidget } from '../../../../paradis/contrib/se
 // PARA-PATCH: local/remote listening-port list (title bar right side, ahead of window controls)
 import { createParadisPortListWidget } from '../../../../paradis/contrib/portList/electron-browser/paradisPortListWidget.js';
 // PARA-PATCH: keep the fork's title bar widgets from overlapping the command center (width steps, menu bar visibility)
-import { createParadisTitlebarFit } from '../../../../paradis/contrib/titlebarFit/electron-browser/paradisTitlebarFit.js';
+import { createParadisTitlebarFit } from '../../../../paradis/contrib/titlebarFit/browser/paradisTitlebarFit.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IConfigurationService, IConfigurationChangeEvent } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';

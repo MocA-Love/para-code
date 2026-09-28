@@ -6,8 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { getWindow } from '../../../../base/browser/dom.js';
-import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableResizeObserver, getWindow } from '../../../../base/browser/dom.js';
+import { Disposable, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import './media/paradisTitlebarFit.css';
 
 /**
@@ -19,9 +19,14 @@ const FIT_STEPS = [1400, 1200, 1000] as const;
 /** カスタムメニューバーがタイトルバー左側に見えているあいだ付けるクラス。 */
 const MENUBAR_VISIBLE_CLASS = 'paradis-fit-menubar-visible';
 
+/** テストで差し替える依存。既定は要素が属するウィンドウの `ResizeObserver`。 */
+export interface IParadisTitlebarFitOptions {
+	readonly resizeObserverCtor?: typeof ResizeObserver;
+}
+
 /** titlebarPart.ts の PARA-PATCH 点 (NativeTitlebarPart.createContentArea) から呼ばれるファクトリ。 */
-export function createParadisTitlebarFit(rootContainer: HTMLElement, leftContent: HTMLElement): IDisposable {
-	return new ParadisTitlebarFit(rootContainer, leftContent);
+export function createParadisTitlebarFit(rootContainer: HTMLElement, leftContent: HTMLElement, options?: IParadisTitlebarFitOptions): IDisposable {
+	return new ParadisTitlebarFit(rootContainer, leftContent, options);
 }
 
 /**
@@ -36,19 +41,21 @@ export function createParadisTitlebarFit(rootContainer: HTMLElement, leftContent
  */
 class ParadisTitlebarFit extends Disposable {
 
-	private readonly resizeObserver: ResizeObserver;
+	private readonly resizeObserver: DisposableResizeObserver;
+	private readonly menubarObservation = this._register(new MutableDisposable<IDisposable>());
 	private observedMenubar: HTMLElement | undefined;
 
 	constructor(
 		private readonly rootContainer: HTMLElement,
 		private readonly leftContent: HTMLElement,
+		options?: IParadisTitlebarFitOptions,
 	) {
 		super();
 
 		const targetWindow = getWindow(rootContainer);
-		this.resizeObserver = new targetWindow.ResizeObserver(() => this.update());
-		this._register(toDisposable(() => this.resizeObserver.disconnect()));
-		this.resizeObserver.observe(rootContainer);
+		// 最初の段は ResizeObserver の初回の通知で決まる (observe した直後に必ず1回届く)
+		this.resizeObserver = this._register(new DisposableResizeObserver('ParadisTitlebarFit.width', () => this.update(), targetWindow, options));
+		this._register(this.resizeObserver.observe(rootContainer));
 
 		// メニューバーは設定の変更で作り直される。付け替わった要素を追いかけて、表示の切り替え
 		// (display: none ⇄ flex) も ResizeObserver で拾う。左側の部品の `active` (パネルを開いている)
@@ -56,8 +63,6 @@ class ParadisTitlebarFit extends Disposable {
 		const mutationObserver = new targetWindow.MutationObserver(() => this.update());
 		this._register(toDisposable(() => mutationObserver.disconnect()));
 		mutationObserver.observe(leftContent, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
-
-		this.update();
 	}
 
 	override dispose(): void {
@@ -71,13 +76,8 @@ class ParadisTitlebarFit extends Disposable {
 	private update(): void {
 		const menubar = this.findMenubar();
 		if (menubar !== this.observedMenubar) {
-			if (this.observedMenubar) {
-				this.resizeObserver.unobserve(this.observedMenubar);
-			}
 			this.observedMenubar = menubar;
-			if (menubar) {
-				this.resizeObserver.observe(menubar);
-			}
+			this.menubarObservation.value = menubar ? this.resizeObserver.observe(menubar) : undefined;
 		}
 		this.rootContainer.classList.toggle(MENUBAR_VISIBLE_CLASS, !!menubar && menubar.offsetWidth > 0);
 
