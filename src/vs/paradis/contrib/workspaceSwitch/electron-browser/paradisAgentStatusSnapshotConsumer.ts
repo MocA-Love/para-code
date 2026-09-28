@@ -79,9 +79,17 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 		this._consecutivePollFailures++;
 		if (paradisShouldClearAgentStatusAfterPollFailures(this._consecutivePollFailures)) {
 			this._latestSnapshot = undefined;
-			this._options.statusStore.setScopeBreakdowns(new Map());
-			this._options.statusStore.setInstanceStates(new Map(), new Set());
-			this._options.statusStore.setScopeIssueUrls(new Map());
+			// 通常の取得と同じく、全部消し終えてから変化の通知を1回だけ出させる。
+			const clear = () => {
+				this._options.statusStore.setScopeBreakdowns(new Map());
+				this._options.statusStore.setInstanceStates(new Map(), new Set());
+				this._options.statusStore.setScopeIssueUrls(new Map());
+			};
+			if (this._options.statusStore.batchUpdates !== undefined) {
+				this._options.statusStore.batchUpdates(clear);
+			} else {
+				clear();
+			}
 		}
 	}
 
