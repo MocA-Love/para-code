@@ -33,6 +33,7 @@ import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisParseGhIssueSt
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
 import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_GIT_NETWORK_SUBCOMMANDS, paradisRestrictedGitArgsError } from '../common/paradisGitRestrictedArgs.js';
+import { PARADIS_PR_DETAIL_FIELDS, PARADIS_PR_FAILED_LOG_JOBS, ParadisPullRequestLookup, paradisParseGhPullRequestDetail, paradisPickMergeMethod, paradisTailFailedJobLog } from '../../mobileRelay/common/paradisMobilePullRequest.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { getWslExePath } from '../../../../platform/agentHost/node/wslRemoteAgentHostHelpers.js';
 import { ParadisCommandArgument, paradisBuildWslInvocationArgs, paradisMergeWslEnvNames, paradisParseWslLoginPath, paradisParseWslUncPath, paradisPlanWslCommand, paradisWslLoginPathProbeArgs, paradisWslPathArg } from '../../../common/paradisWslPath.js';
@@ -311,7 +312,7 @@ export class ParadisWorktreeGitService {
 		return false;
 	}
 
-	private async execGh(args: string[], cwd: string): Promise<string> {
+	private async execGh(args: string[], cwd: string, options?: { readonly timeout?: number; readonly maxBuffer?: number }): Promise<string> {
 		const env = await this.cachedShellEnv.getEnv();
 		// GitHub API 利用状況ビュー用の計測。gh CLI 経由の呼び出しはすべてここを通るので、
 		// 「どの処理がどれだけ gh を呼んでいるか」はこの1箇所で数えられる
@@ -324,7 +325,7 @@ export class ParadisWorktreeGitService {
 		return new Promise<string>((resolve, reject) => {
 			// gh はネットワーク I/O のためタイムアウト必須。無いとプロキシ環境等でハングしたとき
 			// 呼び出し側 (Workspaces ビュー) の in-flight ガードが永久に解除されなくなる
-			this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', windowsHide: true, env: invocation.env }, (err, stdout, stderr) => {
+			this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', timeout: options?.timeout ?? 15_000, killSignal: 'SIGKILL', windowsHide: true, env: invocation.env, ...(options?.maxBuffer !== undefined ? { maxBuffer: options.maxBuffer } : {}) }, (err, stdout, stderr) => {
 				if (err) {
 					// 「gh が入っていない」の現れ方は実行経路で違う。ローカルは spawn の ENOENT、
 					// WSL へ振り分けた場合は（起動するのが必ず存在する wsl.exe なので）挟んだ
@@ -403,6 +404,89 @@ export class ParadisWorktreeGitService {
 			this.logService.trace(`[ParadisWorktreeGit] gh pr view failed for ${worktreePath}: ${error instanceof Error ? error.message : String(error)}`);
 			return undefined;
 		}
+	}
+
+	/**
+	 * 作業ツリーの現在ブランチの PR を、CI のチェックとマージの判断に要る項目まで含めて返す（スマホの PR の画面、
+	 * Orca W2-36）。`getPrStatus` と違い、出せない理由（gh が無い・未ログイン・PR が無い）を返す。
+	 * スマホが PR の画面を開いている間だけ呼ばれる（定期の取得は getPrStatus のまま）。
+	 */
+	async getPullRequestDetail(worktreePath: string): Promise<ParadisPullRequestLookup> {
+		if (typeof worktreePath !== 'string' || worktreePath.length === 0) {
+			return { kind: 'none', reason: 'error', message: 'invalid path' };
+		}
+		if (this.isGhUnavailable(worktreePath)) {
+			return { kind: 'none', reason: 'no-gh' };
+		}
+		let branch: string;
+		try {
+			branch = (await this.exec(['-C', paradisWslPathArg(worktreePath), 'rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+		} catch (error) {
+			return { kind: 'none', reason: 'error', message: error instanceof Error ? error.message : String(error) };
+		}
+		if (!branch || branch === 'HEAD') {
+			return { kind: 'none', reason: 'detached' };
+		}
+		try {
+			const stdout = await this.execGh(['pr', 'view', '--json', PARADIS_PR_DETAIL_FIELDS], worktreePath);
+			const detail = paradisParseGhPullRequestDetail(stdout, branch);
+			return detail !== undefined ? { kind: 'ok', detail } : { kind: 'none', reason: 'no-pr' };
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (paradisIsGithubNoPullRequestMessage(message)) {
+				return { kind: 'none', reason: 'no-pr' };
+			}
+			if (this.isGhUnavailable(worktreePath) || /\bENOENT\b|command not found/i.test(message)) {
+				return { kind: 'none', reason: 'no-gh' };
+			}
+			if (/gh auth login|not logged in|authentication|GH_TOKEN/i.test(message)) {
+				return { kind: 'none', reason: 'no-auth' };
+			}
+			return { kind: 'none', reason: 'error', message };
+		}
+	}
+
+	/**
+	 * 失敗した Actions のジョブのログの末尾（`gh run view --job <id> --log-failed`）。ジョブごとに成否を返し、
+	 * 1 件の失敗で他を止めない。末尾を切るのはここ（IPC で大きなログを運ばない）。
+	 */
+	async getFailedJobLogs(worktreePath: string, jobs: readonly { readonly jobId: string; readonly repo: string }[]): Promise<{ readonly jobId: string; readonly log?: string; readonly error?: string }[]> {
+		if (typeof worktreePath !== 'string' || worktreePath.length === 0 || !Array.isArray(jobs) || this.isGhUnavailable(worktreePath)) {
+			return [];
+		}
+		const results: { jobId: string; log?: string; error?: string }[] = [];
+		for (const job of jobs.slice(0, PARADIS_PR_FAILED_LOG_JOBS)) {
+			// 呼び出し側（renderer）の値でも、gh に渡すのは数字の id と owner/repo の形のものだけ
+			if (typeof job?.jobId !== 'string' || !/^\d{1,20}$/.test(job.jobId) || typeof job.repo !== 'string' || !/^(?:[A-Za-z0-9.-]+(?::\d+)?\/)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(job.repo)) {
+				continue;
+			}
+			try {
+				const stdout = await this.execGh(['run', 'view', '--job', job.jobId, '--log-failed', '-R', job.repo], worktreePath, { timeout: 30_000, maxBuffer: 32 * 1024 * 1024 });
+				results.push({ jobId: job.jobId, log: paradisTailFailedJobLog(stdout) });
+			} catch (error) {
+				results.push({ jobId: job.jobId, error: error instanceof Error ? error.message : String(error) });
+			}
+		}
+		return results;
+	}
+
+	/**
+	 * PR をマージする（スマホの PR の画面、Orca W2-36）。`--match-head-commit` で、スマホが見た後に push された
+	 * 内容を黙ってマージしない。方式はリポジトリの既定（`viewerDefaultMergeMethod`）。`--admin`（保護の規則を
+	 * 飛ばす）と `--delete-branch`（作業ツリーがまだそのブランチを使っている）は使わない。
+	 */
+	async mergePullRequest(worktreePath: string, request: { readonly repo: string; readonly number: number; readonly headSha: string }): Promise<{ readonly method: 'merge' | 'squash' | 'rebase' }> {
+		if (typeof worktreePath !== 'string' || worktreePath.length === 0 || typeof request?.repo !== 'string' || !/^(?:[A-Za-z0-9.-]+(?::\d+)?\/)?[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(request.repo)
+			|| typeof request.number !== 'number' || !Number.isSafeInteger(request.number) || request.number <= 0 || typeof request.headSha !== 'string' || !/^[0-9a-f]{40}$/i.test(request.headSha)) {
+			throw new Error('invalid merge request');
+		}
+		const repoJson = await this.execGh(['repo', 'view', request.repo, '--json', 'viewerDefaultMergeMethod,mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed'], worktreePath);
+		const method = paradisPickMergeMethod(repoJson);
+		if (method === undefined) {
+			throw new Error('このリポジトリで使えるマージの方式が分かりませんでした。');
+		}
+		await this.execGh(['pr', 'merge', String(request.number), '-R', request.repo, `--${method}`, '--match-head-commit', request.headSha], worktreePath, { timeout: 60_000 });
+		return { method };
 	}
 
 	/**
@@ -998,6 +1082,9 @@ export class ParadisWorktreeGitChannel<TContext extends ParadisCloneOwner = stri
 			case 'readWorktreeLock': return this.service.readWorktreeLock(args[0] as IParadisWorktreeLockQuery<string>) as Promise<T>;
 			case 'runLifecycleScript': return this.service.runLifecycleScript(args[0] as IParadisRunLifecycleScriptRequest<string>) as Promise<T>;
 			case 'runGit': return this.service.runGit(String(args[0]), Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
+			case 'getPullRequestDetail': return this.service.getPullRequestDetail(String(args[0])) as Promise<T>;
+			case 'getFailedJobLogs': return this.service.getFailedJobLogs(String(args[0]), Array.isArray(args[1]) ? args[1] : []) as Promise<T>;
+			case 'mergePullRequest': return this.service.mergePullRequest(String(args[0]), args[1] as { repo: string; number: number; headSha: string }) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
