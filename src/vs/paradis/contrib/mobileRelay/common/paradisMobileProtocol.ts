@@ -342,6 +342,12 @@ export interface NotifyPayload {
 	 *   許可なし）は自分で鳴らしてよい
 	 */
 	readonly quiet?: ParadisNotifyQuiet;
+	/**
+	 * もう片付いた通知の印（W2-27。プッシュの暗号文にだけ載せる。`app/protocol/src/notify.ts` と一致）。
+	 * 通知 ID を通知鍵から用途別に作った鍵で HMAC にした16進32桁で、作るのは `node/paradisMobilePushIds.ts`、
+	 * どれを載せるかは `paradisNotifyDismissLedger.ts`。
+	 */
+	readonly dismiss?: readonly string[];
 }
 
 export function encodeNotify(payload: NotifyPayload): Uint8Array {
@@ -384,6 +390,13 @@ export type NotifyControlMessage =
 	| { readonly t: 'dismiss'; readonly id: string }
 	| { readonly t: 'dismissed'; readonly id: string }
 	| { readonly t: 'dismissed-token'; readonly token: string };
+
+// W2-27: アプリは1件ずつの `dismiss` に `opened: true` を付ける（「すべて消去」では付けない）。上の読み手は
+// この項目を落とすので、PC は `paradisNotifyDismissLedger.ts` の `paradisNotifyDismissOpened` で読む。
+//
+// W2-34 の notify チャネルの `visibility` / `visibility-ack`（アプリが裏に回った・前面に戻った）は、
+// `paradisMobileVisibility.ts` に `app/protocol/src/notify.ts` から逐語で写してある（上の制御メッセージの
+// 読み手はどちらも `t` を知らないものとして捨てる）。
 
 export function encodeNotifyDismissed(id: string): Uint8Array {
 	return new TextEncoder().encode(JSON.stringify({ t: 'dismissed', id }));

@@ -67,12 +67,40 @@ interface QueuedPush {
 const TURN_RATE_WINDOW_MS = 60 * 1000;
 const TURN_RATE_MAX_PER_WINDOW = 6;
 
+/**
+ * モバイルの資格を最後に使った時刻（`mobiles.lastSeenAt`）を書き直す最小の間隔（W2-35）。
+ * 接続のたびに書くと DO のストレージ書き込みが増えるので、1時間に1回までにする。
+ */
+export const MOBILE_LAST_SEEN_WRITE_INTERVAL_MS = 60 * 60 * 1000;
+/** 使われていないモバイルの資格を掃除する間隔（失効を有効にしているときだけ）。 */
+export const MOBILE_CREDENTIAL_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** PC へまだ伝えていない失効の知らせを覚えておく数の上限。 */
+const MAX_PENDING_PC_NOTICES = 100;
+
+/**
+ * 使われていないモバイルの資格を失効させるまでの日数（W2-35、Q127 A は 90 日）。環境変数
+ * `MOBILE_CREDENTIAL_TTL_DAYS` で決め、**未設定・0・読めない値なら失効させない（既定は無効）**。
+ * 理由付きの切断（W2-04）を知らない旧アプリは、失効すると理由の分からない「再接続中」を続けるので、
+ * W2-04 を載せたアプリが行き渡ってから有効にする。最後に使った時刻の記録は、無効の間も続ける。
+ */
+export function mobileCredentialTtlMs(env: unknown): number | undefined {
+	const raw = (env as { MOBILE_CREDENTIAL_TTL_DAYS?: unknown } | null | undefined)?.MOBILE_CREDENTIAL_TTL_DAYS;
+	const days = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim().length > 0 ? Number(raw) : NaN;
+	if (!Number.isFinite(days) || days <= 0) {
+		return undefined;
+	}
+	// 誤って短くしすぎて全端末を切らないよう、7日を下限にする。
+	return Math.max(7, days) * 24 * 60 * 60 * 1000;
+}
+
 export class DeviceDO implements DurableObject {
 	private readonly sql: SqlStorage;
 	// ES256 JWTのメモリキャッシュ（apns.ts が45分間再利用する）。
 	private readonly apnsJwtCache: ApnsJwtCache = {};
 	/** TURN資格情報の発行時刻（レート制限用。インメモリで十分、詳細は turnCredentials 参照）。 */
 	private turnIssueTimes: number[] = [];
+	/** 資格を使った時刻を最後に確かめた時刻（メモリ。`touchMobile` の間引き）。 */
+	private readonly lastTouchedAt = new Map<string, number>();
 
 	constructor(private readonly state: DurableObjectState, private readonly env: unknown) {
 		this.sql = state.storage.sql;
@@ -85,6 +113,11 @@ export class DeviceDO implements DurableObject {
 		// 後方互換マイグレーション: 既存DOの mobiles テーブルにAPNs列を追加する。
 		// SQLiteは `ADD COLUMN IF NOT EXISTS` を持たないため、既に存在する場合の例外は握りつぶす。
 		this.migrateMobilesForPush();
+		this.migrateMobilesForLastSeen();
+		// PC がつながっていない間に失効させたモバイル。次に PC がつながったら mobile-revoked で伝える（W2-35）。
+		this.sql.exec(`CREATE TABLE IF NOT EXISTS pc_notices (mobileId TEXT PRIMARY KEY, at INTEGER)`);
+		// 失効の掃除の次の時刻など、1行だけの値。
+		this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER)`);
 		// 保活のping/pongはエッジが自動応答する。hibernation中のDOを起こさないので、
 		// アイドル接続を維持するコストがほぼゼロで済む（起こすと課金対象の実行時間が発生する）。
 		// 照合はバイト列の完全一致なので、クライアントは必ず同じ定数を送ること。
@@ -101,6 +134,85 @@ export class DeviceDO implements DurableObject {
 				// 列が既に存在する（=マイグレーション済み）。無視してよい。
 			}
 		}
+	}
+
+	/**
+	 * 最後に使った時刻の列を足す（W2-35）。列を足したときは、既にある行に今の時刻を入れる: 列が無かった頃の
+	 * 行は「いつ使ったか分からない」ので、失効の数え始めをこのデプロイの時点にする（作った時刻で数えると、
+	 * 毎日使っている古いペアリングまで、失効を有効にした日に切れてしまう）。
+	 */
+	private migrateMobilesForLastSeen(): void {
+		try {
+			this.sql.exec('ALTER TABLE mobiles ADD COLUMN lastSeenAt INTEGER');
+		} catch {
+			return; // 列が既にある
+		}
+		this.sql.exec('UPDATE mobiles SET lastSeenAt = ? WHERE lastSeenAt IS NULL', Date.now());
+	}
+
+	/**
+	 * モバイルの資格を使った時刻を残す（1時間に1回まで）。メッセージを受けるたびにも呼ぶので、SQL を
+	 * 叩く前にメモリで間引く（DO が休止から起きた後の最初の1回だけは SQL で確かめる）。
+	 */
+	private touchMobile(mobileId: string, now: number = Date.now()): void {
+		const touched = this.lastTouchedAt.get(mobileId);
+		if (touched !== undefined && now - touched < MOBILE_LAST_SEEN_WRITE_INTERVAL_MS) {
+			return;
+		}
+		this.lastTouchedAt.set(mobileId, now);
+		this.sql.exec('UPDATE mobiles SET lastSeenAt = ? WHERE mobileId = ? AND (lastSeenAt IS NULL OR lastSeenAt < ?)', now, mobileId, now - MOBILE_LAST_SEEN_WRITE_INTERVAL_MS);
+	}
+
+	/**
+	 * 使われていないモバイルの資格を失効させる（W2-35。失効を有効にしているときだけ、1日1回）。
+	 * 行を消してソケットを閉じ（4404）、PC がつながっていれば mobile-revoked を送る。つながっていなければ
+	 * 次に PC がつながったときに送る（PC の台帳から外すため。PC は既存の mobile-revoked の処理で外す）。
+	 */
+	private sweepUnusedMobiles(ttlMs: number, now: number = Date.now()): string[] {
+		const expired = this.sql.exec('SELECT mobileId FROM mobiles WHERE COALESCE(lastSeenAt, createdAt, 0) < ?', now - ttlMs).toArray().map(row => row.mobileId as string);
+		for (const mobileId of expired) {
+			this.sql.exec('DELETE FROM mobiles WHERE mobileId = ?', mobileId);
+			this.sql.exec('DELETE FROM push_queue WHERE mobileId = ?', mobileId);
+			for (const ws of this.state.getWebSockets(`m:${mobileId}`)) {
+				try { ws.close(PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE, 'expired'); } catch { /* ignore */ }
+			}
+			if (this.state.getWebSockets('pc').length > 0) {
+				this.sendToPc({ type: 'mobile-revoked', mobileId });
+			} else {
+				this.sql.exec('INSERT OR REPLACE INTO pc_notices (mobileId, at) VALUES (?, ?)', mobileId, now);
+			}
+		}
+		this.sql.exec('DELETE FROM pc_notices WHERE mobileId NOT IN (SELECT mobileId FROM pc_notices ORDER BY at DESC LIMIT ?)', MAX_PENDING_PC_NOTICES);
+		return expired;
+	}
+
+	/** PC がつながったとき、つながっていない間に失効させたモバイルを伝える。 */
+	private flushPcNotices(): void {
+		const rows = this.sql.exec('SELECT mobileId FROM pc_notices').toArray();
+		for (const row of rows) {
+			this.sendToPc({ type: 'mobile-revoked', mobileId: row.mobileId as string });
+		}
+		if (rows.length > 0) {
+			this.sql.exec('DELETE FROM pc_notices');
+		}
+	}
+
+	/** 失効の掃除の次の時刻（失効が無効・モバイルが1台も無いなら undefined）。無ければ今から1日後に決める。 */
+	private nextCredentialSweepAt(now: number = Date.now()): number | undefined {
+		if (mobileCredentialTtlMs(this.env) === undefined) {
+			return undefined;
+		}
+		const count = this.sql.exec('SELECT COUNT(*) AS n FROM mobiles').toArray()[0] as { n?: unknown } | undefined;
+		if (typeof count?.n !== 'number' || count.n === 0) {
+			return undefined;
+		}
+		const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'credentialSweepAt'`).toArray()[0] as { value?: unknown } | undefined;
+		if (typeof row?.value === 'number' && Number.isFinite(row.value)) {
+			return row.value;
+		}
+		const next = now + MOBILE_CREDENTIAL_SWEEP_INTERVAL_MS;
+		this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('credentialSweepAt', ?)`, next);
+		return next;
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -243,6 +355,10 @@ export class DeviceDO implements DurableObject {
 		if (typeof pushRow?.next === 'number' && Number.isFinite(pushRow.next)) {
 			candidates.push(pushRow.next);
 		}
+		const sweepAt = this.nextCredentialSweepAt();
+		if (sweepAt !== undefined) {
+			candidates.push(sweepAt);
+		}
 		if (candidates.length === 0) {
 			return;
 		}
@@ -258,6 +374,13 @@ export class DeviceDO implements DurableObject {
 	async alarm(): Promise<void> {
 		this.cleanupPairings();
 		await this.flushPushQueue();
+		// 使われていないモバイルの資格の失効（W2-35。既定は無効）。
+		const ttlMs = mobileCredentialTtlMs(this.env);
+		const sweepAt = this.nextCredentialSweepAt();
+		if (ttlMs !== undefined && sweepAt !== undefined && sweepAt <= Date.now()) {
+			this.sweepUnusedMobiles(ttlMs);
+			this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('credentialSweepAt', ?)`, Date.now() + MOBILE_CREDENTIAL_SWEEP_INTERVAL_MS);
+		}
 		await this.scheduleAlarm();
 	}
 
@@ -316,6 +439,7 @@ export class DeviceDO implements DurableObject {
 		if (!record || token === null || !timingSafeEqualHex(await hashToken(token), record.tokenHash)) {
 			return new Response('unauthorized', { status: 401 });
 		}
+		this.touchMobile(body.mobileId);
 		// デバイス単位の発行レート制限。1リクエストごとにCloudflare TURN APIへの外部fetchが
 		// 走るため、暴走クライアントによるクォータ消費を抑える（インメモリで十分:
 		// DOのハイバネーションでリセットされても制限が緩む方向にしか倒れない）。
@@ -366,8 +490,18 @@ export class DeviceDO implements DurableObject {
 		if (superseded.length > 0) {
 			this.notifyPcPresence(false);
 		}
+		// 失効を有効にしていれば掃除の予定を張る（PC がつながるのは頻繁なので、ここで張れば取りこぼさない）。
+		// 失効が無効なら何もしない。予定を張れなくても PC の接続は止めない。
+		if (mobileCredentialTtlMs(this.env) !== undefined) {
+			try {
+				await this.scheduleAlarm();
+			} catch (err) {
+				console.warn('[relay] failed to schedule the credential sweep', err);
+			}
+		}
 		return this.upgrade(ws => this.state.acceptWebSocket(ws, ['pc']), () => {
 			this.notifyPcPresence(true);
+			this.flushPcNotices();
 		}, echoSubprotocol);
 	}
 
@@ -383,6 +517,8 @@ export class DeviceDO implements DurableObject {
 		if (!timingSafeEqualHex(await hashToken(token), record.tokenHash)) {
 			return this.rejectWithClose(PARADIS_RELAY_CLOSE_CODE.CREDENTIAL_REFUSED, 'unauthorized', echoSubprotocol);
 		}
+		// 資格を使った時刻（W2-35。使われていない資格の失効の元）。
+		this.touchMobile(mobileIdStr);
 		// 同一モバイルの既存ソケットは閉じる（1本に限定）。iOSがバックグラウンドで
 		// ソケットをhalf-openのまま放置した場合、これが残っていると再接続時に
 		// 「offline通知が飛ばない→PC側が古いE2Eセッションを保持し続ける→新しい
@@ -465,6 +601,8 @@ export class DeviceDO implements DurableObject {
 		} else if (tag.startsWith('m:')) {
 			// モバイル→PC: mobileIdを付与してPCへ多重化
 			const mobileIdStr = tag.slice(2);
+			// つなぎっぱなしのスマホも「使っている」として残す（W2-35。1時間に1回まで）。
+			this.touchMobile(mobileIdStr);
 			try {
 				const framed = packPcData(mobileIdFromString(mobileIdStr), data);
 				this.forwardBinaryToTag('pc', framed);
@@ -661,7 +799,7 @@ export class DeviceDO implements DurableObject {
 		const mobileId = mobileIdToString(crypto.getRandomValues(new Uint8Array(16)));
 		const mobileToken = randomTokenB64u(32);
 		const tokenHash = await hashToken(mobileToken);
-		this.sql.exec('INSERT INTO mobiles (mobileId, name, tokenHash, createdAt) VALUES (?, ?, ?, ?)', mobileId, name || 'device', tokenHash, Date.now());
+		this.sql.exec('INSERT INTO mobiles (mobileId, name, tokenHash, createdAt, lastSeenAt) VALUES (?, ?, ?, ?, ?)', mobileId, name || 'device', tokenHash, Date.now(), Date.now());
 		const deviceId = this.state.id.toString();
 		// C-1: 資格情報は承認対象の pairId ソケットにのみ渡す（全pairソケットへのブロードキャストは
 		// mobileToken 漏洩になる）。

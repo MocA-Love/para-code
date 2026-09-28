@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
+import { useAppInFront } from '../hooks/useAppInFront.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { getRtcView, startWebrtcMirror, WebrtcMirrorCoordinator } from '../webrtcMirror.js';
 import { HIT_SIZE, alpha, colors, radius, squircle, type } from '../theme.js';
@@ -42,7 +43,11 @@ interface BrowserTarget {
  *
  * `active` が false の間（画面がフォーカスを失った間）は screencast を停止する。
  */
-export function BrowserPanel({ active, preferredToken }: { active: boolean; preferredToken?: string }) {
+export function BrowserPanel({ active: screenActive, preferredToken }: { active: boolean; preferredToken?: string }) {
+	// 画面が見えているのは、画面にフォーカスがあり、アプリが裏に回っていないとき。裏に回っても接続を
+	// 保つようになった（W2-34）ので、裏では止め、前に戻ったら同じ target で張り直す。
+	const inFront = useAppInFront();
+	const active = screenActive && inFront;
 	const theme = useThemeColors();
 	const { browserTargets, browserStart, browserStop, browserInput, frame, connection, pcOnline, sessionProtocolReady, setJpegFramesSuspended, workspace, browserSelection, setBrowserSelection, sidebarCollapsed, setSidebarCollapsed } = useAppStore(useShallow(s => ({
 		browserTargets: s.browserTargets, browserStart: s.browserStart, browserStop: s.browserStop,

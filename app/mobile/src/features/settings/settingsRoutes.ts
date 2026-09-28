@@ -16,6 +16,7 @@ import type { RouteHref } from '../../routes.js';
  * | `/settings/usage/rtk` | RTK の節約 |
  * | `/settings/usage/github` | GitHub API |
  * | `/settings/usage/system` | システム（CPU・メモリ・ディスクの内訳） |
+ * | `/settings/connection-log` | 接続の記録と簡単な診断（W2-22） |
  */
 export type UsageDetailPage = 'cost' | 'rtk' | 'github' | 'system';
 
@@ -25,4 +26,5 @@ export const settingsRoutes = {
 	colors: (): RouteHref => '/settings/colors',
 	widgets: (): RouteHref => '/settings/widgets',
 	usageDetail: (page: UsageDetailPage): RouteHref => `/settings/usage/${page}`,
+	connectionLog: (): RouteHref => '/settings/connection-log',
 } as const;

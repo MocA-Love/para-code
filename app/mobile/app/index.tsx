@@ -8,7 +8,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
 import { unreadQuestionNotificationCount } from '../src/components/notificationCount.js';
 import { AccountUsageCard, HomeEmptyState, HomeTopBar, QuickActions, ResumeCard, StatCards } from '../src/features/home/homeParts.js';
-import { batteryLine, formatCost, pcCardCounts, pcConnectionLine, runningAgents, totalAttention } from '../src/features/home/homeSummary.js';
+import { batteryLine, formatCost, lastKnownCardCounts, pcCardCounts, pcConnectionLine, runningAgents, totalAttention } from '../src/features/home/homeSummary.js';
+import { lastKnownLabel } from '../src/features/pc/lastKnownPcList.js';
 import { lastSessionSubtitle } from '../src/features/home/lastSession.js';
 import { useLastSession } from '../src/features/home/lastSessionStore.js';
 import { PcActions } from '../src/features/home/pcActions.js';
@@ -104,6 +105,10 @@ export default function HomeScreen() {
 								detail={shouldShowBattery(pc) && pc.battery !== undefined ? batteryLine(pc.battery) : undefined}
 								// 見ていない PC のターミナルは届かないので、件数は台帳の要約から出す。
 								counts={pcCardCounts(pc, pc.id === activePcId ? terminals : undefined, archivedKeys)}
+								// つながるまでは前回の一覧を目安として出す（W2-25。版が合わない PC には出さない）。
+								lastKnown={kind !== 'connected' && pc.lastKnown !== undefined && pc.updateRequired === undefined
+									? { label: lastKnownLabel(pc.lastKnown.savedAt, now), counts: lastKnownCardCounts(pc.lastKnown) }
+									: undefined}
 								onOpen={id => router.push(routes.pc(id))}
 								onMenu={setMenuPcId}
 							/>

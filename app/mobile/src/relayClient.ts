@@ -52,6 +52,19 @@ export interface PairedCredentials {
 
 export type ConnectionState = 'connecting' | 'handshaking' | 'online' | 'offline';
 
+/**
+ * 接続の記録（W2-22。設定 →「接続の記録」）へ残す出来事。**秘密を含めない**（トークン・URL・識別子は
+ * 載せない。`detail` は OS のエラー文で、記録する側 `connectionLog.ts` が伏せ字にしてから残す）。
+ */
+export interface RelayConnectionEvent {
+	readonly kind: 'connecting' | 'online' | 'closed' | 'connect-timeout' | 'socket-error' | 'auth-rejected' | 'reconnect-scheduled' | 'suspended' | 'resumed' | 'pc-presence' | 'pc-restarted';
+	readonly code?: number;
+	readonly delayMs?: number;
+	readonly attempt?: number;
+	readonly online?: boolean;
+	readonly detail?: string;
+}
+
 export interface RelayClientCallbacks {
 	readonly onStateChange?: (state: ConnectionState) => void;
 	/** PC自身のpresence（PCがリレーに繋がっているか）。 */
@@ -63,6 +76,8 @@ export interface RelayClientCallbacks {
 	 * true の間は再ペアリングが必要で、再接続は1〜15分おきの確認に落ちる。
 	 */
 	readonly onAuthRejected?: (rejected: boolean) => void;
+	/** 接続の記録（W2-22）。記録するだけで、振る舞いは変えない。 */
+	readonly onConnectionEvent?: (event: RelayConnectionEvent) => void;
 }
 
 export interface Timers {
@@ -100,6 +115,12 @@ export class RelayClient {
 	 */
 	private closedForPcRestart = false;
 	private suspended = false;
+	/**
+	 * 裏に回ったあとも、いまのソケットだけを保っている（W2-34）。この間は張り直さない:
+	 * 切れたら・張り直そうとしたら、その場で suspend と同じ状態に落とす。張り直した接続は PC から見て
+	 * 「前面のアプリ」になり、裏にいる間の通知がプッシュにならないため。
+	 */
+	private backgroundHold = false;
 	/** 破棄済みソケットにキューされていたコールバックを無効化する世代番号。 */
 	private socketGeneration = 0;
 	private reconnectAttempt = 0;
@@ -145,12 +166,14 @@ export class RelayClient {
 	connect(): void {
 		this.closedByUser = false;
 		this.suspended = false;
+		this.backgroundHold = false;
 		this.openSocket();
 	}
 
 	close(): void {
 		this.closedByUser = true;
 		this.suspended = false;
+		this.backgroundHold = false;
 		if (this.reconnectHandle !== null) {
 			this.timers.clearTimeout(this.reconnectHandle);
 			this.reconnectHandle = null;
@@ -161,6 +184,18 @@ export class RelayClient {
 	}
 
 	/**
+	 * 裏に回ったあとも、いまのソケットを保つ（W2-34。PC が「裏に回った」を確認したときだけ呼ぶ）。
+	 * 繋がっていなければ保てないので false。前面へ戻ったら {@link resume} で解く。
+	 */
+	holdInBackground(): boolean {
+		if (this.closedByUser || this.suspended || this.state !== 'online') {
+			return false;
+		}
+		this.backgroundHold = true;
+		return true;
+	}
+
+	/**
 	 * アプリがバックグラウンドへ移った時にフォアグラウンド用接続を明示的に止める。
 	 * 旧ソケットへキュー済みのフレームも世代番号とハンドラ解除で破棄する。
 	 */
@@ -168,7 +203,9 @@ export class RelayClient {
 		if (this.closedByUser || this.suspended) {
 			return;
 		}
+		this.backgroundHold = false;
 		this.suspended = true;
+		this.logEvent({ kind: 'suspended' });
 		if (this.reconnectHandle !== null) {
 			this.timers.clearTimeout(this.reconnectHandle);
 			this.reconnectHandle = null;
@@ -180,6 +217,7 @@ export class RelayClient {
 
 	/** フォアグラウンド復帰時に必ず有効なソケットを1本だけ確保する。 */
 	resume(): void {
+		this.backgroundHold = false;
 		if (this.closedByUser) {
 			return;
 		}
@@ -189,6 +227,7 @@ export class RelayClient {
 		}
 		this.suspended = false;
 		this.reconnectAttempt = 0;
+		this.logEvent({ kind: 'resumed' });
 		if (this.waitForAuthGate()) {
 			return;
 		}
@@ -201,6 +240,10 @@ export class RelayClient {
 	 * すでにonlineなら何もしない。ユーザーが明示的に切断した状態は維持する。
 	 */
 	ensureConnected(options?: { readonly keepBackoff?: boolean }): void {
+		if (this.backgroundHold && this.state !== 'online') {
+			this.suspend();
+			return;
+		}
 		if (this.closedByUser || this.suspended || this.state === 'online') {
 			return;
 		}
@@ -236,6 +279,11 @@ export class RelayClient {
 	 */
 	private reopenSocket(keepBackoff = false): void {
 		if (this.suspended) {
+			return;
+		}
+		// 裏で保っている間は張り直さない（新しい接続は PC から前面のアプリに見える）。畳んで前面復帰を待つ。
+		if (this.backgroundHold) {
+			this.suspend();
 			return;
 		}
 		// 資格を拒まれている間は、前面復帰や心拍（25秒おき）で叩き直さない。拒否は待っても
@@ -339,6 +387,7 @@ export class RelayClient {
 			return;
 		}
 		this.setState('connecting');
+		this.logEvent({ kind: 'connecting', attempt: this.reconnectAttempt });
 		let socket: SocketLike;
 		try {
 			socket = this.socketFactory(this.wsUrl(), this.wsProtocols());
@@ -383,6 +432,7 @@ export class RelayClient {
 					});
 				}
 				closedByConnectTimeout = true;
+				this.logEvent({ kind: 'connect-timeout' });
 				try {
 					socket.close(4001, 'connect timeout');
 				} catch { /* ignore */ }
@@ -433,6 +483,7 @@ export class RelayClient {
 						this.authGateUntil = undefined;
 						this.callbacks.onAuthRejected?.(false);
 					}
+					this.logEvent({ kind: 'online' });
 					this.setState('online');
 				} catch (error) {
 					// ここへ来る最頻ケースは「PCがまだ再接続に気づいていない」ことによる取りこぼしで、
@@ -457,6 +508,7 @@ export class RelayClient {
 		socket.onerror = error => {
 			if (isCurrent()) {
 				sawSocketError = true;
+				this.logEvent({ kind: 'socket-error', detail: errorMessage(error) });
 				reportMobileDiagnosticError('relay', 'socket-error', error, {
 					phase: this.state,
 					reconnect_count: this.reconnectAttempt,
@@ -468,6 +520,7 @@ export class RelayClient {
 		socket.onclose = event => {
 			if (isCurrent()) {
 				if (isRelayAuthRejection(event?.code)) {
+					this.logEvent({ kind: 'auth-rejected', code: event?.code });
 					// 異常系ではなく「再ペアリングが必要」という確定した状態なので、エラーとして積まない
 					// （拒否は1〜15分おきに確かめ直すたびに起きる）。
 					this.authRejectedStreak++;
@@ -477,6 +530,7 @@ export class RelayClient {
 					this.onClosed();
 					return;
 				}
+				this.logEvent({ kind: 'closed', code: event?.code ?? 0 });
 				// onerror を伴わない切断（リレー側の superseded、iOS のバックグラウンド回収）は
 				// これまで一切記録が残らず、同じ事象がPC側の close code だけで語られる非対称に
 				// なっていた。onerror 済みのときと、自分がタイムアウトで閉じたとき（直前に
@@ -508,6 +562,9 @@ export class RelayClient {
 				// リレーはモバイルのソケットを受理した直後に必ず現在のPC在否を送る（deviceDOのacceptMobile）。
 				// つまりE2Eハンドシェイクが始まる前にこの値は埋まる。
 				this.pcOnlineForCurrentSocket = msg.online;
+				if (wasOnlineOnThisSocket !== msg.online) {
+					this.logEvent({ kind: 'pc-presence', online: msg.online });
+				}
 				this.callbacks.onPcPresence?.(msg.online);
 				// PCがoffline→onlineへ戻った = PC側プロセスが再起動し、E2Eセッション（ephemeral鍵）
 				// が新しくなった。モバイル側のソケットはリレーDOに保持されたまま生きているため、
@@ -525,6 +582,7 @@ export class RelayClient {
 				if (msg.online && wasOnlineOnThisSocket === false) {
 					this.reconnectAttempt = 0;
 					this.closedForPcRestart = true;
+					this.logEvent({ kind: 'pc-restarted' });
 					try {
 						this.socket?.close(4002, 'pc restarted');
 					} catch { /* onclose経由の再接続に任せる */ }
@@ -575,6 +633,14 @@ export class RelayClient {
 			this.reconnectAttempt = 0;
 		}
 		this.onlineSince = undefined;
+		// 裏で保っていたソケットが切れた。張り直さず、suspend と同じ状態で前面復帰を待つ。
+		if (this.backgroundHold) {
+			this.backgroundHold = false;
+			this.suspended = true;
+			this.logEvent({ kind: 'suspended' });
+			this.setState('offline');
+			return;
+		}
 		if (this.closedByUser || this.suspended) {
 			this.setState('offline');
 			return;
@@ -592,6 +658,7 @@ export class RelayClient {
 			delay = relayReconnectDelayMs(this.reconnectAttempt, this.random());
 		}
 		this.reconnectAttempt++;
+		this.logEvent({ kind: 'reconnect-scheduled', delayMs: delay, attempt: this.reconnectAttempt });
 		this.reconnectHandle = this.timers.setTimeout(() => {
 			this.reconnectHandle = null;
 			if (!this.closedByUser && !this.suspended) {
@@ -600,10 +667,25 @@ export class RelayClient {
 		}, delay);
 	}
 
+	private logEvent(event: RelayConnectionEvent): void {
+		try {
+			this.callbacks.onConnectionEvent?.(event);
+		} catch { /* 記録の失敗で接続を止めない */ }
+	}
+
 	/** 制御メッセージ（pairing-msg等）をリレーへ送る低レベルAPI（ペアリング時に使用）。 */
 	sendControl(text: string): void {
 		this.socket?.send(text);
 	}
+}
+
+/** ソケットのエラーの文（RN は Event、テストは Error を渡す）。無ければ undefined。 */
+function errorMessage(error: unknown): string | undefined {
+	if (error instanceof Error) {
+		return error.message;
+	}
+	const message = (error as { message?: unknown } | null | undefined)?.message;
+	return typeof message === 'string' ? message : undefined;
 }
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {

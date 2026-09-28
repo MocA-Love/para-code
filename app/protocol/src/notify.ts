@@ -59,7 +59,18 @@ export interface NotifyPayload {
 	 *   成否を知らないので、プッシュを受け取れないと分かっている端末は自分で鳴らしてよい
 	 */
 	readonly quiet?: NotifyQuiet;
+	/**
+	 * もう片付いた通知の印（W2-27。**プッシュの暗号文にだけ載る**）。PC が片付いたと知っている通知
+	 * （スマホで開いた・PC で確認済みにしたエージェントの確認より前の通知）の `id` を、通知鍵から用途別に
+	 * 作った鍵で HMAC-SHA256 にした16進先頭32桁。通知拡張（NSE）が同じ値を作って通知センターから消す。
+	 * PC は10件まで載せる。旧アプリ・旧 NSE は読まずに無視する。
+	 */
+	readonly dismiss?: readonly string[];
 }
+
+/** `dismiss` の1件の形（16進32桁）と、読む件数の上限。 */
+const NOTIFY_DISMISS_TAG_PATTERN = /^[0-9a-f]{32}$/;
+const NOTIFY_DISMISS_MAX_TAGS = 32;
 
 export function encodeNotify(payload: NotifyPayload): Uint8Array {
 	return new TextEncoder().encode(JSON.stringify(payload));
@@ -87,7 +98,11 @@ export function decodeNotify(bytes: Uint8Array): NotifyPayload {
 	const windowId = typeof raw['windowId'] === 'number' && Number.isInteger(raw['windowId']) ? raw['windowId'] : undefined;
 	const agentToken = typeof raw['agentToken'] === 'string' && raw['agentToken'].length <= 200 ? raw['agentToken'] : undefined;
 	const quiet = raw['quiet'] === 'muted' || raw['quiet'] === 'pushed' ? raw['quiet'] : undefined;
-	return { kind, id, title, body, at, ...(subtitle !== undefined ? { subtitle } : {}), ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}), ...(terminalKey !== undefined ? { terminalKey } : {}), ...(windowId !== undefined ? { windowId } : {}), ...(agentToken !== undefined ? { agentToken } : {}), ...(pcId !== undefined ? { pcId } : {}), ...(pcName !== undefined ? { pcName } : {}), ...(quiet !== undefined ? { quiet } : {}) };
+	const dismissRaw = raw['dismiss'];
+	const dismiss = Array.isArray(dismissRaw)
+		? dismissRaw.slice(0, NOTIFY_DISMISS_MAX_TAGS).filter((tag): tag is string => typeof tag === 'string' && NOTIFY_DISMISS_TAG_PATTERN.test(tag))
+		: undefined;
+	return { kind, id, title, body, at, ...(dismiss !== undefined && dismiss.length > 0 ? { dismiss } : {}), ...(subtitle !== undefined ? { subtitle } : {}), ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}), ...(terminalKey !== undefined ? { terminalKey } : {}), ...(windowId !== undefined ? { windowId } : {}), ...(agentToken !== undefined ? { agentToken } : {}), ...(pcId !== undefined ? { pcId } : {}), ...(pcName !== undefined ? { pcName } : {}), ...(quiet !== undefined ? { quiet } : {}) };
 }
 
 function isNotifyKind(value: string): value is NotifyKind {
@@ -107,8 +122,12 @@ export type NotifyControlMessage =
 	| { readonly t: 'dismissed'; readonly id: string }
 	| { readonly t: 'dismissed-token'; readonly token: string };
 
-export function encodeNotifyDismiss(id: string): Uint8Array {
-	return new TextEncoder().encode(JSON.stringify({ t: 'dismiss', id }));
+/**
+ * `opened`（任意）: その通知を ID で指定して開いた・消した（W2-27）。PC はこれが付いた許可・質問だけを、
+ * ほかの端末のロック画面から消してよい通知として扱う。「すべて消去」では付けない。旧PCは読まずに無視する。
+ */
+export function encodeNotifyDismiss(id: string, options?: { readonly opened?: boolean }): Uint8Array {
+	return new TextEncoder().encode(JSON.stringify({ t: 'dismiss', id, ...(options?.opened === true ? { opened: true } : {}) }));
 }
 
 export function encodeNotifyDismissed(id: string): Uint8Array {
@@ -134,6 +153,46 @@ export function decodeNotifyControl(bytes: Uint8Array): NotifyControlMessage | u
 			return { t: raw.t, token: raw.token };
 		}
 		return undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * アプリが裏に回った・前面に戻ったことを PC へ伝える（W2-34。notify チャネル M→PC）と、その確認（PC→M）。
+ *
+ * アプリは裏に回ったとき、PC がこの知らせを受けて確認を返したときだけ、ソケットを最大30秒保つ。
+ * 受けた PC は、そのスマホを「前面ではない」とみなし、最後に受信した時刻に関わらずプッシュを送る
+ * （鳴らすかは PC が決める、の方針を保つため。paradisNotifyDelivery.ts）。旧PCはこの `t` を知らず
+ * 確認を返さないので、アプリは今までどおり即座に閉じる。PC は `conn.background-grace.v1` を広告する。
+ *
+ * `id` は確認と突き合わせるためのもの（任意。前面の知らせには付けない）。
+ */
+export type NotifyVisibilityState = 'background' | 'foreground';
+
+export type NotifyVisibilityMessage =
+	| { readonly t: 'visibility'; readonly state: NotifyVisibilityState; readonly id?: string }
+	| { readonly t: 'visibility-ack'; readonly state: NotifyVisibilityState; readonly id?: string };
+
+const VISIBILITY_ID_MAX_LENGTH = 64;
+
+export function encodeNotifyVisibility(state: NotifyVisibilityState, id?: string): Uint8Array {
+	return new TextEncoder().encode(JSON.stringify({ t: 'visibility', state, ...(id !== undefined ? { id } : {}) }));
+}
+
+export function encodeNotifyVisibilityAck(state: NotifyVisibilityState, id?: string): Uint8Array {
+	return new TextEncoder().encode(JSON.stringify({ t: 'visibility-ack', state, ...(id !== undefined ? { id } : {}) }));
+}
+
+/** notify チャネルの受信バイト列を W2-34 の知らせとして読む。違えば undefined。 */
+export function decodeNotifyVisibility(bytes: Uint8Array): NotifyVisibilityMessage | undefined {
+	try {
+		const raw = JSON.parse(new TextDecoder().decode(bytes)) as { t?: unknown; state?: unknown; id?: unknown };
+		if ((raw.t !== 'visibility' && raw.t !== 'visibility-ack') || (raw.state !== 'background' && raw.state !== 'foreground')) {
+			return undefined;
+		}
+		const id = typeof raw.id === 'string' && raw.id.length > 0 && raw.id.length <= VISIBILITY_ID_MAX_LENGTH ? raw.id : undefined;
+		return { t: raw.t, state: raw.state, ...(id !== undefined ? { id } : {}) };
 	} catch {
 		return undefined;
 	}

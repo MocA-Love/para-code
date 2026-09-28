@@ -42,10 +42,29 @@ export function paradisMobilePushIds(notifyKey: Uint8Array, notifyBytes: Uint8Ar
 	} catch {
 		return {};
 	}
-	const idKey = createHmac('sha256', notifyKey).update(PUSH_ID_KEY_LABEL).digest();
-	const id = (purpose: 'collapse' | 'thread', value: string) => createHmac('sha256', idKey).update(`${purpose}\0${value}`).digest('hex').slice(0, PUSH_ID_HEX_LENGTH);
+	const id = pushIdHasher(notifyKey);
 	return {
 		...(agentToken !== undefined ? { collapseId: id('collapse', agentToken) } : {}),
 		threadId: id('thread', ws ?? ''),
 	};
+}
+
+/**
+ * 「もう消してよい通知」の印（W2-27）。通知の `id` を、同じ用途別の鍵で HMAC にしたもの。
+ * プッシュの暗号文の中（`dismiss`）に入れるので、リレーと APNs には見えない。通知拡張（NSE）は
+ * 復号に使えた鍵で、通知センターに残る通知の `notifyId` から同じ値を作って突き合わせる
+ * （`app/mobile/native/NotifyExtension/NotificationService.swift` の `dismissTag`。値は
+ * `paradisMobilePushIds.test.ts` で固定）。鍵はペアリングごとなので、別の PC の通知には一致しない。
+ */
+export function paradisMobileDismissTags(notifyKey: Uint8Array, notifyIds: readonly string[]): string[] {
+	if (notifyIds.length === 0) {
+		return [];
+	}
+	const id = pushIdHasher(notifyKey);
+	return notifyIds.map(notifyId => id('dismiss', notifyId));
+}
+
+function pushIdHasher(notifyKey: Uint8Array): (purpose: 'collapse' | 'thread' | 'dismiss', value: string) => string {
+	const idKey = createHmac('sha256', notifyKey).update(PUSH_ID_KEY_LABEL).digest();
+	return (purpose, value) => createHmac('sha256', idKey).update(`${purpose}\0${value}`).digest('hex').slice(0, PUSH_ID_HEX_LENGTH);
 }
