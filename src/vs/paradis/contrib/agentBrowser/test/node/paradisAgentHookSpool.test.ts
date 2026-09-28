@@ -62,16 +62,22 @@ suite('paradisAgentHookSpool (node)', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	/** 標準エラーに出たもの（控えのたびに何も出ないこと）。 */
+	const stderrs: string[] = [];
+
 	async function runHook(payload: string, portFilePath: string): Promise<void> {
 		const scriptPath = join(root, 'notify.sh');
 		await fs.writeFile(scriptPath, paradisGetNotifyScriptContent(), { mode: 0o755 });
 		await fs.chmod(scriptPath, 0o755);
 		const payloadPath = join(root, 'payload.json');
 		await fs.writeFile(payloadPath, payload);
-		await execFileAsync('/bin/sh', ['-c', 'cat "$PAYLOAD_FILE" | "$HOOK_SCRIPT"'], {
+		const { stderr } = await execFileAsync('/bin/sh', ['-c', 'cat "$PAYLOAD_FILE" | "$HOOK_SCRIPT"'], {
 			env: { PATH: process.env['PATH'], HOOK_SCRIPT: scriptPath, PAYLOAD_FILE: payloadPath, [PARADIS_PANE_TOKEN_ENV_VAR]: TOKEN, [PARADIS_MCP_PORT_FILE_ENV_VAR]: portFilePath },
 			timeout: 15_000,
 		});
+		if (stderr.length > 0) {
+			stderrs.push(stderr);
+		}
 	}
 
 	test('keeps only unreachable and not-yet-synced hooks, privately, under a hash of the pane token, with only the fields that tell the state', async function () {
@@ -122,6 +128,7 @@ suite('paradisAgentHookSpool (node)', () => {
 			payloads: records.map(record => record.payload),
 			idsDistinct: new Set(records.map(record => record.id)).size === records.length && records.every(record => typeof record.id === 'string'),
 			afterTake: await fs.readdir(spoolDir),
+			stderrs,
 		}, {
 			files: [fileName],
 			dirMode: '700',
@@ -135,6 +142,8 @@ suite('paradisAgentHookSpool (node)', () => {
 			],
 			idsDistinct: true,
 			afterTake: [],
+			// 最初の控え（まだファイルが無い）でも、何も標準エラーへ出さない。
+			stderrs: [],
 		});
 	});
 

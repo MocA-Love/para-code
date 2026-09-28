@@ -1091,13 +1091,16 @@ fork の後始末を `sentry/common/paradisTeardownTiming.ts` で名前付きで
 
 ### Para Code が止まっている間の hook の控え（W2-20）
 
-- notify.sh / notify.ps1 はスキーマ v4。手元の版だけが、受け口に届かなかった hook（ポートファイル無し・接続できない）と、受け口が 503（ペインがまだ同期されていない）と答えた hook を `<userData>/agent-hook-spool/pane-<ペイントークンの SHA-256>.jsonl` に 1 行 `{"v":1,"id","event","t":<秒>,"payload"}` で書く。404（知らない・終わったペイン）は控えない。受け口は、起動とウィンドウの接続から 60 秒の間だけ、知らないトークンに 503 と答える（レビュー M3）
+- notify.sh / notify.ps1 はスキーマ v5（v4 は最初の控えでファイルが無いとき `wc -c <"$SPOOL_FILE" 2>/dev/null` が標準エラーへ `No such file or directory` を出していた。sh はリダイレクトを左から処理するので、`{ wc -c <file; } 2>/dev/null` と括る）。手元の版だけが、受け口に届かなかった hook（ポートファイル無し・接続できない）と、受け口が 503（ペインがまだ同期されていない）と答えた hook を `<userData>/agent-hook-spool/pane-<ペイントークンの SHA-256>.jsonl` に 1 行 `{"v":1,"id","event","t":<秒>,"payload"}` で書く。404（知らない・終わったペイン）は控えない。受け口は、起動とウィンドウの接続から 60 秒の間だけ、知らないトークンに 503 と答える（レビュー M3）
 - payload に残すのは `hook_event_name`・`session_id`・`transcript_path`・`cwd`・`tool_name` と、Notification が許可要求かどうか（`"message":"permission"`）だけ。依頼の文面やツールの入力は書かない（レビュー M4）。sh は `grep -oE` で JSON の文字列値を（エスケープごと）抜き出し、1 行を変数で組み立てて 1 回で追記する（一時ファイルを使わない）
 - フォルダ 0700・ファイル 0600、1 ファイル 5MB・1024 ファイルまで。Pre/PostToolUse・PostToolUseFailure・MessageDisplay は書かない。SSH の接続先の版は控えない（流し直す口が無い）
-- hook ごとに ID（`hid`）を振る。受け口は最近の ID を覚え、流し直しで同じ ID を捨てる。shared process は `agent-hook-spool/alive` に生きている時刻を 1 分ごとと閉じるときに書き、次の起動はそれより後で、しかも 1 時間以内の控えだけを流す（受け口の返事が遅れて控えてしまった重複を除くため、レビュー M5）
+- hook ごとに ID（`hid`）を振る。受け口は最近の ID を覚え、流し直しで同じ ID を捨てる。shared process は `agent-hook-spool/alive` に生きている時刻を 15 秒ごとに書き、次の起動はそれより後で、しかも 1 時間以内の控えだけを流す（受け口の返事が遅れて控えてしまった重複を除くため、レビュー M5）。閉じるときにも書こうとするが、**shared process の終了では dispose が呼ばれず書かれない**（実機で 3 回とも直前の刻みのままだった、2026-09-29）。終了の経路に依頼を足すより単純で安全なので、刻みを 1 分から 15 秒に縮めて境目のずれを抑えた
 - 読むのは shared process（`agentBrowser/node/paradisAgentHookSpoolStore.ts`）。起動時に 7 日より古いものを消し、ウィンドウがペインを同期した（`syncBindingAuthority`）後に、そのペインの控えを 1 度だけ名前を変えてから読んで消す。この起動で本物の hook が届いたペイン・既に状態があるペインは状態を触らない。所有者の判定は pid 無しの hook と同じ（transcript だけで見る fail-closed）
 - 状態は最後の 1 件で決める。作業中（working）は流し直さない。完了は `quiet` 付きの review（`IParadisAgentPaneStatus.quiet`）にして、デスクトップの通知（`paradisAgentStatusNotificationTracker.ts`）とモバイルのプッシュ（`paradisMobileWorkspaceProvider.ts` の `detectAndNotify`、`paradisQuietReplayedPanes.ts` を見る）が鳴らさない。許可要求と質問は 10 分以内の最後の 1 件だけを `replayedPrompts` としてスナップショットに載せ、ウィンドウ（`paradisAgentHookReplay.contribution.ts`）が画面の下端にその種類の確認が出ていると確かめて `confirmReplayedPrompt` を呼んだときに初めて状態を付け、hook のバスへ流す（承認カードと通知はライブと同じ経路）
 - 【要確認】別のスペースへ退避したターミナルは xterm の画面が読めないことがあり、その間は確かめられずに 10 分で捨てる（推測）
+- 【要確認】常駐を使っていて閉じるときに「終了する」を選んだ後の再起動で、エディタ領域のタブが空の新しいシェルとして戻る（W2-20 とは関係の無い既存の挙動と推測）
+- 【要確認】`pty-daemon.save-terminal-screens` は「終了する」の返事より前に画面を保存するので、常駐が先に終わっていると次の起動でその保存物から戻りうる（この順序は W2-26 の前からのもの）
+- 【要確認】流し直しは MCP の待ち受けを始める約 1.5 秒前に済むことがあり、その間に控えられた hook は控えに残ったまま、その起動では流されない可能性がある（未検証）
 
 ## モバイルリレー: Cloudflare Workers/DOデプロイ（2026-07-05）
 

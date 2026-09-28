@@ -41,8 +41,14 @@ export const PARADIS_AGENT_HOOK_SPOOL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS = 10 * 60 * 1000;
 /** そもそも流し直してよい古さ。 */
 export const PARADIS_AGENT_HOOK_REPLAY_MAX_AGE_MS = 60 * 60 * 1000;
-/** 前の Para Code が生きていたことを書き残す間隔（`alive` ファイル）。 */
-export const PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS = 60 * 1000;
+/**
+ * 前の Para Code が生きていたことを書き残す間隔（`alive` ファイル）。
+ *
+ * shared process は終了のときに dispose されない（実機で確認、2026-09-29）ので、閉じるときの書き込みは
+ * 当てにできない。終了の仕組みに新しい依頼を足すより、間隔を短くして境目のずれ（この間に控えた重複が
+ * 流れうる幅）を 15 秒に抑える方を選んだ。書くのは数字 1 つで、15 秒ごとでも負担は無い。
+ */
+export const PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS = 15 * 1000;
 /** 前の Para Code が生きていた最後の時刻を書き残すファイル名（控えのフォルダの中）。 */
 export const PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE = 'alive';
 /**
