@@ -32,7 +32,8 @@
 #
 # タグの判定は para-release.yml と同じ build/lib/paradisReleaseChannel.ts で行う。ステーブル
 # （v<ver>-paracode-<N>）とベータ（v<ver>-paracode-<N>-beta.<M>）のタグだけがビルド・公開され、
-# それ以外のタグは最初の段で止まる。ベータの REH も同じ `reh` リリースへ commit 名のファイルで
+# それ以外のタグは最初の段で止まる。ブランチからの手動起動はビルドと artifact までで、`reh` には
+# 公開しない（タグからの手動起動は `publish` 入力に従う）。ベータの REH も同じ `reh` リリースへ commit 名のファイルで
 # 積む（ベータのクライアントが SSH 先へ入れるため）。ファイル名が commit で分かれているので
 # ステーブルのクライアントが取りに来るファイルとは重ならない。さらにベータでは、同じ名前の
 # ファイルが既にあれば上書きしない（ステーブルと同じ commit にベータのタグを打った場合でも、
@@ -43,7 +44,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: 'ビルドしたサーバーを reh リリースへ公開する（オフだと artifact のみ）'
+        description: 'ビルドしたサーバーを reh リリースへ公開する（タグ上で実行したときだけ。オフだと artifact のみ）'
         type: boolean
         default: true
   push:
@@ -75,6 +76,17 @@ jobs:
       - name: Classify the ref
         id: plan
         run: node build/lib/paradisReleaseChannel.ts
+
+      # 出力が空だと下の公開の段が黙って飛ばされ、緑のまま何も置かれない。失敗として止める。
+      - name: Fail on an empty plan
+        env:
+          KIND: ${{ steps.plan.outputs.kind }}
+          PUBLISH: ${{ steps.plan.outputs.publish }}
+        run: |
+          if [ -z "$KIND" ] || [ -z "$PUBLISH" ]; then
+            echo "::error::The release plan is empty (kind='$KIND' publish='$PUBLISH')."
+            exit 1
+          fi
 
       - name: Setup system dependencies
         run: |
@@ -155,13 +167,14 @@ jobs:
       # commit 別のファイルが積まれる。古い commit のサーバーは、その版のクライアントを
       # 使っている人がいる限り消さないこと。
       - name: Publish to reh release
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        # publish はタグ（ステーブル／ベータ）のときだけ true。ブランチからの手動起動では公開しない。
+        if: ${{ steps.plan.outputs.publish == 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IS_BETA: ${{ steps.plan.outputs.is_beta }}
           TARBALL: ${{ steps.pack.outputs.tarball }}
         run: |
-          set -e
+          set -e -o pipefail
           if ! gh release view reh >/dev/null 2>&1; then
             gh release create reh \
               --title "Remote server (REH) builds" \
@@ -169,9 +182,13 @@ jobs:
               --latest=false
           fi
           # ベータは既存のファイルを上書きしない（ステーブル側の成果物に触れないため）。
-          if [ "$IS_BETA" = "true" ] && gh release view reh --json assets --jq '.assets[].name' | grep -qxF "$TARBALL"; then
-            echo "::notice::$TARBALL is already in the reh release; the beta run leaves it as is."
-            exit 0
+          # 一覧を取れなかったときは「無い」とみなさず、set -e でここで止める。
+          if [ "$IS_BETA" = "true" ]; then
+            ASSETS="$(gh release view reh --json assets --jq '.assets[].name')"
+            if printf '%s\n' "$ASSETS" | grep -qxF "$TARBALL"; then
+              echo "::notice::$TARBALL is already in the reh release; the beta run leaves it as is."
+              exit 0
+            fi
           fi
           gh release upload reh \
             "${{ steps.pack.outputs.tarball }}" \
