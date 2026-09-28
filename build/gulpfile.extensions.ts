@@ -295,7 +295,9 @@ task.task(compileNativeExtensionsBuildTask);
  */
 export const compileCopilotExtensionBuildTask = task.define('compile-copilot-extension-build', task.series(
 	task.define('bundle-copilot-extension-build', () => ext.packageCopilotExtensionStream().pipe(gulp.dest('.build'))),
-	task.define('copy-copilot-extension-dependencies-build', () => ext.packageCopilotExtensionDependenciesStream().pipe(gulp.dest('.build')))
+	task.define('copy-copilot-extension-dependencies-build', () => ext.packageCopilotExtensionDependenciesStream().pipe(gulp.dest('.build'))),
+	// PARA-PATCH: restore @github/copilot/sdk, which build/.moduleignore strips since 1.139 (see packageCopilotExtensionSdkStream).
+	task.define('copy-copilot-extension-sdk-build', () => ext.packageCopilotExtensionSdkStream().pipe(gulp.dest('.build')))
 ));
 task.task(compileCopilotExtensionBuildTask);
 
