@@ -11,7 +11,7 @@ import { ServicesAccessor } from '../../../../platform/instantiation/common/inst
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { paradisChannelHostResolver } from '../../workspaceSwitch/electron-browser/paradisWorktreeGitChannelClient.js';
 import { paradisRedactMobileCommandOutput } from '../common/paradisMobileOutputRedaction.js';
-import { IParadisFailedCheckForPrompt, paradisBuildFixChecksPrompt } from '../common/paradisMobileAgentPrompts.js';
+import { IParadisFailedCheckForPrompt, PARADIS_AGENT_PROMPT_MAX_LENGTH, paradisBuildFixChecksPrompt } from '../common/paradisMobileAgentPrompts.js';
 import {
 	IParadisPullRequestDetail,
 	PARADIS_PR_FAILED_LOG_JOBS,
@@ -142,14 +142,19 @@ registerParadisMobileRequestHandler('scm', 'prFixChecks', {
 				context.reply({ error: 'いま失敗しているチェックはありません。', code: 'no-failures' });
 				return 'replied' as const;
 			}
-			const jobs = failed.flatMap(check => check.jobId !== undefined && check.repo !== undefined ? [{ jobId: check.jobId, repo: check.repo }] : []).slice(0, PARADIS_PR_FAILED_LOG_JOBS);
+			const jobs = failed.flatMap(check => check.jobId !== undefined && check.repo !== undefined && check.repo.toLowerCase() === detail.repo.toLowerCase() ? [{ jobId: check.jobId, repo: check.repo }] : []).slice(0, PARADIS_PR_FAILED_LOG_JOBS);
 			const logs = jobs.length > 0 ? await host.failedJobLogs(jobs).catch(() => []) : [];
 			const forPrompt: IParadisFailedCheckForPrompt[] = failed.map(check => {
 				const log = logs.find(entry => entry.jobId === check.jobId)?.log;
 				// CI のログにはマスクされなかった秘密値が出ることがある。依頼文に載せる前に伏せる
 				return log !== undefined ? { check, log: paradisRedactMobileCommandOutput(log) } : { check };
 			});
-			return paradisDeliverAgentPrompt(services, ws, root, paradisBuildFixChecksPrompt(detail, forPrompt), target, () => context.pushState());
+			const prompt = paradisBuildFixChecksPrompt(detail, forPrompt);
+			if (prompt.length > PARADIS_AGENT_PROMPT_MAX_LENGTH) {
+				context.reply({ error: '依頼文が長すぎます。PC で頼んでください。', code: 'too-long' });
+				return 'replied' as const;
+			}
+			return paradisDeliverAgentPrompt(services, ws, root, prompt, target, () => context.pushState());
 		});
 		if (outcome === undefined) {
 			context.reply({ error: 'このスペースで PR の操作をしている最中です。終わってからもう一度試してください。', code: 'busy' });

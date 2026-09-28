@@ -52,7 +52,15 @@ export interface IParadisPullRequestDetail {
 	readonly mergeStateStatus?: string;
 	/** `APPROVED` / `CHANGES_REQUESTED` / `REVIEW_REQUIRED`（レビューが要らなければ無い）。 */
 	readonly reviewDecision?: string;
+	/** 画面に出すチェック（{@link PARADIS_PR_MAX_CHECKS} 件まで）。 */
 	readonly checks: readonly IParadisPullRequestCheck[];
+	/** 切る前の全件の区分ごとの数（マージの判断はこちらで数える。W2-36 より前の形には無い）。 */
+	readonly checkCounts?: Record<ParadisPullRequestCheckBucket, number>;
+	/**
+	 * チェックが切られている・gh が全件を返したか分からない（{@link PARADIS_PR_CHECKS_MAYBE_TRUNCATED} 件以上）。
+	 * このときスマホからはマージさせない。
+	 */
+	readonly checksIncomplete?: boolean;
 }
 
 /** PR を出せない理由（`prView` の `unavailable`）。 */
@@ -67,7 +75,13 @@ export type ParadisPullRequestLookup =
 export const PARADIS_PR_DETAIL_FIELDS = 'number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup';
 
 /** 一度に返すチェックの上限（大きなモノレポで何百と並ぶことがある）。 */
-const MAX_CHECKS = 200;
+export const PARADIS_PR_MAX_CHECKS = 200;
+
+/**
+ * この件数以上のチェックが届いたら、gh が途中で切った可能性があるとみなす。gh の `statusCheckRollup` は GraphQL の
+ * `contexts(first: 100)` 相当で取っていると推測していて（打ち切り件数は確かめられていない）、全件かどうかが分からない。
+ */
+export const PARADIS_PR_CHECKS_MAYBE_TRUNCATED = 100;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -159,26 +173,35 @@ export function paradisParseGhPullRequestDetail(stdout: string, currentBranch: s
 		default: return undefined;
 	}
 	const checks: IParadisPullRequestCheck[] = [];
-	for (const entry of Array.isArray(raw.statusCheckRollup) ? raw.statusCheckRollup : []) {
-		if (!isRecord(entry) || checks.length >= MAX_CHECKS) {
+	const checkCounts: Record<ParadisPullRequestCheckBucket, number> = { pass: 0, fail: 0, pending: 0, skipping: 0, cancel: 0 };
+	const rollup = Array.isArray(raw.statusCheckRollup) ? raw.statusCheckRollup : [];
+	for (const entry of rollup) {
+		if (!isRecord(entry)) {
 			continue;
 		}
+		// マージの判断に使う数は、画面に出す分を切る前の全件で数える
+		const bucket = paradisPullRequestCheckBucket(entry);
+		checkCounts[bucket]++;
 		const name = stringOf(entry.name) ?? stringOf(entry.context);
-		if (name === undefined) {
+		if (name === undefined || checks.length >= PARADIS_PR_MAX_CHECKS) {
 			continue;
 		}
 		const checkUrl = httpsUrl(entry.detailsUrl) ?? httpsUrl(entry.targetUrl);
 		const jobId = checkUrl !== undefined ? paradisGithubJobIdFromUrl(checkUrl) : undefined;
+		// ログを取るのは PR と同じリポジトリ（同じホスト・owner/repo）の Actions のジョブだけ。第三者の App が
+		// 詳細の URL に別のホストを書いても、そこへ gh を向けさせない
 		const jobRepo = jobId !== undefined && checkUrl !== undefined ? paradisGithubRepoFromUrl(checkUrl) : undefined;
+		const sameRepo = jobRepo !== undefined && jobRepo.toLowerCase() === repo.toLowerCase();
 		const workflow = stringOf(entry.workflowName);
 		checks.push({
 			name: name.slice(0, 200),
 			...(workflow !== undefined ? { workflow: workflow.slice(0, 200) } : {}),
-			bucket: paradisPullRequestCheckBucket(entry),
+			bucket,
 			...(checkUrl !== undefined ? { url: checkUrl } : {}),
-			...(jobId !== undefined && jobRepo !== undefined ? { jobId, repo: jobRepo } : {}),
+			...(jobId !== undefined && sameRepo ? { jobId, repo } : {}),
 		});
 	}
+	const checksIncomplete = rollup.length >= PARADIS_PR_CHECKS_MAYBE_TRUNCATED || rollup.length > checks.length;
 	const baseRefName = stringOf(raw.baseRefName);
 	const mergeable = stringOf(raw.mergeable);
 	const mergeStateStatus = stringOf(raw.mergeStateStatus);
@@ -196,6 +219,8 @@ export function paradisParseGhPullRequestDetail(stdout: string, currentBranch: s
 		...(mergeStateStatus !== undefined ? { mergeStateStatus } : {}),
 		...(reviewDecision !== undefined ? { reviewDecision } : {}),
 		checks,
+		checkCounts,
+		...(checksIncomplete ? { checksIncomplete: true } : {}),
 	};
 }
 
@@ -209,7 +234,7 @@ export function paradisPullRequestCheckCounts(checks: readonly IParadisPullReque
 }
 
 /** スマホからマージできない理由。 */
-export type ParadisPullRequestMergeBlock = 'not-open' | 'draft' | 'conflict' | 'checks-failing' | 'checks-pending' | 'changes-requested' | 'review-required' | 'blocked';
+export type ParadisPullRequestMergeBlock = 'not-open' | 'draft' | 'conflict' | 'checks-failing' | 'checks-pending' | 'checks-unknown' | 'changes-requested' | 'review-required' | 'blocked';
 
 /**
  * スマホからマージしてよいか（Q128 A）。CI が失敗・実行中なら出さず、PC でのマージを案内する。
@@ -226,12 +251,16 @@ export function paradisPullRequestMergeBlock(detail: IParadisPullRequestDetail):
 	if (detail.mergeable === 'CONFLICTING' || detail.mergeStateStatus === 'DIRTY') {
 		return { code: 'conflict', message: 'ベースのブランチと競合しています。PC で解決してください。' };
 	}
-	const counts = paradisPullRequestCheckCounts(detail.checks);
+	// 画面に出す分を切る前の全件の数で判断する（切った後ろに失敗が隠れていてもマージさせない）
+	const counts = detail.checkCounts ?? paradisPullRequestCheckCounts(detail.checks);
 	if (counts.fail > 0 || counts.cancel > 0) {
 		return { code: 'checks-failing', message: '失敗した CI のチェックがあります。PC でマージしてください。' };
 	}
 	if (counts.pending > 0) {
 		return { code: 'checks-pending', message: 'CI のチェックが実行中です。終わるのを待つか、PC でマージしてください。' };
+	}
+	if (detail.checksIncomplete === true) {
+		return { code: 'checks-unknown', message: 'CI のチェックが多く、すべてを確かめられません。PC でマージしてください。' };
 	}
 	if (detail.reviewDecision === 'CHANGES_REQUESTED') {
 		return { code: 'changes-requested', message: '変更を求めるレビューがあります。' };

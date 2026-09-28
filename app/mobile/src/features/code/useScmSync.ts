@@ -20,10 +20,10 @@ import { currentRendererTarget, type CodeSpace } from './useCodeSpace.js';
  * 失敗はこの画面の中（一覧の上・コミットバーの上）に出す。シートの中では使わない。
  */
 
-/** push・pull は認証とネットワークを待つので長めに待つ（PC 側の上限は 120 秒）。 */
-const SYNC_TIMEOUT_MS = 130_000;
-/** エージェントの起動を待つ（PC 側は 45 秒で打ち切る）。 */
-const HANDOFF_TIMEOUT_MS = 60_000;
+/** push・pull は認証とネットワークを待つので長めに待つ（PC 側は push だけで 120 秒、前後の読み取りを足した合計より長く）。 */
+const SYNC_TIMEOUT_MS = 200_000;
+/** エージェントの起動を待つ（PC 側は 45 秒で打ち切る）。CI の直しは PR とログの取得（最大 3 件）が先に入る。 */
+const HANDOFF_TIMEOUT_MS = 200_000;
 
 export interface ScmSyncController {
 	readonly enabled: boolean;

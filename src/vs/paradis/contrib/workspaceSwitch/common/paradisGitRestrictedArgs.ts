@@ -7,8 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 /**
- * `runGit`（モバイル中継の許可リスト付き git 実行）で、リモートとやり取りするサブコマンドとインデックスを
- * 丸ごと入れ替えるサブコマンドに掛ける追加の検査（Orca W2-15）。
+ * `runGit`（モバイル中継の許可リスト付き git 実行）で、リモートとやり取りするサブコマンドに掛ける追加の検査（Orca W2-15）。
  *
  * 許可リストの他のサブコマンドは「危険なオプションを拒否する」方式だが、これらは**許すオプションを列挙する**方式にする。
  * `--force` 系・`-f`・`+` 付きの refspec（強制更新）・`:branch`（リモートのブランチの削除）・`--mirror` / `--delete` /
@@ -25,21 +24,11 @@ const ALLOWED_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
 /** 位置引数（remote と refspec）の数の上限。 */
 const MAX_POSITIONAL: Readonly<Record<string, number>> = { push: 2, fetch: 1, pull: 2 };
 
-/** `write-tree` / `read-tree` で扱うツリーの id（SHA-1 か SHA-256）。 */
-const TREE_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-
 /**
  * `args`（先頭がサブコマンド）を検査し、許されなければ理由を返す。対象外のサブコマンドは undefined。
  */
 export function paradisRestrictedGitArgsError(args: readonly string[]): string | undefined {
 	const [subcommand, ...rest] = args;
-	if (subcommand === 'write-tree') {
-		return rest.length === 0 ? undefined : 'write-tree takes no arguments';
-	}
-	if (subcommand === 'read-tree') {
-		// オプション（`-m` `-u` `--reset` など作業ツリーまで書き換えるもの）は受けず、控えたツリーをインデックスへ戻すだけ
-		return rest.length === 1 && TREE_ID.test(rest[0] ?? '') ? undefined : 'read-tree only restores a saved tree';
-	}
 	if (subcommand === undefined) {
 		return undefined;
 	}

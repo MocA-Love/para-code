@@ -76,6 +76,7 @@ describe('commit failure', () => {
 		expect(failure).toEqual({ id: 'f1', kind: 'lint', summary: 'lint で失敗', output: 'a.ts:1 error', restored: true });
 		expect(commitFailureView(failure!)).toEqual({ title: 'lint で失敗', output: 'a.ts:1 error', fixable: true, note: 'ステージの状態はコミットの前に戻しました。' });
 		expect(commitFailureView({ ...failure!, kind: 'identity', restored: false })).toMatchObject({ fixable: false, note: undefined });
+		expect(commitFailureView(parseCommitFailure({ id: 'f2', kind: 'hook', summary: 's', output: '', restored: false, restoreFailed: true })!).note).toBe('ステージを戻せませんでした。PC で確かめてください。');
 		expect(parseCommitFailure({ id: 1 })).toBeUndefined();
 		expect(parseCommitFailure({ id: 'x', kind: 'future', summary: 's', output: '' })?.kind).toBe('other');
 	});

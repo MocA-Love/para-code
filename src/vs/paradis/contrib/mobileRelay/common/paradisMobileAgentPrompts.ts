@@ -20,17 +20,33 @@ export interface IParadisFailedCheckForPrompt {
 	readonly log?: string;
 }
 
+/** 依頼文に並べる失敗したチェックの数と、依頼文全体の長さの上限（commitFix と同じ）。 */
+export const PARADIS_FIX_CHECKS_MAX_CHECKS = 20;
+export const PARADIS_AGENT_PROMPT_MAX_LENGTH = 40_000;
+
+/** ログの末尾を、行の境目で `budget` 字に収める（新しい行を残す）。 */
+function tailWithin(log: string, budget: number): string {
+	if (log.length <= budget) {
+		return log;
+	}
+	const tail = log.slice(log.length - budget);
+	const newline = tail.indexOf('\n');
+	return newline >= 0 && newline < tail.length - 1 ? tail.slice(newline + 1) : tail;
+}
+
 /**
  * 失敗したチェックをエージェントに直してもらう依頼文（上流 `buildFixCIPrompt` と Orca `pr-checks-fix-prompt.ts` を
- * 参考に、PC が取り直した PR の状態から組み立てる）。題名・チェック名・ログは信頼できないデータとして囲む。
+ * 参考に、PC が取り直した PR の状態から組み立てる）。題名・チェックの名前と URL・ログは信頼できないデータとして囲む。
+ * 並べるチェックは {@link PARADIS_FIX_CHECKS_MAX_CHECKS} 件まで、全体は {@link PARADIS_AGENT_PROMPT_MAX_LENGTH} 字に
+ * 収まるよう、ログの末尾を均等に詰める。
  */
 export function paradisBuildFixChecksPrompt(detail: IParadisPullRequestDetail, failed: readonly IParadisFailedCheckForPrompt[]): string {
-	const sections = failed.map(({ check, log }, index) => [
-		`${index + 1}. ${check.workflow !== undefined ? `${check.workflow} / ` : ''}${check.name}`,
-		...(check.url !== undefined ? [`   詳細: ${check.url}`] : []),
-		log !== undefined && log.length > 0 ? paradisFenceUntrusted(`失敗したログの末尾（${check.name}）`, log) : '   （ログは取れませんでした。詳細の URL か gh で確かめてください）',
-	].join('\n'));
-	return [
+	const listed = failed.slice(0, PARADIS_FIX_CHECKS_MAX_CHECKS);
+	const checkLines = listed.map(({ check }, index) => `${index + 1}. ${check.workflow !== undefined ? `${check.workflow} / ` : ''}${check.name}${check.url !== undefined ? ` ${check.url}` : ''}`);
+	if (failed.length > listed.length) {
+		checkLines.push(`ほか ${failed.length - listed.length} 件`);
+	}
+	const head = [
 		`プルリクエスト #${detail.number} の CI で失敗したチェックを調べ、このブランチが原因のものだけを直してください。`,
 		'',
 		`- PR: ${detail.url}`,
@@ -46,7 +62,13 @@ export function paradisBuildFixChecksPrompt(detail: IParadisPullRequestDetail, f
 		'',
 		paradisFenceUntrusted('PR の題名', detail.title),
 		'',
-		'失敗したチェック:',
-		...sections,
+		paradisFenceUntrusted('失敗したチェック（番号・名前・URL）', checkLines.join('\n')),
 	].join('\n');
+	const withLogs = listed.map(({ log }, index) => ({ index, log })).filter((entry): entry is { index: number; log: string } => entry.log !== undefined && entry.log.length > 0);
+	// 囲みの見出しと改行の分を見込んで、残りをログの数で割る
+	const overhead = withLogs.length * 160 + 200;
+	const budget = withLogs.length > 0 ? Math.max(0, Math.floor((PARADIS_AGENT_PROMPT_MAX_LENGTH - head.length - overhead) / withLogs.length)) : 0;
+	const logs = withLogs.map(({ index, log }) => paradisFenceUntrusted(`${index + 1} 番の失敗したログの末尾`, tailWithin(log, budget)));
+	const noLog = listed.length > withLogs.length ? ['ログを取れなかったチェックは、上の URL か gh で確かめてください。'] : [];
+	return [head, ...logs.flatMap(log => ['', log]), ...(noLog.length > 0 ? ['', ...noLog] : [])].join('\n');
 }

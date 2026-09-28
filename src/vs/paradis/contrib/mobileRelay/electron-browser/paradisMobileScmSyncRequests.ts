@@ -6,7 +6,11 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
+import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { PARADIS_WORKTREE_GIT_CHANNEL } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
+import { paradisChannelHostResolver } from '../../workspaceSwitch/electron-browser/paradisWorktreeGitChannelClient.js';
 import { paradisParseMobilePorcelainStatus } from '../common/paradisMobileDiffReview.js';
 import { paradisRedactMobileCommandOutput } from '../common/paradisMobileOutputRedaction.js';
 import {
@@ -21,6 +25,7 @@ import {
 	paradisClassifyMobileSyncFailure,
 	paradisMobileCommitFailureIsFixable,
 	paradisParseCurrentBranchUpstream,
+	paradisMobilePushPlan,
 	paradisParseMobileBranchSync,
 	paradisSummarizeMobileCommitFailure,
 	paradisTruncateMiddle,
@@ -35,8 +40,9 @@ import { IParadisMobileRequest, IParadisMobileRequestContext, registerParadisMob
  *   （git channel の許可リストが `--force` 系・`+refspec` を弾く）。断られたら「取り込むか PC で解決」を返す
  * - `fetch { ws }` / `pull { ws }`: pull は `--ff-only` だけ（合流のコミットも rebase も作らない）
  *   どれも応答に `{ upstream, ahead, behind }`（status と同じ任意項目）を載せる
- * - `commitSafe { ws, message, all }`: `all` なら `git add -A` の前にインデックスを `write-tree` で控え、コミットが
- *   失敗したら `read-tree` で戻す。失敗は `{ ok: false, failure }`（要約・伏せ字を入れた出力・id）で返す
+ * - `commitSafe { ws, message, all }`: `all` なら `git add -A` の前にインデックスのファイルを控え（git channel の
+ *   `backupIndex`）、コミットが失敗したら戻す。HEAD が動いていれば（フックの途中で止まってもコミットはできた）戻さずに
+ *   成功として `warning` を付けて返す。失敗は `{ ok: false, failure }`（要約・伏せ字を入れた出力・id）で返す
  * - `commitFix { ws, failureId, target: 'auto' | 'new' }`: PC が控えた失敗の記録から依頼文を組み立て、そのスペースの
  *   エージェントへ送る（いなければ既定のエージェントを起動。Q15-2）
  * - `stage { ws, paths }` / `unstage { ws, paths }`: ファイルごとのステージ
@@ -85,16 +91,39 @@ async function readBranchSync(context: IParadisMobileRequestContext): Promise<IP
 	return result?.code === 0 ? paradisParseMobileBranchSync(result.stdout) : {};
 }
 
+/** インデックスのファイルの控えと復元（そのリポジトリがあるマシンの git channel。SSH 先の REH を含む）。 */
+interface IIndexBackupHost {
+	backup(): Promise<{ readonly token: string }>;
+	restore(token: string): Promise<{ readonly restored: boolean; readonly reason?: string }>;
+	discard(token: string): Promise<void>;
+}
+
+/** `accessor` は await の前でしか使えないので、処理の先頭で呼ぶ。 */
+function indexBackupHost(accessor: ServicesAccessor, root: URI | undefined): IIndexBackupHost | undefined {
+	const host = root !== undefined ? paradisChannelHostResolver(accessor, PARADIS_WORKTREE_GIT_CHANNEL, 'reject')(root) : undefined;
+	if (host === undefined || root === undefined) {
+		return undefined;
+	}
+	const path = host.path(root);
+	return {
+		backup: () => host.channel.call('backupIndex', [path]),
+		restore: token => host.channel.call('restoreIndex', [path, token]),
+		discard: token => host.channel.call('discardIndexBackup', [path, token]),
+	};
+}
+
 /** 同じスペースの git の操作を1本ずつにして実行する。 */
-function registerGitOperation(kind: string, run: (request: IParadisMobileRequest, context: IParadisMobileRequestContext, ws: string) => Promise<void>): void {
+function registerGitOperation(kind: string, run: (request: IParadisMobileRequest, context: IParadisMobileRequestContext, ws: string, index: IIndexBackupHost | undefined) => Promise<void>, usesIndexBackup = false): void {
 	registerParadisMobileRequestHandler('scm', kind, {
-		async handle(_accessor, request, context) {
+		async handle(accessor, request, context) {
+			// インデックスを控えるのは `git add -A` をするときだけ（ステージ済みだけのコミットは触らない）
+			const index = usesIndexBackup && request.all === true ? indexBackupHost(accessor, context.root) : undefined;
 			const ws = requireWorkspace(request, context);
 			if (ws === undefined) {
 				return;
 			}
 			const done = await gitGate.run(ws, async () => {
-				await run(request, context, ws);
+				await run(request, context, ws, index);
 				return true;
 			});
 			if (done === undefined) {
@@ -111,33 +140,28 @@ function replySyncFailure(context: IParadisMobileRequestContext, operation: Para
 }
 
 registerGitOperation('push', async (_request, context, ws) => {
-	const branches = await context.runGit(['branch', PARADIS_MOBILE_BRANCH_FORMAT]);
+	const [branches, remotes] = await Promise.all([context.runGit(['branch', PARADIS_MOBILE_BRANCH_FORMAT]), context.runGit(['remote'])]);
 	const current = branches.code === 0 ? paradisParseCurrentBranchUpstream(branches.stdout) : undefined;
 	if (current === undefined) {
 		context.reply({ error: 'いまのブランチが分からないため push できません（detached HEAD など）。PC で確かめてください。', code: 'no-branch' });
 		return;
 	}
-	let args: string[];
-	if (current.remote !== undefined && current.remoteRef !== undefined) {
-		// 上流の名前を明示して、push.default の設定（matching など）で他のブランチまで送らない
-		args = ['push', '--porcelain', current.remote, `HEAD:${current.remoteRef}`];
-	} else {
-		// 上流が無い（まだ公開していない）ブランチは、origin（無ければ唯一の remote）へ同じ名前で公開して上流にする
-		const remotes = await context.runGit(['remote']);
-		const names = remotes.code === 0 ? remotes.stdout.split('\n').map(line => line.trim()).filter(line => line.length > 0) : [];
-		const remote = names.includes('origin') ? 'origin' : names.length === 1 ? names[0] : undefined;
-		if (remote === undefined) {
-			context.reply({ error: names.length === 0 ? 'リモートがありません。PC でリモートを設定してください。' : 'push 先のリモートを決められません。PC で上流を設定してください。', code: 'no-upstream' });
-			return;
-		}
-		args = ['push', '--porcelain', '--set-upstream', remote, `HEAD:refs/heads/${current.branch}`];
+	// git の push 先（@{push}）に従い、上流が別名・手元のときは断る。remote は `git remote` の名前だけを使う
+	const names = remotes.code === 0 ? remotes.stdout.split('\n').map(line => line.trim()).filter(line => line.length > 0) : [];
+	const plan = paradisMobilePushPlan(current, names);
+	if (plan.kind === 'refuse') {
+		context.reply({ error: plan.message, code: plan.code });
+		return;
 	}
-	const result = await context.runGit(args);
+	// 宛先を名指しして、push.default の設定（matching など）で他のブランチまで送らない
+	const result = await context.runGit(plan.publish
+		? ['push', '--porcelain', '--set-upstream', plan.remote, `HEAD:${plan.ref}`]
+		: ['push', '--porcelain', plan.remote, `HEAD:${plan.ref}`]);
 	if (result.code !== 0) {
 		replySyncFailure(context, 'push', result.stderr, result.stdout);
 		return;
 	}
-	context.reply({ t: 'push', ws, ...(await readBranchSync(context)), ...(current.remote === undefined ? { published: true } : {}) });
+	context.reply({ t: 'push', ws, ...(await readBranchSync(context)), ...(plan.publish ? { published: true } : {}) });
 });
 
 registerGitOperation('fetch', async (_request, context, ws) => {
@@ -171,24 +195,37 @@ async function changedFiles(context: IParadisMobileRequestContext): Promise<{ re
 	return { files: paths.slice(0, PROMPT_FILES), more: Math.max(0, paths.length - PROMPT_FILES) };
 }
 
-registerGitOperation('commitSafe', async (request, context, ws) => {
+/** HEAD のコミット（まだコミットが無ければ undefined）。 */
+async function headCommit(context: IParadisMobileRequestContext): Promise<string | undefined> {
+	const result = await context.runGit(['rev-parse', '--verify', '--quiet', 'HEAD']).catch(() => undefined);
+	return result?.code === 0 && result.stdout.trim().length > 0 ? result.stdout.trim() : undefined;
+}
+
+registerGitOperation('commitSafe', async (request, context, ws, index) => {
 	const message = typeof request.message === 'string' ? request.message.trim() : '';
 	if (message.length === 0 || message.length > MAX_COMMIT_MESSAGE) {
 		context.reply({ error: message.length === 0 ? 'empty commit message' : 'コミットメッセージが長すぎます。' });
 		return;
 	}
 	const all = request.all === true;
-	// `git add -A` の前のインデックスを控える（部分的にステージした内容まで、そのまま戻せるように）
-	let savedTree: string | undefined;
+	// フックの途中で止まってもコミット自体はできていることがある（post-commit の時間切れなど）。HEAD が動いたかで見分ける
+	const headBefore = await headCommit(context);
+	// `git add -A` の前のインデックスをファイルごと控える（部分的なステージや sparse-checkout の印まで、そのまま戻せるように）
+	let backup: string | undefined;
 	if (all) {
-		const snapshot = await context.runGit(['write-tree']);
-		const tree = snapshot.stdout.trim();
-		if (snapshot.code !== 0 || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(tree)) {
-			// 競合が残っている（unmerged）とツリーを作れない。コミットもできないので、何も変えずに返す
-			await replyCommitFailure(context, ws, message, snapshot.stderr, snapshot.stdout, false, undefined);
+		if (index === undefined) {
+			context.reply({ error: 'This workspace is not reachable from this window.' });
 			return;
 		}
-		savedTree = tree;
+		try {
+			backup = (await index.backup()).token;
+		} catch (error) {
+			const text = error instanceof Error ? error.message : String(error);
+			context.reply(/method not found/i.test(text)
+				? { error: '接続先の Para Code のサーバーが古いため、コミットに失敗したときにステージを戻せません。PC で接続し直すか、ステージしたものだけをコミットしてください。', code: 'old-server' }
+				: { error: `ステージの状態を控えられなかったため、コミットしませんでした: ${paradisRedactMobileCommandOutput(text)}`, code: 'backup-failed' });
+			return;
+		}
 	}
 	let stderr = '';
 	let stdout = '';
@@ -202,21 +239,29 @@ registerGitOperation('commitSafe', async (request, context, ws) => {
 	} catch (error) {
 		stderr = error instanceof Error ? error.message : String(error);
 	}
-	if (committed) {
+	const headAfter = committed ? undefined : await headCommit(context);
+	if (committed || (headAfter !== undefined && headAfter !== headBefore)) {
+		if (backup !== undefined) {
+			await index?.discard(backup).catch(() => undefined);
+		}
 		commitFailures.delete(ws);
-		context.reply({ t: 'commitSafe', ok: true, output: stdout.trim() });
+		context.refreshBranches();
+		const warning = committed ? undefined : paradisSummarizeMobileCommitFailure(stderr).kind === 'timeout'
+			? 'コミットはできましたが、コミットの後のフックが時間内に終わりませんでした。PC で確かめてください。'
+			: 'コミットはできましたが、コミットの後に git が失敗を返しました。PC で確かめてください。';
+		context.reply({ t: 'commitSafe', ok: true, output: stdout.trim(), ...(warning !== undefined ? { warning } : {}) });
 		return;
 	}
 	// 失敗したら、コミットの前のステージの状態へ戻す（フックが足した・消したステージも戻る）
 	let restored = false;
-	if (savedTree !== undefined) {
-		const reset = await context.runGit(['read-tree', savedTree]).catch(() => undefined);
-		restored = reset?.code === 0;
+	if (backup !== undefined) {
+		const reset = await index?.restore(backup).catch(() => undefined);
+		restored = reset?.restored === true;
 	}
-	await replyCommitFailure(context, ws, message, stderr, stdout, restored, savedTree);
-});
+	await replyCommitFailure(context, ws, message, stderr, stdout, backup !== undefined, restored);
+}, true);
 
-async function replyCommitFailure(context: IParadisMobileRequestContext, ws: string, message: string, stderr: string, stdout: string, restored: boolean, savedTree: string | undefined): Promise<void> {
+async function replyCommitFailure(context: IParadisMobileRequestContext, ws: string, message: string, stderr: string, stdout: string, attemptedRestore: boolean, restored: boolean): Promise<void> {
 	// フックの出力には秘密値（環境変数の中身・トークン）が出ることがある。スマホに出す前と依頼文に載せる前に伏せる
 	const output = paradisTruncateMiddle(paradisRedactMobileCommandOutput([stderr.trim(), stdout.trim()].filter(part => part.length > 0).join('\n')), PARADIS_MOBILE_COMMIT_OUTPUT_LIMIT);
 	const { kind, summary } = paradisSummarizeMobileCommitFailure(output);
@@ -226,7 +271,7 @@ async function replyCommitFailure(context: IParadisMobileRequestContext, ws: str
 	]);
 	const record: ICommitFailureRecord = { id: generateUuid(), kind, branch: branch === 'HEAD' ? undefined : branch, message, summary, output, files: files.files, moreFiles: files.more };
 	commitFailures.set(ws, record);
-	const failure: IParadisMobileCommitFailure = { id: record.id, kind, summary, output, restored: savedTree !== undefined && restored };
+	const failure: IParadisMobileCommitFailure = { id: record.id, kind, summary, output, restored: attemptedRestore && restored, ...(attemptedRestore && !restored ? { restoreFailed: true } : {}) };
 	context.reply({ t: 'commitSafe', ok: false, failure });
 }
 

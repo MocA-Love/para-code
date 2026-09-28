@@ -51,8 +51,8 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 		const current = () => genRef.current === gen && currentRendererTarget(wsId) === rendererTarget;
 		setLoading(true);
 		try {
-			// gh は PC 側で 15 秒で打ち切る
-			const reply = await sendPcRequest<{ readonly pr?: unknown; readonly unavailable?: unknown; readonly message?: unknown }>(pcId, 'scm', { t: 'prView', ws: wsId }, { timeoutMs: 40_000 });
+			// PC 側は git（30 秒）と gh（15 秒）を続けて待つ
+			const reply = await sendPcRequest<{ readonly pr?: unknown; readonly unavailable?: unknown; readonly message?: unknown }>(pcId, 'scm', { t: 'prView', ws: wsId }, { timeoutMs: 60_000 });
 			if (current()) {
 				setView(parsePrView(reply));
 				setError(undefined);
@@ -93,7 +93,7 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 		setMerging(true);
 		setMergeError(undefined);
 		try {
-			await sendPcRequest(pcId, 'scm', { t: 'prMerge', ws: wsId, number: pr.number, headSha: pr.headSha }, { timeoutMs: 90_000 });
+			await sendPcRequest(pcId, 'scm', { t: 'prMerge', ws: wsId, number: pr.number, headSha: pr.headSha }, { timeoutMs: 130_000 });
 			return true;
 		} catch (e) {
 			setMergeError(errorMessage(e));

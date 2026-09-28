@@ -17,6 +17,13 @@ describe('parsePrView', () => {
 		});
 	});
 
+	it('切る前の全件の数と「全件か分からない」を読み、それでマージを止める', () => {
+		const view = parsePrView({ pr: { ...pr(), checks: [{ name: 'a', bucket: 'pass' }], checkCounts: { pass: 150, fail: 1, pending: 0, skipping: 0, cancel: 0 }, checksIncomplete: true } });
+		expect(view.kind === 'pr' ? [view.pr.checkCounts?.fail, view.pr.checksIncomplete, prMergeButton(view.pr).reason, checkSummaryText(view.pr.checks, view.pr.checkCounts)] : undefined)
+			.toEqual([1, true, '失敗した CI のチェックがあります。PC でマージしてください。', '失敗 1・成功 150']);
+		expect(prMergeButton(pr({ checks: [{ name: 'a', bucket: 'pass' }], checksIncomplete: true })).reason).toContain('すべてを確かめられません');
+	});
+
 	it('出せない理由を読み、知らない理由と壊れた PR は「取得できなかった」にする', () => {
 		expect(parsePrView({ unavailable: 'no-auth' })).toEqual({ kind: 'unavailable', reason: 'no-auth', message: undefined });
 		expect(parsePrView({ unavailable: 'future', message: 'x' })).toEqual({ kind: 'unavailable', reason: 'error', message: 'x' });
