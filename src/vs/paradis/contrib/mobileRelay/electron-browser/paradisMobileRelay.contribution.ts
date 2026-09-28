@@ -67,6 +67,7 @@ import { IParadisPrStatus, PARADIS_WORKTREE_GIT_CHANNEL } from '../../workspaceS
 import { IParadisMobileWindowLease, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, ParadisMobileWindowLeaseClient } from '../common/paradisMobileWindowLease.js';
 import { ParadisAgentCommandDeliveryCoordinator, paradisShouldRetireAgentToken } from '../common/paradisAgentCommandLifecycle.js';
 import { ParadisAgentTerminalRecoveryTracker } from '../common/paradisAgentTerminalRecovery.js';
+import { ParadisTerminalInputModeGuard } from '../common/paradisTerminalArmedInputModes.js';
 import { IParadisAgentTerminalHintConsumer, paradisCreateAgentTerminalHintConsumer, paradisCreateTerminalOutputConsumer } from '../common/paradisTerminalOutputHotPath.js';
 import { setParadisDiagnosticCorrelationTag } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisMobilePcFocusHeartbeatCoordinator } from './paradisMobilePcFocusHeartbeat.js';
@@ -99,6 +100,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	private correlationDeviceId: string | undefined;
 	private readonly terminalHintListeners = this._register(new DisposableMap<number, DisposableStore>());
 	private readonly terminalHintConsumers = new Map<number, IParadisAgentTerminalHintConsumer>();
+	/** 落ちたエージェントが残した入力モードを戻す見張り（エージェントを起動したターミナルだけ）。 */
+	private readonly inputModeGuards = this._register(new DisposableMap<number, ParadisTerminalInputModeGuard>());
 	private readonly terminalHintTokens = new Map<number, string>();
 	private readonly terminalPaneTokens = new Map<number, string>();
 	private readonly agentCommandsByInstance = new Map<number, { readonly token: string; readonly commandLine: string }>();
@@ -429,10 +432,13 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			)));
 			this.agentCommandsByInstance.set(instance.instanceId, { token: runningPaneToken, commandLine: normalizedCommandLine });
 			this.terminalPaneTokens.set(instance.instanceId, runningPaneToken);
+			this.inputModeGuardFor(instance)?.commandStarted();
 		};
 		const finishAgentCommand = (instance: ITerminalInstance, commandLineValue: string) => {
 			const commandLine = commandLineValue.trim();
 			if (paradisInteractiveAgentCommand(commandLine) === undefined) { return; }
+			// 133;D でシェルに戻ったと分かったので、落ちたエージェントが残した入力モードを戻す
+			this.inputModeGuards.get(instance.instanceId)?.commandFinished();
 			const running = this.agentCommandsByInstance.get(instance.instanceId);
 			const paneToken = this.provider.getPaneTokenForTerminalHint(instance.instanceId) ?? running?.token;
 			if (paneToken === undefined) { return; }
@@ -666,6 +672,27 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		this.agentCommandsByInstance.delete(instanceId);
 		this.terminalPaneTokens.delete(instanceId);
 		this.stopTerminalHints(instanceId);
+		this.inputModeGuards.deleteAndDispose(instanceId);
+	}
+
+	/**
+	 * エージェントを起動したターミナルに、入力モードの見張りを掛ける（最初の1回だけ）。
+	 * 133;C の処理の中で呼ばれるので、この後に届くエージェントの出力から見張れる。
+	 */
+	private inputModeGuardFor(instance: ITerminalInstance): ParadisTerminalInputModeGuard | undefined {
+		const existing = this.inputModeGuards.get(instance.instanceId);
+		if (existing) {
+			return existing;
+		}
+		const raw = instance.xterm?.raw;
+		if (!raw) {
+			return undefined;
+		}
+		const guard = new ParadisTerminalInputModeGuard(raw, sequence => {
+			this.logService.info(`[paradisMobileRelay] reset input modes left by an agent in terminal ${instance.instanceId}: ${JSON.stringify(sequence)}`);
+		});
+		this.inputModeGuards.set(instance.instanceId, guard);
+		return guard;
 	}
 
 	private async initialize(enabled: boolean, relayUrl: string | undefined): Promise<void> {
