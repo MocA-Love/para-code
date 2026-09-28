@@ -89,15 +89,15 @@ export interface IParadisComputerUseHelperHost {
 	randomToken(): string;
 }
 
-export function createParadisComputerUseHelperHost(appRoot: string, userDataPath: string): IParadisComputerUseHelperHost {
+export function createParadisComputerUseHelperHost(appRoot: string, userDataPath: string, isBuilt: boolean): IParadisComputerUseHelperHost {
 	return {
 		platform: process.platform,
 		osRelease: release(),
 		helperCandidates: [
 			// パッケージ版: <Para Code.app>/Contents/Resources/app → <Para Code.app>/Contents/Helpers
 			join(appRoot, '..', '..', 'Helpers', PARADIS_COMPUTER_USE_APP_NAME),
-			// 開発時: node build/paradis/computerUse/buildHelper.ts の出力
-			join(appRoot, '.build', 'paradis', 'computerUse', PARADIS_COMPUTER_USE_APP_NAME),
+			// 開発時だけ: node build/paradis/computerUse/buildHelper.ts の出力（パッケージ版はアプリの中を探さない。レビュー L4）
+			...(isBuilt ? [] : [join(appRoot, '.build', 'paradis', 'computerUse', PARADIS_COMPUTER_USE_APP_NAME)]),
 		],
 		runtimeDirectory: join(userDataPath, 'paradis-computer-use'),
 		exists: path => existsSync(path),
@@ -184,7 +184,7 @@ class ParadisHelperConnection {
 	/** 要求の途中で切れたか（落ちた）。何も待っていないときの切断は正常な終わり（10 分の待ち切れなど）。 */
 	private _closedWhileBusy = false;
 
-	constructor(private readonly _socket: Socket, private readonly _onClose: (closedWhileBusy: boolean) => void) {
+	constructor(private readonly _socket: Socket, private readonly _onClose: (closedWhileBusy: boolean) => void, private readonly _onTimeout: () => void = () => { }) {
 		_socket.setEncoding('utf8');
 		_socket.on('data', (chunk: string) => this._onData(chunk));
 		_socket.on('error', () => this._close());
@@ -210,6 +210,7 @@ class ParadisHelperConnection {
 				cleanup();
 				reject(new ParadisComputerUseHelperError('timeout', `The Computer Use helper did not answer ${method} in time.`));
 				this.destroy();
+				this._onTimeout();
 			}, timeoutMs);
 			const onAbort = () => {
 				this._pending.delete(id);
@@ -443,7 +444,13 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 			if (!socket) {
 				fail('launch-failed', `the helper did not open its socket within ${this._launchTimeoutMs / 1000}s${await this._helperLogTail(runtimeDirectory)}`);
 			}
-			connection = new ParadisHelperConnection(socket!, closedWhileBusy => this._onConnectionClosed(connection!, closedWhileBusy));
+			// 応答しない補助アプリは、切断に気づくのを待たずに終わらせる（AX の呼び出しの中で止まっていても残さない。レビュー L5）
+			connection = new ParadisHelperConnection(socket!, closedWhileBusy => this._onConnectionClosed(connection!, closedWhileBusy), () => {
+				const pid = this._status?.pid;
+				if (pid !== undefined) {
+					void this._host.terminateStaleHelper(pid);
+				}
+			});
 			let hello: unknown;
 			try {
 				hello = await connection.send('handshake', { token, protocolVersion: PARADIS_COMPUTER_USE_PROTOCOL_VERSION }, this._launchTimeoutMs);

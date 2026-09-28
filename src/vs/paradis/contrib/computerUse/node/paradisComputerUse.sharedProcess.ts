@@ -73,7 +73,7 @@ ParadisSharedProcessContributions.register('computerUse', ({ server, accessor })
 	const logService = accessor.get(ILogService);
 	const environmentService = accessor.get(INativeEnvironmentService);
 	const store = new DisposableStore();
-	const helper = store.add(new ParadisComputerUseHelperClient(createParadisComputerUseHelperHost(environmentService.appRoot, environmentService.userDataPath), logService));
+	const helper = store.add(new ParadisComputerUseHelperClient(createParadisComputerUseHelperHost(environmentService.appRoot, environmentService.userDataPath, environmentService.isBuilt), logService));
 	const ledger = new ParadisComputerUseGrantLedger();
 	// 設定のスキーマは画面側でしか登録されないので、ここでは生の値を読んで既定（オフ）へ倒す
 	const enabled = () => paradisComputerUseEnabled(configurationService.getValue(PARADIS_COMPUTER_USE_ENABLED_SETTING));
