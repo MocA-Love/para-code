@@ -33,6 +33,7 @@ import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradis
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisTimeBoundedTeardownStep } from '../../sentry/common/paradisTeardownTiming.js';
 import { paradisClearVerifiedWorkspaceFolders, paradisMarkVerifiedWorkspaceFolder, paradisTakeVerifiedWorkspaceFolderHits } from '../common/paradisWorkspaceFolderVerification.js';
 import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
@@ -359,9 +360,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			this._shuttingDown = true;
 			const activeOperations = [...this._shutdownOperations];
 			if (activeOperations.length > 0) {
-				const boundedJoin = raceTimeout(
+				// 所要時間を測る（W2-26）。上限は元からある SHUTDOWN_JOIN_TIMEOUT_MS。
+				const boundedJoin = paradisTimeBoundedTeardownStep(
+					'workspace-switch.finish-switch',
 					Promise.all(activeOperations.map(operation => operation.catch(() => undefined))).then(() => undefined),
 					ParadisWorkspaceSwitchService.SHUTDOWN_JOIN_TIMEOUT_MS,
+					{ log: this.logService },
 				).then(() => undefined);
 				event.join(boundedJoin, {
 					id: 'paradis.workspaceSwitch.complete',

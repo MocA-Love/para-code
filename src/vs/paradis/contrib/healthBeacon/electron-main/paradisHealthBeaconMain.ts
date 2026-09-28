@@ -25,6 +25,7 @@ import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/
 import { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
 import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-main/lifecycleMainService.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
+import { IParadisTeardownLog, paradisReportSlowTeardownStep, paradisTimeTeardownStep } from '../../sentry/common/paradisTeardownTiming.js';
 import { captureParadisMainMeasurementSnapshot, flushParadisMainSentry } from '../../sentry/electron-main/paradisSentryMain.js';
 import {
 	IParadisHealthBeaconMainService,
@@ -47,6 +48,21 @@ import {
 
 /** 終了時の送信を待ち切る上限。これを超えたら諦めて終了を進める。 */
 const SHUTDOWN_FLUSH_TIMEOUT_MS = 2_000;
+
+/**
+ * 終了時の計測（W2-26）で遅かったと分かった後、その報告だけを送り出すために待つ上限。
+ * 遅かったときにしか待たないので、普段の終了は延びない。
+ */
+const SLOW_SHUTDOWN_REPORT_FLUSH_TIMEOUT_MS = 500;
+
+/**
+ * main の計測ログの出し先。この beacon は ILogService を受け取らない（app.ts の PARA-PATCH 行を
+ * 増やさないため）ので、遅いものだけを標準エラーへ書く。
+ */
+const MAIN_TEARDOWN_LOG: IParadisTeardownLog = {
+	trace: () => { },
+	warn: message => console.warn(message),
+};
 
 /** 内蔵ブラウザ数の問い合わせを待つ上限。終了経路でも必ず返るように時間で切る。 */
 const BROWSER_VIEW_COUNT_TIMEOUT_MS = 500;
@@ -108,7 +124,7 @@ export class ParadisHealthBeacon extends Disposable {
 		// 終了時の1本が「そのセッションの最終形」で最も価値が高い。自動更新による再起動も
 		// ここを通る（更新の適用はアプリの終了を伴うため）。
 		this._register(lifecycleMainService.onWillShutdown(event => {
-			event.join('paradisHealthBeacon', this.sendSnapshot('shutdown'));
+			event.join('paradisHealthBeacon', this.sendShutdownSnapshot());
 		}));
 	}
 
@@ -130,6 +146,24 @@ export class ParadisHealthBeacon extends Disposable {
 
 	acceptWindowReport(report: IParadisHealthWindowReport): void {
 		this.reports.set(report.windowId, { report, receivedAt: Date.now() });
+	}
+
+	/**
+	 * 終了時の1本を送り、その所要時間を測る（W2-26）。遅かったときは、その報告を送り出すために
+	 * もう一度だけ短く flush する（最初の flush は報告より前に終わっているため）。
+	 */
+	private async sendShutdownSnapshot(): Promise<void> {
+		let reported = false;
+		await paradisTimeTeardownStep('health-beacon.shutdown-snapshot', this.sendSnapshot('shutdown'), {
+			log: MAIN_TEARDOWN_LOG,
+			report: record => {
+				paradisReportSlowTeardownStep(record);
+				reported = true;
+			},
+		});
+		if (reported) {
+			await flushParadisMainSentry(SLOW_SHUTDOWN_REPORT_FLUSH_TIMEOUT_MS);
+		}
 	}
 
 	/**
