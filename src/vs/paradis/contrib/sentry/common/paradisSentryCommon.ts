@@ -193,6 +193,10 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 	// name travels as a tag; without it every unhandled error shared one issue. Appended only
 	// when present so automatic captures and native crashes keep their existing issue history.
 	const errorName = event.tags?.['para.error_name'];
+	// Only for an event with no frame at all: there the rest of the key is constant, so errors from
+	// unrelated places (a Node error relayed over IPC, code outside `out/vs`) all landed in one issue.
+	// Events with frames keep their existing key and issue history.
+	const messageHash = topFrame === undefined ? event.tags?.['para.error_message_hash'] : undefined;
 	return [
 		event.tags?.['para.scope'] ?? 'unknown',
 		event.tags?.['para.feature'] ?? 'unknown',
@@ -201,6 +205,7 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 		topFrame?.filename ?? 'unknown',
 		topFrame?.function ?? 'unknown',
 		...(errorName !== undefined ? [errorName] : []),
+		...(messageHash !== undefined ? [messageHash] : []),
 	].map(value => paradisSanitizeSentryText(String(value))).join('|');
 }
 

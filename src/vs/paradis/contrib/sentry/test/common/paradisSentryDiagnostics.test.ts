@@ -5,10 +5,14 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { paradisSentryFingerprint } from '../../common/paradisSentryCommon.js';
 import {
 	configureParadisDiagnosticReporter,
 	reportParadisDiagnosticError,
+	paradisErrorMessageHash,
+	paradisSafeErrorExtra,
 	paradisSafeErrorName,
+	paradisSafeErrorTags,
 	toParadisSentrySafeError,
 } from '../../common/paradisSentryDiagnostics.js';
 
@@ -54,6 +58,77 @@ suite('ParadisSentryDiagnostics', () => {
 		const source = new Error('private');
 		source.stack = 'Error: private\n    at parse (/Users/alice/private.ts:1:2)';
 		assert.strictEqual(toParadisSentrySafeError('terminal', 'spawn', source).stack, 'Error: Para Code diagnostic: terminal.spawn');
+	});
+
+	test('keeps Node internal frames and shipped dependencies, but never a user path', () => {
+		const source = new Error('write EPIPE');
+		source.stack = [
+			'Error: write EPIPE',
+			'    at afterWriteDispatched (node:internal/stream_base_commons:161:15)',
+			'    at node:internal/process/task_queues:105:5',
+			'    at readCell (/Users/alice/Applications/Para Code.app/Contents/Resources/app/node_modules.asar/exceljs/lib/xlsx/xform/sheet/cell-xform.js:10:20)',
+			'    at C:\\Users\\alice\\AppData\\Local\\Programs\\Para Code\\resources\\app\\node_modules\\@xterm\\xterm\\lib\\xterm.js:1:2',
+			'    at own (/Users/alice/project/node_modules/private-lib/index.js:1:1)',
+			'    at ext (/Users/alice/.para-code/extensions/pub.ext-1.0.0/node_modules/dep/index.js:3:4)',
+		].join('\n');
+
+		assert.strictEqual(toParadisSentrySafeError('terminal', 'write', source).stack, [
+			'Error: Para Code diagnostic: terminal.write',
+			'    at afterWriteDispatched (node:internal/stream_base_commons:161:15)',
+			'    at node:internal/process/task_queues:105:5',
+			'    at readCell (app:///node_modules/exceljs/lib/xlsx/xform/sheet/cell-xform.js:10:20)',
+			'    at app:///node_modules/@xterm/xterm/lib/xterm.js:1:2',
+		].join('\n'));
+	});
+
+	test('extracts content-free facts about the error for the report extras', () => {
+		const fileError = Object.assign(new Error(`Unable to write file '/Users/alice/EFOO/config.toml' (Error: EACCES: permission denied, open '/Users/alice/EFOO/config.toml')`), { fileOperationResult: 6 });
+		const nodeError = Object.assign(new Error('write EPIPE'), { code: 'EPIPE', errno: -32, syscall: 'write' });
+		class ParadisResultRecord { constructor(readonly ok: boolean) { } }
+
+		assert.deepStrictEqual({
+			fileError: paradisSafeErrorExtra(fileError),
+			nodeError: paradisSafeErrorExtra(nodeError),
+			plainObject: paradisSafeErrorExtra({ message: 'private', 'has space': 1, reason: 'x', statusCode: 500 }),
+			primitive: paradisSafeErrorExtra('private'),
+			outOfRangeResult: paradisSafeErrorExtra(Object.assign(new Error('x'), { fileOperationResult: 99 })),
+			className: paradisSafeErrorName(new ParadisResultRecord(false)),
+		}, {
+			fileError: { safe_file_result: 'FILE_PERMISSION_DENIED', safe_errno: 'EACCES' },
+			nodeError: { safe_errno: 'EPIPE', safe_syscall: 'write' },
+			plainObject: { safe_error_keys: 'message,reason,statusCode' },
+			primitive: {},
+			outOfRangeResult: { safe_file_result: 'fileOperationResult:99' },
+			className: 'ParadisResultRecord',
+		});
+	});
+
+	test('separates frame-less errors by a hash of their message, ignoring paths, quotes and numbers', () => {
+		const hash = (message: string) => paradisErrorMessageHash(new Error(message));
+		const fingerprint = (error: Error) => {
+			const safe = toParadisSentrySafeError('unhandled-error', 'on-unexpected-error', error);
+			const frames = safe.stack?.includes('\n') ? [{ filename: 'app:///out/vs/x.js', function: 'f' }] : undefined;
+			return paradisSentryFingerprint({
+				tags: { 'para.scope': 'patched', 'para.feature': 'unhandled-error', 'para.operation': 'on-unexpected-error', ...paradisSafeErrorTags(error) },
+				exception: { values: [{ type: 'Error', stacktrace: frames ? { frames } : undefined }] },
+			});
+		};
+		const stackless = (message: string) => Object.assign(new Error(message), { stack: `Error: ${message}` });
+		const withFrame = (message: string) => Object.assign(new Error(message), { stack: `Error: ${message}\n    at f (app:///out/vs/base/x.js:1:1)` });
+
+		assert.deepStrictEqual({
+			samePathsDiffer: hash(`Cannot open '/Users/alice/a.txt' at line 3`) === hash(`Cannot open '/Users/bob/b.txt' at line 12`),
+			differentMessages: hash('Channel has been closed') === hash('Cannot read properties of undefined (reading \'x\')'),
+			noMessage: paradisErrorMessageHash({}),
+			stacklessSplit: fingerprint(stackless('Channel has been closed')) === fingerprint(stackless('Unknown channel')),
+			framedUnchanged: fingerprint(withFrame('Channel has been closed')) === fingerprint(withFrame('Unknown channel')),
+		}, {
+			samePathsDiffer: true,
+			differentMessages: false,
+			noMessage: undefined,
+			stacklessSplit: false,
+			framedUnchanged: true,
+		});
 	});
 
 	test('derives a content-free error name for grouping', () => {
