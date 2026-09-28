@@ -99,6 +99,8 @@ export class DeviceDO implements DurableObject {
 	private readonly apnsJwtCache: ApnsJwtCache = {};
 	/** TURN資格情報の発行時刻（レート制限用。インメモリで十分、詳細は turnCredentials 参照）。 */
 	private turnIssueTimes: number[] = [];
+	/** 資格を使った時刻を最後に確かめた時刻（メモリ。`touchMobile` の間引き）。 */
+	private readonly lastTouchedAt = new Map<string, number>();
 
 	constructor(private readonly state: DurableObjectState, private readonly env: unknown) {
 		this.sql = state.storage.sql;
@@ -148,8 +150,16 @@ export class DeviceDO implements DurableObject {
 		this.sql.exec('UPDATE mobiles SET lastSeenAt = ? WHERE lastSeenAt IS NULL', Date.now());
 	}
 
-	/** モバイルの資格を使った時刻を残す（1時間に1回まで）。 */
+	/**
+	 * モバイルの資格を使った時刻を残す（1時間に1回まで）。メッセージを受けるたびにも呼ぶので、SQL を
+	 * 叩く前にメモリで間引く（DO が休止から起きた後の最初の1回だけは SQL で確かめる）。
+	 */
 	private touchMobile(mobileId: string, now: number = Date.now()): void {
+		const touched = this.lastTouchedAt.get(mobileId);
+		if (touched !== undefined && now - touched < MOBILE_LAST_SEEN_WRITE_INTERVAL_MS) {
+			return;
+		}
+		this.lastTouchedAt.set(mobileId, now);
 		this.sql.exec('UPDATE mobiles SET lastSeenAt = ? WHERE mobileId = ? AND (lastSeenAt IS NULL OR lastSeenAt < ?)', now, mobileId, now - MOBILE_LAST_SEEN_WRITE_INTERVAL_MS);
 	}
 
@@ -187,9 +197,13 @@ export class DeviceDO implements DurableObject {
 		}
 	}
 
-	/** 失効の掃除の次の時刻（失効が無効なら undefined）。無ければ今から1日後に決める。 */
+	/** 失効の掃除の次の時刻（失効が無効・モバイルが1台も無いなら undefined）。無ければ今から1日後に決める。 */
 	private nextCredentialSweepAt(now: number = Date.now()): number | undefined {
 		if (mobileCredentialTtlMs(this.env) === undefined) {
+			return undefined;
+		}
+		const count = this.sql.exec('SELECT COUNT(*) AS n FROM mobiles').toArray()[0] as { n?: unknown } | undefined;
+		if (typeof count?.n !== 'number' || count.n === 0) {
 			return undefined;
 		}
 		const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'credentialSweepAt'`).toArray()[0] as { value?: unknown } | undefined;
@@ -477,7 +491,14 @@ export class DeviceDO implements DurableObject {
 			this.notifyPcPresence(false);
 		}
 		// 失効を有効にしていれば掃除の予定を張る（PC がつながるのは頻繁なので、ここで張れば取りこぼさない）。
-		await this.scheduleAlarm();
+		// 失効が無効なら何もしない。予定を張れなくても PC の接続は止めない。
+		if (mobileCredentialTtlMs(this.env) !== undefined) {
+			try {
+				await this.scheduleAlarm();
+			} catch (err) {
+				console.warn('[relay] failed to schedule the credential sweep', err);
+			}
+		}
 		return this.upgrade(ws => this.state.acceptWebSocket(ws, ['pc']), () => {
 			this.notifyPcPresence(true);
 			this.flushPcNotices();
@@ -580,6 +601,8 @@ export class DeviceDO implements DurableObject {
 		} else if (tag.startsWith('m:')) {
 			// モバイル→PC: mobileIdを付与してPCへ多重化
 			const mobileIdStr = tag.slice(2);
+			// つなぎっぱなしのスマホも「使っている」として残す（W2-35。1時間に1回まで）。
+			this.touchMobile(mobileIdStr);
 			try {
 				const framed = packPcData(mobileIdFromString(mobileIdStr), data);
 				this.forwardBinaryToTag('pc', framed);

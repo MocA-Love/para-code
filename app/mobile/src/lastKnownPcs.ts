@@ -1,6 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { fromBase64Url, openNotify, sealNotify, toBase64Url } from '@para/protocol';
+import { hkdf } from '@noble/hashes/hkdf';
+import { sha256 } from '@noble/hashes/sha256';
 import { statusBucket } from './homeSort.js';
 
 /**
@@ -10,8 +12,9 @@ import { statusBucket } from './homeSort.js';
  * 最後に受け取った一覧の要約を端末へ残しておき、起動直後から「最終確認 ○分前」付きで出す。
  *
  * **残すのはスペースの名前と件数・状態だけ。** ターミナルの題名にはコマンドや作業内容が出ることが
- * あるので残さない（Q118 A。題名は接続してから出す）。ファイルは操作の outbox と同じ通知鍵で
- * 封緘する（鍵は Keychain の長期鍵と PC の公開鍵から毎回導く。ファイルだけ持ち出しても読めない）。
+ * あるので残さない（Q118 A。題名は接続してから出す）。ファイルは操作の outbox と同じ通知鍵から HKDF で
+ * この用途だけの鍵を導いて封緘する（鍵は Keychain の長期鍵と PC の公開鍵から毎回導く。ファイルだけ
+ * 持ち出しても読めない。通知鍵そのものを別の用途の暗号文に使い回さない）。
  *
  * **ここにある値は「前に見えたもの」でしかない。** 操作してよいか（スペースがあるか、起動できるか）の
  * 判断には使わない。画面は読み取り専用で出し、接続して State が届いたら生きた一覧へ切り替える。
@@ -92,10 +95,15 @@ export function sameLastKnownContent(a: LastKnownPcSnapshot | undefined, b: Last
 	});
 }
 
-/** 通知鍵で封緘して base64url にする（ファイルへ書く形）。 */
+/** 通知鍵から、この用途だけの封緘鍵を導く（HKDF-SHA256、info は用途の印）。 */
+export function lastKnownSealKey(notifyKey: Uint8Array): Uint8Array {
+	return hkdf(sha256, notifyKey, undefined, new TextEncoder().encode(`${SNAPSHOT_PURPOSE}.v${SNAPSHOT_VERSION}`), 32);
+}
+
+/** 通知鍵から導いた鍵で封緘して base64url にする（ファイルへ書く形）。`key` は通知鍵。 */
 export function sealLastKnownSnapshot(key: Uint8Array, snapshot: LastKnownPcSnapshot): string {
 	const plaintext = JSON.stringify({ v: SNAPSHOT_VERSION, purpose: SNAPSHOT_PURPOSE, ...snapshot });
-	return toBase64Url(sealNotify(key, new TextEncoder().encode(plaintext)));
+	return toBase64Url(sealNotify(lastKnownSealKey(key), new TextEncoder().encode(plaintext)));
 }
 
 /**
@@ -105,7 +113,7 @@ export function sealLastKnownSnapshot(key: Uint8Array, snapshot: LastKnownPcSnap
 export function openLastKnownSnapshot(key: Uint8Array, sealed: string, pcId: string): LastKnownPcSnapshot | undefined {
 	let raw: unknown;
 	try {
-		raw = JSON.parse(new TextDecoder().decode(openNotify(key, fromBase64Url(sealed))));
+		raw = JSON.parse(new TextDecoder().decode(openNotify(lastKnownSealKey(key), fromBase64Url(sealed))));
 	} catch {
 		return undefined;
 	}

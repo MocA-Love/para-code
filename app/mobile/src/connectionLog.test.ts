@@ -19,6 +19,8 @@ describe('connection log (W2-22)', () => {
 		expect(redactConnectionDetail('failed wss://relay.example/device/abc?role=mobile  token AbCdEfGhIjKlMnOpQrStUvWxYz0123 key 0123456789abcdef at 192.168.1.20:443 mail a.b@example.com'))
 			.toBe('failed <url> token <id> key <hex> at <ip> mail <email>');
 		expect(redactConnectionDetail('x'.repeat(500)).length).toBeLessThanOrEqual(160);
+		expect(redactConnectionDetail('could not reach para-mobile-relay.example.workers.dev:443/device for mobile AAAAAAAAAAAAAAAAAAAAAA (The Internet connection appears to be offline.)'))
+			.toBe('could not reach <host> for mobile <id> (The Internet connection appears to be offline.)');
 	});
 
 	test('keeps the last 200 entries per PC and coalesces writes', async () => {

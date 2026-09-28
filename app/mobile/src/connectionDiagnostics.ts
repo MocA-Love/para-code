@@ -45,13 +45,14 @@ export const RELAY_PROBE_TIMEOUT_MS = 5_000;
 
 /** リレーの WebSocket の URL から、到達を確かめる HTTP の URL（ルート）を作る。読めなければ undefined。 */
 export function relayProbeUrl(relayUrl: string): string | undefined {
-	const match = /^(wss?|https?):\/\/([^/?#\s]+)/i.exec(relayUrl.trim());
-	if (match === null) {
+	const match = /^(?<scheme>wss?|https?):\/\/(?:[^/?#\s@]*@)?(?<host>[^/?#\s@]+)/i.exec(relayUrl.trim());
+	if (match?.groups === undefined) {
 		return undefined;
 	}
-	const scheme = match[1]!.toLowerCase();
+	// 資格（user:pass@）は問い合わせに載せない。
+	const scheme = match.groups.scheme!.toLowerCase();
 	const secure = scheme === 'wss' || scheme === 'https';
-	return `${secure ? 'https' : 'http'}://${match[2]}/`;
+	return `${secure ? 'https' : 'http'}://${match.groups.host}/`;
 }
 
 /** リレーの応答の見立て。HTTP の応答が返れば経路は通っている。5xx はリレー側の不調として注意にする。 */
