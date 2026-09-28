@@ -25,6 +25,7 @@ import {
 	paradisParseAgentIdeCall,
 } from '../../common/paradisAgentIde.js';
 import { PARADIS_AGENT_IDE_SKILL_CONTENT, paradisAgentIdeGuide } from '../../common/paradisAgentIdeGuide.js';
+import { paradisAgentStartupScreenState } from '../../common/paradisAgentStartupScreen.js';
 
 suite('paradisAgentIde (common)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -105,6 +106,43 @@ suite('paradisAgentIde (common)', () => {
 			launched: launchedWatcher.observe('idle', undefined, 30_000),
 			needsHuman: new ParadisAgentStopWatcher(1000).observe('asking_question', 500, 1000),
 		}, { busy: ['waiting', 'waiting', 'stopped'], idle: ['waiting', 'no_agent_status'], launched: 'waiting', needsHuman: 'needs_input' });
+	});
+
+	test('stop watcher: an agent launched without a prompt is ready once its input box shows', () => {
+		const idleLaunch = new ParadisAgentStopWatcher(1000, 90_000, true);
+		const promptedLaunch = new ParadisAgentStopWatcher(1000, 90_000);
+		assert.deepStrictEqual({
+			idle: [idleLaunch.observe('idle', undefined, 2000), idleLaunch.observe('idle', undefined, 3000, 'ready')],
+			prompted: promptedLaunch.observe('idle', undefined, 3000, 'ready'),
+			trust: new ParadisAgentStopWatcher(1000, 90_000, true).observe('waiting_for_permission', undefined, 2000, 'trust_dialog'),
+		}, { idle: ['waiting', 'ready'], prompted: 'waiting', trust: 'needs_input' });
+	});
+
+	test('startup screen: the trust dialogs and empty input boxes of the installed CLIs, and nothing else', () => {
+		const screens = {
+			// Claude Code 2.1.283（折り返しと枠線をまたぐ）
+			claudeTrust: '\u2502 Accessing workspace:\n\u2502 Quick safety check: Is this a project you created or one you\n\u2502 trust? (Like your own code)\n\u2502 \u276f 1. Yes, I trust this folder\n\u2502   2. No, exit',
+			// codex-cli 0.155.1
+			codexTrust: '> You are in /tmp/x\n  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk.\n\u203a 1. Yes, continue\n  2. No, quit',
+			claudeReady: '\u256d\u2500\u256e\n\u2502 \u276f \u2502\n\u2570\u2500\u256f\n  ? for shortcuts',
+			codexReady: '\u203a Ask Codex to do anything\n\n  100% context left',
+			// 片方の文言だけでは当てない（会話の中で文言に触れただけ、など）
+			mentionOnly: 'The dialog says "Yes, I trust this folder" when you start it.',
+			codexQuestionOnly: 'Do you trust the contents of this directory?',
+			// 画面の末尾 30 行より上にあるものは見ない
+			scrolledAway: `? for shortcuts${'\n'.repeat(40)}$ `,
+			empty: '',
+		};
+		assert.deepStrictEqual(Object.fromEntries(Object.entries(screens).map(([name, screen]) => [name, paradisAgentStartupScreenState(screen) ?? null])), {
+			claudeTrust: 'trust_dialog',
+			codexTrust: 'trust_dialog',
+			claudeReady: 'ready',
+			codexReady: 'ready',
+			mentionOnly: null,
+			codexQuestionOnly: null,
+			scrolledAway: null,
+			empty: null,
+		});
 	});
 
 	test('prompt detection ignores the text that was just typed, across wrapping and box borders', () => {

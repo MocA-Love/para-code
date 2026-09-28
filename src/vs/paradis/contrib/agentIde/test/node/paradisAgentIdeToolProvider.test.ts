@@ -31,6 +31,34 @@ function text(result: unknown): { readonly isError: boolean; readonly body: stri
 	return { isError: value.isError === true, body: value.content[0].text };
 }
 
+// Claude Code 2.1.283 / codex-cli 0.155.1 の実際の画面の形（文言は CLI の文字列から拾った）
+const CLAUDE_TRUST_DIALOG = [
+	'\u256d\u2500\u2500\u2500\u2500\u256e',
+	' Accessing workspace:',
+	'',
+	' /Users/example/projects/demo',
+	'',
+	' Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known',
+	' open source project, or work from your team). If not, take a moment to review what\'s in this folder first.',
+	'',
+	' \u276f 1. Yes, I trust this folder',
+	'   2. No, exit',
+].join('\n');
+const CODEX_TRUST_DIALOG = [
+	'> You are in /Users/example/projects/demo',
+	'',
+	'  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt injection.',
+	'',
+	'\u203a 1. Yes, continue',
+	'  2. No, quit',
+].join('\n');
+const CLAUDE_READY = [
+	'\u256d\u2500\u2500\u256e',
+	'\u2502 \u276f  \u2502',
+	'\u2570\u2500\u2500\u256f',
+	'  ? for shortcuts',
+].join('\n');
+
 suite('ParadisAgentIdeToolProvider', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -39,8 +67,8 @@ suite('ParadisAgentIdeToolProvider', () => {
 		const marks = new Map<string, 'pending' | 'unverifiable'>();
 		const hookTokens = new Set<string>([TARGET]);
 		const calls: ParadisAgentIdeRequest[] = [];
-		const state = { screen: '', agent: true, gone: false, launchedAt: undefined as number | undefined };
-		const internal = (): IParadisAgentIdeInternal => ({ paneToken: TARGET, status: 'idle', agent: state.agent, screen: state.screen, ...(state.launchedAt !== undefined ? { launchedAt: state.launchedAt } : {}) });
+		const state = { screen: '', agent: true, gone: false, launchedAt: undefined as number | undefined, launchedIdle: false };
+		const internal = (): IParadisAgentIdeInternal => ({ paneToken: TARGET, status: 'idle', agent: state.agent, screen: state.screen, ...(state.launchedAt !== undefined ? { launchedAt: state.launchedAt } : {}), ...(state.launchedIdle ? { launchedIdle: true } : {}) });
 		const respond = (request: ParadisAgentIdeRequest): ParadisAgentIdeResult => {
 			switch (request.op) {
 				case 'listTerminals': return { ok: true, data: { terminals: [] } };
@@ -208,6 +236,55 @@ suite('ParadisAgentIdeToolProvider', () => {
 			{ met: starting.met, timedOut: starting.timed_out },
 		], [
 			{ met: false, reason: 'no_agent_status', waited: 5 },
+			{ met: false, timedOut: true },
+		]);
+	});
+
+	test('nothing is typed into a startup trust dialog, and waits report it as needing the user', async () => {
+		const send = setup();
+		send.hookTokens.clear();
+		send.state.screen = CLAUDE_TRUST_DIALOG;
+		const paste = text(await send.provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: '1', press_enter: false }, undefined, send.context));
+		const key = text(await send.provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'escape' }, undefined, send.context));
+
+		const wait = setup({ actionsEnabled: false });
+		wait.state.launchedAt = wait.clock.time;
+		wait.state.screen = CODEX_TRUST_DIALOG;
+		const stopped = JSON.parse(text(await wait.provider.callTool(CALLER, 'wait_for_terminal', { terminal: 't_1', until: 'agent_stopped' }, undefined, wait.context)).body);
+		const needsInput = JSON.parse(text(await wait.provider.callTool(CALLER, 'wait_for_terminal', { terminal: 't_1', until: 'needs_input' }, undefined, wait.context)).body);
+
+		assert.deepStrictEqual({
+			paste: { isError: paste.isError, trust: paste.body.includes('trust') },
+			key: key.isError,
+			sent: ops(send.calls),
+			stopped: { met: stopped.met, reason: stopped.reason, blockedBy: stopped.blocked_by, status: stopped.status, waited: stopped.waited_seconds },
+			needsInput: { met: needsInput.met, blockedBy: needsInput.blocked_by },
+		}, {
+			paste: { isError: true, trust: true },
+			key: true,
+			sent: ['resolveWriteTarget', 'resolveWriteTarget'],
+			stopped: { met: true, reason: 'needs_input', blockedBy: 'trust_dialog', status: 'waiting_for_permission', waited: 0 },
+			needsInput: { met: true, blockedBy: 'trust_dialog' },
+		});
+	});
+
+	test('an agent launched without a prompt is reported ready once its input box shows', async () => {
+		const idle = setup({ actionsEnabled: false });
+		idle.state.launchedAt = idle.clock.time;
+		idle.state.launchedIdle = true;
+		idle.clock.onSleep = () => { idle.state.screen = CLAUDE_READY; };
+		const ready = JSON.parse(text(await idle.provider.callTool(CALLER, 'wait_for_terminal', { terminal: 't_1', until: 'agent_stopped' }, undefined, idle.context)).body);
+
+		const prompted = setup({ actionsEnabled: false });
+		prompted.state.launchedAt = prompted.clock.time;
+		prompted.state.screen = CLAUDE_READY;
+		const starting = JSON.parse(text(await prompted.provider.callTool(CALLER, 'wait_for_terminal', { terminal: 't_1', until: 'agent_stopped', timeout_seconds: 10 }, undefined, prompted.context)).body);
+
+		assert.deepStrictEqual([
+			{ met: ready.met, reason: ready.reason, waited: ready.waited_seconds },
+			{ met: starting.met, timedOut: starting.timed_out },
+		], [
+			{ met: true, reason: 'ready', waited: 1 },
 			{ met: false, timedOut: true },
 		]);
 	});
