@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { WebView } from 'react-native-webview';
@@ -21,7 +21,7 @@ import { CenterSpinner, OfflineBanner, SpaceGateBody } from '../../../../src/fea
 import { fileViewerHref } from '../../../../src/features/code/codeRoutes.js';
 import { canOpenWorkingFile, diffStats, nextUnreviewed, reviewQueue, reviewStateOf, reviewedCount, stageableEntries, stepReview, type ReviewFilter } from '../../../../src/features/code/diffReview.js';
 import { NoteComposer, ReviewNotesPanel, type NoteComposerTarget } from '../../../../src/features/code/reviewNoteParts.js';
-import { noteAnchorOf, noteCountsByPath, placeReviewNotes, reviewSendTargets, unsentNoteIds, type PlacedNotes, type ReviewNote } from '../../../../src/features/code/reviewNotes.js';
+import { noteAnchorOf, noteCountsByPath, placeReviewNotes, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type PlacedNotes, type ReviewNote } from '../../../../src/features/code/reviewNotes.js';
 import { DiffLines, ReviewFileList, ReviewFileSummary, ReviewFooter, ReviewSummary } from '../../../../src/features/code/reviewParts.js';
 import { RightDrawer } from '../../../../src/features/code/rightDrawer.js';
 import { orderedScmEntries, scmEntries } from '../../../../src/features/code/scmModel.js';
@@ -58,7 +58,15 @@ export default function ReviewScreen() {
 	const notes = useReviewNotesController(codeSpace, review);
 	const [notesOpen, setNotesOpen] = useState(false);
 	const [composer, setComposer] = useState<NoteComposerTarget | undefined>(undefined);
-	const [selectedNotes, setSelectedNotes] = useState<ReadonlySet<string>>(new Set());
+	const [pickedNotes, setSelectedNotes] = useState<ReadonlySet<string>>(new Set());
+	// 片付け・別の端末での削除で消えたメモは選択から落とす（件数と送る対象に残さない）
+	const selectedNotes = useMemo(() => selectedExistingNotes(pickedNotes, notes.notes), [pickedNotes, notes.notes]);
+	/** 確認済みのステージを待っている間（メモの保存・送信とは別に持つ）。 */
+	const [staging, setStaging] = useState(false);
+	/** シートの中に出すお知らせ（片付けの結果）。 */
+	const [panelNotice, setPanelNotice] = useState<string | undefined>(undefined);
+	/** シートを閉じ切った後に出すトースト（Modal の裏に隠れないように、閉じてから出す）。 */
+	const afterCloseToast = useRef<string | undefined>(undefined);
 	const [agents, setAgents] = useState<readonly WorktreeAgentDef[]>([]);
 	const [agentsRequested, setAgentsRequested] = useState(false);
 	const terminals = useAppStore(s => s.workspace?.terminals);
@@ -69,7 +77,8 @@ export default function ReviewScreen() {
 	// クエリに無ければ（ソース管理以外から開いた）先頭のファイルから見る。
 	const path = requested ?? entries[0]?.path;
 	const entry = entries.find(candidate => candidate.path === path);
-	const diff = useDiffContent(codeSpace, path, entry?.staged ?? false);
+	// 識別もキーにする（確認した後に書き換えられたら差分を取り直す）
+	const diff = useDiffContent(codeSpace, path, entry?.staged ?? false, entry?.identity);
 	// 差分の解析は重いので、差分の本文が変わったときだけやり直す（再描画のたびに解析しない）。
 	const diffText = diff.text;
 	const rows = useMemo(() => (diffText !== undefined ? parseUnifiedDiff(diffText) : undefined), [diffText]);
@@ -109,7 +118,22 @@ export default function ReviewScreen() {
 	const openNotes = () => {
 		// 送っていないメモを選んでおく（送った後にまた開いたときは、そのとき未送信のものを選び直す）
 		setSelectedNotes(new Set(unsentNoteIds(notes.notes)));
+		notes.clearError();
+		setPanelNotice(undefined);
 		setNotesOpen(true);
+	};
+
+	const openComposer = (target: NoteComposerTarget) => {
+		notes.clearError();
+		setComposer(target);
+	};
+
+	const showAfterCloseToast = () => {
+		const text = afterCloseToast.current;
+		afterCloseToast.current = undefined;
+		if (text !== undefined) {
+			useParaToast.getState().show({ key: 'review-note-sent', text, icon: 'checkmark-circle-outline', tone: 'done' }, 2_000);
+		}
 	};
 
 	const toggleSelected = (id: string) => {
@@ -144,19 +168,23 @@ export default function ReviewScreen() {
 		// 選んだ後に別の端末で消されたメモは送らない
 		const ids = notes.notes.filter(note => selectedNotes.has(note.id)).map(note => note.id);
 		if (ids.length > 0 && await notes.send(ids, target)) {
+			afterCloseToast.current = `メモを ${ids.length} 件送りました`;
 			setNotesOpen(false);
 		}
 	};
 
 	const clearNotes = async () => {
+		setPanelNotice(undefined);
 		const removed = await notes.clear();
 		if (removed !== undefined) {
-			useParaToast.getState().show({ key: 'review-notes-cleared', text: removed > 0 ? `メモを ${removed} 件消しました` : '消せるメモはありませんでした', icon: 'checkmark-circle-outline', tone: 'done' }, 2_000);
+			// シートの中に出す（トーストはシートの裏に隠れる）
+			setPanelNotice(removed > 0 ? `メモを ${removed} 件消しました。` : '消せるメモはありませんでした。');
 		}
 	};
 
 	const stageReviewed = async () => {
-		const result = await notes.stage(stageable);
+		setStaging(true);
+		const result = await notes.stage(stageable).finally(() => setStaging(false));
 		if (result === undefined) {
 			return;
 		}
@@ -185,11 +213,14 @@ export default function ReviewScreen() {
 		<ReviewNotesPanel
 			notes={notes.notes}
 			selected={selectedNotes}
+			currentLines={placedNotes?.currentLines}
 			onToggle={toggleSelected}
-			onOpenNote={note => { setNotesOpen(false); setComposer({ mode: 'edit', note }); }}
+			onOpenNote={note => { setNotesOpen(false); openComposer({ mode: 'edit', note }); }}
 			targets={sendTargets}
 			agents={agents}
 			busy={notes.busy}
+			error={notes.error}
+			notice={panelNotice}
 			onSend={target => void sendNotes({ terminalKey: target.terminalKey })}
 			onLaunch={agent => void sendNotes({ agent: agent.id })}
 			onClear={() => void clearNotes()}
@@ -231,7 +262,7 @@ export default function ReviewScreen() {
 						position={at >= 0 ? { index: at, count: queue.length } : undefined}
 						filter={filter}
 						onFilter={setFilter}
-						{...(stageable.length > 0 ? { stage: { count: stageable.length, busy: notes.busy, onPress: () => void stageReviewed() } } : {})}
+						{...(stageable.length > 0 ? { stage: { count: stageable.length, busy: staging, onPress: () => void stageReviewed() } } : {})}
 					/>
 					{path === undefined ? (
 						statusState.status === undefined
@@ -245,8 +276,8 @@ export default function ReviewScreen() {
 								rows={rows}
 								unavailable={codeSpace.unavailable}
 								notes={placedNotes}
-								onLongPressRow={notes.enabled ? row => setComposer({ mode: 'add', path, ...noteAnchorOf(row) }) : undefined}
-								onPressNote={note => setComposer({ mode: 'edit', note })}
+								onLongPressRow={notes.enabled ? row => openComposer({ mode: 'add', path, ...noteAnchorOf(row) }) : undefined}
+								onPressNote={note => openComposer({ mode: 'edit', note })}
 							/>
 							<ReviewFooter
 								reviewed={isReviewed}
@@ -270,15 +301,17 @@ export default function ReviewScreen() {
 			<RightDrawer visible={listOpen && regular} onClose={() => setListOpen(false)} accessibilityLabel="ファイルの一覧">
 				{fileList}
 			</RightDrawer>
-			<BottomDrawer visible={notesOpen && !regular} onClose={() => setNotesOpen(false)} accessibilityLabel="メモ">
+			<BottomDrawer visible={notesOpen && !regular} onClose={() => setNotesOpen(false)} onAfterClose={showAfterCloseToast} accessibilityLabel="メモ">
 				{notesPanel}
 			</BottomDrawer>
-			<RightDrawer visible={notesOpen && regular} onClose={() => setNotesOpen(false)} accessibilityLabel="メモ">
+			<RightDrawer visible={notesOpen && regular} onClose={() => setNotesOpen(false)} onAfterClose={showAfterCloseToast} accessibilityLabel="メモ">
 				{notesPanel}
 			</RightDrawer>
 			<NoteComposer
 				target={composer}
 				busy={notes.busy}
+				error={notes.error}
+				currentLines={placedNotes?.currentLines}
 				onSubmit={body => void submitNote(body)}
 				onDelete={note => void deleteNote(note)}
 				onClose={() => setComposer(undefined)}

@@ -25,12 +25,15 @@ interface Loaded {
 /**
  * 1ファイルの差分を読む（旧 `src/components/diffView.tsx` の取得処理）。ファイルが変わったら
  * 前のファイルの差分は出さない。接続し直したときは読み直すが、読み終わるまでは前回の結果を出しておく。
+ *
+ * `identity` は変更の中身の識別（`ScmEntry.identity`）。一覧を読み直して識別が変わった（確認した後に書き換えられた）
+ * ときも読み直す。古い差分のまま「もう一度確認済みにする」を押せないようにするため（Orca W2-14）。
  */
-export function useDiffContent(space: CodeSpace, path: string | undefined, staged: boolean): DiffContent {
+export function useDiffContent(space: CodeSpace, path: string | undefined, staged: boolean, identity?: string): DiffContent {
 	const scmDiff = useAppStore(s => s.scmDiff);
 	const scmXlsxDiff = useAppStore(s => s.scmXlsxDiff);
 	const source = path !== undefined ? diffSourceOf(path) : 'text';
-	const key = `${space.wsId ?? ''}\0${path ?? ''}\0${staged}`;
+	const key = `${space.wsId ?? ''}\0${path ?? ''}\0${staged}\0${identity ?? ''}`;
 	const [loaded, setLoaded] = useState<Loaded | undefined>(undefined);
 	const { wsId, rendererTarget } = space;
 
