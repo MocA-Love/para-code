@@ -19,14 +19,33 @@ private func paradisMainBundleIdentifier() -> String {
 	return (Bundle.main.object(forInfoDictionaryKey: "ParadisMainBundleIdentifier") as? String) ?? "ltd.paradis.paracode"
 }
 
+/** Para Code のデータのフォルダの名前（argv.json の場所）。ビルド時に Info.plist へ書く。 */
+private func paradisDataFolderName() -> String {
+	return (Bundle.main.object(forInfoDictionaryKey: "ParadisDataFolderName") as? String) ?? ".para-code"
+}
+
 private final class ParadisAgentDelegate: NSObject, NSApplicationDelegate {
 	private let server: ParadisAgentServer
+	private let desktop: ParadisDesktop
+	private var terminationSource: DispatchSourceSignal?
 
-	init(server: ParadisAgentServer) {
+	init(server: ParadisAgentServer, desktop: ParadisDesktop) {
 		self.server = server
+		self.desktop = desktop
 	}
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
+		// 締め切りで終わらされるときも、押したままのボタンとキーを離してから終わる（レビュー N5）
+		signal(SIGTERM, SIG_IGN)
+		let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+		source.setEventHandler {
+			paradisPressedInput.releaseAll()
+			exit(0)
+		}
+		source.resume()
+		terminationSource = source
+		// 許可があれば、最初の入力の命令の前から見張る（直前の利用者の入力を見逃さない。レビュー N6）
+		desktop.inputMonitor.ensureStarted()
 		let server = self.server
 		let thread = Thread {
 			server.run()
@@ -43,10 +62,10 @@ case .agent(let socketPath, let tokenFile):
 	}
 	let desktop = ParadisDesktop()
 	let handler = ParadisRequestHandler(backend: desktop, expectedToken: token, selfPid: getpid())
-	let server = ParadisAgentServer(socketPath: socketPath, handler: handler, helperIdentity: paradisSelfSigningIdentity(), mainBundleIdentifier: paradisMainBundleIdentifier())
+	let server = ParadisAgentServer(socketPath: socketPath, handler: handler, helperIdentity: paradisSelfSigningIdentity(), mainBundleIdentifier: paradisMainBundleIdentifier(), dataFolderName: paradisDataFolderName())
 	let application = NSApplication.shared
 	application.setActivationPolicy(.accessory)
-	let delegate = ParadisAgentDelegate(server: server)
+	let delegate = ParadisAgentDelegate(server: server, desktop: desktop)
 	application.delegate = delegate
 	application.run()
 case .permissionStatus:

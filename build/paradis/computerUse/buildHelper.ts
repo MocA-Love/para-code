@@ -51,14 +51,16 @@ export interface IParadisHelperBuildOptions {
 
 interface IProductInfo {
 	readonly darwinBundleIdentifier: string;
+	readonly dataFolderName: string;
 	readonly version: string;
 }
 
 function readProductInfo(): IProductInfo {
-	const product = JSON.parse(readFileSync(join(repositoryRoot, 'product.json'), 'utf8')) as { darwinBundleIdentifier?: string };
+	const product = JSON.parse(readFileSync(join(repositoryRoot, 'product.json'), 'utf8')) as { darwinBundleIdentifier?: string; dataFolderName?: string };
 	const packageJson = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8')) as { version?: string };
 	return {
 		darwinBundleIdentifier: product.darwinBundleIdentifier ?? 'ltd.paradis.paracode',
+		dataFolderName: product.dataFolderName ?? '.para-code',
 		version: packageJson.version ?? '0.0.0',
 	};
 }
@@ -71,7 +73,7 @@ function escapeXml(value: string): string {
  * 補助アプリの Info.plist。名前に ` Helper` を含めない（build/darwin/sign.ts の `' Helper.app'` の判定に当たると
  * Electron の helper 用の entitlements が付いてしまう）。
  */
-export function paradisComputerUseInfoPlist(mainBundleIdentifier: string, version: string, testingBuild: boolean = false): string {
+export function paradisComputerUseInfoPlist(mainBundleIdentifier: string, version: string, testingBuild: boolean = false, dataFolderName: string = '.para-code'): string {
 	const entries: [string, string][] = [
 		['CFBundleDevelopmentRegion', 'ja'],
 		['CFBundleExecutable', PARADIS_COMPUTER_USE_EXECUTABLE],
@@ -88,6 +90,8 @@ export function paradisComputerUseInfoPlist(mainBundleIdentifier: string, versio
 		// allow-any-unicode-next-line
 		['NSScreenCaptureUsageDescription', 'Para Code のエージェントが、あなたの承認したアプリのウィンドウを撮るために使います。'],
 		['ParadisMainBundleIdentifier', mainBundleIdentifier],
+		// argv.json の場所（補助アプリが実行中に足されるスイッチを確かめる）
+		['ParadisDataFolderName', dataFolderName],
 	];
 	const body = entries.map(([key, value]) => `\t<key>${escapeXml(key)}</key>\n\t<string>${escapeXml(value)}</string>`).join('\n');
 	return [
@@ -178,7 +182,7 @@ export function buildParadisComputerUseHelper(options: IParadisHelperBuildOption
 		} else {
 			execFileSync('lipo', ['-create', ...thin, '-output', stagedExecutable], { stdio: 'inherit' });
 		}
-		writeFileSync(join(stagedApp, 'Contents', 'Info.plist'), paradisComputerUseInfoPlist(product.darwinBundleIdentifier, product.version, options.allowAnyPeerForTesting === true));
+		writeFileSync(join(stagedApp, 'Contents', 'Info.plist'), paradisComputerUseInfoPlist(product.darwinBundleIdentifier, product.version, options.allowAnyPeerForTesting === true, product.dataFolderName));
 		writeFileSync(join(stagedApp, 'Contents', 'PkgInfo'), 'APPL????');
 		// ad-hoc 署名。リリースは CI が本番の identity で署名し直す
 		execFileSync('codesign', ['--force', '--sign', '-', '--timestamp=none', stagedApp], { stdio: 'inherit' });

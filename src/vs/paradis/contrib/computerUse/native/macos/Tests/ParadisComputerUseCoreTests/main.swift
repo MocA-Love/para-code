@@ -330,7 +330,28 @@ do {
 	check(!paradisUserIsActive(secondsSincePhysicalInput: 5), "idle user")
 	check(!paradisUserIsActive(secondsSincePhysicalInput: nil), "no physical input yet")
 	check(paradisUserIsActive(secondsSincePhysicalInput: 0.3), "physical input within a second is the user, even right after our own input")
-	check(paradisIsOurEvent(userData: paradisSyntheticEventMarker) && !paradisIsOurEvent(userData: 0), "marks our own events")
+	check(paradisIsOurEvent(userData: paradisSyntheticEventMarker, sourcePid: 42, selfPid: 42), "marks our own events")
+	check(!paradisIsOurEvent(userData: 0, sourcePid: 42, selfPid: 42) && !paradisIsOurEvent(userData: paradisSyntheticEventMarker, sourcePid: 7, selfPid: 42), "another process cannot borrow the marker")
+
+	// レビュー N6・N7: タップと HID の合わせ方
+	// タップにキーが届いたことが無ければ、キーボードは HID の値で見る（自分の入力で止まる側に倒れる）
+	check(paradisPhysicalInputAge(tapKeyboard: nil, tapPointer: 9, hidKeyboard: 0.2, hidPointer: 5, tapSawKeyboard: false, secondsSinceTapStarted: 30) == 0.2, "uses the HID keyboard time until the tap has seen a key")
+	check(paradisPhysicalInputAge(tapKeyboard: 4, tapPointer: 9, hidKeyboard: 0.2, hidPointer: 5, tapSawKeyboard: true, secondsSinceTapStarted: 30) == 4, "trusts the tap once it has seen keys")
+	check(paradisPhysicalInputAge(tapKeyboard: 4, tapPointer: nil, hidKeyboard: 9, hidPointer: 0.3, tapSawKeyboard: true, secondsSinceTapStarted: 0.5) == 0.3, "also uses the HID pointer time right after the tap starts")
+	check(paradisPhysicalInputAge(tapKeyboard: 4, tapPointer: nil, hidKeyboard: 9, hidPointer: 0.3, tapSawKeyboard: true, secondsSinceTapStarted: 5) == 4, "ignores the HID pointer time later")
+	check(paradisPhysicalInputAge(tapKeyboard: nil, tapPointer: nil, hidKeyboard: 3, hidPointer: 0.7, tapSawKeyboard: false, secondsSinceTapStarted: nil) == 0.7, "uses HID only without a tap")
+
+	// レビュー N5: 長い入力の確かめの間隔
+	check(paradisNeedsFullFence(unitIndex: 3, secondsSinceLastFullFence: nil), "checks everything before the first unit")
+	check(!paradisNeedsFullFence(unitIndex: 3, secondsSinceLastFullFence: 0.01), "skips the full check between batches")
+	check(paradisNeedsFullFence(unitIndex: 10, secondsSinceLastFullFence: 0.01), "checks every ten units")
+	check(paradisNeedsFullFence(unitIndex: 3, secondsSinceLastFullFence: 0.06), "checks every 50 ms")
+
+	// レビュー N11: メニューの「ペースト」
+	check(paradisIsPasteMenuItem(role: "AXMenuItem", commandCharacter: "V", commandModifiers: 0, title: "Paste"), "detects Edit > Paste")
+	check(paradisIsPasteMenuItem(role: "AXMenuItem", commandCharacter: nil, commandModifiers: nil, title: "ペースト"), "detects a context menu paste")
+	check(!paradisIsPasteMenuItem(role: "AXMenuItem", commandCharacter: "V", commandModifiers: 8, title: "View"), "a plain V shortcut is not paste")
+	check(!paradisIsPasteMenuItem(role: "AXButton", commandCharacter: "V", commandModifiers: 0, title: "Paste"), "only menu items")
 
 	check(paradisFenceFailure(targetPid: 5, frontmostPid: 5, ownerAtTarget: 5) == nil, "front window of the target passes")
 	check(paradisFenceFailure(targetPid: 5, frontmostPid: 9, ownerAtTarget: 5)?.code == "window_not_focused", "another app in front stops input")
@@ -359,12 +380,16 @@ do {
 	let panel = ParadisScreenWindow(pid: 52, ownerName: "Spotlight", bundleId: "com.apple.Spotlight", layer: 25, bounds: CGRect(x: 200, y: 150, width: 100, height: 50))
 	let menuBar = ParadisScreenWindow(pid: 53, ownerName: "Window Server", bundleId: nil, layer: 24, bounds: CGRect(x: 0, y: 0, width: 2000, height: 1000))
 	let ownMenu = ParadisScreenWindow(pid: 5, ownerName: "Notes", bundleId: "com.apple.Notes", layer: 101, bounds: target)
-	check(paradisOverlayFailure(targetPid: 5, windows: [dialog], targetBounds: nil)?.code == "system_dialog", "an authentication dialog anywhere stops input")
-	check(paradisOverlayFailure(targetPid: 5, windows: [consent], targetBounds: target)?.code == "system_dialog", "a consent dialog stops input")
-	check(paradisOverlayFailure(targetPid: 5, windows: [panel], targetBounds: target)?.code == "point_obscured", "another app's panel over the window stops keys")
-	check(paradisOverlayFailure(targetPid: 5, windows: [panel], targetBounds: nil) == nil, "a panel does not stop a click whose point is checked separately")
-	check(paradisOverlayFailure(targetPid: 5, windows: [menuBar, ownMenu], targetBounds: target) == nil, "the menu bar and the app's own menus do not stop keys")
-	check(paradisFocusFailure(targetPid: 5, focusedPid: 5) == nil && paradisFocusFailure(targetPid: 5, focusedPid: 9)?.code == "window_not_focused" && paradisFocusFailure(targetPid: 5, focusedPid: nil) != nil, "keys need keyboard focus in the app")
+	let droppy = ParadisScreenWindow(pid: 54, ownerName: "Droppy", bundleId: "app.droppy", layer: 100, bounds: target)
+	let passkey = ParadisScreenWindow(pid: 55, ownerName: "AuthenticationServicesAgent", bundleId: nil, layer: 3, bounds: .zero)
+	check(paradisOverlayFailure(targetPid: 5, windows: [dialog])?.code == "system_dialog", "an authentication dialog anywhere stops input")
+	check(paradisOverlayFailure(targetPid: 5, windows: [consent])?.code == "system_dialog", "a consent dialog stops input")
+	check(paradisOverlayFailure(targetPid: 5, windows: [passkey])?.code == "system_dialog", "a passkey sheet stops input")
+	// レビュー N4: 常駐の浮いたパネルが重なっているだけでは止めない
+	check(paradisOverlayFailure(targetPid: 5, windows: [panel, droppy, menuBar, ownMenu]) == nil, "floating panels, the menu bar and the app's own menus do not stop input")
+	check(paradisFocusFailure(targetPid: 5, focusedApplicationPid: 5, focusedElementPid: 5) == nil, "keys go to the focused app")
+	check(paradisFocusFailure(targetPid: 5, focusedApplicationPid: 5, focusedElementPid: 52)?.code == "window_not_focused", "a panel holding the focused element stops keys")
+	check(paradisFocusFailure(targetPid: 5, focusedApplicationPid: 9, focusedElementPid: 5) != nil && paradisFocusFailure(targetPid: 5, focusedApplicationPid: nil, focusedElementPid: nil) != nil, "keys need keyboard focus in the app")
 }
 
 // MARK: - 引数
@@ -441,6 +466,28 @@ do {
 		let duplicated = ParadisProcessArguments(executablePath: "", arguments: [], environment: ["A=1", "A=2"])
 		check(parsed.environmentValue("A") == .some("1") && parsed.environmentValue("C") == .none && duplicated.environmentValue("A") == .some(.none), "reads environment values and refuses duplicates")
 	}
+}
+
+// MARK: - 起動時の argv の外（レビュー N2）
+
+do {
+	check(paradisForbiddenArgvJsonEntries(Data(#"{ "locale": "ja", "enable-crash-reporter": true }"#.utf8)) == [], "a normal argv.json passes")
+	check(paradisForbiddenArgvJsonEntries(Data("// comment\n{ \"remote-debugging-port\": 9222, \"js-flags\": \"--x\", }".utf8)) == ["js-flags", "remote-debugging-port"], "finds runtime switches in JSON with comments")
+	check(paradisForbiddenArgvJsonEntries(Data(#"{ "enable-proposed-api": ["a.b"], "inspect-extensions": 9333 }"#.utf8)) == ["enable-proposed-api", "inspect-extensions"], "finds proposed APIs and inspect switches")
+	check(paradisForbiddenArgvJsonEntries(Data("not json".utf8)) == nil, "an unreadable argv.json is reported")
+
+	check(paradisSealProblem(added: [], altered: [], missing: ["/Applications/Para Code.app/Contents/Resources/app/out/x/react-devtools/_metadata/verified_contents.json"]) == nil, "tolerates Chromium rewriting _metadata")
+	check(paradisSealProblem(added: [], altered: ["/Applications/Para Code.app/Contents/Resources/app/out/main.js"], missing: []) != nil, "refuses a modified file")
+	check(paradisSealProblem(added: ["/Applications/Para Code.app/Contents/Resources/app/out/evil.js"], altered: [], missing: []) != nil, "refuses an added file")
+
+	check(paradisInspectorProblem(listeningPorts: ["Para Code": [47286, 51234], "the shared process": [47286]]) == nil, "other listening ports are fine")
+	check(paradisInspectorProblem(listeningPorts: ["Para Code": [9229]]) != nil, "an inspector on the default port is refused")
+}
+
+do {
+	let failure = jsonObject(paradisEncodeFailure(id: 3, error: ParadisHelperError(code: "user_active", message: "x", progress: 12)))
+	check((failure["error"] as? [String: Any])?["progress"] as? Int == 12, "reports progress with an error")
+	check(ParadisPermissionSnapshot(accessibility: true, screenRecording: false, inputMonitoring: false).json["inputMonitoring"] as? String == "not-granted", "reports input monitoring")
 }
 
 // MARK: - 常に操作させないアプリ（レビュー M1・M8）

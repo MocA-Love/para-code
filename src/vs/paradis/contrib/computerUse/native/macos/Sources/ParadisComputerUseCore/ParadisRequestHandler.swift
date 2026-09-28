@@ -67,9 +67,15 @@ func paradisParseArguments(_ arguments: [String]) -> ParadisHelperMode {
 struct ParadisPermissionSnapshot: Equatable {
 	let accessibility: Bool
 	let screenRecording: Bool
+	/** 入力監視（聞くだけのイベントタップにキーが届くか。無くても止める側に倒すので必須ではない）。 */
+	var inputMonitoring: Bool? = nil
 
 	var json: [String: Any] {
-		return ["accessibility": accessibility ? "granted" : "not-granted", "screenRecording": screenRecording ? "granted" : "not-granted"]
+		var result: [String: Any] = ["accessibility": accessibility ? "granted" : "not-granted", "screenRecording": screenRecording ? "granted" : "not-granted"]
+		if let inputMonitoring {
+			result["inputMonitoring"] = inputMonitoring ? "granted" : "not-granted"
+		}
+		return result
 	}
 }
 
