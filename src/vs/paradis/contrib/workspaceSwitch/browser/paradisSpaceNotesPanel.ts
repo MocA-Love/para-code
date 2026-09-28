@@ -100,6 +100,10 @@ export class ParadisSpaceNotesPanel extends Disposable {
 	/** 「この項目を編集」で1行だけ入力状態にしているチェックリストの行番号。 */
 	private editingTaskIndex: number | undefined;
 	private availableHeight = 0;
+	/** 本文を最後に描いたときのスペース。別のスペースへ切り替えた描き直しではスクロール位置を持ち越さない。 */
+	private renderedStateKey: string | undefined;
+	/** 描いたチェックボックスを行番号で引く。描き直しの後に同じ行へフォーカスを戻すのに使う。 */
+	private readonly taskChecks = new Map<number, HTMLElement>();
 
 	constructor(
 		container: HTMLElement,
@@ -369,7 +373,17 @@ export class ParadisSpaceNotesPanel extends Disposable {
 			return;
 		}
 
+		// 本文は毎回作り直す。フォーカス中の要素 (チェックボックスや入力欄) を消すと、Chromium は
+		// その場で blur を配って同期レイアウトを走らせ、行が抜けて高さの無い本文の scrollTop を 0 に
+		// 丸める。後から行を足し直しても戻らないので、同じスペースの描き直しなら位置とフォーカスを
+		// 消す前に控えて書き戻す (トグル・他ウィンドウやモバイルからの更新・1行編集の確定で共通)
+		const sameSpace = this.renderedStateKey !== undefined && this.renderedStateKey === this.stateKey;
+		const scrollTop = sameSpace ? this.bodyElement.scrollTop : 0;
+		const focusedCheckLine = sameSpace ? this.focusedCheckLineIndex() : undefined;
+		this.renderedStateKey = this.stateKey;
+
 		this.bodyDisposables.clear();
+		this.taskChecks.clear();
 		DOM.clearNode(this.bodyElement);
 		if (this.stateKey === undefined) {
 			// allow-any-unicode-next-line
@@ -385,6 +399,45 @@ export class ParadisSpaceNotesPanel extends Disposable {
 			}
 		}
 		this.renderAddRow();
+		this.restoreScrollAndFocus(scrollTop, focusedCheckLine);
+	}
+
+	/**
+	 * 本文内のチェックボックスにフォーカスがあれば、その行番号を返す。ウィンドウが前面に無いときに
+	 * 届く外部更新でも読めるよう、前面の document ではなくこの本文が属する document を見る。
+	 */
+	private focusedCheckLineIndex(): number | undefined {
+		const active = this.bodyElement.ownerDocument.activeElement;
+		for (const [lineIndex, check] of this.taskChecks) {
+			if (check === active) {
+				return lineIndex;
+			}
+		}
+		return undefined;
+	}
+
+	private restoreScrollAndFocus(scrollTop: number, focusedCheckLine: number | undefined): void {
+		if (focusedCheckLine !== undefined) {
+			// 同じ行番号がまだチェックリストなら (外部更新で行が消えていなければ) フォーカスを戻し、
+			// キーボードで続けて操作できるようにする。位置は下で書き戻すのでここでは動かさない
+			this.taskChecks.get(focusedCheckLine)?.focus({ preventScroll: true });
+		}
+		// 別のスペースへ切り替えた描き直しでは 0 (先頭) を書く。フォーカスが無いと clearNode でも
+		// 位置が丸められず、前のスペースのスクロール位置のまま開いてしまうため
+		this.bodyElement.scrollTop = scrollTop;
+		// 「やることを追加」や1行編集の入力欄は描き直しの中でフォーカスされる。書き戻した位置で
+		// 入力欄が見えなくならないよう、本文の中だけで見える位置まで動かす (scrollIntoView は
+		// 外側の overflow: hidden の祖先まで動かしてしまうので使わない)
+		const active = this.bodyElement.ownerDocument.activeElement;
+		if (DOM.isHTMLElement(active) && active !== this.bodyElement && this.bodyElement.contains(active) && !active.classList.contains('paradis-space-notes-check')) {
+			const bodyRect = this.bodyElement.getBoundingClientRect();
+			const activeRect = active.getBoundingClientRect();
+			if (activeRect.bottom > bodyRect.bottom) {
+				this.bodyElement.scrollTop += activeRect.bottom - bodyRect.bottom;
+			} else if (activeRect.top < bodyRect.top) {
+				this.bodyElement.scrollTop -= bodyRect.top - activeRect.top;
+			}
+		}
 	}
 
 	/**
@@ -486,6 +539,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 				const row = DOM.append(this.bodyElement, DOM.$('.paradis-space-notes-task'));
 				row.classList.toggle('done', line.done);
 				const check = this.appendTaskCheck(row);
+				this.taskChecks.set(line.index, check);
 				check.tabIndex = 0;
 				check.setAttribute('role', 'checkbox');
 				check.setAttribute('aria-checked', String(line.done));
