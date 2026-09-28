@@ -21,6 +21,15 @@ describe('notify codec', () => {
 		expect(decoded.kind).toBe('disconnected');
 	});
 
+	test('reads the W2-27 dismiss tags, keeping only well-formed ones', () => {
+		const tag = 'a'.repeat(32);
+		const raw = { kind: 'agent-done', id: 'n3', title: 't', body: 'b', at: 1, dismiss: [tag, 'NOT-HEX', 5, 'b'.repeat(31)] };
+		expect([
+			decodeNotify(new TextEncoder().encode(JSON.stringify(raw))).dismiss,
+			decodeNotify(new TextEncoder().encode(JSON.stringify({ ...raw, dismiss: ['x'] }))).dismiss,
+		]).toEqual([[tag], undefined]);
+	});
+
 	test('rejects malformed / unknown kind', () => {
 		expect(() => decodeNotify(new TextEncoder().encode('{"kind":"bogus","id":"x","title":"a","body":"b","at":1}'))).toThrow();
 		expect(() => decodeNotify(new TextEncoder().encode('not json'))).toThrow();

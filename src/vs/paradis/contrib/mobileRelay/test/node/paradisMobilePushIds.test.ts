@@ -9,7 +9,7 @@
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_PUSH_ID_PATTERN } from '../../common/paradisMobileProtocol.js';
-import { paradisMobilePushIds } from '../../node/paradisMobilePushIds.js';
+import { paradisMobileDismissTags, paradisMobilePushIds } from '../../node/paradisMobilePushIds.js';
 
 function notify(fields: Record<string, unknown>): Uint8Array {
 	return new TextEncoder().encode(JSON.stringify({ kind: 'agent-done', id: 'n1', title: 't', body: 'b', at: 1, ...fields }));
@@ -54,6 +54,25 @@ suite('paradisMobilePushIds', () => {
 			allMatchRelayPattern: true,
 			noPlaintext: true,
 			malformed: {},
+		});
+	});
+
+	// W2-27: 通知拡張（NSE、Swift の CryptoKit）が同じ値を作ることを、この値で固定する。
+	// NSE 側の計算は `app/mobile/native/NotifyExtension/NotificationService.swift` の `dismissTag`。
+	test('dismiss tags are per-pairing HMACs of the notify id with a fixed vector for the NSE', () => {
+		const keyA = new Uint8Array(32).fill(1);
+		const keyB = new Uint8Array(32).fill(2);
+		const tags = paradisMobileDismissTags(keyA, ['n1', 'q0b6f6b1e-1111-4222-8333-944445555666']);
+		assert.deepStrictEqual({
+			tags,
+			perPairing: paradisMobileDismissTags(keyB, ['n1'])[0] !== tags[0],
+			notTheCollapseId: paradisMobilePushIds(keyA, notify({ agentToken: 'n1' })).collapseId !== tags[0],
+			empty: paradisMobileDismissTags(keyA, []),
+		}, {
+			tags: ['f6bbbd12fc1fd39b8cddf0d5c0f1f5df', '7d99d54fdb5bab9ff838798f32452e07'],
+			perPairing: true,
+			notTheCollapseId: true,
+			empty: [],
 		});
 	});
 });
