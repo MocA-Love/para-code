@@ -12,6 +12,7 @@
 // あったものを、デスクトップのチャット表示からも使えるよう切り出した（フェーズ6）。キー列そのものは
 // mobileRelay/common/paradisAgentQuestionKeys.ts が組み立てる。ここは「いつ・どう流すか」だけを持つ。
 
+import { StringSHA1 } from '../../../../base/common/hash.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 
@@ -140,6 +141,56 @@ function regionShowsPromptWithOptions(lines: readonly string[], markers: readonl
 		}
 	}
 	return false;
+}
+
+/**
+ * 画面の下端に出ている許可の確認を、見出しまで（見出しとその上のコマンドの行）と、見出しより後（選択肢の並び）に
+ * 分ける（W2-21 のレビュー M1 / M2）。許可の確認が出ていなければ undefined。
+ *
+ * 選択肢は見出しより後の行からだけ読む（会話の本文に残っている番号付きの箇条書きを拾わないため）。`context` は
+ * 見出しの行と、その上の空行までの行（コマンドの中身など。最大 {@link PROMPT_CONTEXT_LINES} 行）で、送る直前に
+ * 同じ確認のままかを照らし合わせるのに使う。
+ */
+export function paradisPermissionPromptParts(screen: string): { readonly context: string; readonly options: string } | undefined {
+	const lines = promptRegion(screen);
+	let joined = '';
+	for (let index = 0; index < lines.length; index++) {
+		joined += compact(lines[index]);
+		if (PERMISSION_PROMPT_MARKERS.some(marker => joined.includes(marker))) {
+			if (!regionShowsPromptWithOptions(lines, PERMISSION_PROMPT_MARKERS)) {
+				return undefined;
+			}
+			// 見出しの上は、確認の枠の上端の横線か、空行が 2 つ続くところまで（最大 PROMPT_CONTEXT_LINES 行の中身）。
+			// Claude Code の確認は「横線 / Bash command / 空行 / コマンド / 説明 / 空行 / 見出し」の形で、1 つの空行では止めない。
+			let top = index;
+			let filled = 0;
+			while (top > 0 && filled < PROMPT_CONTEXT_LINES) {
+				const above = lines[top - 1];
+				if (HORIZONTAL_RULE_LINE.test(above) || (above.trim().length === 0 && top > 1 && lines[top - 2].trim().length === 0)) {
+					break;
+				}
+				top--;
+				if (above.trim().length > 0) {
+					filled++;
+				}
+			}
+			return { context: lines.slice(top, index + 1).join('\n'), options: lines.slice(index + 1).join('\n') };
+		}
+	}
+	return undefined;
+}
+
+/** 許可の確認の見出しの上から、照らし合わせに含める行の数。 */
+const PROMPT_CONTEXT_LINES = 8;
+
+/**
+ * 許可の確認の見出しまで（{@link paradisPermissionPromptParts} の `context`）の指紋。空白の違い（折り返しの位置）は見ない。
+ * 選択肢を見せたときと送る直前で違えば、別の確認に変わっている。
+ */
+export function paradisPermissionPromptHash(context: string): string {
+	const sha = new StringSHA1();
+	sha.update(context.replace(/\s+/g, ''));
+	return sha.digest();
 }
 
 /**

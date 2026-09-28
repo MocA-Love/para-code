@@ -286,9 +286,10 @@ interface AppState extends StoreState {
 	sendArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left'): void;
 	/** テキスト入力を送る（PC側でbracketed paste対応。execute=trueで実行）。 */
 	sendTextInput(terminalKey: string, text: string, execute: boolean): Promise<boolean>;
-	sendAgentMessage(terminalKey: string, text: string): Promise<AgentMessageSendResult>;
+	/** `sendId` は預かった送信の id（PC は同じ id を二度送らない。W2-29）。 */
+	sendAgentMessage(terminalKey: string, text: string, sendId?: string): Promise<AgentMessageSendResult>;
 	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<AgentMessageSendResult>;
-	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, optionLabel?: string): Promise<AgentMessageSendResult>;
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }): Promise<AgentMessageSendResult>;
 	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult>;
 	/** agent チャネルの新しい種類の要求（`MobileController.requestAgentReply`）。 */
 	requestAgentReply(terminalKey: string, body: { readonly t: string; readonly [key: string]: unknown }, replyType: string, timeoutMs?: number): Promise<Record<string, unknown>>;
@@ -1699,8 +1700,8 @@ export const useAppStore = create<AppState>(set => ({
 		return controller?.sendTextInput(terminalKey, text, execute) ?? Promise.resolve(false);
 	},
 
-	sendAgentMessage(terminalKey: string, text: string) {
-		return controller?.sendAgentMessage(terminalKey, text) ?? Promise.resolve({ status: 'rejected' as const });
+	sendAgentMessage(terminalKey: string, text: string, sendId?: string) {
+		return controller?.sendAgentMessage(terminalKey, text, sendId) ?? Promise.resolve({ status: 'rejected' as const });
 	},
 
 	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]) {
@@ -1708,8 +1709,8 @@ export const useAppStore = create<AppState>(set => ({
 			?? Promise.resolve<AgentMessageSendResult>({ status: 'rejected', message: 'PCとの接続が切れています' });
 	},
 
-	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, optionLabel?: string) {
-		return controller?.answerAgentApproval(terminalKey, interactionId, choice, optionLabel)
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }) {
+		return controller?.answerAgentApproval(terminalKey, interactionId, choice, option)
 			?? Promise.resolve<AgentMessageSendResult>({ status: 'rejected', message: 'PCとの接続が切れています' });
 	},
 

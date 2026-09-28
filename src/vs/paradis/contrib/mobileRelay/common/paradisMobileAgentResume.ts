@@ -7,7 +7,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { StringSHA1 } from '../../../../base/common/hash.js';
-import type { IParadisResumeSession } from '../../sessionResume/common/paradisSessionResume.js';
+import { PARADIS_RESUME_SESSION_ID_PATTERN, type IParadisResumeSession } from '../../sessionResume/common/paradisSessionResume.js';
+import { paradisInteractiveAgentCommand } from './paradisAgentCliCommand.js';
 
 /**
  * 終わった会話をスマホから開き直して続きを頼む（Orca W2-29）の、PC とアプリで共有する取り決め。
@@ -99,4 +100,28 @@ export function paradisMobileAgentSessionMatches(session: IParadisMobileAgentSes
 /** 台帳に入れる（同じ id の古い記録・期限を過ぎたもの・上限を超えたものを捨てる）。 */
 export function paradisRecordResumeRequest(ledger: readonly IParadisResumeLedgerEntry[], entry: IParadisResumeLedgerEntry, now: number): IParadisResumeLedgerEntry[] {
 	return [...ledger.filter(item => item.id !== entry.id && now - item.at < RESUME_LEDGER_TTL_MS), entry].slice(-RESUME_LEDGER_LIMIT);
+}
+
+/**
+ * ターミナルで実行中のコマンドが、既存の会話を続ける `claude --resume <id>` / `codex resume <id>` なら、その会話を返す
+ * （「PC で今開いている会話」を hook が届く前でも見分けるため。レビュー M6）。複製して始める（fork）ものは別の会話なので返さない。
+ */
+export function paradisResumedSessionOfCommand(commandLine: string): { readonly agent: 'claude' | 'codex'; readonly sessionId: string } | undefined {
+	const command = paradisInteractiveAgentCommand(commandLine);
+	if (command === undefined || command.mode !== 'resume') {
+		return undefined;
+	}
+	let sessionId = command.sessionId;
+	if (command.agent === 'claude') {
+		const words = commandLine.trim().split(/\s+/).map(word => word.replace(/^['"]|['"]$/g, ''));
+		for (let index = 0; index < words.length && sessionId === undefined; index++) {
+			const word = words[index];
+			if (word === '--resume' || word === '-r') {
+				sessionId = words[index + 1];
+			} else if (word.startsWith('--resume=')) {
+				sessionId = word.slice('--resume='.length);
+			}
+		}
+	}
+	return sessionId !== undefined && PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId) ? { agent: command.agent, sessionId } : undefined;
 }

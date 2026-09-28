@@ -115,9 +115,9 @@ export function paradisIsLateHookAfterTurnEnd(eventName: string, at: number, tur
 type AgentInbound =
 	| { t: 'attach'; id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }
 	| { t: 'detach'; id: number; token?: string }
-	| { t: 'action/sendMessage'; id: number; token?: string; requestId: string; epoch: string; text: string }
+	| { t: 'action/sendMessage'; id: number; token?: string; requestId: string; epoch: string; text: string; sendId?: string }
 	| { t: 'action/answerQuestion'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; answers: readonly AgentQuestionAnswer[] }
-	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: string; optionLabel?: string }
+	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: string; optionLabel?: string; promptHash?: string }
 	/** 承認の画面に出ている番号付きの選択肢を求める（W2-21、`agent.approval.options.v1`）。答えは所有ウィンドウが直接返す。 */
 	| { t: 'approval-options'; id: number; token?: string; requestId: string; epoch: string; interactionId: string }
 	| { t: 'action/claudeSetting'; id: number; token?: string; requestId: string; epoch: string; setting: 'model' | 'effort'; value: string }
@@ -150,7 +150,7 @@ type AgentOutbound =
 	 * 承認の選択肢（W2-21）。ふつうは所有ウィンドウ（画面を読める renderer）が直接返し、ここから送るのは
 	 * 求めが古い・画面を読めない相手のときの `error` だけ。
 	 */
-	| { t: 'approval-options'; id: number; requestId: string; interactionId: string; options?: readonly IParadisAgentApprovalOption[]; error?: string }
+	| { t: 'approval-options'; id: number; requestId: string; interactionId: string; options?: readonly IParadisAgentApprovalOption[]; promptHash?: string; error?: string }
 	/**
 	 * 古い発言（W2-30）。messages は古い順。記録ファイルから読んだものの rev は負の数（-1 から古い方へ減る）で、全文・画像の
 	 * 取り寄せはできない。`cursor` があれば続きがあり、次の求めにそのまま付ける。`hasMore` が false ならこれより前は無いか、
@@ -185,6 +185,11 @@ const APPEND_READ_CHUNK_BYTES = 1024 * 1024;
 const MAX_TRANSCRIPT_LINE_BYTES = 4 * 1024 * 1024;
 /** 保持するメッセージ数の上限 (超過分は古いものから捨てる)。 */
 const MESSAGE_RING_LIMIT = 400;
+/** 預かりの送信の id を覚えておく数と時間（W2-29 のレビュー M4。アプリが預かるのは 24 時間まで）。 */
+const SEND_ID_LIMIT = 500;
+const SEND_ID_TTL_MS = 24 * 60 * 60 * 1000;
+/** リングから押し出した発言の位置を残す数（W2-30。モバイルが持つ 500 件を十分に上回る）。 */
+const EVICTED_POSITION_LIMIT = 2000;
 /**
  * 通知回数のカウンタを覚えておく上限（計測用。超過分は最後に触ったものから遠い順に捨てる）。
  *
@@ -622,6 +627,7 @@ function isValidSendMessageAction(msg: AgentInboundCandidate): msg is AgentInbou
 	return msg.t === 'action/sendMessage'
 		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
 		&& typeof msg.text === 'string' && msg.text.trim().length > 0 && msg.text.length <= 100_000
+		&& (msg.sendId === undefined || (typeof msg.sendId === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(msg.sendId)))
 		&& isValidControlRequest(msg);
 }
 
@@ -640,6 +646,7 @@ function isValidApprovalAction(msg: AgentInboundCandidate): msg is AgentInboundC
 		&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
 		&& typeof msg.choice === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(msg.choice)
 		&& (msg.optionLabel === undefined || (typeof msg.optionLabel === 'string' && msg.optionLabel.length > 0 && msg.optionLabel.length <= 500))
+		&& (msg.promptHash === undefined || (typeof msg.promptHash === 'string' && /^[0-9a-f]{40}$/.test(msg.promptHash)))
 		&& isValidControlRequest(msg);
 }
 
@@ -1570,50 +1577,62 @@ class TranscriptTailer {
 
 	/** 持ち越している不完全な行（remainder）の頭のバイト位置。行の頭の位置を数える起点（W2-30）。 */
 	private lineBase = 0;
-	/** 記録ファイルから作った発言の rev → その行の頭のバイト位置（リングにある間だけ。モバイルへは送らない）。 */
-	private readonly lineStartByRev = new Map<number, number>();
 	/**
-	 * リングのいちばん古い「ファイルから作った発言」の行から、リングの外へ押し出した発言の数。1 行から発言が複数できるので、
-	 * 行の途中で押し出されたぶんを古い発言の読み取りに含めるために覚える。
+	 * 記録ファイルから作った発言の rev → その発言の位置（行の頭のバイト位置と、その行を解釈して出た発言の中での順番）。
+	 * リングにある発言のぶん。モバイルへは送らない。順番はパーサーの単位で数える（古い発言の読み取り
+	 * `paradisReadTranscriptHistory` が同じ行を解釈し直して先頭から `keep` 件を採るのと揃えるため。L1）。
 	 */
-	private evictedAtLine: { readonly offset: number; readonly count: number } | undefined;
+	private readonly positionByRev = new Map<number, IParadisHistoryCursor>();
+	/**
+	 * リングから押し出した発言の位置（新しい方から {@link EVICTED_POSITION_LIMIT} 件）。モバイルはリングより多く
+	 * （新しい発言の差分で 500 件まで）持つので、モバイルのいちばん古い発言がもうリングに無くても、そこから前を
+	 * 記録ファイルで読めるように残す（W2-30 のレビュー H3）。
+	 */
+	private readonly evictedPositions = new Map<number, IParadisHistoryCursor>();
 
-	/** リングを上限まで縮める。押し出した発言の行の位置は捨て、境目の行から押し出した数を覚える。 */
+	/** リングを上限まで縮める。押し出した発言の位置は、上限付きで残す。 */
 	private trimRing(): void {
 		if (this.messages.length <= MESSAGE_RING_LIMIT) {
 			return;
 		}
 		const evicted = this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
-		const evictedStarts: number[] = [];
 		for (const message of evicted) {
-			const start = this.lineStartByRev.get(message.rev);
-			if (start !== undefined) {
-				evictedStarts.push(start);
-				this.lineStartByRev.delete(message.rev);
+			const position = this.positionByRev.get(message.rev);
+			if (position !== undefined) {
+				this.positionByRev.delete(message.rev);
+				this.evictedPositions.set(message.rev, position);
 			}
 		}
-		const boundary = this.messages.find(message => this.lineStartByRev.has(message.rev));
-		const boundaryStart = boundary !== undefined ? this.lineStartByRev.get(boundary.rev) : undefined;
-		if (boundaryStart === undefined) {
-			this.evictedAtLine = undefined;
-			return;
+		while (this.evictedPositions.size > EVICTED_POSITION_LIMIT) {
+			const oldest = this.evictedPositions.keys().next();
+			if (oldest.done === true) {
+				break;
+			}
+			this.evictedPositions.delete(oldest.value);
 		}
-		const count = evictedStarts.filter(start => start === boundaryStart).length;
-		const previous = this.evictedAtLine?.offset === boundaryStart ? this.evictedAtLine.count : 0;
-		this.evictedAtLine = count + previous > 0 ? { offset: boundaryStart, count: count + previous } : undefined;
 	}
 
 	/**
-	 * リングより前の発言がファイルのどこから前にあるか（W2-30 の 2 段目の起点）。リングにファイルから作った発言が
-	 * 無ければ、読み終えたところ（それより前の行からは、リングに残る発言が 1 つもできなかった）。
+	 * rev `before` の発言より前の発言が、記録ファイルのどこから前にあるか（W2-30 の 2 段目の起点）。
+	 * `before` 以上でいちばん古い「ファイルから作った発言」の位置を使う（手前に hook から差し込んだ発言があっても、
+	 * それはファイルに無いので飛ばしてよい）。押し出した位置も残っていない（古すぎる）なら undefined。
+	 * 何も見つからなければ、読み終えたところ（それより前の行からは、残っている発言が 1 つもできなかった）。
 	 */
-	historyFloor(): IParadisHistoryCursor {
-		const boundary = this.messages.find(message => this.lineStartByRev.has(message.rev));
-		const boundaryStart = boundary !== undefined ? this.lineStartByRev.get(boundary.rev) : undefined;
-		if (boundaryStart === undefined) {
-			return { offset: this.lineBase, keep: 0 };
+	historyCursorBefore(before: number): IParadisHistoryCursor | undefined {
+		let best: { readonly rev: number; readonly position: IParadisHistoryCursor } | undefined;
+		for (const positions of [this.evictedPositions, this.positionByRev]) {
+			for (const [rev, position] of positions) {
+				if (rev >= before && (best === undefined || rev < best.rev)) {
+					best = { rev, position };
+				}
+			}
 		}
-		return { offset: boundaryStart, keep: this.evictedAtLine?.offset === boundaryStart ? this.evictedAtLine.count : 0 };
+		if (best !== undefined) {
+			return best.position;
+		}
+		const oldestKnown = Math.min(...this.evictedPositions.keys(), ...this.positionByRev.keys());
+		// 残している位置より古い発言を指されたら、どこから前かは分からない。
+		return Number.isFinite(oldestKnown) && before < oldestKnown ? undefined : { offset: this.lineBase, keep: 0 };
 	}
 
 	private async readAppended(): Promise<void> {
@@ -1635,8 +1654,8 @@ class TranscriptTailer {
 				this.offset = 0;
 				this.remainder = '';
 				this.lineBase = 0;
-				this.lineStartByRev.clear();
-				this.evictedAtLine = undefined;
+				this.positionByRev.clear();
+				this.evictedPositions.clear();
 				// offset 0 から読み直すので、前のバイト境界を持ち越したデコーダは捨てる。
 				this.decoder = new TextDecoder();
 				this.initialTruncated = false;
@@ -1801,7 +1820,8 @@ class TranscriptTailer {
 				}
 			}
 			const raw = this.agent === 'claude' ? parseClaudeLine(obj, signals) : parseCodexLine(obj, signals);
-			for (const message of raw) {
+			for (const [rawIndex, message] of raw.entries()) {
+				const position: IParadisHistoryCursor = { offset: lineStart, keep: rawIndex };
 				// ライブ質問の決着処理: hookで注入済みの質問が決着後に transcript へ本物として
 				// 現れたら間引き（合成カードで表示済み）、対応する tool_result は合成IDへ
 				// 付け替える（モバイル側の合成カードが「回答済み」になる）。
@@ -1825,13 +1845,13 @@ class TranscriptTailer {
 						this.liveQuestionRealIds.delete(message.toolUseId);
 						for (const syntheticId of syntheticIds) {
 							signals.answeredIds.push(syntheticId);
-							this.lineStartByRev.set(this.rev, lineStart);
+							this.positionByRev.set(this.rev, position);
 							added.push({ ...message, toolUseId: syntheticId, rev: this.rev++ });
 						}
 						continue;
 					}
 				}
-				this.lineStartByRev.set(this.rev, lineStart);
+				this.positionByRev.set(this.rev, position);
 				added.push({ ...message, rev: this.rev++ });
 			}
 		}
@@ -2599,7 +2619,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly codexLiveClient: ParadisCodexLiveClient;
 	/** ペアリング済みモバイル向けのライブ質問/承認注入を有効にする。status用tailは常時動作する。 */
 	private eagerTailing = false;
-	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly sendKey?: string; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly interactionClaims = new Map<string, string>();
 	/** 計測専用: `token\0questionGroup` → その質問グループで通知を送った回数。 */
@@ -3301,7 +3321,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 古い発言を返す（W2-30、Q122）。
 	 *
 	 * 1 段目: `cursor` が無ければ、PC のメモリにある発言（ペインごとに 400 件のリング）のうち `beforeRev` より前を返す。
-	 * リングを読み切ったら、その手前の記録ファイルの位置を `cursor` として添える。
+	 * リングを読み切ったら、その手前の記録ファイルの位置を `cursor` として添える。`beforeRev` がもうリングに無い（モバイルは
+	 * 差分で 500 件まで持つ）ときは、押し出した発言の位置（2000 件まで残す）からすぐに記録ファイルを読む。
 	 * 2 段目: `cursor` があれば、記録ファイルをその位置から後ろへ読んで返す（1 回 2MB まで）。rev は負の数を振り、1 ペインで
 	 * {@link PARADIS_HISTORY_FILE_CAP} 件まで。重いので 1 ペインで同時に 1 本だけ。
 	 */
@@ -3316,27 +3337,38 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		const limit = msg.limit ?? 60;
-		if (msg.cursor === undefined) {
-			const ring = tailer.messages;
-			const oldestRingRev = ring[0]?.rev;
-			// モバイルの持っているいちばん古い発言が、もうリングから押し出されている（読んでいる間に新しい発言が大量に来た）。
-			// ここからファイルを読むと、モバイルが持っている発言と重なる。
-			if (msg.beforeRev < 0 || (oldestRingRev !== undefined && msg.beforeRev < oldestRingRev)) {
+		let cursor: IParadisHistoryCursor | undefined = msg.cursor !== undefined ? paradisDecodeHistoryCursor(msg.cursor) : undefined;
+		if (cursor === undefined) {
+			if (msg.beforeRev < 0) {
 				reply({ error: 'history-moved' });
 				return;
 			}
-			const older = ring.filter(message => message.rev < msg.beforeRev);
-			const page = older.slice(-limit);
-			if (older.length > page.length) {
-				reply({ messages: page, hasMore: true });
+			const ring = tailer.messages;
+			const oldestRingRev = ring[0]?.rev;
+			if (oldestRingRev !== undefined && msg.beforeRev >= oldestRingRev) {
+				const older = ring.filter(message => message.rev < msg.beforeRev);
+				const page = older.slice(-limit);
+				if (older.length > page.length) {
+					reply({ messages: page, hasMore: true });
+					return;
+				}
+				const floor = tailer.historyCursorBefore(page[0]?.rev ?? msg.beforeRev);
+				const next = floor !== undefined && paradisHistoryCursorHasMore(floor) ? paradisEncodeHistoryCursor(floor) : undefined;
+				reply({ messages: page, hasMore: next !== undefined, ...(next !== undefined ? { cursor: next } : {}) });
 				return;
 			}
-			const floor = tailer.historyFloor();
-			const cursor = paradisHistoryCursorHasMore(floor) ? paradisEncodeHistoryCursor(floor) : undefined;
-			reply({ messages: page, hasMore: cursor !== undefined, ...(cursor !== undefined ? { cursor } : {}) });
-			return;
+			// モバイルのいちばん古い発言がもうリングに無い（モバイルは差分で 500 件まで持つ。リングは 400 件）。
+			// 押し出した発言の位置が残っていれば、そこから前を記録ファイルで読む（レビュー H3）。
+			cursor = tailer.historyCursorBefore(msg.beforeRev);
+			if (cursor === undefined) {
+				reply({ error: 'history-moved' });
+				return;
+			}
+			if (!paradisHistoryCursorHasMore(cursor)) {
+				reply({ messages: [], hasMore: false });
+				return;
+			}
 		}
-		const cursor = paradisDecodeHistoryCursor(msg.cursor)!;
 		// ファイルから読んだ発言の rev は負の数。最初のページはモバイルの持っている rev（0 以上）の手前の -1 から振る。
 		const newestRev = Math.min(msg.beforeRev, 0) - 1;
 		const remaining = PARADIS_HISTORY_FILE_CAP + newestRev + 1;
@@ -3538,17 +3570,50 @@ export class ParadisMobileAgentChat extends Disposable {
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
 		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
 		const key = this.actionKey(mobileId, msg.requestId);
+		// 預かった送信（W2-29）の送り直し: 同じ id を一度ウィンドウへ渡したら、二度目は送らずに受け付け済みと答える
+		// （アプリが送っている途中で落ちて、起動し直して送り直したとき。レビュー M4）。
+		const sendKey = msg.sendId !== undefined ? `${mobileId}\0${msg.sendId}` : undefined;
+		if (sendKey !== undefined && this.dispatchedSendIds.has(sendKey)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted', code: 'duplicate' }, token ?? msg.token);
+			return;
+		}
 		if (token === undefined || session === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined || !this.hasSubscriber(token, mobileId) || this.pendingActions.has(key) || this.completedActions.has(key)) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' }, token ?? msg.token);
 			return;
 		}
 		const timer = setTimeout(() => {
 			if (this.pendingActions.delete(key)) {
+				this.forgetSendId(sendKey);
 				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: '操作対象のウィンドウが応答しませんでした' }, token);
 			}
 		}, 5_000);
-		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, timer });
+		this.rememberSendId(sendKey);
+		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, timer, ...(sendKey !== undefined ? { sendKey } : {}) });
 		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({ ...msg, token, windowId: owner.windowId })));
+	}
+
+	/** ウィンドウへ渡した預かりの送信の id（mobileId と組。最近 {@link SEND_ID_LIMIT} 件、24 時間）。 */
+	private readonly dispatchedSendIds = new Map<string, number>();
+
+	private rememberSendId(sendKey: string | undefined): void {
+		if (sendKey === undefined) {
+			return;
+		}
+		const now = Date.now();
+		this.dispatchedSendIds.set(sendKey, now);
+		for (const [candidate, at] of this.dispatchedSendIds) {
+			if (this.dispatchedSendIds.size <= SEND_ID_LIMIT && now - at < SEND_ID_TTL_MS) {
+				break;
+			}
+			this.dispatchedSendIds.delete(candidate);
+		}
+	}
+
+	/** ウィンドウが受け取らなかった（古い・時間切れ）送信は、送り直せるように忘れる。 */
+	private forgetSendId(sendKey: string | undefined): void {
+		if (sendKey !== undefined) {
+			this.dispatchedSendIds.delete(sendKey);
+		}
 	}
 
 	private handleClaudeSettingAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/claudeSetting' }>): void {
@@ -3714,7 +3779,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			// キーは送る直前に所有ウィンドウが画面を読み直して決める（Codex は行末の近道が要る）。ここでは
 			// 番号を仮に置き、確かめる文言を添える。
 			this.dispatchInteractionAction(mobileId, msg, { kind: 'approval', id: msg.interactionId }, [String(optionNumber)], undefined,
-				{ expectOption: { n: optionNumber, label: msg.optionLabel as string }, agent: agent === 'codex' ? 'codex' : 'claude' });
+				{ expectOption: { n: optionNumber, label: msg.optionLabel as string }, agent: agent === 'codex' ? 'codex' : 'claude', ...(msg.promptHash !== undefined ? { promptHash: msg.promptHash } : {}) });
 			return;
 		}
 		const parts = paradisAgentApprovalKeySequence(agent === 'codex' ? 'codex' : 'claude', msg.choice as 'yes' | 'no');
@@ -3816,7 +3881,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		parts: readonly string[],
 		readyMarker?: string,
 		/** 画面の番号付きの選択肢で答えたとき（W2-21）: 送る直前に確かめる番号と文言、キーを決めるためのエージェントの種類。 */
-		approvalOption?: { readonly expectOption: IParadisAgentApprovalOption; readonly agent: 'claude' | 'codex' },
+		approvalOption?: { readonly expectOption: IParadisAgentApprovalOption; readonly agent: 'claude' | 'codex'; readonly promptHash?: string },
 	): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
@@ -3850,7 +3915,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
 			t: 'action/interaction', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch, interaction, parts, delayMs: 300, windowId: owner.windowId,
 			...(readyMarker !== undefined ? { readyMarker } : {}),
-			...(approvalOption !== undefined ? { expectOption: approvalOption.expectOption, agent: approvalOption.agent } : {}),
+			...(approvalOption !== undefined ? { expectOption: approvalOption.expectOption, agent: approvalOption.agent, ...(approvalOption.promptHash !== undefined ? { expectPromptHash: approvalOption.promptHash } : {}) } : {}),
 		})));
 	}
 
@@ -3882,6 +3947,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& (pending.interactionKey === undefined || this.interactionClaims.get(pending.interactionKey) === key);
 		if (!valid) {
 			this.releaseInteractionClaim(pending.interactionKey, key);
+			this.forgetSendId(pending.sendKey);
 		}
 		return valid ? 'claimed' : 'stale';
 	}

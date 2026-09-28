@@ -16,6 +16,13 @@
 export const AGENT_RESUME_CAPABILITY = 'agent.resume.v1';
 /** 預かった送信の期限（Q121）。 */
 export const AGENT_SEND_QUEUE_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * つながったときに確かめずに送るのは、預けてからこの時間までのものだけ（レビュー H2）。それより古いものは、状況が
+ * 変わっているかもしれないので「送る」か「再開して送る」を利用者に確かめる。
+ */
+export const AGENT_SEND_AUTO_WINDOW_MS = 15 * 60 * 1000;
+/** 期限切れの印を残しておく時間（本文は期限切れの時点で消す。L5）。 */
+const AGENT_SEND_EXPIRED_KEEP_MS = 24 * 60 * 60 * 1000;
 /** 1 台の PC に預かる送信の上限（古いものから捨てる）。 */
 export const AGENT_SEND_QUEUE_LIMIT = 50;
 /** 続きの依頼の長さの上限（PC の PARADIS_AGENT_RESUME_PROMPT_LIMIT と同じ）。 */
@@ -169,51 +176,76 @@ export interface AgentSendQueueItem {
 	readonly target: AgentSendTarget;
 	readonly status: AgentSendStatus;
 	readonly error?: string;
+	/**
+	 * 確かめが要る理由（`needs-confirm` のとき）。`stale` は預けてから 15 分を過ぎた、`other-conversation` は宛先のターミナルが
+	 * 別の会話（か会話が分からない）になっていた、`closed` はターミナルが閉じていた。
+	 */
+	readonly reason?: AgentSendConfirmReason;
 }
+
+export type AgentSendConfirmReason = 'stale' | 'other-conversation' | 'closed';
 
 /** 期限を過ぎたものを expired にする。変わらなければ同じ配列を返す。 */
 export function expireAgentSendQueue(items: readonly AgentSendQueueItem[], now: number): readonly AgentSendQueueItem[] {
 	let changed = false;
-	const next = items.map(item => {
-		if (item.status !== 'expired' && item.status !== 'sending' && now - item.createdAt > AGENT_SEND_QUEUE_TTL_MS) {
+	const next: AgentSendQueueItem[] = [];
+	for (const item of items) {
+		if (item.status === 'expired' && now - item.createdAt > AGENT_SEND_QUEUE_TTL_MS + AGENT_SEND_EXPIRED_KEEP_MS) {
+			// 期限切れの印も、さらに 1 日たったら消す（L5）。
 			changed = true;
-			return { ...item, status: 'expired' as const };
+			continue;
 		}
-		return item;
-	});
+		if (item.status !== 'expired' && item.status !== 'sending' && now - item.createdAt > AGENT_SEND_QUEUE_TTL_MS) {
+			// 期限切れにしたら本文は残さない（送らないものを端末に持ち続けない。L5）。
+			changed = true;
+			const { error: _error, reason: _reason, ...rest } = item;
+			next.push({ ...rest, text: '', status: 'expired' });
+			continue;
+		}
+		next.push(item);
+	}
 	return changed ? next : items;
 }
 
 /** つながったときに 1 件をどうするか。 */
 export type AgentSendPlan =
 	| { readonly kind: 'send'; readonly item: AgentSendQueueItem }
-	| { readonly kind: 'confirm'; readonly item: AgentSendQueueItem }
+	| { readonly kind: 'confirm'; readonly item: AgentSendQueueItem; readonly reason: AgentSendConfirmReason }
 	| { readonly kind: 'fail'; readonly item: AgentSendQueueItem; readonly error: string };
 
 /**
  * つながったときに、待っている送信をどうするかを決める（古い順）。`terminals` は PC の今のターミナル。
- * 開いているエージェントのターミナル宛てだけを送る。閉じていれば、指紋があれば「再開して送る」の確認へ、無ければ失敗。
- * 過去の会話宛ては必ず確認へ（黙って再開しない）。
+ * 開いているエージェントのターミナル宛てで、預けてから 15 分以内のものだけを送る（送る直前に、そのターミナルの会話が
+ * 預けたときと同じかをもう一度確かめる。{@link agentSendConversationMatches}）。古いものは確認へ。閉じていれば、
+ * 指紋があれば「再開して送る」の確認へ、無ければ失敗。過去の会話宛ては必ず確認へ（黙って再開しない）。
  */
-export function planAgentSendQueue(items: readonly AgentSendQueueItem[], pcId: string, terminals: readonly { readonly terminalKey: string; readonly agent?: boolean }[]): readonly AgentSendPlan[] {
+export function planAgentSendQueue(items: readonly AgentSendQueueItem[], pcId: string, terminals: readonly { readonly terminalKey: string; readonly agent?: boolean }[], now: number): readonly AgentSendPlan[] {
 	const plans: AgentSendPlan[] = [];
 	const waiting = items.filter(item => item.pcId === pcId && item.status === 'waiting').sort((a, b) => a.createdAt - b.createdAt);
 	for (const item of waiting) {
 		if (item.target.kind === 'resume') {
-			plans.push({ kind: 'confirm', item });
+			plans.push({ kind: 'confirm', item, reason: 'closed' });
 			continue;
 		}
 		const terminalKey = item.target.terminalKey;
 		const terminal = terminals.find(candidate => candidate.terminalKey === terminalKey);
 		if (terminal !== undefined && terminal.agent === true) {
-			plans.push({ kind: 'send', item });
+			plans.push(now - item.createdAt <= AGENT_SEND_AUTO_WINDOW_MS ? { kind: 'send', item } : { kind: 'confirm', item, reason: 'stale' });
 		} else if (item.target.resumeKey !== undefined && item.target.ws !== undefined) {
-			plans.push({ kind: 'confirm', item });
+			plans.push({ kind: 'confirm', item, reason: 'closed' });
 		} else {
 			plans.push({ kind: 'fail', item, error: '宛先のターミナルが閉じられていたため送れませんでした' });
 		}
 	}
 	return plans;
+}
+
+/**
+ * 宛先のターミナルが、預けたときと同じ会話か（レビュー H2）。どちらかの指紋が分からなければ同じとはみなさない
+ * （ターミナルで別の会話が始まっていたら、そちらへ黙って送らない）。
+ */
+export function agentSendConversationMatches(item: AgentSendQueueItem, currentResumeKey: string | undefined): boolean {
+	return item.target.kind === 'live' && item.target.resumeKey !== undefined && currentResumeKey !== undefined && item.target.resumeKey === currentResumeKey;
 }
 
 /** 預かりに足す（同じ PC の上限を超えたら古いものから捨てる）。 */
@@ -256,14 +288,19 @@ export function deserializeAgentSendQueue(pcId: string, text: string): readonly 
 		const validTarget = target !== undefined && target !== null && ((target.kind === 'live' && typeof target.terminalKey === 'string')
 			|| (target.kind === 'resume' && typeof target.ws === 'string' && typeof target.key === 'string' && KEY_PATTERN.test(target.key)));
 		if (item === null || typeof item !== 'object' || typeof item.id !== 'string' || item.pcId !== pcId || typeof item.createdAt !== 'number'
-			|| typeof item.text !== 'string' || item.text.length === 0 || item.text.length > AGENT_RESUME_PROMPT_LIMIT || !validTarget
+			|| typeof item.text !== 'string' || (item.text.length === 0 && item.status !== 'expired') || item.text.length > AGENT_RESUME_PROMPT_LIMIT || !validTarget
 			|| !['waiting', 'sending', 'needs-confirm', 'failed', 'expired'].includes(item.status as string)) {
 			continue;
 		}
+		// 送っている途中で止まったもの（M4）: 開いているターミナル宛ては待ちに戻す（同じ id で送り直し、PC が重複を捨てる）。
+		// 再開して送るものは、結果が分からないので利用者に確かめ直してもらう（PC も同じ id の二度目の再開はしない）。
+		const status: AgentSendStatus = item.status === 'sending' ? (target!.kind === 'live' ? 'waiting' : 'needs-confirm') : item.status as AgentSendStatus;
+		const reason = item.reason === 'stale' || item.reason === 'other-conversation' || item.reason === 'closed' ? item.reason
+			: item.status === 'sending' && target!.kind === 'resume' ? 'closed' : undefined;
 		items.push({
-			id: item.id, pcId, createdAt: item.createdAt, text: item.text, target: target as AgentSendTarget,
-			status: item.status === 'sending' ? 'waiting' : item.status as AgentSendStatus,
+			id: item.id, pcId, createdAt: item.createdAt, text: item.text, target: target as AgentSendTarget, status,
 			...(typeof item.error === 'string' ? { error: item.error } : {}),
+			...(status === 'needs-confirm' && reason !== undefined ? { reason } : {}),
 		});
 	}
 	return items;
@@ -274,7 +311,12 @@ export function agentSendStatusText(item: AgentSendQueueItem): string {
 	switch (item.status) {
 		case 'waiting': return 'PC に届き次第送ります';
 		case 'sending': return '送っています';
-		case 'needs-confirm': return item.target.kind === 'resume' ? '会話を再開して送るか確かめてください' : 'ターミナルが閉じられていました。会話を再開して送れます';
+		case 'needs-confirm':
+			switch (item.reason) {
+				case 'stale': return '預けてから時間がたちました。今も送ってよいか確かめてください';
+				case 'other-conversation': return '宛先のターミナルで別の会話が動いています。そのまま送るか、元の会話を再開して送るかを選んでください';
+				default: return item.target.kind === 'resume' ? '会話を再開して送るか確かめてください' : 'ターミナルが閉じられていました。会話を再開して送れます';
+			}
 		case 'failed': return item.error ?? '送れませんでした';
 		case 'expired': return '24 時間を過ぎたので送りませんでした';
 	}

@@ -20,7 +20,7 @@ export function useApprovalOptions(
 	terminalKey: string,
 	epoch: string | undefined,
 	interaction: AgentInteraction | undefined,
-	approve: (interactionId: string, choice: string, optionLabel?: string) => Promise<AgentMessageSendResult>,
+	approve: (interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }) => Promise<AgentMessageSendResult>,
 ): (ApprovalOptionChoices & { readonly approve: (interactionId: string, choice: string) => Promise<AgentMessageSendResult> }) | undefined {
 	const supported = usePcCapability(PARADIS_AGENT_APPROVAL_OPTIONS_CAPABILITY);
 	const requestAgentReply = useAppStore(s => s.requestAgentReply);
@@ -36,9 +36,9 @@ export function useApprovalOptions(
 		let cancelled = false;
 		requestAgentReply(terminalKey, { t: 'approval-options', epoch, interactionId }, 'approval-options', APPROVAL_OPTIONS_TIMEOUT_MS)
 			.then(reply => {
-				const options = parseApprovalOptionsReply(reply);
-				if (!cancelled && options !== undefined) {
-					setLoaded({ key, value: approvalChoicesFromOptions(options) });
+				const parsed = parseApprovalOptionsReply(reply);
+				if (!cancelled && parsed !== undefined) {
+					setLoaded({ key, value: approvalChoicesFromOptions(parsed.options, parsed.promptHash) });
 				}
 			})
 			.catch(() => { /* 読めない・古い・切断: 「許可 / 拒否」のまま */ });
@@ -48,6 +48,9 @@ export function useApprovalOptions(
 	}, [key, terminalKey, epoch, interactionId, requestAgentReply]);
 
 	const value = loaded !== undefined && loaded.key === key ? loaded.value : undefined;
-	const approveOption = useCallback((id: string, choice: string) => approve(id, choice, value?.labels.get(choice)), [approve, value]);
+	const approveOption = useCallback((id: string, choice: string) => {
+		const label = value?.labels.get(choice);
+		return approve(id, choice, label !== undefined ? { label, ...(value?.promptHash !== undefined ? { promptHash: value.promptHash } : {}) } : undefined);
+	}, [approve, value]);
 	return value !== undefined ? { ...value, approve: approveOption } : undefined;
 }

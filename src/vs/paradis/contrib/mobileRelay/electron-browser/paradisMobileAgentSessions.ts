@@ -40,7 +40,10 @@ import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktre
 import { paradisResumeAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
-import { IParadisResumeLedgerEntry, PARADIS_AGENT_RESUME_PROMPT_LIMIT, PARADIS_AGENT_SESSION_KEY_PATTERN, PARADIS_AGENT_SESSIONS_PAGE_LIMIT, paradisAgentSessionKey, paradisClipAgentSessionText, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, paradisRecordResumeRequest } from '../common/paradisMobileAgentResume.js';
+import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
+import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
+import { paradisCanPasteMultiline, paradisTerminalRunsAgent } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
+import { IParadisResumeLedgerEntry, PARADIS_AGENT_RESUME_PROMPT_LIMIT, PARADIS_AGENT_SESSION_KEY_PATTERN, PARADIS_AGENT_SESSIONS_PAGE_LIMIT, paradisAgentSessionKey, paradisClipAgentSessionText, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, paradisRecordResumeRequest, paradisResumedSessionOfCommand } from '../common/paradisMobileAgentResume.js';
 import { registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
 
 /** 再開の依頼の台帳（PC の再起動をまたいで同じ依頼を二度実行しないため）。 */
@@ -124,7 +127,12 @@ function collectTools(accessor: ServicesAccessor): IAgentSessionTools {
 	};
 }
 
-/** 今ターミナルで動いている会話（指紋 → そのターミナルのキー）。 */
+/**
+ * 今ターミナルで動いている会話（指紋 → そのターミナルのキー）。3 つの手がかりを合わせる（レビュー M6）:
+ * - hook が報告した各ペインの会話（状態のスナップショットの `paneSessions`）
+ * - 各ターミナルのシェル統合が記録している実行中のコマンド（`claude --resume <id>` / `codex resume <id>`）
+ * - このウィンドウがスマホから再開した直後の会話（hook も届いていない数分の間。レビュー H1）
+ */
 function liveSessionTerminals(tools: IAgentSessionTools): Map<string, string> {
 	let paneSessions: readonly IParadisAgentPaneSession[] = [];
 	tools.snapshotService.subscribe(outcome => { paneSessions = outcome.snapshot?.paneSessions ?? paneSessions; }).dispose();
@@ -136,8 +144,40 @@ function liveSessionTerminals(tools: IAgentSessionTools): Map<string, string> {
 			result.set(paradisAgentSessionKey(session.agent, session.sessionId), terminalKey);
 		}
 	}
+	const instances = paradisCollectAllTerminalInstances(tools.terminalService, tools.terminalGroupService).filter(instance => !instance.isDisposed);
+	for (const instance of instances) {
+		const executing = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
+		const resumed = executing !== undefined ? paradisResumedSessionOfCommand(executing) : undefined;
+		const terminalKey = resumed !== undefined ? tools.identityService.getTerminalKey(instance.instanceId) : undefined;
+		if (resumed !== undefined && terminalKey !== undefined) {
+			const key = paradisAgentSessionKey(resumed.agent, resumed.sessionId);
+			if (!result.has(key)) {
+				result.set(key, terminalKey);
+			}
+		}
+	}
+	const now = Date.now();
+	for (const [key, recent] of recentResumes) {
+		const alive = instances.some(instance => instance.instanceId === recent.instanceId);
+		if (now - recent.at > RECENT_RESUME_TTL_MS || !alive) {
+			recentResumes.delete(key);
+			continue;
+		}
+		const terminalKey = tools.identityService.getTerminalKey(recent.instanceId);
+		if (terminalKey !== undefined && !result.has(key)) {
+			result.set(key, terminalKey);
+		}
+	}
 	return result;
 }
+
+/** スマホからの再開を処理している会話（指紋）と依頼 ID。最初の await より前に入れる（二重の再開を防ぐ。レビュー H1）。 */
+const resumingKeys = new Set<string>();
+const resumingRequestIds = new Set<string>();
+/** スマホから再開した直後の会話 → そのターミナル（hook が届くまでの間も「開いている」とみなす）。 */
+const recentResumes = new Map<string, { readonly instanceId: number; readonly at: number }>();
+/** {@link recentResumes} を覚えておく時間。 */
+const RECENT_RESUME_TTL_MS = 5 * 60_000;
 
 async function listSessions(tools: IAgentSessionTools, space: IParadisResumeSpaceWithUri): Promise<readonly IParadisResumeSession[]> {
 	const client = tools.instantiationService.createInstance(ParadisSessionResumeClient);
@@ -227,23 +267,64 @@ registerParadisMobileRequestHandler('scm', 'agentSessionResume', {
 		const tools = collectTools(accessor);
 		const key = requireString(request.key, 'key', 64);
 		const requestId = requireString(request.requestId, 'requestId', 100);
-		const prompt = typeof request.prompt === 'string' ? request.prompt : '';
-		if (!PARADIS_AGENT_SESSION_KEY_PATTERN.test(key) || prompt.trim().length === 0 || prompt.length > PARADIS_AGENT_RESUME_PROMPT_LIMIT) {
+		const rawPrompt = typeof request.prompt === 'string' ? request.prompt : '';
+		if (!PARADIS_AGENT_SESSION_KEY_PATTERN.test(key) || rawPrompt.trim().length === 0 || rawPrompt.length > PARADIS_AGENT_RESUME_PROMPT_LIMIT) {
 			throw new Error('送る内容が正しくありません');
 		}
-		// 同じ依頼（スマホが預かって送り直したもの）は二度実行しない。
+		const reply = (body: IResumeReply) => context.reply({ t: 'agentSessionResume', ...body });
+		// ここから最初の await までを同期で済ませる（同じ依頼・同じ会話の求めが重なっても、再開は 1 回だけ。レビュー H1）。
+		if (resumingRequestIds.has(requestId)) {
+			reply({ status: 'duplicate', message: 'この依頼は PC で処理している最中です' });
+			return undefined;
+		}
+		// 同じ依頼（スマホが預かって送り直したもの）は二度実行しない。ターミナルを開く前に失敗したものだけは、やり直せる。
 		const previous = readLedger(tools.storageService).find(entry => entry.id === requestId);
-		if (previous !== undefined) {
-			context.reply({ t: 'agentSessionResume', status: 'duplicate', ...(previous.terminalKey !== undefined ? { terminalKey: previous.terminalKey } : {}), ...(previous.delivered !== undefined ? { delivered: previous.delivered } : {}) });
+		if (previous !== undefined && !(previous.status === 'failed' && previous.terminalKey === undefined)) {
+			reply({ status: 'duplicate', ...(previous.terminalKey !== undefined ? { terminalKey: previous.terminalKey } : {}), ...(previous.delivered !== undefined ? { delivered: previous.delivered } : {}) });
+			return undefined;
+		}
+		if (resumingKeys.has(key)) {
+			reply({ status: 'running', message: 'この会話は今スマホから再開しているところです。少し待ってから会話の画面で送ってください' });
+			return undefined;
+		}
+		const running = liveSessionTerminals(tools).get(key);
+		if (running !== undefined) {
+			reply({ status: 'running', terminalKey: running, message: 'この会話は PC で開いています' });
 			return undefined;
 		}
 		const space = findSpace(tools.switchService, tools.worktreeService, request.ws);
 		if (space === undefined) {
 			throw new Error('このスペースは PC で開けません');
 		}
-		return resumeFromMobile(tools, space, key, requestId, prompt, body => context.reply({ t: 'agentSessionResume', ...body }));
+		resumingKeys.add(key);
+		resumingRequestIds.add(requestId);
+		// 台帳へも先に入れる（再開の途中で PC が落ちても、送り直しで二度目を起こさない）。
+		writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'started' });
+		return resumeFromMobile(tools, space, key, requestId, paradisStripTerminalControlCharacters(rawPrompt), reply).finally(() => {
+			resumingKeys.delete(key);
+			resumingRequestIds.delete(requestId);
+		});
 	},
 });
+
+interface IResumeReply {
+	readonly status: 'resumed' | 'running' | 'needs-trust' | 'duplicate';
+	readonly terminalKey?: string;
+	readonly delivered?: boolean;
+	readonly message?: string;
+}
+
+/**
+ * 再開したターミナルへ依頼を渡してよいか（W2-28 の差分メモの送信と同じ規則。レビュー M3）: 前面のコマンドが Claude Code /
+ * Codex だとシェル統合で確かめられ（エージェントが抜けてシェルに戻っていたら、依頼がコマンドとして実行される）、確認や
+ * 質問の画面が出ておらず、複数行なら貼り付けの囲みが有効なこと。
+ */
+function canDeliverPrompt(instance: ITerminalInstance, prompt: string): boolean {
+	return !instance.isDisposed
+		&& paradisTerminalRunsAgent(instance)
+		&& (!prompt.includes('\n') || paradisCanPasteMultiline(instance))
+		&& !paradisScreenShowsAgentPrompt(paradisVisibleTerminalText(instance));
+}
 
 async function resumeFromMobile(
 	tools: IAgentSessionTools,
@@ -251,23 +332,22 @@ async function resumeFromMobile(
 	key: string,
 	requestId: string,
 	prompt: string,
-	reply: (body: { readonly status: 'resumed' | 'running' | 'needs-trust'; readonly terminalKey?: string; readonly delivered?: boolean; readonly message?: string }) => void,
+	reply: (body: IResumeReply) => void,
 ): Promise<void> {
-	const sessions = await listSessions(tools, space);
-	const session = sessions.find(candidate => paradisAgentSessionKey(candidate.agent, candidate.id) === key);
-	if (session === undefined) {
-		throw new Error('この会話は見つかりませんでした');
-	}
-	// PC で今開いている会話は再開しない（同じ会話を 2 つのターミナルで動かさない）。
-	const running = liveSessionTerminals(tools).get(key);
-	if (running !== undefined) {
-		reply({ status: 'running', terminalKey: running, message: 'この会話は PC で開いています' });
-		return;
-	}
-	// 先に台帳へ入れる（再開の途中で PC が落ちても、送り直しで二度目を起こさない）。
-	writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'started' });
 	let terminalKey: string | undefined;
 	try {
+		const sessions = await listSessions(tools, space);
+		const session = sessions.find(candidate => paradisAgentSessionKey(candidate.agent, candidate.id) === key);
+		if (session === undefined) {
+			throw new Error('この会話は見つかりませんでした');
+		}
+		// 一覧を引いている間に PC で開かれていないか、もう一度確かめる。
+		const running = liveSessionTerminals(tools).get(key);
+		if (running !== undefined) {
+			writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'failed' });
+			reply({ status: 'running', terminalKey: running, message: 'この会話は PC で開いています' });
+			return;
+		}
 		const launched = await tools.instantiationService.invokeFunction(paradisResumeAgentInWorkspace, {
 			rootUri: space.uri,
 			stateKey: space.stateKey,
@@ -278,16 +358,19 @@ async function resumeFromMobile(
 			preserveFocus: true,
 			...(session.agent === 'codex' && session.codexHome !== undefined ? { codexHome: session.codexHome } : {}),
 		});
+		recentResumes.set(key, { instanceId: launched.instanceId, at: Date.now() });
 		const instance = paradisCollectAllTerminalInstances(tools.terminalService, tools.terminalGroupService).find(candidate => candidate.instanceId === launched.instanceId);
 		terminalKey = tools.identityService.getTerminalKey(launched.instanceId);
-		notifyResumed(tools, space, session, instance);
+		writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'started', ...(terminalKey !== undefined ? { terminalKey } : {}) });
 		const readiness = instance !== undefined ? await waitForAgentReady(instance) : 'gone';
+		// 通知は準備の結果が分かってから出す（L6。開いたタブがまだ空のシェルのうちに「表示」を押させない）。
+		notifyResumed(tools, space, session, instance);
 		let delivered = false;
 		if (readiness === 'ready' && instance !== undefined) {
 			const outcome = await paradisSendAgentMessageToTui(
 				prompt,
 				(text, execute, bracketedPasteMode) => instance.sendText(text, execute ?? false, bracketedPasteMode),
-				async () => !instance.isDisposed && !paradisScreenShowsAgentPrompt(paradisVisibleTerminalText(instance)),
+				async () => canDeliverPrompt(instance, prompt),
 			);
 			delivered = outcome.executed;
 		}

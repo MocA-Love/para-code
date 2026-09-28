@@ -5,7 +5,8 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { agentSendResumeTarget, agentSendStatusText, type AgentSendQueueItem } from '../../agentSessions.js';
-import { confirmResumeAndSend, mobileSpaceIdFor, removeAgentSend, retryAgentSend, useAgentSendQueue } from '../../agentSendQueue.js';
+import { confirmResumeAndSend, mobileSpaceIdFor, removeAgentSend, retryAgentSend, sendToLiveTerminal, useAgentSendQueue } from '../../agentSendQueue.js';
+import { useAppStore } from '../../appState.js';
 import { hapticSelection, hapticSuccess, hapticWarning } from '../../haptics.js';
 import { routes } from '../../routes.js';
 import { colors, radius, space, type } from '../../theme.js';
@@ -51,6 +52,15 @@ function QueuedSendsDrawer({ visible, pcId, items, onClose }: { visible: boolean
 	const router = useRouter();
 	const [busy, setBusy] = useState<string | undefined>(undefined);
 	const [message, setMessage] = useState<string | undefined>(undefined);
+	// 宛先のエージェントのターミナルが今も開いているもの（「このターミナルへ送る」を出す）。
+	const openAgentTerminals = useAppStore(useShallow(state => (state.workspace?.terminals ?? []).filter(terminal => terminal.agent === true).map(terminal => terminal.terminalKey)));
+	const sendHere = async (item: AgentSendQueueItem) => {
+		setBusy(item.id);
+		setMessage(undefined);
+		await sendToLiveTerminal(item, true);
+		setBusy(undefined);
+		hapticSelection();
+	};
 	const resume = async (item: AgentSendQueueItem) => {
 		const target = agentSendResumeTarget(item);
 		if (target === undefined) {
@@ -82,14 +92,18 @@ function QueuedSendsDrawer({ visible, pcId, items, onClose }: { visible: boolean
 			<View style={styles.list}>
 				{items.map(item => {
 					const resumable = agentSendResumeTarget(item) !== undefined;
+					const terminalOpen = item.target.kind === 'live' && openAgentTerminals.includes(item.target.terminalKey);
 					return (
 						<View key={item.id} style={styles.row}>
 							{item.target.title !== undefined ? <Text style={styles.target} numberOfLines={1}>{item.target.title}</Text> : null}
 							<Text style={styles.body} numberOfLines={4} selectable>{item.text}</Text>
 							<Text style={[styles.status, item.status === 'failed' || item.status === 'expired' ? styles.statusError : undefined]}>{agentSendStatusText(item)}</Text>
 							<View style={styles.actions}>
-								{(item.status === 'needs-confirm' || (item.status === 'failed' && resumable && item.target.kind === 'resume')) ? (
-									<Button label="再開して送る" size="sm" loading={busy === item.id} disabled={busy !== undefined} onPress={() => { void resume(item); }} />
+								{item.status === 'needs-confirm' && terminalOpen ? (
+									<Button label="このターミナルへ送る" size="sm" loading={busy === item.id} disabled={busy !== undefined} onPress={() => { void sendHere(item); }} />
+								) : null}
+								{((item.status === 'needs-confirm' && resumable && (item.reason !== 'stale' || !terminalOpen)) || (item.status === 'failed' && resumable && item.target.kind === 'resume')) ? (
+									<Button label="再開して送る" size="sm" variant={item.status === 'needs-confirm' && terminalOpen ? 'secondary' : 'primary'} loading={busy === item.id && !terminalOpen} disabled={busy !== undefined} onPress={() => { void resume(item); }} />
 								) : null}
 								{item.status === 'failed' && item.target.kind === 'live' ? (
 									<Button label="もう一度送る" size="sm" variant="secondary" disabled={busy !== undefined} onPress={() => { hapticSelection(); retryAgentSend(pcId, item.id); }} />

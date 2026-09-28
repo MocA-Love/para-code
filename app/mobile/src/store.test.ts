@@ -1657,14 +1657,14 @@ describe('MobileController agent approval', () => {
 		await expect(reply).resolves.toMatchObject({ options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'Yes, and don\'t ask again' }] });
 
 		const withoutLabel = await controller.answerAgentApproval('terminal-7', 'approval:e1:0', 'opt:2');
-		const answer = controller.answerAgentApproval('terminal-7', 'approval:e1:0', 'opt:2', 'Yes, and don\'t ask again');
+		const answer = controller.answerAgentApproval('terminal-7', 'approval:e1:0', 'opt:2', { label: 'Yes, and don\'t ask again', promptHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' });
 		await flush();
 		expect({ optionsRequest, withoutLabel, answerRequest: requests[1] }).toEqual({
 			optionsRequest: { t: 'approval-options', epoch: 'e1', interactionId: 'approval:e1:0', id: 7, token: 'agent-7', requestId: optionsRequest?.requestId },
 			withoutLabel: { status: 'rejected', message: 'この選択肢は送信できません' },
 			answerRequest: {
 				t: 'action/answerApproval', id: 7, token: 'agent-7', requestId: requests[1]?.requestId,
-				epoch: 'e1', interactionId: 'approval:e1:0', choice: 'opt:2', optionLabel: 'Yes, and don\'t ask again',
+				epoch: 'e1', interactionId: 'approval:e1:0', choice: 'opt:2', optionLabel: 'Yes, and don\'t ask again', promptHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
 			},
 		});
 		pcMux.send(Channels.Agent, encode({ t: 'action-result', id: 7, token: 'agent-7', requestId: requests[1]?.requestId, status: 'accepted' }));

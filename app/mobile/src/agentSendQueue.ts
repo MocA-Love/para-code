@@ -14,7 +14,7 @@ import { create } from 'zustand';
 import { fromBase64Url, openNotify, randomToken, sealNotify, toBase64Url } from '@para/protocol';
 import { agentSendQueueKey, sendPcRequest, useAppStore } from './appState.js';
 import {
-	addAgentSendQueueItem, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue,
+	addAgentSendQueueItem, agentSendConversationMatches, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue,
 	type AgentResumeResult, type AgentSendQueueItem, type AgentSendTarget,
 } from './agentSessions.js';
 import { createAgentSendOutboxStore } from './platform.js';
@@ -93,12 +93,12 @@ function update(pcId: string, change: (items: readonly AgentSendQueueItem[]) => 
 	void savePc(pcId);
 }
 
-function patch(pcId: string, id: string, fields: Partial<Pick<AgentSendQueueItem, 'status' | 'error'>>): void {
+function patch(pcId: string, id: string, fields: Partial<Pick<AgentSendQueueItem, 'status' | 'error' | 'reason'>>): void {
 	update(pcId, items => items.map(item => {
 		if (item.id !== id) {
 			return item;
 		}
-		const { error: _error, ...rest } = item;
+		const { error: _error, reason: _reason, ...rest } = item;
 		return { ...rest, ...fields };
 	}));
 }
@@ -176,8 +176,12 @@ export async function confirmResumeAndSend(item: AgentSendQueueItem): Promise<Ag
 	}
 }
 
-/** 開いているエージェントのターミナルへ 1 件送る。会話の準備を待ち、送れたら預かりから外す。 */
-async function sendToLiveTerminal(item: AgentSendQueueItem): Promise<void> {
+/**
+ * 開いているエージェントのターミナルへ 1 件送る。会話の準備を待ち、送れたら預かりから外す。
+ * `confirmed`（利用者が「このターミナルへ送る」を押した）でなければ、ターミナルの会話が預けたときと同じかを確かめ、
+ * 違う・分からないなら送らずに確認へ回す（レビュー H2）。送信には預かりの id を付け、PC は同じ id を二度送らない（M4）。
+ */
+export async function sendToLiveTerminal(item: AgentSendQueueItem, confirmed = false): Promise<void> {
 	if (item.target.kind !== 'live') {
 		return;
 	}
@@ -194,7 +198,12 @@ async function sendToLiveTerminal(item: AgentSendQueueItem): Promise<void> {
 			}
 			await new Promise<void>(resolve => setTimeout(resolve, 200));
 		}
-		const result = await useAppStore.getState().sendAgentMessage(terminalKey, item.text);
+		const chat = useAppStore.getState().agentChats.get(terminalKey);
+		if (!confirmed && !agentSendConversationMatches(item, chat?.info?.resumeKey)) {
+			patch(item.pcId, item.id, { status: 'needs-confirm', reason: 'other-conversation' });
+			return;
+		}
+		const result = await useAppStore.getState().sendAgentMessage(terminalKey, item.text, item.id);
 		if (result.status === 'accepted') {
 			removeAgentSend(item.pcId, item.id);
 			return;
@@ -217,13 +226,13 @@ async function flush(pcId: string): Promise<void> {
 		await loadPc(pcId);
 		update(pcId, items => expireAgentSendQueue(items, Date.now()));
 		const terminals = useAppStore.getState().workspace?.terminals ?? [];
-		for (const plan of planAgentSendQueue(useAgentSendQueue.getState().items, pcId, terminals)) {
+		for (const plan of planAgentSendQueue(useAgentSendQueue.getState().items, pcId, terminals, Date.now())) {
 			const app = useAppStore.getState();
 			if (app.activePcId !== pcId || !isLive(app)) {
 				return;
 			}
 			if (plan.kind === 'confirm') {
-				patch(pcId, plan.item.id, { status: 'needs-confirm' });
+				patch(pcId, plan.item.id, { status: 'needs-confirm', reason: plan.reason });
 			} else if (plan.kind === 'fail') {
 				patch(pcId, plan.item.id, { status: 'failed', error: plan.error });
 			} else {
