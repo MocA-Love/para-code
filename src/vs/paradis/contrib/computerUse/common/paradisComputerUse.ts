@@ -35,7 +35,7 @@ export const PARADIS_COMPUTER_USE_EXECUTABLE = 'ParadisComputerUse';
  * 補助アプリとの約束の版。Swift 側の `ParadisComputerUseVersion.protocolVersion`
  * （native/macos/Sources/ParadisComputerUseCore/ParadisProtocol.swift）と同じ値にする。
  */
-export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 3;
+export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 4;
 /** 対応する macOS の最低の Darwin の版（macOS 14 = Darwin 23）。ScreenCaptureKit の単一ウィンドウ撮影に要る。 */
 export const PARADIS_COMPUTER_USE_MIN_DARWIN_MAJOR = 23;
 
@@ -271,6 +271,8 @@ export const PARADIS_COMPUTER_USE_COMMAND_APPS: readonly string[] = [
 	'com.raphaelamorim.rio',
 	'com.apple.ScriptEditor2',
 	'com.apple.Automator',
+	// ディスク上のスクリプトやアプリを開いて動かせる（レビュー N12）
+	'com.apple.finder',
 	// ターミナルを内蔵したエディタと、シェルを実行できるランチャー（レビュー L11。【要確認】各 id の実在）
 	'com.microsoft.VSCode',
 	'com.microsoft.VSCodeInsiders',
