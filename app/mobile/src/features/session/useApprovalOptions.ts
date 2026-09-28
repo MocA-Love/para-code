@@ -27,7 +27,9 @@ export function useApprovalOptions(
 	const [loaded, setLoaded] = useState<{ readonly key: string; readonly value: ApprovalOptionChoices } | undefined>(undefined);
 	const wanted = supported && epoch !== undefined && shouldRequestApprovalOptions(interaction);
 	const interactionId = interaction?.id;
-	const key = wanted && interactionId !== undefined ? `${epoch}\0${interactionId}` : undefined;
+	// 番号の選択肢で答えて断られたら（PC の選択肢が変わっていた等）、取り直す（シミュレータ確認の気づき (b)）。
+	const [reload, setReload] = useState(0);
+	const key = wanted && interactionId !== undefined ? `${epoch}\0${interactionId}\0${reload}` : undefined;
 
 	useEffect(() => {
 		if (key === undefined || interactionId === undefined) {
@@ -48,9 +50,14 @@ export function useApprovalOptions(
 	}, [key, terminalKey, epoch, interactionId, requestAgentReply]);
 
 	const value = loaded !== undefined && loaded.key === key ? loaded.value : undefined;
-	const approveOption = useCallback((id: string, choice: string) => {
+	const approveOption = useCallback(async (id: string, choice: string) => {
 		const label = value?.labels.get(choice);
-		return approve(id, choice, label !== undefined ? { label, ...(value?.promptHash !== undefined ? { promptHash: value.promptHash } : {}) } : undefined);
+		const result = await approve(id, choice, label !== undefined ? { label, ...(value?.promptHash !== undefined ? { promptHash: value.promptHash } : {}) } : undefined);
+		if (result.status === 'rejected' && label !== undefined) {
+			// 古い選択肢を出したままにしない。取り直すまでは「許可 / 拒否」に戻る。
+			setReload(count => count + 1);
+		}
+		return result;
 	}, [approve, value]);
 	return value !== undefined ? { ...value, approve: approveOption } : undefined;
 }

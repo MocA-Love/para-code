@@ -79,7 +79,7 @@ import { paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts, paradis
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionsForMobile, paradisParseApprovalOptions, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
-import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisSendAgentInteractionKeys, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
+import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { PARADIS_OFFICE_CHANNEL, marshalParadisOfficeRequest, unmarshalParadisOfficeResponse, type ParadisOfficeV1Negotiation } from '../../fileViewers/common/paradisOfficeChannel.js';
@@ -1554,7 +1554,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					}
 					optionCheckPending = false;
 					// 許可の確認が出ていて（M1）、見出しまでが選択肢を見せたときと同じで（M2）、その番号が同じ文言のときだけ送る。
-					const prompt = paradisPermissionPromptParts(paradisVisibleTerminalText(instance));
+					const prompt = paradisPermissionPromptParts(paradisVisibleTerminalLogicalText(instance));
 					if (prompt === undefined || (expectPromptHash !== undefined && paradisPermissionPromptHash(prompt.context) !== expectPromptHash)) {
 						return false;
 					}
@@ -1575,7 +1575,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					sendText: (_text: string, shouldExecute: boolean) => instance.sendText(parts[0], shouldExecute),
 				};
 				const sent = await paradisSendAgentInteractionKeys(sendTarget, parts, msg.delayMs as number, {
-					readScreen: () => paradisVisibleTerminalText(instance),
+					// 番号の選択肢で答えるときは、折り返しをつないだ画面で見る（選択肢の読み取りと同じ画面）
+					readScreen: () => expectOption !== undefined ? paradisVisibleTerminalLogicalText(instance) : paradisVisibleTerminalText(instance),
 					// 選択肢が画面に出るまで待つ（出なければ待ちの上限の後、直前の確かめで断る）。
 					ready: expectOption !== undefined
 						? (screen: string) => {
@@ -1644,7 +1645,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const deadline = Date.now() + PARADIS_APPROVAL_OPTIONS_WAIT_MS;
 		for (; ;) {
 			// 選択肢は許可の確認の見出しより後の行からだけ読む（レビュー M1）。見出しまでの指紋を添え、回答で返させる（M2）。
-			const prompt = paradisPermissionPromptParts(paradisVisibleTerminalText(instance));
+			const prompt = paradisPermissionPromptParts(paradisVisibleTerminalLogicalText(instance));
 			options = prompt !== undefined ? paradisApprovalOptionsForMobile(agent, paradisParseApprovalOptions(prompt.options)) : undefined;
 			promptHash = prompt !== undefined ? paradisPermissionPromptHash(prompt.context) : undefined;
 			if (options !== undefined || Date.now() >= deadline || this.findAuthoritativePaneInstance(msg.id, msg.token) !== instance) {

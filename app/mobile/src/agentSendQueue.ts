@@ -14,7 +14,7 @@ import { create } from 'zustand';
 import { fromBase64Url, openNotify, randomToken, sealNotify, toBase64Url } from '@para/protocol';
 import { agentSendQueueKey, sendPcRequest, useAppStore } from './appState.js';
 import {
-	addAgentSendQueueItem, agentSendConversationMatches, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue,
+	addAgentSendQueueItem, agentSendLiveDecision, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue,
 	type AgentResumeResult, type AgentSendQueueItem, type AgentSendTarget,
 } from './agentSessions.js';
 import { createAgentSendOutboxStore } from './platform.js';
@@ -22,6 +22,8 @@ import { createAgentSendOutboxStore } from './platform.js';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+/** 会話の状態を受け取り直すまで、取り直しを頼まずに待つ時間。 */
+const CHAT_REFRESH_AFTER_MS = 2_000;
 /** 送ったエージェントの会話が準備できるのを待つ上限。 */
 const CHAT_READY_TIMEOUT_MS = 10_000;
 /** 再開は PC がエージェントの準備を待ってから答える（最大 60 秒）ので、それより長く待つ。 */
@@ -188,18 +190,28 @@ export async function sendToLiveTerminal(item: AgentSendQueueItem, confirmed = f
 	const terminalKey = item.target.terminalKey;
 	const app = useAppStore.getState();
 	patch(item.pcId, item.id, { status: 'sending' });
+	// 今の会話の状態を PC から受け取り直してから判断する（NG-2）。つながり直した直後の手元の状態は切れる前のもので、
+	// その間に PC で `/clear` などをされていると、古い会話の指紋で比べて別の会話へ送ってしまう。
+	const since = Date.now();
 	app.attachAgent(terminalKey);
 	try {
+		const decide = () => agentSendLiveDecision(item, useAppStore.getState().agentChats.get(terminalKey), since, confirmed);
 		const deadline = Date.now() + CHAT_READY_TIMEOUT_MS;
-		while (Date.now() < deadline) {
-			const chat = useAppStore.getState().agentChats.get(terminalKey);
-			if (chat?.capabilities?.agentActions === true || chat?.none === true) {
-				break;
+		let refreshed = false;
+		while (decide() === 'wait' && Date.now() < deadline) {
+			// 既に開いていた会話は attach し直しても何も届かないので、少し待っても来なければ取り直しを頼む。
+			if (!refreshed && Date.now() - since > CHAT_REFRESH_AFTER_MS) {
+				refreshed = true;
+				useAppStore.getState().refreshAgent(terminalKey);
 			}
 			await new Promise<void>(resolve => setTimeout(resolve, 200));
 		}
-		const chat = useAppStore.getState().agentChats.get(terminalKey);
-		if (!confirmed && !agentSendConversationMatches(item, chat?.info?.resumeKey)) {
+		const decision = decide();
+		if (decision === 'wait') {
+			patch(item.pcId, item.id, { status: 'failed', error: '宛先の会話の状態を PC から受け取れませんでした。もう一度送ってください' });
+			return;
+		}
+		if (decision === 'confirm') {
 			patch(item.pcId, item.id, { status: 'needs-confirm', reason: 'other-conversation' });
 			return;
 		}

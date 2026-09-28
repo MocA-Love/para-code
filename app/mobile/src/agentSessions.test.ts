@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-	AGENT_RESUME_CAPABILITY, AGENT_SEND_AUTO_WINDOW_MS, AGENT_SEND_QUEUE_LIMIT, agentSendConversationMatches, AGENT_SEND_QUEUE_TTL_MS, addAgentSendQueueItem, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentPastSessionPage,
+	AGENT_RESUME_CAPABILITY, AGENT_SEND_AUTO_WINDOW_MS, AGENT_SEND_QUEUE_LIMIT, agentSendConversationMatches, agentSendLiveDecision, AGENT_SEND_QUEUE_TTL_MS, addAgentSendQueueItem, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentPastSessionPage,
 	parseAgentPastSessionPreview, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue, type AgentSendQueueItem,
 } from './agentSessions.js';
 import { AGENT_HISTORY_CAPABILITY } from './agentHistory.js';
@@ -72,6 +72,20 @@ describe('agentSessions (W2-29)', () => {
 			unknownNow: agentSendConversationMatches(item('a'), undefined),
 			unknownThen: agentSendConversationMatches(item('a', { target: { kind: 'live', terminalKey: 'term-1' } }), KEY),
 		}).toEqual({ same: true, other: false, unknownNow: false, unknownThen: false });
+	});
+
+	it('decides only on the conversation state received after reconnecting (NG-2)', () => {
+		const fresh = { syncedAt: 200, capabilities: { agentActions: true }, info: { resumeKey: KEY } };
+		expect({
+			// つながる前の状態は、同じ会話に見えても使わない（PC で /clear されているかもしれない）
+			beforeReconnect: agentSendLiveDecision(item('a'), { ...fresh, syncedAt: 99 }, 100, false),
+			notReady: agentSendLiveDecision(item('a'), { syncedAt: 200 }, 100, false),
+			same: agentSendLiveDecision(item('a'), fresh, 100, false),
+			cleared: agentSendLiveDecision(item('a'), { ...fresh, info: { resumeKey: 'b'.repeat(40) } }, 100, false),
+			noSession: agentSendLiveDecision(item('a'), { syncedAt: 200, none: true }, 100, false),
+			confirmedOther: agentSendLiveDecision(item('a'), { ...fresh, info: {} }, 100, true),
+			confirmedNoSession: agentSendLiveDecision(item('a'), { syncedAt: 200, none: true }, 100, true),
+		}).toEqual({ beforeReconnect: 'wait', notReady: 'wait', same: 'send', cleared: 'confirm', noSession: 'confirm', confirmedOther: 'send', confirmedNoSession: 'confirm' });
 	});
 
 	it('expires items after 24 hours and keeps at most the limit per PC', () => {

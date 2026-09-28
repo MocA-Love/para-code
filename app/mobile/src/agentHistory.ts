@@ -99,6 +99,38 @@ export function reconcileAgentHistory(history: AgentHistoryState | undefined, ep
 	return kept.length === history.messages.length ? history : { ...history, messages: kept };
 }
 
+/** 古い発言として手元に持つ上限（新しい発言から繰り入れた分を含む）。超えたら古い方を捨て、それより前は PC で見てもらう。 */
+export const AGENT_HISTORY_KEEP_LIMIT = 2500;
+
+/**
+ * 新しい発言の差分で会話の状態が 500 件に切られたとき、切られた発言を古い発言の末尾へ繰り入れる（シミュレータ確認の NG-1）。
+ * これをしないと、古い発言と新しい発言の間が空いて {@link reconcileAgentHistory} が古い発言を全部捨て、表示位置も飛ぶ。
+ * 並びは切る前と同じなので、一覧の行（キーは rev）は変わらず、見ている位置も保たれる。
+ * 古い発言が無い（さかのぼっていない）ときは何もしない（切られた分は PC から読み直せる）。
+ */
+export function absorbTrimmedIntoHistory(
+	history: AgentHistoryState | undefined,
+	epoch: string | undefined,
+	previousLive: readonly AgentChatMessage[],
+	nextLive: readonly AgentChatMessage[],
+): AgentHistoryState | undefined {
+	const oldestNext = nextLive[0]?.rev;
+	if (history === undefined || epoch === undefined || history.epoch !== epoch || oldestNext === undefined) {
+		return history;
+	}
+	const newestHistory = history.messages.at(-1)?.rev;
+	const trimmed = previousLive.filter(message => message.rev < oldestNext && (newestHistory === undefined || message.rev > newestHistory));
+	if (trimmed.length === 0) {
+		return history;
+	}
+	const messages = [...history.messages, ...trimmed];
+	if (messages.length <= AGENT_HISTORY_KEEP_LIMIT) {
+		return { ...history, messages };
+	}
+	const { cursor: _cursor, ...rest } = history;
+	return { ...rest, messages: messages.slice(-AGENT_HISTORY_KEEP_LIMIT), hasMore: false, capped: true };
+}
+
 /** 読み込みを始めた状態。 */
 export function beginAgentHistoryLoad(history: AgentHistoryState | undefined, epoch: string): AgentHistoryState {
 	const base: AgentHistoryState = history ?? { epoch, messages: [], hasMore: true, capped: false, loading: false };

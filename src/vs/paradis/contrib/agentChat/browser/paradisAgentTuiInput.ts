@@ -50,6 +50,31 @@ export function paradisVisibleTerminalText(instance: ITerminalInstance): string 
 }
 
 /**
+ * {@link paradisVisibleTerminalText} と同じ範囲を、端末の自動折り返しでつながっている行（`isWrapped`）を 1 行にまとめて返す。
+ * 許可の確認の選択肢を読むときに使う（W2-21 のシミュレータ確認: 長い選択肢が画面の幅で折り返されると、続きが 0 桁目から
+ * 始まり、字下げで続きの行と見分けられずに後ろの選択肢が読めなかった）。見えている範囲の先頭が折り返しの途中なら、
+ * その行の頭まではさかのぼらない。
+ */
+export function paradisVisibleTerminalLogicalText(instance: ITerminalInstance): string {
+	const raw = instance.xterm?.raw;
+	if (raw === undefined) {
+		return '';
+	}
+	const buffer = raw.buffer.active;
+	const lines: string[] = [];
+	for (let y = buffer.baseY; y < buffer.baseY + raw.rows; y++) {
+		const line = buffer.getLine(y);
+		const text = line?.translateToString(true) ?? '';
+		if (line?.isWrapped === true && lines.length > 0) {
+			lines[lines.length - 1] += text;
+		} else {
+			lines.push(text);
+		}
+	}
+	return lines.join('\n');
+}
+
+/**
  * 画面に目印が出ているかを、**空白と改行を無視して**照合する。
  *
  * ターミナルは幅で折り返し、折り返しの境目には改行が入る。Para Code は2Dグリッドで
