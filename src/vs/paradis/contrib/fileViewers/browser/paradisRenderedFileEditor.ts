@@ -478,7 +478,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		}
 		const resource = this._currentResource;
 		if (resource) {
-			this._applyViewMode(mode, resource).catch(onUnexpectedError);
+			this._applyViewMode(mode, resource).catch(err => this._onViewModeError(err));
 		}
 	}
 
@@ -527,7 +527,20 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	/** UI イベント由来の再描画。失敗時は現在の HTML を保持し、未処理の Promise を残さない。 */
 	private _renderResourceInBackground(resource: URI): void {
-		this.renderResource(resource, CancellationToken.None).catch(onUnexpectedError);
+		// renderResource が送るべき失敗は自分で送り、ファイルが無い場合は意図して送らない。
+		// ここで onUnexpectedError へ流すと、その区別を無視して unhandled-error として二重に届く。
+		this.renderResource(resource, CancellationToken.None).catch(() => { /* reported by renderResource when needed */ });
+	}
+
+	/**
+	 * 表示モード切替の失敗を扱う。ファイルが消えているのはユーザー側の状態で、エディタが読み取り
+	 * エラーを自分で出すので、不具合としては送らない（renderResource と同じ方針）。
+	 */
+	private _onViewModeError(err: unknown): void {
+		if (err instanceof Error && toFileOperationResult(err) === FileOperationResult.FILE_NOT_FOUND) {
+			return;
+		}
+		onUnexpectedError(err);
 	}
 
 	private ensureWebview(resource: URI): IOverlayWebview {
@@ -643,7 +656,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		if (!resource) {
 			return;
 		}
-		this._applyViewMode(mode, resource).catch(onUnexpectedError);
+		this._applyViewMode(mode, resource).catch(err => this._onViewModeError(err));
 	}
 
 	/** 現在の表示モード。 */
