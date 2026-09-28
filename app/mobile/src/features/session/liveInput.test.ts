@@ -43,18 +43,35 @@ describe('liveInputStep', () => {
 		expect(run([change('ls', false), { kind: 'submit' }]).sent).toEqual(['ls', LIVE_ENTER]);
 	});
 
-	it('starts over after the field was emptied', () => {
-		expect(run([change('ls', false), { kind: 'submit' }, { kind: 'cleared' }, change('p', false), change('pw', false)]).sent).toEqual(['ls', LIVE_ENTER, 'p', 'w']);
+	it('keeps the field after Enter and mirrors only what comes after it', () => {
+		const { sent, state } = run([change('ls', false), { kind: 'submit' }, change('lsp', false), change('lspw', false)]);
+		expect({ sent, state }).toEqual({ sent: ['ls', LIVE_ENTER, 'p', 'w'], state: { text: 'lspw', offset: 2, sent: 'pw', held: '' } });
 	});
 
-	it('does not resend the old text when the native side ignored the clear', () => {
-		expect(run([change('ls', false), { kind: 'cleared' }, change('lsx', false)]).sent).toEqual(['ls', 'x']);
+	it('sends one DEL per ⌫ after Enter instead of resending the previous line', () => {
+		// 以前は clear() が捨てられた後の ⌫ で「ls」を丸ごと送り直していた（レビュー M2 (a)）
+		expect(run([change('ls', false), { kind: 'submit' }, backspace, change('l', false), backspace, change('', false), backspace]).sent)
+			.toEqual(['ls', LIVE_ENTER, LIVE_DEL, LIVE_DEL, LIVE_DEL]);
+	});
+
+	it('sends the whole of a long input that happens to start with the previous line', () => {
+		// 以前は「前の行の続き」と見なして後ろだけ送っていた（レビュー M2 (b)）
+		expect(run([change('ls', false), { kind: 'submit' }, change('lslsof -i', false)]).sent).toEqual(['ls', LIVE_ENTER, 'lsof -i']);
+	});
+
+	it('handles typing into the new line after ⌫ ate into the previous one', () => {
+		expect(run([change('ls', false), { kind: 'submit' }, change('l', false), change('lx', false)]).sent).toEqual(['ls', LIVE_ENTER, LIVE_DEL, 'x']);
 	});
 
 	it('turns smart punctuation back into what was typed', () => {
 		expect(normalizeLiveText('‘a’ “b” c—d…')).toBe('\'a\' "b" c--d...');
 		expect(run([change('-', false), change('—', false)]).sent).toEqual(['-', '-']);
 		expect(run([change('it', false), change('it’', false)]).sent).toEqual(['it', '\'']);
+	});
+
+	it('turns an ideographic space from the Japanese keyboard into a plain space', () => {
+		expect(normalizeLiveText('a\u3000b')).toBe('a b');
+		expect(run([change('git', false), change('git\u3000', false), change('git\u3000s', false)]).sent).toEqual(['git', ' ', 's']);
 	});
 });
 
@@ -65,7 +82,7 @@ describe('liveInputStep with the reported marked text (iOS)', () => {
 			change('かんj', true), change('かんじ', true), change('漢字', true),
 			change('漢字', false),
 		]);
-		expect({ sent, state }).toEqual({ sent: ['漢字'], state: { text: '漢字', sent: '漢字', held: '', clearing: false } });
+		expect({ sent, state }).toEqual({ sent: ['漢字'], state: { text: '漢字', offset: 0, sent: '漢字', held: '' } });
 	});
 
 	it('sends kana typed on the kana keyboard once confirmed', () => {

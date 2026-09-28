@@ -147,8 +147,8 @@ export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitt
 
 /**
  * ライブ入力で打った文字を受け取るだけの見えない入力欄。入力欄を PC のプロンプトへ写す
- * （`liveInput.ts`）。入力欄を空に戻すのは Enter とフォーカスが外れたときだけ（変更イベントの中で
- * 空に戻すと、RN 0.86 の iOS ではネイティブ側で捨てられて文字が溜まり、次に全部まとめて再送される）。
+ * （`liveInput.ts`）。入力欄は空に戻さず、Enter で送ったところまでを覚えておく（RN 0.86 の iOS は
+ * `clear()` を黙って捨てることがあり、空になったかを推し量ると送り直しや取りこぼしが起きた）。
  *
  * 変換中かどうかは `onChange` の `isComposing`（RN へのパッチで iOS の marked text を渡している）で
  * 受け取る。`onChangeText` は文字列しか渡さないので使わない。
@@ -184,10 +184,6 @@ function LiveCapture({ inputRef, onFocusChange, onSend }: {
 			}, HELD_PREEDIT_COMMIT_DELAY_MS);
 		}
 	};
-	const clear = () => {
-		inputRef.current?.clear();
-		dispatch({ kind: 'cleared' });
-	};
 	return (
 		<TextInput
 			ref={inputRef}
@@ -206,14 +202,11 @@ function LiveCapture({ inputRef, onFocusChange, onSend }: {
 			onFocus={() => onFocusChange(true)}
 			onBlur={() => {
 				onFocusChange(false);
-				clear();
+				dispatch({ kind: 'flush' });
 			}}
 			onChange={event => dispatch({ kind: 'change', text: event.nativeEvent.text, composing: readComposing(event.nativeEvent) })}
 			onKeyPress={event => dispatch({ kind: 'key', key: event.nativeEvent.key })}
-			onSubmitEditing={() => {
-				dispatch({ kind: 'submit' });
-				clear();
-			}}
+			onSubmitEditing={() => dispatch({ kind: 'submit' })}
 			accessibilityElementsHidden
 			importantForAccessibility="no-hide-descendants"
 		/>
