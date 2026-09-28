@@ -1,0 +1,60 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments) */
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * スマホに合わせて縮めているターミナルの右下の案内（W2-19）。縮めている間はターミナルの右側と
+ * 下側が空くので、そこに浮かべる。エディタの中の浮く部品（検索ウィジェット・復元のバナー）と同じ
+ * editorWidget の色・影・角丸（large）に揃える。背景は不透明（ウィンドウ透過で下の文字と重ならないように）。
+ * エディタ領域は overflow guard の直下、パネルはターミナルの wrapper の直下に付く。
+ */
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-mobile-viewport-banner,
+.monaco-workbench .terminal-wrapper > .paradis-mobile-viewport-banner {
+	position: absolute;
+	right: var(--vscode-spacing-size120);
+	bottom: var(--vscode-spacing-size80);
+	z-index: 35;
+	box-sizing: border-box;
+	max-width: calc(100% - 24px);
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size60) var(--vscode-spacing-size60) var(--vscode-spacing-size100);
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	color: var(--vscode-editorWidget-foreground);
+	background-color: var(--vscode-editorWidget-background);
+	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: var(--vscode-cornerRadius-large);
+	box-shadow: 0 0 8px 2px var(--vscode-widget-shadow);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 1.4;
+}
+
+.monaco-workbench .paradis-mobile-viewport-banner .paradis-mobile-viewport-banner-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-mobile-viewport-banner .paradis-mobile-viewport-banner-size {
+	flex-shrink: 0;
+	color: var(--vscode-descriptionForeground);
+	font-variant-numeric: tabular-nums;
+}
+
+/* ボタンは upstream の monaco-text-button。横幅いっぱいに伸びる既定を打ち消して内容の幅にする。 */
+.monaco-workbench .paradis-mobile-viewport-banner > .monaco-text-button {
+	flex-shrink: 0;
+	width: auto;
+	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+/* パネルのターミナルの wrapper は位置の基準を持たないので、案内を付けている間だけ基準にする。 */
+.monaco-workbench .pane-body.integrated-terminal .terminal-wrapper:has(> .paradis-mobile-viewport-banner) {
+	position: relative;
+}

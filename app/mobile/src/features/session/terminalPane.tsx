@@ -5,8 +5,9 @@ import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { ActivityIndicator, Alert, Linking, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
-import { pcHasCapabilityFor, sendPcRequest, useAppStore } from '../../appState.js';
+import { isTerminalViewportRevoked, onTerminalViewportRevoked, pcHasCapabilityFor, reclaimTerminalViewport, sendPcRequest, useAppStore } from '../../appState.js';
 import { appendUploadedPath } from '../../components/agentComposerDraft.js';
+import { Button } from '../../components/button.js';
 import { useTerminalKeyInput } from '../../components/terminalKeyRow.js';
 import { TermView } from '../../components/termView.js';
 import { WorkspaceFileViewer } from '../../components/workspaceFileViewer.js';
@@ -18,7 +19,7 @@ import { terminalSubmitPlan } from '../../terminalKeys.js';
 import { terminalViewportForPrefs, type TerminalGrid } from '../../terminalViewport.js';
 import type { SpaceTerminal } from '../../navigationTargets.js';
 import { monoFamily } from '../../monoFont.js';
-import { colors, space, type } from '../../theme.js';
+import { colors, radius, space, type } from '../../theme.js';
 import { AccessoryKeyBar } from './commandDock.js';
 import { errorKind } from './errorKind.js';
 import { createTerminalAttachments } from './terminalAttachments.js';
@@ -53,6 +54,9 @@ const terminalAttachments = createTerminalAttachments(
  * ターミナルに出たリンクを押すと開く（W2-31、Q123 A）。URL は `localhost` やプライベートアドレスなら
  * PC の内蔵ブラウザで開いてブラウザのタブで映し、それ以外は Safari。ファイルパスはこのターミナルの
  * 作業フォルダを基準に PC が解決し、ワークスペースの中のファイルだけをファイルビューアで開く（外なら何もしない）。
+ *
+ * 「スマホの幅に合わせる」で PC のターミナルを縮めている間に PC で［PC の幅に戻す］が押されたら（W2-19）、
+ * ターミナルの上に「PC 側で元の幅に戻されました」と［再び合わせる］を出す。開き直すまではスマホから縮めない。
  */
 export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }: {
 	terminal: SpaceTerminal;
@@ -89,6 +93,18 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 		setTerminalViewport(terminalViewportForPrefs(grid, terminalPrefs));
 	}, [grid, terminalPrefs, activePcId, setTerminalViewport]);
 	useEffect(() => () => setTerminalViewport(undefined), [setTerminalViewport]);
+
+	// PC で幅を戻されたか（W2-19）。開き直す（このペインを作り直す）と PC も印を外すので、ペインの間だけ持つ。
+	const [viewportRevoked, setViewportRevoked] = useState(() => isTerminalViewportRevoked(terminalKey));
+	useEffect(() => {
+		setViewportRevoked(isTerminalViewportRevoked(terminalKey));
+		const subscription = onTerminalViewportRevoked((key, revoked) => {
+			if (key === terminalKey) {
+				setViewportRevoked(revoked);
+			}
+		});
+		return () => subscription.dispose();
+	}, [terminalKey, activePcId]);
 
 	// 枠の高さ。キーボードが閉じているときの高さを保つ（開閉で PTY をリサイズさせない）。
 	const [outputHeight, setOutputHeight] = useState(0);
@@ -268,6 +284,15 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 						onOpenLink={openLink}
 					/>
 				</View>
+				{/* 高さを変えないよう、ターミナルの上に重ねる（枠の中で位置だけ決める）。 */}
+				{viewportRevoked && terminalPrefs.matchPcWidth ? (
+					<View style={styles.revokedWrap} pointerEvents="box-none">
+						<View style={styles.revoked}>
+							<Text style={styles.revokedText}>PC 側で元の幅に戻されました</Text>
+							<Button size="sm" variant="secondary" label="再び合わせる" onPress={() => reclaimTerminalViewport(terminalKey)} />
+						</View>
+					</View>
+				) : null}
 			</View>
 			<AccessoryKeyBar
 				keyboardVisible={keyboardVisible}
@@ -332,6 +357,32 @@ const styles = StyleSheet.create({
 	},
 	bottom: {
 		backgroundColor: colors.panel,
+	},
+	revokedWrap: {
+		position: 'absolute',
+		top: space.sm,
+		left: space.sm,
+		right: space.sm,
+		alignItems: 'center',
+	},
+	// iPad の広い幅で横に伸びすぎないよう、幅は絶対値で抑える。
+	revoked: {
+		maxWidth: 420,
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.sm,
+		paddingVertical: space.xs,
+		paddingLeft: space.md,
+		paddingRight: space.xs,
+		borderRadius: radius.panel,
+		borderWidth: StyleSheet.hairlineWidth,
+		borderColor: colors.borderStrong,
+		backgroundColor: colors.panel,
+	},
+	revokedText: {
+		flexShrink: 1,
+		fontSize: type.meta,
+		color: colors.text,
 	},
 	center: {
 		alignItems: 'center',
