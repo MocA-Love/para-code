@@ -174,3 +174,15 @@ export function liveInputStep(state: LiveInputState, event: LiveInputEvent): Liv
 			return commit(state);
 	}
 }
+
+/**
+ * Ctrl で打った文字を制御文字として送った後の、この入力欄の扱い。入力欄はその文字を持ったままで、
+ * PC の行には載っていない（^U・^W なら行も変わる）ので、写し続けると後の ⌫ で PC に無い文字の分まで
+ * DEL を送って実際の文字を消す。どの出来事でも引退させ、画面は新しい空の入力欄を作る。
+ *
+ * `focusNext` は新しい入力欄にフォーカスを渡すか。フォーカスが外れたときの flush では渡さない
+ * （渡すと、閉じたキーボードがまた出る）。止まった変換の flush のように、まだフォーカスがあるなら渡す。
+ */
+export function retireAfterControl(event: LiveInputEvent, focused: boolean): { readonly state: LiveInputState; readonly focusNext: boolean } {
+	return { state: LIVE_INPUT_RETIRED, focusNext: event.kind !== 'flush' || focused };
+}

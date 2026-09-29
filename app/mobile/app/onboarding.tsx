@@ -5,6 +5,7 @@ import { Animated, ScrollView, StyleSheet, Text, View, type LayoutChangeEvent } 
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { MessageSquare } from 'lucide-react-native';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useWindowControlsInset } from '../src/ipad/windowControls.js';
 import { useParaToast } from '../src/paraToast.js';
 import { ensureNotificationPermission } from '../src/platform.js';
 import { colors, radius, space, type } from '../src/theme.js';
@@ -69,6 +70,8 @@ export default function OnboardingScreen() {
 
 function OnboardingFlow({ steps, onDone }: { steps: readonly OnboardingStep[]; onDone: () => void }) {
 	const insets = useStableInsets();
+	// iPad のウィンドウアプリでは左上に操作ボタンが出る。見出しはその右から始める。
+	const controlsInset = useWindowControlsInset();
 	const saveSessionView = useSessionViewPreference(s => s.save);
 	const [width, setWidth] = useState(0);
 	const [index, setIndex] = useState(0);
@@ -134,7 +137,7 @@ function OnboardingFlow({ steps, onDone }: { steps: readonly OnboardingStep[]; o
 
 	return (
 		<View style={[styles.flow, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-			<View style={styles.brand}>
+			<View style={[styles.brand, controlsInset > 0 ? { paddingLeft: space.xl + controlsInset } : undefined]}>
 				<ParaLogo size={18} />
 				<Text style={styles.brandName}>Para Code</Text>
 				{steps.length > 1 ? (

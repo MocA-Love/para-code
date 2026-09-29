@@ -17,8 +17,8 @@ export interface NotificationDeepLinkData {
 }
 
 /**
- * タップされた通知から開く先の手がかりを読む。プッシュは `content.data` が空なので
- * `trigger.payload` も読む（readTrayData）。文字列でない値・長すぎる値は捨てる。
+ * タップされた通知から開く先の手がかりを読む。プッシュは `content.data` を使わず
+ * `trigger.payload` を読む（readTrayData）。文字列でない値・長すぎる値は捨てる。
  * 手がかりが1つも無ければ undefined（どこへも遷移しない）。
  */
 export function readNotificationDeepLink(request: { readonly content: { readonly data?: unknown }; readonly trigger?: unknown }): NotificationDeepLinkData | undefined {
@@ -44,6 +44,23 @@ export function notificationNavigationDecision(
 	return terminalKey !== undefined && workspace.terminals.some(terminal => terminal.terminalKey === terminalKey)
 		? 'open'
 		: 'missing';
+}
+
+/**
+ * 通知のタップを保留したまま、PC の状態が届くのを待つ長さ。これを過ぎたら保留を捨てる
+ * （PC がオフラインのまま後で繋がった瞬間に、ユーザーが見ている画面から古い通知の先へ飛ばさない）。
+ * 起動直後にリレーへ繋ぎ直す時間は見込む。
+ */
+export const NOTIFICATION_PENDING_WAIT_MS = 20_000;
+
+/**
+ * 保留中の通知タップをまだ扱うか。`waitingSince` は判断を始めた時刻（初めて判断するときは undefined）。
+ * 返す `waitingSince` を次の判断に渡す。遷移・PC の切り替えなど、どの分かれ道よりも先に見ること
+ * （判断はストアが変わったときにしか走らないので、後で見ると期限を過ぎた保留で遷移してしまう）。
+ */
+export function pendingNotificationWait(waitingSince: number | undefined, now: number): { readonly expired: boolean; readonly waitingSince: number } {
+	const since = waitingSince ?? now;
+	return { expired: now - since > NOTIFICATION_PENDING_WAIT_MS, waitingSince: since };
 }
 
 /** 通知のタップで開く先と、あわせて合わせておく既存の選択（`selectedWs` / `selectedTerminalKey`）。 */

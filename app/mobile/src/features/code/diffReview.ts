@@ -89,6 +89,15 @@ export function stageableEntries(entries: readonly ScmEntry[], marks: ReviewMark
 	return entries.filter(entry => entry.group !== 'staged' && entry.kind !== 'conflict' && isReviewed(entry, marks));
 }
 
+/**
+ * ソース管理の一覧の「+」で、まず `reviewStage` を送るか。確認済みかどうかは PC が保存している印で決まり、
+ * 手元の写しは差分画面を開くまで空のことがある（再起動後・別の端末で確認した後）ので、手元の印では絞らない。
+ * PC が扱えて、まだステージしていない衝突でない変更なら送る（PC がステージしなければ、ただのステージに代える）。
+ */
+export function shouldTryReviewStage(entry: ScmEntry, canStage: boolean): boolean {
+	return canStage && entry.group !== 'staged' && entry.kind !== 'conflict';
+}
+
 /** 確認済みの件数（いまの一覧に残っていて、確認した後に変わっていないものだけ数える）。 */
 export function reviewedCount(entries: readonly ScmEntry[], marks: ReviewMarks): number {
 	return entries.filter(entry => isReviewed(entry, marks)).length;

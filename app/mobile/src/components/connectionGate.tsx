@@ -15,6 +15,7 @@ import { useAppStore } from '../appState.js';
 import { colors, radius, squircle, type } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
+import { useWindowControlsInset } from '../ipad/windowControls.js';
 import { ConnectionStatusBanner } from './connectionStatusBanner.js';
 import { Button } from './button.js';
 import { PAIRING_REJECTED_HINT, PAIRING_REJECTED_LABEL } from '../pcStatus.js';
@@ -63,6 +64,8 @@ export function useConnectionGateBlocked(): boolean {
 export function ConnectionGate({ children }: { children: ReactNode }) {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// iPad のウィンドウアプリでは左上に操作ボタンが出る。戻るボタンはその右に置く。
+	const controlsInset = useWindowControlsInset();
 	const canGoBack = router.canGoBack();
 	// workspace 本体ではなく「キャッシュがあるか」だけを購読する（判定に使うのは有無のみ）。
 	// 本体を購読すると、PCからのstate再送のたびに全タブの中身が再構築される。
@@ -78,7 +81,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 			<Ionicons name="refresh-circle-outline" size={40} color={colors.red} />
 			<Text style={styles.title}>アップデートが必要です</Text>
 			<Text style={styles.dim}>{protocolError}</Text>
-		</View>{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>;
+		</View>{canGoBack ? <GateBackButton top={insets.top + 8} left={16 + controlsInset} onBack={() => router.back()} /> : null}</View>;
 	}
 
 	// **起動処理の間は「未接続」を出さない。** コールドスタート直後（Keychain読取・台帳復元が
@@ -88,7 +91,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 		return <View style={styles.gated}><View style={styles.center}>
 			<ActivityIndicator accessibilityLabel="起動中" size="large" color={colors.accent} />
 			<Text style={styles.dim}>起動しています…</Text>
-		</View>{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>;
+		</View>{canGoBack ? <GateBackButton top={insets.top + 8} left={16 + controlsInset} onBack={() => router.back()} /> : null}</View>;
 	}
 
 	// **起動処理の失敗。** 記録していないと初期 state のまま「未接続」で固まり、
@@ -100,11 +103,11 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 			<Text style={styles.title}>起動に失敗しました</Text>
 			<Text style={styles.dim}>{initError}</Text>
 			<Button label="再試行" variant="primary" style={styles.btn} onPress={() => { hapticImpact('light'); retry(); }} />
-		</View>{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>;
+		</View>{canGoBack ? <GateBackButton top={insets.top + 8} left={16 + controlsInset} onBack={() => router.back()} /> : null}</View>;
 	}
 
 	if (ready && !paired) {
-		return <View style={styles.gated}><PairingRequiredNotice onStart={() => router.push('/pair')} />{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>;
+		return <View style={styles.gated}><PairingRequiredNotice onStart={() => router.push('/pair')} />{canGoBack ? <GateBackButton top={insets.top + 8} left={16 + controlsInset} onBack={() => router.back()} /> : null}</View>;
 	}
 
 	if (paired && hasWorkspace) {
@@ -147,19 +150,19 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 					onPress={() => { hapticImpact('light'); if (rejected) { router.push('/pair'); } else { connectRelay(); } }}
 				/>
 			) : null}
-		</View>{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>
+		</View>{canGoBack ? <GateBackButton top={insets.top + 8} left={16 + controlsInset} onBack={() => router.back()} /> : null}</View>
 	);
 }
 
-function GateBackButton({ onBack, top }: { onBack: () => void; top: number }) {
-	return <Pressable style={[styles.back, { top }]} accessibilityRole="button" accessibilityLabel="前の画面へ戻る" onPress={onBack}><Ionicons name="chevron-back" size={18} color={colors.text} /><Text style={styles.backText}>戻る</Text></Pressable>;
+function GateBackButton({ onBack, top, left }: { onBack: () => void; top: number; left: number }) {
+	return <Pressable style={[styles.back, { top, left }]} accessibilityRole="button" accessibilityLabel="前の画面へ戻る" onPress={onBack}><Ionicons name="chevron-back" size={18} color={colors.text} /><Text style={styles.backText}>戻る</Text></Pressable>;
 }
 
 const styles = StyleSheet.create({
 	gated: { flex: 1, backgroundColor: colors.bg },
 	cached: { flex: 1, backgroundColor: colors.bg },
 	center: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 14 },
-	back: { position: 'absolute', left: 16, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 8, borderRadius: radius.control, ...squircle, backgroundColor: colors.surface }, backText: { color: colors.text, fontSize: type.body, fontWeight: '600' },
+	back: { position: 'absolute', flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 8, borderRadius: radius.control, ...squircle, backgroundColor: colors.surface }, backText: { color: colors.text, fontSize: type.body, fontWeight: '600' },
 	title: { color: colors.text, fontSize: type.title, fontWeight: '700' },
 	dim: { color: colors.textDim, fontSize: type.body, textAlign: 'center', lineHeight: 21 },
 	btn: { marginTop: 4 },

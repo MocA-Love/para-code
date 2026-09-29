@@ -5,7 +5,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View, type StyleProp, t
 import { CircleAlert, FolderX, MonitorX, TriangleAlert } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { hapticSelection } from '../../haptics.js';
-import { useIsRegularWidth } from '../../hooks/useSizeClass.js';
+import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import { monoFamily } from '../../monoFont.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { EmptyState, Icon, iconSize } from '../../ui/index.js';
@@ -16,19 +16,12 @@ import type { CodeSpaceGate } from './spaceLink.js';
  * `.banner` `.segs` `.rvbadge` `.state` に当たるもの）。
  */
 
-/** 広い幅（iPad）で一覧を読みやすい幅に収める最大幅（pt。旧 `src/ipad/ipadLayout.ts` の本文幅と同じ）。 */
-const READABLE_MAX_WIDTH = 760;
-
-const columnStyles = StyleSheet.create({
-	column: { width: '100%', maxWidth: READABLE_MAX_WIDTH, alignSelf: 'center' },
-});
-
 /**
  * iPad の広い幅で、一覧を読みやすい列幅に収めて中央へ寄せるスタイル（iPhone では undefined）。
- * 差分とコードは広いほど読みやすいので使わない。
+ * 差分とコードは広いほど読みやすいので使わない。中身は共通の `useContentColumnStyle()`。
  */
 export function useReadableColumn(): StyleProp<ViewStyle> {
-	return useIsRegularWidth() ? columnStyles.column : undefined;
+	return useContentColumnStyle();
 }
 
 /**

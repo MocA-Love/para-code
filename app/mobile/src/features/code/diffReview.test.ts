@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseUnifiedDiff } from '../../components/diffParser.js';
 import type { ReviewMarks } from './codeCache.js';
-import { canOpenWorkingFile, diffLineNumber, diffSign, diffSourceOf, diffStats, nextUnreviewed, parseReviewMarks, reviewQueue, reviewStateOf, reviewedCount, stageableEntries, stepReview } from './diffReview.js';
+import { canOpenWorkingFile, diffLineNumber, diffSign, diffSourceOf, diffStats, nextUnreviewed, parseReviewMarks, reviewQueue, reviewStateOf, reviewedCount, shouldTryReviewStage, stageableEntries, stepReview } from './diffReview.js';
 import { scmEntries, scmEntry } from './scmModel.js';
 
 const entries = scmEntries({
@@ -55,6 +55,20 @@ describe('確認後に変更あり', () => {
 			reviewStateOf(scmEntry({ x: '?', y: '?', path: 'new.ts', size: 10, mtime: 1 }), marks),
 			reviewStateOf(scmEntry({ x: '?', y: '?', path: 'new.ts', size: 10, mtime: 2 }), marks),
 		]).toEqual(['reviewed', 'changed']);
+	});
+});
+
+describe('shouldTryReviewStage', () => {
+	it('手元に印が無くても、PC が扱えればまだステージしていない変更には送る', () => {
+		const unstaged = entries[0]!;
+		const staged = scmEntry({ x: 'M', y: ' ', path: 'staged.ts' });
+		const conflict = scmEntry({ x: 'U', y: 'U', path: 'conflict.ts' });
+		expect([
+			shouldTryReviewStage(unstaged, true),
+			shouldTryReviewStage(unstaged, false),
+			shouldTryReviewStage(staged, true),
+			shouldTryReviewStage(conflict, true),
+		]).toEqual([true, false, false, false]);
 	});
 });
 

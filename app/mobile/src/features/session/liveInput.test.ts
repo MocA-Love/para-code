@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { LIVE_DEL, LIVE_ENTER, LIVE_INPUT_EMPTY, LIVE_INPUT_RETIRED, liveInputStep, normalizeLiveText, type LiveInputEvent, type LiveInputState } from './liveInput.js';
+import { LIVE_DEL, LIVE_ENTER, LIVE_INPUT_EMPTY, LIVE_INPUT_RETIRED, liveInputStep, normalizeLiveText, retireAfterControl, type LiveInputEvent, type LiveInputState } from './liveInput.js';
 
 /** 出来事を順に流して、送ったものを並べる。 */
 function run(events: readonly LiveInputEvent[], initial: LiveInputState = LIVE_INPUT_EMPTY): { state: LiveInputState; sent: string[] } {
@@ -160,5 +160,19 @@ describe('liveInputStep without a reported marked text (fallback)', () => {
 
 	it('commits the held text before Enter', () => {
 		expect(run([change('ls '), change('ls 漢'), { kind: 'submit' }]).sent).toEqual(['ls ', '漢', LIVE_ENTER]);
+	});
+});
+
+describe('retireAfterControl', () => {
+	it('retires the field on every event, and hands focus to the next field unless the flush came from losing focus', () => {
+		// Ctrl が点いたまま変換していない文字が止まり、flush で制御文字として送った後の ⌫ は、この入力欄からは何も送らない
+		const afterBlurFlush = retireAfterControl({ kind: 'flush' }, false);
+		expect({
+			change: retireAfterControl({ kind: 'change', text: 'a' }, true).focusNext,
+			heldFlush: retireAfterControl({ kind: 'flush' }, true).focusNext,
+			blurFlush: afterBlurFlush.focusNext,
+			backspaceAfter: liveInputStep(afterBlurFlush.state, { kind: 'key', key: 'Backspace' }).send,
+			editAfter: liveInputStep(afterBlurFlush.state, { kind: 'change', text: '' }).send,
+		}).toEqual({ change: true, heldFlush: true, blurFlush: false, backspaceAfter: [], editAfter: [] });
 	});
 });

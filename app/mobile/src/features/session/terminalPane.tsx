@@ -121,18 +121,34 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 	// 枠の高さ。キーボードが閉じているときの高さを保つ（開閉で PTY をリサイズさせない）。
 	const [outputHeight, setOutputHeight] = useState(0);
 	const outputWidthRef = useRef(0);
-	const onOutputLayout = (event: LayoutChangeEvent) => {
-		if (!active && outputHeight > 0) {
-			return;
-		}
-		const next = event.nativeEvent.layout.height;
-		const nextWidth = event.nativeEvent.layout.width;
+	/** 前面でない間に届いた枠の寸法（回転・Split View の幅変更）。前面に戻ったときに当てる。 */
+	const deferredLayoutRef = useRef<{ readonly height: number; readonly width: number } | undefined>(undefined);
+	const applyOutputLayout = (next: number, nextWidth: number) => {
 		const widthChanged = outputWidthRef.current !== 0 && Math.abs(outputWidthRef.current - nextWidth) > 0.5;
 		outputWidthRef.current = nextWidth;
 		if (!keyboardVisible || next > outputHeight || widthChanged) {
 			setOutputHeight(next);
 		}
 	};
+	const onOutputLayout = (event: LayoutChangeEvent) => {
+		const { height, width } = event.nativeEvent.layout;
+		if (!active && outputHeight > 0) {
+			// 前面に戻っても寸法が変わらなければ onLayout は来ないので、控えておいて戻ったときに当てる。
+			deferredLayoutRef.current = height > 0 ? { height, width } : undefined;
+			return;
+		}
+		deferredLayoutRef.current = undefined;
+		applyOutputLayout(height, width);
+	};
+	useEffect(() => {
+		const deferred = deferredLayoutRef.current;
+		if (!active || deferred === undefined) {
+			return;
+		}
+		deferredLayoutRef.current = undefined;
+		applyOutputLayout(deferred.height, deferred.width);
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- 前面に戻ったときだけ
+	}, [active]);
 
 	// ターミナルに出たリンク（W2-31）。
 	const router = useRouter();
@@ -240,15 +256,16 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 		setSubmitting(false);
 	};
 
-	/** ライブ入力で打った1文字（Ctrl が点いていれば制御文字にする）。 */
-	const sendLiveText = (text: string) => {
+	/** ライブ入力で打った1文字（Ctrl が点いていれば制御文字にする）。制御文字として送ったら true。 */
+	const sendLiveText = (text: string): boolean => {
 		if (text.length === 1) {
 			const filtered = keyInput.filterComposerText('', text);
 			if (filtered === undefined) {
-				return;
+				return true;
 			}
 		}
 		send(text);
+		return false;
 	};
 
 	const paste = async () => {

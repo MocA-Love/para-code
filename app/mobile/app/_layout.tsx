@@ -21,7 +21,9 @@ import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { startWidgetSync } from '../src/widgets/widgetSync.js';
 import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
-import { notificationDestination, notificationNavigationDecision, readNotificationDeepLink, type NotificationDeepLinkData } from '../src/notificationNavigation.js';
+import { reportMobileDiagnosticError } from '../src/mobileDiagnostics.js';
+import { useParaToast } from '../src/paraToast.js';
+import { notificationDestination, notificationNavigationDecision, pendingNotificationWait, readNotificationDeepLink, type NotificationDeepLinkData } from '../src/notificationNavigation.js';
 import { loadSessionViewSettings } from '../src/features/session/useSessionView.js';
 import { useQuickReplies } from '../src/features/settings/quickRepliesStore.js';
 import { loadThemeColors } from '../src/features/settings/themeColorSettings.js';
@@ -80,9 +82,13 @@ function RootLayout() {
 	const pendingRef = useRef<NotificationDeepLinkData | undefined>(undefined);
 	// 保留中の通知のために、どのPCへ自動で切り替えたか（同じ保留で二度は切り替えない）。
 	const switchedForPendingRef = useRef<string | undefined>(undefined);
+	// 保留中の通知の判断を始めた時刻（解除と台帳の読み込みの後の最初の判断）。待ちすぎたら保留を捨てる（`pendingNotificationWait`）。
+	const pendingWaitSinceRef = useRef<number | undefined>(undefined);
 
 	useEffect(() => {
-		void init().finally(() => Sentry.appLoaded());
+		// 失敗は initError へ記録され、ゲートが「起動に失敗しました」と再試行を出す。未処理の拒否にはせず、
+		// 診断には送る。
+		void init().catch((error: unknown) => reportMobileDiagnosticError('app', 'init', error)).finally(() => Sentry.appLoaded());
 		startLiveActivitySync();
 		// ホーム画面・ロック画面のウィジェットへ要約を書き出す（前面の間と、バックグラウンドへ移るとき）。
 		startWidgetSync();
@@ -107,6 +113,18 @@ function RootLayout() {
 		if (!store.ready) {
 			return;
 		}
+		// 保留が長すぎたら、どの分かれ道より先に捨てる。この関数はストアが変わったときにしか呼ばれないので、
+		// PC が長く繋がらずに後で全体が届くと、ここで捨てない限りその瞬間に古い通知の先へ飛んでしまう。
+		const wait = pendingNotificationWait(pendingWaitSinceRef.current, Date.now());
+		if (wait.expired) {
+			pendingRef.current = undefined;
+			pendingWaitSinceRef.current = undefined;
+			// 通知の PC へ切り替えた後に、自分で別の PC へ戻していたなら、つながらなかったせいではない。
+			const leftTargetPc = target.pcId !== undefined && target.pcId !== store.activePcId && switchedForPendingRef.current === target.pcId;
+			useParaToast.getState().show({ key: 'notification-tap-expired', text: '通知の画面は開きませんでした', sub: leftTargetPc ? '通知の PC から別の PC へ切り替えたためです' : 'PC の状態が届くまでに時間がかかったためです', icon: 'time-outline', tone: 'info' }, 3_000);
+			return;
+		}
+		pendingWaitSinceRef.current = wait.waitingSince;
 		if (target.pcId !== undefined && target.pcId !== store.activePcId) {
 			// 台帳に無いPC（ペアリングを解除した後に届いたプッシュ）の通知は捨てる。
 			// いま見ているPCの一覧に対して遷移先を探すと、別のPCの話で画面が動く。
@@ -180,9 +198,10 @@ function RootLayout() {
 
 	useEffect(() => {
 		const sub = Notifications.addNotificationResponseReceivedListener(response => {
-			// プッシュは content.data が空（中身は trigger.payload）。両方から読む（readNotificationDeepLink）。
+			// プッシュは中身が trigger.payload、ローカル通知は content.data にある（readNotificationDeepLink）。
 			pendingRef.current = readNotificationDeepLink(response.notification.request);
 			switchedForPendingRef.current = undefined;
+			pendingWaitSinceRef.current = undefined;
 			tryNavigate();
 		});
 		// コールドスタート（通知タップでアプリが起動された）対応
@@ -190,6 +209,7 @@ function RootLayout() {
 			if (response) {
 				pendingRef.current = readNotificationDeepLink(response.notification.request);
 				switchedForPendingRef.current = undefined;
+				pendingWaitSinceRef.current = undefined;
 				tryNavigate();
 			}
 		});

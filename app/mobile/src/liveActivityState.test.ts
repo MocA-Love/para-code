@@ -115,6 +115,14 @@ describe('buildLiveActivityState', () => {
 		expect(question.attention[0]?.detail).toBeUndefined();
 	});
 
+	it('設定で質問文とコマンドをオフにしていれば、実行中の行にもツールと対象を載せない', () => {
+		const chats = new Map<string, LiveChatInput>([
+			['a', { live: { phase: 'tool', tool: 'Bash', detail: 'npm test' } }],
+		]);
+		expect(build([terminal('a', 'working')], { chats, includeDetail: false }).running).toEqual([{ key: 'a', space: '1:w1', name: '作業 a' }]);
+		expect(build([terminal('a', 'working')], { chats }).running).toEqual([{ key: 'a', space: '1:w1', name: '作業 a', tool: 'Bash', target: 'npm test' }]);
+	});
+
 	it('前に出した中身から質問文とコマンドを外せる（設定をオフにしたとき）', () => {
 		const chats = new Map<string, LiveChatInput>([
 			['a', { interaction: { kind: 'approval', title: 'Bash', detail: 'git status' } }],
@@ -125,6 +133,8 @@ describe('buildLiveActivityState', () => {
 		expect(stripped.waitingCount).toBe(1);
 		const plain = build([terminal('a', 'working')]);
 		expect(withoutAttentionDetail(plain)).toBe(plain);
+		const running = build([terminal('b', 'working')], { chats: new Map([['b', { live: { phase: 'tool', tool: 'Edit', detail: 'src/a.ts' } }]]) });
+		expect(withoutAttentionDetail(running).running).toEqual([{ key: 'b', space: '1:w1', name: '作業 b' }]);
 	});
 
 	it('名前は上限で切り、空ならエージェントと出す', () => {
