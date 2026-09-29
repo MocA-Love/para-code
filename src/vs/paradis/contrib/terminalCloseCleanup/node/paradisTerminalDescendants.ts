@@ -40,7 +40,7 @@ import {
 /** 表 1 枚。 */
 export interface IParadisProcessSnapshot {
 	readonly rows: readonly IParadisProcessRow[];
-	/** 撮り始めた時刻（epoch 秒、切り捨て）。これ以降に生まれたものは対象にしない。 */
+	/** 撮り終えた時刻（epoch 秒、切り捨て）の次の秒。表に載るものはすべてこれより前に生まれている。 */
 	readonly bornBefore: number;
 }
 
@@ -54,6 +54,8 @@ export interface IParadisDescendantStopDeps {
 	probeHangupIgnored(rows: readonly IParadisProcessRow[]): Promise<ReadonlyMap<number, boolean | undefined>>;
 	kill(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void;
 	delay(ms: number): Promise<void>;
+	/** 今の時刻（epoch ミリ秒）。無ければ `Date.now()`。 */
+	now?(): number;
 	readonly log: Pick<ILogService, 'info' | 'warn' | 'trace'>;
 }
 
@@ -89,6 +91,14 @@ export async function paradisStopCapturedDescendants(captured: readonly IParadis
 	}
 	await raceTimeout(exited.then(() => undefined, () => undefined), PARADIS_CLOSE_CLEANUP_EXIT_WAIT_MS);
 	await deps.delay(PARADIS_CLOSE_CLEANUP_GRACE_MS);
+	// 開始時刻は秒単位なので、撮り直しで同じプロセスかを見分けられるのは、生まれた秒が過ぎてから。
+	// その秒の中で pid が使い回されたものは見分けられないが、pid が一巡しない限り起きない。
+	// ふつうは上の猶予で過ぎているので、ここでは待たない。
+	const latestBirthSecond = Math.max(...captured.map(row => row.startedAt));
+	const untilBirthSecondPassed = (latestBirthSecond + 1) * 1000 - (deps.now?.() ?? Date.now());
+	if (untilBirthSecondPassed > 0) {
+		await deps.delay(untilBirthSecondPassed);
+	}
 
 	const firstLook = await deps.lookup(captured.map(row => row.pid));
 	if (!firstLook) {
@@ -202,11 +212,13 @@ const WITH_SID = isLinux;
 let inFlightSnapshot: Promise<IParadisProcessSnapshot | undefined> | undefined;
 
 async function takeSnapshot(): Promise<IParadisProcessSnapshot | undefined> {
-	const bornBefore = Math.floor(Date.now() / 1000);
 	const result = await runPs(['-A', '-o', paradisPsColumns(WITH_SID)]);
 	if (!result || result.code !== 0) {
 		return undefined;
 	}
+	// 閉じる直前に起動したもの（撮った秒に生まれたもの）も対象にする。同じプロセスかの照合は、
+	// 止める側（paradisStopCapturedDescendants）が生まれた秒を過ぎてから行う。
+	const bornBefore = Math.floor(Date.now() / 1000) + 1;
 	return { rows: paradisParsePsRows(result.stdout, WITH_SID), bornBefore };
 }
 
