@@ -8,7 +8,10 @@
 import assert from 'assert';
 import { ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
+import { tmpdir } from 'os';
 import { PassThrough } from 'stream';
+import { pathToFileURL } from 'url';
+import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
@@ -41,6 +44,10 @@ interface IFakeDevtoolsChild {
 	readonly killSignals: readonly (NodeJS.Signals | number)[];
 	emitExit(): void;
 	respondToPendingToolCalls(): void;
+	/** Sends a request from the child to the client (the proxy) and waits for its answer. */
+	requestFromChild(method: string): Promise<unknown>;
+	/** Requests the proxy sent to the child (initialize, tools/call, ...). */
+	readonly requests: readonly { readonly method: string; readonly params: unknown }[];
 }
 
 interface IFakeDevtoolsSpawnOptions {
@@ -128,6 +135,9 @@ function createFakeDevtoolsChildren(options: { hangToolCalls?: number; stderrBef
 		let exited = false;
 		let stdinBuffer = '';
 		const pendingToolCallIds: number[] = [];
+		const requests: { readonly method: string; readonly params: unknown }[] = [];
+		const childRequestWaiters = new Map<string, (result: unknown) => void>();
+		let nextChildRequestId = 1;
 		const respond = (id: number, result: unknown) => queueMicrotask(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`));
 		const respondWithError = (id: number, message: string) => queueMicrotask(() => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message } })}\n`));
 
@@ -137,8 +147,18 @@ function createFakeDevtoolsChildren(options: { hangToolCalls?: number; stderrBef
 			while ((newlineIndex = stdinBuffer.indexOf('\n')) >= 0) {
 				const line = stdinBuffer.slice(0, newlineIndex);
 				stdinBuffer = stdinBuffer.slice(newlineIndex + 1);
-				const request = JSON.parse(line) as { id?: number; method?: string };
+				const request = JSON.parse(line) as { id?: number | string; method?: string; params?: unknown; result?: unknown };
 				if (request.id === undefined) {
+					continue;
+				}
+				if (request.method === undefined) {
+					// The proxy's answer to a request the child sent
+					childRequestWaiters.get(String(request.id))?.(request.result);
+					childRequestWaiters.delete(String(request.id));
+					continue;
+				}
+				requests.push({ method: request.method, params: request.params });
+				if (typeof request.id !== 'number') {
 					continue;
 				}
 				if (request.method === 'tools/call' && toolCallErrors.length > 0) {
@@ -195,6 +215,12 @@ function createFakeDevtoolsChildren(options: { hangToolCalls?: number; stderrBef
 					respond(id, { content: [{ type: 'text', text: 'late' }] });
 				}
 			},
+			requestFromChild: method => new Promise<unknown>(resolve => {
+				const id = `child-${nextChildRequestId++}`;
+				childRequestWaiters.set(id, resolve);
+				stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, method })}\n`);
+			}),
+			requests,
 		});
 		return child;
 	};
@@ -989,5 +1015,63 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		operation.resolve();
 		await lease;
 		assert.deepStrictEqual({ forgotten, generation: coordinator.getGeneration('secret-token') }, { forgotten: ['secret-token'], generation: undefined });
+	});
+
+	test('advertises roots and answers roots/list with the pane folders and the Para Code temporary folder', async () => {
+		const fixture = createFakeDevtoolsChildren();
+		const temporaryDirectory = join(tmpdir(), 'para-code-devtools-test');
+		const folders = [join(tmpdir(), 'para-code-space'), 'relative/folder', join(tmpdir(), 'para-code-space')];
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+			spawnChild: fixture.spawn,
+			temporaryDirectory,
+			resolveRoots: async token => token === 'secret-token' ? folders : [],
+		}));
+		await proxy.listTools('secret-token', 1, 'ws://one');
+		const rootsResult = await fixture.children[0].requestFromChild('roots/list');
+		const env = fixture.spawnOptions[0].env;
+
+		assert.deepStrictEqual({
+			capabilities: (fixture.children[0].requests.find(request => request.method === 'initialize')?.params as { capabilities?: unknown } | undefined)?.capabilities,
+			temporaryEnv: [env.TMPDIR, env.TMP, env.TEMP],
+			rootsResult,
+		}, {
+			capabilities: { roots: { listChanged: false } },
+			temporaryEnv: [temporaryDirectory, temporaryDirectory, temporaryDirectory],
+			rootsResult: {
+				roots: [
+					{ uri: pathToFileURL(join(tmpdir(), 'para-code-space')).href, name: 'workspace' },
+					{ uri: pathToFileURL(temporaryDirectory).href, name: 'Para Code temporary files' },
+				],
+			},
+		});
+	});
+
+	test('answers roots/list with only the temporary folder when the pane folders fail or hang', async () => {
+		const temporaryDirectory = join(tmpdir(), 'para-code-devtools-test');
+		const rootsFor = async (resolveRoots: (token: string) => Promise<readonly string[]>) => {
+			const fixture = createFakeDevtoolsChildren();
+			const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { spawnChild: fixture.spawn, temporaryDirectory, resolveRoots, rootsTimeoutMs: 1 }));
+			await proxy.listTools('secret-token', 1, 'ws://one');
+			const result = await fixture.children[0].requestFromChild('roots/list');
+			proxy.dispose();
+			return result;
+		};
+		const onlyTemporary = { roots: [{ uri: pathToFileURL(temporaryDirectory).href, name: 'Para Code temporary files' }] };
+
+		assert.deepStrictEqual({
+			rejected: await rootsFor(async () => { throw new Error('window gone'); }),
+			hung: await rootsFor(() => new Promise<readonly string[]>(() => { })),
+		}, { rejected: onlyTemporary, hung: onlyTemporary });
+	});
+
+	test('forwards a local path argument to the child unchanged', async () => {
+		const fixture = createFakeDevtoolsChildren();
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { spawnChild: fixture.spawn, temporaryDirectory: join(tmpdir(), 'para-code-devtools-test') }));
+		const filePath = join(tmpdir(), 'para-code-space', 'snapshot.txt');
+		await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', { filePath });
+
+		assert.deepStrictEqual(fixture.children[0].requests.filter(request => request.method === 'tools/call').map(request => request.params), [
+			{ name: 'take_snapshot', arguments: { filePath } },
+		]);
 	});
 });
