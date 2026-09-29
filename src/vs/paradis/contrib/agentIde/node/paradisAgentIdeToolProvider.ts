@@ -95,6 +95,7 @@ const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request
 const READ_CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside a Para Code terminal pane, so it refuses the request. Start this agent CLI from a terminal inside Para Code.';
 const REMOTE_TARGET_ENTER_MESSAGE = 'That terminal runs on an SSH host, where Para Code cannot tell a genuine status report from a forged one, so it does not press Enter there. Type the text without Enter and ask the user to submit it.';
 const UNVERIFIABLE_RELEASE_MESSAGE = 'That agent answered a permission request or a question, and Para Code cannot confirm from the agent itself that it moved on (for example it runs inside tmux, WSL or a container), so it leaves pressing Enter there to the user. Ask the user to send it.';
+const UNVERIFIABLE_RELEASE_INPUT_MESSAGE = 'That agent answered a permission request or a question, and Para Code cannot confirm from the agent itself that it moved on (for example it runs inside tmux, WSL or a container), so it does not send keys or text there: they could answer a prompt that is still open. Ask the user to do it.';
 const UNCONFIRMED_RELEASE_MESSAGE = 'That agent was waiting for a permission or question answer, and Para Code has not yet confirmed from the agent itself that it moved on, so it does not press Enter there yet. Wait with wait_for_terminal and try again.';
 const SCREEN_UNREADABLE_MESSAGE = 'Para Code cannot read that terminal\'s screen right now (it may not have been drawn yet), so it cannot check for a confirmation prompt and does not press Enter. Retry in a moment.';
 const PROMPT_ON_SCREEN_MESSAGE = 'That terminal shows a confirmation prompt on screen (for example a permission question), so Para Code does not press Enter there. Tell the user instead.';
@@ -219,6 +220,15 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		if (paradisAgentIdeNeedsHuman(status)) {
 			return NEEDS_HUMAN_MESSAGE;
 		}
+		const token = target.internal?.paneToken;
+		// transcript や確かめられない hook で許可待ちが解かれ、まだ確かめた hook が来ていない（偽装できる）
+		// 状態の項目（既読や idle で消える）ではなく、印そのものを引く
+		const unconfirmedRelease = token !== undefined ? context.getUnconfirmedRelease(token) : undefined;
+		// 確かめられないまま解けたペインは、まだ許可の確認が出ているかもしれない。Enter でなくても
+		// （数字・矢印・Esc・Ctrl+C・貼り付け）確認に答えてしまうので、許可待ちと同じく何も送らない
+		if (unconfirmedRelease === 'unverifiable' && !wantsEnter) {
+			return UNVERIFIABLE_RELEASE_INPUT_MESSAGE;
+		}
 		if (!wantsEnter) {
 			return undefined;
 		}
@@ -227,10 +237,6 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		if (target.internal?.remote === true) {
 			return REMOTE_TARGET_ENTER_MESSAGE;
 		}
-		const token = target.internal?.paneToken;
-		// transcript から許可待ちが解かれ、まだ確かめた hook が来ていない（追記で偽装できる）
-		// 状態の項目（既読や idle で消える）ではなく、印そのものを引く
-		const unconfirmedRelease = token !== undefined ? context.getUnconfirmedRelease(token) : undefined;
 		if (unconfirmedRelease === 'unverifiable') {
 			return UNVERIFIABLE_RELEASE_MESSAGE;
 		}
