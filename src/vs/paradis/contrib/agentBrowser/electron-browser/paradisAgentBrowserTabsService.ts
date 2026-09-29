@@ -181,8 +181,11 @@ export interface IParadisAgentBrowserTabsService {
 	/** そのペインのエージェントが開いていて、まだ開いているタブの数。 */
 	openedCount(token: string): number;
 
-	/** エージェントが開いたタブとして登録する。タブが閉じられると自動で外れる。 */
-	registerAgentTab(token: string, input: BrowserEditorInput): void;
+	/**
+	 * エージェントが開いたタブとして登録する。タブが閉じられると自動で外れる。`approvedProfile`
+	 * （承認を得て開いたユーザーのプロファイルのタブ）は、ユーザーが共有を止めた時点でも外れる。
+	 */
+	registerAgentTab(token: string, input: BrowserEditorInput, options?: { readonly approvedProfile?: boolean }): void;
 
 	/** そのペインのエージェントが開いたタブか。 */
 	isOpenedBy(token: string, viewId: string): boolean;
@@ -237,6 +240,8 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	/** viewId → エージェントが開いたタブ（閉じるときと一覧に使う）。 */
 	private readonly _agentInputs = new Map<string, BrowserEditorInput>();
 	private readonly _agentTabListeners = this._register(new DisposableMap<string, IDisposable>());
+	/** ペイン → エージェント自身の求め（タブを開く・選ぶ・時間切れの共有を外す）で共有先を動かしている数。 */
+	private readonly _agentMoves = new Map<string, number>();
 	/** request_browser_page の処理中（締め切り後に遅れて成立する共有が片付くまでを含む）のペイン。 */
 	private readonly _pendingRequests = new Set<string>();
 	/** 承認を待っているペイン（ページでもプロファイルでも、1ペインにつき1つ）。 */
@@ -270,6 +275,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		super();
 		this._windowFocus = this._register(new ParadisNativeWindowFocus(_nativeHostService.onDidFocusMainOrAuxiliaryWindow, _nativeHostService.onDidBlurMainOrAuxiliaryWindow));
 		this._browserViews = ProxyChannel.toService<IBrowserViewService>(mainProcessService.getChannel(ipcBrowserViewChannelName));
+		this._register(this._bindingModel.onDidChange(() => this._reconcileApprovedProfileTabs()));
 	}
 
 	// #region 台帳
@@ -291,8 +297,8 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		});
 	}
 
-	registerAgentTab(token: string, input: BrowserEditorInput): void {
-		if (!this._ledger.registerAgentTab(token, input.id)) {
+	registerAgentTab(token: string, input: BrowserEditorInput, options?: { readonly approvedProfile?: boolean }): void {
+		if (!this._ledger.registerAgentTab(token, input.id, options)) {
 			return;
 		}
 		this._agentInputs.set(input.id, input);
@@ -307,6 +313,41 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		this._ledger.forget(viewId);
 		this._agentInputs.delete(viewId);
 		this._agentTabListeners.deleteAndDispose(viewId);
+	}
+
+	/**
+	 * ユーザーが共有を止めた承認済みプロファイルのタブを台帳から外す（タブ自体は閉じない。ユーザーのタブに戻る）。
+	 * 以後エージェントが select_browser_tab で選ぶと unknownTab になり、使うには open_browser_profile で
+	 * 承認を取り直す。
+	 */
+	private _reconcileApprovedProfileTabs(): void {
+		const dropped = this._ledger.reconcileApprovedProfileTabs(
+			token => this._bindingModel.getBindingForToken(token)?.pageId,
+			token => this._agentMoves.has(token),
+		);
+		for (const viewId of dropped) {
+			this._agentInputs.delete(viewId);
+			this._agentTabListeners.deleteAndDispose(viewId);
+		}
+	}
+
+	/**
+	 * エージェント自身の求めで共有先を動かす間の印。その間に承認済みプロファイルのタブから共有が外れても、
+	 * ユーザーが止めたとはみなさない。終わる前に今の共有先を記録し直す（共有先の変化の通知は遅れて届く）。
+	 */
+	private async _asAgentMove<T>(token: string, run: () => Promise<T>): Promise<T> {
+		this._agentMoves.set(token, (this._agentMoves.get(token) ?? 0) + 1);
+		try {
+			return await run();
+		} finally {
+			this._reconcileApprovedProfileTabs();
+			const remaining = (this._agentMoves.get(token) ?? 1) - 1;
+			if (remaining > 0) {
+				this._agentMoves.set(token, remaining);
+			} else {
+				this._agentMoves.delete(token);
+			}
+		}
 	}
 
 	// #endregion
@@ -578,7 +619,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			return;
 		}
 		try {
-			await this._bindingModel.unbindToken(token);
+			await this._asAgentMove(token, () => this._bindingModel.unbindToken(token));
 		} catch (error) {
 			this._logService.warn('[ParadisAgentBrowserTabs] could not withdraw a share that completed after the deadline', error);
 		}
@@ -827,10 +868,12 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 
 	async bindTab(token: string, input: BrowserEditorInput): Promise<boolean> {
 		try {
-			const model = await input.resolve();
-			await this._waitForStableScope(input.id);
-			await this._shareApproved(model);
-			return await this._bindingModel.bindPageToPane(model, token);
+			return await this._asAgentMove(token, async () => {
+				const model = await input.resolve();
+				await this._waitForStableScope(input.id);
+				await this._shareApproved(model);
+				return await this._bindingModel.bindPageToPane(model, token);
+			});
 		} catch (error) {
 			this._logService.warn('[ParadisAgentBrowserTabs] could not share the tab with the calling pane', error);
 			return false;
