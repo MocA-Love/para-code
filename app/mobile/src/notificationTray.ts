@@ -49,18 +49,18 @@ export interface TrayTerminal {
  * Para Code のプッシュは暗号文 `e` だけを載せ、通知拡張（NSE）が復号して識別子を userInfo の
  * 最上位に書き足すので、`content.data` は空になる。userInfo 全体（NSE が書き換えた後のもの）は
  * `trigger.payload`（trigger.type === 'push'）にある。ローカル通知は `content.data` に入る。
- * 両方を読み、重なる項目はプッシュの userInfo を採る。
+ *
+ * **プッシュでは `content.data` を混ぜない。** そこは APNs の生ペイロードの userInfo["body"] で、NSE は
+ * 剥がさない（剥がすのは最上位の識別子だけ）。リレーが差し込めるので、復号した本文に無い項目（`ws` など）を
+ * そこから補うと、タップの行き先や通知センターの後始末の対象を外から変えられる。Para Code のプッシュは
+ * `body` を載せない（`app/relay/src/apns.ts`）。
  */
 export function readTrayData(request: { readonly content: { readonly data?: unknown }; readonly trigger?: unknown }): Readonly<Record<string, unknown>> | undefined {
-	const data = asRecord(request.content.data);
 	const trigger = request.trigger;
-	const payload = trigger !== null && typeof trigger === 'object' && (trigger as { type?: unknown }).type === 'push'
-		? asRecord((trigger as { payload?: unknown }).payload)
-		: undefined;
-	if (data === undefined || payload === undefined) {
-		return payload ?? data;
+	if (trigger !== null && typeof trigger === 'object' && (trigger as { type?: unknown }).type === 'push') {
+		return asRecord((trigger as { payload?: unknown }).payload);
 	}
-	return { ...data, ...payload };
+	return asRecord(request.content.data);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

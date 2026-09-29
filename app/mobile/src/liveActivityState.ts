@@ -265,7 +265,8 @@ export function buildLiveActivityState(input: {
 		...(terminal.ws !== undefined ? { space: terminal.ws } : {}),
 		name: nameOf(terminal),
 		...(since !== undefined ? { since } : {}),
-		...runningTool(input.chats.get(terminal.terminalKey)),
+		// 実行中のツールと対象（`Bash npm test` など）もコマンドなので、設定でオフなら載せない。
+		...(input.includeDetail ? runningTool(input.chats.get(terminal.terminalKey)) : {}),
 	}));
 	const done = finished.slice(0, LIVE_DONE_MAX).flatMap(([key, entry]): LiveActivityDoneItem[] => {
 		const terminal = byKey.get(key);
@@ -293,12 +294,21 @@ export function buildLiveActivityState(input: {
 	};
 }
 
-/** 要対応の質問文とコマンド（ツール名を含む）を外す。設定でオフにしたときに、前に出した中身へ当てる。 */
+/**
+ * 質問文とコマンド（ツール名を含む）を外す。要対応の中身と、実行中の行のツールと対象の両方。
+ * 設定でオフにしたときに、前に出した中身へ当てる。
+ */
 export function withoutAttentionDetail(state: LiveActivityState): LiveActivityState {
-	if (state.attention.every(item => item.tool === undefined && item.detail === undefined)) {
+	const attentionPlain = state.attention.every(item => item.tool === undefined && item.detail === undefined);
+	const runningPlain = state.running.every(item => item.tool === undefined && item.target === undefined);
+	if (attentionPlain && runningPlain) {
 		return state;
 	}
-	return { ...state, attention: state.attention.map(({ tool: _tool, detail: _detail, ...item }) => item) };
+	return {
+		...state,
+		attention: attentionPlain ? state.attention : state.attention.map(({ tool: _tool, detail: _detail, ...item }) => item),
+		running: runningPlain ? state.running : state.running.map(({ tool: _tool, target: _target, ...item }) => item),
+	};
 }
 
 /**
