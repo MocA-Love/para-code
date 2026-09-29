@@ -249,6 +249,11 @@ const REDACTED = '***';
  */
 const VALUE = `[!#-%(-:<-{}~]+`;
 const QUOTED_OR_VALUE = `("[^"]*"|'[^']*'|${VALUE})`;
+/**
+ * 項目名の後の値のうち、文の一部ではなさそうなもの。値のすぐ後に日本語などが続く（`パスワード: 8文字以上`）
+ * ものは値ではなく文なので伏せない（途中で切って一部だけ伏せることもしない）。
+ */
+const QUOTED_OR_STANDALONE_VALUE = `("[^"]*"|'[^']*'|${VALUE}(?![!#-%(-:<-{}~]|[^\\x00-\\x7F]))`;
 
 /** 既知の形のトークンの接頭辞（切り詰めの境目で断片だけ残ったものを伏せるのにも使う）。 */
 const KNOWN_TOKEN_PREFIXES = `(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|sk-|sk_|pk_|rk_|AKIA|ASIA|xox[abprs]-|AIza|npm_|glpat-|hf_|eyJ)`;
@@ -267,10 +272,11 @@ const SECRET_PATTERNS: readonly [RegExp, string][] = [
 	// 大文字の環境変数（STRIPE_SECRET_KEY=... / OPENAI_KEY=... / SENTRY_DSN=...）
 	[new RegExp(`\\b([A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASS(?:WORD)?|PWD|DSN|CREDENTIALS?))(\\s*=\\s*)${QUOTED_OR_VALUE}`, 'g'), `$1$2${REDACTED}`],
 	// api_key: ... / password=... / secret_key_base: ... など（右辺だけ伏せる）。全角のコロン・等号（\uFF1A \uFF1D）も区切りとして読む
-	[new RegExp(`\\b([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|secret|token|passw(?:or)?d|pwd|credentials?|authorization)[A-Za-z0-9_]*)(["']?\\s*[:=\\uFF1A\\uFF1D]\\s*)${QUOTED_OR_VALUE}`, 'gi'), `$1$2${REDACTED}`],
+	// `max_tokens` などトークンの数（`tokens`）は秘密ではないので除く
+	[new RegExp(`\\b([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|secret|token(?!s\\b)|passw(?:or)?d|pwd|credentials?|authorization)[A-Za-z0-9_]*)(["']?\\s*[:=\\uFF1A\\uFF1D]\\s*)${QUOTED_OR_STANDALONE_VALUE}`, 'gi'), `$1$2${REDACTED}`],
 	// 日本語の項目名（パスワード：hunter2 / トークン=abc123）。値は ASCII だけなので「パスワード：必須」のような文は伏せない
 	// allow-any-unicode-next-line
-	[new RegExp(`(パスワード|パスフレーズ|暗証番号|トークン|シークレット|秘密鍵|API\\s?キー|アクセスキー)(\\s*[:=\\uFF1A\\uFF1D]\\s*)${QUOTED_OR_VALUE}`, 'gi'), `$1$2${REDACTED}`],
+	[new RegExp(`(パスワード|パスフレーズ|暗証番号|トークン|シークレット|秘密鍵|API\\s?キー|アクセスキー)(\\s*[:=\\uFF1A\\uFF1D]\\s*)${QUOTED_OR_STANDALONE_VALUE}`, 'gi'), `$1$2${REDACTED}`],
 	// 空白区切りで値を渡す設定（aws configure set aws_secret_access_key <値>）
 	[new RegExp(`\\b([a-z0-9]+_(?:secret_access_key|session_token|secret_key|api_key|access_token))(\\s+)${QUOTED_OR_VALUE}`, 'gi'), `$1$2${REDACTED}`],
 	// --password xxx / --api-key=xxx などのコマンドライン引数（行頭か空白の直後のものだけ）
