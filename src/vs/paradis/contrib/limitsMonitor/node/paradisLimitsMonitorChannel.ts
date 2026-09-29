@@ -8,9 +8,10 @@
 
 // AIリミットモニターのshared processバックエンド（Codex の分）。
 //
-// Claude の分は paradisClaudeAccountService.ts（別チャネル、常に手元の shared process）が持つ。
-// 以前は claude-swap (cswap) を呼んでいたが撤去した。このチャネルの getSnapshot は Claude を
-// 空で返し、レンダラー側のクライアントが Claude のチャネルの結果を差し込む。
+// Claude の分は、手元のウィンドウでは paradisClaudeAccountService.ts（別チャネル、手元の shared process）が
+// 持つ。以前は claude-swap (cswap) を呼んでいたが撤去した。このチャネルの getSnapshot は Claude を
+// 空で返し、レンダラー側のクライアントが Claude の結果を差し込む。SSH のウィンドウでは、REH に生やした
+// このチャネルの getClaudeHostState（paradisClaudeHostUsage.ts、読み取り専用）が接続先のログインの分を返す。
 //
 // データ取得(getSnapshot):
 //   - Codex: ~/.codex / ~/.codex-* 各ホームについて、Orca（codex-fetcher.ts）と同じく
@@ -27,7 +28,7 @@
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
-import { timeout } from '../../../../base/common/async.js';
+import { CancelablePromise, timeout } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import * as path from '../../../../base/common/path.js';
@@ -56,6 +57,9 @@ import {
 	ParadisLimitsDuplicateDecision,
 	paradisNormalizeCodexLimitWindows
 } from '../common/paradisLimitsMonitor.js';
+import { IParadisClaudeStateRequest, PARADIS_CLAUDE_HOST_STATE_COMMAND } from '../common/paradisClaudeAccounts.js';
+import { ParadisClaudeHostUsage } from './paradisClaudeHostUsage.js';
+import { ParadisClaudeOAuthClient } from './paradisClaudeOAuthClient.js';
 
 /**
  * スナップショットのTTL。ウィジェット表示中(30秒ポーリング)・非表示中(120秒ポーリング)の
@@ -65,8 +69,25 @@ import {
 const SNAPSHOT_CACHE_TTL_MS = 150_000;
 /** wham/usage HTTPタイムアウト。 */
 const USAGE_HTTP_TIMEOUT_MS = 30_000;
-/** app-server RPCのリクエストタイムアウト（初期化は paradisCodexAppServerRpc.ts 側の15秒）。 */
-const RPC_REQUEST_TIMEOUT_MS = 10_000;
+/*
+ * 1つのホームを読む時間の上限の内訳。スマホの limits の問い合わせは 60 秒で諦めるので、1ホームが最悪でも
+ * 45 秒ほどで終わるようにしてある（codex の場所とシェル環境の解決は、初回以外はキャッシュが効く）:
+ *  - RPC で取れる: 初期化 15 秒（paradisCodexAppServerRpc.ts）+ rateLimits 15 秒 + account/read 10 秒
+ *    + wham/usage で足す分 5 秒 = 45 秒
+ *  - RPC が失敗する: 初期化 15 秒 + rateLimits 15 秒 + wham/usage 15 秒 = 45 秒
+ *  - RPC を起こさない間: wham/usage 30 秒（401 はすぐ返るので、そこから RPC に進んでも上の範囲に収まる）
+ * ホームが複数あると RPC はホームをまたいで1つずつ（2 秒ずらして）流すので、後のホームは前のホームの RPC を
+ * 待つ。ホームが多いと全体では 60 秒を超えうる（スナップショットは 150 秒キャッシュするので、次の問い合わせは
+ * すぐ返る）。
+ */
+/** app-server の `account/rateLimits/read`（トークンの更新を挟むと遅くなる）。 */
+const RPC_RATE_LIMITS_TIMEOUT_MS = 15_000;
+/** app-server の `account/read`（メールとプランだけの補助。取れなくても成立する）。 */
+const RPC_ACCOUNT_TIMEOUT_MS = 10_000;
+/** RPC が失敗した後に wham/usage で読むとき。 */
+const WHAM_FALLBACK_TIMEOUT_MS = 15_000;
+/** RPC で取れた後に、wham/usage で追加の枠を足すとき（取れなければ RPC の結果だけで出す）。 */
+const WHAM_SUPPLEMENT_TIMEOUT_MS = 5_000;
 /** RPCが失敗したホームの再試行抑止時間(毎ポーリングでcodexを起動しないため)。 */
 const RPC_FAILURE_COOLDOWN_MS = 10 * 60_000;
 /** 同じホームで RPC を起こす最短の間隔（Orca の MIN_REFETCH_MS）。その間は wham/usage で読む。 */
@@ -193,6 +214,14 @@ interface ISetupSession {
 	dispose(): void;
 }
 
+/**
+ * `codex login` の出力からログインの URL を取り出す。ホスト名の後ろは / ? # か URL の終わりに限る
+ * （`auth.openai.com.example` のような別のホストに一致させない）。
+ */
+export function paradisCodexLoginUrl(output: string): string | undefined {
+	return /https:\/\/auth\.openai\.com(?:[/?#][^\s"')]*)?(?=[\s"')]|$)/.exec(output)?.[0];
+}
+
 export class ParadisLimitsMonitorService {
 
 	private snapshotCache: { at: number; key: string; value: IParadisLimitsSnapshot } | undefined;
@@ -214,6 +243,8 @@ export class ParadisLimitsMonitorService {
 	 */
 	private readonly rpcFailureReported = new Set<string>();
 	private readonly setupSessions = new Map<string, ISetupSession>();
+	/** ログインの時間切れと、終わったログインの状態を消すタイマー。 */
+	private readonly setupTimers = new Set<CancelablePromise<void>>();
 	private readonly childProcesses: ParadisChildProcessTreeTracker;
 	private disposed = false;
 	/** 同時ログイン完了時の重複判定・確定を直列化する。 */
@@ -245,6 +276,10 @@ export class ParadisLimitsMonitorService {
 
 	dispose(): void {
 		this.disposed = true;
+		for (const timer of this.setupTimers) {
+			timer.cancel();
+		}
+		this.setupTimers.clear();
 		this.childProcesses.dispose();
 		for (const session of this.setupSessions.values()) {
 			session.dispose();
@@ -498,18 +533,22 @@ export class ParadisLimitsMonitorService {
 		const dueForRpc = lastRpc === undefined || now - lastRpc >= MIN_RPC_INTERVAL_MS;
 
 		let rpcTried = false;
+		// RPC の失敗は、wham/usage でも取れなかったときだけ報告する（wham/usage で出せたなら、パネルは壊れていない）。
+		let reportRpcFailure: (() => void) | undefined;
 		if (!inAuthBackoff && !inFailureCooldown && dueForRpc) {
 			rpcTried = true;
 			const viaRpc = await this.tryCodexRpc(homePath, base.homeLabel);
 			if (viaRpc.kind !== 'failed') {
 				return this.rpcResult(viaRpc, homePath, base, email, accountId);
 			}
+			reportRpcFailure = viaRpc.report;
 		}
 
 		try {
-			const usage = await this.fetchWhamUsage(accessToken, accountId);
+			const usage = await this.fetchWhamUsage(accessToken, accountId, rpcTried ? WHAM_FALLBACK_TIMEOUT_MS : USAGE_HTTP_TIMEOUT_MS);
 			return { account: { ...base, email, ...this.mapWhamUsage(usage), status: 'ok' }, accountId };
 		} catch (error) {
+			reportRpcFailure?.();
 			const httpStatus = (error as { httpStatus?: number }).httpStatus;
 			if (httpStatus !== 401 && httpStatus !== 403) {
 				return { account: { ...base, email, status: 'error', statusDetail: (error as Error).message }, accountId };
@@ -524,6 +563,8 @@ export class ParadisLimitsMonitorService {
 				if (viaRpc.kind !== 'failed') {
 					return this.rpcResult(viaRpc, homePath, base, email, accountId);
 				}
+				// wham/usage はもう失敗している
+				viaRpc.report?.();
 			}
 			// codex で更新できない（app-server が動かない）。再ログインで直るとは限らないので、要再ログインにはしない。
 			return { account: { ...base, email, status: 'error', statusDetail: 'access token expired and codex app-server is unavailable to refresh it' }, accountId };
@@ -540,8 +581,12 @@ export class ParadisLimitsMonitorService {
 		}
 	}
 
-	/** RPC で取る。ホームをまたいで1つずつ、前の RPC から 2 秒あけて起こす。 */
-	private async tryCodexRpc(homePath: string, homeLabel: string | undefined): Promise<{ kind: 'ok'; value: Awaited<ReturnType<ParadisLimitsMonitorService['fetchCodexAccountViaRpc']>> } | { kind: 'auth'; error: Error } | { kind: 'failed' }> {
+	/**
+	 * RPC で取る。ホームをまたいで1つずつ、前の RPC から 2 秒あけて起こす。
+	 * 失敗したときの `report` は Sentry への報告（ホームごとに1回）。呼び出し側が wham/usage でも取れなかった
+	 * ときだけ呼ぶ。
+	 */
+	private async tryCodexRpc(homePath: string, homeLabel: string | undefined): Promise<{ kind: 'ok'; value: Awaited<ReturnType<ParadisLimitsMonitorService['fetchCodexAccountViaRpc']>> } | { kind: 'auth'; error: Error } | { kind: 'failed'; report?: () => void }> {
 		const run = async () => {
 			const wait = this.lastRpcEndAt + RPC_STAGGER_MS - this.now();
 			if (wait > 0) {
@@ -570,8 +615,15 @@ export class ParadisLimitsMonitorService {
 			}
 			this.rpcFailureAt.set(homePath, this.now());
 			const kind = classifyCodexRpcFailure(error);
+			this.logService.warn(`[ParadisLimitsMonitor] codex app-server failed for ${homeLabel}; reading wham/usage instead: ${(error as Error).message}`);
 			// codex を入れていない人は毎回同じ理由で失敗するので報告しない（パネルは wham/usage で出せる）。
-			if (kind !== 'binary-missing' && !this.rpcFailureReported.has(homePath)) {
+			if (kind === 'binary-missing') {
+				return { kind: 'failed' };
+			}
+			const report = () => {
+				if (this.rpcFailureReported.has(homePath)) {
+					return;
+				}
 				this.rpcFailureReported.add(homePath);
 				const { exitCode, exitSignal } = error as { exitCode?: number | null; exitSignal?: string | null };
 				reportParadisDiagnosticError('owned', 'limits-monitor', 'codex-app-server-fallback', error, {
@@ -581,9 +633,8 @@ export class ParadisLimitsMonitorService {
 					...(typeof exitCode === 'number' ? { safe_exit_code: exitCode } : {}),
 					...(typeof exitSignal === 'string' ? { signal: exitSignal } : {}),
 				});
-			}
-			this.logService.warn(`[ParadisLimitsMonitor] codex app-server failed for ${homeLabel}; reading wham/usage instead: ${(error as Error).message}`);
-			return { kind: 'failed' };
+			};
+			return { kind: 'failed', report };
 		}
 	}
 
@@ -633,7 +684,7 @@ export class ParadisLimitsMonitorService {
 		const fromRpc = { planType: viaRpc.planType, fiveHour: viaRpc.windows.fiveHour, sevenDay: viaRpc.windows.sevenDay };
 		let usage: ReturnType<ParadisLimitsMonitorService['mapWhamUsage']>;
 		try {
-			usage = this.mapWhamUsage(await this.fetchWhamUsage(accessToken, accountId));
+			usage = this.mapWhamUsage(await this.fetchWhamUsage(accessToken, accountId, WHAM_SUPPLEMENT_TIMEOUT_MS));
 		} catch {
 			return fromRpc;
 		}
@@ -667,9 +718,9 @@ export class ParadisLimitsMonitorService {
 		return undefined;
 	}
 
-	protected async fetchWhamUsage(accessToken: string, accountId: string | undefined): Promise<IWhamUsageResponse> {
+	protected async fetchWhamUsage(accessToken: string, accountId: string | undefined, timeoutMs = USAGE_HTTP_TIMEOUT_MS): Promise<IWhamUsageResponse> {
 		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), USAGE_HTTP_TIMEOUT_MS);
+		const timer = setTimeout(() => controller.abort(), timeoutMs);
 		try {
 			const headers: Record<string, string> = {
 				'Authorization': `Bearer ${accessToken}`,
@@ -730,11 +781,11 @@ export class ParadisLimitsMonitorService {
 		// initialize の失敗は開始関数の中で子プロセスを片付けてから投げる。
 		const rpc = await paradisStartCodexAppServerRpc(command, env, this.logService, 'para-code-limits-monitor', { shortLivedProbe: true });
 		try {
-			const rateLimits = await rpc.request('account/rateLimits/read', undefined, RPC_REQUEST_TIMEOUT_MS) as IRpcRateLimitsResult;
+			const rateLimits = await rpc.request('account/rateLimits/read', undefined, RPC_RATE_LIMITS_TIMEOUT_MS) as IRpcRateLimitsResult;
 			let account: IRpcAccountResult | undefined;
 			try {
 				// codex 0.154 は `params` 省略を `missing field 'params'` で拒否するので空オブジェクトを渡す
-				account = await rpc.request('account/read', {}, RPC_REQUEST_TIMEOUT_MS) as IRpcAccountResult;
+				account = await rpc.request('account/read', {}, RPC_ACCOUNT_TIMEOUT_MS) as IRpcAccountResult;
 			} catch {
 				// email/planは補助情報。rate limitsが取れていれば成立させる
 			}
@@ -786,7 +837,6 @@ export class ParadisLimitsMonitorService {
 	private async runCodexLogin(session: ISetupSession, existingHome: string | undefined): Promise<void> {
 		let homePath: string;
 		let createdHome = false;
-		let copiedConfig = false;
 		if (existingHome) {
 			// 再ログイン: 既存ホームに対してcodex自身のloginを実行するだけ(ファイルは一切触らない)。
 			// IPC経由の任意パスに対してcodexを起動しないよう、発見済みホームのみに制限する
@@ -798,31 +848,42 @@ export class ParadisLimitsMonitorService {
 		} else {
 			homePath = await this.allocateCodexHome();
 			createdHome = true;
-			// モデル設定等を引き継ぐためconfig.tomlのみコピーする(auth.jsonは決してコピーしない)
-			const defaultConfig = path.join(os.homedir(), '.codex', 'config.toml');
-			if (await this.fileExists(defaultConfig)) {
-				await fs.promises.copyFile(defaultConfig, path.join(homePath, 'config.toml'));
-				copiedConfig = true;
-			}
 		}
-		session.state = { phase: 'waiting_browser', homeLabel: this.codexHomeLabel(homePath) };
+		let child: cp.ChildProcess;
+		try {
+			if (createdHome) {
+				// モデル設定等を引き継ぐためconfig.tomlのみコピーする(auth.jsonは決してコピーしない)
+				const defaultConfig = path.join(this._homedir(), '.codex', 'config.toml');
+				if (await this.fileExists(defaultConfig)) {
+					await fs.promises.copyFile(defaultConfig, path.join(homePath, 'config.toml'));
+				}
+			}
+			session.state = { phase: 'waiting_browser', homeLabel: this.codexHomeLabel(homePath) };
 
-		const command = await this.resolveCommand('codex', undefined);
-		const env = { ...await this.getExecEnv(), CODEX_HOME: homePath };
-		// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
-		// (shell 指定なしの spawn は CVE-2024-27980 対策後の Node では EINVAL になる)。
-		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, ['login']) : undefined;
-		const child = cp.spawn(shimInvocation?.file ?? command, shimInvocation?.args ?? ['login'], {
-			env,
-			stdio: ['ignore', 'pipe', 'pipe'],
-			windowsHide: true,
-			windowsVerbatimArguments: shimInvocation !== undefined,
-		});
+			const command = await this.resolveCommand('codex', undefined);
+			const env = { ...await this.getExecEnv(), CODEX_HOME: homePath };
+			// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする
+			// (shell 指定なしの spawn は CVE-2024-27980 対策後の Node では EINVAL になる)。
+			const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, ['login']) : undefined;
+			child = this.spawnCodexLogin(shimInvocation?.file ?? command, shimInvocation?.args ?? ['login'], {
+				env,
+				stdio: ['ignore', 'pipe', 'pipe'],
+				windowsHide: true,
+				windowsVerbatimArguments: shimInvocation !== undefined,
+			});
+		} catch (error) {
+			// codex を起動する前に失敗した（config.toml のコピー、codex が見つからない、シェル環境の解決）。
+			// 作ったばかりのホームを残すと、auth.json が無いので使用量パネルから消せず、空き番号も減る。
+			if (createdHome) {
+				await this.removeUnusedCodexHome(homePath);
+			}
+			throw error;
+		}
 		let output = '';
 		const onData = (chunk: Buffer) => {
 			output += chunk.toString('utf8');
 			// チャンク境界でURLが途切れた状態を確定させないよう、蓄積出力から毎回抽出し直して更新する
-			const url = /https:\/\/auth\.openai\.com[^\s"')]+/.exec(output)?.[0];
+			const url = paradisCodexLoginUrl(output);
 			if (url && url !== session.state.url && session.state.phase === 'waiting_browser') {
 				session.state = { ...session.state, url };
 			}
@@ -849,17 +910,8 @@ export class ParadisLimitsMonitorService {
 			return;
 		}
 
-		// 失敗/キャンセル時: 自分が作った新ホームのみ後始末する(既存ホームは決して消さない)。
-		// 消してよいのは自分が置いたconfig.tomlコピーだけで、他に何かができていたら残す
-		if (createdHome && !(await this.fileExists(path.join(homePath, 'auth.json')))) {
-			try {
-				if (copiedConfig) {
-					await fs.promises.rm(path.join(homePath, 'config.toml'), { force: true });
-				}
-				await fs.promises.rmdir(homePath);
-			} catch {
-				// 空でない(codexが何かを書いた)場合は残す
-			}
+		if (createdHome) {
+			await this.removeUnusedCodexHome(homePath);
 		}
 		if (!cancelled) {
 			const detail = output.trim().split('\n').pop() ?? '';
@@ -868,12 +920,33 @@ export class ParadisLimitsMonitorService {
 	}
 
 	/**
+	 * 失敗/キャンセル時: 自分が作った新ホームのみ後始末する(既存ホームは決して消さない。呼び出し側は
+	 * 直前に確保したホームでだけ呼ぶ)。消すのは中身が自分の置いた config.toml（途中で失敗した書きかけを
+	 * 含む）だけのときで、他に何かができていたら(codex が何かを書いた)残す。
+	 */
+	private async removeUnusedCodexHome(homePath: string): Promise<void> {
+		try {
+			const entries = await fs.promises.readdir(homePath);
+			if (entries.every(entry => entry === 'config.toml')) {
+				await fs.promises.rm(homePath, { recursive: true, force: true });
+			}
+		} catch {
+			// 読めない・消せない場合は残す
+		}
+	}
+
+	/** `codex login` を起動する（テストで差し替える）。 */
+	protected spawnCodexLogin(command: string, args: readonly string[], options: cp.SpawnOptions): cp.ChildProcess {
+		return cp.spawn(command, args, options);
+	}
+
+	/**
 	 * 追加アカウント用の新しいCodexホームを確保する。~/.codex-2 から順に走査し、
 	 * mkdir(recursive無し)のEEXISTで存在検知することで、既存ディレクトリを決して
 	 * 再利用・上書きしない(TOCTOUも排除)。
 	 */
 	private async allocateCodexHome(): Promise<string> {
-		const home = os.homedir();
+		const home = this._homedir();
 		for (let index = 2; index <= MAX_CODEX_HOME_INDEX; index++) {
 			const candidate = path.join(home, `.codex-${index}`);
 			try {
@@ -933,7 +1006,7 @@ export class ParadisLimitsMonitorService {
 	}
 
 	private scheduleSetupTimeout(session: ISetupSession): void {
-		timeout(SETUP_TIMEOUT_MS).then(() => {
+		this.afterDelay(SETUP_TIMEOUT_MS, () => {
 			if (this.setupSessions.get(session.id) === session && session.state.phase !== 'done' && session.state.phase !== 'error') {
 				session.dispose();
 				session.state = { ...session.state, phase: 'error', error: 'timed out' };
@@ -943,11 +1016,18 @@ export class ParadisLimitsMonitorService {
 	}
 
 	private scheduleSetupCleanup(session: ISetupSession): void {
-		timeout(SETUP_RETENTION_MS).then(() => {
+		this.afterDelay(SETUP_RETENTION_MS, () => {
 			if (this.setupSessions.get(session.id) === session) {
 				this.setupSessions.delete(session.id);
 			}
 		});
+	}
+
+	/** `ms` 後に `fn` を呼ぶ。dispose で取り消す（止めた後にタイマーだけ残さない）。 */
+	private afterDelay(ms: number, fn: () => void): void {
+		const timer = timeout(ms);
+		this.setupTimers.add(timer);
+		timer.then(fn, () => undefined).finally(() => this.setupTimers.delete(timer));
 	}
 
 	// ---------- 実行ヘルパー ----------
@@ -957,7 +1037,7 @@ export class ParadisLimitsMonitorService {
 	 * （候補の場所は paradisResolveAgentCli と共通）。PATH 上にあるかは `codex --version` が
 	 * 通るかで確かめ、そのときはコマンド名のまま返す。
 	 */
-	private async resolveCommand(name: 'codex', explicitPath: string | undefined): Promise<string> {
+	protected async resolveCommand(name: 'codex', explicitPath: string | undefined): Promise<string> {
 		if (explicitPath) {
 			if (!path.isAbsolute(explicitPath)) {
 				throw new Error(`configured path for ${name} must be absolute: ${explicitPath}`);
@@ -1003,7 +1083,11 @@ export class ParadisLimitsMonitorService {
 // 接続先（REH）へも同じチャネルを生やすため context は型引数にしておく（中身では使わない）。
 export class ParadisLimitsMonitorChannel<TContext = string> implements IServerChannel<TContext> {
 
-	constructor(private readonly service: ParadisLimitsMonitorService) { }
+	/**
+	 * @param claudeHost 接続先（REH）の Claude のログインの使用量（読み取り専用）。REH にだけ渡す。
+	 * shared process では渡さず、{@link PARADIS_CLAUDE_HOST_STATE_COMMAND} は「無い」と答える。
+	 */
+	constructor(private readonly service: ParadisLimitsMonitorService, private readonly claudeHost?: ParadisClaudeHostUsage) { }
 
 	listen<T>(_ctx: TContext, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
@@ -1022,6 +1106,12 @@ export class ParadisLimitsMonitorChannel<TContext = string> implements IServerCh
 			case 'resolveCodexDuplicate': return this.service.resolveCodexDuplicate(String(args[0]), args[1] as ParadisLimitsDuplicateDecision) as Promise<T>;
 			case 'getSetupState': return Promise.resolve(this.service.getSetupState(String(args[0]))) as Promise<T>;
 			case 'cancelSetup': return Promise.resolve(this.service.cancelSetup(String(args[0]))) as Promise<T>;
+			case PARADIS_CLAUDE_HOST_STATE_COMMAND:
+				if (this.claudeHost) {
+					const request = (args[0] ?? {}) as IParadisClaudeStateRequest;
+					return this.claudeHost.getState({ refresh: request.refresh === true, passive: request.passive === true }) as Promise<T>;
+				}
+				throw new Error(`Method not found: ${command}`);
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
@@ -1031,10 +1121,21 @@ export class ParadisLimitsMonitorChannel<TContext = string> implements IServerCh
 /**
  * REH (接続先) 側の登録。利用上限は接続先の認証情報から読むので、繋いでいる間は接続先に聞く。
  * 設定と起動引数は渡さない（どちらも省略可で、シェル環境の解決だけに使う）。
+ *
+ * Claude は、接続先の Claude Code がいまログインしているアカウントの使用量だけを読み取り専用で答える
+ * （{@link ParadisClaudeHostUsage}。トークンの更新もファイルへの書き込みもしない）。`CLAUDE_CONFIG_DIR` は
+ * この REH のプロセスの環境にあるときだけ使う。
  */
 export function registerParadisLimitsMonitorForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
 	const service = new ParadisLimitsMonitorService(logService);
-	server.registerChannel(PARADIS_LIMITS_MONITOR_CHANNEL, new ParadisLimitsMonitorChannel<TContext>(service));
+	const claudeHost = new ParadisClaudeHostUsage({
+		homedir: os.homedir(),
+		platform: process.platform,
+		configDir: process.env['CLAUDE_CONFIG_DIR'],
+		oauth: new ParadisClaudeOAuthClient(),
+		logService,
+	});
+	server.registerChannel(PARADIS_LIMITS_MONITOR_CHANNEL, new ParadisLimitsMonitorChannel<TContext>(service, claudeHost));
 	return { dispose: () => service.dispose() };
 }
 

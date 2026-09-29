@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../appState.js';
+import { localRelayWindowId } from '../../relayHosts.js';
 import type { RateLimitsResult } from '../../store.js';
 import { todayCost } from '../../usageFormat.js';
 
@@ -36,7 +37,8 @@ export function useHomeUsage(): HomeUsage {
 		const mine = ++seq.current;
 		const pcAtStart = activePcId;
 		const stillCurrent = () => mine === seq.current && useAppStore.getState().activePcId === pcAtStart;
-		rateLimits().then(limits => {
+		// この PC のアカウントの値を出す（SSH のウィンドウの接続先のログインに入れ替わらないように）
+		rateLimits(false, localRelayWindowId(useAppStore.getState().workspace?.renderers)).then(limits => {
 			if (stillCurrent()) {
 				setUsage(prev => ({ ...(prev.pcId === pcAtStart ? prev : {}), pcId: pcAtStart, limits }));
 			}

@@ -11,6 +11,11 @@
 // ウィジェットから updateSnapshot() を受け取るだけの受け身のビュー。
 // アカウントごとに 5時間/7日/モデル別枠のバーとリセット残り時間を表示し、失効アカウントには
 // 再ログインボタン、プロバイダーヘッダーにはアカウント追加ボタンを出す。
+//
+// SSH のウィンドウの Claude（スナップショットの `remoteHost` が付いている）は、接続先の Claude Code が
+// いまログインしているアカウントだけを読み取り専用で出す。見出しに接続先の名前を出し、
+// アカウントの追加・切り替え・登録・claude-swap の案内（差し込み部品を含む）は出さない。直し方の案内も
+// 接続先のターミナルでの /login に変える。
 
 import './media/paradisLimitsMonitor.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -182,6 +187,11 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		const header = dom.append(this.bodyElement, $('.plm-provider-header'));
 		appendParadisLimitsLogo(header, provider);
 		dom.append(header, $('span')).textContent = title;
+		const remoteHost = provider === 'claude' ? providerSnapshot.remoteHost : undefined;
+		if (remoteHost) {
+			this.renderRemoteHostSection(header, providerSnapshot, remoteHost.label);
+			return;
+		}
 		// 非表示にしている分があると「3 アカウント」なのに行が2つしか無い、という食い違いが
 		// 起きるため、隠れている分がある場合だけ「表示中 / 合計」の内訳を出す。
 		const hiddenCount = providerSnapshot.accounts.filter(account => this.options.isAccountHidden(account)).length;
@@ -210,7 +220,22 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		}
 	}
 
-	private renderProviderAccounts(provider: ParadisLimitsProvider, providerSnapshot: IParadisLimitsProviderSnapshot): void {
+	/**
+	 * SSH の接続先の Claude のログイン（読み取り専用）。アカウントの数・追加ボタン・差し込み部品は出さず、
+	 * 見出しに接続先の名前を出す。手元のアカウントは手元のウィンドウで見る。
+	 */
+	private renderRemoteHostSection(header: HTMLElement, providerSnapshot: IParadisLimitsProviderSnapshot, hostLabel: string | undefined): void {
+		dom.append(header, $('.plm-provider-count')).textContent = hostLabel
+			? localize('paradis.limitsMonitor.claudeRemoteHostHeading', "接続先 {0} のログイン", hostLabel)
+			: localize('paradis.limitsMonitor.claudeRemoteHostHeadingUnknown', "接続先のログイン");
+		this.renderProviderAccounts('claude', providerSnapshot, true);
+		dom.append(this.bodyElement, $('.plm-provider-footer')).textContent = localize(
+			'paradis.limitsMonitor.claudeRemoteHostNote',
+			"接続先の Claude Code がいまログインしているアカウントです。手元の PC のアカウントの確認と切り替えは、手元のウィンドウで行います。",
+		);
+	}
+
+	private renderProviderAccounts(provider: ParadisLimitsProvider, providerSnapshot: IParadisLimitsProviderSnapshot, remoteHost = false): void {
 		if (providerSnapshot.sourceError) {
 			dom.append(this.bodyElement, $('.plm-source-error')).textContent = providerSnapshot.sourceError;
 			return;
@@ -224,7 +249,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			if (this.options.isAccountHidden(account)) {
 				hiddenAccounts.push(account);
 			} else {
-				this.renderAccount(account);
+				this.renderAccount(account, remoteHost);
 			}
 		}
 		if (hiddenAccounts.length > 0) {
@@ -266,7 +291,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		}
 	}
 
-	private renderAccount(account: IParadisLimitsAccount): void {
+	/** @param remoteHost SSH の接続先の Claude のログイン（読み取り専用。手元の操作は出さない）。 */
+	private renderAccount(account: IParadisLimitsAccount, remoteHost = false): void {
 		const card = dom.append(this.bodyElement, $('.plm-account'));
 		const top = dom.append(card, $('.plm-account-top'));
 		dom.append(top, $('.plm-account-mail')).textContent = account.email ?? account.homeLabel ?? account.id;
@@ -298,14 +324,18 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		}
 
 		const actions = dom.append(badgeGroup, $('.plm-account-actions'));
-		const hideLabel = localize('paradis.limitsMonitor.hideAccount', "{0} を一覧から隠す", account.email ?? account.homeLabel ?? account.id);
-		const hideButton = dom.append(actions, $('button.plm-account-icon-btn.plm-account-hide')) as HTMLButtonElement;
-		hideButton.type = 'button';
-		hideButton.setAttribute('aria-label', hideLabel);
-		// 再表示ボタン(非表示中リスト側)と対にする: 「隠す」はeyeClosed、「再表示」はeye。
-		hideButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.eyeClosed)}`));
-		this._bodyListeners.add(dom.addDisposableListener(hideButton, 'click', () => this.options.onToggleHiddenAccount(account)));
-		this._bodyListeners.add(this.hoverService.setupManagedHover(this.hoverDelegate, hideButton, hideLabel));
+		// 接続先のログインのカードは1枚だけなので隠せないようにする（隠すと Claude の欄が空になり、
+		// 「非表示中」からしか戻せない）。
+		if (!remoteHost) {
+			const hideLabel = localize('paradis.limitsMonitor.hideAccount', "{0} を一覧から隠す", account.email ?? account.homeLabel ?? account.id);
+			const hideButton = dom.append(actions, $('button.plm-account-icon-btn.plm-account-hide')) as HTMLButtonElement;
+			hideButton.type = 'button';
+			hideButton.setAttribute('aria-label', hideLabel);
+			// 再表示ボタン(非表示中リスト側)と対にする: 「隠す」はeyeClosed、「再表示」はeye。
+			hideButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.eyeClosed)}`));
+			this._bodyListeners.add(dom.addDisposableListener(hideButton, 'click', () => this.options.onToggleHiddenAccount(account)));
+			this._bodyListeners.add(this.hoverService.setupManagedHover(this.hoverDelegate, hideButton, hideLabel));
+		}
 
 		// Claude は Para Code に登録したものだけ登録を消せる（この PC のログインには触らない）。
 		if ((account.provider === 'codex' && account.removable) || (account.provider === 'claude' && account.managed)) {
@@ -328,10 +358,12 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			// Claude の登録していないログインは Para Code からは直せない（ターミナルで claude に
 			// ログインし直す）。再ログインのボタンは登録したアカウントと Codex にだけ出し、それ以外は
 			// 直し方を文で案内する。
-			const canRelogin = account.provider === 'codex' || account.managed === true;
-			dom.append(errorRow, $('span')).textContent = paradisLimitsNeedsRelogin(account.status) && !canRelogin
-				? localize('paradis.limitsMonitor.claudeLiveRelogin', "ターミナルで claude を起動し、/login でログインし直してください")
-				: this.statusMessage(account);
+			const canRelogin = !remoteHost && (account.provider === 'codex' || account.managed === true);
+			dom.append(errorRow, $('span')).textContent = remoteHost
+				? this.remoteHostStatusMessage(account)
+				: paradisLimitsNeedsRelogin(account.status) && !canRelogin
+					? localize('paradis.limitsMonitor.claudeLiveRelogin', "ターミナルで claude を起動し、/login でログインし直してください")
+					: this.statusMessage(account);
 			if (paradisLimitsNeedsRelogin(account.status) && canRelogin) {
 				const reloginButton = dom.append(errorRow, $('button.plm-relogin-btn'));
 				reloginButton.setAttribute('type', 'button');
@@ -361,7 +393,9 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 				}
 			}
 		}
-		this.renderAccountActions(card, account);
+		if (!remoteHost) {
+			this.renderAccountActions(card, account);
+		}
 	}
 
 	/** 差し込み部品のボタン列。何も足されなければ列ごと消す。 */
@@ -398,6 +432,43 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			default: {
 				// 状態を増やしたらここがコンパイルエラーになる（無言の誤表示を防ぐ）。
 				const exhaustive: never = status;
+				return exhaustive;
+			}
+		}
+	}
+
+	/**
+	 * SSH の接続先の Claude のログインの状態の説明文。直すのは接続先の Claude Code なので、手元の
+	 * 「再ログイン…」ではなく接続先のターミナルでの操作を案内する。
+	 */
+	private remoteHostStatusMessage(account: IParadisLimitsAccount): string {
+		switch (account.status) {
+			case 'refreshing':
+				// Claude Code は動いている間しかトークンを更新しない。「待てば直る」とは書かない。
+				return localize('paradis.limitsMonitor.claudeHostRefreshing', "アクセストークンの期限が切れています。接続先で claude を起動すると Claude Code が更新し、表示が戻ります");
+			case 'relogin_required':
+			case 'no_credentials':
+				return localize('paradis.limitsMonitor.claudeHostRelogin', "接続先のターミナルで claude を起動し、/login でログインし直してください");
+			case 'unavailable':
+				switch (account.unavailableReason) {
+					case 'host_not_logged_in':
+						return localize('paradis.limitsMonitor.claudeHostNotLoggedIn', "接続先に Claude のサブスクリプションのログインが見つかりません。接続先で使うときは、接続先のターミナルで claude を起動し /login でログインすると表示されます（API キーで使っている場合は表示できません）");
+					case 'host_fetch_failed':
+						return account.statusDetail
+							? localize('paradis.limitsMonitor.claudeHostFetchFailedDetail', "接続先から使用量を取得できていません（{0}）。しばらくしてから取り直します", account.statusDetail)
+							: localize('paradis.limitsMonitor.claudeHostFetchFailed', "接続先から使用量を取得できていません。しばらくしてから取り直します");
+					case 'keychain_unavailable':
+						return localize('paradis.limitsMonitor.claudeHostKeychain', "接続先では Claude のログインが macOS のキーチェーンに保存されているため、SSH 越しには読み取れません");
+					default:
+						// 取得回数の上限などによる一時的なもの。手元と同じ説明にする。
+						return this.statusMessage(account);
+				}
+			case 'error':
+				return this.statusMessage(account);
+			case 'ok':
+				return '';
+			default: {
+				const exhaustive: never = account.status;
 				return exhaustive;
 			}
 		}

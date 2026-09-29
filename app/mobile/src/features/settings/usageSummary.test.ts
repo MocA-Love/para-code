@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('../../hooks/useAppIsActive.js', () => ({ useAppIsActive: () => true }));
 import type { RateLimitAccount, UsageDashboardResult } from '../../store.js';
 import {
+	accountHint,
 	accountName,
 	accountStatusMessage,
 	accountWindows,
@@ -14,6 +15,7 @@ import {
 	ratioPercent,
 	recentDailyAverage,
 	resetInLabel,
+	usageFootNote,
 } from './usageSummary.js';
 
 const NOW = new Date(2026, 8, 26, 12, 0, 0).getTime();
@@ -118,6 +120,48 @@ describe('accountStatusMessage', () => {
 
 	it('PC から届いた詳細があればそれを出す', () => {
 		expect(accountStatusMessage(account({ status: 'error', statusDetail: 'detail' }))).toBe('detail');
+	});
+});
+
+describe('SSH の接続先の Claude のログイン', () => {
+	const host = { label: 'devbox' };
+
+	it('使用中の代わりにどの接続先のログインかを書く', () => {
+		expect({
+			hint: accountHint(account({ email: 'a@example.com' }), host),
+			unknownHostHint: accountHint(account(), {}),
+			localActiveHint: accountHint(account({ active: true }), undefined),
+		}).toEqual({
+			hint: '接続先 devbox でログイン中',
+			unknownHostHint: '接続先でログイン中',
+			localActiveHint: '使用中',
+		});
+	});
+
+	it('直し方は PC の Para Code ではなく接続先を案内し、ログインが無い・取れないは中立に書く', () => {
+		const messages = {
+			refreshing: accountHint(account({ status: 'refreshing' }), host),
+			relogin: accountHint(account({ status: 'relogin_required' }), host),
+			notLoggedIn: accountHint(account({ status: 'unavailable', unavailableReason: 'host_not_logged_in' }), host),
+			fetchFailed: accountHint(account({ status: 'unavailable', unavailableReason: 'host_fetch_failed', statusDetail: 'could not reach the usage API' }), host),
+			keychain: accountHint(account({ status: 'unavailable', unavailableReason: 'keychain_unavailable' }), host),
+			rateLimited: accountHint(account({ status: 'unavailable', unavailableReason: 'rate_limited' }), host),
+		};
+		expect(messages).toEqual({
+			refreshing: 'アクセストークンの期限が切れています。接続先で claude を起動すると Claude Code が更新し、表示が戻ります',
+			relogin: '接続先のターミナルで claude を起動し、/login でログインし直してください',
+			notLoggedIn: '接続先に Claude のサブスクリプションのログインが見つかりません。接続先で使うときは、接続先のターミナルで claude を起動し /login でログインすると表示されます（API キーで使っている場合は表示できません）',
+			fetchFailed: '接続先から使用量を取得できていません（could not reach the usage API）。しばらくしてから取り直します',
+			keychain: '接続先では Claude のログインが macOS のキーチェーンに保存されているため、SSH 越しには読み取れません',
+			rateLimited: '使用状況を一時的に取得できていません（上限に達したアカウントは、リセットまで取得を止めます）',
+		});
+		expect(Object.values(messages).some(message => message?.includes('PC の Para Code'))).toBe(false);
+	});
+
+	it('画面の下の注記も接続先のログインに合わせる（古い PC は印を付けないので従来の文言）', () => {
+		expect(usageFootNote({ accounts: [], remoteHost: host })).toContain('接続先のターミナル');
+		expect(usageFootNote({ accounts: [] })).toBe('アカウントの追加や再ログインは、PC の Para Code から行います。');
+		expect(usageFootNote(undefined)).toBe('アカウントの追加や再ログインは、PC の Para Code から行います。');
 	});
 });
 

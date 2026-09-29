@@ -9,6 +9,7 @@ import {
 	writeWidgetFileIfUnchanged,
 } from '../../modules/para-live-activity/index.js';
 import { useAppStore } from '../appState.js';
+import { localRelayWindowId } from '../relayHosts.js';
 import { startStatusSinceTracking, useStatusSince } from '../features/pc/statusSinceStore.js';
 import {
 	buildWidgetSnapshot,
@@ -305,7 +306,8 @@ function maybeFetchUsage(state: AppStoreState, now: number): void {
 	usageInFlight = true;
 	usageByPc.set(pcId, { usage: cached?.usage, at: now });
 	void Promise.all([
-		state.rateLimits().catch(() => undefined),
+		// この PC のアカウントの値（SSH のウィンドウの接続先のログインに入れ替わらないように）
+		state.rateLimits(false, localRelayWindowId(state.workspace?.renderers)).catch(() => undefined),
 		state.usageDashboard().catch(() => undefined),
 	]).then(([limits, dashboard]) => {
 		// 取っている間に PC を切り替えたら捨てる（別の PC の値を混ぜない）。

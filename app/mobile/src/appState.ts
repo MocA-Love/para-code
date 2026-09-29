@@ -357,7 +357,7 @@ interface AppState extends StoreState {
 	/** RTK(Rust Token Killer)の節約状況。bypassCache/windowId の意味は usageDashboard と同じ。 */
 	rtkSavings(bypassCache?: boolean, windowId?: number): Promise<RtkSavingsResult>;
 	/** Rate Limit(AIリミット)スナップショット。bypassCache/windowId の意味は usageDashboard と同じ。 */
-	rateLimits(bypassCache?: boolean, windowId?: number): Promise<RateLimitsResult>;
+	rateLimits(bypassCache?: boolean, windowId?: number, claudeHost?: boolean): Promise<RateLimitsResult>;
 	/** GitHub API利用状況。bypassCache の意味は usageDashboard と同じ。 */
 	githubUsage(bypassCache?: boolean): Promise<GithubUsageResult>;
 	/** PC本体のリソース内訳（「システム」画面）。bypassCache の意味は usageDashboard と同じ。 */
@@ -2108,9 +2108,9 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.rtkSavings(bypassCache, windowId);
 	},
 
-	rateLimits(bypassCache?: boolean, windowId?: number) {
+	rateLimits(bypassCache?: boolean, windowId?: number, claudeHost?: boolean) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		return controller.rateLimits(bypassCache, windowId);
+		return controller.rateLimits(bypassCache, windowId, claudeHost);
 	},
 
 	githubUsage(bypassCache?: boolean) {

@@ -86,3 +86,22 @@ export function defaultRelayHostId(hosts: readonly RelayHost[], renderers: reado
 	}
 	return (hosts.find(host => host.ready) ?? hosts[0])?.id;
 }
+
+/**
+ * この PC 自身（ローカル）の応答できるウィンドウ。無ければ undefined。
+ *
+ * ホームやウィジェットの利用上限は、この PC のアカウントの値を出す。ウィンドウを選ばずに問い合わせると
+ * PC は最初に見つけたウィンドウで答え、それが SSH のウィンドウだと Claude が接続先のログインに入れ替わる
+ * （新しい PC はウィンドウを選ばない問い合わせには手元の Claude を返すが、こちらからもローカルを名指しする）。
+ */
+export function localRelayWindowId(renderers: readonly RelayHostRendererLike[] | undefined): number | undefined {
+	return renderers?.find(renderer => renderer.ready && renderer.host?.kind === 'local')?.windowId;
+}
+
+/**
+ * 使用量の画面で、Claude を選んだ接続先のログインで出してもらうか（`limits` の `claudeHost`）。
+ * SSH などの接続先を選んだときだけ。PC はこれが付いた問い合わせにだけ接続先の Claude を返す。
+ */
+export function wantsClaudeHost(host: RelayHost | undefined): boolean {
+	return host?.kind === 'remote';
+}

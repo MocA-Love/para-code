@@ -113,6 +113,12 @@ export interface IParadisClaudeLiveSnapshot {
 
 export interface IParadisClaudeLiveAuthOptions {
 	readonly homedir: string;
+	/**
+	 * `CLAUDE_CONFIG_DIR` で動く Claude Code の設定フォルダ（絶対パス）。渡すと認証情報と身元をこの下の
+	 * `.credentials.json` / `.claude.json` から読む。接続先（REH）の読み取り専用の表示だけが使い、この PC の
+	 * 切り替え（書き込み）では渡さない。
+	 */
+	readonly configDir?: string;
 	readonly platform: NodeJS.Platform;
 	/** macOS のときだけ使う。 */
 	readonly keychain: IParadisKeychain | undefined;
@@ -206,7 +212,7 @@ export class ParadisClaudeLiveAuth {
 	}
 
 	get configHome(): string {
-		return path.join(this.options.homedir, '.claude');
+		return this.options.configDir ?? path.join(this.options.homedir, '.claude');
 	}
 
 	get credentialsPath(): string {
@@ -232,14 +238,17 @@ export class ParadisClaudeLiveAuth {
 		return ParadisClaudeLiveAuth.scopedKeychainService(this.configHome);
 	}
 
-	/** `~/.claude/.config.json` があればそれ（古い版）、無ければ `~/.claude.json`。 */
+	/**
+	 * `~/.claude/.config.json` があればそれ（古い版）、無ければ `~/.claude.json`。`configDir` を渡したときは
+	 * Claude Code と同じくその下の `.config.json` / `.claude.json`。
+	 */
 	async globalConfigPath(): Promise<string> {
 		const legacy = path.join(this.configHome, '.config.json');
 		try {
 			await fs.promises.access(legacy);
 			return legacy;
 		} catch {
-			return path.join(this.options.homedir, '.claude.json');
+			return path.join(this.options.configDir ?? this.options.homedir, '.claude.json');
 		}
 	}
 
