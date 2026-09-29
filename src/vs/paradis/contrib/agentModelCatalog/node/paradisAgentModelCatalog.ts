@@ -52,6 +52,11 @@ const AGENTS: readonly ParadisCatalogAgentId[] = ['claude', 'codex'];
 const CATALOG_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** 窓が続けて開いたときに、そのたび `--version` を起こさないための間隔。 */
 const RECHECK_INTERVAL_MS = 60 * 1000;
+/**
+ * 一覧を取れなかった CLI（一覧を返さない古い版など）に、同じ版のまま聞き直すまでの間隔。取れないたびに
+ * `claude -p`（最大 30 秒）や `codex app-server` を起こし直さないため。版が変われば待たずに聞く。
+ */
+const PROBE_FAILURE_RETRY_MS = 60 * 60 * 1000;
 const VERSION_TIMEOUT_MS = 10_000;
 const CLAUDE_PROBE_TIMEOUT_MS = 30_000;
 const CODEX_MAX_PAGES = 5;
@@ -84,6 +89,8 @@ export class ParadisAgentModelCatalogService {
 	private cache: Promise<Record<string, ICachedCatalog>> | undefined;
 	private inFlight: Promise<IParadisAgentModelCatalog[]> | undefined;
 	private lastResult: { readonly at: number; readonly catalogs: IParadisAgentModelCatalog[] } | undefined;
+	/** 一覧を取れなかった CLI（実行ファイルと版）と、その時刻。 */
+	private readonly failedProbes = new Map<ParadisCatalogAgentId, { readonly command: string; readonly version: string; readonly at: number }>();
 
 	constructor(
 		private readonly backend: IParadisAgentModelCatalogBackend,
@@ -136,6 +143,11 @@ export class ParadisAgentModelCatalogService {
 		if (cached !== undefined && cached.command === cli.command && cached.cliVersion === version && this.backend.now() - cached.fetchedAt < CATALOG_MAX_AGE_MS) {
 			return publicCatalog(cached);
 		}
+		const fallback = cached !== undefined && cached.command === cli.command ? publicCatalog(cached) : undefined;
+		const failed = this.failedProbes.get(agentId);
+		if (failed !== undefined && failed.command === cli.command && failed.version === version && this.backend.now() - failed.at < PROBE_FAILURE_RETRY_MS) {
+			return fallback;
+		}
 		let models: IParadisDiscoveredModel[] = [];
 		try {
 			models = await this.backend.probe(agentId, cli);
@@ -143,8 +155,10 @@ export class ParadisAgentModelCatalogService {
 			this.logService.warn(`[ParadisAgentModelCatalog] ${agentId} ${version}: could not list models`, error);
 		}
 		if (models.length === 0) {
-			return cached !== undefined && cached.command === cli.command ? publicCatalog(cached) : undefined;
+			this.failedProbes.set(agentId, { command: cli.command, version, at: this.backend.now() });
+			return fallback;
 		}
+		this.failedProbes.delete(agentId);
 		const entry: ICachedCatalog = { agentId, cliVersion: version, models, fetchedAt: this.backend.now(), command: cli.command };
 		// 同じ入れ物を書き換える（claude と codex を並べて取るので、写しを作ると片方の結果が消える）
 		const cache = await this.readCache();

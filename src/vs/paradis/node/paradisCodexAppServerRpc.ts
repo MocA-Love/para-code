@@ -114,16 +114,23 @@ function codexHomeLockKey(env: NodeJS.ProcessEnv): string {
 	return process.platform === 'win32' || process.platform === 'darwin' ? resolved.toLowerCase() : resolved;
 }
 
-/** ホームのロックを取る。返す関数で外す（何度呼んでもよい）。 */
-async function acquireCodexHomeLock(key: string): Promise<() => void> {
+/**
+ * ホームのロックを取る。返す関数で外す（何度呼んでもよい）。
+ *
+ * 待つのをあきらめたら、その時点で自分の番とみなす。後ろに並んだ者は、あきらめた前の保持者ではなく
+ * 自分が外すのを待つ（閉じ忘れた保持者が1人いるだけで、後ろの全員が上限まで待たされ続けないように）。
+ * @internal テスト用に `waitMs` を変えられる。
+ */
+export async function paradisAcquireCodexHomeLock(key: string, waitMs: number = HOME_LOCK_WAIT_MS): Promise<() => void> {
 	const prior = homeLockTails.get(key) ?? Promise.resolve();
 	let releaseTail!: () => void;
 	const tail = new Promise<void>(resolveTail => { releaseTail = resolveTail; });
-	const chained = prior.then(() => tail);
+	const giveUp = timeout(waitMs);
+	const turn = Promise.race([prior, giveUp.then(() => undefined, () => undefined)]);
+	const chained = turn.then(() => tail);
 	homeLockTails.set(key, chained);
-	const giveUp = timeout(HOME_LOCK_WAIT_MS);
 	try {
-		await Promise.race([prior, giveUp]);
+		await turn;
 	} finally {
 		giveUp.cancel();
 	}
@@ -149,7 +156,7 @@ export const paradisStartCodexAppServerRpc: ParadisCodexAppServerRpcFactory = as
 	// Orca（`codex-home-process-lock.ts`）と同じく、同じホームの app-server は1つずつにする。codex は
 	// ホームの auth.json の使い捨てのリフレッシュトークンで更新するので、同じホームで2つが同時に更新すると
 	// 1回分の更新を二重に使い、保存したログインを無効にしうる。ロックはセッションを閉じるまで持つ。
-	const release = await acquireCodexHomeLock(codexHomeLockKey(childEnv));
+	const release = await paradisAcquireCodexHomeLock(codexHomeLockKey(childEnv));
 	let session: ParadisCodexAppServerRpcSession;
 	try {
 		session = new ParadisCodexAppServerRpcSession(command, childEnv, options.cwd, logService, options.shortLivedProbe === true, release);

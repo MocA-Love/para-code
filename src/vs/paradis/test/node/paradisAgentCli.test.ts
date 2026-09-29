@@ -10,9 +10,13 @@
 // hook の信頼・モデル一覧が共有する）。実ファイルは見ず、有無を決めた偽の fileExists で確かめる。
 
 import assert from 'assert';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { timeout } from '../../../base/common/async.js';
+import { join } from '../../../base/common/path.js';
 import { isWindows } from '../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { paradisAgentCliFallbackDirs, paradisResolveAgentCli } from '../../node/paradisAgentCli.js';
+import { paradisAgentCliFallbackDirs, paradisResolveAgentCli, paradisRunAgentCli } from '../../node/paradisAgentCli.js';
 
 (isWindows ? suite.skip : suite)('Paradis agent CLI resolution', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -57,5 +61,27 @@ import { paradisAgentCliFallbackDirs, paradisResolveAgentCli } from '../../node/
 		const onPath = await paradisResolveAgentCli('ccusage', { PATH: '/usr/bin' }, { homeDir: HOME, platform: 'linux', isOnPath: async name => { probed.push(name); return true; }, fileExists: existing('/usr/bin/ccusage').fileExists });
 		const fallback = await paradisResolveAgentCli('ccusage', {}, { homeDir: HOME, platform: 'linux', isOnPath: async () => false, fileExists: existing(`${HOME}/.deno/bin/ccusage`).fileExists });
 		assert.deepStrictEqual({ onPath, probed, fallback }, { onPath: 'ccusage', probed: ['ccusage'], fallback: `${HOME}/.deno/bin/ccusage` });
+	});
+
+	test('stops what the CLI started as well when it times out', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'paradis-agent-cli-'));
+		try {
+			const pidFile = join(root, 'grandchild.pid');
+			const script = join(root, 'slow-cli');
+			writeFileSync(script, `#!/bin/sh\nsleep 30 &\necho $! > '${pidFile}'\nwait\n`);
+			chmodSync(script, 0o755);
+			const failure = await paradisRunAgentCli(script, [], { env: process.env, timeoutMs: 500 }).then(() => undefined, (error: Error) => error.message);
+			const grandchild = Number(readFileSync(pidFile, 'utf8').trim());
+			await timeout(300);
+			let alive = true;
+			try {
+				process.kill(grandchild, 0);
+			} catch {
+				alive = false;
+			}
+			assert.deepStrictEqual({ timedOut: failure?.includes('timed out'), alive }, { timedOut: true, alive: false });
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
