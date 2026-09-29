@@ -84,6 +84,7 @@ function createFixture(): {
 		_ingressLeaseStates: new WeakMap<object, object>(),
 		_terminalExitedTokens: new Set<string>(),
 		_paneShells: new Map(),
+		_paneRemoteAuthorities: new Map(),
 		_paneStatuses: new Map(),
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set(),

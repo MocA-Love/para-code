@@ -67,6 +67,14 @@ export interface IParadisCdpGatewayDelegate {
 		isConnectionCurrent: () => boolean,
 	): IParadisCdpInputQueueOperation;
 	closeInputConnection(connection: object): void;
+	/** 接続先（SSH・WSL・コンテナ）のペインか（ペインの `remoteAuthority`）。台帳に無いトークンも true。 */
+	isRemotePane(token: string): boolean;
+	/**
+	 * この loopback 接続の相手が Para Code の張った戻り経路（`ssh -R`）のプロセスか。トークンが手元の
+	 * ペインのものでも、戻り経路から来たなら接続先からの接続として扱う。戻り経路があるのに相手を特定
+	 * できないときは true。プロセス表を調べるので、手元のファイルに触れるコマンドが来たときにだけ呼ぶ。
+	 */
+	isTunnelPeer(remotePort: number, localPort: number): Promise<boolean>;
 }
 
 /** Opaque service-owned authority captured before any token-local CDP state is touched. */
@@ -344,6 +352,7 @@ export class ParadisCdpGateway extends Disposable {
 				return;
 			}
 			const { token } = access;
+			const peer = typeof s.remotePort === 'number' && typeof s.localPort === 'number' ? { remotePort: s.remotePort, localPort: s.localPort } : undefined;
 			reservation = this._reserveWebSocket(token);
 			if (!reservation) {
 				socket.destroy();
@@ -374,7 +383,7 @@ export class ParadisCdpGateway extends Disposable {
 				}
 				// Capture the binding generation before the health-check await. A restart or
 				// rebind during that await must not gain a fresh lease for this stored URL.
-				const context = this._makeContext(access, reservation);
+				const context = this._makeContext(access, reservation, peer);
 				// Stored page URLs can outlive an Electron restart. Health-check through the
 				// refresh-aware JSON authority before opening the raw page WebSocket.
 				const { port } = await this.upstream.fetchJsonWithPort('/json/version');
@@ -396,7 +405,7 @@ export class ParadisCdpGateway extends Disposable {
 			}
 			// The health check below can refresh the Electron port. Keep it inside the
 			// binding generation that requested the upgrade.
-			const context = this._makeContext(access, reservation);
+			const context = this._makeContext(access, reservation, peer);
 			const { value: version, port } = await this.upstream.fetchJsonWithPort<{ webSocketDebuggerUrl?: string }>('/json/version');
 			if (!context.isCurrentLease()
 				|| typeof version.webSocketDebuggerUrl !== 'string'
@@ -512,7 +521,7 @@ export class ParadisCdpGateway extends Disposable {
 
 	// --- 内部ヘルパー ---
 
-	private _makeContext(access: IParadisCdpIngressAccess, reservation?: IParadisCdpWebSocketReservation): IParadisBoundContext {
+	private _makeContext(access: IParadisCdpIngressAccess, reservation?: IParadisCdpWebSocketReservation, peer?: { readonly remotePort: number; readonly localPort: number }): IParadisBoundContext {
 		if (!this._isIngressAccessCurrent(access)) {
 			throw new Error('CDP ingress authority is unavailable');
 		}
@@ -545,6 +554,22 @@ export class ParadisCdpGateway extends Disposable {
 		// 直近の値で埋める。恒久失効時はcloseConnectionsForTokenが世代をbumpしてisCurrentLeaseを偽にし、
 		// 接続ごと殺すのでスナップショットが古い値を返し続ける心配はない。
 		let lastKnownBoundTargetId: string | undefined;
+		// 戻り経路から来た接続か（接続ごとに1回だけ、手元のファイルに触れるコマンドが初めて来たときに調べる）
+		let viaTunnel: boolean | undefined = peer === undefined ? false : undefined;
+		let viaTunnelLookup: Promise<boolean> | undefined;
+		const isRemotePane = (): boolean | Promise<boolean> => {
+			if (this.delegate.isRemotePane(token)) {
+				return true;
+			}
+			if (viaTunnel !== undefined) {
+				return viaTunnel;
+			}
+			viaTunnelLookup ??= this.delegate.isTunnelPeer(peer!.remotePort, peer!.localPort).then(
+				result => viaTunnel = result,
+				() => viaTunnel = true,
+			);
+			return viaTunnelLookup;
+		};
 		return {
 			rawScreenshotCoordinator: this._rawScreenshotAuthorities.forAuthority(token),
 			isCurrentLease,
@@ -590,6 +615,7 @@ export class ParadisCdpGateway extends Disposable {
 				);
 			},
 			closeInputConnection,
+			isRemotePane,
 			onOpen: ws => {
 				if (!isCurrentLease()) {
 					reservation?.releaseIfUnattached();
