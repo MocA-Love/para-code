@@ -2154,6 +2154,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [
 			{ token: 'remote', shellPid: 4242, remoteAuthority: 'ssh-remote+dev' },
 			{ token: 'local', shellPid: 123 },
+			{ token: 'local-reloading' },
 		]));
 		Reflect.set(fixture.service, '_toolProviders', []);
 		const windowCalls: unknown[] = [];
@@ -2161,17 +2162,22 @@ suite('ParadisAgentBrowser authority integration', () => {
 			connections: [{ ctx: 'window:1' }],
 			getChannel: () => ({ call: async (method: string, args: unknown) => { windowCalls.push([method, args]); return { ok: true }; } }),
 		});
-		for (const token of ['remote', 'local']) {
+		const bodies: string[] = [];
+		for (const token of ['remote', 'local', 'local-reloading']) {
 			const request = new TestRequest('POST', `/?pane=${token}`);
 			const response = new TestResponse();
 			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
 			request.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'preview_file', arguments: { path: '/home/example/notes.md' } } })));
 			request.emit('end');
 			await pending;
+			bodies.push(response.body);
 		}
-		assert.deepStrictEqual(windowCalls, [
-			['previewFile', ['remote', '/home/example/notes.md', 'ssh-remote+dev']],
-			['previewFile', ['local', '/home/example/notes.md']],
-		]);
+		assert.deepStrictEqual({ windowCalls, unregisteredRefused: bodies[2].includes('has not registered this terminal pane yet') }, {
+			windowCalls: [
+				['previewFile', ['remote', '/home/example/notes.md', 'ssh-remote+dev']],
+				['previewFile', ['local', '/home/example/notes.md']],
+			],
+			unregisteredRefused: true,
+		});
 	});
 });

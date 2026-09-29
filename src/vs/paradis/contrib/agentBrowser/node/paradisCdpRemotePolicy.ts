@@ -52,7 +52,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-const REMOTE_REASON = 'this CDP connection comes from a terminal pane in a remote window (SSH, WSL, container), and the browser runs on the user\'s local machine, so it would reach the user\'s local files.';
+const REMOTE_REASON = 'this CDP connection comes from a terminal pane in a remote window (SSH, WSL, container), or Para Code has not registered this pane yet (wait a moment and retry), and the browser runs on the user\'s local machine, so it would reach the user\'s local files.';
 
 /**
  * 接続先のペインからの CDP コマンドのうち、手元のファイルに触れるものを断るときの説明文。

@@ -320,16 +320,16 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 	}
 }
 
-/**
- * shared process の IPCServer へ、このウィンドウ宛の {@link PARADIS_AGENT_PREVIEW_CHANNEL}
- * を登録する。登録はウィンドウの生存期間ずっと有効（接続断で自動的に消える）。
- */
 /** 接続先のパスを、その接続先のリソースにする。Windows 形式の区切りは `/` に揃える。 */
 function paradisRemotePathResource(remoteAuthority: string, path: string): URI {
 	const posixPath = path.replace(/\\/g, '/');
 	return URI.from({ scheme: Schemas.vscodeRemote, authority: remoteAuthority, path: posixPath.startsWith('/') ? posixPath : `/${posixPath}` });
 }
 
+/**
+ * shared process の IPCServer へ、このウィンドウ宛の {@link PARADIS_AGENT_PREVIEW_CHANNEL}
+ * を登録する。登録はウィンドウの生存期間ずっと有効（接続断で自動的に消える）。
+ */
 class ParadisAgentPreviewContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.paradisAgentPreview';
 
