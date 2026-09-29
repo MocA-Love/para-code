@@ -82,23 +82,33 @@ export interface IParadisBoundContext {
 	/**
 	 * この接続が接続先（SSH・WSL・コンテナ）のペインのものか、戻り経路から来たか。true のときは手元の
 	 * ファイルに触れるコマンドを断る（paradisCdpRemotePolicy.ts）。手元のファイルに触れうるコマンドが
-	 * 来たときにだけ呼ぶ。
+	 * 来たときにだけ呼ぶ。まだ分からない（戻り経路かをこれから調べる）ときは Promise を返し、以後は
+	 * 同期で答える。
 	 */
-	isRemotePane(): boolean;
+	isRemotePane(): boolean | Promise<boolean>;
 }
 
-/** 接続先のペインからの、手元のファイルに触れるコマンドなら断る理由を返す。 */
-function remotePaneDeniedMessage(ctx: IParadisBoundContext, method: string, params: Record<string, unknown> | undefined): string | undefined {
+/**
+ * 接続先のペインからの、手元のファイルに触れるコマンドなら断る理由を返す。判定を待つ必要があれば
+ * Promise を返す（呼び出し側は待ってから同じコマンドをもう一度処理する）。`resolved` のときに
+ * まだ判定が出ていなければ断る。
+ */
+function remotePaneDeniedMessage(ctx: IParadisBoundContext, method: string, params: Record<string, unknown> | undefined, resolved: boolean): string | undefined | Promise<void> {
 	const message = paradisRemotePaneCdpDeniedMessage(method, params);
 	if (message === undefined) {
 		return undefined;
 	}
+	let remote: boolean | Promise<boolean>;
 	try {
-		return ctx.isRemotePane() ? message : undefined;
+		remote = ctx.isRemotePane();
 	} catch {
 		// 判定できなければ断る側へ倒す
 		return message;
 	}
+	if (typeof remote === 'boolean') {
+		return remote ? message : undefined;
+	}
+	return resolved ? message : remote.then(() => undefined, () => undefined);
 }
 
 interface IJsonRpcMsg {
@@ -1139,7 +1149,7 @@ export function paradisProxyPageUpgrade(
 			}, closeBoth);
 			await Promise.race([operation.drained, connectionClosed]);
 		};
-		const processClientMessage = (data: wsTypes.RawData): Promise<void> | undefined => {
+		const processClientMessage = (data: wsTypes.RawData, remoteResolved = false): Promise<void> | undefined => {
 			if (!ctx.isCurrentLease() || !ctx.boundTargetIds().has(targetId)) {
 				closeBoth();
 				return;
@@ -1149,13 +1159,17 @@ export function paradisProxyPageUpgrade(
 				closeBoth();
 				return;
 			}
+			const remoteDenied = remotePaneDeniedMessage(ctx, msg.method, msg.params, remoteResolved);
+			if (remoteDenied instanceof Promise) {
+				return remoteDenied.then(() => processClientMessage(data, true));
+			}
 			// 常時拒否メソッドはページレベル接続でも遮断する（Page.close等は共有ビューを破壊する）
 			const denied = ALWAYS_DENIED_METHODS.get(msg.method)
 				?? sharedStateDeniedMessage(msg.method)
 				?? paradisCookieAndRewriteDeniedMessage(msg.method, msg.params)
 				?? (msg.method.startsWith('Target.') ? `${msg.method} is not permitted on a page-scoped CDP connection.` : undefined)
 				?? (LAYOUT_MANAGED_DENIED_METHODS.has(msg.method) ? `${msg.method} is not supported: ${LAYOUT_MANAGED_DENIED_MESSAGE}` : undefined)
-				?? remotePaneDeniedMessage(ctx, msg.method, msg.params);
+				?? remoteDenied;
 			if (denied !== undefined) {
 				if (clientWs.readyState === ws.WebSocket.OPEN) {
 					const serialized = JSON.stringify({ id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), error: { code: -32000, message: denied } });
@@ -1690,7 +1704,7 @@ export async function paradisProxyBrowserUpgrade(
 			pendingUpstreamBytes = 0;
 		});
 
-		const processClientMessage = (data: wsTypes.RawData): Promise<void> | undefined => {
+		const processClientMessage = (data: wsTypes.RawData, remoteResolved = false): Promise<void> | undefined => {
 			if (!ctx.isCurrentLease()) {
 				closeBoth();
 				return;
@@ -1724,9 +1738,13 @@ export async function paradisProxyBrowserUpgrade(
 					rejectRequest(message, `${message.method} is not permitted on a target-scoped CDP session.`);
 					return;
 				}
+				const remoteDenied = remotePaneDeniedMessage(ctx, message.method, message.params, remoteResolved);
+				if (remoteDenied instanceof Promise) {
+					return remoteDenied.then(() => processClientMessage(data, true));
+				}
 				const sharedStateDenied = sharedStateDeniedMessage(message.method)
 					?? paradisCookieAndRewriteDeniedMessage(message.method, message.params)
-					?? remotePaneDeniedMessage(ctx, message.method, message.params);
+					?? remoteDenied;
 				if (sharedStateDenied !== undefined) {
 					rejectRequest(message, sharedStateDenied);
 					return;

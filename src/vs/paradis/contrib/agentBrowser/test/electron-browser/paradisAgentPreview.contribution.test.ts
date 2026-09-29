@@ -40,7 +40,7 @@ interface IHarnessOptions {
 	/** ピン留めされた補助エディタウィンドウを持つスペース。 */
 	readonly pinnedPartStateKey?: string;
 	readonly openEditor?: () => Promise<unknown>;
-	readonly stat?: () => Promise<{ readonly isDirectory: boolean }>;
+	readonly stat?: (resource?: URI) => Promise<{ readonly isDirectory: boolean }>;
 	/** 直近使用順（MOST_RECENTLY_ACTIVE）でのグループ名。既定は main → main-split → auxiliary。 */
 	readonly groupOrder?: readonly string[];
 	/** 既に開かれているファイル（fsPath → そのファイルを開いているグループ名）。 */
@@ -124,6 +124,7 @@ function createHarness(store: Pick<DisposableStore, 'add'>, options: IHarnessOpt
 		onDidRetireScope,
 		preview: (path: string, token: string | undefined = 'pane-a') => channel.call<unknown>(undefined, 'previewFile', [token, path]),
 		paneRoots: (token: string) => channel.call<unknown>(undefined, 'paneRoots', [token]),
+		previewRemote: (path: string, remoteAuthority: string) => channel.call<unknown>(undefined, 'previewFile', ['pane-a', path, remoteAuthority]),
 		switchTo: (stateKey: string) => { activeStateKey = stateKey; onDidSwitchScope.fire(stateKey); },
 	};
 }
@@ -365,7 +366,7 @@ suite('ParadisAgentPreviewChannel', () => {
 			unresolved: await harness.paneRoots('pane-unknown'),
 		}, {
 			space: [URI.file('/repos/a').fsPath],
-			unresolved: [],
+			unresolved: undefined,
 		});
 	});
 
@@ -382,5 +383,16 @@ suite('ParadisAgentPreviewChannel', () => {
 			unscoped: [URI.file('/work/one').fsPath, URI.file('/work/two').fsPath],
 			remoteSpace: [],
 		});
+	});
+
+	test('opens the path of a remote pane on that remote machine, never as a local file', async () => {
+		const statted: string[] = [];
+		const harness = createHarness(store, {
+			recordedStateKey: 'repo-a',
+			activeStateKey: 'repo-a',
+			stat: async (resource?: URI) => { statted.push(resource!.toString()); return { isDirectory: false }; },
+		});
+		await harness.previewRemote('/home/example/notes.md', 'ssh-remote+dev');
+		assert.deepStrictEqual(statted, ['vscode-remote://ssh-remote%2Bdev/home/example/notes.md']);
 	});
 });

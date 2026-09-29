@@ -729,6 +729,7 @@ function createServiceFixture(generation: number): {
 		_quarantinedTokenState: new Map(),
 		_terminalExitedTokens: new Set(),
 		_paneShells: paneShells,
+		_paneRemoteAuthorities: new Map(),
 		_paneStatuses: new Map(),
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set(),

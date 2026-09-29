@@ -15,7 +15,7 @@
 //    同じ利用者の別の Para Code（製品版と開発版を並べて動かす場合など）が使っている最中のものを
 //    消さないよう、フォルダに作ったプロセスの PID を書いておき、そのプロセスが生きていれば残す
 
-import { promises as fs, lstatSync, mkdtempSync, writeFileSync } from 'fs';
+import { promises as fs, lstatSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from '../../../../base/common/path.js';
 
 const PREFIX = 'para-code-devtools-';
@@ -68,13 +68,24 @@ export class ParadisDevtoolsTemporaryDirectory {
 			return this._path;
 		}
 		this._path = undefined;
+		let created: string;
 		try {
-			const created = mkdtempSync(join(this.parent, PREFIX));
-			writeFileSync(join(created, OWNER_FILE), String(this.ownPid), { mode: 0o600 });
-			this._path = created;
+			created = mkdtempSync(join(this.parent, PREFIX));
 		} catch {
 			return undefined;
 		}
+		try {
+			writeFileSync(join(created, OWNER_FILE), String(this.ownPid), { mode: 0o600 });
+		} catch {
+			// 持ち主の印が無いと、別の Para Code の起動時の掃除で使用中に消されうる。作ったものは片付けて諦める
+			try {
+				rmSync(created, { recursive: true, force: true });
+			} catch {
+				// 次の起動の掃除（24 時間より古い印の無いもの）に任せる
+			}
+			return undefined;
+		}
+		this._path = created;
 		return this._path;
 	}
 
