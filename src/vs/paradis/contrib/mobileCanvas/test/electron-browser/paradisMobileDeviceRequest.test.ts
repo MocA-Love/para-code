@@ -7,7 +7,6 @@
 
 import assert from 'assert';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
-import { Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisAgentApprovalRequest, ParadisAgentApprovalOutcome } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { IParadisMobileDeviceRequestAnswer } from '../../common/paradisMobileDeviceOps.js';
@@ -104,7 +103,7 @@ suite('ParadisMobileDeviceRequestChannel', () => {
 	test('says the user did not answer when the deadline closes the dialog, but still says cancelled when the caller gave up', async () => {
 		const waitForClose = async (cancellation: CancellationToken): Promise<ParadisAgentApprovalOutcome> => {
 			if (!cancellation.isCancellationRequested) {
-				await Event.toPromise(cancellation.onCancellationRequested);
+				await new Promise<void>(resolve => cancellation.onCancellationRequested(() => resolve()));
 			}
 			return 'cancelled';
 		};
