@@ -525,7 +525,9 @@ function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, pr
 	// （プロンプト本文内の空白を巻き込まないよう、必ず置換前に行う）
 	command = command.replace(/ {2,}/g, ' ').trim();
 	if (command.includes('{prompt}')) {
-		return command.replace('{prompt}', promptExpression);
+		// 置換後の文字列は関数で渡す。文字列で渡すと、プロンプトの中の `$&` や `$'` が置換の特殊記号として
+		// 展開され、引用が崩れる
+		return command.replace('{prompt}', () => promptExpression);
 	}
 	return `${command} ${promptExpression}`;
 }
@@ -545,7 +547,10 @@ function paradisBuildCommandPromptAgentCommand(template: IParadisAgentCommandTem
  */
 export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, rawPrompt: string, shellType: TerminalShellType, options?: IParadisAgentLaunchOptions): string {
 	// プロンプトは利用者だけでなくエージェント（MCP）や定期実行の定義からも来るので、全経路でここで落とす
-	const prompt = paradisStripTerminalControlCharacters(rawPrompt);
+	const stripped = paradisStripTerminalControlCharacters(rawPrompt);
+	// `-` で始まる指示は、引用しても CLI がオプションとして読む（`claude '--dangerously-skip-permissions'` は
+	// 権限の確認を飛ばす起動になる）。前に空白を1つ足し、必ず指示（位置引数）として渡す
+	const prompt = stripped.startsWith('-') ? ` ${stripped}` : stripped;
 	if (prompt.trim().length === 0) {
 		return paradisApplyPromptToTemplate(template, '', options).replace(/ {2,}/g, ' ').trim();
 	}

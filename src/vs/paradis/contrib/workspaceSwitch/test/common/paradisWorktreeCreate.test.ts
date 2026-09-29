@@ -205,6 +205,21 @@ suite('paradisWorktreeCreate', () => {
 		]);
 	});
 
+	test('passes a prompt that starts with a dash as the prompt, not as a CLI option, and keeps $ patterns literal', () => {
+		const template = { id: 'claude', label: 'Claude', command: 'claude {prompt}' };
+		assert.deepStrictEqual([
+			paradisBuildAgentCommand(template, '--dangerously-skip-permissions', PosixShellType.Bash),
+			paradisBuildAgentCommand(template, '--permission-mode=bypassPermissions', GeneralShellType.PowerShell),
+			paradisBuildAgentCommand(template, '- fix the bug', PosixShellType.Fish),
+			paradisBuildAgentCommand(template, 'cost $& and $$ and $\'', PosixShellType.Bash),
+		], [
+			'claude \' --dangerously-skip-permissions\'',
+			'claude \' --permission-mode=bypassPermissions\'',
+			'claude \' - fix the bug\'',
+			'claude \'cost $& and $$ and $\'\\\'\'\'',
+		]);
+	});
+
 	test('refuses a prompt with a backslash when the shell is unknown, since it cannot be quoted for fish', () => {
 		const template = { id: 'codex', label: 'Codex', command: 'codex {prompt}' };
 		assert.throws(() => paradisBuildAgentCommand(template, 'a\\\'; touch /tmp/x; echo \\', undefined));
