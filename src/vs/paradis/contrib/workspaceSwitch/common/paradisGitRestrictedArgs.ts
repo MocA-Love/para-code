@@ -13,6 +13,10 @@
  * `--force` 系・`-f`・`+` 付きの refspec（強制更新）・`:branch`（リモートのブランチの削除）・`--mirror` / `--delete` /
  * `--all` などを、短いオプションの束ね（`-fu`）も含めて漏れなく弾くため（Q114 A: 強制 push はスマホからさせない）。
  * URL を remote として渡させない（`ext::` などの転送を名指しさせない）ために、`::` と `://` を含む引数も拒む。
+ * 最初の位置引数（remote）は、scp 形式の URL（`git@host:path`）やパス（`../x`、`/abs`、`~/x`、`C:\x`）にも
+ * 読める形を拒む（remote の名前には `:`・`\`・`~`・`..` を使えず、`.` で始められない。`src/../../x` のような途中の
+ * `..` で外へ出る相対パスも拒む）。呼び出し元は `git remote` で得た
+ * 名前だけを渡すので、これは汎用の `runGit` に対する多層防御。
  */
 
 const ALLOWED_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
@@ -47,6 +51,9 @@ export function paradisRestrictedGitArgsError(args: readonly string[]): string |
 		positional++;
 		if (arg.length === 0 || arg.startsWith('+') || arg.startsWith(':') || arg.includes('::') || arg.includes('://') || arg.includes('\0')) {
 			return `${subcommand} argument not allowed: ${arg}`;
+		}
+		if (positional === 1 && (arg.startsWith('.') || arg.startsWith('/') || arg.includes('..') || /[:\\~]/.test(arg))) {
+			return `${subcommand} remote not allowed: ${arg}`;
 		}
 		// refspec（`src:dst`）は push でだけ受ける。fetch / pull は remote とブランチの名前だけ
 		if (arg.includes(':') && (subcommand !== 'push' || arg.endsWith(':') || arg.split(':').length !== 2)) {
