@@ -12,7 +12,7 @@
 // 余計なことが起きるのは避ける。
 
 import { ISetTerminalLayoutInfoArgs } from '../../../../platform/terminal/common/terminalProcess.js';
-import { paradisEncodeLayout } from './paradisTerminalLayout.js';
+import { paradisLayoutToRemember } from './paradisTerminalLayout.js';
 import { paradisHandleOf, paradisPtyDaemonConnection } from './paradisTerminalProcessFactory.js';
 
 /**
@@ -25,10 +25,13 @@ export function paradisRememberLayout(args: ISetTerminalLayoutInfoArgs): void {
 	if (!connection) {
 		return;
 	}
-	const encoded = paradisEncodeLayout(args, paradisHandleOf);
 	// **常駐の端末が1本も無いなら、空として送って忘れさせる。** そうしないと、常駐が持つ配置は
 	// 増える一方になる（スペースを消しても常駐はそれを知らない）。`{"tabs":[]}` をそのまま
 	// 送っても「中身の無い配置」として残り続けるだけなので、**掃除の合図は空文字にする**。
-	const holdsNothing = JSON.parse(encoded).tabs.length === 0;
-	connection.host.setLayout(args.workspaceId, holdsNothing ? '' : encoded).catch(() => { });
+	// ただし、どれも `start()` の前で handle が分からないだけなら送らない（`paradisLayoutToRemember`）。
+	const layout = paradisLayoutToRemember(args, paradisHandleOf);
+	if (layout === undefined) {
+		return;
+	}
+	connection.host.setLayout(args.workspaceId, layout).catch(() => { });
 }

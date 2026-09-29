@@ -15,7 +15,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ISetTerminalLayoutInfoArgs } from '../../../../../platform/terminal/common/terminalProcess.js';
-import { paradisDecodeLayout, paradisEncodeLayout } from '../../node/paradisTerminalLayout.js';
+import { paradisDecodeLayout, paradisEncodeLayout, paradisLayoutToRemember } from '../../node/paradisTerminalLayout.js';
 
 function layout(ids: number[], background: number[] = []): ISetTerminalLayoutInfoArgs {
 	return {
@@ -86,5 +86,17 @@ suite('ParadisTerminalLayout', () => {
 			{ handles: (JSON.parse(stored) as ISetTerminalLayoutInfoArgs).tabs[0].terminals.map(terminal => terminal.terminal) },
 			{ handles: [10] },
 		);
+	});
+
+	test('start() 前で handle が分からないだけなら、預けた配置を空で消さない', () => {
+		const known = (id: number) => (id === 1 ? 10 : undefined);
+		assert.deepStrictEqual({
+			// どれも handle がまだ無い: 送らない（前に預けた配置を残す）
+			notStarted: paradisLayoutToRemember(layout([2, 3]), known),
+			// ターミナルが1本も無い: 忘れさせる合図
+			none: paradisLayoutToRemember({ workspaceId: 'ws-1', tabs: [], background: [] }, known),
+			// 1本でも分かれば、分かるものだけ預ける
+			partial: (JSON.parse(paradisLayoutToRemember(layout([1, 2]), known)!) as ISetTerminalLayoutInfoArgs).tabs[0].terminals.map(terminal => terminal.terminal),
+		}, { notStarted: undefined, none: '', partial: [10] });
 	});
 });
