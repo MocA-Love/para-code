@@ -111,6 +111,17 @@ export function paradisInboxPaneKey(token: string): string {
 	return sha.digest();
 }
 
+/**
+ * ある状態（再読み込みの前から続いているもの）の通知を、台帳にもう書いたか。そのペインのいちばん新しい記録が
+ * 同じ種類で、その状態になった後に書かれた（hook が同じ状態のまま時刻を書き直すこともあるので、まだ既読に
+ * なっていないものも含める）なら書き済み。台帳には鳴らさなかった通知も書くので、書き済みなら前のウィンドウが
+ * 判断を済ませている。前の完了のように、別の状態へ移ったときに既読になった古い記録は数えない。
+ */
+export function paradisInboxHasRecorded(entries: readonly IParadisInboxEntry[], paneKey: string, kind: ParadisInboxKind, changedAt: number): boolean {
+	const latest = entries.find(entry => entry.paneKey === paneKey);
+	return latest !== undefined && latest.kind === kind && (latest.at >= changedAt || !latest.read);
+}
+
 /** ペインの今の状態（台帳へ知らせる用）。`undefined` は待機中（通知の対象外の状態）。 */
 export interface IParadisInboxPaneStatus {
 	readonly paneKey: string;
@@ -137,6 +148,8 @@ export interface IParadisNotificationInboxService {
 	readonly _serviceBrand: undefined;
 	readonly onDidChange: Event<void>;
 	readonly snapshot: IParadisInboxSnapshot;
+	/** 台帳から今のスナップショットを取り直す（起動直後で手元の写しがまだ届いていないときに使う）。取れなければ手元の写し。 */
+	getLatestSnapshot(): Promise<IParadisInboxSnapshot>;
 	/** どこかのウィンドウ（メニューバーのアイコンを含む）が、あるペインへの移動を頼んだ。 */
 	readonly onDidRequestReveal: Event<IParadisInboxRevealRequest>;
 	/** メニューバーのアイコンが、このウィンドウで受信箱を開くよう頼んだ。 */
