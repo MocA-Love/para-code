@@ -11,7 +11,9 @@ import { Event, Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { IPowerService, PowerSaveBlockerType, SystemIdleState, ThermalState } from '../../../../../workbench/services/power/common/powerService.js';
+import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
+import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
+import { PowerSaveBlockerType } from '../../../../../workbench/services/power/common/powerService.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { IParadisAgentPaneStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
@@ -41,16 +43,8 @@ class TestConfigurationService {
 	}
 }
 
-class TestPowerService implements IPowerService {
-	declare readonly _serviceBrand: undefined;
-	readonly onDidSuspend = Event.None;
-	readonly onDidResume = Event.None;
-	readonly onDidChangeOnBatteryPower = Event.None;
-	readonly onDidChangeThermalState = Event.None;
-	readonly onDidChangeSpeedLimit = Event.None;
-	readonly onWillShutdown = Event.None;
-	readonly onDidLockScreen = Event.None;
-	readonly onDidUnlockScreen = Event.None;
+/** main の blocker のチャネルの代わり（start / stop の呼び出しを覚える）。 */
+class TestPowerService {
 	readonly startedTypes: PowerSaveBlockerType[] = [];
 	readonly stoppedIds: number[] = [];
 
@@ -69,11 +63,20 @@ class TestPowerService implements IPowerService {
 		return this.stop(id);
 	}
 
-	async getSystemIdleState(_idleThreshold: number): Promise<SystemIdleState> { throw new Error('Unexpected getSystemIdleState'); }
-	async getSystemIdleTime(): Promise<number> { throw new Error('Unexpected getSystemIdleTime'); }
-	async getCurrentThermalState(): Promise<ThermalState> { throw new Error('Unexpected getCurrentThermalState'); }
-	async isOnBatteryPower(): Promise<boolean> { throw new Error('Unexpected isOnBatteryPower'); }
-	async isPowerSaveBlockerStarted(_id: number): Promise<boolean> { throw new Error('Unexpected isPowerSaveBlockerStarted'); }
+	asMainProcessService(): IMainProcessService {
+		const channel: IChannel = {
+			call: <T>(command: string, arg?: unknown): Promise<T> => {
+				const value = Array.isArray(arg) ? arg[0] : undefined;
+				switch (command) {
+					case 'start': return this.startPowerSaveBlocker(value) as Promise<T>;
+					case 'stop': return this.stopPowerSaveBlocker(value) as Promise<T>;
+					default: throw new Error(`Unexpected ${command}`);
+				}
+			},
+			listen: () => Event.None,
+		};
+		return { _serviceBrand: undefined, getChannel: () => channel, registerChannel: () => { } };
+	}
 }
 
 class TestStatusbarAccessor implements IStatusbarEntryAccessor {
@@ -157,7 +160,7 @@ function createContribution(
 ): ParadisKeepAwakeContribution {
 	return new ParadisKeepAwakeContribution(
 		configurationService as unknown as IConfigurationService,
-		powerService,
+		powerService.asMainProcessService(),
 		statusbarService as unknown as IStatusbarService,
 		logService,
 		agentStatusService,

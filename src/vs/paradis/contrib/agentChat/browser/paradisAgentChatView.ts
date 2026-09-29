@@ -1417,8 +1417,12 @@ export class ParadisAgentChatView extends Disposable {
 		this.composer.setSending(true);
 		this.host.sendMessage(instanceId, token, text).then(error => {
 			states.composer.sending = false;
-			// 送っている間に別のペインへ切り替えた・閉じたなら、今の入力欄には何もしない。
+			// 送っている間に別のペインへ切り替えた・閉じたなら、今の入力欄には何もしない。ただし切り替えた
+			// ときに入力欄の文が下書きへ移っているので、送れた文のままならそれを消す（戻って Enter を押すと二重に送るため）。
 			if (this._store.isDisposed || this.token !== token) {
+				if (error === undefined && this.host.getDraft(token) === text) {
+					this.host.setDraft(token, '');
+				}
 				return;
 			}
 			this.composer.setSending(false);

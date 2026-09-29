@@ -326,7 +326,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 	private render(): void {
 		const now = Date.now();
 		const entries = this.liveEntries();
-		this.pruneHiddenTokens(entries);
+		this.pruneHiddenTokens();
 
 		const filtered = paradisFilterAgentLiveEntries(entries, this.viewState);
 		const sorted = paradisSortAgentLiveEntries(filtered, this.viewState, now);
@@ -710,8 +710,11 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		// 計算し直し、実際に変わったときだけ描き直す。
 		if (this.viewState.sort === 'updated') {
 			const sorted = paradisSortAgentLiveEntries(paradisFilterAgentLiveEntries(this.liveEntries(), this.viewState), this.viewState, now);
-			const changed = sorted.length !== this.visibleOrder.length
-				|| sorted.some((entry, index) => entry.token !== this.visibleOrder[index]);
+			// visibleOrder はグループ化した後の順なので、同じくグループ化してから比べる (比べる順が食い違うと
+			// グループ表示の間は毎秒描き直してしまう)。
+			const order = paradisGroupAgentLiveEntries(sorted, this.viewState, status => STATUS_LABELS[status]).flatMap(group => group.entries.map(entry => entry.token));
+			const changed = order.length !== this.visibleOrder.length
+				|| order.some((token, index) => token !== this.visibleOrder[index]);
 			if (changed) {
 				this.render();
 				return;
@@ -781,15 +784,15 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 	/**
 	 * 実体の消えた端末を「非表示」台帳から外す。トークンは再利用されないため、放っておくと
-	 * 存在しない端末の件数が絞り込みバーに出続ける。エントリがまだ一件も揃っていない
-	 * 起動直後には触らない (意図した非表示を消してしまうため)。
+	 * 存在しない端末の件数が絞り込みバーに出続ける。エージェントの判定ではなく端末の有無で決め、
+	 * 端末の復元が済む前の起動直後には触らない (意図した非表示を消してしまうため)。
 	 */
-	private pruneHiddenTokens(entries: readonly IParadisAgentLiveEntry[]): void {
-		if (entries.length === 0 || this.viewState.hidden.length === 0) {
+	private pruneHiddenTokens(): void {
+		const live = this.model.livePaneTokens;
+		if (live === undefined || live.size === 0 || this.viewState.hidden.length === 0) {
 			return;
 		}
-		const known = new Set(entries.map(entry => entry.token));
-		const kept = this.viewState.hidden.filter(token => known.has(token));
+		const kept = this.viewState.hidden.filter(token => live.has(token));
 		if (kept.length !== this.viewState.hidden.length) {
 			this.viewState.hidden = kept;
 			this._onDidChangeViewState.fire();

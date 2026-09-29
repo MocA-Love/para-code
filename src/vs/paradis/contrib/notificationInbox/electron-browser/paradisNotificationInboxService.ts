@@ -67,6 +67,15 @@ export class ParadisNotificationInboxClient extends Disposable implements IParad
 		return this._snapshot;
 	}
 
+	async getLatestSnapshot(): Promise<IParadisInboxSnapshot> {
+		try {
+			return await this.channel.call<IParadisInboxSnapshot>('getSnapshot');
+		} catch (error) {
+			this.logService.trace('[paradisNotificationInbox] getSnapshot failed', String(error));
+			return this._snapshot;
+		}
+	}
+
 	record(input: IParadisInboxRecordInput): Promise<void> {
 		return this.send('record', [input]);
 	}

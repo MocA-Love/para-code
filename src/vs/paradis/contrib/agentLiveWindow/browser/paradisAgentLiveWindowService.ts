@@ -125,7 +125,26 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 				nativeTitlebar: !transparencyActive,
 				transparent: transparencyActive,
 			}));
-			await auxiliaryWindow.whenStylesHaveLoaded;
+			// スタイルの読み込みを待つ間に閉じられることがある。閉じる知らせは待った後に購読するので、
+			// ここで拾っておかないと、閉じたウィンドウを開いているものとして持ち続け、二度と開き直せない。
+			// 閉じたウィンドウのスタイルの読み込みは終わらないこともあるので、閉じたら待つのをやめる。
+			let closedWhileLoading = false;
+			let stopWaiting: (() => void) | undefined;
+			const closed = new Promise<void>(resolve => stopWaiting = resolve);
+			const earlyUnload = auxiliaryWindow.onUnload(() => {
+				closedWhileLoading = true;
+				stopWaiting?.();
+			});
+			try {
+				await Promise.race([auxiliaryWindow.whenStylesHaveLoaded, closed]);
+			} finally {
+				earlyUnload.dispose();
+			}
+			if (closedWhileLoading) {
+				this._store.deleteAndLeak(disposables);
+				disposables.dispose();
+				return;
+			}
 
 			auxiliaryWindow.window.document.title = localize('paradis.agentLive.windowTitle', "エージェント");
 

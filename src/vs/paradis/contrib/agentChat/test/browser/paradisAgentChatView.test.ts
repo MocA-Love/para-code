@@ -28,13 +28,16 @@ class TestHost implements IParadisAgentChatViewHost {
 	readonly answers: { group: string; answers: readonly ParadisAgentQuestionAnswer[] }[] = [];
 	readonly approvals: { id: string; choice: string }[] = [];
 	readonly sent: string[] = [];
+	readonly drafts = new Map<string, string>();
+	/** 送信を止めておく（送っている間に別のペインへ切り替える試験のため）。 */
+	sendGate: Promise<void> | undefined;
 	private readonly _onDidChangeSettings = new Emitter<void>();
 	readonly onDidChangeSettings = this._onDidChangeSettings.event;
 
 	constructor(private readonly chat: ParadisAgentChatSession) { }
 
 	session(): ParadisAgentChatSession { return this.chat; }
-	async sendMessage(_instanceId: number, _token: string, text: string): Promise<string | undefined> { this.sent.push(text); return undefined; }
+	async sendMessage(_instanceId: number, _token: string, text: string): Promise<string | undefined> { await this.sendGate; this.sent.push(text); return undefined; }
 	async answerQuestions(_instanceId: number, _token: string, group: string, answers: readonly ParadisAgentQuestionAnswer[]): Promise<string | undefined> { this.answers.push({ group, answers }); return undefined; }
 	async answerApproval(_instanceId: number, _token: string, id: string, choice: string): Promise<string | undefined> { this.approvals.push({ id, choice }); return undefined; }
 	showTerminal(): void { }
@@ -51,8 +54,8 @@ class TestHost implements IParadisAgentChatViewHost {
 		return states;
 	}
 	getSendKey(): ParadisAgentChatSendKey { return 'enter'; }
-	getDraft(): string { return ''; }
-	setDraft(): void { }
+	getDraft(token: string): string { return this.drafts.get(token) ?? ''; }
+	setDraft(token: string, text: string): void { this.drafts.set(token, text); }
 	getHistory(): readonly string[] { return []; }
 	async getCommands() { return []; }
 	dispose(): void { this._onDidChangeSettings.dispose(); }
@@ -248,5 +251,27 @@ suite('ParadisAgentChatView', () => {
 			'card:許可/拒否',
 			'group:2×Bash',
 		]);
+	});
+
+	test('clears the draft of a message that was sent while the user switched to another pane', async () => {
+		const { view, host, container } = await createView([{ token: 'pane', agent: 'claude', epoch: 'e', rev: 1, reset: true, busy: false, live: null, interaction: null, messages: [{ rev: 0, role: 'user', kind: 'text', text: 'a' }] }]);
+		let release: (() => void) | undefined;
+		host.sendGate = new Promise<void>(resolve => release = resolve);
+		const input = container.querySelector<HTMLTextAreaElement>('textarea.paradis-agent-chat-input')!;
+		input.value = 'run the tests';
+		input.dispatchEvent(new InputEvent('input'));
+		container.querySelector<HTMLButtonElement>('.paradis-agent-chat-send')!.click();
+		// 送っている間に別のペインへ切り替える（入力欄の文は下書きへ移る）
+		view.setTarget(2, 'other');
+		const draftWhileSending = host.getDraft('pane');
+		release?.();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		view.setTarget(1, 'pane');
+		assert.deepStrictEqual({ draftWhileSending, sent: host.sent, draftAfterSend: host.getDraft('pane'), input: input.value }, {
+			draftWhileSending: 'run the tests',
+			sent: ['run the tests'],
+			draftAfterSend: '',
+			input: '',
+		});
 	});
 });

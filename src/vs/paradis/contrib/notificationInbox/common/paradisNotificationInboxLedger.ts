@@ -39,12 +39,19 @@ export class ParadisNotificationInboxLedger {
 	/** ペインごとに最後に知らされた状態。記録が状態の知らせより遅れて届いたときに使う。 */
 	private readonly lastStatusByPane = new Map<string, IParadisInboxPaneStatus['status']>();
 	private sequence = 0;
-	private revision = 0;
+	/**
+	 * スナップショットの番号。作った時刻から数え始める。メニューバーのアイコン（main）は番号が戻ったものを
+	 * 古い知らせとして捨てるので、shared process が起動し直して台帳を作り直したときに 0 から数えると、
+	 * 前の番号に追いつくまでアイコンが変わらなくなる。
+	 */
+	private revision: number;
 
 	constructor(
 		private readonly now: () => number = Date.now,
 		private readonly limit = PARADIS_NOTIFICATION_INBOX_LIMIT,
-	) { }
+	) {
+		this.revision = now();
+	}
 
 	record(input: IParadisInboxRecordInput): IParadisInboxEntry {
 		const entry: MutableEntry = {

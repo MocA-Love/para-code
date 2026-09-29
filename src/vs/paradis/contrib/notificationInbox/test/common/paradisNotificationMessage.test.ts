@@ -61,6 +61,51 @@ suite('Paradis notification message', () => {
 		]);
 	});
 
+	test('masks values written after a full-width colon or a Japanese item name', () => {
+		const cases = [
+			'password\uFF1Ahunter2 で入れます',
+			'パスワード\uFF1Ahunter2 を設定しました',
+			'トークン = abc123def を使います',
+			'APIキー: "abc def" です',
+			'パスワード\uFF1A必須チェックを追加しました',
+		];
+		assert.deepStrictEqual(cases.map(paradisRedactSecrets), [
+			'password\uFF1A*** で入れます',
+			'パスワード\uFF1A*** を設定しました',
+			'トークン = *** を使います',
+			'APIキー: *** です',
+			'パスワード\uFF1A必須チェックを追加しました',
+		]);
+	});
+
+	test('masks secrets even when Japanese text or punctuation follows right after them', () => {
+		const cases = [
+			'password=hunter2で接続できました',
+			'`password=hunter2`で接続できました',
+			'client_secret=abc123。',
+			'password=abc123\u2026',
+			'api_key: abcdef123456を.envに書きました',
+		];
+		assert.deepStrictEqual(cases.map(paradisRedactSecrets), [
+			'password=***で接続できました',
+			'`password=***`で接続できました',
+			'client_secret=***。',
+			'password=***\u2026',
+			'api_key: ***を.envに書きました',
+		]);
+	});
+
+	test('does not mask prose right after an item name, or token counts', () => {
+		const cases = [
+			'パスワード: 8文字以上に変更しました',
+			'トークン=3件を使いました',
+			'max_tokens\uFF1A4096',
+			'max_tokens: 4096 に上げました',
+			'MAX_TOKENS=4096',
+		];
+		assert.deepStrictEqual(cases.map(paradisRedactSecrets), cases);
+	});
+
 	test('does not mask ordinary text that only looks like a key assignment', () => {
 		const cases = [
 			'型エラーを 3 件直し、monkey patch も外しました',
