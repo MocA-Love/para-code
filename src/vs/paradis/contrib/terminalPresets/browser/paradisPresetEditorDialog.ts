@@ -267,6 +267,8 @@ const STR_DELETE_FAILED = localize('paradis.presetEditor.deleteFailed', "削除�
 // allow-any-unicode-next-line
 const STR_OPERATION_FAILED = localize('paradis.presetEditor.operationFailed', "操作に失敗しました");
 // allow-any-unicode-next-line
+const STR_REORDER_FAILED = localize('paradis.presetEditor.reorderFailed', "並べ替えられませんでした");
+// allow-any-unicode-next-line
 const STR_SOURCE_USER = localize('paradis.presetEditor.sourceUser', "ユーザー");
 // allow-any-unicode-next-line
 const STR_SOURCE_WORKSPACE = localize('paradis.presetEditor.sourceWorkspace', "リポジトリ");
@@ -646,7 +648,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			e.stopPropagation();
 			const target = e.key === 'ArrowUp' ? targets.up : targets.down;
 			if (target) {
-				void this.presetService.swapPresets(current, target);
+				this._swapPresets(current, target);
 			}
 		}));
 
@@ -786,6 +788,16 @@ class ParadisPresetEditorDialog extends Disposable {
 			return 'folder';
 		}
 		return undefined;
+	}
+
+	/**
+	 * 2件を入れ替える。失敗（`.paracode.json` が読めない・壊れている等）は理由を出す。黙って何も
+	 * 起きないと、並べ替えが効かないようにしか見えない。
+	 */
+	private _swapPresets(presetA: IParadisResolvedPreset, presetB: IParadisResolvedPreset): void {
+		this.presetService.swapPresets(presetA, presetB).catch(error => {
+			void this.dialogService.error(STR_REORDER_FAILED, error instanceof Error ? error.message : String(error));
+		});
 	}
 
 	/** ダイアログ内トースト。フォーカスを奪わない軽い通知（並び替え拒否・複製完了など）。 */
@@ -1040,7 +1052,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			}
 			this._viewStore.add(dom.addDisposableListener(btn, 'click', () => {
 				if (target) {
-					void this.presetService.swapPresets(preset, target);
+					this._swapPresets(preset, target);
 				}
 			}));
 		};
@@ -1227,7 +1239,7 @@ class ParadisPresetEditorDialog extends Disposable {
 				this._toast(STR_MOVE_REJECTED_SCOPE);
 				return;
 			}
-			void this.presetService.swapPresets(dragging, preset);
+			this._swapPresets(dragging, preset);
 		}));
 	}
 

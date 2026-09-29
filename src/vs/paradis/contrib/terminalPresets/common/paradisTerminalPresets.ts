@@ -13,6 +13,7 @@
 //     コミットすればチームや worktree 全体に行き渡る）
 
 import { Event } from '../../../../base/common/event.js';
+import { StringSHA1 } from '../../../../base/common/hash.js';
 import { parse as parseJsonc } from '../../../../base/common/jsonc.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -1031,23 +1032,36 @@ export function paradisParsePresetFileForUpdate(text: string): IParadisPresetFil
 }
 
 /**
- * 復元したターミナルへ貼り直すプリセット名の台帳の1件。キーはシェル統合の nonce。ターミナルの
- * 番号（永続プロセスの ID）は PC の再起動や起こし直しで振り直され、無関係なターミナルに当たる。
- * nonce は起こし直しをまたいでも変わらない。
+ * 復元したターミナルへ貼り直すプリセット名の台帳の1件。キーはシェル統合の nonce のハッシュ
+ * （{@link paradisPresetTitleKey}）。ターミナルの番号（永続プロセスの ID）は PC の再起動や起こし直しで
+ * 振り直され、無関係なターミナルに当たる。nonce は起こし直しをまたいでも変わらない。
  */
 export interface IParadisPresetTitleEntry {
-	readonly nonce: string;
+	readonly key: string;
 	readonly name: string;
 }
 
-/** 台帳を読む。壊れた台帳と、番号をキーにしていた古い形の行は捨てる（名前が戻らないだけで済む）。 */
+const PRESET_TITLE_KEY_PATTERN = /^[0-9a-f]{40}$/;
+
+/**
+ * 台帳のキー。nonce からはペイントークン（MCP やペインの app-server の Bearer を兼ねる）が決まる
+ * ので、平文では保存しない。目的は「読めても元に戻せない」ことで、衝突への強さは要らない
+ * （再開の案内の台帳 `paradisResumeLedgerKey` と同じ考え方）。
+ */
+export function paradisPresetTitleKey(nonce: string): string {
+	const sha = new StringSHA1();
+	sha.update(`paradis-preset-title:${nonce}`);
+	return sha.digest();
+}
+
+/** 台帳を読む。壊れた台帳と、ハッシュでないキー（番号をキーにしていた古い形など）の行は捨てる（名前が戻らないだけで済む）。 */
 export function paradisParsePresetTitles(raw: string | undefined): IParadisPresetTitleEntry[] {
 	try {
 		const parsed: unknown = raw ? JSON.parse(raw) : undefined;
 		return Array.isArray(parsed)
 			? parsed
-				.filter((entry): entry is IParadisPresetTitleEntry => !!entry && typeof entry.nonce === 'string' && entry.nonce.length > 0 && typeof entry.name === 'string')
-				.map(entry => ({ nonce: entry.nonce, name: entry.name }))
+				.filter((entry): entry is IParadisPresetTitleEntry => !!entry && typeof entry.key === 'string' && PRESET_TITLE_KEY_PATTERN.test(entry.key) && typeof entry.name === 'string')
+				.map(entry => ({ key: entry.key, name: entry.name }))
 			: [];
 	} catch {
 		return [];
@@ -1058,7 +1072,6 @@ export function paradisParsePresetTitles(raw: string | undefined): IParadisPrese
  * 台帳に1件覚える。消えた端末の分を確実に掃除する手がない（リロードでは onDisposed を当てに
  * できない）ので、件数で頭打ちにして古いものから捨てる。
  */
-export function paradisRememberPresetTitleEntry(entries: readonly IParadisPresetTitleEntry[], nonce: string, name: string, max: number): IParadisPresetTitleEntry[] {
-	return [...entries.filter(entry => entry.nonce !== nonce), { nonce, name }].slice(-max);
+export function paradisRememberPresetTitleEntry(entries: readonly IParadisPresetTitleEntry[], key: string, name: string, max: number): IParadisPresetTitleEntry[] {
+	return [...entries.filter(entry => entry.key !== key), { key, name }].slice(-max);
 }
-
