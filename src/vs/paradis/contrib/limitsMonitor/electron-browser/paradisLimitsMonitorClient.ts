@@ -10,8 +10,7 @@
 // 設定値(追加Codexホーム)の解決もここで行い、ウィジェット/パネル/ダイアログは
 // このクライアント経由でのみバックエンドへアクセスする。
 //
-// Claude の分は Codex の分と1つのスナップショットに合わせて返す。どこに聞くかはウィンドウで決まる
-// （Q131 案B）:
+// Claude の分は Codex の分と1つのスナップショットに合わせて返す。どこに聞くかはウィンドウで決まる:
 //  - 手元のウィンドウ: 手元の shared process の PARADIS_CLAUDE_ACCOUNTS_CHANNEL（登録したアカウントの
 //    一覧・切り替え・登録）
 //  - SSH のウィンドウ: 接続先（REH）の PARADIS_LIMITS_MONITOR_CHANNEL の PARADIS_CLAUDE_HOST_STATE_COMMAND。
@@ -71,7 +70,9 @@ export class ParadisLimitsMonitorClient {
 
 	/** 接続先(REH)経由で動作しているか。アカウント削除の確認文言と削除経路の提示に使う。 */
 	get connectedToRemote(): boolean {
-		return this.remoteAgentService.getConnection() !== undefined;
+		// getConnection() は繋いでいなければ null を返す（undefined と比べると手元でも true になり、
+		// ゴミ箱へ移すのに「完全に削除」と確認していた）。
+		return this.remoteAgentService.getConnection() !== null;
 	}
 
 	private fetchOptions(bypassCache: boolean): IParadisLimitsFetchOptions {
@@ -103,8 +104,8 @@ export class ParadisLimitsMonitorClient {
 	 * 取り直した結果は {@link onDidChangeClaudeState} の後にもう一度聞くと届く。SSH のウィンドウでは
 	 * 接続先に聞き、予定時刻を過ぎていればその場で取ってから返す。
 	 */
-	async getClaudeState(refresh = false, passive = false): Promise<IParadisClaudeAccountsState> {
-		const remoteConnection = this.remoteAgentService.getConnection();
+	async getClaudeState(refresh = false, passive = false, localOnly = false): Promise<IParadisClaudeAccountsState> {
+		const remoteConnection = localOnly ? null : this.remoteAgentService.getConnection();
 		if (remoteConnection) {
 			return this.getClaudeHostState(remoteConnection, { refresh, passive });
 		}
@@ -141,10 +142,15 @@ export class ParadisLimitsMonitorClient {
 		return { ...snapshot, claude: claudeState.claude };
 	}
 
-	async getSnapshot(bypassCache = false): Promise<IParadisLimitsSnapshot> {
+	/**
+	 * @param claudeFromLocal Claude を、SSH のウィンドウでも手元の shared process から取る。スマホの
+	 * ホームやウィジェットのように、ウィンドウ（接続先）を選ばずに届いた問い合わせに使う（どのウィンドウが
+	 * 答えるかで Claude のアカウントが入れ替わらないように）。Codex の分は従来どおりこのウィンドウの接続先。
+	 */
+	async getSnapshot(bypassCache = false, claudeFromLocal = false): Promise<IParadisLimitsSnapshot> {
 		const [snapshot, claudeState] = await Promise.all([
 			this.channel.call<IParadisLimitsSnapshot>('getSnapshot', [this.fetchOptions(bypassCache)]),
-			this.getClaudeState(bypassCache),
+			this.getClaudeState(bypassCache, false, claudeFromLocal),
 		]);
 		return ParadisLimitsMonitorClient.mergeClaudeState(snapshot, claudeState);
 	}
@@ -171,7 +177,7 @@ export class ParadisLimitsMonitorClient {
 	 */
 	async removeCodexHome(homePath: string, expectedViaRemote: boolean): Promise<void> {
 		const remoteConnection = this.remoteAgentService.getConnection();
-		if ((remoteConnection !== undefined) !== expectedViaRemote) {
+		if ((remoteConnection !== null) !== expectedViaRemote) {
 			throw new Error('Codex home removal aborted: the remote connection state changed');
 		}
 		if (remoteConnection) {

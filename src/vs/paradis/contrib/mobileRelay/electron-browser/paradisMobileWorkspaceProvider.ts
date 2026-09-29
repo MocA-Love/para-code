@@ -49,6 +49,7 @@ import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/pa
 import { paradisPickNotifyInstance } from '../common/paradisNotifySource.js';
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
+import { paradisMobileLimitsClaudeFromLocal } from '../common/paradisMobileLimitsScope.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 // PARA-PATCH: RTK節約データのモバイル配信
 import { localize } from '../../../../nls.js';
@@ -483,7 +484,7 @@ type FsInbound =
 	// PARA-PATCH: RTK節約データのモバイル配信（PC版のRTKダッシュボードと同じデータ）
 	| { t: 'rtk'; id: string; bypassCache?: boolean }
 	// Rate Limit(AIリミット)スナップショット（PC版タイトルバーのリミットモニターと同じデータ）
-	| { t: 'limits'; id: string; bypassCache?: boolean }
+	| { t: 'limits'; id: string; bypassCache?: boolean; ws?: string; rendererGeneration?: number }
 	// GitHub API利用状況（PC版のGitHub API Usageダッシュボードと同じデータ）
 	| { t: 'github'; id: string; bypassCache?: boolean }
 	// PC本体のリソース使用量（マシン全体のCPU/メモリ/ディスク＋Para Code内訳）
@@ -726,8 +727,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		setUsageWarmLease: (ownerId: string, active: boolean) => Promise<void>,
 		// PARA-PATCH: RTK節約データのモバイル配信。実体は rtk のバックエンド(接続中は接続先の REH)
 		private readonly fetchRtkSavings: (bypassCache: boolean) => Promise<IParadisRtkDashboardData>,
-		// AIリミット(Rate Limit)スナップショット。実体は limitsMonitor の shared process バックエンド
-		private readonly fetchLimitsSnapshot: (bypassCache: boolean) => Promise<IParadisLimitsSnapshot>,
+		// AIリミット(Rate Limit)スナップショット。実体は limitsMonitor のクライアント。claudeFromLocal は
+		// SSH のウィンドウでも Claude を手元のアカウントで返す（paradisMobileLimitsClaudeFromLocal）
+		private readonly fetchLimitsSnapshot: (bypassCache: boolean, claudeFromLocal: boolean) => Promise<IParadisLimitsSnapshot>,
 		// GitHub API利用状況。実体は githubMetrics の shared process バックエンド（PC版と同じクライアント）
 		private readonly fetchGithubMetrics: (bypassCache: boolean) => Promise<IParadisGithubMetricsSnapshot>,
 		// worktree（スペース）作成。実体は paradisWorktreeHeadlessCreate.ts（contribution側で
@@ -2466,7 +2468,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// AIリミット(Rate Limit)。usage と同じくワークスペース非依存(閲覧専用。追加・再ログインはPC側のみ)。
 		if (msg.t === 'limits') {
 			try {
-				const data = await this.fetchLimitsSnapshot(!!msg.bypassCache);
+				const data = await this.fetchLimitsSnapshot(!!msg.bypassCache, paradisMobileLimitsClaudeFromLocal(msg));
 				reply({ t: 'limits', data });
 			} catch (err) {
 				reply({ error: String(err) });

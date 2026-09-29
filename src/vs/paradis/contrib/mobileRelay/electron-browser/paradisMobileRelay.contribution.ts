@@ -295,7 +295,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
 			(ownerId, active) => ccusageClient.setDashboardWarmLease(ownerId, active),
 			bypassCache => rtkClient.fetchDashboard(bypassCache),
-			bypassCache => limitsClient.getSnapshot(bypassCache).then(snapshot => codexLimitsFields.addTo(snapshot)),
+			(bypassCache, claudeFromLocal) => limitsClient.getSnapshot(bypassCache, claudeFromLocal).then(snapshot => codexLimitsFields.addTo(snapshot)),
 			bypassCache => githubClient.getSnapshot(bypassCache),
 			// worktree（スペース）作成。実体はヘッドレス版のPC作成ダイアログ相当処理
 			options => instantiationService.invokeFunction(paradisGetWorktreeCreateForm, options),
