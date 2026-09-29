@@ -179,7 +179,8 @@ export function paradisRunAgentCli(command: string, args: readonly string[], opt
 		const maxBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 		let child: cp.ChildProcessWithoutNullStreams;
 		try {
-			child = paradisSpawnAgentCli(command, args, { env: options.env, cwd: options.cwd });
+			// 自分のプロセスグループで起こし、時間切れのときはグループごと止める（CLI が起こした子まで残さない）。
+			child = paradisSpawnAgentCli(command, args, { env: options.env, cwd: options.cwd, processGroup: true });
 		} catch (error) {
 			reject(error);
 			return;
@@ -202,7 +203,7 @@ export function paradisRunAgentCli(command: string, args: readonly string[], opt
 			resolve({ stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), exitCode });
 		};
 		const timer = setTimeout(() => {
-			paradisKillChildProcessTree(child);
+			paradisKillChildProcessTree(child, undefined, { processGroup: true });
 			finish(new Error(`${command} timed out after ${options.timeoutMs}ms`), null);
 		}, options.timeoutMs);
 		child.stdout.on('data', (chunk: Buffer) => {

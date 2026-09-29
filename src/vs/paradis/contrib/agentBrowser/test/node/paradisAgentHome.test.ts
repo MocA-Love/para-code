@@ -8,7 +8,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisClaudeConfigDir, paradisCodexHome, paradisCodexHomes, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../node/paradisAgentHome.js';
+import { resolve } from '../../../../../base/common/path.js';
+import { paradisClaudeConfigDir, paradisCodexHome, paradisCodexHomes, paradisIsWithinCodexHome, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../node/paradisAgentHome.js';
 
 suite('ParadisAgentHome', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -54,5 +55,15 @@ suite('ParadisAgentHome', () => {
 			'\\\\wsl.localhost\\Ubuntu\\home\\u\\.codex\\x.jsonl',
 			'/Users/x/.codex/sessions/rollout-x.jsonl',
 		]);
+	});
+
+	test('compares the Codex home without case where paths ignore case (Windows)', () => {
+		const homes = [resolve('/users/x/.codex')];
+		const transcript = '/Users/X/.codex/sessions/rollout-x.jsonl';
+		assert.deepStrictEqual([
+			paradisIsWithinCodexHome(transcript, homes, true),
+			paradisIsWithinCodexHome(transcript, homes, false),
+			paradisIsWithinCodexHome('/Users/X/.codex-other/a.jsonl', homes, true),
+		], [true, false, false]);
 	});
 });

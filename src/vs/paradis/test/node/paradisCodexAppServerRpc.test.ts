@@ -13,7 +13,7 @@ import { join } from '../../../base/common/path.js';
 import { isWindows } from '../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
 import { NullLogService } from '../../../platform/log/common/log.js';
-import { ParadisCodexRpcMethodNotFoundError, paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from '../../node/paradisCodexAppServerRpc.js';
+import { ParadisCodexRpcMethodNotFoundError, paradisAcquireCodexHomeLock, paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from '../../node/paradisCodexAppServerRpc.js';
 
 // 本物の codex は使わない。改行区切り JSON-RPC を話す小さな偽物を node で動かす。
 (isWindows ? suite.skip : suite)('Paradis Codex app-server RPC', () => {
@@ -148,6 +148,17 @@ rl.on('line', line => {
 			args: { args: ['-c', 'features.plugins=false', '-s', 'read-only', '-a', 'never', 'app-server'] },
 			order: ['other home started', 'first disposed', 'second started'],
 		});
+	});
+
+	test('does not keep later callers waiting on a holder that never releases the home lock', async () => {
+		const key = join(root, 'leaked-home');
+		await paradisAcquireCodexHomeLock(key, 10);
+		const second = await paradisAcquireCodexHomeLock(key, 20);
+		second();
+		const started = Date.now();
+		const third = await paradisAcquireCodexHomeLock(key, 5_000);
+		third();
+		assert.deepStrictEqual({ waitedForTheLeakedHolder: Date.now() - started >= 1_000 }, { waitedForTheLeakedHolder: false });
 	});
 
 	test('reports the exit code of an app-server that dies during initialize', async () => {

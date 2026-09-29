@@ -75,6 +75,24 @@ suite('ParadisAgentModelCatalogService', () => {
 		});
 	});
 
+	test('一覧を取れなかった CLI には、同じ版のまま1時間は聞き直さない。版が変われば聞き直す', async () => {
+		const { state, backend } = setup();
+		state.failProbe = true;
+		const service = new ParadisAgentModelCatalogService(backend, new NullLogService());
+		const first = await service.getCatalogs();
+		state.now += 2 * 60 * 1000;
+		await service.getCatalogs();
+		state.now += 60 * 60 * 1000;
+		await service.getCatalogs();
+		state.versions.codex = 'codex-cli 0.157.1';
+		state.now += 2 * 60 * 1000;
+		await service.getCatalogs();
+		assert.deepStrictEqual({ first: ids(first), probes: state.probes }, {
+			first: [],
+			probes: ['claude@2.1.283 (Claude Code)', 'codex@codex-cli 0.155.1', 'claude@2.1.283 (Claude Code)', 'codex@codex-cli 0.155.1', 'codex@codex-cli 0.157.1'],
+		});
+	});
+
 	test('入っていない CLI は返さない。1日経ったら版が同じでも取り直す', async () => {
 		const { state, backend } = setup();
 		state.installed.delete('claude');
