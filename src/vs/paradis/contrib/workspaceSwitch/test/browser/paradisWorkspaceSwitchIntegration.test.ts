@@ -36,8 +36,9 @@ import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from 
 import { IWorkspaceEditingService } from '../../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
-import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService, TerminalConnectionState } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService, TerminalConnectionState, TerminalEditorLocation } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalGroupService } from '../../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
+import { ACTIVE_GROUP } from '../../../../../workbench/services/editor/common/editorService.js';
 import { createEditorParts, registerTestEditor, TestFileEditorInput, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestContextService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
@@ -276,6 +277,64 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			for (const ids of [seedIds, openingIds, assignedIds]) {
 				paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(ids.persistentProcessId, ids.shellIntegrationNonce));
 			}
+			testDisposables.dispose();
+		}
+	});
+
+	// 開いている途中の端末は、最初のループでは行き先が分からない。そこで切り替え元へ入れると、
+	// 行き先へは誰も移さない（割り当てがまだ来ていない）。
+	test('leaves a terminal that is still being opened for another space to the later passes', async () => {
+		const testDisposables = new DisposableStore();
+		const ids = createUniqueTerminalIds();
+		try {
+			const harness = await createHarness(['space-a', 'space-b', 'space-c'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const input = harness.createEditor('/workspace-a/opening-terminal', false);
+			await harness.parts.activeGroup.openEditor(input, { pinned: true });
+			const terminal = harness.addTerminal(input, ids.instanceId, ids.persistentProcessId, ids.shellIntegrationNonce);
+			const settled = new DeferredPromise<void>();
+			const marker = paradisMarkTerminalEditorOpeningForScope(terminal, 'space-b', settled.p);
+			setTimeout(() => settled.complete(), 0);
+
+			await harness.workspaceSwitchService.switchRepository('space-c');
+			marker.dispose();
+
+			assert.deepStrictEqual(paradisGetParkedTerminalEditorStateKey(terminal.instanceId), 'space-b');
+		} finally {
+			paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(ids.persistentProcessId, ids.shellIntegrationNonce));
+			testDisposables.dispose();
+		}
+	});
+
+	// 今のスペースへ割り当て直された park 中の端末は、その1本だけを裏のタブで開く（同じスペースに
+	// 待避中の他の端末まで開いたり、フォーカスを奪ったりしない）。
+	test('opens only the reassigned terminal, in the background, when it is moved to the current space', async () => {
+		const testDisposables = new DisposableStore();
+		const moved = createFakeTerminalInstance(createUniqueTerminalIds()).instance;
+		const stays = createFakeTerminalInstance(createUniqueTerminalIds()).instance;
+		const opened: [number, TerminalEditorLocation | undefined][] = [];
+		try {
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const scope = harness.installTerminalScope(async (instance, location) => { opened.push([instance.instanceId, location]); }, { worktreeReady: true, connected: true });
+			await settle();
+			paradisParkTerminalEditorInstance(moved, 'space-b');
+			paradisParkTerminalEditorInstance(stays, 'space-b');
+
+			scope.assignInstanceScope(moved.instanceId, 'space-a');
+			await settle();
+
+			assert.deepStrictEqual({
+				opened,
+				owners: [paradisGetParkedTerminalEditorStateKey(moved.instanceId), paradisGetParkedTerminalEditorStateKey(stays.instanceId)],
+			}, {
+				opened: [[moved.instanceId, { viewColumn: ACTIVE_GROUP, preserveFocus: true, paradisInactive: true }]],
+				owners: [undefined, 'space-b'],
+			});
+		} finally {
+			paradisTakeParkedTerminalEditorInstancesForScope('space-b');
+			moved.dispose();
+			stays.dispose();
 			testDisposables.dispose();
 		}
 	});
@@ -2302,7 +2361,7 @@ interface IWorkspaceSwitchIntegrationHarness {
 	readonly parkedGroups: ReadonlySet<ITerminalGroup>;
 	/** 保存された nonce 台帳。所属が「焼き付いた」かどうかはここでしか見分けられない。 */
 	persistedNonceScopes(): readonly (readonly [string, string])[];
-	installTerminalScope(onOpenEditor: (instance: ITerminalInstance) => Promise<void>, options?: IParadisTerminalScopeHarnessOptions): ParadisTerminalWorkspaceScope;
+	installTerminalScope(onOpenEditor: (instance: ITerminalInstance, location?: TerminalEditorLocation) => Promise<void>, options?: IParadisTerminalScopeHarnessOptions): ParadisTerminalWorkspaceScope;
 	/** グループ構成が変わったことを知らせる（タグ付けを走らせる）。 */
 	fireGroupsChanged(): void;
 	/** ターミナルの増減を知らせる（所属の引き直しを走らせる）。 */
@@ -2566,10 +2625,10 @@ async function createHarness(
 		return editor;
 	};
 	await bootstrap?.({ parts, storageService, createEditor });
-	let onOpenTerminalEditor: (instance: ITerminalInstance) => Promise<void> = async () => { };
+	let onOpenTerminalEditor: (instance: ITerminalInstance, location?: TerminalEditorLocation) => Promise<void> = async () => { };
 	const terminalEditorService = {
 		get instances() { return terminals; },
-		openEditor: (instance: ITerminalInstance) => onOpenTerminalEditor(instance),
+		openEditor: (instance: ITerminalInstance, location?: TerminalEditorLocation) => onOpenTerminalEditor(instance, location),
 		getInputFromResource: (resource: URI) => inputs.get(resource.toString()) as unknown as ReturnType<ITerminalEditorService['getInputFromResource']>,
 		detachInstance: (instance: ITerminalInstance) => {
 			detachedTerminalInstanceIds.push(instance.instanceId);
@@ -2660,7 +2719,7 @@ async function createHarness(
 		parts,
 		terminalEditorService,
 		detachedTerminalInstanceIds,
-		installTerminalScope(onOpenEditor: (instance: ITerminalInstance) => Promise<void>, options: IParadisTerminalScopeHarnessOptions = {}): ParadisTerminalWorkspaceScope {
+		installTerminalScope(onOpenEditor: (instance: ITerminalInstance, location?: TerminalEditorLocation) => Promise<void>, options: IParadisTerminalScopeHarnessOptions = {}): ParadisTerminalWorkspaceScope {
 			onOpenTerminalEditor = onOpenEditor;
 			const terminalGroupService = Object.create(TerminalGroupService.prototype) as TerminalGroupService;
 			const groups = liveGroups;

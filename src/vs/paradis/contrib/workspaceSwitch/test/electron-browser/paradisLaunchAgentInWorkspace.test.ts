@@ -10,7 +10,7 @@ import assert from 'assert';
 import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { Emitter } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
@@ -30,6 +30,8 @@ suite('paradisLaunchAgentInWorkspace', () => {
 		const calls: string[] = [];
 		const instance = upcastPartial<ITerminalInstance>({
 			instanceId: 7,
+			isDisposed: false,
+			onDisposed: Event.None,
 			processReady: Promise.resolve(),
 			shellType: undefined,
 			sendText: async (text: string) => { sent.push(text); },
@@ -118,6 +120,35 @@ suite('paradisLaunchAgentInWorkspace', () => {
 		} finally {
 			paradisTakeParkedTerminalEditorInstancesForScope('repo-1');
 		}
+	});
+
+	// 起動前に閉じられた端末の `processReady` は解決しない。待ち続けると MCP・スマホの呼び出しが返らない。
+	test('fails instead of hanging when the terminal is closed before its shell starts', async () => {
+		const { instantiationService, calls } = setup('another-space');
+		const onDisposed = store.add(new Emitter<ITerminalInstance>());
+		let isDisposed = false;
+		const closed = upcastPartial<ITerminalInstance>({
+			instanceId: 9,
+			get isDisposed() { return isDisposed; },
+			onDisposed: onDisposed.event,
+			processReady: new Promise<void>(() => { }),
+		});
+		instantiationService.stub(ITerminalService, { createTerminal: async () => closed });
+		const launch = instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, {
+			rootUri: URI.file('/tmp/repo'),
+			stateKey: 'repo-1',
+			agentId: 'claude',
+			preserveFocus: true,
+		});
+		await Promise.resolve();
+		isDisposed = true;
+		onDisposed.fire(closed);
+		const error = await launch.then(() => undefined, (e: Error) => e.message);
+		assert.deepStrictEqual({ error, calls, opening: paradisTerminalEditorOpening(closed) }, {
+			error: 'The terminal was closed before it started.',
+			calls: [],
+			opening: undefined,
+		});
 	});
 
 	test('resume でも同じ形で返す（非表示のスペース宛て）', async () => {

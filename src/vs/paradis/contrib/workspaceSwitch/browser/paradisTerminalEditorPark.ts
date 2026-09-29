@@ -278,6 +278,18 @@ export function paradisGetParkedTerminalEditorStateKey(instanceId: number): stri
 	return undefined;
 }
 
+/** park 中のこのインスタンスだけを台帳から取り出す。park 中でなければ false。 */
+export function paradisUnparkTerminalEditorInstance(instance: ITerminalInstance): boolean {
+	for (const [nonce, entry] of parkedInstances) {
+		if (entry.instance === instance) {
+			parkedInstances.delete(nonce);
+			entry.onDisposedListener.dispose();
+			return true;
+		}
+	}
+	return false;
+}
+
 /**
  * 指定スコープの park 中インスタンスをすべて取り出す（台帳から消え、監視リスナーも解除される）。
  *
