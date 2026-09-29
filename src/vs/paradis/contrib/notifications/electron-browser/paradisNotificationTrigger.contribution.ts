@@ -76,6 +76,8 @@ const TERMINAL_RESTORE_TIMEOUT_MS = 10_000;
  * 切れかけの接続先で読み取りが詰まっても、通知ごと止めない。
  */
 const BRANCH_READ_TIMEOUT_MS = 500;
+/** 再読み込みの前から続いている状態を知らせ済みか、台帳で確かめるのを待つ上限。 */
+const LEDGER_READ_TIMEOUT_MS = 1_000;
 
 /**
  * ペイン単位の 'review' / 'permission' 遷移を検知して通知をトリガーする workbench contribution。
@@ -144,8 +146,9 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		if (carriedOverFrom !== undefined) {
 			// 再読み込みの前から続いている状態。前のウィンドウが台帳へ書き済みなら、もう知らせてある（鳴らさなかった
 			// ものも台帳には書く）。書かれていなければ、確認の5秒や発言の取得を待つ間に再読み込みされたので、ここで知らせる。
-			const snapshot = await this.inboxService.getLatestSnapshot();
-			if (this._lifetime.token.isCancellationRequested || paradisInboxHasRecorded(snapshot.entries, paradisInboxPaneKey(token), status, carriedOverFrom)) {
+			// shared process が詰まっても通知を止めない。時間内に台帳を取れなければ、書かれていないものとして知らせる。
+			const snapshot = await raceTimeout(this.inboxService.getLatestSnapshot(), LEDGER_READ_TIMEOUT_MS);
+			if (this._lifetime.token.isCancellationRequested || (snapshot !== undefined && paradisInboxHasRecorded(snapshot.entries, paradisInboxPaneKey(token), status, carriedOverFrom))) {
 				return;
 			}
 		}
