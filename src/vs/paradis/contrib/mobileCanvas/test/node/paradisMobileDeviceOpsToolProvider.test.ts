@@ -282,6 +282,8 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		await run('denied', { answer: { outcome: 'denied' } });
 		await run('recentlyDenied', { answer: { outcome: 'recentlyDenied' } });
 		await run('unanswered', { answer: { outcome: 'unanswered' } }, undefined, 'ios:iphone', true);
+		await run('timedOut', { answer: { outcome: 'timedOut' } }, undefined, 'ios:iphone', true);
+		await run('cancelled', { answer: { outcome: 'cancelled' } }, undefined, 'ios:iphone', true);
 		await run('malformed', { answer: { outcome: 'approve' } });
 		assert.deepStrictEqual(outcomes, {
 			usedByOtherPane: { isError: true, windowCalls: 0, attached: false },
@@ -291,6 +293,8 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 			denied: { isError: false, windowCalls: 1, attached: false },
 			recentlyDenied: { isError: true, windowCalls: 1, attached: false },
 			unanswered: { isError: false, windowCalls: 1, attached: false, body: 'Para Code could not get a clear answer: the dialog was answered right after it appeared or with a keyboard shortcut. Ask the user to click a button in the dialog, then ask again.' },
+			timedOut: { isError: false, windowCalls: 1, attached: false, body: 'The user did not answer in time. Ask the user in the conversation before asking again.' },
+			cancelled: { isError: false, windowCalls: 1, attached: false, body: 'The request was cancelled before the user answered.' },
 			malformed: { isError: false, windowCalls: 1, attached: false },
 		});
 	});

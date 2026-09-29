@@ -27,6 +27,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
+import { paradisClassifyBrowserToolErrorText } from '../common/paradisBrowserErrorReason.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /** vendored chrome-devtools-mcp のstdioエントリ（同梱物。更新手順は同フォルダのREADME.md）。 */
@@ -268,6 +269,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			duration_ms: durationMs,
 			safe_tool_name: safeToolName,
 			safe_error_kind: kind,
+			// Whether Para Code's own input gate refused it (PARA_BROWSER_*), and which CDP method failed.
+			...(first ? paradisClassifyBrowserToolErrorText(first.text) : {}),
 		}, 'info');
 	}
 

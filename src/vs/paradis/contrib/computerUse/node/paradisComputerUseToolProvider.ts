@@ -707,6 +707,8 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				return errorResult('Para Code could not get a clear answer: the dialog was answered right after it appeared or with a keyboard shortcut. Ask the user to click a button in the dialog, then ask again.');
 			case 'paneUnresolved':
 				return errorResult('Para Code could not find the window of this terminal pane, so it could not ask the user.');
+			case 'timedOut':
+				return errorResult(REQUEST_TIMEOUT_MESSAGE);
 			case 'cancelled':
 			default:
 				return errorResult('The request was cancelled before the user answered.');

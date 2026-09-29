@@ -50,6 +50,8 @@ export class ParadisComputerUseApprovalChannel implements IServerChannel {
 	constructor(
 		private readonly _approvals: Pick<IParadisAgentBrowserTabsService, 'askApproval'>,
 		private readonly _paneTokens: Pick<IParadisPaneTokenService, 'getInstanceForToken'>,
+		// 締め切りは shared process の待ち（2 分）より少し短くし、こちらで閉じてから答えを返す
+		private readonly _deadlineMs: number = PARADIS_COMPUTER_USE_APPROVAL_TIMEOUT_MS - 5_000,
 	) { }
 
 	listen<T>(_ctx: unknown, event: string): Event<T> {
@@ -110,10 +112,13 @@ export class ParadisComputerUseApprovalChannel implements IServerChannel {
 			cooldownKey: `computer:${bundleId}`,
 		};
 
-		// 締め切りは shared process の待ち（2 分）より少し短くし、こちらで閉じてから答えを返す
-		const deadline = new ParadisApprovalDeadline(cancellation, PARADIS_COMPUTER_USE_APPROVAL_TIMEOUT_MS - 5_000);
+		const deadline = new ParadisApprovalDeadline(cancellation, this._deadlineMs);
 		try {
 			const outcome = await this._approvals.askApproval(token, request, deadline.token);
+			if (outcome === 'cancelled' && deadline.timedOut) {
+				// 締め切りで閉じたものは、取り消しではなく「答えが無かった」と返す（ページ共有・モバイル端末と同じ）
+				return 'timedOut';
+			}
 			// 答えを待つ間にペインが閉じていたら、許可として返さない
 			if ((outcome === 'approve' || outcome === 'alternative') && this._paneTokens.getInstanceForToken(token) === undefined) {
 				return 'paneUnresolved';
