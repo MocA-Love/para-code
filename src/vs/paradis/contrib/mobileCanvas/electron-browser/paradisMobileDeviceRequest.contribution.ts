@@ -29,7 +29,7 @@ import { localize } from '../../../../nls.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
-import { paradisSanitizeAgentPageRequestReason, paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
+import { PARADIS_AGENT_APPROVAL_DEADLINE_MS, paradisSanitizeAgentPageRequestReason, paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisAgentApprovalRequest, IParadisAgentBrowserTabsService, ParadisApprovalDeadline } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
@@ -61,6 +61,7 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 		private readonly _paneTokens: Pick<IParadisPaneTokenService, 'getInstanceForToken'>,
 		private readonly _terminalScopes: Pick<IParadisTerminalScopeService, 'getStateKeyForInstance'>,
 		private readonly _now: () => number = Date.now,
+		private readonly _deadlineMs: number = PARADIS_AGENT_APPROVAL_DEADLINE_MS,
 	) { }
 
 	/** ペイン → 端末の要求を最後に拒否された時刻。 */
@@ -160,9 +161,13 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 			return { outcome: 'paneUnresolved' };
 		}
 		// ページ共有と同じ締め切り（ダイアログの表示を含めて 50 秒）。shared process の取り消しでも閉じる
-		const deadline = new ParadisApprovalDeadline(cancellation);
+		const deadline = new ParadisApprovalDeadline(cancellation, this._deadlineMs);
 		try {
 			const outcome = await this._approvals.askApproval(token, request, deadline.token);
+			if (outcome === 'cancelled' && deadline.timedOut) {
+				// 締め切りで閉じたものは、取り消しではなく「答えが無かった」と返す（ページ共有・プロファイルと同じ）
+				return { outcome: 'timedOut' };
+			}
 			if (outcome !== 'approve') {
 				// 2つ目の選択肢は出していないので alternative は来ない。来ても承認としては扱わない
 				return { outcome: outcome === 'alternative' ? 'denied' : outcome };

@@ -119,6 +119,8 @@ suite('ParadisSentryDiagnostics', () => {
 		assert.deepStrictEqual({
 			fileError: paradisSafeErrorExtra(fileError),
 			nodeError: paradisSafeErrorExtra(nodeError),
+			moduleError: paradisSafeErrorExtra(Object.assign(new Error('Cannot find module /Users/alice/x.js'), { code: 'ERR_MODULE_NOT_FOUND' })),
+			pathShapedCode: paradisSafeErrorExtra(Object.assign(new Error('x'), { code: 'ERR_/Users/alice' })),
 			plainObject: paradisSafeErrorExtra({ message: 'private', 'has space': 1, reason: 'x', statusCode: 500 }),
 			primitive: paradisSafeErrorExtra('private'),
 			outOfRangeResult: paradisSafeErrorExtra(Object.assign(new Error('x'), { fileOperationResult: 99 })),
@@ -128,6 +130,8 @@ suite('ParadisSentryDiagnostics', () => {
 		}, {
 			fileError: { safe_file_result: 'FILE_PERMISSION_DENIED', safe_errno: 'EACCES' },
 			nodeError: { safe_errno: 'EPIPE', safe_syscall: 'write' },
+			moduleError: { safe_errno: 'ERR_MODULE_NOT_FOUND' },
+			pathShapedCode: {},
 			plainObject: { safe_error_keys: 'message,reason,statusCode' },
 			primitive: {},
 			outOfRangeResult: { safe_file_result: 'fileOperationResult:99' },

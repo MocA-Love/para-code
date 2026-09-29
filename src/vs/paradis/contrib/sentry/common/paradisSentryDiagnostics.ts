@@ -294,6 +294,12 @@ const knownErrnoCodes = new Set([
 	'EPIPE', 'ECONNRESET', 'ECONNREFUSED', 'ENOTEMPTY', 'ETXTBSY', 'ECANCELED',
 ]);
 
+/**
+ * Node's own `ERR_*` codes (`ERR_MODULE_NOT_FOUND`, ...) and CommonJS's `MODULE_NOT_FOUND`. Read only
+ * from the `code` property, never from a message; they are fixed names that Node defines.
+ */
+const nodeErrorCode = /^(?:ERR_[A-Z0-9_]{1,45}|MODULE_NOT_FOUND)$/;
+
 function readStringProperty(error: object, key: string): string | undefined {
 	const value = (error as Record<string, unknown>)[key];
 	return typeof value === 'string' ? value : undefined;
@@ -305,7 +311,9 @@ function readStringProperty(error: object, key: string): string | undefined {
  * so without these a `FileOperationError` or a Node system error arrives as a bare `Error`:
  * - `safe_file_result`: the `FileOperationResult` name
  * - `safe_errno`: a known Node error code, from `code` or, for errors whose code only survives in
- *   the text (`FileOperationError` wraps the provider error's message), from the message
+ *   the text (`FileOperationError` wraps the provider error's message), from the message. Node's
+ *   `ERR_*` codes are taken from `code` only (an extension host's module resolution failure arrives
+ *   with `ERR_MODULE_NOT_FOUND` and nothing else that can be sent)
  * - `safe_syscall`: Node's `syscall` (`write`, `open`, ...) when identifier-shaped
  * - `safe_error_keys`: for a thrown non-`Error` object, its identifier-shaped property names, which
  *   tell a JSON-transported error from an event object or a result record
@@ -321,7 +329,7 @@ export function paradisSafeErrorExtra(error: unknown): Record<`safe_${string}`, 
 			extra.safe_file_result = fileResult;
 		}
 		const code = readStringProperty(error, 'code');
-		const errno = code !== undefined && knownErrnoCodes.has(code)
+		const errno = code !== undefined && (knownErrnoCodes.has(code) || nodeErrorCode.test(code))
 			? code
 			: Array.from((readStringProperty(error, 'message') ?? '').matchAll(/\b(?<code>E[A-Z]{2,14})\b/g), match => match.groups?.code)
 				.find(candidate => candidate !== undefined && knownErrnoCodes.has(candidate));

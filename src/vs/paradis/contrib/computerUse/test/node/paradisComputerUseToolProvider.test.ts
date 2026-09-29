@@ -219,13 +219,13 @@ suite('ParadisComputerUseToolProvider', () => {
 
 	test('does not remember answers that are not decisions, and refuses when the app restarts during the dialog', async () => {
 		const { helper, ledger, provider } = setup();
-		const { context, prompts } = createContext('pane', ['busy', 'recentlyDenied', 'unanswered', 'paneUnresolved', 'read'], () => {
-			if (prompts.length === 5) {
+		const { context, prompts } = createContext('pane', ['busy', 'recentlyDenied', 'unanswered', 'paneUnresolved', 'timedOut', 'cancelled', 'read'], () => {
+			if (prompts.length === 7) {
 				helper.apps = [{ ...FINDER, pid: 101 }];
 			}
 		});
 		const results: string[] = [];
-		for (let attempt = 0; attempt < 5; attempt++) {
+		for (let attempt = 0; attempt < 7; attempt++) {
 			results.push(text(await provider.callTool('pane-a', 'computer_list_windows', { app: 'com.apple.finder' }, undefined, context)).split('.')[0]);
 		}
 		assert.deepStrictEqual({ results, prompts: prompts.length, calls: helper.calls.filter(call => call.startsWith('listWindows')) }, {
@@ -234,9 +234,11 @@ suite('ParadisComputerUseToolProvider', () => {
 				'The user declined a request for this app a short while ago, so Para Code turned this one down without asking',
 				'Para Code could not get a clear answer: the dialog was answered right after it appeared or with a keyboard shortcut',
 				'Para Code could not find the window of this terminal pane, so it could not ask the user',
+				'The user did not answer in time',
+				'The request was cancelled before the user answered',
 				'Finder quit or restarted while the user was answering',
 			],
-			prompts: 5,
+			prompts: 7,
 			calls: [],
 		});
 		// 承認そのものは記録したので、起動し直したアプリ（同じ bundle id）は聞かずに読める
