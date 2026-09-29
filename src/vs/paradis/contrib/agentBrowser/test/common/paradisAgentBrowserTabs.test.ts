@@ -95,4 +95,17 @@ suite('ParadisAgentBrowserTabs', () => {
 			ownKept: [],
 		});
 	});
+
+	test('revoking drops only an approved profile tab, also after the agent already moved away from it', () => {
+		const ledger = new ParadisAgentTabLedger();
+		ledger.registerAgentTab('a', 'approved', { approvedProfile: true });
+		ledger.registerAgentTab('a', 'own');
+		// 共有していたが、エージェントが自分のタブへ移った（共有先の変化では外れない）
+		ledger.reconcileApprovedProfileTabs(() => 'approved', () => false);
+		ledger.reconcileApprovedProfileTabs(() => 'own', () => true);
+		assert.deepStrictEqual({
+			revoked: [ledger.revokeApprovedProfileTab('approved'), ledger.revokeApprovedProfileTab('own'), ledger.revokeApprovedProfileTab('unknown')],
+			tabs: ledger.agentTabsOf('a'),
+		}, { revoked: [true, false, false], tabs: ['own'] });
+	});
 });

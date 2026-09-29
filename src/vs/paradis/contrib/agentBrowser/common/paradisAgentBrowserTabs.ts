@@ -258,6 +258,24 @@ export class ParadisAgentTabLedger {
 		return this._approvedProfileTabs.has(viewId);
 	}
 
+	/** そのタブを開いたペインのトークン。 */
+	ownerOf(viewId: string): string | undefined {
+		return this._agentTabs.get(viewId);
+	}
+
+	/**
+	 * ユーザーが共有を止めた（共有ボタン・「ブラウザページの共有を解除」・共有ダイアログのスイッチ）。承認済み
+	 * プロファイルのタブなら台帳から外して true を返す。エージェントがすでに別のタブへ移っていて、このタブの
+	 * 共有先の変化が起きない場合もここで外れる。エージェント自身のタブは何もしない。
+	 */
+	revokeApprovedProfileTab(viewId: string): boolean {
+		if (!this._approvedProfileTabs.has(viewId)) {
+			return false;
+		}
+		this.forget(viewId);
+		return true;
+	}
+
 	/**
 	 * 承認済みプロファイルのタブを今の共有先と突き合わせる。持ち主のペインへ共有されていたのに外れたタブは、
 	 * ユーザーが共有を止めたものとして台帳から外し、その viewId を返す（次に使うときは承認し直しになる。
