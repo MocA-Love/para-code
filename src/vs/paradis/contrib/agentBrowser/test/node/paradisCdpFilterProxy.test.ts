@@ -437,9 +437,10 @@ suite('Paradis CDP screenshot filter', () => {
 		});
 	});
 
-	test('gateway contexts are remote for remote panes and for connections that came through the return tunnel', () => {
+	test('gateway contexts are remote for remote panes, and look the return tunnel up once and only when asked', async () => {
 		const ingressLease = Object.freeze({ token: 'pane-token' });
 		let remotePane = false;
+		const tunnelLookups: number[] = [];
 		const delegate: IParadisCdpGatewayDelegate = {
 			captureIngressLease: token => token === ingressLease.token ? ingressLease : undefined,
 			isIngressLeaseCurrent: lease => lease === ingressLease,
@@ -451,18 +452,64 @@ suite('Paradis CDP screenshot filter', () => {
 			dispatchBoundPageInput: () => ({ response: Promise.resolve({ status: 'success', result: {} }), drained: Promise.resolve() }),
 			closeInputConnection: () => undefined,
 			isRemotePane: () => remotePane,
-			isTunnelPeer: async () => false,
+			isTunnelPeer: async remotePort => {
+				tunnelLookups.push(remotePort);
+				return remotePort === 50001;
+			},
 		};
 		const gateway = new ParadisCdpGateway(delegate, {} as ParadisCdpUpstream, { debug: () => undefined } as never);
 		const internals = gateway as unknown as {
-			_makeContext(access: { token: string; lease: typeof ingressLease }, reservation: undefined, remoteIngress: boolean): IParadisBoundContext;
+			_makeContext(access: { token: string; lease: typeof ingressLease }, reservation: undefined, peer: { remotePort: number; localPort: number } | undefined): IParadisBoundContext;
 		};
-		const local = internals._makeContext({ token: 'pane-token', lease: ingressLease }, undefined, false);
-		const tunnel = internals._makeContext({ token: 'pane-token', lease: ingressLease }, undefined, true);
-		const before = [local.isRemotePane(), tunnel.isRemotePane()];
+		const noPeer = internals._makeContext({ token: 'pane-token', lease: ingressLease }, undefined, undefined);
+		const local = internals._makeContext({ token: 'pane-token', lease: ingressLease }, undefined, { remotePort: 50000, localPort: 47286 });
+		const tunnel = internals._makeContext({ token: 'pane-token', lease: ingressLease }, undefined, { remotePort: 50001, localPort: 47286 });
+		const lookupsBeforeAsking = tunnelLookups.length;
+		const first = [local.isRemotePane(), tunnel.isRemotePane()];
+		const firstResolved = await Promise.all(first);
+		const cached = [noPeer.isRemotePane(), local.isRemotePane(), tunnel.isRemotePane()];
 		remotePane = true;
-		assert.deepStrictEqual({ before, after: local.isRemotePane() }, { before: [false, true], after: true });
+		assert.deepStrictEqual({
+			lookupsBeforeAsking,
+			firstIsPending: first.every(value => value instanceof Promise),
+			firstResolved,
+			cached,
+			remotePane: local.isRemotePane(),
+			tunnelLookups,
+		}, {
+			lookupsBeforeAsking: 0,
+			firstIsPending: true,
+			firstResolved: [false, true],
+			cached: [false, false, true],
+			remotePane: true,
+			tunnelLookups: [50000, 50001],
+		});
 		gateway.dispose();
+	});
+
+	test('a remote check that is still pending holds the command and then refuses or forwards it', async () => {
+		const run = async (remote: boolean) => {
+			let resolved: boolean | undefined;
+			const fixture = await createOpenBrowserProxyFixture(context({
+				isRemotePane: () => resolved ?? new Promise<boolean>(resolve => setTimeout(() => resolve(resolved = remote), 0)),
+			}));
+			publishAllowedSession(fixture, 'session-1');
+			fixture.client.sent.length = 0;
+			fixture.upstream.sent.length = 0;
+			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 1, sessionId: 'session-1', method: 'Page.navigate', params: { url: 'file:///etc/passwd' } })));
+			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 2, sessionId: 'session-1', method: 'Runtime.evaluate', params: { expression: '1' } })));
+			const heldBeforeCheck = parseSent(fixture.upstream).length;
+			await new Promise(resolve => setTimeout(resolve, 5));
+			return {
+				heldBeforeCheck,
+				refused: (parseSent(fixture.client) as Array<{ id: number; error?: unknown }>).filter(frame => frame.error !== undefined).map(frame => frame.id),
+				upstream: (parseSent(fixture.upstream) as Array<{ id: number }>).map(frame => frame.id),
+			};
+		};
+		assert.deepStrictEqual({ remote: await run(true), local: await run(false) }, {
+			remote: { heldBeforeCheck: 0, refused: [1], upstream: [2] },
+			local: { heldBeforeCheck: 0, refused: [], upstream: [1, 2] },
+		});
 	});
 
 	test('gateway revokes a connection lease synchronously before WebSocket close completes', () => {

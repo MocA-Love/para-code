@@ -441,6 +441,13 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** workbenchから同期される「ペイントークン ⇔ シェルPID」表（CDPゲートウェイの呼び出し元識別用）。 */
 	private readonly _paneShells = new Map<string, IPaneShellEntry>();
 	/**
+	 * 接続先（SSH・WSL・コンテナ）のペインのトークン → 接続先。`_paneShells` はシェルの PID が分かるペインしか
+	 * 持たない（SSH のウィンドウの再読み込みでターミナルが付き直す前など、PID の無い manifest が来る）ので、
+	 * 接続先であることだけは PID と関係なく覚えておく。一度接続先と分かったトークンは、トークンが片付くまで
+	 * 手元へは戻さない（手元のファイルに触れる操作を断る側へ倒すため）。
+	 */
+	private readonly _paneRemoteAuthorities = new Map<string, string>();
+	/**
 	 * MCPリクエスト（またはCDPゲートウェイのPID識別）で実際に接続実績のあったペイントークンの集合。
 	 * バインディングダイアログの「MCP未接続」表示に使う（shared processの生存期間のみ保持）。
 	 */
@@ -610,7 +617,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				dispatchBoundPageInput: (token, connection, expectedTargetId, method, paramsJson, isConnectionCurrent) =>
 					this._dispatchBoundPageInput(token, connection, expectedTargetId, method, paramsJson, isConnectionCurrent),
 				closeInputConnection: connection => this._cdpInputQueue.closeConnection(connection),
-				isRemotePane: token => this._paneShells.get(token)?.remoteAuthority !== undefined,
+				isRemotePane: token => this._isRemotePaneForGateway(token),
 				isTunnelPeer: (remotePort, localPort) => this._isTunnelPeer(remotePort, localPort),
 			},
 			// 冷スタート（起動時点で `DevToolsActivePort` が他インスタンスに上書きされていた）でも
@@ -1080,6 +1087,9 @@ export class ParadisAgentBrowserService extends Disposable {
 			throw new Error('Para Browser protocol rejected');
 		}
 		for (const pane of acceptedManifest.panes) {
+			if (pane.remoteAuthority !== undefined) {
+				this._paneRemoteAuthorities.set(pane.token, pane.remoteAuthority);
+			}
 			const existing = this._paneShells.get(pane.token);
 			const terminalExited = this._terminalExitedTokens.has(pane.token);
 			const preserveRecoveryPid = !acceptedManifest.complete
@@ -1619,6 +1629,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _cleanupTokenLocalState(token: string, generation?: number, preserveTerminalExit: boolean = false): void {
 		const cleanupGeneration = generation ?? this._advanceBindingGeneration(token);
 		this._paneShells.delete(token);
+		this._paneRemoteAuthorities.delete(token);
 		this._paneStatuses.delete(token);
 		this._paneSessions.delete(token);
 		this._activityApprovalTokens.delete(token);
@@ -3020,7 +3031,14 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (name === 'preview_file') {
 			const toolArgs = params?.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : undefined;
 			const path = typeof toolArgs?.path === 'string' ? toolArgs.path : undefined;
-			return this._previewFile(ingressLease, path, signal);
+			// 接続先のペインのパスは接続先のものとして開かせる。手元のペインのトークンで戻り経路から来たものは
+			// 手元のファイルを開かせない
+			const remoteAuthority = this._paneRemoteAuthorityOf(token);
+			if (remoteAuthority === undefined && typeof path === 'string' && (await this._devtoolsPathCaller(token, socket)).remote) {
+				this._requireIngressLease(ingressLease);
+				return this._toolError('preview_file was not run: this request came through Para Code\'s return tunnel from a remote window (SSH, WSL, container), so it cannot open files on the user\'s local machine.');
+			}
+			return this._previewFile(ingressLease, path, signal, remoteAuthority);
 		}
 
 		if (PARADIS_AGENT_NOTE_TOOL_OPERATIONS.has(name)) {
@@ -3184,12 +3202,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * パスが使えなくなるため）。
 	 */
 	private async _devtoolsPathCaller(token: string, socket: Socket | undefined): Promise<IParadisDevtoolsPathCaller> {
-		const pane = this._paneShells.get(token);
-		if (pane === undefined) {
-			return { paneKnown: false, remote: false };
+		if (this._paneRemoteAuthorityOf(token) !== undefined) {
+			return { paneKnown: this._paneShells.has(token), remote: true };
 		}
-		if (pane.remoteAuthority !== undefined) {
-			return { paneKnown: true, remote: true };
+		if (!this._paneShells.has(token)) {
+			return { paneKnown: false, remote: false };
 		}
 		const remotePort = socket?.remotePort;
 		const localPort = socket?.localPort;
@@ -3198,8 +3215,22 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
+	 * CDP ゲートウェイ向け: 接続先のペインか。台帳に無いトークンも接続先として扱う（手元のファイルに触れる
+	 * コマンドだけが断られる側へ倒す。MCP の層で台帳に無いペインのパスを断るのと揃える）。
+	 */
+	private _isRemotePaneForGateway(token: string): boolean {
+		return this._paneRemoteAuthorityOf(token) !== undefined || !this._paneShells.has(token);
+	}
+
+	/** ペインの接続先。手元のペイン・知らないトークンは undefined。 */
+	private _paneRemoteAuthorityOf(token: string): string | undefined {
+		return this._paneRemoteAuthorities.get(token) ?? this._paneShells.get(token)?.remoteAuthority;
+	}
+
+	/**
 	 * loopback 接続の相手が、Para Code の張った戻り経路（`ssh -R`）のプロセスか。戻り経路が1本も無ければ
-	 * プロセス表を調べない。相手を特定できなければ false（手元の呼び出しとして扱う。NOTES.md に記録）。
+	 * プロセス表を調べず false。戻り経路があるのに相手を特定できない（lsof 等の失敗）ときは true
+	 * （手元のファイルに触れる操作だけが断られる側へ倒す）。
 	 */
 	private async _isTunnelPeer(remotePort: number, localPort: number): Promise<boolean> {
 		const tunnels = this._remoteTunnels;
@@ -3213,9 +3244,9 @@ export class ParadisAgentBrowserService extends Disposable {
 			return false;
 		}
 		try {
-			return await paradisPeerIsOneOf(remotePort, localPort, process.pid, pids);
+			return await paradisPeerIsOneOf(remotePort, localPort, process.pid, pids) ?? true;
 		} catch {
-			return false;
+			return true;
 		}
 	}
 
@@ -3226,10 +3257,10 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * まだ分からないときは一時フォルダだけを「揃っていない」として返す（proxy が後で引き直す）。
 	 */
 	private async _resolveDevtoolsRoots(token: string): Promise<IParadisDevtoolsRootsResolution> {
-		const pane = this._paneShells.get(token);
-		if (pane?.remoteAuthority !== undefined) {
+		if (this._paneRemoteAuthorityOf(token) !== undefined) {
 			return { folders: [], complete: true };
 		}
+		const pane = this._paneShells.get(token);
 		const temporaryFolders = paradisDevtoolsUserTemporaryFolders();
 		const degraded = { folders: temporaryFolders, complete: false };
 		const ingressLease = pane === undefined ? undefined : this.captureIngressLease(token);
@@ -3575,7 +3606,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 状態（`reason` / `deferred`）だけを定型文へ翻訳する。renderer は内部情報を含み得る
 	 * 文字列を一切返さない（失敗の詳細は renderer 側の log に残る）。
 	 */
-	private async _previewFile(ingressLease: IParadisAgentBrowserIngressLease, path: string | undefined, signal?: AbortSignal): Promise<unknown> {
+	private async _previewFile(ingressLease: IParadisAgentBrowserIngressLease, path: string | undefined, signal?: AbortSignal, remoteAuthority?: string): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		if (!path || !isAbsolute(path)) {
 			return this._toolError(`preview_file requires an absolute file path (got: ${String(path)}). Resolve the path against your working directory first.`);
@@ -3583,8 +3614,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		const call = await this._callOwningWindow<IParadisPreviewFileResult>(ingressLease, {
 			channelName: PARADIS_AGENT_PREVIEW_CHANNEL,
 			method: 'previewFile',
-			// トークンはウィンドウ内で「どのスペースへ開くか」を解くためだけに渡す
-			args: [ingressLease.token, path],
+			// トークンはウィンドウ内で「どのスペースへ開くか」を解くためだけに渡す。接続先のペインは接続先も渡し、
+			// パスをその接続先のものとして開かせる
+			args: remoteAuthority !== undefined ? [ingressLease.token, path, remoteAuthority] : [ingressLease.token, path],
 			failureLabel: 'preview_file',
 			failureMessage: 'Failed to open the file in Para Code.',
 		}, signal);
@@ -4370,6 +4402,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._faultedTokens.clear();
 		this._quarantinedTokenState.clear();
 		this._paneShells.clear();
+		this._paneRemoteAuthorities.clear();
 		this._paneStatuses.clear();
 		this._paneSessions.clear();
 		this._activityApprovalTokens.clear();

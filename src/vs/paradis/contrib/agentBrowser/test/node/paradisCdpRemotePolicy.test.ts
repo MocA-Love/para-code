@@ -25,15 +25,18 @@ suite('ParadisCdpRemotePolicy', () => {
 			['Input.dispatchDragEvent', { type: 'drop', x: 1, y: 1, data: { items: [], files: ['/etc/passwd'], dragOperationsMask: 1 } }],
 			['Page.navigate', { url: 'file:///etc/passwd' }],
 			['Target.createTarget', { url: 'view-source:file:///etc/passwd' }],
+			['Tracing.start', { perfettoConfig: 'base64-config' }],
+			['Tracing.start', { tracingBackend: 'system' }],
 			['Input.dispatchDragEvent', { type: 'drop', x: 1, y: 1, data: { items: [{ mimeType: 'text/plain', data: 'hi' }], dragOperationsMask: 1 } }],
 			['Input.dispatchDragEvent', { type: 'drop', x: 1, y: 1, data: { items: [], files: [], dragOperationsMask: 1 } }],
 			['Page.navigate', { url: 'https://example.com' }],
 			['Page.navigateToHistoryEntry', { entryId: 1 }],
 			['Runtime.evaluate', { expression: 'location.href' }],
+			['Tracing.start', { transferMode: 'ReturnAsStream', traceConfig: { recordMode: 'recordAsMuchAsPossible', includedCategories: ['devtools.timeline'] } }],
 		] as const;
 		assert.deepStrictEqual(deniedMethods.map(([method, params]) => paradisRemotePaneCdpDeniedMessage(method, params as Record<string, unknown>) !== undefined), [
-			true, true, true, true, true, true,
-			false, false, false, false, false,
+			true, true, true, true, true, true, true, true,
+			false, false, false, false, false, false,
 		]);
 	});
 });

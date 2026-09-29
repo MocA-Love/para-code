@@ -128,6 +128,7 @@ function createFixture(): {
 		_quarantinedTokenState: quarantinedTokenState,
 		_terminalExitedTokens: new Set<string>(),
 		_paneShells: paneShells,
+		_paneRemoteAuthorities: new Map<string, string>(),
 		_paneStatuses: new Map<string, { status: string; changedAt: number }>(),
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set<string>(),
@@ -2122,5 +2123,55 @@ suite('ParadisAgentBrowser authority integration', () => {
 			windowFailed: { folders: temporary, complete: false },
 			windowCalls: [['paneRoots', ['local']], ['paneRoots', ['local']]],
 		});
+	});
+
+	test('a remote pane stays remote while its manifest has no shell PID, and unknown tokens count as remote at the gateway', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [
+			{ token: 'remote-reloading', remoteAuthority: 'ssh-remote+dev' },
+			{ token: 'local', shellPid: 123 },
+		]));
+		const gatewayRemote = (token: string) => Reflect.get(fixture.service, '_isRemotePaneForGateway').call(fixture.service, token) as boolean;
+		assert.deepStrictEqual({
+			inShellLedger: fixture.paneShells.has('remote-reloading'),
+			gateway: { remote: gatewayRemote('remote-reloading'), local: gatewayRemote('local'), unknown: gatewayRemote('nobody') },
+			pathCaller: await Reflect.get(fixture.service, '_devtoolsPathCaller').call(fixture.service, 'remote-reloading', undefined),
+			roots: await Reflect.get(fixture.service, '_resolveDevtoolsRoots').call(fixture.service, 'remote-reloading'),
+		}, {
+			inShellLedger: false,
+			gateway: { remote: true, local: false, unknown: true },
+			pathCaller: { paneKnown: false, remote: true },
+			roots: { folders: [], complete: true },
+		});
+	});
+
+	test('preview_file from a remote pane asks the window to open the path on that remote machine', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [
+			{ token: 'remote', shellPid: 4242, remoteAuthority: 'ssh-remote+dev' },
+			{ token: 'local', shellPid: 123 },
+		]));
+		Reflect.set(fixture.service, '_toolProviders', []);
+		const windowCalls: unknown[] = [];
+		Reflect.set(fixture.service, 'ipcServer', {
+			connections: [{ ctx: 'window:1' }],
+			getChannel: () => ({ call: async (method: string, args: unknown) => { windowCalls.push([method, args]); return { ok: true }; } }),
+		});
+		for (const token of ['remote', 'local']) {
+			const request = new TestRequest('POST', `/?pane=${token}`);
+			const response = new TestResponse();
+			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+			request.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'preview_file', arguments: { path: '/home/example/notes.md' } } })));
+			request.emit('end');
+			await pending;
+		}
+		assert.deepStrictEqual(windowCalls, [
+			['previewFile', ['remote', '/home/example/notes.md', 'ssh-remote+dev']],
+			['previewFile', ['local', '/home/example/notes.md']],
+		]);
 	});
 });

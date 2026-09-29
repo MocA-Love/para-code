@@ -73,6 +73,14 @@ export function paradisRemotePaneCdpDeniedMessage(method: string, params: Record
 			}
 			return `Input.dispatchDragEvent with data.files is not permitted: ${REMOTE_REASON} Use the upload_file_to_drop_zone tool with the file content instead.`;
 		}
+		case 'Tracing.start':
+			// perfettoConfig は Perfetto の設定をそのまま渡し、その中の出力先（`output_path` 等）でブラウザの
+			// 機械へファイルを書かせうる。system バックエンドも OS 側のトレースへ流す。puppeteer の通常の
+			// トレース（MCP の performance_* ツール）は traceConfig だけを使うので、これらは断っても困らない。
+			// traceConfig 自体にはファイルの出力先の項目が無い
+			return isRecord(params) && (params.perfettoConfig !== undefined || params.tracingBackend === 'system')
+				? `Tracing.start with perfettoConfig or the system tracing backend is not permitted: ${REMOTE_REASON}`
+				: undefined;
 		case 'Page.navigate':
 		case 'Target.createTarget':
 			return isRecord(params) && paradisIsLocalFileUrl(params.url)

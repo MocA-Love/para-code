@@ -107,7 +107,8 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 		if (command === 'previewFile') {
 			const args = Array.isArray(arg) ? arg : [];
 			const token = typeof args[0] === 'string' ? args[0] : undefined;
-			return this._previewFile(token, String(args[1])) as Promise<T>;
+			const remoteAuthority = typeof args[2] === 'string' && args[2].length > 0 ? args[2] : undefined;
+			return this._previewFile(token, String(args[1]), remoteAuthority) as Promise<T>;
 		}
 		if (command === PARADIS_AGENT_PANE_ROOTS_METHOD) {
 			const args = Array.isArray(arg) ? arg : [];
@@ -116,13 +117,15 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 		throw new Error(`Method not found: ${command}`);
 	}
 
-	private async _previewFile(token: string | undefined, path: string): Promise<IParadisPreviewFileResult> {
+	private async _previewFile(token: string | undefined, path: string, remoteAuthority: string | undefined): Promise<IParadisPreviewFileResult> {
 		// ここは意図的に paradisResolveExternalPath を使わない（他の URI.file 呼び出しとは事情が違う）。
 		// エージェントが送ってくるパスの基準はペインが属するスペースだが、それを基準に写すと
 		// 取り違えたときに「別のファイルを黙って開く」ことになる。解決できないまま stat に失敗すれば
 		// エージェントには失敗が返り、静かな誤動作にはならない。直すならスペース配下であることの
 		// 確認とセットにすること。
-		const resource = URI.file(path);
+		// 接続先（SSH・WSL・コンテナ）のペインのエージェントが渡すパスは、その接続先のパス。手元のパスとして
+		// 開くと、接続先のエージェントが手元のファイルを開いたり有無を探ったりできてしまう
+		const resource = remoteAuthority !== undefined ? paradisRemotePathResource(remoteAuthority, path) : URI.file(path);
 		try {
 			const stat = await this.fileService.stat(resource);
 			if (stat.isDirectory) {
@@ -156,21 +159,23 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 
 	/**
 	 * ペインが属するスペースの手元のフォルダ。スペースを持たないペインはウィンドウのワークスペースの
-	 * フォルダ。所属が分からないとき・接続先（SSH）のフォルダしか無いときは空。
+	 * フォルダ。接続先（SSH）のフォルダしか無いときは空。所属がまだ分からないときは undefined。
 	 */
-	private _paneRoots(token: string | undefined): string[] {
+	private _paneRoots(token: string | undefined): string[] | undefined {
 		if (token === undefined) {
 			return [];
 		}
 		const target = this.resolvePaneTarget(token);
+		if (target.kind === 'unresolved') {
+			// まだ台帳に無い・所属が決まっていない。空で答えると一時フォルダだけに固まるので、後で引き直させる
+			return undefined;
+		}
 		let resources: readonly URI[];
 		if (target.kind === 'space') {
 			const entry = paradisListSpaces(this.workspaceSwitchService.repositories, this.worktreeService).find(candidate => candidate.space === target.stateKey);
 			resources = entry ? [entry.uri] : [];
-		} else if (target.kind === 'active') {
-			resources = this.workspaceContextService?.getWorkspace().folders.map(folder => folder.uri) ?? [];
 		} else {
-			resources = [];
+			resources = this.workspaceContextService?.getWorkspace().folders.map(folder => folder.uri) ?? [];
 		}
 		return resources.filter(resource => resource.scheme === Schemas.file).map(resource => resource.fsPath);
 	}
@@ -319,6 +324,12 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
  * shared process の IPCServer へ、このウィンドウ宛の {@link PARADIS_AGENT_PREVIEW_CHANNEL}
  * を登録する。登録はウィンドウの生存期間ずっと有効（接続断で自動的に消える）。
  */
+/** 接続先のパスを、その接続先のリソースにする。Windows 形式の区切りは `/` に揃える。 */
+function paradisRemotePathResource(remoteAuthority: string, path: string): URI {
+	const posixPath = path.replace(/\\/g, '/');
+	return URI.from({ scheme: Schemas.vscodeRemote, authority: remoteAuthority, path: posixPath.startsWith('/') ? posixPath : `/${posixPath}` });
+}
+
 class ParadisAgentPreviewContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.paradisAgentPreview';
 
