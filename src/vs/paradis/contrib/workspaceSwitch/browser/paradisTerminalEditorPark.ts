@@ -139,6 +139,55 @@ export function paradisMarkOrphanTerminalRevivalComplete(): void {
 	orphanRevivalComplete = true;
 }
 
+/** テスト用。完走フラグはモジュールの状態なので、テストの間で持ち越さないよう戻す。 */
+export function paradisResetOrphanTerminalRevivalForTest(): void {
+	orphanRevivalComplete = false;
+}
+
+/**
+ * エディタターミナルの明示的な持ち主のスペースを引く問い合わせ口。実体はターミナルスコープの
+ * contribution が持っていて、切り替えサービスからは DI で循環するため、ここへ関数を預けてもらう。
+ * 切り替えの最中に作られて別のスペースへ割り当てられた端末を、切り替え元へ park しないために使う。
+ */
+let editorOwnerProbe: ((instance: ITerminalInstance) => string | undefined) | undefined;
+
+export function paradisRegisterTerminalEditorOwnerProbe(probe: (instance: ITerminalInstance) => string | undefined): IDisposable {
+	editorOwnerProbe = probe;
+	return toDisposable(() => {
+		if (editorOwnerProbe === probe) {
+			editorOwnerProbe = undefined;
+		}
+	});
+}
+
+/** 明示的に割り当てられた持ち主のスペース。推測や同居からの借り物は返さない。 */
+export function paradisTerminalEditorOwner(instance: ITerminalInstance): string | undefined {
+	return editorOwnerProbe?.(instance);
+}
+
+/**
+ * 特定のスペースへ開いている途中のエディタターミナル（MCP・スマホからの作成）。
+ *
+ * 作成からスペースの割り当てまでには PTY の起動とエディタを開く待ちがあり、その間に
+ * スペースの切り替えが走ると、切り替えはこの端末を切り替え元の持ち物として扱ってしまう。
+ * 開き終わる（`settled`）まで待つ手掛かりと、行き先のスペースをここで知らせる。
+ */
+const openingInstances = new Map<ITerminalInstance, { readonly stateKey: string; readonly settled: Promise<unknown> }>();
+
+export function paradisMarkTerminalEditorOpeningForScope(instance: ITerminalInstance, stateKey: string, settled: Promise<unknown>): IDisposable {
+	const entry = { stateKey, settled };
+	openingInstances.set(instance, entry);
+	return toDisposable(() => {
+		if (openingInstances.get(instance) === entry) {
+			openingInstances.delete(instance);
+		}
+	});
+}
+
+export function paradisTerminalEditorOpening(instance: ITerminalInstance): { readonly stateKey: string; readonly settled: Promise<unknown> } | undefined {
+	return openingInstances.get(instance);
+}
+
 /**
  * 指定スコープにパーク中のエディタターミナルがあるか（台帳は変更しない）。
  * パーク中の端末は working set にも可視エディタ配置にも現れないので、

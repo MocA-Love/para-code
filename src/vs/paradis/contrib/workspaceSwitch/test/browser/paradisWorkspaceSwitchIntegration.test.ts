@@ -5,7 +5,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { IShellLaunchConfig, TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
+import { IShellLaunchConfig, TerminalExitReason, TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
 import { INotificationHandle, INotificationService, IPromptChoice, Severity } from '../../../../../platform/notification/common/notification.js';
 import assert from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
@@ -41,7 +41,7 @@ import { TerminalGroupService } from '../../../../../workbench/contrib/terminal/
 import { createEditorParts, registerTestEditor, TestFileEditorInput, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestContextService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
-import { paradisGetParkedTerminalEditorStateKey, paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from '../../browser/paradisTerminalEditorPark.js';
+import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisMarkTerminalEditorOpeningForScope, paradisParkTerminalEditorInstance, paradisResetOrphanTerminalRevivalForTest, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from '../../browser/paradisTerminalEditorPark.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
 import { ParadisTerminalWorkspaceScope } from '../../browser/paradisTerminalScope.contribution.js';
 import { paradisParseTerminalNonceScopeStorage } from '../../common/paradisTerminalNonceScope.js';
@@ -179,6 +179,167 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			for (const ids of [startingIds, lateIds]) {
 				paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(ids.persistentProcessId, ids.shellIntegrationNonce));
 			}
+			testDisposables.dispose();
+		}
+	});
+
+	test('gives up waiting for a terminal whose PTY never starts, and leaves it to the working set', () => runWithFakedTimers({ maxTaskCount: 10_000 }, async () => {
+		const testDisposables = new DisposableStore();
+		const ids = createUniqueTerminalIds();
+		try {
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const input = harness.createEditor('/workspace-a/stuck-terminal', false);
+			await harness.parts.activeGroup.openEditor(input, { pinned: true });
+			const stuck = harness.addTerminal(input, ids.instanceId, undefined, ids.shellIntegrationNonce, () => new Promise<void>(() => { }));
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+
+			assert.deepStrictEqual({
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				owner: paradisGetParkedTerminalEditorStateKey(stuck.instanceId),
+				detachedTerminalInstanceIds: harness.detachedTerminalInstanceIds,
+			}, {
+				activeStateKey: 'space-b',
+				owner: undefined,
+				detachedTerminalInstanceIds: [],
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	}));
+
+	// MCP やスマホが別のスペース宛てに開いた端末が、切り替えの最中だったために切り替え元へ入ると、
+	// タブは行き先に出ず、切り替え元を削除したときに巻き添えで閉じられる。
+	test('puts terminals assigned to another space during a switch into that space, not the one being left', async () => {
+		const testDisposables = new DisposableStore();
+		const seedIds = createUniqueTerminalIds();
+		const openingIds = createUniqueTerminalIds();
+		const assignedIds = createUniqueTerminalIds();
+		const disposedIds: number[] = [];
+		const terminals: ITerminalInstance[] = [];
+		try {
+			let assignDuringSwitch: (() => void) | undefined;
+			const harness = await createHarness(['space-a', 'space-b', 'space-c'], testDisposables, async phase => {
+				if (phase === 'start') {
+					assignDuringSwitch?.();
+					assignDuringSwitch = undefined;
+				}
+			});
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const scope = harness.installTerminalScope(async () => { }, { worktreeReady: true, connected: true });
+			await settle();
+			const track = (terminal: ITerminalInstance) => {
+				testDisposables.add(terminal.onDisposed(() => disposedIds.push(terminal.instanceId)));
+				terminals.push(terminal);
+				return terminal;
+			};
+			const seedInput = harness.createEditor('/workspace-a/seed-terminal', false);
+			const openingInput = harness.createEditor('/workspace-a/opening-terminal', false);
+			const assignedInput = harness.createEditor('/workspace-a/assigned-terminal', false);
+			await harness.parts.activeGroup.openEditor(seedInput, { pinned: true });
+			await harness.parts.activeGroup.openEditor(assignedInput, { pinned: true });
+			// 1本目は切り替え元のもの。PTY の起動を待たれている間に、2本目がスペース B 宛てに開かれる
+			// （MCP の create_terminal と同じ手順: 開いている途中だと知らせてから、開き終えて割り当てる）。
+			const seed = track(harness.addTerminal(seedInput, seedIds.instanceId, undefined, seedIds.shellIntegrationNonce, async () => {
+				Object.assign(seed, { persistentProcessId: seedIds.persistentProcessId });
+				await harness.parts.activeGroup.openEditor(openingInput, { pinned: true });
+				const opening = track(harness.addTerminal(openingInput, openingIds.instanceId, openingIds.persistentProcessId, openingIds.shellIntegrationNonce));
+				const settled = new DeferredPromise<void>();
+				const marker = paradisMarkTerminalEditorOpeningForScope(opening, 'space-b', settled.p);
+				setTimeout(() => {
+					scope.assignInstanceScope(opening.instanceId, 'space-b');
+					marker.dispose();
+					settled.complete();
+				}, 0);
+			}));
+			// 3本目は最初のループで切り替え元へ入った後、切り替えの最中にスペース B へ割り当てられる。
+			const assigned = track(harness.addTerminal(assignedInput, assignedIds.instanceId, assignedIds.persistentProcessId, assignedIds.shellIntegrationNonce));
+			assignDuringSwitch = () => scope.assignInstanceScope(assigned.instanceId, 'space-b');
+
+			await harness.workspaceSwitchService.switchRepository('space-c');
+			await settle();
+			const owners = terminals.map(terminal => paradisGetParkedTerminalEditorStateKey(terminal.instanceId));
+			const stateKeys = terminals.map(terminal => scope.getStateKeyForInstance(terminal.instanceId));
+			await harness.workspaceSwitchService.removeRepository('space-a');
+			await settle();
+
+			assert.deepStrictEqual({
+				owners,
+				stateKeys,
+				disposedWithSpaceA: [...new Set(disposedIds)],
+			}, {
+				owners: ['space-a', 'space-b', 'space-b'],
+				stateKeys: ['space-a', 'space-b', 'space-b'],
+				disposedWithSpaceA: [seedIds.instanceId],
+			});
+		} finally {
+			for (const ids of [seedIds, openingIds, assignedIds]) {
+				paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(ids.persistentProcessId, ids.shellIntegrationNonce));
+			}
+			testDisposables.dispose();
+		}
+	});
+
+	test('stops reattaching an orphaned terminal after two failures instead of spawning a shell on every switch', async () => {
+		const testDisposables = new DisposableStore();
+		const created: number[] = [];
+		const disposed: string[] = [];
+		paradisResetOrphanTerminalRevivalForTest();
+		try {
+			// 孤児判定に使う項目だけ。一覧の残りの項目は参照されない。
+			const orphan = {
+				id: 9001,
+				pid: 1,
+				cwd: '/workspace-c',
+				title: 'zsh',
+				workspaceId: 'paradis-switch-integration',
+				isOrphan: true,
+				shellIntegrationNonce: generateUuid(),
+			};
+			const harness = await createHarness(['space-a', 'space-b', 'space-c'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			harness.installTerminalScope(async () => { }, {
+				worktreeReady: true,
+				connected: true,
+				persistentProcessScopes: [[orphan.id, 'space-c']],
+				terminalInstanceService: {
+					getBackend: async () => ({ listProcesses: async () => [orphan] }) as unknown as Awaited<ReturnType<ITerminalInstanceService['getBackend']>>,
+					createInstance: () => {
+						// 繋ぎ直しに失敗して、upstream が新しいシェルを起こした状態（ID が孤児のものと違う）。
+						const instanceId = 9100 + created.length;
+						created.push(instanceId);
+						return {
+							instanceId,
+							persistentProcessId: 7000 + instanceId,
+							shellIntegrationNonce: generateUuid(),
+							shouldPersist: true,
+							isDisposed: false,
+							processReady: Promise.resolve(),
+							onDisposed: Event.None,
+							dispose: (reason?: TerminalExitReason) => { disposed.push(`${instanceId}:${reason}`); },
+						} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+					},
+				},
+			});
+			await settle();
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			await settle();
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			await settle();
+
+			assert.deepStrictEqual({
+				created,
+				disposed,
+				complete: paradisIsOrphanTerminalRevivalComplete(),
+				parkedInSpaceC: paradisTakeParkedTerminalEditorInstancesForScope('space-c').map(instance => instance.instanceId),
+			}, {
+				created: [9100, 9101],
+				disposed: [`9100:${TerminalExitReason.Shutdown}`, `9101:${TerminalExitReason.Shutdown}`],
+				complete: true,
+				parkedInSpaceC: [],
+			});
+		} finally {
+			paradisResetOrphanTerminalRevivalForTest();
 			testDisposables.dispose();
 		}
 	});
@@ -2198,6 +2359,8 @@ interface IParadisTerminalScopeHarnessOptions {
 	readonly connectionState?: TerminalConnectionState;
 	/** 待避から戻すと例外になるグループ。1件の失敗で残りを戻し損ねないかを見るのに使う。 */
 	readonly failingUnparks?: ReadonlySet<ITerminalGroup>;
+	/** 孤児 PTY の一覧と繋ぎ直しを差し替える（既定は backend 無し＝孤児なし）。 */
+	readonly terminalInstanceService?: Pick<ITerminalInstanceService, 'getBackend' | 'createInstance'>;
 }
 
 /** マイクロタスクとタイマーを数回まわして、非同期の解決を落ち着かせる。 */
@@ -2575,7 +2738,7 @@ async function createHarness(
 				auxiliaryWindowScopeService as unknown as IParadisAuxiliaryWindowScopeService,
 				worktreeService,
 				storageService,
-				{ getBackend: async () => undefined } as ITerminalInstanceService,
+				(options.terminalInstanceService ?? { getBackend: async () => undefined }) as ITerminalInstanceService,
 				{ remoteAuthority: options.remoteAuthority } as IWorkbenchEnvironmentService,
 				contextService,
 				parts,

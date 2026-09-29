@@ -30,7 +30,7 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisScopeRootPath, paradisWorktreeStateKey, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisRetireScopeFromNonceScopeStorage, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
-import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
+import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisRegisterTerminalEditorOwnerProbe, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 import { IParadisTerminalOrphanPty, paradisRegisterTerminalReviveIndexSource, paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -169,6 +169,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 起こし直したシェルはこのスペースのフォルダで起きている（`paradisTerminalSpaceCwd.contribution.ts`）。
 	 */
 	private readonly _restartedShellScopes = new Map<number, string>();
+	/** 孤児 PTY（nonce、無ければ ID）ごとの、繋ぎ直しに失敗した回数。 */
+	private readonly _orphanReattachFailures = new Map<string, number>();
+	/** 切り替えの最中に届いたため、park の判定を見送ったエディタターミナル。 */
+	private readonly _editorAssignmentsDuringSwitch = new Set<ITerminalInstance>();
 	private readonly _candidateCapturedInstances = new Set<number>();
 	private readonly _initialCwds = new Map<number, string>();
 	private readonly _initialCwdResolvedInstances = new Set<number>();
@@ -281,6 +285,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private static readonly SHARED_PANEL_FORMER_SCOPES_STORAGE_KEY = 'paradis.workspaceSwitch.sharedPanelFormerScopes';
 	private static readonly SHARED_PANEL_MIGRATION_NOTICE_STORAGE_KEY = 'paradis.terminal.sharedPanel.migrationNoticeShown';
 	private static readonly SHARED_PANEL_FORMER_SCOPES_MAX = 500;
+	/** 孤児 PTY への繋ぎ直しを試す回数の上限（起動時の1回と、切り替え完了時のやり直し1回）。 */
+	private static readonly MAX_ORPHAN_REATTACH_ATTEMPTS = 2;
 
 	constructor(
 		@ITerminalGroupService private readonly terminalGroupService: ITerminalGroupService,
@@ -393,6 +399,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		// スコープを捨ててよいかの判定は park 中の端末を見る必要があるが、DI では循環するので
 		// パネル側の台帳を引く口だけ渡しておく
 		this._register(paradisRegisterParkedTerminalGroupProbe(stateKey => this._parkedGroups.has(stateKey)));
+		// 切り替えの最中に別のスペースへ割り当てられたエディタターミナルを、切り替え元へ park させない
+		this._register(paradisRegisterTerminalEditorOwnerProbe(instance => this.explicitEditorScope(instance)));
 
 		this._register(this.workspaceSwitchService.registerSwitchCompletionParticipant(async stateKey => {
 			await this.applyScope(stateKey);
@@ -602,7 +610,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			if (stateKey !== this.workspaceSwitchService.activeStateKey) {
 				this.parkGroup(groupService, group, stateKey);
 			}
-		} else if (group === undefined) {
+		} else if (group === undefined && !this.reassignParkedEditorTerminal(instance, stateKey)) {
+			if (this.workspaceSwitchService.isSwitching) {
+				this._editorAssignmentsDuringSwitch.add(instance);
+			}
 			this.parkExplicitlyScopedEditorIfInactive(instance);
 		}
 		this.persistMapping();
@@ -611,6 +622,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private parkExplicitlyScopedEditorIfInactive(instance: ITerminalInstance): void {
 		// 切り替えの最中は「所属＝復元先」「アクティブ＝切り替え元」がずれている区間があり、
 		// そのまま比べると復元したばかりの端末を detach してしまう。切り替え側の復元経路に任せる。
+		// 明示的な割り当て（`assignInstanceScope`）だけは控えておき、切り替えが終わってから改めて
+		// 判定する（`settleEditorAssignmentsMadeDuringSwitch`）。
 		if (this.workspaceSwitchService.isSwitching) {
 			return;
 		}
@@ -812,6 +825,17 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				|| stateKey === this.workspaceSwitchService.activeStateKey) {
 				continue;
 			}
+			// 繋ぎ直しに失敗し続ける PTY は、上限の回数で諦める。諦めないと完走扱いにならず
+			// （nonce 台帳の prune も、消えたスペースの自動退役も止まったまま）、切り替えのたびに
+			// 空のシェルを起こしては閉じることになる。
+			const reattachKey = paradisTerminalIdentityNonce(detail.shellIntegrationNonce) ?? `id:${detail.id}`;
+			if ((this._orphanReattachFailures.get(reattachKey) ?? 0) >= ParadisTerminalWorkspaceScope.MAX_ORPHAN_REATTACH_ATTEMPTS) {
+				continue;
+			}
+			const recordReattachFailure = () => {
+				this._orphanReattachFailures.set(reattachKey, (this._orphanReattachFailures.get(reattachKey) ?? 0) + 1);
+				complete = false;
+			};
 			try {
 				// `detail.id` は listProcesses 由来＝**今世代の ID**。ここで findRevivedId を立てると
 				// `getRevivedPtyNewId` が旧 ID をキーにした `_revivedPtyIdMap` を引き、旧 ID 空間と
@@ -825,7 +849,14 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 					// 再接続に失敗した (persistentProcessId が確定しなかった) インスタンスは
 					// どの一覧にも属さないため、放置すると不可視のままリークする。
 					instance.dispose(TerminalExitReason.Shutdown);
-					complete = false;
+					// 起こし直したシェルの控え（どのスペースのフォルダで起こしたか）も捨てる。この端末は
+					// どの一覧にも載らないので、破棄時の掃除（`trackInstanceRetirement`）が走らない。
+					this._restartedShellScopes.delete(instance.instanceId);
+					paradisForgetRestartedTerminal(instance.instanceId);
+					if (this._store.isDisposed) {
+						return false;
+					}
+					recordReattachFailure();
 					continue;
 				}
 				// 次の周回で listHeldPtyIds() を引き直すので、手元の集合へ足す必要は無い
@@ -836,7 +867,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				this._stableScopeTracker.observe(instance.instanceId, { kind: 'managed', stateKey });
 			} catch (error) {
 				onUnexpectedError(error);
-				complete = false;
+				recordReattachFailure();
 			}
 		}
 		return complete;
@@ -2027,10 +2058,69 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		// インスタンスが台帳に残り PTY だけが不可視のまま生き続ける（タブは復元されない）。
 		// 切り替え完了時点で台帳に残っている切り替え先スコープの分を明示的に開き直す。
 		// 正常に revive された分は台帳から取り出し済みのため二重復元にはならない
+		this.settleEditorAssignmentsMadeDuringSwitch();
 		await this.unparkEditorTerminals(targetStateKey);
 
 		this.persistMapping();
 		this.refreshAllStableScopes();
+	}
+
+	/** 明示的に割り当てられた所属。推測（今のスペースへ寄せた分）や同居からの借り物は返さない。 */
+	private explicitEditorScope(instance: ITerminalInstance): string | undefined {
+		if (this._activeFallbackInstances.has(instance.instanceId) || this._inheritedGroupScopes.has(instance.instanceId)) {
+			return undefined;
+		}
+		return this._instanceScopes.get(instance.instanceId);
+	}
+
+	/**
+	 * 切り替えの最中に見送ったエディタターミナルの割り当てを、切り替えが終わったここで反映する。
+	 *
+	 * 切り替えの最中に `assignInstanceScope` が来ると、切り替えとの競合を避けて park を見送る
+	 * （`parkExplicitlyScopedEditorIfInactive`）。その間に切り替えがこの端末を切り替え元の台帳へ
+	 * 入れていると、所属は行き先・台帳は切り替え元に割れる。タブは行き先に出ず、切り替え元を削除
+	 * すると巻き添えで閉じられる。見送った端末だけを所属の方へ揃える（それ以外の端末の台帳は
+	 * 触らない。所属とタブの場所が食い違ったまま残っている端末を勝手に動かさないため）。
+	 */
+	private settleEditorAssignmentsMadeDuringSwitch(): void {
+		const deferred = [...this._editorAssignmentsDuringSwitch];
+		this._editorAssignmentsDuringSwitch.clear();
+		for (const instance of deferred) {
+			if (instance.isDisposed) {
+				continue;
+			}
+			const owner = this.explicitEditorScope(instance);
+			const parkedStateKey = paradisGetParkedTerminalEditorStateKey(instance.instanceId);
+			if (parkedStateKey === undefined) {
+				this.parkExplicitlyScopedEditorIfInactive(instance);
+			} else if (owner !== undefined && owner !== parkedStateKey) {
+				paradisParkTerminalEditorInstance(instance, owner);
+			}
+		}
+	}
+
+	/**
+	 * park 中のエディタターミナルへの割り当てを反映する。park 中でなければ false。
+	 * 切り替えの最中は控えるだけ（完了時の `settleEditorAssignmentsMadeDuringSwitch` が揃える）。
+	 */
+	private reassignParkedEditorTerminal(instance: ITerminalInstance, stateKey: string): boolean {
+		const parkedStateKey = paradisGetParkedTerminalEditorStateKey(instance.instanceId);
+		if (parkedStateKey === undefined) {
+			return false;
+		}
+		if (this.workspaceSwitchService.isSwitching) {
+			this._editorAssignmentsDuringSwitch.add(instance);
+			return true;
+		}
+		if (parkedStateKey === stateKey) {
+			return true;
+		}
+		paradisParkTerminalEditorInstance(instance, stateKey);
+		if (stateKey === this.workspaceSwitchService.activeStateKey) {
+			// 今のスペースの持ち物になった。台帳に置いたままだと、次にこのスペースへ戻るまで見えない。
+			void this.unparkEditorTerminals(stateKey);
+		}
+		return true;
 	}
 
 	private rememberActiveGroup(group: ITerminalGroup | undefined, stateKey = this.workspaceSwitchService.activeStateKey, allowDuringSwitch = false): void {
