@@ -38,6 +38,11 @@ import { IParadisIndexSearchResult, IParadisIndexStats, IParadisIndexUpdateResul
 import { ParadisAgentActivityWorkerHost } from './paradisAgentActivityWorkerHost.js';
 
 const PARSE_BATCH = 40;
+/**
+ * 会話ログ 1 まとまり（{@link PARSE_BATCH} 件）の集計を待つ上限。超えたら worker を止めて起動し直す
+ * （固まった読み込みが、後ろに並んだ使用量・作業実績の問い合わせをいつまでも待たせないように）。
+ */
+const PARSE_TIMEOUT_MS = 3 * 60_000;
 /** 起動してから、保存日数・ツール出力の設定を今ある索引へ反映するまでの時間。 */
 const STARTUP_PRUNE_DELAY_MS = 60_000;
 /** 1回の検索で索引へ問い合わせる会話の数の上限。 */
@@ -241,7 +246,7 @@ export class ParadisAgentActivityService extends Disposable {
 				const replies = await this.options.worker.request<ParadisActivityParseReply>({
 					op: 'parse',
 					files: batch.map(file => ({ path: file.path, agent: file.agent, subagentFile: file.subagentFile })),
-				});
+				}, PARSE_TIMEOUT_MS);
 				batch.forEach((file, position) => {
 					const summary = replies[position];
 					if (summary) {
