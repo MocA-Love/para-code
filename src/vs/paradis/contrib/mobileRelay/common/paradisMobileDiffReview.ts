@@ -149,6 +149,26 @@ export function paradisStagedConsistently(before: IParadisMobileStatusFile, afte
 	return false;
 }
 
+/**
+ * `git add` の後に、足した中身がスマホの見たものと**違う**と言い切れるか（確かめてから足すまでの間に、エージェントなどが
+ * 書き換えた。足したものを戻す）。{@link paradisStagedConsistently} と違い、確かめられないもの（両側に変更があった、
+ * 行数や大きさが分からない、足した後に作業ツリー側がまた変わった未追跡のファイル）は違うと言わない。
+ * - 作業ツリー側だけの変更だったもの: ステージ側の行数が、前の作業ツリー側の行数と違う（ステージ側の行数は、足した後の
+ *   作業ツリーの変更に左右されない）
+ * - 未追跡だったもの: 新しく足され、作業ツリー側に変更が残っていない（足したものと同じ）のに、大きさか時刻が前と違う
+ */
+export function paradisStagedContentDiffers(before: IParadisMobileStatusFile, after: IParadisMobileStatusFile, afterStat?: { readonly size: number; readonly mtime: number }): boolean {
+	if (before.x === '?' && before.y === '?') {
+		return after.x === 'A' && after.y === ' ' && before.size !== undefined && before.mtime !== undefined && afterStat !== undefined
+			&& (afterStat.size !== before.size || afterStat.mtime !== before.mtime);
+	}
+	if (before.x === ' ') {
+		return before.added !== undefined && before.removed !== undefined && after.stagedAdded !== undefined && after.stagedRemoved !== undefined
+			&& (after.stagedAdded !== before.added || after.stagedRemoved !== before.removed);
+	}
+	return false;
+}
+
 /** FNV-1a（32 ビット）。`seed` を変えて 2 回回し、64 ビットぶんの識別にする。 */
 function fnv1a(text: string, seed: number): string {
 	let hash = seed >>> 0;
