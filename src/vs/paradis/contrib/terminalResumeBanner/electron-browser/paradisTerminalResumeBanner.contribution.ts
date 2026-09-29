@@ -36,6 +36,7 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { IParadisAgentStatusSnapshot } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
+import { paradisWasTerminalShellRestarted } from '../../workspaceSwitch/common/paradisTerminalLaunchPreparers.js';
 import { paradisChangeDirectoryCommand } from '../../workspaceSwitch/common/paradisTerminalSpaceFolder.js';
 import { createParadisTerminalResumeBanner, IParadisResumeBannerHost } from '../browser/paradisTerminalResumeBannerView.js';
 import { IParadisResumeLedgerEntry, paradisCodexThreadIdFromTitle, paradisResumeLedgerKey, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
@@ -246,14 +247,19 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 			this._instanceListeners.deleteAndDispose(instance.instanceId);
 		}));
 		const attach = instance.shellLaunchConfig.attachPersistentProcess;
-		if (attach === undefined) {
+		// 起動時に繋ぎ直しに失敗したタブは、ここより先に upstream が新しいシェルを起こし、その時点で
+		// `attachPersistentProcess` を消している（`terminalProcessManager.ts` の attach 失敗の分岐）。
+		// この contribution は AfterRestored なので、起動時からあるタブではもう消えた後を見ることがある。
+		// 起こし直した記録（`paradisWasTerminalShellRestarted`）で拾う。シェルは作り直されている。
+		const restartedAfterFailedAttach = attach === undefined && paradisWasTerminalShellRestarted(instance.instanceId);
+		if (attach === undefined && !restartedAfterFailedAttach) {
 			return;
 		}
 		this._restoredAt.set(instance.instanceId, Date.now());
-		const previousPid = attach.pid;
-		const adopted = attach.paradisAdopted === true;
+		const previousPid = attach?.pid;
+		const adopted = attach?.paradisAdopted === true;
 		void instance.processReady.then(() => {
-			if (instance.isDisposed || !paradisRestoredShellWasRestarted(previousPid, instance.processId, adopted)) {
+			if (instance.isDisposed || !(restartedAfterFailedAttach || paradisRestoredShellWasRestarted(previousPid, instance.processId, adopted))) {
 				return;
 			}
 			const token = this.ledgerKeyForInstance(instance.instanceId);
