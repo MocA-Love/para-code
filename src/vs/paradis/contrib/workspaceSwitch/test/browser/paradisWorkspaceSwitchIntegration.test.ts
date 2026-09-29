@@ -2198,6 +2198,48 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		});
 	});
 
+	// 共通ターミナルをエディタのタブへ移したら、その端末はスペースの持ち物になる。共通ターミナルの
+	// 控え（nonce と、移行時に控えた元の所属の両方）から外さないと、孤児の復活が後でパネルへ連れ戻す。
+	test('forgets a shared panel terminal in both backups once it moves to an editor tab (Q146)', async () => {
+		const testDisposables = new DisposableStore();
+		paradisResetSharedPanelStartupValueForTest();
+		try {
+			const instance = createRestoredTerminalInstance(4311, { initialCwd: '/workspace-b' });
+			Object.assign(instance, { target: TerminalLocation.Panel });
+			const group = createTerminalGroup([instance]);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.configurationService.setUserConfiguration('paradis.terminal.sharedPanel.enabled', true);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			harness.installTerminalScope(async () => { }, {
+				groups: [group],
+				worktreeReady: true,
+				connected: true,
+				connectionState: TerminalConnectionState.Connected,
+				persistentProcessScopes: [[4311, 'space-b']],
+			});
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			const read = () => ({
+				sharedPanelNonces: harness.storageService.get('paradis.workspaceSwitch.sharedPanelNonces', StorageScope.WORKSPACE),
+				formerScopes: harness.storageService.get('paradis.workspaceSwitch.sharedPanelFormerScopes', StorageScope.WORKSPACE) === undefined ? 'none' : 'kept',
+			});
+			const inPanel = read();
+
+			Object.assign(instance, { target: TerminalLocation.Editor });
+			harness.fireInstancesChanged();
+			await settle();
+
+			assert.deepStrictEqual({ inPanel, inEditor: read() }, {
+				inPanel: { sharedPanelNonces: JSON.stringify(['nonce-4311']), formerScopes: 'kept' },
+				inEditor: { sharedPanelNonces: undefined, formerScopes: 'none' },
+			});
+		} finally {
+			paradisResetSharedPanelStartupValueForTest();
+			testDisposables.dispose();
+		}
+	});
+
 	// 共通扱いはユーザーが開いたシェルだけ。パネルで動かしたタスクはそのスペースの作業の一部なので、
 	// 切り替えで退避し、スペースを削除したら一緒に閉じる。
 	test('keeps a task terminal in the panel owned by its space even while the panel is shared', async () => {
