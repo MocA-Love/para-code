@@ -810,6 +810,35 @@ suite('ParadisAgentBrowser authority integration', () => {
 		});
 	});
 
+	test('clears a pending permission or question when the agent CLI exits, but not on a plain turn end', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		const tokens = ['perm-exit', 'question-exit', 'perm-turn', 'working-exit'];
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, tokens.map(token => ({ token }))));
+		Reflect.get(fixture.service, '_paneStatuses')
+			.set('perm-exit', { status: 'permission', changedAt: 1 })
+			.set('question-exit', { status: 'question', changedAt: 2 })
+			.set('perm-turn', { status: 'permission', changedAt: 3 })
+			.set('working-exit', { status: 'working', changedAt: 4 });
+		const turnEnded = (token: string, cause: 'turn' | 'cli-exit') => (fixture.service as unknown as { _settlePaneTurnEnded(token: string, at: number, cause: 'turn' | 'cli-exit'): void })._settlePaneTurnEnded(token, 10, cause);
+		turnEnded('perm-exit', 'cli-exit');
+		turnEnded('question-exit', 'cli-exit');
+		turnEnded('perm-turn', 'turn');
+		turnEnded('working-exit', 'cli-exit');
+
+		assert.deepStrictEqual({
+			statuses: await fixture.service.listPaneStatuses(connection),
+			awaitingUser: (await fixture.service.listAgentStatusSnapshot(connection)).awaitingUserTokens,
+		}, {
+			statuses: [
+				{ token: 'perm-turn', status: 'permission', changedAt: 3 },
+				{ token: 'working-exit', status: 'review', changedAt: 10 },
+			],
+			awaitingUser: ['perm-exit', 'question-exit'],
+		});
+	});
+
 	test('keeps legacy status and hook-token list commands independently available', async () => {
 		const fixture = createFixture();
 		const connection = {};
