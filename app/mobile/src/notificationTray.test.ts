@@ -26,7 +26,9 @@ describe('readTrayData', () => {
 			readTrayData({ content: { data: { agentToken: 'local' } }, trigger: null }),
 			readTrayData({ content: {}, trigger: { type: 'push' } }),
 			readTrayData({ content: { data: { a: 1, b: 1 } }, trigger: { type: 'push', payload: { b: 2 } } }),
-		]).toEqual([{ agentToken: 'tok', aps: {} }, { agentToken: 'local' }, undefined, { a: 1, b: 2 }]);
+			// プッシュの content.data（APNs の生ペイロードの body）はリレーが差し込めるので混ぜない
+			readTrayData({ content: { data: { ws: 'injected' } }, trigger: { type: 'push', payload: { agentToken: 'tok' } } }),
+		]).toEqual([{ agentToken: 'tok', aps: {} }, { agentToken: 'local' }, undefined, { b: 2 }, { agentToken: 'tok' }]);
 		expect([trayDateMs(1_800_000_000), trayDateMs(T0)]).toEqual([T0, T0]);
 	});
 });

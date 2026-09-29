@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkspaceState } from './store.js';
-import { notificationDestination, notificationNavigationDecision, readNotificationDeepLink } from './notificationNavigation.js';
+import { NOTIFICATION_PENDING_WAIT_MS, notificationDestination, notificationNavigationDecision, pendingNotificationWait, readNotificationDeepLink } from './notificationNavigation.js';
 
 describe('notificationNavigationDecision', () => {
 	it('keeps a target pending until a complete desktop snapshot arrives', () => {
@@ -12,6 +12,20 @@ describe('notificationNavigationDecision', () => {
 		expect(notificationNavigationDecision({ complete: true, terminals: [{ terminalKey: 'terminal-a' }] }, 'terminal-a')).toBe('open');
 		expect(notificationNavigationDecision({ complete: true, terminals: [{ terminalKey: 'terminal-b' }] }, 'terminal-a')).toBe('missing');
 		expect(notificationNavigationDecision({ complete: true, terminals: [{ terminalKey: 'terminal-b' }] }, undefined)).toBe('missing');
+	});
+});
+
+describe('pendingNotificationWait', () => {
+	it('待ち始めた時刻から数え、長く待ちすぎたら捨てる', () => {
+		expect([
+			pendingNotificationWait(undefined, 1_000),
+			pendingNotificationWait(1_000, 1_000 + NOTIFICATION_PENDING_WAIT_MS),
+			pendingNotificationWait(1_000, 1_001 + NOTIFICATION_PENDING_WAIT_MS),
+		]).toEqual([
+			{ expired: false, waitingSince: 1_000 },
+			{ expired: false, waitingSince: 1_000 },
+			{ expired: true, waitingSince: 1_000 },
+		]);
 	});
 });
 
@@ -64,11 +78,11 @@ describe('readNotificationDeepLink', () => {
 		expect(readNotificationDeepLink(push)).toEqual({ ws: '1:w2', terminalKey: 'k2', pcId: 'pc-b' });
 	});
 
-	it('prefers the push userInfo when both carry the same key, and drops malformed values', () => {
+	it('ignores content.data of a push (the relay can inject it) and drops malformed values', () => {
 		expect(readNotificationDeepLink({
 			content: { data: { ws: 'from-data', pcId: 'pc-a' } },
 			trigger: { type: 'push', payload: { ws: 'from-payload', terminalKey: 42, agentToken: 'x'.repeat(201) } },
-		})).toEqual({ ws: 'from-payload', pcId: 'pc-a' });
+		})).toEqual({ ws: 'from-payload' });
 	});
 
 	it('returns nothing for a push the NSE could not decrypt (no ids)', () => {

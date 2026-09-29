@@ -21,7 +21,8 @@ import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { startWidgetSync } from '../src/widgets/widgetSync.js';
 import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
-import { notificationDestination, notificationNavigationDecision, readNotificationDeepLink, type NotificationDeepLinkData } from '../src/notificationNavigation.js';
+import { reportMobileDiagnosticError } from '../src/mobileDiagnostics.js';
+import { notificationDestination, notificationNavigationDecision, pendingNotificationWait, readNotificationDeepLink, type NotificationDeepLinkData } from '../src/notificationNavigation.js';
 import { loadSessionViewSettings } from '../src/features/session/useSessionView.js';
 import { useQuickReplies } from '../src/features/settings/quickRepliesStore.js';
 import { loadThemeColors } from '../src/features/settings/themeColorSettings.js';
@@ -80,9 +81,13 @@ function RootLayout() {
 	const pendingRef = useRef<NotificationDeepLinkData | undefined>(undefined);
 	// 保留中の通知のために、どのPCへ自動で切り替えたか（同じ保留で二度は切り替えない）。
 	const switchedForPendingRef = useRef<string | undefined>(undefined);
+	// 保留中の通知が PC の状態を待ち始めた時刻。待ちすぎたら保留を捨てる（`pendingNotificationWait`）。
+	const pendingWaitSinceRef = useRef<number | undefined>(undefined);
 
 	useEffect(() => {
-		void init().finally(() => Sentry.appLoaded());
+		// 失敗は initError へ記録され、ゲートが「起動に失敗しました」と再試行を出す。未処理の拒否にはせず、
+		// 診断には送る。
+		void init().catch((error: unknown) => reportMobileDiagnosticError('app', 'init', error)).finally(() => Sentry.appLoaded());
 		startLiveActivitySync();
 		// ホーム画面・ロック画面のウィジェットへ要約を書き出す（前面の間と、バックグラウンドへ移るとき）。
 		startWidgetSync();
@@ -107,6 +112,16 @@ function RootLayout() {
 		if (!store.ready) {
 			return;
 		}
+		/** PC の状態を待つ。待ちすぎていたら保留を捨てる（後で繋がった瞬間に古い通知の先へ飛ばない）。 */
+		const keepWaiting = () => {
+			const wait = pendingNotificationWait(pendingWaitSinceRef.current, Date.now());
+			if (wait.expired) {
+				pendingRef.current = undefined;
+				pendingWaitSinceRef.current = undefined;
+				return;
+			}
+			pendingWaitSinceRef.current = wait.waitingSince;
+		};
 		if (target.pcId !== undefined && target.pcId !== store.activePcId) {
 			// 台帳に無いPC（ペアリングを解除した後に届いたプッシュ）の通知は捨てる。
 			// いま見ているPCの一覧に対して遷移先を探すと、別のPCの話で画面が動く。
@@ -121,6 +136,7 @@ function RootLayout() {
 			// 毎回撃つと「ユーザーが手で別のPCへ戻す → 通知のPCへ引き戻される」を繰り返し、
 			// 告知の『戻る』が効かなくなる。
 			if (switchedForPendingRef.current === target.pcId) {
+				keepWaiting();
 				return;
 			}
 			switchedForPendingRef.current = target.pcId;
@@ -130,6 +146,7 @@ function RootLayout() {
 		const currentWorkspace = workspaceRef.current;
 		const decision = notificationNavigationDecision(currentWorkspace, target.terminalKey);
 		if (decision === 'wait') {
+			keepWaiting();
 			return;
 		}
 		if (decision === 'missing' || currentWorkspace === undefined || target.terminalKey === undefined) {
@@ -180,9 +197,10 @@ function RootLayout() {
 
 	useEffect(() => {
 		const sub = Notifications.addNotificationResponseReceivedListener(response => {
-			// プッシュは content.data が空（中身は trigger.payload）。両方から読む（readNotificationDeepLink）。
+			// プッシュは中身が trigger.payload、ローカル通知は content.data にある（readNotificationDeepLink）。
 			pendingRef.current = readNotificationDeepLink(response.notification.request);
 			switchedForPendingRef.current = undefined;
+			pendingWaitSinceRef.current = undefined;
 			tryNavigate();
 		});
 		// コールドスタート（通知タップでアプリが起動された）対応
@@ -190,6 +208,7 @@ function RootLayout() {
 			if (response) {
 				pendingRef.current = readNotificationDeepLink(response.notification.request);
 				switchedForPendingRef.current = undefined;
+				pendingWaitSinceRef.current = undefined;
 				tryNavigate();
 			}
 		});

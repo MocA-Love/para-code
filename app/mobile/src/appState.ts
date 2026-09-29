@@ -572,6 +572,8 @@ let voiceNativeChain: Promise<void> = Promise.resolve();
 let voiceResubscribeSubscribed = false;
 /** 回線の変化の購読の多重登録防止（init()失敗リトライ対策）。 */
 let networkRevivalSubscribed = false;
+/** 前面・背面の切り替え（RNAppState）の購読を付けたか。 */
+let appStateSubscribed = false;
 let connectionHeartbeat: ReturnType<typeof setInterval> | undefined;
 
 function stopConnectionHeartbeat(): void {
@@ -1325,43 +1327,47 @@ export const useAppStore = create<AppState>(set => ({
 			// 乗った等）はソケットを維持するので、心拍も止めない。止めるとPC側から「無音が
 			// 続いた＝アプリが凍った」と見えてプッシュが飛び、前面で見ている画面にまでバナーが
 			// 出る（PC側の判断材料は最後に受け取った時刻なので、黙るとそう見える）。
-			RNAppState.addEventListener('change', appState => {
-				const action = connectionActionForAppState(appState);
-				if (action === 'resume') {
-					if (!useAppStore.getState().manualOffline) {
-						// 見ていないPCも繋いだままにしている場合は、そちらも一緒に起こす。裏で保っていた PC は
-						// 張り直さず、「前面に戻った」を送って続きから使う（W2-34）。
-						const targets = connectedRuntimes();
-						backgroundGrace.enterForeground(targets.map(graceTarget));
-						for (const runtime of targets) {
-							// PCで既に見た通知をロック画面・通知センターから消す（W2-02）
-							requestTrayReconcile(runtime);
+			// 1回だけ付ける（init が後段で失敗して再試行されたとき、リスナーを二重にしない）。
+			if (!appStateSubscribed) {
+				appStateSubscribed = true;
+				RNAppState.addEventListener('change', appState => {
+					const action = connectionActionForAppState(appState);
+					if (action === 'resume') {
+						if (!useAppStore.getState().manualOffline) {
+							// 見ていないPCも繋いだままにしている場合は、そちらも一緒に起こす。裏で保っていた PC は
+							// 張り直さず、「前面に戻った」を送って続きから使う（W2-34）。
+							const targets = connectedRuntimes();
+							backgroundGrace.enterForeground(targets.map(graceTarget));
+							for (const runtime of targets) {
+								// PCで既に見た通知をロック画面・通知センターから消す（W2-02）
+								requestTrayReconcile(runtime);
+							}
+						}
+						startConnectionHeartbeat();
+					} else if (action === 'suspend') {
+						const state = useAppStore.getState();
+						// 裏に回ると間もなく止められるので、予約中の書き込みは今のうちに済ませる。
+						void lastKnownPcWriter.flush();
+						void connectionLog.flush();
+						for (const runtime of runtimes.values()) {
+							try {
+								runtime.controller.releaseAllWarmLeases();
+							} catch {
+								// 背景移行時の解放はbest-effortだが、失敗しても残りのPCは必ず解放する。
+							}
+						}
+						// 音声通知を明示的に開始している間は、PCから届く音声クリップの受信に
+						// Relay が必要なため、バックグラウンドでもソケットと心拍を維持する。
+						if (!state.voiceNotifications.desired) {
+							stopConnectionHeartbeat();
+						}
+						if (!state.manualOffline && !state.voiceNotifications.desired) {
+							// PC が「裏に回った」を確認した PC だけ30秒保ち、残りは今までどおり閉じる（W2-34）。
+							backgroundGrace.enterBackground([...runtimes.values()].map(graceTarget));
 						}
 					}
-					startConnectionHeartbeat();
-				} else if (action === 'suspend') {
-					const state = useAppStore.getState();
-					// 裏に回ると間もなく止められるので、予約中の書き込みは今のうちに済ませる。
-					void lastKnownPcWriter.flush();
-					void connectionLog.flush();
-					for (const runtime of runtimes.values()) {
-						try {
-							runtime.controller.releaseAllWarmLeases();
-						} catch {
-							// 背景移行時の解放はbest-effortだが、失敗しても残りのPCは必ず解放する。
-						}
-					}
-					// 音声通知を明示的に開始している間は、PCから届く音声クリップの受信に
-					// Relay が必要なため、バックグラウンドでもソケットと心拍を維持する。
-					if (!state.voiceNotifications.desired) {
-						stopConnectionHeartbeat();
-					}
-					if (!state.manualOffline && !state.voiceNotifications.desired) {
-						// PC が「裏に回った」を確認した PC だけ30秒保ち、残りは今までどおり閉じる（W2-34）。
-						backgroundGrace.enterBackground([...runtimes.values()].map(graceTarget));
-					}
-				}
-			});
+				});
+			}
 			if (shouldRunForegroundWork(RNAppState.currentState)) {
 				startConnectionHeartbeat();
 			}
