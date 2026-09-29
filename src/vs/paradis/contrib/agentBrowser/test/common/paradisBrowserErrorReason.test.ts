@@ -12,7 +12,7 @@ import { paradisClassifyBrowserToolErrorText } from '../../common/paradisBrowser
 suite('paradisClassifyBrowserToolErrorText', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('folds Para Code gate reasons into fixed codes and keeps only the CDP method name', () => {
+	test('folds Para Code gate reasons into fixed codes, keeps retryable apart from outcome-unknown, and keeps only CDP method names of known domains', () => {
 		const texts = [
 			'Error: Protocol error (Input.dispatchMouseEvent): PARA_BROWSER_RETRYABLE: the bound BrowserView is focused by the user',
 			'Protocol error (Input.dispatchMouseEvent): PARA_BROWSER_RETRYABLE: the bound BrowserView became focused before input dispatch',
@@ -27,21 +27,23 @@ suite('paradisClassifyBrowserToolErrorText', () => {
 			'PARA_BROWSER_OUTCOME_UNKNOWN: something new at https://example.com/private',
 			'Protocol error (Page.navigate): Cannot navigate to invalid URL https://example.com/private',
 			'Element not found for selector #login',
+			'Protocol error (SecretWord.leakMe): something the page wrote',
 		];
 		assert.deepStrictEqual(texts.map(paradisClassifyBrowserToolErrorText), [
-			{ safe_error_code: 'user-focus', safe_cdp_method: 'Input.dispatchMouseEvent' },
-			{ safe_error_code: 'user-focus', safe_cdp_method: 'Input.dispatchMouseEvent' },
-			{ safe_error_code: 'authority-changed', safe_cdp_method: 'Input.dispatchKeyEvent' },
-			{ safe_error_code: 'focus-state-unavailable', safe_cdp_method: 'Input.dispatchMouseEvent' },
-			{ safe_error_code: 'key-suppression', safe_cdp_method: 'Input.dispatchKeyEvent' },
-			{ safe_error_code: 'barrier-timeout', safe_cdp_method: 'Input.dispatchMouseEvent' },
-			{ safe_error_code: 'dispatch-incomplete', safe_cdp_method: 'Input.dispatchMouseEvent' },
-			{ safe_error_code: 'binding-changed' },
-			{ safe_error_code: 'command-rejected', safe_cdp_method: 'Emulation.setDeviceMetricsOverride' },
-			{ safe_error_code: 'bridge-unavailable' },
-			{ safe_error_code: 'outcome-unknown-other' },
-			{ safe_error_code: 'none', safe_cdp_method: 'Page.navigate' },
-			{ safe_error_code: 'none' },
+			{ safe_gate_reason: 'user-focus', safe_error_status: 'retryable', safe_cdp_method: 'Input.dispatchMouseEvent' },
+			{ safe_gate_reason: 'user-focus', safe_error_status: 'retryable', safe_cdp_method: 'Input.dispatchMouseEvent' },
+			{ safe_gate_reason: 'authority-changed', safe_error_status: 'retryable', safe_cdp_method: 'Input.dispatchKeyEvent' },
+			{ safe_gate_reason: 'focus-state-unavailable', safe_error_status: 'retryable', safe_cdp_method: 'Input.dispatchMouseEvent' },
+			{ safe_gate_reason: 'key-suppression', safe_error_status: 'retryable', safe_cdp_method: 'Input.dispatchKeyEvent' },
+			{ safe_gate_reason: 'barrier-timeout', safe_error_status: 'retryable', safe_cdp_method: 'Input.dispatchMouseEvent' },
+			{ safe_gate_reason: 'dispatch-incomplete', safe_error_status: 'outcome-unknown', safe_cdp_method: 'Input.dispatchMouseEvent' },
+			{ safe_gate_reason: 'binding-changed', safe_error_status: 'retryable' },
+			{ safe_gate_reason: 'command-rejected', safe_error_status: 'retryable', safe_cdp_method: 'Emulation.setDeviceMetricsOverride' },
+			{ safe_gate_reason: 'bridge-unavailable', safe_error_status: 'retryable' },
+			{ safe_gate_reason: 'outcome-unknown-other', safe_error_status: 'outcome-unknown' },
+			{ safe_gate_reason: 'none', safe_cdp_method: 'Page.navigate' },
+			{ safe_gate_reason: 'none' },
+			{ safe_gate_reason: 'none' },
 		]);
 	});
 });
