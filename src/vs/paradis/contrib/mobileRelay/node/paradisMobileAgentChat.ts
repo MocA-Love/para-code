@@ -2957,7 +2957,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 		}
 		for (const token of [...this.cliReconciliationTimers.keys()]) {
-			if (!liveTokens.has(token)) { this.onCliCommandFinished(token); this.cliDiscoveryGenerations.delete(token); }
+			if (!liveTokens.has(token)) { this.onCliCommandFinished(token, 'pane-gone'); this.cliDiscoveryGenerations.delete(token); }
 		}
 		// paneSessions も掃除する（放置するとclose済みターミナルのセッション情報が単調増加する）。
 		// ただし即時破棄はしない: renderer交代・ウィンドウ間移動・再起動後の再同期では、tokenが
@@ -3197,11 +3197,28 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.cliReconciliationTimers.set(token, reconciliation);
 	}
 
-	onCliCommandFinished(token: string): void {
+	/**
+	 * @param reason `exited` はシェルが CLI の終了を知らせた（Ctrl+C・異常終了も含む）。答える相手が居ないので、
+	 * 許可待ち・質問中も解き、承認・質問のカードと claim も外す。`suspended`（Ctrl+Z で止めただけ。`fg` で戻る）と
+	 * `pane-gone`（リロード等でペインの一覧から一時的に消えただけ）は、まだ答えを待っている CLI かもしれないので
+	 * ターン終了だけを知らせ、許可待ち・質問中とカードは残す
+	 */
+	onCliCommandFinished(token: string, reason: 'exited' | 'suspended' | 'pane-gone' = 'exited'): void {
 		this.cancelCliDiscovery(token);
 		this.cliDiscoveryGenerations.set(token, (this.cliDiscoveryGenerations.get(token) ?? 0) + 1);
 		this.activeTurnTokens.delete(token);
-		fireParadisAgentTurnEnded(token);
+		if (reason === 'exited') {
+			// 先にペインの状態を許可待ち・質問中から idle へ移してからカードを外す。逆にすると、カードが外れた
+			// 知らせ（pendingApproval の解除）でペインが「答えた」とみなされ working へ戻り、続くターン終了で
+			// 確認待ち（review）になって完了の通知が鳴る。
+			fireParadisAgentTurnEnded(token, 'cli-exit');
+			const tailer = this.tailers.get(token);
+			tailer?.clearApprovalRequest(undefined, true, true);
+			tailer?.clearPendingQuestions();
+			this.releaseInteractionClaimsFor(token);
+		} else {
+			fireParadisAgentTurnEnded(token);
+		}
 		const timer = this.cliReconciliationTimers.get(token);
 		if (timer !== undefined) { clearInterval(timer); this.cliReconciliationTimers.delete(token); }
 		this.cliReconciliationWatermarks.delete(token);

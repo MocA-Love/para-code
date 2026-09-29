@@ -10,7 +10,7 @@ import * as assert from 'assert';
 import { URI } from '../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
 import { IFileService } from '../../../platform/files/common/files.js';
-import { paradisRollingBackupUri, paradisWriteRollingBackupUri } from '../../common/paradisRollingFileBackupUri.js';
+import { paradisOriginalBackupUri, paradisRollingBackupUri, paradisWriteRollingBackupUri } from '../../common/paradisRollingFileBackupUri.js';
 
 suite('paradisRollingFileBackupUri', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -39,11 +39,20 @@ suite('paradisRollingFileBackupUri', () => {
 		const trap = fakeFileService([settings.path, paradisRollingBackupUri(settings).path], {}, [paradisRollingBackupUri(settings).path]);
 		const trapResult = await paradisWriteRollingBackupUri(trap.service, settings, error => errors.push(error));
 
+		const original = fakeFileService([settings.path], {});
+		await paradisWriteRollingBackupUri(original.service, settings, undefined, { keepOriginal: true });
+		const kept = fakeFileService([settings.path, paradisOriginalBackupUri(settings).path], {});
+		await paradisWriteRollingBackupUri(kept.service, settings, undefined, { keepOriginal: true });
+
 		assert.deepStrictEqual({
+			original: original.copies,
+			kept: kept.copies,
 			linked: { result: linkedResult, copies: linked.copies },
 			missing: { result: missingResult, copies: missing.copies },
 			trap: { result: trapResult, copies: trap.copies, errors: errors.length },
 		}, {
+			original: ['/home/u/.claude/settings.json -> /home/u/.claude/settings.json.paradis.orig.bak', '/home/u/.claude/settings.json -> /home/u/.claude/settings.json.paradis.bak'],
+			kept: ['/home/u/.claude/settings.json -> /home/u/.claude/settings.json.paradis.bak'],
 			linked: { result: true, copies: ['/home/u/dotfiles/claude-settings.json -> /home/u/.claude/settings.json.paradis.bak'] },
 			missing: { result: false, copies: [] },
 			trap: { result: false, copies: [], errors: 1 },

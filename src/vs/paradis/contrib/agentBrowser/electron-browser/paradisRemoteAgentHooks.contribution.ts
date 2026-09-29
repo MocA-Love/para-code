@@ -343,7 +343,7 @@ export class ParadisRemoteAgentHookFiles {
 			}
 			// 接続先の利用者の設定なので、書き換える前の中身を1つだけ隣へ控える（写せなくても止めない）
 			if (read.text !== undefined) {
-				await paradisWriteRollingBackupUri(this.host.fileService, file, error => this.host.logService.warn(`[ParadisRemoteAgentHooks] could not back up ${file.path}: ${error}`));
+				await paradisWriteRollingBackupUri(this.host.fileService, file, error => this.host.logService.warn(`[ParadisRemoteAgentHooks] could not back up ${file.path}: ${error}`), { keepOriginal: true });
 			}
 			await this.host.fileService.writeFile(file, VSBuffer.fromString(updated));
 			return true;

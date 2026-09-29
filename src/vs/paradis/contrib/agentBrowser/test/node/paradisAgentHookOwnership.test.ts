@@ -152,6 +152,30 @@ suite('ParadisAgentHookOwnership', () => {
 		], [{ origin: 'nested', agentKind: 'codex' }, { origin: 'owner', agentKind: 'claude' }, { origin: 'nested', agentKind: 'codex' }]);
 	});
 
+	test('an agent that launched Para Code itself does not own the panes', async () => {
+		// 外側の claude（900）から Para Code（910 main ← 920 shared process）を起動し、ペイン（100）の中で claude（200）を動かす
+		const tree = new Map([
+			[1, proc(1, 0, '/sbin/launchd')],
+			[890, proc(890, 1, '/bin/zsh -il')],
+			[900, proc(900, 890, 'claude')],
+			[910, proc(910, 900, '/Applications/Para Code.app/Contents/MacOS/Electron')],
+			[920, proc(920, 910, 'Para Code Helper --type=utility')],
+			[930, proc(930, 910, 'Para Code Helper --type=utility pty host')],
+			[100, proc(100, 930, '/bin/zsh -il')],
+			[200, proc(200, 100, 'claude')],
+			[205, proc(205, 200, '/bin/sh -c notify')],
+			[206, proc(206, 205, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+		const insideParaCode = new ParadisAgentHookOwnership({ snapshot: async () => tree }, 920);
+		const withoutSelf = new ParadisAgentHookOwnership({ snapshot: async () => tree }, 99_999);
+		assert.deepStrictEqual([
+			await insideParaCode.classify({ token: 't', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 }),
+			await insideParaCode.classify({ token: 't', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 2 }),
+			// Para Code 自身がプロセス表に無ければ、これまでどおり（外側の claude が所有者になる）
+			await withoutSelf.classify({ token: 't', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 }),
+		], [{ origin: 'owner', agentKind: 'claude' }, { origin: 'owner', agentKind: 'claude' }, { origin: 'nested', agentKind: 'claude' }]);
+	});
+
 	test('claude launched through npx owns the pane', async () => {
 		// npx の実際の ps は npm が process.title を書き換えた `npm exec …` になる。
 		const tree = new Map([
