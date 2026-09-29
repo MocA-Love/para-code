@@ -137,6 +137,7 @@ export type ParadisAgentApprovalChoice = 'approve' | 'alternative';
  *  - denied: ユーザーが拒否した（拒否・Esc・閉じる）。しばらくは同じペインからの求めを自動で断る
  *  - cancelled: 呼び出し側が取り消した（締め切り・MCP の取り消し）
  *  - unanswered: 表示直後やショートカットでの承認が続き、確かな答えが得られなかった
+ *  （表示したのに cancelled / unanswered で終わったのが続いたときも、拒否と同じくしばらく自動で断る）
  *  - busy: 同じペインの別の求めがまだ答えを待っている
  *  - recentlyDenied: 同じペインの求めを少し前にユーザーが断った
  */
@@ -144,6 +145,11 @@ export type ParadisAgentApprovalOutcome = ParadisAgentApprovalChoice | 'denied' 
 
 /** 拒否の後、同じペインからの求めを自動で断る時間。承認疲れを誘う繰り返しを止める。 */
 const DENIAL_COOLDOWN_MS = 3 * 60_000;
+/**
+ * 表示したダイアログに答えが得られないまま終わった（締め切り・取り消し・速押しの打ち切り）のがこの回数
+ * 続いたら、拒否と同じだけ自動で断る。放置されたダイアログを締め切りごとに出し直させないため。
+ */
+const UNANSWERED_COOLDOWN_STREAK = 2;
 /** 承認ダイアログが実際に画面に出たかを確かめる間隔。 */
 const DIALOG_SHOWN_POLL_MS = 50;
 
@@ -229,6 +235,8 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	private readonly _pendingApprovals = new Set<string>();
 	/** ペイン（cooldownKey があれば「ペイン + その単位」）→ この時刻までは求めを自動で断る。 */
 	private readonly _deniedUntil = new Map<string, number>();
+	/** {@link _deniedUntil} と同じ単位 → 表示したのに答えが得られなかった回数（続いている分だけ）。 */
+	private readonly _unansweredStreak = new Map<string, number>();
 	/** 承認ダイアログは1つずつ出す（重なると、1件目へのダブルクリックが2件目の承認に当たる）。 */
 	private readonly _approvalQueue = new Sequencer();
 	private readonly _windowFocus: ParadisNativeWindowFocus;
@@ -601,11 +609,23 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		this._pendingApprovals.add(token);
 		try {
 			// ほかのペインの承認が出ている間は順番を待つ（待っている間も締め切りは進む）。
-			const outcome = await this._approvalQueue.queue(() => cancellation.isCancellationRequested
-				? Promise.resolve<ParadisAgentApprovalOutcome>('cancelled')
-				: this._showApproval(token, request, cancellation));
+			const { outcome, shown } = await this._approvalQueue.queue(async (): Promise<{ outcome: ParadisAgentApprovalOutcome; shown: boolean }> => cancellation.isCancellationRequested
+				? { outcome: 'cancelled', shown: false }
+				: { outcome: await this._showApproval(token, request, cancellation), shown: true });
 			if (outcome === 'denied') {
+				this._unansweredStreak.delete(cooldownKey);
 				this._deniedUntil.set(cooldownKey, Date.now() + DENIAL_COOLDOWN_MS);
+			} else if (shown && (outcome === 'cancelled' || outcome === 'unanswered')) {
+				// 順番待ちのまま締め切られたもの（ユーザーには見えていない）は数えない。
+				const streak = (this._unansweredStreak.get(cooldownKey) ?? 0) + 1;
+				if (streak >= UNANSWERED_COOLDOWN_STREAK) {
+					this._unansweredStreak.delete(cooldownKey);
+					this._deniedUntil.set(cooldownKey, Date.now() + DENIAL_COOLDOWN_MS);
+				} else {
+					this._unansweredStreak.set(cooldownKey, streak);
+				}
+			} else {
+				this._unansweredStreak.delete(cooldownKey);
 			}
 			return outcome;
 		} finally {
