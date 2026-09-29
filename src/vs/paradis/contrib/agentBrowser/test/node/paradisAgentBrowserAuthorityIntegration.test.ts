@@ -8,7 +8,7 @@
 import assert from 'assert';
 import { EventEmitter } from 'events';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisExactBrowserViewDescriptor } from '../../common/paradisAgentBrowser.js';
+import { IParadisExactBrowserViewDescriptor, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent } from '../../common/paradisAgentBrowser.js';
 import { IParadisBindingAuthorityManifest, ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChannel.js';
@@ -1481,6 +1481,101 @@ suite('ParadisAgentBrowser authority integration', () => {
 				stillUnconfirmed: Reflect.get(fixture.service, '_unconfirmedReleaseTokens').has('token'),
 				unconfirmable: Reflect.get(fixture.service, '_unconfirmableTokens').has('token'),
 			}, { events: ['PostToolUse', 'Stop'], status: 'review', stillUnconfirmed: true, unconfirmable: true });
+		} finally {
+			listener.dispose();
+		}
+	});
+
+	// tmux のサーバー配下や WSL の中のエージェントの hook は、送り主がペインのシェルの子孫に見えず確かめを通れない。
+	// 解除の hook まで捨てると、承認しても許可待ちのまま残っていた（M4）。
+	test('a release hook that cannot be verified clears a pending permission and leaves the pane unconfirmed for Enter', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'perm', shellPid: 123 }, { token: 'question', shellPid: 124 }]));
+		Reflect.get(fixture.service, '_paneStatuses')
+			.set('perm', { status: 'permission', changedAt: 1 })
+			.set('question', { status: 'question', changedAt: 2 });
+		const events: IParadisAgentHookEvent[] = [];
+		const listener = onParadisAgentHookEvent(event => events.push(event));
+		try {
+			const statusAfter: Record<string, string | undefined> = {};
+			const bodies: string[] = [];
+			for (const [token, event] of [['perm', 'PostToolUse'], ['question', 'Stop']]) {
+				const request = new TestRequest('POST', `/agent-hook?pane=${token}&event=${event}`);
+				const response = new TestResponse();
+				const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+				request.emit('data', Buffer.from('{}'));
+				request.emit('end');
+				await pending;
+				bodies.push(response.body);
+				statusAfter[token] = Reflect.get(fixture.service, '_paneStatuses').get(token)?.status;
+			}
+			const lease = fixture.service.captureIngressLease('perm');
+			const context = Reflect.get(fixture.service, '_toolCallContext').call(fixture.service, lease, undefined) as IParadisMcpToolCallContext;
+			assert.deepStrictEqual({
+				bodies,
+				events: events.map(event => `${event.token}:${event.event}`),
+				statusAfter,
+				// IDE 操作ツールは、確かめられないまま解けたペインへ Enter を送らない
+				marks: [context.getUnconfirmedRelease('perm'), context.getUnconfirmedRelease('question')],
+			}, {
+				bodies: ['{"ok":true}', '{"ok":true}'],
+				events: ['perm:PostToolUse', 'question:Stop'],
+				statusAfter: { perm: 'working', question: 'review' },
+				marks: ['unverifiable', 'unverifiable'],
+			});
+		} finally {
+			listener.dispose();
+		}
+	});
+
+	test('the hooks accepted without a verified caller only ever move a pane toward working or review', () => {
+		const events = ['PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'UserPromptSubmit', 'task_started', 'Stop', 'StopFailure', 'SubagentStop', 'agent-turn-complete', 'task_complete', 'SessionEnd',
+			'PreToolUse', 'PermissionRequest', 'Notification', 'exec_approval_request', 'apply_patch_approval_request', 'request_user_input', 'permission.ask', 'TerminalExit', 'SessionStart', 'Start'];
+		assert.deepStrictEqual(
+			events.filter(paradisIsAgentHookReleaseEvent).map(event => `${event}:${paradisNormalizeAgentHookEvent(event, 'needs permission') ?? 'unchanged'}`),
+			['PostToolUse:working', 'PostToolUseFailure:working', 'PermissionDenied:working', 'UserPromptSubmit:working', 'task_started:working', 'Stop:review', 'StopFailure:review', 'SubagentStop:unchanged', 'agent-turn-complete:review', 'task_complete:review', 'SessionEnd:review'],
+		);
+	});
+
+	test('a hook that cannot be verified still cannot put or keep a pane in permission, nor clear it by a terminal exit', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'perm', shellPid: 123 }]));
+		Reflect.get(fixture.service, '_paneStatuses').set('perm', { status: 'permission', changedAt: 1 });
+		const events: IParadisAgentHookEvent[] = [];
+		const listener = onParadisAgentHookEvent(event => events.push(event));
+		try {
+			const bodies: string[] = [];
+			for (const [event, payload] of [
+				['PermissionRequest', '{}'],
+				['Notification', '{"message":"Claude needs your permission"}'],
+				['PreToolUse', '{"tool_name":"AskUserQuestion"}'],
+				['PreToolUse', '{"tool_name":"Bash"}'],
+				['TerminalExit', '{}'],
+				['SomethingUnknown', '{}'],
+			]) {
+				const request = new TestRequest('POST', `/agent-hook?pane=perm&event=${event}`);
+				const response = new TestResponse();
+				const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+				request.emit('data', Buffer.from(payload));
+				request.emit('end');
+				await pending;
+				bodies.push(response.body);
+			}
+			assert.deepStrictEqual({
+				bodies: new Set(bodies),
+				events: events.length,
+				status: Reflect.get(fixture.service, '_paneStatuses').get('perm')?.status,
+				unconfirmed: Reflect.get(fixture.service, '_unconfirmedReleaseTokens').has('perm'),
+			}, {
+				bodies: new Set(['{"ok":false,"reason":"caller not verified"}']),
+				events: 0,
+				status: 'permission',
+				unconfirmed: false,
+			});
 		} finally {
 			listener.dispose();
 		}
