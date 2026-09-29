@@ -130,3 +130,17 @@ export function resolveSessionTab(workspace: WorkspaceState | undefined, spaceId
 	}
 	return workspace === undefined || workspace.complete !== true ? { status: 'loading' } : { status: 'empty' };
 }
+
+/**
+ * 指定なしで開いた画面が、既定で開いたタブを固定するための指定。固定するものが無ければ undefined。
+ *
+ * 既定のタブは要対応のエージェントを優先するので、指定なしのまま置くと、同じスペースの別の
+ * エージェントが許可待ちになった瞬間に画面がそちらへ切り替わる（入力中の相手と取り違える）。
+ * 開いた時点のタブをクエリへ書き込み、以後は指定ありと同じ扱いにする。
+ */
+export function sessionTabToPin(requested: SessionTab | undefined, resolved: ResolvedSessionTab): Extract<SessionTab, { readonly kind: 'terminal' }> | undefined {
+	if (requested !== undefined || resolved.status !== 'terminal') {
+		return undefined;
+	}
+	return { kind: 'terminal', terminalKey: resolved.terminal.terminalKey };
+}

@@ -37,7 +37,7 @@ import { useStableInsets } from '../../../../src/hooks/useStableInsets.js';
 import { useLastSession } from '../../../../src/features/home/lastSessionStore.js';
 import { activityMenuHint, hasAgentActivity } from '../../../../src/features/activity/activityModel.js';
 import { spaceColor } from '../../../../src/features/pc/spaceColor.js';
-import type { SpaceTerminal } from '../../../../src/navigationTargets.js';
+import { sessionTabToPin, type SpaceTerminal } from '../../../../src/navigationTargets.js';
 import { encodeSessionTab, routes, type RouteHref, type SessionTab } from '../../../../src/routes.js';
 import { colors } from '../../../../src/theme.js';
 import { PAIRING_REJECTED_LABEL, isPairingRejected } from '../../../../src/pcStatus.js';
@@ -79,7 +79,7 @@ export default function SessionScreen() {
 	// 終わった会話を開き直せる PC か（W2-29）。
 	const historySupported = usePcCapability(AGENT_RESUME_CAPABILITY);
 	const route = useSessionRoute();
-	const { pcId, spaceId, pc, space, terminals, tab, latest } = route;
+	const { pcId, spaceId, pc, space, terminals, tab, latest, requestedTab } = route;
 	const focused = useIsFocused();
 	// 通知や他の画面から直接入った場合も、ホームの「再開」カードがこのセッションを指すようにする
 	// （一覧から開いたときは openSession も記録するが、同じ値の上書きになるだけ）。
@@ -135,6 +135,15 @@ export default function SessionScreen() {
 		}
 		router.setParams({ tab: next !== undefined ? encodeSessionTab(next) : '', ...(options.latest === true ? { latest: createAgentLatestEntryToken() } : {}) });
 	};
+
+	// 指定なしで開いたら、既定で開いたタブをクエリへ固定する（別のエージェントが許可待ちになっても勝手に移らない）。
+	const pinKey = focused ? sessionTabToPin(requestedTab, tab)?.terminalKey : undefined;
+	useEffect(() => {
+		if (pinKey !== undefined) {
+			openTab({ kind: 'terminal', terminalKey: pinKey });
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- 固定する鍵が決まったときだけ
+	}, [pinKey]);
 
 	// ＋やクイックコマンドで作ったターミナルは、現れたらそのタブへ移る（どの鍵になるかは PC が決める）。
 	const awaitingRef = useRef<{ readonly known: ReadonlySet<string>; readonly until: number } | undefined>(undefined);

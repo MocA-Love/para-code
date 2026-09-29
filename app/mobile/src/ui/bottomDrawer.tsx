@@ -245,7 +245,8 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 			<Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>
 				<Pressable style={StyleSheet.absoluteFill} onPress={() => onCloseRef.current()} accessibilityRole="button" accessibilityLabel="閉じる" />
 			</Animated.View>
-			<View style={[styles.anchor, wide ? styles.anchorWide : undefined, { paddingBottom: keyboardInset }]} pointerEvents="box-none">
+			{/* 閉じる動きの間は中身を押させない（「起動する」などを素早く2回押すと2回走るため）。 */}
+			<View style={[styles.anchor, wide ? styles.anchorWide : undefined, { paddingBottom: keyboardInset }]} pointerEvents={visible ? 'box-none' : 'none'}>
 				<Animated.View
 					testID={testID}
 					accessibilityViewIsModal

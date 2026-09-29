@@ -9,7 +9,7 @@ import { monoFamily } from '../../monoFont.js';
 import { terminalSubmitIcon } from '../../terminalKeys.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { Icon } from '../../ui/index.js';
-import { HELD_PREEDIT_COMMIT_DELAY_MS, LIVE_DEL, LIVE_ENTER, LIVE_INPUT_EMPTY, liveInputStep, type LiveInputEvent, type LiveInputState } from './liveInput.js';
+import { HELD_PREEDIT_COMMIT_DELAY_MS, LIVE_DEL, LIVE_ENTER, LIVE_INPUT_EMPTY, LIVE_INPUT_RETIRED, liveInputStep, type LiveInputEvent, type LiveInputState } from './liveInput.js';
 import { useIsFocused } from 'expo-router';
 import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
 
@@ -36,8 +36,11 @@ export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitt
 	onToggleEnterless: () => void;
 	uploading: boolean;
 	onAttachImage: () => void;
-	/** ライブ入力で打たれた文字。 */
-	onLiveText: (text: string) => void;
+	/**
+	 * ライブ入力で打たれた文字。Ctrl が点いていて制御文字として送った（文字としては PC に載らなかった）
+	 * ときは true を返す。
+	 */
+	onLiveText: (text: string) => boolean;
 	/** ライブ入力で押された制御キー（⌫ は DEL の並び、改行は CR）。1回で送る。 */
 	onLiveKey: (data: string) => void;
 	/** ライブ入力中に外付けキーボードで押された矢印（iPad）。PC のターミナルへ送る。 */
@@ -75,20 +78,24 @@ export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitt
 		setLiveFocused(false);
 		setLiveComposing(false);
 	}, [live]);
-	const onLiveSend = (data: string) => {
+	/** 送る。打った文字を制御文字として送った（PC の行に文字として載らなかった）ときは true。 */
+	const onLiveSend = (data: string): boolean => {
 		if (data === LIVE_ENTER) {
 			onLiveKey(data);
 			setLastTyped('');
-			return;
+			return false;
 		}
 		if (data.length > 0 && [...data].every(char => char === LIVE_DEL)) {
 			// DEL の並びは1回で送る（1文字ずつ送ると、その数だけ別々の操作として記録される）。
 			onLiveKey(data);
 			setLastTyped(previous => previous.slice(0, Math.max(0, previous.length - data.length)));
-			return;
+			return false;
 		}
-		onLiveText(data);
+		if (onLiveText(data)) {
+			return true;
+		}
 		setLastTyped(previous => (previous + data).slice(-40));
+		return false;
 	};
 	const imageButton = (
 		<Pressable
@@ -215,7 +222,8 @@ function LiveCapture({ inputRef, submitRef, autoFocus, onFocusChange, onComposin
 	onFocusChange: (focused: boolean) => void;
 	/** いまの世代だけ受け取る。変換中かどうかが変わった。 */
 	onComposingChange: ((composing: boolean) => void) | undefined;
-	onSend: (data: string) => void;
+	/** 送る。打った文字を制御文字として送ったときは true（`TerminalInputBar` の `onLiveText`）。 */
+	onSend: (data: string) => boolean;
 	onSubmitted: () => void;
 	/** Enter で送り終えた後のこの入力欄に、まだ打鍵が届いた。 */
 	onRetiredInput: () => void;
@@ -247,8 +255,17 @@ function LiveCapture({ inputRef, submitRef, autoFocus, onFocusChange, onComposin
 		}
 		const step = liveInputStep(stateRef.current, event);
 		stateRef.current = step.state;
+		let control = false;
 		for (const data of step.send) {
-			onSend(data);
+			control = onSend(data) || control;
+		}
+		if (control) {
+			// Ctrl で打った文字は制御文字として送り、PC の行には載っていない（^U・^W なら行も変わる）。
+			// この入力欄はその文字を持ったままなので、写し続けると後の ⌫ で PC に無い文字の分まで DEL を
+			// 送って実際の文字を消す。Enter と同じく引退させ、新しい空の入力欄から写し直す。
+			stateRef.current = LIVE_INPUT_RETIRED;
+			onSubmitted();
+			return;
 		}
 		if (event.kind === 'change' && event.composing === undefined && step.state.held.length > 0) {
 			heldTimerRef.current = setTimeout(() => {
