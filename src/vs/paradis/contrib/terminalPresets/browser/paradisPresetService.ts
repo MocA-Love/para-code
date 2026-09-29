@@ -69,6 +69,7 @@ import {
 	paradisParsePresetFileForUpdate,
 	IParadisPresetTitleEntry,
 	paradisParsePresetTitles,
+	paradisPresetTitleKey,
 	paradisRememberPresetTitleEntry,
 } from '../common/paradisTerminalPresets.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -1175,7 +1176,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	/**
 	 * プリセット名は `titleTemplate` で渡しているが、これはターミナルの復元情報に含まれない
 	 * （`IPtyHostAttachTarget` に無い）。リロードすると名前だけ失われて `${process}`（zsh 等）に
-	 * 戻ってしまうので、シェル統合の nonce をキーに自前で覚えておいて復元時に貼り直す
+	 * 戻ってしまうので、シェル統合の nonce のハッシュをキーに自前で覚えておいて復元時に貼り直す
 	 * （永続プロセスの ID は振り直されるので、キーにすると無関係なターミナルに名前が付く）。
 	 */
 	private _rememberPresetTitle(instance: ITerminalInstance, name: string | undefined): void {
@@ -1188,7 +1189,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		}
 		this.storageService.store(
 			PRESET_TITLE_STORAGE_KEY,
-			JSON.stringify(paradisRememberPresetTitleEntry(this._readPresetTitles(), nonce, name, MAX_REMEMBERED_PRESET_TITLES)),
+			JSON.stringify(paradisRememberPresetTitleEntry(this._readPresetTitles(), paradisPresetTitleKey(nonce), name, MAX_REMEMBERED_PRESET_TITLES)),
 			StorageScope.WORKSPACE,
 			StorageTarget.MACHINE,
 		);
@@ -1201,7 +1202,8 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		if (nonce === undefined || instance.shellLaunchConfig.titleTemplate || instance.shellLaunchConfig.name) {
 			return;
 		}
-		const name = this._readPresetTitles().find(entry => entry.nonce === nonce)?.name;
+		const key = paradisPresetTitleKey(nonce);
+		const name = this._readPresetTitles().find(entry => entry.key === key)?.name;
 		if (!name) {
 			return;
 		}

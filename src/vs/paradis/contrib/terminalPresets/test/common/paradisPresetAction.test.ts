@@ -22,6 +22,7 @@ import {
 	paradisPresetFingerprint,
 	paradisParsePresetFileForUpdate,
 	paradisParsePresetTitles,
+	paradisPresetTitleKey,
 	paradisRememberPresetTitleEntry,
 } from '../../common/paradisTerminalPresets.js';
 
@@ -135,20 +136,24 @@ suite('ParadisPresetAction', () => {
 		});
 	});
 
-	test('keys remembered preset names by the terminal nonce, not by the renumbered process id', () => {
-		const stored = JSON.stringify([{ id: 3, name: 'old by id' }, { nonce: 'n-1', name: 'Dev' }, { nonce: '', name: 'empty' }]);
+	test('keys remembered preset names by a hash of the terminal nonce, not by the renumbered process id', () => {
+		const key1 = paradisPresetTitleKey('n-1');
+		const key2 = paradisPresetTitleKey('n-2');
+		const stored = JSON.stringify([{ id: 3, name: 'old by id' }, { nonce: 'n-1', name: 'raw nonce' }, { key: key1, name: 'Dev' }, { key: 'n-1', name: 'not a hash' }]);
 		const entries = paradisParsePresetTitles(stored);
 		assert.deepStrictEqual({
-			// 番号をキーにしていた古い行と空の nonce は捨てる
+			// nonce（ペイントークンの元）を平文で持たない
+			hashed: /^[0-9a-f]{40}$/.test(key1) && key1 !== key2 && !key1.includes('n-1'),
+			// 番号や平文の nonce をキーにした行は捨てる
 			entries,
-			// 同じ nonce は上書き、上限を超えたら古いものから捨てる
-			remembered: paradisRememberPresetTitleEntry([...entries, { nonce: 'n-2', name: 'Test' }], 'n-1', 'Dev 2', 2),
+			// 同じキーは上書き、上限を超えたら古いものから捨てる
+			remembered: paradisRememberPresetTitleEntry([...entries, { key: key2, name: 'Test' }], key1, 'Dev 2', 2),
 			broken: paradisParsePresetTitles('{not json'),
 		}, {
-			entries: [{ nonce: 'n-1', name: 'Dev' }],
-			remembered: [{ nonce: 'n-2', name: 'Test' }, { nonce: 'n-1', name: 'Dev 2' }],
+			hashed: true,
+			entries: [{ key: key1, name: 'Dev' }],
+			remembered: [{ key: key2, name: 'Test' }, { key: key1, name: 'Dev 2' }],
 			broken: [],
 		});
 	});
 });
-
