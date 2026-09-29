@@ -3201,7 +3201,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.cancelCliDiscovery(token);
 		this.cliDiscoveryGenerations.set(token, (this.cliDiscoveryGenerations.get(token) ?? 0) + 1);
 		this.activeTurnTokens.delete(token);
-		fireParadisAgentTurnEnded(token);
+		fireParadisAgentTurnEnded(token, 'cli-exit');
 		const timer = this.cliReconciliationTimers.get(token);
 		if (timer !== undefined) { clearInterval(timer); this.cliReconciliationTimers.delete(token); }
 		this.cliReconciliationWatermarks.delete(token);

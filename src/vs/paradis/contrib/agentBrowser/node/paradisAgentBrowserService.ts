@@ -43,7 +43,7 @@ import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStat
 import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator, ParadisExactViewBackgroundThrottlingDispatcher } from '../common/paradisExactViewBackgroundThrottling.js';
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
 import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
-import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
+import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, ParadisAgentTurnEndCause, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
 import { IParadisReplayedAgentPrompt, IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_ID_PATTERN, PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE, PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SYNC_GRACE_MS, paradisPlanAgentHookReplay } from '../common/paradisAgentHookSpool.js';
 import { paradisPruneAgentHookSpool, paradisStampAgentHookSpoolAlive, paradisTakeAgentHookSpool } from './paradisAgentHookSpoolStore.js';
@@ -720,24 +720,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		// transcript由来のターン終了（Codex の usage limit エラー・中断等、Stop hook が
 		// 発火しないケース）を working 状態の解除に反映する。Stop hook と同じく、
 		// バックグラウンドタスクが残っていれば working を維持する（stale掃除の対象になる）。
-		this._register(onParadisAgentTurnEnded(({ token, at }) => {
-			const ingressLease = this.captureIngressLease(token);
-			if (ingressLease === undefined) {
-				return;
-			}
-			const entry = this._paneStatuses.get(token);
-			if (entry === undefined || entry.status !== 'working') {
-				return;
-			}
-			if (!this.isIngressLeaseCurrent(ingressLease)) {
-				return;
-			}
-			if (paradisCountLiveBackgroundTasks(token, at) > 0) {
-				this._paneStatuses.set(token, { ...entry, changedAt: at, backgroundCompletionFallback: true });
-			} else {
-				this._paneStatuses.set(token, { status: 'review', changedAt: at, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) });
-			}
-		}));
+		this._register(onParadisAgentTurnEnded(({ token, at, cause }) => this._settlePaneTurnEnded(token, at, cause)));
 		// エージェントが完了ではなく、止まって利用者の次の指示を待っている（許可を拒否された等。どの hook も
 		// 来ない）。許可待ち・作業中のまま残ると、スリープ防止・タブの鈴・一覧の件数が次のプロンプトまで残るので、
 		// 状態なし（idle）へ移す。確認待ち（review）にはしない（review は完了の通知の対象）。モバイルの接続とは
@@ -1583,13 +1566,41 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * エージェントが止まって利用者の次の指示を待っているペイン（許可を拒否された等）を、状態なし（idle）へ移す。
 	 * 許可待ち・作業中のときだけ動かす。確認待ち（review）にはしない（review は完了の通知の対象）。
 	 */
-	private _settlePaneAwaitingUser(token: string): void {
+	private _settlePaneTurnEnded(token: string, at: number, cause: ParadisAgentTurnEndCause): void {
 		const ingressLease = this.captureIngressLease(token);
 		if (ingressLease === undefined) {
 			return;
 		}
 		const entry = this._paneStatuses.get(token);
-		if (entry === undefined || (entry.status !== 'permission' && entry.status !== 'working')) {
+		// CLI が終わったのに許可待ち・質問中のままだと（承認待ちで Ctrl+C・異常終了）、答える相手が居ないのに
+		// 鈴・件数・スリープ防止が残る。完了ではないので確認待ち（review）ではなく状態なし（idle）へ移す。
+		if (cause === 'cli-exit' && (entry?.status === 'permission' || entry?.status === 'question')) {
+			this._settlePaneAwaitingUser(token, true);
+			return;
+		}
+		if (entry === undefined || entry.status !== 'working') {
+			return;
+		}
+		if (!this.isIngressLeaseCurrent(ingressLease)) {
+			return;
+		}
+		if (paradisCountLiveBackgroundTasks(token, at) > 0) {
+			this._paneStatuses.set(token, { ...entry, changedAt: at, backgroundCompletionFallback: true });
+		} else {
+			this._paneStatuses.set(token, { status: 'review', changedAt: at, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) });
+		}
+	}
+
+	/**
+	 * @param includeQuestion 質問中も解く（CLI が終わったとき）。許可の拒否では質問中は触らない
+	 */
+	private _settlePaneAwaitingUser(token: string, includeQuestion: boolean = false): void {
+		const ingressLease = this.captureIngressLease(token);
+		if (ingressLease === undefined) {
+			return;
+		}
+		const entry = this._paneStatuses.get(token);
+		if (entry === undefined || (entry.status !== 'permission' && entry.status !== 'working' && !(includeQuestion && entry.status === 'question'))) {
 			return;
 		}
 		if (!this.isIngressLeaseCurrent(ingressLease)) {

@@ -159,7 +159,13 @@ export function fireParadisAgentHookEvent(event: IParadisAgentHookEvent): void {
 // transcript（rollout JSONL）の event_msg が唯一の検出点。ParadisMobileAgentChat の tailer が
 // 検出して発火し、ParadisAgentBrowserService がペイン実行状態（working の解除）に反映する。
 
-const turnEndedEmitter = new Emitter<{ readonly token: string; readonly at: number }>();
+/**
+ * ターン終了の理由。`cli-exit` はエージェントの CLI 自体が終わった（Ctrl+C・異常終了も含む）。
+ * そのときは許可待ち・質問中も解く（答える相手がもう居ない）。
+ */
+export type ParadisAgentTurnEndCause = 'turn' | 'cli-exit';
+
+const turnEndedEmitter = new Emitter<{ readonly token: string; readonly at: number; readonly cause: ParadisAgentTurnEndCause }>();
 const turnStartedEmitter = new Emitter<{ readonly token: string; readonly cwd?: string; readonly at: number }>();
 
 /** transcript由来のターン開始（Codex hook未発火時のPC処理中表示）。 */
@@ -170,11 +176,11 @@ export function fireParadisAgentTurnStarted(token: string, cwd?: string): void {
 }
 
 /** transcript由来のターン終了の購読（shared process 内限定）。 */
-export const onParadisAgentTurnEnded: Event<{ readonly token: string; readonly at: number }> = turnEndedEmitter.event;
+export const onParadisAgentTurnEnded: Event<{ readonly token: string; readonly at: number; readonly cause: ParadisAgentTurnEndCause }> = turnEndedEmitter.event;
 
 /** transcript由来のターン終了の発火（ParadisMobileAgentChat の tailer 専用）。 */
-export function fireParadisAgentTurnEnded(token: string): void {
-	turnEndedEmitter.fire({ token, at: Date.now() });
+export function fireParadisAgentTurnEnded(token: string, cause: ParadisAgentTurnEndCause = 'turn'): void {
+	turnEndedEmitter.fire({ token, at: Date.now(), cause });
 }
 
 const awaitingUserEmitter = new Emitter<{ readonly token: string; readonly at: number }>();
