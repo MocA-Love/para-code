@@ -127,10 +127,16 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 			}));
 			// スタイルの読み込みを待つ間に閉じられることがある。閉じる知らせは待った後に購読するので、
 			// ここで拾っておかないと、閉じたウィンドウを開いているものとして持ち続け、二度と開き直せない。
+			// 閉じたウィンドウのスタイルの読み込みは終わらないこともあるので、閉じたら待つのをやめる。
 			let closedWhileLoading = false;
-			const earlyUnload = auxiliaryWindow.onUnload(() => closedWhileLoading = true);
+			let stopWaiting: (() => void) | undefined;
+			const closed = new Promise<void>(resolve => stopWaiting = resolve);
+			const earlyUnload = auxiliaryWindow.onUnload(() => {
+				closedWhileLoading = true;
+				stopWaiting?.();
+			});
 			try {
-				await auxiliaryWindow.whenStylesHaveLoaded;
+				await Promise.race([auxiliaryWindow.whenStylesHaveLoaded, closed]);
 			} finally {
 				earlyUnload.dispose();
 			}

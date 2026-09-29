@@ -24,7 +24,7 @@ export const PARADIS_KEEP_AWAKE_CHANNEL = 'paradisKeepAwake';
 export interface IParadisKeepAwakeBlockerService {
 	/** blocker を掛け、その id を返す。掛けたウィンドウに紐付く。 */
 	start(type: ParadisPowerSaveBlockerType): Promise<number>;
-	/** 自分のウィンドウが掛けた blocker を止める。止めたら true。 */
+	/** 自分のウィンドウが掛けた blocker を止める。止めた（もう止まっていた）なら true。 */
 	stop(id: number): Promise<boolean>;
 }
 
@@ -56,11 +56,14 @@ export class ParadisKeepAwakeBlockerRegistry {
 		return id;
 	}
 
-	/** 持ち主が掛けたものだけを止める（別のウィンドウの blocker は止めない）。 */
+	/**
+	 * 持ち主が掛けたものだけを止める（別のウィンドウの blocker は止めずに false）。誰のものでもない id は、
+	 * 読み込み直しのときに先に止めたもの（前の renderer の片付けが後から届いた）なので、止まっているとして true。
+	 */
 	stop(owner: string, id: number): boolean {
 		const ids = this.idsByOwner.get(owner);
 		if (!ids?.has(id)) {
-			return false;
+			return ![...this.idsByOwner.values()].some(other => other.has(id));
 		}
 		ids.delete(id);
 		if (ids.size === 0) {
