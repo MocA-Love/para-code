@@ -39,7 +39,7 @@ import { localize } from '../../../../nls.js';
 import { BrowserViewStorageScope, IBrowserViewService, ipcBrowserViewChannelName } from '../../../../platform/browserView/common/browserView.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
-import { FocusMode } from '../../../../platform/native/common/native.js';
+import { FocusMode, INativeHostService } from '../../../../platform/native/common/native.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
@@ -50,7 +50,6 @@ import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/co
 import { BrowserViewSharingState, IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import {
 	IParadisAuxiliaryWindowScopeService,
@@ -77,6 +76,7 @@ import {
 	paradisUrlOrigin,
 } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
+import { ParadisNativeWindowFocus } from './paradisNativeWindowFocus.js';
 
 /** 共有相手を加えた後、モデルが共有済みになるのを待つ上限。 */
 const SHARE_STATE_TIMEOUT_MS = 3_000;
@@ -231,6 +231,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	private readonly _deniedUntil = new Map<string, number>();
 	/** 承認ダイアログは1つずつ出す（重なると、1件目へのダブルクリックが2件目の承認に当たる）。 */
 	private readonly _approvalQueue = new Sequencer();
+	private readonly _windowFocus: ParadisNativeWindowFocus;
 	private _approvalSerial = 0;
 
 	constructor(
@@ -248,9 +249,10 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		@IQuickInputService private readonly _quickInputService: IQuickInputService,
 		@ILogService private readonly _logService: ILogService,
 		@IMainProcessService mainProcessService: IMainProcessService,
-		@IHostService private readonly _hostService: IHostService,
+		@INativeHostService private readonly _nativeHostService: INativeHostService,
 	) {
 		super();
+		this._windowFocus = this._register(new ParadisNativeWindowFocus(_nativeHostService.onDidFocusMainOrAuxiliaryWindow, _nativeHostService.onDidBlurMainOrAuxiliaryWindow));
 		this._browserViews = ProxyChannel.toService<IBrowserViewService>(mainProcessService.getChannel(ipcBrowserViewChannelName));
 	}
 
@@ -686,15 +688,19 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	}
 
 	/**
-	 * 裏にあるウィンドウに承認ダイアログを出すときは、Dock のバウンス（Windows/Linux はタスクバーの点滅）で
-	 * 知らせる。知らせないと、利用者は気付かないまま締め切りを迎える。前面に出すことはしない
-	 * （ほかのアプリへ打っているキーを、このダイアログが受け取らないように）。
+	 * Para Code のウィンドウがどれも前面に無いときに承認ダイアログを出すなら、知らせる。知らせないと、
+	 * 利用者は気付かないまま締め切りを迎える。macOS は Dock のアイコンが1回弾み、Dock のアイコンに点が
+	 * 付く。Windows/Linux はタスクバーのボタンが点滅し続ける。点と点滅は、知らせたウィンドウに
+	 * フォーカスが移るまで消えない（main の `showNotifyFocus` / `clearNotifyFocus`）。
+	 * 前面に出すことはしない（ほかのアプリへ打っているキーを、このダイアログが受け取らないように）。
+	 * 前面かどうかはネイティブのウィンドウで判定する（{@link ParadisNativeWindowFocus} を参照）。
 	 */
 	private _requestAttention(): void {
-		if (this._hostService.hasFocus) {
+		if (!this._windowFocus.isAwayFrom(Array.from(dom.getWindows(), ({ window }) => window.vscodeWindowId))) {
 			return;
 		}
-		this._hostService.focus(dom.getActiveWindow(), { mode: FocusMode.Notify }).catch(error => {
+		// ダイアログはワークベンチのアクティブなウィンドウに出る
+		this._nativeHostService.focusWindow({ targetWindowId: dom.getActiveWindow().vscodeWindowId, mode: FocusMode.Notify }).catch(error => {
 			this._logService.trace('[ParadisAgentBrowserTabs] could not ask for attention for an approval dialog', error);
 		});
 	}
