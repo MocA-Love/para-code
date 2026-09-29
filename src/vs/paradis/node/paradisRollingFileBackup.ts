@@ -13,7 +13,9 @@
 // 1つ前へ戻せるようにするため。
 //
 // 1つ前だけだと、Para Code が続けて2回書き換えたときに、利用者の元の中身が Para Code 自身の書いた
-// 中身で上書きされる。そこで最初の1回だけ、`<名前>.paradis.orig.bak` にも写す（以後は触らない）。
+// 中身で上書きされる。そこで頼まれたとき（`keepOriginal`。hook の設定ファイル）は、最初の1回だけ
+// `<名前>.paradis.orig.bak` にも写す（以後は触らない）。秘密を持ちうるファイル（`~/.claude.json` など）では
+// 頼まない: 消えない写しが残り、秘密を変えても古い値が残り続けるため。
 //
 // ログイン情報（`.credentials.json`・`auth.json`）には使わない。秘密をもう1か所に置くことになるため。
 
@@ -25,6 +27,11 @@ export const PARADIS_ROLLING_BACKUP_SUFFIX = '.paradis.bak';
 
 /** 最初の1回だけ写す控えの接尾辞。 */
 export const PARADIS_ORIGINAL_BACKUP_SUFFIX = '.paradis.orig.bak';
+
+export interface IParadisRollingBackupOptions {
+	/** 最初の1回だけ、元の中身を `<名前>.paradis.orig.bak` にも写す。秘密を持ちうるファイルには使わない */
+	readonly keepOriginal?: boolean;
+}
 
 /** `filePath` の控えの置き場所。symlink の設定でも、リンク先ではなく書き換える名前の隣に置く。 */
 export function paradisRollingBackupPath(filePath: string): string {
@@ -96,7 +103,7 @@ function refuseSymlinkedBackup(backupPath: string, isSymbolicLink: boolean): voi
  * 写している途中で落ちても前の控えは残る。権限は元のファイルのものを引き継ぐ。
  * @returns 写したか（元のファイルが無ければ false）
  */
-export function paradisWriteRollingBackupSync(filePath: string): boolean {
+export function paradisWriteRollingBackupSync(filePath: string, options?: IParadisRollingBackupOptions): boolean {
 	const backupPath = paradisRollingBackupPath(filePath);
 	try {
 		refuseSymlinkedBackup(backupPath, lstatSync(backupPath).isSymbolicLink());
@@ -115,7 +122,9 @@ export function paradisWriteRollingBackupSync(filePath: string): boolean {
 			}
 			throw error;
 		}
-		writeOriginalBackupSync(filePath);
+		if (options?.keepOriginal) {
+			writeOriginalBackupSync(filePath);
+		}
 		renameSync(temporary, backupPath);
 		return true;
 	} finally {
@@ -124,7 +133,7 @@ export function paradisWriteRollingBackupSync(filePath: string): boolean {
 }
 
 /** {@link paradisWriteRollingBackupSync} の非同期版。 */
-export async function paradisWriteRollingBackup(filePath: string): Promise<boolean> {
+export async function paradisWriteRollingBackup(filePath: string, options?: IParadisRollingBackupOptions): Promise<boolean> {
 	const backupPath = paradisRollingBackupPath(filePath);
 	try {
 		refuseSymlinkedBackup(backupPath, (await fs.lstat(backupPath)).isSymbolicLink());
@@ -143,7 +152,9 @@ export async function paradisWriteRollingBackup(filePath: string): Promise<boole
 			}
 			throw error;
 		}
-		await writeOriginalBackup(filePath);
+		if (options?.keepOriginal) {
+			await writeOriginalBackup(filePath);
+		}
 		await fs.rename(temporary, backupPath);
 		return true;
 	} finally {
