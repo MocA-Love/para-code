@@ -10,16 +10,24 @@
 // 設定値(追加Codexホーム)の解決もここで行い、ウィジェット/パネル/ダイアログは
 // このクライアント経由でのみバックエンドへアクセスする。
 //
-// Claude の分は別のチャネル（PARADIS_CLAUDE_ACCOUNTS_CHANNEL）から取り、Codex の分と1つの
-// スナップショットに合わせて返す。Claude のチャネルは SSH で繋いでいる間も常に手元の shared process
-// に聞く（切り替えるのはこの PC のログインで、保存した認証情報もこの PC にしか無いため）。
+// Claude の分は Codex の分と1つのスナップショットに合わせて返す。どこに聞くかはウィンドウで決まる
+// （Q131 案B）:
+//  - 手元のウィンドウ: 手元の shared process の PARADIS_CLAUDE_ACCOUNTS_CHANNEL（登録したアカウントの
+//    一覧・切り替え・登録）
+//  - SSH のウィンドウ: 接続先（REH）の PARADIS_LIMITS_MONITOR_CHANNEL の PARADIS_CLAUDE_HOST_STATE_COMMAND。
+//    接続先の Claude Code がいまログインしているアカウントだけを読み取り専用で出す（Claude Code は
+//    接続先で接続先のログインを使って動くため。手元のアカウントは手元のウィンドウで見る）
 
 import { Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { Schemas } from '../../../../base/common/network.js';
+import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { ILabelService } from '../../../../platform/label/common/label.js';
+import { IRemoteAgentConnection, IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { paradisResolveMobileWindowHost } from '../../mobileRelay/common/paradisMobileHost.js';
 import {
 	IParadisLimitsCodexRemovalTarget,
 	IParadisLimitsFetchOptions,
@@ -29,7 +37,15 @@ import {
 	PARADIS_LIMITS_MONITOR_CHANNEL,
 	ParadisLimitsDuplicateDecision
 } from '../common/paradisLimitsMonitor.js';
-import { IParadisClaudeAccountsState, IParadisClaudeRegisterResult, IParadisClaudeSwitchResult, PARADIS_CLAUDE_ACCOUNTS_CHANNEL } from '../common/paradisClaudeAccounts.js';
+import {
+	IParadisClaudeAccountsState,
+	IParadisClaudeRegisterResult,
+	IParadisClaudeStateRequest,
+	IParadisClaudeSwitchResult,
+	PARADIS_CLAUDE_ACCOUNTS_CHANNEL,
+	PARADIS_CLAUDE_HOST_STATE_COMMAND,
+	paradisClaudeHostAccountsState
+} from '../common/paradisClaudeAccounts.js';
 
 export const PARADIS_LIMITS_SETTING_ENABLED = 'paradis.limitsMonitor.enabled';
 export const PARADIS_LIMITS_SETTING_CODEX_HOMES = 'paradis.limitsMonitor.codexHomes';
@@ -41,6 +57,7 @@ export class ParadisLimitsMonitorClient {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IFileService private readonly fileService: IFileService,
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
+		@ILabelService private readonly labelService: ILabelService,
 	) { }
 
 	private get channel() {
@@ -73,20 +90,46 @@ export class ParadisLimitsMonitorClient {
 		return this.sharedProcessService.getChannel(PARADIS_CLAUDE_ACCOUNTS_CHANNEL);
 	}
 
-	/** Claude の取得結果・登録・切り替えで状態が変わったとき（どのウィンドウの操作でも）に発火する。 */
+	/**
+	 * Claude の取得結果・登録・切り替えで状態が変わったとき（どのウィンドウの操作でも）に発火する。
+	 * SSH のウィンドウでは発火しない（接続先の分は予定の取得を持たず、聞かれたときにだけ取るため）。
+	 */
 	get onDidChangeClaudeState(): Event<void> {
-		return this.claudeChannel.listen<void>('onDidChangeState');
+		return this.remoteAgentService.getConnection() ? Event.None : this.claudeChannel.listen<void>('onDidChangeState');
 	}
 
 	/**
-	 * Claude の状態。`refresh` は手動の更新で、180 秒より古い結果だけ取り直す。取り直した結果は
-	 * {@link onDidChangeClaudeState} の後にもう一度聞くと届く。
+	 * Claude の状態。`refresh` は手動の更新で、180 秒より古い結果だけ取り直す。手元のウィンドウでは、
+	 * 取り直した結果は {@link onDidChangeClaudeState} の後にもう一度聞くと届く。SSH のウィンドウでは
+	 * 接続先に聞き、予定時刻を過ぎていればその場で取ってから返す。
 	 */
 	async getClaudeState(refresh = false, passive = false): Promise<IParadisClaudeAccountsState> {
+		const remoteConnection = this.remoteAgentService.getConnection();
+		if (remoteConnection) {
+			return this.getClaudeHostState(remoteConnection, { refresh, passive });
+		}
 		try {
 			return await this.claudeChannel.call<IParadisClaudeAccountsState>('getState', [{ refresh, passive }]);
 		} catch (error) {
 			return { claude: { accounts: [], sourceError: (error as Error).message }, switching: false };
+		}
+	}
+
+	/** SSH の接続先の Claude のログインの状態（読み取り専用）。 */
+	private async getClaudeHostState(remoteConnection: IRemoteAgentConnection, request: IParadisClaudeStateRequest): Promise<IParadisClaudeAccountsState> {
+		// 拡張機能のラベルの整形が届く前は authority のままなので、そのときは読みやすく整えたものを使う。
+		const rawLabel = this.labelService.getHostLabel(Schemas.vscodeRemote, remoteConnection.remoteAuthority);
+		const host = paradisResolveMobileWindowHost(remoteConnection.remoteAuthority, rawLabel === remoteConnection.remoteAuthority ? undefined : rawLabel);
+		const remoteHost = { label: host.label };
+		try {
+			const state = await remoteConnection.getChannel(PARADIS_LIMITS_MONITOR_CHANNEL).call<IParadisClaudeAccountsState>(PARADIS_CLAUDE_HOST_STATE_COMMAND, [request]);
+			return paradisClaudeHostAccountsState(state, remoteHost);
+		} catch (error) {
+			const message = (error as Error | undefined)?.message ?? '';
+			const sourceError = message.includes(PARADIS_CLAUDE_HOST_STATE_COMMAND)
+				? localize('paradis.limitsMonitor.claudeHostUnsupported', "接続先のサーバーがこの表示に対応していないため、接続先の Claude の使用量を表示できません。")
+				: localize('paradis.limitsMonitor.claudeHostFailed', "接続先の Claude の使用量を取得できませんでした（{0}）", message);
+			return paradisClaudeHostAccountsState(undefined, remoteHost, sourceError);
 		}
 	}
 
