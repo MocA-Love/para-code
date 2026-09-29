@@ -13,6 +13,7 @@
 //     コミットすればチームや worktree 全体に行き渡る）
 
 import { Event } from '../../../../base/common/event.js';
+import { parse as parseJsonc } from '../../../../base/common/jsonc.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
@@ -1003,3 +1004,61 @@ export function paradisPresetApprovalSignature(definition: IParadisPresetDefinit
 	}
 	return parts.join('\n');
 }
+
+/** 書き換えるために読んだ `.paracode.json` の中身（知らないキーもそのまま書き戻す）。 */
+export interface IParadisPresetFileContent {
+	presets?: unknown[];
+	presetFolders?: unknown[];
+	[key: string]: unknown;
+}
+
+/**
+ * 書き換える前に `.paracode.json` の中身を読む。空のファイルは中身の無いものとして扱う。
+ * 読めない（構文エラー、最上位がオブジェクトでない）なら undefined を返す。書き換える側はそのとき
+ * 書かないこと。空から書き出すと、ファイルにあった他のプリセットや設定がすべて消える。
+ */
+export function paradisParsePresetFileForUpdate(text: string): IParadisPresetFileContent | undefined {
+	if (text.trim().length === 0) {
+		return {};
+	}
+	let parsed: unknown;
+	try {
+		parsed = parseJsonc<unknown>(text);
+	} catch {
+		return undefined;
+	}
+	return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as IParadisPresetFileContent : undefined;
+}
+
+/**
+ * 復元したターミナルへ貼り直すプリセット名の台帳の1件。キーはシェル統合の nonce。ターミナルの
+ * 番号（永続プロセスの ID）は PC の再起動や起こし直しで振り直され、無関係なターミナルに当たる。
+ * nonce は起こし直しをまたいでも変わらない。
+ */
+export interface IParadisPresetTitleEntry {
+	readonly nonce: string;
+	readonly name: string;
+}
+
+/** 台帳を読む。壊れた台帳と、番号をキーにしていた古い形の行は捨てる（名前が戻らないだけで済む）。 */
+export function paradisParsePresetTitles(raw: string | undefined): IParadisPresetTitleEntry[] {
+	try {
+		const parsed: unknown = raw ? JSON.parse(raw) : undefined;
+		return Array.isArray(parsed)
+			? parsed
+				.filter((entry): entry is IParadisPresetTitleEntry => !!entry && typeof entry.nonce === 'string' && entry.nonce.length > 0 && typeof entry.name === 'string')
+				.map(entry => ({ nonce: entry.nonce, name: entry.name }))
+			: [];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * 台帳に1件覚える。消えた端末の分を確実に掃除する手がない（リロードでは onDisposed を当てに
+ * できない）ので、件数で頭打ちにして古いものから捨てる。
+ */
+export function paradisRememberPresetTitleEntry(entries: readonly IParadisPresetTitleEntry[], nonce: string, name: string, max: number): IParadisPresetTitleEntry[] {
+	return [...entries.filter(entry => entry.nonce !== nonce), { nonce, name }].slice(-max);
+}
+

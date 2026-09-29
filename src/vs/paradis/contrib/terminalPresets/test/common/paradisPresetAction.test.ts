@@ -20,6 +20,9 @@ import {
 	paradisPresetAction,
 	paradisPresetCommandSignature,
 	paradisPresetFingerprint,
+	paradisParsePresetFileForUpdate,
+	paradisParsePresetTitles,
+	paradisRememberPresetTitleEntry,
 } from '../../common/paradisTerminalPresets.js';
 
 suite('ParadisPresetAction', () => {
@@ -113,4 +116,39 @@ suite('ParadisPresetAction', () => {
 			designMode: [true, true, false, false],
 		});
 	});
+
+	test('refuses to rewrite a .paracode.json it cannot read instead of starting from nothing', () => {
+		assert.deepStrictEqual({
+			empty: paradisParsePresetFileForUpdate('  \n'),
+			jsonc: paradisParsePresetFileForUpdate('{\n\t// memo\n\t"presets": [{ "name": "a", "commands": ["x"] },],\n\t"other": 1\n}'),
+			// 編集途中の構文エラー
+			broken: paradisParsePresetFileForUpdate('{ "presets": [{ "name": "a" '),
+			// 最上位がオブジェクトでない（書き戻すとキーが落ちる）
+			array: paradisParsePresetFileForUpdate('[]'),
+			nullValue: paradisParsePresetFileForUpdate('null'),
+		}, {
+			empty: {},
+			jsonc: { presets: [{ name: 'a', commands: ['x'] }], other: 1 },
+			broken: undefined,
+			array: undefined,
+			nullValue: undefined,
+		});
+	});
+
+	test('keys remembered preset names by the terminal nonce, not by the renumbered process id', () => {
+		const stored = JSON.stringify([{ id: 3, name: 'old by id' }, { nonce: 'n-1', name: 'Dev' }, { nonce: '', name: 'empty' }]);
+		const entries = paradisParsePresetTitles(stored);
+		assert.deepStrictEqual({
+			// 番号をキーにしていた古い行と空の nonce は捨てる
+			entries,
+			// 同じ nonce は上書き、上限を超えたら古いものから捨てる
+			remembered: paradisRememberPresetTitleEntry([...entries, { nonce: 'n-2', name: 'Test' }], 'n-1', 'Dev 2', 2),
+			broken: paradisParsePresetTitles('{not json'),
+		}, {
+			entries: [{ nonce: 'n-1', name: 'Dev' }],
+			remembered: [{ nonce: 'n-2', name: 'Test' }, { nonce: 'n-1', name: 'Dev 2' }],
+			broken: [],
+		});
+	});
 });
+
