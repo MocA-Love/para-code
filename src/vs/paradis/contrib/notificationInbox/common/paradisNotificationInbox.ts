@@ -111,6 +111,17 @@ export function paradisInboxPaneKey(token: string): string {
 	return sha.digest();
 }
 
+/**
+ * ある状態（再読み込みの前から続いているもの）の通知を、台帳にもう書いたか。そのペインのいちばん新しい記録が
+ * 同じ種類で、その状態になった後に書かれた（hook が同じ状態のまま時刻を書き直すこともあるので、まだ既読に
+ * なっていないものも含める）なら書き済み。台帳には鳴らさなかった通知も書くので、書き済みなら前のウィンドウが
+ * 判断を済ませている。前の完了のように、別の状態へ移ったときに既読になった古い記録は数えない。
+ */
+export function paradisInboxHasRecorded(entries: readonly IParadisInboxEntry[], paneKey: string, kind: ParadisInboxKind, changedAt: number): boolean {
+	const latest = entries.find(entry => entry.paneKey === paneKey);
+	return latest !== undefined && latest.kind === kind && (latest.at >= changedAt || !latest.read);
+}
+
 /** ペインの今の状態（台帳へ知らせる用）。`undefined` は待機中（通知の対象外の状態）。 */
 export interface IParadisInboxPaneStatus {
 	readonly paneKey: string;
@@ -137,6 +148,8 @@ export interface IParadisNotificationInboxService {
 	readonly _serviceBrand: undefined;
 	readonly onDidChange: Event<void>;
 	readonly snapshot: IParadisInboxSnapshot;
+	/** 台帳から今のスナップショットを取り直す（起動直後で手元の写しがまだ届いていないときに使う）。取れなければ手元の写し。 */
+	getLatestSnapshot(): Promise<IParadisInboxSnapshot>;
 	/** どこかのウィンドウ（メニューバーのアイコンを含む）が、あるペインへの移動を頼んだ。 */
 	readonly onDidRequestReveal: Event<IParadisInboxRevealRequest>;
 	/** メニューバーのアイコンが、このウィンドウで受信箱を開くよう頼んだ。 */
@@ -231,11 +244,17 @@ export function paradisInboxAttentionEntries(snapshot: IParadisInboxSnapshot, li
 const REDACTED = '***';
 
 /**
- * 値として伏せる文字。ASCII の記号・英数字だけに限る（引用符と `&;|` は区切りとして除く）。
+ * 値として伏せる文字。ASCII の記号・英数字だけに限る（引用符・バッククオートと `&;|` は区切りとして除く）。
  * 日本語の文は空白で区切られないので、「次の空白まで」を値にすると文の残りまで消えてしまう。
  */
-const VALUE = `[!#-%(-:<-{}~]+`;
+const VALUE = `[!#-%(-:<-_a-{}~]+`;
 const QUOTED_OR_VALUE = `("[^"]*"|'[^']*'|${VALUE})`;
+/**
+ * 項目名の後の値。ただし3桁までの数字のすぐ後に日本語などが続くもの（`パスワード: 8文字以上`・`トークン=3件`）は
+ * 数を書いた文なので伏せない。数字でない値は、後ろに日本語や句点が続いても（`password=hunter2で接続できました`）伏せる。
+ * 省略記号（…）で切れた数字は、切り詰めた値の断片なので伏せる。
+ */
+const QUOTED_OR_STANDALONE_VALUE = `("[^"]*"|'[^']*'|(?!\\d{1,3}[^\\x00-\\x7F\\u2026])${VALUE})`;
 
 /** 既知の形のトークンの接頭辞（切り詰めの境目で断片だけ残ったものを伏せるのにも使う）。 */
 const KNOWN_TOKEN_PREFIXES = `(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|sk-|sk_|pk_|rk_|AKIA|ASIA|xox[abprs]-|AIza|npm_|glpat-|hf_|eyJ)`;
@@ -253,8 +272,12 @@ const SECRET_PATTERNS: readonly [RegExp, string][] = [
 	[/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}/gi, `$1 ${REDACTED}`],
 	// 大文字の環境変数（STRIPE_SECRET_KEY=... / OPENAI_KEY=... / SENTRY_DSN=...）
 	[new RegExp(`\\b([A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASS(?:WORD)?|PWD|DSN|CREDENTIALS?))(\\s*=\\s*)${QUOTED_OR_VALUE}`, 'g'), `$1$2${REDACTED}`],
-	// api_key: ... / password=... / secret_key_base: ... など（右辺だけ伏せる）
-	[new RegExp(`\\b([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|secret|token|passw(?:or)?d|pwd|credentials?|authorization)[A-Za-z0-9_]*)(["']?\\s*[:=]\\s*)${QUOTED_OR_VALUE}`, 'gi'), `$1$2${REDACTED}`],
+	// api_key: ... / password=... / secret_key_base: ... など（右辺だけ伏せる）。全角のコロン・等号（\uFF1A \uFF1D）も区切りとして読む
+	// `max_tokens` などトークンの数（`tokens`）は秘密ではないので除く
+	[new RegExp(`\\b([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|secret|token(?!s\\b)|passw(?:or)?d|pwd|credentials?|authorization)[A-Za-z0-9_]*)(["']?\\s*[:=\\uFF1A\\uFF1D]\\s*)${QUOTED_OR_STANDALONE_VALUE}`, 'gi'), `$1$2${REDACTED}`],
+	// 日本語の項目名（パスワード：hunter2 / トークン=abc123）。値は ASCII だけなので「パスワード：必須」のような文は伏せない
+	// allow-any-unicode-next-line
+	[new RegExp(`(パスワード|パスフレーズ|暗証番号|トークン|シークレット|秘密鍵|API\\s?キー|アクセスキー)(\\s*[:=\\uFF1A\\uFF1D]\\s*)${QUOTED_OR_STANDALONE_VALUE}`, 'gi'), `$1$2${REDACTED}`],
 	// 空白区切りで値を渡す設定（aws configure set aws_secret_access_key <値>）
 	[new RegExp(`\\b([a-z0-9]+_(?:secret_access_key|session_token|secret_key|api_key|access_token))(\\s+)${QUOTED_OR_VALUE}`, 'gi'), `$1$2${REDACTED}`],
 	// --password xxx / --api-key=xxx などのコマンドライン引数（行頭か空白の直後のものだけ）

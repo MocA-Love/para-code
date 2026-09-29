@@ -26,6 +26,7 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { ILifecycleService, StartupKind } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
@@ -38,7 +39,7 @@ import { IParadisAgentPaneInsight, IParadisAgentPaneInsightSource } from '../../
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../../mobileRelay/common/paradisMobileRelay.js';
 // 台帳の窓口（registerSingleton）はここで確実に読み込む。受信箱の UI が無効でも記録は続ける。
 import '../../notificationInbox/electron-browser/paradisNotificationInboxService.js';
-import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING, ParadisInboxDelivery, paradisInboxPaneKey, paradisNotificationBody, paradisNotificationPreview, paradisPickNotificationMessage } from '../../notificationInbox/common/paradisNotificationInbox.js';
+import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING, ParadisInboxDelivery, paradisInboxHasRecorded, paradisInboxPaneKey, paradisNotificationBody, paradisNotificationPreview, paradisPickNotificationMessage } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { ParadisAgentStatusNotificationConsumer, ParadisAgentStatusNotificationTracker, ParadisAgentNotifyStatus } from './paradisAgentStatusNotificationTracker.js';
 
 /** {{event}} の読み上げ用ラベル（日本語）。 */
@@ -68,6 +69,15 @@ const FRESH_MESSAGE_WINDOW_MS = 60_000;
 const MESSAGE_TIMEOUT_MS = 1_500;
 const MESSAGE_RETRY_DELAY_MS = 700;
 const MESSAGE_RETRY_COUNT = 2;
+/** 遷移したペインを引けないとき、ターミナルの復元を待つ上限。 */
+const TERMINAL_RESTORE_TIMEOUT_MS = 10_000;
+/**
+ * ブランチ名（`.git/HEAD`）の読み取りを待つ上限。音・通知は読み取りの後に出るので、WSL の UNC パスや
+ * 切れかけの接続先で読み取りが詰まっても、通知ごと止めない。
+ */
+const BRANCH_READ_TIMEOUT_MS = 500;
+/** 再読み込みの前から続いている状態を知らせ済みか、台帳で確かめるのを待つ上限。 */
+const LEDGER_READ_TIMEOUT_MS = 1_000;
 
 /**
  * ペイン単位の 'review' / 'permission' 遷移を検知して通知をトリガーする workbench contribution。
@@ -98,6 +108,7 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@IParadisNotificationInboxService private readonly inboxService: IParadisNotificationInboxService,
+		@ILifecycleService lifecycleService: ILifecycleService,
 	) {
 		super();
 		this._register(toDisposable(() => this._lifetime.dispose(true)));
@@ -118,18 +129,38 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 			void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('resumeAivis').catch(() => { /* shared process 未起動時は無視 */ });
 		}));
 
-		const tracker = this._register(new ParadisAgentStatusNotificationTracker((token, status, since) => {
-			void this._handleTransition(token, status, since).catch(error => {
+		// 再読み込みの前から続いている状態は、前のウィンドウが通知したかもしれない。読み込み直した時刻を渡し、
+		// そういう状態は台帳で確かめてから鳴らす。
+		const reloadedAt = lifecycleService.startupKind === StartupKind.ReloadedWindow ? Date.now() - performance.now() : undefined;
+		const tracker = this._register(new ParadisAgentStatusNotificationTracker((token, status, since, carriedOverFrom) => {
+			void this._handleTransition(token, status, since, carriedOverFrom).catch(error => {
 				this.logService.warn('[ParadisNotifications] failed to handle status transition', error);
 			});
-		}));
+		}, undefined, reloadedAt));
 		this._register(new ParadisAgentStatusNotificationConsumer(snapshotService, tracker, error => {
 			this.logService.trace('[ParadisNotifications] poll failed', String(error));
 		}));
 	}
 
-	private async _handleTransition(token: string, status: ParadisAgentNotifyStatus, since: number | undefined): Promise<void> {
-		const instanceId = this.paneTokenService.getInstanceForToken(token);
+	private async _handleTransition(token: string, status: ParadisAgentNotifyStatus, since: number | undefined, carriedOverFrom: number | undefined): Promise<void> {
+		if (carriedOverFrom !== undefined) {
+			// 再読み込みの前から続いている状態。前のウィンドウが台帳へ書き済みなら、もう知らせてある（鳴らさなかった
+			// ものも台帳には書く）。書かれていなければ、確認の5秒や発言の取得を待つ間に再読み込みされたので、ここで知らせる。
+			// shared process が詰まっても通知を止めない。時間内に台帳を取れなければ、書かれていないものとして知らせる。
+			const snapshot = await raceTimeout(this.inboxService.getLatestSnapshot(), LEDGER_READ_TIMEOUT_MS);
+			if (this._lifetime.token.isCancellationRequested || (snapshot !== undefined && paradisInboxHasRecorded(snapshot.entries, paradisInboxPaneKey(token), status, carriedOverFrom))) {
+				return;
+			}
+		}
+		let instanceId = this.paneTokenService.getInstanceForToken(token);
+		if (instanceId === undefined) {
+			// 起動・再読み込みの直後は、ターミナルの復元が済むまでペインを引けない。復元を待って引き直す。
+			await raceTimeout(this.terminalService.whenConnected, TERMINAL_RESTORE_TIMEOUT_MS);
+			if (this._lifetime.token.isCancellationRequested) {
+				return;
+			}
+			instanceId = this.paneTokenService.getInstanceForToken(token);
+		}
 		if (instanceId === undefined) {
 			return; // ペインが別ウィンドウ or 終了済み
 		}
@@ -330,7 +361,11 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 	 * worktree のように `.git` がファイル (`gitdir: <path>`) の場合は参照先を辿る。
 	 * 解決できなければ undefined (呼び出し側でフォールバック)。
 	 */
-	private async _resolveBranch(root: URI): Promise<string | undefined> {
+	private _resolveBranch(root: URI): Promise<string | undefined> {
+		return raceTimeout(this._readBranch(root), BRANCH_READ_TIMEOUT_MS);
+	}
+
+	private async _readBranch(root: URI): Promise<string | undefined> {
 		try {
 			const dotGit = joinPath(root, '.git');
 			let headUri = joinPath(dotGit, 'HEAD');

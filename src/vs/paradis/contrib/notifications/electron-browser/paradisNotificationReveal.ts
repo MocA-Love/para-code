@@ -21,7 +21,7 @@ import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/par
 export interface IParadisNotificationRevealServices {
 	readonly hostService: Pick<IHostService, 'focus'>;
 	readonly terminalService: Pick<ITerminalService, 'getInstanceFromId' | 'focusInstance'>;
-	readonly workspaceSwitchService: Pick<IParadisWorkspaceSwitchService, 'activeStateKey' | 'switchToStateKey'>;
+	readonly workspaceSwitchService: Pick<IParadisWorkspaceSwitchService, 'activeStateKey' | 'pendingSwitchTargetKey' | 'switchToStateKey'>;
 }
 
 /** ターミナルが今どのウィンドウに描かれているか。まだ一度も描かれていなければメインウィンドウ。 */
@@ -44,7 +44,11 @@ export async function paradisRevealNotifiedPane(services: IParadisNotificationRe
 	const initialWindow = windowOf(terminalService.getInstanceFromId(instanceId));
 	await hostService.focus(initialWindow, { mode: FocusMode.Force });
 
-	if (stateKey !== undefined && stateKey !== workspaceSwitchService.activeStateKey) {
+	// 切り替えの最中は activeStateKey がまだ切り替え元を指しているので、行き先も見る（ペインが切り替え元に
+	// あるときに切り替えを省くと、進行中の切り替えが済んで別のスペースに着いてしまう）。切り替えは順番に
+	// 並ぶので、今の切り替えが済んでからペインのスペースへ戻る。
+	const pendingTarget = workspaceSwitchService.pendingSwitchTargetKey;
+	if (stateKey !== undefined && (stateKey !== workspaceSwitchService.activeStateKey || (pendingTarget !== undefined && pendingTarget !== stateKey))) {
 		await workspaceSwitchService.switchToStateKey(stateKey);
 	}
 

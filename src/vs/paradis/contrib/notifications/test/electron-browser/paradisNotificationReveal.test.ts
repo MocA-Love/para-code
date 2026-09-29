@@ -11,7 +11,7 @@ import { FocusMode } from '../../../../../platform/native/common/native.js';
 import { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisNotificationRevealServices, paradisRevealNotifiedPane } from '../../electron-browser/paradisNotificationReveal.js';
 
-function createServices(activeStateKey: string | undefined, instances: Map<number, ITerminalInstance>, calls: string[]): IParadisNotificationRevealServices {
+function createServices(activeStateKey: string | undefined, instances: Map<number, ITerminalInstance>, calls: string[], pendingSwitchTargetKey?: string): IParadisNotificationRevealServices {
 	return {
 		hostService: {
 			focus: async (targetWindow: Window, options?: { mode?: FocusMode }) => {
@@ -26,6 +26,7 @@ function createServices(activeStateKey: string | undefined, instances: Map<numbe
 		},
 		workspaceSwitchService: {
 			activeStateKey,
+			pendingSwitchTargetKey,
 			switchToStateKey: async (stateKey: string) => {
 				calls.push(`switch:${stateKey}`);
 			},
@@ -54,6 +55,21 @@ suite('ParadisNotificationReveal', () => {
 			'focus:main:force', 'focusInstance:7',
 			'focus:main:force', 'focusInstance:7',
 			'focus:main:force', 'switch:repo-b',
+		]);
+	});
+
+	test('switches back to the pane space when a switch away from it is in progress', async () => {
+		const calls: string[] = [];
+		const instances = new Map([[7, fakeInstance(7)]]);
+
+		// repo-a から repo-b へ切り替えている最中に、repo-a のペインの通知を押した
+		await paradisRevealNotifiedPane(createServices('repo-a', instances, calls, 'repo-b'), 'repo-a', 7);
+		// 行き先のスペースのペインなら、進行中の切り替えに任せる
+		await paradisRevealNotifiedPane(createServices('repo-a', instances, calls, 'repo-b'), 'repo-b', 7);
+
+		assert.deepStrictEqual(calls, [
+			'focus:main:force', 'switch:repo-a', 'focusInstance:7',
+			'focus:main:force', 'switch:repo-b', 'focusInstance:7',
 		]);
 	});
 });

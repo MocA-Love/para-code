@@ -60,6 +60,10 @@ export class ParadisAgentLiveModel extends Disposable {
 	private readonly _scheduler: RunOnceScheduler;
 	/** 端末の出力を覗くか。ウィンドウを開いている間だけ有効にする */
 	private _trackOutput = false;
+	/** 実体のある端末 (エージェントかどうかを問わない) のトークン */
+	private _livePaneTokens: ReadonlySet<string> = new Set();
+	/** 端末の復元が済んだか。済むまでは、まだ戻っていない端末を「無い」と言い切れない */
+	private _terminalsRestored = false;
 
 	constructor(
 		@ITerminalService private readonly terminalService: ITerminalService,
@@ -84,11 +88,27 @@ export class ParadisAgentLiveModel extends Disposable {
 		this._register(terminalInstanceService.onDidCreateInstance(() => this.schedule()));
 		this._register(this.terminalService.onDidDisposeInstance(() => this.schedule()));
 
+		this.terminalService.whenConnected.then(() => {
+			if (!this._store.isDisposed) {
+				this._terminalsRestored = true;
+				this.schedule();
+			}
+		});
+
 		this.recompute();
 	}
 
 	get entries(): readonly IParadisAgentLiveEntry[] {
 		return this._entries;
+	}
+
+	/**
+	 * 実体のある端末のトークン (エージェントの判定が付いていない端末も含む)。端末の復元が済むまでは
+	 * undefined。非表示の台帳から「もう無い端末」を外すときに使う (エージェントの判定は起動直後に
+	 * 遅れて揃うので、entries に無いことを「端末が無い」とみなしてはいけない)。
+	 */
+	get livePaneTokens(): ReadonlySet<string> | undefined {
+		return this._terminalsRestored ? this._livePaneTokens : undefined;
 	}
 
 	/**
@@ -140,6 +160,7 @@ export class ParadisAgentLiveModel extends Disposable {
 	private recompute(): void {
 		const now = Date.now();
 		const livePanes = paradisCollectLivePaneInstances(this.terminalService, this.terminalGroupService, this.paneTokenService);
+		this._livePaneTokens = new Set(livePanes.map(pane => pane.token));
 		const spaceCache = new Map<string, IParadisSpaceInfo | undefined>();
 		const entries: IParadisAgentLiveEntry[] = [];
 		const seenTokens = new Set<string>();

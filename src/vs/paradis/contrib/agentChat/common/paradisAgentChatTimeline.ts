@@ -148,6 +148,11 @@ export function paradisPendingCodexQuestion(messages: readonly IParadisAgentChat
 	const answered = new Set<string>();
 	for (let index = messages.length - 1; index >= 0; index--) {
 		const message = messages[index];
+		if (message.role === 'user' && message.kind === 'text') {
+			// 質問の後に利用者が発言している。質問に答えている間は発言できないので、質問はもう待っていない
+			// （Esc で中断すると結果が書かれないまま残るため、結果の有無だけで判断しない）。
+			return undefined;
+		}
 		if (message.kind === 'tool_result' && message.toolUseId !== undefined) {
 			answered.add(message.toolUseId);
 		} else if (message.kind === 'tool_use' && message.tool === 'request_user_input') {

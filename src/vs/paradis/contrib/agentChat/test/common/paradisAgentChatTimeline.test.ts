@@ -113,12 +113,15 @@ suite('paradisAgentChatTimeline', () => {
 			askedAgain: askedAgain.map(item => item.kind === 'questions' ? [item.group, item.answered] : item.kind),
 			codexPending: paradisPendingCodexQuestion([codexCall])?.toolUseId,
 			codexAnswered: paradisPendingCodexQuestion([codexCall, message(4, { role: 'tool', kind: 'tool_result', text: 'answer', toolUseId: 'call_1' })]),
+			// Esc で中断した質問は結果が書かれないが、その後の利用者の発言で待っていないと分かる
+			codexInterrupted: paradisPendingCodexQuestion([codexCall, message(4, { role: 'user', kind: 'text', text: 'continue' })]),
 		}, {
 			pendingTwin: ['liveg:1'],
 			answeredTwin: [['liveg:1', true]],
 			askedAgain: [['liveg:1', true], ['liveg:2', false]],
 			codexPending: 'call_1',
 			codexAnswered: undefined,
+			codexInterrupted: undefined,
 		});
 	});
 

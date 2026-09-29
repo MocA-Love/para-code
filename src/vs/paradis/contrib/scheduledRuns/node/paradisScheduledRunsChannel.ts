@@ -145,10 +145,19 @@ export function paradisScheduledRunDefinitionDigest(definition: IParadisSchedule
  * スクリプト・エージェント）だけ。鍵で守るにはキーチェーン等の置き場所が要り、shared process からは
  * まだ使えないため見送っている。
  */
-export function createParadisScheduledRunsFileStore(userDataPath: string): IParadisScheduledRunsStore {
+export function createParadisScheduledRunsFileStore(userDataPath: string, writeFileAtomic: (path: string, data: Buffer) => Promise<void> = paradisWriteFileAtomic): IParadisScheduledRunsStore {
 	const directory = join(userDataPath, 'paradis');
 	const file = join(directory, 'scheduledRuns.json');
 	const digestFile = join(directory, 'scheduledRuns.digest.json');
+	const digestsOf = (definitions: readonly IParadisScheduledRunDefinition[]): Record<string, string> => {
+		const digests: Record<string, string> = {};
+		for (const definition of definitions) {
+			digests[definition.id] = paradisScheduledRunDefinitionDigest(definition);
+		}
+		return digests;
+	};
+	// 今ディスクにある定義（読み込んだとき・前に書いたとき）の指紋。次に書くとき、指紋のファイルにこれも残す
+	let committedDigests: Record<string, string> = {};
 	const readText = async (path: string): Promise<string | undefined> => {
 		try {
 			return await fs.readFile(path, 'utf8');
@@ -176,21 +185,33 @@ export function createParadisScheduledRunsFileStore(userDataPath: string): IPara
 			} catch {
 				digests = {};
 			}
-			return {
-				...state,
-				definitions: state.definitions.map(definition => definition.enabled && digests[definition.id] !== paradisScheduledRunDefinitionDigest(definition)
-					? { ...definition, enabled: false, disabledReason: 'modifiedOutside' as const }
-					: definition),
+			const known = (id: string, digest: string) => {
+				const value = digests[id];
+				return value === digest || (Array.isArray(value) && value.includes(digest));
 			};
+			const definitions = state.definitions.map(definition => definition.enabled && !known(definition.id, paradisScheduledRunDefinitionDigest(definition))
+				? { ...definition, enabled: false, disabledReason: 'modifiedOutside' as const }
+				: definition);
+			committedDigests = digestsOf(definitions);
+			return { ...state, definitions };
 		},
 		async write(state) {
 			await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-			const digests: Record<string, string> = {};
-			for (const definition of state.definitions) {
-				digests[definition.id] = paradisScheduledRunDefinitionDigest(definition);
+			const next = digestsOf(state.definitions);
+			// 1. 今ディスクにある定義の指紋と新しい指紋の両方を書く。定義を書く前に落ちても、残っている古い定義は
+			//    古い指紋で通る（外で書き換えられたものとして無効に戻さない）
+			// 2. 定義を書く
+			// 3. 新しい指紋だけにする。古い指紋を残したままにすると、無効にした定義を外で `"enabled": true` に
+			//    戻しただけで、前の指紋に一致して通ってしまう
+			const both: Record<string, string | string[]> = {};
+			for (const id of new Set([...Object.keys(committedDigests), ...Object.keys(next)])) {
+				const values = [...new Set([committedDigests[id], next[id]].filter((value): value is string => value !== undefined))];
+				both[id] = values.length === 1 ? values[0] : values;
 			}
-			await paradisWriteFileAtomic(file, Buffer.from(JSON.stringify(state, undefined, '\t')));
-			await paradisWriteFileAtomic(digestFile, Buffer.from(JSON.stringify(digests)));
+			await writeFileAtomic(digestFile, Buffer.from(JSON.stringify(both)));
+			await writeFileAtomic(file, Buffer.from(JSON.stringify(state, undefined, '\t')));
+			committedDigests = next;
+			await writeFileAtomic(digestFile, Buffer.from(JSON.stringify(next)));
 		},
 	};
 }
