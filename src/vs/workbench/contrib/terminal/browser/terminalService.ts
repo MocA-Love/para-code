@@ -644,10 +644,10 @@ export class TerminalService extends Disposable implements ITerminalService {
 
 	private async _onBeforeShutdownAsync(reason: ShutdownReason): Promise<boolean> {
 		// PARA-PATCH: decide up front whether the processes should outlive this window (remote
-		// windows can keep them on the server). Must run before the early return below, which
-		// does not count Para Code-parked terminals.
+		// windows can keep them on the server). Must run before the early return below.
 		await paradisPrepareTerminalShutdown(reason);
-		if (this.instances.length === 0) {
+		// PARA-PATCH: terminals parked by Para Code (other spaces) still need their buffers persisted
+		if (this.instances.length === 0 && !(this._terminalGroupService.paradisParkedGroups ?? []).some(g => g.terminalInstances.length > 0) && paradisListParkedTerminalEditorInstances().length === 0) {
 			// No terminal instances, don't veto
 			return false;
 		}
