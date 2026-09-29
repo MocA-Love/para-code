@@ -18,6 +18,10 @@
 // SSH 先（vscode-remote:）のファイルは、同じサーバを**リモート側にも立てて**ポート転送で手元へ
 // 出す。転送が張れない環境では従来どおり webview のリソース URL ＋ service worker へ戻す。
 // ズームは Superset 同様に倍率 1.2^level（範囲 -3〜+5）で、CSS zoom を webview 内に適用する。
+//
+// 信頼していないワークスペース（制限モード）ではスクリプトを動かさない。配信サーバはワークスペースの
+// フォルダーごと載せるので、スクリプトが動くと、クローンしただけのリポジトリの HTML が `.env` などを
+// fetch して外へ送れてしまう。信頼したワークスペースでは従来どおり動かす（タスクや拡張機能と同じ線引き）。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -42,6 +46,7 @@ import { IRemoteAuthorityResolverService } from '../../../../platform/remote/com
 import { ITunnelService } from '../../../../platform/tunnel/common/tunnel.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
@@ -94,13 +99,17 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		@IRemoteAgentService private readonly _remoteAgentService: IRemoteAgentService,
 		@IRemoteAuthorityResolverService private readonly _remoteAuthorityResolverService: IRemoteAuthorityResolverService,
 		@ITunnelService private readonly _tunnelService: ITunnelService,
+		@IWorkspaceTrustManagementService private readonly _workspaceTrustManagementService: IWorkspaceTrustManagementService,
 	) {
 		super(PARADIS_HTML_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService);
 		this._remoteMounter = this._register(new ParadisRemotePreviewMounter(this._remoteAgentService, this._remoteAuthorityResolverService, this._tunnelService));
+		// 信頼の状態が変わったら、スクリプトの可否を反映するため描き直す。
+		this._register(this._workspaceTrustManagementService.onDidChangeTrust(() => this.requestRerender()));
 	}
 
+	/** 信頼していないワークスペースではスクリプトを動かさない（冒頭の説明を参照）。 */
 	protected override get allowScripts(): boolean {
-		return true;
+		return this._workspaceTrustManagementService.isWorkspaceTrusted();
 	}
 
 	/**

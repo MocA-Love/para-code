@@ -10,6 +10,7 @@ import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisHtmlPreviewServer, parseParadisPreviewPath } from '../../node/paradisHtmlPreviewServer.js';
 
@@ -192,6 +193,14 @@ suite('ParadisHtmlPreviewServer', () => {
 			strictEqual((await fetch(`${base}secret.txt`)).status, 404);
 			strictEqual((await fetch(`${base}assets/app.js`)).status, 404);
 			strictEqual((await fetch(base)).status, 404);
+		});
+
+		// 区切りで終わる root（`/`）に区切りを足して比べると `//` になり、全部断ってしまっていた。
+		(isWindows ? test.skip : test)('serves files when the mounted folder is the filesystem root', async () => {
+			const disposables = store.add(new DisposableStore());
+			const server = disposables.add(new ParadisHtmlPreviewServer());
+			const mounted = await server.mount('/');
+			strictEqual((await fetch(`http://127.0.0.1:${mounted.port}/${mounted.token}/etc/hosts`)).status, 200);
 		});
 
 		test('refuses requests that did not come through loopback', async () => {
