@@ -835,6 +835,12 @@ export class PtyService extends Disposable implements IPtyService {
 		for (const id of args.background ?? []) {
 			held.delete(id);
 		}
+		// Editor terminals never appear in the layout (their tabs restore through the editor), so a
+		// window naming them is accounting for them, not leaving them out. The ids are exact: a window
+		// that failed to take a held terminal back names the shell it started instead, not the held one.
+		for (const id of args.paradisEditorTerminals ?? []) {
+			held.delete(id);
+		}
 		return held.size === 0;
 	}
 

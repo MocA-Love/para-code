@@ -287,7 +287,9 @@ export class RemoteTerminalChannelClient implements IPtyHostController {
 		const args: ISetTerminalLayoutInfoArgs = {
 			workspaceId: workspace.id,
 			tabs: layout ? layout.tabs : [],
-			background: layout ? layout.background : null
+			background: layout ? layout.background : null,
+			// PARA-PATCH: editor terminals the window holds outside the panel layout, see PtyService#_paradisLayoutAccountsForHeldTerminals
+			paradisEditorTerminals: layout?.paradisEditorTerminals
 		};
 		return this._channel.call<void>(RemoteTerminalChannelRequest.SetTerminalLayoutInfo, args);
 	}

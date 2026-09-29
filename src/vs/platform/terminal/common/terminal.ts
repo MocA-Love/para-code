@@ -214,6 +214,8 @@ export type ITerminalTabLayoutInfoById = IRawTerminalTabLayoutInfo<number>;
 export interface IRawTerminalsLayoutInfo<T> {
 	tabs: IRawTerminalTabLayoutInfo<T>[];
 	background: T[] | null;
+	// PARA-PATCH: editor terminals (shown or parked) the window holds outside the panel layout; only ever sent, never returned
+	paradisEditorTerminals?: number[];
 }
 
 export interface IPtyHostAttachTarget {
