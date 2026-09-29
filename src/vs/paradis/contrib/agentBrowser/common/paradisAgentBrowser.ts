@@ -1012,7 +1012,8 @@ export interface IParadisMcpFixRequest {
 
 /**
  * 許可待ち・質問中のペインへ、送り主を確かめられない hook（tmux のサーバー配下や WSL の中など、ペインの
- * シェルの子孫に見えないもの）が届いても受け付けるイベント。どれも状態を working / review へ進める
+ * シェルの子孫に見えないもの）が届いても受け付けるイベント。受け付けるのは、その許可待ち・質問へ入れた
+ * hook 自体も確かめられなかったペインだけ（確かめられた hook で入った待ちを、確かめられない hook では解かない）。どれも状態を working / review へ進める
  * （または変えない）だけで、許可待ち・質問へは入れない: ツールの完了・失敗・拒否、次の依頼、ターンの終了。
  * 確かめられないまま解いたペインには、IDE 操作ツールの Enter を断る印を付ける（偽の hook で解いて
  * 許可ダイアログを Enter で承認させる経路は、引き続き塞ぐ）。
@@ -1028,6 +1029,15 @@ const PARADIS_AGENT_HOOK_RELEASE_EVENTS: ReadonlySet<string> = new Set([
 /** 送り主を確かめられなくても、許可待ち・質問中のペインで受け付けてよい hook か（{@link PARADIS_AGENT_HOOK_RELEASE_EVENTS}）。 */
 export function paradisIsAgentHookReleaseEvent(eventType: string): boolean {
 	return PARADIS_AGENT_HOOK_RELEASE_EVENTS.has(eventType);
+}
+
+/** その hook がペインを許可待ち・質問中へ入れるか（入れるときは送り主を確かめて記録する）。 */
+export function paradisAgentHookEntersWait(eventType: string, message: string | undefined, toolName: string | undefined): boolean {
+	if ((eventType === 'PreToolUse' || eventType === 'PermissionRequest') && toolName === 'AskUserQuestion') {
+		return true;
+	}
+	const normalized = paradisNormalizeAgentHookEvent(eventType, message);
+	return normalized === 'permission' || normalized === 'question';
 }
 
 /**

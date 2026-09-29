@@ -166,6 +166,24 @@ suite('ParadisAgentIdeToolProvider', () => {
 		assert.deepStrictEqual([pending.isError, unverifiable.isError, unverifiable.body.includes('leaves pressing Enter there to the user'), acknowledged.isError], [true, true, true, true]);
 	});
 
+	// 確かめられない hook で解けた待ちには、まだ許可の確認が出ているかもしれない。数字・矢印・Esc・貼り付けでも答えてしまう。
+	test('keys and text without Enter are refused after a release that cannot be verified, but not after one still pending', async () => {
+		const { provider, context, statuses, marks, calls } = setup();
+		statuses.set(TARGET, { status: 'review', changedAt: 2 });
+		marks.set(TARGET, 'unverifiable');
+		const escape = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'escape' }, undefined, context));
+		const typed = text(await provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: '1', press_enter: false }, undefined, context));
+		const refusedSends = ops(calls).filter(op => op !== 'resolveWriteTarget');
+		marks.set(TARGET, 'pending');
+		const pendingEscape = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'escape' }, undefined, context));
+		assert.deepStrictEqual({
+			refused: [escape.isError, typed.isError, escape.body.includes('does not send keys or text there')],
+			refusedSends,
+			pendingEscape: pendingEscape.isError,
+			sent: ops(calls).filter(op => op !== 'resolveWriteTarget'),
+		}, { refused: [true, true, true], refusedSends: [], pendingEscape: false, sent: ['sendKey:escape'] });
+	});
+
 	test('pasted text that looks like a prompt does not block its own Enter, but a prompt already on screen does', async () => {
 		const typed = setup();
 		const own = text(await typed.provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: 'Reply (y/n) when done', press_enter: true }, undefined, typed.context));
