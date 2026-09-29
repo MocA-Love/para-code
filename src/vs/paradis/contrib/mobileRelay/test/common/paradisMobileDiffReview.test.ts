@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_MOBILE_PC_CAPABILITIES } from '../../common/paradisMobileCompat.js';
-import { PARADIS_MOBILE_REVIEW_NOTES_CAPABILITY, PARADIS_MOBILE_REVIEW_STAGE_CAPABILITY, PARADIS_MOBILE_REVIEW_STORE_CAPABILITY, paradisBuildReviewNotesPrompt, paradisLocateReviewNoteLine, paradisStagedConsistently, paradisWithUntrackedFileStats, paradisMobileDiffIdentity, paradisMobileReviewState, paradisParseMobilePorcelainStatus, paradisParseNumstatZ, paradisWithMobileLineCounts } from '../../common/paradisMobileDiffReview.js';
+import { PARADIS_MOBILE_REVIEW_NOTES_CAPABILITY, PARADIS_MOBILE_REVIEW_STAGE_CAPABILITY, PARADIS_MOBILE_REVIEW_STORE_CAPABILITY, paradisBuildReviewNotesPrompt, paradisLocateReviewNoteLine, paradisStagedConsistently, paradisStagedContentDiffers, paradisWithUntrackedFileStats, paradisMobileDiffIdentity, paradisMobileReviewState, paradisParseMobilePorcelainStatus, paradisParseNumstatZ, paradisWithMobileLineCounts } from '../../common/paradisMobileDiffReview.js';
 
 suite('ParadisMobileDiffReview', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -125,5 +125,32 @@ suite('ParadisMobileDiffReview', () => {
 			paradisStagedConsistently(untracked, { x: 'A', y: ' ', path: 'n.ts' }),
 			paradisStagedConsistently({ x: 'M', y: 'M', path: 'm.ts' }, { x: 'M', y: ' ', path: 'm.ts' }),
 		], [true, false, false, true, false, false, false]);
+	});
+
+	// 確認していない中身を足したと言い切れるものだけ（足したものを戻す）。確かめられないものは言わない
+	test('tells that the staged content differs from the reviewed one only when it can be sure', () => {
+		const worktree = { x: ' ', y: 'M', path: 'a.ts', added: 3, removed: 1 };
+		const untracked = { x: '?', y: '?', path: 'n.ts', size: 4, mtime: 9 };
+		assert.deepStrictEqual({
+			same: paradisStagedContentDiffers(worktree, { x: 'M', y: ' ', path: 'a.ts', stagedAdded: 3, stagedRemoved: 1 }),
+			more: paradisStagedContentDiffers(worktree, { x: 'M', y: ' ', path: 'a.ts', stagedAdded: 4, stagedRemoved: 1 }),
+			// 足した後に作業ツリーがまた変わっても、ステージ側の行数で分かる
+			moreThenEdited: paradisStagedContentDiffers(worktree, { x: 'M', y: 'M', path: 'a.ts', stagedAdded: 4, stagedRemoved: 1, added: 1, removed: 0 }),
+			binary: paradisStagedContentDiffers({ x: ' ', y: 'M', path: 'b.png' }, { x: 'M', y: ' ', path: 'b.png' }),
+			untrackedSame: paradisStagedContentDiffers(untracked, { x: 'A', y: ' ', path: 'n.ts' }, { size: 4, mtime: 9 }),
+			untrackedResized: paradisStagedContentDiffers(untracked, { x: 'A', y: ' ', path: 'n.ts' }, { size: 5, mtime: 10 }),
+			// 足した後にまた書き換えられた未追跡のファイルは、足したときの中身を確かめられない
+			untrackedEditedAgain: paradisStagedContentDiffers(untracked, { x: 'A', y: 'M', path: 'n.ts' }, { size: 5, mtime: 10 }),
+			bothSides: paradisStagedContentDiffers({ x: 'M', y: 'M', path: 'm.ts', added: 1, removed: 0, stagedAdded: 1, stagedRemoved: 0 }, { x: 'M', y: ' ', path: 'm.ts', stagedAdded: 5, stagedRemoved: 0 }),
+		}, {
+			same: false,
+			more: true,
+			moreThenEdited: true,
+			binary: false,
+			untrackedSame: false,
+			untrackedResized: true,
+			untrackedEditedAgain: false,
+			bothSides: false,
+		});
 	});
 });

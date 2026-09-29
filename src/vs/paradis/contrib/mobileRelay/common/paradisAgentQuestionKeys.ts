@@ -190,14 +190,25 @@ export function paradisAgentApprovalKeySequence(agent: 'claude' | 'codex', choic
 }
 
 /**
- * Codex の承認の画面から、拒否のキーを選ぶ。`No, …` で始まる選択肢の行の末尾の `(esc)` / `(d)` / `(n)` を読む。
+ * 拒否の選択肢の行（`No, …` で始まり、行末に近道 `(esc)` / `(d)` / `(n)` がある）。行頭の枠（古い Codex の `▌` を含む）・選択の印・番号の後に
+ * `No` が来るものだけ（承認の画面の上に残る会話の文、例えば `No match (a)` を拾わない）。
+ */
+const DENY_OPTION_LINE = /^[\s│┃|▌]*(?:[❯›>▶]\s*)?(?:[1-9][.)]\s+)?No\b.*\((?<key>esc|[a-z])\)\s*[│┃|]?\s*$/;
+
+/**
+ * Codex の承認の画面から、拒否のキーを選ぶ。画面の下にある番号付きの選択肢の並びから `No, …` の行の近道を読む。
+ * 並びとして読めなければ、下から探して最初の拒否の選択肢の行（承認の画面は画面のいちばん下に出る）。
  * 画面が無い・読めないときは、以前からの `d`。
  */
 export function paradisCodexApprovalDenyKey(screen: string | undefined): string {
 	if (screen !== undefined) {
-		for (const line of screen.split('\n')) {
-			const match = /\bNo\b.*\((?<key>esc|[a-z])\)\s*$/.exec(line);
-			const key = match?.groups?.key;
+		const option = paradisParseApprovalOptions(screen)?.find(candidate => /^No\b/.test(candidate.label) && candidate.shortcut !== undefined);
+		const optionKey = option !== undefined ? paradisApprovalOptionKey('codex', option) : undefined;
+		if (optionKey !== undefined) {
+			return optionKey;
+		}
+		for (const line of screen.split('\n').reverse()) {
+			const key = DENY_OPTION_LINE.exec(line)?.groups?.key;
 			if (key !== undefined) {
 				return key === 'esc' ? '\u001b' : key;
 			}
