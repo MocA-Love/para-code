@@ -97,6 +97,37 @@ export function paradisMobileAgentSessionMatches(session: IParadisMobileAgentSes
 	return words.every(word => haystack.includes(word));
 }
 
+/**
+ * 「始めた」の記録がこれより古ければ、その再開は途中で止まった（ウィンドウや PC が落ちた）とみなす。再開は
+ * 準備を最長 60 秒待つので、それに一覧を引く・起動する時間を足しても十分に長い値にする。
+ */
+export const PARADIS_RESUME_STALE_START_MS = 5 * 60 * 1000;
+
+/**
+ * 同じ id の依頼が届いたときの扱い（台帳の記録 `previous` から決める）。
+ * - `run`: 実行する。記録が無い（初めての依頼）、ターミナルを開く前に失敗した、始めたままターミナルを開く前に
+ *   長く止まっている（ウィンドウや PC が途中で落ちた）もの
+ * - `pending`: 始めたが、まだターミナルを開いていない（別のウィンドウが進めている最中か、落ちてからまだ間が無い）。
+ *   `duplicate` を返すとスマホは預かりを消し、依頼が黙って消えるので、エラーで断って預かりのまま残させる
+ * - `duplicate`: 再開した、またはターミナルを開いた後に止まった（依頼がそこへ渡った可能性があるので二度実行しない）
+ * 同じ会話が PC で開いていれば、`run` でも呼び出し側が `running` で断る。
+ */
+export function paradisResumeRequestVerdict(previous: IParadisResumeLedgerEntry | undefined, now: number): 'run' | 'pending' | 'duplicate' {
+	if (previous === undefined) {
+		return 'run';
+	}
+	if (previous.terminalKey !== undefined) {
+		return 'duplicate';
+	}
+	if (previous.status === 'failed') {
+		return 'run';
+	}
+	if (previous.status === 'started') {
+		return now - previous.at >= PARADIS_RESUME_STALE_START_MS ? 'run' : 'pending';
+	}
+	return 'duplicate';
+}
+
 /** 台帳に入れる（同じ id の古い記録・期限を過ぎたもの・上限を超えたものを捨てる）。 */
 export function paradisRecordResumeRequest(ledger: readonly IParadisResumeLedgerEntry[], entry: IParadisResumeLedgerEntry, now: number): IParadisResumeLedgerEntry[] {
 	return [...ledger.filter(item => item.id !== entry.id && now - item.at < RESUME_LEDGER_TTL_MS), entry].slice(-RESUME_LEDGER_LIMIT);

@@ -11,7 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import type { IParadisResumeSession } from '../../../sessionResume/common/paradisSessionResume.js';
 import { PARADIS_AGENT_APPROVAL_OPTIONS_CAPABILITY } from '../../common/paradisAgentApprovalOptions.js';
 import { ParadisMobileCapability, PARADIS_MOBILE_PC_CAPABILITIES } from '../../common/paradisMobileCompat.js';
-import { PARADIS_AGENT_RESUME_CAPABILITY, PARADIS_AGENT_SESSION_KEY_PATTERN, paradisAgentSessionKey, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, paradisRecordResumeRequest, paradisResumedSessionOfCommand } from '../../common/paradisMobileAgentResume.js';
+import { PARADIS_AGENT_RESUME_CAPABILITY, PARADIS_AGENT_SESSION_KEY_PATTERN, paradisAgentSessionKey, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, PARADIS_RESUME_STALE_START_MS, paradisRecordResumeRequest, paradisResumedSessionOfCommand, paradisResumeRequestVerdict } from '../../common/paradisMobileAgentResume.js';
 
 suite('paradisMobileAgentResume (W2-29)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -103,5 +103,29 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 			replaced: added.filter(entry => entry.id === 'r499').map(entry => entry.status),
 			last: added.at(-1)?.id,
 		}, { length: 500, hasOld: false, first: 'r1', replaced: ['failed'], last: 'new' });
+	});
+
+	// 再開の途中で落ちて「始めた」が残った依頼は、しばらくしたらやり直せる。それまではエラーで断る（スマホは duplicate を
+	// 受けると預かりを消すので、duplicate は返さない）
+	test('runs a request again only when it never reached a terminal, and refuses one still in progress without saying duplicate', () => {
+		const now = 1_000_000_000;
+		const stale = now - PARADIS_RESUME_STALE_START_MS;
+		assert.deepStrictEqual({
+			none: paradisResumeRequestVerdict(undefined, now),
+			failed: paradisResumeRequestVerdict({ id: 'r', at: now, status: 'failed' }, now),
+			failedAfterTerminal: paradisResumeRequestVerdict({ id: 'r', at: stale, status: 'failed', terminalKey: 't' }, now),
+			startedJustNow: paradisResumeRequestVerdict({ id: 'r', at: stale + 1, status: 'started' }, now),
+			startedLongAgo: paradisResumeRequestVerdict({ id: 'r', at: stale, status: 'started' }, now),
+			startedWithTerminal: paradisResumeRequestVerdict({ id: 'r', at: now, status: 'started', terminalKey: 't' }, now),
+			resumed: paradisResumeRequestVerdict({ id: 'r', at: stale, status: 'resumed' }, now),
+		}, {
+			none: 'run',
+			failed: 'run',
+			failedAfterTerminal: 'duplicate',
+			startedJustNow: 'pending',
+			startedLongAgo: 'run',
+			startedWithTerminal: 'duplicate',
+			resumed: 'duplicate',
+		});
 	});
 });

@@ -43,7 +43,7 @@ import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSende
 import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { paradisCanPasteMultiline, paradisTerminalRunsAgent } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
-import { IParadisResumeLedgerEntry, PARADIS_AGENT_RESUME_PROMPT_LIMIT, PARADIS_AGENT_SESSION_KEY_PATTERN, PARADIS_AGENT_SESSIONS_PAGE_LIMIT, paradisAgentSessionKey, paradisClipAgentSessionText, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, paradisRecordResumeRequest, paradisResumedSessionOfCommand } from '../common/paradisMobileAgentResume.js';
+import { IParadisResumeLedgerEntry, PARADIS_AGENT_RESUME_PROMPT_LIMIT, PARADIS_AGENT_SESSION_KEY_PATTERN, PARADIS_AGENT_SESSIONS_PAGE_LIMIT, paradisAgentSessionKey, paradisClipAgentSessionText, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, paradisRecordResumeRequest, paradisResumedSessionOfCommand, paradisResumeRequestVerdict } from '../common/paradisMobileAgentResume.js';
 import { registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
 
 /** 再開の依頼の台帳（PC の再起動をまたいで同じ依頼を二度実行しないため）。 */
@@ -277,9 +277,14 @@ registerParadisMobileRequestHandler('scm', 'agentSessionResume', {
 			reply({ status: 'duplicate', message: 'この依頼は PC で処理している最中です' });
 			return undefined;
 		}
-		// 同じ依頼（スマホが預かって送り直したもの）は二度実行しない。ターミナルを開く前に失敗したものだけは、やり直せる。
+		// 同じ依頼（スマホが預かって送り直したもの）は二度実行しない。ターミナルを開く前に失敗した・止まったものだけは、やり直せる。
 		const previous = readLedger(tools.storageService).find(entry => entry.id === requestId);
-		if (previous !== undefined && !(previous.status === 'failed' && previous.terminalKey === undefined)) {
+		const verdict = paradisResumeRequestVerdict(previous, Date.now());
+		if (verdict === 'pending') {
+			// 別のウィンドウが進めている最中か、PC が落ちてから間が無い。エラーで断り、スマホに預かりのまま残させる
+			throw new Error('この依頼は PC で途中まで進んでいます。少し待ってからもう一度送ってください');
+		}
+		if (previous !== undefined && verdict === 'duplicate') {
 			reply({ status: 'duplicate', ...(previous.terminalKey !== undefined ? { terminalKey: previous.terminalKey } : {}), ...(previous.delivered !== undefined ? { delivered: previous.delivered } : {}) });
 			return undefined;
 		}
