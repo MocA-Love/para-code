@@ -818,7 +818,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				// 新 ID 空間の衝突で別の PTY へリダイレクトされ得る（この修正が塞いだ穴と同じもの）。
 				const instance = this.terminalInstanceService.createInstance({ attachPersistentProcess: { ...detail, findRevivedId: false } }, TerminalLocation.Editor);
 				await instance.processReady;
-				if (this._store.isDisposed || !paradisParkTerminalEditorInstance(instance, stateKey)) {
+				// 繋ぎ直しに失敗すると、upstream は黙って新しいシェルを起こす（`terminalProcessManager`）。
+				// `processReady` はそれでも成功するので、ID を確かめないと空のシェルをこのスペースへ
+				// 入れてしまう。元の PTY は取り戻せていないので、完走扱いにもしない。
+				if (this._store.isDisposed || instance.persistentProcessId !== detail.id || !paradisParkTerminalEditorInstance(instance, stateKey)) {
 					// 再接続に失敗した (persistentProcessId が確定しなかった) インスタンスは
 					// どの一覧にも属さないため、放置すると不可視のままリークする。
 					instance.dispose(TerminalExitReason.Shutdown);
