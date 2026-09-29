@@ -139,6 +139,31 @@ suite('paradisAgentQuestionKeySequence', () => {
 		});
 	});
 
+	// 承認の画面の上に残る会話の文（`No match (a)` など）を拒否の選択肢と取り違えない
+	test('reads the Codex deny key from the option lines, not from conversation text above the prompt', () => {
+		const withConversation = [
+			'• No match (a)',
+			'No results found (n)',
+			'Would you like to run the following command?',
+			'› 1. Yes, proceed (y)',
+			'  2. No, and tell Codex what to do differently (esc)',
+			'Press enter to confirm or esc to cancel',
+		].join('\n');
+		// 番号の並びとして読めない画面でも、下から探して選択肢の形の行だけを読む
+		const unnumbered = ['No match (a)', '  Yes (y)', '› No, provide feedback (n)'].join('\n');
+		assert.deepStrictEqual({
+			withConversation: paradisCodexApprovalDenyKey(withConversation),
+			unnumbered: paradisCodexApprovalDenyKey(unnumbered),
+			conversationOnly: paradisCodexApprovalDenyKey('I said No to that (a)'),
+			oldBar: paradisCodexApprovalDenyKey(['No match (a)', '▌ Yes (y)', '▌ No, provide feedback (n)'].join('\n')),
+		}, {
+			withConversation: '\u001b',
+			unnumbered: 'n',
+			conversationOnly: 'd',
+			oldBar: 'n',
+		});
+	});
+
 	// W2-21: 画面の番号付きの選択肢から選んだ回答。Claude は数字 1 文字だけ（Enter を付けると次の入力へ漏れる）。
 	// Codex は行末の近道を画面から読む。読めないものは空（呼び出し側が断る）。
 	test('answers a numbered approval option with the digit alone for Claude and the on-screen shortcut for Codex', () => {
