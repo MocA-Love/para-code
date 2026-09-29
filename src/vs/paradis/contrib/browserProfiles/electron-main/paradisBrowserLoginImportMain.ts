@@ -63,12 +63,18 @@ export interface IParadisSafeStoragePasswordProvider {
 	getPassword(service: string, account: string): Promise<Buffer | undefined>;
 }
 
+/**
+ * キーチェーンの確認ダイアログに答えてもらうのを待つ上限。放置されたら「許可されなかった」として終わらせ、
+ * 取り込みのために写した Cookie の DB を消す（待ち続けると写しが残り、取り込みも終わらない）。
+ */
+const KEYCHAIN_PROMPT_TIMEOUT_MS = 3 * 60_000;
+
 /** `/usr/bin/security` でキーチェーンから読む本番実装（macOS のみ）。書き込みはしない。 */
 class ParadisSecurityCommandPasswordProvider implements IParadisSafeStoragePasswordProvider {
 	getPassword(service: string, account: string): Promise<Buffer | undefined> {
 		return new Promise(resolve => {
 			// encoding を指定しないと stdout は Buffer。文字列化を避け、使い終わったら潰せるようにする。
-			execFile('/usr/bin/security', ['find-generic-password', '-w', '-s', service, '-a', account], { encoding: 'buffer' }, (error, stdout) => {
+			execFile('/usr/bin/security', ['find-generic-password', '-w', '-s', service, '-a', account], { encoding: 'buffer', timeout: KEYCHAIN_PROMPT_TIMEOUT_MS }, (error, stdout) => {
 				if (error || !Buffer.isBuffer(stdout)) {
 					resolve(undefined);
 					return;

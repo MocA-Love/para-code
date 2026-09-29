@@ -19,7 +19,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { DiskFileSystemProvider } from '../../../../../platform/files/node/diskFileSystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { IParadisSkillHost, paradisDedupeSkillListings, paradisInstallSkill, paradisListSkills, paradisPlanSkillRoots } from '../../common/paradisSkills.js';
+import { IParadisSkillHost, paradisDedupeSkillListings, paradisDeleteSkill, paradisInstallSkill, paradisListSkills, paradisPlanSkillRoots } from '../../common/paradisSkills.js';
 
 (isWindows ? suite.skip : suite)('paradisSkills on disk', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -87,5 +87,24 @@ import { IParadisSkillHost, paradisDedupeSkillListings, paradisInstallSkill, par
 			await fs.readFile(join(home, '.codex', 'skills', 'foo', 'SKILL.md'), 'utf8'),
 			(await fs.readdir(join(home, '.codex', 'skills'))).sort(),
 		], ['---\nname: new\n---\n', ['foo']]);
+	});
+
+	test('deleting a linked skill removes only the link, and replacing a linked skill keeps no backup link behind', async () => {
+		const { fileService, claude, codex } = services(store.add(new DisposableStore()));
+		await writeSkill(join(home, 'shared', 'foo'), 'shared');
+		await fs.mkdir(join(home, '.claude', 'skills'), { recursive: true });
+		await fs.symlink('../../shared/foo', join(home, '.claude', 'skills', 'foo'));
+		await writeSkill(join(home, '.claude', 'skills', 'bar'), 'new');
+		await fs.mkdir(join(home, '.codex', 'skills'), { recursive: true });
+		await fs.symlink('../../shared/foo', join(home, '.codex', 'skills', 'bar'));
+		const skills = (await paradisListSkills(fileService, claude)).skills;
+		await paradisDeleteSkill(fileService, skills.find(skill => skill.folderName === 'foo')!);
+		await paradisInstallSkill(fileService, skills.find(skill => skill.folderName === 'bar')!, codex, true);
+		assert.deepStrictEqual([
+			(await fs.readdir(join(home, '.claude', 'skills'))).sort(),
+			(await fs.readdir(join(home, '.codex', 'skills'))).sort(),
+			(await fs.lstat(join(home, '.codex', 'skills', 'bar'))).isSymbolicLink(),
+			await fs.readFile(join(home, 'shared', 'foo', 'SKILL.md'), 'utf8'),
+		], [['bar'], ['bar'], false, '---\nname: shared\n---\n']);
 	});
 });

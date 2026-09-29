@@ -38,6 +38,7 @@ import {
 	IParadisCcusageSessionRow,
 	PARADIS_CCUSAGE_CHANNEL,
 	PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS,
+	PARADIS_CCUSAGE_TIMEZONE_PATTERN,
 	ParadisCcusageProjects,
 	ParadisCcusageWarmLeasePayload,
 	ParadisCcusageWarmTarget,
@@ -426,7 +427,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		if (options.until && /^\d{8}$/.test(options.until)) {
 			args.push('--until', options.until);
 		}
-		if (options.timezone && /^[A-Za-z0-9_+\-/]+$/.test(options.timezone)) {
+		if (options.timezone && PARADIS_CCUSAGE_TIMEZONE_PATTERN.test(options.timezone)) {
 			args.push('--timezone', options.timezone);
 		}
 		return args;
@@ -729,9 +730,13 @@ function parseWarmTarget(value: unknown): ParadisCcusageWarmTarget {
 		throw new Error('Invalid warm lease target');
 	}
 	const kind = value.kind;
-	const optionKeys = kind === 'blocks'
-		? (Object.prototype.hasOwnProperty.call(value.options, 'executablePath') ? ['executablePath'] : [])
-		: (Object.prototype.hasOwnProperty.call(value.options, 'executablePath') ? ['executablePath', 'since'] : ['since']);
+	const rawOptions = value.options;
+	const has = (key: string) => Object.prototype.hasOwnProperty.call(rawOptions, key);
+	const optionKeys = [
+		...(has('executablePath') ? ['executablePath'] : []),
+		...(kind === 'blocks' ? [] : ['since']),
+		...(has('timezone') ? ['timezone'] : []),
+	];
 	if (!isExactPlainRecord(value.options, optionKeys)) {
 		throw new Error('Invalid warm lease target options');
 	}
@@ -750,11 +755,16 @@ function parseWarmTarget(value: unknown): ParadisCcusageWarmTarget {
 	} else if (typeof since !== 'string' || !/^\d{8}$/.test(since)) {
 		throw new Error('Invalid warm lease since date');
 	}
+	const timezone = value.options.timezone;
+	if (timezone !== undefined && (typeof timezone !== 'string' || !PARADIS_CCUSAGE_TIMEZONE_PATTERN.test(timezone))) {
+		throw new Error('Invalid warm lease timezone');
+	}
 	return {
 		kind,
 		options: {
 			...(executablePath === undefined ? {} : { executablePath }),
 			...(since === undefined ? {} : { since }),
+			...(timezone === undefined ? {} : { timezone }),
 		},
 	};
 }

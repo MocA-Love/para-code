@@ -13,7 +13,7 @@ import type { IConfigurationOverrides, IConfigurationService } from '../../../..
 import { paradisConfigureBrowserDownloadsWithPath } from '../../electron-main/paradisBrowserDownloadsCore.js';
 
 type WillDownloadListener = (event: Event, item: DownloadItem, webContents: WebContents) => void;
-type DownloadItemFake = Pick<DownloadItem, 'getFilename' | 'setSavePath'>;
+type DownloadItemFake = Pick<DownloadItem, 'getFilename' | 'setSavePath'> & { once(event: 'done', listener: () => void): unknown };
 
 suite('ParadisBrowserDownloads', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -58,6 +58,7 @@ suite('ParadisBrowserDownloads', () => {
 			const screenshotItem = {
 				getFilename: () => 'screenshot.png',
 				setSavePath: candidate => savePaths.push(candidate),
+				once: () => undefined,
 			} satisfies DownloadItemFake;
 			listener(undefined as never, screenshotItem as unknown as DownloadItem, undefined as never);
 			fs.writeFileSync(join(targetDirectory, 'report.txt'), 'existing');
@@ -65,6 +66,7 @@ suite('ParadisBrowserDownloads', () => {
 			const traversalItem = {
 				getFilename: () => join('..', '..', 'report.txt'),
 				setSavePath: candidate => savePaths.push(candidate),
+				once: () => undefined,
 			} satisfies DownloadItemFake;
 			listener(undefined as never, traversalItem as unknown as DownloadItem, undefined as never);
 
@@ -72,6 +74,46 @@ suite('ParadisBrowserDownloads', () => {
 			assert.deepStrictEqual(savePaths, [
 				join(targetDirectory, 'screenshot.png'),
 				join(targetDirectory, 'report (2).txt'),
+			]);
+		} finally {
+			fs.rmSync(temporaryRoot, { recursive: true, force: true });
+		}
+	});
+
+	test('gives two downloads of the same name that run at the same time different paths, and frees a path once its download is done', () => {
+		const temporaryRoot = fs.mkdtempSync(join(os.tmpdir(), 'paradis-browser-downloads-'));
+		let listener: WillDownloadListener | undefined;
+		const session = {
+			on: (_event: 'will-download', candidate: WillDownloadListener) => {
+				listener = candidate;
+			},
+		} satisfies { on(event: 'will-download', listener: WillDownloadListener): void };
+		const getValue: IConfigurationService['getValue'] = <T>(...args: [sectionOrOverrides?: string | IConfigurationOverrides, overrides?: IConfigurationOverrides]): T => {
+			const key = typeof args[0] === 'string' ? args[0] : undefined;
+			return (key === 'paradis.browser.downloads.path' ? temporaryRoot : undefined) as T;
+		};
+		try {
+			paradisConfigureBrowserDownloadsWithPath(session as unknown as Session, { getValue } as IConfigurationService, () => temporaryRoot);
+			const savePaths: string[] = [];
+			const finished: (() => void)[] = [];
+			const start = () => {
+				const item = {
+					getFilename: () => 'invoice.pdf',
+					setSavePath: candidate => savePaths.push(candidate),
+					once: (_event: 'done', done: () => void) => { finished.push(done); },
+				} satisfies DownloadItemFake;
+				listener!(undefined as never, item as unknown as DownloadItem, undefined as never);
+			};
+			start();
+			start();
+			// 1件目が取り消されて（ファイルは残らず）終わったら、その名前はまた使える
+			finished[0]();
+			start();
+			finished.slice(1).forEach(done => done());
+			assert.deepStrictEqual(savePaths, [
+				join(temporaryRoot, 'invoice.pdf'),
+				join(temporaryRoot, 'invoice (1).pdf'),
+				join(temporaryRoot, 'invoice.pdf'),
 			]);
 		} finally {
 			fs.rmSync(temporaryRoot, { recursive: true, force: true });
@@ -103,6 +145,7 @@ suite('ParadisBrowserDownloads', () => {
 				throw new Error('disabled downloads must not inspect the filename');
 			},
 			setSavePath: () => savePathCalls++,
+			once: () => undefined,
 		} satisfies DownloadItemFake;
 		listener(undefined as never, item as unknown as DownloadItem, undefined as never);
 

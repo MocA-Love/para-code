@@ -27,6 +27,9 @@ export interface IParadisActivityWorker {
 	terminate(): Promise<number>;
 }
 
+/** worker が時間内に答えなかった（worker は止めた）。 */
+export class ParadisActivityWorkerTimeoutError extends Error { }
+
 interface IPending {
 	readonly resolve: (value: unknown) => void;
 	readonly reject: (error: Error) => void;
@@ -55,7 +58,11 @@ export class ParadisAgentActivityWorkerHost extends Disposable {
 		return this.worker !== undefined;
 	}
 
-	request<T>(request: ParadisActivityWorkerRequest): Promise<T> {
+	/**
+	 * worker に頼む。`timeoutMs` を渡すと、その間に答えが無ければ worker を止めて（ほかの待ちも含めて）失敗させる。
+	 * 固まった依頼が後ろに並んだ依頼をいつまでも待たせないため（次の依頼で起動し直す）。
+	 */
+	request<T>(request: ParadisActivityWorkerRequest, timeoutMs?: number): Promise<T> {
 		if (this._store.isDisposed) {
 			return Promise.reject(new Error('The agent activity worker has been disposed.'));
 		}
@@ -63,12 +70,30 @@ export class ParadisAgentActivityWorkerHost extends Disposable {
 		const worker = this.ensureWorker();
 		const id = this.nextId++;
 		return new Promise<T>((resolve, reject) => {
-			this.pending.set(id, { resolve: value => resolve(value as T), reject });
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const settle = () => {
+				if (timer !== undefined) {
+					clearTimeout(timer);
+					timer = undefined;
+				}
+			};
+			this.pending.set(id, {
+				resolve: value => { settle(); resolve(value as T); },
+				reject: error => { settle(); reject(error); },
+			});
+			if (timeoutMs !== undefined) {
+				timer = setTimeout(() => {
+					timer = undefined;
+					if (this.pending.has(id) && this.worker === worker) {
+						this.stop(new ParadisActivityWorkerTimeoutError(`The agent activity worker did not answer '${request.op}' within ${timeoutMs}ms.`));
+					}
+				}, timeoutMs);
+			}
 			try {
 				worker.postMessage({ id, request });
 			} catch (error) {
+				this.pending.get(id)?.reject(error instanceof Error ? error : new Error(String(error)));
 				this.pending.delete(id);
-				reject(error instanceof Error ? error : new Error(String(error)));
 				this.scheduleIdle();
 			}
 		});

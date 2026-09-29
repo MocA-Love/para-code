@@ -77,6 +77,22 @@ export function paradisKillChildProcessTree(child: cp.ChildProcess, onError?: (e
 	}
 }
 
+/**
+ * POSIX で自分のプロセスグループで起こした子が終わった瞬間に、グループに残った孫を止める。
+ * 子の `exit` の中で呼ぶこと。後から（時間が経ってから）呼ぶと、空になったグループの番号が別のプロセスの
+ * グループに使い回されている恐れがある（孫が残っている間は、その番号は使い回されない）。
+ */
+export function paradisKillExitedProcessGroup(child: cp.ChildProcess, platform: NodeJS.Platform = process.platform, groupKill: (groupId: number, signal: NodeJS.Signals) => void = (groupId, signal) => process.kill(-groupId, signal)): void {
+	if (platform === 'win32' || typeof child.pid !== 'number') {
+		return;
+	}
+	try {
+		groupKill(child.pid, 'SIGTERM');
+	} catch {
+		// グループがもう空（ESRCH）。止めるものは無い。
+	}
+}
+
 export interface IParadisChildProcessTreeTerminationOptions {
 	readonly platform?: NodeJS.Platform;
 	/** POSIX: 子を自分のプロセスグループで起こした（spawn の `detached`）。グループごと止める。 */

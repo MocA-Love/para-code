@@ -21,7 +21,7 @@ import { homedir } from 'os';
 import { delimiter, isAbsolute, join } from '../../base/common/path.js';
 import { findExecutable } from '../../base/node/processes.js';
 import { paradisWrapWindowsScriptShim } from '../common/paradisWindowsScriptShim.js';
-import { paradisKillChildProcessTree } from './paradisKillChildProcess.js';
+import { paradisKillChildProcessTree, paradisKillExitedProcessGroup } from './paradisKillChildProcess.js';
 
 export type ParadisAgentCliName = 'claude' | 'codex' | 'ccusage';
 
@@ -179,7 +179,8 @@ export function paradisRunAgentCli(command: string, args: readonly string[], opt
 		const maxBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 		let child: cp.ChildProcessWithoutNullStreams;
 		try {
-			child = paradisSpawnAgentCli(command, args, { env: options.env, cwd: options.cwd });
+			// 自分のプロセスグループで起こし、時間切れのときはグループごと止める（CLI が起こした子まで残さない）。
+			child = paradisSpawnAgentCli(command, args, { env: options.env, cwd: options.cwd, processGroup: true });
 		} catch (error) {
 			reject(error);
 			return;
@@ -202,7 +203,7 @@ export function paradisRunAgentCli(command: string, args: readonly string[], opt
 			resolve({ stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), exitCode });
 		};
 		const timer = setTimeout(() => {
-			paradisKillChildProcessTree(child);
+			paradisKillChildProcessTree(child, undefined, { processGroup: true });
 			finish(new Error(`${command} timed out after ${options.timeoutMs}ms`), null);
 		}, options.timeoutMs);
 		child.stdout.on('data', (chunk: Buffer) => {
@@ -218,6 +219,8 @@ export function paradisRunAgentCli(command: string, args: readonly string[], opt
 			}
 		});
 		child.on('error', error => finish(error, null));
+		// CLI が終わった時点で、グループに残した子（裏で起こしたものなど）も止める。
+		child.on('exit', () => paradisKillExitedProcessGroup(child));
 		child.on('close', code => finish(undefined, code));
 		// 子が先に終わると stdin への書き込みは EPIPE になる。そのときは close の結果で判断する
 		child.stdin.on('error', () => { /* handled by close */ });

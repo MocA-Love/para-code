@@ -363,7 +363,9 @@ export async function paradisDeleteSkill(fileService: IFileService, skill: IPara
 		throw new Error(localize('paradis.skills.changed', "表示した後にスキルのフォルダが変わりました。一覧を読み直してから操作してください。"));
 	}
 	const useTrash = fileService.hasCapability(skill.uri, FileSystemProviderCapabilities.Trash);
-	await fileService.del(skill.uri, { recursive: !skill.isSymbolicLink, useTrash });
+	// リンクも recursive で消す。recursive を外すと FileService がリンク先の中身を見て「空でないフォルダ」と
+	// 断る。ディスクのプロバイダはリンクをたどらず、リンクそのものだけを消す（ごみ箱もリンクだけを移す）。
+	await fileService.del(skill.uri, { recursive: true, useTrash });
 }
 
 /** ごみ箱へ移すか（確認の文言に使う）。 */
@@ -489,8 +491,8 @@ export async function paradisInstallSkill(fileService: IFileService, skill: IPar
 		await fileService.del(staging, { recursive: true }).catch(() => undefined);
 	}
 	if (movedAway) {
-		const current = await fileService.resolve(backup).catch(() => undefined);
-		await fileService.del(backup, { recursive: !current?.isSymbolicLink, useTrash: fileService.hasCapability(backup, FileSystemProviderCapabilities.Trash) }).catch(() => undefined);
+		// 退避がリンクでも recursive で消す（リンク先には触らず、リンクだけが消える。paradisDeleteSkill と同じ）
+		await fileService.del(backup, { recursive: true, useTrash: fileService.hasCapability(backup, FileSystemProviderCapabilities.Trash) }).catch(() => undefined);
 	}
 	return destination;
 }

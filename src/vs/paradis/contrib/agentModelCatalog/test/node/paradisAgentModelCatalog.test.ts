@@ -14,7 +14,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisRunAgentCliOptions } from '../../../../node/paradisAgentCli.js';
 import { IParadisClaudeEffortSettings, PARADIS_CLAUDE_MODEL_LIST_ARGS, PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG } from '../../common/paradisAgentModelCatalog.js';
-import { IParadisAgentModelCatalogBackend, ParadisAgentModelCatalogService, paradisClaudeConfigDirFor, paradisProbeClaudeModels, paradisWithPrivateWorkDir } from '../../node/paradisAgentModelCatalog.js';
+import { IParadisAgentModelCatalogBackend, ParadisAgentModelCatalogService, ParadisModelListUnsupportedError, paradisClaudeConfigDirFor, paradisProbeClaudeModels, paradisWithPrivateWorkDir } from '../../node/paradisAgentModelCatalog.js';
 
 suite('ParadisAgentModelCatalogService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -25,6 +25,7 @@ suite('ParadisAgentModelCatalogService', () => {
 			versions: { claude: '2.1.283 (Claude Code)', codex: 'codex-cli 0.155.1' } as Record<string, string | undefined>,
 			installed: new Set(['claude', 'codex']),
 			failProbe: false,
+			unsupported: false,
 			probes: [] as string[],
 			cache: {} as Record<string, unknown>,
 			claudeSettings: {} as IParadisClaudeEffortSettings,
@@ -34,6 +35,9 @@ suite('ParadisAgentModelCatalogService', () => {
 			version: async cli => state.versions[cli.command.slice('/bin/'.length)],
 			probe: async (agentId, cli) => {
 				state.probes.push(`${agentId}@${state.versions[agentId]}`);
+				if (state.unsupported) {
+					throw new ParadisModelListUnsupportedError('unknown option');
+				}
 				if (state.failProbe) {
 					throw new Error('boom');
 				}
@@ -72,6 +76,30 @@ suite('ParadisAgentModelCatalogService', () => {
 			upgraded: ['claude:claude-model-1', 'codex:codex-model-3'],
 			failed: ['claude:claude-model-1', 'codex:codex-model-3'],
 			probes: ['claude@2.1.283 (Claude Code)', 'codex@codex-cli 0.155.1', 'codex@codex-cli 0.157.1', 'claude@2.1.290 (Claude Code)'],
+		});
+	});
+
+	test('一覧を返す仕組みが無い版には1時間、ほかの理由で取れなかった版には5分は聞き直さない。版が変われば聞き直す', async () => {
+		const { state, backend } = setup();
+		state.installed.delete('codex');
+		state.unsupported = true;
+		const service = new ParadisAgentModelCatalogService(backend, new NullLogService());
+		const first = await service.getCatalogs();
+		state.now += 30 * 60 * 1000;
+		await service.getCatalogs();
+		state.unsupported = false;
+		state.failProbe = true;
+		state.versions.claude = '2.1.290 (Claude Code)';
+		state.now += 2 * 60 * 1000;
+		await service.getCatalogs();
+		state.now += 2 * 60 * 1000;
+		await service.getCatalogs();
+		state.now += 4 * 60 * 1000;
+		await service.getCatalogs();
+		assert.deepStrictEqual({ first: ids(first), probes: state.probes }, {
+			first: [],
+			// 1回目（仕組みが無い）→ 30分後は聞かない → 版が変わって聞く（一時的な失敗）→ 2分後は聞かない → 6分後に聞く
+			probes: ['claude@2.1.283 (Claude Code)', 'claude@2.1.290 (Claude Code)', 'claude@2.1.290 (Claude Code)'],
 		});
 	});
 
@@ -137,6 +165,11 @@ suite('ParadisAgentModelCatalogService', () => {
 				{ args: PARADIS_CLAUDE_MODEL_LIST_ARGS.filter(arg => arg !== PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG), cwd: '/work' },
 			],
 		});
+	});
+
+	test('一覧の取り方のオプションを知らない版は、仕組みが無いと知らせる', async () => {
+		const failure = await paradisProbeClaudeModels({ command: '/bin/claude', env: {} }, '/work', async () => ({ stdout: '', stderr: `error: unknown option '--input-format'`, exitCode: 1 })).then(() => undefined, error => error);
+		assert.deepStrictEqual(failure instanceof ParadisModelListUnsupportedError, true);
 	});
 
 	test('ほかの理由で一覧が空なら取り直さない（フラグを外すのは、そのフラグで断られたときだけ）', async () => {

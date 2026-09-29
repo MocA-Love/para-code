@@ -122,6 +122,10 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	private data: IParadisCcusageDashboardData | undefined;
 	private lastError: string | undefined;
 	private loading = false;
+	/** 今の読み込みがキャッシュを使わずに取り直しているか。 */
+	private loadingBypassesCache = false;
+	/** 読み込み中に「キャッシュを使わずに更新」が押された。終わったらもう一度取り直す。 */
+	private pendingBypassRefresh = false;
 	private lastRenderedWidth = 0;
 	private lastTooltipSignature: string | undefined;
 	/** ホストから layout() で渡された幅。DOM を実測できない場面のチャート幅に使う。 */
@@ -415,10 +419,19 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	}
 
 	async refresh(bypassCache = false): Promise<void> {
-		if (this.loading || !this.body) {
+		if (this.loading) {
+			// 初回の遅い集計中に更新ボタンが押されたら、捨てずに覚えておき、終わってから取り直す
+			// （今の読み込みはキャッシュを使っているかもしれず、そのまま古い結果を見せてしまう）。
+			if (bypassCache && !this.loadingBypassesCache) {
+				this.pendingBypassRefresh = true;
+			}
+			return;
+		}
+		if (!this.body) {
 			return;
 		}
 		this.loading = true;
+		this.loadingBypassesCache = bypassCache;
 		this.lastError = undefined;
 		this.refreshIcon?.classList.add('spin');
 		if (this.data) {
@@ -437,9 +450,14 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			this.lastError = error instanceof Error ? error.message : String(error);
 		} finally {
 			this.loading = false;
+			this.loadingBypassesCache = false;
 			this.refreshIcon?.classList.remove('spin');
 			this.body.classList.remove('stale');
 			this.renderBody();
+		}
+		if (this.pendingBypassRefresh && !this._store.isDisposed) {
+			this.pendingBypassRefresh = false;
+			await this.refresh(true);
 		}
 	}
 
