@@ -33,6 +33,31 @@ suite('ParadisAgentStatusNotificationTracker', () => {
 		assert.deepStrictEqual(fixture.notifications, [{ token: 'pane-a', status: 'review' }]);
 	});
 
+	test('after a window reload, keeps states that began before the reload as the baseline without notifying again', () => {
+		const fixture = createFixture(100);
+		fixture.tracker.accept([
+			{ token: 'old-review', status: 'review', changedAt: 50 },
+			{ token: 'old-permission', status: 'permission', changedAt: 60 },
+			{ token: 'new-review', status: 'review', changedAt: 150 },
+		]);
+		fixture.scheduler.advanceBy(5_000);
+		fixture.tracker.accept([
+			{ token: 'old-review', status: 'working', changedAt: 200 },
+			{ token: 'old-permission', status: 'permission', changedAt: 60 },
+			{ token: 'new-review', status: 'review', changedAt: 150 },
+		]);
+		fixture.tracker.accept([
+			{ token: 'old-review', status: 'review', changedAt: 300 },
+			{ token: 'old-permission', status: 'permission', changedAt: 60 },
+			{ token: 'new-review', status: 'review', changedAt: 150 },
+		]);
+
+		assert.deepStrictEqual(fixture.notifications, [
+			{ token: 'new-review', status: 'review' },
+			{ token: 'old-review', status: 'review' },
+		]);
+	});
+
 	test('notifies a transition from working to review immediately', () => {
 		const fixture = createFixture();
 		fixture.tracker.accept([status('pane-a', 'working')]);
@@ -135,7 +160,7 @@ suite('ParadisAgentStatusNotificationTracker', () => {
 		assert.strictEqual(errors.length, 1);
 	});
 
-	function createFixture(): {
+	function createFixture(reloadedAt?: number): {
 		readonly scheduler: TestNotificationScheduler;
 		readonly tracker: ParadisAgentStatusNotificationTracker;
 		readonly notifications: { token: string; status: ParadisAgentNotifyStatus }[];
@@ -145,6 +170,7 @@ suite('ParadisAgentStatusNotificationTracker', () => {
 		const tracker = store.add(new ParadisAgentStatusNotificationTracker(
 			(token, notifyStatus) => notifications.push({ token, status: notifyStatus }),
 			scheduler,
+			reloadedAt,
 		));
 		return { scheduler, tracker, notifications };
 	}

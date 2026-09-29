@@ -32,11 +32,19 @@ export class ParadisAgentStatusNotificationTracker extends Disposable {
 	private readonly _previousChangedAt = new Map<string, number>();
 	private readonly _pendingActionTimers = this._register(new DisposableMap<string>());
 	private _disposed = false;
+	/** 最初のスナップショットを受け取ったか。 */
+	private _primed = false;
 
 	constructor(
 		/** `since` は遷移の直前の状態に入った時刻（分からなければ undefined）。 */
 		private readonly _notify: (token: string, status: ParadisAgentNotifyStatus, since?: number) => void,
 		private readonly _scheduler: IParadisAgentStatusNotificationScheduler = defaultScheduler,
+		/**
+		 * ウィンドウを再読み込みしたときの、読み込み直した時刻。最初のスナップショットのうち、この時刻より前に
+		 * 今の状態になったものは、読み込み直す前のウィンドウが通知済みなので、基準として覚えるだけにする
+		 * （鳴らし直さない）。再読み込みでなければ undefined（最初のスナップショットも通知する）。
+		 */
+		private readonly _reloadedAt?: number,
 	) {
 		super();
 	}
@@ -46,6 +54,8 @@ export class ParadisAgentStatusNotificationTracker extends Disposable {
 			return;
 		}
 		const seenTokens = new Set<string>();
+		const first = !this._primed;
+		this._primed = true;
 		for (const paneStatus of statuses) {
 			seenTokens.add(paneStatus.token);
 			const previous = this._previousStatus.get(paneStatus.token);
@@ -57,6 +67,10 @@ export class ParadisAgentStatusNotificationTracker extends Disposable {
 				continue;
 			}
 			this._previousChangedAt.set(paneStatus.token, paneStatus.changedAt);
+			if (first && this._reloadedAt !== undefined && paneStatus.changedAt < this._reloadedAt) {
+				// 再読み込みの前からこの状態だった。前のウィンドウが通知済みなので、二重に鳴らさない。
+				continue;
+			}
 
 			this._pendingActionTimers.deleteAndDispose(paneStatus.token);
 			if (paneStatus.status === 'review') {
