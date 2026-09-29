@@ -292,6 +292,19 @@ suite('ParadisCcusageService', () => {
 		service.dispose();
 	});
 
+	// SSH 先へは手元のタイムゾーンが添えられ、その日付の区切りで数えさせる。名前に使えない文字は断る。
+	test('accepts a time zone in warm lease targets and passes it to ccusage', async () => {
+		const { clock, service, invocations } = createService(() => ({ stdout: dailyOutput('tz') }));
+		const channel = new ParadisCcusageChannel<{ readonly remote: true }>(service);
+		const options = { ...dailyWarmTarget.options, timezone: 'Asia/Tokyo' };
+		await channel.call({ remote: true }, 'setWarmLease', [{ ownerId: 'owner.tz', active: true, targets: [{ kind: 'daily', options }, { kind: 'blocks', options: { timezone: 'Asia/Tokyo' } }] }]);
+		await assert.rejects(() => Promise.resolve().then(() => channel.call({ remote: true }, 'setWarmLease', [{ ownerId: 'owner', active: true, targets: [{ kind: 'daily', options: { ...dailyWarmTarget.options, timezone: 'Asia/Tokyo; rm -rf' } }] }])));
+		await service.fetchDaily(options);
+		await clock.tickAsync(0);
+		assert.deepStrictEqual(invocations[invocations.length - 1]?.args.slice(-2), ['--timezone', 'Asia/Tokyo']);
+		service.dispose();
+	});
+
 	test('accepts the full opaque owner ID regex boundary and rejects 161 characters', async () => {
 		const { service } = createService(() => ({ stdout: dailyOutput('owner-id') }));
 		const channel = new ParadisCcusageChannel(service);
