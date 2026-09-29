@@ -793,6 +793,8 @@ export class TerminalService extends Disposable implements ITerminalService {
 		// PARA-PATCH: include Para Code-parked groups so they survive window reloads
 		const tabs = [...this._terminalGroupService.groups, ...(this._terminalGroupService.paradisParkedGroups ?? [])].map(g => g.getLayoutInfo(g === this._terminalGroupService.activeGroup));
 		const state: ITerminalsLayoutInfoById = { tabs, background: this._backgroundedTerminalInstances.map(bg => bg.instance).filter(i => i.shellLaunchConfig.forcePersist).map(i => i.persistentProcessId).filter((e): e is number => e !== undefined) };
+		// PARA-PATCH: also name the editor terminals (shown and parked), so a pty daemon holding them does not reject the panel layout
+		state.paradisEditorTerminals = [...this._terminalEditorService.instances, ...paradisListParkedTerminalEditorInstances()].map(i => i.persistentProcessId).filter((e): e is number => e !== undefined);
 		this._primaryBackend?.setTerminalLayoutInfo(state);
 	}
 

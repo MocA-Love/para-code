@@ -2090,6 +2090,9 @@ export default defineConfig(
 						// PARA-PATCH: terminal.clipboard.contribution.ts が切り替え中の入力ゲート
 						// (paradisIsTerminalInputBlocked) を読み、ペーストを捨てるための逆方向 import
 						'vs/paradis/contrib/workspaceSwitch/~',
+						// PARA-PATCH: terminalSuggestAddon.ts が Enter ですぐ実行する候補を履歴だけに絞る判定
+						// (paradisResolveRunOnEnter) を呼ぶための逆方向 import
+						'vs/paradis/contrib/terminalHistorySuggest/~',
 						'vscode-notebook-renderer', // Type only import
 						'@vscode/tree-sitter-wasm', // type import
 						{

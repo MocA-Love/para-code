@@ -403,6 +403,67 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	// 常駐ターミナルが生かし続けた共通ターミナルの孤児は、どのスペースにも属さないので所属の台帳では
+	// 引けない。共通ターミナルだったと控えてある nonce のものだけをパネルへ戻す。所属が分からない
+	// だけの端末（エディタのタブのもの等）は拾わない（後でタブが繋ぎに来たときに取り合いになる）。
+	test('brings a shared panel orphan back to the panel, and leaves orphans of unknown origin alone (Q146)', async () => {
+		const testDisposables = new DisposableStore();
+		const panelCreated: [number | undefined, TerminalLocation | undefined][] = [];
+		const editorCreated: number[] = [];
+		paradisResetOrphanTerminalRevivalForTest();
+		paradisResetSharedPanelStartupValueForTest();
+		try {
+			const orphan = (id: number, nonce: string) => ({ id, pid: 1, cwd: '/home', title: 'zsh', workspaceId: 'paradis-switch-integration', isOrphan: true, shellIntegrationNonce: nonce });
+			const shared = orphan(9201, 'nonce-shared-9201');
+			const unknown = orphan(9202, 'nonce-unknown-9202');
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.configurationService.setUserConfiguration('paradis.terminal.sharedPanel.enabled', true);
+			harness.storageService.store('paradis.workspaceSwitch.sharedPanelNonces', JSON.stringify([shared.shellIntegrationNonce]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			harness.installTerminalScope(async () => { }, {
+				worktreeReady: true,
+				connected: true,
+				terminalInstanceService: {
+					getBackend: async () => ({ listProcesses: async () => [shared, unknown] }) as unknown as Awaited<ReturnType<ITerminalInstanceService['getBackend']>>,
+					createInstance: () => {
+						editorCreated.push(editorCreated.length);
+						throw new Error('orphans of unknown origin must not be reattached as editor terminals');
+					},
+				},
+				createTerminal: async options => {
+					const attach = (options?.config as IShellLaunchConfig | undefined)?.attachPersistentProcess;
+					const location = options?.location === TerminalLocation.Panel ? TerminalLocation.Panel : undefined;
+					panelCreated.push([attach?.id, location]);
+					return {
+						instanceId: 9300,
+						persistentProcessId: attach?.id,
+						shellIntegrationNonce: shared.shellIntegrationNonce,
+						shouldPersist: true,
+						isDisposed: false,
+						processReady: Promise.resolve(),
+						onDisposed: Event.None,
+						dispose: () => { },
+					} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+				},
+			});
+			await settle();
+
+			assert.deepStrictEqual({
+				panelCreated,
+				editorCreated,
+				complete: paradisIsOrphanTerminalRevivalComplete(),
+			}, {
+				panelCreated: [[9201, TerminalLocation.Panel]],
+				editorCreated: [],
+				complete: true,
+			});
+		} finally {
+			paradisResetOrphanTerminalRevivalForTest();
+			paradisResetSharedPanelStartupValueForTest();
+			testDisposables.dispose();
+		}
+	});
+
 	test('points at the target space for the whole switch, including after the switching flag drops', async () => {
 		const testDisposables = new DisposableStore();
 		const updateStarted = new DeferredPromise<void>();
@@ -2137,6 +2198,48 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		});
 	});
 
+	// 共通ターミナルをエディタのタブへ移したら、その端末はスペースの持ち物になる。共通ターミナルの
+	// 控え（nonce と、移行時に控えた元の所属の両方）から外さないと、孤児の復活が後でパネルへ連れ戻す。
+	test('forgets a shared panel terminal in both backups once it moves to an editor tab (Q146)', async () => {
+		const testDisposables = new DisposableStore();
+		paradisResetSharedPanelStartupValueForTest();
+		try {
+			const instance = createRestoredTerminalInstance(4311, { initialCwd: '/workspace-b' });
+			Object.assign(instance, { target: TerminalLocation.Panel });
+			const group = createTerminalGroup([instance]);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.configurationService.setUserConfiguration('paradis.terminal.sharedPanel.enabled', true);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			harness.installTerminalScope(async () => { }, {
+				groups: [group],
+				worktreeReady: true,
+				connected: true,
+				connectionState: TerminalConnectionState.Connected,
+				persistentProcessScopes: [[4311, 'space-b']],
+			});
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			const read = () => ({
+				sharedPanelNonces: harness.storageService.get('paradis.workspaceSwitch.sharedPanelNonces', StorageScope.WORKSPACE),
+				formerScopes: harness.storageService.get('paradis.workspaceSwitch.sharedPanelFormerScopes', StorageScope.WORKSPACE) === undefined ? 'none' : 'kept',
+			});
+			const inPanel = read();
+
+			Object.assign(instance, { target: TerminalLocation.Editor });
+			harness.fireInstancesChanged();
+			await settle();
+
+			assert.deepStrictEqual({ inPanel, inEditor: read() }, {
+				inPanel: { sharedPanelNonces: JSON.stringify(['nonce-4311']), formerScopes: 'kept' },
+				inEditor: { sharedPanelNonces: undefined, formerScopes: 'none' },
+			});
+		} finally {
+			paradisResetSharedPanelStartupValueForTest();
+			testDisposables.dispose();
+		}
+	});
+
 	// 共通扱いはユーザーが開いたシェルだけ。パネルで動かしたタスクはそのスペースの作業の一部なので、
 	// 切り替えで退避し、スペースを削除したら一緒に閉じる。
 	test('keeps a task terminal in the panel owned by its space even while the panel is shared', async () => {
@@ -2420,6 +2523,8 @@ interface IParadisTerminalScopeHarnessOptions {
 	readonly failingUnparks?: ReadonlySet<ITerminalGroup>;
 	/** 孤児 PTY の一覧と繋ぎ直しを差し替える（既定は backend 無し＝孤児なし）。 */
 	readonly terminalInstanceService?: Pick<ITerminalInstanceService, 'getBackend' | 'createInstance'>;
+	/** パネルにターミナルを作る口（共通ターミナルの孤児をパネルへ戻すのに使う）。 */
+	readonly createTerminal?: ITerminalService['createTerminal'];
 }
 
 /** マイクロタスクとタイマーを数回まわして、非同期の解決を落ち着かせる。 */
@@ -2783,6 +2888,7 @@ async function createHarness(
 				onDidChangeConnectionState: onDidChangeConnectionState.event,
 				onAnyInstanceProcessIdReady: Event.None,
 				safeDisposeTerminal: async (instance: ITerminalInstance) => { safeDisposedTerminalIds.push(instance.instanceId); },
+				createTerminal: options.createTerminal,
 			} satisfies Partial<ITerminalService> as unknown as ITerminalService;
 			const worktreeService = {
 				initializationBarrier: options.worktreeReady === true ? Promise.resolve() : new Promise<void>(() => { }),

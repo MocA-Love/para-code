@@ -164,3 +164,61 @@ export function paradisIsIdleEmptyShell(state: IParadisIdleShellState): boolean 
 			? state.nonEmptyLinesBeforePrompt === 0
 			: state.nonEmptyLines !== undefined && state.nonEmptyLines <= PARADIS_IDLE_SHELL_MAX_PROMPT_LINES);
 }
+
+/**
+ * 共通ターミナルの nonce の控えの上限。古いものから捨てる（閉じた端末の nonce は孤児として
+ * 二度と現れないので、残っていても害は無く、上限で自然に消える）。
+ */
+export const PARADIS_SHARED_PANEL_NONCES_MAX = 500;
+
+/** 控えを読む。壊れていれば空。 */
+export function paradisParseSharedPanelNonces(raw: string | undefined): string[] {
+	if (raw === undefined) {
+		return [];
+	}
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string' && value.length > 0) : [];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * 控えに足す。既にあれば undefined（書き込みを省く。同じ端末は所属を見直すたびにここへ来る）。
+ * 上限を超えたら先に控えたものから捨てる。
+ */
+export function paradisRememberSharedPanelNonce(nonces: readonly string[], nonce: string, max: number = PARADIS_SHARED_PANEL_NONCES_MAX): string[] | undefined {
+	if (nonces.includes(nonce)) {
+		return undefined;
+	}
+	return [...nonces, nonce].slice(-max);
+}
+
+/** 控えから外す（エディタのタブへ移した等）。無ければ undefined。 */
+export function paradisForgetSharedPanelNonce(nonces: readonly string[], nonce: string): string[] | undefined {
+	return nonces.includes(nonce) ? nonces.filter(value => value !== nonce) : undefined;
+}
+
+/**
+ * どのウィンドウにも繋がっていない PTY（孤児）を、共通ターミナルとしてパネルへ戻すか。
+ *
+ * 共通ターミナルはどのスペースにも属さないので、スペースの台帳で所属を引けない。引けないまま
+ * 飛ばすと、常駐ターミナルが生かし続ける見えないシェルになる。戻すのは「共通ターミナルだった」と
+ * 控えてある nonce のものだけにする。所属が分からないだけの端末（エディタのタブの端末で台帳に
+ * 書けなかったもの等）まで拾うと、そのタブが後で繋ぎに来たときに取り合いになる。
+ */
+export function paradisShouldReviveSharedPanelOrphan(input: {
+	readonly sharedPanel: boolean;
+	/** スペースの台帳で引けた所属。引けたなら共通ターミナルではない。 */
+	readonly stateKey: string | undefined;
+	readonly nonce: string | undefined;
+	readonly sharedPanelNonces: ReadonlySet<string>;
+	readonly detail: { readonly type?: string; readonly hideFromUser?: boolean; readonly isFeatureTerminal?: boolean };
+}): boolean {
+	return input.sharedPanel
+		&& input.stateKey === undefined
+		&& input.nonce !== undefined
+		&& input.sharedPanelNonces.has(input.nonce)
+		&& paradisIsSharedPanelShell({ attachPersistentProcess: input.detail });
+}

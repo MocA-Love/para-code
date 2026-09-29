@@ -17,6 +17,7 @@ import assert from 'assert';
 import { timeout } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
+import { isWindows } from '../../../../../base/common/platform.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IProductService } from '../../../../../platform/product/common/productService.js';
 import { IShellLaunchConfig, ITerminalLaunchError, ITerminalProcessOptions, ProcessPropertyType } from '../../../../../platform/terminal/common/terminal.js';
@@ -25,6 +26,7 @@ import { IParadisPtySpawnRequest } from '../../common/paradisPtyProtocol.js';
 import { paradisDecodeTerminalMetadata } from '../../common/paradisTerminalMetadata.js';
 import { ParadisDaemonTerminalProcess } from '../../node/paradisDaemonTerminalProcess.js';
 import { PARADIS_TERMINAL_KEEP_BACKGROUND_ENV } from '../../../terminalCloseCleanup/common/paradisTerminalCloseCleanup.js';
+import { paradisCloseCleanupQuitGate } from '../../../terminalCloseCleanup/common/paradisTerminalCloseCleanupQuit.js';
 import { paradisHandleOf } from '../../node/paradisTerminalProcessFactory.js';
 import { ParadisPtyDaemonHost } from '../../node/paradisPtyDaemonHost.js';
 import { IParadisPtyProcess } from '../../node/paradisPtyHolder.js';
@@ -64,7 +66,11 @@ const OPTIONS: ITerminalProcessOptions = {
 suite('ParadisDaemonTerminalProcess', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function create(cwd: string = '/'): { host: ParadisPtyDaemonHost; ptys: FakePty[]; requests: IParadisPtySpawnRequest[]; process: ParadisDaemonTerminalProcess } {
+	/**
+	 * @param closeCleanup 閉じたときの後始末（W2-32）の代役。渡したときだけ後始末を有効にする
+	 * （本物は `ps` で偽の pid の子孫を探しに行くので使わない）。
+	 */
+	function create(cwd: string = '/', closeCleanup?: (shellPid: number, end: () => void) => { readonly done: Promise<void> }): { host: ParadisPtyDaemonHost; ptys: FakePty[]; requests: IParadisPtySpawnRequest[]; process: ParadisDaemonTerminalProcess } {
 		const disposables = store.add(new DisposableStore());
 		const ptys: FakePty[] = [];
 		const requests: IParadisPtySpawnRequest[] = [];
@@ -73,7 +79,7 @@ suite('ParadisDaemonTerminalProcess', () => {
 			const pty = new FakePty(disposables);
 			ptys.push(pty);
 			return pty;
-		}));
+		}, closeCleanup));
 		const shellLaunchConfig: IShellLaunchConfig = { executable: '/bin/sh', args: ['-l'], env: {} };
 		const process = disposables.add(new ParadisDaemonTerminalProcess(
 			host,
@@ -82,7 +88,7 @@ suite('ParadisDaemonTerminalProcess', () => {
 			80, 24,
 			// 閉じたときの後始末（W2-32）は切っておく。偽の pid 7777 は手元の本物のプロセスを指しうるので、
 			// その子孫を `ps` で探して止めに行かせない。
-			{ PATH: '/usr/bin', EMPTY: undefined, [PARADIS_TERMINAL_KEEP_BACKGROUND_ENV]: '1' } as unknown as Record<string, string>,
+			(closeCleanup ? { PATH: '/usr/bin', EMPTY: undefined } : { PATH: '/usr/bin', EMPTY: undefined, [PARADIS_TERMINAL_KEEP_BACKGROUND_ENV]: '1' }) as unknown as Record<string, string>,
 			{},
 			OPTIONS,
 			new NullLogService(),
@@ -302,6 +308,38 @@ suite('ParadisDaemonTerminalProcess', () => {
 		await timeout(1200);
 
 		assert.deepStrictEqual({ immediately, exits }, { immediately: 0, exits: [undefined] });
+	});
+
+	(isWindows ? test.skip : test)('Para Code の終了中に閉じたものは、裏のプロセスを止めるよう常駐へ頼まない（Q136）', async () => {
+		const cleaned: number[] = [];
+		const closeCleanup = (shellPid: number, end: () => void) => {
+			cleaned.push(shellPid);
+			end();
+			return { done: Promise.resolve() };
+		};
+		const duringQuit = create('/', closeCleanup);
+		const afterCancel = create('/', closeCleanup);
+		await duringQuit.process.start();
+		await afterCancel.process.start();
+
+		let cleanedDuringQuit: number[] = [];
+		try {
+			paradisCloseCleanupQuitGate.set(true);
+			duringQuit.process.shutdown(false);
+			await timeout(10);
+			cleanedDuringQuit = [...cleaned];
+		} finally {
+			paradisCloseCleanupQuitGate.set(false);
+		}
+		// 終了が取り消された後にタブで閉じたものは、今までどおり止める。
+		afterCancel.process.shutdown(false);
+		await timeout(10);
+
+		assert.deepStrictEqual(
+			{ cleanedDuringQuit, cleaned, killed: [duringQuit.ptys[0].killed, afterCancel.ptys[0].killed] },
+			// どちらもシェルの終了そのものは今までどおり届く。
+			{ cleanedDuringQuit: [], cleaned: [7777], killed: ['default', 'default'] },
+		);
 	});
 
 	test('起動先が無ければ、起こす前に断る', async () => {

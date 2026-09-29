@@ -214,6 +214,8 @@ export type ITerminalTabLayoutInfoById = IRawTerminalTabLayoutInfo<number>;
 export interface IRawTerminalsLayoutInfo<T> {
 	tabs: IRawTerminalTabLayoutInfo<T>[];
 	background: T[] | null;
+	// PARA-PATCH: editor terminals (shown or parked) the window holds outside the panel layout; only ever sent, never returned
+	paradisEditorTerminals?: number[];
 }
 
 export interface IPtyHostAttachTarget {
@@ -377,6 +379,8 @@ export interface IPtyService {
 	attachToProcess(id: number): Promise<void>;
 	/** PARA-CODE: atomically resolves, claims and attaches an orphan PTY by nonce. */
 	paradisClaimAndAttachToProcess(workspaceId: string, id: number, paradisExpectedNonce: string): Promise<number>;
+	// PARA-PATCH: tell the pty host that the app is quitting, so closing terminals leaves their background processes alone (paradisTerminalCloseCleanupQuit.ts)
+	paradisSetAppQuitting(quitting: boolean): Promise<void>;
 	detachFromProcess(id: number, forcePersist?: boolean): Promise<void>;
 	shutdownAll(): Promise<void>;
 

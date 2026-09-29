@@ -227,6 +227,10 @@ export class PtyHostService extends Disposable implements IPtyHostService {
 	paradisClaimAndAttachToProcess(workspaceId: string, id: number, paradisExpectedNonce: string): Promise<number> {
 		return this._proxy.paradisClaimAndAttachToProcess(workspaceId, id, paradisExpectedNonce);
 	}
+	// PARA-PATCH: forward the quitting mark to the pty host without starting one (paradisTerminalCloseCleanupQuit.ts)
+	async paradisSetAppQuitting(quitting: boolean): Promise<void> {
+		await this._optionalProxy?.paradisSetAppQuitting(quitting);
+	}
 	detachFromProcess(id: number, forcePersist?: boolean): Promise<void> {
 		return this._proxy.detachFromProcess(id, forcePersist);
 	}
