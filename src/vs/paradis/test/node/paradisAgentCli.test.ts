@@ -84,4 +84,26 @@ import { paradisAgentCliFallbackDirs, paradisResolveAgentCli, paradisRunAgentCli
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	test('stops what the CLI left running in its process group when it exits', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'paradis-agent-cli-'));
+		try {
+			const pidFile = join(root, 'grandchild.pid');
+			const script = join(root, 'leaky-cli');
+			writeFileSync(script, `#!/bin/sh\nsleep 30 > /dev/null 2>&1 &\necho $! > '${pidFile}'\necho done\n`);
+			chmodSync(script, 0o755);
+			const result = await paradisRunAgentCli(script, [], { env: process.env, timeoutMs: 5_000 });
+			const grandchild = Number(readFileSync(pidFile, 'utf8').trim());
+			await timeout(300);
+			let alive = true;
+			try {
+				process.kill(grandchild, 0);
+			} catch {
+				alive = false;
+			}
+			assert.deepStrictEqual({ stdout: result.stdout, exitCode: result.exitCode, alive }, { stdout: 'done\n', exitCode: 0, alive: false });
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 });

@@ -27,6 +27,9 @@ export interface IParadisActivityWorker {
 	terminate(): Promise<number>;
 }
 
+/** worker が時間内に答えなかった（worker は止めた）。 */
+export class ParadisActivityWorkerTimeoutError extends Error { }
+
 interface IPending {
 	readonly resolve: (value: unknown) => void;
 	readonly reject: (error: Error) => void;
@@ -82,7 +85,7 @@ export class ParadisAgentActivityWorkerHost extends Disposable {
 				timer = setTimeout(() => {
 					timer = undefined;
 					if (this.pending.has(id) && this.worker === worker) {
-						this.stop(new Error(`The agent activity worker did not answer '${request.op}' within ${timeoutMs}ms.`));
+						this.stop(new ParadisActivityWorkerTimeoutError(`The agent activity worker did not answer '${request.op}' within ${timeoutMs}ms.`));
 					}
 				}, timeoutMs);
 			}

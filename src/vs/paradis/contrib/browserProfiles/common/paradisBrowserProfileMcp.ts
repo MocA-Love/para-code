@@ -106,6 +106,12 @@ export const PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD = 'isPaneOwnedProfile
 /** 1つのペインのエージェントが作れるプロファイルの数の上限（作りっぱなしで台帳が埋まるのを防ぐ）。 */
 export const PARADIS_AGENT_CREATED_PROFILE_LIMIT = 10;
 
+/**
+ * エージェントが作ったプロファイルの、全ペイン合計の上限。上限はペインごとに数えるので、CLI を起動し直すたびに
+ * 前のペインが作ったもの（もう誰も消せない）が残って増え続けないよう、合計にも天井を置く。
+ */
+export const PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT = 30;
+
 /** エージェントへ見せるプロファイル1件分。ID やパーティション名は見せない。 */
 export interface IParadisAgentProfileInfo {
 	readonly name: string;
@@ -128,8 +134,10 @@ export type ParadisProfileManageFailure =
 	 * プロファイル名を探れてしまうので分けない。
 	 */
 	| 'invalidName'
-	/** エージェントが作ったプロファイルが上限に達している。 */
+	/** このペインのエージェントが作ったプロファイルが上限に達している。 */
 	| 'tooManyProfiles'
+	/** 全ペインのエージェントが作ったプロファイルの合計が上限に達している（ユーザーに消してもらう）。 */
+	| 'tooManyAgentProfiles'
 	/** ユーザーのプロファイルを使う承認を、ユーザーが断った。 */
 	| 'denied'
 	/** 承認の締め切りまでに確かな答えが得られなかった。 */

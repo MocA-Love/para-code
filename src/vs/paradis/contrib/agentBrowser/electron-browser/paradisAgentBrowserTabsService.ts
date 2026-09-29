@@ -88,6 +88,12 @@ const NAVIGATION_TIMEOUT_MS = 20_000;
 const PANE_TITLE_MAX_LENGTH = 60;
 
 /**
+ * 締め切りのトークン → その締め切り。承認が取り消されたとき、時間切れ（放置された）なのか、呼び出し元の
+ * 取り消し（エージェント側で Esc を押したなど）なのかを見分けるために使う。
+ */
+const approvalDeadlines = new WeakMap<CancellationToken, ParadisApprovalDeadline>();
+
+/**
  * 承認の締め切り。呼び出し元（shared process）の取り消しと、{@link PARADIS_AGENT_APPROVAL_DEADLINE_MS}
  * の時間切れのどちらでも取り消される。`timedOut` は時間切れで取り消されたかどうか。
  */
@@ -98,6 +104,7 @@ export class ParadisApprovalDeadline extends Disposable {
 	constructor(parent: CancellationToken | undefined, durationMs: number = PARADIS_AGENT_APPROVAL_DEADLINE_MS) {
 		super();
 		this._source = this._register(new CancellationTokenSource(parent));
+		approvalDeadlines.set(this._source.token, this);
 		const timer = setTimeout(() => {
 			this._timedOut = true;
 			this._source.cancel();
@@ -146,8 +153,9 @@ export type ParadisAgentApprovalOutcome = ParadisAgentApprovalChoice | 'denied' 
 /** 拒否の後、同じペインからの求めを自動で断る時間。承認疲れを誘う繰り返しを止める。 */
 const DENIAL_COOLDOWN_MS = 3 * 60_000;
 /**
- * 表示したダイアログに答えが得られないまま終わった（締め切り・取り消し・速押しの打ち切り）のがこの回数
+ * 画面に出したダイアログが答えの無いまま終わった（締め切りまで放置された・速押しの打ち切り）のがこの回数
  * 続いたら、拒否と同じだけ自動で断る。放置されたダイアログを締め切りごとに出し直させないため。
+ * 呼び出し元の取り消し（エージェント側で中断した）は数えない。
  */
 const UNANSWERED_COOLDOWN_STREAK = 2;
 /** 承認ダイアログが実際に画面に出たかを確かめる間隔。 */
@@ -609,22 +617,27 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		this._pendingApprovals.add(token);
 		try {
 			// ほかのペインの承認が出ている間は順番を待つ（待っている間も締め切りは進む）。
-			const { outcome, shown } = await this._approvalQueue.queue(async (): Promise<{ outcome: ParadisAgentApprovalOutcome; shown: boolean }> => cancellation.isCancellationRequested
-				? { outcome: 'cancelled', shown: false }
-				: { outcome: await this._showApproval(token, request, cancellation), shown: true });
+			const { outcome, shown } = await this._approvalQueue.queue(() => cancellation.isCancellationRequested
+				? Promise.resolve({ outcome: 'cancelled' as const, shown: false })
+				: this._showApproval(token, request, cancellation));
+			// 放置された: 締め切りまで答えが無かった、または速押しの打ち切り。呼び出し元の取り消し（エージェント側で
+			// 中断した）は放置ではないので、数えも打ち消しもしない。
+			const ignored = outcome === 'unanswered' || (outcome === 'cancelled' && approvalDeadlines.get(cancellation)?.timedOut === true);
 			if (outcome === 'denied') {
 				this._unansweredStreak.delete(cooldownKey);
 				this._deniedUntil.set(cooldownKey, Date.now() + DENIAL_COOLDOWN_MS);
-			} else if (shown && (outcome === 'cancelled' || outcome === 'unanswered')) {
-				// 順番待ちのまま締め切られたもの（ユーザーには見えていない）は数えない。
-				const streak = (this._unansweredStreak.get(cooldownKey) ?? 0) + 1;
-				if (streak >= UNANSWERED_COOLDOWN_STREAK) {
-					this._unansweredStreak.delete(cooldownKey);
-					this._deniedUntil.set(cooldownKey, Date.now() + DENIAL_COOLDOWN_MS);
-				} else {
-					this._unansweredStreak.set(cooldownKey, streak);
+			} else if (ignored) {
+				// 画面に出る前に終わったもの（順番待ちのまま締め切られたなど）は数えない。
+				if (shown) {
+					const streak = (this._unansweredStreak.get(cooldownKey) ?? 0) + 1;
+					if (streak >= UNANSWERED_COOLDOWN_STREAK) {
+						this._unansweredStreak.delete(cooldownKey);
+						this._deniedUntil.set(cooldownKey, Date.now() + DENIAL_COOLDOWN_MS);
+					} else {
+						this._unansweredStreak.set(cooldownKey, streak);
+					}
 				}
-			} else {
+			} else if (outcome !== 'cancelled') {
 				this._unansweredStreak.delete(cooldownKey);
 			}
 			return outcome;
@@ -633,7 +646,14 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		}
 	}
 
-	private async _showApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken): Promise<ParadisAgentApprovalOutcome> {
+	/** 結果と、ダイアログが一度でも実際に画面に出たか。 */
+	private async _showApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken): Promise<{ readonly outcome: ParadisAgentApprovalOutcome; readonly shown: boolean }> {
+		let shown = false;
+		const outcome = await this._promptApproval(token, request, cancellation, () => { shown = true; });
+		return { outcome, shown };
+	}
+
+	private async _promptApproval(token: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken, onShown: () => void): Promise<ParadisAgentApprovalOutcome> {
 		type Choice = ParadisAgentApprovalChoice | 'deny';
 		// ボタンの並びは意味を持つ:
 		//  - 先頭（index 0）に既定のフォーカスが当たる。打ちかけの Enter が当たるよう「拒否」を置く
@@ -664,6 +684,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 				const poll = mainWindow.setInterval(() => {
 					if (shownAt === undefined && this._isDialogShown(marker)) {
 						shownAt = Date.now();
+						onShown();
 					}
 				}, DIALOG_SHOWN_POLL_MS);
 				watch.add(toDisposable(() => mainWindow.clearInterval(poll)));

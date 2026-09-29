@@ -133,14 +133,14 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 
 	protected override onCreateToolbar(toolbar: HTMLElement): void {
 		this._zoomOutButton = this._createIconButton(toolbar, Codicon.zoomOut, localize('paradis.html.zoomOut', "ズームアウト"));
-		this._register(dom.addDisposableListener(this._zoomOutButton, dom.EventType.CLICK, () => this._applyZoom(this._zoomLevel - 1)));
+		this._register(dom.addDisposableListener(this._zoomOutButton, dom.EventType.CLICK, () => this.applyZoom(this._zoomLevel - 1)));
 
 		this._percentButton = dom.append(toolbar, dom.$('button.paradis-html-zoom-percent')) as HTMLButtonElement;
 		this._percentButton.title = localize('paradis.html.resetZoom', "ズームをリセット");
-		this._register(dom.addDisposableListener(this._percentButton, dom.EventType.CLICK, () => this._applyZoom(0)));
+		this._register(dom.addDisposableListener(this._percentButton, dom.EventType.CLICK, () => this.applyZoom(0)));
 
 		this._zoomInButton = this._createIconButton(toolbar, Codicon.zoomIn, localize('paradis.html.zoomIn', "ズームイン"));
-		this._register(dom.addDisposableListener(this._zoomInButton, dom.EventType.CLICK, () => this._applyZoom(this._zoomLevel + 1)));
+		this._register(dom.addDisposableListener(this._zoomInButton, dom.EventType.CLICK, () => this.applyZoom(this._zoomLevel + 1)));
 
 		const refreshButton = this._createIconButton(toolbar, Codicon.refresh, localize('paradis.html.refresh', "再読み込み"));
 		this._register(dom.addDisposableListener(refreshButton, dom.EventType.CLICK, () => this.webview?.reload()));
@@ -208,14 +208,20 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		return ZOOM_BASE ** this._zoomLevel;
 	}
 
-	private _applyZoom(level: number): void {
+	protected applyZoom(level: number): void {
 		const clamped = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, level));
 		if (clamped === this._zoomLevel) {
 			this._updateZoomUI();
 			return;
 		}
 		this._zoomLevel = clamped;
-		void this.webview?.postMessage({ __paradisZoom: this._zoomFactor });
+		if (this.allowScripts) {
+			void this.webview?.postMessage({ __paradisZoom: this._zoomFactor });
+		} else {
+			// スクリプトを動かさないとき（制限モード）はページの中で倍率を変えられないので、新しい倍率を
+			// CSS に焼き込んで描き直す。
+			this.requestRerender();
+		}
 		this._updateZoomUI();
 	}
 

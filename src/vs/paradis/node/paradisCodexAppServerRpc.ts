@@ -26,7 +26,7 @@ import { Disposable } from '../../base/common/lifecycle.js';
 import { join, resolve } from '../../base/common/path.js';
 import { ILogService } from '../../platform/log/common/log.js';
 import { paradisSpawnAgentCli } from './paradisAgentCli.js';
-import { paradisKillChildProcessTree } from './paradisKillChildProcess.js';
+import { paradisKillChildProcessTree, paradisKillExitedProcessGroup } from './paradisKillChildProcess.js';
 
 /** app-server が返したエラー。message は app-server の文言（パス・トークンは含まない）。 */
 export class ParadisCodexRpcError extends Error {
@@ -198,6 +198,8 @@ class ParadisCodexAppServerRpcSession extends Disposable implements IParadisCode
 			this.logService.trace(`[ParadisCodexAppServer] codex app-server stderr: ${chunk.toString('utf8').trim()}`);
 		});
 		this.child.on('exit', (code, signal) => {
+			// app-server が先に終わっても、起こしたプラグインや MCP がグループに残らないようにする。
+			paradisKillExitedProcessGroup(this.child);
 			// 終了コードとシグナルは Sentry へ載せる（limitsMonitor）。文言には含めたまま。
 			const error = new Error(`codex app-server exited (code=${code}, signal=${signal})`);
 			Object.assign(error, { exitCode: code, exitSignal: signal });

@@ -46,7 +46,7 @@ export type ParadisCcusageWarmTargetOptions = Readonly<{
 }>;
 
 /** `--timezone` に渡してよい値（IANA のタイムゾーン名の文字だけ）。 */
-export const PARADIS_CCUSAGE_TIMEZONE_PATTERN = /^[A-Za-z0-9_+\-/]{1,64}$/;
+export const PARADIS_CCUSAGE_TIMEZONE_PATTERN = /^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$/;
 
 /** owner leaseが要求する1つのwarm対象。 */
 export type ParadisCcusageWarmTarget = Readonly<{

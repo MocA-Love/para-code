@@ -21,7 +21,7 @@ import { homedir } from 'os';
 import { delimiter, isAbsolute, join } from '../../base/common/path.js';
 import { findExecutable } from '../../base/node/processes.js';
 import { paradisWrapWindowsScriptShim } from '../common/paradisWindowsScriptShim.js';
-import { paradisKillChildProcessTree } from './paradisKillChildProcess.js';
+import { paradisKillChildProcessTree, paradisKillExitedProcessGroup } from './paradisKillChildProcess.js';
 
 export type ParadisAgentCliName = 'claude' | 'codex' | 'ccusage';
 
@@ -219,6 +219,8 @@ export function paradisRunAgentCli(command: string, args: readonly string[], opt
 			}
 		});
 		child.on('error', error => finish(error, null));
+		// CLI が終わった時点で、グループに残した子（裏で起こしたものなど）も止める。
+		child.on('exit', () => paradisKillExitedProcessGroup(child));
 		child.on('close', code => finish(undefined, code));
 		// 子が先に終わると stdin への書き込みは EPIPE になる。そのときは close の結果で判断する
 		child.stdin.on('error', () => { /* handled by close */ });
