@@ -155,6 +155,7 @@ interface IStatements {
 	readonly deleteMessages: StatementSync;
 	readonly deleteMessageFiles: StatementSync;
 	readonly setComplete: StatementSync;
+	readonly setOffset: StatementSync;
 }
 
 export class ParadisSessionIndexStore {
@@ -221,6 +222,7 @@ export class ParadisSessionIndexStore {
 			deleteMessages: this.db.prepare('DELETE FROM messages WHERE rowid IN (SELECT rowid FROM message_files WHERE file_id = ?)'),
 			deleteMessageFiles: this.db.prepare('DELETE FROM message_files WHERE file_id = ?'),
 			setComplete: this.db.prepare('UPDATE files SET complete = ? WHERE id = ?'),
+			setOffset: this.db.prepare('UPDATE files SET offset = ? WHERE id = ?'),
 		};
 	}
 
@@ -389,6 +391,8 @@ export class ParadisSessionIndexStore {
 			fileId = row.id;
 			this.clearFileMessages(fileId);
 			this.statements.setComplete.run(0, fileId);
+			// 消した分を「読んだ」ままにしない（最初の書き込みの前に止まっても、次は先頭から読む）。
+			this.statements.setOffset.run(0, fileId);
 			outcome = 'replaced';
 		} else {
 			fileId = Number(this.statements.insertFile.run(file.path, file.agent, file.catalogId, file.dev, file.ino, 0, 0).lastInsertRowid);
@@ -397,20 +401,27 @@ export class ParadisSessionIndexStore {
 		let batch: string[] = [];
 		let skip = false;
 		let first = start === 0;
+		/** 読み終えた最後の行の直後のバイト位置。 */
+		let lineEnd = start;
 		const flush = () => {
 			if (batch.length === 0) {
 				return;
 			}
 			const bodies = batch;
 			batch = [];
+			// 入れた本文と「どこまで読んだか」を同じトランザクションで進める。途中で例外が出たり worker が
+			// 落ちたりしても、次の更新はここから続きを読むので、入れ済みの本文を二重に入れない。
+			const offset = lineEnd;
 			this.transaction(() => {
 				for (const body of bodies) {
 					const rowid = Number(this.statements.insertMessageFile.run(fileId).lastInsertRowid);
 					this.statements.insertMessage.run(rowid, body);
 				}
+				this.statements.setOffset.run(offset, fileId);
 			});
 		};
-		const result = await paradisReadTranscriptLines(file.path, start, line => {
+		const result = await paradisReadTranscriptLines(file.path, start, (line, endOffset) => {
+			lineEnd = endOffset;
 			let item: Record<string, unknown> | undefined;
 			try {
 				item = paradisTranscriptRecord(JSON.parse(line));
@@ -454,8 +465,10 @@ export class ParadisSessionIndexStore {
 			return 'replaced';
 		}
 		const headLength = Math.min(HEAD_FINGERPRINT_BYTES, result.endOffset);
-		const headHash = start === 0 || !row ? await headFingerprint(file.path, headLength) ?? '' : row.head_hash;
-		const storedHeadLength = start === 0 || !row ? (headHash ? headLength : 0) : row.head_len;
+		// 指紋が無いまま続きから読んだ（前回が途中で終わった新しいファイルなど）ときも、ここで取る。
+		const takeHead = start === 0 || !row || row.head_len === 0;
+		const headHash = takeHead ? await headFingerprint(file.path, headLength) ?? '' : row.head_hash;
+		const storedHeadLength = takeHead ? (headHash ? headLength : 0) : row.head_len;
 		// 書きかけの最終行が残っているときは、覚えるサイズを実際に読んだ所までにして、次回の更新で続きを読ませる。
 		const offset = skip ? file.size : result.endOffset;
 		this.statements.updateFile.run(file.dev, file.ino, skip ? file.size : Math.min(file.size, result.endOffset), file.mtimeMs, offset, skip ? 1 : 0, file.catalogId, storedHeadLength, headHash, fileId);

@@ -296,4 +296,25 @@ suite('ParadisAgentActivityWorkerHost', () => {
 			workers: 2,
 		});
 	});
+
+	test('stops a worker that does not answer in time, so the requests queued behind it are not stuck', async () => {
+		const workers: FakeWorker[] = [];
+		const host = store.add(new ParadisAgentActivityWorkerHost(() => {
+			const worker = new FakeWorker();
+			workers.push(worker);
+			return worker;
+		}, 60_000));
+		const stuck = host.request({ op: 'indexClose' }, 10);
+		const answered = host.request<string>({ op: 'indexClose' }, 60_000);
+		workers[0].emit('message', { id: workers[0].posted[1].id, ok: true, value: 'quick' });
+		const errors = await Promise.all([stuck, answered].map(request => request.then(value => value, (error: Error) => error.message)));
+		const next = host.request<string>({ op: 'indexClose' });
+		workers[1].emit('message', { id: workers[1].posted[0].id, ok: true, value: 'done' });
+		assert.deepStrictEqual({ errors, next: await next, terminated: workers[0].terminated, workers: workers.length }, {
+			errors: [`The agent activity worker did not answer 'indexClose' within 10ms.`, 'quick'],
+			next: 'done',
+			terminated: true,
+			workers: 2,
+		});
+	});
 });
