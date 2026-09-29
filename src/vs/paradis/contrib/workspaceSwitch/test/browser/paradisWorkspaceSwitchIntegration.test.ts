@@ -1638,7 +1638,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
-	test('brings back the rest of a space\'s parked groups when one of them fails, and retries the failed one next time', async () => {
+	test('brings back the rest of a space\'s parked groups when one of them fails', async () => {
 		const testDisposables = new DisposableStore();
 		const originalUnexpectedErrorHandler = errorHandler.getUnexpectedErrorHandler();
 		const errors: string[] = [];
@@ -1665,19 +1665,23 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			await harness.workspaceSwitchService.switchRepository('space-b');
 			const parkedAfterFailure = [harness.parkedGroups.has(failing), harness.parkedGroups.has(healthy)];
 
+			// 途中まで戻って見えている分は、待避中の扱いに戻さない。次に離れたときに普通に待避される。
 			failingUnparks.clear();
 			await harness.workspaceSwitchService.switchRepository('space-a');
+			const parkedAfterLeaving = [harness.parkedGroups.has(failing), harness.parkedGroups.has(healthy)];
 			await harness.workspaceSwitchService.switchRepository('space-b');
 
 			assert.deepStrictEqual({
 				parkedInSpaceA,
 				parkedAfterFailure,
-				parkedAfterRetry: [harness.parkedGroups.has(failing), harness.parkedGroups.has(healthy)],
+				parkedAfterLeaving,
+				parkedAfterReturning: [harness.parkedGroups.has(failing), harness.parkedGroups.has(healthy)],
 				errors,
 			}, {
 				parkedInSpaceA: [true, true],
-				parkedAfterFailure: [true, false],
-				parkedAfterRetry: [false, false],
+				parkedAfterFailure: [false, false],
+				parkedAfterLeaving: [true, true],
+				parkedAfterReturning: [false, false],
 				errors: ['Error: unpark failed'],
 			});
 		} finally {
@@ -2515,10 +2519,11 @@ async function createHarness(
 				paradisParkGroup: { value: (group: ITerminalGroup) => { parkedGroups.add(group); } },
 				paradisUnparkGroup: {
 					value: (group: ITerminalGroup) => {
+						parkedGroups.delete(group);
+						// 実物も groups へ戻した後の付け直し（attachToElement）で落ちる。
 						if (options.failingUnparks?.has(group)) {
 							throw new Error('unpark failed');
 						}
-						parkedGroups.delete(group);
 						// 実物は復帰後に見えるグループが1件になった時点で `setActiveGroupByIndex(0, true)`
 						// を呼び、`onDidChangeActiveGroup` を発火する。この副作用が active group 台帳を
 						// 上書きしうるので、ハーネスでも再現する（省くと復元のリグレッションを検知できない）。
