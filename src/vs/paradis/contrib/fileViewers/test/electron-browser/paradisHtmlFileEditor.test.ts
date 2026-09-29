@@ -27,7 +27,7 @@ import { IOverlayWebview, IWebviewService } from '../../../../../workbench/contr
 import { ITextFileService } from '../../../../../workbench/services/textfile/common/textfiles.js';
 import { IWorkingCopyService } from '../../../../../workbench/services/workingCopy/common/workingCopyService.js';
 import { TestEditorGroupView, TestLayoutService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
-import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
+import { TestStorageService, TestWorkspaceTrustManagementService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisHtmlFileEditor } from '../../electron-browser/paradisHtmlFileEditor.js';
 import { ParadisHtmlFileInput } from '../../electron-browser/paradisHtmlFileInput.js';
 
@@ -39,6 +39,17 @@ class TestParadisHtmlFileEditor extends ParadisHtmlFileEditor {
 
 	serviceWorkerDisabledFor(resource: URI): boolean {
 		return this.disableServiceWorkerFor(resource);
+	}
+
+	rerenderRequests = 0;
+
+	zoomTo(level: number): void {
+		this.applyZoom(level);
+	}
+
+	protected override requestRerender(): void {
+		this.rerenderRequests++;
+		super.requestRerender();
 	}
 
 	render(text: string, resource: URI): Promise<string> {
@@ -124,11 +135,12 @@ suite('ParadisHtmlFileEditor', () => {
 			remote.agent ?? createRemoteAgentService(),
 			createRemoteAuthorityResolverService(),
 			remote.tunnel ?? createTunnelService(),
+			disposables.add(new TestWorkspaceTrustManagementService()),
 		));
 	}
 
-	function createProductionEditor(webviewService: IWebviewService, textFileService: ITextFileService, fileService: IFileService): ParadisHtmlFileEditor {
-		return disposables.add(new ParadisHtmlFileEditor(
+	function createProductionEditor(webviewService: IWebviewService, textFileService: ITextFileService, fileService: IFileService, trusted = true): TestParadisHtmlFileEditor {
+		return disposables.add(new TestParadisHtmlFileEditor(
 			new TestEditorGroupView(1),
 			NullTelemetryService,
 			new TestThemeService(),
@@ -146,10 +158,11 @@ suite('ParadisHtmlFileEditor', () => {
 			createRemoteAgentService(),
 			createRemoteAuthorityResolverService(),
 			createTunnelService(),
+			disposables.add(new TestWorkspaceTrustManagementService(trusted)),
 		));
 	}
 
-	test('public setInput applies script and resource policy before setting rendered HTML', async () => {
+	async function renderThroughSetInput(trusted: boolean): Promise<{ contentOptions: { allowScripts: boolean | undefined; localResourceRoots: string[] | undefined } | undefined; html: string | undefined; editor: TestParadisHtmlFileEditor }> {
 		const resource = URI.file('/workspace/site/index.html');
 		const source = '<main><img src="./assets/logo.png"></main>';
 		let renderedHtml: string | undefined;
@@ -166,6 +179,7 @@ suite('ParadisHtmlFileEditor', () => {
 			},
 			focus: () => { },
 			dispose: () => { },
+			postMessage: async () => true,
 		} as unknown as IOverlayWebview;
 		const webviewService = {
 			createWebviewOverlay: () => webview,
@@ -178,19 +192,40 @@ suite('ParadisHtmlFileEditor', () => {
 			onDidWatchError: Event.None,
 		} as unknown as IFileService;
 		const workingCopyService = { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService;
-		const editor = createProductionEditor(webviewService, textFileService, fileService);
+		const editor = createProductionEditor(webviewService, textFileService, fileService, trusted);
 		const input = disposables.add(new ParadisHtmlFileInput(resource, textFileService, workingCopyService));
 
 		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		return { contentOptions: contentOptionsAtSetHtml, html: renderedHtml, editor };
+	}
 
-		deepStrictEqual(contentOptionsAtSetHtml, {
+	test('public setInput applies script and resource policy before setting rendered HTML', async () => {
+		const { contentOptions, html } = await renderThroughSetInput(true);
+		deepStrictEqual(contentOptions, {
 			allowScripts: true,
 			localResourceRoots: ['file:///workspace/site'],
 		});
-		ok(renderedHtml);
-		const document = new DOMParser().parseFromString(renderedHtml, 'text/html');
+		ok(html);
+		const document = new DOMParser().parseFromString(html, 'text/html');
 		strictEqual(document.querySelector('base')?.getAttribute('href'), PREVIEW_BASE);
 		strictEqual(document.querySelector('img')?.getAttribute('src'), './assets/logo.png');
+	});
+
+	test('does not run the page scripts in an untrusted workspace, and zooms by rendering again', async () => {
+		const untrusted = await renderThroughSetInput(false);
+		untrusted.editor.zoomTo(1);
+		const trusted = await renderThroughSetInput(true);
+		trusted.editor.zoomTo(1);
+		// スクリプトが動かないとページの中で倍率を変えられないので、倍率を CSS に焼き込んで描き直す
+		deepStrictEqual({
+			contentOptions: untrusted.contentOptions,
+			rerenders: [untrusted.editor.rerenderRequests, trusted.editor.rerenderRequests],
+			zoomBakedIn: (await untrusted.editor.render('<p>x</p>', URI.file('/workspace/site/index.html'))).includes('html{zoom:1.2;'),
+		}, {
+			contentOptions: { allowScripts: false, localResourceRoots: ['file:///workspace/site'] },
+			rerenders: [1, 0],
+			zoomBakedIn: true,
+		});
 	});
 
 	suite('renderDocument generation contract', () => {
@@ -252,7 +287,8 @@ suite('ParadisHtmlFileEditor', () => {
 				disposables.add(new TestInstantiationService()), new TestLayoutService(),
 				new TestConfigurationService(), new TestNotificationService(),
 				createSharedProcessService(directory => { mounted = directory; return Promise.resolve(PREVIEW_MOUNT); }),
-				workspace, createRemoteAgentService(), createRemoteAuthorityResolverService(), createTunnelService()));
+				workspace, createRemoteAgentService(), createRemoteAuthorityResolverService(), createTunnelService(),
+				disposables.add(new TestWorkspaceTrustManagementService())));
 
 			const document = new DOMParser().parseFromString(
 				await editor.render('<img src="a.png">', URI.file('/workspace/site/index.html')), 'text/html');

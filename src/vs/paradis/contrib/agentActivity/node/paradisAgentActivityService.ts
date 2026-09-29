@@ -35,9 +35,23 @@ import {
 import { IParadisSessionIndexStatus, PARADIS_SESSION_INDEX_DEFAULT_RETENTION_DAYS } from '../common/paradisSessionIndex.js';
 import { IParadisActivityParseFile, IParadisWorkerIndexFile, ParadisActivityParseReply } from '../common/paradisAgentActivityWorkerProtocol.js';
 import { IParadisIndexSearchResult, IParadisIndexStats, IParadisIndexUpdateResult } from './paradisSessionIndexStore.js';
-import { ParadisAgentActivityWorkerHost } from './paradisAgentActivityWorkerHost.js';
+import { ParadisActivityWorkerTimeoutError, ParadisAgentActivityWorkerHost } from './paradisAgentActivityWorkerHost.js';
 
 const PARSE_BATCH = 40;
+/**
+ * 会話ログ 1 まとまりの集計を待つ上限は「基本の時間 + 大きさ ÷ 最低限の読む速さ」。超えたら worker を止めて
+ * 起動し直す（固まった読み込みが、後ろに並んだ使用量・作業実績の問い合わせをいつまでも待たせないように）。
+ * 速さは全文索引の更新と同じ worker を取り合っても下回らないよう、低めに見積もる。
+ */
+const PARSE_TIMEOUT_BASE_MS = 60_000;
+const PARSE_MIN_BYTES_PER_SECOND = 2 * 1024 * 1024;
+/** 1つのファイルがこの回数続けて時間切れになったら、中身が変わるまで読まない（毎回そこで止まらないように）。 */
+const PARSE_TIMEOUTS_BEFORE_SKIP = 2;
+
+/** 会話ログをまとめて集計するときに待つ上限（{@link PARSE_TIMEOUT_BASE_MS} の説明を参照）。 */
+function paradisActivityParseTimeoutMs(bytes: number): number {
+	return PARSE_TIMEOUT_BASE_MS + Math.ceil(bytes / PARSE_MIN_BYTES_PER_SECOND) * 1000;
+}
 /** 起動してから、保存日数・ツール出力の設定を今ある索引へ反映するまでの時間。 */
 const STARTUP_PRUNE_DELAY_MS = 60_000;
 /** 1回の検索で索引へ問い合わせる会話の数の上限。 */
@@ -88,6 +102,13 @@ export interface IParadisAgentActivityServiceOptions {
 	/** スペースの作業フォルダから、そこで動くエージェントのホームを解決する（WSL の判定。既定は `paradisResolveAgentHomes`）。 */
 	readonly resolveAgentHomes?: (cwd: string) => IParadisAgentHomes;
 	readonly now?: () => number;
+	/** 会話ログの集計を待つ上限（テスト用。既定は {@link paradisActivityParseTimeoutMs}）。 */
+	readonly parseTimeoutMs?: (bytes: number) => number;
+}
+
+/** 中身が変わったかを見分けるための、ファイルの識別（inode・大きさ・更新日時）。 */
+function parseIdentity(file: ITranscriptFile): string {
+	return `${file.dev}:${file.ino}:${file.size}:${file.mtimeMs}`;
 }
 
 function validDay(value: unknown): string | undefined {
@@ -97,6 +118,8 @@ function validDay(value: unknown): string | undefined {
 export class ParadisAgentActivityService extends Disposable {
 
 	private readonly cache = new Map<string, ICachedSummary>();
+	/** 集計が時間切れになったファイル（パス → そのときの中身の識別と、続けて時間切れになった回数）。 */
+	private readonly parseTimeouts = new Map<string, { readonly identity: string; readonly count: number }>();
 	private collecting: Promise<void> = Promise.resolve();
 	private indexUpdating: Promise<IParadisIndexUpdateResult | undefined> | undefined;
 	private indexDeleting: Promise<void> | undefined;
@@ -230,26 +253,54 @@ export class ParadisAgentActivityService extends Disposable {
 					this.cache.delete(path);
 				}
 			}
+			for (const path of [...this.parseTimeouts.keys()]) {
+				if (!present.has(path)) {
+					this.parseTimeouts.delete(path);
+				}
+			}
 			const inRange = files.filter(file => file.mtimeMs >= sinceMs);
 			const stale = inRange.filter(file => {
 				const cached = this.cache.get(file.path);
 				return !cached || cached.dev !== file.dev || cached.ino !== file.ino || cached.size !== file.size || cached.mtimeMs !== file.mtimeMs;
 			});
 			let failedFiles = 0;
-			for (let index = 0; index < stale.length; index += PARSE_BATCH) {
-				const batch = stale.slice(index, index + PARSE_BATCH);
-				const replies = await this.options.worker.request<ParadisActivityParseReply>({
-					op: 'parse',
-					files: batch.map(file => ({ path: file.path, agent: file.agent, subagentFile: file.subagentFile })),
-				});
+			const parse = async (batch: readonly ITranscriptFile[]): Promise<void> => {
+				let replies: ParadisActivityParseReply;
+				try {
+					replies = await this.options.worker.request<ParadisActivityParseReply>({
+						op: 'parse',
+						files: batch.map(file => ({ path: file.path, agent: file.agent, subagentFile: file.subagentFile })),
+					}, (this.options.parseTimeoutMs ?? paradisActivityParseTimeoutMs)(batch.reduce((bytes, file) => bytes + file.size, 0)));
+				} catch (error) {
+					if (!(error instanceof ParadisActivityWorkerTimeoutError)) {
+						throw error;
+					}
+					// 時間切れのまとまりは半分に分けて読み直し、どのファイルで止まるのかを絞り込む。
+					if (batch.length > 1) {
+						const half = Math.ceil(batch.length / 2);
+						await parse(batch.slice(0, half));
+						await parse(batch.slice(half));
+						return;
+					}
+					const count = this.recordParseTimeout(batch[0]);
+					this.logService.warn(`[ParadisAgentActivity] reading a transcript of ${batch[0].size} bytes timed out (${count}/${PARSE_TIMEOUTS_BEFORE_SKIP})${count >= PARSE_TIMEOUTS_BEFORE_SKIP ? '; it is skipped until it changes' : ''}`);
+					failedFiles++;
+					return;
+				}
 				batch.forEach((file, position) => {
 					const summary = replies[position];
 					if (summary) {
+						this.parseTimeouts.delete(file.path);
 						this.cache.set(file.path, { dev: file.dev, ino: file.ino, size: file.size, mtimeMs: file.mtimeMs, summary });
 					} else {
 						failedFiles++;
 					}
 				});
+			};
+			const readable = stale.filter(file => !this.isSkippedAfterTimeouts(file));
+			failedFiles += stale.length - readable.length;
+			for (let index = 0; index < readable.length; index += PARSE_BATCH) {
+				await parse(readable.slice(index, index + PARSE_BATCH));
 			}
 			// 古いファイルから渡す。再開・分岐で写された応答や依頼は、集計側で「先に来たファイル」の分として数えるため、
 			// 写した先（新しいファイル）ではなく元の会話に付く。
@@ -259,6 +310,21 @@ export class ParadisAgentActivityService extends Disposable {
 		const next = this.collecting.then(run, run);
 		this.collecting = next.then(() => undefined, () => undefined);
 		return next;
+	}
+
+	/** 集計が時間切れになったことを覚え、続けて何回目かを返す。中身が変わっていたら数え直す。 */
+	private recordParseTimeout(file: ITranscriptFile): number {
+		const identity = parseIdentity(file);
+		const previous = this.parseTimeouts.get(file.path);
+		const count = previous?.identity === identity ? previous.count + 1 : 1;
+		this.parseTimeouts.set(file.path, { identity, count });
+		return count;
+	}
+
+	/** 同じ中身のまま時間切れが続き、読むのをやめているファイルか。 */
+	private isSkippedAfterTimeouts(file: ITranscriptFile): boolean {
+		const entry = this.parseTimeouts.get(file.path);
+		return entry !== undefined && entry.identity === parseIdentity(file) && entry.count >= PARSE_TIMEOUTS_BEFORE_SKIP;
 	}
 
 	/**

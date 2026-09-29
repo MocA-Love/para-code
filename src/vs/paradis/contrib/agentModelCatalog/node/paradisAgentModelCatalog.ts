@@ -26,7 +26,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { IParadisRunAgentCliOptions, IParadisRunAgentCliResult, paradisDetachedAgentCliEnv, paradisResolveAgentCli, paradisRunAgentCli } from '../../../node/paradisAgentCli.js';
-import { paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
+import { ParadisCodexRpcMethodNotFoundError, paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
@@ -52,6 +52,17 @@ const AGENTS: readonly ParadisCatalogAgentId[] = ['claude', 'codex'];
 const CATALOG_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** 窓が続けて開いたときに、そのたび `--version` を起こさないための間隔。 */
 const RECHECK_INTERVAL_MS = 60 * 1000;
+/**
+ * 一覧を取れなかった CLI に、同じ版のまま聞き直すまでの間隔。取れないたびに `claude -p`（最大 30 秒）や
+ * `codex app-server` を起こし直さないため。版が変われば待たずに聞く。
+ * 一覧を返す仕組みが無いと分かった版（{@link ParadisModelListUnsupportedError}）は長く、時間切れ・未ログイン
+ * など一時的かもしれない失敗は短く待つ。
+ */
+const PROBE_UNSUPPORTED_RETRY_MS = 60 * 60 * 1000;
+const PROBE_FAILURE_RETRY_MS = 5 * 60 * 1000;
+
+/** その版の CLI には、モデルの一覧を返す仕組みが無い（知らないオプション・知らないメソッドで断られた）。 */
+export class ParadisModelListUnsupportedError extends Error { }
 const VERSION_TIMEOUT_MS = 10_000;
 const CLAUDE_PROBE_TIMEOUT_MS = 30_000;
 const CODEX_MAX_PAGES = 5;
@@ -84,6 +95,8 @@ export class ParadisAgentModelCatalogService {
 	private cache: Promise<Record<string, ICachedCatalog>> | undefined;
 	private inFlight: Promise<IParadisAgentModelCatalog[]> | undefined;
 	private lastResult: { readonly at: number; readonly catalogs: IParadisAgentModelCatalog[] } | undefined;
+	/** 一覧を取れなかった CLI（実行ファイルと版）と、その時刻。 */
+	private readonly failedProbes = new Map<ParadisCatalogAgentId, { readonly command: string; readonly version: string; readonly retryAt: number }>();
 
 	constructor(
 		private readonly backend: IParadisAgentModelCatalogBackend,
@@ -136,15 +149,24 @@ export class ParadisAgentModelCatalogService {
 		if (cached !== undefined && cached.command === cli.command && cached.cliVersion === version && this.backend.now() - cached.fetchedAt < CATALOG_MAX_AGE_MS) {
 			return publicCatalog(cached);
 		}
+		const fallback = cached !== undefined && cached.command === cli.command ? publicCatalog(cached) : undefined;
+		const failed = this.failedProbes.get(agentId);
+		if (failed !== undefined && failed.command === cli.command && failed.version === version && this.backend.now() < failed.retryAt) {
+			return fallback;
+		}
 		let models: IParadisDiscoveredModel[] = [];
+		let unsupported = false;
 		try {
 			models = await this.backend.probe(agentId, cli);
 		} catch (error) {
+			unsupported = error instanceof ParadisModelListUnsupportedError;
 			this.logService.warn(`[ParadisAgentModelCatalog] ${agentId} ${version}: could not list models`, error);
 		}
 		if (models.length === 0) {
-			return cached !== undefined && cached.command === cli.command ? publicCatalog(cached) : undefined;
+			this.failedProbes.set(agentId, { command: cli.command, version, retryAt: this.backend.now() + (unsupported ? PROBE_UNSUPPORTED_RETRY_MS : PROBE_FAILURE_RETRY_MS) });
+			return fallback;
 		}
+		this.failedProbes.delete(agentId);
 		const entry: ICachedCatalog = { agentId, cliVersion: version, models, fetchedAt: this.backend.now(), command: cli.command };
 		// 同じ入れ物を書き換える（claude と codex を並べて取るので、写しを作ると片方の結果が消える）
 		const cache = await this.readCache();
@@ -225,6 +247,9 @@ export async function paradisWithPrivateWorkDir<T>(parentDir: string, task: (wor
 	}
 }
 
+/** CLI が知らないオプションを渡されたときの出力。 */
+const CLI_UNKNOWN_OPTION_PATTERN = /unknown option|unrecognized option|unknown argument|unexpected argument/i;
+
 /**
  * Claude Code に `list_models` を聞く。`--no-session-persistence` を知らない古い CLI
  * （stderr にこのフラグ名が出て一覧が空）では、フラグだけ外して1回だけ取り直す。
@@ -236,12 +261,17 @@ export async function paradisProbeClaudeModels(cli: IParadisResolvedCli, workDir
 		stdin: PARADIS_CLAUDE_MODEL_LIST_STDIN,
 		timeoutMs: CLAUDE_PROBE_TIMEOUT_MS,
 	});
-	const result = await run(PARADIS_CLAUDE_MODEL_LIST_ARGS);
-	const models = paradisParseClaudeModelList(result.stdout);
-	if (models.length > 0 || !result.stderr.includes(PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG)) {
-		return models;
+	let result = await run(PARADIS_CLAUDE_MODEL_LIST_ARGS);
+	let models = paradisParseClaudeModelList(result.stdout);
+	if (models.length === 0 && result.stderr.includes(PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG)) {
+		result = await run(PARADIS_CLAUDE_MODEL_LIST_ARGS.filter(arg => arg !== PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG));
+		models = paradisParseClaudeModelList(result.stdout);
 	}
-	return paradisParseClaudeModelList((await run(PARADIS_CLAUDE_MODEL_LIST_ARGS.filter(arg => arg !== PARADIS_CLAUDE_NO_SESSION_PERSISTENCE_FLAG))).stdout);
+	if (models.length === 0 && CLI_UNKNOWN_OPTION_PATTERN.test(result.stderr)) {
+		// 一覧の取り方（オプション）そのものを知らない版。同じ版のうちは聞き直しても同じ。
+		throw new ParadisModelListUnsupportedError(`claude does not support listing models: ${result.stderr.trim().slice(0, 200)}`);
+	}
+	return models;
 }
 
 async function probeCodex(cli: IParadisResolvedCli, workDir: string, logService: ILogService): Promise<IParadisDiscoveredModel[]> {
@@ -250,7 +280,13 @@ async function probeCodex(cli: IParadisResolvedCli, workDir: string, logService:
 		const models: IParadisDiscoveredModel[] = [];
 		let cursor: string | undefined;
 		for (let page = 0; page < CODEX_MAX_PAGES; page++) {
-			const result = await rpc.request('model/list', cursor !== undefined ? { cursor } : {});
+			let result: unknown;
+			try {
+				result = await rpc.request('model/list', cursor !== undefined ? { cursor } : {});
+			} catch (error) {
+				// 一覧のメソッドを知らない版。同じ版のうちは聞き直しても同じ。
+				throw error instanceof ParadisCodexRpcMethodNotFoundError ? new ParadisModelListUnsupportedError(error.message) : error;
+			}
 			models.push(...paradisParseCodexModelList(result));
 			cursor = paradisCodexModelListNextCursor(result);
 			if (cursor === undefined) {

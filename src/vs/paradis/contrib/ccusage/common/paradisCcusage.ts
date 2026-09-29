@@ -41,7 +41,12 @@ export type ParadisCcusageWarmTargetKind = 'daily' | 'blocks' | 'session' | 'pro
 export type ParadisCcusageWarmTargetOptions = Readonly<{
 	readonly executablePath?: string;
 	readonly since?: string;
+	/** SSH 先で数えるときだけ付く、手元のタイムゾーン（{@link IParadisCcusageExecOptions.timezone}）。 */
+	readonly timezone?: string;
 }>;
+
+/** `--timezone` に渡してよい値（IANA のタイムゾーン名の文字だけ）。 */
+export const PARADIS_CCUSAGE_TIMEZONE_PATTERN = /^[A-Za-z][A-Za-z0-9_+\-/]{0,63}$/;
 
 /** owner leaseが要求する1つのwarm対象。 */
 export type ParadisCcusageWarmTarget = Readonly<{

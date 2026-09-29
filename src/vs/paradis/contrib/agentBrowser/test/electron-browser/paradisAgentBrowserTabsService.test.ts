@@ -25,7 +25,7 @@ import { IEditorService } from '../../../../../workbench/services/editor/common/
 import { IParadisAuxiliaryWindowScopeService, IParadisBrowserScopeService, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
 import { IParadisAgentBrowserBindingModel } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
-import { IParadisAgentApprovalRequest, ParadisAgentBrowserTabsService } from '../../electron-browser/paradisAgentBrowserTabsService.js';
+import { IParadisAgentApprovalRequest, ParadisAgentBrowserTabsService, ParadisApprovalDeadline } from '../../electron-browser/paradisAgentBrowserTabsService.js';
 
 interface IShownPrompt {
 	readonly message: string;
@@ -67,7 +67,13 @@ function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: und
 				hasCancelButton: prompt.cancelButton !== undefined,
 			});
 			const answer = answers.shift() ?? { button: undefined, afterMs: 0 };
+			// 本物のダイアログと同じく、印のクラスを付けた要素を画面に出しておく（表示されたかの判定に使われる）
+			const element = mainWindow.document.createElement('div');
+			const custom = prompt.custom;
+			element.classList.add(...(typeof custom === 'object' ? custom.classes ?? [] : []));
+			mainWindow.document.body.appendChild(element);
 			await timeout(answer.afterMs);
+			element.remove();
 			if (answer.viaCommandD) {
 				mainWindow.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', metaKey: true }));
 			}
@@ -211,6 +217,30 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 			'approve', 'approve', 'approve', 4, 1,
 			[{ targetWindowId: ownWindow, mode: FocusMode.Notify }],
 		]);
+	}));
+
+	test('refuses the same pane for a while after shown dialogs were left unanswered twice in a row, not counting cancellations by the agent', () => runWithFakedTimers(fakedTimers, async () => {
+		const fast = { button: 1, afterMs: 100 };
+		const { service, shown } = createService([{ button: 1, afterMs: 60_000 }, { button: 1, afterMs: 60_000 }, fast, fast, fast]);
+		store.add(service);
+		// 締め切りまで放置された（1回目）
+		const expiring = store.add(new ParadisApprovalDeadline(undefined, 30_000));
+		const expired = await service.askApproval('pane-token', request, expiring.token);
+		// エージェント側で中断された（数えない）
+		const interrupted = store.add(new CancellationTokenSource());
+		const pending = service.askApproval('pane-token', request, interrupted.token);
+		await timeout(200);
+		interrupted.cancel();
+		const cancelled = await pending;
+		// 速押しが続いて答えが得られなかった（2回目）
+		const live = store.add(new CancellationTokenSource());
+		assert.deepStrictEqual([
+			expired,
+			cancelled,
+			await service.askApproval('pane-token', request, live.token),
+			await service.askApproval('pane-token', request, live.token),
+			shown.length,
+		], ['cancelled', 'cancelled', 'unanswered', 'recentlyDenied', 5]);
 	}));
 
 	(isMacintosh ? test : test.skip)('asks again when the approval was chosen with Cmd+D', () => runWithFakedTimers(fakedTimers, async () => {

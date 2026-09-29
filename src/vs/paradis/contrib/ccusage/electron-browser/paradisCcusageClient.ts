@@ -24,6 +24,7 @@ import {
 	IParadisCcusageExecOptions,
 	IParadisCcusageSessionRow,
 	PARADIS_CCUSAGE_CHANNEL,
+	PARADIS_CCUSAGE_TIMEZONE_PATTERN,
 	ParadisCcusageAgent,
 	ParadisCcusageProjects,
 	ParadisCcusageWarmTarget,
@@ -97,6 +98,16 @@ export function paradisCcusageDateArg(date: Date): string {
 	const m = String(date.getMonth() + 1).padStart(2, '0');
 	const d = String(date.getDate()).padStart(2, '0');
 	return `${y}${m}${d}`;
+}
+
+/** 手元のタイムゾーン（IANA 名）。ccusage の `--timezone` に渡せる形でなければ undefined。 */
+export function paradisCcusageLocalTimeZone(): string | undefined {
+	try {
+		const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+		return typeof timezone === 'string' && PARADIS_CCUSAGE_TIMEZONE_PATTERN.test(timezone) ? timezone : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -227,12 +238,13 @@ export class ParadisCcusageClient {
 		return {
 			...(options.executablePath === undefined ? {} : { executablePath: options.executablePath }),
 			...(options.since === undefined ? {} : { since: options.since }),
+			...(options.timezone === undefined ? {} : { timezone: options.timezone }),
 		};
 	}
 
 	private execOptions(sinceDays: number | undefined, bypassCache?: boolean): IParadisCcusageExecOptions {
 		const executablePath = this.configurationService.getValue<string>(PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH);
-		const options: { executablePath?: string; since?: string; bypassCache?: boolean } = {};
+		const options: { executablePath?: string; since?: string; timezone?: string; bypassCache?: boolean } = {};
 		if (typeof executablePath === 'string' && executablePath.trim().length > 0) {
 			options.executablePath = executablePath.trim();
 		}
@@ -240,6 +252,13 @@ export class ParadisCcusageClient {
 			const since = new Date();
 			since.setDate(since.getDate() - (sinceDays - 1));
 			options.since = paradisCcusageDateArg(since);
+		}
+		// SSH 先で数えるときは、日付の区切りを手元のタイムゾーンに合わせる。`since` と「今日」は手元の日付で
+		// 作っているのに、接続先の ccusage は接続先のタイムゾーンで日ごとに集計するため、時差の分だけ
+		// 「今日」の行が見つからない（ステータスバーが $0.00 になる）。手元で数えるときは同じなので渡さない。
+		const timezone = this.remoteAgentService.getConnection() ? paradisCcusageLocalTimeZone() : undefined;
+		if (timezone !== undefined) {
+			options.timezone = timezone;
 		}
 		if (bypassCache) {
 			options.bypassCache = true;

@@ -80,6 +80,32 @@ suite('ParadisSessionIndexStore', function () {
 		}
 	});
 
+	test('does not index the same messages twice when an update fails after some of them were stored', async () => {
+		const transcript = join(root, 'c.jsonl');
+		const count = 1200;
+		await fs.writeFile(transcript, Array.from({ length: count }, (_, index) => line(index % 2 === 0 ? 'user' : 'assistant', `本文その${index}`)).join('\n') + '\n');
+		const store = new ParadisSessionIndexStore(join(root, 'index.sqlite'));
+		try {
+			let calls = 0;
+			// 1回目の書き込み（500件）を終えた後の行で失敗させる
+			const failed = await store.update([await indexFile(transcript)], { includeToolOutput: false }, () => {
+				if (++calls === 700) {
+					throw new Error('disk full');
+				}
+				return true;
+			});
+			const partial = store.stats();
+			await store.update([await indexFile(transcript)], { includeToolOutput: false });
+			assert.deepStrictEqual({ failedFiles: failed.failedFiles, partial, full: store.stats() }, {
+				failedFiles: 1,
+				partial: { files: 1, messages: 500 },
+				full: { files: 1, messages: count },
+			});
+		} finally {
+			store.close();
+		}
+	});
+
 	test('recreates a database it cannot open', async () => {
 		const dbPath = join(root, 'broken.sqlite');
 		await fs.writeFile(dbPath, 'this is not a database');

@@ -180,10 +180,17 @@ export function paradisCodexHomeCandidates(options: IParadisCodexHomesOptions = 
 	return scanCodexHomes(options).candidates;
 }
 
-/** パスがどれかの Codex ホームの中（またはホームそのもの）か。字面だけで判定する。 */
-export function paradisIsWithinCodexHome(candidate: string, homes: readonly string[] = paradisCodexHomes()): boolean {
-	const resolved = resolve(candidate);
-	return homes.some(home => resolved === home || resolved.startsWith(home + sep));
+/**
+ * パスがどれかの Codex ホームの中（またはホームそのもの）か。字面だけで判定する。
+ * Windows のパスは大小文字を区別しないので、区別せずに比べる（`C:\Users` と `c:\users` を同じとみなす）。
+ */
+export function paradisIsWithinCodexHome(candidate: string, homes: readonly string[] = paradisCodexHomes(), ignoreCase: boolean = process.platform === 'win32'): boolean {
+	const fold = (path: string) => ignoreCase ? path.toLowerCase() : path;
+	const resolved = fold(resolve(candidate));
+	return homes.some(home => {
+		const folded = fold(home);
+		return resolved === folded || resolved.startsWith(folded + sep);
+	});
 }
 
 /** Claude Code の設定ディレクトリ ($CLAUDE_CONFIG_DIR、既定 ~/.claude)。settings.json / projects/ の親。 */
