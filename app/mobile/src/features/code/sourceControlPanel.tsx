@@ -17,7 +17,7 @@ import { X } from 'lucide-react-native';
 import { CenterSpinner, GroupHeading, InlineError, OfflineBanner, Segments, SpaceGateBody, useReadableColumn } from './codeParts.js';
 import { BranchCard, CommitBar, CommitFailureCard, CommitWarning, HistoryList, ScmFileRow } from './scmParts.js';
 import { ConfirmTarget } from './confirmTarget.js';
-import { stageableEntries } from './diffReview.js';
+import { shouldTryReviewStage } from './diffReview.js';
 import {
 	groupScmEntries,
 	listBodyState,
@@ -62,8 +62,9 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	const sync = useScmSync(codeSpace);
 	const [actionError, setActionError] = useState<string | undefined>(undefined);
 	const stageFile = useStageFile(codeSpace, setActionError);
-	// 確認済みのファイルを「+」でステージするときは、差分画面と同じく確認済みの印ごと付け替える。
-	// 印は差分画面が読み直した手元の写しを読むだけにする（前面へ戻るたびに PC へ読み直しを出さない）。
+	// 確認済みのファイルを「+」でステージするときは、差分画面と同じく確認済みの印ごと付け替える。確認済みかは
+	// PC の保存で決まる（手元の写しは差分画面を開くまで空のことがある）ので、ここでは印を読まずに PC に任せる。
+	// 印の写しは応答で置き換えるだけで、前面へ戻るたびに PC へ読み直しは出さない。
 	const review = useReviewMarksController(codeSpace, { reloadOnFocus: false });
 	const reviewNotes = useReviewNotesController(codeSpace, review);
 	const commitHandoff = useAgentHandoff(codeSpace);
@@ -150,12 +151,13 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	/**
 	 * ステージする・外す。確認済みで確認後に変わっていないファイルは、差分画面と同じく `reviewStage` で
 	 * 確認済みの印ごとステージ後の中身へ付け替える（ただのステージだと「確認後に変更あり」に変わるため）。
-	 * 要求が失敗したら（理由はトーストで出る）ただのステージへは代えない。PC が「確認した後に変わっていた」として
-	 * ステージしなかったときだけ、ただのステージに代える。
+	 * 確認済みかどうかは PC が保存している印で決めるので、PC が扱えればステージするときはいつも `reviewStage` を送る。
+	 * 要求が失敗したら（理由はトーストで出る）ただのステージへは代えない。PC がステージしなかった（確認していない・
+	 * 確認した後に変わっていた）ときだけ、ただのステージに代える。
 	 */
 	const toggleStage = async (entry: ScmEntry) => {
 		setActionError(undefined);
-		if (reviewNotes.canStage && stageableEntries([entry], review.marks).length > 0) {
+		if (shouldTryReviewStage(entry, reviewNotes.canStage)) {
 			const result = await reviewNotes.stage([entry]);
 			if (result === undefined) {
 				return;

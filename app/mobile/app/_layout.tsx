@@ -119,7 +119,9 @@ function RootLayout() {
 		if (wait.expired) {
 			pendingRef.current = undefined;
 			pendingWaitSinceRef.current = undefined;
-			useParaToast.getState().show({ key: 'notification-tap-expired', text: '通知の画面は開きませんでした', sub: 'PC とつながらないまま時間がたったためです', icon: 'time-outline', tone: 'info' }, 3_000);
+			// 通知の PC へ切り替えた後に、自分で別の PC へ戻していたなら、つながらなかったせいではない。
+			const leftTargetPc = target.pcId !== undefined && target.pcId !== store.activePcId && switchedForPendingRef.current === target.pcId;
+			useParaToast.getState().show({ key: 'notification-tap-expired', text: '通知の画面は開きませんでした', sub: leftTargetPc ? '通知の PC から別の PC へ切り替えたためです' : 'PC の状態が届くまでに時間がかかったためです', icon: 'time-outline', tone: 'info' }, 3_000);
 			return;
 		}
 		pendingWaitSinceRef.current = wait.waitingSince;
