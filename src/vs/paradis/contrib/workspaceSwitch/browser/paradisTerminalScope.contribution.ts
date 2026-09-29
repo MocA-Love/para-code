@@ -29,7 +29,7 @@ import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreati
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisScopeRootPath, paradisWorktreeStateKey, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
-import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
+import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisRetireScopeFromNonceScopeStorage, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 import { IParadisTerminalOrphanPty, paradisRegisterTerminalReviveIndexSource, paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
@@ -2165,6 +2165,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		if (retiredNonces) {
 			this.persistNonceMapping();
 		}
+		this.retireFormerSharedPanelScopes(stateKey);
 		for (const instanceId of retiringInstanceIds) {
 			const persistentProcessId = this._persistentProcessIdByInstance.get(instanceId);
 			if (persistentProcessId !== undefined && this._instanceIdByPersistentProcessId.get(persistentProcessId) === instanceId) {
@@ -2407,6 +2408,24 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		const raw = paradisSerializeTerminalNonceScopeStorage(new Map(entries));
 		if (raw !== undefined) {
 			this.storageService.store(key, raw, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		}
+	}
+
+	/**
+	 * 退役したスペースへの控えを消す。残すと、設定をオフに戻したときに消えたスペースへ所属が
+	 * 戻り、二度と切り替えられない場所へ park されて PTY ごと見えなくなる。
+	 *
+	 * 読み戻すとき（`restoreFormerSharedPanelScopes`）に今あるスペースと突き合わせる形にはしない。
+	 * 起動直後は worktree がまだ列挙されておらず、worktree のスペースへの控えまで捨ててしまう。
+	 */
+	private retireFormerSharedPanelScopes(stateKey: string): void {
+		const key = ParadisTerminalWorkspaceScope.SHARED_PANEL_FORMER_SCOPES_STORAGE_KEY;
+		const raw = this.storageService.get(key, StorageScope.WORKSPACE);
+		const retired = raw === undefined ? undefined : paradisRetireScopeFromNonceScopeStorage(raw, stateKey);
+		if (retired === '') {
+			this.storageService.remove(key, StorageScope.WORKSPACE);
+		} else if (retired !== undefined) {
+			this.storageService.store(key, retired, StorageScope.WORKSPACE, StorageTarget.MACHINE);
 		}
 	}
 
