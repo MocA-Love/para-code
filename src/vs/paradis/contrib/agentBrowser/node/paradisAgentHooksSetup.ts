@@ -18,6 +18,7 @@ import { execFile } from 'child_process';
 import { promises as fs, readFileSync, watch } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join } from '../../../../base/common/path.js';
+import { Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { findExecutable } from '../../../../base/node/processes.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
@@ -28,7 +29,7 @@ import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../co
 import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SPOOL_MAX_FILE_BYTES, PARADIS_AGENT_HOOK_SPOOL_MAX_FILES, PARADIS_AGENT_HOOK_SPOOL_SKIPPED_EVENTS } from '../common/paradisAgentHookSpool.js';
-import { paradisClaudeConfigDir, paradisCodexHomeCandidates, paradisCodexHomes } from './paradisAgentHome.js';
+import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexHomeCandidates, paradisCodexHomes } from './paradisAgentHome.js';
 
 /**
  * notify.sh の内容を生成する (全行ASCII)。jq には依存せず grep/sed のみでパースする。
@@ -457,7 +458,7 @@ export function paradisMergeAgentHooksJson(existingRaw: string | undefined, mana
 		const event = managedEvents.find(e => e.eventName === eventName);
 		const replacement = event !== undefined ? paradisManagedHookDefinition(event, hookCommand) : undefined;
 		const { definitions, placed } = replaceManagedHooksInDefinitions(current, replacement);
-		if (replacement !== undefined && !placed) {
+		if (replacement !== undefined && !placed && !event?.retainOnly) {
 			// まだ置いていないイベントは末尾へ足す (ユーザーhookの位置は動かない)
 			definitions.push(replacement);
 		}
@@ -470,7 +471,7 @@ export function paradisMergeAgentHooksJson(existingRaw: string | undefined, mana
 
 	// イベント自体がまだ無い管理対象イベントを足す。
 	for (const event of managedEvents) {
-		if (!Array.isArray(hooks[event.eventName])) {
+		if (!event.retainOnly && !Array.isArray(hooks[event.eventName])) {
 			hooks[event.eventName] = [paradisManagedHookDefinition(event, hookCommand)];
 		}
 	}
@@ -514,19 +515,33 @@ export interface IParadisAgentHooksFileIO {
 	mkdir(directory: string): Promise<void>;
 }
 
+/**
+ * 無いときだけ undefined（無い扱い）にする。読めない（権限・Windows のロック等）のを無いと取り違えると、
+ * 利用者の設定を hook だけの中身で、控えも取らずに上書きしてしまう。読めないときは投げて、今回は見送る。
+ */
+function isFileNotFound(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+}
+
 const defaultAgentHooksFileIO: IParadisAgentHooksFileIO = {
 	async readFile(filePath) {
 		try {
 			return await fs.readFile(filePath, 'utf8');
-		} catch {
-			return undefined;
+		} catch (error) {
+			if (isFileNotFound(error)) {
+				return undefined;
+			}
+			throw error;
 		}
 	},
 	writeFileIfUnchanged(filePath, expected, content) {
 		let current: string | undefined;
 		try {
 			current = readFileSync(filePath, 'utf8');
-		} catch {
+		} catch (error) {
+			if (!isFileNotFound(error)) {
+				throw error;
+			}
 			current = undefined;
 		}
 		if (current !== expected) {
@@ -620,6 +635,12 @@ async function updateAgentHooksFile(filePath: string, operation: 'merge' | 'remo
 					phase: 'setup',
 					safe_target: basename(filePath),
 				});
+				return;
+			}
+			// 手を付けずに受け取ったものを返した（新しい版の hook がある・外す hook が無い）なら書かない。
+			// 下の末尾改行の付け足しを通すと、改行で終わるファイルでは中身が1文字ずれて書き込みが起き、
+			// その書き込みを watch が拾って再実行し、改行が増え続ける。
+			if (result.content === existingRaw) {
 				return;
 			}
 			// 既存ファイルの末尾改行は維持する (余計な毎回書き込みを防ぐ)
@@ -729,6 +750,23 @@ export function paradisSupportsClaudeMessageDisplay(versionOutput: string): bool
 	return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 205)));
 }
 
+/**
+ * Claude Code の settings.json に置くイベント。版を確かめられたときは、その版が受け付けるものだけ。
+ * 確かめられなかったとき（`claude --version` の失敗・確認前）は、版に依るものを「既に置いてあれば残す」に
+ * する。外してしまうと、次に確かめられた起動で足し直すまで活動の表示が止まり、起動のたびに設定を書き換える。
+ */
+export function paradisClaudeManagedHookEvents(versionOutput: string | undefined): IParadisManagedHookEvent[] {
+	const versionDependent = [...PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT];
+	if (versionOutput === undefined) {
+		return [...PARADIS_CLAUDE_HOOK_EVENTS, ...versionDependent.map(event => ({ ...event, retainOnly: true }))];
+	}
+	return [
+		...PARADIS_CLAUDE_HOOK_EVENTS,
+		...(paradisSupportsClaudeActivityHooks(versionOutput) ? PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS : []),
+		...(paradisSupportsClaudeMessageDisplay(versionOutput) ? [PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT] : []),
+	];
+}
+
 const PARADIS_CLAUDE_VERSION_TIMEOUT_MS = 15_000;
 const PARADIS_CLAUDE_VERSION_MAX_ATTEMPTS = 3;
 
@@ -802,6 +840,8 @@ export interface IParadisAgentHooksReconcilerOptions {
 	readonly scheduleReconcile?: (listener: () => void) => IDisposable;
 	readonly scheduleAudit?: (listener: () => void) => IDisposable;
 	readonly reconcileFiles?: () => Promise<void>;
+	/** Codex のホームが増えた・ログインした。既定は `codexHooksPath` を固定していなければ実物の通知。 */
+	readonly onDidChangeCodexHomes?: Event<void>;
 }
 
 /**
@@ -818,6 +858,8 @@ export class ParadisAgentHooksReconciler extends Disposable {
 	private readonly scheduleAudit: (listener: () => void) => IDisposable;
 	private reconcileTail: Promise<void> = Promise.resolve();
 	private pendingReconcile: IDisposable | undefined;
+	/** 見張っているフォルダ（後から増えた Codex のホームも足す）。 */
+	private readonly watchedDirectories = new Set<string>();
 	private started = false;
 	private disposed = false;
 	private notifyScriptInstalled = false;
@@ -863,11 +905,26 @@ export class ParadisAgentHooksReconciler extends Disposable {
 		if (this.disposed) {
 			return;
 		}
-		// 起動後に増えたアカウント用ホームは監視しないが、定期監査（60秒ごと）で設置される。
+		this.watchHookDirectories();
+		this._register(this.scheduleAudit(() => { void this.reconcile(); }));
+		// アカウントを足した・ログインした Codex のホームへは、定期監査（60秒ごと）を待たずに置く。
+		const onDidChangeCodexHomes = this.options.onDidChangeCodexHomes ?? (this.fixedCodexHooksPath === undefined ? onDidChangeParadisCodexHomes : Event.None);
+		this._register(onDidChangeCodexHomes(() => {
+			if (!this.disposed) {
+				this.watchHookDirectories();
+				this.onDirectoryChange(null);
+			}
+		}));
+	}
+
+	private watchHookDirectories(): void {
 		for (const directory of new Set([dirname(this.claudeSettingsPath), ...this.codexHooksPaths().map(path => dirname(path))])) {
+			if (this.watchedDirectories.has(directory)) {
+				continue;
+			}
+			this.watchedDirectories.add(directory);
 			this._register(this.watchDirectory(directory, fileName => this.onDirectoryChange(fileName)));
 		}
-		this._register(this.scheduleAudit(() => { void this.reconcile(); }));
 	}
 
 	private onDirectoryChange(fileName: string | null): void {
@@ -947,17 +1004,13 @@ export class ParadisAgentHooksReconciler extends Disposable {
 		}
 		const hookCommand = process.platform === 'win32' ? paradisManagedAgentHookCommandWindows(homedir()) : undefined;
 		const claudeVersion = await this.resolveClaudeVersion(allowVersionProbe);
-		const claudeEvents = [
-			...PARADIS_CLAUDE_HOOK_EVENTS,
-			...(claudeVersion !== undefined && paradisSupportsClaudeActivityHooks(claudeVersion) ? PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS : []),
-			...(claudeVersion !== undefined && paradisSupportsClaudeMessageDisplay(claudeVersion) ? [PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT] : []),
-		];
+		const claudeEvents = paradisClaudeManagedHookEvents(claudeVersion);
 		if (claudeVersion === undefined || !paradisSupportsClaudeActivityHooks(claudeVersion)) {
 			this.logService?.trace('[ParadisAgentHooks] Claude activity hook support not confirmed; leaving version-dependent hooks disabled');
 		}
 		if (!this.capabilityLogged && (claudeVersion !== undefined || this.claudeVersionAttempts >= PARADIS_CLAUDE_VERSION_MAX_ATTEMPTS)) {
 			this.capabilityLogged = true;
-			this.logService?.info(`[ParadisAgentHooks] Claude version ${claudeVersion?.trim() ?? 'unknown'}; managed events: ${claudeEvents.map(event => event.eventName).join(', ')}`);
+			this.logService?.info(`[ParadisAgentHooks] Claude version ${claudeVersion?.trim() ?? 'unknown'}; managed events: ${claudeEvents.map(event => event.retainOnly ? `${event.eventName} (kept if present)` : event.eventName).join(', ')}`);
 		}
 		await paradisMergeAgentHooksFile(this.claudeSettingsPath, claudeEvents, this.logService, hookCommand);
 		for (const codexHooksPath of this.codexHooksPaths()) {
@@ -993,11 +1046,7 @@ export async function paradisSetupAgentHooks(logService: ILogService, shellEnvRe
 		const detail = claudeVersionProbe.detail ? ` (${claudeVersionProbe.detail})` : '';
 		logService.warn(`[ParadisAgentHooks] Claude version probe failed at ${claudeVersionProbe.stage}, attempt 1/1${detail}`);
 	}
-	const claudeEvents = [
-		...PARADIS_CLAUDE_HOOK_EVENTS,
-		...(claudeVersion !== undefined && paradisSupportsClaudeActivityHooks(claudeVersion) ? PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS : []),
-		...(claudeVersion !== undefined && paradisSupportsClaudeMessageDisplay(claudeVersion) ? [PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT] : []),
-	];
+	const claudeEvents = paradisClaudeManagedHookEvents(claudeVersion);
 	if (claudeVersion === undefined || !paradisSupportsClaudeActivityHooks(claudeVersion)) {
 		logService.trace('[ParadisAgentHooks] Claude activity hook support not confirmed; leaving version-dependent hooks disabled');
 	}

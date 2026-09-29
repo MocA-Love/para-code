@@ -83,6 +83,12 @@ export interface IParadisManagedHookEvent {
 	readonly eventName: string;
 	/** ツール系イベント (PostToolUse 等) に付ける matcher。 */
 	readonly matcher?: string;
+	/**
+	 * 既に置いてあれば最新の定義へ差し替えて残し、無ければ足さない。CLI の版を確かめられなかったときの
+	 * 版に依るイベントに使う（確かめられないたびに外し、次に確かめられたときに足し直すと、設定ファイルが
+	 * 起動のたびに書き換わる）。
+	 */
+	readonly retainOnly?: boolean;
 }
 
 /**

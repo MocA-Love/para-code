@@ -13,11 +13,12 @@ import type { AddressInfo } from 'net';
 import { tmpdir } from 'os';
 import { promisify } from 'util';
 import { join } from '../../../../../base/common/path.js';
+import { Emitter } from '../../../../../base/common/event.js';
 import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CODEX_HOOK_EVENTS, paradisManagedAgentHookCommand, paradisManagedHookDefinition } from '../../common/paradisAgentHooks.js';
-import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler, paradisClaudeManagedHookEvents, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksFile, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
 import { paradisWriteFileAtomicSync } from '../../../../node/paradisWriteFileAtomic.js';
 
 const execFileAsync = promisify(execFile);
@@ -479,6 +480,59 @@ suite('ParadisAgentHooksSetup', () => {
 		assert.strictEqual(paradisMergeAgentHooksJson(existing, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS), existing);
 	});
 
+	test('does not rewrite a file ending in a newline when it has newer hooks or nothing to remove', async () => {
+		const newerCommand = paradisManagedAgentHookCommand().replace(
+			`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`,
+			`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION + 1}.sh`,
+		);
+		const newer = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: newerCommand }] }] } }, undefined, 2) + '\n';
+		const userOnly = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: '/tmp/user-hook.sh' }] }] } }, undefined, 2) + '\n';
+		const writes: string[] = [];
+		const io = (raw: string) => ({
+			readFile: async () => raw,
+			writeFileIfUnchanged: (filePath: string) => { writes.push(filePath); return true; },
+			mkdir: async () => undefined,
+		});
+		await paradisMergeAgentHooksFile('/tmp/newer.json', PARADIS_CODEX_HOOK_EVENTS, undefined, undefined, io(newer));
+		await paradisRemoveAgentHooksFile('/tmp/user-only.json', undefined, io(userOnly));
+		assert.deepStrictEqual(writes, []);
+	});
+
+	test('keeps version-dependent Claude hooks already in place while the Claude version is unknown', () => {
+		const activity = paradisManagedHookDefinition({ eventName: 'SubagentStart' });
+		const existing = JSON.stringify({ hooks: { SubagentStart: [activity] } });
+		const hookNames = (raw: string | undefined) => Object.keys((JSON.parse(raw ?? '{}') as { hooks: Record<string, unknown> }).hooks).sort();
+		assert.deepStrictEqual({
+			unknown: hookNames(paradisMergeAgentHooksJson(existing, paradisClaudeManagedHookEvents(undefined))).filter(name => name.startsWith('Subagent') || name === 'MessageDisplay' || name === 'TaskCreated'),
+			unknownFromEmpty: hookNames(paradisMergeAgentHooksJson(undefined, paradisClaudeManagedHookEvents(undefined))).filter(name => name.startsWith('Subagent') || name === 'MessageDisplay'),
+			old: hookNames(paradisMergeAgentHooksJson(existing, paradisClaudeManagedHookEvents('2.1.100 (Claude Code)'))).filter(name => name.startsWith('Subagent')),
+			supported: hookNames(paradisMergeAgentHooksJson(existing, paradisClaudeManagedHookEvents('2.1.207 (Claude Code)'))).filter(name => name.startsWith('Subagent') || name === 'MessageDisplay'),
+		}, {
+			unknown: ['SubagentStart'],
+			unknownFromEmpty: [],
+			old: [],
+			supported: ['MessageDisplay', 'SubagentStart', 'SubagentStop'],
+		});
+	});
+
+	test('leaves a settings file it cannot read alone instead of treating it as missing', async function () {
+		if (process.platform === 'win32' || process.getuid?.() === 0) {
+			this.skip();
+		}
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hooks-unreadable-'));
+		const file = join(root, 'settings.json');
+		try {
+			await fs.writeFile(file, '{"user":true}\n');
+			await fs.chmod(file, 0o200);
+			await paradisMergeAgentHooksFile(file, PARADIS_CODEX_HOOK_EVENTS, undefined);
+			await fs.chmod(file, 0o644);
+			assert.deepStrictEqual({ content: await fs.readFile(file, 'utf8'), entries: (await fs.readdir(root)).sort() }, { content: '{"user":true}\n', entries: ['settings.json'] });
+		} finally {
+			await fs.chmod(file, 0o644).catch(() => undefined);
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('migrates legacy managed hooks and preserves user hooks idempotently', () => {
 		const userHook = { type: 'command', command: '/tmp/user-hook.sh' };
 		const legacyHook = { type: 'command', command: '[ -x "$HOME/.para-code/hooks/notify.sh" ] && "$HOME/.para-code/hooks/notify.sh" || true' };
@@ -603,6 +657,36 @@ suite('ParadisAgentHooksSetup', () => {
 		auditListener?.();
 		assert.strictEqual(scheduled.length, 0);
 		assert.strictEqual(reconcileCount, 3);
+	});
+
+	test('reconciles soon after a Codex home is added instead of waiting for the audit', async () => {
+		const homesChanged = new Emitter<void>();
+		const scheduled: (() => void)[] = [];
+		const watched: string[] = [];
+		let reconcileCount = 0;
+		const reconciler = new ParadisAgentHooksReconciler(undefined, {
+			claudeSettingsPath: '/tmp/paradis-l7/.claude/settings.json',
+			codexHooksPath: '/tmp/paradis-l7/.codex/hooks.json',
+			claudeVersionOutput: '2.1.207',
+			installNotifyScript: false,
+			onDidChangeCodexHomes: homesChanged.event,
+			watchDirectory: directory => { watched.push(directory); return { dispose: () => undefined }; },
+			scheduleAudit: () => ({ dispose: () => undefined }),
+			scheduleReconcile: listener => { scheduled.push(listener); return { dispose: () => undefined }; },
+			reconcileFiles: async () => { reconcileCount++; },
+		});
+		await reconciler.start();
+		homesChanged.fire();
+		scheduled.shift()?.();
+		await reconciler.whenIdle();
+		reconciler.dispose();
+		homesChanged.fire();
+		homesChanged.dispose();
+		assert.deepStrictEqual({ reconcileCount, scheduled: scheduled.length, watched }, {
+			reconcileCount: 2,
+			scheduled: 0,
+			watched: ['/tmp/paradis-l7/.claude', '/tmp/paradis-l7/.codex'],
+		});
 	});
 
 	test('keeps base hook reconciliation available when Claude version detection fails', async () => {
