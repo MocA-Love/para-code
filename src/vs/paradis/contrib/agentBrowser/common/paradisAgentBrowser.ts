@@ -1011,6 +1011,26 @@ export interface IParadisMcpFixRequest {
 }
 
 /**
+ * 許可待ち・質問中のペインへ、送り主を確かめられない hook（tmux のサーバー配下や WSL の中など、ペインの
+ * シェルの子孫に見えないもの）が届いても受け付けるイベント。どれも状態を working / review へ進める
+ * （または変えない）だけで、許可待ち・質問へは入れない: ツールの完了・失敗・拒否、次の依頼、ターンの終了。
+ * 確かめられないまま解いたペインには、IDE 操作ツールの Enter を断る印を付ける（偽の hook で解いて
+ * 許可ダイアログを Enter で承認させる経路は、引き続き塞ぐ）。
+ *
+ * 含めないもの: PreToolUse（AskUserQuestion の PreToolUse は質問への入口）、許可要求・Notification、
+ * TerminalExit（Enter を断る印ごと消してしまう）、未知のイベント。
+ */
+const PARADIS_AGENT_HOOK_RELEASE_EVENTS: ReadonlySet<string> = new Set([
+	'PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'UserPromptSubmit', 'task_started',
+	'Stop', 'StopFailure', 'SubagentStop', 'agent-turn-complete', 'task_complete', 'SessionEnd',
+]);
+
+/** 送り主を確かめられなくても、許可待ち・質問中のペインで受け付けてよい hook か（{@link PARADIS_AGENT_HOOK_RELEASE_EVENTS}）。 */
+export function paradisIsAgentHookReleaseEvent(eventType: string): boolean {
+	return PARADIS_AGENT_HOOK_RELEASE_EVENTS.has(eventType);
+}
+
+/**
  * 各エージェントCLIのhookイベント名を状態へ正規化する。Superset の
  * main/lib/notifications/map-event-type.ts の正規化テーブル移植 + Claude Code の
  * Notification イベント対応。undefined = 未知イベント (無視)、'idle' = エントリ削除。
