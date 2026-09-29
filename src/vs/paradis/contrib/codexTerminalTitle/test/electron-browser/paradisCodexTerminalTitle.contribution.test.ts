@@ -7,7 +7,13 @@ import { deepStrictEqual, strictEqual } from 'assert';
 import { Schemas } from '../../../../../base/common/network.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { classifyTrackableCodexCommand, createCodexTerminalTitle, ICodexTrackableCommand, isCodexTuiCommand, replaceTerminalTitleInTuiSection, resolveWritableCodexHome, writeCodexAccountHomes } from '../../electron-browser/paradisCodexTerminalTitle.contribution.js';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { joinPath } from '../../../../../base/common/resources.js';
+import { FileService } from '../../../../../platform/files/common/fileService.js';
+import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
+import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { addTerminalTitleToTuiSection, classifyTrackableCodexCommand, createCodexTerminalTitle, ICodexTrackableCommand, isCodexTuiCommand, PARADIS_CODEX_TERMINAL_TITLE_MARKER, paradisUpdateCodexTerminalTitleConfig, removeParadisTerminalTitleFromTuiSection, resolveWritableCodexHome, writeCodexAccountHomes } from '../../electron-browser/paradisCodexTerminalTitle.contribution.js';
 
 suite('ParadisCodexTerminalTitle', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -150,25 +156,32 @@ suite('ParadisCodexTerminalTitle', () => {
 		});
 	});
 
-	suite('replaceTerminalTitleInTuiSection', () => {
-		const title = 'terminal_title = ["app-name", "thread-title"]';
-		test('keeps config.toml valid TOML', () => {
+	suite('addTerminalTitleToTuiSection', () => {
+		const title = `terminal_title = ["app-name", "thread-title"] ${PARADIS_CODEX_TERMINAL_TITLE_MARKER}`;
+		test('adds the key only where it is absent and keeps config.toml valid TOML', () => {
 			deepStrictEqual({
-				missing: replaceTerminalTitleInTuiSection('model = "x"\n'),
-				existingKey: replaceTerminalTitleInTuiSection('[tui]\nterminal_title = ["spinner"]\nx = 1\n'),
+				empty: addTerminalTitleToTuiSection(''),
+				missing: addTerminalTitleToTuiSection('model = "x"\n'),
+				// 利用者が決めた値（`/title` など）は上書きしない
+				existingKey: addTerminalTitleToTuiSection('[tui]\nterminal_title = ["spinner"]\nx = 1\n'),
+				existingQuotedKey: addTerminalTitleToTuiSection('[tui]\n"terminal_title" = []\n'),
+				missingKey: addTerminalTitleToTuiSection('[tui]\nx = 1\n'),
 				// `[tui]` が最後の行で改行が無い
-				headerAtEnd: replaceTerminalTitleInTuiSection('model = "x"\n[tui]'),
-				spacedHeader: replaceTerminalTitleInTuiSection('[ tui ] # comment\nx = 1\n'),
+				headerAtEnd: addTerminalTitleToTuiSection('model = "x"\n[tui]'),
+				spacedHeader: addTerminalTitleToTuiSection('[ tui ] # comment\nx = 1\n'),
 				// 最上位の dotted key や inline table で tui を定義済み（[tui] を足すと二重定義になる）
-				dottedKey: replaceTerminalTitleInTuiSection('tui.notifications = true\n[profiles.a]\nmodel = "x"\n'),
-				inlineTable: replaceTerminalTitleInTuiSection('tui = { notifications = true }\n'),
+				dottedKey: addTerminalTitleToTuiSection('tui.notifications = true\n[profiles.a]\nmodel = "x"\n'),
+				inlineTable: addTerminalTitleToTuiSection('tui = { notifications = true }\n'),
 				// 他の表の下の dotted key は tui の定義ではない
-				nestedDotted: replaceTerminalTitleInTuiSection('[profiles.a]\ntui.x = 1\n'),
+				nestedDotted: addTerminalTitleToTuiSection('[profiles.a]\ntui.x = 1\n'),
 				// 字下げした次の表の見出しを [tui] の中身と取り違えない
-				indentedNextTable: replaceTerminalTitleInTuiSection('[tui]\nx = 1\n  [profiles.a]\nterminal_title = "keep"\n'),
+				indentedNextTable: addTerminalTitleToTuiSection('[tui]\nx = 1\n  [profiles.a]\nterminal_title = "keep"\n'),
 			}, {
+				empty: `[tui]\n${title}\n`,
 				missing: `model = "x"\n\n[tui]\n${title}\n`,
-				existingKey: `[tui]\n${title}\nx = 1\n`,
+				existingKey: '[tui]\nterminal_title = ["spinner"]\nx = 1\n',
+				existingQuotedKey: '[tui]\n"terminal_title" = []\n',
+				missingKey: `[tui]\n${title}\nx = 1\n`,
 				headerAtEnd: `model = "x"\n[tui]\n${title}\n`,
 				spacedHeader: `[ tui ] # comment\n${title}\nx = 1\n`,
 				dottedKey: 'tui.notifications = true\n[profiles.a]\nmodel = "x"\n',
@@ -176,6 +189,116 @@ suite('ParadisCodexTerminalTitle', () => {
 				nestedDotted: `[profiles.a]\ntui.x = 1\n\n[tui]\n${title}\n`,
 				indentedNextTable: `[tui]\n${title}\nx = 1\n  [profiles.a]\nterminal_title = "keep"\n`,
 			});
+		});
+	});
+
+	suite('removeParadisTerminalTitleFromTuiSection', () => {
+		const title = `terminal_title = ["app-name", "thread-title"] ${PARADIS_CODEX_TERMINAL_TITLE_MARKER}`;
+		test('removes only the value Para Code wrote', () => {
+			deepStrictEqual({
+				owned: removeParadisTerminalTitleFromTuiSection(`model = "x"\n\n[tui]\n${title}\nx = 1\n`),
+				ownedLastLine: removeParadisTerminalTitleFromTuiSection(`[tui]\n${title}`),
+				// 目印の無い同じ値は、利用者が書いたもの（または目印を付ける前の Para Code）とみなして残す
+				sameValueWithoutMarker: removeParadisTerminalTitleFromTuiSection('[tui]\nterminal_title = ["app-name", "thread-title"]\n'),
+				// 目印が残っていても値を変えていれば利用者のもの
+				editedValue: removeParadisTerminalTitleFromTuiSection(`[tui]\nterminal_title = ["spinner"] ${PARADIS_CODEX_TERMINAL_TITLE_MARKER}\n`),
+				// [tui] の外にある同じ行は tui の設定ではない
+				otherTable: removeParadisTerminalTitleFromTuiSection(`[tui]\nx = 1\n[profiles.a]\n${title}\n`),
+			}, {
+				owned: 'model = "x"\n\n[tui]\nx = 1\n',
+				ownedLastLine: '[tui]\n',
+				sameValueWithoutMarker: '[tui]\nterminal_title = ["app-name", "thread-title"]\n',
+				editedValue: `[tui]\nterminal_title = ["spinner"] ${PARADIS_CODEX_TERMINAL_TITLE_MARKER}\n`,
+				otherTable: `[tui]\nx = 1\n[profiles.a]\n${title}\n`,
+			});
+		});
+
+		test('turning the setting on and off again round-trips a config without [tui]', () => {
+			const config = 'model = "x"\n';
+			// 見出しは残る（利用者が書いた見出しかもしれないため）。空の表は正しい TOML
+			strictEqual(removeParadisTerminalTitleFromTuiSection(addTerminalTitleToTuiSection(config)), 'model = "x"\n\n[tui]\n');
+		});
+	});
+
+	suite('paradisUpdateCodexTerminalTitleConfig', () => {
+		const home = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+box', path: '/home/example/.codex' });
+		const configFile = joinPath(home, 'config.toml');
+		const title = `terminal_title = ["app-name", "thread-title"] ${PARADIS_CODEX_TERMINAL_TITLE_MARKER}`;
+
+		function createFileService(disposables: DisposableStore): FileService {
+			const fileService = disposables.add(new FileService(new NullLogService()));
+			disposables.add(fileService.registerProvider('vscode-remote', disposables.add(new InMemoryFileSystemProvider())));
+			return fileService;
+		}
+
+		async function read(fileService: FileService): Promise<string | undefined> {
+			return await fileService.exists(configFile) ? (await fileService.readFile(configFile)).value.toString() : undefined;
+		}
+
+		test('does not create the Codex home when it does not exist', async () => {
+			const disposables = new DisposableStore();
+			try {
+				const fileService = createFileService(disposables);
+				const result = await paradisUpdateCodexTerminalTitleConfig(fileService, home, true, async () => undefined);
+				deepStrictEqual({ result, homeExists: await fileService.exists(home) }, { result: 'no-home', homeExists: false });
+			} finally {
+				disposables.dispose();
+			}
+		});
+
+		test('writes where absent, keeps a user value, and removes only its own value when turned off', async () => {
+			const disposables = new DisposableStore();
+			try {
+				const fileService = createFileService(disposables);
+				await fileService.createFolder(home);
+				const backups: string[] = [];
+				const backup = async (file: URI) => { backups.push(file.path); };
+				const created = await paradisUpdateCodexTerminalTitleConfig(fileService, home, true, backup);
+				const afterCreate = await read(fileService);
+				const again = await paradisUpdateCodexTerminalTitleConfig(fileService, home, true, backup);
+				const removed = await paradisUpdateCodexTerminalTitleConfig(fileService, home, false, backup);
+				const afterRemove = await read(fileService);
+				await fileService.writeFile(configFile, VSBuffer.fromString('[tui]\nterminal_title = ["spinner"]\n'));
+				const userValueOn = await paradisUpdateCodexTerminalTitleConfig(fileService, home, true, backup);
+				const userValueOff = await paradisUpdateCodexTerminalTitleConfig(fileService, home, false, backup);
+				deepStrictEqual({ created, afterCreate, again, removed, afterRemove, userValueOn, userValueOff, userValue: await read(fileService), backups }, {
+					created: 'written',
+					afterCreate: `[tui]\n${title}\n`,
+					again: 'unchanged',
+					removed: 'written',
+					afterRemove: '[tui]\n',
+					userValueOn: 'unchanged',
+					userValueOff: 'unchanged',
+					userValue: '[tui]\nterminal_title = ["spinner"]\n',
+					// 新しく作ったときは控えるものが無い
+					backups: [configFile.path],
+				});
+			} finally {
+				disposables.dispose();
+			}
+		});
+
+		test('re-reads and keeps a concurrent write made while it was updating', async () => {
+			const disposables = new DisposableStore();
+			try {
+				const fileService = createFileService(disposables);
+				await fileService.createFolder(home);
+				await fileService.writeFile(configFile, VSBuffer.fromString('model = "x"\n'));
+				let concurrentWrites = 0;
+				// 控えを取っている間に、Codex の trust 書き込みが同じファイルへ書いたことにする
+				const result = await paradisUpdateCodexTerminalTitleConfig(fileService, home, true, async () => {
+					if (concurrentWrites++ === 0) {
+						await fileService.writeFile(configFile, VSBuffer.fromString('model = "x"\n\n[projects."/work"]\ntrust_level = "trusted"\n'));
+					}
+				});
+				deepStrictEqual({ result, concurrentWrites, config: await read(fileService) }, {
+					result: 'written',
+					concurrentWrites: 2,
+					config: `model = "x"\n\n[projects."/work"]\ntrust_level = "trusted"\n\n[tui]\n${title}\n`,
+				});
+			} finally {
+				disposables.dispose();
+			}
 		});
 	});
 });
