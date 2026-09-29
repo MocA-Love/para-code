@@ -450,7 +450,10 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			const running = this.agentCommandsByInstance.get(instance.instanceId);
 			const paneToken = this.provider.getPaneTokenForTerminalHint(instance.instanceId) ?? running?.token;
 			if (paneToken === undefined) { return; }
-			this.agentCommandCoordinator?.finish(paneToken, commandLine, generation => withCurrentRendererLease(lease => this.service.notifyAgentCliCommandFinished(lease, paneToken, generation)));
+			// Ctrl+Z で止めただけ（シェルの終了コードが 128 + SIGSTOP・SIGTSTP・SIGTTIN・SIGTTOU。macOS と Linux で番号が違う）
+			// なら、許可待ち・質問中は解かない（`fg` で同じ画面に戻る）
+			const suspended = exitCode !== undefined && exitCode >= 145 && exitCode <= 150;
+			this.agentCommandCoordinator?.finish(paneToken, commandLine, generation => withCurrentRendererLease(lease => this.service.notifyAgentCliCommandFinished(lease, paneToken, generation, suspended)));
 		};
 		const recoveryTracker = this._register(new ParadisAgentTerminalRecoveryTracker(
 			() => this.provider.getAllTerminalInstancesForAgentRecovery(),

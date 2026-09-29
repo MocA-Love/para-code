@@ -429,8 +429,11 @@ export interface IParadisMobileRelayService {
 	 * `claude --help` のような空振りは誤検知にならない)。
 	 */
 	notifyAgentCliCommand(lease: IParadisMobileWindowLease, paneToken: string, generation: number, commandLine: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork', cwd: string | undefined, commandCwd?: string, sessionId?: string): Promise<ParadisAgentCommandDeliveryResult>;
-	/** 対話型Agent CLIが終了した。TUI内resume監視と一時状態を解除する。 */
-	notifyAgentCliCommandFinished(lease: IParadisMobileWindowLease, paneToken: string, generation: number): Promise<ParadisAgentCommandDeliveryResult>;
+	/**
+	 * 対話型Agent CLIが終了した。TUI内resume監視と一時状態を解除する。
+	 * @param suspended Ctrl+Z 等で止めただけ（`fg` で戻る）。許可待ち・質問中は解かない
+	 */
+	notifyAgentCliCommandFinished(lease: IParadisMobileWindowLease, paneToken: string, generation: number, suspended?: boolean): Promise<ParadisAgentCommandDeliveryResult>;
 
 	/** Codex pane app-server購読の設定をshared processへ同期する。 */
 	setAgentLiveOptions(options: { readonly codexDaemonStreaming: boolean }): Promise<void>;
