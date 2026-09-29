@@ -765,6 +765,11 @@ export class SCMRepositoriesViewPane extends ViewPane {
 	}
 
 	private async updateChildren(element?: TreeElement): Promise<void> {
+		// PARA-PATCH: the pane can be disposed while a caller awaits (removing a child repository awaits
+		// the parent's update first), and the disposed throttler then rejects with "Throttler is disposed".
+		if (this._store.isDisposed) {
+			return;
+		}
 		return this.updateChildrenThrottler.queue(
 			() => this.treeOperationSequencer.queue(async () => {
 				if (element && this.tree.hasNode(element)) {
