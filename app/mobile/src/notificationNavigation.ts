@@ -54,8 +54,9 @@ export function notificationNavigationDecision(
 export const NOTIFICATION_PENDING_WAIT_MS = 20_000;
 
 /**
- * 保留中の通知タップを待ち続けるか。`waitingSince` は待ち始めた時刻（初めて待ったときは undefined）。
- * 返す `waitingSince` を次の判断に渡す。
+ * 保留中の通知タップをまだ扱うか。`waitingSince` は判断を始めた時刻（初めて判断するときは undefined）。
+ * 返す `waitingSince` を次の判断に渡す。遷移・PC の切り替えなど、どの分かれ道よりも先に見ること
+ * （判断はストアが変わったときにしか走らないので、後で見ると期限を過ぎた保留で遷移してしまう）。
  */
 export function pendingNotificationWait(waitingSince: number | undefined, now: number): { readonly expired: boolean; readonly waitingSince: number } {
 	const since = waitingSince ?? now;

@@ -136,10 +136,12 @@ export function resolveSessionTab(workspace: WorkspaceState | undefined, spaceId
  *
  * 既定のタブは要対応のエージェントを優先するので、指定なしのまま置くと、同じスペースの別の
  * エージェントが許可待ちになった瞬間に画面がそちらへ切り替わる（入力中の相手と取り違える）。
- * 開いた時点のタブをクエリへ書き込み、以後は指定ありと同じ扱いにする。
+ * 開いた時点のタブをクエリへ書き込み、以後は指定ありと同じ扱いにする。PC の状態の全体
+ * （`workspace.complete`）が届いてから固定する。
  */
-export function sessionTabToPin(requested: SessionTab | undefined, resolved: ResolvedSessionTab): Extract<SessionTab, { readonly kind: 'terminal' }> | undefined {
-	if (requested !== undefined || resolved.status !== 'terminal') {
+export function sessionTabToPin(requested: SessionTab | undefined, resolved: ResolvedSessionTab, workspaceComplete: boolean): Extract<SessionTab, { readonly kind: 'terminal' }> | undefined {
+	// 全体が届く前は、要対応のエージェントがまだ届いていないことがある。途中の一覧で決めたタブは固定しない。
+	if (requested !== undefined || resolved.status !== 'terminal' || !workspaceComplete) {
 		return undefined;
 	}
 	return { kind: 'terminal', terminalKey: resolved.terminal.terminalKey };

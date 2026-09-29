@@ -22,6 +22,7 @@ import { startWidgetSync } from '../src/widgets/widgetSync.js';
 import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 import { reportMobileDiagnosticError } from '../src/mobileDiagnostics.js';
+import { useParaToast } from '../src/paraToast.js';
 import { notificationDestination, notificationNavigationDecision, pendingNotificationWait, readNotificationDeepLink, type NotificationDeepLinkData } from '../src/notificationNavigation.js';
 import { loadSessionViewSettings } from '../src/features/session/useSessionView.js';
 import { useQuickReplies } from '../src/features/settings/quickRepliesStore.js';
@@ -81,7 +82,7 @@ function RootLayout() {
 	const pendingRef = useRef<NotificationDeepLinkData | undefined>(undefined);
 	// 保留中の通知のために、どのPCへ自動で切り替えたか（同じ保留で二度は切り替えない）。
 	const switchedForPendingRef = useRef<string | undefined>(undefined);
-	// 保留中の通知が PC の状態を待ち始めた時刻。待ちすぎたら保留を捨てる（`pendingNotificationWait`）。
+	// 保留中の通知の判断を始めた時刻（解除と台帳の読み込みの後の最初の判断）。待ちすぎたら保留を捨てる（`pendingNotificationWait`）。
 	const pendingWaitSinceRef = useRef<number | undefined>(undefined);
 
 	useEffect(() => {
@@ -112,16 +113,16 @@ function RootLayout() {
 		if (!store.ready) {
 			return;
 		}
-		/** PC の状態を待つ。待ちすぎていたら保留を捨てる（後で繋がった瞬間に古い通知の先へ飛ばない）。 */
-		const keepWaiting = () => {
-			const wait = pendingNotificationWait(pendingWaitSinceRef.current, Date.now());
-			if (wait.expired) {
-				pendingRef.current = undefined;
-				pendingWaitSinceRef.current = undefined;
-				return;
-			}
-			pendingWaitSinceRef.current = wait.waitingSince;
-		};
+		// 保留が長すぎたら、どの分かれ道より先に捨てる。この関数はストアが変わったときにしか呼ばれないので、
+		// PC が長く繋がらずに後で全体が届くと、ここで捨てない限りその瞬間に古い通知の先へ飛んでしまう。
+		const wait = pendingNotificationWait(pendingWaitSinceRef.current, Date.now());
+		if (wait.expired) {
+			pendingRef.current = undefined;
+			pendingWaitSinceRef.current = undefined;
+			useParaToast.getState().show({ key: 'notification-tap-expired', text: '通知の画面は開きませんでした', sub: 'PC とつながらないまま時間がたったためです', icon: 'time-outline', tone: 'info' }, 3_000);
+			return;
+		}
+		pendingWaitSinceRef.current = wait.waitingSince;
 		if (target.pcId !== undefined && target.pcId !== store.activePcId) {
 			// 台帳に無いPC（ペアリングを解除した後に届いたプッシュ）の通知は捨てる。
 			// いま見ているPCの一覧に対して遷移先を探すと、別のPCの話で画面が動く。
@@ -136,7 +137,6 @@ function RootLayout() {
 			// 毎回撃つと「ユーザーが手で別のPCへ戻す → 通知のPCへ引き戻される」を繰り返し、
 			// 告知の『戻る』が効かなくなる。
 			if (switchedForPendingRef.current === target.pcId) {
-				keepWaiting();
 				return;
 			}
 			switchedForPendingRef.current = target.pcId;
@@ -146,7 +146,6 @@ function RootLayout() {
 		const currentWorkspace = workspaceRef.current;
 		const decision = notificationNavigationDecision(currentWorkspace, target.terminalKey);
 		if (decision === 'wait') {
-			keepWaiting();
 			return;
 		}
 		if (decision === 'missing' || currentWorkspace === undefined || target.terminalKey === undefined) {

@@ -137,7 +137,8 @@ export default function SessionScreen() {
 	};
 
 	// 指定なしで開いたら、既定で開いたタブをクエリへ固定する（別のエージェントが許可待ちになっても勝手に移らない）。
-	const pinKey = focused ? sessionTabToPin(requestedTab, tab)?.terminalKey : undefined;
+	const workspaceComplete = useAppStore(s => s.workspace?.complete === true);
+	const pinKey = focused ? sessionTabToPin(requestedTab, tab, workspaceComplete)?.terminalKey : undefined;
 	useEffect(() => {
 		if (pinKey !== undefined) {
 			openTab({ kind: 'terminal', terminalKey: pinKey });
