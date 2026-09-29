@@ -78,6 +78,24 @@ suite('paradisTerminalDescendants', () => {
 		});
 	});
 
+	test('stops a process started in the second the table was taken, checking it only after that second has passed', async () => {
+		const shell = 10;
+		// 表を撮った秒（1_000）の直前に `&` で起動した開発サーバー。
+		const { deps, events } = fakeDeps({
+			snapshot: [row(shell, 1, 'zsh', 900), row(11, shell, 'vite', 1_000)],
+			looks: [[row(11, 1, 'vite', 1_000)], []],
+			ignored: new Map([[11, false]]),
+		});
+		// 猶予の後でもまだ撮った秒の途中（1_000.4 秒）だったとき、秒が過ぎるまで待ってから照合する。
+		const captured = await paradisCaptureShellDescendants(shell, { ...deps, snapshot: async () => ({ rows: [row(shell, 1, 'zsh', 900), row(11, shell, 'vite', 1_000)], bornBefore: 1_001 }) });
+		const report = await paradisStopCapturedDescendants(captured, Promise.resolve(), { ...deps, now: () => 1_000_400 });
+		assert.deepStrictEqual({ captured: captured.map(r => r.pid), events, terminated: report.terminated.map(r => r.pid) }, {
+			captured: [11],
+			events: ['wait 2000', 'wait 600', 'lookup 11', 'probe 11', 'SIGTERM 11', 'wait 8000', 'lookup 11'],
+			terminated: [11],
+		});
+	});
+
 	// レビュー H2: アプリの中の pty ホストでは、シェルへの終了を表の撮影で遅らせない。常駐の中でだけ待つ。
 	test('the in-app order ends the shell right away; the daemon order ends it once the table is taken', async () => {
 		const order: string[] = [];
