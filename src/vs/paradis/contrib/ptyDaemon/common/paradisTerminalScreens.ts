@@ -139,14 +139,34 @@ export function paradisDecideSavedScreens(saved: IParadisSavedTerminalScreens, n
  * 戻すと決めた保存物を、戻した後にどう残すか。undefined なら消す。
  *
  * 戻す前に消すと、戻す途中で失敗したときや、次の保存（最短 5 分後）より前に落ちたときに、画面が
- * すべて失われる。そこで消さずに「今の常駐が抱えている」と書き直す。ウィンドウの再読み込みでは
- * {@link ParadisSavedScreensDecision.DaemonStillHolds} になって二重に起こさず、PC を再起動すれば
- * 今の常駐も居なくなるので、もう一度戻せる。次の保存が今の状態で上書きする。
+ * すべて失われる。そこで消さずに「今の常駐が、今の時刻に抱えた」と書き直す。
  *
- * 今の常駐が分からない（常駐が動いていないのに、アプリの起動時刻から戻すと決めた）ときは、
- * 書き直す相手が居ないので消す（二重に起こすより、失う方を採る）。
+ * - 常駐が同じ（ウィンドウの再読み込み）: {@link ParadisSavedScreensDecision.DaemonStillHolds} に
+ *   なって二重に起こさない
+ * - 常駐の状態が分からない: 保存時刻を今にしてあるので、アプリの起動時刻は保存より前になり、
+ *   {@link ParadisSavedScreensDecision.Unknown} になって起こさない（元の保存時刻のままだと、
+ *   アプリが保存より後に起動したとみなして、生きているシェルの横にもう一度起こしてしまう）
+ * - PC を再起動した（常駐が替わった）: もう一度戻せる
+ *
+ * 次の保存が今の状態で上書きする。今の常駐が分からない（常駐が動いていないのに、アプリの起動時刻
+ * から戻すと決めた）ときは、書き直す相手が居ないので消す（二重に起こすより、失う方を採る）。
  */
-export function paradisSavedScreensAfterRevive(saved: IParadisSavedTerminalScreens, status: IParadisDaemonStatusLike | undefined): IParadisSavedTerminalScreens | undefined {
+export function paradisSavedScreensAfterRevive(saved: IParadisSavedTerminalScreens, status: IParadisDaemonStatusLike | undefined, now: number): IParadisSavedTerminalScreens | undefined {
 	const current = paradisDaemonIdentityForSave(status);
-	return current ? { ...saved, daemon: current } : undefined;
+	return current ? { ...saved, savedAt: now, daemon: current } : undefined;
+}
+
+/**
+ * 保存できなかった（常駐がこちらの端末を抱えていない）ときに、残っている保存物を消すか。
+ *
+ * 保存物が「今の常駐が抱えている」と言っているのに、今の常駐が抱えている本数が保存しようとした
+ * 本数に足りなければ、その主張は外れている（pty ホストがアプリの中に落ち、端末はそちらで動いて
+ * いる）。残すと、次に PC を再起動したときに古い画面を起こすので消す。本数が分からないとき、常駐が
+ * 別のもの（保存物の常駐はもう居ない）のときは判断しない。
+ */
+export function paradisShouldDropScreensNotHeldByDaemon(saved: IParadisSavedTerminalScreens, status: IParadisDaemonStatusLike | undefined, terminalsToSave: number): boolean {
+	const current = paradisDaemonIdentityForSave(status);
+	return current !== undefined
+		&& current.pid === saved.daemon.pid && current.startedAt === saved.daemon.startedAt
+		&& status?.terminalCount !== undefined && status.terminalCount < terminalsToSave;
 }
