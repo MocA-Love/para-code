@@ -401,6 +401,18 @@ suite('ParadisWorktreeGitService', () => {
 			});
 		});
 
+		test('allows write-tree, which the phone commit uses to tell whether the PC changed the index during the hooks', async () => {
+			const calls: ISpawnCall[] = [];
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile([]), async () => ({}), false, createSpawn(calls, child => child.finish(0, '4b825dc642cb6eb9a060e54bf8d69288fbee4904\n')));
+
+			const result = await service.runGit('/repo', ['write-tree']);
+
+			assert.deepStrictEqual({ args: calls.map(call => call.args), result }, {
+				args: [['-C', '/repo', '-c', 'core.quotepath=false', 'write-tree']],
+				result: { code: 0, stdout: '4b825dc642cb6eb9a060e54bf8d69288fbee4904\n', stderr: '' },
+			});
+		});
+
 		test('rejects a subcommand outside the allow list without spawning a process', async () => {
 			const calls: IExecFileCall[] = [];
 			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, createExecFile(calls));

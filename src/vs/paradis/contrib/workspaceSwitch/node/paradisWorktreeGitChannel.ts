@@ -275,7 +275,9 @@ export class ParadisWorktreeGitService {
 
 	// push / fetch / pull（Orca W2-15 のスマホからの同期）は、許すオプションだけを列挙した追加の検査に掛ける
 	// （paradisRestrictedGitArgsError）。強制 push（`--force` 系・`-f`・`+refspec`）とリモートのブランチの削除はそこで弾く。
-	private static readonly RUN_GIT_ALLOWED_SUBCOMMANDS: ReadonlySet<string> = new Set(['status', 'diff', 'add', 'commit', 'log', 'rev-parse', 'branch', 'restore', 'remote', 'show', 'push', 'fetch', 'pull']);
+	// `write-tree` はスマホからのコミットが失敗したとき、フックの間に PC でステージが変わったかを確かめるのに使う
+	// （ツリーのオブジェクトを 1 つ書くだけで、作業ツリーや参照は変えない）。
+	private static readonly RUN_GIT_ALLOWED_SUBCOMMANDS: ReadonlySet<string> = new Set(['status', 'diff', 'add', 'commit', 'log', 'rev-parse', 'branch', 'restore', 'remote', 'show', 'push', 'fetch', 'pull', 'write-tree']);
 	// 外部コマンド実行やリポジトリ差し替えに繋がるオプションを拒否する。`-C`/`-c` は自前で
 	// 先頭に足すので、呼び出し元が渡す args の側からは常に禁止する。`--output` は diff/log/show が
 	// 受け付け、値に任意パスを渡せば任意ファイル書き込みに使える。
