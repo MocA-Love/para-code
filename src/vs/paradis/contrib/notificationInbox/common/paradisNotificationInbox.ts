@@ -253,8 +253,11 @@ const SECRET_PATTERNS: readonly [RegExp, string][] = [
 	[/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}/gi, `$1 ${REDACTED}`],
 	// 大文字の環境変数（STRIPE_SECRET_KEY=... / OPENAI_KEY=... / SENTRY_DSN=...）
 	[new RegExp(`\\b([A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASS(?:WORD)?|PWD|DSN|CREDENTIALS?))(\\s*=\\s*)${QUOTED_OR_VALUE}`, 'g'), `$1$2${REDACTED}`],
-	// api_key: ... / password=... / secret_key_base: ... など（右辺だけ伏せる）
-	[new RegExp(`\\b([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|secret|token|passw(?:or)?d|pwd|credentials?|authorization)[A-Za-z0-9_]*)(["']?\\s*[:=]\\s*)${QUOTED_OR_VALUE}`, 'gi'), `$1$2${REDACTED}`],
+	// api_key: ... / password=... / secret_key_base: ... など（右辺だけ伏せる）。全角のコロン・等号（\uFF1A \uFF1D）も区切りとして読む
+	[new RegExp(`\\b([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|secret|token|passw(?:or)?d|pwd|credentials?|authorization)[A-Za-z0-9_]*)(["']?\\s*[:=\\uFF1A\\uFF1D]\\s*)${QUOTED_OR_VALUE}`, 'gi'), `$1$2${REDACTED}`],
+	// 日本語の項目名（パスワード：hunter2 / トークン=abc123）。値は ASCII だけなので「パスワード：必須」のような文は伏せない
+	// allow-any-unicode-next-line
+	[new RegExp(`(パスワード|パスフレーズ|暗証番号|トークン|シークレット|秘密鍵|API\\s?キー|アクセスキー)(\\s*[:=\\uFF1A\\uFF1D]\\s*)${QUOTED_OR_VALUE}`, 'gi'), `$1$2${REDACTED}`],
 	// 空白区切りで値を渡す設定（aws configure set aws_secret_access_key <値>）
 	[new RegExp(`\\b([a-z0-9]+_(?:secret_access_key|session_token|secret_key|api_key|access_token))(\\s+)${QUOTED_OR_VALUE}`, 'gi'), `$1$2${REDACTED}`],
 	// --password xxx / --api-key=xxx などのコマンドライン引数（行頭か空白の直後のものだけ）

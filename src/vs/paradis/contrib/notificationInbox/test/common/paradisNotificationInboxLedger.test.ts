@@ -107,6 +107,16 @@ suite('Paradis notification inbox ledger', () => {
 		});
 	});
 
+	test('a ledger created later (after the shared process restarts) starts above the revisions of the earlier one', () => {
+		let now = 1000;
+		const earlier = new ParadisNotificationInboxLedger(() => now);
+		earlier.bumpRevision();
+		earlier.bumpRevision();
+		now = 5000;
+		const later = new ParadisNotificationInboxLedger(() => now);
+		assert.deepStrictEqual([earlier.snapshot().revision, later.snapshot().revision > earlier.snapshot().revision], [1002, true]);
+	});
+
 	test('formats the OS notification body and the menu entries', () => {
 		const ledger = new ParadisNotificationInboxLedger(() => 1000);
 		ledger.setLivePanes('window:1', ['a', 'b']);
