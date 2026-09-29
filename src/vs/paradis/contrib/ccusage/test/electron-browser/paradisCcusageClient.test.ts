@@ -16,7 +16,7 @@ import {
 	IParadisCcusageSessionRow,
 	ParadisCcusageProjects,
 } from '../../common/paradisCcusage.js';
-import { ParadisCcusageClient, paradisCcusageDateArg, paradisCcusageProjectDisplayName } from '../../electron-browser/paradisCcusageClient.js';
+import { ParadisCcusageClient, paradisCcusageDateArg, paradisCcusageLocalTimeZone, paradisCcusageProjectDisplayName } from '../../electron-browser/paradisCcusageClient.js';
 
 interface IChannelCall {
 	readonly channel: string;
@@ -33,6 +33,10 @@ async function flushMicrotasks(): Promise<void> {
 function configurationChange(affectedKey: string): IConfigurationChangeEvent {
 	return { affectsConfiguration: key => key === affectedKey } as IConfigurationChangeEvent;
 }
+
+/** SSH 先へ頼むときは、日付の区切りを手元に合わせるためタイムゾーンを添える。 */
+const remoteTimeZone = paradisCcusageLocalTimeZone();
+const remoteDailyOptions = { since: '20260519', ...(remoteTimeZone === undefined ? {} : { timezone: remoteTimeZone }) };
 
 suite('ParadisCcusageClient', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -206,10 +210,10 @@ suite('ParadisCcusageClient', () => {
 		configurationChanges.dispose();
 
 		assert.deepStrictEqual(calls.map(call => ({ channel: call.channel, args: call.args })), [
-			{ channel: 'remote-a', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: { since: '20260519' } }] }] },
-			{ channel: 'remote-a', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: { since: '20260519' } }] }] },
+			{ channel: 'remote-a', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: remoteDailyOptions }] }] },
+			{ channel: 'remote-a', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: remoteDailyOptions }] }] },
 			{ channel: 'remote-a', args: [{ ownerId, active: false, targets: [] }] },
-			{ channel: 'remote-c', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: { since: '20260519' } }] }] },
+			{ channel: 'remote-c', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: remoteDailyOptions }] }] },
 			{ channel: 'remote-c', args: [{ ownerId, active: false, targets: [] }] },
 			{ channel: 'local', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: { since: '20260519' } }] }] },
 			{ channel: 'local', args: [{ ownerId, active: false, targets: [] }] },
@@ -251,7 +255,7 @@ suite('ParadisCcusageClient', () => {
 		configurationChanges.dispose();
 
 		assert.deepStrictEqual(calls.map(call => ({ channel: call.channel, args: call.args })), [
-			{ channel: 'remote-a', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: { since: '20260519' } }] }] },
+			{ channel: 'remote-a', args: [{ ownerId, active: true, targets: [{ kind: 'daily', options: remoteDailyOptions }] }] },
 			{ channel: 'remote-a', args: [{ ownerId, active: false, targets: [] }] },
 		]);
 	});
