@@ -1638,6 +1638,53 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	test('brings back the rest of a space\'s parked groups when one of them fails, and retries the failed one next time', async () => {
+		const testDisposables = new DisposableStore();
+		const originalUnexpectedErrorHandler = errorHandler.getUnexpectedErrorHandler();
+		const errors: string[] = [];
+		setUnexpectedErrorHandler(error => errors.push(String(error)));
+		testDisposables.add({ dispose: () => setUnexpectedErrorHandler(originalUnexpectedErrorHandler) });
+		try {
+			const failing = createRestoredTerminalGroup(4801);
+			const healthy = createRestoredTerminalGroup(4802);
+			const failingUnparks = new Set([failing]);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			harness.installTerminalScope(async () => { }, {
+				groups: [failing, healthy],
+				worktreeReady: true,
+				connected: true,
+				persistentProcessScopes: [[4801, 'space-b'], [4802, 'space-b']],
+				failingUnparks,
+			});
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			const parkedInSpaceA = [harness.parkedGroups.has(failing), harness.parkedGroups.has(healthy)];
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const parkedAfterFailure = [harness.parkedGroups.has(failing), harness.parkedGroups.has(healthy)];
+
+			failingUnparks.clear();
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			await harness.workspaceSwitchService.switchRepository('space-b');
+
+			assert.deepStrictEqual({
+				parkedInSpaceA,
+				parkedAfterFailure,
+				parkedAfterRetry: [harness.parkedGroups.has(failing), harness.parkedGroups.has(healthy)],
+				errors,
+			}, {
+				parkedInSpaceA: [true, true],
+				parkedAfterFailure: [true, false],
+				parkedAfterRetry: [false, false],
+				errors: ['Error: unpark failed'],
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
 	// リモートでは `whenConnected` が復元端末全ての replay 完了まで待つため、数分単位で遅れる。
 	// それまで park を保留したままだと、切り替えたはずの前のスペースのターミナルが見えて操作でき、
 	// 前のスペースの作業ディレクトリでコマンドを打つ事故になる。接続完了で先に打ち切る。
@@ -2140,6 +2187,8 @@ interface IParadisTerminalScopeHarnessOptions {
 	readonly remoteAuthority?: string;
 	/** 組み立てた時点の接続状態。既に Connected な状態から始めるのに使う。 */
 	readonly connectionState?: TerminalConnectionState;
+	/** 待避から戻すと例外になるグループ。1件の失敗で残りを戻し損ねないかを見るのに使う。 */
+	readonly failingUnparks?: ReadonlySet<ITerminalGroup>;
 }
 
 /** マイクロタスクとタイマーを数回まわして、非同期の解決を落ち着かせる。 */
@@ -2461,6 +2510,9 @@ async function createHarness(
 				paradisParkGroup: { value: (group: ITerminalGroup) => { parkedGroups.add(group); } },
 				paradisUnparkGroup: {
 					value: (group: ITerminalGroup) => {
+						if (options.failingUnparks?.has(group)) {
+							throw new Error('unpark failed');
+						}
 						parkedGroups.delete(group);
 						// 実物は復帰後に見えるグループが1件になった時点で `setActiveGroupByIndex(0, true)`
 						// を呼び、`onDidChangeActiveGroup` を発火する。この副作用が active group 台帳を
