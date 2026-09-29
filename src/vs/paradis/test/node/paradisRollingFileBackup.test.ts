@@ -34,10 +34,15 @@ suite('paradisRollingFileBackup', () => {
 		const missing = [paradisWriteRollingBackupSync(file), await paradisWriteRollingBackup(file)];
 		await fs.writeFile(file, 'first', { mode: 0o600 });
 		await fs.chmod(file, 0o600);
-		const firstSync = paradisWriteRollingBackupSync(file);
+		const firstSync = paradisWriteRollingBackupSync(file, { keepOriginal: true });
 		const afterFirst = await fs.readFile(paradisRollingBackupPath(file), 'utf8');
 		await fs.writeFile(file, 'second');
-		const secondAsync = await paradisWriteRollingBackup(file);
+		const secondAsync = await paradisWriteRollingBackup(file, { keepOriginal: true });
+		// 秘密を持ちうるファイル（頼まない）には、消えない写しを作らない
+		const secret = join(directory, 'claude.json');
+		await fs.writeFile(secret, 'token');
+		await paradisWriteRollingBackup(secret);
+		paradisWriteRollingBackupSync(secret);
 		const mode = (await fs.stat(paradisRollingBackupPath(file))).mode & 0o777;
 		assert.deepStrictEqual({
 			missing,
@@ -56,7 +61,7 @@ suite('paradisRollingFileBackup', () => {
 			afterSecond: 'second',
 			original: 'first',
 			mode: 0o600,
-			entries: ['settings.json', 'settings.json.paradis.bak', 'settings.json.paradis.orig.bak'],
+			entries: ['claude.json', 'claude.json.paradis.bak', 'settings.json', 'settings.json.paradis.bak', 'settings.json.paradis.orig.bak'],
 		});
 	});
 

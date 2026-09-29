@@ -554,7 +554,8 @@ const defaultAgentHooksFileIO: IParadisAgentHooksFileIO = {
 		// 控えは保険なので、写せなくても書き換えは止めない。
 		if (current !== undefined) {
 			try {
-				paradisWriteRollingBackupSync(filePath);
+				// hook の設定ファイルは Para Code が繰り返し書き換えるので、最初の中身も残す
+				paradisWriteRollingBackupSync(filePath, { keepOriginal: true });
 			} catch {
 				// 控えの場所が symlink・書き込めない など
 			}
