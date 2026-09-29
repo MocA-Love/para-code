@@ -213,6 +213,23 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 		]);
 	}));
 
+	test('refuses the same pane for a while after shown dialogs ended without an answer twice in a row', () => runWithFakedTimers(fakedTimers, async () => {
+		const fast = { button: 1, afterMs: 100 };
+		const { service, shown } = createService([{ button: 1, afterMs: 60_000 }, fast, fast, fast]);
+		store.add(service);
+		const ignored = store.add(new CancellationTokenSource());
+		const live = store.add(new CancellationTokenSource());
+		const pending = service.askApproval('pane-token', request, ignored.token);
+		await timeout(10);
+		ignored.cancel();
+		assert.deepStrictEqual([
+			await pending,
+			await service.askApproval('pane-token', request, live.token),
+			await service.askApproval('pane-token', request, live.token),
+			shown.length,
+		], ['cancelled', 'unanswered', 'recentlyDenied', 4]);
+	}));
+
 	(isMacintosh ? test : test.skip)('asks again when the approval was chosen with Cmd+D', () => runWithFakedTimers(fakedTimers, async () => {
 		const { service, shown } = createService([{ button: 1, afterMs: 1500, viaCommandD: true }, { button: 1, afterMs: 1500 }]);
 		store.add(service);

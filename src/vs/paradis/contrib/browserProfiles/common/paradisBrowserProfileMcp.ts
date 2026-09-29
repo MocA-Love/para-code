@@ -103,7 +103,7 @@ export const PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD = 'deleteBrowserProfile';
  */
 export const PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD = 'isPaneOwnedProfile';
 
-/** エージェントが作れるプロファイルの数の上限（作りっぱなしで台帳が埋まるのを防ぐ）。 */
+/** 1つのペインのエージェントが作れるプロファイルの数の上限（作りっぱなしで台帳が埋まるのを防ぐ）。 */
 export const PARADIS_AGENT_CREATED_PROFILE_LIMIT = 10;
 
 /** エージェントへ見せるプロファイル1件分。ID やパーティション名は見せない。 */

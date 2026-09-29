@@ -21,6 +21,13 @@ import { PARADIS_BROWSER_DOWNLOADS_DEFAULT_SUBFOLDER, PARADIS_BROWSER_DOWNLOADS_
 const configuredSessions = new WeakSet<Session>();
 
 /**
+ * 保存先として割り当て、まだ終わっていないダウンロードのパス。Chromium は終わるまで保存先に
+ * ファイルを置かないので、ディスクだけを見ると、同時に始まった同じ名前の2件が同じパスになり、
+ * 後から終わった方が先の方を上書きする。
+ */
+const reservedDownloadPaths = new Set<string>();
+
+/**
  * Electron main専用値の取得を呼び出し側へ分離した、ダウンロード配線のテスト可能な本体。
  */
 export function paradisConfigureBrowserDownloadsWithPath(
@@ -58,7 +65,11 @@ function paradisAssignDownloadSavePath(item: DownloadItem, configurationService:
 		return;
 	}
 
-	item.setSavePath(paradisResolveUniqueDownloadPath(targetDirectory, basename(item.getFilename())));
+	const savePath = paradisResolveUniqueDownloadPath(targetDirectory, basename(item.getFilename()));
+	reservedDownloadPaths.add(savePath);
+	// 終わったら（完了・取り消し・中断のどれでも）予約を外す。完了したものはディスクの確認で避けられる。
+	item.once('done', () => reservedDownloadPaths.delete(savePath));
+	item.setSavePath(savePath);
 }
 
 /**
@@ -77,7 +88,7 @@ function paradisResolveUniqueDownloadPath(directory: string, filename: string): 
 	const base = filename.slice(0, filename.length - ext.length);
 
 	let candidate = join(directory, filename);
-	for (let i = 1; fs.existsSync(candidate); i++) {
+	for (let i = 1; reservedDownloadPaths.has(candidate) || fs.existsSync(candidate); i++) {
 		candidate = join(directory, `${base} (${i})${ext}`);
 	}
 	return candidate;

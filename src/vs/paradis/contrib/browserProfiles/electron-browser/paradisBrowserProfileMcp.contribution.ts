@@ -157,28 +157,30 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 	}
 
 	private async _openApprovedProfile(token: string, profile: IParadisBrowserProfile, url: string | undefined, deadline: ParadisApprovalDeadline): Promise<IParadisOpenProfileResult> {
-		const approval = await this._approveUserProfile(token, profile, deadline, url);
-		if (approval !== 'approved') {
-			return { ok: false, reason: approval };
-		}
-		// 承認を待っている間に状況が変わっていないか確かめ直す。
-		const group = this.agentTabsService.resolveTarget(token);
-		if (!group.ok) {
-			return group;
-		}
-
-		// 開く前に Cookie の有無を見ておく。開いた後だとそのページ自身が置いた Cookie が混ざり、
-		// 「ログイン状態が復元された」かどうかを誤って答えてしまう。
-		const stats = await this.profilesService.getProfileStats(profile.id);
-		const restored = (stats.cookieCount ?? 0) > 0;
-
 		// エージェントが開くタブなので、open_browser_tab と同じ上限と台帳に載せる（自分で閉じられるように）。
+		// 上限は承認ダイアログを出す前に確かめる（承認させてから上限で断らない）。枠は開き終えるまで持つ。
 		const slot = this.agentTabsService.reserveSlot(token);
 		if (!slot) {
 			return { ok: false, reason: 'limitReached' };
 		}
 		let input: BrowserEditorInput | undefined;
+		let restored = false;
 		try {
+			const approval = await this._approveUserProfile(token, profile, deadline, url);
+			if (approval !== 'approved') {
+				return { ok: false, reason: approval };
+			}
+			// 承認を待っている間に状況が変わっていないか確かめ直す。
+			const group = this.agentTabsService.resolveTarget(token);
+			if (!group.ok) {
+				return group;
+			}
+
+			// 開く前に Cookie の有無を見ておく。開いた後だとそのページ自身が置いた Cookie が混ざり、
+			// 「ログイン状態が復元された」かどうかを誤って答えてしまう。
+			const stats = await this.profilesService.getProfileStats(profile.id);
+			restored = (stats.cookieCount ?? 0) > 0;
+
 			input = await this.profilesService.openInProfile(profile.id, url, group.group);
 			if (input) {
 				this.agentTabsService.registerAgentTab(token, input);
@@ -287,7 +289,9 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		if (!normalized || paradisIsDuplicateProfileName(profiles, normalized)) {
 			return { ok: false, reason: 'invalidName' };
 		}
-		if (profiles.filter(profile => profile.createdByAgent).length >= PARADIS_AGENT_CREATED_PROFILE_LIMIT) {
+		// 上限はペインごとに数える。作ったペインのトークンは CLI を起動し直すと変わり、前のペインが作った
+		// ものはもう誰も消せないので、全ペインの合計で数えると、残ったものだけで以後ずっと作れなくなる。
+		if (profiles.filter(profile => isOwnProfile(profile, token)).length >= PARADIS_AGENT_CREATED_PROFILE_LIMIT) {
 			return { ok: false, reason: 'tooManyProfiles' };
 		}
 		// 色はエージェントに選ばせない（ユーザーが見分けるための印）。まだ使われていない色から順に割り当てる。
