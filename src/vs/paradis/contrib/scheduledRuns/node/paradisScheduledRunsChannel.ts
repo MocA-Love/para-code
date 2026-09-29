@@ -145,7 +145,7 @@ export function paradisScheduledRunDefinitionDigest(definition: IParadisSchedule
  * スクリプト・エージェント）だけ。鍵で守るにはキーチェーン等の置き場所が要り、shared process からは
  * まだ使えないため見送っている。
  */
-export function createParadisScheduledRunsFileStore(userDataPath: string): IParadisScheduledRunsStore {
+export function createParadisScheduledRunsFileStore(userDataPath: string, writeFileAtomic: (path: string, data: Buffer) => Promise<void> = paradisWriteFileAtomic): IParadisScheduledRunsStore {
 	const directory = join(userDataPath, 'paradis');
 	const file = join(directory, 'scheduledRuns.json');
 	const digestFile = join(directory, 'scheduledRuns.digest.json');
@@ -198,16 +198,20 @@ export function createParadisScheduledRunsFileStore(userDataPath: string): IPara
 		async write(state) {
 			await fs.mkdir(directory, { recursive: true, mode: 0o700 });
 			const next = digestsOf(state.definitions);
-			// 指紋を先に書き、今ディスクにある定義の指紋も残す。定義を書く前に落ちても、残っている古い定義は
-			// 古い指紋で通る（外で書き換えられたものとして無効に戻さない）。定義を書いた後なら新しい指紋で通る。
-			const digests: Record<string, string | string[]> = {};
+			// 1. 今ディスクにある定義の指紋と新しい指紋の両方を書く。定義を書く前に落ちても、残っている古い定義は
+			//    古い指紋で通る（外で書き換えられたものとして無効に戻さない）
+			// 2. 定義を書く
+			// 3. 新しい指紋だけにする。古い指紋を残したままにすると、無効にした定義を外で `"enabled": true` に
+			//    戻しただけで、前の指紋に一致して通ってしまう
+			const both: Record<string, string | string[]> = {};
 			for (const id of new Set([...Object.keys(committedDigests), ...Object.keys(next)])) {
 				const values = [...new Set([committedDigests[id], next[id]].filter((value): value is string => value !== undefined))];
-				digests[id] = values.length === 1 ? values[0] : values;
+				both[id] = values.length === 1 ? values[0] : values;
 			}
-			await paradisWriteFileAtomic(digestFile, Buffer.from(JSON.stringify(digests)));
-			await paradisWriteFileAtomic(file, Buffer.from(JSON.stringify(state, undefined, '\t')));
+			await writeFileAtomic(digestFile, Buffer.from(JSON.stringify(both)));
+			await writeFileAtomic(file, Buffer.from(JSON.stringify(state, undefined, '\t')));
 			committedDigests = next;
+			await writeFileAtomic(digestFile, Buffer.from(JSON.stringify(next)));
 		},
 	};
 }
