@@ -25,21 +25,26 @@
 // エディタウィンドウをユーザーがフォーカスしているだけでそちらへ流出する（`revealIfOpen`
 // が有効なら、別スペースの補助ウィンドウで既に開いている同名ファイルが reveal されもする）。
 //
+// 同じチャネルの `paneRoots` は、内蔵 chrome-devtools-mcp の roots（ツールが手元で読み書きしてよい
+// フォルダ）に使う、ペインのスペースのフォルダを返す。ペイン→スペースの解決は preview_file と同じ。
+//
 // 拡張子ごとの分岐は行わない: Markdown/HTML/PDF/Excel等のリッチビューアは fileViewers が
 // EditorResolver（exclusive優先度）で登録済みなので、openEditor だけで自動的に選ばれる。
 
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Event } from '../../../../base/common/event.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { IParadisPreviewFileResult, PARADIS_AGENT_PREVIEW_CHANNEL } from '../common/paradisAgentBrowser.js';
+import { IParadisPreviewFileResult, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import {
 	IParadisAuxiliaryWindowScopeService,
@@ -79,6 +84,8 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 		private readonly worktreeService: IParadisWorktreeService,
 		private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 		private readonly logService: ILogService,
+		/** スペースを持たないペインのフォルダ（ウィンドウのワークスペース）を引くため。無ければ引かない。 */
+		private readonly workspaceContextService?: IWorkspaceContextService,
 	) {
 		super();
 
@@ -100,18 +107,25 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 		if (command === 'previewFile') {
 			const args = Array.isArray(arg) ? arg : [];
 			const token = typeof args[0] === 'string' ? args[0] : undefined;
-			return this._previewFile(token, String(args[1])) as Promise<T>;
+			const remoteAuthority = typeof args[2] === 'string' && args[2].length > 0 ? args[2] : undefined;
+			return this._previewFile(token, String(args[1]), remoteAuthority) as Promise<T>;
+		}
+		if (command === PARADIS_AGENT_PANE_ROOTS_METHOD) {
+			const args = Array.isArray(arg) ? arg : [];
+			return this._paneRoots(typeof args[0] === 'string' ? args[0] : undefined) as T;
 		}
 		throw new Error(`Method not found: ${command}`);
 	}
 
-	private async _previewFile(token: string | undefined, path: string): Promise<IParadisPreviewFileResult> {
+	private async _previewFile(token: string | undefined, path: string, remoteAuthority: string | undefined): Promise<IParadisPreviewFileResult> {
 		// ここは意図的に paradisResolveExternalPath を使わない（他の URI.file 呼び出しとは事情が違う）。
 		// エージェントが送ってくるパスの基準はペインが属するスペースだが、それを基準に写すと
 		// 取り違えたときに「別のファイルを黙って開く」ことになる。解決できないまま stat に失敗すれば
 		// エージェントには失敗が返り、静かな誤動作にはならない。直すならスペース配下であることの
 		// 確認とセットにすること。
-		const resource = URI.file(path);
+		// 接続先（SSH・WSL・コンテナ）のペインのエージェントが渡すパスは、その接続先のパス。手元のパスとして
+		// 開くと、接続先のエージェントが手元のファイルを開いたり有無を探ったりできてしまう
+		const resource = remoteAuthority !== undefined ? paradisRemotePathResource(remoteAuthority, path) : URI.file(path);
 		try {
 			const stat = await this.fileService.stat(resource);
 			if (stat.isDirectory) {
@@ -141,6 +155,29 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 		}
 		const group = this.resolveVisibleGroup(stateKey, resource);
 		return group ? this.openPreview(resource, group) : this.deferPreview(stateKey, resource);
+	}
+
+	/**
+	 * ペインが属するスペースの手元のフォルダ。スペースを持たないペインはウィンドウのワークスペースの
+	 * フォルダ。接続先（SSH）のフォルダしか無いときは空。所属がまだ分からないときは undefined。
+	 */
+	private _paneRoots(token: string | undefined): string[] | undefined {
+		if (token === undefined) {
+			return [];
+		}
+		const target = this.resolvePaneTarget(token);
+		if (target.kind === 'unresolved') {
+			// まだ台帳に無い・所属が決まっていない。空で答えると一時フォルダだけに固まるので、後で引き直させる
+			return undefined;
+		}
+		let resources: readonly URI[];
+		if (target.kind === 'space') {
+			const entry = paradisListSpaces(this.workspaceSwitchService.repositories, this.worktreeService).find(candidate => candidate.space === target.stateKey);
+			resources = entry ? [entry.uri] : [];
+		} else {
+			resources = this.workspaceContextService?.getWorkspace().folders.map(folder => folder.uri) ?? [];
+		}
+		return resources.filter(resource => resource.scheme === Schemas.file).map(resource => resource.fsPath);
 	}
 
 	/**
@@ -283,6 +320,12 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 	}
 }
 
+/** 接続先のパスを、その接続先のリソースにする。Windows 形式の区切りは `/` に揃える。 */
+function paradisRemotePathResource(remoteAuthority: string, path: string): URI {
+	const posixPath = path.replace(/\\/g, '/');
+	return URI.from({ scheme: Schemas.vscodeRemote, authority: remoteAuthority, path: posixPath.startsWith('/') ? posixPath : `/${posixPath}` });
+}
+
 /**
  * shared process の IPCServer へ、このウィンドウ宛の {@link PARADIS_AGENT_PREVIEW_CHANNEL}
  * を登録する。登録はウィンドウの生存期間ずっと有効（接続断で自動的に消える）。
@@ -301,6 +344,7 @@ class ParadisAgentPreviewContribution extends Disposable implements IWorkbenchCo
 		@IParadisWorktreeService worktreeService: IParadisWorktreeService,
 		@IParadisAuxiliaryWindowScopeService auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 		@ILogService logService: ILogService,
+		@IWorkspaceContextService workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
 		sharedProcessService.registerChannel(PARADIS_AGENT_PREVIEW_CHANNEL, this._register(new ParadisAgentPreviewChannel(
@@ -313,6 +357,7 @@ class ParadisAgentPreviewContribution extends Disposable implements IWorkbenchCo
 			worktreeService,
 			auxiliaryWindowScopeService,
 			logService,
+			workspaceContextService,
 		)));
 	}
 }

@@ -240,6 +240,13 @@ export interface IParadisAgentCursorEvents {
  */
 export const PARADIS_AGENT_PREVIEW_CHANNEL = 'paradisAgentPreview';
 
+/**
+ * {@link PARADIS_AGENT_PREVIEW_CHANNEL} の、ペインが属するスペースの手元のフォルダ（絶対パスの配列）を返す
+ * メソッド。内蔵 chrome-devtools-mcp の roots（ツールが読み書きしてよい範囲）に使う。引数は `[token]`。
+ * 分からないとき・手元のフォルダでないときは空配列。
+ */
+export const PARADIS_AGENT_PANE_ROOTS_METHOD = 'paneRoots';
+
 /** `previewFile` が開けなかった既知の理由。shared process 側が定型文へ翻訳する。 */
 export type ParadisPreviewFileFailure =
 	/** スペース切り替えの最中。再試行すれば通る。 */

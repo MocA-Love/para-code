@@ -539,6 +539,8 @@ suite('Paradis CDP gateway ingress authority', () => {
 			getBoundTargetId: () => boundTarget,
 			ensureBoundTargetId: async () => boundTarget,
 			getTokenForShellPid: () => lease.token,
+			isRemotePane: () => false,
+			isTunnelPeer: async () => false,
 			captureBoundPageScreenshot: async () => 'image',
 			isBoundPageVisible: async () => true,
 			dispatchBoundPageInput: () => ({ response: Promise.resolve({ status: 'success', result: {} }), drained: Promise.resolve() }),
@@ -910,6 +912,8 @@ function createDelegate(options: {
 			return options.ensure ? options.ensure() : targetId;
 		},
 		getTokenForShellPid: () => currentLease.token,
+		isRemotePane: () => false,
+		isTunnelPeer: async () => false,
 		captureBoundPageScreenshot: async () => 'image',
 		isBoundPageVisible: async () => true,
 		dispatchBoundPageInput: (_token: string, _connection: object, _targetId: string, _method: string, _paramsJson: string, isConnectionCurrent: () => boolean) => {

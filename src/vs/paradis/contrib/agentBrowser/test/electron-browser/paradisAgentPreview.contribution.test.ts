@@ -10,6 +10,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IAuxiliaryEditorPart, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService, PreferredGroup } from '../../../../../workbench/services/editor/common/editorService.js';
 import { ParadisAgentPreviewChannel } from '../../electron-browser/paradisAgentPreview.contribution.js';
@@ -39,13 +40,15 @@ interface IHarnessOptions {
 	/** ピン留めされた補助エディタウィンドウを持つスペース。 */
 	readonly pinnedPartStateKey?: string;
 	readonly openEditor?: () => Promise<unknown>;
-	readonly stat?: () => Promise<{ readonly isDirectory: boolean }>;
+	readonly stat?: (resource?: URI) => Promise<{ readonly isDirectory: boolean }>;
 	/** 直近使用順（MOST_RECENTLY_ACTIVE）でのグループ名。既定は main → main-split → auxiliary。 */
 	readonly groupOrder?: readonly string[];
 	/** 既に開かれているファイル（fsPath → そのファイルを開いているグループ名）。 */
 	readonly openedFiles?: Readonly<Record<string, string>>;
 	/** 実体のある worktree（`paradisListSpaces` に載るスペース）。既定は無し。 */
 	readonly worktrees?: readonly IParadisWorktree[];
+	/** ウィンドウのワークスペースのフォルダ（スペースを持たないペインの roots）。 */
+	readonly workspaceFolders?: readonly URI[];
 }
 
 function createHarness(store: Pick<DisposableStore, 'add'>, options: IHarnessOptions = {}) {
@@ -97,7 +100,10 @@ function createHarness(store: Pick<DisposableStore, 'add'>, options: IHarnessOpt
 		{
 			get isSwitching() { return options.isSwitching ?? false; },
 			get activeStateKey() { return activeStateKey; },
-			repositories: [{ id: 'repo-a', name: 'Design System', uri: URI.file('/repos/a') }],
+			repositories: [
+				{ id: 'repo-a', name: 'Design System', uri: URI.file('/repos/a') },
+				{ id: 'repo-remote', name: 'Remote', uri: URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+dev', path: '/home/example/repo' }) },
+			],
 			onDidSwitchScope: onDidSwitchScope.event,
 			onDidRetireScope: onDidRetireScope.event,
 		} as unknown as IParadisWorkspaceSwitchService,
@@ -108,6 +114,7 @@ function createHarness(store: Pick<DisposableStore, 'add'>, options: IHarnessOpt
 				: [],
 		} as unknown as IParadisAuxiliaryWindowScopeService,
 		new NullLogService(),
+		{ getWorkspace: () => ({ folders: (options.workspaceFolders ?? []).map(uri => ({ uri })) }) } as unknown as IWorkspaceContextService,
 	));
 
 	return {
@@ -116,6 +123,8 @@ function createHarness(store: Pick<DisposableStore, 'add'>, options: IHarnessOpt
 		onDidSwitchScope,
 		onDidRetireScope,
 		preview: (path: string, token: string | undefined = 'pane-a') => channel.call<unknown>(undefined, 'previewFile', [token, path]),
+		paneRoots: (token: string) => channel.call<unknown>(undefined, 'paneRoots', [token]),
+		previewRemote: (path: string, remoteAuthority: string) => channel.call<unknown>(undefined, 'previewFile', ['pane-a', path, remoteAuthority]),
 		switchTo: (stateKey: string) => { activeStateKey = stateKey; onDidSwitchScope.fire(stateKey); },
 	};
 }
@@ -348,5 +357,42 @@ suite('ParadisAgentPreviewChannel', () => {
 		await settle();
 
 		assert.deepStrictEqual([retired.opened, kept.opened], [[], [{ resource: '/repos/a/kept.html', group: 'main' }]]);
+	});
+
+	test('returns the folder of the calling pane\'s space as its roots, and nothing for an unresolved pane', async () => {
+		const harness = createHarness(store, { recordedStateKey: 'repo-a', activeStateKey: 'repo-b' });
+		assert.deepStrictEqual({
+			space: await harness.paneRoots('pane-a'),
+			unresolved: await harness.paneRoots('pane-unknown'),
+		}, {
+			space: [URI.file('/repos/a').fsPath],
+			unresolved: undefined,
+		});
+	});
+
+	test('returns the local workspace folders for a pane without a space, and nothing for remote folders', async () => {
+		const unscoped = createHarness(store, {
+			resolvedScope: { kind: 'unscoped' },
+			workspaceFolders: [URI.file('/work/one'), URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+dev', path: '/home/example' }), URI.file('/work/two')],
+		});
+		const remoteSpace = createHarness(store, { recordedStateKey: 'repo-remote' });
+		assert.deepStrictEqual({
+			unscoped: await unscoped.paneRoots('pane-a'),
+			remoteSpace: await remoteSpace.paneRoots('pane-a'),
+		}, {
+			unscoped: [URI.file('/work/one').fsPath, URI.file('/work/two').fsPath],
+			remoteSpace: [],
+		});
+	});
+
+	test('opens the path of a remote pane on that remote machine, never as a local file', async () => {
+		const statted: string[] = [];
+		const harness = createHarness(store, {
+			recordedStateKey: 'repo-a',
+			activeStateKey: 'repo-a',
+			stat: async (resource?: URI) => { statted.push(resource!.toString()); return { isDirectory: false }; },
+		});
+		await harness.previewRemote('/home/example/notes.md', 'ssh-remote+dev');
+		assert.deepStrictEqual(statted, ['vscode-remote://ssh-remote%2Bdev/home/example/notes.md']);
 	});
 });

@@ -20,15 +20,23 @@
 //     spawn は安価（tools/list はブラウザ未接続でも成功する）
 //   - CDPゲートウェイが非対応のツール（new_page / close_page / resize_page）は一覧から除外する
 //   - アイドル一定時間で子プロセスをkillし、次の呼び出しで透過的に再spawnする
+//   - roots 機能を名乗り、`roots/list` にペインのフォルダ（サービスが決める）と Para Code の一時フォルダを
+//     返す。vendored の validatePath は roots が未設定だと何も確かめないため（NOTES.md「chrome-devtools-mcp の
+//     ファイルのパスは手元のペインからだけ受け、roots で範囲を絞る」）。子プロセスの一時フォルダ（TMPDIR 等）も
+//     同じ Para Code の一時フォルダへ向ける。ペインのフォルダが引けなかったときは一時フォルダだけで答え、
+//     引け次第 `notifications/roots/list_changed` で取り直させる
 
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import { createHash } from 'crypto';
+import { tmpdir } from 'os';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 import { paradisClassifyBrowserToolErrorText } from '../common/paradisBrowserErrorReason.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtoolsRoots } from './paradisDevtoolsPathPolicy.js';
+import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDirectory.js';
 
 /** vendored chrome-devtools-mcp のstdioエントリ（同梱物。更新手順は同フォルダのREADME.md）。 */
 const DEVTOOLS_MCP_ENTRY = 'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js';
@@ -58,6 +66,14 @@ const MAX_CHILDREN = 32;
 const MAX_GENERATION_HIGH_WATERMARKS = 4096;
 /** SIGTERMを無視する子プロセスを強制終了するまでの猶予。 */
 const KILL_GRACE_TIMEOUT_MS = 5_000;
+/**
+ * `roots/list` に答えるまでの待ち時間上限。vendored の SDK は 60 秒で要求を諦め、そのとき roots は
+ * 未設定のまま（＝パスを何も確かめない）になるので、それより十分短くし、時間切れでも一時フォルダだけを返す。
+ */
+const ROOTS_RESOLVE_TIMEOUT_MS = 5_000;
+/** ペインのフォルダが引けなかったときに取り直すまでの待ち（回ごとに倍にする）と回数。 */
+const ROOTS_RETRY_DELAY_MS = 2_000;
+const MAX_ROOTS_RETRIES = 5;
 const RESOURCE_LIMIT_ERROR_MESSAGE = 'PARA_BROWSER_RETRYABLE: embedded DevTools bridge resource limit reached; retry';
 const TERMINATED_ERROR_MESSAGE = 'PARA_BROWSER_RETRYABLE: embedded DevTools bridge terminated; retry';
 
@@ -80,6 +96,25 @@ export interface IParadisDevtoolsMcpProxyOptions {
 	readonly maxChildren?: number;
 	readonly maxGenerationHighWatermarks?: number;
 	readonly killGraceTimeoutMs?: number;
+	/**
+	 * ペインの手元のフォルダ（絶対パス）。子プロセスの `roots/list` に答えるときに呼ぶ。接続先のペインは
+	 * 空配列を返すこと（Para Code の一時フォルダだけが roots になる）。ウィンドウに尋ねられなかった等で
+	 * 本来のフォルダが揃っていないときは `complete: false`（後で取り直す）。省略時は空で揃っている扱い。
+	 */
+	readonly resolveRoots?: (token: string) => Promise<IParadisDevtoolsRootsResolution>;
+	readonly rootsTimeoutMs?: number;
+	readonly rootsRetryDelayMs?: number;
+	/**
+	 * 子プロセスの一時フォルダ兼 root を固定する（テスト用。作成・後始末をしない）。省略時は os.tmpdir() の
+	 * 下に作り、子プロセスを起こすたびに在るかを確かめ、終了時に消す。
+	 */
+	readonly temporaryDirectory?: string;
+}
+
+/** {@link IParadisDevtoolsMcpProxyOptions.resolveRoots} の結果。 */
+export interface IParadisDevtoolsRootsResolution {
+	readonly folders: readonly string[];
+	readonly complete: boolean;
 }
 
 interface IPendingRequest {
@@ -93,6 +128,14 @@ interface IChildEntry {
 	readonly wsEndpoint: string;
 	readonly tokenFingerprint: string;
 	readonly spawnedAt: number;
+	/** 子プロセスの一時フォルダ（roots に必ず載せる）。 */
+	readonly temporaryDirectory: string;
+	/** 揃ったペインのフォルダ。揃う前は undefined（遅れて届いた古い応答で上書きさせないため、以後はこれで答える）。 */
+	completeFolders: readonly string[] | undefined;
+	/** 最後に答えた roots（validatePath に断られたときの案内に使う）。 */
+	lastRoots: readonly IParadisDevtoolsRoot[];
+	rootsRetryTimer: ReturnType<typeof setTimeout> | undefined;
+	rootsRetries: number;
 	/** initialize ハンドシェイク完了（失敗時はreject）。spawn直後に一度だけ代入される。 */
 	ready: Promise<void>;
 	readonly pending: Map<number, IPendingRequest>;
@@ -172,6 +215,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	 * ため全ペインで同一。一度取得したらサービス生存中は再取得しない。
 	 */
 	private _toolsCache: readonly IParadisProxiedTool[] | undefined;
+	/** 作成・後始末まで受け持つ一時フォルダ（`options.temporaryDirectory` で固定したときは無い）。 */
+	private readonly _temporaryDirectory: ParadisDevtoolsTemporaryDirectory | undefined;
 
 	constructor(
 		/** para-browser 側の静的ツール名。子プロセス側と衝突した場合は子プロセス側を隠す。 */
@@ -180,6 +225,14 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		private readonly options: IParadisDevtoolsMcpProxyOptions = {},
 	) {
 		super();
+		if (options.temporaryDirectory === undefined) {
+			this._temporaryDirectory = new ParadisDevtoolsTemporaryDirectory(tmpdir());
+			void ParadisDevtoolsTemporaryDirectory.sweepStale(tmpdir()).then(removed => {
+				if (removed.length > 0) {
+					this._debug(`[ParadisDevtoolsProxy] Removed ${removed.length} stale temporary folder(s) of chrome-devtools-mcp`);
+				}
+			}, () => undefined);
+		}
 	}
 
 	/**
@@ -247,8 +300,9 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			await this._awaitReady(token, entry, signal);
 			const result = await this._request(token, entry, 'tools/call', { name, arguments: args ?? {} }, this.options.callTimeoutMs ?? CALL_TIMEOUT_MS, signal);
 			this._reportToolResultError(safeToolName, result, Date.now() - startedAt);
-			// undefined は呼び出し側で「未知ツール」を意味するため、成功時は必ずオブジェクトを返す
-			return result ?? { content: [] };
+			// undefined は呼び出し側で「未知ツール」を意味するため、成功時は必ずオブジェクトを返す。
+			// vendored の validatePath に断られたときは、許された場所とパス無しで呼ぶ手を添える
+			return paradisDevtoolsExplainRootsDenial(result, entry.lastRoots) ?? { content: [] };
 		} catch (error) {
 			this._reportToolCallFailure(safeToolName, error, Date.now() - startedAt, signal);
 			return this._toolCallError(name, error);
@@ -351,6 +405,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		this._generationHighWatermarks.clear();
 		this._toolsCache = undefined;
+		void this._temporaryDirectory?.dispose();
 		super.dispose();
 	}
 
@@ -379,6 +434,13 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		const tokenFingerprint = this._tokenFingerprint(token);
 		this._debug(`[ParadisDevtoolsProxy] Spawning chrome-devtools-mcp for pane ${tokenFingerprint} generation=${generation}`);
 		const spawnChild = this.options.spawnChild ?? ((command, args, options) => spawn(command, args, options));
+		// 起こすたびに在るかを確かめる（OS の掃除で消えていれば作り直す。作れなければ次の起動でまた試す）
+		const ownTemporaryDirectory = this.options.temporaryDirectory ?? this._temporaryDirectory?.ensure();
+		if (ownTemporaryDirectory === undefined) {
+			this._warn('[ParadisDevtoolsProxy] Could not create a temporary folder for chrome-devtools-mcp; it keeps the default one');
+		}
+		// Node の os.tmpdir() は POSIX で TMPDIR→TMP→TEMP、Windows で TEMP→TMP を読む
+		const temporaryEnv: NodeJS.ProcessEnv = ownTemporaryDirectory === undefined ? {} : { TMPDIR: ownTemporaryDirectory, TMP: ownTemporaryDirectory, TEMP: ownTemporaryDirectory };
 		const child = spawnChild(process.execPath, [
 			entryPath,
 			`--wsEndpoint=${wsEndpoint}`,
@@ -396,6 +458,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		], {
 			env: {
 				...process.env,
+				...temporaryEnv,
 				ELECTRON_RUN_AS_NODE: '1',
 				CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: '1',
 				// 保険: wsEndpointクエリが使えない経路に万一落ちても、macOS/Linuxではピアプロセスの
@@ -411,6 +474,11 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			wsEndpoint,
 			tokenFingerprint,
 			spawnedAt: Date.now(),
+			temporaryDirectory: ownTemporaryDirectory ?? tmpdir(),
+			completeFolders: undefined,
+			lastRoots: [],
+			rootsRetryTimer: undefined,
+			rootsRetries: 0,
 			ready: Promise.resolve(),
 			pending: new Map(),
 			nextId: 1,
@@ -469,7 +537,9 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		// initialize ハンドシェイク（応答確認後に initialized 通知を送る）
 		entry.ready = this._request(token, entry, 'initialize', {
 			protocolVersion: '2024-11-05',
-			capabilities: {},
+			// roots を名乗らないと vendored は roots/list を呼ばず、validatePath が何も確かめない。
+			// ペインのフォルダが遅れて引けたときに取り直させるので、変更通知（listChanged）を出す
+			capabilities: { roots: { listChanged: true } },
 			clientInfo: { name: 'para-code-agent-browser', version: '1.0.0' },
 		}, this.options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS).then(() => {
 			if (!this._send(token, entry, { jsonrpc: '2.0', method: 'notifications/initialized' })) {
@@ -535,12 +605,15 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			}
 			const hasRequestId = typeof message.id === 'number' || typeof message.id === 'string';
 			if (typeof method === 'string' && hasRequestId) {
-				// サーバー→クライアント要求（roots/list等）。roots機能は提供しないため空応答/未実装で返す
-				const response = method === 'roots/list'
-					? { jsonrpc: '2.0', id: message.id, result: { roots: [] } }
-					: method === 'ping'
-						? { jsonrpc: '2.0', id: message.id, result: {} }
-						: { jsonrpc: '2.0', id: message.id, error: { code: -32601, message: `Method not found: ${method}` } };
+				// サーバー→クライアント要求。roots/list は非同期に答える（エラーでは答えない。エラーだと
+				// vendored は roots を未設定のままにし、パスを何も確かめなくなる）
+				if (method === 'roots/list') {
+					this._answerRoots(token, entry, message.id as number | string);
+					continue;
+				}
+				const response = method === 'ping'
+					? { jsonrpc: '2.0', id: message.id, result: {} }
+					: { jsonrpc: '2.0', id: message.id, error: { code: -32601, message: `Method not found: ${method}` } };
 				if (!this._send(token, entry, response)) {
 					this._killChild(token, entry, 'failed to send child response', new ParadisDevtoolsResourceLimitError());
 					return;
@@ -566,6 +639,94 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				pending.resolve(message.result);
 			}
 		}
+	}
+
+	/**
+	 * `roots/list` に答える。ペインのフォルダの解決に失敗・時間切れしても、一時フォルダだけの一覧で必ず答える
+	 * （エラーで答えると vendored は roots を未設定のままにし、パスを何も確かめなくなる）。
+	 * 一度揃ったフォルダは以後の応答すべてに使う。解決の遅い先の要求（初期化時のもの）の応答が、後の要求の
+	 * 正しい応答の後に届いても、揃ったフォルダで答えるので上書きにならない。
+	 */
+	private _answerRoots(token: string, entry: IChildEntry, id: number | string): void {
+		const answer = (folders: readonly string[]) => {
+			if (entry.killed) {
+				return;
+			}
+			entry.lastRoots = paradisDevtoolsRoots(entry.completeFolders ?? folders, entry.temporaryDirectory, dropped => this._warnRootsOverflow(entry, dropped));
+			if (!this._send(token, entry, { jsonrpc: '2.0', id, result: { roots: entry.lastRoots } })) {
+				this._killChild(token, entry, 'failed to send roots', new ParadisDevtoolsResourceLimitError());
+			}
+		};
+		if (entry.completeFolders !== undefined) {
+			answer(entry.completeFolders);
+			return;
+		}
+		this._resolveRootFolders(token).then(resolution => {
+			if (resolution.complete && entry.completeFolders === undefined) {
+				entry.completeFolders = resolution.folders;
+			}
+			answer(resolution.folders);
+			if (entry.completeFolders === undefined) {
+				this._scheduleRootsRetry(token, entry);
+			}
+		}).catch(() => {
+			answer([]);
+			this._scheduleRootsRetry(token, entry);
+		});
+	}
+
+	/** ペインのフォルダを引く。失敗・時間切れは「揃っていない空」として返し、reject しない。 */
+	private _resolveRootFolders(token: string): Promise<IParadisDevtoolsRootsResolution> {
+		const resolveRoots = this.options.resolveRoots;
+		if (resolveRoots === undefined) {
+			return Promise.resolve({ folders: [], complete: true });
+		}
+		const degraded: IParadisDevtoolsRootsResolution = { folders: [], complete: false };
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		return Promise.race([
+			Promise.resolve().then(() => resolveRoots(token)).then(
+				resolution => resolution && Array.isArray(resolution.folders) ? resolution : degraded,
+				() => degraded,
+			),
+			new Promise<IParadisDevtoolsRootsResolution>(resolve => {
+				timer = setTimeout(() => resolve(degraded), this._limit(this.options.rootsTimeoutMs, ROOTS_RESOLVE_TIMEOUT_MS));
+			}),
+		]).finally(() => clearTimeout(timer));
+	}
+
+	/**
+	 * フォルダが揃わないまま答えたとき、少し置いて引き直す。揃ったら `notifications/roots/list_changed` を送る
+	 * （vendored はこの通知で `roots/list` を取り直す）。
+	 */
+	private _scheduleRootsRetry(token: string, entry: IChildEntry): void {
+		if (entry.killed || entry.rootsRetryTimer !== undefined || entry.completeFolders !== undefined || entry.rootsRetries >= MAX_ROOTS_RETRIES) {
+			return;
+		}
+		const delay = this._limit(this.options.rootsRetryDelayMs, ROOTS_RETRY_DELAY_MS) * 2 ** entry.rootsRetries;
+		entry.rootsRetries++;
+		entry.rootsRetryTimer = setTimeout(() => {
+			entry.rootsRetryTimer = undefined;
+			if (entry.killed) {
+				return;
+			}
+			void this._resolveRootFolders(token).then(resolution => {
+				if (entry.killed || entry.completeFolders !== undefined) {
+					return;
+				}
+				if (!resolution.complete) {
+					this._scheduleRootsRetry(token, entry);
+					return;
+				}
+				entry.completeFolders = resolution.folders;
+				if (!this._send(token, entry, { jsonrpc: '2.0', method: 'notifications/roots/list_changed' })) {
+					this._killChild(token, entry, 'failed to send roots change', new ParadisDevtoolsResourceLimitError());
+				}
+			});
+		}, delay);
+	}
+
+	private _warnRootsOverflow(entry: IChildEntry, dropped: number): void {
+		this._warn(`[ParadisDevtoolsProxy] ${dropped} workspace folder(s) were left out of the chrome-devtools-mcp roots for pane ${entry.tokenFingerprint} (too many folders)`);
 	}
 
 	private _request(token: string, entry: IChildEntry, method: string, params: unknown, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {
@@ -739,6 +900,10 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		if (entry.idleTimer !== undefined) {
 			clearTimeout(entry.idleTimer);
 			entry.idleTimer = undefined;
+		}
+		if (entry.rootsRetryTimer !== undefined) {
+			clearTimeout(entry.rootsRetryTimer);
+			entry.rootsRetryTimer = undefined;
 		}
 		if (entry.stdoutDataListener) {
 			entry.child.stdout.removeListener('data', entry.stdoutDataListener);
