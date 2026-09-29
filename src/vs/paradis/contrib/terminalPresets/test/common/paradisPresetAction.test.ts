@@ -20,6 +20,10 @@ import {
 	paradisPresetAction,
 	paradisPresetCommandSignature,
 	paradisPresetFingerprint,
+	paradisParsePresetFileForUpdate,
+	paradisParsePresetTitles,
+	paradisPresetTitleKey,
+	paradisRememberPresetTitleEntry,
 } from '../../common/paradisTerminalPresets.js';
 
 suite('ParadisPresetAction', () => {
@@ -111,6 +115,45 @@ suite('ParadisPresetAction', () => {
 		}, {
 			insertPreset: [true, false, false, false],
 			designMode: [true, true, false, false],
+		});
+	});
+
+	test('refuses to rewrite a .paracode.json it cannot read instead of starting from nothing', () => {
+		assert.deepStrictEqual({
+			empty: paradisParsePresetFileForUpdate('  \n'),
+			jsonc: paradisParsePresetFileForUpdate('{\n\t// memo\n\t"presets": [{ "name": "a", "commands": ["x"] },],\n\t"other": 1\n}'),
+			// 編集途中の構文エラー
+			broken: paradisParsePresetFileForUpdate('{ "presets": [{ "name": "a" '),
+			// 最上位がオブジェクトでない（書き戻すとキーが落ちる）
+			array: paradisParsePresetFileForUpdate('[]'),
+			nullValue: paradisParsePresetFileForUpdate('null'),
+		}, {
+			empty: {},
+			jsonc: { presets: [{ name: 'a', commands: ['x'] }], other: 1 },
+			broken: undefined,
+			array: undefined,
+			nullValue: undefined,
+		});
+	});
+
+	test('keys remembered preset names by a hash of the terminal nonce, not by the renumbered process id', () => {
+		const key1 = paradisPresetTitleKey('n-1');
+		const key2 = paradisPresetTitleKey('n-2');
+		const stored = JSON.stringify([{ id: 3, name: 'old by id' }, { nonce: 'n-1', name: 'raw nonce' }, { key: key1, name: 'Dev' }, { key: 'n-1', name: 'not a hash' }]);
+		const entries = paradisParsePresetTitles(stored);
+		assert.deepStrictEqual({
+			// nonce（ペイントークンの元）を平文で持たない
+			hashed: /^[0-9a-f]{40}$/.test(key1) && key1 !== key2 && !key1.includes('n-1'),
+			// 番号や平文の nonce をキーにした行は捨てる
+			entries,
+			// 同じキーは上書き、上限を超えたら古いものから捨てる
+			remembered: paradisRememberPresetTitleEntry([...entries, { key: key2, name: 'Test' }], key1, 'Dev 2', 2),
+			broken: paradisParsePresetTitles('{not json'),
+		}, {
+			hashed: true,
+			entries: [{ key: key1, name: 'Dev' }],
+			remembered: [{ key: key2, name: 'Test' }, { key: key1, name: 'Dev 2' }],
+			broken: [],
 		});
 	});
 });

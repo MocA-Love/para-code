@@ -54,10 +54,18 @@ export class ParadisPtyDispatch extends Disposable {
 		this.data.set(handle, data);
 		this.titles.set(handle, title);
 		this.exits.set(handle, exit);
+		// 外すのは自分の受け口のときだけ。同じ handle をもう一度受け取り始めた後に古い受け口を
+		// 畳むと、新しい方まで外してしまい、その端末の出力が届かなくなる。
 		store.add(toDisposable(() => {
-			this.data.delete(handle);
-			this.titles.delete(handle);
-			this.exits.delete(handle);
+			if (this.data.get(handle) === data) {
+				this.data.delete(handle);
+			}
+			if (this.titles.get(handle) === title) {
+				this.titles.delete(handle);
+			}
+			if (this.exits.get(handle) === exit) {
+				this.exits.delete(handle);
+			}
 		}));
 		return { onData: data.event, onTitle: title.event, onExit: exit.event, dispose: () => store.dispose() };
 	}

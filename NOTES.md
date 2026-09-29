@@ -2026,7 +2026,7 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - **pid 台帳は引かない**。attach に失敗したばかりの ID は何世代も前の番号であり得て、前回たまたま同じ番号だった別のスペースの端末の所属を拾う。復元直後に pid 台帳から付いた今セッションの所属が、出てきた working set と食い違うときは working set の方へ直す（nonce 台帳だけ書き、pid 台帳は新しいシェルの ID が決まったときに書かれる）
 - 食い違い確認のコマンドは表示中のターミナルだけを扱う。待避中の所属を書き換えても park 台帳と working set は元のスペースのままで実際には移らず、そのスペースを削除したときに別のスペースで表示中の端末を PTY ごと破棄しうる。扱うなら台帳キーの付け替えと working set から外す口が先に要る
 - 再開前の `cd` は、終了 → 次のプロンプトの入力開始 → 250ms 待つ、の後で「途中に打たれた文字が無く入力欄が空」を確かめてから再開コマンドを送る（`paradisChangeDirectoryBeforeResume`）。終了だけ見て送ると、`cd` の最中に打った文字（tty バッファにあり、まだ入力欄に出ていない）とつながって Enter 無しで実行された（実機 2/2）
-- 【要確認】起動時に繋ぎ直しに失敗したタブには再開バナーが出ない。バナーの contribution が AfterRestored で、起動時の復元の方が先に終わるため（既存の挙動、今回は未対応）
+- 起動時に繋ぎ直しに失敗したタブに再開バナーが出なかった件は修正済み（2026-09-29）。原因は contribution の順番ではなく、attach に失敗すると upstream が新しいシェルを起こす時点で `attachPersistentProcess` を消すこと（`terminalProcessManager.ts` の attach 失敗の分岐）。AfterRestored で起動時からあるタブを見るバナー側は、消えた後の値を見て対象外にしていた。起こし直した記録（`paradisWasTerminalShellRestarted`）でも拾うようにした
 - 【要確認】共通ターミナルへの移行の知らせの件数が、実際の本数より多く出る（`paradisTerminalScope.contribution.ts` の `rememberFormerSharedPanelScope` が同じ端末を複数回数えている可能性。既存の挙動、今回は未対応）
 - 自動の `cd` は `paradisChangeDirectoryCommand` で作る。upstream の `preparePathForShell` は `C#`・`R&D` の文字を落とし、`'` で継続入力に入り、WSL で引用しないので使わない。シェルの種類が分からないときは送らない
 - 起動直後（所属サービスが立ち上がる前）の attach 失敗は従来どおり。メインウィンドウのフォルダは起動時のスペースなので合っているが、別のスペースに固定した補助ウィンドウのタブは【要確認】のまま

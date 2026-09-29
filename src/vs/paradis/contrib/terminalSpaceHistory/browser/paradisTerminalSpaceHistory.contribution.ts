@@ -140,11 +140,20 @@ class ParadisTerminalSpaceHistoryContribution extends Disposable implements IWor
 	private resolveHistoryDirectory(shellLaunchConfig: IShellLaunchConfig, target: TerminalLocation): { readonly path: string; readonly historyId: string; readonly stateKey: string } | undefined {
 		if (!this.isEnabled()
 			|| (this._sharedPanel && target === TerminalLocation.Panel && paradisIsSharedPanelShell(shellLaunchConfig))
-			|| shellLaunchConfig.type === 'Task') {
+			|| shellLaunchConfig.type === 'Task'
+			|| this.isLocalShellInRemoteWindow(shellLaunchConfig)) {
 			return undefined;
 		}
 		const stateKey = this.resolveStateKey(shellLaunchConfig);
 		return stateKey === undefined ? undefined : this.historyDirectoryFor(stateKey);
+	}
+
+	/**
+	 * 接続先のウィンドウで開いた手元のターミナル（「新しいターミナル（ローカル）」）。履歴フォルダは
+	 * 接続先のパスで決まるので、手元のシェルへ渡しても使えない。
+	 */
+	private isLocalShellInRemoteWindow(shellLaunchConfig: IShellLaunchConfig): boolean {
+		return this.environmentService.remoteAuthority !== undefined && shellLaunchConfig.type === 'Local';
 	}
 
 	private isEnabled(): boolean {
@@ -168,7 +177,7 @@ class ParadisTerminalSpaceHistoryContribution extends Disposable implements IWor
 	 * 入力中のターミナルは今のスペースに居る）。
 	 */
 	private resolveHistoryFile(instance: IParadisSpaceHistoryInstance, shell: 'zsh' | 'bash'): string | undefined {
-		if (!this.isEnabled()) {
+		if (!this.isEnabled() || this.isLocalShellInRemoteWindow(instance.shellLaunchConfig)) {
 			return undefined;
 		}
 		const fromEnv = instance.shellLaunchConfig.env?.[PARADIS_SPACE_HISTORY_DIR_ENV];

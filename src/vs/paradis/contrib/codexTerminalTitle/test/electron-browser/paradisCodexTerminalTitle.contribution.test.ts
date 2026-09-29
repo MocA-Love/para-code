@@ -7,7 +7,7 @@ import { deepStrictEqual, strictEqual } from 'assert';
 import { Schemas } from '../../../../../base/common/network.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { classifyTrackableCodexCommand, createCodexTerminalTitle, ICodexTrackableCommand, isCodexTuiCommand, resolveWritableCodexHome, writeCodexAccountHomes } from '../../electron-browser/paradisCodexTerminalTitle.contribution.js';
+import { classifyTrackableCodexCommand, createCodexTerminalTitle, ICodexTrackableCommand, isCodexTuiCommand, replaceTerminalTitleInTuiSection, resolveWritableCodexHome, writeCodexAccountHomes } from '../../electron-browser/paradisCodexTerminalTitle.contribution.js';
 
 suite('ParadisCodexTerminalTitle', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -147,6 +147,35 @@ suite('ParadisCodexTerminalTitle', () => {
 		test('refuses a home that resolved to a different remote host', () => {
 			const otherHost = URI.from({ scheme: Schemas.vscodeRemote, authority: 'ssh-remote+other', path: '/home/example' });
 			strictEqual(resolveWritableCodexHome(remoteAuthority, otherHost), undefined);
+		});
+	});
+
+	suite('replaceTerminalTitleInTuiSection', () => {
+		const title = 'terminal_title = ["app-name", "thread-title"]';
+		test('keeps config.toml valid TOML', () => {
+			deepStrictEqual({
+				missing: replaceTerminalTitleInTuiSection('model = "x"\n'),
+				existingKey: replaceTerminalTitleInTuiSection('[tui]\nterminal_title = ["spinner"]\nx = 1\n'),
+				// `[tui]` が最後の行で改行が無い
+				headerAtEnd: replaceTerminalTitleInTuiSection('model = "x"\n[tui]'),
+				spacedHeader: replaceTerminalTitleInTuiSection('[ tui ] # comment\nx = 1\n'),
+				// 最上位の dotted key や inline table で tui を定義済み（[tui] を足すと二重定義になる）
+				dottedKey: replaceTerminalTitleInTuiSection('tui.notifications = true\n[profiles.a]\nmodel = "x"\n'),
+				inlineTable: replaceTerminalTitleInTuiSection('tui = { notifications = true }\n'),
+				// 他の表の下の dotted key は tui の定義ではない
+				nestedDotted: replaceTerminalTitleInTuiSection('[profiles.a]\ntui.x = 1\n'),
+				// 字下げした次の表の見出しを [tui] の中身と取り違えない
+				indentedNextTable: replaceTerminalTitleInTuiSection('[tui]\nx = 1\n  [profiles.a]\nterminal_title = "keep"\n'),
+			}, {
+				missing: `model = "x"\n\n[tui]\n${title}\n`,
+				existingKey: `[tui]\n${title}\nx = 1\n`,
+				headerAtEnd: `model = "x"\n[tui]\n${title}\n`,
+				spacedHeader: `[ tui ] # comment\n${title}\nx = 1\n`,
+				dottedKey: 'tui.notifications = true\n[profiles.a]\nmodel = "x"\n',
+				inlineTable: 'tui = { notifications = true }\n',
+				nestedDotted: `[profiles.a]\ntui.x = 1\n\n[tui]\n${title}\n`,
+				indentedNextTable: `[tui]\n${title}\nx = 1\n  [profiles.a]\nterminal_title = "keep"\n`,
+			});
 		});
 	});
 });

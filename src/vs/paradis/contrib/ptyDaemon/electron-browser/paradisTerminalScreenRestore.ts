@@ -18,7 +18,8 @@ import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js'
 
 export interface IParadisTerminalScreenSource {
 	/**
-	 * そのワークスペースの保存画面を取り出す（取り出したら消す）。使えないときは undefined。
+	 * そのワークスペースの保存画面を取り出す（取り出したら、次の起動で二度使われない形に
+	 * 書き直すか消す）。使えないときは undefined。
 	 * 投げないこと。
 	 */
 	take(workspaceId: string): Promise<string | undefined>;

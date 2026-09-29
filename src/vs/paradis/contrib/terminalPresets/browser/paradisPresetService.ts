@@ -23,11 +23,11 @@ import { isWindows, OperatingSystem } from '../../../../base/common/platform.js'
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
-import { GeneralShellType, ITerminalEnvironment, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
+import { GeneralShellType, ITerminalEnvironment, paradisTerminalIdentityNonce, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkspaceContextService, IWorkspaceFolder } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -65,6 +65,12 @@ import {
 	paradisAgentPromptAvailability,
 	ParadisAgentPromptAvailability,
 	paradisThrowIfAgentAwaitingAnswer,
+	IParadisPresetFileContent,
+	paradisParsePresetFileForUpdate,
+	IParadisPresetTitleEntry,
+	paradisParsePresetTitles,
+	paradisPresetTitleKey,
+	paradisRememberPresetTitleEntry,
 } from '../common/paradisTerminalPresets.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
@@ -79,6 +85,8 @@ const STR_AGENT_PROMPT_NOT_AGENT = localize('paradis.presets.agentPrompt.notAgen
 const STR_AGENT_PROMPT_AWAITING = localize('paradis.presets.agentPrompt.awaiting', "エージェントが質問か許可の確認を出しているため、プロンプトを入れられません。先に回答してください。");
 // allow-any-unicode-next-line
 const STR_INSERT_AWAITING = localize('paradis.presets.insert.awaiting', "エージェントが質問か許可の確認を出しているため、コマンドを挿入できません。先に回答してください。");
+// allow-any-unicode-next-line
+const STR_RUN_AWAITING = localize('paradis.presets.run.awaiting', "エージェントが質問か許可の確認を出しているため、今のターミナルでコマンドを実行できません。先に回答してください。");
 
 /**
  * プリセット名をターミナルの初期タイトルとしてどう渡すかを決める。
@@ -489,13 +497,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			// id も書かない——git で共有されるファイルに識別子を足すと、実装都合の差分が
 			// チーム全員のレビューに出てしまう。位置で識別する。
 			const { appliesTo: _appliesTo, id: _id, ...cleaned } = definition;
-			let parsed: { presets?: unknown[];[key: string]: unknown } = {};
-			try {
-				const content = await this.fileService.readFile(presetFile);
-				parsed = parseJsonc<typeof parsed>(content.value.toString()) ?? {};
-			} catch {
-				// ファイルが無ければ新規作成
-			}
+			const parsed = await this._readPresetFileForUpdate(presetFile);
 			const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
 			const index = replace ? this._requirePresetIndex(list, replace) : -1;
 			if (index >= 0) {
@@ -576,8 +578,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	}
 
 	private async _swapWorkspacePresets(presetFile: URI, presetA: IParadisResolvedPreset, presetB: IParadisResolvedPreset): Promise<void> {
-		const content = await this.fileService.readFile(presetFile);
-		const parsed = parseJsonc<{ presets?: unknown[];[key: string]: unknown }>(content.value.toString()) ?? {};
+		const parsed = await this._readPresetFileForUpdate(presetFile);
 		const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
 		const indexA = paradisResolvePresetIndex(list, presetA);
 		const indexB = paradisResolvePresetIndex(list, presetB);
@@ -600,8 +601,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			list.splice(this._requirePresetIndex(list, preset), 1);
 			await this.configurationService.updateValue(PARADIS_PRESETS_SETTING, list, {}, ConfigurationTarget.USER, { donotNotifyError: false });
 		} else if (preset.sourceUri) {
-			const content = await this.fileService.readFile(preset.sourceUri);
-			const parsed = parseJsonc<{ presets?: unknown[];[key: string]: unknown }>(content.value.toString()) ?? {};
+			const parsed = await this._readPresetFileForUpdate(preset.sourceUri);
 			const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
 			list.splice(this._requirePresetIndex(list, preset), 1);
 			parsed.presets = list;
@@ -770,15 +770,33 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		return [...byFile.values()];
 	}
 
-	private async _readWorkspacePresetsFile(presetFile: URI): Promise<{ parsed: { presets?: unknown[];[key: string]: unknown }; list: unknown[] }> {
-		let parsed: { presets?: unknown[];[key: string]: unknown } = {};
-		try {
-			const content = await this.fileService.readFile(presetFile);
-			parsed = parseJsonc<typeof parsed>(content.value.toString()) ?? {};
-		} catch {
-			// ファイルが無ければ対象も見つからないので、呼び出し側の _requirePresetIndex が例外にする
-		}
+	private async _readWorkspacePresetsFile(presetFile: URI): Promise<{ parsed: IParadisPresetFileContent; list: unknown[] }> {
+		// ファイルが無ければ対象も見つからないので、呼び出し側の _requirePresetIndex が例外にする
+		const parsed = await this._readPresetFileForUpdate(presetFile);
 		return { parsed, list: Array.isArray(parsed.presets) ? [...parsed.presets] : [] };
+	}
+
+	/**
+	 * 書き換えるために `.paracode.json` を読む。ファイルが無いときだけ空から始める。読めない
+	 * （一時的な読み込みの失敗、編集途中の構文エラー）ときは例外にして書かない。空から書き出すと、
+	 * ファイルにあった他のプリセットや設定がすべて消える。
+	 */
+	private async _readPresetFileForUpdate(presetFile: URI): Promise<IParadisPresetFileContent> {
+		let text: string;
+		try {
+			text = (await this.fileService.readFile(presetFile)).value.toString();
+		} catch (error) {
+			if (error instanceof Error && toFileOperationResult(error) === FileOperationResult.FILE_NOT_FOUND) {
+				return {};
+			}
+			throw error;
+		}
+		const parsed = paradisParsePresetFileForUpdate(text);
+		if (parsed === undefined) {
+			// allow-any-unicode-next-line
+			throw new Error(localize('paradis.presets.fileUnreadable', "{0} の書式が正しくないため、書き込みませんでした。ファイルを直してから、もう一度実行してください。", basename(presetFile)));
+		}
+		return parsed;
 	}
 
 	/**
@@ -813,7 +831,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		const userList: unknown[] = Array.isArray(userRaw) ? [...userRaw] : [];
 		const userIndices = userTargets.map(target => this._requirePresetIndex(userList, target));
 
-		const workspacePlans: { readonly uri: URI; readonly parsed: { presets?: unknown[];[key: string]: unknown }; readonly list: unknown[]; readonly indices: readonly number[] }[] = [];
+		const workspacePlans: { readonly uri: URI; readonly parsed: IParadisPresetFileContent; readonly list: unknown[]; readonly indices: readonly number[] }[] = [];
 		for (const { uri, targets } of this._groupByWorkspaceFile(presets)) {
 			const { parsed, list } = await this._readWorkspacePresetsFile(uri);
 			workspacePlans.push({ uri, parsed, list, indices: targets.map(target => this._requirePresetIndex(list, target)) });
@@ -858,7 +876,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		// 後続対象の位置がずれて別のプリセットを巻き込む。
 		const userIndices = [...new Set(userTargets.map(target => this._requirePresetIndex(userList, target)))].sort((a, b) => b - a);
 
-		const workspacePlans: { readonly uri: URI; readonly parsed: { presets?: unknown[];[key: string]: unknown }; readonly list: unknown[]; readonly indices: readonly number[] }[] = [];
+		const workspacePlans: { readonly uri: URI; readonly parsed: IParadisPresetFileContent; readonly list: unknown[]; readonly indices: readonly number[] }[] = [];
 		for (const { uri, targets } of this._groupByWorkspaceFile(presets)) {
 			const { parsed, list } = await this._readWorkspacePresetsFile(uri);
 			const indices = [...new Set(targets.map(target => this._requirePresetIndex(list, target)))].sort((a, b) => b - a);
@@ -919,13 +937,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				throw new Error('No workspace folder is open.');
 			}
 			const presetFile = joinPath(workspaceFolder.uri, PARADIS_WORKSPACE_PRESET_FILE);
-			let parsed: { presets?: unknown[]; presetFolders?: unknown[];[key: string]: unknown } = {};
-			try {
-				const content = await this.fileService.readFile(presetFile);
-				parsed = parseJsonc<typeof parsed>(content.value.toString()) ?? {};
-			} catch {
-				// ファイルが無ければ新規作成
-			}
+			const parsed = await this._readPresetFileForUpdate(presetFile);
 			const list: unknown[] = Array.isArray(parsed.presetFolders) ? [...parsed.presetFolders] : [];
 			list.push(normalized);
 			parsed.presetFolders = list;
@@ -1044,13 +1056,12 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				await instance.sendText(paradisJoinPresetCommands(commands, instance.shellType), true);
 			} else {
 				await this._waitForTerminalProcess(instance);
-				if (preset.cwd && cwd) {
-					// 既存ターミナルは作業ディレクトリが不明なので cd を前置する
-					const changeDirectory = await this._buildChangeDirectoryCommand(instance, cwd);
-					await instance.sendText(paradisJoinPresetCommands([changeDirectory, ...commands], instance.shellType), true);
-				} else {
-					await instance.sendText(paradisJoinPresetCommands(commands, instance.shellType), true);
-				}
+				// 既存ターミナルは作業ディレクトリが不明なので cd を前置する
+				const changeDirectory = preset.cwd && cwd ? await this._buildChangeDirectoryCommand(instance, cwd) : undefined;
+				// 送る直前に確かめる（間に await を挟まない）。エージェントが許可・質問の回答を待っている
+				// 相手へ送ると、先頭の文字が選択肢の操作として食われ、Enter で確定されてしまう
+				paradisThrowIfAgentAwaitingAnswer(this.agentStatusStore, instance.instanceId, true, STR_RUN_AWAITING);
+				await instance.sendText(paradisJoinPresetCommands(changeDirectory === undefined ? commands : [changeDirectory, ...commands], instance.shellType), true);
 				options?.onDidStart?.();
 			}
 			instance.focus(true);
@@ -1076,7 +1087,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				location: { viewColumn: editorGroupToColumn(this.editorGroupsService, group) },
 			});
 			options?.onDidCreateTerminal?.(instance.instanceId);
-			void this._rememberPresetTitle(instance, name);
+			this._rememberPresetTitle(instance, name);
 			this._warnIfEnvDropped(instance, options?.env);
 			if (options?.stateKey) {
 				this.terminalScopeService.assignInstanceScope(instance.instanceId, options.stateKey);
@@ -1165,24 +1176,20 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	/**
 	 * プリセット名は `titleTemplate` で渡しているが、これはターミナルの復元情報に含まれない
 	 * （`IPtyHostAttachTarget` に無い）。リロードすると名前だけ失われて `${process}`（zsh 等）に
-	 * 戻ってしまうので、永続プロセスの ID をキーに自前で覚えておいて復元時に貼り直す。
+	 * 戻ってしまうので、シェル統合の nonce のハッシュをキーに自前で覚えておいて復元時に貼り直す
+	 * （永続プロセスの ID は振り直されるので、キーにすると無関係なターミナルに名前が付く）。
 	 */
-	private async _rememberPresetTitle(instance: ITerminalInstance, name: string | undefined): Promise<void> {
+	private _rememberPresetTitle(instance: ITerminalInstance, name: string | undefined): void {
 		if (!name || !instance.shellLaunchConfig.titleTemplate) {
 			return;
 		}
-		await instance.processReady;
-		const persistentProcessId = instance.persistentProcessId;
-		if (persistentProcessId === undefined || instance.isDisposed) {
+		const nonce = paradisTerminalIdentityNonce(instance.shellIntegrationNonce);
+		if (nonce === undefined || instance.isDisposed) {
 			return;
 		}
-		const entries = this._readPresetTitles().filter(entry => entry.id !== persistentProcessId);
-		entries.push({ id: persistentProcessId, name });
-		// 消えた端末の分を確実に掃除する手がない（リロードでは onDisposed を当てにできない）ので、
-		// 件数で頭打ちにして古いものから捨てる。
 		this.storageService.store(
 			PRESET_TITLE_STORAGE_KEY,
-			JSON.stringify(entries.slice(-MAX_REMEMBERED_PRESET_TITLES)),
+			JSON.stringify(paradisRememberPresetTitleEntry(this._readPresetTitles(), paradisPresetTitleKey(nonce), name, MAX_REMEMBERED_PRESET_TITLES)),
 			StorageScope.WORKSPACE,
 			StorageTarget.MACHINE,
 		);
@@ -1190,12 +1197,13 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 
 	/** 復元されたターミナルに、覚えておいたプリセット名を貼り直す。 */
 	private _restorePresetTitle(instance: ITerminalInstance): void {
-		const attachedId = instance.shellLaunchConfig.attachPersistentProcess?.id;
-		// 復元された端末だけを対象にする。新規作成の端末は台帳の ID とたまたま一致しようがない。
-		if (attachedId === undefined || instance.shellLaunchConfig.titleTemplate || instance.shellLaunchConfig.name) {
+		// 復元された端末だけを対象にする。
+		const nonce = paradisTerminalIdentityNonce(instance.shellLaunchConfig.attachPersistentProcess?.shellIntegrationNonce);
+		if (nonce === undefined || instance.shellLaunchConfig.titleTemplate || instance.shellLaunchConfig.name) {
 			return;
 		}
-		const name = this._readPresetTitles().find(entry => entry.id === attachedId)?.name;
+		const key = paradisPresetTitleKey(nonce);
+		const name = this._readPresetTitles().find(entry => entry.key === key)?.name;
 		if (!name) {
 			return;
 		}
@@ -1212,18 +1220,8 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		void instance.rename(undefined);
 	}
 
-	private _readPresetTitles(): { id: number; name: string }[] {
-		try {
-			const raw = this.storageService.get(PRESET_TITLE_STORAGE_KEY, StorageScope.WORKSPACE);
-			const parsed: unknown = raw ? JSON.parse(raw) : undefined;
-			return Array.isArray(parsed)
-				? parsed.filter((entry): entry is { id: number; name: string } =>
-					!!entry && typeof entry.id === 'number' && typeof entry.name === 'string')
-				: [];
-		} catch {
-			// 壊れた台帳で名前が戻らないのは許容する（機能そのものは動く）。
-			return [];
-		}
+	private _readPresetTitles(): IParadisPresetTitleEntry[] {
+		return paradisParsePresetTitles(this.storageService.get(PRESET_TITLE_STORAGE_KEY, StorageScope.WORKSPACE));
 	}
 
 	private _resolveCwd(preset: IParadisResolvedPreset, cwdSpec: string | undefined, baseOverride?: URI): URI | undefined {
@@ -1291,7 +1289,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			cwd,
 			location: { viewColumn: editorGroupToColumn(this.editorGroupsService, this.editorGroupsService.activeGroup) },
 		});
-		void this._rememberPresetTitle(instance, name);
+		this._rememberPresetTitle(instance, name);
 		this._warnIfEnvDropped(instance, env);
 		return instance;
 	}
