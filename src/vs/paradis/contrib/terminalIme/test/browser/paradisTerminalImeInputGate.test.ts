@@ -61,4 +61,20 @@ suite('ParadisTerminalImeInputGate', () => {
 			afterGate: ['input'],
 		});
 	});
+
+	test('does not carry a hidden composition whose end never came into the next one', () => {
+		const { element, seen, fire } = setup();
+		const gate = paradisBlockTerminalInput();
+		// ゲート中に始まった変換の compositionend が届かないまま、ゲートが外れる
+		fire('compositionstart');
+		fire('compositionupdate');
+		gate.dispose();
+		seen.splice(0);
+		fire('compositionstart');
+		fire('compositionupdate');
+		fire('compositionend');
+		element.remove();
+		assert.deepStrictEqual(seen, ['compositionstart', 'compositionupdate', 'compositionend']);
+	});
 });
+
