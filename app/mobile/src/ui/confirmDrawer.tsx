@@ -24,7 +24,7 @@ import { DrawerTitle } from './drawerHeader.js';
  * />
  * ```
  */
-export function ConfirmDrawer({ visible, title, message, confirmLabel, cancelLabel = 'キャンセル', destructive = true, onConfirm, onClose }: {
+export function ConfirmDrawer({ visible, title, message, confirmLabel, cancelLabel = 'キャンセル', destructive = true, onConfirm, onCancelled, onClose }: {
 	visible: boolean;
 	title: string;
 	message?: string;
@@ -32,6 +32,8 @@ export function ConfirmDrawer({ visible, title, message, confirmLabel, cancelLab
 	cancelLabel?: string;
 	destructive?: boolean;
 	onConfirm: () => void;
+	/** 確定せずに閉じ切った後に呼ぶ（別のシートから開いた確かめで、元のシートへ戻すときに使う。任意）。 */
+	onCancelled?: () => void;
 	/** キャンセル・幕・引き下げで呼ばれる。親は `visible` を false にする。 */
 	onClose: () => void;
 }) {
@@ -44,6 +46,8 @@ export function ConfirmDrawer({ visible, title, message, confirmLabel, cancelLab
 				if (confirmed.current) {
 					confirmed.current = false;
 					onConfirm();
+				} else {
+					onCancelled?.();
 				}
 			}}
 			accessibilityLabel={title}

@@ -273,6 +273,12 @@ export interface IParadisMobileCommitFailure {
 	readonly restored: boolean;
 	/** 戻そうとして戻せなかった（ステージが `git add -A` の後のまま残っている。任意項目）。 */
 	readonly restoreFailed?: boolean;
+	/**
+	 * `restoreFailed` の理由: `git add -A` の後にインデックスが変わっていた（フックの間に PC でステージした・フックが
+	 * ステージを変えた）ので、その操作を消さないよう戻さなかった。`restoreFailed` と一緒に立つ（任意項目。古いアプリは
+	 * `restoreFailed` だけを読んで「PC で確かめてください」と出す）。
+	 */
+	readonly indexChanged?: boolean;
 }
 
 /** 表示と依頼に載せる出力の上限（文字）。長ければ先頭の一部と末尾を残す。 */

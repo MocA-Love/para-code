@@ -28,8 +28,8 @@ import {
 	type ScmEntry,
 	type ScmSegment,
 } from './scmModel.js';
-import { branchSyncOf, commitFailureView, commitHint, commitScope, scmPrimaryAction, scmSyncSummary } from './scmSync.js';
-import { mergeConfirmMessage, type PrDetail } from './pullRequest.js';
+import { branchSyncOf, commitFailureView, commitHint, commitScope, scmPrimaryAction, scmPushConfirm, scmSyncSummary, type ScmPushConfirm } from './scmSync.js';
+import { mergeConfirmMessage, prMergeToastText, type PrDetail } from './pullRequest.js';
 import { PullRequestPanel } from './pullRequestParts.js';
 import { useCodeSpace, type CodeSpaceTarget } from './useCodeSpace.js';
 import type { PanelDock } from './panelDock.js';
@@ -77,6 +77,9 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	// 確認のシートの見え隠れと、確認している PR は別に持つ（閉じた後に onConfirm が走るので、対象を閉じる時に消さない）
 	const [confirmingMerge, setConfirmingMerge] = useState<PrDetail | undefined>(undefined);
 	const mergeTarget = useRef(new ConfirmTarget<PrDetail>()).current;
+	// プッシュ・公開の確かめ（Q143 A）。中身は閉じる動きの間も出したままにするので、見え隠れと別に持つ
+	const [confirmingPush, setConfirmingPush] = useState(false);
+	const [pushConfirm, setPushConfirm] = useState<ScmPushConfirm | undefined>(undefined);
 	const [commitWarning, setCommitWarning] = useState<string | undefined>(undefined);
 	const now = useNow();
 	const insets = useStableInsets();
@@ -140,11 +143,21 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 		}
 	};
 
+	/** 同期の操作。プッシュ（ブランチの公開を含む）は外へ出すので、確かめてから送る。 */
+	const requestSync = (operation: 'push' | 'pull' | 'fetch') => {
+		if (operation !== 'push') {
+			void runSync(operation);
+			return;
+		}
+		setPushConfirm(scmPushConfirm(branchSync, branch));
+		setConfirmingPush(true);
+	};
+
 	const primary = () => {
 		if (action.kind === 'commit') {
 			void commit();
 		} else {
-			void runSync(action.kind === 'pull' ? 'pull' : 'push');
+			requestSync(action.kind === 'pull' ? 'pull' : 'push');
 		}
 	};
 
@@ -173,8 +186,9 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	};
 
 	const merge = async (pr: PrDetail) => {
-		if (await pullRequest.merge(pr)) {
-			useParaToast.getState().show({ key: 'scm-pr-merged', text: `#${pr.number} をマージしました`, icon: 'git-merge', tone: 'done' }, 2_400);
+		const outcome = await pullRequest.merge(pr);
+		if (outcome !== undefined) {
+			useParaToast.getState().show({ key: 'scm-pr-merged', text: prMergeToastText(pr.number, outcome), icon: 'git-merge', tone: 'done' }, 2_400);
 			void history.refresh();
 		}
 	};
@@ -226,7 +240,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 							sync={syncText}
 							counts={counts}
 							{...(branchSync !== undefined ? { syncSummary: scmSyncSummary(branchSync), syncing: sync.syncing } : {})}
-							{...(branchSync !== undefined && codeSpace.live ? { onSync: (operation: 'push' | 'pull' | 'fetch') => void runSync(operation) } : {})}
+							{...(branchSync !== undefined && codeSpace.live ? { onSync: requestSync } : {})}
 							{...(prNumber !== undefined && prState !== undefined
 								// PR の区分を出せない PC では、これまでの札と同じくブラウザで開く
 								? { pr: { number: prNumber, state: prState, onPress: () => pullRequest.enabled ? setSegment('pr') : prUrl !== undefined ? void Linking.openURL(prUrl).catch(() => undefined) : undefined } }
@@ -269,6 +283,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 								canMerge={pullRequest.canMerge}
 								merging={pullRequest.merging}
 								mergeError={pullRequest.mergeError}
+								queued={pullRequest.queued}
 								handoff={prHandoff}
 								onRetry={codeSpace.live ? () => void pullRequest.refresh() : undefined}
 								onFix={pr => void prHandoff.send({ t: 'prFixChecks', number: pr.number }, 'auto')}
@@ -348,6 +363,15 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 					}
 				}}
 				onClose={() => setConfirmingMerge(undefined)}
+			/>
+			<ConfirmDrawer
+				visible={confirmingPush}
+				title={pushConfirm?.title ?? 'プッシュしますか？'}
+				message={pushConfirm?.message}
+				confirmLabel={pushConfirm?.confirmLabel ?? 'プッシュ'}
+				destructive={false}
+				onConfirm={() => void runSync('push')}
+				onClose={() => setConfirmingPush(false)}
 			/>
 		</Screen>
 	);

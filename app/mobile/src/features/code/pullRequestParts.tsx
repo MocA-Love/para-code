@@ -17,6 +17,7 @@ import {
 	prUnavailableText,
 	type PrCheck,
 	type PrDetail,
+	type PrQueued,
 	type PrViewResult,
 } from './pullRequest.js';
 import type { AgentHandoffResult } from './scmSync.js';
@@ -26,7 +27,7 @@ import type { AgentHandoffResult } from './scmSync.js';
  * PR の札・CI のチェックの一覧・失敗したチェックを AI に直してもらう・マージ（CI が失敗・実行中なら押せない）。
  * 画面の幅に合わせて縦に積むだけなので、iPhone と iPad（詳細の列・右のドック）で同じ部品を使う。
  */
-export function PullRequestPanel({ view, loading, error, offline, canMerge, merging, mergeError, handoff, onRetry, onFix, onFixWithNewAgent, onMerge }: {
+export function PullRequestPanel({ view, loading, error, offline, canMerge, merging, mergeError, queued, handoff, onRetry, onFix, onFixWithNewAgent, onMerge }: {
 	view: PrViewResult | undefined;
 	loading: boolean;
 	error: string | undefined;
@@ -35,6 +36,8 @@ export function PullRequestPanel({ view, loading, error, offline, canMerge, merg
 	canMerge: boolean;
 	merging: boolean;
 	mergeError: string | undefined;
+	/** このスマホからマージキューに入れた PR。 */
+	queued: PrQueued | undefined;
 	handoff: { readonly sending: boolean; readonly result: AgentHandoffResult | undefined };
 	onRetry: (() => void) | undefined;
 	onFix: (pr: PrDetail) => void;
@@ -55,7 +58,7 @@ export function PullRequestPanel({ view, loading, error, offline, canMerge, merg
 	}
 	const pr = view.pr;
 	const summary = checkSummaryText(pr.checks, pr.checkCounts);
-	const merge = prMergeButton(pr);
+	const merge = prMergeButton(pr, queued);
 	const disabled = offline !== undefined;
 	return (
 		<View>
