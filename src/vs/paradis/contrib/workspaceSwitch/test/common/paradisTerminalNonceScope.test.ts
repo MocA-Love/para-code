@@ -16,6 +16,7 @@ import {
 	paradisParseTerminalNonceScopeStorage,
 	paradisPruneNonceScopes,
 	paradisResolveNonceScope,
+	paradisRetireScopeFromNonceScopeStorage,
 	paradisSerializeTerminalNonceScopeStorage,
 } from '../../common/paradisTerminalNonceScope.js';
 
@@ -60,6 +61,24 @@ suite('Paradis terminal nonce scope', () => {
 
 		assert.strictEqual(resolve(NONCE_A, 'scope:from-pid'), 'scope:from-pid', '食い違ったらID台帳を採る');
 		assert.deepStrictEqual(disagreements, [{ nonce: NONCE_A, nonceStateKey: 'scope:from-nonce', processStateKey: 'scope:from-pid' }]);
+	});
+
+	// 共通ターミナルへ移す前の所属の控え。消したスペースへの控えが残ると、設定を戻したときに
+	// そこへ park されて見えなくなる。
+	test('drops the entries of a retired space from a stored ledger', () => {
+		const raw = paradisSerializeTerminalNonceScopeStorage(new Map([[NONCE_A, 'scope:a'], [NONCE_B, 'worktree:b']]))!;
+		const retiredA = paradisRetireScopeFromNonceScopeStorage(raw, 'scope:a');
+		assert.deepStrictEqual({
+			retiredA: retiredA === undefined ? undefined : [...paradisParseTerminalNonceScopeStorage(retiredA)!],
+			untouched: paradisRetireScopeFromNonceScopeStorage(raw, 'scope:gone'),
+			emptied: paradisRetireScopeFromNonceScopeStorage(retiredA!, 'worktree:b'),
+			unreadable: paradisRetireScopeFromNonceScopeStorage('not json', 'scope:a'),
+		}, {
+			retiredA: [[NONCE_B, 'worktree:b']],
+			untouched: undefined,
+			emptied: '',
+			unreadable: undefined,
+		});
 	});
 
 	// 上限を超えたら保存を諦める（呼び出し側は前回の内容を残して警告する）。黙って

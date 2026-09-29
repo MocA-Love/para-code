@@ -13,7 +13,7 @@
 // フォーム値を引数で受け取って実行する。UIへの依存（DOM・通知・レイアウト）を持たないため、
 // paradisMobileWorkspaceProvider から instantiationService.invokeFunction で直接呼べる。
 
-import { raceTimeout } from '../../../../base/common/async.js';
+import { DeferredPromise, raceTimeout } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
@@ -56,6 +56,7 @@ import {
 	paradisShouldCreateDefaultTerminal,
 } from '../common/paradisWorktreeCreate.js';
 import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js';
+import { paradisGetParkedTerminalEditorStateKey, paradisMarkTerminalEditorOpeningForScope } from '../browser/paradisTerminalEditorPark.js';
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, paradisAgentResumeCommandLine } from '../../sessionResume/common/paradisSessionResume.js';
@@ -418,10 +419,52 @@ export async function paradisOpenEditorTerminalInSpace(
 		cwd: rootUri,
 		location: preserveFocus ? paradisBackgroundEditorLocation() : TerminalLocation.Editor,
 	});
-	await instance.processReady;
-	await services.terminalEditorService.openEditor(instance, preserveFocus ? paradisBackgroundEditorLocation() : undefined);
-	services.terminalScopeService.assignInstanceScope(instance.instanceId, stateKey);
+	await paradisPlaceEditorTerminalInSpace(services, instance, stateKey, preserveFocus ? paradisBackgroundEditorLocation() : undefined);
 	return instance;
+}
+
+/**
+ * 作ったばかりのエディタターミナルを、PTY の起動を待ってからエディタで開き、スペースへ割り当てる。
+ *
+ * この間にスペースの切り替えが走ると、切り替えはエディタに残った端末を park して切り離す。
+ * 行き先のスペースを知らせておけば、切り替えは開き終わるのを待ってから行き先の台帳へ入れる。
+ * 待ちきれずに先に park されたときは、エディタを開き直そうとすると別のウィンドウの端末と
+ * 見なされて失敗する（`requestDetachInstance`）。park 済みなら端末は行き先の台帳にあり、
+ * 生きたまま行き先のスペースで出てくるので、開き直しはしない。
+ */
+async function paradisPlaceEditorTerminalInSpace(
+	services: { readonly terminalEditorService: ITerminalEditorService; readonly terminalScopeService: IParadisTerminalScopeService },
+	instance: ITerminalInstance,
+	stateKey: string,
+	location: TerminalEditorLocation | undefined,
+): Promise<void> {
+	const settled = new DeferredPromise<void>();
+	const opening = paradisMarkTerminalEditorOpeningForScope(instance, stateKey, settled.p);
+	// 起動前に閉じられた端末の `processReady` は解決しない。待ち続けると呼び出し元（MCP・スマホ）が
+	// 返らず、開いている途中の印も残り続ける。
+	const disposed = Event.toPromise(instance.onDisposed);
+	try {
+		if (!instance.isDisposed) {
+			await Promise.race([instance.processReady, disposed]);
+		}
+		if (instance.isDisposed) {
+			throw new Error('The terminal was closed before it started.');
+		}
+		if (paradisGetParkedTerminalEditorStateKey(instance.instanceId) === undefined) {
+			try {
+				await services.terminalEditorService.openEditor(instance, location);
+			} catch (error) {
+				if (paradisGetParkedTerminalEditorStateKey(instance.instanceId) === undefined) {
+					throw error;
+				}
+			}
+		}
+		services.terminalScopeService.assignInstanceScope(instance.instanceId, stateKey);
+	} finally {
+		disposed.cancel();
+		opening.dispose();
+		settled.complete();
+	}
 }
 
 /**
@@ -492,9 +535,7 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 		// エディタターミナルの park は persistentProcessId が確定していないと失敗するため
 		// PTY 起動を待ってから assign する。あわせて createTerminal は openEditor の完了を
 		// 待たないため先に開き切らせる。
-		await instance.processReady;
-		await terminalEditorService.openEditor(instance);
-		terminalScopeService.assignInstanceScope(instance.instanceId, request.stateKey);
+		await paradisPlaceEditorTerminalInSpace({ terminalEditorService, terminalScopeService }, instance, request.stateKey, undefined);
 	} else {
 		// PCのアクティブワークスペース向け: エディタタブとしてそのまま見える
 		terminalService.setActiveInstance(instance);
@@ -558,9 +599,7 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 	// createTerminal は Editor Terminal の openEditor 完了を待たない。スペース切り替え直後に
 	// setActiveInstance だけ行うと、切り替え先のエディタタブとして表示されないことがあるため、
 	// PTY とエディタの準備を明示的に待ってから対象スコープへ割り当てる。
-	await instance.processReady;
-	await terminalEditorService.openEditor(instance, preserveFocus ? paradisBackgroundEditorLocation() : undefined);
-	terminalScopeService.assignInstanceScope(instance.instanceId, request.stateKey);
+	await paradisPlaceEditorTerminalInSpace({ terminalEditorService, terminalScopeService }, instance, request.stateKey, preserveFocus ? paradisBackgroundEditorLocation() : undefined);
 	if (!preserveFocus && request.stateKey === switchService.activeStateKey) {
 		terminalService.setActiveInstance(instance);
 	}
