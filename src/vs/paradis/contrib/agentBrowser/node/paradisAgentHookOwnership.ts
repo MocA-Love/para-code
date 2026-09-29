@@ -479,7 +479,15 @@ export class ParadisAgentHookOwnership {
 
 	private readonly owners = new Map<string, IOwnerRecord>();
 
-	constructor(private readonly inspector: IParadisHookProcessInspector = new ParadisDefaultHookProcessInspector()) { }
+	/**
+	 * @param selfPid Para Code 自身のプロセス。これとその祖先はペインの外なので、hook の祖先チェーンから外す
+	 * （Para Code をエージェントの中から起動すると、その外側のエージェントが全ペインの所有者になり、
+	 * ペインの中のエージェントの hook がすべて nested 扱いになるため）。
+	 */
+	constructor(
+		private readonly inspector: IParadisHookProcessInspector = new ParadisDefaultHookProcessInspector(),
+		private readonly selfPid: number = process.pid,
+	) { }
 
 	/** ペイン終了時に所有権を破棄する。 */
 	clear(token: string): void {
@@ -505,7 +513,7 @@ export class ParadisAgentHookOwnership {
 		if (snapshot === undefined) {
 			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind);
 		}
-		const chain = this.ancestorChain(snapshot, hookPid);
+		const chain = this.chainInsidePanes(snapshot, hookPid);
 		const emitter = this.findEmitter(chain, eventKind);
 		if (emitter === undefined) {
 			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind);
@@ -577,6 +585,14 @@ export class ParadisAgentHookOwnership {
 			return { origin: 'owner', agentKind: eventKind ?? owner.agentKind };
 		}
 		return { origin: 'invalid', agentKind: eventKind };
+	}
+
+	/** {@link ancestorChain} のうち、Para Code 自身（とその祖先）に届く手前まで。 */
+	private chainInsidePanes(snapshot: ReadonlyMap<number, IParadisHookProcessInfo>, hookPid: number): IParadisHookProcessInfo[] {
+		const outside = new Set(this.ancestorChain(snapshot, this.selfPid).map(entry => entry.pid));
+		const chain = this.ancestorChain(snapshot, hookPid);
+		const cut = chain.findIndex(entry => outside.has(entry.pid));
+		return cut >= 0 ? chain.slice(0, cut) : chain;
 	}
 
 	/** hookPid 自身を先頭に、親方向の祖先チェーンを返す（循環・深さ上限つき）。 */
