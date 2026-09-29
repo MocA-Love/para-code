@@ -24,13 +24,14 @@ import { IRemoteAgentService } from '../../../../workbench/services/remote/commo
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService, TerminalConnectionState } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ACTIVE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreationScopeLease } from '../../../../workbench/contrib/terminal/browser/paradisTerminalCreationScope.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisScopeRootPath, paradisWorktreeStateKey, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisRetireScopeFromNonceScopeStorage, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
-import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisRegisterTerminalEditorOwnerProbe, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
+import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisRegisterTerminalEditorOwnerProbe, paradisUnparkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 import { IParadisTerminalOrphanPty, paradisRegisterTerminalReviveIndexSource, paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -826,8 +827,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				continue;
 			}
 			// 繋ぎ直しに失敗し続ける PTY は、上限の回数で諦める。諦めないと完走扱いにならず
-			// （nonce 台帳の prune も、消えたスペースの自動退役も止まったまま）、切り替えのたびに
-			// 空のシェルを起こしては閉じることになる。
+			// （消えたスペースの自動退役が見送られたまま）、切り替えのたびに空のシェルを起こしては
+			// 閉じることになる。nonce 台帳の prune は起動時の1回だけなので、後から完走しても走らない。
 			const reattachKey = paradisTerminalIdentityNonce(detail.shellIntegrationNonce) ?? `id:${detail.id}`;
 			if ((this._orphanReattachFailures.get(reattachKey) ?? 0) >= ParadisTerminalWorkspaceScope.MAX_ORPHAN_REATTACH_ATTEMPTS) {
 				continue;
@@ -2115,12 +2116,29 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		if (parkedStateKey === stateKey) {
 			return true;
 		}
-		paradisParkTerminalEditorInstance(instance, stateKey);
-		if (stateKey === this.workspaceSwitchService.activeStateKey) {
-			// 今のスペースの持ち物になった。台帳に置いたままだと、次にこのスペースへ戻るまで見えない。
-			void this.unparkEditorTerminals(stateKey);
+		if (stateKey !== this.workspaceSwitchService.activeStateKey) {
+			paradisParkTerminalEditorInstance(instance, stateKey);
+			return true;
+		}
+		// 今のスペースの持ち物になった。台帳に置いたままだと、次にこのスペースへ戻るまで見えない。
+		// この端末だけを、利用者の操作を乱さない裏のタブとして開く（割り当てはプログラムからの
+		// 操作なので、フォーカスを奪わない）。
+		if (paradisUnparkTerminalEditorInstance(instance)) {
+			void this.reopenReassignedEditorTerminal(instance, stateKey);
 		}
 		return true;
+	}
+
+	private async reopenReassignedEditorTerminal(instance: ITerminalInstance, stateKey: string): Promise<void> {
+		try {
+			await this.terminalEditorService.openEditor(instance, { viewColumn: ACTIVE_GROUP, preserveFocus: true, paradisInactive: true });
+		} catch (error) {
+			// 開けなかった端末は台帳へ戻す。戻さないとどの一覧にも属さず、PTY だけが見えないまま残る。
+			if (!instance.isDisposed) {
+				paradisParkTerminalEditorInstance(instance, stateKey);
+			}
+			onUnexpectedError(error);
+		}
 	}
 
 	private rememberActiveGroup(group: ITerminalGroup | undefined, stateKey = this.workspaceSwitchService.activeStateKey, allowDuringSwitch = false): void {

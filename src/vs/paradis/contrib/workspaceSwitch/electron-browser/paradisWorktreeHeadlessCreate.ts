@@ -440,8 +440,16 @@ async function paradisPlaceEditorTerminalInSpace(
 ): Promise<void> {
 	const settled = new DeferredPromise<void>();
 	const opening = paradisMarkTerminalEditorOpeningForScope(instance, stateKey, settled.p);
+	// 起動前に閉じられた端末の `processReady` は解決しない。待ち続けると呼び出し元（MCP・スマホ）が
+	// 返らず、開いている途中の印も残り続ける。
+	const disposed = Event.toPromise(instance.onDisposed);
 	try {
-		await instance.processReady;
+		if (!instance.isDisposed) {
+			await Promise.race([instance.processReady, disposed]);
+		}
+		if (instance.isDisposed) {
+			throw new Error('The terminal was closed before it started.');
+		}
 		if (paradisGetParkedTerminalEditorStateKey(instance.instanceId) === undefined) {
 			try {
 				await services.terminalEditorService.openEditor(instance, location);
@@ -453,6 +461,7 @@ async function paradisPlaceEditorTerminalInSpace(
 		}
 		services.terminalScopeService.assignInstanceScope(instance.instanceId, stateKey);
 	} finally {
+		disposed.cancel();
 		opening.dispose();
 		settled.complete();
 	}

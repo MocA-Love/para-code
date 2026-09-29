@@ -1295,7 +1295,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 							if (parkedNonce !== undefined) {
 								parkedNonces.add(parkedNonce);
 							}
-						}));
+						}, undefined,
+							// 別のスペースへ開いている途中の端末は、ここでは行き先が分からない。後の2回
+							// （開き終わるのを待つ回と適用直前の回）に任せる。
+							instance => paradisTerminalEditorOpening(instance) !== undefined));
 						// **永続化しない。** 再起動を跨ぐと台帳の中身は起動時の孤児復活で作られた別物に
 						// なるので、「前回パークした顔ぶれ」として使ってはいけない。世代を跨いだ復元は
 						// 索引が唯一の防波堤なので、集合が無い＝必ず引く、で正しい。
@@ -1859,8 +1862,11 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 * そのまま復帰する。ここで detachInstance すると retain 中の入力を dispose してしまい
 	 * 復元経路が壊れる上、park 台帳と一覧の二重管理になる。
 	 */
-	private parkTerminalEditorsFor(stateKey: string, onParked?: (instance: ITerminalInstance) => void, scopeFor?: (instance: ITerminalInstance) => string): void {
+	private parkTerminalEditorsFor(stateKey: string, onParked?: (instance: ITerminalInstance) => void, scopeFor?: (instance: ITerminalInstance) => string, skip?: (instance: ITerminalInstance) => boolean): void {
 		for (const instance of this.parkableTerminalEditors()) {
+			if (skip?.(instance)) {
+				continue;
+			}
 			if (paradisParkTerminalEditorInstance(instance, scopeFor?.(instance) ?? stateKey)) {
 				onParked?.(instance);
 				this.terminalEditorService.detachInstance(instance);
