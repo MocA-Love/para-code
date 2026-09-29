@@ -18,7 +18,7 @@ import { settingsRoutes, type UsageDetailPage } from '../../../src/features/sett
 import { UsageHostPicker, useUsageHost } from '../../../src/features/settings/usageHost.js';
 import { DetailMessage, DetailNotConnected, DetailRefreshButton } from '../../../src/features/settings/usageDetailParts.js';
 import { ProviderUsageSection, UsageBigValue, UsageRow, UsageRowTitle, UsageSection } from '../../../src/features/settings/usageSections.js';
-import { formatUsd, ratioPercent, recentDailyAverage } from '../../../src/features/settings/usageSummary.js';
+import { formatUsd, ratioPercent, recentDailyAverage, usageFootNote } from '../../../src/features/settings/usageSummary.js';
 
 type SectionErrors = { limits?: string; cost?: string; github?: string };
 
@@ -223,7 +223,7 @@ export default function UsageScreen() {
 
 					<View style={styles.foot}>
 						<Icon icon={User} size={iconSize.sm} color={colors.textMuted} />
-						<Text style={styles.footText}>アカウントの追加や再ログインは、PC の Para Code から行います。</Text>
+						<Text style={styles.footText}>{usageFootNote(limits?.claude)}</Text>
 					</View>
 				</>
 			)}
