@@ -325,32 +325,57 @@ export function paradisParseRequestRules(value: unknown): ParadisPageOpsParseRes
 	return ok(Object.freeze(rules));
 }
 
+/** URL パターンの `?`（ちょうど1文字）と `*`（0文字以上）。 */
+const ANY_ONE = Symbol('anyOne');
+const ANY_RUN = Symbol('anyRun');
+
 /**
  * Chromium の Fetch の urlPattern と同じ規則で URL を照合する（`*` は0文字以上、`?` はちょうど1文字、
  * `\` の次の文字はそのまま）。Chromium が止めたリクエストに、どのルールを当てるかを決めるのに使う。
  */
 export function paradisMatchUrlPattern(pattern: string, url: string): boolean {
-	// 正規表現へ組み立てる（入力はどちらも長さを抑えてある）。
-	let source = '^';
+	// 正規表現にすると `*a*a*a…b` のような指定でバックトラックが爆発し、Fetch の paused ごとに
+	// electron-main が止まる。`*` の直近の位置だけを覚えて戻る反復照合にし、最悪でも
+	// パターン長 × URL 長で終わるようにする。
+	const tokens: (string | typeof ANY_ONE | typeof ANY_RUN)[] = [];
 	for (let i = 0; i < pattern.length; i++) {
 		const char = pattern[i];
 		if (char === '\\' && i + 1 < pattern.length) {
 			i++;
-			source += pattern[i].replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+			tokens.push(pattern[i]);
 		} else if (char === '*') {
-			source += '[\\s\\S]*';
+			if (tokens[tokens.length - 1] !== ANY_RUN) {
+				tokens.push(ANY_RUN);
+			}
 		} else if (char === '?') {
-			source += '[\\s\\S]';
+			tokens.push(ANY_ONE);
 		} else {
-			source += char.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+			tokens.push(char);
 		}
 	}
-	source += '$';
-	try {
-		return new RegExp(source).test(url);
-	} catch {
-		return false;
+	let tokenIndex = 0;
+	let urlIndex = 0;
+	let starTokenIndex = -1;
+	let starUrlIndex = 0;
+	while (urlIndex < url.length) {
+		const token = tokens[tokenIndex];
+		if (tokenIndex < tokens.length && token !== ANY_RUN && (token === ANY_ONE || token === url[urlIndex])) {
+			tokenIndex++;
+			urlIndex++;
+		} else if (token === ANY_RUN) {
+			starTokenIndex = tokenIndex++;
+			starUrlIndex = urlIndex;
+		} else if (starTokenIndex !== -1) {
+			tokenIndex = starTokenIndex + 1;
+			urlIndex = ++starUrlIndex;
+		} else {
+			return false;
+		}
 	}
+	while (tokens[tokenIndex] === ANY_RUN) {
+		tokenIndex++;
+	}
+	return tokenIndex === tokens.length;
 }
 
 /** 止めたリクエストに当てるルール（最初に当たったもの）。 */
