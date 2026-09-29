@@ -580,7 +580,7 @@ export interface RateLimitWindow {
 // 止まる）は認証の問題ではないので、再ログインを促してはいけない。
 export type RateLimitAccountStatus = 'ok' | 'refreshing' | 'relogin_required' | 'no_credentials' | 'unavailable' | 'error';
 /** 'unavailable' の内訳。PC側 ParadisLimitsUnavailableReason と同形。 */
-export type RateLimitUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable';
+export type RateLimitUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable' | 'rate_limited' | 'host_not_logged_in' | 'host_fetch_failed';
 /** Rate Limitの1アカウント。PC側 IParadisLimitsAccount と同形。 */
 export interface RateLimitAccount {
 	provider: 'claude' | 'codex';
@@ -602,8 +602,10 @@ export interface RateLimitProviderSnapshot {
 	sourceError?: string;
 	cswapMissing?: boolean;
 	/**
-	 * Claude: PC の SSH のウィンドウで、接続先の Claude Code がいまログインしているアカウントだけを
-	 * 出している（読み取り専用）。PC側 IParadisLimitsRemoteHost と同形。古い PC は付けない。
+	 * Claude: PC の接続先（SSH など）のウィンドウで、接続先の Claude Code がいまログインしている
+	 * アカウントだけを出している（読み取り専用）。PC側 IParadisLimitsRemoteHost と同形。古い PC は付けない。
+	 * このときの「ログインしていない」「取得できない」は 'unavailable' の 'host_not_logged_in' /
+	 * 'host_fetch_failed' で届く（接続先では Claude を使っていないことも多いので、赤い表示にしない）。
 	 */
 	remoteHost?: { label?: string };
 }

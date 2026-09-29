@@ -24,6 +24,9 @@ export const PARADIS_CLAUDE_ACCOUNTS_CHANNEL = 'paradisClaudeAccounts';
  */
 export const PARADIS_CLAUDE_HOST_STATE_COMMAND = 'getClaudeHostState';
 
+/** 接続先のログインのカードの ID（登録したアカウントやこの PC のログインとは別物）。 */
+export const PARADIS_CLAUDE_HOST_ACCOUNT_ID = 'claude-host';
+
 export interface IParadisClaudeAccountsState {
 	readonly claude: IParadisLimitsProviderSnapshot;
 	/** 表示中のアカウントのうち、いちばん古い取得時刻（epoch ms）。一度も取れていなければ undefined。 */
@@ -112,14 +115,25 @@ export type ParadisClaudeSetupErrorCode =
 	| 'keychain_unavailable'
 	| 'unsupported';
 
-/** 接続先のログインのカードに要らない項目（手元の切り替え・登録に使うもの）を落とす。 */
+/**
+ * 接続先のログインのカードに要らない項目（手元の切り替え・登録に使うもの）を落とし、「認証情報なし」と
+ * 「エラー」を灰色の「取得できず」に落とす。接続先（SSH・WSL・コンテナ・トンネル）では Claude を使って
+ * いない・API キーや環境変数のトークンで使っている・外へ通信できないことがよくあり、赤い「!」と再ログインの
+ * 案内を出すと、直す必要の無いものを壊れているように見せてしまう。
+ */
 function paradisClaudeHostAccount(account: IParadisLimitsAccount): IParadisLimitsAccount {
 	const { active: _active, managed: _managed, registrable: _registrable, ...rest } = account;
+	if (rest.status === 'no_credentials') {
+		return { ...rest, status: 'unavailable', unavailableReason: 'host_not_logged_in' };
+	}
+	if (rest.status === 'error') {
+		return { ...rest, status: 'unavailable', unavailableReason: 'host_fetch_failed' };
+	}
 	return rest;
 }
 
 /**
- * SSH のウィンドウで出す Claude の状態を組み立てる（Q131 案B: 接続先のログインだけを出す）。
+ * 接続先（SSH など）のウィンドウで出す Claude の状態を組み立てる（接続先のログインだけを出す）。
  *
  * 接続先から届いた状態に接続先の印（`remoteHost`）を付け、手元のアカウントの操作に使う項目
  * （使用中・登録済み・登録できる、claude-swap の案内、切り替え中）は落とす。接続先に聞けなかったときは

@@ -248,4 +248,40 @@ suite('ParadisClaudeHostUsage (REH, read-only)', () => {
 			calls: ['Bearer custom-access'],
 		});
 	});
+
+	test('a manual refresh that arrives while another request is running still gets its own look', async () => {
+		const harness = await createHarness();
+		await writeCredentials(path.join(harness.home, '.claude'), 'host-access', harness.now + 24 * HOUR);
+		await harness.reader.getState(undefined);
+		harness.now += 3 * MINUTE + 1000;
+		await harness.reader.getState(undefined);
+		// 使用率が動いていないので次の予定は 4.5 分後。180 秒を過ぎた手動の更新だけが取り直す
+		harness.now += 200_000;
+		const [automatic, manual] = await Promise.all([harness.reader.getState(undefined), harness.reader.getState({ refresh: true })]);
+
+		assert.deepStrictEqual({ calls: harness.calls.length, automatic: automatic.oldestFetchedAt !== harness.now, manual: manual.oldestFetchedAt === harness.now }, {
+			calls: 3,
+			automatic: true,
+			manual: true,
+		});
+	});
+
+	test('a login to another account on the host does not inherit the 429 wait of the previous one', async () => {
+		const harness = await createHarness();
+		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-a', 'a@example.com') });
+		await writeCredentials(path.join(harness.home, '.claude'), 'a-access', harness.now + HOUR);
+		harness.responses.push({ status: 429, headers: { 'retry-after': '3600' } });
+		const limited = summarize(await harness.reader.getState(undefined));
+
+		harness.now += MINUTE;
+		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-b', 'b@example.com') });
+		await writeCredentials(path.join(harness.home, '.claude'), 'b-access', harness.now + HOUR);
+		const other = summarize(await harness.reader.getState(undefined));
+
+		assert.deepStrictEqual({ limited: (limited as { status: string; unavailableReason?: string }[]).map(account => [account.status, account.unavailableReason]), other: (other as { email?: string; status: string }[]).map(account => [account.email, account.status]), calls: harness.calls.map(call => call.authorization) }, {
+			limited: [['unavailable', 'rate_limited']],
+			other: [['b@example.com', 'ok']],
+			calls: ['Bearer a-access', 'Bearer b-access'],
+		});
+	});
 });

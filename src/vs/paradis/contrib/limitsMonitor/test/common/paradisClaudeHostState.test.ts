@@ -39,4 +39,23 @@ suite('paradisClaudeHostAccountsState', () => {
 			switching: false,
 		});
 	});
+
+	test('shows "not logged in" and fetch errors on the host as a neutral gray state, not as a re-login alarm', () => {
+		const state = paradisClaudeHostAccountsState({
+			claude: {
+				accounts: [
+					{ provider: 'claude', id: 'claude-host', status: 'no_credentials' },
+					{ provider: 'claude', id: 'claude-host', status: 'error', statusDetail: 'could not reach the usage API' },
+					{ provider: 'claude', id: 'claude-host', status: 'refreshing' },
+				],
+			},
+			switching: false,
+		}, {});
+
+		assert.deepStrictEqual(state.claude.accounts.map(account => [account.status, account.unavailableReason, account.statusDetail]), [
+			['unavailable', 'host_not_logged_in', undefined],
+			['unavailable', 'host_fetch_failed', 'could not reach the usage API'],
+			['refreshing', undefined, undefined],
+		]);
+	});
 });

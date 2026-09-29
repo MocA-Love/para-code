@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // SSH の接続先（REH）で、その接続先の Claude Code がいまログインしているアカウントの使用量を読む。
-// SSH のウィンドウの使用量パネルは、手元のアカウントではなくこれだけを出す（Q131 案B）。
+// SSH のウィンドウの使用量パネルは、手元のアカウントではなくこれだけを出す。
 //
 // 読み取り専用にしてある:
 //  - 読むのは Claude Code の認証情報のファイル（`~/.claude/.credentials.json`）と身元（`~/.claude.json` の
@@ -28,7 +28,7 @@
 import { createHash } from 'crypto';
 import * as path from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisClaudeAccountsState, IParadisClaudeStateRequest } from '../common/paradisClaudeAccounts.js';
+import { IParadisClaudeAccountsState, IParadisClaudeStateRequest, PARADIS_CLAUDE_HOST_ACCOUNT_ID } from '../common/paradisClaudeAccounts.js';
 import {
 	PARADIS_CLAUDE_RECENT_429_WINDOW_S,
 	PARADIS_CLAUDE_SERVE_TTL_S,
@@ -40,15 +40,11 @@ import {
 	IParadisClaudeIdentity,
 	IParadisClaudeUsageWindows,
 	paradisClaudeAccessToken,
-	paradisClaudeIdentityFromOauthAccount,
 	paradisParseClaudeOAuthBlob
 } from '../common/paradisClaudeUsage.js';
 import { IParadisLimitsAccount, ParadisLimitsAccountStatus, ParadisLimitsUnavailableReason } from '../common/paradisLimitsMonitor.js';
 import { ParadisClaudeLiveAuth } from './paradisClaudeLiveAuth.js';
 import { IParadisClaudeOAuthClient, ParadisClaudeUsageFetchResult } from './paradisClaudeOAuthClient.js';
-
-/** 接続先のログインのカードの ID（登録したアカウントやこの PC のログインとは別物）。 */
-export const PARADIS_CLAUDE_HOST_ACCOUNT_ID = 'claude-host';
 
 /** アクセストークンが切れていたとき、接続先の Claude Code が更新するのを待つ間隔（手元の使用中と同じ）。 */
 const WAIT_FOR_REFRESH_S = 300;
@@ -131,26 +127,33 @@ export class ParadisClaudeHostUsage {
 		this.logService = options.logService;
 		this.now = options.now ?? Date.now;
 		this.random = options.random ?? Math.random;
-		// キーチェーンは渡さない（SSH 越しには読めない）。使うのは読み取りのメソッドだけ。
-		this.liveAuth = new ParadisClaudeLiveAuth({ homedir: options.homedir, platform: options.platform, keychain: undefined, userName: undefined, now: this.now });
+		// キーチェーンは渡さない（SSH 越しには読めない）。使うのは読み取りのメソッドだけ。身元（`.claude.json`）は
+		// 更新時刻と大きさが変わらなければ読み直さない（数 MB になることがある）。
+		this.liveAuth = new ParadisClaudeLiveAuth({ homedir: options.homedir, configDir: this.configDir, platform: options.platform, keychain: undefined, userName: undefined, now: this.now });
 	}
 
-	getState(request: IParadisClaudeStateRequest | undefined): Promise<IParadisClaudeAccountsState> {
-		if (!this.inflight) {
-			this.inflight = this.evaluate(request).finally(() => { this.inflight = undefined; });
+	async getState(request: IParadisClaudeStateRequest | undefined): Promise<IParadisClaudeAccountsState> {
+		const running = this.inflight;
+		if (running) {
+			if (!request?.refresh || request.passive) {
+				return running;
+			}
+			// 手動の更新は、走っている問い合わせの後にもう一度見る（まとめると、その更新が捨てられる）。
+			// 180 秒より新しい結果があれば API は呼ばない。
+			await running.catch(() => undefined);
+			return this.getState(request);
 		}
-		return this.inflight;
+		const evaluation = this.evaluate(request).finally(() => {
+			if (this.inflight === evaluation) {
+				this.inflight = undefined;
+			}
+		});
+		this.inflight = evaluation;
+		return evaluation;
 	}
 
-	private async readLogin(): Promise<IParadisClaudeHostLogin> {
-		if (this.configDir) {
-			const [credentials, oauthAccount] = await Promise.all([
-				this.liveAuth.readScopedCredentials(this.configDir),
-				this.liveAuth.readScopedOauthAccount(this.configDir),
-			]);
-			return { credentials, identity: paradisClaudeIdentityFromOauthAccount(oauthAccount) };
-		}
-		const [live, identity] = await Promise.all([this.liveAuth.readCredentials(), this.liveAuth.readIdentity()]);
+	private async readLogin(fresh = false): Promise<IParadisClaudeHostLogin> {
+		const [live, identity] = await Promise.all([this.liveAuth.readCredentials(), this.liveAuth.readIdentity(fresh)]);
 		return { credentials: live.value, identity };
 	}
 
@@ -167,7 +170,8 @@ export class ParadisClaudeHostUsage {
 
 		const identityKey = paradisIdentityKey(login.identity);
 		if (state.identityKey !== undefined && identityKey !== undefined && identityKey !== state.identityKey) {
-			// 接続先で別のアカウントにログインし直した。前のアカウントの値は出さない。
+			// 接続先で別のアカウントにログインし直した。前のアカウントの値は出さず、失敗と 429 の待ちも
+			// 引き継がない（API の回数の上限はアカウントごとに数えられる）。
 			state.windows = undefined;
 			state.fetchedAt = undefined;
 			state.intervalS = undefined;
@@ -175,6 +179,11 @@ export class ParadisClaudeHostUsage {
 			state.unavailableReason = 'not_fetched';
 			state.statusDetail = undefined;
 			state.nextPollAt = 0;
+			state.failures = 0;
+			state.backoffUntil = undefined;
+			state.last429At = undefined;
+			state.recent429Anchor = undefined;
+			state.fetchTimes = [];
 		}
 		if (identityKey !== undefined) {
 			state.identityKey = identityKey;
@@ -214,7 +223,7 @@ export class ParadisClaudeHostUsage {
 			state.nextPollAt = now;
 		}
 		// 手動の更新でも、180 秒以内の結果は取り直さない（API の回数を守る）。429 で待っている間も同じ。
-		if (request?.refresh && state.nextPollAt !== Number.POSITIVE_INFINITY && (state.fetchedAt === undefined || now - state.fetchedAt > PARADIS_CLAUDE_SERVE_TTL_S * 1000) && !inBackoff) {
+		if (request?.refresh && (state.fetchedAt === undefined || now - state.fetchedAt > PARADIS_CLAUDE_SERVE_TTL_S * 1000) && !inBackoff) {
 			state.nextPollAt = now;
 		}
 		if (request?.passive || now < state.nextPollAt || inBackoff) {
@@ -239,7 +248,7 @@ export class ParadisClaudeHostUsage {
 			// 取っている間に接続先で別のアカウントにログインし直していたら、結果を捨てて少し置いて取り直す。
 			let after: IParadisClaudeHostLogin | undefined;
 			try {
-				after = await this.readLogin();
+				after = await this.readLogin(true);
 			} catch {
 				after = undefined;
 			}

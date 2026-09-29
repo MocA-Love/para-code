@@ -13,7 +13,7 @@
 // 再ログインボタン、プロバイダーヘッダーにはアカウント追加ボタンを出す。
 //
 // SSH のウィンドウの Claude（スナップショットの `remoteHost` が付いている）は、接続先の Claude Code が
-// いまログインしているアカウントだけを読み取り専用で出す（Q131 案B）。見出しに接続先の名前を出し、
+// いまログインしているアカウントだけを読み取り専用で出す。見出しに接続先の名前を出し、
 // アカウントの追加・切り替え・登録・claude-swap の案内（差し込み部品を含む）は出さない。直し方の案内も
 // 接続先のターミナルでの /login に変える。
 
@@ -324,14 +324,18 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		}
 
 		const actions = dom.append(badgeGroup, $('.plm-account-actions'));
-		const hideLabel = localize('paradis.limitsMonitor.hideAccount', "{0} を一覧から隠す", account.email ?? account.homeLabel ?? account.id);
-		const hideButton = dom.append(actions, $('button.plm-account-icon-btn.plm-account-hide')) as HTMLButtonElement;
-		hideButton.type = 'button';
-		hideButton.setAttribute('aria-label', hideLabel);
-		// 再表示ボタン(非表示中リスト側)と対にする: 「隠す」はeyeClosed、「再表示」はeye。
-		hideButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.eyeClosed)}`));
-		this._bodyListeners.add(dom.addDisposableListener(hideButton, 'click', () => this.options.onToggleHiddenAccount(account)));
-		this._bodyListeners.add(this.hoverService.setupManagedHover(this.hoverDelegate, hideButton, hideLabel));
+		// 接続先のログインのカードは1枚だけなので隠せないようにする（隠すと Claude の欄が空になり、
+		// 「非表示中」からしか戻せない）。
+		if (!remoteHost) {
+			const hideLabel = localize('paradis.limitsMonitor.hideAccount', "{0} を一覧から隠す", account.email ?? account.homeLabel ?? account.id);
+			const hideButton = dom.append(actions, $('button.plm-account-icon-btn.plm-account-hide')) as HTMLButtonElement;
+			hideButton.type = 'button';
+			hideButton.setAttribute('aria-label', hideLabel);
+			// 再表示ボタン(非表示中リスト側)と対にする: 「隠す」はeyeClosed、「再表示」はeye。
+			hideButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.eyeClosed)}`));
+			this._bodyListeners.add(dom.addDisposableListener(hideButton, 'click', () => this.options.onToggleHiddenAccount(account)));
+			this._bodyListeners.add(this.hoverService.setupManagedHover(this.hoverDelegate, hideButton, hideLabel));
+		}
 
 		// Claude は Para Code に登録したものだけ登録を消せる（この PC のログインには触らない）。
 		if ((account.provider === 'codex' && account.removable) || (account.provider === 'claude' && account.managed)) {
@@ -440,17 +444,26 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	private remoteHostStatusMessage(account: IParadisLimitsAccount): string {
 		switch (account.status) {
 			case 'refreshing':
-				return localize('paradis.limitsMonitor.claudeHostRefreshing', "アクセストークンの期限が切れています。接続先の Claude Code が更新するのを待っています（操作は要りません）");
-			case 'no_credentials':
-				return localize('paradis.limitsMonitor.claudeHostNotLoggedIn', "接続先の Claude にログインしていません。接続先のターミナルで claude を起動し、/login でログインしてください");
+				// Claude Code は動いている間しかトークンを更新しない。「待てば直る」とは書かない。
+				return localize('paradis.limitsMonitor.claudeHostRefreshing', "アクセストークンの期限が切れています。接続先で claude を起動すると Claude Code が更新し、表示が戻ります");
 			case 'relogin_required':
+			case 'no_credentials':
 				return localize('paradis.limitsMonitor.claudeHostRelogin', "接続先のターミナルで claude を起動し、/login でログインし直してください");
-			case 'error':
 			case 'unavailable':
-				if (account.unavailableReason === 'keychain_unavailable') {
-					return localize('paradis.limitsMonitor.claudeHostKeychain', "接続先では Claude のログインが macOS のキーチェーンに保存されているため、SSH 越しには読み取れません");
+				switch (account.unavailableReason) {
+					case 'host_not_logged_in':
+						return localize('paradis.limitsMonitor.claudeHostNotLoggedIn', "接続先に Claude のサブスクリプションのログインが見つかりません。接続先で使うときは、接続先のターミナルで claude を起動し /login でログインすると表示されます（API キーで使っている場合は表示できません）");
+					case 'host_fetch_failed':
+						return account.statusDetail
+							? localize('paradis.limitsMonitor.claudeHostFetchFailedDetail', "接続先から使用量を取得できていません（{0}）。しばらくしてから取り直します", account.statusDetail)
+							: localize('paradis.limitsMonitor.claudeHostFetchFailed', "接続先から使用量を取得できていません。しばらくしてから取り直します");
+					case 'keychain_unavailable':
+						return localize('paradis.limitsMonitor.claudeHostKeychain', "接続先では Claude のログインが macOS のキーチェーンに保存されているため、SSH 越しには読み取れません");
+					default:
+						// 取得回数の上限などによる一時的なもの。手元と同じ説明にする。
+						return this.statusMessage(account);
 				}
-				// 通信や取得回数の上限による一時的なもの。手元と同じ説明にする。
+			case 'error':
 				return this.statusMessage(account);
 			case 'ok':
 				return '';
