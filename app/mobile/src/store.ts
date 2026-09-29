@@ -580,7 +580,7 @@ export interface RateLimitWindow {
 // 止まる）は認証の問題ではないので、再ログインを促してはいけない。
 export type RateLimitAccountStatus = 'ok' | 'refreshing' | 'relogin_required' | 'no_credentials' | 'unavailable' | 'error';
 /** 'unavailable' の内訳。PC側 ParadisLimitsUnavailableReason と同形。 */
-export type RateLimitUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable';
+export type RateLimitUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable' | 'rate_limited' | 'host_not_logged_in' | 'host_fetch_failed';
 /** Rate Limitの1アカウント。PC側 IParadisLimitsAccount と同形。 */
 export interface RateLimitAccount {
 	provider: 'claude' | 'codex';
@@ -601,6 +601,13 @@ export interface RateLimitProviderSnapshot {
 	accounts: RateLimitAccount[];
 	sourceError?: string;
 	cswapMissing?: boolean;
+	/**
+	 * Claude: PC の接続先（SSH など）のウィンドウで、接続先の Claude Code がいまログインしている
+	 * アカウントだけを出している（読み取り専用）。PC側 IParadisLimitsRemoteHost と同形。古い PC は付けない。
+	 * このときの「ログインしていない」「取得できない」は 'unavailable' の 'host_not_logged_in' /
+	 * 'host_fetch_failed' で届く（接続先では Claude を使っていないことも多いので、赤い表示にしない）。
+	 */
+	remoteHost?: { label?: string };
 }
 /** limits 応答（PC側で正規化済みのRate Limitスナップショット）。 */
 export interface RateLimitsResult {
@@ -3804,10 +3811,12 @@ export class MobileController {
 	/**
 	 * Rate Limit(AIリミット)スナップショット（PC版タイトルバーのリミットモニターと同じデータ）。
 	 * `windowId` を指定すると、その接続先（ローカル/SSHリモート）で取得した値を返す。
+	 * `claudeHost` は、使用量の画面で接続先（SSH など）を選んだときだけ付ける。付けたときだけ、新しい PC は
+	 * Claude をその接続先のログインで返す（付けない問い合わせは、どのウィンドウに届いてもこの PC のアカウント）。
 	 */
-	rateLimits(bypassCache?: boolean, windowId?: number): Promise<RateLimitsResult> {
+	rateLimits(bypassCache?: boolean, windowId?: number, claudeHost?: boolean): Promise<RateLimitsResult> {
 		// usageDashboard と同じく、PC側は結果を data フィールドにネストして返すためここで剥がす
-		return this.request<{ data?: RateLimitsResult }>('fs', { t: 'limits', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000, undefined, undefined, windowId)
+		return this.request<{ data?: RateLimitsResult }>('fs', { t: 'limits', ...(bypassCache ? { bypassCache: true } : {}), ...(claudeHost === true && windowId !== undefined ? { claudeHost: true } : {}) }, 60_000, undefined, undefined, windowId)
 			.then(response => {
 				if (!response.data) {
 					throw new Error('empty limits response');
