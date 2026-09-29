@@ -35,7 +35,7 @@ import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOT
 // PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
 import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, IParadisSwitchProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, ParadisOpenProfileFailure, ParadisProfileManageFailure } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
 import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, ParadisAgentPageRequestFailure, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
-import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
+import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
@@ -58,6 +58,7 @@ import { paradisClassifyPeer } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
+import { IParadisDevtoolsPathCaller, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision } from './paradisDevtoolsPathPolicy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
 import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
@@ -618,7 +619,9 @@ export class ParadisAgentBrowserService extends Disposable {
 			}),
 			logService,
 		));
-		this._devtoolsProxy = this._register(new ParadisDevtoolsMcpProxy(RESERVED_TOOL_NAMES, logService));
+		this._devtoolsProxy = this._register(new ParadisDevtoolsMcpProxy(RESERVED_TOOL_NAMES, logService, {
+			resolveRoots: token => this._resolveDevtoolsRoots(token),
+		}));
 		this._agentNetworkFilter = configurationService ? this._register(new AgentNetworkFilterService(configurationService)) : undefined;
 		this._pageOps = new ParadisBrowserPageOps({
 			// ingress が止まっているペイン（終了済み・隔離中）には共有が無いものとして扱う
@@ -2974,6 +2977,12 @@ export class ParadisAgentBrowserService extends Disposable {
 					return result;
 				}
 			}
+			// 内蔵chrome-devtools-mcpは手元で動くので、ファイルのパスは手元のパスになる。SSH の接続先の
+			// ペインからのパスは渡す前に断る（手元のファイルの読み書きが機械の境界を越えるため。q.html Q132）
+			const pathDecision = paradisDevtoolsPathDecision(this._devtoolsPathCaller(token), name, paradisDevtoolsPathArguments(name, params?.arguments));
+			if (pathDecision.kind === 'refuse') {
+				return this._toolError(pathDecision.message);
+			}
 			// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
 			return this._callDevtoolsTool(ingressLease, name, params?.arguments, signal);
 		}
@@ -3157,6 +3166,48 @@ export class ParadisAgentBrowserService extends Disposable {
 				return [];
 			}
 		});
+	}
+
+	/**
+	 * パスの引数を受けてよいかを決めるための、呼び出し元ペインの属性。接続元の確認（`_classifyCaller`）が
+	 * `tunnel` と `pane` のどちらで確かめるかを決めるのと同じ、ペインの `remoteAuthority` で見る
+	 * （名乗りや環境変数では決めない）。
+	 */
+	private _devtoolsPathCaller(token: string): IParadisDevtoolsPathCaller {
+		const pane = this._paneShells.get(token);
+		return { paneKnown: pane !== undefined, remote: pane?.remoteAuthority !== undefined };
+	}
+
+	/**
+	 * 内蔵chrome-devtools-mcpの `roots/list` に載せる、ペインの手元のフォルダ。ペインのスペースの
+	 * フォルダを、ペインを所有するウィンドウに尋ねる。接続先（SSH）のペイン・分からないときは空
+	 * （子プロセスの roots は Para Code の一時フォルダだけになる）。
+	 */
+	private async _resolveDevtoolsRoots(token: string): Promise<readonly string[]> {
+		const pane = this._paneShells.get(token);
+		if (pane === undefined || pane.remoteAuthority !== undefined) {
+			return [];
+		}
+		const ingressLease = this.captureIngressLease(token);
+		if (ingressLease === undefined) {
+			return [];
+		}
+		try {
+			const call = await this._callOwningWindow<unknown>(ingressLease, {
+				channelName: PARADIS_AGENT_PREVIEW_CHANNEL,
+				method: PARADIS_AGENT_PANE_ROOTS_METHOD,
+				args: [token],
+				failureLabel: 'devtools-roots',
+				failureMessage: 'Para Code could not resolve the folders of this terminal pane.',
+				timeoutMs: 4000,
+			});
+			if (!call.ok || !Array.isArray(call.value)) {
+				return [];
+			}
+			return call.value.filter((folder): folder is string => typeof folder === 'string' && isAbsolute(folder));
+		} catch {
+			return [];
+		}
 	}
 
 	/** ツール呼び出しを内蔵chrome-devtools-mcpへ転送する（転送対象外の名前は -32602）。 */

@@ -116,6 +116,7 @@ function createHarness(store: Pick<DisposableStore, 'add'>, options: IHarnessOpt
 		onDidSwitchScope,
 		onDidRetireScope,
 		preview: (path: string, token: string | undefined = 'pane-a') => channel.call<unknown>(undefined, 'previewFile', [token, path]),
+		paneRoots: (token: string) => channel.call<unknown>(undefined, 'paneRoots', [token]),
 		switchTo: (stateKey: string) => { activeStateKey = stateKey; onDidSwitchScope.fire(stateKey); },
 	};
 }
@@ -348,5 +349,16 @@ suite('ParadisAgentPreviewChannel', () => {
 		await settle();
 
 		assert.deepStrictEqual([retired.opened, kept.opened], [[], [{ resource: '/repos/a/kept.html', group: 'main' }]]);
+	});
+
+	test('returns the folder of the calling pane\'s space as its roots, and nothing for an unresolved pane', async () => {
+		const harness = createHarness(store, { recordedStateKey: 'repo-a', activeStateKey: 'repo-b' });
+		assert.deepStrictEqual({
+			space: await harness.paneRoots('pane-a'),
+			unresolved: await harness.paneRoots('pane-unknown'),
+		}, {
+			space: [URI.file('/repos/a').fsPath],
+			unresolved: [],
+		});
 	});
 });
