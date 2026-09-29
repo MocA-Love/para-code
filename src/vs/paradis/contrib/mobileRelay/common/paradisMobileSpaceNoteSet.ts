@@ -50,6 +50,21 @@ export function paradisParseMobileNoteOp(value: unknown): ParadisSpaceNoteOp | u
 	return undefined;
 }
 
+/** 本文が長すぎるときの応答（黙って末尾を切らない）。 */
+const TOO_LONG_ERROR = `メモが長すぎるため保存しませんでした（${PARADIS_SPACE_NOTE_MAX_LENGTH} 文字まで）`;
+
+/**
+ * 書いて応答を返す。PC が受け付けなかった（メモのあるスペースの数が上限に達しているなど）ときは、書けたように見せずに
+ * `{ error }` を返す。空の本文はメモを消す書き込みなので、残っていないことが正しい。
+ */
+function writeAndReply(notes: IParadisSpaceNotesService, ws: string, text: string): IParadisMobileNoteReply | { readonly error: string } {
+	notes.write(ws, text);
+	if (text.trim().length > 0 && notes.read(ws) !== text) {
+		return { error: 'このスペースのメモを PC に保存できませんでした（メモのあるスペースの数が上限に達しています）' };
+	}
+	return noteReply(notes, ws);
+}
+
 function noteReply(notes: IParadisSpaceNotesService, ws: string, conflict = false): IParadisMobileNoteReply {
 	const entry = notes.readEntry(ws);
 	return { t: 'note', ws, text: entry?.text ?? '', updatedAt: entry?.updatedAt ?? 0, ...(conflict ? { conflict: true as const } : {}) };
@@ -77,8 +92,12 @@ export function paradisMobileNoteSet(notes: IParadisSpaceNotesService, ws: strin
 		if (next === undefined || next.length > PARADIS_SPACE_NOTE_MAX_LENGTH) {
 			return noteReply(notes, ws, true);
 		}
-		notes.write(ws, next);
-		return noteReply(notes, ws);
+		return writeAndReply(notes, ws, next);
+	}
+	// 上限を超えた本文は、PC が末尾を切って書いてしまう（版を比べた書き込みでも）。切らずに断る
+	// （`op` の書き込みは、当てた後が上限を超えれば上で `conflict` を返している）
+	if (message.text.length > PARADIS_SPACE_NOTE_MAX_LENGTH) {
+		return { error: TOO_LONG_ERROR };
 	}
 	if (message.base !== undefined) {
 		if (typeof message.base !== 'number' || !Number.isFinite(message.base)) {
@@ -88,6 +107,5 @@ export function paradisMobileNoteSet(notes: IParadisSpaceNotesService, ws: strin
 			return noteReply(notes, ws, true);
 		}
 	}
-	notes.write(ws, message.text);
-	return noteReply(notes, ws);
+	return writeAndReply(notes, ws, message.text);
 }
