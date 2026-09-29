@@ -290,10 +290,16 @@ suite('ParadisMobileScmSyncRequests', () => {
 	test('does not restore the staged state when the index changed after `git add -A` or cannot be read, and says why', async () => {
 		// フックが動いている間に PC で別のファイルがステージされた（`add -A` の直後と失敗の後でツリーが違う）
 		let trees = [TREE, 'f'.repeat(40)];
-		const git = new FakeGit(args => args[0] === 'commit' ? { code: 1, stderr: 'husky - pre-commit hook exited with code 1' }
-			: args[0] === 'rev-parse' ? { stdout: args.includes('--verify') ? `${HEAD}\n` : 'feature\n' }
-				: args[0] === 'write-tree' ? (trees.length > 0 ? { stdout: `${trees.shift()}\n` } : { code: 128, stderr: 'fatal: git-write-tree: error building trees' })
-					: undefined);
+		let addThrows = false;
+		const git = new FakeGit(args => {
+			if (args[0] === 'add' && addThrows) {
+				throw new Error('ParadisWorktreeGit: channel closed');
+			}
+			return args[0] === 'commit' ? { code: 1, stderr: 'husky - pre-commit hook exited with code 1' }
+				: args[0] === 'rev-parse' ? { stdout: args.includes('--verify') ? `${HEAD}\n` : 'feature\n' }
+					: args[0] === 'write-tree' ? (trees.length > 0 ? { stdout: `${trees.shift()}\n` } : { code: 128, stderr: 'fatal: git-write-tree: error building trees' })
+						: undefined;
+		});
 		const index = new FakeIndexChannel();
 		const sent: IReply[] = [];
 		const host = createHost(git, sent, withIndexChannel(new Map(), index));
@@ -308,6 +314,10 @@ suite('ParadisMobileScmSyncRequests', () => {
 		trees = [TREE, TREE];
 		dispatch(host, { t: 'commitSafe', id: 'same', message: 'feat', all: true });
 		await flush();
+		// `add -A` が例外で終わった（待ちが無いので、これまでどおり戻す）
+		addThrows = true;
+		dispatch(host, { t: 'commitSafe', id: 'addThrew', message: 'feat', all: true });
+		await flush();
 
 		const failureOf = (id: string) => {
 			const failure = reply(sent, id)?.failure as { restored: boolean; restoreFailed?: boolean; indexChanged?: boolean };
@@ -317,13 +327,15 @@ suite('ParadisMobileScmSyncRequests', () => {
 			changed: failureOf('changed'),
 			unreadable: failureOf('unreadable'),
 			same: failureOf('same'),
+			addThrew: failureOf('addThrew'),
 			indexCalls: index.calls,
 		}, {
 			changed: { restored: false, restoreFailed: true, indexChanged: true },
 			unreadable: { restored: false, restoreFailed: true, indexChanged: true },
 			same: { restored: true, restoreFailed: undefined, indexChanged: undefined },
+			addThrew: { restored: true, restoreFailed: undefined, indexChanged: undefined },
 			// 変わっていた回と読めなかった回は restoreIndex を呼ばない（控えは git channel が 10 分後に片付ける）
-			indexCalls: ['backupIndex', 'backupIndex', 'backupIndex', 'restoreIndex token-1'],
+			indexCalls: ['backupIndex', 'backupIndex', 'backupIndex', 'restoreIndex token-1', 'backupIndex', 'restoreIndex token-1'],
 		});
 	});
 

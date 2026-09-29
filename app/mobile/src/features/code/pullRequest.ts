@@ -135,10 +135,22 @@ export function canFixChecks(pr: PrDetail): boolean {
 	return pr.state === 'open' || pr.state === 'draft' ? paradisFailedPullRequestChecks(pr.checks).length > 0 : false;
 }
 
-/** このスマホからマージキューに入れた PR（番号と、入れたときの head）。 */
+/** このスマホからマージキューに入れた PR（番号と、入れたときの head と時刻）。 */
 export interface PrQueued {
 	readonly number: number;
 	readonly headSha: string;
+	readonly at: number;
+}
+
+/**
+ * マージキューに入れた印を持ち続ける時間（ms）。キューから外された PR をいつまでもマージできなくしないよう、
+ * この時間が過ぎたら（または手で読み直したら）印を外す。
+ */
+export const PR_QUEUED_HOLD_MS = 10 * 60_000;
+
+/** いまも効いているマージキューの印（時間が過ぎていれば undefined）。 */
+export function activePrQueued(queued: PrQueued | undefined, now: number): PrQueued | undefined {
+	return queued !== undefined && now - queued.at < PR_QUEUED_HOLD_MS ? queued : undefined;
 }
 
 /**

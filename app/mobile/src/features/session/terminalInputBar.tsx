@@ -26,13 +26,15 @@ const FIELD_SLOP = hitSlopToMinimum(CONTROL);
  *    PC へ届く（⌫ は 1 文字削除、改行は Enter）。日本語は変換を確定したときに届き、変換中の文字は
  *    送らない。送る分の計算は `liveInput.ts`（入力欄を PC のプロンプトへ写す）
  */
-export function TerminalInputBar({ live, liveResetKey, input, onChangeInput, onSubmit, submitting, enterless, onToggleEnterless, uploading, onAttachImage, onLiveText, onLiveKey, onLiveArrow }: {
+export function TerminalInputBar({ live, liveResetKey, liveConnected, input, onChangeInput, onSubmit, submitting, enterless, onToggleEnterless, uploading, onAttachImage, onLiveText, onLiveKey, onLiveArrow }: {
 	live: boolean;
 	/**
 	 * 変わったらライブ入力の入力欄を空から作り直す（PC に届かなかった打鍵があった。Q144 A）。前の入力欄の文字は
 	 * 送らない。
 	 */
 	liveResetKey: number;
+	/** PC へ打鍵を送れる状態か。送れない間は、最後に打った文字の表示を進めない（届いたように見せない）。 */
+	liveConnected: boolean;
 	input: string;
 	onChangeInput: (text: string) => void;
 	onSubmit: () => void;
@@ -88,15 +90,15 @@ export function TerminalInputBar({ live, liveResetKey, input, onChangeInput, onS
 		setCaptures([0]);
 		quietCapturesRef.current.clear();
 		discardedCapturesRef.current.clear();
+		resetPendingRef.current = false;
 		setLiveFocused(false);
 		setLiveComposing(false);
 	}, [live]);
 	const seenResetKeyRef = useRef(liveResetKey);
-	useEffect(() => {
-		if (seenResetKeyRef.current === liveResetKey) {
-			return;
-		}
-		seenResetKeyRef.current = liveResetKey;
+	// 変換中に作り直すと確定前の文字が宙に浮くので、変換が終わるまで待つ
+	const resetPendingRef = useRef(false);
+	const rebuildCapture = () => {
+		resetPendingRef.current = false;
 		setLastTyped('');
 		// Enter で送り終えたときと同じく新しい入力欄を足し（フォーカスがあれば新しい方へ移す）、前の入力欄は黙らせる
 		setCaptures(list => {
@@ -107,24 +109,48 @@ export function TerminalInputBar({ live, liveResetKey, input, onChangeInput, onS
 			}
 			return [last, last + 1];
 		});
+	};
+	useEffect(() => {
+		if (seenResetKeyRef.current === liveResetKey) {
+			return;
+		}
+		seenResetKeyRef.current = liveResetKey;
+		if (liveComposing) {
+			resetPendingRef.current = true;
+			return;
+		}
+		rebuildCapture();
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- 作り直しの合図が来たときだけ
 	}, [liveResetKey]);
+	useEffect(() => {
+		if (!liveComposing && resetPendingRef.current) {
+			rebuildCapture();
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- 変換が終わったときだけ
+	}, [liveComposing]);
 	/** 送る。打った文字を制御文字として送った（PC の行に文字として載らなかった）ときは true。 */
 	const onLiveSend = (data: string): boolean => {
 		if (data === LIVE_ENTER) {
 			onLiveKey(data);
-			setLastTyped('');
+			if (liveConnected) {
+				setLastTyped('');
+			}
 			return false;
 		}
 		if (data.length > 0 && [...data].every(char => char === LIVE_DEL)) {
 			// DEL の並びは1回で送る（1文字ずつ送ると、その数だけ別々の操作として記録される）。
 			onLiveKey(data);
-			setLastTyped(previous => previous.slice(0, Math.max(0, previous.length - data.length)));
+			if (liveConnected) {
+				setLastTyped(previous => previous.slice(0, Math.max(0, previous.length - data.length)));
+			}
 			return false;
 		}
 		if (onLiveText(data)) {
 			return true;
 		}
-		setLastTyped(previous => (previous + data).slice(-40));
+		if (liveConnected) {
+			setLastTyped(previous => (previous + data).slice(-40));
+		}
 		return false;
 	};
 	const imageButton = (
@@ -175,7 +201,14 @@ export function TerminalInputBar({ live, liveResetKey, input, onChangeInput, onS
 								setCaptures(list => (list.length > 1 && list[list.length - 1] === generation ? [generation] : list));
 							}
 						}}
-						onSend={data => discardedCapturesRef.current.has(generation) ? false : onLiveSend(data)}
+						onSend={data => {
+							if (discardedCapturesRef.current.has(generation)) {
+								// 作り直しで外した入力欄に打鍵が届いた。いまの入力欄へフォーカスを戻す（送らない）
+								liveRef.current?.focus();
+								return false;
+							}
+							return onLiveSend(data);
+						}}
 						onSubmitted={(focusNext = true) => setCaptures(list => {
 							const last = list[list.length - 1]!;
 							if (last !== generation) {

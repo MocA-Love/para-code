@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { raceTimeout } from '../../../../base/common/async.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
@@ -35,6 +36,9 @@ import { IParadisMobileRequest, IParadisMobileRequestContext, registerParadisMob
  *   止める理由が無いときだけ `gh pr merge --match-head-commit` でマージする（方式はリポジトリの既定）。
  *   マージの後に PR を取り直し、まだ MERGED でなければ（マージキュー）`merged: false, queued: true` を返す
  */
+
+/** マージの後に PR を取り直すのを待つ時間（ms）。 */
+const POST_MERGE_LOOKUP_TIMEOUT_MS = 10_000;
 
 /** スペースごとのマージ・送信の最中の印。 */
 const gate = new ParadisMobileSendGate();
@@ -202,7 +206,8 @@ registerParadisMobileRequestHandler('scm', 'prMerge', {
 				const result = await host.merge({ repo: detail.repo, number: detail.number, headSha });
 				// gh はマージキューへ入れただけでも成功を返す。取り直して MERGED でなければ「キューに入れた」と返す
 				// （`queued` は後から足した項目。古いアプリは読まずに、これまでどおり「マージしました」と出す）
-				const after = await host.lookup().catch(() => undefined);
+				// 取り直しは待ちすぎない（スマホは 130 秒で諦める）。時間切れは「キューに入れた」として返す
+				const after = await raceTimeout(host.lookup().catch(() => undefined), POST_MERGE_LOOKUP_TIMEOUT_MS);
 				context.reply({ t: 'prMerge', ws, ...paradisPullRequestMergeOutcome(after, detail.number), method: result.method });
 			} catch (error) {
 				context.reply({ error: `マージできませんでした: ${describeLookupError(error)}`, code: 'merge-failed' });

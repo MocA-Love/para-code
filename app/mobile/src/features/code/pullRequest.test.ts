@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { canFixChecks, checkSummaryText, mergeConfirmMessage, orderedChecks, parsePrMergeReply, parsePrView, prMergeButton, prMergeToastText, prUnavailableText, type PrDetail } from './pullRequest.js';
+import { activePrQueued, canFixChecks, checkSummaryText, mergeConfirmMessage, orderedChecks, parsePrMergeReply, parsePrView, prMergeButton, prMergeToastText, prUnavailableText, type PrDetail } from './pullRequest.js';
 
 const HEAD = 'f'.repeat(40);
 
@@ -61,15 +61,20 @@ describe('prMergeButton', () => {
 
 	it('マージキューに入れた PR は、同じ head のまま開いている間だけ押せず、キューに入れたことを出す', () => {
 		const passing = pr({ checks: [{ name: 'a', bucket: 'pass' }] });
+		const queued = { number: passing.number, headSha: passing.headSha, at: 1_000 };
 		expect([
-			prMergeButton(passing, { number: passing.number, headSha: passing.headSha }),
-			prMergeButton({ ...passing, headSha: 'a'.repeat(40) }, { number: passing.number, headSha: passing.headSha }),
-			prMergeButton({ ...passing, state: 'merged' }, { number: passing.number, headSha: passing.headSha }),
+			prMergeButton(passing, queued),
+			prMergeButton({ ...passing, headSha: 'a'.repeat(40) }, queued),
+			prMergeButton({ ...passing, state: 'merged' }, queued),
+			// 10 分を過ぎたら印を外す（キューから外された PR をマージできるように）
+			prMergeButton(passing, activePrQueued(queued, 1_000 + 10 * 60_000)),
 		]).toEqual([
 			{ visible: true, reason: 'マージキューに入れました。GitHub がマージするとマージ済みに変わります。' },
 			{ visible: true, reason: undefined },
 			{ visible: false, reason: undefined },
+			{ visible: true, reason: undefined },
 		]);
+		expect(activePrQueued(queued, 1_000 + 10 * 60_000 - 1)).toBe(queued);
 	});
 
 	it('マージの応答を読み、キューに入れたときは「マージキューに入れました」と出す（queued を返さない古い PC はマージした扱い）', () => {

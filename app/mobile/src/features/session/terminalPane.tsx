@@ -27,6 +27,7 @@ import { terminalDraftKey, useTerminalDrafts } from './terminalDrafts.js';
 import { TerminalInputBar } from './terminalInputBar.js';
 import { liveInputEnabled, useTerminalLiveInputChoices } from './terminalLiveInputChoice.js';
 import { LiveInputResync } from './liveInputResync.js';
+import { useParaToast } from '../../paraToast.js';
 import { openUrlInPcBrowser } from './terminalLinkOpen.js';
 import { readClipboardText } from '../../nativeClipboard.js';
 
@@ -237,8 +238,15 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 	const [liveResetKey, setLiveResetKey] = useState(0);
 	const [liveResync] = useState(() => new LiveInputResync(() => setLiveResetKey(key => key + 1)));
 	useEffect(() => liveResync.setReady(liveReady), [liveResync, liveReady]);
-	const send = (data: string) => { void sendLiveKeys(terminalKey, data).then(accepted => liveResync.settle(accepted)); };
-	const sendArrow = (key: 'up' | 'down' | 'left' | 'right') => { void sendLiveArrowKey(terminalKey, key).then(accepted => liveResync.settle(accepted)); };
+	// 届かなかったら黙らずに知らせる（Ctrl-C や Esc が効いたと思わせない）
+	const settleKeys = (accepted: boolean) => {
+		liveResync.settle(accepted);
+		if (!accepted) {
+			useParaToast.getState().show({ key: 'terminal-keys-dropped', text: 'PC につながっていないため、キーを送れませんでした', icon: 'alert-circle-outline', tone: 'warn' }, 1_900);
+		}
+	};
+	const send = (data: string) => { void sendLiveKeys(terminalKey, data).then(settleKeys); };
+	const sendArrow = (key: 'up' | 'down' | 'left' | 'right') => { void sendLiveArrowKey(terminalKey, key).then(settleKeys); };
 	const keyInput = useTerminalKeyInput({ send, sendArrow, resetKey: terminalKey });
 
 	const onChangeInput = (next: string) => {
@@ -355,6 +363,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 			<TerminalInputBar
 				live={live}
 				liveResetKey={liveResetKey}
+				liveConnected={liveReady}
 				input={input}
 				onChangeInput={onChangeInput}
 				onSubmit={() => { void submit(); }}
