@@ -134,10 +134,11 @@ export interface IParadisComputerUseApprovalPrompt {
 /**
  * 承認の結果。`read` / `operate` / `denied` は台帳に記録する。ほかは記録しない。
  * `paneUnresolved` はウィンドウがそのペインを知らない（閉じた・別のウィンドウ）。
+ * `timedOut` は締め切りまでに答えが無かった、`cancelled` は呼び出し側が取り消した。
  */
-export type ParadisComputerUseApprovalOutcome = ParadisComputerUseGrant | 'cancelled' | 'unanswered' | 'busy' | 'recentlyDenied' | 'paneUnresolved';
+export type ParadisComputerUseApprovalOutcome = ParadisComputerUseGrant | 'cancelled' | 'timedOut' | 'unanswered' | 'busy' | 'recentlyDenied' | 'paneUnresolved';
 
-const APPROVAL_OUTCOMES: readonly ParadisComputerUseApprovalOutcome[] = ['read', 'operate', 'denied', 'cancelled', 'unanswered', 'busy', 'recentlyDenied', 'paneUnresolved'];
+const APPROVAL_OUTCOMES: readonly ParadisComputerUseApprovalOutcome[] = ['read', 'operate', 'denied', 'cancelled', 'timedOut', 'unanswered', 'busy', 'recentlyDenied', 'paneUnresolved'];
 
 export function paradisParseComputerUseApprovalOutcome(value: unknown): ParadisComputerUseApprovalOutcome | undefined {
 	const outcome = value && typeof value === 'object' ? (value as Record<string, unknown>).outcome : undefined;
