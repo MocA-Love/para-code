@@ -244,16 +244,17 @@ export function paradisInboxAttentionEntries(snapshot: IParadisInboxSnapshot, li
 const REDACTED = '***';
 
 /**
- * 値として伏せる文字。ASCII の記号・英数字だけに限る（引用符と `&;|` は区切りとして除く）。
+ * 値として伏せる文字。ASCII の記号・英数字だけに限る（引用符・バッククオートと `&;|` は区切りとして除く）。
  * 日本語の文は空白で区切られないので、「次の空白まで」を値にすると文の残りまで消えてしまう。
  */
-const VALUE = `[!#-%(-:<-{}~]+`;
+const VALUE = `[!#-%(-:<-_a-{}~]+`;
 const QUOTED_OR_VALUE = `("[^"]*"|'[^']*'|${VALUE})`;
 /**
- * 項目名の後の値のうち、文の一部ではなさそうなもの。値のすぐ後に日本語などが続く（`パスワード: 8文字以上`）
- * ものは値ではなく文なので伏せない（途中で切って一部だけ伏せることもしない）。
+ * 項目名の後の値。ただし3桁までの数字のすぐ後に日本語などが続くもの（`パスワード: 8文字以上`・`トークン=3件`）は
+ * 数を書いた文なので伏せない。数字でない値は、後ろに日本語や句点が続いても（`password=hunter2で接続できました`）伏せる。
+ * 省略記号（…）で切れた数字は、切り詰めた値の断片なので伏せる。
  */
-const QUOTED_OR_STANDALONE_VALUE = `("[^"]*"|'[^']*'|${VALUE}(?![!#-%(-:<-{}~]|[^\\x00-\\x7F]))`;
+const QUOTED_OR_STANDALONE_VALUE = `("[^"]*"|'[^']*'|(?!\\d{1,3}[^\\x00-\\x7F\\u2026])${VALUE})`;
 
 /** 既知の形のトークンの接頭辞（切り詰めの境目で断片だけ残ったものを伏せるのにも使う）。 */
 const KNOWN_TOKEN_PREFIXES = `(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|sk-|sk_|pk_|rk_|AKIA|ASIA|xox[abprs]-|AIza|npm_|glpat-|hf_|eyJ)`;
