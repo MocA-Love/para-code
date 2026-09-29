@@ -2221,6 +2221,11 @@ export class SCMHistoryViewPane extends ViewPane {
 	}
 
 	private _updateChildren(): Promise<void> {
+		// PARA-PATCH: callers await across other work (loading more, refresh); if the pane was disposed
+		// meanwhile, the disposed throttler rejects with "Throttler is disposed".
+		if (this._store.isDisposed) {
+			return Promise.resolve();
+		}
 		return this._updateChildrenThrottler.queue(
 			() => this._treeOperationSequencer.queue(
 				async () => {
