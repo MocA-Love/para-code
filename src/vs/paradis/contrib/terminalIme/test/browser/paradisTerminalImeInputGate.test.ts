@@ -76,5 +76,30 @@ suite('ParadisTerminalImeInputGate', () => {
 		element.remove();
 		assert.deepStrictEqual(seen, ['compositionstart', 'compositionupdate', 'compositionend']);
 	});
+
+	test('forgets a hidden composition on focus loss and on input outside any composition', () => {
+		const { element, textarea, seen, fire } = setup();
+		// ゲート中に始まった変換の compositionend が届かないまま、フォーカスが外れる
+		let gate = paradisBlockTerminalInput();
+		fire('compositionstart');
+		textarea.value = 'あ';
+		textarea.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+		const valueAfterBlur = textarea.value;
+		gate.dispose();
+		fire('input');
+		const afterBlur = seen.splice(0);
+		// 同じく取りこぼしたまま、ゲートが外れた後に変換の外の入力が来る
+		gate = paradisBlockTerminalInput();
+		fire('compositionstart');
+		gate.dispose();
+		seen.splice(0);
+		fire('input');
+		element.remove();
+		assert.deepStrictEqual({ valueAfterBlur, afterBlur, afterRelease: seen }, {
+			valueAfterBlur: '',
+			afterBlur: ['input'],
+			afterRelease: ['input'],
+		});
+	});
 });
 
