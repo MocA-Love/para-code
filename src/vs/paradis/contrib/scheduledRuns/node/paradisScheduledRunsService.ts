@@ -24,6 +24,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { paradisRedactSecrets } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { paradisNextCronOccurrence, paradisParseCron } from '../common/paradisScheduleCron.js';
 import {
 	IParadisScheduledRunDefinition,
@@ -453,7 +454,7 @@ export class ParadisScheduledRunsService extends Disposable {
 	/**
 	 * 実行中のエージェントの hook から、会話 ID と最後の発言を拾う。
 	 *
-	 * 最後の発言は Stop hook の `last_assistant_message` の先頭だけを残す（履歴の「最後の出力」欄）。
+	 * 最後の発言は Stop hook の `last_assistant_message` の先頭だけを、秘密らしい値を伏せて残す（履歴の「最後の出力」欄）。
 	 * 会話 ID はトークン数と金額を引くのに使う。
 	 */
 	private onHookEvent(event: IParadisScheduledRunHookEvent): void {
@@ -478,7 +479,9 @@ export class ParadisScheduledRunsService extends Disposable {
 		}
 		const lastMessage = event.event === 'Stop' ? event.payload?.last_assistant_message : undefined;
 		if (typeof lastMessage === 'string' && lastMessage.trim().length > 0) {
-			patch.lastMessage = lastMessage.trim().slice(0, PARADIS_SCHEDULED_RUN_LAST_MESSAGE_LENGTH);
+			// 履歴はファイルに残り画面にも出るので、秘密らしい値を伏せてから切り詰める（切り詰めた後だと、境目で
+			// 切れたトークンの断片が伏せ字の形に当たらず残る）
+			patch.lastMessage = paradisRedactSecrets(lastMessage.trim()).slice(0, PARADIS_SCHEDULED_RUN_LAST_MESSAGE_LENGTH);
 		}
 		if (Object.keys(patch).length > 0) {
 			this.updateRun(run.id, patch);
