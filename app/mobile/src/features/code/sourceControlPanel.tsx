@@ -17,6 +17,7 @@ import { X } from 'lucide-react-native';
 import { CenterSpinner, GroupHeading, InlineError, OfflineBanner, Segments, SpaceGateBody, useReadableColumn } from './codeParts.js';
 import { BranchCard, CommitBar, CommitFailureCard, CommitWarning, HistoryList, ScmFileRow } from './scmParts.js';
 import { ConfirmTarget } from './confirmTarget.js';
+import { stageableEntries } from './diffReview.js';
 import {
 	groupScmEntries,
 	listBodyState,
@@ -35,6 +36,8 @@ import type { PanelDock } from './panelDock.js';
 import { usePullRequest } from './usePullRequest.js';
 import { useScmCommit, useScmHistory, useScmStatus } from './useScmData.js';
 import { useAgentHandoff, useScmSync, useStageFile } from './useScmSync.js';
+import { useReviewMarksController } from './useReviewMarks.js';
+import { useReviewNotesController } from './useReviewNotes.js';
 
 /**
  * ソース管理（`/pc/[pcId]/source-control/[spaceId]`）。Orca の MobileSourceControlPanel に合わせ、
@@ -59,6 +62,9 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	const sync = useScmSync(codeSpace);
 	const [actionError, setActionError] = useState<string | undefined>(undefined);
 	const stageFile = useStageFile(codeSpace, setActionError);
+	// 確認済みのファイルを「+」でステージするときは、差分画面と同じく確認済みの印ごと付け替える。
+	const review = useReviewMarksController(codeSpace);
+	const reviewNotes = useReviewNotesController(codeSpace, review);
 	const commitHandoff = useAgentHandoff(codeSpace);
 	const prHandoff = useAgentHandoff(codeSpace);
 	const [segment, setSegment] = useState<ScmSegment>('changes');
@@ -140,8 +146,19 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 		}
 	};
 
+	/**
+	 * ステージする・外す。確認済みで確認後に変わっていないファイルは、差分画面と同じく `reviewStage` で
+	 * 確認済みの印ごとステージ後の中身へ付け替える（ただのステージだと「確認後に変更あり」に変わるため）。
+	 */
 	const toggleStage = async (entry: ScmEntry) => {
 		setActionError(undefined);
+		if (reviewNotes.canStage && stageableEntries([entry], review.marks).length > 0) {
+			const result = await reviewNotes.stage([entry]);
+			if (result !== undefined && result.staged > 0) {
+				void statusState.refresh();
+				return;
+			}
+		}
 		if (await stageFile.toggle(entry)) {
 			void statusState.refresh();
 		}

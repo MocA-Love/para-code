@@ -66,6 +66,11 @@ const holders = new Map<string, number>();
 
 let pendingEdits: Edit[] = [];
 let loadStarted = false;
+/**
+ * 保存値を読めたか。読めていない間（Keychain がまだ開いていない起動直後など）は、変更を保存せずに
+ * 積んでおき、次の変更のときに読み直す。読めないまま既定値で保存すると、保存済みの条件を上書きしてしまう。
+ */
+let persistReady = false;
 
 function save(saved: PcListViewSaved): void {
 	secureKeyStore.setItem(STORAGE_KEY, JSON.stringify(saved)).catch((err: unknown) => {
@@ -81,10 +86,12 @@ export const usePcListView = create<PcListViewStore>()((set, get) => {
 			return;
 		}
 		set({ saved: next });
-		if (get().loaded) {
+		if (persistReady) {
 			save(next);
 		} else {
 			pendingEdits.push(edit);
+			// 前の読み込みが失敗していれば読み直す（読めたら積んだ変更を重ねて保存する）。
+			ensurePcListViewLoaded();
 		}
 	};
 	const setTransient = (pcId: string, edit: (current: PcListTransient) => PcListTransient) => {
@@ -163,11 +170,8 @@ export function ensurePcListViewLoaded(): void {
 				return DEFAULT_PC_LIST_VIEW;
 			}
 		})
-		.catch((err: unknown): PcListViewSaved => {
-			console.warn('[pcListView] failed to load', err);
-			return DEFAULT_PC_LIST_VIEW;
-		})
 		.then(stored => {
+			persistReady = true;
 			const edits = pendingEdits;
 			pendingEdits = [];
 			const next = edits.reduce((saved, edit) => edit(saved), stored);
@@ -175,5 +179,10 @@ export function ensurePcListViewLoaded(): void {
 			if (edits.length > 0) {
 				save(next);
 			}
+		}, (err: unknown) => {
+			// 読めなかった: 画面は既定値のまま進める（loaded）が、保存はしない。次の変更で読み直す。
+			console.warn('[pcListView] failed to load', err);
+			loadStarted = false;
+			usePcListView.setState({ loaded: true });
 		});
 }

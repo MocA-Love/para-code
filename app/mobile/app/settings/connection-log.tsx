@@ -55,7 +55,11 @@ export default function ConnectionLogScreen() {
 	const [checking, setChecking] = useState(false);
 	const toast = useParaToast(s => s.show);
 	const mounted = useRef(true);
-	useEffect(() => () => { mounted.current = false; }, []);
+	// StrictMode の開発ビルドは effect を外してから付け直すので、付け直したときに true へ戻す。
+	useEffect(() => {
+		mounted.current = true;
+		return () => { mounted.current = false; };
+	}, []);
 
 	const check = useCallback(async () => {
 		setChecking(true);

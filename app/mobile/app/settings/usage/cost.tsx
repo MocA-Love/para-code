@@ -105,7 +105,10 @@ export default function CostScreen() {
 
 	// 接続先ごとに直近の値を持つ（切り替えても他の接続先の値は消えない）。
 	const [dataByHost, setDataByHost] = useState<Record<string, UsageDashboardResult>>({});
-	const data = dataByHost[host.key];
+	// 鍵には PC も含める（'local' / 'default' は PC をまたいで同じ鍵になるので、切り替え直後に届いた前の PC の
+	// 応答が今の PC の値として出ないように）。
+	const dataKey = `${activePcId ?? ''}\u0000${host.key}`;
+	const data = dataByHost[dataKey];
 	const [loading, setLoading] = useState(false);
 	// 引っ張って更新したときだけ RefreshControl のくるくるを出す（初回の読み込みと二重に出さない）。
 	const [pullRefreshing, setPullRefreshing] = useState(false);
@@ -120,7 +123,7 @@ export default function CostScreen() {
 		if (connection !== 'online' || host.stale) {
 			return;
 		}
-		const key = host.key;
+		const key = dataKey;
 		setLoading(true);
 		setError(undefined);
 		try {
@@ -131,7 +134,7 @@ export default function CostScreen() {
 		} finally {
 			setLoading(false);
 		}
-	}, [usageDashboard, connection, host.stale, host.key, windowId]);
+	}, [usageDashboard, connection, host.stale, dataKey, windowId]);
 
 	useEffect(() => { void refresh(); }, [refresh]);
 

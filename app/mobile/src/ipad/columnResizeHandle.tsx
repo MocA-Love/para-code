@@ -14,7 +14,7 @@ const ACCESSIBILITY_STEP = 20;
  * 列の境界をドラッグして幅を変えるつまみ（モックの `.sbgrab` / `.dockgrab`。Orca の左の列とドックの縁）。
  *
  * 親の中で `x`（境界線の位置）を中心に縦いっぱいの帯を重ねる。動かしている間は `onMove` に開始時からの
- * 横の移動量を渡し、離したら `onEnd`（ここで保存する）。境界線は動かしている間だけ見えるように明るくする。
+ * 横の移動量を渡し、動かしてから離したら `onEnd`（ここで保存する）。境界線は動かしている間だけ見えるように明るくする。
  */
 export function ColumnResizeHandle({ x, label, onStart, onMove, onEnd, onStep }: {
 	x: number;
@@ -38,13 +38,18 @@ export function ColumnResizeHandle({ x, label, onStart, onMove, onEnd, onStep }:
 			callbacks.current.onStart();
 		},
 		onPanResponderMove: (_, gesture) => callbacks.current.onMove(gesture.dx),
-		onPanResponderRelease: () => {
+		// 動かさずに離した（触れただけ）なら幅は変わっていないので、保存しない。
+		onPanResponderRelease: (_, gesture) => {
 			setDragging(false);
-			callbacks.current.onEnd();
+			if (gesture.dx !== 0) {
+				callbacks.current.onEnd();
+			}
 		},
-		onPanResponderTerminate: () => {
+		onPanResponderTerminate: (_, gesture) => {
 			setDragging(false);
-			callbacks.current.onEnd();
+			if (gesture.dx !== 0) {
+				callbacks.current.onEnd();
+			}
 		},
 	})).current;
 	return (

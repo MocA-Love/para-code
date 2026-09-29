@@ -5,12 +5,18 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 const storage = new Map<string, string>();
 const setItem = vi.fn(async (key: string, value: string) => { storage.set(key, value); });
 let release: () => void = () => { };
+/** 次の読み込みを失敗させる回数（Keychain がまだ開いていない起動直後）。 */
+let failReads = 0;
 
 vi.mock('../../platform.js', () => ({
 	secureKeyStore: {
 		getItem: async (key: string) => {
 			// 読み込みの途中で画面が値を変える場合を再現するため、`release()` まで返さない。
 			await new Promise<void>(resolve => { release = resolve; });
+			if (failReads > 0) {
+				failReads--;
+				throw new Error('keychain locked');
+			}
 			return storage.get(key) ?? null;
 		},
 		setItem: (key: string, value: string) => setItem(key, value),
@@ -34,6 +40,28 @@ describe('PC の画面の表示条件のストア', () => {
 	beforeEach(() => {
 		storage.clear();
 		setItem.mockClear();
+		failReads = 0;
+	});
+
+	test('読み込みに失敗したら既定値で進めるが保存はせず、次の変更で読み直してから重ねて保存する', async () => {
+		storage.set('pcListView', JSON.stringify({ group: 'none', byPc: { pc2: { states: ['idle'], spaces: [], collapsed: [] } } }));
+		failReads = 1;
+		const { ensurePcListViewLoaded, usePcListView } = await loadStore();
+		ensurePcListViewLoaded();
+		await flush();
+		release();
+		await flush();
+		const afterFailure = { loaded: usePcListView.getState().loaded, group: usePcListView.getState().saved.group };
+		usePcListView.getState().toggleSection('pc1', 'pinned');
+		const savedBeforeRetry = setItem.mock.calls.length;
+		await flush();
+		release();
+		await flush();
+		expect({ afterFailure, savedBeforeRetry, saved: JSON.parse(storage.get('pcListView') ?? 'null') }).toEqual({
+			afterFailure: { loaded: true, group: 'space' },
+			savedBeforeRetry: 0,
+			saved: { group: 'none', byPc: { pc2: { states: ['idle'], spaces: [], collapsed: [] }, pc1: { states: [], spaces: [], collapsed: ['pinned'] } } },
+		});
 	});
 
 	test('保存した条件を次の起動で読み戻し、検索語は残さない', async () => {
