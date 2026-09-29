@@ -78,6 +78,17 @@ suite('Paradis notification message', () => {
 		]);
 	});
 
+	test('does not mask prose right after an item name, or token counts', () => {
+		const cases = [
+			'パスワード: 8文字以上に変更しました',
+			'トークン=3件を使いました',
+			'max_tokens\uFF1A4096',
+			'max_tokens: 4096 に上げました',
+			'MAX_TOKENS=4096',
+		];
+		assert.deepStrictEqual(cases.map(paradisRedactSecrets), cases);
+	});
+
 	test('does not mask ordinary text that only looks like a key assignment', () => {
 		const cases = [
 			'型エラーを 3 件直し、monkey patch も外しました',
