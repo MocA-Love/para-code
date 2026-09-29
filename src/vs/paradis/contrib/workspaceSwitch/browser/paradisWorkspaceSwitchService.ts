@@ -24,12 +24,12 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroupsService, IEditorWorkingSet } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
-import { ITerminalEditorService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalEditorService, ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisSwitchOptions, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
-import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances } from './paradisTerminalEditorPark.js';
+import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances, paradisTerminalEditorOpening, paradisTerminalEditorOwner } from './paradisTerminalEditorPark.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -187,6 +187,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 * そこで止まるのを防ぐ。
 	 */
 	private static readonly FOLDER_VERIFY_TIMEOUT_MS = 1500;
+
+	/**
+	 * 切り替えの直前に作られたエディタターミナルの PTY 起動（と、別のスペースへ開いている途中なら
+	 * 開き終わるの）を待つ上限。これを過ぎても PTY ID が無い端末は park できず、working set の
+	 * 適用で閉じられる。
+	 */
+	private static readonly LATE_TERMINAL_PTY_ID_TIMEOUT_MS = 1500;
 
 	/**
 	 * 切り替えが終わらないとユーザーに知らせるまでの待ち。**ロールバックはしない** (下記参照)。
@@ -1276,44 +1283,37 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						// PTY ごと破棄され、戻ってきた際に死んだ pty への再接続で壊れたターミナルが復元される
 						// (詳細は paradisTerminalEditorPark.ts のコメント参照)。working set を保存して
 						// いない場合 (previousKey なし) は復元先が無くインスタンスが孤児化するためパークしない。
-						//
-						// captureScope が retain 済みの入力 (子プロセス実行中の端末 = closeHandler が確認を
-						// 要求する入力) は対象外とする。retain された入力は close 時も terminalEditorService の
-						// 一覧に残り続け (terminalEditorService.ts の PARA-PATCH)、restoreScope の再アタッチで
-						// そのまま復帰する。ここで detachInstance すると retain 中の入力を dispose してしまい
-						// 復元経路が壊れる上、park 台帳と一覧の二重管理になる。
 						// **端末数に比例する区間**。`safe_terminal_editors` を一緒に送っているのは、
 						// ここの伸びと突き合わせるため。
 						const parkedNonces = new Set<string>();
-						timeSyncPhase('park_terminals', () => {
-							for (const instance of [...this.terminalEditorService.instances]) {
-								const input = this.terminalEditorService.getInputFromResource(instance.resource);
-								if (this.editorGroupsService.isEditorInputRetained?.(input)) {
-									continue;
-								}
-								// input.group はキャッシュで detach 後に古い値が残り得るため、実際に入力を
-								// 含むグループを検索して補助ウィンドウ所属を判定する
-								const containingGroup = this.editorGroupsService.groups.find(group => group.contains(input));
-								if (containingGroup && this.editorGroupsService.getPart(containingGroup) !== this.editorGroupsService.mainPart) {
-									continue;
-								}
-								if (paradisParkTerminalEditorInstance(instance, previousKey)) {
-									// 実際に park できた nonce だけを控える。復元時に「この顔ぶれが
-									// そのまま台帳に残っているか」を名指しで確かめるための唯一の材料。
-									// park に失敗した入力（PTY ID 未確定・nonce 不正）は載らないので、
-									// 集合が working set の端末数に届かず、判定は「引く側」へ倒れる。
-									const parkedNonce = paradisTerminalIdentityNonce(instance.shellIntegrationNonce);
-									if (parkedNonce !== undefined) {
-										parkedNonces.add(parkedNonce);
-									}
-									this.terminalEditorService.detachInstance(instance);
-								}
+						timeSyncPhase('park_terminals', () => this.parkTerminalEditorsFor(previousKey, instance => {
+							// 実際に park できた nonce だけを控える。復元時に「この顔ぶれが
+							// そのまま台帳に残っているか」を名指しで確かめるための唯一の材料。
+							// park に失敗した入力（PTY ID 未確定・nonce 不正）は載らないので、
+							// 集合が working set の端末数に届かず、判定は「引く側」へ倒れる。
+							const parkedNonce = paradisTerminalIdentityNonce(instance.shellIntegrationNonce);
+							if (parkedNonce !== undefined) {
+								parkedNonces.add(parkedNonce);
 							}
-						});
+						}, undefined,
+							// 別のスペースへ開いている途中の端末は、ここでは行き先が分からない。後の2回
+							// （開き終わるのを待つ回と適用直前の回）に任せる。
+							instance => paradisTerminalEditorOpening(instance) !== undefined));
 						// **永続化しない。** 再起動を跨ぐと台帳の中身は起動時の孤児復活で作られた別物に
 						// なるので、「前回パークした顔ぶれ」として使ってはいけない。世代を跨いだ復元は
 						// 索引が唯一の防波堤なので、集合が無い＝必ず引く、で正しい。
 						this._workingSetTerminalNonces.set(previousKey, parkedNonces);
+
+						// 上のループが拾えなかったエディタターミナルを、待ってから拾い直す。適用は切り替え元の
+						// エディタを全部閉じ、閉じられたターミナルは PTY ごと破棄される。拾えないのは、作った直後で
+						// PTY ID がまだ無い端末（park できない）と、別のスペースへ開いている途中の端末（行き先が
+						// まだ決まっていない）。待つのは索引のスナップショットより**前**にする。後ろに置くと、
+						// スナップショットから適用までの間がこの待ちの分だけ伸びる。
+						// どちらも working set には載っていないので、復路では `unparkEditorTerminals` が台帳の
+						// 残りとして開き直す。この回の nonce 集合 (`parkedNonces`) には**足さない**。集合は
+						// 「working set の端末を賄えたか」の証明で、working set に無い端末で数を埋めると件数比較と
+						// 同じ穴になる。
+						await timePhase('park_late_terminals', () => this.parkLateTerminalEditors(previousKey));
 					}
 
 					// エディタの入れ替えは updateFolders より先に行う。Git 拡張はフォルダ削除時、
@@ -1395,6 +1395,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 							expectedNonces: this._workingSetRestoreNonces.get(stateKey),
 						});
 					});
+					// 索引の待ち（最大 500ms）の間に開かれた端末を、適用の直前にもう一度拾う。ここでは待たない。
+					if (previousKey !== undefined) {
+						timeSyncPhase('park_last_terminals', () => this.parkTerminalEditorsFor(previousKey, undefined, instance => this.lateParkScope(instance, previousKey)));
+					}
 					try {
 						await timePhase('apply_working_set', () => this.applyWorkingSetFor(stateKey));
 					} finally {
@@ -1847,6 +1851,77 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			this._workingSetRestoreNonces.delete(stateKey);
 		}
 		this.saveWorkingSets();
+	}
+
+	/**
+	 * 切り替え元のメインのエディタエリアにあるターミナルを、入力から切り離して park する。
+	 *
+	 * captureScope が retain 済みの入力 (子プロセス実行中の端末 = closeHandler が確認を
+	 * 要求する入力) は対象外とする。retain された入力は close 時も terminalEditorService の
+	 * 一覧に残り続け (terminalEditorService.ts の PARA-PATCH)、restoreScope の再アタッチで
+	 * そのまま復帰する。ここで detachInstance すると retain 中の入力を dispose してしまい
+	 * 復元経路が壊れる上、park 台帳と一覧の二重管理になる。
+	 */
+	private parkTerminalEditorsFor(stateKey: string, onParked?: (instance: ITerminalInstance) => void, scopeFor?: (instance: ITerminalInstance) => string, skip?: (instance: ITerminalInstance) => boolean): void {
+		for (const instance of this.parkableTerminalEditors()) {
+			if (skip?.(instance)) {
+				continue;
+			}
+			if (paradisParkTerminalEditorInstance(instance, scopeFor?.(instance) ?? stateKey)) {
+				onParked?.(instance);
+				this.terminalEditorService.detachInstance(instance);
+			}
+		}
+	}
+
+	private parkableTerminalEditors(): ITerminalInstance[] {
+		return this.terminalEditorService.instances.filter(instance => {
+			const input = this.terminalEditorService.getInputFromResource(instance.resource);
+			if (this.editorGroupsService.isEditorInputRetained?.(input)) {
+				return false;
+			}
+			// input.group はキャッシュで detach 後に古い値が残り得るため、実際に入力を
+			// 含むグループを検索して補助ウィンドウ所属を判定する
+			const containingGroup = this.editorGroupsService.groups.find(group => group.contains(input));
+			return !containingGroup || this.editorGroupsService.getPart(containingGroup) === this.editorGroupsService.mainPart;
+		});
+	}
+
+	/**
+	 * 最初の park ループの後に、まだエディタに残っているターミナルを park し直す。
+	 *
+	 * PTY ID が未確定の端末は PTY の起動を、別のスペースへ開いている途中の端末は開き終わるのを
+	 * 待ってから park する。待ちには上限を付ける（詰まった端末1本のために切り替え全体を止めない）。
+	 * 上限を過ぎても ID が無い端末は従来どおり適用で閉じられる。
+	 */
+	private async parkLateTerminalEditors(previousKey: string): Promise<void> {
+		const waits: Promise<unknown>[] = [];
+		for (const instance of this.parkableTerminalEditors()) {
+			if (instance.isDisposed) {
+				continue;
+			}
+			if (typeof instance.persistentProcessId !== 'number') {
+				waits.push(instance.processReady);
+			}
+			const opening = paradisTerminalEditorOpening(instance);
+			if (opening !== undefined) {
+				waits.push(opening.settled);
+			}
+		}
+		if (waits.length > 0) {
+			await raceTimeout(Promise.allSettled(waits), ParadisWorkspaceSwitchService.LATE_TERMINAL_PTY_ID_TIMEOUT_MS);
+		}
+		this.parkTerminalEditorsFor(previousKey, undefined, instance => this.lateParkScope(instance, previousKey));
+	}
+
+	/**
+	 * 最初のループの後で拾う端末の park 先。切り替えの最中に作られて別のスペースへ開いている途中の
+	 * 端末や、別のスペースへ割り当て済みの端末を切り替え元へ入れると、タブが行き先のスペースに
+	 * 出ず、切り替え元を削除したときに巻き添えで閉じられる。行き先が分かればそちらへ、分からなければ
+	 * 作られたときのスペース（切り替え中は切り替え元）へ入れる。
+	 */
+	private lateParkScope(instance: ITerminalInstance, previousKey: string): string {
+		return paradisTerminalEditorOpening(instance)?.stateKey ?? paradisTerminalEditorOwner(instance) ?? previousKey;
 	}
 
 	private async applyWorkingSetFor(stateKey: string): Promise<void> {

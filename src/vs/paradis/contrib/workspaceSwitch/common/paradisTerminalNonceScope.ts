@@ -94,6 +94,30 @@ export function paradisSerializeTerminalNonceScopeStorage(scopes: ReadonlyMap<st
 }
 
 /**
+ * 保存済み台帳から、退役したスペースへの所属を落とす。
+ *
+ * @returns 書き戻す文字列。何も落ちなかったときは `undefined`（書き戻さない）。落とした結果
+ * 空になったときは空文字（呼び出し側がキーごと消す）。読めない台帳は触らない。
+ */
+export function paradisRetireScopeFromNonceScopeStorage(raw: string, stateKey: string): string | undefined {
+	const scopes = paradisParseTerminalNonceScopeStorage(raw);
+	if (scopes === undefined) {
+		return undefined;
+	}
+	let changed = false;
+	for (const [nonce, assignedStateKey] of scopes) {
+		if (assignedStateKey === stateKey) {
+			scopes.delete(nonce);
+			changed = true;
+		}
+	}
+	if (!changed) {
+		return undefined;
+	}
+	return scopes.size === 0 ? '' : paradisSerializeTerminalNonceScopeStorage(scopes);
+}
+
+/**
  * 旧 ID 台帳を nonce 台帳へ翻訳する。
  *
  * 移行の初回起動では nonce 台帳が空なので、翻訳を挟まないと全端末がいきなり所属不明になる。
