@@ -1892,6 +1892,8 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				await settle();
 				return {
 					formerScopes: formerScopes === undefined ? undefined : [...(paradisParseTerminalNonceScopeStorage(formerScopes) ?? [])],
+					// 消したスペースへの控えは一緒に消える（残すと設定を戻したときにそこへ隠れる）。
+					formerScopesAfterRemoval: harness.storageService.get('paradis.workspaceSwitch.sharedPanelFormerScopes', StorageScope.WORKSPACE),
 					parkedInSpaceA,
 					parkedInSpaceB,
 					scopeInSpaceA,
@@ -1906,8 +1908,8 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 
 		assert.deepStrictEqual({ shared: await run(true), perSpace: await run(false) }, {
 			// 共通ターミナルは台帳に所属を持たず、尋ねられたら今のスペース（最後は space-a）と答える。
-			shared: { formerScopes: [['nonce-4301', 'space-b']], parkedInSpaceA: false, parkedInSpaceB: false, scopeInSpaceA: 'managed:space-a', stateKey: 'space-a', disposedWithSpaceB: false },
-			perSpace: { formerScopes: undefined, parkedInSpaceA: true, parkedInSpaceB: false, scopeInSpaceA: 'managed:space-b', stateKey: undefined, disposedWithSpaceB: true },
+			shared: { formerScopes: [['nonce-4301', 'space-b']], formerScopesAfterRemoval: undefined, parkedInSpaceA: false, parkedInSpaceB: false, scopeInSpaceA: 'managed:space-a', stateKey: 'space-a', disposedWithSpaceB: false },
+			perSpace: { formerScopes: undefined, formerScopesAfterRemoval: undefined, parkedInSpaceA: true, parkedInSpaceB: false, scopeInSpaceA: 'managed:space-b', stateKey: undefined, disposedWithSpaceB: true },
 		});
 	});
 
