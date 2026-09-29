@@ -17,7 +17,11 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisLimitsMonitorService, paradisCodexLoginUrl } from '../../node/paradisLimitsMonitorChannel.js';
 
 class ParadisCodexMissingService extends ParadisLimitsMonitorService {
+	/** codex を探している間に新しいホームへ起きること（書きかけの config.toml など）。 */
+	beforeFailure: (() => void) | undefined;
+
 	protected override async resolveCommand(): Promise<string> {
+		this.beforeFailure?.();
 		throw new Error('codex not found');
 	}
 }
@@ -35,10 +39,9 @@ suite('ParadisLimitsMonitor Codex login', () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	test('removes the new home it created when adding an account fails before codex starts', async () => {
-		mkdirSync(join(root, '.codex'));
-		writeFileSync(join(root, '.codex', 'config.toml'), 'model = "gpt-5"\n');
+	async function addAccountThatFails(beforeFailure?: () => void): Promise<{ phase: string; error?: string; homes: string[] }> {
 		const service = new ParadisCodexMissingService(new NullLogService(), undefined, undefined, () => root);
+		service.beforeFailure = beforeFailure;
 		const { sessionId } = await service.startCodexLogin(undefined, undefined);
 		let state = service.getSetupState(sessionId);
 		for (let i = 0; i < 100 && state.phase !== 'error'; i++) {
@@ -47,11 +50,27 @@ suite('ParadisLimitsMonitor Codex login', () => {
 		}
 		service.cancelSetup(sessionId);
 		service.dispose();
-		assert.deepStrictEqual({ phase: state.phase, error: state.error, homes: readdirSync(root).sort(), newHomeLeft: existsSync(join(root, '.codex-2')) }, {
+		return { phase: state.phase, error: state.error, homes: readdirSync(root).sort() };
+	}
+
+	test('removes the new home it created when adding an account fails before codex starts', async () => {
+		mkdirSync(join(root, '.codex'));
+		writeFileSync(join(root, '.codex', 'config.toml'), 'model = "gpt-5"\n');
+		const result = await addAccountThatFails();
+		assert.deepStrictEqual({ ...result, newHomeLeft: existsSync(join(root, '.codex-2')) }, {
 			phase: 'error',
 			error: 'codex not found',
 			homes: ['.codex'],
 			newHomeLeft: false,
+		});
+	});
+
+	test('removes a half-written config.toml with the new home, but keeps a new home that has anything else', async () => {
+		const halfWritten = await addAccountThatFails(() => writeFileSync(join(root, '.codex-2', 'config.toml'), 'mod'));
+		const withOther = await addAccountThatFails(() => writeFileSync(join(root, '.codex-2', 'sessions.log'), 'x'));
+		assert.deepStrictEqual({ halfWritten: halfWritten.homes, withOther: withOther.homes }, {
+			halfWritten: [],
+			withOther: ['.codex-2'],
 		});
 	});
 
