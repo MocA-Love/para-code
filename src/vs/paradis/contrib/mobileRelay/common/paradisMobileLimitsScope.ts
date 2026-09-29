@@ -10,19 +10,25 @@
 export interface IParadisMobileLimitsRequestTarget {
 	readonly ws?: unknown;
 	readonly rendererGeneration?: unknown;
+	/**
+	 * 新しいアプリの使用量の画面が、接続先（SSH など）を選んだときだけ付ける `true`。任意項目なので、
+	 * 古いアプリは付けない。
+	 */
+	readonly claudeHost?: unknown;
 }
 
 /**
  * `limits` の問い合わせで、Claude を手元の shared process から取るか。
  *
- * SSH のウィンドウは Claude に接続先のログインを出す。その値を返すのは、アプリが使用量の画面で接続先を
- * 選び、ウィンドウを名指しした（`ws` を持たず `rendererGeneration` を持つ）問い合わせだけにする。ホームや
- * ウィジェットのようにウィンドウを選ばずに届いた問い合わせ（アプリが最初に見つけたウィンドウの `ws` を
- * 付けて送る）は、どのウィンドウが答えるかで Claude のアカウントが入れ替わらないよう、従来どおり手元の
- * アカウントを返す（古いアプリもこちらになる）。
+ * 接続先のウィンドウは Claude に接続先のログインを出す。その値を返すのは、アプリが明示的に頼んだ
+ * （`claudeHost: true` を付け、ウィンドウを名指しした＝`ws` を持たず `rendererGeneration` を持つ）問い合わせ
+ * だけにする。それ以外は、どのウィンドウに届いても従来どおり手元のアカウントを返す:
+ *  - ホームやウィジェット（ウィンドウを選ばずに送り、リレーが最初に見つけたウィンドウへ配る）
+ *  - 古いアプリ（使用量の画面はウィンドウを名指しするが、接続先のログインの表示を知らない。接続先の名前も
+ *    直し方の文言も出せないので、手元のアカウントのまま見せる）
  */
 export function paradisMobileLimitsClaudeFromLocal(target: IParadisMobileLimitsRequestTarget): boolean {
 	const hasWorkspace = typeof target.ws === 'string' && target.ws.length > 0;
 	const namesWindow = !hasWorkspace && typeof target.rendererGeneration === 'number' && Number.isInteger(target.rendererGeneration);
-	return !namesWindow;
+	return !(namesWindow && target.claudeHost === true);
 }

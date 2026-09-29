@@ -3811,10 +3811,12 @@ export class MobileController {
 	/**
 	 * Rate Limit(AIリミット)スナップショット（PC版タイトルバーのリミットモニターと同じデータ）。
 	 * `windowId` を指定すると、その接続先（ローカル/SSHリモート）で取得した値を返す。
+	 * `claudeHost` は、使用量の画面で接続先（SSH など）を選んだときだけ付ける。付けたときだけ、新しい PC は
+	 * Claude をその接続先のログインで返す（付けない問い合わせは、どのウィンドウに届いてもこの PC のアカウント）。
 	 */
-	rateLimits(bypassCache?: boolean, windowId?: number): Promise<RateLimitsResult> {
+	rateLimits(bypassCache?: boolean, windowId?: number, claudeHost?: boolean): Promise<RateLimitsResult> {
 		// usageDashboard と同じく、PC側は結果を data フィールドにネストして返すためここで剥がす
-		return this.request<{ data?: RateLimitsResult }>('fs', { t: 'limits', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000, undefined, undefined, windowId)
+		return this.request<{ data?: RateLimitsResult }>('fs', { t: 'limits', ...(bypassCache ? { bypassCache: true } : {}), ...(claudeHost === true && windowId !== undefined ? { claudeHost: true } : {}) }, 60_000, undefined, undefined, windowId)
 			.then(response => {
 				if (!response.data) {
 					throw new Error('empty limits response');

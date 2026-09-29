@@ -484,7 +484,7 @@ type FsInbound =
 	// PARA-PATCH: RTK節約データのモバイル配信（PC版のRTKダッシュボードと同じデータ）
 	| { t: 'rtk'; id: string; bypassCache?: boolean }
 	// Rate Limit(AIリミット)スナップショット（PC版タイトルバーのリミットモニターと同じデータ）
-	| { t: 'limits'; id: string; bypassCache?: boolean; ws?: string; rendererGeneration?: number }
+	| { t: 'limits'; id: string; bypassCache?: boolean; ws?: string; rendererGeneration?: number; claudeHost?: boolean }
 	// GitHub API利用状況（PC版のGitHub API Usageダッシュボードと同じデータ）
 	| { t: 'github'; id: string; bypassCache?: boolean }
 	// PC本体のリソース使用量（マシン全体のCPU/メモリ/ディスク＋Para Code内訳）
