@@ -14,6 +14,8 @@ import {
 	paradisDecideSavedScreens,
 	paradisDecodeTerminalScreens,
 	paradisEncodeTerminalScreens,
+	paradisSavedScreensAfterRevive,
+	paradisShouldDropScreensNotHeldByDaemon,
 	PARADIS_TERMINAL_SCREENS_MAX_AGE,
 } from '../../common/paradisTerminalScreens.js';
 
@@ -74,5 +76,49 @@ suite('ParadisTerminalScreens', () => {
 			// 30日を過ぎた
 			paradisDecideSavedScreens(saved, savedAt + PARADIS_TERMINAL_SCREENS_MAX_AGE + 1, status({})),
 		], ['revive', 'daemonStillHolds', 'daemonStillHolds', 'revive', 'unknown', 'unknown', 'revive', 'revive', 'daemonStillHolds', 'expired']);
+	});
+
+	test('keeps revived screens as held by the current daemon so a reload does not revive them twice', () => {
+		const savedAt = 10_000;
+		const revivedAt = savedAt + 3_000;
+		const saved = { version: 2 as const, savedAt, daemon, state: 'x' };
+		const current = { running: true, pid: 200, startedAt: savedAt + 500, foreign: [] };
+		const kept = paradisSavedScreensAfterRevive(saved, current, revivedAt);
+		// アプリは保存の後、戻す前に起動した
+		const mainStartedAt = savedAt + 1_000;
+		assert.deepStrictEqual({
+			kept,
+			// 再読み込み: 同じ常駐がまだ居るので二度目は起こさない
+			reload: kept && paradisDecideSavedScreens(kept, revivedAt + 2000, current, mainStartedAt),
+			// 再読み込みで常駐の状態を聞けなかった: 保存時刻が今なので、アプリの起動時刻からは戻さない
+			reloadStatusUnknown: kept && paradisDecideSavedScreens(kept, revivedAt + 2000, undefined, mainStartedAt),
+			// 次の保存より前に PC を再起動した: 常駐が替わったので、もう一度戻せる
+			reboot: kept && paradisDecideSavedScreens(kept, revivedAt + 2000, { ...current, pid: 300, startedAt: revivedAt + 1500 }),
+			// 今の常駐が分からないときは書き直す相手が居ないので消す
+			unknown: paradisSavedScreensAfterRevive(saved, { running: false, pid: undefined, startedAt: undefined, foreign: [] }, revivedAt),
+		}, {
+			kept: { version: 2, savedAt: revivedAt, daemon: { pid: 200, startedAt: savedAt + 500 }, state: 'x' },
+			reload: 'daemonStillHolds',
+			reloadStatusUnknown: 'unknown',
+			reboot: 'revive',
+			unknown: undefined,
+		});
+	});
+
+	test('drops saved screens that claim the current daemon when it does not hold the terminals', () => {
+		const saved = { version: 2 as const, savedAt: 10_000, daemon, state: 'x' };
+		const status = (overrides: Partial<IParadisDaemonStatusLike>): IParadisDaemonStatusLike => ({ running: true, pid: daemon.pid, startedAt: daemon.startedAt, foreign: [], terminalCount: 0, ...overrides });
+		assert.deepStrictEqual([
+			// 同じ常駐で、抱えている本数が足りない（pty ホストがアプリの中に落ちた）
+			paradisShouldDropScreensNotHeldByDaemon(saved, status({}), 2),
+			// 抱えている
+			paradisShouldDropScreensNotHeldByDaemon(saved, status({ terminalCount: 2 }), 2),
+			// 本数が分からない
+			paradisShouldDropScreensNotHeldByDaemon(saved, status({ terminalCount: undefined }), 2),
+			// 保存物の常駐とは別の常駐（保存物は PC の再起動後に戻す分）
+			paradisShouldDropScreensNotHeldByDaemon(saved, status({ pid: 300 }), 2),
+			// 常駐が動いていない
+			paradisShouldDropScreensNotHeldByDaemon(saved, status({ running: false }), 2),
+		], [true, false, false, false, false]);
 	});
 });

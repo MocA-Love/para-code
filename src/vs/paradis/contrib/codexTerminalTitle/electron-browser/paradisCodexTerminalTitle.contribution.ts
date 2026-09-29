@@ -500,16 +500,32 @@ class ParadisCodexTerminalTitleTrackerContribution extends Disposable implements
 
 registerTerminalContribution(ParadisCodexTerminalTitleTrackerContribution.ID, ParadisCodexTerminalTitleTrackerContribution);
 
-function replaceTerminalTitleInTuiSection(config: string): string {
+/**
+ * Sets `[tui].terminal_title` in a Codex config.toml. Returns the text unchanged when `tui` is
+ * already defined another way (a dotted key such as `tui.x = 1` or an inline table `tui = { ... }` at
+ * the top level): adding a `[tui]` table then would define it twice, which TOML rejects, and Codex
+ * would refuse to start.
+ */
+export function replaceTerminalTitleInTuiSection(config: string): string {
 	const titleLine = `terminal_title = [${PARADIS_CODEX_TERMINAL_TITLE_ITEMS.map(item => `"${item}"`).join(', ')}]`;
-	const tuiHeader = /^\[tui\][^\n]*(?:\n|$)/m;
+	const firstTable = /^[\t ]*\[/m.exec(config);
+	const topLevel = firstTable === null ? config : config.slice(0, firstTable.index);
+	if (/^[\t ]*(?:tui|"tui"|'tui')[\t ]*[.=]/m.test(topLevel)) {
+		return config;
+	}
+	const tuiHeader = /^[\t ]*\[[\t ]*(?:tui|"tui"|'tui')[\t ]*\][^\n]*(?:\n|$)/m;
 	const headerMatch = tuiHeader.exec(config);
 	if (!headerMatch || headerMatch.index === undefined) {
 		return `${config.trimEnd()}\n\n[tui]\n${titleLine}\n`;
 	}
+	if (!headerMatch[0].endsWith('\n')) {
+		// `[tui]` is the last line and has no line break; the key has to go on a line of its own.
+		return `${config}\n${titleLine}\n`;
+	}
 
 	const sectionStart = headerMatch.index + headerMatch[0].length;
-	const nextSection = /^\[/m;
+	// TOML allows indentation before a table header, as the header patterns above do.
+	const nextSection = /^[\t ]*\[/m;
 	const nextSectionMatch = nextSection.exec(config.slice(sectionStart));
 	const sectionEnd = nextSectionMatch?.index === undefined ? config.length : sectionStart + nextSectionMatch.index;
 	const section = config.slice(sectionStart, sectionEnd);

@@ -19,6 +19,7 @@ import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurati
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IShellLaunchConfig, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { paradisRegisterTerminalLaunchPreparer } from '../../workspaceSwitch/common/paradisTerminalLaunchPreparers.js';
 import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
@@ -72,6 +73,9 @@ type ParadisSharedPanelCwdDecision =
  * - 設定したフォルダが無ければホームで開く。存在しないフォルダを渡すと、それ以降のパネルの
  *   ターミナルがすべて起動に失敗するため。確かめるのは非同期なので、設定を読んだ時点で
  *   先に確かめておき、ターミナルを作るときは結果だけを使う
+ * - 確かめた後にフォルダが消える（消した、外付けのディスクを外した）こともあるので、ウィンドウに
+ *   戻ってきたときと、そのフォルダでターミナルを開いた後にも確かめ直す。開いた直後の1本は
+ *   間に合わないことがあるが、次からはホームで開く
  */
 class ParadisTerminalSharedPanelContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.paradisTerminalSharedPanel';
@@ -85,6 +89,7 @@ class ParadisTerminalSharedPanelContribution extends Disposable implements IWork
 		@IFileService private readonly fileService: IFileService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@ILogService private readonly logService: ILogService,
+		@IHostService hostService: IHostService,
 	) {
 		super();
 		// 所属の判定側（paradisTerminalScope）と同じ、ウィンドウの起動時の値を使う。
@@ -94,6 +99,11 @@ class ParadisTerminalSharedPanelContribution extends Disposable implements IWork
 		this._register(paradisRegisterTerminalLaunchPreparer((shellLaunchConfig, target) => this.prepare(shellLaunchConfig, target)));
 		this._register(this.configurationService.onDidChangeConfiguration(event => {
 			if (event.affectsConfiguration(PARADIS_TERMINAL_SHARED_PANEL_CWD) || event.affectsConfiguration(UPSTREAM_TERMINAL_CWD)) {
+				void this.refreshDecision();
+			}
+		}));
+		this._register(hostService.onDidChangeFocus(focused => {
+			if (focused && this._decision?.kind === 'folder') {
 				void this.refreshDecision();
 			}
 		}));
@@ -143,6 +153,9 @@ class ParadisTerminalSharedPanelContribution extends Disposable implements IWork
 		const cwd = decision?.uri ?? this.pathService.resolvedUserHome;
 		if (cwd !== undefined) {
 			shellLaunchConfig.cwd = cwd;
+		}
+		if (decision !== undefined && decision.uri.toString() !== this.pathService.resolvedUserHome?.toString()) {
+			void this.refreshDecision();
 		}
 	}
 }

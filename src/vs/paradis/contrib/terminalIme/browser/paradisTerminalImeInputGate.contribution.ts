@@ -55,10 +55,16 @@ export class ParadisTerminalImeInputGateContribution extends Disposable implemen
 			}
 		};
 		this._register(addDisposableListener(element, 'compositionstart', event => {
+			// 新しい変換が始まったなら、前の変換は終わっている。前の変換の `compositionend` が
+			// 届かなかった（フォーカスが移った等）ときに、その状態を持ち越さない。持ち越すと、
+			// ゲートの外で始まった変換の `update` と `end` まで xterm へ届かず、xterm が
+			// 「変換中」のまま固まる。
 			if (paradisIsTerminalInputBlocked()) {
 				this._swallowingComposition = true;
+				this._passingComposition = false;
 				event.stopImmediatePropagation();
 			} else {
+				this._swallowingComposition = false;
 				this._passingComposition = true;
 			}
 		}, true));
@@ -75,7 +81,24 @@ export class ParadisTerminalImeInputGateContribution extends Disposable implemen
 			}
 			this._passingComposition = false;
 		}, true));
+		// 変換の途中でフォーカスが外れたら、その変換の状態を捨てる。`compositionend` が届かないまま
+		// 残ると、ゲートが外れた後も入力を捨て続ける（下の `input`）。xterm に見せていない変換の
+		// 文字はテキストエリアから消しておく（後から届く `compositionend` で xterm が送らないように）。
+		this._register(addDisposableListener(element, 'focusout', () => {
+			if (this._swallowingComposition) {
+				clearTextarea();
+			}
+			this._swallowingComposition = false;
+			this._passingComposition = false;
+		}, true));
 		this._register(addDisposableListener(element, 'input', event => {
+			// 変換の外の入力（`isComposing` が false）が来たなら、どの変換も続いていない。
+			// `compositionend` を取りこぼした変換の状態が残っていれば、ここで捨てる。ゲートが外れた後の
+			// 最初の入力もここを通るので、取りこぼした状態が解除後まで入力を止め続けることは無い。
+			if (!(event as InputEvent).isComposing) {
+				this._swallowingComposition = false;
+				this._passingComposition = false;
+			}
 			if (this._swallowingComposition || (paradisIsTerminalInputBlocked() && !this._passingComposition)) {
 				event.stopImmediatePropagation();
 				if (!this._swallowingComposition) {
