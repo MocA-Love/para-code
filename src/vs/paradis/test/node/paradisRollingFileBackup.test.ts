@@ -13,7 +13,7 @@ import { join } from '../../../base/common/path.js';
 import { isWindows } from '../../../base/common/platform.js';
 import { generateUuid } from '../../../base/common/uuid.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { paradisRollingBackupPath, paradisWriteRollingBackup, paradisWriteRollingBackupSync } from '../../node/paradisRollingFileBackup.js';
+import { paradisOriginalBackupPath, paradisRollingBackupPath, paradisWriteRollingBackup, paradisWriteRollingBackupSync } from '../../node/paradisRollingFileBackup.js';
 
 suite('paradisRollingFileBackup', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -29,7 +29,7 @@ suite('paradisRollingFileBackup', () => {
 		await fs.rm(directory, { recursive: true, force: true });
 	});
 
-	test('keeps exactly one copy of the previous content, with the same permissions, and skips a missing file', async () => {
+	test('keeps one copy of the previous content and the first original, with the same permissions, and skips a missing file', async () => {
 		const file = join(directory, 'settings.json');
 		const missing = [paradisWriteRollingBackupSync(file), await paradisWriteRollingBackup(file)];
 		await fs.writeFile(file, 'first', { mode: 0o600 });
@@ -45,6 +45,7 @@ suite('paradisRollingFileBackup', () => {
 			afterFirst,
 			secondAsync,
 			afterSecond: await fs.readFile(paradisRollingBackupPath(file), 'utf8'),
+			original: await fs.readFile(paradisOriginalBackupPath(file), 'utf8'),
 			mode: isWindows ? 0o600 : mode,
 			entries: (await fs.readdir(directory)).sort(),
 		}, {
@@ -53,8 +54,9 @@ suite('paradisRollingFileBackup', () => {
 			afterFirst: 'first',
 			secondAsync: true,
 			afterSecond: 'second',
+			original: 'first',
 			mode: 0o600,
-			entries: ['settings.json', 'settings.json.paradis.bak'],
+			entries: ['settings.json', 'settings.json.paradis.bak', 'settings.json.paradis.orig.bak'],
 		});
 	});
 
