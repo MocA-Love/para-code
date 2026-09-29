@@ -325,57 +325,98 @@ export function paradisParseRequestRules(value: unknown): ParadisPageOpsParseRes
 	return ok(Object.freeze(rules));
 }
 
-/** URL パターンの `?`（ちょうど1文字）と `*`（0文字以上）。 */
-const ANY_ONE = Symbol('anyOne');
-const ANY_RUN = Symbol('anyRun');
+/**
+ * ルールと照らす URL の長さの上限。これより長い URL（大きな data を埋めた GET など）はどのルールにも当てず、
+ * そのまま流す。照合の手間は URL の長さに比例するので、Fetch の paused ごとに electron-main を止めないため。
+ */
+export const PARADIS_PAGE_OPS_MAX_MATCH_URL_LENGTH = 64 * 1024;
+/** 1 回の照合で `?` を含む区切りを1文字ずつ比べる回数の上限。超えたら当たらないことにする（同じ理由）。 */
+const MAX_MATCH_COMPARISONS = 4_000_000;
+
+/** `*` で区切った1区切り。`undefined` は `?`（ちょうど1文字）。 */
+type UrlPatternSegment = readonly (string | undefined)[];
+
+function splitUrlPattern(pattern: string): UrlPatternSegment[] {
+	const segments: (string | undefined)[][] = [[]];
+	for (let i = 0; i < pattern.length; i++) {
+		const char = pattern[i];
+		const current = segments[segments.length - 1];
+		if (char === '\\' && i + 1 < pattern.length) {
+			current.push(pattern[++i]);
+		} else if (char === '*') {
+			segments.push([]);
+		} else if (char === '?') {
+			current.push(undefined);
+		} else {
+			current.push(char);
+		}
+	}
+	return segments;
+}
 
 /**
  * Chromium の Fetch の urlPattern と同じ規則で URL を照合する（`*` は0文字以上、`?` はちょうど1文字、
  * `\` の次の文字はそのまま）。Chromium が止めたリクエストに、どのルールを当てるかを決めるのに使う。
+ *
+ * 正規表現にすると `*a*a*a…b` のような指定でバックトラックが爆発し、Fetch の paused ごとに electron-main が
+ * 止まる。そこで `*` で区切り、先頭と末尾の区切りはその位置で、間の区切りは左から順にいちばん手前で探す
+ * （戻らない）。`?` の無い区切りは `indexOf` で探す。長すぎる URL（{@link PARADIS_PAGE_OPS_MAX_MATCH_URL_LENGTH}）と、
+ * `?` の区切りの比較が上限を超えたときは当たらないことにする。
  */
 export function paradisMatchUrlPattern(pattern: string, url: string): boolean {
-	// 正規表現にすると `*a*a*a…b` のような指定でバックトラックが爆発し、Fetch の paused ごとに
-	// electron-main が止まる。`*` の直近の位置だけを覚えて戻る反復照合にし、最悪でも
-	// パターン長 × URL 長で終わるようにする。
-	const tokens: (string | typeof ANY_ONE | typeof ANY_RUN)[] = [];
-	for (let i = 0; i < pattern.length; i++) {
-		const char = pattern[i];
-		if (char === '\\' && i + 1 < pattern.length) {
-			i++;
-			tokens.push(pattern[i]);
-		} else if (char === '*') {
-			if (tokens[tokens.length - 1] !== ANY_RUN) {
-				tokens.push(ANY_RUN);
-			}
-		} else if (char === '?') {
-			tokens.push(ANY_ONE);
-		} else {
-			tokens.push(char);
-		}
+	if (url.length > PARADIS_PAGE_OPS_MAX_MATCH_URL_LENGTH) {
+		return false;
 	}
-	let tokenIndex = 0;
-	let urlIndex = 0;
-	let starTokenIndex = -1;
-	let starUrlIndex = 0;
-	while (urlIndex < url.length) {
-		const token = tokens[tokenIndex];
-		if (tokenIndex < tokens.length && token !== ANY_RUN && (token === ANY_ONE || token === url[urlIndex])) {
-			tokenIndex++;
-			urlIndex++;
-		} else if (token === ANY_RUN) {
-			starTokenIndex = tokenIndex++;
-			starUrlIndex = urlIndex;
-		} else if (starTokenIndex !== -1) {
-			tokenIndex = starTokenIndex + 1;
-			urlIndex = ++starUrlIndex;
-		} else {
+	let budget = MAX_MATCH_COMPARISONS;
+	const matchesAt = (segment: UrlPatternSegment, at: number): boolean => {
+		for (let j = 0; j < segment.length; j++) {
+			const expected = segment[j];
+			if (expected !== undefined && expected !== url[at + j]) {
+				return false;
+			}
+		}
+		return true;
+	};
+	/** `from` 以降で、`end` までに収まるいちばん手前の位置（無ければ -1、上限を超えたら undefined）。 */
+	const find = (segment: UrlPatternSegment, from: number, end: number): number | undefined => {
+		if (!segment.includes(undefined)) {
+			const at = url.indexOf(segment.join(''), from);
+			return at >= 0 && at + segment.length <= end ? at : -1;
+		}
+		for (let at = from; at + segment.length <= end; at++) {
+			budget -= segment.length;
+			if (budget < 0) {
+				return undefined;
+			}
+			if (matchesAt(segment, at)) {
+				return at;
+			}
+		}
+		return -1;
+	};
+	const segments = splitUrlPattern(pattern);
+	const first = segments[0];
+	if (segments.length === 1) {
+		return first.length === url.length && matchesAt(first, 0);
+	}
+	const last = segments[segments.length - 1];
+	if (first.length + last.length > url.length || !matchesAt(first, 0) || !matchesAt(last, url.length - last.length)) {
+		return false;
+	}
+	let position = first.length;
+	const end = url.length - last.length;
+	for (let index = 1; index < segments.length - 1; index++) {
+		const segment = segments[index];
+		if (segment.length === 0) {
+			continue;
+		}
+		const at = find(segment, position, end);
+		if (at === undefined || at < 0) {
 			return false;
 		}
+		position = at + segment.length;
 	}
-	while (tokens[tokenIndex] === ANY_RUN) {
-		tokenIndex++;
-	}
-	return tokenIndex === tokens.length;
+	return true;
 }
 
 /** 止めたリクエストに当てるルール（最初に当たったもの）。 */

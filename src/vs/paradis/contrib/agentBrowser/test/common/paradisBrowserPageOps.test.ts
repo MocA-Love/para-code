@@ -13,6 +13,7 @@ import {
 	paradisBuildRespondHeaders,
 	paradisFindRequestRule,
 	paradisMatchUrlPattern,
+	PARADIS_PAGE_OPS_MAX_MATCH_URL_LENGTH,
 	paradisParseHeaderMap,
 	paradisParseHighlightRect,
 	paradisParseHttpCredentials,
@@ -105,9 +106,15 @@ suite('paradisBrowserPageOps', () => {
 		assert.deepStrictEqual(cases.map(([pattern, url]) => paradisMatchUrlPattern(pattern, url)), [true, false, true, true, false, true, false]);
 	});
 
-	test('URL patterns with many wildcards finish in linear time and keep the wildcard rules', () => {
+	test('URL patterns with many wildcards or single-character wildcards finish quickly, keep the wildcard rules, and skip oversized URLs', () => {
+		const long = 'https://x/' + 'a'.repeat(PARADIS_PAGE_OPS_MAX_MATCH_URL_LENGTH - 10);
 		const started = Date.now();
-		const redos = paradisMatchUrlPattern('*a'.repeat(500) + 'b', 'https://x/' + 'a'.repeat(4000));
+		const heavy = [
+			paradisMatchUrlPattern('*a'.repeat(500) + 'b', long),
+			paradisMatchUrlPattern('*' + 'a'.repeat(1022) + 'b', long),
+			paradisMatchUrlPattern('*b' + 'a'.repeat(1021) + '*', long),
+			paradisMatchUrlPattern('*' + 'a?'.repeat(510) + 'b*', long),
+		];
 		const elapsed = Date.now() - started;
 		const cases: [string, string][] = [
 			['**', ''],
@@ -115,18 +122,23 @@ suite('paradisBrowserPageOps', () => {
 			['a*b*c', 'axxbyyc'],
 			['a*b*c', 'axxbyycd'],
 			['*a*a*b', 'https://x/aaab'],
+			['ab*ba', 'aba'],
+			['a?c*', 'abcd'],
+			['*?*', ''],
 			['https://example.com/a\\', 'https://example.com/a\\'],
 			['https://example.com/\\*', 'https://example.com/x'],
 			['?', ''],
+			['*', long],
+			['*', long + 'a'.repeat(11)],
 		];
 		assert.deepStrictEqual({
-			redos,
+			heavy,
 			fast: elapsed < 1000,
 			cases: cases.map(([pattern, url]) => paradisMatchUrlPattern(pattern, url)),
 		}, {
-			redos: false,
+			heavy: [false, false, false, false],
 			fast: true,
-			cases: [true, true, true, false, true, true, false, false],
+			cases: [true, true, true, false, true, false, true, false, true, false, false, true, false],
 		});
 	});
 
