@@ -19,7 +19,7 @@ import { promises as fs, readFileSync, watch } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join } from '../../../../base/common/path.js';
 import { Event } from '../../../../base/common/event.js';
-import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { findExecutable } from '../../../../base/node/processes.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { paradisWriteFileAtomicSync } from '../../../node/paradisWriteFileAtomic.js';
@@ -860,7 +860,7 @@ export class ParadisAgentHooksReconciler extends Disposable {
 	private reconcileTail: Promise<void> = Promise.resolve();
 	private pendingReconcile: IDisposable | undefined;
 	/** 見張っているフォルダ（後から増えた Codex のホームも足す）。 */
-	private readonly watchedDirectories = new Set<string>();
+	private readonly watchedDirectories = this._register(new DisposableMap<string>());
 	private started = false;
 	private disposed = false;
 	private notifyScriptInstalled = false;
@@ -906,25 +906,33 @@ export class ParadisAgentHooksReconciler extends Disposable {
 		if (this.disposed) {
 			return;
 		}
-		this.watchHookDirectories();
+		this.watchHookDirectories(false);
 		this._register(this.scheduleAudit(() => { void this.reconcile(); }));
 		// アカウントを足した・ログインした Codex のホームへは、定期監査（60秒ごと）を待たずに置く。
 		const onDidChangeCodexHomes = this.options.onDidChangeCodexHomes ?? (this.fixedCodexHooksPath === undefined ? onDidChangeParadisCodexHomes : Event.None);
 		this._register(onDidChangeCodexHomes(() => {
 			if (!this.disposed) {
-				this.watchHookDirectories();
+				this.watchHookDirectories(true);
 				this.onDirectoryChange(null);
 			}
 		}));
 	}
 
-	private watchHookDirectories(): void {
-		for (const directory of new Set([dirname(this.claudeSettingsPath), ...this.codexHooksPaths().map(path => dirname(path))])) {
-			if (this.watchedDirectories.has(directory)) {
-				continue;
+	/**
+	 * @param rewatch 見張っているフォルダも張り直す。消して同じ名前で作り直したホームは、前のフォルダの見張りでは
+	 * 変化が届かない（見張りは消えたフォルダに付いたまま）ので、ホームが変わったと知らされたら張り直す
+	 */
+	private watchHookDirectories(rewatch: boolean): void {
+		const directories = new Set([dirname(this.claudeSettingsPath), ...this.codexHooksPaths().map(path => dirname(path))]);
+		for (const directory of [...this.watchedDirectories.keys()]) {
+			if (rewatch || !directories.has(directory)) {
+				this.watchedDirectories.deleteAndDispose(directory);
 			}
-			this.watchedDirectories.add(directory);
-			this._register(this.watchDirectory(directory, fileName => this.onDirectoryChange(fileName)));
+		}
+		for (const directory of directories) {
+			if (!this.watchedDirectories.has(directory)) {
+				this.watchedDirectories.set(directory, this.watchDirectory(directory, fileName => this.onDirectoryChange(fileName)));
+			}
 		}
 	}
 

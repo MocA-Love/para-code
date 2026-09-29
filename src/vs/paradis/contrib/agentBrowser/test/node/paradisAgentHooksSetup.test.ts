@@ -659,10 +659,11 @@ suite('ParadisAgentHooksSetup', () => {
 		assert.strictEqual(reconcileCount, 3);
 	});
 
-	test('reconciles soon after a Codex home is added instead of waiting for the audit', async () => {
+	test('reconciles soon after a Codex home is added instead of waiting for the audit, and watches the homes again', async () => {
 		const homesChanged = new Emitter<void>();
 		const scheduled: (() => void)[] = [];
 		const watched: string[] = [];
+		let unwatched = 0;
 		let reconcileCount = 0;
 		const reconciler = new ParadisAgentHooksReconciler(undefined, {
 			claudeSettingsPath: '/tmp/paradis-l7/.claude/settings.json',
@@ -670,7 +671,7 @@ suite('ParadisAgentHooksSetup', () => {
 			claudeVersionOutput: '2.1.207',
 			installNotifyScript: false,
 			onDidChangeCodexHomes: homesChanged.event,
-			watchDirectory: directory => { watched.push(directory); return { dispose: () => undefined }; },
+			watchDirectory: directory => { watched.push(directory); return { dispose: () => { unwatched++; } }; },
 			scheduleAudit: () => ({ dispose: () => undefined }),
 			scheduleReconcile: listener => { scheduled.push(listener); return { dispose: () => undefined }; },
 			reconcileFiles: async () => { reconcileCount++; },
@@ -682,10 +683,12 @@ suite('ParadisAgentHooksSetup', () => {
 		reconciler.dispose();
 		homesChanged.fire();
 		homesChanged.dispose();
-		assert.deepStrictEqual({ reconcileCount, scheduled: scheduled.length, watched }, {
+		assert.deepStrictEqual({ reconcileCount, scheduled: scheduled.length, watched, unwatched }, {
 			reconcileCount: 2,
 			scheduled: 0,
-			watched: ['/tmp/paradis-l7/.claude', '/tmp/paradis-l7/.codex'],
+			// 消して作り直したホームにも届くよう、知らされたら張り直す
+			watched: ['/tmp/paradis-l7/.claude', '/tmp/paradis-l7/.codex', '/tmp/paradis-l7/.claude', '/tmp/paradis-l7/.codex'],
+			unwatched: 4,
 		});
 	});
 
