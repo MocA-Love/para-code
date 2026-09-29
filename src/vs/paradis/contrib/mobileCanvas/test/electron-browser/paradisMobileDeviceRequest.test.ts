@@ -6,7 +6,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
+import { Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisAgentApprovalRequest, ParadisAgentApprovalOutcome } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { IParadisMobileDeviceRequestAnswer } from '../../common/paradisMobileDeviceOps.js';
@@ -98,6 +99,29 @@ suite('ParadisMobileDeviceRequestChannel', () => {
 			{ outcome: 'denied' },
 			['mobile-device:ios:iphone', 'mobile-install:ios:iphone', 'mobile-device:android:pixel'],
 		]);
+	});
+
+	test('says the user did not answer when the deadline closes the dialog, but still says cancelled when the caller gave up', async () => {
+		const waitForClose = async (cancellation: CancellationToken): Promise<ParadisAgentApprovalOutcome> => {
+			if (!cancellation.isCancellationRequested) {
+				await Event.toPromise(cancellation.onCancellationRequested);
+			}
+			return 'cancelled';
+		};
+		const approvals = { approvalBlock: () => undefined, askApproval: (_token: string, _request: IParadisAgentApprovalRequest, cancellation: CancellationToken) => waitForClose(cancellation) };
+		const panes = { getInstanceForToken: (token: string) => token === 'pane-a' ? 7 : undefined };
+		const scopes = { getStateKeyForInstance: () => undefined };
+		const expiring = new ParadisMobileDeviceRequestChannel(approvals, panes, scopes, Date.now, 1);
+		const lasting = new ParadisMobileDeviceRequestChannel(approvals, panes, scopes, Date.now, 60_000);
+		const caller = new CancellationTokenSource();
+		const withdrawn = lasting.call<IParadisMobileDeviceRequestAnswer>(undefined, 'requestDevice', ['pane-a', { deviceId: 'ios:iphone', deviceName: 'iPhone 17' }], caller.token);
+		caller.cancel();
+		caller.dispose();
+		assert.deepStrictEqual([
+			await expiring.call<IParadisMobileDeviceRequestAnswer>(undefined, 'requestDevice', ['pane-a', { deviceId: 'ios:iphone', deviceName: 'iPhone 17' }]),
+			await expiring.call<IParadisMobileDeviceRequestAnswer>(undefined, 'approveInstall', ['pane-a', { deviceId: 'ios:iphone', deviceName: 'iPhone 17', path: '/b/My.app' }]),
+			await withdrawn,
+		], [{ outcome: 'timedOut' }, { outcome: 'timedOut' }, { outcome: 'cancelled' }]);
 	});
 
 	test('passes refusals through, never asks for a pane that is not in this window, and drops an approval for a pane closed meanwhile', async () => {

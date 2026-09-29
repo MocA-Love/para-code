@@ -698,6 +698,7 @@ function refusal(outcome: ParadisMobileDeviceRequestOutcome | undefined, denied:
 			return jsonResult({ approved: false, message: REQUEST_UNANSWERED_MESSAGE });
 		case 'cancelled':
 			return jsonResult({ approved: false, message: REQUEST_CANCELLED_MESSAGE });
+		case 'timedOut':
 		default:
 			// 時間切れ・形の違う応答は、どれも承認として扱わない
 			return jsonResult({ approved: false, timedOut: true, message: REQUEST_TIMEOUT_MESSAGE });

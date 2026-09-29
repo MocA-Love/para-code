@@ -58,13 +58,14 @@ export interface IParadisMobileDeviceRequestPrompt {
  * 承認の結果。
  *  - approved: 利用者が承認した
  *  - denied: 利用者が断った（しばらくは同じペインからの求めを自動で断る）
- *  - cancelled: 締め切り・MCP の取り消し
+ *  - cancelled: MCP の取り消し（呼び出し側が待つのをやめた）
+ *  - timedOut: 締め切りまでに答えが無かった（ダイアログが出る前の順番待ちで過ぎた場合も含む）
  *  - unanswered: 表示直後やショートカットでの承認が続き、確かな答えが得られなかった
  *  - busy: 同じペインの別の求めがまだ答えを待っている
  *  - recentlyDenied: 同じペインの求めを少し前に利用者が断った
  *  - paneUnresolved: そのペインがこのウィンドウに見つからない
  */
-export type ParadisMobileDeviceRequestOutcome = 'approved' | 'denied' | 'cancelled' | 'unanswered' | 'busy' | 'recentlyDenied' | 'paneUnresolved';
+export type ParadisMobileDeviceRequestOutcome = 'approved' | 'denied' | 'cancelled' | 'timedOut' | 'unanswered' | 'busy' | 'recentlyDenied' | 'paneUnresolved';
 
 /** アプリのインストールの承認ダイアログに出す中身。 */
 export interface IParadisMobileInstallPrompt {
@@ -85,7 +86,7 @@ export interface IParadisMobileDeviceRequestAnswer {
 	readonly stateKey?: string;
 }
 
-const REQUEST_OUTCOMES: ReadonlySet<string> = new Set<ParadisMobileDeviceRequestOutcome>(['approved', 'denied', 'cancelled', 'unanswered', 'busy', 'recentlyDenied', 'paneUnresolved']);
+const REQUEST_OUTCOMES: ReadonlySet<string> = new Set<ParadisMobileDeviceRequestOutcome>(['approved', 'denied', 'cancelled', 'timedOut', 'unanswered', 'busy', 'recentlyDenied', 'paneUnresolved']);
 
 /** IPC 越しに来た答えを確かめる。形が違えば undefined（承認として扱わない）。 */
 export function paradisParseMobileDeviceRequestAnswer(value: unknown): IParadisMobileDeviceRequestAnswer | undefined {
