@@ -377,6 +377,8 @@ export interface IPtyService {
 	attachToProcess(id: number): Promise<void>;
 	/** PARA-CODE: atomically resolves, claims and attaches an orphan PTY by nonce. */
 	paradisClaimAndAttachToProcess(workspaceId: string, id: number, paradisExpectedNonce: string): Promise<number>;
+	// PARA-PATCH: tell the pty host that the app is quitting, so closing terminals leaves their background processes alone (paradisTerminalCloseCleanupQuit.ts)
+	paradisSetAppQuitting(quitting: boolean): Promise<void>;
 	detachFromProcess(id: number, forcePersist?: boolean): Promise<void>;
 	shutdownAll(): Promise<void>;
 

@@ -12,6 +12,7 @@
 // ので、upstream 側の変更は無い。表の撮影は本来の終了と並べて始め、シェルへの終了は遅らせない。`shutdown` は「本当に閉じる」ときだけ呼ばれ、スペース切り替えの
 // 退避・別ウィンドウへの移動・切り離しは `shutdown` を通らない（`detach` / 器の付け替え）ので、
 // それらでは何も止めない。`kill` 相当のシグナル送信（`sendSignal`）には手を入れない。
+// Para Code の終了で閉じられるときも止めない（`paradisTerminalCloseCleanupQuit.ts`）。
 
 import { Event } from '../../../../base/common/event.js';
 import { IProcessEnvironment } from '../../../../base/common/platform.js';
@@ -19,6 +20,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IShellLaunchConfig, ITerminalProcessOptions } from '../../../../platform/terminal/common/terminal.js';
 import { TerminalProcess } from '../../../../platform/terminal/node/terminalProcess.js';
+import { paradisShouldStopDescendantsNow } from '../common/paradisTerminalCloseCleanupQuit.js';
 import { ParadisShutdownOrder, paradisShutdownStoppingDescendants } from './paradisTerminalDescendants.js';
 
 export class ParadisCleaningTerminalProcess extends TerminalProcess {
@@ -48,7 +50,8 @@ export class ParadisCleaningTerminalProcess extends TerminalProcess {
 	override shutdown(immediate: boolean): void {
 		const shellPid = this.shellPid;
 		// 2 回目以降（猶予の途中で「今すぐ」と言われた等）は本来の処理へそのまま渡す。
-		if (!this.stopDescendantsOnClose || this.closing || shellPid === undefined || shellPid <= 1) {
+		// Para Code の終了中に閉じられたものも止めない（設定の説明どおり）。
+		if (!paradisShouldStopDescendantsNow(this.stopDescendantsOnClose) || this.closing || shellPid === undefined || shellPid <= 1) {
 			super.shutdown(immediate);
 			return;
 		}
