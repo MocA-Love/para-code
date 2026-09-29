@@ -172,7 +172,7 @@ export function applyAgentHistoryPage(history: AgentHistoryState, page: AgentHis
 /** 失敗の理由を画面の文にする。 */
 export function agentHistoryErrorText(code: string): string {
 	switch (code) {
-		case 'busy': return 'PC が読み込み中です。少し待ってからもう一度さかのぼってください';
+		case 'busy': return 'PC が読み込み中です。少し待ってから下のボタンを押して読み込み直してください';
 		case 'history-moved': return 'PC 側で会話が進んだため、ここから前は読めません。会話を開き直してください';
 		case 'stale-session': return '会話が切り替わりました。開き直してください';
 		default: return '古い発言を読み込めませんでした';

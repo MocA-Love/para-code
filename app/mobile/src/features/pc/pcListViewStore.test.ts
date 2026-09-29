@@ -90,6 +90,38 @@ describe('PC の画面の表示条件のストア', () => {
 		});
 	});
 
+	test('読み込みに失敗して変更が無くても、少し待って読み直す', async () => {
+		vi.useFakeTimers();
+		try {
+			storage.set('pcListView', JSON.stringify({ group: 'none', byPc: {} }));
+			failReads = 1;
+			const { ensurePcListViewLoaded, usePcListView, PC_LIST_VIEW_LOAD_RETRY_MS } = await loadStore();
+			ensurePcListViewLoaded();
+			await flush();
+			release();
+			await flush();
+			const beforeRetry = usePcListView.getState().saved.group;
+			vi.advanceTimersByTime(PC_LIST_VIEW_LOAD_RETRY_MS);
+			await flush();
+			release();
+			await flush();
+			expect({ beforeRetry, afterRetry: usePcListView.getState().saved.group }).toEqual({ beforeRetry: 'space', afterRetry: 'none' });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test('読み込みの前に畳んだ段は、読み込んだ値でも畳んだまま（切り替えを重ねて逆にしない）', async () => {
+		storage.set('pcListView', JSON.stringify({ group: 'space', byPc: { pc1: { states: [], spaces: [], collapsed: ['pinned'] } } }));
+		const { ensurePcListViewLoaded, usePcListView } = await loadStore();
+		ensurePcListViewLoaded();
+		await flush();
+		usePcListView.getState().toggleSection('pc1', 'pinned');
+		release();
+		await flush();
+		expect(usePcListView.getState().saved.byPc.pc1?.collapsed).toEqual(['pinned']);
+	});
+
 	test('検索語だけの変更は保存しない。検索欄を閉じると検索語も消える', async () => {
 		const { ensurePcListViewLoaded, usePcListView } = await loadStore();
 		ensurePcListViewLoaded();

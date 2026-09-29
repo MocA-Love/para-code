@@ -129,6 +129,14 @@ export function toggleCollapsedKey(collapsed: readonly string[], key: string): s
 	return collapsed.includes(key) ? collapsed.filter(item => item !== key) : [...collapsed, key];
 }
 
+/** 段を畳んだ状態・開いた状態にする（既にそうなっていれば同じ並びを返す）。 */
+export function withCollapsedKey(collapsed: readonly string[], key: string, collapse: boolean): readonly string[] {
+	if (collapsed.includes(key) === collapse) {
+		return collapsed;
+	}
+	return toggleCollapsedKey(collapsed, key);
+}
+
 /**
  * 画面に効かせる絞り込み（保存した条件＋その場の検索語）を作る。
  *

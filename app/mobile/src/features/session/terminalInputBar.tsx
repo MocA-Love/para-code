@@ -259,10 +259,12 @@ function LiveCapture({ inputRef, submitRef, autoFocus, onFocusChange, onComposin
 		for (const data of step.send) {
 			control = onSend(data) || control;
 		}
-		if (control) {
+		if (control && event.kind !== 'flush') {
 			// Ctrl で打った文字は制御文字として送り、PC の行には載っていない（^U・^W なら行も変わる）。
 			// この入力欄はその文字を持ったままなので、写し続けると後の ⌫ で PC に無い文字の分まで DEL を
 			// 送って実際の文字を消す。Enter と同じく引退させ、新しい空の入力欄から写し直す。
+			// flush（フォーカスが外れた・止まった変換の送り出し）では作り直さない。新しい入力欄は
+			// フォーカスを取るので、閉じたキーボードがまた出てしまう。
 			stateRef.current = LIVE_INPUT_RETIRED;
 			onSubmitted();
 			return;

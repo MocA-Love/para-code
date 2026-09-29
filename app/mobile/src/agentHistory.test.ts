@@ -98,7 +98,7 @@ describe('agentHistory (W2-30)', () => {
 			moved: agentHistoryHeader(true, true, moved).kind,
 			busyRetrying: agentHistoryHeader(true, true, beginAgentHistoryLoad(busy, 'e1')),
 		}).toEqual({
-			busy: { kind: 'more', loading: false, message: 'PC が読み込み中です。少し待ってからもう一度さかのぼってください' },
+			busy: { kind: 'more', loading: false, message: 'PC が読み込み中です。少し待ってから下のボタンを押して読み込み直してください' },
 			moved: 'error',
 			busyRetrying: { kind: 'more', loading: true },
 		});
