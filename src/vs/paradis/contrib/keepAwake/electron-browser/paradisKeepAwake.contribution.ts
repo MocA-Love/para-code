@@ -10,32 +10,33 @@ import { localize, localize2 } from '../../../../nls.js';
 import Severity from '../../../../base/common/severity.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, NeverShowAgainScope } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { IPowerService } from '../../../../workbench/services/power/common/powerService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { PARADIS_KEEP_AWAKE_PROMPT_COMMAND, PARADIS_KEEP_AWAKE_SELECT_COMMAND, PARADIS_KEEP_AWAKE_SETTING, PARADIS_KEEP_AWAKE_AUTO_SNAPSHOT_STALE_MS, ParadisKeepAwakeBlockerMode, ParadisKeepAwakeMode, paradisAgentsActiveAfterSnapshotFailure, paradisAgentsNeedKeepAwake, toParadisKeepAwakeMode } from '../common/paradisKeepAwake.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { ParadisKeepAwakeController } from '../common/paradisKeepAwakeController.js';
+import { IParadisKeepAwakeBlockerService, PARADIS_KEEP_AWAKE_CHANNEL } from '../common/paradisKeepAwakeBlockers.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 const STATUSBAR_ENTRY_ID = 'paradis.power.keepAwake';
 
 /**
- * `paradis.power.keepAwake` 設定に従い、Electron の powerSaveBlocker（`IPowerService` 経由）で
- * PC のスリープを防止する contribution。
+ * `paradis.power.keepAwake` 設定に従い、Electron の powerSaveBlocker で PC のスリープを防止する contribution。
  *
  * powerSaveBlocker はアプリ全体にスタックする方式（発行された全 id が stop されるまで有効）のため、
  * 各ウィンドウの controller が成功済み blocker id を所有し、「Para Code のウィンドウがどれか1枚でも
- * 開いていれば有効・全部閉じたら解除」という意味論になる。ウィンドウが正常に閉じずに stop が
- * 飛ばなかった場合でも、blocker はプロセス（electron-main）終了と共に消えるためリークは
- * アプリ生存中に限られる。
+ * 開いていれば有効・全部閉じたら解除」という意味論になる。blocker は main のチャネル
+ * （{@link PARADIS_KEEP_AWAKE_CHANNEL}）で掛け、main がウィンドウごとに持つ。renderer が落ちた・
+ * 再読み込みした・stop が届く前に閉じたときは、main がそのウィンドウの分を止める。
  *
  * 有効中はステータスバーにインジケーターを表示し、クリックでモード選択の Quick Pick を開く
  * （「なぜ PC が眠らないのか」をユーザーが見失わないための安全装置）。
@@ -60,19 +61,18 @@ export class ParadisKeepAwakeContribution extends Disposable implements IWorkben
 
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@IPowerService private readonly powerService: IPowerService,
+		@IMainProcessService mainProcessService: IMainProcessService,
 		@IStatusbarService private readonly statusbarService: IStatusbarService,
 		@ILogService private readonly logService: ILogService,
 		@IParadisAgentStatusSnapshotService private readonly agentStatusSnapshotService: IParadisAgentStatusSnapshotService,
 	) {
 		super();
 
+		const blockers = ProxyChannel.toService<IParadisKeepAwakeBlockerService>(mainProcessService.getChannel(PARADIS_KEEP_AWAKE_CHANNEL));
 		this.controller = this._register(new ParadisKeepAwakeController({
-			start: mode => this.powerService.startPowerSaveBlocker(
-				mode === 'display' ? 'prevent-display-sleep' : 'prevent-app-suspension'
-			),
+			start: mode => blockers.start(mode === 'display' ? 'prevent-display-sleep' : 'prevent-app-suspension'),
 			stop: async id => {
-				const stopped = await this.powerService.stopPowerSaveBlocker(id);
+				const stopped = await blockers.stop(id);
 				if (!stopped) {
 					throw new Error('Power save blocker could not be stopped');
 				}
