@@ -34,7 +34,7 @@ import { mainWindow } from '../../../../base/browser/window.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
-import { Disposable, DisposableMap, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { BrowserViewStorageScope, IBrowserViewService, ipcBrowserViewChannelName } from '../../../../platform/browserView/common/browserView.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -312,17 +312,21 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		listeners.add(input.onWillDispose(() => this._forgetView(input.id)));
 		if (options?.approvedProfile) {
 			// ブラウザの共有ボタン（upstream の切り替え）で止められたときも外す。エージェント自身が共有先を
-			// 動かしている最中の変化は数えない
-			void input.resolve().then(model => {
-				if (listeners.isDisposed) {
-					return;
-				}
-				listeners.add(model.onDidChangeSharingState(state => {
+			// 動かしている最中の変化は数えない。モデルが作り直されても（onDidResolveModel）見張り続ける
+			const modelListener = listeners.add(new MutableDisposable());
+			const watch = (model: IBrowserViewModel) => {
+				modelListener.value = model.onDidChangeSharingState(state => {
 					const owner = this._ledger.ownerOf(input.id);
 					if (state !== BrowserViewSharingState.Shared && owner !== undefined && !this._agentMoves.has(owner)) {
 						this.revokeApprovedProfileTab(input.id);
 					}
-				}));
+				});
+			};
+			listeners.add(input.onDidResolveModel(model => watch(model)));
+			void input.resolve().then(model => {
+				if (!listeners.isDisposed && modelListener.value === undefined) {
+					watch(model);
+				}
 			}, error => this._logService.debug('[ParadisAgentBrowserTabs] could not watch the sharing state of an approved profile tab', error));
 		}
 		this._agentTabListeners.set(input.id, listeners);

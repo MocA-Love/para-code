@@ -305,7 +305,7 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 			const emitter = disposables.add(new Emitter<BrowserViewSharingState>());
 			sharing.set(id, emitter);
 			const model = { id, sharingState: BrowserViewSharingState.Shared, isDirectlyShareable: true, onDidChangeSharingState: emitter.event } as unknown as IBrowserViewModel;
-			const input = { id, url: `https://${id}.example`, title: id, getName: () => id, onWillDispose: Event.None, resolve: async () => model } as unknown as BrowserEditorInput;
+			const input = { id, url: `https://${id}.example`, title: id, getName: () => id, onWillDispose: Event.None, onDidResolveModel: Event.None, resolve: async () => model } as unknown as BrowserEditorInput;
 			views.set(id, input);
 			return input;
 		};
@@ -346,7 +346,7 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 			const result = service.listTabs(TOKEN);
 			return result.ok ? result.tabs.map(entry => entry.tabId).sort() : [];
 		};
-		return { service, state, tab, bind, listed, sharing };
+		return { service, state, tab, bind, listed, sharing, views, disposables };
 	}
 
 	// 共有を止めてから binding model の通知が届くまでの間に選び直されても、承認なしでは共有し直さない（M22）
@@ -389,5 +389,23 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 			reselected: { ok: false, reason: 'unknownTab' },
 			binds: ['own'],
 		});
+	});
+
+	test('keeps watching the sharing state after the tab\'s model is recreated', async () => {
+		const { service, listed, views, disposables } = setup();
+		const resolved = disposables.add(new Emitter<IBrowserViewModel>());
+		const firstSharing = disposables.add(new Emitter<BrowserViewSharingState>());
+		const secondSharing = disposables.add(new Emitter<BrowserViewSharingState>());
+		const model = (onDidChangeSharingState: Event<BrowserViewSharingState>) => ({ id: 'replaced', sharingState: BrowserViewSharingState.Shared, onDidChangeSharingState }) as unknown as IBrowserViewModel;
+		const input = { id: 'replaced', url: 'https://replaced.example', title: 'replaced', getName: () => 'replaced', onWillDispose: Event.None, onDidResolveModel: resolved.event, resolve: async () => model(firstSharing.event) } as unknown as BrowserEditorInput;
+		views.set('replaced', input);
+		service.registerAgentTab(TOKEN, input, { approvedProfile: true });
+		await timeout(0);
+		resolved.fire(model(secondSharing.event));
+		// 古いモデルの知らせはもう届かない。新しいモデルで共有が止まったら外れる
+		firstSharing.fire(BrowserViewSharingState.Available);
+		const afterOldModel = listed();
+		secondSharing.fire(BrowserViewSharingState.Available);
+		assert.deepStrictEqual({ afterOldModel, afterNewModel: listed() }, { afterOldModel: ['replaced'], afterNewModel: [] });
 	});
 });
