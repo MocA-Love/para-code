@@ -8,7 +8,8 @@
 
 // スリープ防止の blocker を、掛けたウィンドウに紐付けて main で持つ（common/paradisKeepAwakeBlockers.ts）。
 // app.ts の PARA-PATCH から1回だけ呼ばれる。ウィンドウが読み込み直す（再読み込み・renderer が落ちた後の
-// 開き直し・別のフォルダを開く）か閉じたら、そのウィンドウが掛けていた blocker を止める。
+// 開き直し・別のフォルダを開く・DevTools や `location.reload()` での再読み込み）か、renderer が落ちたか、
+// 閉じたら、そのウィンドウが掛けていた blocker を止める。
 
 import { powerSaveBlocker } from 'electron';
 import { Event } from '../../../../base/common/event.js';
@@ -60,7 +61,26 @@ export function paradisRegisterKeepAwake(channelHost: IParadisKeepAwakeChannelHo
 		// renderer の IPC の ctx（vs/platform/ipc/electron-browser/mainProcessService.ts）
 		const owner = `window:${window.id}`;
 		const listeners = new DisposableStore();
-		listeners.add(window.onWillLoad(() => registry.release(owner)));
+		const release = () => registry.release(owner);
+		listeners.add(window.onWillLoad(release));
+		// main を通らない読み込み直し（DevTools・`location.reload()`）と、renderer が落ちたとき（落ちた旨の
+		// ダイアログを出している間も blocker を残さない）
+		const webContents = window.win?.webContents;
+		if (webContents) {
+			const onNavigation = (details: { readonly isMainFrame: boolean; readonly isSameDocument: boolean }) => {
+				if (details.isMainFrame && !details.isSameDocument) {
+					release();
+				}
+			};
+			webContents.on('did-start-navigation', onNavigation);
+			webContents.on('render-process-gone', release);
+			listeners.add(toDisposable(() => {
+				if (!webContents.isDestroyed()) {
+					webContents.off('did-start-navigation', onNavigation);
+					webContents.off('render-process-gone', release);
+				}
+			}));
+		}
 		listeners.add(Event.any(window.onDidClose, window.onDidDestroy)(() => {
 			registry.release(owner);
 			windowListeners.deleteAndDispose(window.id);

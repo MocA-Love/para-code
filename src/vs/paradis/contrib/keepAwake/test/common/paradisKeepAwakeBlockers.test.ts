@@ -40,12 +40,15 @@ suite('ParadisKeepAwakeBlockerRegistry', () => {
 		// window:1 が再読み込みした（新しい renderer は古い id を知らない）
 		const released = registry.release('window:1');
 		const releasedAgain = registry.release('window:1');
+		// 前の renderer の片付けの stop が、読み込み直しの後に届いた
+		const lateStop = registry.stop('window:1', second);
 
-		assert.deepStrictEqual({ stoppedByOtherWindow, stoppedByOwner, released, releasedAgain, active: [...blocker.active] }, {
+		assert.deepStrictEqual({ stoppedByOtherWindow, stoppedByOwner, released, releasedAgain, lateStop, active: [...blocker.active] }, {
 			stoppedByOtherWindow: false,
 			stoppedByOwner: true,
 			released: [second],
 			releasedAgain: [],
+			lateStop: true,
 			active: [other],
 		});
 	});
