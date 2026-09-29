@@ -54,6 +54,7 @@ import {
 	paradisDecodeTerminalScreens,
 	ParadisSavedScreensDecision,
 	paradisSavedScreensAfterRevive,
+	paradisShouldDropScreensNotHeldByDaemon,
 	PARADIS_TERMINAL_SCREENS_MAX_AGE,
 } from '../common/paradisTerminalScreens.js';
 import { paradisSetTerminalScreenSource } from './paradisTerminalScreenRestore.js';
@@ -116,12 +117,6 @@ let restoreSettled = false;
  * 付くまで保存側は上書きしない（上書きすると、戻すはずだった画面が消える）。
  */
 let undecidedWorkspaceId: string | undefined;
-
-/**
- * 起動時に戻した保存物を「今の常駐が抱えている」と書き直したワークスペース。常駐がこちらの端末を
- * 抱えていない（pty ホストがアプリの中に落ちた）と分かったら、その主張は外れているので消す。
- */
-let restampedWorkspaceId: string | undefined;
 
 /**
  * 保存画面を upstream の復元へ渡す役。ターミナルが繋ぎ直しを始めるより前に居る必要があるので、
@@ -195,11 +190,10 @@ class ParadisTerminalScreenSourceContribution extends Disposable implements IWor
 	 * なければ消す。消せなければ投げて、戻すのをやめる（残ったまま戻すと、次の起動でまた起こす）。
 	 */
 	private async _keepAfterRevive(workspaceId: string, saved: IParadisSavedTerminalScreens, status: IParadisDaemonStatusLike | undefined): Promise<void> {
-		const kept = paradisSavedScreensAfterRevive(saved, status);
+		const kept = paradisSavedScreensAfterRevive(saved, status, Date.now());
 		if (kept) {
 			try {
 				await this._files.writeScreens(workspaceId, kept.savedAt, kept.daemon, kept.state);
-				restampedWorkspaceId = workspaceId;
 				return;
 			} catch (error) {
 				this._logService.warn('[ParadisTerminalScreens] could not keep the revived screens; deleting them instead', error);
@@ -251,6 +245,8 @@ class ParadisTerminalScreenSaverContribution extends Disposable implements IWork
 	private _lastSavedAt = 0;
 	private _saving: Promise<void> | undefined;
 	private _closeTimer: ReturnType<typeof setTimeout> | undefined;
+	/** 抱えていない保存物を確かめ終えたワークスペースと常駐の組（保存できたら忘れる）。 */
+	private _keptScreensChecked: string | undefined;
 	private readonly _status: IParadisPtyDaemonStatusService;
 	private readonly _files: IParadisTerminalPrivateFiles;
 
@@ -355,12 +351,7 @@ class ParadisTerminalScreenSaverContribution extends Disposable implements IWork
 			// ウィンドウの再読み込みで生きているシェルを起こし直してしまう
 			const daemon = paradisDaemonIdentityForSaving(status, ids.length);
 			if (!daemon) {
-				// 起動時に「今の常駐が抱えている」と書き直した保存物なのに、常駐はこちらの端末を抱えて
-				// いない。残すと、次に PC を再起動したときに古い画面を起こすので消す
-				if (restampedWorkspaceId === workspaceId && ids.length > 0 && status?.running && status.terminalCount !== undefined) {
-					restampedWorkspaceId = undefined;
-					await this._files.deleteScreens(workspaceId);
-				}
+				await this._dropScreensNotHeldByDaemon(workspaceId, status, ids.length);
 				return;
 			}
 			if (ids.length === 0) {
@@ -369,14 +360,35 @@ class ParadisTerminalScreenSaverContribution extends Disposable implements IWork
 				const state = await this._localPtyService.serializeTerminalState(ids);
 				await this._files.writeScreens(workspaceId, Date.now(), daemon, state);
 			}
-			if (restampedWorkspaceId === workspaceId) {
-				restampedWorkspaceId = undefined;
-			}
+			this._keptScreensChecked = undefined;
 			this._lastSavedAt = Date.now();
 		} catch (error) {
 			this._dirty = true;
 			this._logService.warn('[ParadisTerminalScreens] could not save the terminal screens', error);
 		}
+	}
+
+	/**
+	 * 保存できなかったときに、今の常駐が抱えていると言いながら実は抱えていない保存物を消す
+	 * （`paradisShouldDropScreensNotHeldByDaemon`）。起動時に戻した保存物を書き直した後、pty ホストが
+	 * アプリの中に落ちていた場合に当たる。同じワークスペースと常駐の組では1回だけ読む（保存物は大きい
+	 * ことがあり、この状態は保存のたびに続く）。
+	 */
+	private async _dropScreensNotHeldByDaemon(workspaceId: string, status: IParadisDaemonStatusLike | undefined, terminalsToSave: number): Promise<void> {
+		if (terminalsToSave === 0 || !status?.running || status.terminalCount === undefined || status.terminalCount >= terminalsToSave) {
+			return;
+		}
+		const checkKey = `${workspaceId}|${status.pid}|${status.startedAt}`;
+		if (this._keptScreensChecked === checkKey) {
+			return;
+		}
+		const content = await this._files.readScreens(workspaceId);
+		const saved = content === undefined ? undefined : paradisDecodeTerminalScreens(content);
+		if (saved && paradisShouldDropScreensNotHeldByDaemon(saved, status, terminalsToSave)) {
+			this._logService.warn('[ParadisTerminalScreens] the saved screens claim a daemon that does not hold these terminals; deleting them');
+			await this._files.deleteScreens(workspaceId);
+		}
+		this._keptScreensChecked = checkKey;
 	}
 
 	/** 起動時に「分からない」で残した保存物の判断が、今なら付くか。付かない間は上書きしない。 */
