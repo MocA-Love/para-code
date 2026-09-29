@@ -39,6 +39,7 @@ import { ITerminalCompletionProvider, ITerminalCompletionService } from '../../.
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ParadisTerminalHistoryCache, paradisTerminalHistoryCacheKey, paradisDecodeZshHistory, paradisParseBashHistory, paradisParseZshHistory, ParadisTerminalHistorySharedValue, ParadisTerminalHistoryWaitResult } from '../common/paradisTerminalHistoryCache.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { PARADIS_TERMINAL_HISTORY_PROVIDER_ID } from '../common/paradisTerminalSuggestRunOnEnter.js';
 
 const MAX_RESULTS = 20;
 
@@ -75,7 +76,7 @@ export interface IParadisTerminalHistoryCompletionProviderOptions {
  */
 export class ParadisTerminalHistoryCompletionProvider extends Disposable implements ITerminalCompletionProvider {
 
-	static readonly ID = 'para.terminalHistory';
+	static readonly ID = PARADIS_TERMINAL_HISTORY_PROVIDER_ID;
 
 	id = ParadisTerminalHistoryCompletionProvider.ID;
 	triggerCharacters?: string[];

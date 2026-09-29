@@ -36,6 +36,8 @@ import { terminalSymbolAliasIcon, terminalSymbolArgumentIcon, terminalSymbolEnum
 import { TerminalSuggestShownTracker } from './terminalSuggestShownTracker.js';
 import { SimpleSuggestDetailsPlacement } from '../../../../services/suggest/browser/simpleSuggestWidgetDetails.js';
 import { isString } from '../../../../../base/common/types.js';
+// PARA-PATCH: Para Code decides which suggestions run on Enter (paradisTerminalSuggestRunOnEnter.ts)
+import { paradisResolveRunOnEnter } from '../../../../../paradis/contrib/terminalHistorySuggest/common/paradisTerminalSuggestRunOnEnter.js';
 
 export interface ISuggestController {
 	isPasting: boolean;
@@ -1005,6 +1007,8 @@ export class SuggestAddon extends Disposable implements ITerminalAddon, ISuggest
 						break;
 					}
 				}
+				// PARA-PATCH: under `always` only Para Code's history suggestions run on Enter; paths, folders and the rest are inserted only (Q137)
+				runOnEnter = paradisResolveRunOnEnter(runOnEnterConfig, runOnEnter, completion);
 			}
 
 			const commonPrefixLen = commonPrefixLength(replacementText, completionText);
