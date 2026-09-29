@@ -245,6 +245,28 @@ suite('Para Code adopted pty reattach', () => {
 		assert.deepStrictEqual({ kept, told: daemon.layouts }, { kept: restored, told: afterRestore });
 	});
 
+	test('a layout naming the editor terminals it keeps outside the panel is the whole picture (Q146)', async () => {
+		// Editor terminals never appear in the panel layout; their tabs restore through the editor.
+		// With the daemon holding one, every layout the window saved was ignored, so panel terminals
+		// made since never came back after a restart. Naming them accounts for them — but only by
+		// exact id, so a window that failed to take a held terminal back still cannot pass.
+		const daemon = useDaemon();
+		const pty = service();
+		const panel = await adopt(pty, 'nonce-of-the-panel', { handle: 3 });
+		const editor = await adopt(pty, 'nonce-of-the-editor', { handle: 4 });
+		const layout = { workspaceId: 'ws', tabs: [{ isActive: true, activePersistentProcessId: panel, terminals: [{ relativeSize: 1, terminal: panel }] }], background: [] };
+
+		await pty.setTerminalLayoutInfo({ ...layout, paradisEditorTerminals: [editor + 100] });
+		const namingAnotherTerminal = [...daemon.layouts];
+		await pty.setTerminalLayoutInfo({ ...layout, paradisEditorTerminals: [editor] });
+
+		assert.deepStrictEqual(
+			{ namingAnotherTerminal, told: daemon.layouts.map(encoded => JSON.parse(encoded).tabs.map((tab: { terminals: { terminal: number }[] }) => tab.terminals.map(terminal => terminal.terminal))) },
+			// The daemon keeps the panel layout in its own handles; the editor terminal is not in it.
+			{ namingAnotherTerminal: [], told: [[[3]]] },
+		);
+	});
+
 	test('taking terminals back records the layout here without handing it to the daemon', async () => {
 		// What adoption passes back is the daemon's own layout with every terminal it could not take
 		// back dropped from it. Writing that over the original turns "we could not reach it this time"

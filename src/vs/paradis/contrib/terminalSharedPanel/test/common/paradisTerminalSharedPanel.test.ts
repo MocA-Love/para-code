@@ -10,7 +10,7 @@ import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IShellLaunchConfig, TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
-import { paradisIsIdleEmptyShell, paradisIsTerminalSharedPanelEnabled, paradisResolveSharedPanelCwd, paradisShouldApplySharedPanelCwd } from '../../common/paradisTerminalSharedPanel.js';
+import { paradisForgetSharedPanelNonce, paradisIsIdleEmptyShell, paradisIsTerminalSharedPanelEnabled, paradisParseSharedPanelNonces, paradisRememberSharedPanelNonce, paradisResolveSharedPanelCwd, paradisShouldApplySharedPanelCwd, paradisShouldReviveSharedPanelOrphan } from '../../common/paradisTerminalSharedPanel.js';
 
 suite('paradisTerminalSharedPanel', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -102,6 +102,53 @@ suite('paradisTerminalSharedPanel', () => {
 			unknownPromptTwoLines: true,
 			unknownPromptMoreLines: false,
 			unreadableBuffer: false,
+		});
+	});
+
+	test('keeps the nonces of shared panel terminals so their orphans can come back to the panel (Q146)', () => {
+		assert.deepStrictEqual({
+			parsed: paradisParseSharedPanelNonces('["a","",3,"b"]'),
+			broken: paradisParseSharedPanelNonces('{'),
+			missing: paradisParseSharedPanelNonces(undefined),
+			added: paradisRememberSharedPanelNonce(['a'], 'b'),
+			alreadyKnown: paradisRememberSharedPanelNonce(['a', 'b'], 'a'),
+			capped: paradisRememberSharedPanelNonce(['a', 'b'], 'c', 2),
+			forgotten: paradisForgetSharedPanelNonce(['a', 'b'], 'a'),
+			notThere: paradisForgetSharedPanelNonce(['a'], 'z'),
+		}, {
+			parsed: ['a', 'b'],
+			broken: [],
+			missing: [],
+			added: ['a', 'b'],
+			alreadyKnown: undefined,
+			capped: ['b', 'c'],
+			forgotten: ['b'],
+			notThere: undefined,
+		});
+	});
+
+	test('revives only orphans that were shared panel shells, never ones that merely lost their space (Q146)', () => {
+		const known = new Set(['shared-nonce']);
+		const base = { sharedPanel: true, stateKey: undefined, nonce: 'shared-nonce', sharedPanelNonces: known, detail: {} };
+
+		assert.deepStrictEqual({
+			sharedPanelShell: paradisShouldReviveSharedPanelOrphan(base),
+			settingOff: paradisShouldReviveSharedPanelOrphan({ ...base, sharedPanel: false }),
+			belongsToSpace: paradisShouldReviveSharedPanelOrphan({ ...base, stateKey: 'repo:/work' }),
+			unknownNonce: paradisShouldReviveSharedPanelOrphan({ ...base, nonce: 'editor-tab-nonce' }),
+			noNonce: paradisShouldReviveSharedPanelOrphan({ ...base, nonce: undefined }),
+			task: paradisShouldReviveSharedPanelOrphan({ ...base, detail: { type: 'Task' } }),
+			hidden: paradisShouldReviveSharedPanelOrphan({ ...base, detail: { hideFromUser: true } }),
+			feature: paradisShouldReviveSharedPanelOrphan({ ...base, detail: { isFeatureTerminal: true } }),
+		}, {
+			sharedPanelShell: true,
+			settingOff: false,
+			belongsToSpace: false,
+			unknownNonce: false,
+			noNonce: false,
+			task: false,
+			hidden: false,
+			feature: false,
 		});
 	});
 });

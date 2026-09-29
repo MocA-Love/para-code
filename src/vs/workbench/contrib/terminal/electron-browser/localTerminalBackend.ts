@@ -333,7 +333,8 @@ class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBacke
 			tabs: layoutInfo ? layoutInfo.tabs : [],
 			background: layoutInfo ? layoutInfo.background : null
 		};
-		await this._proxy.setTerminalLayoutInfo(args);
+		// PARA-PATCH: name the editor terminals to the live pty host only. The stored copy is re-sent after a revive, when its ids belong to a pty host that is gone
+		await this._proxy.setTerminalLayoutInfo({ ...args, paradisEditorTerminals: layoutInfo?.paradisEditorTerminals });
 		// Store in the storage service as well to be used when reviving processes as normally this
 		// is stored in memory on the pty host
 		this._storageService.store(TerminalStorageKeys.TerminalLayoutInfo, JSON.stringify(args), StorageScope.WORKSPACE, StorageTarget.MACHINE);
