@@ -949,12 +949,34 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		}
 	}
 
-	/** エディタのタブへ移した端末は、共通ターミナルの控えから外す（スペースの持ち物になる）。 */
+	/**
+	 * エディタのタブへ移した端末は、共通ターミナルの控えから外す（スペースの持ち物になる）。
+	 *
+	 * 移行時に控えた元の所属（`SHARED_PANEL_FORMER_SCOPES_STORAGE_KEY`）からも外す。孤児の復活は
+	 * そちらの nonce も共通ターミナルの印として読む（`sharedPanelOrphanNonces`）ので、残すと
+	 * エディタへ移した端末を後でパネルが取りに来る。
+	 */
 	private forgetSharedPanelNonce(instance: ITerminalInstance): void {
 		const nonce = this.instanceNonce(instance);
-		const next = nonce === undefined ? undefined : paradisForgetSharedPanelNonce(this._sharedPanelNonces, nonce);
+		if (nonce === undefined) {
+			return;
+		}
+		const next = paradisForgetSharedPanelNonce(this._sharedPanelNonces, nonce);
 		if (next !== undefined) {
 			this.storeSharedPanelNonces(next);
+		}
+		const formerKey = ParadisTerminalWorkspaceScope.SHARED_PANEL_FORMER_SCOPES_STORAGE_KEY;
+		const former = paradisParseTerminalNonceScopeStorage(this.storageService.get(formerKey, StorageScope.WORKSPACE) ?? '');
+		if (!former?.delete(nonce)) {
+			return;
+		}
+		if (former.size === 0) {
+			this.storageService.remove(formerKey, StorageScope.WORKSPACE);
+			return;
+		}
+		const raw = paradisSerializeTerminalNonceScopeStorage(former);
+		if (raw !== undefined) {
+			this.storageService.store(formerKey, raw, StorageScope.WORKSPACE, StorageTarget.MACHINE);
 		}
 	}
 
