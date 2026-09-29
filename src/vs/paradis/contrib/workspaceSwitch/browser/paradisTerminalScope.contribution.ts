@@ -1999,7 +1999,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 			// 切り替え先のグループを復帰。グループ単位で確定させる（`adoptUnattributedTerminals` と
 			// 同じ理由）。1件の失敗で残りを諦めると、台帳から外したのに park が解けていないグループが
-			// どの経路からも辿れなくなり、PTY だけが生きたまま見えなくなる。失敗した分は待避台帳へ
+			// どの経路からも辿れなくなり、PTY だけが生きたまま見えなくなる。戻せなかった分は待避台帳へ
 			// 戻し、次にこのスペースへ切り替えたときにやり直す。
 			const parked = this._parkedGroups.get(targetStateKey);
 			if (parked) {
@@ -2008,7 +2008,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 					try {
 						groupService.paradisUnparkGroup(group);
 					} catch (error) {
-						this.addToParkLedger(targetStateKey, group);
+						// 途中まで戻っている（見えている）なら台帳へは戻さない。戻すと見えているのに
+						// park 中扱いになり、次の切り替えで二重に扱われる。
+						if (!groupService.groups.includes(group)) {
+							this.addToParkLedger(targetStateKey, group);
+						}
 						onUnexpectedError(error);
 					}
 				}
