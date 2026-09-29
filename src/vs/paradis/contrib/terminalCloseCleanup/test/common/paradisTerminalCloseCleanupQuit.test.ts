@@ -8,7 +8,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisCloseCleanupQuitGate, paradisShouldStopDescendantsNow, PARADIS_CLOSE_CLEANUP_QUIT_HOLD_MS } from '../../common/paradisTerminalCloseCleanupQuit.js';
+import { ParadisCloseCleanupQuitGate, paradisShouldStopDescendantsNow, paradisShutdownQuitsApp, PARADIS_CLOSE_CLEANUP_QUIT_HOLD_MS } from '../../common/paradisTerminalCloseCleanupQuit.js';
 
 suite('paradisTerminalCloseCleanupQuit', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -36,6 +36,26 @@ suite('paradisTerminalCloseCleanupQuit', () => {
 			almostExpired: { configured: false, disabled: false },
 			expired: { configured: true, disabled: false },
 			cancelled: { configured: true, disabled: false },
+		});
+	});
+
+	test('QUIT と、macOS 以外で最後のウィンドウを閉じる CLOSE をアプリの終了と見なす', () => {
+		const quits = (isQuit: boolean, isClose: boolean, windowCount: number | undefined, isMacintosh: boolean) => paradisShutdownQuitsApp({ isQuit, isClose, windowCount, isMacintosh });
+
+		assert.deepStrictEqual({
+			quit: quits(true, false, undefined, true),
+			closeLastOnLinux: quits(false, true, 1, false),
+			closeOneOfTwoOnLinux: quits(false, true, 2, false),
+			closeLastOnMac: quits(false, true, 1, true),
+			closeUnknownCount: quits(false, true, undefined, false),
+			reload: quits(false, false, 1, false),
+		}, {
+			quit: true,
+			closeLastOnLinux: true,
+			closeOneOfTwoOnLinux: false,
+			closeLastOnMac: false,
+			closeUnknownCount: false,
+			reload: false,
 		});
 	});
 });

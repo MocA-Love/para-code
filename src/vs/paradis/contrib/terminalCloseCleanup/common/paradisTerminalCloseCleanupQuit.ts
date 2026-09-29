@@ -50,3 +50,13 @@ export const paradisCloseCleanupQuitGate = new ParadisCloseCleanupQuitGate();
 export function paradisShouldStopDescendantsNow(configured: boolean, gate: ParadisCloseCleanupQuitGate = paradisCloseCleanupQuitGate): boolean {
 	return configured && !gate.isQuitting();
 }
+
+/**
+ * この閉じ方でアプリが終了するか。
+ *
+ * QUIT に加えて、macOS 以外で最後の 1 枚のウィンドウを閉じた CLOSE もアプリの終了になる
+ * （upstream の `terminalService._shouldReviveProcesses` と同じ見方）。
+ */
+export function paradisShutdownQuitsApp(input: { readonly isQuit: boolean; readonly isClose: boolean; readonly windowCount: number | undefined; readonly isMacintosh: boolean }): boolean {
+	return input.isQuit || (input.isClose && !input.isMacintosh && input.windowCount === 1);
+}
