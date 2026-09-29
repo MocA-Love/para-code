@@ -40,22 +40,38 @@ const REASONS: readonly [RegExp, ParadisBrowserErrorReasonCode][] = [
 ];
 
 const PREFIX = /PARA_BROWSER_(?<status>RETRYABLE|OUTCOME_UNKNOWN):(?<reason>[^\n]*)/;
-/** CDP のメソッド名（`Input.dispatchMouseEvent` など）。固定の名前なので送ってよい。 */
-const PROTOCOL_METHOD = /Protocol error \((?<method>[A-Z][A-Za-z]{0,39}\.[a-z][A-Za-z]{0,63})\)/;
-
 /**
- * ツールのエラー文から、Sentry の `safe_` 欄に載せてよい値だけを返す。
- * `safe_error_code` は常に返す。CDP のメソッド名が読めたときだけ `safe_cdp_method` も返す。
+ * CDP のメソッド名（`Input.dispatchMouseEvent` など）。ドメインは決め打ちの一覧に限る: エラー文には
+ * ページが決められる文字列も混ざるので、形が合うだけの語は通さない。
  */
-export function paradisClassifyBrowserToolErrorText(text: string): { readonly safe_error_code: ParadisBrowserErrorReasonCode; readonly safe_cdp_method?: string } {
-	const method = PROTOCOL_METHOD.exec(text)?.groups?.method;
-	const withMethod = method !== undefined ? { safe_cdp_method: method } : {};
+const PROTOCOL_METHOD = /Protocol error \((?<domain>[A-Za-z]{1,40})\.(?<command>[a-z][A-Za-z]{0,63})\)/;
+const CDP_DOMAINS: ReadonlySet<string> = new Set([
+	'Accessibility', 'Animation', 'Browser', 'CSS', 'DOM', 'DOMDebugger', 'DOMSnapshot', 'Debugger', 'Emulation',
+	'Fetch', 'HeapProfiler', 'IO', 'Input', 'Log', 'Network', 'Overlay', 'Page', 'Performance', 'Profiler',
+	'Runtime', 'Security', 'Storage', 'Target', 'Tracing',
+]);
+
+/** Sentry の `safe_` 欄に載せてよい値。 */
+export interface IParadisBrowserToolErrorFields {
+	/** Para Code の関所が断った理由の種類。関所を通っていなければ `none`。 */
+	readonly safe_gate_reason: ParadisBrowserErrorReasonCode;
+	/** 関所が断ったとき、入力が届かなかった（retryable）のか、届いたか分からない（outcome-unknown）のか。 */
+	readonly safe_error_status?: 'retryable' | 'outcome-unknown';
+	/** 失敗した CDP のメソッド名（一覧にあるドメインのものだけ）。 */
+	readonly safe_cdp_method?: string;
+}
+
+/** ツールのエラー文から、Sentry の `safe_` 欄に載せてよい値だけを返す。 */
+export function paradisClassifyBrowserToolErrorText(text: string): IParadisBrowserToolErrorFields {
+	const method = PROTOCOL_METHOD.exec(text)?.groups;
+	const withMethod = method && CDP_DOMAINS.has(method.domain) ? { safe_cdp_method: `${method.domain}.${method.command}` } : {};
 	const match = PREFIX.exec(text);
 	if (!match?.groups) {
-		return { safe_error_code: 'none', ...withMethod };
+		return { safe_gate_reason: 'none', ...withMethod };
 	}
+	const retryable = match.groups.status === 'RETRYABLE';
 	const reason = match.groups.reason;
 	const known = REASONS.find(([pattern]) => pattern.test(reason));
-	const code = known ? known[1] : match.groups.status === 'RETRYABLE' ? 'retryable-other' : 'outcome-unknown-other';
-	return { safe_error_code: code, ...withMethod };
+	const code = known ? known[1] : retryable ? 'retryable-other' : 'outcome-unknown-other';
+	return { safe_gate_reason: code, safe_error_status: retryable ? 'retryable' : 'outcome-unknown', ...withMethod };
 }
