@@ -3031,12 +3031,18 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (name === 'preview_file') {
 			const toolArgs = params?.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : undefined;
 			const path = typeof toolArgs?.path === 'string' ? toolArgs.path : undefined;
-			// 接続先のペインのパスは接続先のものとして開かせる。手元のペインのトークンで戻り経路から来たものは
-			// 手元のファイルを開かせない
+			// 接続先のペインのパスは接続先のものとして開かせる。台帳に無いペイン・手元のペインのトークンで
+			// 戻り経路から来たものは、手元のファイルを開かせない（ゲートウェイ・MCP の層と揃える）
 			const remoteAuthority = this._paneRemoteAuthorityOf(token);
-			if (remoteAuthority === undefined && typeof path === 'string' && (await this._devtoolsPathCaller(token, socket)).remote) {
+			if (remoteAuthority === undefined && typeof path === 'string') {
+				const caller = await this._devtoolsPathCaller(token, socket);
 				this._requireIngressLease(ingressLease);
-				return this._toolError('preview_file was not run: this request came through Para Code\'s return tunnel from a remote window (SSH, WSL, container), so it cannot open files on the user\'s local machine.');
+				if (!caller.paneKnown) {
+					return this._toolError('preview_file was not run: Para Code has not registered this terminal pane yet, so it cannot tell whether the path is on the user\'s local machine. Wait a moment and retry.');
+				}
+				if (caller.remote) {
+					return this._toolError('preview_file was not run: this request came through Para Code\'s return tunnel from a remote window (SSH, WSL, container), so it cannot open files on the user\'s local machine.');
+				}
 			}
 			return this._previewFile(ingressLease, path, signal, remoteAuthority);
 		}
