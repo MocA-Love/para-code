@@ -524,7 +524,8 @@ export function replaceTerminalTitleInTuiSection(config: string): string {
 	}
 
 	const sectionStart = headerMatch.index + headerMatch[0].length;
-	const nextSection = /^\[/m;
+	// TOML allows indentation before a table header, as the header patterns above do.
+	const nextSection = /^[\t ]*\[/m;
 	const nextSectionMatch = nextSection.exec(config.slice(sectionStart));
 	const sectionEnd = nextSectionMatch?.index === undefined ? config.length : sectionStart + nextSectionMatch.index;
 	const section = config.slice(sectionStart, sectionEnd);

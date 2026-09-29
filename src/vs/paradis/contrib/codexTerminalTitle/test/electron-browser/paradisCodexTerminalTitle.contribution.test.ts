@@ -164,6 +164,8 @@ suite('ParadisCodexTerminalTitle', () => {
 				inlineTable: replaceTerminalTitleInTuiSection('tui = { notifications = true }\n'),
 				// 他の表の下の dotted key は tui の定義ではない
 				nestedDotted: replaceTerminalTitleInTuiSection('[profiles.a]\ntui.x = 1\n'),
+				// 字下げした次の表の見出しを [tui] の中身と取り違えない
+				indentedNextTable: replaceTerminalTitleInTuiSection('[tui]\nx = 1\n  [profiles.a]\nterminal_title = "keep"\n'),
 			}, {
 				missing: `model = "x"\n\n[tui]\n${title}\n`,
 				existingKey: `[tui]\n${title}\nx = 1\n`,
@@ -172,6 +174,7 @@ suite('ParadisCodexTerminalTitle', () => {
 				dottedKey: 'tui.notifications = true\n[profiles.a]\nmodel = "x"\n',
 				inlineTable: 'tui = { notifications = true }\n',
 				nestedDotted: `[profiles.a]\ntui.x = 1\n\n[tui]\n${title}\n`,
+				indentedNextTable: `[tui]\n${title}\nx = 1\n  [profiles.a]\nterminal_title = "keep"\n`,
 			});
 		});
 	});
