@@ -15,6 +15,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import type { IParadisLimitsWindow } from '../../common/paradisLimitsMonitor.js';
 import { ICodexAccountResult, IWhamUsageResponse, ParadisLimitsMonitorService } from '../../node/paradisLimitsMonitorChannel.js';
 
@@ -181,5 +182,31 @@ suite('ParadisLimitsMonitor Codex usage order', () => {
 		await Promise.all([service.fetch(codexHome), service.fetch(secondHome)]);
 		service.dispose();
 		assert.deepStrictEqual(service.calls.filter(call => !call.startsWith('wham:')), [`rpc:${codexHome}`, 'stagger', `rpc:${secondHome}`]);
+	});
+
+	// app-server の失敗は、wham/usage で出せたなら報告しない。両方だめなときだけ、ホームごとに1回報告する。
+	test('reports an app-server failure only when wham/usage also fails, once per home', async () => {
+		const reports: string[] = [];
+		configureParadisDiagnosticReporter((_scope, _feature, operation, _error, safeExtra) => reports.push(`${operation}:${safeExtra?.safe_error_kind}`));
+		try {
+			const service = new ParadisFakeCodexUsageService(new NullLogService(), undefined, undefined, () => root);
+			service.rpcAnswer = new Error('codex app-server exited (code=1, signal=null)');
+			const whamWorked = summary(await service.fetch(codexHome)).status;
+			const afterWhamWorked = [...reports];
+			service.clock += 11 * 60_000;
+			service.whamAnswer = httpError(500);
+			const bothFailed = summary(await service.fetch(codexHome)).status;
+			service.clock += 11 * 60_000;
+			await service.fetch(codexHome);
+			service.dispose();
+			assert.deepStrictEqual({ whamWorked, afterWhamWorked, bothFailed, reports }, {
+				whamWorked: 'ok',
+				afterWhamWorked: [],
+				bothFailed: 'error',
+				reports: ['codex-app-server-fallback:exited'],
+			});
+		} finally {
+			configureParadisDiagnosticReporter(() => { });
+		}
 	});
 });

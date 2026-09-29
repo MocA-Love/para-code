@@ -13,7 +13,7 @@ import assert from 'assert';
 import type * as cp from 'child_process';
 import { PassThrough, Writable } from 'stream';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisSecurityProcess, ParadisKeychainError, ParadisSecurityCliKeychain, PARADIS_SECURITY_STDIN_LINE_LIMIT } from '../../node/paradisClaudeKeychain.js';
+import { IParadisSecurityProcess, ParadisKeychainError, ParadisSecurityCliKeychain, PARADIS_SECURITY_STDIN_LINE_LIMIT, paradisDecodeSecurityPassword } from '../../node/paradisClaudeKeychain.js';
 
 interface ISecurityCall {
 	readonly command: string;
@@ -132,5 +132,23 @@ suite('Paradis Claude keychain (security CLI)', () => {
 			argv.keychain.write(CLAUDE_CODE, ACCOUNT, 'small').then(() => 'written', error => error instanceof ParadisKeychainError ? 'keychain error' : 'other'),
 		]);
 		assert.deepStrictEqual({ results, modes: [short.calls[0].args[0], argv.calls[0].args[0]] }, { results: ['keychain error', 'keychain error'], modes: ['-i', 'add-generic-password'] });
+	});
+
+	// `security -w` は ASCII で表せない文字を含む値を16進で出す。JSON に戻るときだけ戻す。
+	test('decodes the hex output of security -w only when it turns back into JSON', () => {
+		const json = JSON.stringify({ claudeAiOauth: { accessToken: 't' }, mcpOAuth: { 'サーバー': {} } });
+		assert.deepStrictEqual({
+			hexJson: paradisDecodeSecurityPassword(hexOf(json)),
+			plainJson: paradisDecodeSecurityPassword('{"a":1}'),
+			hexButNotJson: paradisDecodeSecurityPassword('deadbeef'),
+			oddLength: paradisDecodeSecurityPassword('abc'),
+			empty: paradisDecodeSecurityPassword(''),
+		}, {
+			hexJson: json,
+			plainJson: '{"a":1}',
+			hexButNotJson: 'deadbeef',
+			oddLength: 'abc',
+			empty: '',
+		});
 	});
 });

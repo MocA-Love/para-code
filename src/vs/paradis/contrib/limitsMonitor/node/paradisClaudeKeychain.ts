@@ -62,6 +62,25 @@ function quoteForSecurityStdin(value: string): string {
 	return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
+/**
+ * `security find-generic-password -w` の出力を値に戻す。`security` は値に ASCII で表せない文字（UTF-8 の
+ * 日本語など）が入っていると、値そのものではなく 16 進の文字列で出す。ここで読むのはどれも JSON（`{` で
+ * 始まる）なので、16 進だけの出力を UTF-8 として戻して JSON に見えるときだけ、戻した方を使う。
+ */
+export function paradisDecodeSecurityPassword(output: string): string {
+	if (output.length === 0 || output.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(output)) {
+		return output;
+	}
+	let decoded: string;
+	try {
+		decoded = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(output, 'hex'));
+	} catch {
+		return output;
+	}
+	const start = decoded.trimStart();
+	return start.startsWith('{') || start.startsWith('[') ? decoded : output;
+}
+
 /** `security` の子プロセスのうち、ここで使う部分。テストでは偽物に差し替え、本物の `security` を起動しない。 */
 export interface IParadisSecurityProcess {
 	readonly stdin: NodeJS.WritableStream | null;
@@ -90,7 +109,7 @@ export class ParadisSecurityCliKeychain implements IParadisKeychain {
 		const result = await this.run(['find-generic-password', '-a', account, '-w', '-s', service]);
 		if (result.code === 0) {
 			// `-w` は値の後に改行を1つ付ける。それだけを落とす。
-			return result.stdout.endsWith('\n') ? result.stdout.slice(0, -1) : result.stdout;
+			return paradisDecodeSecurityPassword(result.stdout.endsWith('\n') ? result.stdout.slice(0, -1) : result.stdout);
 		}
 		if (result.code === NOT_FOUND_EXIT_CODE) {
 			return undefined;

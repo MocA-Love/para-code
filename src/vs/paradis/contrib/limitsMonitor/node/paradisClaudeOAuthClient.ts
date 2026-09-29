@@ -11,6 +11,8 @@
 // Claude の使用量 API とトークン更新の HTTP 呼び出し。
 //
 // トークン・応答本文は結果にもログにも載せない（HTTP の状態コードだけを返す）。
+// どの呼び出しもリダイレクトは辿らない（`redirect: 'error'`）。辿ると Authorization やリフレッシュトークンを
+// 付けたまま別のホストへ送りうる。
 // `fetch` は差し替えられるようにしてあり、テストでは本物の API を呼ばない。
 
 import {
@@ -82,6 +84,7 @@ export class ParadisClaudeOAuthClient implements IParadisClaudeOAuthClient {
 					'Accept': 'application/json',
 					'User-Agent': USER_AGENT,
 				},
+				redirect: 'error',
 				signal: AbortSignal.timeout(USAGE_TIMEOUT_MS),
 			});
 		} catch {
@@ -111,6 +114,7 @@ export class ParadisClaudeOAuthClient implements IParadisClaudeOAuthClient {
 					'Accept': 'application/json',
 					'User-Agent': USER_AGENT,
 				},
+				redirect: 'error',
 				signal: AbortSignal.timeout(USAGE_TIMEOUT_MS),
 			});
 			if (!response.ok) {
@@ -147,6 +151,7 @@ export class ParadisClaudeOAuthClient implements IParadisClaudeOAuthClient {
 					refresh_token: refreshToken,
 					client_id: PARADIS_CLAUDE_OAUTH_CLIENT_ID,
 				}),
+				redirect: 'error',
 				signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
 			});
 		} catch {
