@@ -134,3 +134,19 @@ export function paradisDecideSavedScreens(saved: IParadisSavedTerminalScreens, n
 	}
 	return mainStartedAt !== undefined && mainStartedAt > saved.savedAt ? ParadisSavedScreensDecision.Revive : ParadisSavedScreensDecision.Unknown;
 }
+
+/**
+ * 戻すと決めた保存物を、戻した後にどう残すか。undefined なら消す。
+ *
+ * 戻す前に消すと、戻す途中で失敗したときや、次の保存（最短 5 分後）より前に落ちたときに、画面が
+ * すべて失われる。そこで消さずに「今の常駐が抱えている」と書き直す。ウィンドウの再読み込みでは
+ * {@link ParadisSavedScreensDecision.DaemonStillHolds} になって二重に起こさず、PC を再起動すれば
+ * 今の常駐も居なくなるので、もう一度戻せる。次の保存が今の状態で上書きする。
+ *
+ * 今の常駐が分からない（常駐が動いていないのに、アプリの起動時刻から戻すと決めた）ときは、
+ * 書き直す相手が居ないので消す（二重に起こすより、失う方を採る）。
+ */
+export function paradisSavedScreensAfterRevive(saved: IParadisSavedTerminalScreens, status: IParadisDaemonStatusLike | undefined): IParadisSavedTerminalScreens | undefined {
+	const current = paradisDaemonIdentityForSave(status);
+	return current ? { ...saved, daemon: current } : undefined;
+}

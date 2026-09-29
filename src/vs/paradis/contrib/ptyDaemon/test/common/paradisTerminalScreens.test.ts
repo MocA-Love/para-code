@@ -14,6 +14,7 @@ import {
 	paradisDecideSavedScreens,
 	paradisDecodeTerminalScreens,
 	paradisEncodeTerminalScreens,
+	paradisSavedScreensAfterRevive,
 	PARADIS_TERMINAL_SCREENS_MAX_AGE,
 } from '../../common/paradisTerminalScreens.js';
 
@@ -74,5 +75,26 @@ suite('ParadisTerminalScreens', () => {
 			// 30日を過ぎた
 			paradisDecideSavedScreens(saved, savedAt + PARADIS_TERMINAL_SCREENS_MAX_AGE + 1, status({})),
 		], ['revive', 'daemonStillHolds', 'daemonStillHolds', 'revive', 'unknown', 'unknown', 'revive', 'revive', 'daemonStillHolds', 'expired']);
+	});
+
+	test('keeps revived screens as held by the current daemon so a reload does not revive them twice', () => {
+		const savedAt = 10_000;
+		const saved = { version: 2 as const, savedAt, daemon, state: 'x' };
+		const current = { running: true, pid: 200, startedAt: savedAt + 500, foreign: [] };
+		const kept = paradisSavedScreensAfterRevive(saved, current);
+		assert.deepStrictEqual({
+			kept,
+			// 再読み込み: 同じ常駐がまだ居るので二度目は起こさない
+			reload: kept && paradisDecideSavedScreens(kept, savedAt + 2000, current),
+			// 次の保存より前に PC を再起動した: 常駐が替わったので、もう一度戻せる
+			reboot: kept && paradisDecideSavedScreens(kept, savedAt + 2000, { ...current, pid: 300, startedAt: savedAt + 1500 }),
+			// 今の常駐が分からないときは書き直す相手が居ないので消す
+			unknown: paradisSavedScreensAfterRevive(saved, { running: false, pid: undefined, startedAt: undefined, foreign: [] }),
+		}, {
+			kept: { version: 2, savedAt, daemon: { pid: 200, startedAt: savedAt + 500 }, state: 'x' },
+			reload: 'daemonStillHolds',
+			reboot: 'revive',
+			unknown: undefined,
+		});
 	});
 });
