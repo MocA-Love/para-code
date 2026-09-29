@@ -166,22 +166,35 @@ suite('ParadisAgentIdeToolProvider', () => {
 		assert.deepStrictEqual([pending.isError, unverifiable.isError, unverifiable.body.includes('leaves pressing Enter there to the user'), acknowledged.isError], [true, true, true, true]);
 	});
 
-	// 確かめられない hook で解けた待ちには、まだ許可の確認が出ているかもしれない。数字・矢印・Esc・貼り付けでも答えてしまう。
-	test('keys and text without Enter are refused after a release that cannot be verified, but not after one still pending', async () => {
-		const { provider, context, statuses, marks, calls } = setup();
+	// 確かめないまま解けた待ちには、まだ許可の確認が出ているかもしれない。数字・矢印・Esc・貼り付けでも答えてしまう。
+	// ただし tmux・WSL のペインの印は端末を閉じるまで残るので、確認の出ていない画面への入力は止めない。
+	test('keys and text without Enter are refused after an unconfirmed release only while the screen shows a prompt or cannot be read', async () => {
+		const { provider, context, statuses, marks, calls, state } = setup();
 		statuses.set(TARGET, { status: 'review', changedAt: 2 });
-		marks.set(TARGET, 'unverifiable');
-		const escape = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'escape' }, undefined, context));
-		const typed = text(await provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: '1', press_enter: false }, undefined, context));
-		const refusedSends = ops(calls).filter(op => op !== 'resolveWriteTarget');
-		marks.set(TARGET, 'pending');
-		const pendingEscape = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'escape' }, undefined, context));
-		assert.deepStrictEqual({
-			refused: [escape.isError, typed.isError, escape.body.includes('does not send keys or text there')],
-			refusedSends,
-			pendingEscape: pendingEscape.isError,
-			sent: ops(calls).filter(op => op !== 'resolveWriteTarget'),
-		}, { refused: [true, true, true], refusedSends: [], pendingEscape: false, sent: ['sendKey:escape'] });
+		const results: string[] = [];
+		for (const mark of ['unverifiable', 'pending'] as const) {
+			marks.set(TARGET, mark);
+			for (const screen of ['Do you want to proceed?\n\u276f 1. Yes\n  2. No', undefined, CLAUDE_READY]) {
+				state.screen = screen as string;
+				const key = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'escape' }, undefined, context));
+				const typed = text(await provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: '1', press_enter: false }, undefined, context));
+				results.push(`${mark}:${screen === undefined ? 'unreadable' : screen === CLAUDE_READY ? 'ready' : 'prompt'}:${key.isError}:${typed.isError}`);
+			}
+		}
+		// Enter は画面に関係なく今までどおり断る
+		const enter = text(await provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'enter' }, undefined, context));
+		assert.deepStrictEqual({ results, enterRefused: enter.isError, sent: ops(calls).filter(op => op !== 'resolveWriteTarget' && op !== 'probeTerminal') }, {
+			results: [
+				'unverifiable:prompt:true:true',
+				'unverifiable:unreadable:true:true',
+				'unverifiable:ready:false:false',
+				'pending:prompt:true:true',
+				'pending:unreadable:true:true',
+				'pending:ready:false:false',
+			],
+			enterRefused: true,
+			sent: ['sendKey:escape', 'sendInput', 'sendKey:escape', 'sendInput'],
+		});
 	});
 
 	test('pasted text that looks like a prompt does not block its own Enter, but a prompt already on screen does', async () => {
