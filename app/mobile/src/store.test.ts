@@ -724,6 +724,50 @@ describe('MobileController', () => {
 		expect(latest?.terminalOperationIssue).toContain('結果を確認できなかった');
 	});
 
+	it('sends live keystrokes without the durable outbox and drops them while disconnected instead of replaying', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		const outbox = new MemoryOperationOutboxStore();
+		let saves = 0;
+		const save = outbox.save.bind(outbox);
+		outbox.save = async (encrypted: string) => { saves++; await save(encrypted); };
+		const controller = new MobileController(mobile, () => pair.client, () => { }, undefined, undefined, 'prod', undefined, 1, outbox);
+		const terminalFrames: Record<string, unknown>[] = [];
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey, mux => {
+			mux.on(Channels.Terminal, frame => terminalFrames.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		});
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([{ id: 1, title: 'zsh' }]))));
+		await flush();
+		const savesBefore = saves;
+
+		const accepted = [await controller.sendLiveKeys('terminal-1', 'l'), await controller.sendLiveArrowKey('terminal-1', 'up')];
+		await flush();
+		const savesAfterLive = saves;
+		pair.client.close();
+		await flush();
+		const offline = [await controller.sendLiveKeys('terminal-1', 'x'), await controller.sendLiveKeys('terminal-1', '\r')];
+		await flush();
+		controller.disconnect();
+
+		expect({
+			accepted,
+			offline,
+			inputs: terminalFrames.filter(frame => frame.t === 'input').map(frame => ({ data: frame.data, key: frame.key })),
+			persisted: savesAfterLive - savesBefore,
+		}).toEqual({
+			accepted: [true, true],
+			offline: [false, false],
+			inputs: [{ data: 'l', key: undefined }, { data: '\u001b[A', key: 'up' }],
+			persisted: 0,
+		});
+	});
+
 	it('preserves operation sequence while a mutation waits for durable storage', async () => {
 		const mobile = generateIdentity();
 		const pc = generateIdentity();

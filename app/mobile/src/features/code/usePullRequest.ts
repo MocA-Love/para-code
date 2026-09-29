@@ -8,7 +8,8 @@ import {
 } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobilePullRequest.js';
 import { sendPcRequest } from '../../appState.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
-import { PR_POLL_MS, parsePrView, type PrDetail, type PrViewResult } from './pullRequest.js';
+import { useNow } from '../../time.js';
+import { PR_POLL_MS, activePrQueued, parsePrMergeReply, parsePrView, type PrDetail, type PrMergeOutcome, type PrQueued, type PrViewResult } from './pullRequest.js';
 import { errorMessage } from './scmModel.js';
 import { currentRendererTarget, type CodeSpace } from './useCodeSpace.js';
 
@@ -25,11 +26,15 @@ export interface PullRequestController {
 	/** 読み直しの失敗（前回の結果は出したまま）。 */
 	readonly error: string | undefined;
 	readonly refresh: () => Promise<void>;
+	/** 手で読み直す（マージキューの印も外す。キューから外された PR をマージし直せるように）。 */
+	readonly reload: () => Promise<void>;
 	readonly merging: boolean;
 	/** マージの失敗（画面の中に出す）。 */
 	readonly mergeError: string | undefined;
-	/** 見た時点の head でマージする。できたら true。 */
-	readonly merge: (pr: PrDetail) => Promise<boolean>;
+	/** 見た時点の head でマージする。できたら結果（マージした・マージキューに入れた）、できなければ undefined。 */
+	readonly merge: (pr: PrDetail) => Promise<PrMergeOutcome | undefined>;
+	/** このスマホからマージキューに入れた PR（入れていない・10 分を過ぎた・手で読み直したなら undefined）。 */
+	readonly queued: PrQueued | undefined;
 }
 
 export function usePullRequest(space: CodeSpace, active: boolean): PullRequestController {
@@ -40,6 +45,7 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 	const [error, setError] = useState<string | undefined>(undefined);
 	const [merging, setMerging] = useState(false);
 	const [mergeError, setMergeError] = useState<string | undefined>(undefined);
+	const [queued, setQueued] = useState<PrQueued | undefined>(undefined);
 	const genRef = useRef(0);
 	const { pcId, wsId, rendererTarget } = space;
 
@@ -74,6 +80,7 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 		setView(undefined);
 		setError(undefined);
 		setMergeError(undefined);
+		setQueued(undefined);
 		setLoading(false);
 	}, [wsId]);
 
@@ -88,21 +95,29 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 
 	const merge = useCallback(async (pr: PrDetail) => {
 		if (!canMerge || wsId === undefined || merging) {
-			return false;
+			return undefined;
 		}
 		setMerging(true);
 		setMergeError(undefined);
 		try {
-			await sendPcRequest(pcId, 'scm', { t: 'prMerge', ws: wsId, number: pr.number, headSha: pr.headSha }, { timeoutMs: 130_000 });
-			return true;
+			const reply = await sendPcRequest<{ readonly queued?: unknown }>(pcId, 'scm', { t: 'prMerge', ws: wsId, number: pr.number, headSha: pr.headSha }, { timeoutMs: 130_000 });
+			const outcome = parsePrMergeReply(reply);
+			setQueued(outcome === 'queued' ? { number: pr.number, headSha: pr.headSha, at: Date.now() } : undefined);
+			return outcome;
 		} catch (e) {
 			setMergeError(errorMessage(e));
-			return false;
+			return undefined;
 		} finally {
 			setMerging(false);
 			void refresh();
 		}
 	}, [canMerge, pcId, wsId, merging, refresh]);
 
-	return { enabled, canMerge, view, loading, error, refresh, merging, mergeError, merge };
+	const reload = useCallback(async () => {
+		setQueued(undefined);
+		await refresh();
+	}, [refresh]);
+
+	const now = useNow();
+	return { enabled, canMerge, view, loading, error, refresh, reload, merging, mergeError, merge, queued: activePrQueued(queued, now) };
 }

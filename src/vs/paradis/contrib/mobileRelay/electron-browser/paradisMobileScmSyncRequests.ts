@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { timeout } from '../../../../base/common/async.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -261,13 +262,24 @@ registerGitOperation('commitSafe', async (request, context, ws, index) => {
 	let stderr = '';
 	let stdout = '';
 	let committed = false;
+	// `git add -A` の直後のインデックスの中身。失敗して戻す前に比べ、フックの間に PC などでステージが変わっていたら戻さない
+	let stagedTree: string | undefined;
+	// `add -A` が失敗した（例外を含む）。待ちが無く、その間に PC でステージが変わることはまず無いので、これまでどおり戻す
+	let addFailed = false;
+	let addReturned = !all;
 	try {
 		const added = all ? await context.runGit(['add', '-A']) : undefined;
+		addReturned = true;
+		addFailed = added !== undefined && added.code !== 0;
+		if (added?.code === 0) {
+			stagedTree = await indexTree(context);
+		}
 		const result = added === undefined || added.code === 0 ? await context.runGit(['commit', '-m', message]) : added;
 		committed = result === added ? false : result.code === 0;
 		stderr = result.stderr;
 		stdout = result.stdout;
 	} catch (error) {
+		addFailed = addFailed || !addReturned;
 		stderr = error instanceof Error ? error.message : String(error);
 	}
 	const headAfter = committed ? undefined : await headCommit(context);
@@ -292,16 +304,45 @@ registerGitOperation('commitSafe', async (request, context, ws, index) => {
 		context.reply({ t: 'commitSafe', ok: true, output: stdout.trim(), ...(warning !== undefined ? { warning } : {}) });
 		return;
 	}
-	// 失敗したら、コミットの前のステージの状態へ戻す（フックが足した・消したステージも戻る）
+	// 失敗したら、コミットの前のステージの状態へ戻す。ただし `git add -A` の直後からインデックスが変わっていれば
+	// （フックが動いている間に PC でステージした・フックがステージを足した）、戻すとその操作まで消えるので戻さない。
+	// 直後の中身を読めなかったときも、変わっていないと確かめられないので戻さない（`add -A` 自体の失敗は待ちが無いので戻す）
 	let restored = false;
+	let indexChanged = false;
 	if (backup !== undefined) {
-		const reset = await index?.restore(backup).catch(() => undefined);
-		restored = reset?.restored === true;
+		indexChanged = !addFailed && (stagedTree === undefined || await indexTree(context) !== stagedTree);
+		if (!indexChanged) {
+			const reset = await index?.restore(backup).catch(() => undefined);
+			restored = reset?.restored === true;
+		}
 	}
-	await replyCommitFailure(context, ws, message, stderr, stdout, backup !== undefined, restored);
+	await replyCommitFailure(context, ws, message, stderr, stdout, backup !== undefined, restored, indexChanged);
 }, true);
 
-async function replyCommitFailure(context: IParadisMobileRequestContext, ws: string, message: string, stderr: string, stdout: string, attemptedRestore: boolean, restored: boolean): Promise<void> {
+/** write-tree が index.lock を取れなかったときに待つ時間（ms）。 */
+const INDEX_LOCK_RETRY_MS = 200;
+
+/**
+ * いまのインデックスの中身をツリーの id で読む（`git write-tree`。ステージの印の付け直しでは変わらず、ステージした
+ * 中身が変わったときだけ変わる）。write-tree は index.lock を取るので、ほかの git が持っていれば少し待ってやり直す。
+ * 読めなければ undefined。
+ */
+async function indexTree(context: IParadisMobileRequestContext): Promise<string | undefined> {
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const result = await context.runGit(['write-tree']).catch(() => undefined);
+		const tree = result?.stdout.trim() ?? '';
+		if (result?.code === 0 && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(tree)) {
+			return tree;
+		}
+		if (result === undefined || !/index\.lock/.test(result.stderr)) {
+			return undefined;
+		}
+		await timeout(INDEX_LOCK_RETRY_MS);
+	}
+	return undefined;
+}
+
+async function replyCommitFailure(context: IParadisMobileRequestContext, ws: string, message: string, stderr: string, stdout: string, attemptedRestore: boolean, restored: boolean, indexChanged = false): Promise<void> {
 	// フックの出力には秘密値（環境変数の中身・トークン）が出ることがある。スマホに出す前と依頼文に載せる前に伏せる
 	const output = paradisTruncateMiddle(paradisRedactMobileCommandOutput([stderr.trim(), stdout.trim()].filter(part => part.length > 0).join('\n')), PARADIS_MOBILE_COMMIT_OUTPUT_LIMIT);
 	const { kind, summary } = paradisSummarizeMobileCommitFailure(output);
@@ -311,7 +352,11 @@ async function replyCommitFailure(context: IParadisMobileRequestContext, ws: str
 	]);
 	const record: ICommitFailureRecord = { id: generateUuid(), kind, branch: branch === 'HEAD' ? undefined : branch, message, summary, output, files: files.files, moreFiles: files.more };
 	commitFailures.set(ws, record);
-	const failure: IParadisMobileCommitFailure = { id: record.id, kind, summary, output, restored: attemptedRestore && restored, ...(attemptedRestore && !restored ? { restoreFailed: true } : {}) };
+	const failure: IParadisMobileCommitFailure = {
+		id: record.id, kind, summary, output, restored: attemptedRestore && restored,
+		...(attemptedRestore && !restored ? { restoreFailed: true } : {}),
+		...(attemptedRestore && indexChanged ? { indexChanged: true } : {}),
+	};
 	context.reply({ t: 'commitSafe', ok: false, failure });
 }
 

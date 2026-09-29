@@ -41,13 +41,15 @@ class FakeChannel {
 	readonly calls: { readonly command: string; readonly args: readonly unknown[] }[] = [];
 	lookup: ParadisPullRequestLookup = { kind: 'ok', detail: detail() };
 	logs: { jobId: string; log?: string }[] = [];
+	/** マージの後に取り直したときの PR（既定はマージ済み）。 */
+	afterMerge: ParadisPullRequestLookup = { kind: 'ok', detail: detail({ state: 'merged' }) };
 
 	async call(command: string, args: readonly unknown[]): Promise<unknown> {
 		this.calls.push({ command, args });
 		switch (command) {
 			case 'getPullRequestDetail': return this.lookup;
 			case 'getFailedJobLogs': return this.logs;
-			case 'mergePullRequest': return { method: 'squash' };
+			case 'mergePullRequest': this.lookup = this.afterMerge; return { method: 'squash' };
 			default: throw new Error(`Method not found: ${command}`);
 		}
 	}
@@ -133,6 +135,33 @@ suite('ParadisMobilePullRequestRequests', () => {
 			busy: 'busy',
 			ok: { t: 'prMerge', ws: 'repo', merged: true, method: 'squash', id: 'ok' },
 			merges: [{ repo: 'o/r', number: 9, headSha: HEAD }],
+		});
+	});
+
+	test('reports a merge queue entry instead of a merge when the PR is not merged yet after gh succeeds', async () => {
+		const channel = new FakeChannel();
+		const sent: IReply[] = [];
+		const host = createHost(channel, sent);
+
+		// マージキューのあるリポジトリ: gh は成功を返すが、PR はまだ開いている
+		channel.afterMerge = { kind: 'ok', detail: detail() };
+		dispatch(host, { t: 'prMerge', id: 'queued', number: 9, headSha: HEAD });
+		await flush();
+		// 取り直せなかった（ネットワークなど）
+		channel.lookup = { kind: 'ok', detail: detail() };
+		channel.afterMerge = { kind: 'none', reason: 'error', message: 'timeout' };
+		dispatch(host, { t: 'prMerge', id: 'unknown', number: 9, headSha: HEAD });
+		await flush();
+
+		assert.deepStrictEqual({
+			queued: reply(sent, 'queued'),
+			unknown: reply(sent, 'unknown'),
+			lookups: channel.calls.filter(call => call.command === 'getPullRequestDetail').length,
+		}, {
+			queued: { t: 'prMerge', ws: 'repo', merged: false, queued: true, method: 'squash', id: 'queued' },
+			unknown: { t: 'prMerge', ws: 'repo', merged: false, queued: true, method: 'squash', id: 'unknown' },
+			// マージの前と後に 1 回ずつ
+			lookups: 4,
 		});
 	});
 
