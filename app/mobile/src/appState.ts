@@ -290,6 +290,10 @@ interface AppState extends StoreState {
 	subscribeTerminal(terminalKey: string, listener: (ev: TermStreamEvent) => void): () => void;
 	sendInput(terminalKey: string, data: string): Promise<boolean>;
 	sendLiveInput(terminalKey: string, data: string): boolean;
+	/** 打鍵をアウトボックスへ積まずに送る（つながっていなければ送らずに false。Q144 A）。 */
+	sendLiveKeys(terminalKey: string, data: string): Promise<boolean>;
+	/** 矢印キーを {@link sendLiveKeys} と同じく積まずに送る。 */
+	sendLiveArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left'): Promise<boolean>;
 	/** TUI上のスワイプによるスクロール（送れなくても再試行しない）。 */
 	scrollTerminal(terminalKey: string, dir: 'up' | 'down', lines: number): void;
 	/** 矢印キーをセマンティック名で送る（PC側が端末モードに合わせてエンコードする）。 */
@@ -1801,6 +1805,14 @@ export const useAppStore = create<AppState>(set => ({
 
 	sendLiveInput(terminalKey: string, data: string) {
 		return controller?.sendLiveInput(terminalKey, data) ?? false;
+	},
+
+	sendLiveKeys(terminalKey: string, data: string) {
+		return controller?.sendLiveKeys(terminalKey, data) ?? Promise.resolve(false);
+	},
+
+	sendLiveArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left') {
+		return controller?.sendLiveArrowKey(terminalKey, key) ?? Promise.resolve(false);
 	},
 
 	scrollTerminal(terminalKey: string, dir: 'up' | 'down', lines: number) {

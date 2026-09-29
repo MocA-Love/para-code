@@ -26,8 +26,13 @@ const FIELD_SLOP = hitSlopToMinimum(CONTROL);
  *    PC へ届く（⌫ は 1 文字削除、改行は Enter）。日本語は変換を確定したときに届き、変換中の文字は
  *    送らない。送る分の計算は `liveInput.ts`（入力欄を PC のプロンプトへ写す）
  */
-export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitting, enterless, onToggleEnterless, uploading, onAttachImage, onLiveText, onLiveKey, onLiveArrow }: {
+export function TerminalInputBar({ live, liveResetKey, input, onChangeInput, onSubmit, submitting, enterless, onToggleEnterless, uploading, onAttachImage, onLiveText, onLiveKey, onLiveArrow }: {
 	live: boolean;
+	/**
+	 * 変わったらライブ入力の入力欄を空から作り直す（PC に届かなかった打鍵があった。Q144 A）。前の入力欄の文字は
+	 * 送らない。
+	 */
+	liveResetKey: number;
 	input: string;
 	onChangeInput: (text: string) => void;
 	onSubmit: () => void;
@@ -74,13 +79,35 @@ export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitt
 	const currentCapture = captures[captures.length - 1]!;
 	// 自分からはフォーカスを取らない世代（フォーカスが外れた後に作り直したもの。`retireAfterControl`）。
 	const quietCapturesRef = useRef(new Set<number>());
+	// 作り直しで外した入力欄（残っている間に変換中の文字などを送らせない）
+	const discardedCapturesRef = useRef(new Set<number>());
+	const liveFocusedRef = useRef(liveFocused);
+	liveFocusedRef.current = liveFocused;
 	// ライブ入力を切り替えたら入力欄は最初の世代から（autoFocus で勝手にキーボードを出さない）。
 	useEffect(() => {
 		setCaptures([0]);
 		quietCapturesRef.current.clear();
+		discardedCapturesRef.current.clear();
 		setLiveFocused(false);
 		setLiveComposing(false);
 	}, [live]);
+	const seenResetKeyRef = useRef(liveResetKey);
+	useEffect(() => {
+		if (seenResetKeyRef.current === liveResetKey) {
+			return;
+		}
+		seenResetKeyRef.current = liveResetKey;
+		setLastTyped('');
+		// Enter で送り終えたときと同じく新しい入力欄を足し（フォーカスがあれば新しい方へ移す）、前の入力欄は黙らせる
+		setCaptures(list => {
+			const last = list[list.length - 1]!;
+			discardedCapturesRef.current.add(last);
+			if (!liveFocusedRef.current) {
+				quietCapturesRef.current.add(last + 1);
+			}
+			return [last, last + 1];
+		});
+	}, [liveResetKey]);
 	/** 送る。打った文字を制御文字として送った（PC の行に文字として載らなかった）ときは true。 */
 	const onLiveSend = (data: string): boolean => {
 		if (data === LIVE_ENTER) {
@@ -148,7 +175,7 @@ export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitt
 								setCaptures(list => (list.length > 1 && list[list.length - 1] === generation ? [generation] : list));
 							}
 						}}
-						onSend={onLiveSend}
+						onSend={data => discardedCapturesRef.current.has(generation) ? false : onLiveSend(data)}
 						onSubmitted={(focusNext = true) => setCaptures(list => {
 							const last = list[list.length - 1]!;
 							if (last !== generation) {

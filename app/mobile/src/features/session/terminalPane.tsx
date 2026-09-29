@@ -26,6 +26,7 @@ import { createTerminalAttachments } from './terminalAttachments.js';
 import { terminalDraftKey, useTerminalDrafts } from './terminalDrafts.js';
 import { TerminalInputBar } from './terminalInputBar.js';
 import { liveInputEnabled, useTerminalLiveInputChoices } from './terminalLiveInputChoice.js';
+import { LiveInputResync } from './liveInputResync.js';
 import { openUrlInPcBrowser } from './terminalLinkOpen.js';
 import { readClipboardText } from '../../nativeClipboard.js';
 
@@ -71,11 +72,12 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 	// JS が詰まる（出力は TermView がストリームから直接受けるので、ここで追う必要は無い）。
 	const streamingRef = useRef(false);
 	const output = useAppStore(s => streamingRef.current ? '' : (s.terminalOutput.get(terminalKey) ?? ''));
-	const { attachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, scrollTerminal, terminalPrefs, setTerminalPref, setTerminalViewport, activePcId, fsUpload } = useAppStore(useShallow(s => ({
+	const { attachTerminal, subscribeTerminal, sendInput, sendLiveKeys, sendLiveArrowKey, sendTextInput, scrollTerminal, terminalPrefs, setTerminalPref, setTerminalViewport, activePcId, fsUpload } = useAppStore(useShallow(s => ({
 		attachTerminal: s.attachTerminal,
 		subscribeTerminal: s.subscribeTerminal,
 		sendInput: s.sendInput,
-		sendArrowKey: s.sendArrowKey,
+		sendLiveKeys: s.sendLiveKeys,
+		sendLiveArrowKey: s.sendLiveArrowKey,
 		sendTextInput: s.sendTextInput,
 		scrollTerminal: s.scrollTerminal,
 		terminalPrefs: s.terminalPrefs,
@@ -229,8 +231,15 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 	useEffect(() => useTerminalLiveInputChoices.getState().load(), []);
 	const [submitting, setSubmitting] = useState(false);
 	const [uploading, setUploading] = useState(false);
-	const send = (data: string) => { void sendInput(terminalKey, data); };
-	const keyInput = useTerminalKeyInput({ send, sendArrow: key => sendArrowKey(terminalKey, key), resetKey: terminalKey });
+	// 打鍵（ライブ入力・キーの列）はアウトボックスへ積まない。つながっていなければ捨て、ライブ入力の入力欄は
+	// つながり直したときに空から作り直す（切断中の打鍵を再接続の後に別のプロンプトへ流さない。Q144 A）
+	const liveReady = useAppStore(s => s.connection === 'online' && s.pcOnline && s.sessionProtocolReady);
+	const [liveResetKey, setLiveResetKey] = useState(0);
+	const [liveResync] = useState(() => new LiveInputResync(() => setLiveResetKey(key => key + 1)));
+	useEffect(() => liveResync.setReady(liveReady), [liveResync, liveReady]);
+	const send = (data: string) => { void sendLiveKeys(terminalKey, data).then(accepted => liveResync.settle(accepted)); };
+	const sendArrow = (key: 'up' | 'down' | 'left' | 'right') => { void sendLiveArrowKey(terminalKey, key).then(accepted => liveResync.settle(accepted)); };
+	const keyInput = useTerminalKeyInput({ send, sendArrow, resetKey: terminalKey });
 
 	const onChangeInput = (next: string) => {
 		const accepted = keyInput.filterComposerText(input, next);
@@ -345,6 +354,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 			/>
 			<TerminalInputBar
 				live={live}
+				liveResetKey={liveResetKey}
 				input={input}
 				onChangeInput={onChangeInput}
 				onSubmit={() => { void submit(); }}
@@ -355,7 +365,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 				onAttachImage={() => { void attachImage(); }}
 				onLiveText={sendLiveText}
 				onLiveKey={data => send(data)}
-				onLiveArrow={key => sendArrowKey(terminalKey, key)}
+				onLiveArrow={sendArrow}
 			/>
 			<View style={[styles.bottom, { height: bottomInset }]} />
 			{viewer !== undefined ? (
