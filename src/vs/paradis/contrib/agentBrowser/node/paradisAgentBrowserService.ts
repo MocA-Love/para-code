@@ -35,7 +35,7 @@ import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOT
 // PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
 import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, IParadisSwitchProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, ParadisOpenProfileFailure, ParadisProfileManageFailure } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
 import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, ParadisAgentPageRequestFailure, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
-import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
+import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
@@ -143,6 +143,11 @@ interface IParadisPaneStatusEntry {
 	 * 鳴らさない。次に本物の hook で状態が書き換わると消える（書き換える側はこの項目を持ち越さない）。
 	 */
 	readonly quiet?: true;
+	/**
+	 * 許可待ち・質問中へ入れた hook の送り主を確かめられなかった（tmux のサーバー配下・WSL など）。
+	 * このときだけ、確かめられない解除の hook を受け付ける。書き換える側はこの項目を持ち越さない。
+	 */
+	readonly waitEntryUnverified?: true;
 }
 
 function isExactRecord(value: unknown): value is Record<string, unknown> {
@@ -2632,34 +2637,56 @@ export class ParadisAgentBrowserService extends Disposable {
 			// クエリの `host=` の名乗りでは変わらない。
 			// 相手（curl の 3 秒の待ち）が先に切れても、確かめと状態の更新は最後まで続ける（Windows では
 			// 確かめが遅く、承認の後の hook を落とすと許可待ちのまま残るため）。
-			const currentStatus = eventType ? this._paneStatuses.get(token)?.status : undefined;
-			if (currentStatus === 'permission' || currentStatus === 'question') {
+			const initialEntry = eventType ? this._paneStatuses.get(token) : undefined;
+			const initiallyInWait = initialEntry?.status === 'permission' || initialEntry?.status === 'question';
+			// 許可待ち・質問へ入れる hook も送り主を確かめ、確かめられたかを状態に記録する（解除の hook を
+			// 確かめずに受け付けてよいかは、入れた hook が確かめられなかったかで決める）。
+			const entersWait = eventType !== '' && paradisAgentHookEntersWait(eventType, hookMessage, toolName);
+			const initiallyChecksPendingRelease = !initiallyInWait && eventType !== '' && eventType !== 'TerminalExit'
+				&& this._unconfirmedReleaseTokens.has(token) && !this._unconfirmableTokens.has(token);
+			let callerUnverified: boolean | undefined;
+			if (initiallyInWait || entersWait || initiallyChecksPendingRelease) {
 				const caller = await this._classifyCaller(token, req.socket as Socket);
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
 					this._sendIngressRejected(res);
 					return;
 				}
-				if (caller === 'unverified') {
-					this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] agent-hook ignored while waiting for the user (caller not verified): ${eventType}`));
-					res.writeHead(200, { 'Content-Type': 'application/json' });
-					res.end(JSON.stringify({ ok: false, reason: 'caller not verified' }));
-					return;
+				callerUnverified = caller === 'unverified';
+			}
+			// 確かめている間に状態が変わっていることがある（本物の許可要求と偽の hook が競る）。決めるのは今の状態で。
+			// 確かめなかったときは間に await が無いので、最初に読んだ状態と同じ
+			const currentEntry = eventType ? this._paneStatuses.get(token) : undefined;
+			const inWait = currentEntry?.status === 'permission' || currentEntry?.status === 'question';
+			const checksPendingRelease = !inWait && eventType !== '' && eventType !== 'TerminalExit'
+				&& this._unconfirmedReleaseTokens.has(token) && !this._unconfirmableTokens.has(token);
+			if (inWait) {
+				if (callerUnverified !== false) {
+					// tmux のサーバー配下や WSL の中のエージェントは、いつまでも確かめを通れない。許可待ち・質問へ
+					// 入れる hook は捨てるが、解除の hook（ツールの完了・ターンの終了など）まで捨てると、承認しても
+					// 許可待ちのまま残る。入れた hook も確かめられなかった待ちに限って解除だけは受け付け、確かめ
+					// られないまま解いた印を付けて IDE 操作ツールの入力を断る（偽の hook で解いた状態へ送らせない）。
+					// 確かめられた hook で入った待ち（普通の手元のペイン）を確かめられない hook で解くのは偽装とみなす。
+					if (!paradisIsAgentHookReleaseEvent(eventType) || currentEntry?.waitEntryUnverified !== true) {
+						this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] agent-hook ignored while waiting for the user (caller not verified): ${eventType}`));
+						res.writeHead(200, { 'Content-Type': 'application/json' });
+						res.end(JSON.stringify({ ok: false, reason: 'caller not verified' }));
+						return;
+					}
+					this._unconfirmedReleaseTokens.add(token);
+					this._unconfirmableTokens.add(token);
+					this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] agent-hook released the wait without a verified caller: ${eventType}`));
+				} else {
+					this._unconfirmedReleaseTokens.delete(token);
+					this._unconfirmableTokens.delete(token);
 				}
-				this._unconfirmedReleaseTokens.delete(token);
-				this._unconfirmableTokens.delete(token);
-			} else if (eventType && eventType !== 'TerminalExit' && this._unconfirmedReleaseTokens.has(token) && !this._unconfirmableTokens.has(token)) {
+			} else if (checksPendingRelease) {
 				// transcript から許可待ちが解かれた後の印は、確かめた hook でだけ外す。確かめられない hook も
 				// 捨てずに処理する（tmux・WSL などでは確かめを通れないので、捨てると定期実行の見張りやモバイルの
 				// 会話が止まる）。印は IDE 操作ツールの Enter を断る条件にだけ使う。確かめられなかったペインは
 				// 次の許可待ちで確かめが通るまで問い合わせない（hook のたびに lsof を起こさない）
-				const caller = await this._classifyCaller(token, req.socket as Socket);
-				if (!this.isIngressLeaseCurrent(ingressLease)) {
-					this._sendIngressRejected(res);
-					return;
-				}
-				if (caller === 'unverified') {
+				if (callerUnverified === true) {
 					this._unconfirmableTokens.add(token);
-				} else {
+				} else if (callerUnverified === false) {
 					this._unconfirmedReleaseTokens.delete(token);
 				}
 			}
@@ -2706,8 +2733,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				if (eventType === 'TerminalExit') {
 					this._agentHookTokens.delete(token);
 					this._hookReportedTokens.delete(token);
-					this._unconfirmedReleaseTokens.delete(token);
-					this._unconfirmableTokens.delete(token);
+					// 確かめられないまま解いた印は、HTTP の TerminalExit では外さない（トークンを持つ誰でも送れるので、
+					// 偽の Stop → TerminalExit で印を消して Enter を通す経路になる）。外すのはウィンドウからの
+					// 端末の終了の知らせ（_cleanupTokenLocalState）と、確かめた hook だけ。
 				} else {
 					this._agentHookTokens.add(token);
 					this._hookReportedTokens.add(token);
@@ -2764,16 +2792,32 @@ export class ParadisAgentBrowserService extends Disposable {
 				normalized = 'permission';
 			}
 
+			// 所有権の分類を待つ間に、別の hook がペインを許可待ち・質問へ入れていることがある。確かめられて
+			// いない（または確かめていない）この hook では、その待ちを書き換えない（確かめられた待ちを
+			// 確かめられない側へ落とさない。入れた hook も確かめられなかった待ちの解除だけは通す）
+			const latest = this._paneStatuses.get(token);
+			if ((latest?.status === 'permission' || latest?.status === 'question')
+				&& (callerUnverified === undefined ? !inWait : callerUnverified && latest.waitEntryUnverified !== true)) {
+				this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] agent-hook left a newer wait alone (caller not verified): ${eventType}`));
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({ ok: false, reason: 'caller not verified' }));
+				return;
+			}
 			if (normalized === 'idle') {
 				this._paneStatuses.delete(token);
 			} else {
 				// cwd はhookが報告した最新値を保持する (今回のイベントに無ければ既知の値を維持)。
-				const knownCwd = cwd ?? this._paneStatuses.get(token)?.cwd;
+				const previous = this._paneStatuses.get(token);
+				const knownCwd = cwd ?? previous?.cwd;
+				// 待ちへ入れた hook の送り主を確かめられたか。今回確かめていなければ、続いている待ちの記録を引き継ぐ
+				const waitEntryUnverified = (normalized === 'permission' || normalized === 'question')
+					&& (callerUnverified ?? ((previous?.status === 'permission' || previous?.status === 'question') && previous.waitEntryUnverified === true));
 				this._paneStatuses.set(token, {
 					status: normalized,
 					changedAt: Date.now(),
 					...(knownCwd !== undefined ? { cwd: knownCwd } : {}),
 					...(backgroundCompletionFallback ? { backgroundCompletionFallback: true } : {}),
+					...(waitEntryUnverified ? { waitEntryUnverified: true } : {}),
 				});
 			}
 			this._runNonThrowingDiagnostic(() => this.logService.trace(`[ParadisAgentBrowser] agent-hook: ${eventType} -> ${normalized}`));

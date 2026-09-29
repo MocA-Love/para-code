@@ -17,6 +17,7 @@ import { IParadisMobileCanvasModel } from '../../../mobileCanvas/electron-browse
 import { IParadisTerminalScopeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { onDidChangeParadisHoveredPane, setParadisHoveredPaneInstanceId } from '../../browser/paradisPaneIndicator.js';
 import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
+import { IParadisAgentBrowserTabsService } from '../../electron-browser/paradisAgentBrowserTabsService.js';
 import { ParadisBindingDialog } from '../../electron-browser/paradisBindingDialog.js';
 import { ParadisBindingDialogDevicePollLease, ParadisBindingDialogPaneListResources, ParadisBindingDialogTabController } from '../../electron-browser/paradisBindingDialogResources.js';
 
@@ -139,6 +140,7 @@ suite('ParadisBindingDialogPaneListResources', () => {
 				beginPolling: () => toDisposable(() => { }),
 			}),
 			upcastPartial<IParadisTerminalScopeService>({ getStateKeyForInstance: () => undefined }),
+			upcastPartial<IParadisAgentBrowserTabsService>({ revokeApprovedProfileTab: () => { } }),
 		);
 		const hoverEvents: (number | undefined)[] = [];
 		const hoverListener = onDidChangeParadisHoveredPane(instanceId => hoverEvents.push(instanceId));
