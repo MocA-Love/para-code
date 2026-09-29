@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // ターミナルのプロンプト入力が非空のとき、↓キーで補完候補リスト(既存のterminal suggestウィジェット)を
-// 開けるようにする(Superset同等UX)。実装は5点のみで、upstreamファイルへのPARA-PATCHはゼロ:
+// 開けるようにする(Superset同等UX)。実装は5点(upstreamへのPARA-PATCHが要るのは 3 の絞り込みだけ):
 //  1. fork独自context key `para.terminalPromptNotEmpty` を per-instance の terminal contribution で
 //     promptInputModel から追従させる(ghost text は除外し、入力中(state===Input)かつフォアグラウンド
 //     コマンド実行中でない(executingCommand===undefined)ときのみ非空判定、詳細は
@@ -18,7 +18,9 @@
 //     (新規コマンドIDだと upstream の skip-shell リストへの PARA-PATCH が必要になる)。
 //     プロンプトが空のときは when 節が不成立になり、↓は従来どおりシェル履歴ナビとして機能する
 //  3. fork既定値として runOnEnter を 'always' に上書きし、候補の Enter 確定で即実行にする
-//     (terminal.integrated.suggest.enabled は upstream 既定が true のため上書き不要)
+//     (terminal.integrated.suggest.enabled は upstream 既定が true のため上書き不要)。
+//     'always' で即実行するのは Para Code の履歴の候補だけ。パス・フォルダなどほかの候補は入力欄に
+//     入れるだけにする(paradisTerminalSuggestRunOnEnter.ts、terminalSuggestAddon.ts の PARA-PATCH 1箇所)
 //  4. 候補リスト表示中は →キーを AcceptSelectedSuggestion に割り当てる(Superset の「→で選択候補の
 //     suffix 入力」相当)。AcceptSelectedSuggestion は DEFAULT_COMMANDS_TO_SKIP_SHELL 登録済みなので
 //     この when 成立時は → がシェルへ流れず、zsh-autosuggestions のゴースト確定と競合しない。
@@ -135,7 +137,8 @@ KeybindingsRegistry.registerKeybindingRule({
 	)
 });
 
-// Para Code の fork 既定値: 候補を Enter で確定したら即実行する(Superset の Enter=run と同等)。
+// Para Code の fork 既定値: 履歴の候補を Enter で確定したら即実行する(Superset の Enter=run と同等)。
+// パス・フォルダなどほかの候補は 'always' でも入力欄に入れるだけ(paradisResolveRunOnEnter)。
 // inlineSuggestion 'off' はシェルのゴーストテキストを候補リストへ取り込まない(役割分担の明確化)。
 // 設定の "default" レイヤーへの注入なので、ユーザーが settings.json で明示的に
 // 同キーを設定している場合はそちらが優先される。

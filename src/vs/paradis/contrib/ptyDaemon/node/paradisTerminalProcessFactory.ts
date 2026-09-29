@@ -31,6 +31,7 @@ import { IParadisTerminalOrigin, ParadisDaemonTerminalProcess } from './paradisD
 import { ParadisPtyDispatch } from './paradisPtyDispatch.js';
 import { paradisShouldStopBackgroundOnClose, paradisWithoutCloseCleanupMarker } from '../../terminalCloseCleanup/common/paradisTerminalCloseCleanup.js';
 import { ParadisCleaningTerminalProcess } from '../../terminalCloseCleanup/node/paradisCleaningTerminalProcess.js';
+import { paradisCloseCleanupQuitGate } from '../../terminalCloseCleanup/common/paradisTerminalCloseCleanupQuit.js';
 
 /** 引き取る相手。常駐が抱えている1本を名指しする。 */
 export interface IParadisAdoptTarget {
@@ -247,4 +248,14 @@ export async function paradisCreateTerminalProcess(
 	// 閉じたときに裏のプロセスを止める器（W2-32）。設定の印は env で届くので、読んだらシェルへは渡さない。
 	// 常駐側（上の分岐）は印を env に残したまま渡す。常駐の台帳に残り、引き取るときに読み戻せるようにするため。
 	return new ParadisCleaningTerminalProcess(paradisShouldStopBackgroundOnClose(env), shellLaunchConfig, cwd, cols, rows, paradisWithoutCloseCleanupMarker(env), executableEnv, options, logService, productService);
+}
+
+/**
+ * Para Code が終了中か（Q136）。`PtyService#paradisSetAppQuitting` から呼ぶ。
+ *
+ * 終了中に閉じられたターミナルは、裏のプロセスを止めない（`paradisTerminalCloseCleanupQuit.ts`）。
+ * ここを通すのは、`ptyService.ts` からの逆方向 import を常駐（このフォルダ）だけに留めるため。
+ */
+export function paradisSetAppQuitting(quitting: boolean): void {
+	paradisCloseCleanupQuitGate.set(quitting);
 }

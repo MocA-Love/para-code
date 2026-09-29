@@ -33,6 +33,8 @@ export interface ISetTerminalLayoutInfoArgs {
 	workspaceId: string;
 	tabs: ITerminalTabLayoutInfoById[];
 	background: number[] | null;
+	// PARA-PATCH: editor terminals the window holds outside the panel layout, see PtyService#_paradisLayoutAccountsForHeldTerminals
+	paradisEditorTerminals?: number[];
 }
 
 export interface IGetTerminalLayoutInfoArgs {

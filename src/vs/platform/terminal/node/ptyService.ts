@@ -28,7 +28,7 @@ import { formatMessageForTerminal } from '../common/terminalStrings.js';
 import { IPtyHostProcessReplayEvent } from '../common/capabilities/capabilities.js';
 // PARA-PATCH: pty daemon support; replaces the direct TerminalProcess import (see paradisTerminalProcessFactory.ts)
 import { IParadisTerminalProcessLike } from '../../../paradis/contrib/ptyDaemon/common/paradisTerminalProcessLike.js';
-import { IParadisAdoptTarget, paradisAdoptionSettled, paradisCreateTerminalProcess, paradisHandleOf } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
+import { IParadisAdoptTarget, paradisAdoptionSettled, paradisCreateTerminalProcess, paradisHandleOf, paradisSetAppQuitting } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
 import { paradisRememberLayout } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalLayoutStore.js';
 import { IProductService } from '../../product/common/productService.js';
 import { join } from '../../../base/common/path.js';
@@ -592,6 +592,12 @@ export class PtyService extends Disposable implements IPtyService {
 		return pty ? pty.start() : { message: `Could not find pty with id "${id}"` };
 	}
 
+	// PARA-PATCH: the app is quitting (or no longer is); closing terminals then leaves their background processes alone
+	@traceRpc
+	async paradisSetAppQuitting(quitting: boolean): Promise<void> {
+		paradisSetAppQuitting(quitting);
+	}
+
 	@traceRpc
 	async shutdown(id: number, immediate: boolean): Promise<void> {
 		// Don't throw if the pty is already shutdown
@@ -827,6 +833,12 @@ export class PtyService extends Disposable implements IPtyService {
 			}
 		}
 		for (const id of args.background ?? []) {
+			held.delete(id);
+		}
+		// Editor terminals never appear in the layout (their tabs restore through the editor), so a
+		// window naming them is accounting for them, not leaving them out. The ids are exact: a window
+		// that failed to take a held terminal back names the shell it started instead, not the held one.
+		for (const id of args.paradisEditorTerminals ?? []) {
 			held.delete(id);
 		}
 		return held.size === 0;
