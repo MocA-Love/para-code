@@ -31,6 +31,11 @@ interface SessionViewOverrideStore {
 /** 読み込み前に行われた変更（読み込んだ値に重ねる）。 */
 let pendingEdits: Edit[] = [];
 let loadStarted = false;
+/**
+ * 保存値を読めたか。読めていない間（Keychain がまだ開いていない起動直後など）は、変更を保存せずに
+ * 積んでおき、次の変更のときに読み直す。読めないまま既定値で保存すると、保存済みの上書きを消してしまう。
+ */
+let persistReady = false;
 
 function save(overrides: SessionViewOverrides): void {
 	secureKeyStore.setItem(STORAGE_KEY, JSON.stringify(overrides)).catch((err: unknown) => {
@@ -45,10 +50,12 @@ export const useSessionViewOverrides = create<SessionViewOverrideStore>((set, ge
 		const edit: Edit = overrides => withSessionViewOverride(overrides, key, view, defaultView);
 		const next = edit(get().overrides);
 		set({ overrides: next });
-		if (get().loaded) {
+		if (persistReady) {
 			save(next);
 		} else {
 			pendingEdits.push(edit);
+			// 前の読み込みが失敗していれば読み直す（読めたら積んだ変更を重ねて保存する）。
+			ensureSessionViewOverridesLoaded();
 		}
 	},
 }));
@@ -67,11 +74,8 @@ export function ensureSessionViewOverridesLoaded(): void {
 				return {};
 			}
 		})
-		.catch((err: unknown): SessionViewOverrides => {
-			console.warn('[sessionView] failed to load', err);
-			return {};
-		})
 		.then(stored => {
+			persistReady = true;
 			const edits = pendingEdits;
 			pendingEdits = [];
 			const next = edits.reduce((overrides, edit) => edit(overrides), stored);
@@ -79,5 +83,10 @@ export function ensureSessionViewOverridesLoaded(): void {
 			if (edits.length > 0) {
 				save(next);
 			}
+		}, (err: unknown) => {
+			// 読めなかった: 画面は既定のまま進める（loaded）が、保存はしない。次の変更で読み直す。
+			console.warn('[sessionView] failed to load', err);
+			loadStarted = false;
+			useSessionViewOverrides.setState({ loaded: true });
 		});
 }

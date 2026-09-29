@@ -87,6 +87,9 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 		const generation = ++generationRef.current;
 		setLoading(true);
 		setError(undefined);
+		// 前のスペース（または読み直す前）の保存の応答はもう画面へ反映しない（`current()` が偽になる）ので、
+		// その応答で外すはずだった「保存中」もここで外す（外さないと、閉じるまでメモを操作できない）。
+		setBusy(false);
 		versionRef.current = { wsId, version: undefined };
 		useAppStore.getState().noteGet(wsId)
 			.then(result => {
