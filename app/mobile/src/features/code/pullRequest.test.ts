@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { canFixChecks, checkSummaryText, mergeConfirmMessage, orderedChecks, parsePrView, prMergeButton, prUnavailableText, type PrDetail } from './pullRequest.js';
+import { activePrQueued, canFixChecks, checkSummaryText, mergeConfirmMessage, orderedChecks, parsePrMergeReply, parsePrView, prMergeButton, prMergeToastText, prUnavailableText, type PrDetail } from './pullRequest.js';
 
 const HEAD = 'f'.repeat(40);
 
@@ -57,6 +57,32 @@ describe('prMergeButton', () => {
 		expect(prMergeButton(pr({ checks: [{ name: 'a', bucket: 'fail' }] })).reason).toContain('PC でマージしてください');
 		expect(prMergeButton(pr({ checks: [{ name: 'a', bucket: 'pending' }] })).reason).toContain('実行中');
 		expect(prMergeButton(pr({ state: 'merged' })).visible).toBe(false);
+	});
+
+	it('マージキューに入れた PR は、同じ head のまま開いている間だけ押せず、キューに入れたことを出す', () => {
+		const passing = pr({ checks: [{ name: 'a', bucket: 'pass' }] });
+		const queued = { number: passing.number, headSha: passing.headSha, at: 1_000 };
+		expect([
+			prMergeButton(passing, queued),
+			prMergeButton({ ...passing, headSha: 'a'.repeat(40) }, queued),
+			prMergeButton({ ...passing, state: 'merged' }, queued),
+			// 10 分を過ぎたら印を外す（キューから外された PR をマージできるように）
+			prMergeButton(passing, activePrQueued(queued, 1_000 + 10 * 60_000)),
+		]).toEqual([
+			{ visible: true, reason: 'マージキューに入れました。GitHub がマージするとマージ済みに変わります。' },
+			{ visible: true, reason: undefined },
+			{ visible: false, reason: undefined },
+			{ visible: true, reason: undefined },
+		]);
+		expect(activePrQueued(queued, 1_000 + 10 * 60_000 - 1)).toBe(queued);
+	});
+
+	it('マージの応答を読み、キューに入れたときは「マージキューに入れました」と出す（queued を返さない古い PC はマージした扱い）', () => {
+		expect([
+			prMergeToastText(4, parsePrMergeReply({ queued: true })),
+			prMergeToastText(4, parsePrMergeReply({})),
+			prMergeToastText(4, parsePrMergeReply(undefined)),
+		]).toEqual(['#4 をマージキューに入れました', '#4 をマージしました', '#4 をマージしました']);
 	});
 
 	it('確かめのシートに題名・ブランチ・チェック・固定するコミットを並べる', () => {

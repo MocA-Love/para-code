@@ -1273,6 +1273,8 @@ interface PersistedTerminalOperation {
 }
 
 const MAX_TERMINAL_OPERATION_OUTBOX = 256;
+/** 矢印キーの生のシーケンス（PC がキーの名前を読めないときの予備。端末のモードに合わせるのは PC 側）。 */
+const ARROW_KEY_SEQUENCES = { up: '\u001b[A', down: '\u001b[B', right: '\u001b[C', left: '\u001b[D' } as const;
 
 export interface StoreState {
 	connection: ConnectionState;
@@ -2248,8 +2250,25 @@ export class MobileController {
 	 * data には同じ操作の生シーケンスも併載する。
 	 */
 	sendArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left'): void {
-		const fallback = { up: '\u001b[A', down: '\u001b[B', right: '\u001b[C', left: '\u001b[D' }[key];
-		void this.sendTerm(terminalKey, { t: 'input', data: fallback, key });
+		void this.sendTerm(terminalKey, { t: 'input', data: ARROW_KEY_SEQUENCES[key], key });
+	}
+
+	/**
+	 * ターミナルへ打鍵をそのまま送る（ライブ入力の1打鍵・キーの列の Esc や Ctrl など。Q144 A）。
+	 *
+	 * durable な操作にはしない。アウトボックスへ積むと、切断中の打鍵が再接続のときにまとめて再送され、そのときの
+	 * 別のプロンプトへ流れ込む（Enter まで押していると古い入力が実行される）。つながっていなければ送らずに false を
+	 * 返す（届かなかった打鍵は捨てる）。呼び出し側は false のとき入力欄を作り直し、PC に届いていない文字を前提に
+	 * 続きを写さない。送るのは durable な操作と同じ列なので、先に積んだ操作を追い越さない。
+	 * `sendLiveInput`（エージェントの操作のキー列）と違い、durable な操作が保存を待っている間も捨てずに列で待つ。
+	 */
+	sendLiveKeys(terminalKey: string, data: string): Promise<boolean> {
+		return this.sendTerm(terminalKey, { t: 'input', data }, false);
+	}
+
+	/** 矢印キーを {@link sendLiveKeys} と同じく durable にせずに送る（届かなければ false）。 */
+	sendLiveArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left'): Promise<boolean> {
+		return this.sendTerm(terminalKey, { t: 'input', data: ARROW_KEY_SEQUENCES[key], key }, false);
 	}
 
 	/**

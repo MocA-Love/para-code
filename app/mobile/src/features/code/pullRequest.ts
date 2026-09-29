@@ -135,12 +135,48 @@ export function canFixChecks(pr: PrDetail): boolean {
 	return pr.state === 'open' || pr.state === 'draft' ? paradisFailedPullRequestChecks(pr.checks).length > 0 : false;
 }
 
-/** マージのボタン。`reason` があれば押せない（CI の失敗・実行中は「PC でマージしてください」）。 */
-export function prMergeButton(pr: PrDetail): { readonly visible: boolean; readonly reason: string | undefined } {
+/** このスマホからマージキューに入れた PR（番号と、入れたときの head と時刻）。 */
+export interface PrQueued {
+	readonly number: number;
+	readonly headSha: string;
+	readonly at: number;
+}
+
+/**
+ * マージキューに入れた印を持ち続ける時間（ms）。キューから外された PR をいつまでもマージできなくしないよう、
+ * この時間が過ぎたら（または手で読み直したら）印を外す。
+ */
+export const PR_QUEUED_HOLD_MS = 10 * 60_000;
+
+/** いまも効いているマージキューの印（時間が過ぎていれば undefined）。 */
+export function activePrQueued(queued: PrQueued | undefined, now: number): PrQueued | undefined {
+	return queued !== undefined && now - queued.at < PR_QUEUED_HOLD_MS ? queued : undefined;
+}
+
+/**
+ * マージのボタン。`reason` があれば押せない（CI の失敗・実行中は「PC でマージしてください」）。
+ * マージキューに入れた PR は、同じ head のまま開いている間は押せない（GitHub がマージするのを待つ）。
+ */
+export function prMergeButton(pr: PrDetail, queued?: PrQueued): { readonly visible: boolean; readonly reason: string | undefined } {
 	if (pr.state === 'merged' || pr.state === 'closed') {
 		return { visible: false, reason: undefined };
 	}
+	if (queued !== undefined && queued.number === pr.number && queued.headSha === pr.headSha) {
+		return { visible: true, reason: 'マージキューに入れました。GitHub がマージするとマージ済みに変わります。' };
+	}
 	return { visible: true, reason: paradisPullRequestMergeBlock(pr)?.message };
+}
+
+/** マージの結果。`queued`（Q145）を返さない古い PC はマージしたものとして扱う。 */
+export type PrMergeOutcome = 'merged' | 'queued';
+
+export function parsePrMergeReply(reply: { readonly queued?: unknown } | undefined): PrMergeOutcome {
+	return reply?.queued === true ? 'queued' : 'merged';
+}
+
+/** マージの後のお知らせ。 */
+export function prMergeToastText(number: number, outcome: PrMergeOutcome): string {
+	return outcome === 'queued' ? `#${number} をマージキューに入れました` : `#${number} をマージしました`;
 }
 
 /** マージの確かめのシートの本文（題名・ブランチ・チェックの結果・固定するコミット）。 */

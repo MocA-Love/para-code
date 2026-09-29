@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { raceTimeout } from '../../../../base/common/async.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
@@ -18,6 +19,7 @@ import {
 	ParadisPullRequestLookup,
 	paradisFailedPullRequestChecks,
 	paradisPullRequestMergeBlock,
+	paradisPullRequestMergeOutcome,
 } from '../common/paradisMobilePullRequest.js';
 import { ParadisMobileSendGate, paradisAgentPromptServices, paradisDeliverAgentPrompt, paradisParseAgentPromptTarget } from './paradisMobileAgentPromptDelivery.js';
 import { IParadisMobileRequest, IParadisMobileRequestContext, registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
@@ -31,8 +33,12 @@ import { IParadisMobileRequest, IParadisMobileRequestContext, registerParadisMob
  * - `prFixChecks { ws, number, target: 'auto' | 'new' }`: PC が PR を取り直し、失敗したチェックと、失敗した Actions の
  *   ジョブのログの末尾（3 ジョブまで、各 200 行まで）から依頼文を組み立てて、そのスペースのエージェントへ送る
  * - `prMerge { ws, number, headSha }`: PC が取り直した状態で、スマホが見た head と同じで、CI が通っていて、
- *   止める理由が無いときだけ `gh pr merge --match-head-commit` でマージする（方式はリポジトリの既定）
+ *   止める理由が無いときだけ `gh pr merge --match-head-commit` でマージする（方式はリポジトリの既定）。
+ *   マージの後に PR を取り直し、まだ MERGED でなければ（マージキュー）`merged: false, queued: true` を返す
  */
+
+/** マージの後に PR を取り直すのを待つ時間（ms）。 */
+const POST_MERGE_LOOKUP_TIMEOUT_MS = 10_000;
 
 /** スペースごとのマージ・送信の最中の印。 */
 const gate = new ParadisMobileSendGate();
@@ -198,7 +204,11 @@ registerParadisMobileRequestHandler('scm', 'prMerge', {
 			}
 			try {
 				const result = await host.merge({ repo: detail.repo, number: detail.number, headSha });
-				context.reply({ t: 'prMerge', ws, merged: true, method: result.method });
+				// gh はマージキューへ入れただけでも成功を返す。取り直して MERGED でなければ「キューに入れた」と返す
+				// （`queued` は後から足した項目。古いアプリは読まずに、これまでどおり「マージしました」と出す）
+				// 取り直しは待ちすぎない（スマホは 130 秒で諦める）。時間切れは「キューに入れた」として返す
+				const after = await raceTimeout(host.lookup().catch(() => undefined), POST_MERGE_LOOKUP_TIMEOUT_MS);
+				context.reply({ t: 'prMerge', ws, ...paradisPullRequestMergeOutcome(after, detail.number), method: result.method });
 			} catch (error) {
 				context.reply({ error: `マージできませんでした: ${describeLookupError(error)}`, code: 'merge-failed' });
 			}

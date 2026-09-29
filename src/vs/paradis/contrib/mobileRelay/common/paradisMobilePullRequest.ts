@@ -274,6 +274,17 @@ export function paradisPullRequestMergeBlock(detail: IParadisPullRequestDetail):
 	return undefined;
 }
 
+/**
+ * `gh pr merge` が成功した後に取り直した PR から、`prMerge` の応答の `merged` / `queued` を決める（Q145 A）。
+ * マージキューのあるリポジトリでは、gh はキューへ入れただけで成功を返す。取り直した PR が MERGED のときだけ
+ * マージしたと返し、それ以外（まだ開いている・取り直せなかった・別の PR になった）は「キューに入れた」と返す
+ * （マージ済みを「キューに入れた」と言っても、スマホは続けて PR を取り直すので状態は正しく出る）。
+ * `queued` は後から足した任意項目で、古いアプリは読まずに「マージしました」と出す。
+ */
+export function paradisPullRequestMergeOutcome(after: ParadisPullRequestLookup | undefined, number: number): { readonly merged: true } | { readonly merged: false; readonly queued: true } {
+	return after?.kind === 'ok' && after.detail.number === number && after.detail.state === 'merged' ? { merged: true } : { merged: false, queued: true };
+}
+
 /** 失敗したチェック（「直してもらう」の対象）。ログを取れる Actions のジョブを先に並べる。 */
 export function paradisFailedPullRequestChecks(checks: readonly IParadisPullRequestCheck[]): IParadisPullRequestCheck[] {
 	const failed = checks.filter(check => check.bucket === 'fail');

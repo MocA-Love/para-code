@@ -41,6 +41,7 @@ class FakeGit {
 }
 
 const HEAD = 'c'.repeat(40);
+const TREE = 'e'.repeat(40);
 
 suite('ParadisMobileScmSyncRequests', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -155,7 +156,8 @@ suite('ParadisMobileScmSyncRequests', () => {
 	test('restores the staged state when the commit fails, returns a redacted summary, and hands it to the default agent', async () => {
 		const git = new FakeGit(args => args[0] === 'commit' ? { code: 1, stderr: 'husky - pre-commit hook exited with code 1\nAPI_TOKEN=supersecretvalue123\n✖ eslint found 2 problems' }
 			: args[0] === 'rev-parse' ? { stdout: args.includes('--verify') ? `${HEAD}\n` : 'feature\n' }
-				: args[0] === 'status' ? { stdout: ' M a.ts\n?? b.ts\n' } : undefined);
+				: args[0] === 'write-tree' ? { stdout: `${TREE}\n` }
+					: args[0] === 'status' ? { stdout: ' M a.ts\n?? b.ts\n' } : undefined);
 		const index = new FakeIndexChannel();
 		const launched: { agentId: string; stateKey: string; prompt?: string }[] = [];
 		const services = new Map<unknown, unknown>([
@@ -176,7 +178,7 @@ suite('ParadisMobileScmSyncRequests', () => {
 		await flush();
 
 		assert.deepStrictEqual({
-			sequence: git.calls.slice(0, 4),
+			sequence: git.calls.slice(0, 6),
 			index: index.calls,
 			ok: reply(sent, '1')?.ok,
 			kind: failure.kind,
@@ -186,7 +188,7 @@ suite('ParadisMobileScmSyncRequests', () => {
 			fixed: reply(sent, '3'),
 			launched: launched.map(request => ({ agentId: request.agentId, stateKey: request.stateKey, hasOutput: request.prompt?.includes('eslint found 2 problems'), leaked: request.prompt?.includes('supersecretvalue123') })),
 		}, {
-			sequence: ['rev-parse --verify --quiet HEAD', 'add -A', 'commit -m feat: x', 'rev-parse --verify --quiet HEAD'],
+			sequence: ['rev-parse --verify --quiet HEAD', 'add -A', 'write-tree', 'commit -m feat: x', 'rev-parse --verify --quiet HEAD', 'write-tree'],
 			index: ['backupIndex', 'restoreIndex token-1'],
 			ok: false,
 			kind: 'lint',
@@ -232,7 +234,7 @@ suite('ParadisMobileScmSyncRequests', () => {
 			if (args[0] === 'rev-parse' && args.includes('--verify')) {
 				return headFails ? { code: 1, stderr: 'ParadisWorktreeGit: timed out after 30s' } : { stdout: `${head}\n` };
 			}
-			return args[0] === 'log' ? { stdout: headMessage } : undefined;
+			return args[0] === 'log' ? { stdout: headMessage } : args[0] === 'write-tree' ? { stdout: `${TREE}\n` } : undefined;
 		});
 		const index = new FakeIndexChannel();
 		const refreshed: string[] = [];
@@ -282,6 +284,58 @@ suite('ParadisMobileScmSyncRequests', () => {
 			indexCalls: ['backupIndex', 'discardIndexBackup token-1', 'backupIndex', 'backupIndex', 'restoreIndex token-1', 'backupIndex'],
 			refreshed: ['refresh'],
 			commits: 3,
+		});
+	});
+
+	test('does not restore the staged state when the index changed after `git add -A` or cannot be read, and says why', async () => {
+		// フックが動いている間に PC で別のファイルがステージされた（`add -A` の直後と失敗の後でツリーが違う）
+		let trees = [TREE, 'f'.repeat(40)];
+		let addThrows = false;
+		const git = new FakeGit(args => {
+			if (args[0] === 'add' && addThrows) {
+				throw new Error('ParadisWorktreeGit: channel closed');
+			}
+			return args[0] === 'commit' ? { code: 1, stderr: 'husky - pre-commit hook exited with code 1' }
+				: args[0] === 'rev-parse' ? { stdout: args.includes('--verify') ? `${HEAD}\n` : 'feature\n' }
+					: args[0] === 'write-tree' ? (trees.length > 0 ? { stdout: `${trees.shift()}\n` } : { code: 128, stderr: 'fatal: git-write-tree: error building trees' })
+						: undefined;
+		});
+		const index = new FakeIndexChannel();
+		const sent: IReply[] = [];
+		const host = createHost(git, sent, withIndexChannel(new Map(), index));
+
+		dispatch(host, { t: 'commitSafe', id: 'changed', message: 'feat', all: true });
+		await flush();
+		// `add -A` の直後のツリーを読めなかった
+		trees = [];
+		dispatch(host, { t: 'commitSafe', id: 'unreadable', message: 'feat', all: true });
+		await flush();
+		// 変わっていなければ、これまでどおり戻す
+		trees = [TREE, TREE];
+		dispatch(host, { t: 'commitSafe', id: 'same', message: 'feat', all: true });
+		await flush();
+		// `add -A` が例外で終わった（待ちが無いので、これまでどおり戻す）
+		addThrows = true;
+		dispatch(host, { t: 'commitSafe', id: 'addThrew', message: 'feat', all: true });
+		await flush();
+
+		const failureOf = (id: string) => {
+			const failure = reply(sent, id)?.failure as { restored: boolean; restoreFailed?: boolean; indexChanged?: boolean };
+			return { restored: failure.restored, restoreFailed: failure.restoreFailed, indexChanged: failure.indexChanged };
+		};
+		assert.deepStrictEqual({
+			changed: failureOf('changed'),
+			unreadable: failureOf('unreadable'),
+			same: failureOf('same'),
+			addThrew: failureOf('addThrew'),
+			indexCalls: index.calls,
+		}, {
+			changed: { restored: false, restoreFailed: true, indexChanged: true },
+			unreadable: { restored: false, restoreFailed: true, indexChanged: true },
+			same: { restored: true, restoreFailed: undefined, indexChanged: undefined },
+			addThrew: { restored: true, restoreFailed: undefined, indexChanged: undefined },
+			// 変わっていた回と読めなかった回は restoreIndex を呼ばない（控えは git channel が 10 分後に片付ける）
+			indexCalls: ['backupIndex', 'backupIndex', 'backupIndex', 'restoreIndex token-1', 'backupIndex', 'restoreIndex token-1'],
 		});
 	});
 

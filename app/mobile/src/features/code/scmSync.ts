@@ -64,6 +64,22 @@ export function scmPrimaryAction(input: ScmPrimaryInput): ScmPrimaryAction {
 	return { ...commit, kind: 'commit' };
 }
 
+/** プッシュ・ブランチの公開の確かめのシート（Q143 A。外へ出す操作なので 1 タップでは送らない）。 */
+export interface ScmPushConfirm {
+	readonly title: string;
+	readonly message: string;
+	readonly confirmLabel: string;
+}
+
+export function scmPushConfirm(sync: IParadisMobileBranchSync | undefined, branch: string | undefined): ScmPushConfirm {
+	const name = branch !== undefined && branch.length > 0 ? `「${branch}」` : 'このブランチ';
+	if (sync?.upstream === undefined) {
+		return { title: 'ブランチを公開しますか？', message: `${name}をリモートに公開し、上流に設定します。`, confirmLabel: '公開' };
+	}
+	const count = sync.ahead !== undefined && sync.ahead > 0 ? `のコミット ${sync.ahead} 件` : '';
+	return { title: 'プッシュしますか？', message: `${name}${count}を ${sync.upstream} へプッシュします。強制プッシュはしません。`, confirmLabel: 'プッシュ' };
+}
+
 /** ブランチのカードに出す同期の状態と、並べる操作。 */
 export interface ScmSyncSummary {
 	/** 「origin/main ↑2 ↓1」のような一行（上流が無ければ「まだ公開していません」）。 */
@@ -138,7 +154,9 @@ export function commitFailureView(failure: IParadisMobileCommitFailure): CommitF
 		title: failure.summary,
 		output: failure.output,
 		fixable: paradisMobileCommitFailureIsFixable(failure.kind),
-		note: failure.restoreFailed === true ? 'ステージを戻せませんでした。PC で確かめてください。' : failure.restored ? 'ステージの状態はコミットの前に戻しました。' : undefined,
+		note: failure.indexChanged === true
+			? 'コミットの途中で PC のステージが変わったため、ステージは戻していません。PC で確かめてください。'
+			: failure.restoreFailed === true ? 'ステージを戻せませんでした。PC で確かめてください。' : failure.restored ? 'ステージの状態はコミットの前に戻しました。' : undefined,
 	};
 }
 
@@ -150,7 +168,7 @@ export function parseCommitFailure(value: unknown): IParadisMobileCommitFailure 
 	}
 	const kinds = ['hook', 'lint', 'nothing', 'identity', 'conflict', 'timeout', 'other'] as const;
 	const kind = kinds.find(candidate => candidate === failure.kind) ?? 'other';
-	return { id: failure.id, kind, summary: failure.summary, output: failure.output, restored: failure.restored === true, ...(failure.restoreFailed === true ? { restoreFailed: true } : {}) };
+	return { id: failure.id, kind, summary: failure.summary, output: failure.output, restored: failure.restored === true, ...(failure.restoreFailed === true ? { restoreFailed: true } : {}), ...(failure.indexChanged === true ? { indexChanged: true } : {}) };
 }
 
 /** エージェントへ送った結果（`commitFix` / `prFixChecks` の応答）。 */
