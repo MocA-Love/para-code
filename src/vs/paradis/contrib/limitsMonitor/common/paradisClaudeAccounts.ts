@@ -13,9 +13,16 @@
 // このチャネルは手元の shared process に聞く。切り替えるのは「この PC」の Claude のログインで、
 // 接続先の Claude のログインには触らない。
 
-import { IParadisLimitsProviderSnapshot } from './paradisLimitsMonitor.js';
+import { IParadisLimitsAccount, IParadisLimitsProviderSnapshot, IParadisLimitsRemoteHost } from './paradisLimitsMonitor.js';
 
 export const PARADIS_CLAUDE_ACCOUNTS_CHANNEL = 'paradisClaudeAccounts';
+
+/**
+ * SSH の接続先の Claude のログインの使用量を聞くコマンド。チャネルは Codex と同じ
+ * `PARADIS_LIMITS_MONITOR_CHANNEL`（REH に生えている方）で、REH だけが答える（shared process には無い）。
+ * 引数は {@link IParadisClaudeStateRequest}、戻り値は {@link IParadisClaudeAccountsState}（アカウントは常に1件）。
+ */
+export const PARADIS_CLAUDE_HOST_STATE_COMMAND = 'getClaudeHostState';
 
 export interface IParadisClaudeAccountsState {
 	readonly claude: IParadisLimitsProviderSnapshot;
@@ -104,3 +111,28 @@ export type ParadisClaudeSetupErrorCode =
 	| 'not_found'
 	| 'keychain_unavailable'
 	| 'unsupported';
+
+/** 接続先のログインのカードに要らない項目（手元の切り替え・登録に使うもの）を落とす。 */
+function paradisClaudeHostAccount(account: IParadisLimitsAccount): IParadisLimitsAccount {
+	const { active: _active, managed: _managed, registrable: _registrable, ...rest } = account;
+	return rest;
+}
+
+/**
+ * SSH のウィンドウで出す Claude の状態を組み立てる（Q131 案B: 接続先のログインだけを出す）。
+ *
+ * 接続先から届いた状態に接続先の印（`remoteHost`）を付け、手元のアカウントの操作に使う項目
+ * （使用中・登録済み・登録できる、claude-swap の案内、切り替え中）は落とす。接続先に聞けなかったときは
+ * `state` を undefined にして、`sourceError` に理由を入れる。
+ */
+export function paradisClaudeHostAccountsState(state: IParadisClaudeAccountsState | undefined, remoteHost: IParadisLimitsRemoteHost, sourceError?: string): IParadisClaudeAccountsState {
+	if (!state) {
+		return { claude: { accounts: [], sourceError, remoteHost }, switching: false };
+	}
+	const claude: IParadisLimitsProviderSnapshot = {
+		accounts: state.claude.accounts.map(paradisClaudeHostAccount),
+		...(state.claude.sourceError !== undefined ? { sourceError: state.claude.sourceError } : {}),
+		remoteHost,
+	};
+	return { claude, ...(state.oldestFetchedAt !== undefined ? { oldestFetchedAt: state.oldestFetchedAt } : {}), switching: false };
+}

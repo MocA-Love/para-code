@@ -8,9 +8,10 @@
 
 // AIリミットモニターのshared processバックエンド（Codex の分）。
 //
-// Claude の分は paradisClaudeAccountService.ts（別チャネル、常に手元の shared process）が持つ。
-// 以前は claude-swap (cswap) を呼んでいたが撤去した。このチャネルの getSnapshot は Claude を
-// 空で返し、レンダラー側のクライアントが Claude のチャネルの結果を差し込む。
+// Claude の分は、手元のウィンドウでは paradisClaudeAccountService.ts（別チャネル、手元の shared process）が
+// 持つ。以前は claude-swap (cswap) を呼んでいたが撤去した。このチャネルの getSnapshot は Claude を
+// 空で返し、レンダラー側のクライアントが Claude の結果を差し込む。SSH のウィンドウでは、REH に生やした
+// このチャネルの getClaudeHostState（paradisClaudeHostUsage.ts、読み取り専用）が接続先のログインの分を返す。
 //
 // データ取得(getSnapshot):
 //   - Codex: ~/.codex / ~/.codex-* 各ホームについて、Orca（codex-fetcher.ts）と同じく
@@ -56,6 +57,9 @@ import {
 	ParadisLimitsDuplicateDecision,
 	paradisNormalizeCodexLimitWindows
 } from '../common/paradisLimitsMonitor.js';
+import { IParadisClaudeStateRequest, PARADIS_CLAUDE_HOST_STATE_COMMAND } from '../common/paradisClaudeAccounts.js';
+import { ParadisClaudeHostUsage } from './paradisClaudeHostUsage.js';
+import { ParadisClaudeOAuthClient } from './paradisClaudeOAuthClient.js';
 
 /**
  * スナップショットのTTL。ウィジェット表示中(30秒ポーリング)・非表示中(120秒ポーリング)の
@@ -1003,7 +1007,11 @@ export class ParadisLimitsMonitorService {
 // 接続先（REH）へも同じチャネルを生やすため context は型引数にしておく（中身では使わない）。
 export class ParadisLimitsMonitorChannel<TContext = string> implements IServerChannel<TContext> {
 
-	constructor(private readonly service: ParadisLimitsMonitorService) { }
+	/**
+	 * @param claudeHost 接続先（REH）の Claude のログインの使用量（読み取り専用）。REH にだけ渡す。
+	 * shared process では渡さず、{@link PARADIS_CLAUDE_HOST_STATE_COMMAND} は「無い」と答える。
+	 */
+	constructor(private readonly service: ParadisLimitsMonitorService, private readonly claudeHost?: ParadisClaudeHostUsage) { }
 
 	listen<T>(_ctx: TContext, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
@@ -1022,6 +1030,12 @@ export class ParadisLimitsMonitorChannel<TContext = string> implements IServerCh
 			case 'resolveCodexDuplicate': return this.service.resolveCodexDuplicate(String(args[0]), args[1] as ParadisLimitsDuplicateDecision) as Promise<T>;
 			case 'getSetupState': return Promise.resolve(this.service.getSetupState(String(args[0]))) as Promise<T>;
 			case 'cancelSetup': return Promise.resolve(this.service.cancelSetup(String(args[0]))) as Promise<T>;
+			case PARADIS_CLAUDE_HOST_STATE_COMMAND:
+				if (this.claudeHost) {
+					const request = (args[0] ?? {}) as IParadisClaudeStateRequest;
+					return this.claudeHost.getState({ refresh: request.refresh === true, passive: request.passive === true }) as Promise<T>;
+				}
+				throw new Error(`Method not found: ${command}`);
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
@@ -1031,10 +1045,21 @@ export class ParadisLimitsMonitorChannel<TContext = string> implements IServerCh
 /**
  * REH (接続先) 側の登録。利用上限は接続先の認証情報から読むので、繋いでいる間は接続先に聞く。
  * 設定と起動引数は渡さない（どちらも省略可で、シェル環境の解決だけに使う）。
+ *
+ * Claude は、接続先の Claude Code がいまログインしているアカウントの使用量だけを読み取り専用で答える
+ * （{@link ParadisClaudeHostUsage}。トークンの更新もファイルへの書き込みもしない）。`CLAUDE_CONFIG_DIR` は
+ * この REH のプロセスの環境にあるときだけ使う。
  */
 export function registerParadisLimitsMonitorForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
 	const service = new ParadisLimitsMonitorService(logService);
-	server.registerChannel(PARADIS_LIMITS_MONITOR_CHANNEL, new ParadisLimitsMonitorChannel<TContext>(service));
+	const claudeHost = new ParadisClaudeHostUsage({
+		homedir: os.homedir(),
+		platform: process.platform,
+		configDir: process.env['CLAUDE_CONFIG_DIR'],
+		oauth: new ParadisClaudeOAuthClient(),
+		logService,
+	});
+	server.registerChannel(PARADIS_LIMITS_MONITOR_CHANNEL, new ParadisLimitsMonitorChannel<TContext>(service, claudeHost));
 	return { dispose: () => service.dispose() };
 }
 
