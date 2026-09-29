@@ -16,7 +16,7 @@ import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
-import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisSafeErrorName, reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisCodexThreadPromptRequest,
 	IParadisCodexThreadPromptResult,
@@ -143,6 +143,9 @@ async function readFirstUserPrompt(codexHome: string, rolloutPath: string, limit
 /** Reads Codex thread metadata without starting or mutating Codex. */
 export class ParadisCodexTerminalTitleService {
 
+	/** Failures already reported, by kind. The same one recurs on every poll (see findThreadPromptInHome). */
+	private readonly reportedFailures = new Set<string>();
+
 	constructor(
 		private readonly logService: ILogService,
 		// 省略時は Para Code が扱う全 Codex ホーム（アカウントを切り替えると別ホームで動くため）。
@@ -202,7 +205,13 @@ export class ParadisCodexTerminalTitleService {
 			// Not reported when the reporter is unwired (REH has no Sentry SDK), so this is a
 			// no-op there and only reaches Sentry from the shared process. Warning severity because
 			// the caller falls back to no transient title rather than failing outright.
-			reportParadisDiagnosticError('owned', 'codex-terminal-title', 'db-read-failed', error, undefined, 'warning');
+			// Once per kind: a missing `node:sqlite` or a rollout that is not there yet fails the
+			// same way on every poll, and repeating it only spends the rate limiter's budget.
+			const kind = `${paradisSafeErrorName(error)}|${String((error as { code?: unknown } | undefined)?.code ?? '')}`;
+			if (!this.reportedFailures.has(kind)) {
+				this.reportedFailures.add(kind);
+				reportParadisDiagnosticError('owned', 'codex-terminal-title', 'db-read-failed', error, undefined, 'warning');
+			}
 			this.logService.debug('[ParadisCodexTerminalTitle] unable to read Codex thread metadata', error);
 			return {};
 		} finally {

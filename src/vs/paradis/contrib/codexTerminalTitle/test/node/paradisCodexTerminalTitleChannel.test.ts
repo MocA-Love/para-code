@@ -10,6 +10,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisCodexTerminalTitleService } from '../../node/paradisCodexTerminalTitleChannel.js';
 
 const nodeRequire = createRequire(import.meta.url);
@@ -144,5 +145,27 @@ suite('ParadisCodexTerminalTitleService', () => {
 		await writeRollout(rolloutThreadId, [userPromptLine('Fix the parser')]);
 		const service = new ParadisCodexTerminalTitleService(new NullLogService(), codexHome);
 		assert.deepStrictEqual(await service.findThreadPrompt({ threadId: rolloutThreadId, cwd: '/workspace/original', invocation: 'start', skipRolloutScan: true }), {});
+	});
+
+	test('reports a failure that recurs on every poll only once', async () => {
+		const reported: string[] = [];
+		configureParadisDiagnosticReporter((_scope, _feature, operation) => reported.push(operation));
+		try {
+			// The row points at a rollout that is not there, so every lookup fails the same way.
+			const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+			const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
+			try {
+				database.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+					.run(rolloutThreadId, 'cli', '/workspace/original', '', '', '', join(codexHome, 'sessions', 'missing.jsonl'), 0);
+			} finally {
+				database.close();
+			}
+			const service = new ParadisCodexTerminalTitleService(new NullLogService(), codexHome);
+			const request = { threadId: rolloutThreadId, cwd: '/workspace/original', invocation: 'start' as const };
+			const results = [await service.findThreadPrompt(request), await service.findThreadPrompt(request)];
+			assert.deepStrictEqual({ results, reported }, { results: [{}, {}], reported: ['db-read-failed'] });
+		} finally {
+			configureParadisDiagnosticReporter(() => { });
+		}
 	});
 });
