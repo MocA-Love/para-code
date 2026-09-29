@@ -10,7 +10,7 @@ import { tmpdir } from 'os';
 import { pathToFileURL } from 'url';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_DEVTOOLS_LOCAL_PATH_ARGUMENTS, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsRoots } from '../../node/paradisDevtoolsPathPolicy.js';
+import { PARADIS_DEVTOOLS_LOCAL_PATH_ARGUMENTS, paradisDevtoolsExplainRootsDenial, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsRoots, paradisDevtoolsUserTemporaryFolders } from '../../node/paradisDevtoolsPathPolicy.js';
 
 const REMOTE = { paneKnown: true, remote: true };
 const LOCAL = { paneKnown: true, remote: false };
@@ -69,8 +69,8 @@ suite('ParadisDevtoolsPathPolicy', () => {
 			paradisDevtoolsPathDecision(REMOTE, 'evaluate_script', ['filePath']),
 			paradisDevtoolsPathDecision(REMOTE, 'get_network_request', ['requestFilePath', 'responseFilePath']),
 		], [
-			{ kind: 'refuse', message: 'evaluate_script was not run: `filePath` would be a path on the user\'s local machine (where Para Code runs), not on this remote host, and Para Code does not accept local file paths from agents running on a remote host (SSH). Without `filePath` the result is returned inline.' },
-			{ kind: 'refuse', message: 'get_network_request was not run: `requestFilePath`, `responseFilePath` would be paths on the user\'s local machine (where Para Code runs), not on this remote host, and Para Code does not accept local file paths from agents running on a remote host (SSH). Without `requestFilePath` / `responseFilePath` the bodies are returned inline.' },
+			{ kind: 'refuse', message: 'evaluate_script was not run: `filePath` would refer to the user\'s local machine (where Para Code runs), not to the machine this agent runs on, and Para Code does not accept local files from agents in a remote window (SSH, WSL, container). Without `filePath` the result is returned inline.' },
+			{ kind: 'refuse', message: 'get_network_request was not run: `requestFilePath`, `responseFilePath` would refer to the user\'s local machine (where Para Code runs), not to the machine this agent runs on, and Para Code does not accept local files from agents in a remote window (SSH, WSL, container). Without `requestFilePath` / `responseFilePath` the bodies are returned inline.' },
 		]);
 	});
 
@@ -85,6 +85,40 @@ suite('ParadisDevtoolsPathPolicy', () => {
 			emptyString: ['filePath'],
 			futureArgument: ['exportPath', 'reportDirPath'],
 			notAnObject: [],
+		});
+	});
+
+	test('treats a file: URL given to navigate_page as a local file, and nothing else', () => {
+		assert.deepStrictEqual({
+			file: paradisDevtoolsPathArguments('navigate_page', { type: 'url', url: 'file:///etc/passwd' }),
+			viewSource: paradisDevtoolsPathArguments('navigate_page', { url: ' view-source:FILE:///etc/passwd' }),
+			web: paradisDevtoolsPathArguments('navigate_page', { url: 'https://example.com/file:///x' }),
+			remote: paradisDevtoolsPathDecision(REMOTE, 'navigate_page', ['url']).kind,
+			local: paradisDevtoolsPathDecision(LOCAL, 'navigate_page', ['url']).kind,
+		}, { file: ['url'], viewSource: ['url'], web: [], remote: 'refuse', local: 'forward' });
+	});
+
+	test('adds the user temporary folders for local panes, including /tmp on macOS', () => {
+		assert.deepStrictEqual({
+			darwin: paradisDevtoolsUserTemporaryFolders('darwin', '/var/folders/xy/T'),
+			linux: paradisDevtoolsUserTemporaryFolders('linux', '/tmp'),
+		}, {
+			darwin: ['/var/folders/xy/T', '/tmp', '/private/tmp'],
+			linux: ['/tmp'],
+		});
+	});
+
+	test('explains a vendored roots denial with the allowed folders and leaves other results alone', () => {
+		const space = join(tmpdir(), 'para-code-space');
+		const roots = paradisDevtoolsRoots([space], join(tmpdir(), 'para-code-devtools-test'));
+		const denied = { content: [{ type: 'text', text: 'Access denied: path /etc/x (canonical: /private/etc/x) is not within any of the configured workspace roots.' }], isError: true };
+		const other = { content: [{ type: 'text', text: 'Access denied: Cannot resolve base path for /x.' }], isError: true };
+		assert.deepStrictEqual({
+			denied: paradisDevtoolsExplainRootsDenial(denied, roots),
+			other: paradisDevtoolsExplainRootsDenial(other, roots) === other,
+		}, {
+			denied: { content: [{ type: 'text', text: `Access denied: /etc/x is outside the folders the browser tools may read and write for this terminal pane. Allowed folders: ${space}, ${join(tmpdir(), 'para-code-devtools-test')}. Use a path inside one of them, or call the tool without the path argument to get the result inline where the tool supports it (take_screenshot, take_snapshot, evaluate_script, get_network_request).` }], isError: true },
+			other: true,
 		});
 	});
 

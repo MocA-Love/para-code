@@ -54,11 +54,11 @@ import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
-import { paradisClassifyPeer } from './paradisCdpPeerResolver.js';
+import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
-import { IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
-import { IParadisDevtoolsPathCaller, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision } from './paradisDevtoolsPathPolicy.js';
+import { IParadisDevtoolsRootsResolution, IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
+import { IParadisDevtoolsPathCaller, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders } from './paradisDevtoolsPathPolicy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
 import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
@@ -610,6 +610,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				dispatchBoundPageInput: (token, connection, expectedTargetId, method, paramsJson, isConnectionCurrent) =>
 					this._dispatchBoundPageInput(token, connection, expectedTargetId, method, paramsJson, isConnectionCurrent),
 				closeInputConnection: connection => this._cdpInputQueue.closeConnection(connection),
+				isRemotePane: token => this._paneShells.get(token)?.remoteAuthority !== undefined,
+				isTunnelPeer: (remotePort, localPort) => this._isTunnelPeer(remotePort, localPort),
 			},
 			// 冷スタート（起動時点で `DevToolsActivePort` が他インスタンスに上書きされていた）でも
 			// 上流へ辿り着けるよう、electron-main が確定させたポートを候補に加える。
@@ -2977,11 +2979,16 @@ export class ParadisAgentBrowserService extends Disposable {
 					return result;
 				}
 			}
-			// 内蔵chrome-devtools-mcpは手元で動くので、ファイルのパスは手元のパスになる。SSH の接続先の
-			// ペインからのパスは渡す前に断る（手元のファイルの読み書きが機械の境界を越えるため。q.html Q132）
-			const pathDecision = paradisDevtoolsPathDecision(this._devtoolsPathCaller(token), name, paradisDevtoolsPathArguments(name, params?.arguments));
-			if (pathDecision.kind === 'refuse') {
-				return this._toolError(pathDecision.message);
+			// 内蔵chrome-devtools-mcpは手元で動くので、ファイルのパスは手元のパスになる。接続先（SSH・WSL・
+			// コンテナ）からのパスは渡す前に断る（手元のファイルの読み書きが機械の境界を越えるため。NOTES.md
+			// 「chrome-devtools-mcp のファイルのパスは手元のペインからだけ受け、roots で範囲を絞る」）
+			const pathArguments = paradisDevtoolsPathArguments(name, params?.arguments);
+			if (pathArguments.length > 0) {
+				const pathDecision = paradisDevtoolsPathDecision(await this._devtoolsPathCaller(token, socket), name, pathArguments);
+				this._requireIngressLease(ingressLease);
+				if (pathDecision.kind === 'refuse') {
+					return this._toolError(pathDecision.message);
+				}
 			}
 			// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
 			return this._callDevtoolsTool(ingressLease, name, params?.arguments, signal);
@@ -3169,28 +3176,65 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
-	 * パスの引数を受けてよいかを決めるための、呼び出し元ペインの属性。接続元の確認（`_classifyCaller`）が
+	 * パスの引数を受けてよいかを決めるための、呼び出し元の属性。接続元の確認（`_classifyCaller`）が
 	 * `tunnel` と `pane` のどちらで確かめるかを決めるのと同じ、ペインの `remoteAuthority` で見る
-	 * （名乗りや環境変数では決めない）。
+	 * （名乗りや環境変数では決めない）。加えて、手元のペインのトークンでも、接続の相手が Para Code の
+	 * 張った戻り経路の ssh なら接続先からの呼び出しとして扱う（トークンが接続先へ漏れた場合）。
+	 * 手元のペインに `pane`（シェルの子孫）であることは求めない（tmux・WSL・採用した Codex app-server で
+	 * パスが使えなくなるため）。
 	 */
-	private _devtoolsPathCaller(token: string): IParadisDevtoolsPathCaller {
+	private async _devtoolsPathCaller(token: string, socket: Socket | undefined): Promise<IParadisDevtoolsPathCaller> {
 		const pane = this._paneShells.get(token);
-		return { paneKnown: pane !== undefined, remote: pane?.remoteAuthority !== undefined };
+		if (pane === undefined) {
+			return { paneKnown: false, remote: false };
+		}
+		if (pane.remoteAuthority !== undefined) {
+			return { paneKnown: true, remote: true };
+		}
+		const remotePort = socket?.remotePort;
+		const localPort = socket?.localPort;
+		const viaTunnel = typeof remotePort === 'number' && typeof localPort === 'number' && await this._isTunnelPeer(remotePort, localPort);
+		return { paneKnown: true, remote: viaTunnel };
 	}
 
 	/**
-	 * 内蔵chrome-devtools-mcpの `roots/list` に載せる、ペインの手元のフォルダ。ペインのスペースの
-	 * フォルダを、ペインを所有するウィンドウに尋ねる。接続先（SSH）のペイン・分からないときは空
-	 * （子プロセスの roots は Para Code の一時フォルダだけになる）。
+	 * loopback 接続の相手が、Para Code の張った戻り経路（`ssh -R`）のプロセスか。戻り経路が1本も無ければ
+	 * プロセス表を調べない。相手を特定できなければ false（手元の呼び出しとして扱う。NOTES.md に記録）。
 	 */
-	private async _resolveDevtoolsRoots(token: string): Promise<readonly string[]> {
-		const pane = this._paneShells.get(token);
-		if (pane === undefined || pane.remoteAuthority !== undefined) {
-			return [];
+	private async _isTunnelPeer(remotePort: number, localPort: number): Promise<boolean> {
+		const tunnels = this._remoteTunnels;
+		if (tunnels === undefined || localPort !== this._port) {
+			return false;
 		}
-		const ingressLease = this.captureIngressLease(token);
+		const pids = tunnels.authorities
+			.map(authority => tunnels.processPidFor(authority))
+			.filter((pid): pid is number => pid !== undefined);
+		if (pids.length === 0) {
+			return false;
+		}
+		try {
+			return await paradisPeerIsOneOf(remotePort, localPort, process.pid, pids);
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * 内蔵chrome-devtools-mcpの `roots/list` に載せる、ペインの手元のフォルダ。ペインのスペースのフォルダを、
+	 * ペインを所有するウィンドウに尋ね、利用者の一時フォルダ（{@link paradisDevtoolsUserTemporaryFolders}）を足す。
+	 * 接続先のペインは空（子プロセスの roots は Para Code の一時フォルダだけになる）。ペインやウィンドウが
+	 * まだ分からないときは一時フォルダだけを「揃っていない」として返す（proxy が後で引き直す）。
+	 */
+	private async _resolveDevtoolsRoots(token: string): Promise<IParadisDevtoolsRootsResolution> {
+		const pane = this._paneShells.get(token);
+		if (pane?.remoteAuthority !== undefined) {
+			return { folders: [], complete: true };
+		}
+		const temporaryFolders = paradisDevtoolsUserTemporaryFolders();
+		const degraded = { folders: temporaryFolders, complete: false };
+		const ingressLease = pane === undefined ? undefined : this.captureIngressLease(token);
 		if (ingressLease === undefined) {
-			return [];
+			return degraded;
 		}
 		try {
 			const call = await this._callOwningWindow<unknown>(ingressLease, {
@@ -3202,11 +3246,12 @@ export class ParadisAgentBrowserService extends Disposable {
 				timeoutMs: 4000,
 			});
 			if (!call.ok || !Array.isArray(call.value)) {
-				return [];
+				return degraded;
 			}
-			return call.value.filter((folder): folder is string => typeof folder === 'string' && isAbsolute(folder));
+			const folders = call.value.filter((folder): folder is string => typeof folder === 'string' && isAbsolute(folder));
+			return { folders: [...folders, ...temporaryFolders], complete: true };
 		} catch {
-			return [];
+			return degraded;
 		}
 	}
 

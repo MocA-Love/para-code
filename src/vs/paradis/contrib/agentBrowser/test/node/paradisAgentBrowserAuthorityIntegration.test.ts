@@ -20,6 +20,7 @@ import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { paradisAgentHookSpoolHash } from '../../node/paradisAgentHookSpoolStore.js';
+import { paradisDevtoolsUserTemporaryFolders } from '../../node/paradisDevtoolsPathPolicy.js';
 
 interface ITestBinding {
 	readonly windowCtx: string;
@@ -2051,5 +2052,75 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(Reflect.get(fixture.service, '_rendererConnectionContexts').size, 0);
 		assert.strictEqual(Reflect.get(fixture.authority, 'windowStates').size, 0);
 		assert.strictEqual(Reflect.get(fixture.authority, 'connectionStates').size, 0);
+	});
+
+	test('local file arguments of the embedded DevTools tools are refused for a remote pane before reaching the bridge, and forwarded for a local pane', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [
+			{ token: 'remote', shellPid: 4242, remoteAuthority: 'ssh-remote+dev' },
+			{ token: 'local', shellPid: 123 },
+		]));
+		const forwarded: { token: string; name: string; args: unknown }[] = [];
+		Reflect.set(fixture.service, '_toolProviders', []);
+		Reflect.set(fixture.service, '_callDevtoolsTool', async (lease: { token: string }, name: string, args: unknown) => {
+			forwarded.push({ token: lease.token, name, args });
+			return { content: [{ type: 'text', text: 'ok' }] };
+		});
+		const call = async (token: string, name: string, args: unknown) => {
+			const request = new TestRequest('POST', `/?pane=${token}`);
+			const response = new TestResponse();
+			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+			request.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })));
+			request.emit('end');
+			await pending;
+			return response.body.includes('remote window (SSH, WSL, container)') ? 'refused' : response.body.includes('"ok"') ? 'passed' : response.body;
+		};
+		const outcomes = {
+			remoteEvaluate: await call('remote', 'evaluate_script', { function: '() => 1', filePath: '/Users/example/.zshrc' }),
+			remoteUpload: await call('remote', 'upload_file', { uid: '1', filePath: '/Users/example/.ssh/id_rsa' }),
+			remoteNavigateFile: await call('remote', 'navigate_page', { type: 'url', url: 'file:///etc/passwd' }),
+			remoteNoPath: await call('remote', 'take_snapshot', {}),
+			localPath: await call('local', 'take_snapshot', { filePath: '/repos/a/snapshot.txt' }),
+		};
+		assert.deepStrictEqual({ outcomes, forwarded: forwarded.map(entry => `${entry.token}:${entry.name}`) }, {
+			outcomes: { remoteEvaluate: 'refused', remoteUpload: 'refused', remoteNavigateFile: 'refused', remoteNoPath: 'passed', localPath: 'passed' },
+			forwarded: ['remote:take_snapshot', 'local:take_snapshot'],
+		});
+	});
+
+	test('roots for the embedded DevTools bridge come from the owning window for local panes only', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [
+			{ token: 'remote', shellPid: 4242, remoteAuthority: 'ssh-remote+dev' },
+			{ token: 'local', shellPid: 123 },
+		]));
+		let windowAnswer: () => Promise<unknown> = async () => ['/repos/a', 'relative/folder', 7];
+		const windowCalls: unknown[] = [];
+		Reflect.set(fixture.service, 'ipcServer', {
+			connections: [{ ctx: 'window:1' }],
+			getChannel: () => ({ call: async (method: string, args: unknown) => { windowCalls.push([method, args]); return windowAnswer(); } }),
+		});
+		const resolve = (token: string) => Reflect.get(fixture.service, '_resolveDevtoolsRoots').call(fixture.service, token) as Promise<unknown>;
+		const temporary = paradisDevtoolsUserTemporaryFolders();
+		const local = await resolve('local');
+		windowAnswer = async () => { throw new Error('window reloading'); };
+		const windowFailed = await resolve('local');
+		assert.deepStrictEqual({
+			remote: await resolve('remote'),
+			unknown: await resolve('nobody'),
+			local,
+			windowFailed,
+			windowCalls,
+		}, {
+			remote: { folders: [], complete: true },
+			unknown: { folders: temporary, complete: false },
+			local: { folders: ['/repos/a', ...temporary], complete: true },
+			windowFailed: { folders: temporary, complete: false },
+			windowCalls: [['paneRoots', ['local']], ['paneRoots', ['local']]],
+		});
 	});
 });

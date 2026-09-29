@@ -10,6 +10,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IAuxiliaryEditorPart, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService, PreferredGroup } from '../../../../../workbench/services/editor/common/editorService.js';
 import { ParadisAgentPreviewChannel } from '../../electron-browser/paradisAgentPreview.contribution.js';
@@ -46,6 +47,8 @@ interface IHarnessOptions {
 	readonly openedFiles?: Readonly<Record<string, string>>;
 	/** 実体のある worktree（`paradisListSpaces` に載るスペース）。既定は無し。 */
 	readonly worktrees?: readonly IParadisWorktree[];
+	/** ウィンドウのワークスペースのフォルダ（スペースを持たないペインの roots）。 */
+	readonly workspaceFolders?: readonly URI[];
 }
 
 function createHarness(store: Pick<DisposableStore, 'add'>, options: IHarnessOptions = {}) {
@@ -97,7 +100,10 @@ function createHarness(store: Pick<DisposableStore, 'add'>, options: IHarnessOpt
 		{
 			get isSwitching() { return options.isSwitching ?? false; },
 			get activeStateKey() { return activeStateKey; },
-			repositories: [{ id: 'repo-a', name: 'Design System', uri: URI.file('/repos/a') }],
+			repositories: [
+				{ id: 'repo-a', name: 'Design System', uri: URI.file('/repos/a') },
+				{ id: 'repo-remote', name: 'Remote', uri: URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+dev', path: '/home/example/repo' }) },
+			],
 			onDidSwitchScope: onDidSwitchScope.event,
 			onDidRetireScope: onDidRetireScope.event,
 		} as unknown as IParadisWorkspaceSwitchService,
@@ -108,6 +114,7 @@ function createHarness(store: Pick<DisposableStore, 'add'>, options: IHarnessOpt
 				: [],
 		} as unknown as IParadisAuxiliaryWindowScopeService,
 		new NullLogService(),
+		{ getWorkspace: () => ({ folders: (options.workspaceFolders ?? []).map(uri => ({ uri })) }) } as unknown as IWorkspaceContextService,
 	));
 
 	return {
@@ -359,6 +366,21 @@ suite('ParadisAgentPreviewChannel', () => {
 		}, {
 			space: [URI.file('/repos/a').fsPath],
 			unresolved: [],
+		});
+	});
+
+	test('returns the local workspace folders for a pane without a space, and nothing for remote folders', async () => {
+		const unscoped = createHarness(store, {
+			resolvedScope: { kind: 'unscoped' },
+			workspaceFolders: [URI.file('/work/one'), URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+dev', path: '/home/example' }), URI.file('/work/two')],
+		});
+		const remoteSpace = createHarness(store, { recordedStateKey: 'repo-remote' });
+		assert.deepStrictEqual({
+			unscoped: await unscoped.paneRoots('pane-a'),
+			remoteSpace: await remoteSpace.paneRoots('pane-a'),
+		}, {
+			unscoped: [URI.file('/work/one').fsPath, URI.file('/work/two').fsPath],
+			remoteSpace: [],
 		});
 	});
 });
