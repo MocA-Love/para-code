@@ -2104,9 +2104,12 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			await settle();
 
 			assert.deepStrictEqual({
+				// タグ付けのたびに同じ端末を数え直さない（PTY ID が決まる前は前の所属がまた見つかる）。
+				migrated: notice?.message.match(/下部パネルの (?<count>\d+) 個/)?.groups?.count,
 				choices: notice?.choices.map(choice => choice.label),
 				closed: harness.safeDisposedTerminalIds,
 			}, {
+				migrated: '4',
 				choices: ['使われていない空のシェル 1 個を閉じる'],
 				closed: [4601],
 			});

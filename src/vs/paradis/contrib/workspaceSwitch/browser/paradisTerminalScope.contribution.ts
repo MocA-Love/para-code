@@ -2391,7 +2391,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private rememberFormerSharedPanelScope(instance: ITerminalInstance, former: string): void {
 		// 知らせるのは、前のバージョンがスペースに入れていたパネルの端末だけ。このウィンドウで
 		// エディタのタブからパネルへ移した端末は、ユーザー自身の操作なので数えない。
-		if (!this._seenOutsideSharedPanel.has(instance.instanceId)) {
+		// 同じ端末がここへ何度も来ることがある。PTY ID が決まる前は pid 台帳の所属を消し切れず
+		// (`forgetInstanceScope`)、タグ付けと ID 確定のたびに前の所属がまた見つかるため。
+		// 1本を二度数えると、知らせる本数が実際より多くなる。
+		if (!this._seenOutsideSharedPanel.has(instance.instanceId) && !this._sharedPanelMigratedInstanceIds.has(instance.instanceId)) {
 			this._sharedPanelMigratedCount++;
 			this._sharedPanelMigratedInstanceIds.add(instance.instanceId);
 			this._sharedPanelMigrationNotice.schedule();
