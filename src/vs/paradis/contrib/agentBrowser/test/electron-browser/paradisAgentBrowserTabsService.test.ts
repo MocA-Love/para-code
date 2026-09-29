@@ -15,14 +15,13 @@ import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelSc
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IDialogService, IPrompt } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
-import { FocusMode } from '../../../../../platform/native/common/native.js';
+import { FocusMode, INativeHostService } from '../../../../../platform/native/common/native.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IQuickInputService } from '../../../../../platform/quickinput/common/quickInput.js';
 import { BrowserEditorInput } from '../../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
-import { IHostService } from '../../../../../workbench/services/host/browser/host.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisBrowserScopeService, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
 import { IParadisAgentBrowserBindingModel } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
@@ -49,10 +48,16 @@ interface IFakeBinding {
 	sharingAtBind?: string;
 }
 
-function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: undefined, unbinds: 0 }, onSetAudience: (args: unknown) => void = () => { }, hasFocus = true) {
+function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: undefined, unbinds: 0 }, onSetAudience: (args: unknown) => void = () => { }) {
 	const shown: IShownPrompt[] = [];
-	const attention: (FocusMode | undefined)[] = [];
-	const hostService = { hasFocus, focus: async (_window: Window, options?: { mode?: FocusMode }) => { attention.push(options?.mode); } } as unknown as IHostService;
+	const attention: { targetWindowId: number | undefined; mode: FocusMode | undefined }[] = [];
+	const onDidFocusWindow = new Emitter<number>();
+	const onDidBlurWindow = new Emitter<number>();
+	const nativeHostService = {
+		onDidFocusMainOrAuxiliaryWindow: onDidFocusWindow.event,
+		onDidBlurMainOrAuxiliaryWindow: onDidBlurWindow.event,
+		focusWindow: async (options?: { targetWindowId?: number; mode?: FocusMode }) => { attention.push({ targetWindowId: options?.targetWindowId, mode: options?.mode }); },
+	} as unknown as INativeHostService;
 	const dialogService = {
 		prompt: async (prompt: IPrompt<unknown>) => {
 			shown.push({
@@ -98,9 +103,9 @@ function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: und
 		{} as IQuickInputService,
 		new NullLogService(),
 		{ getChannel: () => ({ call: async (_command: string, args: unknown) => onSetAudience(args), listen: () => Event.None }) } as unknown as IMainProcessService,
-		hostService,
+		nativeHostService,
 	);
-	return { service, shown, binding, attention };
+	return { service, shown, binding, attention, onDidFocusWindow, onDidBlurWindow };
 }
 
 const request: IParadisAgentApprovalRequest = {
@@ -179,19 +184,33 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 		assert.deepStrictEqual([second, await pending], ['busy', 'cancelled']);
 	}));
 
-	test('asks for attention (without taking focus) once per request when the window is in the background', () => runWithFakedTimers(fakedTimers, async () => {
-		const background = createService([{ button: 1, afterMs: 100 }, { button: 1, afterMs: 1500 }], undefined, undefined, false);
-		const foreground = createService([{ button: 1, afterMs: 1500 }]);
-		store.add(background.service);
-		store.add(foreground.service);
+	test('asks for attention (without taking focus) once per request, only when no Para Code window has native focus', () => runWithFakedTimers(fakedTimers, async () => {
+		const { service, shown, attention, onDidFocusWindow, onDidBlurWindow } = createService([
+			{ button: 1, afterMs: 1500 },
+			{ button: 1, afterMs: 100 }, { button: 1, afterMs: 1500 },
+			{ button: 1, afterMs: 1500 },
+		]);
+		store.add(service);
+		store.add(onDidFocusWindow);
+		store.add(onDidBlurWindow);
 		const cts = store.add(new CancellationTokenSource());
-		assert.deepStrictEqual([
-			await background.service.askApproval('pane-token', request, cts.token),
-			background.shown.length,
-			background.attention,
-			await foreground.service.askApproval('pane-token', request, cts.token),
-			foreground.attention,
-		], ['approve', 2, [FocusMode.Notify], 'approve', []]);
+		const ownWindow = mainWindow.vscodeWindowId;
+		// 1: no focus event yet (unknown) -> no attention
+		const unknown = await service.askApproval('pane-token', request, cts.token);
+		// 2: another app is in front -> one attention for the request, even though it is asked twice
+		onDidFocusWindow.fire(ownWindow);
+		onDidBlurWindow.fire(ownWindow);
+		const away = await service.askApproval('pane-token', request, cts.token);
+		const afterAway = attention.length;
+		// 3: our window is frontmost (e.g. the user is in the embedded browser) -> no attention,
+		//    whatever order a switch between two windows arrives in
+		onDidFocusWindow.fire(ownWindow);
+		onDidBlurWindow.fire(ownWindow + 1000);
+		const front = await service.askApproval('pane-token', request, cts.token);
+		assert.deepStrictEqual([unknown, away, front, shown.length, afterAway, attention], [
+			'approve', 'approve', 'approve', 4, 1,
+			[{ targetWindowId: ownWindow, mode: FocusMode.Notify }],
+		]);
 	}));
 
 	(isMacintosh ? test : test.skip)('asks again when the approval was chosen with Cmd+D', () => runWithFakedTimers(fakedTimers, async () => {
