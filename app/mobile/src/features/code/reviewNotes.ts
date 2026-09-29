@@ -158,6 +158,22 @@ export function unsentNoteIds(notes: readonly ReviewNote[]): string[] {
 	return notes.filter(note => note.sentAt === undefined).map(note => note.id);
 }
 
+/**
+ * 「送信済みと古いメモを消す」の確かめの本文（Q143 A）。送信済みの件数と、未送信のメモがあるか（あればその件数）を
+ * 出す。どの未送信のメモが古い（コミットされた・行が見つからない）かは PC が消すときに決めるので、ここでは件数だけ。
+ */
+export function clearNotesConfirmMessage(notes: readonly ReviewNote[]): string {
+	const sent = notes.filter(note => note.sentAt !== undefined).length;
+	const unsent = notes.length - sent;
+	return [
+		sent > 0 ? `送信済みのメモ ${sent} 件を消します。` : '送信済みのメモはありません。',
+		unsent > 0
+			? `未送信のメモ ${unsent} 件のうち、コミットされたものと行が見つからなくなったものも消えます。`
+			: '未送信のメモはありません。',
+		'消したメモは戻せません。',
+	].join('\n');
+}
+
 /** ファイルごとのメモの数（ファイルの一覧に出す）。 */
 export function noteCountsByPath(notes: readonly ReviewNote[]): ReadonlyMap<string, number> {
 	const counts = new Map<string, number>();

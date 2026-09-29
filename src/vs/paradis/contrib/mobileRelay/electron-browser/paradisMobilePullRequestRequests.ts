@@ -18,6 +18,7 @@ import {
 	ParadisPullRequestLookup,
 	paradisFailedPullRequestChecks,
 	paradisPullRequestMergeBlock,
+	paradisPullRequestMergeOutcome,
 } from '../common/paradisMobilePullRequest.js';
 import { ParadisMobileSendGate, paradisAgentPromptServices, paradisDeliverAgentPrompt, paradisParseAgentPromptTarget } from './paradisMobileAgentPromptDelivery.js';
 import { IParadisMobileRequest, IParadisMobileRequestContext, registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
@@ -31,7 +32,8 @@ import { IParadisMobileRequest, IParadisMobileRequestContext, registerParadisMob
  * - `prFixChecks { ws, number, target: 'auto' | 'new' }`: PC が PR を取り直し、失敗したチェックと、失敗した Actions の
  *   ジョブのログの末尾（3 ジョブまで、各 200 行まで）から依頼文を組み立てて、そのスペースのエージェントへ送る
  * - `prMerge { ws, number, headSha }`: PC が取り直した状態で、スマホが見た head と同じで、CI が通っていて、
- *   止める理由が無いときだけ `gh pr merge --match-head-commit` でマージする（方式はリポジトリの既定）
+ *   止める理由が無いときだけ `gh pr merge --match-head-commit` でマージする（方式はリポジトリの既定）。
+ *   マージの後に PR を取り直し、まだ MERGED でなければ（マージキュー）`merged: false, queued: true` を返す
  */
 
 /** スペースごとのマージ・送信の最中の印。 */
@@ -198,7 +200,10 @@ registerParadisMobileRequestHandler('scm', 'prMerge', {
 			}
 			try {
 				const result = await host.merge({ repo: detail.repo, number: detail.number, headSha });
-				context.reply({ t: 'prMerge', ws, merged: true, method: result.method });
+				// gh はマージキューへ入れただけでも成功を返す。取り直して MERGED でなければ「キューに入れた」と返す
+				// （`queued` は後から足した項目。古いアプリは読まずに、これまでどおり「マージしました」と出す）
+				const after = await host.lookup().catch(() => undefined);
+				context.reply({ t: 'prMerge', ws, ...paradisPullRequestMergeOutcome(after, detail.number), method: result.method });
 			} catch (error) {
 				context.reply({ error: `マージできませんでした: ${describeLookupError(error)}`, code: 'merge-failed' });
 			}

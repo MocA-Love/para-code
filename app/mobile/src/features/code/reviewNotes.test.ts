@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { parseUnifiedDiff } from '../../components/diffParser.js';
-import { canAnnotateRow, noteAnchorOf, noteCountsByPath, noteLocationLabel, parseReviewNotes, placeReviewNotes, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type ReviewNote } from './reviewNotes.js';
+import { canAnnotateRow, clearNotesConfirmMessage, noteAnchorOf, noteCountsByPath, noteLocationLabel, parseReviewNotes, placeReviewNotes, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type ReviewNote } from './reviewNotes.js';
 
 function note(id: string, line: number, lineText: string, extra: Partial<ReviewNote> = {}): ReviewNote {
 	return { id, path: 'a.ts', line, lineText, body: `note ${id}`, createdAt: 1, updatedAt: 1, ...extra };
@@ -67,6 +67,18 @@ describe('メモの一覧', () => {
 	it('送っていないメモを選び、ファイルごとに数える', () => {
 		const notes = [note('a', 1, 'x'), note('b', 2, 'y', { sentAt: 3 }), { ...note('c', 1, 'z'), path: 'b.ts' }];
 		expect({ unsent: unsentNoteIds(notes), counts: [...noteCountsByPath(notes)] }).toEqual({ unsent: ['a', 'c'], counts: [['a.ts', 2], ['b.ts', 1]] });
+	});
+
+	it('片付けの確かめに、送信済みの件数と未送信のメモがあるかを出す', () => {
+		expect([
+			clearNotesConfirmMessage([note('a', 1, 'x'), note('b', 2, 'y', { sentAt: 3 }), note('c', 3, 'z', { sentAt: 4 })]).split('\n'),
+			clearNotesConfirmMessage([note('b', 2, 'y', { sentAt: 3 })]).split('\n'),
+			clearNotesConfirmMessage([note('a', 1, 'x')]).split('\n'),
+		]).toEqual([
+			['送信済みのメモ 2 件を消します。', '未送信のメモ 1 件のうち、コミットされたものと行が見つからなくなったものも消えます。', '消したメモは戻せません。'],
+			['送信済みのメモ 1 件を消します。', '未送信のメモはありません。', '消したメモは戻せません。'],
+			['送信済みのメモはありません。', '未送信のメモ 1 件のうち、コミットされたものと行が見つからなくなったものも消えます。', '消したメモは戻せません。'],
+		]);
 	});
 
 	it('片付けで消えたメモは選択から落とす', () => {

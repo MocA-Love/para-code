@@ -16,12 +16,12 @@ import { useParaToast } from '../../../../src/paraToast.js';
 import { firstParam } from '../../../../src/routes.js';
 import { colors, space, type } from '../../../../src/theme.js';
 import type { WorktreeAgentDef } from '../../../../src/store.js';
-import { BottomDrawer, EmptyState, HeaderButton, Screen, ScreenHeader } from '../../../../src/ui/index.js';
+import { BottomDrawer, ConfirmDrawer, EmptyState, HeaderButton, Screen, ScreenHeader } from '../../../../src/ui/index.js';
 import { CenterSpinner, OfflineBanner, SpaceGateBody } from '../../../../src/features/code/codeParts.js';
 import { fileViewerHref } from '../../../../src/features/code/codeRoutes.js';
 import { canOpenWorkingFile, diffStats, nextUnreviewed, reviewQueue, reviewStateOf, reviewedCount, stageableEntries, stepReview, type ReviewFilter } from '../../../../src/features/code/diffReview.js';
 import { NoteComposer, ReviewNotesPanel, type NoteComposerTarget } from '../../../../src/features/code/reviewNoteParts.js';
-import { noteAnchorOf, noteCountsByPath, placeReviewNotes, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type PlacedNotes, type ReviewNote } from '../../../../src/features/code/reviewNotes.js';
+import { clearNotesConfirmMessage, noteAnchorOf, noteCountsByPath, placeReviewNotes, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type PlacedNotes, type ReviewNote } from '../../../../src/features/code/reviewNotes.js';
 import { DiffLines, ReviewFileList, ReviewFileSummary, ReviewFooter, ReviewSummary } from '../../../../src/features/code/reviewParts.js';
 import { RightDrawer } from '../../../../src/features/code/rightDrawer.js';
 import { orderedScmEntries, scmEntries } from '../../../../src/features/code/scmModel.js';
@@ -68,6 +68,13 @@ export default function ReviewScreen() {
 	const [panelNotice, setPanelNotice] = useState<string | undefined>(undefined);
 	/** シートを閉じ切った後に出すトースト（Modal の裏に隠れないように、閉じてから出す）。 */
 	const afterCloseToast = useRef<string | undefined>(undefined);
+	/**
+	 * 「送信済みと古いメモを消す」の確かめ（Q143 A）。メモのシートを閉じ切ってから確かめのシートを出し（シートを重ねて
+	 * 出すと iOS が取りこぼす）、確定でもキャンセルでもメモのシートへ戻る。本文は閉じる動きの間も出したままにする
+	 */
+	const clearAfterClose = useRef(false);
+	const [confirmingClear, setConfirmingClear] = useState(false);
+	const [clearMessage, setClearMessage] = useState<string | undefined>(undefined);
 	const [agents, setAgents] = useState<readonly WorktreeAgentDef[]>([]);
 	const [agentsRequested, setAgentsRequested] = useState(false);
 	const terminals = useAppStore(s => s.workspace?.terminals);
@@ -136,6 +143,22 @@ export default function ReviewScreen() {
 		if (text !== undefined) {
 			useParaToast.getState().show({ key: 'review-note-sent', text, icon: 'checkmark-circle-outline', tone: 'done' }, 2_000);
 		}
+	};
+
+	/** メモのシートが閉じ切った。片付けの確かめを待っていれば出す。 */
+	const afterNotesClosed = () => {
+		showAfterCloseToast();
+		if (clearAfterClose.current) {
+			clearAfterClose.current = false;
+			setConfirmingClear(true);
+		}
+	};
+
+	const requestClearNotes = () => {
+		setPanelNotice(undefined);
+		setClearMessage(clearNotesConfirmMessage(notes.notes));
+		clearAfterClose.current = true;
+		setNotesOpen(false);
 	};
 
 	const toggleSelected = (id: string) => {
@@ -245,7 +268,7 @@ export default function ReviewScreen() {
 			notice={panelNotice}
 			onSend={target => void sendNotes({ terminalKey: target.terminalKey })}
 			onLaunch={agent => void sendNotes({ agent: agent.id })}
-			onClear={() => void clearNotes()}
+			onClear={requestClearNotes}
 			onClose={() => setNotesOpen(false)}
 		/>
 	);
@@ -331,12 +354,25 @@ export default function ReviewScreen() {
 			<RightDrawer visible={listOpen && regular} onClose={() => setListOpen(false)} accessibilityLabel="ファイルの一覧">
 				{fileList}
 			</RightDrawer>
-			<BottomDrawer visible={notesOpen && !regular} onClose={() => setNotesOpen(false)} onAfterClose={showAfterCloseToast} accessibilityLabel="メモ">
+			<BottomDrawer visible={notesOpen && !regular} onClose={() => setNotesOpen(false)} onAfterClose={afterNotesClosed} accessibilityLabel="メモ">
 				{notesPanel}
 			</BottomDrawer>
-			<RightDrawer visible={notesOpen && regular} onClose={() => setNotesOpen(false)} onAfterClose={showAfterCloseToast} accessibilityLabel="メモ">
+			<RightDrawer visible={notesOpen && regular} onClose={() => setNotesOpen(false)} onAfterClose={afterNotesClosed} accessibilityLabel="メモ">
 				{notesPanel}
 			</RightDrawer>
+			<ConfirmDrawer
+				visible={confirmingClear}
+				title="送信済みと古いメモを消しますか？"
+				message={clearMessage}
+				confirmLabel="消す"
+				onConfirm={() => {
+					// 結果はメモのシートの中に出す
+					setNotesOpen(true);
+					void clearNotes();
+				}}
+				onCancelled={() => setNotesOpen(true)}
+				onClose={() => setConfirmingClear(false)}
+			/>
 			<NoteComposer
 				target={composer}
 				busy={notes.busy}

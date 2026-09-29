@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { agentHandoffResult, branchSyncOf, commitFailureView, commitHint, commitScope, parseCommitFailure, scmPrimaryAction, scmSyncSummary, type ScmPrimaryInput } from './scmSync.js';
+import { agentHandoffResult, branchSyncOf, commitFailureView, commitHint, commitScope, parseCommitFailure, scmPrimaryAction, scmPushConfirm, scmSyncSummary, type ScmPrimaryInput } from './scmSync.js';
 
 describe('scmPrimaryAction', () => {
 	const clean: ScmPrimaryInput = { live: true, total: 0, message: '', committing: false, sync: { upstream: 'origin/main', ahead: 0, behind: 0 }, syncing: undefined, branch: 'main' };
@@ -72,6 +72,20 @@ describe('commitScope / commitHint', () => {
 	});
 });
 
+describe('scmPushConfirm', () => {
+	it('プッシュと公開の確かめに、ブランチ・件数・送り先を出す', () => {
+		expect([
+			scmPushConfirm({ upstream: 'origin/feat', ahead: 2, behind: 0 }, 'feat'),
+			scmPushConfirm({}, 'feat'),
+			scmPushConfirm({ upstream: 'origin/feat' }, undefined),
+		]).toEqual([
+			{ title: 'プッシュしますか？', message: '「feat」のコミット 2 件を origin/feat へプッシュします。強制プッシュはしません。', confirmLabel: 'プッシュ' },
+			{ title: 'ブランチを公開しますか？', message: '「feat」をリモートに公開し、上流に設定します。', confirmLabel: '公開' },
+			{ title: 'プッシュしますか？', message: 'このブランチを origin/feat へプッシュします。強制プッシュはしません。', confirmLabel: 'プッシュ' },
+		]);
+	});
+});
+
 describe('commit failure', () => {
 	it('PC の失敗を読み、直してもらえるものにだけボタンを出す', () => {
 		const failure = parseCommitFailure({ id: 'f1', kind: 'lint', summary: 'lint で失敗', output: 'a.ts:1 error', restored: true });
@@ -79,6 +93,9 @@ describe('commit failure', () => {
 		expect(commitFailureView(failure!)).toEqual({ title: 'lint で失敗', output: 'a.ts:1 error', fixable: true, note: 'ステージの状態はコミットの前に戻しました。' });
 		expect(commitFailureView({ ...failure!, kind: 'identity', restored: false })).toMatchObject({ fixable: false, note: undefined });
 		expect(commitFailureView(parseCommitFailure({ id: 'f2', kind: 'hook', summary: 's', output: '', restored: false, restoreFailed: true })!).note).toBe('ステージを戻せませんでした。PC で確かめてください。');
+		// フックの間に PC でステージが変わったので戻さなかった（古いアプリは restoreFailed だけを読む）
+		expect(commitFailureView(parseCommitFailure({ id: 'f3', kind: 'hook', summary: 's', output: '', restored: false, restoreFailed: true, indexChanged: true })!).note)
+			.toBe('コミットの途中で PC のステージが変わったため、ステージは戻していません。PC で確かめてください。');
 		expect(parseCommitFailure({ id: 1 })).toBeUndefined();
 		expect(parseCommitFailure({ id: 'x', kind: 'future', summary: 's', output: '' })?.kind).toBe('other');
 	});
