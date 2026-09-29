@@ -107,6 +107,7 @@ suite('Paradis agent status contribution wiring', () => {
 			{ getValue: () => undefined } as never,
 			{ windowId: 1 } as never,
 			{ record: async () => undefined } as never,
+			{ startupKind: 1 } as never,
 		));
 		const statusContribution = store.add(new ParadisAgentStatusPoller(
 			sharedProcessService,
