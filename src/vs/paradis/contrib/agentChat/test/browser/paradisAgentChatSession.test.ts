@@ -93,4 +93,30 @@ suite('ParadisAgentChatSession', () => {
 		await third;
 		assert.deepStrictEqual({ reads, interaction: session.state?.interaction }, { reads: 2, interaction: null });
 	});
+
+	test('reports a change when only the agent exit flag changes', async () => {
+		// `claude --continue` で同じ会話を再開したとき、終了の印だけが消える（本文も rev も変わらない）
+		const responses: IParadisAgentChatView[] = [
+			{ token: 't', agent: 'claude', epoch: 'e', rev: 1, reset: true, messages: [], live: null, interaction: null, busy: false, agentExited: true },
+			{ token: 't', agent: 'claude', epoch: 'e', rev: 1, reset: true, messages: [], live: null, interaction: null, busy: false },
+		];
+		const source: IParadisAgentChatSource = {
+			onDidChangeAgentChat: Event.None,
+			watchAgentChat: async () => { },
+			getAgentChat: async () => responses.shift(),
+			getAgentChatFullText: async () => undefined,
+			getAgentChatImage: async () => undefined,
+			getAgentChatCommands: async () => [],
+			answerAgentChatApproval: async () => false,
+			claimAgentChatInteraction: async () => true,
+			releaseAgentChatInteraction: async () => { },
+		};
+		const disposables = store.add(new DisposableStore());
+		const session = disposables.add(new ParadisAgentChatSession('t', source, new NullLogService()));
+		let changes = 0;
+		disposables.add(session.onDidChange(() => changes++));
+		await session.refresh();
+		await session.refresh();
+		assert.deepStrictEqual({ changes, agentExited: session.state?.agentExited }, { changes: 2, agentExited: undefined });
+	});
 });
