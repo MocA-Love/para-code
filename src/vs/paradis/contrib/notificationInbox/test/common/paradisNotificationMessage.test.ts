@@ -61,6 +61,23 @@ suite('Paradis notification message', () => {
 		]);
 	});
 
+	test('masks values written after a full-width colon or a Japanese item name', () => {
+		const cases = [
+			'password\uFF1Ahunter2 で入れます',
+			'パスワード\uFF1Ahunter2 を設定しました',
+			'トークン = abc123def を使います',
+			'APIキー: "abc def" です',
+			'パスワード\uFF1A必須チェックを追加しました',
+		];
+		assert.deepStrictEqual(cases.map(paradisRedactSecrets), [
+			'password\uFF1A*** で入れます',
+			'パスワード\uFF1A*** を設定しました',
+			'トークン = *** を使います',
+			'APIキー: *** です',
+			'パスワード\uFF1A必須チェックを追加しました',
+		]);
+	});
+
 	test('does not mask ordinary text that only looks like a key assignment', () => {
 		const cases = [
 			'型エラーを 3 件直し、monkey patch も外しました',
