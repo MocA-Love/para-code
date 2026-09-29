@@ -72,4 +72,20 @@ suite('ParadisPtyDispatch', () => {
 		// 畳み忘れると、閉じた端末あての発火先が残り続ける。
 		assert.deepStrictEqual({ received }, { received: ['before'] });
 	});
+
+	test('古い受け口を後から畳んでも、同じ handle の新しい受け口は外れない', () => {
+		const disposables = store.add(new DisposableStore());
+		const { host, fire } = countingHost(disposables);
+		const dispatch = disposables.add(new ParadisPtyDispatch(host));
+
+		const received: string[] = [];
+		const old = dispatch.listen(1);
+		const current = disposables.add(dispatch.listen(1));
+		disposables.add(current.onData(value => received.push(value)));
+		old.dispose();
+		fire({ handle: 1, data: 'still here' });
+
+		assert.deepStrictEqual({ received }, { received: ['still here'] });
+	});
 });
+

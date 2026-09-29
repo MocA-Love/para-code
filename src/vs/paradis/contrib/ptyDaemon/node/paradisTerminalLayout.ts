@@ -48,6 +48,25 @@ export function paradisEncodeLayout(args: ISetTerminalLayoutInfoArgs, handleOf: 
 }
 
 /**
+ * 常駐へ送る中身を決める。undefined なら送らない。
+ *
+ * - 窓の配置にターミナルが1本も無い: 空文字（常駐に預けた配置を忘れさせる合図）
+ * - ターミナルはあるが、どれも handle がまだ分からない（`start()` の前）: 送らない。空として
+ *   送ると、常駐に預けた配置が消え、その直後にアプリを閉じると、次に開いたとき常駐のシェルは
+ *   生きているのに画面に出てこない。handle が決まれば窓がもう一度配置を送ってくる
+ *   （ターミナルの準備ができたときに窓は配置を保存し直す）
+ * - それ以外: 番号を handle へ書き換えたもの
+ */
+export function paradisLayoutToRemember(args: ISetTerminalLayoutInfoArgs, handleOf: ParadisIdLookup): string | undefined {
+	const encoded = paradisEncodeLayout(args, handleOf);
+	if ((JSON.parse(encoded) as ISetTerminalLayoutInfoArgs).tabs.length > 0) {
+		return encoded;
+	}
+	const hasTerminals = args.tabs.some(tab => tab.terminals.length > 0) || (args.background?.length ?? 0) > 0;
+	return hasTerminals ? undefined : '';
+}
+
+/**
  * 取り戻す。handle を新しい番号へ書き戻す。
  *
  * **読めなくても投げない。** ここで投げると、配置が壊れているというだけで引き取り全体が
