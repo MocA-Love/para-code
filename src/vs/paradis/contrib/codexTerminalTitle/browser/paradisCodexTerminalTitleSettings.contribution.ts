@@ -25,7 +25,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.codex.terminalTitle.enabled', "Codex CLI の通常起動と `codex resume` を検出し、会話の最初の依頼から統合ターミナルの短いタブ名を自動設定します。手動で変更したタブ名と Codex の `/rename` は常に優先されます。有効時は検証用のスレッド ID を受け取るため、`~/.codex/config.toml` の `[tui].terminal_title` を `[\"app-name\", \"thread-title\"]` に更新します。設定変更後に起動した Codex セッションから反映されます。")
+			markdownDescription: localize('paradis.codex.terminalTitle.enabled', "Codex CLI の通常起動と `codex resume` を検出し、会話の最初の依頼から統合ターミナルの短いタブ名を自動設定します。手動で変更したタブ名と Codex の `/rename` は常に優先されます。検証用のスレッド ID を受け取るため、有効時は `~/.codex/config.toml` に `[tui].terminal_title` が無いときだけ `[\"app-name\", \"thread-title\"]` を書き込みます（自分で設定した値は変更しません。`~/.codex` が無ければ作りません）。無効にすると Para Code が書き込んだ値だけを取り除きます。設定変更後に起動した Codex セッションから反映されます。")
 		}
 	}
 });

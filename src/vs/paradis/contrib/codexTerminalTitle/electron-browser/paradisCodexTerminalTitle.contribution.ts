@@ -17,7 +17,7 @@ import { joinPath } from '../../../../base/common/resources.js';
 import { removeAnsiEscapeCodes } from '../../../../base/common/strings.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -501,73 +501,183 @@ class ParadisCodexTerminalTitleTrackerContribution extends Disposable implements
 registerTerminalContribution(ParadisCodexTerminalTitleTrackerContribution.ID, ParadisCodexTerminalTitleTrackerContribution);
 
 /**
- * Sets `[tui].terminal_title` in a Codex config.toml. Returns the text unchanged when `tui` is
- * already defined another way (a dotted key such as `tui.x = 1` or an inline table `tui = { ... }` at
- * the top level): adding a `[tui]` table then would define it twice, which TOML rejects, and Codex
- * would refuse to start.
+ * Para Code が書いた行の目印。値の完全一致とこの目印の両方がそろった行だけを「Para Code のもの」と
+ * みなし、設定をオフにしたときに取り除く。利用者が値を書き換えた行（目印が残っていても値が違う）や、
+ * 目印の無い行（利用者が自分で書いた、または目印を付ける前の Para Code が書いた）は触らない。
  */
-export function replaceTerminalTitleInTuiSection(config: string): string {
-	const titleLine = `terminal_title = [${PARADIS_CODEX_TERMINAL_TITLE_ITEMS.map(item => `"${item}"`).join(', ')}]`;
+export const PARADIS_CODEX_TERMINAL_TITLE_MARKER = '# set by Para Code (paradis.codex.terminalTitle.enabled)';
+const TERMINAL_TITLE_VALUE = `[${PARADIS_CODEX_TERMINAL_TITLE_ITEMS.map(item => `"${item}"`).join(', ')}]`;
+const TERMINAL_TITLE_LINE = `terminal_title = ${TERMINAL_TITLE_VALUE} ${PARADIS_CODEX_TERMINAL_TITLE_MARKER}`;
+
+interface ITuiSection {
+	/** `[tui]` の見出し行の直後（見出しが改行で終わらないときは undefined）。 */
+	readonly start: number | undefined;
+	readonly end: number;
+}
+
+/**
+ * config.toml の `[tui]` 表の範囲。`tui` が別の書き方（最上位の dotted key `tui.x = 1` や inline table
+ * `tui = { ... }`）で定義済みなら 'defined-elsewhere'（`[tui]` を足すと二重定義になり、TOML として
+ * 読めなくなって Codex が起動しない）。
+ */
+function findTuiSection(config: string): ITuiSection | 'defined-elsewhere' | undefined {
 	const firstTable = /^[\t ]*\[/m.exec(config);
 	const topLevel = firstTable === null ? config : config.slice(0, firstTable.index);
 	if (/^[\t ]*(?:tui|"tui"|'tui')[\t ]*[.=]/m.test(topLevel)) {
+		return 'defined-elsewhere';
+	}
+	const headerMatch = /^[\t ]*\[[\t ]*(?:tui|"tui"|'tui')[\t ]*\][^\n]*(?:\n|$)/m.exec(config);
+	if (!headerMatch) {
+		return undefined;
+	}
+	const headerEnd = headerMatch.index + headerMatch[0].length;
+	if (!headerMatch[0].endsWith('\n')) {
+		return { start: undefined, end: headerEnd };
+	}
+	// TOML allows indentation before a table header, as the header patterns above do.
+	const nextSectionMatch = /^[\t ]*\[/m.exec(config.slice(headerEnd));
+	return { start: headerEnd, end: nextSectionMatch === null ? config.length : headerEnd + nextSectionMatch.index };
+}
+
+/**
+ * `[tui].terminal_title` が無いときだけ、Para Code の値を目印付きで足す。既にあれば（利用者が
+ * `/title` などで決めた値でも）そのまま返す。`tui` が別の書き方で定義済みのときもそのまま返す。
+ */
+export function addTerminalTitleToTuiSection(config: string): string {
+	const section = findTuiSection(config);
+	if (section === 'defined-elsewhere') {
 		return config;
 	}
-	const tuiHeader = /^[\t ]*\[[\t ]*(?:tui|"tui"|'tui')[\t ]*\][^\n]*(?:\n|$)/m;
-	const headerMatch = tuiHeader.exec(config);
-	if (!headerMatch || headerMatch.index === undefined) {
-		return `${config.trimEnd()}\n\n[tui]\n${titleLine}\n`;
+	if (section === undefined) {
+		return config.trim().length === 0 ? `[tui]\n${TERMINAL_TITLE_LINE}\n` : `${config.trimEnd()}\n\n[tui]\n${TERMINAL_TITLE_LINE}\n`;
 	}
-	if (!headerMatch[0].endsWith('\n')) {
+	if (section.start === undefined) {
 		// `[tui]` is the last line and has no line break; the key has to go on a line of its own.
-		return `${config}\n${titleLine}\n`;
+		return `${config}\n${TERMINAL_TITLE_LINE}\n`;
 	}
-
-	const sectionStart = headerMatch.index + headerMatch[0].length;
-	// TOML allows indentation before a table header, as the header patterns above do.
-	const nextSection = /^[\t ]*\[/m;
-	const nextSectionMatch = nextSection.exec(config.slice(sectionStart));
-	const sectionEnd = nextSectionMatch?.index === undefined ? config.length : sectionStart + nextSectionMatch.index;
-	const section = config.slice(sectionStart, sectionEnd);
-	const titleKey = /^[\t ]*terminal_title[\t ]*=/m;
-	const titleKeyMatch = titleKey.exec(section);
-	if (!titleKeyMatch || titleKeyMatch.index === undefined) {
-		return `${config.slice(0, sectionStart)}${titleLine}\n${config.slice(sectionStart)}`;
+	if (/^[\t ]*(?:terminal_title|"terminal_title"|'terminal_title')[\t ]*=/m.test(config.slice(section.start, section.end))) {
+		return config;
 	}
+	return `${config.slice(0, section.start)}${TERMINAL_TITLE_LINE}\n${config.slice(section.start)}`;
+}
 
-	const valueStart = titleKeyMatch.index + titleKeyMatch[0].length;
-	let valueEnd = valueStart;
-	let arrayDepth = 0;
-	let inString = false;
-	let escaped = false;
-	for (; valueEnd < section.length; valueEnd++) {
-		const character = section[valueEnd];
-		if (inString) {
-			if (escaped) {
-				escaped = false;
-			} else if (character === '\\') {
-				escaped = true;
-			} else if (character === '"') {
-				inString = false;
-			}
-			continue;
+/**
+ * Para Code が書いた `[tui].terminal_title` の行（値が完全に一致し、目印が付いている行）だけを
+ * 取り除く。それ以外は何も変えない。`[tui]` の見出しは残す（利用者が書いた見出しかもしれないため。
+ * 空の表は TOML として正しい）。
+ */
+export function removeParadisTerminalTitleFromTuiSection(config: string): string {
+	const section = findTuiSection(config);
+	if (section === undefined || section === 'defined-elsewhere' || section.start === undefined) {
+		return config;
+	}
+	const escapedMarker = PARADIS_CODEX_TERMINAL_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const items = PARADIS_CODEX_TERMINAL_TITLE_ITEMS.map(item => `[\\t ]*"${item}"[\\t ]*`).join(',');
+	const ownedLine = new RegExp(`^[\\t ]*terminal_title[\\t ]*=[\\t ]*\\[${items}\\][\\t ]*${escapedMarker}[\\t ]*(?:\\r?\\n|$)`, 'm');
+	const body = config.slice(section.start, section.end);
+	const match = ownedLine.exec(body);
+	if (!match) {
+		return config;
+	}
+	const lineStart = section.start + match.index;
+	return `${config.slice(0, lineStart)}${config.slice(lineStart + match[0].length)}`;
+}
+
+type ParadisCodexConfigStep = 'stat' | 'read' | 'write';
+
+/** 書き込みがほかの書き手（Codex の trust 書き込み・TUI の `/title` など）とぶつかったときに読み直す回数。 */
+const CONFIG_UPDATE_MAX_ATTEMPTS = 3;
+
+/** 失敗した段（Sentry へ中身抜きで送る）。 */
+export class ParadisCodexConfigUpdateError extends Error {
+	constructor(readonly step: ParadisCodexConfigStep, readonly error: unknown) {
+		super(`Codex config.toml update failed at ${step}`);
+	}
+}
+
+interface IConfigSnapshot {
+	readonly text: string;
+	readonly etag: string;
+	readonly mtime: number;
+}
+
+async function readConfigSnapshot(fileService: Pick<IFileService, 'readFile'>, configFile: URI): Promise<IConfigSnapshot | undefined> {
+	try {
+		const content = await fileService.readFile(configFile);
+		return { text: content.value.toString(), etag: content.etag, mtime: content.mtime };
+	} catch (error) {
+		if (error instanceof Error && toFileOperationResult(error) === FileOperationResult.FILE_NOT_FOUND) {
+			return undefined;
 		}
-		if (character === '"') {
-			inString = true;
-		} else if (character === '[') {
-			arrayDepth++;
-		} else if (character === ']') {
-			arrayDepth--;
-			if (arrayDepth === 0) {
-				valueEnd++;
-				break;
-			}
-		} else if (character === '\n' && arrayDepth === 0) {
-			break;
-		}
+		throw error;
 	}
+}
 
-	return `${config.slice(0, sectionStart + titleKeyMatch.index)}${titleLine}${config.slice(sectionStart + valueEnd)}`;
+function isConcurrentModification(error: unknown): boolean {
+	return error instanceof Error && toFileOperationResult(error) === FileOperationResult.FILE_MODIFIED_SINCE;
+}
+
+/**
+ * 1つの Codex ホームの config.toml を、設定のオン/オフに合わせて更新する。
+ *
+ * - オン: `[tui].terminal_title` が無いときだけ目印付きで足す（利用者の値は上書きしない）
+ * - オフ: Para Code が書いた行（値の完全一致＋目印）だけを取り除く
+ * - ホーム（`~/.codex` など）が無ければ何もしない。Codex を入れていない人の家に作らない
+ * - 書く直前にもう一度読み、読んだときと中身が変わっていれば最初からやり直す。書き込み自体も
+ *   読んだときの etag を条件にする（Codex の trust 書き込みなど、同時に書く相手の変更を消さない）
+ *
+ * `backup` は書き換える前の中身を控える処理（失敗しても止めない）。
+ */
+export async function paradisUpdateCodexTerminalTitleConfig(
+	fileService: Pick<IFileService, 'exists' | 'readFile' | 'writeFile' | 'createFile'>,
+	codexHome: URI,
+	enabled: boolean,
+	backup: (configFile: URI) => Promise<unknown>,
+): Promise<'no-home' | 'unchanged' | 'written'> {
+	let step: ParadisCodexConfigStep = 'stat';
+	try {
+		if (!(await fileService.exists(codexHome))) {
+			return 'no-home';
+		}
+		const configFile = joinPath(codexHome, 'config.toml');
+		for (let attempt = 1; ; attempt++) {
+			step = 'read';
+			const snapshot = await readConfigSnapshot(fileService, configFile);
+			const currentConfig = snapshot?.text ?? '';
+			const nextConfig = enabled ? addTerminalTitleToTuiSection(currentConfig) : removeParadisTerminalTitleFromTuiSection(currentConfig);
+			if (nextConfig === currentConfig) {
+				return 'unchanged';
+			}
+			// config.toml は利用者の設定なので、書き換える前の中身を1つだけ隣へ控える（写せなくても止めない）
+			if (snapshot !== undefined && snapshot.text.length > 0) {
+				await backup(configFile);
+			}
+			// 控えている間にほかの書き手が書いていたら、その変更の上にやり直す
+			const latest = await readConfigSnapshot(fileService, configFile);
+			if (latest?.text !== snapshot?.text) {
+				if (attempt >= CONFIG_UPDATE_MAX_ATTEMPTS) {
+					// 書き続けている相手がいる。今回は諦め、失敗として扱って次の機会にやり直す
+					throw new Error('config.toml kept changing while it was being updated');
+				}
+				continue;
+			}
+			step = 'write';
+			try {
+				if (latest === undefined) {
+					await fileService.createFile(configFile, VSBuffer.fromString(nextConfig), { overwrite: false });
+				} else {
+					await fileService.writeFile(configFile, VSBuffer.fromString(nextConfig), { etag: latest.etag, mtime: latest.mtime });
+				}
+				return 'written';
+			} catch (error) {
+				if (!isConcurrentModification(error) || attempt >= CONFIG_UPDATE_MAX_ATTEMPTS) {
+					throw error;
+				}
+			}
+		}
+	} catch (error) {
+		throw new ParadisCodexConfigUpdateError(step, error);
+	}
 }
 
 /**
@@ -585,20 +695,19 @@ export async function writeCodexAccountHomes(homes: readonly IParadisCodexHome[]
 	return allWritten;
 }
 
-/** ログイン済みのアカウント用ホームの顔ぶれ（並び順に依らない）。 */
-function accountHomesKey(homes: readonly IParadisCodexHome[]): string {
-	return JSON.stringify(homes.filter(home => !home.isDefault && home.signedIn).map(home => home.homePath).sort());
+/** ログイン済みのアカウント用ホームの顔ぶれ（並び順に依らない）と、そのときの設定。 */
+function accountHomesKey(homes: readonly IParadisCodexHome[], enabled: boolean): string {
+	return JSON.stringify([enabled, homes.filter(home => !home.isDefault && home.signedIn).map(home => home.homePath).sort()]);
 }
 
 type ParadisCodexConfigTarget = 'default-home' | 'account-home';
-type ParadisCodexConfigStep = 'mkdir' | 'read' | 'write';
 
 class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisCodexTerminalTitle';
 
 	private writeQueue = Promise.resolve();
-	/** 最後に書いたアカウント用ホームの顔ぶれ。 */
+	/** 最後に更新したアカウント用ホームの顔ぶれと、そのときの設定（オン/オフ）。 */
 	private writtenAccountHomesKey: string | undefined;
 	private readonly reportedWriteFailures = new Set<string>();
 	private readonly codexAccountsClient: ParadisCodexAccountsClient;
@@ -621,79 +730,68 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 		}));
 		// 起動した後に増えたアカウント用ホーム（使用量パネルでの追加・ログイン、設定で足したホーム）にも
 		// 入れる。一覧が変わると codexAccounts が全ウィンドウへ状態を配るので、ホームの顔ぶれが変わったら書き直す
-		// （書く中身は同じで、既に入っているホームは書き換えない）。
+		// （書く中身は同じで、既に値のあるホームは書き換えない）。
 		if (this.environmentService.remoteAuthority === undefined) {
 			this._register(this.codexAccountsClient.onDidChangeState(state => {
-				if (accountHomesKey(state.homes) !== this.writtenAccountHomesKey) {
+				if (accountHomesKey(state.homes, this.enabled) !== this.writtenAccountHomesKey) {
 					this.applySetting();
 				}
 			}));
 		}
 	}
 
-	private applySetting(): void {
-		if (this.configurationService.getValue<boolean>(PARADIS_CODEX_TERMINAL_TITLE_ENABLED_SETTING) !== false) {
-			this.writeQueue = this.writeQueue.then(async () => {
-				if (this.configurationService.getValue<boolean>(PARADIS_CODEX_TERMINAL_TITLE_ENABLED_SETTING) !== false) {
-					await this.writeCodexConfig();
-				}
-			}).catch(error => {
-				// This is the main way the feature dies silently: a failed config.toml write leaves
-				// `[tui].terminal_title` unset forever, since nothing else retries it.
-				this.reportWriteFailure(error, 'default-home', 'prepare');
-			});
-		}
+	private get enabled(): boolean {
+		return this.configurationService.getValue<boolean>(PARADIS_CODEX_TERMINAL_TITLE_ENABLED_SETTING) !== false;
 	}
 
-	private async writeCodexConfig(): Promise<void> {
+	/**
+	 * オンなら値の無いホームへ書き、オフなら Para Code が書いた値だけを外す。オフで起動したときも
+	 * 外しに行く（このウィンドウが閉じている間にオフにされた場合があるため。目印の無い値は触らない）。
+	 */
+	private applySetting(): void {
+		this.writeQueue = this.writeQueue.then(() => this.updateCodexConfig(this.enabled)).catch(error => {
+			// This is the main way the feature dies silently: a failed config.toml write leaves
+			// `[tui].terminal_title` unset forever, since nothing else retries it.
+			this.reportWriteFailure(error, 'default-home', 'prepare');
+		});
+	}
+
+	private async updateCodexConfig(enabled: boolean): Promise<void> {
 		const rawHome = await this.pathService.userHome();
 		const userHome = resolveWritableCodexHome(this.environmentService.remoteAuthority, rawHome);
 		if (userHome === undefined) {
 			this.logService.warn('[ParadisCodexTerminalTitle] the host home is not resolved yet; skipping the Codex terminal title config update');
 			return;
 		}
-		const codexHome = joinPath(userHome, '.codex');
-		await this.tryWriteTerminalTitleConfig(codexHome, 'default-home', true);
+		await this.tryUpdateTerminalTitleConfig(joinPath(userHome, '.codex'), 'default-home', enabled);
 		// Codex のアカウントを切り替えると、Codex は ~/.codex-2 のような別のホームの config.toml を
-		// 読む。手元のウィンドウでは、ログイン済みのアカウント用ホームにも同じ設定を入れる。
+		// 読む。手元のウィンドウでは、ログイン済みのアカウント用ホームにも同じ規則で入れる（外す）。
 		// 1つのホームで失敗しても残りのホームには書く（以前は最初の失敗で全部止まっていた）。
 		if (this.environmentService.remoteAuthority === undefined) {
 			const state = await this.codexAccountsClient.getState().catch(() => undefined);
-			const allWritten = await writeCodexAccountHomes(state?.homes ?? [], home => this.tryWriteTerminalTitleConfig(home, 'account-home', false));
+			const allWritten = await writeCodexAccountHomes(state?.homes ?? [], home => this.tryUpdateTerminalTitleConfig(home, 'account-home', enabled));
 			// 失敗したホームがあれば記録しない。次にアカウントの状態が届いたとき、もう一度書きに行く。
 			if (state !== undefined && allWritten) {
-				this.writtenAccountHomesKey = accountHomesKey(state.homes);
+				this.writtenAccountHomesKey = accountHomesKey(state.homes, enabled);
 			}
 		}
 	}
 
 	/**
-	 * Writes one home's config.toml. A failure is reported with where it failed and why, then
+	 * Updates one home's config.toml. A failure is reported with where it failed and why, then
 	 * swallowed so the other homes still get written; the result says whether it succeeded.
 	 */
-	private async tryWriteTerminalTitleConfig(codexHome: URI, target: ParadisCodexConfigTarget, createHome: boolean): Promise<boolean> {
-		let step: ParadisCodexConfigStep = 'mkdir';
+	private async tryUpdateTerminalTitleConfig(codexHome: URI, target: ParadisCodexConfigTarget, enabled: boolean): Promise<boolean> {
 		try {
-			if (createHome && !(await this.fileService.exists(codexHome))) {
-				await this.fileService.createFolder(codexHome);
-			}
-			const configFile = joinPath(codexHome, 'config.toml');
-			step = 'read';
-			const currentConfig = (await this.fileService.exists(configFile))
-				? (await this.fileService.readFile(configFile)).value.toString()
-				: '';
-			const nextConfig = replaceTerminalTitleInTuiSection(currentConfig);
-			if (nextConfig !== currentConfig) {
-				// config.toml は利用者の設定なので、書き換える前の中身を1つだけ隣へ控える（写せなくても止めない）
-				if (currentConfig.length > 0) {
-					await paradisWriteRollingBackupUri(this.fileService, configFile, error => this.logService.warn('[ParadisCodexTerminalTitle] could not back up config.toml', error));
-				}
-				step = 'write';
-				await this.fileService.writeFile(configFile, VSBuffer.fromString(nextConfig));
-			}
+			await paradisUpdateCodexTerminalTitleConfig(this.fileService, codexHome, enabled, configFile =>
+				paradisWriteRollingBackupUri(this.fileService, configFile, error => this.logService.warn('[ParadisCodexTerminalTitle] could not back up config.toml', error)));
 			return true;
 		} catch (error) {
-			this.reportWriteFailure(error, target, step);
+			if (error instanceof ParadisCodexConfigUpdateError) {
+				this.reportWriteFailure(error.error, target, error.step);
+			} else {
+				this.reportWriteFailure(error, target, 'prepare');
+			}
 			return false;
 		}
 	}
