@@ -55,10 +55,16 @@ export class ParadisTerminalImeInputGateContribution extends Disposable implemen
 			}
 		};
 		this._register(addDisposableListener(element, 'compositionstart', event => {
+			// 新しい変換が始まったなら、前の変換は終わっている。前の変換の `compositionend` が
+			// 届かなかった（フォーカスが移った等）ときに、その状態を持ち越さない。持ち越すと、
+			// ゲートの外で始まった変換の `update` と `end` まで xterm へ届かず、xterm が
+			// 「変換中」のまま固まる。
 			if (paradisIsTerminalInputBlocked()) {
 				this._swallowingComposition = true;
+				this._passingComposition = false;
 				event.stopImmediatePropagation();
 			} else {
+				this._swallowingComposition = false;
 				this._passingComposition = true;
 			}
 		}, true));
