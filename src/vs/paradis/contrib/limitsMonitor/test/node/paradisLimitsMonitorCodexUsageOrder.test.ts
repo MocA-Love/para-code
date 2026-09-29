@@ -42,8 +42,11 @@ class ParadisFakeCodexUsageService extends ParadisLimitsMonitorService {
 		return this.rpcAnswer;
 	}
 
-	protected override async fetchWhamUsage(accessToken: string): Promise<IWhamUsageResponse> {
+	readonly whamTimeouts: (number | undefined)[] = [];
+
+	protected override async fetchWhamUsage(accessToken: string, _accountId?: string, timeoutMs?: number): Promise<IWhamUsageResponse> {
 		this.calls.push(`wham:${accessToken}`);
+		this.whamTimeouts.push(timeoutMs);
 		if (this.whamAnswer instanceof Error) {
 			throw this.whamAnswer;
 		}
@@ -208,5 +211,19 @@ suite('ParadisLimitsMonitor Codex usage order', () => {
 		} finally {
 			configureParadisDiagnosticReporter(() => { });
 		}
+	});
+
+	// スマホの limits は 60 秒で諦めるので、1ホームを読む時間を抑える（RPC の後の wham/usage は短く待つ）。
+	test('waits less for wham/usage after the app-server, so one home stays within the phone budget', async () => {
+		const service = new ParadisFakeCodexUsageService(new NullLogService(), undefined, undefined, () => root);
+		await service.fetch(codexHome);
+		service.clock += 60_000;
+		await service.fetch(codexHome);
+		service.clock += 5 * 60_000;
+		service.rpcAnswer = new Error('codex app-server exited (code=1, signal=null)');
+		await service.fetch(codexHome);
+		service.dispose();
+		// RPC で取れた後に足す分 5 秒 / RPC を起こさない間 30 秒 / RPC が失敗した後 15 秒
+		assert.deepStrictEqual(service.whamTimeouts, [5_000, 30_000, 15_000]);
 	});
 });

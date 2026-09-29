@@ -69,11 +69,25 @@ import { ParadisClaudeOAuthClient } from './paradisClaudeOAuthClient.js';
 const SNAPSHOT_CACHE_TTL_MS = 150_000;
 /** wham/usage HTTPタイムアウト。 */
 const USAGE_HTTP_TIMEOUT_MS = 30_000;
-/**
- * app-server RPCのリクエストタイムアウト（初期化は paradisCodexAppServerRpc.ts 側の15秒）。wham/usage の
- * HTTP と同じ 30 秒にそろえる（10 秒では、トークンの更新を挟む遅い応答を失敗として数えていた）。
+/*
+ * 1つのホームを読む時間の上限の内訳。スマホの limits の問い合わせは 60 秒で諦めるので、1ホームが最悪でも
+ * 45 秒ほどで終わるようにしてある（codex の場所とシェル環境の解決は、初回以外はキャッシュが効く）:
+ *  - RPC で取れる: 初期化 15 秒（paradisCodexAppServerRpc.ts）+ rateLimits 15 秒 + account/read 10 秒
+ *    + wham/usage で足す分 5 秒 = 45 秒
+ *  - RPC が失敗する: 初期化 15 秒 + rateLimits 15 秒 + wham/usage 15 秒 = 45 秒
+ *  - RPC を起こさない間: wham/usage 30 秒（401 はすぐ返るので、そこから RPC に進んでも上の範囲に収まる）
+ * ホームが複数あると RPC はホームをまたいで1つずつ（2 秒ずらして）流すので、後のホームは前のホームの RPC を
+ * 待つ。ホームが多いと全体では 60 秒を超えうる（スナップショットは 150 秒キャッシュするので、次の問い合わせは
+ * すぐ返る）。
  */
-const RPC_REQUEST_TIMEOUT_MS = USAGE_HTTP_TIMEOUT_MS;
+/** app-server の `account/rateLimits/read`（トークンの更新を挟むと遅くなる）。 */
+const RPC_RATE_LIMITS_TIMEOUT_MS = 15_000;
+/** app-server の `account/read`（メールとプランだけの補助。取れなくても成立する）。 */
+const RPC_ACCOUNT_TIMEOUT_MS = 10_000;
+/** RPC が失敗した後に wham/usage で読むとき。 */
+const WHAM_FALLBACK_TIMEOUT_MS = 15_000;
+/** RPC で取れた後に、wham/usage で追加の枠を足すとき（取れなければ RPC の結果だけで出す）。 */
+const WHAM_SUPPLEMENT_TIMEOUT_MS = 5_000;
 /** RPCが失敗したホームの再試行抑止時間(毎ポーリングでcodexを起動しないため)。 */
 const RPC_FAILURE_COOLDOWN_MS = 10 * 60_000;
 /** 同じホームで RPC を起こす最短の間隔（Orca の MIN_REFETCH_MS）。その間は wham/usage で読む。 */
@@ -531,7 +545,7 @@ export class ParadisLimitsMonitorService {
 		}
 
 		try {
-			const usage = await this.fetchWhamUsage(accessToken, accountId);
+			const usage = await this.fetchWhamUsage(accessToken, accountId, rpcTried ? WHAM_FALLBACK_TIMEOUT_MS : USAGE_HTTP_TIMEOUT_MS);
 			return { account: { ...base, email, ...this.mapWhamUsage(usage), status: 'ok' }, accountId };
 		} catch (error) {
 			reportRpcFailure?.();
@@ -670,7 +684,7 @@ export class ParadisLimitsMonitorService {
 		const fromRpc = { planType: viaRpc.planType, fiveHour: viaRpc.windows.fiveHour, sevenDay: viaRpc.windows.sevenDay };
 		let usage: ReturnType<ParadisLimitsMonitorService['mapWhamUsage']>;
 		try {
-			usage = this.mapWhamUsage(await this.fetchWhamUsage(accessToken, accountId));
+			usage = this.mapWhamUsage(await this.fetchWhamUsage(accessToken, accountId, WHAM_SUPPLEMENT_TIMEOUT_MS));
 		} catch {
 			return fromRpc;
 		}
@@ -704,9 +718,9 @@ export class ParadisLimitsMonitorService {
 		return undefined;
 	}
 
-	protected async fetchWhamUsage(accessToken: string, accountId: string | undefined): Promise<IWhamUsageResponse> {
+	protected async fetchWhamUsage(accessToken: string, accountId: string | undefined, timeoutMs = USAGE_HTTP_TIMEOUT_MS): Promise<IWhamUsageResponse> {
 		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), USAGE_HTTP_TIMEOUT_MS);
+		const timer = setTimeout(() => controller.abort(), timeoutMs);
 		try {
 			const headers: Record<string, string> = {
 				'Authorization': `Bearer ${accessToken}`,
@@ -767,11 +781,11 @@ export class ParadisLimitsMonitorService {
 		// initialize の失敗は開始関数の中で子プロセスを片付けてから投げる。
 		const rpc = await paradisStartCodexAppServerRpc(command, env, this.logService, 'para-code-limits-monitor', { shortLivedProbe: true });
 		try {
-			const rateLimits = await rpc.request('account/rateLimits/read', undefined, RPC_REQUEST_TIMEOUT_MS) as IRpcRateLimitsResult;
+			const rateLimits = await rpc.request('account/rateLimits/read', undefined, RPC_RATE_LIMITS_TIMEOUT_MS) as IRpcRateLimitsResult;
 			let account: IRpcAccountResult | undefined;
 			try {
 				// codex 0.154 は `params` 省略を `missing field 'params'` で拒否するので空オブジェクトを渡す
-				account = await rpc.request('account/read', {}, RPC_REQUEST_TIMEOUT_MS) as IRpcAccountResult;
+				account = await rpc.request('account/read', {}, RPC_ACCOUNT_TIMEOUT_MS) as IRpcAccountResult;
 			} catch {
 				// email/planは補助情報。rate limitsが取れていれば成立させる
 			}
@@ -823,7 +837,6 @@ export class ParadisLimitsMonitorService {
 	private async runCodexLogin(session: ISetupSession, existingHome: string | undefined): Promise<void> {
 		let homePath: string;
 		let createdHome = false;
-		let copiedConfig = false;
 		if (existingHome) {
 			// 再ログイン: 既存ホームに対してcodex自身のloginを実行するだけ(ファイルは一切触らない)。
 			// IPC経由の任意パスに対してcodexを起動しないよう、発見済みホームのみに制限する
@@ -843,7 +856,6 @@ export class ParadisLimitsMonitorService {
 				const defaultConfig = path.join(this._homedir(), '.codex', 'config.toml');
 				if (await this.fileExists(defaultConfig)) {
 					await fs.promises.copyFile(defaultConfig, path.join(homePath, 'config.toml'));
-					copiedConfig = true;
 				}
 			}
 			session.state = { phase: 'waiting_browser', homeLabel: this.codexHomeLabel(homePath) };
@@ -863,7 +875,7 @@ export class ParadisLimitsMonitorService {
 			// codex を起動する前に失敗した（config.toml のコピー、codex が見つからない、シェル環境の解決）。
 			// 作ったばかりのホームを残すと、auth.json が無いので使用量パネルから消せず、空き番号も減る。
 			if (createdHome) {
-				await this.removeUnusedCodexHome(homePath, copiedConfig);
+				await this.removeUnusedCodexHome(homePath);
 			}
 			throw error;
 		}
@@ -899,7 +911,7 @@ export class ParadisLimitsMonitorService {
 		}
 
 		if (createdHome) {
-			await this.removeUnusedCodexHome(homePath, copiedConfig);
+			await this.removeUnusedCodexHome(homePath);
 		}
 		if (!cancelled) {
 			const detail = output.trim().split('\n').pop() ?? '';
@@ -908,20 +920,18 @@ export class ParadisLimitsMonitorService {
 	}
 
 	/**
-	 * 失敗/キャンセル時: 自分が作った新ホームのみ後始末する(既存ホームは決して消さない)。
-	 * 消してよいのは自分が置いたconfig.tomlコピーだけで、他に何かができていたら残す。
+	 * 失敗/キャンセル時: 自分が作った新ホームのみ後始末する(既存ホームは決して消さない。呼び出し側は
+	 * 直前に確保したホームでだけ呼ぶ)。消すのは中身が自分の置いた config.toml（途中で失敗した書きかけを
+	 * 含む）だけのときで、他に何かができていたら(codex が何かを書いた)残す。
 	 */
-	private async removeUnusedCodexHome(homePath: string, copiedConfig: boolean): Promise<void> {
-		if (await this.fileExists(path.join(homePath, 'auth.json'))) {
-			return;
-		}
+	private async removeUnusedCodexHome(homePath: string): Promise<void> {
 		try {
-			if (copiedConfig) {
-				await fs.promises.rm(path.join(homePath, 'config.toml'), { force: true });
+			const entries = await fs.promises.readdir(homePath);
+			if (entries.every(entry => entry === 'config.toml')) {
+				await fs.promises.rm(homePath, { recursive: true, force: true });
 			}
-			await fs.promises.rmdir(homePath);
 		} catch {
-			// 空でない(codexが何かを書いた)場合は残す
+			// 読めない・消せない場合は残す
 		}
 	}
 
