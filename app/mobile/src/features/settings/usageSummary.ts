@@ -72,19 +72,28 @@ export function accountStatusMessage(account: RateLimitAccount, remoteHost = fal
 	}
 }
 
-/** 接続先のログインで、手元の PC と説明が変わる状態だけを返す（それ以外は undefined）。 */
+/** 接続先のログインで、手元の PC と説明が変わる状態だけを返す（それ以外は undefined）。PC の使用量パネルと同じ文言。 */
 function remoteHostStatusMessage(account: RateLimitAccount): string | undefined {
 	switch (account.status) {
 		case 'refreshing':
-			return 'アクセストークンの期限が切れています。接続先の Claude Code が自動で更新します';
+			// 接続先の Claude Code は、接続先で claude を動かしている間しかトークンを更新しない
+			return 'アクセストークンの期限が切れています。接続先で claude を起動すると Claude Code が更新し、表示が戻ります';
 		case 'no_credentials':
-			return '接続先の Claude にログインしていません。接続先のターミナルで claude を起動し、/login でログインしてください';
 		case 'relogin_required':
 			return '接続先のターミナルで claude を起動し、/login でログインし直してください';
 		case 'unavailable':
-			return account.unavailableReason === 'keychain_unavailable'
-				? '接続先では Claude のログインが macOS のキーチェーンに保存されているため、SSH 越しには読み取れません'
-				: undefined;
+			switch (account.unavailableReason) {
+				case 'host_not_logged_in':
+					return '接続先に Claude のサブスクリプションのログインが見つかりません。接続先で使うときは、接続先のターミナルで claude を起動し /login でログインすると表示されます（API キーで使っている場合は表示できません）';
+				case 'host_fetch_failed':
+					return account.statusDetail !== undefined
+						? `接続先から使用量を取得できていません（${account.statusDetail}）。しばらくしてから取り直します`
+						: '接続先から使用量を取得できていません。しばらくしてから取り直します';
+				case 'keychain_unavailable':
+					return '接続先では Claude のログインが macOS のキーチェーンに保存されているため、SSH 越しには読み取れません';
+				default:
+					return undefined;
+			}
 		default:
 			return undefined;
 	}
@@ -103,12 +112,6 @@ export function accountHint(account: RateLimitAccount, remoteHost: RateLimitProv
 		return remoteHost.label !== undefined ? `接続先 ${remoteHost.label} でログイン中` : '接続先でログイン中';
 	}
 	return account.active === true ? '使用中' : account.planType;
-}
-
-/** 束の見出し。接続先のログインを出しているときは接続先の名前を添える。 */
-export function providerTitle(title: string, snapshot: RateLimitProviderSnapshot | undefined): string {
-	const label = snapshot?.remoteHost?.label;
-	return label !== undefined ? `${title}（${label}）` : title;
 }
 
 /**

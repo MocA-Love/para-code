@@ -39,6 +39,7 @@ import {
 	ParadisLimitsProvider,
 	ParadisLimitsSeverity
 } from '../common/paradisLimitsMonitor.js';
+import { PARADIS_CLAUDE_HOST_ACCOUNT_ID } from '../common/paradisClaudeAccounts.js';
 import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
 import { ParadisLimitsMonitorClient, PARADIS_LIMITS_SETTING_ENABLED } from './paradisLimitsMonitorClient.js';
 import { IParadisLimitsMonitorPanelOptions, ParadisLimitsMonitorPanel } from './paradisLimitsMonitorPanel.js';
@@ -67,8 +68,14 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 function paradisLimitsStatusSummary(account: IParadisLimitsAccount): string {
 	switch (account.status) {
 		case 'refreshing':
-			return localize('paradis.limitsMonitor.tooltipRefreshing', "トークンを更新中（操作は要りません）");
+			// 接続先の Claude Code は、接続先で claude を動かしている間しかトークンを更新しない。
+			return account.id === PARADIS_CLAUDE_HOST_ACCOUNT_ID
+				? localize('paradis.limitsMonitor.tooltipHostRefreshing', "トークンの期限切れ（接続先で claude を起動すると更新されます）")
+				: localize('paradis.limitsMonitor.tooltipRefreshing', "トークンを更新中（操作は要りません）");
 		case 'unavailable':
+			if (account.unavailableReason === 'host_not_logged_in') {
+				return localize('paradis.limitsMonitor.tooltipHostNotLoggedIn', "接続先に Claude のログインがありません");
+			}
 			return account.unavailableReason === 'api_key'
 				? localize('paradis.limitsMonitor.tooltipApiKey', "APIキー利用のため使用状況はありません")
 				: localize('paradis.limitsMonitor.tooltipUnavailable', "使用状況を取得できていません");

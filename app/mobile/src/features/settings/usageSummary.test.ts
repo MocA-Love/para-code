@@ -12,7 +12,6 @@ import {
 	accountWindows,
 	formatUsd,
 	providerEmptyMessage,
-	providerTitle,
 	ratioPercent,
 	recentDailyAverage,
 	resetInLabel,
@@ -127,38 +126,34 @@ describe('accountStatusMessage', () => {
 describe('SSH の接続先の Claude のログイン', () => {
 	const host = { label: 'devbox' };
 
-	it('見出しに接続先を添え、使用中の代わりにどの接続先のログインかを書く', () => {
+	it('使用中の代わりにどの接続先のログインかを書く', () => {
 		expect({
-			title: providerTitle('Claude', { accounts: [], remoteHost: host }),
-			localTitle: providerTitle('Claude', { accounts: [] }),
-			unknownHostTitle: providerTitle('Claude', { accounts: [], remoteHost: {} }),
 			hint: accountHint(account({ email: 'a@example.com' }), host),
 			unknownHostHint: accountHint(account(), {}),
 			localActiveHint: accountHint(account({ active: true }), undefined),
 		}).toEqual({
-			title: 'Claude（devbox）',
-			localTitle: 'Claude',
-			unknownHostTitle: 'Claude',
 			hint: '接続先 devbox でログイン中',
 			unknownHostHint: '接続先でログイン中',
 			localActiveHint: '使用中',
 		});
 	});
 
-	it('直し方は PC の Para Code ではなく接続先のターミナルを案内する', () => {
+	it('直し方は PC の Para Code ではなく接続先を案内し、ログインが無い・取れないは中立に書く', () => {
 		const messages = {
 			refreshing: accountHint(account({ status: 'refreshing' }), host),
-			notLoggedIn: accountHint(account({ status: 'no_credentials' }), host),
 			relogin: accountHint(account({ status: 'relogin_required' }), host),
+			notLoggedIn: accountHint(account({ status: 'unavailable', unavailableReason: 'host_not_logged_in' }), host),
+			fetchFailed: accountHint(account({ status: 'unavailable', unavailableReason: 'host_fetch_failed', statusDetail: 'could not reach the usage API' }), host),
 			keychain: accountHint(account({ status: 'unavailable', unavailableReason: 'keychain_unavailable' }), host),
-			error: accountHint(account({ status: 'error', statusDetail: 'usage API returned 500' }), host),
+			rateLimited: accountHint(account({ status: 'unavailable', unavailableReason: 'rate_limited' }), host),
 		};
 		expect(messages).toEqual({
-			refreshing: 'アクセストークンの期限が切れています。接続先の Claude Code が自動で更新します',
-			notLoggedIn: '接続先の Claude にログインしていません。接続先のターミナルで claude を起動し、/login でログインしてください',
+			refreshing: 'アクセストークンの期限が切れています。接続先で claude を起動すると Claude Code が更新し、表示が戻ります',
 			relogin: '接続先のターミナルで claude を起動し、/login でログインし直してください',
+			notLoggedIn: '接続先に Claude のサブスクリプションのログインが見つかりません。接続先で使うときは、接続先のターミナルで claude を起動し /login でログインすると表示されます（API キーで使っている場合は表示できません）',
+			fetchFailed: '接続先から使用量を取得できていません（could not reach the usage API）。しばらくしてから取り直します',
 			keychain: '接続先では Claude のログインが macOS のキーチェーンに保存されているため、SSH 越しには読み取れません',
-			error: 'usage API returned 500',
+			rateLimited: '使用状況を一時的に取得できていません（上限に達したアカウントは、リセットまで取得を止めます）',
 		});
 		expect(Object.values(messages).some(message => message?.includes('PC の Para Code'))).toBe(false);
 	});

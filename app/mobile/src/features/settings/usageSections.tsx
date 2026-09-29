@@ -7,7 +7,7 @@ import { ProviderLogo } from '../../components/providerLogo.js';
 import type { RateLimitAccount, RateLimitProviderSnapshot } from '../../store.js';
 import { alpha, colors, radius, space, type } from '../../theme.js';
 import { Icon, Meter, MeterRow, iconSize, useThemeColors, type LucideIcon } from '../../ui/index.js';
-import { accountHint, accountName, accountWindows, providerEmptyMessage, providerTitle, resetInLabel } from './usageSummary.js';
+import { accountHint, accountName, accountWindows, providerEmptyMessage, resetInLabel } from './usageSummary.js';
 
 /**
  * 使用量（`/settings/usage`、Orca の accounts）の束（モックの `.acsec` / `.acsh` / `.accard` / `.acrow`）。
@@ -79,8 +79,9 @@ export function UsageSeparator() {
  * Claude / Codex の束。アカウントごとに行を出し、5時間・7日（と追加の枠）のメーターと、
  * リセットまでの時間を並べる。いま使っているアカウントに印。値が取れていないアカウントは理由を書く。
  *
- * PC の SSH のウィンドウの Claude（`snapshot.remoteHost`）は、接続先の Claude Code がいまログインしている
- * アカウントだけが届く。見出しに接続先の名前を添え、「使用中」の印は付けない（手元のアカウントではない）。
+ * PC の接続先（SSH など）のウィンドウの Claude（`snapshot.remoteHost`）は、接続先の Claude Code がいま
+ * ログインしているアカウントだけが届く。「使用中」の印は付けず、行の補足にどの接続先のログインかを書く
+ * （接続先の名前は上の接続先の選択にも出るので、見出しには重ねない）。
  */
 export function ProviderUsageSection({ provider, title, snapshot, now, loading, dimmed }: {
 	provider: 'claude' | 'codex';
@@ -93,7 +94,7 @@ export function ProviderUsageSection({ provider, title, snapshot, now, loading, 
 	const accounts = snapshot?.accounts ?? [];
 	const remoteHost = snapshot?.remoteHost;
 	return (
-		<UsageSection title={providerTitle(title, snapshot)} logo={<ProviderLogo provider={provider} size={iconSize.sm} />} dimmed={dimmed}>
+		<UsageSection title={title} logo={<ProviderLogo provider={provider} size={iconSize.sm} />} dimmed={dimmed}>
 			{snapshot === undefined ? (
 				<UsageRow><UsageRowTitle title={loading ? '取得しています…' : 'まだ取得していません'} /></UsageRow>
 			) : accounts.length === 0 ? (

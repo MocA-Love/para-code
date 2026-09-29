@@ -44,8 +44,12 @@ export type ParadisLimitsAccountStatus = 'ok' | 'refreshing' | 'relogin_required
 /**
  * 'unavailable' の内訳。表示の分岐キーにする（statusDetail は自由文字列なので分岐に使わない）。
  * 'rate_limited' は Claude の使用量 API に 429 を返されて待っている間（時間が経てば戻る）。
+ * 'host_not_logged_in' と 'host_fetch_failed' は接続先（SSH・WSL・コンテナなど）の Claude のカードだけで
+ * 使う。接続先では Claude を使っていない・API キーで使っている・外へ通信できないことがよくあるので、
+ * 「認証情報なし」「エラー」を赤い再ログインの表示にせず、灰色の「取得できず」に落とす
+ * （{@link paradisClaudeHostAccountsState}）。
  */
-export type ParadisLimitsUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable' | 'rate_limited';
+export type ParadisLimitsUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable' | 'rate_limited' | 'host_not_logged_in' | 'host_fetch_failed';
 
 /** 再ログインで解消し得る状態か（'refreshing'・'unavailable' は再ログインしても直らない）。 */
 export function paradisLimitsNeedsRelogin(status: ParadisLimitsAccountStatus): boolean {
@@ -93,7 +97,7 @@ export interface IParadisLimitsLegacyAccount {
 	readonly organizationName?: string;
 }
 
-/** Claude: SSH の接続先のログインを出しているときの接続先（Q131 案B）。 */
+/** Claude: 接続先（SSH など）のログインを出しているときの接続先。 */
 export interface IParadisLimitsRemoteHost {
 	/** 接続先の表示名（SSH のホスト名など）。分からなければ undefined。 */
 	readonly label?: string;
