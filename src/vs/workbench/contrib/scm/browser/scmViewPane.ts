@@ -289,6 +289,13 @@ class InputRenderer implements ICompressibleTreeRenderer<ISCMInput, FuzzyScore, 
 
 	renderElement(node: ITreeNode<ISCMInput, FuzzyScore>, index: number, templateData: InputTemplate): void {
 		const input = node.element;
+		// PARA-PATCH: a hidden tree keeps the node of a provider that has since unregistered, and the
+		// provider disposes its input model first. Attaching that model throws; leave the row empty
+		// until the tree refreshes and drops the node.
+		if (input.repository.provider.inputBoxTextModel.isDisposed()) {
+			templateData.inputWidget.input = undefined;
+			return;
+		}
 		templateData.inputWidget.input = input;
 
 		// Remember widget
