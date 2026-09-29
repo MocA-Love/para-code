@@ -17,7 +17,7 @@ import { IEditorGroup } from '../../../../../workbench/services/editor/common/ed
 import { IParadisAgentBrowserBindingModel } from '../../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserTabsService, ParadisAgentApprovalOutcome } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { IParadisWorkspaceSwitchService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD } from '../../common/paradisBrowserProfileMcp.js';
+import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD } from '../../common/paradisBrowserProfileMcp.js';
 import { IParadisBrowserProfile } from '../../common/paradisBrowserProfileModel.js';
 import { paradisAgentOwnerMark, ParadisBrowserProfileMcpChannel } from '../../electron-browser/paradisBrowserProfileMcp.contribution.js';
 import { IParadisBrowserProfilesService, IParadisCreateProfileOptions } from '../../electron-browser/paradisBrowserProfilesService.js';
@@ -146,6 +146,16 @@ suite('ParadisBrowserProfileMcpChannel', () => {
 			results.push(result.ok ? undefined : result.reason);
 		}
 		assert.deepStrictEqual(results, [...Array.from({ length: PARADIS_AGENT_CREATED_PROFILE_LIMIT }, () => undefined), 'tooManyProfiles']);
+	});
+
+	test('stops agents from creating profiles once agent-made profiles reach the overall cap', async () => {
+		const orphaned = Array.from({ length: PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT }, (_, index) => profile(`0000000000b${index}`, `old-${index}`, { createdByAgent: true, agentOwner: paradisAgentOwnerMark(`restarted-pane-${index % 5}`) }));
+		const { channel } = createChannel(orphaned, 'denied');
+		store.add(channel);
+		assert.deepStrictEqual(
+			await channel.call<IParadisManageProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, ['pane-a', 'new']),
+			{ ok: false, reason: 'tooManyAgentProfiles' },
+		);
 	});
 
 	test('creating a profile with a taken or empty name gets one answer, so user profile names cannot be probed', async () => {

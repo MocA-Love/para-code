@@ -317,4 +317,53 @@ suite('ParadisAgentActivityWorkerHost', () => {
 			workers: 2,
 		});
 	});
+
+	test('splits a parse batch that times out, and stops reading a transcript that keeps timing out until it changes', async () => {
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-activity-timeout-'));
+		try {
+			const project = join(root, 'claude', 'projects', '-work-repo');
+			await fs.mkdir(project, { recursive: true });
+			const line = JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), cwd: '/work/repo', message: { role: 'user', content: 'x' } }) + '\n';
+			await fs.writeFile(join(project, 'small.jsonl'), line);
+			await fs.writeFile(join(project, 'huge.jsonl'), line);
+			const requests: { files: number; huge: boolean }[] = [];
+			// 「huge」を含む集計には答えない worker（読み込みが固まった状態）
+			class StuckOnHugeWorker extends FakeWorker {
+				override postMessage(message: IParadisActivityWorkerEnvelope): void {
+					super.postMessage(message);
+					if (message.request.op !== 'parse') {
+						return;
+					}
+					const files = message.request.files;
+					const huge = files.some(file => file.path.endsWith('huge.jsonl'));
+					requests.push({ files: files.length, huge });
+					if (!huge) {
+						setTimeout(() => this.emit('message', { id: message.id, ok: true, value: files.map(() => null) }), 0);
+					}
+				}
+			}
+			const service = store.add(new ParadisAgentActivityService({
+				worker: new ParadisAgentActivityWorkerHost(() => new StuckOnHugeWorker(), 60_000),
+				indexDbPath: join(root, 'index.sqlite'),
+				claudeHome: () => join(root, 'claude'),
+				codexHomes: () => [join(root, 'codex')],
+				resolveAgentHomes: cwd => ({ claude: join(root, 'claude'), codex: join(root, 'codex'), matchCwd: cwd }),
+				indexSettings: () => ({ enabled: false }),
+				parseTimeoutMs: () => 20,
+			}, new NullLogService()));
+			await service.whenIndexReconciled();
+			const day = paradisActivityDayKey(new Date());
+			for (let round = 0; round < 3; round++) {
+				await service.workStats({ since: day, until: day });
+			}
+			assert.deepStrictEqual(requests, [
+				{ files: 2, huge: true }, { files: 1, huge: requests[1].huge }, { files: 1, huge: !requests[1].huge },
+				{ files: 2, huge: true }, { files: 1, huge: requests[1].huge }, { files: 1, huge: !requests[1].huge },
+				// 2回続けて時間切れになったファイルは、中身が変わるまで読まない
+				{ files: 1, huge: false },
+			]);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
 });

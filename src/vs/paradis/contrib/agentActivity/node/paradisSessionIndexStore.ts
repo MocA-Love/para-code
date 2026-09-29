@@ -389,10 +389,14 @@ export class ParadisSessionIndexStore {
 		} else if (row) {
 			// 差し替えられた、縮んだ、または先頭が書き変わった。そのファイルの分を消して最初から読む。
 			fileId = row.id;
-			this.clearFileMessages(fileId);
-			this.statements.setComplete.run(0, fileId);
-			// 消した分を「読んだ」ままにしない（最初の書き込みの前に止まっても、次は先頭から読む）。
-			this.statements.setOffset.run(0, fileId);
+			// 消すのと「読んだ位置」を先頭へ戻すのを1つのトランザクションで行う（途中で止まっても、消した分を
+			// 読んだままにしない）。
+			this.transaction(() => {
+				this.statements.deleteMessages.run(fileId);
+				this.statements.deleteMessageFiles.run(fileId);
+				this.statements.setComplete.run(0, fileId);
+				this.statements.setOffset.run(0, fileId);
+			});
 			outcome = 'replaced';
 		} else {
 			fileId = Number(this.statements.insertFile.run(file.path, file.agent, file.catalogId, file.dev, file.ino, 0, 0).lastInsertRowid);

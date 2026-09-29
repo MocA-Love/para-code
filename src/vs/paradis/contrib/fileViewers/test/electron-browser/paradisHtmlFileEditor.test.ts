@@ -41,6 +41,17 @@ class TestParadisHtmlFileEditor extends ParadisHtmlFileEditor {
 		return this.disableServiceWorkerFor(resource);
 	}
 
+	rerenderRequests = 0;
+
+	zoomTo(level: number): void {
+		this.applyZoom(level);
+	}
+
+	protected override requestRerender(): void {
+		this.rerenderRequests++;
+		super.requestRerender();
+	}
+
 	render(text: string, resource: URI): Promise<string> {
 		return Promise.resolve(this.renderDocument(text, resource, Object.create(null) as IOverlayWebview));
 	}
@@ -128,8 +139,8 @@ suite('ParadisHtmlFileEditor', () => {
 		));
 	}
 
-	function createProductionEditor(webviewService: IWebviewService, textFileService: ITextFileService, fileService: IFileService, trusted = true): ParadisHtmlFileEditor {
-		return disposables.add(new ParadisHtmlFileEditor(
+	function createProductionEditor(webviewService: IWebviewService, textFileService: ITextFileService, fileService: IFileService, trusted = true): TestParadisHtmlFileEditor {
+		return disposables.add(new TestParadisHtmlFileEditor(
 			new TestEditorGroupView(1),
 			NullTelemetryService,
 			new TestThemeService(),
@@ -151,7 +162,7 @@ suite('ParadisHtmlFileEditor', () => {
 		));
 	}
 
-	async function renderThroughSetInput(trusted: boolean): Promise<{ contentOptions: { allowScripts: boolean | undefined; localResourceRoots: string[] | undefined } | undefined; html: string | undefined }> {
+	async function renderThroughSetInput(trusted: boolean): Promise<{ contentOptions: { allowScripts: boolean | undefined; localResourceRoots: string[] | undefined } | undefined; html: string | undefined; editor: TestParadisHtmlFileEditor }> {
 		const resource = URI.file('/workspace/site/index.html');
 		const source = '<main><img src="./assets/logo.png"></main>';
 		let renderedHtml: string | undefined;
@@ -168,6 +179,7 @@ suite('ParadisHtmlFileEditor', () => {
 			},
 			focus: () => { },
 			dispose: () => { },
+			postMessage: async () => true,
 		} as unknown as IOverlayWebview;
 		const webviewService = {
 			createWebviewOverlay: () => webview,
@@ -184,7 +196,7 @@ suite('ParadisHtmlFileEditor', () => {
 		const input = disposables.add(new ParadisHtmlFileInput(resource, textFileService, workingCopyService));
 
 		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
-		return { contentOptions: contentOptionsAtSetHtml, html: renderedHtml };
+		return { contentOptions: contentOptionsAtSetHtml, html: renderedHtml, editor };
 	}
 
 	test('public setInput applies script and resource policy before setting rendered HTML', async () => {
@@ -199,11 +211,20 @@ suite('ParadisHtmlFileEditor', () => {
 		strictEqual(document.querySelector('img')?.getAttribute('src'), './assets/logo.png');
 	});
 
-	test('does not run the page scripts in an untrusted workspace', async () => {
-		const { contentOptions } = await renderThroughSetInput(false);
-		deepStrictEqual(contentOptions, {
-			allowScripts: false,
-			localResourceRoots: ['file:///workspace/site'],
+	test('does not run the page scripts in an untrusted workspace, and zooms by rendering again', async () => {
+		const untrusted = await renderThroughSetInput(false);
+		untrusted.editor.zoomTo(1);
+		const trusted = await renderThroughSetInput(true);
+		trusted.editor.zoomTo(1);
+		// スクリプトが動かないとページの中で倍率を変えられないので、倍率を CSS に焼き込んで描き直す
+		deepStrictEqual({
+			contentOptions: untrusted.contentOptions,
+			rerenders: [untrusted.editor.rerenderRequests, trusted.editor.rerenderRequests],
+			zoomBakedIn: (await untrusted.editor.render('<p>x</p>', URI.file('/workspace/site/index.html'))).includes('html{zoom:1.2;'),
+		}, {
+			contentOptions: { allowScripts: false, localResourceRoots: ['file:///workspace/site'] },
+			rerenders: [1, 0],
+			zoomBakedIn: true,
 		});
 	});
 

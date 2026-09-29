@@ -46,6 +46,7 @@ import {
 	IParadisOpenProfileResult,
 	IParadisSwitchProfileResult,
 	PARADIS_AGENT_CREATED_PROFILE_LIMIT,
+	PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT,
 	PARADIS_BROWSER_PROFILE_MCP_CHANNEL,
 	PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD,
 	PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD,
@@ -293,6 +294,11 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		// ものはもう誰も消せないので、全ペインの合計で数えると、残ったものだけで以後ずっと作れなくなる。
 		if (profiles.filter(profile => isOwnProfile(profile, token)).length >= PARADIS_AGENT_CREATED_PROFILE_LIMIT) {
 			return { ok: false, reason: 'tooManyProfiles' };
+		}
+		// 誰のものかを問わない合計にも天井を置く（前のペインが残したものが増え続けないように）。持ち主のペインが
+		// もう無いかは、ほかのウィンドウや復元中のペインがあるので確かめられず、自動では消さない。
+		if (profiles.filter(profile => profile.createdByAgent).length >= PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT) {
+			return { ok: false, reason: 'tooManyAgentProfiles' };
 		}
 		// 色はエージェントに選ばせない（ユーザーが見分けるための印）。まだ使われていない色から順に割り当てる。
 		const used = new Set(profiles.map(profile => profile.color));
