@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { defaultRelayHostId, localRelayWindowId, relayHostsFrom, type RelayHostRendererLike } from './relayHosts.js';
+import { defaultRelayHostId, localRelayWindowId, relayHostsFrom, wantsClaudeHost, type RelayHostRendererLike } from './relayHosts.js';
 
 describe('relayHostsFrom', () => {
 	test('host未配信のrendererは無視する（旧PC・state未同期のウィンドウ）', () => {
@@ -98,5 +98,15 @@ describe('localRelayWindowId', () => {
 			oldPc: localRelayWindowId([{ windowId: 1, ready: true }]),
 			noState: localRelayWindowId(undefined),
 		}).toEqual({ sshFirst: 3, onlySsh: undefined, oldPc: undefined, noState: undefined });
+	});
+});
+
+describe('wantsClaudeHost', () => {
+	test('使用量の画面で接続先を選んだときだけ、接続先の Claude を頼む', () => {
+		expect({
+			remote: wantsClaudeHost({ id: 'ssh-remote+x', kind: 'remote', label: 'x', windowId: 2, ready: true }),
+			local: wantsClaudeHost({ id: 'local', kind: 'local', label: 'ローカル', windowId: 1, ready: true }),
+			none: wantsClaudeHost(undefined),
+		}).toEqual({ remote: true, local: false, none: false });
 	});
 });

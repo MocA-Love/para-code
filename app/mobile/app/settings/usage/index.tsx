@@ -16,6 +16,7 @@ import { Icon, ListGroup, ListRow, Meter, MeterRow, iconSize } from '../../../sr
 import { GroupHeader, SettingsScreen } from '../../../src/features/settings/settingsScaffold.js';
 import { settingsRoutes, type UsageDetailPage } from '../../../src/features/settings/settingsRoutes.js';
 import { UsageHostPicker, useUsageHost } from '../../../src/features/settings/usageHost.js';
+import { wantsClaudeHost } from '../../../src/relayHosts.js';
 import { DetailMessage, DetailNotConnected, DetailRefreshButton } from '../../../src/features/settings/usageDetailParts.js';
 import { ProviderUsageSection, UsageBigValue, UsageRow, UsageRowTitle, UsageSection } from '../../../src/features/settings/usageSections.js';
 import { formatUsd, ratioPercent, recentDailyAverage, usageFootNote } from '../../../src/features/settings/usageSummary.js';
@@ -63,6 +64,7 @@ export default function UsageScreen() {
 	const hostStale = host.stale;
 	const hostKey = host.key;
 	const windowId = host.selectedHost?.windowId;
+	const claudeHost = wantsClaudeHost(host.selectedHost);
 
 	const [limitsByHost, setLimitsByHost] = useState<Record<string, RateLimitsResult>>({});
 	const [costByHost, setCostByHost] = useState<Record<string, UsageDashboardResult>>({});
@@ -91,7 +93,7 @@ export default function UsageScreen() {
 		setLoading(true);
 		try {
 			const [limitsResult, costResult, githubResult] = await Promise.allSettled([
-				hostStale ? Promise.resolve(undefined) : rateLimits(bypassCache, windowId),
+				hostStale ? Promise.resolve(undefined) : rateLimits(bypassCache, windowId, claudeHost),
 				hostStale ? Promise.resolve(undefined) : usageDashboard(bypassCache, windowId),
 				githubUsage(bypassCache),
 			]);
@@ -119,7 +121,7 @@ export default function UsageScreen() {
 				setLoading(false);
 			}
 		}
-	}, [rateLimits, usageDashboard, githubUsage, connection, activePcId, hostStale, hostKey, windowId]);
+	}, [rateLimits, usageDashboard, githubUsage, connection, activePcId, hostStale, hostKey, windowId, claudeHost]);
 
 	useEffect(() => { void refresh(); }, [refresh]);
 
