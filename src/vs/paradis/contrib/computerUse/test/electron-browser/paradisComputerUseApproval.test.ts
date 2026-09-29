@@ -6,7 +6,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
+import { Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisAgentApprovalRequest, ParadisAgentApprovalOutcome } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { ParadisComputerUseApprovalOutcome } from '../../common/paradisComputerUse.js';
@@ -105,5 +106,27 @@ suite('ParadisComputerUseApprovalChannel', () => {
 			closedDuringDialog: await closedDuringDialog.call('pane-a', { appName: 'Finder', bundleId: 'com.apple.finder', requested: 'read' }),
 			askedUnknown: unknown.asked.length,
 		}, { denied: 'denied', busy: 'busy', unknownPane: 'paneUnresolved', badBundle: 'cancelled', closedDuringDialog: 'paneUnresolved', askedUnknown: 0 });
+	});
+
+	test('says the user did not answer when the deadline closes the dialog, but still says cancelled when the caller gave up', async () => {
+		const waitForClose = async (cancellation: CancellationToken): Promise<ParadisAgentApprovalOutcome> => {
+			if (!cancellation.isCancellationRequested) {
+				await Event.toPromise(cancellation.onCancellationRequested);
+			}
+			return 'cancelled';
+		};
+		const approvals = { askApproval: (_token: string, _request: IParadisAgentApprovalRequest, cancellation: CancellationToken) => waitForClose(cancellation) };
+		const panes = { getInstanceForToken: (token: string) => token === 'pane-a' ? 7 : undefined };
+		const prompt = { appName: 'Finder', bundleId: 'com.apple.finder', requested: 'read' };
+		const expiring = new ParadisComputerUseApprovalChannel(approvals, panes, 1);
+		const lasting = new ParadisComputerUseApprovalChannel(approvals, panes, 60_000);
+		const caller = new CancellationTokenSource();
+		const withdrawn = lasting.call<{ outcome: ParadisComputerUseApprovalOutcome }>(undefined, 'requestAccess', ['pane-a', prompt], caller.token);
+		caller.cancel();
+		caller.dispose();
+		assert.deepStrictEqual([
+			await expiring.call<{ outcome: ParadisComputerUseApprovalOutcome }>(undefined, 'requestAccess', ['pane-a', prompt]),
+			await withdrawn,
+		], [{ outcome: 'timedOut' }, { outcome: 'cancelled' }]);
 	});
 });
