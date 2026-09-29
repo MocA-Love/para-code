@@ -264,9 +264,12 @@ registerGitOperation('commitSafe', async (request, context, ws, index) => {
 	let committed = false;
 	// `git add -A` の直後のインデックスの中身。失敗して戻す前に比べ、フックの間に PC などでステージが変わっていたら戻さない
 	let stagedTree: string | undefined;
+	// `add -A` が失敗した（例外を含む）。待ちが無く、その間に PC でステージが変わることはまず無いので、これまでどおり戻す
 	let addFailed = false;
+	let addReturned = !all;
 	try {
 		const added = all ? await context.runGit(['add', '-A']) : undefined;
+		addReturned = true;
 		addFailed = added !== undefined && added.code !== 0;
 		if (added?.code === 0) {
 			stagedTree = await indexTree(context);
@@ -276,6 +279,7 @@ registerGitOperation('commitSafe', async (request, context, ws, index) => {
 		stderr = result.stderr;
 		stdout = result.stdout;
 	} catch (error) {
+		addFailed = addFailed || !addReturned;
 		stderr = error instanceof Error ? error.message : String(error);
 	}
 	const headAfter = committed ? undefined : await headCommit(context);

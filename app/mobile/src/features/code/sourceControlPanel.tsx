@@ -108,7 +108,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 		void statusState.refresh();
 		void history.refresh();
 		if (shown === 'pr') {
-			void pullRequest.refresh();
+			void pullRequest.reload();
 		}
 	};
 
@@ -285,7 +285,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 								mergeError={pullRequest.mergeError}
 								queued={pullRequest.queued}
 								handoff={prHandoff}
-								onRetry={codeSpace.live ? () => void pullRequest.refresh() : undefined}
+								onRetry={codeSpace.live ? () => void pullRequest.reload() : undefined}
 								onFix={pr => void prHandoff.send({ t: 'prFixChecks', number: pr.number }, 'auto')}
 								onFixWithNewAgent={pr => void prHandoff.send({ t: 'prFixChecks', number: pr.number }, 'new')}
 								onMerge={pr => { mergeTarget.hold(pr); setConfirmingMerge(pr); }}
