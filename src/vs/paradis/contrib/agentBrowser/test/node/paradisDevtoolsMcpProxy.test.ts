@@ -333,7 +333,7 @@ suite('ParadisDevtoolsMcpProxy', () => {
 			reports: [{
 				feature: 'agent-browser',
 				operation: 'devtools-tool-error-target-closed',
-				extra: { duration_ms: 'number', safe_tool_name: 'take_snapshot', safe_error_kind: 'target-closed' },
+				extra: { duration_ms: 'number', safe_tool_name: 'take_snapshot', safe_error_kind: 'target-closed', safe_error_code: 'none', safe_cdp_method: 'Accessibility.getFullAXTree' },
 				severity: 'info',
 			}],
 		});
