@@ -202,6 +202,11 @@ export class ParadisAgentTabLedger {
 	private readonly _agentTabs = new Map<string, string>();
 	/** token → 開いている途中のタブの数。 */
 	private readonly _reserved = new Map<string, number>();
+	/**
+	 * viewId → 承認を得て開いたユーザーのプロファイルのタブが、前に見たとき持ち主のペインへ共有されていたか。
+	 * このタブを使えるのは、ユーザーが共有を止めるまで（{@link reconcileApprovedProfileTabs}）。
+	 */
+	private readonly _approvedProfileTabs = new Map<string, boolean>();
 
 	constructor(private readonly _limit: number = PARADIS_AGENT_TAB_LIMIT) { }
 
@@ -234,12 +239,50 @@ export class ParadisAgentTabLedger {
 		}
 	}
 
-	registerAgentTab(token: string, viewId: string): boolean {
+	/**
+	 * `approvedProfile` は、ユーザーの承認を得て開いたユーザーのプロファイル（ログイン状態を持つ）のタブ。
+	 * エージェントが自分で作ったプロファイルのタブは付けない（エージェント自身のタブと同じ扱い）。
+	 */
+	registerAgentTab(token: string, viewId: string, options?: { readonly approvedProfile?: boolean }): boolean {
 		if (this._agentTabs.has(viewId)) {
 			return false;
 		}
 		this._agentTabs.set(viewId, token);
+		if (options?.approvedProfile) {
+			this._approvedProfileTabs.set(viewId, false);
+		}
 		return true;
+	}
+
+	isApprovedProfileTab(viewId: string): boolean {
+		return this._approvedProfileTabs.has(viewId);
+	}
+
+	/**
+	 * 承認済みプロファイルのタブを今の共有先と突き合わせる。持ち主のペインへ共有されていたのに外れたタブは、
+	 * ユーザーが共有を止めたものとして台帳から外し、その viewId を返す（次に使うときは承認し直しになる。
+	 * 承認ダイアログの「閉じれば使えなくなります」と同じく、止めたら本当に止まるように）。
+	 * エージェント自身が共有先を動かしている最中（`isAgentMoving`: 別のタブを開いた・選んだ）に外れたぶんは
+	 * 外さない。
+	 */
+	reconcileApprovedProfileTabs(boundPageOf: (token: string) => string | undefined, isAgentMoving: (token: string) => boolean): string[] {
+		const dropped: string[] = [];
+		for (const [viewId, wasShared] of this._approvedProfileTabs) {
+			const token = this._agentTabs.get(viewId);
+			if (token === undefined) {
+				continue;
+			}
+			const shared = boundPageOf(token) === viewId;
+			if (shared || !wasShared || isAgentMoving(token)) {
+				this._approvedProfileTabs.set(viewId, shared);
+			} else {
+				dropped.push(viewId);
+			}
+		}
+		for (const viewId of dropped) {
+			this.forget(viewId);
+		}
+		return dropped;
 	}
 
 	isOpenedBy(token: string, viewId: string): boolean {
@@ -257,5 +300,6 @@ export class ParadisAgentTabLedger {
 	/** タブが閉じられた。 */
 	forget(viewId: string): void {
 		this._agentTabs.delete(viewId);
+		this._approvedProfileTabs.delete(viewId);
 	}
 }
