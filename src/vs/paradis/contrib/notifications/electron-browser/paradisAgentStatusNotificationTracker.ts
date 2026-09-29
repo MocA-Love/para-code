@@ -36,15 +36,19 @@ export class ParadisAgentStatusNotificationTracker extends Disposable {
 	private _primed = false;
 
 	constructor(
-		/** `since` は遷移の直前の状態に入った時刻（分からなければ undefined）。 */
-		private readonly _notify: (token: string, status: ParadisAgentNotifyStatus, since?: number) => void,
+		/**
+		 * `since` は遷移の直前の状態に入った時刻（分からなければ undefined）。`carriedOverFrom` は、ウィンドウの
+		 * 再読み込みより前から続いている状態のときだけ、その状態の時刻（changedAt）が入る。前のウィンドウが
+		 * もう通知したかもしれないので、受け取る側が通知の台帳で確かめてから鳴らす。
+		 */
+		private readonly _notify: (token: string, status: ParadisAgentNotifyStatus, since?: number, carriedOverFrom?: number) => void,
 		private readonly _scheduler: IParadisAgentStatusNotificationScheduler = defaultScheduler,
 		/**
 		 * ウィンドウを再読み込みしたときの、読み込み直した時刻。最初のスナップショットのうち、この時刻より前に
-		 * 今の状態になったものは、読み込み直す前のウィンドウが通知済みなので、基準として覚えるだけにする
-		 * （鳴らし直さない）。再読み込みでなければ undefined（最初のスナップショットも通知する）。
+		 * 今の状態になったものは `carriedOverFrom` を付けて知らせる。再読み込みでなければ undefined。
 		 */
 		private readonly _reloadedAt?: number,
+		private readonly _now: () => number = Date.now,
 	) {
 		super();
 	}
@@ -67,16 +71,15 @@ export class ParadisAgentStatusNotificationTracker extends Disposable {
 				continue;
 			}
 			this._previousChangedAt.set(paneStatus.token, paneStatus.changedAt);
-			if (first && this._reloadedAt !== undefined && paneStatus.changedAt < this._reloadedAt) {
-				// 再読み込みの前からこの状態だった。前のウィンドウが通知済みなので、二重に鳴らさない。
-				continue;
-			}
+			// 再読み込みの前からこの状態だった。前のウィンドウが通知を済ませたか（許可待ちの5秒の確認や、発言の
+			// 取得を待っている間に再読み込みされていないか）は、受け取る側が台帳で確かめる。
+			const carriedOverFrom = first && this._reloadedAt !== undefined && paneStatus.changedAt < this._reloadedAt ? paneStatus.changedAt : undefined;
 
 			this._pendingActionTimers.deleteAndDispose(paneStatus.token);
 			if (paneStatus.status === 'review') {
 				// Para Code が止まっている間の完了を流し直したもの（W2-20）は、印だけで鳴らさない。
 				if (paneStatus.quiet !== true) {
-					this._notify(paneStatus.token, paneStatus.status, previous !== undefined ? previousChangedAt : undefined);
+					this._notify(paneStatus.token, paneStatus.status, previous !== undefined ? previousChangedAt : undefined, carriedOverFrom);
 				}
 				continue;
 			}
@@ -86,12 +89,14 @@ export class ParadisAgentStatusNotificationTracker extends Disposable {
 
 			const token = paneStatus.token;
 			const status = paneStatus.status;
+			// 再読み込みの前から続いている許可待ち・質問は、前のウィンドウで数え始めた5秒の残りだけ待つ。
+			const delay = carriedOverFrom !== undefined ? Math.max(0, carriedOverFrom + ACTION_CONFIRM_DELAY_MS - this._now()) : ACTION_CONFIRM_DELAY_MS;
 			this._pendingActionTimers.set(token, this._scheduler.schedule(() => {
 				this._pendingActionTimers.deleteAndDispose(token);
 				if (!this._disposed && this._previousStatus.get(token) === status) {
-					this._notify(token, status);
+					this._notify(token, status, undefined, carriedOverFrom);
 				}
-			}, ACTION_CONFIRM_DELAY_MS));
+			}, delay));
 		}
 
 		for (const token of [...this._previousStatus.keys()]) {

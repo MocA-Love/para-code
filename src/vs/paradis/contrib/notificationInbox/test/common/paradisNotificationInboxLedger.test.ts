@@ -13,6 +13,7 @@ import {
 	paradisInboxAttentionEntries,
 	paradisInboxAttentionPaneCount,
 	paradisInboxEntryLocation,
+	paradisInboxHasRecorded,
 	paradisNotificationBody,
 	paradisNotificationPreview,
 } from '../../common/paradisNotificationInbox.js';
@@ -115,6 +116,27 @@ suite('Paradis notification inbox ledger', () => {
 		now = 5000;
 		const later = new ParadisNotificationInboxLedger(() => now);
 		assert.deepStrictEqual([earlier.snapshot().revision, later.snapshot().revision > earlier.snapshot().revision], [1002, true]);
+	});
+
+	test('tells whether the window before a reload already recorded a state that is still going on', () => {
+		let now = 1000;
+		const ledger = new ParadisNotificationInboxLedger(() => now);
+		ledger.setLivePanes('window:1', ['a', 'b', 'c']);
+		// a: 前のターンの完了を記録した後、作業に戻った（既読になる）。今の完了（2000）はまだ記録されていない
+		ledger.record(input('a', 'review'));
+		ledger.syncPaneStatuses([{ paneKey: 'a', status: 'working' }]);
+		// b: 許可待ち（1500）を記録済み。その後 hook が同じ状態のまま時刻を書き直した（1800）
+		now = 1600;
+		ledger.record(input('b', 'permission'));
+		// c: 何も記録していない
+		const entries = ledger.snapshot().entries;
+		assert.deepStrictEqual([
+			paradisInboxHasRecorded(entries, 'a', 'review', 2000),
+			paradisInboxHasRecorded(entries, 'b', 'permission', 1500),
+			paradisInboxHasRecorded(entries, 'b', 'permission', 1800),
+			paradisInboxHasRecorded(entries, 'b', 'question', 1500),
+			paradisInboxHasRecorded(entries, 'c', 'review', 500),
+		], [false, true, true, false, false]);
 	});
 
 	test('formats the OS notification body and the menu entries', () => {

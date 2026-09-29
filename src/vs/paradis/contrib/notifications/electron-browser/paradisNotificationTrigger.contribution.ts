@@ -39,7 +39,7 @@ import { IParadisAgentPaneInsight, IParadisAgentPaneInsightSource } from '../../
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../../mobileRelay/common/paradisMobileRelay.js';
 // 台帳の窓口（registerSingleton）はここで確実に読み込む。受信箱の UI が無効でも記録は続ける。
 import '../../notificationInbox/electron-browser/paradisNotificationInboxService.js';
-import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING, ParadisInboxDelivery, paradisInboxPaneKey, paradisNotificationBody, paradisNotificationPreview, paradisPickNotificationMessage } from '../../notificationInbox/common/paradisNotificationInbox.js';
+import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING, ParadisInboxDelivery, paradisInboxHasRecorded, paradisInboxPaneKey, paradisNotificationBody, paradisNotificationPreview, paradisPickNotificationMessage } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { ParadisAgentStatusNotificationConsumer, ParadisAgentStatusNotificationTracker, ParadisAgentNotifyStatus } from './paradisAgentStatusNotificationTracker.js';
 
 /** {{event}} の読み上げ用ラベル（日本語）。 */
@@ -127,18 +127,28 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 			void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('resumeAivis').catch(() => { /* shared process 未起動時は無視 */ });
 		}));
 
-		// 再読み込みの前から続いている状態は、前のウィンドウが通知済み。読み込み直した時刻（この文書の時刻の起点）を渡す。
-		const tracker = this._register(new ParadisAgentStatusNotificationTracker((token, status, since) => {
-			void this._handleTransition(token, status, since).catch(error => {
+		// 再読み込みの前から続いている状態は、前のウィンドウが通知したかもしれない。読み込み直した時刻を渡し、
+		// そういう状態は台帳で確かめてから鳴らす。
+		const reloadedAt = lifecycleService.startupKind === StartupKind.ReloadedWindow ? Date.now() - performance.now() : undefined;
+		const tracker = this._register(new ParadisAgentStatusNotificationTracker((token, status, since, carriedOverFrom) => {
+			void this._handleTransition(token, status, since, carriedOverFrom).catch(error => {
 				this.logService.warn('[ParadisNotifications] failed to handle status transition', error);
 			});
-		}, undefined, lifecycleService.startupKind === StartupKind.ReloadedWindow ? performance.timeOrigin : undefined));
+		}, undefined, reloadedAt));
 		this._register(new ParadisAgentStatusNotificationConsumer(snapshotService, tracker, error => {
 			this.logService.trace('[ParadisNotifications] poll failed', String(error));
 		}));
 	}
 
-	private async _handleTransition(token: string, status: ParadisAgentNotifyStatus, since: number | undefined): Promise<void> {
+	private async _handleTransition(token: string, status: ParadisAgentNotifyStatus, since: number | undefined, carriedOverFrom: number | undefined): Promise<void> {
+		if (carriedOverFrom !== undefined) {
+			// 再読み込みの前から続いている状態。前のウィンドウが台帳へ書き済みなら、もう知らせてある（鳴らさなかった
+			// ものも台帳には書く）。書かれていなければ、確認の5秒や発言の取得を待つ間に再読み込みされたので、ここで知らせる。
+			const snapshot = await this.inboxService.getLatestSnapshot();
+			if (this._lifetime.token.isCancellationRequested || paradisInboxHasRecorded(snapshot.entries, paradisInboxPaneKey(token), status, carriedOverFrom)) {
+				return;
+			}
+		}
 		let instanceId = this.paneTokenService.getInstanceForToken(token);
 		if (instanceId === undefined) {
 			// 起動・再読み込みの直後は、ターミナルの復元が済むまでペインを引けない。復元を待って引き直す。
