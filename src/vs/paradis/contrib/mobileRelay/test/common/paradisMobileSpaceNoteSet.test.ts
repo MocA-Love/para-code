@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisSpaceNote, IParadisSpaceNotesService, IParadisSpaceNoteSummary, paradisSpaceNoteSummary } from '../../../workspaceSwitch/common/paradisSpaceNotes.js';
+import { IParadisSpaceNote, IParadisSpaceNotesService, IParadisSpaceNoteSummary, PARADIS_SPACE_NOTE_MAX_LENGTH, paradisSpaceNoteSummary } from '../../../workspaceSwitch/common/paradisSpaceNotes.js';
 import { paradisMobileNoteGet, paradisMobileNoteSet, paradisParseMobileNoteOp } from '../../common/paradisMobileSpaceNoteSet.js';
 
 /** 書くたびに版を1つ進めるメモ置き場（本物は時刻だが、増えることだけが大事）。 */
@@ -18,6 +18,8 @@ class FakeNotes implements IParadisSpaceNotesService {
 	readonly onDidChangeNotes = Event.None;
 	private readonly notes = new Map<string, IParadisSpaceNote>();
 	private version = 100;
+	/** メモのあるスペースの数が上限に達している（新しいスペースのメモを受け付けない。本物の上限は 512 件）。 */
+	full = false;
 
 	read(stateKey: string): string {
 		return this.notes.get(stateKey)?.text ?? '';
@@ -34,6 +36,8 @@ class FakeNotes implements IParadisSpaceNotesService {
 	write(stateKey: string, text: string): void {
 		if (text.trim().length === 0) {
 			this.notes.delete(stateKey);
+		} else if (this.full && !this.notes.has(stateKey)) {
+			return;
 		} else if (text !== this.read(stateKey)) {
 			this.notes.set(stateKey, { text, updatedAt: ++this.version });
 		}
@@ -94,5 +98,33 @@ suite('ParadisMobileSpaceNoteSet', () => {
 			paradisParseMobileNoteOp({ kind: 'remove', line: 0 }),
 			paradisParseMobileNoteOp(null),
 		], [{ error: 'text is required' }, { error: 'invalid base' }, { error: 'invalid op' }, undefined, undefined]);
+	});
+
+	// 上限を超えた本文を黙って切らない・受け付けなかった書き込みを成功のように返さない
+	test('refuses a note over the length limit and reports a write the PC did not accept', () => {
+		const notes = new FakeNotes();
+		notes.write('ws', 'kept');
+		const tooLong = paradisMobileNoteSet(notes, 'ws', { text: 'x'.repeat(PARADIS_SPACE_NOTE_MAX_LENGTH + 1), base: 101 });
+		const atLimit = paradisMobileNoteSet(notes, 'ws', { text: 'y'.repeat(PARADIS_SPACE_NOTE_MAX_LENGTH), base: 101 });
+		notes.full = true;
+		const newSpace = paradisMobileNoteSet(notes, 'other', { text: 'new', base: 0 });
+		const newSpaceOp = paradisMobileNoteSet(notes, 'other', { text: '- [ ] a', op: { kind: 'append', entry: 'a' } });
+		const existingSpace = paradisMobileNoteSet(notes, 'ws', { text: 'edited', base: 102 });
+		const full = { error: 'このスペースのメモを PC に保存できませんでした（メモのあるスペースの数が上限に達しています）' };
+		assert.deepStrictEqual({
+			tooLong,
+			atLimit: { ...atLimit, text: (atLimit as { text?: string }).text?.length },
+			newSpace,
+			newSpaceOp,
+			existingSpace,
+			other: notes.read('other'),
+		}, {
+			tooLong: { error: `メモが長すぎるため保存しませんでした（${PARADIS_SPACE_NOTE_MAX_LENGTH} 文字まで）` },
+			atLimit: { t: 'note', ws: 'ws', text: PARADIS_SPACE_NOTE_MAX_LENGTH, updatedAt: 102 },
+			newSpace: full,
+			newSpaceOp: full,
+			existingSpace: { t: 'note', ws: 'ws', text: 'edited', updatedAt: 103 },
+			other: '',
+		});
 	});
 });

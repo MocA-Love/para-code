@@ -166,4 +166,27 @@ suite('ParadisMobileScmSync', () => {
 			paradisRestrictedGitArgsError(['fetch', 'https://evil.example/repo']) !== undefined,
 		], [true, true, true, true]);
 	});
+
+	// remote の位置に URL やパスとして読める形を置かせない（多層防御。名前に `/` を含む remote は通す）
+	test('refuses an scp-style URL or a path in the remote position of push, fetch and pull', () => {
+		assert.deepStrictEqual({
+			scp: paradisRestrictedGitArgsError(['push', 'git@evil.example:o/r.git', 'HEAD:refs/heads/main']),
+			relative: paradisRestrictedGitArgsError(['fetch', '../other-repo']),
+			relativeInside: paradisRestrictedGitArgsError(['push', 'src/../../other.git', 'HEAD:refs/heads/main']),
+			absolute: paradisRestrictedGitArgsError(['pull', '--ff-only', '/tmp/repo']),
+			home: paradisRestrictedGitArgsError(['fetch', '~/repo']),
+			windows: paradisRestrictedGitArgsError(['fetch', 'C\\repo']),
+			slashName: paradisRestrictedGitArgsError(['push', 'team/origin', 'HEAD:refs/heads/main']),
+			branchAfterRemote: paradisRestrictedGitArgsError(['pull', '--ff-only', 'origin', 'feature/x']),
+		}, {
+			scp: 'push remote not allowed: git@evil.example:o/r.git',
+			relative: 'fetch remote not allowed: ../other-repo',
+			relativeInside: 'push remote not allowed: src/../../other.git',
+			absolute: 'pull remote not allowed: /tmp/repo',
+			home: 'fetch remote not allowed: ~/repo',
+			windows: 'fetch remote not allowed: C\\repo',
+			slashName: undefined,
+			branchAfterRemote: undefined,
+		});
+	});
 });

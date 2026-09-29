@@ -580,6 +580,8 @@ interface IParadisMobileRelayMetricsTimer extends IDisposable {
 export interface IParadisMobileRelayServiceTestSeams {
 	readonly stateBroadcastMetricsTimer?: IParadisMobileRelayMetricsTimer;
 	readonly disableHostResourceSampling?: boolean;
+	/** 台帳の書き込み（保存の失敗を再現するテストが差し替える）。 */
+	readonly writeRelayState?: (filePath: string, state: IParadisRelayPersistedState) => Promise<void>;
 }
 
 /**
@@ -651,6 +653,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private connectionState: ParadisMobileConnectionState = 'disabled';
 	// Mobile relay が有効な間だけ動かし、shared process の不要な定期起床を避ける。
 	private readonly stateBroadcastMetricsTimer: IParadisMobileRelayMetricsTimer;
+	private readonly writeRelayState: (filePath: string, state: IParadisRelayPersistedState) => Promise<void>;
 	private stateBroadcastMetricsEnabled = false;
 	private stateBroadcastMetricsGeneration = 0;
 
@@ -732,6 +735,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	) {
 		super();
 		this.stateBroadcastMetricsTimer = this._register(testSeams?.stateBroadcastMetricsTimer ?? new IntervalTimer());
+		this.writeRelayState = testSeams?.writeRelayState ?? paradisWriteRelayState;
 		this.disconnectReporter = this._register(new ParadisRelayDisconnectReporter({
 			reportDelayMs: RELAY_DISCONNECT_REPORT_DELAY_MS,
 			reportAfterAttempts: RELAY_DISCONNECT_REPORT_AFTER_ATTEMPTS,
@@ -1162,7 +1166,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			throw new Error('The mobile pairing state could not be read; it is not overwritten until it is retried or discarded.');
 		}
 		// 秘密鍵は persistIdentitySecret で safeStorage 暗号化済み。ファイルは常に 0600。
-		await paradisWriteRelayState(this.statePath, this.state);
+		await this.writeRelayState(this.statePath, this.state);
 		// 壊れた台帳を退避した後、新しい台帳を書けたら案内は役目を終える。
 		if (this.storeProblem === 'corrupt') {
 			this.setStoreProblem(undefined);
@@ -1304,6 +1308,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			state: this.connectionState,
 			deviceId: this.state.device?.deviceId,
 			pairedDevices: this.state.mobiles.map(m => m.name),
+			pairedMobiles: this.state.mobiles.map(m => ({ mobileId: m.mobileId, name: m.name })),
 			onlineMobiles: [...this.sessions.values()].filter(s => s.hasCurrentProtocol).length,
 			...(this.unauthorized ? { unauthorized: true } : {}),
 			...(this.storeProblem !== undefined ? { storeProblem: this.storeProblem } : {}),
@@ -1932,9 +1937,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 	}
 
-	async revokeDevice(deviceName: string): Promise<void> {
-		const removed = this.state.mobiles.filter(m => m.name === deviceName);
-		this.state.mobiles = this.state.mobiles.filter(m => m.name !== deviceName);
+	async revokeDevice(deviceName: string, mobileId?: string): Promise<void> {
+		// 名前は端末が名乗るものなので重なりうる。id を渡されたら、その1台だけを外す
+		const matches = (m: { readonly mobileId: string; readonly name: string }) => mobileId !== undefined ? m.mobileId === mobileId : m.name === deviceName;
+		const removed = this.state.mobiles.filter(matches);
+		this.state.mobiles = this.state.mobiles.filter(m => !matches(m));
 		// リレーへの取り消しは、台帳から外すのと同じ書き込みで積む（W2-35）。書けた後は、リレーが
 		// 受け取ったと確かめるまで送り直す（落ちても次の起動で続きから送る）。
 		const device = this.state.device;
@@ -1945,22 +1952,26 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 			this.state.pendingRelayRevokes = outbox;
 		}
-		await this.save();
-		this.updateEagerTailing();
-		// M-1: リレー側の資格情報も失効させ、既存のモバイル接続を切断する。
-		for (const m of removed) {
-			this.sessions.delete(m.mobileId);
-			this.webrtcRendererLeases.delete(m.mobileId);
-			this.dropVoiceSubscriber(m.mobileId);
-			this.missedNotify.forget(m.mobileId);
-			this.browserMirror.stopSession(m.mobileId);
-			this.agentChat.dropSubscriber(m.mobileId);
-			this.notifyKeyCache.delete(m.mobileId);
-			this.backgroundSessions.end(m.mobileId);
-			this.recentTrustedNotifies.forget(m.mobileId);
+		try {
+			await this.save();
+		} finally {
+			// 台帳を書けなくても（ENOSPC・権限など）、外すと決めた端末の接続はここで切る。保存の失敗は呼び出し側へ返す
+			this.updateEagerTailing();
+			// M-1: リレー側の資格情報も失効させ、既存のモバイル接続を切断する。
+			for (const m of removed) {
+				this.sessions.delete(m.mobileId);
+				this.webrtcRendererLeases.delete(m.mobileId);
+				this.dropVoiceSubscriber(m.mobileId);
+				this.missedNotify.forget(m.mobileId);
+				this.browserMirror.stopSession(m.mobileId);
+				this.agentChat.dropSubscriber(m.mobileId);
+				this.notifyKeyCache.delete(m.mobileId);
+				this.backgroundSessions.end(m.mobileId);
+				this.recentTrustedNotifies.forget(m.mobileId);
+			}
+			void this.drainRevokeOutbox(true);
+			this._onDidChangeStatus.fire(this.snapshot());
 		}
-		void this.drainRevokeOutbox(true);
-		this._onDidChangeStatus.fire(this.snapshot());
 	}
 
 	// --- SSH 接続先 transcript の写し -----------------------------------------------------------

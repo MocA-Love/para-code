@@ -19,8 +19,8 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisMobileStatus } from '../../common/paradisMobileRelay.js';
 import { generatePersistableIdentity } from '../../common/paradisMobileCrypto.js';
 import { toBase64Url } from '../../common/paradisMobileProtocol.js';
-import { paradisParseRelayState, paradisRelayStateAsidePath } from '../../node/paradisMobileRelayStateFile.js';
-import { ParadisMobileRelayService } from '../../node/paradisMobileRelayService.js';
+import { paradisParseRelayState, paradisRelayStateAsidePath, paradisWriteRelayState } from '../../node/paradisMobileRelayStateFile.js';
+import { IParadisMobileRelayServiceTestSeams, ParadisMobileRelayService } from '../../node/paradisMobileRelayService.js';
 import { PARADIS_RELAY_RETRY_CEILING_MS, PARADIS_RELAY_RETRY_MIN_MS, paradisRelayJitteredDelayMs, paradisRelayReconnectDelayMs } from '../../common/paradisRelayReconnectDelay.js';
 
 /** 復号の可否を切り替えられる safeStorage の代わり（キーチェーンの一時的な拒否を再現する）。 */
@@ -59,7 +59,7 @@ suite('ParadisMobileRelayService pairing state store', () => {
 		await fs.rm(userData, { recursive: true, force: true });
 	});
 
-	function createService(encryption: FakeEncryptionService): ParadisMobileRelayService {
+	function createService(encryption: FakeEncryptionService, writeRelayState?: IParadisMobileRelayServiceTestSeams['writeRelayState']): ParadisMobileRelayService {
 		return new ParadisMobileRelayService(
 			userData,
 			encryption as unknown as IEncryptionService,
@@ -70,7 +70,7 @@ suite('ParadisMobileRelayService pairing state store', () => {
 			undefined,
 			undefined,
 			undefined,
-			{ disableHostResourceSampling: true },
+			{ disableHostResourceSampling: true, writeRelayState },
 		);
 	}
 
@@ -263,6 +263,46 @@ suite('ParadisMobileRelayService pairing state store', () => {
 			await service.initialize(false, undefined);
 			const again = await service.claimStoreProblemNotice('undecryptable');
 			assert.deepStrictEqual({ first, again }, { first: [true, false, false], again: true });
+		} finally {
+			service.dispose();
+		}
+	});
+
+	test('revokes only the picked phone when two share a name, and drops its connection even when the ledger cannot be written', async () => {
+		// 端末（device）は持たせない: リレーへの取り消しを送らない（テストからネットワークへ出ない）
+		await fs.writeFile(statePath, JSON.stringify({
+			mobiles: [{ mobileId: 'm1', name: 'iPhone', pubKey: 'AAAA' }, { mobileId: 'm2', name: 'iPhone', pubKey: 'AAAA' }, { mobileId: 'm3', name: 'iPad', pubKey: 'AAAA' }],
+		}));
+		// 台帳の書き込みを失敗させられるようにする（ENOSPC・権限などの代わり）
+		let failWrites = false;
+		const service = createService(new FakeEncryptionService(), async (filePath, state) => {
+			if (failWrites) {
+				throw new Error('ENOSPC');
+			}
+			await paradisWriteRelayState(filePath, state);
+		});
+		try {
+			await service.initialize(false, undefined);
+			const sessions = (service as unknown as { sessions: Map<string, unknown> }).sessions;
+			await service.revokeDevice('iPhone', 'm2');
+			const afterId = (await service.getStatus()).pairedMobiles;
+			const savedAfterId = paradisParseRelayState(await fs.readFile(statePath, 'utf8'))?.mobiles.map(mobile => mobile.mobileId);
+			sessions.set('m3', {});
+			failWrites = true;
+			const failed = await service.revokeDevice('iPad', 'm3').then(() => 'saved', () => 'rejected');
+			assert.deepStrictEqual({
+				afterId,
+				savedAfterId,
+				failed,
+				sessions: [...sessions.keys()],
+				status: (await service.getStatus()).pairedDevices,
+			}, {
+				afterId: [{ mobileId: 'm1', name: 'iPhone' }, { mobileId: 'm3', name: 'iPad' }],
+				savedAfterId: ['m1', 'm3'],
+				failed: 'rejected',
+				sessions: [],
+				status: ['iPhone'],
+			});
 		} finally {
 			service.dispose();
 		}
