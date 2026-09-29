@@ -32,6 +32,7 @@ import { IParadisMobileCanvasModel } from '../../mobileCanvas/electron-browser/p
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { setParadisHoveredPaneInstanceId } from '../browser/paradisPaneIndicator.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
+import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
 import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from './paradisAgentBrowserBindingModel.js';
 import { ParadisBindingDialogPaneListResources, ParadisBindingDialogTab, ParadisBindingDialogTabController } from './paradisBindingDialogResources.js';
 import { paradisGetBindingErrorMessage, paradisGetPaneBindingAction, paradisRunDialogBind } from './paradisDialogPageResolver.js';
@@ -249,6 +250,7 @@ export class ParadisBindingDialog extends Disposable {
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@IParadisMobileCanvasModel private readonly mobileCanvasModel: IParadisMobileCanvasModel,
 		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
+		@IParadisAgentBrowserTabsService private readonly agentTabsService: IParadisAgentBrowserTabsService,
 	) {
 		super();
 
@@ -659,6 +661,12 @@ export class ParadisBindingDialog extends Disposable {
 		if (wantShared) {
 			await this._bindPane(pane.token);
 			return;
+		}
+		// 止める共有先が、承認を得て開いたユーザーのプロファイルのタブなら、エージェントの台帳から外す
+		// （エージェントが選び直しても承認なしでは共有し直されないように）
+		const unsharedPageId = pane.binding?.pageId;
+		if (unsharedPageId !== undefined) {
+			this.agentTabsService.revokeApprovedProfileTab(unsharedPageId);
 		}
 		try {
 			if (pane.binding?.pageId === this._page.id) {

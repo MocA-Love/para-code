@@ -191,6 +191,12 @@ export interface IParadisAgentBrowserTabsService {
 	isOpenedBy(token: string, viewId: string): boolean;
 
 	/**
+	 * ユーザーがそのページの共有を止めた（「ブラウザページの共有を解除」・共有ダイアログのスイッチ）。
+	 * 承認を得て開いたユーザーのプロファイルのタブなら、エージェントの台帳から外す（次に使うときは承認し直し）。
+	 */
+	revokeApprovedProfileTab(pageId: string): void;
+
+	/**
 	 * そのタブへペインの共有を移す。タブのスペースが決まるのを少し待ってから共有する。
 	 * 失敗しても例外は投げず false を返す。
 	 */
@@ -302,7 +308,31 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			return;
 		}
 		this._agentInputs.set(input.id, input);
-		this._agentTabListeners.set(input.id, input.onWillDispose(() => this._forgetView(input.id)));
+		const listeners = new DisposableStore();
+		listeners.add(input.onWillDispose(() => this._forgetView(input.id)));
+		if (options?.approvedProfile) {
+			// ブラウザの共有ボタン（upstream の切り替え）で止められたときも外す。エージェント自身が共有先を
+			// 動かしている最中の変化は数えない
+			void input.resolve().then(model => {
+				if (listeners.isDisposed) {
+					return;
+				}
+				listeners.add(model.onDidChangeSharingState(state => {
+					const owner = this._ledger.ownerOf(input.id);
+					if (state !== BrowserViewSharingState.Shared && owner !== undefined && !this._agentMoves.has(owner)) {
+						this.revokeApprovedProfileTab(input.id);
+					}
+				}));
+			}, error => this._logService.debug('[ParadisAgentBrowserTabs] could not watch the sharing state of an approved profile tab', error));
+		}
+		this._agentTabListeners.set(input.id, listeners);
+	}
+
+	revokeApprovedProfileTab(pageId: string): void {
+		if (this._ledger.revokeApprovedProfileTab(pageId)) {
+			this._agentInputs.delete(pageId);
+			this._agentTabListeners.deleteAndDispose(pageId);
+		}
 	}
 
 	isOpenedBy(token: string, viewId: string): boolean {
@@ -481,6 +511,9 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		if (token === undefined) {
 			return { ok: false, reason: 'paneUnresolved' };
 		}
+		// 共有先の変化の通知は遅れて届く（binding model の 100ms のまとめ）。その間に止められた承認済みの
+		// タブを載せない・選ばせないよう、今の共有先で突き合わせてから答える
+		this._reconcileApprovedProfileTabs();
 		const tabs: IParadisAgentTabInfo[] = [];
 		const seen = new Set<string>();
 		const add = (input: BrowserEditorInput | undefined) => {
@@ -502,6 +535,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		if (token === undefined) {
 			return { ok: false, reason: 'paneUnresolved' };
 		}
+		this._reconcileApprovedProfileTabs();
 		// 選べるのは自分が開いたタブと、今このペインに共有されているタブ（選び直しても何も変わらない）だけ。
 		const input = this._browserViewWorkbenchService.getKnownBrowserViews().get(tabId);
 		const isCurrent = this._bindingModel.getBindingForToken(token)?.pageId === tabId;
