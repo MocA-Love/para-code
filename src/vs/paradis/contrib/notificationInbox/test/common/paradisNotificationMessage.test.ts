@@ -78,6 +78,23 @@ suite('Paradis notification message', () => {
 		]);
 	});
 
+	test('masks secrets even when Japanese text or punctuation follows right after them', () => {
+		const cases = [
+			'password=hunter2で接続できました',
+			'`password=hunter2`で接続できました',
+			'client_secret=abc123。',
+			'password=abc123\u2026',
+			'api_key: abcdef123456を.envに書きました',
+		];
+		assert.deepStrictEqual(cases.map(paradisRedactSecrets), [
+			'password=***で接続できました',
+			'`password=***`で接続できました',
+			'client_secret=***。',
+			'password=***\u2026',
+			'api_key: ***を.envに書きました',
+		]);
+	});
+
 	test('does not mask prose right after an item name, or token counts', () => {
 		const cases = [
 			'パスワード: 8文字以上に変更しました',
