@@ -209,6 +209,25 @@ export async function paradisClassifyPeer(
 	return verdict ?? 'unknown';
 }
 
+/**
+ * loopback 接続の相手のプロセスが `pids` のどれかか（戻り経路の `ssh -R` から来たかを見るのに使う）。
+ * 相手を特定できなければ false。
+ */
+export async function paradisPeerIsOneOf(
+	clientPort: number,
+	serverPort: number,
+	ownPid: number,
+	pids: readonly number[],
+	probe: IParadisPeerProcessProbe = paradisPeerProbeFor(clientPort, serverPort),
+): Promise<boolean> {
+	if (!isPort(clientPort) || !isPort(serverPort) || pids.length === 0) {
+		return false;
+	}
+	const wanted = new Set(pids);
+	const peerPids = await probe.findPeerPids(clientPort, serverPort, ownPid);
+	return peerPids.some(pid => wanted.has(pid));
+}
+
 function isPort(value: number): boolean {
 	return Number.isInteger(value) && value >= 1 && value <= 65535;
 }

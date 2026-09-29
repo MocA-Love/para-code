@@ -25,6 +25,7 @@ function context(overrides: Partial<IParadisBoundContext> = {}): IParadisBoundCo
 		isBoundPageVisible: async () => true,
 		dispatchBoundPageInput: () => ({ response: Promise.resolve({ status: 'success', result: {} }), drained: Promise.resolve() }),
 		closeInputConnection: () => undefined,
+		isRemotePane: () => false,
 		...overrides,
 	};
 }
@@ -387,6 +388,83 @@ suite('Paradis CDP screenshot filter', () => {
 		assert.strictEqual(closed, true);
 	});
 
+	test('browser sessions of a remote pane refuse commands that reach local files, and local panes keep them', async () => {
+		const commands = [
+			{ method: 'Page.navigate', params: { url: 'file:///etc/passwd' } },
+			{ method: 'DOM.setFileInputFiles', params: { files: ['/etc/passwd'], backendNodeId: 1 } },
+			{ method: 'Page.navigate', params: { url: 'https://example.com/' } },
+			{ method: 'Input.dispatchDragEvent', params: { type: 'drop', x: 1, y: 1, data: { items: [], files: ['/etc/passwd'], dragOperationsMask: 1 } } },
+		];
+		const run = async (remote: boolean) => {
+			const fixture = await createOpenBrowserProxyFixture(context({ isRemotePane: () => remote, dispatchBoundPageInput: () => ({ response: Promise.resolve({ status: 'success', result: { dispatched: true } }), drained: Promise.resolve() }) }));
+			publishAllowedSession(fixture, 'session-1');
+			fixture.client.sent.length = 0;
+			fixture.upstream.sent.length = 0;
+			commands.forEach((command, index) => fixture.client.emit('message', Buffer.from(JSON.stringify({ id: index + 1, sessionId: 'session-1', ...command }))));
+			const upstream = (parseSent(fixture.upstream) as Array<{ id: number }>).map(frame => frame.id);
+			// Answer what reached the browser so that a local drag is not left waiting behind them.
+			for (const id of upstream) {
+				fixture.upstream.emit('message', Buffer.from(JSON.stringify({ id, sessionId: 'session-1', result: {} })));
+			}
+			await new Promise(resolve => setTimeout(resolve, 0));
+			return {
+				refused: (parseSent(fixture.client) as Array<{ id: number; error?: { message: string } }>).filter(frame => frame.error?.message.includes('remote window (SSH, WSL, container)')).map(frame => frame.id),
+				upstream,
+			};
+		};
+		assert.deepStrictEqual({ remote: await run(true), local: await run(false) }, {
+			remote: { refused: [1, 2, 4], upstream: [3] },
+			local: { refused: [], upstream: [1, 2, 3] },
+		});
+	});
+
+	test('page connections of a remote pane refuse file: navigation (navigate_page then take_snapshot cannot read local files)', () => {
+		const run = (remote: boolean) => {
+			const fixture = createProxyFixture(context({ isRemotePane: () => remote }));
+			paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), fixture.ws, fixture.wss, 41001, 'target-1', fixture.ctx, fixture.logService);
+			fixture.upstream.readyState = TestWebSocket.OPEN;
+			fixture.upstream.emit('open');
+			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 1, method: 'Page.navigate', params: { url: ' FILE:///Users/example/.ssh/id_rsa' } })));
+			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 2, method: 'Page.navigate', params: { url: 'https://example.com/' } })));
+			return {
+				refused: (parseSent(fixture.client) as Array<{ id: number; error?: unknown }>).filter(frame => frame.error !== undefined).map(frame => frame.id),
+				upstream: (parseSent(fixture.upstream) as Array<{ id: number }>).map(frame => frame.id),
+			};
+		};
+		assert.deepStrictEqual({ remote: run(true), local: run(false) }, {
+			remote: { refused: [1], upstream: [2] },
+			local: { refused: [], upstream: [1, 2] },
+		});
+	});
+
+	test('gateway contexts are remote for remote panes and for connections that came through the return tunnel', () => {
+		const ingressLease = Object.freeze({ token: 'pane-token' });
+		let remotePane = false;
+		const delegate: IParadisCdpGatewayDelegate = {
+			captureIngressLease: token => token === ingressLease.token ? ingressLease : undefined,
+			isIngressLeaseCurrent: lease => lease === ingressLease,
+			getBoundTargetId: () => 'target-1',
+			ensureBoundTargetId: async () => 'target-1',
+			getTokenForShellPid: () => undefined,
+			captureBoundPageScreenshot: async () => 'image',
+			isBoundPageVisible: async () => true,
+			dispatchBoundPageInput: () => ({ response: Promise.resolve({ status: 'success', result: {} }), drained: Promise.resolve() }),
+			closeInputConnection: () => undefined,
+			isRemotePane: () => remotePane,
+			isTunnelPeer: async () => false,
+		};
+		const gateway = new ParadisCdpGateway(delegate, {} as ParadisCdpUpstream, { debug: () => undefined } as never);
+		const internals = gateway as unknown as {
+			_makeContext(access: { token: string; lease: typeof ingressLease }, reservation: undefined, remoteIngress: boolean): IParadisBoundContext;
+		};
+		const local = internals._makeContext({ token: 'pane-token', lease: ingressLease }, undefined, false);
+		const tunnel = internals._makeContext({ token: 'pane-token', lease: ingressLease }, undefined, true);
+		const before = [local.isRemotePane(), tunnel.isRemotePane()];
+		remotePane = true;
+		assert.deepStrictEqual({ before, after: local.isRemotePane() }, { before: [false, true], after: true });
+		gateway.dispose();
+	});
+
 	test('gateway revokes a connection lease synchronously before WebSocket close completes', () => {
 		const ingressLease = Object.freeze({ token: 'pane-token' });
 		const delegate: IParadisCdpGatewayDelegate = {
@@ -399,6 +477,8 @@ suite('Paradis CDP screenshot filter', () => {
 			isBoundPageVisible: async () => true,
 			dispatchBoundPageInput: () => ({ response: Promise.resolve({ status: 'success', result: {} }), drained: Promise.resolve() }),
 			closeInputConnection: () => undefined,
+			isRemotePane: () => false,
+			isTunnelPeer: async () => false,
 		};
 		const gateway = new ParadisCdpGateway(delegate, {} as ParadisCdpUpstream, { debug: () => undefined } as never);
 		const internals = gateway as unknown as {
@@ -1536,8 +1616,8 @@ function createProxyFixture(ctx: IParadisBoundContext): {
 	}) as never;
 }
 
-async function createOpenBrowserProxyFixture(): Promise<ReturnType<typeof createProxyFixture>> {
-	const fixture = createProxyFixture(context());
+async function createOpenBrowserProxyFixture(ctx: IParadisBoundContext = context()): Promise<ReturnType<typeof createProxyFixture>> {
+	const fixture = createProxyFixture(ctx);
 	await paradisProxyBrowserUpgrade({} as never, {} as never, Buffer.alloc(0), fixture.ws, fixture.wss, 41001, 'ws://127.0.0.1:41001/devtools/browser/live', fixture.ctx, fixture.logService);
 	fixture.upstream.readyState = TestWebSocket.OPEN;
 	fixture.upstream.emit('open');
@@ -1596,6 +1676,8 @@ function createGatewayUpgradeFixture(
 		isBoundPageVisible: async () => true,
 		dispatchBoundPageInput: () => ({ response: Promise.resolve({ status: 'success', result: {} }), drained: Promise.resolve() }),
 		closeInputConnection: () => undefined,
+		isRemotePane: () => false,
+		isTunnelPeer: async () => false,
 	};
 	const logService = {
 		trace: () => undefined,
