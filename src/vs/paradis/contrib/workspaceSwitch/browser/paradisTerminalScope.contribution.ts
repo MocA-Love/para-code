@@ -1994,12 +1994,20 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				}
 			}
 
-			// 切り替え先のグループを復帰
+			// 切り替え先のグループを復帰。グループ単位で確定させる（`adoptUnattributedTerminals` と
+			// 同じ理由）。1件の失敗で残りを諦めると、台帳から外したのに park が解けていないグループが
+			// どの経路からも辿れなくなり、PTY だけが生きたまま見えなくなる。失敗した分は待避台帳へ
+			// 戻し、次にこのスペースへ切り替えたときにやり直す。
 			const parked = this._parkedGroups.get(targetStateKey);
 			if (parked) {
 				this._parkedGroups.delete(targetStateKey);
 				for (const group of parked) {
-					groupService.paradisUnparkGroup(group);
+					try {
+						groupService.paradisUnparkGroup(group);
+					} catch (error) {
+						this.addToParkLedger(targetStateKey, group);
+						onUnexpectedError(error);
+					}
 				}
 			}
 			this.restoreActiveGroup(groupService, targetStateKey);
