@@ -549,8 +549,10 @@ export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate,
 	// プロンプトは利用者だけでなくエージェント（MCP）や定期実行の定義からも来るので、全経路でここで落とす
 	const stripped = paradisStripTerminalControlCharacters(rawPrompt);
 	// `-` で始まる指示は、引用しても CLI がオプションとして読む（`claude '--dangerously-skip-permissions'` は
-	// 権限の確認を飛ばす起動になる）。前に空白を1つ足し、必ず指示（位置引数）として渡す
-	const prompt = stripped.startsWith('-') ? ` ${stripped}` : stripped;
+	// 権限の確認を飛ばす起動になる）。1語だけの指示（`logout`・`update`・Codex の `e` など）はサブコマンドとして
+	// 読まれる。どちらも前に空白を1つ足し、必ず指示（位置引数）として渡す（commander も clap も、空白で始まる
+	// 引数はオプションともサブコマンドの名前とも照らさない）
+	const prompt = /^(?:-|[A-Za-z][\w-]*$)/.test(stripped) ? ` ${stripped}` : stripped;
 	if (prompt.trim().length === 0) {
 		return paradisApplyPromptToTemplate(template, '', options).replace(/ {2,}/g, ' ').trim();
 	}
