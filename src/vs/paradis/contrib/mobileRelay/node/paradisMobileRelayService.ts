@@ -2083,7 +2083,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}) ?? 'stale';
 	}
 
-	async notifyAgentCliCommandFinished(lease: IParadisMobileWindowLease, paneToken: string, generation: number): Promise<ParadisAgentCommandDeliveryResult> {
+	async notifyAgentCliCommandFinished(lease: IParadisMobileWindowLease, paneToken: string, generation: number, suspended?: boolean): Promise<ParadisAgentCommandDeliveryResult> {
 		return await this.withCurrentRegisteredLease(lease, async () => {
 			const ownership = this.agentChat.ownershipOfPaneToken(paneToken);
 			if (ownership.kind === 'ambiguous') {
@@ -2094,7 +2094,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 			const decision = this.agentCommandAuthority.finish(this.agentCommandOwner(lease), paneToken, generation);
 			if (decision.apply) {
-				this.agentChat.onCliCommandFinished(paneToken);
+				this.agentChat.onCliCommandFinished(paneToken, suspended === true ? 'suspended' : 'exited');
 			}
 			return decision.result;
 		}) ?? 'stale';

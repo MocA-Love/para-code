@@ -206,6 +206,49 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			clearParadisAgentPaneActivity(token);
 		}
 	}));
+	test('drops the approval card when the agent CLI exits, so a mobile attaching later does not revive it, but keeps it when the CLI is only suspended or the pane briefly leaves the list', () => withClaudeHome(async claudeHome => {
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>> };
+		const tokens = ['pane-cli-exit', 'pane-cli-suspended'];
+		const guard = registerParadisAgentPaneActivityGuard(candidate => tokens.includes(candidate));
+		const causes: string[] = [];
+		const causeListener = onParadisAgentTurnEnded(event => causes.push(`${event.token}:${event.cause}`));
+		try {
+			chat.syncPanes(1, 'window-session', 1, 1, tokens.map((token, index) => ({ terminalId: index + 1, token })));
+			for (const [index, token] of tokens.entries()) {
+				const transcriptPath = join(claudeHome, 'projects', 'repo', `session-exit-${index}.jsonl`);
+				await writeFile(transcriptPath, line({ type: 'user', timestamp: '2026-09-27T10:00:00.000Z', message: { role: 'user', content: 'テストして' } }));
+				fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: `session-exit-${index}`, transcriptPath, cwd: '/repo', at: Date.now() });
+				await waitFor(() => !access.hookProcessing.has(token), 'SessionStart was not processed');
+				chat.watchDesktopChat('window-1', tokens, tokens);
+				fireParadisAgentHookEvent({ token, event: 'PermissionRequest', sessionId: `session-exit-${index}`, transcriptPath, cwd: '/repo', toolName: 'Bash', toolInput: { command: 'npm test' }, at: Date.now() });
+				await waitFor(async () => (await chat.getDesktopChat(token, undefined))?.interaction?.kind === 'approval', 'approval was not captured');
+			}
+			chat.onCliCommandFinished('pane-cli-exit');
+			chat.onCliCommandFinished('pane-cli-suspended', 'suspended');
+			await waitFor(async () => (await chat.getDesktopChat('pane-cli-exit', undefined))?.interaction === null, 'the approval card was not dropped');
+			// モバイル向けの注入が有効になる（デスクトップ専用だった承認をふつうの承認として数え直す）
+			chat.setEagerTailing(true);
+			await waitFor(() => getParadisAgentPaneActivity('pane-cli-suspended').pendingApproval, 'the suspended approval was not promoted');
+			await new Promise<void>(resolve => setTimeout(resolve, 50));
+			assert.deepStrictEqual({
+				causes,
+				exited: { pendingApproval: getParadisAgentPaneActivity('pane-cli-exit').pendingApproval, card: (await chat.getDesktopChat('pane-cli-exit', undefined))?.interaction },
+				suspendedCard: (await chat.getDesktopChat('pane-cli-suspended', undefined))?.interaction?.kind,
+			}, {
+				causes: ['pane-cli-exit:cli-exit', 'pane-cli-suspended:turn'],
+				exited: { pendingApproval: false, card: null },
+				suspendedCard: 'approval',
+			});
+		} finally {
+			causeListener.dispose();
+			chat.dispose();
+			guard.dispose();
+			for (const token of tokens) {
+				clearParadisAgentPaneActivity(token);
+			}
+		}
+	}));
 	test('ties a permission request to its tool call, keeps it through parallel calls of the same tool, marks the agent as exited after SessionEnd, and hands desktop-only captures to a mobile that attaches later', () => withClaudeHome(async claudeHome => {
 		const token = 'pane-desktop-synthetic';
 		const transcriptPath = join(claudeHome, 'projects', 'repo', 'session-4.jsonl');
