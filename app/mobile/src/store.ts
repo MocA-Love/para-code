@@ -601,6 +601,11 @@ export interface RateLimitProviderSnapshot {
 	accounts: RateLimitAccount[];
 	sourceError?: string;
 	cswapMissing?: boolean;
+	/**
+	 * Claude: PC の SSH のウィンドウで、接続先の Claude Code がいまログインしているアカウントだけを
+	 * 出している（読み取り専用）。PC側 IParadisLimitsRemoteHost と同形。古い PC は付けない。
+	 */
+	remoteHost?: { label?: string };
 }
 /** limits 応答（PC側で正規化済みのRate Limitスナップショット）。 */
 export interface RateLimitsResult {

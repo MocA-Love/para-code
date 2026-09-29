@@ -37,8 +37,17 @@ export function accountWindows(account: RateLimitAccount): { label: string; wind
  *
  * `refreshing` と `unavailable` は認証の問題ではない（上限に達したアカウントは、PC 側が枠の
  * リセットまで取得を止める）ので、再ログインを促さない。
+ *
+ * `remoteHost` は SSH の接続先のログインを出しているとき（{@link RateLimitProviderSnapshot.remoteHost}）。
+ * 直すのは接続先の Claude Code なので、PC の Para Code ではなく接続先のターミナルでの操作を案内する。
  */
-export function accountStatusMessage(account: RateLimitAccount): string | undefined {
+export function accountStatusMessage(account: RateLimitAccount, remoteHost = false): string | undefined {
+	if (remoteHost) {
+		const message = remoteHostStatusMessage(account);
+		if (message !== undefined) {
+			return message;
+		}
+	}
 	switch (account.status) {
 		case 'ok':
 			return undefined;
@@ -61,6 +70,55 @@ export function accountStatusMessage(account: RateLimitAccount): string | undefi
 		default:
 			return '使用状況を取得できていません';
 	}
+}
+
+/** 接続先のログインで、手元の PC と説明が変わる状態だけを返す（それ以外は undefined）。 */
+function remoteHostStatusMessage(account: RateLimitAccount): string | undefined {
+	switch (account.status) {
+		case 'refreshing':
+			return 'アクセストークンの期限が切れています。接続先の Claude Code が自動で更新します';
+		case 'no_credentials':
+			return '接続先の Claude にログインしていません。接続先のターミナルで claude を起動し、/login でログインしてください';
+		case 'relogin_required':
+			return '接続先のターミナルで claude を起動し、/login でログインし直してください';
+		case 'unavailable':
+			return account.unavailableReason === 'keychain_unavailable'
+				? '接続先では Claude のログインが macOS のキーチェーンに保存されているため、SSH 越しには読み取れません'
+				: undefined;
+		default:
+			return undefined;
+	}
+}
+
+/**
+ * アカウントの行の補足（見出しの下の一行）。状態の説明があればそれ、無ければ「使用中」やプラン。
+ * 接続先のログインは「使用中」の印の代わりに、どの接続先のログインかを書く。
+ */
+export function accountHint(account: RateLimitAccount, remoteHost: RateLimitProviderSnapshot['remoteHost']): string | undefined {
+	const message = accountStatusMessage(account, remoteHost !== undefined);
+	if (message !== undefined) {
+		return message;
+	}
+	if (remoteHost !== undefined) {
+		return remoteHost.label !== undefined ? `接続先 ${remoteHost.label} でログイン中` : '接続先でログイン中';
+	}
+	return account.active === true ? '使用中' : account.planType;
+}
+
+/** 束の見出し。接続先のログインを出しているときは接続先の名前を添える。 */
+export function providerTitle(title: string, snapshot: RateLimitProviderSnapshot | undefined): string {
+	const label = snapshot?.remoteHost?.label;
+	return label !== undefined ? `${title}（${label}）` : title;
+}
+
+/**
+ * 使用量の画面の下の注記。接続先の Claude のログインを出しているときは、Claude の直し方が接続先の
+ * ターミナルになることも書く。
+ */
+export function usageFootNote(claude: RateLimitProviderSnapshot | undefined): string {
+	return claude?.remoteHost !== undefined
+		? '接続先の Claude のログインは、接続先のターミナルで claude を起動して /login で行います。この PC の Claude のアカウントは、この PC のウィンドウを選ぶと見られます。'
+		: 'アカウントの追加や再ログインは、PC の Para Code から行います。';
 }
 
 /** アカウントが1つも無いときの説明。 */
