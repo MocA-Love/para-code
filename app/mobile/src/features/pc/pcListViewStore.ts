@@ -8,7 +8,7 @@ import {
 	parsePcListView,
 	pcListViewOf,
 	sameItems,
-	toggleCollapsedKey,
+	withCollapsedKey,
 	withPcListView,
 	withoutPc,
 	type PcListViewSaved,
@@ -66,6 +66,14 @@ const holders = new Map<string, number>();
 
 let pendingEdits: Edit[] = [];
 let loadStarted = false;
+/**
+ * 保存値を読めたか。読めていない間（Keychain がまだ開いていない起動直後など）は、変更を保存せずに
+ * 積んでおき、次の変更のときに読み直す。読めないまま既定値で保存すると、保存済みの条件を上書きしてしまう。
+ */
+let persistReady = false;
+/** 読み込みに失敗した後、変更が無くても読み直すまでの間（Keychain が開くのを待つ）。 */
+export const PC_LIST_VIEW_LOAD_RETRY_MS = 30_000;
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 function save(saved: PcListViewSaved): void {
 	secureKeyStore.setItem(STORAGE_KEY, JSON.stringify(saved)).catch((err: unknown) => {
@@ -81,10 +89,12 @@ export const usePcListView = create<PcListViewStore>()((set, get) => {
 			return;
 		}
 		set({ saved: next });
-		if (get().loaded) {
+		if (persistReady) {
 			save(next);
 		} else {
 			pendingEdits.push(edit);
+			// 前の読み込みが失敗していれば読み直す（読めたら積んだ変更を重ねて保存する）。
+			ensurePcListViewLoaded();
 		}
 	};
 	const setTransient = (pcId: string, edit: (current: PcListTransient) => PcListTransient) => {
@@ -123,7 +133,10 @@ export const usePcListView = create<PcListViewStore>()((set, get) => {
 			setTransient(pcId, current => ({ query: searching ? current.query : '', searching }));
 		},
 		toggleSection(pcId, key) {
-			apply(saved => withPcListView(saved, pcId, view => ({ ...view, collapsed: toggleCollapsedKey(view.collapsed, key) })));
+			// 切り替えた後の状態（畳む・開く）を変更として持つ。「切り替える」のまま積むと、読み込みの前に押した分を
+			// 読み込んだ値へ重ねたときに、見えていたのと逆になることがある。
+			const collapse = !pcListViewOf(get().saved, pcId).collapsed.includes(key);
+			apply(saved => withPcListView(saved, pcId, view => ({ ...view, collapsed: withCollapsedKey(view.collapsed, key, collapse) })));
 		},
 		holdPc(pcId) {
 			holders.set(pcId, (holders.get(pcId) ?? 0) + 1);
@@ -163,17 +176,25 @@ export function ensurePcListViewLoaded(): void {
 				return DEFAULT_PC_LIST_VIEW;
 			}
 		})
-		.catch((err: unknown): PcListViewSaved => {
-			console.warn('[pcListView] failed to load', err);
-			return DEFAULT_PC_LIST_VIEW;
-		})
 		.then(stored => {
+			persistReady = true;
 			const edits = pendingEdits;
 			pendingEdits = [];
 			const next = edits.reduce((saved, edit) => edit(saved), stored);
 			usePcListView.setState({ saved: next, loaded: true });
 			if (edits.length > 0) {
 				save(next);
+			}
+		}, (err: unknown) => {
+			// 読めなかった: 画面は既定値のまま進める（loaded）が、保存はしない。次の変更か、少し待ってから読み直す。
+			console.warn('[pcListView] failed to load', err);
+			loadStarted = false;
+			usePcListView.setState({ loaded: true });
+			if (retryTimer === undefined) {
+				retryTimer = setTimeout(() => {
+					retryTimer = undefined;
+					ensurePcListViewLoaded();
+				}, PC_LIST_VIEW_LOAD_RETRY_MS);
 			}
 		});
 }

@@ -40,7 +40,13 @@ interface ReviewReply {
 	readonly notes?: unknown;
 }
 
-export function useReviewMarksController(space: CodeSpace): ReviewMarksController {
+/**
+ * `reloadOnFocus` を false にすると、前面に来るたびの読み直し（`reviewGet`）をしない。印を読むだけで付け外しは
+ * しない画面（ソース管理の一覧の「+」）が、前面へ戻るたびに要求を増やさないため。印は差分画面が読み直した
+ * 手元の写しを使う。
+ */
+export function useReviewMarksController(space: CodeSpace, options: { readonly reloadOnFocus?: boolean } = {}): ReviewMarksController {
+	const reloadOnFocus = options.reloadOnFocus ?? true;
 	const key = codeCacheKey(space.pcId, space.spaceId);
 	const marks = useReviewMarks(key);
 	const setReviewMark = useCodeCache(s => s.setReviewMark);
@@ -90,8 +96,10 @@ export function useReviewMarksController(space: CodeSpace): ReviewMarksControlle
 	}, [stored, pcId, wsId, rendererTarget, applyReply]);
 
 	useFocusEffect(useCallback(() => {
-		void reload();
-	}, [reload]));
+		if (reloadOnFocus) {
+			void reload();
+		}
+	}, [reload, reloadOnFocus]));
 
 	const setReviewed = useCallback((entry: ScmEntry, reviewed: boolean) => {
 		const previous = useCodeCache.getState().reviewed[key]?.[entry.path];

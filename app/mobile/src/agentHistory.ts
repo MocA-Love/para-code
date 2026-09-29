@@ -172,7 +172,7 @@ export function applyAgentHistoryPage(history: AgentHistoryState, page: AgentHis
 /** 失敗の理由を画面の文にする。 */
 export function agentHistoryErrorText(code: string): string {
 	switch (code) {
-		case 'busy': return 'PC が読み込み中です。少し待ってからもう一度さかのぼってください';
+		case 'busy': return 'PC が読み込み中です。少し待ってから下のボタンを押して読み込み直してください';
 		case 'history-moved': return 'PC 側で会話が進んだため、ここから前は読めません。会話を開き直してください';
 		case 'stale-session': return '会話が切り替わりました。開き直してください';
 		default: return '古い発言を読み込めませんでした';
@@ -183,7 +183,11 @@ export function agentHistoryErrorText(code: string): string {
 export type AgentHistoryHeader =
 	| { readonly kind: 'none' }
 	| { readonly kind: 'truncated' }
-	| { readonly kind: 'more'; readonly loading: boolean }
+	/**
+	 * まださかのぼれる。`message` は、やり直せる失敗（PC が読み込み中）の案内。出ている間は上端へ
+	 * スクロールしても自動では読みに行かない（スクロールのたびに要求を出し続けないため）。押せば読み直す。
+	 */
+	| { readonly kind: 'more'; readonly loading: boolean; readonly message?: string }
 	| { readonly kind: 'capped' }
 	| { readonly kind: 'error'; readonly message: string };
 
@@ -203,5 +207,8 @@ export function agentHistoryHeader(supported: boolean, truncated: boolean, histo
 	if (history.capped) {
 		return { kind: 'capped' };
 	}
-	return history.hasMore || history.loading ? { kind: 'more', loading: history.loading } : { kind: 'none' };
+	if (!history.hasMore && !history.loading) {
+		return { kind: 'none' };
+	}
+	return { kind: 'more', loading: history.loading, ...(history.error !== undefined && !history.loading ? { message: history.error } : {}) };
 }

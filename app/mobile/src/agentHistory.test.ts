@@ -96,7 +96,12 @@ describe('agentHistory (W2-30)', () => {
 		expect({
 			busy: agentHistoryHeader(true, true, busy),
 			moved: agentHistoryHeader(true, true, moved).kind,
-		}).toEqual({ busy: { kind: 'more', loading: false }, moved: 'error' });
+			busyRetrying: agentHistoryHeader(true, true, beginAgentHistoryLoad(busy, 'e1')),
+		}).toEqual({
+			busy: { kind: 'more', loading: false, message: 'PC が読み込み中です。少し待ってから下のボタンを押して読み込み直してください' },
+			moved: 'error',
+			busyRetrying: { kind: 'more', loading: true },
+		});
 	});
 
 	it('chooses the header for old PCs, untouched lists, loading, the cap and the start', () => {

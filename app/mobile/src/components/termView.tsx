@@ -107,6 +107,11 @@ const TERM_BG = '#1e1e1e';
  * 撃ち込まないための歯止め（PC側の TERM_SCROLL_MAX_LINES と対）。
  */
 const MAX_SCROLL_LINES_PER_GESTURE = 40;
+/**
+ * WebView の準備が整う前に溜めておく出力の上限（文字数）。超えたら溜めた分を捨て、準備が整ったときに
+ * snapshot を取り直す（準備が整わないまま出力が続くと、際限なく溜まってメモリを食うため）。
+ */
+const PENDING_MAX_CHARS = 1_000_000;
 
 function buildHtml(): string {
 	return `<!DOCTYPE html><html><head>
@@ -1000,8 +1005,7 @@ function buildHtml(): string {
 			return;
 		}
 		var linear = linearAt(cell);
-		var anchorIsStart = selectAnchor <= selectFocus;
-		if ((dragging === 'start') === anchorIsStart) {
+		if (dragMovesAnchor) {
 			selectAnchor = linear;
 		} else {
 			selectFocus = linear;
@@ -1012,11 +1016,15 @@ function buildHtml(): string {
 		dragging = null;
 		document.removeEventListener('touchmove', onDragMove);
 	}
+	// 動かす端（anchor か focus か）はつまみを掴んだ時点で決める。動かすたびに決め直すと、反対側の
+	// つまみを越えた瞬間に動かす端が入れ替わり、範囲が交差したところの 1〜2 セルに縮む。
+	var dragMovesAnchor = false;
 	function startDrag(which) {
 		return function (ev) {
 			ev.preventDefault();
 			ev.stopPropagation();
 			dragging = which;
+			dragMovesAnchor = (which === 'start') === (selectAnchor <= selectFocus);
 			touchTracking = false;
 			document.addEventListener('touchmove', onDragMove, { passive: false });
 		};
@@ -1122,6 +1130,9 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 	const injectSeqRef = useRef(0);
 	// WebView の ready 前に届いた同期イベントのキュー（ready後に順番に適用する）。
 	const pendingRef = useRef<TermStreamEvent[]>([]);
+	// 溜めている文字数と、上限を超えて捨てたか（PENDING_MAX_CHARS）。
+	const pendingCharsRef = useRef(0);
+	const pendingOverflowRef = useRef(false);
 	const readyRef = useRef(false);
 	const firstReadyRef = useRef(true);
 	const onNeedResyncRef = useRef(onNeedResync);
@@ -1326,8 +1337,18 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 			} else {
 				if (ev.kind === 'snapshot') {
 					pendingRef.current = []; // snapshotが置き換えるので、それ以前は不要
+					pendingCharsRef.current = 0;
+					pendingOverflowRef.current = false;
+				} else if (pendingOverflowRef.current) {
+					return; // 捨てた後の続きは溜めない（準備が整ったら snapshot を取り直す）
 				}
 				pendingRef.current.push(ev);
+				pendingCharsRef.current += ev.data?.length ?? 0;
+				if (pendingCharsRef.current > PENDING_MAX_CHARS) {
+					pendingRef.current = [];
+					pendingCharsRef.current = 0;
+					pendingOverflowRef.current = true;
+				}
 			}
 		});
 		// applyStreamEvent はrefのみ参照で安定。subscribe は端末ごとのマウント（key=id）で固定。
@@ -1420,14 +1441,24 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 						firstReadyRef.current = false;
 						// 購読時に再生されたリプレイキャッシュ（ready前のキュー）を適用する。
 						const queued = pendingRef.current;
+						const overflowed = pendingOverflowRef.current;
 						pendingRef.current = [];
-						for (const ev of queued) {
-							applyStreamEvent(ev);
+						pendingCharsRef.current = 0;
+						pendingOverflowRef.current = false;
+						if (overflowed) {
+							// 溜めきれずに捨てた。途中から流すと画面が崩れるので snapshot から取り直す。
+							onNeedResyncRef.current?.();
+						} else {
+							for (const ev of queued) {
+								applyStreamEvent(ev);
+							}
 						}
 					} else {
 						// reload後（プロセス死など）: WebView内の画面は失われている。
 						// キューは捨てて最新snapshotを取り直す。
 						pendingRef.current = [];
+						pendingCharsRef.current = 0;
+						pendingOverflowRef.current = false;
 						if (streamModeRef.current) {
 							onNeedResyncRef.current?.();
 						}

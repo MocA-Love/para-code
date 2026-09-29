@@ -135,7 +135,8 @@ export const ChatList = forwardRef<ChatListHandle, {
 			syncSticky();
 		}
 		// 上端に近づいたら古い発言を読み込む。開いた直後（最下部へ送る前）の位置では読まない。
-		if (revealed && contentOffset.y < LOAD_OLDER_THRESHOLD && history.kind === 'more' && !history.loading && contentSize.height > layoutMeasurement.height) {
+		// やり直せる失敗（PC が読み込み中）の案内が出ている間は、押されるまで読みに行かない。
+		if (revealed && contentOffset.y < LOAD_OLDER_THRESHOLD && history.kind === 'more' && !history.loading && history.message === undefined && contentSize.height > layoutMeasurement.height) {
 			onLoadOlder();
 		}
 	};
@@ -213,13 +214,16 @@ function HistoryHeader({ header, onLoadOlder }: { header: AgentHistoryHeader; on
 					<ActivityIndicator size="small" color={colors.textMuted} />
 				</View>
 			) : (
-				<Pressable
-					style={styles.older}
-					onPress={() => { hapticSelection(); onLoadOlder(); }}
-					accessibilityRole="button"
-				>
-					<Text style={styles.olderText}>さらに前の発言を読み込む</Text>
-				</Pressable>
+				<View>
+					{header.message !== undefined ? <Text style={styles.truncated}>{header.message}</Text> : null}
+					<Pressable
+						style={styles.older}
+						onPress={() => { hapticSelection(); onLoadOlder(); }}
+						accessibilityRole="button"
+					>
+						<Text style={styles.olderText}>さらに前の発言を読み込む</Text>
+					</Pressable>
+				</View>
 			);
 		default:
 			return <View />;

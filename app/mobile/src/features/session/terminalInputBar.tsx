@@ -9,7 +9,7 @@ import { monoFamily } from '../../monoFont.js';
 import { terminalSubmitIcon } from '../../terminalKeys.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { Icon } from '../../ui/index.js';
-import { HELD_PREEDIT_COMMIT_DELAY_MS, LIVE_DEL, LIVE_ENTER, LIVE_INPUT_EMPTY, liveInputStep, type LiveInputEvent, type LiveInputState } from './liveInput.js';
+import { HELD_PREEDIT_COMMIT_DELAY_MS, LIVE_DEL, LIVE_ENTER, LIVE_INPUT_EMPTY, liveInputStep, retireAfterControl, type LiveInputEvent, type LiveInputState } from './liveInput.js';
 import { useIsFocused } from 'expo-router';
 import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
 
@@ -36,8 +36,11 @@ export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitt
 	onToggleEnterless: () => void;
 	uploading: boolean;
 	onAttachImage: () => void;
-	/** ライブ入力で打たれた文字。 */
-	onLiveText: (text: string) => void;
+	/**
+	 * ライブ入力で打たれた文字。Ctrl が点いていて制御文字として送った（文字としては PC に載らなかった）
+	 * ときは true を返す。
+	 */
+	onLiveText: (text: string) => boolean;
 	/** ライブ入力で押された制御キー（⌫ は DEL の並び、改行は CR）。1回で送る。 */
 	onLiveKey: (data: string) => void;
 	/** ライブ入力中に外付けキーボードで押された矢印（iPad）。PC のターミナルへ送る。 */
@@ -69,26 +72,33 @@ export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitt
 	// 2つを一瞬並べるのは、フォーカスを入力欄から入力欄へ直接渡してキーボードを閉じさせないため。
 	const [captures, setCaptures] = useState<readonly number[]>([0]);
 	const currentCapture = captures[captures.length - 1]!;
+	// 自分からはフォーカスを取らない世代（フォーカスが外れた後に作り直したもの。`retireAfterControl`）。
+	const quietCapturesRef = useRef(new Set<number>());
 	// ライブ入力を切り替えたら入力欄は最初の世代から（autoFocus で勝手にキーボードを出さない）。
 	useEffect(() => {
 		setCaptures([0]);
+		quietCapturesRef.current.clear();
 		setLiveFocused(false);
 		setLiveComposing(false);
 	}, [live]);
-	const onLiveSend = (data: string) => {
+	/** 送る。打った文字を制御文字として送った（PC の行に文字として載らなかった）ときは true。 */
+	const onLiveSend = (data: string): boolean => {
 		if (data === LIVE_ENTER) {
 			onLiveKey(data);
 			setLastTyped('');
-			return;
+			return false;
 		}
 		if (data.length > 0 && [...data].every(char => char === LIVE_DEL)) {
 			// DEL の並びは1回で送る（1文字ずつ送ると、その数だけ別々の操作として記録される）。
 			onLiveKey(data);
 			setLastTyped(previous => previous.slice(0, Math.max(0, previous.length - data.length)));
-			return;
+			return false;
 		}
-		onLiveText(data);
+		if (onLiveText(data)) {
+			return true;
+		}
 		setLastTyped(previous => (previous + data).slice(-40));
+		return false;
 	};
 	const imageButton = (
 		<Pressable
@@ -126,7 +136,7 @@ export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitt
 						key={generation}
 						inputRef={generation === currentCapture ? liveRef : undefined}
 						submitRef={generation === currentCapture ? liveSubmitRef : undefined}
-						autoFocus={generation === currentCapture && generation > 0}
+						autoFocus={generation === currentCapture && generation > 0 && !quietCapturesRef.current.has(generation)}
 						onComposingChange={generation === currentCapture ? setLiveComposing : undefined}
 						// 引退した入力欄に打鍵が届いた（新しい入力欄がまだ・またはフォーカスを取れなかった）。
 						// 打鍵は捨て、いまの入力欄へフォーカスを移し直す。
@@ -139,9 +149,15 @@ export function TerminalInputBar({ live, input, onChangeInput, onSubmit, submitt
 							}
 						}}
 						onSend={onLiveSend}
-						onSubmitted={() => setCaptures(list => {
+						onSubmitted={(focusNext = true) => setCaptures(list => {
 							const last = list[list.length - 1]!;
-							return last === generation ? [last, last + 1] : list;
+							if (last !== generation) {
+								return list;
+							}
+							if (!focusNext) {
+								quietCapturesRef.current.add(last + 1);
+							}
+							return [last, last + 1];
 						})}
 					/>
 				))}
@@ -215,8 +231,10 @@ function LiveCapture({ inputRef, submitRef, autoFocus, onFocusChange, onComposin
 	onFocusChange: (focused: boolean) => void;
 	/** いまの世代だけ受け取る。変換中かどうかが変わった。 */
 	onComposingChange: ((composing: boolean) => void) | undefined;
-	onSend: (data: string) => void;
-	onSubmitted: () => void;
+	/** 送る。打った文字を制御文字として送ったときは true（`TerminalInputBar` の `onLiveText`）。 */
+	onSend: (data: string) => boolean;
+	/** この入力欄を引退させた。`focusNext` が false なら新しい入力欄はフォーカスを取らない（既定は取る）。 */
+	onSubmitted: (focusNext?: boolean) => void;
 	/** Enter で送り終えた後のこの入力欄に、まだ打鍵が届いた。 */
 	onRetiredInput: () => void;
 }) {
@@ -225,6 +243,8 @@ function LiveCapture({ inputRef, submitRef, autoFocus, onFocusChange, onComposin
 	// 入力欄のいまの文字列（生のまま。キャレットを末尾へ戻す位置に使う）と、変換中か。
 	const rawTextRef = useRef('');
 	const composingRef = useRef<boolean | undefined>(undefined);
+	// この入力欄にいまフォーカスがあるか（引退させたときに新しい入力欄へフォーカスを渡すかの判断）。
+	const focusedRef = useRef(false);
 	// 変換中かどうかをネイティブが教えてくれない環境（パッチの無いビルド）で、止まった末尾を送る予約。
 	const heldTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const cancelHeldTimer = () => {
@@ -247,8 +267,17 @@ function LiveCapture({ inputRef, submitRef, autoFocus, onFocusChange, onComposin
 		}
 		const step = liveInputStep(stateRef.current, event);
 		stateRef.current = step.state;
+		let control = false;
 		for (const data of step.send) {
-			onSend(data);
+			control = onSend(data) || control;
+		}
+		if (control) {
+			// Ctrl で打った文字は PC の行に載っていない。引退させて新しい空の入力欄から写し直す
+			// （フォーカスが外れた後なら、新しい入力欄はフォーカスを取らない。`retireAfterControl`）。
+			const retired = retireAfterControl(event, focusedRef.current);
+			stateRef.current = retired.state;
+			onSubmitted(retired.focusNext);
+			return;
 		}
 		if (event.kind === 'change' && event.composing === undefined && step.state.held.length > 0) {
 			heldTimerRef.current = setTimeout(() => {
@@ -293,8 +322,12 @@ function LiveCapture({ inputRef, submitRef, autoFocus, onFocusChange, onComposin
 			smartInsertDelete={false}
 			keyboardAppearance="dark"
 			blurOnSubmit={false}
-			onFocus={() => onFocusChange(true)}
+			onFocus={() => {
+				focusedRef.current = true;
+				onFocusChange(true);
+			}}
 			onBlur={() => {
+				focusedRef.current = false;
 				onFocusChange(false);
 				composingRef.current = undefined;
 				onComposingChange?.(false);

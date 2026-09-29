@@ -79,7 +79,7 @@ export default function NotificationsScreen() {
 				<ConfirmDrawer
 					visible={confirming}
 					title="通知をすべて消しますか？"
-					message={`${notifications.length} 件の通知を消します。PC とほかの端末の一覧からも消え、取り消せません。`}
+					message={`${notifications.length} 件の通知を消します。PC とほかの端末の一覧からも消え、取り消せません（まだ答えていない許可と質問は、PC とほかの端末では残ります）。`}
 					confirmLabel="すべて消す"
 					onConfirm={clearNotifications}
 					onClose={() => setConfirming(false)}

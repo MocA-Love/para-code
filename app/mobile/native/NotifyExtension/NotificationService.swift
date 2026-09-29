@@ -147,7 +147,7 @@ final class NotificationService: UNNotificationServiceExtension {
 			let previous = deliveredNotifications
 				.filter { notification in
 					let info = notification.request.content.userInfo
-					if let collapse = collapse, (info["collapse"] as? String) == collapse {
+					if let collapse = collapse, Self.collapseKey(of: info) == collapse {
 						return true
 					}
 					guard !dismissTags.isEmpty, let notifyId = Self.notifyId(of: info) else {
@@ -263,6 +263,19 @@ final class NotificationService: UNNotificationServiceExtension {
 		}
 		if let body = info["body"] as? [String: Any], let id = body["notifyId"] as? String, !id.isEmpty {
 			return id
+		}
+		return nil
+	}
+
+	/// 通知センターの通知の置き換えの鍵。`notifyId(of:)` と同じく、プッシュは userInfo の最上位、
+	/// アプリが出したローカル通知（`notificationTraySync.ts` の presentCollapsedNotification）は
+	/// expo が userInfo["body"] に入れた data の中にある。
+	private static func collapseKey(of info: [AnyHashable: Any]) -> String? {
+		if let key = info["collapse"] as? String, !key.isEmpty {
+			return key
+		}
+		if let body = info["body"] as? [String: Any], let key = body["collapse"] as? String, !key.isEmpty {
+			return key
 		}
 		return nil
 	}
