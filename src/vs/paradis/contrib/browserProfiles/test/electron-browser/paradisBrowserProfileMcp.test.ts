@@ -28,6 +28,7 @@ function profile(id: string, name: string, extra: Partial<IParadisBrowserProfile
 
 function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgentApprovalOutcome, slotAvailable = true) {
 	const calls: string[] = [];
+	const registrations: string[] = [];
 	const profilesService = {
 		list: () => profiles,
 		findByName: (name: string) => profiles.find(candidate => candidate.name === name),
@@ -46,7 +47,7 @@ function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgen
 		resolveTarget: () => ({ ok: true, group: {} as IEditorGroup }),
 		askApproval: async () => { calls.push('ask'); return approval; },
 		reserveSlot: () => slotAvailable ? toDisposable(() => { }) : undefined,
-		registerAgentTab: () => { },
+		registerAgentTab: (token: string, input: BrowserEditorInput, options?: { readonly approvedProfile?: boolean }) => { registrations.push(`${token}:${input.id}:${options?.approvedProfile === true ? 'approved-profile' : 'own'}`); },
 		bindTab: async () => true,
 		bindTabWithin: async () => true,
 		isOpenedBy: () => false,
@@ -60,7 +61,7 @@ function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgen
 		agentTabsService,
 		{ getKnownBrowserViews: () => new Map() } as unknown as IBrowserViewWorkbenchService,
 	);
-	return { channel, calls, profiles };
+	return { channel, calls, profiles, registrations };
 }
 
 suite('ParadisBrowserProfileMcpChannel', () => {
@@ -104,6 +105,17 @@ suite('ParadisBrowserProfileMcpChannel', () => {
 		const busy = createChannel([profile('a3f19c2b7e04', 'PRD')], 'busy');
 		store.add(busy.channel);
 		assert.deepStrictEqual(await busy.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None), { ok: false, reason: 'alreadyPending' });
+	});
+
+	// ユーザーのプロファイルのタブは、ユーザーが共有を止めたら台帳から外れる印付きで載る（M22）。
+	test('marks a tab of an approved user profile, but not one of a profile this pane made', async () => {
+		const user = createChannel([profile('a3f19c2b7e04', 'PRD')], 'approve');
+		store.add(user.channel);
+		await user.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
+		const own = createChannel([profile('b1c2d3e4f506', 'TEST', { createdByAgent: true, agentOwner: paradisAgentOwnerMark('pane-a') })], 'denied');
+		store.add(own.channel);
+		await own.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'TEST'], CancellationToken.None);
+		assert.deepStrictEqual([user.registrations, own.registrations], [['pane-a:view-1:approved-profile'], ['pane-a:view-1:own']]);
 	});
 
 	test('rejects non-http URLs before asking anything', async () => {

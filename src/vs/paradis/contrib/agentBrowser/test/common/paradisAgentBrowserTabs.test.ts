@@ -54,4 +54,58 @@ suite('ParadisAgentBrowserTabs', () => {
 		ledger.forget('view-1');
 		assert.deepStrictEqual([ledger.openedCount('a'), ledger.agentTabsOf('a'), ledger.isAgentTab('view-1')], [1, ['view-2'], false]);
 	});
+
+	// 承認を得て開いたユーザーのプロファイルのタブは、ユーザーが共有を止めたら台帳から外れる（M22）。
+	test('drops an approved profile tab once the user stops sharing it, but not when the agent moves on', () => {
+		const ledger = new ParadisAgentTabLedger();
+		ledger.registerAgentTab('a', 'approved', { approvedProfile: true });
+		ledger.registerAgentTab('a', 'own');
+		let boundPage: string | undefined;
+		let agentMoving = false;
+		const reconcile = () => ledger.reconcileApprovedProfileTabs(() => boundPage, () => agentMoving);
+
+		// まだ共有されていない間に外れても、止めたことにはならない
+		const beforeShared = reconcile();
+		boundPage = 'approved';
+		const whileShared = reconcile();
+		// エージェントが自分のタブを開いて共有先を移した
+		agentMoving = true;
+		boundPage = 'own';
+		const agentMoved = reconcile();
+		agentMoving = false;
+		const afterAgentMoved = reconcile();
+		// エージェントが選び直して、また共有された
+		boundPage = 'approved';
+		reconcile();
+		// ユーザーが共有ボタンで止めた
+		boundPage = undefined;
+		const userStopped = reconcile();
+		assert.deepStrictEqual({
+			beforeShared, whileShared, agentMoved, afterAgentMoved, userStopped,
+			tabs: ledger.agentTabsOf('a'),
+			isOpenedBy: ledger.isOpenedBy('a', 'approved'),
+			isApprovedProfileTab: ledger.isApprovedProfileTab('approved'),
+			// 自分のタブは共有が外れても台帳に残る
+			ownKept: reconcile(),
+		}, {
+			beforeShared: [], whileShared: [], agentMoved: [], afterAgentMoved: [], userStopped: ['approved'],
+			tabs: ['own'],
+			isOpenedBy: false,
+			isApprovedProfileTab: false,
+			ownKept: [],
+		});
+	});
+
+	test('revoking drops only an approved profile tab, also after the agent already moved away from it', () => {
+		const ledger = new ParadisAgentTabLedger();
+		ledger.registerAgentTab('a', 'approved', { approvedProfile: true });
+		ledger.registerAgentTab('a', 'own');
+		// 共有していたが、エージェントが自分のタブへ移った（共有先の変化では外れない）
+		ledger.reconcileApprovedProfileTabs(() => 'approved', () => false);
+		ledger.reconcileApprovedProfileTabs(() => 'own', () => true);
+		assert.deepStrictEqual({
+			revoked: [ledger.revokeApprovedProfileTab('approved'), ledger.revokeApprovedProfileTab('own'), ledger.revokeApprovedProfileTab('unknown')],
+			tabs: ledger.agentTabsOf('a'),
+		}, { revoked: [true, false, false], tabs: ['own'] });
+	});
 });

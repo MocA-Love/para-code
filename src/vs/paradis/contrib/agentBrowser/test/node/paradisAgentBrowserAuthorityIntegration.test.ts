@@ -8,7 +8,7 @@
 import assert from 'assert';
 import { EventEmitter } from 'events';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisExactBrowserViewDescriptor } from '../../common/paradisAgentBrowser.js';
+import { IParadisExactBrowserViewDescriptor, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent } from '../../common/paradisAgentBrowser.js';
 import { IParadisBindingAuthorityManifest, ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChannel.js';
@@ -1481,6 +1481,206 @@ suite('ParadisAgentBrowser authority integration', () => {
 				stillUnconfirmed: Reflect.get(fixture.service, '_unconfirmedReleaseTokens').has('token'),
 				unconfirmable: Reflect.get(fixture.service, '_unconfirmableTokens').has('token'),
 			}, { events: ['PostToolUse', 'Stop'], status: 'review', stillUnconfirmed: true, unconfirmable: true });
+		} finally {
+			listener.dispose();
+		}
+	});
+
+	async function sendHook(service: ParadisAgentBrowserService, token: string, event: string, payload = '{}'): Promise<string> {
+		const request = new TestRequest('POST', `/agent-hook?pane=${token}&event=${event}`);
+		const response = new TestResponse();
+		const pending = Reflect.get(service, '_handleRequest').call(service, request, response) as Promise<void>;
+		request.emit('data', Buffer.from(payload));
+		request.emit('end');
+		await pending;
+		return response.body;
+	}
+
+	// tmux のサーバー配下や WSL の中のエージェントの hook は、送り主がペインのシェルの子孫に見えず確かめを通れない。
+	// 解除の hook まで捨てると、承認しても許可待ちのまま残っていた（M4）。
+	test('in a pane whose hooks cannot be verified, a release hook clears the wait it entered and leaves the pane refusing input', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'perm', shellPid: 123 }, { token: 'question', shellPid: 124 }]));
+		const statuses = Reflect.get(fixture.service, '_paneStatuses') as Map<string, { status: string }>;
+		const steps: string[] = [];
+		const step = async (token: string, event: string, payload?: string) => {
+			const body = await sendHook(fixture.service, token, event, payload);
+			steps.push(`${token}:${event}:${JSON.parse(body).ok}:${statuses.get(token)?.status ?? 'none'}`);
+		};
+		await step('perm', 'PermissionRequest');
+		await step('perm', 'PostToolUse');
+		await step('perm', 'Stop');
+		// HTTP の TerminalExit はトークンを持つ誰でも送れるので、入力を断る印は外さない
+		await step('perm', 'TerminalExit');
+		await step('question', 'PreToolUse', '{"tool_name":"AskUserQuestion"}');
+		await step('question', 'Stop');
+		const lease = fixture.service.captureIngressLease('perm');
+		const context = Reflect.get(fixture.service, '_toolCallContext').call(fixture.service, lease, undefined) as IParadisMcpToolCallContext;
+		assert.deepStrictEqual({ steps, marks: [context.getUnconfirmedRelease('perm'), context.getUnconfirmedRelease('question')] }, {
+			steps: [
+				'perm:PermissionRequest:true:permission',
+				'perm:PostToolUse:true:working',
+				'perm:Stop:true:review',
+				'perm:TerminalExit:true:none',
+				'question:PreToolUse:true:question',
+				'question:Stop:true:review',
+			],
+			marks: ['unverifiable', 'unverifiable'],
+		});
+	});
+
+	// 普通の手元のペイン（許可要求の hook はシェルの子孫から届き、確かめられた）で、トークンを読んだ別プロセスが
+	// 偽の Stop → TerminalExit → Stop で許可待ちを解き、IDE 操作ツールに Enter を送らせる経路。
+	test('a spoofed Stop, TerminalExit and Stop cannot release a wait that a verified hook entered', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'perm', shellPid: 123 }]));
+		let verdict = 'pane';
+		Reflect.set(fixture.service, '_classifyCaller', async () => verdict);
+		const statuses = Reflect.get(fixture.service, '_paneStatuses') as Map<string, { status: string }>;
+		const events: IParadisAgentHookEvent[] = [];
+		const listener = onParadisAgentHookEvent(event => events.push(event));
+		try {
+			const entered = JSON.parse(await sendHook(fixture.service, 'perm', 'PermissionRequest')).ok;
+			verdict = 'unverified';
+			const spoofed: string[] = [];
+			for (const event of ['Stop', 'TerminalExit', 'Stop', 'PostToolUse']) {
+				spoofed.push(await sendHook(fixture.service, 'perm', event));
+			}
+			assert.deepStrictEqual({
+				entered,
+				spoofed: new Set(spoofed),
+				events: events.map(event => event.event),
+				status: statuses.get('perm')?.status,
+				unconfirmed: Reflect.get(fixture.service, '_unconfirmedReleaseTokens').has('perm'),
+			}, {
+				entered: true,
+				spoofed: new Set(['{"ok":false,"reason":"caller not verified"}']),
+				events: ['PermissionRequest'],
+				status: 'permission',
+				unconfirmed: false,
+			});
+		} finally {
+			listener.dispose();
+		}
+	});
+
+	// 偽の許可要求が本物と競っても、確かめられた待ちの記録を「確かめられなかった」へ書き換えない（送り主の確かめを
+	// 待つ間と、所有権の分類を待つ間の両方）
+	test('a spoofed wait-entering hook racing a verified one cannot mark the wait as unverified', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'perm', shellPid: 123 }]));
+		const statuses = Reflect.get(fixture.service, '_paneStatuses') as Map<string, { status: string; changedAt: number; waitEntryUnverified?: true }>;
+		const snapshot = () => { const entry = statuses.get('perm'); return entry ? `${entry.status}:${entry.waitEntryUnverified === true ? 'unverified-entry' : 'verified-entry'}` : 'none'; };
+		const verdicts: Promise<string>[] = [];
+		let classifications = 0;
+		Reflect.set(fixture.service, '_classifyCaller', () => { classifications++; return verdicts.shift() ?? Promise.resolve('unverified'); });
+		const waitFor = async (condition: () => boolean) => {
+			while (!condition()) {
+				await new Promise(resolve => setTimeout(resolve, 0));
+			}
+		};
+
+		// 1) 送り主の確かめを待つ間に、本物（確かめられた）の許可要求が先に状態を付けた
+		let releaseSpoof!: (kind: string) => void;
+		verdicts.push(new Promise<string>(resolve => releaseSpoof = resolve), Promise.resolve('pane'));
+		const spoofed = sendHook(fixture.service, 'perm', 'PermissionRequest');
+		await waitFor(() => classifications === 1);
+		const real = await sendHook(fixture.service, 'perm', 'PermissionRequest');
+		releaseSpoof('unverified');
+		const spoofedBody = await spoofed;
+		const afterClassifyRace = snapshot();
+		const stopAfterClassifyRace = await sendHook(fixture.service, 'perm', 'Stop');
+
+		// 2) 所有権の分類を待つ間に、本物の許可要求が状態を付けた
+		statuses.delete('perm');
+		let releaseOwner!: (value: { origin: 'owner' }) => void;
+		const ownership = Reflect.get(fixture.service, '_hookOwnership');
+		Reflect.set(fixture.service, '_hookOwnership', { classify: () => new Promise(resolve => releaseOwner = resolve), clear: () => undefined });
+		const spoofedLate = sendHook(fixture.service, 'perm', 'PermissionRequest');
+		await waitFor(() => releaseOwner !== undefined);
+		statuses.set('perm', { status: 'permission', changedAt: 5 });
+		releaseOwner({ origin: 'owner' });
+		const spoofedLateBody = await spoofedLate;
+		Reflect.set(fixture.service, '_hookOwnership', ownership);
+
+		assert.deepStrictEqual({
+			bodies: [real, spoofedBody, stopAfterClassifyRace, spoofedLateBody],
+			afterClassifyRace,
+			afterOwnershipRace: snapshot(),
+		}, {
+			bodies: ['{"ok":true}', '{"ok":false,"reason":"caller not verified"}', '{"ok":false,"reason":"caller not verified"}', '{"ok":false,"reason":"caller not verified"}'],
+			afterClassifyRace: 'permission:verified-entry',
+			afterOwnershipRace: 'permission:verified-entry',
+		});
+	});
+
+	test('the unconfirmed release marks survive an HTTP TerminalExit and are lifted only by the window\'s terminal exit', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 123 }]));
+		Reflect.get(fixture.service, '_paneStatuses').set('token', { status: 'review', changedAt: 1 });
+		Reflect.get(fixture.service, '_unconfirmedReleaseTokens').add('token');
+		Reflect.get(fixture.service, '_unconfirmableTokens').add('token');
+		await sendHook(fixture.service, 'token', 'TerminalExit');
+		const afterHttpExit = [Reflect.get(fixture.service, '_unconfirmedReleaseTokens').has('token'), Reflect.get(fixture.service, '_unconfirmableTokens').has('token')];
+		await fixture.service.notifyTerminalExit(connection, 'token');
+		const afterWindowExit = [Reflect.get(fixture.service, '_unconfirmedReleaseTokens').has('token'), Reflect.get(fixture.service, '_unconfirmableTokens').has('token')];
+		assert.deepStrictEqual({ afterHttpExit, afterWindowExit }, { afterHttpExit: [true, true], afterWindowExit: [false, false] });
+	});
+
+	test('the hooks accepted without a verified caller only ever move a pane toward working or review', () => {
+		const events = ['PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'UserPromptSubmit', 'task_started', 'Stop', 'StopFailure', 'SubagentStop', 'agent-turn-complete', 'task_complete', 'SessionEnd',
+			'PreToolUse', 'PermissionRequest', 'Notification', 'exec_approval_request', 'apply_patch_approval_request', 'request_user_input', 'permission.ask', 'TerminalExit', 'SessionStart', 'Start'];
+		assert.deepStrictEqual(
+			events.filter(paradisIsAgentHookReleaseEvent).map(event => `${event}:${paradisNormalizeAgentHookEvent(event, 'needs permission') ?? 'unchanged'}`),
+			['PostToolUse:working', 'PostToolUseFailure:working', 'PermissionDenied:working', 'UserPromptSubmit:working', 'task_started:working', 'Stop:review', 'StopFailure:review', 'SubagentStop:unchanged', 'agent-turn-complete:review', 'task_complete:review', 'SessionEnd:review'],
+		);
+	});
+
+	test('a hook that cannot be verified still cannot put or keep a pane in permission, nor clear it by a terminal exit', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'perm', shellPid: 123 }]));
+		Reflect.get(fixture.service, '_paneStatuses').set('perm', { status: 'permission', changedAt: 1 });
+		const events: IParadisAgentHookEvent[] = [];
+		const listener = onParadisAgentHookEvent(event => events.push(event));
+		try {
+			const bodies: string[] = [];
+			for (const [event, payload] of [
+				['PermissionRequest', '{}'],
+				['Notification', '{"message":"Claude needs your permission"}'],
+				['PreToolUse', '{"tool_name":"AskUserQuestion"}'],
+				['PreToolUse', '{"tool_name":"Bash"}'],
+				['TerminalExit', '{}'],
+				['SomethingUnknown', '{}'],
+			]) {
+				const request = new TestRequest('POST', `/agent-hook?pane=perm&event=${event}`);
+				const response = new TestResponse();
+				const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+				request.emit('data', Buffer.from(payload));
+				request.emit('end');
+				await pending;
+				bodies.push(response.body);
+			}
+			assert.deepStrictEqual({
+				bodies: new Set(bodies),
+				events: events.length,
+				status: Reflect.get(fixture.service, '_paneStatuses').get('perm')?.status,
+				unconfirmed: Reflect.get(fixture.service, '_unconfirmedReleaseTokens').has('perm'),
+			}, {
+				bodies: new Set(['{"ok":false,"reason":"caller not verified"}']),
+				events: 0,
+				status: 'permission',
+				unconfirmed: false,
+			});
 		} finally {
 			listener.dispose();
 		}

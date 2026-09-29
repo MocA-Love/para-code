@@ -184,7 +184,9 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 
 			input = await this.profilesService.openInProfile(profile.id, url, group.group);
 			if (input) {
-				this.agentTabsService.registerAgentTab(token, input);
+				// ユーザーのプロファイル（承認を得て使うもの）のタブは、ユーザーが共有を止めたら台帳から外れ、
+				// 次に使うときは承認し直しになる。自分で作ったプロファイルのタブは自分のタブと同じ扱い。
+				this.agentTabsService.registerAgentTab(token, input, { approvedProfile: !isOwnProfile(profile, token) });
 			}
 		} finally {
 			slot.dispose();
@@ -228,7 +230,7 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 					? localize('paradis.browserProfiles.mcp.approval.site', "開くサイト: {0}", origin)
 					: localize('paradis.browserProfiles.mcp.approval.noSite', "開くサイト: 空のページ（その後エージェントが移動できます）"),
 				localize('paradis.browserProfiles.mcp.approval.detail', "許可すると、エージェントはこのプロファイルに保存されたログイン状態（Cookie など）のままページを開き、操作できます。"),
-				localize('paradis.browserProfiles.mcp.approval.detail2', "エージェントが開いたタブは、エージェントのタブとして一覧に載ります。閉じれば使えなくなります。"),
+				localize('paradis.browserProfiles.mcp.approval.detail2', "エージェントが開いたタブは、エージェントのタブとして一覧に載ります。共有を止めるか閉じれば使えなくなります。"),
 			],
 			approveLabel: localize('paradis.browserProfiles.mcp.approval.allow', "このプロファイルを使わせる"),
 		}, deadline.token);
@@ -351,8 +353,9 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 			if (!replacement) {
 				return { ok: false, reason: 'switchFailed' };
 			}
-			// 古いタブは閉じられて台帳から外れる。作り直したタブをエージェントのものとして載せ直す。
-			this.agentTabsService.registerAgentTab(token, replacement);
+			// 古いタブは閉じられて台帳から外れる。作り直したタブをエージェントのものとして載せ直す
+			// （承認を得たユーザーのプロファイルなら、開いたときと同じく共有を止めたら外れる印を付ける）。
+			this.agentTabsService.registerAgentTab(token, replacement, { approvedProfile: !isOwnProfile(profile, token) });
 			let bound = false;
 			try {
 				const model = await replacement.resolve();

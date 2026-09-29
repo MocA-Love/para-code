@@ -10,6 +10,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { timeout } from '../../../../../base/common/async.js';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
+import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { isMacintosh } from '../../../../../base/common/platform.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -19,7 +20,7 @@ import { FocusMode, INativeHostService } from '../../../../../platform/native/co
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IQuickInputService } from '../../../../../platform/quickinput/common/quickInput.js';
 import { BrowserEditorInput } from '../../../../../workbench/contrib/browserView/common/browserEditorInput.js';
-import { IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
+import { BrowserViewSharingState, IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisBrowserScopeService, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
@@ -84,6 +85,7 @@ function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: und
 		},
 	} as unknown as IDialogService;
 	const bindingModel = {
+		onDidChange: Event.None,
 		getPanes: () => [{ token: 'pane-token', title: 'cla\u202eude \u001b[31m' }],
 		getBindingForToken: () => binding.pageId === undefined ? undefined : { pageId: binding.pageId },
 		bindPageToPane: (model: { sharingState?: string }) => { binding.sharingAtBind = model.sharingState; return new Promise<boolean>(resolve => binding.resolveBind = resolve); },
@@ -287,4 +289,123 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 		binding.resolveBind?.(true);
 		assert.deepStrictEqual([await bound, audienceCalls, binding.sharingAtBind], [true, [['view-1', { type: 'agent' }, true]], 'shared']);
 	}));
+});
+
+suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
+	const TOKEN = 'pane-token';
+
+	function setup() {
+		const disposables = store.add(new DisposableStore());
+		const bindingChanges = disposables.add(new Emitter<void>());
+		const state = { bound: undefined as string | undefined, binds: [] as string[] };
+		const views = new Map<string, BrowserEditorInput>();
+		const sharing = new Map<string, Emitter<BrowserViewSharingState>>();
+		const tab = (id: string) => {
+			const emitter = disposables.add(new Emitter<BrowserViewSharingState>());
+			sharing.set(id, emitter);
+			const model = { id, sharingState: BrowserViewSharingState.Shared, isDirectlyShareable: true, onDidChangeSharingState: emitter.event } as unknown as IBrowserViewModel;
+			const input = { id, url: `https://${id}.example`, title: id, getName: () => id, onWillDispose: Event.None, onDidResolveModel: Event.None, resolve: async () => model } as unknown as BrowserEditorInput;
+			views.set(id, input);
+			return input;
+		};
+		const bindingModel = {
+			onDidChange: bindingChanges.event,
+			getBindingForToken: (token: string) => token === TOKEN && state.bound !== undefined ? { token, pageId: state.bound } : undefined,
+			bindPageToPane: async (model: IBrowserViewModel, token: string) => {
+				state.binds.push(model.id);
+				if (token === TOKEN) {
+					state.bound = model.id;
+				}
+				return true;
+			},
+		} as unknown as IParadisAgentBrowserBindingModel;
+		const service = disposables.add(new ParadisAgentBrowserTabsService(
+			{ getKnownBrowserViews: () => views } as unknown as IBrowserViewWorkbenchService,
+			{} as IEditorService,
+			{} as IEditorGroupsService,
+			bindingModel,
+			{} as IParadisPaneTokenService,
+			{} as IParadisTerminalScopeService,
+			{ resolveScope: () => ({ kind: 'managed' }) } as unknown as IParadisBrowserScopeService,
+			{ isSwitching: false } as unknown as IParadisWorkspaceSwitchService,
+			{} as IParadisWorktreeService,
+			{} as IParadisAuxiliaryWindowScopeService,
+			{} as IDialogService,
+			{} as IQuickInputService,
+			new NullLogService(),
+			{ getChannel: () => ({ call: async () => undefined, listen: () => Event.None }) } as unknown as IMainProcessService,
+			{ onDidFocusMainOrAuxiliaryWindow: Event.None, onDidBlurMainOrAuxiliaryWindow: Event.None } as unknown as INativeHostService,
+		));
+		// 共有先が変わったと binding model が知らせる（実物は 100ms まとめてから届く）
+		const bind = (pageId: string | undefined) => {
+			state.bound = pageId;
+			bindingChanges.fire();
+		};
+		const listed = () => {
+			const result = service.listTabs(TOKEN);
+			return result.ok ? result.tabs.map(entry => entry.tabId).sort() : [];
+		};
+		return { service, state, tab, bind, listed, sharing, views, disposables };
+	}
+
+	// 共有を止めてから binding model の通知が届くまでの間に選び直されても、承認なしでは共有し直さない（M22）
+	test('an approved profile tab stopped by the user cannot be re-selected before the change notification arrives', async () => {
+		const { service, state, tab, bind } = setup();
+		service.registerAgentTab(TOKEN, tab('approved'), { approvedProfile: true });
+		bind('approved');
+		// ユーザーが共有を止めた。通知はまだ届いていない
+		state.bound = undefined;
+		const selected = await service.selectTab(TOKEN, 'approved');
+		assert.deepStrictEqual({ selected, binds: state.binds, opened: service.isOpenedBy(TOKEN, 'approved') }, {
+			selected: { ok: false, reason: 'unknownTab' },
+			binds: [],
+			opened: false,
+		});
+	});
+
+	// エージェントが別のタブへ移った後は、承認済みのタブの共有先は変わらない。「ブラウザページの共有を解除」や
+	// 共有ボタンで止めても共有先の変化は起きないので、止めた経路から直接外す
+	test('an approved profile tab the agent moved away from is dropped when the user unshares it or turns its sharing off', async () => {
+		const { service, state, tab, bind, listed, sharing } = setup();
+		service.registerAgentTab(TOKEN, tab('approved'), { approvedProfile: true });
+		service.registerAgentTab(TOKEN, tab('toggled'), { approvedProfile: true });
+		service.registerAgentTab(TOKEN, tab('own'));
+		bind('approved');
+		const movedToOwn = await service.selectTab(TOKEN, 'own');
+		const afterAgentMove = listed();
+		// エージェント自身のタブは、共有を止められても自分のタブのまま
+		service.revokeApprovedProfileTab('own');
+		// 「ブラウザページの共有を解除」
+		service.revokeApprovedProfileTab('approved');
+		// upstream の共有ボタンで止めた（共有の状態の変化で気づく）
+		await timeout(0);
+		sharing.get('toggled')!.fire(BrowserViewSharingState.Available);
+		const reselected = await service.selectTab(TOKEN, 'approved');
+		assert.deepStrictEqual({ movedToOwn: movedToOwn.ok, afterAgentMove, afterRevoke: listed(), reselected, binds: state.binds }, {
+			movedToOwn: true,
+			afterAgentMove: ['approved', 'own', 'toggled'],
+			afterRevoke: ['own'],
+			reselected: { ok: false, reason: 'unknownTab' },
+			binds: ['own'],
+		});
+	});
+
+	test('keeps watching the sharing state after the tab\'s model is recreated', async () => {
+		const { service, listed, views, disposables } = setup();
+		const resolved = disposables.add(new Emitter<IBrowserViewModel>());
+		const firstSharing = disposables.add(new Emitter<BrowserViewSharingState>());
+		const secondSharing = disposables.add(new Emitter<BrowserViewSharingState>());
+		const model = (onDidChangeSharingState: Event<BrowserViewSharingState>) => ({ id: 'replaced', sharingState: BrowserViewSharingState.Shared, onDidChangeSharingState }) as unknown as IBrowserViewModel;
+		const input = { id: 'replaced', url: 'https://replaced.example', title: 'replaced', getName: () => 'replaced', onWillDispose: Event.None, onDidResolveModel: resolved.event, resolve: async () => model(firstSharing.event) } as unknown as BrowserEditorInput;
+		views.set('replaced', input);
+		service.registerAgentTab(TOKEN, input, { approvedProfile: true });
+		await timeout(0);
+		resolved.fire(model(secondSharing.event));
+		// 古いモデルの知らせはもう届かない。新しいモデルで共有が止まったら外れる
+		firstSharing.fire(BrowserViewSharingState.Available);
+		const afterOldModel = listed();
+		secondSharing.fire(BrowserViewSharingState.Available);
+		assert.deepStrictEqual({ afterOldModel, afterNewModel: listed() }, { afterOldModel: ['replaced'], afterNewModel: [] });
+	});
 });

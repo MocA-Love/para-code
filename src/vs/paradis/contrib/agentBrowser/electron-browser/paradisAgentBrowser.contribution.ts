@@ -38,6 +38,7 @@ import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/par
 import { IParadisPaneBinding, paradisFormatCdpGatewayUrl } from '../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
+import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
 import { ParadisBindingDialog } from './paradisBindingDialog.js';
 import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
 import { paradisGetBindingErrorMessage, paradisGetPaneQuickPickState } from './paradisDialogPageResolver.js';
@@ -232,6 +233,8 @@ class ParadisUnshareBrowserPageAction extends Action2 {
 			return;
 		}
 
+		// 承認を得て開いたユーザーのプロファイルのタブなら、エージェントが選び直しても承認なしでは使えないようにする
+		accessor.get(IParadisAgentBrowserTabsService).revokeApprovedProfileTab(model.id);
 		const removed = await bindingModel.unbindPage(model);
 
 		notificationService.info(removed > 0
