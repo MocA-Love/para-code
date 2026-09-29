@@ -15,12 +15,14 @@ import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelSc
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IDialogService, IPrompt } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
+import { FocusMode } from '../../../../../platform/native/common/native.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IQuickInputService } from '../../../../../platform/quickinput/common/quickInput.js';
 import { BrowserEditorInput } from '../../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
+import { IHostService } from '../../../../../workbench/services/host/browser/host.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisBrowserScopeService, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
 import { IParadisAgentBrowserBindingModel } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
@@ -47,8 +49,10 @@ interface IFakeBinding {
 	sharingAtBind?: string;
 }
 
-function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: undefined, unbinds: 0 }, onSetAudience: (args: unknown) => void = () => { }) {
+function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: undefined, unbinds: 0 }, onSetAudience: (args: unknown) => void = () => { }, hasFocus = true) {
 	const shown: IShownPrompt[] = [];
+	const attention: (FocusMode | undefined)[] = [];
+	const hostService = { hasFocus, focus: async (_window: Window, options?: { mode?: FocusMode }) => { attention.push(options?.mode); } } as unknown as IHostService;
 	const dialogService = {
 		prompt: async (prompt: IPrompt<unknown>) => {
 			shown.push({
@@ -94,8 +98,9 @@ function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: und
 		{} as IQuickInputService,
 		new NullLogService(),
 		{ getChannel: () => ({ call: async (_command: string, args: unknown) => onSetAudience(args), listen: () => Event.None }) } as unknown as IMainProcessService,
+		hostService,
 	);
-	return { service, shown, binding };
+	return { service, shown, binding, attention };
 }
 
 const request: IParadisAgentApprovalRequest = {
@@ -172,6 +177,21 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 		const second = await service.askApproval('pane-token', request, live.token);
 		cts.cancel();
 		assert.deepStrictEqual([second, await pending], ['busy', 'cancelled']);
+	}));
+
+	test('asks for attention (without taking focus) once per request when the window is in the background', () => runWithFakedTimers(fakedTimers, async () => {
+		const background = createService([{ button: 1, afterMs: 100 }, { button: 1, afterMs: 1500 }], undefined, undefined, false);
+		const foreground = createService([{ button: 1, afterMs: 1500 }]);
+		store.add(background.service);
+		store.add(foreground.service);
+		const cts = store.add(new CancellationTokenSource());
+		assert.deepStrictEqual([
+			await background.service.askApproval('pane-token', request, cts.token),
+			background.shown.length,
+			background.attention,
+			await foreground.service.askApproval('pane-token', request, cts.token),
+			foreground.attention,
+		], ['approve', 2, [FocusMode.Notify], 'approve', []]);
 	}));
 
 	(isMacintosh ? test : test.skip)('asks again when the approval was chosen with Cmd+D', () => runWithFakedTimers(fakedTimers, async () => {

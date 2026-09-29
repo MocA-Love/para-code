@@ -39,6 +39,7 @@ import { localize } from '../../../../nls.js';
 import { BrowserViewStorageScope, IBrowserViewService, ipcBrowserViewChannelName } from '../../../../platform/browserView/common/browserView.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
+import { FocusMode } from '../../../../platform/native/common/native.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
@@ -49,6 +50,7 @@ import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/co
 import { BrowserViewSharingState, IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import {
 	IParadisAuxiliaryWindowScopeService,
@@ -246,6 +248,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		@IQuickInputService private readonly _quickInputService: IQuickInputService,
 		@ILogService private readonly _logService: ILogService,
 		@IMainProcessService mainProcessService: IMainProcessService,
+		@IHostService private readonly _hostService: IHostService,
 	) {
 		super();
 		this._browserViews = ProxyChannel.toService<IBrowserViewService>(mainProcessService.getChannel(ipcBrowserViewChannelName));
@@ -626,6 +629,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 
 		const message = request.messageTemplate(this._describePane(token));
 		let detail = request.detail;
+		this._requestAttention();
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const marker = `paradis-agent-approval-${++this._approvalSerial}`;
 			const calledAt = Date.now();
@@ -679,6 +683,20 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			];
 		}
 		return 'unanswered';
+	}
+
+	/**
+	 * 裏にあるウィンドウに承認ダイアログを出すときは、Dock のバウンス（Windows/Linux はタスクバーの点滅）で
+	 * 知らせる。知らせないと、利用者は気付かないまま締め切りを迎える。前面に出すことはしない
+	 * （ほかのアプリへ打っているキーを、このダイアログが受け取らないように）。
+	 */
+	private _requestAttention(): void {
+		if (this._hostService.hasFocus) {
+			return;
+		}
+		this._hostService.focus(dom.getActiveWindow(), { mode: FocusMode.Notify }).catch(error => {
+			this._logService.trace('[ParadisAgentBrowserTabs] could not ask for attention for an approval dialog', error);
+		});
 	}
 
 	/** その印の付いた承認ダイアログが、どれかのウィンドウに出ているか。 */
