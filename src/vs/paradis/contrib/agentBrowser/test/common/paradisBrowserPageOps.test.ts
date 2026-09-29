@@ -105,6 +105,31 @@ suite('paradisBrowserPageOps', () => {
 		assert.deepStrictEqual(cases.map(([pattern, url]) => paradisMatchUrlPattern(pattern, url)), [true, false, true, true, false, true, false]);
 	});
 
+	test('URL patterns with many wildcards finish in linear time and keep the wildcard rules', () => {
+		const started = Date.now();
+		const redos = paradisMatchUrlPattern('*a'.repeat(500) + 'b', 'https://x/' + 'a'.repeat(4000));
+		const elapsed = Date.now() - started;
+		const cases: [string, string][] = [
+			['**', ''],
+			['*', 'https://example.com/'],
+			['a*b*c', 'axxbyyc'],
+			['a*b*c', 'axxbyycd'],
+			['*a*a*b', 'https://x/aaab'],
+			['https://example.com/a\\', 'https://example.com/a\\'],
+			['https://example.com/\\*', 'https://example.com/x'],
+			['?', ''],
+		];
+		assert.deepStrictEqual({
+			redos,
+			fast: elapsed < 1000,
+			cases: cases.map(([pattern, url]) => paradisMatchUrlPattern(pattern, url)),
+		}, {
+			redos: false,
+			fast: true,
+			cases: [true, true, true, false, true, true, false, false],
+		});
+	});
+
 	test('the first matching rule wins, and header rules never touch cookies', () => {
 		const parsed = paradisParseRequestRules([
 			{ url_pattern: '*/api/*', action: 'set_headers', set_headers: { 'X-Env': 'test' }, remove_headers: ['X-Debug'] },
