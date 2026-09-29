@@ -27,7 +27,7 @@ import { IOverlayWebview, IWebviewService } from '../../../../../workbench/contr
 import { ITextFileService } from '../../../../../workbench/services/textfile/common/textfiles.js';
 import { IWorkingCopyService } from '../../../../../workbench/services/workingCopy/common/workingCopyService.js';
 import { TestEditorGroupView, TestLayoutService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
-import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
+import { TestStorageService, TestWorkspaceTrustManagementService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisHtmlFileEditor } from '../../electron-browser/paradisHtmlFileEditor.js';
 import { ParadisHtmlFileInput } from '../../electron-browser/paradisHtmlFileInput.js';
 
@@ -124,10 +124,11 @@ suite('ParadisHtmlFileEditor', () => {
 			remote.agent ?? createRemoteAgentService(),
 			createRemoteAuthorityResolverService(),
 			remote.tunnel ?? createTunnelService(),
+			disposables.add(new TestWorkspaceTrustManagementService()),
 		));
 	}
 
-	function createProductionEditor(webviewService: IWebviewService, textFileService: ITextFileService, fileService: IFileService): ParadisHtmlFileEditor {
+	function createProductionEditor(webviewService: IWebviewService, textFileService: ITextFileService, fileService: IFileService, trusted = true): ParadisHtmlFileEditor {
 		return disposables.add(new ParadisHtmlFileEditor(
 			new TestEditorGroupView(1),
 			NullTelemetryService,
@@ -146,10 +147,11 @@ suite('ParadisHtmlFileEditor', () => {
 			createRemoteAgentService(),
 			createRemoteAuthorityResolverService(),
 			createTunnelService(),
+			disposables.add(new TestWorkspaceTrustManagementService(trusted)),
 		));
 	}
 
-	test('public setInput applies script and resource policy before setting rendered HTML', async () => {
+	async function renderThroughSetInput(trusted: boolean): Promise<{ contentOptions: { allowScripts: boolean | undefined; localResourceRoots: string[] | undefined } | undefined; html: string | undefined }> {
 		const resource = URI.file('/workspace/site/index.html');
 		const source = '<main><img src="./assets/logo.png"></main>';
 		let renderedHtml: string | undefined;
@@ -178,19 +180,31 @@ suite('ParadisHtmlFileEditor', () => {
 			onDidWatchError: Event.None,
 		} as unknown as IFileService;
 		const workingCopyService = { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService;
-		const editor = createProductionEditor(webviewService, textFileService, fileService);
+		const editor = createProductionEditor(webviewService, textFileService, fileService, trusted);
 		const input = disposables.add(new ParadisHtmlFileInput(resource, textFileService, workingCopyService));
 
 		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		return { contentOptions: contentOptionsAtSetHtml, html: renderedHtml };
+	}
 
-		deepStrictEqual(contentOptionsAtSetHtml, {
+	test('public setInput applies script and resource policy before setting rendered HTML', async () => {
+		const { contentOptions, html } = await renderThroughSetInput(true);
+		deepStrictEqual(contentOptions, {
 			allowScripts: true,
 			localResourceRoots: ['file:///workspace/site'],
 		});
-		ok(renderedHtml);
-		const document = new DOMParser().parseFromString(renderedHtml, 'text/html');
+		ok(html);
+		const document = new DOMParser().parseFromString(html, 'text/html');
 		strictEqual(document.querySelector('base')?.getAttribute('href'), PREVIEW_BASE);
 		strictEqual(document.querySelector('img')?.getAttribute('src'), './assets/logo.png');
+	});
+
+	test('does not run the page scripts in an untrusted workspace', async () => {
+		const { contentOptions } = await renderThroughSetInput(false);
+		deepStrictEqual(contentOptions, {
+			allowScripts: false,
+			localResourceRoots: ['file:///workspace/site'],
+		});
 	});
 
 	suite('renderDocument generation contract', () => {
@@ -252,7 +266,8 @@ suite('ParadisHtmlFileEditor', () => {
 				disposables.add(new TestInstantiationService()), new TestLayoutService(),
 				new TestConfigurationService(), new TestNotificationService(),
 				createSharedProcessService(directory => { mounted = directory; return Promise.resolve(PREVIEW_MOUNT); }),
-				workspace, createRemoteAgentService(), createRemoteAuthorityResolverService(), createTunnelService()));
+				workspace, createRemoteAgentService(), createRemoteAuthorityResolverService(), createTunnelService(),
+				disposables.add(new TestWorkspaceTrustManagementService())));
 
 			const document = new DOMParser().parseFromString(
 				await editor.render('<img src="a.png">', URI.file('/workspace/site/index.html')), 'text/html');

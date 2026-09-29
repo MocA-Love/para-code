@@ -285,7 +285,8 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 		} catch {
 			return this._fail(response, 404);
 		}
-		if (target !== root && !target.startsWith(root + sep)) {
+		// root が `/` や `C:\` のように区切りで終わるときは、そのまま前方一致で比べる（区切りを足すと `//` になり全部断ってしまう）。
+		if (target !== root && !target.startsWith(root.endsWith(sep) ? root : root + sep)) {
 			return this._fail(response, 403);
 		}
 
