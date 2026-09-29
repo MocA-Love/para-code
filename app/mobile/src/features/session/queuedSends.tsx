@@ -108,7 +108,8 @@ function QueuedSendsDrawer({ visible, pcId, items, onClose }: { visible: boolean
 								{item.status === 'failed' && item.target.kind === 'live' ? (
 									<Button label="もう一度送る" size="sm" variant="secondary" disabled={busy !== undefined} onPress={() => { hapticSelection(); retryAgentSend(pcId, item.id); }} />
 								) : null}
-								<Button label={item.status === 'expired' ? '消す' : '取り消す'} size="sm" variant="ghost" disabled={busy === item.id} onPress={() => { hapticSelection(); removeAgentSend(pcId, item.id); }} />
+								{/* 送っている最中は取り消せない（一覧から消しても PC への送信は止まらず、取り消したと誤解させる）。 */}
+								<Button label={item.status === 'expired' ? '消す' : '取り消す'} size="sm" variant="ghost" disabled={busy === item.id || item.status === 'sending'} onPress={() => { hapticSelection(); removeAgentSend(pcId, item.id); }} />
 							</View>
 						</View>
 					);

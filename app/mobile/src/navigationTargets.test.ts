@@ -8,6 +8,7 @@ import {
 	findSpace,
 	pcRouteStatus,
 	resolveSessionTab,
+	sessionTabToPin,
 	spaceIdOfTerminal,
 	spaceRouteStatus,
 	spaceTerminals,
@@ -113,5 +114,14 @@ describe('セッションのタブ', () => {
 
 	test('ブラウザはスペースに1つなので、指定されればそのまま開く', () => {
 		expect(resolveSessionTab(ws, '1:w1', { kind: 'browser' })).toEqual({ status: 'browser' });
+	});
+
+	test('指定なしで開いたときだけ、既定で開いたタブを固定する', () => {
+		expect([
+			sessionTabToPin(undefined, resolveSessionTab(ws, '1:w1', undefined)),
+			sessionTabToPin({ kind: 'terminal', terminalKey: 'shell' }, resolveSessionTab(ws, '1:w1', { kind: 'terminal', terminalKey: 'shell' })),
+			sessionTabToPin(undefined, resolveSessionTab(workspace([]), '1:w1', undefined)),
+			sessionTabToPin(undefined, resolveSessionTab(undefined, '1:w1', undefined)),
+		]).toEqual([{ kind: 'terminal', terminalKey: 'agent-ask' }, undefined, undefined, undefined]);
 	});
 });
