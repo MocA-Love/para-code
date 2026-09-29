@@ -22,6 +22,7 @@ import {
 	paradisMobileReviewState,
 	paradisParseMobilePorcelainStatus,
 	paradisStagedConsistently,
+	paradisStagedContentDiffers,
 	paradisWithMobileLineCounts,
 	paradisWithUntrackedFileStats,
 } from '../common/paradisMobileDiffReview.js';
@@ -412,15 +413,33 @@ registerParadisMobileRequestHandler('scm', 'reviewStage', {
 		// 未追跡だったファイルは足した後の status に大きさが載らない（追跡中になる）ので、調べ直して渡す
 		const wasUntracked = toStage.filter(path => byPath.get(path)?.x === '?');
 		const afterStats = await paradisStatMobileWorkspaceFiles(fileService, root, wasUntracked);
+		// 確かめてから足すまでの間に書き換えられて、確認していない中身を足したと分かったものは、足す前へ戻す
+		// （足す前はステージ側に変更が無かったものだけが対象なので、`restore --staged` で元どおりになる）
+		const differed = (after ?? []).filter(file => {
+			const original = byPath.get(file.path);
+			return identities.has(file.path) && original !== undefined && paradisStagedContentDiffers(original, file, afterStats.get(file.path));
+		}).map(file => file.path);
+		let staged = toStage;
+		if (differed.length > 0) {
+			const restored = await context.runGit(['restore', '--staged', '--', ...differed.map(path => `:(literal)${path}`)]).catch(() => undefined);
+			if (restored?.code !== 0) {
+				// 戻せなかった（まだコミットの無いリポジトリでは HEAD が無く `restore --staged` が失敗する）。確かめていない
+				// 中身がステージに残っているので、ステージできたとは返さない
+				context.reply({ error: '確認した後に書き換えられたファイルをステージしてしまい、元に戻せませんでした。PC でステージを確かめてください。', code: 'restore-failed' });
+				return;
+			}
+			staged = toStage.filter(path => !differed.includes(path));
+			skipped.push(...differed.map(path => ({ path, reason: 'changed' as const })));
+		}
 		const restaged = new Map<string, { before: string; after: string }>();
 		for (const file of after ?? []) {
-			const previous = identities.get(file.path);
+			const previous = staged.includes(file.path) ? identities.get(file.path) : undefined;
 			const original = byPath.get(file.path);
 			// 足した中身がスマホの見たものと同じだと行数（未追跡は大きさと時刻）で確かめられたものだけ付け替える
 			if (previous !== undefined && original !== undefined && paradisStagedConsistently(original, file, afterStats.get(file.path))) {
 				restaged.set(file.path, { before: previous, after: paradisMobileDiffIdentity(file) });
 			}
 		}
-		updateSpace(storage, ws, context, space => paradisRemapMobileReviewMarks(space, restaged), 'unreachable', { staged: toStage, skipped });
+		updateSpace(storage, ws, context, space => paradisRemapMobileReviewMarks(space, restaged), 'unreachable', { staged, skipped });
 	},
 });

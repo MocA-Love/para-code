@@ -31,10 +31,20 @@ interface IReply {
 /** git の代わり。status と numstat は与えた値を返し、`add` はその後の status を差し替える。 */
 class FakeGit {
 	readonly calls: string[] = [];
+	/** 失敗させるサブコマンド（まだコミットの無いリポジトリの `restore --staged` など）。 */
+	readonly failing = new Set<string>();
+	/** `add` の直前に呼ぶ（確かめてから足すまでの間の書き換えを再現する）。 */
+	beforeAdd: (() => void) | undefined;
 	constructor(public status: string, public unstaged = '', public staged = '', private readonly afterAdd?: { status: string; unstaged: string; staged: string }) { }
 
 	run(args: readonly string[]): { code: number; stdout: string; stderr: string } {
 		this.calls.push(args.join(' '));
+		if (this.failing.has(args[0])) {
+			return { code: 128, stdout: '', stderr: 'fatal: could not resolve HEAD' };
+		}
+		if (args[0] === 'add') {
+			this.beforeAdd?.();
+		}
 		if (args[0] === 'add' && this.afterAdd !== undefined) {
 			({ status: this.status, unstaged: this.unstaged, staged: this.staged } = this.afterAdd);
 			return { code: 0, stdout: '', stderr: '' };
@@ -254,6 +264,55 @@ suite('ParadisMobileDiffReviewRequests', () => {
 			skipped: [{ path: 'big.ts', reason: 'unsupported' }],
 			remapped: true,
 			revisions: [1, 2],
+		});
+	});
+
+	test('puts back a reviewed file whose content was rewritten between the check and git add, and keeps its mark', async () => {
+		const status = ' M a.ts\n';
+		// 確かめたときは 1 行足しただけ。足したときには 3 行足されていた
+		const git = new FakeGit(status, '1\t0\ta.ts\0', '', { status: 'M  a.ts\n', unstaged: '', staged: '3\t0\ta.ts\0' });
+		const reviewed = paradisMobileDiffIdentity(paradisWithMobileLineCounts(paradisParseMobilePorcelainStatus(status), '1\t0\ta.ts\0', '')[0]);
+		const sent: IReply[] = [];
+		const host = createHost(createServices(), sent, git);
+		dispatch(host, { t: 'reviewSet', id: '1', marks: [{ path: 'a.ts', identity: reviewed }] });
+		dispatch(host, { t: 'reviewStage', id: '2', entries: [{ path: 'a.ts', identity: reviewed }] });
+		await flush();
+
+		const reply = sent.find(candidate => candidate.id === '2')!;
+		assert.deepStrictEqual({
+			git: git.calls.filter(call => call.startsWith('add') || call.startsWith('restore')),
+			staged: reply.staged,
+			skipped: reply.skipped,
+			mark: reply.marks!['a.ts'].identity === reviewed,
+		}, {
+			git: ['add -- :(literal)a.ts', 'restore --staged -- :(literal)a.ts'],
+			staged: [],
+			skipped: [{ path: 'a.ts', reason: 'changed' }],
+			mark: true,
+		});
+	});
+
+	test('does not report a rewritten new file as staged when it cannot be put back (no commit yet)', async () => {
+		const status = '?? n.ts\n';
+		const git = new FakeGit(status, '', '', { status: 'A  n.ts\n', unstaged: '', staged: '3\t0\tn.ts\0' });
+		git.failing.add('restore');
+		// 確かめたときは 3 文字。足したときには書き換えられて 5 文字になっていた
+		const files: Record<string, string> = { 'n.ts': 'a\nb' };
+		const sent: IReply[] = [];
+		const host = createHost(createServices(), sent, git, files);
+		const reviewed = paradisMobileDiffIdentity({ x: '?', y: '?', path: 'n.ts', size: 3, mtime: 1 });
+		dispatch(host, { t: 'reviewSet', id: '1', marks: [{ path: 'n.ts', identity: reviewed }] });
+		git.beforeAdd = () => {
+			files['n.ts'] = 'a\nb\nc';
+		};
+		dispatch(host, { t: 'reviewStage', id: '2', entries: [{ path: 'n.ts', identity: reviewed }] });
+		await flush();
+
+		const reply = sent.find(candidate => candidate.id === '2')!;
+		assert.deepStrictEqual({ git: git.calls.filter(call => call.startsWith('add') || call.startsWith('restore')), code: reply.code, staged: reply.staged }, {
+			git: ['add -- :(literal)n.ts', 'restore --staged -- :(literal)n.ts'],
+			code: 'restore-failed',
+			staged: undefined,
 		});
 	});
 
