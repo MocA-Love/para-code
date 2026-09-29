@@ -1568,6 +1568,58 @@ suite('ParadisAgentBrowser authority integration', () => {
 		}
 	});
 
+	// 偽の許可要求が本物と競っても、確かめられた待ちの記録を「確かめられなかった」へ書き換えない（送り主の確かめを
+	// 待つ間と、所有権の分類を待つ間の両方）
+	test('a spoofed wait-entering hook racing a verified one cannot mark the wait as unverified', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'perm', shellPid: 123 }]));
+		const statuses = Reflect.get(fixture.service, '_paneStatuses') as Map<string, { status: string; changedAt: number; waitEntryUnverified?: true }>;
+		const snapshot = () => { const entry = statuses.get('perm'); return entry ? `${entry.status}:${entry.waitEntryUnverified === true ? 'unverified-entry' : 'verified-entry'}` : 'none'; };
+		const verdicts: Promise<string>[] = [];
+		let classifications = 0;
+		Reflect.set(fixture.service, '_classifyCaller', () => { classifications++; return verdicts.shift() ?? Promise.resolve('unverified'); });
+		const waitFor = async (condition: () => boolean) => {
+			while (!condition()) {
+				await new Promise(resolve => setTimeout(resolve, 0));
+			}
+		};
+
+		// 1) 送り主の確かめを待つ間に、本物（確かめられた）の許可要求が先に状態を付けた
+		let releaseSpoof!: (kind: string) => void;
+		verdicts.push(new Promise<string>(resolve => releaseSpoof = resolve), Promise.resolve('pane'));
+		const spoofed = sendHook(fixture.service, 'perm', 'PermissionRequest');
+		await waitFor(() => classifications === 1);
+		const real = await sendHook(fixture.service, 'perm', 'PermissionRequest');
+		releaseSpoof('unverified');
+		const spoofedBody = await spoofed;
+		const afterClassifyRace = snapshot();
+		const stopAfterClassifyRace = await sendHook(fixture.service, 'perm', 'Stop');
+
+		// 2) 所有権の分類を待つ間に、本物の許可要求が状態を付けた
+		statuses.delete('perm');
+		let releaseOwner!: (value: { origin: 'owner' }) => void;
+		const ownership = Reflect.get(fixture.service, '_hookOwnership');
+		Reflect.set(fixture.service, '_hookOwnership', { classify: () => new Promise(resolve => releaseOwner = resolve), clear: () => undefined });
+		const spoofedLate = sendHook(fixture.service, 'perm', 'PermissionRequest');
+		await waitFor(() => releaseOwner !== undefined);
+		statuses.set('perm', { status: 'permission', changedAt: 5 });
+		releaseOwner({ origin: 'owner' });
+		const spoofedLateBody = await spoofedLate;
+		Reflect.set(fixture.service, '_hookOwnership', ownership);
+
+		assert.deepStrictEqual({
+			bodies: [real, spoofedBody, stopAfterClassifyRace, spoofedLateBody],
+			afterClassifyRace,
+			afterOwnershipRace: snapshot(),
+		}, {
+			bodies: ['{"ok":true}', '{"ok":false,"reason":"caller not verified"}', '{"ok":false,"reason":"caller not verified"}', '{"ok":false,"reason":"caller not verified"}'],
+			afterClassifyRace: 'permission:verified-entry',
+			afterOwnershipRace: 'permission:verified-entry',
+		});
+	});
+
 	test('the unconfirmed release marks survive an HTTP TerminalExit and are lifted only by the window\'s terminal exit', async () => {
 		const fixture = createFixture();
 		const connection = {};

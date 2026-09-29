@@ -2637,15 +2637,15 @@ export class ParadisAgentBrowserService extends Disposable {
 			// クエリの `host=` の名乗りでは変わらない。
 			// 相手（curl の 3 秒の待ち）が先に切れても、確かめと状態の更新は最後まで続ける（Windows では
 			// 確かめが遅く、承認の後の hook を落とすと許可待ちのまま残るため）。
-			const currentEntry = eventType ? this._paneStatuses.get(token) : undefined;
-			const inWait = currentEntry?.status === 'permission' || currentEntry?.status === 'question';
+			const initialEntry = eventType ? this._paneStatuses.get(token) : undefined;
+			const initiallyInWait = initialEntry?.status === 'permission' || initialEntry?.status === 'question';
 			// 許可待ち・質問へ入れる hook も送り主を確かめ、確かめられたかを状態に記録する（解除の hook を
 			// 確かめずに受け付けてよいかは、入れた hook が確かめられなかったかで決める）。
 			const entersWait = eventType !== '' && paradisAgentHookEntersWait(eventType, hookMessage, toolName);
-			const checksPendingRelease = !inWait && eventType !== '' && eventType !== 'TerminalExit'
+			const initiallyChecksPendingRelease = !initiallyInWait && eventType !== '' && eventType !== 'TerminalExit'
 				&& this._unconfirmedReleaseTokens.has(token) && !this._unconfirmableTokens.has(token);
 			let callerUnverified: boolean | undefined;
-			if (inWait || entersWait || checksPendingRelease) {
+			if (initiallyInWait || entersWait || initiallyChecksPendingRelease) {
 				const caller = await this._classifyCaller(token, req.socket as Socket);
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
 					this._sendIngressRejected(res);
@@ -2653,8 +2653,14 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				callerUnverified = caller === 'unverified';
 			}
+			// 確かめている間に状態が変わっていることがある（本物の許可要求と偽の hook が競る）。決めるのは今の状態で。
+			// 確かめなかったときは間に await が無いので、最初に読んだ状態と同じ
+			const currentEntry = eventType ? this._paneStatuses.get(token) : undefined;
+			const inWait = currentEntry?.status === 'permission' || currentEntry?.status === 'question';
+			const checksPendingRelease = !inWait && eventType !== '' && eventType !== 'TerminalExit'
+				&& this._unconfirmedReleaseTokens.has(token) && !this._unconfirmableTokens.has(token);
 			if (inWait) {
-				if (callerUnverified) {
+				if (callerUnverified !== false) {
 					// tmux のサーバー配下や WSL の中のエージェントは、いつまでも確かめを通れない。許可待ち・質問へ
 					// 入れる hook は捨てるが、解除の hook（ツールの完了・ターンの終了など）まで捨てると、承認しても
 					// 許可待ちのまま残る。入れた hook も確かめられなかった待ちに限って解除だけは受け付け、確かめ
@@ -2678,9 +2684,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				// 捨てずに処理する（tmux・WSL などでは確かめを通れないので、捨てると定期実行の見張りやモバイルの
 				// 会話が止まる）。印は IDE 操作ツールの Enter を断る条件にだけ使う。確かめられなかったペインは
 				// 次の許可待ちで確かめが通るまで問い合わせない（hook のたびに lsof を起こさない）
-				if (callerUnverified) {
+				if (callerUnverified === true) {
 					this._unconfirmableTokens.add(token);
-				} else {
+				} else if (callerUnverified === false) {
 					this._unconfirmedReleaseTokens.delete(token);
 				}
 			}
@@ -2786,6 +2792,17 @@ export class ParadisAgentBrowserService extends Disposable {
 				normalized = 'permission';
 			}
 
+			// 所有権の分類を待つ間に、別の hook がペインを許可待ち・質問へ入れていることがある。確かめられて
+			// いない（または確かめていない）この hook では、その待ちを書き換えない（確かめられた待ちを
+			// 確かめられない側へ落とさない。入れた hook も確かめられなかった待ちの解除だけは通す）
+			const latest = this._paneStatuses.get(token);
+			if ((latest?.status === 'permission' || latest?.status === 'question')
+				&& (callerUnverified === undefined ? !inWait : callerUnverified && latest.waitEntryUnverified !== true)) {
+				this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] agent-hook left a newer wait alone (caller not verified): ${eventType}`));
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({ ok: false, reason: 'caller not verified' }));
+				return;
+			}
 			if (normalized === 'idle') {
 				this._paneStatuses.delete(token);
 			} else {
