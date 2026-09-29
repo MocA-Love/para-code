@@ -1017,9 +1017,12 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			this.notificationService.info(localize('paradis.mobile.noDevices', "ペアリング済みのモバイルデバイスはありません。"));
 			return;
 		}
+		// 名前は重なりうるので、失効は id で指す（id を返さない古い状態なら従来どおり名前で）
+		const devices: readonly { readonly mobileId: string | undefined; readonly name: string }[] = status.pairedMobiles ?? status.pairedDevices.map(name => ({ mobileId: undefined, name }));
 		const picked = await this.quickInputService.pick(
-			status.pairedDevices.map(name => ({
-				label: name,
+			devices.map(device => ({
+				label: device.name,
+				mobileId: device.mobileId,
 				description: localize('paradis.mobile.revokeDesc', "選択すると失効します"),
 			})),
 			{ placeHolder: localize('paradis.mobile.managePlaceholder', "失効するモバイルデバイスを選択（Escで閉じる）") },
@@ -1036,7 +1039,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		if (!confirmed) {
 			return;
 		}
-		await this.service.revokeDevice(picked.label);
+		await this.service.revokeDevice(picked.label, picked.mobileId);
 		this.notificationService.info(localize('paradis.mobile.revoked', "モバイルデバイス「{0}」を失効させました。", picked.label));
 	}
 

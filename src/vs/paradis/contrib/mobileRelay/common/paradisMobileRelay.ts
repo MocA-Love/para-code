@@ -227,6 +227,11 @@ export interface IParadisMobileStatus {
 	readonly deviceId: string | undefined;
 	/** 承認済みモバイルデバイスの表示名一覧。 */
 	readonly pairedDevices: readonly string[];
+	/**
+	 * 承認済みモバイルデバイスの id と表示名（`pairedDevices` と同じ順）。表示名は端末の名前なので重なりうる。
+	 * 失効は名前ではなくこの id で指す（同じ名前の別の端末まで外さないため）。
+	 */
+	readonly pairedMobiles?: readonly { readonly mobileId: string; readonly name: string }[];
 	/** 現在オンラインのモバイル接続数。 */
 	readonly onlineMobiles: number;
 	/**
@@ -333,8 +338,11 @@ export interface IParadisMobileRelayService {
 	beginPairing(resetRegistration?: boolean): Promise<IParadisMobilePairingSession>;
 	approvePairing(): Promise<void>;
 	cancelPairing(): Promise<void>;
-	/** 承認済みデバイスを失効させる。 */
-	revokeDevice(deviceName: string): Promise<void>;
+	/**
+	 * 承認済みデバイスを失効させる。`mobileId` を渡せばその端末だけ、無ければ `deviceName` の名前の端末を外す。
+	 * 台帳を保存できなくても、その端末の接続は切ってから失敗を返す。
+	 */
+	revokeDevice(deviceName: string, mobileId?: string): Promise<void>;
 	/**
 	 * 読めなかった鍵とペアリング台帳を読み直す（ファイルの権限を直したときなど）。復号できなかった
 	 * （`undecryptable`）ときは、macOS の safeStorage が失敗をプロセスが終わるまで覚えているので、
