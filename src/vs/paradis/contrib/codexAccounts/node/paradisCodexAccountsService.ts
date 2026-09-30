@@ -15,6 +15,9 @@
 //     使用量パネルからの追加・削除はすぐ、それ以外（手で消した等）は30秒ごとの見直しで全ウィンドウへ通知する
 //   - 切り替えたら、切替元と切替先の2ホームの間だけ会話ログをハードリンクし合う
 //     （paradisCodexSessionLinker.ts）。設定でやめられる
+//   - SSH の接続先（REH）でも同じものが動き、接続先のホームについて選択を持つ
+//     （paradisCodexAccounts.server.ts）。Para Code を更新した直後は、同じ接続先に古い版の REH が
+//     しばらく残り、同じ選択のファイルを読み書きする。なので選択はファイルの印が変わるたびに読み直す
 //
 // リセットクレジット:
 //   - 読み取り: ホームの auth.json のアクセストークンで ChatGPT のバックエンドを直接読む（使用量と
@@ -140,6 +143,16 @@ interface ICodexAuth {
 	readonly email?: string;
 }
 
+/** ファイルの印（inode・大きさ・更新時刻）。無い・読めなければ undefined。 */
+async function fileStamp(filePath: string): Promise<string | undefined> {
+	try {
+		const stat = await fs.promises.stat(filePath);
+		return `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+	} catch {
+		return undefined;
+	}
+}
+
 export class ParadisCodexAccountsService extends Disposable {
 
 	private readonly ledger: ParadisCodexResetCreditLedger;
@@ -155,7 +168,12 @@ export class ParadisCodexAccountsService extends Disposable {
 	private readonly selectionPath: string;
 	private readonly linkLedgerPath: string;
 	private selection: IStoredSelection = { revision: 0 };
-	private selectionLoad: Promise<void> | undefined;
+	/** 選択のファイルの読み直し（前のものが終わってから1本ずつ）。 */
+	private selectionLoad: Promise<void> = Promise.resolve();
+	/** 最後に読んだ・書いた選択のファイルの印（無ければ undefined）。変わったら読み直す。 */
+	private selectionStamp: string | undefined;
+	/** 選択のファイルを一度でも読んだか。 */
+	private selectionLoaded = false;
 	/** 選択の読み書き（選ぶ・見直す）は1本ずつ流す。同時に選ぶと同じ revision が2回出るため。 */
 	private selectionQueue: Promise<unknown> = Promise.resolve();
 	private lastStateKey: string | undefined;
@@ -224,25 +242,48 @@ export class ParadisCodexAccountsService extends Disposable {
 
 	// ---------- 切替 ----------
 
+	/**
+	 * 選択のファイルを、前に読んだ・書いたときから変わっていれば読み直す。自分以外（同じ接続先に残った
+	 * 古い版の REH）が書き換えることがあるので、一度読んだら終わりにしない。
+	 */
 	private loadSelection(): Promise<void> {
-		if (!this.selectionLoad) {
-			this.selectionLoad = (async () => {
-				try {
-					const parsed = JSON.parse(await fs.promises.readFile(this.selectionPath, 'utf8')) as { version?: unknown; homePath?: unknown; previousHomePath?: unknown; revision?: unknown; changedAt?: unknown };
-					if (parsed.version === 1 && typeof parsed.revision === 'number' && Number.isSafeInteger(parsed.revision)) {
-						this.selection = {
-							homePath: typeof parsed.homePath === 'string' && isAbsolute(parsed.homePath) ? parsed.homePath : undefined,
-							previousHomePath: typeof parsed.previousHomePath === 'string' && isAbsolute(parsed.previousHomePath) ? parsed.previousHomePath : undefined,
-							revision: parsed.revision,
-							changedAt: typeof parsed.changedAt === 'number' ? parsed.changedAt : undefined,
-						};
-					}
-				} catch {
-					// 無い・壊れている → 既定のホーム
-				}
-			})();
+		const run = this.selectionLoad.then(() => this.reloadSelectionIfChanged());
+		this.selectionLoad = run.catch(() => undefined);
+		return run;
+	}
+
+	private async reloadSelectionIfChanged(): Promise<void> {
+		const stamp = await fileStamp(this.selectionPath);
+		if (this.selectionLoaded && stamp === this.selectionStamp) {
+			return;
 		}
-		return this.selectionLoad;
+		const first = !this.selectionLoaded;
+		this.selectionLoaded = true;
+		this.selectionStamp = stamp;
+		let next: IStoredSelection | undefined;
+		try {
+			const parsed = JSON.parse(await fs.promises.readFile(this.selectionPath, 'utf8')) as { version?: unknown; homePath?: unknown; previousHomePath?: unknown; revision?: unknown; changedAt?: unknown };
+			if (parsed.version === 1 && typeof parsed.revision === 'number' && Number.isSafeInteger(parsed.revision)) {
+				next = {
+					homePath: typeof parsed.homePath === 'string' && isAbsolute(parsed.homePath) ? parsed.homePath : undefined,
+					previousHomePath: typeof parsed.previousHomePath === 'string' && isAbsolute(parsed.previousHomePath) ? parsed.previousHomePath : undefined,
+					revision: parsed.revision,
+					changedAt: typeof parsed.changedAt === 'number' ? parsed.changedAt : undefined,
+				};
+			}
+		} catch {
+			// 無い・壊れている → 既定のホーム
+		}
+		if (first) {
+			if (next) {
+				this.selection = next;
+			}
+			return;
+		}
+		// 別のプロセスが書き換えた。そちらの revision はこちらの配ったものより小さいことがあり、
+		// ウィンドウは古い revision を捨てるので、こちらの続きの番号で配り直す。
+		const revision = Math.max(next?.revision ?? 0, this.selection.revision + 1);
+		this.selection = next ? { ...next, revision } : { revision };
 	}
 
 	private serializeSelection<T>(run: () => Promise<T>): Promise<T> {
@@ -342,6 +383,9 @@ export class ParadisCodexAccountsService extends Disposable {
 	private async writeSelection(selection: IStoredSelection): Promise<void> {
 		await paradisWriteFileAtomic(this.selectionPath, JSON.stringify({ version: 1, ...selection }), { newFileMode: 0o600, createParentMode: 0o700, fallbackToInPlace: false });
 		this.selection = selection;
+		// 自分で書いたものを、次の読み直しで「別のプロセスが書き換えた」と取り違えない。
+		this.selectionStamp = await fileStamp(this.selectionPath);
+		this.selectionLoaded = true;
 	}
 
 	/**

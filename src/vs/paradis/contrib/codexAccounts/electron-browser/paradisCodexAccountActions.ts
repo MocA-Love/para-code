@@ -16,7 +16,9 @@
 //
 // 部品はパネルを開くたびに作られ、閉じると破棄される。残数と選択は shared process 側が
 // キャッシュしている。残りの読み取りは HTTP で、app-server を起こすのは「使う…」を押したときだけ。
-// SSH の接続先を開いているウィンドウでは何も出さない（台帳と選択はこの PC のもの）。
+// SSH の接続先を開いているウィンドウでは、パネルが並べる接続先のホームについて、接続先（REH）の
+// 選択と台帳を使う（クライアントが接続先のチャネルを呼ぶ）。選んだアカウントは、同じ接続先を開いた
+// すべてのウィンドウで、接続先に新しく開くターミナルから使われる。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
@@ -27,7 +29,6 @@ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
-import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisLimitsAccount } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
 import { IParadisLimitsPanelContext, IParadisLimitsPanelContribution, ParadisLimitsPanelContributions } from '../../limitsMonitor/electron-browser/paradisLimitsPanelContributions.js';
 import {
@@ -57,7 +58,6 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
-		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 		@IDialogService private readonly dialogService: IDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
@@ -67,10 +67,6 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 	}
 
 	renderAccountActions(container: HTMLElement, account: IParadisLimitsAccount, context: IParadisLimitsPanelContext): IDisposable | undefined {
-		// SSH 中のパネルは接続先のホームを並べている。台帳と選択はこの PC のものなので混ぜない。
-		if (this.remoteAgentService.getConnection()) {
-			return undefined;
-		}
 		this.context = context;
 		this.ensureAccountsState();
 		const store = new DisposableStore();

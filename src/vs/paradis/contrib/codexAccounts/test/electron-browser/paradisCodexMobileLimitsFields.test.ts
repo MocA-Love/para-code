@@ -9,7 +9,6 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
-import type { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisLimitsSnapshot } from '../../../limitsMonitor/common/paradisLimitsMonitor.js';
 import { IParadisCodexAccountsState } from '../../common/paradisCodexAccounts.js';
 import { ParadisCodexMobileLimitsFields } from '../../electron-browser/paradisCodexMobileLimitsFields.js';
@@ -36,22 +35,20 @@ suite('Paradis Codex mobile limits fields', () => {
 		fetchedAt: 1,
 	};
 
-	function create(connected: boolean): ParadisCodexMobileLimitsFields {
+	function create(): ParadisCodexMobileLimitsFields {
+		// SSH のウィンドウでもクライアントが接続先のチャネルを呼ぶだけなので、ここでは区別しない
 		const client = {
 			getState: async () => state,
 			peekResetCredits: async () => ({ '/u/.codex-2': { availableCount: 2, nextExpiresAt: 5_000, credits: [] } }),
 		};
-		return new ParadisCodexMobileLimitsFields(
-			{ createInstance: () => client } as unknown as IInstantiationService,
-			{ getConnection: () => connected ? {} : null } as unknown as IRemoteAgentService,
-		);
+		return new ParadisCodexMobileLimitsFields({ createInstance: () => client } as unknown as IInstantiationService);
 	}
 
 	test('adds only optional fields to the Codex accounts and leaves everything else as is', async () => {
-		const local = await create(false).addTo(snapshot);
-		const remote = await create(true).addTo(snapshot);
-		assert.deepStrictEqual({ local, remoteUnchanged: remote === snapshot }, {
-			local: {
+		const result = await create().addTo(snapshot);
+		const empty = { ...snapshot, codex: { accounts: [] } };
+		assert.deepStrictEqual({ result, emptyUnchanged: await create().addTo(empty) === empty }, {
+			result: {
 				claude: snapshot.claude,
 				codex: {
 					accounts: [
@@ -61,7 +58,7 @@ suite('Paradis Codex mobile limits fields', () => {
 				},
 				fetchedAt: 1,
 			},
-			remoteUnchanged: true,
+			emptyUnchanged: true,
 		});
 	});
 });
