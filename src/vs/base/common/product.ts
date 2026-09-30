@@ -132,6 +132,8 @@ export interface IProductConfiguration {
 	readonly updateAccessClientSecret?: string;
 	// PARA-PATCH: update channel stamped only into beta builds (quality stays stable). See platform/update/common/paradisUpdateChannel.ts.
 	readonly paradisUpdateChannel?: string;
+	// PARA-PATCH: Sentry release name stamped at package time. See vs/paradis/contrib/sentry/common/paradisSentryConfiguration.ts.
+	readonly paradisSentryRelease?: string;
 	readonly webUrl?: string;
 	readonly webEndpointUrlTemplate?: string;
 	readonly webviewContentExternalBaseUrlTemplate?: string;

@@ -101,7 +101,7 @@ perf.mark('code/willStartCrashReporter');
 // * --disable-crash-reporter command line parameter is not set
 //
 // Disable crash reporting in all other cases.
-initializeParadisSentryMain(product.commit, () => {
+initializeParadisSentryMain(product, () => {
 	if (args['crash-reporter-directory'] || (argvConfig['enable-crash-reporter'] && !args['disable-crash-reporter'])) {
 		configureCrashReporter();
 	}

@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { suite, test } from 'node:test';
-import { classifyParadisReleaseTag, findPreviousParadisStableTag, planParadisRelease } from '../paradisReleaseChannel.ts';
+import { classifyParadisReleaseTag, findPreviousParadisStableTag, getParadisSentryRelease, getParadisSentryReleaseFromEnv, planParadisRelease } from '../paradisReleaseChannel.ts';
 
 suite('Para Code release channel', () => {
 	test('classifies release tags into stable, beta and other', () => {
@@ -95,6 +95,34 @@ suite('Para Code release channel', () => {
 			first: undefined,
 			beta: undefined,
 			noReleases: undefined,
+		});
+	});
+
+	test('names the Sentry release after the paracode number of the release tag', () => {
+		const commit = '699deb217ffb02666f2e486ed7d32ce06f319331';
+		const tag = (refName: string) => ({ refType: 'tag', refName });
+		assert.deepStrictEqual({
+			stable: getParadisSentryRelease('1.139.1', commit, tag('v1.139.1-paracode-148')),
+			beta: getParadisSentryRelease('1.139.1', commit, tag('v1.139.1-paracode-148-beta.2')),
+			leadingZeros: getParadisSentryRelease('1.139.1', commit, tag('v1.139.1-paracode-0148-beta.02')),
+			branch: getParadisSentryRelease('1.139.1', commit, { refType: 'branch', refName: 'main' }),
+			branchNamedLikeATag: getParadisSentryRelease('1.139.1', commit, { refType: 'branch', refName: 'v1.139.1-paracode-148' }),
+			otherTag: getParadisSentryRelease('1.139.1', commit, tag('v1.139.1-paracode-148-rc1')),
+			unexpectedVersion: getParadisSentryRelease('1.139.1-insider', commit, tag('v1.139.1-paracode-148')),
+			noCommit: getParadisSentryRelease('1.139.1', undefined, tag('v1.139.1-paracode-148')),
+			local: getParadisSentryReleaseFromEnv('1.139.1', undefined, {}),
+			fromEnv: getParadisSentryReleaseFromEnv('1.139.1', commit, { GITHUB_REF_TYPE: 'tag', GITHUB_REF_NAME: 'v1.139.1-paracode-148-beta.1' }),
+		}, {
+			stable: `para-code@1.139.1.148+${commit}`,
+			beta: `para-code@1.139.1.148-beta.2+${commit}`,
+			leadingZeros: `para-code@1.139.1.148-beta.2+${commit}`,
+			branch: `para-code@1.139.1+${commit}`,
+			branchNamedLikeATag: `para-code@1.139.1+${commit}`,
+			otherTag: `para-code@1.139.1+${commit}`,
+			unexpectedVersion: `para-code@1.139.1-insider+${commit}`,
+			noCommit: 'para-code@1.139.1.148',
+			local: 'para-code@1.139.1',
+			fromEnv: `para-code@1.139.1.148-beta.1+${commit}`,
 		});
 	});
 });
