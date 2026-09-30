@@ -266,7 +266,7 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(args));
 				socketLeft: await fs.access(socketPath).then(() => true, () => false),
 				pidLeft: await fs.access(`${socketPath}.pid`).then(() => true, () => false),
 			}, {
-				tuiArgs: ['resume', 'thread-1'],
+				tuiArgs: ['-c', 'features.daemon_auto_start=false', 'resume', 'thread-1'],
 				warned: true,
 				log: 'Error: failed to initialize sqlite state runtime under /fake/.codex\n',
 				socketLeft: false,
@@ -436,31 +436,44 @@ if (args[0] === 'app-server') {
 		assert.ok(posixNames.includes('plugin'), 'the delegated-command list was not parsed');
 	});
 
-	// A launcher that runs outside a Para Code terminal (a leaked PATH entry, a detached shell)
-	// has no pane socket to manage; it must still run Codex rather than refusing to start.
-	test('falls back when the pane socket environment is missing', async () => {
+	// With the pane app-server turned off, Para Code still puts the launcher on PATH (without a
+	// pane socket) so interactive sessions stay off Codex's shared background server: that server
+	// would run every pane's hooks and MCP servers with the environment of the pane that started
+	// it. The same applies to a launcher running outside a Para Code terminal. Non-interactive
+	// commands and explicit `--remote` sessions are passed through unchanged.
+	test('keeps interactive sessions off the shared background server when no pane socket is set', async () => {
 		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
 		try {
 			const launcherPath = join(process.cwd(), 'resources', 'paradis', 'bin', 'codex');
 			const fakeBin = join(testRoot, 'bin');
 			const recordPath = join(testRoot, 'record.json');
 			await fs.mkdir(fakeBin, { recursive: true });
-			await fs.writeFile(join(fakeBin, 'codex'), `#!/usr/bin/env node
-require('fs').writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(process.argv.slice(2)));
-`, { mode: 0o700 });
-			const env = {
+			await fs.writeFile(join(fakeBin, 'codex'), FAKE_CODEX_WITH_COMPLETION, { mode: 0o700 });
+			const env: NodeJS.ProcessEnv = {
 				...process.env,
 				PATH: `${dirname(launcherPath)}:${fakeBin}:${process.env['PATH'] ?? ''}`,
 				PARA_CODE_CODEX_LAUNCHER_DIR: dirname(launcherPath),
-				PARA_CODE_CODEX_APP_SERVER_SOCKET: '',
 				PARADIS_TEST_TUI_RECORD: recordPath,
+				PARADIS_TEST_COMPLETION_NAMES: '',
 			};
-			const { stderr } = await execFileAsync(launcherPath, ['resume', 'thread-2'], { env, timeout: 15_000 });
+			delete env.PARA_CODE_CODEX_APP_SERVER_SOCKET;
+			let stderrOutput = '';
+			for (const args of [[], ['-c', 'model_reasoning_effort=high', 'a prompt'], ['exec', 'status'], ['--remote', 'unix:///tmp/other.sock']]) {
+				stderrOutput += (await execFileAsync(launcherPath, args, { env, timeout: 15_000 })).stderr;
+			}
+			// An empty value is the same as no socket at all.
+			stderrOutput += (await execFileAsync(launcherPath, ['resume', 'thread-2'], { env: { ...env, PARA_CODE_CODEX_APP_SERVER_SOCKET: '' }, timeout: 15_000 })).stderr;
 
-			assert.deepStrictEqual({
-				tuiArgs: JSON.parse(await fs.readFile(recordPath, 'utf8')),
-				warned: stderr.includes('without the pane app-server'),
-			}, { tuiArgs: ['resume', 'thread-2'], warned: true });
+			assert.deepStrictEqual({ records: await readRecords(recordPath), stderrOutput }, {
+				records: [
+					['-c', 'features.daemon_auto_start=false'],
+					['-c', 'features.daemon_auto_start=false', '-c', 'model_reasoning_effort=high', 'a prompt'],
+					['exec', 'status'],
+					['--remote', 'unix:///tmp/other.sock'],
+					['-c', 'features.daemon_auto_start=false', 'resume', 'thread-2'],
+				],
+				stderrOutput: '',
+			});
 		} finally {
 			await fs.rm(testRoot, { recursive: true, force: true });
 		}

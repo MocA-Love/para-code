@@ -65,7 +65,8 @@ export const PARADIS_CODEX_LAUNCHER_NODE_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_NOD
 /**
  * CodexペインランチャーをPTY環境へ追加するための実行時情報。
  * `socketPath`（macOS/Linux: unix socket方式）と `endpointFilePath`（Windows: loopback ws方式）は
- * どちらか一方だけを指定する。
+ * どちらか一方だけを指定する。どちらも指定しないと、ペイン専用 app-server を立てずに、ランチャーが
+ * Codex の共有バックグラウンドサーバーの自動起動を止めるだけになる（POSIX ランチャーのみ対応）。
  */
 export interface IParadisCodexPaneRuntime {
 	readonly launcherDirectory: string;
@@ -163,7 +164,7 @@ export function paradisCreateTerminalPaneEnvironment(
 	const endpointFilePath = codexRuntime?.endpointFilePath ?? '';
 	const nodeExecutablePath = codexRuntime?.nodeExecutablePath ?? '';
 	if (codexRuntime === undefined || codexRuntime.launcherDirectory.length === 0 || codexRuntime.pathDelimiter.length === 0
-		|| (socketPath.length === 0) === (endpointFilePath.length === 0)
+		|| (socketPath.length > 0 && endpointFilePath.length > 0)
 		// endpoint方式のランチャー(.cmd/.ps1)はnode実行体が無いと起動できないため、揃わない場合は注入しない。
 		|| (endpointFilePath.length > 0 && nodeExecutablePath.length === 0)) {
 		return environment;
@@ -176,7 +177,7 @@ export function paradisCreateTerminalPaneEnvironment(
 	environment[PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR] = codexRuntime.launcherDirectory;
 	if (socketPath.length > 0) {
 		environment[PARADIS_CODEX_APP_SERVER_SOCKET_ENV_VAR] = socketPath;
-	} else {
+	} else if (endpointFilePath.length > 0) {
 		environment[PARADIS_CODEX_APP_SERVER_ENDPOINT_ENV_VAR] = endpointFilePath;
 		environment[PARADIS_CODEX_LAUNCHER_NODE_ENV_VAR] = nodeExecutablePath;
 	}
