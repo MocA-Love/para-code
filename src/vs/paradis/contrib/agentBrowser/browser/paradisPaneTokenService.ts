@@ -188,13 +188,14 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 	/**
 	 * ペイン専用 Codex app-server の居場所。
 	 *
-	 * 立てない設定でも、ランチャーだけを PATH に入れる（ソケットや endpoint は入れない）。素の `codex` は
+	 * 立てない設定でも、POSIX ではランチャーだけを PATH に入れる（ソケットは入れない）。素の `codex` は
 	 * 起動済みの共有バックグラウンドサーバーへ相乗りし（0.157 からは無ければ起動もする）、hook と MCP が
 	 * そのサーバーを最初に起こしたターミナルの env で動く。ランチャーは `--no-daemon`（古い Codex では
 	 * 自動起動を止める指定）を足して本物の `codex` を動かす。
-	 * Windows のランチャーは node.exe で動く。node.exe が無い環境では、Para Code 自身の exe で本物の
-	 * `codex` の場所だけを調べ、.cmd / .ps1 がそれを素のまま起動する（GUI サブシステムの exe の下で
-	 * 対話セッションを動かすとコンソールが外れるため）。そのための exe パスを立てない設定でも渡す。
+	 * Windows は立てない設定では入れない。既定の設定の全員が .ps1 / .cmd / .cjs の経路を通ることになり、
+	 * 実行ポリシーが Restricted の PowerShell で codex.ps1 が読めない、pnpm や自作のラッパーで入れた
+	 * codex を見つけられない、日本語を含むパスが化ける、といった形で以前は動いた codex が起動しなくなる
+	 * おそれがあるため（2026-09-30 のレビュー。Windows 実機で確かめてから入れる）。
 	 *
 	 * env はPTY起動時に一度きり組み立てられるので、設定を変えても既に開いているターミナルの
 	 * 中身は変わらない（新しく開いたターミナルから効く）。設定の説明文にも同じことを書いてある。
@@ -215,10 +216,7 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 		}
 		const launcherDirectory = join(appRoot, 'resources', 'paradis', 'bin');
 		if (!paneAppServer && isWindows) {
-			if (typeof execPath !== 'string' || execPath.length === 0) {
-				return undefined;
-			}
-			return { launcherDirectory, nodeExecutablePath: execPath, pathDelimiter: ';' };
+			return undefined;
 		}
 		if (!paneAppServer) {
 			return { launcherDirectory, pathDelimiter: ':' };

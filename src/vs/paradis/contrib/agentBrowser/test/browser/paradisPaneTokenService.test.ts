@@ -61,18 +61,13 @@ suite('Paradis pane token service', () => {
 	// ペイン専用 app-server はターミナルごとに1プロセス立ち、その下でMCPが丸ごと起動し直される。
 	// 立てる価値があるのはモバイルのライブ連携を使うときだけなので、読み手と同じ条件で判定する。
 	// 立てないときも para-browser MCP の識別に要る2つは必ず残す（ここが落ちると全ペインで
-	// ブラウザ操作が動かなくなる）。ランチャーだけを入れ、Codex を共有バックグラウンドサーバーから
-	// 切り離して起動させる（ソケットや endpoint は入れない）。Windows では node.exe の無い環境で
-	// 本物の codex を探すための exe パスも入れる。
+	// ブラウザ操作が動かなくなる）。POSIX ではランチャーだけを入れ、Codex を共有バックグラウンドサーバー
+	// から切り離して起動させる（ソケットは入れない）。Windows は実機で確かめるまで何も入れない。
 	test('keeps the MCP routing variables but no pane app-server socket unless mobile live sync is on', () => {
 		const launcherDirectory = join(APP_ROOT, 'resources', 'paradis', 'bin');
 		const expected = isWindows ? {
 			PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
 			PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
-			PATH: `${launcherDirectory};\${env:PATH}`,
-			VSCODE_PATH_PREFIX: `${launcherDirectory};`,
-			PARA_CODE_CODEX_LAUNCHER_DIR: launcherDirectory,
-			PARA_CODE_CODEX_LAUNCHER_NODE: `${APP_ROOT}/Para Code`,
 		} : {
 			PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
 			PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
