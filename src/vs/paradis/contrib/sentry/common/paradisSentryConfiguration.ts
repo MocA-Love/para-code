@@ -16,6 +16,17 @@ export const PARADIS_SENTRY_DESKTOP_DSN = 'https://c854d2571bf85beb19b9a8abd9424
  */
 export const PARADIS_SENTRY_ENVIRONMENT = 'production';
 
-export function paradisSentryRelease(version: string, commit?: string): string {
+/**
+ * The release every desktop event carries. Packaged builds use the name stamped into product.json
+ * (`paradisSentryRelease`, e.g. `para-code@1.139.1.148+<commit>` for the tag `v1.139.1-paracode-148`),
+ * which the release build also creates in Sentry and uploads the source maps under
+ * (build/lib/paradisReleaseChannel.ts has the naming rule). Builds without the stamp (running out of
+ * sources) fall back to `para-code@<version>+<commit>`.
+ */
+export function paradisSentryRelease(version: string, commit?: string, stampedRelease?: string): string {
+	const stamped = stampedRelease?.trim();
+	if (stamped) {
+		return stamped;
+	}
 	return `para-code@${version}${commit ? `+${commit}` : ''}`;
 }

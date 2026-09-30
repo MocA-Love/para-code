@@ -37,6 +37,8 @@ import { spawnTsgo } from './lib/tsgo.ts';
 import { runEsbuildTranspile, runEsbuildBundle, getBootstrapEntryPointsForTarget } from './lib/esbuild.ts';
 // PARA-PATCH: Computer Use helper app, embedded into Contents/Helpers of local macOS packages (see build/paradis/computerUse/embedHelper.ts).
 import { paradisComputerUseHelperPackageTask } from './paradis/computerUse/embedHelper.ts';
+// PARA-PATCH: Sentry release name stamped into product.json (see build/lib/paradisReleaseChannel.ts).
+import { getParadisSentryReleaseFromEnv } from './lib/paradisReleaseChannel.ts';
 
 
 const glob = promisify(globCallback);
@@ -258,6 +260,9 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 					}
 					json.paradisUpdateChannel = updateChannel;
 				}
+				// PARA-PATCH: the Sentry release the app reports, with the paracode number of the release tag.
+				// build/sentry/upload-desktop-sourcemaps.ts creates the release under the same name.
+				json.paradisSentryRelease = getParadisSentryReleaseFromEnv(packageJson.version, commit);
 				return json;
 			}))
 			.pipe(es.through(function (file) {

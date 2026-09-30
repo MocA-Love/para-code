@@ -11,6 +11,7 @@
 
 import { app, protocol } from 'electron';
 import type * as SentryMain from '@sentry/electron/main';
+import type { IProductConfiguration } from '../../../../base/common/product.js';
 import { ParadisPrivilegedSchemeRecorder } from '../common/paradisPrivilegedSchemes.js';
 import { PARADIS_SENTRY_DESKTOP_DSN, PARADIS_SENTRY_ENVIRONMENT, paradisSentryRelease } from '../common/paradisSentryConfiguration.js';
 import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, ParadisDiagnosticSeverity, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
@@ -52,7 +53,7 @@ function isTruthyEnv(value: string | undefined): boolean {
 	return value !== undefined && value !== '' && value !== 'false' && value !== '0';
 }
 
-export function initializeParadisSentryMain(commit: string | undefined, onUnavailable: () => void): void {
+export function initializeParadisSentryMain(product: Pick<IProductConfiguration, 'commit' | 'paradisSentryRelease'>, onUnavailable: () => void): void {
 	if (sentry) {
 		return;
 	}
@@ -77,7 +78,7 @@ export function initializeParadisSentryMain(commit: string | undefined, onUnavai
 			environment: process.env['VSCODE_DEV'] || isTruthyEnv(process.env['CI']) || isTruthyEnv(process.env['GITHUB_ACTIONS'])
 				? 'local'
 				: PARADIS_SENTRY_ENVIRONMENT,
-			release: paradisSentryRelease(app.getVersion(), commit),
+			release: paradisSentryRelease(app.getVersion(), product.commit, product.paradisSentryRelease),
 			dist: `${process.platform}-${process.arch}`,
 			sendDefaultPii: false,
 			attachScreenshot: false,
