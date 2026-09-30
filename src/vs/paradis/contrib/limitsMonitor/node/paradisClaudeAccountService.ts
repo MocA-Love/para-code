@@ -364,10 +364,10 @@ export class ParadisClaudeAccountService extends Disposable {
 	/** 保存してある認証情報（`claudeAiOauth` だけの JSON）。保存できていない更新があればそちら。 */
 	protected async readSecret(accountId: string): Promise<string | undefined> {
 		const pending = this.pendingSecrets.get(accountId);
-		if (pending !== undefined) {
+		if (pending !== undefined && !await this.isSupersededByStored(accountId, pending)) {
 			// 保存し直しはほかの書き換えと同じ列に並べる（並ばずに書くと、後から保存された新しい値を
-			// 古い値で上書きしうる）。
-			void this.serialize(() => this.flushPendingSecret(accountId, pending));
+			// 古い値で上書きしうる）。ロックを取れなかったときは次に読むときにまた試す。
+			void this.serialize(() => this.flushPendingSecret(accountId, pending)).catch(() => undefined);
 			this.knownSecrets.set(accountId, pending);
 			return pending;
 		}
@@ -380,9 +380,37 @@ export class ParadisClaudeAccountService extends Disposable {
 		return value;
 	}
 
+	/**
+	 * 保存できていなかった値より新しいトークンを、別のプロセス（同じ接続先に残った古い版の REH）が保存して
+	 * いるか。そうなら手元の値は捨てる（その値のリフレッシュトークンは相手の更新で使用済みになっている）。
+	 * 保存場所を別のプロセスと共有していないときは常に false。
+	 */
+	private async isSupersededByStored(accountId: string, pending: string): Promise<boolean> {
+		if (this.crossProcessLockPath === undefined) {
+			return false;
+		}
+		let stored: string | undefined;
+		try {
+			stored = paradisClaudeOAuthOnly(await this.secrets.read(accountId));
+		} catch {
+			return false;
+		}
+		const expiresAt = (json: string | undefined) => {
+			const value = paradisParseClaudeOAuthBlob(json)?.expiresAt;
+			return typeof value === 'number' ? value : 0;
+		};
+		if (stored === undefined || stored === pending || expiresAt(stored) < expiresAt(pending)) {
+			return false;
+		}
+		if (this.pendingSecrets.get(accountId) === pending) {
+			this.pendingSecrets.delete(accountId);
+		}
+		return true;
+	}
+
 	/** 保存できていなかった更新を保存し直す。{@link serialize} の中から呼ぶ。 */
 	private async flushPendingSecret(accountId: string, value: string): Promise<void> {
-		if (this.pendingSecrets.get(accountId) !== value) {
+		if (this.pendingSecrets.get(accountId) !== value || await this.isSupersededByStored(accountId, value)) {
 			return;
 		}
 		try {
@@ -1349,6 +1377,19 @@ export class ParadisClaudeAccountService extends Disposable {
 		}
 		session.abort.abort();
 		this.setupSessions.delete(sessionId);
+	}
+
+	/**
+	 * 接続が切れた（REH で再接続の猶予が尽きた）クライアントが始めたログインを止める。止めないと、その
+	 * 手続きはどの接続からも取り消せないまま、上限（10 分）まで次のアカウント追加を「使用中」で断り続ける。
+	 */
+	abortSetupsOwnedBy(owner: string): void {
+		for (const session of [...this.setupSessions.values()]) {
+			if (session.owner === owner) {
+				session.abort.abort();
+				this.setupSessions.delete(session.id);
+			}
+		}
 	}
 
 	private scheduleSetupCleanup(session: IParadisClaudeSetupSession): void {
