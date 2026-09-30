@@ -48,6 +48,8 @@ interface IParadisAgentStartupScreenRule {
 const TRUST_DIALOG_HEADERS: readonly RegExp[] = [
 	/Quicksafetycheck:Isthisaprojectyoucreatedoroneyoutrust\?|Accessingworkspace:/,
 	/Doyoutrustthecontentsofthisdirectory\?/,
+	// codex-cli 0.159.2 の本文。信頼する画面・制限付きで開く画面・既存のタスクを開く画面の3通り
+	/Trustthisfolder\?Codexcanread|Config,hooks,andexecpoliciesfromuntrustedfoldersstaydisabled\.|Thisexistingtaskmayretainsettings/,
 ];
 
 /**
@@ -72,6 +74,16 @@ export const PARADIS_AGENT_STARTUP_SCREEN_RULES: readonly IParadisAgentStartupSc
 		observedIn: 'codex-cli 0.155.1',
 		allOf: [TRUST_DIALOG_HEADERS[1]],
 		choices: [/^Yes, continue$/, /^No\b/],
+	},
+	{
+		// 見出しは「Folder access」、本文は「Trust this folder? …」（制限付きで開く画面は別の本文）。
+		// 1つめが開く側（Trust and continue / Open restricted / Open existing task）、2つめが断る側
+		// （Quit / Back to Agent Command Center）で、既定で開く側にカーソルがある。
+		agent: 'codex',
+		state: 'trust_dialog',
+		observedIn: 'codex-cli 0.159.2',
+		allOf: [TRUST_DIALOG_HEADERS[2]],
+		choices: [/^(?:Trust and continue|Open restricted|Open existing task)$/, /^(?:Quit|Back to Agent Command Center)$/],
 	},
 	{
 		// 入力欄の下の「? for shortcuts」。入力が空で、作業していないときだけ出る。
