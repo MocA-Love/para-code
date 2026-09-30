@@ -9,9 +9,9 @@
 // Claude のアカウントと使用量のチャネル（shared process）の型。
 //
 // 使用量の取得とアカウントの保存・切り替えは shared process の1か所にまとめ、全ウィンドウへ同じ
-// 結果を配る（アカウントの選択は全ウィンドウ共通、という決定）。SSH で接続先に繋いでいる間も
-// このチャネルは手元の shared process に聞く。切り替えるのは「この PC」の Claude のログインで、
-// 接続先の Claude のログインには触らない。
+// 結果を配る（アカウントの選択は全ウィンドウ共通、という決定）。SSH で接続先に繋いでいるウィンドウは、
+// 接続先（REH）に生やした同じチャネルに聞き、接続先の Claude のログインを切り替える（登録したアカウントも
+// 接続先ごと。この PC のログインには触らない）。
 
 import { IParadisLimitsAccount, IParadisLimitsProviderSnapshot, IParadisLimitsRemoteHost } from './paradisLimitsMonitor.js';
 
@@ -33,6 +33,11 @@ export interface IParadisClaudeAccountsState {
 	readonly oldestFetchedAt?: number;
 	/** 切り替えの最中か（ボタンを押せなくする）。 */
 	readonly switching: boolean;
+	/**
+	 * 接続先（REH）が切り替えに対応していない（macOS の接続先。ログインがキーチェーンにあり SSH 越しには
+	 * 書けない）。ウィンドウは接続先のいまのログインだけを読み取り専用で出す（{@link PARADIS_CLAUDE_HOST_STATE_COMMAND}）。
+	 */
+	readonly unsupportedOnHost?: boolean;
 }
 
 export interface IParadisClaudeStateRequest {
@@ -149,4 +154,22 @@ export function paradisClaudeHostAccountsState(state: IParadisClaudeAccountsStat
 		remoteHost,
 	};
 	return { claude, ...(state.oldestFetchedAt !== undefined ? { oldestFetchedAt: state.oldestFetchedAt } : {}), switching: false };
+}
+
+/**
+ * 接続先で切り替えに対応しているとき（REH のアカウントの状態）から、接続先のいまのログインのカード1枚
+ * だけの状態を作る（{@link PARADIS_CLAUDE_HOST_STATE_COMMAND} の答え。スマホは接続先のログインを表示する
+ * だけなので、登録したほかのアカウントは渡さない）。使用量は REH のアカウントの状態が取ったものをそのまま
+ * 使い、同じログインを2か所で取りに行かない。
+ */
+export function paradisClaudeActiveLoginState(state: IParadisClaudeAccountsState, homeLabel: string): IParadisClaudeAccountsState {
+	const active = state.claude.accounts.find(account => account.active === true);
+	const account: IParadisLimitsAccount = active
+		? { ...active, id: PARADIS_CLAUDE_HOST_ACCOUNT_ID, homeLabel }
+		: { provider: 'claude', id: PARADIS_CLAUDE_HOST_ACCOUNT_ID, homeLabel, status: 'no_credentials' };
+	return {
+		claude: { accounts: [account], ...(state.claude.sourceError !== undefined ? { sourceError: state.claude.sourceError } : {}) },
+		...(active?.fetchedAt !== undefined ? { oldestFetchedAt: active.fetchedAt } : {}),
+		switching: false,
+	};
 }
