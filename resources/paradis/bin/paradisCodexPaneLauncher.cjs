@@ -49,7 +49,7 @@ const TUI_COMMANDS = new Set(['resume', 'fork']);
 const NON_INTERACTIVE_COMMANDS = new Set([
 	'exec', 'e', 'review', 'login', 'logout', 'mcp', 'plugin', 'mcp-server', 'app-server', 'remote-control',
 	'app', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'a', 'archive', 'delete', 'unarchive',
-	'cloud', 'exec-server', 'execpolicy', 'responses-api-proxy', 'stdio-to-uds', 'features', 'help', 'agents',
+	'cloud', 'exec-server', 'execpolicy', 'responses-api-proxy', 'stdio-to-uds', 'features', 'help', 'agents', 'queue', 'migrate-rollouts', 'tcp-tunnel',
 ]);
 
 const SERVER_START_TIMEOUT_MS = 10_000;
