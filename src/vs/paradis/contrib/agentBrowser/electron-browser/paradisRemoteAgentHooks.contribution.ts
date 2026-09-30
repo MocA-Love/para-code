@@ -409,8 +409,11 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	/** 直前に hook 一式を置いたときの接続先側の番号。アカウント用ホームが増えたときの書き足しに使う。 */
 	private installedPort: number | undefined;
 
-	/** 最後に hook を置いた Codex のアカウント用ホームの顔ぶれ（増減したら書き足す目印）。 */
+	/** 最後に hook を置けた Codex のアカウント用ホームの顔ぶれ（増減したら書き足す目印）。 */
 	private codexAccountHomesKey: string | undefined;
+
+	/** 直前に接続先へ聞いたアカウント用ホームの顔ぶれ（置けたら {@link codexAccountHomesKey} へ移す）。 */
+	private listedCodexAccountHomesKey: string | undefined;
 
 	constructor(
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
@@ -519,8 +522,17 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		}
 		try {
 			const state = await connection.getChannel(PARADIS_CODEX_ACCOUNTS_CHANNEL).call<IParadisCodexAccountsState>('getState');
-			this.codexAccountHomesKey = codexAccountHomesKey(state);
-			return paradisCodexAccountHomePaths(state).map(homePath => home.with({ path: homePath }));
+			this.listedCodexAccountHomesKey = codexAccountHomesKey(state);
+			const homes: URI[] = [];
+			for (const homePath of paradisCodexAccountHomePaths(state)) {
+				// 接続先のネイティブのパスを URI のパスへ（Windows の接続先の `C:\…` でも投げない）
+				const codexHome = home.with({ path: URI.file(homePath).path });
+				// 聞いた後に消されたホームを、書き込みで作り直さない
+				if (await this.fileService.exists(codexHome)) {
+					homes.push(codexHome);
+				}
+			}
+			return homes;
 		} catch (error) {
 			this.logService.trace('[paradis] could not list the Codex account homes on the host', error);
 			return [];
@@ -533,10 +545,15 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		if (home === undefined) {
 			return;
 		}
-		if (!await this.hookFiles.sync(home)) {
+		const hooked = await this.hookFiles.sync(home);
+		if (!hooked) {
 			this.logService.warn('[paradis] could not update the agent hook settings for the Codex accounts on the host; leaving them as they are');
 		}
 		await this.mergeCodexMcp(home, port);
+		// 置けたときだけ「この顔ぶれは済んだ」とする（失敗したら次の知らせで試し直す）
+		if (hooked) {
+			this.codexAccountHomesKey = this.listedCodexAccountHomesKey;
+		}
 	}
 
 	/** @returns 置けた接続先側の番号。まだ整っていないだけなら undefined（呼び出し側が試し直す） */
@@ -577,13 +594,17 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 			// 自動設置をオフにしている間は hook だけ置かない（MCP と戻り経路は hook と関係なく使う）。
 			// 保留中の取り外しがあればここで済ませる
-			if (!await this.hookFiles.sync(home)) {
+			const hooked = await this.hookFiles.sync(home);
+			if (!hooked) {
 				// 読めない・書き換えが続いた。MCP と戻り経路は使えるので設置自体は続ける
 				this.logService.warn('[paradis] could not update the agent hook settings on the host; leaving them as they are');
 			}
 			await this.mergeClaudeMcp(home, remotePort);
 			await this.mergeCodexMcp(home, remotePort);
 			this.installedPort = remotePort;
+			if (hooked) {
+				this.codexAccountHomesKey = this.listedCodexAccountHomesKey;
+			}
 			this.syncCodexSockets(home, channel);
 			this.logService.info(`[paradis] installed the agent hooks on ${this.environmentService.remoteAuthority} (port ${remotePort})`);
 			return remotePort;

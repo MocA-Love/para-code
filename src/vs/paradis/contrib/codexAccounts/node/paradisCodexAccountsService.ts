@@ -193,7 +193,8 @@ export class ParadisCodexAccountsService extends Disposable {
 		this.linkLedgerPath = join(options.stateDirectory, 'codex-session-links.json');
 		if (!options.skipBackgroundWork) {
 			this._register(disposableTimeout(() => {
-				void this.loadSelection().then(() => {
+				// 選ぶ・見直すと同じ列に並べる（書き込みの途中の印を「別のプロセスの変更」と取り違えない）
+				void this.serializeSelection(() => this.loadSelection()).then(() => {
 					if (this.selection.homePath !== undefined) {
 						this.linkBetween(this.selection.previousHomePath, this.selection.homePath);
 					}

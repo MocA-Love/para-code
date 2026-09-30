@@ -87,11 +87,14 @@ suite('ParadisLimitsMonitor Codex login', () => {
 			}
 			return state.error;
 		};
-		const onHost = await channel.call<IParadisLimitsSetupHandle>({ clientId: 'a' }, 'startCodexLogin', []);
-		const readByOther = await channel.call<IParadisLimitsSetupState>({ clientId: 'b' }, 'getSetupState', [onHost.sessionId]);
-		await channel.call({ clientId: 'b' }, 'cancelSetup', [onHost.sessionId]);
-		const readByOwner = await waitForError({ clientId: 'a' }, onHost.sessionId);
-		await channel.call({ clientId: 'a' }, 'cancelSetup', [onHost.sessionId]);
+		// REH では全ウィンドウの clientId が同じ 'renderer'。接続（context のオブジェクト）で見分ける
+		const windowA = { remoteAuthority: 'ssh-remote+host', clientId: 'renderer' };
+		const windowB = { remoteAuthority: 'ssh-remote+host', clientId: 'renderer' };
+		const onHost = await channel.call<IParadisLimitsSetupHandle>(windowA, 'startCodexLogin', []);
+		const readByOther = await channel.call<IParadisLimitsSetupState>(windowB, 'getSetupState', [onHost.sessionId]);
+		await channel.call(windowB, 'cancelSetup', [onHost.sessionId]);
+		const readByOwner = await waitForError(windowA, onHost.sessionId);
+		await channel.call(windowA, 'cancelSetup', [onHost.sessionId]);
 		const local = await channel.call<IParadisLimitsSetupHandle>('window:1', 'startCodexLogin', []);
 		const localReadByOther = await waitForError('window:2', local.sessionId);
 		await channel.call('window:2', 'cancelSetup', [local.sessionId]);
