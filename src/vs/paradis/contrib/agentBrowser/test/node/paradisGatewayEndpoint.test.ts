@@ -111,7 +111,7 @@ suite('ParadisGatewayEndpoint', () => {
 			PARA_CODE_CODEX_LAUNCHER_NODE: 'C:\\Para Code\\Para Code.exe',
 		});
 
-		// socketとendpointの両方（または両方欠落）は不正としてCodex変数を注入しない。
+		// socketとendpointの両方は不正としてCodex変数を注入しない。
 		assert.deepStrictEqual(createEnvironment(undefined, token, '/tmp/port.json', {
 			launcherDirectory: '/launcher',
 			socketPath: '/tmp/pcx/pane.sock',
@@ -120,6 +120,22 @@ suite('ParadisGatewayEndpoint', () => {
 		}), {
 			PARA_CODE_TERMINAL_PANE_ID: token,
 			PARA_CODE_MCP_PORT_FILE: '/tmp/port.json',
+		});
+	});
+
+	test('adds only the Codex launcher when the pane app-server is off', () => {
+		const createEnvironment = (agentBrowser as IParadisGatewayEndpointTestExports).paradisCreateTerminalPaneEnvironment;
+		assert.ok(createEnvironment);
+
+		assert.deepStrictEqual(createEnvironment({ PATH: '/usr/bin' }, 'pane-token', '/tmp/port.json', {
+			launcherDirectory: '/launcher',
+			pathDelimiter: ':',
+		}), {
+			PATH: '/launcher:/usr/bin',
+			VSCODE_PATH_PREFIX: '/launcher:',
+			PARA_CODE_TERMINAL_PANE_ID: 'pane-token',
+			PARA_CODE_MCP_PORT_FILE: '/tmp/port.json',
+			PARA_CODE_CODEX_LAUNCHER_DIR: '/launcher',
 		});
 	});
 });

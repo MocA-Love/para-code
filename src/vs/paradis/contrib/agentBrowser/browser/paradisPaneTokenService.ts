@@ -186,18 +186,24 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 	}
 
 	/**
-	 * ペイン専用 Codex app-server の居場所。立てない設定なら undefined を返し、ランチャーも
-	 * ソケットも env へ入れない（= ペインでは素の `codex` がそのまま動く）。
+	 * ペイン専用 Codex app-server の居場所。
+	 *
+	 * 立てない設定でも、POSIX ではランチャーだけを PATH に入れる（ソケットは入れない）。Codex 0.157 から
+	 * 素の `codex` は共有のバックグラウンドサーバーへ相乗りし、hook と MCP がそのサーバーを最初に
+	 * 起こしたペインの env で動く。ランチャーはその自動起動を止める指定を足して本物の `codex` を動かす。
+	 * Windows のランチャーは対話セッションに node.exe が要り、無い環境で PATH に置くと Codex が
+	 * 起動できなくなるので、立てない設定では入れない。
 	 *
 	 * env はPTY起動時に一度きり組み立てられるので、設定を変えても既に開いているターミナルの
 	 * 中身は変わらない（新しく開いたターミナルから効く）。設定の説明文にも同じことを書いてある。
 	 */
 	private _getCodexRuntime(token: string): IParadisCodexPaneRuntime | undefined {
-		if (!this.isCodexPaneAppServerEnabled()) {
-			return undefined;
-		}
+		const paneAppServer = this.isCodexPaneAppServerEnabled();
 		if (this.environmentService.remoteAuthority !== undefined) {
-			return this._getRemoteCodexRuntime(token);
+			return this._getRemoteCodexRuntime(token, paneAppServer);
+		}
+		if (!paneAppServer && isWindows) {
+			return undefined;
 		}
 		const desktopEnvironment = this.environmentService as IWorkbenchEnvironmentService & {
 			readonly appRoot?: string;
@@ -209,6 +215,9 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 			return undefined;
 		}
 		const launcherDirectory = join(appRoot, 'resources', 'paradis', 'bin');
+		if (!paneAppServer) {
+			return { launcherDirectory, pathDelimiter: ':' };
+		}
 		if (isWindows) {
 			// WindowsのNode(libuv)はAF_UNIXを扱えないため、ランチャーがloopback ws + capability
 			// tokenでapp-serverを立て、実ポートをendpointファイルへ書く（設計はNOTES.md参照）。
@@ -234,23 +243,25 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 	 * paradisRemoteAgentHooks.contribution.ts、手元から届くようにするのはソケットの転送。
 	 *
 	 * 接続先は SSH なので常に POSIX として扱う（Windows のendpoint方式は使わない）。
+	 * app-server を立てないときも、共有のバックグラウンドサーバーの自動起動を止めるためにランチャーだけは入れる。
 	 */
-	private _getRemoteCodexRuntime(token: string): IParadisCodexPaneRuntime | undefined {
-		// 手元が Windows のときは入れない。読み手（shared process）は Windows では socket ではなく
-		// endpoint ファイルを見るので、socket を渡しても原理的に繋がらないうえ、接続先の
-		// ランチャーは `/…/x.sock` の形しか受け付けず毎回警告を出す
-		if (isWindows) {
-			return undefined;
-		}
+	private _getRemoteCodexRuntime(token: string, paneAppServer: boolean): IParadisCodexPaneRuntime | undefined {
 		const paraCodeDirectory = this._getRemoteParaCodeDirectory();
 		if (paraCodeDirectory === undefined) {
 			return undefined;
+		}
+		const launcherDirectory = `${paraCodeDirectory}/bin`;
+		// 手元が Windows のときはソケットを入れない。読み手（shared process）は Windows では socket ではなく
+		// endpoint ファイルを見るので、socket を渡しても原理的に繋がらないうえ、接続先の
+		// ランチャーは `/…/x.sock` の形しか受け付けず毎回警告を出す
+		if (!paneAppServer || isWindows) {
+			return { launcherDirectory, pathDelimiter: ':' };
 		}
 		const socketPath = paradisRemoteCodexPaneSocketPath(paraCodeDirectory, token);
 		if (socketPath === undefined) {
 			return undefined;
 		}
-		return { launcherDirectory: `${paraCodeDirectory}/bin`, socketPath, pathDelimiter: ':' };
+		return { launcherDirectory, socketPath, pathDelimiter: ':' };
 	}
 
 	/**

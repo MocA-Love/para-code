@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { join } from '../../../../../base/common/path.js';
+import { Schemas } from '../../../../../base/common/network.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -60,13 +61,48 @@ suite('Paradis pane token service', () => {
 	// ペイン専用 app-server はターミナルごとに1プロセス立ち、その下でMCPが丸ごと起動し直される。
 	// 立てる価値があるのはモバイルのライブ連携を使うときだけなので、読み手と同じ条件で判定する。
 	// 立てないときも para-browser MCP の識別に要る2つは必ず残す（ここが落ちると全ペインで
-	// ブラウザ操作が動かなくなる）。
-	test('keeps the MCP routing variables but no Codex launcher unless mobile live sync is on', () => {
+	// ブラウザ操作が動かなくなる）。POSIX ではランチャーだけを入れ、Codex の共有バックグラウンド
+	// サーバーの自動起動を止める（ソケットは入れない）。
+	test('keeps the MCP routing variables but no pane app-server socket unless mobile live sync is on', () => {
+		const launcherDirectory = join(APP_ROOT, 'resources', 'paradis', 'bin');
+		const expected = isWindows ? {
+			PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
+			PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
+		} : {
+			PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
+			PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
+			PATH: `${launcherDirectory}:\${env:PATH}`,
+			VSCODE_PATH_PREFIX: `${launcherDirectory}:`,
+			PARA_CODE_CODEX_LAUNCHER_DIR: launcherDirectory,
+		};
 		for (const [mobileEnabled, codexLive] of [[false, false], [false, true], [true, false], [true, 'true'], [true, undefined]]) {
-			assert.deepStrictEqual(paneEnvironmentFor(mobileEnabled, codexLive), {
+			assert.deepStrictEqual(paneEnvironmentFor(mobileEnabled, codexLive), expected, `mobile=${String(mobileEnabled)} codexLive=${String(codexLive)} でソケットを注入してはいけない`);
+		}
+	});
+
+	// SSH の接続先では、置いたランチャー（~/.para-code/bin）だけを入れる。手元が Windows でも同じ。
+	test('puts only the host launcher on PATH for a remote terminal when the pane app-server is off', async () => {
+		const configurationService = new TestConfigurationService();
+		const service = new ParadisPaneTokenService(
+			{ onDidCreateInstance: Event.None } as unknown as ITerminalInstanceService,
+			{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, remoteAuthority: 'ssh-remote+host' } as unknown as IWorkbenchEnvironmentService,
+			{ userHome: async () => URI.from({ scheme: Schemas.vscodeRemote, authority: 'ssh-remote+host', path: '/home/test' }) } as unknown as IPathService,
+			configurationService,
+			codexLaunchHomeStub(undefined),
+		);
+		try {
+			await new Promise(resolve => setTimeout(resolve, 0));
+			const shellLaunchConfig = { shellIntegrationNonce: PANE_TOKEN } as IShellLaunchConfig;
+			service.prepareShellLaunchConfig(shellLaunchConfig);
+			assert.deepStrictEqual({ ...shellLaunchConfig.env }, {
 				PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
-				PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
-			}, `mobile=${String(mobileEnabled)} codexLive=${String(codexLive)} でランチャーを注入してはいけない`);
+				PARA_CODE_MCP_PORT_FILE: '/home/test/.para-code/paradis-browser-mcp.json',
+				PATH: '/home/test/.para-code/bin:${env:PATH}',
+				VSCODE_PATH_PREFIX: '/home/test/.para-code/bin:',
+				PARA_CODE_CODEX_LAUNCHER_DIR: '/home/test/.para-code/bin',
+			});
+		} finally {
+			service.dispose();
 		}
 	});
 
@@ -119,16 +155,8 @@ suite('Paradis pane token service', () => {
 				revivedPaneId: revivedConfig.env?.PARA_CODE_TERMINAL_PANE_ID,
 				recorded,
 			}, {
-				created: {
-					PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
-					PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
-					CODEX_HOME: '/home/test/.codex-2',
-				},
-				restored: {
-					PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
-					PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
-					CODEX_HOME: '/home/test/.codex-2',
-				},
+				created: { ...paneEnvironmentFor(false, false), CODEX_HOME: '/home/test/.codex-2' },
+				restored: { ...paneEnvironmentFor(false, false), CODEX_HOME: '/home/test/.codex-2' },
 				registered: PANE_TOKEN,
 				revivedPaneId: revivedToken,
 				// 新しく開いた1回分だけ。再接続した2回（id 2・3）は記録しない
