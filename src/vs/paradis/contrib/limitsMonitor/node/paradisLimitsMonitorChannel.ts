@@ -42,6 +42,7 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../.
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { paradisResolveAgentCli } from '../../../node/paradisAgentCli.js';
+import { paradisConnectionClientId, paradisIsConnectionClientAllowed } from '../../../common/paradisConnectionClient.js';
 import { paradisIsCodexAuthError, paradisStartCodexAppServerRpc } from '../../../node/paradisCodexAppServerRpc.js';
 import { paradisNormalizeCodexHomePath, paradisNotifyCodexHomesChanged } from '../../agentBrowser/node/paradisAgentHome.js';
 import {
@@ -212,6 +213,11 @@ interface ISetupSession {
 	codexExtraHomes?: readonly string[];
 	/** セッション終了時の後始末(子プロセスkill等)。 */
 	dispose(): void;
+	/**
+	 * 始めた接続（REH のときだけ。{@link paradisConnectionClientId}）。ほかのクライアントからは
+	 * 状態（ログインの URL を含む）も見えず、取り消しも重複の確定もできない。
+	 */
+	readonly owner?: string;
 }
 
 /**
@@ -818,13 +824,14 @@ export class ParadisLimitsMonitorService {
 
 	// ---------- アカウント追加: Codex ----------
 
-	async startCodexLogin(existingHome: string | undefined, extraHomes: readonly string[] | undefined): Promise<IParadisLimitsSetupHandle> {
+	async startCodexLogin(existingHome: string | undefined, extraHomes: readonly string[] | undefined, owner?: string): Promise<IParadisLimitsSetupHandle> {
 		const sessionId = generateUuid();
 		const session: ISetupSession = {
 			id: sessionId,
 			state: { phase: 'starting' },
 			codexExtraHomes: extraHomes,
 			dispose: () => { },
+			owner,
 		};
 		this.setupSessions.set(sessionId, session);
 		this.runCodexLogin(session, existingHome).catch(error => {
@@ -965,11 +972,17 @@ export class ParadisLimitsMonitorService {
 
 	// ---------- セットアップセッション共通 ----------
 
-	async resolveCodexDuplicate(sessionId: string, decision: ParadisLimitsDuplicateDecision): Promise<void> {
+	/** 呼び出し元が触ってよいログインの手続き。ほかのクライアントのものは無いものとして扱う。 */
+	private setupSessionFor(sessionId: string, caller: string | undefined): ISetupSession | undefined {
+		const session = this.setupSessions.get(sessionId);
+		return session && paradisIsConnectionClientAllowed(session.owner, caller) ? session : undefined;
+	}
+
+	async resolveCodexDuplicate(sessionId: string, decision: ParadisLimitsDuplicateDecision, caller?: string): Promise<void> {
 		if (decision !== 'keep' && decision !== 'discard') {
 			throw new Error('invalid duplicate-account decision');
 		}
-		const session = this.setupSessions.get(sessionId);
+		const session = this.setupSessionFor(sessionId, caller);
 		if (!session || session.state.phase !== 'waiting_duplicate' || !session.codexHomePath) {
 			throw new Error('setup session is not waiting for a duplicate-account decision');
 		}
@@ -985,16 +998,16 @@ export class ParadisLimitsMonitorService {
 		this.scheduleSetupCleanup(session);
 	}
 
-	getSetupState(sessionId: string): IParadisLimitsSetupState {
-		const session = this.setupSessions.get(sessionId);
+	getSetupState(sessionId: string, caller?: string): IParadisLimitsSetupState {
+		const session = this.setupSessionFor(sessionId, caller);
 		if (!session) {
 			return { phase: 'error', error: 'setup session not found' };
 		}
 		return session.state;
 	}
 
-	cancelSetup(sessionId: string): void {
-		const session = this.setupSessions.get(sessionId);
+	cancelSetup(sessionId: string, caller?: string): void {
+		const session = this.setupSessionFor(sessionId, caller);
 		if (!session) {
 			return;
 		}
@@ -1080,7 +1093,7 @@ export class ParadisLimitsMonitorService {
 	}
 }
 
-// 接続先（REH）へも同じチャネルを生やすため context は型引数にしておく（中身では使わない）。
+// 接続先（REH）へも同じチャネルを生やすため context は型引数にしておく（ログインの手続きの持ち主にだけ使う）。
 export class ParadisLimitsMonitorChannel<TContext = string> implements IServerChannel<TContext> {
 
 	/**
@@ -1093,19 +1106,23 @@ export class ParadisLimitsMonitorChannel<TContext = string> implements IServerCh
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
+	call<T>(ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
+		// REH では、ログインの手続きを始めた接続だけがその状態を読み、取り消せる（同じ接続先へ
+		// 繋いだ別のウィンドウに、ログインの URL を読まれたり手続きを潰されたりしないように）。
+		const caller = paradisConnectionClientId(ctx);
 		switch (command) {
 			case 'getSnapshot': return this.service.getSnapshot((args[0] ?? {}) as IParadisLimitsFetchOptions) as Promise<T>;
 			case 'startCodexLogin': return this.service.startCodexLogin(
 				typeof args[0] === 'string' ? args[0] : undefined,
 				Array.isArray(args[1]) ? args[1].filter((entry): entry is string => typeof entry === 'string') : undefined,
+				caller,
 			) as Promise<T>;
 			case 'validateCodexHomeRemoval': return this.service.validateCodexHomeRemoval(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
 			case 'removeCodexHome': return this.service.removeCodexHome(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
-			case 'resolveCodexDuplicate': return this.service.resolveCodexDuplicate(String(args[0]), args[1] as ParadisLimitsDuplicateDecision) as Promise<T>;
-			case 'getSetupState': return Promise.resolve(this.service.getSetupState(String(args[0]))) as Promise<T>;
-			case 'cancelSetup': return Promise.resolve(this.service.cancelSetup(String(args[0]))) as Promise<T>;
+			case 'resolveCodexDuplicate': return this.service.resolveCodexDuplicate(String(args[0]), args[1] as ParadisLimitsDuplicateDecision, caller) as Promise<T>;
+			case 'getSetupState': return Promise.resolve(this.service.getSetupState(String(args[0]), caller)) as Promise<T>;
+			case 'cancelSetup': return Promise.resolve(this.service.cancelSetup(String(args[0]), caller)) as Promise<T>;
 			case PARADIS_CLAUDE_HOST_STATE_COMMAND:
 				if (this.claudeHost) {
 					const request = (args[0] ?? {}) as IParadisClaudeStateRequest;

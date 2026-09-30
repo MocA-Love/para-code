@@ -311,6 +311,8 @@ suite('ParadisRemoteAgentHookFiles', () => {
 			/** ここに入れたファイルは読めない */
 			unreadable: new Set<string>(),
 			calls: [] as string[],
+			/** 接続先の Codex のアカウント用ホーム */
+			accountHomes: [] as URI[],
 		};
 		const host: IParadisRemoteAgentHookFilesHost = {
 			fileService: {
@@ -336,6 +338,7 @@ suite('ParadisRemoteAgentHookFiles', () => {
 				state.calls.push('remove');
 				return current === HOOKED ? JSON.stringify({ hooks: {} }) : current;
 			},
+			listCodexAccountHomes: async () => state.accountHomes,
 		};
 		const read = async (file: URI) => (await fileService.readFile(file).catch(() => undefined))?.value.toString();
 		return { files: new ParadisRemoteAgentHookFiles(host, enabled), fileService, state, read };
@@ -386,6 +389,22 @@ suite('ParadisRemoteAgentHookFiles', () => {
 			// 書き換える前の中身を隣へ1つ控える
 			backup: HOOKED,
 			pending: undefined,
+		});
+	});
+
+	test('アカウントを切り替えた Codex が読む ~/.codex-N の hooks.json にも置き、オフにしたらそこからも外す', async () => {
+		const disposables = store.add(new DisposableStore());
+		const { files, state, read } = setup(disposables, true);
+		const accountHooks = joinPath(home, '.codex-2', 'hooks.json');
+		state.accountHomes = [joinPath(home, '.codex-2')];
+
+		await files.runExclusive(() => files.sync(home));
+		const installed = { codex: await read(codexHooks), account: await read(accountHooks), calls: [...state.calls] };
+		await files.setEnabled(false);
+
+		assert.deepStrictEqual({ installed, removedFromAccount: await read(accountHooks) }, {
+			installed: { codex: HOOKED, account: HOOKED, calls: ['build:claude', 'build:codex', 'build:codex'] },
+			removedFromAccount: JSON.stringify({ hooks: {} }),
 		});
 	});
 

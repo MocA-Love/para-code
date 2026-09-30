@@ -16,7 +16,9 @@
 //
 // 部品はパネルを開くたびに作られ、閉じると破棄される。残数と選択は shared process 側が
 // キャッシュしている。残りの読み取りは HTTP で、app-server を起こすのは「使う…」を押したときだけ。
-// SSH の接続先を開いているウィンドウでは何も出さない（台帳と選択はこの PC のもの）。
+// SSH の接続先を開いているウィンドウでは、パネルが並べる接続先のホームについて、接続先（REH）の
+// 選択と台帳を使う（クライアントが接続先のチャネルを呼ぶ）。選んだアカウントは、同じ接続先を開いた
+// すべてのウィンドウで、接続先に新しく開くターミナルから使われる。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
@@ -67,10 +69,6 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 	}
 
 	renderAccountActions(container: HTMLElement, account: IParadisLimitsAccount, context: IParadisLimitsPanelContext): IDisposable | undefined {
-		// SSH 中のパネルは接続先のホームを並べている。台帳と選択はこの PC のものなので混ぜない。
-		if (this.remoteAgentService.getConnection()) {
-			return undefined;
-		}
 		this.context = context;
 		this.ensureAccountsState();
 		const store = new DisposableStore();
@@ -130,7 +128,10 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 		button.textContent = this.switching
 			? localize('paradis.codexAccounts.switching', "切り替え中…")
 			: localize('paradis.codexAccounts.useThisAccount', "このアカウントを使う");
-		button.title = localize('paradis.codexAccounts.useThisAccountHint', "すべてのウィンドウで、これから新しく開くターミナルの Codex がこのアカウントを使います。動いている Codex はそのままです");
+		// SSH のウィンドウの選択は接続先のもので、同じ接続先を開いたウィンドウにだけ効く。
+		button.title = this.remoteAgentService.getConnection()
+			? localize('paradis.codexAccounts.useThisAccountHintRemote', "この接続先を開いているすべてのウィンドウで、接続先にこれから新しく開くターミナルの Codex がこのアカウントを使います。動いている Codex はそのままです")
+			: localize('paradis.codexAccounts.useThisAccountHint', "すべてのウィンドウで、これから新しく開くターミナルの Codex がこのアカウントを使います。動いている Codex はそのままです");
 		store.add(dom.addDisposableListener(button, 'click', () => void this.switchTo(home.isDefault ? undefined : home.homePath)));
 	}
 

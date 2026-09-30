@@ -16,6 +16,9 @@
 // ログアウトしたりしていても、ここでは確かめられないため。shared process の返事（選んだホームが
 // 今もログイン済みか確かめた結果）が届くまでに開いたターミナルは、既定のホームで開く。
 //
+// SSH の接続先を開いたウィンドウでは、正は接続先（REH）の選択で、値は接続先のホームのパスになる。
+// 渡してよいのは接続先で動くターミナルだけ（{@link paradisTerminalRunsOnWindowHost}）。
+//
 // あわせて「そのペインをどのホームで開いたか」を覚える。切替後、前のアカウントのまま動いている
 // Codex を数えて知らせるのに使う（知らせるのは通常の通知1回だけで、入力は止めない）。
 
@@ -23,7 +26,8 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { ITerminalEnvironment } from '../../../../platform/terminal/common/terminal.js';
+import { getRemoteAuthority } from '../../../../platform/remote/common/remoteHosts.js';
+import { IShellLaunchConfig, ITerminalEnvironment } from '../../../../platform/terminal/common/terminal.js';
 
 /** Codex がホームを決めるときに読む環境変数。 */
 export const PARADIS_CODEX_HOME_ENV_VAR = 'CODEX_HOME';
@@ -37,6 +41,18 @@ export function paradisApplyCodexLaunchHome(env: ITerminalEnvironment | undefine
 		return env;
 	}
 	return { ...env, [PARADIS_CODEX_HOME_ENV_VAR]: launchHome };
+}
+
+/**
+ * そのターミナルが、ウィンドウと同じマシン（手元のウィンドウなら手元、接続先のウィンドウなら接続先）で
+ * 動くか。選択はそのマシンのホームを指すので、違うマシンで動くターミナルへは渡さない。
+ *
+ * どこで動くかは upstream の TerminalProcessManager と同じ規則で決める（cwd が URI ならその authority、
+ * 無ければウィンドウの接続先）。
+ */
+export function paradisTerminalRunsOnWindowHost(cwd: IShellLaunchConfig['cwd'], windowRemoteAuthority: string | undefined): boolean {
+	const terminalAuthority = cwd && typeof cwd === 'object' ? getRemoteAuthority(cwd) : windowRemoteAuthority;
+	return terminalAuthority === windowRemoteAuthority;
 }
 
 /** ペインを開いたときのホーム。`known: false` は再接続などで分からないもの。 */

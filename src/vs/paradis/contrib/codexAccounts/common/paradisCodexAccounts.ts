@@ -13,9 +13,11 @@
 //   と同じ内容）、消費は Orca と同じくバックエンドの `wham/rate-limit-reset-credits/consume` へ
 //   `redeem_request_id` を付けて POST する。
 // - 切替: 新しく開くターミナルへ渡す `CODEX_HOME` の選択。全ウィンドウ共通で、正は shared process が
-//   持つ（ウィンドウごとの保存にすると食い違うため）。
+//   持つ（ウィンドウごとの保存にすると食い違うため）。SSH の接続先を開いたウィンドウでは、接続先（REH）が
+//   同じものを接続先のホームについて持ち、同じ接続先の全ウィンドウで共通になる。
 //
-// 実体は shared process 側（node/paradisCodexAccountsService.ts）。renderer はチャネル経由で呼ぶ。
+// 実体は shared process と REH の node/paradisCodexAccountsService.ts。renderer はチャネル経由で呼ぶ
+// （接続中は接続先のチャネル）。
 
 export const PARADIS_CODEX_ACCOUNTS_CHANNEL = 'paradisCodexAccounts';
 
@@ -24,6 +26,23 @@ export const PARADIS_CODEX_ACCOUNTS_CHANNEL = 'paradisCodexAccounts';
  * 別の組織のアカウントへ会話の中身を持ち込みたくない人のためにオフにできる。
  */
 export const PARADIS_CODEX_SHARE_CONVERSATIONS_SETTING = 'paradis.codexAccounts.shareConversations';
+
+/**
+ * ウィンドウの設定のうち、接続先（REH）の選択に効かせるもの。REH は利用者の設定（APPLICATION）を
+ * 読めないので、ウィンドウが問い合わせのたびに添える。shared process は自分で設定を読むので使わない。
+ */
+export interface IParadisCodexAccountsClientPreferences {
+	readonly shareConversations: boolean;
+}
+
+/** チャネルの引数から {@link IParadisCodexAccountsClientPreferences} を取り出す。形が合わなければ undefined。 */
+export function paradisCodexAccountsClientPreferences(value: unknown): IParadisCodexAccountsClientPreferences | undefined {
+	if (!value || typeof value !== 'object') {
+		return undefined;
+	}
+	const shareConversations = (value as { shareConversations?: unknown }).shareConversations;
+	return typeof shareConversations === 'boolean' ? { shareConversations } : undefined;
+}
 
 // ---------- リセットクレジット ----------
 

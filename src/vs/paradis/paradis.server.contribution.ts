@@ -27,6 +27,7 @@ import { RemoteAgentConnectionContext } from '../platform/remote/common/remoteAg
 import { ParadisServerContributions } from './common/paradisProcessContributions.js';
 
 // --- 登録（新しいチャネルはこの下に副作用 import を1行足す） ---
+import './contrib/codexAccounts/node/paradisCodexAccounts.server.js';
 
 /**
  * 登録済みの REH サーバー向け contribution をすべて呼ぶ。
