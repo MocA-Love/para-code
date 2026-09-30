@@ -468,7 +468,7 @@ if (args[0] === 'app-server') {
 			};
 			delete env.PARA_CODE_CODEX_APP_SERVER_SOCKET;
 			let stderrOutput = '';
-			for (const args of [[], ['-c', 'model_reasoning_effort=high', 'a prompt'], ['exec', 'status'], ['--remote', 'unix:///tmp/other.sock'], ['agents'], ['--no-daemon', 'fork', 'thread-1']]) {
+			for (const args of [[], ['-c', 'model_reasoning_effort=high', 'a prompt'], ['exec', 'status'], ['--remote', 'unix:///tmp/other.sock'], ['agents'], ['queue', 'list'], ['--no-daemon', 'fork', 'thread-1']]) {
 				stderrOutput += (await execFileAsync(launcherPath, args, { env, timeout: 15_000 })).stderr;
 			}
 			// An empty value is the same as no socket at all.
@@ -485,6 +485,7 @@ if (args[0] === 'app-server') {
 					['exec', 'status'],
 					['--remote', 'unix:///tmp/other.sock'],
 					['agents'],
+					['queue', 'list'],
 					['--no-daemon', 'fork', 'thread-1'],
 					['--no-daemon', 'resume', 'thread-2'],
 					['-c', 'features.daemon_auto_start=false'],
@@ -521,7 +522,7 @@ if (args[0] === 'app-server') {
 			delete env.PARA_CODE_CODEX_LAUNCHER_MODE;
 			const run = (args: readonly string[], extra: NodeJS.ProcessEnv = {}) => execFileAsync(process.execPath, [launcherScript, ...args], { env: { ...env, ...extra }, timeout: 15_000 });
 			let stderrOutput = '';
-			for (const args of [[], ['a prompt'], ['resume', 'thread-1'], ['exec', 'status'], ['agents'], ['--remote', 'ws://127.0.0.1:1'], ['--no-daemon', 'fork', 'thread-2']]) {
+			for (const args of [[], ['a prompt'], ['resume', 'thread-1'], ['exec', 'status'], ['agents'], ['queue', 'list'], ['--remote', 'ws://127.0.0.1:1'], ['--no-daemon', 'fork', 'thread-2']]) {
 				stderrOutput += (await run(args)).stderr;
 			}
 			stderrOutput += (await run(['resume', 'thread-3'], { PARADIS_TEST_NO_DAEMON_UNSUPPORTED: '1' })).stderr;
@@ -534,6 +535,7 @@ if (args[0] === 'app-server') {
 					['--no-daemon', 'resume', 'thread-1'],
 					['exec', 'status'],
 					['agents'],
+					['queue', 'list'],
 					['--remote', 'ws://127.0.0.1:1'],
 					['--no-daemon', 'fork', 'thread-2'],
 					['-c', 'features.daemon_auto_start=false', 'resume', 'thread-3'],

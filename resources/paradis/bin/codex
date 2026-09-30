@@ -83,7 +83,10 @@ done
 # missing from the list below is silently treated as a prompt and breaks that command.
 # The list is Codex 0.146's full set (including aliases and the internal subcommands that
 # `codex --help` hides) minus the two TUI commands, plus `agents` (the overview of the shared
-# background server, which must not be kept off that server). It is only the fast path: a
+# background server, which must not be kept off that server) and the 0.158 additions
+# `queue` (which also rejects `--no-daemon`), `migrate-rollouts` and `tcp-tunnel`. Without a
+# pane socket the lookup below is skipped, so a newer subcommand missing here gets
+# `--no-daemon` and may refuse it; keep the list current. It is only the fast path: a
 # positional argument that does not match it is resolved by asking Codex itself further
 # down, so a subcommand added by a future Codex release keeps working.
 command_kind=unknown
@@ -96,7 +99,7 @@ else
 		resume|fork)
 			command_kind=tui
 			;;
-		exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|archive|delete|unarchive|cloud|exec-server|execpolicy|responses-api-proxy|stdio-to-uds|features|help|agents)
+		exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|archive|delete|unarchive|cloud|exec-server|execpolicy|responses-api-proxy|stdio-to-uds|features|help|agents|queue|migrate-rollouts|tcp-tunnel)
 			command_kind=delegated
 			;;
 	esac
