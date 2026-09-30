@@ -31,7 +31,7 @@ import { hasKey, isString } from '../../../../../base/common/types.js';
 // PARA-PATCH: needed to write a pasted image onto the connected host
 import { IFileService } from '../../../../../platform/files/common/files.js';
 // PARA-PATCH: 画像のみクリップボードのペーストをTUIへ中継するヘルパー（src/vs/paradis/contrib/terminalImagePaste/）
-import { paradisTryTerminalImagePaste } from '../../../../../paradis/contrib/terminalImagePaste/browser/paradisTerminalImagePaste.js';
+import { paradisIsLocalImagePathText, paradisTryTerminalImagePaste } from '../../../../../paradis/contrib/terminalImagePaste/browser/paradisTerminalImagePaste.js';
 // PARA-PATCH: read the Para Code space-switch input gate so a paste is not delivered to a terminal
 // whose owning space is being swapped out from under the user
 import { paradisIsTerminalInputBlocked } from '../../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalInputGate.js';
@@ -104,12 +104,13 @@ export class TerminalClipboardContribution extends Disposable implements ITermin
 		// PARA-PATCH: テキストもファイルパスも無い（スクリーンショット等の画像のみ）場合の中継。
 		// ローカルは Ctrl+V(0x16) を PTY へ送って TUI（Claude Code/Codex等）の画像添付を起動する。
 		// SSH 接続中は接続先へ画像を書き出し、そのパスを通常のテキストとして貼る（TUI はこちらの
-		// クリップボードを読めないため）。テキスト時は既存経路に一切触れない
-		if (!text && this._xterm) {
-			// detached なインスタンス（エディタ外のプレビュー等）は接続先も cwd も持たないので、
-			// その場合はローカル扱い（0x16 の経路）になる
-			const instance = this._ctx.instance;
-			const attached = hasKey(instance, { remoteAuthority: true }) ? instance : undefined;
+		// クリップボードを読めないため）。SSH 接続中にテキストが手元の画像ファイルのパスだけの
+		// ときも同じ経路を試す。それ以外のテキスト時は既存経路に一切触れない
+		// detached なインスタンス（エディタ外のプレビュー等）は接続先も cwd も持たないので、
+		// その場合はローカル扱い（0x16 の経路）になる
+		const instance = this._ctx.instance;
+		const attached = hasKey(instance, { remoteAuthority: true }) ? instance : undefined;
+		if ((!text || paradisIsLocalImagePathText(text, attached?.remoteAuthority)) && this._xterm) {
 			const pasted = await paradisTryTerminalImagePaste(this._clipboardService, this._xterm, {
 				fileService: this._fileService,
 				remoteAuthority: attached?.remoteAuthority,
