@@ -14,7 +14,8 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { ParadisLimitsMonitorService, paradisCodexLoginUrl } from '../../node/paradisLimitsMonitorChannel.js';
+import { IParadisLimitsSetupHandle, IParadisLimitsSetupState } from '../../common/paradisLimitsMonitor.js';
+import { ParadisLimitsMonitorChannel, ParadisLimitsMonitorService, paradisCodexLoginUrl } from '../../node/paradisLimitsMonitorChannel.js';
 
 class ParadisCodexMissingService extends ParadisLimitsMonitorService {
 	/** codex を探している間に新しいホームへ起きること（書きかけの config.toml など）。 */
@@ -71,6 +72,37 @@ suite('ParadisLimitsMonitor Codex login', () => {
 		assert.deepStrictEqual({ halfWritten: halfWritten.homes, withOther: withOther.homes }, {
 			halfWritten: [],
 			withOther: ['.codex-2'],
+		});
+	});
+
+	// 同じ接続先へ繋いだ別のウィンドウ（別の PC を含む）に、ログインの URL を読まれたり手続きを潰されたりしない。
+	test('on the host, only the client that started a login can read or cancel it; in the shared process anyone can', async () => {
+		const service = new ParadisCodexMissingService(new NullLogService(), undefined, undefined, () => root);
+		const channel = new ParadisLimitsMonitorChannel<unknown>(service);
+		const waitForError = async (ctx: unknown, sessionId: string) => {
+			let state = await channel.call<IParadisLimitsSetupState>(ctx, 'getSetupState', [sessionId]);
+			for (let i = 0; i < 100 && state.phase !== 'error'; i++) {
+				await new Promise(resolve => setTimeout(resolve, 5));
+				state = await channel.call<IParadisLimitsSetupState>(ctx, 'getSetupState', [sessionId]);
+			}
+			return state.error;
+		};
+		// REH では全ウィンドウの clientId が同じ 'renderer'。接続（context のオブジェクト）で見分ける
+		const windowA = { remoteAuthority: 'ssh-remote+host', clientId: 'renderer' };
+		const windowB = { remoteAuthority: 'ssh-remote+host', clientId: 'renderer' };
+		const onHost = await channel.call<IParadisLimitsSetupHandle>(windowA, 'startCodexLogin', []);
+		const readByOther = await channel.call<IParadisLimitsSetupState>(windowB, 'getSetupState', [onHost.sessionId]);
+		await channel.call(windowB, 'cancelSetup', [onHost.sessionId]);
+		const readByOwner = await waitForError(windowA, onHost.sessionId);
+		await channel.call(windowA, 'cancelSetup', [onHost.sessionId]);
+		const local = await channel.call<IParadisLimitsSetupHandle>('window:1', 'startCodexLogin', []);
+		const localReadByOther = await waitForError('window:2', local.sessionId);
+		await channel.call('window:2', 'cancelSetup', [local.sessionId]);
+		service.dispose();
+		assert.deepStrictEqual({ readByOther, readByOwner, localReadByOther }, {
+			readByOther: { phase: 'error', error: 'setup session not found' },
+			readByOwner: 'codex not found',
+			localReadByOther: 'codex not found',
 		});
 	});
 

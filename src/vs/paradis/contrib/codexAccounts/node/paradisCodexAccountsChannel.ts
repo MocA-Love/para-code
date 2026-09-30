@@ -10,8 +10,8 @@
 // 登録は shared process の登録口（paradisProcessContributions.ts）経由で、
 // `paradis.sharedProcess.contribution.ts` がこのファイルを副作用 import する。
 //
-// REH（SSH の接続先）には登録しない。リセットクレジットの台帳と Codex の選択はこの PC に1つだけ
-// 持つもので、接続先の Codex ホームは扱わない（接続中のウィンドウではカードを出さない）。
+// SSH の接続先（REH）へは paradisCodexAccounts.server.ts が同じチャネルを登録する。そちらは接続先の
+// Codex ホームについて、台帳と選択を接続先のユーザーデータに持つ（この PC のものとは別）。
 
 import { Event } from '../../../../base/common/event.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -23,7 +23,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { IParadisCodexResetConsumeRequest, PARADIS_CODEX_ACCOUNTS_CHANNEL, PARADIS_CODEX_SHARE_CONVERSATIONS_SETTING } from '../common/paradisCodexAccounts.js';
+import { IParadisCodexAccountsClientPreferences, IParadisCodexResetConsumeRequest, PARADIS_CODEX_ACCOUNTS_CHANNEL, PARADIS_CODEX_SHARE_CONVERSATIONS_SETTING, paradisCodexAccountsClientPreferences } from '../common/paradisCodexAccounts.js';
 import { IParadisHookProcessInspector, ParadisDefaultHookProcessInspector } from '../../agentBrowser/node/paradisAgentHookOwnership.js';
 import { PARADIS_CODEX_PANE_SHELLS_MAX, paradisCodexPaneProcesses } from './paradisCodexPaneProcesses.js';
 import { paradisEnableCodexAccountHomes, paradisNotifyCodexHomesChanged, paradisSetConfiguredCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
@@ -32,14 +32,27 @@ import { ParadisCodexAccountsService } from './paradisCodexAccountsService.js';
 /** 設定で足した Codex ホーム（limitsMonitor と同じ設定を読む）。 */
 const CODEX_HOMES_SETTING = 'paradis.limitsMonitor.codexHomes';
 
-export class ParadisCodexAccountsChannel implements IServerChannel<string> {
+// 接続先（REH）へも同じチャネルを生やすため context は型引数にしておく（中身では使わない）。
+export class ParadisCodexAccountsChannel<TContext = string> implements IServerChannel<TContext> {
 
+	/**
+	 * @param onClientPreferences `getState` / `selectHome` に添えられたウィンドウの設定を受け取る。
+	 * 利用者の設定を読めない REH だけが渡す（shared process は自分で設定を読む）。
+	 */
 	constructor(
 		private readonly service: ParadisCodexAccountsService,
 		private readonly processInspector: IParadisHookProcessInspector = new ParadisDefaultHookProcessInspector(),
+		private readonly onClientPreferences?: (preferences: IParadisCodexAccountsClientPreferences) => void,
 	) { }
 
-	listen<T>(_ctx: string, event: string): Event<T> {
+	private notePreferences(value: unknown): void {
+		const preferences = paradisCodexAccountsClientPreferences(value);
+		if (preferences && this.onClientPreferences) {
+			this.onClientPreferences(preferences);
+		}
+	}
+
+	listen<T>(_ctx: TContext, event: string): Event<T> {
 		switch (event) {
 			case 'onDidChangeState': return this.service.onDidChangeState as Event<T>;
 			default:
@@ -47,14 +60,18 @@ export class ParadisCodexAccountsChannel implements IServerChannel<string> {
 		}
 	}
 
-	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
+	call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'readResetCredits': return this.service.readResetCredits(typeof args[0] === 'string' ? args[0] : '', args[1] === true) as Promise<T>;
 			case 'consumeResetCredit': return this.service.consumeResetCredit(args[0] as IParadisCodexResetConsumeRequest) as Promise<T>;
-			case 'getState': return this.service.getState() as Promise<T>;
+			case 'getState':
+				this.notePreferences(args[0]);
+				return this.service.getState() as Promise<T>;
 			case 'peekResetCredits': return Promise.resolve(this.service.peekResetCredits()) as Promise<T>;
-			case 'selectHome': return this.service.selectHome(typeof args[0] === 'string' ? args[0] : undefined) as Promise<T>;
+			case 'selectHome':
+				this.notePreferences(args[1]);
+				return this.service.selectHome(typeof args[0] === 'string' ? args[0] : undefined) as Promise<T>;
 			case 'shellsRunningCodex': {
 				const pids = (Array.isArray(args[0]) ? args[0] : []).filter((pid: unknown): pid is number => typeof pid === 'number' && Number.isInteger(pid) && pid > 0).slice(0, PARADIS_CODEX_PANE_SHELLS_MAX);
 				return (pids.length === 0 ? Promise.resolve([]) : this.processInspector.snapshot().then(snapshot => paradisCodexPaneProcesses(pids, snapshot))) as Promise<T>;

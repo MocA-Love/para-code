@@ -30,6 +30,8 @@ import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_NOTIFY_HOOK_RELATIVE_PATH,
 import { paradisUpsertClaudeMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
 import { PARADIS_REMOTE_AGENT_TUNNEL_SETTING } from './paradisRemoteAgentTunnel.contribution.js';
 import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { IParadisCodexAccountsState, PARADIS_CODEX_ACCOUNTS_CHANNEL } from '../../codexAccounts/common/paradisCodexAccounts.js';
 
 /**
  * 既存設定を保ったまま接続先Claude用para-browser MCPをマージする。
@@ -177,6 +179,11 @@ export interface IParadisRemoteAgentHookFilesHost {
 	buildHooksJson(cli: 'claude' | 'codex', current: string | undefined): Promise<string | undefined>;
 	/** Para Code が置いた hook だけを外した中身を返す（判断は shared process 側）。 */
 	buildRemovalJson(current: string): Promise<string | undefined>;
+	/**
+	 * 接続先の Codex のアカウント用ホーム（~/.codex-2 等。既定の ~/.codex は含めない）。アカウントを
+	 * 切り替えた Codex はこちらの hooks.json を読むので、同じ hook を置く。分からなければ空。
+	 */
+	listCodexAccountHomes?(): Promise<readonly URI[]>;
 }
 
 /**
@@ -278,9 +285,11 @@ export class ParadisRemoteAgentHookFiles {
 	 */
 	async sync(home: URI): Promise<boolean> {
 		const change = this.pending;
+		const accountHomes = await this.host.listCodexAccountHomes?.().catch(() => []) ?? [];
 		const files: readonly [URI, 'claude' | 'codex'][] = [
 			[joinPath(home, '.claude', 'settings.json'), 'claude'],
 			[joinPath(home, '.codex', 'hooks.json'), 'codex'],
+			...accountHomes.map((codexHome): [URI, 'codex'] => [joinPath(codexHome, 'hooks.json'), 'codex']),
 		];
 		let applied = true;
 		for (const [file, cli] of files) {
@@ -397,8 +406,18 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 	private readonly hookFiles: ParadisRemoteAgentHookFiles;
 
+	/** 直前に hook 一式を置いたときの接続先側の番号。アカウント用ホームが増えたときの書き足しに使う。 */
+	private installedPort: number | undefined;
+
+	/** 最後に hook を置けた Codex のアカウント用ホームの顔ぶれ（増減したら書き足す目印）。 */
+	private codexAccountHomesKey: string | undefined;
+
+	/** 直前に接続先へ聞いたアカウント用ホームの顔ぶれ（置けたら {@link codexAccountHomesKey} へ移す）。 */
+	private listedCodexAccountHomesKey: string | undefined;
+
 	constructor(
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IFileService private readonly fileService: IFileService,
 		@IPathService private readonly pathService: IPathService,
@@ -415,6 +434,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			resolveHome: () => this.remoteUserHome(),
 			buildHooksJson: (cli, current) => channel.call<string | undefined>('buildRemoteAgentHooksJson', [this.environmentService.remoteAuthority, cli, current]),
 			buildRemovalJson: current => channel.call<string | undefined>('buildRemoteAgentHooksRemovalJson', [current]),
+			listCodexAccountHomes: () => this.codexAccountHomes(),
 		}, paradisAgentHooksEnabled(this.configurationService.getValue(PARADIS_AGENT_HOOKS_ENABLED_SETTING)));
 
 		// SSH の接続先だけを対象にする。他の種類の接続先（WSL・コンテナ）は ssh を通らないので、
@@ -439,6 +459,17 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 					}
 				}, () => undefined);
 			}));
+			// 接続先で Codex のアカウントが増えたら（使用量パネルからの追加・接続先での codex login）、
+			// そのホームにも hook と para-browser を書き足す。次に番号が変わるまで待たない
+			const codexAccounts = this.remoteAgentService.getConnection()?.getChannel(PARADIS_CODEX_ACCOUNTS_CHANNEL);
+			if (codexAccounts) {
+				this._register(codexAccounts.listen<IParadisCodexAccountsState>('onDidChangeState')(state => {
+					const port = this.installedPort;
+					if (port !== undefined && codexAccountHomesKey(state) !== this.codexAccountHomesKey) {
+						void this.hookFiles.runExclusive(() => this.syncCodexAccountHomes(port));
+					}
+				}));
+			}
 			this._register({
 				dispose: () => {
 					channel.call('releaseRemoteCodexSockets', [this.environmentService.remoteAuthority])
@@ -479,6 +510,52 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		return home;
 	}
 
+	/**
+	 * 接続先の Codex のアカウント用ホーム（ログイン済みで、既定のホーム以外）。接続先（REH）の
+	 * アカウント切替のチャネルに聞く。聞けなければ空（既定のホームにだけ置く従来どおり）。
+	 */
+	private async codexAccountHomes(): Promise<readonly URI[]> {
+		const home = await this.remoteUserHome();
+		const connection = this.remoteAgentService.getConnection();
+		if (home === undefined || connection === null) {
+			return [];
+		}
+		try {
+			const state = await connection.getChannel(PARADIS_CODEX_ACCOUNTS_CHANNEL).call<IParadisCodexAccountsState>('getState');
+			this.listedCodexAccountHomesKey = codexAccountHomesKey(state);
+			const homes: URI[] = [];
+			for (const homePath of paradisCodexAccountHomePaths(state)) {
+				// 接続先のネイティブのパスを URI のパスへ（Windows の接続先の `C:\…` でも投げない）
+				const codexHome = home.with({ path: URI.file(homePath).path });
+				// 聞いた後に消されたホームを、書き込みで作り直さない
+				if (await this.fileService.exists(codexHome)) {
+					homes.push(codexHome);
+				}
+			}
+			return homes;
+		} catch (error) {
+			this.logService.trace('[paradis] could not list the Codex account homes on the host', error);
+			return [];
+		}
+	}
+
+	/** 増えた Codex のアカウント用ホームへ、hook と para-browser を書き足す。{@link ParadisRemoteAgentHookFiles.runExclusive} の中から呼ぶ。 */
+	private async syncCodexAccountHomes(port: number): Promise<void> {
+		const home = await this.remoteUserHome();
+		if (home === undefined) {
+			return;
+		}
+		const hooked = await this.hookFiles.sync(home);
+		if (!hooked) {
+			this.logService.warn('[paradis] could not update the agent hook settings for the Codex accounts on the host; leaving them as they are');
+		}
+		await this.mergeCodexMcp(home, port);
+		// 置けたときだけ「この顔ぶれは済んだ」とする（失敗したら次の知らせで試し直す）
+		if (hooked) {
+			this.codexAccountHomesKey = this.listedCodexAccountHomesKey;
+		}
+	}
+
 	/** @returns 置けた接続先側の番号。まだ整っていないだけなら undefined（呼び出し側が試し直す） */
 	private async install(channel: IChannel): Promise<number | undefined> {
 		try {
@@ -517,12 +594,17 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 			// 自動設置をオフにしている間は hook だけ置かない（MCP と戻り経路は hook と関係なく使う）。
 			// 保留中の取り外しがあればここで済ませる
-			if (!await this.hookFiles.sync(home)) {
+			const hooked = await this.hookFiles.sync(home);
+			if (!hooked) {
 				// 読めない・書き換えが続いた。MCP と戻り経路は使えるので設置自体は続ける
 				this.logService.warn('[paradis] could not update the agent hook settings on the host; leaving them as they are');
 			}
 			await this.mergeClaudeMcp(home, remotePort);
 			await this.mergeCodexMcp(home, remotePort);
+			this.installedPort = remotePort;
+			if (hooked) {
+				this.codexAccountHomesKey = this.listedCodexAccountHomesKey;
+			}
 			this.syncCodexSockets(home, channel);
 			this.logService.info(`[paradis] installed the agent hooks on ${this.environmentService.remoteAuthority} (port ${remotePort})`);
 			return remotePort;
@@ -641,9 +723,22 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	 * （Codex が起動時にその変数を読んで Bearer に載せる）。
 	 */
 	private async mergeCodexMcp(home: URI, port: number): Promise<void> {
-		const file = joinPath(home, '.codex', 'config.toml');
-		await this.hookFiles.mergeJson(file, current => paradisUpsertCodexMcpToml(current ?? '', port));
+		// アカウントを切り替えた Codex は、そのホームの config.toml を読む。アカウント用ホームにも同じ節を入れる
+		// （作るときに既定のホームの config.toml を写しているので、たいていは番号の書き換えだけになる）
+		const codexHomes = [joinPath(home, '.codex'), ...await this.codexAccountHomes()];
+		for (const codexHome of codexHomes) {
+			await this.hookFiles.mergeJson(joinPath(codexHome, 'config.toml'), current => paradisUpsertCodexMcpToml(current ?? '', port));
+		}
 	}
+}
+
+/** 接続先の状態から、Codex のアカウント用ホーム（ログイン済みで、既定のホーム以外）のパスを取り出す。 */
+export function paradisCodexAccountHomePaths(state: IParadisCodexAccountsState): string[] {
+	return state.homes.filter(home => !home.isDefault && home.signedIn).map(home => home.homePath);
+}
+
+function codexAccountHomesKey(state: IParadisCodexAccountsState): string {
+	return JSON.stringify(paradisCodexAccountHomePaths(state).sort());
 }
 
 registerWorkbenchContribution2(ParadisRemoteAgentHooks.ID, ParadisRemoteAgentHooks, WorkbenchPhase.AfterRestored);
