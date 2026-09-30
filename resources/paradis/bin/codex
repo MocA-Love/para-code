@@ -7,10 +7,11 @@
 # The pane app-server is an enhancement, not a requirement: if it cannot be started
 # (a broken Codex state directory, a full disk, a stale runtime directory, …) this
 # launcher warns and runs the user's Codex directly rather than failing. Turning the
-# pane app-server off is a settings-time decision — Para Code then keeps this launcher
-# out of the terminal's PATH entirely — so by the time this script runs the user has
-# asked for it, and exiting on failure would leave them with no way to run Codex at
-# all (`resume` is not on the delegated-command list either).
+# pane app-server off is a settings-time decision — Para Code then gives the terminal no
+# pane socket and this launcher only keeps Codex off the shared background server — so
+# when a socket is set the user has asked for it, and exiting on failure would leave
+# them with no way to run Codex at all (`resume` is not on the delegated-command list
+# either).
 
 set -u
 
@@ -98,6 +99,23 @@ if [ "$command_kind" = delegated ]; then
 	exec env PATH="$clean_path" "$real_codex" "$@"
 fi
 
+# Codex 0.157 and later attach an interactive session to one shared background server
+# (the daemon) by default, starting it on first use. Hooks and MCP servers then run in that
+# server with the environment of whichever pane started it, so they would report to the
+# wrong pane. Every session this launcher runs without `--remote` therefore turns the
+# auto-start off. It is a `-c` override rather than `--no-daemon`: Codex older than 0.156
+# rejects the unknown flag and refuses to start, but only logs an unknown feature key.
+# The override is placed first so an explicit `-c features.daemon_auto_start=…` from the
+# user still wins.
+daemon_auto_start_off=features.daemon_auto_start=false
+
+# Para Code keeps this launcher on PATH without a pane socket when the pane app-server is
+# turned off, only to add the override above. Run the user's Codex directly then, silently:
+# nothing the user asked for is missing.
+if [ -z "${PARA_CODE_CODEX_APP_SERVER_SOCKET:-}" ]; then
+	exec env PATH="$clean_path" "$real_codex" -c "$daemon_auto_start_off" "$@"
+fi
+
 # Every path below can fall back to the unmanaged Codex, so the cleanup helper has to be
 # callable before the app-server exists. `owns_server` stays 0 until we actually start one,
 # which keeps cleanup a no-op for the early validation failures.
@@ -138,7 +156,7 @@ fallback_direct() {
 	cleanup
 	trap - EXIT
 	umask "$original_umask"
-	exec env PATH="$clean_path" "$real_codex" "$@"
+	exec env PATH="$clean_path" "$real_codex" -c "$daemon_auto_start_off" "$@"
 }
 
 socket_path=${PARA_CODE_CODEX_APP_SERVER_SOCKET:-}
