@@ -13,7 +13,8 @@
 //  - 切り替わったとき、このウィンドウに前のアカウントのまま動いている Codex があれば、通常の通知を
 //    1回だけ出す（入力は止めない・再起動もしない。対象は Codex だけ。止めると作業の邪魔になるため）
 //
-// SSH の接続先を開いているウィンドウでは何もしない（選択はこの PC のホームを指すため）。
+// SSH の接続先を開いているウィンドウでは、接続先（REH）の選択を受ける。選択は接続先のホームを指すので、
+// 渡す先も接続先で動くターミナルだけにする（paradisPaneTokenService.ts）。
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
@@ -47,14 +48,10 @@ class ParadisCodexAccountsSync extends Disposable implements IWorkbenchContribut
 
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
-		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 		@IParadisCodexLaunchHomeService private readonly launchHomeService: IParadisCodexLaunchHomeService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
-		if (environmentService.remoteAuthority !== undefined) {
-			return;
-		}
 		const client = instantiationService.createInstance(ParadisCodexAccountsClient);
 		this._register(client.onDidChangeState(state => this.apply(state)));
 		client.getState().then(state => this.apply(state), error => {
@@ -85,7 +82,7 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
-		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IParadisCodexLaunchHomeService private readonly launchHomeService: IParadisCodexLaunchHomeService,
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 		@ITerminalService private readonly terminalService: ITerminalService,
@@ -94,9 +91,6 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 	) {
 		super();
 		this.client = instantiationService.createInstance(ParadisCodexAccountsClient);
-		if (environmentService.remoteAuthority !== undefined) {
-			return;
-		}
 		this._register(this.launchHomeService.onDidChangeLaunchHome(change => {
 			if (change.initial) {
 				void this.notifyPanesOpenedBeforeSync(change.next);
@@ -141,7 +135,9 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 		const panes: { readonly token: string; readonly instance: ITerminalInstance }[] = [];
 		for (const { instanceId, token } of this.paneTokenService.listPaneTokens()) {
 			const instance = this.terminalService.getInstanceFromId(instanceId);
-			if (instance) {
+			// 選択が効くのは、このウィンドウの選択の持ち主（手元か接続先）で動くターミナルだけ。接続先の
+			// ウィンドウで手元に開いたターミナル（その逆も）は数えない（pid も別のマシンのもの）。
+			if (instance && instance.remoteAuthority === this.environmentService.remoteAuthority) {
 				panes.push({ token, instance });
 			}
 		}
@@ -188,7 +184,8 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 				byShellPid.set(instance.processId, instance);
 			}
 		}
-		// SSH の接続先のウィンドウではこの通知自体を出さない（コンストラクタ）ので、pid は常にこの PC のもの
+		// 渡されるのはこのウィンドウの選択の持ち主で動くペインだけ（呼び出し側）なので、pid はクライアントが
+		// 問い合わせる先（手元なら shared process、接続先なら REH）のマシンのもの
 		if (byShellPid.size > 0) {
 			try {
 				for (const found of await this.client.shellsRunningCodex([...byShellPid.keys()])) {

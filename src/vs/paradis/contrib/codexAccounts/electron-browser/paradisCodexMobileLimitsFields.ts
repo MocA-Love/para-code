@@ -13,8 +13,9 @@
 //  - resetCredits: リセットクレジットの残りと期限（新しい任意項目。読み取り済みのものだけ）
 //
 // 既存の項目の形は変えない。読み取りに失敗したら元のスナップショットをそのまま返す。
+// SSH の接続先を開いたウィンドウでは、Codex のアカウントは接続先のホームで、選択とリセットも接続先の
+// ものを読む（クライアントが接続先のチャネルを呼ぶ）。モバイルは表示するだけで切り替えない。
 
-import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IParadisLimitsAccount, IParadisLimitsSnapshot } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
 import { IParadisCodexResetCredits, paradisSelectedCodexHome } from '../common/paradisCodexAccounts.js';
@@ -35,14 +36,12 @@ export class ParadisCodexMobileLimitsFields {
 
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
-		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) {
 		this.client = instantiationService.createInstance(ParadisCodexAccountsClient);
 	}
 
 	async addTo(snapshot: IParadisLimitsSnapshot): Promise<IParadisLimitsSnapshot> {
-		// SSH 中の使用量は接続先のホームを並べている。選択とリセットはこの PC のものなので混ぜない。
-		if (this.remoteAgentService.getConnection() || snapshot.codex.accounts.length === 0) {
+		if (snapshot.codex.accounts.length === 0) {
 			return snapshot;
 		}
 		let selectedHome: string | undefined;

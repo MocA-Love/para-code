@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { isWindows } from '../../../../../base/common/platform.js';
@@ -15,6 +15,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisCodexAccountsState } from '../../common/paradisCodexAccounts.js';
 import { paradisNotifyCodexHomesChanged } from '../../../agentBrowser/node/paradisAgentHome.js';
+import { ParadisCodexAccountsChannel } from '../../node/paradisCodexAccountsChannel.js';
 import { ParadisCodexAccountsService } from '../../node/paradisCodexAccountsService.js';
 import { paradisLinkCodexSessions } from '../../node/paradisCodexSessionLinker.js';
 
@@ -116,6 +117,44 @@ suite('Paradis Codex account switching', () => {
 		await service.whenLinked();
 		service.dispose();
 		assert.deepStrictEqual([a.selection.revision, b.selection.revision, b.selection.homePath], [1, 2, join(home, '.codex-4')]);
+	});
+
+	// Para Code を更新した直後は、同じ接続先に古い版の REH が残り、同じ選択のファイルを書き換える。
+	// 番号はそちらの方が小さいことがあるので、こちらの続きの番号で全ウィンドウへ配り直す。
+	test('follows a selection another process wrote, with a revision newer than the one it handed out', async () => {
+		const service = createService();
+		await service.selectHome(join(home, '.codex-2'));
+		await service.selectHome(join(home, '.codex-4'));
+		await service.whenLinked();
+		const events: (string | undefined)[] = [];
+		const listener = service.onDidChangeState(state => events.push(state.selection.homePath));
+		const selectionFile = join(stateDirectory, 'codex-account-selection.json');
+		writeFileSync(`${selectionFile}.other`, JSON.stringify({ version: 1, homePath: join(home, '.codex-2'), revision: 1 }));
+		renameSync(`${selectionFile}.other`, selectionFile);
+		await service.revalidate();
+		const state = await service.getState();
+		listener.dispose();
+		service.dispose();
+		assert.deepStrictEqual({ events, selected: state.selection.homePath, revision: state.selection.revision }, {
+			events: [join(home, '.codex-2')],
+			selected: join(home, '.codex-2'),
+			revision: 3,
+		});
+	});
+
+	// REH は利用者の設定を読めないので、会話ログを共有するかはウィンドウが問い合わせに添えた値を使う。
+	test('takes the preferences the window sends with getState and selectHome, and ignores malformed ones', async () => {
+		const service = createService();
+		const received: boolean[] = [];
+		const channel = new ParadisCodexAccountsChannel<{ readonly clientId: string }>(service, undefined, preferences => received.push(preferences.shareConversations));
+		const ctx = { clientId: 'window-a' };
+		await channel.call(ctx, 'getState', [{ shareConversations: false }]);
+		await channel.call(ctx, 'selectHome', [join(home, '.codex-2'), { shareConversations: true }]);
+		await channel.call(ctx, 'getState', [{ shareConversations: 'no' }]);
+		await channel.call(ctx, 'getState');
+		await service.whenLinked();
+		service.dispose();
+		assert.deepStrictEqual(received, [false, true]);
 	});
 
 	// 選んだホームを使用量パネルから消したら、既定のホームへ戻して全ウィンドウへ知らせる。
