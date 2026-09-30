@@ -16,18 +16,20 @@ import { isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisClaudeAccountsState, PARADIS_CLAUDE_HOST_ACCOUNT_ID, paradisClaudeActiveLoginState } from '../../common/paradisClaudeAccounts.js';
+import { paradisConnectionClientId } from '../../../../common/paradisConnectionClient.js';
 import { IParadisLimitsSetupHandle, IParadisLimitsSetupState } from '../../common/paradisLimitsMonitor.js';
 import { paradisClaudeHostSwitchingSupported } from '../../node/paradisClaudeAccounts.server.js';
 import { IParadisClaudeAccountRecord, ParadisClaudeAccountRegistry, ParadisPlainFileClaudeSecretStore } from '../../node/paradisClaudeAccountStore.js';
 import { ParadisClaudeAccountService, ParadisClaudeAccountsChannel } from '../../node/paradisClaudeAccountService.js';
 import { ParadisClaudeHostUsage, paradisSetClaudeHostStateSource } from '../../node/paradisClaudeHostUsage.js';
-import { ParadisClaudeLiveAuth } from '../../node/paradisClaudeLiveAuth.js';
+import { paradisAcquireClaudeDirectoryLock, ParadisClaudeLiveAuth } from '../../node/paradisClaudeLiveAuth.js';
 import {
 	ParadisFakeClaudeLoginRunner,
 	ParadisFakeClaudeOAuth,
 	paradisCreateClaudeTestHome,
 	paradisTestCredentials,
 	paradisTestOauthAccount,
+	paradisTestUsage,
 	paradisWriteClaudeGlobalConfig
 } from './paradisClaudeTestUtils.js';
 
@@ -48,6 +50,25 @@ suite('ParadisClaudeAccounts on the SSH host', () => {
 		return { id, email, accountUuid, organizationUuid: 'org-1', oauthAccount: paradisTestOauthAccount(accountUuid, email), createdAt: 1, updatedAt: 1 };
 	}
 
+	/** 書き込みを指定の回数だけ失敗させる（更新したトークンを保存できなかった状態を作る）。 */
+	class ParadisFlakySecretStore extends ParadisPlainFileClaudeSecretStore {
+		failWrites = 0;
+		override async write(accountId: string, credentialsJson: string): Promise<void> {
+			if (this.failWrites > 0) {
+				this.failWrites--;
+				throw new Error('disk full');
+			}
+			return super.write(accountId, credentialsJson);
+		}
+	}
+
+	/** 保存してある認証情報の読み出し（手元に持っている保存し直し待ちの値を含む）をテストから呼ぶ。 */
+	class ParadisTestableService extends ParadisClaudeAccountService {
+		readSecretForTest(accountId: string): Promise<string | undefined> {
+			return this.readSecret(accountId);
+		}
+	}
+
 	/** 接続先と同じ組み立て（Linux、キーチェーン無し、平文のファイル、プロセスをまたいだロック）。 */
 	async function createHost() {
 		const dirs = await paradisCreateClaudeTestHome();
@@ -65,10 +86,10 @@ suite('ParadisClaudeAccounts on the SSH host', () => {
 			await fs.promises.writeFile(path.join(configDir, '.credentials.json'), paradisTestCredentials('carol-1', 'carol-r1', Date.now() + HOUR));
 			await paradisWriteClaudeGlobalConfig(configDir, { oauthAccount: paradisTestOauthAccount('u-carol', 'carol@example.com') });
 		});
-		const create = () => disposables.add(new ParadisClaudeAccountService({
+		const create = (secrets = new ParadisFlakySecretStore(path.join(storageDir, 'secrets'))) => disposables.add(new ParadisTestableService({
 			liveAuth: new ParadisClaudeLiveAuth({ homedir: dirs.home, platform: 'linux', keychain: undefined, userName: undefined, lockTimeoutMs: 300 }),
 			registry: new ParadisClaudeAccountRegistry(path.join(storageDir, 'accounts.json')),
-			secrets: new ParadisPlainFileClaudeSecretStore(path.join(storageDir, 'secrets')),
+			secrets,
 			oauth,
 			logService: new NullLogService(),
 			loginRunner: runner,
@@ -170,6 +191,72 @@ suite('ParadisClaudeAccounts on the SSH host', () => {
 			registered: ['carol@example.com'],
 			secretFiles: 1,
 			liveLoginWritten: false,
+		});
+	});
+
+	// リロードしたウィンドウは別の接続になり、前の手続きを取り消せない。接続が切れたら止めて、次の追加を
+	// 「使用中」で断り続けないようにする。
+	test('stops a login when the connection that started it goes away, so another window can add an account', async () => {
+		const host = await createHost();
+		const service = host.create();
+		const channel = new ParadisClaudeAccountsChannel<unknown>(service);
+		const windowA = { remoteAuthority: 'ssh-remote+host', clientId: 'renderer' };
+		const windowB = { remoteAuthority: 'ssh-remote+host', clientId: 'renderer' };
+		const first = await channel.call<IParadisLimitsSetupHandle>(windowA, 'startLogin', []);
+		const whileRunning = await channel.call<IParadisLimitsSetupHandle>(windowB, 'startLogin', []);
+		await new Promise(resolve => setTimeout(resolve, 20));
+		const blocked = await channel.call<IParadisLimitsSetupState>(windowB, 'getSetupState', [whileRunning.sessionId]);
+		service.abortSetupsOwnedBy(paradisConnectionClientId(windowA)!);
+		await new Promise(resolve => setTimeout(resolve, 20));
+		const second = await channel.call<IParadisLimitsSetupHandle>(windowB, 'startLogin', []);
+		let state = await channel.call<IParadisLimitsSetupState>(windowB, 'getSetupState', [second.sessionId]);
+		for (let i = 0; i < 100 && state.url === undefined && state.phase !== 'error'; i++) {
+			await new Promise(resolve => setTimeout(resolve, 5));
+			state = await channel.call<IParadisLimitsSetupState>(windowB, 'getSetupState', [second.sessionId]);
+		}
+		await channel.call(windowB, 'cancelSetup', [second.sessionId]);
+		assert.deepStrictEqual({
+			blocked: blocked.error,
+			firstGone: (await channel.call<IParadisLimitsSetupState>(windowA, 'getSetupState', [first.sessionId])).error,
+			secondStarted: [state.phase, state.url],
+		}, {
+			blocked: 'busy',
+			firstGone: 'not_found',
+			secondStarted: ['waiting_browser', 'https://claude.ai/oauth/authorize?code=true'],
+		});
+	});
+
+	// 保存できずに手元に持っていたトークンより新しいものを、別のプロセスが保存していたら、手元の古い方
+	// （リフレッシュトークンは相手の更新で使用済み）で上書きしない。
+	test('drops a token it could not save once the other process has saved a newer one', async () => {
+		const host = await createHost();
+		await new ParadisClaudeAccountRegistry(path.join(host.storageDir, 'accounts.json')).save([record(ALICE_ID, 'u-alice', 'alice@example.com')]);
+		const store = new ParadisFlakySecretStore(path.join(host.storageDir, 'secrets'));
+		await store.write(ALICE_ID, paradisTestCredentials('alice-1', 'alice-r1', Date.now() + 60_000));
+		const refreshed = paradisTestCredentials('alice-2', 'alice-r2', Date.now() + HOUR);
+		host.oauth.refreshByToken.set('alice-r1', { kind: 'ok', credentialsJson: refreshed });
+		host.oauth.usageByToken.set('alice-2', { kind: 'ok', usage: paradisTestUsage(10) });
+		const service = host.create(store);
+		store.failWrites = 1;
+		await service.pollDue();
+		const keptLocally = await service.readSecretForTest(ALICE_ID);
+		// 別のプロセスは同じロックの中で保存する
+		const newer = paradisTestCredentials('alice-3', 'alice-r3', Date.now() + 2 * HOUR);
+		const release = await paradisAcquireClaudeDirectoryLock(path.join(host.storageDir, '.mutation.lock'), 30_000, 5_000);
+		await new ParadisPlainFileClaudeSecretStore(path.join(host.storageDir, 'secrets')).write(ALICE_ID, newer);
+		await release();
+		const afterOtherSaved = await service.readSecretForTest(ALICE_ID);
+		await new Promise(resolve => setTimeout(resolve, 20));
+		assert.deepStrictEqual({
+			refreshed: host.oauth.refreshCalls,
+			keptLocally,
+			afterOtherSaved,
+			onDisk: await store.read(ALICE_ID),
+		}, {
+			refreshed: ['alice-r1'],
+			keptLocally: refreshed,
+			afterOtherSaved: newer,
+			onDisk: newer,
 		});
 	});
 

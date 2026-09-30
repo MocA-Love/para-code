@@ -33,6 +33,7 @@ import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { RemoteAgentConnectionContext } from '../../../../platform/remote/common/remoteAgentEnvironment.js';
+import { paradisConnectionClientId } from '../../../common/paradisConnectionClient.js';
 import { ParadisServerContributions } from '../../../common/paradisProcessContributions.js';
 import { IParadisClaudeAccountsState, PARADIS_CLAUDE_ACCOUNTS_CHANNEL } from '../common/paradisClaudeAccounts.js';
 import { ParadisClaudeAccountRegistry, ParadisPlainFileClaudeSecretStore } from './paradisClaudeAccountStore.js';
@@ -101,6 +102,14 @@ ParadisServerContributions.register('claudeAccounts', ({ server, accessor }) => 
 		crossProcessLockPath: path.join(storageDir, '.mutation.lock'),
 	}));
 	store.add(paradisSetClaudeHostStateSource(request => service.getState(request)));
+	// 始めたウィンドウとの接続が切れたら（REH では再接続の猶予が尽きたときだけ届く。一瞬の回線断では
+	// 届かない）、そのログインを止める。リロードしたウィンドウは別の接続になり、前の手続きを取り消せない
+	store.add(server.onDidRemoveConnection(connection => {
+		const owner = paradisConnectionClientId(connection.ctx);
+		if (owner !== undefined) {
+			service.abortSetupsOwnedBy(owner);
+		}
+	}));
 	server.registerChannel(PARADIS_CLAUDE_ACCOUNTS_CHANNEL, new ParadisClaudeAccountsChannel<RemoteAgentConnectionContext>(service));
 	return store;
 });
