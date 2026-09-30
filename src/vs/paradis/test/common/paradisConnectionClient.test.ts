@@ -13,20 +13,24 @@ import { paradisConnectionClientId, paradisIsConnectionClientAllowed } from '../
 suite('ParadisConnectionClient', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('takes the client id only from a REH context, and lets only the owner touch an owned procedure', () => {
+	// REH の context の clientId は全ウィンドウで同じ 'renderer' なので、context のオブジェクトで見分ける。
+	test('tells connections apart by the context object, not its clientId, and lets only the owner touch an owned procedure', () => {
+		const windowA = { remoteAuthority: 'ssh-remote+host', clientId: 'renderer' };
+		const windowB = { remoteAuthority: 'ssh-remote+host', clientId: 'renderer' };
+		const a = paradisConnectionClientId(windowA);
 		assert.deepStrictEqual({
-			reh: paradisConnectionClientId({ remoteAuthority: 'ssh-remote+host', clientId: 'a' }),
+			stable: paradisConnectionClientId(windowA) === a,
+			distinct: paradisConnectionClientId(windowB) !== a,
 			sharedProcess: paradisConnectionClientId('window:1'),
-			empty: paradisConnectionClientId({ clientId: '' }),
 			missing: paradisConnectionClientId(undefined),
-			owner: paradisIsConnectionClientAllowed('a', 'a'),
-			other: paradisIsConnectionClientAllowed('a', 'b'),
-			unknownCaller: paradisIsConnectionClientAllowed('a', undefined),
-			unowned: paradisIsConnectionClientAllowed(undefined, 'b'),
+			owner: paradisIsConnectionClientAllowed(a, paradisConnectionClientId(windowA)),
+			other: paradisIsConnectionClientAllowed(a, paradisConnectionClientId(windowB)),
+			unknownCaller: paradisIsConnectionClientAllowed(a, undefined),
+			unowned: paradisIsConnectionClientAllowed(undefined, a),
 		}, {
-			reh: 'a',
+			stable: true,
+			distinct: true,
 			sharedProcess: undefined,
-			empty: undefined,
 			missing: undefined,
 			owner: true,
 			other: false,

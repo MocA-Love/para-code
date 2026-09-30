@@ -15,7 +15,8 @@
 // 接続先から動かさない。
 //
 // 利用者の設定（APPLICATION）は REH からは読めないので、会話ログを共有するかはウィンドウが問い合わせの
-// たびに添える値を使う。まだ届いていない間（接続直後の起動時のリンク）は既定どおり共有する。
+// たびに添える値を使う（切り替えのリンクは、切り替えたウィンドウが添えた値で決まる）。まだ1つも
+// 届いていない間は共有しない（オフにしている人の会話を、確かめる前にリンクしない）。
 
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
@@ -35,13 +36,13 @@ ParadisServerContributions.register('codexAccounts', ({ server, accessor }) => {
 	// 接続先で paradisCodexHomes() を見るものも手元と同じ範囲を見るようになる。設定で足したホーム
 	// （paradis.limitsMonitor.codexHomes）は手元のパスなので、接続先では使わない。
 	paradisEnableCodexAccountHomes();
-	let shareConversations = true;
+	let shareConversations: boolean | undefined;
 	const store = new DisposableStore();
 	const service = store.add(new ParadisCodexAccountsService({
 		logService,
 		stateDirectory: join(environmentService.userDataPath, 'paradis', 'codexAccounts'),
 		resolveEnv: async () => ({ ...process.env }),
-		shareConversations: () => shareConversations,
+		shareConversations: () => shareConversations === true,
 	}));
 	server.registerChannel(PARADIS_CODEX_ACCOUNTS_CHANNEL, new ParadisCodexAccountsChannel<RemoteAgentConnectionContext>(service, undefined, preferences => {
 		shareConversations = preferences.shareConversations;

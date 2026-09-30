@@ -214,7 +214,7 @@ interface ISetupSession {
 	/** セッション終了時の後始末(子プロセスkill等)。 */
 	dispose(): void;
 	/**
-	 * 始めたクライアント（REH のときだけ。{@link paradisConnectionClientId}）。ほかのクライアントからは
+	 * 始めた接続（REH のときだけ。{@link paradisConnectionClientId}）。ほかのクライアントからは
 	 * 状態（ログインの URL を含む）も見えず、取り消しも重複の確定もできない。
 	 */
 	readonly owner?: string;
@@ -1108,7 +1108,7 @@ export class ParadisLimitsMonitorChannel<TContext = string> implements IServerCh
 
 	call<T>(ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
-		// REH では、ログインの手続きを始めたクライアントだけがその状態を読み、取り消せる（同じ接続先へ
+		// REH では、ログインの手続きを始めた接続だけがその状態を読み、取り消せる（同じ接続先へ
 		// 繋いだ別のウィンドウに、ログインの URL を読まれたり手続きを潰されたりしないように）。
 		const caller = paradisConnectionClientId(ctx);
 		switch (command) {
