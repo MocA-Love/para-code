@@ -1317,6 +1317,16 @@ macOS/Linuxの「ペインごとのCodex app-server」（`resources/paradis/bin/
 - **後始末**: TUI終了時にランチャーが所有するapp-serverをkill（Windowsは`taskkill /T /F`）。Windows Terminalのタブ閉じはNodeがSIGHUP（CTRL_CLOSE_EVENT）として受けるためそこでも掃除する。それでも残った孤児は「pidが死んでいるendpointファイルの起動時sweep」と「同一ペインの次回起動時のowner死亡検出→採用(adopt)→終了時掃除」で回収する
 - **梱包**: `build/gulpfile.vscode.ts` で win32 のみ `.cmd`/`.ps1`/`.js` の3点を、非win32はshランチャーのみを同梱（PARA-PATCH済）
 
+## Codex の共有バックグラウンドサーバーに相乗りさせない（`--no-daemon`、2026-09-30）
+
+素の `codex` の対話起動は、同じ `CODEX_HOME` で共有のバックグラウンドサーバー（daemon、`CODEX_HOME/app-server-control/app-server-control.sock`）が動いていればそこへ相乗りする。0.157 からは無ければ起動もする（`features.daemon_auto_start` が stable・既定 true）。相乗りすると hook と MCP は daemon の中で動き、daemon を起動したターミナルの env（`PARA_CODE_TERMINAL_PANE_ID` など）で para-browser と通知が全ペイン同じ値になる。daemon は起動元が閉じても PID 1 の下に残り、古い値を持ち続ける（Codex の `app-server-daemon/README.md` も「per-client environment isolation is not provided」と書いている）。hook の親は daemon になるので、祖先チェーンによる所有者判定（`paradisAgentHookOwnership.ts`）も効かない。
+
+- 2026-09-30 の実測（一時 `CODEX_HOME`、偽の MCP と hook で届いた値を記録）: 0.155.1・0.156.1・0.159.2 のいずれも、既に動いている daemon へ既定のまま相乗りした。`-c features.daemon_auto_start=false` は新しく起動しないだけで、0.156 以降は許可された `-c` なので動いている daemon へ相乗りする（#165 の対処はここが漏れていた）。`--no-daemon`（0.156.0 から）は動いている daemon があっても使わない。0.155 以前は `--no-daemon` を知らず起動しないが、`-c` を 1 つでも付けると相乗りしない。`codex exec` は daemon を使わない
+- ランチャー（`resources/paradis/bin/codex`、Windows は `paradisCodexPaneLauncher.cjs`）は、`--remote` を付けない対話起動（引数なし・プロンプト・`resume`・`fork`、ペイン app-server が起動できず素の Codex へ落ちる場合も含む）に `--no-daemon` を付ける。付けられるかは `codex --no-daemon --version` の終了コードで Codex に聞き（0 なら可。ネイティブで約 10ms、npm の Node ラッパー越しで約 40ms）、不可なら `-c features.daemon_auto_start=false` を付ける。`--no-daemon` と `--remote` の併用・2 回指定は Codex が拒むので、ユーザーが `--no-daemon` を書いたときはそのまま渡す。`codex agents`（共有サーバーの一覧。`--no-daemon` を拒む）は委譲一覧に入れた
+- ペイン app-server が off のときも、ランチャーだけを PATH に入れる（ソケット・endpoint は入れない）。SSH の接続先には同じ `codex` を `~/.para-code/bin` へ置く（`paradisRemoteAgentHooks.contribution.ts` の `installCodexLauncher`、中身が変われば置き換える）
+- Windows は #165 まで、ペイン app-server が off だとランチャーを PATH に入れなかった（対話 TUI に console サブシステムの `node.exe` が要り、Para Code の exe で動かすとコンソールが外れるため）。今は入れ、`node.exe` があれば `.cjs` が上と同じ扱いをする。`node.exe` が無ければ、`.cmd` / `.ps1` が `PARA_CODE_CODEX_LAUNCHER_MODE=resolve` を付けて Para Code の exe（`ELECTRON_RUN_AS_NODE=1`）で `.cjs` を走らせ、本物の codex の exe パスだけを受け取り、自分でそれを素のまま起動する（この場合は daemon を避けられない。従来と同じ）
+- 【要確認：Windows 実機】`node.exe` の無い環境で、`.cmd` の `for /f` と `.ps1` の `$x = & exe` が GUI サブシステムの Para Code exe の出力を待って受け取れるか。`.cmd` は `cmd /c` の引用符の剥がしに備えて全体をもう一組の引用符で囲んでいる。`node.exe` のある環境で、ペイン app-server が off のときに `codex` がランチャー経由で `--no-daemon` 付きで起動するか（`Get-CimInstance Win32_Process` のコマンドライン）
+
 ### 接続と通知（Orca W2 の L5: W2-25 / W2-22 / W2-34 / W2-27 / W2-35、2026-09-29）
 
 デプロイは**リレー → PC → アプリ**の順。リレーのデプロイが要るのは W2-35 だけで、W2-25 と W2-22 はアプリだけ、W2-34 と W2-27 は PC とアプリ（リレーは変えていない）。どれも足すだけの変更で、版（3）は上げていない。
