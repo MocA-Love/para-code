@@ -42,7 +42,9 @@ Each process sends at most three copies of the same normalized error in a ten-mi
 Spike Protection is also enabled on both projects.
 
 Desktop release builds inject Debug IDs before integrity checksums and packaging, then upload the
-unshipped maps from `out-vscode-min` under release `para-code@<version>+<commit>`. Mobile native
+unshipped maps from `out-vscode-min` under the release stamped into product.json
+(`para-code@<version>.<N>+<commit>` for `v<version>-paracode-<N>`, `...<N>-beta.<M>+<commit>` for a beta,
+`para-code@<version>+<commit>` otherwise; see `build/lib/paradisReleaseChannel.ts`). Mobile native
 build scripts map the ignored repository-root `.env` value `SENTRY_PAT` to `SENTRY_AUTH_TOKEN` only
 for the Expo child process so Hermes maps and native symbols can be uploaded without storing the
 token in source or an artifact.

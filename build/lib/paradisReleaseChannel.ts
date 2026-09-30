@@ -15,6 +15,8 @@
  * - Any other tag                             → rejected: nothing is built or published.
  * - A branch (workflow_dispatch)              → build only, never publish.
  *
+ * The same tag patterns give the Sentry release name of a build (`getParadisSentryRelease`).
+ *
  * CLI:
  * - `node build/lib/paradisReleaseChannel.ts` reads GitHub's GITHUB_EVENT_NAME / GITHUB_REF_TYPE /
  *   GITHUB_REF_NAME plus PARA_RELEASE_PLATFORMS (the workflow_dispatch `platforms` input), appends the
@@ -90,6 +92,42 @@ export function planParadisRelease(ref: IParadisReleaseRef): IParadisReleasePlan
 		buildWin32: !isBeta && selected('win32'),
 		buildLinux: !isBeta && selected('linux'),
 	};
+}
+
+const PARADIS_RELEASE_TAG_NUMBERS_PATTERN = /-paracode-(?<number>\d+)(?:-beta\.(?<beta>\d+))?$/;
+const PARADIS_SENTRY_BASE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
+
+/**
+ * The Sentry release name of a build. The desktop client reads it from product.json
+ * (`paradisSentryRelease`, stamped by build/gulpfile.vscode.ts) and
+ * build/sentry/upload-desktop-sourcemaps.ts creates the release under it, so both call
+ * {@link getParadisSentryReleaseFromEnv} with the same inputs.
+ *
+ * Sentry orders semver releases by `<major>.<minor>.<patch>.<revision>` numerically, then a release
+ * without a prerelease above one with it, then the prerelease as a plain string, then the build
+ * (`+...`) as a number when both are numeric and as a string otherwise. The old names differed only
+ * in the commit, so their order was the order of the commit hashes, and a resolved issue could not
+ * be detected as a regression. The paracode number is therefore the fourth (revision) component:
+ * - stable tag `v1.139.1-paracode-148`        → `para-code@1.139.1.148+<commit>`
+ * - beta tag   `v1.139.1-paracode-148-beta.2` → `para-code@1.139.1.148-beta.2+<commit>` (below stable 148, above 147)
+ * - anything else (branch builds, local builds) → `para-code@1.139.1+<commit>` as before, which sorts
+ *   below every tagged release of the same upstream version.
+ * Betas of one number compare as strings, so `beta.10` sorts before `beta.2`.
+ */
+export function getParadisSentryRelease(version: string, commit: string | undefined, ref: Pick<IParadisReleaseRef, 'refType' | 'refName'>): string {
+	const build = commit ? `+${commit}` : '';
+	const kind = ref.refType === 'tag' ? classifyParadisReleaseTag(ref.refName) : 'other';
+	const numbers = PARADIS_RELEASE_TAG_NUMBERS_PATTERN.exec(ref.refName)?.groups;
+	if (kind === 'other' || !numbers || !PARADIS_SENTRY_BASE_VERSION_PATTERN.test(version)) {
+		return `para-code@${version}${build}`;
+	}
+	const beta = kind === 'beta' ? `-beta.${Number(numbers.beta)}` : '';
+	return `para-code@${version}.${Number(numbers.number)}${beta}${build}`;
+}
+
+/** {@link getParadisSentryRelease} for the ref GitHub Actions runs on (`GITHUB_REF_TYPE` / `GITHUB_REF_NAME`). */
+export function getParadisSentryReleaseFromEnv(version: string, commit: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
+	return getParadisSentryRelease(version, commit, { refType: env['GITHUB_REF_TYPE'] ?? '', refName: env['GITHUB_REF_NAME'] ?? '' });
 }
 
 const PARADIS_STABLE_TAG_NUMBER_PATTERN = /-paracode-(?<number>\d+)$/;
