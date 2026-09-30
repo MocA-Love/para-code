@@ -137,5 +137,18 @@ suite('ParadisGatewayEndpoint', () => {
 			PARA_CODE_MCP_PORT_FILE: '/tmp/port.json',
 			PARA_CODE_CODEX_LAUNCHER_DIR: '/launcher',
 		});
+		// Windows では node.exe の無い環境でランチャーが本物の codex を探すのに Para Code の exe を使う。
+		assert.deepStrictEqual(createEnvironment({ PATH: 'C:\\Windows' }, 'pane-token', 'C:\\port.json', {
+			launcherDirectory: 'C:\\launcher',
+			nodeExecutablePath: 'C:\\Para Code\\Para Code.exe',
+			pathDelimiter: ';',
+		}), {
+			PATH: 'C:\\launcher;C:\\Windows',
+			VSCODE_PATH_PREFIX: 'C:\\launcher;',
+			PARA_CODE_TERMINAL_PANE_ID: 'pane-token',
+			PARA_CODE_MCP_PORT_FILE: 'C:\\port.json',
+			PARA_CODE_CODEX_LAUNCHER_DIR: 'C:\\launcher',
+			PARA_CODE_CODEX_LAUNCHER_NODE: 'C:\\Para Code\\Para Code.exe',
+		});
 	});
 });
