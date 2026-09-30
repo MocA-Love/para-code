@@ -46,7 +46,8 @@ export interface IParadisTerminalImagePasteTarget {
  * 書き出し、そのパスを普通のテキストとして貼る。TUI 側はパスを見て画像を読み込む。
  *
  * 呼び出し元（terminal.clipboard.contribution.ts の paste()）でテキストとファイルパスの
- * 解決が両方空振りした場合のみ呼ぶこと。テキストペーストの既存挙動
+ * 解決が両方空振りした場合のみ呼ぶこと。例外は SSH 接続中にテキストが手元の画像ファイルの
+ * パスだけだった場合（`paradisIsLocalImagePathText`）。テキストペーストの既存挙動
  * （複数行警告・末尾改行剥がし・onWillPaste/onDidPaste）には一切影響させない。
  *
  * @returns
@@ -82,6 +83,22 @@ export async function paradisTryTerminalImagePaste(
 
 	xterm.raw.input('\x16', true);
 	return true;
+}
+
+/** Claude Code が貼られたパスを画像として扱う拡張子（`/\.(png|jpe?g|gif|webp)$/i`）に合わせる。 */
+const LOCAL_IMAGE_PATH = /^(?:\/|[A-Za-z]:[\\/]|file:\/\/)[^\r\n]*\.(?:png|jpe?g|gif|webp)$/i;
+
+/**
+ * SSH 接続中のターミナルで、クリップボードのテキストを画像の経路へ回すべきかを判定する。
+ *
+ * スクリーンショットツールの一部（DroppyCapture 等）は、画像と一緒に保存先ファイルの絶対パスを
+ * テキストとしてクリップボードへ入れる。テキストが優先されるため、SSH 接続中は手元にしか無い
+ * パスが接続先の TUI に渡って画像が付かない。テキストが手元の画像ファイルのパス 1 つだけの
+ * ときに限り、画像の経路（接続先へ書き出してそのパスを貼る）を試させる。ローカルのターミナルでは
+ * TUI が手元のパスを読めるので false を返し、既存の挙動のままにする。
+ */
+export function paradisIsLocalImagePathText(text: string, remoteAuthority: string | undefined): boolean {
+	return !!remoteAuthority && LOCAL_IMAGE_PATH.test(text.trim());
 }
 
 /** 画像を接続先へ書き、そのパスを返す。書けなければ undefined。 */

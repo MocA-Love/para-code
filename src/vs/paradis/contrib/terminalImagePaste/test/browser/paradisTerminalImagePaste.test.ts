@@ -11,7 +11,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import type { IFileService } from '../../../../../platform/files/common/files.js';
-import { paradisTryTerminalImagePaste } from '../../browser/paradisTerminalImagePaste.js';
+import { paradisIsLocalImagePathText, paradisTryTerminalImagePaste } from '../../browser/paradisTerminalImagePaste.js';
 
 type XtermFake = { raw: Pick<RawXtermTerminal, 'input'> };
 
@@ -233,5 +233,22 @@ suite('ParadisTerminalImagePaste', () => {
 
 		// 接続先の TUI はこちらのクリップボードを読めないので、0x16 を送っても紛らわしいだけ
 		assert.deepStrictEqual({ result, sentCtrlV: inputs.length }, { result: false, sentCtrlV: 0 });
+	});
+
+	test('routes a pasted local image path to the image path only in SSH terminals', () => {
+		const cases = [
+			'/var/folders/5l/T/DroppyCapture-1/Screenshot_2026_09-30_12-23-26.png',
+			'/Users/example/Desktop/shot.JPG\n',
+			'file:///Users/example/shot.webp',
+			'C:\\Users\\example\\shot.gif',
+			'/Users/example/notes.txt',
+			'shot.png',
+			'/Users/example/a.png\n/Users/example/b.png',
+			'see /Users/example/shot.png',
+		];
+		assert.deepStrictEqual(
+			cases.map(text => [paradisIsLocalImagePathText(text, 'ssh-remote+host'), paradisIsLocalImagePathText(text, undefined)]),
+			[[true, false], [true, false], [true, false], [true, false], [false, false], [false, false], [false, false], [false, false]]
+		);
 	});
 });
