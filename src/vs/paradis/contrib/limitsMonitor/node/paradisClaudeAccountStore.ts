@@ -20,6 +20,7 @@
 import * as fs from 'fs';
 import * as path from '../../../../base/common/path.js';
 import { IParadisKeychain } from './paradisClaudeKeychain.js';
+import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { paradisWriteClaudeFileAtomically } from './paradisClaudeLiveAuth.js';
 
 /** 登録したアカウントの認証情報の置き場所。 */
@@ -108,6 +109,43 @@ export class ParadisEncryptedFileClaudeSecretStore implements IParadisClaudeSecr
 		}
 		const encrypted = await this.encryption.encrypt(credentialsJson);
 		await paradisWriteClaudeFileAtomically(this.filePath(accountId), encrypted);
+	}
+
+	async delete(accountId: string): Promise<void> {
+		await fs.promises.rm(this.filePath(accountId), { force: true });
+	}
+}
+
+/**
+ * SSH の接続先（REH）: 本人だけが読めるファイル（0600、フォルダは 0700）に平文で置く。
+ *
+ * 接続先には OS の鍵の保管サービスが無いことが多く、REH には safeStorage も無い。Claude Code 自身も
+ * Linux ではいまのログインを `~/.claude/.credentials.json` に平文 0600 で置くので、保護の強さはそれと
+ * 同じ（その接続先の同じユーザーと root には読める）。置くのは `claudeAiOauth` だけ。
+ */
+export class ParadisPlainFileClaudeSecretStore implements IParadisClaudeSecretStore {
+
+	constructor(private readonly directory: string) { }
+
+	private filePath(accountId: string): string {
+		assertAccountId(accountId);
+		return path.join(this.directory, `${accountId}.json`);
+	}
+
+	async read(accountId: string): Promise<string | undefined> {
+		try {
+			return await fs.promises.readFile(this.filePath(accountId), 'utf8');
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+				return undefined;
+			}
+			throw error;
+		}
+	}
+
+	async write(accountId: string, credentialsJson: string): Promise<void> {
+		// 既にあるファイルの権限にかかわらず 0600。symlink は辿らない（リンク先の知らない場所へ書かない）
+		await paradisWriteFileAtomic(this.filePath(accountId), credentialsJson, { forceMode: 0o600, rejectSymlink: true, createParentMode: 0o700, fallbackToInPlace: false });
 	}
 
 	async delete(accountId: string): Promise<void> {

@@ -30,6 +30,11 @@
 //  - 保存するのは credentials JSON の `claudeAiOauth` だけ。`mcpOAuth` などアカウントと関係の無い
 //    秘密は保存も書き戻しもしない
 //
+// SSH の接続先（REH）でも同じものが動く（paradisClaudeAccounts.server.ts）。そこでは接続先のログインを
+// 切り替え、登録したアカウントは接続先のユーザーデータに置く。Para Code を更新した直後は同じ接続先に古い
+// 版の REH がしばらく残り、同じユーザーデータを読み書きするので、書き換え（控えのトークンの更新を含む）は
+// プロセスをまたいだロックの中で行い、一覧はそのたびに読み直す（{@link IParadisClaudeAccountServiceOptions.crossProcessLockPath}）。
+//
 // claude-swap (cswap) からの移行（cswap の撤去後は、アカウントを再ログインで登録し直してもらう、
 // という決定）: cswap の一覧（sequence.json）を読むだけで、書き込みも認証情報の取り込みもしない。
 // Para Code にまだ登録していないアカウントを並べて、登録し直しを案内する。
@@ -73,7 +78,8 @@ import {
 } from '../common/paradisLimitsMonitor.js';
 import { IParadisClaudeAccountRecord, IParadisClaudeSecretStore, ParadisClaudeAccountRegistry, paradisIsClaudeAccountId } from './paradisClaudeAccountStore.js';
 import { ParadisKeychainError } from './paradisClaudeKeychain.js';
-import { ParadisClaudeConfigUnreadableError, ParadisClaudeLiveAuth, ParadisClaudeLockTimeoutError } from './paradisClaudeLiveAuth.js';
+import { paradisAcquireClaudeDirectoryLock, ParadisClaudeConfigUnreadableError, ParadisClaudeLiveAuth, ParadisClaudeLockTimeoutError } from './paradisClaudeLiveAuth.js';
+import { paradisConnectionClientId, paradisIsConnectionClientAllowed } from '../../../common/paradisConnectionClient.js';
 import { IParadisClaudeLoginRunner, paradisOauthAccountFromClaudeStatus } from './paradisClaudeLogin.js';
 import { IParadisClaudeOAuthClient } from './paradisClaudeOAuthClient.js';
 
@@ -105,6 +111,10 @@ const STALE_LOGIN_DIR_MS = 30 * 60_000;
 const SHARED_LINEAGE_RETRY_S = 600;
 /** いまのログインの持ち主を確かめられなかった後、定期の取り込みで確かめ直すまでの間。 */
 const ADOPT_RETRY_AFTER_MS = 10 * 60_000;
+/** プロセスをまたいだ書き換えのロックを古いとみなすまで（持っている間は3秒ごとに更新時刻を進める）。 */
+const CROSS_PROCESS_LOCK_STALE_MS = 30_000;
+/** プロセスをまたいだ書き換えのロックを待つ上限（相手の書き換えはトークンの更新の往復ぶん）。 */
+const CROSS_PROCESS_LOCK_TIMEOUT_MS = 60_000;
 
 /** {@link ParadisClaudeAccountService.refreshStoredCredentialsNow} の結果。 */
 type ParadisClaudeRefreshOutcome =
@@ -137,12 +147,20 @@ export interface IParadisClaudeAccountServiceOptions {
 	readonly legacyCswapDirs?: readonly string[];
 	readonly now?: () => number;
 	readonly random?: () => number;
+	/**
+	 * 同じ保存場所を別のプロセスも読み書きするとき（SSH の接続先で、更新の前後の REH が同時に動く間）の
+	 * ロックのディレクトリ。渡すと、書き換えはこのロックの中で行い、登録の一覧はそのたびに読み直す
+	 * （控えのトークンを2つのプロセスが続けて更新すると、使い捨てのリフレッシュトークンの片方が無効になる）。
+	 */
+	readonly crossProcessLockPath?: string;
 }
 
 interface IParadisClaudeSetupSession {
 	readonly id: string;
 	state: IParadisLimitsSetupState;
 	readonly abort: AbortController;
+	/** 始めた接続（REH のときだけ。ほかの接続からは状態も見えず、取り消せない）。 */
+	readonly owner?: string;
 }
 
 interface IParadisClaudeUsageState {
@@ -216,6 +234,7 @@ export class ParadisClaudeAccountService extends Disposable {
 	private readonly legacyCswapDirs: readonly string[];
 	private legacyCache: { readonly path: string; readonly mtimeMs: number; readonly accounts: readonly IParadisClaudeLegacyEntry[] } | undefined;
 	private readonly setupCleanupTimers = new Set<ReturnType<typeof setTimeout>>();
+	private readonly crossProcessLockPath: string | undefined;
 
 	private records: IParadisClaudeAccountRecord[] | undefined;
 	/** 一覧を読めなかった（壊れている・一時的な読み取りの失敗）。この間は一覧を書き換えない。 */
@@ -258,6 +277,7 @@ export class ParadisClaudeAccountService extends Disposable {
 		this.legacyCswapDirs = options.legacyCswapDirs ?? [];
 		this.now = options.now ?? Date.now;
 		this.random = options.random ?? Math.random;
+		this.crossProcessLockPath = options.crossProcessLockPath;
 		// 前回の終了で消し損ねたアカウント追加の一時ディレクトリを、起動のたびに（パネルを開かなくても）消す。
 		if (this.loginRunner) {
 			void this.cleanStaleLogins();
@@ -278,17 +298,37 @@ export class ParadisClaudeAccountService extends Disposable {
 		this._onDidChangeState.fire();
 	}
 
-	/** 書き換えを1本に並べて実行する。前の処理が失敗しても後ろは動く。 */
+	/**
+	 * 書き換えを1本に並べて実行する。前の処理が失敗しても後ろは動く。別のプロセスと保存場所を共有して
+	 * いるときは、そのプロセスとも取り合わないようロックの中で実行する。
+	 */
 	protected serialize<T>(fn: () => Promise<T>): Promise<T> {
-		const next = this.mutationQueue.then(fn, fn);
+		const lockPath = this.crossProcessLockPath;
+		const run = lockPath === undefined ? fn : () => this.withCrossProcessLock(lockPath, fn);
+		const next = this.mutationQueue.then(run, run);
 		this.mutationQueue = next.catch(() => undefined);
 		return next;
+	}
+
+	private async withCrossProcessLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
+		const release = await paradisAcquireClaudeDirectoryLock(lockPath, CROSS_PROCESS_LOCK_STALE_MS, CROSS_PROCESS_LOCK_TIMEOUT_MS, this.now);
+		try {
+			// 別のプロセスが一覧を書き換えたかもしれない。覚えている一覧で書き戻すと、その変更を消す
+			this.records = undefined;
+			return await fn();
+		} finally {
+			await release();
+		}
 	}
 
 	// ---------- 一覧 ----------
 
 	/** 表示用の一覧。読めなければ空で返す（書き換えには {@link loadRecordsForWrite} を使う）。 */
 	protected async loadRecords(): Promise<IParadisClaudeAccountRecord[]> {
+		if (this.crossProcessLockPath !== undefined) {
+			// 別のプロセスの登録・削除も見えるよう、覚えている一覧を使わない（小さな JSON を読むだけ）
+			this.records = undefined;
+		}
 		try {
 			return await this.loadRecordsForWrite();
 		} catch {
@@ -324,10 +364,10 @@ export class ParadisClaudeAccountService extends Disposable {
 	/** 保存してある認証情報（`claudeAiOauth` だけの JSON）。保存できていない更新があればそちら。 */
 	protected async readSecret(accountId: string): Promise<string | undefined> {
 		const pending = this.pendingSecrets.get(accountId);
-		if (pending !== undefined) {
+		if (pending !== undefined && !await this.isSupersededByStored(accountId, pending)) {
 			// 保存し直しはほかの書き換えと同じ列に並べる（並ばずに書くと、後から保存された新しい値を
-			// 古い値で上書きしうる）。
-			void this.serialize(() => this.flushPendingSecret(accountId, pending));
+			// 古い値で上書きしうる）。ロックを取れなかったときは次に読むときにまた試す。
+			void this.serialize(() => this.flushPendingSecret(accountId, pending)).catch(() => undefined);
 			this.knownSecrets.set(accountId, pending);
 			return pending;
 		}
@@ -340,9 +380,37 @@ export class ParadisClaudeAccountService extends Disposable {
 		return value;
 	}
 
+	/**
+	 * 保存できていなかった値より新しいトークンを、別のプロセス（同じ接続先に残った古い版の REH）が保存して
+	 * いるか。そうなら手元の値は捨てる（その値のリフレッシュトークンは相手の更新で使用済みになっている）。
+	 * 保存場所を別のプロセスと共有していないときは常に false。
+	 */
+	private async isSupersededByStored(accountId: string, pending: string): Promise<boolean> {
+		if (this.crossProcessLockPath === undefined) {
+			return false;
+		}
+		let stored: string | undefined;
+		try {
+			stored = paradisClaudeOAuthOnly(await this.secrets.read(accountId));
+		} catch {
+			return false;
+		}
+		const expiresAt = (json: string | undefined) => {
+			const value = paradisParseClaudeOAuthBlob(json)?.expiresAt;
+			return typeof value === 'number' ? value : 0;
+		};
+		if (stored === undefined || stored === pending || expiresAt(stored) < expiresAt(pending)) {
+			return false;
+		}
+		if (this.pendingSecrets.get(accountId) === pending) {
+			this.pendingSecrets.delete(accountId);
+		}
+		return true;
+	}
+
 	/** 保存できていなかった更新を保存し直す。{@link serialize} の中から呼ぶ。 */
 	private async flushPendingSecret(accountId: string, value: string): Promise<void> {
-		if (this.pendingSecrets.get(accountId) !== value) {
+		if (this.pendingSecrets.get(accountId) !== value || await this.isSupersededByStored(accountId, value)) {
 			return;
 		}
 		try {
@@ -1196,9 +1264,9 @@ export class ParadisClaudeAccountService extends Disposable {
 	 * 進み具合は {@link getSetupState} で聞く。同時に進められるのは1つだけ（キャンセルした後も、
 	 * 一時ディレクトリとキーチェーン項目の後片付けが終わるまでは次を始めない）。
 	 */
-	startLogin(managedId: string | undefined): IParadisLimitsSetupHandle {
+	startLogin(managedId: string | undefined, owner?: string): IParadisLimitsSetupHandle {
 		const id = generateUuid();
-		const session: IParadisClaudeSetupSession = { id, state: { phase: 'starting' }, abort: new AbortController() };
+		const session: IParadisClaudeSetupSession = { id, state: { phase: 'starting' }, abort: new AbortController(), owner };
 		this.setupSessions.set(id, session);
 		const reloginId = managedId !== undefined ? ParadisClaudeAccountService.parseManagedId(managedId) : undefined;
 		let run: Promise<{ email: string }>;
@@ -1292,17 +1360,36 @@ export class ParadisClaudeAccountService extends Disposable {
 		}
 	}
 
-	getSetupState(sessionId: string): IParadisLimitsSetupState {
-		return this.setupSessions.get(sessionId)?.state ?? { phase: 'error', error: 'not_found' };
+	/** 呼び出し元が触ってよいログインの手続き。ほかの接続のものは無いものとして扱う。 */
+	private setupSessionFor(sessionId: string, caller: string | undefined): IParadisClaudeSetupSession | undefined {
+		const session = this.setupSessions.get(sessionId);
+		return session && paradisIsConnectionClientAllowed(session.owner, caller) ? session : undefined;
 	}
 
-	cancelSetup(sessionId: string): void {
-		const session = this.setupSessions.get(sessionId);
+	getSetupState(sessionId: string, caller?: string): IParadisLimitsSetupState {
+		return this.setupSessionFor(sessionId, caller)?.state ?? { phase: 'error', error: 'not_found' };
+	}
+
+	cancelSetup(sessionId: string, caller?: string): void {
+		const session = this.setupSessionFor(sessionId, caller);
 		if (!session) {
 			return;
 		}
 		session.abort.abort();
 		this.setupSessions.delete(sessionId);
+	}
+
+	/**
+	 * 接続が切れた（REH で再接続の猶予が尽きた）クライアントが始めたログインを止める。止めないと、その
+	 * 手続きはどの接続からも取り消せないまま、上限（10 分）まで次のアカウント追加を「使用中」で断り続ける。
+	 */
+	abortSetupsOwnedBy(owner: string): void {
+		for (const session of [...this.setupSessions.values()]) {
+			if (session.owner === owner) {
+				session.abort.abort();
+				this.setupSessions.delete(session.id);
+			}
+		}
 	}
 
 	private scheduleSetupCleanup(session: IParadisClaudeSetupSession): void {
@@ -1325,28 +1412,31 @@ export class ParadisClaudeAccountService extends Disposable {
 	}
 }
 
-export class ParadisClaudeAccountsChannel implements IServerChannel<string> {
+// 接続先（REH）へも同じチャネルを生やすため context は型引数にしておく（ログインの手続きの持ち主にだけ使う）。
+export class ParadisClaudeAccountsChannel<TContext = string> implements IServerChannel<TContext> {
 
 	constructor(private readonly service: ParadisClaudeAccountService) { }
 
-	listen<T>(_ctx: string, event: string): Event<T> {
+	listen<T>(_ctx: TContext, event: string): Event<T> {
 		if (event === 'onDidChangeState') {
 			return this.service.onDidChangeState as Event<unknown> as Event<T>;
 		}
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
+	call<T>(ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
+		// REH では、ログインの手続きを始めた接続だけがその状態（ログインの URL を含む）を読み、取り消せる
+		const caller = paradisConnectionClientId(ctx);
 		switch (command) {
 			case 'getState': {
 				const raw = args[0] && typeof args[0] === 'object' ? args[0] as IParadisClaudeStateRequest : undefined;
 				const request = raw ? { refresh: raw.refresh === true, passive: raw.passive === true } : undefined;
 				return this.service.getState(request) as Promise<T>;
 			}
-			case 'startLogin': return Promise.resolve(this.service.startLogin(typeof args[0] === 'string' ? args[0] : undefined)) as Promise<T>;
-			case 'getSetupState': return Promise.resolve(this.service.getSetupState(String(args[0]))) as Promise<T>;
-			case 'cancelSetup': return Promise.resolve(this.service.cancelSetup(String(args[0]))) as Promise<T>;
+			case 'startLogin': return Promise.resolve(this.service.startLogin(typeof args[0] === 'string' ? args[0] : undefined, caller)) as Promise<T>;
+			case 'getSetupState': return Promise.resolve(this.service.getSetupState(String(args[0]), caller)) as Promise<T>;
+			case 'cancelSetup': return Promise.resolve(this.service.cancelSetup(String(args[0]), caller)) as Promise<T>;
 			case 'registerLiveAccount': return this.service.registerLiveAccount() as Promise<T>;
 			case 'removeAccount': return this.service.removeAccount(String(args[0])) as Promise<T>;
 			case 'switchAccount': return this.service.switchAccount(String(args[0])) as Promise<T>;

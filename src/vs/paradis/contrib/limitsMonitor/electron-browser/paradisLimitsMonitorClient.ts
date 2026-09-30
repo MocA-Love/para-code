@@ -13,9 +13,11 @@
 // Claude の分は Codex の分と1つのスナップショットに合わせて返す。どこに聞くかはウィンドウで決まる:
 //  - 手元のウィンドウ: 手元の shared process の PARADIS_CLAUDE_ACCOUNTS_CHANNEL（登録したアカウントの
 //    一覧・切り替え・登録）
-//  - SSH のウィンドウ: 接続先（REH）の PARADIS_LIMITS_MONITOR_CHANNEL の PARADIS_CLAUDE_HOST_STATE_COMMAND。
-//    接続先の Claude Code がいまログインしているアカウントだけを読み取り専用で出す（Claude Code は
-//    接続先で接続先のログインを使って動くため。手元のアカウントは手元のウィンドウで見る）
+//  - SSH のウィンドウ: 接続先（REH）の PARADIS_CLAUDE_ACCOUNTS_CHANNEL。接続先のログインについて、手元と
+//    同じ一覧・切り替え・登録をする（Claude Code は接続先で接続先のログインを使って動くため。登録した
+//    アカウントも接続先ごと）。接続先が切り替えに対応していない（`unsupportedOnHost`）ときと、スマホが
+//    接続先のログインだけを見るとき（`hostLoginOnly`）は、PARADIS_LIMITS_MONITOR_CHANNEL の
+//    PARADIS_CLAUDE_HOST_STATE_COMMAND で、いまのログインだけを読み取り専用で出す
 
 import { Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -87,33 +89,46 @@ export class ParadisLimitsMonitorClient {
 		return options;
 	}
 
+	/** アカウントの一覧・切り替え・登録を持つところ（手元のウィンドウは shared process、SSH のウィンドウは接続先）。 */
 	private get claudeChannel() {
-		return this.sharedProcessService.getChannel(PARADIS_CLAUDE_ACCOUNTS_CHANNEL);
+		const remoteConnection = this.remoteAgentService.getConnection();
+		return remoteConnection
+			? remoteConnection.getChannel(PARADIS_CLAUDE_ACCOUNTS_CHANNEL)
+			: this.sharedProcessService.getChannel(PARADIS_CLAUDE_ACCOUNTS_CHANNEL);
 	}
 
 	/**
-	 * Claude の取得結果・登録・切り替えで状態が変わったとき（どのウィンドウの操作でも）に発火する。
-	 * SSH のウィンドウでは発火しない（接続先の分は予定の取得を持たず、聞かれたときにだけ取るため）。
+	 * Claude の取得結果・登録・切り替えで状態が変わったとき（同じところに聞いているどのウィンドウの操作でも）に
+	 * 発火する。切り替えに対応しない接続先は発火しない（聞かれたときにだけ取るため）。
 	 */
 	get onDidChangeClaudeState(): Event<void> {
-		return this.remoteAgentService.getConnection() ? Event.None : this.claudeChannel.listen<void>('onDidChangeState');
+		return this.claudeChannel.listen<void>('onDidChangeState');
 	}
 
 	/**
-	 * Claude の状態。`refresh` は手動の更新で、180 秒より古い結果だけ取り直す。手元のウィンドウでは、
-	 * 取り直した結果は {@link onDidChangeClaudeState} の後にもう一度聞くと届く。SSH のウィンドウでは
-	 * 接続先に聞き、予定時刻を過ぎていればその場で取ってから返す。
+	 * Claude の状態。`refresh` は手動の更新で、180 秒より古い結果だけ取り直す。取り直した結果は
+	 * {@link onDidChangeClaudeState} の後にもう一度聞くと届く。
+	 *
+	 * @param localOnly SSH のウィンドウでも手元の shared process に聞く
+	 * @param hostLoginOnly SSH のウィンドウで、接続先のいまのログインだけを読み取り専用で返す（スマホ用）
 	 */
-	async getClaudeState(refresh = false, passive = false, localOnly = false): Promise<IParadisClaudeAccountsState> {
+	async getClaudeState(refresh = false, passive = false, localOnly = false, hostLoginOnly = false): Promise<IParadisClaudeAccountsState> {
 		const remoteConnection = localOnly ? null : this.remoteAgentService.getConnection();
-		if (remoteConnection) {
+		if (remoteConnection && hostLoginOnly) {
 			return this.getClaudeHostState(remoteConnection, { refresh, passive });
 		}
+		const channel = localOnly ? this.sharedProcessService.getChannel(PARADIS_CLAUDE_ACCOUNTS_CHANNEL) : this.claudeChannel;
+		let state: IParadisClaudeAccountsState;
 		try {
-			return await this.claudeChannel.call<IParadisClaudeAccountsState>('getState', [{ refresh, passive }]);
+			state = await channel.call<IParadisClaudeAccountsState>('getState', [{ refresh, passive }]);
 		} catch (error) {
 			return { claude: { accounts: [], sourceError: (error as Error).message }, switching: false };
 		}
+		if (remoteConnection && state.unsupportedOnHost) {
+			// 接続先が切り替えに対応していない。いまのログインだけを読み取り専用で出す
+			return this.getClaudeHostState(remoteConnection, { refresh, passive });
+		}
+		return state;
 	}
 
 	/** SSH の接続先の Claude のログインの状態（読み取り専用）。 */
@@ -146,11 +161,13 @@ export class ParadisLimitsMonitorClient {
 	 * @param claudeFromLocal Claude を、SSH のウィンドウでも手元の shared process から取る。スマホの
 	 * ホームやウィジェットのように、ウィンドウ（接続先）を選ばずに届いた問い合わせに使う（どのウィンドウが
 	 * 答えるかで Claude のアカウントが入れ替わらないように）。Codex の分は従来どおりこのウィンドウの接続先。
+	 * @param claudeHostLoginOnly SSH のウィンドウの Claude を、接続先のいまのログインだけにする（スマホは
+	 * 接続先のログインを表示するだけで、登録したほかのアカウントや切り替えは扱わない）。
 	 */
-	async getSnapshot(bypassCache = false, claudeFromLocal = false): Promise<IParadisLimitsSnapshot> {
+	async getSnapshot(bypassCache = false, claudeFromLocal = false, claudeHostLoginOnly = false): Promise<IParadisLimitsSnapshot> {
 		const [snapshot, claudeState] = await Promise.all([
 			this.channel.call<IParadisLimitsSnapshot>('getSnapshot', [this.fetchOptions(bypassCache)]),
-			this.getClaudeState(bypassCache, false, claudeFromLocal),
+			this.getClaudeState(bypassCache, false, claudeFromLocal, claudeHostLoginOnly),
 		]);
 		return ParadisLimitsMonitorClient.mergeClaudeState(snapshot, claudeState);
 	}
@@ -213,12 +230,12 @@ export class ParadisLimitsMonitorClient {
 		return this.claudeChannel.call<IParadisClaudeRegisterResult>('registerLiveAccount', []);
 	}
 
-	/** この PC の Claude のログインを、登録したアカウントに切り替える（全ウィンドウ共通）。 */
+	/** Claude のログイン（SSH のウィンドウでは接続先のもの）を、登録したアカウントに切り替える（全ウィンドウ共通）。 */
 	switchClaudeAccount(managedId: string): Promise<IParadisClaudeSwitchResult> {
 		return this.claudeChannel.call<IParadisClaudeSwitchResult>('switchAccount', [managedId]);
 	}
 
-	/** Claude アカウントの登録を消す（この PC のログインはそのまま）。 */
+	/** Claude アカウントの登録を消す（いまのログインはそのまま）。 */
 	removeClaudeAccount(managedId: string): Promise<boolean> {
 		return this.claudeChannel.call<boolean>('removeAccount', [managedId]);
 	}

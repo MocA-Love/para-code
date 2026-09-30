@@ -141,6 +141,10 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		if (this.options.provider === 'codex') {
 			return localize('paradis.limitsSetup.descCodex', "ブラウザが開きます。追加したいアカウントでログインしてください。ログインが完了すると自動でこの画面も完了します。");
 		}
+		if (this.client.connectedToRemote) {
+			// ログインは接続先で動かす。ブラウザからの戻りは接続先のポートへ行くので、手元からはポート転送で届ける
+			return localize('paradis.limitsSetup.descClaudeRemote', "ブラウザが開きます。追加したいアカウントでログインしてください。ログインが終わると接続先に登録されます。いま接続先で使っている Claude のログインは変わりません。ブラウザで別のアカウントにログインしている場合は、先にログアウトしてください。");
+		}
 		return localize('paradis.limitsSetup.descClaude', "ブラウザが開きます。追加したいアカウントでログインしてください。ログインが終わると自動で登録されます。いまこの PC で使っている Claude のログインは変わりません。ブラウザで別のアカウントにログインしている場合は、先にログアウトしてください。");
 	}
 
