@@ -9,6 +9,36 @@
 
 $paraCodexNode = (Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
 $paraCodexRunAsNode = $false
+if (-not $paraCodexNode -and $env:PARA_CODE_CODEX_LAUNCHER_NODE -and -not $env:PARA_CODE_CODEX_APP_SERVER_ENDPOINT) {
+	# The pane app-server is turned off, so the launcher is on PATH only to keep Codex off its
+	# shared background server, which needs the launcher script. Without node.exe that cannot be
+	# done without breaking the interactive session, so run the user's Codex unchanged: the
+	# launcher only looks it up (it prints the path) and this script runs it in this console.
+	$paraPreviousRunAsNode = $env:ELECTRON_RUN_AS_NODE
+	$env:ELECTRON_RUN_AS_NODE = '1'
+	$env:PARA_CODE_CODEX_LAUNCHER_MODE = 'resolve'
+	try {
+		$paraCodexReal = & $env:PARA_CODE_CODEX_LAUNCHER_NODE "$PSScriptRoot\paradisCodexPaneLauncher.cjs" | Select-Object -First 1
+	}
+	catch {
+		$paraCodexReal = $null
+	}
+	finally {
+		Remove-Item Env:PARA_CODE_CODEX_LAUNCHER_MODE -ErrorAction SilentlyContinue
+		if ($null -ne $paraPreviousRunAsNode) {
+			$env:ELECTRON_RUN_AS_NODE = $paraPreviousRunAsNode
+		}
+		else {
+			Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+		}
+	}
+	if (-not $paraCodexReal) {
+		[Console]::Error.WriteLine('Para Code: Codex executable was not found after the pane launcher.')
+		exit 127
+	}
+	& $paraCodexReal @args
+	if ($null -eq $LASTEXITCODE) { exit 1 } else { exit $LASTEXITCODE }
+}
 if (-not $paraCodexNode) {
 	if ($env:PARA_CODE_CODEX_LAUNCHER_NODE) {
 		# Fallback keeps non-interactive delegation working; interactive sessions need node.exe.
