@@ -29,6 +29,7 @@ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisLimitsAccount } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
 import { IParadisLimitsPanelContext, IParadisLimitsPanelContribution, ParadisLimitsPanelContributions } from '../../limitsMonitor/electron-browser/paradisLimitsPanelContributions.js';
 import {
@@ -58,6 +59,7 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 		@IDialogService private readonly dialogService: IDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
@@ -126,7 +128,10 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 		button.textContent = this.switching
 			? localize('paradis.codexAccounts.switching', "切り替え中…")
 			: localize('paradis.codexAccounts.useThisAccount', "このアカウントを使う");
-		button.title = localize('paradis.codexAccounts.useThisAccountHint', "すべてのウィンドウで、これから新しく開くターミナルの Codex がこのアカウントを使います。動いている Codex はそのままです");
+		// SSH のウィンドウの選択は接続先のもので、同じ接続先を開いたウィンドウにだけ効く。
+		button.title = this.remoteAgentService.getConnection()
+			? localize('paradis.codexAccounts.useThisAccountHintRemote', "この接続先を開いているすべてのウィンドウで、接続先にこれから新しく開くターミナルの Codex がこのアカウントを使います。動いている Codex はそのままです")
+			: localize('paradis.codexAccounts.useThisAccountHint', "すべてのウィンドウで、これから新しく開くターミナルの Codex がこのアカウントを使います。動いている Codex はそのままです");
 		store.add(dom.addDisposableListener(button, 'click', () => void this.switchTo(home.isDefault ? undefined : home.homePath)));
 	}
 
