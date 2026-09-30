@@ -21,6 +21,10 @@
 //    身元だけで、トークンは接続先から出さない
 //  - macOS の接続先ではログインがキーチェーンにあり、SSH 越しには読めないので「読めない」と返す
 //
+// 接続先でアカウントの切り替え（paradisClaudeAccounts.server.ts）が動いているときは、そちらが同じログインの
+// 使用量を取っているので、ここでは取りに行かずにその結果から「いまのログイン」のカードだけを返す
+// （{@link paradisSetClaudeHostStateSource}。同じログインを2か所で取ると API の回数を倍使う）。
+//
 // 取得の間隔は手元と同じ適応型（{@link paradisClaudePlanAfterFetch}）。予定の取得は持たず、ウィンドウに
 // 聞かれたときに予定時刻を過ぎていれば取りに行く（誰も見ていなければ API を呼ばない）。同じ接続先に
 // 複数のウィンドウが繋いでいても、このプロセスの1か所が回数を数える。
@@ -28,7 +32,8 @@
 import { createHash } from 'crypto';
 import * as path from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisClaudeAccountsState, IParadisClaudeStateRequest, PARADIS_CLAUDE_HOST_ACCOUNT_ID } from '../common/paradisClaudeAccounts.js';
+import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { IParadisClaudeAccountsState, IParadisClaudeStateRequest, PARADIS_CLAUDE_HOST_ACCOUNT_ID, paradisClaudeActiveLoginState } from '../common/paradisClaudeAccounts.js';
 import {
 	PARADIS_CLAUDE_RECENT_429_WINDOW_S,
 	PARADIS_CLAUDE_SERVE_TTL_S,
@@ -104,6 +109,22 @@ function paradisIdentityKey(identity: IParadisClaudeIdentity | undefined): strin
 	return `${identity.accountUuid ?? ''}\u0000${identity.email?.toLowerCase() ?? ''}\u0000${identity.organizationUuid ?? ''}`;
 }
 
+/** 接続先のアカウントの状態（このプロセスで切り替えが動いているときだけ）。 */
+let hostStateSource: ((request: IParadisClaudeStateRequest | undefined) => Promise<IParadisClaudeAccountsState>) | undefined;
+
+/**
+ * このプロセス（REH）で Claude のアカウントの切り替えが動いているとき、その状態を渡す。以後
+ * {@link ParadisClaudeHostUsage} は自分では取りに行かず、その状態から「いまのログイン」を返す。
+ */
+export function paradisSetClaudeHostStateSource(source: (request: IParadisClaudeStateRequest | undefined) => Promise<IParadisClaudeAccountsState>): IDisposable {
+	hostStateSource = source;
+	return toDisposable(() => {
+		if (hostStateSource === source) {
+			hostStateSource = undefined;
+		}
+	});
+}
+
 export class ParadisClaudeHostUsage {
 
 	private readonly liveAuth: ParadisClaudeLiveAuth;
@@ -133,6 +154,10 @@ export class ParadisClaudeHostUsage {
 	}
 
 	async getState(request: IParadisClaudeStateRequest | undefined): Promise<IParadisClaudeAccountsState> {
+		const source = hostStateSource;
+		if (source) {
+			return paradisClaudeActiveLoginState(await source(request), this.configLabel);
+		}
 		const running = this.inflight;
 		if (running) {
 			if (!request?.refresh || request.passive) {

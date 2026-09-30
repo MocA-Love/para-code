@@ -34,7 +34,7 @@ function codexLaunchHomeStub(launchHome: string | undefined, recorded: Map<strin
 	} as unknown as IParadisCodexLaunchHomeService;
 }
 
-function paneEnvironmentFor(mobileEnabled: unknown, codexLive: unknown, options: { readonly launchHome?: string; readonly remoteAuthority?: string; readonly recorded?: Map<string, string | undefined> } = {}): Record<string, string | null | undefined> {
+function paneEnvironmentFor(mobileEnabled: unknown, codexLive: unknown, options: { readonly launchHome?: string; readonly remoteAuthority?: string; readonly cwd?: URI; readonly recorded?: Map<string, string | undefined> } = {}): Record<string, string | null | undefined> {
 	const configurationService = new TestConfigurationService();
 	configurationService.setUserConfiguration(PARADIS_MOBILE_ENABLED_KEY, mobileEnabled);
 	configurationService.setUserConfiguration(PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, codexLive);
@@ -46,7 +46,7 @@ function paneEnvironmentFor(mobileEnabled: unknown, codexLive: unknown, options:
 		configurationService,
 		codexLaunchHomeStub(options.launchHome, options.recorded),
 	);
-	const shellLaunchConfig = { shellIntegrationNonce: PANE_TOKEN } as IShellLaunchConfig;
+	const shellLaunchConfig = { shellIntegrationNonce: PANE_TOKEN, cwd: options.cwd } as IShellLaunchConfig;
 	try {
 		service.prepareShellLaunchConfig(shellLaunchConfig);
 	} finally {
@@ -180,18 +180,32 @@ suite('Paradis pane token service', () => {
 	// Codex のアカウント切替は、新しく開くターミナルへ CODEX_HOME を渡すだけ。既定のホームを選んで
 	// いるときは何も足さない（ユーザー自身の CODEX_HOME を潰さない）。SSH の接続先で動くターミナルへ
 	// 手元のホームのパスを渡すと存在しない場所を指すので、そこでも渡さない。
-	test('passes the selected Codex home only to local terminals and remembers it per pane', () => {
+	// 選択はウィンドウのマシン（SSH のウィンドウなら接続先）のホームを指すので、そのマシンで動くターミナル
+	// にだけ渡す。SSH のウィンドウで手元に開いたターミナルには渡さず、開いたときのホームも覚えない。
+	test('passes the selected Codex home only to terminals on the window\'s machine and remembers it per pane', () => {
 		const recorded = new Map<string, string | undefined>();
+		const selected = paneEnvironmentFor(false, false, { launchHome: '/home/test/.codex-2', recorded }).CODEX_HOME;
+		const recordedLocal = recorded.get(PANE_TOKEN);
+		const remoteRecorded = new Map<string, string | undefined>();
+		const remote = paneEnvironmentFor(false, false, { launchHome: '/home/test/.codex-2', remoteAuthority: 'ssh-remote+host', recorded: remoteRecorded }).CODEX_HOME;
+		const localInRemoteRecorded = new Map<string, string | undefined>();
+		const localInRemote = paneEnvironmentFor(false, false, { launchHome: '/home/test/.codex-2', remoteAuthority: 'ssh-remote+host', cwd: URI.file('/Users/test/project'), recorded: localInRemoteRecorded }).CODEX_HOME;
 		assert.deepStrictEqual({
-			selected: paneEnvironmentFor(false, false, { launchHome: '/home/test/.codex-2', recorded }).CODEX_HOME,
-			recorded: recorded.get(PANE_TOKEN),
+			selected,
+			recordedLocal,
 			defaultHome: paneEnvironmentFor(false, false, { launchHome: undefined }).CODEX_HOME,
-			remote: paneEnvironmentFor(false, false, { launchHome: '/home/test/.codex-2', remoteAuthority: 'ssh-remote+host' }).CODEX_HOME,
+			remote,
+			remoteRecorded: remoteRecorded.get(PANE_TOKEN),
+			localInRemote,
+			localInRemoteRecorded: localInRemoteRecorded.has(PANE_TOKEN),
 		}, {
 			selected: '/home/test/.codex-2',
-			recorded: '/home/test/.codex-2',
+			recordedLocal: '/home/test/.codex-2',
 			defaultHome: undefined,
-			remote: undefined,
+			remote: '/home/test/.codex-2',
+			remoteRecorded: '/home/test/.codex-2',
+			localInRemote: undefined,
+			localInRemoteRecorded: false,
 		});
 	});
 });

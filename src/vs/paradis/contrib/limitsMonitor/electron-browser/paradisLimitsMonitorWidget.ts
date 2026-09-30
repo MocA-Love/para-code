@@ -330,9 +330,13 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		try {
 			const { confirmed } = await this.dialogService.confirm({
 				message: localize('paradis.limitsMonitor.unregisterConfirm', "この Claude アカウントの登録を削除しますか？"),
-				detail: account.active
-					? localize('paradis.limitsMonitor.unregisterDetailActive', "Para Code に保存した {0} の認証情報を削除します。いまこの PC で使っているアカウントなので、Claude のログインはそのまま残ります（ログアウトはしません）。切り替えに使うには、もう一度登録してください。", account.email ?? account.id)
-					: localize('paradis.limitsMonitor.unregisterDetail', "Para Code に保存した {0} の認証情報を削除します。この PC の Claude のログインは変わりません。切り替えに使うには、もう一度登録してください。", account.email ?? account.id),
+				detail: this.client.connectedToRemote
+					? account.active
+						? localize('paradis.limitsMonitor.unregisterDetailActiveRemote', "接続先に保存した {0} の認証情報を削除します。いま接続先で使っているアカウントなので、Claude のログインはそのまま残ります（ログアウトはしません）。切り替えに使うには、もう一度登録してください。", account.email ?? account.id)
+						: localize('paradis.limitsMonitor.unregisterDetailRemote', "接続先に保存した {0} の認証情報を削除します。接続先の Claude のログインは変わりません。切り替えに使うには、もう一度登録してください。", account.email ?? account.id)
+					: account.active
+						? localize('paradis.limitsMonitor.unregisterDetailActive', "Para Code に保存した {0} の認証情報を削除します。いまこの PC で使っているアカウントなので、Claude のログインはそのまま残ります（ログアウトはしません）。切り替えに使うには、もう一度登録してください。", account.email ?? account.id)
+						: localize('paradis.limitsMonitor.unregisterDetail', "Para Code に保存した {0} の認証情報を削除します。この PC の Claude のログインは変わりません。切り替えに使うには、もう一度登録してください。", account.email ?? account.id),
 				primaryButton: localize('paradis.limitsMonitor.unregister', "登録を削除"),
 			});
 			if (!confirmed) {

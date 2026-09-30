@@ -66,7 +66,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 
 ## Claude のアカウントと使用量（limitsMonitor、2026-09-27、claude-swap を撤去）
 
-Claude の使用量の取得・アカウントの保存・PC 全体の切り替えは、shared process の `src/vs/paradis/contrib/limitsMonitor/node/paradisClaudeAccountService.ts` が1か所で持ち、チャネル `paradisClaudeAccounts` で全ウィンドウへ配ります。登録は `ParadisSharedProcessContributions`（`paradisClaudeAccounts.contribution.ts` → `paradis.sharedProcess.contribution.ts`）です。upstream 側は `sharedProcessMain.ts` の既存の PARA-PATCH コメント1行の文言を直しただけです。このチャネルは REH には足していません。切り替えるのはこの PC のログインだけです（接続先の Claude のログインは変えない）。Codex の分は従来どおり `paradisLimitsMonitorChannel.ts`（接続中は REH）で、レンダラーの `ParadisLimitsMonitorClient.getSnapshot()` が2つを合わせます。
+Claude の使用量の取得・アカウントの保存・PC 全体の切り替えは、shared process の `src/vs/paradis/contrib/limitsMonitor/node/paradisClaudeAccountService.ts` が1か所で持ち、チャネル `paradisClaudeAccounts` で全ウィンドウへ配ります。登録は `ParadisSharedProcessContributions`（`paradisClaudeAccounts.contribution.ts` → `paradis.sharedProcess.contribution.ts`）です。upstream 側は `sharedProcessMain.ts` の既存の PARA-PATCH コメント1行の文言を直しただけです。SSH の接続先（REH）にも同じサービスを動かし、接続先のログインを切り替えます（下の「SSH の接続先での切り替え」）。Codex の分は従来どおり `paradisLimitsMonitorChannel.ts`（接続中は REH）で、レンダラーの `ParadisLimitsMonitorClient.getSnapshot()` が2つを合わせます。
 
 接続先（SSH・WSL・コンテナ・トンネル。`IRemoteAgentService.getConnection()` があるウィンドウ）の Claude は、接続先の Claude Code がいまログインしているアカウントだけを出します（2026-09-29 の決定。手元のアカウントは手元のウィンドウで見る）。Claude Code は接続先で接続先のログインを使って動くので、手元のアカウントを出すと「使用中」も「このアカウントを使う」も `/login` の案内も別のマシンを指していました。実体は `node/paradisClaudeHostUsage.ts` で、REH の `paradisLimitsMonitorChannel.ts` にコマンド `getClaudeHostState` として足しました（`registerParadisLimitsMonitorForServer` が作る。shared process の同じチャネルは「無い」と答える）。`serverServices.ts` 側の変更はありません。
 
@@ -77,6 +77,15 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 - スマホの `limits` の問い合わせで接続先の Claude を返すのは、新しいアプリの使用量の画面が接続先を選び、ウィンドウを名指しして（`ws` が無く `rendererGeneration` がある）`claudeHost: true` を付けたときだけです（`paradisMobileLimitsClaudeFromLocal`。任意項目を足しただけで、`limits` の形は公開ワイヤの型（`paradisMobileProtocol.ts` / `app/protocol`）に無いので同期と golden の対象外）。それ以外は、どのウィンドウに届いても Claude を手元の shared process から返します。ホームとウィジェットはウィンドウを選ばずに問い合わせ、リレーは最初に見つけた ready なウィンドウへ配るので、名指しで決めると SSH のウィンドウに当たったときに入れ替わります。古いアプリの使用量の画面はウィンドウを名指しするものの接続先のログインの表示を知らないので、`ws` の有無ではなくこの任意項目で決めます。新しいアプリはホームとウィジェットでもローカルのウィンドウを名指しします
 - レンダラーは `paradisClaudeHostAccountsState` で `claude.remoteHost`（接続先の表示名）を付け、使用中・登録済み・登録できる・claude-swap の案内を落とします。パネルは `remoteHost` があると、見出しに接続先を出し、アカウントの数・追加ボタン・隠すボタン・差し込み部品（切り替え・登録）を出さず、直し方を接続先のターミナルでの `/login` に変えます。モバイルの `limits` 応答はこのスナップショットのままなので、アプリも `remoteHost` を見て同じ出し分けをします。任意項目を足しただけなので capability も golden も要りません（古いアプリは無視し、古い PC は付けないので従来の表示になる）
 - 限界: `CLAUDE_CONFIG_DIR` は REH のプロセスの環境にあるとき（絶対パス）だけ使います。シェルの設定でだけ付けている場合は REH に届かないことがあり、そのときは既定の場所を見ます。macOS の接続先のキーチェーンは読みません。REH のプロセスからの HTTPS がプロキシを要る環境は試していません
+
+**SSH の接続先での切り替え（2026-09-30）**: `node/paradisClaudeAccounts.server.ts`（`paradis.server.contribution.ts` から登録。`serverServices.ts` は触っていない）が REH に同じ `ParadisClaudeAccountService` と `paradisClaudeAccounts` チャネルを置きます。SSH のウィンドウの `ParadisLimitsMonitorClient` は接続先のこのチャネルに聞き、手元と同じ一覧・登録・追加・切り替えを出します。登録したアカウントは接続先ごとに独立で、同じ接続先を開いた全ウィンドウで共通です（2026-09-30 の決定。手元のアカウントを接続先へ写すことはしない。同じリフレッシュトークンを2台で使うと、片方の更新でもう片方が失効するため）。
+
+- 認証情報は接続先のユーザーデータの `paradis-claude-accounts/secrets/<UUID>.json` に平文で置きます（0600 に固定、フォルダは 0700、symlink は辿らない。`ParadisPlainFileClaudeSecretStore`）。REH には safeStorage も鍵の保管サービスも無いためで、Claude Code 自身が Linux でいまのログインを `.credentials.json` に置くのと同じ保護です（2026-09-30 の決定）。認証情報は接続先から出しません
+- 更新の直後は同じ接続先に古い版の REH が残り（最大 24 時間）、同じユーザーデータを読み書きします。控えのトークンを2つのプロセスが続けて更新すると使い捨てのリフレッシュトークンの片方が無効になるので、REH では書き換え（`serialize` に並ぶもの。控えの更新・取り込み・登録・削除・切り替え）を `paradis-claude-accounts/.mutation.lock` のディレクトリロックの中で行い、登録の一覧は毎回読み直します（`crossProcessLockPath`）。ロックは 30 秒で古いとみなし、持っている間は3秒ごとに更新時刻を進め、60 秒待っても取れなければその書き換えは失敗します。更新したのに保存できずに手元に持っているトークンは、相手のプロセスがそれより期限の新しいトークンを保存していたら捨てます（手元の方のリフレッシュトークンは使用済みのため）。古いロックを消して取り直す箇所（`acquireDirectoryLock` の stat → rmdir）には、持ち主が落ちた後に2つのプロセスが同時に取り直すと両方が取れる隙が残っています（既存のヘルパーのまま）
+- アカウント追加は接続先で `claude auth login --claudeai` を一時フォルダに向けて動かします。ブラウザからの戻りは接続先の localhost のポートへ行くので、手元へ届くのは VS Code のポート転送が効いたときだけです【要確認: 実機未確認。届かなければコードを貼る方式に切り替える前提（2026-09-30 の決定）】。手続きは始めた接続（`paradisConnectionClientId`）だけが読み・取り消せます。追加は REH 全体で同時に1つなので、始めた接続が切れたら（REH の `onDidRemoveConnection` は再接続の猶予が尽きたときだけ届く）その手続きを止めます（リロードしたウィンドウは別の接続になり、前の手続きを取り消せないため）
+- 接続先のいまのログインの使用量も REH のこのサービスが取ります。スマホが接続先のログインを見る口（`getClaudeHostState` / `ParadisClaudeHostUsage`）は `paradisSetClaudeHostStateSource` でこのサービスの結果を使い、使用中のカード1枚だけを返します（同じログインを2か所で取らない）。スマホは表示だけで、切り替えも登録したほかのアカウントも扱いません（`getSnapshot` の `claudeHostLoginOnly`）
+- 切り替えに対応しない接続先（macOS。ログインがキーチェーンにある／REH の環境の `CLAUDE_CONFIG_DIR` が既定の `~/.claude` と違う）は `unsupportedOnHost` だけを返し、ウィンドウは従来どおり読み取り専用の表示に戻ります
+- 【要確認】Linux の Claude Code が、動いている間に `.credentials.json` の差し替えを読み直すか（UI と changelog は「起動し直すと確実」と書いている）
 
 | 対象 | 場所 | 誰が書くか |
 |---|---|---|
