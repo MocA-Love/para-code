@@ -39,6 +39,7 @@ if [ -z "$real_codex" ] || [ "$real_codex" = "$0" ]; then
 fi
 
 early_delegate=0
+user_no_daemon=0
 has_positional=0
 first_positional=
 skip_next=0
@@ -51,6 +52,11 @@ for argument in "$@"; do
 		--remote|--remote=*|--help|-h|--version|-V)
 			early_delegate=1
 			break
+			;;
+		--no-daemon)
+			# The user already keeps this session off the shared background server. Codex
+			# rejects the flag together with `--remote`, and twice, so run it exactly as typed.
+			user_no_daemon=1
 			;;
 		--)
 			# Codex treats everything after `--` as the prompt, never as a subcommand.
@@ -76,11 +82,12 @@ done
 # delegated, which means every other subcommand name must be recognized here — a name
 # missing from the list below is silently treated as a prompt and breaks that command.
 # The list is Codex 0.146's full set (including aliases and the internal subcommands that
-# `codex --help` hides) minus the two TUI commands, and it is only the fast path: a
+# `codex --help` hides) minus the two TUI commands, plus `agents` (the overview of the shared
+# background server, which must not be kept off that server). It is only the fast path: a
 # positional argument that does not match it is resolved by asking Codex itself further
 # down, so a subcommand added by a future Codex release keeps working.
 command_kind=unknown
-if [ "$early_delegate" -eq 1 ]; then
+if [ "$early_delegate" -eq 1 ] || [ "$user_no_daemon" -eq 1 ]; then
 	command_kind=delegated
 elif [ "$has_positional" -eq 0 ]; then
 	command_kind=tui
@@ -89,7 +96,7 @@ else
 		resume|fork)
 			command_kind=tui
 			;;
-		exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|archive|delete|unarchive|cloud|exec-server|execpolicy|responses-api-proxy|stdio-to-uds|features|help)
+		exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|archive|delete|unarchive|cloud|exec-server|execpolicy|responses-api-proxy|stdio-to-uds|features|help|agents)
 			command_kind=delegated
 			;;
 	esac
@@ -99,21 +106,35 @@ if [ "$command_kind" = delegated ]; then
 	exec env PATH="$clean_path" "$real_codex" "$@"
 fi
 
-# Codex 0.157 and later attach an interactive session to one shared background server
-# (the daemon) by default, starting it on first use. Hooks and MCP servers then run in that
-# server with the environment of whichever pane started it, so they would report to the
-# wrong pane. Every session this launcher runs without `--remote` therefore turns the
-# auto-start off. It is a `-c` override rather than `--no-daemon`: Codex older than 0.156
-# rejects the unknown flag and refuses to start, but only logs an unknown feature key.
-# The override is placed first so an explicit `-c features.daemon_auto_start=…` from the
-# user still wins.
-daemon_auto_start_off=features.daemon_auto_start=false
+# Codex attaches an interactive session to its shared background server (the daemon)
+# whenever one is running for this CODEX_HOME, and 0.157 and later also start it on first
+# use. Hooks and MCP servers then run in that server with the environment of whichever
+# terminal started it, so they report to the wrong pane (or to none), and the server keeps
+# that environment after every pane closes. Every session this launcher runs without
+# `--remote` must therefore stay embedded:
+#  - Codex 0.156 and later: `--no-daemon`. It is the only option that also refuses a server
+#    that is already running; `-c features.daemon_auto_start=false` only stops a new one
+#    from starting, and Codex still attaches to a running one.
+#  - Codex 0.155 and older reject `--no-daemon` and refuse to start, so they get the `-c`
+#    override instead. Any `-c` override already keeps those versions off a running server;
+#    the key itself only logs an unknown feature there.
+# Which one applies is asked from Codex itself (the flag is accepted or it is not), not read
+# from a version string. That costs one `--version` run, about 10 ms for the native binary
+# and 40 ms behind npm's Node wrapper.
+# `codex agents` needs the shared server and rejects `--no-daemon`; it is delegated above.
+# Replace this process with the user's Codex, kept off the shared background server.
+exec_unmanaged() {
+	if PATH=$clean_path "$real_codex" --no-daemon --version </dev/null >/dev/null 2>&1; then
+		exec env PATH="$clean_path" "$real_codex" --no-daemon "$@"
+	fi
+	exec env PATH="$clean_path" "$real_codex" -c features.daemon_auto_start=false "$@"
+}
 
 # Para Code keeps this launcher on PATH without a pane socket when the pane app-server is
-# turned off, only to add the override above. Run the user's Codex directly then, silently:
-# nothing the user asked for is missing.
+# turned off, only to keep Codex embedded as above. Run the user's Codex directly then,
+# silently: nothing the user asked for is missing.
 if [ -z "${PARA_CODE_CODEX_APP_SERVER_SOCKET:-}" ]; then
-	exec env PATH="$clean_path" "$real_codex" -c "$daemon_auto_start_off" "$@"
+	exec_unmanaged "$@"
 fi
 
 # Every path below can fall back to the unmanaged Codex, so the cleanup helper has to be
@@ -156,7 +177,7 @@ fallback_direct() {
 	cleanup
 	trap - EXIT
 	umask "$original_umask"
-	exec env PATH="$clean_path" "$real_codex" -c "$daemon_auto_start_off" "$@"
+	exec_unmanaged "$@"
 }
 
 socket_path=${PARA_CODE_CODEX_APP_SERVER_SOCKET:-}
