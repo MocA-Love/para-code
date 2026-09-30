@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
+import { PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 
 export const PARADIS_SESSION_RESUME_CHANNEL = 'paradisSessionResume';
 
@@ -113,7 +114,8 @@ export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, session
 	}
 	const bypass = options?.dangerouslyBypassPermissions === true;
 	if (agent === 'claude') {
-		return `claude ${bypass ? '--dangerously-skip-permissions ' : ''}--resume ${sessionId}${mode === 'fork' ? ' --fork-session' : ''}`;
+		// 権限の確認を省かない再開は、確認を出すモードを明示する（Claude Code 2.1.284 から、指定しないと auto mode になる）
+		return `claude ${bypass ? '--dangerously-skip-permissions' : PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG} --resume ${sessionId}${mode === 'fork' ? ' --fork-session' : ''}`;
 	}
 	return `codex ${bypass ? '--dangerously-bypass-approvals-and-sandbox ' : ''}${mode === 'fork' ? 'fork' : 'resume'} ${sessionId}`;
 }

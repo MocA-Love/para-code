@@ -94,7 +94,6 @@ const CODEX_BUILT_INS: readonly [string, string][] = [
 	['ps', 'list background terminals'],
 	['stop', 'stop all background terminals'],
 	['clear', 'clear the terminal and start a new chat'],
-	['personality', 'choose a communication style for Codex'],
 ];
 
 const CLAUDE_BUILT_INS: readonly [string, string][] = [

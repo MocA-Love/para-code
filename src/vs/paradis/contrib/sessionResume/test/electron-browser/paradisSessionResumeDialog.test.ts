@@ -583,6 +583,7 @@ suite('paradisResumeAgentInWorkspace', () => {
 		const ready = new DeferredPromise<void>();
 		const instance = {
 			instanceId: 17,
+			onDisposed: BaseEvent.None,
 			processReady: ready.p.then(() => { events.push('ready'); }),
 			sendText: async (command: string, shouldExecute: boolean) => { events.push(`send:${command}:${shouldExecute}`); },
 		} as unknown as ITerminalInstance;
@@ -666,7 +667,7 @@ suite('paradisResumeAgentInWorkspace', () => {
 				'open',
 				'assign:17:worktree:feature',
 				'active',
-				'send:claude --resume session-123:true',
+				'send:claude --permission-mode default --resume session-123:true',
 			],
 			launched: { instanceId: 17, paneToken: 'pane-token-17' },
 		});
@@ -674,7 +675,7 @@ suite('paradisResumeAgentInWorkspace', () => {
 
 	test('uses the agent-specific dangerous flag', async () => {
 		const cases = [
-			{ agent: 'claude' as const, dangerous: false, command: 'claude --resume session-123' },
+			{ agent: 'claude' as const, dangerous: false, command: 'claude --permission-mode default --resume session-123' },
 			{ agent: 'claude' as const, dangerous: true, command: 'claude --dangerously-skip-permissions --resume session-123' },
 			{ agent: 'codex' as const, dangerous: false, command: 'codex resume session-123' },
 			{ agent: 'codex' as const, dangerous: true, command: 'codex --dangerously-bypass-approvals-and-sandbox resume session-123' },
