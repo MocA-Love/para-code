@@ -66,14 +66,15 @@ export const PARADIS_CODEX_LAUNCHER_NODE_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_NOD
  * CodexペインランチャーをPTY環境へ追加するための実行時情報。
  * `socketPath`（macOS/Linux: unix socket方式）と `endpointFilePath`（Windows: loopback ws方式）は
  * どちらか一方だけを指定する。どちらも指定しないと、ペイン専用 app-server を立てずに、ランチャーが
- * Codex の共有バックグラウンドサーバーの自動起動を止めるだけになる（POSIX ランチャーのみ対応）。
+ * Codex を共有バックグラウンドサーバーから切り離して起動するだけになる。Windows ではその場合も
+ * `nodeExecutablePath` を渡す（node.exe の無い環境で .cmd / .ps1 が本物の `codex` を探すのに使う）。
  */
 export interface IParadisCodexPaneRuntime {
 	readonly launcherDirectory: string;
 	readonly pathDelimiter: string;
 	readonly socketPath?: string;
 	readonly endpointFilePath?: string;
-	/** Windowsのみ: `ELECTRON_RUN_AS_NODE=1` でランチャーJSを実行するexeパス。 */
+	/** Windowsのみ: `ELECTRON_RUN_AS_NODE=1` でランチャーJSを実行するexeパス（endpoint 無しでも渡す）。 */
 	readonly nodeExecutablePath?: string;
 }
 
@@ -179,6 +180,8 @@ export function paradisCreateTerminalPaneEnvironment(
 		environment[PARADIS_CODEX_APP_SERVER_SOCKET_ENV_VAR] = socketPath;
 	} else if (endpointFilePath.length > 0) {
 		environment[PARADIS_CODEX_APP_SERVER_ENDPOINT_ENV_VAR] = endpointFilePath;
+		environment[PARADIS_CODEX_LAUNCHER_NODE_ENV_VAR] = nodeExecutablePath;
+	} else if (nodeExecutablePath.length > 0) {
 		environment[PARADIS_CODEX_LAUNCHER_NODE_ENV_VAR] = nodeExecutablePath;
 	}
 	return environment;

@@ -44,11 +44,15 @@ interface IFakeCodexRecord {
 // Records every invocation except the pane app-server the launcher starts itself, and answers
 // `completion bash` with the dispatch table Codex generates — the table the launcher reads to
 // find out which names are subcommands. PARADIS_TEST_COMPLETION_NAMES lists the names it knows.
+// `--version` answers the launcher's `--no-daemon` probe without being recorded; with
+// PARADIS_TEST_NO_DAEMON_UNSUPPORTED=1 it rejects the flag like Codex 0.155 and older.
 const FAKE_CODEX_WITH_COMPLETION = `#!/usr/bin/env node
 const fs = require('fs');
 const net = require('net');
 const args = process.argv.slice(2);
-if (args[0] === 'app-server' && args[1] === '--listen') {
+if (args.includes('--version')) {
+	process.exit(process.env.PARADIS_TEST_NO_DAEMON_UNSUPPORTED === '1' && args.includes('--no-daemon') ? 2 : 0);
+} else if (args[0] === 'app-server' && args[1] === '--listen') {
 	const server = net.createServer(socket => socket.end());
 	const close = () => server.close(() => process.exit(0));
 	process.on('SIGTERM', close);
@@ -170,11 +174,14 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(records));
 			await execFileAsync(launcherPath, ['exec', '--json', 'status'], { env });
 			await execFileAsync(launcherPath, ['--remote', 'unix:///tmp/existing.sock', 'resume', 'thread-1'], { env });
 			await execFileAsync(launcherPath, ['resume', '--remote', 'unix:///tmp/after-command.sock', 'thread-2'], { env });
+			// Codex rejects `--no-daemon` together with `--remote`: the user's own choice runs as typed.
+			await execFileAsync(launcherPath, ['--no-daemon', 'resume', 'thread-3'], { env });
 
 			assert.deepStrictEqual(JSON.parse(await fs.readFile(recordPath, 'utf8')), [
 				['exec', '--json', 'status'],
 				['--remote', 'unix:///tmp/existing.sock', 'resume', 'thread-1'],
 				['resume', '--remote', 'unix:///tmp/after-command.sock', 'thread-2'],
+				['--no-daemon', 'resume', 'thread-3'],
 			]);
 			assert.strictEqual(await fs.access(join(testRoot, 'must-not-start.sock')).then(() => true, () => false), false);
 		} finally {
@@ -266,7 +273,7 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(args));
 				socketLeft: await fs.access(socketPath).then(() => true, () => false),
 				pidLeft: await fs.access(`${socketPath}.pid`).then(() => true, () => false),
 			}, {
-				tuiArgs: ['-c', 'features.daemon_auto_start=false', 'resume', 'thread-1'],
+				tuiArgs: ['--no-daemon', 'resume', 'thread-1'],
 				warned: true,
 				log: 'Error: failed to initialize sqlite state runtime under /fake/.codex\n',
 				socketLeft: false,
@@ -305,7 +312,7 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(args));
 				['app-server'], ['remote-control'], ['app'], ['completion'], ['update'], ['doctor'],
 				['sandbox'], ['debug'], ['apply'], ['a'], ['archive'], ['delete'], ['unarchive'], ['cloud'],
 				['exec-server'], ['execpolicy'], ['responses-api-proxy'], ['stdio-to-uds'], ['features'],
-				['help'], ['help', 'plugin'], ['--model', 'gpt-5', 'plugin', 'list'], ['-a', 'never', 'plugin'],
+				['help'], ['agents'], ['help', 'plugin'], ['--model', 'gpt-5', 'plugin', 'list'], ['-a', 'never', 'plugin'],
 				[], ['explain this repo'], ['resume'], ['fork'], ['--', 'plugin', 'list'],
 			];
 			const paneManaged: string[] = [];
@@ -438,9 +445,12 @@ if (args[0] === 'app-server') {
 
 	// With the pane app-server turned off, Para Code still puts the launcher on PATH (without a
 	// pane socket) so interactive sessions stay off Codex's shared background server: that server
-	// would run every pane's hooks and MCP servers with the environment of the pane that started
-	// it. The same applies to a launcher running outside a Para Code terminal. Non-interactive
-	// commands and explicit `--remote` sessions are passed through unchanged.
+	// runs every pane's hooks and MCP servers with the environment of the terminal that started
+	// it, and Codex attaches to a running one even with the auto-start turned off, so only
+	// `--no-daemon` keeps a session embedded. Codex 0.155 and older reject that flag and get the
+	// auto-start override instead. Non-interactive commands, `codex agents` (it needs the shared
+	// server), explicit `--remote` sessions and a `--no-daemon` the user typed are passed through
+	// unchanged.
 	test('keeps interactive sessions off the shared background server when no pane socket is set', async () => {
 		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
 		try {
@@ -458,21 +468,78 @@ if (args[0] === 'app-server') {
 			};
 			delete env.PARA_CODE_CODEX_APP_SERVER_SOCKET;
 			let stderrOutput = '';
-			for (const args of [[], ['-c', 'model_reasoning_effort=high', 'a prompt'], ['exec', 'status'], ['--remote', 'unix:///tmp/other.sock']]) {
+			for (const args of [[], ['-c', 'model_reasoning_effort=high', 'a prompt'], ['exec', 'status'], ['--remote', 'unix:///tmp/other.sock'], ['agents'], ['--no-daemon', 'fork', 'thread-1']]) {
 				stderrOutput += (await execFileAsync(launcherPath, args, { env, timeout: 15_000 })).stderr;
 			}
 			// An empty value is the same as no socket at all.
 			stderrOutput += (await execFileAsync(launcherPath, ['resume', 'thread-2'], { env: { ...env, PARA_CODE_CODEX_APP_SERVER_SOCKET: '' }, timeout: 15_000 })).stderr;
+			const olderCodex = { ...env, PARADIS_TEST_NO_DAEMON_UNSUPPORTED: '1' };
+			for (const args of [[], ['resume', 'thread-3']]) {
+				stderrOutput += (await execFileAsync(launcherPath, args, { env: olderCodex, timeout: 15_000 })).stderr;
+			}
 
 			assert.deepStrictEqual({ records: await readRecords(recordPath), stderrOutput }, {
 				records: [
-					['-c', 'features.daemon_auto_start=false'],
-					['-c', 'features.daemon_auto_start=false', '-c', 'model_reasoning_effort=high', 'a prompt'],
+					['--no-daemon'],
+					['--no-daemon', '-c', 'model_reasoning_effort=high', 'a prompt'],
 					['exec', 'status'],
 					['--remote', 'unix:///tmp/other.sock'],
-					['-c', 'features.daemon_auto_start=false', 'resume', 'thread-2'],
+					['agents'],
+					['--no-daemon', 'fork', 'thread-1'],
+					['--no-daemon', 'resume', 'thread-2'],
+					['-c', 'features.daemon_auto_start=false'],
+					['-c', 'features.daemon_auto_start=false', 'resume', 'thread-3'],
 				],
 				stderrOutput: '',
+			});
+		} finally {
+			await fs.rm(testRoot, { recursive: true, force: true });
+		}
+	});
+
+	// The Windows launcher does the same with the pane app-server off (no endpoint), and when the
+	// terminal has no console-subsystem node.exe, codex.cmd / codex.ps1 only ask it where the
+	// user's Codex is and run that themselves. The script itself runs under Node here.
+	test('keeps interactive sessions embedded in the Windows launcher and resolves the real Codex for the scripts', async () => {
+		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
+		try {
+			const launcherDirectory = join(process.cwd(), 'resources', 'paradis', 'bin');
+			const launcherScript = join(launcherDirectory, 'paradisCodexPaneLauncher.cjs');
+			const fakeBin = join(testRoot, 'bin');
+			const recordPath = join(testRoot, 'record.json');
+			await fs.mkdir(fakeBin, { recursive: true });
+			await fs.writeFile(join(fakeBin, 'codex'), FAKE_CODEX_WITH_COMPLETION, { mode: 0o700 });
+			const env: NodeJS.ProcessEnv = {
+				...process.env,
+				ELECTRON_RUN_AS_NODE: '1',
+				PATH: `${launcherDirectory}:${fakeBin}:${process.env['PATH'] ?? ''}`,
+				PARA_CODE_CODEX_LAUNCHER_DIR: launcherDirectory,
+				PARADIS_TEST_TUI_RECORD: recordPath,
+				PARADIS_TEST_COMPLETION_NAMES: '',
+			};
+			delete env.PARA_CODE_CODEX_APP_SERVER_ENDPOINT;
+			delete env.PARA_CODE_CODEX_LAUNCHER_MODE;
+			const run = (args: readonly string[], extra: NodeJS.ProcessEnv = {}) => execFileAsync(process.execPath, [launcherScript, ...args], { env: { ...env, ...extra }, timeout: 15_000 });
+			let stderrOutput = '';
+			for (const args of [[], ['a prompt'], ['resume', 'thread-1'], ['exec', 'status'], ['agents'], ['--remote', 'ws://127.0.0.1:1'], ['--no-daemon', 'fork', 'thread-2']]) {
+				stderrOutput += (await run(args)).stderr;
+			}
+			stderrOutput += (await run(['resume', 'thread-3'], { PARADIS_TEST_NO_DAEMON_UNSUPPORTED: '1' })).stderr;
+			const resolved = await run(['resume', 'thread-4'], { PARA_CODE_CODEX_LAUNCHER_MODE: 'resolve' });
+
+			assert.deepStrictEqual({ records: await readRecords(recordPath), stderrOutput, resolved: resolved.stdout.trim() }, {
+				records: [
+					['--no-daemon'],
+					['--no-daemon', 'a prompt'],
+					['--no-daemon', 'resume', 'thread-1'],
+					['exec', 'status'],
+					['agents'],
+					['--remote', 'ws://127.0.0.1:1'],
+					['--no-daemon', 'fork', 'thread-2'],
+					['-c', 'features.daemon_auto_start=false', 'resume', 'thread-3'],
+				],
+				stderrOutput: '',
+				resolved: join(fakeBin, 'codex'),
 			});
 		} finally {
 			await fs.rm(testRoot, { recursive: true, force: true });

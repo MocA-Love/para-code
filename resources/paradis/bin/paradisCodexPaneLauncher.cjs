@@ -11,6 +11,9 @@
 // Invoked by codex.cmd / codex.ps1 with the Para Code executable running as Node
 // (ELECTRON_RUN_AS_NODE=1). Non-interactive subcommands are delegated unchanged to
 // the user's real Codex installation.
+//
+// Without a pane endpoint (the pane app-server is turned off) interactive sessions are only
+// kept off Codex's shared background server, like the POSIX launcher does.
 
 'use strict';
 
@@ -24,6 +27,10 @@ const path = require('path');
 const ENDPOINT_ENV_VAR = 'PARA_CODE_CODEX_APP_SERVER_ENDPOINT';
 const PANE_TOKEN_ENV_VAR = 'PARA_CODE_TERMINAL_PANE_ID';
 const LAUNCHER_DIR_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_DIR';
+// Set by codex.cmd / codex.ps1 to `resolve` when no console-subsystem node.exe is available:
+// the launcher then only prints the user's Codex executable, and the script runs it itself so
+// the interactive session keeps the terminal's console.
+const MODE_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_MODE';
 
 const OPTIONS_WITH_VALUE = new Set([
 	'-c', '--config', '--enable', '--disable', '--remote-auth-token-env', '-i', '--image', '-m', '--model',
@@ -36,12 +43,13 @@ const OPTIONS_WITH_VALUE = new Set([
 // set is silently treated as a prompt and breaks that command. This is Codex 0.146's full set
 // (aliases and the internal subcommands `codex --help` hides included) minus the TUI commands,
 // and it is only the fast path: an unrecognized positional argument is resolved by asking Codex
-// itself, so a subcommand added by a future Codex release keeps working.
+// itself, so a subcommand added by a future Codex release keeps working. `agents` (the overview of
+// the shared background server) is listed too: it must not be kept off that server.
 const TUI_COMMANDS = new Set(['resume', 'fork']);
 const NON_INTERACTIVE_COMMANDS = new Set([
 	'exec', 'e', 'review', 'login', 'logout', 'mcp', 'plugin', 'mcp-server', 'app-server', 'remote-control',
 	'app', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'a', 'archive', 'delete', 'unarchive',
-	'cloud', 'exec-server', 'execpolicy', 'responses-api-proxy', 'stdio-to-uds', 'features', 'help',
+	'cloud', 'exec-server', 'execpolicy', 'responses-api-proxy', 'stdio-to-uds', 'features', 'help', 'agents',
 ]);
 
 const SERVER_START_TIMEOUT_MS = 10_000;
@@ -49,6 +57,7 @@ const PROBE_TIMEOUT_MS = 2_000;
 const SUBCOMMAND_PROBE_TIMEOUT_MS = 5_000;
 const SUBCOMMAND_CACHE_TTL_MS = 6 * 60 * 60 * 1_000;
 const SUBCOMMAND_CACHE_NAME = 'codex-commands.cache';
+const DAEMON_PROBE_TIMEOUT_MS = 5_000;
 
 function fail(message, code) {
 	process.stderr.write(`Para Code: ${message}${os.EOL}`);
@@ -67,7 +76,37 @@ function fail(message, code) {
 function fallbackToDirect(reason, real, pathEntries, args) {
 	process.stderr.write(
 		`Para Code: ${reason} Starting Codex without the pane app-server; MCP servers will not inherit this pane's environment.${os.EOL}`);
-	runDelegated(real, pathEntries, args);
+	runUnmanaged(real, pathEntries, args);
+}
+
+/**
+ * Arguments that keep an interactive session off Codex's shared background server.
+ *
+ * Codex attaches an interactive session to that server whenever one is running for this
+ * CODEX_HOME (0.157 and later also start it on first use), and hooks and MCP servers then run
+ * with the environment of whichever terminal started it — the wrong pane, or none. Codex 0.156
+ * and later accept `--no-daemon`, the only option that also refuses a running server
+ * (`-c features.daemon_auto_start=false` only stops a new one from starting). Older Codex
+ * rejects the flag and refuses to start; any `-c` override already keeps those versions off a
+ * running server, so they get the auto-start override. Codex itself is asked which applies.
+ */
+function daemonOptOutArguments(real, pathEntries) {
+	try {
+		childProcess.execFileSync(real.command, [...real.prefixArgs, '--no-daemon', '--version'], {
+			env: childEnvironment(pathEntries, real.useOwnNode),
+			timeout: DAEMON_PROBE_TIMEOUT_MS,
+			stdio: 'ignore',
+			windowsHide: true,
+		});
+		return ['--no-daemon'];
+	} catch {
+		return ['-c', 'features.daemon_auto_start=false'];
+	}
+}
+
+/** Runs the user's Codex for an interactive session, kept off the shared background server. */
+function runUnmanaged(real, pathEntries, args) {
+	runDelegated(real, pathEntries, [...daemonOptOutArguments(real, pathEntries), ...args]);
 }
 
 function samePath(a, b) {
@@ -93,7 +132,10 @@ function classifyInvocation(args) {
 			continue;
 		}
 		if (argument === '--remote' || argument.startsWith('--remote=')
-			|| argument === '--help' || argument === '-h' || argument === '--version' || argument === '-V') {
+			|| argument === '--help' || argument === '-h' || argument === '--version' || argument === '-V'
+			// The user already keeps this session off the shared background server. Codex rejects
+			// the flag together with `--remote`, and twice, so run it exactly as typed.
+			|| argument === '--no-daemon') {
 			return { kind: 'delegated' };
 		}
 		if (argument === '--') {
@@ -602,9 +644,23 @@ function main() {
 	if (real === undefined) {
 		fail('Codex executable was not found after the pane launcher.', 127);
 	}
+	if (process.env[MODE_ENV_VAR] === 'resolve') {
+		// Only a directly runnable executable is useful to the script; anything that needs a Node
+		// runtime would have to run under this GUI-subsystem executable again.
+		if (real.prefixArgs.length > 0) {
+			process.exit(1);
+		}
+		process.stdout.write(`${real.command}${os.EOL}`);
+		return;
+	}
 	const invocation = classifyInvocation(args);
 	if (invocation.kind === 'delegated') {
 		runDelegated(real, pathEntries, args);
+		return;
+	}
+	// No endpoint means the pane app-server is turned off: keep the session embedded, silently.
+	if ((process.env[ENDPOINT_ENV_VAR] || '').length === 0) {
+		runUnmanaged(real, pathEntries, args);
 		return;
 	}
 	runManaged(real, pathEntries, args, invocation).catch(error => fail(String(error && error.message ? error.message : error), 1));

@@ -188,11 +188,13 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 	/**
 	 * ペイン専用 Codex app-server の居場所。
 	 *
-	 * 立てない設定でも、POSIX ではランチャーだけを PATH に入れる（ソケットは入れない）。Codex 0.157 から
-	 * 素の `codex` は共有のバックグラウンドサーバーへ相乗りし、hook と MCP がそのサーバーを最初に
-	 * 起こしたペインの env で動く。ランチャーはその自動起動を止める指定を足して本物の `codex` を動かす。
-	 * Windows のランチャーは対話セッションに node.exe が要り、無い環境で PATH に置くと Codex が
-	 * 起動できなくなるので、立てない設定では入れない。
+	 * 立てない設定でも、ランチャーだけを PATH に入れる（ソケットや endpoint は入れない）。素の `codex` は
+	 * 起動済みの共有バックグラウンドサーバーへ相乗りし（0.157 からは無ければ起動もする）、hook と MCP が
+	 * そのサーバーを最初に起こしたターミナルの env で動く。ランチャーは `--no-daemon`（古い Codex では
+	 * 自動起動を止める指定）を足して本物の `codex` を動かす。
+	 * Windows のランチャーは node.exe で動く。node.exe が無い環境では、Para Code 自身の exe で本物の
+	 * `codex` の場所だけを調べ、.cmd / .ps1 がそれを素のまま起動する（GUI サブシステムの exe の下で
+	 * 対話セッションを動かすとコンソールが外れるため）。そのための exe パスを立てない設定でも渡す。
 	 *
 	 * env はPTY起動時に一度きり組み立てられるので、設定を変えても既に開いているターミナルの
 	 * 中身は変わらない（新しく開いたターミナルから効く）。設定の説明文にも同じことを書いてある。
@@ -201,9 +203,6 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 		const paneAppServer = this.isCodexPaneAppServerEnabled();
 		if (this.environmentService.remoteAuthority !== undefined) {
 			return this._getRemoteCodexRuntime(token, paneAppServer);
-		}
-		if (!paneAppServer && isWindows) {
-			return undefined;
 		}
 		const desktopEnvironment = this.environmentService as IWorkbenchEnvironmentService & {
 			readonly appRoot?: string;
@@ -215,6 +214,12 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 			return undefined;
 		}
 		const launcherDirectory = join(appRoot, 'resources', 'paradis', 'bin');
+		if (!paneAppServer && isWindows) {
+			if (typeof execPath !== 'string' || execPath.length === 0) {
+				return undefined;
+			}
+			return { launcherDirectory, nodeExecutablePath: execPath, pathDelimiter: ';' };
+		}
 		if (!paneAppServer) {
 			return { launcherDirectory, pathDelimiter: ':' };
 		}
