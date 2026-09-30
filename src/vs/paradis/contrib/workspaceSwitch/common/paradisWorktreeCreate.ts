@@ -360,9 +360,9 @@ export interface IParadisAgentLaunchOptions {
 
 /** Claude Code のエフォート語彙（2026-07時点の公式ドキュメント準拠）。 */
 const CLAUDE_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-/** Codex のエフォート語彙（gpt-6-astra / gpt-5.6-sol / gpt-5.6-terra が選べる全部）。 */
+/** Codex のエフォート語彙（gpt-6.1-sol / gpt-6-astra / gpt-6-sol / gpt-5.6-sol / gpt-5.6-terra が選べる全部）。 */
 const CODEX_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-/** gpt-5.6-luna は ultra が無い。 */
+/** gpt-6-luna と gpt-5.6-luna は ultra が無い。 */
 const CODEX_MAX_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 /** gpt-5.5 は max も無い。 */
 const CODEX_XHIGH_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh'];
@@ -380,6 +380,12 @@ export function paradisCodexEffortFlag(effortId: string): string {
  * 同じ意味だった「作業ツリーへの書き込みを許す sandbox」と「確認はモデルが要ると判断したときだけ」を並べる。
  */
 export const PARADIS_CODEX_FULL_AUTO_FLAGS = '--sandbox workspace-write --ask-for-approval on-request';
+
+/**
+ * Claude Code を確認ありで起動するフラグ。2.1.284 から、権限モードを指定せず設定にも書いていないと
+ * auto mode（安全性の分類器が確認を代わりに判断する）で起動するため、確認を出すモードを明示する。
+ */
+export const PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG = '--permission-mode default';
 
 // allow-any-unicode-next-line
 const STR_PERMISSION_DEFAULT = localize('paradis.agentPermission.default', "通常（確認あり）");
@@ -403,15 +409,20 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
 		],
 		efforts: CLAUDE_EFFORT_IDS.map(id => ({ id, flag: `--effort ${id}` })),
 		permissions: [
-			{ id: 'default', label: STR_PERMISSION_DEFAULT, flag: '' },
+			{ id: 'default', label: STR_PERMISSION_DEFAULT, flag: PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG },
 			{ id: 'skip-permissions', label: STR_PERMISSION_SKIP_ALL, flag: '--dangerously-skip-permissions', danger: true, hint: STR_PERMISSION_SKIP_ALL_HINT },
 		],
 	},
 	{
 		id: 'codex', label: 'Codex', command: 'codex {prompt}',
 		models: [
-			// codex-cli 0.155.1 の model/list（2026-09-28）。CLI から一覧を取れたときは使わない
+			// codex-cli 0.159.2 の一覧（2026-09-30）。並びは priority の順で、先頭が既定。gpt-6.1-sol は
+			// CLI に同梱の表（`codex debug models --bundled`）から、ほかのエフォートの既定はサーバーから
+			// 届く一覧（model/list）から取った。CLI から一覧を取れたときは使わない
+			{ id: 'gpt-6.1-sol', flag: '--model gpt-6.1-sol', efforts: CODEX_EFFORT_IDS, defaultEffort: 'low' },
 			{ id: 'gpt-6-astra', flag: '--model gpt-6-astra', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
+			{ id: 'gpt-6-sol', flag: '--model gpt-6-sol', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
+			{ id: 'gpt-6-luna', flag: '--model gpt-6-luna', efforts: CODEX_MAX_EFFORT_IDS, defaultEffort: 'medium' },
 			{ id: 'gpt-5.6-sol', flag: '--model gpt-5.6-sol', efforts: CODEX_EFFORT_IDS, defaultEffort: 'low' },
 			{ id: 'gpt-5.6-terra', flag: '--model gpt-5.6-terra', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
 			{ id: 'gpt-5.6-luna', flag: '--model gpt-5.6-luna', efforts: CODEX_MAX_EFFORT_IDS, defaultEffort: 'medium' },

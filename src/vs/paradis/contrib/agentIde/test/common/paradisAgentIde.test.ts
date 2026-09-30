@@ -126,6 +126,7 @@ suite('paradisAgentIde (common)', () => {
 		const claudeNo = words('No,', 'exit');
 		const claudeHeader = '\u2502 Accessing workspace:\n\u2502 Quick safety check: Is this a project you created or one you\n\u2502 trust? (Like your own code)\n';
 		const codexHeader = '> You are in /tmp/x\n  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk.\n';
+		const codex159Header = '  Folder access\n  /tmp/x\n\n  Trust this folder? Codex can read, edit, and run files here,\n  subject to your permission settings.\n';
 		const screens = {
 			// Claude Code 2.1.283（折り返しと枠線をまたぐ。番号無しで、断る側にカーソル）
 			claudeTrust: `${claudeHeader}\u2502 \u276f ${claudeNo}\n\u2502   ${claudeYes}`,
@@ -133,6 +134,11 @@ suite('paradisAgentIde (common)', () => {
 			claudeTrustMoved: `${claudeHeader}\u2502   1. ${claudeNo}\n\n\u2502 \u276f 2. ${claudeYes}`,
 			// codex-cli 0.155.1
 			codexTrust: `${codexHeader}\u203a 1. ${words('Yes,', 'continue')}\n  2. ${words('No,', 'quit')}`,
+			// codex-cli 0.159.2（本文は折り返す。既定で開く側にカーソル）
+			codex159Trust: `${codex159Header}\n\u203a 1. ${words('Trust', 'and', 'continue')}\n  2. Quit\n\n  enter continue \u00b7 esc quit`,
+			codex159Restricted: `  Folder access\n  /tmp/x\n\n  Config, hooks, and exec policies from untrusted folders stay disabled.\n  Trusted project folders can still contribute settings.\n\n  1. ${words('Open', 'restricted')}\n\u203a 2. ${words('Back', 'to', 'Agent', 'Command', 'Center')}`,
+			codex159ReadyUnderTrust: `${codex159Header}\n\u203a Ask Codex to do anything`,
+			codex159MentionOnly: `${codex159Header}The dialog offers "${words('Trust', 'and', 'continue')}" and "Quit".`,
 			claudeReady: '\u256d\u2500\u256e\n\u2502 \u276f \u2502\n\u2570\u2500\u256f\n  ? for shortcuts',
 			// 2.1.283 を auto mode（既定）で起動した実機の画面の末尾（入力欄の下が権限モードの表示になる）
 			claudeReadyAutoMode: `${rule}\n\u276f \n${rule}\n  \u23f5\u23f5 auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents`,
@@ -158,6 +164,10 @@ suite('paradisAgentIde (common)', () => {
 			claudeTrust: 'trust_dialog',
 			claudeTrustMoved: 'trust_dialog',
 			codexTrust: 'trust_dialog',
+			codex159Trust: 'trust_dialog',
+			codex159Restricted: 'trust_dialog',
+			codex159ReadyUnderTrust: null,
+			codex159MentionOnly: null,
 			claudeReady: 'ready',
 			claudeReadyAutoMode: 'ready',
 			claudeReadyPlaceholder: 'ready',
