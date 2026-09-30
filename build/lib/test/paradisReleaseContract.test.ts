@@ -42,6 +42,7 @@ interface IWorkflowJob {
 }
 
 interface IReleaseWorkflow {
+	readonly env?: Record<string, string>;
 	readonly jobs: Record<string, IWorkflowJob>;
 }
 
@@ -495,6 +496,28 @@ suite('Para Code release contract', () => {
 		});
 		// If the asset list cannot be read, the beta run stops instead of uploading over it.
 		assert.throws(() => publish(beta, { releaseExists: true }));
+	});
+
+	// The app reports the release stamped into product.json by the gulp packaging and the upload step
+	// creates the release and uploads the source maps under its own name. Both must come from the same
+	// function and inputs (build/lib/paradisReleaseChannel.ts), or every event loses its release.
+	test('names the Sentry release of the app and of its uploaded source maps the same way', () => {
+		const workflow = readReleaseWorkflow();
+		const read = (file: string) => fs.readFileSync(path.join(repositoryRoot, file), 'utf8');
+		const overridesRef = (...envs: (Record<string, string> | undefined)[]) => envs.some(env => Object.keys(env ?? {}).some(key => key.startsWith('GITHUB_REF')));
+		assert.deepStrictEqual({
+			uploads: Object.fromEntries(['build-darwin', 'build-win32', 'build-linux'].map(name => {
+				const job = workflow.jobs[name];
+				const step = getStep(job, 'Upload desktop source maps to Sentry');
+				return [name, { script: step.run?.split(' ').slice(0, 2).join(' '), overridesRef: overridesRef(workflow.env, job.env, step.env) }];
+			})),
+			gulpStamp: read('build/gulpfile.vscode.ts').includes('json.paradisSentryRelease = getParadisSentryReleaseFromEnv(packageJson.version, commit);'),
+			uploadRelease: read('build/sentry/upload-desktop-sourcemaps.ts').includes('const release = getParadisSentryReleaseFromEnv(packageJson.version, process.env.GITHUB_SHA);'),
+		}, {
+			uploads: Object.fromEntries(['build-darwin', 'build-win32', 'build-linux'].map(name => [name, { script: 'node build/sentry/upload-desktop-sourcemaps.ts', overridesRef: false }])),
+			gulpStamp: true,
+			uploadRelease: true,
+		});
 	});
 
 	// This used to pin the digest Open VSX served when its repackaged bytes differed from the

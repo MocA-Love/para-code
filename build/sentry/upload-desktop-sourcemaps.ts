@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getParadisSentryReleaseFromEnv } from '../lib/paradisReleaseChannel.ts';
 
 const [, , platform, arch] = process.argv;
 if (!platform || !arch) {
@@ -23,7 +24,10 @@ if (!process.env.GITHUB_SHA) {
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const packageJson = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8')) as { version: string };
-const release = `para-code@${packageJson.version}+${process.env.GITHUB_SHA}`;
+// Must equal the `paradisSentryRelease` that build/gulpfile.vscode.ts stamps into product.json (the
+// name the app sends): same function, same package.json version, same tag (GITHUB_REF_TYPE/_NAME).
+const release = getParadisSentryReleaseFromEnv(packageJson.version, process.env.GITHUB_SHA);
+console.log(`Sentry release: ${release}`);
 const sentryCli = join(repositoryRoot, 'node_modules', '@sentry', 'cli', 'bin', 'sentry-cli');
 
 function runSentryCli(args: string[], label: string): string | undefined {
