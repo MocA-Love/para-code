@@ -46,7 +46,9 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 			const button = dom.append(container, $('button.plm-card-action-btn')) as HTMLButtonElement;
 			button.type = 'button';
 			button.textContent = localize('paradis.claudeAccounts.register', "Para Code に登録");
-			button.title = localize('paradis.claudeAccounts.registerHint', "いまこの PC でログインしている Claude アカウントを登録し、ほかのアカウントとの切り替えに使えるようにします");
+			button.title = context.client.connectedToRemote
+				? localize('paradis.claudeAccounts.registerHintRemote', "いま接続先でログインしている Claude アカウントを接続先に登録し、ほかのアカウントとの切り替えに使えるようにします")
+				: localize('paradis.claudeAccounts.registerHint', "いまこの PC でログインしている Claude アカウントを登録し、ほかのアカウントとの切り替えに使えるようにします");
 			button.disabled = this.registering;
 			store.add(dom.addDisposableListener(button, 'click', () => void this.registerLive(context)));
 		}
@@ -89,10 +91,15 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		const email = account.email ?? account.id;
 		const { confirmed } = await this.dialogService.confirm({
 			message: localize('paradis.claudeAccounts.switchConfirm', "Claude のアカウントを {0} に切り替えますか？", email),
-			detail: localize(
-				'paradis.claudeAccounts.switchDetail',
-				"この PC の Claude Code のログインを書き換えます。Para Code の外で使う Claude Code も含め、この PC で新しく起動する Claude Code はこのアカウントを使います。\n\nいま動いている Claude Code は、しばらくして読み直すまで前のアカウントのまま動くことがあります。確実に切り替えるには、Claude Code を起動し直してください。",
-			),
+			detail: context.client.connectedToRemote
+				? localize(
+					'paradis.claudeAccounts.switchDetailRemote',
+					"接続先の Claude Code のログインを書き換えます。Para Code の外で使う Claude Code も含め、接続先で新しく起動する Claude Code はこのアカウントを使います（この PC のログインは変わりません）。\n\nいま動いている Claude Code は、しばらくして読み直すまで前のアカウントのまま動くことがあります。確実に切り替えるには、Claude Code を起動し直してください。",
+				)
+				: localize(
+					'paradis.claudeAccounts.switchDetail',
+					"この PC の Claude Code のログインを書き換えます。Para Code の外で使う Claude Code も含め、この PC で新しく起動する Claude Code はこのアカウントを使います。\n\nいま動いている Claude Code は、しばらくして読み直すまで前のアカウントのまま動くことがあります。確実に切り替えるには、Claude Code を起動し直してください。",
+				),
 			primaryButton: localize('paradis.claudeAccounts.switchButton', "切り替える"),
 		});
 		if (!confirmed) {
@@ -108,11 +115,11 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		} finally {
 			this.switching = false;
 		}
-		this.reportSwitch(result, email);
+		this.reportSwitch(result, email, context.client.connectedToRemote);
 		context.requestRefresh(false);
 	}
 
-	private reportSwitch(result: IParadisClaudeSwitchResult, email: string): void {
+	private reportSwitch(result: IParadisClaudeSwitchResult, email: string, remote: boolean): void {
 		switch (result.outcome) {
 			case 'switched':
 				this.notificationService.info(localize('paradis.claudeAccounts.switched', "Claude のアカウントを {0} に切り替えました。いま動いている Claude Code は、起動し直すと確実に新しいアカウントを使います。", result.email ?? email));
@@ -124,7 +131,9 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 				this.notificationService.warn(localize('paradis.claudeAccounts.switchBusy', "ほかの切り替えが進行中です。終わってからもう一度お試しください。"));
 				return;
 			case 'unmanaged_live':
-				this.notificationService.warn(localize('paradis.claudeAccounts.unmanagedLive', "いまこの PC でログインしている {0} は Para Code に登録されていないため、切り替えるとそのログインが失われます。先にそのアカウントのカードで「Para Code に登録」を押してください。", result.previousEmail ?? ''));
+				this.notificationService.warn(remote
+					? localize('paradis.claudeAccounts.unmanagedLiveRemote', "いま接続先でログインしている {0} は Para Code に登録されていないため、切り替えるとそのログインが失われます。先にそのアカウントのカードで「Para Code に登録」を押してください。", result.previousEmail ?? '')
+					: localize('paradis.claudeAccounts.unmanagedLive', "いまこの PC でログインしている {0} は Para Code に登録されていないため、切り替えるとそのログインが失われます。先にそのアカウントのカードで「Para Code に登録」を押してください。", result.previousEmail ?? ''));
 				return;
 			case 'not_found':
 				this.notificationService.error(localize('paradis.claudeAccounts.switchNotFound', "切り替え先のアカウントが見つかりません。一覧を更新してからもう一度お試しください。"));
@@ -165,7 +174,9 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 					this.notificationService.info(localize('paradis.claudeAccounts.registered', "{0} を Para Code に登録しました。", result.email ?? ''));
 					break;
 				case 'no_live_login':
-					this.notificationService.warn(localize('paradis.claudeAccounts.noLiveLogin', "この PC の Claude にログインしていないため、登録できませんでした。"));
+					this.notificationService.warn(context.client.connectedToRemote
+						? localize('paradis.claudeAccounts.noLiveLoginRemote', "接続先の Claude にログインしていないため、登録できませんでした。接続先のターミナルで claude を起動してログインするか、「＋ アカウントを追加」を使ってください。")
+						: localize('paradis.claudeAccounts.noLiveLogin', "この PC の Claude にログインしていないため、登録できませんでした。"));
 					break;
 				case 'not_oauth':
 					this.notificationService.warn(localize('paradis.claudeAccounts.notOauth', "API キーでのログインは登録できません。Claude のサブスクリプションでログインしたアカウントだけ登録できます。"));

@@ -174,6 +174,15 @@ async function acquireDirectoryLock(lockPath: string, staleMs: number, timeoutMs
 	};
 }
 
+/**
+ * ディレクトリを作る方式のロック（proper-lockfile 互換）を取る。持っている間は更新時刻を進め、`staleMs`
+ * より古いものは持ち主がいなくなったとみなして取り直す。返り値を呼ぶと解放する。
+ * @throws {@link ParadisClaudeLockTimeoutError} `timeoutMs` 待っても取れなかったとき
+ */
+export function paradisAcquireClaudeDirectoryLock(lockPath: string, staleMs: number, timeoutMs: number, now: () => number = Date.now): Promise<() => Promise<void>> {
+	return acquireDirectoryLock(lockPath, staleMs, timeoutMs, now);
+}
+
 async function readFileIfExists(filePath: string): Promise<string | undefined> {
 	try {
 		return await fs.promises.readFile(filePath, 'utf8');
