@@ -23,7 +23,6 @@ try {
 	Sentry.init({
 		dsn: PARA_CODE_MOBILE_SENTRY_DSN,
 		// enabled / enableNative / environment。開発ビルド（__DEV__）はネイティブ側も含めて送らない。
-		// environment は PC側（PARADIS_SENTRY_ENVIRONMENT）と揃える。
 		...mobileSentryRuntime(__DEV__),
 		// ネイティブ由来のバージョンは prebuild しないと app.json に追従しない（sentryRelease.ts 参照）。
 		release: mobileSentryRelease({

@@ -9,6 +9,10 @@ export interface MobileSentryRuntime {
 	 * App Hang の検知はこちらが持っているので、`enabled` だけでは止まらない。
 	 */
 	readonly enableNative: boolean;
+	/**
+	 * PC側（PARADIS_SENTRY_ENVIRONMENT）と揃える。'development' 固定だった頃は配布ビルドの実使用も
+	 * 全部 development になり、実ユーザーの障害とローカル検証を区別できなかった。
+	 */
 	readonly environment: 'local' | 'production';
 }
 
