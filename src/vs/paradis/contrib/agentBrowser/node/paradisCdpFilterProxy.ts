@@ -138,38 +138,6 @@ interface IParadisPendingRequest {
 
 const MAX_CDP_PENDING_REQUESTS = 1_024;
 
-/**
- * スコープ外の auto-attach を解放する手順。`Runtime.runIfWaitingForDebugger` の応答（成功でも失敗でも）を
- * 受けてから `Target.detachFromTarget` を送る（puppeteer の silentDetach と同じ順）。
- *
- * 応答を待たずに切り離すと、一時停止していた対象が再開されないまま切り離される。webview の
- * service worker では起動が `starting` のまま止まり、同じ origin の webview（画像プレビュー等）が
- * index.html の読み込みで 60 秒待たされたうえ、SW 無しの描画になって画像もスクリプトも読めない。
- * 隔離した製品版で、続けて送ると再現し、応答を待つと 0.26 秒で表示されることを実測した（2026-10-01）。
- */
-export class ParadisOutOfScopeAttachRelease {
-	private readonly resuming = new Set<string>();
-
-	constructor(private readonly send: (method: string, params: Record<string, unknown>, sessionId?: string) => void) { }
-
-	/** 一時停止しているかもしれない対象を再開させる。切り離しは応答が来てから。 */
-	release(sessionId: string): void {
-		this.resuming.add(sessionId);
-		this.send('Runtime.runIfWaitingForDebugger', {}, sessionId);
-	}
-
-	/** 内部リクエストの応答が来た（大きすぎて捨てた応答も含む）。解放中の再開の応答なら切り離す。 */
-	onInternalResponse(method: string, sessionId: string | undefined): void {
-		if (method === 'Runtime.runIfWaitingForDebugger' && sessionId !== undefined && this.resuming.delete(sessionId)) {
-			this.send('Target.detachFromTarget', { sessionId });
-		}
-	}
-
-	/** 接続が閉じた。上流ごと切れるので、待っていた切り離しは送らない。 */
-	clear(): void {
-		this.resuming.clear();
-	}
-}
 // Debugger metadata can legitimately contain multi-megabyte inline source maps in a single
 // frame. Keep every transport stage on the same bounded ceiling so a valid frame accepted by
 // the parser is not rejected by an earlier queue or later backpressure check.
@@ -200,6 +168,64 @@ const MAX_UPSTREAM_ERROR_DETAIL_LENGTH = 256;
 const MAX_CDP_ROUTING_ENTRIES = 4_096;
 const MAX_CDP_PENDING_POLICY_BYTES = 1024 * 1024;
 const PARADIS_CDP_PRE_INPUT_BARRIER_TIMEOUT_MS = 5_000;
+
+/** 再開の応答が来ないときに、スコープ外のセッションを切り離すまでの時間。 */
+export const PARADIS_OUT_OF_SCOPE_DETACH_FALLBACK_MS = 5_000;
+
+/**
+ * スコープ外の auto-attach を解放する手順。`Runtime.runIfWaitingForDebugger` の応答（成功でも失敗でも）を
+ * 受けてから `Target.detachFromTarget` を送る（puppeteer の silentDetach と同じ順）。
+ *
+ * 応答を待たずに切り離すと、一時停止していた対象が再開されないまま切り離される。webview の
+ * service worker では起動が `starting` のまま止まり、同じ origin の webview（画像プレビュー等）が
+ * index.html の読み込みで 60 秒待たされたうえ、SW 無しの描画になって画像もスクリプトも読めない。
+ * 隔離した製品版で、続けて送ると再現し、応答を待つと 0.26 秒で表示されることを実測した（2026-10-01）。
+ * 応答が来ないまま対象が生き残ると、スコープ外のセッションが接続の寿命いっぱい張り付くので、
+ * {@link PARADIS_OUT_OF_SCOPE_DETACH_FALLBACK_MS} で切り離す。
+ */
+export class ParadisOutOfScopeAttachRelease {
+	/** 再開の応答を待っているセッションと、応答が来なかったときに切り離す保険のタイマー。 */
+	private readonly resuming = new Map<string, ReturnType<typeof setTimeout>>();
+
+	constructor(
+		private readonly send: (method: string, params: Record<string, unknown>, sessionId?: string) => void,
+		private readonly fallbackMs = PARADIS_OUT_OF_SCOPE_DETACH_FALLBACK_MS,
+	) { }
+
+	/** 一時停止しているかもしれない対象を再開させる。切り離しは応答が来てから（来なければ期限で）。 */
+	release(sessionId: string): void {
+		if (this.resuming.has(sessionId)) {
+			return;
+		}
+		this.resuming.set(sessionId, setTimeout(() => this.detach(sessionId), this.fallbackMs));
+		this.send('Runtime.runIfWaitingForDebugger', {}, sessionId);
+	}
+
+	/** 内部リクエストの応答が来た（大きすぎて捨てた応答も含む）。解放中の再開の応答なら切り離す。 */
+	onInternalResponse(method: string, sessionId: string | undefined): void {
+		if (method === 'Runtime.runIfWaitingForDebugger' && sessionId !== undefined) {
+			this.detach(sessionId);
+		}
+	}
+
+	/** 接続が閉じた。上流ごと切れるので、待っていた切り離しは送らない。 */
+	clear(): void {
+		for (const timer of this.resuming.values()) {
+			clearTimeout(timer);
+		}
+		this.resuming.clear();
+	}
+
+	private detach(sessionId: string): void {
+		const timer = this.resuming.get(sessionId);
+		if (timer === undefined) {
+			return;
+		}
+		clearTimeout(timer);
+		this.resuming.delete(sessionId);
+		this.send('Target.detachFromTarget', { sessionId });
+	}
+}
 
 interface IParadisForwardedRequestBarrier {
 	readonly sessionId: string | undefined;

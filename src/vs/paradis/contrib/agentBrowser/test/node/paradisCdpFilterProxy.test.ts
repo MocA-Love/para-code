@@ -818,6 +818,7 @@ suite('Paradis CDP screenshot filter', () => {
 			afterResumeReply: ['Runtime.runIfWaitingForDebugger', 'Target.detachFromTarget'],
 		});
 		assert.deepStrictEqual(fixture.client.sent, []);
+		assert.strictEqual(fixture.client.closeCalls, 0);
 		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ id: internal.id, result: {} })));
 		assert.strictEqual(fixture.client.closeCalls, 1);
 	});
@@ -1819,5 +1820,28 @@ suite('Paradis CDP out-of-scope attach release', () => {
 				'Runtime.runIfWaitingForDebugger@sw-2',
 			],
 		});
+	});
+
+	test('detaches after the fallback delay when the resume reply never comes', () => {
+		const clock = sinon.useFakeTimers();
+		try {
+			const sent: string[] = [];
+			const release = new ParadisOutOfScopeAttachRelease((method, _params, sessionId) => sent.push(`${method}@${sessionId ?? 'browser'}`), 100);
+			release.release('sw-1');
+			clock.tick(99);
+			const beforeDeadline = [...sent];
+			clock.tick(1);
+			// 期限で切り離した後に遅れて応答が来ても、二度は送らない。
+			release.onInternalResponse('Runtime.runIfWaitingForDebugger', 'sw-1');
+			release.release('sw-2');
+			release.clear();
+			clock.tick(1_000);
+			assert.deepStrictEqual({ beforeDeadline, sent }, {
+				beforeDeadline: ['Runtime.runIfWaitingForDebugger@sw-1'],
+				sent: ['Runtime.runIfWaitingForDebugger@sw-1', 'Target.detachFromTarget@browser', 'Runtime.runIfWaitingForDebugger@sw-2'],
+			});
+		} finally {
+			clock.restore();
+		}
 	});
 });
