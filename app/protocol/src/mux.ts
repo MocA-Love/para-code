@@ -21,6 +21,22 @@ export interface FrameMuxOptions {
 	readonly sendSealed: (sealed: Uint8Array) => void;
 	/** open/decode失敗時のコールバック（切断判断に使う。既定はthrow）。 */
 	readonly onError?: (error: unknown) => void;
+	/**
+	 * 計測用（任意）。封緘バイト列を1つ開封してフレームにした直後、再結合の前に呼ぶ。大きな応答が
+	 * チャンクごとにいつ届き、開封（復号）にどれだけかかったかを測るためだけに使い、振る舞いは変えない。
+	 */
+	readonly onChunkOpened?: (chunk: FrameChunkTiming) => void;
+}
+
+/** {@link FrameMuxOptions.onChunkOpened} へ渡す、チャンク1つ分の計測値。 */
+export interface FrameChunkTiming {
+	readonly ch: ChannelId;
+	/** チャンクのペイロードのバイト数。 */
+	readonly bytes: number;
+	/** 続きのチャンクがあるか（false ならこのチャンクで論理フレームが完結する）。 */
+	readonly more: boolean;
+	/** 開封（復号）とフレームのデコードにかかった時間（ms）。 */
+	readonly openMs: number;
 }
 
 /**
@@ -69,6 +85,8 @@ export class FrameMux {
 
 	/** transportから届いた封緘バイト列を処理する。 */
 	receive(sealed: Uint8Array): void {
+		const onChunkOpened = this.options.onChunkOpened;
+		const openStartedAt = onChunkOpened !== undefined ? Date.now() : 0;
 		let frame: Frame;
 		try {
 			frame = decodeFrame(this.channel.open(sealed));
@@ -78,6 +96,11 @@ export class FrameMux {
 				return;
 			}
 			throw error;
+		}
+		if (onChunkOpened !== undefined) {
+			try {
+				onChunkOpened({ ch: frame.ch, bytes: frame.payload.length, more: frame.more === true, openMs: Date.now() - openStartedAt });
+			} catch { /* 計測の失敗で受信を止めない */ }
 		}
 		const pending = this.reassembly.get(frame.ch);
 		if (frame.more === true) {

@@ -74,6 +74,7 @@ import { paradisEncodeJsonResponsePayload } from '../common/paradisMobileGzipJso
 import { ParadisMobileCapability, paradisHasMobileCapability, paradisIsAcceptedMobileWireVersion } from '../common/paradisMobileCompat.js';
 import { type IParadisMobileRequestHost, paradisDispatchMobileRequest } from './paradisMobileRequestHandlers.js';
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
+import { ParadisMobileFileTiming } from '../common/paradisMobileFileTiming.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
 import { paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts, paradisWithUntrackedFileStats } from '../common/paradisMobileDiffReview.js';
@@ -2114,19 +2115,22 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * トークン色は tokenizeToString が付ける mtk クラス + カラーマップCSSで再現し、
 	 * 背景/前景はテーマのエディタ色を添える。失敗時は undefined（モバイル側はプレーン表示）。
 	 */
-	private async highlightFile(uri: URI, text: string): Promise<{ html: string; css: string; bg?: string; fg?: string; highlightTruncated?: boolean } | undefined> {
+	private async highlightFile(uri: URI, text: string, timing?: ParadisMobileFileTiming): Promise<{ html: string; css: string; bg?: string; fg?: string; highlightTruncated?: boolean } | undefined> {
 		try {
 			// TextMate文法は拡張機構経由で登録されるため、登録完了を待ってから言語解決する
 			await this.extensionService.whenInstalledExtensionsRegistered();
+			timing?.mark('highlight_wait');
 			const truncated = text.length > HIGHLIGHT_SOURCE_LIMIT;
 			const source = truncated ? text.slice(0, HIGHLIGHT_SOURCE_LIMIT) : text;
 			const newlineIndex = source.indexOf('\n');
 			const firstLine = newlineIndex === -1 ? source : source.slice(0, newlineIndex);
 			const languageId = this.languageService.guessLanguageIdByFilepathOrFirstLine(uri, firstLine);
 			const html = await tokenizeToString(this.languageService, source, languageId);
+			timing?.mark('highlight_tokenize');
 			const colorMap = TokenizationRegistry.getColorMap();
 			const css = colorMap ? generateTokensCSSForColorMap(colorMap) : '';
 			const theme = this.themeService.getColorTheme();
+			timing?.mark('highlight_theme');
 			return {
 				html,
 				css,
@@ -2135,6 +2139,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				...(truncated ? { highlightTruncated: true } : {}),
 			};
 		} catch (err) {
+			timing?.mark('highlight_failed');
 			this.logService.warn('[paradisMobileRelay] highlight failed', err);
 			return undefined;
 		}
@@ -2365,6 +2370,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	}
 
 	private async handleFsInbound(payload: VSBuffer, mobileId: string | undefined): Promise<void> {
+		const receivedAt = Date.now();
 		let msg: FsInbound;
 		const binaryUpload = paradisDecodeBinaryFsUpload(payload.buffer);
 		if (binaryUpload !== undefined) {
@@ -2377,21 +2383,31 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				return;
 			}
 		}
+		// ファイルビューアの要求（read/xlsx/pdf/docx/media）だけ、各区間の所要時間を Sentry へ送る。
+		const timing = binaryUpload === undefined ? ParadisMobileFileTiming.start(msg, receivedAt) : undefined;
 		const sendReply = (replyPayload: Uint8Array) => {
 			this.sendFrame({ ch: Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(replyPayload), mobileId: mobileId || undefined });
+			timing?.sent(replyPayload.byteLength);
 		};
 		const jsonReply = (body: object) => encoder.encode(JSON.stringify({ id: msg.id, ...body }));
 		const reply = (body: object) => {
+			if ((body as { readonly error?: unknown }).error !== undefined) {
+				timing?.setOutcome('error');
+			}
 			sendReply(jsonReply(body));
 		};
 		const replyCompressed = async (body: object) => {
 			const json = jsonReply(body);
+			timing?.mark('json');
 			const responseEncoding = msg.t === 'read' || msg.t === 'xlsx' ? msg.responseEncoding : undefined;
 			const encoded = await paradisEncodeJsonResponsePayload('fs', msg.t, responseEncoding, json);
+			timing?.mark('gzip');
+			timing?.set({ safe_json_bytes: json.byteLength, safe_gzip: encoded !== json });
 			// gzip交渉が効かない場合や、非UTF-8バイト/制御文字のJSONエスケープ膨張で
 			// FrameMuxの再結合上限を超えると、フレームが再結合されずソケットごと切断される
 			// （黙って表示が乱れるだけでは済まない）。実サイズをここで検査して弾く。
 			if (encoded.length > FS_RESPONSE_PAYLOAD_LIMIT) {
+				timing?.setOutcome('too-large');
 				// allow-any-unicode-next-line
 				sendReply(jsonReply({ error: `このファイルは転送できる上限（${FS_RESPONSE_PAYLOAD_LIMIT / 1024 / 1024}MB）を超えています。テキストとして扱えない内容の可能性があります。` }));
 				return;
@@ -2401,15 +2417,23 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const replyCacheable = async (body: { readonly t: string } & Record<string, unknown>) => {
 			const cacheEncoding = msg.t === 'read' || msg.t === 'xlsx' ? msg.cacheEncoding : undefined;
 			const ifContentHash = msg.t === 'read' || msg.t === 'xlsx' ? msg.ifContentHash : undefined;
-			await replyCompressed(await paradisContentHashResponse(cacheEncoding, ifContentHash, body));
+			const response = await paradisContentHashResponse(cacheEncoding, ifContentHash, body);
+			timing?.mark('content_hash');
+			if ((response as { readonly notModified?: unknown }).notModified === true) {
+				timing?.setOutcome('not-modified');
+			}
+			await replyCompressed(response);
 		};
 		const replyBinary = (type: ParadisBinaryFsResponseType, size: number, data: Uint8Array): boolean => {
 			const responseEncoding = msg.t === 'pdf' || msg.t === 'docx' || msg.t === 'media' ? msg.responseEncoding : undefined;
 			const encoded = paradisEncodeNegotiatedBinaryFsResponse(responseEncoding, type, msg.id, size, data);
+			timing?.mark('binary_encode');
+			timing?.set({ safe_binary_wire: encoded !== undefined });
 			if (encoded === undefined) {
 				return false;
 			}
 			this.sendFrame({ ch: Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoded), mobileId: mobileId || undefined });
+			timing?.sent(encoded.byteLength);
 			return true;
 		};
 		if (msg.t === 'office/hello' || msg.t === 'office/wordDiff' || msg.t === 'office/cancel') {
@@ -2615,6 +2639,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		const uri = await this.resolveWorkspacePathReal(msg.ws, msg.path);
+		timing?.mark('resolve_path');
 		if (!uri) {
 			reply({ error: `invalid path: ${msg.path}` });
 			return;
@@ -2624,16 +2649,21 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// シート単位の遅延読み込み(sheet省略時は先頭)。シート一覧はモバイルの
 				// ネイティブタブに使われ、切替時に該当sheetだけ再要求される。
 				const result = await renderSpreadsheetMobileSheet(this.fileService, this.sharedProcessService, uri, typeof msg.sheet === 'number' ? msg.sheet : 0);
+				timing?.mark('xlsx_render');
+				timing?.set({ safe_html_chars: result.html.length });
 				await replyCacheable({ t: 'xlsx', html: result.html, sheets: result.sheets, sheet: result.sheet });
 			} else if (msg.t === 'pdf') {
 				// PDF はバイナリのまま base64 で返す（'read' の UTF-8 デコード経路はバイナリを壊すため使えない）。
 				const stat = await this.fileService.stat(uri);
+				timing?.mark('stat');
+				timing?.set({ safe_source_bytes: stat.size ?? 0 });
 				if ((stat.size ?? 0) > BINARY_READ_LIMIT) {
 					// allow-any-unicode-next-line
 					reply({ error: `PDF が大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${BINARY_READ_LIMIT / 1024 / 1024}MB までです。` });
 					return;
 				}
 				const content = await this.fileService.readFile(uri, { length: BINARY_READ_LIMIT });
+				timing?.mark('read');
 				// 標準base64（パディング付き）。モバイル側は expo-file-system の Base64 エンコーディング指定で
 				// ネイティブデコードしながらファイルへ書くため、JSでのデコードは発生しない。
 				const size = stat.size ?? 0;
@@ -2645,12 +2675,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// PC版ビューアと同じ vendored docx-preview で行う。PC側でHTML化しないのは、
 				// docx-preview がDOM前提でタブストップ計算等が表示環境のフォント計測に依存するため）。
 				const stat = await this.fileService.stat(uri);
+				timing?.mark('stat');
+				timing?.set({ safe_source_bytes: stat.size ?? 0 });
 				if ((stat.size ?? 0) > BINARY_READ_LIMIT) {
 					// allow-any-unicode-next-line
 					reply({ error: `Word 文書が大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${BINARY_READ_LIMIT / 1024 / 1024}MB までです。` });
 					return;
 				}
 				const content = await this.fileService.readFile(uri, { length: BINARY_READ_LIMIT });
+				timing?.mark('read');
 				const size = stat.size ?? 0;
 				if (!replyBinary('docx', size, content.value.buffer)) {
 					reply({ t: 'docx', data: encodeBase64(content.value), size });
@@ -2659,12 +2692,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// 画像・動画・音声もバイナリのまま base64 で返す（表示はモバイル側。画像は data URI、
 				// 動画/音声はキャッシュファイル経由で WKWebView のネイティブ再生を使う）。
 				const stat = await this.fileService.stat(uri);
+				timing?.mark('stat');
+				timing?.set({ safe_source_bytes: stat.size ?? 0 });
 				if ((stat.size ?? 0) > BINARY_READ_LIMIT) {
 					// allow-any-unicode-next-line
 					reply({ error: `ファイルが大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${BINARY_READ_LIMIT / 1024 / 1024}MB までです。` });
 					return;
 				}
 				const content = await this.fileService.readFile(uri, { length: BINARY_READ_LIMIT });
+				timing?.mark('read');
 				const size = stat.size ?? 0;
 				if (!replyBinary('media', size, content.value.buffer)) {
 					reply({ t: 'media', data: encodeBase64(content.value), size });
@@ -2678,11 +2714,19 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				reply({ t: 'list', entries });
 			} else if (msg.t === 'read') {
 				const stat = await this.fileService.stat(uri);
+				timing?.mark('stat');
 				const content = await this.fileService.readFile(uri, { length: FS_READ_LIMIT });
+				timing?.mark('read');
 				const text = content.value.toString();
+				timing?.mark('decode');
+				timing?.set({ safe_source_bytes: stat.size ?? 0, safe_text_chars: text.length, safe_truncated: (stat.size ?? 0) > FS_READ_LIMIT });
 				const body: { t: 'read' } & Record<string, unknown> = { t: 'read', content: text, truncated: (stat.size ?? 0) > FS_READ_LIMIT, size: stat.size ?? 0 };
 				if (msg.highlight) {
-					const highlighted = await this.highlightFile(uri, text);
+					const highlighted = await this.highlightFile(uri, text, timing);
+					timing?.set({
+						safe_highlighted: highlighted !== undefined,
+						...(highlighted !== undefined ? { safe_highlight_html_chars: highlighted.html.length, safe_highlight_truncated: highlighted.highlightTruncated === true } : {}),
+					});
 					if (highlighted) {
 						Object.assign(body, highlighted);
 					}
