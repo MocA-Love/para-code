@@ -60,7 +60,7 @@ describe('PC の画面の表示条件のストア', () => {
 		expect({ afterFailure, savedBeforeRetry, saved: JSON.parse(storage.get('pcListView') ?? 'null') }).toEqual({
 			afterFailure: { loaded: true, group: 'space' },
 			savedBeforeRetry: 0,
-			saved: { group: 'none', byPc: { pc2: { states: ['idle'], spaces: [], collapsed: [] }, pc1: { states: [], spaces: [], collapsed: ['pinned'] } } },
+			saved: { group: 'none', byPc: { pc2: { kind: 'all', states: ['idle'], spaces: [], collapsed: [] }, pc1: { kind: 'all', states: [], spaces: [], collapsed: ['pinned'] } } },
 		});
 	});
 
@@ -72,7 +72,7 @@ describe('PC の画面の表示条件のストア', () => {
 		await flush();
 		const store = first.usePcListView.getState();
 		store.setGroup('state');
-		store.setFilter('pc1', { states: ['waiting'], spaces: ['w1'] });
+		store.setFilter('pc1', { kind: 'all', states: ['waiting'], spaces: ['w1'] });
 		store.setSearching('pc1', true);
 		store.setQuery('pc1', 'fix');
 		store.toggleSection('pc1', 'space:w2');
@@ -84,7 +84,7 @@ describe('PC の画面の表示条件のストア', () => {
 		await flush();
 		const { saved, transient, loaded } = second.usePcListView.getState();
 		expect({ saved, transient, loaded }).toEqual({
-			saved: { group: 'state', byPc: { pc1: { states: ['waiting'], spaces: ['w1'], collapsed: ['space:w2'] } } },
+			saved: { group: 'state', byPc: { pc1: { kind: 'all', states: ['waiting'], spaces: ['w1'], collapsed: ['space:w2'] } } },
 			transient: {},
 			loaded: true,
 		});
@@ -147,7 +147,7 @@ describe('PC の画面の表示条件のストア', () => {
 		expect(setItem).not.toHaveBeenCalled();
 		release();
 		await flush();
-		const expected = { group: 'none', byPc: { pc2: { states: ['idle'], spaces: [], collapsed: [] }, pc1: { states: [], spaces: [], collapsed: ['pinned'] } } };
+		const expected = { group: 'none', byPc: { pc2: { kind: 'all', states: ['idle'], spaces: [], collapsed: [] }, pc1: { kind: 'all', states: [], spaces: [], collapsed: ['pinned'] } } };
 		expect(usePcListView.getState().saved).toEqual(expected);
 		expect(JSON.parse(storage.get('pcListView') ?? 'null')).toEqual(expected);
 	});
@@ -165,7 +165,7 @@ describe('PC の画面の表示条件のストア', () => {
 		store.setQuery('pc1', 'relay');
 		store.setSearching('pc2', true);
 		store.setQuery('pc2', 'docs');
-		store.setFilter('pc1', { states: ['waiting'], spaces: [] });
+		store.setFilter('pc1', { kind: 'all', states: ['waiting'], spaces: [] });
 		// 同じ PC の画面がもう1枚積まれて、上だけを閉じた（2列 ⇄ 1列の作り直しも器は外れないので同じく残る）。
 		const releaseSecond = store.holdPc('pc1');
 		releaseSecond();
@@ -187,7 +187,7 @@ describe('PC の画面の表示条件のストア', () => {
 		release();
 		await flush();
 		const store = usePcListView.getState();
-		store.setFilter('pc1', { states: ['working'], spaces: [] });
+		store.setFilter('pc1', { kind: 'all', states: ['working'], spaces: [] });
 		store.setQuery('pc1', 'x');
 		store.forgetPc('pc1');
 		expect({ saved: usePcListView.getState().saved, transient: usePcListView.getState().transient }).toEqual({ saved: { group: 'space', byPc: {} }, transient: {} });

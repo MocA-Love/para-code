@@ -20,15 +20,30 @@ import { status } from '../../theme.js';
 /** グループの仕方。 */
 export type PcListGroup = 'none' | 'state' | 'space';
 
+/** 行の種類の絞り込み。エージェントかどうかで 1 つだけ選ぶ（`all` は絞らない）。 */
+export type PcListKind = 'all' | 'agent' | 'terminal';
+
+/** 種類の選択肢（シートのセグメントと、ツールバーのチップに出す呼び名）。 */
+export const PC_LIST_KIND_OPTIONS: readonly { readonly value: PcListKind; readonly label: string }[] = [
+	{ value: 'all', label: 'すべて' },
+	{ value: 'agent', label: 'エージェント' },
+	{ value: 'terminal', label: 'ターミナル' },
+];
+
 /** 絞り込み。何も選んでいない軸は「すべて」。 */
 export interface PcListFilter {
+	/**
+	 * 種類。状態（`states`）はエージェントにだけ効くので、`terminal` のときは状態を見ない。
+	 * 状態を選んでいるときは、`all` でもふつうのターミナルは出さない（状態を持たないため）。
+	 */
+	readonly kind: PcListKind;
 	readonly states: readonly HomeStatusBucket[];
 	readonly spaces: readonly string[];
 	/** 検索語（名前・スペース名・ブランチの部分一致。大文字小文字は区別しない）。 */
 	readonly query: string;
 }
 
-export const EMPTY_PC_LIST_FILTER: PcListFilter = { states: [], spaces: [], query: '' };
+export const EMPTY_PC_LIST_FILTER: PcListFilter = { kind: 'all', states: [], spaces: [], query: '' };
 
 /** 一覧に載せるスペースの形（実体は `workspace.workspaces`）。 */
 export interface PcListSpace {
@@ -111,9 +126,24 @@ export function withSort(preferences: HomeListPreferences, sort: HomeSortKey): H
 	return { ...preferences, sort, secondary: reconcileSecondary(sort, preferences.secondary) };
 }
 
-/** 絞り込みで選んでいる数（ツールバーのチップに添える）。検索語は数えない。 */
-export function filterCount(filter: PcListFilter): number {
+/** 絞り込みで選んでいる数（ツールバーのチップに添える）。検索語と種類は数えない（種類は呼び名で出す）。 */
+export function filterCount(filter: Pick<PcListFilter, 'states' | 'spaces'>): number {
 	return filter.states.length + filter.spaces.length;
+}
+
+/** 種類を絞っているときの呼び名（ツールバーのチップに出す）。絞っていなければ undefined。 */
+export function kindLabel(kind: PcListKind): string | undefined {
+	return kind === 'all' ? undefined : PC_LIST_KIND_OPTIONS.find(option => option.value === kind)?.label;
+}
+
+/** 状態の絞り込みが効くか（ターミナルだけを出しているときは状態を見ない）。 */
+export function statesApply(filter: Pick<PcListFilter, 'kind'>): boolean {
+	return filter.kind !== 'terminal';
+}
+
+/** 行がエージェントか（PC がエージェントとして見つけたターミナル）。 */
+function isAgentTerminal(terminal: PcListTerminal): boolean {
+	return terminal.agent === true;
 }
 
 /** 選択を1つ足す／外す（新しい配列を返す）。 */
@@ -169,7 +199,13 @@ export function buildPcList<T extends PcListTerminal>(input: BuildPcListInput<T>
 	const live = terminals.filter(terminal => !archivedKeys.has(pinKeyForTerminal(terminal)));
 	const filtered = live.filter(terminal => {
 		const space = resolveTerminalSpace(terminal, spaces, activeWs);
-		if (filter.states.length > 0 && !filter.states.includes(statusBucket(terminal.agentStatus))) {
+		const agent = isAgentTerminal(terminal);
+		if ((filter.kind === 'agent' && !agent) || (filter.kind === 'terminal' && agent)) {
+			return false;
+		}
+		// 状態はエージェントにだけ効く。ふつうのターミナルは状態を持たないので、状態を選んでいれば出さない
+		// （以前は「待機」に混ざっていた）。
+		if (statesApply(filter) && filter.states.length > 0 && (!agent || !filter.states.includes(statusBucket(terminal.agentStatus)))) {
 			return false;
 		}
 		if (filter.spaces.length > 0 && (space === undefined || !filter.spaces.includes(space.id))) {
@@ -204,7 +240,7 @@ export function buildPcList<T extends PcListTerminal>(input: BuildPcListInput<T>
 		return sections;
 	}
 	if (group === 'space') {
-		const unfiltered = filter.states.length === 0 && filter.query.trim().length === 0;
+		const unfiltered = filter.kind === 'all' && filter.states.length === 0 && filter.query.trim().length === 0;
 		const occupied = new Set(live.map(terminal => resolveTerminalSpace(terminal, spaces, activeWs)?.id));
 		for (const space of spaces) {
 			if (filter.spaces.length > 0 && !filter.spaces.includes(space.id)) {
