@@ -31,7 +31,9 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { ITextModelService } from '../../../../editor/common/services/resolverService.js';
-import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { ITextResourceConfigurationService } from '../../../../editor/common/services/textResourceConfiguration.js';
+import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -62,17 +64,21 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 		@IConfigurationService configurationService: IConfigurationService,
 		@INotificationService notificationService: INotificationService,
+		@ITextResourceConfigurationService textResourceConfigurationService: ITextResourceConfigurationService,
+		@IEditorService editorService: IEditorService,
+		@IEditorGroupsService editorGroupService: IEditorGroupsService,
 		@IExtensionService private readonly _extensionService: IExtensionService,
 		@ILanguageService private readonly _languageService: ILanguageService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@IOpenerService private readonly _openerService: IOpenerService,
 	) {
-		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService);
+		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService, textResourceConfigurationService, editorService, editorGroupService);
 	}
 
-	// Mermaid ブロック（```mermaid```）を webview 内で mermaid.js に描画させるため許可する。実行できる
-	// スクリプトは CSP の `script-src 'nonce-...'` により、この HTML が自分で埋め込んだ nonce 付き
-	// <script>（vendored mermaid.js 本体 + 初期化コード）だけに限定される。
+	// Mermaid ブロック（```mermaid```）を webview 内で mermaid.js に描画させ、スクロール位置の復元と
+	// 検索結果の色付けをするため許可する。実行できるスクリプトは CSP の `script-src 'nonce-...'` により、
+	// この HTML が自分で埋め込んだ nonce 付き <script>（vendored mermaid.js 本体 + 初期化コード、
+	// ビューアの補助スクリプト）だけに限定される。
 	protected override get allowScripts(): boolean {
 		return true;
 	}
@@ -145,10 +151,10 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		}
 		const mermaidEnabled = hasMermaid && mermaidScriptSource !== undefined;
 
-		// script-src は mermaid を使う文書でだけ許可する。許可しても実行できるのは、この HTML 自身が
-		// 埋め込む nonce 付き <script>（vendored mermaid.js 本体 + 直後の初期化コード）だけであり、
+		// 実行できるのは、この HTML 自身が埋め込む nonce 付き <script>（ビューアの補助スクリプトと、
+		// mermaid を使う文書では vendored mermaid.js 本体 + 直後の初期化コード）だけであり、
 		// Markdown の記述内容や外部ソースからスクリプトを注入する余地はない。
-		const scriptSrc = mermaidEnabled ? ` script-src 'nonce-${nonce}';` : '';
+		const scriptSrc = ` script-src 'nonce-${nonce}';`;
 
 		return `<!DOCTYPE html>
 <html>
@@ -167,6 +173,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	<body class="paradis-markdown-body">
 		${frontMatter.htmlPrefix}${media.html}
 		${mermaidEnabled ? this._renderMermaidScripts(nonce, mermaidScriptSource!) : ''}
+		${this.viewerPageScripts(resource, nonce)}
 	</body>
 </html>`;
 	}
