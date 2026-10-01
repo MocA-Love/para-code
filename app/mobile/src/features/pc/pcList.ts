@@ -126,9 +126,12 @@ export function withSort(preferences: HomeListPreferences, sort: HomeSortKey): H
 	return { ...preferences, sort, secondary: reconcileSecondary(sort, preferences.secondary) };
 }
 
-/** 絞り込みで選んでいる数（ツールバーのチップに添える）。検索語と種類は数えない（種類は呼び名で出す）。 */
-export function filterCount(filter: Pick<PcListFilter, 'states' | 'spaces'>): number {
-	return filter.states.length + filter.spaces.length;
+/**
+ * 絞り込みで効いている数（ツールバーのチップに添える）。検索語と種類は数えない（種類は呼び名で出す）。
+ * ターミナルだけを出しているときは状態が効かないので、残っている状態の選択も数えない。
+ */
+export function filterCount(filter: Pick<PcListFilter, 'kind' | 'states' | 'spaces'>): number {
+	return (statesApply(filter) ? filter.states.length : 0) + filter.spaces.length;
 }
 
 /** 種類を絞っているときの呼び名（ツールバーのチップに出す）。絞っていなければ undefined。 */
@@ -231,11 +234,17 @@ export function buildPcList<T extends PcListTerminal>(input: BuildPcListInput<T>
 		sections.push({ key: 'pinned', kind: 'pinned', title: 'ピン留め', rows: pinnedRows });
 	}
 	if (group === 'state') {
+		// 状態はエージェントにだけあるので、ふつうのターミナルは状態の段に入れず、最後の「ターミナル」の段にまとめる
+		// （絞り込みの「状態はエージェントにだけ効く」と揃える）。
 		for (const { bucket, title } of STATE_SECTIONS) {
-			const rows = restRows.filter(row => statusBucket(row.terminal.agentStatus) === bucket);
+			const rows = restRows.filter(row => isAgentTerminal(row.terminal) && statusBucket(row.terminal.agentStatus) === bucket);
 			if (rows.length > 0) {
 				sections.push({ key: `state:${bucket}`, kind: 'state', title, bucket, rows });
 			}
+		}
+		const plainRows = restRows.filter(row => !isAgentTerminal(row.terminal));
+		if (plainRows.length > 0) {
+			sections.push({ key: 'state:terminal', kind: 'all', title: 'ターミナル', rows: plainRows });
 		}
 		return sections;
 	}

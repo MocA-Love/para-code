@@ -47,7 +47,7 @@ export function FilterDrawer({ visible, filter, spaces, onChange, onClose }: {
 			<SectionHeader title="種類" />
 			<KindSegments value={filter.kind} onChange={selectKind} />
 			<SectionHeader title="エージェントの状態" right={<Text style={styles.headerHint}>{statesEnabled ? 'ターミナルには効きません' : 'ターミナルだけを表示中'}</Text>} style={styles.groupGap} />
-			<ListGroup style={statesEnabled ? undefined : styles.disabledGroup}>
+			<ListGroup>
 				{STATE_SECTIONS.map(({ bucket, title }) => {
 					const selected = filter.states.includes(bucket);
 					return (
@@ -101,9 +101,9 @@ function KindSegments({ value, onChange }: { value: PcListKind; onChange: (kind:
 						key={option.value}
 						onPress={() => onChange(option.value)}
 						hitSlop={hitSlopToMinimum(SEGMENT_HEIGHT)}
-						style={[styles.segment, on ? styles.segmentOn : undefined]}
+						style={({ pressed }) => [styles.segment, on ? styles.segmentOn : undefined, pressed && !on ? styles.segmentPressed : undefined]}
 						accessibilityRole="radio"
-						accessibilityState={{ selected: on }}
+						accessibilityState={{ checked: on }}
 						accessibilityLabel={option.label}
 					>
 						<Text style={[styles.segmentText, on ? styles.segmentTextOn : undefined]} numberOfLines={1}>{option.label}</Text>
@@ -133,9 +133,6 @@ const styles = StyleSheet.create({
 		fontSize: type.caption,
 		color: colors.textMuted,
 	},
-	disabledGroup: {
-		opacity: 0.4,
-	},
 	segments: {
 		flexDirection: 'row',
 		gap: 2,
@@ -153,6 +150,9 @@ const styles = StyleSheet.create({
 	},
 	segmentOn: {
 		backgroundColor: colors.raised,
+	},
+	segmentPressed: {
+		opacity: 0.6,
 	},
 	segmentText: {
 		fontSize: type.label,

@@ -137,6 +137,21 @@ describe('絞り込み・検索・アーカイブ', () => {
 		expect({ all: rows('all'), terminal: rows('terminal') }).toEqual({ all: ['a'], terminal: ['b'] });
 	});
 
+	test('PC から agent の無い形で届くターミナルもターミナルとして扱い、状態のグループでは最後の「ターミナル」の段に入る', () => {
+		const plain: PcListTerminal & { ws?: string } = { terminalKey: 'p', id: 3, windowId: 1, title: 'zsh', ws: 'w1' };
+		const terminals = [term('a', 'w1', undefined), plain, term('c', 'w1', 'working')];
+		const kindRows = keys(buildPcList(input({ terminals, filter: { ...EMPTY_PC_LIST_FILTER, kind: 'terminal' } }))[0]?.rows ?? []);
+		const grouped = buildPcList(input({ terminals, group: 'state' })).map(section => [section.title, keys(section.rows)]);
+		expect({ kindRows, grouped }).toEqual({ kindRows: ['p'], grouped: [['実行中', ['c']], ['待機', ['a']], ['ターミナル', ['p']]] });
+	});
+
+	test('ターミナルだけのときは、残っている状態の選択を件数に数えない', () => {
+		expect([
+			filterCount({ kind: 'all', states: ['idle'], spaces: ['w1'] }),
+			filterCount({ kind: 'terminal', states: ['idle'], spaces: ['w1'] }),
+		]).toEqual([2, 1]);
+	});
+
 	test('種類を絞っている間は、ターミナルの無いスペースの空の段を出さない', () => {
 		const sections = buildPcList(input({ group: 'space', terminals: [term('a', 'w1', undefined)], filter: { ...EMPTY_PC_LIST_FILTER, kind: 'agent' } }));
 		expect(sections.map(section => section.key)).toEqual(['space:w1']);
@@ -150,7 +165,7 @@ describe('絞り込み・検索・アーカイブ', () => {
 	});
 
 	test('絞り込みの数と選択の出し入れ', () => {
-		expect(filterCount({ states: ['working'], spaces: ['w1', 'w2'] })).toBe(3);
+		expect(filterCount({ kind: 'all', states: ['working'], spaces: ['w1', 'w2'] })).toBe(3);
 		expect(toggleValue(['a', 'b'], 'a')).toEqual(['b']);
 		expect(toggleValue(['a'], 'b')).toEqual(['a', 'b']);
 	});
