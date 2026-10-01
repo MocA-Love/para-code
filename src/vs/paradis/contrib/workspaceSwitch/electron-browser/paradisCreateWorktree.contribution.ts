@@ -31,7 +31,7 @@ import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IPar
 import { IParadisIssueStatus, IParadisIssueStatusesResult } from '../../../common/paradisIssueDetection.js';
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
-import { paradisPrefersTeardown, paradisReadWorkspaceLifecycleConfig, paradisRememberTeardownChoice, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
+import { paradisIsLifecycleScriptApproved, paradisPrefersTeardown, paradisReadWorkspaceLifecycleConfig, paradisRememberTeardownChoice, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { openParadisWorkspaceLifecycleDialog } from './paradisWorkspaceLifecycleDialog.js';
 import { IParadisWorktreeCreateQueueService, ParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
@@ -329,7 +329,10 @@ class ParadisRemoveWorktreeAction extends Action2 {
 				checkbox: {
 					// allow-any-unicode-next-line
 					label: localize('paradis.workspaceSwitch.removeWorktreeRunTeardown', "削除の前に teardown スクリプトを実行する"),
-					checked: paradisPrefersTeardown(storageService, repository.uri)
+					// まだ承認していない（新しい・書き換わった）スクリプトは、チェックを外した状態で出す。
+					// ［削除］を押す意図は削除であってスクリプトの承認ではないので、見せたうえで自分で入れたときだけ実行する。
+					// 承認済みなら、そのリポジトリでの前回の選択に従う。
+					checked: paradisIsLifecycleScriptApproved(storageService, repository.uri, 'teardown', teardown) && paradisPrefersTeardown(storageService, repository.uri)
 				}
 			} : {})
 		});
@@ -358,7 +361,13 @@ class ParadisRemoveWorktreeAction extends Action2 {
 						return;
 					}
 					try {
-						teardownRan = await instantiationService.invokeFunction(paradisRunWorkspaceLifecycleScript, 'teardown', repository, uri, teardown?.script);
+						teardownRan = await instantiationService.invokeFunction(paradisRunWorkspaceLifecycleScript, 'teardown', repository, uri, teardown);
+						if (!teardownRan && teardown !== undefined) {
+							// 確認の後にスクリプトか打ち切り時間が書き換わり、出し直した承認を断られた。黙って削除へ進まず、
+							// 失敗と同じく「それでも削除するか」を尋ねる（断った後に削除が進むのが以前の分かりにくさだった）。
+							// allow-any-unicode-next-line
+							throw new Error(localize('paradis.workspaceSwitch.removeWorktreeTeardownDeclined', "確認の後に teardown スクリプトが変わったため実行しませんでした。"));
+						}
 					} catch (error) {
 						throw new ParadisTeardownFailedError(error);
 					}

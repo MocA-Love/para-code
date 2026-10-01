@@ -19,7 +19,7 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { InMemoryStorageService, IStorageService } from '../../../../../platform/storage/common/storage.js';
 import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
-import { paradisPrefersTeardown, paradisRememberTeardownChoice, paradisRunWorkspaceLifecycleScript } from '../../electron-browser/paradisWorkspaceLifecycleService.js';
+import { IParadisLifecycleScriptConsent, paradisIsLifecycleScriptApproved, paradisPrefersTeardown, paradisRememberTeardownChoice, paradisRunWorkspaceLifecycleScript } from '../../electron-browser/paradisWorkspaceLifecycleService.js';
 import { IParadisWorkspaceLifecycleConfig } from '../../common/paradisWorkspaceLifecycle.js';
 import { IParadisWorkspaceRepository } from '../../common/paradisWorkspaceSwitch.js';
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../../common/paradisWorktreeCreate.js';
@@ -78,12 +78,13 @@ suite('workspace lifecycle service', () => {
 			calls,
 			remoteCalls,
 			get confirmCount() { return confirmCount; },
+			isApproved(consent: IParadisLifecycleScriptConsent) { return paradisIsLifecycleScriptApproved(storageService, repositoryUri, 'teardown', consent); },
 			async writeConfig(override?: IParadisWorkspaceLifecycleConfig) {
 				await fileService.writeFile(repositoryUri.with({ path: '/repo/.paracode.json' }), VSBuffer.fromString(JSON.stringify(override ?? config)));
 			},
-			async run(kind: 'setup' | 'teardown', override?: IParadisWorkspaceLifecycleConfig, approvedScript?: string) {
+			async run(kind: 'setup' | 'teardown', override?: IParadisWorkspaceLifecycleConfig, consent?: IParadisLifecycleScriptConsent) {
 				await this.writeConfig(override);
-				return paradisRunWorkspaceLifecycleScript(accessor, kind, repository, worktreeUri, approvedScript);
+				return paradisRunWorkspaceLifecycleScript(accessor, kind, repository, worktreeUri, consent);
 			}
 		};
 	}
@@ -92,13 +93,17 @@ suite('workspace lifecycle service', () => {
 		// 削除の確認でスクリプトを見せてチェックを入れたまま削除したなら、承認ダイアログを重ねない。
 		// 確認の後にスクリプトが書き換わっていたら、その同意は使わずに従来どおり尋ねる。
 		const fixture = createLifecycleFixture({ teardownScript: 'docker compose down' }, { approve: false });
-		const changed = await fixture.run('teardown', { teardownScript: 'rm -rf ~' }, 'docker compose down');
-		const confirmsAfterChanged = fixture.confirmCount;
-		const shown = await fixture.run('teardown', undefined, 'docker compose down');
+		const consent = { script: 'docker compose down', timeoutMinutes: undefined };
+		const changed = await fixture.run('teardown', { teardownScript: 'rm -rf ~' }, consent);
+		// 本文が同じでも、見せていない打ち切り時間に書き換わっていたら同意は使わない。
+		const longer = await fixture.run('teardown', { teardownScript: 'docker compose down', teardownTimeoutMinutes: 120 }, consent);
+		const confirmsBeforeShown = fixture.confirmCount;
+		const approvedBefore = fixture.isApproved(consent);
+		const shown = await fixture.run('teardown', undefined, consent);
 		// 一度承認として記録したので、同意を渡さない次の実行でも尋ねない。
 		const again = await fixture.run('teardown');
-		assert.deepStrictEqual({ changed, confirmsAfterChanged, shown, again, confirms: fixture.confirmCount, runs: fixture.calls.length }, {
-			changed: false, confirmsAfterChanged: 1, shown: true, again: true, confirms: 1, runs: 2,
+		assert.deepStrictEqual({ changed, longer, confirmsBeforeShown, approvedBefore, shown, again, approvedAfter: fixture.isApproved(consent), confirms: fixture.confirmCount, runs: fixture.calls.length }, {
+			changed: false, longer: false, confirmsBeforeShown: 2, approvedBefore: false, shown: true, again: true, approvedAfter: true, confirms: 2, runs: 2,
 		});
 	});
 
