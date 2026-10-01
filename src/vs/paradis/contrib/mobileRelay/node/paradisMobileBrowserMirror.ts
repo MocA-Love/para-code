@@ -20,9 +20,11 @@
 
 import { decodeBase64 } from '../../../../base/common/buffer.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { isMacintosh } from '../../../../base/common/platform.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisCdpFrameEvent, IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
+import { paradisMobileBrowserKeyEvents } from '../common/paradisMobileBrowserKeys.js';
 
 /** モバイル→PC の browser チャネル要求。 */
 type BrowserInbound =
@@ -30,7 +32,7 @@ type BrowserInbound =
 	| { t: 'start'; id: string; targetId: string; frameEncoding?: string }
 	| { t: 'stop'; id: string }
 	| {
-		t: 'input'; kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate';
+		t: 'input'; kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate' | 'key';
 		/** tap/scroll: 直近フレームに対する正規化座標(0..1)。 */
 		nx?: number; ny?: number;
 		/** scroll: 正規化スクロール量（dy: 正=下へ、dx: 正=右へ）。 */
@@ -39,6 +41,10 @@ type BrowserInbound =
 		text?: string;
 		/** navigate: 遷移先URL（http/httpsのみ受け付ける）。 */
 		url?: string;
+		/** key: 特殊キーの名前（`paradisMobileBrowserKeys.ts` の許可リストにあるものだけ送る。`browser.keys.v1`）。 */
+		key?: unknown;
+		/** key: Shift を押しながら（`true` のときだけ）。 */
+		shift?: unknown;
 	};
 
 interface MirrorSession {
@@ -389,6 +395,10 @@ export class ParadisMobileBrowserMirror extends Disposable {
 			this.cdpSend(session, 'Input.insertText', { text: msg.text });
 		} else if (msg.kind === 'navigate' && msg.url && /^https?:\/\//i.test(msg.url)) {
 			this.cdpSend(session, 'Page.navigate', { url: msg.url });
+		} else if (msg.kind === 'key') {
+			for (const params of paradisMobileBrowserKeyEvents(msg.key, msg.shift, isMacintosh) ?? []) {
+				this.cdpSend(session, 'Input.dispatchKeyEvent', params);
+			}
 		}
 		// 入力の反映を素早く見せるため、少し置いてから即時キャプチャする
 		// （プッシュが直近まで届いている間は再描画が自動で届くため不要。

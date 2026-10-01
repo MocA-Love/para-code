@@ -51,6 +51,7 @@ import { lastKnownPcStorage, lastKnownPcWriter } from './lastKnownPcStore.js';
 import { connectionLog } from './connectionLogStore.js';
 import { BackgroundGrace, type BackgroundGraceTarget } from './backgroundGrace.js';
 import type { DiagnosticPc } from './connectionDiagnostics.js';
+import type { BrowserInput } from './browserKeys.js';
 
 /**
  * PC側とモバイル側の Sentry イベントを突き合わせる相関IDを設定する。
@@ -375,7 +376,7 @@ interface AppState extends StoreState {
 	browserStart(targetId: string): Promise<void>;
 	/** keepFrame=true で最後のフレームを残したまま停止する（タブblur時の一時停止用）。 */
 	browserStop(keepFrame?: boolean): Promise<void>;
-	browserInput(input: { kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate'; nx?: number; ny?: number; dy?: number; dx?: number; text?: string; url?: string }): void;
+	browserInput(input: BrowserInput): void;
 	/**
 	 * WebRTCミラー表示中にJPEGフレームの受信処理を止める（フルパース前に読み捨てて
 	 * JSスレッド飽和を防ぐ。PC側はフォールバック用にJPEGを送り続けている）。
