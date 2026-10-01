@@ -1245,6 +1245,15 @@ fork の後始末を `sentry/common/paradisTeardownTiming.ts` で名前付きで
 - **固定形（ゴールデン）**: `app/protocol/test/golden/` の state / state-request / term / agent。PC の組み立てる State がゴールデンと同じ形か、アプリが送る形を PC が受けるか、PC が送る形をアプリが受けるかを両側のテストが確かめる。版・`minCompatible*`・`capabilities`・`fsUploadEncoding`・`voiceClips` は値まで比べるので、capability を足したらゴールデンの `state.json` / `state-request.json` も同じ変更で直す
 - **版を上げるときに一緒に直す場所**: 2 進アップロードの枠（`app/protocol/src/fileUpload.ts` と PC の `paradisMobileFileUpload.ts`）は `protocolVersion: 3` を固定で検査している。`IParadisMobileDesktopStateV3` の名前と型も版 3 のまま
 
+### スマホのブラウザ画面からの文字とキーの入力（`browser.keys.v1`、2026-10-01）
+
+ブラウザ画面のツールバーの右端（キーボードのボタン）で、ツールバーの代わりに入力の段が出る（`app/mobile/src/components/browserKeyInput.tsx`）。文字は従来からある browser の `input` の `kind: 'text'`（PC は `Input.insertText`）で、確定した文字だけを送る。日本語の変換中の Return は OS が確定に使うので送信にならない。特殊キーは新しい `kind: 'key'`（`key` と任意の `shift: true`）で、PC は `common/paradisMobileBrowserKeys.ts` の許可リスト（Enter・Backspace・Delete・Tab・Escape・矢印・Home・End・PageUp・PageDown）にある名前だけを `Input.dispatchKeyEvent` の押す・離すにして送る。
+
+- **macOS の `commands`**: CDP で合成したキーは、macOS の Chromium では削除・カーソル移動の編集の操作にならない。PC が macOS のときだけ `commands`（`deleteBackward`・`moveLeft` など。Playwright と同じ対応表）を押す側に添える。`insert*`（Enter の `insertNewline`、Tab の `insertTab`）は文字やフォーカス移動と二重になるので渡さない
+- **互換**: アプリは PC の `browser.keys.v1` を見て、無ければキー行の代わりに「PC を更新すると送れます」と出し、空の Return・空の ⌫ も送らない（文字の送信は古い PC でも効く）。古い PC に `kind: 'key'` が届いても `dispatchInput` のどの分岐にも当たらず、何も起きない
+- **入力欄の動き**: 文字があれば Return で文字だけ送る（Enter は付けない）。空の Return は Enter、空の ⌫ はページ側の 1 文字削除。入力の段を開いている間は映像のタップでキーボードを閉じない（`keyboardShouldPersistTaps="handled"`）ので、ページの入力欄をタップしてから続けて打てる
+- **iPad の外付けキーボードの矢印は見送った**: 入力欄に打った文字・Return・⌫ はそのまま上の経路で届くが、矢印は RN の `onKeyPress` に来ないので `src/ipad/shortcuts.ts` の UIKeyCommand が要る。矢印（修飾なし）は既にターミナルのライブ入力（`terminal.up` など）に割り当て済みで、`shortcuts.test.ts` の「同じキーの組み合わせを2つに割り当てない」に反する。足すなら `terminalArrows` の受け口を「入力欄の矢印を相手へ回す」汎用の受け口に直し、⌘ 長押しの一覧の名前も両方に合うものへ変える
+
 ### スペースのメモの版と差分レビューの記録（Orca W2-16 / W2-14 / W2-28、2026-09-29）
 
 モバイルからの書き込みで PC 側の変更を黙って消さないことが共通の主題。どれも任意項目・新しい種類の追加だけで、版は上げていない。

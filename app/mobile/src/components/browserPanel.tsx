@@ -1,13 +1,20 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { ComponentType, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, GestureResponderEvent, Image, LayoutChangeEvent, NativeScrollEvent, NativeSyntheticEvent, PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, GestureResponderEvent, Image, Keyboard, LayoutChangeEvent, NativeScrollEvent, NativeSyntheticEvent, PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { Keyboard as KeyboardGlyph } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { useAppInFront } from '../hooks/useAppInFront.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
+import { useKeyboardVisible } from '../hooks/useKeyboardVisible.js';
+import { usePcCapability } from '../hooks/usePcCapability.js';
+import { PcCapability } from '../pcCompat.js';
+import type { BrowserInput } from '../browserKeys.js';
+import { BrowserKeyInput } from './browserKeyInput.js';
+import { Icon } from '../ui/icon.js';
 import { getRtcView, startWebrtcMirror, WebrtcMirrorCoordinator } from '../webrtcMirror.js';
 import { HIT_SIZE, alpha, colors, radius, squircle, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
@@ -70,6 +77,12 @@ export function BrowserPanel({ active: screenActive, preferredToken }: { active:
 	workspaceEpochRef.current = workspace?.desktopEpoch;
 
 	const insets = useStableInsets();
+	// キーボードが出ている間はセッションの画面が被覆ぶん下を空けるので、下の段に Home インジケータの余白は要らない。
+	const keyboardVisible = useKeyboardVisible();
+	const bottomPadding = (keyboardVisible ? 0 : insets.bottom) + 10;
+	// ページへの文字入力（ツールバーのキーボードのボタンで開く）。特殊キーは PC が受けるときだけ出す。
+	const [keyInputOpen, setKeyInputOpen] = useState(false);
+	const keysSupported = usePcCapability(PcCapability.BrowserKeys);
 	const [targets, setTargets] = useState<BrowserTarget[] | undefined>();
 	const [error, setError] = useState<string | undefined>();
 	const [activeUrl, setActiveUrl] = useState<string | undefined>(cachedSelection?.url);
@@ -535,6 +548,8 @@ export function BrowserPanel({ active: screenActive, preferredToken }: { active:
 				onScrollEndDrag={onZoomScroll}
 				onMomentumScrollEnd={onZoomScroll}
 				scrollEventThrottle={100}
+				// 文字入力中は、映像をタップしてページの入力欄を選んでもキーボードを閉じない。
+				keyboardShouldPersistTaps={keyInputOpen ? 'handled' : 'never'}
 			>
 				{webrtcUrl !== undefined && RTCViewComponent !== undefined ? (
 					<View style={styles.frameWrap} {...panResponder.panHandlers} onTouchStart={onFrameTouchStart} onTouchEnd={onFrameTouchEnd} onTouchCancel={onFrameTouchCancel}>
@@ -561,29 +576,47 @@ export function BrowserPanel({ active: screenActive, preferredToken }: { active:
 					<View style={styles.center}><ActivityIndicator /><Text style={styles.dim}>フレームを待っています…</Text></View>
 				)}
 			</ScrollView>
-			<View style={[styles.toolbar, { paddingBottom: insets.bottom + 10 }]}>
-				{TOOLBAR_ITEMS.map(item => (
+			{keyInputOpen ? (
+				<BrowserKeyInput
+					live={live}
+					keysSupported={keysSupported}
+					bottomPadding={bottomPadding}
+					onInput={browserInput}
+					onClose={() => { Keyboard.dismiss(); setKeyInputOpen(false); }}
+				/>
+			) : (
+				<View style={[styles.toolbar, { paddingBottom: bottomPadding }]}>
+					{TOOLBAR_ITEMS.map(item => (
+						<Pressable
+							key={item.label}
+							disabled={!live}
+							style={[styles.toolBtn, !live && styles.disabled]}
+							onPress={() => { hapticImpact('light'); browserInput(item.input); }}
+							accessibilityRole="button"
+							accessibilityState={{ disabled: !live }}
+							accessibilityLabel={item.label}
+						>
+							<Ionicons name={item.icon} size={17} color={colors.text} />
+						</Pressable>
+					))}
 					<Pressable
-						key={item.label}
 						disabled={!live}
 						style={[styles.toolBtn, !live && styles.disabled]}
-						onPress={() => { hapticImpact('light'); browserInput(item.input); }}
+						onPress={() => { hapticSelection(); setKeyInputOpen(true); }}
 						accessibilityRole="button"
 						accessibilityState={{ disabled: !live }}
-						accessibilityLabel={item.label}
+						accessibilityLabel="ページに文字を入力"
 					>
-						<Ionicons name={item.icon} size={17} color={colors.text} />
+						<Icon icon={KeyboardGlyph} size={17} color={colors.text} />
 					</Pressable>
-				))}
-			</View>
+				</View>
+			)}
 		</View>
 	);
 }
 
-type BrowserToolbarInput = Parameters<ReturnType<typeof useAppStore.getState>['browserInput']>[0];
-
-/** 下のツールバーの操作。並びは以前と同じ（戻る・進む・再読み込み・上へ・下へ）。 */
-const TOOLBAR_ITEMS: readonly { icon: keyof typeof Ionicons.glyphMap; label: string; input: BrowserToolbarInput }[] = [
+/** 下のツールバーの操作。並びは以前と同じ（戻る・進む・再読み込み・上へ・下へ）。この後ろに文字入力のボタンを置く。 */
+const TOOLBAR_ITEMS: readonly { icon: keyof typeof Ionicons.glyphMap; label: string; input: BrowserInput }[] = [
 	{ icon: 'chevron-back', label: '戻る', input: { kind: 'back' } },
 	{ icon: 'chevron-forward', label: '進む', input: { kind: 'forward' } },
 	{ icon: 'refresh', label: '再読み込み', input: { kind: 'reload' } },
