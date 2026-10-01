@@ -1967,6 +1967,15 @@ node_modules を解決できない**ため、main のトップレベル import �
 制御クライアントを読むための `electron-main/` → `node/` の import が残っている（いずれもネイティブ依存を
 持たない葉）。これらは上記テストの探索範囲に入っているので、その先に外部依存が生えれば検出される。
 
+## 開発ビルドは Sentry へ送らない（2026-10-01、Q157）
+
+ソースから起動した開発ビルド（`VSCODE_DEV`）とモバイルの開発ビルド（`__DEV__`）は、Sentry を初期化しません。手元の検証が `local` の雑音として積み上がり、2026-10-01 に 105 件を手で ignore したためです。
+
+- PC: 判定は `sentry/common/paradisSentryConfiguration.ts` の `isParadisSentryDevelopmentBuild`（upstream の `isBuilt` と同じ `!!env['VSCODE_DEV']`）の 1 か所です。main（`paradisSentryMain.ts`）・renderer（`paradisSentryRenderer.ts`）・shared process（`paradisSentryUtility.ts`）がそれぞれ同じ判定で init を飛ばします。Sentry を初期化しているのはこの 3 か所だけで、pty host・拡張ホスト・ほかの utility process は持っていません。`reportParadisDiagnosticError`・`runInParadisSpan`・ヘルスビーコンは SDK が繋がっていなければ何もしません。main は init を飛ばすときに `onUnavailable` を呼び、Sentry が無かった頃の upstream のクラッシュレポーター（`--crash-reporter-directory` などの指定時だけ手元に保存、開発ビルドは送信しない）に戻します。
+- CI（`CI` / `GITHUB_ACTIONS`）で `VSCODE_DEV` 無しのパッケージ版を動かすスモークテストは、今までどおり `local` で送ります（`paradisSentryEnvironment`）。
+- モバイル: `app/mobile/src/sentryRuntime.ts` が `__DEV__` のとき `enabled: false`（JS のイベントとトランザクション）と `enableNative: false`（sentry-cocoa を起動しない。ネイティブのクラッシュと App Hang はこちら）を返します。ネイティブ側は JS の init からしか起動しない（`ios/` に `RNSentrySDK.start` は無い）ので、これで両方止まります。
+- 開発ビルドで Sentry への送信を確かめたいときは、一時的に判定を外して起動します（コミットしない）。
+
 ## Sentry の既製の固まり検知（eventLoopBlockIntegration）は配布版で動かない（W2-33、2026-09-29）
 
 main の固まりの検知は、`@sentry/electron/native` の `eventLoopBlockIntegration` を使う案（Q125 A）で始めたが、配布版では動かないことが分かり、fork 所有の自作の見張りに切り替えた（`healthBeacon/node/paradisMainHangWatchdog.ts`）。インストール済みの配布版（Electron 43.6.0、Node 24.20、`process.versions.modules` 148）を `ELECTRON_RUN_AS_NODE=1` で動かして確かめた理由は 2 つ。
