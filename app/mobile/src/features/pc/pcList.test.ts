@@ -112,7 +112,7 @@ describe('グループ化', () => {
 describe('絞り込み・検索・アーカイブ', () => {
 	test('状態とスペースの両方で絞れる', () => {
 		const sections = buildPcList(input({
-			filter: { states: ['working', 'waiting'], spaces: ['w2'], query: '' },
+			filter: { kind: 'all', states: ['working', 'waiting'], spaces: ['w2'], query: '' },
 			terminals: [term('a', 'w1', 'working'), term('b', 'w2', 'working'), term('c', 'w2', undefined), term('d', 'w2', 'permission')],
 		}));
 		expect(keys(sections[0]?.rows ?? [])).toEqual(['d', 'b']);
@@ -125,6 +125,38 @@ describe('絞り込み・検索・アーカイブ', () => {
 		expect(buildPcList(input({ terminals, filter: { ...EMPTY_PC_LIST_FILTER, query: 'none' } }))).toEqual([]);
 	});
 
+	test('種類で、エージェントだけ・ふつうのターミナルだけに絞れる', () => {
+		const terminals = [term('a', 'w1', 'working'), term('b', 'w1', undefined, 'zsh', 2, false), term('c', 'w2', undefined)];
+		const rows = (kind: 'all' | 'agent' | 'terminal') => keys(buildPcList(input({ terminals, filter: { ...EMPTY_PC_LIST_FILTER, kind } }))[0]?.rows ?? []);
+		expect({ all: rows('all'), agent: rows('agent'), terminal: rows('terminal') }).toEqual({ all: ['a', 'b', 'c'], agent: ['a', 'c'], terminal: ['b'] });
+	});
+
+	test('状態はエージェントにだけ効く（待機を選んでもふつうのターミナルは混ざらない・ターミナルだけのときは状態を見ない）', () => {
+		const terminals = [term('a', 'w1', undefined), term('b', 'w1', undefined, 'zsh', 2, false), term('c', 'w1', 'working')];
+		const rows = (kind: 'all' | 'terminal') => keys(buildPcList(input({ terminals, filter: { ...EMPTY_PC_LIST_FILTER, kind, states: ['idle'] } }))[0]?.rows ?? []);
+		expect({ all: rows('all'), terminal: rows('terminal') }).toEqual({ all: ['a'], terminal: ['b'] });
+	});
+
+	test('PC から agent の無い形で届くターミナルもターミナルとして扱い、状態のグループでは最後の「ターミナル」の段に入る', () => {
+		const plain: PcListTerminal & { ws?: string } = { terminalKey: 'p', id: 3, windowId: 1, title: 'zsh', ws: 'w1' };
+		const terminals = [term('a', 'w1', undefined), plain, term('c', 'w1', 'working')];
+		const kindRows = keys(buildPcList(input({ terminals, filter: { ...EMPTY_PC_LIST_FILTER, kind: 'terminal' } }))[0]?.rows ?? []);
+		const grouped = buildPcList(input({ terminals, group: 'state' })).map(section => [section.title, keys(section.rows)]);
+		expect({ kindRows, grouped }).toEqual({ kindRows: ['p'], grouped: [['実行中', ['c']], ['待機', ['a']], ['ターミナル', ['p']]] });
+	});
+
+	test('ターミナルだけのときは、残っている状態の選択を件数に数えない', () => {
+		expect([
+			filterCount({ kind: 'all', states: ['idle'], spaces: ['w1'] }),
+			filterCount({ kind: 'terminal', states: ['idle'], spaces: ['w1'] }),
+		]).toEqual([2, 1]);
+	});
+
+	test('種類を絞っている間は、ターミナルの無いスペースの空の段を出さない', () => {
+		const sections = buildPcList(input({ group: 'space', terminals: [term('a', 'w1', undefined)], filter: { ...EMPTY_PC_LIST_FILTER, kind: 'agent' } }));
+		expect(sections.map(section => section.key)).toEqual(['space:w1']);
+	});
+
 	test('アーカイブしたものは一覧に出ず、アーカイブの一覧にだけ出る', () => {
 		const terminals = [term('a', 'w1', undefined), term('b', 'w1', 'working')];
 		const archivedKeys = new Set(['a']);
@@ -133,7 +165,7 @@ describe('絞り込み・検索・アーカイブ', () => {
 	});
 
 	test('絞り込みの数と選択の出し入れ', () => {
-		expect(filterCount({ states: ['working'], spaces: ['w1', 'w2'], query: 'x' })).toBe(3);
+		expect(filterCount({ kind: 'all', states: ['working'], spaces: ['w1', 'w2'] })).toBe(3);
 		expect(toggleValue(['a', 'b'], 'a')).toEqual(['b']);
 		expect(toggleValue(['a'], 'b')).toEqual(['a', 'b']);
 	});

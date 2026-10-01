@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.11.1',
+		date: '2026-10-02',
+		items: [
+			{
+				icon: 'funnel-outline',
+				title: 'PC の画面の絞り込みで、エージェントだけ・ターミナルだけを表示できるようになりました',
+				body: '絞り込みの上の「すべて／エージェント／ターミナル」で選びます。状態の絞り込みはエージェントにだけ効くようになり、「待機」を選んでもふつうのターミナルは混ざりません。',
+			},
+		],
+	},
+	{
 		version: '0.11.0',
 		date: '2026-10-01',
 		items: [

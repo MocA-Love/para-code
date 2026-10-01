@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { HomeStatusBucket } from '../../homeSort.js';
-import { DEFAULT_PC_LIST_GROUP, EMPTY_PC_LIST_FILTER, PC_LIST_GROUP_OPTIONS, STATE_SECTIONS, type PcListFilter, type PcListGroup } from './pcList.js';
+import { DEFAULT_PC_LIST_GROUP, EMPTY_PC_LIST_FILTER, PC_LIST_GROUP_OPTIONS, PC_LIST_KIND_OPTIONS, STATE_SECTIONS, type PcListFilter, type PcListGroup, type PcListKind } from './pcList.js';
 
 /**
  * PC の画面の一覧の表示条件のうち、アプリを終了しても残すもの（保存形式と、その読み書きの純関数）。
@@ -11,7 +11,7 @@ import { DEFAULT_PC_LIST_GROUP, EMPTY_PC_LIST_FILTER, PC_LIST_GROUP_OPTIONS, STA
  *  - グループ（全体で1つ）。並び順は既存の `homeListPreferences`（`appState.ts`）が全体で1つ持っているので、
  *    それと同じ単位にする。「一覧をどう読むか」は利用者の癖で、PC ごとに変える理由が薄く、
  *    新しく足した PC にもそのまま効いてほしい
- *  - 絞り込みの状態とスペース、畳んだ段（PC ごと）。スペースの ID と段の鍵（`space:<id>`）は PC の中でしか
+ *  - 絞り込みの種類・状態・スペース、畳んだ段（PC ごと）。スペースの ID と段の鍵（`space:<id>`）は PC の中でしか
  *    意味を持たない。状態の絞り込みは同じシートでスペースと一緒に選び、「クリア」で一緒に消えるので、同じ単位に揃える
  *
  * 残さないもの: 検索語と検索欄を開いているか（その場の入力。次に開いたとき前の語で絞られていると
@@ -21,6 +21,8 @@ import { DEFAULT_PC_LIST_GROUP, EMPTY_PC_LIST_FILTER, PC_LIST_GROUP_OPTIONS, STA
 
 /** PC ごとに残す表示条件。 */
 export interface PcListViewOfPc {
+	/** 種類（エージェント／ターミナル）。古い保存値には無いので、読むときに `all` へ寄せる。 */
+	readonly kind: PcListKind;
 	readonly states: readonly HomeStatusBucket[];
 	readonly spaces: readonly string[];
 	/** 畳んだ段の鍵（`PcListSection.key`）。 */
@@ -33,7 +35,7 @@ export interface PcListViewSaved {
 	readonly byPc: Readonly<Record<string, PcListViewOfPc>>;
 }
 
-export const EMPTY_PC_LIST_VIEW_OF_PC: PcListViewOfPc = { states: [], spaces: [], collapsed: [] };
+export const EMPTY_PC_LIST_VIEW_OF_PC: PcListViewOfPc = { kind: 'all', states: [], spaces: [], collapsed: [] };
 
 export const DEFAULT_PC_LIST_VIEW: PcListViewSaved = { group: DEFAULT_PC_LIST_GROUP, byPc: {} };
 
@@ -42,6 +44,7 @@ export const MAX_PC_LIST_VIEW_KEYS = 64;
 
 const BUCKETS: ReadonlySet<string> = new Set(STATE_SECTIONS.map(section => section.bucket));
 const GROUPS: ReadonlySet<string> = new Set(PC_LIST_GROUP_OPTIONS.map(option => option.value));
+const KINDS: ReadonlySet<string> = new Set(PC_LIST_KIND_OPTIONS.map(option => option.value));
 
 function uniqueStrings(value: unknown, accept: (item: string) => boolean): string[] {
 	if (!Array.isArray(value)) {
@@ -57,7 +60,7 @@ function uniqueStrings(value: unknown, accept: (item: string) => boolean): strin
 }
 
 function isEmptyView(view: PcListViewOfPc): boolean {
-	return view.states.length === 0 && view.spaces.length === 0 && view.collapsed.length === 0;
+	return view.kind === 'all' && view.states.length === 0 && view.spaces.length === 0 && view.collapsed.length === 0;
 }
 
 /** 保存値を読む。壊れた値・知らない値は捨てて既定に寄せる。 */
@@ -73,8 +76,9 @@ export function parsePcListView(raw: unknown): PcListViewSaved {
 			if (typeof value !== 'object' || value === null) {
 				continue;
 			}
-			const entry = value as { states?: unknown; spaces?: unknown; collapsed?: unknown };
+			const entry = value as { kind?: unknown; states?: unknown; spaces?: unknown; collapsed?: unknown };
 			const view: PcListViewOfPc = {
+				kind: typeof entry.kind === 'string' && KINDS.has(entry.kind) ? entry.kind as PcListKind : 'all',
 				states: uniqueStrings(entry.states, item => BUCKETS.has(item)) as HomeStatusBucket[],
 				spaces: uniqueStrings(entry.spaces, () => true),
 				collapsed: uniqueStrings(entry.collapsed, () => true),
@@ -96,6 +100,7 @@ export function pcListViewOf(saved: PcListViewSaved, pcId: string | undefined): 
 export function withPcListView(saved: PcListViewSaved, pcId: string, edit: (view: PcListViewOfPc) => PcListViewOfPc): PcListViewSaved {
 	const edited = edit(pcListViewOf(saved, pcId));
 	const next: PcListViewOfPc = {
+		kind: edited.kind,
 		states: edited.states.slice(-MAX_PC_LIST_VIEW_KEYS),
 		spaces: edited.spaces.slice(-MAX_PC_LIST_VIEW_KEYS),
 		collapsed: edited.collapsed.slice(-MAX_PC_LIST_VIEW_KEYS),
@@ -147,5 +152,5 @@ export function withCollapsedKey(collapsed: readonly string[], key: string, coll
  */
 export function effectivePcListFilter(view: PcListViewOfPc, query: string, spaceIds: readonly string[]): PcListFilter {
 	const spaces = spaceIds.length > 0 ? view.spaces.filter(id => spaceIds.includes(id)) : view.spaces;
-	return { ...EMPTY_PC_LIST_FILTER, states: view.states, spaces, query };
+	return { ...EMPTY_PC_LIST_FILTER, kind: view.kind, states: view.states, spaces, query };
 }
