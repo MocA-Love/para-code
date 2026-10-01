@@ -19,6 +19,7 @@ import { reuseWorkspaceState } from './workspaceIdentity.js';
 import { ResumeFrameBuffer } from './resumeFrameBuffer.js';
 import type { RelayWindowHost } from './relayHosts.js';
 import { BACKGROUND_GRACE_CAPABILITY } from './backgroundGraceCapability.js';
+import type { BrowserInput } from './browserKeys.js';
 import { APP_PROTOCOL_VERSION, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -3960,7 +3961,7 @@ export class MobileController {
 	}
 
 	/** 入力イベントを送る（正規化座標）。 */
-	browserInput(input: { kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate'; nx?: number; ny?: number; dy?: number; dx?: number; text?: string; url?: string }): void {
+	browserInput(input: BrowserInput): void {
 		if (this.isLiveAvailable()) {
 			this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'input', ...input })));
 		}

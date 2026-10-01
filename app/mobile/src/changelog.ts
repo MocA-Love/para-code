@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.10.2',
+		date: '2026-10-01',
+		items: [
+			{
+				icon: 'create-outline',
+				title: 'ブラウザの画面から、PC のページへ文字とキーを入力できるようになりました',
+				body: '下のツールバーのキーボードのボタンで入力欄が出ます。打った文字は確定してから送り、Enter・⌫・Tab・矢印・Esc は入力欄の上のキーで送れます（キーを送るには PC の Para Code の更新が必要です）。',
+			},
+		],
+	},
+	{
 		version: '0.10.1',
 		date: '2026-09-29',
 		headline: '画面を「PC → スペース → セッション」の順に作り直しました',
