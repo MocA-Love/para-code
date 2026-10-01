@@ -40,7 +40,7 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
-		version: '0.10.2',
+		version: '0.11.0',
 		date: '2026-10-01',
 		items: [
 			{

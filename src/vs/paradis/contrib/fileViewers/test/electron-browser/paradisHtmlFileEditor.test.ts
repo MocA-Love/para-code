@@ -31,6 +31,7 @@ import { IEditorService } from '../../../../../workbench/services/editor/common/
 import { TestStorageService, TestWorkspaceTrustManagementService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisHtmlFileEditor } from '../../electron-browser/paradisHtmlFileEditor.js';
 import { ParadisHtmlFileInput } from '../../electron-browser/paradisHtmlFileInput.js';
+import { notifyParadisWebviewSignal, ParadisWebviewSignalCode } from '../../../sentry/common/paradisWebviewSignals.js';
 
 class TestParadisHtmlFileEditor extends ParadisHtmlFileEditor {
 
@@ -242,6 +243,7 @@ suite('ParadisHtmlFileEditor', () => {
 		const scroll = disposables.add(new Emitter<{ scrollYPercentage: number }>());
 		const writes: { file: string; restoreTo: number | undefined; initialScrollProgress: number }[] = [];
 		const webview = {
+			origin: 'scroll-test-origin',
 			contentOptions: {},
 			initialScrollProgress: 0,
 			onFatalError: Event.None,
@@ -272,6 +274,8 @@ suite('ParadisHtmlFileEditor', () => {
 		const context = Object.create(null);
 
 		await editor.setInput(firstInput, undefined, context, CancellationToken.None);
+		// webview が書き込みを終えた（白紙ではない）と知らせてくる。
+		notifyParadisWebviewSignal({ origin: 'scroll-test-origin', code: ParadisWebviewSignalCode.ContentApplied });
 		scroll.fire({ scrollYPercentage: 0.25 });
 		// 別の種類のエディタへ切り替えて戻る（ペインは clearInput される）。
 		editor.clearInput();
@@ -289,6 +293,48 @@ suite('ParadisHtmlFileEditor', () => {
 			{ file: '', restoreTo: undefined, initialScrollProgress: 0 },
 			{ file: 'index', restoreTo: 0.25, initialScrollProgress: 0.25 },
 		]);
+	});
+
+	test('sends the page again when it was left before the webview confirmed showing it', async () => {
+		const first = URI.file('/workspace/site/index.html');
+		const scroll = disposables.add(new Emitter<{ scrollYPercentage: number }>());
+		const writes: { file: string; restoreTo: number | undefined; initialScrollProgress: number }[] = [];
+		const webview = {
+			origin: 'scroll-test-origin',
+			contentOptions: {},
+			initialScrollProgress: 0,
+			onFatalError: Event.None,
+			onDidScroll: scroll.event,
+			setHtml: (html: string) => {
+				writes.push({
+					file: html.includes('other') ? 'other' : html ? 'index' : '',
+					restoreTo: /var p=([\d.]+);/.exec(html) ? Number(/var p=([\d.]+);/.exec(html)![1]) : undefined,
+					initialScrollProgress: webview.initialScrollProgress,
+				});
+			},
+			focus: () => { },
+			dispose: () => { },
+			release: () => { },
+			postMessage: async () => true,
+		} as unknown as IOverlayWebview & { initialScrollProgress: number };
+		const textFileService = {
+			read: (resource: URI) => Promise.resolve({ value: resource.path.endsWith('other.html') ? '<p>other</p>' : '<p>index</p>' }),
+		} as unknown as ITextFileService;
+		const fileService = {
+			createWatcher: () => { throw new Error('watching is unavailable in this test'); },
+			onDidWatchError: Event.None,
+		} as unknown as IFileService;
+		const workingCopyService = { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService;
+		const editor = createProductionEditor({ createWebviewOverlay: () => webview } as unknown as IWebviewService, textFileService, fileService);
+		const firstInput = disposables.add(new ParadisHtmlFileInput(first, textFileService, workingCopyService));
+		const context = Object.create(null);
+
+		await editor.setInput(firstInput, undefined, context, CancellationToken.None);
+		// 書き込みの完了を知らせてくる前に別の種類のエディタへ切り替えて戻る。
+		editor.clearInput();
+		await editor.setInput(firstInput, undefined, context, CancellationToken.None);
+
+		deepStrictEqual(writes.map(write => write.file), ['index', 'index']);
 	});
 
 	suite('renderDocument generation contract', () => {
