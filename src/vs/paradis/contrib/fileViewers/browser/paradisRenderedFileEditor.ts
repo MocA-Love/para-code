@@ -302,6 +302,16 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		return this._scroll && isEqual(this._scroll.resource, resource) ? this._scroll.progress : 0;
 	}
 
+	/**
+	 * 表示されたと確かめる前（白紙の監視中）に描画を手放すなら、「同じ内容を表示済み」の目印を外す。
+	 * 外さないと、戻ってきたときに送り直しも監視も起きず、白紙のまま立て直せなくなる。
+	 */
+	private _forgetUnconfirmedRender(): void {
+		if (this._contentWatchdog.value) {
+			this._renderedSource = undefined;
+		}
+	}
+
 	/** webview の中身を空にする（別のファイルを描く前と、閉じたタブの中身を捨てるとき）。 */
 	private _clearDisplayedContent(): void {
 		this._webview?.setHtml('');
@@ -730,6 +740,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 			}
 			// 描画を見せていない間は白紙の監視も止める（復帰させる相手がいない）。
 			// 世代も外しておかないと、遅れて届いたシグナルが監視を張り直してしまう。
+			this._forgetUnconfirmedRender();
 			this._watchdogGeneration = -1;
 			this._contentWatchdog.clear();
 			return false;
@@ -818,6 +829,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	override clearInput(): void {
 		this._inputDisposables.clear();
 		this._renderGeneration++;
+		this._forgetUnconfirmedRender();
 		this._watchdogGeneration = -1;
 		this._contentWatchdog.clear();
 		this._recoveryPolicy.reset();
