@@ -24,8 +24,8 @@ import {
 	archivedTerminals,
 	buildPcList,
 	filterCount,
-	kindLabel,
 	groupShortLabel,
+	kindLabel,
 	resolveTerminalSpace,
 	sortShortLabel,
 	withSort,
@@ -252,7 +252,7 @@ export function PcScreen({ placement, onCollapse }: {
 		if (sections.length === 0) {
 			return (
 				<EmptyState
-					title="該当するエージェントがありません"
+					title="該当するエージェント・ターミナルがありません"
 					body="検索語や絞り込みを変えてください。"
 					action={{
 						label: '絞り込みをクリア',

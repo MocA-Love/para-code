@@ -120,8 +120,15 @@ export const usePcListView = create<PcListViewStore>()((set, get) => {
 		},
 		setFilter(pcId, filter) {
 			const view = pcListViewOf(get().saved, pcId);
-			if (view.kind !== filter.kind || !sameItems(view.states, filter.states) || !sameItems(view.spaces, filter.spaces)) {
-				apply(saved => withPcListView(saved, pcId, current => ({ ...current, kind: filter.kind, states: filter.states, spaces: filter.spaces })));
+			// 変えた軸だけを変更として積む。読み込みの前に種類だけを変えたとき、読み込んだ状態とスペースを
+			// その時点のメモリの値（空）で上書きしないため。
+			const changed: Partial<Pick<PcListFilter, 'kind' | 'states' | 'spaces'>> = {
+				...(view.kind !== filter.kind ? { kind: filter.kind } : {}),
+				...(!sameItems(view.states, filter.states) ? { states: filter.states } : {}),
+				...(!sameItems(view.spaces, filter.spaces) ? { spaces: filter.spaces } : {}),
+			};
+			if (Object.keys(changed).length > 0) {
+				apply(saved => withPcListView(saved, pcId, current => ({ ...current, ...changed })));
 			}
 		},
 		setQuery(pcId, query) {

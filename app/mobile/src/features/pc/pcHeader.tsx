@@ -309,6 +309,8 @@ const styles = StyleSheet.create({
 		borderTopColor: colors.border,
 	},
 	chip: {
+		// 種類の名前（「エージェント・2」）で伸びたとき、iPad の狭い左の列でも並び替え・グループのボタンを押し出さない。
+		flexShrink: 1,
 		flexDirection: 'row',
 		alignItems: 'center',
 		gap: space.xs,
@@ -323,6 +325,7 @@ const styles = StyleSheet.create({
 		backgroundColor: colors.raised,
 	},
 	chipText: {
+		flexShrink: 1,
 		fontSize: type.meta,
 		color: colors.textDim,
 	},
