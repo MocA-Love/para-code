@@ -7,6 +7,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as Sentry from '@sentry/electron/renderer';
+import { env } from '../../../../base/common/process.js';
+import { isParadisSentryDevelopmentBuild } from '../common/paradisSentryConfiguration.js';
 import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisDiagnosticSeverity, ParadisSpanAttributes, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
@@ -30,51 +32,63 @@ import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepa
 const PARADIS_ROUTINE_TRACE_SAMPLE_RATE = 1;
 const PARADIS_ROUTINE_TRACE_PREFIXES = ['para.workspaceSwitch.'];
 
-try {
-	Sentry.init({
-		sendDefaultPii: false,
-		enableLogs: false,
-		tracesSampler: context => {
-			if (!context.name.startsWith('para.')) {
-				return 0;
-			}
-			return PARADIS_ROUTINE_TRACE_PREFIXES.some(prefix => context.name.startsWith(prefix))
-				? PARADIS_ROUTINE_TRACE_SAMPLE_RATE
-				: 1;
-		},
-		beforeBreadcrumb: breadcrumb => paradisPrepareSentryBreadcrumb(breadcrumb),
-		beforeSend: event => paradisPrepareSentryEvent(event, 'renderer'),
-		beforeSendTransaction: event => paradisPrepareSentryTransaction(event, 'renderer'),
-	});
-
-	Sentry.setTags({
-		'para.scope': 'unknown',
-		'process.type': 'renderer',
-	});
-	configureParadisDiagnosticTagSetter((key, value) => Sentry.setTag(key, value));
-	configureParadisSpanRunner((feature, operation, attributes, callback) =>
-		startParadisRendererSpan(feature, operation, callback, attributes));
-	configureParadisSpanAttributeSetter(attributes => Sentry.getActiveSpan()?.setAttributes(attributes));
-	configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra, severity) => {
-		captureParadisRendererException(scope, feature, operation, error, safeExtra, severity);
-	});
-} catch (error) {
-	console.error('[Para Code] Failed to initialize renderer Sentry.', error);
+// Builds run out of sources do not report (see isParadisSentryDevelopmentBuild). Main skips its own
+// init under the same test, so there would be nothing to forward renderer events to anyway. Without a
+// client, the capture and span functions below are no-ops, and the diagnostic reporter stays unset.
+if (!isParadisSentryDevelopmentBuild(env)) {
+	initializeParadisRendererSentry();
+	reportInsecureRendererContext();
 }
 
-try {
-	// Regression sentinel. `vscode-file` must stay registered as a secure scheme, otherwise the
-	// workbench is not a secure context, `crypto.subtle` is undefined, and every webview (Markdown
-	// preview, the Para Code file viewers, the changelog, extension webviews) fails to mount.
-	// Upstream surfaces this only as an unhandled rejection the first time a webview is opened, and
-	// the scope filter drops upstream-only events — so report it here instead: once per window, at
-	// startup, whether or not the user ever opens a webview.
-	if (!globalThis.isSecureContext || !globalThis.crypto?.subtle) {
-		captureParadisRendererException('patched', 'webview', 'insecure-context',
-			new Error('Renderer is not a secure context, so crypto.subtle is unavailable and webviews cannot mount'));
+function initializeParadisRendererSentry(): void {
+	try {
+		Sentry.init({
+			sendDefaultPii: false,
+			enableLogs: false,
+			tracesSampler: context => {
+				if (!context.name.startsWith('para.')) {
+					return 0;
+				}
+				return PARADIS_ROUTINE_TRACE_PREFIXES.some(prefix => context.name.startsWith(prefix))
+					? PARADIS_ROUTINE_TRACE_SAMPLE_RATE
+					: 1;
+			},
+			beforeBreadcrumb: breadcrumb => paradisPrepareSentryBreadcrumb(breadcrumb),
+			beforeSend: event => paradisPrepareSentryEvent(event, 'renderer'),
+			beforeSendTransaction: event => paradisPrepareSentryTransaction(event, 'renderer'),
+		});
+
+		Sentry.setTags({
+			'para.scope': 'unknown',
+			'process.type': 'renderer',
+		});
+		configureParadisDiagnosticTagSetter((key, value) => Sentry.setTag(key, value));
+		configureParadisSpanRunner((feature, operation, attributes, callback) =>
+			startParadisRendererSpan(feature, operation, callback, attributes));
+		configureParadisSpanAttributeSetter(attributes => Sentry.getActiveSpan()?.setAttributes(attributes));
+		configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra, severity) => {
+			captureParadisRendererException(scope, feature, operation, error, safeExtra, severity);
+		});
+	} catch (error) {
+		console.error('[Para Code] Failed to initialize renderer Sentry.', error);
 	}
-} catch (error) {
-	console.error('[Para Code] Failed to report the insecure-context sentinel.', error);
+}
+
+function reportInsecureRendererContext(): void {
+	try {
+		// Regression sentinel. `vscode-file` must stay registered as a secure scheme, otherwise the
+		// workbench is not a secure context, `crypto.subtle` is undefined, and every webview (Markdown
+		// preview, the Para Code file viewers, the changelog, extension webviews) fails to mount.
+		// Upstream surfaces this only as an unhandled rejection the first time a webview is opened, and
+		// the scope filter drops upstream-only events — so report it here instead: once per window, at
+		// startup, whether or not the user ever opens a webview.
+		if (!globalThis.isSecureContext || !globalThis.crypto?.subtle) {
+			captureParadisRendererException('patched', 'webview', 'insecure-context',
+				new Error('Renderer is not a secure context, so crypto.subtle is unavailable and webviews cannot mount'));
+		}
+	} catch (error) {
+		console.error('[Para Code] Failed to report the insecure-context sentinel.', error);
+	}
 }
 
 export function captureParadisRendererException(
