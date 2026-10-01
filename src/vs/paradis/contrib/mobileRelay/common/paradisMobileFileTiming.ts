@@ -120,7 +120,8 @@ export class ParadisMobileFileTiming {
 		try {
 			this.mark('send');
 			this.recorder({
-				safe_request_id: this.requestId,
+				// id は相手（ペアリング済みのアプリ）が決める値なので、長さだけは抑えて載せる。
+				safe_request_id: this.requestId.slice(0, 64),
 				safe_kind: this.kind,
 				safe_outcome: this.outcome,
 				safe_total_ms: this.now() - this.receivedAt,
