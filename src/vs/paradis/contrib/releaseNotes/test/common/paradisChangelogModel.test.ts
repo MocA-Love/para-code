@@ -8,13 +8,31 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { formatInlineMarkdown, mergeChangelogs, parseParadisChangelog } from '../../common/paradisChangelogModel.js';
+import { formatInlineMarkdown, mergeChangelogs, PARADIS_CHANGELOG_DEFAULT_CATEGORY, parseParadisChangelog } from '../../common/paradisChangelogModel.js';
 
 suite('Paradis Changelog Model', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	suite('parseParadisChangelog', () => {
+
+		test('keeps items of a release that has no category heading', () => {
+			const md = [
+				'## paracode-149（2026-10-01）',
+				'',
+				'- Markdown のプレビュー表示でも拡大縮小できるようになりました',
+				'',
+				'## paracode-148（2026-10-01）',
+				'',
+				'### 修正',
+				'',
+				'- 見つかった語が見えなかったのを直しました',
+			].join('\n');
+			assert.deepStrictEqual(parseParadisChangelog(md).map(release => release.sections), [
+				[{ category: PARADIS_CHANGELOG_DEFAULT_CATEGORY, items: ['Markdown のプレビュー表示でも拡大縮小できるようになりました'] }],
+				[{ category: '修正', items: ['見つかった語が見えなかったのを直しました'] }],
+			]);
+		});
 
 		test('parses releases, sections and items in order', () => {
 			const md = [
@@ -75,7 +93,7 @@ suite('Paradis Changelog Model', () => {
 			assert.strictEqual(releases[1].version, 8);
 		});
 
-		test('ignores stray list items before any section heading', () => {
+		test('collects list items before the first section heading into the default category', () => {
 			const md = [
 				'## paracode-5（2026-01-01）',
 				'',
@@ -88,9 +106,10 @@ suite('Paradis Changelog Model', () => {
 
 			const releases = parseParadisChangelog(md);
 
-			assert.strictEqual(releases.length, 1);
-			assert.strictEqual(releases[0].sections.length, 1);
-			assert.deepStrictEqual(releases[0].sections[0].items, ['正しい項目']);
+			assert.deepStrictEqual(releases.map(release => release.sections), [[
+				{ category: PARADIS_CHANGELOG_DEFAULT_CATEGORY, items: ['孤立した項目'] },
+				{ category: '改善', items: ['正しい項目'] },
+			]]);
 		});
 
 		test('returns an empty array for content without releases', () => {
