@@ -45,11 +45,14 @@ import { inlineParadisMarkdownMedia, PARADIS_INLINE_MEDIA_LIMITS, PARADIS_INLINE
 import { paradisMarkdownLinkToOpen, rewriteParadisMarkdownLinks } from './paradisMarkdownLinks.js';
 import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMermaidExtension } from './paradisMarkdownMermaid.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
+import { ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from './paradisViewerZoom.js';
 import { PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
 
 export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 
 	static readonly ID = PARADIS_MARKDOWN_EDITOR_ID;
+
+	private readonly _zoom: ParadisViewerZoomControls;
 
 	constructor(
 		group: IEditorGroup,
@@ -73,6 +76,12 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		@IOpenerService private readonly _openerService: IOpenerService,
 	) {
 		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService, textResourceConfigurationService, editorService, editorGroupService);
+		// 拡大縮小はページ内のスクリプトで反映する（Markdown はスクリプトを常に許可している）。
+		this._zoom = this._register(new ParadisViewerZoomControls(() => void this.webview?.postMessage(paradisViewerZoomMessage(this._zoom.factor))));
+	}
+
+	protected override onCreateToolbar(toolbar: HTMLElement): void {
+		this._zoom.createButtons(toolbar);
 	}
 
 	// Mermaid ブロック（```mermaid```）を webview 内で mermaid.js に描画させ、スクロール位置の復元と
@@ -162,6 +171,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		<meta charset="utf-8">
 		<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; media-src https: data:; style-src 'nonce-${nonce}'; font-src https: data:;${scriptSrc}">
 		<style nonce="${nonce}">
+			html { zoom: ${this._zoom.factor}; }
 			${DEFAULT_MARKDOWN_STYLES}
 			${PARADIS_FRONTMATTER_STYLES}
 			${PARADIS_INLINE_MEDIA_STYLES}
@@ -173,6 +183,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	<body class="paradis-markdown-body">
 		${frontMatter.htmlPrefix}${media.html}
 		${mermaidEnabled ? this._renderMermaidScripts(nonce, mermaidScriptSource!) : ''}
+		${paradisViewerZoomScript(nonce)}
 		${this.viewerPageScripts(resource, nonce)}
 	</body>
 </html>`;
