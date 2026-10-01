@@ -26,7 +26,8 @@ import { TestThemeService } from '../../../../../platform/theme/test/common/test
 import { IOverlayWebview, IWebviewService } from '../../../../../workbench/contrib/webview/browser/webview.js';
 import { ITextFileService } from '../../../../../workbench/services/textfile/common/textfiles.js';
 import { IWorkingCopyService } from '../../../../../workbench/services/workingCopy/common/workingCopyService.js';
-import { TestEditorGroupView, TestLayoutService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
+import { TestEditorGroupsService, TestEditorGroupView, TestLayoutService, TestTextResourceConfigurationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
+import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { TestStorageService, TestWorkspaceTrustManagementService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisHtmlFileEditor } from '../../electron-browser/paradisHtmlFileEditor.js';
 import { ParadisHtmlFileInput } from '../../electron-browser/paradisHtmlFileInput.js';
@@ -130,6 +131,9 @@ suite('ParadisHtmlFileEditor', () => {
 			new TestLayoutService(),
 			new TestConfigurationService(),
 			new TestNotificationService(),
+			new TestTextResourceConfigurationService(),
+			Object.create(null) as IEditorService,
+			new TestEditorGroupsService(),
 			sharedProcessService,
 			createWorkspaceContextService(workspaceFolder),
 			remote.agent ?? createRemoteAgentService(),
@@ -153,6 +157,9 @@ suite('ParadisHtmlFileEditor', () => {
 			new TestLayoutService(),
 			new TestConfigurationService(),
 			new TestNotificationService(),
+			new TestTextResourceConfigurationService(),
+			Object.create(null) as IEditorService,
+			new TestEditorGroupsService(),
 			createSharedProcessService(),
 			createWorkspaceContextService(undefined),
 			createRemoteAgentService(),
@@ -170,6 +177,7 @@ suite('ParadisHtmlFileEditor', () => {
 		const webview = {
 			contentOptions: {},
 			onFatalError: Event.None,
+			onDidScroll: Event.None,
 			setHtml: (html: string) => {
 				renderedHtml = html;
 				contentOptionsAtSetHtml = {
@@ -226,6 +234,61 @@ suite('ParadisHtmlFileEditor', () => {
 			rerenders: [1, 0],
 			zoomBakedIn: true,
 		});
+	});
+
+	test('keeps the page when coming back to the same file, and restores the scroll position for another one', async () => {
+		const first = URI.file('/workspace/site/index.html');
+		const second = URI.file('/workspace/site/other.html');
+		const scroll = disposables.add(new Emitter<{ scrollYPercentage: number }>());
+		const writes: { file: string; restoreTo: number | undefined; initialScrollProgress: number }[] = [];
+		const webview = {
+			contentOptions: {},
+			initialScrollProgress: 0,
+			onFatalError: Event.None,
+			onDidScroll: scroll.event,
+			setHtml: (html: string) => {
+				writes.push({
+					file: html.includes('other') ? 'other' : html ? 'index' : '',
+					restoreTo: /var p=([\d.]+);/.exec(html) ? Number(/var p=([\d.]+);/.exec(html)![1]) : undefined,
+					initialScrollProgress: webview.initialScrollProgress,
+				});
+			},
+			focus: () => { },
+			dispose: () => { },
+			release: () => { },
+			postMessage: async () => true,
+		} as unknown as IOverlayWebview & { initialScrollProgress: number };
+		const textFileService = {
+			read: (resource: URI) => Promise.resolve({ value: resource.path.endsWith('other.html') ? '<p>other</p>' : '<p>index</p>' }),
+		} as unknown as ITextFileService;
+		const fileService = {
+			createWatcher: () => { throw new Error('watching is unavailable in this test'); },
+			onDidWatchError: Event.None,
+		} as unknown as IFileService;
+		const workingCopyService = { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService;
+		const editor = createProductionEditor({ createWebviewOverlay: () => webview } as unknown as IWebviewService, textFileService, fileService);
+		const firstInput = disposables.add(new ParadisHtmlFileInput(first, textFileService, workingCopyService));
+		const secondInput = disposables.add(new ParadisHtmlFileInput(second, textFileService, workingCopyService));
+		const context = Object.create(null);
+
+		await editor.setInput(firstInput, undefined, context, CancellationToken.None);
+		scroll.fire({ scrollYPercentage: 0.25 });
+		// 別の種類のエディタへ切り替えて戻る（ペインは clearInput される）。
+		editor.clearInput();
+		await editor.setInput(firstInput, undefined, context, CancellationToken.None);
+		// 同じペインで別の HTML を開き、元のファイルへ戻る。
+		editor.clearInput();
+		await editor.setInput(secondInput, undefined, context, CancellationToken.None);
+		editor.clearInput();
+		await editor.setInput(firstInput, undefined, context, CancellationToken.None);
+
+		deepStrictEqual(writes, [
+			{ file: 'index', restoreTo: 0, initialScrollProgress: 0 },
+			{ file: '', restoreTo: undefined, initialScrollProgress: 0 },
+			{ file: 'other', restoreTo: 0, initialScrollProgress: 0 },
+			{ file: '', restoreTo: undefined, initialScrollProgress: 0 },
+			{ file: 'index', restoreTo: 0.25, initialScrollProgress: 0.25 },
+		]);
 	});
 
 	suite('renderDocument generation contract', () => {
@@ -286,6 +349,7 @@ suite('ParadisHtmlFileEditor', () => {
 				Object.create(null) as IFileService, Object.create(null) as ITextModelService,
 				disposables.add(new TestInstantiationService()), new TestLayoutService(),
 				new TestConfigurationService(), new TestNotificationService(),
+				new TestTextResourceConfigurationService(), Object.create(null) as IEditorService, new TestEditorGroupsService(),
 				createSharedProcessService(directory => { mounted = directory; return Promise.resolve(PREVIEW_MOUNT); }),
 				workspace, createRemoteAgentService(), createRemoteAuthorityResolverService(), createTunnelService(),
 				disposables.add(new TestWorkspaceTrustManagementService())));
