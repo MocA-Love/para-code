@@ -16,6 +16,7 @@ import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reducePar
 import { CenterSpinner } from './codeParts.js';
 import { buildCodeHtml, buildMarkdownHtml, type ViewerKind, type ViewerMode } from './fileViewerModel.js';
 import type { FileContent } from './useFileContent.js';
+import { measureBuild, type FileViewerLoadTrace } from './fileViewerTiming.js';
 import { buildDocxHtml, buildImageHtml, fileExt } from './viewerHtml.js';
 
 /**
@@ -37,7 +38,7 @@ import { buildDocxHtml, buildImageHtml, fileExt } from './viewerHtml.js';
  * 書き込みは legacy API の Base64 エンコーディング指定で行う（デコードがネイティブ側で走るため、
  * 数十MBのファイルでもJSスレッドをブロックしない）。
  */
-export function NativeFileView({ data, ext }: { data: string; ext: string }) {
+export function NativeFileView({ data, ext, trace }: { data: string; ext: string; trace?: FileViewerLoadTrace }) {
 	const [uri, setUri] = useState<string | undefined>(undefined);
 	const [error, setError] = useState<string | undefined>(undefined);
 	useEffect(() => {
@@ -50,7 +51,9 @@ export function NativeFileView({ data, ext }: { data: string; ext: string }) {
 					throw new Error('cache directory unavailable');
 				}
 				const target = `${dir}pm-file-view-${Date.now()}.${ext}`;
+				const writeStartedAt = Date.now();
 				await LegacyFileSystem.writeAsStringAsync(target, data, { encoding: LegacyFileSystem.EncodingType.Base64 });
+				trace?.fileWritten(Date.now() - writeStartedAt);
 				written = target;
 				if (!cancelled) {
 					setUri(target);
@@ -71,7 +74,7 @@ export function NativeFileView({ data, ext }: { data: string; ext: string }) {
 				void LegacyFileSystem.deleteAsync(written, { idempotent: true }).catch(() => { });
 			}
 		};
-	}, [data, ext]);
+	}, [data, ext, trace]);
 	if (error !== undefined) {
 		return <EmptyState icon={CircleAlert} title="ファイルを表示できませんでした" body={error} />;
 	}
@@ -88,6 +91,8 @@ export function NativeFileView({ data, ext }: { data: string; ext: string }) {
 			allowingReadAccessToURL={uri}
 			javaScriptEnabled={false}
 			onShouldStartLoadWithRequest={guardWebViewNavigation}
+			onLoadStart={trace?.loadStarted}
+			onLoadEnd={trace?.loadEnded}
 		/>
 	);
 }
@@ -99,10 +104,13 @@ interface MobileOfficeWebViewProps {
 	readonly javaScriptEnabled: boolean;
 	readonly viewState: Readonly<Record<string, string | number>>;
 	readonly onShouldStartLoadWithRequest: (request: { readonly url: string; readonly isTopFrame?: boolean }) => boolean;
+	/** 計測用。WebView の onLoadStart / onLoadEnd をそのまま渡す。 */
+	readonly onLoadStart?: () => void;
+	readonly onLoadEnd?: () => void;
 }
 
 /** Applies the shared bounded recovery reducer to the isolated mobile Office WebView. */
-export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewState, onShouldStartLoadWithRequest }: MobileOfficeWebViewProps) {
+export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewState, onShouldStartLoadWithRequest, onLoadStart, onLoadEnd }: MobileOfficeWebViewProps) {
 	const snapshot = useMemo<IParadisOfficeRecoverySnapshot>(() => ({
 		source: { mode: 'document', source: { kind: 'file', uri: path, displayName: path.split('/').pop() ?? path } },
 		viewState,
@@ -214,6 +222,8 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 			originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 			javaScriptEnabled={javaScriptEnabled}
 			onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
+			onLoadStart={onLoadStart}
+			onLoadEnd={onLoadEnd}
 			injectedJavaScript={probe}
 			onMessage={event => {
 				try {
@@ -243,6 +253,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 	const text = content?.text;
 	const spreadsheetHtml = content?.xlsx?.html;
 	const binary = content?.binary;
+	const trace = content?.trace;
 	const officeNonce = useMemo(() => (officeKind ? createMobileOfficeNonce() : undefined), [officeKind, spreadsheetHtml, binary]);
 	const guardOfficeNavigation = useCallback((request: { readonly url: string; readonly isTopFrame?: boolean }) => guardMobileOfficeNavigation(request, url => {
 		Alert.alert('外部リンクを開きますか？', url, [
@@ -252,7 +263,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 	}), []);
 	// Markdown のリンクと、開いた行の地は設定 → 色の「選択の印・リンク」。
 	const theme = useThemeColors();
-	const html = useMemo(() => {
+	const built = useMemo(() => measureBuild(() => {
 		if (kind === 'spreadsheet') {
 			return spreadsheetHtml !== undefined && officeNonce !== undefined ? secureMobileOfficeHtml(spreadsheetHtml, officeNonce) : undefined;
 		}
@@ -272,7 +283,14 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 			return buildMarkdownHtml(text, theme);
 		}
 		return buildCodeHtml(text, focusLine, theme);
-	}, [kind, mode, text, spreadsheetHtml, binary, officeNonce, focusLine, name, theme]);
+	}), [kind, mode, text, spreadsheetHtml, binary, officeNonce, focusLine, name, theme]);
+	const html = built.value;
+	useEffect(() => {
+		trace?.viewing(kind, mode);
+		if (html !== undefined) {
+			trace?.htmlBuilt(built.ms, html.length);
+		}
+	}, [trace, built, html, kind, mode]);
 	const officeViewState = useMemo(() => ({
 		mode,
 		...(kind === 'spreadsheet' && content?.xlsx?.sheet !== undefined ? { activeSheetIndex: content.xlsx.sheet } : {}),
@@ -286,7 +304,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 	const allowJs = isFileViewerJavaScriptEnabled(kind, mode, focusLine);
 	let view;
 	if ((kind === 'pdf' || kind === 'av') && binary !== undefined) {
-		view = <NativeFileView data={binary} ext={kind === 'pdf' ? 'pdf' : fileExt(name)} />;
+		view = <NativeFileView data={binary} ext={kind === 'pdf' ? 'pdf' : fileExt(name)} trace={trace} />;
 	} else if (html !== undefined && officeKind) {
 		view = (
 			<MobileOfficeWebView
@@ -296,6 +314,8 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 				javaScriptEnabled={allowJs}
 				viewState={officeViewState}
 				onShouldStartLoadWithRequest={guardOfficeNavigation}
+				onLoadStart={trace?.loadStarted}
+				onLoadEnd={trace?.loadEnded}
 			/>
 		);
 	} else if (html !== undefined) {
@@ -306,6 +326,8 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 				originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 				javaScriptEnabled={allowJs}
 				onShouldStartLoadWithRequest={guardWebViewNavigation}
+				onLoadStart={trace?.loadStarted}
+				onLoadEnd={trace?.loadEnded}
 			/>
 		);
 	} else {

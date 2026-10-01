@@ -5,6 +5,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../appState.js';
 import type { FsReadResult } from '../../store.js';
 import { viewerFetchOf, viewerKindOf } from './fileViewerModel.js';
+import { FileViewerLoadTrace } from './fileViewerTiming.js';
 import { errorMessage } from './scmModel.js';
 import { currentRendererTarget, type CodeSpace } from './useCodeSpace.js';
 
@@ -16,6 +17,8 @@ export interface FileContent {
 	/** PDF・Word・画像・動画・音声のバイナリ（base64）。 */
 	readonly binary?: string;
 	readonly error?: string;
+	/** 開いてから表示し終えるまでの計測（Sentry の `para.mobileFileViewer.display`）。画面が区間を書き足す。 */
+	readonly trace?: FileViewerLoadTrace;
 }
 
 export interface FileContentState {
@@ -42,22 +45,50 @@ export function useFileContent(space: CodeSpace, path: string): FileContentState
 			return undefined;
 		}
 		const current = () => loadGen.current === gen && currentRendererTarget(wsId) === rendererTarget;
-		const load = async (): Promise<FileContent> => {
+		const trace = new FileViewerLoadTrace(fetchKind, path);
+		// 応答そのもの（response）も返すのは、計測で PC 側の記録と突き合わせる要求の id を読むため。
+		const load = async (): Promise<{ readonly value: FileContent; readonly response: object }> => {
 			switch (fetchKind) {
 				case 'xlsx': {
-					const value = await fsXlsx(wsId, path);
-					return { xlsx: { html: value.html, sheets: value.sheets, sheet: value.sheet } };
+					const response = await fsXlsx(wsId, path);
+					return { response, value: { xlsx: { html: response.html, sheets: response.sheets, sheet: response.sheet } } };
 				}
-				case 'pdf': return { binary: (await fsPdf(wsId, path)).data };
-				case 'docx': return { binary: (await fsDocx(wsId, path)).data };
-				case 'media': return { binary: (await fsMedia(wsId, path)).data };
-				case 'text': return { text: await fsRead(wsId, path, true) };
+				case 'pdf': {
+					const response = await fsPdf(wsId, path);
+					return { response, value: { binary: response.data } };
+				}
+				case 'docx': {
+					const response = await fsDocx(wsId, path);
+					return { response, value: { binary: response.data } };
+				}
+				case 'media': {
+					const response = await fsMedia(wsId, path);
+					return { response, value: { binary: response.data } };
+				}
+				case 'text': {
+					const response = await fsRead(wsId, path, true);
+					return { response, value: { text: response } };
+				}
 			}
 		};
 		load()
-			.then(value => { if (current()) { setContent(value); } })
-			.catch((e: unknown) => { if (current()) { setContent({ error: errorMessage(e) }); } });
-		return () => { loadGen.current++; };
+			.then(({ value, response }) => {
+				if (current()) {
+					trace.fetched(response);
+					setContent({ ...value, trace });
+				}
+			})
+			.catch((e: unknown) => {
+				if (current()) {
+					trace.failed();
+					setContent({ error: errorMessage(e) });
+				}
+			});
+		return () => {
+			loadGen.current++;
+			// 表示し終える前に閉じた・読み直した。表示し終えていれば何もしない。
+			trace.cancel();
+		};
 	}, [wsId, rendererTarget, path, fetchKind, fsRead, fsXlsx, fsPdf, fsDocx, fsMedia]);
 
 	const selectSheet = useCallback((index: number) => {
