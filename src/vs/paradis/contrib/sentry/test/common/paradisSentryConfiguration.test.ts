@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisSentryRelease } from '../../common/paradisSentryConfiguration.js';
+import { IParadisSentryProcessEnvironment, isParadisSentryDevelopmentBuild, paradisSentryEnvironment, paradisSentryRelease } from '../../common/paradisSentryConfiguration.js';
 
 suite('paradisSentryRelease', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -25,6 +25,36 @@ suite('paradisSentryRelease', () => {
 			'para-code@1.139.1+abc123',
 			'para-code@1.139.1+abc123',
 			'para-code@1.139.1',
+		]);
+	});
+});
+
+suite('paradisSentryEnvironment', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('skips builds run out of sources and files CI smoke tests of the packaged build under local', () => {
+		const cases: IParadisSentryProcessEnvironment[] = [
+			{},
+			{ VSCODE_DEV: '1' },
+			{ VSCODE_DEV: '1', CI: 'true' },
+			{ VSCODE_DEV: '' },
+			{ CI: 'true' },
+			{ GITHUB_ACTIONS: 'true' },
+			{ CI: 'false' },
+			{ CI: '0', GITHUB_ACTIONS: '' },
+		];
+		assert.deepStrictEqual(cases.map(env => ({
+			skipped: isParadisSentryDevelopmentBuild(env),
+			environment: paradisSentryEnvironment(env),
+		})), [
+			{ skipped: false, environment: 'production' },
+			{ skipped: true, environment: 'local' },
+			{ skipped: true, environment: 'local' },
+			{ skipped: false, environment: 'production' },
+			{ skipped: false, environment: 'local' },
+			{ skipped: false, environment: 'local' },
+			{ skipped: false, environment: 'production' },
+			{ skipped: false, environment: 'production' },
 		]);
 	});
 });

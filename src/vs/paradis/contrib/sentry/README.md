@@ -38,6 +38,13 @@ drop `cause`, and keep only stack frames under `out/vs/**` (extension, `node_mod
 frames are removed). The original error's name or `code` is sent as the `para.error_name` tag only
 when it is identifier-shaped; anything else becomes `Error` / `object`.
 
+Development builds do not send anything (2026-10-01, after 105 issues of local noise had to be
+ignored). On desktop, main, renderer and the shared process all skip `Sentry.init` when `VSCODE_DEV`
+is set (`isParadisSentryDevelopmentBuild` in `common/paradisSentryConfiguration.ts`); CI smoke tests of
+the packaged build still report, under the `local` environment. On mobile, `__DEV__` builds pass
+`enabled: false` and `enableNative: false` (`app/mobile/src/sentryRuntime.ts`), so neither the JS SDK
+nor sentry-cocoa reports.
+
 Each process sends at most three copies of the same normalized error in a ten-minute window. Sentry
 Spike Protection is also enabled on both projects.
 
