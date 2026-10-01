@@ -33,8 +33,10 @@
 //     type==='page' しか数えないため）。
 //   - スコープ外ターゲットへの auto-attach イベントは握りつぶすが、
 //     `waitForDebuggerOnStart` で一時停止したまま放置しないよう、内部リクエストで
-//     `Runtime.runIfWaitingForDebugger` + `Target.detachFromTarget` を送って解放する
-//     （上流はアプリ全体なので、放置すると新規ウィンドウ等が固まる恐れがある）。
+//     `Runtime.runIfWaitingForDebugger` を送り、**その応答を受けてから** `Target.detachFromTarget`
+//     を送って解放する（上流はアプリ全体なので、放置すると新規ウィンドウ等が固まる恐れがある）。
+//     2 つを続けて送ると再開が効かず、webview の service worker が起動途中のまま固まり、
+//     画像プレビューが 60 秒止まった末に表示されなくなる（{@link ParadisOutOfScopeAttachRelease}）。
 
 import type { IncomingMessage } from 'http';
 import type { Duplex } from 'stream';
@@ -135,6 +137,39 @@ interface IParadisPendingRequest {
 }
 
 const MAX_CDP_PENDING_REQUESTS = 1_024;
+
+/**
+ * スコープ外の auto-attach を解放する手順。`Runtime.runIfWaitingForDebugger` の応答（成功でも失敗でも）を
+ * 受けてから `Target.detachFromTarget` を送る（puppeteer の silentDetach と同じ順）。
+ *
+ * 応答を待たずに切り離すと、一時停止していた対象が再開されないまま切り離される。webview の
+ * service worker では起動が `starting` のまま止まり、同じ origin の webview（画像プレビュー等）が
+ * index.html の読み込みで 60 秒待たされたうえ、SW 無しの描画になって画像もスクリプトも読めない。
+ * 隔離した製品版で、続けて送ると再現し、応答を待つと 0.26 秒で表示されることを実測した（2026-10-01）。
+ */
+export class ParadisOutOfScopeAttachRelease {
+	private readonly resuming = new Set<string>();
+
+	constructor(private readonly send: (method: string, params: Record<string, unknown>, sessionId?: string) => void) { }
+
+	/** 一時停止しているかもしれない対象を再開させる。切り離しは応答が来てから。 */
+	release(sessionId: string): void {
+		this.resuming.add(sessionId);
+		this.send('Runtime.runIfWaitingForDebugger', {}, sessionId);
+	}
+
+	/** 内部リクエストの応答が来た（大きすぎて捨てた応答も含む）。解放中の再開の応答なら切り離す。 */
+	onInternalResponse(method: string, sessionId: string | undefined): void {
+		if (method === 'Runtime.runIfWaitingForDebugger' && sessionId !== undefined && this.resuming.delete(sessionId)) {
+			this.send('Target.detachFromTarget', { sessionId });
+		}
+	}
+
+	/** 接続が閉じた。上流ごと切れるので、待っていた切り離しは送らない。 */
+	clear(): void {
+		this.resuming.clear();
+	}
+}
 // Debugger metadata can legitimately contain multi-megabyte inline source maps in a single
 // frame. Keep every transport stage on the same bounded ceiling so a valid frame accepted by
 // the parser is not rejected by an earlier queue or later backpressure check.
@@ -1420,6 +1455,8 @@ export async function paradisProxyBrowserUpgrade(
 		// Para Code 自身の isolated world（Design Mode の要素選択、preload）をエージェントから隠す。
 		const isolatedWorlds = new ParadisCdpIsolatedWorldFilter();
 		let closed = false;
+		// sendInternal は後で定義する。呼ぶのは接続が動き出してからなので、ここでは参照だけ渡す。
+		const outOfScopeRelease = new ParadisOutOfScopeAttachRelease((method, params, sessionId) => { sendInternal(method, params, sessionId); });
 		let resolveConnectionClosed!: () => void;
 		const connectionClosed = new Promise<void>(resolve => resolveConnectionClosed = resolve);
 		let scheduledClientMessages = 0;
@@ -1523,6 +1560,7 @@ export async function paradisProxyBrowserUpgrade(
 			ctx.closeInputConnection();
 			pendingRequests.clear();
 			internalPending.clear();
+			outOfScopeRelease.clear();
 			clearForwardedRequestBarriers(forwardedRequestBarriers);
 			pendingPolicyBytes = 0;
 			pendingUpstream.length = 0;
@@ -1944,6 +1982,7 @@ export async function paradisProxyBrowserUpgrade(
 					if (pending) {
 						internalPending.delete(peek.id);
 						pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
+						outOfScopeRelease.onInternalResponse(pending.method, pending.sessionId);
 					}
 					return;
 				}
@@ -1989,6 +2028,7 @@ export async function paradisProxyBrowserUpgrade(
 					}
 					internalPending.delete(message.id);
 					pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
+					outOfScopeRelease.onInternalResponse(pending.method, pending.sessionId);
 					if (pending.method === 'Target.attachToTarget') {
 						const sessionId = boundedIdentifier(message.result?.sessionId);
 						if (sessionId && pending.targetId && allowedTargetIds.has(pending.targetId)) {
@@ -2137,8 +2177,7 @@ export async function paradisProxyBrowserUpgrade(
 				const params = message.params as { sessionId?: string; targetInfo?: { type?: string; targetId?: string; openerId?: string } } | undefined;
 				if (!isAllowedTarget(params?.targetInfo)) {
 					if (params?.sessionId) {
-						sendInternal('Runtime.runIfWaitingForDebugger', {}, params.sessionId);
-						sendInternal('Target.detachFromTarget', { sessionId: params.sessionId });
+						outOfScopeRelease.release(params.sessionId);
 					}
 					return;
 				}

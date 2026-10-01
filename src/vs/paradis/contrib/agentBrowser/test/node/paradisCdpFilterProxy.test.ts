@@ -10,7 +10,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX } from '../../../../../platform/browserView/common/browserViewScreenshot.js';
 import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
-import { IParadisBoundContext, IParadisWsModule, ParadisRawScreenshotAuthorityRegistry, ParadisRawScreenshotCoordinator, paradisClassifyCaptureScreenshotParams, paradisDispatchCaptureScreenshotRequest, paradisForceCloseRawScreenshotUpstream, paradisMapCaptureScreenshotParams, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade, paradisRegisterPageUpgrade, paradisResolveCaptureScreenshotRequest, paradisStartVisibleWebPCapture, paradisVisibleWebPScreenshotLogMessage, resetParadisCdpDroppedEventCounts } from '../../node/paradisCdpFilterProxy.js';
+import { IParadisBoundContext, IParadisWsModule, ParadisOutOfScopeAttachRelease, ParadisRawScreenshotAuthorityRegistry, ParadisRawScreenshotCoordinator, paradisClassifyCaptureScreenshotParams, paradisDispatchCaptureScreenshotRequest, paradisForceCloseRawScreenshotUpstream, paradisMapCaptureScreenshotParams, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade, paradisRegisterPageUpgrade, paradisResolveCaptureScreenshotRequest, paradisStartVisibleWebPCapture, paradisVisibleWebPScreenshotLogMessage, resetParadisCdpDroppedEventCounts } from '../../node/paradisCdpFilterProxy.js';
 import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisCdpGatewayDelegate, ParadisCdpGateway, paradisPageUpgradeTargetIsCurrent } from '../../node/paradisCdpGateway.js';
 import { ParadisCdpUpstream } from '../../node/paradisCdpUpstream.js';
@@ -802,11 +802,21 @@ suite('Paradis CDP screenshot filter', () => {
 			method: 'Target.attachedToTarget',
 			params: { sessionId: 'outside-session', targetInfo: { targetId: 'outside-target', type: 'page' } },
 		})));
-		const sessionInternal = (parseSent(fixture.upstream) as Array<{ id?: number; method?: string; sessionId?: string }>).filter(frame => frame.id !== undefined && frame.id < 0 && frame.id !== internal.id);
-		assert.strictEqual(sessionInternal.length, 2);
-		for (const frame of sessionInternal) {
+		const sessionInternal = () => (parseSent(fixture.upstream) as Array<{ id?: number; method?: string; sessionId?: string }>).filter(frame => frame.id !== undefined && frame.id < 0 && frame.id !== internal.id);
+		// 再開の応答が来るまでは切り離さない（続けて送ると service worker の起動が止まる）。
+		const beforeResumeReply = sessionInternal().map(frame => frame.method);
+		for (const frame of sessionInternal()) {
 			fixture.upstream.emit('message', Buffer.from(JSON.stringify({ id: frame.id, ...(frame.sessionId ? { sessionId: frame.sessionId } : {}), result: {} })));
 		}
+		const afterResumeReply = sessionInternal().map(frame => frame.method);
+		const detach = sessionInternal().filter(frame => frame.method === 'Target.detachFromTarget');
+		for (const frame of detach) {
+			fixture.upstream.emit('message', Buffer.from(JSON.stringify({ id: frame.id, result: {} })));
+		}
+		assert.deepStrictEqual({ beforeResumeReply, afterResumeReply }, {
+			beforeResumeReply: ['Runtime.runIfWaitingForDebugger'],
+			afterResumeReply: ['Runtime.runIfWaitingForDebugger', 'Target.detachFromTarget'],
+		});
 		assert.deepStrictEqual(fixture.client.sent, []);
 		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ id: internal.id, result: {} })));
 		assert.strictEqual(fixture.client.closeCalls, 1);
@@ -1780,3 +1790,34 @@ function createGatewayUpgradeFixture(
 		destroyCalls: () => socketDestroyCalls,
 	};
 }
+
+suite('Paradis CDP out-of-scope attach release', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('detaches only after the resume reply, so a paused service worker is not left starting', () => {
+		const sent: string[] = [];
+		const release = new ParadisOutOfScopeAttachRelease((method, _params, sessionId) => sent.push(`${method}@${sessionId ?? 'browser'}`));
+
+		release.release('sw-1');
+		const beforeReply = [...sent];
+		// 関係のない内部応答や、別のセッションの再開の応答では切り離さない。
+		release.onInternalResponse('Target.attachToTarget', 'sw-1');
+		release.onInternalResponse('Runtime.runIfWaitingForDebugger', 'other');
+		release.onInternalResponse('Runtime.runIfWaitingForDebugger', 'sw-1');
+		// 同じ応答が二度来ても切り離しは一度だけ。
+		release.onInternalResponse('Runtime.runIfWaitingForDebugger', 'sw-1');
+
+		release.release('sw-2');
+		release.clear();
+		release.onInternalResponse('Runtime.runIfWaitingForDebugger', 'sw-2');
+
+		assert.deepStrictEqual({ beforeReply, sent }, {
+			beforeReply: ['Runtime.runIfWaitingForDebugger@sw-1'],
+			sent: [
+				'Runtime.runIfWaitingForDebugger@sw-1',
+				'Target.detachFromTarget@browser',
+				'Runtime.runIfWaitingForDebugger@sw-2',
+			],
+		});
+	});
+});
