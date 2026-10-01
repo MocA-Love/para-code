@@ -39,7 +39,9 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ITextModelService } from '../../../../editor/common/services/resolverService.js';
-import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { ITextResourceConfigurationService } from '../../../../editor/common/services/textResourceConfiguration.js';
+import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IRemoteAuthorityResolverService } from '../../../../platform/remote/common/remoteAuthorityResolver.js';
@@ -94,6 +96,9 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 		@IConfigurationService configurationService: IConfigurationService,
 		@INotificationService notificationService: INotificationService,
+		@ITextResourceConfigurationService textResourceConfigurationService: ITextResourceConfigurationService,
+		@IEditorService editorService: IEditorService,
+		@IEditorGroupsService editorGroupService: IEditorGroupsService,
 		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@IRemoteAgentService private readonly _remoteAgentService: IRemoteAgentService,
@@ -101,7 +106,7 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		@ITunnelService private readonly _tunnelService: ITunnelService,
 		@IWorkspaceTrustManagementService private readonly _workspaceTrustManagementService: IWorkspaceTrustManagementService,
 	) {
-		super(PARADIS_HTML_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService);
+		super(PARADIS_HTML_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService, textResourceConfigurationService, editorService, editorGroupService);
 		this._remoteMounter = this._register(new ParadisRemotePreviewMounter(this._remoteAgentService, this._remoteAuthorityResolverService, this._tunnelService));
 		// 信頼の状態が変わったら、スクリプトの可否を反映するため描き直す。
 		this._register(this._workspaceTrustManagementService.onDidChangeTrust(() => this.requestRerender()));
@@ -261,6 +266,10 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		// `</body>` に当たることがあり、注入した `</script>` がそのスクリプトを途中で終わらせて
 		// 以降が全部本文として表示される（paracode-121 で実際に起きた）。閉じタグの後ろに置いても
 		// パーサーが body の中へ入れてくれるので、探さないのが正しい。
-		return `${html}${zoomScript}`;
+		// スクロール位置の復元と検索結果の色のスクリプトも同じ理由で末尾に足す。スクリプトを動かさない
+		// とき（制限モード）は入れても動かないので入れない（webview を作り直した直後の初回表示だけは
+		// webview 自身がスクロール位置を戻す）。
+		const pageScripts = this.allowScripts ? this.viewerPageScripts(resource) : '';
+		return `${html}${zoomScript}${pageScripts}`;
 	}
 }

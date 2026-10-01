@@ -16,7 +16,13 @@
 // （src/vs/workbench/contrib/webviewPanel/browser/webviewEditor.ts 参照）。overlay は workbench の
 // webview レイヤーに生き続けるため、タブ切替・ペインの hide/再表示・グループ移動でも webview のコンテンツ
 // プロセスが破棄されない。ペインが可視かつ Rendered のときだけ claim + setAnchorElement でアンカーへ重ね、
-// Raw / 非可視のときは release する。claim 直後は下地が作り直され内容が失われ得るため、復帰時は必ず再 setHtml する。
+// Raw / 非可視のときは release する。claim 直後は下地が作り直され内容が失われ得るため、復帰時は必ず描画を試みる
+// （webview が内容を保持していて中身も同じなら送り直さない）。
+//
+// スクロール位置は view state（EditorMemento）として覚える。別の種類のエディタへタブを切り替えると
+// ペインは clearInput されるが、同じファイルへ戻ってくる限り webview の中身は捨てずに見せ直す
+// （スクロールもページ内のスクリプトの状態もそのまま残る）。別のファイルを描くときやウィンドウの
+// 再読み込み・グループ間の移動の後は、覚えた位置へ戻す（common/paradisViewerScroll.ts）。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { disposableTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
@@ -38,10 +44,12 @@ import { IStorageService } from '../../../../platform/storage/common/storage.js'
 import { ParadisWebviewOriginPool } from './paradisWebviewOriginPool.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
+import { AbstractEditorWithViewState } from '../../../../workbench/browser/parts/editor/editorWithViewState.js';
+import { ITextResourceConfigurationService } from '../../../../editor/common/services/textResourceConfiguration.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IOverlayWebview, IWebviewService, WebviewContentPurpose } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { onParadisWebviewSignal, ParadisWebviewSignalCode } from '../../sentry/common/paradisWebviewSignals.js';
@@ -51,6 +59,7 @@ import { ITextFileService } from '../../../../workbench/services/textfile/common
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { clampParadisTransparencyOpacity, PARADIS_TRANSPARENCY_ENABLED_KEY, PARADIS_TRANSPARENCY_OPACITY_KEY, PARADIS_TRANSPARENT_CLASS } from '../../windowTransparency/common/paradisTransparency.js';
 import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
+import { IParadisViewerScrollState, paradisFindHighlightScript, paradisNormalizeScrollProgress, paradisReadViewerScrollState, paradisScrollRestoreScript } from '../common/paradisViewerScroll.js';
 
 import './media/paradisFileViewer.css';
 
@@ -76,7 +85,7 @@ export function paradisShouldReportViewModeError(err: unknown, alreadyReported: 
  * Rendered/Raw を内蔵する EditorPane 基底。webview と埋め込みコードエディタのライフサイクル管理・
  * ファイル読込・自動再レンダリング・モード切替を担い、Rendered の HTML 生成はサブクラスの {@link renderDocument} に委ねる。
  */
-export abstract class ParadisRenderedFileEditor extends EditorPane {
+export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewState<IParadisViewerScrollState> {
 
 	private _rootElement: HTMLElement | undefined;
 	private _webviewContainer: HTMLElement | undefined;
@@ -136,6 +145,16 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	 * 位置が飛び、画像の埋め込みもやり直しになる**ため、同一なら黙って見送る。
 	 */
 	private _renderedSource: { readonly resource: URI; readonly text: string } | undefined;
+	/**
+	 * いま webview に書き込んである文書のリソース。
+	 *
+	 * {@link _renderedSource} は「同じ内容なら送り直さない」ための目印で、テーマや透過の変更で
+	 * わざと外される。こちらは中身を空にするまで残り、スクロールの通知がどの文書のものかと、
+	 * タブを切り替えて戻ってきたときに中身をそのまま見せてよいかの判断に使う。
+	 */
+	private _displayedResource: URI | undefined;
+	/** Rendered 表示の最新のスクロール位置（view state として保存する値）。 */
+	private _scroll: { readonly resource: URI; readonly progress: number } | undefined;
 	// watcher・claim・モード切替から始まった描画が逆順で完了しても、最後に開始した結果だけを反映する。
 	private _renderGeneration = 0;
 	/** webview の origin の貸し出し元（service worker の登録を開き直しで増やさないため）。 */
@@ -151,12 +170,15 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		@ITextFileService private readonly _textFileService: ITextFileService,
 		@IFileService protected readonly _fileService: IFileService,
 		@ITextModelService private readonly _textModelService: ITextModelService,
-		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+		@IInstantiationService instantiationService: IInstantiationService,
 		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
 		@IConfigurationService protected readonly _configurationService: IConfigurationService,
 		@INotificationService private readonly _notificationService: INotificationService,
+		@ITextResourceConfigurationService textResourceConfigurationService: ITextResourceConfigurationService,
+		@IEditorService editorService: IEditorService,
+		@IEditorGroupsService editorGroupService: IEditorGroupsService,
 	) {
-		super(id, group, telemetryService, themeService, storageService);
+		super(id, group, `${id}.viewState`, telemetryService, instantiationService, storageService, textResourceConfigurationService, themeService, editorService, editorGroupService);
 		this._originPool = ParadisWebviewOriginPool.getShared(storageService);
 
 		// ウィンドウ透過（paradis.window.transparency.*）の状態変化に追従して Rendered を描き直す。
@@ -180,6 +202,15 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		});
 		classObserver.observe(this._layoutService.mainContainer, { attributes: true, attributeFilter: ['class'] });
 		this._register(toDisposable(() => classObserver.disconnect()));
+
+		// タブを閉じたら、そのファイルのために残していた中身を捨てる。残すのは戻ってくるためなので、
+		// 閉じた後まで隠れたページ（動画や音、タイマー）を動かし続けない。閉じる通知はペインが次の
+		// エディタへ切り替わる前に来るので、いま表示中のタブでも捨てる（どうせ閉じる）。
+		this._register(this.group.onDidCloseEditor(e => {
+			if (e.editor instanceof ParadisFileViewerInput && isEqual(e.editor.resource, this._displayedResource)) {
+				this._clearDisplayedContent();
+			}
+		}));
 	}
 
 	/**
@@ -256,6 +287,45 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		return this._webview;
 	}
 
+	/**
+	 * 文書の末尾に入れる補助スクリプト（スクロール位置の復元と、検索で見つかった語を見える色にする）。
+	 *
+	 * webview は初回表示のときしか位置を戻さない（`initialScrollProgress`）ので、同じ webview に
+	 * 別の文書を書き込む場合は復元のスクリプトが要る。スクリプトを動かせない描画では入れても動かない
+	 * ため、呼び出し側で {@link allowScripts} を見て入れるかを決める。
+	 */
+	protected viewerPageScripts(resource: URI, nonce?: string): string {
+		return paradisScrollRestoreScript(this._scrollProgressFor(resource), nonce) + paradisFindHighlightScript(nonce);
+	}
+
+	private _scrollProgressFor(resource: URI): number {
+		return this._scroll && isEqual(this._scroll.resource, resource) ? this._scroll.progress : 0;
+	}
+
+	/** webview の中身を空にする（別のファイルを描く前と、閉じたタブの中身を捨てるとき）。 */
+	private _clearDisplayedContent(): void {
+		this._webview?.setHtml('');
+		this._renderedSource = undefined;
+		this._displayedResource = undefined;
+	}
+
+	protected override computeEditorViewState(resource: URI): IParadisViewerScrollState | undefined {
+		return this._scroll && isEqual(this._scroll.resource, resource) ? { scrollProgress: this._scroll.progress } : undefined;
+	}
+
+	protected override tracksEditorViewState(input: EditorInput): boolean {
+		return input instanceof ParadisFileViewerInput;
+	}
+
+	// ファイルに紐づく状態なので、タブを閉じて開き直したときにも戻す（テキストエディタと同じ）。
+	protected override tracksDisposedEditorViewState(): boolean {
+		return true;
+	}
+
+	protected override toEditorViewStateResource(input: EditorInput): URI | undefined {
+		return input.resource;
+	}
+
 	protected override createEditor(parent: HTMLElement): void {
 		this._rootElement = dom.append(parent, dom.$('.paradis-file-viewer'));
 
@@ -292,8 +362,15 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		this._currentResource = resource;
 		// 別のファイルを開いたので、前のファイルが無かったことは引き継がない。
 		this._missingResource = undefined;
+		// 同じファイルへ戻ってきたなら、webview に残してある中身をそのまま見せる（描画は内容が
+		// 同じなら送り直さない）。別のファイルなら、前のファイルが一瞬見えないよう先に空にし、
+		// 覚えておいた位置（グループ間の移動で渡された位置 > 保存した位置）から描く。
+		if (!isEqual(this._displayedResource, resource)) {
+			this._clearDisplayedContent();
+			const restored = paradisReadViewerScrollState(options?.viewState) ?? paradisReadViewerScrollState(this.loadEditorViewState(input, context));
+			this._scroll = { resource, progress: restored?.scrollProgress ?? 0 };
+		}
 		// 別ファイルに切り替わったので前のモデル参照を解放する。
-		this._renderedSource = undefined;
 		this._modelRef.clear();
 		this._codeEditor?.setModel(null);
 
@@ -411,8 +488,11 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		if (!this._isRenderCurrent(generation, resource, token)) {
 			return;
 		}
+		// webview を作り直した直後の初回表示では、webview 自身がこの位置へ戻す（スクリプト不要）。
+		webview.initialScrollProgress = this._scrollProgressFor(resource);
 		webview.setHtml(html);
 		this._renderedSource = { resource, text };
+		this._displayedResource = resource;
 		// setHtml は「送った」だけで「表示された」ことは保証しない。webview 側が内容を書き終えたら
 		// content-applied シグナルが返るので、それが来なければ白紙とみなして立て直す。
 		this._startContentWatchdog(generation, paradisViewerContentTimeout(html.length));
@@ -518,6 +598,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		this._webviewClaimed = false;
 		this._webview = undefined;
 		this._renderedSource = undefined;
+		this._displayedResource = undefined;
 		this._contentWatchdog.clear();
 		this._webviewStore.clear();
 	}
@@ -622,6 +703,15 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 					break;
 			}
 		}));
+		// スクロール位置を覚える。通知は webview 基盤がページの window のスクロールから送ってくる
+		// （ページのスクリプトの可否に関係なく届く）。
+		store.add(webview.onDidScroll(({ scrollYPercentage }) => {
+			const resource = this._displayedResource;
+			const progress = paradisNormalizeScrollProgress(scrollYPercentage);
+			if (resource && progress !== undefined) {
+				this._scroll = { resource, progress };
+			}
+		}));
 		this.onWebviewCreated(webview, store);
 		return webview;
 	}
@@ -710,7 +800,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	private async _ensureRawEditor(resource: URI): Promise<void> {
 		if (!this._codeEditor) {
-			this._codeEditor = this._register(this._instantiationService.createInstance(CodeEditorWidget, this._editorContainer!, RAW_EDITOR_OPTIONS, {}));
+			this._codeEditor = this._register(this.instantiationService.createInstance(CodeEditorWidget, this._editorContainer!, RAW_EDITOR_OPTIONS, {}));
 		}
 		// 既に同じモデルを表示していれば何もしない。
 		if (this._modelRef.value && isEqual(this._modelRef.value.object.textEditorModel.uri, resource)) {
@@ -739,9 +829,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			this._webview.release(this);
 			this._webviewClaimed = false;
 		}
-		// 次の入力を claim した直後に前ファイルの内容が一瞬表示されないよう、保持 HTML も消去する。
-		this._webview?.setHtml('');
-		this._renderedSource = undefined;
+		// 中身は消さない。同じファイルへ戻ってきたらそのまま見せる（スクロールとページの状態を残す）。
+		// 別のファイルが来たら setInput が先に空にし、タブを閉じたら onDidCloseEditor で空にする。
 		super.clearInput();
 	}
 
