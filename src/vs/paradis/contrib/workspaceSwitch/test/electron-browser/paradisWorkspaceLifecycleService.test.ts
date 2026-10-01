@@ -19,7 +19,7 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { InMemoryStorageService, IStorageService } from '../../../../../platform/storage/common/storage.js';
 import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
-import { paradisRunWorkspaceLifecycleScript } from '../../electron-browser/paradisWorkspaceLifecycleService.js';
+import { paradisPrefersTeardown, paradisRememberTeardownChoice, paradisRunWorkspaceLifecycleScript } from '../../electron-browser/paradisWorkspaceLifecycleService.js';
 import { IParadisWorkspaceLifecycleConfig } from '../../common/paradisWorkspaceLifecycle.js';
 import { IParadisWorkspaceRepository } from '../../common/paradisWorkspaceSwitch.js';
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../../common/paradisWorktreeCreate.js';
@@ -81,12 +81,39 @@ suite('workspace lifecycle service', () => {
 			async writeConfig(override?: IParadisWorkspaceLifecycleConfig) {
 				await fileService.writeFile(repositoryUri.with({ path: '/repo/.paracode.json' }), VSBuffer.fromString(JSON.stringify(override ?? config)));
 			},
-			async run(kind: 'setup' | 'teardown', override?: IParadisWorkspaceLifecycleConfig) {
+			async run(kind: 'setup' | 'teardown', override?: IParadisWorkspaceLifecycleConfig, approvedScript?: string) {
 				await this.writeConfig(override);
-				return paradisRunWorkspaceLifecycleScript(accessor, kind, repository, worktreeUri);
+				return paradisRunWorkspaceLifecycleScript(accessor, kind, repository, worktreeUri, approvedScript);
 			}
 		};
 	}
+
+	test('takes the removal dialog consent as approval only for the script it showed', async () => {
+		// 削除の確認でスクリプトを見せてチェックを入れたまま削除したなら、承認ダイアログを重ねない。
+		// 確認の後にスクリプトが書き換わっていたら、その同意は使わずに従来どおり尋ねる。
+		const fixture = createLifecycleFixture({ teardownScript: 'docker compose down' }, { approve: false });
+		const changed = await fixture.run('teardown', { teardownScript: 'rm -rf ~' }, 'docker compose down');
+		const confirmsAfterChanged = fixture.confirmCount;
+		const shown = await fixture.run('teardown', undefined, 'docker compose down');
+		// 一度承認として記録したので、同意を渡さない次の実行でも尋ねない。
+		const again = await fixture.run('teardown');
+		assert.deepStrictEqual({ changed, confirmsAfterChanged, shown, again, confirms: fixture.confirmCount, runs: fixture.calls.length }, {
+			changed: false, confirmsAfterChanged: 1, shown: true, again: true, confirms: 1, runs: 2,
+		});
+	});
+
+	test('remembers per repository whether to run teardown before removing a worktree', () => {
+		const storageService = store.add(new InMemoryStorageService());
+		const local = URI.file('/repo');
+		const remote = URI.from({ scheme: Schemas.vscodeRemote, authority: REMOTE_AUTHORITY, path: '/repo' });
+		const initial = paradisPrefersTeardown(storageService, local);
+		paradisRememberTeardownChoice(storageService, local, false);
+		const afterSkip = [paradisPrefersTeardown(storageService, local), paradisPrefersTeardown(storageService, remote)];
+		paradisRememberTeardownChoice(storageService, local, true);
+		assert.deepStrictEqual({ initial, afterSkip, afterRun: paradisPrefersTeardown(storageService, local) }, {
+			initial: true, afterSkip: [false, true], afterRun: true,
+		});
+	});
 
 	test('loads parent config and sends setup request after first-run approval', async () => {
 		const fixture = createLifecycleFixture({ setupScript: 'bun install' });
