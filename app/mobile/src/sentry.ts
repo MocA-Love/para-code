@@ -3,7 +3,7 @@
 import * as Sentry from '@sentry/react-native';
 import type { ErrorEvent, Event } from '@sentry/react-native';
 import Constants from 'expo-constants';
-import { configureMobileDiagnosticReporter, configureMobileDiagnosticTagSetter } from './mobileDiagnostics.js';
+import { configureMobileDiagnosticReporter, configureMobileDiagnosticTagSetter, configureMobileTimingRecorder } from './mobileDiagnostics.js';
 import { sanitizeMobileSentryEvent, sanitizeMobileSentryText } from './sentryPrivacy.js';
 import { mobileSentryRelease } from './sentryRelease.js';
 import { mobileSentryRuntime } from './sentryRuntime.js';
@@ -89,6 +89,22 @@ try {
 	configureMobileDiagnosticTagSetter((key, value) => Sentry.setTag(key, value));
 	configureMobileDiagnosticReporter((feature, operation, error, safeExtra) => {
 		captureMobileException(feature, operation, error, safeExtra);
+	});
+	configureMobileTimingRecorder((feature, operation, startedAt, endedAt, attributes) => {
+		// 済んだ処理を開始・終了の時刻つきで1件の transaction にする。forceTransaction は、
+		// たまたま別の span が実行中でもその子にならず、名前（para.*）で抽選と検索ができるようにするため。
+		Sentry.startInactiveSpan({
+			name: `para.${feature}.${operation}`,
+			op: `para.${feature}`,
+			startTime: startedAt,
+			forceTransaction: true,
+			attributes: {
+				...attributes,
+				'para.scope': 'owned',
+				'para.feature': feature,
+				'para.operation': operation,
+			},
+		}).end(endedAt);
 	});
 } catch (error) {
 	console.error('[Para Code] Failed to initialize mobile Sentry.', error);

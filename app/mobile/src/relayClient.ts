@@ -16,6 +16,7 @@
 import {
 	type ChannelId,
 	type Frame,
+	type FrameChunkTiming,
 	FrameMux,
 	type Identity,
 	createInitiator,
@@ -70,6 +71,8 @@ export interface RelayClientCallbacks {
 	/** PC自身のpresence（PCがリレーに繋がっているか）。 */
 	readonly onPcPresence?: (online: boolean) => void;
 	readonly onFrame?: (frame: Frame) => void;
+	/** 計測用。チャンク1つを開封した直後（再結合の前）に呼ぶ（`FrameMuxOptions.onChunkOpened`）。 */
+	readonly onFrameChunk?: (chunk: FrameChunkTiming) => void;
 	readonly onError?: (error: unknown) => void;
 	/**
 	 * リレーがこの端末の資格を認めなかった（4401 / 4404 で閉じた）/ 再び繋がった。
@@ -467,6 +470,7 @@ export class RelayClient {
 					this.mux = new FrameMux(channel, {
 						sendSealed: sealed => socket.send(toArrayBuffer(sealed)),
 						onError: error => this.onFatal(error),
+						...(this.callbacks.onFrameChunk !== undefined ? { onChunkOpened: this.callbacks.onFrameChunk } : {}),
 					});
 					if (this.callbacks.onFrame) {
 						const onFrame = this.callbacks.onFrame;

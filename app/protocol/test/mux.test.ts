@@ -63,6 +63,32 @@ describe('FrameMux over SecureChannel', () => {
 		]);
 	});
 
+	test('reports every opened chunk before reassembly without changing delivery', () => {
+		const { mobileChannel, pcChannel } = establish();
+		const chunks: { ch: string; bytes: number; more: boolean }[] = [];
+		const pcMux = new FrameMux(pcChannel, {
+			sendSealed: () => { },
+			onChunkOpened: chunk => {
+				expect(chunk.openMs).toBeGreaterThanOrEqual(0);
+				chunks.push({ ch: chunk.ch, bytes: chunk.bytes, more: chunk.more });
+				throw new Error('a failing observer must not stop delivery');
+			},
+		});
+		const mobileMux = new FrameMux(mobileChannel, { sendSealed: sealed => pcMux.receive(sealed) });
+		const received: number[] = [];
+		pcMux.on(Channels.Fs, f => received.push(f.payload.length));
+
+		mobileMux.send(Channels.Fs, new Uint8Array(FRAME_CHUNK_BYTES + 1));
+
+		expect({ chunks, received }).toEqual({
+			chunks: [
+				{ ch: 'fs', bytes: FRAME_CHUNK_BYTES, more: true },
+				{ ch: 'fs', bytes: 1, more: false },
+			],
+			received: [FRAME_CHUNK_BYTES + 1],
+		});
+	});
+
 	test('reports error on out-of-order sealed bytes instead of throwing', () => {
 		const { mobileChannel, pcChannel } = establish();
 		const errors: unknown[] = [];
