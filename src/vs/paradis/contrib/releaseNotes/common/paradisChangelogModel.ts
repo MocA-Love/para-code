@@ -18,7 +18,7 @@
  *   - 項目...
  *
  * `## paracode-N` の見出しが1リリース、`### 見出し` がカテゴリ(新機能/改善/修正など)、
- * `- ` 行が1項目。それ以外の行(# 冒頭の導入文など)は無視する。
+ * `- ` 行が1項目（カテゴリの見出しより前の項目は {@link PARADIS_CHANGELOG_DEFAULT_CATEGORY} にまとめる）。それ以外の行(# 冒頭の導入文など)は無視する。
  * 項目本文は `` `code` `` と **太字** のインライン記法のみを前提とする。
  */
 
@@ -39,6 +39,8 @@ export interface IParadisChangelogRelease {
 const RELEASE_HEADING_RE = /^##\s+paracode-(\d+)\s*(?:[（(]\s*([^）)]*?)\s*[）)])?\s*$/;
 const SECTION_HEADING_RE = /^###\s+(.+?)\s*$/;
 const ITEM_RE = /^[-*]\s+(.+)$/;
+/** カテゴリの見出しが無い版の項目をまとめるカテゴリ名。 */
+export const PARADIS_CHANGELOG_DEFAULT_CATEGORY = '変更点';
 
 interface IParsedSection {
 	readonly category: string;
@@ -81,7 +83,12 @@ export function parseParadisChangelog(markdown: string): IParadisChangelogReleas
 		}
 
 		const itemMatch = ITEM_RE.exec(line);
-		if (itemMatch && current.sections.length > 0) {
+		if (itemMatch) {
+			// 項目が少ない版はカテゴリの見出しを書かないことがある（CLAUDE.md は多い版だけ分ける）。
+			// 見出しより前の項目を捨てると、その版の中身が空に見える（paracode-149 で起きた）。
+			if (current.sections.length === 0) {
+				current.sections.push({ category: PARADIS_CHANGELOG_DEFAULT_CATEGORY, items: [] });
+			}
 			current.sections[current.sections.length - 1].items.push(itemMatch[1]);
 		}
 	}
