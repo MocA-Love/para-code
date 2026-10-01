@@ -24,6 +24,7 @@ import {
 	archivedTerminals,
 	buildPcList,
 	filterCount,
+	kindLabel,
 	groupShortLabel,
 	resolveTerminalSpace,
 	sortShortLabel,
@@ -119,7 +120,7 @@ export function PcScreen({ placement, onCollapse }: {
 	})));
 	const filter = effectivePcListFilter(view, query, spaces.map(candidate => candidate.id));
 	const collapsed = new Set(view.collapsed);
-	const setFilter = (next: Pick<PcListFilter, 'states' | 'spaces'>) => {
+	const setFilter = (next: Pick<PcListFilter, 'kind' | 'states' | 'spaces'>) => {
 		if (pcId !== undefined) {
 			setListFilter(pcId, next);
 		}
@@ -328,7 +329,7 @@ export function PcScreen({ placement, onCollapse }: {
 				{...(placement === 'column' && onCollapse !== undefined ? { onCollapse } : {})}
 				toolbar={(
 					<>
-						<FilterChip count={filterCount(filter)} onPress={() => { hapticSelection(); setSheet('filter'); }} />
+						<FilterChip count={filterCount(filter)} kind={kindLabel(filter.kind)} onPress={() => { hapticSelection(); setSheet('filter'); }} />
 						<ModeButton kind="sort" label={sortShortLabel(preferences.sort)} onPress={() => { hapticSelection(); setSheet('sort'); }} />
 						<ModeButton kind="group" label={groupShortLabel(group)} onPress={() => { hapticSelection(); setSheet('group'); }} />
 						<ToolbarRight

@@ -26,9 +26,17 @@ describe('PC の画面の表示条件の保存値', () => {
 			},
 		})).toEqual({
 			group: 'space',
-			byPc: { pc1: { states: ['waiting'], spaces: ['w1'], collapsed: ['space:w2'] } },
+			byPc: { pc1: { kind: 'all', states: ['waiting'], spaces: ['w1'], collapsed: ['space:w2'] } },
 		});
 		expect(parsePcListView({ group: 'state', byPc: [] })).toEqual({ group: 'state', byPc: {} });
+		// 種類だけを選んだ PC も残し、知らない種類と古い保存値（種類が無い）は「すべて」に寄せる。
+		expect(parsePcListView({
+			group: 'space',
+			byPc: { pc1: { kind: 'terminal', states: [], spaces: [], collapsed: [] }, pc2: { kind: 'bogus', states: ['idle'] } },
+		}).byPc).toEqual({
+			pc1: { kind: 'terminal', states: [], spaces: [], collapsed: [] },
+			pc2: { kind: 'all', states: ['idle'], spaces: [], collapsed: [] },
+		});
 	});
 
 	test('保存して読み直すと同じ値に戻る', () => {
@@ -39,8 +47,8 @@ describe('PC の画面の表示条件の保存値', () => {
 	test('PC ごとに別に持ち、空になった PC は消す', () => {
 		let saved = withPcListView(DEFAULT_PC_LIST_VIEW, 'pc1', view => ({ ...view, states: ['waiting'] }));
 		saved = withPcListView(saved, 'pc2', view => ({ ...view, collapsed: ['space:w1'] }));
-		expect(pcListViewOf(saved, 'pc1')).toEqual({ states: ['waiting'], spaces: [], collapsed: [] });
-		expect(pcListViewOf(saved, 'pc2')).toEqual({ states: [], spaces: [], collapsed: ['space:w1'] });
+		expect(pcListViewOf(saved, 'pc1')).toEqual({ kind: 'all', states: ['waiting'], spaces: [], collapsed: [] });
+		expect(pcListViewOf(saved, 'pc2')).toEqual({ kind: 'all', states: [], spaces: [], collapsed: ['space:w1'] });
 		expect(pcListViewOf(saved, 'pc3')).toBe(EMPTY_PC_LIST_VIEW_OF_PC);
 		expect(pcListViewOf(saved, undefined)).toBe(EMPTY_PC_LIST_VIEW_OF_PC);
 		saved = withPcListView(saved, 'pc1', view => ({ ...view, states: [] }));
@@ -61,8 +69,8 @@ describe('PC の画面の表示条件の保存値', () => {
 	});
 
 	test('閉じられたスペースの条件は画面では外し、スペースが届く前は外さない', () => {
-		const view = { states: ['review' as const], spaces: ['w1', 'gone'], collapsed: [] };
-		expect(effectivePcListFilter(view, 'abc', ['w1', 'w2'])).toEqual({ states: ['review'], spaces: ['w1'], query: 'abc' });
-		expect(effectivePcListFilter(view, '', [])).toEqual({ states: ['review'], spaces: ['w1', 'gone'], query: '' });
+		const view = { kind: 'agent' as const, states: ['review' as const], spaces: ['w1', 'gone'], collapsed: [] };
+		expect(effectivePcListFilter(view, 'abc', ['w1', 'w2'])).toEqual({ kind: 'agent', states: ['review'], spaces: ['w1'], query: 'abc' });
+		expect(effectivePcListFilter(view, '', [])).toEqual({ kind: 'agent', states: ['review'], spaces: ['w1', 'gone'], query: '' });
 	});
 });

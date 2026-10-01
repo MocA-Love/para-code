@@ -45,8 +45,8 @@ interface PcListViewStore {
 	readonly loaded: boolean;
 	readonly transient: Readonly<Record<string, PcListTransient>>;
 	setGroup(group: PcListGroup): void;
-	/** 絞り込み（状態とスペース）を変えて保存する。検索語は `setQuery`。 */
-	setFilter(pcId: string, filter: Pick<PcListFilter, 'states' | 'spaces'>): void;
+	/** 絞り込み（種類・状態・スペース）を変えて保存する。検索語は `setQuery`。 */
+	setFilter(pcId: string, filter: Pick<PcListFilter, 'kind' | 'states' | 'spaces'>): void;
 	/** 検索語を変える（メモリにだけ置く。1文字ごとに Keychain へ書かない）。 */
 	setQuery(pcId: string, query: string): void;
 	/** 検索欄を開く／閉じる。閉じるときは検索語も消す。 */
@@ -120,8 +120,8 @@ export const usePcListView = create<PcListViewStore>()((set, get) => {
 		},
 		setFilter(pcId, filter) {
 			const view = pcListViewOf(get().saved, pcId);
-			if (!sameItems(view.states, filter.states) || !sameItems(view.spaces, filter.spaces)) {
-				apply(saved => withPcListView(saved, pcId, current => ({ ...current, states: filter.states, spaces: filter.spaces })));
+			if (view.kind !== filter.kind || !sameItems(view.states, filter.states) || !sameItems(view.spaces, filter.spaces)) {
+				apply(saved => withPcListView(saved, pcId, current => ({ ...current, kind: filter.kind, states: filter.states, spaces: filter.spaces })));
 			}
 		},
 		setQuery(pcId, query) {
