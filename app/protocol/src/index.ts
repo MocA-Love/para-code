@@ -7,7 +7,7 @@ export type { PairingPayload } from './pairing.js';
 export { Channels, encodeFrame, decodeFrame } from './frames.js';
 export type { ChannelId, Frame } from './frames.js';
 export { FrameMux } from './mux.js';
-export type { FrameHandler, FrameMuxOptions } from './mux.js';
+export type { FrameChunkTiming, FrameHandler, FrameMuxOptions } from './mux.js';
 export { toBase64, toBase64Url, fromBase64Url, concatBytes, bytesEqual } from './util.js';
 export { BROWSER_JPEG_BINARY_ENCODING, decodeBinaryBrowserJpegFrame, isBinaryBrowserJpegFrame } from './browserFrame.js';
 export type { BrowserJpegFrame } from './browserFrame.js';

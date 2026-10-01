@@ -11,6 +11,7 @@
 import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeNotify, decodeNotifyControl, decodeNotifyVisibility, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, encodeNotifyVisibility, generateIdentity, isBinaryBrowserJpegFrame, isGzipJsonResponse, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
 import { AGENT_LIVE_APPEND_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
 import { ContentHashResponseCache, type PreparedContentHashRequest } from './contentHashCache.js';
+import { FsRequestTimings } from './fsRequestTiming.js';
 import { terminalViewportEquals, type TerminalViewport } from './terminalViewport.js';
 import { isValidPresetDef } from './presets.js';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type RelayConnectionEvent, type SocketFactory } from './relayClient.js';
@@ -1543,6 +1544,8 @@ export class MobileController {
 	 */
 	private readonly notificationDismissalModes = new Map<string, 'opened' | 'local'>();
 	private readonly fsContentHashCache = new ContentHashResponseCache();
+	/** ファイルビューアの要求の区間計測（Sentry の `para.mobileFileViewer.fetch`）。 */
+	private readonly fsTimings = new FsRequestTimings();
 	private operationOutboxWrite = Promise.resolve();
 	private terminalOperationDispatchChain = Promise.resolve();
 	private terminalOperationDispatchDepth = 0;
@@ -1827,6 +1830,7 @@ export class MobileController {
 				this.emit(agentChatsChanged ? { agentChats: true } : undefined);
 			},
 			onFrame: frame => { this.lastFrameAt = Date.now(); this.handleFrame(frame); },
+			onFrameChunk: chunk => this.fsTimings.chunk(chunk),
 			onAuthRejected: rejected => {
 				this.state.pairingRejected = rejected;
 				this.emit();
@@ -3385,14 +3389,19 @@ export class MobileController {
 			};
 		}
 		const id = `${this.requestPrefix}-r-${this.requestCounter++}`;
+		if (channel === 'fs') {
+			this.fsTimings.begin(id, requestBody);
+		}
 		const payload = encodePayload?.(id, requestBody) ?? encoder.encode(JSON.stringify({ ...requestBody, id }));
 		return new Promise<T>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
+				this.fsTimings.abort(id, 'timeout');
 				reject(new Error('request timeout'));
 			}, timeoutMs);
 			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer, ...(rendererTarget !== undefined ? { rendererTarget } : {}), ...(contentHash !== undefined ? { contentHash } : {}) });
 			client.send(channel, payload);
+			this.fsTimings.sent(id, payload.length);
 		});
 	}
 
@@ -3438,7 +3447,10 @@ export class MobileController {
 	}
 
 	private settleResponse(payload: Uint8Array, channel?: 'scm' | 'fs'): void {
+		// ファイルビューアの要求なら各区間を測る（測っていない id なら finish は何もしない）。
+		const timing = channel === 'fs' ? this.fsTimings.response() : undefined;
 		const binary = decodeBinaryFsResponse(payload);
+		timing?.mark('binary_decode');
 		if (binary !== undefined) {
 			const entry = this.pending.get(binary.id);
 			if (!entry) {
@@ -3446,12 +3458,22 @@ export class MobileController {
 			}
 			this.pending.delete(binary.id);
 			clearTimeout(entry.timer);
-			entry.resolve({ id: binary.id, t: binary.t, data: toBase64(binary.data), size: binary.size });
+			const data = toBase64(binary.data);
+			timing?.mark('base64');
+			timing?.set({ safe_binary_bytes: binary.data.length });
+			entry.resolve({ id: binary.id, t: binary.t, data, size: binary.size });
+			timing?.finish(binary.id, 'ok');
 			return;
 		}
-		const jsonPayload = decodeGzipJsonResponse(payload) ?? payload;
+		const gunzipped = decodeGzipJsonResponse(payload);
+		timing?.mark('gunzip');
+		const jsonPayload = gunzipped ?? payload;
 		try {
-			const msg = JSON.parse(decoder.decode(jsonPayload)) as { id?: string; error?: string; t?: unknown };
+			const text = decoder.decode(jsonPayload);
+			timing?.mark('utf8_decode');
+			const msg = JSON.parse(text) as { id?: string; error?: string; t?: unknown };
+			timing?.mark('json_parse');
+			timing?.set({ safe_gzip: gunzipped !== undefined, safe_json_bytes: jsonPayload.length });
 			if (!msg.id) {
 				// id の無いメッセージは PC からの知らせ（登録表の処理の push）。種類を持つものだけ配る。
 				if (channel !== undefined && typeof msg.t === 'string') {
@@ -3471,15 +3493,20 @@ export class MobileController {
 			clearTimeout(entry.timer);
 			if (msg.error) {
 				entry.reject(new Error(msg.error));
+				timing?.finish(msg.id, 'error');
 			} else if (entry.contentHash !== undefined) {
 				const resolved = this.fsContentHashCache.resolve(entry.contentHash.key, entry.contentHash.prepared, msg);
+				timing?.mark('cache_resolve');
 				if (resolved.ok) {
 					entry.resolve(resolved.value);
+					timing?.finish(msg.id, (msg as { notModified?: unknown }).notModified === true ? 'not-modified' : 'ok');
 				} else {
 					entry.reject(new Error(resolved.error));
+					timing?.finish(msg.id, 'error');
 				}
 			} else {
 				entry.resolve(msg);
+				timing?.finish(msg.id, 'ok');
 			}
 		} catch { /* ignore */ }
 	}
@@ -3490,6 +3517,7 @@ export class MobileController {
 			entry.reject(new Error('接続が切断されました'));
 		}
 		this.pending.clear();
+		this.fsTimings.abortAll('disconnected');
 	}
 
 	private cancelStaleRendererRequests(): boolean {
@@ -3498,6 +3526,7 @@ export class MobileController {
 			if (entry.rendererTarget !== undefined && !this.isCurrentRendererRequestTarget(entry.rendererTarget)) {
 				clearTimeout(entry.timer);
 				this.pending.delete(id);
+				this.fsTimings.abort(id, 'renderer-changed');
 				entry.reject(new Error('PC画面が再接続されたため操作を中断しました'));
 			}
 		}
