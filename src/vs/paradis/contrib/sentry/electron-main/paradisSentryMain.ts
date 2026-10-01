@@ -13,7 +13,7 @@ import { app, protocol } from 'electron';
 import type * as SentryMain from '@sentry/electron/main';
 import type { IProductConfiguration } from '../../../../base/common/product.js';
 import { ParadisPrivilegedSchemeRecorder } from '../common/paradisPrivilegedSchemes.js';
-import { PARADIS_SENTRY_DESKTOP_DSN, PARADIS_SENTRY_ENVIRONMENT, paradisSentryRelease } from '../common/paradisSentryConfiguration.js';
+import { isParadisSentryDevelopmentBuild, PARADIS_SENTRY_DESKTOP_DSN, paradisSentryEnvironment, paradisSentryRelease } from '../common/paradisSentryConfiguration.js';
 import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, ParadisDiagnosticSeverity, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 import { registerParadisProcessGoneDiagnostics } from './paradisProcessGoneDiagnostics.js';
@@ -48,13 +48,16 @@ protocol.registerSchemesAsPrivileged = function paradisRecordingRegisterSchemesA
 	privilegedSchemeRecorder.add(customSchemes);
 };
 
-/** パッケージ版へのCIスモークは VSCODE_DEV を立てないため、実ユーザーと同じ環境に混ざるのを防ぐ。 */
-function isTruthyEnv(value: string | undefined): boolean {
-	return value !== undefined && value !== '' && value !== 'false' && value !== '0';
-}
-
 export function initializeParadisSentryMain(product: Pick<IProductConfiguration, 'commit' | 'paradisSentryRelease'>, onUnavailable: () => void): void {
 	if (sentry) {
+		return;
+	}
+
+	// ソースから起動した開発ビルドは送らない（isParadisSentryDevelopmentBuild）。renderer と shared
+	// process も同じ判定で止まる。クラッシュレポーターは Sentry が無かった頃の upstream の扱い
+	// （--crash-reporter-directory 等の指定時だけローカルに保存）へ戻す。
+	if (isParadisSentryDevelopmentBuild(process.env)) {
+		onUnavailable();
 		return;
 	}
 
@@ -72,12 +75,9 @@ export function initializeParadisSentryMain(product: Pick<IProductConfiguration,
 	import('@sentry/electron/main').then(Sentry => {
 		Sentry.init({
 			dsn: PARADIS_SENTRY_DESKTOP_DSN,
-			// パッケージ版に対する CI のスモークテストは VSCODE_DEV を立てないため、
-			// これが無いと自動テストのクラッシュが実ユーザーと同じ production に混ざる。
-			// CI=false を明示するツールがあるので truthy 判定にはしない。
-			environment: process.env['VSCODE_DEV'] || isTruthyEnv(process.env['CI']) || isTruthyEnv(process.env['GITHUB_ACTIONS'])
-				? 'local'
-				: PARADIS_SENTRY_ENVIRONMENT,
+			// パッケージ版に対する CI のスモークテストは VSCODE_DEV を立てずに送ってくるので、
+			// local に分けないと自動テストのクラッシュが実ユーザーと同じ production に混ざる。
+			environment: paradisSentryEnvironment(process.env),
 			release: paradisSentryRelease(app.getVersion(), product.commit, product.paradisSentryRelease),
 			dist: `${process.platform}-${process.arch}`,
 			sendDefaultPii: false,
