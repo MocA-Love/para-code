@@ -33,6 +33,39 @@ import { PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/para
  */
 const LIFECYCLE_APPROVED_STORAGE_KEY = 'paradis.workspaceLifecycle.scriptApproved';
 
+/**
+ * ワークツリーの削除で「teardown を実行する」のチェックを外したリポジトリ（`uri.toString()` の一覧）。
+ * 次にそのリポジトリのワークツリーを消すときは、チェックを外した状態で確認を出す。
+ */
+const TEARDOWN_SKIPPED_STORAGE_KEY = 'paradis.workspaceLifecycle.teardownSkipped';
+
+/** 覚えておくリポジトリの数の上限（古いものから落とす）。 */
+const MAX_TEARDOWN_SKIPPED_REPOSITORIES = 256;
+
+function readStringList(storageService: IStorageService, key: string): string[] {
+	try {
+		const value: unknown = JSON.parse(storageService.get(key, StorageScope.APPLICATION, '[]'));
+		return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+	} catch {
+		return [];
+	}
+}
+
+/** ワークツリーの削除で teardown を実行するかの、そのリポジトリでの前回の選択（既定は実行する）。 */
+export function paradisPrefersTeardown(storageService: IStorageService, repositoryUri: URI): boolean {
+	return !readStringList(storageService, TEARDOWN_SKIPPED_STORAGE_KEY).includes(repositoryUri.toString());
+}
+
+/** ワークツリーの削除で選んだ「teardown を実行するか」を、そのリポジトリの次回の既定として覚える。 */
+export function paradisRememberTeardownChoice(storageService: IStorageService, repositoryUri: URI, run: boolean): void {
+	const key = repositoryUri.toString();
+	const skipped = readStringList(storageService, TEARDOWN_SKIPPED_STORAGE_KEY).filter(item => item !== key);
+	if (!run) {
+		skipped.push(key);
+	}
+	storageService.store(TEARDOWN_SKIPPED_STORAGE_KEY, JSON.stringify(skipped.slice(-MAX_TEARDOWN_SKIPPED_REPOSITORIES)), StorageScope.APPLICATION, StorageTarget.MACHINE);
+}
+
 /** リポジトリ直下の .paracode.json から setupScript / teardownScript を読み取る。ファイル無しは空扱い。 */
 export async function paradisReadWorkspaceLifecycleConfig(fileService: IFileService, repositoryUri: URI): Promise<IParadisWorkspaceLifecycleConfig> {
 	const configUri = joinPath(repositoryUri, PARADIS_WORKSPACE_PRESET_FILE);
@@ -50,8 +83,11 @@ export async function paradisReadWorkspaceLifecycleConfig(fileService: IFileServ
  * 必要（未信頼なら例外）で、さらにリポジトリ+種別+スクリプト内容ごとの初回承認ダイアログを挟む
  * （承認は APPLICATION スコープへ永続し、スクリプトが変わると再承認を要求する）。
  * ユーザーが承認しなかった場合は実行せず false を返す（呼び出し側のフローは打ち切らない）。
+ *
+ * `approvedScript` は、呼び出し側が自分の確認ダイアログでスクリプト本文を見せて実行の同意を得たときに渡す。
+ * 読み直したスクリプトがそれと同じなら、承認ダイアログを重ねずに承認として記録する（違えば従来どおり尋ねる）。
  */
-export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAccessor, kind: ParadisWorkspaceLifecycleKind, repository: IParadisWorkspaceRepository, worktreeUri: URI): Promise<boolean> {
+export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAccessor, kind: ParadisWorkspaceLifecycleKind, repository: IParadisWorkspaceRepository, worktreeUri: URI, approvedScript?: string): Promise<boolean> {
 	const trustService = accessor.get(IWorkspaceTrustManagementService);
 	const fileService = accessor.get(IFileService);
 	// 承認ダイアログの await をまたいで accessor は使えないので、ここで取り出しておく。
@@ -78,11 +114,10 @@ export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAcces
 	// 同 hostB が全部同じ鍵になり、手元で一度承認しただけで、絶対パスの一致する
 	// 別の接続先のリポジトリのスクリプトが無確認で動いてしまう。
 	const approvalKey = `${repository.uri.toString()}:${kind}:${hash(script)}${timeoutMinutes !== undefined ? `:${timeoutMinutes}` : ''}`;
-	let approved: string[];
-	try {
-		approved = JSON.parse(storageService.get(LIFECYCLE_APPROVED_STORAGE_KEY, StorageScope.APPLICATION, '[]'));
-	} catch {
-		approved = [];
+	const approved = readStringList(storageService, LIFECYCLE_APPROVED_STORAGE_KEY);
+	if (!approved.includes(approvalKey) && approvedScript !== undefined && approvedScript === script) {
+		approved.push(approvalKey);
+		storageService.store(LIFECYCLE_APPROVED_STORAGE_KEY, JSON.stringify(approved), StorageScope.APPLICATION, StorageTarget.MACHINE);
 	}
 	if (!approved.includes(approvalKey)) {
 		const { confirmed } = await dialogService.confirm({

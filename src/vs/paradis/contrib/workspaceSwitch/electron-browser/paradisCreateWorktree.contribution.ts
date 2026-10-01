@@ -20,16 +20,18 @@ import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurati
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
+import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_REMOVE_WORKTREE_COMMAND_ID, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult } from '../../../common/paradisIssueDetection.js';
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
-import { paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
+import { paradisPrefersTeardown, paradisReadWorkspaceLifecycleConfig, paradisRememberTeardownChoice, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { openParadisWorkspaceLifecycleDialog } from './paradisWorkspaceLifecycleDialog.js';
 import { IParadisWorktreeCreateQueueService, ParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
@@ -280,6 +282,8 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		// アクセサは同期実行中しか有効でないため、await をまたぐ teardown 実行用に
 		// instantiationService だけ取り出しておき、実行時は invokeFunction で新しいアクセサを作る
 		const instantiationService = accessor.get(IInstantiationService);
+		const fileService = accessor.get(IFileService);
+		const storageService = accessor.get(IStorageService);
 
 		// executeCommand 経由で渡ってくる URI が復元済みでない可能性に備えて revive する
 		const uri = URI.isUri(worktree.uri) ? worktree.uri : URI.revive(worktree.uri);
@@ -289,7 +293,26 @@ class ParadisRemoveWorktreeAction extends Action2 {
 			return;
 		}
 
-		const { confirmed } = await dialogService.confirm({
+		// teardown スクリプトがあれば、削除の確認の 1 枚で「実行するか」も選ばせる。以前は削除の確認の後に
+		// 別の承認ダイアログを出しており、そこの［キャンセル］が「削除をやめる」ではなく「teardown を飛ばして
+		// 削除する」意味になっていたうえ、一度承認すると実行せずに消す手段が無かった。
+		// 設定を読めないとき（.paracode.json が壊れている等）はチェックを出さず、従来どおり削除の途中で
+		// teardown を試みて失敗の確認に回す（読めないことを黙って「teardown 無し」と扱わない）。
+		let teardown: { readonly script: string; readonly timeoutMinutes: number | undefined } | undefined;
+		try {
+			const config = await paradisReadWorkspaceLifecycleConfig(fileService, repository.uri);
+			teardown = config.teardownScript ? { script: config.teardownScript, timeoutMinutes: config.teardownTimeoutMinutes } : undefined;
+		} catch (error) {
+			logService.warn('[ParadisRemoveWorktree] could not read the teardown script before confirming', error);
+		}
+		const teardownDetail = teardown === undefined
+			? ''
+			: teardown.timeoutMinutes !== undefined
+				// allow-any-unicode-next-line
+				? localize('paradis.workspaceSwitch.removeWorktreeTeardownDetailWithTimeout', "\n\n削除の前に実行できる teardown スクリプト（最長 {1} 分で打ち切り）:\n{0}", teardown.script, teardown.timeoutMinutes)
+				// allow-any-unicode-next-line
+				: localize('paradis.workspaceSwitch.removeWorktreeTeardownDetail', "\n\n削除の前に実行できる teardown スクリプト:\n{0}", teardown.script);
+		const { confirmed, checkboxChecked } = await dialogService.confirm({
 			type: 'warning',
 			// allow-any-unicode-next-line
 			message: localize('paradis.workspaceSwitch.removeWorktreeConfirm', "ワークツリー「{0}」を削除しますか？", worktree.name),
@@ -298,12 +321,25 @@ class ParadisRemoveWorktreeAction extends Action2 {
 				? localize('paradis.workspaceSwitch.removeWorktreeAgentRequest', "この削除は、あなたではなくターミナル「{0}」のエージェントからの依頼です。\n\n", options.requestedByAgent)
 				: '')
 				// allow-any-unicode-next-line
-				+ localize('paradis.workspaceSwitch.removeWorktreeDetail', "パス: {0}\n\nディスク上の作業ツリーを削除します。未コミットの変更は失われます。", uri.fsPath),
+				+ localize('paradis.workspaceSwitch.removeWorktreeDetail', "パス: {0}\n\nディスク上の作業ツリーを削除します。未コミットの変更は失われます。", uri.fsPath)
+				+ teardownDetail,
 			// allow-any-unicode-next-line
-			primaryButton: localize('paradis.workspaceSwitch.removeWorktreeConfirmAction', "削除")
+			primaryButton: localize('paradis.workspaceSwitch.removeWorktreeConfirmAction', "削除"),
+			...(teardown !== undefined ? {
+				checkbox: {
+					// allow-any-unicode-next-line
+					label: localize('paradis.workspaceSwitch.removeWorktreeRunTeardown', "削除の前に teardown スクリプトを実行する"),
+					checked: paradisPrefersTeardown(storageService, repository.uri)
+				}
+			} : {})
 		});
 		if (!confirmed) {
 			return;
+		}
+		// チェックを入れたまま削除したことを、表示したスクリプトの実行の承認として扱う（別の承認ダイアログを重ねない）。
+		const runTeardownScript = teardown === undefined || checkboxChecked === true;
+		if (teardown !== undefined) {
+			paradisRememberTeardownChoice(storageService, repository.uri, runTeardownScript);
 		}
 		const stateKey = paradisWorktreeStateKey(uri);
 		if (!await switchService.prepareScopeRetirement(stateKey)) {
@@ -318,8 +354,11 @@ class ParadisRemoveWorktreeAction extends Action2 {
 			await paradisRemoveWorktreeSequence({
 				runTeardown: async () => {
 					// リポジトリ定義の teardownScript。失敗したら続行するかを尋ねる（confirmTeardownFailure）
+					if (!runTeardownScript) {
+						return;
+					}
 					try {
-						teardownRan = await instantiationService.invokeFunction(paradisRunWorkspaceLifecycleScript, 'teardown', repository, uri);
+						teardownRan = await instantiationService.invokeFunction(paradisRunWorkspaceLifecycleScript, 'teardown', repository, uri, teardown?.script);
 					} catch (error) {
 						throw new ParadisTeardownFailedError(error);
 					}
