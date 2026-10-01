@@ -45,8 +45,8 @@ interface PcListViewStore {
 	readonly loaded: boolean;
 	readonly transient: Readonly<Record<string, PcListTransient>>;
 	setGroup(group: PcListGroup): void;
-	/** 絞り込み（状態とスペース）を変えて保存する。検索語は `setQuery`。 */
-	setFilter(pcId: string, filter: Pick<PcListFilter, 'states' | 'spaces'>): void;
+	/** 絞り込み（種類・状態・スペース）を変えて保存する。検索語は `setQuery`。 */
+	setFilter(pcId: string, filter: Pick<PcListFilter, 'kind' | 'states' | 'spaces'>): void;
 	/** 検索語を変える（メモリにだけ置く。1文字ごとに Keychain へ書かない）。 */
 	setQuery(pcId: string, query: string): void;
 	/** 検索欄を開く／閉じる。閉じるときは検索語も消す。 */
@@ -120,8 +120,15 @@ export const usePcListView = create<PcListViewStore>()((set, get) => {
 		},
 		setFilter(pcId, filter) {
 			const view = pcListViewOf(get().saved, pcId);
-			if (!sameItems(view.states, filter.states) || !sameItems(view.spaces, filter.spaces)) {
-				apply(saved => withPcListView(saved, pcId, current => ({ ...current, states: filter.states, spaces: filter.spaces })));
+			// 変えた軸だけを変更として積む。読み込みの前に種類だけを変えたとき、読み込んだ状態とスペースを
+			// その時点のメモリの値（空）で上書きしないため。
+			const changed: Partial<Pick<PcListFilter, 'kind' | 'states' | 'spaces'>> = {
+				...(view.kind !== filter.kind ? { kind: filter.kind } : {}),
+				...(!sameItems(view.states, filter.states) ? { states: filter.states } : {}),
+				...(!sameItems(view.spaces, filter.spaces) ? { spaces: filter.spaces } : {}),
+			};
+			if (Object.keys(changed).length > 0) {
+				apply(saved => withPcListView(saved, pcId, current => ({ ...current, ...changed })));
 			}
 		},
 		setQuery(pcId, query) {

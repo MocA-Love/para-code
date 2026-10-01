@@ -100,19 +100,23 @@ export function PcHeader({ name, kind, detail, pairingRejected = false, onReconn
 	);
 }
 
-/** ツールバーの左端の「絞り込み」のチップ（選んでいる数を添える）。 */
-export function FilterChip({ count, onPress }: { count: number; onPress: () => void }) {
-	const on = count > 0;
+/**
+ * ツールバーの左端の「絞り込み」のチップ（選んでいる数を添える）。種類を絞っているときは
+ * 「絞り込み」の代わりに種類の名前を出し、何で絞っているかを一覧から分かるようにする（例「エージェント・2」）。
+ */
+export function FilterChip({ count, kind, onPress }: { count: number; kind?: string; onPress: () => void }) {
+	const on = count > 0 || kind !== undefined;
+	const label = kind !== undefined ? (count > 0 ? `${kind}・${count}` : kind) : (count > 0 ? `絞り込み ${count}` : '絞り込み');
 	return (
 		<Pressable
 			style={({ pressed }) => [styles.chip, on ? styles.chipOn : undefined, pressed ? styles.pressed : undefined]}
 			hitSlop={hitSlopToMinimum(CHIP_HEIGHT)}
 			onPress={onPress}
 			accessibilityRole="button"
-			accessibilityLabel={on ? `絞り込み、${count}件選択中` : '絞り込み'}
+			accessibilityLabel={on ? `絞り込み、${[kind, count > 0 ? `${count}件選択中` : undefined].filter(part => part !== undefined).join('、')}` : '絞り込み'}
 		>
 			<Icon icon={Funnel} size={iconSize.xs} color={on ? colors.text : colors.textDim} />
-			<Text style={[styles.chipText, on ? styles.chipTextOn : undefined]}>{on ? `絞り込み ${count}` : '絞り込み'}</Text>
+			<Text style={[styles.chipText, on ? styles.chipTextOn : undefined]} numberOfLines={1}>{label}</Text>
 		</Pressable>
 	);
 }
@@ -305,6 +309,8 @@ const styles = StyleSheet.create({
 		borderTopColor: colors.border,
 	},
 	chip: {
+		// 種類の名前（「エージェント・2」）で伸びたとき、iPad の狭い左の列でも並び替え・グループのボタンを押し出さない。
+		flexShrink: 1,
 		flexDirection: 'row',
 		alignItems: 'center',
 		gap: space.xs,
@@ -319,6 +325,7 @@ const styles = StyleSheet.create({
 		backgroundColor: colors.raised,
 	},
 	chipText: {
+		flexShrink: 1,
 		fontSize: type.meta,
 		color: colors.textDim,
 	},
