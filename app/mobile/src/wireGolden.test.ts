@@ -255,14 +255,25 @@ describe('wire golden (app side)', () => {
 			await flush();
 		}
 		const chat = latest()?.agentChats.get('terminal-key-1');
+		const goldenDelta = agentGolden.toMobile.find(message => message.t === 'delta');
+		const goldenMonitor = (goldenDelta?.['monitors'] as Golden[] | undefined)?.[0];
 		expect({
 			attach: shapeOf(sent.agent![0]),
 			messages: chat?.messages.map(message => `${message.rev}:${message.kind}`),
 			capabilities: chat?.capabilities,
+			// 任意項目の Monitor の一覧（agent.monitors.v1）を全項目のまま読み、時刻は monitorsAt との差で手元の時計へ直す
+			// （直した量を引けばゴールデンと同じになる）
+			monitors: chat?.monitors?.map(monitor => {
+				const shift = monitor.startedAt - (goldenMonitor?.['startedAt'] as number);
+				return { ...monitor, startedAt: monitor.startedAt - shift, ...(monitor.endedAt !== undefined ? { endedAt: monitor.endedAt - shift } : {}), output: monitor.output.map(line => ({ ...line, at: line.at - shift })) };
+			}),
+			shifted: chat?.monitors?.[0] !== undefined && chat.monitors[0].startedAt !== goldenMonitor?.['startedAt'],
 		}).toEqual({
 			attach: shapeOf(agentGolden.toPc[0]),
 			messages: ['0:text', '1:tool_use', '2:tool_result'],
 			capabilities: { agentActions: true, claudeSettings: true },
+			monitors: goldenDelta?.['monitors'],
+			shifted: true,
 		});
 		controller.disconnect();
 	});

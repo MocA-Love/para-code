@@ -1254,6 +1254,16 @@ fork の後始末を `sentry/common/paradisTeardownTiming.ts` で名前付きで
 - **入力欄の動き**: 文字があれば Return で文字だけ送る（Enter は付けない）。空の Return は Enter、空の ⌫ はページ側の 1 文字削除。入力の段を開いている間は映像のタップでキーボードを閉じない（`keyboardShouldPersistTaps="handled"`）ので、ページの入力欄をタップしてから続けて打てる
 - **iPad の外付けキーボードの矢印は見送った**: 入力欄に打った文字・Return・⌫ はそのまま上の経路で届くが、矢印は RN の `onKeyPress` に来ないので `src/ipad/shortcuts.ts` の UIKeyCommand が要る。矢印（修飾なし）は既にターミナルのライブ入力（`terminal.up` など）に割り当て済みで、`shortcuts.test.ts` の「同じキーの組み合わせを2つに割り当てない」に反する。足すなら `terminalArrows` の受け口を「入力欄の矢印を相手へ回す」汎用の受け口に直し、⌘ 長押しの一覧の名前も両方に合うものへ変える
 
+### モバイルのコンポーザーの Monitor のピル（`agent.monitors.v1`、2026-10-02）
+
+Claude Code の Monitor（出力を 1 行ずつ会話へ通知するバックグラウンドのシェル）を、モバイルの入力欄のモデルピルの右に出す。調査とモックは `monitor-composer-mock.html` の案A。PC は transcript から Monitor を読み（`agentChat/common/paradisAgentMonitors.ts`。パーサーは `paradisAgentTranscriptParser.ts` が手がかりを `signals.monitorSignals` に集めるだけ）、tailer が epoch ごとに一覧を持って agent の snapshot / delta の任意項目 `monitors` で丸ごと送る。古いアプリは読まずに無視し、古い PC からは来ないのでアプリはピルを出さない。
+
+- **読み方**: 起動は tool_use `Monitor` の input と、tool_result の `Monitor started (task …)` の行の `toolUseResult`。出力は `<task-notification>` の `<summary>Monitor event: "…"</summary>` と `<event>`（`<status>` 無し。時間切れも `<event>` が `[Monitor timed out …]`）。終了は `<status>` 付きの通知。バックグラウンドの Bash も同じ b 始まりの ID・同じ形で終わるので、知らない ID の終了は要約が `Monitor "` で始まるときだけ拾う。停止は TaskStop の結果の `toolUseResult.task_id`
+- **推定**: 常駐でないものは `timeout_ms`（上限後に出力が届いたら最後の出力）に 30 秒足した時刻を過ぎたら「時間切れ（推定）」、SessionEnd の hook で動いているものを「停止（推定）」にする（TUI から止めた・プロセスが終わったときは transcript に印が残らないため）。ペインが止まっている（SessionEnd の後・ペインが生きていない）間は、送るたびに動いているものを「停止（推定）」へ直す（推定は tailer のメモリにしか無く、作り直すと再生で running に戻るため）。同じ出力の通知が `queued_command` と user 行に重ねて書かれたら（taskId, 時刻, 本文）で 1 件にする。8 MB を超える transcript の末尾だけ読んで起動行が無いものは、通知の要約の説明で代わりにし、出力が 1 時間途絶えたら時間切れ（推定）にする。終わったものは 30 分で一覧から外す。上限は 20 件・出力は末尾 5 行（1 行 300 文字）
+- **時計**: 送る時刻は PC の時計に直す。SSH の写しは transcript の時刻が接続先の時計なので、ライブ追記の行の時刻と読んだ時刻の差の最小値を「ずれ」として推定の判定と送る時刻に使う。一緒に送信時刻 `monitorsAt` を載せ、アプリは受け取った時刻との差を全時刻へ足して手元の時計へ直す（「終了から 1 分」をスマホの時計で判定するため）。起動行が読めなかったものは `startUnknown` を付け、アプリは経過時間に「以上」を付ける
+- **アプリ**: `app/mobile/src/agentMonitors.ts`（純関数）と `features/session/monitorDrawer.tsx`。ピルは実行中か終了から 1 分以内のものがあるときだけ出し、出さないときも木に残して `display: 'none'` にする。停止の操作は置かない（見るだけ）。幅が足りないときはモデルピルが縮む
+- **既知の制約**: TUI から止めた常駐の Monitor、SessionEnd を出さずに落ちたプロセス、hook が届かない構成（WSL）では、transcript に終わりの印が残らないので「実行中」のまま残る。時計のずれは最小値を保持し続けるので、SSH の接続先の時計が途中で戻されると推定の時間切れが早まる。最初のライブの行を読むまでずれは 0 として扱う
+
 ### スペースのメモの版と差分レビューの記録（Orca W2-16 / W2-14 / W2-28、2026-09-29）
 
 モバイルからの書き込みで PC 側の変更を黙って消さないことが共通の主題。どれも任意項目・新しい種類の追加だけで、版は上げていない。
