@@ -104,7 +104,8 @@ export class ParadisChangelogModal extends Disposable {
 
 		const previousFocus = container.ownerDocument.activeElement as HTMLElement | undefined;
 
-		this.overlay = $('.para-cl-overlay');
+		// 内蔵ブラウザの裏に隠れないよう、fork のモーダル共通の印（overlayManager.ts に登録済み）を付ける
+		this.overlay = $('.para-cl-overlay.paradis-modal-backdrop');
 		this.overlay.setAttribute('role', 'presentation');
 		this._register(dom.addDisposableListener(this.overlay, dom.EventType.CLICK, e => {
 			if (e.target === this.overlay) {
