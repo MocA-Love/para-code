@@ -8,6 +8,9 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_ACTIVITY_STALE_MS, ParadisAgentActivityTracker } from '../../node/paradisAgentActivity.js';
+import { paradisParseCodexPersistedActivity } from '../../node/paradisPersistedAgentActivity.js';
+import { paradisParseCodexRolloutForTest } from '../../../agentChat/common/paradisAgentTranscriptParser.js';
+import { CODEX_FIXTURE_CHILD_ROLLOUT, CODEX_FIXTURE_ENCRYPTED, CODEX_FIXTURE_PARENT_ROLLOUT, CODEX_FIXTURE_USER_MESSAGES } from '../../../agentChat/test/common/paradisCodexRolloutFixture.js';
 
 suite('ParadisAgentActivity', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -215,5 +218,122 @@ suite('ParadisAgentActivity', () => {
 		tracker.applyNestedAgentHook('claude', 'child-1', 'SessionEnd', 120);
 		assert.strictEqual(tracker.applyNestedAgentHook('claude', 'child-1', 'PostToolUse', 130), false);
 		assert.strictEqual(tracker.snapshot()?.agents[0].status, 'completed');
+	});
+
+	test('builds the Codex sub-agent, goal and plan from a paginated rollout the same way the tailer feeds it', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		for (const event of paradisParseCodexRolloutForTest(CODEX_FIXTURE_PARENT_ROLLOUT).timeline) {
+			if (event.type === 'subagent') {
+				tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: event.id, agentPath: event.agentPath, kind: event.kind, ...(event.via !== undefined ? { interaction: event.via } : {}) } }, event.at);
+			} else if (event.type === 'goal') {
+				tracker.applyCodexGoal(event, event.at);
+			} else if (event.type === 'plan') {
+				tracker.applyCodexPlan(event.steps, event.at);
+			} else if (event.type === 'turnEnd') {
+				tracker.endTurn(event.at, event.reason);
+			}
+		}
+		const goalAt = Date.parse('2026-10-01T21:40:00.000Z');
+		const planAt = Date.parse('2026-10-01T21:40:05.000Z');
+		const endAt = Date.parse('2026-10-01T21:45:00.000Z');
+		const snapshot = tracker.snapshot();
+		assert.deepStrictEqual({ agents: snapshot?.agents, tasks: snapshot?.tasks }, {
+			agents: [{ id: 'thread-child', label: '/root/reviewer', role: 'subagent', provider: 'codex', status: 'completed', startedAt: 1790890475402, updatedAt: 1790890753317 }],
+			tasks: [
+				// ゴールは目標なので待機として載せ、取りかかったまま失敗で終わった手順はターンの終わりに合わせて畳む
+				{ id: 'codex-plan:2', label: 'テストを足す', assignee: '計画', status: 'idle', startedAt: planAt, updatedAt: planAt },
+				{ id: 'codex-goal:thread-root', label: '設定画面の不具合を直してテストまで通す', detail: '設定画面の不具合を直してテストまで通す', assignee: 'ゴール', status: 'idle', startedAt: goalAt, updatedAt: goalAt },
+				{ id: 'codex-plan:1', label: '直す', assignee: '計画', status: 'failed', startedAt: planAt, updatedAt: endAt },
+				{ id: 'codex-plan:0', label: '原因を調べる', assignee: '計画', status: 'completed', startedAt: planAt, updatedAt: planAt },
+			],
+		});
+	});
+
+	test('replaces the Codex plan on every update and ends the goal when it is completed or cleared', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyCodexPlan([{ step: '調べる', status: 'in_progress' }, { step: '直す', status: 'pending' }, { step: '確かめる', status: 'pending' }], 100);
+		tracker.applyCodexPlan([{ step: '調べる', status: 'completed' }, { step: '直す', status: 'in_progress' }], 200);
+		// 古い計画が遅れて届いても巻き戻さない
+		assert.strictEqual(tracker.applyCodexPlan([{ step: '古い', status: 'pending' }], 150), false);
+		tracker.applyCodexGoal({ threadId: 't', objective: '目標', status: 'active' }, 100);
+		tracker.applyCodexGoal({ threadId: 't', objective: '目標', status: 'complete' }, 300);
+		tracker.applyCodexGoal({ threadId: 'u', objective: '前の目標', status: 'active' }, 305);
+		// 同じスレッドで目標が変わったら、開始時刻を数え直す
+		tracker.applyCodexGoal({ threadId: 'u', objective: '別の目標', status: 'active' }, 310);
+		tracker.applyCodexGoal({ threadId: 'u', status: 'cleared' }, 320);
+		// 知らないゴールが外れただけなら項目を作らない
+		assert.strictEqual(tracker.applyCodexGoal({ threadId: 'v', status: 'cleared' }, 330), false);
+		assert.deepStrictEqual(tracker.snapshot()?.tasks.map(task => `${task.id}:${task.label}:${task.status}:${task.startedAt}`), [
+			'codex-plan:1:直す:running:200',
+			'codex-goal:u:別の目標:interrupted:310',
+			'codex-goal:t:目標:completed:100',
+			'codex-plan:0:調べる:completed:100',
+		]);
+	});
+
+	test('marks a Codex sub-agent completed by the paginated completed kind and revives it only on a followup task', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		const activity = (kind: string, at: number, extra: Record<string, unknown> = {}) => tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: 'c', agentPath: '/root/c', kind, ...extra } }, at);
+		activity('started', 100, { prompt: '平文の指示' });
+		activity('completed', 200);
+		const completed = tracker.snapshot()?.agents[0];
+		activity('interacted', 300, { interaction: 'send_message' });
+		const afterMessage = tracker.snapshot()?.agents[0].status;
+		activity('interacted', 400, { interaction: 'followup_task' });
+		const afterFollowup = tracker.snapshot()?.agents[0].status;
+		activity('completed', 500);
+		// どのツールか分からない interacted（app-server・旧形式）は従来どおり動き出したとみなす
+		activity('interacted', 600);
+		assert.deepStrictEqual([completed?.status, completed?.detail, afterMessage, afterFollowup, tracker.snapshot()?.agents[0].status], ['completed', '平文の指示', 'completed', 'running', 'running']);
+	});
+
+	test('settles a running Codex plan step when the turn ends or the conversation stops being read', () => {
+		const run = (end: (tracker: ParadisAgentActivityTracker) => void) => {
+			const tracker = new ParadisAgentActivityTracker();
+			tracker.applyCodexPlan([{ step: '直す', status: 'in_progress' }, { step: '試す', status: 'pending' }], 100);
+			tracker.applyCodexGoal({ threadId: 't', objective: '目標', status: 'active' }, 100);
+			end(tracker);
+			return tracker.snapshot()?.tasks.map(task => `${task.id}:${task.status}`).sort();
+		};
+		assert.deepStrictEqual({
+			completed: run(tracker => tracker.endTurn(200, 'completed')),
+			interrupted: run(tracker => tracker.endTurn(200, 'interrupted')),
+			hook: run(tracker => tracker.endTurn(200)),
+			disposed: run(tracker => tracker.settleCodexPlanAndGoal(200)),
+			session: run(tracker => tracker.endSession('interrupted', 200)),
+		}, {
+			completed: ['codex-goal:t:idle', 'codex-plan:0:idle', 'codex-plan:1:idle'],
+			interrupted: ['codex-goal:t:idle', 'codex-plan:0:interrupted', 'codex-plan:1:idle'],
+			hook: ['codex-goal:t:idle', 'codex-plan:0:idle', 'codex-plan:1:idle'],
+			disposed: ['codex-goal:t:idle', 'codex-plan:0:idle', 'codex-plan:1:idle'],
+			session: ['codex-goal:t:interrupted', 'codex-plan:0:interrupted', 'codex-plan:1:interrupted'],
+		});
+	});
+
+	test('does not take the injected AGENTS.md or the inherited history as a Codex child instruction', () => {
+		const now = Date.parse('2026-10-01T22:00:00.000Z');
+		const child = paradisParseCodexPersistedActivity('thread-child', JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: 'thread-root', depth: 1, agent_nickname: 'Hooke' } } }), CODEX_FIXTURE_CHILD_ROLLOUT, now, now);
+		// fork_turns で親の会話を引き継いだ子（親の発言の後に、平文の NEW_TASK が来る旧い形）
+		const forked = paradisParseCodexPersistedActivity('thread-forked', '{}', [
+			CODEX_FIXTURE_USER_MESSAGES.injected.recommendedPluginsLegacy,
+			CODEX_FIXTURE_USER_MESSAGES.authored.textWithKinds,
+			JSON.stringify({ timestamp: '2026-10-01T21:50:00.000Z', type: 'response_item', payload: { type: 'agent_message', author: '/root', recipient: '/root/fork', content: [{ type: 'input_text', text: 'Message Type: NEW_TASK\nTask name: /root/fork\nSender: /root\nPayload:\nテストを書いて' }] } }),
+		], now, now);
+		const encryptedForked = paradisParseCodexPersistedActivity('thread-forked2', '{}', [
+			CODEX_FIXTURE_USER_MESSAGES.authored.textWithKinds,
+			JSON.stringify({ type: 'response_item', payload: { type: 'agent_message', content: [{ type: 'input_text', text: 'Message Type: NEW_TASK\nTask name: /root/fork\nSender: /root\nPayload:\n' }, { type: 'encrypted_content', encrypted_content: CODEX_FIXTURE_ENCRYPTED }] } }),
+		], now, now);
+		// 指示が平文の user メッセージで来る旧形式
+		const legacy = paradisParseCodexPersistedActivity('thread-legacy', '{}', [CODEX_FIXTURE_USER_MESSAGES.injected.agentsMdProjectLegacy, CODEX_FIXTURE_USER_MESSAGES.authored.taskLegacy], now, now);
+		const failed = paradisParseCodexPersistedActivity('thread-failed', '{}', [CODEX_FIXTURE_PARENT_ROLLOUT.at(-1)!], now, now);
+		assert.deepStrictEqual({
+			child: [child?.label, child?.detail, child?.parentId, child?.status],
+			forked: forked?.detail, encryptedForked: encryptedForked?.detail, legacy: legacy?.detail, failed: failed?.status,
+		}, {
+			child: ['Hooke', undefined, 'thread-root', 'completed'],
+			forked: 'テストを書いて', encryptedForked: undefined,
+			legacy: '<task>\nリポジトリ /workspace/app の実装計画をレビューしてください\n</task>',
+			failed: 'failed',
+		});
 	});
 });

@@ -838,7 +838,8 @@ suite('ParadisMobileAgentChat', () => {
 		]);
 	});
 
-	test('extracts current Codex rollout sub_agent_activity for the activity tracker', () => {
+	// history_mode が legacy の rollout だけが書く形。今の（paginated の）形は paradisAgentTranscriptParser.test.ts で見る
+	test('extracts legacy Codex rollout sub_agent_activity for the activity tracker', () => {
 		const parsed = paradisParseCodexTranscriptLineForTest(JSON.stringify({
 			timestamp: '2026-07-13T00:00:00.000Z', type: 'event_msg',
 			payload: { type: 'sub_agent_activity', event_id: 'event-1', occurred_at_ms: 1783900800123, agent_thread_id: 'thread-2', agent_path: '/root/reviewer', kind: 'started' },

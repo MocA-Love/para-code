@@ -18,6 +18,7 @@ import { IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentQuestion
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 import { paradisExpandPastedContent } from '../../../common/paradisPastedContent.js';
 import { IParadisMonitorSignal, paradisMonitorCallSignal, paradisMonitorNotificationSignals, paradisMonitorStartedSignal, paradisMonitorTaskStopSignal } from './paradisAgentMonitors.js';
+import { paradisCodexUserAuthoredContent, paradisIsCodexEncryptedPayload, paradisMaskCodexEncryptedPayloads } from './paradisCodexInjectedContext.js';
 
 export { paradisQuestionReadyMarker } from './paradisAgentQuestionMarker.js';
 
@@ -122,8 +123,194 @@ export interface IRawMessage {
  */
 export type ICodexTranscriptActivityEvent =
 	| { readonly type: 'turnStart'; readonly at: number }
-	| { readonly type: 'subagent'; readonly id: string; readonly agentPath?: string; readonly kind: 'started' | 'interacted' | 'interrupted'; readonly at: number }
+	| { readonly type: 'subagent'; readonly id: string; readonly agentPath?: string; readonly kind: 'started' | 'interacted' | 'interrupted' | 'completed'; readonly at: number; readonly detail?: string; readonly via?: string }
+	| ({ readonly type: 'goal'; readonly at: number } & IParadisCodexGoal)
+	| { readonly type: 'plan'; readonly steps: readonly IParadisCodexPlanStep[]; readonly explanation?: string; readonly at: number }
 	| { readonly type: 'turnEnd'; readonly reason: 'completed' | 'failed' | 'interrupted'; readonly at: number };
+
+/**
+ * Codex の `/goal`（rollout の event_msg `thread_goal_updated`）。`cleared` はゴールが外された
+ * （`goal` が null の）とき。
+ */
+export interface IParadisCodexGoal {
+	readonly threadId?: string;
+	readonly objective?: string;
+	readonly status: 'active' | 'paused' | 'complete' | 'budgetLimited' | 'cleared' | 'unknown';
+	readonly tokensUsed?: number;
+	readonly timeUsedSeconds?: number;
+}
+
+/** Codex の `update_plan` の 1 手順。 */
+export interface IParadisCodexPlanStep {
+	readonly step: string;
+	readonly status: 'pending' | 'in_progress' | 'completed';
+}
+
+/** 持つ計画の手順の上限（モバイルの一覧の上限 100 件の内側に収める）。 */
+const MAX_CODEX_PLAN_STEPS = 50;
+
+function pushCodexSubagentActivity(signals: IParseSignals, id: string | undefined, agentPath: string | undefined, kind: string | undefined, at: number, callId?: string): void {
+	// 子の rollout には、親（`/root`）とのやりとりも同じ形で書かれる。親はサブエージェントではない
+	if (id === undefined || agentPath === '/root' || !Number.isFinite(at)) {
+		return;
+	}
+	if (kind !== 'started' && kind !== 'interacted' && kind !== 'interrupted' && kind !== 'completed') {
+		return;
+	}
+	const detail = kind === 'started' && callId !== undefined ? signals.codexSpawnMessages.get(callId) : undefined;
+	// interacted がどのツール（send_message / followup_task 等）の呼び出しで起きたか。終わった子へ send_message で
+	// 知らせただけなら子は動き出さないので、トラッカーが状態を変えないために使う
+	const via = kind === 'interacted' && callId !== undefined ? signals.codexCallTools.get(callId) : undefined;
+	signals.codexActivityTimeline.push({ type: 'subagent', id, ...(agentPath !== undefined ? { agentPath } : {}), kind, at, ...(detail !== undefined ? { detail } : {}), ...(via !== undefined ? { via } : {}) });
+}
+
+function paradisCodexGoalStatus(value: string | undefined): IParadisCodexGoal['status'] {
+	switch (value?.replace(/[_-]/g, '').toLowerCase()) {
+		case 'active': return 'active';
+		case 'paused': return 'paused';
+		case 'complete': case 'completed': return 'complete';
+		case 'budgetlimited': return 'budgetLimited';
+		default: return 'unknown';
+	}
+}
+
+/** `thread_goal_updated` の payload を読む（フィールド名は camelCase。snake_case の版も読む）。 */
+function paradisCodexGoalFromEvent(payload: Record<string, unknown> | undefined): IParadisCodexGoal | undefined {
+	if (payload === undefined) {
+		return undefined;
+	}
+	const threadId = str(payload.threadId) ?? str(payload.thread_id);
+	if (payload.goal === null) {
+		return { ...(threadId !== undefined ? { threadId } : {}), status: 'cleared' };
+	}
+	const goal = rec(payload.goal);
+	const objective = str(goal?.objective)?.trim();
+	if (goal === undefined || objective === undefined || objective.length === 0) {
+		return undefined;
+	}
+	const tokensUsed = num(goal.tokensUsed) ?? num(goal.tokens_used);
+	const timeUsedSeconds = num(goal.timeUsedSeconds) ?? num(goal.time_used_seconds);
+	return {
+		...(threadId !== undefined ? { threadId } : str(goal.threadId) !== undefined ? { threadId: str(goal.threadId) } : {}),
+		objective: truncateText(objective, 1000),
+		status: paradisCodexGoalStatus(str(goal.status)),
+		...(tokensUsed !== undefined ? { tokensUsed } : {}),
+		...(timeUsedSeconds !== undefined ? { timeUsedSeconds } : {}),
+	};
+}
+
+/** `update_plan` の引数（`{ explanation?, plan: [{ step, status }] }`）を読む。形が違えば undefined。 */
+function paradisCodexPlanFromArguments(argumentsText: string): { readonly steps: readonly IParadisCodexPlanStep[]; readonly explanation?: string } | undefined {
+	const args = rec(safeJsonParse(argumentsText));
+	if (!Array.isArray(args?.plan)) {
+		return undefined;
+	}
+	const steps: IParadisCodexPlanStep[] = [];
+	for (const raw of args.plan.slice(0, MAX_CODEX_PLAN_STEPS)) {
+		const entry = rec(raw);
+		const step = str(entry?.step)?.trim();
+		const status = str(entry?.status);
+		if (step !== undefined && step.length > 0 && (status === 'pending' || status === 'in_progress' || status === 'completed')) {
+			steps.push({ step: truncateText(step, 500), status });
+		}
+	}
+	const explanation = str(args.explanation)?.trim();
+	return { steps, ...(explanation !== undefined && explanation.length > 0 ? { explanation: truncateText(explanation, 1000) } : {}) };
+}
+
+/**
+ * multi-agent のツール（spawn_agent・send_message 等）の引数を画面用に整える。暗号化された本文
+ * （`message` 等）は読めないので外す。spawn_agent は Claude Code の Agent と同じ「名前 (モデル)」の 1 行にする。
+ */
+function paradisCodexCollaborationDisplay(tool: string, argumentsText: string): string {
+	const args = rec(safeJsonParse(argumentsText));
+	if (args === undefined) {
+		// JSON として読めなくても、暗号文らしい部分は伏せる
+		return paradisMaskCodexEncryptedPayloads(argumentsText);
+	}
+	if (tool === 'spawn_agent') {
+		const taskName = str(args.task_name)?.trim() ?? str(args.agent_type)?.trim();
+		const message = str(args.message);
+		const plainMessage = message !== undefined && !paradisIsCodexEncryptedPayload(message) ? message.trim().split(/\r?\n/).find(line => line.trim().length > 0)?.trim() : undefined;
+		const model = [str(args.model), str(args.reasoning_effort)].filter((part): part is string => part !== undefined && part.length > 0).join(' ');
+		const title = [taskName, plainMessage].filter((part): part is string => part !== undefined && part.length > 0).join(': ');
+		if (title.length > 0) {
+			return model.length > 0 ? `${title} (${model})` : title;
+		}
+	}
+	const visible: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(args)) {
+		if (!(typeof value === 'string' && paradisIsCodexEncryptedPayload(value))) {
+			visible[key] = value;
+		}
+	}
+	// 入れ子の値の中の暗号文も伏せる
+	return paradisMaskCodexEncryptedPayloads(JSON.stringify(visible));
+}
+
+/** Codex の multi-agent のツール名。 */
+const CODEX_COLLABORATION_TOOLS: ReadonlySet<string> = new Set(['spawn_agent', 'send_message', 'followup_task', 'send_input', 'wait_agent', 'wait', 'list_agents', 'interrupt_agent', 'close_agent', 'resume_agent']);
+
+/**
+ * サブエージェントが返し終えた結果のカード。Claude Code のバックグラウンドのサブエージェントの完了通知と同じく、
+ * 親の会話に結果のカードとして出す。呼び出しと対にならないので、カードを見分ける合成の toolUseId を付ける。
+ */
+function codexSubagentResultCard(name: string | undefined, body: string, ts: number | undefined, toolUseId: string | undefined, outcome: 'completed' | 'errored' | 'shutdown' = 'completed'): IRawMessage {
+	// allow-any-unicode-next-line
+	const heading = outcome === 'errored' ? 'サブエージェント失敗' : outcome === 'shutdown' ? 'サブエージェント終了' : 'サブエージェント完了';
+	// allow-any-unicode-next-line
+	const title = name !== undefined ? `${heading}: ${name}` : heading;
+	return {
+		role: 'tool', kind: 'tool_result', ...withTruncation(body.length > 0 ? `${title}\n${body}` : title, TOOL_TEXT_LIMIT), ts,
+		...(toolUseId !== undefined ? { toolUseId } : {}), ...(outcome === 'errored' ? { isError: true } : {}),
+	};
+}
+
+/**
+ * 旧形式の子の完了の知らせ（user role の `<subagent_notification>`。中身は `agent_path` と `status` の JSON）を
+ * FINAL_ANSWER と同じ結果カードにする。読めなければ中身をそのまま本文にする。
+ */
+function parseCodexSubagentNotification(text: string, ts: number | undefined): IRawMessage {
+	const inner = /^<subagent_notification>([\s\S]*?)(?:<\/subagent_notification>|$)/.exec(text.trim())?.[1]?.trim() ?? '';
+	const json = rec(safeJsonParse(inner));
+	const path = str(json?.agent_path) ?? str(json?.agent_nickname) ?? str(json?.agent_id);
+	const name = path?.split('/').filter(segment => segment.length > 0).at(-1);
+	// 実データの status は `{ completed: 本文 }`・`{ errored: 理由 }`・`"shutdown"` の 3 つ
+	const status = json?.status;
+	const statusRecord = rec(status);
+	const errored = str(statusRecord?.errored);
+	const completed = str(statusRecord?.completed);
+	const outcome = errored !== undefined ? 'errored' : status === 'shutdown' ? 'shutdown' : 'completed';
+	const body = json === undefined ? inner
+		: errored ?? completed ?? (typeof status === 'string' ? (status === 'shutdown' ? '' : status) : statusRecord !== undefined ? JSON.stringify(statusRecord) : '');
+	return codexSubagentResultCard(name, paradisMaskCodexEncryptedPayloads(body.trim()), ts, ts !== undefined ? `codex-final:notification:${ts}:${stableTextHash(inner)}` : undefined, outcome);
+}
+
+/**
+ * サブエージェント同士・親とのやりとり（response_item の `agent_message`）。本文の頭に
+ * `Message Type: FINAL_ANSWER|MESSAGE|NEW_TASK` / `Task name` / `Sender` / `Payload:` が並ぶ。
+ * NEW_TASK と MESSAGE の本文は暗号化されている（encrypted_content）。
+ */
+function parseCodexAgentMessage(payload: Record<string, unknown>, ts: number | undefined): IRawMessage[] {
+	const parts = Array.isArray(payload.content) ? payload.content.map(item => rec(item)).filter(item => item?.type === 'input_text' || item?.type === 'output_text' || item?.type === 'text') : [];
+	const raw = parts.map(item => str(item?.text) ?? '').join('');
+	const header = /^Message Type: (?<type>[A-Z_]+)\n(?:[^\n]*\n)*?Payload:\n?/.exec(raw);
+	const messageType = header?.groups?.type;
+	const body = (header !== null ? raw.slice(header[0].length) : raw).trim();
+	const author = str(payload.author);
+	const name = author?.split('/').filter(segment => segment.length > 0).at(-1);
+	if (body.length === 0 || paradisIsCodexEncryptedPayload(body)) {
+		return [];
+	}
+	if (messageType === 'FINAL_ANSWER') {
+		const id = str(payload.id);
+		return [codexSubagentResultCard(name, body, ts, id !== undefined ? `codex-final:${id}` : undefined)];
+	}
+	if (messageType === 'MESSAGE') {
+		return [{ role: 'assistant', kind: 'peer_message', text: truncateText(body, TEXT_LIMIT), ts, ...(name !== undefined ? { peerName: name } : {}) }];
+	}
+	return [];
+}
 
 export interface IParseSignals {
 	/** バックグラウンドタスク（サブエージェント等）の起動: id → 起動時刻。 */
@@ -143,6 +330,13 @@ export interface IParseSignals {
 	 */
 	turnEnded: 'completed' | 'failed' | 'interrupted' | undefined;
 	readonly codexActivityTimeline: ICodexTranscriptActivityEvent[];
+	/**
+	 * この読み取りの塊で見た Codex の spawn_agent の call_id → 平文の指示。直後の SubAgentActivity（started）の
+	 * 詳細に使う（今の Codex は指示を暗号化して書くので、多くの場合は空）。
+	 */
+	readonly codexSpawnMessages: Map<string, string>;
+	/** この読み取りの塊で見た Codex の multi-agent のツール呼び出しの call_id → ツール名（interacted の出どころ）。 */
+	readonly codexCallTools: Map<string, string>;
 	/** Claude Code の Monitor の起動・出力・終了・停止（出現順。tailer の Monitor 一覧へ当てる）。 */
 	readonly monitorSignals: IParadisMonitorSignal[];
 	/**
@@ -188,7 +382,7 @@ export function newClaudeQueuedPromptState(): IClaudeQueuedPromptState {
 }
 
 export function newParseSignals(claudeQueuedPrompts: IClaudeQueuedPromptState = newClaudeQueuedPromptState()): IParseSignals {
-	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], monitorSignals: [], userText: false, turnEnded: undefined, claudeQueuedPrompts };
+	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], codexSpawnMessages: new Map(), codexCallTools: new Map(), monitorSignals: [], userText: false, turnEnded: undefined, claudeQueuedPrompts };
 }
 
 export function decodeXmlAttribute(value: string): string {
@@ -241,6 +435,14 @@ export function str(value: unknown): string | undefined {
 
 export function num(value: unknown): number | undefined {
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function safeJsonParse(text: string): unknown {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return undefined;
+	}
 }
 
 export function stableTextHash(value: string): string {
@@ -940,6 +1142,22 @@ export function paradisParseCodexTranscriptLinesForTest(lines: readonly string[]
 	return JSON.parse(JSON.stringify(out)) as IRawMessage[];
 }
 
+/**
+ * 連続する Codex rollout 行を 1 つの signals で通し、表示メッセージと状態のシグナル（サブエージェント・
+ * ゴール・計画・ターンの終わり）を返す（回帰テスト用）。
+ */
+export function paradisParseCodexRolloutForTest(lines: readonly string[]): { messages: IRawMessage[]; timeline: ICodexTranscriptActivityEvent[]; turnEnded: IParseSignals['turnEnded'] | null } {
+	const signals = newParseSignals();
+	const out: IRawMessage[] = [];
+	for (const line of lines) {
+		const obj = rec(safeJsonParse(line));
+		if (obj !== undefined) {
+			out.push(...parseCodexLine(obj, signals));
+		}
+	}
+	return JSON.parse(JSON.stringify({ messages: out, timeline: signals.codexActivityTimeline, turnEnded: signals.turnEnded ?? null })) as { messages: IRawMessage[]; timeline: ICodexTranscriptActivityEvent[]; turnEnded: IParseSignals['turnEnded'] | null };
+}
+
 /** Codex子threadのrollout行を、SubAgent詳細用メッセージへ正規化する。 */
 export function paradisParseCodexDetailLinesForTest(lines: readonly string[]): IParadisAgentActivityDetailMessage[] {
 	const out: IParadisAgentActivityDetailMessage[] = [];
@@ -978,25 +1196,41 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 		// ここで拾わないと「考え中」表示が永久に残る。
 		const eventPayload = rec(obj.payload);
 		const eventType = str(eventPayload?.type);
+		const timestamp = str(obj.timestamp);
+		const lineAt = timestamp !== undefined ? Date.parse(timestamp) : NaN;
 		if (eventType === 'sub_agent_activity') {
-			const id = str(eventPayload?.agent_thread_id);
-			const kind = str(eventPayload?.kind);
-			const timestamp = str(obj.timestamp);
-			const at = num(eventPayload?.occurred_at_ms) ?? (timestamp !== undefined ? Date.parse(timestamp) : NaN);
-			if (id !== undefined && (kind === 'started' || kind === 'interacted' || kind === 'interrupted') && Number.isFinite(at)) {
-				signals.codexActivityTimeline.push({ type: 'subagent', id, ...(str(eventPayload?.agent_path) !== undefined ? { agentPath: str(eventPayload?.agent_path) } : {}), kind, at });
+			// 旧形式（rollout の history_mode が legacy のときだけ書かれる）
+			pushCodexSubagentActivity(signals, str(eventPayload?.agent_thread_id), str(eventPayload?.agent_path), str(eventPayload?.kind), num(eventPayload?.occurred_at_ms) ?? lineAt);
+		}
+		if (eventType === 'item_completed') {
+			// 今の形式（history_mode: paginated、codex-cli 0.144 以降）。item の id は spawn_agent 等の呼び出しの call_id
+			const item = rec(eventPayload?.item);
+			if (str(item?.type) === 'SubAgentActivity') {
+				pushCodexSubagentActivity(signals, str(item?.agent_thread_id), str(item?.agent_path), str(item?.kind), num(eventPayload?.completed_at_ms) ?? lineAt, str(item?.id));
+			}
+		}
+		if (eventType === 'thread_goal_updated') {
+			const goal = paradisCodexGoalFromEvent(eventPayload);
+			if (goal !== undefined && Number.isFinite(lineAt)) {
+				signals.codexActivityTimeline.push({ type: 'goal', ...goal, at: lineAt });
 			}
 		}
 		if (eventType === 'task_started') {
-			const timestamp = str(obj.timestamp);
-			const at = timestamp !== undefined ? Date.parse(timestamp) : NaN;
-			if (Number.isFinite(at)) { signals.codexActivityTimeline.push({ type: 'turnStart', at }); }
+			if (Number.isFinite(lineAt)) { signals.codexActivityTimeline.push({ type: 'turnStart', at: lineAt }); }
 		}
+		// 今の rollout は `error` の event_msg を書かない（永続化しない）。usage limit などで終わったターンは
+		// `task_complete` に `error: { message, codex_error_info }` が付く（実データで task_complete の約 5%）。
+		const turnError = eventType === 'task_complete' ? rec(eventPayload?.error) : undefined;
 		if (eventType === 'task_complete' || eventType === 'error' || eventType === 'turn_aborted') {
-			signals.turnEnded = eventType === 'task_complete' ? 'completed' : eventType === 'turn_aborted' ? 'interrupted' : 'failed';
-			const timestamp = str(obj.timestamp);
-			const at = timestamp !== undefined ? Date.parse(timestamp) : NaN;
-			if (Number.isFinite(at)) { signals.codexActivityTimeline.push({ type: 'turnEnd', reason: signals.turnEnded, at }); }
+			signals.turnEnded = eventType === 'task_complete' && turnError === undefined ? 'completed' : eventType === 'turn_aborted' ? 'interrupted' : 'failed';
+			if (Number.isFinite(lineAt)) { signals.codexActivityTimeline.push({ type: 'turnEnd', reason: signals.turnEnded, at: lineAt }); }
+		}
+		if (turnError !== undefined || eventType === 'error') {
+			// 失敗したことと理由を会話に残す（Claude Code の `API Error: …` と同じく、エージェントの発言として出す）。
+			const message = str(turnError?.message) ?? str(eventPayload?.message);
+			if (message !== undefined && message.trim().length > 0) {
+				return [{ role: 'assistant', kind: 'text', text: truncateText(message.trim(), TEXT_LIMIT), ts: Number.isFinite(lineAt) ? lineAt : undefined, isError: true }];
+			}
 		}
 		return [];
 	}
@@ -1022,17 +1256,27 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 		if (role !== 'user' && role !== 'assistant') {
 			return []; // developer / system プロンプトは出さない
 		}
-		const { text, images } = flattenContentParts(payload.content);
-		// Codexはuserメッセージとして環境コンテキスト/プロジェクト指示を注入するため表示から除く。
-		// 旧CLI(0.4x): <environment_context> / <user_instructions>
-		// 新CLI(0.80+): 「# AGENTS.md instructions for <path>」見出し＋<INSTRUCTIONS>ラッパー
-		const trimmedText = text.trim();
-		// 中断の知らせ（`<turn_aborted>The user interrupted the previous turn on purpose…`、codex-cli 0.155.1）も
-		// ユーザーの発言ではないので出さない。
-		if (/^<(environment_context|user_instructions|ENVIRONMENT_CONTEXT|INSTRUCTIONS|turn_aborted)/.test(trimmedText)
-			|| trimmedText.startsWith('# AGENTS.md instructions for')) {
+		if (role === 'user') {
+			const rawText = flattenContent(payload.content).trim();
+			// 旧形式の子の完了の知らせは、FINAL_ANSWER と同じ結果カードにする
+			if (rawText.startsWith('<subagent_notification>')) {
+				return [parseCodexSubagentNotification(rawText, ts)];
+			}
+			// ユーザーが `!` で打ったシェルコマンドの記録は本人の操作なので、チャットでは隠さない
+			// （差し込みの判定では隠す側に入っている。セッション名・タブ名には使わないため）
+			if (rawText.startsWith('<user_shell_command>')) {
+				signals.pendingCodexImageCallId = undefined;
+				return [{ role: 'user', kind: 'text', text: truncateText(rawText, TEXT_LIMIT), ts }];
+			}
+		}
+		// Codex は AGENTS.md・環境情報・plugin の案内・中断の知らせなどを user のメッセージとして差し込む。
+		// ユーザーが書いた content だけを残す（判定は paradisCodexInjectedContext に一本化）。
+		const authoredContent = role === 'user' ? paradisCodexUserAuthoredContent(payload) : payload.content;
+		if (authoredContent === undefined) {
 			return [];
 		}
+		const { text, images } = flattenContentParts(authoredContent);
+		const trimmedText = text.trim();
 		// view_image の実体が来るのは「直後の」メッセージだけなので、ここで必ず手放す。
 		// 持ち越すと、実体が来ないまま後で貼られた無関係な画像がその呼び出しの結果として
 		// 繋がってしまう（環境コンテキストの注入は上で弾いた後なので巻き込まれない）。
@@ -1058,6 +1302,8 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 			return [];
 		}
 		out.push({ role, kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
+	} else if (ptype === 'agent_message') {
+		out.push(...parseCodexAgentMessage(payload, ts));
 	} else if (ptype === 'reasoning') {
 		const text = flattenContent(payload.summary);
 		if (text.trim().length > 0) {
@@ -1065,12 +1311,35 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 		}
 	} else if (ptype === 'function_call' || ptype === 'custom_tool_call' || ptype === 'mcp_tool_call') {
 		// custom_tool_call は arguments でなく input にテキストが入る（それ以外は function_call と同形）
-		const tool = str(payload.name) ?? 'tool';
+		let tool = str(payload.name) ?? 'tool';
+		const argumentsText = str(payload.arguments) ?? str(payload.input) ?? '';
 		// 資格情報（set_http_credentials の password）は画面へ出さない
-		const text = paradisRedactToolArgumentsText(tool, str(payload.arguments) ?? str(payload.input) ?? '');
+		let text = paradisRedactToolArgumentsText(tool, argumentsText);
 		if (tool === 'view_image') {
 			// 実体は直後の user メッセージへ書かれる。その画像をこの呼び出しへ繋ぐため覚えておく。
 			signals.pendingCodexImageCallId = callId;
+		}
+		if (ptype === 'function_call' && tool === 'update_plan') {
+			const plan = paradisCodexPlanFromArguments(argumentsText);
+			if (plan !== undefined && ts !== undefined) {
+				signals.codexActivityTimeline.push({ type: 'plan', ...plan, at: ts });
+			}
+		}
+		if (ptype === 'function_call' && CODEX_COLLABORATION_TOOLS.has(tool)) {
+			if (tool === 'spawn_agent' && callId !== undefined) {
+				const message = rec(safeJsonParse(argumentsText))?.message;
+				if (typeof message === 'string' && message.trim().length > 0 && !paradisIsCodexEncryptedPayload(message)) {
+					signals.codexSpawnMessages.set(callId, truncateText(message.trim(), 1000));
+				}
+			}
+			if (callId !== undefined) {
+				signals.codexCallTools.set(callId, tool);
+			}
+			text = paradisCodexCollaborationDisplay(tool, paradisRedactToolArgumentsText(tool, argumentsText));
+			// サブエージェントの起動は Claude Code の Agent と同じカード（たたんだ呼び出しと報告）で出す
+			if (tool === 'spawn_agent') {
+				tool = 'Agent';
+			}
 		}
 		out.push({ role: 'assistant', kind: 'tool_use', tool, ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 	} else if (ptype === 'web_search_call' || ptype === 'tool_search_call') {
@@ -1132,7 +1401,11 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 		let text: string;
 		let failed = false;
 		if (typeof output === 'string') {
-			text = output;
+			// spawn_agent の結果は起動した子の名前だけの JSON（`{"task_name":"/root/reviewer"}`）
+			const parsedOutput = output.length <= 600 && output.trimStart().startsWith('{"task_name"') ? rec(safeJsonParse(output)) : undefined;
+			const spawned = parsedOutput !== undefined && Object.keys(parsedOutput).length === 1 ? str(parsedOutput.task_name) : undefined;
+			// allow-any-unicode-next-line
+			text = spawned !== undefined ? `起動しました: ${spawned}` : output;
 		} else {
 			const o = rec(output);
 			text = str(o?.content) ?? flattenContent(output) ?? '';

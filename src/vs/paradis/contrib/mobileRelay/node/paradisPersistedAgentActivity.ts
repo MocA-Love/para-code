@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { paradisCodexUserAuthoredContent, paradisIsCodexEncryptedPayload } from '../../agentChat/common/paradisCodexInjectedContext.js';
+
 export type ParadisRecoveredAgentStatus = 'running' | 'completed' | 'failed' | 'interrupted' | 'unknown';
 
 export interface IParadisRecoveredAgentActivity {
@@ -286,6 +288,9 @@ export function paradisParseCodexPersistedActivity(id: string, source: string, l
 	const sourceInfo = parseCodexSource(source);
 	let label = sourceInfo.label ?? 'SubAgent';
 	let detail: string | undefined;
+	// 親からの指示（agent_message の NEW_TASK）を見たら、それより前の user メッセージは指示ではない
+	// （fork_turns で引き継いだ親の会話）。今の Codex は指示を暗号化して書くので、読めなければ空のままにする
+	let sawTask = false;
 	let startedAt = mtime;
 	let updatedAt = mtime;
 	let sawLine = false;
@@ -303,14 +308,24 @@ export function paradisParseCodexPersistedActivity(id: string, source: string, l
 			label = text(payload?.agent_nickname) ?? text(payload?.agent_path) ?? label;
 		} else if (entry.type === 'response_item') {
 			const payload = record(entry.payload);
-			if (payload?.type === 'message' && payload.role === 'user' && detail === undefined) {
-				detail = text(flattenContent(payload.content));
+			if (payload?.type === 'message' && payload.role === 'user' && detail === undefined && !sawTask) {
+				// AGENTS.md・環境情報・plugin の案内などの差し込みは指示ではない
+				const authored = paradisCodexUserAuthoredContent(payload);
+				detail = authored !== undefined ? text(flattenContent(authored)) : undefined;
+			} else if (payload?.type === 'agent_message' && !sawTask) {
+				const body = flattenContent(payload.content);
+				if (/^Message Type: NEW_TASK\n/.test(body)) {
+					sawTask = true;
+					const instruction = body.replace(/^Message Type: NEW_TASK\n(?:[^\n]*\n)*?Payload:\n?/, '').trim();
+					detail = instruction.length > 0 && !paradisIsCodexEncryptedPayload(instruction) ? text(instruction) : undefined;
+				}
 			}
 		} else if (entry.type === 'event_msg') {
 			const payload = record(entry.payload);
 			switch (text(payload?.type)) {
 				case 'task_started': status = activeOrEnded(mtime, now); break;
-				case 'task_complete': status = 'completed'; break;
+				// usage limit などで終わったターンは `error` の event_msg ではなく、task_complete の `error` に残る
+				case 'task_complete': status = record(payload?.error) !== undefined ? 'failed' : 'completed'; break;
 				case 'error': status = 'failed'; break;
 				case 'turn_aborted': status = 'interrupted'; break;
 			}
