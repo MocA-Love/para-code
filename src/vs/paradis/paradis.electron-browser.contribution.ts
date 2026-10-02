@@ -53,6 +53,9 @@ import './contrib/mobileRelay/electron-browser/paradisMobileRelay.contribution.j
 import './contrib/mobileRelay/electron-browser/paradisMobileViewportBanner.contribution.js';
 import './contrib/browserMirror/electron-browser/paradisBrowserMirrorSpike.contribution.js';
 import './contrib/remoteHosts/electron-browser/paradisRemoteHostBrowser.js';
+// 2 画面のファイル転送（このマシン ⇄ このウィンドウの接続先）。アクティビティバー左下のボタンは
+// アクティビティバーが作られる前に登録する必要があるので、ここでの読み込みに頼る
+import './contrib/fileTransfer/electron-browser/paradisFileTransfer.contribution.js';
 import './contrib/paradisSettings/electron-browser/paradisSettingsDialog.contribution.js';
 import './contrib/usageDashboard/electron-browser/paradisUsageDashboard.contribution.js';
 import './contrib/ccusage/electron-browser/paradisCcusage.contribution.js';

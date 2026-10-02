@@ -2060,6 +2060,63 @@ main の固まりの検知は、`@sentry/electron/native` の `eventLoopBlockInt
 
 自作の見張りは worker を文字列から起こす（`eval: true`、Node の組み込みだけを使う）ので、上の 2 つを踏まない。main が 2 秒ごとに共有メモリへ時刻とヒープの大きさを書き、worker が 10 秒途切れたら `<userData>/paradis-main-hang.json` に印を書き、戻れば `main-hang` / `blocked` で報告して消す。戻らずに終了されたら次の起動の 60 秒後に `blocked-until-exit` で報告する。スタックは取れない。配布版だけで動かす（開発版はデバッガの停止を誤検知する）。スリープは `powerMonitor` の suspend / resume と、worker 自身の見回りの間隔（15 秒）の両方で除く。resume が来ないまま 1 分心拍が続いたら、取りこぼしとみなして数え直す。
 
+## 2 画面のファイル転送は IFileService だけで流し、権限だけを専用のチャネルで読む（fileTransfer、2026-10-02、段階 1）
+
+エディタのタブ 1 枚（`ParadisFileTransferEditor` / `ParadisFileTransferInput`、シリアライザーで左右の場所ごと復元）で、左にこのマシン（`file://`）、右にこのウィンドウの接続先（`vscode-remote://`）を並べる。見た目は案C（`dual-pane-transfer-mock.html`）で、表・選択・キーボード・ドラッグは `WorkbenchTable` に任せ、見出し・2 段の名前（名前の下に権限）・足元の件数・下の待ち行列だけを `src/vs/paradis/contrib/fileTransfer/` で描く。片側の画面は、表（`paradisFileTransferPaneTable.ts`）・操作（`paradisFileTransferPaneOperations.ts`）・ドラッグ＆ドロップ（`paradisFileTransferPaneDnd.ts`）に分けてある。狭い（760px 未満）と左右を上下に積み、待ち行列は見出しの 1 行に縮める。
+
+### 転送は一時名に書いてプロバイダーの rename 1 回で置き換え、取り消しは実行が終わるまで待つ
+
+`IFileService.copy` は進み具合も取り消しも受け取らないので、`common/paradisFileTransferQueue.ts` の `ParadisTransferQueue` が 1 ファイルずつ `browser/paradisFileTransferFileSystem.ts` の `copyFile` を呼ぶ。データを守るための約束は次のとおり（2026-10-02 の 2 回のレビューで決めた）。
+
+- 書き込みは送り先と同じフォルダーの一時名 `.paratransfer-<実行の印>` に `writeFile` し、書き終えてから**プロバイダーの `rename(temp, target, { overwrite })` を 1 回だけ**呼んで置き換える。`IFileService.move` は「存在確認 → 送り先を `del` → `mkdirp` → `rename`」を別々の往復で行い原子的でないので使わない（disk のプロバイダーはファイル同士なら `fs.rename` 1 回で、接続先でも POSIX の rename）。一時名に元の名前は含めない（長い名前で 255 バイトの上限を超えないように）
+- 一時ファイルへの書き込みで失敗・取り消しになったら、一時ファイルだけを消す。**rename に入った後の失敗では一時ファイルを消さない**（元が消えていても書き終えた方は残る）。待ち行列の行に一時ファイルの場所を出し、自動の片付けの控えからも外す
+- 送り先がフォルダーかリンクなら置き換えない。種類の違う同名（ファイル ⇔ フォルダー、送り先がリンク）は「以後すべてに適用」の対象から外し、毎回「フォルダー（リンク）ごと置き換える」と分かる文言で確かめ、`removeForReplace`（手元はゴミ箱へ）で取り除いてから写す
+- 置き換えると、送り先の権限・所有者・グループ・ACL・ハードリンクが新しいファイルのものに替わる。そこで:
+  - 権限のチャネル（版 2 以上の `statFile`）で送り先の mode・所有者・リンク数を読み、rename の前に一時ファイルを同じ mode に `chmod` する（新しく作るときは送り元の mode に合わせる）。`chmod` できなければ置き換えない
+  - その場で書くのは、次のどちらかが**確かなときだけ**: `statFile` が「所有者が違う」か「リンク数 2 以上」を実際に返した／権限のチャネルの版が 2 未満だと確かに分かった（`version` の呼び出しが `name: 'Unknown channel'` で返った。**権限のチャネルが無い・版 1 の古い REH**）。その場で書くのは upstream の `copy` と同じで原子的ではなく、途中で失敗すると送り先は書きかけになるので、待ち行列の行に「送り先を直接書き換えます（途中で失敗すると元に戻りません）」と出す。0600 の `.env` や `id_rsa` が 0644 になるのを避けるため、古い REH では置き換えを選ばない
+  - 接続の詰まり・時間切れ・切断など一時的な失敗で送り先を読めないときは、その場で書かず、項目の失敗（再試行できる）にする。`version` の一時的な失敗は「版 0」として覚えない（`paradisIsUnknownChannelError` は名前で見分ける。メッセージの「timed out」だけでは見分けない）
+  - 上書きの置き換えは、版 3 以上なら権限のチャネルの `rename`（相手のマシンの素の `fs.rename`。送り先がフォルダーなら `EISDIR` で失敗し、消す処理を挟まない）で行う。版 2 以下では provider の `rename`。上書きしない置き換えは、送り先の有無を確かめる provider の `rename`
+  - `statFile` の `identity`（`dev:ino:size:mtime`）が送り元と送り先で一致したら、同じファイル（同じマシンへの SSH など）として転送を拒否する。古い REH では見分けられない
+  - 一時ファイルを作れない場所（ファイルには書けるがフォルダーには書けない）も、その場で書く
+  - ACL と拡張属性は読んでいないので、一時ファイル経由で置き換えると引き継がれない（mode と所有者が同じ場合だけ一時ファイルを使う）
+- 書いている一時ファイルは APPLICATION の保存領域に控える（`paradis.fileTransfer.tempJournal`、`browser/paradisFileTransferTempJournal.ts`）。書いているウィンドウは 1 分ごとに時刻を更新し、5 分更新の無いもの・閉じるときに片付けきれなかった印（時刻 0）のものを、起動の 10 秒後と再接続のときに別のウィンドウが片付ける。スリープ明けは書いている側の心拍が遅れているだけのことがあるので、候補を選んだ後に心拍の間隔より長く（75 秒）待ってから控えを読み直し、その間に時刻が変わったものは消さない。一覧では `.paratransfer-*` を隠しファイルの設定に関わらず「書きかけ」の印付きで出し、「書きかけのファイルを削除」で消せる
+- 取り消しは表示をすぐ「取り消し」にするが、実行（`IEntry.run`）が本当に終わるまで同時に流れる数（既定 2 本）に数える。再試行は前の実行が終わるのを待ってから始める。置き換えの途中で取り消しても、置き換えが済んでいれば「完了」と出す
+- `overwrite: false` の項目は実行の直前にも送り先を確かめる。利用者の操作から流したもの（積んだとき・再試行のボタン）は聞き直し、その間は同時に流れる数に数えない。接続が戻ったときの自動の流し直しは、聞く相手がいないので衝突として失敗にする。「名前を変える」で選ぶ名前は、送り先にある名前と待ち行列の他の項目が作る予定の名前を避ける
+- フォルダーの中のフォルダーを指すリンク・ソケット・FIFO・壊れたリンクと、読めないファイル・フォルダーは飛ばし、件数を行に出す（FIFO は読む前に除く）
+- 積む前の確認は送り先のフォルダーを 1 回だけ読む。フォルダーの展開も 1 階層ごとに 1 回の一覧で大きさまで取る。確認と下調べの間は見出しに「準備中…」を出す
+- 進み具合は、書く側が受け取った塊を次の塊を受け取ったとき（＝前の塊を書き終えたとき）に数える。待ち行列の表示は行を id ごとに使い回す
+- 転送中にウィンドウを閉じる・再読み込みするときは `ILifecycleService.onBeforeShutdown` で確かめ、閉じるなら取り消して片付けを最大 3 秒待つ（衝突のダイアログを待っている項目は待たない）。時間切れなら控えに印を付け、次に開いたときに片付ける
+
+接続先が同じマシン（`ssh localhost` など）でも、一時名に書いてから置き換えるので、同じファイルを送り元と送り先にしても中身は壊れない（同じ内容で置き換わるだけ）。その場で書く経路（所有者が違うなど）で送り元と送り先が同じファイルだと、書き込みで送り元を切り詰めてしまうので、`statFile` の `identity` が一致したら拒否する。権限のチャネルが無い・版 2 以下の古い REH では見分けられない。
+
+### 権限は shared process と REH の `paradisFileModes` チャネル
+
+`IStat.permissions` は 3 ビットしか無いので、`node/paradisFileModesService.ts` を手元の shared process（`paradis.sharedProcess.contribution.ts` から）と接続先の REH（`paradis.server.contribution.ts` から）の両方に登録する。どちらも既存の登録口（`ParadisSharedProcessContributions` / `ParadisServerContributions`）に乗るので、`sharedProcessMain.ts` と `serverServices.ts` には手を入れていない。
+
+- `list` は 1 往復で名前・種類・サイズ・更新日時・`st_mode & 0o7777` を返す（lstat を 64 並列）。ソケット・FIFO は `kind: 'other'`
+- `statFile`（版 2 から）は 1 ファイルの mode・所有者が自分か・リンク数・リンクかを返す。版 3 から同じファイルかを見分ける `identity` も返す。転送で送り先の権限を保つのに使う
+- `rename`（版 3 から）は素の `fs.rename`。送り先がフォルダーなら `EISDIR` で失敗させる
+- `chmod` はリンクには当てない（chmod はリンク先を変えるが、一覧はリンク自身の権限を出すため）。画面でもリンクの行では「権限の変更…」を選べない。「中身にも適用」は、フォルダーには選んだ値を当て、ファイルは元から実行権があったときだけ実行権を残し、setuid / setgid / sticky は付けない
+- このチャネルが無い古い REH は `Unknown channel`（1 秒待つ）で分かるので覚えておき、権限の行とメニューを隠す。繋がり直したら（更新された REH かもしれないので）聞き直す
+
+### 入口と upstream への PARA-PATCH
+
+主の入口はアクティビティバーの左下（アカウントと設定の間）のボタン（`electron-browser/paradisFileTransferActivity.ts`、`CompositeBarActionViewItem` の派生）。upstream の `globalCompositeBar.ts` はこの欄を 2 つ決め打ちにしているので、機能に依存しない差し込み口 `src/vs/paradis/browser/paradisGlobalActivitySlot.ts`（base と platform だけを import）を置き、PARA-PATCH は次に限った。
+
+| 場所 | 変更 |
+|---|---|
+| `src/vs/workbench/browser/parts/globalCompositeBar.ts` の import | 差し込み口の import 1 行 |
+| 同 `actionViewItemProvider` の先頭 | 差し込み口が作った表示部品を返す（fork のボタンでなければ upstream の分岐へ進む） |
+| 同 コンストラクタ（アカウントの後・歯車の前） | `paradisGlobalActivityActions(this._store)` を積む |
+| 同 `toggleAccountsActivity` | 「ボタンの数が 2 か」を `hasAction(this.accountAction)` に置き換え（fork のボタンで数が変わるため） |
+| `eslint.config.js` の `src/vs/workbench/~` | `vs/paradis/browser/paradisGlobalActivitySlot.js` の 1 ファイルだけ逆方向 import を許可 |
+
+ボタンの登録はモジュールの読み込み時に行う（アクティビティバーが作られる前に `paradis.electron-browser.contribution.ts` が読まれる）。Web と Agent Sessions ウィンドウは登録しないので upstream のまま。補助の入口は、タイトルバーのボタン（`workbench.activityBar.location` が `default` 以外のときだけ。上・下・非表示では左下の欄ごと描かれない）、エクスプローラーのフォルダーの右クリック（手元のフォルダーは左、接続先のフォルダーは右に出す）、コマンドパレットの「ファイル転送を開く」。条件は `common/paradisFileTransferEntryPoints.ts` に置き、テストで評価している。⌥⌘T は macOS の「グループ内の他のエディターを閉じる」と重なるので、キーの割り当ては付けていない（代わりのキーは利用者の回答待ち）。
+
+マーク（案3）は codicon の `files` に `arrow-swap` を重ねた形で、フォントの 1 文字では作れないため、`registerIcon('paradis-file-transfer', Codicon.files)` を既定にして、`media/paradisFileTransfer.css` の `::after` で `arrow-swap`（`\ebcb`）を背景色の縁取り付きで重ねる。重ねるのはアクティビティバー・タイトルバー・タブのラベルだけ（メニューなどでは `files` のまま）。
+
+手元のウィンドウの右側は「接続していません」と `~/.ssh/config` のホストを出す（`paradisRemoteHostBrowser()` を借りる）。「接続して開く」は APPLICATION の保存領域に `paradis.fileTransfer.pendingOpen`（宛先と時刻）を書いてから `ssh-remote+<別名>` の新しいウィンドウを開き、繋がった側が起動後に読んで消し、3 分以内なら転送画面を開く。接続していないホストへの直接の読み書きは段階 2。
+
 ## ビルド環境（macOS / Apple Silicon）
 
 - Node: `.nvmrc`が指定する`24.17.0`を`mise`でプロジェクト固定（`mise.toml`）。システムのNode（v26.3.0）とは別
