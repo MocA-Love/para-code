@@ -66,10 +66,13 @@ suite('paradisAgentTranscriptParser', () => {
 			resent: texts([[queued('テストも直して', 1), assistant('直しました', 2), user('テストも直して', 3)]]),
 			// 割り込みの後にエージェントが応答したら、控えは捨てる
 			answeredAfterInterrupt: texts([[queued('テストも直して', 1), user('[Request interrupted by user]', 2), assistant('止めました', 3), user('テストも直して', 4)]]),
+			// 応答の後に Esc で止めて同じ文を打ち直したものは、書き直しではなく新しい発言
+			retypedAfterAnswer: texts([[queued('続けて', 1), assistant('進めます', 2), user('[Request interrupted by user for tool use]', 3), user('続けて', 4)]]),
 		}, {
 			rewritten: ['user:テストも直して'],
 			resent: ['user:テストも直して', 'assistant:直しました', 'user:テストも直して'],
 			answeredAfterInterrupt: ['user:テストも直して', 'assistant:止めました', 'user:テストも直して'],
+			retypedAfterAnswer: ['user:続けて', 'assistant:進めます', 'user:続けて'],
 		});
 	});
 

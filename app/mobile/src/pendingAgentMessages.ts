@@ -65,8 +65,10 @@ const PASTED_CONTENT_PATTERN = /\n\n<pasted_content id="(?<id>[^"]*)">\n(?<body>
  */
 export function normalizeAgentMessageText(text: string): string {
 	const unified = text.replace(/\r\n?/g, '\n');
+	// 閉じタグの無い開きタグが大量に並ぶと照合が 2 乗で伸びるので、極端に長い本文は展開しない（PC と同じ上限）。
+	const expandable = unified.length <= 1_000_000;
 	return unified
-		.replace(PASTED_CONTENT_PATTERN, (match: string, _id: string, body: string, offset: number) =>
+		.replace(expandable ? PASTED_CONTENT_PATTERN : /$^/g, (match: string, _id: string, body: string, offset: number) =>
 			`${offset > 0 ? '\n' : ''}${body}${offset + match.length < unified.length ? '\n' : ''}`)
 		.replace(/[ \t]+$/gm, '')
 		.trim();
