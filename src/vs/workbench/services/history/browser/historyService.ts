@@ -1114,7 +1114,7 @@ export class HistoryService extends Disposable implements IHistoryService {
 
 		// Add all opened editors first
 		for (const { editor } of openedEditorsLru) {
-			if (!this.includeInHistory(editor)) {
+			if (editor.isDisposed() || !this.includeInHistory(editor)) { // PARA-PATCH: a disposed editor never fires onWillDispose again, so it would stay in history for good
 				continue;
 			}
 
