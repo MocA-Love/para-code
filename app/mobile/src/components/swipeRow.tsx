@@ -9,7 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { CARD_GAP, CARD_WIDTH, cardEdgeIndex, swipeGeometry } from './swipeRowGeometry.js';
 import { colors, radius, squircle, type } from '../theme.js';
 import { spring } from '../motion.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { EDGE_RELEASE, haptic, prepareHaptic, type HapticToken } from '../haptics.js';
 
 /**
  * 一覧の行を横スワイプして操作するための包み。
@@ -41,6 +41,8 @@ export interface SwipeAction {
 	onPress: () => void;
 	/** 引き切ったときに伸びて実行されるか。破壊的な操作には付けないこと。 */
 	fullSwipe?: boolean;
+	/** 実行したときの触覚（既定は `commit`。取り消せない操作なら `danger`）。 */
+	haptic?: HapticToken;
 }
 
 /**
@@ -99,21 +101,21 @@ export function SwipeRow({ direction, actions, children, panLocked }: {
 			}
 			openedRowCloser = closeRef.current;
 			setOpened(true);
-			hapticSelection();
+			haptic('tick');
 			dx.value = withSpring(toLeft ? -openDistance : openDistance, spring.swipe);
 			return;
 		}
 		unregister();
 		setOpened(false);
 		dx.value = withSpring(0, spring.swipe);
-		if (next === 'full') {
-			hapticImpact('medium');
-			fullSwipeAction?.onPress();
+		if (next === 'full' && fullSwipeAction !== undefined) {
+			haptic(fullSwipeAction.haptic ?? 'commit');
+			fullSwipeAction.onPress();
 		}
 	}, [dx, fullSwipeAction, openDistance, toLeft, unregister]);
 
 	const runAction = useCallback((action: SwipeAction) => {
-		hapticImpact('medium');
+		haptic(action.haptic ?? 'commit');
 		close();
 		setOpened(false);
 		unregister();
@@ -135,7 +137,16 @@ export function SwipeRow({ direction, actions, children, panLocked }: {
 		// 妨げない。開いている間だけ両方向を掴んで、引き戻して閉じられるようにする。
 		.activeOffsetX(opened ? [-14, 14] : toLeft ? -14 : 14)
 		.failOffsetY([-12, 12])
-		.onBegin(() => { startX.value = dx.value; passedFull.value = false; })
+		.onBegin(() => {
+			startX.value = dx.value;
+			passedFull.value = false;
+			// 引き切りの手応え（edge）に備えて温めておく
+			if (fullSwipeAction !== undefined) {
+				prepareHaptic('edge');
+				// 戻ったときの 1 打は Core Haptics なので、エンジンも非同期に起こしておく
+				prepareHaptic('edge', EDGE_RELEASE);
+			}
+		})
 		.onUpdate(event => {
 			const next = startX.value + event.translationX;
 			dx.value = toLeft ? Math.min(0, Math.max(next, -limit)) : Math.max(0, Math.min(next, limit));
@@ -144,8 +155,8 @@ export function SwipeRow({ direction, actions, children, panLocked }: {
 				if (past !== passedFull.value) {
 					passedFull.value = past;
 					// 引き切ったことを、指を離す前に手応えで返す。離してから初めて分かると
-					// 「やめる」判断ができない。
-					hapticSelection();
+					// 「やめる」判断ができない。戻ったときは弱く返す。
+					haptic('edge', past ? undefined : EDGE_RELEASE);
 				}
 			}
 		})

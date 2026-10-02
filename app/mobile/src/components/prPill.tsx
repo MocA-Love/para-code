@@ -2,7 +2,6 @@
 
 import { Linking, Pressable, StyleSheet, Text } from 'react-native';
 import { Octicons } from '@expo/vector-icons';
-import { hapticSelection } from '../haptics.js';
 import type { WorkspacePrStatus } from '../store.js';
 import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
@@ -22,7 +21,6 @@ export function PrPill({ pr }: { pr: WorkspacePrStatus }) {
 			style={[styles.pill, { backgroundColor: look.wash, borderColor: look.border }]}
 			hitSlop={PILL_HIT_SLOP}
 			onPress={() => {
-				hapticSelection();
 				void Linking.openURL(pr.url).catch(() => { /* 開けないURLは無視 */ });
 			}}
 			accessibilityRole="link"

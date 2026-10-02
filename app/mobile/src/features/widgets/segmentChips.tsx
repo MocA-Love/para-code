@@ -2,7 +2,7 @@
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { colors, radius, space, type } from '../../theme.js';
 
 /** チップの見た目の高さ（当たり判定は hitSlop で 44 まで広げる）。 */
@@ -27,7 +27,7 @@ export function SegmentChips<T extends string>({ options, selected, onSelect, ac
 						key={option.value}
 						onPress={() => {
 							if (!on) {
-								hapticSelection();
+								haptic('tick');
 								onSelect(option.value);
 							}
 						}}

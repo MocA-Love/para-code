@@ -13,7 +13,7 @@ import { useStableInsets } from '../hooks/useStableInsets.js';
 import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { Badge } from './badge.js';
 import { Button } from './button.js';
-import { hapticImpact } from '../haptics.js';
+import { haptic } from '../haptics.js';
 
 /** iPadの広い幅でお知らせシートを中央寄せするときの最大幅（pt）。 */
 const SHEET_MAX_WIDTH = 640;
@@ -65,7 +65,7 @@ export function UpdateSheetHost() {
 	}, [ready, paired]);
 
 	const dismiss = () => {
-		hapticImpact('light');
+		haptic('move');
 		setReleases([]);
 		void secureKeyStore.setItem(SEEN_KEY, APP_VERSION).catch(() => undefined);
 	};

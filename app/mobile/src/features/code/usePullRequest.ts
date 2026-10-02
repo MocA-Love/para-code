@@ -7,10 +7,11 @@ import {
 	PARADIS_MOBILE_PR_VIEW_CAPABILITY,
 } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobilePullRequest.js';
 import { sendPcRequest } from '../../appState.js';
+import { haptic } from '../../haptics.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
 import { useNow } from '../../time.js';
-import { PR_POLL_MS, activePrQueued, parsePrMergeReply, parsePrView, type PrDetail, type PrMergeOutcome, type PrQueued, type PrViewResult } from './pullRequest.js';
-import { errorMessage } from './scmModel.js';
+import { PR_POLL_MS, activePrQueued, startPrPolling, parsePrMergeReply, parsePrView, type PrDetail, type PrMergeOutcome, type PrQueued, type PrViewResult } from './pullRequest.js';
+import { errorMessage, scmErrorText } from './scmModel.js';
 import { currentRendererTarget, type CodeSpace } from './useCodeSpace.js';
 
 /**
@@ -57,7 +58,7 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 		const current = () => genRef.current === gen && currentRendererTarget(wsId) === rendererTarget;
 		setLoading(true);
 		try {
-			// PC 側は git（30 秒）と gh（15 秒）を続けて待つ
+			// PC 側は git（30 秒）と gh（15 秒）を続けて待つが、50 秒で打ち切って「接続先が応答しません」を返す
 			const reply = await sendPcRequest<{ readonly pr?: unknown; readonly unavailable?: unknown; readonly message?: unknown }>(pcId, 'scm', { t: 'prView', ws: wsId }, { timeoutMs: 60_000 });
 			if (current()) {
 				setView(parsePrView(reply));
@@ -65,7 +66,8 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 			}
 		} catch (e) {
 			if (current()) {
-				setError(errorMessage(e));
+				// 前に読めた PR（view）は出したまま、失敗だけを出す（時間切れのたびに表示が消えたり出たりしない）
+				setError(scmErrorText(e));
 			}
 		} finally {
 			if (current()) {
@@ -88,9 +90,8 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 		if (!active) {
 			return undefined;
 		}
-		void refresh();
-		const timer = setInterval(() => { void refresh(); }, PR_POLL_MS);
-		return () => clearInterval(timer);
+		// 前の要求が終わってから次を出す（PC の応答が間隔より遅くても、届いた応答を次の要求で捨てない）
+		return startPrPolling(refresh, PR_POLL_MS);
 	}, [active, refresh]));
 
 	const merge = useCallback(async (pr: PrDetail) => {
@@ -99,19 +100,27 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 		}
 		setMerging(true);
 		setMergeError(undefined);
+		// 結果の触覚は、まだ同じスペースを見ているときだけ返す（別のスペースへ移った後に鳴らさない。useScmSync と同じ）
+		const sameTarget = () => rendererTarget !== undefined && currentRendererTarget(wsId) === rendererTarget;
 		try {
 			const reply = await sendPcRequest<{ readonly queued?: unknown }>(pcId, 'scm', { t: 'prMerge', ws: wsId, number: pr.number, headSha: pr.headSha }, { timeoutMs: 130_000 });
 			const outcome = parsePrMergeReply(reply);
 			setQueued(outcome === 'queued' ? { number: pr.number, headSha: pr.headSha, at: Date.now() } : undefined);
+			if (sameTarget()) {
+				haptic('success');
+			}
 			return outcome;
 		} catch (e) {
+			if (sameTarget()) {
+				haptic('error');
+			}
 			setMergeError(errorMessage(e));
 			return undefined;
 		} finally {
 			setMerging(false);
 			void refresh();
 		}
-	}, [canMerge, pcId, wsId, merging, refresh]);
+	}, [canMerge, pcId, wsId, rendererTarget, merging, refresh]);
 
 	const reload = useCallback(async () => {
 		setQueued(undefined);

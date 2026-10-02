@@ -5,13 +5,14 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { AgentChatImage, AgentChatMessage } from '../store.js';
 import { basename, countLines, parseToolInput, splitMcpTool, type AgentTimelineStep } from '../agentToolMeta.js';
-import { ExpandableText, IOBlock, ioStyles } from './agentIoBlock.js';
+import { ExpandableText, IOBlock, ioStyles as baseIoStyles } from './agentIoBlock.js';
 import { ToolImageLightbox, ToolImagePreview, isPreviewableToolImage, useToolImage } from './toolImage.js';
 import { formatImageBytes } from '../agentToolImages.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 import { tintOf } from '../ui/themeColors.js';
+import { useChatIconSize, useChatStyles } from '../ui/chatTextScale.js';
 import { useThemeColors } from '../ui/themeColorsStore.js';
 
 /**
@@ -23,6 +24,9 @@ import { useThemeColors } from '../ui/themeColorsStore.js';
  *  - 判断材料になる数値（±行数、件数）はボディの先頭にバッジで置く
  */
 export function ToolStepBody({ step, terminalKey }: { step: AgentTimelineStep; terminalKey?: string }) {
+	const ioStyles = useChatStyles(baseIoStyles);
+	const styles = useChatStyles(baseStyles);
+	const headIconSize = useChatIconSize(12);
 	const use = step.use;
 	const result = step.result;
 	const images = result?.images ?? [];
@@ -122,7 +126,7 @@ export function ToolStepBody({ step, terminalKey }: { step: AgentTimelineStep; t
 			<View style={ioStyles.body}>
 				<View style={styles.subagent}>
 					<View style={styles.subagentHead}>
-						<Ionicons name="person-outline" size={12} color={colors.claude} />
+						<Ionicons name="person-outline" size={headIconSize} color={colors.claude} />
 						<Text style={styles.subagentTitle} numberOfLines={2}>{use.text}</Text>
 					</View>
 					<Text style={styles.caption}>このエージェントの詳細な作業ログは「SubAgent」から開けます。</Text>
@@ -138,7 +142,7 @@ export function ToolStepBody({ step, terminalKey }: { step: AgentTimelineStep; t
 			<View style={ioStyles.body}>
 				<View style={styles.approval}>
 					<View style={styles.approvalHead}>
-						<Ionicons name="lock-closed-outline" size={12} color={colors.yellow} />
+						<Ionicons name="lock-closed-outline" size={headIconSize} color={colors.yellow} />
 						<Text style={styles.approvalTitle}>許可を求めています</Text>
 					</View>
 					<Text style={styles.approvalBody} selectable>{use.text}</Text>
@@ -186,7 +190,7 @@ export function ToolImageCards({ result, terminalKey, path }: { result: AgentCha
 					image={image}
 					title={imageCardTitle(name, position, images.length)}
 					{...(dir !== undefined && dir.length > 0 ? { dir } : {})}
-					onOpen={() => { hapticSelection(); setOpenIndex(position); }}
+					onOpen={() => { haptic('move'); setOpenIndex(position); }}
 				/>
 			))}
 			{openIndex !== undefined ? (
@@ -220,6 +224,9 @@ function ToolImageCard({ terminalKey, rev, image, title, dir, onOpen }: {
 	// メモリを大きく食うため）。カードを押して全画面で開いたときにだけ読み込む。
 	const previewable = isPreviewableToolImage(image);
 	const load = useToolImage(terminalKey, rev, image, previewable);
+	const ioStyles = useChatStyles(baseIoStyles);
+	const styles = useChatStyles(baseStyles);
+	const chevronSize = useChatIconSize(14);
 	const size = formatImageBytes(image.bytes);
 	const type = typeof image.mediaType === 'string' ? image.mediaType.replace(/^image\//, '').toUpperCase() : '';
 	const detail = load.status === 'error'
@@ -233,13 +240,15 @@ function ToolImageCard({ terminalKey, rev, image, title, dir, onOpen }: {
 				<Text style={ioStyles.cardTitle} numberOfLines={1}>{title}</Text>
 				<Text style={[ioStyles.cardSub, load.status === 'error' && styles.imageError]} numberOfLines={1} ellipsizeMode="head">{detail}</Text>
 			</View>
-			<Ionicons name="chevron-forward" size={14} color={colors.textDim} />
+			<Ionicons name="chevron-forward" size={chevronSize} color={colors.textDim} />
 		</Pressable>
 	);
 }
 
 /** thinking ステップの中身（引用スタイル）。 */
 export function ThinkingBody({ message, terminalKey }: { message: AgentChatMessage; terminalKey?: string }) {
+	const ioStyles = useChatStyles(baseIoStyles);
+	const styles = useChatStyles(baseStyles);
 	return (
 		<View style={ioStyles.body}>
 			<View style={styles.quote}>
@@ -296,10 +305,13 @@ function FileCard({ path }: { path: string }) {
 	const name = basename(path);
 	const dir = path.slice(0, Math.max(0, path.length - name.length));
 	const theme = useThemeColors();
+	const ioStyles = useChatStyles(baseIoStyles);
+	const box = useChatIconSize(CARD_ICON_BOX);
+	const glyph = useChatIconSize(CARD_ICON_GLYPH);
 	return (
 		<View style={ioStyles.card}>
-			<View style={[ioStyles.cardIcon, { backgroundColor: theme.accentWash }]}>
-				<Ionicons name="document-text-outline" size={14} color={theme.accent} />
+			<View style={[ioStyles.cardIcon, { width: box, height: box, backgroundColor: theme.accentWash }]}>
+				<Ionicons name="document-text-outline" size={glyph} color={theme.accent} />
 			</View>
 			<View style={ioStyles.cardBody}>
 				<Text style={ioStyles.cardTitle} numberOfLines={1}>{name}</Text>
@@ -313,10 +325,13 @@ function FileCard({ path }: { path: string }) {
 function SiteCard({ url }: { url: string }) {
 	const host = url.replace(/^https?:\/\//, '').split('/')[0] ?? url;
 	const theme = useThemeColors();
+	const ioStyles = useChatStyles(baseIoStyles);
+	const box = useChatIconSize(CARD_ICON_BOX);
+	const glyph = useChatIconSize(CARD_ICON_GLYPH);
 	return (
 		<View style={ioStyles.card}>
-			<View style={[ioStyles.cardIcon, { backgroundColor: theme.accentWash }]}>
-				<Ionicons name="globe-outline" size={14} color={theme.accent} />
+			<View style={[ioStyles.cardIcon, { width: box, height: box, backgroundColor: theme.accentWash }]}>
+				<Ionicons name="globe-outline" size={glyph} color={theme.accent} />
 			</View>
 			<View style={ioStyles.cardBody}>
 				<Text style={ioStyles.cardTitle} numberOfLines={1}>{host}</Text>
@@ -331,6 +346,8 @@ function SiteCard({ url }: { url: string }) {
  * 削除行→追加行の順に並べる（GitHub モバイルの split より縦に短く収まる）。
  */
 function EditDiff({ oldText, newText }: { oldText: string; newText: string }) {
+	const ioStyles = useChatStyles(baseIoStyles);
+	const styles = useChatStyles(baseStyles);
 	const removed = oldText.length > 0 ? oldText.replace(/\n+$/, '').split('\n') : [];
 	const added = newText.length > 0 ? newText.replace(/\n+$/, '').split('\n') : [];
 	const shown = [
@@ -363,6 +380,8 @@ function EditDiff({ oldText, newText }: { oldText: string; newText: string }) {
 
 /** Glob / Grep の結果。1行1パスに見えるならリスト、そうでなければ素のテキスト枠。 */
 function HitList({ message, terminalKey }: { message: AgentChatMessage; terminalKey?: string }) {
+	const ioStyles = useChatStyles(baseIoStyles);
+	const docIconSize = useChatIconSize(11);
 	const lines = message.text.replace(/\n+$/, '').split('\n').filter(line => line.trim().length > 0);
 	const pathLike = lines.length > 1 && lines.slice(0, 8).every(line => !line.includes(' ') && line.includes('/'));
 	if (!pathLike) {
@@ -373,7 +392,7 @@ function HitList({ message, terminalKey }: { message: AgentChatMessage; terminal
 		<View style={ioStyles.list}>
 			{shown.map((line, index) => (
 				<View key={line} style={[ioStyles.listRow, index === 0 ? ioStyles.listRowFirst : null]}>
-					<Ionicons name="document-outline" size={11} color={colors.textDim} />
+					<Ionicons name="document-outline" size={docIconSize} color={colors.textDim} />
 					<Text style={ioStyles.listText} numberOfLines={1} ellipsizeMode="head" selectable>{line}</Text>
 				</View>
 			))}
@@ -385,6 +404,11 @@ function HitList({ message, terminalKey }: { message: AgentChatMessage; terminal
 /** TodoWrite のチェックリスト。 */
 function TodoList({ input }: { input: Record<string, unknown> | undefined }) {
 	const theme = useThemeColors();
+	const ioStyles = useChatStyles(baseIoStyles);
+	const styles = useChatStyles(baseStyles);
+	const todoBoxSize = useChatIconSize(14);
+	const todoCheckSize = useChatIconSize(9);
+	const todoDotSize = useChatIconSize(6);
 	const todos = Array.isArray(input?.['todos']) ? input['todos'] : [];
 	const items: { content: string; status: string }[] = [];
 	for (const todo of todos) {
@@ -403,9 +427,9 @@ function TodoList({ input }: { input: Record<string, unknown> | undefined }) {
 		<View style={ioStyles.list}>
 			{items.map((item, index) => (
 				<View key={`${index}:${item.content}`} style={[ioStyles.listRow, index === 0 ? ioStyles.listRowFirst : null, item.status === 'in_progress' ? { backgroundColor: tintOf(theme.accent, alpha.faint) } : null]}>
-					<View style={[styles.todoBox, item.status === 'completed' ? styles.todoBoxDone : null, item.status === 'in_progress' ? { borderColor: theme.accent } : null]}>
-						{item.status === 'completed' ? <Ionicons name="checkmark" size={9} color={colors.bg} /> : null}
-						{item.status === 'in_progress' ? <View style={[styles.todoDot, { backgroundColor: theme.accent }]} /> : null}
+					<View style={[styles.todoBox, { width: todoBoxSize, height: todoBoxSize }, item.status === 'completed' ? styles.todoBoxDone : null, item.status === 'in_progress' ? { borderColor: theme.accent } : null]}>
+						{item.status === 'completed' ? <Ionicons name="checkmark" size={todoCheckSize} color={colors.bg} /> : null}
+						{item.status === 'in_progress' ? <View style={[styles.todoDot, { width: todoDotSize, height: todoDotSize, backgroundColor: theme.accent }]} /> : null}
 					</View>
 					<Text style={[styles.todoText, item.status === 'completed' ? styles.todoTextDone : null]} numberOfLines={2}>{item.content}</Text>
 				</View>
@@ -414,12 +438,16 @@ function TodoList({ input }: { input: Record<string, unknown> | undefined }) {
 	);
 }
 
+/** ファイル・サイトのカードのアイコンの台と記号の大きさ（100% のとき。会話の文字サイズの割合をかける）。 */
+const CARD_ICON_BOX = 28;
+const CARD_ICON_GLYPH = 14;
+
 /** Read の結果行数など、ボディ内で使う軽い集計。 */
 export function resultLineCount(message: AgentChatMessage | undefined): number {
 	return message === undefined ? 0 : countLines(message.text);
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
 	pending: { color: colors.textDim, fontSize: type.caption, fontStyle: 'italic' },
 	imageError: { color: colors.red },
 	caption: { color: colors.textDim, fontSize: type.caption, lineHeight: 16 },

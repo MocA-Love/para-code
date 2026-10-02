@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { activePrQueued, canFixChecks, checkSummaryText, mergeConfirmMessage, orderedChecks, parsePrMergeReply, parsePrView, prMergeButton, prMergeToastText, prUnavailableText, type PrDetail } from './pullRequest.js';
+import { activePrQueued, canFixChecks, checkSummaryText, mergeConfirmMessage, orderedChecks, parsePrMergeReply, parsePrView, prMergeButton, prMergeToastText, prUnavailableText, startPrPolling, type PrDetail } from './pullRequest.js';
 
 const HEAD = 'f'.repeat(40);
 
@@ -92,5 +92,28 @@ describe('prMergeButton', () => {
 			'成功 1',
 			'コミット fffffff をリポジトリの既定の方法でマージします。この操作は取り消せません。',
 		]);
+	});
+});
+
+describe('startPrPolling', () => {
+	it('読み終わってから次を予約し、読んでいる最中は次を出さない。止めたら予約しない', async () => {
+		const scheduled: (() => void)[] = [];
+		const timers = { set: (callback: () => void) => { scheduled.push(callback); return scheduled.length; }, clear: () => undefined };
+		const pending: (() => void)[] = [];
+		let calls = 0;
+		const refresh = () => { calls++; return new Promise<void>(resolve => pending.push(resolve)); };
+		const stop = startPrPolling(refresh, 60_000, timers);
+		const flush = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+		await flush();
+		const whileLoading = [calls, scheduled.length];
+		pending.shift()?.();
+		await flush();
+		const afterFirst = [calls, scheduled.length];
+		scheduled.shift()?.();
+		await flush();
+		stop();
+		pending.shift()?.();
+		await flush();
+		expect([whileLoading, afterFirst, [calls, scheduled.length]]).toEqual([[1, 0], [1, 1], [2, 0]]);
 	});
 });

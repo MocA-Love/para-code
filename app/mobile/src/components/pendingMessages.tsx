@@ -7,7 +7,7 @@ import { BottomSheet } from './bottomSheet.js';
 import { GlassSurface } from './glassSurface.js';
 import { colors, radius, squircle, type } from '../theme.js';
 import { hitSlopToMinimum } from './hitSlop.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 
 /**
@@ -24,7 +24,7 @@ export function PendingMessagesChip({ count, onPress }: { count: number; onPress
 	return (
 		<Pressable
 			style={styles.chip}
-			onPress={() => { hapticSelection(); onPress(); }}
+			onPress={() => { haptic('move'); onPress(); }}
 			hitSlop={CHIP_HIT_SLOP}
 			accessibilityRole="button"
 			accessibilityLabel={`送信予定 ${count}件。開いて内容を確認`}

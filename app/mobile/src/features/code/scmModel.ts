@@ -171,7 +171,7 @@ export function commitAction(input: CommitActionInput): CommitAction {
 export type ListBodyState =
 	| { readonly kind: 'loading' }
 	| { readonly kind: 'offline'; readonly reason: string }
-	| { readonly kind: 'error'; readonly message: string }
+	| { readonly kind: 'error'; readonly title: string; readonly message: string; readonly retryLabel: string }
 	| { readonly kind: 'empty' }
 	| { readonly kind: 'ready' };
 
@@ -180,7 +180,9 @@ export function listBodyState<T>(input: { readonly data: readonly T[] | undefine
 		return input.data.length === 0 ? { kind: 'empty' } : { kind: 'ready' };
 	}
 	if (input.error !== undefined) {
-		return { kind: 'error', message: input.error };
+		return isNoResponseError(input.error)
+			? { kind: 'error', title: SCM_NO_RESPONSE_MESSAGE, message: 'PC または接続先から返事がありませんでした。もう一度試してください。', retryLabel: '再試行' }
+			: { kind: 'error', title: '読み込めませんでした', message: input.error, retryLabel: '再読み込み' };
 	}
 	if (input.unavailable !== undefined) {
 		return { kind: 'offline', reason: input.unavailable };
@@ -191,4 +193,32 @@ export function listBodyState<T>(input: { readonly data: readonly T[] | undefine
 /** エラーを画面に出す文字列にする（機密は含まない。PC 側の文言をそのまま使う）。 */
 export function errorMessage(error: unknown): string {
 	return String(error instanceof Error ? error.message : error);
+}
+
+/** 接続先（SSH の接続先を含む）が返事をしなかったときに出す見出し。 */
+export const SCM_NO_RESPONSE_MESSAGE = '接続先が応答していません';
+
+/**
+ * 返事が無かった失敗か。アプリの待ち時間切れ（`request timeout`）と、PC が接続先を待ちきれずに返した
+ * 「接続先が応答しません」（PC 側の上限）の両方を含む。
+ */
+export function isNoResponseError(message: string): boolean {
+	return message === 'request timeout' || message.startsWith('接続先が応答しません') || message === SCM_NO_RESPONSE_MESSAGE;
+}
+
+/** 変更の一覧の失敗を画面の文にする（返事が無かったものは {@link SCM_NO_RESPONSE_MESSAGE} にそろえる）。 */
+export function scmErrorText(error: unknown): string {
+	const message = errorMessage(error);
+	return isNoResponseError(message) ? SCM_NO_RESPONSE_MESSAGE : message;
+}
+
+/** 変更の一覧に返事が無かったときに、自分で取り直す回数。 */
+export const SCM_STATUS_AUTO_RETRIES = 1;
+
+/**
+ * `attempt` 回目（0 から）の失敗の後に、もう 1 回自分で取り直すか。返事が無かった失敗だけを取り直す
+ * （git の失敗や不明なスペースは取り直しても同じなので、すぐに出す）。
+ */
+export function shouldAutoRetryScmStatus(attempt: number, message: string): boolean {
+	return attempt < SCM_STATUS_AUTO_RETRIES && isNoResponseError(message);
 }

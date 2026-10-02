@@ -2,17 +2,19 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'expo-router';
-import { Activity, Bell, Info, LayoutGrid, ListChecks, MessageSquare, MessageSquareReply, Monitor, Palette, ScrollText, Terminal } from 'lucide-react-native';
+import { Activity, Bell, Info, LayoutGrid, ListChecks, MessageSquare, MessageSquareReply, Monitor, Palette, ScrollText, Terminal, Vibrate } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { APP_VERSION } from '../../src/components/updateSheet.js';
-import { hapticSelection } from '../../src/haptics.js';
+import { haptic } from '../../src/haptics.js';
+import { useHapticPreference } from '../../src/hapticPreference.js';
+import { useParaToast } from '../../src/paraToast.js';
 import { notificationSettingsSummary } from '../../src/notificationSettingsSummary.js';
 import { routes, type RouteHref } from '../../src/routes.js';
 import { ListGroup, ListRow, THEME_COLOR_SLOTS, isDefaultThemeColor, useThemeColorStore } from '../../src/ui/index.js';
 import { effectiveSessionView, useSessionViewPreference } from '../../src/features/settings/onboardingStore.js';
 import { useQuickReplyList } from '../../src/features/settings/quickRepliesStore.js';
-import { SettingsScreen } from '../../src/features/settings/settingsScaffold.js';
+import { GroupGap, GroupNote, SettingsScreen, SettingsSwitch } from '../../src/features/settings/settingsScaffold.js';
 import { settingsRoutes } from '../../src/features/settings/settingsRoutes.js';
 
 /**
@@ -39,9 +41,17 @@ export default function SettingsScreenRoute() {
 	useEffect(() => { void loadSessionView(); }, [loadSessionView]);
 	const quickReplies = useQuickReplyList();
 	const customColorCount = useThemeColorStore(s => THEME_COLOR_SLOTS.filter(slot => !isDefaultThemeColor(s.settings, slot)).length);
+	const hapticsEnabled = useHapticPreference(s => s.enabled);
+	// 起動時に読めなかった（Keychain がロック中など）ときはここで読み直す
+	useEffect(() => { void useHapticPreference.getState().load(); }, []);
 	const open = (href: RouteHref) => {
-		hapticSelection();
+		haptic('move');
 		router.push(href);
+	};
+	const setHapticsEnabled = (enabled: boolean) => {
+		useHapticPreference.getState().setEnabled(enabled).catch(() => {
+			useParaToast.getState().show({ key: 'haptics-save', text: '保存できませんでした', icon: 'alert-circle-outline', tone: 'warn' }, 2_500);
+		});
 	};
 	return (
 		<SettingsScreen title="設定">
@@ -76,6 +86,15 @@ export default function SettingsScreenRoute() {
 				<ListRow icon={ScrollText} label="接続の記録" trailing="chevron" onPress={() => open(settingsRoutes.connectionLog())} />
 				<ListRow icon={Info} label="このアプリについて" value={APP_VERSION} trailing="chevron" onPress={() => open(routes.settings('about'))} />
 			</ListGroup>
+			<GroupGap />
+			<ListGroup>
+				<ListRow
+					icon={Vibrate}
+					label="触覚フィードバック"
+					trailing={<SettingsSwitch value={hapticsEnabled} onValueChange={setHapticsEnabled} accessibilityLabel="触覚フィードバック" />}
+				/>
+			</ListGroup>
+			<GroupNote after>送信・長押し・画面の移動などで端末を軽く震わせます。iPad では鳴りません。</GroupNote>
 		</SettingsScreen>
 	);
 }

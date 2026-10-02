@@ -2,7 +2,7 @@
 
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { FileText, RotateCw, Search, Sparkles, SquareTerminal } from 'lucide-react-native';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import type { AgentCommandCatalogState, AgentCommandOption } from '../../store.js';
 import { HIT_SIZE, colors, radius, space, squircle, type } from '../../theme.js';
@@ -48,7 +48,7 @@ export function SlashCommandList({ catalog, commands, onSelect, onRetry }: {
 						<Pressable
 							key={`${command.source}:${command.kind}:${command.name}`}
 							style={({ pressed }) => [styles.row, index > 0 ? styles.divider : undefined, pressed ? styles.pressed : undefined]}
-							onPress={() => { hapticSelection(); onSelect(command); }}
+							onPress={() => { haptic('tick'); onSelect(command); }}
 							accessibilityRole="button"
 							accessibilityLabel={`${command.insertText} ${command.description}`}
 						>

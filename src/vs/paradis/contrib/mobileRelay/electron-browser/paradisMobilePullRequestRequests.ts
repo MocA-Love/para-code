@@ -12,6 +12,7 @@ import { ServicesAccessor } from '../../../../platform/instantiation/common/inst
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { paradisChannelHostResolver } from '../../workspaceSwitch/electron-browser/paradisWorktreeGitChannelClient.js';
 import { paradisRedactMobileCommandOutput } from '../common/paradisMobileOutputRedaction.js';
+import { PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, PARADIS_MOBILE_PR_LOOKUP_DEADLINE_MS, paradisIsMobileHostNoResponse, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
 import { IParadisFailedCheckForPrompt, PARADIS_AGENT_PROMPT_MAX_LENGTH, paradisBuildFixChecksPrompt } from '../common/paradisMobileAgentPrompts.js';
 import {
 	IParadisPullRequestDetail,
@@ -59,7 +60,8 @@ function pullRequestHost(accessor: ServicesAccessor, root: URI): IPullRequestHos
 	}
 	const path = host.path(root);
 	return {
-		lookup: () => host.channel.call<ParadisPullRequestLookup>('getPullRequestDetail', [path]),
+		// 接続先が返さないとスマホへ何も返せない。スマホ（60 秒）より先（50 秒）に打ち切って「接続先が応答しません」を返す
+		lookup: () => paradisWithHostDeadline(host.channel.call<ParadisPullRequestLookup>('getPullRequestDetail', [path]), PARADIS_MOBILE_PR_LOOKUP_DEADLINE_MS),
 		failedJobLogs: jobs => host.channel.call('getFailedJobLogs', [path, jobs]),
 		merge: request => host.channel.call('mergePullRequest', [path, request]),
 	};
@@ -75,6 +77,9 @@ function requireWorkspace(request: IParadisMobileRequest, context: IParadisMobil
 
 /** 古い接続先のサーバー（SSH）はこの呼び出しを知らない。 */
 function describeLookupError(error: unknown): string {
+	if (paradisIsMobileHostNoResponse(error)) {
+		return error.message;
+	}
 	const message = error instanceof Error ? error.message : String(error);
 	return /method not found/i.test(message) ? '接続先の Para Code のサーバーが古いため取得できません。PC で接続し直してください。' : paradisRedactMobileCommandOutput(message);
 }
@@ -85,7 +90,7 @@ async function freshDetail(host: IPullRequestHost, context: IParadisMobileReques
 	try {
 		lookup = await host.lookup();
 	} catch (error) {
-		context.reply({ error: describeLookupError(error) });
+		context.reply({ error: describeLookupError(error), ...(paradisIsMobileHostNoResponse(error) ? { code: PARADIS_MOBILE_HOST_NO_RESPONSE_CODE } : {}) });
 		return undefined;
 	}
 	if (lookup.kind !== 'ok') {
@@ -114,7 +119,11 @@ registerParadisMobileRequestHandler('scm', 'prView', {
 		try {
 			lookup = await host.lookup();
 		} catch (error) {
-			context.reply({ t: 'prView', ws, unavailable: 'error', message: describeLookupError(error) });
+			// 時間切れはエラーで返す（アプリは前に読めた PR を出したまま失敗だけを出す。「出せない」に切り替えると
+			// 時間切れのたびに PR の表示が消えたり出たりする）
+			context.reply(paradisIsMobileHostNoResponse(error)
+				? { error: error.message, code: PARADIS_MOBILE_HOST_NO_RESPONSE_CODE }
+				: { t: 'prView', ws, unavailable: 'error', message: describeLookupError(error) });
 			return;
 		}
 		context.reply(lookup.kind === 'ok'

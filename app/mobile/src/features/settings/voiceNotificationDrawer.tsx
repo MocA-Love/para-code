@@ -4,7 +4,7 @@ import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-nativ
 import { Lock, Monitor, Play, Radio, Square, Volume2, LayoutGrid } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../appState.js';
-import { hapticImpact } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { colors, radius, space, type } from '../../theme.js';
 import type { VoiceNotificationStatus } from './settingsSummary.js';
 import { BottomDrawer, Button, DrawerTitle, Icon, ListGroup, ListRow, StatusDot } from '../../ui/index.js';
@@ -37,7 +37,7 @@ export function VoiceNotificationDrawer({ visible, onClose }: { visible: boolean
 	const busy = voice.status === 'connecting';
 	const active = voice.desired;
 	const toggle = () => {
-		hapticImpact('medium');
+		haptic('commit');
 		if (active) {
 			stop();
 		} else {

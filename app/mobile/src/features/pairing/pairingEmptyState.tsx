@@ -4,7 +4,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { QrCode } from 'lucide-react-native';
 import { useAppStore } from '../../appState.js';
-import { hapticImpact } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { routes } from '../../routes.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { Icon, SectionHeader, iconSize, useThemeColors } from '../../ui/index.js';
@@ -42,7 +42,7 @@ export function PairingEmptyState() {
 				<Text style={styles.title} accessibilityRole="header">デスクトップをつなぐ</Text>
 				<Text style={styles.body}>PC の Para Code とペアリングすると、エージェントの様子を確かめたり、どのターミナルにも入ったり、スマホから作業を進めたりできます。</Text>
 				<Pressable
-					onPress={() => { hapticImpact('medium'); router.push(routes.pair()); }}
+					onPress={() => { haptic('move'); router.push(routes.pair()); }}
 					style={({ pressed }) => [styles.button, { backgroundColor: theme.primary }, pressed ? styles.buttonPressed : undefined]}
 					accessibilityRole="button"
 					accessibilityLabel="デスクトップとペアリング"

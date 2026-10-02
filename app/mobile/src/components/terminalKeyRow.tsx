@@ -5,7 +5,7 @@ import { Keyboard, Pressable, ScrollView, StyleSheet, Text } from 'react-native'
 import { Ionicons } from '@expo/vector-icons';
 import { monoFamily } from '../monoFont.js';
 import { alpha, colors, HIT_SIZE, radius, squircle, tint, type } from '../theme.js';
-import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
+import { KEY_TICK, haptic } from '../haptics.js';
 import {
 	ctrlLatchedTextInput,
 	TERMINAL_ACCESSORY_KEYS,
@@ -60,7 +60,7 @@ export function useTerminalKeyInput({ send, sendArrow, resetKey }: {
 		const ctrl = repeat ? heldCtrlRef.current : ctrlRef.current;
 		const action = terminalKeyAction(id, ctrl);
 		if (action.kind === 'toggleCtrl') {
-			hapticSelection();
+			haptic('tick');
 			setCtrl(!ctrlRef.current);
 			return;
 		}
@@ -70,9 +70,9 @@ export function useTerminalKeyInput({ send, sendArrow, resetKey }: {
 				setCtrl(false);
 			}
 			if (id === 'ctrlC' || id === 'ctrlD') {
-				hapticWarning();
+				haptic('edge');
 			} else {
-				hapticImpact('light');
+				haptic('tick', KEY_TICK);
 			}
 		}
 		if (action.kind === 'arrow') {
@@ -92,7 +92,7 @@ export function useTerminalKeyInput({ send, sendArrow, resetKey }: {
 		}
 		const result = ctrlLatchedTextInput(previous, next);
 		if (result.kind === 'control') {
-			hapticImpact('light');
+			haptic('tick', KEY_TICK);
 			setCtrl(false);
 			send(result.data);
 			return undefined;
@@ -180,7 +180,7 @@ export function TerminalKeyRow({ keyboardVisible, ctrlLatched, enterless, onKey,
 				<Pressable
 					style={({ pressed }) => [styles.key, pressed && styles.keyPressed]}
 					hitSlop={KEY_SLOP}
-					onPress={() => { hapticSelection(); Keyboard.dismiss(); }}
+					onPress={() => { Keyboard.dismiss(); }}
 					accessibilityRole="button"
 					accessibilityLabel="キーボードを閉じる"
 				>
@@ -199,7 +199,7 @@ export function TerminalKeyRow({ keyboardVisible, ctrlLatched, enterless, onKey,
 			<Pressable
 				style={({ pressed }) => [styles.toggle, enterless && styles.toggleOn, pressed && styles.keyPressed]}
 				hitSlop={KEY_SLOP}
-				onPress={() => { hapticSelection(); onToggleEnterless(); }}
+				onPress={() => { haptic('tick'); onToggleEnterless(); }}
 				accessibilityRole="switch"
 				accessibilityLabel="Enter なしで入力"
 				accessibilityHint="オンにすると、送信しても Enter を押さずに入力だけします"

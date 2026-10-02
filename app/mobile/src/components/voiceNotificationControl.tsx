@@ -9,7 +9,7 @@ import { BottomSheet } from './bottomSheet.js';
 import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { Button } from './button.js';
 import { SettingsCard, SettingsRow } from './settingsRow.js';
-import { hapticImpact } from '../haptics.js';
+import { haptic } from '../haptics.js';
 
 const STATUS_LABELS = {
 	idle: '停止中',
@@ -44,7 +44,7 @@ export function VoiceNotificationControl({ visible, onClose }: {
 	};
 
 	const toggle = () => {
-		hapticImpact('medium');
+		haptic('commit');
 		if (active) {
 			stop();
 		} else {
@@ -58,7 +58,7 @@ export function VoiceNotificationControl({ visible, onClose }: {
 				<Pressable
 					style={({ pressed }) => [styles.headerButton, active && styles.headerButtonActive, pressed && styles.headerButtonPressed]}
 					hitSlop={{ top: 5, bottom: 5, left: 4, right: 4 }}
-					onPress={() => { hapticImpact('light'); setInternalVisible(true); }}
+					onPress={() => { haptic('move'); setInternalVisible(true); }}
 					accessibilityRole="button"
 					accessibilityLabel={active ? '音声通知を受信中' : '音声通知を開始'}
 				>

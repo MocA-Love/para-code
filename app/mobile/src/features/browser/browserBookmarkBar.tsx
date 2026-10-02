@@ -7,7 +7,6 @@ import type { IParadisMobileBookmarkFolder, IParadisMobileBookmarks, ParadisMobi
 import { HorizontalScrollFade } from '../../components/horizontalScrollFade.js';
 import { Icon } from '../../ui/icon.js';
 import { colors, radius, squircle, type } from '../../theme.js';
-import { hapticSelection } from '../../haptics.js';
 import { bookmarkFavicon, bookmarkFolderIcon, bookmarkLabel, isCurrentBookmark } from '../../browserBookmarks.js';
 import type { BrowserPopoverAnchor } from './browserListOverlay.js';
 
@@ -46,7 +45,6 @@ export function BrowserBookmarkBar({ bookmarks, pageUrl, disabled, onOpen, onOpe
 						disabled={disabled}
 						style={({ pressed }) => [styles.item, (current || pressed) && styles.itemOn, disabled && styles.disabled]}
 						onPress={event => {
-							hapticSelection();
 							if (node.type === 'folder') {
 								const { pageX, pageY, locationX, locationY } = event.nativeEvent;
 								onOpenFolder(node, { top: pageY - locationY + BOOKMARK_BAR_HEIGHT - 4, x: pageX - locationX, align: 'left' });

@@ -73,6 +73,8 @@ import { IParadisAgentTerminalHintConsumer, paradisCreateAgentTerminalHintConsum
 import { setParadisDiagnosticCorrelationTag } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisMobilePcFocusHeartbeatCoordinator } from './paradisMobilePcFocusHeartbeat.js';
 import { ParadisMobileRelayRendererLifecycle } from './paradisMobileRelayRendererLifecycle.js';
+import { ParadisMobileBackgroundThrottlingKeeper, paradisCreateMobileBackgroundThrottlingKeeper } from './paradisMobileBackgroundThrottling.js';
+import { IChatService } from '../../../../workbench/contrib/chat/common/chatService/chatService.js';
 // モバイルの scm / fs の新しい種類を別ファイルで受ける処理（登録表。W2-17）
 import './paradisMobileRequestHandlerRegistrations.js';
 
@@ -114,6 +116,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	private previousOnlineMobiles = 0;
 	/** このウィンドウで案内済みの「鍵と台帳を読めない」理由（同じ理由で何度も出さない）。 */
 	private announcedStoreProblem: IParadisMobileStatus['storeProblem'];
+	private readonly backgroundThrottling: ParadisMobileBackgroundThrottlingKeeper;
 	constructor(
 		@ISharedProcessService sharedProcessService: ISharedProcessService,
 		@IMainProcessService mainProcessService: IMainProcessService,
@@ -146,8 +149,11 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@IParadisPresetService presetService: IParadisPresetService,
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 		@ILabelService private readonly labelService: ILabelService,
+		@IChatService chatService: IChatService,
 	) {
 		super();
+		// モバイルがオンラインの間は、隠れたウィンドウでもモバイルの要求の処理を間引かせない
+		this.backgroundThrottling = this._register(paradisCreateMobileBackgroundThrottlingKeeper(this.nativeHostService, chatService));
 
 		ParadisMobileRelayContribution.instance = this;
 		this._register({ dispose: () => { if (ParadisMobileRelayContribution.instance === this) { ParadisMobileRelayContribution.instance = undefined; } } });
@@ -768,6 +774,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	}
 
 	private renderStatusbar(status: IParadisMobileStatus): void {
+		// 状態の変化・設定の切り替え・初期化のどれもここを通るので、背景スロットリングの要否もここで決め直す
+		this.backgroundThrottling.update(this.isEnabled(), status);
 		this.applyDiagnosticCorrelation(status.deviceId);
 		this.announceStoreProblem(status);
 		// 表示可否は「設定でリレーが有効か」だけで決める。shared process の state に依存すると、

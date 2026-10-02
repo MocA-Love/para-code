@@ -18,10 +18,29 @@ const CHECK_SIZE = 18;
 /** 行の最小の高さ（当たり判定）。 */
 const ROW_MIN = 44;
 
-/** 本文の各行（見出し・ふつうの行・チェック項目）。チェック項目を押すと完了を切り替える。 */
-export function NoteLines({ lines, onToggle, disabled }: {
+/** チェック項目をその行の中で書き換えているときの入力欄（uncontrolled。確定・取り消しは呼び出し側が持つ）。 */
+export interface NoteLineEditor {
+	/** 書き換えている行（0-based）。 */
+	readonly index: number;
+	readonly inputRef: RefObject<TextInput | null>;
+	readonly onChange: (text: string) => void;
+	/** Return・フォーカスが外れたとき（PC と同じく確定する）。 */
+	readonly onCommit: () => void;
+	/** 外付けキーボードの Esc（取り消す。PC と同じ）。 */
+	readonly onCancel?: () => void;
+}
+
+/**
+ * 本文の各行（見出し・ふつうの行・チェック項目）。チェック項目を押すと完了を切り替え、長押しで操作のメニューを開く
+ * （`onLongPress`。PC の右クリックのメニューと同じくチェック項目の行だけ）。`selected` の行はメニューを開いている間
+ * 塗ったままにする。`editor` の行は入力欄に変わる。
+ */
+export function NoteLines({ lines, onToggle, onLongPress, selected, editor, disabled }: {
 	lines: readonly SpaceNoteLine[];
 	onToggle: (lineIndex: number) => void;
+	onLongPress?: (line: SpaceNoteLine) => void;
+	selected?: number;
+	editor?: NoteLineEditor;
 	disabled: boolean;
 }) {
 	const theme = useThemeColors();
@@ -36,15 +55,48 @@ export function NoteLines({ lines, onToggle, disabled }: {
 					case 'text':
 						return <Text key={line.index} style={styles.text}>{line.text}</Text>;
 					case 'task':
+						if (editor?.index === line.index) {
+							return (
+								<View key={line.index} style={[styles.task, styles.selected]}>
+									<View style={[styles.check, line.done ? { borderColor: theme.primary, backgroundColor: theme.primary } : undefined]}>
+										{line.done ? <Icon icon={Check} size={iconSize.xs} color={theme.onPrimary} strokeWidth={3} /> : null}
+									</View>
+									<TextInput
+										ref={editor.inputRef}
+										style={styles.addInput}
+										defaultValue={line.text}
+										onChangeText={editor.onChange}
+										onSubmitEditing={editor.onCommit}
+										onBlur={editor.onCommit}
+										onKeyPress={event => {
+											if (event.nativeEvent.key === 'Escape') {
+												editor.onCancel?.();
+											}
+										}}
+										autoFocus
+										spellCheck={false}
+										autoCorrect={false}
+										returnKeyType="done"
+										submitBehavior="submit"
+										maxLength={SPACE_NOTE_MAX_LENGTH}
+										keyboardAppearance="dark"
+										accessibilityLabel="チェック項目を編集"
+									/>
+								</View>
+							);
+						}
 						return (
 							<Pressable
 								key={line.index}
 								onPress={() => onToggle(line.index)}
+								onLongPress={onLongPress !== undefined ? () => onLongPress(line) : undefined}
+								delayLongPress={400}
 								disabled={disabled}
-								style={({ pressed }) => [styles.task, pressed ? styles.pressed : undefined]}
+								style={({ pressed }) => [styles.task, selected === line.index ? styles.selected : undefined, pressed ? styles.pressed : undefined]}
 								accessibilityRole="checkbox"
 								accessibilityState={{ checked: line.done, disabled }}
 								accessibilityLabel={line.text.length > 0 ? line.text : '空のチェック項目'}
+								accessibilityHint={onLongPress !== undefined ? '長押しで操作を開きます' : undefined}
 							>
 								<View style={[styles.check, line.done ? { borderColor: theme.primary, backgroundColor: theme.primary } : undefined]}>
 									{line.done ? <Icon icon={Check} size={iconSize.xs} color={theme.onPrimary} strokeWidth={3} /> : null}
@@ -169,6 +221,10 @@ const styles = StyleSheet.create({
 		borderRadius: radius.row,
 	},
 	pressed: {
+		backgroundColor: colors.raised,
+	},
+	/** メニューを開いている・書き換えている行（どの行の操作かを目で追えるように塗ったままにする）。 */
+	selected: {
 		backgroundColor: colors.raised,
 	},
 	disabled: {

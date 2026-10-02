@@ -5,7 +5,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_SPACE_NOTE_MAX_LENGTH, paradisAppendSpaceNoteTask, paradisApplySpaceNoteOp, paradisMergeSpaceNoteEdits, paradisContinueSpaceNoteList, paradisNormalizeSpaceNoteText, paradisParseSpaceNote, paradisParseSpaceNotes, paradisRemoveSpaceNoteTask, paradisReplaceSpaceNoteTaskText, paradisSerializeSpaceNotes, paradisSpaceNoteSummary, paradisToggleSpaceNoteListMarkers, paradisToggleSpaceNoteTask } from '../../common/paradisSpaceNotes.js';
+import { PARADIS_SPACE_NOTE_MAX_LENGTH, paradisAppendSpaceNoteTask, paradisApplySpaceNoteOp, paradisApplySpaceNoteOpAt, paradisMergeSpaceNoteEdits, paradisContinueSpaceNoteList, paradisNormalizeSpaceNoteText, paradisParseSpaceNote, paradisParseSpaceNotes, paradisRemoveSpaceNoteTask, paradisReplaceSpaceNoteTaskText, paradisSerializeSpaceNotes, paradisSpaceNoteSummary, paradisToggleSpaceNoteListMarkers, paradisToggleSpaceNoteTask } from '../../common/paradisSpaceNotes.js';
 
 suite('ParadisSpaceNotes', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -188,6 +188,63 @@ suite('ParadisSpaceNotes', () => {
 			paradisApplySpaceNoteOp('', { kind: 'append', entry: '- [ ] b' }),
 			paradisApplySpaceNoteOp('- [ ] a', { kind: 'append', entry: '  ' }),
 		], ['- [ ] a\n- [ ] b\n  more', '- [ ] b', undefined]);
+	});
+
+	test('removes and edits a task at the line the sender saw, following lines that moved (note.task-ops.v1)', () => {
+		const text = '- [ ] a\n- [x] b\n  detail\n- [ ] c';
+		const shifted = `- [ ] new\n${text}`;
+		assert.deepStrictEqual({
+			remove: paradisApplySpaceNoteOp(text, { kind: 'remove', line: 1, lineText: '- [x] b' }),
+			removeShifted: paradisApplySpaceNoteOp(shifted, { kind: 'remove', line: 1, lineText: '- [x] b' }),
+			removeGone: paradisApplySpaceNoteOp('- [ ] a', { kind: 'remove', line: 1, lineText: '- [x] b' }),
+			edit: paradisApplySpaceNoteOp(text, { kind: 'edit', line: 1, lineText: '- [x] b', text: 'B\nnext' }),
+			editShifted: paradisApplySpaceNoteOp(shifted, { kind: 'edit', line: 0, lineText: '- [ ] a', text: 'A' }),
+			editEmpty: paradisApplySpaceNoteOp(text, { kind: 'edit', line: 0, lineText: '- [ ] a', text: '  ' }),
+			editSame: paradisApplySpaceNoteOp(text, { kind: 'edit', line: 0, lineText: '- [ ] a', text: 'a' }),
+		}, {
+			remove: '- [ ] a\n- [ ] c',
+			removeShifted: '- [ ] new\n- [ ] a\n- [ ] c',
+			removeGone: undefined,
+			edit: '- [ ] a\n- [x] B next\n  detail\n- [ ] c',
+			editShifted: '- [ ] new\n- [ ] A\n- [x] b\n  detail\n- [ ] c',
+			editEmpty: undefined,
+			// 文言が変わらない書き換えは失敗ではない (本文をそのまま返す)
+			editSame: text,
+		});
+	});
+
+	test('uses the text the sender read to tell apart tasks with the same line (baseText)', () => {
+		// 同じ中身の項目が 2 つあり、送る側は 2 つ目 (継続行つき) を見ていた。読んだ後に先頭へ 1 行足された
+		const base = '- [ ] same\n- [ ] x\n- [ ] same\n  detail';
+		const current = `- [ ] new\n${base}`;
+		const second = { line: 2, lineText: '- [ ] same', baseText: base };
+		assert.deepStrictEqual({
+			remove: paradisApplySpaceNoteOp(current, { kind: 'remove', ...second }),
+			edit: paradisApplySpaceNoteOp(current, { kind: 'edit', ...second, text: 'other' }),
+			toggleFirst: paradisApplySpaceNoteOp(current, { kind: 'toggle', line: 0, lineText: '- [ ] same', baseText: base }),
+			// 同じ中身の別の項目 (1 つ目) が消えていても、差分の対応で 2 つ目を当てる (同じ文の数では断らない)
+			otherSameRemoved: paradisApplySpaceNoteOp('- [ ] x\n- [ ] same\n  detail', { kind: 'remove', ...second }),
+			// 対象の項目そのものが消えていれば、残っている同じ中身の 1 つ目には当てない
+			targetGone: paradisApplySpaceNoteOp('- [ ] same\n- [ ] x', { kind: 'remove', ...second }),
+			// 消した位置 (当てる前の本文の行) も返す
+			removedAt: paradisApplySpaceNoteOpAt(current, { kind: 'remove', ...second })?.line,
+			// 対象の項目の継続行が読んだ後に書き換えられていたら当てない
+			blockChanged: paradisApplySpaceNoteOp('- [ ] same\n- [ ] x\n- [ ] same\n  changed', { kind: 'remove', ...second }),
+			// 継続行が足されていても当てない (消す範囲が変わる)
+			blockGrew: paradisApplySpaceNoteOp(`${base}\n  more`, { kind: 'remove', ...second }),
+			// 読んだときにその行が無かった (送る側の不具合) なら当てない
+			wrongBase: paradisApplySpaceNoteOp(current, { kind: 'remove', line: 1, lineText: '- [ ] same', baseText: base }),
+		}, {
+			remove: '- [ ] new\n- [ ] same\n- [ ] x',
+			edit: '- [ ] new\n- [ ] same\n- [ ] x\n- [ ] other\n  detail',
+			toggleFirst: '- [ ] new\n- [x] same\n- [ ] x\n- [ ] same\n  detail',
+			otherSameRemoved: '- [ ] x',
+			targetGone: undefined,
+			removedAt: 3,
+			blockChanged: undefined,
+			blockGrew: undefined,
+			wrongBase: undefined,
+		});
 	});
 
 	test('merges edits that touch different lines and refuses overlapping ones', () => {

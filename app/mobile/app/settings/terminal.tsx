@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
-import { hapticSelection } from '../../src/haptics.js';
+import { haptic } from '../../src/haptics.js';
 import { TERMINAL_FOLLOW_MIN_FONT_SIZE } from '../../src/terminalViewport.js';
 import { ListGroup, ListRow } from '../../src/ui/index.js';
 import { GroupHeader, GroupNote, SettingsScreen, SettingsSwitch } from '../../src/features/settings/settingsScaffold.js';
@@ -35,7 +35,7 @@ export default function TerminalSettingsScreen() {
 					visible={sizeOpen}
 					fontSize={terminalPrefs.fontSize}
 					onSelect={size => {
-						hapticSelection();
+						haptic('tick');
 						setTerminalPref('fontSize', size);
 					}}
 					onClose={() => setSizeOpen(false)}
@@ -53,7 +53,7 @@ export default function TerminalSettingsScreen() {
 					label="文字サイズ"
 					hint={`${terminalPrefs.fontSize}pt`}
 					trailing="chevron"
-					onPress={() => { hapticSelection(); setSizeOpen(true); }}
+					onPress={() => { haptic('move'); setSizeOpen(true); }}
 				/>
 			</ListGroup>
 

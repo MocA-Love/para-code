@@ -2,7 +2,7 @@
 
 import { Pressable, ScrollView, StyleSheet, Text } from 'react-native';
 import { colors, radius, space, squircle, type } from '../theme.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { QUICK_REPLIES } from '../agentConversationUx.js';
 import { hitSlopToMinimum } from './hitSlop.js';
 
@@ -19,7 +19,7 @@ export function AgentQuickReplies({ onPick }: { onPick: (text: string) => void }
 					key={reply}
 					style={({ pressed }) => [styles.chip, pressed && styles.pressed]}
 					hitSlop={CHIP_HIT_SLOP}
-					onPress={() => { hapticSelection(); onPick(reply); }}
+					onPress={() => { haptic('tick'); onPick(reply); }}
 					accessibilityRole="button"
 					accessibilityLabel={`「${reply}」を入力欄に入れる`}
 				>

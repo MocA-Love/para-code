@@ -4,7 +4,7 @@ import { Children, Fragment, isValidElement, type ReactNode } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { RefreshCw, Unplug } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { alpha, colors, radius, space, type } from '../../theme.js';
 import { EmptyState, HeaderButton } from '../../ui/index.js';
 
@@ -130,7 +130,7 @@ export function ChoiceChips<T extends string>({ options, selected, onSelect }: {
 					<Pressable
 						key={option.value}
 						onPress={() => {
-							hapticSelection();
+							haptic('tick');
 							onSelect(option.value);
 						}}
 						hitSlop={hitSlopToMinimum(CHIP_HEIGHT)}
@@ -185,7 +185,7 @@ export function DetailRefreshButton({ onPress, disabled }: { onPress: () => void
 			round
 			disabled={disabled}
 			onPress={() => {
-				hapticImpact('light');
+				haptic('commit');
 				onPress();
 			}}
 		/>

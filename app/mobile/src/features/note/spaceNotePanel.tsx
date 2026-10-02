@@ -2,8 +2,12 @@
 
 import { useRef, useState } from 'react';
 import { ScrollView, StyleSheet, TextInput, View, type NativeSyntheticEvent, type TextInputSelectionChangeEventData } from 'react-native';
-import { ChevronDown, Heading, List, ListChecks, Minus, Pencil, Type, X } from 'lucide-react-native';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { Check, ChevronDown, CircleCheck, Circle, Copy, Heading, List, ListChecks, Minus, Pencil, Trash2, Type, X } from 'lucide-react-native';
+import { haptic } from '../../haptics.js';
+import { usePcCapability } from '../../hooks/usePcCapability.js';
+import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
+import { writeClipboardText } from '../../nativeClipboard.js';
+import { useParaToast } from '../../paraToast.js';
 import { useKeyboardCoverage } from '../../hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import {
@@ -13,15 +17,16 @@ import {
 	parseSpaceNote,
 	spaceNoteSummary,
 	trimSpaceNoteTrailingEmptyTask,
+	type SpaceNoteLine,
 	type SpaceNotePrefix,
 } from '../../spaceNote.js';
 import { colors, space, type } from '../../theme.js';
-import { Button, EmptyState, HeaderButton, Screen, ScreenHeader, SectionHeader } from '../../ui/index.js';
+import { ActionSheet, Button, EmptyState, HeaderButton, Screen, ScreenHeader, SectionHeader, type ActionSheetAction } from '../../ui/index.js';
 import { CenterSpinner, InlineError, OfflineBanner, SpaceGateBody, useReadableColumn } from '../code/codeParts.js';
 import type { PanelDock } from '../code/panelDock.js';
 import { useCodeSpace, type CodeSpaceTarget } from '../code/useCodeSpace.js';
 import { NoteAddButton, NoteAddInput, NoteLines, NoteToolbar, type NoteToolbarAction } from './noteParts.js';
-import { appendNoteChange, replaceNoteChange, toggleNoteChange } from './spaceNoteSave.js';
+import { NOTE_TASK_OPS_CAPABILITY, appendNoteChange, editNoteChange, removeNoteChange, replaceNoteChange, restoreLineIndex, restoreNoteChange, toggleNoteChange } from './spaceNoteSave.js';
 import { spaceNoteErrorMessage, useSpaceNote } from './useSpaceNote.js';
 
 /**
@@ -30,6 +35,9 @@ import { spaceNoteErrorMessage, useSpaceNote } from './useSpaceNote.js';
  *
  *  - `- [ ]` / `- [x]` の行はチェック項目として描き、押すと完了を切り替えて保存する（楽観更新・失敗したら戻す）
  *  - 末尾の「項目を追加」で、編集に入らずにチェック項目を足せる（確定しても入力欄は残り、続けて書ける）
+ *  - チェック項目を長押しすると、PC の右クリックと同じ操作（完了の切り替え・この項目を編集・テキストをコピー・削除）を
+ *    下のシートに出す。編集はその行の中の入力欄で行い、削除は確かめずに消して「元に戻す」をトーストに出す。
+ *    PC が `note.task-ops.v1` を持たなければ「編集」「削除」は出さない
  *  - 右上の「編集」で本文全体を書き換える。キーボードの上の記号のバーで行頭の記号を付け替える
  *  - 編集の途中で戻っても書きかけは捨てずに保存する（`useSpaceNote`）
  *
@@ -64,18 +72,150 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 	const addRef = useRef<TextInput>(null);
 	const addDraft = useRef('');
 
+	// 長押しのメニュー。対象の行はシートを閉じる途中も見出しが変わらないように、閉じても持ち続ける。
+	const taskOps = usePcCapability(NOTE_TASK_OPS_CAPABILITY);
+	const [menuTarget, setMenuTarget] = useState<{ readonly line: SpaceNoteLine; readonly raw: string } | undefined>(undefined);
+	const [menuOpen, setMenuOpen] = useState(false);
+	// その行の中で書き換えている項目（行番号と、書き換え始めたときのその行の中身）。
+	const [lineEdit, setLineEdit] = useState<{ readonly index: number; readonly raw: string } | undefined>(undefined);
+	const lineEditRef = useRef(lineEdit);
+	lineEditRef.current = lineEdit;
+	const lineInputRef = useRef<TextInput>(null);
+	const lineDraft = useRef('');
+
 	const summary = spaceNoteSummary(text);
 	const lines = parseSpaceNote(text);
 	const subtitle = [codeSpace.name, codeSpace.branch].filter((part): part is string => part !== undefined && part.length > 0).join(' · ');
+
+	/** 長押しした行がまだ同じ中身でそこにあるか（シートを開いている間に本文が変わっていたら何もしない）。 */
+	const sameLine = (index: number, raw: string) => text.split('\n')[index] === raw;
+
+	const openMenu = (line: SpaceNoteLine) => {
+		const raw = text.split('\n')[line.index];
+		if (raw === undefined || lineEdit !== undefined) {
+			return;
+		}
+		haptic('lift');
+		setMenuTarget({ line, raw });
+		setMenuOpen(true);
+	};
+
+	const copyLine = async (line: SpaceNoteLine) => {
+		const copied = await writeClipboardText(line.text);
+		useParaToast.getState().show(copied
+			? { key: 'space-note-copied', text: 'テキストをコピーしました', icon: 'copy-outline', tone: 'done' }
+			: { key: 'space-note-copied', text: 'コピーできませんでした', icon: 'alert-circle', tone: 'warn' }, 1_500);
+	};
+
+	const startLineEdit = (line: SpaceNoteLine, raw: string) => {
+		if (!sameLine(line.index, raw)) {
+			return;
+		}
+		lineDraft.current = line.text;
+		setAdding(false);
+		setLineEdit({ index: line.index, raw });
+	};
+	/** 行の中の編集を確定する（Return・フォーカスが外れた・保存）。空・変わらないなら書かずに閉じる（PC と同じ）。 */
+	const commitLineEdit = () => {
+		const current = lineEditRef.current;
+		if (current === undefined) {
+			return;
+		}
+		lineEditRef.current = undefined;
+		setLineEdit(undefined);
+		const draft = lineDraft.current;
+		if (!sameLine(current.index, current.raw)) {
+			// 編集している間に本文が変わった（PC やエージェントが書き換えた）。書かずに閉じるので、書いた文は逃がす
+			void keepDiscardedEdit(draft);
+			return;
+		}
+		const change = editNoteChange(text, current.index, draft);
+		if (change !== undefined) {
+			haptic('commit');
+			void note.commit(change).then(result => {
+				if (result.outcome === 'conflict' || result.outcome === 'failed') {
+					void keepDiscardedEdit(draft);
+				}
+			});
+		}
+	};
+	/** 書かれなかった行の中の編集を、クリップボードへ逃がして知らせる（黙って消さない）。 */
+	const keepDiscardedEdit = async (draft: string) => {
+		const copied = draft.trim().length > 0 && await writeClipboardText(draft);
+		useParaToast.getState().show({
+			key: 'space-note-edit-discarded',
+			text: '編集を保存できませんでした',
+			sub: copied ? '書いた文はクリップボードにコピーしました。' : 'メモが PC で変わっていました。',
+			icon: 'alert-circle',
+			tone: 'warn',
+		}, 5_000);
+	};
+	const cancelLineEdit = () => {
+		lineEditRef.current = undefined;
+		setLineEdit(undefined);
+	};
+	// iPad の外付けキーボードの Esc で取り消す（後から置いた受け口が勝つので、ドックを閉じる Esc より先に効く）
+	useShortcutSlot('escape', lineEdit !== undefined ? { escape: cancelLineEdit } : undefined);
+
+	/** 確かめずに消し、「元に戻す」を 5 秒出す（PC の「削除」も確かめない）。 */
+	const removeLine = (line: SpaceNoteLine, raw: string) => {
+		const change = removeNoteChange(text, line.index);
+		if (change === undefined || !sameLine(line.index, raw)) {
+			return;
+		}
+		haptic('commit');
+		const removedIn = note.wsId;
+		void note.commit(change).then(result => {
+			// 消せたときだけ「元に戻す」を出す（失敗・PC で変わっていて書かれなかったときに出すと、残っている項目を二重に挿す）
+			if (result.outcome === 'saved' && removedIn !== undefined) {
+				// 挿し直す位置は PC が実際に消した位置（応答の opLine。無い PC では手元の行）と、消した直後の本文で決める
+				showUndo(line, change.removed, { wsId: removedIn, text: result.text ?? change.next, at: result.opLine ?? line.index });
+			}
+		});
+	};
+	/** 「元に戻す」付きのトースト。二重に押しても一度だけ挿し直す。 */
+	const showUndo = (line: SpaceNoteLine, removed: readonly string[], removal: { readonly wsId: string; readonly text: string; readonly at: number }) => {
+		let used = false;
+		const undo = async () => {
+			if (used) {
+				return;
+			}
+			used = true;
+			useParaToast.getState().hide();
+			// 消した保存の応答（PC が当てた後の本文）を待ってから、その本文に挿し直す。全文はその本文を読んだ時点の版を
+			// base に付けて送る（間に別の操作が版を進めていれば書かれず、その操作を消さない）
+			const latest = await note.settledSnapshot();
+			if (latest.wsId !== removal.wsId) {
+				// 別のスペースへ移った後に押された。別のスペースのメモに挿さない
+				return;
+			}
+			void note.commit(restoreNoteChange(latest.text, restoreLineIndex(removal.text, removal.at, latest.text), removed, latest.version));
+		};
+		useParaToast.getState().show({
+			key: 'space-note-removed',
+			text: '項目を削除しました',
+			sub: line.text,
+			icon: 'trash-outline',
+			tone: 'info',
+			action: { label: '元に戻す', onPress: () => void undo() },
+		}, 5_000);
+	};
 
 	const toggle = (lineIndex: number) => {
 		const change = toggleNoteChange(text, lineIndex);
 		if (change === undefined) {
 			return;
 		}
-		hapticSelection();
-		note.commit(change);
+		haptic('tick');
+		void note.commit(change);
 	};
+
+	const menuActions: ActionSheetAction[] = menuTarget === undefined ? [] : [
+		{ label: menuTarget.line.done ? '未完了に戻す' : '完了にする', icon: menuTarget.line.done ? Circle : CircleCheck, onPress: () => { if (sameLine(menuTarget.line.index, menuTarget.raw)) { toggle(menuTarget.line.index); } } },
+		...(taskOps ? [{ label: 'この項目を編集', icon: Pencil, onPress: () => startLineEdit(menuTarget.line, menuTarget.raw) }] : []),
+		{ label: 'テキストをコピー', icon: Copy, onPress: () => void copyLine(menuTarget.line) },
+		...(taskOps ? [{ label: '削除', icon: Trash2, destructive: true, onPress: () => removeLine(menuTarget.line, menuTarget.raw) }] : []),
+	];
 
 	/**
 	 * 編集欄の中身をこちらから書き換える。テキストと選択範囲で API を分けているのは、`selection` を
@@ -103,39 +243,37 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 		}
 	};
 	const applyPrefix = (prefix: SpaceNotePrefix) => {
-		hapticSelection();
+		haptic('tick');
 		const result = applySpaceNotePrefix(editorBaseline.current, editorSelection.current, prefix);
 		writeEditor(result.text, result.selection);
 	};
 
 	const startEditing = () => {
-		hapticImpact('light');
 		editorInitial.current = text;
 		editorBaseline.current = text;
 		editorSelection.current = text.length;
 		note.holdDraft(text);
 		setEditorKey(key => key + 1);
 		setAdding(false);
+		cancelLineEdit();
 		setEditing(true);
 	};
 	const cancelEditing = () => {
-		hapticImpact('light');
 		note.holdDraft(undefined);
 		setEditing(false);
 	};
 	const commitEditing = () => {
-		hapticImpact('light');
+		haptic('commit');
 		// 自動継続が置いた末尾の空項目は未完了1件として数えられるので、保存の前に落とす。
 		const next = trimSpaceNoteTrailingEmptyTask(editorBaseline.current);
 		note.holdDraft(undefined);
 		setEditing(false);
 		if (next !== text) {
-			note.commit(replaceNoteChange(next));
+			void note.commit(replaceNoteChange(next));
 		}
 	};
 
 	const startAdding = () => {
-		hapticImpact('light');
 		addDraft.current = '';
 		note.setError(undefined);
 		setAdding(true);
@@ -155,7 +293,7 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 			note.setError('full');
 			return;
 		}
-		hapticSelection();
+		haptic('commit');
 		addDraft.current = '';
 		addRef.current?.clear();
 		if (close) {
@@ -163,7 +301,7 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 		} else {
 			requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
 		}
-		note.commit(change);
+		void note.commit(change);
 	};
 	/** フォーカスが外れたら、書きかけを捨てずに1件として確定する（黙って消さない）。 */
 	const onAddBlur = () => {
@@ -174,7 +312,11 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 		commitAdding('task', true);
 	};
 
-	const toolbarActions: NoteToolbarAction[] = editing ? [
+	const toolbarActions: NoteToolbarAction[] = lineEdit !== undefined ? [
+		// 行の中の編集（iPhone はキーボードの上のここで確定・取り消す。iPad は Return / Esc でも）
+		{ key: 'cancel', icon: X, label: 'キャンセル', onPress: cancelLineEdit },
+		{ key: 'save', icon: Check, label: '保存', onPress: commitLineEdit },
+	] : editing ? [
 		{ key: 'task', icon: ListChecks, label: 'チェック', onPress: () => applyPrefix('task') },
 		{ key: 'heading', icon: Heading, label: '見出し', onPress: () => applyPrefix('heading') },
 		{ key: 'bullet', icon: List, label: '箇条書き', onPress: () => applyPrefix('bullet') },
@@ -237,7 +379,14 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 				{lines.length === 0 && !adding ? (
 					<EmptyState style={styles.empty} title="メモはまだありません" body="下の「項目を追加」からすぐ書き始められます。PC のメモ欄と同じ内容です。" />
 				) : (
-					<NoteLines lines={lines} onToggle={toggle} disabled={busy} />
+					<NoteLines
+						lines={lines}
+						onToggle={toggle}
+						onLongPress={openMenu}
+						selected={menuOpen ? menuTarget?.line.index : undefined}
+						editor={lineEdit !== undefined ? { index: lineEdit.index, inputRef: lineInputRef, onChange: value => { lineDraft.current = value; }, onCommit: commitLineEdit, onCancel: cancelLineEdit } : undefined}
+						disabled={busy}
+					/>
 				)}
 				{adding ? (
 					<NoteAddInput inputRef={addRef} onChange={value => { addDraft.current = value; }} onSubmit={() => commitAdding('task')} onBlur={onAddBlur} />
@@ -262,7 +411,13 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 			<View style={styles.fill}>
 				<SpaceGateBody gate={codeSpace.gate}>{body}</SpaceGateBody>
 			</View>
-			{ready && (editing || adding) ? <NoteToolbar actions={toolbarActions} bottomInset={keyboardVisible ? 0 : insets.bottom} /> : null}
+			{ready && (editing || adding || lineEdit !== undefined) ? <NoteToolbar actions={toolbarActions} bottomInset={keyboardVisible ? 0 : insets.bottom} /> : null}
+			<ActionSheet
+				visible={menuOpen}
+				title={menuTarget?.line.text}
+				actions={menuActions}
+				onClose={() => setMenuOpen(false)}
+			/>
 		</Screen>
 	);
 }

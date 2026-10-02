@@ -6,7 +6,7 @@ import { useFocusEffect } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
-import { hapticSelection } from '../../src/haptics.js';
+import { haptic } from '../../src/haptics.js';
 import { ensureNotificationPermission } from '../../src/platform.js';
 import { ListGroup, ListRow } from '../../src/ui/index.js';
 import type { NotificationPermissionState } from '../../src/features/settings/onboardingPlan.js';
@@ -57,7 +57,7 @@ export default function NotificationSettingsScreen() {
 	}, [appActive]));
 
 	const onPermissionPress = () => {
-		hapticSelection();
+		haptic('move');
 		if (permission === 'undetermined') {
 			void ensureNotificationPermission().then(granted => setPermission(granted ? 'granted' : 'denied'), () => undefined);
 		} else {
@@ -114,7 +114,7 @@ export default function NotificationSettingsScreen() {
 					hint="PC で流れる読み上げを、この端末でも再生します"
 					value={voiceNotificationValue(voice)}
 					trailing="chevron"
-					onPress={() => { hapticSelection(); setVoiceOpen(true); }}
+					onPress={() => { haptic('move'); setVoiceOpen(true); }}
 				/>
 			</ListGroup>
 		</SettingsScreen>

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshControl, View } from 'react-native';
 import { useIsFocused } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
+import { haptic } from '../../../src/haptics.js';
 import { useAppStore } from '../../../src/appState.js';
 import { useAppIsActive } from '../../../src/hooks/useAppIsActive.js';
 import { MobileWarmLeaseLifecycle, type UsageAgent, type UsageDashboardResult } from '../../../src/store.js';
@@ -184,7 +185,7 @@ export default function CostScreen() {
 			title="コスト"
 			subtitle={subtitle}
 			right={<DetailRefreshButton onPress={() => { void onPullRefresh(); }} disabled={pullRefreshing || loading} />}
-			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
+			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { haptic('edge'); void onPullRefresh(); }} tintColor={colors.textDim} />}
 		>
 			<UsageHostPicker host={host} />
 			{loading && data === undefined ? <DetailLoading /> : null}

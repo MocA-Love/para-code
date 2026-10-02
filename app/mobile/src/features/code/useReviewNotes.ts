@@ -9,7 +9,8 @@ import { sendPcRequest } from '../../appState.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
 import { useParaToast } from '../../paraToast.js';
 import { codeCacheKey, useReviewNotes } from './codeCache.js';
-import { sendFailureMessage, type ReviewNote } from './reviewNotes.js';
+import { pcReplyErrorCode } from '../../store.js';
+import { reviewFailureTitle, sendFailureMessage, type ReviewNote } from './reviewNotes.js';
 import type { ScmEntry } from './scmModel.js';
 import type { CodeSpace } from './useCodeSpace.js';
 import type { ReviewMarksController } from './useReviewMarks.js';
@@ -54,8 +55,11 @@ interface ReviewReply {
 }
 
 function showFailure(text: string, error: unknown): void {
-	useParaToast.getState().show({ key: 'review-note-failed', text, sub: sendFailureMessage(error), icon: 'alert-circle', tone: 'warn' }, 4_000);
+	useParaToast.getState().show({ key: 'review-note-failed', text: reviewFailureTitle(text, pcReplyErrorCode(error)), sub: sendFailureMessage(error), icon: 'alert-circle', tone: 'warn' }, 4_000);
 }
+
+/** `reviewStage` の待ち時間（PC: 前の読み直し 20 秒 + git add + 後の読み直し 20 秒 + 大きさ 10 秒）。 */
+const REVIEW_STAGE_TIMEOUT_MS = 90_000;
 
 /** 失敗をどこに出すか。シートの中の操作は `sheet`（トーストは Modal の裏に隠れる）。 */
 type FailureSurface = 'sheet' | 'toast';
@@ -118,7 +122,8 @@ export function useReviewNotesController(space: CodeSpace, review: ReviewMarksCo
 	}, [run]);
 
 	const stage = useCallback(async (entries: readonly ScmEntry[]) => {
-		const reply = await run({ t: 'reviewStage', entries: entries.map(entry => ({ path: entry.path, identity: entry.identity })) }, 'ステージできませんでした', 'toast');
+		// PC は前後の読み直し（各 20 秒まで）と git add を続けて待つので長めに待つ
+		const reply = await run({ t: 'reviewStage', entries: entries.map(entry => ({ path: entry.path, identity: entry.identity })) }, 'ステージできませんでした', 'toast', REVIEW_STAGE_TIMEOUT_MS);
 		if (reply === undefined) {
 			return undefined;
 		}

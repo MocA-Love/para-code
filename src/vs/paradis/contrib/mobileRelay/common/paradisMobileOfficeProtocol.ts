@@ -21,9 +21,21 @@ export const PARADIS_MOBILE_OFFICE_FEATURE_WORD_VIEW = PARADIS_OFFICE_FEATURE_WO
 export const PARADIS_MOBILE_OFFICE_FEATURE_WORD_DIFF = PARADIS_OFFICE_FEATURE_WORD_DIFF;
 export const PARADIS_MOBILE_OFFICE_ALL_FEATURES = PARADIS_OFFICE_ALL_FEATURES;
 
-/** The relay UI/transport is not connected yet, so the host must not advertise semantic features. */
-export function getParadisMobileOfficeHostFeatureBits(_requestedBits: number): number {
-	return 0;
+/**
+ * Semantic features this host actually serves over the relay. Only Word Diff is wired (`office/wordDiff`
+ * and the scm `wordDiff` of `scm.word-diff.v1`); Excel view/diff still travel through the legacy
+ * `xlsx` / `xlsxDiff` HTML path and Word view is rendered on the device, so those bits stay off.
+ */
+export function getParadisMobileOfficeHostFeatureBits(requestedBits: number): number {
+	return Number.isSafeInteger(requestedBits) ? requestedBits & PARADIS_MOBILE_OFFICE_FEATURE_WORD_DIFF : 0;
+}
+
+/**
+ * `office/hello` への v1 の応答。使える機能のビットが 1 つも無いときだけ `office.capability.featureUnavailable` を付ける
+ * （Word 差分だけでも使えるなら、アプリに「使えない」とは知らせない）。
+ */
+export function paradisMobileOfficeCapabilities(featureBits: number): ParadisMobileOfficeResponse {
+	return { t: 'office/capabilities', version: PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, featureBits, warnings: featureBits === 0 ? ['office.capability.featureUnavailable'] : [] };
 }
 
 export type ParadisMobileOfficeRequest =

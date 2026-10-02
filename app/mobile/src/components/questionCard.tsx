@@ -8,7 +8,7 @@ import type { QuestionGroupAnswer } from '../hooks/useAgentActions.js';
 import { useAnswerSubmission } from '../hooks/useAnswerSubmission.js';
 import type { AgentChatMessage, AgentMessageSendResult } from '../store.js';
 import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { haptic, prepareHaptic } from '../haptics.js';
 import { setMobileSpanAttributes, startMobileSpan } from '../sentry.js';
 import { Button } from './button.js';
 import { AnswerSubmissionStatus } from './answerSubmissionStatus.js';
@@ -104,7 +104,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 		if (interactionId === undefined || onRequestFreeText === undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('tick');
 		setSelected(undefined);
 		onRequestFreeText({
 			id: interactionId,
@@ -119,7 +119,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 		});
 	};
 	const pickOption = (i: number) => {
-		hapticSelection();
+		haptic('tick');
 		if (otherSelected) {
 			onRequestFreeText?.(undefined);
 		}
@@ -134,7 +134,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 		if (interactionId === undefined || !canConfirm) {
 			return;
 		}
-		hapticImpact('medium');
+		haptic('commit');
 		if (multiSelect) {
 			void submit('multi', () => onMulti(interactionId, question, [...toggled].sort((a, b) => a - b)));
 		} else if (selected !== undefined) {
@@ -189,14 +189,14 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 						placeholderTextColor={colors.textDim}
 						autoCapitalize="none"
 						autoCorrect={false}
-						onFocus={() => hapticSelection()}
+						onFocus={() => prepareHaptic('commit')}
 					/>
 					<Pressable
 						style={[styles.questionFreeSend, freeText.trim().length === 0 && styles.confirmBtnDisabled]}
 						disabled={freeText.trim().length === 0 || interactionId === undefined}
 						accessibilityRole="button"
 						accessibilityState={{ disabled: freeText.trim().length === 0 || interactionId === undefined }}
-						onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); void submit('text', () => onFreeText(interactionId, question, freeText.trim())); } }}
+						onPress={() => { if (interactionId !== undefined) { haptic('commit'); void submit('text', () => onFreeText(interactionId, question, freeText.trim())); } }}
 						accessibilityLabel="自由入力で回答"
 					>
 						<Ionicons name="arrow-up" size={16} color={colors.onPrimary} />
@@ -299,7 +299,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 		if (interactionId === undefined || onRequestFreeText === undefined || current === undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('tick');
 		const index = step;
 		onRequestFreeText({
 			id: stepRequestId(index),
@@ -321,7 +321,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 
 	const submitAll = () => {
 		if (interactionId === undefined) { return; }
-		hapticImpact('medium');
+		haptic('commit');
 		const picked = answers.filter((a): a is QuestionGroupAnswer => a !== undefined);
 		// 複数ステップ・自由入力つきの回答がPCで正しく再生されているかは、送った側の
 		// 形と結果を並べないと分からない。件数と種別だけを残す（本文は載せない）。
@@ -357,7 +357,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 						accessibilityRole="tab"
 						accessibilityState={{ selected: i === step, disabled }}
 						disabled={disabled}
-						onPress={() => { hapticSelection(); setStep(i); }}
+						onPress={() => { haptic('tick'); setStep(i); }}
 					>
 						<Text style={[styles.stepTabText, i === step && styles.stepTabTextActive]}>
 							{answers[i] !== undefined ? '✓ ' : ''}{m.header ?? `Q${i + 1}`}
@@ -377,7 +377,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 						accessibilityRole="button"
 						accessibilityState={{ selected, disabled }}
 						onPress={() => {
-							hapticSelection();
+							haptic('tick');
 							if (otherSelected) {
 								onRequestFreeText?.(undefined);
 							}
@@ -431,7 +431,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 					placeholderTextColor={colors.textDim}
 					autoCapitalize="none"
 					autoCorrect={false}
-					onFocus={() => hapticSelection()}
+					onFocus={() => prepareHaptic('commit')}
 				/>
 			) : null}
 			{locked ? (

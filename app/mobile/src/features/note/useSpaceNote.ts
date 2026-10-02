@@ -2,12 +2,30 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../appState.js';
+import { haptic } from '../../haptics.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
 import { writeClipboardText } from '../../nativeClipboard.js';
 import { useParaToast } from '../../paraToast.js';
 import { trimSpaceNoteTrailingEmptyTask } from '../../spaceNote.js';
 import type { SpaceNoteResult } from '../../store.js';
-import { NOTE_CAS_CAPABILITY, replaceNoteChange, spaceNoteConflictKind, spaceNoteConflictMessage, spaceNoteSetOptions, type SpaceNoteChange, type SpaceNoteConflictKind } from './spaceNoteSave.js';
+import { NOTE_CAS_CAPABILITY, replaceNoteChange, spaceNoteConflictKind, spaceNoteConflictMessage, spaceNoteKeepsDraft, spaceNoteMissingBase, spaceNoteSetOptions, type SpaceNoteChange, type SpaceNoteConflictKind } from './spaceNoteSave.js';
+
+/** 保存 1 回の結果。 */
+export type SpaceNoteCommitOutcome = 'saved' | 'conflict' | 'failed';
+
+/** 保存の結果。`text` と `opLine` は PC が書いた（または書かなかった）ときの応答（送らなかった・失敗したときは無い）。 */
+export interface SpaceNoteCommitResult {
+	readonly outcome: SpaceNoteCommitOutcome;
+	readonly text?: string;
+	readonly opLine?: number;
+}
+
+/** 送った保存の応答をすべて受けた後の本文と、その本文の版（版を比べられない PC・まだ読めていないときは undefined）。 */
+export interface SpaceNoteSnapshot {
+	readonly wsId: string | undefined;
+	readonly text: string;
+	readonly version: number | undefined;
+}
 
 /**
  * メモの読み書きの失敗（画面に出す一文）。PC から届いた本文をそのまま出さない。
@@ -16,6 +34,8 @@ import { NOTE_CAS_CAPABILITY, replaceNoteChange, spaceNoteConflictKind, spaceNot
 export type SpaceNoteError = 'load' | 'save' | 'full' | { readonly conflict: SpaceNoteConflictKind };
 
 export interface SpaceNoteController {
+	/** 読み書きしているスペース（要求を出せないときは undefined）。 */
+	readonly wsId: string | undefined;
 	/** いまの本文（楽観更新を含む）。 */
 	readonly text: string;
 	readonly loading: boolean;
@@ -26,8 +46,10 @@ export interface SpaceNoteController {
 	/**
 	 * 本文を差し替えて保存する（楽観更新。失敗したら `previous` へ戻す）。PC で先に書き換えられていて
 	 * 書かれなかったら、PC の最新を読み込み `conflict*` を出す（`spaceNoteSave.ts`）。
+	 * 結果は PC の応答を受けてから返す（`saved` は PC が書いた。後から送った保存に追い越されて、この応答を画面に
+	 * 出さなかったときも書いたことに変わりはない。`conflict` / `failed` は書かれていない）。
 	 */
-	commit(change: SpaceNoteChange): void;
+	commit(change: SpaceNoteChange): Promise<SpaceNoteCommitResult>;
 	/**
 	 * 編集中の書きかけを預ける（undefined で取り下げ）。画面を離れたときに、まだ保存していない
 	 * 書きかけがあれば保存する（PC 側のメモ欄がフォーカスを外したときに保存するのと揃える）。
@@ -35,6 +57,11 @@ export interface SpaceNoteController {
 	holdDraft(draft: string | undefined): void;
 	/** 読み込みに失敗したあとに読み直す。 */
 	reload(): void;
+	/**
+	 * 送った保存の応答をすべて受けた後の本文（PC の最新）。「元に戻す」のように、いまの本文から次の全文を作る操作は
+	 * これを待ってから作る（応答の前に作ると、PC が当てた書き足しを知らない全文を送ってしまう）。
+	 */
+	settledSnapshot(): Promise<SpaceNoteSnapshot>;
 }
 
 /**
@@ -95,6 +122,8 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 			.then(result => {
 				if (generation === generationRef.current) {
 					setText(result.text ?? '');
+					// 版と本文を同じ応答から組で進める（settledSnapshot() が描き直しを待たずに同じ組を読めるように）
+					textRef.current = result.text ?? '';
 					if (versionRef.current?.wsId === wsId) {
 						versionRef.current.version = result.updatedAt;
 					}
@@ -121,11 +150,15 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 			}
 			const trimmed = trimSpaceNoteTrailingEmptyTask(draft);
 			if (trimmed !== textRef.current) {
-				// 画面はもう無いので、PC で先に書き換えられていたら書きかけをクリップボードへ逃がして知らせる
+				// 画面はもう無いので、PC で先に書き換えられていたら書きかけをクリップボードへ逃がして知らせる。
+				// 版は離れる時点のこのスペースのもの（スペースが変わった後に読んだ別のスペースの版は使わない）
 				const change = replaceNoteChange(trimmed);
+				const version = versionRef.current?.wsId === wsId ? versionRef.current.version : undefined;
 				void enqueueSave(async () => {
-					const version = versionRef.current?.wsId === wsId ? versionRef.current.version : undefined;
-					const result = await useAppStore.getState().noteSet(wsId, trimmed, spaceNoteSetOptions(change, version, pcHasCasRef.current)).catch(() => undefined);
+					// 版を比べられる PC なのに版がまだ無い（読み直しの途中）なら送らない（無条件の上書きで PC の変更を消さない）
+					const result = spaceNoteMissingBase(change, version, pcHasCasRef.current)
+						? { conflict: true }
+						: await useAppStore.getState().noteSet(wsId, trimmed, spaceNoteSetOptions(change, version, pcHasCasRef.current)).catch(() => undefined);
 					if (result?.conflict === true) {
 						const copied = await writeClipboardText(trimmed);
 						useParaToast.getState().show({ key: 'space-note-conflict', text: 'メモを保存しませんでした', sub: spaceNoteConflictMessage(spaceNoteConflictKind(change, copied)), icon: 'alert-circle', tone: 'warn' }, 6_000);
@@ -135,41 +168,61 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 		};
 	}, [wsId, reloadCount, enqueueSave]);
 
-	const commit = useCallback((change: SpaceNoteChange) => {
+	const commit = useCallback((change: SpaceNoteChange): Promise<SpaceNoteCommitResult> => {
 		if (wsId === undefined) {
-			return;
+			return Promise.resolve({ outcome: 'failed' });
 		}
+		let outcome: SpaceNoteCommitResult = { outcome: 'failed' };
 		const { next } = change;
 		const previous = textRef.current;
 		const generation = generationRef.current;
 		const sequence = ++saveSequenceRef.current;
 		setText(next);
+		textRef.current = next;
 		setBusy(true);
 		setError(undefined);
 		const current = () => generation === generationRef.current && sequence === saveSequenceRef.current;
 		// 送るのは前の保存の応答を受けてから（その時点の版を付ける）
-		void enqueueSave(() => useAppStore.getState().noteSet(wsId, next, spaceNoteSetOptions(change, versionRef.current?.wsId === wsId ? versionRef.current.version : undefined, pcHasCas))
-			.then(async (result: SpaceNoteResult) => {
+		return enqueueSave(() => {
+			const version = versionRef.current?.wsId === wsId ? versionRef.current.version : undefined;
+			// 版を比べられる PC なのに版が無い全文の書き換え（読み直しの途中など）は送らない。PC で更新されていたのと
+			// 同じ扱いにして最新を読み直す（版なしで送ると無条件に上書きされ、PC の変更を消す）
+			const missingBase = spaceNoteMissingBase(change, version, pcHasCas);
+			const send: Promise<SpaceNoteResult> = missingBase
+				? Promise.resolve({ ws: wsId, text: previous, conflict: true })
+				: useAppStore.getState().noteSet(wsId, next, spaceNoteSetOptions(change, version, pcHasCas));
+			return send.then(async (result: SpaceNoteResult) => {
+				if (missingBase) {
+					setReloadCount(count => count + 1);
+				}
 				if (versionRef.current?.wsId === wsId) {
 					// 後から送った保存の応答より先に届いた応答でも、版は PC のその時点の最新なので控える
 					versionRef.current.version = result.updatedAt;
 				}
+				outcome = { outcome: result.conflict === true ? 'conflict' : 'saved', text: result.text, ...(result.opLine !== undefined ? { opLine: result.opLine } : {}) };
 				if (!current()) {
 					return;
 				}
 				setText(result.text ?? next);
+				// settledSnapshot() が描き直しを待たずに最新を読めるよう、控えもすぐ進める
+				textRef.current = result.text ?? next;
 				if (result.conflict === true) {
-					// 全文の書き換えが書かれなかったら、書きかけは画面から消えるのでクリップボードへ逃がす
-					const copied = change.op === undefined && await writeClipboardText(next);
+					// PC で変わっていて書かれなかった（押したときの commit とは別に、書けなかったことを知らせる）
+					haptic('warning');
+					// 全文の書き換えが書かれなかったら、書きかけは画面から消えるのでクリップボードへ逃がす（「元に戻す」は書きかけではないので逃がさない）
+					const copied = spaceNoteKeepsDraft(change) && await writeClipboardText(next);
 					if (current()) {
 						setError({ conflict: spaceNoteConflictKind(change, copied) });
 					}
 				}
 			})
 			.catch(() => {
+				outcome = { outcome: 'failed' };
 				if (current()) {
+					haptic('error');
 					// 保存できなかったので楽観更新を戻す（チェックが付いたまま残らないように）。
 					setText(previous);
+					textRef.current = previous;
 					setError('save');
 				}
 			})
@@ -177,7 +230,8 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 				if (current()) {
 					setBusy(false);
 				}
-			}));
+			});
+		}).then(() => outcome, () => outcome);
 	}, [wsId, pcHasCas, enqueueSave]);
 
 	const holdDraft = useCallback((draft: string | undefined) => {
@@ -186,7 +240,13 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 
 	const reload = useCallback(() => setReloadCount(count => count + 1), []);
 
-	return { text, loading: wsId === undefined || loading, busy, error, setError, commit, holdDraft, reload };
+	// 本文と版は同じ時点（送った保存の応答をすべて受けた後）のものを組にして返す。全文を作る側はこの版を `base` に付ける
+	const settledSnapshot = useCallback(() => saveQueueRef.current.then((): SpaceNoteSnapshot => {
+		const held = versionRef.current;
+		return { wsId: held?.wsId, text: textRef.current, version: held !== undefined && held.wsId === wsId ? held.version : undefined };
+	}), [wsId]);
+
+	return { wsId, text, loading: wsId === undefined || loading, busy, error, setError, commit, holdDraft, reload, settledSnapshot };
 }
 
 /** 失敗の一文。 */

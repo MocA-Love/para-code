@@ -7,7 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
 import { colors, radius, squircle, type } from '../theme.js';
-import { hapticImpact } from '../haptics.js';
+import { haptic } from '../haptics.js';
 
 export interface AgentStatusPopoverTarget {
 	terminalKey: string;
@@ -67,7 +67,7 @@ export function AgentStatusPopover({ target, anchor, onClose, onAck }: {
 					<Text style={styles.head}>このエージェントの状態</Text>
 					<Pressable
 						style={styles.item}
-						onPress={() => { hapticImpact('light'); onAck(target.terminalKey); onClose(); }}
+						onPress={() => { haptic('commit'); onAck(target.terminalKey); onClose(); }}
 					>
 						<View style={[styles.dot, styles.dotIdle]} />
 						<Text style={styles.itemLabel}>確認済みにする</Text>

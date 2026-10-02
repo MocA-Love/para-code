@@ -5,7 +5,7 @@ import { Link } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import type { NotifyPayload } from '@para/protocol';
 import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
-import { hapticImpact } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { unreadQuestionNotificationCount } from './notificationCount.js';
 
 /**
@@ -28,7 +28,7 @@ export function NotificationsButton({ notifications }: {
 				<Pressable
 					style={({ pressed }) => [styles.bellBtn, pressed && styles.bellBtnPressed]}
 					hitSlop={{ top: 5, bottom: 5, left: 4, right: 4 }}
-					onPress={() => hapticImpact('light')}
+					onPress={() => haptic('move')}
 					accessibilityRole="button"
 					accessibilityLabel={questionCount > 0 ? `通知。要対応 ${questionCount}件` : '通知'}
 				>

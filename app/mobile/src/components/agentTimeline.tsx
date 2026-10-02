@@ -11,7 +11,7 @@ import {
 import { ThinkingBody, ToolStepBody } from './agentToolBodies.js';
 import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 
 /**
  * thinking / tool 群の集約表示（案A「タイムライン・レーン」）。
@@ -36,7 +36,7 @@ export const AgentTimeline = memo(function AgentTimeline({ msgs, terminalKey }: 
 		<View>
 			<Pressable
 				style={styles.aggRow}
-				onPress={() => { hapticSelection(); setExpanded(value => !value); }}
+				onPress={() => { haptic('move'); setExpanded(value => !value); }}
 				accessibilityRole="button"
 				accessibilityState={{ expanded }}
 				accessibilityLabel={expanded ? 'アクティビティを折りたたむ' : 'アクティビティを展開'}
@@ -78,7 +78,7 @@ function TimelineStepRow({ step, terminalKey, first, last }: { step: AgentTimeli
 			<View style={styles.stepBody}>
 				<Pressable
 					style={styles.head}
-					onPress={() => { hapticSelection(); setOpen(value => !value); }}
+					onPress={() => { haptic('move'); setOpen(value => !value); }}
 					accessibilityRole="button"
 					accessibilityState={{ expanded: open }}
 					accessibilityLabel={`${description.label}の詳細を${open ? '折りたたむ' : '展開'}`}

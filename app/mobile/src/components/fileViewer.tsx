@@ -18,7 +18,7 @@ import { Button } from './button.js';
 import { EmptyState } from './emptyState.js';
 import { ViewerHeader } from './viewerHeader.js';
 import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import type { FsReadResult } from '../store.js';
 import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
 import { isFileViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
@@ -567,7 +567,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 	const headerTop = effectiveSheet ? 14 : 58;
 
 	const requestToggleExpanded = () => {
-		hapticImpact('light');
+		haptic('move');
 		pendingExpandedRef.current = !expanded;
 		setModalOpen(false);
 	};
@@ -676,7 +676,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 								key={i}
 								style={[styles.sheetChip, i === sheetIndex && styles.sheetChipActive]}
 								hitSlop={SHEET_CHIP_SLOP}
-								onPress={() => { hapticSelection(); onSelectSheet?.(i); }}
+								onPress={() => { haptic('tick'); onSelectSheet?.(i); }}
 								accessibilityRole="button"
 								accessibilityState={{ selected: i === sheetIndex }}
 								accessibilityLabel={`シート ${sheetName}`}

@@ -2,7 +2,7 @@
 
 import type { useRouter } from 'expo-router';
 import { useAppStore } from '../../appState.js';
-import { hapticSuccess } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { useParaToast } from '../../paraToast.js';
 import { routes } from '../../routes.js';
 import { loadOnboardingSteps } from '../settings/onboardingStore.js';
@@ -27,7 +27,7 @@ export function leaveToHome(router: Router): void {
  * 無ければホームへ（モックの `pairDone`: ホームへ戻して「〜とペアリングしました」）。
  */
 export async function continueAfterPairing(router: Router): Promise<void> {
-	hapticSuccess();
+	haptic('success');
 	const state = useAppStore.getState();
 	const pc = state.pcs.find(item => item.id === state.activePcId);
 	useParaToast.getState().show({

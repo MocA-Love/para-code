@@ -5,7 +5,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, type } from '../theme.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 
 /** ヘッダーの丸ボタン。44ptはHIGの最小タップ領域そのもの。 */
 export const HEADER_BUTTON = 44;
@@ -70,7 +70,7 @@ export function ScreenHeader({ title, subtitle, showBack = true, showClose = tru
 	), [title, subtitle]);
 
 	const closeModal = useCallback(() => {
-		hapticSelection();
+		haptic('move');
 		// 深く潜っていても1タップでモーダルごと抜ける。閉じる先が無い（＝積み上がりが
 		// 1枚だけの）ときは普通に戻るのと同じなので back に落とす。
 		if (router.canDismiss()) { router.dismissAll(); } else { router.back(); }

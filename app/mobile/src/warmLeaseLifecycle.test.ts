@@ -124,7 +124,7 @@ vi.mock('./theme.js', async (importOriginal) => ({
 	squircle: () => ({}),
 }));
 vi.mock('./time.js', () => ({ formatRelativeTime: () => '', useNow: () => 0 }));
-vi.mock('./haptics.js', () => ({ hapticImpact: async () => { }, hapticSelection: async () => { } }));
+vi.mock('./haptics.js', () => ({ haptic: () => undefined, prepareHaptic: () => undefined, hapticImpact: () => undefined, hapticSelection: () => undefined }));
 
 interface ScreenWarmLeaseState {
 	readonly focused: boolean;

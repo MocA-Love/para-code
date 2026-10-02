@@ -9,7 +9,7 @@ import { GlassSurface } from './glassSurface.js';
 import { useParaToast, type ParaToast as ParaToastItem } from '../paraToast.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { colors, radius, squircle, type } from '../theme.js';
-import { hapticImpact } from '../haptics.js';
+import { haptic } from '../haptics.js';
 
 /**
  * 一時的なお知らせを出す唯一の場所。ルートに1つだけ置く（`app/_layout.tsx`）。
@@ -115,7 +115,6 @@ export function ParaToastHost() {
 	const [travel, setTravel] = useState(64);
 
 	const dismiss = useMemo(() => () => {
-		hapticImpact('light');
 		hide();
 	}, [hide]);
 
@@ -182,7 +181,7 @@ export function ParaToastHost() {
 								<Pressable
 									hitSlop={8}
 									onPress={() => {
-										hapticImpact('light');
+										haptic('commit');
 										content.action?.onPress();
 										// 操作したらそのお知らせの役目は終わり。
 										hide();

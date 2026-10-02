@@ -42,7 +42,7 @@ import xtermBundle from '../../assets/xterm/xtermBundle.json';
 import type { TermStreamEvent } from '../store.js';
 import { TERMINAL_FOLLOW_MIN_FONT_SIZE, TERMINAL_FONT_SIZE_MIN, terminalGridFor, type TerminalGrid } from '../terminalViewport.js';
 import { colors } from '../theme.js';
-import { hapticSelection, hapticSuccess } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { writeClipboardText } from '../nativeClipboard.js';
 import { useParaToast } from '../paraToast.js';
 import { findTerminalLinkAt, findTerminalLinks, terminalOsc8Link, type TerminalLinkTarget } from '../terminalLinks.js';
@@ -1203,7 +1203,7 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 				}
 				const osc8 = typeof msg.osc8 === 'string' && msg.osc8.length > 0 ? terminalOsc8Link(msg.osc8, typeof msg.osc8Label === 'string' ? msg.osc8Label : undefined) : undefined;
 				if (osc8 !== undefined) {
-					hapticSelection();
+					haptic('move');
 					open(osc8);
 					return;
 				}
@@ -1211,7 +1211,7 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 				if (link === undefined) {
 					return;
 				}
-				hapticSelection();
+				haptic('move');
 				inject(`window.__para.flash(${Number(msg.token)}, ${link.start}, ${link.end})`);
 				setTimeout(() => open(link.kind === 'url' ? { kind: 'url', url: link.url } : { kind: 'file', target: link.target }), LINK_FLASH_MS);
 				return;
@@ -1243,14 +1243,14 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 				}
 				void writeClipboardText(msg.text).then(copied => {
 					if (copied) {
-						hapticSuccess();
+						haptic('success');
 						useParaToast.getState().show({ key: 'terminal-copy', text: 'コピーしました', icon: 'copy-outline', tone: 'done' }, 1500);
 					}
 				});
 				return;
 			}
 			case 'selection':
-				hapticSelection();
+				haptic('tick');
 				return;
 			default:
 				return;

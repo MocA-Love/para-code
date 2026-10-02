@@ -183,6 +183,14 @@ export function noteCountsByPath(notes: readonly ReviewNote[]): ReadonlyMap<stri
 	return counts;
 }
 
+/**
+ * 失敗のトーストの見出し。PC が `staged-unverified`（ステージはしたが、接続先が返さず中身を確かめられなかった）を
+ * 返したときは「できませんでした」ではないので見出しを変える。
+ */
+export function reviewFailureTitle(fallback: string, code: string | undefined): string {
+	return code === 'staged-unverified' ? 'ステージを確かめられませんでした' : fallback;
+}
+
 /** PC の送信の失敗を一文にする（PC が理由の文を付けていればそれを使う）。 */
 export function sendFailureMessage(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);

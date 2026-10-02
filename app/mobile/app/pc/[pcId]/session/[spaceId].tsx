@@ -22,7 +22,7 @@ import { activeTabKey, buildSessionTabs, tabAfterClose, type SessionTabItem } fr
 import { otherSessionView } from '../../../../src/features/session/sessionViewMode.js';
 import { TerminalPane } from '../../../../src/features/session/terminalPane.js';
 import { useSessionView, useSessionViewReady } from '../../../../src/features/session/useSessionView.js';
-import { hapticSelection } from '../../../../src/haptics.js';
+import { haptic } from '../../../../src/haptics.js';
 import { useKeyboardCoverage } from '../../../../src/hooks/useKeyboardVisible.js';
 import { usePcCapability } from '../../../../src/hooks/usePcCapability.js';
 import { useIsRegularWidth } from '../../../../src/hooks/useSizeClass.js';
@@ -232,17 +232,31 @@ export default function SessionScreen() {
 		if (pcId === undefined || spaceId === undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('move');
 		if (dockable) {
 			setDockPanel(current => (current === panel ? undefined : panel));
 			return;
 		}
 		router.push(panel === 'scm' ? routes.sourceControl(pcId, spaceId) : panel === 'files' ? routes.files(pcId, spaceId) : routes.note(pcId, spaceId));
 	};
+	// ドックから差分・ファイルへ進むときはドックを閉じる（詳細の列で押し進める決まり）。戻ってきたら同じドックを
+	// 開き直す（ファイルの一覧の開いていたフォルダや位置は `fileTreeStore.ts` に退避してあるので、そのまま戻る）。
+	const reopenDock = useRef<DockPanel | undefined>(undefined);
 	const dockNavigate = (href: RouteHref) => {
+		reopenDock.current = dockPanel;
 		setDockPanel(undefined);
 		router.push(href);
 	};
+	useEffect(() => {
+		if (!focused || reopenDock.current === undefined) {
+			return;
+		}
+		const panel = reopenDock.current;
+		reopenDock.current = undefined;
+		if (dockable) {
+			setDockPanel(panel);
+		}
+	}, [focused, dockable]);
 	// 2列で左の列を隠しているときは、見出しの左端に戻すボタンを出す（⌘\ でも戻せる）。
 	const sidebarCollapsed = useAppStore(s => s.sidebarCollapsed);
 	// 自分のいる器の詳細の列だけを見る（PC の画面が2枚積まれていても、下の画面の様子に引きずられない）。
@@ -257,14 +271,14 @@ export default function SessionScreen() {
 		selectTab: index => {
 			const item = items[index];
 			if (item !== undefined) {
-				hapticSelection();
+				haptic('move');
 				openTab(item.tab);
 			}
 		},
 		stepTab: delta => {
 			const next = items[stepIndex(items.findIndex(item => item.key === currentKey), items.length, delta)];
 			if (next !== undefined) {
-				hapticSelection();
+				haptic('move');
 				openTab(next.tab);
 			}
 		},
@@ -285,7 +299,7 @@ export default function SessionScreen() {
 			<Pressable
 				style={styles.metaButton}
 				hitSlop={hitSlopToMinimum(META_HEIGHT)}
-				onPress={() => { hapticSelection(); router.push(routes.pair()); }}
+				onPress={() => { haptic('move'); router.push(routes.pair()); }}
 				accessibilityRole="button"
 				accessibilityLabel={`${PAIRING_REJECTED_LABEL}。押すとペアリングし直す画面を開きます`}
 			>
@@ -299,7 +313,7 @@ export default function SessionScreen() {
 			<Pressable
 				style={styles.metaButton}
 				hitSlop={hitSlopToMinimum(META_HEIGHT)}
-				onPress={() => { hapticSelection(); connectRelay(); }}
+				onPress={() => { connectRelay(); }}
 				accessibilityRole="button"
 				accessibilityLabel="切断中。押すと再接続します"
 			>
@@ -367,7 +381,7 @@ export default function SessionScreen() {
 							icon={PanelLeftOpen}
 							label="サイドバーを出す"
 							round
-							onPress={() => { hapticSelection(); setSidebarCollapsed(false); }}
+							onPress={() => { haptic('move'); setSidebarCollapsed(false); }}
 						/>
 					),
 				} : {})}

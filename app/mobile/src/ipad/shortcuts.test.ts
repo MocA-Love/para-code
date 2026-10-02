@@ -13,6 +13,7 @@ const NOTHING: ShortcutContext = {
 	inSettings: false,
 	inNotifications: false,
 	terminalArrows: false,
+	find: false,
 };
 
 const ids = (context: ShortcutContext) => availableShortcuts(context).map(def => def.id);
@@ -25,6 +26,17 @@ describe('terminal arrows', () => {
 			ids({ ...NOTHING, terminalArrows: true }).filter(id => arrows.includes(id)),
 			shortcutById('terminal.left')?.action,
 		]).toEqual([[], arrows, { kind: 'terminalArrow', key: 'left' }]);
+	});
+});
+
+describe('find in file', () => {
+	test('⌘F・⌘G・⇧⌘G はファイルのビューアが前面にあるときだけ', () => {
+		const find = ['find', 'find.next', 'find.prev'];
+		expect([
+			ids(NOTHING).filter(id => find.includes(id)),
+			ids({ ...NOTHING, find: true }).filter(id => find.includes(id)),
+			find.map(id => shortcutById(id)?.action),
+		]).toEqual([[], find, [{ kind: 'find' }, { kind: 'stepFind', delta: 1 }, { kind: 'stepFind', delta: -1 }]]);
 	});
 });
 

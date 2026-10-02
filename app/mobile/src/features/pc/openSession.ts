@@ -3,7 +3,7 @@
 import type { useRouter } from 'expo-router';
 import { useAppStore } from '../../appState.js';
 import { createAgentLatestEntryToken } from '../../agentNavigation.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { resetDetailColumnFor } from '../../ipad/detailColumn.js';
 import { routes } from '../../routes.js';
 import { useLastSession } from '../home/lastSessionStore.js';
@@ -35,7 +35,7 @@ export interface SessionTarget {
  *   （詳細の列は積み増さず入れ替える。Orca と同じ）
  */
 export function openSession(router: Router, target: SessionTarget): void {
-	hapticSelection();
+	haptic('move');
 	const store = useAppStore.getState();
 	if (store.activePcId === target.pcId) {
 		store.setSelectedWs(target.spaceId);

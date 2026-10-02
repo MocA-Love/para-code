@@ -241,6 +241,8 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/relay/package.json` / `app/relay/tsconfig.json` | 新規追加（fork所有）。モバイルリレーサーバーのマニフェストとTypeScript設定 | Para Codeモバイルリレーをビルド・実行するため |
 | `app/mobile/modules/para-live-activity/expo-module.config.json` | 新規追加（fork所有）。Para Live Activity Expo moduleのプラットフォーム・モジュール登録設定 | iOS Live ActivityネイティブモジュールをExpoから検出・読み込みするため |
 | `app/mobile/modules/para-ipad-input/expo-module.config.json` | 新規追加（fork所有）。`apple.modules: ["ParaIpadInputModule"]` | iPad の外付けキーボードのショートカット（UIKeyCommand）とポインタのホバー（UIPointerInteraction）のローカル Expo モジュールを検出・読み込みするため。JSONのためマーカー不可。同モジュールの Swift・podspec・index.ts には PARA-CODE ヘッダーあり。取り込んだら `app/mobile/ios` で `pod install` が要る |
+| `app/mobile/modules/para-aes-gcm/expo-module.config.json` | 新規追加（fork所有）。`apple.modules: ["ParaAesGcmModule"]` | PC とのセッションのフレームの AES-256-GCM を CryptoKit で開く・封緘するローカル Expo モジュールを検出・読み込みするため。JSONのためマーカー不可。同モジュールの Swift・podspec・index.ts には PARA-CODE ヘッダーあり。取り込んだら `app/mobile/ios` で `pod install` が要る |
+| `app/mobile/modules/para-haptics/expo-module.config.json` | 新規追加（fork所有）。`apple.modules: ["ParaHapticsModule"]` | 触覚のトークン（`src/haptics.ts`）を UIFeedbackGenerator の強さ指定と Core Haptics で鳴らすローカル Expo モジュールを検出・読み込みするため。JSONのためマーカー不可。同モジュールの Swift・podspec・index.ts には PARA-CODE ヘッダーあり。取り込んだら `app/mobile/ios` で `pod install` が要る（入れる前のバイナリでは expo-haptics で鳴る） |
 | `app/mobile/assets/icon.png` / `app/mobile/assets/pairing-logo.png` | 新規追加（fork所有バイナリ）。モバイルアプリアイコンとペアリング画面用ロゴ | Para CodeモバイルのブランディングとペアリングUI表示のため |
 | `app/mobile/native/ParaCodeWidgets/Info.plist` | 新規追加（fork所有）。Live Activity / Dynamic Island Widget Extensionの設定ファイル | ParaCodeWidgets拡張のbundle情報と実行設定を追跡・復元するため |
 | `mise.toml` | 新規追加（fork所有）。Node.jsツールチェーンのバージョン固定。コメント構文はあるが、`PARA-CODE`を冒頭へ置くとupstream hygieneのcopyright検査に失敗するためファイル内マーカーの代わりに本台帳で管理 | Para Code開発環境のNode.jsバージョンを統一しつつ、不適切なMicrosoft copyrightを付与しないため |
@@ -1525,6 +1527,30 @@ for f in native/ParaCodeWidgets/* native/NotifyExtension/*; do b=$(basename "$f"
 - 段階 2（プッシュ）: `ParaLiveActivityModule.swift` の `upsert` で `pushType: .token` にし、`activity.pushTokenUpdates`（と iOS 17.2 以降の `Activity.pushToStartTokenUpdates`）を JS へイベントで渡して PC に登録する。PC が `liveActivityState.ts` と同じ形の content-state を作り、リレー（`app/relay/src/apns.ts`）が `apns-push-type: liveactivity`・トピック `<bundleID>.push-type.liveactivity` で送る。要対応の発生と全部完了だけ priority 10 とアラート、ほかは 5。`stale-date` は同じ 2 分。content-state は平文で Widget に届く（NSE を通らない）ので、名前・コマンドは暗号化した項目を足すか、アプリを開いたときだけ出すかを決める
 - 段階 3（許可ボタン）: `ParaCodeLiveActivity.swift` の `RequestBlock` のコマンドの右に `Button(intent:)` を 1 つ置く（expanded とロック画面だけ）。ContentState の `AttentionItem` に `interactionId`・`epoch`・`dangerous`（`dangerousCommand.ts` が拾うものはボタンを出さない）を足す
 - 通知との重複: いまはリレーが要対応を通常の通知（`apns-push-type: alert`）でも送るので、要対応は通知と Live Activity の両方に出る。段階 2 で Live Activity が出ている間は要対応の通常の通知を止める（Live Activity のアラートに寄せる）
+
+### AES-GCM の復号・封緘をネイティブ（CryptoKit）へ移した（`modules/para-aes-gcm`、2026-10-02）
+
+PC とのセッションのフレーム（`nonce(12) || 暗号文 || タグ(16)`）を、純 JS の `@noble/ciphers` ではなく CryptoKit で開く・封緘する。21MB の HTML の受信で、noble の開封に 2,575ms かかっていた（`mobile-file-load-analysis.html` の実測）。
+
+| 場所 | 役割 |
+|---|---|
+| `app/protocol/src/crypto.ts` | `AesGcmBackend`（`open(key, sealed)` / `seal(key, nonce, plaintext)`）と `setAesGcmBackend` / `getAesGcmBackend` / `nobleAesGcm`。既定は noble。nonce の照合とカウンタは `DirectionalCipher` が持ち、復号・封緘が成功してから進める（差し替えても同じ）。noble 以外の実装の例外は常に素の `Error`（`aes/gcm (<名前>): <元の message>`）に包み直し、元の例外は `cause` に残す（Expo の同期 Function の例外は `Error.prototype` の `Error` に `code` を足した形で届くので、型では見分けない）。noble の例外は従来どおりそのまま |
+| `app/mobile/modules/para-aes-gcm/` | 同期の `Function("open")` / `Function("seal")`（`AES.GCM.SealedBox(combined:)`）。引数の `Uint8Array` は JS のメモリをコピーせずに読み、戻り値は CryptoKit の `Data` をコピーせずに ArrayBuffer として返す。鍵は 32 バイト以外を弾く。iOS だけ（Android は `app/mobile/android/` が無いので未実装。JS は noble に落ちる） |
+| `app/mobile/src/nativeAesGcm.ts`・`src/installNativeAesGcm.ts` | `index.ts` から起動時に 1 回だけ登録する。登録の前に固定の値で noble と突き合わせ（byteOffset が 0 でない view の封緘・開封を含む）、食い違えば noble に残して Sentry へ送る（`relay` / `nativeAesGcmSelfCheck`）。モジュールの無い古いバイナリでは noble のまま |
+| `app/mobile/src/dev/aesGcmSelfTest.ts` | 開発ビルドの `globalThis.__paraDev.aesGcmSelfTest()`。GCM の試験値（Test Case 14）・長さ別（空の平文を含む）の noble との一致と byteOffset が 0 でない view での一致・改ざんの拒否と、21MB を 700KiB ずつ開く所要時間（`nativeOpenMs` / `nobleOpenMs`）を JSON で返す。`{ skipNoble: true }` で noble の計測を省く |
+
+ファイルビューアの計測（`para.mobileFileViewer.fetch`）には `safe_aes_backend`（`native` / `noble`）を足した。`safe_open_ms` を実装ごとに比べられる。
+
+**`pod install` が要る**: 新しいローカルの Expo モジュールなので、このブランチを取り込んだら各自の Mac で `cd app/mobile/ios && pod install` を 1 回実行する。`Podfile.lock` に `ParaAesGcm (1.0.0)`（依存は `ExpoModulesCore`、`:path: "../modules/para-aes-gcm/ios"`）が足される。`Podfile`・`Info.plist`・entitlements・`project.pbxproj` の手作業は無く、`native/` へ写すものも無い。CryptoKit は iOS 13 からの標準のフレームワークなので、リンクの設定も要らない。確認は次の 2 つ。
+
+```sh
+cd app/mobile/ios
+grep -n "ParaAesGcm" Podfile.lock     # 4 行出る
+RCT_METRO_PORT=8082 SENTRY_DISABLE_AUTO_UPLOAD=true xcodebuild -workspace ParaCodeMobile.xcworkspace -scheme ParaCodeMobile \
+  -configuration Debug -destination 'generic/platform=iOS Simulator' IPHONEOS_DEPLOYMENT_TARGET=16.4 build
+```
+
+開発ビルドを起動したら、Metro の CDP から `__paraDev.aesGcmSelfTest()` を呼び、`ok: true` と `activeBackend: "native"` を確かめる。
 
 ## モバイルアプリのiPad対応（2026-08-05）
 

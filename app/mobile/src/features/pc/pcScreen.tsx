@@ -39,7 +39,7 @@ import { RowActions, type RowActionTarget } from './rowActions.js';
 import { spaceColor } from './spaceColor.js';
 import { startStatusSinceTracking } from './statusSinceStore.js';
 import type { HomeSortKey } from '../../homeSort.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { useRoutePc } from '../../hooks/useRouteTargets.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
@@ -174,7 +174,6 @@ export function PcScreen({ placement, onCollapse }: {
 		openSession(router, { pcId, spaceId: target.id, spaceName: target.name, color: spaceColor(target), ...(target.branch !== undefined ? { branch: target.branch } : {}) });
 	};
 	const reconnect = () => {
-		hapticSelection();
 		connectRelay();
 		toast({ key: 'pc-reconnect', text: `${pc?.name ?? 'PC'} に再接続しています…`, icon: 'refresh-outline', tone: 'info' }, 2_500);
 	};
@@ -242,7 +241,7 @@ export function PcScreen({ placement, onCollapse }: {
 					lastOnline={pc?.lastOnlineAt !== undefined ? formatRelativeTime(pc.lastOnlineAt, now) : undefined}
 					onReconnect={reconnect}
 					pairingRejected={rejected}
-					onRepair={() => { hapticSelection(); router.push(routes.pair()); }}
+					onRepair={() => { haptic('move'); router.push(routes.pair()); }}
 				/>
 			);
 		}
@@ -329,19 +328,19 @@ export function PcScreen({ placement, onCollapse }: {
 				{...(placement === 'column' && onCollapse !== undefined ? { onCollapse } : {})}
 				toolbar={(
 					<>
-						<FilterChip count={filterCount(filter)} kind={kindLabel(filter.kind)} onPress={() => { hapticSelection(); setSheet('filter'); }} />
-						<ModeButton kind="sort" label={sortShortLabel(preferences.sort)} onPress={() => { hapticSelection(); setSheet('sort'); }} />
-						<ModeButton kind="group" label={groupShortLabel(group)} onPress={() => { hapticSelection(); setSheet('group'); }} />
+						<FilterChip count={filterCount(filter)} kind={kindLabel(filter.kind)} onPress={() => { haptic('move'); setSheet('filter'); }} />
+						<ModeButton kind="sort" label={sortShortLabel(preferences.sort)} onPress={() => { haptic('move'); setSheet('sort'); }} />
+						<ModeButton kind="group" label={groupShortLabel(group)} onPress={() => { haptic('move'); setSheet('group'); }} />
 						<ToolbarRight
 							archivedCount={archived.length}
 							unread={unread}
 							searching={searching}
 							usageDisabled={kind !== 'connected'}
-							onArchive={() => { hapticSelection(); setSheet('archive'); }}
-							onUsage={() => { hapticSelection(); router.push(routes.settings('usage')); }}
-							onNotifications={() => { hapticSelection(); router.push(routes.notifications()); }}
+							onArchive={() => { haptic('move'); setSheet('archive'); }}
+							onUsage={() => { haptic('move'); router.push(routes.settings('usage')); }}
+							onNotifications={() => { haptic('move'); router.push(routes.notifications()); }}
 							onToggleSearch={() => {
-								hapticSelection();
+								haptic('move');
 								if (pcId !== undefined) {
 									setOpenedSearchHere(!searching);
 									setListSearching(pcId, !searching);

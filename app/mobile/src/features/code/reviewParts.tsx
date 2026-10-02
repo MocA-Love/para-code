@@ -5,7 +5,7 @@ import { Check, ChevronLeft, ChevronRight, FileText, RefreshCw, X } from 'lucide
 import type { ParadisMobileReviewState } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileDiffReview.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import type { DiffRow } from '../../components/diffParser.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
 import { HeaderButton, Icon, iconSize, useThemeColors } from '../../ui/index.js';
@@ -50,7 +50,7 @@ export function ReviewSummary({ reviewed, total, synced, position, filter, onFil
 					return (
 						<Pressable
 							key={item.key}
-							onPress={() => { if (!on) { hapticSelection(); onFilter(item.key); } }}
+							onPress={() => { if (!on) { haptic('tick'); onFilter(item.key); } }}
 							hitSlop={hitSlopToMinimum(CHIP_HEIGHT)}
 							style={[styles.chip, on ? styles.chipOn : undefined]}
 							accessibilityRole="button"
@@ -63,7 +63,7 @@ export function ReviewSummary({ reviewed, total, synced, position, filter, onFil
 			</View>
 			{stage !== undefined ? (
 				<Pressable
-					onPress={() => { hapticImpact('light'); stage.onPress(); }}
+					onPress={() => { haptic('commit'); stage.onPress(); }}
 					disabled={stage.busy}
 					hitSlop={hitSlopToMinimum(CHIP_HEIGHT)}
 					style={({ pressed }) => [styles.stage, pressed || stage.busy ? styles.pressed : undefined]}
@@ -151,7 +151,7 @@ function DiffLine({ row, onLongPress }: { row: DiffRow; onLongPress?: (row: Diff
 	}
 	return (
 		<Pressable
-			onLongPress={() => { hapticImpact('light'); onLongPress(row); }}
+			onLongPress={() => { haptic('lift'); onLongPress(row); }}
 			delayLongPress={350}
 			style={({ pressed }) => [...lineStyle, pressed ? styles.linePressed : undefined]}
 			accessibilityHint="長押しでこの行にメモを書けます"
@@ -181,7 +181,7 @@ export function ReviewFooter({ reviewed, changed, canOpen, canMove, bottomInset,
 	return (
 		<View style={[styles.footer, { paddingBottom: space.sm + bottomInset }]}>
 			<Pressable
-				onPress={() => { hapticSelection(); onPrev(); }}
+				onPress={() => { haptic('tick'); onPrev(); }}
 				disabled={!canMove}
 				style={({ pressed }) => [styles.nav, pressed ? styles.pressed : undefined, !canMove ? styles.off : undefined]}
 				accessibilityRole="button"
@@ -190,7 +190,7 @@ export function ReviewFooter({ reviewed, changed, canOpen, canMove, bottomInset,
 				<Icon icon={ChevronLeft} size={iconSize.lg} color={colors.text} />
 			</Pressable>
 			<Pressable
-				onPress={() => { hapticSelection(); onOpen(); }}
+				onPress={() => { haptic('move'); onOpen(); }}
 				disabled={!canOpen}
 				style={({ pressed }) => [styles.open, pressed ? styles.pressed : undefined, !canOpen ? styles.off : undefined]}
 				accessibilityRole="button"
@@ -200,7 +200,7 @@ export function ReviewFooter({ reviewed, changed, canOpen, canMove, bottomInset,
 				<Text style={styles.openText}>開く</Text>
 			</Pressable>
 			<Pressable
-				onPress={() => { hapticImpact('light'); onToggleReviewed(); }}
+				onPress={() => { haptic('tick'); onToggleReviewed(); }}
 				style={({ pressed }) => [styles.mark, { backgroundColor: theme.primary }, reviewed ? styles.markDone : undefined, pressed ? styles.markPressed : undefined]}
 				accessibilityRole="button"
 				accessibilityState={{ checked: reviewed }}
@@ -210,7 +210,7 @@ export function ReviewFooter({ reviewed, changed, canOpen, canMove, bottomInset,
 				<Text style={[styles.markText, { color: theme.onPrimary }, reviewed ? styles.markTextDone : undefined]}>{reviewed ? '確認済み' : changed ? 'もう一度確認済みにする' : '確認済みにする'}</Text>
 			</Pressable>
 			<Pressable
-				onPress={() => { hapticSelection(); onNext(); }}
+				onPress={() => { haptic('tick'); onNext(); }}
 				disabled={!canMove}
 				style={({ pressed }) => [styles.nav, pressed ? styles.pressed : undefined, !canMove ? styles.off : undefined]}
 				accessibilityRole="button"
@@ -252,7 +252,7 @@ export function ReviewFileList({ entries, marks, noteCounts, currentPath, onPick
 							<View key={entry.path}>
 								{index > 0 ? <View style={styles.separator} /> : null}
 								<Pressable
-									onPress={() => { hapticSelection(); onPick(entry.path); }}
+									onPress={() => { haptic('move'); onPick(entry.path); }}
 									style={({ pressed }) => [styles.listRow, on || pressed ? styles.listRowOn : undefined]}
 									accessibilityRole="button"
 									accessibilityState={{ selected: on, checked: state === 'reviewed' }}

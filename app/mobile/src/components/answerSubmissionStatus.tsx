@@ -4,7 +4,7 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Button } from './button.js';
 import { HIT_SIZE, colors, space, type } from '../theme.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { canRetrySubmission, type AnswerSubmissionState } from './answerSubmission.js';
 
 /**
@@ -43,8 +43,8 @@ export function AnswerSubmissionStatus({ state, onRetry, onReselect }: {
 				</View>
 				<Text style={styles.hint}>PC に届いていない可能性があります。再送するか、PC の画面で確認してください。</Text>
 				<View style={styles.buttons}>
-					<Button label="選び直す" variant="secondary" flex onPress={() => { hapticSelection(); onReselect(); }} />
-					<Button label="再送" icon="refresh" variant="primary" flex onPress={() => { hapticImpact('medium'); onRetry(); }} />
+					<Button label="選び直す" variant="secondary" flex onPress={() => { haptic('move'); onReselect(); }} />
+					<Button label="再送" icon="refresh" variant="primary" flex onPress={() => { haptic('commit'); onRetry(); }} />
 				</View>
 			</View>
 		);

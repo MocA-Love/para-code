@@ -8,6 +8,7 @@ import { focusBrowserDemo, installBrowserDemo } from './dev/browserDemo.js';
 import { useBrowserFullscreen } from './features/browser/browserFullscreenStore.js';
 import { LogBox } from 'react-native';
 import { installTerminalDemo } from './dev/terminalDemo.js';
+import { installFilesDemo } from './dev/filesDemo.js';
 import { openPcRoute } from './features/pc/openPcRoute.js';
 import { usePcListView } from './features/pc/pcListViewStore.js';
 import type { RouteHref } from './routes.js';
@@ -16,6 +17,8 @@ import { dispatchShortcut } from './ipad/shortcutHost.js';
 import { useDetailColumn } from './ipad/detailColumn.js';
 import { useIpadLayout } from './ipad/ipadLayoutStore.js';
 import { devDescribeKeyCommands, devDescribeWindowControls, devFireKeyCommand, devRequestOrientation } from '../modules/para-ipad-input/index.js';
+import { nativeAesGcmModule } from '../modules/para-aes-gcm/index.js';
+import { runAesGcmSelfTest, type AesGcmSelfTestOptions } from './dev/aesGcmSelfTest.js';
 
 /**
  * 開発ビルド専用: いま開いている画面をデバッガ（Metro の CDP）から読めるようにする。
@@ -24,7 +27,8 @@ import { devDescribeKeyCommands, devDescribeWindowControls, devFireKeyCommand, d
  * - `globalThis.__paraDev` に現在のパスと router とストアを置く（デバッガから `router.push()` で画面を移し、
  *   `store.getState()` で実在する PC・スペースの ID を読める）
  * - ペアリングの無いシミュレータ用に、見本のデータを入れる `demo()`、ターミナルの表示に見本の出力を流す
- *   `terminalDemo()`、アプリの幅を狭めて 2列 ⇄ 1列 を確かめる `setWidth(pt | undefined)` も置く
+ *   `terminalDemo()`、ファイル・メモ・差分の見本を入れる `filesDemo()`、アプリの幅を狭めて 2列 ⇄ 1列 を確かめる `setWidth(pt | undefined)` も置く
+ * - ネイティブの AES-GCM の自己検査 `aesGcmSelfTest()`（noble との一致と所要時間）も置く
  *
  * `__DEV__` のときだけ描画する（リリースビルドには何も残らない）。
  */
@@ -48,6 +52,8 @@ export function DevProbe() {
 			ignoreLogs: () => LogBox.ignoreAllLogs(),
 			// ターミナルの表示に見本の出力（多数の行と末尾のプロンプト）を流す。`demo()` の後に呼ぶ。
 			terminalDemo: installTerminalDemo,
+			// ファイルの一覧・メモ・差分の見本（`demo()` の後に呼ぶ。fs / scm の要求を見本に差し替える）。
+			filesDemo: installFilesDemo,
 			setWidth: setDevWidthOverride,
 			shortcut: (id: string) => dispatchShortcut(id, router),
 			orientation: (landscape: boolean) => devRequestOrientation(landscape),
@@ -67,6 +73,8 @@ export function DevProbe() {
 			openPc: (href: RouteHref, from: 'focus' | 'overlay' = 'focus') => openPcRoute(router, navigation, href, from),
 			// ナビゲーションの状態そのもの（ルートの引数まで見るとき）。
 			rootState: () => JSON.stringify(navigation.getRootState()),
+			// ネイティブの AES-GCM を noble と突き合わせ、21MB を 700KiB ずつ開く時間を測る（`{ skipNoble: true }` で noble の計測を省く）。
+			aesGcmSelfTest: (options?: AesGcmSelfTestOptions) => JSON.stringify(runAesGcmSelfTest(nativeAesGcmModule, options)),
 		};
 		console.log(`[para-dev] route ${pathname} ${paramsKey}`);
 	}, [pathname, paramsKey, router, navigation]);

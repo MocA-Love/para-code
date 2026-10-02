@@ -10,10 +10,11 @@ import { appendUploadedPath, flattenAnswerInput, reconcileSubmittedDraftTarget, 
 import { agentSlashQuery, filterAgentSlashCommands, normalizeAgentSlashSubmission, selectedAgentSlashCommandText } from '../../components/agentSlashCommands.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import type { AgentMonitor } from '../../agentMonitors.js';
 import type { AgentCommandCatalogState, AgentCommandOption, AgentMessageSendResult, AgentModelControlState, FsUploadResult } from '../../store.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
+import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
 import { Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import { errorKind } from './errorKind.js';
 import { ModelPill } from './modelDrawer.js';
@@ -78,6 +79,10 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	const loadDraft = (key: string | undefined): string => key !== undefined ? useAppStore.getState().agentDrafts[key] ?? '' : '';
 	const nativeInputRef = useRef<TextInput>(null);
 	const theme = useThemeColors();
+	// 会話の文字サイズ（設定 → チャット UI）は入力の文字と回答中の案内にだけかける。
+	// 丸いボタン・ピル・枠の余白は操作の部品なので変えない。
+	const textStyles = useChatStyles(styles);
+	const answerIconSize = useChatIconSize(iconSize.sm);
 	const inputRef = useRef(loadDraft(draftKey));
 	const defaultValueRef = useRef(inputRef.current);
 	const submissionGenerationRef = useRef(0);
@@ -200,9 +205,12 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				onAfterSubmit();
 			}
 			if (result.status === 'consumed' && shouldShowSubmissionAlert(result.status, submissionGenerationRef.current, generation)) {
+				haptic('warning');
 				Alert.alert('メッセージは未送信です', result.message ?? '本文はターミナルの入力欄に残っています。ターミナル表示で確認して送信してください。');
 			}
 			if (result.status === 'rejected' && shouldShowSubmissionAlert(result.status, submissionGenerationRef.current, generation)) {
+				// 送った時点で commit を鳴らしている。受理では鳴らさず、届かなかったときだけ知らせる
+				haptic('error');
 				Alert.alert('メッセージを送信できませんでした', result.message ?? '接続とエージェントのセッションを確認して再送してください。');
 			}
 		}).finally(() => {
@@ -266,6 +274,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 			}
 		} catch (err) {
 			console.warn('[session] image upload failed', errorKind(err));
+			haptic('error');
 			Alert.alert('画像を送れませんでした', 'PC との接続を確認して、もう一度お試しください。');
 		} finally {
 			setUploading(false);
@@ -275,7 +284,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	const sendDisabled = submitting || !sendable || codexSlashCatalogPending || (answering && answerRefreshing);
 	// 外付けキーボードの ⌘↩（iPad）。送信ボタンと同じ条件で送る。
 	const focused = useIsFocused();
-	useShortcutSlot('send', focused ? { send: () => { if (!sendDisabled) { hapticImpact('medium'); submit(); } } } : undefined);
+	useShortcutSlot('send', focused ? { send: () => { if (!sendDisabled) { haptic('commit'); submit(); } } } : undefined);
 	return (
 		<View style={styles.root}>
 			{showSlashMenu ? (
@@ -283,12 +292,12 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 			) : null}
 			{answerTarget !== undefined ? (
 				<View style={styles.answerBanner} accessibilityLiveRegion="polite">
-					<Icon icon={CornerDownRight} size={iconSize.sm} color={colors.textDim} />
-					<View style={styles.answerBody}>
-						<Text style={styles.answerLabel}>{answerRefreshing ? '最新の内容を取得しています。届くまで回答できません' : '質問への回答を入力しています（改行は空白として送られます）'}</Text>
-						<Text style={styles.answerPrompt} numberOfLines={1}>{answerTarget.prompt}</Text>
+					<Icon icon={CornerDownRight} size={answerIconSize} color={colors.textDim} />
+					<View style={textStyles.answerBody}>
+						<Text style={textStyles.answerLabel}>{answerRefreshing ? '最新の内容を取得しています。届くまで回答できません' : '質問への回答を入力しています（改行は空白として送られます）'}</Text>
+						<Text style={textStyles.answerPrompt} numberOfLines={1}>{answerTarget.prompt}</Text>
 					</View>
-					<Button label="やめる" variant="ghost" size="sm" onPress={() => { hapticSelection(); onCancelAnswer(); }} />
+					<Button label="やめる" variant="ghost" size="sm" onPress={() => { haptic('move'); onCancelAnswer(); }} />
 				</View>
 			) : null}
 			<View style={styles.bar}>
@@ -301,7 +310,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				/>
 				<View style={styles.actions}>
 					<Pressable
-						onPress={() => { hapticImpact('light'); void attachImage(); }}
+						onPress={() => { void attachImage(); }}
 						disabled={uploading}
 						hitSlop={ROUND_SLOP}
 						style={({ pressed }) => [styles.round, pressed ? styles.pressed : undefined]}
@@ -324,7 +333,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 					<MonitorPill key={`${terminalKey ?? 'none'}:${sessionEpoch ?? 'none'}`} monitors={monitors} />
 					<View style={styles.spacer} />
 					<Pressable
-						onPress={() => { hapticImpact('medium'); submit(); }}
+						onPress={() => { haptic('commit'); submit(); }}
 						disabled={sendDisabled}
 						hitSlop={ROUND_SLOP}
 						style={({ pressed }) => [styles.round, styles.send, !sendDisabled ? { backgroundColor: theme.bubble } : undefined, pressed ? styles.pressed : undefined]}
@@ -349,10 +358,12 @@ const ComposerInput = memo(forwardRef<TextInput, {
 	onChangeText: (text: string) => void;
 	placeholder: string;
 }>(function ComposerInput({ defaultValue, onChangeText, placeholder }, ref) {
+	// 文字サイズの設定が変わったときは、memo を越えて Context から描き直される（値は持たないので入力は消えない）。
+	const inputStyle = useChatStyles(styles).input;
 	return (
 		<TextInput
 			ref={ref}
-			style={styles.input}
+			style={inputStyle}
 			defaultValue={defaultValue}
 			onChangeText={onChangeText}
 			placeholder={placeholder}

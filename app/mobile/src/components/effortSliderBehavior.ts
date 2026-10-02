@@ -4,3 +4,8 @@
 export function effortSliderGestureBehavior(disabled: boolean, effortCount: number): { readonly enabled: boolean; readonly allowTermination: boolean } {
 	return { enabled: !disabled && effortCount > 1, allowTermination: false };
 }
+
+/** エフォートの最大（max・ultra）か。スライダーの光と、最大に入ったときの触覚（`charge`）に使う。 */
+export function isMaximumEffort(effort: string | undefined): boolean {
+	return effort === 'max' || effort === 'ultra';
+}
