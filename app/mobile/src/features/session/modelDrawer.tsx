@@ -2,14 +2,18 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Check, ChevronDown, X } from 'lucide-react-native';
+import { Check, ChevronDown, ChevronLeft, Settings, X } from 'lucide-react-native';
+import { useShallow } from 'zustand/react/shallow';
 import { claudeModelDisplayName, matchAgentModel } from '../../agentModels.js';
+import { useAppStore } from '../../appState.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { hapticSelection } from '../../haptics.js';
 import { useClaudeModelOptions } from '../../hooks/useClaudeModelOptions.js';
+import { EMPTY_HIDDEN_MODELS, canHideModel, countVisibleModels, initialModelSelection, modelVisibilityAgent, pickerModelChoices } from '../../modelVisibility.js';
 import type { AgentMessageSendResult, AgentModelControlState } from '../../store.js';
 import { HIT_SIZE, colors, radius, space, squircle, type } from '../../theme.js';
 import { BottomDrawer, Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
+import { SettingsSwitch } from '../settings/settingsScaffold.js';
 
 /** ピルの見た目の高さ（モックの `.pill`: 28）。当たり判定は 44 に広げる。 */
 const PILL_HEIGHT = 28;
@@ -22,7 +26,14 @@ interface ModelOption {
 	readonly label: string;
 	readonly aliases: readonly string[];
 	readonly efforts: readonly string[];
+	/** Codex の既定のモデル（model/list の isDefault）。 */
+	readonly isDefault?: boolean;
 }
+
+/** シートの中身。歯車で「表示するモデル」に切り替え、「完了」か戻るで「モデルを選ぶ」へ戻る。 */
+type DrawerPage = 'pick' | 'visibility';
+
+const AGENT_NAMES: Readonly<Record<'claude' | 'codex', string>> = { claude: 'Claude Code', codex: 'Codex' };
 
 /**
  * コンポーザーのモデルと effort のピル（モックの `.pill`）と、押すと開く「モデルを選ぶ」のシート。
@@ -33,6 +44,10 @@ interface ModelOption {
  *    （入力待ちでなければ PC が拒否する。理由はそのまま出す）
  *  - Codex: PC から届くモデルの一覧（model/list）を正本にし、確定したら model と effort を一度に送る
  * シートの中の選択は仮のもので、「適用」を押すまで何も送らない。
+ *
+ * 右上の歯車で、同じシートの中身を「表示するモデル」（モデルごとのスイッチ）に切り替え、「完了」で戻す。
+ * 別のシートを重ねて出さないのは、閉じる途中で次のモーダルを出すと iOS が取りこぼすため（`BottomDrawer` の約束）。
+ * 隠したモデルは「モデルを選ぶ」に出さない（使用中のものは「使用中・非表示」として残す）。計算は `modelVisibility.ts`。
  */
 export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting, onRequestCodexCatalog, onUpdateCodexSettings }: {
 	agent: string | undefined;
@@ -45,6 +60,8 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 }) {
 	const theme = useThemeColors();
 	const [open, setOpen] = useState(false);
+	const [page, setPage] = useState<DrawerPage>('pick');
+	const { hiddenModels, setModelHidden } = useAppStore(useShallow(s => ({ hiddenModels: s.hiddenModels, setModelHidden: s.setModelHidden })));
 	const [pickedModelId, setPickedModelId] = useState<string | undefined>(undefined);
 	const [pickedEffort, setPickedEffort] = useState<string | undefined>(undefined);
 	const [codexUpdatePending, setCodexUpdatePending] = useState(false);
@@ -76,15 +93,23 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 			label: option.displayName,
 			aliases: option.id === option.model ? [] : [option.id],
 			efforts: option.efforts.map(item => item.value),
+			isDefault: option.isDefault,
 		}))
 		: claudeCatalog.options;
 	const currentModel = agent === 'codex'
 		? options.find(option => option.id === model || option.aliases.includes(model ?? ''))
 		: matchAgentModel(agent, model, options);
-	const defaultCodexModel = agent === 'codex' ? codexModels.find(option => option.isDefault)?.model : undefined;
-	const selected = (pickedModelId !== undefined ? options.find(option => option.id === pickedModelId) : undefined)
-		?? currentModel
-		?? (defaultCodexModel !== undefined ? options.find(option => option.id === defaultCodexModel) : undefined);
+	const visibilityAgent = modelVisibilityAgent(agent);
+	const hiddenIds = visibilityAgent !== undefined ? hiddenModels[visibilityAgent] : EMPTY_HIDDEN_MODELS.claude;
+	const choices = pickerModelChoices(options, hiddenIds, currentModel?.id);
+	// 選んだもの → 使用中 → 表示中の既定 → 表示中の先頭（先頭まで落とすのは Codex だけ）
+	const selected = initialModelSelection(choices.map(choice => choice.option), {
+		pickedId: pickedModelId,
+		currentId: currentModel?.id,
+		defaultId: agent === 'codex' ? codexModels.find(option => option.isDefault)?.model : undefined,
+		fallbackToFirst: agent === 'codex',
+	});
+	const visibleCount = countVisibleModels(options, hiddenIds);
 	const candidateEffort = pickedEffort ?? effort;
 	const effectiveEffort = selected !== undefined && candidateEffort !== undefined && !selected.efforts.includes(candidateEffort)
 		? selected.efforts[0]
@@ -100,6 +125,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 		hapticSelection();
 		setPickedModelId(undefined);
 		setPickedEffort(undefined);
+		setPage('pick');
 		setOpen(true);
 		if (agent === 'codex') {
 			onRequestCodexCatalog();
@@ -169,14 +195,35 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 				<Text style={styles.pillText} numberOfLines={1}>{label}</Text>
 				<Icon icon={ChevronDown} size={iconSize.xs} color={colors.textDim} />
 			</Pressable>
-			<BottomDrawer visible={open} onClose={close} accessibilityLabel="モデルを選ぶ">
-				<View style={styles.head}>
-					<Pressable onPress={close} hitSlop={hitSlopToMinimum(NAV_SIZE, NAV_SIZE)} style={styles.nav} accessibilityRole="button" accessibilityLabel="閉じる">
-						<Icon icon={X} size={iconSize.lg} color={colors.textDim} strokeWidth={2.2} />
-					</Pressable>
-					<Text style={styles.headTitle} accessibilityRole="header">モデルを選ぶ</Text>
-					<View style={styles.nav} />
-				</View>
+			<BottomDrawer visible={open} onClose={close} accessibilityLabel={page === 'visibility' ? '表示するモデル' : 'モデルを選ぶ'}>
+				{page === 'visibility' ? (
+					<View style={styles.head}>
+						<Pressable onPress={() => setPage('pick')} hitSlop={hitSlopToMinimum(NAV_SIZE, NAV_SIZE)} style={styles.nav} accessibilityRole="button" accessibilityLabel="モデルを選ぶに戻る">
+							<Icon icon={ChevronLeft} size={iconSize.lg} color={colors.textDim} strokeWidth={2.2} />
+						</Pressable>
+						<Text style={styles.headTitle} accessibilityRole="header">表示するモデル</Text>
+						<View style={styles.nav} />
+					</View>
+				) : (
+					<View style={styles.head}>
+						<Pressable onPress={close} hitSlop={hitSlopToMinimum(NAV_SIZE, NAV_SIZE)} style={styles.nav} accessibilityRole="button" accessibilityLabel="閉じる">
+							<Icon icon={X} size={iconSize.lg} color={colors.textDim} strokeWidth={2.2} />
+						</Pressable>
+						<Text style={styles.headTitle} accessibilityRole="header">モデルを選ぶ</Text>
+						{visibilityAgent !== undefined ? (
+							<Pressable
+								onPress={() => { hapticSelection(); setPage('visibility'); }}
+								disabled={submitting}
+								hitSlop={hitSlopToMinimum(NAV_SIZE, NAV_SIZE)}
+								style={({ pressed }) => [styles.nav, pressed ? styles.pressed : undefined]}
+								accessibilityRole="button"
+								accessibilityLabel="表示するモデルを選ぶ"
+							>
+								<Icon icon={Settings} size={iconSize.lg} color={colors.textDim} strokeWidth={2.2} />
+							</Pressable>
+						) : <View style={styles.nav} />}
+					</View>
+				)}
 				{agent === 'codex' && modelControl?.status === 'loading' ? (
 					<View style={styles.notice}><ActivityIndicator size="small" color={colors.textDim} /><Text style={styles.hint}>Codex からモデルの一覧を取得しています…</Text></View>
 				) : null}
@@ -188,57 +235,100 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 				) : null}
 				{options.length === 0 && modelControl?.status !== 'loading' ? (
 					<Text style={styles.hint}>エージェントのセッションが特定されるとモデルを選べます</Text>
-				) : (
-					<View style={styles.group}>
-						{options.map((option, index) => {
-							const isSelected = selected?.id === option.id;
-							return (
-								<Pressable
-									key={option.id}
-									disabled={locked}
-									onPress={() => { hapticSelection(); setPickedModelId(option.id); }}
-									style={({ pressed }) => [styles.row, index > 0 ? styles.rowDivider : undefined, pressed ? styles.rowPressed : undefined]}
-									accessibilityRole="button"
-									accessibilityState={{ selected: isSelected, disabled: locked }}
-								>
-									<View style={styles.rowBody}>
-										<Text style={styles.rowLabel}>{option.label}</Text>
-										{currentModel?.id === option.id ? <Text style={styles.rowHint}>使用中</Text> : null}
-									</View>
-									{isSelected ? <Icon icon={Check} color={theme.accent} /> : null}
-								</Pressable>
-							);
-						})}
-					</View>
-				)}
-				{selected !== undefined && selected.efforts.length > 0 ? (
-					<>
-						<Text style={styles.section}>{`Effort（${selected.label}）`}</Text>
-						<View style={styles.efforts}>
-							{selected.efforts.map(level => {
-								const on = level === effectiveEffort;
-								return (
-									<Pressable
-										key={level}
-										disabled={locked}
-										onPress={() => { hapticSelection(); setPickedEffort(level); }}
-										style={[styles.effort, on ? { borderColor: theme.accent, backgroundColor: theme.accentWash } : undefined]}
-										accessibilityRole="button"
-										accessibilityState={{ selected: on, disabled: locked }}
-									>
-										<Text style={[styles.effortText, on ? styles.effortTextOn : undefined]}>{level}</Text>
-									</Pressable>
-								);
-							})}
-						</View>
-					</>
 				) : null}
-				<Text style={styles.hint}>
-					{agent === 'codex'
-						? '適用すると、モデルと effort が次のターンから同時に変わります'
-						: submitting ? 'Claude Code へ設定を送っています…' : '適用すると、入力待ちであることを確かめてからモデルと effort を変えます'}
-				</Text>
-				<Button label="適用" onPress={() => { void apply(); }} loading={submitting} disabled={locked || selected === undefined} style={styles.apply} />
+				{page === 'visibility' ? (
+					<>
+						{options.length > 0 ? (
+							<>
+								<Text style={[styles.section, styles.sectionFirst]}>{visibilityAgent !== undefined ? AGENT_NAMES[visibilityAgent] : ''}</Text>
+								<View style={styles.group}>
+									{options.map((option, index) => {
+										const shown = !hiddenIds.includes(option.id);
+										// 表示中が 1 つだけなら、そのスイッチは切れない
+										const lastOne = shown && visibleCount <= 1;
+										const hint = currentModel?.id === option.id
+											? (shown ? '使用中' : '使用中のあいだはモデルを選ぶ画面に出ます')
+											: lastOne ? '1 つは表示が必要です' : option.isDefault === true ? '既定' : undefined;
+										return (
+											<View key={option.id} style={[styles.row, index > 0 ? styles.rowDivider : undefined]}>
+												<View style={styles.rowBody}>
+													<Text style={styles.rowLabel}>{option.label}</Text>
+													{hint !== undefined ? <Text style={styles.rowHint}>{hint}</Text> : null}
+												</View>
+												<SettingsSwitch
+													value={shown}
+													disabled={lastOne}
+													onValueChange={value => {
+														if (visibilityAgent !== undefined && (value || canHideModel(options, hiddenIds, option.id))) {
+															setModelHidden(visibilityAgent, option.id, !value);
+														}
+													}}
+													accessibilityLabel={`${option.label} を一覧に出す`}
+												/>
+											</View>
+										);
+									})}
+								</View>
+							</>
+						) : null}
+						<Text style={styles.hint}>オフにしたモデルは「モデルを選ぶ」に出ません。この端末の設定で、どの PC につないでも同じです。PC に新しいモデルが増えたときは表示されます。</Text>
+						<Button label="完了" onPress={() => { hapticSelection(); setPage('pick'); }} style={styles.apply} />
+					</>
+				) : (
+					<>
+						{options.length > 0 ? (
+							<View style={styles.group}>
+								{choices.map(({ option, hidden }, index) => {
+									const isSelected = selected?.id === option.id;
+									return (
+										<Pressable
+											key={option.id}
+											disabled={locked}
+											onPress={() => { hapticSelection(); setPickedModelId(option.id); }}
+											style={({ pressed }) => [styles.row, index > 0 ? styles.rowDivider : undefined, pressed ? styles.rowPressed : undefined]}
+											accessibilityRole="button"
+											accessibilityState={{ selected: isSelected, disabled: locked }}
+										>
+											<View style={styles.rowBody}>
+												<Text style={[styles.rowLabel, hidden ? styles.rowLabelHidden : undefined]}>{option.label}</Text>
+												{currentModel?.id === option.id ? <Text style={styles.rowHint}>{hidden ? '使用中・非表示' : '使用中'}</Text> : null}
+											</View>
+											{isSelected ? <Icon icon={Check} color={theme.accent} /> : null}
+										</Pressable>
+									);
+								})}
+							</View>
+						) : null}
+						{selected !== undefined && selected.efforts.length > 0 ? (
+							<>
+								<Text style={styles.section}>{`Effort（${selected.label}）`}</Text>
+								<View style={styles.efforts}>
+									{selected.efforts.map(level => {
+										const on = level === effectiveEffort;
+										return (
+											<Pressable
+												key={level}
+												disabled={locked}
+												onPress={() => { hapticSelection(); setPickedEffort(level); }}
+												style={[styles.effort, on ? { borderColor: theme.accent, backgroundColor: theme.accentWash } : undefined]}
+												accessibilityRole="button"
+												accessibilityState={{ selected: on, disabled: locked }}
+											>
+												<Text style={[styles.effortText, on ? styles.effortTextOn : undefined]}>{level}</Text>
+											</Pressable>
+										);
+									})}
+								</View>
+							</>
+						) : null}
+						<Text style={styles.hint}>
+							{agent === 'codex'
+								? '適用すると、モデルと effort が次のターンから同時に変わります'
+								: submitting ? 'Claude Code へ設定を送っています…' : '適用すると、入力待ちであることを確かめてからモデルと effort を変えます'}
+						</Text>
+						<Button label="適用" onPress={() => { void apply(); }} loading={submitting} disabled={locked || selected === undefined} style={styles.apply} />
+					</>
+				)}
 			</BottomDrawer>
 		</>
 	);
@@ -318,6 +408,9 @@ const styles = StyleSheet.create({
 		fontWeight: '500',
 		color: colors.text,
 	},
+	rowLabelHidden: {
+		color: colors.textDim,
+	},
 	rowHint: {
 		marginTop: 2,
 		fontSize: type.meta,
@@ -330,6 +423,9 @@ const styles = StyleSheet.create({
 		fontSize: type.caption,
 		fontWeight: '600',
 		color: colors.textMuted,
+	},
+	sectionFirst: {
+		marginTop: 0,
 	},
 	efforts: {
 		flexDirection: 'row',
