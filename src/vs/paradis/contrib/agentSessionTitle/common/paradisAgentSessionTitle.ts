@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { localize } from '../../../../nls.js';
+import { paradisExpandPastedContent } from '../../../common/paradisPastedContent.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 // Claude Code / Codex のハーネスは、スラッシュコマンド実行やバックグラウンドタスク完了通知等を
@@ -60,7 +61,9 @@ export function paradisHumanizeAgentSessionTitle(raw: string | undefined): strin
 	if (!raw) {
 		return undefined;
 	}
-	const trimmed = raw.trim();
+	// 貼り付けの包み（`<pasted_content id="…">`）は属性付きで SIMPLE_TAG_PATTERN に当たらないので、
+	// 先に中身へ戻す（包みの前の改行も形の一部なので trim より前に）。
+	const trimmed = paradisExpandPastedContent(raw).trim();
 	if (trimmed.length === 0) {
 		return undefined;
 	}

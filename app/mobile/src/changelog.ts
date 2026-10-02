@@ -109,6 +109,17 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'チャットの文字サイズを変えられるようになりました',
 				body: '設定 → チャット UI → 文字サイズで、会話の文字を 85〜150% から選べます。OS の文字サイズに合わせる設定（既定）のままなら今までと同じ表示です。',
 			},
+			{
+				icon: 'sparkles-outline',
+				title: 'Claude Code と Codex の印を、PC と同じすっきりした形にしました',
+				body: 'エージェントの一覧では、最新の発言の前に出ていた状態の点をなくしました。状態は左の印で分かります。',
+			},
+			{
+				icon: 'checkmark-done-outline',
+				title: 'エージェントに読まれた発言が「送信予定」に残り続けることがあったのを直しました',
+				body: '複数行の発言や、作業中に送った発言で起きていました。PC の Para Code の更新が必要です。',
+				tone: 'green',
+			},
 		],
 	},
 	{

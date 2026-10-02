@@ -59,7 +59,7 @@ import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.j
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentSessionInfo, ParadisAgentKind, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
-import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
+import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
 // 会話の型と transcript の正規化は、デスクトップのチャット表示と共有するため agentChat/common へ
 // 切り出した。既存の呼び出し元（テスト）がこのモジュールから引けるよう、公開していたものは再公開する。
@@ -1460,6 +1460,8 @@ class TranscriptTailer {
 
 	private offset = 0;
 	private remainder = '';
+	/** 作業中に送った発言の控え。読み取りの塊をまたいで重複（Esc 後の書き直し）を見分けるため持ち続ける。 */
+	private claudeQueuedPrompts = newClaudeQueuedPromptState();
 	// transcript を offset 連続で読み進める間、UTF-8マルチバイト文字が読み境界で分断されても
 	// 化けないよう stream モードでデコードする（境界の継続バイトはデコーダ内部で持ち越される）。
 	// epoch reset（offset 0 へ巻き戻し）時は新しいインスタンスに差し替えて内部状態を捨てる。
@@ -1670,6 +1672,7 @@ class TranscriptTailer {
 				this.messages.length = 0;
 				this.offset = 0;
 				this.remainder = '';
+				this.claudeQueuedPrompts = newClaudeQueuedPromptState();
 				this.lineBase = 0;
 				this.positionByRev.clear();
 				this.evictedPositions.clear();
@@ -1803,7 +1806,7 @@ class TranscriptTailer {
 		let lineOffset = this.lineBase;
 		// fullText / imageData はここでだけ通過する（この直後に退避して送信対象から外す）。
 		const added: (IParadisAgentChatMessage & { fullText?: string; imageData?: readonly IFlattenedImage[] })[] = [];
-		const signals = newParseSignals();
+		const signals = newParseSignals(this.claudeQueuedPrompts);
 		let latestProgress: ITranscriptProgress | undefined;
 		let issueUrlsChanged = false;
 		for (const line of lines) {

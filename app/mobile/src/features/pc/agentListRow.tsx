@@ -9,7 +9,7 @@ import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { hapticImpact, hapticSelection } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { colors, radius, space, type } from '../../theme.js';
-import { AgentSpinner, AgentStateDot, Icon, agentKindFromStatus, iconSize } from '../../ui/index.js';
+import { AgentSpinner, Icon, agentKindFromStatus, iconSize } from '../../ui/index.js';
 import { AgentLogo } from './agentLogo.js';
 import { agentLogoKind, agentRowLine, formatElapsedShort } from './agentRowLine.js';
 import { useStatusSince } from './statusSinceStore.js';
@@ -21,7 +21,8 @@ import { PointerHover } from '../../ipad/pointerHover.js';
  *  - 左の列: 状態の印（AgentSpinner。実行中は黄の輪が回る）と、未読のベル（要対応・未確認）
  *  - 1段目: 名前（未読は太字）とピン留めの印
  *  - 2段目: スペース（スペースで分けているときは見出しが言うので省く）とブランチ
- *  - 3段目: エージェントの点・ロゴ・最後の一言・経過時間（`agentRowLine`）
+ *  - 3段目: エージェントのロゴ・最後の一言・経過時間（`agentRowLine`）。状態は左の列の印が示すので、
+ *    ここには状態の点を重ねて出さない
  *  - 右端: ⋯（長押しと同じ操作のシート）
  *
  * 受け取るのはスカラと安定したコールバックだけにして、行ごとに memo で止める（PC からの再送は
@@ -92,7 +93,6 @@ export const AgentListRow = memo(function AgentListRow({
 					</View>
 				) : null}
 				<View style={styles.agentRow}>
-					<AgentStateDot kind={kind} />
 					<AgentLogo kind={line.logo} size={LOGO_SIZE} />
 					<Text style={[styles.agentLabel, line.emphasized ? styles.agentLabelUnread : undefined]} numberOfLines={1}>{line.text}</Text>
 					{at !== undefined ? <Text style={styles.time}>{formatElapsedShort(at, now)}</Text> : null}
