@@ -12,7 +12,10 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { BrowserViewCommandId } from '../../../../../platform/browserView/common/browserView.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
-import { paradisMobileOpenableUrl } from '../../electron-browser/paradisMobileOpenUrl.js';
+import { GroupsOrder, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisWorkspaceSwitchService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { paradisMobileOpenableUrl, paradisMobileOpenUrlPlacement } from '../../electron-browser/paradisMobileOpenUrl.js';
 import { IParadisMobileRequestHost, paradisDispatchMobileRequest } from '../../electron-browser/paradisMobileRequestHandlers.js';
 
 suite('ParadisMobileOpenUrl', () => {
@@ -42,6 +45,47 @@ suite('ParadisMobileOpenUrl', () => {
 		assert.deepStrictEqual({ executed, sent }, {
 			executed: [[BrowserViewCommandId.Open, 'http://localhost:5173/']],
 			sent: ['{"error":"invalid url","id":"r2"}', '{"t":"openUrl","id":"r1"}'],
+		});
+	});
+
+	test('ws があれば、そのスペースに開く（今のスペースならそのまま、補助ウィンドウにあればそこ、見えていなければ断る）', async () => {
+		assert.deepStrictEqual([
+			paradisMobileOpenUrlPlacement(undefined, 'repo', 0),
+			paradisMobileOpenUrlPlacement('repo', 'repo', 0),
+			paradisMobileOpenUrlPlacement('other', undefined, 0),
+			paradisMobileOpenUrlPlacement('other', 'repo', 1),
+			paradisMobileOpenUrlPlacement('other', 'repo', 0),
+		], ['current', 'current', 'current', 'pinned', 'notVisible']);
+
+		const executed: unknown[][] = [];
+		const opened: unknown[] = [];
+		const sent: string[] = [];
+		const pinnedGroup = { id: 'pinned-group' };
+		const pinnedPart = { activeGroup: pinnedGroup };
+		const services = new Map<unknown, unknown>([
+			[ICommandService, { executeCommand: async (...args: unknown[]) => { executed.push(args); } }],
+			[IParadisWorkspaceSwitchService, { activeStateKey: 'repo' }],
+			[IParadisAuxiliaryWindowScopeService, { getPinnedParts: (stateKey: string) => stateKey === 'pinned-space' ? [pinnedPart] : [] }],
+			[IEditorGroupsService, { getGroups: (order: GroupsOrder) => { assert.strictEqual(order, GroupsOrder.MOST_RECENTLY_ACTIVE); return [{ id: 'main-group' }, pinnedGroup]; }, getPart: (group: unknown) => group === pinnedGroup ? pinnedPart : undefined }],
+			[IEditorService, { openEditor: async (input: { options?: { viewState?: { url?: string } } }, group: unknown) => { opened.push([input.options?.viewState?.url, group]); } }],
+		]);
+		const host: IParadisMobileRequestHost = {
+			invokeFunction: fn => fn({ get: (id: unknown) => services.get(id) } as unknown as ServicesAccessor),
+			resolveRoot: () => URI.file('/repo'),
+			runGit: async () => ({ code: 0, stdout: '', stderr: '' }),
+			resolvePath: async () => undefined,
+			getMobileCapabilities: async () => undefined,
+			getMobileWireVersion: async () => undefined,
+			send: (_channel, _mobileId, payload) => sent.push(new TextDecoder().decode(payload)),
+		};
+		paradisDispatchMobileRequest('fs', { t: 'openUrl', id: 'r1', ws: 'repo', url: 'http://localhost:1/' }, 'phone', host);
+		paradisDispatchMobileRequest('fs', { t: 'openUrl', id: 'r2', ws: 'pinned-space', url: 'http://localhost:2/' }, 'phone', host);
+		paradisDispatchMobileRequest('fs', { t: 'openUrl', id: 'r3', ws: 'hidden-space', url: 'http://localhost:3/' }, 'phone', host);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({ executed, opened, sent }, {
+			executed: [[BrowserViewCommandId.Open, 'http://localhost:1/']],
+			opened: [['http://localhost:2/', pinnedGroup]],
+			sent: ['{"error":"space-not-visible","id":"r3"}', '{"t":"openUrl","id":"r1"}', '{"t":"openUrl","id":"r2"}'],
 		});
 	});
 });

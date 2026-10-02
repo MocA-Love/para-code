@@ -16,5 +16,6 @@ import './paradisMobileOpenUrl.js';
 import './paradisMobileAgentSessions.js';
 import './paradisMobileScmSyncRequests.js'; // push / fetch / pull・コミットの失敗からの立て直し・ファイルごとのステージ（W2-15）
 import './paradisMobilePullRequestRequests.js'; // PR の状態・CI の失敗をエージェントへ・マージ（W2-36）
+import './paradisMobileBookmarkRequests.js'; // ブラウザのブックマークバー（browser.bookmarks.v1）
 
 export { };

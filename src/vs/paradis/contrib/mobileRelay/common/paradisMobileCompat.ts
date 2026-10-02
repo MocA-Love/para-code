@@ -81,6 +81,14 @@ export const ParadisMobileCapability = {
 	BrowserKeys: 'browser.keys.v1',
 	/** agent の snapshot / delta の任意項目 `monitors`（Claude Code の Monitor の一覧。`paradisAgentMonitors.ts`）。 */
 	AgentMonitors: 'agent.monitors.v1',
+	/** browser の `targets` の `windowId` / `ws` で、そのスペースのページだけを返す。fs の `openUrl` の `ws`（`paradisMobileBrowserProtocol.ts`）。 */
+	BrowserSpace: 'browser.space.v1',
+	/** browser の通知 `page`（URL・題名・読み込み中・戻る/進むの可否）と入力 `stop` / `open`。 */
+	BrowserPage: 'browser.page.v1',
+	/** browser の通知 `focus`（ページの入力欄のフォーカスと中身）と入力 `replace`。 */
+	BrowserFocus: 'browser.focus.v1',
+	/** fs の要求 `bookmarks` と通知 `bookmarksChanged`（PC の内蔵ブラウザのブックマーク）。 */
+	BrowserBookmarks: 'browser.bookmarks.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -107,6 +115,10 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.BackgroundGrace,
 	ParadisMobileCapability.BrowserKeys,
 	ParadisMobileCapability.AgentMonitors,
+	ParadisMobileCapability.BrowserSpace,
+	ParadisMobileCapability.BrowserPage,
+	ParadisMobileCapability.BrowserFocus,
+	ParadisMobileCapability.BrowserBookmarks,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
@@ -119,6 +131,8 @@ export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentApprovalOptions,
 	ParadisMobileCapability.AgentHistoryPage,
 	ParadisMobileCapability.AgentResume,
+	// PC はこれを見て、欄の中身を含む `focus` の通知を送る（古いアプリには送らない）。
+	ParadisMobileCapability.BrowserFocus,
 ];
 
 /** 受け取る capability の上限。相手は信用しない前提で、表を無制限に膨らませない。 */

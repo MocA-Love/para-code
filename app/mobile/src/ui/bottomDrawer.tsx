@@ -151,9 +151,16 @@ export interface BottomDrawerProps {
 	/** 読み上げでシートを何と呼ぶか。 */
 	readonly accessibilityLabel?: string;
 	readonly testID?: string;
+	/**
+	 * 横向きでも出すか。RN の Modal は既定で縦向きだけなので、横向きの画面（iPhone のブラウザの全画面）から
+	 * 開くシートは true にする。許すかどうかの最後の判断は OS とアプリの向きの許可（縦固定のままなら縦）。
+	 */
+	readonly allowLandscape?: boolean;
 }
 
-export function BottomDrawer({ visible, onClose, onAfterClose, children, scrollable = true, accessibilityLabel, testID }: BottomDrawerProps) {
+const ALL_ORIENTATIONS = ['portrait', 'portrait-upside-down', 'landscape', 'landscape-left', 'landscape-right'] as const;
+
+export function BottomDrawer({ visible, onClose, onAfterClose, children, scrollable = true, accessibilityLabel, testID, allowLandscape = false }: BottomDrawerProps) {
 	const [mounted, setMounted] = useState(visible);
 	// 開くときは描画の前に木へ入れる（effect を待つと、空の1フレームを挟んでから動き出す）。
 	if (visible && !mounted) {
@@ -239,7 +246,7 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 	const maxHeight = Math.max(0, windowHeight - insets.top - space.lg - keyboardInset);
 
 	return (
-		<Modal visible transparent animationType="none" statusBarTranslucent onRequestClose={() => onCloseRef.current()}>
+		<Modal visible transparent animationType="none" statusBarTranslucent onRequestClose={() => onCloseRef.current()} {...(allowLandscape ? { supportedOrientations: [...ALL_ORIENTATIONS] } : {})}>
 			{/* Modal は別の画面として出るので、ジェスチャの根をここに置き直す（アプリの根のものは届かない）。 */}
 			<GestureHandlerRootView style={styles.gestureRoot}>
 			<Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>

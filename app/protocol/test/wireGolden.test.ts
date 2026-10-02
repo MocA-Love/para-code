@@ -29,6 +29,7 @@ const state = readGolden<{ current: Json & { terminals: Json[]; workspaces: Json
 const stateRequest = readGolden<{ current: Json; preW217: Json }>('state-request.json');
 const term = readGolden<{ toPc: Json[]; toMobile: Json[] }>('term.json');
 const agent = readGolden<{ toPc: Json[]; toMobile: Json[] }>('agent.json');
+const browser = readGolden<{ toPc: Json[]; toMobile: Json[]; bookmarks: { toPc: Json; toMobile: Json; push: Json } }>('browser.json');
 
 describe('wire golden fixtures', () => {
 	test('W2-17 より前の形は、W2-17 で足した項目だけを欠く', () => {
@@ -60,5 +61,19 @@ describe('wire golden fixtures', () => {
 			agent: true,
 			encodings: [JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING],
 		});
+	});
+	test('browser の固定形は state の current と同じウィンドウ・スペースを指し、要求と応答の id が対になる', () => {
+		const workspace = state.current.workspaces[0]!;
+		const renderer = state.current.renderers[0]!;
+		const targetsRequest = browser.toPc.find(message => message.t === 'targets');
+		const targetsResponse = browser.toMobile.find(message => message.t === 'targets');
+		const pageTargets = browser.toMobile.filter(message => message.t === 'page' || message.t === 'focus').map(message => message.targetId);
+		const capabilities = state.current.capabilities as string[];
+		expect({
+			scope: [targetsRequest?.windowId === renderer.windowId, targetsRequest?.ws === workspace.sourceId],
+			ids: [targetsResponse?.id === targetsRequest?.id, browser.bookmarks.toMobile.id === browser.bookmarks.toPc.id],
+			sameTarget: pageTargets.every(targetId => (targetsResponse?.targets as Json[]).some(target => target.targetId === targetId)),
+			advertised: ['browser.space.v1', 'browser.page.v1', 'browser.focus.v1', 'browser.bookmarks.v1'].every(name => capabilities.includes(name)),
+		}).toEqual({ scope: [true, true], ids: [true, true], sameTarget: true, advertised: true });
 	});
 });
