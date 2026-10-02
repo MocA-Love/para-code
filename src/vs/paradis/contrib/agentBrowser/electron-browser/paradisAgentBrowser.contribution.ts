@@ -18,6 +18,7 @@
 import { mainWindow } from '../../../../base/browser/window.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
+import { Event } from '../../../../base/common/event.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -72,6 +73,18 @@ function getActiveBrowserViewModel(editorService: IEditorService): IBrowserViewM
 
 let activeDialog: ParadisBindingDialog | undefined;
 
+/** 開いているダイアログを差し替える。閉じた後も参照を持ち続けると、DOM ごと次に開くまで残る。 */
+function openActiveDialog(create: () => ParadisBindingDialog): void {
+	activeDialog?.dispose();
+	const dialog = create();
+	activeDialog = dialog;
+	Event.once(dialog.onDidDispose)(() => {
+		if (activeDialog === dialog) {
+			activeDialog = undefined;
+		}
+	});
+}
+
 async function openBindingDialog(accessor: ServicesAccessor, instanceId?: number): Promise<void> {
 	const notificationService = accessor.get(INotificationService);
 	const instantiationService = accessor.get(IInstantiationService);
@@ -82,12 +95,11 @@ async function openBindingDialog(accessor: ServicesAccessor, instanceId?: number
 		return;
 	}
 
-	activeDialog?.dispose();
-	activeDialog = instantiationService.createInstance(
+	openActiveDialog(() => instantiationService.createInstance(
 		ParadisBindingDialog,
 		model,
 		instanceId !== undefined ? { selectInstanceId: instanceId } : undefined,
-	);
+	));
 }
 
 /**
@@ -96,8 +108,7 @@ async function openBindingDialog(accessor: ServicesAccessor, instanceId?: number
  */
 function openMobileDeviceDialog(accessor: ServicesAccessor): void {
 	const instantiationService = accessor.get(IInstantiationService);
-	activeDialog?.dispose();
-	activeDialog = instantiationService.createInstance(ParadisBindingDialog, undefined, undefined);
+	openActiveDialog(() => instantiationService.createInstance(ParadisBindingDialog, undefined, undefined));
 }
 
 // --- コマンドパレット ---
