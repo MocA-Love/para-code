@@ -49,6 +49,12 @@ const MAX_ENTRIES = 64;
 /** ペインが見当たらなくても、これより後に hook が来ていれば追いかけ続ける。 */
 const RECENTLY_NOTED_MS = 10 * 60_000;
 
+/**
+ * 終わったサブエージェントの写しを台帳から外すまでの猶予。最後の行が届くのを待ってから外す。
+ * 外すのは台帳からだけで、写しはディスクに残る（一覧の補完と詳細の表示はそれを読む）。
+ */
+const FINISHED_SUBAGENT_GRACE_MS = 2 * 60_000;
+
 /** 起動時の掃除で、これより古い写しは消す。 */
 const PRUNE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -168,6 +174,8 @@ interface IMirrorEntry {
 	token: string;
 	/** 上限に達したことを一度だけ記録するための目印。 */
 	capped: boolean;
+	/** サブエージェントの終わりを知った時刻。再開（同じパスが再び現れる）で消える。 */
+	finishedAt?: number;
 	/** 同じファイルへの追記を直列化する。 */
 	chain: Promise<void>;
 }
@@ -241,6 +249,7 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 		if (existing !== undefined) {
 			existing.notedAt = Date.now();
 			existing.token = token;
+			existing.finishedAt = undefined;
 			return existing.localPath;
 		}
 		const localPath = paradisRemoteTranscriptMirrorPathFor(this.root, remotePath, remoteHostId);
@@ -389,9 +398,21 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 	retainLiveTokens(isLive: (token: string) => boolean): void {
 		const now = Date.now();
 		for (const [remotePath, entry] of [...this.entries]) {
-			if (!isLive(entry.token) && now - entry.notedAt > RECENTLY_NOTED_MS) {
+			if ((!isLive(entry.token) && now - entry.notedAt > RECENTLY_NOTED_MS)
+				|| (entry.finishedAt !== undefined && now - entry.finishedAt > FINISHED_SUBAGENT_GRACE_MS)) {
 				this.entries.delete(remotePath);
 			}
+		}
+	}
+
+	/**
+	 * サブエージェントが終わったことを知らせる。{@link FINISHED_SUBAGENT_GRACE_MS} の後に台帳から外し、
+	 * 終わった子の数だけ接続先の監視と読み取りが増え続けないようにする。
+	 */
+	noteSubagentFinished(remotePath: string): void {
+		const entry = this.entries.get(remotePath);
+		if (entry !== undefined) {
+			entry.finishedAt = Date.now();
 		}
 	}
 

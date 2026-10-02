@@ -19,6 +19,13 @@ export type ParadisAgentActivityStatus = 'running' | 'idle' | 'completed' | 'fai
  */
 export const PARADIS_ACTIVITY_STALE_MS = 30 * 60 * 1000;
 
+/**
+ * 終わった子に届いた SubagentStart を、再開として受け入れるまでの最短の間隔。hook は別々の HTTP
+ * 要求として届き、受け取った側の処理の待ち時間で順序が入れ替わりうる。すぐ終わる子の Start が Stop の
+ * 直後に処理されたものを、再開と取り違えないための幅（SendMessage での再開はこれよりずっと後に来る）。
+ */
+const SUBAGENT_RESTART_MIN_GAP_MS = 2_000;
+
 export interface IParadisAgentActivityAgent {
 	readonly id: string;
 	readonly label: string;
@@ -161,6 +168,8 @@ export class ParadisAgentActivityTracker {
 	private startedAt: number | undefined;
 	private updatedAt: number | undefined;
 	private activeCompactionId: string | undefined;
+	/** 名前付きのエージェント（チームメイト）の名前 → 子 transcript の ID。TeammateIdle を同じ項目へ当てる。 */
+	private readonly agentIdsByName = new Map<string, string>();
 
 	beginTurn(): boolean {
 		// セッション内の完了履歴はモバイルの一覧・詳細へ残す。新しい活動は同じ
@@ -175,7 +184,10 @@ export class ParadisAgentActivityTracker {
 			if (id !== undefined) {
 				const previous = this.agents.get(id);
 				const nextStatus: ParadisAgentActivityStatus = event === 'SubagentStop' ? 'completed' : 'running';
-				if (!(previous !== undefined && terminal(previous.status) && nextStatus === 'running')) {
+				// SendMessage で再開した子には、同じ agent_id で SubagentStart がもう一度届く（Claude Code
+				// 2.1.287 で実測）。終わった後に届いた Start は蘇生として受け入れ、Stop の直後に処理されたもの
+				// （{@link SUBAGENT_RESTART_MIN_GAP_MS} 以内）は順序が入れ替わった遅着として捨てる。
+				if (!(previous !== undefined && terminal(previous.status) && nextStatus === 'running' && at - previous.updatedAt < SUBAGENT_RESTART_MIN_GAP_MS)) {
 					const detail = event === 'SubagentStop' ? text(payload.last_assistant_message) ?? previous?.detail : text(payload.prompt) ?? previous?.detail;
 					this.agents.set(id, {
 						id, label: text(payload.agent_type) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'claude',
@@ -202,9 +214,16 @@ export class ParadisAgentActivityTracker {
 		} else if (event === 'TeammateIdle') {
 			const name = text(payload.teammate_name);
 			if (name !== undefined) {
-				const id = `teammate:${name}`;
-				const previous = this.agents.get(id);
-				this.agents.set(id, { id, label: name, role: 'teammate', provider: 'claude', status: 'idle', startedAt: previous?.startedAt ?? at, updatedAt: at });
+				// 子 transcript から既に分かっているチームメイトなら、その項目を待機中にする（別項目を増やさない）
+				const knownId = this.agentIdsByName.get(name);
+				const known = knownId !== undefined ? this.agents.get(knownId) : undefined;
+				if (known !== undefined) {
+					this.agents.set(known.id, { ...known, status: 'idle', updatedAt: Math.max(known.updatedAt, at) });
+				} else {
+					const id = `teammate:${name}`;
+					const previous = this.agents.get(id);
+					this.agents.set(id, { id, label: name, role: 'teammate', provider: 'claude', status: 'idle', startedAt: previous?.startedAt ?? at, updatedAt: at });
+				}
 			}
 		} else if (event === 'PreCompact') {
 			const id = `compact:${at}`;
@@ -333,8 +352,12 @@ export class ParadisAgentActivityTracker {
 				} else if (previous.status === 'unknown' && recovered.status === 'running' && recovered.updatedAt >= previous.updatedAt) {
 					status = 'running';
 				}
+			} else if (previous !== undefined && recovered.status === 'running' && recovered.updatedAt > previous.updatedAt) {
+				// 終わった後に子 transcript へ新しい作業が書かれた（SendMessage での再開など）
+				status = 'running';
 			}
-			const label = previous?.label !== undefined && previous.label !== 'SubAgent' ? previous.label : recovered.label;
+			// 名前付きの起動は名前で見分ける（hook の agent_type で先に作った項目は種類名を持っている）
+			const label = recovered.name ?? (previous?.label !== undefined && previous.label !== 'SubAgent' ? previous.label : recovered.label);
 			const detail = previous?.detail ?? recovered.detail;
 			this.agents.set(recovered.id, {
 				id: recovered.id, label, role: 'subagent', provider: recovered.provider,
@@ -345,6 +368,18 @@ export class ParadisAgentActivityTracker {
 				updatedAt: Math.max(previous?.updatedAt ?? recovered.updatedAt, recovered.updatedAt),
 			});
 			relationships.set(recovered.id, { ...(recovered.parentId !== undefined ? { parentId: recovered.parentId } : {}), ...(recovered.depth !== undefined ? { depth: recovered.depth } : {}) });
+			if (recovered.name !== undefined && recovered.name !== recovered.id) {
+				// 先に TeammateIdle で作った仮の項目があれば、子 transcript の項目へ畳む
+				this.agentIdsByName.set(recovered.name, recovered.id);
+				const placeholder = this.agents.get(`teammate:${recovered.name}`);
+				if (placeholder !== undefined) {
+					this.agents.delete(placeholder.id);
+					const current = this.agents.get(recovered.id);
+					if (current !== undefined && placeholder.updatedAt > current.updatedAt && !terminal(current.status)) {
+						this.agents.set(recovered.id, { ...current, status: placeholder.status, updatedAt: placeholder.updatedAt });
+					}
+				}
+			}
 		}
 		for (const [id, recovered] of relationships) {
 			const current = this.agents.get(id);

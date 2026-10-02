@@ -475,11 +475,13 @@ async function readClaudeSubagentMeta(transcriptPath: string): Promise<IParadisC
 		const agentType = str(parsed?.agentType);
 		const description = str(parsed?.description);
 		const spawnDepth = num(parsed?.spawnDepth);
-		if (agentType === undefined && description === undefined && spawnDepth === undefined) { return undefined; }
+		const name = str(parsed?.name);
+		if (agentType === undefined && description === undefined && spawnDepth === undefined && name === undefined) { return undefined; }
 		return {
 			...(agentType !== undefined ? { agentType } : {}),
 			...(description !== undefined ? { description } : {}),
 			...(spawnDepth !== undefined ? { spawnDepth } : {}),
+			...(name !== undefined ? { name } : {}),
 		};
 	} catch {
 		return undefined;
@@ -496,7 +498,8 @@ async function discoverClaudePersistedSubagentFiles(rootTranscriptPath: string):
 	for (const entry of entries) {
 		if (!entry.isFile()) { continue; }
 		const match = /^agent-([A-Za-z0-9._:-]{1,500})\.jsonl$/.exec(entry.name);
-		if (match === null) { continue; }
+		// `/btw` の脇の質問も同じ置き場に `agent-aside_question-*` として書かれるが、サブエージェントではない
+		if (match === null || match[1].startsWith('aside_question-')) { continue; }
 		const path = join(subagentsDir, entry.name);
 		if (!await isAllowedTranscriptPath(path)) { continue; }
 		const stat = await fs.stat(path).catch(() => undefined);
@@ -882,6 +885,14 @@ export function paradisClaudeSubagentTranscriptCandidates(transcriptPath: string
 	const filename = transcriptPath.slice(transcriptPath.lastIndexOf(sep) + 1).replace(/\.jsonl$/i, '');
 	const agentFile = `${activityId.startsWith('agent-') ? activityId : `agent-${activityId}`}.jsonl`;
 	return [...new Set([...(hookTranscriptPath !== undefined ? [hookTranscriptPath] : []), join(dir, filename, 'subagents', agentFile), join(dir, 'subagents', agentFile)])];
+}
+
+/**
+ * 名前付きで起動したエージェントの子 transcript は `agent-a<name>-<16桁>.jsonl` という ID を持つ
+ * （実データで確認）。名前を書いた meta.json が無い（SSH の写しは .jsonl しか写さない）ときの予備。
+ */
+export function paradisClaudeNamedAgentFromFileId(fileId: string): string | undefined {
+	return /^a(?<name>[A-Za-z0-9._:-]+)-[0-9a-f]{16}$/.exec(fileId)?.groups?.name;
 }
 
 /** Claudeの子transcript pathに埋め込まれた所有Agent ID。root transcriptならundefined。 */
@@ -5445,27 +5456,62 @@ export class ParadisMobileAgentChat extends Disposable {
 				const previous = spawned.get(agent.id);
 				if (previous === undefined || agent.updatedAt >= previous.updatedAt) { spawned.set(agent.id, agent); }
 			};
+			// ID の付いていない完了通知（起動の記録が読み込み範囲の外にあった等）。Bash や Monitor の通知も
+			// 混ざるので、子 transcript が実在する ID にだけ当てる。
+			const notifications = new Map<string, { readonly status: IParadisRecoveredAgentActivity['status']; readonly at: number }>();
+			const rememberNotifications = (found: ReadonlyMap<string, { readonly status: IParadisRecoveredAgentActivity['status']; readonly at: number }>) => {
+				for (const [id, notice] of found) {
+					const previous = notifications.get(id);
+					if (previous === undefined || notice.at >= previous.at) { notifications.set(id, notice); }
+				}
+			};
 			const rootStat = await fs.stat(session.transcriptPath).catch(() => undefined);
 			const rootLines = await readPersistedTranscriptLines(session.transcriptPath);
 			if (rootStat !== undefined) {
-				for (const agent of paradisParseClaudePersistedActivity(undefined, rootLines, rootStat.mtimeMs, now).spawned) { rememberSpawned(agent); }
+				const parsed = paradisParseClaudePersistedActivity(undefined, rootLines, rootStat.mtimeMs, now);
+				for (const agent of parsed.spawned) { rememberSpawned(agent); }
+				rememberNotifications(parsed.notifications);
 			}
 			const files = await discoverClaudePersistedSubagentFiles(session.transcriptPath);
+			// 名前付きの起動は、親の会話が名前で呼び、ファイルは別の ID を持つ。名前 → ファイル ID で1つに束ねる
+			const fileIdsByName = new Map<string, string>();
 			for (const file of files) {
 				const parsed = paradisParseClaudePersistedActivity(file.id, await readPersistedTranscriptLines(file.path), file.mtime, now, file.meta);
-				if (parsed.owner !== undefined) { owners.set(file.id, parsed.owner); }
+				// ファイル ID から名前を取るのは meta の写らない SSH の写しだけ（手元の古い版の `acompact-` 等を名前と誤読しない）
+				const fileName = file.meta?.name ?? (paradisIsRemoteAgentTranscriptMirrorPath(file.path) ? paradisClaudeNamedAgentFromFileId(file.id) : undefined);
+				if (parsed.owner !== undefined) { owners.set(file.id, fileName !== undefined ? { ...parsed.owner, name: fileName, label: fileName } : parsed.owner); }
 				for (const agent of parsed.spawned) { rememberSpawned(agent); }
+				rememberNotifications(parsed.notifications);
+				if (fileName !== undefined) { fileIdsByName.set(fileName, file.id); }
 				claudeTranscriptPaths.push({ id: file.id, path: file.path });
+			}
+			for (const [id, agent] of [...spawned]) {
+				const fileId = fileIdsByName.get(agent.name ?? id);
+				if (fileId !== undefined && fileId !== id && !owners.has(id)) {
+					spawned.delete(id);
+					rememberSpawned({ ...agent, id: fileId });
+				}
+			}
+			for (const [id, notice] of notifications) {
+				const owner = owners.get(id);
+				if (owner !== undefined && !spawned.has(id) && notice.at >= (owner.lastLineAt ?? 0)) {
+					rememberSpawned({ ...owner, status: notice.status, updatedAt: Math.max(owner.updatedAt, notice.at) });
+				}
 			}
 			for (const id of new Set([...owners.keys(), ...spawned.keys()])) {
 				const owner = owners.get(id);
 				const spawn = spawned.get(id);
 				if (owner === undefined) { if (spawn !== undefined) { recovered.push(spawn); } continue; }
 				if (spawn === undefined) { recovered.push(owner); continue; }
-				const explicitTerminal = spawn.status === 'completed' || spawn.status === 'failed' || spawn.status === 'interrupted';
+				// 親の会話の「完了」（完了通知・フォアグラウンドの結果）は、子がその後に書いた作業を打ち消さない。
+				// SendMessage で再開した子は、古い完了の記録の後に新しい行を書き続ける。
+				const explicitTerminal = (spawn.status === 'completed' || spawn.status === 'failed' || spawn.status === 'interrupted')
+					&& spawn.updatedAt >= (owner.lastLineAt ?? 0);
 				recovered.push({
 					...owner,
-					label: spawn.label !== 'SubAgent' ? spawn.label : owner.label,
+					...(owner.name !== undefined || spawn.name === undefined ? {} : { name: spawn.name }),
+					// 名前付きの起動は名前の方が見分けやすい（種類は同じ code-reviewer が並びがち）
+					label: owner.name ?? (spawn.label !== 'SubAgent' ? spawn.label : owner.label),
 					...(spawn.detail !== undefined ? { detail: spawn.detail } : {}),
 					...(spawn.parentId !== undefined ? { parentId: spawn.parentId } : {}),
 					...(spawn.depth !== undefined ? { depth: spawn.depth } : {}),
@@ -5595,7 +5641,44 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 読み替えて、以降はローカルの transcript と全く同じ経路に乗せる。写しがまだ無くても
 		// tailer はファイルの出現を待てるので、ここで足踏みする必要はない。
 		const transcriptPath = this.remoteTranscriptMirror?.localPathForHookPath(event.transcriptPath, event.token, event.remoteHostId) ?? event.transcriptPath;
+		if (transcriptPath !== event.transcriptPath) {
+			this.followRemoteSubagentTranscript(event);
+		}
 		this.enqueueHookEvent(event, transcriptPath, false);
+	}
+
+	/**
+	 * 接続先で動くサブエージェントの transcript も写す対象に加える。写しは hook の `transcript_path`
+	 * が指すファイルにしか張られず、子のファイル（`<session>/subagents/agent-<id>.jsonl`）はそこに
+	 * 現れないので、加えないと一覧の補完も詳細の表示も手元で空振りする。
+	 */
+	private followRemoteSubagentTranscript(event: IParadisAgentHookEvent): void {
+		if (event.event !== 'SubagentStart' && event.event !== 'SubagentStop') {
+			return;
+		}
+		const agentId = str(event.payload?.agent_id);
+		if (agentId === undefined || !PARADIS_CLAUDE_AGENT_ID_PATTERN.test(agentId) || event.transcriptPath === undefined) {
+			return;
+		}
+		const reported = str(event.payload?.agent_transcript_path);
+		const rootPath = event.transcriptPath;
+		// 子の中で起きた hook は、子自身の transcript を名乗る。その場合は親の置き場から辿れない
+		const derived = /\.jsonl$/i.test(rootPath) && paradisClaudeAgentIdFromTranscriptPath(rootPath) === undefined
+			? `${rootPath.slice(0, -'.jsonl'.length)}/subagents/agent-${agentId}.jsonl`
+			: undefined;
+		const remotePath = reported !== undefined && paradisClaudeAgentIdFromTranscriptPath(reported) === agentId ? reported : derived;
+		if (remotePath === undefined) {
+			return;
+		}
+		this.remoteTranscriptMirror?.localPathForHookPath(remotePath, event.token, event.remoteHostId);
+		if (event.event === 'SubagentStop') {
+			// 終わった子の写しを台帳に残し続けると、接続先の監視と読み取りが子の数だけ増える。
+			// Start で導いたパスが Stop の申告と違った場合は、そちらも外す。
+			this.remoteTranscriptMirror?.noteSubagentFinished(remotePath);
+			if (derived !== undefined && derived !== remotePath) {
+				this.remoteTranscriptMirror?.noteSubagentFinished(derived);
+			}
+		}
 	}
 
 	/**
@@ -5924,6 +6007,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const submittedPrompt = str(event.payload?.prompt)?.trimStart();
 		const isLocalSettingCommand = event.event === 'UserPromptSubmit' && submittedPrompt !== undefined && /^\/(?:model|effort)\s+\S/.test(submittedPrompt);
+		// バックグラウンドの Bash・Monitor・サブエージェントの完了通知も UserPromptSubmit として届く
+		// （Claude Code 2.1.287 で実測）。ユーザーの新しいターンではないので、前ターンの片付けには使わない。
+		const isHarnessNotification = event.event === 'UserPromptSubmit' && submittedPrompt?.startsWith('<task-notification>') === true;
 		if (!isLocalSettingCommand && !isTurnEnd) {
 			this.updateLiveFromHook(event);
 		}
@@ -6022,7 +6108,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 			}
 		}
-		if (event.event === 'UserPromptSubmit' && !isLocalSettingCommand) {
+		if (event.event === 'UserPromptSubmit' && !isLocalSettingCommand && !isHarnessNotification) {
 			// 新しいユーザーターンが始まった時点で前ターンのsubagentは全て終わっている。
 			// SubagentStop の発火漏れ (Claude Code側の既知の制約) やhookの到着順序の逆転
 			// (並行POSTのため理論上あり得る) で閉じ損ねた hook: エントリを次ターンまで持ち越さない。
