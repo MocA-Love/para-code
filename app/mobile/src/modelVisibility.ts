@@ -11,7 +11,7 @@ import type { KeyStore } from './store.js';
  *  - この端末の中だけの設定で、PC ごとには分けない（Claude の別名も Codex のモデル名も PC 間で同じ文字列）。PC へは送らない
  *  - エージェント（Claude Code / Codex）ごとに持つ。Claude は PC の CLI から取った一覧にも、アプリ固定の予備表にも同じ id で効く
  *  - PC の一覧から消えた id が残っていても何も起きない（一覧に無い id は数えも表示もしない）
- *  - 使用中のモデルは隠していてもシートに残す（ピルの表示と「使用中」の印をずらさないため）
+ *  - 使用中のモデルと、シートで仮に選んでいるモデルは、隠していてもシートに残す（ピルの表示や印を黙ってずらさないため）
  *  - 最後の 1 つは隠せない。ただし一覧が入れ替わって表示中が 0 になったときは、隠す設定を無視して全部出す
  */
 
@@ -87,6 +87,21 @@ export function saveHiddenModels(store: Pick<KeyStore, 'setItem' | 'deleteItem'>
 		: store.setItem(HIDDEN_MODELS_KEY, JSON.stringify({ claude: hidden.claude, codex: hidden.codex }));
 }
 
+/** 保存値を読み込む前にシートで切り替えた 1 回の操作。 */
+export interface HiddenModelOp {
+	readonly agent: ModelVisibilityAgent;
+	readonly id: string;
+	readonly hidden: boolean;
+}
+
+/**
+ * 読み込んだ保存値に、読み込み前の操作を順に当て直す。在メモリ値で上書きしないのは、
+ * 操作していないエージェントの保存値を消さないため。
+ */
+export function replayHiddenModelOps(stored: HiddenModels, ops: readonly HiddenModelOp[]): HiddenModels {
+	return ops.reduce((acc, op) => withModelHidden(acc, op.agent, op.id, op.hidden), stored);
+}
+
 /** 1 つのモデルを隠す・表示に戻す。変わらなければ同じオブジェクトを返す。 */
 export function withModelHidden(hidden: HiddenModels, agent: ModelVisibilityAgent, id: string, hide: boolean): HiddenModels {
 	const current = hidden[agent];
@@ -108,17 +123,18 @@ export function canHideModel(options: readonly ModelLike[], hiddenIds: readonly 
 }
 
 /**
- * 「モデルを選ぶ」に並べる行。隠したものを外し、使用中のものは隠していても残す（`hidden: true`）。
+ * 「モデルを選ぶ」に並べる行。隠したものを外し、使用中のものと仮に選んでいるもの（`pickedId`）は
+ * 隠していても残す（`hidden: true`）。
  * 一覧が入れ替わって隠していないものが 1 つも無くなったときは、隠す設定を無視して全部出す。
  */
-export function pickerModelChoices<T extends ModelLike>(options: readonly T[], hiddenIds: readonly string[], currentId: string | undefined): ModelChoice<T>[] {
+export function pickerModelChoices<T extends ModelLike>(options: readonly T[], hiddenIds: readonly string[], currentId: string | undefined, pickedId?: string): ModelChoice<T>[] {
 	if (countVisibleModels(options, hiddenIds) === 0) {
 		return options.map(option => ({ option, hidden: false }));
 	}
 	const choices: ModelChoice<T>[] = [];
 	for (const option of options) {
 		const hidden = hiddenIds.includes(option.id);
-		if (!hidden || option.id === currentId) {
+		if (!hidden || option.id === currentId || option.id === pickedId) {
 			choices.push({ option, hidden });
 		}
 	}

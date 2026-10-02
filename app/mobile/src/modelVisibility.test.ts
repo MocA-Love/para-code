@@ -12,6 +12,7 @@ import {
 	modelVisibilityAgent,
 	normalizeHiddenModels,
 	pickerModelChoices,
+	replayHiddenModelOps,
 	saveHiddenModels,
 	withModelHidden,
 } from './modelVisibility.js';
@@ -67,6 +68,22 @@ describe('隠す設定の保存形', () => {
 			agents: ['claude', 'codex', undefined, undefined],
 		});
 	});
+
+	test('読み込み前の切り替えは、保存値の上に順に当て直す（もう一方のエージェントの保存値は消さない）', () => {
+		const stored = { claude: ['haiku'], codex: ['gpt-6.1'] };
+		expect({
+			replayed: replayHiddenModelOps(stored, [
+				{ agent: 'codex', id: 'gpt-6.1-mini', hidden: true },
+				{ agent: 'codex', id: 'gpt-6.1', hidden: false },
+				{ agent: 'codex', id: 'gpt-6.1-mini', hidden: false },
+				{ agent: 'codex', id: 'gpt-6.1-sol', hidden: true },
+			]),
+			none: replayHiddenModelOps(stored, []) === stored,
+		}).toEqual({
+			replayed: { claude: ['haiku'], codex: ['gpt-6.1-sol'] },
+			none: true,
+		});
+	});
 });
 
 describe('モデルを選ぶシートに並べる行', () => {
@@ -92,6 +109,10 @@ describe('モデルを選ぶシートに並べる行', () => {
 		expect(choices(pickerModelChoices(CODEX, ['gpt-6.1-sol', 'gpt-6.1', 'gpt-6.1-mini'], 'gpt-6.1'))).toEqual(['gpt-6.1-sol', 'gpt-6.1', 'gpt-6.1-mini']);
 	});
 
+	test('仮に選んでいるモデルを隠しても、「非表示」として残す', () => {
+		expect(choices(pickerModelChoices(CODEX, ['gpt-6.1'], 'gpt-6.1-mini', 'gpt-6.1'))).toEqual(['gpt-6.1-sol', 'gpt-6.1 (hidden)', 'gpt-6.1-mini']);
+	});
+
 	test('Claude の固定の予備表にも同じ id で効く', () => {
 		expect(choices(pickerModelChoices(agentModelOptions('claude'), ['haiku', 'fable'], 'opus'))).toEqual(['opus', 'sonnet']);
 	});
@@ -110,7 +131,7 @@ describe('最後の 1 つ', () => {
 
 describe('シートの初期選択', () => {
 	const select = (hidden: string[], options: { pickedId?: string; currentId?: string; defaultId?: string; fallbackToFirst?: boolean }) => {
-		const shown = pickerModelChoices(CODEX, hidden, options.currentId).map(choice => choice.option);
+		const shown = pickerModelChoices(CODEX, hidden, options.currentId, options.pickedId).map(choice => choice.option);
 		return initialModelSelection(shown, {
 			pickedId: options.pickedId,
 			currentId: options.currentId,
@@ -119,14 +140,14 @@ describe('シートの初期選択', () => {
 		})?.id;
 	};
 
-	test('選んだもの → 使用中 → 表示中の既定 → 表示中の先頭', () => {
+	test('選んだもの（隠していても） → 使用中 → 表示中の既定 → 表示中の先頭', () => {
 		expect([
 			select([], { pickedId: 'gpt-6.1', currentId: 'gpt-6.1-mini', defaultId: 'gpt-6.1-sol' }),
 			select(['gpt-6.1-mini'], { currentId: 'gpt-6.1-mini', defaultId: 'gpt-6.1-sol' }),
 			select([], { defaultId: 'gpt-6.1-sol' }),
 			select(['gpt-6.1-sol'], { defaultId: 'gpt-6.1-sol' }),
 			select(['gpt-6.1'], { pickedId: 'gpt-6.1', defaultId: 'gpt-6.1-sol' }),
-		]).toEqual(['gpt-6.1', 'gpt-6.1-mini', 'gpt-6.1-sol', 'gpt-6.1', 'gpt-6.1-sol']);
+		]).toEqual(['gpt-6.1', 'gpt-6.1-mini', 'gpt-6.1-sol', 'gpt-6.1', 'gpt-6.1']);
 	});
 
 	test('先頭へ落とさない指定（Claude）では、使用中が分からなければ何も選ばない', () => {
