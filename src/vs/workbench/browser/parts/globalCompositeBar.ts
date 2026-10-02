@@ -51,6 +51,7 @@ import { ICommandService } from '../../../platform/commands/common/commands.js';
 import { IDefaultAccountService } from '../../../platform/defaultAccount/common/defaultAccount.js';
 import { WORKBENCH_MENU_MOTION_CLASS, workbenchMenuCloseAnimation } from '../actions/menuMotion.js';
 import { createCodexAccountMenuActions, ICodexAccountService, shouldShowCodexAccount } from '../../services/agentHost/browser/codexAccountService.js';
+import { paradisCreateGlobalActivityViewItem, paradisGlobalActivityActions } from '../../../paradis/browser/paradisGlobalActivitySlot.js'; // PARA-PATCH: fork buttons between Accounts and Manage (file transfer)
 
 export class GlobalCompositeBar extends Disposable {
 
@@ -84,6 +85,12 @@ export class GlobalCompositeBar extends Disposable {
 		});
 		this.globalActivityActionBar = this._register(new ActionBar(this.element, {
 			actionViewItemProvider: (action, options) => {
+				// PARA-PATCH: fork-owned buttons (slot in vs/paradis/browser/paradisGlobalActivitySlot.ts)
+				const paradisViewItem = paradisCreateGlobalActivityViewItem(action, this.instantiationService, { ...options, colors: this.colors, hoverOptions: this.activityHoverOptions });
+				if (paradisViewItem) {
+					return paradisViewItem;
+				}
+
 				if (action.id === GLOBAL_ACTIVITY_ID) {
 					return this.instantiationService.createInstance(GlobalActivityActionViewItem, this.contextMenuActionsProvider, { ...options, colors: this.colors, hoverOptions: this.activityHoverOptions }, contextMenuAlignmentOptions);
 				}
@@ -116,6 +123,7 @@ export class GlobalCompositeBar extends Disposable {
 			this.globalActivityActionBar.push(this.accountAction, { index: GlobalCompositeBar.ACCOUNTS_ACTION_INDEX });
 		}
 
+		this.globalActivityActionBar.push(paradisGlobalActivityActions(this._store)); // PARA-PATCH: fork buttons sit after Accounts, before Manage
 		this.globalActivityActionBar.push(this.globalActivityAction);
 
 		this.registerListeners();
@@ -147,7 +155,7 @@ export class GlobalCompositeBar extends Disposable {
 	}
 
 	private toggleAccountsActivity() {
-		const accountsVisible = this.globalActivityActionBar.length() === 2;
+		const accountsVisible = this.globalActivityActionBar.hasAction(this.accountAction); // PARA-PATCH: fork buttons change the count, so look for the Accounts action itself
 		if (accountsVisible === this.accountsVisibilityPreference) {
 			return;
 		}
