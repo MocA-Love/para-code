@@ -3,14 +3,14 @@
 	"current": {
 		"protocolVersion": 3,
 		"minCompatibleMobile": 3,
-		"capabilities": ["state.gzip.v1", "term.sync.v1", "fs.upload-binary.v1", "voice.clips.v1", "note.cas.v1", "review.store.v1", "review.notes.v1", "review.stage.v1", "browser.open-url.v1", "fs.resolve-link.terminal.v1", "term.viewport.takeback.v1", "agent.approval.options.v1", "agent.history.page.v1", "agent.resume.v1", "scm.sync.v1", "scm.commit-recover.v1", "scm.stage-file.v1", "pr.view.v1", "pr.merge.v1", "conn.background-grace.v1", "browser.keys.v1", "agent.monitors.v1", "browser.space.v1", "browser.page.v1", "browser.focus.v1", "browser.bookmarks.v1", "fs.ignored.v1", "fs.icon-theme.v1", "note.task-ops.v1", "scm.file-at.v1", "scm.word-diff.v1"],
+		"capabilities": ["state.gzip.v1", "term.sync.v1", "fs.upload-binary.v1", "voice.clips.v1", "note.cas.v1", "review.store.v1", "review.notes.v1", "review.stage.v1", "browser.open-url.v1", "fs.resolve-link.terminal.v1", "term.viewport.takeback.v1", "agent.approval.options.v1", "agent.history.page.v1", "agent.resume.v1", "scm.sync.v1", "scm.commit-recover.v1", "scm.stage-file.v1", "pr.view.v1", "pr.merge.v1", "conn.background-grace.v1", "browser.keys.v1", "agent.monitors.v1", "browser.space.v1", "browser.page.v1", "browser.focus.v1", "browser.bookmarks.v1", "fs.ignored.v1", "fs.icon-theme.v1", "note.task-ops.v1", "scm.file-at.v1", "scm.word-diff.v1", "usage.machine-id.v1"],
 		"fsUploadEncoding": "fs-binary-v1",
 		"voiceClips": "relay-v1",
 		"desktopEpoch": "golden-desktop-epoch",
 		"revision": 3,
 		"complete": true,
 		"renderers": [
-			{ "windowId": 1, "rendererGeneration": 2, "ready": true, "host": { "kind": "remote", "id": "ssh-remote+devbox", "label": "devbox" } }
+			{ "windowId": 1, "rendererGeneration": 2, "ready": true, "host": { "kind": "remote", "id": "ssh-remote+devbox", "label": "devbox", "machineIdHash": "5c9d0a5c1a35d4b1d8d4e1f0f0a7f3c2b6e1d9a8c7b6a5f4e3d2c1b0a9f8e7d6" } }
 		],
 		"activeWs": "1:repo",
 		"workspaces": [
@@ -44,7 +44,8 @@
 		],
 		"battery": { "level": 80, "charging": true },
 		"resources": { "cpu": 25, "memUsed": 8589934592, "memTotal": 17179869184, "diskFree": 107374182400, "diskTotal": 494384795648 },
-		"pcName": "MacBook-Pro"
+		"pcName": "MacBook-Pro",
+		"machineIdHash": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
 	},
 	"preW217": {
 		"protocolVersion": 3,

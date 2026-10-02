@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
-import { useIsFocused } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../../src/appState.js';
@@ -29,6 +29,10 @@ import { formatRelativeTime, useNow } from '../../../src/time.js';
 import { resourceLevelColor, updatedAtLabel } from '../../../src/usageFormat.js';
 import { Icon, SectionHeader, iconSize } from '../../../src/ui/index.js';
 import { GroupHeader, SettingsScreen } from '../../../src/features/settings/settingsScaffold.js';
+import { settingsRoutes } from '../../../src/features/settings/settingsRoutes.js';
+import { UsageEntryRows } from '../../../src/features/usage/usageOverviewParts.js';
+import { useUsageOverview } from '../../../src/features/usage/usageStore.js';
+import { useUsageScope } from '../../../src/features/usage/useUsageScope.js';
 import { barPercent, unsupportedRequestMessage, updateSystemSpaceDiskWarmLeaseLifecycle } from '../../../src/features/settings/usageDetailModel.js';
 import {
 	Bar,
@@ -68,16 +72,56 @@ const AXIS_OPTIONS: readonly { value: AxisKey; label: string }[] = [
  * ボリュームの内訳を開いている間だけ PC 側のキャッシュを温める（warm lease）。
  */
 export default function SystemScreen() {
-	const { systemResources, spaceDiskUsage, connection, warmLeaseReady, activePcId, controllerRevision, acquireSpaceDiskWarmLease, pcs } = useAppStore(useShallow(s => ({
-		systemResources: s.systemResources,
-		spaceDiskUsage: s.spaceDisk,
-		connection: s.connection,
+	const { scope } = useUsageScope();
+	return scope.kind === 'all' ? <SystemAllView /> : <SystemDetailView />;
+}
+
+/**
+ * PC が2台以上のときの「システム」。足さずに PC ごとに1行（desktop state の CPU・メモリ・SSD だけを使い、
+ * 6 秒ごとの詳細の取得は全 PC にかけない）。行を押すとその PC の詳細へ。
+ */
+function SystemAllView() {
+	const router = useRouter();
+	const now = useNow();
+	const overview = useUsageOverview();
+	const entries = overview.entries.filter(entry => entry.kind === 'pc');
+	return (
+		<SettingsScreen title="システム" subtitle={`PC ${entries.length} 台`}>
+			<GroupHeader title="PC ごと" first />
+			<UsageEntryRows
+				entries={entries}
+				values={{}}
+				now={now}
+				onOpen={entry => { haptic('move'); router.push(settingsRoutes.usageDetail('system', entry.key)); }}
+			/>
+			<DetailMessage tone="note">PC を選ぶと、何が CPU・メモリ・ディスクを使っているかを見られます。値は PC から常に届いているものです（オフラインの PC は出せません）。</DetailMessage>
+		</SettingsScreen>
+	);
+}
+
+function SystemDetailView() {
+	const { scope } = useUsageScope();
+	const { activeConnection, warmLeaseReady, activePcId, controllerRevision, acquireSpaceDiskWarmLease, pcs } = useAppStore(useShallow(s => ({
+		activeConnection: s.connection,
 		warmLeaseReady: s.connection === 'online' && s.pcOnline && s.sessionProtocolReady,
 		activePcId: s.activePcId,
 		controllerRevision: s.controllerRevision,
 		acquireSpaceDiskWarmLease: s.acquireSpaceDiskWarmLease,
 		pcs: s.pcs,
 	})));
+	// 「PC ごと」の行から来たときはその PC、PC が1台なら見ている PC。要求はその PC のコントローラへ送る。
+	const targetPcId = scope.kind === 'source' && scope.pcId !== undefined ? scope.pcId : activePcId;
+	const isActivePc = targetPcId === activePcId;
+	const targetPc = pcs.find(pc => pc.id === targetPcId);
+	const connection = isActivePc ? activeConnection : targetPc?.connection === 'online' && targetPc.pcOnline ? 'online' : 'offline';
+	const systemResources = useCallback((bypassCache?: boolean) => {
+		const requester = targetPcId !== undefined ? useAppStore.getState().usageRequesterFor(targetPcId) : undefined;
+		return requester !== undefined ? requester.systemResources(bypassCache) : Promise.reject(new Error('not initialized'));
+	}, [targetPcId]);
+	const spaceDiskUsage = useCallback((bypassCache?: boolean) => {
+		const requester = targetPcId !== undefined ? useAppStore.getState().usageRequesterFor(targetPcId) : undefined;
+		return requester !== undefined ? requester.spaceDisk(bypassCache) : Promise.reject(new Error('not initialized'));
+	}, [targetPcId]);
 
 	const [data, setData] = useState<SystemResourcesResult | undefined>();
 	const [loading, setLoading] = useState(false);
@@ -115,8 +159,8 @@ export default function SystemScreen() {
 				setLoading(false);
 			}
 		}
-		// activePcId: 切り替えたら取り直す（connection は online のままなので、これが無いと再取得が起きない）
-	}, [systemResources, connection, activePcId]);
+		// targetPcId: 切り替えたら取り直す（connection は online のままなので、これが無いと再取得が起きない）
+	}, [systemResources, connection, targetPcId]);
 
 	useEffect(() => { void refresh(); }, [refresh]);
 
@@ -164,7 +208,7 @@ export default function SystemScreen() {
 		setError(undefined);
 		setSpaceError(undefined);
 		spaceRequestGen.current++;
-	}, [activePcId]);
+	}, [targetPcId]);
 
 	// 表示中だけ自動更新する（画面を離れる・アプリが背面に回ったら止める）。
 	const isFocused = useIsFocused();
@@ -179,13 +223,14 @@ export default function SystemScreen() {
 		updateSystemSpaceDiskWarmLeaseLifecycle(lifecycle, {
 			focused: isFocused,
 			appActive: isAppActive,
-			online: warmLeaseReady,
+			// 温めの要求は見ている PC にだけ送る（見ていない PC の詳細はキャッシュのまま測る）
+			online: warmLeaseReady && isActivePc,
 			volumeAxis: axis === 'volume',
 			activePcId,
 			controllerRevision,
 		}, acquireSpaceDiskWarmLease);
 		return () => lifecycle.update(false, acquireSpaceDiskWarmLease);
-	}, [isFocused, isAppActive, warmLeaseReady, axis, activePcId, controllerRevision, acquireSpaceDiskWarmLease]);
+	}, [isFocused, isAppActive, warmLeaseReady, isActivePc, axis, activePcId, controllerRevision, acquireSpaceDiskWarmLease]);
 	useEffect(() => {
 		if (!isFocused || !isAppActive || connection !== 'online') {
 			return undefined;
@@ -222,9 +267,8 @@ export default function SystemScreen() {
 	const memoryRows = sortRowsBy(rows, 'memory');
 	const maxCpu = Math.max(1, ...rows.map(row => row.cpu));
 	const maxMemory = Math.max(1, ...rows.map(row => row.memory));
-	const activePc = pcs.find(pc => pc.id === activePcId);
 	const subtitle = [
-		pcs.length > 1 ? activePc?.name : undefined,
+		pcs.length > 1 ? targetPc?.name : undefined,
 		data !== undefined ? `${updatedAtLabel(data.host.collectedAt, now)} · ${data.host.cores}コア` : undefined,
 	].filter((part): part is string => part !== undefined).join(' · ') || undefined;
 

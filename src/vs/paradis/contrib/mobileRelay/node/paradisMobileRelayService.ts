@@ -103,6 +103,7 @@ import { PARADIS_RELAY_STABLE_CONNECTION_MS, paradisRelayJitteredDelayMs, paradi
 import { ParadisVoiceSubscriptions } from '../common/paradisVoiceSubscriptions.js';
 import { PARADIS_JSON_GZIP_RESPONSE_ENCODING, paradisEncodeNegotiatedGzipJsonResponse } from '../common/paradisMobileGzipJson.js';
 import { paradisDeliverVoiceClip } from './paradisVoiceClipDelivery.js';
+import { paradisGetMachineIdHash } from '../../../node/paradisMachineId.js';
 
 /**
  * リレー接続の保活間隔。経路のアイドルタイムアウトより十分短く、かつ常時接続の台数分だけ
@@ -585,6 +586,8 @@ export interface IParadisMobileRelayServiceTestSeams {
 	readonly disableHostResourceSampling?: boolean;
 	/** 台帳の書き込み（保存の失敗を再現するテストが差し替える）。 */
 	readonly writeRelayState?: (filePath: string, state: IParadisRelayPersistedState) => Promise<void>;
+	/** このPCの機械の印の読み出し（既定は OS の機械 ID。テストは OS を読まない値に差し替える）。 */
+	readonly readMachineIdHash?: () => Promise<string | undefined>;
 }
 
 /**
@@ -657,6 +660,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	// Mobile relay が有効な間だけ動かし、shared process の不要な定期起床を避ける。
 	private readonly stateBroadcastMetricsTimer: IParadisMobileRelayMetricsTimer;
 	private readonly writeRelayState: (filePath: string, state: IParadisRelayPersistedState) => Promise<void>;
+	private readonly readMachineIdHash: () => Promise<string | undefined>;
+	private machineIdHashRequested = false;
 	private stateBroadcastMetricsEnabled = false;
 	private stateBroadcastMetricsGeneration = 0;
 
@@ -739,6 +744,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		super();
 		this.stateBroadcastMetricsTimer = this._register(testSeams?.stateBroadcastMetricsTimer ?? new IntervalTimer());
 		this.writeRelayState = testSeams?.writeRelayState ?? paradisWriteRelayState;
+		this.readMachineIdHash = testSeams?.readMachineIdHash ?? paradisGetMachineIdHash;
 		this.disconnectReporter = this._register(new ParadisRelayDisconnectReporter({
 			reportDelayMs: RELAY_DISCONNECT_REPORT_DELAY_MS,
 			reportAfterAttempts: RELAY_DISCONNECT_REPORT_AFTER_ATTEMPTS,
@@ -1396,6 +1402,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.pcName = paradisFormatPcName(undefined, hostname());
 			this.terminalRegistry.setPcName(this.pcName);
 		}
+		this.loadMachineIdHash();
 		await this.ensureLoaded();
 		this.updateDiagnosticCorrelation();
 		this.enabled = enabled;
@@ -2125,6 +2132,33 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * 空のときのホスト名へのフォールバックはここで行う（renderer からは `os` を読めないため）。
 	 * 変わったときだけ desktop state を送り直す（名前は滅多に変わらないので間引きは要らない）。
 	 */
+	/**
+	 * このPCの機械の印を desktop state に載せる（モバイルが複数PCの使用量を合計するとき、SSH 先が別に
+	 * ペアリングしたPCと同じ機械かを見分けるため）。読めたら以後は読まない。読めなければ載せず、次の initialize で読み直す。
+	 */
+	private loadMachineIdHash(): void {
+		if (this.machineIdHashRequested) {
+			return;
+		}
+		this.machineIdHashRequested = true;
+		this.readMachineIdHash().then(async machineIdHash => {
+			if (machineIdHash === undefined) {
+				// 読めなかった。次に initialize されたときに読み直す
+				this.machineIdHashRequested = false;
+				return;
+			}
+			if (this._store.isDisposed) {
+				return;
+			}
+			if (this.terminalRegistry.setMachineIdHash(machineIdHash)) {
+				await this.enqueueRendererAuthority(() => this.broadcastDesktopState());
+			}
+		}).catch(error => {
+			this.machineIdHashRequested = false;
+			this.logService.trace('[paradisMobileRelay] could not read the machine id', error);
+		});
+	}
+
 	async setPcName(pcName: string | undefined): Promise<void> {
 		const next = paradisFormatPcName(pcName, hostname());
 		if (this.pcName === next) {

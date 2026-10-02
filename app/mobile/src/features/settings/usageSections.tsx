@@ -8,6 +8,7 @@ import type { RateLimitAccount, RateLimitProviderSnapshot } from '../../store.js
 import { alpha, colors, radius, space, type } from '../../theme.js';
 import { Icon, Meter, MeterRow, iconSize, useThemeColors, type LucideIcon } from '../../ui/index.js';
 import { accountHint, accountName, accountWindows, providerEmptyMessage, resetInLabel } from './usageSummary.js';
+import { isWindowExpired, windowPercent } from '../usage/usageAggregate.js';
 
 /**
  * 使用量（`/settings/usage`、Orca の accounts）の束（モックの `.acsec` / `.acsh` / `.accard` / `.acrow`）。
@@ -109,7 +110,18 @@ export function ProviderUsageSection({ provider, title, snapshot, now, loading, 
 	);
 }
 
-function AccountRow({ account, now, remoteHost }: { account: RateLimitAccount; now: number; remoteHost: RateLimitProviderSnapshot['remoteHost'] }) {
+/**
+ * アカウント1行（見出し・補足・メーター）。全 PC の合計では、見えている PC のチップを `extra` に渡し、
+ * オフラインの PC の最後の値なら `dimmed` で薄くする。
+ */
+export function AccountRow({ account, now, remoteHost, extra, dimmed = false }: {
+	account: RateLimitAccount;
+	now: number;
+	remoteHost: RateLimitProviderSnapshot['remoteHost'];
+	/** メーターの下に添えるもの（見えている PC のチップ）。 */
+	extra?: ReactNode;
+	dimmed?: boolean;
+}) {
 	const windows = accountWindows(account);
 	const hint = accountHint(account, remoteHost);
 	const inUse = remoteHost === undefined && account.active === true;
@@ -120,16 +132,25 @@ function AccountRow({ account, now, remoteHost }: { account: RateLimitAccount; n
 	}
 	return (
 		<UsageRow trailing={inUse ? 'check' : undefined}>
-			<UsageRowTitle title={accountName(account)} hint={hint} />
-			{account.status === 'ok' && windows.length === 0 ? <Text style={styles.rowHint}>使用状況のデータがありません</Text> : null}
-			{account.status === 'ok' ? pairs.map(pair => (
-				<MeterRow key={pair.map(item => item.label).join('|')}>
-					{pair.map(item => (
-						<Meter key={item.label} label={item.label} percent={item.window.usedPercent} reset={resetInLabel(item.window.resetsAt, now)} />
-					))}
-					{pair.length === 1 ? <View style={styles.meterSpacer} /> : null}
-				</MeterRow>
-			)) : null}
+			<View style={[styles.accountBody, dimmed ? styles.dimmed : undefined]}>
+				<UsageRowTitle title={accountName(account)} hint={hint} />
+				{account.status === 'ok' && windows.length === 0 ? <Text style={styles.rowHint}>使用状況のデータがありません</Text> : null}
+				{account.status === 'ok' ? pairs.map(pair => (
+					<MeterRow key={pair.map(item => item.label).join('|')}>
+						{pair.map(item => (
+							<Meter
+								key={item.label}
+								label={item.label}
+								// リセット時刻を過ぎた枠（オフラインの PC の最後の値など）は、取り直すまで使用率を出さない。
+								percent={windowPercent(item.window, now)}
+								reset={isWindowExpired(item.window, now) ? 'リセット済みの可能性' : resetInLabel(item.window.resetsAt, now)}
+							/>
+						))}
+						{pair.length === 1 ? <View style={styles.meterSpacer} /> : null}
+					</MeterRow>
+				)) : null}
+			</View>
+			{extra}
 		</UsageRow>
 	);
 }
@@ -171,6 +192,9 @@ const styles = StyleSheet.create({
 	main: {
 		flex: 1,
 		minWidth: 0,
+		gap: space.xs,
+	},
+	accountBody: {
 		gap: space.xs,
 	},
 	trailing: {

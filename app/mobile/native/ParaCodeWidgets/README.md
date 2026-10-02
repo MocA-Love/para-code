@@ -54,6 +54,9 @@ C PC の状態・D スペース。iOS 17 以上）のソース一式。JS側の�
   書き換えは `src/features/links/widgetLinks.ts`（ルートを変えてもウィジェットは直さなくてよい）
 - 設定（長押し →「ウィジェットを編集」）は `WidgetIntents.swift` の AppIntentConfiguration。PC・スペースの
   候補は要約から出す。「既定」はアプリの設定（設定 → ウィジェット）に従う
+- C（PC の状態）の「コストと利用上限」は、ウィジェットの設定（`PcStatusConfigIntent.usageScope`）で「全 PC の合計」（既定）か
+  「選んだ PC」を選ぶ。全 PC の合計は要約の最上位の `usageAll`（アプリの `src/widgets/usage.ts` の `buildWidgetUsageAll`）。
+  `usageAll` の無い古い要約では選んだ PC の値に落とす
 - iOS 16.x（配信の下限 16.4）ではホーム画面のウィジェットは出ない（WidgetBundle の `if #available(iOS 17.0, *)`）
 
 ## 設計メモ

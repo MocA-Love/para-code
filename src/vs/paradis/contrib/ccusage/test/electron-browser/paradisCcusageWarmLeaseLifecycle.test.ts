@@ -25,7 +25,7 @@ import {
 	ParadisCcusageWarmLeasePayload,
 	ParadisCcusageWarmTarget,
 } from '../../common/paradisCcusage.js';
-import { ParadisCcusageStatusBarContribution } from '../../electron-browser/paradisCcusage.contribution.js';
+import { ParadisCcusageStatusBarContribution, paradisCcusageStatusPollDelay } from '../../electron-browser/paradisCcusage.contribution.js';
 import { PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH } from '../../electron-browser/paradisCcusageClient.js';
 import { ParadisCcusageEditor } from '../../electron-browser/paradisCcusageEditor.js';
 import { ParadisCcusageInput } from '../../electron-browser/paradisCcusageInput.js';
@@ -64,6 +64,12 @@ class TestCcusageConfigurationService {
 	}
 }
 
+const TEST_DAILY_ROWS = [{
+	period: '2026-08-16',
+	totalCost: 4.25,
+	modelBreakdowns: [],
+}];
+
 class TestCcusageChannel {
 	readonly calls: IChannelCall[] = [];
 	readonly activeLeases = new Map<string, readonly ParadisCcusageWarmTarget[]>();
@@ -71,6 +77,8 @@ class TestCcusageChannel {
 	private holdWarmLeases = false;
 	leaseFailure: Error | undefined;
 	dailyFailure: Error | undefined;
+	/** true なら fetchReport を持たない古い接続先として振る舞う（従来のコマンドへ落ちる）。 */
+	legacy = false;
 
 	call<T>(command: string, args?: unknown): Promise<T> {
 		this.calls.push({ command, args });
@@ -91,15 +99,22 @@ class TestCcusageChannel {
 			this.applyWarmLease(payload);
 			return Promise.resolve(undefined as T);
 		}
+		if (command === 'fetchReport') {
+			if (this.legacy) {
+				return Promise.reject(new Error(`Method not found: ${command}`));
+			}
+			const kind = (args as readonly [{ readonly kind: string }])[0].kind;
+			if (kind === 'daily' && this.dailyFailure) {
+				return Promise.reject(this.dailyFailure);
+			}
+			const values: Record<string, unknown> = { daily: TEST_DAILY_ROWS, blocks: undefined, session: [], projects: {} };
+			return Promise.resolve({ value: values[kind], fetchedAt: Date.now(), stale: false } as T);
+		}
 		if (command === 'fetchDaily') {
 			if (this.dailyFailure) {
 				return Promise.reject(this.dailyFailure);
 			}
-			return Promise.resolve([{
-				period: '2026-08-16',
-				totalCost: 4.25,
-				modelBreakdowns: [],
-			}] as T);
+			return Promise.resolve(TEST_DAILY_ROWS as T);
 		}
 		if (command === 'fetchActiveBlock') {
 			return Promise.resolve(undefined as T);
@@ -111,6 +126,12 @@ class TestCcusageChannel {
 			return Promise.resolve({} as T);
 		}
 		throw new Error(`Unexpected ccusage command: ${command}`);
+	}
+
+	/** daily の取得の回数（fetchReport の daily と、古い接続先の fetchDaily）。 */
+	dailyCalls(): number {
+		return this.calls.filter(call => call.command === 'fetchDaily'
+			|| (call.command === 'fetchReport' && (call.args as readonly [{ readonly kind: string }])[0].kind === 'daily')).length;
 	}
 
 	callsFor(command: string): readonly IChannelCall[] {
@@ -202,7 +223,9 @@ function createEditor(harness: ITestCcusageHarness, storageService: TestStorageS
 }
 
 async function settle(): Promise<void> {
-	for (let index = 0; index < 8; index++) {
+	// クライアントは IPC の応答を待ってから次を呼ぶ（古い接続先では fetchReport の失敗の後に従来のコマンド）。
+	// その段数に余裕を持たせて流し切る。
+	for (let index = 0; index < 32; index++) {
 		await Promise.resolve();
 	}
 }
@@ -234,20 +257,20 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 
 		await settle();
 		assert.deepStrictEqual(singleActiveLease(harness.channel), [{ kind: 'daily', options: { since: '20260519' } }]);
-		assert.strictEqual(harness.channel.callsFor('fetchDaily').length, 0);
+		assert.strictEqual(harness.channel.dailyCalls(), 0);
 		await clock.tickAsync(15_000);
 		await settle();
-		assert.strictEqual(harness.channel.callsFor('fetchDaily').length, 1);
+		assert.strictEqual(harness.channel.dailyCalls(), 1);
 		await clock.tickAsync(10 * 60 * 1000);
 		await settle();
-		assert.strictEqual(harness.channel.callsFor('fetchDaily').length, 2);
+		assert.strictEqual(harness.channel.dailyCalls(), 2);
 
 		harness.configuration.setValue(STATUS_BAR_ENABLED_SETTING, false);
 		await settle();
 		assert.strictEqual(harness.channel.activeLeases.size, 0);
 		await clock.tickAsync(10 * 60 * 1000);
 		await settle();
-		assert.strictEqual(harness.channel.callsFor('fetchDaily').length, 2);
+		assert.strictEqual(harness.channel.dailyCalls(), 2);
 
 		harness.configuration.setValue(STATUS_BAR_ENABLED_SETTING, true);
 		await settle();
@@ -479,7 +502,7 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 		await settle();
 		assert.strictEqual(harness.statusbarService.lastEntry?.text, '$(graph) $4.25');
 		assert.ok(harness.channel.callsFor('setWarmLease').length > 0);
-		assert.strictEqual(harness.channel.callsFor('fetchDaily').length, 1);
+		assert.strictEqual(harness.channel.dailyCalls(), 1);
 
 		harness.channel.dailyFailure = new Error('foreground dashboard failure');
 		const editor = disposables.add(createEditor(harness, disposables.add(new TestStorageService())));
@@ -490,9 +513,63 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 		editor.setVisible(true);
 		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
 		await settle();
-		assert.ok(parent.textContent?.includes('Failed to run ccusage: foreground dashboard failure'));
+		// 文言は翻訳で変わるので、失敗の理由が画面に出ていることだけを見る
+		assert.ok(parent.textContent?.includes('foreground dashboard failure'));
 
 		status.dispose();
 		editor.dispose();
+	});
+
+	// fetchReport を持たない古い接続先（REH）では、1 回だけ fetchReport を試して従来のコマンドへ落ち、以後は従来のコマンドだけを使う。
+	test('falls back to the legacy daily command on a host without fetchReport', async () => {
+		const clock = sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
+		const harness = createHarness({ [STATUS_BAR_ENABLED_SETTING]: true });
+		harness.channel.legacy = true;
+		disposables.add(harness.instantiationService);
+		disposables.add(toDisposable(() => harness.configuration.dispose()));
+		const status = disposables.add(createStatusContribution(harness));
+
+		await clock.tickAsync(15_000);
+		await settle();
+		await clock.tickAsync(10 * 60 * 1000);
+		await settle();
+		const text = harness.statusbarService.lastEntry?.text;
+		status.dispose();
+
+		assert.deepStrictEqual({
+			text,
+			fetchReport: harness.channel.callsFor('fetchReport').length,
+			fetchDaily: harness.channel.callsFor('fetchDaily').length,
+		}, { text: '$(graph) $4.25', fetchReport: 1, fetchDaily: 2 });
+	});
+
+	// 取得が続けて失敗したら間隔を 10 → 20 → 40 → 80 分と伸ばし、1 回成功したら 10 分へ戻す。
+	test('backs off the status poll while fetches keep failing and returns to the normal cadence after a success', async () => {
+		const clock = sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
+		const harness = createHarness({ [STATUS_BAR_ENABLED_SETTING]: true });
+		harness.channel.dailyFailure = new Error('ccusage timed out');
+		disposables.add(harness.instantiationService);
+		disposables.add(toDisposable(() => harness.configuration.dispose()));
+		const status = disposables.add(createStatusContribution(harness));
+		const calls: number[] = [];
+		const advance = async (ms: number) => {
+			await clock.tickAsync(ms);
+			await settle();
+			calls.push(harness.channel.dailyCalls());
+		};
+
+		await advance(15_000);
+		await advance(10 * 60 * 1000);
+		await advance(10 * 60 * 1000);
+		await advance(40 * 60 * 1000);
+		harness.channel.dailyFailure = undefined;
+		await advance(80 * 60 * 1000);
+		await advance(10 * 60 * 1000);
+		status.dispose();
+
+		assert.deepStrictEqual({ calls, delays: [0, 1, 2, 3, 4].map(paradisCcusageStatusPollDelay) }, {
+			calls: [1, 1, 2, 3, 4, 5],
+			delays: [10, 20, 40, 80, 80].map(minutes => minutes * 60 * 1000),
+		});
 	});
 });

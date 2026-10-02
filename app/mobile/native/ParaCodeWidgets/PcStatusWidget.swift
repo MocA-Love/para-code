@@ -48,6 +48,7 @@ extension PcStatusConfigIntent {
 		case .codex: config.limitTarget = "codex"
 		case .appDefault: config.limitTarget = nil
 		}
+		config.usageAll = usageScope == .all
 		return config
 	}
 }
@@ -69,12 +70,28 @@ struct PcMetric: Identifiable {
 extension ParaWidgetModel {
 	static let limitKeys: Set<String> = ["claude5h", "claudeWeek", "codex5h", "codexWeek"]
 
+	/// 今日のコストと利用上限。設定が「全 PC の合計」なら要約の合計（古いアプリの要約に無ければ PC の値）。
+	var usage: WidgetUsage? {
+		if entry.config.usageAll, let all = entry.snapshot?.usageAll {
+			return all
+		}
+		return pc?.usage
+	}
+
+	/// 出しているコストと利用上限が全 PC の合計か。
+	var usageIsAll: Bool {
+		entry.config.usageAll && entry.snapshot?.usageAll != nil
+	}
+
 	func metric(_ key: String) -> PcMetric? {
-		guard let pc else { return nil }
-		let resources = pc.resources
+		// コストと利用上限は「全 PC の合計」なら PC が選べなくても出す（`usage` が要約の合計を返す）。
+		if pc == nil && !(usageIsAll && (key == "cost" || Self.limitKeys.contains(key))) {
+			return nil
+		}
+		let resources = pc?.resources
 		switch key {
 		case "battery":
-			guard let battery = pc.battery else {
+			guard let battery = pc?.battery else {
 				return PcMetric(id: key, label: "電源", short: "電池", value: "電源", percent: nil, level: 0, sub: "電源に接続")
 			}
 			let level = battery.level <= 10 ? 2 : battery.level <= 20 ? 1 : 0
@@ -94,10 +111,10 @@ extension ParaWidgetModel {
 			let level = gb <= 10 ? 2 : gb <= 25 ? 1 : (used ?? 0) >= 96 ? 2 : (used ?? 0) >= 88 ? 1 : 0
 			return PcMetric(id: key, label: "SSD の空き", short: "SSD 空き", value: WidgetText.bytes(free), percent: used, level: level, sub: nil)
 		case "cost":
-			guard let cost = pc.usage?.todayCost else { return nil }
-			return PcMetric(id: key, label: "今日のコスト", short: "今日", value: WidgetText.cost(cost), percent: nil, level: 0, sub: nil)
+			guard let cost = usage?.todayCost else { return nil }
+			return PcMetric(id: key, label: usageIsAll ? "今日のコスト（全 PC）" : "今日のコスト", short: "今日", value: WidgetText.cost(cost), percent: nil, level: 0, sub: nil)
 		default:
-			guard Self.limitKeys.contains(key), let limit = pc.usage?.limits.first(where: { $0.key == key }) else { return nil }
+			guard Self.limitKeys.contains(key), let limit = usage?.limits.first(where: { $0.key == key }) else { return nil }
 			let reset = WidgetText.until(limit.resetsAt, now: now).map { "\($0)にリセット" }
 			let short = limit.label.replacingOccurrences(of: "5時間", with: "5h")
 			return PcMetric(id: key, label: limit.label, short: short, value: "\(Int(limit.usedPercent.rounded()))%", percent: limit.usedPercent, level: limit.usedPercent >= 90 ? 2 : limit.usedPercent >= 70 ? 1 : 0, sub: reset)
@@ -124,7 +141,11 @@ extension ParaWidgetModel {
 	}
 
 	var usageAgo: String? {
-		guard let at = pc?.usage?.fetchedAt else { return nil }
+		guard let at = usage?.fetchedAt else { return nil }
+		if usageIsAll {
+			let partial = usage?.partial == true ? "（一部オフライン）" : ""
+			return "全 PC の合計\(partial) ・ \(WidgetText.ago(at, now: now))に取得"
+		}
 		return "コストと上限は\(WidgetText.ago(at, now: now))に取得"
 	}
 }
@@ -304,7 +325,7 @@ private struct PcMedium: View {
 			VStack(alignment: .leading, spacing: 4) {
 				if chosen.contains("cost") {
 					Text("今日のコスト").font(.system(size: 11)).foregroundStyle(palette.dim)
-					Text(WidgetText.cost(model.pc?.usage?.todayCost))
+					Text(WidgetText.cost(model.usage?.todayCost))
 						.font(.system(size: 20, weight: .semibold))
 						.tracking(-0.4)
 						.foregroundStyle(palette.text)
@@ -363,7 +384,7 @@ private struct PcLarge: View {
 		let chosen = Set(model.settings.pc.metrics)
 		let rings = model.metrics.filter { $0.id == "battery" || $0.id == "cpu" || $0.id == "memory" }.prefix(3)
 		let limits = model.metrics.filter { ParaWidgetModel.limitKeys.contains($0.id) }
-		let usage = model.pc?.usage
+		let usage = model.usage
 		VStack(alignment: .leading, spacing: 0) {
 			WidgetHeader(title: model.pcName, palette: palette, privateTitle: true) {
 				if let pc = model.pc { PcBadge(pc: pc, palette: palette) }
@@ -384,7 +405,7 @@ private struct PcLarge: View {
 					MetricBarRow(metric: disk, palette: palette).padding(.top, 6)
 				}
 				if chosen.contains("cost") {
-					SectionTitle(text: "今日のコスト", palette: palette)
+					SectionTitle(text: model.usageIsAll ? "今日のコスト（全 PC）" : "今日のコスト", palette: palette)
 					HStack(alignment: .firstTextBaseline) {
 						Text(WidgetText.cost(usage?.todayCost))
 							.font(.system(size: 20, weight: .semibold))
@@ -506,7 +527,7 @@ private struct PcRectangular: View {
 				Text("\(battery)\(cpu)").lineLimit(1)
 			}
 			let limit = model.primaryLimit.map { " ・ 上限 \($0.value)" } ?? ""
-			Text("今日 \(WidgetText.cost(pc?.usage?.todayCost))\(limit)").lineLimit(1).foregroundStyle(.secondary)
+			Text("今日 \(WidgetText.cost(model.usage?.todayCost))\(limit)").lineLimit(1).foregroundStyle(.secondary)
 		}
 		.frame(maxWidth: .infinity, alignment: .leading)
 		.widgetURL(model.systemURL)

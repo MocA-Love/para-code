@@ -17,7 +17,7 @@ suite('ParadisCcusage process lifecycle', () => {
 
 	teardown(() => sinon.restore());
 
-	/** 設定値ごとに、実際に子プロセスが tree-kill されるまでの経過時間(ms)を測る。 */
+	/** 設定値ごとに、待っている側が打ち切られるまでの経過時間(ms)を測る（実行そのものはその時点では止めない）。 */
 	async function measureDeadline(configuredValue: unknown): Promise<number | undefined> {
 		const clock = sinon.useFakeTimers();
 		const kill = sinon.spy(() => true);
@@ -27,20 +27,17 @@ suite('ParadisCcusage process lifecycle', () => {
 		const configurationService = new TestConfigurationService({ [PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS]: configuredValue });
 		const service = new ParadisCcusageService(new NullLogService(), configurationService, undefined, execFile, () => clock.now);
 
-		const pending = service.fetchDaily({ executablePath: '/test/ccusage' });
-		pending.catch(() => undefined);
-		let killedAt: number | undefined;
+		let rejectedAt: number | undefined;
+		service.fetchDaily({ executablePath: '/test/ccusage' }).catch(() => { rejectedAt = clock.now; });
 		// 上限(10分)を超えて回し、どこで打ち切られたかを見る。
-		while (clock.now <= 11 * 60_000) {
-			if (kill.callCount > 0) {
-				killedAt = clock.now;
-				break;
-			}
+		while (clock.now <= 11 * 60_000 && rejectedAt === undefined) {
 			await clock.tickAsync(1_000);
 		}
+		const killedBeforeGivingUp = kill.callCount;
 		service.dispose();
 		clock.restore();
-		return killedAt;
+		assert.strictEqual(killedBeforeGivingUp, 0, 'giving up the wait must not stop the scan');
+		return rejectedAt;
 	}
 
 	test('derives the execution deadline from the setting, clamped to 10 seconds and 10 minutes', async () => {
@@ -61,7 +58,8 @@ suite('ParadisCcusage process lifecycle', () => {
 		});
 	});
 
-	test('tree-kills at the default 180 second timeout and classifies the explicit deadline without an offline retry', async () => {
+	// 待っている側は既定の 180 秒で外すが、走査は止めずに 15 分の上限まで続ける（--offline でやり直さない）。
+	test('stops waiting at the default 180 seconds but keeps the scan running until the 15 minute limit', async () => {
 		const clock = sinon.useFakeTimers();
 		const kill = sinon.spy(() => true);
 		let callback: ((error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void) | undefined;
@@ -81,22 +79,26 @@ suite('ParadisCcusage process lifecycle', () => {
 		const service = new ParadisCcusageService(new NullLogService(), undefined, undefined, execFile, () => clock.now);
 
 		const pending = service.fetchDaily({ executablePath: '/test/ccusage' });
+		pending.catch(() => undefined);
 		while (!callback) {
 			await Promise.resolve();
 		}
-		await clock.tickAsync(179_999);
-		assert.strictEqual(kill.callCount, 0, 'the deadline must not fire before the configured default');
+		await clock.tickAsync(180_000);
+		await assert.rejects(pending, /timed out/);
+		assert.strictEqual(kill.callCount, 0, 'the scan must keep running after the foreground limit');
+		await clock.tickAsync(15 * 60_000 - 180_000 - 1);
+		assert.strictEqual(kill.callCount, 0);
 		await clock.tickAsync(1);
-		assert.strictEqual(kill.callCount, 1);
-		assert.strictEqual(timeoutOption, undefined);
+		assert.deepStrictEqual({ kills: kill.callCount, timeout: timeoutOption }, { kills: 1, timeout: undefined });
 
 		callback!(Object.assign(new Error('terminated'), { killed: false }), '', 'terminated');
-		await assert.rejects(pending, /terminated/);
-		assert.strictEqual(invocations, 1, 'an explicitly timed out execution must not retry with --offline');
+		await clock.tickAsync(0);
+		assert.strictEqual(invocations, 1, 'a timed out execution must not retry with --offline');
 		service.dispose();
 	});
 
-	test('rejects a successful callback that follows the deadline without retrying or caching it', async () => {
+	// 待っている側を外した後に走査が終われば、その値をキャッシュし、次の要求はすぐ返る（走査をやり直さない）。
+	test('caches a scan that completes after the foreground gave up waiting', async () => {
 		const clock = sinon.useFakeTimers();
 		const callbacks: Array<(error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void> = [];
 		const invocations: string[][] = [];
@@ -108,20 +110,19 @@ suite('ParadisCcusage process lifecycle', () => {
 		const service = new ParadisCcusageService(new NullLogService(), undefined, undefined, execFile, () => clock.now);
 
 		const expired = service.fetchDaily({ executablePath: '/test/ccusage' });
+		expired.catch(() => undefined);
 		while (callbacks.length === 0) {
 			await Promise.resolve();
 		}
 		await clock.tickAsync(180_000);
-		callbacks[0](null, JSON.stringify({ daily: [{ period: 'late' }] }), '');
 		await assert.rejects(expired, /timed out/);
-
-		const refreshed = service.fetchDaily({ executablePath: '/test/ccusage' });
-		while (callbacks.length < 2) {
-			await Promise.resolve();
-		}
-		callbacks[1](null, JSON.stringify({ daily: [{ period: 'fresh' }] }), '');
-		assert.deepStrictEqual(await refreshed, [{ period: 'fresh' }]);
-		assert.deepStrictEqual(invocations, [['daily', '--json'], ['daily', '--json']]);
+		// 打ち切った直後の要求は、走っている走査に相乗りする（新しく起こさない）
+		const joined = service.fetchDaily({ executablePath: '/test/ccusage' });
+		await clock.tickAsync(100_000);
+		callbacks[0](null, JSON.stringify({ daily: [{ period: 'late' }] }), '');
+		assert.deepStrictEqual(await joined, [{ period: 'late' }]);
+		assert.deepStrictEqual(await service.fetchDaily({ executablePath: '/test/ccusage' }), [{ period: 'late' }]);
+		assert.deepStrictEqual(invocations, [['daily', '--json']]);
 		service.dispose();
 	});
 
@@ -160,6 +161,8 @@ suite('ParadisCcusage process lifecycle', () => {
 		await completed;
 		const active = service.fetchDaily({ executablePath: '/test/second' });
 		const anotherActive = service.fetchDaily({ executablePath: '/test/third' });
+		active.catch(() => undefined);
+		anotherActive.catch(() => undefined);
 		while (callbacks.length < 3) {
 			await Promise.resolve();
 		}

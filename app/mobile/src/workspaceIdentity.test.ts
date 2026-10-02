@@ -32,6 +32,16 @@ function makeState(overrides: Partial<WorkspaceState> = {}): WorkspaceState {
 }
 
 describe('reuseWorkspaceState', () => {
+	test('機械のハッシュ（PC 自身と接続先）だけが変わっても、前回の state を据え置かない', () => {
+		const previous = makeState({ renderers: [{ windowId: 1, rendererGeneration: 1, ready: true, host: { kind: 'remote', id: 'srv', label: 'srv' } }] });
+		const withHost = clone(previous);
+		withHost.renderers = [{ windowId: 1, rendererGeneration: 1, ready: true, host: { kind: 'remote', id: 'srv', label: 'srv', machineIdHash: 'm-srv' } }];
+		const hostResult = reuseWorkspaceState(previous, withHost);
+		const withPc = clone(previous);
+		withPc.machineIdHash = 'm-pc';
+		expect([hostResult.renderers[0]?.host?.machineIdHash, reuseWorkspaceState(previous, withPc).machineIdHash]).toEqual(['m-srv', 'm-pc']);
+	});
+
 	test('値が完全に同じなら前回の state をそのまま返す', () => {
 		const previous = makeState();
 		expect(reuseWorkspaceState(previous, clone(previous))).toBe(previous);

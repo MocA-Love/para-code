@@ -13,7 +13,7 @@
 // - 設定 `paradis.ccusage.*` のスキーマ登録
 // ccusage CLI 実行本体は shared process 側(node/paradisCcusageChannel.ts)にある。
 
-import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Categories } from '../../../../platform/action/common/actionCommonCategories.js';
@@ -40,6 +40,16 @@ const SHOW_DASHBOARD_COMMAND_ID = 'paradis.ccusage.showDashboard';
 const STATUS_POLL_INTERVAL_MS = 10 * 60 * 1000;
 /** 起動直後の負荷を避けるための初回取得ディレイ。 */
 const STATUS_INITIAL_DELAY_MS = 15 * 1000;
+/**
+ * 取得が続けて失敗したときに間隔を伸ばす上限（10 分 → 20 分 → 40 分 → 80 分）。ccusage がタイムアウトまで
+ * 走り続ける PC で、10 分ごとに重い走査を起こし直さないため。1 回成功したら 10 分へ戻す。
+ */
+const STATUS_MAX_BACKOFF_STEPS = 3;
+
+/** 連続失敗の回数から、次にステータスバーの値を取りに行くまでの間隔を求める。 */
+export function paradisCcusageStatusPollDelay(consecutiveFailures: number): number {
+	return STATUS_POLL_INTERVAL_MS * Math.pow(2, Math.min(Math.max(consecutiveFailures, 0), STATUS_MAX_BACKOFF_STEPS));
+}
 
 // ---------- editor pane / serializer ----------
 
@@ -141,10 +151,11 @@ export class ParadisCcusageStatusBarContribution extends Disposable implements I
 
 	private readonly entry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly warmLease = this._register(new MutableDisposable<IDisposable>());
-	private readonly pollTimer = this._register(new IntervalTimer());
+	private readonly pollTimer = this._register(new RunOnceScheduler(() => this.update(), STATUS_POLL_INTERVAL_MS));
 	private readonly initialFetch = this._register(new RunOnceScheduler(() => this.update(), STATUS_INITIAL_DELAY_MS));
 	private readonly client: ParadisCcusageClient;
 	private fetching = false;
+	private consecutiveFailures = 0;
 
 	constructor(
 		@IStatusbarService private readonly statusbarService: IStatusbarService,
@@ -176,9 +187,9 @@ export class ParadisCcusageStatusBarContribution extends Disposable implements I
 		}
 		this.warmLease.value ??= this.client.createStatusWarmLease();
 		this.showEntry(undefined);
-		// 起動直後は避けて初回取得し、以降は定期更新する
+		// 起動直後は避けて初回取得し、以降は取得のたびに次を予約する（失敗が続けば間隔を伸ばす）
+		this.pollTimer.cancel();
 		this.initialFetch.schedule();
-		this.pollTimer.cancelAndSet(() => this.update(), STATUS_POLL_INTERVAL_MS);
 	}
 
 	private showEntry(todayCost: number | undefined): void {
@@ -207,13 +218,18 @@ export class ParadisCcusageStatusBarContribution extends Disposable implements I
 		this.fetching = true;
 		try {
 			const todayCost = await this.client.fetchTodayCost();
+			this.consecutiveFailures = 0;
 			if (this.enabled) {
 				this.showEntry(todayCost);
 			}
 		} catch {
-			// ccusage 未インストール等。ボタン自体は開ける状態のまま維持する。
+			// ccusage 未インストール・タイムアウト等。ボタン自体は開ける状態のまま維持する。
+			this.consecutiveFailures++;
 		} finally {
 			this.fetching = false;
+			if (this.enabled) {
+				this.pollTimer.schedule(paradisCcusageStatusPollDelay(this.consecutiveFailures));
+			}
 		}
 	}
 }

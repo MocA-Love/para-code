@@ -22,12 +22,16 @@ import {
 	IParadisCcusageBlock,
 	IParadisCcusageDailyRow,
 	IParadisCcusageExecOptions,
+	IParadisCcusageReportResult,
+	IParadisCcusageReportValues,
 	IParadisCcusageSessionRow,
 	PARADIS_CCUSAGE_CHANNEL,
+	PARADIS_CCUSAGE_FETCH_REPORT_COMMAND,
 	PARADIS_CCUSAGE_TIMEZONE_PATTERN,
 	ParadisCcusageAgent,
 	ParadisCcusageProjects,
 	ParadisCcusageWarmTarget,
+	ParadisCcusageWarmTargetKind,
 	paradisCcusageAgentForModel
 } from '../common/paradisCcusage.js';
 
@@ -89,7 +93,13 @@ export interface IParadisCcusageDashboardData {
 	readonly projects: IParadisCcusageProjectData[];
 	/** 部分的に取得へ失敗したレポート名(UI で注記表示する)。 */
 	readonly failedReports: string[];
+	/**
+	 * 値を ccusage から取った時刻（epoch ms）。レポートごとに違うときは最も古いもの。古い接続先（REH）からは
+	 * 取得時刻が届かないので、組み立てた時刻になる。
+	 */
 	readonly fetchedAt: number;
+	/** TTL を過ぎた前回の値を含む（裏で取り直している）。古い接続先からは常に未設定。 */
+	readonly stale?: boolean;
 }
 
 /** ローカル時刻で YYYYMMDD を返す。 */
@@ -123,6 +133,14 @@ export function paradisCcusageProjectDisplayName(rawName: string): string {
 
 type ParadisCcusageRouteId = 'local' | `remote:${number}`;
 
+/** `fetchReport` を持たない古い接続先で代わりに呼ぶコマンド。 */
+const LEGACY_REPORT_COMMANDS: Readonly<Record<ParadisCcusageWarmTargetKind, string>> = {
+	daily: 'fetchDaily',
+	blocks: 'fetchActiveBlock',
+	session: 'fetchRecentSessions',
+	projects: 'fetchProjects',
+};
+
 interface IParadisCcusageRoute {
 	readonly routeId: ParadisCcusageRouteId;
 	readonly channel: IChannel;
@@ -131,6 +149,8 @@ interface IParadisCcusageRoute {
 export class ParadisCcusageClient {
 	private readonly remoteRouteIds = new WeakMap<object, number>();
 	private readonly warmLeaseRoutes = new Map<string, IParadisCcusageRoute>();
+	/** `fetchReport` を持たないと分かった接続先（古い REH）。 */
+	private readonly legacyRoutes = new Set<ParadisCcusageRouteId>();
 	private nextRemoteRouteId = 0;
 
 	constructor(
@@ -138,13 +158,6 @@ export class ParadisCcusageClient {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) { }
-
-	private get channel() {
-		// SSH で繋いでいる間、エージェントは接続先で動くので、使った量も接続先のホームに
-		// 記録される。手元で数えるとその分がまるごと抜けるため、繋いでいる先へ聞く
-		// （同じチャネルを REH 側にも生やしてある）。
-		return this.resolveRoute().channel;
-	}
 
 	/** status表示が必要な間、daily targetのwarm leaseを維持する。 */
 	createStatusWarmLease(): IDisposable {
@@ -272,11 +285,16 @@ export class ParadisCcusageClient {
 	 * (ccusage の走査コストは since に依らずほぼ一定なので、絞っても速くならない)。
 	 */
 	async fetchTodayCost(): Promise<number | undefined> {
-		const rows = await this.channel.call<IParadisCcusageDailyRow[]>('fetchDaily', [this.execOptions(FETCH_WINDOW_DAYS)]);
+		const report = await this.fetchReport('daily', this.execOptions(FETCH_WINDOW_DAYS));
+		const rows = report.value;
 		if (!Array.isArray(rows) || rows.length === 0) {
 			return undefined;
 		}
 		const now = new Date();
+		// 昨日以前に取った古い値には今日の行が無い。$0.00 と出さず「分からない」にする（裏で取り直している）。
+		if (report.stale && report.fetchedAt < new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) {
+			return undefined;
+		}
 		const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 		const todayRow = rows.find(row => row.period === today);
 		return todayRow ? (todayRow.totalCost ?? 0) : 0;
@@ -289,12 +307,14 @@ export class ParadisCcusageClient {
 	 */
 	async fetchDashboard(bypassCache = false): Promise<IParadisCcusageDashboardData> {
 		const options = this.execOptions(FETCH_WINDOW_DAYS, bypassCache);
+		const assembledAt = Date.now();
 		const [daily, block, sessions, projects] = await Promise.allSettled([
-			this.channel.call<IParadisCcusageDailyRow[]>('fetchDaily', [options]),
-			this.channel.call<IParadisCcusageBlock | undefined>('fetchActiveBlock', [this.execOptions(undefined, bypassCache)]),
-			this.channel.call<IParadisCcusageSessionRow[]>('fetchRecentSessions', [options]),
-			this.channel.call<ParadisCcusageProjects>('fetchProjects', [options]),
+			this.fetchReport('daily', options),
+			this.fetchReport('blocks', this.execOptions(undefined, bypassCache)),
+			this.fetchReport('session', options),
+			this.fetchReport('projects', options),
 		]);
+		const fulfilled = [daily, block, sessions, projects].flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
 
 		const failedReports: string[] = [];
 		if (daily.status === 'rejected') {
@@ -314,14 +334,39 @@ export class ParadisCcusageClient {
 			throw daily.reason instanceof Error ? daily.reason : new Error(String(daily.reason));
 		}
 
+		const stale = fulfilled.some(result => result.stale);
 		return {
-			days: normalizeDaily(daily.value),
-			block: block.status === 'fulfilled' ? normalizeBlock(block.value) : undefined,
-			sessions: sessions.status === 'fulfilled' ? normalizeSessions(sessions.value) : [],
-			projects: projects.status === 'fulfilled' ? normalizeProjects(projects.value) : [],
+			days: normalizeDaily(daily.value.value),
+			block: block.status === 'fulfilled' ? normalizeBlock(block.value.value) : undefined,
+			sessions: sessions.status === 'fulfilled' ? normalizeSessions(sessions.value.value) : [],
+			projects: projects.status === 'fulfilled' ? normalizeProjects(projects.value.value) : [],
 			failedReports,
-			fetchedAt: Date.now(),
+			fetchedAt: Math.min(assembledAt, ...fulfilled.map(result => result.fetchedAt)),
+			...(stale ? { stale } : {}),
 		};
+	}
+
+	/**
+	 * レポート1つを取得時刻と古さ付きで取る。`fetchReport` を持たない古い接続先（REH）では従来の
+	 * コマンドを呼び、取得時刻は今、古さは無しとして扱う。
+	 */
+	private async fetchReport<K extends ParadisCcusageWarmTargetKind>(kind: K, options: IParadisCcusageExecOptions): Promise<IParadisCcusageReportResult<IParadisCcusageReportValues[K]>> {
+		// SSH で繋いでいる間、エージェントは接続先で動くので、使った量も接続先のホームに
+		// 記録される。手元で数えるとその分がまるごと抜けるため、繋いでいる先へ聞く
+		// （同じチャネルを REH 側にも生やしてある）。
+		const route = this.resolveRoute();
+		if (!this.legacyRoutes.has(route.routeId)) {
+			try {
+				return await route.channel.call<IParadisCcusageReportResult<IParadisCcusageReportValues[K]>>(PARADIS_CCUSAGE_FETCH_REPORT_COMMAND, [{ kind, options }]);
+			} catch (error) {
+				if (!String((error as Error | undefined)?.message ?? '').includes(`Method not found: ${PARADIS_CCUSAGE_FETCH_REPORT_COMMAND}`)) {
+					throw error;
+				}
+				this.legacyRoutes.add(route.routeId);
+			}
+		}
+		const value = await route.channel.call<IParadisCcusageReportValues[K]>(LEGACY_REPORT_COMMANDS[kind], [options]);
+		return { value, fetchedAt: Date.now(), stale: false };
 	}
 }
 

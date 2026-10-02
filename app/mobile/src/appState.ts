@@ -10,7 +10,7 @@ import { create } from 'zustand';
 import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
 import { MobileController, MobileWarmLeaseControllerRegistry, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type BrowserTargetsScope, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type PcPushMessage, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type SpaceNoteSetOptions, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
-import type { UpdateTarget } from './pcCompat.js';
+import { pcHasCapability, type UpdateTarget } from './pcCompat.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
 import { countAttentionAgents } from './attentionCount.js';
 import { toolImageCache } from './agentToolImages.js';
@@ -56,6 +56,10 @@ import { connectionLog } from './connectionLogStore.js';
 import { BackgroundGrace, type BackgroundGraceTarget } from './backgroundGrace.js';
 import type { DiagnosticPc } from './connectionDiagnostics.js';
 import type { BrowserInput } from './browserKeys.js';
+import type { RelayHost } from './relayHosts.js';
+import { USAGE_MACHINE_ID_CAPABILITY } from './features/usage/usageAggregate.js';
+import { forgetUsagePc } from './features/usage/usageCacheFile.js';
+import { buildUsageTargets } from './features/usage/usageSources.js';
 
 /** 保存値を読み込む前に「モデルを選ぶ」で切り替えた操作。読み込み後は undefined（以後はそのまま保存する）。 */
 let hiddenModelOpsBeforeLoad: HiddenModelOp[] | undefined = [];
@@ -113,6 +117,27 @@ export interface PcSummary {
 	 * 一覧の行に出すため、いま見ているPCだけでなく全PCぶんをここに載せる。
 	 */
 	readonly battery: { readonly level: number; readonly charging: boolean } | undefined;
+	/** そのPCの機械を見分けるハッシュ（旧PCでは undefined）。SSH の接続先と同じ機械かを見分ける。 */
+	readonly machineIdHash?: string | undefined;
+}
+
+/** PC の CPU・メモリ・SSD の使用率（0〜100 の整数。取れていない項目は undefined）。 */
+export interface PcResourceSummary {
+	readonly cpu?: number | undefined;
+	readonly memPercent?: number | undefined;
+	readonly diskPercent?: number | undefined;
+}
+
+/** 使用量を PC を名指しして取るための要求（PC ごとのコントローラの使用量の口だけ）。 */
+export type PcUsageRequester = Pick<MobileController, 'rateLimits' | 'usageDashboard' | 'rtkSavings' | 'githubUsage' | 'systemResources' | 'spaceDisk'>;
+
+/** 使用量を取る先（PC 1台ぶん）。手元のウィンドウと、SSH の接続先のウィンドウ。 */
+export interface PcUsageTarget {
+	readonly pcId: string;
+	/** この PC 自身（ローカル）の応答できるウィンドウ。無ければ undefined（PC の既定のウィンドウに任せる）。 */
+	readonly localWindowId: number | undefined;
+	/** SSH などの接続先（ホスト単位に束ね済み）。 */
+	readonly remotes: readonly RelayHost[];
 }
 
 /**
@@ -403,6 +428,13 @@ interface AppState extends StoreState {
 	 * PC側が1時間ごとに測っておくので通常は即座に返る。bypassCache は測り直しで数十秒〜数分かかる。
 	 */
 	spaceDisk(bypassCache?: boolean): Promise<SpaceDiskResult>;
+	/**
+	 * 使用量の要求を、いま見ていない PC も含めて PC を名指しして送る口（全 PC の合計用）。
+	 * 見ていない PC も接続を保っていれば（`keepBackgroundPcs`）そのまま届く。ペアリングに無い PC なら undefined。
+	 */
+	usageRequesterFor(pcId: string): PcUsageRequester | undefined;
+	/** 使用量を取る先（ペアリング済みの全 PC の、手元のウィンドウと SSH の接続先）。台帳の順。 */
+	usageTargets(): PcUsageTarget[];
 	/** `scope` を渡すと、`browser.space.v1` の PC にはそのスペースのページだけを頼む。 */
 	browserTargets(scope?: BrowserTargetsScope): Promise<BrowserTargetsResult>;
 	/** `scope` を渡すと、`browser.space.v1` の PC はそのスペースのページでなければ断る。 */
@@ -546,7 +578,51 @@ function summarizeRuntime(runtime: PcRuntime): PcSummary {
 		lastOnlineAt: runtime.lastOnlineAt ?? runtime.lastKnown?.savedAt,
 		lastKnown: runtime.lastKnown,
 		battery: workspace?.battery,
+		// 機械のハッシュでの重複の排除は、それを広告する PC だけ（無い PC は別の機械として扱う）。
+		machineIdHash: pcHasCapability(workspace, USAGE_MACHINE_ID_CAPABILITY) ? workspace?.machineIdHash : undefined,
 	};
+}
+
+/** desktop state の CPU・メモリ・SSD を、一覧に載せる整数の % にする。 */
+function summarizeResources(resources: WorkspaceResources | undefined): PcResourceSummary | undefined {
+	if (resources === undefined) {
+		return undefined;
+	}
+	const round = (value: number | undefined) => (value !== undefined && Number.isFinite(value) ? Math.round(Math.min(100, Math.max(0, value))) : undefined);
+	return {
+		cpu: round(resources.cpu),
+		memPercent: resources.memTotal > 0 ? round((resources.memUsed / resources.memTotal) * 100) : undefined,
+		diskPercent: resources.diskTotal !== undefined && resources.diskFree !== undefined && resources.diskTotal > 0
+			? round(((resources.diskTotal - resources.diskFree) / resources.diskTotal) * 100)
+			: undefined,
+	};
+}
+
+type WorkspaceResources = NonNullable<NonNullable<StoreState['workspace']>['resources']>;
+
+/**
+ * PC ごとの CPU・メモリ・SSD（整数の %）。使用量の画面だけが読む（`usePcResources`）。
+ * `PcSummary` に載せると、一覧を購読するすべての画面とライブアクティビティが CPU の揺れのたびに配り直されるため、
+ * 別の入れ物にしている。PC の一覧を作り直すたび（{@link pcSummaries}）に、中身が変わったときだけ更新する。
+ */
+export const usePcResources = create<{ readonly byPc: Readonly<Record<string, PcResourceSummary>> }>(() => ({ byPc: {} }));
+
+function publishPcResources(): void {
+	const next: Record<string, PcResourceSummary> = {};
+	for (const id of pcOrder) {
+		const summary = summarizeResources(runtimes.get(id)?.state.workspace?.resources);
+		if (summary !== undefined) {
+			next[id] = summary;
+		}
+	}
+	const current = usePcResources.getState().byPc;
+	const same = Object.keys(next).length === Object.keys(current).length && Object.entries(next).every(([id, value]) => {
+		const before = current[id];
+		return before !== undefined && before.cpu === value.cpu && before.memPercent === value.memPercent && before.diskPercent === value.diskPercent;
+	});
+	if (!same) {
+		usePcResources.setState({ byPc: next });
+	}
 }
 
 /** PCの長期公開鍵から色を決める（並び順に依存しない、そのPC固有の値）。 */
@@ -565,7 +641,8 @@ function sameSummary(a: PcSummary, b: PcSummary): boolean {
 		&& a.lastOnlineAt === b.lastOnlineAt && a.lastKnown === b.lastKnown
 		// battery はオブジェクトなので中身で比べる（参照比較だと毎回「変わった」ことになり、
 		// 一覧を購読しているUIとLive Activityの同期が状態更新のたびに走ってしまう）。
-		&& a.battery?.level === b.battery?.level && a.battery?.charging === b.battery?.charging;
+		&& a.battery?.level === b.battery?.level && a.battery?.charging === b.battery?.charging
+		&& a.machineIdHash === b.machineIdHash;
 }
 
 /**
@@ -576,6 +653,7 @@ function sameSummary(a: PcSummary, b: PcSummary): boolean {
 let lastSummaries: PcSummary[] = [];
 
 function pcSummaries(): PcSummary[] {
+	publishPcResources();
 	const next = pcOrder
 		.map(id => runtimes.get(id))
 		.filter((runtime): runtime is PcRuntime => runtime !== undefined)
@@ -1736,6 +1814,8 @@ export const useAppStore = create<AppState>(set => ({
 		// 前回の一覧（スペース名が入る）も残さない。
 		void lastKnownPcWriter.forget(id);
 		void connectionLog.forget(id);
+		// 使用量の最後の値（アカウントのメール・コストが入る）も、その PC と SSH の接続先の分を消す。
+		void forgetUsagePc(id).catch(err => console.warn('[appState] failed to forget the usage values', err));
 		// PC画面の一部が写り込んだ画像をメモリに残さない（取得済みの画像はストア外のキャッシュにある）。
 		toolImageCache.clear();
 		if (id === activePcId) {
@@ -2279,6 +2359,18 @@ export const useAppStore = create<AppState>(set => ({
 	spaceDisk(bypassCache?: boolean) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.spaceDisk(bypassCache);
+	},
+
+	usageRequesterFor(pcId: string) {
+		return runtimes.get(pcId)?.controller;
+	},
+
+	usageTargets() {
+		// 機械のハッシュを広告しない PC の接続先は、別の機械として扱う（`buildUsageTargets`）。
+		return buildUsageTargets(pcOrder
+			.map(id => runtimes.get(id))
+			.filter((runtime): runtime is PcRuntime => runtime !== undefined)
+			.map(runtime => ({ pcId: runtime.pc.id, workspace: runtime.state.workspace })));
 	},
 
 	browserTargets(scope?: BrowserTargetsScope) {
