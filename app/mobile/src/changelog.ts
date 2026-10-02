@@ -40,7 +40,7 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
-		version: '0.13.0',
+		version: '0.12.1',
 		date: '2026-10-03',
 		headline: '使用量を全 PC の合計で見られるようになりました',
 		items: [
