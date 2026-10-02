@@ -1,5 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { decodeUtf8 } from './utf8.js';
+
 /**
  * E2Eチャネル上に流す多重化フレームの定義とコーデック（設計書 §3）。
  * フレームは手書きのコンパクトなバイナリ形式でエンコードした後、SecureChannel.seal()
@@ -103,7 +105,7 @@ export function decodeFrame(bytes: Uint8Array): Frame {
 	if (8 + wsLen > bytes.length) {
 		throw new Error('malformed frame: ws length exceeds buffer');
 	}
-	const ws = hasWs ? new TextDecoder().decode(bytes.subarray(8, 8 + wsLen)) : undefined;
+	const ws = hasWs ? decodeUtf8(bytes.subarray(8, 8 + wsLen)) : undefined;
 	const payload = bytes.subarray(8 + wsLen);
 	return {
 		ch,

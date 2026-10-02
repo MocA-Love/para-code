@@ -8,7 +8,7 @@
  * （本番は expo-secure-store、テストはメモリ実装）。
  */
 
-import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeNotify, decodeNotifyControl, decodeNotifyVisibility, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, encodeNotifyVisibility, generateIdentity, isBinaryBrowserJpegFrame, isGzipJsonResponse, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeUtf8, decodeNotify, decodeNotifyControl, decodeNotifyVisibility, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, encodeNotifyVisibility, generateIdentity, isBinaryBrowserJpegFrame, isGzipJsonResponse, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
 import { AGENT_LIVE_APPEND_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
 import { ContentHashResponseCache, type PreparedContentHashRequest } from './contentHashCache.js';
 import { FsRequestTimings } from './fsRequestTiming.js';
@@ -1387,7 +1387,6 @@ const TERM_REPLAY_CACHE_LIMIT = 150_000;
 // 2回落としても切れない余裕を取ってある（PC側 TERM_VIEWPORT_LEASE_MS と対）。
 const TERM_VIEWPORT_RENEW_MS = 20_000;
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
 /**
  * 覚えておく既読IDの上限。再接続のたびに全件をPCへ送り直すので、際限なく増えると
@@ -2781,7 +2780,7 @@ export class MobileController {
 			return false;
 		}
 		try {
-			const message = JSON.parse(decoder.decode(operation.payload)) as { desktopEpoch?: unknown; t?: unknown; terminalKey?: unknown; windowId?: unknown; ws?: unknown };
+			const message = JSON.parse(decodeUtf8(operation.payload)) as { desktopEpoch?: unknown; t?: unknown; terminalKey?: unknown; windowId?: unknown; ws?: unknown };
 			if (message.desktopEpoch !== this.outboxReplayEpoch) {
 				return false;
 			}
@@ -2860,7 +2859,7 @@ export class MobileController {
 					continue;
 				}
 				try {
-					const payload = JSON.parse(decoder.decode(operation.payload)) as { desktopEpoch?: unknown };
+					const payload = JSON.parse(decodeUtf8(operation.payload)) as { desktopEpoch?: unknown };
 					if (payload.desktopEpoch !== desktopEpoch) {
 						operation.state = 'unknown';
 						this.operationOutboxDirty = true;
@@ -2987,7 +2986,7 @@ export class MobileController {
 		}
 		for (const encrypted of candidates) {
 			try {
-				const decoded = decoder.decode(openNotify(key, fromB64(encrypted)));
+				const decoded = decodeUtf8(openNotify(key, fromB64(encrypted)));
 				const parsed = JSON.parse(decoded) as { version?: unknown; pairingScope?: unknown; operations?: unknown };
 				if (parsed.version !== 2 || parsed.pairingScope !== scope || !Array.isArray(parsed.operations)) {
 					continue;
@@ -3046,7 +3045,7 @@ export class MobileController {
 				operationId,
 				operationRun: operation.operationRun,
 				operationSeq: operation.operationSeq,
-				payload: decoder.decode(operation.payload),
+				payload: decodeUtf8(operation.payload),
 				state: operation.state,
 			}));
 			const encrypted = toBase64Url(sealNotify(key, encoder.encode(JSON.stringify({ version: 2, pairingScope, operations }))));
@@ -3492,7 +3491,7 @@ export class MobileController {
 		timing?.mark('gunzip');
 		const jsonPayload = gunzipped ?? payload;
 		try {
-			const text = decoder.decode(jsonPayload);
+			const text = decodeUtf8(jsonPayload);
 			timing?.mark('utf8_decode');
 			const msg = JSON.parse(text) as { id?: string; error?: string; t?: unknown };
 			timing?.mark('json_parse');
@@ -4126,7 +4125,7 @@ export class MobileController {
 				if (isBinaryBrowserJpegFrame(frame.payload)) {
 					return;
 				}
-				const head = decoder.decode(frame.payload.subarray(0, 12));
+				const head = decodeUtf8(frame.payload.subarray(0, 12));
 				if (head.startsWith('{"t":"frame"')) {
 					return;
 				}
@@ -4138,7 +4137,7 @@ export class MobileController {
 				return;
 			}
 			try {
-				const msg = JSON.parse(decoder.decode(frame.payload)) as { t?: string; id?: string; data?: string; w?: number; h?: number; candidate?: object; sid?: string };
+				const msg = JSON.parse(decodeUtf8(frame.payload)) as { t?: string; id?: string; data?: string; w?: number; h?: number; candidate?: object; sid?: string };
 				if (msg.t === 'page' && msg.id === undefined) {
 					// ページの状態（browser.page.v1）。止めている間（stop の後）に届いた分は捨てる。
 					const page = this.browserStopping ? undefined : paradisParseMobileBrowserPage(msg);
@@ -4189,7 +4188,7 @@ export class MobileController {
 					// 壊れた圧縮フレームは捨てる。stateは常に全量なので次の再送で自動的に追いつく。
 					return;
 				}
-				const incoming = JSON.parse(decoder.decode(raw)) as WorkspaceState;
+				const incoming = JSON.parse(decodeUtf8(raw)) as WorkspaceState;
 				// 版の窓の判定は PC と同じ関数（pcCompat.ts → paradisMobileCompat.ts）。
 				// minCompatibleMobile を送らない旧PCは、これまでどおり版の完全一致だけが通る。
 				const verdict = evaluatePcCompat(incoming);
@@ -4369,7 +4368,7 @@ export class MobileController {
 		} else if (frame.ch === 'term') {
 			try {
 				const msg = decodeBinaryTerminalData(frame.payload)
-					?? JSON.parse(decoder.decode(frame.payload)) as { t: string; operationId?: string; terminalKey?: string; data?: string; snapshot?: boolean; epoch?: number; seq?: number; cols?: number; rows?: number; unicode?: string; status?: string };
+					?? JSON.parse(decodeUtf8(frame.payload)) as { t: string; operationId?: string; terminalKey?: string; data?: string; snapshot?: boolean; epoch?: number; seq?: number; cols?: number; rows?: number; unicode?: string; status?: string };
 				if (msg.t === 'operation-result') {
 					this.handleTerminalOperationResult(msg.operationId, msg.status);
 					return;
@@ -4514,7 +4513,7 @@ export class MobileController {
 
 	private handleAgentFrame(payload: Uint8Array): void {
 		try {
-			const msg = JSON.parse(decoder.decode(payload)) as {
+			const msg = JSON.parse(decodeUtf8(payload)) as {
 				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number; index?: number;
 				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null; liveRevision?: number; liveAppend?: unknown; activity?: AgentActivityState | null;
 				requestId?: string; activityId?: string; error?: string; models?: AgentModelOption[]; commands?: unknown; status?: string; code?: string; message?: string; consumed?: boolean; capabilities?: { agentActions?: unknown; claudeSettings?: unknown }; interaction?: AgentInteraction | null;

@@ -9,6 +9,7 @@ export type { ChannelId, Frame } from './frames.js';
 export { FrameMux } from './mux.js';
 export type { FrameChunkTiming, FrameHandler, FrameMuxOptions } from './mux.js';
 export { toBase64, toBase64Url, fromBase64Url, concatBytes, bytesEqual } from './util.js';
+export { decodeUtf8 } from './utf8.js';
 export { BROWSER_JPEG_BINARY_ENCODING, decodeBinaryBrowserJpegFrame, isBinaryBrowserJpegFrame } from './browserFrame.js';
 export type { BrowserJpegFrame } from './browserFrame.js';
 export { FS_BINARY_RESPONSE_ENCODING, decodeBinaryFsResponse, isBinaryFsResponse } from './fileResponse.js';

@@ -11,7 +11,7 @@
 
 import { useEffect } from 'react';
 import { create } from 'zustand';
-import { fromBase64Url, openNotify, randomToken, sealNotify, toBase64Url } from '@para/protocol';
+import { decodeUtf8, fromBase64Url, openNotify, randomToken, sealNotify, toBase64Url } from '@para/protocol';
 import { agentSendQueueKey, sendPcRequest, useAppStore } from './appState.js';
 import {
 	addAgentSendQueueItem, agentSendLiveDecision, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue,
@@ -20,7 +20,6 @@ import {
 import { createAgentSendOutboxStore } from './platform.js';
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
 /** 会話の状態を受け取り直すまで、取り直しを頼まずに待つ時間。 */
 const CHAT_REFRESH_AFTER_MS = 2_000;
@@ -52,7 +51,7 @@ async function loadPc(pcId: string): Promise<void> {
 	let restored: readonly AgentSendQueueItem[] = [];
 	for (const candidate of await createAgentSendOutboxStore(pcId).loadCandidates().catch(() => [] as readonly string[])) {
 		try {
-			restored = deserializeAgentSendQueue(pcId, decoder.decode(openNotify(key, fromBase64Url(candidate))));
+			restored = deserializeAgentSendQueue(pcId, decodeUtf8(openNotify(key, fromBase64Url(candidate))));
 			break;
 		} catch {
 			// 鍵が変わった（ペアリングし直した）か壊れている。次の候補を試す。

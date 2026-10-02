@@ -1,11 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { decodeUtf8 } from './utf8.js';
+
 /** Mobileがファイル閲覧要求で明示する、後方互換な応答encoding名。 */
 export const FS_BINARY_RESPONSE_ENCODING = 'fs-binary-v1';
 
 const HEADER_BYTES = 12;
 const MAGIC = [0x50, 0x46, 0x42, 0x01] as const; // "PFB" + wire version 1
-const decoder = new TextDecoder();
 
 export type BinaryFsResponseType = 'pdf' | 'docx' | 'media';
 
@@ -39,7 +40,7 @@ export function decodeBinaryFsResponse(payload: Uint8Array): BinaryFsResponse | 
 	if (idLength === 0 || dataOffset > payload.length) {
 		return undefined;
 	}
-	const id = decoder.decode(payload.subarray(HEADER_BYTES, dataOffset));
+	const id = decodeUtf8(payload.subarray(HEADER_BYTES, dataOffset));
 	if (id.length === 0) {
 		return undefined;
 	}
