@@ -8,7 +8,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_JSON_GZIP_RESPONSE_ENCODING, paradisEncodeGzipJsonResponse, paradisEncodeJsonResponsePayload, paradisEncodeNegotiatedGzipJsonResponse, paradisShouldCompressJsonResponse } from '../../common/paradisMobileGzipJson.js';
+import { PARADIS_JSON_GZIP_RESPONSE_ENCODING, paradisEncodeGzipJsonResponse, paradisEncodeJsonResponsePayload, paradisEncodeNegotiatedGzipJsonResponse, paradisIsGzipWorthwhile, paradisShouldCompressJsonResponse } from '../../common/paradisMobileGzipJson.js';
 
 async function gunzip(payload: Uint8Array): Promise<Uint8Array> {
 	const stream = new Blob([payload.slice()]).stream().pipeThrough(new DecompressionStream('gzip'));
@@ -69,4 +69,55 @@ suite('ParadisMobileGzipJson', () => {
 		assert.strictEqual(await paradisEncodeJsonResponsePayload('scm', 'status', PARADIS_JSON_GZIP_RESPONSE_ENCODING, json), json);
 		assert.strictEqual(await paradisEncodeJsonResponsePayload('scm', 'diff', undefined, json), json);
 	});
+
+	test('judges whether gzip saves enough to be worth decompressing on the phone', () => {
+		assert.deepStrictEqual([
+			paradisIsGzipWorthwhile(10_000, 8_000),
+			paradisIsGzipWorthwhile(10_000, 8_001),
+			paradisIsGzipWorthwhile(10_000, 2_000),
+			paradisIsGzipWorthwhile(1_000, 800),
+			paradisIsGzipWorthwhile(500, 380),
+			paradisIsGzipWorthwhile(21_185_805, 15_206_755),
+		], [true, false, true, true, false, true]);
+	});
+
+	test('sends incompressible content as plain JSON', async () => {
+		// `"` と `\` を除く印字可能な ASCII 92 種を xorshift32 で一様に並べる。1 文字あたり約 6.5 ビットの
+		// 情報なので、gzip しても 8 割強にしか縮まない。
+		const alphabet: number[] = [];
+		for (let code = 0x21; code < 0x7f; code++) {
+			if (code !== 0x22 && code !== 0x5c) {
+				alphabet.push(code);
+			}
+		}
+		let seed = 1;
+		let noise = '';
+		for (let i = 0; i < 20_000; i++) {
+			seed ^= seed << 13;
+			seed ^= seed >>> 17;
+			seed ^= seed << 5;
+			noise += String.fromCharCode(alphabet[(seed >>> 0) % alphabet.length]);
+		}
+		const json = new TextEncoder().encode(JSON.stringify({ id: 'request-1', t: 'read', content: noise }));
+		assert.strictEqual(await paradisEncodeGzipJsonResponse(json), undefined);
+		assert.strictEqual(await paradisEncodeJsonResponsePayload('fs', 'read', PARADIS_JSON_GZIP_RESPONSE_ENCODING, json), json);
+	});
+
+	test('still compresses binary read as text, whose JSON is full of U+FFFD and escapes', async () => {
+		let seed = 7;
+		let binary = '';
+		for (let i = 0; i < 20_000; i++) {
+			seed ^= seed << 13;
+			seed ^= seed >>> 17;
+			seed ^= seed << 5;
+			binary += String.fromCharCode((seed >>> 0) % 256);
+		}
+		// fileService の toString() と同じく、バイナリを UTF-8 として読んだ文字列にする。
+		const text = new TextDecoder().decode(Uint8Array.from(binary, c => c.charCodeAt(0)));
+		const json = new TextEncoder().encode(JSON.stringify({ id: 'request-1', t: 'read', content: text }));
+		const compressed = await paradisEncodeJsonResponsePayload('fs', 'read', PARADIS_JSON_GZIP_RESPONSE_ENCODING, json);
+		assert.deepStrictEqual([...compressed.subarray(0, 4)], [0x50, 0x43, 0x4a, 0x01]);
+		assert.deepStrictEqual(await gunzip(compressed.subarray(12)), json);
+	});
+
 });

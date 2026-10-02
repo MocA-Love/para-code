@@ -12,6 +12,13 @@ const HEADER_BYTES = 12;
 const MIN_JSON_BYTES = 1024;
 const MAX_JSON_BYTES = 32 * 1024 * 1024;
 const MIN_SAVINGS_BYTES = 128;
+/**
+ * 圧縮後（ヘッダー込み）が元のこの割合を超えるなら圧縮せずに送る。モバイルは gzip の展開を
+ * JS（fflate）で行い、21 MB で約 1.6 秒かかる（2026-10-02 の Sentry 実測）。縮み方が 2 割に
+ * 満たないと、減る転送と復号の手間より展開の手間の方が大きくなりやすい。
+ */
+const MAX_COMPRESSED_RATIO = 0.8;
+
 
 /** Phase 9で圧縮対象にする、既知の大容量JSON成功応答だけを選ぶ。 */
 export function paradisShouldCompressJsonResponse(channel: string, type: string): boolean {
@@ -19,7 +26,12 @@ export function paradisShouldCompressJsonResponse(channel: string, type: string)
 		|| (channel === 'fs' && (type === 'read' || type === 'xlsx'));
 }
 
-/** 従来のUTF-8 JSON bytesをgzip response v1へ可逆変換する。 */
+/** 圧縮して縮んだ量が、展開の手間に見合うか（元の大きさと、ヘッダー込みの圧縮後の大きさ）。 */
+export function paradisIsGzipWorthwhile(rawBytes: number, compressedBytes: number): boolean {
+	return compressedBytes <= rawBytes - MIN_SAVINGS_BYTES && compressedBytes <= rawBytes * MAX_COMPRESSED_RATIO;
+}
+
+/** 従来のUTF-8 JSON bytesをgzip response v1へ可逆変換する。縮み方が足りなければ undefined。 */
 export async function paradisEncodeGzipJsonResponse(json: Uint8Array): Promise<Uint8Array | undefined> {
 	if (json.length < MIN_JSON_BYTES || json.length > MAX_JSON_BYTES) {
 		return undefined;
@@ -31,7 +43,7 @@ export async function paradisEncodeGzipJsonResponse(json: Uint8Array): Promise<U
 		await writer.write(json.slice());
 		await writer.close();
 		const compressed = new Uint8Array(await output);
-		if (HEADER_BYTES + compressed.length > json.length - MIN_SAVINGS_BYTES) {
+		if (!paradisIsGzipWorthwhile(json.length, HEADER_BYTES + compressed.length)) {
 			return undefined;
 		}
 		const payload = new Uint8Array(HEADER_BYTES + compressed.length);
@@ -51,7 +63,12 @@ export function paradisEncodeNegotiatedGzipJsonResponse(encoding: unknown, json:
 		: Promise.resolve(undefined);
 }
 
-/** 対象4種かつ明示交渉時だけ圧縮し、それ以外・失敗時は同じJSON bytesを返す。 */
+/**
+ * 対象4種かつ明示交渉時だけ圧縮し、それ以外・失敗時は同じJSON bytesを返す。
+ * モバイルは magic の無い応答を従来の JSON として読むので、圧縮しない応答に印は要らない。
+ * 拡張子では判定しない。`read` に届くバイナリ（zip 等をテキストとして開いたもの）の JSON は
+ * U+FFFD と `\u00XX` だらけでよく縮み、省くと転送量が増えて上限を超えることがあるため。
+ */
 export async function paradisEncodeJsonResponsePayload(channel: string, type: string, encoding: unknown, json: Uint8Array): Promise<Uint8Array> {
 	if (!paradisShouldCompressJsonResponse(channel, type)) {
 		return json;

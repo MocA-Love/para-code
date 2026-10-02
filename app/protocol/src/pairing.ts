@@ -13,6 +13,7 @@ import { hkdf } from '@noble/hashes/hkdf';
 import { sha256 } from '@noble/hashes/sha256';
 import type { Identity } from './crypto.js';
 import { fromBase64Url, toBase64Url } from './util.js';
+import { decodeUtf8 } from './utf8.js';
 
 export const PAIRING_URI_SCHEME = 'paracode-mobile://pair';
 const SAS_INFO = new TextEncoder().encode('para-code-mobile/sas/1');
@@ -59,7 +60,7 @@ export function decodePairingUri(uri: string): PairingPayload {
 	}
 	let raw: Record<string, unknown>;
 	try {
-		raw = JSON.parse(new TextDecoder().decode(fromBase64Url(uri.slice(prefix.length)))) as Record<string, unknown>;
+		raw = JSON.parse(decodeUtf8(fromBase64Url(uri.slice(prefix.length)))) as Record<string, unknown>;
 	} catch {
 		throw new Error('malformed pairing payload');
 	}
