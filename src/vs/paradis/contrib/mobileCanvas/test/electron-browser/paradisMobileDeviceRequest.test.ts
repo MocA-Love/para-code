@@ -103,7 +103,13 @@ suite('ParadisMobileDeviceRequestChannel', () => {
 	test('says the user did not answer when the deadline closes the dialog, but still says cancelled when the caller gave up', async () => {
 		const waitForClose = async (cancellation: CancellationToken): Promise<ParadisAgentApprovalOutcome> => {
 			if (!cancellation.isCancellationRequested) {
-				await new Promise<void>(resolve => cancellation.onCancellationRequested(() => resolve()));
+				// 閉じたら取り消しの購読を外す（外さないと購読がテストの後まで残り、漏れとして検出される）
+				await new Promise<void>(resolve => {
+					const listener = cancellation.onCancellationRequested(() => {
+						listener.dispose();
+						resolve();
+					});
+				});
 			}
 			return 'cancelled';
 		};

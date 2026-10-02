@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo, ActivityIndicator, Alert, Pressable, StyleSheet, Text, View, findNodeHandle } from 'react-native';
 import { Check, ChevronDown, ChevronLeft, Settings, X } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { claudeModelDisplayName, matchAgentModel } from '../../agentModels.js';
@@ -10,7 +10,7 @@ import { isMaximumEffort } from '../../components/effortSliderBehavior.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { haptic } from '../../haptics.js';
 import { useClaudeModelOptions } from '../../hooks/useClaudeModelOptions.js';
-import { EMPTY_HIDDEN_MODELS, canHideModel, countVisibleModels, initialModelSelection, modelVisibilityAgent, pickerModelChoices } from '../../modelVisibility.js';
+import { EMPTY_HIDDEN_MODELS, canHideModel, initialModelSelection, modelVisibilityAgent, pickerModelChoices } from '../../modelVisibility.js';
 import type { AgentMessageSendResult, AgentModelControlState } from '../../store.js';
 import { HIT_SIZE, colors, radius, space, squircle, type } from '../../theme.js';
 import { BottomDrawer, Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
@@ -51,7 +51,8 @@ const AGENT_NAMES: Readonly<Record<'claude' | 'codex', string>> = { claude: 'Cla
  *
  * 右上の歯車で、同じシートの中身を「表示するモデル」（モデルごとのスイッチ）に切り替え、「完了」で戻す。
  * 別のシートを重ねて出さないのは、閉じる途中で次のモーダルを出すと iOS が取りこぼすため（`BottomDrawer` の約束）。
- * 隠したモデルは「モデルを選ぶ」に出さない（使用中のものは「使用中・非表示」として残す）。計算は `modelVisibility.ts`。
+ * 隠したモデルは「モデルを選ぶ」に出さない（使用中のものと仮に選んでいるものは「非表示」の印付きで残す）。計算は `modelVisibility.ts`。
+ * ページを切り替えたら、VoiceOver の読み上げ位置を新しいページの見出しへ移す。
  */
 export function ModelPill({ agent, model, effort, modelControl, readOnly = false, onClaudeSetting, onRequestCodexCatalog, onUpdateCodexSettings }: {
 	agent: string | undefined;
@@ -76,6 +77,25 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 		mounted.current = true;
 		return () => { mounted.current = false; };
 	}, []);
+	// 歯車・「完了」・戻るでページを切り替えたときだけ、新しいページの見出しへ VoiceOver を移す
+	// （シートを開いたときの読み上げ位置は `BottomDrawer` に任せる）
+	const headingRef = useRef<Text>(null);
+	const pageSwitched = useRef(false);
+	const switchPage = (next: DrawerPage) => {
+		haptic('move');
+		pageSwitched.current = true;
+		setPage(next);
+	};
+	useEffect(() => {
+		if (!pageSwitched.current) {
+			return;
+		}
+		pageSwitched.current = false;
+		const node = headingRef.current !== null ? findNodeHandle(headingRef.current) : null;
+		if (node !== null) {
+			AccessibilityInfo.setAccessibilityFocus(node);
+		}
+	}, [page]);
 	useEffect(() => {
 		if (!codexUpdatePending) {
 			return;
@@ -106,7 +126,7 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 		: matchAgentModel(agent, model, options);
 	const visibilityAgent = modelVisibilityAgent(agent);
 	const hiddenIds = visibilityAgent !== undefined ? hiddenModels[visibilityAgent] : EMPTY_HIDDEN_MODELS.claude;
-	const choices = pickerModelChoices(options, hiddenIds, currentModel?.id);
+	const choices = pickerModelChoices(options, hiddenIds, currentModel?.id, pickedModelId);
 	// 選んだもの → 使用中 → 表示中の既定 → 表示中の先頭（先頭まで落とすのは Codex だけ）
 	const selected = initialModelSelection(choices.map(choice => choice.option), {
 		pickedId: pickedModelId,
@@ -114,7 +134,6 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 		defaultId: agent === 'codex' ? codexModels.find(option => option.isDefault)?.model : undefined,
 		fallbackToFirst: agent === 'codex',
 	});
-	const visibleCount = countVisibleModels(options, hiddenIds);
 	const candidateEffort = pickedEffort ?? effort;
 	const effectiveEffort = selected !== undefined && candidateEffort !== undefined && !selected.efforts.includes(candidateEffort)
 		? selected.efforts[0]
@@ -130,6 +149,7 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 		haptic('move');
 		setPickedModelId(undefined);
 		setPickedEffort(undefined);
+		pageSwitched.current = false;
 		setPage('pick');
 		setOpen(true);
 		if (agent === 'codex') {
@@ -203,10 +223,10 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 			<BottomDrawer visible={open} onClose={close} accessibilityLabel={page === 'visibility' ? '表示するモデル' : 'モデルを選ぶ'}>
 				{page === 'visibility' ? (
 					<View style={styles.head}>
-						<Pressable onPress={() => setPage('pick')} hitSlop={hitSlopToMinimum(NAV_SIZE, NAV_SIZE)} style={styles.nav} accessibilityRole="button" accessibilityLabel="モデルを選ぶに戻る">
+						<Pressable onPress={() => switchPage('pick')} hitSlop={hitSlopToMinimum(NAV_SIZE, NAV_SIZE)} style={styles.nav} accessibilityRole="button" accessibilityLabel="モデルを選ぶに戻る">
 							<Icon icon={ChevronLeft} size={iconSize.lg} color={colors.textDim} strokeWidth={2.2} />
 						</Pressable>
-						<Text style={styles.headTitle} accessibilityRole="header">表示するモデル</Text>
+						<Text ref={headingRef} style={styles.headTitle} accessibilityRole="header">表示するモデル</Text>
 						<View style={styles.nav} />
 					</View>
 				) : (
@@ -214,10 +234,10 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 						<Pressable onPress={close} hitSlop={hitSlopToMinimum(NAV_SIZE, NAV_SIZE)} style={styles.nav} accessibilityRole="button" accessibilityLabel="閉じる">
 							<Icon icon={X} size={iconSize.lg} color={colors.textDim} strokeWidth={2.2} />
 						</Pressable>
-						<Text style={styles.headTitle} accessibilityRole="header">モデルを選ぶ</Text>
+						<Text ref={headingRef} style={styles.headTitle} accessibilityRole="header">モデルを選ぶ</Text>
 						{visibilityAgent !== undefined ? (
 							<Pressable
-								onPress={() => { haptic('move'); setPage('visibility'); }}
+								onPress={() => switchPage('visibility')}
 								disabled={submitting}
 								hitSlop={hitSlopToMinimum(NAV_SIZE, NAV_SIZE)}
 								style={({ pressed }) => [styles.nav, pressed ? styles.pressed : undefined]}
@@ -249,20 +269,22 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 								<View style={styles.group}>
 									{options.map((option, index) => {
 										const shown = !hiddenIds.includes(option.id);
-										// 表示中が 1 つだけなら、そのスイッチは切れない
-										const lastOne = shown && visibleCount <= 1;
+										// 表示中で隠せないもの（表示中が 1 つだけ）は、そのスイッチを切れない
+										const lastOne = shown && !canHideModel(options, hiddenIds, option.id);
 										const hint = currentModel?.id === option.id
 											? (shown ? '使用中' : '使用中のあいだはモデルを選ぶ画面に出ます')
 											: lastOne ? '1 つは表示が必要です' : option.isDefault === true ? '既定' : undefined;
 										return (
 											<View key={option.id} style={[styles.row, index > 0 ? styles.rowDivider : undefined]}>
-												<View style={styles.rowBody}>
+												{/* 読み上げはスイッチ 1 つにまとめる（名前はラベル、補足はヒント） */}
+												<View style={styles.rowBody} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
 													<Text style={styles.rowLabel}>{option.label}</Text>
 													{hint !== undefined ? <Text style={styles.rowHint}>{hint}</Text> : null}
 												</View>
 												<SettingsSwitch
 													value={shown}
 													disabled={lastOne}
+													accessibilityHint={hint}
 													onValueChange={value => {
 														if (visibilityAgent !== undefined && (value || canHideModel(options, hiddenIds, option.id))) {
 															setModelHidden(visibilityAgent, option.id, !value);
@@ -277,7 +299,7 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 							</>
 						) : null}
 						<Text style={styles.hint}>オフにしたモデルは「モデルを選ぶ」に出ません。この端末の設定で、どの PC につないでも同じです。PC に新しいモデルが増えたときは表示されます。</Text>
-						<Button label="完了" onPress={() => { haptic('move'); setPage('pick'); }} style={styles.apply} />
+						<Button label="完了" onPress={() => switchPage('pick')} style={styles.apply} />
 					</>
 				) : (
 					<>
@@ -296,7 +318,9 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 										>
 											<View style={styles.rowBody}>
 												<Text style={[styles.rowLabel, hidden ? styles.rowLabelHidden : undefined]}>{option.label}</Text>
-												{currentModel?.id === option.id ? <Text style={styles.rowHint}>{hidden ? '使用中・非表示' : '使用中'}</Text> : null}
+												{currentModel?.id === option.id
+													? <Text style={styles.rowHint}>{hidden ? '使用中・非表示' : '使用中'}</Text>
+													: hidden ? <Text style={styles.rowHint}>非表示</Text> : null}
 											</View>
 											{isSelected ? <Icon icon={Check} color={theme.accent} /> : null}
 										</Pressable>

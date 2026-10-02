@@ -112,7 +112,7 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'eye-off-outline',
 				title: '使わないモデルを、モデルを選ぶ画面から隠せるようになりました',
-				body: '「モデルを選ぶ」の右上の歯車から、表示するモデルを選べます。今使っているモデルは隠しても一覧に残ります。',
+				body: '「モデルを選ぶ」の右上の歯車から、表示するモデルを選べます。今使っているモデルと選びかけのモデルは、隠しても一覧に残ります。VoiceOver では、切り替えられないモデルの理由も読み上げます。',
 			},
 			{
 				icon: 'pulse-outline',
