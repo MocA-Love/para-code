@@ -12,7 +12,7 @@ import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisWarmLeaseScheduler } from '../../../../common/paradisWarmLease.js';
-import { ParadisCcusageChannel, ParadisCcusageService, paradisCcusageCodexHomeEnv } from '../../node/paradisCcusageChannel.js';
+import { ParadisCcusageChannel, ParadisCcusageService, paradisCcusageCodexHomeEnv, paradisCcusageProcessGroupOptions } from '../../node/paradisCcusageChannel.js';
 
 interface IExecResult {
 	readonly stdout?: string;
@@ -99,23 +99,119 @@ suite('ParadisCcusageService', () => {
 		return { childKills, clock, invocations, service };
 	}
 
-	test('reuses a cached report until its TTL expires', async () => {
+	// TTL を過ぎた値は待たせずに古い値として返し、裏で1本だけ取り直す（stale-while-revalidate）。
+	test('serves a cached report until its TTL expires, then serves it stale while one revalidation runs', async () => {
+		const { clock, invocations, service } = createService(invocation => invocation === 1
+			? { stdout: dailyOutput('day-1') }
+			: { stdout: dailyOutput(`day-${invocation}`), delayMs: 1_000 });
+		const options = { executablePath: '/test/ccusage' };
+		const summary = (result: { value: { period: string }[]; fetchedAt: number; stale: boolean }) => ({ period: result.value[0]?.period, fetchedAt: result.fetchedAt - INITIAL_TIME, stale: result.stale });
+
+		const first = summary(await service.fetchReport('daily', options));
+		clock.setSystemTime(INITIAL_TIME + CACHE_TTL_MS - 1);
+		const cached = summary(await service.fetchReport('daily', options));
+		clock.setSystemTime(INITIAL_TIME + CACHE_TTL_MS);
+		const expired = summary(await service.fetchReport('daily', options));
+		const whileRevalidating = summary(await service.fetchReport('daily', options));
+		await clock.tickAsync(1_000);
+		const revalidated = summary(await service.fetchReport('daily', options));
+		service.dispose();
+
+		assert.deepStrictEqual({ calls: invocations.length, results: [first, cached, expired, whileRevalidating, revalidated] }, {
+			calls: 2,
+			results: [
+				{ period: 'day-1', fetchedAt: 0, stale: false },
+				{ period: 'day-1', fetchedAt: 0, stale: false },
+				{ period: 'day-1', fetchedAt: 0, stale: true },
+				{ period: 'day-1', fetchedAt: 0, stale: true },
+				{ period: 'day-2', fetchedAt: CACHE_TTL_MS + 1_000, stale: false },
+			],
+		});
+	});
+
+	// `--since` は毎日1日進む。日付が変わっても前日の値を古い値として返し、新しい `--since` で取り直す。
+	test('serves the value taken with a previous --since as stale and refetches with the new one', async () => {
 		const { clock, invocations, service } = createService(invocation => ({ stdout: dailyOutput(`day-${invocation}`) }));
 
-		const first = await service.fetchDaily({ executablePath: '/test/ccusage' });
-		clock.setSystemTime(INITIAL_TIME + CACHE_TTL_MS - 1);
-		const cached = await service.fetchDaily({ executablePath: '/test/ccusage' });
-		clock.setSystemTime(INITIAL_TIME + CACHE_TTL_MS);
-		const expired = await service.fetchDaily({ executablePath: '/test/ccusage' });
+		await service.fetchReport('daily', { executablePath: '/test/ccusage', since: '20260519' });
+		const nextDay = await service.fetchReport('daily', { executablePath: '/test/ccusage', since: '20260520' });
+		await clock.tickAsync(0);
+		const refetched = await service.fetchReport('daily', { executablePath: '/test/ccusage', since: '20260520' });
 		service.dispose();
 
 		assert.deepStrictEqual({
-			calls: invocations.length,
-			periods: [first[0]?.period, cached[0]?.period, expired[0]?.period],
+			args: invocations.map(invocation => invocation.args),
+			nextDay: [nextDay.value[0]?.period, nextDay.stale],
+			refetched: [refetched.value[0]?.period, refetched.stale],
 		}, {
-			calls: 2,
-			periods: ['day-1', 'day-1', 'day-2'],
+			args: [['daily', '--json', '--since', '20260519'], ['daily', '--json', '--since', '20260520']],
+			nextDay: ['day-1', true],
+			refetched: ['day-2', false],
 		});
+	});
+
+	// 裏の取り直しが失敗し続けても、要求のたびに ccusage を起こし直さない（5 分から伸ばす）。手動更新は待って実行する。
+	test('backs off a failing revalidation and still runs an explicit refresh', async () => {
+		const timeout = Object.assign(new Error('terminated'), { killed: true });
+		const { clock, invocations, service } = createService(invocation => invocation === 1
+			? { stdout: dailyOutput('day-1') }
+			: { error: timeout, stderr: 'terminated' });
+		const options = { executablePath: '/test/ccusage' };
+
+		await service.fetchReport('daily', options);
+		clock.setSystemTime(INITIAL_TIME + CACHE_TTL_MS);
+		await service.fetchReport('daily', options);
+		await clock.tickAsync(0);
+		const callsAfterFirstFailure = invocations.length;
+		await clock.tickAsync(5 * 60 * 1000 - 1);
+		const stillStale = await service.fetchReport('daily', options);
+		await clock.tickAsync(0);
+		const callsWithinBackoff = invocations.length;
+		await clock.tickAsync(1);
+		await service.fetchReport('daily', options);
+		await clock.tickAsync(0);
+		const callsAfterBackoff = invocations.length;
+		await assert.rejects(service.fetchReport('daily', { ...options, bypassCache: true }));
+		service.dispose();
+
+		assert.deepStrictEqual({
+			stillStale: [stillStale.value[0]?.period, stillStale.stale],
+			calls: [callsAfterFirstFailure, callsWithinBackoff, callsAfterBackoff, invocations.length],
+		}, {
+			stillStale: ['day-1', true],
+			// 1 回目の失敗の後は --offline の再試行も走る（タイムアウト以外の失敗のため）
+			calls: [3, 3, 5, 7],
+		});
+	});
+
+	// 値が無いまま前景が失敗したら、2 分は同じ失敗を返して ccusage を起こし直さない。
+	test('returns a recent foreground failure for two minutes without running ccusage again', async () => {
+		const failure = Object.assign(new Error('spawn ccusage ENOENT'), { code: 'ENOENT' });
+		const { clock, invocations, service } = createService(invocation => invocation === 1
+			? { error: failure, stderr: '' }
+			: { stdout: dailyOutput('recovered') });
+		const options = { executablePath: '/test/ccusage' };
+
+		await assert.rejects(service.fetchReport('daily', options), /ENOENT/);
+		await clock.tickAsync(2 * 60_000 - 1);
+		await assert.rejects(service.fetchReport('daily', options), /ENOENT/);
+		const callsWithinWindow = invocations.length;
+		await clock.tickAsync(1);
+		const recovered = await service.fetchReport('daily', options);
+		service.dispose();
+
+		assert.deepStrictEqual({ callsWithinWindow, calls: invocations.length, period: recovered.value[0]?.period }, { callsWithinWindow: 1, calls: 2, period: 'recovered' });
+	});
+
+	test('answers fetchReport over the channel and rejects an unknown kind', async () => {
+		const { service } = createService(() => ({ stdout: JSON.stringify({ blocks: [{ id: 'gap', isGap: true, isActive: true, startTime: 'a', endTime: 'b' }, { id: 'active', isActive: true, startTime: 'a', endTime: 'b' }] }) }));
+		const channel = new ParadisCcusageChannel(service);
+
+		const result = await channel.call<{ value: { id: string }; fetchedAt: number; stale: boolean }>('', 'fetchReport', [{ kind: 'blocks', options: { executablePath: '/test/ccusage' } }]);
+		await assert.rejects(() => Promise.resolve().then(() => channel.call('', 'fetchReport', [{ kind: 'shell', options: {} }])), /Invalid fetchReport kind/);
+		service.dispose();
+
+		assert.deepStrictEqual({ id: result.value.id, fetchedAt: result.fetchedAt, stale: result.stale }, { id: 'active', fetchedAt: INITIAL_TIME, stale: false });
 	});
 
 	test('does not warm a foreground fetch that has no active owner lease', async () => {
@@ -462,7 +558,8 @@ suite('ParadisCcusageService', () => {
 
 	test('does not reset three-failure suppression when the same target renews', async () => {
 		const timeout = Object.assign(new Error('timed out'), { killed: false });
-		const { clock, invocations, service } = createService(() => ({ error: timeout, stderr: 'timed out', delayMs: 180_000 }));
+		// warm は誰も待たない実行なので、上限は 15 分（設定の 180 秒ではない）。そこで時間切れにする
+		const { clock, invocations, service } = createService(() => ({ error: timeout, stderr: 'timed out', delayMs: 15 * 60_000 }));
 		const channel = new ParadisCcusageChannel(service);
 		const payload = { ownerId: 'status-owner', active: true, targets: [dailyWarmTarget] };
 
@@ -529,17 +626,46 @@ suite('ParadisCcusageService', () => {
 		clock.setSystemTime(INITIAL_TIME + FALLBACK_CACHE_TTL_MS - 1);
 		const cached = await service.fetchDaily({ executablePath: '/test/ccusage' });
 		clock.setSystemTime(INITIAL_TIME + FALLBACK_CACHE_TTL_MS);
+		// 短い TTL を過ぎたら古い値として返し、裏で取り直す
+		const stale = await service.fetchDaily({ executablePath: '/test/ccusage' });
+		await clock.tickAsync(0);
 		const refreshed = await service.fetchDaily({ executablePath: '/test/ccusage' });
 		service.dispose();
 
 		assert.deepStrictEqual({
 			calls: invocations.length,
 			offlineArgs: invocations[1]?.args,
-			periods: [fallback[0]?.period, cached[0]?.period, refreshed[0]?.period],
+			periods: [fallback[0]?.period, cached[0]?.period, stale[0]?.period, refreshed[0]?.period],
 		}, {
 			calls: 3,
 			offlineArgs: ['daily', '--json', '--offline'],
-			periods: ['offline', 'offline', 'online'],
+			periods: ['offline', 'offline', 'offline', 'online'],
+		});
+	});
+
+	// POSIX では自分のプロセスグループで起こし、止めるときに npx の先の孫までまとめて止める。Windows は付けない。
+	test('starts ccusage in its own process group except on Windows', async () => {
+		const detached: unknown[] = [];
+		const execFile = ((_file: string, _args: readonly string[], options: cp.ExecFileOptions & { detached?: boolean }, callback: (error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void) => {
+			detached.push(options.detached);
+			callback(null, dailyOutput('grouped'), '');
+			return { kill: sinon.spy(() => true) } as unknown as cp.ChildProcess;
+		}) as unknown as typeof cp.execFile;
+		const service = new ParadisCcusageService(new NullLogService(), undefined, undefined, execFile);
+
+		await service.fetchDaily({ executablePath: '/test/ccusage' });
+		service.dispose();
+
+		assert.deepStrictEqual({
+			spawned: detached,
+			darwin: paradisCcusageProcessGroupOptions('darwin'),
+			linux: paradisCcusageProcessGroupOptions('linux'),
+			win32: paradisCcusageProcessGroupOptions('win32'),
+		}, {
+			spawned: [process.platform === 'win32' ? undefined : true],
+			darwin: { detached: true },
+			linux: { detached: true },
+			win32: {},
 		});
 	});
 

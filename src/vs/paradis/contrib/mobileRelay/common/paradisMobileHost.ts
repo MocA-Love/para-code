@@ -21,6 +21,13 @@ export interface IParadisMobileWindowHost {
 	readonly id: string;
 	/** remote のときだけ付与する表示名（ローカルはモバイル側で「ローカル」とローカライズする）。 */
 	readonly label?: string;
+	/**
+	 * その接続先の機械の印（`vs/paradis/node/paradisMachineId.ts`。OS の機械 ID の sha256 の hex）。
+	 * remote は接続先へ聞けたときだけ、local は shared process が desktop state の `machineIdHash` と
+	 * 同じ値を載せる。モバイルはこれで「SSH 先が別にペアリングした PC と同じ機械か」を見分け、使用量を
+	 * 二重に数えない。古い PC・古い接続先・読めなかったときは無い。
+	 */
+	readonly machineIdHash?: string;
 }
 
 /**
@@ -30,11 +37,16 @@ export interface IParadisMobileWindowHost {
  * 起動後にラベルフォーマッタを登録するまでは `hostLabel` が渡らない。フォーマッタ未到着の間は
  * authority をそのまま `label` に使う（先頭の `xxx-remote+` を落として読みやすくする）。
  */
-export function paradisResolveMobileWindowHost(remoteAuthority: string | undefined, hostLabel: string | undefined): IParadisMobileWindowHost {
+export function paradisResolveMobileWindowHost(remoteAuthority: string | undefined, hostLabel: string | undefined, machineIdHash?: string): IParadisMobileWindowHost {
 	if (remoteAuthority === undefined) {
 		return { kind: 'local', id: 'local' };
 	}
 	const id = remoteAuthority.toLowerCase();
 	const label = hostLabel ?? remoteAuthority.replace(/^[a-z0-9-]+\+/i, '');
-	return { kind: 'remote', id, label };
+	return { kind: 'remote', id, label, ...(paradisIsMachineIdHash(machineIdHash) ? { machineIdHash } : {}) };
+}
+
+/** 機械の印として受け取ってよい値か（sha256 の hex 小文字 64 文字）。接続先の応答は信用しない。 */
+export function paradisIsMachineIdHash(value: unknown): value is string {
+	return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 }

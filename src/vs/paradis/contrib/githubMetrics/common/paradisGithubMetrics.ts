@@ -224,6 +224,15 @@ export interface IParadisGithubTotals {
 }
 
 export interface IParadisGithubMetricsSnapshot {
+	/**
+	 * gh が認証しているアカウント（枠を読む GraphQL のプローブの応答から取る。取れていなければ無い）。
+	 * レート枠はアカウント単位なので、スマホが複数の PC の枠を合わせるときの束ねる鍵にする。
+	 */
+	readonly account?: { readonly login: string };
+	/** レート枠を最後に1つでも取れた時刻（epoch ms）。まだ取れていなければ無い。 */
+	readonly fetchedAt?: number;
+	/** 最後の取り直しで1つも取れず、前回の値を出している。 */
+	readonly stale?: boolean;
 	readonly generatedAt: number;
 	readonly sessionStartedAt: number;
 	/** gh CLI が使えるか（未インストール・未認証時は false）。 */

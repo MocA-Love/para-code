@@ -17,6 +17,12 @@ import * as cp from 'child_process';
 import { IDisposable } from '../../base/common/lifecycle.js';
 import { killTree } from '../../base/node/processes.js';
 
+/** プロセスグループへ SIGTERM を送ってから、まだ残っているものへ SIGKILL を送るまでの猶予。 */
+const PARADIS_GROUP_KILL_GRACE_MS = 3_000;
+
+/** グループごとの停止を頼んだ子。この子が後で終わったら、グループの残りへは SIGKILL を送る。 */
+const groupStopRequested = new WeakSet<cp.ChildProcess>();
+
 /**
  * 子プロセスを終了させる。Windows ではプロセスツリーごと落とし、失敗したときだけ
  * `child.kill()` へ落とす(既に死んでいる場合もここへ来るが、二重に止めても無害)。
@@ -47,8 +53,25 @@ export function paradisKillChildProcessTree(child: cp.ChildProcess, onError?: (e
 	if (platform !== 'win32' && options?.processGroup && typeof pid === 'number' && child.exitCode === null && child.signalCode === null) {
 		// 自分のプロセスグループで起こした子（spawn の detached）は、グループごと止める。子が起こした
 		// 孫（codex app-server のプラグイン・MCP など）まで残さない。
+		const groupKill = options.groupKill ?? ((groupId, signal) => process.kill(-groupId, signal));
 		try {
-			(options.groupKill ?? ((groupId, signal) => process.kill(-groupId, signal)))(pid, 'SIGTERM');
+			groupKill(pid, 'SIGTERM');
+			groupStopRequested.add(child);
+			// SIGTERM を無視する・後始末に時間がかかるものが残っていたら、少し待ってから SIGKILL で止める。
+			// 送るのは子（グループの先頭）がまだ生きているときだけ。生きている間はグループの番号は自分のもので、
+			// 別のプロセスのグループに使い回されていない。子が先に終わったときは、子の exit で
+			// paradisKillExitedProcessGroup が SIGKILL を送る（停止を頼んだ後なので）。
+			const escalation = setTimeout(() => {
+				if (child.exitCode !== null || child.signalCode !== null) {
+					return;
+				}
+				try {
+					groupKill(pid, 'SIGKILL');
+				} catch {
+					// グループがもう空
+				}
+			}, options.groupKillGraceMs ?? PARADIS_GROUP_KILL_GRACE_MS);
+			(escalation as { unref?: () => void }).unref?.();
 			return;
 		} catch (error) {
 			reportError(error);
@@ -87,7 +110,8 @@ export function paradisKillExitedProcessGroup(child: cp.ChildProcess, platform: 
 		return;
 	}
 	try {
-		groupKill(child.pid, 'SIGTERM');
+		// 停止を頼んだ後に終わった子なら、残っている孫は SIGTERM を受けても残ったもの。SIGKILL で止める。
+		groupKill(child.pid, groupStopRequested.has(child) ? 'SIGKILL' : 'SIGTERM');
 	} catch {
 		// グループがもう空（ESRCH）。止めるものは無い。
 	}
@@ -99,6 +123,8 @@ export interface IParadisChildProcessTreeTerminationOptions {
 	readonly processGroup?: boolean;
 	/** テスト用。グループへシグナルを送る。 */
 	readonly groupKill?: (groupId: number, signal: NodeJS.Signals) => void;
+	/** グループへ SIGTERM を送ってから SIGKILL を送るまでの猶予（既定 {@link PARADIS_GROUP_KILL_GRACE_MS}）。 */
+	readonly groupKillGraceMs?: number;
 	readonly treeKill?: typeof killTree;
 	readonly terminator?: (child: cp.ChildProcess) => void;
 }

@@ -132,6 +132,34 @@ suite('ParadisMobileTerminalRegistry', () => {
 		]);
 	});
 
+	// このPCの機械の印は desktop state と手元のウィンドウの host に載せる。SSH のウィンドウの印は renderer が
+	// 接続先へ聞いて載せてきたものをそのまま通す（手元の印で上書きしない）。
+	test('このPCの機械の印を desktop state と手元のウィンドウの host に載せる', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		registry.syncWindow(1, 'session-local', 1, {
+			activeWs: undefined, workspaces: [], terminals: [], host: { kind: 'local', id: 'local' },
+		});
+		registry.syncWindow(2, 'session-remote', 1, {
+			activeWs: undefined, workspaces: [], terminals: [], host: { kind: 'remote', id: 'ssh-remote+myserver', label: 'myserver', machineIdHash: 'r'.repeat(64) },
+		});
+		const before = registry.desktopState();
+		const changed = registry.setMachineIdHash('p'.repeat(64));
+		const unchanged = registry.setMachineIdHash('p'.repeat(64));
+		const after = registry.desktopState();
+
+		assert.deepStrictEqual({ before: before.machineIdHash, changed, unchanged, revisionAdvanced: after.revision > before.revision, machineIdHash: after.machineIdHash, renderers: after.renderers }, {
+			before: undefined,
+			changed: true,
+			unchanged: false,
+			revisionAdvanced: true,
+			machineIdHash: 'p'.repeat(64),
+			renderers: [
+				{ windowId: 1, rendererGeneration: 1, ready: true, host: { kind: 'local', id: 'local', machineIdHash: 'p'.repeat(64) } },
+				{ windowId: 2, rendererGeneration: 1, ready: true, host: { kind: 'remote', id: 'ssh-remote+myserver', label: 'myserver', machineIdHash: 'r'.repeat(64) } },
+			],
+		});
+	});
+
 	test('host未配信のウィンドウ（旧PC・state未同期）はrenderersにhostを持たない', () => {
 		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
 		registry.syncWindow(1, 'session', 1, { activeWs: undefined, workspaces: [], terminals: [] });

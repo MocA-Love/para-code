@@ -81,7 +81,7 @@ import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMob
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
 import { PARADIS_MOBILE_SHOW_PREFIX_ARGS, ParadisMobileIgnoredRuns, paradisMarkMobileIgnoredEntries, paradisMobileIgnoredRepoDir, paradisMobileIgnoredStatusArgs, paradisParseMobileIgnoredNames } from '../common/paradisMobileIgnoredEntries.js';
 import { paradisReadMobileScmStatus } from '../common/paradisMobileScmStatusRead.js';
-import { PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, paradisIsMobileHostNoResponse } from '../common/paradisMobileHostDeadline.js';
+import { PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisIsMobileHostNoResponse, paradisMobileUsageErrorReply, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionsForMobile, paradisParseApprovalOptions, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
 import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
@@ -2472,47 +2472,47 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		// ccusage 使用量ダッシュボード。ワークスペースに紐付かないため、パス解決の前に処理する。
+		// usage・rtk・limits・github は 50 秒で打ち切り、{ error, code: 'no-response' } を返す（裏の実行は続け、
+		// 終わればキャッシュに入る）。打ち切らないと、ccusage が数分かかる PC ではアプリが自分の上限まで待たされる。
 		if (msg.t === 'usage') {
 			try {
-				const data = await this.fetchUsageDashboard(!!msg.bypassCache);
+				const data = await paradisWithHostDeadline(this.fetchUsageDashboard(!!msg.bypassCache), PARADIS_MOBILE_USAGE_DEADLINE_MS);
 				reply({ t: 'usage', data });
 			} catch (err) {
-				reply({ error: String(err) });
+				reply(paradisMobileUsageErrorReply(err));
 			}
 			return;
 		}
 		// PARA-PATCH: RTK節約データのモバイル配信。usage と同じくワークスペース非依存。
 		if (msg.t === 'rtk') {
 			try {
-				const data = await this.fetchRtkSavings(!!msg.bypassCache);
+				const data = await paradisWithHostDeadline(this.fetchRtkSavings(!!msg.bypassCache), PARADIS_MOBILE_USAGE_DEADLINE_MS);
 				reply({ t: 'rtk', data });
 			} catch (err) {
 				// 未インストールは内部マーカー入りの英文で来る。そのまま見せない。
-				reply({
-					error: isParadisRtkNotFoundError(err)
-						? localize('paradis.mobile.rtkNotFound', "rtk が見つかりません。PC（SSH 接続中は接続先）にインストールすると節約量を見られます。")
-						: String(err)
-				});
+				reply(isParadisRtkNotFoundError(err)
+					? { error: localize('paradis.mobile.rtkNotFound', "rtk が見つかりません。PC（SSH 接続中は接続先）にインストールすると節約量を見られます。") }
+					: paradisMobileUsageErrorReply(err));
 			}
 			return;
 		}
 		// AIリミット(Rate Limit)。usage と同じくワークスペース非依存(閲覧専用。追加・再ログインはPC側のみ)。
 		if (msg.t === 'limits') {
 			try {
-				const data = await this.fetchLimitsSnapshot(!!msg.bypassCache, paradisMobileLimitsClaudeFromLocal(msg));
+				const data = await paradisWithHostDeadline(this.fetchLimitsSnapshot(!!msg.bypassCache, paradisMobileLimitsClaudeFromLocal(msg)), PARADIS_MOBILE_USAGE_DEADLINE_MS);
 				reply({ t: 'limits', data });
 			} catch (err) {
-				reply({ error: String(err) });
+				reply(paradisMobileUsageErrorReply(err));
 			}
 			return;
 		}
 		// GitHub API利用状況。usage/limits と同じくワークスペース非依存(閲覧専用)。
 		if (msg.t === 'github') {
 			try {
-				const data = await this.fetchGithubMetrics(!!msg.bypassCache);
+				const data = await paradisWithHostDeadline(this.fetchGithubMetrics(!!msg.bypassCache), PARADIS_MOBILE_USAGE_DEADLINE_MS);
 				reply({ t: 'github', data });
 			} catch (err) {
-				reply({ error: String(err) });
+				reply(paradisMobileUsageErrorReply(err));
 			}
 			return;
 		}

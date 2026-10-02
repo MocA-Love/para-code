@@ -8,6 +8,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { equals as objectsEqual } from '../../../../base/common/objects.js';
 import { IParadisMobileDesktopBattery, IParadisMobileDesktopResources, IParadisMobileDesktopStateV3, IParadisMobileTerminalV3, IParadisMobileWindowStateV2, IParadisMobileWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION } from '../common/paradisMobileRelay.js';
 import { paradisMobileResourcesEqual } from '../common/paradisMobileHostResources.js';
+import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
 import { PARADIS_FS_BINARY_UPLOAD_ENCODING } from '../common/paradisMobileFileUpload.js';
 import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, PARADIS_MOBILE_PC_CAPABILITIES } from '../common/paradisMobileCompat.js';
 import { IParadisMobileRendererManifest, IParadisMobileWindowLease, IParadisMobileWindowLeaseValidation } from '../common/paradisMobileWindowLease.js';
@@ -45,6 +46,7 @@ export class ParadisMobileTerminalRegistry {
 	private hostResources: IParadisMobileDesktopResources | undefined;
 	// モバイルのPC一覧に出す表示名。renderer が設定値（無ければホスト名）を解決して入れる。
 	private pcName: string | undefined;
+	private machineIdHash: string | undefined;
 	private highestValidatedManifestRevision = 0;
 	private fullManifestRevision = 0;
 	private readonly observedManifestEntries = new Map<number, { entry: IParadisMobileRendererManifest['entries'][number]; observedAtManifestRevision: number }>();
@@ -112,6 +114,19 @@ export class ParadisMobileTerminalRegistry {
 			return false;
 		}
 		this.hostResources = resources;
+		this.revision++;
+		return true;
+	}
+
+	/**
+	 * このPCの機械の印を差し替える。実際に変わったときだけ revision を進め、
+	 * true（＝再ブロードキャストが要る）を返す。
+	 */
+	setMachineIdHash(machineIdHash: string | undefined): boolean {
+		if (this.machineIdHash === machineIdHash) {
+			return false;
+		}
+		this.machineIdHash = machineIdHash;
 		this.revision++;
 		return true;
 	}
@@ -309,14 +324,14 @@ export class ParadisMobileTerminalRegistry {
 				windowId: entry.windowId,
 				rendererGeneration: entry.rendererGeneration,
 				ready: entry.claimed && generationMatches && lease?.windowSession === entry.windowSession && lease?.ready === true,
-				...(generationMatches && lease?.state.host !== undefined ? { host: lease.state.host } : {}),
+				...(generationMatches && lease?.state.host !== undefined ? { host: this.withMachineIdHash(lease.state.host) } : {}),
 			}];
 		}));
 		for (const [windowId, lease] of this.windows) {
 			if (!rendererByWindow.has(windowId)) {
 				rendererByWindow.set(windowId, {
 					windowId, rendererGeneration: lease.rendererGeneration, ready: lease.ready,
-					...(lease.state.host !== undefined ? { host: lease.state.host } : {}),
+					...(lease.state.host !== undefined ? { host: this.withMachineIdHash(lease.state.host) } : {}),
 				});
 			}
 		}
@@ -336,7 +351,16 @@ export class ParadisMobileTerminalRegistry {
 			...(battery !== undefined ? { battery } : {}),
 			...(this.hostResources !== undefined ? { resources: this.hostResources } : {}),
 			...(this.pcName !== undefined ? { pcName: this.pcName } : {}),
+			...(this.machineIdHash !== undefined ? { machineIdHash: this.machineIdHash } : {}),
 		};
+	}
+
+	/**
+	 * 手元のウィンドウの接続先へ、このPCの機械の印を載せる（renderer は OS の機械 ID を読めないので
+	 * ここで足す）。SSH のウィンドウの印は renderer が接続先へ聞いて載せてくるので、そのまま通す。
+	 */
+	private withMachineIdHash(host: IParadisMobileWindowHost): IParadisMobileWindowHost {
+		return host.kind === 'local' && this.machineIdHash !== undefined ? { ...host, machineIdHash: this.machineIdHash } : host;
 	}
 
 	private rebuildOwners(): void {

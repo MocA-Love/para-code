@@ -19,6 +19,11 @@ export const PARADIS_RESOURCE_MONITOR_CHANNEL = 'paradisResourceMonitor';
  * 接続先のマシンなので、繋いでいるウィンドウはこちらへ聞く。
  */
 export const PARADIS_HOST_RESOURCES_CHANNEL = 'paradisHostResources';
+/**
+ * {@link PARADIS_HOST_RESOURCES_CHANNEL} のコマンド。そのマシンの印（OS の機械 ID の sha256 の hex。
+ * `vs/paradis/node/paradisMachineId.ts`）を返す。この版より古い接続先は Method not found で失敗する。
+ */
+export const PARADIS_HOST_MACHINE_ID_HASH_COMMAND = 'getMachineIdHash';
 
 export interface IParadisResourceUsage {
 	/** CPU使用率(%)。マルチコアでは100を超え得る。 */

@@ -215,6 +215,12 @@ export interface IParadisMobileDesktopStateV3 {
 	 * 一覧で見分けるために使う。設定 `paradis.mobile.pcName` が空ならホスト名。
 	 */
 	readonly pcName?: string;
+	/**
+	 * このPCの機械の印（OS の機械 ID の sha256 の hex。`vs/paradis/node/paradisMachineId.ts`）。
+	 * 旧PC・読めなかったときは未配信。SSH 先の印（`renderers[].host.machineIdHash`）と同じ計算なので、
+	 * モバイルは「あるPCの SSH 先が、別にペアリングしたPCそのもの」を見分けて使用量を二重に数えない。
+	 */
+	readonly machineIdHash?: string;
 }
 
 /** shared process の接続状態。 */
