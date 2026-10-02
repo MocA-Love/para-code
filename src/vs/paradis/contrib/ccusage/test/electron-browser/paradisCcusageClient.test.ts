@@ -418,7 +418,8 @@ suite('ParadisCcusageClient', () => {
 						result = projectsFixture;
 						break;
 					default:
-						throw new Error(`unexpected command: ${command}`);
+						// fetchReport を持たない古い接続先として振る舞わせる（従来のコマンドへ落ちる）
+						throw new Error(`Method not found: ${command}`);
 				}
 				return result as T;
 			},
@@ -496,5 +497,54 @@ suite('ParadisCcusageClient', () => {
 		}]);
 		assert.deepStrictEqual(dashboard.failedReports, []);
 		assert.ok(Number.isFinite(dashboard.fetchedAt));
+	});
+
+	// 取得時刻と古さは fetchReport から受け取り、ダッシュボードには最も古い取得時刻と「古い値を含む」を載せる。
+	// 昨日以前に取った古い値には今日の行が無いので、ステータスバーには $0.00 でなく「分からない」を返す。
+	test('carries the oldest fetch time and staleness from fetchReport and hides a stale today cost from a previous day', async () => {
+		const clock = sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
+		const yesterday = new Date(2026, 7, 15, 23, 0, 0).getTime();
+		const earlierToday = new Date(2026, 7, 16, 9, 0, 0).getTime();
+		let dailyFetchedAt = yesterday;
+		const commands: string[] = [];
+		const channel = {
+			call: async <T>(command: string, args?: unknown): Promise<T> => {
+				commands.push(command);
+				const kind = (args as readonly [{ readonly kind: string }])[0].kind;
+				const values: Record<string, unknown> = {
+					daily: [{ period: '2026-08-15', totalCost: 3 }],
+					blocks: undefined,
+					session: [],
+					projects: {},
+				};
+				const fetchedAt = kind === 'daily' ? dailyFetchedAt : earlierToday;
+				return { value: values[kind], fetchedAt, stale: kind === 'daily' } as T;
+			},
+		};
+		const client = new ParadisCcusageClient(
+			{ getChannel: () => channel } as unknown as ISharedProcessService,
+			{ getValue: () => '' } as unknown as IConfigurationService,
+			{ getConnection: () => null } as unknown as IRemoteAgentService,
+		);
+
+		const dashboard = await client.fetchDashboard();
+		const staleFromYesterday = await client.fetchTodayCost();
+		dailyFetchedAt = earlierToday;
+		const staleFromToday = await client.fetchTodayCost();
+		clock.restore();
+
+		assert.deepStrictEqual({
+			fetchedAt: dashboard.fetchedAt,
+			stale: dashboard.stale,
+			staleFromYesterday,
+			staleFromToday,
+			commands: [...new Set(commands)],
+		}, {
+			fetchedAt: yesterday,
+			stale: true,
+			staleFromYesterday: undefined,
+			staleFromToday: 0,
+			commands: ['fetchReport'],
+		});
 	});
 });

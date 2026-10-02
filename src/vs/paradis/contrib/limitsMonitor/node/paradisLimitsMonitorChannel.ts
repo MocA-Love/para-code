@@ -26,6 +26,7 @@
 //     ログインが完了するとcodexがauth.jsonを書いてexitする
 
 import * as cp from 'child_process';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import { CancelablePromise, timeout } from '../../../../base/common/async.js';
@@ -68,6 +69,11 @@ import { ParadisClaudeOAuthClient } from './paradisClaudeOAuthClient.js';
  * リミットの変化は緩やかなので十分で、手動更新(bypassCache)は常に実取得する。
  */
 const SNAPSHOT_CACHE_TTL_MS = 150_000;
+/** TTL を過ぎたスナップショットを古い値（stale）として返してよい長さ。これより古ければ取り終えるまで待つ。 */
+const SNAPSHOT_STALE_MAX_AGE_MS = 6 * 60 * 60_000;
+/** 古い値を返したときの裏の取り直しが失敗し続けたときの間隔（1 分から 10 分まで伸ばす）。 */
+const SNAPSHOT_REFRESH_BACKOFF_START_MS = 60_000;
+const SNAPSHOT_REFRESH_BACKOFF_MAX_MS = 10 * 60_000;
 /** wham/usage HTTPタイムアウト。 */
 const USAGE_HTTP_TIMEOUT_MS = 30_000;
 /*
@@ -200,7 +206,7 @@ interface ICodexAuthJson {
 
 export interface ICodexAccountResult {
 	readonly account: IParadisLimitsAccount;
-	/** rendererへは返さず、shared process内の重複判定だけに使う。 */
+	/** 重複判定に使う。スナップショットでは account.accountId としても返す（スマホがPCをまたいで束ねる鍵）。 */
 	readonly accountId?: string;
 }
 
@@ -228,9 +234,28 @@ export function paradisCodexLoginUrl(output: string): string | undefined {
 	return /https:\/\/auth\.openai\.com(?:[/?#][^\s"')]*)?(?=[\s"')]|$)/.exec(output)?.[0];
 }
 
+/**
+ * Codex のスナップショットが「全ホームの読み取りが一時的に失敗した」ものか。一時的と数えるのは 'error'
+ * （通信の失敗・app-server が起動できない等）と、'unavailable' のうち時間が経てば戻るもの（'host_fetch_failed'・
+ * 'rate_limited'）だけ。再ログインが要るもの（'relogin_required'・'no_credentials'）や、'api_key' のような
+ * 恒常的な 'unavailable' は失敗ではなく今の状態として出す。
+ */
+export function paradisIsTransientCodexSnapshotFailure(snapshot: IParadisLimitsSnapshot): boolean {
+	const accounts = snapshot.codex.accounts;
+	return accounts.length > 0 && accounts.every(account => account.status === 'error'
+		|| (account.status === 'unavailable' && (account.unavailableReason === 'host_fetch_failed' || account.unavailableReason === 'rate_limited')));
+}
+
+/** Codex の account_id を、スマホが束ねる鍵として送る形（`sha256('para-code-codex-account-v1:' + account_id)` の hex）にする。 */
+export function paradisHashCodexAccountId(accountId: string): string {
+	return createHash('sha256').update(`para-code-codex-account-v1:${accountId}`).digest('hex');
+}
+
 export class ParadisLimitsMonitorService {
 
 	private snapshotCache: { at: number; key: string; value: IParadisLimitsSnapshot } | undefined;
+	/** 裏の取り直しが続けて失敗した回数と、次に試してよい時刻。 */
+	private snapshotRefreshFailure: { readonly count: number; readonly retryAt: number } | undefined;
 	private inflight: Promise<IParadisLimitsSnapshot> | undefined;
 	private inflightKey: string | undefined;
 	/** RPCフォールバックまで失敗したCodexホーム → 失敗時刻(クールダウン用)。 */
@@ -299,17 +324,56 @@ export class ParadisLimitsMonitorService {
 
 	// ---------- スナップショット取得 ----------
 
+	/**
+	 * スナップショットを返す。TTL 内ならそのまま、TTL を過ぎていても同じ設定で取った前回の値があれば
+	 * 待たせずに `stale: true` を付けて返し、裏で取り直す（stale-while-revalidate）。Codex のホームが多いと
+	 * 取り直しは 60 秒を超えることがあり、待たせるとスマホの問い合わせが時間切れになる。前回の値が無い・
+	 * bypassCache（手動更新）のときだけ取り終えるまで待つ。
+	 */
 	async getSnapshot(options: IParadisLimitsFetchOptions): Promise<IParadisLimitsSnapshot> {
 		const key = JSON.stringify(options.codexHomes ?? []);
-		if (!options.bypassCache && this.snapshotCache && this.snapshotCache.key === key && Date.now() - this.snapshotCache.at < SNAPSHOT_CACHE_TTL_MS) {
-			return this.snapshotCache.value;
+		const cached = this.snapshotCache?.key === key ? this.snapshotCache : undefined;
+		const age = cached ? Date.now() - cached.at : undefined;
+		if (!options.bypassCache && cached && age !== undefined && age < SNAPSHOT_STALE_MAX_AGE_MS) {
+			if (age < SNAPSHOT_CACHE_TTL_MS) {
+				return cached.value;
+			}
+			const failure = this.snapshotRefreshFailure;
+			if (!failure || Date.now() >= failure.retryAt) {
+				this.refreshSnapshot(options, key).then(value => {
+					if (paradisIsTransientCodexSnapshotFailure(value)) {
+						throw new Error('every Codex home failed to read its usage');
+					}
+					this.snapshotRefreshFailure = undefined;
+				}).catch(error => {
+					const count = (this.snapshotRefreshFailure?.count ?? 0) + 1;
+					const delay = Math.min(SNAPSHOT_REFRESH_BACKOFF_MAX_MS, SNAPSHOT_REFRESH_BACKOFF_START_MS * Math.pow(2, count - 1));
+					this.snapshotRefreshFailure = { count, retryAt: Date.now() + delay };
+					this.logService.trace(`[ParadisLimitsMonitor] background snapshot refresh failed (${count} in a row): ${error}`);
+				});
+			}
+			return { ...cached.value, stale: true };
 		}
+		return this.refreshSnapshot(options, key);
+	}
+
+	/** スナップショットを取り直す。同じ設定で取り直している最中なら、それに相乗りする。 */
+	private refreshSnapshot(options: IParadisLimitsFetchOptions, key: string): Promise<IParadisLimitsSnapshot> {
 		if (this.inflight && this.inflightKey === key) {
 			return this.inflight;
 		}
 		const promise = this.doGetSnapshot(options)
 			.then(value => {
-				this.snapshotCache = { at: Date.now(), key, value };
+				// 全ホームが一時的な失敗（通信など）なら、古い値として出せる前回の値を残す（取り直しの間隔は
+				// getSnapshot が伸ばす）。前回の値が無い・古い値として出せないほど古いときは、失敗のスナップショットを
+				// 入れる（TTL の間は同じ失敗を返し、要求のたびに app-server を起こさない）。
+				const previous = this.snapshotCache;
+				const keepPrevious = paradisIsTransientCodexSnapshotFailure(value)
+					&& previous?.key === key
+					&& Date.now() - previous.at < SNAPSHOT_STALE_MAX_AGE_MS;
+				if (!keepPrevious) {
+					this.snapshotCache = { at: Date.now(), key, value };
+				}
 				return value;
 			})
 			.finally(() => {
@@ -345,9 +409,14 @@ export class ParadisLimitsMonitorService {
 				.filter((other, otherIndex) => otherIndex !== index && other.accountId === result.accountId)
 				.map(other => other.account.homeLabel)
 				.filter(homeLabel => homeLabel !== undefined);
-			return duplicateHomeLabels.length > 0
-				? { ...result.account, duplicateHomeLabels }
-				: result.account;
+			// account_id も載せる。スマホが複数の PC の上限を合わせるとき、同じアカウントを1つに束ねる鍵にする
+			// （メールだけでは、同じメールで別のワークスペースを持つ人を1つに潰してしまう）。束ねる鍵にしか
+			// 使わないので、生の値ではなくハッシュにして送る。
+			return {
+				...result.account,
+				accountId: paradisHashCodexAccountId(result.accountId),
+				...(duplicateHomeLabels.length > 0 ? { duplicateHomeLabels } : {}),
+			};
 		});
 		return { accounts };
 	}

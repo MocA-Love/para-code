@@ -72,6 +72,7 @@ function createStateBroadcastMetricsFixture(): { service: IStateBroadcastMetrics
 		load: async () => undefined,
 		ensureLoaded: async () => undefined,
 		updateDiagnosticCorrelation: () => undefined,
+		loadMachineIdHash: () => undefined,
 		updateEagerTailing: () => undefined,
 		setConnectionState: () => undefined,
 		connect: () => state.lifecycleTimerStates.push(timer.active),
@@ -112,7 +113,7 @@ suite('ParadisMobileRelayService state broadcast metrics', () => {
 				undefined,
 				undefined,
 				undefined,
-				{ stateBroadcastMetricsTimer: timer, disableHostResourceSampling: true },
+				{ stateBroadcastMetricsTimer: timer, disableHostResourceSampling: true, readMachineIdHash: async () => undefined },
 			);
 
 			assert.deepStrictEqual({ events, intervals: timer.intervals }, { events: [], intervals: [] });
@@ -258,7 +259,7 @@ suite('ParadisMobileRelayService state broadcast metrics', () => {
 			undefined,
 			undefined,
 			undefined,
-			{ stateBroadcastMetricsTimer: timer, disableHostResourceSampling: true },
+			{ stateBroadcastMetricsTimer: timer, disableHostResourceSampling: true, readMachineIdHash: async () => undefined },
 		);
 
 		service.dispose();

@@ -7,7 +7,7 @@ import assert from 'assert';
 import * as cp from 'child_process';
 import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { type IParadisChildProcessTreeTerminationOptions, ParadisChildProcessTreeTracker, paradisKillChildProcessTree } from '../../node/paradisKillChildProcess.js';
+import { type IParadisChildProcessTreeTerminationOptions, ParadisChildProcessTreeTracker, paradisKillChildProcessTree, paradisKillExitedProcessGroup } from '../../node/paradisKillChildProcess.js';
 
 suite('ParadisChildProcessTreeTracker', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -74,6 +74,24 @@ suite('ParadisChildProcessTreeTracker', () => {
 			// 終わった子は直接の kill だけ（無害）。グループへ送れなければ直接止める
 			directKills: [0, 1, 1],
 		});
+		// SIGTERM の 3 秒後にグループへ SIGKILL（残っていれば止まる。空なら ESRCH で無視）
+		clock.tick(3_000);
+		assert.deepStrictEqual(groupKill.args, [[4242, 'SIGTERM'], [4242, 'SIGKILL']]);
+	});
+
+	// SIGKILL はグループの先頭（子）が生きている間だけ送る（番号が使い回されていないと分かるのはその間だけ）。
+	// 子が先に終わったら、子の exit で残りへ送る信号を、停止を頼んだ後なら SIGKILL にする。
+	test('escalates to SIGKILL only while the group leader is alive, and on its exit after a stop request', () => {
+		const groupKill = sinon.spy();
+		const exitsEarly = child({ pid: 5151 });
+		paradisKillChildProcessTree(exitsEarly.process, undefined, { platform: 'linux', processGroup: true, groupKill });
+		(exitsEarly.process as { exitCode: number | null }).exitCode = 0;
+		paradisKillExitedProcessGroup(exitsEarly.process, 'linux', groupKill);
+		clock.tick(3_000);
+		const neverStopped = child({ pid: 5252, exitCode: 0 });
+		paradisKillExitedProcessGroup(neverStopped.process, 'linux', groupKill);
+
+		assert.deepStrictEqual(groupKill.args, [[5151, 'SIGTERM'], [5151, 'SIGKILL'], [5252, 'SIGTERM']]);
 	});
 
 	test('normal completion clears the deadline without terminating the child', () => {

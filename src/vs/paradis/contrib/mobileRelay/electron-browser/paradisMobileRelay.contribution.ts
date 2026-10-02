@@ -9,6 +9,7 @@
 import { localize, localize2 } from '../../../../nls.js';
 import * as dom from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
+import { timeout } from '../../../../base/common/async.js';
 import { Disposable, DisposableMap, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -59,7 +60,8 @@ import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm, paradisLau
 import { paradisChannelHostResolver } from '../../workspaceSwitch/electron-browser/paradisWorktreeGitChannelClient.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ILabelService } from '../../../../platform/label/common/label.js';
-import { IParadisMobileWindowHost, paradisResolveMobileWindowHost } from '../common/paradisMobileHost.js';
+import { IParadisMobileWindowHost, paradisIsMachineIdHash, paradisResolveMobileWindowHost } from '../common/paradisMobileHost.js';
+import { PARADIS_HOST_MACHINE_ID_HASH_COMMAND, PARADIS_HOST_RESOURCES_CHANNEL } from '../../resourceMonitor/common/paradisResourceMonitor.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { PARADIS_REMOTE_SEARCH_CHANNEL } from '../common/paradisRemoteSearch.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
@@ -85,6 +87,9 @@ const PAIR_COMMAND = 'paradis.mobile.connectDevice';
 const MENU_COMMAND = 'paradis.mobile.showMenu';
 /** PCフォーカス状態のハートビート間隔。shared process側のTTL（WINDOW_FOCUS_TTL_MS=90秒）より十分短く保つ。 */
 const PC_FOCUS_HEARTBEAT_INTERVAL_MS = 25_000;
+/** SSH の接続先の機械の印を聞く回数と間隔（接続の確立待ちで失敗したときだけ聞き直す）。 */
+const REMOTE_MACHINE_ID_ATTEMPTS = 3;
+const REMOTE_MACHINE_ID_RETRY_MS = 30_000;
 
 /**
  * renderer 側のモバイルリレー contribution。
@@ -102,6 +107,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 	private readonly service: IParadisMobileRelayService;
 	private readonly provider: ParadisMobileWorkspaceProvider;
+	/** SSH の接続先の機械の印（{@link loadRemoteMachineIdHash}）。聞けるまでは undefined。 */
+	private remoteMachineIdHash: { readonly authority: string; readonly hash: string } | undefined;
 	private readonly statusbarEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	/** 相関タグを設定済みの deviceId（同じ値で毎回ハッシュし直さないため）。 */
 	private correlationDeviceId: string | undefined;
@@ -375,6 +382,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// 届いた時点で再送し、モバイルの「接続先セグメント」の表示名を整形済みへ差し替える。
 		// 起動時に複数回発火しうるため、他のイベントと同じく100ms集約（pushStateSoon）に乗せる。
 		this._register(this.labelService.onDidChangeFormatters(() => this.provider.pushStateSoon()));
+		// SSH の接続先の機械の印（モバイルが使用量を合計するとき、接続先が別にペアリングしたPCと同じ機械かを
+		// 見分ける）。接続先へ1度だけ聞き、届いたら再送する。
+		void this.loadRemoteMachineIdHash();
 		this._register(this.service.onDidRequestAgentPaneSync(request => {
 			withCurrentRendererLease(async lease => {
 				if (lease.windowId === request.windowId
@@ -658,7 +668,43 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			return paradisResolveMobileWindowHost(undefined, undefined);
 		}
 		const rawLabel = this.labelService.getHostLabel(Schemas.vscodeRemote, connection.remoteAuthority);
-		return paradisResolveMobileWindowHost(connection.remoteAuthority, rawLabel === connection.remoteAuthority ? undefined : rawLabel);
+		const machineIdHash = this.remoteMachineIdHash?.authority === connection.remoteAuthority ? this.remoteMachineIdHash.hash : undefined;
+		return paradisResolveMobileWindowHost(connection.remoteAuthority, rawLabel === connection.remoteAuthority ? undefined : rawLabel, machineIdHash);
+	}
+
+	/**
+	 * SSH の接続先の機械の印を聞く。この版より古い接続先は答えない（Method not found）ので、そのときは
+	 * 印を載せない（モバイルは「同じ機械か分からない」として扱う）。届く前の失敗（接続の確立待ち等）だけ
+	 * 間隔を空けて数回聞き直す。
+	 */
+	private async loadRemoteMachineIdHash(): Promise<void> {
+		const connection = this.remoteAgentService.getConnection();
+		if (connection === null) {
+			return;
+		}
+		for (let attempt = 0; attempt < REMOTE_MACHINE_ID_ATTEMPTS; attempt++) {
+			if (attempt > 0) {
+				await timeout(REMOTE_MACHINE_ID_RETRY_MS);
+			}
+			if (this._store.isDisposed) {
+				return;
+			}
+			try {
+				const hash = await connection.getChannel(PARADIS_HOST_RESOURCES_CHANNEL).call<unknown>(PARADIS_HOST_MACHINE_ID_HASH_COMMAND);
+				if (this._store.isDisposed || !paradisIsMachineIdHash(hash)) {
+					return;
+				}
+				this.remoteMachineIdHash = { authority: connection.remoteAuthority, hash };
+				this.provider.pushStateSoon();
+				return;
+			} catch (error) {
+				const message = (error as Error | undefined)?.message ?? '';
+				if (message.includes(PARADIS_HOST_MACHINE_ID_HASH_COMMAND)) {
+					return;
+				}
+				this.logService.trace('[paradisMobileRelay] could not read the machine id of the remote host', error);
+			}
+		}
 	}
 
 	/**

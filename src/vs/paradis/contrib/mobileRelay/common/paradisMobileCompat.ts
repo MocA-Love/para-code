@@ -99,6 +99,12 @@ export const ParadisMobileCapability = {
 	ScmFileAt: 'scm.file-at.v1',
 	/** scm の `wordDiff`（PC の Word 差分を、スペースの中のパスと比べる側の指定だけで頼める。差分の画面の「差分」）。 */
 	ScmWordDiff: 'scm.word-diff.v1',
+	/**
+	 * 使用量を全PCで合計するための情報。desktop state の `machineIdHash` と `renderers[].host.machineIdHash`
+	 * （機械の印）、`github` の `account`、`limits` の Codex の `accountId`、`usage`・`rtk`・`limits`・`github` の
+	 * `fetchedAt`・`stale`、時間内に返せないときの `{ error, code: 'no-response' }`（50 秒）。
+	 */
+	UsageMachineId: 'usage.machine-id.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -134,6 +140,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.NoteTaskOps,
 	ParadisMobileCapability.ScmFileAt,
 	ParadisMobileCapability.ScmWordDiff,
+	ParadisMobileCapability.UsageMachineId,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

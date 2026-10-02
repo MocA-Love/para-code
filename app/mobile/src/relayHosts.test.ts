@@ -4,6 +4,14 @@ import { describe, expect, test } from 'vitest';
 import { defaultRelayHostId, localRelayWindowId, relayHostsFrom, wantsClaudeHost, type RelayHostRendererLike } from './relayHosts.js';
 
 describe('relayHostsFrom', () => {
+	test('接続先の機械のハッシュを持ち回り、形の合わない値は届いていないものとして捨てる', () => {
+		const renderers: RelayHostRendererLike[] = [
+			{ windowId: 1, ready: true, host: { kind: 'remote', id: 'a', label: 'a', machineIdHash: 'm-a' } },
+			{ windowId: 2, ready: true, host: { kind: 'remote', id: 'b', label: 'b', machineIdHash: '' } },
+		];
+		expect(relayHostsFrom(renderers).map(h => [h.id, h.machineIdHash])).toEqual([['a', 'm-a'], ['b', undefined]]);
+	});
+
 	test('host未配信のrendererは無視する（旧PC・state未同期のウィンドウ）', () => {
 		const renderers: RelayHostRendererLike[] = [
 			{ windowId: 1, ready: true },

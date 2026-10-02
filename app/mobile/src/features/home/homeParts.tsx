@@ -6,12 +6,12 @@ import { Bell, ChevronRight, Plus, QrCode, Settings, SquareTerminal } from 'luci
 import { ProviderLogo } from '../../components/providerLogo.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { useWindowControlsInset } from '../../ipad/windowControls.js';
-import type { RateLimitAccount, RateLimitsResult } from '../../store.js';
-import { colors, radius, space, type } from '../../theme.js';
-import { pickRateLimitAccount } from '../../usageFormat.js';
+import { alpha, colors, radius, space, type } from '../../theme.js';
 import { Card, HeaderButton, Icon, Meter, MeterRow, SectionHeader, iconSize, useThemeColors } from '../../ui/index.js';
 import { ParaLogo } from '../pairing/paraLogo.js';
 import { accountName } from '../settings/usageSummary.js';
+import { HOME_ACCOUNTS_PER_PROVIDER, isWindowExpired, windowPercent, type AggregatedAccount } from '../usage/usageAggregate.js';
+import { SeenOnChips } from '../usage/usageOverviewParts.js';
 
 /**
  * ホーム（Orca の MobileHomeScreen）の部品。寸法はモック（concept-orca.html の `.topbar` `.stats`
@@ -105,31 +105,55 @@ function QuickAction({ icon, label, onPress, disabled = false }: { icon: ReactNo
 	);
 }
 
-/** アカウントの使用量（Claude / Codex の 5時間・7日）。押すと使用量の画面へ。 */
-export function AccountUsageCard({ limits, onPress }: { limits: RateLimitsResult | undefined; onPress: () => void }) {
-	const rows: { provider: 'claude' | 'codex'; account: RateLimitAccount | undefined }[] = [
-		{ provider: 'claude', account: limits !== undefined ? pickRateLimitAccount(limits.claude) : undefined },
-		{ provider: 'codex', account: limits !== undefined ? pickRateLimitAccount(limits.codex) : undefined },
-	];
+/**
+ * アカウントの使用量（Claude / Codex の 5時間・7日）。押すと使用量の画面へ。
+ *
+ * 全 PC の合計: アカウントごとに1行（同じアカウントを複数の PC で使っていても1行）で、PC が2台以上なら
+ * どの PC から見えているかをチップで添える。オフラインの PC の最後の値は薄く出す。
+ */
+export function AccountUsageCard({ claude, codex, anyLimits, showChips, now, onPress }: {
+	/** カードに出す順に並べたアカウント（`homeAccounts`）。provider ごとに先頭の数件だけ出し、残りは「ほか N 件」。 */
+	claude: readonly AggregatedAccount[];
+	codex: readonly AggregatedAccount[];
+	anyLimits: boolean;
+	showChips: boolean;
+	now: number;
+	onPress: () => void;
+}) {
+	const rows: { key: string; provider: 'claude' | 'codex'; item: AggregatedAccount | undefined; more: number }[] = [];
+	for (const [provider, list] of [['claude', claude], ['codex', codex]] as const) {
+		if (list.length === 0) {
+			rows.push({ key: provider, provider, item: undefined, more: 0 });
+		}
+		const shown = list.slice(0, HOME_ACCOUNTS_PER_PROVIDER);
+		shown.forEach((item, index) => {
+			rows.push({ key: `${provider}:${item.key}`, provider, item, more: index === shown.length - 1 ? list.length - shown.length : 0 });
+		});
+	}
 	return (
 		<Card onPress={onPress} style={styles.usage} accessibilityLabel="アカウントの使用量を開く">
 			{rows.map(row => (
-				<View key={row.provider} style={styles.usageRow}>
+				<View key={row.key} style={styles.usageRow}>
 					<View style={styles.usageIcon}><ProviderLogo provider={row.provider} size={iconSize.lg} /></View>
-					<View style={styles.usageInfo}>
+					<View style={[styles.usageInfo, row.item?.old === true ? styles.usageOld : undefined]}>
 						<Text style={styles.usageName} numberOfLines={1}>
-							{row.account !== undefined ? accountName(row.account) : limits === undefined ? '読み込み中…' : 'アカウントがありません'}
+							{row.item !== undefined ? accountName(row.item.account) : !anyLimits ? '読み込み中…' : 'アカウントがありません'}
 						</Text>
 						<MeterRow>
-							<Meter label="5時間" percent={row.account?.fiveHour?.usedPercent} />
-							<Meter label="7日" percent={row.account?.sevenDay?.usedPercent} />
+							<Meter label="5時間" percent={windowPercent(row.item?.account.fiveHour, now)} reset={isWindowExpired(row.item?.account.fiveHour, now) ? EXPIRED_LABEL : undefined} />
+							<Meter label="7日" percent={windowPercent(row.item?.account.sevenDay, now)} reset={isWindowExpired(row.item?.account.sevenDay, now) ? EXPIRED_LABEL : undefined} />
 						</MeterRow>
+						{showChips && row.item !== undefined ? <SeenOnChips chips={row.item.seenOn} /> : null}
+						{row.more > 0 ? <Text style={styles.usageMore}>{`ほか ${row.more} 件`}</Text> : null}
 					</View>
 				</View>
 			))}
 		</Card>
 	);
 }
+
+/** リセット時刻を過ぎた枠に添える一言（取り直すまで使用率は確かでない）。 */
+const EXPIRED_LABEL = 'リセット済みの可能性';
 
 /** PC が1台も無いときのホーム（Orca の MobileHomeEmptyState）。 */
 export function HomeEmptyState({ onPair }: { onPair: () => void }) {
@@ -324,6 +348,13 @@ const styles = StyleSheet.create({
 		flex: 1,
 		minWidth: 0,
 		gap: 2,
+	},
+	usageOld: {
+		opacity: alpha.strong,
+	},
+	usageMore: {
+		fontSize: type.meta,
+		color: colors.textMuted,
 	},
 	usageName: {
 		fontSize: type.label,

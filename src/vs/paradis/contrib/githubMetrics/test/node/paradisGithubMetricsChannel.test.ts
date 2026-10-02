@@ -10,7 +10,7 @@ import assert from 'assert';
 import * as cp from 'child_process';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { ParadisGithubMetricsService } from '../../node/paradisGithubMetricsChannel.js';
+import { ParadisGithubMetricsService, paradisParseGhViewerLogin } from '../../node/paradisGithubMetricsChannel.js';
 
 suite('ParadisGithubMetricsService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -295,6 +295,35 @@ suite('ParadisGithubMetricsService', () => {
 			callsAfterBackoff: 2 * PROBES_PER_REFRESH,
 			error: authError.message,
 			ghAvailable: true,
+		});
+	});
+
+	// 枠を読む GraphQL のプローブの本文（{viewer{login}}）からアカウントを読む（追加の呼び出しはしない）。
+	// 取り直しが全部失敗したら前回の値を古い値として示し、fetchedAt は最後に取れた時刻のままにする。
+	test('reads the account from the GraphQL probe body and marks values kept after a failed refresh as stale', async () => {
+		let failing = false;
+		const { service, state } = createService((_invocation, args) => failing
+			? { error: Object.assign(new Error('network down'), { code: 1 }) as unknown as NodeJS.ErrnoException }
+			: { stdout: args.includes('graphql') ? `${headerResponse(5000, 3180, 1820, 2_000)}{"data":{"viewer":{"login":"octo-cat"}}}` : respondToProbe(args) });
+
+		const first = await service.getSnapshot();
+		failing = true;
+		state.clock += 60_000;
+		const afterFailure = await service.getSnapshot();
+		service.dispose();
+
+		assert.deepStrictEqual({
+			first: { account: first.account, fetchedAt: first.fetchedAt, stale: first.stale },
+			afterFailure: { account: afterFailure.account, fetchedAt: afterFailure.fetchedAt, stale: afterFailure.stale, kept: afterFailure.rateLimits.length },
+			parsed: [
+				paradisParseGhViewerLogin('HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\n\r\n{"data":{"viewer":{"login":"octo-cat"}}}'),
+				paradisParseGhViewerLogin('HTTP/2.0 200 OK\r\n\r\n{"data":{"viewer":{"login":"-bad;name"}}}'),
+				paradisParseGhViewerLogin('HTTP/2.0 401 Unauthorized\r\n\r\nnot json'),
+			],
+		}, {
+			first: { account: { login: 'octo-cat' }, fetchedAt: 1_000_000, stale: undefined },
+			afterFailure: { account: { login: 'octo-cat' }, fetchedAt: 1_000_000, stale: true, kept: 2 },
+			parsed: ['octo-cat', undefined, undefined],
 		});
 	});
 });

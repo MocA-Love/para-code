@@ -282,6 +282,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/patches/react-native@0.86.0.patch` | 新規追加（fork所有。パッチ形式なのでマーカーを書けない。当てた先の3ファイルには `Para Code:` のコメントが入る） | TextInput の変更イベントに `isComposing` を足す（Orca の `react-native@0.83.10.patch` の該当部分を 0.86.0 に合わせた）。RN はソースからビルドしている（`ios.buildReactNativeFromSource`）ので、ネイティブの再ビルドで効く |
 | `app/protocol/test/golden/state.json` / `state-request.json` / `term.json` / `agent.json` | 新規追加（fork所有。JSON なのでマーカーの代わりに各ファイル先頭の `$comment` に用途を書いた）（W2-17） | PC ⇔ モバイルの公開ワイヤの固定形。PC（`paradisMobileWireGolden.test.ts`）とアプリ（`app/mobile/src/wireGolden.test.ts`）の両方が読み、形が黙って変わったら落とす。形を変えるときは同じ変更でここも直す |
 | `app/protocol/test/golden/browser.json` | 新規追加（fork所有。先頭の `$comment` に用途）。`state.json` の `capabilities` に `browser.space.v1` / `browser.page.v1` / `browser.focus.v1` / `browser.bookmarks.v1` を追加 | モバイルのブラウザのタブ（案A）の固定形 |
+| `app/protocol/test/golden/state.json` | `capabilities` に `usage.machine-id.v1`、`current` に `machineIdHash` と `renderers[].host.machineIdHash` を追加（2026-10-03） | 使用量を全 PC で合計するための機械の印（NOTES「使用量を全 PC で合計するための PC 側」） |
 | `app/mobile/app.json` | `expo.version` を `0.12.0` に | モバイルのブラウザのタブ（案A）の配信 |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
@@ -1248,6 +1249,27 @@ fork の後始末を `sentry/common/paradisTeardownTiming.ts` で名前付きで
 - **新しい種類を足す手順（後続の担当向け）**: PC は新しいファイルで `registerParadisMobileRequestHandler('scm' | 'fs', kind, handler)` を呼び、`electron-browser/paradisMobileRequestHandlerRegistrations.ts` に副作用 import を 1 行足す（provider の分岐は触らない）。provider は既存の分岐で処理しなかった要求だけを登録表へ回す（scm はスペースの検査より前、fs はパス解決より前）。既存の種類は `common/paradisMobileRequestKinds.ts` に予約してあり、登録すると例外になる（provider に種類を足したらそこにも足す。`paradisMobileRequestKinds.test.ts` が provider のソースと突き合わせる）。応答の `id` は本文より後に置くので、処理が本文に `id` を入れても宛先は変わらない。アプリは `sendPcRequest(pcId, 'scm', { t: kind, ws, ... })`（`appState.ts`）か `MobileController.requestPc` で送る。`ws` を付けなければスペースを選ばず、いま前面のウィンドウ宛て（`rendererGeneration`）で送り、PC 側の `root` は undefined になる（shared process は予約に無い種類だけ ws 無しで通す）。id の無い知らせは `onPcMessage` で受ける（`pcId` を省くといま見ている PC に付いて行き、PC の切り替えやコントローラの作り直しで付け替わる）。どちらも capability を 1 つ足して、広告の無い PC にはボタンを出さない。agent チャネルの新しい種類は shared process の agentChat が受けるので、この登録表の対象外
 - **固定形（ゴールデン）**: `app/protocol/test/golden/` の state / state-request / term / agent。PC の組み立てる State がゴールデンと同じ形か、アプリが送る形を PC が受けるか、PC が送る形をアプリが受けるかを両側のテストが確かめる。版・`minCompatible*`・`capabilities`・`fsUploadEncoding`・`voiceClips` は値まで比べるので、capability を足したらゴールデンの `state.json` / `state-request.json` も同じ変更で直す
 - **版を上げるときに一緒に直す場所**: 2 進アップロードの枠（`app/protocol/src/fileUpload.ts` と PC の `paradisMobileFileUpload.ts`）は `protocolVersion: 3` を固定で検査している。`IParadisMobileDesktopStateV3` の名前と型も版 3 のまま
+
+### 使用量を全 PC で合計するための PC 側（`usage.machine-id.v1`、2026-10-03）
+
+モバイルの使用量を「全 PC の合計」にするため、PC が束ねる鍵と鮮度を返す。調査は `mobile-usage-multipc-mock.html`（リポジトリ外）。
+
+| 項目 | 置き場所 | 中身 |
+|---|---|---|
+| 機械の印 | desktop state の `machineIdHash`、`renderers[].host.machineIdHash` | `sha256('para-code-machine-v1:' + id + ':' + OS のユーザー名)` の hex。id は OS の機械 ID（macOS は IOPlatformUUID、Linux は `/etc/machine-id` か `/var/lib/dbus/machine-id`、Windows は MachineGuid）を trim・小文字化したもの。ユーザー名を混ぜるので、同じ機械の別ユーザーへの SSH は別の相手になる。全部 0 の仮の値は使わない。Linux のコンテナの中（環境変数 `KUBERNETES_SERVICE_HOST`、`/.dockerenv`・`/run/.containerenv`・`/run/secrets/kubernetes.io`、`/proc/1/cgroup` に docker・containerd・kubepods・libpod・podman・lxc、`/proc/1/mountinfo` で `/` が overlay）では出さない。実体は `src/vs/paradis/node/paradisMachineId.ts`。手元のウィンドウの host は shared process が足し、SSH のウィンドウの host は renderer が接続先の `paradisHostResources` チャネルの `getMachineIdHash` で聞いて載せる（古い REH は Method not found なので載らない） |
+| GitHub のアカウント | `github` の `account.login` | 枠を読む GraphQL のプローブ（`{viewer{login}}`）の本文から読む。追加の通信はしない |
+| Codex のアカウント | `limits` の `codex.accounts[].accountId` | auth.json の account_id の `sha256('para-code-codex-account-v1:' + account_id)` の hex（束ねる鍵にしか使わないので生の値は送らない）。Claude の `organizationName`・アカウントごとの `fetchedAt` は以前から送っている |
+| 鮮度 | `usage`・`limits`・`github` の `fetchedAt`・`stale` | `rtk` は `fetchedAt`（組み立てた時刻）だけで、`stale` は送らない（待って取る） |
+| 打ち切り | `usage`・`rtk`・`limits`・`github` | 50 秒（`PARADIS_MOBILE_USAGE_DEADLINE_MS`）で `{ error, code: 'no-response' }`。裏の実行は止めない |
+
+- **ccusage の stale-while-revalidate**: TTL を過ぎても 7 日以内の前回の値があれば `stale: true` ですぐ返し、裏で 1 本だけ取り直す。取り直しが失敗し続けたら 5 分から 60 分まで間隔を伸ばす。値が無いときと手動更新（bypassCache）だけ完了を待つ。取得時刻と古さは新しいコマンド `fetchReport` で返し、持たない古い REH には従来のコマンドで聞く
+- **ccusage のキャッシュの鍵**: `--since` を除いた実行引数（`until`・`timezone` は残す）と実行ファイル。どの `--since` で取った値かは値の側に持ち、`--since` が違えば古い値として返して取り直す。同時実行の束ねと warm の対象は従来どおり `--since` を含む鍵
+- **上限の使い分け**: ccusage の実行そのものは常に max(設定値, 15 分) まで走らせる。設定 `paradis.ccusage.execTimeoutSeconds`（既定 180 秒）は待っている側だけを外す上限で、外しても実行は止めない（走査をやり直さない）。終われば値が入るので、1 本 400 秒かかる PC でも既定のままで値が埋まる。走っている実行に相乗りした前景も、同じ上限で待つ側だけ外れる
+- **失敗の短期キャッシュ**: 値が無いまま前景が失敗したら、`--since` を除いた鍵で 2 分間その失敗を返す。裏の長い実行が走っていれば、失敗を返さずにそれに相乗りする
+- **孫プロセス**: POSIX では ccusage を `detached` で自分のプロセスグループに起こし、時間切れ・dispose ではグループごと、子が終わった瞬間にもグループの残りを止める（npx の先の node が孤児で残っていた）。グループへの SIGTERM の 3 秒後、子（グループの先頭）がまだ生きていれば SIGKILL も送る（生きている間だけ番号が自分のものと言えるため）。子が先に終わったら、子の exit で残りへ送る信号を、停止を頼んだ後なら SIGKILL にする（`paradisKillChildProcess.ts`。codex app-server も同じ）。REH ではプロセスの終了時にも止める。Windows は従来どおりツリーごと止める。rtk は npx を挟まず子を起こさないので変えていない
+- **ステータスバー**: 取得が続けて失敗したら 10 → 20 → 40 → 80 分と間隔を伸ばし、成功で 10 分に戻す。昨日以前に取った古い値では今日のコストを出さない（`$0.00` と見せない）
+- **limits**: Codex のスナップショットも TTL（150 秒）を過ぎたら、6 時間以内の前回の値を `stale: true` で返して裏で取り直す。取り直しが続けて失敗したら 1 分から 10 分まで間隔を伸ばす。全ホームが一時的な失敗（status `error`）だけのときは失敗として扱い、前回の値を残す（再ログインが要る `relogin_required`・`no_credentials` は今の状態として出す）
+- **打ち切りの文言**: 50 秒の打ち切りの文は `paradisMobileUsageNoResponseMessage()`（localize 済み、4 種で共通）
 
 ### スマホのブラウザ画面からの文字とキーの入力（`browser.keys.v1`、2026-10-01）
 

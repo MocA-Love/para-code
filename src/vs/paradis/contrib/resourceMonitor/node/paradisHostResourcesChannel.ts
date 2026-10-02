@@ -21,8 +21,9 @@ import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisHostResources, IParadisHostResourcesRequest, PARADIS_HOST_RESOURCES_CHANNEL } from '../common/paradisResourceMonitor.js';
+import { IParadisHostResources, IParadisHostResourcesRequest, PARADIS_HOST_MACHINE_ID_HASH_COMMAND, PARADIS_HOST_RESOURCES_CHANNEL } from '../common/paradisResourceMonitor.js';
 import { ParadisHostResourceSampler } from './paradisHostResources.js';
+import { paradisGetMachineIdHash } from '../../../node/paradisMachineId.js';
 
 /** 短時間に何度も聞かれたときに、同じ結果を返してよい長さ。 */
 const SNAPSHOT_MAX_AGE_MS = 2000;
@@ -74,6 +75,10 @@ class ParadisHostResourcesChannel<TContext> implements IServerChannel<TContext> 
 		switch (command) {
 			case 'getHostResources':
 				return this.service.getHostResources((arg ?? {}) as IParadisHostResourcesRequest) as Promise<T>;
+			// このマシンの印（paradisMachineId.ts）。モバイルが SSH 先の使用量を、別にペアリングした PC と
+			// 同じ機械として見分けるのに使う。読めなければ undefined。
+			case PARADIS_HOST_MACHINE_ID_HASH_COMMAND:
+				return paradisGetMachineIdHash() as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}

@@ -70,7 +70,7 @@ suite('ParadisMobileRelayService pairing state store', () => {
 			undefined,
 			undefined,
 			undefined,
-			{ disableHostResourceSampling: true, writeRelayState },
+			{ disableHostResourceSampling: true, readMachineIdHash: async () => undefined, writeRelayState },
 		);
 	}
 

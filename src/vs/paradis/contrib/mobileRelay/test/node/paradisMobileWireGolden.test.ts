@@ -104,10 +104,11 @@ suite('ParadisMobileWireGolden', () => {
 			}],
 			terminals: [{ terminalKey: 'terminal-key-1', id: 7, title: 'claude', ws: 'repo', agent: true, agentToken: 'agent-token-1', agentStatus: 'working', cols: 120, rows: 40 }],
 			battery: { level: 80, charging: true },
-			host: { kind: 'remote', id: 'ssh-remote+devbox', label: 'devbox' },
+			host: { kind: 'remote', id: 'ssh-remote+devbox', label: 'devbox', machineIdHash: 'a'.repeat(64) },
 		});
 		registry.setHostResources({ cpu: 25, memUsed: 8589934592, memTotal: 17179869184, diskFree: 107374182400, diskTotal: 494384795648 });
 		registry.setPcName('MacBook-Pro');
+		registry.setMachineIdHash('b'.repeat(64));
 		const built = JSON.parse(JSON.stringify(registry.desktopState()));
 		// 版・互換の窓・機能の広告・既存の能力の印は、形だけでなく値まで一致させる
 		// （PC がこれらを変えたら、アプリの判定が変わるのでゴールデンも同じ変更で直す）。

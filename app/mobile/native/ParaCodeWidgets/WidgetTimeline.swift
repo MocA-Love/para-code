@@ -20,6 +20,8 @@ struct ParaWidgetConfig: Hashable {
 	var agentsOrder: String?
 	/// C の利用上限の対象（nil はアプリの設定に従う）。
 	var limitTarget: String?
+	/// C のコストと利用上限を全 PC の合計で出すか（false は選んだ PC の値）。
+	var usageAll: Bool = false
 
 	struct SpaceSelection: Hashable {
 		var pcId: String

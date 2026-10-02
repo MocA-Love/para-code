@@ -21,6 +21,8 @@ export interface RelayWindowHost {
 	readonly id: string;
 	/** remote のときだけ付与される表示名。 */
 	readonly label?: string;
+	/** そのウィンドウの繋がっている機械のハッシュ（local は PC 自身、SSH は接続先。`usage.machine-id.v1` の PC だけ）。 */
+	readonly machineIdHash?: string;
 }
 
 /** `relayHostsFrom` が受け取る、renderer 一覧の最小形。 */
@@ -38,6 +40,8 @@ export interface RelayHost {
 	/** リクエストを飛ばす代表ウィンドウ（同一ホストに複数ウィンドウがあれば ready なものを優先）。 */
 	readonly windowId: number;
 	readonly ready: boolean;
+	/** その接続先の機械のハッシュ（届いた PC だけ。全 PC の合計で同じ機械を1回だけ数える）。 */
+	readonly machineIdHash?: string;
 }
 
 const LOCAL_LABEL = 'ローカル';
@@ -58,7 +62,8 @@ export function relayHostsFrom(renderers: readonly RelayHostRendererLike[]): Rel
 		const existing = byId.get(host.id);
 		// 同じホストに複数ウィンドウがあるとき、ready なものを代表に選ぶ（無ければ最初に見つかったもの）。
 		if (existing === undefined || (!existing.ready && renderer.ready)) {
-			byId.set(host.id, { id: host.id, kind: host.kind, label, windowId: renderer.windowId, ready: renderer.ready });
+			const machineIdHash = validMachineIdHash(host.machineIdHash) ?? existing?.machineIdHash;
+			byId.set(host.id, { id: host.id, kind: host.kind, label, windowId: renderer.windowId, ready: renderer.ready, ...(machineIdHash !== undefined ? { machineIdHash } : {}) });
 		}
 	}
 	// local を先頭に、以降はラベル順（renderer の到着順で毎回並びが変わるとセグメントがチラつく）。
@@ -66,6 +71,11 @@ export function relayHostsFrom(renderers: readonly RelayHostRendererLike[]): Rel
 		if (a.kind !== b.kind) { return a.kind === 'local' ? -1 : 1; }
 		return a.label.localeCompare(b.label);
 	});
+}
+
+/** PC から届いた機械のハッシュを確かめる（文字列でない・空・長すぎるものは「届いていない」）。 */
+function validMachineIdHash(value: unknown): string | undefined {
+	return typeof value === 'string' && value.length > 0 && value.length <= 256 ? value : undefined;
 }
 
 /**

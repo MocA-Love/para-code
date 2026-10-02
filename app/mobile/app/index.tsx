@@ -132,7 +132,14 @@ export default function HomeScreen() {
 						newSpaceDisabled={!activeConnected}
 					/>
 					<SectionHeader title="アカウントの使用量" style={styles.gapLarge} />
-					<AccountUsageCard limits={usage.limits} onPress={() => { haptic('move'); router.push(routes.settings('usage')); }} />
+					<AccountUsageCard
+						claude={usage.claude}
+						codex={usage.codex}
+						anyLimits={usage.anyLimits}
+						showChips={usage.multiple}
+						now={now}
+						onPress={() => { haptic('move'); router.push(routes.settings('usage')); }}
+					/>
 				</ScrollView>
 			)}
 			<PcActions pcId={menuPcId} onClose={() => setMenuPcId(undefined)} />

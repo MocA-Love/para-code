@@ -61,6 +61,8 @@ struct WidgetUsage: Codable, Hashable {
 	var costCodex: Double?
 	var limits: [WidgetLimit]
 	var fetchedAt: Double
+	/// 全 PC の合計で、オフラインの出どころ（最後の値で数えたもの）がある。
+	var partial: Bool? = nil
 }
 
 struct WidgetAgent: Codable, Hashable, Identifiable {
@@ -134,6 +136,9 @@ struct WidgetSnapshot: Codable, Hashable {
 	var paired: Bool
 	var activePcId: String?
 	var pcs: [WidgetPc]
+	/// 全 PC の合計の今日のコストと利用上限（C の「コストと利用上限」を「全 PC の合計」にしたときに出す）。
+	/// 古いアプリが書いた要約には無い。
+	var usageAll: WidgetUsage? = nil
 
 	func pc(_ id: String?) -> WidgetPc? {
 		guard let id else { return nil }

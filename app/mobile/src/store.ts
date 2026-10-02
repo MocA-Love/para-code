@@ -79,6 +79,11 @@ export interface WorkspaceState {
 	// このPCの表示名（旧PCでは未配信）。複数のPCとペアリングしているときの見分けに使う。
 	// PC側の設定が空ならホスト名が入る。ユーザーがアプリ側で名前を付け直していれば、そちらが優先。
 	pcName?: string;
+	/**
+	 * この機械を見分けるハッシュ（`usage.machine-id.v1` の PC だけ）。SSH の接続先の機械は `renderers[].host.machineIdHash`。
+	 * ペアリング済みの PC へ SSH でも繋いでいるとき、全 PC の合計で同じ機械を二重に数えないために使う。
+	 */
+	machineIdHash?: string;
 }
 
 /** PC が `id` を付けずに scm / fs で送ってくるメッセージ（`MobileController.onPcMessage`）。 */
@@ -548,7 +553,10 @@ export interface UsageDashboardResult {
 	sessions: UsageSessionData[];
 	projects: UsageProjectData[];
 	failedReports: string[];
+	/** 4 つのレポートのうち最も古い取得時刻。 */
 	fetchedAt: number;
+	/** PC 側の集計が間に合わず、前回の値を返した（旧PCでは未配信）。 */
+	stale?: boolean;
 }
 
 /** RTK: 1日分の節約量。PC側 IParadisRtkDayData と同形（出力トークン・所要時間はモバイルでは使わない）。 */
@@ -617,6 +625,12 @@ export interface RateLimitAccount {
 	unavailableReason?: RateLimitUnavailableReason;
 	statusDetail?: string;
 	planType?: string;
+	/** Codex のアカウント ID（PC をまたいで同じアカウントを束ねる鍵。旧PCでは未配信）。 */
+	accountId?: string;
+	/** Claude の組織名（同じメールの個人と組織を分ける。旧PCでは未配信）。 */
+	organizationName?: string;
+	/** このアカウントの値を取った時刻（epoch ms。PC がアカウントごとに付ける。無い PC では応答の `fetchedAt` を使う）。 */
+	fetchedAt?: number;
 	fiveHour?: RateLimitWindow;
 	sevenDay?: RateLimitWindow;
 	scoped?: RateLimitWindow[];
@@ -638,6 +652,8 @@ export interface RateLimitsResult {
 	claude: RateLimitProviderSnapshot;
 	codex: RateLimitProviderSnapshot;
 	fetchedAt: number;
+	/** PC 側の取得が間に合わず、前回の値を返した（旧PCでは未配信）。 */
+	stale?: boolean;
 }
 
 /** GitHub API利用状況の資源区分。PC側 IParadisGithubCallResource と同形。 */
@@ -715,6 +731,12 @@ export interface GithubUsageResult {
 	spaces: GithubSpaceStat[];
 	totals: { sessionCalls: number; sessionFailures: number; rolling5mCalls: number; rolling5mFailures: number; rolling5mRateLimited: number };
 	lastErrors: GithubErrorEntry[];
+	/** レート枠を読んだ GitHub のアカウント（PC をまたいで同じ枠を束ねる鍵。旧PCでは未配信）。 */
+	account?: { login: string };
+	/** 取得した時刻（旧PCでは未配信。無ければ `generatedAt`）。 */
+	fetchedAt?: number;
+	/** PC 側の取得が間に合わず、前回の値を返した（旧PCでは未配信）。 */
+	stale?: boolean;
 }
 
 /**
@@ -4276,6 +4298,10 @@ export class MobileController {
 				// ここで型を確かめて捨てる（PCは信用しない相手として扱う）。
 				if (incoming.pcName !== undefined && typeof incoming.pcName !== 'string') {
 					delete (incoming as { pcName?: unknown }).pcName;
+				}
+				// 機械のハッシュも後から足した任意項目。文字列でなければ「届いていない」にする（別の機械として扱われる）。
+				if (incoming.machineIdHash !== undefined && (typeof incoming.machineIdHash !== 'string' || incoming.machineIdHash.length === 0 || incoming.machineIdHash.length > 256)) {
+					delete (incoming as { machineIdHash?: unknown }).machineIdHash;
 				}
 				this.liveFsUploadEncoding = incoming.fsUploadEncoding === FS_BINARY_UPLOAD_ENCODING ? FS_BINARY_UPLOAD_ENCODING : undefined;
 				// 有効なv3 Stateそのものがpresenceより強い生存証拠。同一revisionでも
