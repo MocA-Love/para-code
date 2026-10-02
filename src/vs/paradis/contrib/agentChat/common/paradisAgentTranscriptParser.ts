@@ -575,6 +575,18 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 		signals.cliVersion = version;
 	}
 	const type = str(obj.type);
+	if (type === 'attachment') {
+		// 作業中に届いたバックグラウンドタスクの完了通知は、ユーザーの発言ではなく `queued_command` の
+		// attachment として書かれる（実データで通知の約4分の1）。表示はしないが、実行中のタスクは閉じる。
+		const attachment = rec(obj.attachment);
+		const prompt = attachment?.type === 'queued_command' ? str(attachment.prompt) : undefined;
+		if (prompt?.trimStart().startsWith('<task-notification>')) {
+			for (const match of prompt.matchAll(/<task-id>([^<\n]+)<\/task-id>/g)) {
+				signals.closedTasks.push(match[1].trim());
+			}
+		}
+		return [];
+	}
 	if (type !== 'user' && type !== 'assistant') {
 		return []; // summary / system / file-history-snapshot 等
 	}

@@ -21,7 +21,9 @@ export function agentActivityTasksForAgent(tasks: readonly AgentActivityTask[], 
 export function summarizeAgentActivity(activity: AgentActivityState): string {
 	const items = [...activity.agents, ...activity.tasks];
 	const failed = items.filter(item => item.status === 'failed').length;
-	const interrupted = items.filter(item => item.status === 'interrupted' || item.status === 'unknown').length;
+	const interrupted = items.filter(item => item.status === 'interrupted').length;
+	// 状態不明は「終わった」とは限らない（長いコマンドを待っている子は何分も書かない）。中断に数えない
+	const unknown = items.filter(item => item.status === 'unknown').length;
 	const idle = items.filter(item => item.status === 'idle').length;
 	if (activity.agents.length === 0 && activity.tasks.length === 0 && activity.compactions.length > 0) {
 		return 'コンテキスト圧縮が完了';
@@ -30,7 +32,8 @@ export function summarizeAgentActivity(activity: AgentActivityState): string {
 	if (idle > 0) { parts.push(`待機${idle}件`); }
 	if (failed > 0) { parts.push(`失敗${failed}件`); }
 	if (interrupted > 0) { parts.push(`中断${interrupted}件`); }
-	return `${parts.join('・')}${failed > 0 || interrupted > 0 ? 'で終了' : idle > 0 ? '' : 'が完了'}`;
+	if (unknown > 0) { parts.push(`状態不明${unknown}件`); }
+	return `${parts.join('・')}${failed > 0 || interrupted > 0 ? 'で終了' : idle > 0 || unknown > 0 ? '' : 'が完了'}`;
 }
 
 function indexAgents(agents: readonly AgentActivityAgent[]): Map<string, AgentActivityAgent> {
