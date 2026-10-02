@@ -1007,6 +1007,36 @@
         "category": "Git"
       },
       {
+        "command": "git.paraBranchDiffRevealInExplorer",
+        "title": "%command.revealInExplorer%",
+        "category": "Git"
+      },
+      {
+        "command": "git.paraBranchDiffRevealFileInOS.linux",
+        "title": "%command.revealFileInOS.linux%",
+        "category": "Git"
+      },
+      {
+        "command": "git.paraBranchDiffRevealFileInOS.mac",
+        "title": "%command.revealFileInOS.mac%",
+        "category": "Git"
+      },
+      {
+        "command": "git.paraBranchDiffRevealFileInOS.windows",
+        "title": "%command.revealFileInOS.windows%",
+        "category": "Git"
+      },
+      {
+        "command": "git.paraBranchDiffCopyPath",
+        "title": "%command.paraBranchDiffCopyPath%",
+        "category": "Git"
+      },
+      {
+        "command": "git.paraBranchDiffCopyRelativePath",
+        "title": "%command.paraBranchDiffCopyRelativePath%",
+        "category": "Git"
+      },
+      {
         "command": "git.paraBranchDiffSetViewModeTree",
         "title": "%command.paraBranchDiffSetViewModeTree%",
         "icon": "$(list-tree)",
@@ -1808,6 +1838,30 @@
           "when": "false"
         },
         {
+          "command": "git.paraBranchDiffRevealInExplorer",
+          "when": "false"
+        },
+        {
+          "command": "git.paraBranchDiffRevealFileInOS.linux",
+          "when": "false"
+        },
+        {
+          "command": "git.paraBranchDiffRevealFileInOS.mac",
+          "when": "false"
+        },
+        {
+          "command": "git.paraBranchDiffRevealFileInOS.windows",
+          "when": "false"
+        },
+        {
+          "command": "git.paraBranchDiffCopyPath",
+          "when": "false"
+        },
+        {
+          "command": "git.paraBranchDiffCopyRelativePath",
+          "when": "false"
+        },
+        {
           "command": "git.paraBranchDiffSetViewModeTree",
           "when": "false"
         },
@@ -2045,18 +2099,48 @@
       "view/item/context": [
         {
           "command": "git.paraBranchDiffOpenFile",
-          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile",
+          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiffFile/",
           "group": "inline@1"
         },
         {
           "command": "git.paraBranchDiffOpenChanges",
-          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile",
+          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiffFile/",
           "group": "navigation@1"
         },
         {
           "command": "git.paraBranchDiffOpenFile",
-          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile",
+          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiffFile/",
           "group": "navigation@2"
+        },
+        {
+          "command": "git.paraBranchDiffRevealFileInOS.linux",
+          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile && remoteName == '' && isLinux",
+          "group": "2_view@1"
+        },
+        {
+          "command": "git.paraBranchDiffRevealFileInOS.mac",
+          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile && remoteName == '' && isMac",
+          "group": "2_view@1"
+        },
+        {
+          "command": "git.paraBranchDiffRevealFileInOS.windows",
+          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile && remoteName == '' && isWindows",
+          "group": "2_view@1"
+        },
+        {
+          "command": "git.paraBranchDiffRevealInExplorer",
+          "when": "view == git.paraBranchDiff && viewItem == paraBranchDiffFile",
+          "group": "2_view@2"
+        },
+        {
+          "command": "git.paraBranchDiffCopyPath",
+          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiffFile/",
+          "group": "3_copy@1"
+        },
+        {
+          "command": "git.paraBranchDiffCopyRelativePath",
+          "when": "view == git.paraBranchDiff && viewItem =~ /^paraBranchDiffFile/",
+          "group": "3_copy@2"
         },
         {
           "command": "git.paraBranchDiffViewAll",
