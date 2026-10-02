@@ -120,6 +120,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '複数行の発言や、作業中に送った発言で起きていました。PC の Para Code の更新が必要です。',
 				tone: 'green',
 			},
+			{
+				icon: 'git-pull-request-outline',
+				title: 'SSH で接続している先のソース管理が「読み込み中」のまま止まることがあったのを直しました',
+				body: '返事が無いときは「PC または接続先から返事がありませんでした」と出て、もう一度試せます。PC の Para Code の更新が必要です。',
+				tone: 'green',
+			},
 		],
 	},
 	{

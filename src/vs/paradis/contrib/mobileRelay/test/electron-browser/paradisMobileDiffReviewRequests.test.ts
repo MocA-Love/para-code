@@ -7,14 +7,17 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { timeout } from '../../../../../base/common/async.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { InMemoryStorageService, IStorageService, StorageScope } from '../../../../../platform/storage/common/storage.js';
 import { paradisMobileDiffIdentity, paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts } from '../../common/paradisMobileDiffReview.js';
 import { PARADIS_MOBILE_REVIEW_STORAGE_KEY } from '../../common/paradisMobileReviewStore.js';
+import { PARADIS_MOBILE_HOST_NO_RESPONSE_MESSAGE, PARADIS_MOBILE_STATUS_DEADLINE_MS } from '../../common/paradisMobileHostDeadline.js';
 import { paradisReviewNotesTargetVerdict } from '../../electron-browser/paradisMobileAgentPromptDelivery.js';
 // 差分レビューの処理を登録表へ載せる（副作用 import）
 import '../../electron-browser/paradisMobileDiffReviewRequests.js';
@@ -35,6 +38,9 @@ class FakeGit {
 	readonly failing = new Set<string>();
 	/** `add` の直前に呼ぶ（確かめてから足すまでの間の書き換えを再現する）。 */
 	beforeAdd: (() => void) | undefined;
+	/** `add` の後は接続先が返さない（どの git も終わらない）。 */
+	hangAfterAdd = false;
+	added = false;
 	constructor(public status: string, public unstaged = '', public staged = '', private readonly afterAdd?: { status: string; unstaged: string; staged: string }) { }
 
 	run(args: readonly string[]): { code: number; stdout: string; stderr: string } {
@@ -44,6 +50,7 @@ class FakeGit {
 		}
 		if (args[0] === 'add') {
 			this.beforeAdd?.();
+			this.added = true;
 		}
 		if (args[0] === 'add' && this.afterAdd !== undefined) {
 			({ status: this.status, unstaged: this.unstaged, staged: this.staged } = this.afterAdd);
@@ -73,7 +80,7 @@ suite('ParadisMobileDiffReviewRequests', () => {
 			// 使わないサービス（送り先を確かめる端末まわり）は空で埋める
 			invokeFunction: fn => fn({ get: id => services.get(id) ?? {} } as ServicesAccessor),
 			resolveRoot: ws => ws === 'repo' ? URI.file('/repo') : undefined,
-			runGit: async (_root, args) => git.run(args),
+			runGit: (_root, args) => git.hangAfterAdd && git.added ? new Promise<never>(() => { }) : Promise.resolve(git.run(args)),
 			resolvePath: async (_ws, relativePath) => URI.file(`/repo/${relativePath}`),
 			getMobileCapabilities: async () => undefined,
 			getMobileWireVersion: async () => undefined,
@@ -291,6 +298,43 @@ suite('ParadisMobileDiffReviewRequests', () => {
 			mark: true,
 		});
 	});
+
+	test('tells that it staged but could not verify when the host stops answering after git add, and keeps the mark', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const status = ' M a.ts\n';
+		const git = new FakeGit(status, '1\t0\ta.ts\0', '', { status: 'M  a.ts\n', unstaged: '', staged: '1\t0\ta.ts\0' });
+		git.hangAfterAdd = true;
+		const reviewed = paradisMobileDiffIdentity(paradisWithMobileLineCounts(paradisParseMobilePorcelainStatus(status), '1\t0\ta.ts\0', '')[0]);
+		const services = createServices();
+		const sent: IReply[] = [];
+		const host = createHost(services, sent, git);
+		dispatch(host, { t: 'reviewSet', id: '1', marks: [{ path: 'a.ts', identity: reviewed }] });
+		dispatch(host, { t: 'reviewStage', id: '2', entries: [{ path: 'a.ts', identity: reviewed }] });
+		await timeout(PARADIS_MOBILE_STATUS_DEADLINE_MS + 1);
+
+		const reply = sent.find(candidate => candidate.id === '2');
+		const stored = JSON.parse((services.get(IStorageService) as IStorageService).get(PARADIS_MOBILE_REVIEW_STORAGE_KEY, StorageScope.WORKSPACE)!).repo.marks['a.ts'].identity;
+		assert.deepStrictEqual({ git: git.calls.filter(call => call.startsWith('add') || call.startsWith('restore')), code: reply?.code, staged: reply?.staged, markKept: stored === reviewed }, {
+			git: ['add -- :(literal)a.ts'],
+			code: 'staged-unverified',
+			staged: undefined,
+			markKept: true,
+		});
+	}));
+
+	test('fails as "the host does not respond" before staging anything when the first read does not answer', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const git = new FakeGit(' M a.ts\n');
+		git.hangAfterAdd = true;
+		git.added = true;
+		const sent: IReply[] = [];
+		const host = createHost(createServices(), sent, git);
+		dispatch(host, { t: 'reviewStage', id: '2', entries: [{ path: 'a.ts', identity: '00aa' }] });
+		await timeout(PARADIS_MOBILE_STATUS_DEADLINE_MS + 1);
+
+		assert.deepStrictEqual({ reply: sent.find(candidate => candidate.id === '2'), add: git.calls.filter(call => call.startsWith('add')) }, {
+			reply: { error: PARADIS_MOBILE_HOST_NO_RESPONSE_MESSAGE, id: '2' },
+			add: [],
+		});
+	}));
 
 	test('does not report a rewritten new file as staged when it cannot be put back (no commit yet)', async () => {
 		const status = '?? n.ts\n';

@@ -78,10 +78,10 @@ import { paradisContentHashResponse } from '../common/paradisMobileContentHash.j
 import { ParadisMobileFileTiming } from '../common/paradisMobileFileTiming.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
-import { paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts, paradisWithUntrackedFileStats } from '../common/paradisMobileDiffReview.js';
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
 import { PARADIS_MOBILE_SHOW_PREFIX_ARGS, ParadisMobileIgnoredRuns, paradisMarkMobileIgnoredEntries, paradisMobileIgnoredRepoDir, paradisMobileIgnoredStatusArgs, paradisParseMobileIgnoredNames } from '../common/paradisMobileIgnoredEntries.js';
-import { paradisParseMobileBranchSync } from '../common/paradisMobileScmSync.js';
+import { paradisReadMobileScmStatus } from '../common/paradisMobileScmStatusRead.js';
+import { PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, paradisIsMobileHostNoResponse } from '../common/paradisMobileHostDeadline.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionsForMobile, paradisParseApprovalOptions, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
 import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
@@ -1924,24 +1924,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		try {
 			if (msg.t === 'status') {
-				const [status, branch, unstagedCounts, stagedCounts, branchSync] = await Promise.all([
-					this.runGit(repoUri, ['status', '--porcelain=v1']),
-					this.runGit(repoUri, ['rev-parse', '--abbrev-ref', 'HEAD']),
-					// ファイルごとの行数（差分レビューの「確認後に変更あり」の判定に使う。Orca W2-14）。
-					// 任意項目なので、数えられなくても一覧はそのまま返す
-					this.runGit(repoUri, ['diff', '--numstat', '-z']).catch(() => undefined),
-					this.runGit(repoUri, ['diff', '--cached', '--numstat', '-z']).catch(() => undefined),
-					// 上流と先行・遅れの数（スマホからの push / pull の判断に使う。Orca W2-15）。任意項目
-					this.runGit(repoUri, ['status', '--porcelain=v2', '--branch', '--untracked-files=no']).catch(() => undefined),
-				]);
-				// 未追跡のファイルは行数を数えられないので、大きさと時刻を足す（書き換えを見分けるため）
-				const files = await paradisWithUntrackedFileStats(paradisWithMobileLineCounts(
-					paradisParseMobilePorcelainStatus(status.stdout),
-					unstagedCounts?.code === 0 ? unstagedCounts.stdout : undefined,
-					stagedCounts?.code === 0 ? stagedCounts.stdout : undefined,
-				), paths => paradisStatMobileWorkspaceFiles(this.fileService, repoUri, paths));
-				// pathsUnquoted: git の引用（`"a b.txt"` など）を外したパスで送っている印（アプリは外し直さない）
-				reply({ t: 'status', branch: branch.stdout.trim(), files, pathsUnquoted: true, ...(branchSync?.code === 0 ? paradisParseMobileBranchSync(branchSync.stdout) : {}) });
+				// 必須（status・rev-parse・行数・未追跡の大きさ）は上限つきで待ち、任意（先行と遅れ）だけを
+				// 短い上限で打ち切って省く。接続先が返さなければ「接続先が応答しません」を返す
+				reply(await paradisReadMobileScmStatus({
+					runGit: args => this.runGit(repoUri, args),
+					statFiles: paths => paradisStatMobileWorkspaceFiles(this.fileService, repoUri, paths),
+				}).catch(error => paradisIsMobileHostNoResponse(error) ? { error: error.message, code: PARADIS_MOBILE_HOST_NO_RESPONSE_CODE } : Promise.reject(error)));
 			} else if (msg.t === 'diff') {
 				const args = msg.staged ? ['diff', '--cached'] : ['diff'];
 				if (msg.path) {

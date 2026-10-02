@@ -7,7 +7,7 @@ import { sendPcRequest, useAppStore } from '../../appState.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
 import type { ScmLogResult, ScmStatusResult } from '../../store.js';
 import { codeCacheKey, useCodeCache } from './codeCache.js';
-import { errorMessage } from './scmModel.js';
+import { errorMessage, scmErrorText, shouldAutoRetryScmStatus } from './scmModel.js';
 import { parseCommitFailure, type CommitScope } from './scmSync.js';
 import { currentRendererTarget, type CodeSpace } from './useCodeSpace.js';
 
@@ -45,14 +45,26 @@ export function useScmStatus(space: CodeSpace): ScmStatusState {
 		const current = () => genRef.current === gen && currentRendererTarget(wsId) === rendererTarget;
 		setLoading(true);
 		try {
-			const result = await scmStatus(wsId);
-			if (current()) {
-				setStatus(key, result);
-				setError(undefined);
-			}
-		} catch (e) {
-			if (current()) {
-				setError(errorMessage(e));
+			// 返事が無かったら（接続先が応答しない・待ち時間切れ）自分で 1 回だけ取り直す。
+			// 取り直している間は失敗を出さず、読み込み中のままにする
+			for (let attempt = 0; ; attempt++) {
+				try {
+					const result = await scmStatus(wsId);
+					if (current()) {
+						setStatus(key, result);
+						setError(undefined);
+					}
+					return;
+				} catch (e) {
+					if (!current()) {
+						return;
+					}
+					// 取り直すのは返事が無かったときだけ（git の失敗などは取り直しても同じ）
+					if (!shouldAutoRetryScmStatus(attempt, errorMessage(e))) {
+						setError(scmErrorText(e));
+						return;
+					}
+				}
 			}
 		} finally {
 			if (current()) {
