@@ -1865,6 +1865,9 @@ export default defineConfig(
 						// PARA-PATCH: 同titlebarPart.ts が上の部品を幅に合わせて畳む制御
 						// (createParadisTitlebarFit)を呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/titlebarFit/~',
+						// PARA-PATCH: globalCompositeBar.ts がアクティビティバー左下の fork のボタン（ファイル転送）の
+						// 差し込み口を読むための逆方向 import。機能に依存しない 1 ファイルだけを許可する
+						'vs/paradis/browser/paradisGlobalActivitySlot.js',
 						'assert',
 						{
 							'when': 'test',
