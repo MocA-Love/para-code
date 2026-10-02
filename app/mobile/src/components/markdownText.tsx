@@ -20,6 +20,8 @@ import { useAppStore } from '../appState.js';
 import { hapticSelection } from '../haptics.js';
 import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
+import { scaleChatSize, type ChatTextScale } from '../chatTextScale.js';
+import { useChatIconSize, useChatStyles, useChatTextScale } from '../ui/chatTextScale.js';
 import { useThemeColors } from '../ui/themeColorsStore.js';
 import { parseLocalFileTarget, type LocalFileTarget } from '../localFileTarget.js';
 import { HorizontalScrollFade } from './horizontalScrollFade.js';
@@ -44,8 +46,11 @@ function estimateTextWidth(text: string): number {
 	return width;
 }
 
-/** 列ごとに「一番長いセル」を基準に幅を決める。極端に長い列は上限で頭打ちにする。 */
-function tableColumnWidths(block: { header: string[]; rows: string[][] }, cols: number): number[] {
+/**
+ * 列ごとに「一番長いセル」を基準に幅を決める。極端に長い列は上限で頭打ちにする。
+ * 会話の文字サイズ（`scale`）を変えているときは、見積もりも同じ割合で広げる・狭める。
+ */
+function tableColumnWidths(block: { header: string[]; rows: string[][] }, cols: number, scale: ChatTextScale): number[] {
 	const widths: number[] = [];
 	for (let c = 0; c < cols; c++) {
 		let max = estimateTextWidth(block.header[c] ?? '');
@@ -53,7 +58,7 @@ function tableColumnWidths(block: { header: string[]; rows: string[][] }, cols: 
 			max = Math.max(max, estimateTextWidth(row[c] ?? ''));
 		}
 		// +14 はセル左右のパディング、+8 は見積もり誤差ぶんの余白（足りないと折り返す）。
-		widths.push(Math.min(260, Math.max(52, Math.ceil(max) + 22)));
+		widths.push(scaleChatSize(Math.min(260, Math.max(52, Math.ceil(max) + 22)), scale));
 	}
 	return widths;
 }
@@ -227,9 +232,10 @@ const HIGHLIGHT_REQUEST_DELAY_MS = 250;
  */
 const HeadingBlock = memo(function HeadingBlock({ text, level, onOpenLocal }: { text: string; level: number; onOpenLocal: (target: LocalFileTarget) => void }) {
 	const theme = useThemeColors();
+	const styles = useChatStyles(baseStyles);
 	return (
 		<Text style={[styles.body, styles.heading, level === 1 ? styles.h1 : level === 2 ? styles.h2 : null]} selectable>
-			{renderInlineTokens(parseInline(text), styles.body, onOpenLocal, theme.accent)}
+			{renderInlineTokens(parseInline(text), styles, styles.body, onOpenLocal, theme.accent)}
 		</Text>
 	);
 });
@@ -239,8 +245,10 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 	const cols = block.header.length;
 	// 列幅は内容から見積もって固定する。flex:1 で画面幅へ押し込むと列が潰れて
 	// 縦に折り返し、桁が崩れるため（本家Claudeアプリと同じく表だけ横に流す）。
-	const widths = tableColumnWidths(block, cols);
+	const scale = useChatTextScale();
+	const widths = tableColumnWidths(block, cols, scale);
 	const theme = useThemeColors();
+	const styles = useChatStyles(baseStyles);
 	return (
 		<HorizontalScrollFade style={styles.tableWrap}>
 			<View style={styles.table}>
@@ -248,7 +256,7 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 					{block.header.map((cell, c) => (
 						<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
 							<Text style={[styles.body, styles.tableHeadText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
-								{renderInlineTokens(parseInline(cell), styles.body, onOpenLocal, theme.accent)}
+								{renderInlineTokens(parseInline(cell), styles, styles.body, onOpenLocal, theme.accent)}
 							</Text>
 						</View>
 					))}
@@ -258,7 +266,7 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 						{Array.from({ length: cols }, (_, c) => (
 							<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
 								<Text style={[styles.body, styles.tableCellText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
-									{renderInlineTokens(parseInline(row[c] ?? ''), styles.body, onOpenLocal, theme.accent)}
+									{renderInlineTokens(parseInline(row[c] ?? ''), styles, styles.body, onOpenLocal, theme.accent)}
 								</Text>
 							</View>
 						))}
@@ -271,6 +279,7 @@ const TableBlock = memo(function TableBlock({ block, onOpenLocal }: { block: Ext
 
 const CodeBlock = memo(function CodeBlock({ text, lang }: { text: string; lang?: string }) {
 	const fsHighlight = useAppStore(s => s.fsHighlight);
+	const styles = useChatStyles(baseStyles);
 	const cacheKey = `${lang ?? ''} ${text}`;
 	// 結果は「どの内容に対するものか」と一緒に持つ。紐づけずに持つと、ストリーミングで本文が
 	// 伸びた後も前の（短い）ハイライト行を描き続け、ブロックの高さが実際の内容とずれたまま
@@ -467,7 +476,7 @@ function parseInline(text: string): InlineToken[] {
 }
 
 /** `linkColor` はリンクの色（設定 → 色の「選択の印・リンク」）。 */
-function renderInlineTokens(tokens: InlineToken[], baseStyle: object, onOpenLocal: (target: LocalFileTarget) => void, linkColor: string): ReactNode[] {
+function renderInlineTokens(tokens: InlineToken[], styles: typeof baseStyles, baseStyle: object, onOpenLocal: (target: LocalFileTarget) => void, linkColor: string): ReactNode[] {
 	return tokens.map((token, i) => {
 		if (token.kind === 'code') {
 			return <Text key={i} style={[baseStyle, styles.inlineCode]}>{token.text}</Text>;
@@ -488,24 +497,28 @@ function renderInlineTokens(tokens: InlineToken[], baseStyle: object, onOpenLoca
 function LocalFileCard({ label, target, opening, onPress }: { label: string; target: LocalFileTarget; opening: boolean; onPress: () => void }) {
 	const name = target.path.split(/[\\/]/).pop() ?? target.path;
 	const theme = useThemeColors();
+	const styles = useChatStyles(baseStyles);
+	const iconSize = useChatIconSize(18);
+	const fileIconBox = useChatIconSize(32);
 	const location = target.line !== undefined ? `行 ${target.line}${target.column !== undefined ? `、列 ${target.column}` : ''}` : undefined;
 	return (
 		<Pressable style={({ pressed }) => [styles.fileCard, pressed ? styles.fileCardPressed : null]} onPress={onPress} accessibilityRole="button" accessibilityLabel={`${label}を開く`}>
-			<View style={[styles.fileIcon, { backgroundColor: theme.accentWash }]}><Ionicons name="document-text-outline" size={18} color={theme.accent} /></View>
+			<View style={[styles.fileIcon, { width: fileIconBox, height: fileIconBox, backgroundColor: theme.accentWash }]}><Ionicons name="document-text-outline" size={iconSize} color={theme.accent} /></View>
 			<View style={styles.fileInfo}>
 				<Text style={styles.fileLabel} numberOfLines={1}>{label || name}</Text>
 				<Text style={styles.filePath} numberOfLines={2}>{target.path}{location !== undefined ? ` · ${location}` : ''}</Text>
 			</View>
-			{opening ? <ActivityIndicator size="small" color={theme.accent} /> : <Ionicons name="chevron-forward" size={18} color={colors.textDim} />}
+			{opening ? <ActivityIndicator size="small" color={theme.accent} /> : <Ionicons name="chevron-forward" size={iconSize} color={colors.textDim} />}
 		</Pressable>
 	);
 }
 
 const InlineBlock = memo(function InlineBlock({ text, onOpenLocal, openingKey }: { text: string; onOpenLocal: (target: LocalFileTarget) => void; openingKey?: string }) {
 	const theme = useThemeColors();
+	const styles = useChatStyles(baseStyles);
 	const tokens = parseInline(text);
 	if (!tokens.some(token => token.kind === 'local')) {
-		return <Text style={styles.body} selectable>{renderInlineTokens(tokens, styles.body, onOpenLocal, theme.accent)}</Text>;
+		return <Text style={styles.body} selectable>{renderInlineTokens(tokens, styles, styles.body, onOpenLocal, theme.accent)}</Text>;
 	}
 	const groups: InlineToken[][] = [];
 	for (const token of tokens) {
@@ -524,7 +537,7 @@ const InlineBlock = memo(function InlineBlock({ text, onOpenLocal, openingKey }:
 					const key = `${local.target.path}:${local.target.line ?? ''}:${local.target.column ?? ''}`;
 					return <LocalFileCard key={i} label={local.label} target={local.target} opening={openingKey === key} onPress={() => onOpenLocal(local.target)} />;
 				}
-				return <Text key={i} style={styles.body} selectable>{renderInlineTokens(group, styles.body, onOpenLocal, theme.accent)}</Text>;
+				return <Text key={i} style={styles.body} selectable>{renderInlineTokens(group, styles, styles.body, onOpenLocal, theme.accent)}</Text>;
 			})}
 		</View>
 	);
@@ -545,6 +558,7 @@ export function MarkdownText({ text }: { text: string }) {
 		};
 	}));
 const [openingKey, setOpeningKey] = useState<string | undefined>();
+	const styles = useChatStyles(baseStyles);
 	const [viewer, setViewer] = useState<{ ws: string; path: string; line?: number } | undefined>();
 	const openGeneration = useRef(0);
 	useEffect(() => () => { openGeneration.current++; }, []);
@@ -605,7 +619,7 @@ const [openingKey, setOpeningKey] = useState<string | undefined>();
 	);
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
 	root: { gap: 6 },
 	body: { color: colors.text, fontSize: type.body, lineHeight: 20 },
 	bold: { fontWeight: '700' },

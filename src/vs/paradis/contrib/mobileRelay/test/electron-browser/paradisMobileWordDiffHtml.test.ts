@@ -18,6 +18,7 @@ import {
 } from '../../electron-browser/paradisMobileWordDiffHtml.js';
 import {
 	PARADIS_MOBILE_OFFICE_ALL_FEATURES,
+	PARADIS_MOBILE_OFFICE_FEATURE_WORD_DIFF,
 	decodeParadisMobileOfficeRequest,
 } from '../../common/paradisMobileOfficeProtocol.js';
 import * as mobileOfficeProtocol from '../../common/paradisMobileOfficeProtocol.js';
@@ -100,7 +101,7 @@ suite('ParadisMobileWordDiffHtml', () => {
 
 	test('rejects handle-bearing mobile source messages and accepts the v1 descriptor-only handshake/diff contract', () => {
 		const advertisedBits = (mobileOfficeProtocol as typeof mobileOfficeProtocol & { readonly getParadisMobileOfficeHostFeatureBits?: (requestedBits: number) => number }).getParadisMobileOfficeHostFeatureBits;
-		assert.strictEqual(advertisedBits?.(PARADIS_MOBILE_OFFICE_ALL_FEATURES), 0);
+		assert.deepStrictEqual([advertisedBits?.(PARADIS_MOBILE_OFFICE_ALL_FEATURES), advertisedBits?.(0)], [PARADIS_MOBILE_OFFICE_FEATURE_WORD_DIFF, 0]);
 		assert.deepStrictEqual(decodeParadisMobileOfficeRequest({ t: 'office/hello', id: 'hello-1', version: 1, featureBits: PARADIS_MOBILE_OFFICE_ALL_FEATURES }), {
 			t: 'office/hello', id: 'hello-1', version: 1, featureBits: PARADIS_MOBILE_OFFICE_ALL_FEATURES,
 		});

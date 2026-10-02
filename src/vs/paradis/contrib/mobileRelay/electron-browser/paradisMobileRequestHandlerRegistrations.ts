@@ -17,5 +17,8 @@ import './paradisMobileAgentSessions.js';
 import './paradisMobileScmSyncRequests.js'; // push / fetch / pull・コミットの失敗からの立て直し・ファイルごとのステージ（W2-15）
 import './paradisMobilePullRequestRequests.js'; // PR の状態・CI の失敗をエージェントへ・マージ（W2-36）
 import './paradisMobileBookmarkRequests.js'; // ブラウザのブックマークバー（browser.bookmarks.v1）
+import './paradisMobileFileAtRequests.js'; // 差分の画面の変更前・変更後の中身（scm.file-at.v1）
+import './paradisMobileWordDiffRequests.js'; // 差分の画面の Word の差分（scm.word-diff.v1）
+import './paradisMobileFileIconRequests.js'; // ファイルの一覧のアイコン（fs.icon-theme.v1）
 
 export { };

@@ -60,6 +60,7 @@ describe('FsRequestTimings', () => {
 				safe_wait_first_chunk_ms: 3_958,
 				safe_receive_ms: 4_040,
 				safe_open_ms: 70,
+				safe_aes_backend: 'noble',
 				safe_chunks: 2,
 				safe_wire_bytes: 900,
 				safe_handoff_ms: 1,

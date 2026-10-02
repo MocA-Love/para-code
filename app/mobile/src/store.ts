@@ -257,6 +257,8 @@ export interface SpaceNoteResult {
 	updatedAt?: number;
 	/** 版が合わない・切り替える行がもう無いので書かなかった。`text` / `updatedAt` は PC の最新。 */
 	conflict?: boolean;
+	/** 行を指す op を当てた、当てる前の本文の行（0 始まり。remove なら PC が実際に消した位置。`note.task-ops.v1`）。 */
+	opLine?: number;
 }
 /**
  * noteSet の任意項目（`note.cas.v1` を広告する PC だけが見る。古い PC は無視して `text` で上書きする）。
@@ -265,7 +267,10 @@ export interface SpaceNoteResult {
  */
 export interface SpaceNoteSetOptions {
 	base?: number;
-	op?: { kind: 'toggle'; line: number; lineText: string } | { kind: 'append'; entry: string };
+	// `baseText` は読んだときの本文（任意）。PC は行単位の差分で行の位置を対応づける（古い PC は読み飛ばす）
+	op?: { kind: 'toggle'; line: number; lineText: string; baseText?: string } | { kind: 'append'; entry: string }
+		// `remove` / `edit` は `note.task-ops.v1` を広告する PC にだけ送る（古い PC は invalid op で断る）
+		| { kind: 'remove'; line: number; lineText: string; baseText?: string } | { kind: 'edit'; line: number; lineText: string; text: string; baseText?: string };
 }
 /** コマンドプリセットの1タスク（＝PC側で1つ作られるターミナル）。 */
 export interface PresetTask {
@@ -324,6 +329,8 @@ export interface ScmStatusResult {
 	 * 「確認後に変更あり」の判定に使う）。
 	 */
 	files: { x: string; y: string; path: string; oldPath?: string; added?: number; removed?: number; stagedAdded?: number; stagedRemoved?: number; size?: number; mtime?: number }[];
+	/** パスから git の引用（`"a b.txt"` など）を外して送っている（新しい PC だけが付ける。無ければアプリが外す）。 */
+	pathsUnquoted?: boolean;
 }
 /** scm diff 応答。 */
 export interface ScmDiffResult {
@@ -390,9 +397,9 @@ export interface WorktreeCreateResult {
 	branch: string;
 	warning?: string;
 }
-/** fs list 応答。 */
+/** fs list 応答。`ignored` は .gitignore で無視されている印（`fs.ignored.v1` の PC だけが付ける）。 */
 export interface FsListResult {
-	entries: { name: string; dir: boolean; size?: number }[];
+	entries: { name: string; dir: boolean; size?: number; ignored?: boolean }[];
 }
 /** Markdown内のファイルリンクを、選択ワークスペース内の相対パスへ安全に解決した結果。 */
 export interface FsResolveLinkResult {

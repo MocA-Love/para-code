@@ -83,10 +83,39 @@ suite('ParadisMobileSpaceNoteSet', () => {
 		const appended = paradisMobileNoteSet(notes, 'ws', { text: '- [x] a\n- [ ] b', op: { kind: 'append', entry: '- [ ] b' } });
 		const gone = paradisMobileNoteSet(notes, 'ws', { text: 'x', op: { kind: 'toggle', line: 0, lineText: '- [ ] removed' } });
 		assert.deepStrictEqual({ toggled, appended, gone }, {
-			toggled: { t: 'note', ws: 'ws', text: '- [ ] added on pc\n- [x] a', updatedAt: 102 },
+			toggled: { t: 'note', ws: 'ws', text: '- [ ] added on pc\n- [x] a', updatedAt: 102, opLine: 1 },
 			appended: { t: 'note', ws: 'ws', text: '- [ ] added on pc\n- [x] a\n- [ ] b', updatedAt: 103 },
 			gone: { t: 'note', ws: 'ws', text: '- [ ] added on pc\n- [x] a\n- [ ] b', updatedAt: 103, conflict: true },
 		});
+	});
+
+	test('removes and edits a task on the latest text (note.task-ops.v1)', () => {
+		const notes = new FakeNotes();
+		notes.write('ws', '- [ ] added on pc\n- [ ] a\n- [ ] b');
+		const edited = paradisMobileNoteSet(notes, 'ws', { text: '- [ ] A\n- [ ] b', op: { kind: 'edit', line: 0, lineText: '- [ ] a', text: 'A', baseText: '- [ ] a\n- [ ] b' } });
+		const removed = paradisMobileNoteSet(notes, 'ws', { text: '- [ ] A', op: { kind: 'remove', line: 1, lineText: '- [ ] b', baseText: '- [ ] A\n- [ ] b' } });
+		const gone = paradisMobileNoteSet(notes, 'ws', { text: '', op: { kind: 'remove', line: 0, lineText: '- [ ] b', baseText: '- [ ] b' } });
+		// 同じ文言への書き換えは書かずに最新を返す（版を進めず、conflict も付けない）
+		const same = paradisMobileNoteSet(notes, 'ws', { text: '- [ ] added on pc\n- [ ] A', op: { kind: 'edit', line: 1, lineText: '- [ ] A', text: 'A', baseText: '- [ ] added on pc\n- [ ] A' } });
+		assert.deepStrictEqual({ edited, removed, gone, same, badEdit: paradisParseMobileNoteOp({ kind: 'edit', line: 0, lineText: 'x' }), noBaseRemove: paradisParseMobileNoteOp({ kind: 'remove', line: 0, lineText: 'x' }), noBaseEdit: paradisParseMobileNoteOp({ kind: 'edit', line: 0, lineText: 'x', text: 'y' }), badBase: paradisParseMobileNoteOp({ kind: 'remove', line: 0, lineText: 'x', baseText: 1 }) }, {
+			edited: { t: 'note', ws: 'ws', text: '- [ ] added on pc\n- [ ] A\n- [ ] b', updatedAt: 102, opLine: 1 },
+			removed: { t: 'note', ws: 'ws', text: '- [ ] added on pc\n- [ ] A', updatedAt: 103, opLine: 2 },
+			gone: { t: 'note', ws: 'ws', text: '- [ ] added on pc\n- [ ] A', updatedAt: 103, conflict: true },
+			same: { t: 'note', ws: 'ws', text: '- [ ] added on pc\n- [ ] A', updatedAt: 103, opLine: 1 },
+			badEdit: undefined,
+			// remove / edit は baseText が必須（同じ中身の別の項目を消さないため）
+			noBaseRemove: undefined,
+			noBaseEdit: undefined,
+			badBase: undefined,
+		});
+	});
+
+	test('tells apart tasks with the same text by the text the app read (baseText)', () => {
+		const notes = new FakeNotes();
+		const base = '- [ ] same\n- [ ] same';
+		notes.write('ws', `- [ ] added on pc\n${base}`);
+		const removed = paradisMobileNoteSet(notes, 'ws', { text: '- [ ] same', op: { kind: 'remove', line: 1, lineText: '- [ ] same', baseText: base } });
+		assert.deepStrictEqual(removed, { t: 'note', ws: 'ws', text: '- [ ] added on pc\n- [ ] same', updatedAt: 102, opLine: 2 });
 	});
 
 	test('rejects malformed requests', () => {

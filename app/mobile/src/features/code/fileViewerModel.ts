@@ -6,6 +6,7 @@ import { breadcrumbItems, type BreadcrumbItem } from '../../filesBreadcrumb.js';
 import type { FsReadResult } from '../../store.js';
 import { colors, radius, type } from '../../theme.js';
 import type { ThemeColors } from '../../ui/themeColors.js';
+import { viewerScriptCspMeta } from './fileFind.js';
 import { parentPath } from './fileTree.js';
 
 /**
@@ -148,16 +149,20 @@ export function codeLines(result: Pick<FsReadResult, 'content' | 'html'>): strin
 type AccentColors = Pick<ThemeColors, 'accent' | 'accentWash'>;
 const DEFAULT_ACCENT: AccentColors = { accent: colors.accent, accentWash: colors.accentWash };
 
-export function buildCodeHtml(result: FsReadResult, focusLine?: number, accent: AccentColors = DEFAULT_ACCENT): string {
+/**
+ * `nonce` を渡すと、`<head>` の先頭に自分のスクリプトだけを動かす CSP を置き、一致行へ送るスクリプトに nonce を付ける
+ * （ビューアの中の検索のために WebView のスクリプトを有効にするため。`fileFind.ts`）。
+ */
+export function buildCodeHtml(result: FsReadResult, focusLine?: number, accent: AccentColors = DEFAULT_ACCENT, nonce?: string): string {
 	const bg = result.bg ?? colors.codeBg;
 	const fg = result.fg ?? colors.terminalFg;
 	const rows = codeLines(result)
 		.map((line, index) => `<div class="l${index + 1 === focusLine ? ' f' : ''}"><i>${index + 1}</i><span>${line.length > 0 ? line : ' '}</span></div>`)
 		.join('');
 	const focusScript = focusLine !== undefined && focusLine > 0
-		? '<script>(function(){var f=document.querySelector(".f");if(f){setTimeout(function(){f.scrollIntoView({block:"center"});},50);}})();</script>'
+		? `<script${nonce !== undefined ? ` nonce="${nonce}"` : ''}>(function(){var f=document.querySelector(".f");if(f){setTimeout(function(){f.scrollIntoView({block:"center"});},50);}})();</script>`
 		: '';
-	return `<!DOCTYPE html><html><head>
+	return `<!DOCTYPE html><html><head>${nonce !== undefined ? viewerScriptCspMeta(nonce) : ''}
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>${result.css ?? ''}</style>
 <style>
@@ -171,12 +176,15 @@ export function buildCodeHtml(result: FsReadResult, focusLine?: number, accent: 
 </head><body><div class="src monaco-tokenized-source">${rows}</div>${focusScript}</body></html>`;
 }
 
-/** Markdown のプレビュー（モックの `.mdv`）。地と文字は PC のテーマに合わせる。 */
-export function buildMarkdownHtml(result: Pick<FsReadResult, 'content' | 'bg' | 'fg'>, accent: AccentColors = DEFAULT_ACCENT): string {
+/**
+ * Markdown のプレビュー（モックの `.mdv`）。地と文字は PC のテーマに合わせる。
+ * `nonce` を渡すと、本文に混ざった生の HTML のスクリプトを止める CSP を `<head>` の先頭に置く（`buildCodeHtml` と同じ）。
+ */
+export function buildMarkdownHtml(result: Pick<FsReadResult, 'content' | 'bg' | 'fg'>, accent: AccentColors = DEFAULT_ACCENT, nonce?: string): string {
 	const bg = result.bg ?? colors.codeBg;
 	const fg = result.fg ?? colors.text;
 	const rendered = marked.parse(result.content, { async: false });
-	return `<!DOCTYPE html><html><head>
+	return `<!DOCTYPE html><html><head>${nonce !== undefined ? viewerScriptCspMeta(nonce) : ''}
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 	body { margin: 0; padding: 16px; background: ${bg}; color: ${fg}; font-family: -apple-system, sans-serif; font-size: ${type.input}px; line-height: 24px; word-wrap: break-word; }

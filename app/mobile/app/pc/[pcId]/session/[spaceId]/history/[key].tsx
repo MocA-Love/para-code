@@ -7,7 +7,9 @@ import { CircleAlert } from 'lucide-react-native';
 import { AGENT_RESUME_CAPABILITY, AGENT_RESUME_PROMPT_LIMIT, parseAgentPastSessionPreview, type AgentPastSessionPreview } from '../../../../../../src/agentSessions.js';
 import { enqueueAgentSend, resumeAndSend, useAgentSendLive } from '../../../../../../src/agentSendQueue.js';
 import { sendPcRequest, useAppStore } from '../../../../../../src/appState.js';
+import { scaleChatStyles } from '../../../../../../src/chatTextScale.js';
 import { MarkdownText } from '../../../../../../src/components/markdownText.js';
+import { ChatTextScaleProvider, useChatTextScaleFor } from '../../../../../../src/ui/chatTextScale.js';
 import { useParaToast } from '../../../../../../src/paraToast.js';
 import { CenterSpinner, useReadableColumn } from '../../../../../../src/features/code/codeParts.js';
 import { QueuedSendsBanner } from '../../../../../../src/features/session/queuedSends.js';
@@ -37,6 +39,9 @@ export default function AgentHistorySessionScreen() {
 	const key = firstParam(params.key);
 	const supported = usePcCapability(AGENT_RESUME_CAPABILITY);
 	const live = useAgentSendLive();
+	// 会話の文字サイズ（設定 → チャット UI）を、発言と続きの依頼の入力欄にもかける（会話の画面と同じ倍率）。
+	const chatFontSize = useAppStore(s => s.chatFontSize);
+	const textStyles = scaleChatStyles(styles, useChatTextScaleFor(chatFontSize));
 	const [preview, setPreview] = useState<AgentPastSessionPreview | undefined>(undefined);
 	const [error, setError] = useState<string | undefined>(undefined);
 	const [text, setText] = useState('');
@@ -124,11 +129,11 @@ export default function AgentHistorySessionScreen() {
 		}
 		return (
 			<ScrollView contentContainerStyle={[styles.content, column]} keyboardShouldPersistTaps="handled">
-				{preview.truncated ? <Text style={styles.truncated}>古い発言は省略しています</Text> : null}
+				{preview.truncated ? <Text style={textStyles.truncated}>古い発言は省略しています</Text> : null}
 				{preview.messages.map((message, index) => (
-					<View key={index} style={[styles.message, message.role === 'user' ? styles.user : undefined]}>
-						<Text style={styles.role}>{message.role === 'user' ? 'あなた' : session?.agent === 'codex' ? 'Codex' : 'Claude Code'}{message.ts !== undefined ? ` · ${formatRelativeTime(message.ts, now)}` : ''}</Text>
-						{message.role === 'assistant' ? <MarkdownText text={message.text} /> : <Text style={styles.text} selectable>{message.text}</Text>}
+					<View key={index} style={[textStyles.message, message.role === 'user' ? styles.user : undefined]}>
+						<Text style={textStyles.role}>{message.role === 'user' ? 'あなた' : session?.agent === 'codex' ? 'Codex' : 'Claude Code'}{message.ts !== undefined ? ` · ${formatRelativeTime(message.ts, now)}` : ''}</Text>
+						{message.role === 'assistant' ? <MarkdownText text={message.text} /> : <Text style={textStyles.text} selectable>{message.text}</Text>}
 					</View>
 				))}
 			</ScrollView>
@@ -136,45 +141,47 @@ export default function AgentHistorySessionScreen() {
 	})();
 
 	return (
-		<Screen>
-			<ScreenHeader
-				title={session?.title ?? '過去の会話'}
-				subtitle={[session !== undefined ? (session.agent === 'codex' ? 'Codex' : 'Claude Code') : undefined, route.space?.name].filter(part => part !== undefined).join(' · ')}
-				backLabel="過去の会話へ戻る"
-			/>
-			<QueuedSendsBanner pcId={pcId} ws={sourceId} />
-			<KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-				<View style={styles.fill}>{body}</View>
-				{supported ? (
-					<View style={[styles.composer, { paddingBottom: insets.bottom + space.sm }, column]}>
-						{notice !== undefined ? <Text style={styles.notice}>{notice}</Text> : null}
-						{session?.terminalKey !== undefined ? (
-							<Button label="PC で開いている会話を開く" onPress={() => openTerminal(session.terminalKey!)} />
-						) : (
-							<>
-								<TextInput
-									style={styles.input}
-									value={text}
-									onChangeText={setText}
-									placeholder="続きの依頼を書く"
-									placeholderTextColor={colors.textMuted}
-									multiline
-									maxLength={AGENT_RESUME_PROMPT_LIMIT}
-									accessibilityLabel="続きの依頼"
-								/>
-								<Button
-									label={live ? '再開して送る' : 'PC に届き次第送る'}
-									loading={sending}
-									disabled={text.trim().length === 0 || sourceId === undefined || key === undefined}
-									onPress={() => { void send(); }}
-								/>
-								<Text style={styles.hint}>PC で会話を裏で再開します（PC の画面は切り替えません）。権限は PC の既定のままです。</Text>
-							</>
-						)}
-					</View>
-				) : null}
-			</KeyboardAvoidingView>
-		</Screen>
+		<ChatTextScaleProvider size={chatFontSize}>
+			<Screen>
+				<ScreenHeader
+					title={session?.title ?? '過去の会話'}
+					subtitle={[session !== undefined ? (session.agent === 'codex' ? 'Codex' : 'Claude Code') : undefined, route.space?.name].filter(part => part !== undefined).join(' · ')}
+					backLabel="過去の会話へ戻る"
+				/>
+				<QueuedSendsBanner pcId={pcId} ws={sourceId} />
+				<KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+					<View style={styles.fill}>{body}</View>
+					{supported ? (
+						<View style={[styles.composer, { paddingBottom: insets.bottom + space.sm }, column]}>
+							{notice !== undefined ? <Text style={styles.notice}>{notice}</Text> : null}
+							{session?.terminalKey !== undefined ? (
+								<Button label="PC で開いている会話を開く" onPress={() => openTerminal(session.terminalKey!)} />
+							) : (
+								<>
+									<TextInput
+										style={textStyles.input}
+										value={text}
+										onChangeText={setText}
+										placeholder="続きの依頼を書く"
+										placeholderTextColor={colors.textMuted}
+										multiline
+										maxLength={AGENT_RESUME_PROMPT_LIMIT}
+										accessibilityLabel="続きの依頼"
+									/>
+									<Button
+										label={live ? '再開して送る' : 'PC に届き次第送る'}
+										loading={sending}
+										disabled={text.trim().length === 0 || sourceId === undefined || key === undefined}
+										onPress={() => { void send(); }}
+									/>
+									<Text style={styles.hint}>PC で会話を裏で再開します（PC の画面は切り替えません）。権限は PC の既定のままです。</Text>
+								</>
+							)}
+						</View>
+					) : null}
+				</KeyboardAvoidingView>
+			</Screen>
+		</ChatTextScaleProvider>
 	);
 }
 

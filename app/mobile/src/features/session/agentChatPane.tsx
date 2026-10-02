@@ -21,7 +21,8 @@ import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../../pendingAgent
 import { pinKeyForTerminal, type AgentChatMessage, type AgentMessageSendResult } from '../../store.js';
 import { colors, space, type } from '../../theme.js';
 import { EmptyState } from '../../ui/index.js';
-import { cardStyles } from './answerCardStyles.js';
+import { ChatTextScaleProvider, useChatStyles } from '../../ui/chatTextScale.js';
+import { cardStyles as baseCardStyles } from './answerCardStyles.js';
 import { AskCard, AskGroupCard } from './askCard.js';
 import { ChatChromeRow, PendingMessagesDrawer, QuickReplies } from './chatChrome.js';
 import { ChatList, type ChatListHandle } from './chatList.js';
@@ -64,6 +65,8 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 		requestAgentCommandCatalog: s.requestAgentCommandCatalog,
 		updateAgentSettings: s.updateAgentSettings,
 	})));
+	// 会話の文字サイズ（設定 → チャット UI）。変えたらその場で描き直す。
+	const chatFontSize = useAppStore(s => s.chatFontSize);
 	const actions = useAgentActions(terminalKey, chat?.agent);
 	const column = useContentColumnStyle();
 
@@ -223,76 +226,79 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	});
 
 	return (
-		<View style={[styles.root, { paddingBottom: bottomInset }]}>
-			{chat === undefined ? (
-				<View style={styles.center}><ActivityIndicator color={colors.textDim} /><Text style={styles.loading}>会話を読み込んでいます…</Text></View>
-			) : chat.none === true ? (
-				<EmptyState
-					icon={RotateCw}
-					title="エージェントのセッションが見つかりません"
-					body={'このターミナルで claude / codex を起動する（または一度発言する）と表示されます。\n画面はターミナル表示で確認できます。'}
-					action={{ label: '再試行', onPress: () => { hapticImpact('light'); refreshAgent(terminalKey); } }}
-				/>
-			) : (
-				<ChatList
-					ref={listRef}
-					rows={listRows}
-					epoch={chat.epoch}
-					terminalKey={terminalKey}
-					latest={latest}
-					history={history.header}
-					onLoadOlder={history.loadOlder}
-					allToolsOpen={allToolsOpen}
-				/>
-			)}
-			<View style={[styles.bottom, column]}>
-				{card !== undefined ? (
-					<ScrollView style={styles.cardScroll} contentContainerStyle={styles.cardContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-						{card}
-					</ScrollView>
-				) : null}
-				{showQuickReplies ? <QuickReplies onPick={insertQuickReply} /> : null}
-				<QueuedSendsBanner pcId={activePcId} terminalKey={terminalKey} />
-				{chatReady ? (
-					<ChatChromeRow
-						working={working}
-						live={chat?.live}
-						allToolsOpen={allToolsOpen}
-						onToggleTools={() => setAllToolsOpen(value => !value)}
-						pendingCount={pendingMessages.length}
-						onOpenPending={() => setPendingOpen(true)}
+		<ChatTextScaleProvider size={chatFontSize}>
+			<View style={[styles.root, { paddingBottom: bottomInset }]}>
+				{chat === undefined ? (
+					<View style={styles.center}><ActivityIndicator color={colors.textDim} /><Text style={styles.loading}>会話を読み込んでいます…</Text></View>
+				) : chat.none === true ? (
+					<EmptyState
+						icon={RotateCw}
+						title="エージェントのセッションが見つかりません"
+						body={'このターミナルで claude / codex を起動する（または一度発言する）と表示されます。\n画面はターミナル表示で確認できます。'}
+						action={{ label: '再試行', onPress: () => { hapticImpact('light'); refreshAgent(terminalKey); } }}
 					/>
-				) : null}
-				<SessionComposer
-					ref={composerRef}
-					draftKey={pinKeyForTerminal(terminal)}
-					terminalKey={terminalKey}
-					sessionEpoch={chat?.epoch}
-					agent={chatReady ? chat?.agent : undefined}
-					model={chat?.info?.model}
-					effort={chat?.info?.effort}
-					modelControl={chat?.modelControl}
-					commandCatalog={chat?.commandCatalog}
-					monitors={chatReady ? chat?.monitors : undefined}
-					sendText={sendText}
-					updateClaudeSetting={actions.updateClaudeSetting}
-					onAfterSubmit={scrollToLatest}
-					fsUpload={fsUpload}
-					requestAgentModelCatalog={requestAgentModelCatalog}
-					requestAgentCommandCatalog={requestAgentCommandCatalog}
-					updateAgentSettings={updateAgentSettings}
-					answerTarget={activeAnswerRequest}
-					onCancelAnswer={cancelAnswer}
-					answerRefreshing={refreshing}
-				/>
+				) : (
+					<ChatList
+						ref={listRef}
+						rows={listRows}
+						epoch={chat.epoch}
+						terminalKey={terminalKey}
+						latest={latest}
+						history={history.header}
+						onLoadOlder={history.loadOlder}
+						allToolsOpen={allToolsOpen}
+					/>
+				)}
+				<View style={[styles.bottom, column]}>
+					{card !== undefined ? (
+						<ScrollView style={styles.cardScroll} contentContainerStyle={styles.cardContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+							{card}
+						</ScrollView>
+					) : null}
+					{showQuickReplies ? <QuickReplies onPick={insertQuickReply} /> : null}
+					<QueuedSendsBanner pcId={activePcId} terminalKey={terminalKey} />
+					{chatReady ? (
+						<ChatChromeRow
+							working={working}
+							live={chat?.live}
+							allToolsOpen={allToolsOpen}
+							onToggleTools={() => setAllToolsOpen(value => !value)}
+							pendingCount={pendingMessages.length}
+							onOpenPending={() => setPendingOpen(true)}
+						/>
+					) : null}
+					<SessionComposer
+						ref={composerRef}
+						draftKey={pinKeyForTerminal(terminal)}
+						terminalKey={terminalKey}
+						sessionEpoch={chat?.epoch}
+						agent={chatReady ? chat?.agent : undefined}
+						model={chat?.info?.model}
+						effort={chat?.info?.effort}
+						modelControl={chat?.modelControl}
+						commandCatalog={chat?.commandCatalog}
+						monitors={chatReady ? chat?.monitors : undefined}
+						sendText={sendText}
+						updateClaudeSetting={actions.updateClaudeSetting}
+						onAfterSubmit={scrollToLatest}
+						fsUpload={fsUpload}
+						requestAgentModelCatalog={requestAgentModelCatalog}
+						requestAgentCommandCatalog={requestAgentCommandCatalog}
+						updateAgentSettings={updateAgentSettings}
+						answerTarget={activeAnswerRequest}
+						onCancelAnswer={cancelAnswer}
+						answerRefreshing={refreshing}
+					/>
+				</View>
+				<PendingMessagesDrawer visible={pendingOpen} messages={pendingMessages} onClose={() => setPendingOpen(false)} />
 			</View>
-			<PendingMessagesDrawer visible={pendingOpen} messages={pendingMessages} onClose={() => setPendingOpen(false)} />
-		</View>
+		</ChatTextScaleProvider>
 	);
 }
 
 /** 回答カードの代わりに出す案内（内容がまだ届いていないとき）。 */
 function Notice({ title, body }: { title: string; body: string }) {
+	const cardStyles = useChatStyles(baseCardStyles);
 	return (
 		<View style={cardStyles.card}>
 			<Text style={cardStyles.title}>{title}</Text>

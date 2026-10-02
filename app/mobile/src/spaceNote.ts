@@ -179,3 +179,80 @@ export function toggleSpaceNoteTask(text: string, lineIndex: number): string | u
 	lines[lineIndex] = line.replace(/\[[ xX]\]/, (task[1] ?? '').toLowerCase() === 'x' ? '[ ]' : '[x]');
 	return lines.join('\n');
 }
+
+/**
+ * 直前のチェックリスト行にぶら下がる継続行か（PC 側の isSpaceNoteContinuationLine と同じ規則）。
+ * ネストしたチェックリストと見出しは独立した行なので含めない。
+ */
+function isContinuationLine(line: string): boolean {
+	return /^\s+\S/.test(line) && !TASK_PATTERN.test(line) && !HEADING_PATTERN.test(line);
+}
+
+/**
+ * 指定行のチェック項目と、ぶら下がる継続行（消すときに一緒に消える行）。チェック項目でなければ undefined。
+ * 「元に戻す」で同じ位置へ挿し直すために、消す前に控える。
+ */
+export function spaceNoteTaskBlock(text: string, lineIndex: number): string[] | undefined {
+	const lines = text.split('\n');
+	const line = lines[lineIndex];
+	if (line === undefined || !TASK_PATTERN.test(line)) {
+		return undefined;
+	}
+	let end = lineIndex + 1;
+	while (end < lines.length && isContinuationLine(lines[end] ?? '')) {
+		end++;
+	}
+	return lines.slice(lineIndex, end);
+}
+
+/** 指定行のチェック項目を継続行ごと消した本文（PC 側の paradisRemoveSpaceNoteTask と同じ）。チェック項目でなければ undefined。 */
+export function removeSpaceNoteTask(text: string, lineIndex: number): string | undefined {
+	const block = spaceNoteTaskBlock(text, lineIndex);
+	if (block === undefined) {
+		return undefined;
+	}
+	const lines = text.split('\n');
+	lines.splice(lineIndex, block.length);
+	return lines.join('\n');
+}
+
+/**
+ * 指定行のチェック項目の文言だけを差し替えた本文（PC 側の paradisReplaceSpaceNoteTaskText と同じ）。
+ * チェックの状態・インデント・記号・継続行は残し、改行は空白に潰す。空・変化しないなら undefined。
+ */
+export function replaceSpaceNoteTaskText(text: string, lineIndex: number, taskText: string): string | undefined {
+	const lines = text.split('\n');
+	const line = lines[lineIndex];
+	if (line === undefined) {
+		return undefined;
+	}
+	const task = TASK_PATTERN.exec(line);
+	if (!task) {
+		return undefined;
+	}
+	const normalized = taskText.replace(/[\r\n]+/g, ' ').trim();
+	if (normalized.length === 0) {
+		return undefined;
+	}
+	const indent = /^\s*/.exec(line)?.[0] ?? '';
+	const marker = line.charAt(indent.length);
+	const replaced = `${indent}${marker} [${(task[1] ?? '').toLowerCase() === 'x' ? 'x' : ' '}] ${normalized}`;
+	if (replaced === line) {
+		return undefined;
+	}
+	lines[lineIndex] = replaced;
+	return lines.join('\n');
+}
+
+/**
+ * 消した行（{@link spaceNoteTaskBlock}）を `lineIndex` 行目へ挿し直した本文（「元に戻す」）。
+ * 消した後に行が減っていれば末尾へ足す。空の本文なら消した行だけにする。
+ */
+export function restoreSpaceNoteLines(text: string, lineIndex: number, block: readonly string[]): string {
+	if (text.length === 0) {
+		return block.join('\n');
+	}
+	const lines = text.split('\n');
+	lines.splice(Math.min(Math.max(lineIndex, 0), lines.length), 0, ...block);
+	return lines.join('\n');
+}

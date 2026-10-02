@@ -239,10 +239,24 @@ export default function SessionScreen() {
 		}
 		router.push(panel === 'scm' ? routes.sourceControl(pcId, spaceId) : panel === 'files' ? routes.files(pcId, spaceId) : routes.note(pcId, spaceId));
 	};
+	// ドックから差分・ファイルへ進むときはドックを閉じる（詳細の列で押し進める決まり）。戻ってきたら同じドックを
+	// 開き直す（ファイルの一覧の開いていたフォルダや位置は `fileTreeStore.ts` に退避してあるので、そのまま戻る）。
+	const reopenDock = useRef<DockPanel | undefined>(undefined);
 	const dockNavigate = (href: RouteHref) => {
+		reopenDock.current = dockPanel;
 		setDockPanel(undefined);
 		router.push(href);
 	};
+	useEffect(() => {
+		if (!focused || reopenDock.current === undefined) {
+			return;
+		}
+		const panel = reopenDock.current;
+		reopenDock.current = undefined;
+		if (dockable) {
+			setDockPanel(panel);
+		}
+	}, [focused, dockable]);
 	// 2列で左の列を隠しているときは、見出しの左端に戻すボタンを出す（⌘\ でも戻せる）。
 	const sidebarCollapsed = useAppStore(s => s.sidebarCollapsed);
 	// 自分のいる器の詳細の列だけを見る（PC の画面が2枚積まれていても、下の画面の様子に引きずられない）。

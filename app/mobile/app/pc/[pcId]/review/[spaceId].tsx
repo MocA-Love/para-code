@@ -9,24 +9,31 @@ import { useAppStore } from '../../../../src/appState.js';
 import { parseUnifiedDiff, type DiffRow } from '../../../../src/components/diffParser.js';
 import { guardWebViewNavigation } from '../../../../src/components/webViewLinkGuard.js';
 import { isDiffViewerJavaScriptEnabled } from '../../../../src/components/webViewScriptPolicy.js';
+import { usePcCapability } from '../../../../src/hooks/usePcCapability.js';
 import { useIsRegularWidth } from '../../../../src/hooks/useSizeClass.js';
 import { useStableInsets } from '../../../../src/hooks/useStableInsets.js';
 import { monoFamily } from '../../../../src/monoFont.js';
 import { useParaToast } from '../../../../src/paraToast.js';
+import { PcCapability } from '../../../../src/pcCompat.js';
 import { firstParam } from '../../../../src/routes.js';
 import { colors, space, type } from '../../../../src/theme.js';
 import type { WorktreeAgentDef } from '../../../../src/store.js';
 import { BottomDrawer, ConfirmDrawer, EmptyState, HeaderButton, Screen, ScreenHeader } from '../../../../src/ui/index.js';
 import { CenterSpinner, OfflineBanner, SpaceGateBody } from '../../../../src/features/code/codeParts.js';
 import { fileViewerHref } from '../../../../src/features/code/codeRoutes.js';
+import { FileViewerBody } from '../../../../src/features/code/fileViewerBody.js';
 import { canOpenWorkingFile, diffStats, nextUnreviewed, reviewQueue, reviewStateOf, reviewedCount, stageableEntries, stepReview, type ReviewFilter } from '../../../../src/features/code/diffReview.js';
 import { NoteComposer, ReviewNotesPanel, type NoteComposerTarget } from '../../../../src/features/code/reviewNoteParts.js';
 import { clearNotesConfirmMessage, noteAnchorOf, noteCountsByPath, placeReviewNotes, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type PlacedNotes, type ReviewNote } from '../../../../src/features/code/reviewNotes.js';
 import { DiffLines, ReviewFileList, ReviewFileSummary, ReviewFooter, ReviewSummary } from '../../../../src/features/code/reviewParts.js';
+import { MAX_RAW_LINES } from '../../../../src/features/code/officeRawDiff.js';
+import { effectiveReviewMode, reviewContentKindOf, reviewSidesOf, reviewViewPlan, type ReviewContentKind, type ReviewViewMode } from '../../../../src/features/code/reviewViewModes.js';
+import { OfficeDiffWebView, ReviewImageCompare, ReviewViewSwitch } from '../../../../src/features/code/reviewViewParts.js';
 import { RightDrawer } from '../../../../src/features/code/rightDrawer.js';
 import { orderedScmEntries, scmEntries } from '../../../../src/features/code/scmModel.js';
 import { useCodeSpace } from '../../../../src/features/code/useCodeSpace.js';
 import { useDiffContent, type DiffContent } from '../../../../src/features/code/useDiffContent.js';
+import { useReviewView, type ReviewViewState } from '../../../../src/features/code/useReviewView.js';
 import { useReviewMarksController } from '../../../../src/features/code/useReviewMarks.js';
 import { useReviewNotesController } from '../../../../src/features/code/useReviewNotes.js';
 import { useScmStatus } from '../../../../src/features/code/useScmData.js';
@@ -86,12 +93,29 @@ export default function ReviewScreen() {
 	// クエリに無ければ（ソース管理以外から開いた）先頭のファイルから見る。
 	const path = requested ?? entries[0]?.path;
 	const entry = entries.find(candidate => candidate.path === path);
-	// 識別もキーにする（確認した後に書き換えられたら差分を取り直す）
-	const diff = useDiffContent(codeSpace, path, entry?.staged ?? false, entry?.identity);
+	// 見方（表示・差分・Raw）。種類と PC の機能で並べる見方と既定が決まり、ファイルを移ったら既定に戻る（項目 6）
+	const fileAtCapable = usePcCapability(PcCapability.ScmFileAt);
+	const wordDiffCapable = usePcCapability(PcCapability.ScmWordDiff);
+	const contentKind = path !== undefined ? reviewContentKindOf(path) : 'text';
+	const sides = reviewSidesOf(entry);
+	const viewPlan = reviewViewPlan(contentKind, sides, { fileAt: fileAtCapable, wordDiff: wordDiffCapable }, path ?? '');
+	const [chosenView, setChosenView] = useState<{ readonly path: string; readonly mode: ReviewViewMode } | undefined>(undefined);
+	const viewMode = effectiveReviewMode(viewPlan, chosenView !== undefined && chosenView.path === path ? chosenView.mode : undefined);
+	const office = contentKind === 'spreadsheet' || contentKind === 'docx';
+	// Excel・Word の Raw はセルの値・段落の比較（両側の中身が要る）。読めない古い PC では git の差分の文字に戻す
+	const officeRaw = office && fileAtCapable;
+	const textRaw = viewMode === 'raw' && !officeRaw;
+	const view = useReviewView(codeSpace, path, contentKind, viewMode, sides, entry?.identity, officeRaw);
+	// 識別もキーにする（確認した後に書き換えられたら差分を取り直す）。テキストの差分は Office 以外でだけ読む
+	// （行数・行へのメモに使うので、見方が「表示」でも読む）
+	const diff = useDiffContent(codeSpace, !office || textRaw ? path : undefined, entry?.staged ?? false, entry?.identity);
 	// 差分の解析は重いので、差分の本文が変わったときだけやり直す（再描画のたびに解析しない）。
 	const diffText = diff.text;
 	const rows = useMemo(() => (diffText !== undefined ? parseUnifiedDiff(diffText) : undefined), [diffText]);
-	const stats = rows !== undefined ? diffStats(rows) : undefined;
+	const officeRows = view.content?.rows;
+	// 画像の比較を左右に並べるか。ウィンドウの幅ではなく本文の幅で決める（iPad の詳細の列は左の列の幅で変わる）
+	const [bodyWidth, setBodyWidth] = useState(0);
+	const stats = rows !== undefined ? diffStats(rows) : officeRows !== undefined ? diffStats(officeRows) : undefined;
 	const placedNotes: PlacedNotes | undefined = useMemo(() => (notes.enabled && rows !== undefined && path !== undefined ? placeReviewNotes(rows, notes.notes, path) : undefined), [notes.enabled, notes.notes, rows, path]);
 	const stageable = notes.canStage ? stageableEntries(entries, marks) : [];
 	const queue = reviewQueue(entries, marks, filter);
@@ -324,14 +348,21 @@ export default function ReviewScreen() {
 									? { stage: { busy: stageFile.pending.has(entry.path) || staging, disabled: !codeSpace.live, onPress: () => void toggleStageCurrent() } }
 									: {})}
 							/>
-							<DiffBody
-								diff={diff}
-								rows={rows}
-								unavailable={codeSpace.unavailable}
-								notes={placedNotes}
-								onLongPressRow={notes.enabled ? row => openComposer({ mode: 'add', path, ...noteAnchorOf(row) }) : undefined}
-								onPressNote={note => openComposer({ mode: 'edit', note })}
-							/>
+							{viewPlan.modes.length > 1 ? <ReviewViewSwitch modes={viewPlan.modes} mode={viewMode} onChange={mode => setChosenView({ path, mode })} /> : null}
+							{textRaw ? (
+								<DiffBody
+									diff={diff}
+									rows={rows}
+									unavailable={codeSpace.unavailable}
+									notes={placedNotes}
+									onLongPressRow={notes.enabled ? row => openComposer({ mode: 'add', path, ...noteAnchorOf(row) }) : undefined}
+									onPressNote={note => openComposer({ mode: 'edit', note })}
+								/>
+							) : (
+								<View style={styles.body} onLayout={event => setBodyWidth(event.nativeEvent.layout.width)}>
+									<ReviewViewBody path={path} kind={contentKind} mode={viewMode} view={view} unavailable={codeSpace.unavailable} sideBySide={bodyWidth >= SIDE_BY_SIDE_MIN_WIDTH} />
+								</View>
+							)}
 							<ReviewFooter
 								reviewed={isReviewed}
 								changed={reviewState === 'changed'}
@@ -434,6 +465,55 @@ function DiffBody({ diff, rows, unavailable, notes, onLongPressRow, onPressNote 
 	return <DiffLines rows={rows} {...(notes !== undefined ? { notes, onPressNote } : {})} {...(onLongPressRow !== undefined ? { onLongPressRow } : {})} />;
 }
 
+/** 「表示」「差分」と Office の「Raw」の本文（テキストの Raw は {@link DiffBody}）。 */
+function ReviewViewBody({ path, kind, mode, view, unavailable, sideBySide }: {
+	path: string;
+	kind: ReviewContentKind;
+	mode: ReviewViewMode;
+	view: ReviewViewState;
+	unavailable: string | undefined;
+	sideBySide: boolean;
+}) {
+	const content = view.content;
+	if (content?.error !== undefined) {
+		return <EmptyState icon={CircleAlert} title={mode === 'diff' ? '差分を読み込めませんでした' : 'ファイルを読み込めませんでした'} body={content.error} />;
+	}
+	if (content === undefined) {
+		return unavailable !== undefined
+			? <EmptyState icon={CloudOff} title="読み込めません" body={`${unavailable}。つながると読み込みます。`} />
+			: <CenterSpinner label="読み込み中…" />;
+	}
+	if (content.render !== undefined && kind !== 'text') {
+		return <FileViewerBody path={path} kind={kind} mode="render" content={content.render} focusLine={undefined} onSelectSheet={view.selectSheet} />;
+	}
+	if (content.images !== undefined) {
+		return <ReviewImageCompare path={path} before={content.images.before} after={content.images.after} sideBySide={sideBySide} />;
+	}
+	if (content.html !== undefined && (kind === 'spreadsheet' || kind === 'docx')) {
+		return <OfficeDiffWebView html={content.html} kind={kind} />;
+	}
+	if (content.rows !== undefined) {
+		const unit = kind === 'docx' ? '段落' : 'セル';
+		const cappedNote = `先頭 ${MAX_RAW_LINES.toLocaleString('en-US')} ${unit}だけ比べました`;
+		if (content.rows.length === 0) {
+			// 打ち切ったときは、残りに違いがあるかもしれないので「違いなし」とは言わない
+			return content.rowsCapped === true
+				? <EmptyState icon={CircleAlert} title={cappedNote} body={`比べた範囲では${unit}の中身は同じです。それより後ろは比べていません。`} />
+				: <EmptyState icon={CircleCheck} title="中身の違いはありません" body={kind === 'docx' ? '段落の文字は同じです。書式だけが変わっているかもしれません。' : 'セルの値は同じです。書式だけが変わっているかもしれません。'} />;
+		}
+		return (
+			<View style={styles.body}>
+				{content.rowsCapped === true ? <Text style={styles.capped}>{cappedNote}</Text> : null}
+				<DiffLines rows={content.rows} />
+			</View>
+		);
+	}
+	return <CenterSpinner label="読み込み中…" />;
+}
+
+/** 画像の変更前・変更後を左右に並べる本文の幅の下限（pt）。狭ければ上下に並べる。 */
+const SIDE_BY_SIDE_MIN_WIDTH = 560;
+
 const styles = StyleSheet.create({
 	body: {
 		flex: 1,
@@ -449,5 +529,12 @@ const styles = StyleSheet.create({
 		fontFamily: monoFamily,
 		fontSize: type.meta,
 		color: colors.textDim,
+	},
+	capped: {
+		fontSize: type.caption,
+		color: colors.amber,
+		paddingHorizontal: space.lg,
+		paddingVertical: space.xs,
+		backgroundColor: colors.panel,
 	},
 });
