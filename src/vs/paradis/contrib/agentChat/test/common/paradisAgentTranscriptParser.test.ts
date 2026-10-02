@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisParseCodexTranscriptLineForTest } from '../../common/paradisAgentTranscriptParser.js';
+import { paradisParseClaudeTranscriptBatchesForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexTranscriptLineForTest } from '../../common/paradisAgentTranscriptParser.js';
 
 suite('paradisAgentTranscriptParser', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -19,5 +19,78 @@ suite('paradisAgentTranscriptParser', () => {
 		const aborted = paradisParseCodexTranscriptLineForTest(userMessage('<turn_aborted>\nThe user interrupted the previous turn on purpose. Any running unified exec processes may still be running in the background. If any tools/commands were aborted, they may have partially executed.\n</turn_aborted>'));
 		const normal = paradisParseCodexTranscriptLineForTest(userMessage('P6CXASK 質問して'));
 		assert.deepStrictEqual({ aborted: aborted.messages.length, normal: normal.messages.map(message => message.text) }, { aborted: 0, normal: ['P6CXASK 質問して'] });
+	});
+
+	test('shows a prompt queued while Claude Code is working as a user message', () => {
+		const queued = (prompt: unknown, commandMode = 'prompt', extra: Record<string, unknown> = { origin: { kind: 'human' }, humanTurn: true }) => paradisParseClaudeTranscriptLineForTest(JSON.stringify({
+			type: 'attachment', timestamp: '2026-10-01T10:00:00.000Z',
+			attachment: { type: 'queued_command', commandMode, prompt, ...extra },
+		}));
+		const summarize = (result: ReturnType<typeof queued>) => ({ userText: result.userText, messages: result.messages.map(message => ({ role: message.role, kind: message.kind, text: message.text, ts: message.ts, images: message.imageData?.length ?? 0 })) });
+		const ts = Date.parse('2026-10-01T10:00:00.000Z');
+		assert.deepStrictEqual({
+			text: summarize(queued('次はテストも直して')),
+			blocks: summarize(queued([{ type: 'text', text: 'この画面を見て' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } }])),
+			notification: summarize(queued('<task-notification>\n<task-id>abc</task-id>\n<status>completed</status>\n</task-notification>')),
+			notificationBlocks: summarize(queued([{ type: 'text', text: '<task-notification>\n<task-id>abc</task-id>\n</task-notification>' }])),
+			otherMode: summarize(queued('/compact', 'bash')),
+			peer: summarize(queued('<cross-session-message>\n調査が終わりました\n</cross-session-message>', 'prompt', { origin: { kind: 'peer' } })),
+			agentMessage: summarize(queued('<agent-message from="worker">報告です</agent-message>', 'prompt', { origin: { kind: 'peer' } })),
+			meta: summarize(queued('内部の指示', 'prompt', { origin: { kind: 'human' }, isMeta: true })),
+			noOrigin: summarize(queued('出どころ不明', 'prompt', {})),
+			attachmentTime: summarize(queued('届いた時刻で並べる', 'prompt', { origin: { kind: 'human' }, timestamp: '2026-10-01T10:00:05.000Z' })),
+		}, {
+			text: { userText: true, messages: [{ role: 'user', kind: 'text', text: '次はテストも直して', ts, images: 0 }] },
+			blocks: { userText: true, messages: [{ role: 'user', kind: 'text', text: 'この画面を見て', ts, images: 1 }] },
+			notification: { userText: false, messages: [] },
+			notificationBlocks: { userText: false, messages: [] },
+			otherMode: { userText: false, messages: [] },
+			peer: { userText: false, messages: [] },
+			agentMessage: { userText: false, messages: [] },
+			meta: { userText: false, messages: [] },
+			noOrigin: { userText: false, messages: [] },
+			attachmentTime: { userText: true, messages: [{ role: 'user', kind: 'text', text: '届いた時刻で並べる', ts: ts + 5_000, images: 0 }] },
+		});
+	});
+
+	test('does not repeat a queued prompt that Claude Code rewrites as a user line after Esc', () => {
+		const at = (second: number) => `2026-10-01T10:00:${String(second).padStart(2, '0')}.000Z`;
+		const queued = (text: string, second: number) => JSON.stringify({ type: 'attachment', timestamp: at(second), attachment: { type: 'queued_command', commandMode: 'prompt', prompt: text, origin: { kind: 'human' } } });
+		const user = (text: string, second: number) => JSON.stringify({ type: 'user', timestamp: at(second), message: { role: 'user', content: text } });
+		const assistant = (text: string, second: number) => JSON.stringify({ type: 'assistant', timestamp: at(second), message: { role: 'assistant', content: [{ type: 'text', text }] } });
+		const texts = (batches: string[][]) => paradisParseClaudeTranscriptBatchesForTest(batches).map(message => `${message.role}:${message.text}`);
+		assert.deepStrictEqual({
+			// queued_command → 割り込み → 同じ本文の user 行（読み取りの塊をまたいでも同じ）
+			rewritten: texts([[queued('テストも直して', 1)], [user('[Request interrupted by user]', 2)], [user('テストも直して', 3)]]),
+			// 割り込みが無ければ、後から同じ本文を送り直したものは別の発言として出す
+			resent: texts([[queued('テストも直して', 1), assistant('直しました', 2), user('テストも直して', 3)]]),
+			// 割り込みの後にエージェントが応答したら、控えは捨てる
+			answeredAfterInterrupt: texts([[queued('テストも直して', 1), user('[Request interrupted by user]', 2), assistant('止めました', 3), user('テストも直して', 4)]]),
+		}, {
+			rewritten: ['user:テストも直して'],
+			resent: ['user:テストも直して', 'assistant:直しました', 'user:テストも直して'],
+			answeredAfterInterrupt: ['user:テストも直して', 'assistant:止めました', 'user:テストも直して'],
+		});
+	});
+
+	test('unwraps pasted_content written by Claude Code 2.1.278+', () => {
+		const user = (content: unknown) => paradisParseClaudeTranscriptLineForTest(JSON.stringify({ type: 'user', timestamp: '2026-10-01T10:00:00.000Z', message: { role: 'user', content } })).messages.map(message => message.text);
+		assert.deepStrictEqual({
+			withId: user('\n\n<pasted_content id="512f">\n一行目\n二行目\n</pasted_content id="512f">\n'),
+			withoutId: user('\n\n<pasted_content>\n貼った本文\n</pasted_content>\n'),
+			surrounded: user('これを見て\n\n<pasted_content id="a1">\nlog line\n</pasted_content id="a1">\nどう思う?'),
+			literalTag: user('タグの書き方は <pasted_content id="x">本文</pasted_content id="x"> です'),
+			nested: user('\n\n<pasted_content id="outer">\n前\n\n<pasted_content id="inner">\n中\n</pasted_content id="inner">\n後\n</pasted_content id="outer">\n'),
+			mismatchedId: user('\n\n<pasted_content id="a">\n本文\n</pasted_content id="b">\n'),
+			blocks: user([{ type: 'text', text: '\n\n<pasted_content id="9">\n配列の本文\n</pasted_content id="9">\n' }]),
+		}, {
+			withId: ['一行目\n二行目'],
+			withoutId: ['<pasted_content>\n貼った本文\n</pasted_content>'],
+			surrounded: ['これを見て\nlog line\nどう思う?'],
+			literalTag: ['タグの書き方は <pasted_content id="x">本文</pasted_content id="x"> です'],
+			nested: ['前\n\n<pasted_content id="inner">\n中\n</pasted_content id="inner">\n後'],
+			mismatchedId: ['<pasted_content id="a">\n本文\n</pasted_content id="b">'],
+			blocks: ['配列の本文'],
+		});
 	});
 });
