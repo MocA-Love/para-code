@@ -120,6 +120,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '確定・選択・警告・失敗などで手応えが変わり、承認や質問が届いたときは軽く 2 回叩きます。設定の一番下の「触覚フィードバック」でオフにできます。',
 			},
 			{
+				icon: 'git-network-outline',
+				title: 'Codex の会話の表示を直しました',
+				body: 'AGENTS.md の中身が自分の発言として出ていたのと、動いているのに「待機中」と出ることがあったのを直しました。サブエージェントの結果、ゴールと計画も出ます。会話の途中で Codex のモデルを変える操作は無くなりました。PC の Para Code の更新が必要です。',
+				tone: 'green',
+			},
+			{
 				icon: 'sparkles-outline',
 				title: 'Claude Code と Codex の印を、PC と同じすっきりした形にしました',
 				body: 'エージェントの一覧では、最新の発言の前に出ていた状態の点をなくしました。状態は左の印で分かります。',

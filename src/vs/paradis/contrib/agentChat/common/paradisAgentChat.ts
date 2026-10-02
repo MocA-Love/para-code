@@ -131,6 +131,12 @@ export interface IParadisAgentSessionInfo {
 	 * セッション ID そのものは送らない。
 	 */
 	readonly resumeKey?: string;
+	/**
+	 * `none`: このセッションのモデルと思考の深さはモバイルから変えられない（Codex。2026-10 にライブ連携
+	 * をやめたため、走っている Codex へ設定を渡す口が無い。PC のターミナルの /model で変える）。
+	 * モバイルはモデルの選択を開かず、表示だけにする。項目が無ければ従来どおり（古い PC）。
+	 */
+	readonly modelControl?: 'none';
 }
 
 export type IParadisAgentInteraction =

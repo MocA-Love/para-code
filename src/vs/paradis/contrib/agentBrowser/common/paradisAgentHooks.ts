@@ -89,6 +89,12 @@ export interface IParadisManagedHookEvent {
 	 * 起動のたびに書き換わる）。
 	 */
 	readonly retainOnly?: boolean;
+	/**
+	 * hook の `timeout`（秒）。省略すると書かない（CLI の既定値になる）。Codex の Interrupt は既定が
+	 * 1 秒（上限 3 秒）で、notify スクリプトの curl（最長 3 秒）が途中で打ち切られうるため明示する。
+	 * Codex は信頼のハッシュにこの値を含めるので、変えると信頼を付け直すことになる。
+	 */
+	readonly timeoutSec?: number;
 }
 
 /**
@@ -154,9 +160,17 @@ export const PARADIS_CODEX_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
 	{ eventName: 'PreToolUse' },
 	// PostToolUse: 長いターンの途中でも「実行中」を維持するライブネス供給源。Codex の新hooksは
 	// Claude Code 互換の stdin JSON (transcript_path 付き) を送るため、hook 未発火起因の
-	// セッション未特定からの自己回復にも効く。Codex hooks.json の対応イベントは10種のみで、
-	// それ以外の名前は無視される (イベントを増やす場合は対応表を必ず確認すること)。
+	// セッション未特定からの自己回復にも効く。Codex hooks.json の対応イベントは12種
+	// (codex-rs/config/src/hook_config.rs の HookEventsToml、2026-10 時点) で、それ以外の名前は
+	// 無視される (イベントを増やす場合は対応表を必ず確認すること)。
 	{ eventName: 'PostToolUse' },
+	// SubagentStart / SubagentStop: Codex の子エージェントの開始と終了 (agent_id・agent_type 付き)。
+	// SubagentStop は本体のターン終了ではない (状態は変えず、子の一覧にだけ反映する)。
+	{ eventName: 'SubagentStart' },
+	{ eventName: 'SubagentStop' },
+	// Interrupt: Esc でターンを中断したときに発火する唯一の hook (Codex 0.150+。それより古い版は
+	// 知らないキーとして無視する)。既定のタイムアウトは 1 秒なので上限の 3 秒を明示する。
+	{ eventName: 'Interrupt', timeoutSec: 3 },
 ];
 
 /**
@@ -180,8 +194,8 @@ export function paradisManagedAgentHookCommandWindows(homeDir: string): string {
 }
 
 /** 1イベント分のhook定義オブジェクトを組み立てる (自動マージ・手動スニペットで共用)。 */
-export function paradisManagedHookDefinition(event: IParadisManagedHookEvent, command: string = paradisManagedAgentHookCommand()): { readonly matcher?: string; readonly hooks: readonly { readonly type: string; readonly command: string }[] } {
-	const entry = { type: 'command', command };
+export function paradisManagedHookDefinition(event: IParadisManagedHookEvent, command: string = paradisManagedAgentHookCommand()): { readonly matcher?: string; readonly hooks: readonly { readonly type: string; readonly command: string; readonly timeout?: number }[] } {
+	const entry = event.timeoutSec !== undefined ? { type: 'command', command, timeout: event.timeoutSec } : { type: 'command', command };
 	return event.matcher !== undefined ? { matcher: event.matcher, hooks: [entry] } : { hooks: [entry] };
 }
 

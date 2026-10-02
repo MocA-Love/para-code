@@ -17,6 +17,7 @@ import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { paradisSafeErrorName, reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisCodexUserAuthoredContent, paradisIsCodexInjectedText } from '../../agentChat/common/paradisCodexInjectedContext.js';
 import {
 	IParadisCodexThreadPromptRequest,
 	IParadisCodexThreadPromptResult,
@@ -84,14 +85,19 @@ function extractUserText(value: unknown): string | undefined {
 	if (payload?.type !== 'message' || payload.role !== 'user' || !Array.isArray(payload.content)) {
 		return undefined;
 	}
-	const text = payload.content
+	// Codex has injected AGENTS.md, environment context and similar content as user messages.
+	const authored = paradisCodexUserAuthoredContent(payload);
+	if (!Array.isArray(authored)) {
+		return undefined;
+	}
+	const text = authored
 		.map(item => item && typeof item === 'object' && (item as Record<string, unknown>).type === 'input_text'
 			? nonEmptyString((item as Record<string, unknown>).text)
 			: undefined)
 		.filter((item): item is string => item !== undefined)
 		.join('\n')
 		.trim();
-	if (!text || text.startsWith('<environment_context>') || text.startsWith('# AGENTS.md instructions for ')) {
+	if (!text) {
 		return undefined;
 	}
 	return text.slice(0, MAX_PROMPT_LENGTH);
@@ -195,7 +201,8 @@ export class ParadisCodexTerminalTitleService {
 			if (!row || typeof row.source !== 'string' || !ALLOWED_THREAD_SOURCES.has(row.source) || (request.invocation === 'start' && row.cwd !== request.cwd && row.cwd !== realCwd)) {
 				return {};
 			}
-			const prompt = nonEmptyString(row.title) ?? nonEmptyString(row.first_user_message) ?? nonEmptyString(row.preview);
+			// Older Codex builds stored injected context (for example `<environment_context>`) as the title.
+			const prompt = [row.title, row.first_user_message, row.preview].map(nonEmptyString).find(value => value !== undefined && !paradisIsCodexInjectedText(value));
 			if (prompt) {
 				return { prompt };
 			}

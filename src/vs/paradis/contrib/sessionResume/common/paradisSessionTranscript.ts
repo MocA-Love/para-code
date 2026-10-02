@@ -12,6 +12,7 @@
 // 会話を拾えるよう、もとはセッション履歴のチャネルにあった関数をここへ移した。Node の API に
 // 依存しないので common に置く。
 
+import { paradisCodexUserAuthoredContent } from '../../agentChat/common/paradisCodexInjectedContext.js';
 import { ParadisResumeAgent } from './paradisSessionResume.js';
 
 /** 1メッセージの本文を切り詰める既定の上限（一覧・プレビュー用）。 */
@@ -71,13 +72,6 @@ export function paradisTranscriptFlattenText(value: unknown): string {
 		}
 	}
 	return parts.join('\n');
-}
-
-/** Codex が会話の先頭へ自動で差し込む環境情報・指示（ユーザーの依頼ではない）。 */
-export function paradisIsInjectedCodexContext(text: string): boolean {
-	const value = text.trim();
-	return /^<(environment_context|user_instructions|ENVIRONMENT_CONTEXT|INSTRUCTIONS)/.test(value)
-		|| value.startsWith('# AGENTS.md instructions for');
 }
 
 /** Codex の state DB の `source` 列が、サブエージェントではない（ユーザーが起動した）スレッドを指すか。 */
@@ -158,8 +152,10 @@ export function paradisTranscriptMessageFromItem(item: Record<string, unknown> |
 	if (role !== 'user' && role !== 'assistant') {
 		return undefined;
 	}
-	const text = paradisTranscriptFlattenText(payload.content);
-	if (!text.trim() || (role === 'user' && paradisIsInjectedCodexContext(text))) {
+	// Codex が user のメッセージとして差し込む文（AGENTS.md・環境情報など）は発言ではない
+	const content = role === 'user' ? paradisCodexUserAuthoredContent(payload) : payload.content;
+	const text = content !== undefined ? paradisTranscriptFlattenText(content) : '';
+	if (!text.trim()) {
 		return undefined;
 	}
 	return { role, text: paradisTranscriptClipped(text, maxChars), timestamp: paradisTranscriptTimestamp(item.timestamp) };

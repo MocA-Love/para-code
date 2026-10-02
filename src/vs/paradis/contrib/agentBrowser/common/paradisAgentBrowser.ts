@@ -11,7 +11,6 @@
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Event } from '../../../../base/common/event.js';
-import { join } from '../../../../base/common/path.js';
 import type { ParadisBindingAuthorityStableScope } from './paradisBindingAuthority.js';
 
 /**
@@ -35,17 +34,6 @@ export const PARADIS_MCP_PORT_FILE_ENV_VAR = 'PARA_CODE_MCP_PORT_FILE';
  */
 export const PARADIS_VOICE_TOKEN_ENV_VAR = 'PARA_CODE_VOICE_TOKEN';
 
-/** ペイン専用Codex app-serverのUnix socket絶対パス（macOS/Linux）。 */
-export const PARADIS_CODEX_APP_SERVER_SOCKET_ENV_VAR = 'PARA_CODE_CODEX_APP_SERVER_SOCKET';
-
-/**
- * ペイン専用Codex app-serverのエンドポイント記述ファイル（JSON）の絶対パス（Windows）。
- * WindowsのNode(libuv)はAF_UNIXを扱えないため、ランチャーが `ws://127.0.0.1:<動的ポート>` で
- * app-serverを起動し、実ポート等をこのファイルへ書き出す。認証はペイントークンを
- * capability tokenとして使う（`--ws-token-sha256`、平文はディスクへ書かない）。
- */
-export const PARADIS_CODEX_APP_SERVER_ENDPOINT_ENV_VAR = 'PARA_CODE_CODEX_APP_SERVER_ENDPOINT';
-
 /** 再帰せず実Codexを解決するため、ランチャー自身がPATHから除外するディレクトリ。 */
 export const PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_DIR';
 
@@ -59,22 +47,17 @@ export const PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_DIR'
  */
 export const PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING = 'paradis.agentBrowser.showCursorOverlay';
 
-/** Windowsランチャー(.cmd/.ps1)がJS本体の実行に使うNode互換実行体（Para Code自身のexe）。 */
+/** Windowsランチャー(.cmd/.ps1)が、node.exe の無い環境で本物の `codex` を探すのに使うNode互換実行体（Para Code自身のexe）。 */
 export const PARADIS_CODEX_LAUNCHER_NODE_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_NODE';
 
 /**
- * CodexペインランチャーをPTY環境へ追加するための実行時情報。
- * `socketPath`（macOS/Linux: unix socket方式）と `endpointFilePath`（Windows: loopback ws方式）は
- * どちらか一方だけを指定する。どちらも指定しないと、ペイン専用 app-server を立てずに、ランチャーが
- * Codex を共有バックグラウンドサーバーから切り離して起動するだけになる。Windows ではその場合も
- * `nodeExecutablePath` を渡す（node.exe の無い環境で .cmd / .ps1 が本物の `codex` を探すのに使う）。
+ * CodexランチャーをPTY環境へ追加するための実行時情報。ランチャーは対話の Codex を共有バックグラウンド
+ * サーバーから切り離して起動するだけ（ペイン専用 app-server と `--remote` は 2026-10 にやめた）。
  */
 export interface IParadisCodexPaneRuntime {
 	readonly launcherDirectory: string;
 	readonly pathDelimiter: string;
-	readonly socketPath?: string;
-	readonly endpointFilePath?: string;
-	/** Windowsのみ: `ELECTRON_RUN_AS_NODE=1` でランチャーJSを実行するexeパス（endpoint 無しでも渡す）。 */
+	/** Windowsのみ: node.exe の無い環境で .cmd / .ps1 が本物の `codex` を探すのに使うexeパス。 */
 	readonly nodeExecutablePath?: string;
 }
 
@@ -91,47 +74,6 @@ export const PARADIS_MCP_PORT_FILE_NAME = 'paradis-browser-mcp.json';
  * 将来的にはParadis設定に載せる想定（現状はconst固定）。
  */
 export const PARADIS_MCP_DEFAULT_PORT = 47286;
-
-/**
- * userDataDir配下に、Unixのsun_path上限へ収まるペイン固有socketパスを作る。
- * パストラバーサルを防ぐため、復元された旧トークンも安全な文字だけを許可する。
- */
-export function paradisCodexPaneSocketPath(userDataPath: string, token: string): string | undefined {
-	if (userDataPath.length === 0 || !/^[A-Za-z0-9._-]{1,64}$/.test(token)) {
-		return undefined;
-	}
-	const socketPath = join(userDataPath, 'pcx', `${token}.sock`);
-	return new TextEncoder().encode(socketPath).length <= 100 ? socketPath : undefined;
-}
-
-/**
- * SSH で繋いだ先のペイン固有socketパス。
- *
- * {@link paradisCodexPaneSocketPath} と分けてあるのは区切り文字のため。あちらは動作中のOSで
- * 区切りを選ぶので、Windows から Linux へ繋ぐと `\` 混じりのパスが出来てしまい、接続先の
- * ランチャーにも `ssh -L` にも通らない。接続先は常に POSIX として組み立てる。
- */
-export function paradisRemoteCodexPaneSocketPath(remoteParaCodeDirectory: string, token: string): string | undefined {
-	if (!/^\/[A-Za-z0-9._\-/]{1,200}$/.test(remoteParaCodeDirectory)
-		|| remoteParaCodeDirectory.includes('..')
-		|| !/^[A-Za-z0-9._-]{1,64}$/.test(token)) {
-		return undefined;
-	}
-	const socketPath = `${remoteParaCodeDirectory.replace(/\/+$/, '')}/pcx/${token}.sock`;
-	return new TextEncoder().encode(socketPath).length <= 100 ? socketPath : undefined;
-}
-
-/**
- * Windows用: userDataDir配下のペイン固有endpoint記述ファイル（`pcx/<token>.endpoint.json`）の
- * パスを作る。unix socketと違いsun_path長の制約はないが、トークンの文字集合は同じ制約で
- * 検証する（パストラバーサル防止）。
- */
-export function paradisCodexPaneEndpointFilePath(userDataPath: string, token: string): string | undefined {
-	if (userDataPath.length === 0 || !/^[A-Za-z0-9._-]{1,64}$/.test(token)) {
-		return undefined;
-	}
-	return join(userDataPath, 'pcx', `${token}.endpoint.json`);
-}
 
 /** shared processで起動済みのMCP+CDPゲートウェイ接続先。 */
 export interface IParadisGatewayEndpoint {
@@ -161,13 +103,8 @@ export function paradisCreateTerminalPaneEnvironment(
 		[PARADIS_PANE_TOKEN_ENV_VAR]: token,
 		[PARADIS_MCP_PORT_FILE_ENV_VAR]: portFilePath,
 	};
-	const socketPath = codexRuntime?.socketPath ?? '';
-	const endpointFilePath = codexRuntime?.endpointFilePath ?? '';
 	const nodeExecutablePath = codexRuntime?.nodeExecutablePath ?? '';
-	if (codexRuntime === undefined || codexRuntime.launcherDirectory.length === 0 || codexRuntime.pathDelimiter.length === 0
-		|| (socketPath.length > 0 && endpointFilePath.length > 0)
-		// endpoint方式のランチャー(.cmd/.ps1)はnode実行体が無いと起動できないため、揃わない場合は注入しない。
-		|| (endpointFilePath.length > 0 && nodeExecutablePath.length === 0)) {
+	if (codexRuntime === undefined || codexRuntime.launcherDirectory.length === 0 || codexRuntime.pathDelimiter.length === 0) {
 		return environment;
 	}
 	const pathPrefix = `${codexRuntime.launcherDirectory}${codexRuntime.pathDelimiter}`;
@@ -176,12 +113,7 @@ export function paradisCreateTerminalPaneEnvironment(
 	environment.PATH = `${pathPrefix}${typeof currentPath === 'string' ? currentPath : '${env:PATH}'}`;
 	environment.VSCODE_PATH_PREFIX = `${pathPrefix}${typeof currentPathPrefix === 'string' ? currentPathPrefix : ''}`;
 	environment[PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR] = codexRuntime.launcherDirectory;
-	if (socketPath.length > 0) {
-		environment[PARADIS_CODEX_APP_SERVER_SOCKET_ENV_VAR] = socketPath;
-	} else if (endpointFilePath.length > 0) {
-		environment[PARADIS_CODEX_APP_SERVER_ENDPOINT_ENV_VAR] = endpointFilePath;
-		environment[PARADIS_CODEX_LAUNCHER_NODE_ENV_VAR] = nodeExecutablePath;
-	} else if (nodeExecutablePath.length > 0) {
+	if (nodeExecutablePath.length > 0) {
 		environment[PARADIS_CODEX_LAUNCHER_NODE_ENV_VAR] = nodeExecutablePath;
 	}
 	return environment;
@@ -1032,7 +964,7 @@ export interface IParadisMcpFixRequest {
  */
 const PARADIS_AGENT_HOOK_RELEASE_EVENTS: ReadonlySet<string> = new Set([
 	'PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'UserPromptSubmit', 'task_started',
-	'Stop', 'StopFailure', 'SubagentStop', 'agent-turn-complete', 'task_complete', 'SessionEnd',
+	'Stop', 'StopFailure', 'SubagentStop', 'agent-turn-complete', 'task_complete', 'SessionEnd', 'Interrupt',
 ]);
 
 /** 送り主を確かめられなくても、許可待ち・質問中のペインで受け付けてよい hook か（{@link PARADIS_AGENT_HOOK_RELEASE_EVENTS}）。 */
@@ -1101,6 +1033,10 @@ export function paradisNormalizeAgentHookEvent(eventType: string, message?: stri
 			return 'working';
 		// 終了 (プロセス消滅)
 		case 'TerminalExit':
+			return 'idle';
+		// Codex の Esc による中断（Interrupt hook、0.150+）。利用者が自分で止めたので「完了」（review）
+		// にはせず、待機（状態なし）へ戻す。完了の通知も鳴らさない。
+		case 'Interrupt':
 			return 'idle';
 		default:
 			return undefined;

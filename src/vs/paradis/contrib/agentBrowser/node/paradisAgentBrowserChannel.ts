@@ -124,6 +124,10 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				const args = requireArgs(arg, 1);
 				return this.service.ensureRemoteAgentTunnel(String(args[0]), ctx) as Promise<T>;
 			}
+			case 'getRemoteAgentTunnelPort': {
+				const args = requireArgs(arg, 1);
+				return this.service.getRemoteAgentTunnelPort(String(args[0])) as Promise<T>;
+			}
 			case 'closeRemoteAgentTunnel': {
 				const args = requireArgs(arg, 1);
 				return this.service.closeRemoteAgentTunnel(String(args[0]), ctx) as Promise<T>;
@@ -147,20 +151,6 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				const args = requireArgs(arg, 1);
 				const existingRaw = typeof args[0] === 'string' ? args[0] : undefined;
 				return this.service.buildRemoteAgentHooksRemovalJson(existingRaw) as Promise<T>;
-			}
-			case 'syncRemoteCodexSockets': {
-				const args = requireArgs(arg, 3);
-				const tokens = Array.isArray(args[2]) ? args[2].filter((entry): entry is string => typeof entry === 'string') : [];
-				// どのウィンドウの要求かは ctx で決める。同じ接続先へ何枚でも開けるので、
-				// 引数で名乗らせると他のウィンドウの転送まで畳めてしまう
-				return this.service.syncRemoteCodexSockets(ctx, String(args[0]), String(args[1]), tokens) as Promise<T>;
-			}
-			case 'releaseRemoteCodexSockets': {
-				// 呼び出し側は syncRemoteCodexSockets と揃えて接続先を1つ渡してくる。数が合わないと
-				// protocolError で必ず失敗し、握り潰されて転送の台帳にだけ幽霊が残る。
-				// どのウィンドウの要求かは（同期側と同じく）引数ではなく ctx で決める
-				requireArgs(arg, 1);
-				return this.service.releaseRemoteCodexSockets(ctx) as Promise<T>;
 			}
 			case 'setupMcp': {
 				const args = requireArgs(arg, 1);

@@ -1635,12 +1635,13 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.deepStrictEqual({ afterHttpExit, afterWindowExit }, { afterHttpExit: [true, true], afterWindowExit: [false, false] });
 	});
 
-	test('the hooks accepted without a verified caller only ever move a pane toward working or review', () => {
-		const events = ['PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'UserPromptSubmit', 'task_started', 'Stop', 'StopFailure', 'SubagentStop', 'agent-turn-complete', 'task_complete', 'SessionEnd',
+	// Interrupt (Codex's Esc) returns the pane to no status (idle); it never enters a wait.
+	test('the hooks accepted without a verified caller only ever move a pane toward working, review or no status', () => {
+		const events = ['PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'UserPromptSubmit', 'task_started', 'Stop', 'StopFailure', 'SubagentStop', 'agent-turn-complete', 'task_complete', 'SessionEnd', 'Interrupt', 'SubagentStart',
 			'PreToolUse', 'PermissionRequest', 'Notification', 'exec_approval_request', 'apply_patch_approval_request', 'request_user_input', 'permission.ask', 'TerminalExit', 'SessionStart', 'Start'];
 		assert.deepStrictEqual(
 			events.filter(paradisIsAgentHookReleaseEvent).map(event => `${event}:${paradisNormalizeAgentHookEvent(event, 'needs permission') ?? 'unchanged'}`),
-			['PostToolUse:working', 'PostToolUseFailure:working', 'PermissionDenied:working', 'UserPromptSubmit:working', 'task_started:working', 'Stop:review', 'StopFailure:review', 'SubagentStop:unchanged', 'agent-turn-complete:review', 'task_complete:review', 'SessionEnd:review'],
+			['PostToolUse:working', 'PostToolUseFailure:working', 'PermissionDenied:working', 'UserPromptSubmit:working', 'task_started:working', 'Stop:review', 'StopFailure:review', 'SubagentStop:unchanged', 'agent-turn-complete:review', 'task_complete:review', 'SessionEnd:review', 'Interrupt:idle'],
 		);
 	});
 

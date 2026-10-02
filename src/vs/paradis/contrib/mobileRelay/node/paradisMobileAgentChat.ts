@@ -41,7 +41,6 @@ import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHomes, paradisE
 import { paradisExtractIssueUrls } from '../../../common/paradisIssueDetection.js';
 import { paradisIsWslAgentHomePath } from '../../../common/paradisWslAgentHome.js';
 import { paradisCwdGroupKey } from '../../../common/paradisWslPath.js';
-import { IParadisCodexApprovalInteraction, IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, IParadisCodexThreadTarget, PARADIS_CODEX_DAEMON_DISCONNECTED, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
 import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from './paradisAgentCommandCatalog.js';
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
@@ -70,6 +69,9 @@ export { paradisHasPendingDuplicateQuestion, paradisParseClaudeTranscriptLineFor
 
 export type ParadisCliDiscoveryMode = 'new' | 'resume' | 'fork';
 
+/** Codex のモデルをモバイルから変えようとしたときの返事（ライブ連携をやめたため）。 */
+const PARADIS_CODEX_MODEL_CONTROL_UNSUPPORTED_MESSAGE = 'Codex のモデルはモバイルから変えられません。PC のターミナルで /model から変えてください';
+
 /**
  * ターンやセッションの終了を伝える hook か。
  *
@@ -78,7 +80,8 @@ export type ParadisCliDiscoveryMode = 'new' | 'resume' | 'fork';
  * 終了時は質問・承認・活動表示も同じ完了処理へ収束させる必要がある。
  */
 export function paradisIsTurnEndHookEvent(eventName: string): boolean {
-	return eventName === 'Stop' || eventName === 'StopFailure' || eventName === 'SessionEnd' || eventName === 'agent-turn-complete';
+	// Interrupt は Codex の Esc による中断（0.150+）。rollout の turn_aborted より先に届くので、ここでも閉じる
+	return eventName === 'Stop' || eventName === 'StopFailure' || eventName === 'SessionEnd' || eventName === 'agent-turn-complete' || eventName === 'Interrupt';
 }
 
 /**
@@ -99,6 +102,7 @@ export function paradisIsLateHookAfterTurnEnd(eventName: string, at: number, tur
 		case 'SessionEnd':
 		case 'TerminalExit':
 		case 'agent-turn-complete':
+		case 'Interrupt':
 			return false;
 		default:
 			break;
@@ -138,7 +142,6 @@ type AgentInbound =
 type AgentOutbound =
 	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number }
 	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number }
-	| { t: 'model-catalog'; id: number; requestId: string; models: readonly IParadisCodexModelOption[] }
 	| { t: 'command-catalog'; id: number; requestId: string; commands: readonly IParadisAgentCommandOption[] }
 	| { t: 'command-catalog-error'; id: number; requestId: string; message: string }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
@@ -2061,75 +2064,6 @@ class TranscriptTailer {
 		});
 	}
 
-	/** Codex app-server由来の構造化された承認要求を、その選択肢を失わず表示する。 */
-	injectCodexApprovalRequest(interaction: IParadisCodexApprovalInteraction): void {
-		this.enqueue(async () => {
-			if (this.approvalQueue.some(entry => entry.interaction.id === interaction.id)) { return; }
-			const front = this.frontApprovalIndex();
-			const hadApproval = front >= 0;
-			const entry: IParadisApprovalEntry = { interaction, key: `codex:${interaction.id}`, desktopOnly: false };
-			if (hadApproval) {
-				// hook経路が先着していた場合（表の1件）は、正式な選択肢のものへ置き換える。
-				this.approvalQueue[front] = entry;
-			} else {
-				this.approvalQueue.push(entry);
-			}
-			if (hadApproval) {
-				// hook経路が先着していた場合はカードだけ正式な選択肢へ置換し、履歴を重複させない。
-				this.delegate.onDelta([]);
-				this.delegate.onActivity();
-				return;
-			}
-			const message: IParadisAgentChatMessage = {
-				role: 'assistant', kind: 'tool_use', tool: 'approval_request', text: truncateText(interaction.detail || interaction.title, TOOL_TEXT_LIMIT),
-				ts: Date.now(), rev: this.rev++, toolUseId: interaction.id,
-			};
-			this.messages.push(message);
-			this.trimRing();
-			this.delegate.onDelta([message]);
-			this.delegate.onActivity();
-		});
-	}
-
-	/**
-	 * 承認内容を同期できないときの案内カードを出す。
-	 *
-	 * replaceExisting は app-server との接続が切れた場合に使う。切断で app-server 側の
-	 * pendingApprovals は捨てられるため、構造化された承認カード（codex:<thread>:<id>）を
-	 * 残したままにすると、押しても daemon 経路に乗らず必ず失敗する。
-	 */
-	injectCodexApprovalFallback(threadId: string, replaceExisting = false): void {
-		this.enqueue(async () => {
-			const fallbackId = `codex-status:${threadId}`;
-			// replaceExisting は「今ある daemon 承認を案内カードへ差し替える」モード。判定は必ず
-			// キューの内側で行う（呼び出し側で同期に覗くと、先にキューへ積まれた解決処理が
-			// まだ走っておらず、既に回答済みの承認に対して案内カードを生やしてしまう）。
-			if (replaceExisting && this.pendingApproval === undefined) {
-				return;
-			}
-			if (this.pendingApproval !== undefined
-				&& (!replaceExisting || this.pendingApproval.id === fallbackId || !paradisIsCodexDaemonApprovalInteraction(this.pendingApproval.id))) {
-				return;
-			}
-			const fallback: IParadisApprovalEntry = {
-				interaction: {
-					kind: 'approval', id: fallbackId, title: 'Codexが許可を待っています',
-					detail: '承認内容を同期できませんでした。PCのCodex画面で確認してください。', choices: [],
-				},
-				key: fallbackId,
-				desktopOnly: false,
-			};
-			const front = this.frontApprovalIndex();
-			if (front >= 0) {
-				this.approvalQueue[front] = fallback;
-			} else {
-				this.approvalQueue.push(fallback);
-			}
-			this.delegate.onDelta([]);
-			this.delegate.onActivity();
-		});
-	}
-
 	/**
 	 * 承認を解く。toolUseId が一致するものを外す。force（拒否の hook）は、一致するものが無ければ表の1件を
 	 * 外す。all（ターン終了）はすべて外す。
@@ -2146,17 +2080,6 @@ class TranscriptTailer {
 			if (!removed) {
 				return;
 			}
-			this.delegate.onDelta([]);
-			this.delegate.onActivity();
-		});
-	}
-
-	clearCodexApprovalRequest(interactionId?: string): void {
-		this.enqueue(async () => {
-			const removed = interactionId !== undefined
-				? this.removeApprovals(entry => entry.interaction.id === interactionId)
-				: this.approvalQueue.pop() !== undefined;
-			if (!removed) { return; }
 			this.delegate.onDelta([]);
 			this.delegate.onActivity();
 		});
@@ -2514,24 +2437,6 @@ interface IPaneSessionInfo {
 	readonly restoredFromDisk?: boolean;
 }
 
-/** pane session集合を、Mobileのsocket別Codex購読ターゲットへ正規化する。 */
-export function paradisCodexThreadTargetsForPaneSessions(
-	sessions: Iterable<readonly [string, Pick<IPaneSessionInfo, 'agent' | 'sessionId'>]>,
-	socketPathResolver: (token: string) => string | undefined,
-): readonly IParadisCodexThreadTarget[] {
-	const targetsByThread = new Map<string, IParadisCodexThreadTarget>();
-	for (const [token, session] of sessions) {
-		if (session.agent !== 'codex' || session.sessionId === undefined || session.sessionId.length === 0) {
-			continue;
-		}
-		const socketPath = socketPathResolver(token);
-		if (socketPath !== undefined) {
-			targetsByThread.set(session.sessionId, { threadId: session.sessionId, socketPath });
-		}
-	}
-	return [...targetsByThread.values()];
-}
-
 interface ICommandCatalogContext {
 	readonly token: string;
 	readonly session: IPaneSessionInfo;
@@ -2621,6 +2526,11 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 見せてしまう。誤ったものを出すくらいなら出さない）。
 	 */
 	private readonly tokenToRemoteHost = new Map<string, { readonly host: string; readonly at: number }>();
+	/**
+	 * ペイントークン → 接続先の hook が最後に届いた時刻。ウィンドウが接続先の rollout を探して
+	 * 知らせてくるもの（onRemoteTranscriptDiscovered）より hook を正とするための目印。
+	 */
+	private readonly remoteHookAt = new Map<string, number>();
 	/** ペイントークン → 稼働中の tailer (購読者がいる間のみ)。 */
 	private readonly tailers = new Map<string, TranscriptTailer>();
 	/** ペイントークン → 購読中モバイルIDとattach時のexact owner。Renderer交代後は
@@ -2653,14 +2563,11 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly codexActiveItems = new Map<string, string>();
 	/** main agentがターン処理中のtoken。Claude hook / Codex app-serverの開始・終了で更新する。 */
 	private readonly activeTurnTokens = new Set<string>();
-	/** daemonが確認した次ターンのCodexモデル設定。transcriptの直近ターン値より優先表示する。 */
-	private readonly codexThreadSettings = new Map<string, IParadisCodexThreadSettings>();
 	/** tokenごとにhookの検証と反映を受信順へ直列化する。 */
 	private readonly hookProcessing = new Map<string, Promise<void>>();
 	/** ペイン同期より先着したhook。質問など一度しか来ないイベントを順序付きで保持する。 */
 	private readonly pendingHooks = new Map<string, { readonly event: IParadisAgentHookEvent; readonly transcriptPath: string; readonly receivedAt: number }[]>();
 	private readonly pendingHookTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	private readonly codexLiveClient: ParadisCodexLiveClient;
 	/** ペアリング済みモバイル向けのライブ質問/承認注入を有効にする。status用tailは常時動作する。 */
 	private eagerTailing = false;
 	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly sendKey?: string; readonly timer: ReturnType<typeof setTimeout> }>();
@@ -2709,7 +2616,6 @@ export class ParadisMobileAgentChat extends Disposable {
 		/** 質問(AskUserQuestion等)がtranscriptに現れた（回答待ちが始まった）。通知の発火元。 */
 		private readonly onQuestion: (info: { terminalId: number; agent: ParadisAgentKind; text: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner }) => void,
 		private readonly logService: ILogService,
-		private readonly codexSocketPathResolver?: (token: string) => string | undefined,
 		private readonly authorizeOwner: (owner: IParadisMobilePaneOwner) => Promise<boolean> = async () => true,
 		private readonly requestPaneSync: (owner: IParadisMobilePaneOwner) => void = () => { },
 		private readonly sessionStore?: ParadisAgentSessionStore,
@@ -2719,7 +2625,6 @@ export class ParadisMobileAgentChat extends Disposable {
 	) {
 		super();
 		this.codexDirectoryWalkLedger = codexDirectoryWalkBudget ?? new ParadisDirectoryWalkLedger(PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS, PARADIS_CODEX_DIRECTORY_WALK_LIMIT);
-		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService));
 		this._register(toDisposable(() => clearTimeout(this.desktopInsightTimer)));
 		this._register(toDisposable(() => clearTimeout(this.desktopChatTimer)));
 		this._register(toDisposable(() => {
@@ -2784,12 +2689,6 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.questionNotifyCounts.clear();
 			this.questionNotifiedAt.clear();
 		}));
-	}
-
-	/** Codex pane app-server購読の有効/無効（renderer設定から同期）。 */
-	setCodexDaemonEnabled(enabled: boolean): void {
-		this.codexLiveClient.setEnabled(enabled);
-		this.syncCodexDaemonThreads();
 	}
 
 	/**
@@ -3025,7 +2924,6 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.lastTurnEndedAt.delete(token);
 				this.codexMessageBuffers.delete(token);
 				this.codexActiveItems.delete(token);
-				this.codexThreadSettings.delete(token);
 				this.activityTrackers.delete(token);
 				this.clearClaudeSubagentTranscripts(token);
 				this.activeTurnTokens.delete(token);
@@ -3051,6 +2949,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		for (const [token, remote] of [...this.tokenToRemoteHost]) {
 			if (!liveTokens.has(token) && !this.retiredSessions.has(token) && now - remote.at > PENDING_HOOK_TTL_MS) {
 				this.tokenToRemoteHost.delete(token);
+				this.remoteHookAt.delete(token);
 			}
 		}
 		// 常駐スキャンは世代の記録だけを残すことがある（セッションもタイマーも持たないので、
@@ -3068,7 +2967,6 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 		}
 		this.persistSessions();
-		this.syncCodexDaemonThreads();
 		this.emitConfirmedAgentPanesIfChanged();
 	}
 
@@ -3178,7 +3076,6 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.persistSessions();
 				this.ensureEagerTailer(token, session);
 				this.emitConfirmedAgentPanesIfChanged();
-				this.syncCodexDaemonThreads();
 				this.pushToSubscribers(token);
 			} finally {
 				this.sessionReviveInFlight.delete(token);
@@ -3554,7 +3451,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.activityDetailRequests.set(requestKey, token);
 		try {
 			const messages = session.agent === 'codex'
-				? await this.readCodexSubagentMessages(token, msg.activityId, session.sessionId)
+				? await this.readCodexSubagentMessages(token, msg.activityId)
 				: await this.readClaudeSubagentMessages(session.transcriptPath, msg.activityId, this.claudeSubagentTranscriptPaths.get(`${token}\0${msg.activityId}`));
 			if (this.paneSessions.get(token) === session && this.tailers.get(token) === tailer && tailer.epoch === msg.epoch && this.hasSubscriber(token, mobileId)
 				&& this.activityTrackers.get(token)?.snapshot()?.agents.some(agent => agent.id === msg.activityId && agent.role === 'subagent')) {
@@ -3573,32 +3470,24 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	private static codexDetailMessage(message: IParadisCodexThreadMessage): IParadisAgentActivityDetailMessage {
-		return message;
-	}
-
-	private async readCodexSubagentMessages(token: string, activityId: string, ownerThreadId: string | undefined): Promise<readonly IParadisAgentActivityDetailMessage[]> {
+	private async readCodexSubagentMessages(token: string, activityId: string): Promise<readonly IParadisAgentActivityDetailMessage[]> {
+		// 接続先のペインはホームが引けない（手元を探しに行かせない）。写しの無い SubAgent の
+		// 本文は取りようがないので、そのまま「取得できませんでした」を返す
+		const homes = this.agentHomesForToken(token);
+		const transcriptPath = homes === undefined ? undefined : await discoverCodexTranscriptByThreadId(activityId, homes);
+		if (transcriptPath === undefined || !(await isAllowedTranscriptPath(transcriptPath))) { throw new Error('Codex SubAgent transcript not found'); }
+		const stat = await fs.stat(transcriptPath);
+		const start = Math.max(0, stat.size - INITIAL_READ_TAIL_BYTES);
+		const handle = await fs.open(transcriptPath, 'r');
 		try {
-			return (await this.codexLiveClient.readThreadMessages(activityId, ownerThreadId)).map(ParadisMobileAgentChat.codexDetailMessage);
-		} catch {
-			// 接続先のペインはホームが引けない（手元を探しに行かせない）。写しの無い SubAgent の
-			// 本文は取りようがないので、そのまま「取得できませんでした」を返す
-			const homes = this.agentHomesForToken(token);
-			const transcriptPath = homes === undefined ? undefined : await discoverCodexTranscriptByThreadId(activityId, homes);
-			if (transcriptPath === undefined || !(await isAllowedTranscriptPath(transcriptPath))) { throw new Error('Codex SubAgent transcript not found'); }
-			const stat = await fs.stat(transcriptPath);
-			const start = Math.max(0, stat.size - INITIAL_READ_TAIL_BYTES);
-			const handle = await fs.open(transcriptPath, 'r');
-			try {
-				if (!(await isAllowedOpenTranscriptPath(handle, transcriptPath))) { throw new Error('Codex SubAgent transcript path changed'); }
-				const buffer = Buffer.alloc(stat.size - start);
-				const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
-				const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n');
-				if (start > 0) { lines.shift(); }
-				return paradisParseCodexDetailLinesForTest(lines);
-			} finally {
-				await handle.close();
-			}
+			if (!(await isAllowedOpenTranscriptPath(handle, transcriptPath))) { throw new Error('Codex SubAgent transcript path changed'); }
+			const buffer = Buffer.alloc(stat.size - start);
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+			const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n');
+			if (start > 0) { lines.shift(); }
+			return paradisParseCodexDetailLinesForTest(lines);
+		} finally {
+			await handle.close();
 		}
 	}
 
@@ -3829,12 +3718,6 @@ export class ParadisMobileAgentChat extends Disposable {
 	private handleApprovalAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/answerApproval' }>): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
-		if (session?.agent === 'codex' && token !== undefined && session.sessionId !== undefined && this.codexLiveClient.hasPendingApproval(session.sessionId, msg.interactionId)) {
-			this.handleCodexApprovalAction(mobileId, msg, token, session.sessionId).catch(error => {
-				this.logService.warn('[paradisAgentChat] Codex approval action failed', error);
-			});
-			return;
-		}
 		if (paradisIsCodexDaemonApprovalInteraction(msg.interactionId)) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: 'この承認要求はすでに完了しています' }, token ?? msg.token);
 			return;
@@ -3874,8 +3757,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const interaction = tailer?.currentInteraction();
 		if (token === undefined || session === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined
 			|| !this.hasSubscriber(token, mobileId) || interaction?.kind !== 'approval' || interaction.id !== msg.interactionId
-			|| paradisIsCodexDaemonApprovalInteraction(msg.interactionId)
-			|| (session.agent === 'codex' && session.sessionId !== undefined && this.codexLiveClient.hasPendingApproval(session.sessionId, msg.interactionId))) {
+			|| paradisIsCodexDaemonApprovalInteraction(msg.interactionId)) {
 			this.sendTo(mobileId, { t: 'approval-options', id: msg.id, requestId: msg.requestId, interactionId: msg.interactionId, error: 'stale-interaction' }, token ?? msg.token);
 			return;
 		}
@@ -3883,68 +3765,6 @@ export class ParadisMobileAgentChat extends Disposable {
 			t: 'action/approvalOptions', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch, interactionId: msg.interactionId,
 			agent: session.agent, windowId: owner.windowId,
 		})));
-	}
-
-	private async handleCodexApprovalAction(
-		mobileId: string,
-		msg: Extract<AgentInbound, { t: 'action/answerApproval' }>,
-		token: string,
-		threadId: string,
-	): Promise<void> {
-		const tailer = this.tailers.get(token);
-		const interaction = tailer?.currentInteraction();
-		const owner = this.ownerForPane(msg.id, token);
-		const key = this.actionKey(mobileId, msg.requestId);
-		const interactionKey = `${token}\0${msg.epoch}\0approval\0${msg.interactionId}`;
-		if (tailer?.epoch !== msg.epoch || interaction?.kind !== 'approval' || interaction.id !== msg.interactionId
-			|| owner === undefined || !this.hasSubscriber(token, mobileId) || this.interactionClaims.has(interactionKey)
-			|| this.pendingActions.has(key) || this.completedActions.has(key)) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '回答対象の承認要求が変わりました' }, token);
-			return;
-		}
-		if (!await this.authorizeOwner(owner)) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '操作対象のウィンドウが切り替わりました' }, token);
-			return;
-		}
-		const currentOwner = this.ownerForPane(msg.id, token);
-		if (currentOwner === undefined || !this.samePaneOwner(owner, currentOwner)
-			|| tailer.epoch !== msg.epoch || !tailer.hasPendingInteraction(interaction)
-			|| !this.hasSubscriber(token, mobileId) || this.interactionClaims.has(interactionKey)) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '回答対象の承認要求が変わりました' }, token);
-			return;
-		}
-		const timer = setTimeout(() => {
-			if (this.pendingActions.delete(key)) {
-				this.releaseInteractionClaim(interactionKey, key);
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: 'Codexへ承認結果を送信できませんでした' }, token);
-			}
-		}, 5_000);
-		this.interactionClaims.set(interactionKey, key);
-		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, interaction, interactionKey, timer });
-		try {
-			await this.codexLiveClient.answerApproval(threadId, msg.interactionId, msg.choice);
-			const pending = this.pendingActions.get(key);
-			if (pending === undefined) { return; }
-			clearTimeout(pending.timer);
-			this.pendingActions.delete(key);
-			const completedTimer = setTimeout(() => {
-				const completed = this.completedActions.get(key);
-				this.completedActions.delete(key);
-				this.releaseInteractionClaim(completed?.interactionKey, key);
-			}, 60_000);
-			this.completedActions.set(key, { token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, interaction, interactionKey, timer: completedTimer });
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
-		} catch (error) {
-			const pending = this.pendingActions.get(key);
-			if (pending === undefined) { return; }
-			clearTimeout(pending.timer);
-			this.pendingActions.delete(key);
-			this.releaseInteractionClaim(interactionKey, key);
-			const normalized = error instanceof ParadisCodexControlError
-				? { code: error.code, message: error.message }
-				: { code: 'unavailable', message: 'Codexへ承認結果を送信できませんでした' };
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', ...normalized }, token);
-		}
 	}
 
 	private dispatchInteractionAction(
@@ -4107,35 +3927,27 @@ export class ParadisMobileAgentChat extends Disposable {
 		return this.paneRegistry.ownerOf(token, terminalId);
 	}
 
-	private codexControlSession(mobileId: string, terminalId: number, paneToken?: string): { readonly token: string; readonly threadId: string; readonly owner: IParadisMobilePaneOwner } | undefined {
+	private codexControlSession(mobileId: string, terminalId: number, paneToken?: string): { readonly token: string; readonly owner: IParadisMobilePaneOwner } | undefined {
 		const token = this.resolveInboundToken(terminalId, paneToken);
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
 		const owner = token !== undefined ? this.ownerForPane(terminalId, token) : undefined;
 		if (token === undefined || session?.agent !== 'codex' || session.sessionId === undefined || owner === undefined || !this.hasSubscriber(token, mobileId)) {
 			return undefined;
 		}
-		return { token, threadId: session.sessionId, owner };
+		return { token, owner };
 	}
 
+	/**
+	 * Codex のモデル一覧（古いモバイルアプリが求めてくる）。走っている Codex へ設定を渡す口が無いので、
+	 * 待たせずに「モバイルからは変えられない」と返す（新しいアプリは info.modelControl で画面を開かない）。
+	 */
 	private async handleModelCatalogRequest(mobileId: string, msg: { readonly id: number; readonly token?: string; readonly requestId: string }): Promise<void> {
 		const session = this.codexControlSession(mobileId, msg.id, msg.token);
 		if (session === undefined) {
-			this.sendControlError(mobileId, msg.id, msg.requestId, new ParadisCodexControlError('unavailable', '操作対象のCodexセッションを確認できません'), msg.token);
+			this.sendControlError(mobileId, msg.id, msg.requestId, 'unavailable', '操作対象のCodexセッションを確認できません', msg.token);
 			return;
 		}
-		try {
-			if (!await this.authorizeOwner(session.owner)) {
-				throw new ParadisCodexControlError('unavailable', '操作対象のウィンドウが切り替わりました');
-			}
-			const models = await this.codexLiveClient.listModels(session.threadId);
-			const current = this.codexControlSession(mobileId, msg.id, msg.token);
-			if (current?.token !== session.token || current.threadId !== session.threadId || !this.samePaneOwner(current.owner, session.owner)) {
-				throw new ParadisCodexControlError('unavailable', '操作対象のCodexセッションが切り替わりました');
-			}
-			this.sendTo(mobileId, { t: 'model-catalog', id: msg.id, requestId: msg.requestId, models }, session.token, session.owner);
-		} catch (error) {
-			this.sendControlError(mobileId, msg.id, msg.requestId, error, session.token, session.owner);
-		}
+		this.sendControlError(mobileId, msg.id, msg.requestId, 'unsupported', PARADIS_CODEX_MODEL_CONTROL_UNSUPPORTED_MESSAGE, session.token, session.owner);
 	}
 
 	private async handleCommandCatalogRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'command-catalog' }>): Promise<void> {
@@ -4224,55 +4036,27 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.send(mobileId, encoder.encode(JSON.stringify({ ...response, ...(token !== undefined ? { token } : {}) })));
 	}
 
+	/** Codex のモデルと effort の変更（古いモバイルアプリから）。モデル一覧と同じく、変えられないと返す。 */
 	private async handleSettingsUpdateRequest(mobileId: string, msg: { readonly id: number; readonly token?: string; readonly requestId: string; readonly model: string; readonly effort: string }): Promise<void> {
 		const session = this.codexControlSession(mobileId, msg.id, msg.token);
 		if (session === undefined) {
-			this.sendControlError(mobileId, msg.id, msg.requestId, new ParadisCodexControlError('unavailable', '操作対象のCodexセッションを確認できません'), msg.token);
+			this.sendControlError(mobileId, msg.id, msg.requestId, 'unavailable', '操作対象のCodexセッションを確認できません', msg.token);
 			return;
 		}
 		if (!await this.authorizeOwner(session.owner)) {
 			this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'failed', code: 'stale-session', message: '操作対象のウィンドウが切り替わりました' }, session.token);
 			return;
 		}
-		if (!await this.sendToAuthorized(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'pending' }, session.token, session.owner)) {
-			return;
-		}
-		try {
-			const settings = await this.codexLiveClient.updateThreadSettings(session.threadId, msg.model, msg.effort);
-			const current = this.codexControlSession(mobileId, msg.id, msg.token);
-			if (current?.token !== session.token || current.threadId !== session.threadId || !this.samePaneOwner(current.owner, session.owner) || !await this.authorizeOwner(current.owner)) {
-				this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'failed', code: 'stale-session', message: '操作対象のCodexセッションが切り替わりました' }, current?.token ?? session.token);
-				return;
-			}
-			this.codexThreadSettings.set(session.token, settings);
-			this.pushInfoToSubscribers(session.token);
-			const info = { model: settings.model, ...(settings.effort !== undefined ? { effort: settings.effort } : {}) };
-			this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'confirmed', info }, session.token, session.owner);
-		} catch (error) {
-			const normalized = ParadisMobileAgentChat.controlError(error);
-			const current = this.codexControlSession(mobileId, msg.id, msg.token);
-			this.sendTo(mobileId, {
-				t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'failed',
-				code: current?.token === session.token && current.threadId === session.threadId ? normalized.code : 'stale-session', message: current?.token === session.token && current.threadId === session.threadId ? normalized.message : '操作対象のCodexセッションが切り替わりました',
-			}, session.token, session.owner);
-		}
+		this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'failed', code: 'unsupported', message: PARADIS_CODEX_MODEL_CONTROL_UNSUPPORTED_MESSAGE }, session.token, session.owner);
 	}
 
-	private sendControlError(mobileId: string, terminalId: number, requestId: string, error: unknown, token?: string, owner?: IParadisMobilePaneOwner): void {
-		const normalized = ParadisMobileAgentChat.controlError(error);
-		this.sendTo(mobileId, { t: 'model-control-error', id: terminalId, requestId, code: normalized.code, message: normalized.message }, token, owner);
+	private sendControlError(mobileId: string, terminalId: number, requestId: string, code: string, message: string, token?: string, owner?: IParadisMobilePaneOwner): void {
+		this.sendTo(mobileId, { t: 'model-control-error', id: terminalId, requestId, code, message }, token, owner);
 	}
 
 	private samePaneOwner(a: IParadisMobilePaneOwner, b: IParadisMobilePaneOwner): boolean {
 		return a.windowId === b.windowId && a.windowSession === b.windowSession && a.rendererGeneration === b.rendererGeneration
 			&& a.terminalId === b.terminalId && a.token === b.token;
-	}
-
-	private static controlError(error: unknown): { readonly code: string; readonly message: string } {
-		if (error instanceof ParadisCodexControlError) {
-			return { code: error.code, message: error.message };
-		}
-		return { code: 'unavailable', message: 'Codexのモデル設定を更新できませんでした' };
 	}
 
 	private async handleAttach(mobileId: string, msg: { id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }, retry = false): Promise<void> {
@@ -4595,232 +4379,6 @@ export class ParadisMobileAgentChat extends Disposable {
 			...(progress.detail !== undefined ? { detail: progress.detail } : {}),
 			...(progress.elapsedSeconds !== undefined ? { elapsedSeconds: progress.elapsedSeconds } : {}),
 		});
-	}
-
-	/** pane app-serverへ購読させるのは、hookまたはrolloutメタ情報でthread IDを確定できたCodexセッションだけ。 */
-	private syncCodexDaemonThreads(): void {
-		this.codexLiveClient.setThreads(paradisCodexThreadTargetsForPaneSessions(
-			this.paneSessions,
-			token => this.codexSocketPathResolver?.(token),
-		));
-	}
-
-	/** Codex daemonの通知を対応するペインの置換型ライブ状態へ投影する。 */
-	private onCodexDaemonEvent(event: IParadisCodexDaemonEvent): void {
-		for (const [token, session] of this.paneSessions) {
-			if (session.agent === 'codex' && session.sessionId === event.threadId) {
-				this.applyCodexDaemonEvent(token, event);
-			}
-		}
-	}
-
-	private applyCodexDaemonEvent(token: string, event: IParadisCodexDaemonEvent): void {
-		const now = Date.now();
-		const session = this.paneSessions.get(token);
-		const tailer = session !== undefined ? this.ensureTailer(token, session) : undefined;
-		if (event.approval !== undefined) {
-			if (event.method === 'serverRequest/resolved') {
-				tailer?.clearCodexApprovalRequest(event.approval.id);
-				this.releaseInteractionClaimsFor(token, event.approval.id);
-				this.clearLiveState(token);
-			} else {
-				tailer?.injectCodexApprovalRequest(event.approval);
-				this.setLiveState(token, {
-					phase: 'tool', source: 'codex-daemon', startedAt: now, updatedAt: now,
-					tool: 'approval_request', detail: event.approval.detail || event.approval.title,
-				});
-			}
-			return;
-		}
-		if (event.method === 'thread/status/changed') {
-			const status = rec(event.params.status);
-			const flags = status?.activeFlags;
-			const waiting = Array.isArray(flags) && flags.includes('waitingOnApproval');
-			if (waiting) {
-				tailer?.injectCodexApprovalFallback(event.threadId);
-			} else {
-				tailer?.clearCodexApprovalRequest(`codex-status:${event.threadId}`);
-				this.releaseInteractionClaimsFor(token, `codex-status:${event.threadId}`);
-			}
-		}
-		if (this.activityTracker(token).applyCodex(event.method, event.params, now)) {
-			this.pushActivityToSubscribers(token);
-		}
-		const activityItem = rec(event.params.item);
-		if (str(activityItem?.type) === 'subAgentActivity') {
-			const activityId = str(activityItem?.agentThreadId);
-			if (activityId !== undefined) { this.enrichCodexActivityRelationship(token, activityId, now).catch(() => { /* state DB未反映中は次イベントで再試行 */ }); }
-		}
-		if (event.method === 'thread/settings/updated') {
-			const settings = rec(event.params.threadSettings);
-			const model = str(settings?.model);
-			const effort = str(settings?.effort);
-			if (model !== undefined) {
-				this.codexThreadSettings.set(token, { model, ...(effort !== undefined ? { effort } : {}) });
-				this.pushInfoToSubscribers(token);
-			}
-			return;
-		}
-		if (event.method === 'turn/started') {
-			this.activeTurnTokens.add(token);
-			fireParadisAgentTurnStarted(token, this.tokenToCwd.get(token));
-			if (this.activityTracker(token).beginTurn()) {
-				this.pushActivityToSubscribers(token);
-			}
-			this.codexMessageBuffers.delete(token);
-			this.codexActiveItems.delete(token);
-			this.setLiveState(token, { phase: 'thinking', source: 'codex-daemon', startedAt: now, updatedAt: now });
-			return;
-		}
-		if (event.method === PARADIS_CODEX_DAEMON_DISCONNECTED) {
-			// app-server との接続が切れた。ターンが終わったのか単に経路が落ちたのかは区別
-			// できないので、turn-ended は発火せず（偽の完了通知を避ける）、伸び続ける
-			// 「応答を生成中」だけを「考え中」へ畳む。実際の完了は rollout の task_complete か、
-			// それも来なければ live の staleness sweep が回収する。
-			this.codexMessageBuffers.delete(token);
-			this.codexActiveItems.delete(token);
-			const disconnectedLive = this.liveStates.get(token);
-			if (disconnectedLive?.phase === 'message') {
-				this.setLiveState(token, {
-					phase: 'thinking', source: 'codex-daemon', startedAt: disconnectedLive.startedAt, updatedAt: now,
-				});
-			}
-			// app-server 側の pendingApprovals は切断で捨てられるため、構造化された承認カードを
-			// 残したままにすると押しても daemon 経路に乗らず必ず失敗する。PCで確認するよう促す
-			// フォールバックカードへ差し替える（承認が残っているかの判定は tailer のキュー内側で行う。
-			// 切断時は解決イベントが先にキューへ積まれるため、ここで同期に覗くと既に回答済みの
-			// 承認に対して案内カードを出してしまう）。
-			tailer?.injectCodexApprovalFallback(event.threadId, true);
-			return;
-		}
-		if (event.method === 'turn/completed' || event.method === 'turn/failed' || event.method === 'turn/aborted') {
-			this.activeTurnTokens.delete(token);
-			fireParadisAgentTurnEnded(token);
-			// turn/failed は usage limit 等のエラー中断（turn/completed が来ないため、
-			// ここで解除しないと「考え中」表示が残り続ける）。
-			this.codexMessageBuffers.delete(token);
-			this.codexActiveItems.delete(token);
-			tailer?.clearCodexApprovalRequest();
-			this.releaseInteractionClaimsFor(token);
-			this.clearLiveState(token);
-			if (this.activityTracker(token).endTurn(now)) {
-				this.pushActivityToSubscribers(token);
-			}
-			return;
-		}
-		if (event.method === 'item/started') {
-			const item = rec(event.params.item);
-			const itemId = str(item?.id);
-			const itemType = str(item?.type);
-			const startedAt = num(event.params.startedAtMs) ?? now;
-			if (itemId !== undefined) {
-				this.codexActiveItems.set(token, itemId);
-			}
-			if (itemType === 'agentMessage') {
-				if (itemId !== undefined) {
-					this.codexMessageBuffers.set(token, { itemId, text: '', startedAt });
-				}
-				this.setLiveState(token, { phase: 'message', source: 'codex-daemon', startedAt, updatedAt: now });
-				return;
-			}
-			if (itemType === 'reasoning') {
-				this.setLiveState(token, { phase: 'thinking', source: 'codex-daemon', startedAt, updatedAt: now });
-				return;
-			}
-			const tool = ParadisMobileAgentChat.codexItemToolName(itemType, item);
-			if (tool !== undefined) {
-				const detail = ParadisMobileAgentChat.codexItemDetail(itemType, item);
-				this.setLiveState(token, {
-					phase: 'tool', source: 'codex-daemon', startedAt, updatedAt: now, tool,
-					...(detail !== undefined ? { detail } : {}),
-				});
-			}
-			return;
-		}
-		if (event.method === 'item/agentMessage/delta') {
-			const itemId = str(event.params.itemId);
-			const delta = str(event.params.delta);
-			if (itemId === undefined || delta === undefined) {
-				return;
-			}
-			const previous = this.codexMessageBuffers.get(token);
-			const startedAt = previous?.itemId === itemId ? previous.startedAt : now;
-			const text = truncateCodexLiveText((previous?.itemId === itemId ? previous.text : '') + delta);
-			this.codexMessageBuffers.set(token, { itemId, text, startedAt });
-			this.codexActiveItems.set(token, itemId);
-			this.setLiveState(token, { phase: 'message', source: 'codex-daemon', startedAt, updatedAt: now, text });
-			return;
-		}
-		if (event.method === 'item/reasoning/summaryTextDelta') {
-			const delta = str(event.params.delta);
-			if (delta === undefined) {
-				return;
-			}
-			const previous = this.liveStates.get(token);
-			const detail = truncateCodexLiveText((previous?.phase === 'thinking' ? previous.detail ?? '' : '') + delta);
-			this.setLiveState(token, {
-				phase: 'thinking', source: 'codex-daemon', startedAt: previous?.phase === 'thinking' ? previous.startedAt : now,
-				updatedAt: now, detail,
-			});
-			return;
-		}
-		if (event.method === 'item/commandExecution/outputDelta') {
-			const itemId = str(event.params.itemId);
-			const delta = str(event.params.delta);
-			if (delta === undefined) {
-				return;
-			}
-			const previous = this.liveStates.get(token);
-			const detail = truncateCodexLiveText([previous?.detail, delta.trim()].filter((part): part is string => part !== undefined && part.length > 0).join('\n'));
-			if (itemId !== undefined) {
-				this.codexActiveItems.set(token, itemId);
-			}
-			this.setLiveState(token, {
-				phase: 'tool', source: 'codex-daemon', startedAt: previous?.phase === 'tool' ? previous.startedAt : now,
-				updatedAt: now, tool: previous?.tool ?? 'shell', ...(detail.length > 0 ? { detail } : {}),
-			});
-			return;
-		}
-		if (event.method === 'item/completed') {
-			const item = rec(event.params.item);
-			const itemId = str(item?.id);
-			if (itemId !== undefined && this.codexActiveItems.get(token) !== itemId) {
-				return;
-			}
-			this.codexActiveItems.delete(token);
-			const previous = this.liveStates.get(token);
-			this.setLiveState(token, {
-				phase: 'thinking', source: 'codex-daemon', startedAt: previous?.startedAt ?? now, updatedAt: now,
-			});
-		}
-	}
-
-	private static codexItemToolName(itemType: string | undefined, item: Record<string, unknown> | undefined): string | undefined {
-		switch (itemType) {
-			case 'commandExecution': return 'shell';
-			case 'fileChange': return 'apply_patch';
-			case 'webSearch': return 'web_search';
-			case 'mcpToolCall': {
-				const server = str(item?.server);
-				const tool = str(item?.tool) ?? 'tool';
-				return server !== undefined ? `mcp__${server}__${tool}` : tool;
-			}
-			case 'dynamicToolCall': return str(item?.tool) ?? 'tool';
-			case 'collabAgentToolCall': return str(item?.tool) ?? 'agent';
-			case 'sleep': return 'sleep';
-			case 'imageView': return 'view_image';
-			case 'imageGeneration': return 'image_generation';
-			default: return undefined;
-		}
-	}
-
-	private static codexItemDetail(itemType: string | undefined, item: Record<string, unknown> | undefined): string | undefined {
-		const value = itemType === 'commandExecution' ? str(item?.command)
-			: itemType === 'webSearch' ? str(item?.query)
-				: itemType === 'imageView' ? str(item?.path)
-					: itemType === 'collabAgentToolCall' ? str(item?.prompt)
-						: undefined;
-		return value !== undefined && value.length > 0 ? truncateText(value.replace(/\s+/g, ' '), 500) : undefined;
 	}
 
 	/** 現在attach中の全モバイルへライブ状態だけを空deltaとして送る。 */
@@ -5171,36 +4729,6 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		// cwd がまだ同期されていないときは、プロジェクトのコマンドを探さずホームの分だけにする。
 		return paradisBuildAgentCommandCatalog(session.agent, cwd ?? homedir());
-	}
-
-	/**
-	 * Codex の app-server 経由の承認にデスクトップのチャット表示から答える。モバイルからの回答と
-	 * 同じ interaction の取り合いにならないよう、答えている間は同じ claim を持つ。
-	 */
-	async answerDesktopCodexApproval(token: string, interactionId: string, choiceId: string): Promise<boolean> {
-		const session = this.paneSessions.get(token);
-		const tailer = this.tailers.get(token);
-		const interaction = tailer?.currentInteraction();
-		if (session?.agent !== 'codex' || session.sessionId === undefined || tailer === undefined
-			|| interaction?.kind !== 'approval' || interaction.id !== interactionId
-			|| !this.codexLiveClient.hasPendingApproval(session.sessionId, interactionId)) {
-			return false;
-		}
-		const interactionKey = `${token}\0${tailer.epoch}\0approval\0${interactionId}`;
-		if (this.interactionClaims.has(interactionKey)) {
-			return false;
-		}
-		const claim = `desktop\0${interactionId}`;
-		this.interactionClaims.set(interactionKey, claim);
-		try {
-			await this.codexLiveClient.answerApproval(session.sessionId, interactionId, choiceId);
-			return true;
-		} catch (error) {
-			this.logService.warn('[paradisAgentChat] desktop Codex approval failed', error);
-			return false;
-		} finally {
-			this.releaseInteractionClaim(interactionKey, claim);
-		}
 	}
 
 	// ---- 許可要求と tool_use_id の対応付け ---------------------------------------------------------
@@ -5671,6 +5199,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 関わらず覚えておく（手元のディスクを探しに行かせないための唯一の根拠になる）。
 		if (event.remoteHostId !== undefined) {
 			this.tokenToRemoteHost.set(event.token, { host: event.remoteHostId, at: Date.now() });
+			this.remoteHookAt.set(event.token, event.at);
 		}
 		if (event.transcriptPath === undefined || event.transcriptPath.length === 0) {
 			// agent種別を確定できないため、transcript_path無しのhookだけではcwd探索しない。
@@ -5685,6 +5214,68 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.followRemoteSubagentTranscript(event);
 		}
 		this.enqueueHookEvent(event, transcriptPath, false);
+	}
+
+	/**
+	 * SSH の接続先の Codex の rollout を、ウィンドウが接続先のディスクから見つけた（hook が届かない
+	 * 接続先でも会話を写すための経路。relay の noteRemoteAgentTranscript から来る）。
+	 *
+	 * 写しの対象に加え、そのペインの会話として結び付ける（cwd 探索の discoverAndNotify と同じ置き換え方）。
+	 * `codex` の起動より後に接続先の hook が届いていれば、hook の方が正しいので何もしない
+	 * （同じ作業ディレクトリで 2 つの Codex を動かしていると、こちらは取り違えうる）。
+	 */
+	async onRemoteTranscriptDiscovered(token: string, remotePath: string, remoteHostId: string, commandStartedAt: number): Promise<'accepted' | 'ignored' | 'hooked' | 'stale'> {
+		if (!this.isLiveToken(token)) {
+			return 'stale';
+		}
+		if ((this.remoteHookAt.get(token) ?? Number.NEGATIVE_INFINITY) >= commandStartedAt) {
+			return 'hooked';
+		}
+		if (agentKindForPath(remotePath) !== 'codex') {
+			return 'ignored';
+		}
+		const transcriptPath = this.remoteTranscriptMirror?.localPathForHookPath(remotePath, token, remoteHostId);
+		if (transcriptPath === undefined || !(await isAllowedTranscriptPath(transcriptPath))) {
+			return 'ignored';
+		}
+		if (!this.isLiveToken(token)) {
+			return 'stale';
+		}
+		if ((this.remoteHookAt.get(token) ?? Number.NEGATIVE_INFINITY) >= commandStartedAt) {
+			return 'hooked';
+		}
+		// 接続先で動くペインだと覚える（手元の ~/.codex を cwd で探しに行かせない）
+		this.tokenToRemoteHost.set(token, { host: remoteHostId, at: Date.now() });
+		if (this.transcriptClaimedByOther(transcriptPath, token)) {
+			return 'ignored';
+		}
+		const previous = this.paneSessions.get(token);
+		if (previous?.transcriptPath === transcriptPath) {
+			return 'accepted';
+		}
+		if (previous !== undefined) {
+			this.paneSessions.delete(token);
+			if (this.transcriptClaims.get(previous.transcriptPath) === token) {
+				this.transcriptClaims.delete(previous.transcriptPath);
+			}
+			this.disposeTailer(token);
+			this.clearLiveState(token);
+			this.activityTrackers.delete(token);
+			this.clearClaudeSubagentTranscripts(token);
+			this.activeTurnTokens.delete(token);
+		}
+		// rollout の名前の末尾は thread id（rollout-<時刻>-<uuid>.jsonl）
+		const sessionId = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(remotePath)?.[1];
+		const session: IPaneSessionInfo = { token, agent: 'codex', transcriptPath, sessionId };
+		this.paneSessions.set(token, session);
+		this.retiredSessions.delete(token);
+		this.persistSessions();
+		this.transcriptClaims.set(transcriptPath, token);
+		this.emitConfirmedAgentPanesIfChanged();
+		this.ensureEagerTailer(token, session);
+		this.pushToSubscribers(token);
+		this.logService.info(`[paradisAgentChat] following a Codex conversation on the host without hooks: ${remotePath}`);
+		return 'accepted';
 	}
 
 	/**
@@ -5961,7 +5552,6 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.transcriptClaims.set(discovered.transcriptPath, token);
 		this.cliReconciliationWatermarks.set(token, Math.max(this.cliReconciliationWatermarks.get(token) ?? 0, discovered.mtime + 1));
 		this.emitConfirmedAgentPanesIfChanged();
-		this.syncCodexDaemonThreads();
 		this.ensureEagerTailer(token, session);
 		this.pushToSubscribers(token);
 	}
@@ -6073,7 +5663,6 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.lastTurnEndedAt.delete(previousOwner);
 			this.codexMessageBuffers.delete(previousOwner);
 			this.codexActiveItems.delete(previousOwner);
-			this.codexThreadSettings.delete(previousOwner);
 			this.activityTrackers.delete(previousOwner);
 			this.clearClaudeSubagentTranscripts(previousOwner);
 			this.activeTurnTokens.delete(previousOwner);
@@ -6101,7 +5690,6 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.persistSessions();
 		this.transcriptClaims.set(sessionTranscriptPath, event.token);
 		this.emitConfirmedAgentPanesIfChanged();
-		this.syncCodexDaemonThreads();
 
 		// エージェント起動などでこのペインのセッションが初めて判明した
 		// → 「セッションなし」表示のまま待っている購読者にスナップショットを送る。
@@ -6111,7 +5699,6 @@ export class ParadisMobileAgentChat extends Disposable {
 		} else if (previous.transcriptPath !== info.transcriptPath) {
 			// 同じペインで別セッションが始まった (claude再起動・/clear・resume等でファイルが変わる)
 			// → 稼働中の tailer を張り替え、購読者には新セッションのスナップショットを送り直す。
-			this.codexThreadSettings.delete(event.token);
 			this.activityTrackers.delete(event.token);
 			this.clearClaudeSubagentTranscripts(event.token);
 			this.activeTurnTokens.delete(event.token);
@@ -6230,21 +5817,24 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	/** daemonの次ターン設定を優先し、無ければtranscriptの直近ターン値を返す。 */
+	/** transcript の直近ターンの model / effort を返す。 */
 	private infoOf(token: string, tailer: TranscriptTailer): IParadisAgentSessionInfo | undefined {
-		const settings = this.codexThreadSettings.get(token);
-		const model = settings?.model ?? tailer.model;
-		const effort = settings?.effort ?? tailer.effort;
+		const model = tailer.model;
+		const effort = tailer.effort;
 		// ターミナルが閉じた後にスマホから再開するための指紋（W2-29）。セッション ID そのものは送らない。
 		const sessionId = this.paneSessions.get(token)?.sessionId;
 		const resumeKey = sessionId !== undefined && PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId) ? paradisAgentSessionKey(tailer.agent, sessionId) : undefined;
-		if (model === undefined && effort === undefined && resumeKey === undefined) {
+		// 走っている Codex へ設定を渡す口が無いので、Codex のモデルはモバイルから変えられない。モデルが
+		// まだ分からないうちから伝えて、選択の画面を開かせない
+		const modelControl = tailer.agent === 'codex' ? 'none' : undefined;
+		if (model === undefined && effort === undefined && resumeKey === undefined && modelControl === undefined) {
 			return undefined;
 		}
 		return {
 			...(model !== undefined ? { model } : {}),
 			...(effort !== undefined ? { effort } : {}),
 			...(resumeKey !== undefined ? { resumeKey } : {}),
+			...(modelControl !== undefined ? { modelControl } : {}),
 		};
 	}
 
@@ -6331,13 +5921,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			// （ParadisAgentBrowserService がペイン実行状態 working/question の判定に使う）。
 			onActivity: pushActivity,
 			// model / effort の変化は空deltaで購読者へ届ける（メッセージ本文とは独立に変わるため）。
-			onInfo: () => {
-				const settings = this.codexThreadSettings.get(token);
-				if (settings !== undefined && tailer.model === settings.model && tailer.effort === settings.effort) {
-					this.codexThreadSettings.delete(token);
-				}
-				this.pushInfoToSubscribers(token);
-			},
+			onInfo: () => this.pushInfoToSubscribers(token),
 			// Monitor の一覧は本文と独立に変わる（出力の通知・時間の経過）ので、空 delta で丸ごと届ける。
 			onMonitors: () => {
 				const terminalId = this.terminalIdForToken(token);
@@ -6354,8 +5938,12 @@ export class ParadisMobileAgentChat extends Disposable {
 						this.activeTurnTokens.add(token);
 						fireParadisAgentTurnStarted(token, this.tokenToCwd.get(token));
 					} else if (event.type === 'subagent') {
-						changed = tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: event.id, agentPath: event.agentPath, kind: event.kind } }, event.at) || changed;
+						changed = tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: event.id, agentPath: event.agentPath, kind: event.kind, ...(event.detail !== undefined ? { prompt: event.detail } : {}), ...(event.via !== undefined ? { interaction: event.via } : {}) } }, event.at) || changed;
 						this.enrichCodexActivityRelationship(token, event.id, event.at).catch(err => this.logService.trace('[paradisAgentChat] codex activity relationship lookup failed', String(err)));
+					} else if (event.type === 'goal') {
+						changed = tracker.applyCodexGoal(event, event.at) || changed;
+					} else if (event.type === 'plan') {
+						changed = tracker.applyCodexPlan(event.steps, event.at) || changed;
 					} else {
 						this.activeTurnTokens.delete(token);
 						// 承認が残ったままの中断（承認の拒否）は完了ではない（直後の onTurnEnded がペインを idle へ移す）。
@@ -6364,7 +5952,7 @@ export class ParadisMobileAgentChat extends Disposable {
 						if (!(event.reason === 'interrupted' && tailer.stoppedOnApproval())) {
 							fireParadisAgentTurnEnded(token);
 						}
-						changed = tracker.endTurn(event.at) || changed;
+						changed = tracker.endTurn(event.at, event.reason) || changed;
 					}
 				}
 				if (changed) { this.pushActivityToSubscribers(token); }
@@ -6411,6 +5999,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.scheduleDesktopInsightCheck();
 			tailer.dispose();
 			this.tailers.delete(token);
+			// 読むのをやめた会話の Codex の計画・ゴールを「実行中」のまま残さない
+			if (this.activityTrackers.get(token)?.settleCodexPlanAndGoal(Date.now()) === true) { this.pushActivityToSubscribers(token); }
 			setParadisAgentPaneActivity(token, { backgroundTasks: new Map(), pendingQuestion: false, pendingApproval: false });
 			// tailer 破棄時点で検出済みIssueもリセットする。/clear や resume でこのトークンに
 			// 新しい tailer が張られたとき、新会話が1件もIssueへ触れなければ onIssueUrlsUpdated が

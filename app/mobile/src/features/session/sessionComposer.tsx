@@ -42,6 +42,8 @@ interface SessionComposerProps {
 	model: string | undefined;
 	effort: string | undefined;
 	modelControl: AgentModelControlState | undefined;
+	/** モデルと effort をモバイルから変えられない（PC が `info.modelControl: 'none'` を送ってきた）。 */
+	modelLocked?: boolean;
 	commandCatalog: AgentCommandCatalogState | undefined;
 	/** Claude Code の Monitor の一覧（古い PC では undefined。そのときピルは出ない）。 */
 	monitors: readonly AgentMonitor[] | undefined;
@@ -72,7 +74,7 @@ interface SessionComposerProps {
  *  - 画像は PC へ上げて、保存先のパスを入力欄へ入れる
  */
 export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionComposerProps>(function SessionComposer({
-	draftKey, terminalKey, sessionEpoch, agent, model, effort, modelControl, commandCatalog, monitors,
+	draftKey, terminalKey, sessionEpoch, agent, model, effort, modelControl, modelLocked, commandCatalog, monitors,
 	sendText, updateClaudeSetting, onAfterSubmit, fsUpload, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings,
 	answerTarget, onCancelAnswer, answerRefreshing,
 }, ref) {
@@ -326,6 +328,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 						model={model}
 						effort={effort}
 						modelControl={modelControl}
+						readOnly={modelLocked === true}
 						onClaudeSetting={updateClaudeSetting}
 						onRequestCodexCatalog={() => { if (terminalKey !== undefined) { requestAgentModelCatalog(terminalKey); } }}
 						onUpdateCodexSettings={(nextModel, nextEffort) => { if (terminalKey !== undefined) { updateAgentSettings(terminalKey, nextModel, nextEffort); } }}
