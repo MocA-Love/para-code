@@ -6,7 +6,7 @@ import { ChevronDown, ChevronRight, Search } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import type { BreadcrumbItem } from '../../filesBreadcrumb.js';
 import { matchRanges, type FilesSearchMode } from '../../filesSearch.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
 import { Icon, iconSize, useThemeColors } from '../../ui/index.js';
@@ -57,7 +57,7 @@ export function TreeRowView({ pcId, row, expanded, highlighted, decoration, disa
 				<View style={styles.chevronSpace} />
 				<Text style={styles.errorText} numberOfLines={1}>{row.message ?? 'フォルダを読み込めませんでした'}</Text>
 				<Pressable
-					onPress={() => { hapticSelection(); onRetry(row.path); }}
+					onPress={() => { haptic('commit'); onRetry(row.path); }}
 					hitSlop={hitSlopToMinimum(RETRY_HEIGHT)}
 					style={({ pressed }) => [styles.retry, pressed ? styles.pressed : undefined]}
 					accessibilityRole="button"
@@ -72,7 +72,7 @@ export function TreeRowView({ pcId, row, expanded, highlighted, decoration, disa
 	return (
 		<Pressable
 			onPress={() => {
-				hapticSelection();
+				haptic('move');
 				if (dir) {
 					onToggle(row.path);
 				} else {
@@ -138,7 +138,7 @@ export function FilesSearchBar({ mode, initialQuery = '', onChangeMode, onChange
 					return (
 						<Pressable
 							key={item.key}
-							onPress={() => { if (!on) { hapticSelection(); onChangeMode(item.key); } }}
+							onPress={() => { if (!on) { haptic('tick'); onChangeMode(item.key); } }}
 							hitSlop={hitSlopToMinimum(SEARCH_FIELD_HEIGHT - space.xs * 2)}
 							style={[styles.mode, on ? styles.modeOn : undefined]}
 							accessibilityRole="radio"
@@ -179,7 +179,7 @@ export function FindResultRow({ pcId, path, query, onOpen }: { pcId: string | un
 	const name = at < 0 ? path : path.slice(at + 1);
 	return (
 		<Pressable
-			onPress={() => { hapticSelection(); onOpen(path); }}
+			onPress={() => { haptic('move'); onOpen(path); }}
 			style={({ pressed }) => [styles.row, styles.resultRow, pressed ? styles.pressed : undefined]}
 			accessibilityRole="button"
 			accessibilityLabel={`ファイル ${path}`}
@@ -197,7 +197,7 @@ export function FindResultRow({ pcId, path, query, onOpen }: { pcId: string | un
 export function GrepResultRow({ path, line, text, query, onOpen }: { path: string; line: number; text: string; query: string; onOpen: (path: string, line: number) => void }) {
 	return (
 		<Pressable
-			onPress={() => { hapticSelection(); onOpen(path, line); }}
+			onPress={() => { haptic('move'); onOpen(path, line); }}
 			style={({ pressed }) => [styles.row, styles.resultRow, pressed ? styles.pressed : undefined]}
 			accessibilityRole="button"
 			accessibilityLabel={`${path} の ${line} 行目`}
@@ -221,7 +221,7 @@ export function ViewerCrumbs({ items, onSelect }: { items: readonly BreadcrumbIt
 				<View key={item.target} style={styles.crumbItem}>
 					{index > 0 ? <Text style={styles.crumbSep}>/</Text> : null}
 					<Pressable
-						onPress={() => { hapticSelection(); onSelect(item.target); }}
+						onPress={() => { haptic('move'); onSelect(item.target); }}
 						hitSlop={hitSlopToMinimum(CRUMB_HEIGHT)}
 						style={styles.crumbButton}
 						accessibilityRole="link"

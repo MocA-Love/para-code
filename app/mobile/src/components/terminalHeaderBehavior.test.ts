@@ -27,7 +27,7 @@ vi.mock('react-native', () => ({
 vi.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 vi.mock('../../modules/para-plus-menu/index.js', () => ({ ParaPlusMenuButton: 'ParaPlusMenuButton' }));
 vi.mock('./glassSurface.js', () => ({ GlassSurface: 'GlassSurface' }));
-vi.mock('../haptics.js', () => ({ hapticSelection: vi.fn() }));
+vi.mock('../haptics.js', () => ({ haptic: vi.fn(), prepareHaptic: vi.fn() }));
 // 追加されたトークン（type / alpha など）まで列挙し続けなくて済むよう、本物を土台にして色などだけ差し替える。
 vi.mock('../theme.js', async (importOriginal) => ({
 	...await importOriginal<typeof import('../theme.js')>(),

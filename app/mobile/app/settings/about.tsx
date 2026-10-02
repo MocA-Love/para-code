@@ -4,7 +4,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { FileText } from 'lucide-react-native';
 import { APP_VERSION } from '../../src/components/updateSheet.js';
-import { hapticSelection } from '../../src/haptics.js';
+import { haptic } from '../../src/haptics.js';
 import { routes } from '../../src/routes.js';
 import { colors, space, type } from '../../src/theme.js';
 import { ListGroup, ListRow } from '../../src/ui/index.js';
@@ -25,7 +25,7 @@ export default function AboutScreen() {
 				<Text style={styles.version}>バージョン {APP_VERSION}</Text>
 			</View>
 			<ListGroup>
-				<ListRow icon={FileText} label="更新履歴" trailing="chevron" onPress={() => { hapticSelection(); router.push(routes.settings('changelog')); }} />
+				<ListRow icon={FileText} label="更新履歴" trailing="chevron" onPress={() => { haptic('move'); router.push(routes.settings('changelog')); }} />
 			</ListGroup>
 		</SettingsScreen>
 	);

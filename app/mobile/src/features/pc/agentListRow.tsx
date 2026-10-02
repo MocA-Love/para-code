@@ -6,7 +6,7 @@ import { Bell, Ellipsis, Folder, Pin } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../appState.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { AgentSpinner, Icon, agentKindFromStatus, iconSize } from '../../ui/index.js';
@@ -65,7 +65,7 @@ export const AgentListRow = memo(function AgentListRow({
 			onPress={() => onOpen(terminalKey)}
 			delayLongPress={400}
 			onLongPress={() => {
-				hapticImpact('medium');
+				haptic('lift');
 				onMenu(terminalKey);
 			}}
 			accessibilityRole="button"
@@ -103,7 +103,7 @@ export const AgentListRow = memo(function AgentListRow({
 				style={({ pressed }) => [styles.more, pressed ? styles.morePressed : undefined]}
 				hitSlop={hitSlopToMinimum(MORE_SIZE, MORE_SIZE)}
 				onPress={() => {
-					hapticSelection();
+					haptic('move');
 					onMenu(terminalKey);
 				}}
 				accessibilityRole="button"

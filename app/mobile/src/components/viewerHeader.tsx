@@ -5,7 +5,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { monoFamily } from '../monoFont.js';
 import { HIT_SIZE, alpha, colors, radius, squircle, type } from '../theme.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { tintOf } from '../ui/themeColors.js';
 import { useThemeColors } from '../ui/themeColorsStore.js';
 
@@ -56,7 +56,7 @@ export function ViewerHeader<T extends string>({ icon, title, top, backLabel, on
 	expanded: boolean;
 	onToggleExpanded: () => void;
 }) {
-	const close = () => { hapticImpact('light'); onClose(); };
+	const close = () => { haptic('move'); onClose(); };
 	const theme = useThemeColors();
 	return (
 		<View style={[styles.header, { paddingTop: top }]}>
@@ -77,7 +77,7 @@ export function ViewerHeader<T extends string>({ icon, title, top, backLabel, on
 							<Pressable
 								key={option.value}
 								style={styles.segmentBtn}
-								onPress={() => { if (!active) { hapticSelection(); segment.onChange(option.value); } }}
+								onPress={() => { if (!active) { haptic('tick'); segment.onChange(option.value); } }}
 								accessibilityRole="button"
 								accessibilityState={{ selected: active }}
 								accessibilityLabel={option.label}
@@ -91,7 +91,7 @@ export function ViewerHeader<T extends string>({ icon, title, top, backLabel, on
 				</View>
 			) : null}
 			{(actions ?? []).map(action => (
-				<Pressable key={action.key} style={styles.iconBtn} hitSlop={ICON_SLOP} onPress={() => { hapticImpact('light'); action.onPress(); }} accessibilityRole="button" accessibilityLabel={action.label}>
+				<Pressable key={action.key} style={styles.iconBtn} hitSlop={ICON_SLOP} onPress={() => { action.onPress(); }} accessibilityRole="button" accessibilityLabel={action.label}>
 					<Ionicons name={action.icon} size={19} color={colors.textDim} />
 				</Pressable>
 			))}

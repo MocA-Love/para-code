@@ -8,7 +8,7 @@ import { basename, countLines, parseToolInput, splitMcpTool, type AgentTimelineS
 import { ExpandableText, IOBlock, ioStyles as baseIoStyles } from './agentIoBlock.js';
 import { ToolImageLightbox, ToolImagePreview, isPreviewableToolImage, useToolImage } from './toolImage.js';
 import { formatImageBytes } from '../agentToolImages.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 import { tintOf } from '../ui/themeColors.js';
@@ -190,7 +190,7 @@ export function ToolImageCards({ result, terminalKey, path }: { result: AgentCha
 					image={image}
 					title={imageCardTitle(name, position, images.length)}
 					{...(dir !== undefined && dir.length > 0 ? { dir } : {})}
-					onOpen={() => { hapticSelection(); setOpenIndex(position); }}
+					onOpen={() => { haptic('move'); setOpenIndex(position); }}
 				/>
 			))}
 			{openIndex !== undefined ? (

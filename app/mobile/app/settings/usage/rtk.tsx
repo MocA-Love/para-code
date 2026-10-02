@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
+import { haptic } from '../../../src/haptics.js';
 import { useAppStore } from '../../../src/appState.js';
 import type { RtkSavingsResult } from '../../../src/store.js';
 import { colors, type } from '../../../src/theme.js';
@@ -101,7 +102,7 @@ export default function RtkScreen() {
 			title="RTK の節約"
 			subtitle={subtitle}
 			right={<DetailRefreshButton onPress={() => { void onPullRefresh(); }} disabled={pullRefreshing || loading} />}
-			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
+			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { haptic('edge'); void onPullRefresh(); }} tintColor={colors.textDim} />}
 		>
 			<UsageHostPicker host={host} />
 			{loading && data === undefined ? <DetailLoading /> : null}

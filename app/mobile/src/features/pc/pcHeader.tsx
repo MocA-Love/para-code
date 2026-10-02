@@ -5,7 +5,7 @@ import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Archive, Bell, ChevronLeft, CircleUser, Funnel, Layers, PanelLeftClose, Search, SlidersHorizontal, X } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { PointerHover } from '../../ipad/pointerHover.js';
 import { useWindowControlsInset } from '../../ipad/windowControls.js';
@@ -38,7 +38,7 @@ export function PcHeader({ name, kind, detail, pairingRejected = false, onReconn
 	// iPad のウィンドウアプリで左上に出る操作ボタンの右から始める（上段だけ。下段のツールバーはボタンより下）。
 	const controlsInset = useWindowControlsInset();
 	const goBack = () => {
-		hapticSelection();
+		haptic('move');
 		if (onBack !== undefined) {
 			onBack();
 			return;
@@ -84,7 +84,7 @@ export function PcHeader({ name, kind, detail, pairingRejected = false, onReconn
 						<Pressable
 							style={({ pressed }) => [styles.collapse, pressed ? styles.pressed : undefined]}
 							hitSlop={hitSlopToMinimum(COLLAPSE_SIZE, COLLAPSE_SIZE)}
-							onPress={() => { hapticSelection(); onCollapse(); }}
+							onPress={() => { haptic('move'); onCollapse(); }}
 							accessibilityRole="button"
 							accessibilityLabel="サイドバーを隠す"
 							accessibilityHint={'⌘\\ でも隠せます'}

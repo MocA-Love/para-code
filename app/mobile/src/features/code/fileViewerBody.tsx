@@ -9,7 +9,7 @@ import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORI
 import { guardWebViewNavigation } from '../../components/webViewLinkGuard.js';
 import { isFileViewerJavaScriptEnabled, isSearchableFileViewerJavaScriptEnabled } from '../../components/webViewScriptPolicy.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { Button, EmptyState, useThemeColors } from '../../ui/index.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoverySnapshot, type ParadisOfficeRecoveryEffect } from '../../../../../src/vs/paradis/contrib/fileViewers/common/paradisOfficeRecovery.js';
@@ -391,7 +391,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 						return (
 							<Pressable
 								key={`${index}:${sheetName}`}
-								onPress={() => { if (!on) { hapticSelection(); onSelectSheet(index); } }}
+								onPress={() => { if (!on) { haptic('tick'); onSelectSheet(index); } }}
 								hitSlop={hitSlopToMinimum(SHEET_CHIP_HEIGHT)}
 								style={[styles.sheetChip, on ? styles.sheetChipOn : undefined]}
 								accessibilityRole="button"

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { CircleAlert, RefreshCw, Users } from 'lucide-react-native';
-import { hapticSelection } from '../../../../../src/haptics.js';
+import { haptic } from '../../../../../src/haptics.js';
 import { useStableInsets } from '../../../../../src/hooks/useStableInsets.js';
 import { routes } from '../../../../../src/routes.js';
 import type { AgentActivityAgent } from '../../../../../src/store.js';
@@ -45,7 +45,7 @@ export default function AgentActivityScreen() {
 		if (agent.role !== 'subagent' || route.pcId === undefined || route.spaceId === undefined || route.terminalKey === undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('move');
 		router.push(routes.activityAgent(route.pcId, route.spaceId, route.terminalKey, agent.id, route.epoch));
 	};
 
@@ -83,7 +83,7 @@ export default function AgentActivityScreen() {
 								<ActivityAgentRow key={row.agent.id} agent={row.agent} depth={row.depth} fallbackProvider={provider} now={now} onOpen={openAgent} />
 							)),
 							...(overview.olderCount > 0 ? [
-								<ActivityMoreRow key="more" count={overview.olderCount} expanded={expanded} onToggle={() => { hapticSelection(); setExpanded(value => !value); }} />,
+								<ActivityMoreRow key="more" count={overview.olderCount} expanded={expanded} onToggle={() => { haptic('move'); setExpanded(value => !value); }} />,
 							] : []),
 						]}
 					</ListGroup>

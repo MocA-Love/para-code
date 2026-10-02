@@ -17,7 +17,7 @@ import {
 	type MonitorTone,
 } from '../../agentMonitors.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
 import { BottomDrawer, Icon, iconSize } from '../../ui/index.js';
@@ -55,7 +55,7 @@ export function MonitorPill({ monitors }: { monitors: readonly AgentMonitor[] | 
 			<Pressable
 				style={({ pressed }) => [styles.pill, summary === undefined ? styles.hidden : undefined, pressed ? styles.pressed : undefined]}
 				hitSlop={PILL_SLOP}
-				onPress={() => { hapticSelection(); setOpen(true); }}
+				onPress={() => { haptic('move'); setOpen(true); }}
 				disabled={summary === undefined}
 				accessibilityRole="button"
 				accessibilityLabel={summary?.accessibilityLabel}

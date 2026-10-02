@@ -17,7 +17,7 @@ import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, Text, View } 
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 import { scaleChatSize, type ChatTextScale } from '../chatTextScale.js';
@@ -574,7 +574,7 @@ const [openingKey, setOpeningKey] = useState<string | undefined>();
 		}
 		const key = `${target.path}:${target.line ?? ''}:${target.column ?? ''}`;
 		const generation = ++openGeneration.current;
-		hapticSelection();
+		haptic('move');
 		setOpeningKey(key);
 		void fsResolveLink(ws, target.path).then(resolved => {
 			if (openGeneration.current === generation) {

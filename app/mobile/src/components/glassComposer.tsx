@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface } from './glassSurface.js';
 import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { haptic, prepareHaptic } from '../haptics.js';
 import { glassComposerTextInputBehavior } from './glassComposerBehavior.js';
 
 /**
@@ -43,7 +43,7 @@ export function GlassComposer({ value, defaultValue, inputKey, inputRef, onChang
 				<View style={styles.toolsLeft}>{tools}</View>
 				<Pressable
 					style={({ pressed }) => [styles.sendBtn, sendDisabled && styles.sendBtnDisabled, pressed && styles.sendBtnPressed]}
-					onPress={() => { hapticImpact('medium'); onSubmit(); }}
+					onPress={() => { haptic('commit'); onSubmit(); }}
 					disabled={sendDisabled}
 					accessibilityRole="button"
 					accessibilityState={{ disabled: sendDisabled }}
@@ -81,7 +81,8 @@ const ComposerTextInput = memo(forwardRef<TextInput, {
 		autoCapitalize="none"
 		autoCorrect={false}
 		multiline={multiline}
-		onFocus={hapticSelection}
+		// 入力欄に入ったら送信の触覚を温めておく（フォーカス自体は鳴らさない）
+		onFocus={() => prepareHaptic('commit')}
 		blurOnSubmit={blurOnSubmit}
 	/>;
 }));

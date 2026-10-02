@@ -7,7 +7,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useFilesSearch } from '../filesSearch.js';
 import { useFilesLive } from '../filesLive.js';
 import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 
 /**
  * 検索欄。**本文の上に絶対配置で張り付ける**（`app/(tabs)/files.tsx`）。
@@ -85,7 +85,7 @@ export function FilesSearchField({ onClose }: { onClose: () => void }) {
 					key={candidate}
 					disabled={!live}
 					style={styles.modeHit}
-					onPress={() => { hapticSelection(); setMode(candidate); }}
+					onPress={() => { haptic('tick'); setMode(candidate); }}
 					accessibilityRole="button"
 					accessibilityState={{ selected: mode === candidate, disabled: !live }}
 					accessibilityLabel={candidate === 'name' ? 'ファイル名で検索' : '内容で検索'}
@@ -97,7 +97,7 @@ export function FilesSearchField({ onClose }: { onClose: () => void }) {
 			))}
 			<Pressable
 				style={styles.close}
-				onPress={() => { hapticSelection(); onClose(); }}
+				onPress={() => { haptic('move'); onClose(); }}
 				accessibilityRole="button"
 				accessibilityLabel="検索を閉じる"
 			>

@@ -2,7 +2,6 @@
 
 import type { ReactElement, ReactNode } from 'react';
 import { ScrollView, StyleSheet, Switch, Text, View, type RefreshControlProps, type StyleProp, type ViewStyle } from 'react-native';
-import { hapticSelection } from '../../haptics.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import { colors, space, type } from '../../theme.js';
@@ -76,7 +75,7 @@ export function GroupGap() {
 
 /**
  * 設定の切り替え（モックの `.sw`: オフは一段明るい面、オンは補足の灰、つまみは本文の白）。
- * 切り替えると軽く震わせる。
+ * 触覚はアプリからは鳴らさない（iOS の Switch が自分で鳴らすので、重ねると二重になる）。
  */
 export function SettingsSwitch({ value, onValueChange, disabled = false, accessibilityLabel }: {
 	value: boolean;
@@ -88,7 +87,6 @@ export function SettingsSwitch({ value, onValueChange, disabled = false, accessi
 		<Switch
 			value={value}
 			onValueChange={next => {
-				hapticSelection();
 				onValueChange(next);
 			}}
 			disabled={disabled}

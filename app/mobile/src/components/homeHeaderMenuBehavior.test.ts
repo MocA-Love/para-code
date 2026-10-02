@@ -34,7 +34,7 @@ vi.mock('./bottomSheet.js', () => ({ BottomSheet: 'BottomSheet' }));
 vi.mock('./overlayHost.js', () => ({ OverlayPortal: 'OverlayPortal', PopIn: 'PopIn' }));
 vi.mock('../paraHeader.js', () => ({ PARA_HEADER_PILL_BUTTON: 34, PARA_HEADER_SLOT_HEIGHT: 44 }));
 vi.mock('../hooks/useStableInsets.js', () => ({ useStableInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }) }));
-vi.mock('../haptics.js', () => ({ hapticImpact: vi.fn() }));
+vi.mock('../haptics.js', () => ({ haptic: vi.fn(), prepareHaptic: vi.fn() }));
 vi.mock('zustand/react/shallow', () => ({ useShallow: <T>(selector: T) => selector }));
 vi.mock('../appState.js', () => ({
 	useAppStore: (selector: (state: {

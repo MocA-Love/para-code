@@ -7,7 +7,7 @@ import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { MOBILE_OFFICE_ORIGIN_WHITELIST } from '../../components/officeCapability.js';
 import { guardWebViewNavigation } from '../../components/webViewLinkGuard.js';
 import { isDiffViewerJavaScriptEnabled } from '../../components/webViewScriptPolicy.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { REVIEW_VIEW_LABELS, type ReviewViewMode } from './reviewViewModes.js';
 import { buildImageHtml, fileExt } from './viewerHtml.js';
@@ -29,7 +29,7 @@ export function ReviewViewSwitch({ modes, mode, onChange }: { modes: readonly Re
 					return (
 						<Pressable
 							key={item}
-							onPress={() => { if (!on) { hapticSelection(); onChange(item); } }}
+							onPress={() => { if (!on) { haptic('tick'); onChange(item); } }}
 							hitSlop={hitSlopToMinimum(SWITCH_HEIGHT - space.xs * 2)}
 							style={[styles.segment, on ? styles.segmentOn : undefined]}
 							accessibilityRole="radio"

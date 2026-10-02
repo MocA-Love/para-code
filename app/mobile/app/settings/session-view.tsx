@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useAppStore } from '../../src/appState.js';
 import { chatFontSizeLabel } from '../../src/chatTextScale.js';
-import { hapticSelection } from '../../src/haptics.js';
+import { haptic } from '../../src/haptics.js';
 import { useParaToast } from '../../src/paraToast.js';
 import { ListGroup, ListRow } from '../../src/ui/index.js';
 import type { SessionView } from '../../src/features/settings/onboardingPlan.js';
@@ -34,7 +34,7 @@ export default function SessionViewSettingsScreen() {
 		if (next === view) {
 			return;
 		}
-		hapticSelection();
+		haptic('tick');
 		save(next).catch(() => {
 			useParaToast.getState().show({ key: 'session-view-save', text: '保存できませんでした', icon: 'alert-circle-outline', tone: 'warn' }, 2_500);
 		});
@@ -48,7 +48,7 @@ export default function SessionViewSettingsScreen() {
 					visible={sizeOpen}
 					fontSize={chatFontSize}
 					onSelect={size => {
-						hapticSelection();
+						haptic('tick');
 						setChatFontSize(size);
 					}}
 					onClose={() => setSizeOpen(false)}
@@ -77,7 +77,7 @@ export default function SessionViewSettingsScreen() {
 					label="チャットの文字サイズ"
 					value={chatFontSizeLabel(chatFontSize)}
 					trailing="chevron"
-					onPress={() => { hapticSelection(); setSizeOpen(true); }}
+					onPress={() => { haptic('move'); setSizeOpen(true); }}
 				/>
 			</ListGroup>
 		</SettingsScreen>

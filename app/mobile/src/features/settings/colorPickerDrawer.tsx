@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { colorChoices, colors, radius, space, type } from '../../theme.js';
 import {
@@ -53,7 +53,7 @@ export function ColorPickerDrawer({ visible, slot, onChange, onClose }: {
 	}
 
 	const choose = (next: string | undefined) => {
-		hapticSelection();
+		haptic('tick');
 		setText((next ?? DEFAULT_THEME_COLORS[slot]).toUpperCase());
 		onChange(slot, next);
 	};

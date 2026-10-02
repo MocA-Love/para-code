@@ -7,7 +7,7 @@ import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../../src/appState.js';
 import { hitSlopToMinimum } from '../../../src/components/hitSlop.js';
-import { hapticSelection } from '../../../src/haptics.js';
+import { haptic } from '../../../src/haptics.js';
 import { useAppIsActive } from '../../../src/hooks/useAppIsActive.js';
 import { MobileWarmLeaseLifecycle, type SpaceDiskResult, type SystemResourcesResult } from '../../../src/store.js';
 import {
@@ -229,7 +229,7 @@ export default function SystemScreen() {
 	].filter((part): part is string => part !== undefined).join(' · ') || undefined;
 
 	const toggleSpace = (key: string) => {
-		hapticSelection();
+		haptic('move');
 		setOpenSpaces(prev => {
 			const next = new Set(prev);
 			if (next.has(key)) {
@@ -286,7 +286,7 @@ export default function SystemScreen() {
 							<Pressable
 								style={({ pressed }) => [styles.remeasure, pressed ? styles.remeasurePressed : undefined]}
 								hitSlop={hitSlopToMinimum(REMEASURE_SIZE, REMEASURE_SIZE)}
-								onPress={() => { hapticSelection(); void loadSpaceDisk(true); }}
+								onPress={() => { haptic('commit'); void loadSpaceDisk(true); }}
 								disabled={spaceLoading}
 								accessibilityRole="button"
 								accessibilityLabel="スペースの容量を測り直す"
@@ -384,7 +384,7 @@ export default function SystemScreen() {
 			subtitle={subtitle}
 			// 6秒ごとの自動更新で loading は常に揺れるので、無効にするのは手動の再取得中だけ（点滅させない）。
 			right={<DetailRefreshButton onPress={() => { void onPullRefresh(); }} disabled={pullRefreshing} />}
-			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
+			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { haptic('edge'); void onPullRefresh(); }} tintColor={colors.textDim} />}
 		>
 			{loading && data === undefined ? <DetailLoading /> : null}
 			{error !== undefined ? <DetailMessage tone="error">{error}</DetailMessage> : null}

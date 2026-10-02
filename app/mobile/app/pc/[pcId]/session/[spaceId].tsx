@@ -22,7 +22,7 @@ import { activeTabKey, buildSessionTabs, tabAfterClose, type SessionTabItem } fr
 import { otherSessionView } from '../../../../src/features/session/sessionViewMode.js';
 import { TerminalPane } from '../../../../src/features/session/terminalPane.js';
 import { useSessionView, useSessionViewReady } from '../../../../src/features/session/useSessionView.js';
-import { hapticSelection } from '../../../../src/haptics.js';
+import { haptic } from '../../../../src/haptics.js';
 import { useKeyboardCoverage } from '../../../../src/hooks/useKeyboardVisible.js';
 import { usePcCapability } from '../../../../src/hooks/usePcCapability.js';
 import { useIsRegularWidth } from '../../../../src/hooks/useSizeClass.js';
@@ -232,7 +232,7 @@ export default function SessionScreen() {
 		if (pcId === undefined || spaceId === undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('move');
 		if (dockable) {
 			setDockPanel(current => (current === panel ? undefined : panel));
 			return;
@@ -271,14 +271,14 @@ export default function SessionScreen() {
 		selectTab: index => {
 			const item = items[index];
 			if (item !== undefined) {
-				hapticSelection();
+				haptic('move');
 				openTab(item.tab);
 			}
 		},
 		stepTab: delta => {
 			const next = items[stepIndex(items.findIndex(item => item.key === currentKey), items.length, delta)];
 			if (next !== undefined) {
-				hapticSelection();
+				haptic('move');
 				openTab(next.tab);
 			}
 		},
@@ -299,7 +299,7 @@ export default function SessionScreen() {
 			<Pressable
 				style={styles.metaButton}
 				hitSlop={hitSlopToMinimum(META_HEIGHT)}
-				onPress={() => { hapticSelection(); router.push(routes.pair()); }}
+				onPress={() => { haptic('move'); router.push(routes.pair()); }}
 				accessibilityRole="button"
 				accessibilityLabel={`${PAIRING_REJECTED_LABEL}。押すとペアリングし直す画面を開きます`}
 			>
@@ -313,7 +313,7 @@ export default function SessionScreen() {
 			<Pressable
 				style={styles.metaButton}
 				hitSlop={hitSlopToMinimum(META_HEIGHT)}
-				onPress={() => { hapticSelection(); connectRelay(); }}
+				onPress={() => { connectRelay(); }}
 				accessibilityRole="button"
 				accessibilityLabel="切断中。押すと再接続します"
 			>
@@ -381,7 +381,7 @@ export default function SessionScreen() {
 							icon={PanelLeftOpen}
 							label="サイドバーを出す"
 							round
-							onPress={() => { hapticSelection(); setSidebarCollapsed(false); }}
+							onPress={() => { haptic('move'); setSidebarCollapsed(false); }}
 						/>
 					),
 				} : {})}

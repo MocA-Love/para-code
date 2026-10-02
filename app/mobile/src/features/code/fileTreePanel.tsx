@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { CircleAlert, CloudOff, FolderOpen, Search, SearchX, X } from 'lucide-react-native';
+import { haptic } from '../../haptics.js';
 import type { FilesSearchMode } from '../../filesSearch.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { colors, space, type } from '../../theme.js';
@@ -141,7 +142,7 @@ export function FileTreePanel({ codeSpace, reveal, dock }: { codeSpace: CodeSpac
 							onScroll={event => saveTreeScroll(key, event.nativeEvent.contentOffset.y)}
 							scrollEventThrottle={100}
 							keyboardShouldPersistTaps="handled"
-							refreshControl={<RefreshControl refreshing={tree.refreshing} onRefresh={refresh} tintColor={colors.textDim} />}
+							refreshControl={<RefreshControl refreshing={tree.refreshing} onRefresh={() => { haptic('edge'); refresh(); }} tintColor={colors.textDim} />}
 							onScrollToIndexFailed={info => {
 								listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: true });
 							}}

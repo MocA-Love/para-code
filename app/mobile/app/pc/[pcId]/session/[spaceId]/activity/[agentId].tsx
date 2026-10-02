@@ -11,7 +11,7 @@ import { useAppStore } from '../../../../../../src/appState.js';
 import { hitSlopToMinimum } from '../../../../../../src/components/hitSlop.js';
 import { MarkdownText } from '../../../../../../src/components/markdownText.js';
 import { ChatTextScaleProvider } from '../../../../../../src/ui/chatTextScale.js';
-import { hapticSelection } from '../../../../../../src/haptics.js';
+import { haptic } from '../../../../../../src/haptics.js';
 import { useStableInsets } from '../../../../../../src/hooks/useStableInsets.js';
 import { firstParam, routes } from '../../../../../../src/routes.js';
 import type { AgentActivityAgent, AgentActivityDetailMessage } from '../../../../../../src/store.js';
@@ -85,7 +85,7 @@ export default function AgentActivityDetailScreen() {
 		if (route.pcId === undefined || route.spaceId === undefined || terminalKey === undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('move');
 		router.push(routes.activityAgent(route.pcId, route.spaceId, terminalKey, target.id, route.epoch));
 	};
 

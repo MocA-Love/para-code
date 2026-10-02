@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { ReactNode } from 'react';
+import { haptic } from '../haptics.js';
 import { BottomDrawer } from './bottomDrawer.js';
 import { DrawerCaption } from './drawerHeader.js';
 import { ListGroup, ListRow } from './listRow.js';
@@ -58,6 +59,10 @@ export function PickerDrawer<T extends string = string>({ visible, title, messag
 						selected={option.value === selected}
 						trailing={option.value === selected ? 'check' : 'none'}
 						onPress={() => {
+							// 値が 1 段変わった手応え（閉じる move はこの直後なので重ねない）
+							if (option.value !== selected) {
+								haptic('tick');
+							}
 							onSelect(option.value);
 							onClose();
 						}}

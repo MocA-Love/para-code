@@ -13,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { colors, radius, squircle, type } from '../theme.js';
-import { hapticImpact } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { useWindowControlsInset } from '../ipad/windowControls.js';
 import { ConnectionStatusBanner } from './connectionStatusBanner.js';
@@ -30,7 +30,7 @@ export function PairingRequiredNotice({ onStart }: { onStart: () => void }) {
 			<Ionicons name="qr-code-outline" size={40} color={colors.textDim} />
 			<Text style={styles.title}>ペアリングが必要です</Text>
 			<Text style={styles.dim}>PCとペアリングすると、離れた場所からでも遠隔操作できます。</Text>
-			<Button label="ペアリングを開始" variant="primary" style={styles.btn} onPress={() => { hapticImpact('medium'); onStart(); }} />
+			<Button label="ペアリングを開始" variant="primary" style={styles.btn} onPress={() => { haptic('move'); onStart(); }} />
 		</View>
 	);
 }
@@ -102,7 +102,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 			<Ionicons name="cloud-offline-outline" size={40} color={colors.red} />
 			<Text style={styles.title}>起動に失敗しました</Text>
 			<Text style={styles.dim}>{initError}</Text>
-			<Button label="再試行" variant="primary" style={styles.btn} onPress={() => { hapticImpact('light'); retry(); }} />
+			<Button label="再試行" variant="primary" style={styles.btn} onPress={() => { haptic('commit'); retry(); }} />
 		</View>{canGoBack ? <GateBackButton top={insets.top + 8} left={16 + controlsInset} onBack={() => router.back()} /> : null}</View>;
 	}
 
@@ -147,7 +147,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 					label={rejected ? 'ペアリングし直す' : manualOffline ? '接続する' : '再接続'}
 					variant="primary"
 					style={styles.btn}
-					onPress={() => { hapticImpact('light'); if (rejected) { router.push('/pair'); } else { connectRelay(); } }}
+					onPress={() => { if (rejected) { router.push('/pair'); } else { connectRelay(); } }}
 				/>
 			) : null}
 		</View>{canGoBack ? <GateBackButton top={insets.top + 8} left={16 + controlsInset} onBack={() => router.back()} /> : null}</View>

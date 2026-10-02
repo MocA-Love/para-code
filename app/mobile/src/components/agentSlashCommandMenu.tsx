@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { AgentCommandCatalogState, AgentCommandOption } from '../store.js';
 import { colors, radius, squircle, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { GlassSurface } from './glassSurface.js';
 
 /** スラッシュ候補と取得状態を既存のLiquid Glass面へ表示する。 */
@@ -43,7 +43,7 @@ export function AgentSlashCommandMenu({ catalog, commands, agent, onSelect, onRe
 						<Pressable
 							key={`${command.source}:${command.kind}:${command.name}`}
 							style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-							onPress={() => { hapticSelection(); onSelect(command); }}
+							onPress={() => { haptic('tick'); onSelect(command); }}
 							accessibilityRole="button"
 							accessibilityLabel={`${command.insertText} ${command.description}`}
 						>

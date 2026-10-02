@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { hapticSelection } from '../../src/haptics.js';
+import { haptic } from '../../src/haptics.js';
 import { useParaToast } from '../../src/paraToast.js';
 import { colors, radius } from '../../src/theme.js';
 import {
@@ -39,7 +39,7 @@ export default function ColorSettingsScreen() {
 	const allDefault = THEME_COLOR_SLOTS.every(slot => isDefaultThemeColor(settings, slot));
 
 	const open = (slot: ThemeColorSlot) => {
-		hapticSelection();
+		haptic('move');
 		setEditing(slot);
 		setDrawerOpen(true);
 	};
@@ -85,7 +85,7 @@ export default function ColorSettingsScreen() {
 					label="すべて既定に戻す"
 					disabled={allDefault}
 					onPress={() => {
-						hapticSelection();
+						haptic('commit');
 						resetThemeColors().catch(showSaveFailed);
 					}}
 				/>

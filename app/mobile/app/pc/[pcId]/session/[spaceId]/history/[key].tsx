@@ -13,7 +13,7 @@ import { ChatTextScaleProvider, useChatTextScaleFor } from '../../../../../../sr
 import { useParaToast } from '../../../../../../src/paraToast.js';
 import { CenterSpinner, useReadableColumn } from '../../../../../../src/features/code/codeParts.js';
 import { QueuedSendsBanner } from '../../../../../../src/features/session/queuedSends.js';
-import { hapticSuccess, hapticWarning } from '../../../../../../src/haptics.js';
+import { haptic } from '../../../../../../src/haptics.js';
 import { usePcCapability } from '../../../../../../src/hooks/usePcCapability.js';
 import { useRouteSpace } from '../../../../../../src/hooks/useRouteTargets.js';
 import { useStableInsets } from '../../../../../../src/hooks/useStableInsets.js';
@@ -87,13 +87,14 @@ export default function AgentHistorySessionScreen() {
 			if (!live) {
 				// PC に届かない。預かって、つながった後に「再開して送る」を確かめる（黙って再開しない）。
 				await enqueueAgentSend(pcId, prompt, { kind: 'resume', ws: sourceId, key, ...(preview !== undefined ? { title: preview.session.title } : {}) });
-				hapticSuccess();
+				haptic('warning');
 				setText('');
 				setNotice('PC に届かないため預かりました。つながったら、再開して送るか確かめます（24 時間まで）');
 				return;
 			}
 			const result = await resumeAndSend(pcId, sourceId, key, prompt);
-			hapticSuccess();
+			// 依頼まで渡せたときだけ完了。会話は開けたが渡せなかった・確認待ちなどは注意として返す
+			haptic(result.delivered === true ? 'success' : 'warning');
 			setText('');
 			if (result.terminalKey !== undefined && result.status !== 'needs-trust') {
 				if (result.delivered !== true) {
@@ -106,7 +107,7 @@ export default function AgentHistorySessionScreen() {
 			}
 			setNotice(result.message ?? '会話を再開しました');
 		} catch (reason) {
-			hapticWarning();
+			haptic('error');
 			setNotice(reason instanceof Error ? reason.message : '送れませんでした');
 		} finally {
 			setSending(false);

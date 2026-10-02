@@ -58,7 +58,7 @@ vi.mock('../theme.js', async (importOriginal) => ({
 	...await importOriginal<typeof import('../theme.js')>(),
 	colors: new Proxy({}, { get: () => '#000' }),
 }));
-vi.mock('../haptics.js', () => ({ hapticImpact: () => undefined, hapticSelection: () => undefined }));
+vi.mock('../haptics.js', () => ({ haptic: () => undefined, prepareHaptic: () => undefined, hapticImpact: () => undefined, hapticSelection: () => undefined }));
 vi.mock('./webViewScriptPolicy.js', () => ({ isDiffViewerJavaScriptEnabled: () => false }));
 vi.mock('./webViewLinkGuard.js', () => ({ guardWebViewNavigation: () => false }));
 vi.mock('./diffParser.js', () => ({ parseUnifiedDiff: () => [] }));

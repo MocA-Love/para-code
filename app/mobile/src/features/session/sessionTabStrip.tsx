@@ -5,7 +5,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Globe, Plus, Sparkles, SquareChevronRight } from 'lucide-react-native';
 import { useAppStore } from '../../appState.js';
 import { ProviderLogo } from '../../components/providerLogo.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
 import { AgentStateDot, Icon, agentKindFromStatus } from '../../ui/index.js';
 import type { SessionTabItem } from './sessionTabs.js';
@@ -82,8 +82,8 @@ function SessionTab({ item, active, onPress, onLongPress }: {
 	return (
 		<PointerHover effect="highlight" cornerRadius={radius.button}>
 		<Pressable
-			onPress={() => { hapticSelection(); onPress(); }}
-			onLongPress={() => { hapticSelection(); onLongPress(); }}
+			onPress={() => { haptic('move'); onPress(); }}
+			onLongPress={() => { haptic('lift'); onLongPress(); }}
 			style={({ pressed }) => [styles.tab, active ? styles.tabOn : undefined, pressed ? styles.pressed : undefined]}
 			accessibilityRole="tab"
 			accessibilityState={{ selected: active }}
@@ -117,7 +117,7 @@ function StripButton({ icon, label, onPress }: { icon: typeof Plus; label: strin
 	return (
 		<PointerHover effect="highlight" cornerRadius={radius.button}>
 		<Pressable
-			onPress={() => { hapticSelection(); onPress(); }}
+			onPress={() => { haptic('move'); onPress(); }}
 			hitSlop={TAB_BUTTON_SLOP}
 			style={({ pressed }) => [styles.button, pressed ? styles.pressed : undefined]}
 			accessibilityRole="button"

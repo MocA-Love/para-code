@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { PillHitArea } from './pillHitArea.js';
 import { SelectablePill } from './selectablePill.js';
 import { colors, radius, squircle, type } from '../theme.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import type { RelayHost } from '../relayHosts.js';
 
 /**
@@ -36,7 +36,7 @@ export function HostSegment({ hosts, selectedId, onSelect }: {
 		<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
 			{hosts.map(host => {
 				const active = host.id === selectedId;
-				const select = () => { hapticSelection(); onSelect(host.id); };
+				const select = () => { haptic('tick'); onSelect(host.id); };
 				return (
 					<PillHitArea key={host.id} onPress={select}>
 						<SelectablePill

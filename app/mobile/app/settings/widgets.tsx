@@ -5,7 +5,7 @@ import { StyleSheet, View } from 'react-native';
 import { ArrowDown, ArrowUp } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
-import { hapticSelection } from '../../src/haptics.js';
+import { haptic } from '../../src/haptics.js';
 import { useParaToast } from '../../src/paraToast.js';
 import { space } from '../../src/theme.js';
 import { Card, HeaderButton, ListGroup, ListRow, PickerDrawer, themeColorOf, useThemeColorStore, type PickerOption } from '../../src/ui/index.js';
@@ -69,7 +69,7 @@ export default function WidgetSettingsScreen() {
 		updateWidgetSettings(next).catch(showSaveFailed);
 	};
 	const open = (next: Picker) => {
-		hapticSelection();
+		haptic('move');
 		setPicker(next);
 	};
 

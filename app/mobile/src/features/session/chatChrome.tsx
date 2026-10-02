@@ -5,7 +5,7 @@ import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from 'react-n
 import { ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react-native';
 import { formatToolName } from '../../agentToolMeta.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { useAppIsActive } from '../../hooks/useAppIsActive.js';
 import { useQuickReplyList } from '../settings/quickRepliesStore.js';
 import type { PendingAgentMessage } from '../../pendingAgentMessages.js';
@@ -36,7 +36,7 @@ export function ChatChromeRow({ working, live, allToolsOpen, onToggleTools, pend
 			<View style={styles.left}>
 				{working ? <WorkingIndicator live={live} /> : null}
 				<Pressable
-					onPress={() => { hapticSelection(); onToggleTools(); }}
+					onPress={() => { haptic('tick'); onToggleTools(); }}
 					hitSlop={SMALL_SLOP}
 					style={styles.toggle}
 					accessibilityRole="button"
@@ -48,7 +48,7 @@ export function ChatChromeRow({ working, live, allToolsOpen, onToggleTools, pend
 			</View>
 			{pendingCount > 0 ? (
 				<Pressable
-					onPress={() => { hapticSelection(); onOpenPending(); }}
+					onPress={() => { haptic('move'); onOpenPending(); }}
 					hitSlop={SMALL_SLOP}
 					style={styles.pending}
 					accessibilityRole="button"
@@ -162,7 +162,7 @@ export function QuickReplies({ onPick }: { onPick: (text: string) => void }) {
 			{replies.map(reply => (
 				<Pressable
 					key={reply}
-					onPress={() => { hapticSelection(); onPick(reply); }}
+					onPress={() => { haptic('tick'); onPick(reply); }}
 					hitSlop={REPLY_SLOP}
 					style={({ pressed }) => [styles.reply, pressed ? styles.replyPressed : undefined]}
 					accessibilityRole="button"

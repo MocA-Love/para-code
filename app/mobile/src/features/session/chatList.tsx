@@ -7,7 +7,7 @@ import type { AgentHistoryHeader } from '../../agentHistory.js';
 import { AgentInitialRevealGate } from '../../agentInitialReveal.js';
 import { shouldHandleLatestEntry } from '../../agentNavigation.js';
 import { AgentStickyScroll, agentScrollEndOffset } from '../../agentStickyScroll.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
 import { useChatStyles } from '../../ui/chatTextScale.js';
@@ -187,7 +187,7 @@ export const ChatList = forwardRef<ChatListHandle, {
 			{!sticky ? (
 				<Pressable
 					style={styles.jump}
-					onPress={() => { hapticSelection(); scrollToLatest(); }}
+					onPress={() => { haptic('move'); scrollToLatest(); }}
 					accessibilityRole="button"
 					accessibilityLabel={newCount > 0 ? `最新のメッセージへ移動。新着 ${newCount}件` : '最新のメッセージへ移動'}
 				>
@@ -222,7 +222,7 @@ function HistoryHeader({ header, onLoadOlder }: { header: AgentHistoryHeader; on
 					{header.message !== undefined ? <Text style={scaled.truncated}>{header.message}</Text> : null}
 					<Pressable
 						style={scaled.older}
-						onPress={() => { hapticSelection(); onLoadOlder(); }}
+						onPress={() => { haptic('move'); onLoadOlder(); }}
 						accessibilityRole="button"
 					>
 						<Text style={scaled.olderText}>さらに前の発言を読み込む</Text>

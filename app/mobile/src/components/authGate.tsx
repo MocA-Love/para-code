@@ -12,7 +12,6 @@ import { Ionicons } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { colors, type } from '../theme.js';
 import { Button } from './button.js';
-import { hapticImpact } from '../haptics.js';
 
 /** 離脱後に再認証を免除する猶予時間。 */
 const REAUTH_GRACE_MS = 10 * 60 * 1000;
@@ -110,7 +109,7 @@ export function AuthGate({ children, onUnlock }: { children: React.ReactNode; on
 			<Ionicons name="lock-closed-outline" size={44} color={colors.textDim} />
 			<Text style={styles.title}>Para Code はロックされています</Text>
 			{state === 'locked' ? (
-				<Button label="ロック解除" variant="primary" accessibilityLabel="ロック解除" onPress={() => { hapticImpact('medium'); void authenticate(); }} />
+				<Button label="ロック解除" variant="primary" accessibilityLabel="ロック解除" onPress={() => { void authenticate(); }} />
 			) : (
 				<Text style={styles.dim}>認証中…</Text>
 			)}

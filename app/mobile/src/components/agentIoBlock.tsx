@@ -7,7 +7,7 @@ import type { AgentChatMessage } from '../store.js';
 import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { hitSlopToMinimum } from './hitSlop.js';
 import { monoFamily } from '../monoFont.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { clipForDisplay } from './agentIoClip.js';
 import { scaleChatSize } from '../chatTextScale.js';
 import { useChatStyles, useChatTextScale } from '../ui/chatTextScale.js';
@@ -35,7 +35,7 @@ export function useFullText(message: AgentChatMessage, terminalKey: string | und
 		if (terminalKey === undefined || loading || full !== undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('move');
 		setLoading(true);
 		setError(undefined);
 		requestFull(terminalKey, message.rev)
@@ -86,8 +86,8 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 	// クリップボードのネイティブ部品が無いビルドではコピーのボタンを出さない（nativeClipboard.ts）。
 	const canCopy = isClipboardAvailable();
 	const copy = () => {
-		hapticSelection();
 		void writeClipboardText(body).then(copied => {
+			haptic(copied ? 'success' : 'error');
 			if (copied) {
 				setCopied(true);
 				setTimeout(() => setCopied(false), 1200);
@@ -101,7 +101,7 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 			<View style={styles.ioBar}>
 				<Text style={styles.ioLabel} numberOfLines={1}>{lines === true && lineCount > 0 ? `${label} · ${lineCount}行` : label}</Text>
 				<Pressable
-					onPress={() => { hapticSelection(); setWrap(value => !value); }}
+					onPress={() => { haptic('tick'); setWrap(value => !value); }}
 					accessibilityRole="button"
 					accessibilityLabel={wrap ? '折り返しを解除' : '折り返して表示'}
 					style={styles.ioAction}
