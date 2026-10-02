@@ -21,7 +21,8 @@ import type { RelayWindowHost } from './relayHosts.js';
 import { BACKGROUND_GRACE_CAPABILITY } from './backgroundGraceCapability.js';
 import type { BrowserInput } from './browserKeys.js';
 import { localizeAgentMonitors, parseAgentMonitors, type AgentMonitor } from './agentMonitors.js';
-import { APP_PROTOCOL_VERSION, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
+import { APP_PROTOCOL_VERSION, PcCapability, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
+import { paradisParseMobileBookmarks, paradisParseMobileBrowserFocus, paradisParseMobileBrowserInputRejected, paradisParseMobileBrowserPage, type IParadisMobileBookmarks, type IParadisMobileBrowserFocus, type IParadisMobileBrowserInputRejected, type IParadisMobileBrowserPage } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileBrowserProtocol.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
 export interface WorkspacePrStatus {
@@ -794,6 +795,13 @@ export interface SpaceDiskResult {
 /** browser targets 応答。sharedToken はそのページを共有中のターミナルペインのトークン（PC側 agentBrowser のバインディング由来）。 */
 export interface BrowserTargetsResult {
 	targets: { targetId: string; title: string; url: string; sharedToken?: string }[];
+	/** そのスペースのページだけに絞った一覧か（`browser.space.v1` の PC がスペースを知っていたとき）。 */
+	scoped?: boolean;
+}
+/** ページの一覧を絞るスペース（`windowId` と、スペースの `sourceId`）。 */
+export interface BrowserTargetsScope {
+	readonly windowId: number;
+	readonly ws: string;
 }
 /** browser の直近 screencast フレーム。 */
 export interface BrowserFrame {
@@ -1312,6 +1320,12 @@ export interface StoreState {
 	pushRegistered: boolean | undefined;
 	/** browser ミラーの直近フレーム（未開始は undefined）。 */
 	browserFrame: BrowserFrame | undefined;
+	/** ミラー中のページの状態（`browser.page.v1` の PC だけが送る。張り直すと消す）。 */
+	browserPage: IParadisMobileBrowserPage | undefined;
+	/** ミラー中のページの入力欄のフォーカス（`browser.focus.v1` の PC だけが送る。張り直すと消す）。 */
+	browserFocus: IParadisMobileBrowserFocus | undefined;
+	/** PC が入力を断った知らせ（`inputRejected`）。`n` は届くたびに増える（同じ中身が続いても画面が気づけるように）。 */
+	browserInputRejected: (IParadisMobileBrowserInputRejected & { readonly n: number }) | undefined;
 	/** ターミナルID → エージェントチャット状態（agentチャネル）。 */
 	agentChats: Map<string, AgentChatState>;
 	/** アプリ起動処理（init）が走っている間。コールドスタート直後に誤った「未接続」を
@@ -1343,6 +1357,9 @@ export function createEmptyStoreState(): StoreState {
 		initializing: false,
 		initError: undefined,
 		browserFrame: undefined,
+		browserPage: undefined,
+		browserFocus: undefined,
+		browserInputRejected: undefined,
 		agentChats: new Map(),
 	};
 }
@@ -1954,6 +1971,8 @@ export class MobileController {
 			this.pendingNotificationDismissals.clear();
 			this.notificationDismissalModes.clear();
 			this.state.browserFrame = undefined;
+			this.state.browserPage = undefined;
+			this.state.browserFocus = undefined;
 			this.state.agentChats = new Map();
 			this.emit({ term: true, notifications: true, agentChats: true });
 		} catch (error) {
@@ -3919,9 +3938,27 @@ export class MobileController {
 
 	// --- browser（para-browser ミラー、設計書 M3） ------------------------------
 
-	/** ミラー可能なブラウザページ一覧。 */
-	browserTargets(): Promise<BrowserTargetsResult> {
-		return this.request<BrowserTargetsResult>('browser', { t: 'targets' });
+	/**
+	 * ミラー可能なブラウザページ一覧。`scope` を渡すと、PC が `browser.space.v1` を持っていればそのスペースの
+	 * ページだけを返してもらう（応答の `scoped`）。持たない PC には付けない（全スペースのページが返る）。
+	 */
+	browserTargets(scope?: BrowserTargetsScope): Promise<BrowserTargetsResult> {
+		const scoped = scope !== undefined && this.hasPcCapability(PcCapability.BrowserSpace);
+		return this.request<BrowserTargetsResult>('browser', { t: 'targets', ...(scoped ? { windowId: scope.windowId, ws: scope.ws } : {}) })
+			.then(result => ({ targets: Array.isArray(result.targets) ? result.targets : [], ...(scoped && result.scoped === true ? { scoped: true } : {}) }));
+	}
+
+	/**
+	 * PC の内蔵ブラウザのブックマーク（`browser.bookmarks.v1`）。PC はこの要求を、10 分間の変更の購読として
+	 * 覚え、変わったら fs で `{ t: 'bookmarksChanged' }` を送ってくる（`onPcMessage('fs', …)` で受ける）。
+	 */
+	async browserBookmarks(): Promise<IParadisMobileBookmarks> {
+		const response = await this.requestPc<Record<string, unknown>>('fs', { t: 'bookmarks' });
+		const bookmarks = paradisParseMobileBookmarks(response);
+		if (bookmarks === undefined) {
+			throw new Error('invalid bookmarks response');
+		}
+		return bookmarks;
 	}
 
 	/**
@@ -3940,9 +3977,12 @@ export class MobileController {
 	}
 
 	/** screencast を開始する（フレームは state.browserFrame に流れ込む）。 */
-	browserStart(targetId: string): Promise<void> {
+	browserStart(targetId: string, scope?: BrowserTargetsScope): Promise<void> {
 		this.browserStopping = false;
-		return this.request<void>('browser', { t: 'start', targetId, frameEncoding: BROWSER_JPEG_BINARY_ENCODING });
+		this.clearBrowserPageState();
+		// browser.space.v1 の PC は、スペースを付けると「そのスペースのページでなければ断る」。
+		const scoped = scope !== undefined && this.hasPcCapability(PcCapability.BrowserSpace);
+		return this.request<void>('browser', { t: 'start', targetId, frameEncoding: BROWSER_JPEG_BINARY_ENCODING, ...(scoped ? { windowId: scope.windowId, ws: scope.ws } : {}) });
 	}
 
 	/**
@@ -3958,9 +3998,19 @@ export class MobileController {
 			this.state.browserFrame = undefined;
 			this.emit();
 		}
+		this.clearBrowserPageState();
 		try {
 			await this.request<void>('browser', { t: 'stop' });
 		} catch { /* 接続断などは無視 */ }
+	}
+
+	/** ページの状態とフォーカスを消す（ミラーを張り直す・止めるとき。PC の通知の番号もやり直しになる）。 */
+	private clearBrowserPageState(): void {
+		if (this.state.browserPage !== undefined || this.state.browserFocus !== undefined) {
+			this.state.browserPage = undefined;
+			this.state.browserFocus = undefined;
+			this.emit();
+		}
 	}
 
 	/** 入力イベントを送る（正規化座標）。 */
@@ -4089,7 +4139,28 @@ export class MobileController {
 			}
 			try {
 				const msg = JSON.parse(decoder.decode(frame.payload)) as { t?: string; id?: string; data?: string; w?: number; h?: number; candidate?: object; sid?: string };
-				if (msg.t === 'frame' && typeof msg.data === 'string') {
+				if (msg.t === 'page' && msg.id === undefined) {
+					// ページの状態（browser.page.v1）。止めている間（stop の後）に届いた分は捨てる。
+					const page = this.browserStopping ? undefined : paradisParseMobileBrowserPage(msg);
+					if (page !== undefined) {
+						this.state.browserPage = page;
+						this.emit();
+					}
+				} else if (msg.t === 'focus' && msg.id === undefined) {
+					// 入力欄のフォーカス（browser.focus.v1）。同じページの古い通知は番号で捨てる。
+					const focus = this.browserStopping ? undefined : paradisParseMobileBrowserFocus(msg);
+					const previous = this.state.browserFocus;
+					if (focus !== undefined && !(previous !== undefined && previous.targetId === focus.targetId && previous.seq >= focus.seq)) {
+						this.state.browserFocus = focus;
+						this.emit();
+					}
+				} else if (msg.t === 'inputRejected' && msg.id === undefined) {
+					const rejected = this.browserStopping ? undefined : paradisParseMobileBrowserInputRejected(msg);
+					if (rejected !== undefined) {
+						this.state.browserInputRejected = { ...rejected, n: (this.state.browserInputRejected?.n ?? 0) + 1 };
+						this.emit();
+					}
+				} else if (msg.t === 'frame' && typeof msg.data === 'string') {
 					this.state.browserFrame = { data: msg.data, w: msg.w ?? 0, h: msg.h ?? 0 };
 					this.emit();
 				} else if (msg.t === 'webrtc-ice' && msg.candidate) {
@@ -4137,6 +4208,8 @@ export class MobileController {
 					this.state.agentChats.clear();
 					this.pendingAgentLiveResyncs.clear();
 					this.state.browserFrame = undefined;
+					this.state.browserPage = undefined;
+					this.state.browserFocus = undefined;
 					this.state.notifications = [];
 					this.cancelPendingAgentActions();
 					this.cancelPendingRequests();
@@ -4806,6 +4879,9 @@ export class MobileController {
 			terminalOperationIssue: this.state.terminalOperationIssue,
 			unknownTerminalOperationCount: this.state.unknownTerminalOperationCount,
 			browserFrame: this.state.browserFrame,
+			browserPage: this.state.browserPage,
+			browserFocus: this.state.browserFocus,
+			browserInputRejected: this.state.browserInputRejected,
 			initializing: this.state.initializing,
 			initError: this.state.initError,
 			terminalOutput: (!prev || changed?.term) ? new Map(this.state.terminalOutput) : prev.terminalOutput,

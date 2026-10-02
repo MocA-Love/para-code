@@ -225,7 +225,7 @@ describe('WebRTC mirror display coordinator', () => {
 		const next = deferred<WebrtcMirrorSession>();
 		let firstStops = 0;
 		const starts = [
-			Promise.resolve({ streamUrl: 'stream://one', stop() { firstStops++; }, onClosed() { } }),
+			Promise.resolve({ streamUrl: 'stream://one', stop() { firstStops++; }, onClosed() { }, route: async () => undefined }),
 			next.promise,
 		];
 		const displayed: Array<string | undefined> = [];
@@ -257,7 +257,7 @@ describe('WebRTC mirror display coordinator', () => {
 		await flushPromises();
 
 		let onClosed: (() => void) | undefined;
-		starts.push(Promise.resolve({ streamUrl: 'stream://two', stop() { }, onClosed(cb) { onClosed = cb; } }));
+		starts.push(Promise.resolve({ streamUrl: 'stream://two', stop() { }, onClosed(cb) { onClosed = cb; }, route: async () => undefined }));
 		coordinator.start('target-two');
 		await flushPromises();
 		onClosed?.();
@@ -312,9 +312,9 @@ describe('WebRTC mirror display coordinator', () => {
 
 		coordinator.start('target-one');
 		coordinator.start('target-two');
-		second.resolve({ streamUrl: 'stream://sid-two', stop() { secondStops++; }, onClosed() { } });
+		second.resolve({ streamUrl: 'stream://sid-two', stop() { secondStops++; }, onClosed() { }, route: async () => undefined });
 		await flushPromises();
-		first.resolve({ streamUrl: 'stream://sid-one', stop() { firstStops++; }, onClosed() { } });
+		first.resolve({ streamUrl: 'stream://sid-one', stop() { firstStops++; }, onClosed() { }, route: async () => undefined });
 		await flushPromises();
 
 		expect({ displayed, firstStops, secondStops }).toEqual({
@@ -411,7 +411,7 @@ describe('WebRTC mirror display coordinator', () => {
 
 		coordinator.start('target-one');
 		coordinator.dispose();
-		late.resolve({ streamUrl: 'stream://late', stop() { lateStops++; }, onClosed() { } });
+		late.resolve({ streamUrl: 'stream://late', stop() { lateStops++; }, onClosed() { }, route: async () => undefined });
 		await flushPromises();
 		coordinator.start('target-two');
 		await flushPromises();

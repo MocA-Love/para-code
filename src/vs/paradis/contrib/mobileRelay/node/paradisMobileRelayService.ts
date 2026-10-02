@@ -38,6 +38,8 @@ import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { paradisMobileDismissTags, paradisMobilePushIds } from './paradisMobilePushIds.js';
 import { IParadisRelayPairedMobile, IParadisRelayPersistedState, ParadisRelayStoreProblem, paradisMoveRelayStateAside, paradisPruneRelayStateLeftovers, paradisReadRelayState, paradisWriteRelayState } from './paradisMobileRelayStateFile.js';
 import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
+import { IParadisMobileBrowserScopeSnapshot, paradisMobileBrowserViewsInSpace, paradisSanitizeMobileBrowserScopeSnapshot } from '../common/paradisMobileBrowserScope.js';
+import { BrowserSearchEngineSettingId } from '../../../../workbench/contrib/browserView/common/browserSearch.js';
 import { ParadisMobileTerminalRegistry } from './paradisMobileTerminalRegistry.js';
 import {
 	Channels,
@@ -61,7 +63,7 @@ import {
 	unpackPcData,
 } from '../common/paradisMobileProtocol.js';
 import { PARADIS_MOBILE_BUILTIN_REQUEST_KINDS } from '../common/paradisMobileRequestKinds.js';
-import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, paradisEvaluateMobileCompat, paradisIsAcceptedMobileWireVersion, paradisParseMobileCapabilities } from '../common/paradisMobileCompat.js';
+import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, paradisEvaluateMobileCompat, paradisHasMobileCapability, paradisIsAcceptedMobileWireVersion, paradisParseMobileCapabilities } from '../common/paradisMobileCompat.js';
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyPcFocusQuiet, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
 import { decodeNotifyVisibility, encodeNotifyVisibilityAck } from '../common/paradisMobileVisibility.js';
 import { ParadisNotifyDismissLedger, paradisNotifyDismissOpened, paradisWithNotifyDismiss } from '../common/paradisNotifyDismissLedger.js';
@@ -727,7 +729,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		private readonly sharedPageBindings: IParadisSharedPageBindings | undefined,
 		private readonly windowLeaseClient: ParadisMobileWindowLeaseClient,
 		private readonly logService: ILogService,
-		_configurationService?: IConfigurationService,
+		configurationService?: IConfigurationService,
 		_args?: NativeParsedArgs,
 		// 生成済みAivis音声（MP3）。同一 shared process の通知サービスが発火する。
 		voiceClips?: Event<VSBuffer>,
@@ -765,7 +767,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		const cdpUpstream = new ParadisCdpUpstream(this.userDataPath, this.logService, {
 			resolveMainPort: async () => await cdpFrames?.resolveUpstreamPort() ?? undefined,
 		});
-		this.browserMirror = this._register(new ParadisMobileBrowserMirror(cdpUpstream, cdpFrames, sharedPageBindings, this.logService));
+		this.browserMirror = this._register(new ParadisMobileBrowserMirror(cdpUpstream, cdpFrames, sharedPageBindings, this.logService, {
+			// browser.page.v1 の `open`: PC のアドレスバーと同じ検索エンジンの設定を読む（未設定なら Google）。
+			resolveSearchEngine: () => configurationService?.getValue<unknown>(BrowserSearchEngineSettingId),
+			// browser.space.v1: Renderer が送った台帳から、そのスペースのページの targetId を引く。
+			resolveSpaceTargetIds: (windowId, ws) => this.resolveBrowserSpaceTargetIds(windowId, ws),
+			// browser.focus.v1: 欄の中身を含む `focus` は、受けると広告したアプリにだけ送る。
+			mobileHasCapability: async (mobileId, name) => paradisHasMobileCapability(await this.getMobileCapabilities(mobileId), name),
+		}));
 		// SSH 接続先の transcript は shared process からは開けない。接続中のウィンドウに写して
 		// もらい、tailer にはその写しを読ませる。
 		this.remoteTranscriptMirror = this._register(new ParadisRemoteTranscriptMirrorStore(this.userDataPath, this.logService));
@@ -2272,8 +2281,44 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		});
 	}
 
+	/** windowId → そのウィンドウの「ブラウザビュー → スペース」の台帳（browser.space.v1）。 */
+	private readonly browserScopes = new Map<number, { readonly windowSession: string; readonly rendererGeneration: number; readonly snapshot: IParadisMobileBrowserScopeSnapshot }>();
+
+	async syncBrowserScopes(lease: IParadisMobileWindowLease, snapshot: IParadisMobileBrowserScopeSnapshot): Promise<boolean> {
+		const sanitized = paradisSanitizeMobileBrowserScopeSnapshot(snapshot);
+		if (sanitized === undefined) {
+			return false;
+		}
+		return await this.withCurrentRegisteredLease(lease, async () => {
+			this.browserScopes.set(lease.windowId, { windowSession: lease.windowSession, rendererGeneration: lease.rendererGeneration, snapshot: sanitized });
+			return true;
+		}) ?? false;
+	}
+
+	/**
+	 * そのウィンドウの、そのスペース（`sourceId` = stateKey）のページの targetId。台帳が無い・古いなら
+	 * `undefined`（呼び出し側は全件を返す）。
+	 */
+	private async resolveBrowserSpaceTargetIds(windowId: number, ws: string): Promise<ReadonlySet<string> | undefined> {
+		const entry = this.browserScopes.get(windowId);
+		const cdpFrames = this.cdpFrames;
+		if (entry === undefined || cdpFrames === undefined) {
+			return undefined;
+		}
+		const current = this.terminalRegistry.leaseOfWindow(windowId);
+		if (current === undefined || current.windowSession !== entry.windowSession || current.rendererGeneration !== entry.rendererGeneration) {
+			return undefined;
+		}
+		const targetIds = await Promise.all(paradisMobileBrowserViewsInSpace(entry.snapshot, ws).map(viewId => cdpFrames.resolveTargetId(viewId).catch(() => null)));
+		return new Set(targetIds.filter((targetId): targetId is string => typeof targetId === 'string'));
+	}
+
 	async removeTerminalWindow(lease: IParadisMobileWindowLease): Promise<void> {
 		await this.enqueueRendererAuthority(async () => {
+			const scopes = this.browserScopes.get(lease.windowId);
+			if (scopes !== undefined && scopes.windowSession === lease.windowSession && scopes.rendererGeneration === lease.rendererGeneration) {
+				this.browserScopes.delete(lease.windowId);
+			}
 			const removed = this.terminalRegistry.removeWindow(lease.windowId, lease.windowSession, lease.rendererGeneration);
 			// terminal stateの初回同期よりpane同期が先に届いた場合も、同じsessionだけは掃除する。
 			this.agentChat.removePanes(lease.windowId, lease.windowSession, lease.rendererGeneration);

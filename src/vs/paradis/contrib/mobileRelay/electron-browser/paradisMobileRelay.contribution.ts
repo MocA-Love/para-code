@@ -42,6 +42,7 @@ import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspa
 import { IParadisConfirmedAgentPanes, IParadisGitResult, IParadisMobileRelayService, IParadisMobileStatus, PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_ENABLED_KEY, PARADIS_MOBILE_PC_NAME_KEY, PARADIS_MOBILE_RELAY_CHANNEL, PARADIS_MOBILE_RELAY_URL_KEY, paradisMobileWindowRoute } from '../common/paradisMobileRelay.js';
 import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider.js';
 import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
+import { ParadisMobileBrowserScopeSync } from './paradisMobileBrowserScopeSync.js';
 import { ParadisAgentTerminalHintParser, paradisShouldAcceptAgentTerminalHint } from '../common/paradisAgentTerminalHints.js';
 import { Channels } from '../common/paradisMobileProtocol.js';
 import { paradisInteractiveAgentCommand, paradisResolveRunningAgentCommand } from '../common/paradisAgentCliCommand.js';
@@ -497,6 +498,27 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		this._register(workspaceSwitchService.onDidSwitchScope(reconcileTerminalTracking));
 		this._register(agentStatusStore.onDidChangeAgentStatuses(() => this.updateTerminalHintTracking()));
 		reconcileTerminalTracking();
+
+		// モバイルのブラウザのページ一覧をスペースで絞るための台帳（browser.space.v1）。shared process は
+		// このウィンドウの lease を terminal state の初回同期で知るので、それを待ってから送る。
+		// モバイル機能を無効にしている間は作らない（全ウィンドウで台帳を作って送り続けないため）。
+		const browserScopeSync = this._register(new MutableDisposable<ParadisMobileBrowserScopeSync>());
+		const updateBrowserScopeSync = () => {
+			if (!this.isEnabled()) {
+				browserScopeSync.clear();
+			} else if (browserScopeSync.value === undefined) {
+				browserScopeSync.value = instantiationService.createInstance(
+					ParadisMobileBrowserScopeSync,
+					snapshot => terminalStateReady.then(() => withWindowLease(lease => this.service.syncBrowserScopes(lease, snapshot))),
+				);
+			}
+		};
+		updateBrowserScopeSync();
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(PARADIS_MOBILE_ENABLED_KEY)) {
+				updateBrowserScopeSync();
+			}
+		}));
 
 		// WebRTCミラーのストリーマ（browser チャネルの webrtc-* シグナリングを処理）。
 		const webrtcStreamer = this._register(new ParadisMobileWebrtcStreamer(

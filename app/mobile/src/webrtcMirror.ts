@@ -9,6 +9,7 @@
 // 吸収し、その場合は isWebrtcAvailable() が false（呼び出し側はJPEGミラーのまま）。
 
 import { useAppStore } from './appState.js';
+import { routeFromStats, type MirrorRoute, type RtcStatsReportLike } from './browserRoute.js';
 
 interface WebrtcModule {
 	RTCPeerConnection: new (config: object) => RtcPeerConnectionLike;
@@ -28,6 +29,8 @@ export interface RtcPeerConnectionLike {
 	onicecandidate?: ((event: { candidate?: { toJSON(): object } | null }) => void) | null;
 	ontrack?: ((event: { streams: { toURL(): string }[] }) => void) | null;
 	onconnectionstatechange?: (() => void) | null;
+	/** 接続の統計（経路の印に使う）。無い実装では経路を出さない。 */
+	getStats?(): Promise<RtcStatsReportLike>;
 }
 
 let webrtcModule: WebrtcModule | undefined | null = null; // null=未試行
@@ -59,6 +62,8 @@ export interface WebrtcMirrorSession {
 	stop(): void;
 	/** 切断検知（failed/closed）で1回呼ばれる。 */
 	onClosed: (cb: () => void) => void;
+	/** 選ばれた候補の組から決めた経路（`browserRoute.ts`）。分からなければ `undefined`。 */
+	route(): Promise<Exclude<MirrorRoute, 'relay'> | undefined>;
 }
 
 const STUN_SERVERS = [{ urls: 'stun:stun.cloudflare.com:3478' }];
@@ -262,6 +267,16 @@ export async function startWebrtcMirrorWithDependencies(targetId: string, depend
 		return {
 			streamUrl: streamOutcome.stream.toURL(),
 			stop: () => cleanup(true),
+			route: async () => {
+				if (closed || peer.getStats === undefined) {
+					return undefined;
+				}
+				try {
+					return routeFromStats(await peer.getStats());
+				} catch {
+					return undefined;
+				}
+			},
 			onClosed: cb => {
 				closedCb = cb;
 				if (closed) {

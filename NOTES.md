@@ -279,6 +279,8 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/mobile/package.json` / `app/pnpm-lock.yaml` | `expo-network@~57.0.2` を依存に追加（W2-05） | 回線の変化で即座に繋ぎ直すため。JS からは `requireOptionalNativeModule('ExpoNetwork')` で引くので、ネイティブ部品が入る前のバイナリでも落ちない。反映には `app/mobile/ios` で `pod install` と再ビルドが要る（prebuild は使わない） |
 | `app/patches/react-native@0.86.0.patch` | 新規追加（fork所有。パッチ形式なのでマーカーを書けない。当てた先の3ファイルには `Para Code:` のコメントが入る） | TextInput の変更イベントに `isComposing` を足す（Orca の `react-native@0.83.10.patch` の該当部分を 0.86.0 に合わせた）。RN はソースからビルドしている（`ios.buildReactNativeFromSource`）ので、ネイティブの再ビルドで効く |
 | `app/protocol/test/golden/state.json` / `state-request.json` / `term.json` / `agent.json` | 新規追加（fork所有。JSON なのでマーカーの代わりに各ファイル先頭の `$comment` に用途を書いた）（W2-17） | PC ⇔ モバイルの公開ワイヤの固定形。PC（`paradisMobileWireGolden.test.ts`）とアプリ（`app/mobile/src/wireGolden.test.ts`）の両方が読み、形が黙って変わったら落とす。形を変えるときは同じ変更でここも直す |
+| `app/protocol/test/golden/browser.json` | 新規追加（fork所有。先頭の `$comment` に用途）。`state.json` の `capabilities` に `browser.space.v1` / `browser.page.v1` / `browser.focus.v1` / `browser.bookmarks.v1` を追加 | モバイルのブラウザのタブ（案A）の固定形 |
+| `app/mobile/app.json` | `expo.version` を `0.12.0` に | モバイルのブラウザのタブ（案A）の配信 |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 
@@ -1263,6 +1265,58 @@ Claude Code の Monitor（出力を 1 行ずつ会話へ通知するバックグ
 - **時計**: 送る時刻は PC の時計に直す。SSH の写しは transcript の時刻が接続先の時計なので、ライブ追記の行の時刻と読んだ時刻の差の最小値を「ずれ」として推定の判定と送る時刻に使う。一緒に送信時刻 `monitorsAt` を載せ、アプリは受け取った時刻との差を全時刻へ足して手元の時計へ直す（「終了から 1 分」をスマホの時計で判定するため）。起動行が読めなかったものは `startUnknown` を付け、アプリは経過時間に「以上」を付ける
 - **アプリ**: `app/mobile/src/agentMonitors.ts`（純関数）と `features/session/monitorDrawer.tsx`。ピルは実行中か終了から 1 分以内のものがあるときだけ出し、出さないときも木に残して `display: 'none'` にする。停止の操作は置かない（見るだけ）。幅が足りないときはモデルピルが縮む
 - **既知の制約**: TUI から止めた常駐の Monitor、SessionEnd を出さずに落ちたプロセス、hook が届かない構成（WSL）では、transcript に終わりの印が残らないので「実行中」のまま残る。時計のずれは最小値を保持し続けるので、SSH の接続先の時計が途中で戻されると推定の時間切れが早まる。最初のライブの行を読むまでずれは 0 として扱う
+
+### モバイルのブラウザのタブを案A に作り直した（`browser.space.v1` ほか、2026-10-02）
+
+見た目と動きの正解は `mobile-browser-ux-mock.html` の案A（リポジトリ外のモック）。上の段に戻る・進む・再読み込み（読み込み中は停止）・アドレス・ページ数・全画面を置き、その下に PC と同じブックマークバー、残りを映像にした。上へ・下へのボタン・下のツールバー・ページのチップの列・映像の外周の余白は無くした（上の節の「ツールバーの右端のキーボードのボタン」は、映像の右下の丸いボタンに移った）。
+
+| capability | 中身 | 置き場所 |
+|---|---|---|
+| `browser.space.v1` | browser の `targets` の `windowId` と `ws`（スペースの `sourceId`）で、そのスペースのページだけを返す（応答に `scoped: true`）。fs の `openUrl` の `ws` で、そのスペースに開く | Renderer `electron-browser/paradisMobileBrowserScopeSync.ts` → `IParadisMobileRelayService.syncBrowserScopes` → shared process の `resolveBrowserSpaceTargetIds`。判定は `common/paradisMobileBrowserScope.ts` |
+| `browser.page.v1` | 通知 `page`（url・title・loading・progress・canGoBack・canGoForward）。入力 `stop` と `open`（アドレス欄の生の文字） | `node/paradisMobileBrowserMirror.ts`。純関数は `common/paradisMobileBrowserPageState.ts`・`common/paradisMobileBrowserAddress.ts` |
+| `browser.focus.v1` | 通知 `focus`（欄の番号 `fieldId`・種類・`type`・中身・`fromTap`・`seq`）。入力 `replace`（`fieldId` の欄の中身を全部置き換える）と、断った知らせ `inputRejected`。**アプリもこの capability を広告し、PC は広告したアプリにだけ `focus` を送る**（欄の中身を含むため） | 同上（注入スクリプト `PARADIS_MOBILE_FOCUS_SCRIPT`） |
+| `browser.bookmarks.v1` | fs の要求 `bookmarks` と、変わったときの通知 `bookmarksChanged`（fs、`id` なし） | `electron-browser/paradisMobileBookmarkRequests.ts`。変換は `common/paradisMobileBookmarks.ts` |
+
+形と読み方はアプリと PC で 1 つのファイル（`common/paradisMobileBrowserProtocol.ts`。import を持たないのでアプリが相対パスで読む）に置き、固定形は `app/protocol/test/golden/browser.json`。
+
+- **スペースの台帳**: モバイル機能を無効にしている間は作らない（設定の切り替えで作る・捨てる）。Renderer が `{ managed, views: { viewId, stateKey? }[] }` を作り、`syncBrowserScopes` で shared process へ送る。スペースの切り替え中は送らず、直前の台帳を保つ（`resolveScope` が `pending` を返すため。PC の一覧 `paradisBrowserLiveModel.ts` と同じ考え方）。変化が無ければ送らない。受理されなければ 5 秒後、shared process の作り直しに備えて 60 秒ごとにも送り直す。初回は terminal state の同期の後（lease を登録表が知るのがその時点のため）。shared process は windowId ごとに持ち、`targets` に `windowId`・`ws` が付いているときだけ `resolveTargetId(viewId)`（electron-main の `ParadisCdpTargetService`。`IParadisCdpFrameSubscription` に宣言を足しただけで、ProxyChannel の公開は既存）で引いた targetId で `/json/list` を絞る。台帳が無い・lease が古い・古いアプリの要求なら全件を返し `scoped` を付けない（アプリはそのとき見出しを「ブラウザのページ」にする）。`windowId` / `ws` が片方だけ・形が違う・`ws` が上限（4096 文字。worktree の stateKey はパスを含み、日本語のパスは 1 文字が 9 文字になるので長い。台帳の stateKey も同じ上限）を超えるときは、黙って全件に戻さず `invalid-scope` で断る。所属の決まっていないビューは、スペースのウィンドウではどの一覧にも出ない。`start` も、targetId の形式（英数字と `-_.`、128 文字まで）・`/json/list` の http(s) のページであること・スペースが付いていて台帳があるならそのスペースのページであることを確かめ、違えば断る。アプリは前回の選択をスペースごとに持ち（`scopeKey`）、映していたページが一覧から外れたら PC のミラーも止める
+- **ページの状態**: ミラーのソケットで CDP のイベントを読む（それまでは id 付きの応答しか見ずに捨てていた）。進み具合は開始 0.1・DOMContentLoaded 0.6・load と停止で 1 の 3 段階。url・title・戻る/進むの可否は `Page.getNavigationHistory` から取り、題名の変化に追うため約 1 秒ごとにも読み直す。署名が変わったときだけ送る。古いアプリは `page` / `focus` を読み捨てる（id が無く `frame` でもないので store の分岐に当たらない）ので、アプリの capability は足していない
+- **アドレス欄**: アプリは打った文字をそのまま `open` で送り、PC がアドレスバーと同じ `resolveAddressBarInputType` と設定 `workbench.browser.searchEngine`（shared process の設定から読む。未設定・知らない値は Google）で URL か検索かを決める。スキームの無い URL は、手元のホスト（localhost・IP・`.local`・ドットの無い名前）なら http、それ以外は https。http(s) 以外は開かない。`browser.page.v1` の無い古い PC には、アプリが手元で URL にして（検索は Google）従来の `navigate` で送る（`app/mobile/src/browserAddress.ts`）
+- **入力欄のフォーカス**: 分離ワールド（`Page.addScriptToEvaluateOnNewDocument` の `worldName` と `Runtime.addBinding` の `executionContextName`）に注入するので、ページ本体からバインディングは見えない。ワールドは 1 ページに 1 つ: `Runtime.enable` が今ある文脈を知らせてくるので、前のミラーが作った同じ名前のワールド（メインフレームのもの）があれば使い回し、無いときだけ `Page.createIsolatedWorld` で作る。注入スクリプトは入れた回数を数え、ミラーを止めるときの `__paraMobileFocusDispose()` は 1 つ減らし、最後の 1 つのときだけリスナーを外す（張り直しでリスナーを溜めず、同じページを映すもう 1 台のスマホの置き換えも止めない）。バインディングは呼ぶたびに引くので、使い回したワールドでも新しい CDP の接続へ届く。`Runtime.bindingCalled` は自分のワールドの文脈 ID（`executionContextId`）のものだけ受ける（iframe の中にできた同名のワールドや、ほかの文脈からの報告は捨てる）。focusin/focusout と input（300ms 間引き）で `document.activeElement`（shadowRoot をたどる）を知らせ、タップの 150ms 後にも今のフォーカスを報告させて `fromTap` を付ける（同じ欄をもう一度押したときのため）。欄には `WeakMap` で番号（`fieldId`）を振る。番号の起点はスクリプトを入れるたびに乱数（2^40 までの整数）にする（文書が替わると入れ直すので、1 から振ると前の文書の欄の番号が新しい文書の欄と一致する）。メインフレームの文書が替わったら（`Page.frameNavigated` の `parentId` の無いもの・`Runtime.executionContextsCleared`）、捨てられた文書からは知らせが来ないので、ミラーが `focused: false` を送って重複排除の控えも消す。アプリはそれで欄と番号を捨てる。パスワードの欄は中身を送らず、4000 文字を超える中身は先頭だけで `truncated`。contenteditable は中身を送らない（書式・リンク・画像を持つので、文字だけで置き換えると消える）
+- **置き換え（`replace`）**: アプリは `fieldId` を付けて送り、PC は分離ワールドで「今のフォーカスがその番号の input / textarea のとき」だけ全選択して `Input.insertText`（空なら Backspace）。違えば置き換えずに `inputRejected`（`field-changed`）を返し、今のフォーカスを知らせ直させる（この知らせ直しは前と同じ中身でも重複排除を通さずに送る）。`replace` / `text` / `open` の文字が 8192 文字を超えたら `too-long`。アプリ側の決まり（`app/mobile/src/browserKeyboard.ts`）: `fromTap` のフォーカスでだけ自動で開き、自動で開いたものはフォーカスが外れたら閉じる（直しかけの文字があれば閉じない）。欄が替わったら（別の欄をタップした・ページがフォーカスを動かした）直しかけの文字は捨てて新しい欄に合わせる。Return は「中身が欄と同じなら Enter、違えば `replace`」。断られたら基準を送る前に戻し、入力欄の見出しに理由を出す。中身が分からない（手動で開いた・古い PC・`truncated`・contenteditable）ときは従来どおり `text` で足す。textarea と contenteditable は複数行で直し（Return は改行、送るのは送るボタン）、入力欄に 8192 文字の上限を付ける
+- **ブックマーク**: PC のブックマークはアプリ全体で 1 つの保存先なので、要求を受けたウィンドウが答える。favicon は 1 枚 24KB・合計 768KB まで（超えた分は地球のアイコン）。答えたモバイルを 10 分間の購読として覚え、変わったら `bookmarksChanged` を送る。アプリは前面でブラウザのタブを見ている間だけ読み、知らせと 5 分ごとに読み直す（`features/browser/useBrowserBookmarks.ts`）。最初は見て開くだけ（今のページで `navigate`）
+- **openUrl**: スマホのターミナルで押した URL は、そのターミナルのスペースに開く（そうしないとスペースで絞った一覧に出ない）。今の PC のスペースならそのまま、補助ウィンドウにピン留めされたスペースならそのグループへ開き、どこにも見えていなければ開かずに `space-not-visible` を返す（アプリは「PC でこのスペースに切り替えてから」と案内する）。PC のスペースは勝手に切り替えない
+- **接続経路の印**: アプリだけで決める（`app/mobile/src/browserRoute.ts`）。WebRTC の `getStats()` の transport が指す選ばれた候補の組（無い実装では nominated かつ succeeded の組）の `candidateType` で、両方 host なら同じネットワーク、どちらかが relay なら TURN、それ以外はインターネット越しに直接。JPEG を写しているときはリレーサーバー経由。つながった直後と 5 秒おきに調べる
+- **全画面**: iPhone の全画面から開くシート（RN の Modal）は既定で縦向き限定なので、`BottomDrawer` の `allowLandscape` で横を許す。印はアプリに 1 つ（`features/browser/browserFullscreenStore.ts`。決まりは `browserFullscreen.ts`）。セッションの画面は見出しとタブの列を高さ 0 で隠す（木の形は変えない）。iPhone はボタンか、端末を横に倒して入る。倒して入ったときは縦に戻すと抜け、ボタンで入ったときは抜けない。画面を離れたら抜ける。iPad は端末の向きでは出し入れせず、左の列も畳む（抜けたら戻す。全画面による畳みは保存しないので、全画面中に強制終了しても次は元のまま）。隠した見出しは VoiceOver からも外す
+
+#### 全画面の間だけ iPhone の横向きを許す（`ios/` への手当て）
+
+アプリは縦に固定（`app.json` の `orientation`、`ios/ParaCodeMobile/Info.plist` の `UISupportedInterfaceOrientations` は縦だけ）のまま、既存のローカルの Expo モジュール `modules/para-ipad-input` に `ParaOrientationGate` と JS の `setLandscapeAllowed` / `observeDeviceOrientation` を足した。**新しいネイティブの依存は無く、`pod install` も要らない**（既存のモジュールの Swift に足しただけ）。端末の向きは `UIDevice.orientationDidChangeNotification` で、画面が縦に固定されている間も届く。
+
+`ios/` は git の管理外なので、`ios/ParaCodeMobile/AppDelegate.swift` に次を手で当てた（別の Mac でビルドするときも同じ変更が要る。Info.plist は変えていない）:
+
+```swift
+internal import ParaIpadInput   // 先頭の import に足す（ExpoModulesProvider と同じく internal。付けないと「ambiguous implicit access level」で止まる）
+
+  // class AppDelegate: ExpoAppDelegate の中
+  public override func application(
+    _ application: UIApplication,
+    supportedInterfaceOrientationsFor window: UIWindow?
+  ) -> UIInterfaceOrientationMask {
+    return ParaOrientationGate.shared.supportedOrientations(
+      base: super.application(application, supportedInterfaceOrientationsFor: window))
+  }
+```
+
+`supportedOrientations(base:)` は iPad と許していない間は `base`（Info.plist のまま）を返し、許している間だけ横を足す。許したときに端末がもう横なら `requestGeometryUpdate` で横へ回し、許さなくしたら縦へ戻す。これを当てていないバイナリでは、JS の `setLandscapeAllowed` を呼んでも横に回らない（全画面は縦のまま効く）。モジュールの無い古いバイナリでは、横に倒して入るのもやめる（`supportsLandscapeGate()`）。
+
+#### 確かめ方と既知の制約
+
+- ペアリングの無いシミュレータでは `__paraDev.demo()` の後に `__paraDev.browserDemo()`（`{ loading: true }` で読み込み中）。ストアのブラウザの操作を差し替え、見本の画像（`src/dev/demoBrowserFrame.ts` の base64。`fetch` で資産を読むと、このビルドでは Blob を作れず落ちたため。`__DEV__` の中の require でだけ読むので本番の bundle には入らない）・3 枚のページ・ブックマークを出す。`__paraDev.browserFocus()` で検索欄をタップしたことにする（`src/dev/browserDemo.ts`）
+- iframe の中の欄はフォーカスを拾わない。注入スクリプトはメインフレームの文書の `activeElement` を見るので、iframe の中の欄にフォーカスがあると `focused: false`（iframe の要素は欄ではない）になる。同一オリジンの iframe には `addScriptToEvaluateOnNewDocument` で同名のワールドができてスクリプトも動くが、その報告は文脈 ID が違うので捨てる
+- モックにある「キーボードが開いたら欄の位置へ寄せて拡大する」は入れていない（欄の位置を送っていない）
+- 同じページを複数のスマホが同時に映すと、ワールドとリスナーを共有する（数を数えるので、片方が止めてももう片方は動き続ける）。どちらにもフォーカスの通知が届くが、`fromTap` はそれぞれのミラーが最後に送ったタップの時刻で決める。ミラーの CDP の接続が後片付けを経ずに切れたときは数が減らないので、そのページではリスナーが残る（同じページで次にミラーを張ったときに数が合わないだけで、置き換えは止まらない）
+- CDP の動きは偽の CDP を使った単体テストだけで確かめている。実機の PC とスマホをつないだ確認はまだ
 
 ### スペースのメモの版と差分レビューの記録（Orca W2-16 / W2-14 / W2-28、2026-09-29）
 

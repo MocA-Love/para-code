@@ -20,7 +20,10 @@ interface NativeModuleShape {
 	setKeyCommands(specs: readonly KeyCommandSpec[]): void;
 	addListener(eventName: 'onKeyCommand', listener: (event: { id: string }) => void): { remove(): void };
 	addListener(eventName: 'onWindowControlsInset', listener: (event: WindowControlsInset) => void): { remove(): void };
+	addListener(eventName: 'onDeviceOrientation', listener: (event: { orientation: DeviceOrientation }) => void): { remove(): void };
 	startWindowControlsObserver?(): void;
+	setLandscapeAllowed?(allowed: boolean): void;
+	setDeviceOrientationObserved?(observed: boolean): void;
 	devDescribeWindowControls?(): unknown;
 	devRequestOrientation?(landscape: boolean): void;
 	devDescribeKeyCommands?(): unknown;
@@ -64,6 +67,38 @@ export function observeWindowControlsInset(listener: (inset: WindowControlsInset
 	const subscription = native.addListener('onWindowControlsInset', listener);
 	native.startWindowControlsObserver();
 	return () => subscription.remove();
+}
+
+/** 端末の向き。`other` は表を上・下に向けたもの・分からないもの。 */
+export type DeviceOrientation = 'portrait' | 'landscape' | 'other';
+
+/**
+ * iPhone で横向きを許すか（ブラウザの全画面の間だけ許す）。許すと、端末が横ならすぐ横へ回る。許さなくすると
+ * 縦へ戻す。iPad では何もしない（前から全方向）。モジュールの無い古いバイナリでは何もしない（縦のまま）。
+ */
+export function setLandscapeAllowed(allowed: boolean): void {
+	native?.setLandscapeAllowed?.(allowed);
+}
+
+/** このビルドが横向きの切り替えを持っているか（無い古いバイナリでは、横に倒して全画面に入るのをやめる）。 */
+export function supportsLandscapeGate(): boolean {
+	return native?.setLandscapeAllowed !== undefined;
+}
+
+/**
+ * 端末の向きを見張る（画面が縦に固定されている間も届く）。いま 1 回と、変わるたびに届く。戻り値で購読をやめる。
+ * 見張りは 1 か所からだけ使う前提（最後に止めた側が見張りを止める）。
+ */
+export function observeDeviceOrientation(listener: (orientation: DeviceOrientation) => void): () => void {
+	if (native?.setDeviceOrientationObserved === undefined) {
+		return () => {};
+	}
+	const subscription = native.addListener('onDeviceOrientation', event => listener(event.orientation));
+	native.setDeviceOrientationObserved(true);
+	return () => {
+		subscription.remove();
+		native.setDeviceOrientationObserved?.(false);
+	};
 }
 
 /** 開発ビルド専用: ルートの view の各レイアウト領域の生の余白（1回目で測らせ、2回目の呼び出しで読める）。 */

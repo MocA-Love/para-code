@@ -1,0 +1,30 @@
+{
+	"$comment": "browser チャネルと、ブラウザのブックマーク（fs）の固定形（案A、browser.space.v1 / browser.page.v1 / browser.focus.v1 / browser.bookmarks.v1）。windowId と ws は state.json の current の renderers[0] / workspaces[0].sourceId と揃えてある。toPc はアプリが送る形、toMobile は PC が送る形。各配列の先頭の要素に全項目を持たせてある。replace は focus の fieldId の欄にだけ効き、欄が替わっていれば PC は inputRejected を返す。形の読み方は src/vs/paradis/contrib/mobileRelay/common/paradisMobileBrowserProtocol.ts。",
+	"toPc": [
+		{ "t": "targets", "id": "m-r-1", "windowId": 1, "ws": "repo" },
+		{ "t": "input", "kind": "open", "text": "para code mobile" },
+		{ "t": "input", "kind": "stop" },
+		{ "t": "input", "kind": "replace", "text": "置き換えた文字", "fieldId": 7 },
+		{ "t": "input", "kind": "navigate", "url": "https://example.com/docs" }
+	],
+	"toMobile": [
+		{ "id": "m-r-1", "t": "targets", "scoped": true, "targets": [{ "targetId": "target-1", "title": "Docs", "url": "https://example.com/docs", "sharedToken": "pane-token-1" }] },
+		{ "t": "page", "targetId": "target-1", "url": "https://example.com/docs", "title": "Docs", "loading": true, "progress": 0.6, "canGoBack": true, "canGoForward": false },
+		{ "t": "focus", "targetId": "target-1", "seq": 3, "focused": true, "fieldId": 7, "field": "text", "inputType": "search", "value": "検索中の文字", "truncated": true, "fromTap": true },
+		{ "t": "focus", "targetId": "target-1", "seq": 4, "focused": false },
+		{ "t": "inputRejected", "targetId": "target-1", "kind": "replace", "reason": "field-changed" }
+	],
+	"bookmarks": {
+		"toPc": { "t": "bookmarks", "id": "m-r-2" },
+		"toMobile": {
+			"id": "m-r-2",
+			"t": "bookmarks",
+			"nodes": [
+				{ "type": "folder", "id": "folder-1", "title": "仕事", "icon": "briefcase", "color": "#2563eb", "children": [{ "type": "bookmark", "id": "bookmark-2", "title": "Issues", "url": "https://example.com/issues" }] },
+				{ "type": "bookmark", "id": "bookmark-1", "title": "Docs", "url": "https://example.com/docs", "favicon": "hash-1" }
+			],
+			"favicons": { "hash-1": "data:image/png;base64,iVBORw0KGgo=" }
+		},
+		"push": { "t": "bookmarksChanged" }
+	}
+}

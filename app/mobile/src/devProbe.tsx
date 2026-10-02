@@ -4,6 +4,9 @@ import { useEffect } from 'react';
 import { useGlobalSearchParams, useNavigationContainerRef, usePathname, useRouter } from 'expo-router';
 import { useAppStore } from './appState.js';
 import { installDemoData } from './dev/demoData.js';
+import { focusBrowserDemo, installBrowserDemo } from './dev/browserDemo.js';
+import { useBrowserFullscreen } from './features/browser/browserFullscreenStore.js';
+import { LogBox } from 'react-native';
 import { installTerminalDemo } from './dev/terminalDemo.js';
 import { openPcRoute } from './features/pc/openPcRoute.js';
 import { usePcListView } from './features/pc/pcListViewStore.js';
@@ -36,6 +39,13 @@ export function DevProbe() {
 		(globalThis as { __paraDev?: unknown }).__paraDev = {
 			pathname, params: JSON.parse(paramsKey) as unknown, router, store: useAppStore, at: Date.now(),
 			demo: installDemoData,
+			// ブラウザのタブの見本（`demo()` の後に呼ぶ。`{ loading: true }` で読み込み中）。`browserFocus()` で検索欄をタップしたことにする。
+			browserDemo: installBrowserDemo,
+			browserFocus: focusBrowserDemo,
+			// ブラウザの全画面の印（`dispatch({ kind: 'toggle' })` など。browserFullscreen.ts）。
+			browserFullscreen: useBrowserFullscreen,
+			// 画面の下に出る警告の札を出さない（シミュレータの画像を撮るとき）。
+			ignoreLogs: () => LogBox.ignoreAllLogs(),
 			// ターミナルの表示に見本の出力（多数の行と末尾のプロンプト）を流す。`demo()` の後に呼ぶ。
 			terminalDemo: installTerminalDemo,
 			setWidth: setDevWidthOverride,
