@@ -11,6 +11,7 @@ import { hapticSelection } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import type { AgentChatMessage } from '../../store.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
+import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
 import { Icon, useThemeColors } from '../../ui/index.js';
 import type { ChatRow } from './chatRows.js';
 
@@ -49,11 +50,13 @@ function MessageRow({ message, terminalKey }: { message: AgentChatMessage; termi
 	const hasText = message.text.trim().length > 0;
 	// 自分の発言の吹き出しは設定 → 色の「自分の発言と送信」。
 	const theme = useThemeColors();
+	const styles = useChatStyles(baseStyles);
+	const peerIconSize = useChatIconSize(12);
 	if (message.kind === 'peer_message') {
 		return (
 			<View style={styles.row}>
 				<View style={styles.peerHead}>
-					<Icon icon={Users} size={12} color={colors.textMuted} />
+					<Icon icon={Users} size={peerIconSize} color={colors.textMuted} />
 					<Text style={styles.peerLabel}>{`Claude teammate${message.peerName !== undefined ? ` · ${message.peerName}` : ''}`}</Text>
 				</View>
 				{message.peerSummary !== undefined ? <Text style={styles.peerSummary}>{message.peerSummary}</Text> : null}
@@ -82,6 +85,8 @@ function MessageRow({ message, terminalKey }: { message: AgentChatMessage; termi
 /** ツール実行のまとまり（モックの `.toolrun`）。 */
 const ToolRunRow = memo(function ToolRunRow({ msgs, terminalKey, allOpen }: { msgs: AgentChatMessage[]; terminalKey: string; allOpen: boolean }) {
 	const [open, setOpen] = useState<boolean | undefined>(undefined);
+	const styles = useChatStyles(baseStyles);
+	const iconSize = useChatIconSize(15);
 	const expanded = open ?? allOpen;
 	const steps = buildTimelineSteps(msgs);
 	const names: string[] = [];
@@ -101,7 +106,7 @@ const ToolRunRow = memo(function ToolRunRow({ msgs, terminalKey, allOpen }: { ms
 				accessibilityState={{ expanded }}
 				accessibilityLabel={`ツール実行 ${steps.length}件（${names.join('、')}）`}
 			>
-				<Icon icon={expanded ? ChevronDown : SquareChevronRight} size={15} color={colors.textMuted} />
+				<Icon icon={expanded ? ChevronDown : SquareChevronRight} size={iconSize} color={colors.textMuted} />
 				<Text style={styles.runCount}>{`${steps.length}×`}</Text>
 				<Text style={styles.runLabel} numberOfLines={1}>{names.join(', ')}</Text>
 			</Pressable>
@@ -121,6 +126,8 @@ const ToolRunRow = memo(function ToolRunRow({ msgs, terminalKey, allOpen }: { ms
 /** ツール実行の1行（モックの `.tline`: 名前 13/600 と引数の要約 12、等幅）。 */
 function ToolLine({ step, terminalKey }: { step: AgentTimelineStep; terminalKey: string }) {
 	const [open, setOpen] = useState(false);
+	const styles = useChatStyles(baseStyles);
+	const iconSize = useChatIconSize(15);
 	const description = describeStep(step);
 	const failed = description.tone === 'error';
 	return (
@@ -133,7 +140,7 @@ function ToolLine({ step, terminalKey }: { step: AgentTimelineStep; terminalKey:
 				accessibilityState={{ expanded: open }}
 				accessibilityLabel={`${description.label}の詳細を${open ? '閉じる' : '開く'}`}
 			>
-				<Icon icon={open ? ChevronDown : SquareChevronRight} size={15} color={colors.textMuted} />
+				<Icon icon={open ? ChevronDown : SquareChevronRight} size={iconSize} color={colors.textMuted} />
 				<Text style={[styles.lineName, failed ? styles.lineFailed : undefined]}>{description.label}{description.namespace ?? ''}</Text>
 				{description.arg !== undefined && description.arg.length > 0
 					? <Text style={styles.linePreview} numberOfLines={1}>{description.arg}</Text>
@@ -153,6 +160,8 @@ function ToolLine({ step, terminalKey }: { step: AgentTimelineStep; terminalKey:
 /** Web 検索（開始と結果）。ツール実行と同じ等幅の1行で、開くと結果を出す。 */
 function WebSearchRow({ msgs, terminalKey }: { msgs: AgentChatMessage[]; terminalKey: string }) {
 	const [open, setOpen] = useState(false);
+	const styles = useChatStyles(baseStyles);
+	const iconSize = useChatIconSize(15);
 	const use = msgs.find(message => message.kind === 'tool_use');
 	const results = msgs.filter(message => message.kind === 'tool_result');
 	const failed = results.some(message => message.text.startsWith('Web検索に失敗しました'));
@@ -167,7 +176,7 @@ function WebSearchRow({ msgs, terminalKey }: { msgs: AgentChatMessage[]; termina
 				accessibilityRole="button"
 				accessibilityState={{ expanded: open, disabled: results.length === 0 }}
 			>
-				<Icon icon={Globe} size={15} color={colors.textMuted} />
+				<Icon icon={Globe} size={iconSize} color={colors.textMuted} />
 				<Text style={[styles.lineName, failed ? styles.lineFailed : undefined]}>{label}</Text>
 				<Text style={styles.linePreview} numberOfLines={1}>{use?.text ?? formatToolName('web_search')}</Text>
 			</Pressable>
@@ -185,9 +194,11 @@ function WebSearchRow({ msgs, terminalKey }: { msgs: AgentChatMessage[]; termina
  * コンポーザーの上のカードに出すので、ここは履歴として1行で示すだけ。
  */
 function HistoryQuestionRow({ text, count, answered }: { text: string; count?: number; answered: boolean }) {
+	const styles = useChatStyles(baseStyles);
+	const iconSize = useChatIconSize(12);
 	return (
 		<View style={styles.sysline}>
-			<Icon icon={CircleHelp} size={12} color={colors.textMuted} />
+			<Icon icon={CircleHelp} size={iconSize} color={colors.textMuted} />
 			<Text style={styles.syslineText} numberOfLines={2}>
 				{`${count !== undefined ? `${count}つの質問: ` : ''}${text}`}
 				<Text style={styles.syslineNote}>{answered ? '　回答済み' : '　PC で回答済み、または対象外になりました'}</Text>
@@ -196,7 +207,7 @@ function HistoryQuestionRow({ text, count, answered }: { text: string; count?: n
 	);
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
 	row: {
 		paddingHorizontal: space.lg,
 		paddingVertical: space.sm,

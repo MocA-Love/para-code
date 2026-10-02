@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { appendSpaceNoteEntry, applySpaceNotePrefix, continueSpaceNoteChecklist, parseSpaceNote, spaceNoteSummary, toggleSpaceNoteTask, trimSpaceNoteTrailingEmptyTask } from './spaceNote.js';
+import { appendSpaceNoteEntry, applySpaceNotePrefix, continueSpaceNoteChecklist, parseSpaceNote, removeSpaceNoteTask, replaceSpaceNoteTaskText, restoreSpaceNoteLines, spaceNoteSummary, spaceNoteTaskBlock, toggleSpaceNoteTask, trimSpaceNoteTrailingEmptyTask } from './spaceNote.js';
 
 describe('spaceNote', () => {
 	it('parses headings, checklists and plain text', () => {
@@ -109,5 +109,38 @@ describe('appendSpaceNoteEntry', () => {
 		// 改行を含む貼り付けでチェックボックスが増えないよう、2行目以降はぶら下げる（PC側と同じ）
 		expect(appendSpaceNoteEntry('- [ ] a', '一行目\n二行目\n\n三行目', 'task')).toBe('- [ ] a\n- [ ] 一行目\n  二行目\n  三行目');
 		expect(appendSpaceNoteEntry('- [ ] a', '   ', 'task')).toBeUndefined();
+	});
+});
+
+// PC の paradisRemoveSpaceNoteTask / paradisReplaceSpaceNoteTaskText と同じ結果になること（同じ例を PC のテストにも置いている）
+describe('removeSpaceNoteTask / replaceSpaceNoteTaskText', () => {
+	const text = '- [ ] a\n- [x] b\n  detail\n- [ ] c';
+
+	it('removes a task with its continuation lines, and keeps the block for undo', () => {
+		expect({
+			block: spaceNoteTaskBlock(text, 1),
+			removed: removeSpaceNoteTask(text, 1),
+			notTask: removeSpaceNoteTask('# h\n- [ ] a', 0),
+			restored: restoreSpaceNoteLines(removeSpaceNoteTask(text, 1)!, 1, spaceNoteTaskBlock(text, 1)!),
+			restoredPastEnd: restoreSpaceNoteLines('- [ ] a', 5, ['- [ ] z']),
+			restoredEmpty: restoreSpaceNoteLines('', 0, ['- [ ] z']),
+		}).toEqual({
+			block: ['- [x] b', '  detail'],
+			removed: '- [ ] a\n- [ ] c',
+			notTask: undefined,
+			restored: text,
+			restoredPastEnd: '- [ ] a\n- [ ] z',
+			restoredEmpty: '- [ ] z',
+		});
+	});
+
+	it('replaces only the label, folding newlines and refusing empty or unchanged text', () => {
+		expect([
+			replaceSpaceNoteTaskText(text, 1, 'B\nnext'),
+			replaceSpaceNoteTaskText('  * [ ] a', 0, 'A'),
+			replaceSpaceNoteTaskText(text, 0, '  '),
+			replaceSpaceNoteTaskText(text, 0, 'a'),
+			replaceSpaceNoteTaskText(text, 2, 'x'),
+		]).toEqual(['- [ ] a\n- [x] B next\n  detail\n- [ ] c', '  * [ ] A', undefined, undefined, undefined]);
 	});
 });

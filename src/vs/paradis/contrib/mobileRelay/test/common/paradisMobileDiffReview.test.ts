@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_MOBILE_PC_CAPABILITIES } from '../../common/paradisMobileCompat.js';
-import { PARADIS_MOBILE_REVIEW_NOTES_CAPABILITY, PARADIS_MOBILE_REVIEW_STAGE_CAPABILITY, PARADIS_MOBILE_REVIEW_STORE_CAPABILITY, paradisBuildReviewNotesPrompt, paradisLocateReviewNoteLine, paradisStagedConsistently, paradisStagedContentDiffers, paradisWithUntrackedFileStats, paradisMobileDiffIdentity, paradisMobileReviewState, paradisParseMobilePorcelainStatus, paradisParseNumstatZ, paradisWithMobileLineCounts } from '../../common/paradisMobileDiffReview.js';
+import { PARADIS_MOBILE_REVIEW_NOTES_CAPABILITY, PARADIS_MOBILE_REVIEW_STAGE_CAPABILITY, PARADIS_MOBILE_REVIEW_STORE_CAPABILITY, paradisBuildReviewNotesPrompt, paradisLocateReviewNoteLine, paradisStagedConsistently, paradisStagedContentDiffers, paradisWithUntrackedFileStats, paradisMobileDiffIdentity, paradisMobileReviewState, paradisParseMobilePorcelainStatus, paradisParseNumstatZ, paradisUnquoteGitPath, paradisWithMobileLineCounts } from '../../common/paradisMobileDiffReview.js';
 
 suite('ParadisMobileDiffReview', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -20,6 +20,23 @@ suite('ParadisMobileDiffReview', () => {
 			{ x: 'R', y: ' ', path: 'new.ts', oldPath: 'old.ts' },
 			{ x: '?', y: '?', path: 'notes/' },
 		]);
+	});
+
+	test('removes git quoting from paths with spaces and Japanese', () => {
+		const status = '?? "a b.txt"\n M "\\346\\227\\245\\346\\234\\254.md"\nR  "old name.ts" -> "new -> name.ts"\n M 日本.ts\n';
+		assert.deepStrictEqual({
+			files: paradisParseMobilePorcelainStatus(status),
+			escapes: [paradisUnquoteGitPath('"tab\\there\\"q\\\\"'), paradisUnquoteGitPath('plain'), paradisUnquoteGitPath('"\\377"')],
+		}, {
+			files: [
+				{ x: '?', y: '?', path: 'a b.txt' },
+				{ x: ' ', y: 'M', path: '日本.md' },
+				{ x: 'R', y: ' ', path: 'new -> name.ts', oldPath: 'old name.ts' },
+				{ x: ' ', y: 'M', path: '日本.ts' },
+			],
+			// 壊れた UTF-8 は引用ごと残す
+			escapes: ['tab\there"q\\', 'plain', '"\\377"'],
+		});
 	});
 
 	test('reads numstat -z, including renames and binary files', () => {

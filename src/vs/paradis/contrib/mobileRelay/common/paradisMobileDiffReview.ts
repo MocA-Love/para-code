@@ -38,18 +38,106 @@ export interface IParadisMobileStatusFile {
 	readonly mtime?: number;
 }
 
+const GIT_QUOTE_ESCAPES: Readonly<Record<string, number>> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, '\\': 92 };
+
+/**
+ * git が C の文字列の形で引用したパス（空白・引用符・制御文字・`core.quotepath` が効いているときの非 ASCII を含むとき。
+ * 例 `"a b.txt"`、`"\346\227\245.md"`）を元のパスに戻す。引用されていなければそのまま返す。
+ * 8 進のエスケープは UTF-8 のバイト列として読み直す。PC とアプリの両方が使う（アプリは古い PC の応答に当てる）。
+ */
+export function paradisUnquoteGitPath(value: string): string {
+	if (value.length < 2 || !value.startsWith('"') || !value.endsWith('"')) {
+		return value;
+	}
+	const bytes: number[] = [];
+	const body = value.slice(1, -1);
+	for (let index = 0; index < body.length; index++) {
+		const char = body[index];
+		if (char !== '\\') {
+			const code = body.codePointAt(index) ?? 0;
+			if (code > 0xffff) {
+				index++;
+			}
+			bytes.push(...utf8Bytes(code));
+			continue;
+		}
+		const next = body[index + 1] ?? '';
+		const octal = /^[0-7]{3}/.exec(body.slice(index + 1, index + 4));
+		if (octal !== null) {
+			bytes.push(Number.parseInt(octal[0], 8));
+			index += 3;
+		} else if (GIT_QUOTE_ESCAPES[next] !== undefined) {
+			bytes.push(GIT_QUOTE_ESCAPES[next]);
+			index++;
+		} else {
+			bytes.push(92);
+		}
+	}
+	return decodeUtf8(bytes) ?? value;
+}
+
+function utf8Bytes(code: number): number[] {
+	if (code < 0x80) {
+		return [code];
+	}
+	if (code < 0x800) {
+		return [0xc0 | (code >> 6), 0x80 | (code & 0x3f)];
+	}
+	if (code < 0x10000) {
+		return [0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f)];
+	}
+	return [0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f)];
+}
+
+/** UTF-8 として読めなければ undefined（引用を外さずに元の文字列を使う）。 */
+function decodeUtf8(bytes: readonly number[]): string | undefined {
+	let result = '';
+	for (let index = 0; index < bytes.length;) {
+		const first = bytes[index]!;
+		const length = first < 0x80 ? 1 : first >= 0xf0 ? 4 : first >= 0xe0 ? 3 : first >= 0xc0 ? 2 : 0;
+		if (length === 0 || index + length > bytes.length) {
+			return undefined;
+		}
+		let code = length === 1 ? first : first & (0xff >> (length + 1));
+		for (let offset = 1; offset < length; offset++) {
+			const byte = bytes[index + offset]!;
+			if ((byte & 0xc0) !== 0x80) {
+				return undefined;
+			}
+			code = (code << 6) | (byte & 0x3f);
+		}
+		result += String.fromCodePoint(code);
+		index += length;
+	}
+	return result;
+}
+
 /**
  * `git status --porcelain=v1` を読む。リネームは `old -> new` なので、`path` に新しい側、`oldPath` に元の側を入れる。
- * パスの引用（特殊な文字を含むときの `"..."`）はそのまま残す（今までの応答と同じ）。
+ * パスの引用（空白・日本語などを含むときの `"..."`）は外す（{@link paradisUnquoteGitPath}）。外さないと、`git diff -- <path>`・
+ * `--numstat -z` の行数・アプリのファイルの一覧と、引用されたパスが合わない。
  */
 export function paradisParseMobilePorcelainStatus(stdout: string): IParadisMobileStatusFile[] {
 	return stdout.split('\n').filter(line => line.length > 3).map(line => {
 		const rest = line.slice(3);
-		const arrow = rest.indexOf(' -> ');
-		return arrow >= 0
-			? { x: line.charAt(0), y: line.charAt(1), path: rest.slice(arrow + 4), oldPath: rest.slice(0, arrow) }
-			: { x: line.charAt(0), y: line.charAt(1), path: rest };
+		const arrow = splitRenameArrow(rest);
+		return arrow !== undefined
+			? { x: line.charAt(0), y: line.charAt(1), path: paradisUnquoteGitPath(arrow.to), oldPath: paradisUnquoteGitPath(arrow.from) }
+			: { x: line.charAt(0), y: line.charAt(1), path: paradisUnquoteGitPath(rest) };
 	});
+}
+
+/** `old -> new` を分ける。引用されたパスの中の ` -> ` では分けない。 */
+function splitRenameArrow(rest: string): { readonly from: string; readonly to: string } | undefined {
+	if (rest.startsWith('"')) {
+		const end = /^"(?:[^"\\]|\\.)*"/.exec(rest)?.[0];
+		if (end !== undefined && rest.slice(end.length).startsWith(' -> ')) {
+			return { from: end, to: rest.slice(end.length + 4) };
+		}
+		return undefined;
+	}
+	const arrow = rest.indexOf(' -> ');
+	return arrow >= 0 ? { from: rest.slice(0, arrow), to: rest.slice(arrow + 4) } : undefined;
 }
 
 interface ILineCount {

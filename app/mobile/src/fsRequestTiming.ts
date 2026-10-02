@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import type { FrameChunkTiming } from '@para/protocol';
+import { getAesGcmBackend, type FrameChunkTiming } from '@para/protocol';
 import { recordMobileTiming, type MobileTimingAttributes, type MobileTimingRecorder } from './mobileDiagnostics.js';
 
 /**
@@ -13,7 +13,7 @@ import { recordMobileTiming, type MobileTimingAttributes, type MobileTimingRecor
  * - `safe_send_ms`: 要求の組み立て〜送出（封緘を含む）
  * - `safe_wait_first_chunk_ms`: 送出〜応答の最初のチャンクを開封し始めるまで（PC の処理 + 回線）
  * - `safe_receive_ms`: 最初のチャンク〜最後のチャンクの開封完了（残りの転送 + 開封）
- * - `safe_open_ms`: そのうちチャンクの開封（復号）にかかった時間の合計
+ * - `safe_open_ms`: そのうちチャンクの開封（復号）にかかった時間の合計（実装は `safe_aes_backend`）
  * - `safe_handoff_ms`: 最後のチャンク〜応答の処理開始（再結合）
  * - 応答の処理: `safe_gunzip_ms` / `safe_utf8_decode_ms` / `safe_json_parse_ms` / `safe_cache_resolve_ms`、
  *   バイナリは `safe_binary_decode_ms` / `safe_base64_ms`
@@ -202,6 +202,8 @@ export class FsRequestTimings {
 				...(sentAt !== undefined ? { safe_wait_first_chunk_ms: Math.max(0, assembly.firstAt - sentAt) } : {}),
 				safe_receive_ms: assembly.lastAt - assembly.firstAt,
 				safe_open_ms: assembly.openMs,
+				// 開封に使った AES-GCM の実装（`native` / `noble`）。safe_open_ms を実装ごとに比べるため。
+				safe_aes_backend: getAesGcmBackend().name,
 				safe_chunks: assembly.chunks,
 				safe_wire_bytes: assembly.bytes,
 			} : {}),

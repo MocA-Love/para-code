@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View, type StyleProp, type TextStyle } from 'react-native';
-import { ChevronDown, ChevronRight, File, FileText, Folder, FolderOpen, Image as ImageIcon, Search } from 'lucide-react-native';
+import { ChevronDown, ChevronRight, Search } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import type { BreadcrumbItem } from '../../filesBreadcrumb.js';
 import { matchRanges, type FilesSearchMode } from '../../filesSearch.js';
@@ -10,8 +10,9 @@ import { hapticSelection } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
 import { Icon, iconSize, useThemeColors } from '../../ui/index.js';
-import { formatSize, type TreeRow } from './fileTree.js';
-import { viewerKindOf } from './fileViewerModel.js';
+import type { FileDecoration } from './fileDecorations.js';
+import { FileTypeIcon } from './fileIcons.js';
+import { baseName, formatSize, parentPath, type TreeRow } from './fileTree.js';
 
 /**
  * ファイルの画面の部品（Orca の mobile-file-explorer-row・検索欄・ビューアのパンくず。
@@ -23,16 +24,17 @@ const INDENT = 18;
 /** シェブロンの列の幅（pt。ファイルの行はこの幅だけ空ける）。 */
 const CHEVRON_WIDTH = 16;
 
-function fileIconOf(name: string) {
-	const kind = viewerKindOf(name);
-	return kind === 'markdown' ? FileText : kind === 'image' ? ImageIcon : File;
-}
-
-/** ツリーの1行（フォルダは押すと開閉、ファイルは押すとビューアへ）。 */
-export function TreeRowView({ row, expanded, highlighted, disabled, onToggle, onOpen, onRetry }: {
+/**
+ * ツリーの1行（フォルダは押すと開閉、ファイルは押すとビューアへ）。`decoration` は Git の色と右端の文字
+ * （`fileDecorations.ts`。PC のエクスプローラーと同じ見え方）。
+ */
+export function TreeRowView({ pcId, row, expanded, highlighted, decoration, disabled, onToggle, onOpen, onRetry }: {
+	/** アイコンのテーマを引く PC。 */
+	pcId: string | undefined;
 	row: TreeRow;
 	expanded: boolean;
 	highlighted: boolean;
+	decoration?: FileDecoration;
 	disabled: boolean;
 	onToggle: (path: string) => void;
 	onOpen: (path: string) => void;
@@ -81,14 +83,15 @@ export function TreeRowView({ row, expanded, highlighted, disabled, onToggle, on
 			style={({ pressed }) => [styles.row, indent, highlighted ? { backgroundColor: theme.accentWash } : undefined, pressed ? styles.pressed : undefined]}
 			accessibilityRole="button"
 			accessibilityState={dir ? { expanded } : undefined}
-			accessibilityLabel={dir ? `フォルダ ${row.name}` : `ファイル ${row.name}`}
+			accessibilityLabel={`${dir ? 'フォルダ' : 'ファイル'} ${row.name}${decoration !== undefined ? `、${decoration.label}` : ''}`}
 		>
 			{dir ? <Icon icon={expanded ? ChevronDown : ChevronRight} size={iconSize.md} color={colors.textMuted} /> : <View style={styles.chevronSpace} />}
-			<Icon icon={dir ? (expanded ? FolderOpen : Folder) : fileIconOf(row.name)} size={iconSize.md} color={colors.textDim} />
+			<FileTypeIcon pcId={pcId} name={row.name} dir={dir} expanded={dir ? expanded : undefined} parentName={baseName(parentPath(row.path)) || undefined} />
 			<View style={styles.col}>
-				<Text style={styles.name} numberOfLines={1}>{row.name}</Text>
+				<Text style={[styles.name, decoration !== undefined ? { color: decoration.color } : undefined]} numberOfLines={1}>{row.name}</Text>
 				{!dir && row.size !== undefined ? <Text style={styles.sub}>{formatSize(row.size)}</Text> : null}
 			</View>
+			<Text style={[styles.badge, decoration !== undefined ? { color: decoration.color } : undefined]} importantForAccessibility="no">{decoration?.badge ?? ''}</Text>
 		</Pressable>
 	);
 }
@@ -102,8 +105,10 @@ const SEARCH_MODES: readonly { readonly key: FilesSearchMode; readonly label: st
  * 検索欄（モックの `.searchbar`）。`ScreenHeader` の children に置く。入力は uncontrolled
  * （打ちながら親を描き直しても、欄の中身とカーソルが揺れないように）。
  */
-export function FilesSearchBar({ mode, onChangeMode, onChangeQuery, editable }: {
+export function FilesSearchBar({ mode, initialQuery = '', onChangeMode, onChangeQuery, editable }: {
 	mode: FilesSearchMode;
+	/** 開いたときに入れておく文字（退避しておいた検索を戻すとき）。 */
+	initialQuery?: string;
 	onChangeMode: (mode: FilesSearchMode) => void;
 	onChangeQuery: (query: string) => void;
 	editable: boolean;
@@ -114,8 +119,8 @@ export function FilesSearchBar({ mode, onChangeMode, onChangeQuery, editable }: 
 				<Icon icon={Search} size={iconSize.sm} color={colors.textMuted} />
 				<TextInput
 					style={styles.input}
-					autoFocus
-					defaultValue=""
+					autoFocus={initialQuery.length === 0}
+					defaultValue={initialQuery}
 					onChangeText={onChangeQuery}
 					placeholder={mode === 'name' ? 'ファイル名で検索…' : 'ファイルの内容を検索…'}
 					placeholderTextColor={colors.textMuted}
@@ -169,7 +174,7 @@ function Highlighted({ text, query, smartCase, lines, style }: { text: string; q
 }
 
 /** ファイル名の検索の結果の行。 */
-export function FindResultRow({ path, query, onOpen }: { path: string; query: string; onOpen: (path: string) => void }) {
+export function FindResultRow({ pcId, path, query, onOpen }: { pcId: string | undefined; path: string; query: string; onOpen: (path: string) => void }) {
 	const at = path.lastIndexOf('/');
 	const name = at < 0 ? path : path.slice(at + 1);
 	return (
@@ -179,7 +184,7 @@ export function FindResultRow({ path, query, onOpen }: { path: string; query: st
 			accessibilityRole="button"
 			accessibilityLabel={`ファイル ${path}`}
 		>
-			<Icon icon={fileIconOf(name)} size={iconSize.md} color={colors.textDim} />
+			<FileTypeIcon pcId={pcId} name={name} dir={false} parentName={baseName(parentPath(path)) || undefined} />
 			<View style={styles.col}>
 				<Highlighted text={name} query={query} smartCase={false} lines={1} style={styles.name} />
 				<Highlighted text={path} query={query} smartCase={false} lines={1} style={styles.sub} />
@@ -230,6 +235,8 @@ export function ViewerCrumbs({ items, onSelect }: { items: readonly BreadcrumbIt
 	);
 }
 
+/** 右端の Git の文字の列の幅（pt）。文字が無い行も同じ幅を空けて、名前の右端をそろえる。 */
+const BADGE_WIDTH = 18;
 /** 検索欄の高さ（pt。モックの `.sfield`）。 */
 const SEARCH_FIELD_HEIGHT = 36;
 /** 再試行のボタンの高さ（pt。Orca の inlineRetryButton）。当たり判定は 44 に広げる。 */
@@ -258,6 +265,12 @@ const styles = StyleSheet.create({
 	col: {
 		flex: 1,
 		minWidth: 0,
+	},
+	badge: {
+		width: BADGE_WIDTH,
+		textAlign: 'center',
+		fontSize: type.meta,
+		fontWeight: '600',
 	},
 	name: {
 		fontSize: type.body,

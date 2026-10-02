@@ -89,6 +89,16 @@ export const ParadisMobileCapability = {
 	BrowserFocus: 'browser.focus.v1',
 	/** fs の要求 `bookmarks` と通知 `bookmarksChanged`（PC の内蔵ブラウザのブックマーク）。 */
 	BrowserBookmarks: 'browser.bookmarks.v1',
+	/** fs の `list` の各項目に任意の `ignored: true`（.gitignore で無視されている。ファイルの一覧で名前を灰にする）。 */
+	FsIgnored: 'fs.ignored.v1',
+	/** fs の `iconTheme`（PC で選んでいるファイルアイコンのテーマの対応表）と `iconSvgs`（アイコンの SVG）。 */
+	FsIconTheme: 'fs.icon-theme.v1',
+	/** noteSet の `op` の `kind: 'remove'`（チェック項目の削除）と `kind: 'edit'`（チェック項目の文言の書き換え）。 */
+	NoteTaskOps: 'note.task-ops.v1',
+	/** scm の `fileAt`（HEAD・インデックス・作業ツリーにあるファイルのバイト列。差分の画面の「表示」・画像の比較・Office の Raw に使う）。 */
+	ScmFileAt: 'scm.file-at.v1',
+	/** scm の `wordDiff`（PC の Word 差分を、スペースの中のパスと比べる側の指定だけで頼める。差分の画面の「差分」）。 */
+	ScmWordDiff: 'scm.word-diff.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -119,6 +129,11 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.BrowserPage,
 	ParadisMobileCapability.BrowserFocus,
 	ParadisMobileCapability.BrowserBookmarks,
+	ParadisMobileCapability.FsIgnored,
+	ParadisMobileCapability.FsIconTheme,
+	ParadisMobileCapability.NoteTaskOps,
+	ParadisMobileCapability.ScmFileAt,
+	ParadisMobileCapability.ScmWordDiff,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

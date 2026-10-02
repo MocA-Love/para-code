@@ -10,6 +10,7 @@ import { AgentStickyScroll, agentScrollEndOffset } from '../../agentStickyScroll
 import { hapticSelection } from '../../haptics.js';
 import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
+import { useChatStyles } from '../../ui/chatTextScale.js';
 import { Icon } from '../../ui/index.js';
 import { ChatRowView } from './chatItems.js';
 import { chatRowKey, type ChatRow } from './chatRows.js';
@@ -44,6 +45,8 @@ export const ChatList = forwardRef<ChatListHandle, {
 }>(function ChatList({ rows, epoch, terminalKey, latest, history, onLoadOlder, allToolsOpen }, ref) {
 	const listRef = useRef<FlatList<ChatRow>>(null);
 	const column = useContentColumnStyle();
+	// 会話の文字サイズ（設定 → チャット UI）は空の状態の文字にもかける。「最新へ」のボタンは操作の部品なので変えない。
+	const textStyles = useChatStyles(styles);
 	const scrollState = useRef(new AgentStickyScroll()).current;
 	const [sticky, setSticky] = useState(true);
 	const [newCount, setNewCount] = useState(0);
@@ -164,9 +167,9 @@ export const ChatList = forwardRef<ChatListHandle, {
 				ListHeaderComponent={<HistoryHeader header={history} onLoadOlder={onLoadOlder} />}
 				maintainVisibleContentPosition={MAINTAIN_POSITION}
 				ListEmptyComponent={(
-					<View style={styles.empty}>
-						<Text style={styles.emptyTitle}>まだ会話がありません</Text>
-						<Text style={styles.emptyBody}>下の入力欄から指示を送ると始まります。</Text>
+					<View style={textStyles.empty}>
+						<Text style={textStyles.emptyTitle}>まだ会話がありません</Text>
+						<Text style={textStyles.emptyBody}>下の入力欄から指示を送ると始まります。</Text>
 					</View>
 				)}
 				contentContainerStyle={[styles.content, column]}
@@ -201,27 +204,28 @@ const MAINTAIN_POSITION = { minIndexForVisible: 1 } as const;
 
 /** 一覧の先頭の案内。行の数を変えないよう、何も出さないときも空の行を置く（位置の保持が 1 番目から数えるため）。 */
 function HistoryHeader({ header, onLoadOlder }: { header: AgentHistoryHeader; onLoadOlder: () => void }) {
+	const scaled = useChatStyles(styles);
 	switch (header.kind) {
 		case 'truncated':
-			return <Text style={styles.truncated}>古い履歴は省略しています</Text>;
+			return <Text style={scaled.truncated}>古い履歴は省略しています</Text>;
 		case 'capped':
-			return <Text style={styles.truncated}>これより前の発言は PC で見てください</Text>;
+			return <Text style={scaled.truncated}>これより前の発言は PC で見てください</Text>;
 		case 'error':
-			return <Text style={styles.truncated}>{header.message}</Text>;
+			return <Text style={scaled.truncated}>{header.message}</Text>;
 		case 'more':
 			return header.loading ? (
-				<View style={styles.older} accessibilityLabel="古い発言を読み込んでいます">
+				<View style={scaled.older} accessibilityLabel="古い発言を読み込んでいます">
 					<ActivityIndicator size="small" color={colors.textMuted} />
 				</View>
 			) : (
 				<View>
-					{header.message !== undefined ? <Text style={styles.truncated}>{header.message}</Text> : null}
+					{header.message !== undefined ? <Text style={scaled.truncated}>{header.message}</Text> : null}
 					<Pressable
-						style={styles.older}
+						style={scaled.older}
 						onPress={() => { hapticSelection(); onLoadOlder(); }}
 						accessibilityRole="button"
 					>
-						<Text style={styles.olderText}>さらに前の発言を読み込む</Text>
+						<Text style={scaled.olderText}>さらに前の発言を読み込む</Text>
 					</Pressable>
 				</View>
 			);

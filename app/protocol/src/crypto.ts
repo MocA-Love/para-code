@@ -46,6 +46,66 @@ export function generateIdentity(): Identity {
 }
 
 /**
+ * セッションのフレームの AES-256-GCM（12 バイト nonce・16 バイトのタグ）を実際に計算する実装。
+ *
+ * 既定は {@link nobleAesGcm}（純 JS）。モバイルアプリは起動時に {@link setAesGcmBackend} でネイティブの実装
+ * （iOS の CryptoKit）を登録する。ワイヤ形式は実装によらず `nonce(12) || 暗号文 || タグ(16)` で、PC 側の
+ * webcrypto と同じ。カウンタ nonce の照合と進め方は {@link DirectionalCipher} が持ち、実装には任せない。
+ */
+export interface AesGcmBackend {
+	/** 計測・ログで見分けるための名前。 */
+	readonly name: string;
+	/**
+	 * `sealed`（`nonce(12) || 暗号文 || タグ(16)`）を開く。認証に失敗したら throw する。
+	 * 返す平文は呼び出し側が自由に持ってよい（`sealed` の一部を指す view を返さない）。
+	 */
+	open(key: Uint8Array, sealed: Uint8Array): Uint8Array;
+	/** `plaintext` を封緘し、`nonce(12) || 暗号文 || タグ(16)` を返す。 */
+	seal(key: Uint8Array, nonce: Uint8Array, plaintext: Uint8Array): Uint8Array;
+}
+
+/** 純 JS（@noble/ciphers）の実装。既定。ネイティブの実装の自己検査の基準にも使う。 */
+export const nobleAesGcm: AesGcmBackend = {
+	name: 'noble',
+	open: (key, sealed) => {
+		if (sealed.length < NONCE_LENGTH) {
+			throw new Error('message too short');
+		}
+		return gcm(key, sealed.subarray(0, NONCE_LENGTH)).decrypt(sealed.subarray(NONCE_LENGTH));
+	},
+	seal: (key, nonce, plaintext) => concatBytes(nonce, gcm(key, nonce).encrypt(plaintext)),
+};
+
+let aesGcmBackend: AesGcmBackend = nobleAesGcm;
+
+/**
+ * セッションのフレームの AES-GCM の実装を差し替える。`undefined` で既定（noble）へ戻す。
+ * 確立済みのチャネルにも次のフレームから効く（鍵とカウンタはチャネル側が持つため）。
+ */
+export function setAesGcmBackend(backend: AesGcmBackend | undefined): void {
+	aesGcmBackend = backend ?? nobleAesGcm;
+}
+
+/** いま使っている AES-GCM の実装。 */
+export function getAesGcmBackend(): AesGcmBackend {
+	return aesGcmBackend;
+}
+
+/**
+ * 差し替えた実装の例外を、noble と同じ素の `Error` に包み直す。ネイティブの例外（Expo の同期 Function の例外は
+ * `Error.prototype` そのものの `Error` に `code` を足した形で届く）の形に呼び出し側が依存しないようにし、
+ * ログでどの実装が失敗したか分かるよう `aes/gcm (<name>):` を付ける。元の例外は `cause` に残す。
+ * 既定の noble の例外は今までどおりそのまま投げる。
+ */
+function asPlainError(error: unknown, backend: AesGcmBackend): unknown {
+	if (backend === nobleAesGcm) {
+		return error;
+	}
+	const message = error instanceof Error ? error.message : String(error);
+	return new Error(`aes/gcm (${backend.name}): ${message}`, { cause: error });
+}
+
+/**
  * 一方向の暗号チャネル。鍵は方向ごとに独立で、nonceは単調増加カウンタ。
  */
 class DirectionalCipher {
@@ -55,7 +115,13 @@ class DirectionalCipher {
 
 	seal(plaintext: Uint8Array): Uint8Array {
 		const nonce = this.nonceFor(this.counter);
-		const sealed = concatBytes(nonce, gcm(this.key, nonce).encrypt(plaintext));
+		const backend = aesGcmBackend;
+		let sealed: Uint8Array;
+		try {
+			sealed = backend.seal(this.key, nonce, plaintext);
+		} catch (error) {
+			throw asPlainError(error, backend);
+		}
 		this.counter++;
 		return sealed;
 	}
@@ -72,8 +138,15 @@ class DirectionalCipher {
 			}
 		}
 		// 復号（認証失敗はthrow）が成功して初めてカウンタを進める。失敗時に進めると
-		// 不正・欠落フレーム1個で受信側が恒久desyncするため（H-1）。
-		const plaintext = gcm(this.key, expected).decrypt(message.subarray(NONCE_LENGTH));
+		// 不正・欠落フレーム1個で受信側が恒久desyncするため（H-1）。差し替えた実装でも同じ。
+		// nonce は上で expected と一致を確かめたので、message をそのまま渡す。
+		const backend = aesGcmBackend;
+		let plaintext: Uint8Array;
+		try {
+			plaintext = backend.open(this.key, message);
+		} catch (error) {
+			throw asPlainError(error, backend);
+		}
 		this.counter++;
 		return plaintext;
 	}

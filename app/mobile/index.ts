@@ -5,4 +5,6 @@
 // main をこのファイルにし、expo-router/entry より前に import する）。
 import 'react-native-get-random-values';
 import './src/sentry.js';
+// PC とのセッションの AES-GCM をネイティブ（CryptoKit）へ切り替える。最初の接続より前に済ませる。
+import './src/installNativeAesGcm.js';
 import 'expo-router/entry';

@@ -9,6 +9,8 @@ import { hitSlopToMinimum } from './hitSlop.js';
 import { monoFamily } from '../monoFont.js';
 import { hapticSelection } from '../haptics.js';
 import { clipForDisplay } from './agentIoClip.js';
+import { scaleChatSize } from '../chatTextScale.js';
+import { useChatStyles, useChatTextScale } from '../ui/chatTextScale.js';
 import { useThemeColors } from '../ui/themeColorsStore.js';
 import { isClipboardAvailable, writeClipboardText } from '../nativeClipboard.js';
 
@@ -51,6 +53,9 @@ export function useFullText(message: AgentChatMessage, terminalKey: string | und
 export function ExpandableText({ message, terminalKey, style }: { message: AgentChatMessage; terminalKey?: string; style?: StyleProp<TextStyle> }) {
 	const { full, loading, error, load, available } = useFullText(message, terminalKey);
 	const theme = useThemeColors();
+	const styles = useChatStyles(baseStyles);
+	// 文字を小さくしても当たり判定が 44pt を割らないよう、見た目の高さにも同じ割合をかけて広げる。
+	const plainNoteHitSlop = hitSlopToMinimum(scaleChatSize(PLAIN_NOTE_HEIGHT, useChatTextScale()));
 	const plainNote = [styles.plainNote, { color: theme.accent }];
 	const clipped = clipForDisplay(full ?? message.text);
 	return (
@@ -58,7 +63,7 @@ export function ExpandableText({ message, terminalKey, style }: { message: Agent
 			<Text style={style} selectable>{clipped.text}</Text>
 			{clipped.omittedLines > 0 ? <Text style={plainNote}>ほか {clipped.omittedLines} 行を省略しています</Text> : null}
 			{message.truncated === true && full === undefined ? (
-				<Pressable onPress={load} disabled={!available || loading} hitSlop={PLAIN_NOTE_HIT_SLOP} accessibilityRole="button" accessibilityLabel="全文を表示">
+				<Pressable onPress={load} disabled={!available || loading} hitSlop={plainNoteHitSlop} accessibilityRole="button" accessibilityLabel="全文を表示">
 					<Text style={plainNote}>
 						{loading ? '全文を取得しています…' : error ?? (available ? '全文を表示' : 'PCに接続すると全文を表示できます')}
 					</Text>
@@ -73,6 +78,7 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 	const [copied, setCopied] = useState(false);
 	const { full, loading, error, load, available } = useFullText(message, terminalKey);
 	const theme = useThemeColors();
+	const styles = useChatStyles(baseStyles);
 	// text 指定は「入力JSONから抜き出したコマンド本文」など、表示だけ差し替えたい場合に使う。
 	// 全文取得後は取得結果（＝元の生テキスト）へ切り替える。
 	const body = (full ?? text ?? message.text).replace(/\n+$/, '');
@@ -137,9 +143,10 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
  */
 const IO_ACTION_HEIGHT = 20;
 const IO_ACTION_HIT_SLOP = { ...hitSlopToMinimum(IO_ACTION_HEIGHT), bottom: 0 };
-/** 枠を持たない本文の「全文を表示」の見た目の高さ（文字1行＋上余白）。 */
-const PLAIN_NOTE_HIT_SLOP = hitSlopToMinimum(20);
+/** 枠を持たない本文の「全文を表示」の見た目の高さ（文字1行＋上余白。会話の文字サイズが 100% のとき）。 */
+const PLAIN_NOTE_HEIGHT = 20;
 
+/** ツール別ボディの共通の見た目。会話の中では `useChatStyles(ioStyles)` で文字サイズの設定をかけて使う。 */
 export const ioStyles = StyleSheet.create({
 	/** ツール別ボディで共有する余白・区切りの基本形。 */
 	body: { paddingBottom: 11, gap: 7 },
@@ -160,7 +167,7 @@ export const ioStyles = StyleSheet.create({
 	listMore: { paddingHorizontal: 9, paddingVertical: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, color: colors.textDim, fontSize: type.badge, textAlign: 'center' },
 });
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
 	io: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.control, ...squircle, overflow: 'hidden', backgroundColor: colors.codeBg },
 	ioBar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8, paddingVertical: 5, backgroundColor: 'rgba(255,255,255,0.035)', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
 	ioLabel: { flex: 1, color: colors.textDim, fontSize: type.badge, fontWeight: '800', letterSpacing: 0.9, textTransform: 'uppercase' },

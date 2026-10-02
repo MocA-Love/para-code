@@ -43,8 +43,9 @@ import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspa
 import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
 import { loadParadisMobileWordDiffBundle, renderParadisMobileWordDiffHtml } from './paradisMobileWordDiffHtml.js';
+import { paradisNegotiateMobileOfficeHost } from './paradisMobileOfficeHost.js';
 import { Channels, decodeParadisMobileWarmLeaseRequest, encodeNotify, NotifyKind, NotifyPayload, ParadisMobileWarmLeaseRequest } from '../common/paradisMobileProtocol.js';
-import { decodeParadisMobileOfficeRequest, getParadisMobileOfficeHostFeatureBits, PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, type ParadisMobileOfficeRequest, type ParadisMobileOfficeResponse } from '../common/paradisMobileOfficeProtocol.js';
+import { decodeParadisMobileOfficeRequest, getParadisMobileOfficeHostFeatureBits, paradisMobileOfficeCapabilities, PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, type ParadisMobileOfficeRequest, type ParadisMobileOfficeResponse } from '../common/paradisMobileOfficeProtocol.js';
 import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { paradisPickNotifyInstance } from '../common/paradisNotifySource.js';
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
@@ -79,6 +80,7 @@ import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSende
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
 import { paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts, paradisWithUntrackedFileStats } from '../common/paradisMobileDiffReview.js';
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
+import { PARADIS_MOBILE_SHOW_PREFIX_ARGS, ParadisMobileIgnoredRuns, paradisMarkMobileIgnoredEntries, paradisMobileIgnoredRepoDir, paradisMobileIgnoredStatusArgs, paradisParseMobileIgnoredNames } from '../common/paradisMobileIgnoredEntries.js';
 import { paradisParseMobileBranchSync } from '../common/paradisMobileScmSync.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionsForMobile, paradisParseApprovalOptions, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
@@ -517,6 +519,8 @@ const FS_RESPONSE_PAYLOAD_LIMIT = 24 * 1024 * 1024;
 // バイナリ（PDF・Word・画像・動画・音声）の読み取り上限。base64 で約1.37倍に膨らむため、
 // FrameMux の再結合上限（FRAME_REASSEMBLY_LIMIT = 32MiB）に収まるようここで抑える（20MiB → base64 約27MiB）。
 const BINARY_READ_LIMIT = 20 * 1024 * 1024;
+/** fs の `list` の無視の印を待つ上限（ms）。超えたら印を付けずに一覧を返す（fs.ignored.v1）。 */
+const LIST_IGNORED_TIMEOUT_MS = 1500;
 const UPLOAD_LIMIT = 10 * 1024 * 1024; // モバイルからの添付アップロード上限（バイト）
 const UPLOAD_BASE64_LIMIT = Math.ceil(UPLOAD_LIMIT * 4 / 3) + 4; // 同、base64文字列長での事前判定用
 const UPLOAD_DECODED_LIMIT = Math.floor(UPLOAD_BASE64_LIMIT * 3 / 4); // unpadded Base64を含む従来許容範囲のraw上限
@@ -1936,7 +1940,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					unstagedCounts?.code === 0 ? unstagedCounts.stdout : undefined,
 					stagedCounts?.code === 0 ? stagedCounts.stdout : undefined,
 				), paths => paradisStatMobileWorkspaceFiles(this.fileService, repoUri, paths));
-				reply({ t: 'status', branch: branch.stdout.trim(), files, ...(branchSync?.code === 0 ? paradisParseMobileBranchSync(branchSync.stdout) : {}) });
+				// pathsUnquoted: git の引用（`"a b.txt"` など）を外したパスで送っている印（アプリは外し直さない）
+				reply({ t: 'status', branch: branch.stdout.trim(), files, pathsUnquoted: true, ...(branchSync?.code === 0 ? paradisParseMobileBranchSync(branchSync.stdout) : {}) });
 			} else if (msg.t === 'diff') {
 				const args = msg.staged ? ['diff', '--cached'] : ['diff'];
 				if (msg.path) {
@@ -2097,6 +2102,36 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		return paradisResolveMobileWorkspacePath(this.fileService, root, relPath);
 	}
 
+	/** fs の `list` の無視の印を調べる git（スペースごとに 1 本）と、スペースの根のリポジトリの中の位置。 */
+	private readonly ignoredRuns = new ParadisMobileIgnoredRuns<ReadonlySet<string> | 'all'>();
+	private readonly ignoredPrefixes = new Map<string, string>();
+
+	/**
+	 * fs の `list` に付ける無視の印（`fs.ignored.v1`）。git のリポジトリでない・git が遅い（{@link LIST_IGNORED_TIMEOUT_MS}
+	 * を超えた）・失敗したときは undefined（印を付けずに一覧を返す）。
+	 */
+	private async listIgnoredNames(ws: string, relPath: string): Promise<ReadonlySet<string> | 'all' | undefined> {
+		const repoUri = this.repoUriForWs(ws);
+		if (!repoUri) {
+			return undefined;
+		}
+		// スペースごとに 1 本だけ走らせ、少しの間は結果を覚える（時間切れの後も git は走り続けるので、溜めない）
+		const run = this.ignoredRuns.lookup(ws, relPath, async () => {
+			let prefix = this.ignoredPrefixes.get(ws);
+			if (prefix === undefined) {
+				const shown = await this.runGit(repoUri, PARADIS_MOBILE_SHOW_PREFIX_ARGS);
+				if (shown.code !== 0) {
+					return undefined;
+				}
+				prefix = shown.stdout;
+				this.ignoredPrefixes.set(ws, prefix);
+			}
+			const result = await this.runGit(repoUri, paradisMobileIgnoredStatusArgs(relPath));
+			return result.code === 0 ? paradisParseMobileIgnoredNames(result.stdout, paradisMobileIgnoredRepoDir(prefix, relPath)) : undefined;
+		});
+		return raceTimeout(run, LIST_IGNORED_TIMEOUT_MS);
+	}
+
 	private async readWorkspaceFile(ws: string, relPath: string): Promise<string | undefined> {
 		const uri = await this.resolveWorkspacePathReal(ws, relPath);
 		if (!uri) {
@@ -2213,24 +2248,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		return `${mobileId}\0${requestId}`;
 	}
 
-	private async negotiateMobileOfficeHost(): Promise<ParadisOfficeV1Negotiation | undefined> {
-		try {
-			const value = await this.sharedProcessService.getChannel(PARADIS_OFFICE_CHANNEL).call<unknown>('negotiate', { versions: [1, 0] });
-			if (!value || typeof value !== 'object' || Array.isArray(value)) {
-				return undefined;
-			}
-			const candidate = value as Partial<ParadisOfficeV1Negotiation>;
-			const authorityValid = candidate.ownerCapability === undefined && candidate.connectionEpoch === undefined
-				|| typeof candidate.ownerCapability === 'string' && /^[a-f\d]{64}$/.test(candidate.ownerCapability)
-				&& typeof candidate.connectionEpoch === 'number' && Number.isSafeInteger(candidate.connectionEpoch) && candidate.connectionEpoch > 0;
-			return candidate.version === 1 && candidate.channel === PARADIS_OFFICE_CHANNEL && Array.isArray(candidate.capabilities)
-				&& candidate.capabilities.includes('compare') && candidate.capabilities.includes('getViewport') && candidate.capabilities.includes('getRenderableAsset')
-				&& authorityValid
-				? candidate as ParadisOfficeV1Negotiation
-				: undefined;
-		} catch {
-			return undefined;
-		}
+	private negotiateMobileOfficeHost(): Promise<ParadisOfficeV1Negotiation | undefined> {
+		return paradisNegotiateMobileOfficeHost(this.sharedProcessService);
 	}
 
 	/**
@@ -2299,7 +2318,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (msg.t === 'office/hello') {
 			const negotiation = await this.negotiateMobileOfficeHost();
 			const body: ParadisMobileOfficeResponse = negotiation
-				? { t: 'office/capabilities', version: PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, featureBits: getParadisMobileOfficeHostFeatureBits(msg.featureBits), warnings: ['office.capability.featureUnavailable'] }
+				? paradisMobileOfficeCapabilities(getParadisMobileOfficeHostFeatureBits(msg.featureBits))
 				: { t: 'office/capabilities', version: 0, featureBits: 0, warnings: ['office.capability.mobileHostV0'] };
 			reply(body);
 			return;
@@ -2706,12 +2725,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					reply({ t: 'media', data: encodeBase64(content.value), size });
 				}
 			} else if (msg.t === 'list') {
+				// 無視の印（fs.ignored.v1）は一覧と並べて調べる。遅い・失敗したときは印なしで返す（一覧を待たせない）
+				const ignored = this.listIgnoredNames(msg.ws, msg.path);
 				const stat = await this.fileService.resolve(uri);
 				const entries = (stat.children ?? [])
 					.filter(c => !c.isSymbolicLink) // シンボリックリンク越えの読み取りを防止（設計書 §8）
 					.map(c => ({ name: c.name, dir: c.isDirectory, size: c.size }))
 					.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
-				reply({ t: 'list', entries });
+				reply({ t: 'list', entries: paradisMarkMobileIgnoredEntries(entries, await ignored) });
 			} else if (msg.t === 'read') {
 				const stat = await this.fileService.stat(uri);
 				timing?.mark('stat');

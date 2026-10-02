@@ -42,6 +42,7 @@ import { subscribeNetworkRevival } from './networkRevival.js';
 import { shouldPresentNotifyBanner } from './notificationPolicy.js';
 import { notifySubtitle } from './notifyPresentation.js';
 import { defaultTerminalPrefs, normalizeTerminalPrefs, type TerminalPrefs, type TerminalViewport } from './terminalViewport.js';
+import { DEFAULT_CHAT_FONT_SIZE, loadChatFontSize, normalizeChatFontSize, saveChatFontSize, type ChatFontSize } from './chatTextScale.js';
 import { isTablet } from './hooks/useSizeClass.js';
 import { MobileVoiceLifecycle } from './voiceLifecycle.js';
 import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
@@ -229,6 +230,12 @@ interface AppState extends StoreState {
 	 */
 	terminalPrefs: TerminalPrefs;
 	setTerminalPref<K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]): void;
+	/**
+	 * 会話表示（エージェントのタブのチャット）の文字サイズ（設定 →「チャット UI」）。アプリ全体で1つで、
+	 * PC やスペースごとには持たない。PCへは送らない。計算は `chatTextScale.ts`。
+	 */
+	chatFontSize: ChatFontSize;
+	setChatFontSize(size: ChatFontSize): void;
 	/**
 	 * ターミナル画面が実測した「読める寸法」をPCへ申告する（PTYをこの寸法へ寄せてもらう）。
 	 * `undefined` で申告を取り下げる（画面を離れた・設定オフ）。
@@ -1162,6 +1169,7 @@ export const useAppStore = create<AppState>(set => ({
 	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: true },
 	// 文字サイズの既定は iPad が 12pt、iPhone が 10pt。
 	terminalPrefs: defaultTerminalPrefs(isTablet),
+	chatFontSize: DEFAULT_CHAT_FONT_SIZE,
 	viewingTerminalKey: undefined,
 	pinnedKeys: new Set(),
 	archivedKeys: new Set(),
@@ -1233,6 +1241,17 @@ export const useAppStore = create<AppState>(set => ({
 				}
 			} catch (err) {
 				console.warn('[appState] failed to load terminalPrefs', err);
+			}
+			// 会話表示の文字サイズをロード（保存が無い/壊れている場合は既定のまま）。
+			// 読み込みの前に設定画面で変えていたら、その値を残す。
+			try {
+				const before = useAppStore.getState().chatFontSize;
+				const stored = await loadChatFontSize(secureKeyStore);
+				if (useAppStore.getState().chatFontSize === before) {
+					set({ chatFontSize: stored });
+				}
+			} catch (err) {
+				console.warn('[appState] failed to load chatFontSize', err);
 			}
 			// 接続方針の設定をロード（保存が無い/壊れている場合は既定のまま）。
 			try {
@@ -1960,6 +1979,12 @@ export const useAppStore = create<AppState>(set => ({
 		for (const runtime of runtimes.values()) {
 			runtime.controller.sendNotifyPrefs(next);
 		}
+	},
+
+	setChatFontSize(size) {
+		const next = normalizeChatFontSize(size);
+		set({ chatFontSize: next });
+		saveChatFontSize(secureKeyStore, next).catch(err => console.warn('[appState] failed to save chatFontSize', err));
 	},
 
 	setTerminalPref(key, value) {
