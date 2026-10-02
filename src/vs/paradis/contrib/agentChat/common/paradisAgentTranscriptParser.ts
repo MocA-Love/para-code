@@ -788,8 +788,9 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 		pushClaudeUserContent(out, obj, content, ts, signals);
 		return out;
 	}
-	if (signals.claudeQueuedPrompts.interrupted) {
-		// 割り込みの後にエージェントが応答した＝書き直しの user 行は来なかった。
+	// エージェントが応答した時点で、控えた queued の発言は消費済み。割り込みの有無に関わらず捨てる
+	// （残すと、応答の後に Esc で止めて同じ文を打ち直したときに書き直しと取り違えて隠してしまう）。
+	if (signals.claudeQueuedPrompts.texts.length > 0 || signals.claudeQueuedPrompts.interrupted) {
 		signals.claudeQueuedPrompts.texts = [];
 		signals.claudeQueuedPrompts.interrupted = false;
 	}

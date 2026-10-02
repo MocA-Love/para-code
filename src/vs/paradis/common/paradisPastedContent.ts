@@ -16,6 +16,9 @@
  * 実データの形だけを受ける。開きタグの前の改行 2 つと id を必須にし、閉じタグの id を後方参照で対にする
  * （本文に文字としてタグを書いた場合や、貼った本文に別の包みが入っている場合に途中で閉じないように）。
  */
+/** これより長い本文は展開しない（照合の最悪計算量を抑える）。 */
+const PASTED_CONTENT_MAX_LENGTH = 1_000_000;
+
 const PASTED_CONTENT_PATTERN = /\n\n<pasted_content id="(?<id>[^"]*)">\n(?<body>[\s\S]*?)\n<\/pasted_content id="\k<id>">\n?/g;
 
 /**
@@ -23,7 +26,8 @@ const PASTED_CONTENT_PATTERN = /\n\n<pasted_content id="(?<id>[^"]*)">\n(?<body>
  * （`これを見て` + 包み + `どう思う?` → `これを見て\n本文\nどう思う?`）。
  */
 export function paradisExpandPastedContent(text: string): string {
-	if (!text.includes('<pasted_content')) {
+	// 閉じタグの無い開きタグが大量に並ぶと照合が 2 乗で伸びるので、極端に長い本文は展開しない。
+	if (!text.includes('<pasted_content') || text.length > PASTED_CONTENT_MAX_LENGTH) {
 		return text;
 	}
 	return text.replace(PASTED_CONTENT_PATTERN, (match: string, _id: string, body: string, offset: number) => {

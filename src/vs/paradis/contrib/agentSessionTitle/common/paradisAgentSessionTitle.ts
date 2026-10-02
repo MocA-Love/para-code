@@ -63,7 +63,8 @@ export function paradisHumanizeAgentSessionTitle(raw: string | undefined): strin
 	}
 	// 貼り付けの包み（`<pasted_content id="…">`）は属性付きで SIMPLE_TAG_PATTERN に当たらないので、
 	// 先に中身へ戻す（包みの前の改行も形の一部なので trim より前に）。
-	const trimmed = paradisExpandPastedContent(raw).trim();
+	// 途中で切られて閉じタグを失った包みは展開できないので、残ったタグだけ取り除く。
+	const trimmed = paradisExpandPastedContent(raw).replace(/<\/?pasted_content[^>]*>/g, '').trim();
 	if (trimmed.length === 0) {
 		return undefined;
 	}
