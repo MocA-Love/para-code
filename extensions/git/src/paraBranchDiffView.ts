@@ -6,7 +6,7 @@
 
 import * as path from 'path';
 import {
-	commands, Disposable, Event, EventEmitter, FileDecoration, FileDecorationProvider, l10n, LogOutputChannel, Memento,
+	commands, Disposable, env, Event, EventEmitter, FileDecoration, FileDecorationProvider, l10n, LogOutputChannel, Memento,
 	ThemeColor, ThemeIcon, TreeDataProvider, TreeItem, TreeItemCollapsibleState, TreeView, Uri, window, workspace
 } from 'vscode';
 import type { Change } from './api/git';
@@ -87,6 +87,10 @@ interface IVisibleRepository {
 
 /** Sorting thousands of rows through `String.localeCompare` rebuilds a collator on every call. */
 const collator = new Intl.Collator(undefined, { numeric: true });
+
+function isDeleted(change: Change): boolean {
+	return change.status === Status.DELETED || change.status === Status.INDEX_DELETED;
+}
 
 function isFileNode(node: unknown): node is IFileNode {
 	return !!node && (node as IFileNode).kind === 'file';
@@ -286,7 +290,15 @@ class ParaBranchDiffView implements TreeDataProvider<Node>, Disposable {
 			commands.registerCommand('git.paraBranchDiffSort', () => this.pickSortKey()),
 			commands.registerCommand('git.paraBranchDiffOpenChanges', (node?: Node) => this.openChanges(node)),
 			commands.registerCommand('git.paraBranchDiffOpenFile', (node?: Node) => this.openFile(node)),
-			commands.registerCommand('git.paraBranchDiffViewAll', (node?: Node) => this.openAllChanges(node))
+			commands.registerCommand('git.paraBranchDiffViewAll', (node?: Node) => this.openAllChanges(node)),
+			// Same entries as the right-click menu of the regular Changes list (`git.revealInExplorer`,
+			// `git.revealFileInOS.*`), which take a SourceControlResourceState and so cannot be reused here.
+			commands.registerCommand('git.paraBranchDiffRevealInExplorer', (node?: Node) => this.revealFile(node, 'revealInExplorer')),
+			commands.registerCommand('git.paraBranchDiffRevealFileInOS.linux', (node?: Node) => this.revealFile(node, 'revealFileInOS')),
+			commands.registerCommand('git.paraBranchDiffRevealFileInOS.mac', (node?: Node) => this.revealFile(node, 'revealFileInOS')),
+			commands.registerCommand('git.paraBranchDiffRevealFileInOS.windows', (node?: Node) => this.revealFile(node, 'revealFileInOS')),
+			commands.registerCommand('git.paraBranchDiffCopyPath', (node?: Node) => this.copyPath(node, false)),
+			commands.registerCommand('git.paraBranchDiffCopyRelativePath', (node?: Node) => this.copyPath(node, true))
 		);
 	}
 
@@ -615,7 +627,8 @@ class ParaBranchDiffView implements TreeDataProvider<Node>, Disposable {
 		// In tree mode the folder rows already say where the file is, so repeating the directory
 		// on every row would only push the status letter off the edge.
 		item.description = this.viewMode === 'list' ? entry.dirname : undefined;
-		item.contextValue = 'paraBranchDiffFile';
+		// Deleted files have no file on disk, so the reveal entries are keyed off a separate value.
+		item.contextValue = isDeleted(entry.change) ? 'paraBranchDiffFileDeleted' : 'paraBranchDiffFile';
 		item.tooltip = entry.change.status === Status.INDEX_RENAMED
 			? `${entry.relativePath}\n${statusText(entry.change.status)}: ${path.relative(entry.repository.root, entry.change.originalUri.fsPath).replace(/\\/g, '/')}`
 			: `${entry.relativePath}\n${statusText(entry.change.status)}`;
@@ -660,13 +673,32 @@ class ParaBranchDiffView implements TreeDataProvider<Node>, Disposable {
 
 		// Decided from the status rather than from a failed open: `vscode.open` swallows the error
 		// and puts a "file not found" editor on screen, so waiting for it to throw says nothing.
-		if (entry.change.status === Status.DELETED || entry.change.status === Status.INDEX_DELETED) {
+		if (isDeleted(entry.change)) {
 			// allow-any-unicode-next-line
 			window.showInformationMessage(l10n.t('「{0}」は、このブランチが削除したファイルです。', entry.relativePath));
 			return;
 		}
 
 		await commands.executeCommand('vscode.open', entry.change.uri);
+	}
+
+	/** The file as it is on disk now. The menu hides these entries for deleted files. */
+	private async revealFile(node: Node | undefined, command: 'revealInExplorer' | 'revealFileInOS'): Promise<void> {
+		if (!isFileNode(node) || isDeleted(node.entry.change)) {
+			return;
+		}
+
+		await commands.executeCommand(command, node.entry.change.uri);
+	}
+
+	/** The relative path is from the repository root, which is what the row shows. */
+	private async copyPath(node: Node | undefined, relative: boolean): Promise<void> {
+		if (!isFileNode(node)) {
+			return;
+		}
+
+		const { entry } = node;
+		await env.clipboard.writeText(relative ? entry.relativePath : entry.change.uri.fsPath);
 	}
 
 	private async openAllChanges(node?: Node): Promise<void> {

@@ -141,6 +141,8 @@
 	"command.paraBranchDiffViewAll": "ブランチの変更点をまとめて開く",
 	"command.paraBranchDiffOpenChanges": "変更を開く",
 	"command.paraBranchDiffOpenFile": "ファイルを開く",
+	"command.paraBranchDiffCopyPath": "パスのコピー",
+	"command.paraBranchDiffCopyRelativePath": "相対パスをコピー",
 	"command.paraBranchDiffSetViewModeTree": "ツリーとして表示",
 	"command.paraBranchDiffSetViewModeList": "リストとして表示",
 	"command.paraBranchDiffSort": "並べ替え...",
