@@ -13,13 +13,12 @@ import { Schemas } from '../../../../../base/common/network.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import type { IShellLaunchConfig } from '../../../../../platform/terminal/common/terminal.js';
 import type { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
 import type { ITerminalInstance, ITerminalInstanceService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import type { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
-import { PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_ENABLED_KEY } from '../../../mobileRelay/common/paradisMobileRelay.js';
 import { ParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
+import { paradisRemoteHookSourceId } from '../../common/paradisRemoteHookSource.js';
 import type { IParadisCodexLaunchHomeService } from '../../../codexAccounts/browser/paradisCodexLaunchHomeService.js';
 
 const PANE_TOKEN = '12345678-1234-4234-8234-123456789abc';
@@ -34,16 +33,11 @@ function codexLaunchHomeStub(launchHome: string | undefined, recorded: Map<strin
 	} as unknown as IParadisCodexLaunchHomeService;
 }
 
-function paneEnvironmentFor(mobileEnabled: unknown, codexLive: unknown, options: { readonly launchHome?: string; readonly remoteAuthority?: string; readonly cwd?: URI; readonly recorded?: Map<string, string | undefined> } = {}): Record<string, string | null | undefined> {
-	const configurationService = new TestConfigurationService();
-	configurationService.setUserConfiguration(PARADIS_MOBILE_ENABLED_KEY, mobileEnabled);
-	configurationService.setUserConfiguration(PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, codexLive);
-
+function paneEnvironmentFor(options: { readonly launchHome?: string; readonly remoteAuthority?: string; readonly cwd?: URI; readonly recorded?: Map<string, string | undefined> } = {}): Record<string, string | null | undefined> {
 	const service = new ParadisPaneTokenService(
 		{ onDidCreateInstance: Event.None } as unknown as ITerminalInstanceService,
 		{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, execPath: `${APP_ROOT}/Para Code`, remoteAuthority: options.remoteAuthority } as unknown as IWorkbenchEnvironmentService,
 		{ userHome: async () => URI.file('/home/test') } as unknown as IPathService,
-		configurationService,
 		codexLaunchHomeStub(options.launchHome, options.recorded),
 	);
 	const shellLaunchConfig = { shellIntegrationNonce: PANE_TOKEN, cwd: options.cwd } as IShellLaunchConfig;
@@ -58,12 +52,11 @@ function paneEnvironmentFor(mobileEnabled: unknown, codexLive: unknown, options:
 suite('Paradis pane token service', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	// ペイン専用 app-server はターミナルごとに1プロセス立ち、その下でMCPが丸ごと起動し直される。
-	// 立てる価値があるのはモバイルのライブ連携を使うときだけなので、読み手と同じ条件で判定する。
-	// 立てないときも para-browser MCP の識別に要る2つは必ず残す（ここが落ちると全ペインで
-	// ブラウザ操作が動かなくなる）。POSIX ではランチャーだけを入れ、Codex を共有バックグラウンドサーバー
-	// から切り離して起動させる（ソケットは入れない）。Windows は実機で確かめるまで何も入れない。
-	test('keeps the MCP routing variables but no pane app-server socket unless mobile live sync is on', () => {
+	// ペイン専用 app-server（モバイルのライブ連携）はやめたので、ソケットは入れない。para-browser MCP の
+	// 識別に要る2つは必ず残す（ここが落ちると全ペインでブラウザ操作が動かなくなる）。POSIX では
+	// ランチャーだけを入れ、Codex を共有バックグラウンドサーバーから切り離して起動させる。
+	// Windows は実機で確かめるまで何も入れない。
+	test('keeps the MCP routing variables and only the launcher, never a pane app-server socket', () => {
 		const launcherDirectory = join(APP_ROOT, 'resources', 'paradis', 'bin');
 		const expected = isWindows ? {
 			PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
@@ -75,35 +68,45 @@ suite('Paradis pane token service', () => {
 			VSCODE_PATH_PREFIX: `${launcherDirectory}:`,
 			PARA_CODE_CODEX_LAUNCHER_DIR: launcherDirectory,
 		};
-		for (const [mobileEnabled, codexLive] of [[false, false], [false, true], [true, false], [true, 'true'], [true, undefined]]) {
-			assert.deepStrictEqual(paneEnvironmentFor(mobileEnabled, codexLive), expected, `mobile=${String(mobileEnabled)} codexLive=${String(codexLive)} でソケットを注入してはいけない`);
-		}
+		assert.deepStrictEqual(paneEnvironmentFor(), expected);
 	});
 
 	// SSH の接続先では、置いたランチャー（~/.para-code/bin）だけを入れる。手元が Windows でも同じ。
-	test('puts only the host launcher on PATH for a remote terminal when the pane app-server is off', async () => {
-		const configurationService = new TestConfigurationService();
-		const service = new ParadisPaneTokenService(
-			{ onDidCreateInstance: Event.None } as unknown as ITerminalInstanceService,
-			{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, remoteAuthority: 'ssh-remote+host' } as unknown as IWorkbenchEnvironmentService,
-			{ userHome: async () => URI.from({ scheme: Schemas.vscodeRemote, authority: 'ssh-remote+host', path: '/home/test' }) } as unknown as IPathService,
-			configurationService,
-			codexLaunchHomeStub(undefined),
-		);
-		try {
-			await new Promise(resolve => setTimeout(resolve, 0));
-			const shellLaunchConfig = { shellIntegrationNonce: PANE_TOKEN } as IShellLaunchConfig;
-			service.prepareShellLaunchConfig(shellLaunchConfig);
-			assert.deepStrictEqual({ ...shellLaunchConfig.env }, {
-				PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
-				PARA_CODE_MCP_PORT_FILE: '/home/test/.para-code/paradis-browser-mcp.json',
-				PATH: '/home/test/.para-code/bin:${env:PATH}',
-				VSCODE_PATH_PREFIX: '/home/test/.para-code/bin:',
-				PARA_CODE_CODEX_LAUNCHER_DIR: '/home/test/.para-code/bin',
-			});
-		} finally {
-			service.dispose();
-		}
+	// ポートファイルは、この PC の印が作れればこの PC 専用のもの（同じ接続先へ別の PC からも繋いで
+	// いるとき、hook をこのペインを開いた PC へ届けるため）。作れなければ共有のもの。
+	test('puts only the host launcher on PATH and points the hooks at this PC\'s port file on the host', async () => {
+		const remoteEnvironment = async (machineId: string | undefined) => {
+			const service = new ParadisPaneTokenService(
+				{ onDidCreateInstance: Event.None } as unknown as ITerminalInstanceService,
+				{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, remoteAuthority: 'ssh-remote+host', machineId } as unknown as IWorkbenchEnvironmentService,
+				{ userHome: async () => URI.from({ scheme: Schemas.vscodeRemote, authority: 'ssh-remote+host', path: '/home/test' }) } as unknown as IPathService,
+				codexLaunchHomeStub(undefined),
+			);
+			try {
+				await new Promise(resolve => setTimeout(resolve, 0));
+				const shellLaunchConfig = { shellIntegrationNonce: PANE_TOKEN } as IShellLaunchConfig;
+				service.prepareShellLaunchConfig(shellLaunchConfig);
+				return { ...shellLaunchConfig.env };
+			} finally {
+				service.dispose();
+			}
+		};
+		const launcher = {
+			PATH: '/home/test/.para-code/bin:${env:PATH}',
+			VSCODE_PATH_PREFIX: '/home/test/.para-code/bin:',
+			PARA_CODE_CODEX_LAUNCHER_DIR: '/home/test/.para-code/bin',
+		};
+		const sourceId = paradisRemoteHookSourceId('machine-a');
+		assert.deepStrictEqual({
+			withMachineId: await remoteEnvironment('machine-a'),
+			withoutMachineId: await remoteEnvironment(undefined),
+			otherMachineDiffers: paradisRemoteHookSourceId('machine-b') !== sourceId,
+		}, {
+			withMachineId: { PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN, PARA_CODE_MCP_PORT_FILE: `/home/test/.para-code/ports/${sourceId}.json`, ...launcher },
+			withoutMachineId: { PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN, PARA_CODE_MCP_PORT_FILE: '/home/test/.para-code/paradis-browser-mcp.json', ...launcher },
+			otherMachineDiffers: true,
+		});
+		assert.ok(/^[0-9a-f]{16}$/.test(sourceId ?? ''));
 	});
 
 	// アプリを終了→起動し直したとき、終了前に一度も入力されなかったターミナルはバッファが保存されず
@@ -120,7 +123,6 @@ suite('Paradis pane token service', () => {
 			{ onDidCreateInstance: onDidCreateInstance.event } as unknown as ITerminalInstanceService,
 			{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, execPath: `${APP_ROOT}/Para Code` } as unknown as IWorkbenchEnvironmentService,
 			{ userHome: async () => URI.file('/home/test') } as unknown as IPathService,
-			new TestConfigurationService(),
 			{
 				getLaunchHome: () => '/home/test/.codex-2',
 				recordPaneHome: (token: string, homePath: string | undefined) => recorded.push([token, homePath]),
@@ -155,8 +157,8 @@ suite('Paradis pane token service', () => {
 				revivedPaneId: revivedConfig.env?.PARA_CODE_TERMINAL_PANE_ID,
 				recorded,
 			}, {
-				created: { ...paneEnvironmentFor(false, false), CODEX_HOME: '/home/test/.codex-2' },
-				restored: { ...paneEnvironmentFor(false, false), CODEX_HOME: '/home/test/.codex-2' },
+				created: { ...paneEnvironmentFor(), CODEX_HOME: '/home/test/.codex-2' },
+				restored: { ...paneEnvironmentFor(), CODEX_HOME: '/home/test/.codex-2' },
 				registered: PANE_TOKEN,
 				revivedPaneId: revivedToken,
 				// 新しく開いた1回分だけ。再接続した2回（id 2・3）は記録しない
@@ -168,15 +170,6 @@ suite('Paradis pane token service', () => {
 		}
 	});
 
-	test('points Codex at a pane app-server when both mobile settings are on', () => {
-		const environment = paneEnvironmentFor(true, true);
-
-		assert.ok(String(environment.PARA_CODE_CODEX_LAUNCHER_DIR ?? '').endsWith(join('resources', 'paradis', 'bin')));
-		// ペイン単位の宛先。POSIXはUnixソケット、WindowsはNodeが繋げるws endpointファイル。
-		const paneEndpoint = isWindows ? environment.PARA_CODE_CODEX_APP_SERVER_ENDPOINT : environment.PARA_CODE_CODEX_APP_SERVER_SOCKET;
-		assert.ok(String(paneEndpoint ?? '').includes(PANE_TOKEN));
-	});
-
 	// Codex のアカウント切替は、新しく開くターミナルへ CODEX_HOME を渡すだけ。既定のホームを選んで
 	// いるときは何も足さない（ユーザー自身の CODEX_HOME を潰さない）。SSH の接続先で動くターミナルへ
 	// 手元のホームのパスを渡すと存在しない場所を指すので、そこでも渡さない。
@@ -184,16 +177,16 @@ suite('Paradis pane token service', () => {
 	// にだけ渡す。SSH のウィンドウで手元に開いたターミナルには渡さず、開いたときのホームも覚えない。
 	test('passes the selected Codex home only to terminals on the window\'s machine and remembers it per pane', () => {
 		const recorded = new Map<string, string | undefined>();
-		const selected = paneEnvironmentFor(false, false, { launchHome: '/home/test/.codex-2', recorded }).CODEX_HOME;
+		const selected = paneEnvironmentFor({ launchHome: '/home/test/.codex-2', recorded }).CODEX_HOME;
 		const recordedLocal = recorded.get(PANE_TOKEN);
 		const remoteRecorded = new Map<string, string | undefined>();
-		const remote = paneEnvironmentFor(false, false, { launchHome: '/home/test/.codex-2', remoteAuthority: 'ssh-remote+host', recorded: remoteRecorded }).CODEX_HOME;
+		const remote = paneEnvironmentFor({ launchHome: '/home/test/.codex-2', remoteAuthority: 'ssh-remote+host', recorded: remoteRecorded }).CODEX_HOME;
 		const localInRemoteRecorded = new Map<string, string | undefined>();
-		const localInRemote = paneEnvironmentFor(false, false, { launchHome: '/home/test/.codex-2', remoteAuthority: 'ssh-remote+host', cwd: URI.file('/Users/test/project'), recorded: localInRemoteRecorded }).CODEX_HOME;
+		const localInRemote = paneEnvironmentFor({ launchHome: '/home/test/.codex-2', remoteAuthority: 'ssh-remote+host', cwd: URI.file('/Users/test/project'), recorded: localInRemoteRecorded }).CODEX_HOME;
 		assert.deepStrictEqual({
 			selected,
 			recordedLocal,
-			defaultHome: paneEnvironmentFor(false, false, { launchHome: undefined }).CODEX_HOME,
+			defaultHome: paneEnvironmentFor({ launchHome: undefined }).CODEX_HOME,
 			remote,
 			remoteRecorded: remoteRecorded.get(PANE_TOKEN),
 			localInRemote,

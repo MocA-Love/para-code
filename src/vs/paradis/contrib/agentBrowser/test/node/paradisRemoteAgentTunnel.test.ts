@@ -7,10 +7,7 @@
 
 
 import * as assert from 'assert';
-import { promises as fs } from 'fs';
-import { tmpdir } from 'os';
 import * as sinon from 'sinon';
-import { join } from '../../../../../base/common/path.js';
 import type { ChildProcess } from 'child_process';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ILogService } from '../../../../../platform/log/common/log.js';
@@ -377,115 +374,6 @@ suite('ParadisRemoteAgentTunnel', () => {
 		}
 	});
 
-	/**
-	 * `-O` の要求だけ「成功して終了」を返す偽 ssh（戻り経路の常駐プロセスは生かしたまま）。
-	 * @param options.deferForwardExit `-O` の返事を自動で返さず、`settleControlRequests()` を待つ
-	 */
-	function fakeSshWithControl(options?: { readonly deferForwardExit?: boolean }) {
-		const calls: string[][] = [];
-		const masters: Array<ReturnType<typeof fakeControlChild>> = [];
-		const pendingControlExits: Array<() => void> = [];
-		const spawn = (args: string[]) => {
-			calls.push(args);
-			const entry = fakeControlChild();
-			if (args.includes('-O')) {
-				const settle = () => entry.emit('exit', 0);
-				if (options?.deferForwardExit === true) {
-					pendingControlExits.push(settle);
-				} else {
-					queueMicrotask(settle);
-				}
-			} else {
-				masters.push(entry);
-			}
-			return entry.child;
-		};
-		return {
-			calls,
-			spawn,
-			/** 実際の ssh が動的ポートの割り当てを stderr へ書くのを模す（最後に起こしたマスター）。 */
-			allocatePort: (port: number) => masters[masters.length - 1]
-				.emit('stderr:data', Buffer.from(`Allocated port ${port} for remote forward to 127.0.0.1:47286\n`)),
-			/** 決定的候補で張れたことを LogLevel=DEBUG1 の出力として模す（最後に起こしたマスター）。 */
-			fixedPortSuccess: (port: number) => masters[masters.length - 1]
-				.emit('stderr:data', Buffer.from(`debug1: remote forward success for: listen ${port}, connect 127.0.0.1:47286\n`)),
-			/** マスターが落ちたことを模す（切断・鍵の失効など）。 */
-			closeMaster: () => masters[masters.length - 1].emit('close', 1),
-			/** 溜めておいた `-O` の返事をまとめて返す。 */
-			settleControlRequests: () => {
-				for (const settle of pendingControlExits.splice(0)) {
-					settle();
-				}
-			},
-		};
-	}
-
-	test('rides the tunnel already open instead of dialling once per pane', async () => {
-		const ssh = fakeSshWithControl();
-		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-sock-'));
-		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn, dir);
-		try {
-			tunnels.ensure('ssh-remote+dev-pc', 47286);
-			tunnels.syncSocketForwards('window:1', 'ssh-remote+dev-pc', new Map([[join(dir, 'a.sock'), '/home/u/.para-code/pcx/a.sock']]));
-			await new Promise<void>(resolve => queueMicrotask(resolve));
-
-			const connections = ssh.calls.filter(args => !args.includes('-O'));
-			assert.deepStrictEqual({
-				// ペインが増えても新しい接続は起こさない。増えるのは制御要求だけ
-				connections: connections.length,
-				master: connections[0].includes('-M'),
-				forwarded: ssh.calls.filter(args => args.includes('-O')).map(args => args.slice(args.indexOf('-O'))),
-			}, {
-				connections: 1,
-				master: true,
-				forwarded: [['-O', 'forward', '-L', `${join(dir, 'a.sock')}:/home/u/.para-code/pcx/a.sock`, 'dev-pc']],
-			});
-		} finally {
-			tunnels.dispose();
-			await fs.rm(dir, { recursive: true, force: true });
-		}
-	});
-
-	test('leaves another window\'s forwards alone when one window drops its own', async () => {
-		const ssh = fakeSshWithControl();
-		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-sock-'));
-		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn, dir);
-		try {
-			const a = join(dir, 'a.sock');
-			const b = join(dir, 'b.sock');
-			tunnels.ensure('ssh-remote+dev-pc', 47286);
-			tunnels.syncSocketForwards('window:1', 'ssh-remote+dev-pc', new Map([[a, '/home/u/.para-code/pcx/a.sock']]));
-			tunnels.syncSocketForwards('window:2', 'ssh-remote+dev-pc', new Map([[b, '/home/u/.para-code/pcx/b.sock']]));
-			await new Promise<void>(resolve => queueMicrotask(resolve));
-
-			// 2枚目のウィンドウがペインを閉じても、1枚目の転送は生きていなければならない
-			tunnels.syncSocketForwards('window:2', 'ssh-remote+dev-pc', new Map());
-			await new Promise<void>(resolve => queueMicrotask(resolve));
-
-			assert.deepStrictEqual(
-				ssh.calls.filter(args => args.includes('cancel')).map(args => args[args.indexOf('-L') + 1]),
-				[`${b}:/home/u/.para-code/pcx/b.sock`],
-			);
-		} finally {
-			tunnels.dispose();
-			await fs.rm(dir, { recursive: true, force: true });
-		}
-	});
-
-	test('does not forward anything when no tunnel is open', async () => {
-		const ssh = fakeSshWithControl();
-		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-sock-'));
-		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn, dir);
-		try {
-			// 戻り経路が設定で切られている／まだ張れていない状態。勝手に ssh を起こさない
-			tunnels.syncSocketForwards('window:1', 'ssh-remote+dev-pc', new Map([[join(dir, 'a.sock'), '/home/u/.para-code/pcx/a.sock']]));
-			assert.deepStrictEqual(ssh.calls, []);
-		} finally {
-			tunnels.dispose();
-			await fs.rm(dir, { recursive: true, force: true });
-		}
-	});
-
 	test('keeps the tunnel up until the last window that asked for it lets go', async () => {
 		// 同じホストへ2枚開いているとき、1枚閉じただけで畳むと残った側の hook が黙って死ぬ
 		const ssh = fakeSsh();
@@ -511,100 +399,18 @@ suite('ParadisRemoteAgentTunnel', () => {
 		tunnels.dispose();
 	});
 
-	test('re-opens the Codex socket forwards after the ssh master is replaced', async () => {
-		// 新しいマスターは旧マスターの `-L` を何も引き継いでいない。希望一覧の差分を基準にすると
-		// 「前回と同じ希望」で差分ゼロになり、誰も張り直さないままペインが黙って死ぬ
-		const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-		const ssh = fakeSshWithControl();
-		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-sock-'));
-		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn, dir);
-		try {
-			const a = join(dir, 'a.sock');
-			const preferredPort = computeCandidateRemotePort('dev-pc');
-			tunnels.ensure('ssh-remote+dev-pc', 47286, 'window:1');
-			ssh.fixedPortSuccess(preferredPort);
-			tunnels.syncSocketForwards('window:1', 'ssh-remote+dev-pc', new Map([[a, '/home/u/.para-code/pcx/a.sock']]));
-			await new Promise<void>(resolve => queueMicrotask(resolve));
-			const beforeReconnect = ssh.calls.filter(args => args.includes('forward')).length;
+	test('lets go of the tunnels a destroyed window owned without waiting for its goodbye', async () => {
+		// 閉じる知らせはウィンドウの dispose から投げっぱなしなので、クラッシュでは届かない
+		const ssh = fakeSsh();
+		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn);
+		const first = tunnels.ensure('ssh-remote+dev-pc', 47286, 'window:1');
+		ssh.emitFixedPortSuccess(computeCandidateRemotePort('dev-pc'));
+		await first;
 
-			ssh.closeMaster();
-			await clock.tickAsync(5000); // 張り直しまでの待ち時間
-			ssh.fixedPortSuccess(preferredPort);
-			await new Promise<void>(resolve => queueMicrotask(resolve));
+		tunnels.releaseWindow('window:1');
 
-			assert.deepStrictEqual({
-				beforeReconnect,
-				afterReconnect: ssh.calls.filter(args => args.includes('forward')).map(args => args[args.indexOf('-L') + 1]),
-				masters: ssh.calls.filter(args => args.includes('-M')).length,
-			}, {
-				beforeReconnect: 1,
-				afterReconnect: [`${a}:/home/u/.para-code/pcx/a.sock`, `${a}:/home/u/.para-code/pcx/a.sock`],
-				masters: 2,
-			});
-		} finally {
-			tunnels.dispose();
-			clock.restore();
-			await fs.rm(dir, { recursive: true, force: true });
-		}
-	});
-
-	test('cancels a forward whose reply lands after the pane that wanted it went away', async () => {
-		// 返事待ちの転送は「張れている一覧」にまだ載っていないため、取り下げループから漏れる
-		const ssh = fakeSshWithControl({ deferForwardExit: true });
-		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-sock-'));
-		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn, dir);
-		try {
-			const a = join(dir, 'a.sock');
-			tunnels.ensure('ssh-remote+dev-pc', 47286, 'window:1');
-			tunnels.syncSocketForwards('window:1', 'ssh-remote+dev-pc', new Map([[a, '/home/u/.para-code/pcx/a.sock']]));
-			tunnels.syncSocketForwards('window:1', 'ssh-remote+dev-pc', new Map());
-			ssh.settleControlRequests();
-
-			assert.deepStrictEqual(
-				ssh.calls.filter(args => args.includes('cancel')).map(args => args[args.indexOf('-L') + 1]),
-				[`${a}:/home/u/.para-code/pcx/a.sock`],
-			);
-		} finally {
-			// 溜めたままの `-O` は打ち切り待ちのタイマーを抱えている。返事を返して片付ける
-			ssh.settleControlRequests();
-			tunnels.dispose();
-			await fs.rm(dir, { recursive: true, force: true });
-		}
-	});
-
-	test('lets go of everything a destroyed window owned without waiting for its goodbye', async () => {
-		// 取り下げの知らせはウィンドウの dispose から投げっぱなしなので、クラッシュでは届かない。
-		// 残ったままだと、次に同じホストへ繋いだ別のウィンドウが死んだペインのソケットまで張り直す
-		const ssh = fakeSshWithControl();
-		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-sock-'));
-		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn, dir);
-		try {
-			const a = join(dir, 'a.sock');
-			const preferredPort = computeCandidateRemotePort('dev-pc');
-			tunnels.ensure('ssh-remote+dev-pc', 47286, 'window:1');
-			ssh.fixedPortSuccess(preferredPort);
-			tunnels.syncSocketForwards('window:1', 'ssh-remote+dev-pc', new Map([[a, '/home/u/.para-code/pcx/a.sock']]));
-			await new Promise<void>(resolve => queueMicrotask(resolve));
-
-			tunnels.releaseWindow('window:1');
-			tunnels.ensure('ssh-remote+dev-pc', 47286, 'window:2');
-			ssh.fixedPortSuccess(preferredPort);
-			await new Promise<void>(resolve => queueMicrotask(resolve));
-
-			assert.deepStrictEqual({
-				cancelled: ssh.calls.filter(args => args.includes('cancel')).map(args => args[args.indexOf('-L') + 1]),
-				forwards: ssh.calls.filter(args => args.includes('forward')).length,
-				authorities: [...tunnels.authorities],
-			}, {
-				cancelled: [`${a}:/home/u/.para-code/pcx/a.sock`],
-				// 死んだウィンドウの希望は消えているので、新しいウィンドウの接続では張り直されない
-				forwards: 1,
-				authorities: ['ssh-remote+dev-pc'],
-			});
-		} finally {
-			tunnels.dispose();
-			await fs.rm(dir, { recursive: true, force: true });
-		}
+		assert.deepStrictEqual({ killed: ssh.killed, authorities: [...tunnels.authorities] }, { killed: 1, authorities: [] });
+		tunnels.dispose();
 	});
 });
 

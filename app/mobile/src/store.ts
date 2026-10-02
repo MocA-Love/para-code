@@ -897,6 +897,11 @@ export interface AgentSessionInfo {
 	effort?: string;
 	/** 会話の指紋（W2-29）。ターミナルが閉じた後に「再開して送る」ときの宛先。 */
 	resumeKey?: string;
+	/**
+	 * `none`: このセッションのモデルと effort はモバイルから変えられない（Codex。PC がライブ連携を
+	 * やめたため。PC のターミナルの /model で変える）。無ければ従来どおり（古い PC）。
+	 */
+	modelControl?: 'none';
 }
 
 /** Codexモデルが広告するreasoning effort 1件。 */

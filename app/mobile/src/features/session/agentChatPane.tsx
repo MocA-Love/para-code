@@ -276,6 +276,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 						model={chat?.info?.model}
 						effort={chat?.info?.effort}
 						modelControl={chat?.modelControl}
+						modelLocked={chat?.info?.modelControl === 'none'}
 						commandCatalog={chat?.commandCatalog}
 						monitors={chatReady ? chat?.monitors : undefined}
 						sendText={sendText}

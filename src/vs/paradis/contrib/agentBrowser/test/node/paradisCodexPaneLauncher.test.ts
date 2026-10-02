@@ -6,7 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { execFile, spawn } from 'child_process';
+import { execFile } from 'child_process';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { promisify } from 'util';
@@ -14,26 +14,6 @@ import { dirname, join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
 const execFileAsync = promisify(execFile);
-
-async function waitForSocket(socketPath: string): Promise<void> {
-	const deadline = Date.now() + 3_000;
-	while (Date.now() < deadline) {
-		if (await fs.stat(socketPath).then(stat => stat.isSocket(), () => false)) {
-			return;
-		}
-		await new Promise(resolve => setTimeout(resolve, 20));
-	}
-	assert.fail('socket did not become ready');
-}
-
-function processIsAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 interface IFakeCodexRecord {
 	readonly args: readonly string[];
@@ -78,39 +58,29 @@ async function readLastRecord(recordPath: string): Promise<string[]> {
 	return records[records.length - 1];
 }
 
-async function countCompletionProbes(recordPath: string): Promise<number> {
-	return (await readRecords(recordPath)).filter(record => record[0] === 'completion').length;
-}
-
 suite('ParadisCodexPaneLauncher', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('starts a pane app-server and preserves interactive arguments and MCP environment', async () => {
+	// The launcher no longer starts a pane app-server or adds `--remote`: Codex rejects permission
+	// overrides with `--remote resume|fork`, and the pane app-server restarted every MCP server
+	// for each terminal. A socket left in the environment of a terminal opened by an older
+	// Para Code must not bring that mode back.
+	test('ignores a pane app-server socket and preserves interactive arguments and MCP environment', async () => {
 		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
 		try {
 			const launcherPath = join(process.cwd(), 'resources', 'paradis', 'bin', 'codex');
 			const fakeBin = join(testRoot, 'bin');
 			const fakeCodexPath = join(fakeBin, 'codex');
-			const appServerRecordPath = join(testRoot, 'app-server.json');
 			const tuiRecordPath = join(testRoot, 'tui.json');
 			const socketPath = join(testRoot, 'pcx', 'pane.sock');
 			const injectionMarkerPath = join(testRoot, 'must-not-exist');
 			await fs.mkdir(fakeBin, { recursive: true });
 			await fs.writeFile(fakeCodexPath, `#!/usr/bin/env node
 const fs = require('fs');
-const net = require('net');
 const args = process.argv.slice(2);
-const record = { args, paneToken: process.env.PARA_CODE_TERMINAL_PANE_ID, portFile: process.env.PARA_CODE_MCP_PORT_FILE };
-if (args[0] === 'app-server') {
-	fs.writeFileSync(process.env.PARADIS_TEST_APP_SERVER_RECORD, JSON.stringify(record));
-	const socketPath = args[2].slice('unix://'.length);
-	const server = net.createServer(socket => socket.end());
-	const close = () => server.close(() => process.exit(0));
-	process.on('SIGTERM', close);
-	process.on('SIGINT', close);
-	server.listen(socketPath);
-} else {
-	fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(record));
+if (!args.includes('--version')) {
+	const record = { args, paneToken: process.env.PARA_CODE_TERMINAL_PANE_ID, portFile: process.env.PARA_CODE_MCP_PORT_FILE };
+	fs.appendFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(record) + '\\n');
 }
 `, { mode: 0o700 });
 
@@ -123,28 +93,25 @@ if (args[0] === 'app-server') {
 					PARA_CODE_CODEX_APP_SERVER_SOCKET: socketPath,
 					PARA_CODE_TERMINAL_PANE_ID: 'pane-token',
 					PARA_CODE_MCP_PORT_FILE: '/tmp/paradis-browser-mcp.json',
-					PARADIS_TEST_APP_SERVER_RECORD: appServerRecordPath,
 					PARADIS_TEST_TUI_RECORD: tuiRecordPath,
 				},
 				timeout: 15_000,
 			});
 
-			const appServer = JSON.parse(await fs.readFile(appServerRecordPath, 'utf8')) as IFakeCodexRecord;
-			const tui = JSON.parse(await fs.readFile(tuiRecordPath, 'utf8')) as IFakeCodexRecord;
-			assert.deepStrictEqual({ appServer, tui, injectionRan: await fs.access(injectionMarkerPath).then(() => true, () => false) }, {
-				appServer: {
-					args: ['app-server', '--listen', `unix://${socketPath}`],
+			const records = (await fs.readFile(tuiRecordPath, 'utf8')).split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as IFakeCodexRecord);
+			assert.deepStrictEqual({
+				records,
+				injectionRan: await fs.access(injectionMarkerPath).then(() => true, () => false),
+				runtimeCreated: await fs.access(join(testRoot, 'pcx')).then(() => true, () => false),
+			}, {
+				records: [{
+					args: ['--no-daemon', '--model', 'gpt-5', prompt],
 					paneToken: 'pane-token',
 					portFile: '/tmp/paradis-browser-mcp.json',
-				},
-				tui: {
-					args: ['--remote', `unix://${socketPath}`, '--model', 'gpt-5', prompt],
-					paneToken: 'pane-token',
-					portFile: '/tmp/paradis-browser-mcp.json',
-				},
+				}],
 				injectionRan: false,
+				runtimeCreated: false,
 			});
-			assert.strictEqual(await fs.access(socketPath).then(() => true, () => false), false);
 		} finally {
 			await fs.rm(testRoot, { recursive: true, force: true });
 		}
@@ -189,107 +156,11 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(records));
 		}
 	});
 
-	test('takes ownership of and cleans up an app-server whose launcher died', async () => {
-		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
-		const launcherPath = join(process.cwd(), 'resources', 'paradis', 'bin', 'codex');
-		const fakeBin = join(testRoot, 'bin');
-		const fakeCodexPath = join(fakeBin, 'codex');
-		const socketPath = join(testRoot, 'pcx', 'pane.sock');
-		const recordPath = join(testRoot, 'record.json');
-		await fs.mkdir(dirname(socketPath), { recursive: true });
-		await fs.mkdir(fakeBin, { recursive: true });
-		await fs.writeFile(fakeCodexPath, `#!/usr/bin/env node
-const fs = require('fs');
-const net = require('net');
-const args = process.argv.slice(2);
-if (args[0] === 'app-server') {
-	const socketPath = args[2].slice('unix://'.length);
-	const server = net.createServer();
-	const close = () => server.close(() => process.exit(0));
-	process.on('SIGTERM', close);
-	server.listen(socketPath);
-} else {
-	fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(args));
-}
-`, { mode: 0o700 });
-		const env = {
-			...process.env,
-			PATH: `${dirname(launcherPath)}:${fakeBin}:${process.env['PATH'] ?? ''}`,
-			PARA_CODE_CODEX_LAUNCHER_DIR: dirname(launcherPath),
-			PARA_CODE_CODEX_APP_SERVER_SOCKET: socketPath,
-			PARADIS_TEST_TUI_RECORD: recordPath,
-		};
-		const staleServer = spawn(fakeCodexPath, ['app-server', '--listen', `unix://${socketPath}`], { env, stdio: 'ignore' });
-		try {
-			await waitForSocket(socketPath);
-			await fs.writeFile(`${socketPath}.pid`, `${staleServer.pid}\n`, { mode: 0o600 });
-
-			await execFileAsync(launcherPath, [], { env, timeout: 15_000 });
-			await new Promise(resolve => setTimeout(resolve, 50));
-
-			assert.strictEqual(processIsAlive(staleServer.pid!), false);
-			assert.strictEqual(await fs.access(socketPath).then(() => true, () => false), false);
-		} finally {
-			staleServer.kill('SIGKILL');
-			await fs.rm(testRoot, { recursive: true, force: true });
-		}
-	});
-
-	// The launcher is on every Para Code terminal's PATH with no way to bypass it, and `resume`
-	// is not a delegated command, so exiting when the app-server cannot start would leave the
-	// user unable to run Codex at all. Field reports of a broken Codex state directory produced
-	// exactly that. The app-server's log must survive: it is the only record of the cause.
-	test('falls back to the unmanaged Codex when the app-server cannot start', async () => {
-		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
-		try {
-			const launcherPath = join(process.cwd(), 'resources', 'paradis', 'bin', 'codex');
-			const fakeBin = join(testRoot, 'bin');
-			const fakeCodexPath = join(fakeBin, 'codex');
-			const socketPath = join(testRoot, 'pcx', 'pane.sock');
-			const recordPath = join(testRoot, 'record.json');
-			await fs.mkdir(fakeBin, { recursive: true });
-			await fs.writeFile(fakeCodexPath, `#!/usr/bin/env node
-const fs = require('fs');
-const args = process.argv.slice(2);
-if (args[0] === 'app-server') {
-	process.stderr.write('Error: failed to initialize sqlite state runtime under /fake/.codex\\n');
-	process.exit(3);
-}
-fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(args));
-`, { mode: 0o700 });
-			const env = {
-				...process.env,
-				PATH: `${dirname(launcherPath)}:${fakeBin}:${process.env['PATH'] ?? ''}`,
-				PARA_CODE_CODEX_LAUNCHER_DIR: dirname(launcherPath),
-				PARA_CODE_CODEX_APP_SERVER_SOCKET: socketPath,
-				PARADIS_TEST_TUI_RECORD: recordPath,
-			};
-			const { stderr } = await execFileAsync(launcherPath, ['resume', 'thread-1'], { env, timeout: 15_000 });
-
-			assert.deepStrictEqual({
-				tuiArgs: JSON.parse(await fs.readFile(recordPath, 'utf8')),
-				warned: stderr.includes('without the pane app-server'),
-				log: await fs.readFile(`${socketPath}.log`, 'utf8'),
-				socketLeft: await fs.access(socketPath).then(() => true, () => false),
-				pidLeft: await fs.access(`${socketPath}.pid`).then(() => true, () => false),
-			}, {
-				tuiArgs: ['--no-daemon', 'resume', 'thread-1'],
-				warned: true,
-				log: 'Error: failed to initialize sqlite state runtime under /fake/.codex\n',
-				socketLeft: false,
-				pidLeft: false,
-			});
-		} finally {
-			await fs.rm(testRoot, { recursive: true, force: true });
-		}
-	});
-
-	// Codex rejects `--remote` for anything but the interactive TUI ("only supported for
-	// interactive TUI commands"), so a subcommand the launcher fails to recognize is treated as
-	// a prompt and stops working entirely — `codex plugin` broke in the field exactly this way.
+	// `--no-daemon` is a TUI option, so a subcommand the launcher fails to recognize gets it and
+	// may refuse to run — `codex plugin` broke in the field exactly this way (then with `--remote`).
 	// The invocations below are Codex 0.146's full set, aliases and the subcommands hidden from
 	// `codex --help` included.
-	test('delegates every Codex subcommand and keeps only TUI invocations pane-managed', async function () {
+	test('delegates every Codex subcommand and keeps only TUI invocations off the shared server', async function () {
 		this.timeout(60_000);
 		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
 		try {
@@ -320,104 +191,12 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(args));
 				await fs.rm(recordPath, { force: true });
 				await execFileAsync(launcherPath, args, { env, timeout: 15_000 });
 				const recorded = await readLastRecord(recordPath);
-				if (recorded[0] === '--remote') {
+				if (recorded[0] === '--no-daemon') {
 					paneManaged.push(args.join(' '));
 				}
 			}
 
 			assert.deepStrictEqual(paneManaged, ['', 'explain this repo', 'resume', 'fork', '-- plugin list']);
-		} finally {
-			await fs.rm(testRoot, { recursive: true, force: true });
-		}
-	});
-
-	// The static list cannot stay complete on its own: Codex ships subcommands regularly, and
-	// every one it gains is a command Para Code silently breaks until the list catches up.
-	test('asks Codex to classify a positional argument the static list does not know', async function () {
-		this.timeout(20_000);
-		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
-		try {
-			const launcherPath = join(process.cwd(), 'resources', 'paradis', 'bin', 'codex');
-			const fakeBin = join(testRoot, 'bin');
-			const socketPath = join(testRoot, 'pcx', 'pane.sock');
-			const recordPath = join(testRoot, 'record.json');
-			await fs.mkdir(fakeBin, { recursive: true });
-			await fs.writeFile(join(fakeBin, 'codex'), FAKE_CODEX_WITH_COMPLETION, { mode: 0o700 });
-			const env = {
-				...process.env,
-				PATH: `${dirname(launcherPath)}:${fakeBin}:${process.env['PATH'] ?? ''}`,
-				PARA_CODE_CODEX_LAUNCHER_DIR: dirname(launcherPath),
-				PARA_CODE_CODEX_APP_SERVER_SOCKET: socketPath,
-				PARADIS_TEST_TUI_RECORD: recordPath,
-				PARADIS_TEST_COMPLETION_NAMES: 'resume fork brandnew',
-			};
-
-			await execFileAsync(launcherPath, ['brandnew', '--flag'], { env, timeout: 15_000 });
-			const newSubcommand = await readLastRecord(recordPath);
-			const probesAfterFirstRun = await countCompletionProbes(recordPath);
-			await fs.rm(recordPath, { force: true });
-			await execFileAsync(launcherPath, ['brandnew', '--flag'], { env, timeout: 15_000 });
-			const cachedRun = await readLastRecord(recordPath);
-			const probesAfterSecondRun = await countCompletionProbes(recordPath);
-			await fs.rm(recordPath, { force: true });
-			await execFileAsync(launcherPath, ['a prompt Codex does not know'], { env, timeout: 15_000 });
-			const prompt = await readLastRecord(recordPath);
-
-			assert.deepStrictEqual({
-				newSubcommand, probesAfterFirstRun, cachedRun, probesAfterSecondRun,
-				promptStaysPaneManaged: prompt[0] === '--remote',
-				cached: await fs.access(join(testRoot, 'pcx', 'codex-commands.cache')).then(() => true, () => false),
-			}, {
-				newSubcommand: ['brandnew', '--flag'],
-				probesAfterFirstRun: 1,
-				cachedRun: ['brandnew', '--flag'],
-				probesAfterSecondRun: 0,
-				promptStaysPaneManaged: true,
-				cached: true,
-			});
-		} finally {
-			await fs.rm(testRoot, { recursive: true, force: true });
-		}
-	});
-
-	// The pane runtime directory's files are written under a tightened umask, but that umask is
-	// inherited by every command the interactive session goes on to run. Leaving it in place
-	// makes everything the agent creates — its `npm install`, its builds, its generated
-	// directories — unreadable to any other user, and git records no permissions, so nothing
-	// about it surfaces in a diff.
-	test('runs the interactive session under the caller umask, not the pane runtime one', async () => {
-		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
-		try {
-			const launcherPath = join(process.cwd(), 'resources', 'paradis', 'bin', 'codex');
-			const fakeBin = join(testRoot, 'bin');
-			const socketPath = join(testRoot, 'pcx', 'pane.sock');
-			const recordPath = join(testRoot, 'umask.txt');
-			await fs.mkdir(fakeBin, { recursive: true });
-			await fs.writeFile(join(fakeBin, 'codex'), `#!/usr/bin/env node
-const fs = require('fs');
-const net = require('net');
-const args = process.argv.slice(2);
-if (args[0] === 'app-server') {
-	const server = net.createServer(socket => socket.end());
-	const close = () => server.close(() => process.exit(0));
-	process.on('SIGTERM', close);
-	process.on('SIGINT', close);
-	server.listen(args[2].slice('unix://'.length));
-} else {
-	fs.writeFileSync(process.env.PARADIS_TEST_UMASK_RECORD, process.umask().toString(8));
-}
-`, { mode: 0o700 });
-			const env = {
-				...process.env,
-				PATH: `${dirname(launcherPath)}:${fakeBin}:${process.env['PATH'] ?? ''}`,
-				PARA_CODE_CODEX_LAUNCHER_DIR: dirname(launcherPath),
-				PARA_CODE_CODEX_APP_SERVER_SOCKET: socketPath,
-				PARADIS_TEST_UMASK_RECORD: recordPath,
-			};
-
-			await execFileAsync('/bin/sh', ['-c', `umask 027; exec '${launcherPath}' 'a prompt'`], { env, timeout: 15_000 });
-
-			assert.strictEqual(await fs.readFile(recordPath, 'utf8'), '27');
 		} finally {
 			await fs.rm(testRoot, { recursive: true, force: true });
 		}

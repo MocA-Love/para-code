@@ -21,6 +21,17 @@
 export const PARADIS_CODEX_HOOK_TRUST_CHANNEL = 'paradisCodexHookTrust';
 
 /**
+ * SSH の接続先（REH）で、接続先の CODEX_HOME の Para Code の hook に信頼を付けるチャネル
+ * （node/paradisRemoteCodexHookTrust.server.ts）。接続先では codex を起こせるとは限らないので、
+ * Codex と同じ計算でハッシュを作って config.toml を直接書く（node/paradisCodexHookTrustFile.ts）。
+ * 呼ぶのはウィンドウ側で、`getStatus` / `grant` / `listCodexHomes` とも引数を取らない（扱うホームは接続先が決める）。
+ */
+export const PARADIS_REMOTE_CODEX_HOOK_TRUST_CHANNEL = 'paradisRemoteCodexHookTrust';
+
+/** 手元と接続先の hook の信頼と、接続先からの戻り経路の状態を出すコマンド（設定ダイアログの「状態を確認…」）。 */
+export const PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID = 'paradis.agentHooks.showCodexHookStatus';
+
+/**
  * 信頼の付け方の設定。
  * - `ask`: まだ聞いていない（既定）。信頼が要る hook を見つけたら、一度だけ利用者に確かめる
  * - `auto`: 確かめ済み。以後は Para Code が設置し直すたびに自動で信頼を付ける

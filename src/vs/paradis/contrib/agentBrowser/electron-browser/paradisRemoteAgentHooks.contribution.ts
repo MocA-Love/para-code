@@ -25,13 +25,14 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
-import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, paradisAgentHooksEnabled } from '../common/paradisAgentHooks.js';
 import { paradisUpsertClaudeMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
 import { PARADIS_REMOTE_AGENT_TUNNEL_SETTING } from './paradisRemoteAgentTunnel.contribution.js';
 import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisCodexAccountsState, PARADIS_CODEX_ACCOUNTS_CHANNEL } from '../../codexAccounts/common/paradisCodexAccounts.js';
+import { IParadisCodexHookTrustGrantResult, PARADIS_CODEX_HOOK_TRUST_SETTING, PARADIS_REMOTE_CODEX_HOOK_TRUST_CHANNEL, paradisCodexHookTrustMode } from '../../agentHookTrust/common/paradisCodexHookTrust.js';
+import { PARADIS_REMOTE_HOOK_PORTS_DIR_NAME, paradisRemoteHookSourceId } from '../common/paradisRemoteHookSource.js';
 
 /**
  * 既存設定を保ったまま接続先Claude用para-browser MCPをマージする。
@@ -423,7 +424,6 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		@IPathService private readonly pathService: IPathService,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@ILogService private readonly logService: ILogService,
-		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 	) {
 		super();
 		const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
@@ -451,14 +451,6 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 					void this.hookFiles.setEnabled(paradisAgentHooksEnabled(this.configurationService.getValue(PARADIS_AGENT_HOOKS_ENABLED_SETTING)));
 				}
 			}));
-			// ペインが増減するたび、接続先の Codex ソケットの引き込みを合わせ直す
-			this._register(this.paneTokenService.onDidChange(() => {
-				void this.remoteUserHome().then(home => {
-					if (home !== undefined) {
-						this.syncCodexSockets(home, channel);
-					}
-				}, () => undefined);
-			}));
 			// 接続先で Codex のアカウントが増えたら（使用量パネルからの追加・接続先での codex login）、
 			// そのホームにも hook と para-browser を書き足す。次に番号が変わるまで待たない
 			const codexAccounts = this.remoteAgentService.getConnection()?.getChannel(PARADIS_CODEX_ACCOUNTS_CHANNEL);
@@ -470,12 +462,6 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 					}
 				}));
 			}
-			this._register({
-				dispose: () => {
-					channel.call('releaseRemoteCodexSockets', [this.environmentService.remoteAuthority])
-						.catch(() => undefined);
-				}
-			});
 			this._register(new ParadisRemoteAgentHooksController(
 				() => this.hookFiles.runExclusive(() => this.install(channel)),
 				async () => {
@@ -550,6 +536,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			this.logService.warn('[paradis] could not update the agent hook settings for the Codex accounts on the host; leaving them as they are');
 		}
 		await this.mergeCodexMcp(home, port);
+		await this.grantCodexHookTrust();
 		// 置けたときだけ「この顔ぶれは済んだ」とする（失敗したら次の知らせで試し直す）
 		if (hooked) {
 			this.codexAccountHomesKey = this.listedCodexAccountHomesKey;
@@ -587,8 +574,15 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			// 戻りトンネルが接続先で実際に受け取った番号を書いておく。固定番号ではないので、
 			// 同じホストへ他ユーザーが同時に SSH していても衝突しない
 			await this.warnIfPortFileBelongsToAnotherSource(portFile, remotePort);
-			await this.fileService.writeFile(portFile, VSBuffer.fromString(JSON.stringify({ protocolVersion: 1, port: remotePort })));
+			const portFileContent = VSBuffer.fromString(JSON.stringify({ protocolVersion: 1, port: remotePort }));
+			await this.fileService.writeFile(portFile, portFileContent);
 			this.lastWrittenPort = remotePort;
+			// この PC 専用のポートファイルも置く。この PC が開いたペインは env でこちらを指すので、同じ接続先へ
+			// 別の PC が繋いで共有のものを書き換えても、hook はこの PC へ届く（paradisRemoteHookSource.ts）
+			const ownPortFile = this.ownPortFile(home);
+			if (ownPortFile !== undefined) {
+				await this.fileService.writeFile(ownPortFile, portFileContent);
+			}
 
 			await this.installCodexLauncher(home, channel);
 
@@ -605,7 +599,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			if (hooked) {
 				this.codexAccountHomesKey = this.listedCodexAccountHomesKey;
 			}
-			this.syncCodexSockets(home, channel);
+			await this.grantCodexHookTrust();
 			this.logService.info(`[paradis] installed the agent hooks on ${this.environmentService.remoteAuthority} (port ${remotePort})`);
 			return remotePort;
 		} catch (error) {
@@ -622,8 +616,9 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	 * 2台のPCから繋ぐと後から書いた側が勝ち、先客の通知はこちらのゲートウェイへ飛んでくる
 	 * （トークンを知らないので捨てられ、先客側では実行状態が黙って止まる）。
 	 *
-	 * 分けるには接続先で動く通知スクリプト側にも「自分はどの接続元のものか」を選ばせる必要があり、
-	 * ここだけでは直せない。せめて起きていることが分かるようにログへ残す。
+	 * この PC が開いたペインは env で PC 専用のポートファイル（`ports/<印>.json`）を指し、新しい通知
+	 * スクリプトはそちらを読むので、hook は取り違えない。共有のものを読むのは、印を持たないペイン
+	 * （古い Para Code が開いたもの）と古い通知スクリプトだけ。起きていることが分かるようにログへ残す。
 	 */
 	private async warnIfPortFileBelongsToAnotherSource(portFile: URI, port: number): Promise<void> {
 		if (this.hasWarnedAboutForeignPortFile) {
@@ -647,14 +642,15 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	}
 
 	/**
-	 * Codex のペイン専用ランチャーを接続先へ置く。
+	 * Codex のランチャーを接続先へ置く。
 	 *
-	 * Codex の承認カードやモデル一覧は、TUI の画面ではなく app-server との構造化されたやり取りで
-	 * 取っている。それを立てるのがこのランチャーで、PATH の先頭に置かれて `codex` の代わりに
-	 * 呼ばれる。手元のものは Para Code の中にあり接続先からは見えないので、同じものを置く。
+	 * PATH の先頭に置かれて `codex` の代わりに呼ばれ、対話の Codex を共有バックグラウンドサーバーから
+	 * 切り離して（`--no-daemon`）起動させる。共有サーバーの下では hook と MCP が最初に起動したペインの
+	 * env で動き、別のペインの状態として届いてしまう。手元のものは Para Code の中にあり接続先からは
+	 * 見えないので、同じものを置く。
 	 *
-	 * 中身は素の sh スクリプトで、何か揃わなければ本物の codex をそのまま実行する作りになって
-	 * いる。置くこと自体が Codex を壊す方向には働かない。
+	 * 中身は素の sh スクリプトで、本物の codex が見つからなければ失敗を知らせて終わるだけ。置くこと自体が
+	 * Codex を壊す方向には働かない。
 	 */
 	private async installCodexLauncher(home: URI, channel: IChannel): Promise<void> {
 		const appRoot = (this.environmentService as IWorkbenchEnvironmentService & { readonly appRoot?: string }).appRoot;
@@ -682,19 +678,41 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		await this.fileService.move(staging, target, true);
 	}
 
+	/** この PC 専用の、接続先のポートファイル。この PC の印が作れなければ undefined（共有のものだけを使う）。 */
+	private ownPortFile(home: URI): URI | undefined {
+		const sourceId = paradisRemoteHookSourceId((this.environmentService as IWorkbenchEnvironmentService & { readonly machineId?: string }).machineId);
+		return sourceId === undefined ? undefined : joinPath(home, '.para-code', PARADIS_REMOTE_HOOK_PORTS_DIR_NAME, `${sourceId}.json`);
+	}
+
 	/**
-	 * 接続先の Codex ペインのソケットを、手元の同じ場所へ引いてくるよう頼む。
+	 * 接続先の Codex の hook に信頼を付ける（設定 `paradis.agentHooks.codexTrust` が `off` でなければ）。
 	 *
-	 * ペインは開いたり閉じたりするので、その都度いまある一覧を渡して同期させる。手元のソケットの
-	 * 場所は shared process が決める（ウィンドウの言い値でソケットを作らせない）。
+	 * Codex は信頼の無い hook を実行しないので、置いただけでは接続先の Codex の状態が一切届かない。
+	 * 接続先の hook は、既定の `ask` でも確かめずに付ける（2026-10 の判断。手元の hook は初回に確かめる）。
+	 * 付けるのは Para Code が置いた hook だけ。書くのは接続先（REH）で、古い REH にはチャネルが無いので、
+	 * その場合は何もしない。
 	 */
-	private syncCodexSockets(home: URI, channel: IChannel): void {
-		// 立てない設定なら宛先も要らない。空で送ると、既に張ってある転送はそこで畳まれる
-		const tokens = this.paneTokenService.isCodexPaneAppServerEnabled()
-			? this.paneTokenService.listPaneTokens().map(pane => pane.token)
-			: [];
-		channel.call('syncRemoteCodexSockets', [this.environmentService.remoteAuthority, joinPath(home, '.para-code').path, tokens])
-			.catch(error => this.logService.trace('[paradis] could not sync the Codex sockets with the host', error));
+	private async grantCodexHookTrust(): Promise<void> {
+		if (paradisCodexHookTrustMode(this.configurationService.getValue(PARADIS_CODEX_HOOK_TRUST_SETTING)) === 'off'
+			|| !paradisAgentHooksEnabled(this.configurationService.getValue(PARADIS_AGENT_HOOKS_ENABLED_SETTING))) {
+			return;
+		}
+		const connection = this.remoteAgentService.getConnection();
+		if (connection === null) {
+			return;
+		}
+		try {
+			const results = await connection.getChannel(PARADIS_REMOTE_CODEX_HOOK_TRUST_CHANNEL).call<IParadisCodexHookTrustGrantResult[]>('grant');
+			for (const result of results) {
+				if (result.outcome === 'granted') {
+					this.logService.info(`[paradis] trusted the Codex hooks on ${this.environmentService.remoteAuthority} (${result.codexHome}: ${result.grantedEvents.join(', ')})`);
+				} else if (result.outcome !== 'already-trusted' && result.outcome !== 'nothing-installed' && result.outcome !== 'skipped') {
+					this.logService.warn(`[paradis] could not trust the Codex hooks on ${this.environmentService.remoteAuthority} (${result.codexHome}: ${result.outcome}${result.detail ? ` - ${result.detail}` : ''})`);
+				}
+			}
+		} catch (error) {
+			this.logService.trace('[paradis] the host does not trust Codex hooks (older server?)', error);
+		}
 	}
 
 	/**
