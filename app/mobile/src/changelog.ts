@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.11.2',
+		date: '2026-10-02',
+		items: [
+			{
+				icon: 'git-branch-outline',
+				title: 'サブエージェントの一覧が、動いているものを「完了」「中断」と出さなくなりました',
+				body: '再開したサブエージェントや長いコマンドを待っているものを正しく実行中として出し、バックグラウンドのコマンドなど中身の無い項目は並ばなくなりました。直るのは PC の Para Code を更新してからです。',
+			},
+		],
+	},
+	{
 		version: '0.11.1',
 		date: '2026-10-02',
 		items: [
