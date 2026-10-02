@@ -12,7 +12,14 @@ import { fileURLToPath } from 'url';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { Event } from '../../../../../base/common/event.js';
+import { ParadisCdpUpstream } from '../../../agentBrowser/node/paradisCdpUpstream.js';
+import { paradisMobileBookmarksPayload } from '../../common/paradisMobileBookmarks.js';
+import { paradisMobileBrowserPageMessage, paradisNormalizeMobileBrowserFocusReport } from '../../common/paradisMobileBrowserPageState.js';
+import { paradisParseMobileBookmarks, paradisParseMobileBrowserFocus, paradisParseMobileBrowserInputRejected, paradisParseMobileBrowserPage } from '../../common/paradisMobileBrowserProtocol.js';
+import { paradisMobileBrowserTargetsScope } from '../../common/paradisMobileBrowserScope.js';
 import { paradisHasMobileCapability } from '../../common/paradisMobileCompat.js';
+import { ParadisMobileBrowserMirror } from '../../node/paradisMobileBrowserMirror.js';
 import type { MobileIdentity } from '../../common/paradisMobileCrypto.js';
 import { Channels } from '../../common/paradisMobileProtocol.js';
 import { IParadisMobileInboundFrame, ParadisMobileInboundFrameWire } from '../../common/paradisMobileRelay.js';
@@ -169,5 +176,81 @@ suite('ParadisMobileWireGolden', () => {
 	test('agent: アプリが送る要求はすべて PC の検査を通る', function () {
 		const golden = readGolden<{ toPc: Array<{ t: string }> }>(this, 'agent.json');
 		assert.deepStrictEqual(golden.toPc.map(message => [message.t, paradisIsValidAgentInboundForTest(message)]), golden.toPc.map(message => [message.t, true]));
+	});
+
+	test('browser: アプリが送る形を PC が受け、PC が組み立てる形はゴールデンと同じ形', async function () {
+		type Message = Record<string, unknown>;
+		const golden = readGolden<{ toPc: Message[]; toMobile: Message[]; bookmarks: { toPc: Message; toMobile: Message; push: Message } }>(this, 'browser.json');
+		const state = readGolden<{ current: { renderers: { windowId: number }[]; workspaces: { sourceId: string }[] } }>(this, 'state.json');
+		const logService = new NullLogService();
+		const upstream = new ParadisCdpUpstream('', logService);
+		(upstream as unknown as { fetchJson: () => Promise<unknown> }).fetchJson = async () => [
+			{ id: 'target-1', type: 'page', title: 'Docs', url: 'https://example.com/docs' },
+			{ id: 'target-other', type: 'page', title: 'Other', url: 'https://example.com/other' },
+		];
+		const asked: unknown[] = [];
+		const mirror = new ParadisMobileBrowserMirror(upstream, undefined, { listBoundCdpTargets: async () => [{ token: 'pane-token-1', targetId: 'target-1' }], onDidAcknowledgePane: Event.None }, logService, {
+			resolveSpaceTargetIds: async (windowId, ws) => { asked.push([windowId, ws]); return new Set(['target-1']); },
+		});
+		try {
+			const replies: Message[] = [];
+			await mirror.handleRequest('m', new TextEncoder().encode(JSON.stringify(golden.toPc[0])), payload => replies.push(JSON.parse(new TextDecoder().decode(payload))));
+
+			// 入力の各種類が CDP の呼び出しになる（新しい種類を PC が受け付ける）
+			const sentCdp: string[] = [];
+			const session = {
+				socket: { close: () => undefined, readyState: 1, send: (data: string) => sentCdp.push(JSON.parse(data).method) } as unknown as WebSocket,
+				targetId: 'target-1', nextId: 1, viewWidth: 800, viewHeight: 600, captureTimer: undefined, captureInFlight: false, lastFrameData: undefined,
+				handlers: new Map(), pushMode: true, pushStarted: false, lastPushFrameAt: Date.now(), lastMetricsAt: 0, binaryFrames: false,
+				send: () => undefined, focusContextId: 1,
+			};
+			const internals = mirror as unknown as { sessions: Map<string, typeof session>; cdpCall: (target: typeof session, method: string, params: object, handler: (result: unknown) => void) => void };
+			internals.sessions.set('m', session);
+			internals.cdpCall = (_session, method, _params, handler) => handler(method === 'Runtime.evaluate' ? { result: { value: true } } : undefined);
+			const inputKinds: [unknown, number][] = [];
+			for (const message of golden.toPc.filter(candidate => candidate.t === 'input')) {
+				const before = sentCdp.length;
+				await mirror.handleRequest('m', new TextEncoder().encode(JSON.stringify(message)), () => undefined);
+				inputKinds.push([message.kind, sentCdp.length - before]);
+			}
+			internals.sessions.delete('m');
+
+			const pageMessage = paradisMobileBrowserPageMessage('target-1', { url: 'https://example.com/docs', title: 'Docs', loading: true, progress: 0.6, canGoBack: true, canGoForward: false });
+			const focusMessage = paradisNormalizeMobileBrowserFocusReport(JSON.stringify({ focused: true, fieldId: 7, field: 'text', inputType: 'search', value: 'x'.repeat(5000), reason: 'tap' }), { targetId: 'target-1', seq: 3, now: 0, lastTapAt: 0 });
+			const blurMessage = paradisNormalizeMobileBrowserFocusReport(JSON.stringify({ focused: false, reason: 'focus' }), { targetId: 'target-1', seq: 4, now: 0, lastTapAt: 0 });
+			const bookmarksReply = {
+				...paradisMobileBookmarksPayload([
+					{ id: 'folder-1', type: 'folder', title: '仕事', icon: 'briefcase', color: '#2563eb', createdAt: 0, children: [{ id: 'bookmark-2', type: 'bookmark', title: 'Issues', url: 'https://example.com/issues', createdAt: 0 }] },
+					{ id: 'bookmark-1', type: 'bookmark', title: 'Docs', url: 'https://example.com/docs', faviconHash: 'hash-1', createdAt: 0 },
+				], hash => hash === 'hash-1' ? 'data:image/png;base64,iVBORw0KGgo=' : undefined), id: 'm-r-2'
+			};
+			const withoutId = (message: Message) => Object.fromEntries(Object.entries(message).filter(([key]) => key !== 'id'));
+
+			assert.deepStrictEqual({
+				scope: paradisMobileBrowserTargetsScope(golden.toPc[0]),
+				asked,
+				targets: replies.map(shapeOf),
+				targetsValue: replies[0],
+				inputKinds: inputKinds.map(([kind, calls]) => [kind, calls > 0]),
+				page: shapeOf(pageMessage),
+				focus: shapeOf(focusMessage),
+				blur: shapeOf(blurMessage),
+				bookmarks: bookmarksReply,
+				parsed: [paradisParseMobileBrowserPage(golden.toMobile[1]), paradisParseMobileBrowserFocus(golden.toMobile[2]), paradisParseMobileBrowserFocus(golden.toMobile[3]), paradisParseMobileBookmarks(golden.bookmarks.toMobile), paradisParseMobileBrowserInputRejected(golden.toMobile[4])],
+			}, {
+				scope: { windowId: state.current.renderers[0].windowId, ws: state.current.workspaces[0].sourceId },
+				asked: [[state.current.renderers[0].windowId, state.current.workspaces[0].sourceId]],
+				targets: [shapeOf(golden.toMobile[0])],
+				targetsValue: golden.toMobile[0],
+				inputKinds: golden.toPc.filter(candidate => candidate.t === 'input').map(message => [message.kind, true]),
+				page: shapeOf(golden.toMobile[1]),
+				focus: shapeOf(golden.toMobile[2]),
+				blur: shapeOf(golden.toMobile[3]),
+				bookmarks: golden.bookmarks.toMobile,
+				parsed: [golden.toMobile[1], golden.toMobile[2], golden.toMobile[3], withoutId(golden.bookmarks.toMobile), golden.toMobile[4]],
+			});
+		} finally {
+			mirror.dispose();
+		}
 	});
 });

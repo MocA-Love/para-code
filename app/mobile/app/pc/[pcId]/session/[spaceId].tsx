@@ -11,6 +11,7 @@ import { AGENT_RESUME_CAPABILITY } from '../../../../src/agentSessions.js';
 import { createAgentLatestEntryToken } from '../../../../src/agentNavigation.js';
 import { useAppStore } from '../../../../src/appState.js';
 import { BrowserPanel } from '../../../../src/components/browserPanel.js';
+import { useBrowserFullscreen } from '../../../../src/features/browser/browserFullscreenStore.js';
 import { hitSlopToMinimum } from '../../../../src/components/hitSlop.js';
 import { ProviderLogo } from '../../../../src/components/providerLogo.js';
 import { AgentChatPane } from '../../../../src/features/session/agentChatPane.js';
@@ -272,6 +273,9 @@ export default function SessionScreen() {
 	} : undefined);
 	useShortcutSlot('escape', focused && dockPanel !== undefined ? { escape: () => setDockPanel(undefined) } : undefined);
 
+	// ブラウザの全画面（ブラウザのタブを開いている間だけ効かせる）。
+	const browserFullscreen = useBrowserFullscreen(s => s.fullscreen) && tab.status === 'browser';
+
 	const kind = pc !== undefined ? connectionKind(connection, pcOnline) : 'offline';
 	// 資格を拒まれた PC は再接続では直らない。見出しの行から再ペアリングへ案内する（判定は pcStatus.ts）。
 	const rejected = isPairingRejected({ connection, pcOnline, pairingRejected });
@@ -325,7 +329,11 @@ export default function SessionScreen() {
 			case 'browser':
 				return (
 					<View style={styles.fill}>
-						<BrowserPanel active={focused} preferredToken={terminals.find(terminal => terminal.agentToken !== undefined)?.agentToken} />
+						<BrowserPanel
+							active={focused}
+							preferredToken={terminals.find(terminal => terminal.agentToken !== undefined)?.agentToken}
+							{...(space !== undefined ? { scope: { windowId: space.windowId, ws: space.sourceId }, spaceName: space.name } : {})}
+						/>
 					</View>
 				);
 			case 'terminal':
@@ -340,6 +348,13 @@ export default function SessionScreen() {
 
 	return (
 		<Screen style={{ paddingBottom: keyboardCover }}>
+			{/* ブラウザの全画面の間は、見出しとタブの列を高さ 0 で隠す（木の形は変えない。browserFullscreen.ts）。 */}
+			<View
+				style={browserFullscreen ? styles.headerHidden : undefined}
+				// 高さ 0 で隠している間は、VoiceOver からも外す（見えないボタンを読み上げない・選べない）。
+				accessibilityElementsHidden={browserFullscreen}
+				importantForAccessibility={browserFullscreen ? 'no-hide-descendants' : 'auto'}
+			>
 			<ScreenHeader
 				variant="session"
 				surface="panel"
@@ -384,6 +399,7 @@ export default function SessionScreen() {
 					/>
 				) : null}
 			</ScreenHeader>
+			</View>
 			<View style={styles.row} onLayout={event => setBodyWidth(event.nativeEvent.layout.width)}>
 				<View style={styles.main}>{body}</View>
 				{/* ドックの枠は常に置き、幅で出し入れする（本文の位置を変えないため）。 */}
@@ -532,6 +548,10 @@ function TabMenu({ visible, item, pcId, phoneWidth, onToggleWidth, onShow, onRen
 const styles = StyleSheet.create({
 	fill: {
 		flex: 1,
+	},
+	headerHidden: {
+		height: 0,
+		overflow: 'hidden',
 	},
 	row: {
 		flex: 1,

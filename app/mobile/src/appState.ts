@@ -8,7 +8,7 @@
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
-import { MobileController, MobileWarmLeaseControllerRegistry, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type PcPushMessage, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type SpaceNoteSetOptions, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, MobileWarmLeaseControllerRegistry, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type BrowserTargetsScope, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type PcPushMessage, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type SpaceNoteSetOptions, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import type { UpdateTarget } from './pcCompat.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
@@ -108,6 +108,17 @@ export interface PcSummary {
 	readonly battery: { readonly level: number; readonly charging: boolean } | undefined;
 }
 
+/**
+ * ブラウザ画面を離れても最後のページを静止画と一緒に戻すための控え。`scopeKey`（`windowId:sourceId`）の
+ * スペースのものだけ使う（別のスペースのページを、一覧が届く前に映し始めないため）。
+ */
+export interface BrowserSelection {
+	readonly targetId: string;
+	readonly url: string;
+	readonly desktopEpoch: string;
+	readonly scopeKey?: string;
+}
+
 interface AppState extends StoreState {
 	ready: boolean;
 	paired: boolean;
@@ -195,13 +206,14 @@ interface AppState extends StoreState {
 	 * Split View/Slide Over）では意味を持たない。端末に保存し、次回起動時も同じ見え方にする。
 	 */
 	sidebarCollapsed: boolean;
-	setSidebarCollapsed(value: boolean): void;
+	/** `persist: false` は保存しない（ブラウザの全画面の間だけ畳むときなど。強制終了しても次は元のまま）。 */
+	setSidebarCollapsed(value: boolean, options?: { readonly persist?: boolean }): void;
 	/** ターミナル画面で選択中の論理キー（ws切替時はリセット）。 */
 	selectedTerminalKey: string | undefined;
 	setSelectedTerminalKey(terminalKey: string | undefined): void;
 	/** ブラウザ画面を離れても最後のtarget/URLを静止画と一緒に復元するためのUIキャッシュ。 */
-	browserSelection: { targetId: string; url: string; desktopEpoch: string } | undefined;
-	setBrowserSelection(selection: { targetId: string; url: string; desktopEpoch: string } | undefined): void;
+	browserSelection: BrowserSelection | undefined;
+	setBrowserSelection(selection: BrowserSelection | undefined): void;
 	/**
 	 * 通知設定（設定画面）。ここでオフにした種別と、PC操作中の抑制は「バナーを出さない」
 	 * であって「届かない」ではない（抑制された通知もアプリ内の通知一覧には残る）。
@@ -372,8 +384,10 @@ interface AppState extends StoreState {
 	 * PC側が1時間ごとに測っておくので通常は即座に返る。bypassCache は測り直しで数十秒〜数分かかる。
 	 */
 	spaceDisk(bypassCache?: boolean): Promise<SpaceDiskResult>;
-	browserTargets(): Promise<BrowserTargetsResult>;
-	browserStart(targetId: string): Promise<void>;
+	/** `scope` を渡すと、`browser.space.v1` の PC にはそのスペースのページだけを頼む。 */
+	browserTargets(scope?: BrowserTargetsScope): Promise<BrowserTargetsResult>;
+	/** `scope` を渡すと、`browser.space.v1` の PC はそのスペースのページでなければ断る。 */
+	browserStart(targetId: string, scope?: BrowserTargetsScope): Promise<void>;
 	/** keepFrame=true で最後のフレームを残したまま停止する（タブblur時の一時停止用）。 */
 	browserStop(keepFrame?: boolean): Promise<void>;
 	browserInput(input: BrowserInput): void;
@@ -1116,6 +1130,9 @@ export const useAppStore = create<AppState>(set => ({
 	terminalOutput: new Map(),
 	notifications: [],
 	browserFrame: undefined,
+	browserPage: undefined,
+	browserFocus: undefined,
+	browserInputRejected: undefined,
 	agentChats: new Map(),
 	// アプリ起動直後は「初期化中」。init 完了までゲートに誤った未接続画面を出さない。
 	initializing: true,
@@ -1912,8 +1929,11 @@ export const useAppStore = create<AppState>(set => ({
 		secureKeyStore.setItem('homeListPreferences', JSON.stringify(next)).catch(err => console.warn('[appState] failed to save homeListPreferences', err));
 	},
 
-	setSidebarCollapsed(value: boolean) {
+	setSidebarCollapsed(value: boolean, options?: { readonly persist?: boolean }) {
 		set({ sidebarCollapsed: value });
+		if (options?.persist === false) {
+			return;
+		}
 		secureKeyStore.setItem('sidebarCollapsed', JSON.stringify(value)).catch(err => console.warn('[appState] failed to save sidebarCollapsed', err));
 	},
 
@@ -1921,7 +1941,7 @@ export const useAppStore = create<AppState>(set => ({
 		set({ selectedTerminalKey: terminalKey });
 	},
 
-	setBrowserSelection(selection: { targetId: string; url: string; desktopEpoch: string } | undefined) {
+	setBrowserSelection(selection: BrowserSelection | undefined) {
 		set({ browserSelection: selection });
 	},
 
@@ -2147,14 +2167,14 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.spaceDisk(bypassCache);
 	},
 
-	browserTargets() {
+	browserTargets(scope?: BrowserTargetsScope) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		return controller.browserTargets();
+		return controller.browserTargets(scope);
 	},
 
-	browserStart(targetId: string) {
+	browserStart(targetId: string, scope?: BrowserTargetsScope) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		return controller.browserStart(targetId);
+		return controller.browserStart(targetId, scope);
 	},
 
 	browserStop(keepFrame?: boolean) {
@@ -2260,6 +2280,12 @@ export function pcHasCapabilityFor(pcId: string | undefined, name: string): bool
 export function sendPcRequest<T = Record<string, unknown>>(pcId: string | undefined, channel: 'scm' | 'fs', body: { readonly t: string; readonly ws?: string; readonly [key: string]: unknown }, options?: { readonly timeoutMs?: number }): Promise<T> {
 	const target = runtimeControllerOf(pcId);
 	return target !== undefined ? target.requestPc<T>(channel, body, options) : Promise.reject(new Error('not initialized'));
+}
+
+/** その PC の内蔵ブラウザのブックマーク（`browser.bookmarks.v1`。`MobileController.browserBookmarks`）。 */
+export function fetchBrowserBookmarks(pcId: string | undefined): ReturnType<MobileController['browserBookmarks']> {
+	const target = runtimeControllerOf(pcId);
+	return target !== undefined ? target.browserBookmarks() : Promise.reject(new Error('not initialized'));
 }
 
 /** 条件に合う購読を、そのコントローラへ付け替える（同じコントローラなら何もしない）。 */

@@ -179,15 +179,24 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 			return;
 		}
 		const generation = ++openGeneration.current;
+		// このターミナルのスペースに開く（browser.space.v1 の PC。古い PC は ws を見ずに PC の今のスペースへ開く）。
+		// ページの一覧も同じスペースで絞り、ブラウザのタブに出る一覧と揃える。
+		const ws = terminal.ws ?? useAppStore.getState().workspace?.activeWs;
+		const space = ws !== undefined ? useAppStore.getState().workspace?.workspaces.find(candidate => candidate.id === ws) : undefined;
+		const scope = space !== undefined ? { windowId: space.windowId, ws: space.sourceId } : undefined;
 		let target: { targetId: string; url: string } | undefined;
 		try {
 			target = await openUrlInPcBrowser(url, {
-				open: () => sendPcRequest(activePcId, 'fs', { t: 'openUrl', url }),
-				listTargets: async () => (await useAppStore.getState().browserTargets()).targets,
+				open: () => sendPcRequest(activePcId, 'fs', { t: 'openUrl', url, ...(ws !== undefined && space !== undefined ? { ws } : {}) }),
+				listTargets: async () => (await useAppStore.getState().browserTargets(scope)).targets,
 				wait: ms => new Promise(resolve => setTimeout(resolve, ms)),
 			});
 		} catch (err) {
 			console.warn('[session] opening a terminal URL on the PC failed', errorKind(err));
+			if (err instanceof Error && err.message === 'space-not-visible') {
+				Alert.alert('PC のブラウザで開けませんでした', 'PC でこのスペースを表示していないため、このスペースにページを開けません。PC でこのスペースに切り替えてから、もう一度お試しください。');
+				return;
+			}
 			Alert.alert('PC のブラウザで開けませんでした', 'PC との接続を確認して、もう一度お試しください。');
 			return;
 		}
@@ -196,7 +205,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 		}
 		const desktopEpoch = useAppStore.getState().workspace?.desktopEpoch;
 		if (target !== undefined && desktopEpoch !== undefined) {
-			useAppStore.getState().setBrowserSelection({ targetId: target.targetId, url: target.url, desktopEpoch });
+			useAppStore.getState().setBrowserSelection({ targetId: target.targetId, url: target.url, desktopEpoch, ...(scope !== undefined ? { scopeKey: `${scope.windowId}:${scope.ws}` } : {}) });
 		}
 		router.setParams({ tab: encodeSessionTab({ kind: 'browser' }) });
 	};

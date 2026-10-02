@@ -96,12 +96,14 @@ async function connect() {
 	const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
 	let latest: StoreState | undefined;
 	const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
-	const sent: Record<string, Record<string, unknown>[]> = { state: [], term: [], agent: [], scm: [] };
+	const sent: Record<string, Record<string, unknown>[]> = { state: [], term: [], agent: [], scm: [], browser: [], fs: [] };
 	const pcMuxPromise = drivePc(pair, pc, mobile.publicKey, mux => {
 		mux.on(Channels.State, frame => sent.state!.push(decode(frame.payload)));
 		mux.on(Channels.Terminal, frame => sent.term!.push(decode(frame.payload)));
 		mux.on(Channels.Agent, frame => sent.agent!.push(decode(frame.payload)));
 		mux.on(Channels.Scm, frame => sent.scm!.push(decode(frame.payload)));
+		mux.on(Channels.Browser, frame => sent.browser!.push(decode(frame.payload)));
+		mux.on(Channels.Fs, frame => sent.fs!.push(decode(frame.payload)));
 	});
 	controller.connect(creds);
 	pair.fireOpen();
@@ -114,6 +116,7 @@ const stateGolden = readGolden<{ current: Golden; preW217: Golden }>('state.json
 const stateRequestGolden = readGolden<{ current: Golden; preW217: Golden }>('state-request.json');
 const termGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[] }>('term.json');
 const agentGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[] }>('agent.json');
+const browserGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[]; bookmarks: { toPc: Golden; toMobile: Golden; push: Golden } }>('browser.json');
 
 describe('wire golden (app side)', () => {
 	it('State の要求はゴールデンの current と値まで同じで、今の PC の State を受け付けて機能を覚える', async () => {
@@ -309,6 +312,80 @@ describe('wire golden (app side)', () => {
 			failed: 'rejected by PC',
 			pushed: [{ t: 'goldenProgress', step: 1 }],
 		});
+		controller.disconnect();
+	});
+	it('browser: スペースで絞る targets・新しい入力はゴールデンと同じ形で、PC の page / focus / bookmarks を受け付ける', async () => {
+		const { controller, pcMux, sent, latest } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		const workspace = (stateGolden.current['workspaces'] as Golden[])[0]!;
+		// targets: browser.space.v1 の PC にはスペースを付けて頼み、応答の scoped を読む。
+		const targets = controller.browserTargets({ windowId: workspace['windowId'] as number, ws: workspace['sourceId'] as string });
+		await flush();
+		const targetsRequest = sent.browser!.find(message => message.t === 'targets');
+		const goldenTargets = browserGolden.toMobile.find(message => message.t === 'targets')!;
+		pcMux.send(Channels.Browser, encode({ ...goldenTargets, id: targetsRequest?.id }));
+		const targetsResult = await targets;
+		// 入力: open / stop / replace / navigate。
+		for (const message of browserGolden.toPc.filter(candidate => candidate.t === 'input')) {
+			const { t: _t, ...input } = message;
+			controller.browserInput(input as unknown as Parameters<MobileController['browserInput']>[0]);
+		}
+		await flush();
+		// 通知: page と focus（新しい番号のものだけ受ける）。
+		for (const message of browserGolden.toMobile.filter(candidate => candidate.t === 'page' || candidate.t === 'focus')) {
+			pcMux.send(Channels.Browser, encode(message));
+			await flush();
+		}
+		pcMux.send(Channels.Browser, encode({ ...browserGolden.toMobile.find(message => message.t === 'focus'), seq: 1 }));
+		await flush();
+		pcMux.send(Channels.Browser, encode(browserGolden.toMobile.find(message => message.t === 'inputRejected')));
+		await flush();
+		// ブックマーク: 要求はゴールデンと同じ形、変わったら fs の id なしの知らせが届く。
+		const pushed: string[] = [];
+		controller.onPcMessage('fs', message => pushed.push(message.t));
+		const bookmarks = controller.browserBookmarks();
+		await flush();
+		const bookmarksRequest = sent.fs!.find(message => message.t === 'bookmarks');
+		pcMux.send(Channels.Fs, encode({ ...browserGolden.bookmarks.toMobile, id: bookmarksRequest?.id }));
+		const bookmarksResult = await bookmarks;
+		pcMux.send(Channels.Fs, encode(browserGolden.bookmarks.push));
+		await flush();
+		const { id: _goldenBookmarksId, ...goldenBookmarks } = browserGolden.bookmarks.toMobile;
+		expect({
+			targetsRequest: shapeOf(targetsRequest),
+			targetsScope: { windowId: targetsRequest?.windowId, ws: targetsRequest?.ws },
+			targetsResult,
+			inputs: sent.browser!.filter(message => message.t === 'input'),
+			page: latest()?.browserPage,
+			focus: latest()?.browserFocus,
+			rejected: latest()?.browserInputRejected,
+			bookmarksRequest: shapeOf(bookmarksRequest),
+			bookmarksResult,
+			pushed,
+		}).toEqual({
+			targetsRequest: shapeOf(browserGolden.toPc.find(message => message.t === 'targets')),
+			targetsScope: { windowId: browserGolden.toPc[0]!['windowId'], ws: browserGolden.toPc[0]!['ws'] },
+			targetsResult: { targets: goldenTargets['targets'], scoped: true },
+			inputs: browserGolden.toPc.filter(message => message.t === 'input'),
+			page: browserGolden.toMobile.find(message => message.t === 'page'),
+			focus: browserGolden.toMobile.filter(message => message.t === 'focus').at(-1),
+			rejected: { ...browserGolden.toMobile.find(message => message.t === 'inputRejected'), n: 1 },
+			bookmarksRequest: shapeOf({ ...browserGolden.bookmarks.toPc, protocolVersion: 3, desktopEpoch: 'e', windowId: 1, rendererGeneration: 2 }),
+			bookmarksResult: goldenBookmarks,
+			pushed: ['bookmarksChanged'],
+		});
+		controller.disconnect();
+	});
+
+	it('browser: browser.space.v1 の無い PC には targets にスペースを付けない', async () => {
+		const { controller, pcMux, sent } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.preW217));
+		await flush();
+		void controller.browserTargets({ windowId: 1, ws: 'repo' }).catch(() => undefined);
+		await flush();
+		const request = sent.browser!.find(message => message.t === 'targets');
+		expect({ windowId: request?.windowId, ws: request?.ws }).toEqual({ windowId: undefined, ws: undefined });
 		controller.disconnect();
 	});
 });

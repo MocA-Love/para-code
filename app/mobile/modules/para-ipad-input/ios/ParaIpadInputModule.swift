@@ -31,7 +31,7 @@ typealias ParaKeyCommandValue = (id: String, input: String, modifiers: [String],
 public class ParaIpadInputModule: Module {
 	public func definition() -> ModuleDefinition {
 		Name("ParaIpadInput")
-		Events("onKeyCommand", "onWindowControlsInset")
+		Events("onKeyCommand", "onWindowControlsInset", "onDeviceOrientation")
 
 		OnCreate {
 			ParaKeyCommandCenter.shared.onCommand = { [weak self] id in
@@ -39,6 +39,26 @@ public class ParaIpadInputModule: Module {
 			}
 			ParaWindowControlsObserver.shared.onChange = { [weak self] inset in
 				self?.sendEvent("onWindowControlsInset", inset.payload)
+			}
+			ParaOrientationGate.shared.onDeviceOrientation = { [weak self] orientation in
+				self?.sendEvent("onDeviceOrientation", ["orientation": orientation])
+			}
+		}
+
+		// ブラウザの全画面の間だけ、iPhone の横向きを許す（`AppDelegate.swift` の
+		// `application(_:supportedInterfaceOrientationsFor:)` が `ParaOrientationGate` を読む）。
+		// 許さなくしたら縦に戻す。iPad は Info.plist のとおり全方向のまま（ここでは何もしない）。
+		Function("setLandscapeAllowed") { (allowed: Bool) in
+			DispatchQueue.main.async {
+				ParaOrientationGate.shared.setLandscapeAllowed(allowed)
+			}
+		}
+
+		// 端末の向き（画面が回らない縦の固定の間も届く）の見張り。`onDeviceOrientation` で
+		// `portrait` / `landscape` / `other`（表を上・下に向けた・分からない）が届く（始めた直後にも 1 回）。
+		Function("setDeviceOrientationObserved") { (observed: Bool) in
+			DispatchQueue.main.async {
+				ParaOrientationGate.shared.setObserved(observed)
 			}
 		}
 
@@ -72,6 +92,7 @@ public class ParaIpadInputModule: Module {
 		OnDestroy {
 			ParaKeyCommandCenter.shared.onCommand = nil
 			ParaWindowControlsObserver.shared.onChange = nil
+			ParaOrientationGate.shared.onDeviceOrientation = nil
 		}
 
 		// 開発ビルド専用: 登録したショートカットと、いまのファーストレスポンダを返す（シミュレータでの確認用）。
@@ -615,5 +636,91 @@ final class ParaWindowControlsProbe: UIView {
 	override func safeAreaInsetsDidChange() {
 		super.safeAreaInsetsDidChange()
 		observer?.scheduleMeasure()
+	}
+}
+
+/**
+ * iPhone の横向きの許可（ブラウザの全画面の間だけ）と、端末の向きの見張り。
+ *
+ * アプリは縦に固定している（Info.plist の `UISupportedInterfaceOrientations` は縦だけ）。`AppDelegate.swift` の
+ * `application(_:supportedInterfaceOrientationsFor:)` が {@link supportedOrientations(base:)} を返すので、
+ * 許している間だけ iPhone でも横向きを含める。iPad は Info.plist のとおり（`base` をそのまま返す）。
+ * `ios/` は git の管理外なので、AppDelegate への手当ては `NOTES.md` に記録してある。
+ */
+public final class ParaOrientationGate {
+	public static let shared = ParaOrientationGate()
+
+	var onDeviceOrientation: ((String) -> Void)?
+
+	private var landscapeAllowed = false
+	private var observing = false
+	private var observer: NSObjectProtocol?
+	private var lastReported: String?
+
+	/** AppDelegate から呼ぶ。主スレッドで呼ばれる。 */
+	public func supportedOrientations(base: UIInterfaceOrientationMask) -> UIInterfaceOrientationMask {
+		if UIDevice.current.userInterfaceIdiom == .pad || !landscapeAllowed {
+			return base
+		}
+		return base.union(.landscape)
+	}
+
+	func setLandscapeAllowed(_ allowed: Bool) {
+		guard allowed != landscapeAllowed else { return }
+		landscapeAllowed = allowed
+		guard UIDevice.current.userInterfaceIdiom != .pad else { return }
+		guard #available(iOS 16.0, *) else { return }
+		let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+		for scene in scenes {
+			for window in scene.windows {
+				window.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+			}
+		}
+		// 許したときは、端末がもう横なら横へ回す（倒してから入ったときに、もう一度倒し直さなくてよいように）。
+		// 許さなくしたときは縦へ戻す。
+		let device = UIDevice.current.orientation
+		let target: UIInterfaceOrientationMask? = allowed
+			? (device == .landscapeLeft ? .landscapeRight : device == .landscapeRight ? .landscapeLeft : nil)
+			: .portrait
+		guard let target else { return }
+		for scene in scenes {
+			scene.requestGeometryUpdate(.iOS(interfaceOrientations: target)) { error in
+				NSLog("[ParaOrientationGate] requestGeometryUpdate failed: %@", error.localizedDescription)
+			}
+		}
+	}
+
+	func setObserved(_ observed: Bool) {
+		guard observed != observing else { return }
+		observing = observed
+		if observed {
+			UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+			observer = NotificationCenter.default.addObserver(forName: UIDevice.orientationDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+				self?.report()
+			}
+			lastReported = nil
+			report()
+		} else {
+			if let observer {
+				NotificationCenter.default.removeObserver(observer)
+			}
+			observer = nil
+			UIDevice.current.endGeneratingDeviceOrientationNotifications()
+		}
+	}
+
+	private func report() {
+		let orientation: String
+		switch UIDevice.current.orientation {
+		case .portrait, .portraitUpsideDown:
+			orientation = "portrait"
+		case .landscapeLeft, .landscapeRight:
+			orientation = "landscape"
+		default:
+			orientation = "other"
+		}
+		guard orientation != lastReported else { return }
+		lastReported = orientation
+		onDeviceOrientation?(orientation)
 	}
 }

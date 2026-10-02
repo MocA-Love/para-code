@@ -19,6 +19,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IParadisWorktreeGitCommandResult } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { IParadisMobileWindowHost } from './paradisMobileHost.js';
 import { ChannelId } from './paradisMobileProtocol.js';
+import { IParadisMobileBrowserScopeSnapshot } from './paradisMobileBrowserScope.js';
 import { PARADIS_MOBILE_PROTOCOL_VERSION } from './paradisMobileCompat.js';
 import { IParadisMobileWindowLease } from './paradisMobileWindowLease.js';
 import { ParadisAgentCommandDeliveryResult } from './paradisAgentCommandLifecycle.js';
@@ -372,6 +373,12 @@ export interface IParadisMobileRelayService {
 
 	/** renderer 一つ分の protocol v2 状態を shared process の統合 registry へ同期する。 */
 	syncTerminalWindow(lease: IParadisMobileWindowLease, state: IParadisMobileWindowStateV2): Promise<void>;
+	/**
+	 * renderer 一つ分の「ブラウザビュー → スペース」の台帳（browser.space.v1）。モバイルのブラウザの
+	 * ページ一覧をスペースで絞るのに使う。State は送り直さない（台帳はページ一覧の要求のときに読む）。
+	 * 受け取れたら true（その lease がまだ登録されていなければ false。Renderer は後で送り直す）。
+	 */
+	syncBrowserScopes(lease: IParadisMobileWindowLease, snapshot: IParadisMobileBrowserScopeSnapshot): Promise<boolean>;
 	/** dispose された renderer の lease を、session が現在値と一致する場合だけ解除する。 */
 	removeTerminalWindow(lease: IParadisMobileWindowLease): Promise<void>;
 	/** Rendererで実際に操作が完了した後、そのleaseからだけ最終結果を確定する。 */
