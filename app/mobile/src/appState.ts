@@ -43,6 +43,7 @@ import { shouldPresentNotifyBanner } from './notificationPolicy.js';
 import { notifySubtitle } from './notifyPresentation.js';
 import { defaultTerminalPrefs, normalizeTerminalPrefs, type TerminalPrefs, type TerminalViewport } from './terminalViewport.js';
 import { DEFAULT_CHAT_FONT_SIZE, loadChatFontSize, normalizeChatFontSize, saveChatFontSize, type ChatFontSize } from './chatTextScale.js';
+import { EMPTY_HIDDEN_MODELS, loadHiddenModels, saveHiddenModels, withModelHidden, type HiddenModels, type ModelVisibilityAgent } from './modelVisibility.js';
 import { isTablet } from './hooks/useSizeClass.js';
 import { MobileVoiceLifecycle } from './voiceLifecycle.js';
 import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
@@ -236,6 +237,12 @@ interface AppState extends StoreState {
 	 */
 	chatFontSize: ChatFontSize;
 	setChatFontSize(size: ChatFontSize): void;
+	/**
+	 * チャットの「モデルを選ぶ」に出さないモデルの id（エージェントごと）。アプリ全体で1つで、
+	 * PC ごとには持たない。PCへは送らない。最後の1つを隠させない判定は画面側（一覧が要るため）。計算は `modelVisibility.ts`。
+	 */
+	hiddenModels: HiddenModels;
+	setModelHidden(agent: ModelVisibilityAgent, id: string, hidden: boolean): void;
 	/**
 	 * ターミナル画面が実測した「読める寸法」をPCへ申告する（PTYをこの寸法へ寄せてもらう）。
 	 * `undefined` で申告を取り下げる（画面を離れた・設定オフ）。
@@ -1170,6 +1177,7 @@ export const useAppStore = create<AppState>(set => ({
 	// 文字サイズの既定は iPad が 12pt、iPhone が 10pt。
 	terminalPrefs: defaultTerminalPrefs(isTablet),
 	chatFontSize: DEFAULT_CHAT_FONT_SIZE,
+	hiddenModels: EMPTY_HIDDEN_MODELS,
 	viewingTerminalKey: undefined,
 	pinnedKeys: new Set(),
 	archivedKeys: new Set(),
@@ -1252,6 +1260,16 @@ export const useAppStore = create<AppState>(set => ({
 				}
 			} catch (err) {
 				console.warn('[appState] failed to load chatFontSize', err);
+			}
+			// 「モデルを選ぶ」に出さないモデルをロード。読み込みの前にシートで変えていたら、その値を残す。
+			try {
+				const before = useAppStore.getState().hiddenModels;
+				const stored = await loadHiddenModels(secureKeyStore);
+				if (useAppStore.getState().hiddenModels === before) {
+					set({ hiddenModels: stored });
+				}
+			} catch (err) {
+				console.warn('[appState] failed to load hiddenModels', err);
 			}
 			// 接続方針の設定をロード（保存が無い/壊れている場合は既定のまま）。
 			try {
@@ -1985,6 +2003,16 @@ export const useAppStore = create<AppState>(set => ({
 		const next = normalizeChatFontSize(size);
 		set({ chatFontSize: next });
 		saveChatFontSize(secureKeyStore, next).catch(err => console.warn('[appState] failed to save chatFontSize', err));
+	},
+
+	setModelHidden(agent, id, hidden) {
+		const current = useAppStore.getState().hiddenModels;
+		const next = withModelHidden(current, agent, id, hidden);
+		if (next === current) {
+			return;
+		}
+		set({ hiddenModels: next });
+		saveHiddenModels(secureKeyStore, next).catch(err => console.warn('[appState] failed to save hiddenModels', err));
 	},
 
 	setTerminalPref(key, value) {

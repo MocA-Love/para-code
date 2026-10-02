@@ -110,6 +110,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '設定 → チャット UI → 文字サイズで、会話の文字を 85〜150% から選べます。OS の文字サイズに合わせる設定（既定）のままなら今までと同じ表示です。',
 			},
 			{
+				icon: 'eye-off-outline',
+				title: '使わないモデルを、モデルを選ぶ画面から隠せるようになりました',
+				body: '「モデルを選ぶ」の右上の歯車から、表示するモデルを選べます。今使っているモデルは隠しても一覧に残ります。',
+			},
+			{
 				icon: 'sparkles-outline',
 				title: 'Claude Code と Codex の印を、PC と同じすっきりした形にしました',
 				body: 'エージェントの一覧では、最新の発言の前に出ていた状態の点をなくしました。状態は左の印で分かります。',
