@@ -16,6 +16,7 @@
 
 import { IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentQuestionOption } from './paradisAgentChat.js';
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
+import { IParadisMonitorSignal, paradisMonitorCallSignal, paradisMonitorNotificationSignals, paradisMonitorStartedSignal, paradisMonitorTaskStopSignal } from './paradisAgentMonitors.js';
 
 export { paradisQuestionReadyMarker } from './paradisAgentQuestionMarker.js';
 
@@ -141,6 +142,8 @@ export interface IParseSignals {
 	 */
 	turnEnded: 'completed' | 'failed' | 'interrupted' | undefined;
 	readonly codexActivityTimeline: ICodexTranscriptActivityEvent[];
+	/** Claude Code の Monitor の起動・出力・終了・停止（出現順。tailer の Monitor 一覧へ当てる）。 */
+	readonly monitorSignals: IParadisMonitorSignal[];
 	/**
 	 * 直前に現れた Codex の view_image 呼び出しの call_id。
 	 * Codex は読んだ画像の実体を「関数の結果」ではなく直後の user メッセージへ書くため、
@@ -159,7 +162,7 @@ export interface IParseSignals {
 }
 
 export function newParseSignals(): IParseSignals {
-	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], userText: false, turnEnded: undefined };
+	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], monitorSignals: [], userText: false, turnEnded: undefined };
 }
 
 export function decodeXmlAttribute(value: string): string {
@@ -523,6 +526,7 @@ export function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: numb
 		for (const match of trimmed.matchAll(/<task-id>([^<\n]+)<\/task-id>/g)) {
 			signals.closedTasks.push(match[1].trim());
 		}
+		signals.monitorSignals.push(...paradisMonitorNotificationSignals(trimmed, ts ?? Date.now()));
 		const summary = /<summary>([\s\S]*?)<\/summary>/.exec(trimmed)?.[1]?.trim();
 		const result = /<result>([\s\S]*?)<\/result>/.exec(trimmed)?.[1]?.trim();
 		const status = /<status>([^<\n]+)<\/status>/.exec(trimmed)?.[1]?.trim();
@@ -584,6 +588,9 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 			for (const match of prompt.matchAll(/<task-id>([^<\n]+)<\/task-id>/g)) {
 				signals.closedTasks.push(match[1].trim());
 			}
+			// Monitor の出力・終了もこの形で届く（作業中に届いたもの）。
+			const attachmentTs = Date.parse(str(obj.timestamp) ?? '');
+			signals.monitorSignals.push(...paradisMonitorNotificationSignals(prompt, Number.isFinite(attachmentTs) ? attachmentTs : Date.now()));
 		}
 		return [];
 	}
@@ -627,6 +634,12 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 					const toolUseId = str(b.tool_use_id);
 					if (toolUseId !== undefined) {
 						signals.answeredIds.push(toolUseId);
+					}
+					// Monitor の起動応答と、TaskStop による停止（行の toolUseResult に構造化した値がある）。
+					const toolUseResult = rec(obj.toolUseResult);
+					const monitorSignal = paradisMonitorStartedSignal(text, toolUseResult, toolUseId, ts ?? Date.now()) ?? paradisMonitorTaskStopSignal(toolUseResult, ts ?? Date.now());
+					if (monitorSignal !== undefined) {
+						signals.monitorSignals.push(monitorSignal);
 					}
 					// バックグラウンドタスク（サブエージェント等）の起動応答から実行中タスクを学習する。
 					if (/Async agent launched|running in the background/i.test(text)) {
@@ -701,6 +714,12 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 				}
 				let text = '';
 				const input = rec(b.input);
+				if (tool === 'Monitor') {
+					const monitorCall = paradisMonitorCallSignal(input, toolUseId, ts ?? Date.now());
+					if (monitorCall !== undefined) {
+						signals.monitorSignals.push(monitorCall);
+					}
+				}
 				if (tool === 'Agent' || tool === 'Task') {
 					// サブエージェント起動は description（何をさせるか）を出す方が JSON より分かりやすい。
 					const description = str(input?.description);

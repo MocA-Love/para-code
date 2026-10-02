@@ -273,6 +273,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 					effort={chat?.info?.effort}
 					modelControl={chat?.modelControl}
 					commandCatalog={chat?.commandCatalog}
+					monitors={chatReady ? chat?.monitors : undefined}
 					sendText={sendText}
 					updateClaudeSetting={actions.updateClaudeSetting}
 					onAfterSubmit={scrollToLatest}

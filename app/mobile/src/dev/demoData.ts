@@ -87,7 +87,14 @@ function demoChats(): Map<string, AgentChatState> {
 			{ rev: 1, role: 'user', kind: 'text', text: 'Diff ビューの配色をダークテーマに合わせて', ts: now - 720_000 },
 			{ rev: 2, role: 'assistant', kind: 'text', text: '追加と削除の色をテーマのトークンに寄せます。', ts: now - 700_000 },
 			{ rev: 3, role: 'assistant', kind: 'tool_use', tool: 'Edit', text: 'src/components/diffView.tsx +42 −18', ts: now - 650_000 },
-		])],
+		], {
+			// コンポーザーの Monitor のピルとシートを見るための見本（実行中 2 件と、終わったばかりの 1 件）。
+			monitors: [
+				{ id: 'bdemo01', description: 'iOS ビルドの進行と失敗シグナル', command: 'tail -f /tmp/paracode-ios-build.log | grep -E --line-buffered "error:|\\*\\* BUILD|Bundling"', startedAt: now - 332_000, timeoutMs: 1_800_000, status: 'running', output: [{ at: now - 200_000, text: '› Planning build' }, { at: now - 90_000, text: '› Compiling ParaCode (arm64)' }], eventCount: 2 },
+				{ id: 'bdemo02', description: 'git extension integration test run for PR62', command: 'tail -f /tmp/pr62-integration-test.log | grep -E --line-buffered "passing|failing|Error"', startedAt: now - 724_000, persistent: true, status: 'running', output: [], eventCount: 0 },
+				{ id: 'bdemo03', description: 'paracode-80 publish job outcome', startedAt: now - 168_000, timeoutMs: 900_000, status: 'completed', endedAt: now - 30_000, output: [{ at: now - 31_000, text: 'RELEASE RUN completed success' }], eventCount: 1 },
+			],
+		})],
 		['demo-types', chat('codex', [
 			{ rev: 1, role: 'user', kind: 'text', text: '型エラーを直して', ts: now - 120_000 },
 			{ rev: 2, role: 'assistant', kind: 'tool_use', tool: 'Bash', text: 'pnpm tsc --noEmit', ts: now - 100_000 },
