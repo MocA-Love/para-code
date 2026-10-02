@@ -77,11 +77,13 @@ export function GroupGap() {
  * 設定の切り替え（モックの `.sw`: オフは一段明るい面、オンは補足の灰、つまみは本文の白）。
  * 触覚はアプリからは鳴らさない（iOS の Switch が自分で鳴らすので、重ねると二重になる）。
  */
-export function SettingsSwitch({ value, onValueChange, disabled = false, accessibilityLabel }: {
+export function SettingsSwitch({ value, onValueChange, disabled = false, accessibilityLabel, accessibilityHint }: {
 	value: boolean;
 	onValueChange: (value: boolean) => void;
 	disabled?: boolean;
 	accessibilityLabel?: string;
+	/** VoiceOver が名前の後に読む補足（切れない理由など）。 */
+	accessibilityHint?: string;
 }) {
 	return (
 		<Switch
@@ -94,6 +96,7 @@ export function SettingsSwitch({ value, onValueChange, disabled = false, accessi
 			ios_backgroundColor={colors.raised}
 			thumbColor={colors.text}
 			accessibilityLabel={accessibilityLabel}
+			accessibilityHint={accessibilityHint}
 		/>
 	);
 }
