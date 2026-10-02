@@ -1,17 +1,14 @@
 #!/bin/sh
 
-# PARA-CODE: Start interactive Codex sessions against a pane-scoped app-server so
-# MCP servers inherit the terminal pane environment. Non-interactive commands are
-# delegated unchanged to the user's Codex executable.
+# PARA-CODE: Keep interactive Codex sessions started from a Para Code terminal off Codex's
+# shared background server (the daemon). Non-interactive commands are delegated unchanged to
+# the user's Codex executable.
 #
-# The pane app-server is an enhancement, not a requirement: if it cannot be started
-# (a broken Codex state directory, a full disk, a stale runtime directory, …) this
-# launcher warns and runs the user's Codex directly rather than failing. Turning the
-# pane app-server off is a settings-time decision — Para Code then gives the terminal no
-# pane socket and this launcher only keeps Codex off the shared background server — so
-# when a socket is set the user has asked for it, and exiting on failure would leave
-# them with no way to run Codex at all (`resume` is not on the delegated-command list
-# either).
+# This launcher used to start a pane-scoped `codex app-server` and attach the TUI to it with
+# `--remote` (the mobile "live" streaming). That mode was removed: Codex rejects permission
+# overrides, `--add-dir` and other options with `--remote resume|fork`, and the pane app-server
+# restarted every MCP server for each terminal. A PARA_CODE_CODEX_APP_SERVER_SOCKET left in the
+# environment of a terminal opened by an older Para Code is ignored.
 
 set -u
 
@@ -76,19 +73,14 @@ for argument in "$@"; do
 	esac
 done
 
-# Codex rejects `--remote` outside the interactive TUI ("only supported for interactive
-# TUI commands"), so it may only be injected when this invocation really opens the TUI:
-# no subcommand at all (a bare prompt), `resume`, or `fork`. Everything else has to be
-# delegated, which means every other subcommand name must be recognized here — a name
-# missing from the list below is silently treated as a prompt and breaks that command.
+# Only an interactive TUI session (no subcommand at all, a bare prompt, `resume`, or `fork`)
+# is kept off the shared background server; every other subcommand is delegated unchanged,
+# because `--no-daemon` is a TUI option and some subcommands (`agents`, `queue`) reject it.
 # The list is Codex 0.146's full set (including aliases and the internal subcommands that
-# `codex --help` hides) minus the two TUI commands, plus `agents` (the overview of the shared
-# background server, which must not be kept off that server) and the 0.158 additions
-# `queue` (which also rejects `--no-daemon`), `migrate-rollouts` and `tcp-tunnel`. Without a
-# pane socket the lookup below is skipped, so a newer subcommand missing here gets
-# `--no-daemon` and may refuse it; keep the list current. It is only the fast path: a
-# positional argument that does not match it is resolved by asking Codex itself further
-# down, so a subcommand added by a future Codex release keeps working.
+# `codex --help` hides) minus the two TUI commands, plus `agents`, and the 0.158 additions
+# `queue`, `migrate-rollouts` and `tcp-tunnel`. A subcommand missing here gets `--no-daemon`
+# and may refuse it; keep the list current (the Windows launcher and the mobile relay's
+# command parser carry the same list).
 command_kind=unknown
 if [ "$early_delegate" -eq 1 ] || [ "$user_no_daemon" -eq 1 ]; then
 	command_kind=delegated
@@ -113,8 +105,8 @@ fi
 # whenever one is running for this CODEX_HOME, and 0.157 and later also start it on first
 # use. Hooks and MCP servers then run in that server with the environment of whichever
 # terminal started it, so they report to the wrong pane (or to none), and the server keeps
-# that environment after every pane closes. Every session this launcher runs without
-# `--remote` must therefore stay embedded:
+# that environment after every pane closes. Every interactive session this launcher runs must
+# therefore stay embedded:
 #  - Codex 0.156 and later: `--no-daemon`. It is the only option that also refuses a server
 #    that is already running; `-c features.daemon_auto_start=false` only stops a new one
 #    from starting, and Codex still attaches to a running one.
@@ -133,222 +125,4 @@ exec_unmanaged() {
 	exec env PATH="$clean_path" "$real_codex" -c features.daemon_auto_start=false "$@"
 }
 
-# Para Code keeps this launcher on PATH without a pane socket when the pane app-server is
-# turned off, only to keep Codex embedded as above. Run the user's Codex directly then,
-# silently: nothing the user asked for is missing.
-if [ -z "${PARA_CODE_CODEX_APP_SERVER_SOCKET:-}" ]; then
-	exec_unmanaged "$@"
-fi
-
-# Every path below can fall back to the unmanaged Codex, so the cleanup helper has to be
-# callable before the app-server exists. `owns_server` stays 0 until we actually start one,
-# which keeps cleanup a no-op for the early validation failures.
-socket_path=
-pid_path=
-owner_path=
-log_path=
-server_pid=
-owns_server=0
-# Only the pane's own runtime files belong to the tightened umask set below; a Codex this
-# launcher hands the session to must create its files exactly as it would outside Para Code.
-original_umask=$(umask)
-
-cleanup() {
-	if [ "$owns_server" -ne 1 ] || [ -z "$server_pid" ]; then
-		return
-	fi
-	current_owner=
-	if [ -f "$owner_path" ]; then
-		IFS= read -r current_owner < "$owner_path" || current_owner=
-	fi
-	if [ "$current_owner" = "$$" ]; then
-		kill "$server_pid" 2>/dev/null || true
-		wait "$server_pid" 2>/dev/null || true
-		# `.log` is deliberately kept: it is the only record of why an app-server died, and
-		# both the user and Para Code's diagnostics read it after the fact.
-		rm -f "$socket_path" "$pid_path" "$owner_path"
-	fi
-	owns_server=0
-}
-
-# Give up on the pane app-server and hand the session to the user's Codex unchanged.
-# `exec` does not run the EXIT trap, so release the app-server before replacing the process.
-fallback_direct() {
-	fallback_reason=$1
-	shift
-	echo "Para Code: $fallback_reason Starting Codex without the pane app-server; MCP servers will not inherit this pane's environment." >&2
-	cleanup
-	trap - EXIT
-	umask "$original_umask"
-	exec_unmanaged "$@"
-}
-
-socket_path=${PARA_CODE_CODEX_APP_SERVER_SOCKET:-}
-case "$socket_path" in
-	/*/*.sock) ;;
-	*)
-		fallback_direct "PARA_CODE_CODEX_APP_SERVER_SOCKET is missing or invalid." "$@"
-		;;
-esac
-socket_name=${socket_path##*/}
-case "$socket_name" in
-	''|*[!A-Za-z0-9._-]*)
-		fallback_direct "Codex app-server socket name is invalid." "$@"
-		;;
-esac
-
-runtime_dir=${socket_path%/*}
-case "$runtime_dir" in
-	*/pcx) ;;
-	*)
-		fallback_direct "Codex app-server socket must be inside the Para Code pcx runtime directory." "$@"
-		;;
-esac
-pid_path=$socket_path.pid
-owner_path=$socket_path.owner
-log_path=$socket_path.log
-umask 077
-mkdir -p "$runtime_dir" || fallback_direct "could not create the Para Code pcx runtime directory." "$@"
-chmod 700 "$runtime_dir" || fallback_direct "could not secure the Para Code pcx runtime directory." "$@"
-
-# Every name Codex knows as a subcommand, read out of the dispatch table in the shell
-# completion script it generates for itself. That table is the only complete source: it
-# lists aliases and the internal subcommands `codex --help` hides.
-#
-# Generating it costs about a third of a second, so the result is cached in the pane
-# runtime directory (mode 700, so no other user can steer this classification). The cache
-# is invalidated both by the Codex executable's identity and by age: `real_codex` is
-# often a wrapper script whose size and timestamp do not change when the Codex behind it
-# is upgraded.
-codex_known_subcommands() {
-	subcommand_cache=$runtime_dir/codex-commands.cache
-	codex_identity=$(ls -lnL -- "$real_codex" 2>/dev/null | awk 'NR == 1 { print $5 "-" $6 "-" $7 "-" $8 }')
-	cached_identity=
-	cached_subcommands=
-	if [ -n "$codex_identity" ] && [ -f "$subcommand_cache" ] && [ -z "$(find "$subcommand_cache" -mmin +360 2>/dev/null)" ]; then
-		{ IFS= read -r cached_identity && IFS= read -r cached_subcommands; } < "$subcommand_cache" 2>/dev/null || cached_subcommands=
-	fi
-	if [ -n "$cached_subcommands" ] && [ "$cached_identity" = "$codex_identity" ]; then
-		printf '%s\n' "$cached_subcommands"
-		return 0
-	fi
-
-	probe_output=$subcommand_cache.$$.probe
-	rm -f "$probe_output"
-	PATH=$clean_path "$real_codex" completion bash </dev/null >"$probe_output" 2>/dev/null &
-	probe_pid=$!
-	probe_attempt=0
-	while kill -0 "$probe_pid" 2>/dev/null; do
-		probe_attempt=$((probe_attempt + 1))
-		if [ "$probe_attempt" -ge 50 ]; then
-			kill "$probe_pid" 2>/dev/null || true
-			break
-		fi
-		sleep 0.1
-	done
-	wait "$probe_pid" 2>/dev/null || true
-	# Surrounding spaces let the caller test membership with a single glob.
-	discovered=" $(sed -n 's/^[[:space:]]*codex,\([A-Za-z0-9_-][A-Za-z0-9_-]*\))$/\1/p' "$probe_output" 2>/dev/null | sort -u | tr '\n' ' ')"
-	rm -f "$probe_output"
-	if [ "$discovered" = ' ' ]; then
-		return 1
-	fi
-
-	if [ -n "$codex_identity" ]; then
-		probe_cache=$subcommand_cache.$$.tmp
-		if printf '%s\n%s\n' "$codex_identity" "$discovered" > "$probe_cache" 2>/dev/null; then
-			mv -f "$probe_cache" "$subcommand_cache" 2>/dev/null || rm -f "$probe_cache"
-		else
-			rm -f "$probe_cache" 2>/dev/null || true
-		fi
-	fi
-	printf '%s\n' "$discovered"
-}
-
-# An unrecognized positional argument is either the prompt or a subcommand from a newer
-# Codex than the static list above knows. Only Codex can tell the two apart. Failing to
-# ask keeps the prompt reading, which is what the static list alone would have decided.
-if [ "$command_kind" = unknown ]; then
-	known_subcommands=$(codex_known_subcommands 2>/dev/null || true)
-	case "$known_subcommands" in
-		*" $first_positional "*)
-			# No EXIT trap is installed yet and no app-server has been started, so the
-			# process can be replaced without releasing anything.
-			umask "$original_umask"
-			exec env PATH="$clean_path" "$real_codex" "$@"
-			;;
-	esac
-fi
-
-if [ -f "$pid_path" ]; then
-	IFS= read -r server_pid < "$pid_path" || server_pid=
-	case "$server_pid" in
-		''|*[!0-9]*) server_pid= ;;
-	esac
-	if [ -n "$server_pid" ] && ! kill -0 "$server_pid" 2>/dev/null; then
-		server_pid=
-	fi
-	if [ -n "$server_pid" ]; then
-		server_command=$(ps -p "$server_pid" -o command= 2>/dev/null || true)
-		if ! printf '%s\n' "$server_command" | grep -F -- "app-server --listen unix://$socket_path" >/dev/null 2>&1; then
-			server_pid=
-		fi
-	fi
-fi
-
-if [ -z "$server_pid" ]; then
-	rm -f "$socket_path" "$pid_path" "$owner_path"
-	: > "$log_path"
-	PATH=$clean_path "$real_codex" app-server --listen "unix://$socket_path" </dev/null >>"$log_path" 2>&1 &
-	server_pid=$!
-	owns_server=1
-	if ! printf '%s\n' "$server_pid" > "$pid_path" || ! printf '%s\n' "$$" > "$owner_path"; then
-		kill "$server_pid" 2>/dev/null || true
-		wait "$server_pid" 2>/dev/null || true
-		rm -f "$socket_path" "$pid_path" "$owner_path"
-		# Already released above, so keep cleanup from killing an unrelated recycled pid.
-		owns_server=0
-		server_pid=
-		fallback_direct "could not record pane Codex app-server ownership." "$@"
-	fi
-else
-	owner_pid=
-	if [ -f "$owner_path" ]; then
-		IFS= read -r owner_pid < "$owner_path" || owner_pid=
-		case "$owner_pid" in
-			''|*[!0-9]*) owner_pid= ;;
-		esac
-	fi
-	if [ -z "$owner_pid" ] || ! kill -0 "$owner_pid" 2>/dev/null; then
-		owns_server=1
-		printf '%s\n' "$$" > "$owner_path"
-	fi
-fi
-
-trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
-attempt=0
-while [ ! -S "$socket_path" ]; do
-	if ! kill -0 "$server_pid" 2>/dev/null; then
-		fallback_direct "pane Codex app-server failed to start (see $log_path)." "$@"
-	fi
-	attempt=$((attempt + 1))
-	if [ "$attempt" -ge 100 ]; then
-		fallback_direct "timed out waiting for pane Codex app-server (see $log_path)." "$@"
-	fi
-	sleep 0.1
-done
-
-# The pane's own runtime files are all written by now, so the tightened umask has done its
-# job. Restoring it before the interactive session matters more than it looks: the umask is
-# inherited by every command the session runs, so leaving it at 077 would make the agent's
-# `npm install`, builds and generated directories unreadable to any other user — a Docker
-# mount, a service under a different uid, a local CI runner — and git records no permissions,
-# so nothing about that would show up in a diff.
-umask "$original_umask"
-PATH=$clean_path "$real_codex" --remote "unix://$socket_path" "$@"
-status=$?
-exit "$status"
+exec_unmanaged "$@"

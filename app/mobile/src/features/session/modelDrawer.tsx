@@ -46,15 +46,19 @@ const AGENT_NAMES: Readonly<Record<'claude' | 'codex', string>> = { claude: 'Cla
  *  - Codex: PC から届くモデルの一覧（model/list）を正本にし、確定したら model と effort を一度に送る
  * シートの中の選択は仮のもので、「適用」を押すまで何も送らない。
  *
+ * `readOnly`（PC が「モバイルからは変えられない」と伝えてきた Codex のセッション）のときは、ピルは表示だけで
+ * 押してもシートを開かない（PC のターミナルの /model で変える）。
+ *
  * 右上の歯車で、同じシートの中身を「表示するモデル」（モデルごとのスイッチ）に切り替え、「完了」で戻す。
  * 別のシートを重ねて出さないのは、閉じる途中で次のモーダルを出すと iOS が取りこぼすため（`BottomDrawer` の約束）。
  * 隠したモデルは「モデルを選ぶ」に出さない（使用中のものは「使用中・非表示」として残す）。計算は `modelVisibility.ts`。
  */
-export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting, onRequestCodexCatalog, onUpdateCodexSettings }: {
+export function ModelPill({ agent, model, effort, modelControl, readOnly = false, onClaudeSetting, onRequestCodexCatalog, onUpdateCodexSettings }: {
 	agent: string | undefined;
 	model: string | undefined;
 	effort: string | undefined;
 	modelControl: AgentModelControlState | undefined;
+	readOnly?: boolean;
 	onClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<AgentMessageSendResult>;
 	onRequestCodexCatalog: () => void;
 	onUpdateCodexSettings: (model: string, effort: string) => void;
@@ -189,12 +193,12 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 				style={({ pressed }) => [styles.pill, pressed ? styles.pressed : undefined]}
 				hitSlop={PILL_SLOP}
 				onPress={openDrawer}
-				disabled={modelControl?.status === 'updating' || submitting}
-				accessibilityRole="button"
-				accessibilityLabel={`モデルと effort を変更。いまは ${label}`}
+				disabled={readOnly || modelControl?.status === 'updating' || submitting}
+				accessibilityRole={readOnly ? 'text' : 'button'}
+				accessibilityLabel={readOnly ? `モデルと effort は ${label}。PC のターミナルの /model で変更します` : `モデルと effort を変更。いまは ${label}`}
 			>
 				<Text style={styles.pillText} numberOfLines={1}>{label}</Text>
-				<Icon icon={ChevronDown} size={iconSize.xs} color={colors.textDim} />
+				{readOnly ? null : <Icon icon={ChevronDown} size={iconSize.xs} color={colors.textDim} />}
 			</Pressable>
 			<BottomDrawer visible={open} onClose={close} accessibilityLabel={page === 'visibility' ? '表示するモデル' : 'モデルを選ぶ'}>
 				{page === 'visibility' ? (

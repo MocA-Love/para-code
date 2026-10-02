@@ -39,7 +39,7 @@ import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdent
 import { encodeQrCode, qrToSvg } from '../common/paradisQrCode.js';
 import { IParadisSpaceNotesService } from '../../workspaceSwitch/common/paradisSpaceNotes.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisConfirmedAgentPanes, IParadisGitResult, IParadisMobileRelayService, IParadisMobileStatus, PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_ENABLED_KEY, PARADIS_MOBILE_PC_NAME_KEY, PARADIS_MOBILE_RELAY_CHANNEL, PARADIS_MOBILE_RELAY_URL_KEY, paradisMobileWindowRoute } from '../common/paradisMobileRelay.js';
+import { IParadisConfirmedAgentPanes, IParadisGitResult, IParadisMobileRelayService, IParadisMobileStatus, PARADIS_MOBILE_ENABLED_KEY, PARADIS_MOBILE_PC_NAME_KEY, PARADIS_MOBILE_RELAY_CHANNEL, PARADIS_MOBILE_RELAY_URL_KEY, paradisMobileWindowRoute } from '../common/paradisMobileRelay.js';
 import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider.js';
 import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
 import { ParadisMobileBrowserScopeSync } from './paradisMobileBrowserScopeSync.js';
@@ -73,6 +73,8 @@ import { IParadisAgentTerminalHintConsumer, paradisCreateAgentTerminalHintConsum
 import { setParadisDiagnosticCorrelationTag } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisMobilePcFocusHeartbeatCoordinator } from './paradisMobilePcFocusHeartbeat.js';
 import { ParadisMobileRelayRendererLifecycle } from './paradisMobileRelayRendererLifecycle.js';
+import { ParadisRemoteCodexRolloutDiscovery } from './paradisRemoteCodexRolloutDiscovery.js';
+import { paradisRemoteCodexHomes } from '../../agentHookTrust/browser/paradisRemoteCodexHomes.js';
 import { ParadisMobileBackgroundThrottlingKeeper, paradisCreateMobileBackgroundThrottlingKeeper } from './paradisMobileBackgroundThrottling.js';
 import { IChatService } from '../../../../workbench/contrib/chat/common/chatService/chatService.js';
 // モバイルの scm / fs の新しい種類を別ファイルで受ける処理（登録表。W2-17）
@@ -175,6 +177,24 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		let agentPanesSyncChain = Promise.resolve();
 		const withWindowLease = <T>(callback: (lease: IParadisMobileWindowLease) => Promise<T>): Promise<T> => this.withWindowLease(callback);
 		const withCurrentRendererLease = <T>(callback: (lease: IParadisMobileWindowLease) => Promise<T>): Promise<T> => this.withCurrentRendererLease(callback);
+		// SSH の接続先で動く Codex の rollout を、hook が届かなくても接続先のディスクから見つける
+		const remoteAuthority = this.remoteAgentService.getConnection()?.remoteAuthority;
+		const remoteCodexDiscovery = remoteAuthority?.startsWith('ssh-remote+') === true
+			? this._register(new ParadisRemoteCodexRolloutDiscovery({
+				fileService,
+				resolveCodexHomes: () => paradisRemoteCodexHomes(this.remoteAgentService),
+				report: (token, remotePath, commandStartedAt) => withCurrentRendererLease(lease => this.service.noteRemoteAgentTranscript(lease, token, remoteAuthority, remotePath, commandStartedAt)),
+				// 写しはモバイルのためのもの。モバイル連携が無効なら探さない
+				isActive: () => this.isEnabled(),
+			}))
+			: undefined;
+		if (remoteCodexDiscovery !== undefined) {
+			this._register(this.configurationService.onDidChangeConfiguration(e => {
+				if (e.affectsConfiguration(PARADIS_MOBILE_ENABLED_KEY) && !this.isEnabled()) {
+					remoteCodexDiscovery.stopAll();
+				}
+			}));
+		}
 
 		// ウィンドウを閉じるとき、terminal leaseと同時にこのsessionのペイン対応表も破棄する。
 		this._register({ dispose: () => { withWindowLease(lease => this.service.removeTerminalWindow(lease)).catch(() => { }); } });
@@ -447,6 +467,11 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 				lease, runningPaneToken, generation, normalizedCommandLine, command.agent, command.mode, cwd, command.cwd, command.sessionId,
 			)));
 			this.agentCommandsByInstance.set(instance.instanceId, { token: runningPaneToken, commandLine: normalizedCommandLine });
+			if (command.agent === 'codex' && cwd !== undefined) {
+				// `codex -C <dir>` の作業ディレクトリは、シェルの cwd から見たもの（接続先は POSIX）
+				const codexCwd = command.cwd === undefined ? cwd : command.cwd.startsWith('/') ? command.cwd : `${cwd.replace(/\/+$/, '')}/${command.cwd}`;
+				remoteCodexDiscovery?.start(runningPaneToken, codexCwd, command.mode, command.sessionId);
+			}
 			this.terminalPaneTokens.set(instance.instanceId, runningPaneToken);
 			this.inputModeGuardFor(instance)?.commandStarted();
 		};
@@ -461,6 +486,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// Ctrl+Z で止めただけ（シェルの終了コードが 128 + SIGSTOP・SIGTSTP・SIGTTIN・SIGTTOU。macOS と Linux で番号が違う）
 			// なら、許可待ち・質問中は解かない（`fg` で同じ画面に戻る）
 			const suspended = exitCode !== undefined && exitCode >= 145 && exitCode <= 150;
+			if (!suspended) {
+				remoteCodexDiscovery?.stop(paneToken);
+			}
 			this.agentCommandCoordinator?.finish(paneToken, commandLine, generation => withCurrentRendererLease(lease => this.service.notifyAgentCliCommandFinished(lease, paneToken, generation, suspended)));
 		};
 		const recoveryTracker = this._register(new ParadisAgentTerminalRecoveryTracker(
@@ -497,6 +525,10 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// 各live instanceへ直接一度だけ購読する。
 		this._register(terminalService.onDidCreateInstance(reconcileTerminalTracking));
 		this._register(terminalService.onDidDisposeInstance(instance => {
+			const discoveryToken = this.terminalPaneTokens.get(instance.instanceId) ?? this.agentCommandsByInstance.get(instance.instanceId)?.token;
+			if (discoveryToken !== undefined) {
+				remoteCodexDiscovery?.stop(discoveryToken);
+			}
 			this.cleanupTerminalTracking(instance);
 			reconcileTerminalTracking();
 		}));
@@ -599,14 +631,10 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 					// 自分で掃除しないと、無効にした直後の一覧に項目が残り続ける。
 					this.agentStatusStore.setDiscoveredAgentPaneTokens(new Set());
 				}
-				this.syncAgentLiveOptions();
 				this.updateTerminalHintTracking();
 				// 有効/無効の切り替えは shared process の状態変化を待たずに即座に表示へ反映する
 				// （無効化直後の項目消去・有効化直後の項目表示を確実にするため）。
 				this.service.getStatus().then(status => this.renderStatusbar(status)).catch(() => { /* ignore */ });
-			}
-			if (e.affectsConfiguration(PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY)) {
-				this.syncAgentLiveOptions();
 			}
 		}));
 
@@ -641,12 +669,6 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		const configured = this.configurationService.getValue<string>(PARADIS_MOBILE_PC_NAME_KEY);
 		this.service.setPcName(typeof configured === 'string' ? configured : undefined)
 			.catch(err => this.logService.warn('[paradisMobileRelay] setPcName failed', err));
-	}
-
-	private syncAgentLiveOptions(): void {
-		const codexDaemonStreaming = this.isEnabled()
-			&& this.configurationService.getValue<boolean>(PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY) === true;
-		this.service.setAgentLiveOptions({ codexDaemonStreaming }).catch(err => this.logService.warn('[paradisMobileRelay] setAgentLiveOptions failed', err));
 	}
 
 	private withWindowLease<T>(callback: (lease: IParadisMobileWindowLease) => Promise<T>): Promise<T> {
@@ -738,7 +760,6 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	private async initialize(enabled: boolean, relayUrl: string | undefined): Promise<void> {
 		try {
 			await this.service.initialize(enabled, relayUrl);
-			this.syncAgentLiveOptions();
 			// オンラインになったら状態を1回 push（設定変更での再初期化を含むので必ず送る）。
 			this.provider.pushState(true);
 			// 初期化完了時点の状態でステータスバーを描き直す。onDidChangeStatus は状態が

@@ -80,7 +80,6 @@ class TestPaneTokens implements IParadisPaneTokenService {
 	listPaneTokens(): readonly { readonly instanceId: number; readonly token: string }[] {
 		return this.insights.insights.map(insight => ({ instanceId: Number(insight.token.slice(1)), token: insight.token }));
 	}
-	isCodexPaneAppServerEnabled(): boolean { return false; }
 	prepareShellLaunchConfig(_shellLaunchConfig: IShellLaunchConfig): void { }
 }
 
