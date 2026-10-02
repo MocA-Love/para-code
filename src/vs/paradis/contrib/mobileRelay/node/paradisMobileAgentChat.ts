@@ -6354,8 +6354,12 @@ export class ParadisMobileAgentChat extends Disposable {
 						this.activeTurnTokens.add(token);
 						fireParadisAgentTurnStarted(token, this.tokenToCwd.get(token));
 					} else if (event.type === 'subagent') {
-						changed = tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: event.id, agentPath: event.agentPath, kind: event.kind } }, event.at) || changed;
+						changed = tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: event.id, agentPath: event.agentPath, kind: event.kind, ...(event.detail !== undefined ? { prompt: event.detail } : {}), ...(event.via !== undefined ? { interaction: event.via } : {}) } }, event.at) || changed;
 						this.enrichCodexActivityRelationship(token, event.id, event.at).catch(err => this.logService.trace('[paradisAgentChat] codex activity relationship lookup failed', String(err)));
+					} else if (event.type === 'goal') {
+						changed = tracker.applyCodexGoal(event, event.at) || changed;
+					} else if (event.type === 'plan') {
+						changed = tracker.applyCodexPlan(event.steps, event.at) || changed;
 					} else {
 						this.activeTurnTokens.delete(token);
 						// 承認が残ったままの中断（承認の拒否）は完了ではない（直後の onTurnEnded がペインを idle へ移す）。
@@ -6364,7 +6368,7 @@ export class ParadisMobileAgentChat extends Disposable {
 						if (!(event.reason === 'interrupted' && tailer.stoppedOnApproval())) {
 							fireParadisAgentTurnEnded(token);
 						}
-						changed = tracker.endTurn(event.at) || changed;
+						changed = tracker.endTurn(event.at, event.reason) || changed;
 					}
 				}
 				if (changed) { this.pushActivityToSubscribers(token); }
@@ -6411,6 +6415,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.scheduleDesktopInsightCheck();
 			tailer.dispose();
 			this.tailers.delete(token);
+			// 読むのをやめた会話の Codex の計画・ゴールを「実行中」のまま残さない
+			if (this.activityTrackers.get(token)?.settleCodexPlanAndGoal(Date.now()) === true) { this.pushActivityToSubscribers(token); }
 			setParadisAgentPaneActivity(token, { backgroundTasks: new Map(), pendingQuestion: false, pendingApproval: false });
 			// tailer 破棄時点で検出済みIssueもリセットする。/clear や resume でこのトークンに
 			// 新しい tailer が張られたとき、新会話が1件もIssueへ触れなければ onIssueUrlsUpdated が
