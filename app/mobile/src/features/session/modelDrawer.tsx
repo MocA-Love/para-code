@@ -249,6 +249,8 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		gap: space.xs,
+		// 幅が足りないとき（右に Monitor のピルが出ているとき）は、こちらが縮んで文字を省略する。
+		flexShrink: 1,
 		maxWidth: 180,
 		minHeight: PILL_HEIGHT,
 		paddingHorizontal: space.sm,

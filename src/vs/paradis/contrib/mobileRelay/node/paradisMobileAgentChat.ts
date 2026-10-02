@@ -58,6 +58,7 @@ import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentSessionInfo, ParadisAgentKind, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
+import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
 import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
 // 会話の型と transcript の正規化は、デスクトップのチャット表示と共有するため agentChat/common へ
@@ -135,8 +136,8 @@ type AgentInbound =
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } }
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } }
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number }
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number }
 	| { t: 'model-catalog'; id: number; requestId: string; models: readonly IParadisCodexModelOption[] }
 	| { t: 'command-catalog'; id: number; requestId: string; commands: readonly IParadisAgentCommandOption[] }
 	| { t: 'command-catalog-error'; id: number; requestId: string; message: string }
@@ -1296,6 +1297,8 @@ interface ITailerDelegate {
 	onActivity(): void;
 	/** セッションメタ情報（model / effort）が変化した。 */
 	onInfo(): void;
+	/** Claude Code の Monitor の一覧が変化した（起動・出力・終了・推定による時間切れ）。 */
+	onMonitors?(): void;
 	/** Claude transcriptのephemeral progress行を受けた。履歴には追加しない。 */
 	onProgress(progress: ITranscriptProgress): void;
 	/** ライブ追記でターン終了（task_complete / error / turn_aborted）を検出した。 */
@@ -1425,6 +1428,8 @@ class TranscriptTailer {
 	readonly backgroundTasks = new Map<string, number>();
 	/** 回答待ちの質問 (AskUserQuestion) の tool_use_id。 */
 	readonly pendingQuestions = new Set<string>();
+	/** Claude Code の Monitor の一覧（epoch ごと。モバイルのコンポーザーのピルに出す）。 */
+	private readonly monitorWatch = new ParadisAgentMonitorWatch(() => this.delegate.onMonitors?.());
 	/**
 	 * PreToolUse hook でライブ注入した質問: 内容キー → 合成toolUseId。Claude Code は
 	 * AskUserQuestion の tool_use を決着（回答/中断）まで transcript へ flush しないため、
@@ -1505,6 +1510,7 @@ class TranscriptTailer {
 
 	dispose(): void {
 		this.disposed = true;
+		this.monitorWatch.dispose();
 		this.watcher?.close();
 		this.watcher = undefined;
 		if (this.pollTimer !== undefined) {
@@ -1672,6 +1678,8 @@ class TranscriptTailer {
 				this.initialTruncated = false;
 				this.backgroundTasks.clear();
 				this.pendingQuestions.clear();
+				// 会話が替わったので Monitor の一覧も空にする（読み直しで今の transcript から作り直す）。
+				this.monitorWatch.clear();
 				this.approvalQueue.length = 0;
 				this.approvalDeniedInTurn = false;
 				this.liveQuestions.clear();
@@ -1823,6 +1831,13 @@ class TranscriptTailer {
 				continue;
 			}
 			if (this.agent === 'claude') {
+				if (emitDelta) {
+					// 書かれた直後に読んだ行の時刻で、transcript の時計と PC の時計のずれを測る（SSH の写しは接続先の時計）。
+					const writtenAt = Date.parse(str(obj.timestamp) ?? '');
+					if (Number.isFinite(writtenAt)) {
+						this.monitorWatch.observeClock(writtenAt);
+					}
+				}
 				this.observePromptCache(obj);
 				const progress = parseClaudeProgress(obj);
 				if (progress !== undefined) {
@@ -2365,6 +2380,19 @@ class TranscriptTailer {
 		});
 	}
 
+	/** モバイルへ送る Monitor の一覧（Claude のセッションだけ。Codex には無い）。時刻は PC の時計。 */
+	monitors(): IParadisAgentMonitor[] {
+		return this.monitorWatch.snapshot();
+	}
+
+	/**
+	 * Claude Code のセッションが終わった（SessionEnd hook）。Monitor はプロセスと一緒に止まるが
+	 * transcript には何も残らないので、動いていたものを「停止（推定）」にする。
+	 */
+	endMonitorsForSessionEnd(at: number): void {
+		this.monitorWatch.endSession(at);
+	}
+
 	/**
 	 * SubagentStart/SubagentStop hook 由来のバックグラウンドタスク開始を反映する。
 	 * transcriptパース由来 (openedTasks) と同じ backgroundTasks を共有するが、キーは
@@ -2456,6 +2484,8 @@ class TranscriptTailer {
 			this.delegate.onInfo();
 		}
 		if (signals.codexActivityTimeline.length > 0) { this.delegate.onCodexActivityTimeline(signals.codexActivityTimeline); }
+		// 初回読み込み・読み直し（live でない）では知らせない。その後の snapshot が一覧を運ぶ。
+		this.monitorWatch.apply(signals.monitorSignals, live);
 		// ターン終了はライブ追記でのみ通知する（初回読み込み・epoch読み直しの履歴に含まれる
 		// 過去の task_complete で、現在進行中のライブ状態を消してしまわないように）。
 		if (live && signals.turnEnded !== undefined) {
@@ -4308,7 +4338,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 				// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 				const messages = tailer.messages.filter(m => m.rev > afterRev);
-				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) } }, token, owner);
+				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer) }, token, owner);
 			} else {
 				const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 				this.sendTo(mobileId, {
@@ -4316,6 +4346,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					...(tailer.wasInitialTruncated || tailer.messages.length > messages.length ? { truncated: true } : {}),
 					...(info !== undefined ? { info } : {}),
 					live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) },
+					...this.monitorsField(token, tailer),
 				}, token, owner);
 			}
 		} finally {
@@ -4988,6 +5019,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		for (const token of [...this.desktopExitedTokens]) {
 			if (!live.has(token)) {
 				this.desktopExitedTokens.delete(token);
+				this.sessionEndedAt.delete(token);
 			}
 		}
 		let changed = false;
@@ -5027,6 +5059,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly desktopChatWatchers = new Map<string, { readonly tokens: ReadonlySet<string>; readonly visible: ReadonlySet<string>; readonly expiresAt: number }>();
 	/** SessionEnd を受けてからまだ次の hook が来ていないペイン。 */
 	private readonly desktopExitedTokens = new Set<string>();
+	/** SessionEnd を受けた時刻（Monitor を「停止（推定）」にするときの終わった時刻）。desktopExitedTokens と同じ寿命。 */
+	private readonly sessionEndedAt = new Map<string, number>();
 	private readonly _onDidChangeDesktopChat = this._register(new Emitter<readonly string[]>());
 	/** 見られているペインの会話（履歴・生成中の様子・待っている内容・モデル）が変わった。 */
 	readonly onDidChangeDesktopChat = this._onDidChangeDesktopChat.event;
@@ -5619,7 +5653,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 文を送ると、シェルでコマンドとして実行されるため）。SessionEnd の後に別の hook が来たら消す。
 		if (event.event === 'SessionEnd') {
 			this.desktopExitedTokens.add(event.token);
+			this.sessionEndedAt.set(event.token, event.at);
+			this.tailers.get(event.token)?.endMonitorsForSessionEnd(event.at);
 		} else if (this.desktopExitedTokens.delete(event.token)) {
+			this.sessionEndedAt.delete(event.token);
 			this.scheduleDesktopChatCheck();
 		}
 		// hook はペインの環境変数を継承したプロセスからしか届かない。届いた時点で
@@ -6271,7 +6308,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 					const info = this.infoOf(token, tailer);
-					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, liveRevision: this.liveRevisions.get(token) ?? 0, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) } });
+					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, liveRevision: this.liveRevisions.get(token) ?? 0, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer) });
 				}
 			},
 			// この起動後に transcript が伸びた＝そのペインでエージェントが今も動いている。
@@ -6297,6 +6334,13 @@ export class ParadisMobileAgentChat extends Disposable {
 					this.codexThreadSettings.delete(token);
 				}
 				this.pushInfoToSubscribers(token);
+			},
+			// Monitor の一覧は本文と独立に変わる（出力の通知・時間の経過）ので、空 delta で丸ごと届ける。
+			onMonitors: () => {
+				const terminalId = this.terminalIdForToken(token);
+				if (terminalId !== undefined) {
+					this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...this.monitorsField(token, tailer) });
+				}
 			},
 			onProgress: progress => this.updateLiveFromProgress(token, progress),
 			onCodexActivityTimeline: events => {
@@ -6587,6 +6631,28 @@ export class ParadisMobileAgentChat extends Disposable {
 			return undefined;
 		}
 		return this.isLiveToken(paneToken) && this.terminalIdForToken(paneToken) === terminalId ? paneToken : undefined;
+	}
+
+	/**
+	 * snapshot / delta に載せる Monitor の一覧（Claude のセッションだけ。空でも送り、モバイルの一覧を揃える）。
+	 * 時刻は PC の時計なので、送信時刻 `monitorsAt` を添える（モバイルが手元の時計へ直す）。
+	 * ペインでエージェントが動いていない（SessionEnd の後・ペインが生きていない）ときは、動いているものを
+	 * 「停止（推定）」にして送る。推定は tailer のメモリにしか無く、作り直すと再生で running に戻るため、
+	 * 送るたびにここで判定する。
+	 */
+	private monitorsField(token: string, tailer: TranscriptTailer): { monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } {
+		if (tailer.agent !== 'claude') {
+			return {};
+		}
+		const monitors = tailer.monitors();
+		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
+		return { monitors: paneStopped ? paradisMonitorsForStoppedPane(monitors, this.sessionEndedAt.get(token)) : monitors, monitorsAt: Date.now() };
+	}
+
+	/** {@link monitorsField} の判定をテストから確かめるため。 */
+	monitorsForTest(token: string): { monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } | undefined {
+		const tailer = this.tailers.get(token);
+		return tailer !== undefined ? this.monitorsField(token, tailer) : undefined;
 	}
 
 	private isLiveToken(token: string): boolean {

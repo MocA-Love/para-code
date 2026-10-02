@@ -1,5 +1,5 @@
 {
-	"$comment": "agent チャネルの固定形。id はターミナルの数値 ID、token はペイントークン（state.json の current の terminals[0] と揃えてある）。toPc はアプリが送る要求、toMobile は PC が送る応答。",
+	"$comment": "agent チャネルの固定形。id はターミナルの数値 ID、token はペイントークン（state.json の current の terminals[0] と揃えてある）。toPc はアプリが送る要求、toMobile は PC が送る応答。delta の monitors は任意項目（agent.monitors.v1）で、先頭の要素に全項目を持たせてある。時刻は PC の時計で、monitorsAt（PC の送信時刻）との差でアプリが手元の時計へ直す。",
 	"toPc": [
 		{ "t": "attach", "id": 7, "token": "agent-token-1", "liveEncoding": "agent-live-append-v1" },
 		{ "t": "attach", "id": 7, "token": "agent-token-1", "epoch": "golden-agent-epoch", "afterRev": 1, "liveEncoding": "agent-live-append-v1" },
@@ -29,7 +29,11 @@
 			"messages": [
 				{ "rev": 2, "role": "tool", "kind": "tool_result", "text": "ok", "toolUseId": "tool-1", "ts": 1760000002000 }
 			],
-			"capabilities": { "agentActions": true, "claudeSettings": true }
+			"capabilities": { "agentActions": true, "claudeSettings": true },
+			"monitors": [
+				{ "id": "bgolden01", "description": "ビルドの進行と失敗", "command": "tail -f /tmp/build.log | grep --line-buffered error", "startedAt": 1760000001500, "startUnknown": true, "timeoutMs": 900000, "persistent": true, "status": "failed", "estimated": true, "endedAt": 1760000002500, "exitCode": 1, "output": [{ "at": 1760000002000, "text": "error: build failed" }], "eventCount": 1 }
+			],
+			"monitorsAt": 1760000003000
 		},
 		{ "t": "action-result", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-1", "status": "accepted", "consumed": true },
 		{ "t": "approval-options", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-5", "interactionId": "approval-1", "options": [{ "n": 1, "label": "Yes" }, { "n": 2, "label": "Yes, and don't ask again for npm test commands" }, { "n": 3, "label": "No, and tell Claude what to do differently (esc)" }], "promptHash": "0123456789abcdef0123456789abcdef01234567" },

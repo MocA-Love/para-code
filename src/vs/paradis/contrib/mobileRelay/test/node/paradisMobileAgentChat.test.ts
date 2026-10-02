@@ -632,6 +632,60 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	});
 
+	test('tracks Claude Code Monitors per epoch and stops them as an estimate when the session ends', async () => {
+		// tailer が transcript の Monitor の起動・出力を一覧に持ち、truncate（epoch の切り替え）で空にし、
+		// SessionEnd で動いているものを「停止（推定）」にする（TUI から止めた・プロセスが終わったときは印が残らないため）
+		const home = await realpath(await mkdtemp(join(tmpdir(), 'paradis-agent-monitor-home-')));
+		const previousHome = process.env['CLAUDE_CONFIG_DIR'];
+		process.env['CLAUDE_CONFIG_DIR'] = home;
+		await mkdir(join(home, 'projects', 'para-code-tests'), { recursive: true });
+		const transcript = join(home, 'projects', 'para-code-tests', 'monitor.jsonl');
+		const at = (offsetMs: number) => new Date(Date.now() - 60_000 + offsetMs).toISOString();
+		const lines = [
+			JSON.stringify({ type: 'assistant', timestamp: at(0), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_m1', name: 'Monitor', input: { command: 'tail -f /tmp/build.log', description: 'ビルドの見張り', persistent: true } }] } }),
+			JSON.stringify({ type: 'user', timestamp: at(1_000), toolUseResult: { taskId: 'bmonitor1', timeoutMs: 0, persistent: true }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_m1', content: 'Monitor started (task bmonitor1, persistent — runs until TaskStop or session end).' }] } }),
+		];
+		await writeFile(transcript, lines.join('\n') + '\n');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { tailers: Map<string, { readonly epoch: string; monitors(): readonly { readonly id: string; readonly status: string; readonly estimated?: true; readonly output: readonly { readonly text: string }[] }[] }> };
+		const monitorsOf = () => access.tailers.get('pane-monitor')?.monitors().map(monitor => `${monitor.id}:${monitor.status}${monitor.estimated ? '?' : ''}:${monitor.output.map(line => line.text).join('|')}`);
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token: 'pane-monitor' }]), true);
+			fireParadisAgentHookEvent({ token: 'pane-monitor', event: 'SessionStart', sessionId: 'monitor-session', transcriptPath: transcript, cwd: '/workspace', at: Date.now() });
+			await waitFor(() => monitorsOf()?.length === 1, 'the Monitor start was not tracked');
+			const started = monitorsOf();
+			await writeFile(transcript, [...lines, JSON.stringify({ type: 'user', timestamp: at(2_000), message: { role: 'user', content: '<task-notification>\n<task-id>bmonitor1</task-id>\n<summary>Monitor event: "ビルドの見張り"</summary>\n<event>Compiling</event>\n</task-notification>' } })].join('\n') + '\n');
+			await waitFor(() => monitorsOf()?.[0]?.endsWith('Compiling') === true, 'the Monitor event was not tracked');
+			const withOutput = monitorsOf();
+			fireParadisAgentHookEvent({ token: 'pane-monitor', event: 'SessionEnd', sessionId: 'monitor-session', transcriptPath: transcript, cwd: '/workspace', at: Date.now() });
+			await waitFor(() => monitorsOf()?.[0]?.startsWith('bmonitor1:stopped?') === true, 'SessionEnd did not stop the Monitor');
+			const ended = monitorsOf();
+			// 送る一覧は、ペインが止まっている間は送るたびに「停止（推定）」へ直す（tailer を作り直して running に戻っても同じ）
+			const sent = chat.monitorsForTest('pane-monitor');
+			const sentShape = sent?.monitors?.map(monitor => `${monitor.status}:${monitor.estimated === true}`).concat(typeof sent.monitorsAt === 'number' ? ['monitorsAt'] : []);
+			// 置き換え（サイズ減少）で epoch が替わったら、新しい内容に Monitor が無い限り空にする
+			const epoch = access.tailers.get('pane-monitor')?.epoch;
+			await writeFile(transcript, JSON.stringify({ type: 'user', timestamp: at(3_000), message: { role: 'user', content: '次の会話' } }) + '\n');
+			await waitFor(() => access.tailers.get('pane-monitor')?.epoch !== epoch, 'the epoch did not change');
+			assert.deepStrictEqual({ started, withOutput, ended, sentShape, reset: monitorsOf() }, {
+				started: ['bmonitor1:running:'],
+				withOutput: ['bmonitor1:running:Compiling'],
+				ended: ['bmonitor1:stopped?:Compiling'],
+				sentShape: ['stopped:true', 'monitorsAt'],
+				reset: [],
+			});
+		} finally {
+			chat.dispose();
+			if (previousHome === undefined) {
+				delete process.env['CLAUDE_CONFIG_DIR'];
+			} else {
+				process.env['CLAUDE_CONFIG_DIR'] = previousHome;
+			}
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
 	test('applies complete turn cleanup when Stop is overtaken during path validation', async () => {
 		const token = 'pane-stop-order';
 		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'stop-order.jsonl');

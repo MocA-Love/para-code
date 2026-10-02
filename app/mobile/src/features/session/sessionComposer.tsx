@@ -11,11 +11,13 @@ import { agentSlashQuery, filterAgentSlashCommands, normalizeAgentSlashSubmissio
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { hapticImpact, hapticSelection } from '../../haptics.js';
+import type { AgentMonitor } from '../../agentMonitors.js';
 import type { AgentCommandCatalogState, AgentCommandOption, AgentMessageSendResult, AgentModelControlState, FsUploadResult } from '../../store.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
 import { Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import { errorKind } from './errorKind.js';
 import { ModelPill } from './modelDrawer.js';
+import { MonitorPill } from './monitorDrawer.js';
 import { SlashCommandList } from './slashCommandList.js';
 import { useIsFocused } from 'expo-router';
 import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
@@ -40,6 +42,8 @@ interface SessionComposerProps {
 	effort: string | undefined;
 	modelControl: AgentModelControlState | undefined;
 	commandCatalog: AgentCommandCatalogState | undefined;
+	/** Claude Code の Monitor の一覧（古い PC では undefined。そのときピルは出ない）。 */
+	monitors: readonly AgentMonitor[] | undefined;
 	sendText: (text: string) => Promise<AgentMessageSendResult>;
 	updateClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<AgentMessageSendResult>;
 	onAfterSubmit: () => void;
@@ -55,7 +59,7 @@ interface SessionComposerProps {
 
 /**
  * 会話表示の入力欄（Orca の MobileNativeChatComposer。モックの `.composer`）。
- * 上段に入力、下段に 画像の添付・モデルと effort のピル・送信の白い円。
+ * 上段に入力、下段に 画像の添付・モデルと effort のピル・Monitor のピル（あるときだけ）・送信の白い円。
  *
  * 入力と送信の決まりは旧部品（`components/agentComposer.tsx`）をそのまま移している:
  *  - 入力中の文字はネイティブの TextInput が持ち（uncontrolled）、下書きはストアへ一方向に退避する。
@@ -67,7 +71,7 @@ interface SessionComposerProps {
  *  - 画像は PC へ上げて、保存先のパスを入力欄へ入れる
  */
 export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionComposerProps>(function SessionComposer({
-	draftKey, terminalKey, sessionEpoch, agent, model, effort, modelControl, commandCatalog,
+	draftKey, terminalKey, sessionEpoch, agent, model, effort, modelControl, commandCatalog, monitors,
 	sendText, updateClaudeSetting, onAfterSubmit, fsUpload, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings,
 	answerTarget, onCancelAnswer, answerRefreshing,
 }, ref) {
@@ -317,6 +321,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 						onRequestCodexCatalog={() => { if (terminalKey !== undefined) { requestAgentModelCatalog(terminalKey); } }}
 						onUpdateCodexSettings={(nextModel, nextEffort) => { if (terminalKey !== undefined) { updateAgentSettings(terminalKey, nextModel, nextEffort); } }}
 					/>
+					<MonitorPill key={`${terminalKey ?? 'none'}:${sessionEpoch ?? 'none'}`} monitors={monitors} />
 					<View style={styles.spacer} />
 					<Pressable
 						onPress={() => { hapticImpact('medium'); submit(); }}
