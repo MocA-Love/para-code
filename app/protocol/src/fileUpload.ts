@@ -1,12 +1,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { decodeUtf8 } from './utf8.js';
+
 /** MobileがDesktop Stateで確認する、後方互換なupload encoding名。 */
 export const FS_BINARY_UPLOAD_ENCODING = 'fs-binary-v1';
 
 const HEADER_BYTES = 12;
 const MAGIC = [0x50, 0x46, 0x55, 0x01] as const; // "PFU" + wire version 1
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
 export interface BinaryFsUploadMetadata {
 	readonly id: string;
@@ -130,7 +131,7 @@ export function decodeBinaryFsUpload(payload: Uint8Array): BinaryFsUpload | unde
 		return undefined;
 	}
 	try {
-		const metadata = JSON.parse(decoder.decode(payload.subarray(HEADER_BYTES, dataOffset))) as Partial<BinaryFsUpload>;
+		const metadata = JSON.parse(decodeUtf8(payload.subarray(HEADER_BYTES, dataOffset))) as Partial<BinaryFsUpload>;
 		if (metadata.t !== 'upload' || metadata.protocolVersion !== 3 || typeof metadata.id !== 'string'
 			|| typeof metadata.desktopEpoch !== 'string' || typeof metadata.windowId !== 'number'
 			|| typeof metadata.ws !== 'string' || typeof metadata.name !== 'string'

@@ -1,12 +1,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { decodeUtf8 } from './utf8.js';
+
 /** Mobileがterminal attachで明示する、後方互換なdata encoding名。 */
 export const TERMINAL_BINARY_DATA_ENCODING = 'terminal-binary-v1';
 
 const HEADER_BYTES = 12;
 const MAGIC = [0x50, 0x54, 0x44, 0x01] as const; // "PTD" + wire version 1
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
 export interface BinaryTerminalDataMetadata {
 	readonly terminalKey: string;
@@ -24,11 +25,11 @@ export interface BinaryTerminalData extends BinaryTerminalDataMetadata {
 }
 
 function isReversibleUtf8(value: string): boolean {
-	return decoder.decode(encoder.encode(value)) === value;
+	return decodeUtf8(encoder.encode(value)) === value;
 }
 
 function decodeReversibleUtf8(value: Uint8Array): string | undefined {
-	const decoded = decoder.decode(value);
+	const decoded = decodeUtf8(value);
 	const encoded = encoder.encode(decoded);
 	if (encoded.length !== value.length || encoded.some((byte, index) => byte !== value[index])) {
 		return undefined;

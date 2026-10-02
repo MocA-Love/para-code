@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { fromBase64Url, openNotify, sealNotify, toBase64Url } from '@para/protocol';
+import { decodeUtf8, fromBase64Url, openNotify, sealNotify, toBase64Url } from '@para/protocol';
 import { hkdf } from '@noble/hashes/hkdf';
 import { sha256 } from '@noble/hashes/sha256';
 import { statusBucket } from './homeSort.js';
@@ -113,7 +113,7 @@ export function sealLastKnownSnapshot(key: Uint8Array, snapshot: LastKnownPcSnap
 export function openLastKnownSnapshot(key: Uint8Array, sealed: string, pcId: string): LastKnownPcSnapshot | undefined {
 	let raw: unknown;
 	try {
-		raw = JSON.parse(new TextDecoder().decode(openNotify(lastKnownSealKey(key), fromBase64Url(sealed))));
+		raw = JSON.parse(decodeUtf8(openNotify(lastKnownSealKey(key), fromBase64Url(sealed))));
 	} catch {
 		return undefined;
 	}
