@@ -79,6 +79,8 @@ export const ParadisMobileCapability = {
 	BackgroundGrace: 'conn.background-grace.v1',
 	/** browser の `input` の `kind: 'key'`（Enter・Backspace・Tab・矢印・Esc など。`paradisMobileBrowserKeys.ts`）。 */
 	BrowserKeys: 'browser.keys.v1',
+	/** agent の snapshot / delta の任意項目 `monitors`（Claude Code の Monitor の一覧。`paradisAgentMonitors.ts`）。 */
+	AgentMonitors: 'agent.monitors.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -104,6 +106,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.PrMerge,
 	ParadisMobileCapability.BackgroundGrace,
 	ParadisMobileCapability.BrowserKeys,
+	ParadisMobileCapability.AgentMonitors,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

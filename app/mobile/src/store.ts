@@ -20,6 +20,7 @@ import { ResumeFrameBuffer } from './resumeFrameBuffer.js';
 import type { RelayWindowHost } from './relayHosts.js';
 import { BACKGROUND_GRACE_CAPABILITY } from './backgroundGraceCapability.js';
 import type { BrowserInput } from './browserKeys.js';
+import { localizeAgentMonitors, parseAgentMonitors, type AgentMonitor } from './agentMonitors.js';
 import { APP_PROTOCOL_VERSION, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -1126,6 +1127,8 @@ export interface AgentChatState {
 	liveRevision?: number;
 	/** SubAgent、タスク、圧縮のプロバイダー非依存な最新状態。 */
 	activity?: AgentActivityState;
+	/** Claude Code の Monitor の一覧（PC が `monitors` を送るときだけ。古い PC では無い）。 */
+	monitors?: AgentMonitor[];
 	/** Codex app-server由来の動的モデルカタログと設定更新状態。 */
 	modelControl?: AgentModelControlState;
 	/** PC側でプロバイダーとcwdを検証して構築したスラッシュコマンド一覧。 */
@@ -4459,6 +4462,10 @@ export class MobileController {
 			}
 			const parsedActivity = msg.activity !== null ? parseAgentActivityState(msg.activity) : undefined;
 			const parsedInteraction = msg.interaction !== null ? parseAgentInteraction(msg.interaction) : undefined;
+			// 任意項目。届いたときだけ丸ごと置き換える（delta で無ければ手元のまま）。
+			// 時刻は PC の時計で届くので、PC の送信時刻（monitorsAt）との差で手元の時計へ直す。
+			const rawMonitors = parseAgentMonitors((msg as { monitors?: unknown }).monitors);
+			const parsedMonitors = rawMonitors !== undefined ? localizeAgentMonitors(rawMonitors, (msg as { monitorsAt?: unknown }).monitorsAt, Date.now()) : undefined;
 			if (msg.t === 'activity-detail' && typeof msg.requestId === 'string' && typeof msg.activityId === 'string') {
 				const pending = this.pendingActivityDetails.get(msg.requestId);
 				if (pending === undefined || pending.terminalKey !== terminalKey || pending.rendererTarget !== rendererTarget || pending.activityId !== msg.activityId) { return; }
@@ -4538,6 +4545,7 @@ export class MobileController {
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 					...(isNonNegativeSafeInteger(msg.liveRevision) ? { liveRevision: msg.liveRevision } : {}),
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
+					...(parsedMonitors !== undefined ? { monitors: parsedMonitors } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 					...(previous?.modelControl !== undefined && previous.epoch === msg.epoch ? { modelControl: previous.modelControl } : {}),
@@ -4613,6 +4621,7 @@ export class MobileController {
 					...(msg.live !== undefined && isNonNegativeSafeInteger(msg.liveRevision) ? { liveRevision: msg.liveRevision } : {}),
 					...(appliedLiveAppend !== undefined ? appliedLiveAppend : {}),
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
+					...(parsedMonitors !== undefined ? { monitors: parsedMonitors } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 				});
