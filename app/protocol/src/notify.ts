@@ -1,5 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { decodeUtf8 } from './utf8.js';
+
 /**
  * `notify` チャネル（PC→モバイル）のペイロード定義とコーデック。
  * エージェント（Claude Code / Codex）の質問・完了・エラーや接続断をモバイルへ知らせる。
@@ -77,7 +79,7 @@ export function encodeNotify(payload: NotifyPayload): Uint8Array {
 }
 
 export function decodeNotify(bytes: Uint8Array): NotifyPayload {
-	const raw = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+	const raw = JSON.parse(decodeUtf8(bytes)) as Record<string, unknown>;
 	if (raw === null || typeof raw !== 'object') {
 		throw new Error('malformed notify payload');
 	}
@@ -145,7 +147,7 @@ export function encodeNotifyDismissedByToken(token: string): Uint8Array {
  */
 export function decodeNotifyControl(bytes: Uint8Array): NotifyControlMessage | undefined {
 	try {
-		const raw = JSON.parse(new TextDecoder().decode(bytes)) as { t?: unknown; id?: unknown; token?: unknown };
+		const raw = JSON.parse(decodeUtf8(bytes)) as { t?: unknown; id?: unknown; token?: unknown };
 		if ((raw.t === 'dismiss' || raw.t === 'dismissed') && typeof raw.id === 'string') {
 			return { t: raw.t, id: raw.id };
 		}
@@ -187,7 +189,7 @@ export function encodeNotifyVisibilityAck(state: NotifyVisibilityState, id?: str
 /** notify チャネルの受信バイト列を W2-34 の知らせとして読む。違えば undefined。 */
 export function decodeNotifyVisibility(bytes: Uint8Array): NotifyVisibilityMessage | undefined {
 	try {
-		const raw = JSON.parse(new TextDecoder().decode(bytes)) as { t?: unknown; state?: unknown; id?: unknown };
+		const raw = JSON.parse(decodeUtf8(bytes)) as { t?: unknown; state?: unknown; id?: unknown };
 		if ((raw.t !== 'visibility' && raw.t !== 'visibility-ack') || (raw.state !== 'background' && raw.state !== 'foreground')) {
 			return undefined;
 		}
