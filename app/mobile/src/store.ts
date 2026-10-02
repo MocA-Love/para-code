@@ -320,6 +320,19 @@ export interface PresetRunResult extends PresetDef {
 	/** 実行で新しくできたターミナル。PC側が拾えなかった場合は空になりうる。 */
 	created?: string[];
 }
+/** PC が `{ error, code? }` で返した失敗（`code` は判定用。例: `no-response`・`staged-unverified`）。 */
+export class PcReplyError extends Error {
+	constructor(message: string, readonly code: string | undefined) {
+		super(message);
+		this.name = 'PcReplyError';
+	}
+}
+
+/** 失敗に PC が付けた `code`（無ければ undefined）。 */
+export function pcReplyErrorCode(error: unknown): string | undefined {
+	return error instanceof PcReplyError ? error.code : undefined;
+}
+
 /** scm status 応答。 */
 export interface ScmStatusResult {
 	branch: string;
@@ -3500,7 +3513,7 @@ export class MobileController {
 		try {
 			const text = decodeUtf8(jsonPayload);
 			timing?.mark('utf8_decode');
-			const msg = JSON.parse(text) as { id?: string; error?: string; t?: unknown };
+			const msg = JSON.parse(text) as { id?: string; error?: string; code?: unknown; t?: unknown };
 			timing?.mark('json_parse');
 			timing?.set({ safe_gzip: gunzipped !== undefined, safe_json_bytes: jsonPayload.length });
 			if (!msg.id) {
@@ -3521,7 +3534,8 @@ export class MobileController {
 			this.pending.delete(msg.id);
 			clearTimeout(entry.timer);
 			if (msg.error) {
-				entry.reject(new Error(msg.error));
+				// PC が付けた判定用の `code` も渡す（文は今までどおり message）
+				entry.reject(new PcReplyError(msg.error, typeof msg.code === 'string' ? msg.code : undefined));
 				timing?.finish(msg.id, 'error');
 			} else if (entry.contentHash !== undefined) {
 				const resolved = this.fsContentHashCache.resolve(entry.contentHash.key, entry.contentHash.prepared, msg);

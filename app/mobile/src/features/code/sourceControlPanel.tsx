@@ -392,7 +392,7 @@ function ListBody({ state, emptyTitle, emptyBody, emptyIcon, onRetry, children }
 		case 'offline':
 			return <EmptyState icon={CloudOff} title="読み込めません" body={`${state.reason}。つながると読み込みます。`} style={styles.state} />;
 		case 'error':
-			return <EmptyState icon={CircleAlert} title="読み込めませんでした" body={state.message} action={onRetry !== undefined ? { label: '再読み込み', onPress: onRetry } : undefined} style={styles.state} />;
+			return <EmptyState icon={CircleAlert} title={state.title} body={state.message} action={onRetry !== undefined ? { label: state.retryLabel, onPress: onRetry } : undefined} style={styles.state} />;
 		case 'empty':
 			return <EmptyState icon={emptyIcon} title={emptyTitle} body={emptyBody} style={styles.state} />;
 		case 'ready':

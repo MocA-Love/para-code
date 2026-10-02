@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { parseUnifiedDiff } from '../../components/diffParser.js';
-import { canAnnotateRow, clearNotesConfirmMessage, noteAnchorOf, noteCountsByPath, noteLocationLabel, parseReviewNotes, placeReviewNotes, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type ReviewNote } from './reviewNotes.js';
+import { canAnnotateRow, clearNotesConfirmMessage, noteAnchorOf, noteCountsByPath, noteLocationLabel, parseReviewNotes, placeReviewNotes, reviewFailureTitle, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type ReviewNote } from './reviewNotes.js';
 
 function note(id: string, line: number, lineText: string, extra: Partial<ReviewNote> = {}): ReviewNote {
 	return { id, path: 'a.ts', line, lineText, body: `note ${id}`, createdAt: 1, updatedAt: 1, ...extra };
@@ -97,5 +97,12 @@ describe('メモの一覧', () => {
 			{ terminalKey: 't4', title: 'claude', ws: '1:other', agent: true },
 		], '1:repo');
 		expect(targets.map(target => [target.terminalKey, target.ready])).toEqual([['t1', true], ['t2', false]]);
+	});
+});
+
+describe('reviewFailureTitle', () => {
+	it('ステージはしたが確かめられなかったときだけ見出しを変える', () => {
+		expect([reviewFailureTitle('ステージできませんでした', 'staged-unverified'), reviewFailureTitle('ステージできませんでした', 'no-response'), reviewFailureTitle('ステージできませんでした', undefined)])
+			.toEqual(['ステージを確かめられませんでした', 'ステージできませんでした', 'ステージできませんでした']);
 	});
 });

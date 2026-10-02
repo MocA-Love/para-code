@@ -7,7 +7,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { timeout } from '../../../../../base/common/async.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -16,6 +18,7 @@ import { ITerminalGroupService, ITerminalService } from '../../../../../workbenc
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisAgentModelCatalogService } from '../../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { IParadisPullRequestDetail, ParadisPullRequestLookup } from '../../common/paradisMobilePullRequest.js';
+import { PARADIS_MOBILE_HOST_NO_RESPONSE_MESSAGE, PARADIS_MOBILE_PR_LOOKUP_DEADLINE_MS } from '../../common/paradisMobileHostDeadline.js';
 import { IParadisMobileRequestHost, paradisDispatchMobileRequest } from '../../electron-browser/paradisMobileRequestHandlers.js';
 // W2-36 の処理を登録表へ載せる（副作用 import）
 import '../../electron-browser/paradisMobilePullRequestRequests.js';
@@ -44,8 +47,14 @@ class FakeChannel {
 	/** マージの後に取り直したときの PR（既定はマージ済み）。 */
 	afterMerge: ParadisPullRequestLookup = { kind: 'ok', detail: detail({ state: 'merged' }) };
 
+	/** 接続先が返さない（`getPullRequestDetail` が終わらない）。 */
+	hang = false;
+
 	async call(command: string, args: readonly unknown[]): Promise<unknown> {
 		this.calls.push({ command, args });
+		if (this.hang && command === 'getPullRequestDetail') {
+			return new Promise<never>(() => { });
+		}
 		switch (command) {
 			case 'getPullRequestDetail': return this.lookup;
 			case 'getFailedJobLogs': return this.logs;
@@ -101,6 +110,24 @@ suite('ParadisMobilePullRequestRequests', () => {
 			path: ['/repo'],
 		});
 	});
+
+	test('answers that the host does not respond when the lookup does not return before the phone gives up', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const channel = new FakeChannel();
+		channel.hang = true;
+		const sent: IReply[] = [];
+		const host = createHost(channel, sent);
+
+		dispatch(host, { t: 'prView', id: '1' });
+		await timeout(PARADIS_MOBILE_PR_LOOKUP_DEADLINE_MS - 1);
+		const beforeDeadline = reply(sent, '1');
+		await timeout(2);
+
+		assert.deepStrictEqual({ beforeDeadline, after: reply(sent, '1') }, {
+			beforeDeadline: undefined,
+			// 「出せない」ではなく失敗で返す（アプリは前に読めた PR を出したまま失敗だけを出す）
+			after: { error: PARADIS_MOBILE_HOST_NO_RESPONSE_MESSAGE, code: 'no-response', id: '1' },
+		});
+	}));
 
 	test('merges only the head the phone saw, and never while checks fail or run', async () => {
 		const channel = new FakeChannel();

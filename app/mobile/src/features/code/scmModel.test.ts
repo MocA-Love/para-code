@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { codeSpaceGate, rendererTargetOf, type SpaceLinkInput } from './spaceLink.js';
-import { commitAction, groupScmEntries, listBodyState, orderedScmEntries, scmCounts, scmEntries, scmEntry, splitPath } from './scmModel.js';
+import { SCM_NO_RESPONSE_MESSAGE, commitAction, groupScmEntries, listBodyState, orderedScmEntries, scmCounts, scmEntries, scmEntry, scmErrorText, shouldAutoRetryScmStatus, splitPath } from './scmModel.js';
 
 describe('scmEntry', () => {
 	it('未追跡・ステージ済み・変更に振り分ける', () => {
@@ -97,9 +97,31 @@ describe('listBodyState', () => {
 	});
 
 	it('まだ読めていなければ 失敗 → 切断 → 読み込み中 の順', () => {
-		expect(listBodyState({ data: undefined, error: '失敗', unavailable: '切断' })).toEqual({ kind: 'error', message: '失敗' });
+		expect(listBodyState({ data: undefined, error: '失敗', unavailable: '切断' })).toEqual({ kind: 'error', title: '読み込めませんでした', message: '失敗', retryLabel: '再読み込み' });
 		expect(listBodyState({ data: undefined, error: undefined, unavailable: '切断' })).toEqual({ kind: 'offline', reason: '切断' });
 		expect(listBodyState({ data: undefined, error: undefined, unavailable: undefined })).toEqual({ kind: 'loading' });
+	});
+
+	it('返事が無かった失敗は「接続先が応答していません」と再試行にする', () => {
+		const titles = ['request timeout', '接続先が応答しません。しばらくしてから読み直してください。', SCM_NO_RESPONSE_MESSAGE].map(error => {
+			const state = listBodyState({ data: undefined, error, unavailable: undefined });
+			return state.kind === 'error' ? [state.title, state.retryLabel] : state.kind;
+		});
+		expect(titles).toEqual(Array(3).fill([SCM_NO_RESPONSE_MESSAGE, '再試行']));
+	});
+});
+
+describe('scmErrorText / shouldAutoRetryScmStatus', () => {
+	it('返事が無かった失敗をそろえ、ほかの失敗はそのまま出す。自分で取り直すのは返事が無かったときに 1 回だけ', () => {
+		expect([
+			scmErrorText(new Error('request timeout')),
+			scmErrorText(new Error('接続先が応答しません。しばらくしてから読み直してください。')),
+			scmErrorText(new Error('unknown workspace: w')),
+			shouldAutoRetryScmStatus(0, 'request timeout'),
+			shouldAutoRetryScmStatus(0, '接続先が応答しません。しばらくしてから読み直してください。'),
+			shouldAutoRetryScmStatus(1, 'request timeout'),
+			shouldAutoRetryScmStatus(0, 'unknown workspace: w'),
+		]).toEqual([SCM_NO_RESPONSE_MESSAGE, SCM_NO_RESPONSE_MESSAGE, 'unknown workspace: w', true, true, false, false]);
 	});
 });
 
