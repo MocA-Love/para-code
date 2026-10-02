@@ -55,6 +55,9 @@ import { BackgroundGrace, type BackgroundGraceTarget } from './backgroundGrace.j
 import type { DiagnosticPc } from './connectionDiagnostics.js';
 import type { BrowserInput } from './browserKeys.js';
 
+/** 保存値を読み込む前に「モデルを選ぶ」で切り替えた操作。読み込み後は undefined（以後はそのまま保存する）。 */
+let hiddenModelOpsBeforeLoad: { readonly agent: ModelVisibilityAgent; readonly id: string; readonly hidden: boolean }[] | undefined = [];
+
 /**
  * PC側とモバイル側の Sentry イベントを突き合わせる相関IDを設定する。
  * PC側と同じ規則（deviceId の SHA-256 先頭8桁）。生の deviceId は送らない。
@@ -1261,14 +1264,19 @@ export const useAppStore = create<AppState>(set => ({
 			} catch (err) {
 				console.warn('[appState] failed to load chatFontSize', err);
 			}
-			// 「モデルを選ぶ」に出さないモデルをロード。読み込みの前にシートで変えていたら、その値を残す。
+			// 「モデルを選ぶ」に出さないモデルをロード。読み込みの前にシートで切り替えていたら、その操作を
+			// 保存値の上に当て直す（集合なので在メモリ値で上書きすると、もう一方のエージェントの設定が消える）。
 			try {
-				const before = useAppStore.getState().hiddenModels;
 				const stored = await loadHiddenModels(secureKeyStore);
-				if (useAppStore.getState().hiddenModels === before) {
-					set({ hiddenModels: stored });
+				const ops = hiddenModelOpsBeforeLoad ?? [];
+				hiddenModelOpsBeforeLoad = undefined;
+				const merged = ops.reduce((acc, op) => withModelHidden(acc, op.agent, op.id, op.hidden), stored);
+				set({ hiddenModels: merged });
+				if (ops.length > 0) {
+					saveHiddenModels(secureKeyStore, merged).catch(err => console.warn('[appState] failed to save hiddenModels', err));
 				}
 			} catch (err) {
+				hiddenModelOpsBeforeLoad = undefined;
 				console.warn('[appState] failed to load hiddenModels', err);
 			}
 			// 接続方針の設定をロード（保存が無い/壊れている場合は既定のまま）。
@@ -2012,6 +2020,11 @@ export const useAppStore = create<AppState>(set => ({
 			return;
 		}
 		set({ hiddenModels: next });
+		if (hiddenModelOpsBeforeLoad !== undefined) {
+			// 読み込み前は保存値を知らないので書かず、読み込み後に保存値へ当て直す
+			hiddenModelOpsBeforeLoad.push({ agent, id, hidden });
+			return;
+		}
 		saveHiddenModels(secureKeyStore, next).catch(err => console.warn('[appState] failed to save hiddenModels', err));
 	},
 
