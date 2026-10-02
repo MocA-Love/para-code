@@ -30,6 +30,21 @@ describe('flattenTree', () => {
 		]);
 	});
 
+	it('無視されたフォルダの中は全部無視の印を継ぐ', () => {
+		const ignoredCache: DirCache = {
+			'': { entries: [{ name: 'node_modules', dir: true, ignored: true }, { name: '.env', dir: false, ignored: true }, { name: 'src', dir: true }] },
+			node_modules: { entries: [{ name: 'lodash', dir: true }] },
+			src: { entries: [{ name: 'a.ts', dir: false }] },
+		};
+		expect(flattenTree(ignoredCache, new Set(['node_modules', 'src'])).map(row => [row.path, row.kind === 'dir' || row.kind === 'file' ? row.ignored === true : undefined])).toEqual([
+			['node_modules', true],
+			['node_modules/lodash', true],
+			['.env', true],
+			['src', false],
+			['src/a.ts', false],
+		]);
+	});
+
 	it('継承されたキーを読み込み済みのフォルダと取り違えない', () => {
 		expect(dirState({}, 'constructor')).toBeUndefined();
 		expect(needsLoad({}, 'constructor')).toBe(true);

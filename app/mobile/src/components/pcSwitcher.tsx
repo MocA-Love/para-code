@@ -16,7 +16,7 @@ import { HIT_SIZE, alpha, colors, radius, squircle, tint, type, status } from '.
 import { monoFamily } from '../monoFont.js';
 import { Badge } from './badge.js';
 import { SectionHeader } from './sectionHeader.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { useNow } from '../time.js';
 import { PAIRING_REJECTED_LABEL, isPairingRejected } from '../pcStatus.js';
 
@@ -138,7 +138,7 @@ function PcList({ onClose, closeThen }: { onClose: () => void; /** 遷移を伴�
 			onClose();
 			return;
 		}
-		hapticSelection();
+		haptic('move');
 		switchPc(id);
 		onClose();
 	};
@@ -151,7 +151,7 @@ function PcList({ onClose, closeThen }: { onClose: () => void; /** 遷移を伴�
 			<View style={styles.divider} />
 			<Pressable
 				style={styles.row}
-				onPress={() => { hapticSelection(); closeThen(() => router.push('/pair')); }}
+				onPress={() => { haptic('move'); closeThen(() => router.push('/pair')); }}
 				accessibilityLabel="新しいPCとペアリング"
 			>
 				<View style={[styles.avatar, styles.addAvatar]}>
@@ -163,7 +163,7 @@ function PcList({ onClose, closeThen }: { onClose: () => void; /** 遷移を伴�
 			</Pressable>
 			<Pressable
 				style={styles.row}
-				onPress={() => { hapticSelection(); closeThen(() => router.push('/settings')); }}
+				onPress={() => { haptic('move'); closeThen(() => router.push('/settings')); }}
 				accessibilityLabel="PCの管理"
 			>
 				<View style={[styles.avatar, styles.addAvatar]}>
@@ -279,7 +279,7 @@ export function PcCardHeader({ onOpen, onOpenSettings }: {
 			<Pressable
 				style={styles.cardMain}
 				onPress={event => {
-					hapticSelection();
+					haptic('move');
 					const { pageX, pageY } = event.nativeEvent;
 					onOpen({ x: Math.max(12, pageX - 40), y: pageY + 18 });
 				}}
@@ -316,7 +316,7 @@ export function PcCardHeader({ onOpen, onOpenSettings }: {
 			<GlassSurface style={styles.settingsBtn} interactive>
 				<Pressable
 					style={styles.settingsBtnHit}
-					onPress={() => { hapticSelection(); onOpenSettings(); }}
+					onPress={() => { haptic('move'); onOpenSettings(); }}
 					accessibilityRole="button"
 					accessibilityLabel="設定"
 				>

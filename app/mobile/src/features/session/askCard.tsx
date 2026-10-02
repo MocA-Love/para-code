@@ -6,17 +6,22 @@ import { Check, CircleHelp, Square, SquareCheck } from 'lucide-react-native';
 import type { AgentQuestionShape } from '../../agentQuestionKeys.js';
 import { isSubmissionLocked } from '../../components/answerSubmission.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import type { QuestionGroupAnswer } from '../../hooks/useAgentActions.js';
 import { useAnswerSubmission } from '../../hooks/useAnswerSubmission.js';
 import { setMobileSpanAttributes, startMobileSpan } from '../../sentry.js';
 import type { AgentChatMessage, AgentMessageSendResult } from '../../store.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
-import { cardStyles } from './answerCardStyles.js';
+import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
+import { cardStyles as baseCardStyles } from './answerCardStyles.js';
 import { SubmissionStatus } from './submissionStatus.js';
 
-/** 質問を切り替える丸いタブの当たり判定（見た目 36、上下 4 ずつ。スクロールの内側に収まる）。 */
+/**
+ * 質問を切り替える丸いタブの当たり判定（見た目 36、上下 4 ずつ。スクロールの内側に収まる）。
+ * タブの最小の高さ 36 とスクロールの上下の余白 4 は、会話の文字サイズで変えない（縮めると 44 を割るため。
+ * 文字を大きくしたときはタブが中身に合わせて伸びる）。
+ */
 const STEP_SLOP = { top: 4, bottom: 4, left: 0, right: 0 };
 
 const REFRESHING_MESSAGE = '最新の内容を取得しています。届くまで回答できません';
@@ -40,6 +45,9 @@ export function AskCard({ message, refreshing, onAnswer, onMulti, onFreeText, on
 	freeTextActive: boolean;
 }) {
 	const theme = useThemeColors();
+	const cardStyles = useChatStyles(baseCardStyles);
+	const styles = useChatStyles(baseStyles);
+	const headIconSize = useChatIconSize(15);
 	const [selected, setSelected] = useState<number | undefined>(undefined);
 	const [toggled, setToggled] = useState<ReadonlySet<number>>(new Set());
 	const multiSelect = message.multiSelect === true;
@@ -67,7 +75,7 @@ export function AskCard({ message, refreshing, onAnswer, onMulti, onFreeText, on
 		if (interactionId === undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('tick');
 		setSelected(undefined);
 		onRequestFreeText({
 			id: interactionId,
@@ -82,7 +90,7 @@ export function AskCard({ message, refreshing, onAnswer, onMulti, onFreeText, on
 		});
 	};
 	const pick = (index: number) => {
-		hapticSelection();
+		haptic('tick');
 		if (freeTextActive) {
 			onRequestFreeText(undefined);
 		}
@@ -105,7 +113,7 @@ export function AskCard({ message, refreshing, onAnswer, onMulti, onFreeText, on
 		if (interactionId === undefined || !canConfirm) {
 			return;
 		}
-		hapticImpact('medium');
+		haptic('commit');
 		if (multiSelect) {
 			void submit('multi', () => onMulti(interactionId, question, [...toggled].sort((a, b) => a - b)));
 		} else if (selected !== undefined) {
@@ -116,7 +124,7 @@ export function AskCard({ message, refreshing, onAnswer, onMulti, onFreeText, on
 	return (
 		<View style={cardStyles.card}>
 			<View style={cardStyles.head}>
-				<Icon icon={CircleHelp} size={15} color={theme.accent} strokeWidth={2.2} />
+				<Icon icon={CircleHelp} size={headIconSize} color={theme.accent} strokeWidth={2.2} />
 				<Text style={cardStyles.question} selectable>{message.text}</Text>
 			</View>
 			{message.header !== undefined || multiSelect ? (
@@ -178,6 +186,10 @@ export function AskGroupCard({ messages, refreshing, onSubmit, onRequestFreeText
 	freeTextActiveId: string | undefined;
 }) {
 	const theme = useThemeColors();
+	const cardStyles = useChatStyles(baseCardStyles);
+	const styles = useChatStyles(baseStyles);
+	const headIconSize = useChatIconSize(15);
+	const checkIconSize = useChatIconSize(iconSize.xs);
 	const [step, setStep] = useState(0);
 	const [answers, setAnswers] = useState<(QuestionGroupAnswer | undefined)[]>(() => messages.map(() => undefined));
 	const interactionId = messages[0]?.questionGroup ?? messages[0]?.toolUseId;
@@ -221,7 +233,7 @@ export function AskGroupCard({ messages, refreshing, onSubmit, onRequestFreeText
 		if (interactionId === undefined || current === undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('tick');
 		const index = step;
 		onRequestFreeText({
 			id: stepRequestId(index),
@@ -241,7 +253,7 @@ export function AskGroupCard({ messages, refreshing, onSubmit, onRequestFreeText
 		});
 	};
 	const pick = (optionIndex: number) => {
-		hapticSelection();
+		haptic('tick');
 		if (otherSelected) {
 			onRequestFreeText(undefined);
 		}
@@ -260,7 +272,7 @@ export function AskGroupCard({ messages, refreshing, onSubmit, onRequestFreeText
 		if (interactionId === undefined) {
 			return;
 		}
-		hapticImpact('medium');
+		haptic('commit');
 		const picked = answers.filter((answer): answer is QuestionGroupAnswer => answer !== undefined);
 		void submission.run(() => startMobileSpan('agentQuestion', 'submit-group', () =>
 			onSubmit(interactionId, questions, picked).then(result => {
@@ -277,21 +289,21 @@ export function AskGroupCard({ messages, refreshing, onSubmit, onRequestFreeText
 	return (
 		<View style={cardStyles.card}>
 			<View style={cardStyles.head}>
-				<Icon icon={CircleHelp} size={15} color={theme.accent} strokeWidth={2.2} />
+				<Icon icon={CircleHelp} size={headIconSize} color={theme.accent} strokeWidth={2.2} />
 				<Text style={cardStyles.title}>{`${messages.length}つの質問`}</Text>
 			</View>
-			<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.steps} keyboardShouldPersistTaps="handled">
+			<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={baseStyles.steps} keyboardShouldPersistTaps="handled">
 				{messages.map((m, index) => (
 					<Pressable
 						key={index}
 						disabled={disabled}
-						onPress={() => { hapticSelection(); setStep(index); }}
+						onPress={() => { haptic('tick'); setStep(index); }}
 						hitSlop={STEP_SLOP}
 						style={[styles.step, index === step ? { borderColor: theme.accent, backgroundColor: theme.accentWash } : undefined]}
 						accessibilityRole="tab"
 						accessibilityState={{ selected: index === step, disabled }}
 					>
-						{answers[index] !== undefined ? <Icon icon={Check} size={iconSize.xs} color={colors.green} /> : null}
+						{answers[index] !== undefined ? <Icon icon={Check} size={checkIconSize} color={colors.green} /> : null}
 						<Text style={[styles.stepText, index === step ? styles.stepTextOn : undefined]} numberOfLines={1}>{m.header ?? `Q${index + 1}`}</Text>
 					</Pressable>
 				))}
@@ -345,6 +357,9 @@ function OptionButton({ label, description, selected, multiSelect = false, disab
 	onPress: () => void;
 }) {
 	const theme = useThemeColors();
+	const cardStyles = useChatStyles(baseCardStyles);
+	const styles = useChatStyles(baseStyles);
+	const checkboxSize = useChatIconSize(iconSize.md);
 	return (
 		<Pressable
 			disabled={disabled}
@@ -360,7 +375,7 @@ function OptionButton({ label, description, selected, multiSelect = false, disab
 			accessibilityState={{ selected, disabled }}
 			accessibilityHint={hint}
 		>
-			{multiSelect ? <Icon icon={selected ? SquareCheck : Square} color={selected ? theme.accent : colors.textDim} /> : null}
+			{multiSelect ? <Icon icon={selected ? SquareCheck : Square} size={checkboxSize} color={selected ? theme.accent : colors.textDim} /> : null}
 			<View style={styles.optionBody}>
 				<Text style={cardStyles.optionLabel}>{label}</Text>
 				{description !== undefined && description.length > 0 ? <Text style={cardStyles.optionDescription} numberOfLines={3}>{description}</Text> : null}
@@ -369,7 +384,7 @@ function OptionButton({ label, description, selected, multiSelect = false, disab
 	);
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
 	chips: {
 		flexDirection: 'row',
 		flexWrap: 'wrap',

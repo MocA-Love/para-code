@@ -4,7 +4,7 @@ import { memo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { EllipsisVertical, Monitor } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { colors, radius, space, status, type } from '../../theme.js';
 import { Icon, connectionColor, iconSize, type ConnectionKind } from '../../ui/index.js';
 import { bucketDotColor } from '../pc/pcListParts.js';
@@ -49,12 +49,12 @@ export const PcCard = memo(function PcCard({ id, name, kind, connectionText, pai
 			<Pressable
 				style={({ pressed }) => [styles.main, pressed ? styles.pressed : undefined]}
 				onPress={() => {
-					hapticSelection();
+					haptic('move');
 					onOpen(id);
 				}}
 				delayLongPress={400}
 				onLongPress={() => {
-					hapticImpact('medium');
+					haptic('lift');
 					onMenu(id);
 				}}
 				accessibilityRole="button"
@@ -110,7 +110,7 @@ export const PcCard = memo(function PcCard({ id, name, kind, connectionText, pai
 				style={({ pressed }) => [styles.more, pressed ? styles.pressed : undefined]}
 				hitSlop={hitSlopToMinimum(MORE_SIZE, MORE_SIZE)}
 				onPress={() => {
-					hapticSelection();
+					haptic('move');
 					onMenu(id);
 				}}
 				accessibilityRole="button"

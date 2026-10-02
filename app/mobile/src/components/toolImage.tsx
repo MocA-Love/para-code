@@ -8,7 +8,7 @@ import type { AgentChatImage } from '../store.js';
 import { formatImageBytes, loadToolImage, toolImageCache, toolImageKey } from '../agentToolImages.js';
 import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal } from './overlayHost.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { colors, radius, squircle, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 
@@ -163,7 +163,7 @@ export function ToolImageLightbox({ terminalKey, rev, images, initialIndex, titl
 	}, [uri]);
 
 	const step = useCallback((delta: number) => {
-		hapticSelection();
+		haptic('tick');
 		setIndex(current => Math.min(Math.max(0, current + delta), images.length - 1));
 	}, [images.length]);
 
@@ -208,7 +208,7 @@ export function ToolImageLightbox({ terminalKey, rev, images, initialIndex, titl
 				</ScrollView>
 
 				<GlassSurface style={styles.bar}>
-					<Pressable onPress={() => { hapticImpact('light'); onClose(); }} hitSlop={10} accessibilityRole="button" accessibilityLabel="閉じる" style={styles.close}>
+					<Pressable onPress={() => { haptic('move'); onClose(); }} hitSlop={10} accessibilityRole="button" accessibilityLabel="閉じる" style={styles.close}>
 						<Ionicons name="close" size={18} color={colors.text} />
 					</Pressable>
 					<View style={styles.barBody}>

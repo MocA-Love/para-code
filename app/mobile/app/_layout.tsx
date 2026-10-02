@@ -27,6 +27,7 @@ import { notificationDestination, notificationNavigationDecision, pendingNotific
 import { loadSessionViewSettings } from '../src/features/session/useSessionView.js';
 import { useQuickReplies } from '../src/features/settings/quickRepliesStore.js';
 import { loadThemeColors } from '../src/features/settings/themeColorSettings.js';
+import { useHapticPreference } from '../src/hapticPreference.js';
 
 /**
  * 深いルート（通知から開いたセッションなど）をいきなり開いたときも、下にホームを敷く。
@@ -100,6 +101,8 @@ function RootLayout() {
 		useQuickReplies.getState().load();
 		// iPad の2列の幅（左の列・ドック）。最初に2列を描くときに保存した幅で出す。
 		useIpadLayout.getState().load();
+		// 触覚フィードバックのオン / オフ（読み終えるまでは既定のオン）。
+		void useHapticPreference.getState().load();
 	}, [init]);
 
 	const tryNavigate = useCallback(() => {

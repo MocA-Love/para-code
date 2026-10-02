@@ -16,6 +16,7 @@ import {
 	useWindowDimensions,
 	type KeyboardEvent,
 } from 'react-native';
+import { haptic } from '../haptics.js';
 import { keyboardCoverage } from '../keyboardCoverage.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useShortcutSlot } from '../ipad/shortcutRegistry.js';
@@ -185,6 +186,16 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 	onAfterCloseRef.current = onAfterClose;
 	// 外付けキーボードの Esc で閉じる（iPad）。重なっていれば上のシートから。
 	useShortcutSlot('escape', visible ? { escape: () => onCloseRef.current() } : undefined);
+
+	// 開く・閉じるときの弱い触覚（画面の移動と同じ `move`）。どの操作で閉じても（幕・引き下げ・ボタン）1 回。
+	// 確定ボタンの直後に閉じるときは、確定の手応えに重ねない（`haptics.ts` の間引き）。最初に描いたときは鳴らさない。
+	const shownRef = useRef(visible);
+	useEffect(() => {
+		if (shownRef.current !== visible) {
+			shownRef.current = visible;
+			haptic('move');
+		}
+	}, [visible]);
 
 	useEffect(() => {
 		if (visible) {

@@ -7,6 +7,7 @@ import {
 	type ParadisMobileSyncOperation,
 } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileScmSync.js';
 import { sendPcRequest } from '../../appState.js';
+import { haptic } from '../../haptics.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
 import { errorMessage, type ScmEntry } from './scmModel.js';
 import { agentHandoffResult, type AgentHandoffResult } from './scmSync.js';
@@ -56,9 +57,12 @@ export function useScmSync(space: CodeSpace): ScmSyncController {
 			if (!current()) {
 				return undefined;
 			}
+			// 押したときの commit とは別に、PC 側の結果を返す
+			haptic('success');
 			return reply.published === true ? 'ブランチを公開しました' : DONE[operation];
 		} catch (e) {
 			if (current()) {
+				haptic('error');
 				setError(errorMessage(e));
 			}
 			return undefined;

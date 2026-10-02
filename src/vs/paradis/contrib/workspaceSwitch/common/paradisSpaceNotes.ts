@@ -251,9 +251,13 @@ export function paradisAppendSpaceNoteTask(text: string, task: string): string |
  */
 export type ParadisSpaceNoteOp =
 	/** `line` 行目 (0-based) のチェックを切り替える。`lineText` は送る側が見ていたその行の中身。 */
-	| { readonly kind: 'toggle'; readonly line: number; readonly lineText: string }
+	| { readonly kind: 'toggle'; readonly line: number; readonly lineText: string; readonly baseText?: string }
 	/** 末尾に1件足す。`entry` は足す行そのもの (`- [ ] …` と継続行。送る側が組み立て済み)。 */
-	| { readonly kind: 'append'; readonly entry: string };
+	| { readonly kind: 'append'; readonly entry: string }
+	/** `line` 行目 (0-based) のチェック項目を、ぶら下がる継続行ごと消す (PC の「削除」と同じ)。 */
+	| { readonly kind: 'remove'; readonly line: number; readonly lineText: string; readonly baseText?: string }
+	/** `line` 行目のチェック項目の文言だけを `text` にする (PC の「この項目を編集」と同じ)。 */
+	| { readonly kind: 'edit'; readonly line: number; readonly lineText: string; readonly text: string; readonly baseText?: string };
 
 /** 行を探す範囲。行の中身が同じでも、遠く離れた別の行を同じものとみなさない。 */
 const SPACE_NOTE_OP_SEARCH_RADIUS = 200;
@@ -275,21 +279,92 @@ function locateSpaceNoteLine(lines: readonly string[], line: number, lineText: s
 	return nearest;
 }
 
+/** `index` 行目から始まる項目の行数 (その行とぶら下がる継続行)。 */
+function spaceNoteBlockLength(lines: readonly string[], index: number): number {
+	let end = index + 1;
+	while (end < lines.length && isSpaceNoteContinuationLine(lines[end])) {
+		end++;
+	}
+	return end - index;
+}
+
 /**
- * いまの本文に操作を当てた結果。当てられない (切り替える行がもう無い・チェック項目でない・
- * 足す中身が空) ときは undefined を返し、呼び出し側は書かずに最新を返す。
+ * 送る側が読んだ本文 (`baseText`) の `line` 行目が、いまの本文の何行目かを行単位の差分で決める
+ * (同じ中身の行が複数あっても、位置の対応で取り違えない)。その項目 (継続行を含む) が読んだ後に
+ * 書き換えられた・消えた・継続行が増減した・対応が取れないときは undefined (送る側へ最新を返す)。
+ */
+function mapSpaceNoteBaseLine(baseText: string, lines: readonly string[], line: number, lineText: string): number | undefined {
+	const baseLines = baseText.split('\n');
+	if (baseLines[line] !== lineText) {
+		return undefined;
+	}
+	const blockEnd = line + spaceNoteBlockLength(baseLines, line);
+	const edits = spaceNoteLineEdits(baseLines, lines);
+	if (edits === undefined) {
+		return undefined;
+	}
+	let shift = 0;
+	for (const edit of edits) {
+		// 項目の行を書き換えた・消した、または項目の中 (継続行の間) に行が入った
+		if (edit.start < blockEnd && (edit.end > line || (edit.start === edit.end && edit.start > line))) {
+			return undefined;
+		}
+		// 項目より前の編集 (項目の直前への挿入を含む) だけが行の位置をずらす
+		if (edit.end <= line) {
+			shift += edit.lines.length - (edit.end - edit.start);
+		}
+	}
+	const index = line + shift;
+	if (lines[index] !== lineText || spaceNoteBlockLength(lines, index) !== blockEnd - line) {
+		return undefined;
+	}
+	return index;
+}
+
+/**
+ * いまの本文に操作を当てた結果。当てられない (対象の行がもう無い・チェック項目でない・
+ * 足す中身や書き換える文言が空) ときは undefined を返し、呼び出し側は書かずに最新を返す。
+ * 文言が変わらない書き換えは、いまの本文をそのまま返す (失敗ではない)。
+ *
+ * `baseText` (送る側が読んだ本文) があれば、行の位置は差分で対応づける (同じ中身の行を取り違えない)。
+ * 無ければ (古いアプリ) 同じ中身の最寄りの行に当てる。
  */
 export function paradisApplySpaceNoteOp(text: string, op: ParadisSpaceNoteOp): string | undefined {
-	if (op.kind === 'toggle') {
-		const index = locateSpaceNoteLine(text.split('\n'), op.line, op.lineText);
-		return index !== undefined ? paradisToggleSpaceNoteTask(text, index) : undefined;
+	return paradisApplySpaceNoteOpAt(text, op)?.text;
+}
+
+/**
+ * {@link paradisApplySpaceNoteOp} と同じ。行を指す操作では、当てたいまの本文の行 (`line`。0 始まり) も返す
+ * (モバイルの「元に戻す」が、消した項目を PC が実際に消した位置へ挿し直すため)。
+ */
+export function paradisApplySpaceNoteOpAt(text: string, op: ParadisSpaceNoteOp): { readonly text: string; readonly line?: number } | undefined {
+	if (op.kind === 'toggle' || op.kind === 'remove' || op.kind === 'edit') {
+		const lines = text.split('\n');
+		const index = op.baseText !== undefined
+			? mapSpaceNoteBaseLine(op.baseText, lines, op.line, op.lineText)
+			: locateSpaceNoteLine(lines, op.line, op.lineText);
+		if (index === undefined) {
+			return undefined;
+		}
+		let next: string | undefined;
+		switch (op.kind) {
+			case 'toggle': next = paradisToggleSpaceNoteTask(text, index); break;
+			case 'remove': next = paradisRemoveSpaceNoteTask(text, index); break;
+			case 'edit': {
+				const replaced = paradisReplaceSpaceNoteTaskText(text, index, op.text);
+				// 文言が変わらない (チェック項目で、中身も空でない) なら、書き換え済みとして扱う
+				next = replaced ?? (TASK_PATTERN.test(lines[index]) && op.text.replace(/[\r\n]+/g, ' ').trim().length > 0 ? text : undefined);
+				break;
+			}
+		}
+		return next !== undefined ? { text: next, line: index } : undefined;
 	}
 	const entry = op.entry.replace(/\s+$/, '');
 	if (entry.trim().length === 0) {
 		return undefined;
 	}
 	const body = text.replace(/\s+$/, '');
-	return body.length === 0 ? entry : `${body}\n${entry}`;
+	return { text: body.length === 0 ? entry : `${body}\n${entry}` };
 }
 
 /** 本文の一部を置き換える編集 (`base` の [start, end) 行を `lines` にする)。 */

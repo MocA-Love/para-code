@@ -6,7 +6,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { useParaToast, type ParaToast } from '../paraToast.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
-import { hapticImpact } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { colors, radius, space, type } from '../theme.js';
 import { useThemeColors } from './themeColorsStore.js';
 
@@ -107,7 +107,7 @@ export function ToastHost() {
 				<Toast
 					toast={shown}
 					onAction={() => {
-						hapticImpact('light');
+						haptic('commit');
 						shown.action?.onPress();
 						hide();
 					}}

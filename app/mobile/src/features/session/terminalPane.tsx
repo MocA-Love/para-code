@@ -8,6 +8,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { isTerminalViewportRevoked, onTerminalViewportRevoked, pcHasCapabilityFor, reclaimTerminalViewport, sendPcRequest, useAppStore } from '../../appState.js';
 import { appendUploadedPath } from '../../components/agentComposerDraft.js';
 import { Button } from '../../components/button.js';
+import { haptic } from '../../haptics.js';
 import { useTerminalKeyInput } from '../../components/terminalKeyRow.js';
 import { TermView } from '../../components/termView.js';
 import { WorkspaceFileViewer } from '../../components/workspaceFileViewer.js';
@@ -278,6 +279,9 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 		// 書きかけはターミナルごとなので、送り終える前にタブを移っていても送ったターミナルの分だけを空にする。
 		if (accepted) {
 			setInput(current => current === submitted ? '' : current);
+		} else {
+			// 送った時点で commit を鳴らしている。届かなかったときだけ知らせる
+			haptic('error');
 		}
 		setSubmitting(false);
 	};
@@ -325,6 +329,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 			}
 		} catch (err) {
 			console.warn('[session] terminal image upload failed', errorKind(err));
+			haptic('error');
 			Alert.alert('画像を送れませんでした', 'PC との接続を確認して、もう一度お試しください。');
 		} finally {
 			setUploading(false);

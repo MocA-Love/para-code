@@ -10,7 +10,7 @@ import { useClaudeModelOptions } from '../hooks/useClaudeModelOptions.js';
 import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { hitSlopToMinimum } from './hitSlop.js';
 import { monoFamily } from '../monoFont.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import type { AgentMessageSendResult, AgentModelControlState } from '../store.js';
 
 /**
@@ -86,14 +86,14 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 	const label = [modelName, shownEffort].filter(Boolean).join(' · ') || 'model / effort';
 
 	const applyModel = (id: string) => {
-		hapticSelection();
+		haptic('tick');
 		setPickedModelId(id);
 	};
 	const applyEffort = (level: string) => {
 		setPickedEffort(level);
 	};
 	const openSheet = () => {
-		hapticSelection();
+		haptic('move');
 		setPickedModelId(undefined);
 		setPickedEffort(undefined);
 		setOpen(true);

@@ -7,7 +7,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { agentSendResumeTarget, agentSendStatusText, type AgentSendQueueItem } from '../../agentSessions.js';
 import { confirmResumeAndSend, mobileSpaceIdFor, removeAgentSend, retryAgentSend, sendToLiveTerminal, useAgentSendQueue } from '../../agentSendQueue.js';
 import { useAppStore } from '../../appState.js';
-import { hapticSelection, hapticSuccess, hapticWarning } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { routes } from '../../routes.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { BottomDrawer, Button, DrawerCaption, DrawerTitle } from '../../ui/index.js';
@@ -36,7 +36,7 @@ export function QueuedSendsBanner({ pcId, terminalKey, ws }: { pcId: string | un
 		<>
 			<Pressable
 				style={styles.banner}
-				onPress={() => { hapticSelection(); setOpen(true); }}
+				onPress={() => { haptic('move'); setOpen(true); }}
 				accessibilityRole="button"
 				accessibilityLabel={`${summary}。一覧を開く`}
 			>
@@ -55,11 +55,11 @@ function QueuedSendsDrawer({ visible, pcId, items, onClose }: { visible: boolean
 	// 宛先のエージェントのターミナルが今も開いているもの（「このターミナルへ送る」を出す）。
 	const openAgentTerminals = useAppStore(useShallow(state => (state.workspace?.terminals ?? []).filter(terminal => terminal.agent === true).map(terminal => terminal.terminalKey)));
 	const sendHere = async (item: AgentSendQueueItem) => {
+		haptic('commit');
 		setBusy(item.id);
 		setMessage(undefined);
 		await sendToLiveTerminal(item, true);
 		setBusy(undefined);
-		hapticSelection();
 	};
 	const resume = async (item: AgentSendQueueItem) => {
 		const target = agentSendResumeTarget(item);
@@ -71,10 +71,10 @@ function QueuedSendsDrawer({ visible, pcId, items, onClose }: { visible: boolean
 		const result = await confirmResumeAndSend(item);
 		setBusy(undefined);
 		if (result === undefined) {
-			hapticWarning();
+			haptic('error');
 			return;
 		}
-		hapticSuccess();
+		haptic('success');
 		if (result.message !== undefined) {
 			setMessage(result.message);
 		}
@@ -106,10 +106,10 @@ function QueuedSendsDrawer({ visible, pcId, items, onClose }: { visible: boolean
 									<Button label="再開して送る" size="sm" variant={item.status === 'needs-confirm' && terminalOpen ? 'secondary' : 'primary'} loading={busy === item.id && !terminalOpen} disabled={busy !== undefined} onPress={() => { void resume(item); }} />
 								) : null}
 								{item.status === 'failed' && item.target.kind === 'live' ? (
-									<Button label="もう一度送る" size="sm" variant="secondary" disabled={busy !== undefined} onPress={() => { hapticSelection(); retryAgentSend(pcId, item.id); }} />
+									<Button label="もう一度送る" size="sm" variant="secondary" disabled={busy !== undefined} onPress={() => { haptic('commit'); retryAgentSend(pcId, item.id); }} />
 								) : null}
 								{/* 送っている最中は取り消せない（一覧から消しても PC への送信は止まらず、取り消したと誤解させる）。 */}
-								<Button label={item.status === 'expired' ? '消す' : '取り消す'} size="sm" variant="ghost" disabled={busy === item.id || item.status === 'sending'} onPress={() => { hapticSelection(); removeAgentSend(pcId, item.id); }} />
+								<Button label={item.status === 'expired' ? '消す' : '取り消す'} size="sm" variant="ghost" disabled={busy === item.id || item.status === 'sending'} onPress={() => { haptic('commit'); removeAgentSend(pcId, item.id); }} />
 							</View>
 						</View>
 					);

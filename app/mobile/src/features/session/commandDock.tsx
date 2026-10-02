@@ -3,7 +3,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { Keyboard, Pressable, ScrollView, StyleSheet, Text } from 'react-native';
 import { ChevronDown, ChevronsRight, Monitor, Smartphone } from 'lucide-react-native';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import {
 	TERMINAL_ACCESSORY_KEYS,
@@ -90,17 +90,17 @@ export function AccessoryKeyBar({ keyboardVisible, phoneWidth, live, ctrlLatched
 			contentContainerStyle={styles.keys}
 		>
 			{keyboardVisible ? (
-				<Key onPress={() => { hapticSelection(); Keyboard.dismiss(); }} label="キーボードを閉じる">
+				<Key onPress={() => { Keyboard.dismiss(); }} label="キーボードを閉じる">
 					<Icon icon={ChevronDown} size={iconSize.sm} color={colors.textDim} />
 				</Key>
 			) : null}
-			<Key onPress={() => { hapticSelection(); onToggleDisplay(); }} label={phoneWidth ? 'デスクトップ表示に切り替え' : 'スマホ表示に切り替え'}>
+			<Key onPress={() => { haptic('tick'); onToggleDisplay(); }} label={phoneWidth ? 'デスクトップ表示に切り替え' : 'スマホ表示に切り替え'}>
 				<Icon icon={phoneWidth ? Monitor : Smartphone} size={iconSize.sm} color={colors.textDim} />
 			</Key>
-			<Key on={live} role="togglebutton" onPress={() => { hapticSelection(); onToggleLive(); }} label="ライブ入力の切り替え">
+			<Key on={live} role="togglebutton" onPress={() => { haptic('tick'); onToggleLive(); }} label="ライブ入力の切り替え">
 				<Icon icon={ChevronsRight} size={iconSize.sm} color={live ? colors.bg : colors.textDim} />
 			</Key>
-			<Key onPress={() => { hapticSelection(); onPaste(); }} label="クリップボードを貼り付け">
+			<Key onPress={() => { onPaste(); }} label="クリップボードを貼り付け">
 				<Text style={styles.keyText}>貼付</Text>
 			</Key>
 			{TERMINAL_ACCESSORY_KEYS.map(renderKey)}

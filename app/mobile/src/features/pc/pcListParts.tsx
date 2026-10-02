@@ -3,7 +3,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { ChevronDown, ChevronRight, CircleArrowUp, Folder, KeyRound, Pin, Plus, TriangleAlert, Unplug } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import type { HomeStatusBucket } from '../../homeSort.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { colors, radius, space, type } from '../../theme.js';
@@ -34,7 +34,7 @@ export function SectionToggle({ title, count, collapsed, onToggle, icon, iconCol
 			style={styles.section}
 			hitSlop={hitSlopToMinimum(SECTION_HEIGHT)}
 			onPress={() => {
-				hapticSelection();
+				haptic('move');
 				onToggle();
 			}}
 			accessibilityRole="button"
@@ -63,7 +63,7 @@ export function LaunchFab({ disabled, onPress }: { disabled: boolean; onPress: (
 				disabled ? styles.fabDisabled : undefined,
 			]}
 			onPress={() => {
-				hapticImpact('light');
+				haptic('move');
 				onPress();
 			}}
 			disabled={disabled}

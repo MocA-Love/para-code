@@ -10,7 +10,8 @@ import { detailToChatMessages } from '../../../../../../src/agentToolMeta.js';
 import { useAppStore } from '../../../../../../src/appState.js';
 import { hitSlopToMinimum } from '../../../../../../src/components/hitSlop.js';
 import { MarkdownText } from '../../../../../../src/components/markdownText.js';
-import { hapticSelection } from '../../../../../../src/haptics.js';
+import { ChatTextScaleProvider } from '../../../../../../src/ui/chatTextScale.js';
+import { haptic } from '../../../../../../src/haptics.js';
 import { useStableInsets } from '../../../../../../src/hooks/useStableInsets.js';
 import { firstParam, routes } from '../../../../../../src/routes.js';
 import type { AgentActivityAgent, AgentActivityDetailMessage } from '../../../../../../src/store.js';
@@ -44,6 +45,8 @@ export default function AgentActivityDetailScreen() {
 	const route = useActivityRoute();
 	const { chat, terminalKey } = route;
 	const requestDetail = useAppStore(s => s.requestAgentActivityDetail);
+	// 会話の文字サイズ（設定 → チャット UI）を、頼まれた内容と会話・ツールの履歴にもかける。
+	const chatFontSize = useAppStore(s => s.chatFontSize);
 	const agents = !route.sessionChanged ? chat?.activity?.agents ?? [] : [];
 	const agent = agentId !== undefined ? agents.find(item => item.id === agentId) : undefined;
 	const parent = agent?.parentId !== undefined ? agents.find(item => item.id === agent.parentId) : undefined;
@@ -82,7 +85,7 @@ export default function AgentActivityDetailScreen() {
 		if (route.pcId === undefined || route.spaceId === undefined || terminalKey === undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('move');
 		router.push(routes.activityAgent(route.pcId, route.spaceId, terminalKey, target.id, route.epoch));
 	};
 
@@ -151,44 +154,46 @@ export default function AgentActivityDetailScreen() {
 		: <Text style={styles.muted}>{failed ? '履歴を読み込めませんでした。PC との接続を確かめてください。' : '保存された履歴はありません。'}</Text>;
 
 	return (
-		<Screen>
-			<ScreenHeader
-				title={agent?.label ?? 'サブエージェント'}
-				subtitle={`親: ${parentLabel} · ${providerLabel(provider)}`}
-				backLabel="ひとつ上へ戻る"
-			>
-				{ancestors.length > 0 ? (
-					<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.crumbs}>
-						<Text style={styles.crumbRoot} numberOfLines={1}>{route.title ?? 'エージェント'}</Text>
-						{ancestors.map(ancestor => (
-							<Pressable
-								key={ancestor.id}
-								onPress={() => openAgent(ancestor)}
-								hitSlop={hitSlopToMinimum(CRUMB_HEIGHT)}
-								style={styles.crumb}
-								accessibilityRole="button"
-								accessibilityLabel={`${ancestor.label}を開く`}
-							>
-								<Text style={styles.crumbText} numberOfLines={1}>{`› ${ancestor.label}`}</Text>
-							</Pressable>
-						))}
-					</ScrollView>
-				) : null}
-			</ScreenHeader>
-			<View style={styles.fill}>
-				{gate ?? (
-					<FlatList
-						data={rows}
-						keyExtractor={row => chatRowKey(row, chatEpoch ?? '')}
-						renderItem={({ item }) => <ChatRowView row={item} terminalKey={terminalKey ?? ''} allToolsOpen={false} />}
-						ListHeaderComponent={header}
-						ListEmptyComponent={historyEmpty}
-						ListFooterComponent={footer}
-						contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + space.xl }, column]}
-					/>
-				)}
-			</View>
-		</Screen>
+		<ChatTextScaleProvider size={chatFontSize}>
+			<Screen>
+				<ScreenHeader
+					title={agent?.label ?? 'サブエージェント'}
+					subtitle={`親: ${parentLabel} · ${providerLabel(provider)}`}
+					backLabel="ひとつ上へ戻る"
+				>
+					{ancestors.length > 0 ? (
+						<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.crumbs}>
+							<Text style={styles.crumbRoot} numberOfLines={1}>{route.title ?? 'エージェント'}</Text>
+							{ancestors.map(ancestor => (
+								<Pressable
+									key={ancestor.id}
+									onPress={() => openAgent(ancestor)}
+									hitSlop={hitSlopToMinimum(CRUMB_HEIGHT)}
+									style={styles.crumb}
+									accessibilityRole="button"
+									accessibilityLabel={`${ancestor.label}を開く`}
+								>
+									<Text style={styles.crumbText} numberOfLines={1}>{`› ${ancestor.label}`}</Text>
+								</Pressable>
+							))}
+						</ScrollView>
+					) : null}
+				</ScreenHeader>
+				<View style={styles.fill}>
+					{gate ?? (
+						<FlatList
+							data={rows}
+							keyExtractor={row => chatRowKey(row, chatEpoch ?? '')}
+							renderItem={({ item }) => <ChatRowView row={item} terminalKey={terminalKey ?? ''} allToolsOpen={false} />}
+							ListHeaderComponent={header}
+							ListEmptyComponent={historyEmpty}
+							ListFooterComponent={footer}
+							contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + space.xl }, column]}
+						/>
+					)}
+				</View>
+			</Screen>
+		</ChatTextScaleProvider>
 	);
 }
 

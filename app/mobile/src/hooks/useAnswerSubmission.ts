@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useReducer, useRef } from 'react';
+import { haptic } from '../haptics.js';
 import type { AgentMessageSendResult } from '../store.js';
 import {
 	ANSWER_RESPONSE_TIMEOUT_MS, IDLE_SUBMISSION, reduceAnswerSubmission, type AnswerSubmissionState,
@@ -67,6 +68,8 @@ export function useAnswerSubmission(resetKey: unknown): AnswerSubmission {
 				// 送信中のまま時間切れなら再送を許す（「PC から応答がありません」から再送する）。
 				if (!settled) {
 					inFlightRef.current = undefined;
+					// 届いたか分からない（失敗とは限らない）ので warning
+					haptic('warning');
 				}
 				dispatch({ type: 'timeout' });
 			}
@@ -80,6 +83,8 @@ export function useAnswerSubmission(resetKey: unknown): AnswerSubmission {
 					inFlightRef.current = result.status === 'rejected' ? undefined : pending;
 					if (result.status === 'rejected') {
 						clearTimer();
+						// 押した時点で commit を鳴らしている。受理では鳴らさず、失敗だけ知らせる
+						haptic('error');
 					}
 					dispatch({ type: 'result', result });
 				}

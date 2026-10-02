@@ -21,6 +21,46 @@ export type PrCheck = IParadisPullRequestCheck;
 /** PR の区分を開いている間に取り直す間隔（GitHub の制限に触れないよう、開いている間だけ）。 */
 export const PR_POLL_MS = 60_000;
 
+/** {@link startPrPolling} が使うタイマー（テストでは差し替える）。 */
+export interface PrPollTimers {
+	readonly set: (callback: () => void, ms: number) => unknown;
+	readonly clear: (handle: unknown) => void;
+}
+
+const DEFAULT_TIMERS: PrPollTimers = {
+	set: (callback, ms) => setTimeout(callback, ms),
+	clear: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+/**
+ * すぐに 1 回読み、読み終わってから `intervalMs` 後に次を読む（前の要求が終わるまで次を出さない）。
+ * 決まった間隔で出すと、PC の応答が間隔より遅いとき次の要求が前の要求の応答を捨て続け、読み込み中のまま止まる。
+ * 返す関数で止める（読んでいる最中に止めたら、その後は次を予約しない）。
+ */
+export function startPrPolling(refresh: () => Promise<void>, intervalMs: number = PR_POLL_MS, timers: PrPollTimers = DEFAULT_TIMERS): () => void {
+	let stopped = false;
+	let handle: unknown;
+	const tick = async () => {
+		handle = undefined;
+		try {
+			await refresh();
+		} catch {
+			// refresh は失敗を自分で画面へ出す。ここでは次の予約だけを続ける
+		}
+		if (!stopped) {
+			handle = timers.set(() => { void tick(); }, intervalMs);
+		}
+	};
+	void tick();
+	return () => {
+		stopped = true;
+		if (handle !== undefined) {
+			timers.clear(handle);
+			handle = undefined;
+		}
+	};
+}
+
 /** `prView` の応答。 */
 export type PrViewResult =
 	| { readonly kind: 'pr'; readonly pr: PrDetail }

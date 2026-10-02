@@ -7,7 +7,7 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-
 import { Ionicons } from '@expo/vector-icons';
 import { monoFamily } from '../monoFont.js';
 import { colors, HIT_SIZE, radius, squircle, type } from '../theme.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { KEY_TICK, haptic } from '../haptics.js';
 import { useThemeColors } from '../ui/themeColorsStore.js';
 import { TERMINAL_KEY_REPEAT_DELAY_MS, TERMINAL_KEY_REPEAT_INTERVAL_MS, TERMINAL_KEY_REPEAT_MAX } from '../terminalKeys.js';
 import { BROWSER_ACCESSORY_KEYS, browserEmptyBackspaceInput, browserKeyInput, type BrowserInput, type BrowserKeyDef } from '../browserKeys.js';
@@ -68,7 +68,7 @@ export function BrowserKeyInput({ live, keysSupported, bottomPadding, text, onCh
 	useEffect(() => stopRepeat, []);
 
 	const pressKey = (def: BrowserKeyDef) => {
-		hapticImpact('light');
+		haptic('tick', KEY_TICK);
 		onInputRef.current(browserKeyInput(def));
 	};
 	const startRepeat = (def: BrowserKeyDef) => {
@@ -87,7 +87,7 @@ export function BrowserKeyInput({ live, keysSupported, bottomPadding, text, onCh
 
 	const sendText = () => {
 		if (onSubmit()) {
-			hapticImpact('light');
+			haptic('commit');
 		}
 	};
 
@@ -137,7 +137,7 @@ export function BrowserKeyInput({ live, keysSupported, bottomPadding, text, onCh
 			<View style={styles.inputRow}>
 				<Pressable
 					style={({ pressed }) => [styles.iconButton, pressed && styles.keyPressed]}
-					onPress={() => { hapticSelection(); onClose(); }}
+					onPress={() => { haptic('move'); onClose(); }}
 					accessibilityRole="button"
 					accessibilityLabel="文字入力を閉じる"
 				>

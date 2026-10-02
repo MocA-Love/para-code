@@ -2,7 +2,7 @@
 
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { CircleAlert, CircleCheck, CircleDashed, CircleMinus, CircleX, ExternalLink, GitMerge, GitPullRequest, Sparkles } from 'lucide-react-native';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
 import { Button, EmptyState, Icon, iconSize, type LucideIcon } from '../../ui/index.js';
@@ -90,7 +90,7 @@ export function PullRequestPanel({ view, loading, error, offline, canMerge, merg
 					<Button
 						label="マージ"
 						icon={GitMerge}
-						onPress={() => { hapticImpact('medium'); onMerge(pr); }}
+						onPress={() => { haptic('move'); onMerge(pr); }}
 						disabled={disabled || merge.reason !== undefined}
 						loading={merging}
 						accessibilityLabel={merge.reason !== undefined ? `マージ（${merge.reason}）` : 'マージ'}
@@ -115,7 +115,7 @@ function PrCard({ pr }: { pr: PrDetail }) {
 				</View>
 				<Text style={styles.number}>{`#${pr.number}`}</Text>
 				<Pressable
-					onPress={() => { hapticSelection(); void Linking.openURL(pr.url).catch(() => undefined); }}
+					onPress={() => { void Linking.openURL(pr.url).catch(() => undefined); }}
 					hitSlop={hitSlop}
 					style={({ pressed }) => [styles.open, pressed ? styles.pressed : undefined]}
 					accessibilityRole="link"
@@ -157,7 +157,7 @@ function CheckRow({ check }: { check: PrCheck }) {
 	}
 	return (
 		<Pressable
-			onPress={() => { hapticSelection(); void Linking.openURL(url).catch(() => undefined); }}
+			onPress={() => { void Linking.openURL(url).catch(() => undefined); }}
 			style={({ pressed }) => [styles.checkRow, pressed ? styles.pressed : undefined]}
 			accessibilityRole="link"
 			accessibilityLabel={`${check.name}: ${checkBucketLabel(check.bucket)}。GitHub で開く`}

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
+import { haptic } from '../../../src/haptics.js';
 import { useAppStore } from '../../../src/appState.js';
 import type { GithubRateLimitEntry, GithubUsageResult } from '../../../src/store.js';
 import { alpha, colors, radius, space, tint, type } from '../../../src/theme.js';
@@ -149,7 +150,7 @@ export default function GithubUsageScreen() {
 			title="GitHub API"
 			subtitle={subtitle}
 			right={<DetailRefreshButton onPress={() => { void onPullRefresh(); }} disabled={pullRefreshing || loading} />}
-			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
+			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { haptic('edge'); void onPullRefresh(); }} tintColor={colors.textDim} />}
 		>
 			{loading && data === undefined ? <DetailLoading /> : null}
 			{error !== undefined ? <DetailMessage tone="error">{error}</DetailMessage> : null}

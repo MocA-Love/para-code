@@ -2,7 +2,7 @@
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Folder } from 'lucide-react-native';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import type { HomeStatusBucket } from '../../homeSort.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { colors, radius, space, type } from '../../theme.js';
@@ -25,17 +25,17 @@ export function FilterDrawer({ visible, filter, spaces, onChange, onClose }: {
 }) {
 	const selectKind = (kind: PcListKind) => {
 		if (kind !== filter.kind) {
-			hapticSelection();
+			haptic('tick');
 			onChange({ ...filter, kind });
 		}
 	};
 	const statesEnabled = statesApply(filter);
 	const toggleState = (bucket: HomeStatusBucket) => {
-		hapticSelection();
+		haptic('tick');
 		onChange({ ...filter, states: toggleValue(filter.states, bucket) });
 	};
 	const toggleSpace = (id: string) => {
-		hapticSelection();
+		haptic('tick');
 		onChange({ ...filter, spaces: toggleValue(filter.spaces, id) });
 	};
 	return (

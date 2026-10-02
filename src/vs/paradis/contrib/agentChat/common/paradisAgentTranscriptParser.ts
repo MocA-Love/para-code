@@ -16,6 +16,7 @@
 
 import { IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentQuestionOption } from './paradisAgentChat.js';
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
+import { paradisExpandPastedContent } from '../../../common/paradisPastedContent.js';
 import { IParadisMonitorSignal, paradisMonitorCallSignal, paradisMonitorNotificationSignals, paradisMonitorStartedSignal, paradisMonitorTaskStopSignal } from './paradisAgentMonitors.js';
 
 export { paradisQuestionReadyMarker } from './paradisAgentQuestionMarker.js';
@@ -159,10 +160,35 @@ export interface IParseSignals {
 	 * 冒頭を参照）、壊れたときに「どの版から変わったか」を切り分けられるようにこれだけ拾う。
 	 */
 	cliVersion?: string;
+	/**
+	 * Claude Code の、作業中に送った発言（queued_command）と、Esc で割り込んだ後に同じ本文が user 行として
+	 * 書き直されたものとの重複を見分ける状態。行をまたいで持つ必要があるので、tailer のように続けて読む側は
+	 * `newClaudeQueuedPromptState()` を1つ作って `newParseSignals` へ渡し続ける。
+	 */
+	readonly claudeQueuedPrompts: IClaudeQueuedPromptState;
 }
 
-export function newParseSignals(): IParseSignals {
-	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], monitorSignals: [], userText: false, turnEnded: undefined };
+/**
+ * 作業中に送った発言の控え。Esc で割り込むと、Claude Code は queued_command → `[Request interrupted by user]` →
+ * 同じ本文の user 行 の順に書く（実データで約 1/320）。queued_command の時点で発言として出しているので、
+ * 割り込みの直後に現れた同じ本文の user 行は出さない。
+ */
+export interface IClaudeQueuedPromptState {
+	/** まだ user 行と突き合わせていない queued_command の本文（照合用にそろえたもの）。 */
+	texts: string[];
+	/** 控えがある状態で割り込みの印を見た。 */
+	interrupted: boolean;
+}
+
+/** 控えておく queued_command の本文の上限（読み込みが長く続いても状態が膨らまないように）。 */
+const MAX_QUEUED_PROMPTS = 8;
+
+export function newClaudeQueuedPromptState(): IClaudeQueuedPromptState {
+	return { texts: [], interrupted: false };
+}
+
+export function newParseSignals(claudeQueuedPrompts: IClaudeQueuedPromptState = newClaudeQueuedPromptState()): IParseSignals {
+	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], monitorSignals: [], userText: false, turnEnded: undefined, claudeQueuedPrompts };
 }
 
 export function decodeXmlAttribute(value: string): string {
@@ -503,6 +529,7 @@ export function paradisHasPendingDuplicateQuestion(
  * 吹き出し表示すると誤解を招くため、種類ごとに変換・除去する。
  */
 export function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: number | undefined, signals: IParseSignals): void {
+	rawText = paradisExpandPastedContent(rawText);
 	const trimmed = rawText.trim();
 	if (trimmed.length === 0) {
 		return;
@@ -568,6 +595,131 @@ export function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: numb
 	out.push({ role: 'user', kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
 }
 
+/**
+ * user 行・queued_command の中身のうち、人が書いた本文（text ブロック）を照合用にそろえて返す。
+ * tool_result・画像は含めない。
+ */
+function claudeUserRowText(content: unknown): string {
+	let text = '';
+	if (typeof content === 'string') {
+		text = content;
+	} else if (Array.isArray(content)) {
+		text = content.map(block => rec(block)).filter(block => block?.type === 'text').map(block => str(block?.text) ?? '').join('\n');
+	}
+	return paradisExpandPastedContent(text).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
+}
+
+/**
+ * Esc で割り込んだ後に書き直された、queued_command と同じ本文の user 行かどうか。状態もここで進める
+ * （割り込みの印を覚える／突き合わせた控えを外す／人の新しい発言が来たら控えを捨てる）。
+ */
+function isRepeatedQueuedPrompt(state: IClaudeQueuedPromptState, content: unknown): boolean {
+	if (state.texts.length === 0) {
+		return false;
+	}
+	const text = claudeUserRowText(content);
+	if (text.length === 0) {
+		return false; // tool_result だけの行などは状態を変えない
+	}
+	if (/^\[Request interrupted by user( for tool use)?\]$/.test(text)) {
+		state.interrupted = true;
+		return false;
+	}
+	const index = state.interrupted ? state.texts.indexOf(text) : -1;
+	if (index >= 0) {
+		state.texts = state.texts.filter((_, i) => i !== index);
+		if (state.texts.length === 0) {
+			state.interrupted = false;
+		}
+		return true;
+	}
+	if (text.startsWith('<')) {
+		return false; // ハーネスが user 行として書く通知（task-notification 等）は人の発言ではない
+	}
+	// 人の新しい発言が来た＝それより前の控えはもう書き直されない。
+	state.texts = [];
+	state.interrupted = false;
+	return false;
+}
+
+/** transcript の1行の timestamp（ISO 文字列）をミリ秒へ。読めなければ undefined。 */
+function lineTimestamp(obj: Record<string, unknown>): number | undefined {
+	const tsRaw = str(obj.timestamp);
+	const tsParsed = tsRaw !== undefined ? Date.parse(tsRaw) : NaN;
+	return Number.isFinite(tsParsed) ? tsParsed : undefined;
+}
+
+/**
+ * Claude Code のユーザー側の中身（user 行の `message.content`、または作業中に送った発言の
+ * `queued_command` attachment の `prompt`）を表示メッセージへ変換する。文字列か、text / image /
+ * tool_result ブロックの配列。
+ */
+function pushClaudeUserContent(out: IRawMessage[], obj: Record<string, unknown>, content: unknown, ts: number | undefined, signals: IParseSignals): void {
+	if (typeof content === 'string') {
+		pushClaudeUserText(out, content, ts, signals);
+		return;
+	}
+	if (Array.isArray(content)) {
+		// ユーザーが貼った画像は tool_result ではなく content 直下に image ブロックとして入る。
+		// 本文と同じ発言の一部なので、テキスト側のメッセージへまとめて添える。
+		const pastedImages: IFlattenedImage[] = [];
+		for (const block of content) {
+			const b = rec(block);
+			if (!b) {
+				continue;
+			}
+			if (b.type === 'text') {
+				pushClaudeUserText(out, str(b.text) ?? '', ts, signals);
+			} else if (b.type === 'image') {
+				const image = flattenContentParts([b]).images[0];
+				if (image !== undefined) {
+					pastedImages.push(image);
+				}
+			} else if (b.type === 'tool_result') {
+				const { text, images } = flattenContentParts(b.content);
+				// toolUseId は質問(AskUserQuestion)の「回答済み」判定に使う（本文が空でも回答は成立する）。
+				const toolUseId = str(b.tool_use_id);
+				if (toolUseId !== undefined) {
+					signals.answeredIds.push(toolUseId);
+				}
+				// Monitor の起動応答と、TaskStop による停止（行の toolUseResult に構造化した値がある）。
+				const toolUseResult = rec(obj.toolUseResult);
+				const monitorSignal = paradisMonitorStartedSignal(text, toolUseResult, toolUseId, ts ?? Date.now()) ?? paradisMonitorTaskStopSignal(toolUseResult, ts ?? Date.now());
+				if (monitorSignal !== undefined) {
+					signals.monitorSignals.push(monitorSignal);
+				}
+				// バックグラウンドタスク（サブエージェント等）の起動応答から実行中タスクを学習する。
+				if (/Async agent launched|running in the background/i.test(text)) {
+					const idMatch = /\bagentId:\s*([A-Za-z0-9_-]+)/.exec(text) ?? /background with ID:\s*([A-Za-z0-9_-]+)/.exec(text);
+					if (idMatch) {
+						signals.openedTasks.set(idMatch[1], ts ?? Date.now());
+					}
+				}
+				if (text.trim().length > 0 || images.length > 0) {
+					out.push({
+						role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts,
+						...(toolUseId !== undefined ? { toolUseId } : {}),
+						// transcript の is_error。モバイルは失敗ステップを赤で示す（推定に頼らない）。
+						...(b.is_error === true ? { isError: true } : {}),
+						...(images.length > 0 ? { imageData: images } : {}),
+					});
+				}
+			}
+		}
+		if (pastedImages.length > 0) {
+			// 直前のユーザー発言に添える。画像だけを貼った（本文なし）ときは
+			// 画像だけの発言として1件作る。
+			const last = out.at(-1);
+			if (last?.role === 'user' && last.kind === 'text' && last.imageData === undefined) {
+				out[out.length - 1] = { ...last, imageData: pastedImages };
+			} else {
+				signals.userText = true;
+				out.push({ role: 'user', kind: 'text', text: '', ts, imageData: pastedImages });
+			}
+		}
+	}
+}
+
 /** Claude Code transcript JSONL の1行をパースする。表示対象外の行は空配列。 */
 export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, includeSidechain = false): IRawMessage[] {
 	if ((!includeSidechain && obj.isSidechain === true) || obj.isMeta === true) {
@@ -591,8 +743,32 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 			// Monitor の出力・終了もこの形で届く（作業中に届いたもの）。
 			const attachmentTs = Date.parse(str(obj.timestamp) ?? '');
 			signals.monitorSignals.push(...paradisMonitorNotificationSignals(prompt, Number.isFinite(attachmentTs) ? attachmentTs : Date.now()));
+			return [];
 		}
-		return [];
+		// 作業中にユーザーが送った発言も、user 行ではなくこの attachment（commandMode: 'prompt'）としてだけ
+		// 書かれる。同じ本文の user 行は別に書かれないので、ここで user 行と同じ経路に乗せる。
+		// 人が送ったものだけ（origin.kind: 'human'）。サブエージェントや別セッションからの報告
+		// （origin.kind: 'peer' の `<cross-session-message>` / `<agent-message from=...>`、isMeta: true）を
+		// 発言にすると、ユーザーの吹き出しになり、質問の回答待ちまで解除してしまう。
+		const queuedPrompt = attachment?.type === 'queued_command' && attachment.commandMode === 'prompt'
+			&& rec(attachment.origin)?.kind === 'human' && attachment.isMeta !== true ? attachment.prompt : undefined;
+		if (typeof queuedPrompt !== 'string' && !Array.isArray(queuedPrompt)) {
+			return [];
+		}
+		const queuedText = claudeUserRowText(queuedPrompt);
+		if (queuedText.startsWith('<task-notification>')) {
+			return [];
+		}
+		const state = signals.claudeQueuedPrompts;
+		if (queuedText.length > 0) {
+			state.texts = [...state.texts, queuedText].slice(-MAX_QUEUED_PROMPTS);
+		}
+		// 時刻は attachment 自身の timestamp（届いた時刻。実データでは行の timestamp と同じ値）を使い、
+		// 無い版では行の timestamp にする。
+		const attachmentTs = Date.parse(str(attachment?.timestamp) ?? '');
+		const out: IRawMessage[] = [];
+		pushClaudeUserContent(out, obj, queuedPrompt, Number.isFinite(attachmentTs) ? attachmentTs : lineTimestamp(obj), signals);
+		return out;
 	}
 	if (type !== 'user' && type !== 'assistant') {
 		return []; // summary / system / file-history-snapshot 等
@@ -601,77 +777,22 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 	if (!message) {
 		return [];
 	}
-	const tsRaw = str(obj.timestamp);
-	const tsParsed = tsRaw !== undefined ? Date.parse(tsRaw) : NaN;
-	const ts = Number.isFinite(tsParsed) ? tsParsed : undefined;
+	const ts = lineTimestamp(obj);
 	const out: IRawMessage[] = [];
 	const content = message.content;
 
 	if (type === 'user') {
-		if (typeof content === 'string') {
-			pushClaudeUserText(out, content, ts, signals);
+		if (isRepeatedQueuedPrompt(signals.claudeQueuedPrompts, content)) {
 			return out;
 		}
-		if (Array.isArray(content)) {
-			// ユーザーが貼った画像は tool_result ではなく content 直下に image ブロックとして入る。
-			// 本文と同じ発言の一部なので、テキスト側のメッセージへまとめて添える。
-			const pastedImages: IFlattenedImage[] = [];
-			for (const block of content) {
-				const b = rec(block);
-				if (!b) {
-					continue;
-				}
-				if (b.type === 'text') {
-					pushClaudeUserText(out, str(b.text) ?? '', ts, signals);
-				} else if (b.type === 'image') {
-					const image = flattenContentParts([b]).images[0];
-					if (image !== undefined) {
-						pastedImages.push(image);
-					}
-				} else if (b.type === 'tool_result') {
-					const { text, images } = flattenContentParts(b.content);
-					// toolUseId は質問(AskUserQuestion)の「回答済み」判定に使う（本文が空でも回答は成立する）。
-					const toolUseId = str(b.tool_use_id);
-					if (toolUseId !== undefined) {
-						signals.answeredIds.push(toolUseId);
-					}
-					// Monitor の起動応答と、TaskStop による停止（行の toolUseResult に構造化した値がある）。
-					const toolUseResult = rec(obj.toolUseResult);
-					const monitorSignal = paradisMonitorStartedSignal(text, toolUseResult, toolUseId, ts ?? Date.now()) ?? paradisMonitorTaskStopSignal(toolUseResult, ts ?? Date.now());
-					if (monitorSignal !== undefined) {
-						signals.monitorSignals.push(monitorSignal);
-					}
-					// バックグラウンドタスク（サブエージェント等）の起動応答から実行中タスクを学習する。
-					if (/Async agent launched|running in the background/i.test(text)) {
-						const idMatch = /\bagentId:\s*([A-Za-z0-9_-]+)/.exec(text) ?? /background with ID:\s*([A-Za-z0-9_-]+)/.exec(text);
-						if (idMatch) {
-							signals.openedTasks.set(idMatch[1], ts ?? Date.now());
-						}
-					}
-					if (text.trim().length > 0 || images.length > 0) {
-						out.push({
-							role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts,
-							...(toolUseId !== undefined ? { toolUseId } : {}),
-							// transcript の is_error。モバイルは失敗ステップを赤で示す（推定に頼らない）。
-							...(b.is_error === true ? { isError: true } : {}),
-							...(images.length > 0 ? { imageData: images } : {}),
-						});
-					}
-				}
-			}
-			if (pastedImages.length > 0) {
-				// 直前のユーザー発言に添える。画像だけを貼った（本文なし）ときは
-				// 画像だけの発言として1件作る。
-				const last = out.at(-1);
-				if (last?.role === 'user' && last.kind === 'text' && last.imageData === undefined) {
-					out[out.length - 1] = { ...last, imageData: pastedImages };
-				} else {
-					signals.userText = true;
-					out.push({ role: 'user', kind: 'text', text: '', ts, imageData: pastedImages });
-				}
-			}
-		}
+		pushClaudeUserContent(out, obj, content, ts, signals);
 		return out;
+	}
+	// エージェントが応答した時点で、控えた queued の発言は消費済み。割り込みの有無に関わらず捨てる
+	// （残すと、応答の後に Esc で止めて同じ文を打ち直したときに書き直しと取り違えて隠してしまう）。
+	if (signals.claudeQueuedPrompts.texts.length > 0 || signals.claudeQueuedPrompts.interrupted) {
+		signals.claudeQueuedPrompts.texts = [];
+		signals.claudeQueuedPrompts.interrupted = false;
 	}
 
 	// assistant
@@ -759,6 +880,25 @@ export function paradisParseClaudeTranscriptLineForTest(line: string): { message
 	const signals = newParseSignals();
 	const messages = JSON.parse(JSON.stringify(parseClaudeLine(obj, signals))) as IRawMessage[];
 	return { messages, userText: signals.userText };
+}
+
+/**
+ * 複数行にまたがる解釈（queued_command と書き直しの重複など）の回帰テスト用。tailer と同じく、
+ * 読み取りの塊ごとに signals を作り直しつつ、queued_command の控えだけは塊をまたいで持ち続ける。
+ */
+export function paradisParseClaudeTranscriptBatchesForTest(batches: readonly (readonly string[])[]): IRawMessage[] {
+	const queuedPrompts = newClaudeQueuedPromptState();
+	const out: IRawMessage[] = [];
+	for (const lines of batches) {
+		const signals = newParseSignals(queuedPrompts);
+		for (const line of lines) {
+			const obj = rec(JSON.parse(line));
+			if (obj !== undefined) {
+				out.push(...parseClaudeLine(obj, signals));
+			}
+		}
+	}
+	return JSON.parse(JSON.stringify(out)) as IRawMessage[];
 }
 
 /** Codex transcript分類の回帰テスト用。productionと同じparserを1行だけ通す。 */

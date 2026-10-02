@@ -3,9 +3,10 @@
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { CircleAlert, CircleCheck, RotateCw } from 'lucide-react-native';
 import { canRetrySubmission, type AnswerSubmissionState } from '../../components/answerSubmission.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { HIT_SIZE, colors, space, type } from '../../theme.js';
-import { Button, Icon } from '../../ui/index.js';
+import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
+import { Button, Icon, iconSize } from '../../ui/index.js';
 
 /**
  * 回答カードの送信後の表示（状態の決まりは既存の `answerSubmission.ts`。ここは見た目だけ）。
@@ -18,6 +19,8 @@ export function SubmissionStatus({ state, onRetry, onReselect }: {
 	onRetry: () => void;
 	onReselect: () => void;
 }) {
+	const styles = useChatStyles(baseStyles);
+	const statusIconSize = useChatIconSize(iconSize.md);
 	if (state.phase === 'idle') {
 		return null;
 	}
@@ -25,7 +28,7 @@ export function SubmissionStatus({ state, onRetry, onReselect }: {
 		return (
 			<View style={styles.block} accessibilityLiveRegion="polite">
 				<View style={styles.row}>
-					<Icon icon={CircleCheck} color={colors.textDim} />
+					<Icon icon={CircleCheck} size={statusIconSize} color={colors.textDim} />
 					<Text style={styles.title}>PC は受け付けました</Text>
 				</View>
 				<Text style={styles.hint}>PC の画面で確認してください。</Text>
@@ -36,13 +39,13 @@ export function SubmissionStatus({ state, onRetry, onReselect }: {
 		return (
 			<View style={styles.block} accessibilityLiveRegion="polite">
 				<View style={styles.row}>
-					<Icon icon={CircleAlert} color={colors.amber} />
+					<Icon icon={CircleAlert} size={statusIconSize} color={colors.amber} />
 					<Text style={styles.title}>PC から応答がありません</Text>
 				</View>
 				<Text style={styles.hint}>PC に届いていない可能性があります。再送するか、PC の画面で確認してください。</Text>
 				<View style={styles.buttons}>
-					<Button label="選び直す" variant="secondary" style={styles.flex} onPress={() => { hapticSelection(); onReselect(); }} />
-					<Button label="再送" icon={RotateCw} style={styles.flex} onPress={() => { hapticImpact('medium'); onRetry(); }} />
+					<Button label="選び直す" variant="secondary" style={styles.flex} onPress={() => { haptic('move'); onReselect(); }} />
+					<Button label="再送" icon={RotateCw} style={styles.flex} onPress={() => { haptic('commit'); onRetry(); }} />
 				</View>
 			</View>
 		);
@@ -55,7 +58,7 @@ export function SubmissionStatus({ state, onRetry, onReselect }: {
 	);
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
 	block: { gap: space.sm },
 	row: { flexDirection: 'row', alignItems: 'center', gap: space.sm, minHeight: HIT_SIZE },
 	title: { flexShrink: 1, fontSize: type.body, fontWeight: '600', color: colors.text },

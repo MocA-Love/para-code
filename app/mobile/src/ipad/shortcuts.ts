@@ -28,6 +28,9 @@ export type ShortcutAction =
 	| { readonly kind: 'settings' }
 	| { readonly kind: 'notifications' }
 	| { readonly kind: 'escape' }
+	/** 開いたファイルの中の検索（⌘F で欄を開く、⌘G・⇧⌘G で次・前の一致へ）。 */
+	| { readonly kind: 'find' }
+	| { readonly kind: 'stepFind'; readonly delta: 1 | -1 }
 	/** ライブ入力中の矢印キー。入力欄のキャレットを動かさず、PC のターミナルへ送る。 */
 	| { readonly kind: 'terminalArrow'; readonly key: 'up' | 'down' | 'left' | 'right' };
 
@@ -71,6 +74,9 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
 	{ id: 'settings', input: ',', modifiers: ['command'], title: '設定', action: { kind: 'settings' } },
 	{ id: 'notifications', input: 'n', modifiers: ['shift', 'command'], title: '通知', action: { kind: 'notifications' } },
 	{ id: 'escape', input: 'Escape', modifiers: [], title: '閉じる', action: { kind: 'escape' } },
+	{ id: 'find', input: 'f', modifiers: ['command'], title: 'ファイル内を検索', action: { kind: 'find' } },
+	{ id: 'find.next', input: 'g', modifiers: ['command'], title: '次を検索', action: { kind: 'stepFind', delta: 1 } },
+	{ id: 'find.prev', input: 'g', modifiers: ['shift', 'command'], title: '前を検索', action: { kind: 'stepFind', delta: -1 } },
 	// ライブ入力の見えない入力欄は1行ぶんしか持たず、キャレットは常に末尾に置く。矢印は入力欄ではなく
 	// PC のターミナルへ（シェルの履歴・カーソル移動）。ライブ入力にフォーカスがある間だけ効く。
 	{ id: 'terminal.up', input: 'ArrowUp', modifiers: [], title: 'ターミナルへ ↑', action: { kind: 'terminalArrow', key: 'up' }, overridesTextInput: true },
@@ -98,6 +104,8 @@ export interface ShortcutContext {
 	readonly inNotifications: boolean;
 	/** ライブ入力にフォーカスがあるか（矢印を PC のターミナルへ回す）。 */
 	readonly terminalArrows: boolean;
+	/** 前面に中を探せるファイルのビューアがあるか。 */
+	readonly find: boolean;
 }
 
 /** その操作がいまの画面で効くか。 */
@@ -127,6 +135,9 @@ export function isShortcutAvailable(action: ShortcutAction, context: ShortcutCon
 			return context.escape;
 		case 'terminalArrow':
 			return context.terminalArrows;
+		case 'find':
+		case 'stepFind':
+			return context.find;
 	}
 }
 

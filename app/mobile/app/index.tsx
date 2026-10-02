@@ -18,7 +18,7 @@ import { useHomeUsage } from '../src/features/home/useHomeUsage.js';
 import { LaunchDrawer } from '../src/features/launch/launchDrawer.js';
 import { openSession } from '../src/features/pc/openSession.js';
 import { startStatusSinceTracking } from '../src/features/pc/statusSinceStore.js';
-import { hapticSelection } from '../src/haptics.js';
+import { haptic } from '../src/haptics.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { useShortcutSlot } from '../src/ipad/shortcutRegistry.js';
 import { isPairingRejected, shouldShowBattery } from '../src/pcStatus.js';
@@ -76,11 +76,11 @@ export default function HomeScreen() {
 			<HomeTopBar
 				unread={unread}
 				showBell={!empty}
-				onNotifications={() => { hapticSelection(); router.push(routes.notifications()); }}
-				onSettings={() => { hapticSelection(); router.push(routes.settings()); }}
+				onNotifications={() => { haptic('move'); router.push(routes.notifications()); }}
+				onSettings={() => { haptic('move'); router.push(routes.settings()); }}
 			/>
 			{empty ? (
-				pairingRequired ? <PairingEmptyState /> : <HomeEmptyState onPair={() => { hapticSelection(); router.push(routes.pair()); }} />
+				pairingRequired ? <PairingEmptyState /> : <HomeEmptyState onPair={() => { haptic('move'); router.push(routes.pair()); }} />
 			) : (
 				<ScrollView contentContainerStyle={[styles.content, column]}>
 					<Text style={styles.hero} accessibilityRole="header">おかえりなさい</Text>
@@ -127,12 +127,12 @@ export default function HomeScreen() {
 					) : null}
 					<SectionHeader title="クイック操作" style={styles.gapLarge} />
 					<QuickActions
-						onPair={() => { hapticSelection(); router.push(routes.pair()); }}
-						onNewSpace={() => { hapticSelection(); setLaunching(true); }}
+						onPair={() => { haptic('move'); router.push(routes.pair()); }}
+						onNewSpace={() => { haptic('move'); setLaunching(true); }}
 						newSpaceDisabled={!activeConnected}
 					/>
 					<SectionHeader title="アカウントの使用量" style={styles.gapLarge} />
-					<AccountUsageCard limits={usage.limits} onPress={() => { hapticSelection(); router.push(routes.settings('usage')); }} />
+					<AccountUsageCard limits={usage.limits} onPress={() => { haptic('move'); router.push(routes.settings('usage')); }} />
 				</ScrollView>
 			)}
 			<PcActions pcId={menuPcId} onClose={() => setMenuPcId(undefined)} />

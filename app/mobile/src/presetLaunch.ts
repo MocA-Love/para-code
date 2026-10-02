@@ -2,6 +2,7 @@
 
 import { Alert } from 'react-native';
 import { useAppStore } from './appState.js';
+import { haptic } from './haptics.js';
 import { useParaToast } from './paraToast.js';
 import { presetTerminalCount } from './presets.js';
 import type { PresetDef } from './store.js';
@@ -46,6 +47,7 @@ export function runPresetInBackground(request: { ws: string; wsLabel: string; pr
 			tone: 'done',
 		}, 2_500);
 	}).catch((e: unknown) => {
+		haptic('error');
 		useParaToast.getState().show({ key: 'preset-run', text: '実行できませんでした', sub: '', icon: 'alert-circle', tone: 'warn' }, 1_200);
 		// PCは実行の直前に定義を読み直して署名を突き合わせる。手元で確認したあとに
 		// PC側でコマンドや作業ディレクトリが書き換わっていた場合はここに来る。

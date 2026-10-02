@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface } from './glassSurface.js';
 import { HeaderEdgeFade } from './headerEdgeFade.js';
 import { colors, radius, squircle, type } from '../theme.js';
-import { hapticImpact } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { keyboardCoverage } from '../keyboardCoverage.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
@@ -221,7 +221,7 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 		onPanResponderRelease: (_event, gesture) => {
 			// 離した位置だけで決めない。速く短く払ったときに戻ってしまう。
 			if (gesture.dy > DISMISS_DISTANCE || gesture.vy > DISMISS_VELOCITY) {
-				hapticImpact('light');
+				haptic('move');
 				onClose();
 				return;
 			}
@@ -248,18 +248,18 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 
 	const head = onConfirm ? (
 		<>
-			<Pressable style={styles.headerBtn} onPress={() => { hapticImpact('light'); onClose(); }} accessibilityRole="button" accessibilityLabel="キャンセル">
+			<Pressable style={styles.headerBtn} onPress={() => { haptic('move'); onClose(); }} accessibilityRole="button" accessibilityLabel="キャンセル">
 				<Ionicons name="close" size={16} color={colors.textDim} />
 			</Pressable>
 			<Text style={styles.title}>{title}</Text>
-			<Pressable style={[styles.headerBtn, styles.confirmBtn]} onPress={() => { hapticImpact('light'); onConfirm(); }} accessibilityRole="button" accessibilityLabel="確定">
+			<Pressable style={[styles.headerBtn, styles.confirmBtn]} onPress={() => { haptic('commit'); onConfirm(); }} accessibilityRole="button" accessibilityLabel="確定">
 				<Ionicons name="checkmark" size={16} color={colors.bg} />
 			</Pressable>
 		</>
 	) : (
 		<>
 			<Text style={styles.title}>{title}</Text>
-			<Pressable style={styles.close} onPress={() => { hapticImpact('light'); onClose(); }} accessibilityLabel="閉じる">
+			<Pressable style={styles.close} onPress={() => { haptic('move'); onClose(); }} accessibilityLabel="閉じる">
 				<Ionicons name="close" size={16} color={colors.textDim} />
 			</Pressable>
 		</>

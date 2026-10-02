@@ -5,7 +5,7 @@ import { useRouter } from 'expo-router';
 import { Activity, EllipsisVertical, Monitor, Pencil, QrCode, SquareArrowOutUpRight, Trash2 } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
-import { hapticImpact, hapticSelection } from '../../src/haptics.js';
+import { haptic } from '../../src/haptics.js';
 import { useParaToast } from '../../src/paraToast.js';
 import { routes } from '../../src/routes.js';
 import { colors } from '../../src/theme.js';
@@ -112,7 +112,6 @@ export default function PcSettingsScreen() {
 						confirmLabel="解除"
 						onConfirm={() => {
 							if (target !== undefined) {
-								hapticImpact('medium');
 								// ホームの「再開」がこの PC のセッションを指していれば消す（ホームの PC の操作と同じ）。
 								if (useLastSession.getState().value?.pcId === target.id) {
 									useLastSession.getState().clear();
@@ -137,7 +136,7 @@ export default function PcSettingsScreen() {
 								hint={pcRowHint(pc, pc.id === activePcId, now)}
 								trailing={<Icon icon={EllipsisVertical} color={colors.textDim} />}
 								accessibilityLabel={`${pc.name} の操作`}
-								onPress={() => { hapticSelection(); openSheet({ kind: 'menu', pcId: pc.id }); }}
+								onPress={() => { haptic('move'); openSheet({ kind: 'menu', pcId: pc.id }); }}
 							/>
 						);
 					})}
@@ -145,7 +144,7 @@ export default function PcSettingsScreen() {
 			) : null}
 			{pcs.length > 0 ? <GroupGap /> : null}
 			<ListGroup>
-				<ListRow icon={QrCode} label="PC を追加でペアリング" trailing="chevron" onPress={() => { hapticSelection(); router.push(routes.pair()); }} />
+				<ListRow icon={QrCode} label="PC を追加でペアリング" trailing="chevron" onPress={() => { haptic('move'); router.push(routes.pair()); }} />
 			</ListGroup>
 
 			<GroupHeader title="接続" />

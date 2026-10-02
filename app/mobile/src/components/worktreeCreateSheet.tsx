@@ -9,7 +9,7 @@ import { BottomSheet } from './bottomSheet.js';
 import { Button } from './button.js';
 import { colors, radius, squircle, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 
 /**
  * 「新しいスペース（worktree）を作成」シート（space.html 案A/共通シート準拠）。
@@ -104,7 +104,7 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 	const canCreate = live && repo !== undefined && baseRef !== undefined && !busy;
 
 	const selectRepo = (id: string) => {
-		hapticSelection();
+		haptic('tick');
 		setRepoId(id);
 		const next = form?.repos.find(r => r.id === id);
 		setBaseRef(next?.head ?? next?.branches[0]);
@@ -114,7 +114,7 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 		if (!live || !repo || !baseRef || busy) {
 			return;
 		}
-		hapticImpact('medium');
+		haptic('commit');
 		setBusy(true);
 		setError(undefined);
 		const requestGeneration = ++requestGenerationRef.current;
@@ -144,6 +144,7 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 				return;
 			}
 			activeRequestRef.current = undefined;
+			haptic('error');
 			setError(String(e instanceof Error ? e.message : e));
 			setBusy(false);
 		}
@@ -200,7 +201,7 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 									<Pressable
 										key={agent.id}
 										style={[styles.pill, agentId === agent.id && styles.pillActive]}
-										onPress={() => { hapticSelection(); setAgentId(agent.id); }}
+										onPress={() => { haptic('tick'); setAgentId(agent.id); }}
 										disabled={busy}
 									>
 										<Text style={[styles.pillText, agentId === agent.id && styles.pillTextActive]}>{agent.label}</Text>
@@ -226,7 +227,7 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 									<Pressable
 										key={b}
 										style={[styles.pill, baseRef === b && styles.pillActive]}
-										onPress={() => { hapticSelection(); setBaseRef(b); }}
+										onPress={() => { haptic('tick'); setBaseRef(b); }}
 										disabled={busy}
 									>
 										<Text style={[styles.pillText, styles.pillTextMono, baseRef === b && styles.pillTextActive]}>{b}</Text>
@@ -236,7 +237,7 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 							</ScrollView>
 							{error ? <Text style={styles.error}>{error}</Text> : null}
 							<View style={styles.btnRow}>
-								<Button label="キャンセル" variant="secondary" flex onPress={() => { hapticImpact('light'); onClose(); }} disabled={busy} />
+								<Button label="キャンセル" variant="secondary" flex onPress={() => { haptic('move'); onClose(); }} disabled={busy} />
 								<Button label={busy ? '作成中…' : '作成'} variant="primary" flex onPress={() => { void create(); }} disabled={!canCreate} />
 							</View>
 						</>

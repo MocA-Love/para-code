@@ -60,6 +60,11 @@ export interface IParadisMobileRequestContext {
 	reply(body: object): void;
 	/** `id` を付けずにこのモバイルへ送る（アプリ側は `onPcMessage` で受ける）。 */
 	push(body: { readonly t: string; readonly [key: string]: unknown }): void;
+	/**
+	 * 組み立て済みのバイト列をそのままこのモバイルへ送る（`fs-binary-v1` のように、応答の id を中に持つ形を
+	 * 自分で作る処理だけが使う。JSON の応答は {@link reply} を使う）。
+	 */
+	sendBytes(payload: Uint8Array): void;
 	/** {@link root} で git を実行する。git のサブコマンドは shared process の許可リストで制限される。 */
 	runGit(args: readonly string[]): Promise<IParadisGitResult>;
 	/** スペースの中の相対パスを、シンボリックリンクで外へ出ていないことを確かめて URI にする。 */
@@ -165,6 +170,7 @@ export function paradisDispatchMobileRequest(channel: ParadisMobileRequestChanne
 		// id は本文より後に置く（処理が本文に id を入れても応答の宛先を変えさせない）。
 		reply: body => send({ ...body, id: request.id }),
 		push: body => send(body),
+		sendBytes: payload => host.send(channel, mobileId, payload),
 		runGit: args => root !== undefined ? host.runGit(root, args) : Promise.reject(new Error(`unknown workspace: ${request.ws ?? ''}`)),
 		resolvePath: relativePath => request.ws !== undefined ? host.resolvePath(request.ws, relativePath) : Promise.resolve(undefined),
 		hasMobileCapability: async name => mobileId !== undefined && paradisHasMobileCapability(await host.getMobileCapabilities(mobileId), name),

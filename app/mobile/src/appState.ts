@@ -40,8 +40,12 @@ import { TrayReconcileRequests, dismissTrayHandledByPc, presentCollapsedNotifica
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
 import { subscribeNetworkRevival } from './networkRevival.js';
 import { shouldPresentNotifyBanner } from './notificationPolicy.js';
+import { CONNECT_RESULT_WINDOW_MS, connectionHaptic, shouldKnockOnNotify } from './hapticEvents.js';
+import { DISCONNECT_WARNING, haptic } from './haptics.js';
 import { notifySubtitle } from './notifyPresentation.js';
 import { defaultTerminalPrefs, normalizeTerminalPrefs, type TerminalPrefs, type TerminalViewport } from './terminalViewport.js';
+import { DEFAULT_CHAT_FONT_SIZE, loadChatFontSize, normalizeChatFontSize, saveChatFontSize, type ChatFontSize } from './chatTextScale.js';
+import { EMPTY_HIDDEN_MODELS, loadHiddenModels, saveHiddenModels, withModelHidden, type HiddenModels, type ModelVisibilityAgent } from './modelVisibility.js';
 import { isTablet } from './hooks/useSizeClass.js';
 import { MobileVoiceLifecycle } from './voiceLifecycle.js';
 import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
@@ -52,6 +56,9 @@ import { connectionLog } from './connectionLogStore.js';
 import { BackgroundGrace, type BackgroundGraceTarget } from './backgroundGrace.js';
 import type { DiagnosticPc } from './connectionDiagnostics.js';
 import type { BrowserInput } from './browserKeys.js';
+
+/** 保存値を読み込む前に「モデルを選ぶ」で切り替えた操作。読み込み後は undefined（以後はそのまま保存する）。 */
+let hiddenModelOpsBeforeLoad: { readonly agent: ModelVisibilityAgent; readonly id: string; readonly hidden: boolean }[] | undefined = [];
 
 /**
  * PC側とモバイル側の Sentry イベントを突き合わせる相関IDを設定する。
@@ -229,6 +236,18 @@ interface AppState extends StoreState {
 	 */
 	terminalPrefs: TerminalPrefs;
 	setTerminalPref<K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]): void;
+	/**
+	 * 会話表示（エージェントのタブのチャット）の文字サイズ（設定 →「チャット UI」）。アプリ全体で1つで、
+	 * PC やスペースごとには持たない。PCへは送らない。計算は `chatTextScale.ts`。
+	 */
+	chatFontSize: ChatFontSize;
+	setChatFontSize(size: ChatFontSize): void;
+	/**
+	 * チャットの「モデルを選ぶ」に出さないモデルの id（エージェントごと）。アプリ全体で1つで、
+	 * PC ごとには持たない。PCへは送らない。最後の1つを隠させない判定は画面側（一覧が要るため）。計算は `modelVisibility.ts`。
+	 */
+	hiddenModels: HiddenModels;
+	setModelHidden(agent: ModelVisibilityAgent, id: string, hidden: boolean): void;
 	/**
 	 * ターミナル画面が実測した「読める寸法」をPCへ申告する（PTYをこの寸法へ寄せてもらう）。
 	 * `undefined` で申告を取り下げる（画面を離れた・設定オフ）。
@@ -796,6 +815,9 @@ function createRuntime(pc: PairedPc, operationRun: number, persistedOutbox: read
  */
 function applyControllerState(runtime: PcRuntime, next: StoreState): void {
 	const wasOnline = runtime.state.connection === 'online';
+	if (runtime.pc.id === activePcId && !removingPcIds.has(runtime.pc.id)) {
+		playConnectionHaptic(runtime.state, next);
+	}
 	runtime.state = next;
 	if (next.pcOnline) {
 		runtime.lastOnlineAt = Date.now();
@@ -931,6 +953,34 @@ function persistPresetApprovals(pcId: string, keys: ReadonlySet<string>): void {
 	secureKeyStore.setItem('presetApproved', JSON.stringify(presetApprovedRecord)).catch(err => console.warn('[appState] failed to save presetApproved', err));
 }
 
+/** 利用者が「接続」を押した時刻（結果を触覚で返すまで。`connectRelay`）。 */
+let userConnectRequestedAt: number | undefined;
+/** ペアリングを解除している最中の PC（切れても「意図しない切断」として鳴らさない）。 */
+const removingPcIds = new Set<string>();
+
+/** いま見ている PC の接続の変化を触覚で返す（判断は `hapticEvents.ts` の `connectionHaptic`）。 */
+function playConnectionHaptic(previous: StoreState, next: StoreState): void {
+	const now = Date.now();
+	const userRequested = userConnectRequestedAt !== undefined && now - userConnectRequestedAt < CONNECT_RESULT_WINDOW_MS;
+	const token = connectionHaptic({
+		wasOnline: previous.connection === 'online',
+		online: next.connection === 'online',
+		wasRejected: previous.pairingRejected,
+		rejected: next.pairingRejected,
+		manualOffline: useAppStore.getState().manualOffline,
+		userRequested,
+	});
+	if (token === undefined) {
+		return;
+	}
+	if (token === 'warning') {
+		haptic('warning', DISCONNECT_WARNING);
+		return;
+	}
+	userConnectRequestedAt = undefined;
+	haptic(token);
+}
+
 /**
  * 通知の受け取り。どのPCから来たかを添えて、タップされたときにそのPCへ切り替えられるようにする。
  * バナーを出すかの判断は notificationPolicy.ts に集約してある（届いた通知を一覧へ入れるのは
@@ -942,14 +992,25 @@ function handleNotify(runtime: PcRuntime, payload: NotifyPayload): void {
 	if (!isActive && !state.notifyOtherPcs) {
 		return;
 	}
-	if (!shouldPresentNotifyBanner(payload, {
+	const bannerPresented = shouldPresentNotifyBanner(payload, {
 		appState: RNAppState.currentState,
 		prefs: state.notifyPrefs,
 		// 「その画面を見ているから出さない」は、いま見ているPCの通知にしか当てはまらない。
 		viewingTerminalKey: isActive ? state.viewingTerminalKey : undefined,
 		pushRegistered: runtime.state.pushRegistered,
 		now: Date.now(),
+	});
+	// 前面で承認・質問が届いたら触覚で知らせる（バナーを出すときは OS の音・振動に任せる。3 秒以内はまとめる）
+	if (shouldKnockOnNotify(payload, {
+		appState: RNAppState.currentState,
+		now: Date.now(),
+		questionsEnabled: state.notifyPrefs.agentQuestion,
+		bannerPresented,
+		pushRegistered: runtime.state.pushRegistered,
 	})) {
+		haptic('knock');
+	}
+	if (!bannerPresented) {
 		return;
 	}
 	// タイトルはPCが決めたワークツリー名のまま出す。2台以上と繋いでいるときに「どのPCの話か」を
@@ -1162,6 +1223,8 @@ export const useAppStore = create<AppState>(set => ({
 	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: true },
 	// 文字サイズの既定は iPad が 12pt、iPhone が 10pt。
 	terminalPrefs: defaultTerminalPrefs(isTablet),
+	chatFontSize: DEFAULT_CHAT_FONT_SIZE,
+	hiddenModels: EMPTY_HIDDEN_MODELS,
 	viewingTerminalKey: undefined,
 	pinnedKeys: new Set(),
 	archivedKeys: new Set(),
@@ -1233,6 +1296,32 @@ export const useAppStore = create<AppState>(set => ({
 				}
 			} catch (err) {
 				console.warn('[appState] failed to load terminalPrefs', err);
+			}
+			// 会話表示の文字サイズをロード（保存が無い/壊れている場合は既定のまま）。
+			// 読み込みの前に設定画面で変えていたら、その値を残す。
+			try {
+				const before = useAppStore.getState().chatFontSize;
+				const stored = await loadChatFontSize(secureKeyStore);
+				if (useAppStore.getState().chatFontSize === before) {
+					set({ chatFontSize: stored });
+				}
+			} catch (err) {
+				console.warn('[appState] failed to load chatFontSize', err);
+			}
+			// 「モデルを選ぶ」に出さないモデルをロード。読み込みの前にシートで切り替えていたら、その操作を
+			// 保存値の上に当て直す（集合なので在メモリ値で上書きすると、もう一方のエージェントの設定が消える）。
+			try {
+				const stored = await loadHiddenModels(secureKeyStore);
+				const ops = hiddenModelOpsBeforeLoad ?? [];
+				hiddenModelOpsBeforeLoad = undefined;
+				const merged = ops.reduce((acc, op) => withModelHidden(acc, op.agent, op.id, op.hidden), stored);
+				set({ hiddenModels: merged });
+				if (ops.length > 0) {
+					saveHiddenModels(secureKeyStore, merged).catch(err => console.warn('[appState] failed to save hiddenModels', err));
+				}
+			} catch (err) {
+				hiddenModelOpsBeforeLoad = undefined;
+				console.warn('[appState] failed to load hiddenModels', err);
 			}
 			// 接続方針の設定をロード（保存が無い/壊れている場合は既定のまま）。
 			try {
@@ -1455,6 +1544,7 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	connectRelay() {
+		userConnectRequestedAt = Date.now();
 		set({ manualOffline: false });
 		applyConnectionPolicy();
 	},
@@ -1609,9 +1699,11 @@ export const useAppStore = create<AppState>(set => ({
 			await savePairedPcs(secureKeyStore, previousPcs).catch(() => { /* 次回起動で読み直される */ });
 			throw error;
 		}
+		removingPcIds.add(id);
 		try {
 			await runtime.controller.reset();
 		} catch (error) {
+			removingPcIds.delete(id);
 			// journal clear失敗時はresetが旧接続へ戻す。台帳と通知鍵も元へ戻す。
 			await savePairedPcs(secureKeyStore, previousPcs).catch(() => { /* 次回起動で読み直される */ });
 			if (identity !== undefined) {
@@ -1621,6 +1713,7 @@ export const useAppStore = create<AppState>(set => ({
 			throw error;
 		}
 		runtimes.delete(id);
+		removingPcIds.delete(id);
 		// PC に届かない間に預かった送信（W2-29）も捨てる。
 		await createAgentSendOutboxStore(id).clear().catch(err => console.warn('[appState] failed to clear the agent send outbox', err));
 		pcOrder = remaining.map(pc => pc.id);
@@ -1960,6 +2053,27 @@ export const useAppStore = create<AppState>(set => ({
 		for (const runtime of runtimes.values()) {
 			runtime.controller.sendNotifyPrefs(next);
 		}
+	},
+
+	setChatFontSize(size) {
+		const next = normalizeChatFontSize(size);
+		set({ chatFontSize: next });
+		saveChatFontSize(secureKeyStore, next).catch(err => console.warn('[appState] failed to save chatFontSize', err));
+	},
+
+	setModelHidden(agent, id, hidden) {
+		const current = useAppStore.getState().hiddenModels;
+		const next = withModelHidden(current, agent, id, hidden);
+		if (next === current) {
+			return;
+		}
+		set({ hiddenModels: next });
+		if (hiddenModelOpsBeforeLoad !== undefined) {
+			// 読み込み前は保存値を知らないので書かず、読み込み後に保存値へ当て直す
+			hiddenModelOpsBeforeLoad.push({ agent, id, hidden });
+			return;
+		}
+		saveHiddenModels(secureKeyStore, next).catch(err => console.warn('[appState] failed to save hiddenModels', err));
 	},
 
 	setTerminalPref(key, value) {

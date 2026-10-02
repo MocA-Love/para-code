@@ -9,7 +9,7 @@ import {
 	type HomeListPreferences, type HomeSortKey,
 } from '../homeSort.js';
 import { colors, radius, squircle, type } from '../theme.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 
 /**
  * ホーム一覧の並び替えシート。
@@ -68,7 +68,7 @@ export function HomeSortSheet({ visible, preferences, onChange, onClose }: {
 							description={SORT_DESCRIPTION[key]}
 							selected={preferences.sort === key}
 							onPress={() => {
-								hapticSelection();
+								haptic('tick');
 								onChange({ ...preferences, sort: key, secondary: reconcileSecondary(key, preferences.secondary) });
 							}}
 						/>
@@ -85,7 +85,7 @@ export function HomeSortSheet({ visible, preferences, onChange, onClose }: {
 							title={SORT_LABEL[key]}
 							description={SORT_DESCRIPTION[key]}
 							selected={preferences.secondary === key}
-							onPress={() => { hapticSelection(); onChange({ ...preferences, secondary: key }); }}
+							onPress={() => { haptic('tick'); onChange({ ...preferences, secondary: key }); }}
 						/>
 					))}
 				</View>
@@ -98,7 +98,7 @@ export function HomeSortSheet({ visible, preferences, onChange, onClose }: {
 						title="ピン留めを最上部に固定"
 						description="並び順に関係なく先頭へ出す"
 						selected={preferences.pinFirst}
-						onPress={() => { hapticSelection(); onChange({ ...preferences, pinFirst: !preferences.pinFirst }); }}
+						onPress={() => { haptic('tick'); onChange({ ...preferences, pinFirst: !preferences.pinFirst }); }}
 					/>
 				</View>
 			</ScrollView>

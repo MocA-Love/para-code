@@ -23,10 +23,10 @@ import {
 	paradisParseMobilePorcelainStatus,
 	paradisStagedConsistently,
 	paradisStagedContentDiffers,
-	paradisWithMobileLineCounts,
-	paradisWithUntrackedFileStats,
 } from '../common/paradisMobileDiffReview.js';
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
+import { paradisIsMobileHostNoResponse, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
+import { paradisReadMobileStatusFiles } from '../common/paradisMobileScmStatusRead.js';
 import {
 	IParadisMobileReviewSpace,
 	PARADIS_MOBILE_REVIEW_MAX_MARKS_PER_REQUEST,
@@ -116,17 +116,19 @@ function updateSpace(storage: IStorageService, ws: string, context: IParadisMobi
 
 /** status と両側の行数、未追跡のファイルの大きさと時刻を読む（scm `status` 応答と同じ材料）。 */
 async function readStatusWithCounts(context: IParadisMobileRequestContext, fileService: IFileService, root: URI): Promise<IParadisMobileStatusFile[] | undefined> {
-	const [status, unstaged, staged] = await Promise.all([
-		context.runGit(['status', '--porcelain=v1']),
-		context.runGit(['diff', '--numstat', '-z']).catch(() => undefined),
-		context.runGit(['diff', '--cached', '--numstat', '-z']).catch(() => undefined),
-	]);
-	if (status.code !== 0) {
-		return undefined;
-	}
-	const files = paradisWithMobileLineCounts(paradisParseMobilePorcelainStatus(status.stdout), unstaged?.code === 0 ? unstaged.stdout : undefined, staged?.code === 0 ? staged.stdout : undefined);
-	return paradisWithUntrackedFileStats(files, paths => paradisStatMobileWorkspaceFiles(fileService, root, paths));
+	// ステージの判定は行数と大きさまで揃った一覧で行う（省くと識別が変わる）ので、全部を上限つきで待ち、
+	// 接続先が返さなければ「接続先が応答しません」で失敗させる
+	return paradisReadMobileStatusFiles({
+		runGit: args => context.runGit(args),
+		statFiles: paths => paradisStatMobileWorkspaceFiles(fileService, root, paths),
+	});
 }
+
+/** `git add` の後に、未追跡だったファイルの大きさを調べ直す上限（アプリは reviewStage を 90 秒待つ）。 */
+const AFTER_STAT_DEADLINE_MS = 10_000;
+
+/** `git add` の後に確かめられなかった（接続先が返さなかった）ときの応答。 */
+const STAGED_UNVERIFIED = { error: 'ステージしましたが、確かめられませんでした。PC でステージを確かめてください。', code: 'staged-unverified' };
 
 /** 行を追いかけるために読むファイルの上限。これより大きいファイルのメモは「古い」と判定しない。 */
 const LOCATE_FILE_SIZE_LIMIT = 2 * 1024 * 1024;
@@ -409,10 +411,22 @@ registerParadisMobileRequestHandler('scm', 'reviewStage', {
 				return;
 			}
 		}
-		const after = await readStatusWithCounts(context, fileService, root);
 		// 未追跡だったファイルは足した後の status に大きさが載らない（追跡中になる）ので、調べ直して渡す
 		const wasUntracked = toStage.filter(path => byPath.get(path)?.x === '?');
-		const afterStats = await paradisStatMobileWorkspaceFiles(fileService, root, wasUntracked);
+		let after: IParadisMobileStatusFile[] | undefined;
+		let afterStats: ReadonlyMap<string, { readonly size: number; readonly mtime: number }>;
+		try {
+			after = await readStatusWithCounts(context, fileService, root);
+			afterStats = await paradisWithHostDeadline(paradisStatMobileWorkspaceFiles(fileService, root, wasUntracked), AFTER_STAT_DEADLINE_MS);
+		} catch (error) {
+			// 足した後を読めないと、確かめていない中身を戻すことも印を付け替えることもできない。
+			// ステージしたことは伝え、PC で確かめてもらう（印は付け替えない）
+			if (paradisIsMobileHostNoResponse(error) && toStage.length > 0) {
+				context.reply(STAGED_UNVERIFIED);
+				return;
+			}
+			throw error;
+		}
 		// 確かめてから足すまでの間に書き換えられて、確認していない中身を足したと分かったものは、足す前へ戻す
 		// （足す前はステージ側に変更が無かったものだけが対象なので、`restore --staged` で元どおりになる）
 		const differed = (after ?? []).filter(file => {

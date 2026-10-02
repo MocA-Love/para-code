@@ -7,15 +7,17 @@ import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { CircleAlert } from 'lucide-react-native';
 import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from '../../components/officeCapability.js';
 import { guardWebViewNavigation } from '../../components/webViewLinkGuard.js';
-import { isFileViewerJavaScriptEnabled } from '../../components/webViewScriptPolicy.js';
+import { isFileViewerJavaScriptEnabled, isSearchableFileViewerJavaScriptEnabled } from '../../components/webViewScriptPolicy.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { Button, EmptyState, useThemeColors } from '../../ui/index.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoverySnapshot, type ParadisOfficeRecoveryEffect } from '../../../../../src/vs/paradis/contrib/fileViewers/common/paradisOfficeRecovery.js';
 import { CenterSpinner } from './codeParts.js';
+import { buildFindScript, findTargetOf } from './fileFind.js';
 import { buildCodeHtml, buildMarkdownHtml, type ViewerKind, type ViewerMode } from './fileViewerModel.js';
 import type { FileContent } from './useFileContent.js';
+import type { FileFindBinding } from './useFileFind.js';
 import { measureBuild, type FileViewerLoadTrace } from './fileViewerTiming.js';
 import { buildDocxHtml, buildImageHtml, fileExt } from './viewerHtml.js';
 
@@ -107,10 +109,14 @@ interface MobileOfficeWebViewProps {
 	/** 計測用。WebView の onLoadStart / onLoadEnd をそのまま渡す。 */
 	readonly onLoadStart?: () => void;
 	readonly onLoadEnd?: () => void;
+	/** 中の WebView（作り直したら新しいもの。ファイル内の検索の流し込みに使う）。 */
+	readonly onWebViewRef?: (view: WebView | null) => void;
+	/** 復旧の確認以外のメッセージ（ファイル内の検索の結果）。 */
+	readonly onExtraMessage?: (data: string) => void;
 }
 
 /** Applies the shared bounded recovery reducer to the isolated mobile Office WebView. */
-export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewState, onShouldStartLoadWithRequest, onLoadStart, onLoadEnd }: MobileOfficeWebViewProps) {
+export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewState, onShouldStartLoadWithRequest, onLoadStart, onLoadEnd, onWebViewRef, onExtraMessage }: MobileOfficeWebViewProps) {
 	const snapshot = useMemo<IParadisOfficeRecoverySnapshot>(() => ({
 		source: { mode: 'document', source: { kind: 'file', uri: path, displayName: path.split('/').pop() ?? path } },
 		viewState,
@@ -215,7 +221,10 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 
 	return (
 		<WebView
-			ref={webviewRef}
+			ref={view => {
+				webviewRef.current = view;
+				onWebViewRef?.(view);
+			}}
 			key={`${kind}:${webviewEpoch}`}
 			style={styles.web}
 			source={{ html }}
@@ -230,23 +239,30 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 					const message = JSON.parse(event.nativeEvent.data) as { readonly type?: string; readonly generation?: number; readonly hasExpectedRoot?: boolean };
 					if (message.type === 'paradisOfficeRecovery' && message.generation === generation && typeof message.hasExpectedRoot === 'boolean') {
 						completeRender(message.hasExpectedRoot);
+						return;
 					}
 				} catch {
 					// Ignore messages that are not recovery observations.
 				}
+				onExtraMessage?.(event.nativeEvent.data);
 			}}
 		/>
 	);
 }
 
 
-export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectSheet }: {
+export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectSheet, find }: {
 	path: string;
 	kind: ViewerKind;
 	mode: ViewerMode;
 	content: FileContent | undefined;
 	focusLine: number | undefined;
 	onSelectSheet: (index: number) => void;
+	/**
+	 * ファイル内の検索（`useFileFind` の `binding`）。渡すと、画像・PDF・動画・音声のほかは WebView のスクリプトを
+	 * 有効にし、コードと Markdown には自分のスクリプトだけを許す CSP を付ける。渡さなければ今までどおり。
+	 */
+	find?: FileFindBinding;
 }) {
 	const name = path.split('/').pop() ?? path;
 	const officeKind = kind === 'spreadsheet' || kind === 'docx';
@@ -263,6 +279,9 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 	}), []);
 	// Markdown のリンクと、開いた行の地は設定 → 色の「選択の印・リンク」。
 	const theme = useThemeColors();
+	const searchable = find !== undefined;
+	// コードと Markdown の CSP の nonce（HTML を作り直すたびに新しくする）。
+	const viewerNonce = useMemo(() => (searchable ? createMobileOfficeNonce() : undefined), [searchable, text, mode]);
 	const built = useMemo(() => measureBuild(() => {
 		if (kind === 'spreadsheet') {
 			return spreadsheetHtml !== undefined && officeNonce !== undefined ? secureMobileOfficeHtml(spreadsheetHtml, officeNonce) : undefined;
@@ -280,10 +299,10 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 			return text.content;
 		}
 		if (mode === 'render' && kind === 'markdown') {
-			return buildMarkdownHtml(text, theme);
+			return buildMarkdownHtml(text, theme, viewerNonce);
 		}
-		return buildCodeHtml(text, focusLine, theme);
-	}), [kind, mode, text, spreadsheetHtml, binary, officeNonce, focusLine, name, theme]);
+		return buildCodeHtml(text, focusLine, theme, viewerNonce);
+	}), [kind, mode, text, spreadsheetHtml, binary, officeNonce, focusLine, name, theme, viewerNonce]);
 	const html = built.value;
 	useEffect(() => {
 		trace?.viewing(kind, mode);
@@ -296,12 +315,38 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 		...(kind === 'spreadsheet' && content?.xlsx?.sheet !== undefined ? { activeSheetIndex: content.xlsx.sheet } : {}),
 	}), [kind, mode, content?.xlsx?.sheet]);
 
+	// ファイル内の検索: 操作が変わるたびに、今の WebView へ検索のスクリプトを流す。範囲（種類と表示で決まる）が
+	// 変わるときは本文を読み直すので、読み込み終わり（onViewLoaded）から送り直される。
+	const webRef = useRef<WebView | null>(null);
+	const findTarget = searchable ? findTargetOf(kind, mode) : undefined;
+	const findTargetRef = useRef(findTarget);
+	findTargetRef.current = findTarget;
+	const findRequest = find?.request;
+	const findToken = find?.token;
+	useEffect(() => {
+		const target = findTargetRef.current;
+		if (findRequest === undefined || target === undefined || findToken === undefined) {
+			return;
+		}
+		webRef.current?.injectJavaScript(buildFindScript(findRequest.command, { token: findToken, seq: findRequest.seq, target }));
+	}, [findRequest, findToken]);
+	const setWebRef = useCallback((view: WebView | null) => {
+		webRef.current = view;
+	}, []);
+	const onViewLoadEnd = () => {
+		trace?.loadEnded();
+		find?.onViewLoaded();
+	};
+	const onViewMessage = (data: string) => {
+		find?.onMessage(data);
+	};
+
 	if (content?.error !== undefined) {
 		return <EmptyState icon={CircleAlert} title="ファイルを開けませんでした" body={content.error} />;
 	}
 	const sheets = content?.xlsx?.sheets;
 	const sheetIndex = content?.xlsx?.sheet;
-	const allowJs = isFileViewerJavaScriptEnabled(kind, mode, focusLine);
+	const allowJs = searchable ? isSearchableFileViewerJavaScriptEnabled(kind) : isFileViewerJavaScriptEnabled(kind, mode, focusLine);
 	let view;
 	if ((kind === 'pdf' || kind === 'av') && binary !== undefined) {
 		view = <NativeFileView data={binary} ext={kind === 'pdf' ? 'pdf' : fileExt(name)} trace={trace} />;
@@ -315,19 +360,23 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 				viewState={officeViewState}
 				onShouldStartLoadWithRequest={guardOfficeNavigation}
 				onLoadStart={trace?.loadStarted}
-				onLoadEnd={trace?.loadEnded}
+				onLoadEnd={onViewLoadEnd}
+				onWebViewRef={setWebRef}
+				{...(find !== undefined ? { onExtraMessage: onViewMessage } : {})}
 			/>
 		);
 	} else if (html !== undefined) {
 		view = (
 			<WebView
+				ref={setWebRef}
 				style={styles.web}
 				source={{ html }}
 				originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 				javaScriptEnabled={allowJs}
 				onShouldStartLoadWithRequest={guardWebViewNavigation}
 				onLoadStart={trace?.loadStarted}
-				onLoadEnd={trace?.loadEnded}
+				onLoadEnd={onViewLoadEnd}
+				{...(find !== undefined ? { onMessage: (event: { nativeEvent: { data: string } }) => onViewMessage(event.nativeEvent.data) } : {})}
 			/>
 		);
 	} else {
@@ -342,7 +391,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 						return (
 							<Pressable
 								key={`${index}:${sheetName}`}
-								onPress={() => { if (!on) { hapticSelection(); onSelectSheet(index); } }}
+								onPress={() => { if (!on) { haptic('tick'); onSelectSheet(index); } }}
 								hitSlop={hitSlopToMinimum(SHEET_CHIP_HEIGHT)}
 								style={[styles.sheetChip, on ? styles.sheetChipOn : undefined]}
 								accessibilityRole="button"

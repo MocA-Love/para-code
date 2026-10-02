@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { alpha, colors, radius, space, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
-import { hapticSelection, hapticSuccess, hapticWarning } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import type { AgentApprovalChoice, AgentMessageSendResult } from '../store.js';
 import { dangerousCommandLabels } from '../dangerousCommand.js';
 import { useAnswerSubmission } from '../hooks/useAnswerSubmission.js';
@@ -74,7 +74,7 @@ export function ApprovalCard({ interactionId, onApprove, title, detail, choices,
 				<Text style={styles.approvalDetail} numberOfLines={APPROVAL_DETAIL_LINES} selectable>{detail}</Text>
 			) : null}
 			{longDetail ? (
-				<Button label="全文を表示" variant="ghost" size="sm" style={styles.fullBtn} onPress={() => { hapticSelection(); setDetailOpen(true); }} />
+				<Button label="全文を表示" variant="ghost" size="sm" style={styles.fullBtn} onPress={() => { haptic('move'); setDetailOpen(true); }} />
 			) : null}
 			{locked ? (
 				<AnswerSubmissionStatus state={submission.state} onRetry={submission.retry} onReselect={submission.reset} />
@@ -88,7 +88,7 @@ export function ApprovalCard({ interactionId, onApprove, title, detail, choices,
 							variant={variant}
 							flex={layout === 'row'}
 							disabled={disabled}
-							onPress={() => { choice.tone === 'deny' ? hapticWarning() : hapticSuccess(); submit(choice); }}
+							onPress={() => { haptic('commit'); submit(choice); }}
 						/>
 					))}
 				</View>

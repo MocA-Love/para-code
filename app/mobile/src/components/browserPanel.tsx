@@ -20,7 +20,7 @@ import { BottomDrawer } from '../ui/bottomDrawer.js';
 import { DrawerCaption } from '../ui/drawerHeader.js';
 import { getRtcView, startWebrtcMirror, WebrtcMirrorCoordinator, type WebrtcMirrorSession } from '../webrtcMirror.js';
 import { colors, radius, squircle, type } from '../theme.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { useThemeColors } from '../ui/themeColorsStore.js';
 import { useWindowControlsInset } from '../ipad/windowControls.js';
 import { addressHost, legacyNavigateUrl } from '../browserAddress.js';
@@ -598,7 +598,7 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- 全画面の出入りのときだけ
 	}, [fullscreen]);
 	const toggleFullscreen = () => {
-		hapticImpact('light');
+		haptic('move');
 		dispatchFullscreen({ kind: 'toggle' });
 	};
 
@@ -637,7 +637,7 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 				if (target.targetId === activeTargetId && mirrorActiveRef.current === target.targetId) {
 					return;
 				}
-				hapticSelection();
+				haptic('tick');
 				void start(target.targetId, target.url);
 			},
 		};
@@ -750,7 +750,7 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 			disabled={disabled || !live}
 			hitSlop={4}
 			style={({ pressed }) => [styles.capsuleButton, pressed && styles.capsulePressed, (disabled || !live) && styles.disabled]}
-			onPress={() => { hapticImpact('light'); onPress(); }}
+			onPress={() => { onPress(); }}
 			accessibilityRole="button"
 			accessibilityLabel={label}
 		>
@@ -807,7 +807,7 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 							</>
 						) : null}
 						{targets !== undefined ? (
-							<Pressable disabled={!live} style={[styles.reloadTargets, !live && styles.disabled]} onPress={() => { hapticImpact('light'); autoStartedRef.current = false; void loadTargets(); }}>
+							<Pressable disabled={!live} style={[styles.reloadTargets, !live && styles.disabled]} onPress={() => { autoStartedRef.current = false; void loadTargets(); }}>
 								<Text style={[styles.link, { color: theme.accent }]}>一覧を更新</Text>
 							</Pressable>
 						) : null}
@@ -826,7 +826,7 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 						</View>
 						<Pressable
 							style={[styles.glass, styles.badge, { top: rawInsets.top + 14, right: rawInsets.right + 12 }]}
-							onPress={() => { if (route !== undefined) { hapticSelection(); setRouteInfo(route); } }}
+							onPress={() => { if (route !== undefined) { haptic('move'); setRouteInfo(route); } }}
 							accessibilityRole="button"
 							accessibilityLabel={route !== undefined ? `接続経路: ${MIRROR_ROUTE_INFO[route].label}` : 'ページ'}
 						>
@@ -840,7 +840,7 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 					<Pressable
 						disabled={!live}
 						style={({ pressed }) => [styles.glass, styles.fab, { right: (phoneFullscreen ? rawInsets.right : 0) + 12, bottom: (phoneFullscreen ? rawInsets.bottom : 0) + 12 }, pressed && styles.capsulePressed, !live && styles.disabled]}
-						onPress={() => { hapticSelection(); dispatchKeyboard({ kind: 'open' }); }}
+						onPress={() => { haptic('move'); dispatchKeyboard({ kind: 'open' }); }}
 						accessibilityRole="button"
 						accessibilityLabel="ページに文字を入力"
 					>

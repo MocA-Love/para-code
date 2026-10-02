@@ -7,16 +7,18 @@ import { isSubmissionLocked } from '../../components/answerSubmission.js';
 import { APPROVAL_DETAIL_LINES, approvalButtonLayout, isLongApprovalDetail, orderApprovalChoices } from '../../components/approvalCardBehavior.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { dangerousCommandLabels } from '../../dangerousCommand.js';
-import { hapticSelection, hapticSuccess, hapticWarning } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { useAnswerSubmission } from '../../hooks/useAnswerSubmission.js';
 import { monoFamily } from '../../monoFont.js';
 import type { AgentApprovalChoice, AgentMessageSendResult } from '../../store.js';
 import { alpha, colors, radius, space, tint, type } from '../../theme.js';
-import { BottomDrawer, DrawerTitle, Icon, useThemeColors } from '../../ui/index.js';
-import { cardStyles } from './answerCardStyles.js';
+import { BottomDrawer, DrawerTitle, Icon, iconSize, useThemeColors } from '../../ui/index.js';
+import { scaleChatSize } from '../../chatTextScale.js';
+import { useChatIconSize, useChatStyles, useChatTextScale } from '../../ui/chatTextScale.js';
+import { cardStyles as baseCardStyles } from './answerCardStyles.js';
 import { SubmissionStatus } from './submissionStatus.js';
 
-/** 「全文を表示」の見た目の高さ（当たり判定は 44 に広げる）。 */
+/** 「全文を表示」の見た目の高さ（会話の文字サイズが 100% のとき。当たり判定は 44 に広げる）。 */
 const LINK_HEIGHT = 20;
 
 /**
@@ -41,6 +43,12 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 }) {
 	const submission = useAnswerSubmission(interactionId);
 	const theme = useThemeColors();
+	const cardStyles = useChatStyles(baseCardStyles);
+	const styles = useChatStyles(baseStyles);
+	const headIconSize = useChatIconSize(iconSize.md);
+	const dangerIconSize = useChatIconSize(11);
+	// 文字を小さくしても「全文を表示」の当たり判定が 44pt を割らないよう、見た目の高さに同じ割合をかける。
+	const linkHitSlop = hitSlopToMinimum(scaleChatSize(LINK_HEIGHT, useChatTextScale()));
 	const [detailOpen, setDetailOpen] = useState(false);
 	const locked = isSubmissionLocked(submission.state);
 	const disabled = locked || refreshing;
@@ -63,24 +71,21 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 	);
 	const error = submission.state.phase === 'idle' ? submission.state.error : undefined;
 	const submit = (choice: AgentApprovalChoice) => {
-		if (choice.tone === 'deny') {
-			hapticWarning();
-		} else {
-			hapticSuccess();
-		}
+		// 許可も拒否も同じ重さの「押した」。結果（失敗だけ）は useAnswerSubmission が鳴らす
+		haptic('commit');
 		void submission.run(() => onApprove(interactionId, choice.id));
 	};
 	return (
 		<View style={cardStyles.card}>
 			<View style={cardStyles.head}>
-				<Icon icon={ShieldQuestion} color={theme.accent} />
+				<Icon icon={ShieldQuestion} size={headIconSize} color={theme.accent} />
 				<Text style={cardStyles.title}>{title ?? 'エージェントが確認を求めています'}</Text>
 			</View>
 			{dangers.length > 0 ? (
 				<View style={styles.dangers}>
 					{dangers.map(label => (
 						<View key={label} style={styles.danger}>
-							<Icon icon={TriangleAlert} size={11} color={colors.red} strokeWidth={2.4} />
+							<Icon icon={TriangleAlert} size={dangerIconSize} color={colors.red} strokeWidth={2.4} />
 							<Text style={styles.dangerText}>{label}</Text>
 						</View>
 					))}
@@ -90,7 +95,7 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 				<Text style={cardStyles.command} numberOfLines={APPROVAL_DETAIL_LINES} selectable>{detail}</Text>
 			) : null}
 			{longDetail ? (
-				<Pressable onPress={() => { hapticSelection(); setDetailOpen(true); }} hitSlop={hitSlopToMinimum(LINK_HEIGHT)} accessibilityRole="button">
+				<Pressable onPress={() => { haptic('move'); setDetailOpen(true); }} hitSlop={linkHitSlop} accessibilityRole="button">
 					<Text style={[cardStyles.link, { color: theme.accent }]}>全文を表示</Text>
 				</Pressable>
 			) : null}
@@ -132,7 +137,7 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 	);
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
 	dangers: {
 		flexDirection: 'row',
 		flexWrap: 'wrap',

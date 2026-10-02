@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { ChevronLeft } from 'lucide-react-native';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { hitSlopToMinimum } from '../components/hitSlop.js';
 import { PointerHover } from '../ipad/pointerHover.js';
@@ -118,7 +118,7 @@ export function ScreenHeader({
 	// iPad のウィンドウアプリでは左上に操作ボタンが出る。画面の上端に置くとき（`safeTop`）だけ、その右から始める。
 	const controlsInset = useWindowControlsInset();
 	const goBack = () => {
-		hapticSelection();
+		haptic('move');
 		if (onBack !== undefined) {
 			onBack();
 			return;
