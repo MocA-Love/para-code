@@ -11,21 +11,28 @@ import type { ParadisMobileBrowserKey } from '../../../src/vs/paradis/contrib/mo
 
 export type BrowserKeyName = ParadisMobileBrowserKey;
 
-/** browser チャネルの `input`（PC の `paradisMobileBrowserMirror.ts` の `BrowserInbound` と一致）。 */
+/**
+ * browser チャネルの `input`（PC の `paradisMobileBrowserMirror.ts` の `BrowserInbound` と一致）。
+ * `stop` と `open`（アドレス欄の生の文字）は `browser.page.v1`、`replace`（欄の中身を置き換える）は
+ * `browser.focus.v1` を広告している PC にだけ送る。
+ */
 export interface BrowserInput {
-	readonly kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate' | 'key';
+	readonly kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate' | 'key' | 'stop' | 'open' | 'replace';
 	/** tap / scroll: 映像に対する正規化座標（0..1）。 */
 	readonly nx?: number;
 	readonly ny?: number;
 	/** scroll: 正規化したスクロール量（正で下・右）。 */
 	readonly dy?: number;
 	readonly dx?: number;
+	/** text: 足す文字。open: アドレス欄の生の文字。replace: 欄の新しい中身。 */
 	readonly text?: string;
 	readonly url?: string;
 	/** key: 特殊キー。PC が `browser.keys.v1` を広告しているときだけ送る。 */
 	readonly key?: BrowserKeyName;
 	/** key: Shift を押しながら。 */
 	readonly shift?: true;
+	/** replace: 置き換える欄の番号（`focus` の `fieldId`）。PC はその欄にフォーカスがあるときだけ置き換える。 */
+	readonly fieldId?: number;
 }
 
 export interface BrowserKeyDef {

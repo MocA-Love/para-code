@@ -308,6 +308,11 @@ export interface IParadisCdpFrameSubscription {
 	/** targetIdを所有するworkbench window ID。対象が既に閉じられていればnull。 */
 	resolveTargetWindowId(targetId: string): Promise<number | null>;
 	/**
+	 * browserView の viewId → DevTools の targetId。ビューが無ければ null。モバイルのブラウザの一覧を
+	 * スペースで絞る（browser.space.v1）ために、Renderer が送るスペースの台帳（viewId 単位）を引く。
+	 */
+	resolveTargetId(viewId: string): Promise<string | null>;
+	/**
 	 * アプリ本体の remote-debugging ポート。ビュー固有の権威ではなくプロセス全体の事実なので、
 	 * ミラー用のこの面からも読めてよい（同じチャネルが両方を提供している）。
 	 * モバイルのブラウザミラーは WebSocket を直接張るため、ここが無いと冷スタートで

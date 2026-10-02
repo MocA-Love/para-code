@@ -25,19 +25,46 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisCdpFrameEvent, IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { paradisMobileBrowserKeyEvents } from '../common/paradisMobileBrowserKeys.js';
+import { paradisResolveMobileBrowserAddress } from '../common/paradisMobileBrowserAddress.js';
+import { ParadisMobileCapability } from '../common/paradisMobileCompat.js';
+import {
+	IParadisMobileBrowserPageState,
+	PARADIS_MOBILE_FOCUS_BINDING,
+	PARADIS_MOBILE_FOCUS_REPORT_TAP_EXPRESSION,
+	PARADIS_MOBILE_FOCUS_DISPOSE_EXPRESSION,
+	PARADIS_MOBILE_FOCUS_REPORT_CURRENT_EXPRESSION,
+	PARADIS_MOBILE_FOCUS_SCRIPT,
+	PARADIS_MOBILE_FOCUS_WORLD,
+	paradisMobileFocusSelectExpression,
+	paradisMobileBrowserHistoryState,
+	paradisMobileBrowserLifecycleProgress,
+	paradisMobileBrowserPageMessage,
+	paradisNormalizeMobileBrowserFocusReport,
+} from '../common/paradisMobileBrowserPageState.js';
+import { IParadisMobileBrowserFocus, IParadisMobileBrowserInputRejected, PARADIS_MOBILE_BROWSER_INPUT_TEXT_MAX } from '../common/paradisMobileBrowserProtocol.js';
+import { paradisIsMobileBrowserTargetId, paradisMobileBrowserTargetsScope } from '../common/paradisMobileBrowserScope.js';
 
 /** モバイル→PC の browser チャネル要求。 */
 type BrowserInbound =
-	| { t: 'targets'; id: string }
-	| { t: 'start'; id: string; targetId: string; frameEncoding?: string }
+	| {
+		t: 'targets'; id: string;
+		/** browser.space.v1: このウィンドウの、このスペース（`sourceId`）のページだけを返す。古いアプリは送らない。 */
+		windowId?: unknown; ws?: unknown;
+	}
+	| {
+		t: 'start'; id: string; targetId: unknown; frameEncoding?: string;
+		/** browser.space.v1: 台帳があれば、このスペースのページでなければ断る。 */
+		windowId?: unknown; ws?: unknown;
+	}
 	| { t: 'stop'; id: string }
 	| {
-		t: 'input'; kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate' | 'key';
+		t: 'input'; kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate' | 'key' | 'stop' | 'open' | 'replace';
 		/** tap/scroll: 直近フレームに対する正規化座標(0..1)。 */
 		nx?: number; ny?: number;
 		/** scroll: 正規化スクロール量（dy: 正=下へ、dx: 正=右へ）。 */
 		dy?: number;
 		dx?: number;
+		/** text: 入れる文字。open: アドレス欄の生の文字（browser.page.v1）。replace: 欄の新しい中身（browser.focus.v1）。 */
 		text?: string;
 		/** navigate: 遷移先URL（http/httpsのみ受け付ける）。 */
 		url?: string;
@@ -45,6 +72,8 @@ type BrowserInbound =
 		key?: unknown;
 		/** key: Shift を押しながら（`true` のときだけ）。 */
 		shift?: unknown;
+		/** replace: 置き換える欄の番号（`focus` の `fieldId`。browser.focus.v1）。 */
+		fieldId?: unknown;
 	};
 
 interface MirrorSession {
@@ -71,6 +100,35 @@ interface MirrorSession {
 	/** Mobileが明示した場合だけBase64を外してbinary JPEG v1を送る。 */
 	binaryFrames: boolean;
 	send: (payload: Uint8Array) => void;
+	/** メインフレームの ID（`Page.getFrameTree`・`frameNavigated` で更新）。 */
+	mainFrameId?: string;
+	/** ページの状態（browser.page.v1）と、最後に送った署名。 */
+	page?: IParadisMobileBrowserPageState;
+	pageSignature?: string;
+	lastHistoryAt?: number;
+	/** フォーカスを見張るか（アプリが browser.focus.v1 を広告しているときだけ）。 */
+	focusTracking?: boolean;
+	/** フォーカスの注入スクリプトを動かしている分離ワールドの文脈 ID（browser.focus.v1）。 */
+	focusContextId?: number;
+	focusSeq?: number;
+	/** 最後にモバイルのタップを送った時刻。 */
+	lastTapAt?: number;
+	lastFocusSignature?: string;
+	/** 次のフォーカスの報告を、重複でも送る（置き換えを断った後の知らせ直し）。 */
+	forceNextFocus?: boolean;
+}
+
+/** ミラーへ RelayService から渡す道具。どれも無ければ従来の動き。 */
+export interface IParadisMobileBrowserMirrorOptions {
+	/** 設定 `workbench.browser.searchEngine` の今の値（browser.page.v1 の `open`）。 */
+	readonly resolveSearchEngine?: () => unknown;
+	/**
+	 * そのウィンドウの、そのスペースのページの targetId（browser.space.v1）。台帳が無ければ `undefined`
+	 * （そのときは全件を返す）。
+	 */
+	readonly resolveSpaceTargetIds?: (windowId: number, ws: string) => Promise<ReadonlySet<string> | undefined>;
+	/** そのモバイルがその capability を広告しているか（browser.focus.v1 の `focus` を送ってよいか）。 */
+	readonly mobileHasCapability?: (mobileId: string, name: string) => Promise<boolean>;
 }
 
 // 変化が無いフレームは送信しない（下記）ため、間隔は短めでも帯域を圧迫しない
@@ -79,6 +137,8 @@ const CAPTURE_INTERVAL_MS = 250;
 // （非表示・最小化中はペイントが起きずプッシュが止まるため）
 const PUSH_STALE_MS = 1500;
 const CDP_CALL_TIMEOUT_MS = 5000;
+/** タップを送ってから、今のフォーカスを読むまでの待ち（ページのフォーカス処理が終わるのを待つ）。 */
+const FOCUS_AFTER_TAP_MS = 150;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const BROWSER_JPEG_BINARY_ENCODING = 'jpeg-binary-v1';
@@ -113,6 +173,7 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		private readonly cdpFrames: IParadisCdpFrameSubscription | undefined,
 		private readonly sharedPageBindings: IParadisSharedPageBindings | undefined,
 		private readonly logService: ILogService,
+		private readonly options: IParadisMobileBrowserMirrorOptions = {},
 	) {
 		super();
 		if (cdpFrames) {
@@ -157,6 +218,11 @@ export class ParadisMobileBrowserMirror extends Disposable {
 				session.pushStarted = false;
 				this.cdpFrames?.stopFrameSubscription(session.targetId).catch(() => undefined);
 			}
+			// 分離ワールドは次のミラーが使い回すので、リスナーだけ外しておく（溜めない）。
+			if (session.focusContextId !== undefined) {
+				this.cdpSend(session, 'Runtime.evaluate', { expression: PARADIS_MOBILE_FOCUS_DISPOSE_EXPRESSION, contextId: session.focusContextId });
+				session.focusContextId = undefined;
+			}
 			try {
 				session.socket.close();
 			} catch { /* ignore */ }
@@ -191,8 +257,24 @@ export class ParadisMobileBrowserMirror extends Disposable {
 				// URLだけで絞ると、開いているページが内部に持つ iframe / service_worker /
 				// worker まで別ページとして列挙されてしまう（workbench等のvscode-file
 				// ウィンドウやDevTools自身も除外）
+				// browser.space.v1: そのウィンドウのそのスペースのページだけ。台帳が無ければ従来どおり全件。
+				const scope = paradisMobileBrowserTargetsScope(msg);
+				if (scope === 'invalid') {
+					// スペースを付けてきたのに読めない（長すぎる等）。黙って全件に戻さず、絞れないと返す。
+					reply({ id: msg.id, error: 'invalid-scope' });
+					return;
+				}
+				let allowed: ReadonlySet<string> | undefined;
+				if (scope !== undefined && this.options.resolveSpaceTargetIds !== undefined) {
+					try {
+						allowed = await this.options.resolveSpaceTargetIds(scope.windowId, scope.ws);
+					} catch (err) {
+						this.logService.warn('[paradisMobileBrowserMirror] failed to resolve the pages of the space', err);
+					}
+				}
 				const targets = list
 					.filter(t => t.type === 'page' && typeof t.url === 'string' && /^https?:\/\//.test(t.url as string))
+					.filter(t => allowed === undefined || allowed.has(String(t.id)))
 					.map(t => {
 						const sharedToken = sharedTokens.get(String(t.id));
 						return {
@@ -200,9 +282,10 @@ export class ParadisMobileBrowserMirror extends Disposable {
 							...(sharedToken !== undefined ? { sharedToken } : {}),
 						};
 					});
-				reply({ id: msg.id, t: 'targets', targets });
+				reply({ id: msg.id, t: 'targets', ...(allowed !== undefined ? { scoped: true } : {}), targets });
 			} else if (msg.t === 'start') {
-				await this.start(mobileId, msg.targetId, send, msg.frameEncoding === BROWSER_JPEG_BINARY_ENCODING);
+				const targetId = await this.validateStartTarget(msg);
+				await this.start(mobileId, targetId, send, msg.frameEncoding === BROWSER_JPEG_BINARY_ENCODING);
 				reply({ id: msg.id, t: 'started' });
 			} else if (msg.t === 'stop') {
 				this.stopSession(mobileId);
@@ -217,6 +300,32 @@ export class ParadisMobileBrowserMirror extends Disposable {
 				this.logService.warn('[paradisMobileBrowserMirror] input failed', err);
 			}
 		}
+	}
+
+	/**
+	 * `start` の targetId を確かめる。形式が正しく、`/json/list` の http(s) のページで、スペースが付いていて
+	 * 台帳があるならそのスペースのページであること。違えば例外（モバイルへは `{ error }` で返る）。
+	 */
+	private async validateStartTarget(msg: Extract<BrowserInbound, { t: 'start' }>): Promise<string> {
+		const targetId = msg.targetId;
+		if (!paradisIsMobileBrowserTargetId(targetId)) {
+			throw new Error('invalid target');
+		}
+		const list = await this.upstream.fetchJson('/json/list') as Array<Record<string, unknown>>;
+		if (!Array.isArray(list) || !list.some(t => String(t.id) === targetId && t.type === 'page' && typeof t.url === 'string' && /^https?:\/\//.test(t.url))) {
+			throw new Error('unknown target');
+		}
+		const scope = paradisMobileBrowserTargetsScope(msg);
+		if (scope === 'invalid') {
+			throw new Error('invalid-scope');
+		}
+		if (scope !== undefined && this.options.resolveSpaceTargetIds !== undefined) {
+			const allowed = await this.options.resolveSpaceTargetIds(scope.windowId, scope.ws).catch(() => undefined);
+			if (allowed !== undefined && !allowed.has(targetId)) {
+				throw new Error('target-not-in-space');
+			}
+		}
+		return targetId;
 	}
 
 	private async start(mobileId: string, targetId: string, send: (payload: Uint8Array) => void, binaryFrames = false): Promise<void> {
@@ -260,13 +369,15 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		socket.onmessage = event => {
 			try {
 				const data = typeof event.data === 'string' ? event.data : decoder.decode(event.data as ArrayBuffer);
-				const cdp = JSON.parse(data) as { id?: number; result?: unknown };
+				const cdp = JSON.parse(data) as { id?: number; result?: unknown; method?: string; params?: unknown };
 				if (cdp.id !== undefined) {
 					const handler = session.handlers.get(cdp.id);
 					if (handler) {
 						session.handlers.delete(cdp.id);
 						handler(cdp.result);
 					}
+				} else if (typeof cdp.method === 'string') {
+					this.onCdpEvent(session, cdp.method, (cdp.params ?? {}) as Record<string, unknown>);
 				}
 			} catch { /* ignore malformed CDP */ }
 		};
@@ -277,6 +388,16 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		};
 
 		this.cdpSend(session, 'Page.enable', {});
+		// フォーカスの通知（欄の中身を含む）は、受けると広告したアプリにだけ送る。
+		let focusTracking = false;
+		try {
+			focusTracking = await this.options.mobileHasCapability?.(mobileId, ParadisMobileCapability.BrowserFocus) ?? false;
+		} catch { /* 分からなければ送らない */ }
+		if (this.sessions.get(mobileId) !== session) {
+			return;
+		}
+		session.focusTracking = focusTracking;
+		this.startPageTracking(session);
 		// 主経路: electron-main の再描画プッシュ購読（成功すればペイントの度にフレームが届く）
 		if (this.cdpFrames) {
 			this.cdpFrames.startFrameSubscription(targetId).then(ok => {
@@ -307,10 +428,263 @@ export class ParadisMobileBrowserMirror extends Disposable {
 				session.lastMetricsAt = Date.now();
 				this.refreshViewMetrics(session);
 			}
+		} else {
+			this.captureFrame(session);
+		}
+		// 題名の変化（SPA の document.title など）はイベントで来ないので、約 1 秒ごとに履歴を読み直す。
+		if (session.page !== undefined && Date.now() - (session.lastHistoryAt ?? 0) >= 1000) {
+			this.refreshHistory(session);
+		}
+	}
+
+	// #region ページの状態（browser.page.v1）とフォーカス（browser.focus.v1）
+
+	/**
+	 * ページの状態とフォーカスの見張りを始める。古いアプリは `page` / `focus` を読まずに捨てるので、
+	 * 能力の交渉はしない（送るのは変化のあったときだけで小さい）。
+	 */
+	private startPageTracking(session: MirrorSession): void {
+		session.page = { url: '', title: '', loading: false, progress: 1, canGoBack: false, canGoForward: false };
+		session.focusSeq = 0;
+		this.cdpSend(session, 'Page.setLifecycleEventsEnabled', { enabled: true });
+		this.cdpCall(session, 'Page.getFrameTree', {}, result => {
+			const frameId = (result as { frameTree?: { frame?: { id?: unknown } } } | undefined)?.frameTree?.frame?.id;
+			if (typeof frameId !== 'string' || this.sessionOf(session) === undefined) {
+				return;
+			}
+			session.mainFrameId = frameId;
+			if (session.focusTracking === true) {
+				this.startFocusTracking(session, frameId);
+			}
+		});
+		this.refreshHistory(session);
+	}
+
+	/**
+	 * フォーカスの見張り（browser.focus.v1）。分離ワールドは 1 ページに 1 つにする: `Runtime.enable` は今ある
+	 * 文脈を全部知らせてくるので、前のミラーが作った同じ名前のワールドがメインフレームにあればそれを使い回し、
+	 * 無いときだけ作る（ミラーを張り直すたびにワールドとリスナーが増えないように）。
+	 */
+	private startFocusTracking(session: MirrorSession, frameId: string): void {
+		this.cdpSend(session, 'Runtime.addBinding', { name: PARADIS_MOBILE_FOCUS_BINDING, executionContextName: PARADIS_MOBILE_FOCUS_WORLD });
+		this.cdpSend(session, 'Page.addScriptToEvaluateOnNewDocument', { source: PARADIS_MOBILE_FOCUS_SCRIPT, worldName: PARADIS_MOBILE_FOCUS_WORLD });
+		this.cdpCall(session, 'Runtime.enable', {}, () => {
+			if (this.sessionOf(session) === undefined) {
+				return;
+			}
+			const install = (contextId: number) => {
+				session.focusContextId = contextId;
+				this.cdpSend(session, 'Runtime.evaluate', { expression: PARADIS_MOBILE_FOCUS_SCRIPT, contextId });
+			};
+			if (session.focusContextId !== undefined) {
+				install(session.focusContextId);
+				return;
+			}
+			// 今の文書には addScriptToEvaluateOnNewDocument が効かないので、分離ワールドを作って入れる。
+			this.cdpCall(session, 'Page.createIsolatedWorld', { frameId, worldName: PARADIS_MOBILE_FOCUS_WORLD }, created => {
+				const contextId = (created as { executionContextId?: unknown } | undefined)?.executionContextId;
+				if (typeof contextId === 'number' && this.sessionOf(session) !== undefined) {
+					install(contextId);
+				}
+			});
+		});
+	}
+
+	private sessionOf(session: MirrorSession): MirrorSession | undefined {
+		for (const candidate of this.sessions.values()) {
+			if (candidate === session) {
+				return candidate;
+			}
+		}
+		return undefined;
+	}
+
+	private onCdpEvent(session: MirrorSession, method: string, params: Record<string, unknown>): void {
+		const page = session.page;
+		if (page === undefined) {
 			return;
 		}
-		this.captureFrame(session);
+		const isMain = (frameId: unknown) => session.mainFrameId === undefined || frameId === session.mainFrameId;
+		switch (method) {
+			case 'Page.frameStartedLoading':
+				if (isMain(params.frameId)) {
+					page.loading = true;
+					page.progress = 0.1;
+					this.emitPage(session);
+				}
+				break;
+			case 'Page.lifecycleEvent':
+				if (isMain(params.frameId) && page.loading) {
+					page.progress = paradisMobileBrowserLifecycleProgress(page.progress, params.name);
+					this.emitPage(session);
+				}
+				break;
+			case 'Page.frameStoppedLoading':
+				if (isMain(params.frameId)) {
+					page.loading = false;
+					page.progress = 1;
+					this.emitPage(session);
+					this.refreshHistory(session);
+				}
+				break;
+			case 'Page.frameNavigated': {
+				const frame = params.frame as { id?: unknown; parentId?: unknown; url?: unknown; urlFragment?: unknown } | undefined;
+				if (frame !== undefined && frame.parentId === undefined) {
+					if (typeof frame.id === 'string') {
+						session.mainFrameId = frame.id;
+					}
+					// 文書が替わった。前の文書の欄は無くなったので、フォーカスが外れたと知らせる。
+					this.emitDocumentChanged(session);
+					if (typeof frame.url === 'string') {
+						page.url = frame.url + (typeof frame.urlFragment === 'string' ? frame.urlFragment : '');
+						this.emitPage(session);
+					}
+					this.refreshHistory(session);
+				}
+				break;
+			}
+			case 'Page.navigatedWithinDocument':
+				if (isMain(params.frameId) && typeof params.url === 'string') {
+					page.url = params.url;
+					this.emitPage(session);
+					this.refreshHistory(session);
+				}
+				break;
+			case 'Runtime.executionContextCreated': {
+				// メインフレームの自分の名前のワールドだけ（iframe の中の同じ名前のワールドは使わない）。
+				const context = params.context as { id?: unknown; name?: unknown; auxData?: { frameId?: unknown } } | undefined;
+				if (session.focusTracking === true && context?.name === PARADIS_MOBILE_FOCUS_WORLD && typeof context.id === 'number'
+					&& session.mainFrameId !== undefined && context.auxData?.frameId === session.mainFrameId) {
+					session.focusContextId = context.id;
+				}
+				break;
+			}
+			case 'Runtime.executionContextDestroyed':
+				if (params.executionContextId === session.focusContextId) {
+					session.focusContextId = undefined;
+				}
+				break;
+			case 'Runtime.executionContextsCleared':
+				session.focusContextId = undefined;
+				this.emitDocumentChanged(session);
+				break;
+			case 'Runtime.bindingCalled':
+				// 自分のワールド（メインフレーム）からの報告だけ。iframe の中のワールドや、ほかの文脈は捨てる。
+				if (params.name === PARADIS_MOBILE_FOCUS_BINDING && session.focusContextId !== undefined && params.executionContextId === session.focusContextId) {
+					this.onFocusReport(session, params.payload);
+				}
+				break;
+		}
 	}
+
+	private refreshHistory(session: MirrorSession): void {
+		session.lastHistoryAt = Date.now();
+		this.cdpCall(session, 'Page.getNavigationHistory', {}, result => {
+			const history = paradisMobileBrowserHistoryState(result);
+			if (history === undefined || session.page === undefined) {
+				return;
+			}
+			Object.assign(session.page, history);
+			this.emitPage(session);
+		});
+	}
+
+	private emitPage(session: MirrorSession): void {
+		if (session.page === undefined || this.sessionOf(session) === undefined) {
+			return;
+		}
+		const message = paradisMobileBrowserPageMessage(session.targetId, session.page);
+		const signature = JSON.stringify(message);
+		if (signature === session.pageSignature) {
+			return;
+		}
+		session.pageSignature = signature;
+		session.send(encoder.encode(signature));
+	}
+
+	private onFocusReport(session: MirrorSession, payload: unknown): void {
+		if (this.sessionOf(session) === undefined) {
+			return;
+		}
+		const seq = (session.focusSeq ?? 0) + 1;
+		const message = paradisNormalizeMobileBrowserFocusReport(payload, { targetId: session.targetId, seq, now: Date.now(), lastTapAt: session.lastTapAt ?? 0 });
+		if (message === undefined) {
+			return;
+		}
+		// 同じ中身の続けての通知（input の間引き後に値が変わっていない等）は送らない。タップの結果は必ず送る
+		// （アプリはそれを見てキーボードを開く）。
+		const signature = JSON.stringify({ ...message, seq: 0, fromTap: undefined });
+		if (signature === session.lastFocusSignature && message.fromTap !== true && session.forceNextFocus !== true) {
+			return;
+		}
+		session.forceNextFocus = false;
+		session.lastFocusSignature = signature;
+		session.focusSeq = seq;
+		session.send(encoder.encode(JSON.stringify(message)));
+	}
+
+	/**
+	 * メインフレームの文書が替わった（遷移・読み直し）。捨てられた文書からは `focused: false` が届かないので、
+	 * ここで送る。重複排除の控えも消す（新しい文書の最初の報告を落とさない）。
+	 */
+	private emitDocumentChanged(session: MirrorSession): void {
+		if (session.focusTracking !== true || this.sessionOf(session) === undefined) {
+			return;
+		}
+		session.lastFocusSignature = undefined;
+		const seq = (session.focusSeq ?? 0) + 1;
+		session.focusSeq = seq;
+		const message: IParadisMobileBrowserFocus = { t: 'focus', targetId: session.targetId, seq, focused: false };
+		session.send(encoder.encode(JSON.stringify(message)));
+	}
+
+	/** タップの後に、今のフォーカスを分離ワールドに報告させる（既にフォーカスのある欄をタップしたとき用）。 */
+	private reportFocusAfterTap(session: MirrorSession): void {
+		session.lastTapAt = Date.now();
+		setTimeout(() => {
+			if (this.sessionOf(session) !== undefined && session.focusContextId !== undefined) {
+				this.cdpSend(session, 'Runtime.evaluate', { expression: PARADIS_MOBILE_FOCUS_REPORT_TAP_EXPRESSION, contextId: session.focusContextId });
+			}
+		}, FOCUS_AFTER_TAP_MS);
+	}
+
+	/**
+	 * `fieldId` の欄にフォーカスがあるときだけ、その中身を `text` で置き換える（browser.focus.v1 の `replace`）。
+	 * 欄が替わっていたら置き換えずに断り、今のフォーカスを知らせ直す。
+	 */
+	private replaceFocusedValue(session: MirrorSession, fieldId: number, text: string): void {
+		if (session.focusContextId === undefined) {
+			this.rejectInput(session, 'replace', 'field-changed');
+			return;
+		}
+		const contextId = session.focusContextId;
+		this.cdpCall(session, 'Runtime.evaluate', { expression: paradisMobileFocusSelectExpression(fieldId), contextId, returnByValue: true }, result => {
+			if ((result as { result?: { value?: unknown } } | undefined)?.result?.value !== true) {
+				this.rejectInput(session, 'replace', 'field-changed');
+				// 知らせ直しは、前と同じ中身でも送る（アプリは断られた後の欄の様子を知りたい）。
+				session.forceNextFocus = true;
+				this.cdpSend(session, 'Runtime.evaluate', { expression: PARADIS_MOBILE_FOCUS_REPORT_CURRENT_EXPRESSION, contextId });
+				return;
+			}
+			if (text.length > 0) {
+				this.cdpSend(session, 'Input.insertText', { text });
+			} else {
+				for (const keyParams of paradisMobileBrowserKeyEvents('Backspace', undefined, isMacintosh) ?? []) {
+					this.cdpSend(session, 'Input.dispatchKeyEvent', keyParams);
+				}
+			}
+		});
+	}
+
+	private rejectInput(session: MirrorSession, kind: IParadisMobileBrowserInputRejected['kind'], reason: IParadisMobileBrowserInputRejected['reason']): void {
+		if (this.sessionOf(session) === undefined) {
+			return;
+		}
+		const message: IParadisMobileBrowserInputRejected = { t: 'inputRejected', targetId: session.targetId, kind, reason };
+		session.send(encoder.encode(JSON.stringify(message)));
+	}
+
+	// #endregion
 
 	private refreshViewMetrics(session: MirrorSession): void {
 		this.cdpCall(session, 'Page.getLayoutMetrics', {}, metricsResult => {
@@ -380,6 +754,7 @@ export class ParadisMobileBrowserMirror extends Disposable {
 				// buttons:1 が無いと Chromium がクリックとして合成しないことがある（実測）
 				this.cdpSend(session, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: tapX, y: tapY, button: 'left', buttons: 1, clickCount: 1 });
 				this.cdpSend(session, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: tapX, y: tapY, button: 'left', buttons: 1, clickCount: 1 });
+				this.reportFocusAfterTap(session);
 			});
 		} else if (msg.kind === 'scroll') {
 			const deltaY = Math.round((msg.dy ?? 0) * session.viewHeight);
@@ -392,9 +767,32 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		} else if (msg.kind === 'reload') {
 			this.cdpSend(session, 'Page.reload', {});
 		} else if (msg.kind === 'text' && msg.text) {
-			this.cdpSend(session, 'Input.insertText', { text: msg.text });
+			if (msg.text.length > PARADIS_MOBILE_BROWSER_INPUT_TEXT_MAX) {
+				this.rejectInput(session, 'text', 'too-long');
+			} else {
+				this.cdpSend(session, 'Input.insertText', { text: msg.text });
+			}
 		} else if (msg.kind === 'navigate' && msg.url && /^https?:\/\//i.test(msg.url)) {
 			this.cdpSend(session, 'Page.navigate', { url: msg.url });
+		} else if (msg.kind === 'stop') {
+			this.cdpSend(session, 'Page.stopLoading', {});
+		} else if (msg.kind === 'open' && typeof msg.text === 'string' && msg.text.length > PARADIS_MOBILE_BROWSER_INPUT_TEXT_MAX) {
+			this.rejectInput(session, 'open', 'too-long');
+		} else if (msg.kind === 'open') {
+			// URL か検索かは PC のアドレスバーと同じ判定と検索エンジンの設定で決める（http(s) だけ開く）。
+			const url = paradisResolveMobileBrowserAddress(msg.text, this.options.resolveSearchEngine?.());
+			if (url !== undefined) {
+				this.cdpSend(session, 'Page.navigate', { url });
+			}
+		} else if (msg.kind === 'replace' && typeof msg.text === 'string') {
+			if (msg.text.length > PARADIS_MOBILE_BROWSER_INPUT_TEXT_MAX) {
+				this.rejectInput(session, 'replace', 'too-long');
+			} else if (typeof msg.fieldId !== 'number' || !Number.isSafeInteger(msg.fieldId) || msg.fieldId <= 0) {
+				// 欄を名指ししない置き換えはしない（別の欄の中身を上書きしうるため）。
+				this.rejectInput(session, 'replace', 'field-changed');
+			} else {
+				this.replaceFocusedValue(session, msg.fieldId, msg.text);
+			}
 		} else if (msg.kind === 'key') {
 			for (const params of paradisMobileBrowserKeyEvents(msg.key, msg.shift, isMacintosh) ?? []) {
 				this.cdpSend(session, 'Input.dispatchKeyEvent', params);

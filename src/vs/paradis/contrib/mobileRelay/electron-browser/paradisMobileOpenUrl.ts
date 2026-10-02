@@ -10,9 +10,18 @@
 // 開く道は、ターミナルの右クリックの「内蔵ブラウザで開く」と同じ `BrowserViewCommandId.Open`。
 // スマホはこの後に内蔵ブラウザのページ一覧を取り直し、開いたページをブラウザのタブで映す。
 // capability は `ParadisMobileCapability.BrowserOpenUrl`（広告の無い PC にはアプリが送らない）。
+// `ws`（スマホで見ているスペース、browser.space.v1）が付いていれば、そのスペースに開く（スマホのページ一覧は
+// そのスペースのページだけなので、PC の今のスペースへ開くと一覧に出ない）。PC で今そのスペースを表示して
+// いなくても、補助ウィンドウにピン留めされていればそこへ開く。どこにも見えていなければ開かずに
+// `space-not-visible` を返す（PC のスペースを勝手に切り替えない）。
 
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { BrowserViewCommandId } from '../../../../platform/browserView/common/browserView.js';
+import { BrowserViewUri } from '../../../../platform/browserView/common/browserViewUri.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { GroupsOrder, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
 
 /** 受ける URL の長さの上限。 */
@@ -40,6 +49,14 @@ export function paradisMobileOpenableUrl(value: unknown): string | undefined {
 	}
 }
 
+/** どこへ開くか。`current` は今のスペース（従来の開き方）、`pinned` はそのスペースの補助ウィンドウ、`notVisible` は開かない。 */
+export function paradisMobileOpenUrlPlacement(ws: unknown, activeStateKey: string | undefined, pinnedPartCount: number): 'current' | 'pinned' | 'notVisible' {
+	if (typeof ws !== 'string' || activeStateKey === undefined || ws === activeStateKey) {
+		return 'current';
+	}
+	return pinnedPartCount > 0 ? 'pinned' : 'notVisible';
+}
+
 registerParadisMobileRequestHandler('fs', 'openUrl', {
 	handle(accessor, request, context) {
 		const url = paradisMobileOpenableUrl(request.url);
@@ -47,7 +64,28 @@ registerParadisMobileRequestHandler('fs', 'openUrl', {
 			context.reply({ error: 'invalid url' });
 			return;
 		}
-		const commandService = accessor.get(ICommandService);
-		return commandService.executeCommand(BrowserViewCommandId.Open, url).then(() => context.reply({ t: 'openUrl' }));
+		const ws = request.ws;
+		const activeStateKey = typeof ws === 'string' ? accessor.get(IParadisWorkspaceSwitchService).activeStateKey : undefined;
+		const parts = typeof ws === 'string' && activeStateKey !== undefined && ws !== activeStateKey
+			? accessor.get(IParadisAuxiliaryWindowScopeService).getPinnedParts(ws)
+			: [];
+		switch (paradisMobileOpenUrlPlacement(ws, activeStateKey, parts.length)) {
+			case 'current': {
+				const commandService = accessor.get(ICommandService);
+				return commandService.executeCommand(BrowserViewCommandId.Open, url).then(() => context.reply({ t: 'openUrl' }));
+			}
+			case 'pinned': {
+				const editorGroupsService = accessor.get(IEditorGroupsService);
+				const editorService = accessor.get(IEditorService);
+				const partSet = new Set<unknown>(parts);
+				const group = editorGroupsService.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE).find(candidate => partSet.has(editorGroupsService.getPart(candidate)))
+					?? parts[0].activeGroup;
+				return editorService.openEditor({ resource: BrowserViewUri.forId(generateUuid()), options: { viewState: { url } } }, group)
+					.then(() => context.reply({ t: 'openUrl' }));
+			}
+			default:
+				context.reply({ error: 'space-not-visible' });
+				return;
+		}
 	},
 });
