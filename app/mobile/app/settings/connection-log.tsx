@@ -10,7 +10,7 @@ import { runConnectionDiagnostics, type DiagnosticItem, type DiagnosticStatus } 
 import { describeConnectionEntry, formatConnectionReport, formatLogTime } from '../../src/connectionLog.js';
 import { connectionLog, readNetworkState } from '../../src/connectionLogStore.js';
 import { GroupHeader, GroupNote, SettingsScreen } from '../../src/features/settings/settingsScaffold.js';
-import { hapticSelection } from '../../src/haptics.js';
+import { haptic } from '../../src/haptics.js';
 import { isClipboardAvailable, writeClipboardText } from '../../src/nativeClipboard.js';
 import { useParaToast } from '../../src/paraToast.js';
 import { colors, radius, space, type } from '../../src/theme.js';
@@ -81,7 +81,6 @@ export default function ConnectionLogScreen() {
 	useEffect(() => { void check(); }, [check]);
 
 	const copyReport = async () => {
-		hapticSelection();
 		const report = formatConnectionReport({
 			appVersion: APP_VERSION,
 			generatedAt: Date.now(),
@@ -93,6 +92,7 @@ export default function ConnectionLogScreen() {
 			})),
 		});
 		const copied = await writeClipboardText(report);
+		haptic(copied ? 'success' : 'error');
 		toast({ key: 'connection-log-copy', text: copied ? '報告をコピーしました' : 'コピーできませんでした', icon: copied ? 'checkmark-circle-outline' : 'alert-circle-outline', tone: copied ? 'info' : 'warn' }, 2_500);
 	};
 
@@ -103,7 +103,7 @@ export default function ConnectionLogScreen() {
 				{(diagnostics ?? []).map(item => (
 					<ListRow key={item.key} leading={<StatusDot status={item.status} />} label={item.label} hint={item.detail} accessibilityLabel={`${item.label}、${STATUS_WORD[item.status]}、${item.detail}`} />
 				))}
-				<ListRow icon={RefreshCw} label={diagnostics === undefined ? '調べています…' : 'もう一度調べる'} loading={checking} disabled={checking} onPress={() => { hapticSelection(); void check(); }} />
+				<ListRow icon={RefreshCw} label={diagnostics === undefined ? '調べています…' : 'もう一度調べる'} loading={checking} disabled={checking} onPress={() => { haptic('commit'); void check(); }} />
 			</ListGroup>
 			<GroupNote after>リレーへの到達は、リレーに1回だけ問い合わせて確かめます。インターネットは端末の回線の状態から判断します。</GroupNote>
 
@@ -122,7 +122,7 @@ export default function ConnectionLogScreen() {
 					<GroupHeader title="PC" />
 					<ListGroup>
 						{pcs.map(pc => (
-							<ListRow key={pc.id} label={pc.name} trailing={pc.id === pcId ? 'check' : 'none'} selected={pc.id === pcId} onPress={() => { hapticSelection(); setSelectedPcId(pc.id); }} />
+							<ListRow key={pc.id} label={pc.name} trailing={pc.id === pcId ? 'check' : 'none'} selected={pc.id === pcId} onPress={() => { haptic('tick'); setSelectedPcId(pc.id); }} />
 						))}
 					</ListGroup>
 				</>

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Check, MessageSquare, Send, Sparkles, Trash2, X } from 'lucide-react-native';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import type { WorktreeAgentDef } from '../../store.js';
 import { colors, radius, space, type } from '../../theme.js';
@@ -21,7 +21,7 @@ import { splitPath } from './scmModel.js';
 export function NoteBubble({ note, stale = false, onPress }: { note: ReviewNote; stale?: boolean; onPress: (note: ReviewNote) => void }) {
 	return (
 		<Pressable
-			onPress={() => { hapticSelection(); onPress(note); }}
+			onPress={() => { haptic('move'); onPress(note); }}
 			style={({ pressed }) => [styles.bubble, stale ? styles.bubbleStale : undefined, pressed ? styles.pressed : undefined]}
 			accessibilityRole="button"
 			accessibilityLabel={`メモ: ${note.body}${note.sentAt !== undefined ? '（送信済み）' : ''}${stale ? '（古いメモ）' : ''}`}
@@ -162,7 +162,7 @@ export function ReviewNotesPanel({ notes, selected, currentLines, onToggle, onOp
 					{targets.map(target => (
 						<Pressable
 							key={target.terminalKey}
-							onPress={() => { hapticSelection(); onSend(target); }}
+							onPress={() => { haptic('commit'); onSend(target); }}
 							disabled={!target.ready || busy}
 							style={({ pressed }) => [styles.row, pressed ? styles.rowOn : undefined, !target.ready ? styles.off : undefined]}
 							accessibilityRole="button"
@@ -179,7 +179,7 @@ export function ReviewNotesPanel({ notes, selected, currentLines, onToggle, onOp
 					{agents.map(agent => (
 						<Pressable
 							key={agent.id}
-							onPress={() => { hapticSelection(); onLaunch(agent); }}
+							onPress={() => { haptic('commit'); onLaunch(agent); }}
 							disabled={busy}
 							style={({ pressed }) => [styles.row, pressed ? styles.rowOn : undefined]}
 							accessibilityRole="button"
@@ -207,7 +207,7 @@ export function ReviewNotesPanel({ notes, selected, currentLines, onToggle, onOp
 										{index > 0 ? <View style={styles.separator} /> : null}
 										<View style={styles.row}>
 											<Pressable
-												onPress={() => { hapticSelection(); onToggle(note.id); }}
+												onPress={() => { haptic('tick'); onToggle(note.id); }}
 												hitSlop={8}
 												style={[styles.check, on ? styles.checkOn : undefined]}
 												accessibilityRole="checkbox"

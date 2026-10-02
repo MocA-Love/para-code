@@ -8,7 +8,7 @@ import { AGENT_RESUME_CAPABILITY, parseAgentPastSessionPage, type AgentPastSessi
 import { sendPcRequest } from '../../../../../src/appState.js';
 import { CenterSpinner, useReadableColumn } from '../../../../../src/features/code/codeParts.js';
 import { QueuedSendsBanner } from '../../../../../src/features/session/queuedSends.js';
-import { hapticSelection } from '../../../../../src/haptics.js';
+import { haptic } from '../../../../../src/haptics.js';
 import { usePcCapability } from '../../../../../src/hooks/usePcCapability.js';
 import { useRouteSpace } from '../../../../../src/hooks/useRouteTargets.js';
 import { useStableInsets } from '../../../../../src/hooks/useStableInsets.js';
@@ -83,7 +83,7 @@ export default function AgentHistoryScreen() {
 		if (pcId === undefined || spaceId === undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('move');
 		router.push(session.terminalKey !== undefined
 			? routes.session(pcId, spaceId, { tab: { kind: 'terminal', terminalKey: session.terminalKey } })
 			: routes.agentHistorySession(pcId, spaceId, session.key));

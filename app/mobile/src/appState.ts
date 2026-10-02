@@ -40,6 +40,8 @@ import { TrayReconcileRequests, dismissTrayHandledByPc, presentCollapsedNotifica
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
 import { subscribeNetworkRevival } from './networkRevival.js';
 import { shouldPresentNotifyBanner } from './notificationPolicy.js';
+import { CONNECT_RESULT_WINDOW_MS, connectionHaptic, shouldKnockOnNotify } from './hapticEvents.js';
+import { DISCONNECT_WARNING, haptic } from './haptics.js';
 import { notifySubtitle } from './notifyPresentation.js';
 import { defaultTerminalPrefs, normalizeTerminalPrefs, type TerminalPrefs, type TerminalViewport } from './terminalViewport.js';
 import { DEFAULT_CHAT_FONT_SIZE, loadChatFontSize, normalizeChatFontSize, saveChatFontSize, type ChatFontSize } from './chatTextScale.js';
@@ -813,6 +815,9 @@ function createRuntime(pc: PairedPc, operationRun: number, persistedOutbox: read
  */
 function applyControllerState(runtime: PcRuntime, next: StoreState): void {
 	const wasOnline = runtime.state.connection === 'online';
+	if (runtime.pc.id === activePcId && !removingPcIds.has(runtime.pc.id)) {
+		playConnectionHaptic(runtime.state, next);
+	}
 	runtime.state = next;
 	if (next.pcOnline) {
 		runtime.lastOnlineAt = Date.now();
@@ -948,6 +953,34 @@ function persistPresetApprovals(pcId: string, keys: ReadonlySet<string>): void {
 	secureKeyStore.setItem('presetApproved', JSON.stringify(presetApprovedRecord)).catch(err => console.warn('[appState] failed to save presetApproved', err));
 }
 
+/** 利用者が「接続」を押した時刻（結果を触覚で返すまで。`connectRelay`）。 */
+let userConnectRequestedAt: number | undefined;
+/** ペアリングを解除している最中の PC（切れても「意図しない切断」として鳴らさない）。 */
+const removingPcIds = new Set<string>();
+
+/** いま見ている PC の接続の変化を触覚で返す（判断は `hapticEvents.ts` の `connectionHaptic`）。 */
+function playConnectionHaptic(previous: StoreState, next: StoreState): void {
+	const now = Date.now();
+	const userRequested = userConnectRequestedAt !== undefined && now - userConnectRequestedAt < CONNECT_RESULT_WINDOW_MS;
+	const token = connectionHaptic({
+		wasOnline: previous.connection === 'online',
+		online: next.connection === 'online',
+		wasRejected: previous.pairingRejected,
+		rejected: next.pairingRejected,
+		manualOffline: useAppStore.getState().manualOffline,
+		userRequested,
+	});
+	if (token === undefined) {
+		return;
+	}
+	if (token === 'warning') {
+		haptic('warning', DISCONNECT_WARNING);
+		return;
+	}
+	userConnectRequestedAt = undefined;
+	haptic(token);
+}
+
 /**
  * 通知の受け取り。どのPCから来たかを添えて、タップされたときにそのPCへ切り替えられるようにする。
  * バナーを出すかの判断は notificationPolicy.ts に集約してある（届いた通知を一覧へ入れるのは
@@ -959,14 +992,25 @@ function handleNotify(runtime: PcRuntime, payload: NotifyPayload): void {
 	if (!isActive && !state.notifyOtherPcs) {
 		return;
 	}
-	if (!shouldPresentNotifyBanner(payload, {
+	const bannerPresented = shouldPresentNotifyBanner(payload, {
 		appState: RNAppState.currentState,
 		prefs: state.notifyPrefs,
 		// 「その画面を見ているから出さない」は、いま見ているPCの通知にしか当てはまらない。
 		viewingTerminalKey: isActive ? state.viewingTerminalKey : undefined,
 		pushRegistered: runtime.state.pushRegistered,
 		now: Date.now(),
+	});
+	// 前面で承認・質問が届いたら触覚で知らせる（バナーを出すときは OS の音・振動に任せる。3 秒以内はまとめる）
+	if (shouldKnockOnNotify(payload, {
+		appState: RNAppState.currentState,
+		now: Date.now(),
+		questionsEnabled: state.notifyPrefs.agentQuestion,
+		bannerPresented,
+		pushRegistered: runtime.state.pushRegistered,
 	})) {
+		haptic('knock');
+	}
+	if (!bannerPresented) {
 		return;
 	}
 	// タイトルはPCが決めたワークツリー名のまま出す。2台以上と繋いでいるときに「どのPCの話か」を
@@ -1500,6 +1544,7 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	connectRelay() {
+		userConnectRequestedAt = Date.now();
 		set({ manualOffline: false });
 		applyConnectionPolicy();
 	},
@@ -1654,9 +1699,11 @@ export const useAppStore = create<AppState>(set => ({
 			await savePairedPcs(secureKeyStore, previousPcs).catch(() => { /* 次回起動で読み直される */ });
 			throw error;
 		}
+		removingPcIds.add(id);
 		try {
 			await runtime.controller.reset();
 		} catch (error) {
+			removingPcIds.delete(id);
 			// journal clear失敗時はresetが旧接続へ戻す。台帳と通知鍵も元へ戻す。
 			await savePairedPcs(secureKeyStore, previousPcs).catch(() => { /* 次回起動で読み直される */ });
 			if (identity !== undefined) {
@@ -1666,6 +1713,7 @@ export const useAppStore = create<AppState>(set => ({
 			throw error;
 		}
 		runtimes.delete(id);
+		removingPcIds.delete(id);
 		// PC に届かない間に預かった送信（W2-29）も捨てる。
 		await createAgentSendOutboxStore(id).clear().catch(err => console.warn('[appState] failed to clear the agent send outbox', err));
 		pcOrder = remaining.map(pc => pc.id);

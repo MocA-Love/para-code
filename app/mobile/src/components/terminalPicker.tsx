@@ -7,7 +7,7 @@ import { ParaPlusMenuButton, type ParaPlusMenuItem } from '../../modules/para-pl
 import { GlassSurface } from './glassSurface.js';
 import { monoFamily } from '../monoFont.js';
 import { alpha, colors, HIT_SIZE, radius, squircle, tint, type, status } from '../theme.js';
-import { hapticSelection } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import {
 	COMPACT_TERMINAL_MENU_WIDTH,
 	decodeTerminalCompactMenuAction,
@@ -88,7 +88,7 @@ export function TerminalPicker({ entries, activeKey, onSelect, onCreate }: {
 			items={items}
 			accessibilityTitle={label}
 			onSelect={event => {
-				hapticSelection();
+				haptic('move');
 				const id = event.nativeEvent.id;
 				if (id.startsWith(TERMINAL_PICK_PREFIX)) {
 					onSelect(id.slice(TERMINAL_PICK_PREFIX.length));
@@ -149,10 +149,10 @@ export function TerminalCompactMenu({ entries, activeKey, onSelect, onOpenPreset
 			onSelect={event => {
 				const action = decodeTerminalCompactMenuAction(event.nativeEvent.id);
 				if (action?.kind === 'terminal') {
-					hapticSelection();
+					haptic('move');
 					onSelect(action.terminalKey);
 				} else if (action?.kind === 'presets') {
-					hapticSelection();
+					haptic('move');
 					onOpenPresets();
 				} else if (action?.kind === 'create') {
 					onCreate();
@@ -175,7 +175,7 @@ export function TerminalFallbackBand({ entries, activeKey, onSelect }: {
 				const body = (
 					<Pressable
 						style={styles.fallbackTabHit}
-						onPress={() => { hapticSelection(); onSelect(entry.terminalKey); }}
+						onPress={() => { haptic('move'); onSelect(entry.terminalKey); }}
 						accessibilityRole="button"
 						accessibilityLabel={`ターミナル ${entry.index}: ${entry.title}、${state}`}
 						accessibilityState={{ selected: active }}

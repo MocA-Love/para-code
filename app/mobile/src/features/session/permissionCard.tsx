@@ -7,7 +7,7 @@ import { isSubmissionLocked } from '../../components/answerSubmission.js';
 import { APPROVAL_DETAIL_LINES, approvalButtonLayout, isLongApprovalDetail, orderApprovalChoices } from '../../components/approvalCardBehavior.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { dangerousCommandLabels } from '../../dangerousCommand.js';
-import { hapticSelection, hapticSuccess, hapticWarning } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { useAnswerSubmission } from '../../hooks/useAnswerSubmission.js';
 import { monoFamily } from '../../monoFont.js';
 import type { AgentApprovalChoice, AgentMessageSendResult } from '../../store.js';
@@ -71,11 +71,8 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 	);
 	const error = submission.state.phase === 'idle' ? submission.state.error : undefined;
 	const submit = (choice: AgentApprovalChoice) => {
-		if (choice.tone === 'deny') {
-			hapticWarning();
-		} else {
-			hapticSuccess();
-		}
+		// 許可も拒否も同じ重さの「押した」。結果（失敗だけ）は useAnswerSubmission が鳴らす
+		haptic('commit');
 		void submission.run(() => onApprove(interactionId, choice.id));
 	};
 	return (
@@ -98,7 +95,7 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 				<Text style={cardStyles.command} numberOfLines={APPROVAL_DETAIL_LINES} selectable>{detail}</Text>
 			) : null}
 			{longDetail ? (
-				<Pressable onPress={() => { hapticSelection(); setDetailOpen(true); }} hitSlop={linkHitSlop} accessibilityRole="button">
+				<Pressable onPress={() => { haptic('move'); setDetailOpen(true); }} hitSlop={linkHitSlop} accessibilityRole="button">
 					<Text style={[cardStyles.link, { color: theme.accent }]}>全文を表示</Text>
 				</Pressable>
 			) : null}

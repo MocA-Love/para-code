@@ -8,7 +8,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../appState.js';
 import { launchAgentInBackground } from '../../agentLaunch.js';
 import { ProviderLogo } from '../../components/providerLogo.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { useParaToast } from '../../paraToast.js';
 import { routes } from '../../routes.js';
 import type { WorktreeFormResult } from '../../store.js';
@@ -164,7 +164,7 @@ export function LaunchDrawer({ visible, preset, onClose }: {
 	});
 
 	const goTo = (sheetName: Sheet) => {
-		hapticSelection();
+		haptic('move');
 		next.current = sheetName;
 		setSheet(undefined);
 	};
@@ -197,7 +197,7 @@ export function LaunchDrawer({ visible, preset, onClose }: {
 		if (blocked !== undefined || target === undefined) {
 			return;
 		}
-		hapticImpact('medium');
+		haptic('commit');
 		const trimmedPrompt = prompt.trim();
 		const trimmedName = name.trim();
 		const permissionOption = selectedPermission !== undefined && selectedPermission.flag.length > 0 ? { permission: selectedPermission.id } : {};
@@ -320,7 +320,7 @@ export function LaunchDrawer({ visible, preset, onClose }: {
 					<>
 						<Pressable
 							style={styles.advanced}
-							onPress={() => { hapticSelection(); setAdvanced(open => !open); }}
+							onPress={() => { haptic('move'); setAdvanced(open => !open); }}
 							accessibilityRole="button"
 							accessibilityState={{ expanded: advanced }}
 						>
@@ -388,6 +388,7 @@ function createNewSpace(
 			useParaToast.getState().show({ key: 'agent-launch', text: 'スペースを作成しました', sub: `${result.name} · ${result.branch}`, icon: 'checkmark-circle', tone: 'done' }, 2_500);
 		})
 		.catch((error: unknown) => {
+			haptic('error');
 			useParaToast.getState().show({ key: 'agent-launch', text: 'スペースを作成できませんでした', sub: error instanceof Error ? error.message : String(error), icon: 'alert-circle', tone: 'warn' }, 4_000);
 		});
 }

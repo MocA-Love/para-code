@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type RefObject } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { ArrowUp, CornerDownLeft, ImagePlus, Keyboard as KeyboardIcon } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { terminalSubmitIcon } from '../../terminalKeys.js';
 import { colors, radius, space, type } from '../../theme.js';
@@ -61,7 +61,7 @@ export function TerminalInputBar({ live, liveResetKey, liveConnected, input, onC
 	const liveSubmitRef = useRef<(() => void) | undefined>(undefined);
 	useShortcutSlot('send', focused && !submitting ? {
 		send: () => {
-			hapticImpact('medium');
+			haptic('commit');
 			if (live && liveSubmitRef.current !== undefined) {
 				liveSubmitRef.current();
 			} else {
@@ -155,7 +155,7 @@ export function TerminalInputBar({ live, liveResetKey, liveConnected, input, onC
 	};
 	const imageButton = (
 		<Pressable
-			onPress={() => { hapticImpact('light'); onAttachImage(); }}
+			onPress={() => { onAttachImage(); }}
 			disabled={uploading}
 			hitSlop={ROUND_SLOP}
 			style={({ pressed }) => [styles.round, pressed ? styles.pressed : undefined]}
@@ -171,7 +171,7 @@ export function TerminalInputBar({ live, liveResetKey, liveConnected, input, onC
 		return (
 			<View style={styles.bar}>
 				<Pressable
-					onPress={() => { hapticSelection(); liveRef.current?.focus(); }}
+					onPress={() => { liveRef.current?.focus(); }}
 					hitSlop={FIELD_SLOP}
 					style={[styles.liveField, liveFocused ? styles.liveFieldFocused : undefined]}
 					accessibilityRole="button"
@@ -246,7 +246,7 @@ export function TerminalInputBar({ live, liveResetKey, liveConnected, input, onC
 			/>
 			{imageButton}
 			<Pressable
-				onPress={() => { hapticSelection(); onToggleEnterless(); }}
+				onPress={() => { haptic('tick'); onToggleEnterless(); }}
 				hitSlop={FIELD_SLOP}
 				style={[styles.toggle, enterless ? styles.toggleOn : undefined]}
 				accessibilityRole="switch"
@@ -257,7 +257,7 @@ export function TerminalInputBar({ live, liveResetKey, liveConnected, input, onC
 				<Text style={[styles.toggleText, enterless ? styles.toggleTextOn : undefined]}>Enterなし</Text>
 			</Pressable>
 			<Pressable
-				onPress={() => { hapticImpact('medium'); onSubmit(); }}
+				onPress={() => { haptic('commit'); onSubmit(); }}
 				disabled={submitting}
 				hitSlop={ROUND_SLOP}
 				style={({ pressed }) => [styles.round, pressed ? styles.pressed : undefined]}

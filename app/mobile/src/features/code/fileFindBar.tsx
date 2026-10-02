@@ -4,7 +4,7 @@ import type { RefObject } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { ChevronDown, ChevronUp, Search } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { Icon, iconSize } from '../../ui/index.js';
 import { findCountLabel, type FindResult } from './fileFind.js';
@@ -58,7 +58,7 @@ export function FileFindBar({ inputRef, query, result, onChangeQuery, onStep, on
 function StepButton({ icon, label, disabled, onPress }: { icon: typeof ChevronUp; label: string; disabled: boolean; onPress: () => void }) {
 	return (
 		<Pressable
-			onPress={() => { hapticSelection(); onPress(); }}
+			onPress={() => { haptic('tick'); onPress(); }}
 			disabled={disabled}
 			hitSlop={hitSlopToMinimum(FIELD_HEIGHT, FIELD_HEIGHT)}
 			style={({ pressed }) => [styles.step, pressed ? styles.stepPressed : undefined, disabled ? styles.disabled : undefined]}

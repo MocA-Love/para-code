@@ -7,6 +7,7 @@ import {
 	PARADIS_MOBILE_PR_VIEW_CAPABILITY,
 } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobilePullRequest.js';
 import { sendPcRequest } from '../../appState.js';
+import { haptic } from '../../haptics.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
 import { useNow } from '../../time.js';
 import { PR_POLL_MS, activePrQueued, startPrPolling, parsePrMergeReply, parsePrView, type PrDetail, type PrMergeOutcome, type PrQueued, type PrViewResult } from './pullRequest.js';
@@ -99,19 +100,27 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 		}
 		setMerging(true);
 		setMergeError(undefined);
+		// 結果の触覚は、まだ同じスペースを見ているときだけ返す（別のスペースへ移った後に鳴らさない。useScmSync と同じ）
+		const sameTarget = () => rendererTarget !== undefined && currentRendererTarget(wsId) === rendererTarget;
 		try {
 			const reply = await sendPcRequest<{ readonly queued?: unknown }>(pcId, 'scm', { t: 'prMerge', ws: wsId, number: pr.number, headSha: pr.headSha }, { timeoutMs: 130_000 });
 			const outcome = parsePrMergeReply(reply);
 			setQueued(outcome === 'queued' ? { number: pr.number, headSha: pr.headSha, at: Date.now() } : undefined);
+			if (sameTarget()) {
+				haptic('success');
+			}
 			return outcome;
 		} catch (e) {
+			if (sameTarget()) {
+				haptic('error');
+			}
 			setMergeError(errorMessage(e));
 			return undefined;
 		} finally {
 			setMerging(false);
 			void refresh();
 		}
-	}, [canMerge, pcId, wsId, merging, refresh]);
+	}, [canMerge, pcId, wsId, rendererTarget, merging, refresh]);
 
 	const reload = useCallback(async () => {
 		setQueued(undefined);

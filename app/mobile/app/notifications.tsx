@@ -7,7 +7,7 @@ import { useShallow } from 'zustand/react/shallow';
 import type { NotifyPayload } from '@para/protocol';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 import { useAppStore } from '../src/appState.js';
-import { hapticImpact, hapticSelection } from '../src/haptics.js';
+import { haptic } from '../src/haptics.js';
 import { useParaToast } from '../src/paraToast.js';
 import { useNow } from '../src/time.js';
 import { Button, ConfirmDrawer, EmptyState, ListGroup } from '../src/ui/index.js';
@@ -42,7 +42,7 @@ export default function NotificationsScreen() {
 	const [confirming, setConfirming] = useState(false);
 
 	const open = (notification: NotifyPayload) => {
-		hapticSelection();
+		haptic('move');
 		const { workspace, activePcId } = useAppStore.getState();
 		const target = notificationTarget(notification, workspace, activePcId, createAgentLatestEntryToken());
 		switch (target.kind) {
@@ -73,7 +73,7 @@ export default function NotificationsScreen() {
 		<SettingsScreen
 			title="通知"
 			right={notifications.length > 0 ? (
-				<Button label="すべて消す" variant="ghost" size="sm" onPress={() => { hapticImpact('light'); setConfirming(true); }} />
+				<Button label="すべて消す" variant="ghost" size="sm" onPress={() => { haptic('move'); setConfirming(true); }} />
 			) : undefined}
 			footer={(
 				<ConfirmDrawer

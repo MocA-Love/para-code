@@ -8,7 +8,7 @@ import { PointerHover } from '../../ipad/pointerHover.js';
 import { useThemeColors } from '../../ui/themeColorsStore.js';
 import { colors, radius, squircle, type } from '../../theme.js';
 import { monoFamily } from '../../monoFont.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { addressHost, addressLabel, type AddressDisplayMode } from '../../browserAddress.js';
 import { MIRROR_ROUTE_INFO, type MirrorRoute } from '../../browserRoute.js';
 import type { BrowserPopoverAnchor } from './browserListOverlay.js';
@@ -76,7 +76,7 @@ export function BrowserNavBar({
 				disabled={disabled}
 				hitSlop={SLOP}
 				style={({ pressed }) => [styles.button, pressed && styles.pressed, disabled && styles.disabled]}
-				onPress={() => { hapticImpact('light'); onPress(); }}
+				onPress={() => { onPress(); }}
 				accessibilityRole="button"
 				accessibilityLabel={label}
 				accessibilityState={{ disabled }}
@@ -134,7 +134,7 @@ export function BrowserNavBar({
 				) : (
 					<>
 						{route !== undefined && hasPage ? (
-							<Pressable hitSlop={10} onPress={() => { hapticSelection(); onRoutePress(route); }} accessibilityRole="button" accessibilityLabel={`接続経路: ${MIRROR_ROUTE_INFO[route].label}`}>
+							<Pressable hitSlop={10} onPress={() => { haptic('move'); onRoutePress(route); }} accessibilityRole="button" accessibilityLabel={`接続経路: ${MIRROR_ROUTE_INFO[route].label}`}>
 								<RouteGlyph route={route} />
 							</Pressable>
 						) : (
@@ -143,8 +143,8 @@ export function BrowserNavBar({
 						<Pressable
 							style={styles.addressLabel}
 							disabled={!live}
-							onPress={() => { hapticSelection(); setDraft(url); setEditing(true); }}
-							onLongPress={hasPage ? () => { hapticImpact('light'); onToggleDisplayMode(); } : undefined}
+							onPress={() => { setDraft(url); setEditing(true); }}
+							onLongPress={hasPage ? () => { haptic('lift'); onToggleDisplayMode(); } : undefined}
 							accessibilityRole="button"
 							accessibilityLabel={hasPage ? `${label}。押すと URL を編集、長押しで題名と URL を切り替え` : 'URL を入力'}
 						>
@@ -175,7 +175,7 @@ export function BrowserNavBar({
 					hitSlop={SLOP}
 					style={({ pressed }) => [styles.button, pressed && styles.pressed, !live && styles.disabled]}
 					onPress={() => {
-						hapticSelection();
+						haptic('move');
 						countRef.current?.measureInWindow((x, y, width, height) => onOpenPages({ top: y + height, x: x + width, align: 'right' }));
 					}}
 					accessibilityRole="button"

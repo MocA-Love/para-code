@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AccessibilityInfo, Animated, LayoutChangeEvent, PanResponder, StyleSheet, Text, View } from 'react-native';
 import { colors, radius, squircle, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
-import { hapticSelection } from '../haptics.js';
-import { effortSliderGestureBehavior } from './effortSliderBehavior.js';
+import { haptic } from '../haptics.js';
+import { effortSliderGestureBehavior, isMaximumEffort } from './effortSliderBehavior.js';
 
 /**
  * モデルが提供する順序を保ったまま選択する、コンポーザー用のEffortスライダー。
@@ -39,7 +39,7 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onChange }
 	onChangeRef.current = onChange;
 	const progress = efforts.length <= 1 ? 0 : previewIndex / (efforts.length - 1);
 	const activeEffort = efforts[previewIndex] ?? efforts[0] ?? '';
-	const isMaximum = activeEffort === 'max' || activeEffort === 'ultra';
+	const isMaximum = isMaximumEffort(activeEffort);
 
 	useEffect(() => {
 		let mounted = true;
@@ -117,7 +117,8 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onChange }
 		const nextIndex = Math.max(0, Math.min(index, efforts.length - 1));
 		setPreviewIndex(currentIndex => {
 			if (currentIndex !== nextIndex) {
-				hapticSelection();
+				// 最大（max・ultra）に入ったときだけ「溜まる」手触り、それ以外は 1 段ぶんの tick
+				haptic(isMaximumEffort(effortsRef.current[nextIndex]) ? 'charge' : 'tick');
 			}
 			return nextIndex;
 		});

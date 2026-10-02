@@ -6,7 +6,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCameraPermissions } from 'expo-camera';
 import { Clipboard, QrCode } from 'lucide-react-native';
 import { useAppStore } from '../src/appState.js';
-import { hapticSelection } from '../src/haptics.js';
+import { haptic } from '../src/haptics.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { hitSlopToMinimum } from '../src/components/hitSlop.js';
 import { colors, space, type } from '../src/theme.js';
@@ -66,7 +66,7 @@ export default function PairScreen() {
 			return;
 		}
 		scanLock.current = true;
-		hapticSelection();
+		haptic('commit');
 		startWith(data);
 	};
 	const backToScan = () => {
@@ -181,7 +181,7 @@ function Centered({ children }: { children: ReactNode }) {
 function PasteLink({ label, onPress }: { label: string; onPress: () => void }) {
 	return (
 		<Pressable
-			onPress={() => { hapticSelection(); onPress(); }}
+			onPress={() => { haptic('commit'); onPress(); }}
 			hitSlop={hitSlopToMinimum(36)}
 			style={({ pressed }) => [styles.paste, pressed ? styles.pastePressed : undefined]}
 			accessibilityRole="button"

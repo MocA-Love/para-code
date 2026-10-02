@@ -4,7 +4,7 @@ import { useRef, useState, type ReactNode } from 'react';
 import { Linking, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { CircleCheck, CircleAlert, CloudOff, GitCommitHorizontal, RefreshCw } from 'lucide-react-native';
-import { hapticImpact } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { useKeyboardCoverage } from '../../hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { useAppStore } from '../../appState.js';
@@ -104,7 +104,6 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 	const webUrl = history.log?.webUrl;
 
 	const refreshAll = () => {
-		hapticImpact('light');
 		void statusState.refresh();
 		void history.refresh();
 		if (shown === 'pr') {
@@ -117,6 +116,8 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 		setActionError(undefined);
 		setCommitWarning(undefined);
 		const outcome = await commitState.commit(message, scope);
+		// フックの失敗・時間切れの一言があれば、コミットはできたが注意あり
+		haptic(!outcome.ok ? 'error' : outcome.warning !== undefined ? 'warning' : 'success');
 		if (!outcome.ok) {
 			// 失敗でもステージを戻したので、一覧を読み直す
 			void statusState.refresh();
@@ -215,7 +216,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 				subtitle={subtitle.length > 0 ? subtitle : undefined}
 				surface="panel"
 				{...(dock !== undefined ? { safeTop: false, backIcon: X, backLabel: 'ソース管理を閉じる', onBack: dock.close } : {})}
-				right={<HeaderButton icon={RefreshCw} label="最新の状態に更新" onPress={refreshAll} disabled={!codeSpace.live} />}
+				right={<HeaderButton icon={RefreshCw} label="最新の状態に更新" onPress={() => { haptic('commit'); refreshAll(); }} disabled={!codeSpace.live} />}
 			>
 				<Segments items={scmSegments(pullRequest.enabled)} value={shown} onChange={setSegment} />
 			</ScreenHeader>
@@ -229,7 +230,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 						refreshControl={(
 							<RefreshControl
 								refreshing={statusState.loading && statusState.status !== undefined}
-								onRefresh={refreshAll}
+								onRefresh={() => { haptic('edge'); refreshAll(); }}
 								tintColor={colors.textDim}
 							/>
 						)}
@@ -314,7 +315,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 											label="さらに読み込む"
 											variant="secondary"
 											size="sm"
-											onPress={() => { hapticImpact('light'); void history.loadMore(); }}
+											onPress={() => { haptic('move'); void history.loadMore(); }}
 											loading={history.loadingMore}
 											disabled={!codeSpace.live}
 											style={styles.more}
@@ -356,6 +357,7 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 				message={confirmingMerge !== undefined ? mergeConfirmMessage(confirmingMerge) : undefined}
 				confirmLabel="マージ"
 				destructive={false}
+				haptic="danger"
 				onConfirm={() => {
 					const pr = mergeTarget.take();
 					if (pr !== undefined) {

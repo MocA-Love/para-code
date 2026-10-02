@@ -6,8 +6,9 @@ import { Check, ChevronDown, ChevronLeft, Settings, X } from 'lucide-react-nativ
 import { useShallow } from 'zustand/react/shallow';
 import { claudeModelDisplayName, matchAgentModel } from '../../agentModels.js';
 import { useAppStore } from '../../appState.js';
+import { isMaximumEffort } from '../../components/effortSliderBehavior.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { useClaudeModelOptions } from '../../hooks/useClaudeModelOptions.js';
 import { EMPTY_HIDDEN_MODELS, canHideModel, countVisibleModels, initialModelSelection, modelVisibilityAgent, pickerModelChoices } from '../../modelVisibility.js';
 import type { AgentMessageSendResult, AgentModelControlState } from '../../store.js';
@@ -122,7 +123,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 	const locked = isCodexBusy || submitting;
 
 	const openDrawer = () => {
-		hapticSelection();
+		haptic('move');
 		setPickedModelId(undefined);
 		setPickedEffort(undefined);
 		setPage('pick');
@@ -212,7 +213,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 						<Text style={styles.headTitle} accessibilityRole="header">モデルを選ぶ</Text>
 						{visibilityAgent !== undefined ? (
 							<Pressable
-								onPress={() => { hapticSelection(); setPage('visibility'); }}
+								onPress={() => { haptic('move'); setPage('visibility'); }}
 								disabled={submitting}
 								hitSlop={hitSlopToMinimum(NAV_SIZE, NAV_SIZE)}
 								style={({ pressed }) => [styles.nav, pressed ? styles.pressed : undefined]}
@@ -272,7 +273,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 							</>
 						) : null}
 						<Text style={styles.hint}>オフにしたモデルは「モデルを選ぶ」に出ません。この端末の設定で、どの PC につないでも同じです。PC に新しいモデルが増えたときは表示されます。</Text>
-						<Button label="完了" onPress={() => { hapticSelection(); setPage('pick'); }} style={styles.apply} />
+						<Button label="完了" onPress={() => { haptic('move'); setPage('pick'); }} style={styles.apply} />
 					</>
 				) : (
 					<>
@@ -284,7 +285,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 										<Pressable
 											key={option.id}
 											disabled={locked}
-											onPress={() => { hapticSelection(); setPickedModelId(option.id); }}
+											onPress={() => { haptic('tick'); setPickedModelId(option.id); }}
 											style={({ pressed }) => [styles.row, index > 0 ? styles.rowDivider : undefined, pressed ? styles.rowPressed : undefined]}
 											accessibilityRole="button"
 											accessibilityState={{ selected: isSelected, disabled: locked }}
@@ -309,7 +310,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 											<Pressable
 												key={level}
 												disabled={locked}
-												onPress={() => { hapticSelection(); setPickedEffort(level); }}
+												onPress={() => { haptic(isMaximumEffort(level) ? 'charge' : 'tick'); setPickedEffort(level); }}
 												style={[styles.effort, on ? { borderColor: theme.accent, backgroundColor: theme.accentWash } : undefined]}
 												accessibilityRole="button"
 												accessibilityState={{ selected: on, disabled: locked }}

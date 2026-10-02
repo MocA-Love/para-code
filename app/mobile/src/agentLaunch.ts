@@ -2,6 +2,7 @@
 
 import { Alert } from 'react-native';
 import { useAppStore } from './appState.js';
+import { haptic } from './haptics.js';
 import { useParaToast } from './paraToast.js';
 
 /**
@@ -79,6 +80,7 @@ export function launchAgentInBackground(request: AgentLaunchRequest): void {
 				Alert.alert('スペースを作成しました', `ただし後続の処理でエラーがありました: ${result.warning}`);
 			}
 		}).catch((e: unknown) => {
+			haptic('error');
 			showResult('起動できませんでした', '', 'warn', 1_200);
 			Alert.alert('エージェントを起動できませんでした', String(e instanceof Error ? e.message : e));
 		});
@@ -92,6 +94,7 @@ export function launchAgentInBackground(request: AgentLaunchRequest): void {
 	store.launchAgent({ ws: request.ws, ...options }).then(() => {
 		showResult(`${request.agentLabel} を起動しました`, request.subtitle, 'done', 2_500);
 	}).catch((e: unknown) => {
+		haptic('error');
 		showResult('起動できませんでした', '', 'warn', 1_200);
 		Alert.alert('エージェントを起動できませんでした', String(e instanceof Error ? e.message : e));
 	});

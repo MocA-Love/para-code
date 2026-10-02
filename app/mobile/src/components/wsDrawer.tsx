@@ -30,7 +30,7 @@ import { HIT_SIZE, alpha, colors, radius, squircle, tint, type, withAlpha, statu
 import { monoFamily } from '../monoFont.js';
 import { Badge } from './badge.js';
 import { SectionHeader } from './sectionHeader.js';
-import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
+import { haptic } from '../haptics.js';
 
 /**
  * ワークスペースドロワー（mock.html 案A準拠）。全タブ共通の左スライドドロワーに
@@ -218,7 +218,7 @@ export function WsDrawerLayout({ children }: { children: ReactNode }) {
 
 /** 開き切った/閉じ切った瞬間の触覚フィードバック（スワイプ・タップのどちらで操作しても鳴る）。 */
 function onDrawerSettled() {
-	hapticImpact('light');
+	haptic('move');
 }
 
 /**
@@ -362,7 +362,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 	}, [effective, selectedParent]);
 
 	const toggleRepo = (id: string) => {
-		hapticImpact('light');
+		haptic('move');
 		LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 		setCollapsedRepos(prev => {
 			const next = new Set(prev);
@@ -399,7 +399,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 	};
 
 	const select = (id: string) => {
-		hapticSelection();
+		haptic('move');
 		setSelectedWs(id);
 		setHomeShowAllWorkspaces(false);
 		returnHome();
@@ -408,7 +408,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 
 	/** ワークスペース一覧上部の「すべて表示」。ホームの絞り込みを解除する（他タブのselectedWsは変えない）。 */
 	const selectAll = () => {
-		hapticSelection();
+		haptic('move');
 		setHomeShowAllWorkspaces(true);
 		returnHome();
 		onClose();
@@ -472,7 +472,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 					style={[styles.noteBtn, (ws.note?.open ?? 0) > 0 && styles.noteBtnActive]}
 					hitSlop={NOTE_BTN_HIT_SLOP}
 					onPress={() => {
-						hapticSelection();
+						haptic('move');
 						onClose();
 						router.push({ pathname: '/space-note', params: { ws: ws.id } });
 					}}
@@ -515,7 +515,6 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 			return;
 		}
 		const name = pcs.find(pc => pc.id === activePcId)?.name ?? 'このPC';
-		hapticWarning();
 		Alert.alert(
 			'ペアリング解除',
 			// 解除は「いま見ているPC」だけ。他のPCとのペアリングはそのまま残る。
@@ -524,6 +523,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 				{ text: 'キャンセル', style: 'cancel' },
 				{
 					text: '解除する', style: 'destructive', onPress: () => {
+						haptic('danger');
 						void removePc(activePcId).catch(error => Alert.alert('ペアリングを解除できませんでした', error instanceof Error ? error.message : String(error)));
 					},
 				},
@@ -569,7 +569,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 				{online && resources !== undefined ? (
 					<PcResourceRow
 						resources={resources}
-						onPress={() => { hapticSelection(); onClose(); router.push('/system'); }}
+						onPress={() => { haptic('move'); onClose(); router.push('/system'); }}
 					/>
 				) : null}
 			</View>
@@ -586,7 +586,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 					<Pressable
 						disabled={!online}
 						style={styles.addSpaceHit}
-						onPress={() => { hapticSelection(); setCreateSheetOpen(true); }}
+						onPress={() => { haptic('move'); setCreateSheetOpen(true); }}
 						accessibilityRole="button"
 						accessibilityLabel="新しいスペースを作成"
 						accessibilityState={{ disabled: !online }}
@@ -642,7 +642,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 			<View style={styles.footer}>
 				{connection === 'online' ? (
 					<GlassSurface style={styles.footerBtn} interactive>
-						<Pressable style={styles.footerBtnHit} onPress={() => { hapticImpact('light'); disconnectRelay(); }} accessibilityLabel="切断">
+						<Pressable style={styles.footerBtnHit} onPress={() => { disconnectRelay(); }} accessibilityLabel="切断">
 							<Ionicons name="power-outline" size={13} color={colors.red} />
 							<Text style={[styles.footerBtnText, { color: colors.red }]}>切断</Text>
 						</Pressable>
@@ -650,14 +650,14 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 				) : pairingRejected ? (
 					// リレーが資格を拒んでいる間は「接続」を押しても繋がらない。再ペアリングへ案内する
 					<GlassSurface style={styles.footerBtn} interactive>
-						<Pressable style={styles.footerBtnHit} onPress={() => { hapticImpact('light'); onClose(); router.push(routes.pair()); }} accessibilityLabel="ペアリングし直す">
+						<Pressable style={styles.footerBtnHit} onPress={() => { haptic('move'); onClose(); router.push(routes.pair()); }} accessibilityLabel="ペアリングし直す">
 							<Ionicons name="qr-code-outline" size={13} color={colors.red} />
 							<Text style={[styles.footerBtnText, { color: colors.red }]}>ペアリングし直す</Text>
 						</Pressable>
 					</GlassSurface>
 				) : (
 					<GlassSurface style={styles.footerBtn} interactive>
-						<Pressable style={styles.footerBtnHit} onPress={() => { hapticImpact('light'); connectRelay(); }} accessibilityLabel="接続">
+						<Pressable style={styles.footerBtnHit} onPress={() => { connectRelay(); }} accessibilityLabel="接続">
 							<Ionicons name="power-outline" size={13} color={colors.green} />
 							<Text style={[styles.footerBtnText, { color: colors.green }]}>接続</Text>
 						</Pressable>

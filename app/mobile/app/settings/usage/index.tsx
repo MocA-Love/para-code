@@ -6,7 +6,7 @@ import { useRouter } from 'expo-router';
 import { Activity, Cpu, Cuboid, GitPullRequest, Scissors, User } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../../src/appState.js';
-import { hapticSelection } from '../../../src/haptics.js';
+import { haptic } from '../../../src/haptics.js';
 import type { GithubUsageResult, RateLimitsResult, UsageDashboardResult } from '../../../src/store.js';
 import { usagePercent } from '../../../src/systemResources.js';
 import { colors, space, type } from '../../../src/theme.js';
@@ -143,7 +143,7 @@ export default function UsageScreen() {
 	].filter((part): part is string => part !== undefined).join(' · ') || undefined;
 
 	const openDetail = (page: UsageDetailPage) => {
-		hapticSelection();
+		haptic('move');
 		router.push(settingsRoutes.usageDetail(page));
 	};
 
@@ -161,7 +161,7 @@ export default function UsageScreen() {
 			title="使用量"
 			subtitle={subtitle}
 			right={<DetailRefreshButton onPress={() => { void onPullRefresh(); }} disabled={pullRefreshing || loading || connection !== 'online'} />}
-			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
+			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { haptic('edge'); void onPullRefresh(); }} tintColor={colors.textDim} />}
 		>
 			{notConnected ? <DetailNotConnected /> : (
 				<>

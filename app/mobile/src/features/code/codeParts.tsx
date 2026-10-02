@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { CircleAlert, FolderX, MonitorX, TriangleAlert } from 'lucide-react-native';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import { monoFamily } from '../../monoFont.js';
 import { colors, radius, space, type } from '../../theme.js';
@@ -69,7 +69,7 @@ export function Segments<K extends string>({ items, value, onChange }: {
 				return (
 					<Pressable
 						key={item.key}
-						onPress={() => { if (!on) { hapticSelection(); onChange(item.key); } }}
+						onPress={() => { if (!on) { haptic('tick'); onChange(item.key); } }}
 						hitSlop={hitSlopToMinimum(SEG_HEIGHT)}
 						style={[styles.seg, on ? styles.segOn : undefined]}
 						accessibilityRole="tab"

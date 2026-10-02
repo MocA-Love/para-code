@@ -3,7 +3,7 @@
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { CircleAlert, CircleCheck, RotateCw } from 'lucide-react-native';
 import { canRetrySubmission, type AnswerSubmissionState } from '../../components/answerSubmission.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { HIT_SIZE, colors, space, type } from '../../theme.js';
 import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
 import { Button, Icon, iconSize } from '../../ui/index.js';
@@ -44,8 +44,8 @@ export function SubmissionStatus({ state, onRetry, onReselect }: {
 				</View>
 				<Text style={styles.hint}>PC に届いていない可能性があります。再送するか、PC の画面で確認してください。</Text>
 				<View style={styles.buttons}>
-					<Button label="選び直す" variant="secondary" style={styles.flex} onPress={() => { hapticSelection(); onReselect(); }} />
-					<Button label="再送" icon={RotateCw} style={styles.flex} onPress={() => { hapticImpact('medium'); onRetry(); }} />
+					<Button label="選び直す" variant="secondary" style={styles.flex} onPress={() => { haptic('move'); onReselect(); }} />
+					<Button label="再送" icon={RotateCw} style={styles.flex} onPress={() => { haptic('commit'); onRetry(); }} />
 				</View>
 			</View>
 		);

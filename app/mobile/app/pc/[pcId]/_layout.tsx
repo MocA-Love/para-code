@@ -8,7 +8,7 @@ import { PcRouteContext } from '../../../src/features/pc/pcRouteContext.js';
 import { PcScreen } from '../../../src/features/pc/pcScreen.js';
 import { usePcListView } from '../../../src/features/pc/pcListViewStore.js';
 import { stackWithoutRoute } from '../../../src/features/pc/pcStackAnchor.js';
-import { hapticSelection } from '../../../src/haptics.js';
+import { haptic } from '../../../src/haptics.js';
 import { useIsRegularWidth } from '../../../src/hooks/useSizeClass.js';
 import { ColumnResizeHandle } from '../../../src/ipad/columnResizeHandle.js';
 import { DetailColumnKeyContext, useDetailColumn, useDetailColumnOpen } from '../../../src/ipad/detailColumn.js';
@@ -84,7 +84,7 @@ export default function PcLayout() {
 	const canCollapse = regular && detailOpen;
 	const showSidebar = regular && (!collapsed || !detailOpen);
 	const toggle = () => {
-		hapticSelection();
+		haptic('move');
 		setCollapsed(!collapsed);
 	};
 	useShortcutSlot('sidebar', focused && canCollapse ? { toggle } : undefined);

@@ -5,7 +5,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, 
 import { ChevronDown, ChevronRight, CircleAlert, ExternalLink, FileText, GitBranch, GitCommitHorizontal, GitPullRequest, Minus, Plus, Sparkles, X } from 'lucide-react-native';
 import type { ParadisMobileSyncOperation } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileScmSync.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { commitFileKind, scmChangeMeta } from '../../scmChangeKind.js';
 import type { ScmLogResult } from '../../store.js';
@@ -44,7 +44,7 @@ export function BranchCard({ branch, sync, counts, syncSummary, syncing, onSync,
 				</View>
 				{pr !== undefined ? (
 					<Pressable
-						onPress={() => { hapticSelection(); pr.onPress(); }}
+						onPress={() => { haptic('move'); pr.onPress(); }}
 						hitSlop={hitSlopToMinimum(PR_CHIP_HEIGHT)}
 						style={({ pressed }) => [styles.prChip, { borderColor: prStateColor(pr.state) }, pressed ? styles.fileRowPressed : undefined]}
 						accessibilityRole="button"
@@ -67,7 +67,7 @@ export function BranchCard({ branch, sync, counts, syncSummary, syncing, onSync,
 					{onSync !== undefined ? syncSummary.actions.map(operation => (
 						<Pressable
 							key={operation}
-							onPress={() => { hapticImpact('light'); onSync(operation); }}
+							onPress={() => { haptic('commit'); onSync(operation); }}
 							disabled={syncing !== undefined}
 							hitSlop={hitSlopToMinimum(SYNC_BUTTON_HEIGHT)}
 							style={({ pressed }) => [styles.syncButton, pressed ? styles.fileRowPressed : undefined, syncing !== undefined && syncing !== operation ? styles.dim : undefined]}
@@ -105,7 +105,7 @@ export function ScmFileRow({ entry, disabled, onPress, stage }: {
 	const { name, dir } = splitPath(entry.path);
 	const row = (
 		<Pressable
-			onPress={() => { hapticSelection(); onPress(); }}
+			onPress={() => { haptic('move'); onPress(); }}
 			disabled={disabled}
 			style={({ pressed }) => [styles.fileRow, pressed ? styles.fileRowPressed : undefined, disabled ? styles.dim : undefined]}
 			accessibilityRole="button"
@@ -136,7 +136,7 @@ export function ScmFileRow({ entry, disabled, onPress, stage }: {
 export function StageToggle({ staged, busy, disabled, onPress, path, style }: { staged: boolean; busy: boolean; disabled: boolean; onPress: () => void; path: string; style?: StyleProp<ViewStyle> }) {
 	return (
 		<Pressable
-			onPress={() => { hapticImpact('light'); onPress(); }}
+			onPress={() => { haptic('commit'); onPress(); }}
 			disabled={disabled || busy}
 			style={({ pressed }) => [styles.stageButton, style, pressed ? styles.fileRowPressed : undefined, disabled ? styles.dim : undefined]}
 			accessibilityRole="button"
@@ -185,7 +185,7 @@ export function CommitFailureCard({ view, handoff, onFix, onFixWithNewAgent, onD
 			</View>
 			{view.note !== undefined ? <Text style={styles.failureNote}>{view.note}</Text> : null}
 			{view.output.length > 0 ? (
-				<Pressable onPress={() => { hapticSelection(); setOpen(!open); }} accessibilityRole="button" accessibilityState={{ expanded: open }}>
+				<Pressable onPress={() => { haptic('move'); setOpen(!open); }} accessibilityRole="button" accessibilityState={{ expanded: open }}>
 					<Text style={[styles.failureToggle, { color: theme.accent }]}>{open ? '出力を閉じる' : '出力を見る'}</Text>
 				</Pressable>
 			) : null}
@@ -236,7 +236,7 @@ export function CommitBar({ action, message, onChangeMessage, onCommit, onBlocke
 			}
 			return;
 		}
-		hapticImpact('medium');
+		haptic('commit');
 		onCommit();
 	};
 	return (
@@ -297,7 +297,7 @@ export function HistoryList({ log, now, commitFiles, onExpand, onOpenWeb }: {
 						<View style={styles.historyRowWrap}>
 							<Pressable
 								onPress={() => {
-									hapticSelection();
+									haptic('move');
 									setExpanded(open ? undefined : commit.hash);
 									if (!open) {
 										onExpand(commit.hash);
@@ -318,7 +318,7 @@ export function HistoryList({ log, now, commitFiles, onExpand, onOpenWeb }: {
 							</Pressable>
 							{onOpenWeb !== undefined ? (
 								<Pressable
-									onPress={() => { hapticImpact('light'); onOpenWeb(commit.hash); }}
+									onPress={() => { onOpenWeb(commit.hash); }}
 									style={({ pressed }) => [styles.webButton, pressed ? styles.fileRowPressed : undefined]}
 									accessibilityRole="link"
 									accessibilityLabel="ブラウザでコミットを開く"

@@ -6,7 +6,7 @@ import { Check, CircleHelp, Square, SquareCheck } from 'lucide-react-native';
 import type { AgentQuestionShape } from '../../agentQuestionKeys.js';
 import { isSubmissionLocked } from '../../components/answerSubmission.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import type { QuestionGroupAnswer } from '../../hooks/useAgentActions.js';
 import { useAnswerSubmission } from '../../hooks/useAnswerSubmission.js';
 import { setMobileSpanAttributes, startMobileSpan } from '../../sentry.js';
@@ -75,7 +75,7 @@ export function AskCard({ message, refreshing, onAnswer, onMulti, onFreeText, on
 		if (interactionId === undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('tick');
 		setSelected(undefined);
 		onRequestFreeText({
 			id: interactionId,
@@ -90,7 +90,7 @@ export function AskCard({ message, refreshing, onAnswer, onMulti, onFreeText, on
 		});
 	};
 	const pick = (index: number) => {
-		hapticSelection();
+		haptic('tick');
 		if (freeTextActive) {
 			onRequestFreeText(undefined);
 		}
@@ -113,7 +113,7 @@ export function AskCard({ message, refreshing, onAnswer, onMulti, onFreeText, on
 		if (interactionId === undefined || !canConfirm) {
 			return;
 		}
-		hapticImpact('medium');
+		haptic('commit');
 		if (multiSelect) {
 			void submit('multi', () => onMulti(interactionId, question, [...toggled].sort((a, b) => a - b)));
 		} else if (selected !== undefined) {
@@ -233,7 +233,7 @@ export function AskGroupCard({ messages, refreshing, onSubmit, onRequestFreeText
 		if (interactionId === undefined || current === undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('tick');
 		const index = step;
 		onRequestFreeText({
 			id: stepRequestId(index),
@@ -253,7 +253,7 @@ export function AskGroupCard({ messages, refreshing, onSubmit, onRequestFreeText
 		});
 	};
 	const pick = (optionIndex: number) => {
-		hapticSelection();
+		haptic('tick');
 		if (otherSelected) {
 			onRequestFreeText(undefined);
 		}
@@ -272,7 +272,7 @@ export function AskGroupCard({ messages, refreshing, onSubmit, onRequestFreeText
 		if (interactionId === undefined) {
 			return;
 		}
-		hapticImpact('medium');
+		haptic('commit');
 		const picked = answers.filter((answer): answer is QuestionGroupAnswer => answer !== undefined);
 		void submission.run(() => startMobileSpan('agentQuestion', 'submit-group', () =>
 			onSubmit(interactionId, questions, picked).then(result => {
@@ -297,7 +297,7 @@ export function AskGroupCard({ messages, refreshing, onSubmit, onRequestFreeText
 					<Pressable
 						key={index}
 						disabled={disabled}
-						onPress={() => { hapticSelection(); setStep(index); }}
+						onPress={() => { haptic('tick'); setStep(index); }}
 						hitSlop={STEP_SLOP}
 						style={[styles.step, index === step ? { borderColor: theme.accent, backgroundColor: theme.accentWash } : undefined]}
 						accessibilityRole="tab"

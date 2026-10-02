@@ -9,7 +9,7 @@ import { ParaPlusMenuButton, type ParaPlusMenuItem } from '../../modules/para-pl
 import { PARA_HEADER_PILL_BUTTON, PARA_HEADER_SLOT_HEIGHT } from '../paraHeader.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
-import { hapticImpact } from '../haptics.js';
+import { haptic } from '../haptics.js';
 import {
 	buildHomeCreateMenuItems,
 	buildHomeHeaderMenuItems,
@@ -79,7 +79,7 @@ export function HomePlusMenuButton({
 				items={nativeItems}
 				accessibilityTitle={compact === true ? 'ホーム操作' : '作成と表示のメニュー'}
 				onSelect={event => {
-					hapticImpact('light');
+					haptic('move');
 					onSelect(event.nativeEvent.id as HomeHeaderMenuAction);
 				}}
 			/>
@@ -129,7 +129,7 @@ export function HomeCreateFab({ hasSpace, onSelect }: {
 				items={toNativeItems(menuItems)}
 				accessibilityTitle="新規作成"
 				onSelect={event => {
-					hapticImpact('light');
+					haptic('move');
 					select(event.nativeEvent.id as HomeHeaderMenuAction);
 				}}
 			>
@@ -183,7 +183,7 @@ function FallbackPlusMenu({ items, trigger, onSelect }: {
 	}, [open]);
 
 	const pick = (action: HomeHeaderMenuAction) => {
-		hapticImpact('light');
+		haptic('move');
 		setOpen(false);
 		onSelect(action);
 	};
@@ -199,7 +199,7 @@ function FallbackPlusMenu({ items, trigger, onSelect }: {
 				// 見た目34ptの＋も当たり判定は44ptにする（compact と右下の＋はそれ自体が44pt以上）。
 				hitSlop={trigger === 'header' ? FALLBACK_BUTTON_HIT_SLOP : undefined}
 				onPress={event => {
-					hapticImpact('light');
+					haptic('move');
 					if (fab) {
 						const { pageY, locationY } = event.nativeEvent;
 						setFabTop(pageY - locationY);

@@ -115,6 +115,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '「モデルを選ぶ」の右上の歯車から、表示するモデルを選べます。今使っているモデルは隠しても一覧に残ります。',
 			},
 			{
+				icon: 'pulse-outline',
+				title: '操作の手応え（触覚）を作り直しました',
+				body: '確定・選択・警告・失敗などで手応えが変わり、承認や質問が届いたときは軽く 2 回叩きます。設定の一番下の「触覚フィードバック」でオフにできます。',
+			},
+			{
 				icon: 'sparkles-outline',
 				title: 'Claude Code と Codex の印を、PC と同じすっきりした形にしました',
 				body: 'エージェントの一覧では、最新の発言の前に出ていた状態の点をなくしました。状態は左の印で分かります。',

@@ -7,7 +7,7 @@ import { buildTimelineSteps, describeStep, formatToolName, type AgentTimelineSte
 import { IOBlock } from '../../components/agentIoBlock.js';
 import { ThinkingBody, ToolImageCards, ToolStepBody } from '../../components/agentToolBodies.js';
 import { MarkdownText } from '../../components/markdownText.js';
-import { hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import type { AgentChatMessage } from '../../store.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
@@ -101,7 +101,7 @@ const ToolRunRow = memo(function ToolRunRow({ msgs, terminalKey, allOpen }: { ms
 			<Pressable
 				style={styles.runHead}
 				hitSlop={LINE_SLOP}
-				onPress={() => { hapticSelection(); setOpen(!expanded); }}
+				onPress={() => { haptic('move'); setOpen(!expanded); }}
 				accessibilityRole="button"
 				accessibilityState={{ expanded }}
 				accessibilityLabel={`ツール実行 ${steps.length}件（${names.join('、')}）`}
@@ -135,7 +135,7 @@ function ToolLine({ step, terminalKey }: { step: AgentTimelineStep; terminalKey:
 			<Pressable
 				style={styles.line}
 				hitSlop={LINE_SLOP}
-				onPress={() => { hapticSelection(); setOpen(value => !value); }}
+				onPress={() => { haptic('move'); setOpen(value => !value); }}
 				accessibilityRole="button"
 				accessibilityState={{ expanded: open }}
 				accessibilityLabel={`${description.label}の詳細を${open ? '閉じる' : '開く'}`}
@@ -172,7 +172,7 @@ function WebSearchRow({ msgs, terminalKey }: { msgs: AgentChatMessage[]; termina
 				style={styles.runHead}
 				hitSlop={LINE_SLOP}
 				disabled={results.length === 0}
-				onPress={() => { hapticSelection(); setOpen(value => !value); }}
+				onPress={() => { haptic('move'); setOpen(value => !value); }}
 				accessibilityRole="button"
 				accessibilityState={{ expanded: open, disabled: results.length === 0 }}
 			>

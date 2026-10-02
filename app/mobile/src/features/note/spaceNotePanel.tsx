@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import { ScrollView, StyleSheet, TextInput, View, type NativeSyntheticEvent, type TextInputSelectionChangeEventData } from 'react-native';
 import { Check, ChevronDown, CircleCheck, Circle, Copy, Heading, List, ListChecks, Minus, Pencil, Trash2, Type, X } from 'lucide-react-native';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
 import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
 import { writeClipboardText } from '../../nativeClipboard.js';
@@ -95,7 +95,7 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 		if (raw === undefined || lineEdit !== undefined) {
 			return;
 		}
-		hapticImpact('medium');
+		haptic('lift');
 		setMenuTarget({ line, raw });
 		setMenuOpen(true);
 	};
@@ -131,7 +131,7 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 		}
 		const change = editNoteChange(text, current.index, draft);
 		if (change !== undefined) {
-			hapticSelection();
+			haptic('commit');
 			void note.commit(change).then(result => {
 				if (result.outcome === 'conflict' || result.outcome === 'failed') {
 					void keepDiscardedEdit(draft);
@@ -163,7 +163,7 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 		if (change === undefined || !sameLine(line.index, raw)) {
 			return;
 		}
-		hapticImpact('medium');
+		haptic('commit');
 		const removedIn = note.wsId;
 		void note.commit(change).then(result => {
 			// 消せたときだけ「元に戻す」を出す（失敗・PC で変わっていて書かれなかったときに出すと、残っている項目を二重に挿す）
@@ -206,7 +206,7 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 		if (change === undefined) {
 			return;
 		}
-		hapticSelection();
+		haptic('tick');
 		void note.commit(change);
 	};
 
@@ -243,13 +243,12 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 		}
 	};
 	const applyPrefix = (prefix: SpaceNotePrefix) => {
-		hapticSelection();
+		haptic('tick');
 		const result = applySpaceNotePrefix(editorBaseline.current, editorSelection.current, prefix);
 		writeEditor(result.text, result.selection);
 	};
 
 	const startEditing = () => {
-		hapticImpact('light');
 		editorInitial.current = text;
 		editorBaseline.current = text;
 		editorSelection.current = text.length;
@@ -260,12 +259,11 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 		setEditing(true);
 	};
 	const cancelEditing = () => {
-		hapticImpact('light');
 		note.holdDraft(undefined);
 		setEditing(false);
 	};
 	const commitEditing = () => {
-		hapticImpact('light');
+		haptic('commit');
 		// 自動継続が置いた末尾の空項目は未完了1件として数えられるので、保存の前に落とす。
 		const next = trimSpaceNoteTrailingEmptyTask(editorBaseline.current);
 		note.holdDraft(undefined);
@@ -276,7 +274,6 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 	};
 
 	const startAdding = () => {
-		hapticImpact('light');
 		addDraft.current = '';
 		note.setError(undefined);
 		setAdding(true);
@@ -296,7 +293,7 @@ export function SpaceNotePanel({ target, dock }: { target?: CodeSpaceTarget; doc
 			note.setError('full');
 			return;
 		}
-		hapticSelection();
+		haptic('commit');
 		addDraft.current = '';
 		addRef.current?.clear();
 		if (close) {

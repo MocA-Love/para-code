@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../appState.js';
+import { haptic } from '../../haptics.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
 import { writeClipboardText } from '../../nativeClipboard.js';
 import { useParaToast } from '../../paraToast.js';
@@ -206,6 +207,8 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 				// settledSnapshot() が描き直しを待たずに最新を読めるよう、控えもすぐ進める
 				textRef.current = result.text ?? next;
 				if (result.conflict === true) {
+					// PC で変わっていて書かれなかった（押したときの commit とは別に、書けなかったことを知らせる）
+					haptic('warning');
 					// 全文の書き換えが書かれなかったら、書きかけは画面から消えるのでクリップボードへ逃がす（「元に戻す」は書きかけではないので逃がさない）
 					const copied = spaceNoteKeepsDraft(change) && await writeClipboardText(next);
 					if (current()) {
@@ -216,6 +219,7 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 			.catch(() => {
 				outcome = { outcome: 'failed' };
 				if (current()) {
+					haptic('error');
 					// 保存できなかったので楽観更新を戻す（チェックが付いたまま残らないように）。
 					setText(previous);
 					textRef.current = previous;

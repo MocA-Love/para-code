@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Alert, Platform } from 'react-native';
-import { hapticSelection } from './haptics.js';
+import { haptic } from './haptics.js';
 
 /**
  * 「ターミナル名を変える」の入口。**器はOSの標準アラートに任せる。**
@@ -22,7 +22,7 @@ import { hapticSelection } from './haptics.js';
 const TERMINAL_NAME_MAX_LENGTH = 120;
 
 export function promptTerminalName(current: string, onSubmit: (name: string) => void): void {
-	hapticSelection();
+	haptic('move');
 	if (Platform.OS !== 'ios') {
 		// 自作ダイアログを復活させるより、できないことを言うほうが混乱が少ない。
 		Alert.alert('ターミナル名', 'この端末では名前を変更できません。');

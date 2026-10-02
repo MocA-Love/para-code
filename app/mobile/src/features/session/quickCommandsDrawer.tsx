@@ -6,7 +6,7 @@ import { useRouter } from 'expo-router';
 import { Search, Settings2, SquareTerminal } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../appState.js';
-import { hapticImpact, hapticSelection } from '../../haptics.js';
+import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { runPresetInBackground } from '../../presetLaunch.js';
 import { presetApprovalKey, presetCommandSummary, presetTerminalCount, visiblePresets } from '../../presets.js';
@@ -85,7 +85,7 @@ export function QuickCommandsDrawer({ visible, ws, wsLabel, onClose, onRan }: {
 		if (ws === undefined) {
 			return;
 		}
-		hapticImpact('medium');
+		haptic('commit');
 		runPresetInBackground({ ws, wsLabel, preset });
 		onRan();
 		onClose();
@@ -95,7 +95,7 @@ export function QuickCommandsDrawer({ visible, ws, wsLabel, onClose, onRan }: {
 			run(preset);
 			return;
 		}
-		hapticSelection();
+		haptic('move');
 		setConfirming(preset);
 	};
 	const confirm = () => {

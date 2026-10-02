@@ -2,6 +2,7 @@
 
 import { useRef } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import { haptic, type HapticToken } from '../haptics.js';
 import { colors, space, type } from '../theme.js';
 import { BottomDrawer } from './bottomDrawer.js';
 import { Button } from './button.js';
@@ -24,13 +25,18 @@ import { DrawerTitle } from './drawerHeader.js';
  * />
  * ```
  */
-export function ConfirmDrawer({ visible, title, message, confirmLabel, cancelLabel = 'キャンセル', destructive = true, onConfirm, onCancelled, onClose }: {
+export function ConfirmDrawer({ visible, title, message, confirmLabel, cancelLabel = 'キャンセル', destructive = true, haptic: confirmHaptic, onConfirm, onCancelled, onClose }: {
 	visible: boolean;
 	title: string;
 	message?: string;
 	confirmLabel: string;
 	cancelLabel?: string;
 	destructive?: boolean;
+	/**
+	 * 確定を押したときの触覚。省くと `destructive` に合わせる（赤なら `danger`、白なら `commit`）。
+	 * 見た目は白でも取り消せない操作（PR のマージなど）は `danger` を渡す。
+	 */
+	haptic?: HapticToken;
 	onConfirm: () => void;
 	/** 確定せずに閉じ切った後に呼ぶ（別のシートから開いた確かめで、元のシートへ戻すときに使う。任意）。 */
 	onCancelled?: () => void;
@@ -60,6 +66,8 @@ export function ConfirmDrawer({ visible, title, message, confirmLabel, cancelLab
 					label={confirmLabel}
 					variant={destructive ? 'danger' : 'primary'}
 					onPress={() => {
+						// 確定を押した時点で手応えを返す（取り消せない操作は danger、確認を出すときには鳴らさない）
+						haptic(confirmHaptic ?? (destructive ? 'danger' : 'commit'));
 						confirmed.current = true;
 						onClose();
 					}}

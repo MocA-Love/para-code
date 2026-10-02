@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { ArrowDown, ArrowUp, Ellipsis, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react-native';
-import { hapticSelection } from '../../src/haptics.js';
+import { haptic } from '../../src/haptics.js';
 import { useParaToast } from '../../src/paraToast.js';
 import { colors, space } from '../../src/theme.js';
 import { ActionSheet, ConfirmDrawer, Icon, ListGroup, ListRow, TextInputDrawer } from '../../src/ui/index.js';
@@ -63,12 +63,12 @@ export default function QuickRepliesSettingsScreen() {
 		save(next).catch(showSaveFailed);
 	};
 	const openMenu = (index: number) => {
-		hapticSelection();
+		haptic('move');
 		setTarget(index);
 		setMenuOpen(true);
 	};
 	const openAdd = () => {
-		hapticSelection();
+		haptic('move');
 		setEditorMode('add');
 		setEditorOpen(true);
 	};
@@ -136,7 +136,7 @@ export default function QuickRepliesSettingsScreen() {
 							label={reply}
 							trailing={<Icon icon={Ellipsis} color={colors.textMuted} />}
 							onPress={() => openMenu(index)}
-							onLongPress={() => openMenu(index)}
+							onLongPress={() => { haptic('lift'); openMenu(index); }}
 							accessibilityLabel={`${reply}、操作を開く`}
 						/>
 					))}
@@ -159,7 +159,7 @@ export default function QuickRepliesSettingsScreen() {
 					label="既定に戻す"
 					hint={DEFAULT_QUICK_REPLIES.join('・')}
 					disabled={replies === undefined || isDefault}
-					onPress={() => { hapticSelection(); setResetOpen(true); }}
+					onPress={() => { haptic('move'); setResetOpen(true); }}
 				/>
 			</ListGroup>
 		</SettingsScreen>
