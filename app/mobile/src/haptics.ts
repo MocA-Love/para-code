@@ -141,8 +141,9 @@ function playExpo(call: ExpoHapticCall): void {
 }
 
 /**
- * @deprecated 旧 API。`legacy-screens/` と、どこからも読まれていない `src/components/` の 7 ファイル
- * （別の PR で削除予定）のためだけに残す。新しいコードは `haptic(token)` を使う。
+ * @deprecated 旧 API。`legacy-screens/` と、そこからだけ読まれる `src/components/` の 7 ファイル
+ * （`agentComposer` `agentInfoSheet` `diffView` `filesPanel` `homeAgentActionsMenu` `homeAgentRow` `presetSheet`）
+ * のためだけに残す。`legacy-screens/` を消すときに一緒に消す。新しいコードは `haptic(token)` を使う。
  */
 export function hapticSelection(): void {
 	haptic('tick');

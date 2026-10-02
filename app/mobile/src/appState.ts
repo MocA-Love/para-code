@@ -45,7 +45,7 @@ import { DISCONNECT_WARNING, haptic } from './haptics.js';
 import { notifySubtitle } from './notifyPresentation.js';
 import { defaultTerminalPrefs, normalizeTerminalPrefs, type TerminalPrefs, type TerminalViewport } from './terminalViewport.js';
 import { DEFAULT_CHAT_FONT_SIZE, loadChatFontSize, normalizeChatFontSize, saveChatFontSize, type ChatFontSize } from './chatTextScale.js';
-import { EMPTY_HIDDEN_MODELS, loadHiddenModels, saveHiddenModels, withModelHidden, type HiddenModels, type ModelVisibilityAgent } from './modelVisibility.js';
+import { EMPTY_HIDDEN_MODELS, loadHiddenModels, replayHiddenModelOps, saveHiddenModels, withModelHidden, type HiddenModelOp, type HiddenModels, type ModelVisibilityAgent } from './modelVisibility.js';
 import { isTablet } from './hooks/useSizeClass.js';
 import { MobileVoiceLifecycle } from './voiceLifecycle.js';
 import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
@@ -58,7 +58,7 @@ import type { DiagnosticPc } from './connectionDiagnostics.js';
 import type { BrowserInput } from './browserKeys.js';
 
 /** 保存値を読み込む前に「モデルを選ぶ」で切り替えた操作。読み込み後は undefined（以後はそのまま保存する）。 */
-let hiddenModelOpsBeforeLoad: { readonly agent: ModelVisibilityAgent; readonly id: string; readonly hidden: boolean }[] | undefined = [];
+let hiddenModelOpsBeforeLoad: HiddenModelOp[] | undefined = [];
 
 /**
  * PC側とモバイル側の Sentry イベントを突き合わせる相関IDを設定する。
@@ -1314,7 +1314,7 @@ export const useAppStore = create<AppState>(set => ({
 				const stored = await loadHiddenModels(secureKeyStore);
 				const ops = hiddenModelOpsBeforeLoad ?? [];
 				hiddenModelOpsBeforeLoad = undefined;
-				const merged = ops.reduce((acc, op) => withModelHidden(acc, op.agent, op.id, op.hidden), stored);
+				const merged = replayHiddenModelOps(stored, ops);
 				set({ hiddenModels: merged });
 				if (ops.length > 0) {
 					saveHiddenModels(secureKeyStore, merged).catch(err => console.warn('[appState] failed to save hiddenModels', err));
