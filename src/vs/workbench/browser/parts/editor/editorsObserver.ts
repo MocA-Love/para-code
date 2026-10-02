@@ -162,7 +162,20 @@ export class EditorsObserver extends Disposable {
 		}));
 
 		// Make sure to cleanup on dispose
-		Event.once(group.onWillDispose)(() => dispose(groupDisposables));
+		Event.once(group.onWillDispose)(() => {
+			dispose(groupDisposables);
+
+			// PARA-PATCH: applyState (working sets, used by every Paradis space switch) disposes groups
+			// without closing editors that need confirmation, so no close event arrives for them. Drop
+			// what is left of the group here, otherwise disposed editors stay in the MRU list forever
+			// (and the next group reusing this id keeps adding to the same entry). Entries are keyed by id,
+			// so only drop editors of this group: another live group may carry the same id.
+			for (const editor of [...(this.keyMap.get(group.id)?.keys() ?? [])]) {
+				if (group.contains(editor, { strictEquals: true }) || editor.isDisposed()) {
+					this.removeMostRecentEditor(group, editor);
+				}
+			}
+		});
 	}
 
 	private onDidChangeEditorPartOptions(event: IEditorPartOptionsChangeEvent): void {
