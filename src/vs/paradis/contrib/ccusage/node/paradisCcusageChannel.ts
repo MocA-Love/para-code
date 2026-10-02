@@ -23,7 +23,7 @@ import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { paradisAgentCliFallbackDirs, paradisResolveAgentCli } from '../../../node/paradisAgentCli.js';
 import { paradisCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
-import { IParadisTrackedChildProcess, ParadisChildProcessTreeTracker } from '../../../node/paradisKillChildProcess.js';
+import { IParadisTrackedChildProcess, ParadisChildProcessTreeTracker, paradisKillExitedProcessGroup } from '../../../node/paradisKillChildProcess.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
@@ -34,9 +34,12 @@ import {
 	IParadisCcusageBlock,
 	IParadisCcusageDailyRow,
 	IParadisCcusageExecOptions,
+	IParadisCcusageReportResult,
+	IParadisCcusageReportValues,
 	IParadisCcusageService,
 	IParadisCcusageSessionRow,
 	PARADIS_CCUSAGE_CHANNEL,
+	PARADIS_CCUSAGE_FETCH_REPORT_COMMAND,
 	PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS,
 	PARADIS_CCUSAGE_TIMEZONE_PATTERN,
 	ParadisCcusageProjects,
@@ -56,6 +59,8 @@ const MIN_EXEC_TIMEOUT_MS = 10_000;
  * 上限を10分にしてあるのは、warm(定期先取り更新)が daily/blocks/session/projects の4種を
  * 直列に実行するため(runWarmPass)。1本ごとの上限を長くすると「対象数 × タイムアウト」で
  * 1周の所要が伸び、CACHE_TTL_MS を前提にした「周期内に必ず温め直す」不変条件が崩れる。
+ * ただし warm と裏の取り直しは BACKGROUND_MIN_EXEC_TIMEOUT_MS まで走らせるので、ログが多い PC ではこの
+ * 不変条件は守れない。TTL を過ぎた値は古い値（stale）として返すので、待たせることにはならない。
  */
 const MAX_EXEC_TIMEOUT_MS = 10 * 60_000;
 /**
@@ -96,6 +101,30 @@ const CACHE_TTL_MS = WARM_INTERVAL_MS + WARM_SKIP_IF_FRESHER_THAN_MS + 5 * 60 * 
 const BLOCK_CACHE_TTL_MS = CACHE_TTL_MS;
 /** --offline フォールバックで得た結果(価格が古い可能性)は短命キャッシュに留める。 */
 const FALLBACK_CACHE_TTL_MS = 60 * 1000;
+/**
+ * TTL を過ぎた前回の値を「古い値」として返してよい長さ。ccusage はログが多いと1回に数分かかる
+ * (実測で 400 秒を超える PC がある)。TTL が切れるたびに完了を待たせると、モバイルも PC の画面も
+ * その間ずっと読み込み中になるので、前回の値をすぐ返して裏で取り直す。取得時刻は値に添えて返すので、
+ * 古さは表示側が見せられる。メモリ上のキャッシュなので、実際には shared process が生きている間に限られる。
+ */
+const STALE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * 古い値を返したときの裏の取り直しが失敗し続けたときの間隔(指数で伸ばす)。毎回の要求で
+ * タイムアウトまで走る ccusage を起こし直さないため。手動更新(bypassCache)と warm は対象外。
+ */
+const REVALIDATE_BACKOFF_START_MS = 5 * 60 * 1000;
+const REVALIDATE_BACKOFF_MAX_MS = 60 * 60 * 1000;
+/**
+ * ccusage の実行そのものの上限の下限。設定 `paradis.ccusage.execTimeoutSeconds` は「待たせる長さ」の
+ * 上限で、待っている側だけをそこで打ち切る(実行は止めない)。ログが多い PC では 1 本が 400 秒を超える
+ * ため、設定値で実行まで打ち切ると値がいつまでも埋まらない。実行は max(設定値, この値) まで走らせる。
+ */
+const BACKGROUND_MIN_EXEC_TIMEOUT_MS = 15 * 60_000;
+/**
+ * 値が無いまま前景の実行が失敗したとき、同じキャッシュの鍵の次の要求へ失敗をそのまま返す長さ。
+ * 開くたびに設定の上限まで走る実行を起こし直さない(裏の長い実行が走っていれば、それに相乗りする)。
+ */
+const NEGATIVE_CACHE_MS = 2 * 60_000;
 /** 連続で失敗し続ける対象を諦める回数(ccusage が入っていない環境で永久に走らせない)。 */
 const WARM_MAX_CONSECUTIVE_FAILURES = 3;
 const WARM_LEASE_MAX_OWNERS = 128;
@@ -110,8 +139,39 @@ interface IWarmFailure {
 }
 
 interface IInflightReport {
-	readonly promise: Promise<unknown>;
+	readonly promise: Promise<ICompletedReport>;
+	/** キャッシュの鍵（`--since` を除いたもの）。 */
+	readonly familyKey: string;
 	foregroundCacheInterest: boolean;
+}
+
+interface ICompletedReport {
+	readonly value: unknown;
+	/** 取り終えた時刻。 */
+	readonly at: number;
+}
+
+/**
+ * キャッシュの1件。鍵は `--since` を除いた実行引数と実行ファイル（cacheFamilyKeyFor）で、
+ * どの `--since` で取った値かはここに持つ。日付が変わって `--since` が1日進んでも、前日の値を古い値として返せる
+ * （鍵に `--since` を含めると、日付が変わった瞬間に全部が見つからなくなり、最初の要求が完了まで待たされる）。
+ */
+interface ICacheEntry {
+	readonly at: number;
+	readonly ttl: number;
+	readonly value: unknown;
+	/** この値を取ったときの `--since`（無ければ undefined）。 */
+	readonly since: string | undefined;
+}
+
+interface IRevalidateFailure {
+	readonly count: number;
+	readonly retryAt: number;
+}
+
+interface INegativeCacheEntry {
+	readonly at: number;
+	readonly error: unknown;
 }
 
 interface IWarmLeaseOwner {
@@ -147,10 +207,14 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	private resolved: IResolvedExecutable | undefined;
 	/** 解決処理の in-flight メモ(並列 fetch の初回に解決が多重実行されるのを防ぐ)。 */
 	private resolving: Promise<IResolvedExecutable> | undefined;
-	/** レポート結果のTTLキャッシュ(キー: 実行引数+実行ファイルパス)。 */
-	private readonly cache = new Map<string, { at: number; ttl: number; value: unknown }>();
-	/** 実行中リクエストの共有(同一キーの同時要求を1本にまとめる)。 */
+	/** レポート結果のキャッシュ(キー: `--since` を除いた実行引数+実行ファイルパス。{@link ICacheEntry})。 */
+	private readonly cache = new Map<string, ICacheEntry>();
+	/** 実行中リクエストの共有(同一キーの同時要求を1本にまとめる。キーは `--since` を含む実行引数+実行ファイルパス)。 */
 	private readonly inflight = new Map<string, IInflightReport>();
+	/** 古い値を返した後の裏の取り直しが失敗したキャッシュの鍵と、次に試してよい時刻。 */
+	private readonly revalidateFailures = new Map<string, IRevalidateFailure>();
+	/** 値が無いまま前景の実行が失敗したキャッシュの鍵（{@link NEGATIVE_CACHE_MS}）。 */
+	private readonly negativeCache = new Map<string, INegativeCacheEntry>();
 	/** 実行のdeadlineと子プロセスツリーの停止を所有する。 */
 	private readonly childProcesses: ParadisChildProcessTreeTracker;
 	private readonly warmLeaseTracker: ParadisWarmLeaseTracker<ParadisCcusageWarmTarget>;
@@ -179,8 +243,13 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		private readonly now: () => number = Date.now,
 		warmLeaseSchedulerFactory: WarmLeaseSchedulerFactory = runner => new RunOnceScheduler(runner, 0),
 	) {
+		// POSIX では ccusage を自分のプロセスグループで起こし(paradisCcusageProcessGroupOptions)、止めるときは
+		// グループごと止める。npx 経由だと子は npx で、実体の node(ccusage)は孫になる。子だけを止めると孫が
+		// 孤児として走査を続け、次の要求がまた新しい ccusage を起こす(ログが多い PC で数本が同時に残っていた)。
+		// Windows はツリーごと止める(paradisKillChildProcessTree)。
 		this.childProcesses = new ParadisChildProcessTreeTracker(
 			error => this.logService.trace('[ParadisCcusage] failed to stop child process: ' + error),
+			{ processGroup: true },
 		);
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
@@ -215,30 +284,36 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		return Math.min(Math.max(seconds * 1000, MIN_EXEC_TIMEOUT_MS), MAX_EXEC_TIMEOUT_MS);
 	}
 
+	/** 誰も完了を待っていない実行の上限（{@link BACKGROUND_MIN_EXEC_TIMEOUT_MS}）。 */
+	private getBackgroundExecTimeoutMs(): number {
+		return Math.max(this.getExecTimeoutMs(), BACKGROUND_MIN_EXEC_TIMEOUT_MS);
+	}
+
 	/** exec に渡す環境変数(process.env にログインシェル解決分をマージしたもの)。 */
 	private getExecEnv(): Promise<NodeJS.ProcessEnv> {
 		return this.cachedShellEnv.getEnv();
 	}
 
 	async fetchDaily(options: IParadisCcusageExecOptions): Promise<IParadisCcusageDailyRow[]> {
-		const result = await this.execJson<{ daily?: IParadisCcusageDailyRow[] }>(['daily'], options);
-		return Array.isArray(result.daily) ? result.daily : [];
+		return (await this.fetchReport('daily', options)).value;
 	}
 
 	async fetchActiveBlock(options: IParadisCcusageExecOptions): Promise<IParadisCcusageBlock | undefined> {
-		const result = await this.execJson<{ blocks?: IParadisCcusageBlock[] }>(['blocks', '--active'], options, BLOCK_CACHE_TTL_MS);
-		const blocks = Array.isArray(result.blocks) ? result.blocks : [];
-		return blocks.find(block => block.isActive && !block.isGap) ?? blocks[0];
+		return (await this.fetchReport('blocks', options)).value;
 	}
 
 	async fetchRecentSessions(options: IParadisCcusageExecOptions): Promise<IParadisCcusageSessionRow[]> {
-		const result = await this.execJson<{ sessions?: IParadisCcusageSessionRow[] }>(['claude', 'session', '--order', 'desc'], options);
-		return Array.isArray(result.sessions) ? result.sessions : [];
+		return (await this.fetchReport('session', options)).value;
 	}
 
 	async fetchProjects(options: IParadisCcusageExecOptions): Promise<ParadisCcusageProjects> {
-		const result = await this.execJson<{ projects?: ParadisCcusageProjects }>(['claude', 'daily', '--instances'], options);
-		return result.projects ?? {};
+		return (await this.fetchReport('projects', options)).value;
+	}
+
+	async fetchReport<K extends ParadisCcusageWarmTargetKind>(kind: K, options: IParadisCcusageExecOptions): Promise<IParadisCcusageReportResult<IParadisCcusageReportValues[K]>> {
+		const ttl = kind === 'blocks' ? BLOCK_CACHE_TTL_MS : CACHE_TTL_MS;
+		const result = await this.execJson<unknown>([...warmReportArgs[kind]], options, ttl);
+		return { ...result, value: paradisCcusageReportValue(kind, result.value) };
 	}
 
 	setWarmLease(ownerId: string, targets: readonly ParadisCcusageWarmTarget[]): void {
@@ -263,7 +338,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	}
 
 	/** foreground の要求。warm ownership は setWarmLease だけが変更する。 */
-	private async execJson<T>(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number = CACHE_TTL_MS): Promise<T> {
+	private async execJson<T>(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number = CACHE_TTL_MS): Promise<IParadisCcusageReportResult<T>> {
 		return this.execJsonInternal<T>(reportArgs, options, ttl);
 	}
 
@@ -295,8 +370,9 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			// 経過時間はループの都度見る(1本に数十秒かかるので、入口の1回では古くなる)。
 			const now = this.now();
 			// 直前に手動更新された等で十分新しいものは飛ばす(同じ走査を続けて2回しない)。
-			const cached = this.cache.get(key);
-			if (cached && now - cached.at < WARM_SKIP_IF_FRESHER_THAN_MS) {
+			const reportArgs = [...warmReportArgs[target.kind]];
+			const cached = this.cache.get(this.cacheFamilyKeyFor(reportArgs, target.options));
+			if (cached && cached.since === sinceArg(target.options) && now - cached.at < WARM_SKIP_IF_FRESHER_THAN_MS) {
 				continue;
 			}
 			if (this.inflight.has(key)) {
@@ -304,9 +380,8 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			}
 			try {
 				// 鮮度判定はここで済ませているので、キャッシュを見に行かせず必ず実行させる。
-				const reportArgs = [...warmReportArgs[target.kind]];
 				const ttl = target.kind === 'blocks' ? BLOCK_CACHE_TTL_MS : CACHE_TTL_MS;
-				await this.execJsonInternal(reportArgs, { ...target.options, bypassCache: true }, ttl, () => this.warmLeaseTracker.isCurrent(key, generation), false);
+				await this.execJsonInternal(reportArgs, { ...target.options, bypassCache: true }, ttl, () => this.warmLeaseTracker.isCurrent(key, generation), false, true);
 				if (this.warmLeaseTracker.isCurrent(key, generation)) {
 					this.warmFailures.delete(key);
 				}
@@ -414,9 +489,18 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		return memberships <= WARM_LEASE_MAX_MEMBERSHIPS && distinctKeys.size <= WARM_LEASE_MAX_MEMBERSHIPS;
 	}
 
-	/** キャッシュキー。since/until/timezone を含む実行引数と実行ファイルパスで決まる。 */
+	/** 実行の鍵(同時実行の束ね・warm の対象)。since/until/timezone を含む実行引数と実行ファイルパスで決まる。 */
 	private cacheKeyFor(reportArgs: string[], options: IParadisCcusageExecOptions): string {
 		return JSON.stringify([this.buildArgs(reportArgs, options), options.executablePath ?? '']);
+	}
+
+	/**
+	 * キャッシュの鍵。{@link cacheKeyFor} から `--since` だけを除いたもの。`--since` は「今日から 90 日前」で
+	 * 毎日1日ずつ進むので、鍵に含めると日付が変わるたびに前日の値が引けなくなる。until・timezone・
+	 * 実行ファイルは値の意味を変えるので鍵に残す。
+	 */
+	private cacheFamilyKeyFor(reportArgs: string[], options: IParadisCcusageExecOptions): string {
+		return JSON.stringify([this.buildArgs(reportArgs, { ...options, since: undefined }), options.executablePath ?? '']);
 	}
 
 	private buildArgs(reportArgs: string[], options: IParadisCcusageExecOptions): string[] {
@@ -444,40 +528,146 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		this.warmLeaseTracker.dispose();
 		this.warmLeaseOwners.clear();
 		this.warmFailures.clear();
+		this.revalidateFailures.clear();
+		this.negativeCache.clear();
 		this.childProcesses.dispose();
 	}
 
+	/**
+	 * キャッシュを見て返すか、ccusage を実行する。
+	 * - TTL 内で同じ `--since` の値: そのまま返す
+	 * - TTL を過ぎた値・別の `--since` で取った値（STALE_MAX_AGE_MS 以内）: すぐ `stale: true` で返し、
+	 *   裏で取り直す（同じ鍵の実行は1本に束ねる。取り直しが失敗し続けたら間隔を伸ばす）
+	 * - 値が無い・bypassCache: 実行の完了を待つ
+	 */
 	private async execJsonInternal<T>(
 		reportArgs: string[],
 		options: IParadisCcusageExecOptions,
 		ttl: number = CACHE_TTL_MS,
 		shouldCache: () => boolean = () => true,
 		foregroundCacheInterest = true,
-	): Promise<T> {
-		const args = this.buildArgs(reportArgs, options);
-		const cacheKey = JSON.stringify([args, options.executablePath ?? '']);
+		background = false,
+	): Promise<IParadisCcusageReportResult<T>> {
+		const familyKey = this.cacheFamilyKeyFor(reportArgs, options);
 		if (!options.bypassCache) {
-			const cached = this.cache.get(cacheKey);
-			if (cached && this.now() - cached.at < cached.ttl) {
-				return cached.value as T;
+			const cached = this.cache.get(familyKey);
+			if (cached) {
+				const age = this.now() - cached.at;
+				if (cached.since === sinceArg(options) && age < cached.ttl) {
+					return { value: cached.value as T, fetchedAt: cached.at, stale: false };
+				}
+				if (age < STALE_MAX_AGE_MS) {
+					this.revalidate(reportArgs, options, ttl);
+					return { value: cached.value as T, fetchedAt: cached.at, stale: true };
+				}
 			}
 		}
+		if (!options.bypassCache && !background) {
+			// 値が無いまま直前に失敗した: 裏の長い実行が走っていれば相乗りし、無ければ同じ失敗を返す
+			const negative = this.negativeCache.get(familyKey);
+			if (negative && this.now() - negative.at < NEGATIVE_CACHE_MS) {
+				const running = this.inflightForFamily(familyKey);
+				if (!running) {
+					throw negative.error;
+				}
+				const joined = await this.waitWithinForegroundLimit(running.promise);
+				return { value: joined.value as T, fetchedAt: joined.at, stale: false };
+			}
+		}
+		try {
+			const running = this.run(reportArgs, options, ttl, shouldCache, foregroundCacheInterest);
+			const completed = background ? await running : await this.waitWithinForegroundLimit(running);
+			return { value: completed.value as T, fetchedAt: completed.at, stale: false };
+		} catch (error) {
+			if (!background && !this.disposed) {
+				// 時間切れでも実行そのものは裏の上限まで続き、終われば値が入る（その間の要求は相乗りする）
+				this.negativeCache.set(familyKey, { at: this.now(), error });
+			}
+			throw error;
+		}
+	}
+
+	/**
+	 * 待っている側だけを設定 `paradis.ccusage.execTimeoutSeconds` で打ち切る。実行は止めない（同じ走査を
+	 * やり直さないため。裏の上限 {@link BACKGROUND_MIN_EXEC_TIMEOUT_MS} 以上まで走り、終わればキャッシュに入る）。
+	 */
+	private waitWithinForegroundLimit<T>(promise: Promise<T>): Promise<T> {
+		const limitMs = this.getExecTimeoutMs();
+		return new Promise<T>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				const error: IParadisExecError = new Error(`command timed out after ${limitMs}ms (still running in the background)`);
+				error.timedOut = true;
+				reject(error);
+			}, limitMs);
+			promise.then(value => {
+				clearTimeout(timer);
+				resolve(value);
+			}, error => {
+				clearTimeout(timer);
+				reject(error);
+			});
+		});
+	}
+
+	/** 同じキャッシュの鍵で走っている実行（`--since` だけ違うものを含む）。 */
+	private inflightForFamily(familyKey: string): IInflightReport | undefined {
+		return [...this.inflight.values()].find(record => record.familyKey === familyKey);
+	}
+
+	/** 古い値を返した後の裏の取り直し。失敗はログだけにして、次に試してよい時刻を遅らせる。 */
+	private revalidate(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number): void {
+		const familyKey = this.cacheFamilyKeyFor(reportArgs, options);
+		// 同じキャッシュの鍵で走っているものがあれば（`--since` だけ違う実行を含む）、それが終われば値が入るので起こさない。
+		if (this.disposed || this.inflightForFamily(familyKey)) {
+			return;
+		}
+		const failure = this.revalidateFailures.get(familyKey);
+		if (failure && this.now() < failure.retryAt) {
+			return;
+		}
+		this.run(reportArgs, { ...options, bypassCache: true }, ttl, () => true, true).then(() => {
+			this.revalidateFailures.delete(familyKey);
+		}, error => {
+			const count = (this.revalidateFailures.get(familyKey)?.count ?? 0) + 1;
+			const delay = Math.min(REVALIDATE_BACKOFF_MAX_MS, REVALIDATE_BACKOFF_START_MS * Math.pow(2, count - 1));
+			if (!this.disposed) {
+				this.revalidateFailures.set(familyKey, { count, retryAt: this.now() + delay });
+			}
+			this.logService.trace(`[ParadisCcusage] background revalidation failed for 'ccusage ${reportArgs.join(' ')}' (${count} in a row): ${error}`);
+		});
+	}
+
+	/** ccusage を実行してキャッシュへ入れる。同じ鍵の実行中のものがあれば相乗りする。 */
+	private run(
+		reportArgs: string[],
+		options: IParadisCcusageExecOptions,
+		ttl: number,
+		shouldCache: () => boolean,
+		foregroundCacheInterest: boolean,
+	): Promise<ICompletedReport> {
+		const args = this.buildArgs(reportArgs, options);
+		const cacheKey = JSON.stringify([args, options.executablePath ?? '']);
+		const familyKey = this.cacheFamilyKeyFor(reportArgs, options);
 		// bypassCache でも実行中の同一リクエストには相乗りする(結果はどのみち今まさに取り直したもの)
 		const inflight = this.inflight.get(cacheKey);
 		if (inflight) {
 			inflight.foregroundCacheInterest ||= foregroundCacheInterest;
-			return inflight.promise as Promise<T>;
+			return inflight.promise;
 		}
 
 		const record: IInflightReport = {
+			familyKey,
 			foregroundCacheInterest,
-			promise: this.doExecJson<T>(reportArgs, args, options)
+			// 実行の上限は常に裏の上限。待っている側の上限は waitWithinForegroundLimit が持つ
+			promise: this.doExecJson<unknown>(reportArgs, args, options, this.getBackgroundExecTimeoutMs())
 				.then(({ value, usedOfflineFallback }) => {
+					const at = this.now();
+					this.negativeCache.delete(familyKey);
 					if (!this.disposed && (record.foregroundCacheInterest || shouldCache())) {
 						this.pruneCache();
-						this.cache.set(cacheKey, { at: this.now(), ttl: usedOfflineFallback ? FALLBACK_CACHE_TTL_MS : ttl, value });
+						this.cache.set(familyKey, { at, ttl: usedOfflineFallback ? FALLBACK_CACHE_TTL_MS : ttl, value, since: sinceArg(options) });
 					}
-					return value;
+					return { value, at };
 				})
 				.finally(() => {
 					if (this.inflight.get(cacheKey) === record) {
@@ -486,25 +676,25 @@ export class ParadisCcusageService implements IParadisCcusageService {
 				}),
 		};
 		this.inflight.set(cacheKey, record);
-		return record.promise as Promise<T>;
+		return record.promise;
 	}
 
-	/** 期限切れエントリの掃除(since が日付で変わるため古いキーが溜まり続けるのを防ぐ)。 */
+	/** 古い値としても返せなくなったエントリの掃除。 */
 	private pruneCache(): void {
 		const now = this.now();
 		for (const [key, entry] of this.cache) {
-			if (now - entry.at >= entry.ttl) {
+			if (now - entry.at >= STALE_MAX_AGE_MS) {
 				this.cache.delete(key);
 			}
 		}
 	}
 
-	private async doExecJson<T>(reportArgs: string[], args: string[], options: IParadisCcusageExecOptions): Promise<{ value: T; usedOfflineFallback: boolean }> {
+	private async doExecJson<T>(reportArgs: string[], args: string[], options: IParadisCcusageExecOptions, timeoutMs: number): Promise<{ value: T; usedOfflineFallback: boolean }> {
 		const executable = await this.resolveExecutable(options.executablePath);
 		let stdout: string;
 		let usedOfflineFallback = false;
 		try {
-			stdout = await this.exec(executable, args);
+			stdout = await this.exec(executable, args, timeoutMs);
 		} catch (error) {
 			// 価格表のオンライン取得失敗(オフライン環境等)で落ちることがあるため、キャッシュ済み価格を
 			// 使う --offline で一度だけ再試行する。ただしバイナリが起動できなかった(ENOENT)・timeout の
@@ -516,7 +706,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			this.logService.info(`[ParadisCcusage] retrying 'ccusage ${reportArgs.join(' ')}' with --offline: ${execError.message}`);
 			try {
 				// 1回目に解決済みの executable をそのまま使う(再解決の PATH プローブを避ける)
-				stdout = await this.exec(executable, [...args, '--offline']);
+				stdout = await this.exec(executable, [...args, '--offline'], timeoutMs);
 				usedOfflineFallback = true;
 			} catch {
 				// 再試行も失敗した場合は元のエラーの方が原因を表している
@@ -531,13 +721,12 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		}
 	}
 
-	private async exec(executable: IResolvedExecutable, args: string[]): Promise<string> {
+	private async exec(executable: IResolvedExecutable, args: string[], timeoutMs: number): Promise<string> {
 		const fullArgs = [...executable.prefixArgs, ...args];
 		const env = await this.getExecEnv();
 		// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする。旧 Node の
 		// 自動委譲は CVE-2024-27980 対策で撤去済みで、ラップしないと EINVAL になる。
 		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(executable.command, fullArgs) : undefined;
-		const timeoutMs = this.getExecTimeoutMs();
 		return new Promise<string>((resolve, reject) => {
 			const execution: { child?: cp.ChildProcess; tracked?: IParadisTrackedChildProcess; completed: boolean } = { completed: false };
 			execution.child = this.execFile(shimInvocation?.file ?? executable.command, shimInvocation?.args ?? fullArgs, {
@@ -545,6 +734,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 				maxBuffer: EXEC_MAX_BUFFER,
 				windowsHide: true,
 				windowsVerbatimArguments: shimInvocation !== undefined,
+				...paradisCcusageProcessGroupOptions(),
 				env: { ...paradisCcusageCodexHomeEnv(env, paradisCodexHomes()), NO_COLOR: '1', LOG_LEVEL: '0' }
 			}, (err, stdout, stderr) => {
 				execution.completed = true;
@@ -565,6 +755,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 					resolve(stdout);
 				}
 			});
+			watchProcessGroupExit(execution.child);
 			if (!execution.completed && execution.child) {
 				execution.tracked = this.childProcesses.track(execution.child, timeoutMs);
 			}
@@ -631,12 +822,13 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		const shimInvocation = process.platform === 'win32' ? paradisWrapWindowsScriptShim(command, ['--version']) : undefined;
 		return new Promise<boolean>(resolve => {
 			const execution: { child?: cp.ChildProcess; tracked?: IParadisTrackedChildProcess; completed: boolean } = { completed: false };
-			execution.child = this.execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? ['--version'], { windowsHide: true, windowsVerbatimArguments: shimInvocation !== undefined, env }, err => {
+			execution.child = this.execFile(shimInvocation?.file ?? command, shimInvocation?.args ?? ['--version'], { windowsHide: true, windowsVerbatimArguments: shimInvocation !== undefined, ...paradisCcusageProcessGroupOptions(), env }, err => {
 				execution.completed = true;
 				const timedOut = execution.tracked?.timedOut === true;
 				execution.tracked?.dispose();
 				resolve(!err && !timedOut);
 			});
+			watchProcessGroupExit(execution.child);
 			if (!execution.completed && execution.child) {
 				execution.tracked = this.childProcesses.track(execution.child, 10_000);
 			}
@@ -647,6 +839,44 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		return new Promise<boolean>(resolve => {
 			fs.access(filePath, fs.constants.X_OK, err => resolve(!err));
 		});
+	}
+}
+
+/** 値を取ったときの `--since`（buildArgs と同じ条件。渡されないものは undefined）。 */
+function sinceArg(options: IParadisCcusageExecOptions): string | undefined {
+	return options.since && /^\d{8}$/.test(options.since) ? options.since : undefined;
+}
+
+/** ccusage の JSON 出力から、レポートの種類ごとの値を取り出す（形が違っても落ちない）。 */
+function paradisCcusageReportValue<K extends ParadisCcusageWarmTargetKind>(kind: K, output: unknown): IParadisCcusageReportValues[K] {
+	const record = (output !== null && typeof output === 'object' ? output : {}) as { daily?: unknown; blocks?: unknown; sessions?: unknown; projects?: unknown };
+	switch (kind) {
+		case 'daily':
+			return (Array.isArray(record.daily) ? record.daily : []) as IParadisCcusageReportValues[K];
+		case 'blocks': {
+			const blocks = (Array.isArray(record.blocks) ? record.blocks : []) as IParadisCcusageBlock[];
+			return (blocks.find(block => block.isActive && !block.isGap) ?? blocks[0]) as IParadisCcusageReportValues[K];
+		}
+		case 'session':
+			return (Array.isArray(record.sessions) ? record.sessions : []) as IParadisCcusageReportValues[K];
+		default:
+			return (record.projects !== null && typeof record.projects === 'object' ? record.projects : {}) as IParadisCcusageReportValues[K];
+	}
+}
+
+/**
+ * POSIX では ccusage を自分のプロセスグループで起こす(`detached`)。止めるときにグループごと止め、
+ * npx の先の孫(実体の node)まで残さないため。Windows では `detached` が新しいコンソールを開くので付けない
+ * (ツリーごと止める)。`detached` は execFile の型には無いが、ランタイムでは spawn へそのまま渡る。
+ */
+export function paradisCcusageProcessGroupOptions(platform: NodeJS.Platform = process.platform): { readonly detached?: boolean } {
+	return platform === 'win32' ? {} : { detached: true };
+}
+
+/** 子が終わった瞬間に、グループに残った孫を止める（終わり方によらない。子だけが先に終わる経路があるため）。 */
+function watchProcessGroupExit(child: cp.ChildProcess | undefined): void {
+	if (child && typeof child.once === 'function') {
+		child.once('exit', () => paradisKillExitedProcessGroup(child));
 	}
 }
 
@@ -679,6 +909,13 @@ export class ParadisCcusageChannel<TContext = string> implements IServerChannel<
 			return Promise.resolve(undefined as T);
 		}
 		const args = Array.isArray(arg) ? arg : [];
+		if (command === PARADIS_CCUSAGE_FETCH_REPORT_COMMAND) {
+			const request = (args[0] ?? {}) as { readonly kind?: unknown; readonly options?: IParadisCcusageExecOptions };
+			if (request.kind !== 'daily' && request.kind !== 'blocks' && request.kind !== 'session' && request.kind !== 'projects') {
+				throw new Error('Invalid fetchReport kind');
+			}
+			return this.service.fetchReport(request.kind, request.options ?? {}) as Promise<T>;
+		}
 		const options = (args[0] ?? {}) as IParadisCcusageExecOptions;
 		switch (command) {
 			case 'fetchDaily': return this.service.fetchDaily(options) as Promise<T>;
@@ -817,7 +1054,16 @@ function isExactPlainRecord(value: unknown, expectedKeys: readonly string[]): va
 export function registerParadisCcusageForServer<TContext>(server: IPCServer<TContext>, logService: ILogService, configurationService?: IConfigurationService): IDisposable {
 	const service = new ParadisCcusageService(logService, configurationService);
 	server.registerChannel(PARADIS_CCUSAGE_CHANNEL, new ParadisCcusageChannel<TContext>(service));
-	return { dispose: () => service.dispose() };
+	// REH は畳まずに終わることがある（接続が切れて延命の期限が来たときなど）。そのときも走っている ccusage を
+	// グループごと止める（裏の実行は設定値より長く走るので、残すと孤児になる）。
+	const onExit = () => service.dispose();
+	process.once('exit', onExit);
+	return {
+		dispose: () => {
+			process.removeListener('exit', onExit);
+			service.dispose();
+		}
+	};
 }
 
 /**

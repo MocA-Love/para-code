@@ -93,6 +93,10 @@ export class ParadisGithubMetricsService {
 
 	private rateLimits: readonly IParadisGithubRateLimitEntry[] = [];
 	private rateLimitFetchedAt: number | undefined;
+	/** レート枠を最後に1つでも取れた時刻。 */
+	private rateLimitSucceededAt: number | undefined;
+	/** gh が認証しているアカウント（GraphQL のプローブの応答から読む。取れなければ前回の値のまま）。 */
+	private accountLogin: string | undefined;
 	private rateLimitError: string | undefined;
 	private ghAvailable = true;
 	private inFlight: Promise<void> | undefined;
@@ -127,7 +131,12 @@ export class ParadisGithubMetricsService {
 
 		const now = this.now();
 		const { operations, spaces, totals, lastErrors } = this.callLog.snapshot(now);
+		// 最後の取り直しで1つも取れず、前回の値を出しているときは古い値として示す。
+		const stale = this.rateLimits.length > 0 && this.consecutiveFailures > 0;
 		return {
+			...(this.accountLogin !== undefined ? { account: { login: this.accountLogin } } : {}),
+			...(this.rateLimitSucceededAt !== undefined ? { fetchedAt: this.rateLimitSucceededAt } : {}),
+			...(stale ? { stale } : {}),
 			generatedAt: now,
 			sessionStartedAt: this.callLog.sessionStartedAt,
 			ghAvailable: this.ghAvailable,
@@ -216,6 +225,7 @@ export class ParadisGithubMetricsService {
 			// 履歴には取れたものだけを入れる。前回値を今回の時刻で入れ直すと、
 			// 実測していない区間を「消費0」として記録することになる
 			this.history.record(entries, finishedAt);
+			this.rateLimitSucceededAt = finishedAt;
 		}
 		// 片方だけ失敗したときも、その資源の値が古いままである理由を UI に出す
 		this.rateLimitError = errors[0];
@@ -236,6 +246,11 @@ export class ParadisGithubMetricsService {
 		// 枠を使い切ると gh は HTTP 403 で非0終了するが、そのレスポンスにも X-RateLimit-* は載っている。
 		// 終了コードだけを見て捨てると、残量0とリセット時刻という一番知りたい情報を落としてしまう。
 		const entry = paradisParseGhRateLimitHeaders(result.stdout, probe.resource);
+		if (probe.resource === 'graphql' && result.errorMessage === undefined) {
+			// 追加の呼び出しはせず、枠を読むための `{viewer{login}}` の応答本文からアカウントを読む
+			// （スマホが複数の PC の枠を合わせるとき、同じアカウントを1つに束ねる鍵にする）。
+			this.accountLogin = paradisParseGhViewerLogin(result.stdout) ?? this.accountLogin;
+		}
 
 		// ヘッダが読めた呼び出しだけを記録する。プローブは枠を消費するので内訳に出すが、
 		// gh 不在・未認証・ネットワーク断のように枠を使っていない失敗まで記録すると、
@@ -296,6 +311,26 @@ export class ParadisGithubMetricsService {
 				}
 			});
 		});
+	}
+}
+
+/**
+ * `gh api graphql -i -f query={viewer{login}}` の出力（ヘッダの後に本文）から login を取り出す。
+ * GitHub の login に使える文字（英数字とハイフン、39 文字まで）だけを受け付ける。
+ */
+export function paradisParseGhViewerLogin(output: string): string | undefined {
+	// ヘッダと本文の間の空行より後が本文
+	const separator = /\r?\n\r?\n/.exec(output);
+	const text = (separator ? output.slice(separator.index + separator[0].length) : output).trim();
+	if (!text.startsWith('{')) {
+		return undefined;
+	}
+	try {
+		const body = JSON.parse(text) as { data?: { viewer?: { login?: unknown } } };
+		const login = body?.data?.viewer?.login;
+		return typeof login === 'string' && /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(login) ? login : undefined;
+	} catch {
+		return undefined;
 	}
 }
 

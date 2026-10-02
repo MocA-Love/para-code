@@ -82,6 +82,8 @@ vi.mock('./platform.js', () => ({
 }));
 // 回線の変化の購読は expo-modules-core（ネイティブ）を引くので差し替える。
 vi.mock('./networkRevival.js', () => ({ subscribeNetworkRevival: () => () => undefined }));
+// 使用量の最後の値のファイル（expo-file-system を読む）。PC の解除で呼ぶだけなので何もしないものにする。
+vi.mock('./features/usage/usageCacheFile.js', () => ({ forgetUsagePc: async () => undefined }));
 // 前回の一覧（W2-25）と接続の記録（W2-22）のファイルは expo のネイティブ部品を引くので、メモリの代わりに置く。
 vi.mock('./lastKnownPcStore.js', () => ({
 	lastKnownPcStorage: { read: async () => null, write: async () => undefined, remove: async () => undefined },

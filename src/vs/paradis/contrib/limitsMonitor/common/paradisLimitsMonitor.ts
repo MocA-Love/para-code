@@ -80,6 +80,12 @@ export interface IParadisLimitsAccount {
 	readonly removable?: boolean;
 	/** Codex: 同じaccount_idを持つ、自分以外のホームの表示用ラベル。 */
 	readonly duplicateHomeLabels?: readonly string[];
+	/**
+	 * Codex: auth.json の account_id（ChatGPT のアカウント／ワークスペースの ID）の
+	 * `sha256('para-code-codex-account-v1:' + account_id)` の hex。モバイルが複数の PC の上限を合わせるとき、
+	 * 同じアカウントを1つに束ねる鍵にする（PC ごとの `id` はホームのパスなので使えない）。比べるだけなので生の値は送らない。
+	 */
+	readonly accountId?: string;
 	readonly status: ParadisLimitsAccountStatus;
 	/** status が 'unavailable' のときの内訳(表示の分岐に使う)。 */
 	readonly unavailableReason?: ParadisLimitsUnavailableReason;
@@ -120,7 +126,10 @@ export interface IParadisLimitsProviderSnapshot {
 export interface IParadisLimitsSnapshot {
 	readonly claude: IParadisLimitsProviderSnapshot;
 	readonly codex: IParadisLimitsProviderSnapshot;
+	/** Codex の分を取り終えた時刻（epoch ms）。Claude の古さはアカウントごとの `fetchedAt` で見る。 */
 	readonly fetchedAt: number;
+	/** Codex の分が TTL を過ぎた前回の値（裏で取り直している）。古い PC・接続先では未設定。 */
+	readonly stale?: boolean;
 }
 
 export interface IParadisLimitsFetchOptions {

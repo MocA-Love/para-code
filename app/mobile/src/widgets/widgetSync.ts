@@ -9,7 +9,6 @@ import {
 	writeWidgetFileIfUnchanged,
 } from '../../modules/para-live-activity/index.js';
 import { useAppStore } from '../appState.js';
-import { localRelayWindowId } from '../relayHosts.js';
 import { startStatusSinceTracking, useStatusSince } from '../features/pc/statusSinceStore.js';
 import {
 	buildWidgetSnapshot,
@@ -24,7 +23,10 @@ import {
 	type WidgetSnapshot,
 	type WidgetUsage,
 } from './snapshot.js';
-import { buildWidgetUsage } from './usage.js';
+import { buildWidgetUsage, buildWidgetUsageAll } from './usage.js';
+import { currentUsageEntries, useUsageStore } from '../features/usage/usageStore.js';
+import { pcSourceKey } from '../features/usage/usageAggregate.js';
+import { localDateKey } from '../usageFormat.js';
 import { loadWidgetSettings, persistWidgetSettings, startWidgetThemeWatch, useWidgetSettings } from './widgetSettingsStore.js';
 
 /**
@@ -39,9 +41,9 @@ import { loadWidgetSettings, persistWidgetSettings, startWidgetThemeWatch, useWi
  * あわせて、ウィジェットの「確認済みにする」の積み置きを読み、いま見ている PC に繋がったら既存の
  * 「確認済みにする」（`ackAgentStatus`）で送る。PC 上で未確認でなくなったら積み置きから消す。
  *
- * C（PC の状態）のコストと上限、D（スペース）の変更とコミットは、アプリが前面にいる間だけ既存の要求
- * （`rateLimits` / `usageDashboard` / `scmStatus` / `scmLog`）で取る。どちらも間隔を空けて取り、
- * PC への負荷を増やしすぎない。
+ * C（PC の状態）のコストと上限は使用量のストア（`usageStore.ts`。全 PC の合計 `usageAll` もここから作る）の値を使い、
+ * D（スペース）の変更とコミットは既存の要求（`scmStatus` / `scmLog`）で取る。どちらもアプリが前面にいる間だけ、
+ * 間隔を空けて取り、PC への負荷を増やしすぎない。
  */
 
 const SNAPSHOT_FILE = 'widget-snapshot.json';
@@ -71,10 +73,10 @@ let writing: Promise<void> = Promise.resolve();
 let generation = 0;
 let outbox: WidgetOutboxEntry[] = [];
 const sentOutbox = new Set<string>();
-const usageByPc = new Map<string, { usage: WidgetUsage | undefined; at: number }>();
 const scmByPc = new Map<string, Map<string, ScmEntry>>();
 const scmFetchedAt = new Map<string, number>();
-let usageInFlight = false;
+/** 全 PC の合計（`usageAll`）のために、全 PC から取り直した時刻。 */
+let allUsageFetchedAt = 0;
 let scmInFlight = false;
 let appActive = AppState.currentState === 'active';
 
@@ -96,6 +98,12 @@ export function startWidgetSync(): void {
 	]).finally(() => {
 		useAppStore.subscribe(() => scheduleWrite());
 		useStatusSince.subscribe(() => scheduleWrite());
+		// 全 PC の値（使用量の画面・ホームが取ったものを含む）が増えたら書き直す
+		useUsageStore.subscribe((next, before) => {
+			if (next.records !== before.records) {
+				scheduleWrite();
+			}
+		});
 		useWidgetSettings.subscribe((next, before) => {
 			if (next.settings.showDetail !== before.settings.showDetail) {
 				scheduleWrite();
@@ -177,6 +185,7 @@ function flush(force: boolean): void {
 		active,
 		includeDetail,
 		outbox,
+		usageAll: buildWidgetUsageAll(currentUsageEntries(), now),
 	}, previous, now);
 	const key = snapshotContentKey(snapshot);
 	if (!force && key === lastKey && now - lastWriteAt < REFRESH_INTERVAL_MS) {
@@ -242,7 +251,7 @@ function activeInput(state: AppStoreState): SnapshotActiveInput | undefined {
 		chats: state.agentChats,
 		...(workspace.resources !== undefined ? { resources: workspace.resources } : {}),
 		statusSince: useStatusSince.getState().map,
-		...(usageByPc.get(pcId)?.usage !== undefined ? { usage: usageByPc.get(pcId)?.usage } : {}),
+		...(activePcUsage(pcId, Date.now()) !== undefined ? { usage: activePcUsage(pcId, Date.now()) } : {}),
 		scm: scmByPc.get(pcId) ?? new Map(),
 	};
 }
@@ -294,32 +303,23 @@ function processOutbox(state: AppStoreState): void {
 
 // --- C: コストと上限 ---------------------------------------------------------------
 
+/**
+ * コストと上限は使用量のストア（`usageStore.ts`）の値を使い、ここからは直接要求を送らない（ホームや使用量の画面と
+ * 二重に送らないため）。間隔を空けて全 PC から取り直してもらい（SSH の接続先は取らない）、取れたら購読で書き直す。
+ */
 function maybeFetchUsage(state: AppStoreState, now: number): void {
-	const pcId = state.activePcId;
-	if (pcId === undefined || usageInFlight || !isOnline(state)) {
-		return;
+	if (now - allUsageFetchedAt >= USAGE_INTERVAL_MS && state.pcs.some(pc => pc.connection === 'online' && pc.pcOnline)) {
+		allUsageFetchedAt = now;
+		void useUsageStore.getState().refresh(['limits', 'cost'], { maxAgeMs: USAGE_INTERVAL_MS, includeSsh: false });
 	}
-	const cached = usageByPc.get(pcId);
-	if (cached !== undefined && now - cached.at < USAGE_INTERVAL_MS) {
-		return;
-	}
-	usageInFlight = true;
-	usageByPc.set(pcId, { usage: cached?.usage, at: now });
-	void Promise.all([
-		// この PC のアカウントの値（SSH のウィンドウの接続先のログインに入れ替わらないように）
-		state.rateLimits(false, localRelayWindowId(state.workspace?.renderers)).catch(() => undefined),
-		state.usageDashboard().catch(() => undefined),
-	]).then(([limits, dashboard]) => {
-		// 取っている間に PC を切り替えたら捨てる（別の PC の値を混ぜない）。
-		if (useAppStore.getState().activePcId !== pcId) {
-			return;
-		}
-		const usage = buildWidgetUsage(limits, dashboard, Date.now());
-		usageByPc.set(pcId, { usage: usage ?? cached?.usage, at: Date.now() });
-		scheduleWrite();
-	}).finally(() => {
-		usageInFlight = false;
-	});
+}
+
+/** 見ている PC の今日のコストと上限（使用量のストアの、その PC の手元のウィンドウの値）。 */
+function activePcUsage(pcId: string, now: number): WidgetUsage | undefined {
+	const values = useUsageStore.getState().records[pcSourceKey(pcId)]?.values;
+	// 今日取れた値でなければ今日のコストは出さない（昨日の値の「今日」は 0 円に見えてしまう）
+	const cost = values?.cost !== undefined && localDateKey(new Date(values.cost.at)) === localDateKey(new Date(now)) ? values.cost.value : undefined;
+	return buildWidgetUsage(values?.limits?.value, cost, now);
 }
 
 // --- D: スペースの変更とコミット ----------------------------------------------------------

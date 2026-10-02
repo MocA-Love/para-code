@@ -186,6 +186,17 @@ enum WidgetLimitOption: String, AppEnum {
 	]
 }
 
+@available(iOS 17.0, *)
+enum WidgetUsageScopeOption: String, AppEnum {
+	case all, pc
+
+	static var typeDisplayRepresentation: TypeDisplayRepresentation = "コストと利用上限"
+	static var caseDisplayRepresentations: [WidgetUsageScopeOption: DisplayRepresentation] = [
+		.all: "全 PC の合計",
+		.pc: "選んだ PC",
+	]
+}
+
 // MARK: - ウィジェットごとの設定
 
 @available(iOS 17.0, *)
@@ -225,6 +236,9 @@ struct PcStatusConfigIntent: WidgetConfigurationIntent {
 
 	@Parameter(title: "PC")
 	var pc: WidgetPcEntity?
+
+	@Parameter(title: "コストと利用上限", default: .all)
+	var usageScope: WidgetUsageScopeOption
 
 	@Parameter(title: "利用上限の対象", default: .appDefault)
 	var limit: WidgetLimitOption

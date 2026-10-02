@@ -111,6 +111,8 @@ function reuseRenderer(previous: Renderer, next: Renderer): Renderer {
 		&& previous.host?.kind === next.host?.kind
 		&& previous.host?.id === next.host?.id
 		&& previous.host?.label === next.host?.label
+		// 機械のハッシュ（全 PC の合計で同じ機械を1回だけ数える）も。後から届いたハッシュを捨てないため。
+		&& previous.host?.machineIdHash === next.host?.machineIdHash
 		? previous
 		: next;
 }
@@ -180,7 +182,8 @@ export function reuseWorkspaceState(previous: WorkspaceState | undefined, next: 
 		&& previous.revision === next.revision
 		&& previous.complete === next.complete
 		&& previous.activeWs === next.activeWs
-		&& previous.pcName === next.pcName) {
+		&& previous.pcName === next.pcName
+		&& previous.machineIdHash === next.machineIdHash) {
 		return previous;
 	}
 	if (renderers === next.renderers

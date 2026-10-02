@@ -1,17 +1,21 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { RefreshControl, StyleSheet, Text, View } from 'react-native';
-import { useShallow } from 'zustand/react/shallow';
+import { useRouter } from 'expo-router';
 import { haptic } from '../../../src/haptics.js';
-import { useAppStore } from '../../../src/appState.js';
-import type { GithubRateLimitEntry, GithubUsageResult } from '../../../src/store.js';
+import type { GithubRateLimitEntry } from '../../../src/store.js';
 import { alpha, colors, radius, space, tint, type } from '../../../src/theme.js';
 import { useNow } from '../../../src/time.js';
-import { updatedAtLabel } from '../../../src/usageFormat.js';
+import { staleValueLabel, updatedAtLabel } from '../../../src/usageFormat.js';
 import { meterColor } from '../../../src/ui/index.js';
 import { GroupHeader, SettingsScreen } from '../../../src/features/settings/settingsScaffold.js';
 import { ratioPercent } from '../../../src/features/settings/usageSummary.js';
+import { settingsRoutes } from '../../../src/features/settings/settingsRoutes.js';
+import { pcSourceKey, summarizeGithub, type UsageKind } from '../../../src/features/usage/usageAggregate.js';
+import { AggregatedFetchNotes, SeenOnChips, UsageEntryRows, UsageFetchNote, fetchNoteItems } from '../../../src/features/usage/usageOverviewParts.js';
+import { useUsageAutoRefresh, useUsageOverview, useUsageStore } from '../../../src/features/usage/usageStore.js';
+import { useUsageScope } from '../../../src/features/usage/useUsageScope.js';
 import {
 	SLOW_CALL_MS,
 	barPercent,
@@ -33,8 +37,10 @@ import {
 	DetailRefreshButton,
 	StatTile,
 	StatTiles,
+	staleStyle,
 } from '../../../src/features/settings/usageDetailParts.js';
 
+const GITHUB_KINDS: readonly UsageKind[] = ['github'];
 /** 内訳に出す行の上限。 */
 const MAX_ROWS = 10;
 /**
@@ -59,78 +65,52 @@ const GROUP_OPTIONS: readonly { value: GithubGroupKey; label: string }[] = [
  * （旧 `legacy-screens/(settings)/github-usage.tsx` の作り直し）。
  *
  * GitHub のレート枠は PC（マシン）単位で共有され、どの接続先から見ても同じ値なので、接続先の切り替えは出さない。
- * 取り方（最後に投げた要求だけを採用・PC の切り替えで捨てる）は旧画面のまま。
+ * PC が2台以上なら全 PC の合計: レート枠は GitHub のアカウント（`account.login`）ごとに1つ（足さない。
+ * アカウント名の届かない古い PC は PC ごと）、呼び出し件数は足す。行を押すとその PC だけの値（`?source=`）へ。
  */
 export default function GithubUsageScreen() {
 	// 画面を開いたままでもリセットまでの時間が進むよう、取得時刻ではなく今の時刻を使う
 	const now = useNow();
-	const { githubUsage, connection, activePcId, pcs } = useAppStore(useShallow(s => ({
-		githubUsage: s.githubUsage, connection: s.connection, activePcId: s.activePcId, pcs: s.pcs,
-	})));
-
-	const [data, setData] = useState<GithubUsageResult | undefined>();
-	const [loading, setLoading] = useState(false);
+	const router = useRouter();
+	const { scope, sourceParam } = useUsageScope();
+	const overview = useUsageOverview();
+	// GitHub は PC の値（SSH の接続先ごとには無い）。PC が1台で接続先を選んでいても、その PC の値を出す。
+	const sourceKey = scope.kind === 'source' ? (scope.pcId !== undefined ? pcSourceKey(scope.pcId) : scope.key) : undefined;
+	const source = sourceKey !== undefined ? overview.sources.find(item => item.key === sourceKey) : undefined;
+	useUsageAutoRefresh(GITHUB_KINDS, sourceKey !== undefined ? [sourceKey] : undefined);
 	const [pullRefreshing, setPullRefreshing] = useState(false);
-	const [error, setError] = useState<string | undefined>();
 	const [windowKey, setWindowKey] = useState<GithubWindowKey>('5m');
 	const [groupKey, setGroupKey] = useState<GithubGroupKey>('caller');
 
-	// PC の切り替えと手動の更新が前後したとき、古い応答で新しい結果を上書きしないよう最後の要求だけを採る
-	// （見ていない PC も接続を保つので、切り替えた後でも前の PC 向けの要求が正常に返りうる）。
-	const requestSeq = useRef(0);
-	const refresh = useCallback(async (bypassCache = false) => {
-		if (connection !== 'online') {
-			return;
-		}
-		const seq = ++requestSeq.current;
-		setLoading(true);
-		setError(undefined);
-		try {
-			const result = await githubUsage(bypassCache);
-			if (seq !== requestSeq.current) {
-				return;
-			}
-			setData(result);
-		} catch (e) {
-			if (seq !== requestSeq.current) {
-				return;
-			}
-			setError(String(e instanceof Error ? e.message : e));
-		} finally {
-			if (seq === requestSeq.current) {
-				setLoading(false);
-			}
-		}
-		// activePcId: 切り替えたら取り直す（connection は online のままなので、これが無いと再取得が起きない）
-	}, [githubUsage, connection, activePcId]);
-
-	useEffect(() => { void refresh(); }, [refresh]);
-
-	// PC を切り替えたら前の PC の数字を捨てる。
-	useEffect(() => {
-		setData(undefined);
-		setError(undefined);
-	}, [activePcId]);
+	// 全 PC の合計（レート枠はアカウントごと、呼び出し件数は足したもの）か、1つの PC の値。
+	const summary = scope.kind === 'all' ? summarizeGithub(overview.entries, now) : undefined;
+	const timed = sourceKey !== undefined ? overview.valuesOf(sourceKey)?.github : undefined;
+	const data = summary !== undefined ? summary.merged : timed?.value;
+	const loading = overview.isLoading('github', sourceKey);
+	const online = scope.kind === 'all' ? overview.entries.some(entry => entry.online) : source?.online === true;
+	const stale = scope.kind === 'source' && !online;
 
 	const onPullRefresh = useCallback(async () => {
 		setPullRefreshing(true);
 		try {
-			await refresh(true);
+			await useUsageStore.getState().refresh(GITHUB_KINDS, { bypassCache: true, ...(sourceKey !== undefined ? { sourceKeys: [sourceKey] } : {}) });
 		} finally {
 			setPullRefreshing(false);
 		}
-	}, [refresh]);
+	}, [sourceKey]);
 
 	const core = data?.rateLimits.find(entry => entry.resource === 'core');
 	const graphql = data?.rateLimits.find(entry => entry.resource === 'graphql');
 	const rows = data === undefined ? [] : groupKey === 'caller' ? githubCallerRows(data.operations, windowKey) : githubSpaceRows(data.spaces, windowKey);
 	const maxValue = Math.max(1, ...rows.map(row => row.value));
-	const activePc = pcs.find(pc => pc.id === activePcId);
+	const label = scope.kind === 'all'
+		? `PC ${overview.entries.filter(entry => entry.kind === 'pc').length} 台の合計`
+		: sourceParam !== undefined ? source?.pcName : undefined;
 	const subtitle = [
-		pcs.length > 1 ? activePc?.name : undefined,
-		data !== undefined ? updatedAtLabel(data.generatedAt, now) : undefined,
-		'PC 全体の値',
-	].filter((part): part is string => part !== undefined).join(' · ');
+		label,
+		data !== undefined ? updatedAtLabel(summary !== undefined ? data.generatedAt : (timed?.at ?? data.generatedAt), now) : undefined,
+		scope.kind === 'all' ? undefined : 'PC 全体の値',
+	].filter((part): part is string => part !== undefined && part.length > 0).join(' · ');
 
 	const renderLimit = (label: string, entry: GithubRateLimitEntry | undefined) => {
 		const percent = entry !== undefined ? ratioPercent(entry.used, entry.limit) : undefined;
@@ -153,21 +133,55 @@ export default function GithubUsageScreen() {
 			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { haptic('edge'); void onPullRefresh(); }} tintColor={colors.textDim} />}
 		>
 			{loading && data === undefined ? <DetailLoading /> : null}
-			{error !== undefined ? <DetailMessage tone="error">{error}</DetailMessage> : null}
-			{data !== undefined && !data.ghAvailable ? (
+			{scope.kind === 'all'
+				? <AggregatedFetchNotes items={fetchNoteItems(overview, 'github')} now={now} />
+				: <UsageFetchNote error={sourceKey !== undefined ? overview.errorOf(sourceKey, 'github') : undefined} hasPrevious={timed !== undefined} staleAt={timed?.value.stale === true ? timed.at : undefined} now={now} />}
+			{timed !== undefined && stale ? <DetailMessage tone="note">{staleValueLabel(timed.at, now)}</DetailMessage> : null}
+			{scope.kind === 'source' && data !== undefined && !data.ghAvailable ? (
 				<DetailMessage tone="warn">GitHub CLI（gh）が見つかりません。PC で `gh auth login` を実行してください。</DetailMessage>
 			) : null}
-			{data?.rateLimitError !== undefined ? <DetailMessage tone="warn">レート枠を取得できませんでした: {data.rateLimitError}</DetailMessage> : null}
-			{data === undefined && connection !== 'online' ? <DetailNotConnected /> : null}
+			{scope.kind === 'source' && data?.rateLimitError !== undefined ? <DetailMessage tone="warn">レート枠を取得できませんでした: {data.rateLimitError}</DetailMessage> : null}
+			{data === undefined && !online ? <DetailNotConnected /> : null}
 
 			{data !== undefined ? (
-				<View>
+				<View style={stale ? staleStyle : undefined}>
 					{/* 他の使用量と同じく「使用率」で見せる（残量で見せると、満ちた棒が画面によって逆の意味になる）。 */}
-					<GroupHeader title="レート枠の使用率" first />
-					<StatTiles>
-						{renderLimit('REST', core)}
-						{renderLimit('GraphQL', graphql)}
-					</StatTiles>
+					{summary !== undefined ? (
+						// 同じアカウントは足さずに1つ（見えている PC を添える）。アカウント名の届かない古い PC は PC ごと。
+						summary.accounts.map((account, index) => (
+							<View key={account.key} style={account.old ? staleStyle : undefined}>
+								<GroupHeader title={`レート枠の使用率 · ${account.label}`} first={index === 0} />
+								{!account.ghAvailable ? <DetailMessage tone="warn">GitHub CLI（gh）が見つかりません。PC で `gh auth login` を実行してください。</DetailMessage> : null}
+								{account.rateLimitError !== undefined ? <DetailMessage tone="warn">レート枠を取得できませんでした: {account.rateLimitError}</DetailMessage> : null}
+								<StatTiles>
+									{renderLimit('REST', account.rateLimits.find(entry => entry.resource === 'core'))}
+									{renderLimit('GraphQL', account.rateLimits.find(entry => entry.resource === 'graphql'))}
+								</StatTiles>
+								<SeenOnChips chips={account.seenOn} />
+							</View>
+						))
+					) : (
+						<>
+							<GroupHeader title="レート枠の使用率" first />
+							<StatTiles>
+								{renderLimit('REST', core)}
+								{renderLimit('GraphQL', graphql)}
+							</StatTiles>
+						</>
+					)}
+
+					{summary !== undefined && summary.rows.length > 1 ? (
+						<>
+							<GroupHeader title="PC ごとの呼び出し（セッション）" />
+							<UsageEntryRows
+								entries={overview.entries.filter(entry => entry.kind === 'pc')}
+								values={Object.fromEntries(summary.rows.map(row => [row.key, { value: row.sessionCalls !== undefined ? `${row.sessionCalls.toLocaleString()} 件` : '—', at: row.at }]))}
+								now={now}
+								showResources={false}
+								onOpen={entry => { haptic('move'); router.push(settingsRoutes.usageDetail('github', entry.key)); }}
+							/>
+						</>
+					) : null}
 
 					<GroupHeader title="期間" />
 					<ChoiceChips options={WINDOW_OPTIONS} selected={windowKey} onSelect={setWindowKey} />

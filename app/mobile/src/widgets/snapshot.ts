@@ -94,8 +94,10 @@ export interface WidgetUsage {
 	readonly costClaude?: number;
 	readonly costCodex?: number;
 	readonly limits: readonly WidgetLimit[];
-	/** コストと上限を取った時刻。 */
+	/** コストと上限を取った時刻（全 PC の合計では、オンラインの出どころのうち最も古いもの）。 */
 	readonly fetchedAt: number;
+	/** 全 PC の合計で、オフラインの出どころ（最後の値で数えたもの）がある。 */
+	readonly partial?: boolean;
 }
 
 export interface WidgetResources {
@@ -136,6 +138,11 @@ export interface WidgetSnapshot {
 	/** アプリで見ている PC（ウィジェットの PC の設定が「アプリで見ている PC」のときの行き先）。 */
 	readonly activePcId?: string;
 	readonly pcs: readonly WidgetPc[];
+	/**
+	 * 全 PC の合計の今日のコストと利用上限（ウィジェット C の「使用量」を「全 PC の合計」にしたときに出す）。
+	 * 今日のコストは今日取れた PC の分だけ、上限はアカウントで束ねて provider ごとに最も使っているもの。
+	 */
+	readonly usageAll?: WidgetUsage;
 }
 
 /** 「確認済みにしたい」の積み置き（ウィジェットのボタンが積み、アプリが PC へ送って消す）。 */
@@ -197,6 +204,8 @@ export interface SnapshotInput {
 	readonly active: SnapshotActiveInput | undefined;
 	/** 質問文とコマンドを入れるか（アプリの設定）。 */
 	readonly includeDetail: boolean;
+	/** 全 PC の合計の使用量（無ければ前回の要約のものを残す）。 */
+	readonly usageAll?: WidgetUsage | undefined;
 	/** まだ PC へ送れていない「確認済みにしたい」。ウィジェットの表示を先に変えたままにする。 */
 	readonly outbox: readonly WidgetOutboxEntry[];
 }
@@ -471,6 +480,8 @@ export function buildWidgetSnapshot(input: SnapshotInput, previous: WidgetSnapsh
 		paired: input.pcs.length > 0,
 		...(input.activePcId !== undefined ? { activePcId: input.activePcId } : {}),
 		pcs,
+		// PC が1台も無ければ（すべて解除した）合計も残さない。
+		...(input.pcs.length > 0 && (input.usageAll ?? previous?.usageAll) !== undefined ? { usageAll: input.usageAll ?? previous?.usageAll } : {}),
 	};
 }
 
@@ -698,6 +709,13 @@ function parseSpace(raw: unknown): WidgetSpace | undefined {
 	};
 }
 
+function parseUsage(raw: unknown): WidgetUsage | undefined {
+	const usage = raw as Record<string, unknown> | undefined | null;
+	return usage !== undefined && usage !== null && typeof usage === 'object' && isFiniteNumber(usage['fetchedAt']) && Array.isArray(usage['limits'])
+		? usage as unknown as WidgetUsage
+		: undefined;
+}
+
 function parsePc(raw: unknown): WidgetPc | undefined {
 	if (raw === null || typeof raw !== 'object') {
 		return undefined;
@@ -709,7 +727,7 @@ function parsePc(raw: unknown): WidgetPc | undefined {
 	const agents = Array.isArray(r['agents']) ? r['agents'].map(parseAgent).filter((a): a is WidgetAgent => a !== undefined).slice(0, WIDGET_AGENTS_MAX) : [];
 	const spaces = Array.isArray(r['spaces']) ? r['spaces'].map(parseSpace).filter((s): s is WidgetSpace => s !== undefined).slice(0, WIDGET_SPACES_MAX) : [];
 	const battery = r['battery'] as Record<string, unknown> | undefined;
-	const usage = r['usage'] as Record<string, unknown> | undefined;
+	const usage = parseUsage(r['usage']);
 	const resources = r['resources'];
 	return {
 		id: r['id'],
@@ -720,7 +738,7 @@ function parsePc(raw: unknown): WidgetPc | undefined {
 		...(isFiniteNumber(r['eventAt']) ? { eventAt: r['eventAt'] } : {}),
 		...(battery !== undefined && battery !== null && isFiniteNumber(battery['level']) && typeof battery['charging'] === 'boolean' ? { battery: { level: battery['level'], charging: battery['charging'] } } : {}),
 		...(resources !== null && typeof resources === 'object' ? { resources: resources as WidgetResources } : {}),
-		...(usage !== undefined && usage !== null && isFiniteNumber(usage['fetchedAt']) && Array.isArray(usage['limits']) ? { usage: usage as unknown as WidgetUsage } : {}),
+		...(usage !== undefined ? { usage } : {}),
 		attention: isFiniteNumber(r['attention']) ? r['attention'] : agents.filter(agent => isWidgetAttention(agent.state)).length,
 		agents,
 		spaces,
@@ -753,5 +771,6 @@ export function parseWidgetSnapshot(raw: string | undefined | null): WidgetSnaps
 		paired: r['paired'] === true,
 		...(typeof r['activePcId'] === 'string' ? { activePcId: r['activePcId'] } : {}),
 		pcs: r['pcs'].map(parsePc).filter((pc): pc is WidgetPc => pc !== undefined),
+		...(parseUsage(r['usageAll']) !== undefined ? { usageAll: parseUsage(r['usageAll'])! } : {}),
 	};
 }

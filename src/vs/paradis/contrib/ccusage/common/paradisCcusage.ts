@@ -143,8 +143,33 @@ export interface IParadisCcusageProjectDailyRow {
 
 export type ParadisCcusageProjects = { readonly [projectName: string]: IParadisCcusageProjectDailyRow[] };
 
+/**
+ * `fetchReport` の戻り値。値に、それを ccusage から取った時刻と、TTL を過ぎた前回の値かどうかを添える。
+ * TTL を過ぎていても前回の値があれば待たせずに返し（`stale: true`）、裏で取り直す（stale-while-revalidate）。
+ */
+export interface IParadisCcusageReportResult<T> {
+	readonly value: T;
+	/** その値を ccusage から取り終えた時刻（epoch ms）。 */
+	readonly fetchedAt: number;
+	/** TTL を過ぎた前回の値（裏で取り直している）。 */
+	readonly stale: boolean;
+}
+
+/** `fetchReport` の種類ごとの値。 */
+export interface IParadisCcusageReportValues {
+	readonly daily: IParadisCcusageDailyRow[];
+	readonly blocks: IParadisCcusageBlock | undefined;
+	readonly session: IParadisCcusageSessionRow[];
+	readonly projects: ParadisCcusageProjects;
+}
+
+/** チャネルのコマンド名。この版より古い接続先（REH）には無い（Method not found）。 */
+export const PARADIS_CCUSAGE_FETCH_REPORT_COMMAND = 'fetchReport';
+
 /** shared process チャネルのメソッドと戻り値。 */
 export interface IParadisCcusageService {
+	/** レポート1つを、取得時刻と古さ付きで返す（{@link IParadisCcusageReportResult}）。 */
+	fetchReport<K extends ParadisCcusageWarmTargetKind>(kind: K, options: IParadisCcusageExecOptions): Promise<IParadisCcusageReportResult<IParadisCcusageReportValues[K]>>;
 	/** ownerのwarm対象を更新する。空配列はownerをreleaseする。 */
 	setWarmLease(ownerId: string, targets: readonly ParadisCcusageWarmTarget[]): void;
 	/** 統合 daily(全エージェント合算・モデル別内訳付き)。 */

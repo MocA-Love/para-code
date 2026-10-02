@@ -12,6 +12,7 @@ import type { RouteHref } from '../../routes.js';
  * | `/settings/quick-replies` | 会話画面のクイック返信（入力欄の上のチップ） |
  * | `/settings/colors` | 色（主ボタン・自分の発言と送信・選択の印とリンクの色） |
  * | `/settings/widgets` | ホーム画面・ロック画面のウィジェットの見た目と表示項目 |
+ * | `/settings/usage?source=…` | 使用量の、1つの出どころ（PC・SSH の接続先）だけの表示 |
  * | `/settings/usage/cost` | コスト（日別・モデル別） |
  * | `/settings/usage/rtk` | RTK の節約 |
  * | `/settings/usage/github` | GitHub API |
@@ -25,6 +26,14 @@ export const settingsRoutes = {
 	quickReplies: (): RouteHref => '/settings/quick-replies',
 	colors: (): RouteHref => '/settings/colors',
 	widgets: (): RouteHref => '/settings/widgets',
-	usageDetail: (page: UsageDetailPage): RouteHref => `/settings/usage/${page}`,
+	/**
+	 * 使用量の詳しい画面。`source` を渡すとその出どころ（PC・SSH の接続先）だけの値、渡さなければ
+	 * PC が2台以上なら全 PC の合計（PC が1台なら見ている PC の値）。
+	 */
+	usageDetail: (page: UsageDetailPage, source?: string): RouteHref => (source !== undefined
+		? { pathname: `/settings/usage/${page}`, params: { source } }
+		: `/settings/usage/${page}`),
+	/** 使用量の、1つの出どころ（PC・SSH の接続先）だけの表示（全 PC の合計の「PC ごと」の行から）。 */
+	usageSource: (source: string): RouteHref => ({ pathname: '/settings/usage', params: { source } }),
 	connectionLog: (): RouteHref => '/settings/connection-log',
 } as const;

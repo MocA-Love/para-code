@@ -40,6 +40,29 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.13.0',
+		date: '2026-10-03',
+		headline: '使用量を全 PC の合計で見られるようになりました',
+		items: [
+			{
+				icon: 'stats-chart-outline',
+				title: 'ホームと使用量の画面で、全 PC の合計を見られるようになりました',
+				body: 'コスト・RTK・GitHub は足し、Claude と Codex の上限はアカウントごとにまとめます。使用量の画面では PC ごとの行を押すと、その PC だけを見られます。SSH の接続先が同じ機械なら二重に数えません。PC の Para Code の更新が必要です。',
+			},
+			{
+				icon: 'time-outline',
+				title: '使用量の画面で「request timeout」が出にくくなりました',
+				body: 'PC の集計に時間がかかるときは、前回の値を残したまま知らせます。オフラインの PC は最後に取れた値を薄く出します。',
+				tone: 'green',
+			},
+			{
+				icon: 'apps-outline',
+				title: 'ホーム画面のウィジェットで、全 PC の合計か特定の PC かを選べるようになりました',
+				body: 'ウィジェットを長押しして「ウィジェットを編集」から選べます。既定は全 PC の合計です。',
+			},
+		],
+	},
+	{
 		version: '0.12.0',
 		date: '2026-10-02',
 		headline: 'ブラウザの画面を作り直しました',
