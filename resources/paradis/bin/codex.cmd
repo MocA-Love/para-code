@@ -11,17 +11,11 @@ set "PARA_CODEX_NODE="
 for %%i in (node.exe) do set "PARA_CODEX_NODE=%%~$PATH:i"
 if defined PARA_CODEX_NODE goto :run
 if not defined PARA_CODE_CODEX_LAUNCHER_NODE goto :nonode
-if not defined PARA_CODE_CODEX_APP_SERVER_ENDPOINT goto :direct
-rem Fallback keeps non-interactive delegation working; interactive sessions need node.exe.
-set "PARA_CODEX_NODE=%PARA_CODE_CODEX_LAUNCHER_NODE%"
-set "ELECTRON_RUN_AS_NODE=1"
-goto :run
-:direct
-rem The pane app-server is turned off, so the launcher is on PATH only to keep Codex off
-rem its shared background server, which needs the launcher script. Without node.exe that
-rem cannot be done without breaking the interactive session, so run the user's Codex
-rem unchanged: the launcher only looks it up (it prints the path) and this script runs it,
-rem keeping the terminal's console. The outer quotes survive cmd /c's quote stripping.
+rem The launcher only keeps Codex off its shared background server, which needs the
+rem launcher script. Without node.exe that cannot be done without breaking the interactive
+rem session, so run the user's Codex unchanged: the launcher only looks it up (it prints the
+rem path) and this script runs it, keeping the terminal's console. The outer quotes survive
+rem cmd /c's quote stripping.
 set "PARA_CODEX_REAL="
 set "ELECTRON_RUN_AS_NODE=1"
 set "PARA_CODE_CODEX_LAUNCHER_MODE=resolve"

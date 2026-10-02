@@ -1,31 +1,24 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 //
-// Windows pane launcher for interactive Codex sessions. Windows' Node (libuv) cannot
-// connect to AF_UNIX sockets, so unlike the POSIX `codex` launcher next to this file
-// the pane app-server listens on a loopback WebSocket port protected by a capability
-// token. The pane token already present in the terminal environment doubles as that
-// capability token: only its SHA-256 digest is passed to the app-server command line
-// and the plaintext never touches disk. The actual port is written to the pane's
-// endpoint file so the Para Code shared process (mobile relay) can connect too.
+// Windows launcher for interactive Codex sessions, the counterpart of the POSIX `codex`
+// launcher next to this file. It keeps interactive sessions off Codex's shared background
+// server (`--no-daemon`, or the auto-start override for Codex 0.155 and older) and delegates
+// every other subcommand to the user's real Codex unchanged.
 //
-// Invoked by codex.cmd / codex.ps1 with the Para Code executable running as Node
-// (ELECTRON_RUN_AS_NODE=1). Non-interactive subcommands are delegated unchanged to
-// the user's real Codex installation.
+// It used to start a pane-scoped `codex app-server` and attach the TUI with `--remote`. That
+// mode was removed: Codex rejects permission overrides with `--remote resume|fork`, and the
+// pane app-server restarted every MCP server for each terminal.
 //
-// Without a pane endpoint (the pane app-server is turned off) interactive sessions are only
-// kept off Codex's shared background server, like the POSIX launcher does.
+// Invoked by codex.cmd / codex.ps1 with a Node runtime (a console-subsystem node.exe, or the
+// Para Code executable with ELECTRON_RUN_AS_NODE=1).
 
 'use strict';
 
 const childProcess = require('child_process');
-const crypto = require('crypto');
 const fs = require('fs');
-const http = require('http');
 const os = require('os');
 const path = require('path');
 
-const ENDPOINT_ENV_VAR = 'PARA_CODE_CODEX_APP_SERVER_ENDPOINT';
-const PANE_TOKEN_ENV_VAR = 'PARA_CODE_TERMINAL_PANE_ID';
 const LAUNCHER_DIR_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_DIR';
 // Set by codex.cmd / codex.ps1 to `resolve` when no console-subsystem node.exe is available:
 // the launcher then only prints the user's Codex executable, and the script runs it itself so
@@ -36,15 +29,12 @@ const OPTIONS_WITH_VALUE = new Set([
 	'-c', '--config', '--enable', '--disable', '--remote-auth-token-env', '-i', '--image', '-m', '--model',
 	'--local-provider', '-p', '--profile', '-s', '--sandbox', '-C', '--cd', '--add-dir', '-a', '--ask-for-approval',
 ]);
-// Codex rejects `--remote` outside the interactive TUI ("only supported for interactive TUI
-// commands"), so it may only be injected when the invocation really opens the TUI: no
-// subcommand at all (a bare prompt), `resume`, or `fork`. Everything else has to be delegated,
-// which means every other subcommand name must be recognized here — a name missing from this
-// set is silently treated as a prompt and breaks that command. This is Codex 0.146's full set
-// (aliases and the internal subcommands `codex --help` hides included) minus the TUI commands,
-// and it is only the fast path: an unrecognized positional argument is resolved by asking Codex
-// itself, so a subcommand added by a future Codex release keeps working. `agents` (the overview of
-// the shared background server) is listed too: it must not be kept off that server.
+// `--no-daemon` is a TUI option, so only an invocation that opens the TUI gets it: no
+// subcommand at all (a bare prompt), `resume`, or `fork`. Every other subcommand is delegated
+// unchanged. This is Codex 0.146's full set (aliases and the internal subcommands `codex --help`
+// hides included) minus the TUI commands, plus `agents` and the 0.158 additions. A subcommand
+// missing here gets `--no-daemon` and may refuse it; the POSIX launcher and the mobile relay's
+// command parser carry the same list.
 const TUI_COMMANDS = new Set(['resume', 'fork']);
 const NON_INTERACTIVE_COMMANDS = new Set([
 	'exec', 'e', 'review', 'login', 'logout', 'mcp', 'plugin', 'mcp-server', 'app-server', 'remote-control',
@@ -52,31 +42,11 @@ const NON_INTERACTIVE_COMMANDS = new Set([
 	'cloud', 'exec-server', 'execpolicy', 'responses-api-proxy', 'stdio-to-uds', 'features', 'help', 'agents', 'queue', 'migrate-rollouts', 'tcp-tunnel',
 ]);
 
-const SERVER_START_TIMEOUT_MS = 10_000;
-const PROBE_TIMEOUT_MS = 2_000;
-const SUBCOMMAND_PROBE_TIMEOUT_MS = 5_000;
-const SUBCOMMAND_CACHE_TTL_MS = 6 * 60 * 60 * 1_000;
-const SUBCOMMAND_CACHE_NAME = 'codex-commands.cache';
 const DAEMON_PROBE_TIMEOUT_MS = 5_000;
 
 function fail(message, code) {
 	process.stderr.write(`Para Code: ${message}${os.EOL}`);
 	process.exit(code);
-}
-
-/**
- * Gives up on the pane app-server and runs the user's Codex unchanged.
- *
- * The pane app-server is an enhancement (it lets MCP servers inherit the pane
- * environment), not a requirement. This launcher is injected into every Para Code
- * terminal's PATH unconditionally with no setting to bypass it, and `resume` is not on
- * the delegated-command list, so failing here would leave the user unable to run Codex
- * at all. Warn about the lost capability and keep going instead.
- */
-function fallbackToDirect(reason, real, pathEntries, args) {
-	process.stderr.write(
-		`Para Code: ${reason} Starting Codex without the pane app-server; MCP servers will not inherit this pane's environment.${os.EOL}`);
-	runUnmanaged(real, pathEntries, args);
 }
 
 /**
@@ -119,9 +89,8 @@ function samePath(a, b) {
 /**
  * Mirrors the POSIX launcher's classification of an invocation.
  *
- * `delegated` runs the user's Codex unchanged, `tui` gets the pane app-server, and
- * `unknown` is a positional argument the static list cannot place — either the prompt or a
- * subcommand from a newer Codex — which only Codex itself can resolve.
+ * `delegated` runs the user's Codex unchanged; `tui` (a prompt, `resume`, `fork`, or a
+ * positional argument the list does not know) is kept off the shared background server.
  */
 function classifyInvocation(args) {
 	let skipNext = false;
@@ -133,8 +102,8 @@ function classifyInvocation(args) {
 		}
 		if (argument === '--remote' || argument.startsWith('--remote=')
 			|| argument === '--help' || argument === '-h' || argument === '--version' || argument === '-V'
-			// The user already keeps this session off the shared background server. Codex rejects
-			// the flag together with `--remote`, and twice, so run it exactly as typed.
+			// The user already chose: `--remote` attaches elsewhere, and `--no-daemon` is
+			// rejected when given twice. Run it exactly as typed.
 			|| argument === '--no-daemon') {
 			return { kind: 'delegated' };
 		}
@@ -156,89 +125,7 @@ function classifyInvocation(args) {
 	if (firstPositional === undefined || TUI_COMMANDS.has(firstPositional)) {
 		return { kind: 'tui' };
 	}
-	if (NON_INTERACTIVE_COMMANDS.has(firstPositional)) {
-		return { kind: 'delegated' };
-	}
-	return { kind: 'unknown', firstPositional };
-}
-
-/** Identity of the resolved Codex, used to invalidate the discovered-subcommand cache. */
-function codexIdentity(real) {
-	try {
-		const stat = fs.statSync(real.prefixArgs.length > 0 ? real.prefixArgs[0] : real.command);
-		return `${stat.size}-${Math.trunc(stat.mtimeMs)}`;
-	} catch {
-		return undefined;
-	}
-}
-
-/**
- * Every name Codex knows as a subcommand, read out of the dispatch table in the shell
- * completion script it generates for itself. That table is the only complete source: it lists
- * aliases and the internal subcommands `codex --help` hides.
- */
-function discoverSubcommands(real, pathEntries) {
-	let completionScript;
-	try {
-		completionScript = childProcess.execFileSync(real.command, [...real.prefixArgs, 'completion', 'bash'], {
-			env: childEnvironment(pathEntries, real.useOwnNode),
-			encoding: 'utf8',
-			timeout: SUBCOMMAND_PROBE_TIMEOUT_MS,
-			maxBuffer: 8 * 1_024 * 1_024,
-			stdio: ['ignore', 'pipe', 'ignore'],
-			windowsHide: true,
-		});
-	} catch {
-		return undefined;
-	}
-	const names = [];
-	// `\r?` because a Codex that writes its completion script with Windows line endings would
-	// otherwise leave every entry unmatched, and an empty result reads as "no subcommands".
-	for (const match of completionScript.matchAll(/^[ \t]*codex,([A-Za-z0-9_-]+)\)\r?$/gm)) {
-		names.push(match[1]);
-	}
-	return names.length > 0 ? names : undefined;
-}
-
-/**
- * Discovered subcommands for this Codex. Generating them costs about a third of a second, so
- * the result is cached in the pane runtime directory. The cache is invalidated both by the
- * Codex executable's identity and by age: the resolved entry is often a shim whose size and
- * timestamp do not change when the Codex behind it is upgraded.
- */
-function knownSubcommands(real, pathEntries, runtimeDir) {
-	const cachePath = path.join(runtimeDir, SUBCOMMAND_CACHE_NAME);
-	const identity = codexIdentity(real);
-	if (identity !== undefined) {
-		try {
-			const cached = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-			if (cached !== null && typeof cached === 'object' && cached.identity === identity
-				&& Array.isArray(cached.commands) && cached.commands.length > 0
-				&& Date.now() - fs.statSync(cachePath).mtimeMs < SUBCOMMAND_CACHE_TTL_MS) {
-				return new Set(cached.commands);
-			}
-		} catch {
-			// no usable cache
-		}
-	}
-	const commands = discoverSubcommands(real, pathEntries);
-	if (commands === undefined) {
-		return undefined;
-	}
-	if (identity !== undefined) {
-		const temporaryPath = `${cachePath}.${process.pid}.tmp`;
-		try {
-			fs.writeFileSync(temporaryPath, `${JSON.stringify({ identity, commands })}\n`);
-			fs.renameSync(temporaryPath, cachePath);
-		} catch {
-			try {
-				fs.rmSync(temporaryPath, { force: true });
-			} catch {
-				// best effort
-			}
-		}
-	}
-	return new Set(commands);
+	return NON_INTERACTIVE_COMMANDS.has(firstPositional) ? { kind: 'delegated' } : { kind: 'tui' };
 }
 
 function cleanPathEntries() {
@@ -338,294 +225,6 @@ function spawnCodex(real, args, options) {
 	return childProcess.spawn(real.command, [...real.prefixArgs, ...args], options);
 }
 
-function readEndpointRecord(endpointPath) {
-	try {
-		const parsed = JSON.parse(fs.readFileSync(endpointPath, 'utf8'));
-		if (parsed === null || typeof parsed !== 'object') {
-			return undefined;
-		}
-		const port = parsed.port;
-		const pid = parsed.pid;
-		if (!Number.isSafeInteger(port) || port <= 0 || port > 65_535 || !Number.isSafeInteger(pid) || pid <= 0) {
-			return undefined;
-		}
-		const ownerPid = Number.isSafeInteger(parsed.ownerPid) && parsed.ownerPid > 0 ? parsed.ownerPid : undefined;
-		return { port, pid, ownerPid };
-	} catch {
-		return undefined;
-	}
-}
-
-function writeEndpointRecord(endpointPath, record) {
-	const temporaryPath = `${endpointPath}.${process.pid}.tmp`;
-	fs.writeFileSync(temporaryPath, `${JSON.stringify(record)}\n`);
-	fs.renameSync(temporaryPath, endpointPath);
-}
-
-function processIsAlive(pid) {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-function killServerTree(pid) {
-	try {
-		if (process.platform === 'win32') {
-			childProcess.spawnSync('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true });
-		} else {
-			process.kill(pid, 'SIGTERM');
-		}
-	} catch {
-		// already gone
-	}
-}
-
-/** Removes endpoint records whose app-server process is no longer alive. */
-function sweepDeadEndpoints(runtimeDir) {
-	let entries;
-	try {
-		entries = fs.readdirSync(runtimeDir);
-	} catch {
-		return;
-	}
-	for (const name of entries) {
-		if (!name.endsWith('.endpoint.json')) {
-			continue;
-		}
-		const endpointPath = path.join(runtimeDir, name);
-		const record = readEndpointRecord(endpointPath);
-		if (record === undefined || !processIsAlive(record.pid)) {
-			try {
-				fs.rmSync(endpointPath, { force: true });
-				fs.rmSync(`${endpointPath}.log`, { force: true });
-			} catch {
-				// best effort
-			}
-		}
-	}
-}
-
-/**
- * Proves a listening port is this pane's app-server by completing an authenticated
- * WebSocket upgrade handshake: only a server started with the SHA-256 digest of this
- * pane's token answers 101 to this Authorization header.
- */
-function probeEndpointAuth(port, paneToken) {
-	return new Promise(resolve => {
-		const request = http.request({
-			host: '127.0.0.1',
-			port,
-			method: 'GET',
-			path: '/',
-			headers: {
-				'Connection': 'Upgrade',
-				'Upgrade': 'websocket',
-				'Sec-WebSocket-Version': '13',
-				'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64'),
-				'Authorization': `Bearer ${paneToken}`,
-			},
-			timeout: PROBE_TIMEOUT_MS,
-		});
-		const finish = result => {
-			request.destroy();
-			resolve(result);
-		};
-		request.on('upgrade', (_response, socket) => {
-			socket.destroy();
-			finish(true);
-		});
-		request.on('response', response => {
-			response.destroy();
-			finish(false);
-		});
-		request.on('timeout', () => finish(false));
-		request.on('error', () => finish(false));
-		request.end();
-	});
-}
-
-function startPaneServer(real, pathEntries, endpointPath, paneToken) {
-	return new Promise(resolve => {
-		const tokenDigest = crypto.createHash('sha256').update(paneToken, 'utf8').digest('hex');
-		const logPath = `${endpointPath}.log`;
-		const logStream = fs.createWriteStream(logPath, { flags: 'w' });
-		// このターミナルのコンソールを共有して起動する。detached/windowsHideでコンソールを
-		// 切り離すと、app-serverがspawnする各MCPサーバー（コンソールアプリ）が自前の
-		// コンソールウィンドウを確保して黒いウィンドウが乱立する（Windows実機で確認）。
-		// 共有により、ターミナルタブを閉じればapp-serverも自動的に終了する。
-		const server = spawnCodex(real, [
-			'app-server', '--listen', 'ws://127.0.0.1:0', '--ws-auth', 'capability-token', '--ws-token-sha256', tokenDigest,
-		], {
-			stdio: ['ignore', 'ignore', 'pipe'],
-			env: childEnvironment(pathEntries, real.useOwnNode),
-		});
-		let settled = false;
-		let stderrTail = '';
-		const settle = result => {
-			if (!settled) {
-				settled = true;
-				// On the failure paths nobody else owns the stream, and the launcher now keeps
-				// running (it falls back to the unmanaged Codex) instead of exiting immediately,
-				// so the descriptor has to be released here. The file itself is kept: it is the
-				// only record of why the app-server died.
-				if (result.error !== undefined) {
-					logStream.end();
-				}
-				resolve(result);
-			}
-		};
-		const timeout = setTimeout(() => {
-			killServerTree(server.pid);
-			settle({ error: `timed out waiting for pane Codex app-server. See ${logPath}` });
-		}, SERVER_START_TIMEOUT_MS);
-		server.on('error', error => {
-			clearTimeout(timeout);
-			settle({ error: `pane Codex app-server failed to start: ${error.message}` });
-		});
-		server.on('exit', () => {
-			clearTimeout(timeout);
-			settle({ error: `pane Codex app-server failed to start. See ${logPath}` });
-		});
-		server.stderr.on('data', chunk => {
-			logStream.write(chunk);
-			if (settled) {
-				return;
-			}
-			stderrTail = (stderrTail + chunk.toString('utf8')).slice(-8_192);
-			// codex 0.144時点の実出力は `listening on: ws://127.0.0.1:<port>`。表記変更に
-			// 多少耐えるようhost部分は固定しない（listenは常に127.0.0.1へ指示している）。
-			const match = /listening on:\s*ws:\/\/\S*:(\d{1,5})/.exec(stderrTail);
-			if (match !== null) {
-				clearTimeout(timeout);
-				// exit/errorリスナーは残す: settleは冪等なので起動成功後の発火は無視される。
-				settle({ server, port: Number(match[1]), logStream });
-			}
-		});
-	});
-}
-
-async function runManaged(real, pathEntries, args, invocation) {
-	const endpointPath = process.env[ENDPOINT_ENV_VAR] || '';
-	const endpointName = path.basename(endpointPath);
-	if (!path.isAbsolute(endpointPath) || !/^[A-Za-z0-9._-]{1,64}\.endpoint\.json$/.test(endpointName)
-		|| path.basename(path.dirname(endpointPath)) !== 'pcx') {
-		fallbackToDirect(`${ENDPOINT_ENV_VAR} is missing or invalid.`, real, pathEntries, args);
-		return;
-	}
-	const paneToken = process.env[PANE_TOKEN_ENV_VAR] || '';
-	if (!/^[A-Za-z0-9._-]{1,64}$/.test(paneToken)) {
-		fallbackToDirect(`${PANE_TOKEN_ENV_VAR} is missing or invalid.`, real, pathEntries, args);
-		return;
-	}
-	const runtimeDir = path.dirname(endpointPath);
-	try {
-		fs.mkdirSync(runtimeDir, { recursive: true });
-	} catch (error) {
-		fallbackToDirect(`could not create the Para Code pcx runtime directory: ${error.message}.`, real, pathEntries, args);
-		return;
-	}
-	sweepDeadEndpoints(runtimeDir);
-
-	// An unrecognized positional argument is either the prompt or a subcommand from a newer
-	// Codex than the static list knows. Only Codex can tell the two apart. Failing to ask keeps
-	// the prompt reading, which is what the static list alone would have decided.
-	if (invocation.kind === 'unknown'
-		&& knownSubcommands(real, pathEntries, runtimeDir)?.has(invocation.firstPositional) === true) {
-		runDelegated(real, pathEntries, args);
-		return;
-	}
-
-	let port;
-	let ownedServer;
-	const existing = readEndpointRecord(endpointPath);
-	if (existing !== undefined && processIsAlive(existing.pid) && await probeEndpointAuth(existing.port, paneToken)) {
-		port = existing.port;
-		if (existing.ownerPid === undefined || !processIsAlive(existing.ownerPid)) {
-			// The launcher that started this server is gone (for example a closed
-			// terminal tab): adopt the orphan so this session cleans it up on exit.
-			ownedServer = { pid: existing.pid, port: existing.port, adopted: true };
-			writeEndpointRecord(endpointPath, { port: existing.port, pid: existing.pid, ownerPid: process.pid });
-		}
-	} else {
-		const started = await startPaneServer(real, pathEntries, endpointPath, paneToken);
-		if (started.error !== undefined) {
-			fallbackToDirect(`${started.error}.`, real, pathEntries, args);
-			return;
-		}
-		port = started.port;
-		ownedServer = { pid: started.server.pid, port, child: started.server, logStream: started.logStream };
-		try {
-			writeEndpointRecord(endpointPath, { port, pid: started.server.pid, ownerPid: process.pid });
-		} catch (error) {
-			killServerTree(started.server.pid);
-			started.logStream.end();
-			fallbackToDirect(`could not record the pane Codex app-server endpoint: ${error.message}.`, real, pathEntries, args);
-			return;
-		}
-		started.server.unref();
-	}
-
-	const cleanup = () => {
-		if (ownedServer === undefined) {
-			return;
-		}
-		const owned = ownedServer;
-		ownedServer = undefined;
-		const record = readEndpointRecord(endpointPath);
-		if (record !== undefined && record.ownerPid !== process.pid) {
-			return;
-		}
-		// PID再利用で無関係なプロセスを殺さないよう、kill前に「その正体」を再確認する:
-		// 自分がspawnした子はhandleの終了状態が正、adoptした孤児は記録との一致とpid生存で判定する。
-		const stillOurs = owned.child !== undefined
-			? owned.child.exitCode === null && owned.child.signalCode === null
-			: record !== undefined && record.pid === owned.pid && record.port === owned.port && processIsAlive(owned.pid);
-		if (stillOurs) {
-			killServerTree(owned.pid);
-		}
-		if (owned.logStream !== undefined) {
-			owned.logStream.end();
-		}
-		try {
-			fs.rmSync(endpointPath, { force: true });
-			fs.rmSync(`${endpointPath}.log`, { force: true });
-		} catch {
-			// best effort
-		}
-	};
-
-	const tui = spawnCodex(real, ['--remote', `ws://127.0.0.1:${port}`, '--remote-auth-token-env', PANE_TOKEN_ENV_VAR, ...args], {
-		stdio: 'inherit',
-		env: childEnvironment(pathEntries, real.useOwnNode),
-	});
-	// Ctrl+C reaches the interactive Codex through the shared console; the launcher
-	// must stay alive to clean up after the TUI decides to exit.
-	process.on('SIGINT', () => { });
-	const terminate = exitCode => {
-		try {
-			tui.kill();
-		} catch {
-			// already gone
-		}
-		cleanup();
-		process.exit(exitCode);
-	};
-	process.on('SIGTERM', () => terminate(143));
-	// Node maps a closing console window (CTRL_CLOSE_EVENT) to SIGHUP on Windows.
-	process.on('SIGHUP', () => terminate(129));
-	tui.on('exit', (code, signal) => {
-		cleanup();
-		process.exit(typeof code === 'number' ? code : signal === 'SIGINT' ? 130 : 1);
-	});
-	tui.on('error', error => {
-		cleanup();
-		fail(`could not start Codex: ${error.message}`, 1);
-	});
-}
-
 function runDelegated(real, pathEntries, args) {
 	const child = spawnCodex(real, args, {
 		stdio: 'inherit',
@@ -653,17 +252,11 @@ function main() {
 		process.stdout.write(`${real.command}${os.EOL}`);
 		return;
 	}
-	const invocation = classifyInvocation(args);
-	if (invocation.kind === 'delegated') {
+	if (classifyInvocation(args).kind === 'delegated') {
 		runDelegated(real, pathEntries, args);
 		return;
 	}
-	// No endpoint means the pane app-server is turned off: keep the session embedded, silently.
-	if ((process.env[ENDPOINT_ENV_VAR] || '').length === 0) {
-		runUnmanaged(real, pathEntries, args);
-		return;
-	}
-	runManaged(real, pathEntries, args, invocation).catch(error => fail(String(error && error.message ? error.message : error), 1));
+	runUnmanaged(real, pathEntries, args);
 }
 
 main();

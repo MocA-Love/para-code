@@ -26,10 +26,16 @@ import { paradisWriteFileAtomicSync } from '../../../node/paradisWriteFileAtomic
 import { paradisWriteRollingBackupSync } from '../../../node/paradisRollingFileBackup.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
+import { PARADIS_REMOTE_HOOK_PORTS_DIR_NAME } from '../common/paradisRemoteHookSource.js';
 import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SPOOL_MAX_FILE_BYTES, PARADIS_AGENT_HOOK_SPOOL_MAX_FILES, PARADIS_AGENT_HOOK_SPOOL_SKIPPED_EVENTS } from '../common/paradisAgentHookSpool.js';
 import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexHomeCandidates, paradisCodexHomes } from './paradisAgentHome.js';
+
+/** 接続先の共有ポートファイルの隣にある、PC ごとのポートファイルの置き場。 */
+function paradisRemoteHookPortsDirectory(sharedPortFilePath: string): string {
+	return `${sharedPortFilePath.slice(0, sharedPortFilePath.lastIndexOf('/'))}/${PARADIS_REMOTE_HOOK_PORTS_DIR_NAME}`;
+}
 
 /**
  * notify.sh の内容を生成する (全行ASCII)。jq には依存せず grep/sed のみでパースする。
@@ -42,9 +48,25 @@ export function paradisGetNotifyScriptContent(fixedPortFilePath?: string, remote
 	// SSH で繋いだ先に置く版は、ポートファイルの場所を焼き込む。env（PARA_CODE_MCP_PORT_FILE）は
 	// 手元のパスのまま接続先へ渡ってしまい、そこには存在しないので必ず素通りしてしまうため。
 	// 焼き込む値は我々が組み立てた絶対パスで、ユーザー入力は混ざらない。
+	// 接続先の版は、ペインの env が「この PC 専用のポートファイル」（`ports/<印>.json`）を指していて、
+	// それが実在すればそちらを読む（同じ接続先へ複数の PC から繋いでいるとき、hook をペインを開いた
+	// PC へ届けるため。paradisRemoteHookSource.ts）。受け付けるのは焼き込んだ置き場の直下の形だけ。
 	const portFileRef = fixedPortFilePath !== undefined
-		? `"${fixedPortFilePath}"`
+		? '"$PORT_FILE"'
 		: `"$${PARADIS_MCP_PORT_FILE_ENV_VAR}"`;
+	const remotePortFileSelection = fixedPortFilePath === undefined ? [] : [
+		`PORT_FILE="${fixedPortFilePath}"`,
+		`SOURCE_PORT_FILE="\${${PARADIS_MCP_PORT_FILE_ENV_VAR}:-}"`,
+		'SOURCE_PORT_NAME="${SOURCE_PORT_FILE##*/}"',
+		'case "$SOURCE_PORT_NAME" in',
+		`  ${'[0-9a-f]'.repeat(16)}.json)`,
+		`    if [ "$SOURCE_PORT_FILE" = "${paradisRemoteHookPortsDirectory(fixedPortFilePath)}/$SOURCE_PORT_NAME" ] && [ -f "$SOURCE_PORT_FILE" ]; then`,
+		'      PORT_FILE="$SOURCE_PORT_FILE"',
+		'    fi',
+		'    ;;',
+		'esac',
+		'',
+	];
 	// 接続先へ置く版にだけ「どの接続先から来たか」の印を焼き込む。受け手はこの印だけを根拠に
 	// 「手元では開けないパス」と判断する（パスの綴りで見分けると、接続先とユーザー名が同じ
 	// 機械では手元のホーム配下と区別が付かず、会話が丸ごと出なくなる）。
@@ -110,6 +132,7 @@ export function paradisGetNotifyScriptContent(fixedPortFilePath?: string, remote
 		'  fi',
 		'}',
 		'',
+		...remotePortFileSelection,
 		guard,
 		'  drain_stdin "${1:-}"',
 		'  exit 0',

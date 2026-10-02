@@ -9,7 +9,7 @@
 import { localize } from '../../../../nls.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationNode, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_DEFAULT_RELAY_URL, PARADIS_MOBILE_ENABLED_KEY, PARADIS_MOBILE_PC_NAME_KEY, PARADIS_MOBILE_RELAY_URL_KEY } from '../common/paradisMobileRelay.js';
+import { PARADIS_MOBILE_DEFAULT_RELAY_URL, PARADIS_MOBILE_ENABLED_KEY, PARADIS_MOBILE_PC_NAME_KEY, PARADIS_MOBILE_RELAY_URL_KEY } from '../common/paradisMobileRelay.js';
 
 const paradisConfigurationNodeBase = Object.freeze<IConfigurationNode>({
 	id: 'paradis',
@@ -38,12 +38,6 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: '',
 			scope: ConfigurationScope.APPLICATION,
 			markdownDescription: localize('paradis.mobile.pcName', "Para Code Mobile のPC一覧に表示される、このPCの名前です。空のままにするとこのマシンのホスト名を使います。複数のPCとペアリングしているときに見分けやすい名前を付けてください。")
-		},
-		[PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY]: {
-			type: 'boolean',
-			default: false,
-			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.mobile.agent.codexDaemonStreaming', "Codexのライブ連携: 生成中の文字・子エージェント・ツールの出力・モデル一覧・次のターンの設定を、Para Code Mobileへその場で送ります。有効にすると、Codexを開いたターミナル1つにつき裏方のプロセスがもう1つ立ち上がり、その下でツール連携（MCP）のプロセス群も丸ごと起動し直されるため、メモリと起動時間がターミナルの数だけ増えます。無効のあいだCodexは素のまま動き、モバイルへは少し遅れて届きます（モバイルからモデルと思考の深さは変えられません）。この設定は新しく開いたターミナルから効きます。{0} が無効なときは何も起動しません。", `\`${PARADIS_MOBILE_ENABLED_KEY}\``)
 		}
 	}
 });

@@ -31,8 +31,6 @@ import type { ParadisBindingScope } from '../../workspaceSwitch/common/paradisWo
 export const PARADIS_MOBILE_ENABLED_KEY = 'paradis.mobile.enabled';
 /** リレーのベースURL（セルフホスト用）。 */
 export const PARADIS_MOBILE_RELAY_URL_KEY = 'paradis.mobile.relayUrl';
-/** 稼働中Codex pane app-serverからトークン単位の進捗通知を購読する（設定キー名は互換維持）。 */
-export const PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY = 'paradis.mobile.agent.codexDaemonStreaming';
 /** モバイルアプリのPC一覧に出すこのPCの表示名。空ならホスト名を使う。 */
 export const PARADIS_MOBILE_PC_NAME_KEY = 'paradis.mobile.pcName';
 
@@ -442,8 +440,14 @@ export interface IParadisMobileRelayService {
 	 */
 	notifyAgentCliCommandFinished(lease: IParadisMobileWindowLease, paneToken: string, generation: number, suspended?: boolean): Promise<ParadisAgentCommandDeliveryResult>;
 
-	/** Codex pane app-server購読の設定をshared processへ同期する。 */
-	setAgentLiveOptions(options: { readonly codexDaemonStreaming: boolean }): Promise<void>;
+	/**
+	 * agentチャネル用: SSH の接続先で動く Codex の rollout を、ウィンドウが接続先のディスクから見つけた
+	 * （hook が届かない接続先でも会話を写すため。electron-browser/paradisRemoteCodexRolloutDiscovery.ts）。
+	 * `remotePath` は接続先のパス。写すかどうかと、そのペインの会話として結び付けるかは shared process が決める。
+	 * @param commandStartedAt ウィンドウが `codex` の起動を見た時刻。これより後に hook が届いていれば hook を正とする
+	 * @returns `hooked` は hook が届いている（探すのをやめてよい）、`stale` はペインがもう無い
+	 */
+	noteRemoteAgentTranscript(lease: IParadisMobileWindowLease, paneToken: string, remoteAuthority: string, remotePath: string, commandStartedAt: number): Promise<'accepted' | 'ignored' | 'hooked' | 'stale'>;
 
 	/** PTY表示からbest-effort抽出した経過時間等を既存ライブ状態へ補足する。 */
 	notifyAgentTerminalHint(lease: IParadisMobileWindowLease, terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): Promise<void>;

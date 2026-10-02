@@ -16,8 +16,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { fireParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/node/paradisAgentHome.js';
-import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
-import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
+import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from '../../node/paradisRemoteTranscriptMirror.js';
 
 const nodeRequire = createRequire(import.meta.url);
@@ -81,7 +80,7 @@ function createDirectoryWalkBudget(allow: boolean): { readonly budget: IDirector
 function createChatWithDirectoryWalkBudget(budget: IDirectoryWalkBudget): ParadisMobileAgentChat {
 	return new ParadisMobileAgentChat(
 		() => { }, () => { }, () => { }, new NullLogService(),
-		undefined, async () => true, () => { }, undefined, undefined, budget,
+		async () => true, () => { }, undefined, undefined, budget,
 	);
 }
 
@@ -156,18 +155,6 @@ suite('ParadisMobileAgentChat', () => {
 			paradisConfirmedAgentPaneTokens(['window-2-pane-1'], ['window-1-pane-1', 'window-2-pane-1']),
 			['window-2-pane-1'],
 		);
-	});
-
-	test('routes each Codex Mobile thread to its newest pane socket', () => {
-		assert.deepStrictEqual(paradisCodexThreadTargetsForPaneSessions([
-			['pane-old', { agent: 'codex', sessionId: 'thread-1' }],
-			['pane-claude', { agent: 'claude', sessionId: 'claude-session' }],
-			['pane-two', { agent: 'codex', sessionId: 'thread-2' }],
-			['pane-new', { agent: 'codex', sessionId: 'thread-1' }],
-		], token => `/user-data/pcx/${token}.sock`), [
-			{ threadId: 'thread-1', socketPath: '/user-data/pcx/pane-new.sock' },
-			{ threadId: 'thread-2', socketPath: '/user-data/pcx/pane-two.sock' },
-		]);
 	});
 
 	test('validates each mobile agent inbound shape before dispatch', () => {
@@ -416,7 +403,6 @@ suite('ParadisMobileAgentChat', () => {
 			() => { },
 			() => { },
 			new NullLogService(),
-			undefined,
 			async () => true,
 			owner => syncRequests.push(owner),
 		);
@@ -592,7 +578,7 @@ suite('ParadisMobileAgentChat', () => {
 		const mirror = new ParadisRemoteTranscriptMirrorStore(userData, new NullLogService());
 		const chat = new ParadisMobileAgentChat(
 			() => { }, () => { }, () => { }, new NullLogService(),
-			undefined, async () => true, () => { }, undefined, mirror,
+			async () => true, () => { }, undefined, mirror,
 		);
 		const access = chat as unknown as { tailers: Map<string, { readonly effort: string | undefined }> };
 		try {
@@ -739,54 +725,6 @@ suite('ParadisMobileAgentChat', () => {
 		})), { cwd: '/workspace', sessionId: 'thread-1' });
 	});
 
-	test('preserves the exact Codex command approval choices and their response payloads', () => {
-		const parsed = paradisParseCodexApprovalRequestForTest({
-			method: 'item/commandExecution/requestApproval', id: 'approval-1', params: {
-				threadId: 'thread-1', turnId: 'turn-1', itemId: 'item-1', startedAtMs: 1,
-				command: 'git add src/file.ts', cwd: '/workspace', reason: 'Git indexへの書き込み',
-				availableDecisions: [
-					'accept',
-					{ acceptWithExecpolicyAmendment: { execpolicy_amendment: ['git', 'add'] } },
-					'decline',
-				],
-			},
-		});
-		assert.deepStrictEqual(parsed?.interaction, {
-			kind: 'approval', id: 'codex:s:approval-1', title: 'コマンドの実行許可',
-			detail: 'git add src/file.ts\nGit indexへの書き込み\n/workspace',
-			choices: [
-				{ id: '0', label: '今回だけ許可', tone: 'approve' },
-				{ id: '1', label: '同じ種類のコマンドを今後許可', tone: 'neutral' },
-				{ id: '2', label: '拒否', tone: 'deny' },
-			],
-		});
-		assert.deepStrictEqual(paradisCodexApprovalResultForTest(parsed!, '1'), {
-			decision: { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['git', 'add'] } },
-		});
-		assert.deepStrictEqual(paradisCodexApprovalResultForTest(parsed!, 'yes'), { decision: 'accept' });
-		assert.deepStrictEqual(paradisCodexApprovalResultForTest(parsed!, 'no'), { decision: 'decline' });
-		assert.strictEqual(paradisCodexApprovalResultForTest(parsed!, 'missing'), undefined);
-	});
-
-	test('maps Codex permission approval to requested subsets and an explicit denial', () => {
-		const parsed = paradisParseCodexApprovalRequestForTest({
-			method: 'item/permissions/requestApproval', id: 61, params: {
-				threadId: 'thread-1', turnId: 'turn-1', itemId: 'item-1', environmentId: 'local',
-				startedAtMs: 1, cwd: '/workspace', reason: '共有フォルダへの書き込み',
-				permissions: { network: null, fileSystem: { write: ['/workspace', '/shared'] } },
-			},
-		});
-		assert.deepStrictEqual(parsed?.interaction.choices, [
-			{ id: '0', label: '今回だけ許可', tone: 'approve' },
-			{ id: '1', label: 'セッション中は許可', tone: 'neutral' },
-			{ id: '2', label: '拒否', tone: 'deny' },
-		]);
-		assert.deepStrictEqual(paradisCodexApprovalResultForTest(parsed!, '1'), {
-			permissions: { fileSystem: { write: ['/workspace', '/shared'] } }, scope: 'session',
-		});
-		assert.deepStrictEqual(paradisCodexApprovalResultForTest(parsed!, '2'), { permissions: {}, scope: 'turn' });
-	});
-
 	test('never falls a resolved Codex daemon approval back to PTY key injection', () => {
 		assert.strictEqual(paradisIsCodexDaemonApprovalInteraction('codex:s:approval-1'), true);
 		assert.strictEqual(paradisIsCodexDaemonApprovalInteraction('codex-status:thread-1'), true);
@@ -838,7 +776,8 @@ suite('ParadisMobileAgentChat', () => {
 		]);
 	});
 
-	test('extracts current Codex rollout sub_agent_activity for the activity tracker', () => {
+	// history_mode が legacy の rollout だけが書く形。今の（paginated の）形は paradisAgentTranscriptParser.test.ts で見る
+	test('extracts legacy Codex rollout sub_agent_activity for the activity tracker', () => {
 		const parsed = paradisParseCodexTranscriptLineForTest(JSON.stringify({
 			timestamp: '2026-07-13T00:00:00.000Z', type: 'event_msg',
 			payload: { type: 'sub_agent_activity', event_id: 'event-1', occurred_at_ms: 1783900800123, agent_thread_id: 'thread-2', agent_path: '/root/reviewer', kind: 'started' },

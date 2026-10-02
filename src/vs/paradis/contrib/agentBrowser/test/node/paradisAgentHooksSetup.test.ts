@@ -73,21 +73,83 @@ suite('ParadisAgentHooksSetup', () => {
 
 		assert.deepStrictEqual(
 			{
-				// 接続先版はその場所を直接見る。env を経由しない（手元のパスが渡ってくるため）
-				remoteReadsBakedPath: remote.includes('"/home/user/.para-code/paradis-browser-mcp.json"'),
-				remoteIgnoresEnvVar: !remote.includes('PARA_CODE_MCP_PORT_FILE'),
+				// 接続先版はその場所を直接見る（env は手元のパスのまま届くことがあるため、既定にはしない）
+				remoteReadsBakedPath: remote.includes('PORT_FILE="/home/user/.para-code/paradis-browser-mcp.json"'),
+				// env を見るのは、焼き込んだ置き場の直下の PC ごとのポートファイルを指しているときだけ
+				remoteAcceptsOnlyItsPortsDirectory: remote.includes('"/home/user/.para-code/ports/$SOURCE_PORT_NAME"'),
 				// ペイントークンの判定は接続先でも要る（Para Code の外では素通りさせる）
 				remoteStillChecksPaneToken: remote.includes('PARA_CODE_TERMINAL_PANE_ID'),
 				// 手元版は今までどおり env を見る
-				localReadsEnvVar: local.includes('"$PARA_CODE_MCP_PORT_FILE"')
+				localReadsEnvVar: local.includes('"$PARA_CODE_MCP_PORT_FILE"'),
+				localHasNoSourceSelection: !local.includes('SOURCE_PORT_FILE'),
 			},
 			{
 				remoteReadsBakedPath: true,
-				remoteIgnoresEnvVar: true,
+				remoteAcceptsOnlyItsPortsDirectory: true,
 				remoteStillChecksPaneToken: true,
-				localReadsEnvVar: true
+				localReadsEnvVar: true,
+				localHasNoSourceSelection: true,
 			}
 		);
+	});
+
+	// 同じ接続先へ2台の PC から繋ぐと、共有のポートファイルは後から繋いだ PC の番号になる。ペインの env が
+	// その PC 専用のポートファイルを指していれば、hook はペインを開いた PC へ届く。置き場の外を指す env は
+	// 無視して共有のものを読む。
+	test('sends an SSH host hook to the PC that opened the pane when several PCs share the host', async function () {
+		if (process.platform === 'win32') {
+			this.skip();
+		}
+		this.timeout(20_000);
+		const { createServer } = await import('http');
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hook-source-'));
+		const received: string[] = [];
+		const servers = ['shared', 'own'].map(name => createServer((request, response) => {
+			request.resume();
+			request.on('end', () => {
+				received.push(name);
+				response.writeHead(200, { 'Content-Type': 'application/json' });
+				response.end('{"ok":true}');
+			});
+		}));
+		try {
+			for (const server of servers) {
+				await new Promise<void>((resolve, reject) => {
+					server.once('error', reject);
+					server.listen(0, '127.0.0.1', resolve);
+				});
+			}
+			const paraCodeDirectory = join(root, '.para-code');
+			const sharedPortFile = join(paraCodeDirectory, 'paradis-browser-mcp.json');
+			const ownPortFile = join(paraCodeDirectory, 'ports', '0123456789abcdef.json');
+			const outsidePortFile = join(root, 'elsewhere', 'ports', '0123456789abcdef.json');
+			await fs.mkdir(join(paraCodeDirectory, 'ports'), { recursive: true });
+			await fs.mkdir(join(root, 'elsewhere', 'ports'), { recursive: true });
+			await fs.writeFile(sharedPortFile, JSON.stringify({ port: (servers[0].address() as AddressInfo).port }));
+			await fs.writeFile(ownPortFile, JSON.stringify({ port: (servers[1].address() as AddressInfo).port }));
+			await fs.writeFile(outsidePortFile, JSON.stringify({ port: (servers[1].address() as AddressInfo).port }));
+			const scriptPath = join(root, 'notify.sh');
+			await fs.writeFile(scriptPath, paradisGetNotifyScriptContent(sharedPortFile, 'ssh-remote-host'), { mode: 0o755 });
+			const payloadPath = join(root, 'hook.json');
+			await fs.writeFile(payloadPath, '{"hook_event_name":"Stop"}');
+
+			for (const portFile of [ownPortFile, undefined, outsidePortFile, join(paraCodeDirectory, 'ports', 'fedcba9876543210.json')]) {
+				await runPipedNotifyScript(scriptPath, payloadPath, {
+					[PARADIS_PANE_TOKEN_ENV_VAR]: 'pane-token',
+					...(portFile !== undefined ? { [PARADIS_MCP_PORT_FILE_ENV_VAR]: portFile } : {}),
+				});
+			}
+
+			// 実在しない PC ごとのポートファイル（まだ置かれていない）も共有のものへ戻る
+			assert.deepStrictEqual(received, ['own', 'shared', 'shared', 'shared']);
+		} finally {
+			for (const server of servers) {
+				if (server.listening) {
+					await new Promise<void>(resolve => server.close(() => resolve()));
+				}
+			}
+			await fs.rm(root, { recursive: true, force: true });
+		}
 	});
 
 	test('marks the hooks it installs on an SSH host as coming from that host', () => {

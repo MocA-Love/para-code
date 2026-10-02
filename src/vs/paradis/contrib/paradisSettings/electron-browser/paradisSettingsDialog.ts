@@ -29,6 +29,7 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
 import { ParadisModalFocus } from '../browser/paradisModalFocus.js';
 import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
+import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/common/paradisCodexHookTrust.js';
 import { PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
 
 const $ = dom.$;
@@ -506,7 +507,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.codexHookTrust', "Codex の hook に信頼を付ける"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.codexHookTrustDesc', "Codex は hook を使う前に信頼の確認を求めます。Para Code が設置した hook にだけ、Para Code が代わりに信頼を付けます。"),
+		description: localize('paradis.settings.codexHookTrustDesc', "Codex は hook を使う前に信頼の確認を求めます。Para Code が設置した hook にだけ、Para Code が代わりに信頼を付けます。SSH の接続先の hook には、「付けない」以外なら確かめずに付けます。"),
 		keywords: 'codex hook trust hooks.state config.toml',
 		choiceLabels: {
 			// allow-any-unicode-next-line
@@ -515,6 +516,19 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			auto: localize('paradis.settings.codexHookTrust.auto', "自動で付ける"),
 			// allow-any-unicode-next-line
 			off: localize('paradis.settings.codexHookTrust.off', "付けない"),
+		},
+	},
+	{
+		sectionId: 'psd-sec-notif',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.codexHookStatus', "Codex の hook の状態"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.codexHookStatusDesc', "この PC と SSH の接続先で、Para Code が設置した Codex の hook に信頼が付いているかと、接続先から hook が届く経路が張れているかを確かめます。"),
+		keywords: 'codex hook trust status ssh remote tunnel',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.codexHookStatusAction', "状態を確認…"),
+			commandId: PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID,
 		},
 	},
 
@@ -979,15 +993,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		placeholder: localize('paradis.settings.mobileRelayUrlPlaceholder', "(既定のリレー)"),
 		keywords: 'mobile relay url server',
-	},
-	{
-		sectionId: 'psd-sec-mobile',
-		key: 'paradis.mobile.agent.codexDaemonStreaming',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.codexDaemonStreaming', "Codex のライブ連携をモバイルへ送る"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.codexDaemonStreamingDesc', "生成中の文字やツールの出力をその場で送ります。Codex を開いたターミナルごとに裏方のプロセスが増えるので、メモリと起動時間は増えます。"),
-		keywords: 'codex daemon streaming mobile live',
 	},
 
 	// --- リモート (SSH) ---

@@ -35,7 +35,7 @@ import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOT
 // PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
 import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, IParadisSwitchProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, ParadisOpenProfileFailure, ParadisProfileManageFailure } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
 import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, ParadisAgentPageRequestFailure, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
-import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
+import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
@@ -665,11 +665,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			Date.now,
 			reportParadisShellEnvDiagnosticError,
 		);
-		// 制御ソケット（Codex ソケットの引き込みに使う）は、ペイン用ソケットと同じ場所へ置く。
 		// ssh はログインシェル由来の環境で起こす: `SSH_AUTH_SOCK` を rc で設定する鍵エージェント
 		// 構成（1Password / gpg-agent 等）だと、shared process が継いだ環境のままでは公開鍵認証が
 		// 黙って失敗し、拡張機能側の接続だけ成功して戻り経路が張れない状態になる
-		this._remoteTunnels = this._register(new ParadisRemoteAgentTunnels(logService, undefined, join(this._userDataPath, 'pcx'), () => cachedShellEnv.getEnv()));
+		this._remoteTunnels = this._register(new ParadisRemoteAgentTunnels(logService, undefined, () => cachedShellEnv.getEnv()));
 		this._devtoolsGenerationCoordinator = new ParadisDevtoolsGenerationCoordinator(token => this._devtoolsProxy.forget(token));
 		// Renderer IPC切断はreloadでも発生するため、退役根拠にはしない。実windowの生存権威は
 		// Electron Mainのmanifestであり、reload gap中はpending entryが残り、destroy時だけ消える。
@@ -2003,6 +2002,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * @returns 接続先で実際に割り当てられた番号。失敗しても投げない:
 	 * 張れない状態は「接続先の hook が届かない」だけで、手元の動きには何も影響しない。
 	 */
+	/** 張れている戻り経路の接続先の番号（張りには行かない。状態の表示用）。張れていなければ undefined。 */
+	async getRemoteAgentTunnelPort(remoteAuthority: string): Promise<number | undefined> {
+		return this._remoteTunnels.currentPort(remoteAuthority);
+	}
+
 	async ensureRemoteAgentTunnel(remoteAuthority: string, windowCtx?: string): Promise<number | undefined> {
 		if (typeof remoteAuthority !== 'string' || remoteAuthority.length === 0) {
 			return undefined;
@@ -2047,11 +2051,10 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
-	 * ウィンドウが destroy されたら、そのウィンドウ名義の戻りトンネルと Codex ソケットの転送を手放す。
+	 * ウィンドウが destroy されたら、そのウィンドウ名義の戻りトンネルを手放す。
 	 *
 	 * ウィンドウ側からの取り下げは dispose 時の投げっぱなしなので、クラッシュや終了中の切断では
-	 * 届かない。届かないまま所有者として残ると、トンネルは誰も使っていないのに畳まれず、次に同じ
-	 * 接続先へ別のウィンドウが繋いだ瞬間に死んだウィンドウのソケットまで張り直される。
+	 * 届かない。届かないまま所有者として残ると、トンネルは誰も使っていないのに畳まれない。
 	 */
 	private _releaseRemoteAgentTunnelsForWindow(windowCtx: string): void {
 		this._remoteTunnels.releaseWindow(windowCtx);
@@ -2112,31 +2115,6 @@ export class ParadisAgentBrowserService extends Disposable {
 			return undefined;
 		}
 		return paradisRemoveAgentHooksJson(existingRaw);
-	}
-
-	/**
-	 * 接続先で動く Codex ペインのソケットを、手元の同じ場所へ引いてくる。
-	 *
-	 * 呼び出し側（接続中のウィンドウ）が今あるペインの一覧を渡し、ここが差分を取る。手元の
-	 * ソケットの場所は**こちらで決める**（繋いでいないときと同じ規則）。渡されたパスをそのまま
-	 * listen に使うと、ウィンドウ側の言い値で任意の場所にソケットを作れてしまう。
-	 */
-	async syncRemoteCodexSockets(windowCtx: string, remoteAuthority: string, remoteParaCodeDirectory: string, tokens: readonly string[]): Promise<void> {
-		const wanted = new Map<string, string>();
-		for (const token of tokens) {
-			const localPath = paradisCodexPaneSocketPath(this._userDataPath, token);
-			const remotePath = paradisRemoteCodexPaneSocketPath(remoteParaCodeDirectory, token);
-			// `-L` の値は `<手元>:<接続先>` を1語で渡すため、コロンが混ざると別の意味に読まれる
-			if (localPath !== undefined && remotePath !== undefined && !localPath.includes(':')) {
-				wanted.set(localPath, remotePath);
-			}
-		}
-		this._remoteTunnels.syncSocketForwards(windowCtx, remoteAuthority, wanted);
-	}
-
-	/** 接続が切れた・ウィンドウが閉じたときに、その接続先ぶんの転送を畳む。 */
-	async releaseRemoteCodexSockets(windowCtx: string): Promise<void> {
-		this._remoteTunnels.releaseSocketForwards(windowCtx);
 	}
 
 	private async _startServer(): Promise<void> {

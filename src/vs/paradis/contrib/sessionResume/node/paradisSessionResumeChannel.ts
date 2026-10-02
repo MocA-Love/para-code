@@ -21,6 +21,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
+import { paradisIsCodexInjectedText } from '../../agentChat/common/paradisCodexInjectedContext.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisSessionSearchTextCache } from './paradisSessionSearchTextCache.js';
 import {
@@ -769,8 +770,10 @@ export class ParadisSessionResumeService {
 				}
 				const homes = this.resolveAgentHomes(space.cwd);
 				const transcriptPath = paradisLocalAgentPath(homes, rollout);
-				const title = string(row?.name) ?? string(row?.title) ?? string(row?.first_user_message) ?? string(row?.preview) ?? id;
-				const preview = string(row?.preview) ?? string(row?.first_user_message) ?? title;
+				// 古い Codex は差し込んだ文（`<environment_context>` 等）を title・最初の発言として state DB に残している
+				const userText = (value: unknown) => { const text = string(value); return text !== undefined && !paradisIsCodexInjectedText(text) ? text : undefined; };
+				const title = string(row?.name) ?? userText(row?.title) ?? userText(row?.first_user_message) ?? userText(row?.preview) ?? id;
+				const preview = userText(row?.preview) ?? userText(row?.first_user_message) ?? title;
 				this.addSession({
 					id, agent: 'codex', title: clipped(title, 160), preview: clipped(preview, 260), cwd: space.cwd,
 					spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,

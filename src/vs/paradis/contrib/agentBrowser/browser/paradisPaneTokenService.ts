@@ -17,16 +17,15 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, IDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
 import { isWindows } from '../../../../base/common/platform.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IShellLaunchConfig } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ITerminalInstance, ITerminalInstanceService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_ENABLED_KEY } from '../../mobileRelay/common/paradisMobileRelay.js';
 import { paneTokenFromShellIntegrationNonce, restoredPaneToken } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
-import { IParadisCodexPaneRuntime, paradisCodexPaneEndpointFilePath, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, paradisCreateTerminalPaneEnvironment, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
+import { IParadisCodexPaneRuntime, paradisCreateTerminalPaneEnvironment, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
+import { paradisRemoteHookPortFilePath, paradisRemoteHookSourceId } from '../common/paradisRemoteHookSource.js';
 import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
 import { paradisListCurrentPaneTokens } from './paradisLivePaneInstances.js';
 import { IParadisCodexLaunchHomeService, paradisApplyCodexLaunchHome, PARADIS_CODEX_HOME_ENV_VAR, paradisTerminalRunsOnWindowHost } from '../../codexAccounts/browser/paradisCodexLaunchHomeService.js';
@@ -55,12 +54,6 @@ export interface IParadisPaneTokenService {
 	listPaneTokens(): readonly { readonly instanceId: number; readonly token: string }[];
 
 	/**
-	 * ペイン専用 Codex app-server を立てる設定になっているか。
-	 * 立てないなら、その宛先を用意する側（SSH接続先へのソケット転送など）も一緒に畳む。
-	 */
-	isCodexPaneAppServerEnabled(): boolean;
-
-	/**
 	 * PTY起動前の {@link IShellLaunchConfig} にペイントークン等のenvを注入する。
 	 * `attachPersistentProcess`（永続ターミナル再接続）の場合も、繋ぎに失敗して新しいシェルを
 	 * 起こし直す経路に備えて同じトークンのenvを入れておく（繋げたときは使われない）。
@@ -84,7 +77,7 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 	 * ペインへ渡すパスは接続先のものでなければならない（ターミナルが動くのは接続先）。env の
 	 * 組み立ては PTY 起動の直前に同期で走るので、解決を待てない。接続してすぐ一度だけ取り、
 	 * ここへ控えておく。間に合わなかったターミナルは、これまでどおり手元のパスのまま動く
-	 * （Codex のペイン専用サーバーだけが立たない）。
+	 * （接続先の hook とランチャーだけが効かない）。
 	 */
 	private remoteHome: string | undefined;
 
@@ -92,7 +85,6 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 		@ITerminalInstanceService terminalInstanceService: ITerminalInstanceService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IPathService pathService: IPathService,
-		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IParadisCodexLaunchHomeService private readonly codexLaunchHomeService: IParadisCodexLaunchHomeService,
 	) {
 		super();
@@ -100,10 +92,10 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 		if (this.environmentService.remoteAuthority !== undefined) {
 			pathService.userHome().then(home => {
 				// 接続先の環境が解決できていないと userHome() は手元のホームを返す。それを接続先の
-				// ホームとして扱うと、接続先には無い場所へソケットを作らせにいくことになる
+				// ホームとして扱うと、接続先には無い場所を PATH やポートファイルとして渡すことになる
 				this.remoteHome = paradisRemoteUserHome(this.environmentService.remoteAuthority, home)?.path;
 			}, () => {
-				// 取れなければ手元のパスのまま。接続先で Codex のペイン専用サーバーが立たないだけ
+				// 取れなければ手元のパスのまま。接続先で hook とランチャーが効かないだけ
 			});
 		}
 
@@ -147,7 +139,7 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 			? restoredPaneToken(nonce, attachTarget.paradisPaneToken)
 			: paneTokenFromShellIntegrationNonce(nonce);
 		// CDP URLは動的ポート確定前に固定注入せず、ユーザーが指定済みならその値を保持する。
-		shellLaunchConfig.env = paradisCreateTerminalPaneEnvironment(shellLaunchConfig.env, token, portFilePath, this._getCodexRuntime(token));
+		shellLaunchConfig.env = paradisCreateTerminalPaneEnvironment(shellLaunchConfig.env, token, portFilePath, this._getCodexRuntime());
 		// Codex のアカウント切替: 選んだアカウントのホームを新しく開くターミナルへ渡す。選択はウィンドウの
 		// マシン（手元のウィンドウなら手元、SSH のウィンドウなら接続先）のホームを指すので、別のマシンで
 		// 動くターミナルには渡さない。
@@ -168,103 +160,37 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 	}
 
 	/**
-	 * ペイン専用 Codex app-server を立てる設定になっているか。
+	 * Codex のランチャー（`resources/paradis/bin/codex`）の居場所。
 	 *
-	 * この app-server は「MCPサーバーにペインのenvを継がせる」ためだけに入れたもので、それは
-	 * `--remote` を使わない素の Codex なら元から成り立つ（MCPを起こすのはCodex自身のプロセスで、
-	 * そのenvはペインのシェルから継いでいる）。一方で代償は大きく、ペインごとにapp-serverが1本
-	 * 立ち、その配下でMCPが丸ごと起動し直される。Codexを開くたびに毎回起きる。
-	 *
-	 * 立てる価値があるのはモバイルのライブ連携（生成中テキスト・動的モデル一覧・次ターン設定）を
-	 * 使うときだけ。読み手（paradisMobileRelay.contribution.ts の syncAgentLiveOptions）と
-	 * 同じ条件で判定する。ここだけ緩いと、モバイルを切っている人が誰も繋がないapp-serverの
-	 * 代金だけ払うことになる。
+	 * POSIX ではランチャーを PATH の先頭に入れる。素の `codex` は起動済みの共有バックグラウンド
+	 * サーバーへ相乗りし（0.157 からは無ければ起動もする）、hook と MCP がそのサーバーを最初に起こした
+	 * ターミナルの env で動く。ランチャーは `--no-daemon`（古い Codex では自動起動を止める指定）を
+	 * 足して本物の `codex` を動かすだけで、`--remote` は付けない（2026-10 にペイン専用 app-server と
+	 * モバイルのライブ連携をやめた。`--remote` の resume・fork は権限の指定を受け付けないため）。
+	 * Windows では入れない。.ps1 / .cmd / .cjs の経路は、実行ポリシーが Restricted の PowerShell や
+	 * pnpm・自作のラッパーで入れた codex で起動しなくなるおそれがある（2026-09-30 のレビュー）。
 	 */
-	isCodexPaneAppServerEnabled(): boolean {
-		return this.configurationService.getValue(PARADIS_MOBILE_ENABLED_KEY) === true
-			&& this.configurationService.getValue(PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY) === true;
-	}
-
-	/**
-	 * ペイン専用 Codex app-server の居場所。
-	 *
-	 * 立てない設定でも、POSIX ではランチャーだけを PATH に入れる（ソケットは入れない）。素の `codex` は
-	 * 起動済みの共有バックグラウンドサーバーへ相乗りし（0.157 からは無ければ起動もする）、hook と MCP が
-	 * そのサーバーを最初に起こしたターミナルの env で動く。ランチャーは `--no-daemon`（古い Codex では
-	 * 自動起動を止める指定）を足して本物の `codex` を動かす。
-	 * Windows は立てない設定では入れない。既定の設定の全員が .ps1 / .cmd / .cjs の経路を通ることになり、
-	 * 実行ポリシーが Restricted の PowerShell で codex.ps1 が読めない、pnpm や自作のラッパーで入れた
-	 * codex を見つけられない、日本語を含むパスが化ける、といった形で以前は動いた codex が起動しなくなる
-	 * おそれがあるため（2026-09-30 のレビュー。Windows 実機で確かめてから入れる）。
-	 *
-	 * env はPTY起動時に一度きり組み立てられるので、設定を変えても既に開いているターミナルの
-	 * 中身は変わらない（新しく開いたターミナルから効く）。設定の説明文にも同じことを書いてある。
-	 */
-	private _getCodexRuntime(token: string): IParadisCodexPaneRuntime | undefined {
-		const paneAppServer = this.isCodexPaneAppServerEnabled();
+	private _getCodexRuntime(): IParadisCodexPaneRuntime | undefined {
 		if (this.environmentService.remoteAuthority !== undefined) {
-			return this._getRemoteCodexRuntime(token, paneAppServer);
+			return this._getRemoteCodexRuntime();
 		}
-		const desktopEnvironment = this.environmentService as IWorkbenchEnvironmentService & {
-			readonly appRoot?: string;
-			readonly userDataPath?: string;
-			readonly execPath?: string;
-		};
-		const { appRoot, userDataPath, execPath } = desktopEnvironment;
-		if (typeof appRoot !== 'string' || typeof userDataPath !== 'string') {
+		const appRoot = (this.environmentService as IWorkbenchEnvironmentService & { readonly appRoot?: string }).appRoot;
+		if (typeof appRoot !== 'string' || isWindows) {
 			return undefined;
 		}
-		const launcherDirectory = join(appRoot, 'resources', 'paradis', 'bin');
-		if (!paneAppServer && isWindows) {
-			return undefined;
-		}
-		if (!paneAppServer) {
-			return { launcherDirectory, pathDelimiter: ':' };
-		}
-		if (isWindows) {
-			// WindowsのNode(libuv)はAF_UNIXを扱えないため、ランチャーがloopback ws + capability
-			// tokenでapp-serverを立て、実ポートをendpointファイルへ書く（設計はNOTES.md参照）。
-			// ランチャーJSはPara Code自身のexeを ELECTRON_RUN_AS_NODE=1 で実行する。
-			const endpointFilePath = paradisCodexPaneEndpointFilePath(userDataPath, token);
-			if (endpointFilePath === undefined || typeof execPath !== 'string' || execPath.length === 0) {
-				return undefined;
-			}
-			return { launcherDirectory, endpointFilePath, nodeExecutablePath: execPath, pathDelimiter: ';' };
-		}
-		const socketPath = paradisCodexPaneSocketPath(userDataPath, token);
-		if (socketPath === undefined) {
-			return undefined;
-		}
-		return { launcherDirectory, socketPath, pathDelimiter: ':' };
+		return { launcherDirectory: join(appRoot, 'resources', 'paradis', 'bin'), pathDelimiter: ':' };
 	}
 
 	/**
-	 * 接続先で動くターミナルへ渡す Codex の居場所。
-	 *
-	 * ランチャーとソケットは接続先に無いと意味がない（手元のパスを渡すと、存在しない場所を
-	 * PATH の先頭に置き、作られもしないソケットを指すことになる）。置く側は
-	 * paradisRemoteAgentHooks.contribution.ts、手元から届くようにするのはソケットの転送。
-	 *
-	 * 接続先は SSH なので常に POSIX として扱う（Windows のendpoint方式は使わない）。
-	 * app-server を立てないときも、共有のバックグラウンドサーバーの自動起動を止めるためにランチャーだけは入れる。
+	 * 接続先で動くターミナルへ渡すランチャーの居場所（置く側は paradisRemoteAgentHooks.contribution.ts）。
+	 * 手元のパスを渡すと、存在しない場所を PATH の先頭に置くことになる。接続先は SSH なので常に POSIX。
 	 */
-	private _getRemoteCodexRuntime(token: string, paneAppServer: boolean): IParadisCodexPaneRuntime | undefined {
+	private _getRemoteCodexRuntime(): IParadisCodexPaneRuntime | undefined {
 		const paraCodeDirectory = this._getRemoteParaCodeDirectory();
 		if (paraCodeDirectory === undefined) {
 			return undefined;
 		}
-		const launcherDirectory = `${paraCodeDirectory}/bin`;
-		// 手元が Windows のときはソケットを入れない。読み手（shared process）は Windows では socket ではなく
-		// endpoint ファイルを見るので、socket を渡しても原理的に繋がらないうえ、接続先の
-		// ランチャーは `/…/x.sock` の形しか受け付けず毎回警告を出す
-		if (!paneAppServer || isWindows) {
-			return { launcherDirectory, pathDelimiter: ':' };
-		}
-		const socketPath = paradisRemoteCodexPaneSocketPath(paraCodeDirectory, token);
-		if (socketPath === undefined) {
-			return undefined;
-		}
-		return { launcherDirectory, socketPath, pathDelimiter: ':' };
+		return { launcherDirectory: `${paraCodeDirectory}/bin`, pathDelimiter: ':' };
 	}
 
 	/**
@@ -286,10 +212,14 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 
 	private _getPortFilePath(): string | undefined {
 		// 接続先で動くエージェントが読むのは接続先のポートファイル。同じ内容のものを
-		// paradisRemoteAgentHooks.contribution.ts が置いている
+		// paradisRemoteAgentHooks.contribution.ts が置いている。この PC 専用の置き場を渡すので、
+		// 同じ接続先へ別の PC からも繋いでいても、hook はこのペインを開いた PC へ届く
 		const remoteParaCodeDirectory = this._getRemoteParaCodeDirectory();
 		if (remoteParaCodeDirectory !== undefined) {
-			return `${remoteParaCodeDirectory}/${PARADIS_MCP_PORT_FILE_NAME}`;
+			const sourceId = paradisRemoteHookSourceId((this.environmentService as IWorkbenchEnvironmentService & { readonly machineId?: string }).machineId);
+			return sourceId !== undefined
+				? paradisRemoteHookPortFilePath(remoteParaCodeDirectory, sourceId)
+				: `${remoteParaCodeDirectory}/${PARADIS_MCP_PORT_FILE_NAME}`;
 		}
 		// INativeWorkbenchEnvironmentService（electron-browser）を型importするとlayer違反になるため、
 		// デスクトップでのみ存在する userDataPath をプロパティ有無で判定する。

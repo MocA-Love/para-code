@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { paradisAgentHookRemoteHostId } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -30,7 +31,7 @@ import {
 	sealNotify,
 } from '../common/paradisMobileCrypto.js';
 import { FrameMux, IParadisMobileFrameTrafficSample } from '../common/paradisMobileMux.js';
-import { IParadisCdpFrameSubscription, IParadisSharedPageBindings, paradisCodexPaneEndpointFilePath, paradisCodexPaneSocketPath } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from './paradisRemoteTranscriptMirror.js';
@@ -796,10 +797,6 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// 発火しないことがあるため、こちらが質問通知の主経路。
 			info => this.notifyAgentQuestion(info),
 			this.logService,
-			// WindowsはUnix socketの代わりに、ランチャーが書くws endpointファイルを接続targetにする。
-			token => process.platform === 'win32'
-				? paradisCodexPaneEndpointFilePath(this.userDataPath, token)
-				: paradisCodexPaneSocketPath(this.userDataPath, token),
 			owner => this.withCurrentRegisteredLease(owner, async () => true).then(result => result === true, () => false),
 			owner => this._onDidRequestAgentPaneSync.fire({
 				windowId: owner.windowId,
@@ -1288,10 +1285,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 	}
 
-	async answerAgentChatApproval(token: string, interactionId: string, choiceId: string): Promise<boolean> {
-		return paradisIsAgentChatToken(token) && typeof interactionId === 'string' && interactionId.length <= 500 && typeof choiceId === 'string' && choiceId.length <= 100
-			? this.agentChat.answerDesktopCodexApproval(token, interactionId, choiceId)
-			: false;
+	async answerAgentChatApproval(_token: string, _interactionId: string, _choiceId: string): Promise<boolean> {
+		// 選択肢付きの承認は Codex のペイン専用 app-server から来ていた。それをやめたので答える相手が居ない
+		return false;
 	}
 
 	async claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string, lease: IParadisMobileWindowLease): Promise<'claimed' | 'stale' | 'expired'> {
@@ -2092,6 +2088,21 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}) ?? 'stale';
 	}
 
+	async noteRemoteAgentTranscript(lease: IParadisMobileWindowLease, paneToken: string, remoteAuthority: string, remotePath: string, commandStartedAt: number): Promise<'accepted' | 'ignored' | 'hooked' | 'stale'> {
+		return await this.withCurrentRegisteredLease(lease, async () => {
+			const ownership = this.agentChat.ownershipOfPaneToken(paneToken);
+			if (ownership.kind !== 'owned' || !this.sameLease(ownership.owner, lease)) {
+				return 'stale' as const;
+			}
+			// hook の印と同じ組み立て方にする（写し先の置き場と、接続先のペインの判定がこれで揃う）
+			const remoteHostId = paradisAgentHookRemoteHostId(remoteAuthority);
+			if (remoteHostId === undefined || typeof remotePath !== 'string' || typeof commandStartedAt !== 'number') {
+				return 'ignored' as const;
+			}
+			return this.agentChat.onRemoteTranscriptDiscovered(paneToken, remotePath, remoteHostId, commandStartedAt);
+		}) ?? 'stale';
+	}
+
 	async notifyAgentCliCommandFinished(lease: IParadisMobileWindowLease, paneToken: string, generation: number, suspended?: boolean): Promise<ParadisAgentCommandDeliveryResult> {
 		return await this.withCurrentRegisteredLease(lease, async () => {
 			const ownership = this.agentChat.ownershipOfPaneToken(paneToken);
@@ -2107,10 +2118,6 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 			return decision.result;
 		}) ?? 'stale';
-	}
-
-	async setAgentLiveOptions(options: { readonly codexDaemonStreaming: boolean }): Promise<void> {
-		this.agentChat.setCodexDaemonEnabled(options.codexDaemonStreaming === true);
 	}
 
 	/**

@@ -9,16 +9,17 @@
 import { localize } from '../../../../nls.js';
 import { paradisExpandPastedContent } from '../../../common/paradisPastedContent.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisIsCodexInjectedText } from '../../agentChat/common/paradisCodexInjectedContext.js';
 
 // Claude Code / Codex のハーネスは、スラッシュコマンド実行やバックグラウンドタスク完了通知等を
 // 「ユーザーロールの合成メッセージ」として transcript / state DB に書き込む。エージェントセッション
 // 一覧のタイトルはその先頭メッセージ（要約）をそのまま流用しているため、これらの内部XMLラッパーが
 // 生文字列のまま画面に出てしまう。ここではセッション一覧に出す直前でその変換・除去を行う。
-// 判定対象タグは src/vs/paradis/contrib/mobileRelay/node/paradisMobileAgentChat.ts の
-// pushClaudeUserText、および src/vs/paradis/contrib/sessionResume/node/paradisSessionResumeChannel.ts の
-// isInjectedCodexContext と揃えてある。
+// Claude 側の判定対象タグは src/vs/paradis/contrib/agentChat/common/paradisAgentTranscriptParser.ts の
+// pushClaudeUserText と揃えてある。Codex が差し込む文（AGENTS.md・環境情報など）の判定は
+// src/vs/paradis/contrib/agentChat/common/paradisCodexInjectedContext.ts に一本化している。
 
-const DISCARDABLE_PREFIX_PATTERN = /^<(local-command-stdout|local-command-stderr|local-command-caveat|environment_context|user_instructions|ENVIRONMENT_CONTEXT|INSTRUCTIONS)[>\s]/;
+const DISCARDABLE_PREFIX_PATTERN = /^<(local-command-stdout|local-command-stderr|local-command-caveat)[>\s]/;
 const INTERRUPTED_PATTERN = /^\[Request interrupted by user( for tool use)?\]$/;
 const TASK_NOTIFICATION_SUMMARY_PATTERN = /<summary>([\s\S]*?)<\/summary>/;
 const COMMAND_NAME_PATTERN = /<command-name>([^<\n]*)<\/command-name>/;
@@ -69,7 +70,7 @@ export function paradisHumanizeAgentSessionTitle(raw: string | undefined): strin
 		return undefined;
 	}
 	if (DISCARDABLE_PREFIX_PATTERN.test(trimmed)
-		|| trimmed.startsWith('# AGENTS.md instructions for')
+		|| paradisIsCodexInjectedText(trimmed)
 		|| INTERRUPTED_PATTERN.test(trimmed)) {
 		return undefined;
 	}

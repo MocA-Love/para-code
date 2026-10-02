@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import type { IParadisCodexGoal, IParadisCodexPlanStep } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 import type { IParadisRecoveredAgentActivity } from './paradisPersistedAgentActivity.js';
 
 export type ParadisAgentActivityStatus = 'running' | 'idle' | 'completed' | 'failed' | 'interrupted' | 'unknown';
@@ -88,7 +89,32 @@ function terminal(status: ParadisAgentActivityStatus): boolean {
 
 function codexSubAgentStatus(kind: string | undefined): ParadisAgentActivityStatus {
 	if (kind === 'interrupted') { return 'interrupted'; }
+	// 今の rollout（paginated）は子が答えを返し終えたとき `completed` を書く。followup で再び動けば `interacted` が来る
+	if (kind === 'completed') { return 'completed'; }
 	return 'running';
+}
+
+/** Codex のゴールを表すタスクの ID の接頭辞（スレッドごとに 1 件）。 */
+const CODEX_GOAL_TASK_PREFIX = 'codex-goal:';
+/** Codex の計画（update_plan）の手順を表すタスクの ID の接頭辞（手順の番号を後ろに付ける）。 */
+const CODEX_PLAN_TASK_PREFIX = 'codex-plan:';
+
+function codexGoalTaskStatus(status: IParadisCodexGoal['status']): ParadisAgentActivityStatus {
+	switch (status) {
+		// ゴールは作業ではなく目標なので「実行中」には数えない（ターンが終わっても残り続けるため）
+		case 'active': case 'paused': return 'idle';
+		case 'complete': return 'completed';
+		case 'budgetLimited': case 'cleared': return 'interrupted';
+		default: return 'unknown';
+	}
+}
+
+function codexPlanTaskStatus(status: IParadisCodexPlanStep['status']): ParadisAgentActivityStatus {
+	switch (status) {
+		case 'in_progress': return 'running';
+		case 'completed': return 'completed';
+		default: return 'idle';
+	}
 }
 
 function codexStatus(value: unknown): ParadisAgentActivityStatus {
@@ -285,9 +311,15 @@ export class ParadisAgentActivityTracker {
 			const id = text(item?.agentThreadId);
 			if (id !== undefined) {
 				const previous = this.agents.get(id);
-				const status = codexSubAgentStatus(text(item?.kind));
+				const kind = text(item?.kind);
+				const via = text(item?.interaction);
+				// 終わった子への interacted は、followup_task（新しい仕事）なら再び動き出すが、send_message 等の知らせだけなら
+				// 子は動かない。どのツールか分からない（app-server・旧形式）ときは従来どおり動き出したとみなす
+				const keepsTerminal = kind === 'interacted' && via !== undefined && via !== 'followup_task' && previous !== undefined && terminal(previous.status);
+				const status = keepsTerminal ? previous.status : codexSubAgentStatus(kind);
 				if (!(previous !== undefined && (at < previous.updatedAt || (terminal(previous.status) && status === 'running' && at === previous.updatedAt)))) {
-					this.agents.set(id, { id, label: text(item?.agentPath) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(previous?.detail ? { detail: previous.detail } : {}), ...relationship(id, item?.parentThreadId, item?.depth, previous), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
+					const detail = previous?.detail ?? text(item?.prompt);
+					this.agents.set(id, { id, label: text(item?.agentPath) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(detail !== undefined ? { detail } : {}), ...relationship(id, item?.parentThreadId, item?.depth, previous), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
 				}
 				this.updateCodexTask(id, status, at, { assignee: codexAssignee(item?.agentPath) });
 			}
@@ -303,6 +335,60 @@ export class ParadisAgentActivityTracker {
 				this.updateCodexTask(id, status, at, { create: isSpawn, ...(isSpawn && collaboration.prompt !== undefined ? { prompt: collaboration.prompt } : {}) });
 			}
 		}
+		return this.finishApply(before, at);
+	}
+
+	/**
+	 * Codex の `/goal`（rollout の `thread_goal_updated`）を、Claude Code のタスクと同じ一覧へ 1 件として載せる。
+	 * ゴールはスレッドに 1 つだけなので、同じスレッドの更新は同じ項目を書き換える。
+	 */
+	applyCodexGoal(goal: IParadisCodexGoal, at: number): boolean {
+		const before = this.serialized();
+		const id = `${CODEX_GOAL_TASK_PREFIX}${(goal.threadId ?? 'thread').slice(0, 480)}`;
+		const previous = this.tasks.get(id);
+		if (previous !== undefined && at < previous.updatedAt) {
+			return false;
+		}
+		const objective = goal.objective ?? previous?.detail;
+		if (objective === undefined) {
+			return false; // 外されたゴールを、知らないまま新しく作らない
+		}
+		const label = objective.split(/\r?\n/).map(line => line.trim()).find(line => line.length > 0)?.slice(0, 200) ?? 'Goal';
+		this.tasks.set(id, {
+			// allow-any-unicode-next-line
+			id, label, detail: objective, assignee: 'ゴール',
+			// 同じスレッドでも目標が変わったら、新しいゴールとして数え直す
+			status: codexGoalTaskStatus(goal.status), startedAt: previous !== undefined && previous.detail === objective ? previous.startedAt : at, updatedAt: at,
+		});
+		return this.finishApply(before, at);
+	}
+
+	/**
+	 * Codex の計画（`update_plan`）。呼ばれるたびに計画は丸ごと置き換わるので、前の計画の手順は消して並べ直す。
+	 * 同じ位置の同じ手順は開始時刻を引き継ぐ。
+	 */
+	applyCodexPlan(steps: readonly IParadisCodexPlanStep[], at: number): boolean {
+		const before = this.serialized();
+		const previousSteps = new Map([...this.tasks].filter(([id]) => id.startsWith(CODEX_PLAN_TASK_PREFIX)));
+		if ([...previousSteps.values()].some(task => at < task.updatedAt)) {
+			return false;
+		}
+		for (const id of previousSteps.keys()) {
+			this.tasks.delete(id);
+		}
+		steps.forEach((step, index) => {
+			const id = `${CODEX_PLAN_TASK_PREFIX}${index}`;
+			const previous = previousSteps.get(id);
+			const label = step.step.split(/\r?\n/)[0].slice(0, 200);
+			const status = codexPlanTaskStatus(step.status);
+			// 同じ手順を続けている間は開始時刻を引き継ぐ。待っていた手順に取りかかったら、そこから数える
+			const startedAt = previous !== undefined && previous.label === label && !(previous.status === 'idle' && status !== 'idle') ? previous.startedAt : at;
+			this.tasks.set(id, {
+				// allow-any-unicode-next-line
+				id, label, ...(label !== step.step ? { detail: step.step } : {}), assignee: '計画',
+				status, startedAt, updatedAt: at,
+			});
+		});
 		return this.finishApply(before, at);
 	}
 
@@ -398,11 +484,39 @@ export class ParadisAgentActivityTracker {
 		return this.finishApply(before, at);
 	}
 
-	/** 親Agentのターン終了。子Agent/Taskは各自の終了イベントが正本なので変更しない。 */
-	endTurn(at: number): boolean {
+	/**
+	 * 親Agentのターン終了。子Agent/Taskは各自の終了イベントが正本なので変更しない。ただし Codex の計画の手順は
+	 * 親のターンの中の作業なので、取りかかったまま終わった手順は畳む（失敗・中断はそのまま、それ以外は待機）
+	 * （更新されずに終わる計画が実データで約 4 割あり、実行中のまま残ってしまう）。
+	 */
+	endTurn(at: number, reason?: 'completed' | 'failed' | 'interrupted'): boolean {
 		const before = this.serialized();
 		this.finishCompactions(at);
+		// 正常に終わったターンでも、取りかかったままの手順は終わっていない。完了とは見せず待機へ戻す
+		this.settleCodexPlan(reason === 'failed' || reason === 'interrupted' ? reason : 'idle', at);
 		return this.finishApply(before, at);
+	}
+
+	/**
+	 * 会話を読むのをやめる（tailer の破棄）ときに、Codex の計画とゴールを「動いている」扱いのまま残さない。
+	 * 時刻は変えないので、読み直したときに同じ記録が来れば元どおりに組み直される。
+	 */
+	settleCodexPlanAndGoal(at: number): boolean {
+		const before = this.serialized();
+		for (const [id, task] of this.tasks) {
+			if ((id.startsWith(CODEX_PLAN_TASK_PREFIX) || id.startsWith(CODEX_GOAL_TASK_PREFIX)) && task.status === 'running') {
+				this.tasks.set(id, { ...task, status: 'idle' });
+			}
+		}
+		return this.finishApply(before, at);
+	}
+
+	private settleCodexPlan(status: ParadisAgentActivityStatus, at: number): void {
+		for (const [id, task] of this.tasks) {
+			if (id.startsWith(CODEX_PLAN_TASK_PREFIX) && task.status === 'running' && task.updatedAt <= at) {
+				this.tasks.set(id, { ...task, status, updatedAt: at });
+			}
+		}
 	}
 
 	/** セッション自体の終了時だけ、残っている子Agent/Taskも打ち切る。 */
