@@ -2987,6 +2987,18 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.activeTurnTokens.delete(token);
 			}
 		}
+		// ツール呼び出しの追跡は終了 hook / SessionStart でしか消えないので、それが届かずにペインが消えると
+		// 入力の指紋ごと残り続ける。リロードの隙間で退避に載ったばかりのペインだけは、復活後に replay される
+		// PermissionRequest を元の tool_use_id へ結び付けられるよう、保留中の hook と同じ猶予だけ残す
+		// （live でない間は hook が保留に積まれるだけなので、猶予中にここが増えることはない）。
+		for (const token of new Set([...this.openToolUses.keys(), ...this.syntheticApprovalWaits.keys(), ...this.liveBeforePermission.keys()])) {
+			const retired = this.retiredSessions.get(token);
+			if (!liveTokens.has(token) && !(retired !== undefined && now - retired.retiredAt <= PENDING_HOOK_TTL_MS)) {
+				this.openToolUses.delete(token);
+				this.syntheticApprovalWaits.delete(token);
+				this.liveBeforePermission.delete(token);
+			}
+		}
 		// 接続先の印は、ウィンドウのリロードでtokenが一瞬liveでなくなる隙間では捨てない
 		// （捨てると復活したペインが「手元のもの」に戻り、次のhookが来るまでの間だけ手元の
 		// セッションや設定を探しに行ってしまう）。セッションが確定していれば退避に載るのでそれを
@@ -5265,6 +5277,12 @@ export class ParadisMobileAgentChat extends Disposable {
 					this.tailers.get(token)?.clearSyntheticApproval(waitKey);
 				}
 			}
+		}
+		if (open?.size === 0) {
+			this.openToolUses.delete(token);
+		}
+		if (waits?.size === 0) {
+			this.syntheticApprovalWaits.delete(token);
 		}
 	}
 

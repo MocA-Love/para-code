@@ -85,6 +85,7 @@ export class McpServersListView extends AbstractExtensionsListView<IWorkbenchMcp
 	private readonly contextMenuActionRunner = this._register(new ActionRunner());
 	private readonly modalNavigationDisposable = this._register(new MutableDisposable());
 	private input: IQueryResult | undefined;
+	private showGeneration = 0; // PARA-PATCH: lets only the latest show() keep its query subscriptions
 
 	constructor(
 		private readonly mpcViewOptions: McpServerListViewOptions,
@@ -106,6 +107,14 @@ export class McpServersListView extends AbstractExtensionsListView<IWorkbenchMcp
 		@ILogService private readonly logService: ILogService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
+	}
+
+	// PARA-PATCH: the query result subscribes to the singleton IMcpWorkbenchService (onChange/onReset).
+	// Without releasing it here, every removed view stays reachable and keeps re-rendering on each change.
+	override dispose(): void {
+		this.input?.disposables.dispose();
+		this.input = undefined;
+		super.dispose();
 	}
 
 	protected override renderBody(container: HTMLElement): void {
@@ -216,6 +225,7 @@ export class McpServersListView extends AbstractExtensionsListView<IWorkbenchMcp
 	}
 
 	async show(query: string): Promise<IPagedModel<IWorkbenchMcpServer>> {
+		const generation = ++this.showGeneration; // PARA-PATCH: see showGeneration
 		if (this.input) {
 			this.input.disposables.dispose();
 			this.input = undefined;
@@ -224,7 +234,14 @@ export class McpServersListView extends AbstractExtensionsListView<IWorkbenchMcp
 		if (this.mpcViewOptions.showWelcome) {
 			this.input = { model: new PagedModel([]), disposables: new DisposableStore(), showWelcomeContent: true };
 		} else {
-			this.input = await this.query(query.trim());
+			const result = await this.query(query.trim());
+			// PARA-PATCH: the view may be disposed, or a newer show() may have started, while the query is pending.
+			// Release the stale subscriptions instead of overwriting (and leaking) another input.
+			if (this._store.isDisposed || generation !== this.showGeneration) {
+				result.disposables.dispose();
+				return result.model;
+			}
+			this.input = result;
 		}
 
 		this.renderInput();

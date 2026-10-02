@@ -12,6 +12,7 @@
 // 対応するタブを指定して同じダイアログを開く（3機能の contribution 側が
 // `paradis.usage.showDashboard` を該当タブ付きで呼ぶ）。
 
+import { Event } from '../../../../base/common/event.js';
 import { localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -25,7 +26,14 @@ let activeDialog: ParadisUsageDashboardDialog | undefined;
 /** 別 contribution（各ステータスバー）からタブ指定で開くための入口。 */
 export function paradisOpenUsageDashboard(accessor: ServicesAccessor, tab?: ParadisUsageDashboardTab): void {
 	activeDialog?.dispose();
-	activeDialog = accessor.get(IInstantiationService).createInstance(ParadisUsageDashboardDialog, tab);
+	const dialog = accessor.get(IInstantiationService).createInstance(ParadisUsageDashboardDialog, tab);
+	activeDialog = dialog;
+	// 閉じた後も参照を持ち続けると、DOM ごと次に開くまで残る。
+	Event.once(dialog.onDidDispose)(() => {
+		if (activeDialog === dialog) {
+			activeDialog = undefined;
+		}
+	});
 }
 
 class ParadisShowUsageDashboardAction extends Action2 {

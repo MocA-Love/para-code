@@ -19,6 +19,7 @@ import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js
 import { disposableTimeout } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { BugIndicatingError } from '../../../../base/common/errors.js';
+import { Emitter } from '../../../../base/common/event.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -238,6 +239,10 @@ export class ParadisBindingDialog extends Disposable {
 	/** 「アタッチ」を押して渡し先ペインの一覧を開いている端末（開いていなければ undefined）。 */
 	private _attachTargetDeviceId: string | undefined;
 
+	private readonly _onDidDispose = this._register(new Emitter<void>());
+	/** 閉じた（破棄された）ことを、開いた側が参照を手放すために知らせる。 */
+	readonly onDidDispose = this._onDidDispose.event;
+
 	constructor(
 		// モバイル端末のアタッチだけを目的に開く場合はページが無い（ブラウザページを1枚も
 		// 開いていなくても端末タブへ入れるようにするため）。ページ起点のタブからは _page を使う。
@@ -326,6 +331,7 @@ export class ParadisBindingDialog extends Disposable {
 		setParadisHoveredPaneInstanceId(undefined);
 		this._backdrop.ownerDocument.body.classList.remove('paradis-pvh-glow');
 		this._backdrop.remove();
+		this._onDidDispose.fire();
 		super.dispose();
 	}
 

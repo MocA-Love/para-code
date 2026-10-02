@@ -21,6 +21,7 @@ import './media/paradisUsageDashboard.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { Emitter } from '../../../../base/common/event.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -178,6 +179,10 @@ export class ParadisUsageDashboardDialog extends Disposable {
 	private readonly _settingRefreshers: (() => void)[] = [];
 	private _activeTab: ParadisUsageDashboardTab = 'ccusage';
 
+	private readonly _onDidDispose = this._register(new Emitter<void>());
+	/** 閉じた（破棄された）ことを、開いた側が参照を手放すために知らせる。 */
+	readonly onDidDispose = this._onDidDispose.event;
+
 	constructor(
 		initialTab: ParadisUsageDashboardTab | undefined,
 		@ILayoutService layoutService: ILayoutService,
@@ -270,6 +275,7 @@ export class ParadisUsageDashboardDialog extends Disposable {
 
 	override dispose(): void {
 		this._backdrop.remove();
+		this._onDidDispose.fire();
 		super.dispose();
 	}
 
