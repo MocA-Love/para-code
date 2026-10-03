@@ -119,6 +119,11 @@ export const ParadisMobileCapability = {
 	AgentQuestionNotes: 'agent.question.notes.v1',
 	/** agent の `action/clarifyQuestion`（「質問に答えずに話す」。`answerVia: 'mod'` のときだけ）。 */
 	AgentQuestionChat: 'agent.question.chat.v1',
+	/**
+	 * fs の `attachment`（モバイルから上げた添付画像を、置き場 `<userData>/User/paraMobileUploads/` の直下の名前で読む。
+	 * `variant: 'thumb'` は長辺 512px の JPEG、`'full'` は原寸。`paradisMobileAttachmentRequests.ts`）。
+	 */
+	FsAttachment: 'fs.attachment.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -158,6 +163,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.NotifyContent,
 	ParadisMobileCapability.AgentQuestionNotes,
 	ParadisMobileCapability.AgentQuestionChat,
+	ParadisMobileCapability.FsAttachment,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

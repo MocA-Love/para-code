@@ -291,6 +291,9 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/protocol/test/golden/browser.json` | 新規追加（fork所有。先頭の `$comment` に用途）。`state.json` の `capabilities` に `browser.space.v1` / `browser.page.v1` / `browser.focus.v1` / `browser.bookmarks.v1` を追加 | モバイルのブラウザのタブ（案A）の固定形 |
 | `app/protocol/test/golden/state.json` | `capabilities` に `usage.machine-id.v1`、`current` に `machineIdHash` と `renderers[].host.machineIdHash` を追加（2026-10-03） | 使用量を全 PC で合計するための機械の印（NOTES「使用量を全 PC で合計するための PC 側」） |
 | `app/protocol/test/golden/state.json` / `agent.json` | `state.json` の `capabilities` に `agent.question.notes.v1` / `agent.question.chat.v1`、`agent.json` に preview 付きの質問と `answerVia` の delta、`notes` 付きの回答、`action/clarifyQuestion` を追加（2026-10-04） | モバイルの質問カードの preview・メモ・「質問に答えずに話す」の固定形 |
+| `app/protocol/test/golden/state.json` | `capabilities` に `fs.attachment.v1` を追加（2026-10-04） | モバイルから上げた添付画像を、置き場（`<userData>/User/paraMobileUploads/`）の直下の名前でサムネイル・原寸として読む口（`paradisMobileAttachmentRequests.ts`） |
+| `app/mobile/package.json` / `app/pnpm-lock.yaml` | `expo-media-library@~57.0.1` を依存に追加（2026-10-04） | 添付画像の全画面ビューアの「写真に保存」。JS からは `requireOptionalNativeModule('ExpoMediaLibrary')` で引く（`src/photoLibrary.ts`）ので、ネイティブ部品が入る前のバイナリでも落ちず、ボタンを出さないだけ。反映には `app/mobile/ios` で `pod install` と再ビルドが要る（prebuild は使わない） |
+| `app/mobile/app.json` / `app/mobile/ios/ParaCodeMobile/Info.plist`（後者は追跡なし） | `ios.infoPlist` に `NSPhotoLibraryAddUsageDescription` を追加（2026-10-04）。実体の Info.plist には同じキーを手で当てる | 「写真に保存」の許可の文言。無いと `saveToLibraryAsync` がネイティブで例外を投げる |
 | `app/mobile/app.json` | `expo.version` を `0.12.0` に | モバイルのブラウザのタブ（案A）の配信 |
 | `resources/paradis/claude-mod/.claude-plugin/plugin.json` / `resources/paradis/claude-mod/hooks/hooks.json` | 新規追加（fork所有。Claude Code の mod のマニフェストと hooks module の指定。JSON なのでマーカーを書けない。同じフォルダの `hooks/register.ts`・`tests/para-code.test.ts` には PARA-CODE ヘッダーあり）（2026-10-03） | Para Code のターミナルの Claude Code に読ませる mod（NOTES「Claude Code の mod（Claude Mods）で会話・質問・承認・送信をつなぐ」）。`build/gulpfile.vscode.ts` の PARA-PATCH で macOS/Linux のパッケージへ同梱する |
 
@@ -2345,6 +2348,29 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - 起こし直したシェルの所属は、cwd より「出てきた working set」「固定した補助ウィンドウ」を先に採る（`paradisWasTerminalShellRestarted`）。繋ぎ直せたシェルの cwd は従来どおり証拠になる
 - 再開バナーの「このタブで再開」は、会話のフォルダと今のフォルダが違えば `cd` を送り、終了とフォルダの変化を確かめてから再開する。確かめられなければ再開しない（新しいタブで再開する案は、元のタブが空のシェルで残るので採らなかった）
 - パネルの開閉（`restorePanelVisibilityFor`）は、通常の切り替え・ロールバック・中断した切り替えの復旧のどれでも、完了参加者（`applyScope`）の後に戻す。閉じる側は順番に関係なく何も作らない
+
+## モバイルの添付画像のプレビュー（2026-10-04）
+
+吹き出しと入力欄の札（案 C2・P2）、全画面ビューアの共有と「写真に保存」、PC の置き場を読む口（`fs.attachment.v1`、`paradisMobileAttachmentRequests.ts`）。
+
+### ネイティブの反映（同じ作業の中で、この順に行う）
+
+「写真に保存」は `expo-media-library` の pod と Info.plist の `NSPhotoLibraryAddUsageDescription` の両方が揃って初めて動く。pod だけ入れて Info.plist を忘れると、ボタンは出るのに押すとネイティブが例外を投げる（`saveToLibraryAsync` がキーの有無を確かめる）。片方だけを入れたバイナリを作らないよう、次を 1 回の作業で続けて行う。
+
+1. `app/` で `pnpm install`（`expo-media-library` が入る）
+2. `app/mobile/ios/ParaCodeMobile/Info.plist` に `NSPhotoLibraryAddUsageDescription` を足す（文言は `app.json` の `ios.infoPlist` と同じ「エージェントに送った画像を写真に保存するために使用します。」）
+3. `cd app/mobile/ios && pod install`（`ExpoMediaLibrary` が `Podfile.lock` に足される）
+4. Xcode で再ビルド（`npx expo prebuild` は使わない）
+
+### 配信前の確認
+
+- `grep NSPhotoLibraryAddUsageDescription ios/ParaCodeMobile/Info.plist`（`app/mobile` で実行。1 行出ること）
+- `grep ExpoMediaLibrary ios/Podfile.lock`（pod が入っていること）
+
+### 置き場所の判断
+
+- 端末の控え（原寸）と、PC から取り寄せたサムネイルは、どちらも caches（`cacheDirectory`）に置く。サムネイルは「掃除しない・無期限に持つ」が決定だが、iCloud のバックアップに載せたくない。Library/Application Support に「バックアップの対象外」の属性を付けるのが本来の置き場所だが、expo-file-system（SDK 57）にも既存のネイティブモジュール（`modules/para-*`）にも属性を付ける口が無いため、caches にした。アプリは消さず、OS が消したら PC から取り直す（PC は置き場を掃除しない）
+- Application Support へ移すなら、既存のモジュール（例 `para-ipad-input`）の Swift に `URLResourceValues.isExcludedFromBackup = true` を付ける関数を足す（ネイティブの再ビルドが要る）
 
 ## 今後の方針候補（未確定、要議論）
 

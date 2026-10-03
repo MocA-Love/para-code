@@ -51,6 +51,9 @@ importers:
       expo-local-authentication:
         specifier: ~57.0.0
         version: 57.0.0(expo@57.0.4)
+      expo-media-library:
+        specifier: ~57.0.1
+        version: 57.0.5(expo@57.0.4)(react-native@0.86.0(patch_hash=5adbea2356161c09df8709b74302c75e87b79d99fe1a2d571c724612af235902)(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3))
       expo-network:
         specifier: ~57.0.2
         version: 57.0.2(expo@57.0.4)(react@19.2.3)
@@ -2613,6 +2616,12 @@ packages:
     resolution: {integrity: sha512-/ZzS7OD5OaAEhSF/+zPWZqzT8xWy1rMICfDqP5ojJ6Flh4wgAOedG37p8UZlTQYJRR5u1NQ9AoAePV8H/ky14g==}
     peerDependencies:
       expo: '*'
+
+  expo-media-library@57.0.5:
+    resolution: {integrity: sha512-amSLrLsS7Gl4nCqbc2PlVbHj5jK9kQLsSOQgJ2QasHCSHzYXw6Ui7aolxX5APg9P4TgYPE0yWn46ndifh52bRw==}
+    peerDependencies:
+      expo: '*'
+      react-native: '*'
 
   expo-modules-autolinking@57.0.5:
     resolution: {integrity: sha512-Vv2PVeEUN0/VW19ItkVA8LxAuH8SV8cjui0MKhJxCKrNyCAGGZU6sRsBJciYXR4uVxuXWKiepGW6E3k/c+Ytdg==}
@@ -6897,6 +6906,11 @@ snapshots:
     dependencies:
       expo: 57.0.4(9723afc4e9c84289252044c2402280a3)
       invariant: 2.2.4
+
+  expo-media-library@57.0.5(expo@57.0.4)(react-native@0.86.0(patch_hash=5adbea2356161c09df8709b74302c75e87b79d99fe1a2d571c724612af235902)(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)):
+    dependencies:
+      expo: 57.0.4(9723afc4e9c84289252044c2402280a3)
+      react-native: 0.86.0(patch_hash=5adbea2356161c09df8709b74302c75e87b79d99fe1a2d571c724612af235902)(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)
 
   expo-modules-autolinking@57.0.5(typescript@6.0.3):
     dependencies:

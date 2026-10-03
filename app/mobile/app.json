@@ -27,6 +27,7 @@
 					"UIInterfaceOrientationLandscapeRight"
 				],
 				"NSCameraUsageDescription": "QRコードでPara Codeとペアリングするためにカメラを使用します。",
+				"NSPhotoLibraryAddUsageDescription": "エージェントに送った画像を写真に保存するために使用します。",
 				"ITSAppUsesNonExemptEncryption": false,
 				"UIBackgroundModes": ["remote-notification", "audio"],
 				"NSSupportsLiveActivities": true,

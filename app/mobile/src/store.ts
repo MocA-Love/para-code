@@ -333,6 +333,22 @@ export class PcReplyError extends Error {
 	}
 }
 
+/**
+ * PC に届かなかった・応答が来なかった要求の失敗（切断・再接続待ち・PC 画面の入れ替わり・時間切れ）。
+ * 文は従来どおりで、呼び出し側は型で「つながっていない」を見分けられる（`instanceof` か `isPcUnreachableError`）。
+ */
+export class PcUnreachableError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'PcUnreachableError';
+	}
+}
+
+/** つながっていないための失敗か（{@link PcUnreachableError}）。 */
+export function isPcUnreachableError(error: unknown): boolean {
+	return error instanceof PcUnreachableError || (error instanceof Error && error.name === 'PcUnreachableError');
+}
+
 /** 失敗に PC が付けた `code`（無ければ undefined）。 */
 export function pcReplyErrorCode(error: unknown): string | undefined {
 	return error instanceof PcReplyError ? error.code : undefined;
@@ -3566,7 +3582,7 @@ export class MobileController {
 	private request<T>(channel: 'scm' | 'fs' | 'browser', body: object, timeoutMs = 30_000, encodePayload?: (id: string, requestBody: object) => Uint8Array | undefined, contentHashCacheKey?: string, targetWindowId?: number): Promise<T> {
 		const client = this.client;
 		if (!client || !this.isLiveAvailable()) {
-			return Promise.reject(new Error('PCへ再接続してから操作してください'));
+			return Promise.reject(new PcUnreachableError('PCへ再接続してから操作してください'));
 		}
 		const contentHash = contentHashCacheKey !== undefined
 			? { key: contentHashCacheKey, prepared: this.fsContentHashCache.prepare(contentHashCacheKey) }
@@ -3577,7 +3593,7 @@ export class MobileController {
 			const desktop = this.state.workspace;
 			const renderer = desktop?.renderers.find(candidate => candidate.windowId === targetWindowId);
 			if (desktop === undefined || renderer?.ready !== true) {
-				return Promise.reject(new Error('この接続先のPC画面はいま応答していません'));
+				return Promise.reject(new PcUnreachableError('この接続先のPC画面はいま応答していません'));
 			}
 			rendererTarget = { desktopEpoch: desktop.desktopEpoch, windowId: renderer.windowId, rendererGeneration: renderer.rendererGeneration };
 			requestBody = {
@@ -3598,7 +3614,7 @@ export class MobileController {
 			}
 			const renderer = desktop.renderers.find(candidate => candidate.windowId === workspace.windowId);
 			if (renderer?.ready !== true) {
-				return Promise.reject(new Error('PC画面の再接続が完了してから操作してください'));
+				return Promise.reject(new PcUnreachableError('PC画面の再接続が完了してから操作してください'));
 			}
 			rendererTarget = { desktopEpoch: desktop.desktopEpoch, windowId: renderer.windowId, rendererGeneration: renderer.rendererGeneration };
 			requestBody = {
@@ -3618,7 +3634,7 @@ export class MobileController {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
 				this.fsTimings.abort(id, 'timeout');
-				reject(new Error('request timeout'));
+				reject(new PcUnreachableError('request timeout'));
 			}, timeoutMs);
 			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer, ...(rendererTarget !== undefined ? { rendererTarget } : {}), ...(contentHash !== undefined ? { contentHash } : {}) });
 			client.send(channel, payload);
@@ -3647,7 +3663,7 @@ export class MobileController {
 		const renderer = desktop?.renderers.find(candidate => candidate.ready && candidate.windowId === activeWindowId)
 			?? desktop?.renderers.find(candidate => candidate.ready);
 		if (renderer === undefined) {
-			return Promise.reject(new Error('PC画面の再接続が完了してから操作してください'));
+			return Promise.reject(new PcUnreachableError('PC画面の再接続が完了してから操作してください'));
 		}
 		return this.request<T>(channel, body, timeoutMs, undefined, undefined, renderer.windowId);
 	}
@@ -3736,7 +3752,7 @@ export class MobileController {
 	private cancelPendingRequests(): void {
 		for (const entry of this.pending.values()) {
 			clearTimeout(entry.timer);
-			entry.reject(new Error('接続が切断されました'));
+			entry.reject(new PcUnreachableError('接続が切断されました'));
 		}
 		this.pending.clear();
 		this.fsTimings.abortAll('disconnected');
@@ -3749,7 +3765,7 @@ export class MobileController {
 				clearTimeout(entry.timer);
 				this.pending.delete(id);
 				this.fsTimings.abort(id, 'renderer-changed');
-				entry.reject(new Error('PC画面が再接続されたため操作を中断しました'));
+				entry.reject(new PcUnreachableError('PC画面が再接続されたため操作を中断しました'));
 			}
 		}
 		for (const [requestId, pending] of this.pendingAgentActions) {
@@ -4011,8 +4027,10 @@ export class MobileController {
 	/**
 	 * 画像等をPCへアップロードし、保存先フルパスを受け取る（エージェントへの添付用。
 	 * PC側は userData 配下の専用ディレクトリに保存し、モバイルはパスをPTYへ貼り付ける）。
+	 * `ws`（スペースの id）を渡すと、そのスペースの PC 画面へ届ける。SSH 接続中のウィンドウは接続先に置くので、
+	 * エージェントのいるウィンドウへ上げないと、エージェントから読めないパスになる。省くと応答できるどれかの画面。
 	 */
-	fsUpload(name: string, dataBase64: string): Promise<FsUploadResult> {
+	fsUpload(name: string, dataBase64: string, ws?: string): Promise<FsUploadResult> {
 		const binaryEncoder = this.liveFsUploadEncoding === FS_BINARY_UPLOAD_ENCODING
 			? (id: string, requestBody: object) => {
 				// 2進アップロードの枠は版 3 の形で固定（app/protocol の fileUpload.ts と PC の複製）。
@@ -4021,7 +4039,7 @@ export class MobileController {
 				return encodeBinaryFsUpload({ id, protocolVersion: request.protocolVersion, desktopEpoch: request.desktopEpoch, windowId: request.windowId, ws: request.ws, name }, dataBase64);
 			}
 			: undefined;
-		return this.request<FsUploadResult>('fs', { t: 'upload', name, data: dataBase64 }, 120_000, binaryEncoder);
+		return this.request<FsUploadResult>('fs', { t: 'upload', name, data: dataBase64, ...(ws !== undefined ? { ws } : {}) }, 120_000, binaryEncoder);
 	}
 
 	/** ファイル名検索（ワークスペース全体、.gitignore尊重、PC側ripgrep）。 */

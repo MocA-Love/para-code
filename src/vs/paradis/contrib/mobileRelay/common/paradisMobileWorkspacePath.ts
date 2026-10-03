@@ -8,6 +8,7 @@
 import { extUri, extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { PARADIS_MOBILE_UPLOADS_DIRECTORY } from './paradisMobileAttachment.js';
 
 /**
  * Resolves a mobile file request to its canonical target below the workspace root.
@@ -61,6 +62,6 @@ export function paradisCreateMobileUploadTarget(userRoamingDataHome: URI, origin
 	const dot = originalName.lastIndexOf('.');
 	const extension = dot >= 0 ? originalName.slice(dot + 1).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) : '';
 	const safeSuffix = randomSuffix.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
-	const directory = joinPath(userRoamingDataHome, 'paraMobileUploads');
+	const directory = joinPath(userRoamingDataHome, PARADIS_MOBILE_UPLOADS_DIRECTORY);
 	return joinPath(directory, `attachment-${timestamp}-${safeSuffix}${extension ? `.${extension}` : ''}`);
 }

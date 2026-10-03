@@ -1,10 +1,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { memo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { ChevronDown, CircleHelp, Globe, Info, SquareChevronRight, Users } from 'lucide-react-native';
 import { buildTimelineSteps, describeStep, formatToolName, type AgentTimelineStep } from '../../agentToolMeta.js';
+import { attachmentImagesDuplicate, attachmentImagesMatch } from '../../attachments/attachmentFetchPolicy.js';
+import { useAttachmentSizes } from '../../attachments/attachmentImages.js';
+import { parseAttachmentMessage } from '../../attachments/attachmentText.js';
 import { IOBlock } from '../../components/agentIoBlock.js';
+import { MessageAttachmentChips } from '../../components/attachmentChips.js';
 import { ThinkingBody, ToolImageCards, ToolStepBody } from '../../components/agentToolBodies.js';
 import { MarkdownText } from '../../components/markdownText.js';
 import { haptic } from '../../haptics.js';
@@ -56,8 +60,6 @@ export const ChatRowView = memo(function ChatRowView({ row, terminalKey, allTool
 function MessageRow({ message, terminalKey }: { message: AgentChatMessage; terminalKey: string }) {
 	const hasImages = (message.images?.length ?? 0) > 0;
 	const hasText = message.text.trim().length > 0;
-	// 自分の発言の吹き出しは設定 → 色の「自分の発言と送信」。
-	const theme = useThemeColors();
 	const styles = useChatStyles(baseStyles);
 	const peerIconSize = useChatIconSize(12);
 	if (message.kind === 'peer_message') {
@@ -76,19 +78,48 @@ function MessageRow({ message, terminalKey }: { message: AgentChatMessage; termi
 		return <NoticeRow text={message.text} />;
 	}
 	if (message.role === 'user') {
-		return (
-			<View style={[styles.row, styles.userRow]}>
-				<View style={[styles.bubble, { backgroundColor: theme.bubble }]}>
-					{hasText ? <Text style={[styles.bubbleText, { color: theme.onBubble }]} selectable>{message.text}</Text> : null}
-					{hasImages ? <ToolImageCards result={message} terminalKey={terminalKey} /> : null}
-				</View>
-			</View>
-		);
+		return <UserMessageRow message={message} terminalKey={terminalKey} />;
 	}
 	return (
 		<View style={styles.row}>
 			{hasText ? <MarkdownText text={message.text} /> : null}
 			{hasImages ? <ToolImageCards result={message} terminalKey={terminalKey} /> : null}
+		</View>
+	);
+}
+
+/**
+ * 人の発言の吹き出し。モバイルから添付した画像のパスは隠し、本文の前に札（「画像 1」〜）を並べてから
+ * 改行して本文を出す（案 C2）。transcript の画像のブロックが札と同じ枚数なら下の画像のカードは出さない（同じ画像を
+ * 2 度出さない）。そのブロックを札の中身の代わりに使うのは、1 枚ずつ大きさも一致したときだけ。
+ */
+function UserMessageRow({ message, terminalKey }: { message: AgentChatMessage; terminalKey: string }) {
+	// 自分の発言の吹き出しは設定 → 色の「自分の発言と送信」。
+	const theme = useThemeColors();
+	const styles = useChatStyles(baseStyles);
+	const parsed = useMemo(() => parseAttachmentMessage(message.text), [message.text]);
+	const images = message.images ?? [];
+	const names = useMemo(() => parsed.attachments.map(attachment => attachment.name), [parsed.attachments]);
+	const sizes = useAttachmentSizes(names);
+	// 下の画像のカードは、札と枚数が同じなら隠す（同じ画像を 2 度出さない）
+	const hideImageCards = attachmentImagesDuplicate(parsed.attachments.length, images.length);
+	// transcript の画像のブロックを札の中身に当てるのは、1 枚ずつの大きさまで一致したときだけ（取り違えた画像を出さない）
+	const imagesMatched = attachmentImagesMatch(sizes, images);
+	const fallback = useMemo(
+		() => imagesMatched ? { terminalKey, rev: message.rev, images } : undefined,
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- images は message と一緒に替わる
+		[imagesMatched, terminalKey, message.rev, message.images],
+	);
+	const hasText = parsed.body.trim().length > 0;
+	return (
+		<View style={[styles.row, styles.userRow]}>
+			<View style={[styles.bubble, { backgroundColor: theme.bubble }]}>
+				{parsed.attachments.length > 0 ? (
+					<MessageAttachmentChips attachments={parsed.attachments} terminalKey={terminalKey} fallback={fallback} onBubble={theme.onBubble} />
+				) : null}
+				{hasText ? <Text style={[styles.bubbleText, { color: theme.onBubble }]} selectable>{parsed.body}</Text> : null}
+				{images.length > 0 && !hideImageCards ? <ToolImageCards result={message} terminalKey={terminalKey} /> : null}
+			</View>
 		</View>
 	);
 }
