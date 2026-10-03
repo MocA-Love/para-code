@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { paradisCodexUserAuthoredContent, paradisIsCodexEncryptedPayload } from '../../agentChat/common/paradisCodexInjectedContext.js';
+import { ADVISOR_TEXT_LIMIT, IParadisAgentAdvisorUpdate } from './paradisAgentActivity.js';
 
 export type ParadisRecoveredAgentStatus = 'running' | 'completed' | 'failed' | 'interrupted' | 'unknown';
 
@@ -307,6 +308,66 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 		status: ownerStatus, startedAt: ownerStartedAt, updatedAt: ownerUpdatedAt,
 	} : undefined;
 	return { ...(owner !== undefined ? { owner } : {}), spawned: [...spawned.values()], notifications, resumeToolUseIds };
+}
+
+const ADVISOR_MODEL_PATTERN = /^[A-Za-z0-9._:@-]{1,100}$/;
+
+/**
+ * transcript の行から Advisor（サーバー側ツール）への相談を拾う。`server_tool_use`（name:"advisor"）が開始、
+ * `advisor_tool_result` が結果で、モデル名は行のトップの `advisorModel`。`ownerId` はサブエージェントの transcript を
+ * 読むときのその子の ID（親の会話では undefined）。結果の無い相談は、古ければ中断とみなす。
+ */
+export function paradisParseClaudeAdvisors(ownerId: string | undefined, lines: readonly string[], now: number): IParadisAgentAdvisorUpdate[] {
+	const advisors = new Map<string, IParadisAgentAdvisorUpdate>();
+	for (const line of lines) {
+		if (!line.includes('advisor')) {
+			continue;
+		}
+		let entry: Record<string, unknown> | undefined;
+		try { entry = record(JSON.parse(line)); } catch { continue; }
+		const content = record(entry?.message)?.content;
+		// 親の transcript に混ざる sidechain の行（古い版のサブエージェント）は、その子の相談なので親の分に数えない
+		if (entry === undefined || entry.type !== 'assistant' || entry.isSidechain === true || !Array.isArray(content)) {
+			continue;
+		}
+		const at = timestamp(entry.timestamp);
+		if (at === undefined) {
+			continue;
+		}
+		const rawModel = text(entry.advisorModel);
+		const model = rawModel !== undefined && ADVISOR_MODEL_PATTERN.test(rawModel) ? rawModel : undefined;
+		for (const rawBlock of content) {
+			const block = record(rawBlock);
+			if (block?.type === 'server_tool_use' && block.name === 'advisor') {
+				const id = text(block.id);
+				if (id !== undefined && ID_PATTERN.test(id) && !advisors.has(id)) {
+					advisors.set(id, {
+						id, ...(model !== undefined ? { model } : {}), ...(ownerId !== undefined ? { ownerId } : {}),
+						status: now - at <= STALE_ACTIVITY_MS ? 'running' : 'interrupted', startedAt: at, updatedAt: at,
+					});
+				}
+			} else if (block?.type === 'advisor_tool_result') {
+				const id = text(block.tool_use_id);
+				if (id === undefined || !ID_PATTERN.test(id)) {
+					continue;
+				}
+				const previous = advisors.get(id);
+				const result = record(block.content);
+				const type = text(result?.type);
+				const errorCode = type === 'advisor_tool_result_error' ? text(result?.error_code) : undefined;
+				const plain = type === 'advisor_result' ? text(result?.text) : undefined;
+				advisors.set(id, {
+					id, ...((model ?? previous?.model) !== undefined ? { model: model ?? previous?.model } : {}), ...(ownerId !== undefined ? { ownerId } : {}),
+					status: type === 'advisor_tool_result_error' ? 'failed' : 'completed',
+					outcome: type === 'advisor_tool_result_error' ? 'error' : type === 'advisor_result' ? 'text' : 'redacted',
+					...(errorCode !== undefined && /^[A-Za-z0-9._:-]{1,100}$/.test(errorCode) ? { errorCode } : type === 'advisor_tool_result_error' ? { errorCode: 'unknown_error' } : {}),
+					...(plain !== undefined ? { text: plain.slice(0, ADVISOR_TEXT_LIMIT), ...(plain.length > ADVISOR_TEXT_LIMIT ? { textTruncated: true } : {}) } : {}),
+					startedAt: previous?.startedAt ?? at, updatedAt: at,
+				});
+			}
+		}
+	}
+	return [...advisors.values()];
 }
 
 function parseCodexSource(source: string): { readonly parentId?: string; readonly depth?: number; readonly label?: string } {

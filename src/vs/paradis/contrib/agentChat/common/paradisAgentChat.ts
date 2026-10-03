@@ -55,6 +55,23 @@ export interface IParadisAgentChatImage {
 	readonly oversize?: true;
 }
 
+/**
+ * Claude Code の Advisor（API のサーバー側ツール `advisor`）の呼び出しと結果。transcript の `server_tool_use`
+ * （name:"advisor"）を `tool:'Advisor'` の tool_use、`advisor_tool_result` を tool_result にし、この印を添える。
+ * 古いアプリは印を知らず、ふつうのツール（「Advisor」）として出す。
+ */
+export interface IParadisAgentAdvisorInfo {
+	/** 行のトップの `advisorModel`（例 `claude-opus-4-7`）。 */
+	readonly model?: string;
+	/** 結果の種別（tool_result だけ）。`redacted` は暗号化されて読めない返答、`text` は平文の返答（旧世代のモデル）。 */
+	readonly outcome?: 'redacted' | 'text' | 'error';
+	/** `advisor_tool_result_error` の `error_code`（言い換えずにそのまま出す）。 */
+	readonly errorCode?: string;
+}
+
+/** Advisor の呼び出しを表す tool_use のツール名。 */
+export const PARADIS_ADVISOR_TOOL = 'Advisor';
+
 /** モバイルへ送る正規化済みチャットメッセージ1件。 */
 export interface IParadisAgentChatMessage {
 	/** epoch内で単調増加する連番 (差分同期用)。 */
@@ -89,6 +106,13 @@ export interface IParadisAgentChatMessage {
 	readonly peerSummary?: string;
 	/** kind==='tool_result' のとき: ツールがエラーを返したか（transcriptの is_error）。 */
 	readonly isError?: boolean;
+	/**
+	 * Para Code からの知らせ（送った発言がエージェントへ届かなかった等。transcript には無い）。エージェントの発言とは
+	 * 分けて、小さな灰色の 1 行で出す。古いアプリは知らない項目として無視し、これまでどおり本文として出す。
+	 */
+	readonly notice?: true;
+	/** Advisor の呼び出し（tool_use）と結果（tool_result）に付く。{@link IParadisAgentAdvisorInfo} */
+	readonly advisor?: IParadisAgentAdvisorInfo;
 	/**
 	 * kind==='tool_result' のとき: サブエージェント（Agent / Task）の起動・報告の結果に Claude Code が添える子の ID
 	 * （行の `toolUseResult.agentId`）。本文の末尾の `agentId:` が切り詰めで落ちても、会話のカードを一覧の項目へ結べる。

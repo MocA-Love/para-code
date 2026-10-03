@@ -20,16 +20,20 @@ export function activityEndAt(agent: Pick<AgentActivityAgent, 'status' | 'update
 	return agent.status === 'running' || agent.status === 'idle' ? now : agent.updatedAt;
 }
 
-/** サブエージェントかタスクの記録が1件でもあるか（⋯ に入口を出すか）。 */
+/**
+ * サブエージェント・タスク・Advisor への相談の記録が1件でもあるか（⋯ に入口を出すか）。Advisor しか無い会話でも出す。
+ */
 export function hasAgentActivity(activity: AgentActivityState | undefined): activity is AgentActivityState {
-	return activity !== undefined && (activity.agents.length > 0 || activity.tasks.length > 0);
+	return activity !== undefined && (activity.agents.length > 0 || activity.tasks.length > 0 || (activity.advisors?.length ?? 0) > 0);
 }
 
-/** ⋯ の「サブエージェント」の補足（「実行中 1 · エージェント 3 · タスク 2」）。 */
+/** ⋯ の「サブエージェント」の補足（「実行中 1 · エージェント 3 · タスク 2」。相談があれば「アドバイザー 2」も）。 */
 export function activityMenuHint(activity: AgentActivityState): string {
+	const advisors = activity.advisors ?? [];
 	const running = activity.agents.filter(agent => isRunningAgentActivity(agent.status)).length
-		+ activity.tasks.filter(task => isRunningAgentActivity(task.status)).length;
-	const parts = [`エージェント ${activity.agents.length}`, `タスク ${activity.tasks.length}`];
+		+ activity.tasks.filter(task => isRunningAgentActivity(task.status)).length
+		+ advisors.filter(advisor => advisor.status === 'running').length;
+	const parts = [`エージェント ${activity.agents.length}`, ...(advisors.length > 0 ? [`アドバイザー ${advisors.length}`] : []), `タスク ${activity.tasks.length}`];
 	return running > 0 ? [`実行中 ${running}`, ...parts].join(' · ') : parts.join(' · ');
 }
 
@@ -50,7 +54,7 @@ export function activityOverview(activity: AgentActivityState, now: number, expa
 	const { recent, older } = partitionRecentAgentActivity(activity.agents, now);
 	const visible = expanded || older.length === 0 ? activity.agents : recent;
 	return {
-		running: activity.agents.filter(agent => isRunningAgentActivity(agent.status)).length,
+		running: activity.agents.filter(agent => isRunningAgentActivity(agent.status)).length + (activity.advisors ?? []).filter(advisor => advisor.status === 'running').length,
 		rows: flattenAgentActivity(visible),
 		olderCount: older.length,
 	};

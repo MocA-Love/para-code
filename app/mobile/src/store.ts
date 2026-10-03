@@ -889,6 +889,16 @@ export interface AgentChatMessage {
 	/** text がPC側で切り詰められている。requestAgentToolFullText で全文を取り寄せられる。 */
 	truncated?: boolean;
 	/**
+	 * Para Code からの知らせ（Claude Mods で送った発言が後から届かなかった等。transcript には無い）。エージェントの
+	 * 発言ではないので、小さな灰色の 1 行で出し、最後の発言にも数えない。古い PC は送らない。
+	 */
+	notice?: boolean;
+	/**
+	 * Claude Code の Advisor の呼び出し（tool_use、`tool:'Advisor'`）と結果（tool_result）に PC が付ける印。
+	 * 届いたまま検証せずに入るので、使うときは `parseAgentAdvisorInfo()` を通す。
+	 */
+	advisor?: AgentAdvisorInfo;
+	/**
 	 * kind==='tool_result': サブエージェントの起動・報告の結果の子の ID（PC が transcript の構造化した結果から添える）。
 	 * 本文の末尾の `agentId:` が切り詰めで落ちても会話のカードを一覧の項目へ結べる。古い PC は送らない。
 	 */
@@ -1118,10 +1128,33 @@ export type AgentActivityStatus = 'running' | 'idle' | 'completed' | 'failed' | 
 export interface AgentActivityAgent { id: string; label: string; role: 'subagent' | 'teammate'; provider?: 'claude' | 'codex'; detail?: string; parentId?: string; depth?: number; status: AgentActivityStatus; startedAt: number; updatedAt: number; toolUseIds?: string[] }
 export interface AgentActivityTask { id: string; label: string; detail?: string; assignee?: string; agentId?: string; status: AgentActivityStatus; startedAt: number; updatedAt: number }
 export interface AgentActivityCompaction { id: string; trigger?: string; status: 'running' | 'completed'; startedAt: number; updatedAt: number }
+/** Advisor の呼び出し・結果の印（PC の IParadisAgentAdvisorInfo）。 */
+export interface AgentAdvisorInfo {
+	/** 例 `claude-opus-4-7`。 */
+	model?: string;
+	/** 結果の種別。`redacted` は暗号化されて読めない返答、`text` は平文（旧世代）、`error` は失敗。 */
+	outcome?: 'redacted' | 'text' | 'error';
+	/** 失敗の `error_code`（言い換えずに出す）。 */
+	errorCode?: string;
+}
+/** Advisor への相談 1 回（サブエージェントの画面の「アドバイザー」）。 */
+export interface AgentActivityAdvisor {
+	id: string;
+	model?: string;
+	status: 'running' | 'completed' | 'failed' | 'interrupted';
+	outcome?: 'redacted' | 'text' | 'error';
+	errorCode?: string;
+	/** サブエージェントの中で呼んだときの、その子の ID。 */
+	ownerId?: string;
+	startedAt: number;
+	updatedAt: number;
+}
 export interface AgentActivityState {
 	agents: AgentActivityAgent[];
 	tasks: AgentActivityTask[];
 	compactions: AgentActivityCompaction[];
+	/** Advisor への相談（新しい順。古い PC は送らない）。 */
+	advisors?: AgentActivityAdvisor[];
 	startedAt: number;
 	updatedAt: number;
 }
@@ -1139,6 +1172,45 @@ export interface AgentActivityDetailMessage {
 	truncated?: boolean;
 	/** {@link AgentChatMessage.agentId} */
 	agentId?: string;
+	/** {@link AgentChatMessage.advisor} */
+	advisor?: AgentAdvisorInfo;
+}
+
+const ADVISOR_ID_PATTERN = /^[A-Za-z0-9._:@-]{1,200}$/;
+
+/** Advisor の印を、届いた値を信用せずに読む（形が違えば undefined）。 */
+export function parseAgentAdvisorInfo(value: unknown): AgentAdvisorInfo | undefined {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		return undefined;
+	}
+	const raw = value as Record<string, unknown>;
+	return {
+		...(typeof raw['model'] === 'string' && ADVISOR_ID_PATTERN.test(raw['model']) ? { model: raw['model'] } : {}),
+		...(raw['outcome'] === 'redacted' || raw['outcome'] === 'text' || raw['outcome'] === 'error' ? { outcome: raw['outcome'] } : {}),
+		...(typeof raw['errorCode'] === 'string' && ADVISOR_ID_PATTERN.test(raw['errorCode']) ? { errorCode: raw['errorCode'] } : {}),
+	};
+}
+
+/** 一覧の Advisor への相談を、届いた値を信用せずに読む（平文の返答は一覧には載らない。詳細で取り寄せる）。 */
+export function parseAgentActivityAdvisors(value: unknown): AgentActivityAdvisor[] | undefined {
+	if (!Array.isArray(value)) {
+		return undefined;
+	}
+	const advisors: AgentActivityAdvisor[] = [];
+	for (const candidate of value.slice(0, 50)) {
+		if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) { continue; }
+		const item = candidate as Record<string, unknown>;
+		const status = item['status'];
+		if (typeof item['id'] !== 'string' || !ADVISOR_ID_PATTERN.test(item['id']) || typeof item['startedAt'] !== 'number' || typeof item['updatedAt'] !== 'number'
+			|| (status !== 'running' && status !== 'completed' && status !== 'failed' && status !== 'interrupted')) {
+			continue;
+		}
+		advisors.push({
+			id: item['id'], status, startedAt: item['startedAt'], updatedAt: item['updatedAt'], ...parseAgentAdvisorInfo(item),
+			...(typeof item['ownerId'] === 'string' && item['ownerId'].length <= 500 ? { ownerId: item['ownerId'] } : {}),
+		});
+	}
+	return advisors.length > 0 ? advisors : undefined;
 }
 
 function parseAgentActivityState(value: unknown): AgentActivityState | undefined {
@@ -1173,7 +1245,8 @@ function parseAgentActivityState(value: unknown): AgentActivityState | undefined
 			compactions.push({ id: item['id'].slice(0, 500), ...(typeof item['trigger'] === 'string' ? { trigger: item['trigger'].slice(0, 100) } : {}), status: item['status'], startedAt: item['startedAt'], updatedAt: item['updatedAt'] });
 		}
 	}
-	return { agents, tasks, compactions, startedAt: raw['startedAt'], updatedAt: raw['updatedAt'] };
+	const advisors = parseAgentActivityAdvisors(raw['advisors']);
+	return { agents, tasks, compactions, ...(advisors !== undefined ? { advisors } : {}), startedAt: raw['startedAt'], updatedAt: raw['updatedAt'] };
 }
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
@@ -2464,7 +2537,10 @@ export class MobileController {
 		const chat = this.state.agentChats.get(terminalKey);
 		const terminal = this.terminalForKey(terminalKey);
 		const rendererTarget = this.rendererTargetFor(terminalKey);
-		if (!this.isLiveAvailable() || rendererTarget === undefined || chat === undefined || terminal === undefined || !chat.activity?.agents.some(agent => agent.id === activityId && agent.role === 'subagent')) {
+		// サブエージェントの会話か、Advisor の平文の返答（同じ要求で PC に頼む）
+		const known = chat?.activity?.agents.some(agent => agent.id === activityId && agent.role === 'subagent') === true
+			|| chat?.activity?.advisors?.some(advisor => advisor.id === activityId && advisor.outcome === 'text') === true;
+		if (!this.isLiveAvailable() || rendererTarget === undefined || chat === undefined || terminal === undefined || !known) {
 			return Promise.reject(new Error('SubAgentが見つかりません'));
 		}
 		const requestId = `${this.requestPrefix}-agent-detail-${this.requestCounter++}`;
@@ -4622,10 +4698,12 @@ export class MobileController {
 					if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) { continue; }
 					const item = candidate as Record<string, unknown>;
 					if ((item['role'] === 'user' || item['role'] === 'assistant' || item['role'] === 'tool') && (item['kind'] === 'text' || item['kind'] === 'thinking' || item['kind'] === 'tool') && typeof item['text'] === 'string') {
+						const advisor = parseAgentAdvisorInfo(item['advisor']);
 						messages.push({
 							role: item['role'], kind: item['kind'], text: item['text'].slice(0, 6_000),
 							...(item['truncated'] === true || item['text'].length > 6_000 ? { truncated: true } : {}),
 							...(typeof item['agentId'] === 'string' && item['agentId'].length <= 200 ? { agentId: item['agentId'] } : {}),
+							...(advisor !== undefined ? { advisor } : {}),
 							...(item['toolKind'] === 'tool_use' || item['toolKind'] === 'tool_result' ? { toolKind: item['toolKind'] } : {}),
 							...(typeof item['tool'] === 'string' && item['tool'].length <= 200 ? { tool: item['tool'] } : {}),
 							...(typeof item['toolUseId'] === 'string' && item['toolUseId'].length <= 500 ? { toolUseId: item['toolUseId'] } : {}),

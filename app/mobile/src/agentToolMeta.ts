@@ -175,6 +175,7 @@ export function detailToChatMessages(messages: readonly AgentActivityDetailMessa
 		// 全文の取り寄せは親の会話の rev で引くので、ここでは truncated にしない（別の本文を取り寄せてしまう）
 		...(message.truncated === true ? { detailTruncated: true } : {}),
 		...(message.agentId !== undefined ? { agentId: message.agentId } : {}),
+		...(message.advisor !== undefined ? { advisor: message.advisor } : {}),
 	}));
 }
 

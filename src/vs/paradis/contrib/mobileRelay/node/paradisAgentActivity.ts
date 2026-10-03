@@ -77,10 +77,53 @@ export interface IParadisAgentCompaction {
 	readonly updatedAt: number;
 }
 
+/**
+ * Claude Code の Advisor（API のサーバー側ツール）への相談 1 回。会話の transcript と子 transcript から読む。
+ * 古いアプリは `advisors` を知らない項目として捨てる。
+ */
+export interface IParadisAgentActivityAdvisor {
+	/** `server_tool_use` の id。 */
+	readonly id: string;
+	readonly model?: string;
+	readonly status: 'running' | 'completed' | 'failed' | 'interrupted';
+	/** 結果の種別（終わったものだけ）。`redacted` は暗号化されて読めない返答、`text` は平文（旧世代）。 */
+	readonly outcome?: 'redacted' | 'text' | 'error';
+	readonly errorCode?: string;
+	/** サブエージェントの中で呼んだときの、そのサブエージェントの ID。 */
+	readonly ownerId?: string;
+	readonly startedAt: number;
+	readonly updatedAt: number;
+}
+
+/**
+ * {@link ParadisAgentActivityTracker.applyAdvisors} へ渡す相談。平文の返答（旧世代のモデルだけ）は一覧には載せず、
+ * tracker が持っておいて、詳細を開いたとき（activity-detail）に返す（{@link ParadisAgentActivityTracker.advisorReply}）。
+ */
+export interface IParadisAgentAdvisorUpdate extends IParadisAgentActivityAdvisor {
+	/** 平文の返答（上限 {@link ADVISOR_TEXT_LIMIT} 字）。 */
+	readonly text?: string;
+	/** 返答を切り詰めた（会話の追記の上限、または {@link ADVISOR_TEXT_LIMIT}）。 */
+	readonly textTruncated?: boolean;
+}
+
+/** 一覧に残す Advisor の相談の数（新しい方から）。 */
+const MAX_ADVISORS = 50;
+/** Advisor の平文の返答を持っておく上限（1 件あたり）。50 件で最大 200,000 字。 */
+export const ADVISOR_TEXT_LIMIT = 4_000;
+/** 結果の無い相談を中断とみなすまでの長さ（実測は 8 秒〜2 分）。 */
+const ADVISOR_STALE_MS = 15 * 60 * 1_000;
+
+function sameAdvisor(a: IParadisAgentActivityAdvisor | undefined, b: IParadisAgentActivityAdvisor): boolean {
+	return a !== undefined && a.id === b.id && a.model === b.model && a.status === b.status && a.outcome === b.outcome && a.errorCode === b.errorCode
+		&& a.ownerId === b.ownerId && a.startedAt === b.startedAt && a.updatedAt === b.updatedAt;
+}
+
 export interface IParadisAgentActivityState {
 	readonly agents: readonly IParadisAgentActivityAgent[];
 	readonly tasks: readonly IParadisAgentActivityTask[];
 	readonly compactions: readonly IParadisAgentCompaction[];
+	/** Advisor への相談（1 回も無ければ省く）。 */
+	readonly advisors?: readonly IParadisAgentActivityAdvisor[];
 	readonly startedAt: number;
 	readonly updatedAt: number;
 }
@@ -224,6 +267,14 @@ export class ParadisAgentActivityTracker {
 	 * 入れ替わり）で戻ったものは、記録の読み直しで再開後の行が無いと分かったら終わりへ戻す（{@link mergeRecoveredAgents}）。
 	 */
 	private readonly revivedAt = new Map<string, number>();
+	/** Advisor への相談（id → 項目）。変える時は {@link setAdvisor} を通す（{@link advisorGeneration} を進めるため）。 */
+	private readonly advisors = new Map<string, IParadisAgentActivityAdvisor>();
+	/** 平文の返答（id → 本文と、切り詰めたか）。一覧には載せない。 */
+	private readonly advisorReplies = new Map<string, { readonly text: string; readonly truncated: boolean }>();
+	/** 相談の中身が変わった回数。変化の判定（serialized）は相談の表を JSON にせず、この数だけを比べる。 */
+	private advisorGeneration = 0;
+	/** 最後に分かった Advisor のモデル名（mod の行など、モデル名の無い知らせを補う）。 */
+	private lastAdvisorModel: string | undefined;
 	/** 一覧にいる子の結びが変わった回数。変化の判定（serialized）は大きな表を JSON にせず、この数だけを比べる。 */
 	private linkGeneration = 0;
 
@@ -252,6 +303,10 @@ export class ParadisAgentActivityTracker {
 						}
 					} else if (nextStatus !== 'running') {
 						this.revivedAt.delete(id);
+					}
+					if (event === 'SubagentStop') {
+						// 子が終わったら、その子の結果の無い相談はもう返らない（結果があとから読めれば完了に直る）
+						this.endAdvisors('interrupted', at, advisor => advisor.ownerId === id);
 					}
 					const detail = event === 'SubagentStop' ? text(payload.last_assistant_message) ?? previous?.detail : text(payload.prompt) ?? previous?.detail;
 					this.agents.set(id, {
@@ -316,6 +371,7 @@ export class ParadisAgentActivityTracker {
 		const before = this.serialized();
 		this.revivedAt.delete(id);
 		this.agents.set(id, { ...previous, status, updatedAt: Math.max(previous.updatedAt, at) });
+		this.endAdvisors('interrupted', at, advisor => advisor.ownerId === id);
 		return this.finishApply(before, at);
 	}
 
@@ -501,6 +557,78 @@ export class ParadisAgentActivityTracker {
 		return true;
 	}
 
+	/**
+	 * Advisor への相談を足す・更新する（会話の追記と、transcript の読み直しの両方から来る）。終わった相談を
+	 * 遅れて届いた開始で動いているに戻さない。上限を超えたら古い方から忘れる。
+	 */
+	applyAdvisors(advisors: readonly IParadisAgentAdvisorUpdate[], at: number): boolean {
+		const before = this.serialized();
+		for (const advisor of advisors) {
+			if (!/^[A-Za-z0-9._:-]{1,200}$/.test(advisor.id)) {
+				continue;
+			}
+			const previous = this.advisors.get(advisor.id);
+			if (previous !== undefined && previous.status !== 'running' && advisor.status === 'running') {
+				continue;
+			}
+			const ownerId = advisor.ownerId ?? previous?.ownerId;
+			const model = advisor.model ?? previous?.model ?? this.lastAdvisorModel;
+			if (advisor.model !== undefined) {
+				this.lastAdvisorModel = advisor.model;
+			}
+			const { text, textTruncated, ...rest } = advisor;
+			this.setAdvisor({
+				...rest,
+				...(model !== undefined ? { model } : {}),
+				...(ownerId !== undefined ? { ownerId } : {}),
+				startedAt: Math.min(previous?.startedAt ?? advisor.startedAt, advisor.startedAt),
+			});
+			// 会話の追記の本文は切り詰めてある。transcript の読み直しで取った長い方を残す
+			const reply = this.advisorReplies.get(advisor.id);
+			if (text !== undefined && advisor.status !== 'running' && (reply === undefined || text.length >= reply.text.length)) {
+				this.advisorReplies.set(advisor.id, { text: text.slice(0, ADVISOR_TEXT_LIMIT), truncated: textTruncated === true || text.length > ADVISOR_TEXT_LIMIT });
+			}
+		}
+		if (this.advisors.size > MAX_ADVISORS) {
+			const oldest = [...this.advisors.values()].sort((a, b) => a.startedAt - b.startedAt).slice(0, this.advisors.size - MAX_ADVISORS);
+			for (const advisor of oldest) {
+				this.advisors.delete(advisor.id);
+				this.advisorReplies.delete(advisor.id);
+				this.advisorGeneration++;
+			}
+		}
+		return this.finishApply(before, at);
+	}
+
+	/** 相談を置く。中身が変わったときだけ {@link advisorGeneration} を進める。 */
+	private setAdvisor(advisor: IParadisAgentActivityAdvisor): void {
+		if (!sameAdvisor(this.advisors.get(advisor.id), advisor)) {
+			this.advisors.set(advisor.id, advisor);
+			this.advisorGeneration++;
+		}
+	}
+
+	/** 結果の無い相談を終わりにする（`filter` に当たる、`at` より前に始めたもの）。 */
+	private endAdvisors(status: 'completed' | 'failed' | 'interrupted', at: number, filter: (advisor: IParadisAgentActivityAdvisor) => boolean): void {
+		for (const advisor of [...this.advisors.values()]) {
+			if (advisor.status === 'running' && advisor.startedAt <= at && filter(advisor)) {
+				this.setAdvisor({ ...advisor, status, updatedAt: at });
+			}
+		}
+	}
+
+	/** 平文の返答（詳細を開いたときに返す）。平文の返答の無い相談・知らない相談なら undefined。 */
+	advisorReply(id: string): { readonly advisor: IParadisAgentActivityAdvisor; readonly text: string; readonly truncated: boolean } | undefined {
+		const advisor = this.advisors.get(id);
+		const reply = this.advisorReplies.get(id);
+		return advisor !== undefined && reply !== undefined && advisor.outcome === 'text' ? { advisor, ...reply } : undefined;
+	}
+
+	/** 最後に分かった Advisor のモデル名。 */
+	advisorModel(): string | undefined {
+		return this.lastAdvisorModel;
+	}
+
 	/** 一覧に子がいるか（SubagentStart が新しい起動か再開かを見分ける）。 */
 	hasAgent(agentId: string): boolean {
 		return this.agents.has(agentId);
@@ -610,6 +738,8 @@ export class ParadisAgentActivityTracker {
 		this.finishCompactions(at);
 		// 正常に終わったターンでも、取りかかったままの手順は終わっていない。完了とは見せず待機へ戻す
 		this.settleCodexPlan(reason === 'failed' || reason === 'interrupted' ? reason : 'idle', at);
+		// 親のターンが終わったのに結果の無い Advisor の相談は、もう返らない（中断）。サブエージェントの中の相談は子が持つ
+		this.endAdvisors('interrupted', at, advisor => advisor.ownerId === undefined);
 		return this.finishApply(before, at);
 	}
 
@@ -648,6 +778,8 @@ export class ParadisAgentActivityTracker {
 				this.tasks.set(id, { ...task, status: reason, updatedAt: at });
 			}
 		}
+		// 会話が終わったら、結果の無い相談はもう返らない（サブエージェントの中の相談も含めて）
+		this.endAdvisors(reason === 'completed' ? 'interrupted' : reason, at, () => true);
 		this.finishCompactions(at);
 		return this.finishApply(before, at);
 	}
@@ -667,7 +799,8 @@ export class ParadisAgentActivityTracker {
 	/** 実行中とみなしている子Agent/Taskを抱えているか（失効前の生存確認に使う）。 */
 	hasActiveWork(): boolean {
 		return [...this.agents.values()].some(agent => agent.status === 'running' || agent.status === 'idle')
-			|| [...this.tasks.values()].some(task => task.status === 'running');
+			|| [...this.tasks.values()].some(task => task.status === 'running')
+			|| [...this.advisors.values()].some(advisor => advisor.status === 'running');
 	}
 
 	sweepStale(now: number): boolean {
@@ -688,6 +821,9 @@ export class ParadisAgentActivityTracker {
 				this.compactions.set(id, { ...compaction, status: 'completed', updatedAt: now });
 			}
 		}
+		// 結果の届かないまま古くなった相談（transcript の読み直しが止まった・結果の行が落ちた）
+		const advisorCutoff = now - ADVISOR_STALE_MS;
+		this.endAdvisors('interrupted', now, advisor => advisor.updatedAt < advisorCutoff);
 		return this.finishApply(before, now);
 	}
 
@@ -702,6 +838,7 @@ export class ParadisAgentActivityTracker {
 			}).sort((a, b) => Number(b.status === 'running' || b.status === 'idle') - Number(a.status === 'running' || a.status === 'idle') || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)),
 			tasks: [...this.tasks.values()].sort((a, b) => Number(b.status === 'running' || b.status === 'idle') - Number(a.status === 'running' || a.status === 'idle') || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)),
 			compactions: [...this.compactions.values()].sort((a, b) => a.startedAt - b.startedAt).slice(-5),
+			...(this.advisors.size > 0 ? { advisors: [...this.advisors.values()].sort((a, b) => b.startedAt - a.startedAt || a.id.localeCompare(b.id)) } : {}),
 			startedAt: this.startedAt, updatedAt: this.updatedAt,
 		};
 	}
@@ -726,6 +863,6 @@ export class ParadisAgentActivityTracker {
 	}
 
 	private serialized(): string {
-		return JSON.stringify([...[...this.agents].sort(), ...[...this.tasks].sort(), ...[...this.compactions].sort(), this.linkGeneration]);
+		return JSON.stringify([...[...this.agents].sort(), ...[...this.tasks].sort(), ...[...this.compactions].sort(), this.advisorGeneration, this.linkGeneration]);
 	}
 }

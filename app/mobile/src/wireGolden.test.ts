@@ -271,9 +271,16 @@ describe('wire golden (app side)', () => {
 				return { ...monitor, startedAt: monitor.startedAt - shift, ...(monitor.endedAt !== undefined ? { endedAt: monitor.endedAt - shift } : {}), output: monitor.output.map(line => ({ ...line, at: line.at - shift })) };
 			}),
 			shifted: chat?.monitors?.[0] !== undefined && chat.monitors[0].startedAt !== goldenMonitor?.['startedAt'],
+			// 任意項目: Para Code からの知らせ・Advisor の印・一覧の Advisor への相談
+			notice: chat?.messages.filter(message => message.notice === true).map(message => message.rev),
+			advisor: chat?.messages.filter(message => message.advisor !== undefined).map(message => [message.rev, message.advisor]),
+			advisors: chat?.activity?.advisors,
 		}).toEqual({
 			attach: shapeOf(agentGolden.toPc[0]),
-			messages: ['0:text', '1:tool_use', '2:tool_result'],
+			messages: ['0:text', '1:tool_use', '2:tool_result', '3:tool_use', '4:tool_result', '5:text'],
+			notice: [5],
+			advisor: [[3, { model: 'claude-opus-5-5' }], [4, { model: 'claude-opus-5-5', outcome: 'redacted' }]],
+			advisors: (goldenDelta?.['activity'] as Golden | undefined)?.['advisors'],
 			capabilities: { agentActions: true, claudeSettings: true },
 			monitors: goldenDelta?.['monitors'],
 			shifted: true,
