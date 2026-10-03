@@ -299,11 +299,22 @@ export function paradisCodexMcpTableNeedsToolTimeout(text: string, gatewayPort: 
 
 function codexToolTimeoutTarget(text: string, gatewayPort: number): IServerTable | undefined {
 	const tables = collectCodexServerTables(text.split(/\r?\n/)).filter(table => table.name === PARADIS_MCP_SERVER_NAME);
-	return tables.length === 1
-		&& detectCodexTableUrlPort(tables[0].code) === gatewayPort
-		&& codexToolTimeoutKeyState(text) === 'absent'
-		? tables[0]
-		: undefined;
+	if (tables.length !== 1
+		|| detectCodexTableUrlPort(tables[0].code) !== gatewayPort
+		|| codexToolTimeoutKeyState(text) !== 'absent') {
+		return undefined;
+	}
+	// 節の中に複数行文字列があると、節の終わり（行を足す場所）を行単位で正しく決められない。触らない。
+	const lines = text.split(/\r?\n/).slice(tables[0].headerLine, tables[0].endLine + 1);
+	if (lines.some(line => line.includes('"""') || line.includes('\x27\x27\x27'))) {
+		return undefined;
+	}
+	return tables[0];
+}
+
+/** キー（の候補）に `\u` / `\U` のエスケープがあるか。 */
+function hasUnicodeEscape(keyText: string): boolean {
+	return /\\[uU]/.test(keyText);
 }
 
 const CODEX_TOOL_TIMEOUT_KEY_PATH: readonly string[] = ['mcp_servers', PARADIS_MCP_SERVER_NAME, 'tool_timeout_sec'];
@@ -335,16 +346,23 @@ function codexToolTimeoutKeyState(text: string): 'present' | 'absent' | 'ambiguo
 			}
 			const close = trimmed.lastIndexOf(']');
 			tablePath = close > 0 ? parseTomlKeyPath(trimmed.slice(1, close)) : undefined;
-			if (tablePath === undefined && trimmed.includes('tool_timeout_sec')) {
+			if ((tablePath === undefined && trimmed.includes('tool_timeout_sec')) || hasUnicodeEscape(trimmed)) {
 				state = 'ambiguous';
 			}
+			continue;
+		}
+		const assignment = findTomlAssignment(trimmed);
+		const keyText = assignment > 0 ? trimmed.slice(0, assignment) : undefined;
+		// 引用符付きのキーの `\u` / `\U` は、文字列として探しても見つからない形で同じキーを書ける
+		// （"tool_timeout_sec"）。どのキーか確かめないまま足すと重複しうるので足さない。
+		if (keyText !== undefined && hasUnicodeEscape(keyText)) {
+			state = 'ambiguous';
 			continue;
 		}
 		if (!trimmed.includes('tool_timeout_sec')) {
 			continue;
 		}
-		const assignment = findTomlAssignment(trimmed);
-		const keyPath = assignment > 0 ? parseTomlKeyPath(trimmed.slice(0, assignment)) : undefined;
+		const keyPath = keyText !== undefined ? parseTomlKeyPath(keyText) : undefined;
 		if (keyPath === undefined || tablePath === undefined) {
 			// インラインテーブル・配列の続きの行・解釈できない左辺。どこに効くか分からない。
 			if (state === 'absent') {

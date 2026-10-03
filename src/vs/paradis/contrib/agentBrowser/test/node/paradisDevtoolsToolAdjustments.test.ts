@@ -103,17 +103,18 @@ suite('Paradis devtools tool adjustments', () => {
 		const waitFor = textOf(paradisAdjustDevtoolsToolResult('wait_for', paradisPrepareDevtoolsToolCall('wait_for', { text: 'x', includeSnapshot: true }), response));
 		let now = 0;
 		const cache = new ParadisSnapshotCache(() => now);
-		cache.remember('pane', response);
-		cache.remember('short', text('## Latest page snapshot\nuid=1_0'));
-		const recalled = cache.recall('pane')?.result === response;
+		const child = {};
+		cache.remember('pane', response, child, 1, cache.epoch('pane'));
+		cache.remember('short', text('## Latest page snapshot\nuid=1_0'), child, 1, cache.epoch('short'));
+		const recalled = cache.recall('pane', child, 1)?.result === response;
 		now = 120_000;
 		assert.deepStrictEqual({
 			endsOnWholeCharacter: !/[\uD800-\uDBFF]$/.test(firstPart),
 			waitForLimited: waitFor.includes('snapshot truncated'),
 			description: paradisAdjustDevtoolsToolDescriptor({ name: 'wait_for', description: 'Wait.', inputSchema: { type: 'object', properties: {} } }).description,
 			recalled,
-			short: cache.recall('short'),
-			expired: cache.recall('pane'),
+			short: cache.recall('short', child, 1),
+			expired: cache.recall('pane', child, 1),
 		}, {
 			endsOnWholeCharacter: true,
 			waitForLimited: true,
@@ -122,6 +123,25 @@ suite('Paradis devtools tool adjustments', () => {
 			short: undefined,
 			expired: undefined,
 		});
+	});
+
+	test('a kept snapshot is returned only to the same child process and generation, and a call that outlived a forget keeps nothing', () => {
+		const response = text(`## Latest page snapshot\n${'uid=1_1 button "x"\n'.repeat(2000)}`);
+		const cache = new ParadisSnapshotCache(() => 0);
+		const child = {};
+		const keep = () => cache.remember('pane', response, child, 2, cache.epoch('pane'));
+		keep();
+		const otherChild = cache.recall('pane', {}, 2);
+		keep();
+		const otherGeneration = cache.recall('pane', child, 3);
+		keep();
+		const same = cache.recall('pane', child, 2) !== undefined;
+		// A call starts, another tool runs (forget) before it finishes: what it took is not kept.
+		const epochAtStart = cache.epoch('pane');
+		cache.forget('pane');
+		cache.remember('pane', response, child, 2, epochAtStart);
+		const afterForget = cache.recall('pane', child, 2);
+		assert.deepStrictEqual({ otherChild, otherGeneration, same, afterForget }, { otherChild: undefined, otherGeneration: undefined, same: true, afterForget: undefined });
 	});
 
 	test('the input rejection log keeps the latest reason per pane only for the current call', () => {

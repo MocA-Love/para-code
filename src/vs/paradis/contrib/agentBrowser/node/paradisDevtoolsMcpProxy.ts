@@ -318,12 +318,14 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		const safeToolName = vendoredToolName.test(name) ? name : 'other';
 		const prepared = paradisPrepareDevtoolsToolCall(name, args);
 		const snapshotCacheUsable = paradisSnapshotCacheUsable(name, prepared);
+		const snapshotEpoch = this._snapshots.epoch(token);
 		if (name !== 'take_snapshot' && name !== 'wait_for') {
 			// ほかのツール（クリック・遷移など）でページが変わりうる。控えた続きはもう当てにしない。
 			this._snapshots.forget(token);
 		} else if (snapshotCacheUsable && name === 'take_snapshot' && (prepared.snapshotOffset ?? 0) > 0) {
 			// 続きは、直前に返したスナップショットから切り出す（取り直すとページが変わって続きがずれる）。
-			const cached = this._snapshots.recall(token);
+			const current = this._children.get(token);
+			const cached = this._snapshots.recall(token, current, generation);
 			if (cached !== undefined) {
 				return paradisAdjustCachedSnapshotResult(prepared, cached.result, cached.at);
 			}
@@ -333,6 +335,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			const entry = this._ensureChild(token, generation, wsEndpoint);
 			await this._awaitReady(token, entry, signal);
 			let result = await this._request(token, entry, 'tools/call', { name, arguments: prepared.args ?? {} }, callTimeoutMs, signal);
+			// 結果を返した子プロセス（再試行したら 2 回目のもの）。スナップショットの控えはこれに結び付ける。
+			let producer = entry;
 			const remainingMs = callTimeoutMs - (now() - budgetStartedAt);
 			if (paradisShouldRetryDevtoolsToolAfterTargetClosed(name, result) && !signal?.aborted && remainingMs > 0) {
 				// The CDP connection or the page's session went away under the call (a rebind sweep, a
@@ -347,6 +351,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				const retryBudgetMs = callTimeoutMs - (now() - budgetStartedAt);
 				if (retryBudgetMs > 0) {
 					result = await this._request(token, retryEntry, 'tools/call', { name, arguments: prepared.args ?? {} }, retryBudgetMs, signal);
+					producer = retryEntry;
 					reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-target-closed-retry', new Error('chrome-devtools-mcp tool retried after Target closed'), {
 						safe_tool_name: safeToolName,
 						safe_retry_succeeded: !(this._isRecord(result) && result.isError === true),
@@ -357,7 +362,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				this._reportToolResultError(safeToolName, result, Date.now() - startedAt);
 			}
 			if (snapshotCacheUsable && (name === 'take_snapshot' || (name === 'wait_for' && prepared.includeSnapshot === true))) {
-				this._snapshots.remember(token, result);
+				this._snapshots.remember(token, result, producer, producer.generation, snapshotEpoch);
 			}
 			const adjusted = paradisAdjustDevtoolsToolResult(name, prepared, result, this.options.recentInputRejection?.(token, startedAt));
 			// undefined は呼び出し側で「未知ツール」を意味するため、成功時は必ずオブジェクトを返す。
