@@ -9,9 +9,10 @@ import { useAppStore } from '../../appState.js';
 import { useRouteSpace } from '../../hooks/useRouteTargets.js';
 import { monoFamily } from '../../monoFont.js';
 import { firstParam } from '../../routes.js';
-import type { AgentActivityAgent, AgentActivityTask, AgentChatState } from '../../store.js';
+import type { AgentActivityAdvisor, AgentActivityAgent, AgentActivityTask, AgentChatState } from '../../store.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { AgentStateDot, Card, Icon, iconSize } from '../../ui/index.js';
+import { advisorListMeta, advisorStatusLabel, advisorTitle } from '../session/advisor.js';
 import { activityEndAt, formatActivityDuration } from './activityModel.js';
 
 /**
@@ -139,6 +140,40 @@ export function ActivityAgentRow({ agent, depth, fallbackProvider, now, onOpen }
 	);
 }
 
+/**
+ * Advisor への相談の行（「アドバイザー」の区分。モックの 1a）。押すと詳細（1b）を開く。サブエージェントの中で
+ * 呼んだ相談は、そのサブエージェントの名前を「… から」と添える。
+ */
+export function ActivityAdvisorRow({ advisor, ownerLabel, now, onOpen }: {
+	advisor: AgentActivityAdvisor;
+	ownerLabel: string | undefined;
+	now: number;
+	onOpen: (advisor: AgentActivityAdvisor) => void;
+}) {
+	const title = advisorTitle(advisor.model);
+	const meta = advisorListMeta(advisor, now);
+	const status = advisorStatusLabel(advisor.status);
+	return (
+		<Pressable
+			onPress={() => onOpen(advisor)}
+			style={({ pressed }) => [styles.row, pressed ? styles.pressed : undefined]}
+			accessibilityRole="button"
+			accessibilityLabel={`${ownerLabel !== undefined ? `${ownerLabel} から、` : ''}${title}、${status}、${meta}`}
+		>
+			<AgentStateDot kind={activityStatusKind(advisor.status)} />
+			<View style={styles.body}>
+				<Text style={styles.label} numberOfLines={1}>
+					{ownerLabel !== undefined ? <Text style={styles.owner}>{`${ownerLabel} から `}</Text> : null}
+					{title}
+				</Text>
+				<Text style={styles.meta} numberOfLines={1}>{meta}</Text>
+			</View>
+			<Text style={[styles.status, { color: activityStatusColor(advisor.status) }]}>{status}</Text>
+			<Icon icon={ChevronRight} color={colors.textMuted} />
+		</Pressable>
+	);
+}
+
 /** タスクの行（押せない）。 */
 export function ActivityTaskRow({ task }: { task: AgentActivityTask }) {
 	const glyph = task.status === 'completed' ? CircleCheck : task.status === 'failed' ? CircleX : CircleDashed;
@@ -230,6 +265,10 @@ const styles = StyleSheet.create({
 		color: colors.textMuted,
 		marginTop: 2,
 		fontFamily: monoFamily,
+	},
+	owner: {
+		color: colors.textMuted,
+		fontWeight: '400',
 	},
 	detail: {
 		fontSize: type.meta,

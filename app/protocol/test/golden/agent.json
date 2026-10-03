@@ -1,5 +1,5 @@
 {
-	"$comment": "agent チャネルの固定形。id はターミナルの数値 ID、token はペイントークン（state.json の current の terminals[0] と揃えてある）。toPc はアプリが送る要求、toMobile は PC が送る応答。delta の monitors は任意項目（agent.monitors.v1）で、先頭の要素に全項目を持たせてある。時刻は PC の時計で、monitorsAt（PC の送信時刻）との差でアプリが手元の時計へ直す。",
+	"$comment": "agent チャネルの固定形。id はターミナルの数値 ID、token はペイントークン（state.json の current の terminals[0] と揃えてある）。toPc はアプリが送る要求、toMobile は PC が送る応答。delta の monitors は任意項目（agent.monitors.v1）で、先頭の要素に全項目を持たせてある。delta の notice（Para Code からの知らせ）・advisor（Advisor の呼び出しと結果の印）・activity.advisors（Advisor への相談）も任意項目で、古いアプリは無視する。activity-detail の activityId に相談の id を渡すと、平文の返答を返す。時刻は PC の時計で、monitorsAt（PC の送信時刻）との差でアプリが手元の時計へ直す。",
 	"toPc": [
 		{ "t": "attach", "id": 7, "token": "agent-token-1", "liveEncoding": "agent-live-append-v1" },
 		{ "t": "attach", "id": 7, "token": "agent-token-1", "epoch": "golden-agent-epoch", "afterRev": 1, "liveEncoding": "agent-live-append-v1" },
@@ -12,6 +12,7 @@
 		{ "t": "action/sendMessage", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-9", "epoch": "golden-agent-epoch", "text": "続きをお願い", "sendId": "send-golden-1" },
 		{ "t": "history", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-7", "epoch": "golden-agent-epoch", "beforeRev": 0, "limit": 60 },
 		{ "t": "history", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-8", "epoch": "golden-agent-epoch", "beforeRev": -60, "cursor": "f:1024:0", "limit": 60 },
+		{ "t": "activity-detail", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-10", "epoch": "golden-agent-epoch", "activityId": "srvtoolu_golden2" },
 		{ "t": "detach", "id": 7, "token": "agent-token-1" }
 	],
 	"toMobile": [
@@ -25,10 +26,22 @@
 			"capabilities": { "agentActions": true, "claudeSettings": true }
 		},
 		{
-			"t": "delta", "id": 7, "token": "agent-token-1", "agent": "claude", "epoch": "golden-agent-epoch", "rev": 2,
+			"t": "delta", "id": 7, "token": "agent-token-1", "agent": "claude", "epoch": "golden-agent-epoch", "rev": 5,
 			"messages": [
-				{ "rev": 2, "role": "tool", "kind": "tool_result", "text": "ok", "toolUseId": "tool-1", "ts": 1760000002000 }
+				{ "rev": 2, "role": "tool", "kind": "tool_result", "text": "ok", "toolUseId": "tool-1", "ts": 1760000002000 },
+				{ "rev": 3, "role": "assistant", "kind": "tool_use", "tool": "Advisor", "text": "claude-opus-5-5", "toolUseId": "srvtoolu_golden1", "ts": 1760000002100, "advisor": { "model": "claude-opus-5-5" } },
+				{ "rev": 4, "role": "tool", "kind": "tool_result", "text": "返答は暗号化されているため、表示できません。", "toolUseId": "srvtoolu_golden1", "ts": 1760000002900, "advisor": { "model": "claude-opus-5-5", "outcome": "redacted" } },
+				{ "rev": 5, "role": "assistant", "kind": "text", "text": "送れませんでした: 続きをお願い", "ts": 1760000003000, "notice": true }
 			],
+			"activity": {
+				"agents": [], "tasks": [], "compactions": [],
+				"advisors": [
+					{ "id": "srvtoolu_golden2", "model": "claude-opus-4-7", "status": "completed", "outcome": "text", "startedAt": 1760000002950, "updatedAt": 1760000002990 },
+					{ "id": "srvtoolu_golden1", "model": "claude-opus-5-5", "status": "completed", "outcome": "redacted", "startedAt": 1760000002100, "updatedAt": 1760000002900 },
+					{ "id": "srvtoolu_golden0", "model": "claude-opus-5-5", "status": "failed", "outcome": "error", "errorCode": "too_many_requests", "ownerId": "agent-sub-1", "startedAt": 1760000001000, "updatedAt": 1760000001300 }
+				],
+				"startedAt": 1760000001000, "updatedAt": 1760000002990
+			},
 			"capabilities": { "agentActions": true, "claudeSettings": true },
 			"monitors": [
 				{ "id": "bgolden01", "description": "ビルドの進行と失敗", "command": "tail -f /tmp/build.log | grep --line-buffered error", "startedAt": 1760000001500, "startUnknown": true, "timeoutMs": 900000, "persistent": true, "status": "failed", "estimated": true, "endedAt": 1760000002500, "exitCode": 1, "output": [{ "at": 1760000002000, "text": "error: build failed" }], "eventCount": 1 }
@@ -38,6 +51,7 @@
 		{ "t": "action-result", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-1", "status": "accepted", "consumed": true },
 		{ "t": "approval-options", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-5", "interactionId": "approval-1", "options": [{ "n": 1, "label": "Yes" }, { "n": 2, "label": "Yes, and don't ask again for npm test commands" }, { "n": 3, "label": "No, and tell Claude what to do differently (esc)" }], "promptHash": "0123456789abcdef0123456789abcdef01234567" },
 		{ "t": "history", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-8", "epoch": "golden-agent-epoch", "messages": [{ "rev": -1, "role": "user", "kind": "text", "text": "最初の依頼", "ts": 1759990000000 }], "hasMore": true, "cursor": "f:512:0" },
+		{ "t": "activity-detail", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-10", "activityId": "srvtoolu_golden2", "messages": [{ "role": "tool", "kind": "tool", "toolKind": "tool_result", "tool": "Advisor", "text": "順番を入れ替えてください。", "truncated": true, "advisor": { "model": "claude-opus-4-7", "outcome": "text" } }] },
 		{ "t": "none", "id": 7, "token": "agent-token-1" }
 	]
 }

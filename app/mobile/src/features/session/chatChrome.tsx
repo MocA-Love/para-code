@@ -12,6 +12,7 @@ import type { PendingAgentMessage } from '../../pendingAgentMessages.js';
 import type { AgentLiveState } from '../../store.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
 import { BottomDrawer, DrawerCaption, DrawerTitle, Icon, iconSize } from '../../ui/index.js';
+import { advisorLiveLabel, isAdvisorLive } from './advisor.js';
 
 /** 行の中の小さな操作（見た目 28）。当たり判定は 44 に広げる。 */
 const SMALL_SLOP = hitSlopToMinimum(28);
@@ -96,10 +97,11 @@ function WorkingIndicator({ live }: { live: AgentLiveState | undefined }) {
 	const seconds = live !== undefined
 		? Math.max(live.elapsedSeconds ?? 0, Math.max(0, Math.floor((Date.now() - live.startedAt) / 1000)))
 		: undefined;
-	const phase = live?.phase === 'tool'
-		? `実行中: ${formatToolName(live.tool ?? 'tool')}`
-		: live?.phase === 'message' ? '応答を生成中'
-			: live?.phase === 'permission' ? '許可待ち' : undefined;
+	// Advisor を待つ間は「Advisor（Opus 5.5）に相談中」（親の会話の相談だけ。サブエージェントの中の相談は上がらない）
+	const phase = isAdvisorLive(live) ? advisorLiveLabel(live)
+		: live?.phase === 'tool' ? `実行中: ${formatToolName(live.tool ?? 'tool')}`
+			: live?.phase === 'message' ? '応答を生成中'
+				: live?.phase === 'permission' ? '許可待ち' : undefined;
 	const label = ['エージェントが作業中', seconds !== undefined ? elapsedLabel(seconds) : undefined, phase].filter(Boolean).join(' · ');
 	return (
 		<View style={styles.working} accessibilityRole="progressbar" accessibilityLabel={label}>

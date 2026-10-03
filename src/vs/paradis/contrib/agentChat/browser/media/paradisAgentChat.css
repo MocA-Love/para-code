@@ -183,6 +183,25 @@
 	border-radius: var(--vscode-cornerRadius-medium);
 }
 
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-message.system {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--vscode-spacing-size40);
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-message.system .codicon {
+	flex-shrink: 0;
+	font-size: inherit;
+	line-height: inherit;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-system-text {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-peer-name {
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-label1);

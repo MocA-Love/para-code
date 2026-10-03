@@ -28,6 +28,11 @@ describe('行の3段目の一文', () => {
 		expect(agentRowLine({ agent: true, agentStatus: 'review' }, chat)).toEqual({ text: '最初の行', emphasized: true, at: 3_000 });
 	});
 
+	test('Para Code の知らせ（送れませんでした）はエージェントの発言に数えない', () => {
+		const chat = { messages: [message(1, 'assistant', 'text', '終わりました'), { ...message(2, 'assistant', 'text', '送れませんでした: 続けて'), notice: true }] };
+		expect(lastAssistantText(chat)).toBe('終わりました');
+	});
+
 	test('実行中は動いているツールとその対象を優先する', () => {
 		const chat = { messages: [message(1, 'assistant', 'text', '進めます')], live: { phase: 'tool' as const, source: 'hook' as const, startedAt: 1, updatedAt: 5_000, tool: 'Bash', detail: 'pnpm test' } };
 		expect(agentRowLine({ agent: true, agentStatus: 'working' }, chat)).toEqual({ text: 'Bash pnpm test', emphasized: false, at: 5_000 });

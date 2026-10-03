@@ -66,6 +66,10 @@ describe('routes', () => {
 			pathname: '/pc/[pcId]/session/[spaceId]/activity/[agentId]',
 			params: { pcId: 'p', spaceId: 's', agentId: 'a1', terminal: 'k', epoch: 'e1' },
 		});
+		expect(routes.activityAdvisor('p', 's', 'k', 'srvtoolu_1', 'e1')).toEqual({
+			pathname: '/pc/[pcId]/session/[spaceId]/activity/advisor/[advisorId]',
+			params: { pcId: 'p', spaceId: 's', advisorId: 'srvtoolu_1', terminal: 'k', epoch: 'e1' },
+		});
 	});
 
 	test('根の画面', () => {

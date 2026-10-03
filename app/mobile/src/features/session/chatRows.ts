@@ -2,6 +2,7 @@
 
 import { pinnedQuestionIndex } from '../../agentConversationUx.js';
 import type { AgentChatMessage, AgentInteraction } from '../../store.js';
+import { advisorInfoOf } from './advisor.js';
 import { foldSubagentRows, type SubagentCardChatRow } from './subagentCards.js';
 
 /**
@@ -11,6 +12,7 @@ import { foldSubagentRows, type SubagentCardChatRow } from './subagentCards.js';
  *  - 質問は独立の行（同じ AskUserQuestion 由来の複数の質問は1行にまとめる）
  *  - Web 検索は開始と結果を別の行にする（結果は実際に届いた位置へ置く）
  *  - サブエージェントの呼び出しは、同じターンのものを 1 枚のカードにまとめる（`subagentCards.ts`）
+ *  - Advisor への相談は、呼び出しと結果を独立した 1 行にする（ツールのまとまりに混ぜない。`advisor.ts`）
  */
 export type ChatRow =
 	| { readonly type: 'msg'; readonly m: AgentChatMessage }
@@ -18,7 +20,16 @@ export type ChatRow =
 	| { readonly type: 'questionGroup'; readonly key: string; readonly msgs: AgentChatMessage[]; answered: boolean }
 	| { readonly type: 'web'; readonly key: string; readonly msgs: AgentChatMessage[] }
 	| { readonly type: 'group'; readonly key: string; readonly msgs: AgentChatMessage[] }
+	| AdvisorChatRow
 	| SubagentCardChatRow;
+
+/** Advisor への相談 1 回（呼び出しと、届いていれば結果）。 */
+export interface AdvisorChatRow {
+	readonly type: 'advisor';
+	readonly key: string;
+	readonly use?: AgentChatMessage;
+	result?: AgentChatMessage;
+}
 
 export type QuestionChatRow = Extract<ChatRow, { type: 'question' | 'questionGroup' }>;
 
@@ -32,6 +43,7 @@ export function buildChatRows(messages: readonly AgentChatMessage[]): ChatRow[] 
 	}
 	const result: ChatRow[] = [];
 	const webSearches = new Map<string, AgentChatMessage>();
+	const advisorCalls = new Map<string, AdvisorChatRow>();
 	let buffer: AgentChatMessage[] = [];
 	const flush = () => {
 		const first = buffer[0];
@@ -65,6 +77,18 @@ export function buildChatRows(messages: readonly AgentChatMessage[]): ChatRow[] 
 			}
 			if (m.toolUseId !== undefined) {
 				webSearches.set(m.toolUseId, m);
+			}
+		} else if (advisorInfoOf(m) !== undefined) {
+			const call = m.kind === 'tool_result' && m.toolUseId !== undefined ? advisorCalls.get(m.toolUseId) : undefined;
+			if (call !== undefined && call.result === undefined) {
+				call.result = m;
+			} else {
+				flush();
+				const row: AdvisorChatRow = m.kind === 'tool_use' ? { type: 'advisor', key: `adv:${m.rev}`, use: m } : { type: 'advisor', key: `adv:${m.rev}`, result: m };
+				result.push(row);
+				if (m.kind === 'tool_use' && m.toolUseId !== undefined) {
+					advisorCalls.set(m.toolUseId, row);
+				}
 			}
 		} else if (m.kind === 'tool_result' && m.toolUseId !== undefined && webSearches.has(m.toolUseId)) {
 			flush();
@@ -110,7 +134,7 @@ export function splitPinnedQuestion(
 
 /** 一覧の行の鍵（セッションが変わったら全行を作り直す）。 */
 export function chatRowKey(row: ChatRow, epoch: string): string {
-	return row.type === 'group' || row.type === 'questionGroup' || row.type === 'web' || row.type === 'agents'
+	return row.type === 'group' || row.type === 'questionGroup' || row.type === 'web' || row.type === 'agents' || row.type === 'advisor'
 		? `${epoch}:${row.key}`
 		: `${epoch}:${row.m.rev}`;
 }
