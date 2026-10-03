@@ -26,6 +26,14 @@
 //     本文に `redeem_request_id`（冪等の鍵）を付ける。二重消費は台帳（paradisCodexResetCreditLedger.ts）で
 //     防ぐ。結果が分からない要求は、同じ `redeem_request_id` で再送する。消費は shared process の中で
 //     1本ずつ直列に流すので、複数ウィンドウから同時に押しても provider へ出る要求は1つになる
+//   - 1件を選んで使う: 期限の一覧で選んだクレジットの ID を `credit_id` として本文に足す（Codex 本体の
+//     backend-client の `consume_rate_limit_reset_credit_by_id` と同じ形。省くとどれを使うかは指定しない）。
+//     キー名の根拠は openai/codex のコミット 3a69ec3ef8fb（2026-10-03）の
+//   codex-rs/backend-client/src/client/rate_limit_resets.rs:16-20（消費の本文 `ConsumeRateLimitResetCreditRequest` の
+//   `redeem_request_id` と `credit_id`。`credit_id` は None なら省く）・:97-104（`consume_rate_limit_reset_credit_by_id`）、
+//   codex-rs/backend-client/src/types.rs:33-35（読み取りの応答の各クレジット `RateLimitResetCreditDetails` の `id`。
+//   serde の名前の付け替えは無いのでキーはそのまま）、rate_limit_resets_tests.rs:81-91・:106（直列化と読み取りのテスト）。
+//     ID は確認した提示の中の使えるクレジットのものに限る。結果不明の再送は、最初の要求と同じ ID を送る
 
 import * as fs from 'fs';
 import * as os from 'os';
@@ -45,15 +53,22 @@ import {
 	IParadisCodexResetCreditOffer,
 	IParadisCodexResetCredits,
 	ParadisCodexResetOutcome,
+	paradisCodexResetCreditId,
 	paradisCodexResetOfferRevision,
 	paradisMapCodexBackendResetCredits
 } from '../common/paradisCodexAccounts.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
-import { ParadisCodexResetCreditLedger } from './paradisCodexResetCreditLedger.js';
+import { IParadisCodexResetAttempt, ParadisCodexResetCreditLedger } from './paradisCodexResetCreditLedger.js';
 import { paradisLinkCodexSessions } from './paradisCodexSessionLinker.js';
 
 /** 読み取り結果を使い回す時間。パネルは30秒ごとに描き直すので、そのたびに読まない。 */
 const RESET_CREDITS_CACHE_MS = 3 * 60_000;
+/**
+ * `reset`・`alreadyRedeemed` の後に同じ中身（同じ残り回数・明細）が見えても、使った直後の読み取りが古い
+ * だけかもしれないので断る期間。これを過ぎてから読んだ提示なら押せる（明細の無い応答で、付与されて同じ
+ * 回数に戻ったときに、台帳の保持期間の30日間ずっと押せなくならないように）。
+ */
+const RESET_SAME_CONTENT_HOLD_MS = 10 * 60_000;
 const READ_TIMEOUT_MS = 20_000;
 /** 消費は provider まで往復するので長め（Orca と同じ 30 秒）。 */
 const CONSUME_TIMEOUT_MS = 30_000;
@@ -157,7 +172,12 @@ export class ParadisCodexAccountsService extends Disposable {
 
 	private readonly ledger: ParadisCodexResetCreditLedger;
 	private readonly offers = new Map<string, ICachedOffer>();
-	private readonly inflightReads = new Map<string, Promise<ICachedOffer>>();
+	private readonly inflightReads = new Map<string, { readonly promise: Promise<ICachedOffer>; readonly generation: number }>();
+	/**
+	 * ホームごとの世代。消費を始めるときと終えたときに1つずつ進める（奇数の間は消費の途中）。消費の前や途中に
+	 * 始まった読み取りの結果はキャッシュに書かない（使う前の残数で、使った後の表示を上書きしないため）。
+	 */
+	private readonly generations = new Map<string, number>();
 	/** 同じ鍵の連打には同じ Promise を返す。 */
 	private readonly inflightConsumes = new Map<string, Promise<IParadisCodexResetConsumeResult>>();
 	/** 消費は全ホームを通して1本ずつ流す。 */
@@ -451,13 +471,28 @@ export class ParadisCodexAccountsService extends Disposable {
 		if (!bypassCache && cached && this.now() - cached.offer.fetchedAt < RESET_CREDITS_CACHE_MS) {
 			return this.withPendingFlag(cached.offer, cached.accountId);
 		}
+		const generation = this.generationOf(homePath);
 		let inflight = this.inflightReads.get(homePath);
-		if (!inflight) {
-			inflight = this.fetchResetCredits(homePath).finally(() => this.inflightReads.delete(homePath));
+		// 走っている読み取りが消費より前に始まったものなら、その結果は使う前の残数なので読み直す。
+		if (!inflight || inflight.generation !== generation) {
+			const promise = this.fetchResetCredits(homePath, generation).finally(() => {
+				if (this.inflightReads.get(homePath)?.promise === promise) {
+					this.inflightReads.delete(homePath);
+				}
+			});
+			inflight = { promise, generation };
 			this.inflightReads.set(homePath, inflight);
 		}
-		const fetched = await inflight;
+		const fetched = await inflight.promise;
 		return this.withPendingFlag(fetched.offer, fetched.accountId);
+	}
+
+	private generationOf(homePath: string): number {
+		return this.generations.get(homePath) ?? 0;
+	}
+
+	private nextGeneration(homePath: string): void {
+		this.generations.set(homePath, this.generationOf(homePath) + 1);
 	}
 
 	private withPendingFlag(offer: IParadisCodexResetCreditOffer, accountId: string | undefined): IParadisCodexResetCreditOffer {
@@ -465,7 +500,7 @@ export class ParadisCodexAccountsService extends Disposable {
 		return pendingUnknown ? { ...offer, pendingUnknown } : offer;
 	}
 
-	private async fetchResetCredits(homePath: string): Promise<ICachedOffer> {
+	private async fetchResetCredits(homePath: string, generation: number): Promise<ICachedOffer> {
 		const fetchedAt = this.now();
 		const auth = await this.readAuth(homePath);
 		let result: ICachedOffer;
@@ -483,7 +518,7 @@ export class ParadisCodexAccountsService extends Disposable {
 					result = { offer: { homePath, error: 'unavailable', fetchedAt }, accountId: auth.accountId };
 				} else {
 					const credits = paradisMapCodexBackendResetCredits(await response.json());
-					const offerRevision = credits && credits.availableCount > 0 ? paradisCodexResetOfferRevision(auth.accountId, credits, fetchedAt) : undefined;
+					const offerRevision = credits && credits.availableCount > 0 ? paradisCodexResetOfferRevision(auth.accountId, credits) : undefined;
 					result = { offer: { homePath, credits, offerRevision, fetchedAt }, accountId: auth.accountId };
 				}
 			} catch (error) {
@@ -493,8 +528,11 @@ export class ParadisCodexAccountsService extends Disposable {
 				clearTimeout(timer);
 			}
 		}
-		// 失敗もキャッシュする（パネルを描き直すたびに読み直さない）。
-		this.offers.set(homePath, result);
+		// 失敗もキャッシュする（パネルを描き直すたびに読み直さない）。消費の途中に始まった・読んでいる間に消費が
+		// 始まった読み取りは書かない。
+		if (generation === this.generationOf(homePath) && generation % 2 === 0) {
+			this.offers.set(homePath, result);
+		}
 		return result;
 	}
 
@@ -516,7 +554,8 @@ export class ParadisCodexAccountsService extends Disposable {
 
 	consumeResetCredit(request: IParadisCodexResetConsumeRequest): Promise<IParadisCodexResetConsumeResult> {
 		if (!request || typeof request.homePath !== 'string' || typeof request.offerRevision !== 'string' || typeof request.idempotencyKey !== 'string'
-			|| request.idempotencyKey.trim().length === 0 || request.idempotencyKey.length > 200) {
+			|| request.idempotencyKey.trim().length === 0 || request.idempotencyKey.length > 200
+			|| (request.creditId !== undefined && paradisCodexResetCreditId(request.creditId) === undefined)) {
 			return Promise.reject(new Error('invalid reset-credit request'));
 		}
 		const existing = this.inflightConsumes.get(request.idempotencyKey);
@@ -555,6 +594,7 @@ export class ParadisCodexAccountsService extends Disposable {
 		const accountScope = accountScopeOf(homePath, accountId);
 		let key: string;
 		let offerScope: string;
+		let creditId: string | undefined;
 		const pendingKey = this.ledger.pendingKeyForAccount(accountScope);
 		// 結果が分からない前回の要求の再送か。再送への応答から分かるのは「その再送が使われたか」だけで、
 		// 最初の要求が使われたかは分からない。
@@ -565,13 +605,21 @@ export class ParadisCodexAccountsService extends Disposable {
 			const pending = this.ledger.get(pendingKey)!;
 			key = pending.key;
 			offerScope = pending.offerScope;
+			// 再送は最初の要求と同じ内容にする（今回選んだクレジットではなく、最初に選んだもの）。
+			creditId = pending.creditId;
 		} else {
 			if (!cached || cached.offer.offerRevision === undefined || cached.offer.offerRevision !== request.offerRevision) {
 				return { kind: 'rejected', reason: 'offerChanged' };
 			}
+			if (request.creditId !== undefined && !cached.offer.credits?.credits?.some(credit => credit.status === 'available' && credit.id === request.creditId)) {
+				// 確認した提示に無いクレジット（使われた・期限が切れた・別のアカウントのもの）は送らない。
+				return { kind: 'rejected', reason: 'offerChanged' };
+			}
+			creditId = request.creditId;
 			offerScope = `${accountScope}\n${request.offerRevision}`;
-			const claimed = this.ledger.claimedKeyForOffer(offerScope);
-			if (claimed !== undefined && claimed !== request.idempotencyKey) {
+			// 提示は中身だけで決まるので、同じ中身への要求が前にもありうる。
+			const claimed = this.ledger.claimedAttemptForOffer(offerScope);
+			if (claimed !== undefined && claimed.key !== request.idempotencyKey && !this.mayRetrySameOffer(claimed, request.offerFetchedAt, cached.offer.fetchedAt)) {
 				return { kind: 'rejected', reason: 'alreadyAttempted' };
 			}
 			key = request.idempotencyKey;
@@ -584,11 +632,14 @@ export class ParadisCodexAccountsService extends Disposable {
 			throw new Error('Codex not signed in');
 		}
 		// 書けなければここで例外になり、provider へは出さない。
-		await this.ledger.markProviderPending(key, offerScope, accountScope);
+		await this.ledger.markProviderPending(key, offerScope, accountScope, creditId);
+		// ここから後に始まった読み取りだけをキャッシュに使う（終えたときにもう一度進める）。
+		this.nextGeneration(homePath);
 		let code: unknown;
 		try {
-			code = await this.postConsume(auth.accessToken, auth.accountId, key);
+			code = await this.postConsume(auth.accessToken, auth.accountId, key, creditId);
 		} catch (error) {
+			this.nextGeneration(homePath);
 			if (error instanceof ParadisCodexResetHttpError) {
 				const outcome = paradisCodexResetHttpFailureOutcome(error.status, resend);
 				if (outcome === 'release') {
@@ -606,6 +657,7 @@ export class ParadisCodexAccountsService extends Disposable {
 			// 通信の失敗・時間切れも結果が分からない。providerPending のまま残し、次の操作で同じ鍵を再送させる。
 			throw error;
 		}
+		this.nextGeneration(homePath);
 		const outcome = outcomeOfBackendCode(code);
 		if (outcome === undefined) {
 			// 結果が読めない。providerPending のまま残し、次の操作で同じ鍵を再送させる。
@@ -614,11 +666,39 @@ export class ParadisCodexAccountsService extends Disposable {
 		await this.ledger.markSettled(key, outcome);
 		// 残数・枠が変わったので、次の表示で読み直す。
 		this.offers.delete(homePath);
-		return { kind: 'consumed', outcome };
+		// 一覧で選んで押したのに、結果の分からない前回の要求を送り直した（選んだものは使っていない）。
+		return resend && request.creditId !== undefined ? { kind: 'consumed', outcome, resentPrevious: true } : { kind: 'consumed', outcome };
 	}
 
-	/** バックエンドへ消費を送り、応答の `code` を返す。断られたら {@link ParadisCodexResetHttpError}。 */
-	private async postConsume(accessToken: string, accountId: string | undefined, redeemRequestId: string): Promise<unknown> {
+	/**
+	 * 同じ中身（同じ提示）に、別の鍵でもう一度要求を出してよいか。
+	 *
+	 * 押した画面が見ていた提示の読み取り時刻（`offerFetchedAt`）が、前の要求より後で、shared process が持つ
+	 * 提示の読み取り時刻より後でない（未来の時刻は断る）ことを前提に、
+	 * - 前の要求で使われなかったと分かっているとき（断られた `failed`、使う枠が無かった `nothingToReset`、
+	 *   残りが無かった `noCredit`）と、結果の分からないまま送り直しの期間を過ぎたときは通す
+	 * - `reset`・`alreadyRedeemed` の後は、{@link RESET_SAME_CONTENT_HOLD_MS} を過ぎてから読んだ提示だけ通す。
+	 *   それより前に同じ中身が見えているのは読み取りが古いということなので断る（通すと2回使われる）
+	 * 期間内の結果不明は送り直しの経路に乗るのでここには来ない。
+	 */
+	private mayRetrySameOffer(claimed: IParadisCodexResetAttempt, offerFetchedAt: number | undefined, cachedFetchedAt: number): boolean {
+		if (typeof offerFetchedAt !== 'number' || !Number.isFinite(offerFetchedAt) || offerFetchedAt <= claimed.updatedAt || offerFetchedAt > cachedFetchedAt) {
+			return false;
+		}
+		if (claimed.state === 'settled' && (claimed.outcome === 'reset' || claimed.outcome === 'alreadyRedeemed')) {
+			return offerFetchedAt - claimed.updatedAt >= RESET_SAME_CONTENT_HOLD_MS;
+		}
+		return claimed.state === 'failed'
+			|| (claimed.state === 'settled' && (claimed.outcome === 'nothingToReset' || claimed.outcome === 'noCredit'))
+			|| this.ledger.isExpiredPending(claimed);
+	}
+
+	/**
+	 * バックエンドへ消費を送り、応答の `code` を返す。断られたら {@link ParadisCodexResetHttpError}。
+	 * `creditId` を渡すとそのクレジットを使う（`credit_id`）。省くと本文は今までどおり `redeem_request_id` だけ。
+	 * キー名は Codex 本体の codex-rs/backend-client/src/client/rate_limit_resets.rs:16-20（コミット 3a69ec3ef8fb）と同じ。
+	 */
+	private async postConsume(accessToken: string, accountId: string | undefined, redeemRequestId: string, creditId: string | undefined): Promise<unknown> {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), CONSUME_TIMEOUT_MS);
 		try {
@@ -627,7 +707,7 @@ export class ParadisCodexAccountsService extends Disposable {
 				headers: { ...codexBackendHeaders(accessToken, accountId), 'Content-Type': 'application/json' },
 				// トークンと冪等の鍵を chatgpt.com の外へ転送させない
 				redirect: 'error',
-				body: JSON.stringify({ redeem_request_id: redeemRequestId }),
+				body: JSON.stringify(creditId !== undefined ? { redeem_request_id: redeemRequestId, credit_id: creditId } : { redeem_request_id: redeemRequestId }),
 				signal: controller.signal,
 			});
 			if (!response.ok) {

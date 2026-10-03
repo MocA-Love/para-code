@@ -11,7 +11,7 @@
 //
 // 守りたいこと:
 //  1. 同じ提示（アカウント × 確認ダイアログで見せた残数）に対して provider へ出す消費要求は1つだけ。
-//     連打・複数ウィンドウからの同時操作でも2回目は出さない（claimedKeyForOffer）。
+//     連打・複数ウィンドウからの同時操作でも2回目は出さない（claimedAttemptForOffer）。
 //  2. provider へ要求を出した後にプロセスが落ちて結果が分からなくなっても、次の操作は
 //     **同じ idempotencyKey の再送** になる（pendingKeyForAccount）。バックエンドの消費は
 //     `redeem_request_id`（= idempotencyKey）ごとに1回しか効かないので、再送しても2枚目は減らない。
@@ -29,7 +29,7 @@ const SETTLED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 /**
  * 結果不明の要求を「同じ鍵で送り直す」対象にしておく期間。これを過ぎたら新しい提示で押せる
  * ようにする（ずっと同じ失敗を返し続ける要求があっても、アカウントが使えないままにならないように）。
- * 同じ提示への2回目は、期間を過ぎても claimedKeyForOffer が断る。
+ * 同じ提示への2回目は、期間を過ぎても claimedAttemptForOffer が断る。
  */
 const PENDING_RESEND_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -49,6 +49,8 @@ interface IDurableAttempt {
 	readonly accountScope: string;
 	readonly state: DurableAttemptState;
 	readonly outcome?: ParadisCodexResetOutcome;
+	/** 選んで使ったクレジットの ID（選ばなかったときは無い）。結果不明の再送で同じものを送るために残す。 */
+	readonly creditId?: string;
 	readonly updatedAt: number;
 }
 
@@ -63,6 +65,8 @@ export interface IParadisCodexResetAttempt {
 	readonly accountScope: string;
 	readonly state: DurableAttemptState;
 	readonly outcome?: ParadisCodexResetOutcome;
+	readonly creditId?: string;
+	readonly updatedAt: number;
 }
 
 function isDurableAttempt(value: unknown): value is IDurableAttempt {
@@ -73,6 +77,7 @@ function isDurableAttempt(value: unknown): value is IDurableAttempt {
 	return typeof attempt.key === 'string' && attempt.key.length > 0
 		&& typeof attempt.offerScope === 'string'
 		&& typeof attempt.accountScope === 'string'
+		&& (attempt.creditId === undefined || typeof attempt.creditId === 'string')
 		&& (attempt.state === 'providerPending' || attempt.state === 'failed' || (attempt.state === 'settled' && paradisCodexResetOutcome(attempt.outcome) !== undefined))
 		&& typeof attempt.updatedAt === 'number';
 }
@@ -132,14 +137,23 @@ export class ParadisCodexResetCreditLedger {
 		return this.attempts.get(key);
 	}
 
-	/** この提示に対して既に要求を出した（出している）鍵。 */
-	claimedKeyForOffer(offerScope: string): string | undefined {
+	/** この提示に対して最後に出した（出している）要求。 */
+	claimedAttemptForOffer(offerScope: string): IParadisCodexResetAttempt | undefined {
+		let latest: IDurableAttempt | undefined;
 		for (const attempt of this.attempts.values()) {
-			if (attempt.offerScope === offerScope) {
-				return attempt.key;
+			if (attempt.offerScope === offerScope && (latest === undefined || attempt.updatedAt >= latest.updatedAt)) {
+				latest = attempt;
 			}
 		}
-		return undefined;
+		return latest;
+	}
+
+	/**
+	 * 結果の分からない要求が、送り直しの対象の期間（{@link PENDING_RESEND_WINDOW_MS}）を過ぎたか。過ぎたものは
+	 * 送り直さず、読み直した提示なら新しい要求を出せる。
+	 */
+	isExpiredPending(attempt: IParadisCodexResetAttempt): boolean {
+		return attempt.state === 'providerPending' && attempt.updatedAt < this.now() - PENDING_RESEND_WINDOW_MS;
 	}
 
 	/** このアカウントで結果が分かっていない要求の鍵。 */
@@ -154,8 +168,8 @@ export class ParadisCodexResetCreditLedger {
 	}
 
 	/** provider へ要求を出す直前に呼ぶ。書けなければ例外（呼び出し側は要求を出さない）。 */
-	markProviderPending(key: string, offerScope: string, accountScope: string): Promise<void> {
-		return this.update(key, { key, offerScope, accountScope, state: 'providerPending', updatedAt: this.now() });
+	markProviderPending(key: string, offerScope: string, accountScope: string, creditId?: string): Promise<void> {
+		return this.update(key, { key, offerScope, accountScope, state: 'providerPending', ...(creditId !== undefined ? { creditId } : {}), updatedAt: this.now() });
 	}
 
 	/** provider から結果を受けたら呼ぶ。 */
@@ -173,7 +187,7 @@ export class ParadisCodexResetCreditLedger {
 		if (!existing) {
 			return Promise.reject(new Error('unknown reset-credit attempt'));
 		}
-		return this.update(key, { key: existing.key, offerScope: existing.offerScope, accountScope: existing.accountScope, state: 'failed', updatedAt: this.now() });
+		return this.update(key, { key: existing.key, offerScope: existing.offerScope, accountScope: existing.accountScope, state: 'failed', ...(existing.creditId !== undefined ? { creditId: existing.creditId } : {}), updatedAt: this.now() });
 	}
 
 	/**

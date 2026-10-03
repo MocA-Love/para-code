@@ -11,7 +11,13 @@
 // - リセットクレジット: Codex の使用枠を即時に戻せる権利。残数と期限は ChatGPT のバックエンドの
 //   `wham/rate-limit-reset-credits`（app-server の `account/rateLimits/read` の `rateLimitResetCredits`
 //   と同じ内容）、消費は Orca と同じくバックエンドの `wham/rate-limit-reset-credits/consume` へ
-//   `redeem_request_id` を付けて POST する。
+//   `redeem_request_id` を付けて POST する。利用者が期限の一覧から1件を選んだときは、Codex 本体の
+//   `consume_rate_limit_reset_credit_by_id` と同じく `credit_id` も付ける。キー名（本文の `credit_id`、読み取りの
+//   応答の `id`）の根拠は openai/codex のコミット 3a69ec3ef8fb（2026-10-03）の
+//   codex-rs/backend-client/src/client/rate_limit_resets.rs:16-20（消費の本文 `ConsumeRateLimitResetCreditRequest` の
+//   `redeem_request_id` と `credit_id`。`credit_id` は None なら省く）・:97-104（`consume_rate_limit_reset_credit_by_id`）、
+//   codex-rs/backend-client/src/types.rs:33-35（読み取りの応答の各クレジット `RateLimitResetCreditDetails` の `id`。
+//   serde の名前の付け替えは無いのでキーはそのまま）、rate_limit_resets_tests.rs:81-91・:106（直列化と読み取りのテスト）。
 // - 切替: 新しく開くターミナルへ渡す `CODEX_HOME` の選択。全ウィンドウ共通で、正は shared process が
 //   持つ（ウィンドウごとの保存にすると食い違うため）。SSH の接続先を開いたウィンドウでは、接続先（REH）が
 //   同じものを接続先のホームについて持ち、同じ接続先の全ウィンドウで共通になる。
@@ -50,6 +56,8 @@ export function paradisCodexAccountsClientPreferences(value: unknown): IParadisC
 export type ParadisCodexResetCreditStatus = 'available' | 'redeeming' | 'redeemed' | 'unknown';
 
 export interface IParadisCodexResetCredit {
+	/** バックエンドが付けるクレジットの ID（中身は解釈しない）。消費で1件を選ぶときに `credit_id` として送る。 */
+	readonly id?: string;
 	readonly status: ParadisCodexResetCreditStatus;
 	/** 期限(epoch ms)。期限の無いクレジットは undefined。 */
 	readonly expiresAt?: number;
@@ -102,7 +110,15 @@ export type ParadisCodexResetOutcome = 'reset' | 'nothingToReset' | 'noCredit' |
 export type ParadisCodexResetRejection = 'offerChanged' | 'alreadyAttempted' | 'unknownHome' | 'ledgerUnavailable';
 
 export type IParadisCodexResetConsumeResult =
-	| { readonly kind: 'consumed'; readonly outcome: ParadisCodexResetOutcome }
+	| {
+		readonly kind: 'consumed';
+		readonly outcome: ParadisCodexResetOutcome;
+		/**
+		 * 一覧で1件を選んで押したが、結果の分からない前回の要求があったので、選んだものではなくその要求を
+		 * 送り直した（選んだリセットは使っていない）。
+		 */
+		readonly resentPrevious?: boolean;
+	}
 	| { readonly kind: 'rejected'; readonly reason: ParadisCodexResetRejection };
 
 export interface IParadisCodexResetConsumeRequest {
@@ -110,6 +126,25 @@ export interface IParadisCodexResetConsumeRequest {
 	readonly offerRevision: string;
 	/** 1回の「使う」操作につき1つ。同じ操作を再送するときは同じ値を使う。 */
 	readonly idempotencyKey: string;
+	/**
+	 * 使うクレジット（期限の一覧で選んだもの）の ID。省くと、どれを使うかを指定しない（今までどおり）。
+	 * 提示（{@link offerRevision}）の中の使えるクレジットの ID でなければ断る。
+	 */
+	readonly creditId?: string;
+	/**
+	 * 確認ダイアログで見せた提示を読んだ時刻（{@link IParadisCodexResetCreditOffer.fetchedAt}）。同じ中身への
+	 * 2回目を受け付けるのは、前の要求で使われなかったと分かっていて、かつこの時刻がその要求より後のときだけ
+	 * （shared process のキャッシュの時刻ではなく、押した画面が見ていたものの時刻で比べる）。
+	 */
+	readonly offerFetchedAt?: number;
+}
+
+/** 消費で送るクレジットの ID の長さの上限（これを超える値は受け付けない）。 */
+export const PARADIS_CODEX_RESET_CREDIT_ID_MAX_LENGTH = 200;
+
+/** クレジットの ID として受け付ける値か。空・長すぎる・文字列でないものは undefined。 */
+export function paradisCodexResetCreditId(value: unknown): string | undefined {
+	return typeof value === 'string' && value.trim().length > 0 && value.length <= PARADIS_CODEX_RESET_CREDIT_ID_MAX_LENGTH ? value : undefined;
 }
 
 const RESET_OUTCOMES: ReadonlySet<string> = new Set<ParadisCodexResetOutcome>(['reset', 'nothingToReset', 'noCredit', 'alreadyRedeemed']);
@@ -159,8 +194,10 @@ export function paradisMapCodexResetCredits(raw: unknown): IParadisCodexResetCre
 			if (!entry || typeof entry !== 'object') {
 				continue;
 			}
-			const credit = entry as { status?: unknown; expiresAt?: unknown; grantedAt?: unknown };
+			const credit = entry as { id?: unknown; status?: unknown; expiresAt?: unknown; grantedAt?: unknown };
+			const id = paradisCodexResetCreditId(credit.id);
 			credits.push({
+				...(id !== undefined ? { id } : {}),
 				status: toStatus(credit.status),
 				expiresAt: toEpochMs(credit.expiresAt),
 				grantedAt: toEpochMs(credit.grantedAt),
@@ -189,8 +226,8 @@ export function paradisMapCodexBackendResetCredits(raw: unknown): IParadisCodexR
 	const response = raw as { available_count?: unknown; credits?: unknown };
 	const credits = Array.isArray(response.credits)
 		? response.credits.map(entry => {
-			const credit = (entry && typeof entry === 'object' ? entry : {}) as { status?: unknown; expires_at?: unknown; granted_at?: unknown };
-			return { status: typeof credit.status === 'string' ? credit.status.toLowerCase() : undefined, expiresAt: credit.expires_at, grantedAt: credit.granted_at };
+			const credit = (entry && typeof entry === 'object' ? entry : {}) as { id?: unknown; status?: unknown; expires_at?: unknown; granted_at?: unknown };
+			return { id: credit.id, status: typeof credit.status === 'string' ? credit.status.toLowerCase() : undefined, expiresAt: credit.expires_at, grantedAt: credit.granted_at };
 		})
 		: undefined;
 	const availableCount = typeof response.available_count === 'number'
@@ -202,15 +239,107 @@ export function paradisMapCodexBackendResetCredits(raw: unknown): IParadisCodexR
 /**
  * 確認ダイアログで見せた提示を特定する値を作る。
  *
- * アカウント・残数・明細・取得時刻を含める。取得し直すと値が変わるので、古い内容を見て
- * 押した「使う」は、新しい内容に対しては通らない（ユーザーは最新の残数を見て判断し直す）。
+ * 中身（アカウント・残数・明細の ID と期限と状態）だけで作り、取得時刻は含めない。モバイルの要求で3分ごとに
+ * 読み直しても、中身が同じなら確認した提示のまま押せる。中身が変わっていれば値が変わり、古い内容を見て
+ * 押した「使う」は通らない（利用者は新しい内容を見て判断し直す）。
  */
-export function paradisCodexResetOfferRevision(accountId: string | undefined, credits: IParadisCodexResetCredits, fetchedAt: number): string {
+export function paradisCodexResetOfferRevision(accountId: string | undefined, credits: IParadisCodexResetCredits): string {
 	const rows = (credits.credits ?? [])
-		.map(credit => [credit.status, credit.expiresAt ?? null, credit.grantedAt ?? null])
-		.map(row => JSON.stringify(row))
+		.map(credit => JSON.stringify([credit.id ?? null, credit.status, credit.expiresAt ?? null]))
 		.sort();
-	return `v1:${JSON.stringify([accountId ?? null, credits.availableCount, credits.nextExpiresAt ?? null, rows, fetchedAt])}`;
+	return `v2:${JSON.stringify([accountId ?? null, credits.availableCount, credits.credits === undefined ? null : rows])}`;
+}
+
+/**
+ * 消費の後に読み直した明細に、選んだクレジットがまだ使える状態で残っているか。残っていれば、選んだものでは
+ * なく別のものが使われた可能性がある（明細が無い・選んでいないときは false）。
+ */
+export function paradisCodexChosenCreditStillAvailable(credits: IParadisCodexResetCredits | undefined, creditId: string | undefined): boolean {
+	return creditId !== undefined && credits?.credits?.some(credit => credit.id === creditId && credit.status === 'available') === true;
+}
+
+/**
+ * メーターの下のリセットの1行の決まり（モバイルの usageSummary.ts の `resetCreditsFacts` と同じ。両方のテストが同じ表で確かめる）。
+ * - count: 残り回数
+ * - nextExpiresAt / nextDayOffset: 使えるもののうち最も早い期限と、それが暦の上で何日後か（期限のあるものが無ければ無い）
+ * - hasNoExpiry: 期限の無いものがある
+ * - listable: 1件ごとの期限の一覧を開けるか（残りが2回以上で、使えるものの明細が1件でもある）
+ */
+export interface IParadisCodexResetSummary {
+	readonly count: number;
+	readonly listable: boolean;
+	readonly nextExpiresAt?: number;
+	readonly nextDayOffset?: number;
+	readonly hasNoExpiry: boolean;
+}
+
+export function paradisCodexResetSummary(credits: IParadisCodexResetCredits, now: number): IParadisCodexResetSummary {
+	const count = Math.max(0, Math.floor(credits.availableCount));
+	const available = credits.credits?.filter(credit => credit.status === 'available');
+	const nextExpiresAt = available
+		?.map(credit => credit.expiresAt)
+		.filter((at): at is number => at !== undefined)
+		.sort((a, b) => a - b)[0] ?? credits.nextExpiresAt;
+	return {
+		count,
+		listable: count >= 2 && (available?.length ?? 0) > 0,
+		...(count > 0 && nextExpiresAt !== undefined ? { nextExpiresAt, nextDayOffset: paradisCalendarDayOffset(nextExpiresAt, now) } : {}),
+		hasNoExpiry: available?.some(credit => credit.expiresAt === undefined) === true,
+	};
+}
+
+/**
+ * 期限の一覧の1行。
+ * - dated: 期限のあるクレジット
+ * - noExpiry: 期限の無いクレジット
+ * - unknown: 明細が無い・明細が残り回数より少ないときの、期限の分からない残り（`count` 回分）
+ */
+export type ParadisCodexResetCreditRow =
+	| { readonly kind: 'dated'; readonly expiresAt: number; readonly id?: string }
+	| { readonly kind: 'noExpiry'; readonly id?: string }
+	| { readonly kind: 'unknown'; readonly count: number };
+
+/**
+ * 残りのリセットを、期限の一覧の行にする（期限の早い順、期限の無いものはその後、期限の分からない残りは最後）。
+ *
+ * 明細は上限付きで返ることがあり、残り回数と件数が合わないことがある。
+ * - 明細が無い: 残り回数ぶんを「期限は不明」の1行にする
+ * - 明細が残り回数より少ない: 足りない回数を「ほか N 回（期限は不明）」の1行で足す
+ * - 明細が残り回数より多い: 残り回数を正とし、期限の早いものから残り回数ぶんだけ出す
+ */
+export function paradisCodexResetCreditRows(credits: IParadisCodexResetCredits): ParadisCodexResetCreditRow[] {
+	const count = credits.availableCount;
+	if (count <= 0) {
+		return [];
+	}
+	if (!credits.credits) {
+		return [{ kind: 'unknown', count }];
+	}
+	const available = credits.credits.filter(credit => credit.status === 'available');
+	const dated = available
+		.filter(credit => credit.expiresAt !== undefined)
+		.sort((a, b) => a.expiresAt! - b.expiresAt!)
+		.map((credit): ParadisCodexResetCreditRow => ({ kind: 'dated', expiresAt: credit.expiresAt!, ...(credit.id !== undefined ? { id: credit.id } : {}) }));
+	const noExpiry = available
+		.filter(credit => credit.expiresAt === undefined)
+		.map((credit): ParadisCodexResetCreditRow => ({ kind: 'noExpiry', ...(credit.id !== undefined ? { id: credit.id } : {}) }));
+	const rows = [...dated, ...noExpiry].slice(0, count);
+	if (rows.length < count) {
+		rows.push({ kind: 'unknown', count: count - rows.length });
+	}
+	return rows;
+}
+
+/**
+ * `target` が `now` から見て暦の上で何日後か（ローカル時刻。今日は 0、明日は 1、過ぎた日は負）。
+ * 「今日」「明日」「N 日後」の表示と、近い期限の色分けに使う。
+ */
+export function paradisCalendarDayOffset(target: number, now: number): number {
+	const day = (epochMs: number) => {
+		const date = new Date(epochMs);
+		return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+	};
+	return Math.round((day(target) - day(now)) / 86_400_000);
 }
 
 // ---------- アカウント（ホーム）の一覧と切替 ----------

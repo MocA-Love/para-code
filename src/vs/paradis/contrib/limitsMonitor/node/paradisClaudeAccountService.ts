@@ -73,6 +73,8 @@ import {
 	IParadisLimitsLegacyAccount,
 	IParadisLimitsSetupHandle,
 	IParadisLimitsSetupState,
+	PARADIS_CLAUDE_DETAIL_SAME_LINEAGE,
+	PARADIS_CLAUDE_DETAIL_SHARED_WITH_CLAUDE_SWAP,
 	ParadisLimitsAccountStatus,
 	ParadisLimitsUnavailableReason
 } from '../common/paradisLimitsMonitor.js';
@@ -726,7 +728,7 @@ export class ParadisClaudeAccountService extends Disposable {
 			if (paradisIsClaudeTokenExpiring(credentials, this.now())) {
 				if (sharedLineage) {
 					// claude-swap と共有しているかもしれない系列は更新しない。使用中に戻ったときに取り直す。
-					this.setStatus(state, 'unavailable', SHARED_LINEAGE_RETRY_S, 'not_fetched', 'shared with claude-swap');
+					this.setStatus(state, 'unavailable', SHARED_LINEAGE_RETRY_S, 'not_fetched', PARADIS_CLAUDE_DETAIL_SHARED_WITH_CLAUDE_SWAP);
 					return;
 				}
 				const refreshed = await this.refreshStoredCredentials(target.record, false, context.epoch);
@@ -735,7 +737,7 @@ export class ParadisClaudeAccountService extends Disposable {
 					return;
 				}
 				if (refreshed === 'live_lineage') {
-					this.setStatus(state, 'unavailable', ACTIVE_EXPIRED_RETRY_S, 'not_fetched', 'same lineage as the current login');
+					this.setStatus(state, 'unavailable', ACTIVE_EXPIRED_RETRY_S, 'not_fetched', PARADIS_CLAUDE_DETAIL_SAME_LINEAGE);
 					return;
 				}
 				credentials = refreshed ?? credentials;
@@ -757,7 +759,7 @@ export class ParadisClaudeAccountService extends Disposable {
 				return;
 			}
 			if (refreshed === 'live_lineage') {
-				this.setStatus(state, 'unavailable', ACTIVE_EXPIRED_RETRY_S, 'not_fetched', 'same lineage as the current login');
+				this.setStatus(state, 'unavailable', ACTIVE_EXPIRED_RETRY_S, 'not_fetched', PARADIS_CLAUDE_DETAIL_SAME_LINEAGE);
 				return;
 			}
 			const retryToken = paradisClaudeAccessToken(refreshed);
@@ -808,7 +810,7 @@ export class ParadisClaudeAccountService extends Disposable {
 						// 使用中のアカウントのトークンは Claude Code が更新する。こちらは待つだけ。
 						this.setStatus(state, 'refreshing', ACTIVE_EXPIRED_RETRY_S);
 					} else if (sharedLineage) {
-						this.setStatus(state, 'unavailable', SHARED_LINEAGE_RETRY_S, 'not_fetched', 'shared with claude-swap');
+						this.setStatus(state, 'unavailable', SHARED_LINEAGE_RETRY_S, 'not_fetched', PARADIS_CLAUDE_DETAIL_SHARED_WITH_CLAUDE_SWAP);
 					} else {
 						this.setStatus(state, 'relogin_required', Number.POSITIVE_INFINITY);
 					}

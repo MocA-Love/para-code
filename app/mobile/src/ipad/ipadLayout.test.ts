@@ -10,6 +10,7 @@ import {
 	sidebarWidthFor,
 	listColumnsFor,
 	questionPreviewSplit,
+	usageProviderColumnsFor,
 } from './ipadLayout.js';
 
 describe('clampSidebarWidth', () => {
@@ -84,5 +85,17 @@ describe('questionPreviewSplit', () => {
 			questionPreviewSplit(true, 600), questionPreviewSplit(true, 520), questionPreviewSplit(true, 519),
 			questionPreviewSplit(true, 0), questionPreviewSplit(false, 900),
 		]).toEqual([true, true, false, false, false]);
+	});
+});
+
+describe('usageProviderColumnsFor', () => {
+	test('広い幅で本文に2列が収まるときだけ Claude と Codex を左右に並べる', () => {
+		expect([
+			usageProviderColumnsFor(true, 728),
+			usageProviderColumnsFor(true, 616),
+			usageProviderColumnsFor(true, 615),
+			usageProviderColumnsFor(true, 0),
+			usageProviderColumnsFor(false, 728),
+		]).toEqual([2, 2, 1, 1, 1]);
 	});
 });

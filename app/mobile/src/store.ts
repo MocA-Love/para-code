@@ -611,6 +611,20 @@ export interface RateLimitWindow {
 // 'unavailable'（今は使用状況を読めないだけ。制限に達したアカウントは枠のリセットまで再取得が
 // 止まる）は認証の問題ではないので、再ログインを促してはいけない。
 export type RateLimitAccountStatus = 'ok' | 'refreshing' | 'relogin_required' | 'no_credentials' | 'unavailable' | 'error';
+/**
+ * Codex の枠のリセット（リセットクレジット）の残り。PC側 IParadisCodexMobileResetCredits と同形。
+ * 旧PCでは未配信（`credits` は今回から）。PC はモバイルが使用量を要求するたびに読む。
+ */
+export interface RateLimitResetCredits {
+	availableCount: number;
+	/** 使えるリセットのうち最も早い期限（epoch ms）。 */
+	nextExpiresAt?: number;
+	/**
+	 * 使えるリセット1件ごとの期限（期限の早い順。期限の無いものは `expiresAt` が無い）。明細の無いときは
+	 * 項目ごと無い。明細は上限付きのことがあり、件数が `availableCount` より少ないことがある。
+	 */
+	credits?: { expiresAt?: number }[];
+}
 /** 'unavailable' の内訳。PC側 ParadisLimitsUnavailableReason と同形。 */
 export type RateLimitUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable' | 'rate_limited' | 'host_not_logged_in' | 'host_fetch_failed';
 /** Rate Limitの1アカウント。PC側 IParadisLimitsAccount と同形。 */
@@ -634,6 +648,8 @@ export interface RateLimitAccount {
 	fiveHour?: RateLimitWindow;
 	sevenDay?: RateLimitWindow;
 	scoped?: RateLimitWindow[];
+	/** Codex の枠のリセットの残り（旧PCでは未配信）。 */
+	resetCredits?: RateLimitResetCredits;
 }
 export interface RateLimitProviderSnapshot {
 	accounts: RateLimitAccount[];

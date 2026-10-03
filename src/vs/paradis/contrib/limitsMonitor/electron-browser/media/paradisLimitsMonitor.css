@@ -99,7 +99,10 @@
 .paradis-limits-panel {
 	position: fixed;
 	z-index: 2500;
-	width: 400px;
+	/* 2列（左に Claude、右に Codex）の幅。ウィンドウが狭いときは paradisLimitsPanelLayout.ts が
+		style.width で縮める（1列なら 400px）。値を変えるときは同じファイルの定数も直す。 */
+	width: 800px;
+	max-width: calc(100vw - 16px);
 	max-height: 70vh;
 	display: flex;
 	flex-direction: column;
@@ -126,9 +129,22 @@
 	font-weight: 600;
 }
 
-/* .plm-account + .plm-account の隣接セレクタ方式に変えたことで消えていた、
-	プロバイダー節どうしの区切り線をここで明示する(最初の節には要らない)。 */
-.paradis-limits-panel .plm-provider-header:not(:first-child) {
+/* プロバイダーの節は1つずつ .plm-column に入る。2列のときは左右に並べて縦線で、1列のときは縦に
+	並べて横線で区切る。列の高さは揃えない（縦線が途中で切れないよう、列そのものは行の高さまで伸ばす）。 */
+.paradis-limits-panel .plm-body.two-columns {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.paradis-limits-panel .plm-column {
+	min-width: 0;
+}
+
+.paradis-limits-panel .plm-body.two-columns .plm-column + .plm-column {
+	border-left: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+
+.paradis-limits-panel .plm-body:not(.two-columns) .plm-column + .plm-column {
 	border-top: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
 }
 
@@ -182,6 +198,36 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+/* 取得できていないカードは1行に縮める（理由とボタンは開いたときだけ）。 */
+.paradis-limits-panel .plm-account.compact:not(.expanded) .plm-account-top {
+	margin-bottom: 0;
+}
+
+.paradis-limits-panel .plm-account-toggle {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	min-width: 0;
+	padding: 0;
+	border: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	text-align: left;
+}
+
+.paradis-limits-panel .plm-account-toggle .codicon {
+	flex: none;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-limits-panel .plm-account-toggle:focus-visible {
+	outline: var(--vscode-strokeThickness, 1px) solid var(--vscode-focusBorder);
+	outline-offset: 1px;
 }
 
 /* バッジ・アイコンボタンをまとめて右寄せする列。高さをここで20pxに揃えることで、
@@ -492,6 +538,102 @@
 .paradis-limits-panel .plm-card-action-note {
 	color: var(--vscode-descriptionForeground);
 	font-size: 11px;
+}
+
+/* 「期限」の開閉ボタン（リンクの見た目）。 */
+.paradis-limits-panel .plm-card-action-link {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	padding: 0 2px;
+	border: none;
+	background: transparent;
+	color: var(--vscode-textLink-foreground);
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.paradis-limits-panel .plm-card-action-link .codicon {
+	font-size: 12px;
+}
+
+.paradis-limits-panel .plm-card-action-link:hover {
+	text-decoration: underline;
+}
+
+.paradis-limits-panel .plm-card-action-link:focus-visible {
+	outline: var(--vscode-strokeThickness, 1px) solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+}
+
+/* 次に切れる期限が今日・明日のときの1行。 */
+.paradis-limits-panel .plm-card-action-note.soon {
+	color: var(--vscode-editorWarning-foreground, #f59e0b);
+}
+
+/* リセットの期限の一覧。ボタン列の中で、ほかのボタンの後ろの1行を丸ごと使う。 */
+.paradis-limits-panel .plm-reset-expiries {
+	order: 1;
+	flex-basis: 100%;
+	margin: 0;
+	padding: 4px 0 0;
+	list-style: none;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.paradis-limits-panel .plm-reset-expiry {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 22px;
+	padding: 0 6px;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-limits-panel .plm-reset-expiry:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-limits-panel .plm-reset-expiry-when {
+	color: var(--vscode-descriptionForeground);
+}
+
+/* 今日・明日に切れるリセット。 */
+.paradis-limits-panel .plm-reset-expiry.soon .plm-reset-expiry-when {
+	color: var(--vscode-editorWarning-foreground, #f59e0b);
+	font-weight: 600;
+}
+
+.paradis-limits-panel .plm-reset-expiry-use {
+	margin-left: auto;
+}
+
+/* claude-swap の案内（1文に縮め、注意書きと一覧は「詳しく」で開く）。 */
+.paradis-limits-panel .plm-legacy-notice summary {
+	list-style: none;
+	cursor: pointer;
+}
+
+.paradis-limits-panel .plm-legacy-notice summary::-webkit-details-marker {
+	display: none;
+}
+
+.paradis-limits-panel .plm-legacy-notice .plm-legacy-more {
+	margin-left: 4px;
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-limits-panel .plm-legacy-notice[open] .plm-legacy-more {
+	display: none;
+}
+
+.paradis-limits-panel .plm-legacy-notice > div {
+	margin-top: 6px;
 }
 
 /* Claude のカードの値が古いときの添え書き。 */

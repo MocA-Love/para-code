@@ -42,7 +42,8 @@ export interface IParadisLimitsWindow {
 export type ParadisLimitsAccountStatus = 'ok' | 'refreshing' | 'relogin_required' | 'no_credentials' | 'unavailable' | 'error';
 
 /**
- * 'unavailable' の内訳。表示の分岐キーにする（statusDetail は自由文字列なので分岐に使わない）。
+ * 'unavailable' の内訳。表示の分岐キーにする（statusDetail は自由文字列なので、分岐には
+ * {@link paradisLimitsNotFetchedCause} が知っている決まった値だけを使う）。
  * 'rate_limited' は Claude の使用量 API に 429 を返されて待っている間（時間が経てば戻る）。
  * 'host_not_logged_in' と 'host_fetch_failed' は接続先（SSH・WSL・コンテナなど）の Claude のカードだけで
  * 使う。接続先では Claude を使っていない・API キーで使っている・外へ通信できないことがよくあるので、
@@ -50,6 +51,30 @@ export type ParadisLimitsAccountStatus = 'ok' | 'refreshing' | 'relogin_required
  * （{@link paradisClaudeHostAccountsState}）。
  */
 export type ParadisLimitsUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable' | 'rate_limited' | 'host_not_logged_in' | 'host_fetch_failed';
+
+/**
+ * Claude の 'not_fetched' に添える `statusDetail`（モバイルへもこの文字列のまま届く。変えるとモバイルの
+ * 説明文の出し分け（app/mobile の usageSummary.ts）が外れるので、変えない）。
+ * - SHARED_WITH_CLAUDE_SWAP: claude-swap と同じログインを共有しているかもしれないので、トークンの更新を控えている
+ * - SAME_LINEAGE: いまのログインと同じ系列のトークンなので、更新を Claude Code に任せている
+ */
+export const PARADIS_CLAUDE_DETAIL_SHARED_WITH_CLAUDE_SWAP = 'shared with claude-swap';
+export const PARADIS_CLAUDE_DETAIL_SAME_LINEAGE = 'same lineage as the current login';
+
+/**
+ * 'not_fetched' の本当の理由。
+ * - shared_with_claude_swap / same_lineage: 上の `statusDetail` のとおり（取りに行くのを控えている）
+ * - not_yet: まだ一度も取れていない（使用中と控えが入れ替わった直後など）
+ */
+export type ParadisLimitsNotFetchedCause = 'shared_with_claude_swap' | 'same_lineage' | 'not_yet';
+
+export function paradisLimitsNotFetchedCause(statusDetail: string | undefined): ParadisLimitsNotFetchedCause {
+	switch (statusDetail) {
+		case PARADIS_CLAUDE_DETAIL_SHARED_WITH_CLAUDE_SWAP: return 'shared_with_claude_swap';
+		case PARADIS_CLAUDE_DETAIL_SAME_LINEAGE: return 'same_lineage';
+		default: return 'not_yet';
+	}
+}
 
 /** 再ログインで解消し得る状態か（'refreshing'・'unavailable' は再ログインしても直らない）。 */
 export function paradisLimitsNeedsRelogin(status: ParadisLimitsAccountStatus): boolean {

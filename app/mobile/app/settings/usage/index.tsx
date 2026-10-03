@@ -1,10 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useState } from 'react';
-import { RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useState, type ReactNode } from 'react';
+import { RefreshControl, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Activity, Cpu, Cuboid, GitPullRequest, Scissors, User } from 'lucide-react-native';
 import { useAppStore, usePcResources } from '../../../src/appState.js';
+import { useIsRegularWidth } from '../../../src/hooks/useSizeClass.js';
+import { USAGE_PROVIDER_COLUMN_GAP, usageProviderColumnsFor } from '../../../src/ipad/ipadLayout.js';
 import { haptic } from '../../../src/haptics.js';
 import { alpha, colors, space, type } from '../../../src/theme.js';
 import { useNow } from '../../../src/time.js';
@@ -77,6 +79,23 @@ function useRefreshControl(kinds: readonly UsageKind[], sourceKeys: readonly str
 	return { pullRefreshing, onPullRefresh };
 }
 
+/**
+ * Claude と Codex の2つの束。iPad の広い幅で本文に収まるときは左右に並べ、リセットの期限の一覧を最初から開く。
+ * 並べ方はスタイルだけで変え、木の形は変えない（幅は本文の実際の幅を測る。ウィンドウ幅ではない）。
+ */
+function ProviderColumns({ claude, codex }: { claude: (expandResets: boolean) => ReactNode; codex: (expandResets: boolean) => ReactNode }) {
+	const regular = useIsRegularWidth();
+	const [width, setWidth] = useState(0);
+	const columns = usageProviderColumnsFor(regular, width);
+	const onLayout = useCallback((event: LayoutChangeEvent) => setWidth(event.nativeEvent.layout.width), []);
+	return (
+		<View style={columns === 2 ? styles.providerRow : undefined} onLayout={onLayout}>
+			<View style={columns === 2 ? styles.providerColumn : undefined}>{claude(columns === 2)}</View>
+			<View style={columns === 2 ? styles.providerColumn : undefined}>{codex(columns === 2)}</View>
+		</View>
+	);
+}
+
 function useOpenDetail(source: string | undefined) {
 	const router = useRouter();
 	return (page: UsageDetailPage) => {
@@ -121,8 +140,10 @@ function UsageAllView() {
 			{nothing ? <DetailNotConnected /> : (
 				<>
 					<AggregatedFetchNotes items={fetchNoteItems(overview, 'limits')} now={now} />
-					<AggregatedProviderSection provider="claude" title="Claude" accounts={claude} emptySnapshot={latestProviderSnapshot(entries, 'claude')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips />
-					<AggregatedProviderSection provider="codex" title="Codex" accounts={codex} emptySnapshot={latestProviderSnapshot(entries, 'codex')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips />
+					<ProviderColumns
+						claude={expandResets => <AggregatedProviderSection provider="claude" title="Claude" accounts={claude} emptySnapshot={latestProviderSnapshot(entries, 'claude')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips expandResets={expandResets} />}
+						codex={expandResets => <AggregatedProviderSection provider="codex" title="Codex" accounts={codex} emptySnapshot={latestProviderSnapshot(entries, 'codex')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips expandResets={expandResets} />}
+					/>
 
 					<AggregatedFetchNotes items={fetchNoteItems(overview, 'cost')} now={now} />
 					<UsageSection title="今日のコスト" icon={Activity} onPress={() => openDetail('cost')}>
@@ -262,8 +283,10 @@ function UsageSourceView() {
 					{showHostPicker ? <UsageHostPicker host={host} /> : null}
 					<UsageFetchNote error={overview.errorOf(key, 'limits')} hasPrevious={limits !== undefined} staleAt={staleNote(limits)} now={now} />
 					{limits !== undefined && dimmed ? <DetailMessage tone="note">{staleValueLabel(limits.at, now)}</DetailMessage> : null}
-					<ProviderUsageSection provider="claude" title="Claude" snapshot={limits?.value.claude} now={now} loading={loadingLimits} dimmed={dimmed || (entry !== undefined && isOldValue(entry, limits, now))} />
-					<ProviderUsageSection provider="codex" title="Codex" snapshot={limits?.value.codex} now={now} loading={loadingLimits} dimmed={dimmed || (entry !== undefined && isOldValue(entry, limits, now))} />
+					<ProviderColumns
+						claude={expandResets => <ProviderUsageSection provider="claude" title="Claude" snapshot={limits?.value.claude} now={now} loading={loadingLimits} dimmed={dimmed || (entry !== undefined && isOldValue(entry, limits, now))} expandResets={expandResets} />}
+						codex={expandResets => <ProviderUsageSection provider="codex" title="Codex" snapshot={limits?.value.codex} now={now} loading={loadingLimits} dimmed={dimmed || (entry !== undefined && isOldValue(entry, limits, now))} expandResets={expandResets} />}
+					/>
 
 					<UsageFetchNote error={overview.errorOf(key, 'cost')} hasPrevious={cost !== undefined} staleAt={staleNote(cost)} now={now} />
 					<UsageSection title="今日のコスト" icon={Activity} onPress={() => openDetail('cost')} dimmed={dimmed}>
@@ -347,6 +370,15 @@ const styles = StyleSheet.create({
 	},
 	spacer: {
 		flex: 1,
+	},
+	providerRow: {
+		flexDirection: 'row',
+		alignItems: 'flex-start',
+		gap: USAGE_PROVIDER_COLUMN_GAP,
+	},
+	providerColumn: {
+		flex: 1,
+		minWidth: 0,
 	},
 	foot: {
 		flexDirection: 'row',
