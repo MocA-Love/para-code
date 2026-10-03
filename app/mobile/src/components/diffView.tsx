@@ -27,6 +27,8 @@ import { isDiffViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 import { guardWebViewNavigation } from './webViewLinkGuard.js';
 import { parseUnifiedDiff } from './diffParser.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
+import { useCloseOnAppLock } from '../appLock.js';
+import { lockedModalVisible } from '../appLockPolicy.js';
 import { classifyMobileFileKind } from './officeCapability.js';
 
 const OFFICE_DIFF_UNAVAILABLE = 'このOffice形式のDiffは利用できません';
@@ -77,6 +79,11 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 	const [modalOpen, setModalOpen] = useState(true);
 	const pendingExpandedRef = useRef<boolean | undefined>(undefined);
 	const effectiveSheet = presentedAsSheet && !expanded;
+	// ロックされたら閉じる。Modal はロック画面より上に出るので、親が閉じるのを待たずに隠す（`appLock.ts`）。
+	// 拡大の切り替え途中（`modalOpen` が false）でも閉じる。
+	const locked = useCloseOnAppLock(true, onClose);
+	const lockedRef = useRef(locked);
+	lockedRef.current = locked;
 	const headerTop = effectiveSheet ? 14 : 58;
 
 	const requestToggleExpanded = () => {
@@ -85,6 +92,10 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 		setModalOpen(false);
 	};
 	const handleDismiss = () => {
+		// ロックで隠したときの dismiss。閉じる処理は `useCloseOnAppLock` が済ませているので二重に呼ばない。
+		if (lockedRef.current) {
+			return;
+		}
 		if (pendingExpandedRef.current !== undefined) {
 			setExpanded(pendingExpandedRef.current);
 			pendingExpandedRef.current = undefined;
@@ -207,8 +218,8 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 	return (
 		<Modal
 			key={effectiveSheet ? 'sheet' : 'full'}
-			visible={modalOpen}
-			animationType="slide"
+			visible={lockedModalVisible(modalOpen, locked)}
+			animationType={locked ? 'none' : 'slide'}
 			presentationStyle={effectiveSheet ? 'pageSheet' : 'fullScreen'}
 			onDismiss={handleDismiss}
 			onRequestClose={onClose}

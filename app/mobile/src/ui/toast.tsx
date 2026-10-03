@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
+import { useAppLocked } from '../appLock.js';
 import { useParaToast, type ParaToast } from '../paraToast.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { haptic } from '../haptics.js';
@@ -73,6 +74,8 @@ const BOTTOM_GAP = 162;
 export function ToastHost() {
 	const insets = useStableInsets();
 	const { current, hide } = useParaToast(useShallow(s => ({ current: s.current, hide: s.hide })));
+	// ロック中は出さない（画面はロック画面の下に残るので、ここで止める）。
+	const locked = useAppLocked();
 	usePcSwitchToast();
 	const anim = useRef(new Animated.Value(0)).current;
 	// 消える動きの間も中身を描き続けるため、消え切るまで直前の内容を持つ。
@@ -97,7 +100,7 @@ export function ToastHost() {
 		};
 	}, [current, anim]);
 
-	if (shown === undefined) {
+	if (shown === undefined || locked) {
 		return null;
 	}
 	const translateY = anim.interpolate({ inputRange: [0, 1], outputRange: [6, 0] });

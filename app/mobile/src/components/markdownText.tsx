@@ -13,7 +13,8 @@
  */
 
 import { memo, useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
-import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { paraAlert } from '../paraAlert.js';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
@@ -569,7 +570,7 @@ const [openingKey, setOpeningKey] = useState<string | undefined>();
 	// 毎レンダー新しい関数を渡すと memo が素通りしてインラインの再パースが毎回走る。
 	const openLocal = useCallback((target: LocalFileTarget) => {
 		if (ws === undefined) {
-			Alert.alert('ファイルを開けません', '対応するワークスペースが見つかりません。');
+			paraAlert.alert('ファイルを開けません', '対応するワークスペースが見つかりません。');
 			return;
 		}
 		const key = `${target.path}:${target.line ?? ''}:${target.column ?? ''}`;
@@ -582,7 +583,7 @@ const [openingKey, setOpeningKey] = useState<string | undefined>();
 			}
 		}).catch(error => {
 			if (openGeneration.current === generation) {
-				Alert.alert('ファイルを開けません', String(error instanceof Error ? error.message : error));
+				paraAlert.alert('ファイルを開けません', String(error instanceof Error ? error.message : error));
 			}
 		}).finally(() => {
 			if (openGeneration.current === generation) {

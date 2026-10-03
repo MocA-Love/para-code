@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, Easing, Modal, PanResponder, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { useCloseOnAppLock } from '../../appLock.js';
+import { lockedModalVisible } from '../../appLockPolicy.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
 import { colors, radius, space } from '../../theme.js';
@@ -46,6 +48,8 @@ export function RightDrawer({ visible, onClose, onAfterClose, children, accessib
 	onCloseRef.current = onClose;
 	const onAfterCloseRef = useRef(onAfterClose);
 	onAfterCloseRef.current = onAfterClose;
+	// ロックされたら閉じる。Modal はロック画面より上に出るので、親が閉じるのを待たずに隠す（`appLock.ts`）。
+	const locked = useCloseOnAppLock(visible, () => onCloseRef.current());
 	// 外付けキーボードの Esc で閉じる（iPad）。
 	useShortcutSlot('escape', visible ? { escape: () => onCloseRef.current() } : undefined);
 	const { width } = useWindowDimensions();
@@ -61,13 +65,23 @@ export function RightDrawer({ visible, onClose, onAfterClose, children, accessib
 			Animated.timing(progress, { toValue: 1, duration: SHOW_MS, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
 			return;
 		}
+		// ロックで閉じるときは動かさずにその場で片付ける。Modal は隠れていて動きは見えず、途中で止まると
+		// `finished` が false のまま木に残り、解除後に途中のシートや幕が全画面のタップを塞ぐ。
+		if (locked) {
+			progress.stopAnimation();
+			progress.setValue(0);
+			drag.setValue(0);
+			setMounted(false);
+			onAfterCloseRef.current?.();
+			return;
+		}
 		Animated.timing(progress, { toValue: 0, duration: HIDE_MS, easing: Easing.in(Easing.cubic), useNativeDriver: true }).start(({ finished }) => {
 			if (finished) {
 				setMounted(false);
 				onAfterCloseRef.current?.();
 			}
 		});
-	}, [visible, mounted, progress, drag]);
+	}, [visible, mounted, progress, drag, locked]);
 
 	const pan = useRef(PanResponder.create({
 		onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > DRAG_SLOP && Math.abs(gesture.dx) > Math.abs(gesture.dy),
@@ -91,7 +105,7 @@ export function RightDrawer({ visible, onClose, onAfterClose, children, accessib
 	}
 	const translateX = Animated.add(progress.interpolate({ inputRange: [0, 1], outputRange: [panelWidth, 0] }), drag);
 	return (
-		<Modal visible transparent animationType="none" onRequestClose={onClose} statusBarTranslucent supportedOrientations={['portrait', 'landscape']}>
+		<Modal visible={lockedModalVisible(true, locked)} transparent animationType="none" onRequestClose={onClose} statusBarTranslucent supportedOrientations={['portrait', 'landscape']}>
 			<View style={styles.fill}>
 				<Animated.View style={[styles.fill, styles.backdrop, { opacity: progress }]}>
 					<Pressable style={styles.fill} onPress={onClose} accessibilityRole="button" accessibilityLabel="閉じる" />

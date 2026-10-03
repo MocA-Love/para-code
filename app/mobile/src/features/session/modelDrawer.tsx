@@ -1,7 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useRef, useState } from 'react';
-import { AccessibilityInfo, ActivityIndicator, Alert, Pressable, StyleSheet, Text, View, findNodeHandle } from 'react-native';
+import { AccessibilityInfo, ActivityIndicator, Pressable, StyleSheet, Text, View, findNodeHandle } from 'react-native';
+import { paraAlert } from '../../paraAlert.js';
 import { Check, ChevronDown, ChevronLeft, Settings, X } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { claudeModelDisplayName, matchAgentModel } from '../../agentModels.js';
@@ -105,7 +106,7 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 		} else if (modelControl?.status === 'error') {
 			setCodexUpdatePending(false);
 			if (!open) {
-				Alert.alert('設定を変更できませんでした', modelControl.errorMessage ?? 'Codex から設定の変更を確認できませんでした');
+				paraAlert.alert('設定を変更できませんでした', modelControl.errorMessage ?? 'Codex から設定の変更を確認できませんでした');
 			}
 		}
 	}, [codexUpdatePending, modelControl?.errorMessage, modelControl?.status, open]);
@@ -199,7 +200,7 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 			}
 			if (result.status !== 'accepted') {
 				setSubmitting(false);
-				Alert.alert('設定を変更できませんでした', failureDetail(result));
+				paraAlert.alert('設定を変更できませんでした', failureDetail(result));
 				return;
 			}
 		}
