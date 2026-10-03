@@ -61,8 +61,9 @@ const appTheme = {
  * ヘッダーは各画面が自前の `ScreenHeader` で描く。ルートの一覧は `src/routes.ts`）。
  *
  * OS通知（ローカル/リモート双方）のタップを、そのエージェントのスペースのセッション
- * （そのエージェントのタブ）へのディープリンクに変換する。AuthGateでロック中に届いた場合は
- * 解除まで遷移を保留する。
+ * （そのエージェントのタブ）へのディープリンクに変換する。起動直後の最初の解除の前に届いた場合は、
+ * 解除まで遷移を保留する。猶予切れの再ロック中に届いたものは保留しない（下の画面で遷移し、
+ * ロック画面が覆うだけ。AuthGate はロック中も画面を木に残すので、解除すると通知元の画面が見える）。
  */
 function RootLayout() {
 	const router = useRouter();
@@ -74,6 +75,10 @@ function RootLayout() {
 	// tryNavigateから常に最新値を読むためのref（tryNavigate自体をunlockedに依存させると
 	// 参照が変わるたびにリスナーeffectを再登録することになり、stale closure対策として
 	// 依存を空にした場合に「登録時点のunlocked」を永久キャプチャしてしまうため）。
+	// 「一度でも解除したか」を表し、再ロックでは false に戻さない。AuthGate はロック中も Stack を
+	// 木に残し、ロック画面で覆うだけなので、再ロック中の遷移は下で済ませておけばよい（解除後にそのまま
+	// 見える）。戻して保留にすると、解除に手間取る間に保留の期限（pendingNotificationWait）が切れて
+	// 通知の画面が開かなくなる。最初の解除までは保留する（認証前に PC の切り替えなどを始めない）。
 	const unlockedRef = useRef(false);
 	// workspace は通知タップの遷移判定にしか使わないため、セレクタで購読せずストアの変化を
 	// 直接受けて ref を更新する。ここで購読すると、PCからのstate再送（エージェント実行中は
@@ -236,16 +241,16 @@ function RootLayout() {
 					    （`presentation: 'modal'` の画面は作らない）。 */}
 					<Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />
 					{/* 旧来の部品が使うメニュー/ダイアログの描画先（overlayHost.tsx参照）。
-					    再ロック時にロック画面より上へ残らないよう、AuthGateの内側に置く */}
+					    ロック画面の下の層に描くため、AuthGateの内側に置く */}
 					<OverlayHost />
-					{/* 更新後の初回起動でだけ出るお知らせ。ロック中に出ないようAuthGateの内側に置く */}
+					{/* 更新後の初回起動でだけ出るお知らせ。ロック中は出さない（useAppLocked を読む） */}
 					<UpdateSheetHost />
-					{/* PC に届かない間に預かったエージェントへの送信を、つながったら送る（W2-29）。何も描かない */}
+					{/* PC に届かない間に預かったエージェントへの送信を、つながったら送る（W2-29）。何も描かない。
+					    ロック中は送らない（useAppLocked を読む） */}
 					<AgentSendQueueRunner />
-					{/* 一時的なお知らせ（PC切替・起動完了）を出す唯一の場所。ロック中に出さないよう
-					    AuthGateの内側に置く */}
+					{/* 一時的なお知らせ（PC切替・起動完了）を出す唯一の場所。ロック中は出さない（useAppLocked を読む） */}
 					<ToastHost />
-					{/* iPad の外付けキーボードのショートカット。ロック中に効かないよう AuthGate の内側に置く */}
+					{/* iPad の外付けキーボードのショートカット。ロック中は効かない（useAppLocked を読む） */}
 					<ShortcutHost />
 				</AuthGate>
 			</ThemeProvider>

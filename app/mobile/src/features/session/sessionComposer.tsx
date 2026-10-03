@@ -2,7 +2,8 @@
 
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { paraAlert } from '../../paraAlert.js';
 import { ArrowUp, CornerDownRight, ImagePlus } from 'lucide-react-native';
 import { appendQuickReply } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
@@ -208,12 +209,12 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 			}
 			if (result.status === 'consumed' && shouldShowSubmissionAlert(result.status, submissionGenerationRef.current, generation)) {
 				haptic('warning');
-				Alert.alert('メッセージは未送信です', result.message ?? '本文はターミナルの入力欄に残っています。ターミナル表示で確認して送信してください。');
+				paraAlert.alert('メッセージは未送信です', result.message ?? '本文はターミナルの入力欄に残っています。ターミナル表示で確認して送信してください。');
 			}
 			if (result.status === 'rejected' && shouldShowSubmissionAlert(result.status, submissionGenerationRef.current, generation)) {
 				// 送った時点で commit を鳴らしている。受理では鳴らさず、届かなかったときだけ知らせる
 				haptic('error');
-				Alert.alert('メッセージを送信できませんでした', result.message ?? '接続とエージェントのセッションを確認して再送してください。');
+				paraAlert.alert('メッセージを送信できませんでした', result.message ?? '接続とエージェントのセッションを確認して再送してください。');
 			}
 		}).finally(() => {
 			if (submissionGenerationRef.current === generation) {
@@ -277,7 +278,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 		} catch (err) {
 			console.warn('[session] image upload failed', errorKind(err));
 			haptic('error');
-			Alert.alert('画像を送れませんでした', 'PC との接続を確認して、もう一度お試しください。');
+			paraAlert.alert('画像を送れませんでした', 'PC との接続を確認して、もう一度お試しください。');
 		} finally {
 			setUploading(false);
 		}

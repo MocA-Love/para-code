@@ -5,6 +5,8 @@ import { Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensio
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import { useAppStore } from '../appState.js';
+import { useAppLocked } from '../appLock.js';
+import { lockedModalVisible } from '../appLockPolicy.js';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
 import { pendingReleases, type MobileChangelogItem, type MobileRelease } from '../changelog.js';
 import { secureKeyStore } from '../platform.js';
@@ -39,9 +41,11 @@ export const APP_VERSION: string = Constants.expoConfig?.version ?? '0.0.0';
 export function UpdateSheetHost() {
 	const ready = useAppStore(state => state.ready);
 	const paired = useAppStore(state => state.paired);
+	// ロック中は出さない。解除後に改めて落ち着くのを待ってから出す。
+	const locked = useAppLocked();
 	const [releases, setReleases] = useState<readonly MobileRelease[]>([]);
 	useEffect(() => {
-		if (!ready || !paired) {
+		if (!ready || !paired || locked) {
 			return;
 		}
 		let cancelled = false;
@@ -62,7 +66,7 @@ export function UpdateSheetHost() {
 				.catch(() => undefined);
 		}, APPEAR_DELAY_MS);
 		return () => { cancelled = true; clearTimeout(timer); };
-	}, [ready, paired]);
+	}, [ready, paired, locked]);
 
 	const dismiss = () => {
 		haptic('move');
@@ -85,8 +89,10 @@ export function UpdateSheet({ releases, onDismiss }: { releases: readonly Mobile
 	const single = releases.length === 1 ? releases[0] : undefined;
 	const total = releases.reduce((count, release) => count + release.items.length, 0);
 	const oldest = releases[releases.length - 1];
+	// Modal はロック画面より上に出るので、ロック中は隠す。閉じる（既読にする）とは扱わない。
+	const locked = useAppLocked();
 	return (
-		<Modal visible transparent animationType="slide" onRequestClose={onDismiss} statusBarTranslucent>
+		<Modal visible={lockedModalVisible(true, locked)} transparent animationType={locked ? 'none' : 'slide'} onRequestClose={onDismiss} statusBarTranslucent>
 			<Pressable style={styles.scrim} onPress={onDismiss} accessibilityLabel="閉じる" />
 			<View style={[styles.sheetWrap, sideInset > 0 && { left: sideInset, right: sideInset }]}>
 				{/* Liquid Glass は面そのもの。上に載せる操作要素（CTA）は Apple HIG に従い

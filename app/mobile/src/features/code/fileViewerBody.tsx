@@ -1,7 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { paraAlert } from '../../paraAlert.js';
 import { WebView } from 'react-native-webview';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { CircleAlert } from 'lucide-react-native';
@@ -185,7 +186,7 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 
 	const openExternally = () => {
 		const uri = /^[a-z][a-z\d+.-]*:/i.test(path) ? path : `file://${path}`;
-		void Linking.openURL(uri).catch(() => Alert.alert('ファイルを開けませんでした', path));
+		void Linking.openURL(uri).catch(() => paraAlert.alert('ファイルを開けませんでした', path));
 	};
 
 	if (finalError) {
@@ -272,7 +273,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 	const trace = content?.trace;
 	const officeNonce = useMemo(() => (officeKind ? createMobileOfficeNonce() : undefined), [officeKind, spreadsheetHtml, binary]);
 	const guardOfficeNavigation = useCallback((request: { readonly url: string; readonly isTopFrame?: boolean }) => guardMobileOfficeNavigation(request, url => {
-		Alert.alert('外部リンクを開きますか？', url, [
+		paraAlert.alert('外部リンクを開きますか？', url, [
 			{ text: 'キャンセル', style: 'cancel' },
 			{ text: '開く', onPress: () => { void Linking.openURL(url).catch(() => undefined); } },
 		]);

@@ -12,6 +12,8 @@ import { screenCornerRadius } from '../screenCornerRadius.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { useShortcutSlot } from '../ipad/shortcutRegistry.js';
+import { useCloseOnAppLock } from '../appLock.js';
+import { lockedModalVisible } from '../appLockPolicy.js';
 
 /** iPadの広い幅でシートを中央寄せするときの最大幅（pt）。 */
 const SHEET_MAX_WIDTH = 640;
@@ -162,6 +164,8 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 	const onCloseRef = useRef(onClose);
 	onCloseRef.current = onClose;
 	useShortcutSlot('escape', visible ? { escape: () => onCloseRef.current() } : undefined);
+	// ロックされたら閉じる。Modal はロック画面より上に出るので、親が閉じるのを待たずに隠す（`appLock.ts`）。
+	const locked = useCloseOnAppLock(visible, () => onCloseRef.current());
 	const insets = useStableInsets();
 	const keyboardInset = useKeyboardInset();
 	const { height: windowHeight, width: windowWidth } = useWindowDimensions();
@@ -201,11 +205,17 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 			// 開くときだけ少し行き過ぎて戻る。縮む方向のオーバーシュートは
 			// 目標より小さく凹んで見えて気持ち悪いので、閉じは弾ませない。
 			Animated.spring(anim, { toValue: 1, speed: 14, bounciness: 6, useNativeDriver: true }).start();
+		} else if (locked) {
+			// ロックで閉じるときは動かさずにその場で片付ける。Modal は隠れていて動きは見えず、途中で止まると
+			// `finished` が false のまま木に残り、解除後に途中のシートや幕が全画面のタップを塞ぐ。
+			anim.stopAnimation();
+			anim.setValue(0);
+			setMounted(false);
 		} else {
 			Animated.timing(anim, { toValue: 0, duration: SHEET_CLOSE_MS, easing: Easing.in(Easing.cubic), useNativeDriver: true })
 				.start(({ finished }) => { if (finished) { setMounted(false); } });
 		}
-	}, [visible, anim, sheetHeight]);
+	}, [visible, anim, sheetHeight, locked]);
 
 	// グラバー（と見出しの帯）を下へ引くと、シートが指に付いてくる。
 	// `anim` そのものを動かすので、離したときの戻りも開閉と同じ1本の値で扱える。
@@ -266,7 +276,7 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 	);
 
 	return (
-		<Modal visible transparent animationType="none" onRequestClose={onClose}>
+		<Modal visible={lockedModalVisible(true, locked)} transparent animationType="none" onRequestClose={onClose}>
 			<Animated.View style={[StyleSheet.absoluteFill, styles.overlay, { opacity: anim }]}>
 				<Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="閉じる" />
 			</Animated.View>

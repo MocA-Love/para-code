@@ -1,7 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { paraAlert } from '../paraAlert.js';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import type { WorktreeFormResult } from '../store.js';
@@ -137,7 +138,7 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 				onClose();
 			}
 			if (result.warning) {
-				Alert.alert('スペースを作成しました', `ただし後続の処理でエラーがありました: ${result.warning}`);
+				paraAlert.alert('スペースを作成しました', `ただし後続の処理でエラーがありました: ${result.warning}`);
 			}
 		} catch (e) {
 			if (!mountedRef.current || activeRequestRef.current !== requestGeneration) {
