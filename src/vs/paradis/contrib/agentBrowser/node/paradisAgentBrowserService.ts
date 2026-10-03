@@ -60,6 +60,7 @@ import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolve
 import { IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisDevtoolsRootsResolution, IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
+import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
 import { IParadisDevtoolsPathCaller, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from './paradisDevtoolsPathPolicy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
 import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
@@ -408,6 +409,8 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	private readonly _bindings = new Map<string, IBindingEntry>();
 	private readonly _cdpInputQueue = this._register(new ParadisCdpInputQueue());
+	/** ゲートウェイが断った入力の理由（ペインごとに直近 1 件）。click などの「not interactive」に書き足す。 */
+	private readonly _inputRejections = new ParadisInputRejectionLog();
 	private readonly _quarantinedBindings = new Set<IBindingEntry>();
 	/**
 	 * リタイア不整合で隔離した個別ペイントークン。authority全体を殺す({@link _authorityFaulted})代わりに、
@@ -640,6 +643,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				dispatchBoundPageInput: (token, connection, expectedTargetId, method, paramsJson, isConnectionCurrent) =>
 					this._dispatchBoundPageInput(token, connection, expectedTargetId, method, paramsJson, isConnectionCurrent),
 				closeInputConnection: connection => this._cdpInputQueue.closeConnection(connection),
+				noteInputRejection: (token, message) => this._inputRejections.record(token, message),
 				isRemotePane: token => this._isRemotePaneForGateway(token),
 				isTunnelPeer: (remotePort, localPort) => this._isTunnelPeer(remotePort, localPort),
 			},
@@ -653,6 +657,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		));
 		this._devtoolsProxy = this._register(new ParadisDevtoolsMcpProxy(RESERVED_TOOL_NAMES, logService, {
 			resolveRoots: token => this._resolveDevtoolsRoots(token),
+			recentInputRejection: (token, since) => this._inputRejections.recent(token, since),
 		}));
 		this._agentNetworkFilter = configurationService ? this._register(new AgentNetworkFilterService(configurationService)) : undefined;
 		this._pageOps = new ParadisBrowserPageOps({
@@ -713,6 +718,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			},
 			// アカウントを切り替えた先の Codex（~/.codex-2 等）にも同じ設定を入れる。
 			() => paradisCodexHomes(),
+			// ツール呼び出しの上限を足す入れ直しを、どの設定ファイルとポートで試したか（試したものは次の起動から試さない）。
+			join(this._userDataPath, 'paradis-mcp-tool-timeout-upgrade.json'),
 		);
 		// ホームが増えたら（アカウントの追加・ログイン、設定で足した）、既定のホームでセットアップ済みの
 		// 設定をそこへも入れる。セットアップや修正のときだけでは、後から増えたホームに入らない。
@@ -721,6 +728,10 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] Failed to add the MCP settings to new Codex homes', error));
 			});
 		}));
+		// ツール呼び出しの上限（timeout / tool_timeout_sec）を足す前に登録した para-browser を、起動時に 1 回だけ入れ直す。
+		void this._serverStartPromise.then(() => this._currentGatewayPort()).then(port => this._mcpSetupController.upgradeToolTimeouts(port)).catch(error => {
+			this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] Failed to add the tool timeout to the MCP settings', error));
+		});
 		// 設定でオフにできる。オフに切り替わったその時だけ取り外し、起動時には取り外さない
 		// （paradisAgentHooksAutoInstall.ts）。
 		this._register(new ParadisAgentHooksAutoInstall({

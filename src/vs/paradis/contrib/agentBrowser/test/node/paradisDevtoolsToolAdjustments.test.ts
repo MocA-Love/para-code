@@ -1,0 +1,139 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import assert from 'assert';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { PARADIS_SNAPSHOT_MAX_CHARS, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed } from '../../node/paradisDevtoolsToolAdjustments.js';
+import { ParadisInputRejectionLog } from '../../node/paradisInputRejectionLog.js';
+
+function text(value: string, isError = false): unknown {
+	return { content: [{ type: 'text', text: value }], ...(isError ? { isError: true } : {}) };
+}
+
+function textOf(result: unknown): string {
+	return ((result as { content: { text: string }[] }).content[0]).text;
+}
+
+suite('Paradis devtools tool adjustments', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('wait_for accepts a single string and drops the snapshot unless asked for', () => {
+		const prepared = paradisPrepareDevtoolsToolCall('wait_for', { text: 'Attachments', timeout: 15000 });
+		const withSnapshot = paradisPrepareDevtoolsToolCall('wait_for', { text: ['a', 'b'], includeSnapshot: true });
+		const response = text('# wait_for response\nElement matching one of ["Attachments"] found.\n## Latest page snapshot\nuid=1_0 RootWebArea');
+		assert.deepStrictEqual({
+			args: prepared.args,
+			argsWithSnapshot: withSnapshot.args,
+			stripped: textOf(paradisAdjustDevtoolsToolResult('wait_for', prepared, response)),
+			kept: textOf(paradisAdjustDevtoolsToolResult('wait_for', withSnapshot, response)),
+		}, {
+			args: { text: ['Attachments'], timeout: 15000 },
+			argsWithSnapshot: { text: ['a', 'b'] },
+			stripped: '# wait_for response\nElement matching one of ["Attachments"] found.\n(Snapshot omitted. Call take_snapshot, or pass includeSnapshot: true, when you need element uids.)',
+			kept: '# wait_for response\nElement matching one of ["Attachments"] found.\n## Latest page snapshot\nuid=1_0 RootWebArea',
+		});
+	});
+
+	test('publishes the widened wait_for and take_snapshot schemas and leaves other tools alone', () => {
+		const waitFor = paradisAdjustDevtoolsToolDescriptor({
+			name: 'wait_for',
+			inputSchema: { type: 'object', properties: { text: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'old' }, timeout: { type: 'integer' } }, required: ['text'], additionalProperties: false },
+		});
+		const snapshot = paradisAdjustDevtoolsToolDescriptor({ name: 'take_snapshot', inputSchema: { type: 'object', properties: { verbose: { type: 'boolean' } } } });
+		const click = { name: 'click', inputSchema: { type: 'object', properties: {} } };
+		const waitForProperties = (waitFor.inputSchema as { properties: Record<string, { anyOf?: unknown[] }> }).properties;
+		assert.deepStrictEqual({
+			textAnyOf: waitForProperties.text.anyOf,
+			hasIncludeSnapshot: waitForProperties.includeSnapshot !== undefined,
+			hasOffset: (snapshot.inputSchema as { properties: Record<string, unknown> }).properties.offset !== undefined,
+			clickUnchanged: paradisAdjustDevtoolsToolDescriptor(click) === click,
+		}, {
+			textAnyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string' }, minItems: 1 }],
+			hasIncludeSnapshot: true,
+			hasOffset: true,
+			clickUnchanged: true,
+		});
+	});
+
+	test('take_snapshot returns long snapshots in parts on line boundaries', () => {
+		const line = 'uid=1_1 button "x"\n';
+		const body = line.repeat(Math.ceil((PARADIS_SNAPSHOT_MAX_CHARS * 1.5) / line.length));
+		const response = text(`## Latest page snapshot\n${body}`);
+		const first = textOf(paradisAdjustDevtoolsToolResult('take_snapshot', paradisPrepareDevtoolsToolCall('take_snapshot', {}), response));
+		const next = Number(/"offset": (\d+)/.exec(first)?.[1]);
+		const second = textOf(paradisAdjustDevtoolsToolResult('take_snapshot', paradisPrepareDevtoolsToolCall('take_snapshot', { offset: next }), response));
+		assert.deepStrictEqual({
+			firstEndsOnLine: first.split('\n[Para Code')[0].endsWith('"x"\n'),
+			nextOnLine: next % line.length,
+			secondIsLast: second.includes('end of snapshot'),
+			offsetStripped: paradisPrepareDevtoolsToolCall('take_snapshot', { offset: next, verbose: true }).args,
+			shortUnchanged: textOf(paradisAdjustDevtoolsToolResult('take_snapshot', { args: {} }, text('## Latest page snapshot\nuid=1_0'))),
+		}, {
+			firstEndsOnLine: true,
+			nextOnLine: 0,
+			secondIsLast: true,
+			offsetStripped: { verbose: true },
+			shortUnchanged: '## Latest page snapshot\nuid=1_0',
+		});
+	});
+
+	test('adds the gateway refusal to a not-interactive input failure, and retries only read-only tools after Target closed', () => {
+		const notInteractive = text('Failed to interact with the element with uid 1_2. The element did not become interactive within the configured timeout.', true);
+		const reason = 'PARA_BROWSER_RETRYABLE: the bound BrowserView is focused by the user (the user is interacting with the page).';
+		const closed = text('Protocol error (Accessibility.getFullAXTree): Target closed', true);
+		assert.deepStrictEqual({
+			click: textOf(paradisAdjustDevtoolsToolResult('click', { args: {} }, notInteractive, reason)).endsWith(`Para Code refused the input during this call: ${reason}`),
+			snapshotRetry: paradisShouldRetryDevtoolsToolAfterTargetClosed('take_snapshot', closed),
+			clickRetry: paradisShouldRetryDevtoolsToolAfterTargetClosed('click', closed),
+			evaluateRetry: paradisShouldRetryDevtoolsToolAfterTargetClosed('evaluate_script', closed),
+			successRetry: paradisShouldRetryDevtoolsToolAfterTargetClosed('take_snapshot', text('ok')),
+		}, { click: true, snapshotRetry: true, clickRetry: false, evaluateRetry: false, successRetry: false });
+	});
+
+	test('limits a wait_for snapshot too, never splits a surrogate pair, and keeps a long snapshot per pane for a short while', () => {
+		const emoji = '\u{1F600}';
+		// 15 characters before the emoji, so the cut at an even offset would land between a surrogate pair.
+		const longLine = `uid=1_0 text "x${emoji.repeat(PARADIS_SNAPSHOT_MAX_CHARS)}"`;
+		const response = text(`## Latest page snapshot\n${longLine}`);
+		const firstPart = textOf(paradisAdjustDevtoolsToolResult('take_snapshot', { args: {} }, response)).split('\n[Para Code')[0];
+		const waitFor = textOf(paradisAdjustDevtoolsToolResult('wait_for', paradisPrepareDevtoolsToolCall('wait_for', { text: 'x', includeSnapshot: true }), response));
+		let now = 0;
+		const cache = new ParadisSnapshotCache(() => now);
+		cache.remember('pane', response);
+		cache.remember('short', text('## Latest page snapshot\nuid=1_0'));
+		const recalled = cache.recall('pane')?.result === response;
+		now = 120_000;
+		assert.deepStrictEqual({
+			endsOnWholeCharacter: !/[\uD800-\uDBFF]$/.test(firstPart),
+			waitForLimited: waitFor.includes('snapshot truncated'),
+			description: paradisAdjustDevtoolsToolDescriptor({ name: 'wait_for', description: 'Wait.', inputSchema: { type: 'object', properties: {} } }).description,
+			recalled,
+			short: cache.recall('short'),
+			expired: cache.recall('pane'),
+		}, {
+			endsOnWholeCharacter: true,
+			waitForLimited: true,
+			description: 'Wait. By default the response does not include a page snapshot; pass includeSnapshot: true or call take_snapshot when you need element uids.',
+			recalled: true,
+			short: undefined,
+			expired: undefined,
+		});
+	});
+
+	test('the input rejection log keeps the latest reason per pane only for the current call', () => {
+		let now = 1_000;
+		const log = new ParadisInputRejectionLog(() => now);
+		log.record('pane', 'first');
+		log.record('pane', 'second');
+		const during = log.recent('pane', 900);
+		const beforeCall = log.recent('pane', 1_001);
+		now = 100_000;
+		assert.deepStrictEqual({ during, beforeCall, stale: log.recent('pane', 0), other: log.recent('other', 0) }, {
+			during: 'second', beforeCall: undefined, stale: undefined, other: undefined,
+		});
+	});
+});

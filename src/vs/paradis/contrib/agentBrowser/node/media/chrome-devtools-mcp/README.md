@@ -25,6 +25,9 @@ node build/src/bin/chrome-devtools-mcp.js --version  # 動作確認
 # .eslint-allowed-javascript-files の当ディレクトリ分を再生成すること（手順は同ファイル内コメント参照）
 ```
 
+`build/src/McpContext.js` の `waitForTextOnPage` には Para Code の変更（`PARA-PATCH`）が 1 か所ある。
+更新したら当て直すこと（理由と内容は NOTES.md「vendored chrome-devtools-mcp への変更」）。
+
 更新時はこの README のバージョン表記と、`paradisDevtoolsMcpProxy.ts` が前提とする
 CLIフラグ（`--wsEndpoint` / `--usageStatistics` / `--performanceCrux`）の互換性を確認すること。
 ビルド同梱は `build/next/index.ts` の `desktopResourcePatterns`（実リリース経路）と
