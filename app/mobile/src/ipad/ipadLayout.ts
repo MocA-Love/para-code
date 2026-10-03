@@ -80,3 +80,17 @@ const MIN_COLUMN_WIDTH = 420;
 export function listColumnsFor(contentWidth: number): 1 | 2 {
 	return contentWidth >= MIN_COLUMN_WIDTH * 2 ? 2 : 1;
 }
+
+/**
+ * 質問のカードの中身がこの幅以上なら、選択肢と preview を左右に並べる（左に選択肢、右に preview）。
+ * 選択肢の列 2 : preview の列 3 で、preview の枠に等幅 30 字ほどが入る幅。
+ */
+export const QUESTION_PREVIEW_SPLIT_MIN_WIDTH = 520;
+
+/**
+ * 質問のカードで選択肢と preview を左右に並べるか。2列の表示（`regular`）で、カードの実際の幅（onLayout。ウィンドウ幅ではない）が
+ * 足りるときだけ。幅をまだ測っていない（0）ときは並べない。
+ */
+export function questionPreviewSplit(regular: boolean, cardWidth: number): boolean {
+	return regular && cardWidth >= QUESTION_PREVIEW_SPLIT_MIN_WIDTH;
+}

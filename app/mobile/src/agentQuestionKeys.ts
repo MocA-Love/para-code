@@ -42,6 +42,8 @@ export interface AgentQuestionShape {
 	/** 「Other」を除いた選択肢の数。 */
 	readonly optionCount: number;
 	readonly multiSelect: boolean;
+	/** TUI がこの質問で preview を描くか（PC 側 `paradisAgentQuestionKeys.ts` と同じ規則）。 */
+	readonly hasPreview: boolean;
 }
 
 /** 1問ぶんの回答。 */
@@ -103,9 +105,17 @@ export function agentQuestionKeySequence(
 		if (question === undefined) {
 			continue;
 		}
+		if (answer.kind === 'text' && question.hasPreview === true) {
+			// preview のある質問には「その他」の行が無い（PC 側の実測のコメントを参照）
+			return [];
+		}
 		if (answer.kind === 'option') {
 			// 数字だけで確定し、次の質問へ自動で進む。Enterは送らない。
+			// preview のある質問だけは数字がフォーカスを移すだけなので、Enter で確定する（PC 側の実測のコメントを参照）。
 			parts.push(String(answer.index + 1));
+			if (question.hasPreview === true) {
+				parts.push(ENTER);
+			}
 			continue;
 		}
 		if (answer.kind === 'multi') {

@@ -9,6 +9,7 @@ import {
 	dockWidthFor,
 	sidebarWidthFor,
 	listColumnsFor,
+	questionPreviewSplit,
 } from './ipadLayout.js';
 
 describe('clampSidebarWidth', () => {
@@ -74,5 +75,14 @@ describe('dockWidthFor', () => {
 describe('listColumnsFor', () => {
 	test('本文が十分広いときだけ2列にする', () => {
 		expect([400, 500, 839, 840, 1026].map(listColumnsFor)).toEqual([1, 1, 1, 2, 2]);
+	});
+});
+
+describe('questionPreviewSplit', () => {
+	test('2列の表示で、カードの幅が 520pt 以上のときだけ左右に並べる（測る前の 0 は並べない）', () => {
+		expect([
+			questionPreviewSplit(true, 600), questionPreviewSplit(true, 520), questionPreviewSplit(true, 519),
+			questionPreviewSplit(true, 0), questionPreviewSplit(false, 900),
+		]).toEqual([true, true, false, false, false]);
 	});
 });

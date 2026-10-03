@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } fro
 import { Ionicons } from '@expo/vector-icons';
 import type { AgentChatMessage, AgentChatState } from '../store.js';
 import type { AgentActions } from '../hooks/useAgentActions.js';
+import { questionHasPreview } from '../agentQuestionMod.js';
 import { QuestionCard } from './questionCard.js';
 import { ApprovalCard } from './approvalCard.js';
 import { HIT_SIZE, alpha, colors, radius, squircle, tint, type, status } from '../theme.js';
@@ -83,6 +84,9 @@ function AttentionBody({ agentStatus, chat, actions, onOpenAgent }: {
 	// 複数質問グループの一部なら、ホームの単発カードでは回答させない（1問だけの回答で
 	// フォーム全体がSubmitされる事故を防ぐ）。エージェント画面のステップ式カードへ誘導する。
 	const isGroupedQuestion = question !== undefined && question.questionGroup !== undefined && (question.questionCount ?? 1) > 1;
+	// preview（選択肢の下書き）のある質問も、下書きを見てから答えられるエージェント画面へ誘導する
+	// （ホームの単発カードには preview の枠もメモも無く、キー注入では「その他」も送れない）。
+	const isPreviewQuestion = question !== undefined && !isGroupedQuestion && questionHasPreview(question);
 	const approval = interaction?.kind === 'approval' ? interaction : undefined;
 	// 再取得の応答待ち。表示中の要求が今もPC側の現在の要求である保証がないので操作を止める
 	// （useAgentActions も同じ条件で送信を拒否する）。
@@ -100,6 +104,11 @@ function AttentionBody({ agentStatus, chat, actions, onOpenAgent }: {
 				<Pressable style={styles.groupNotice} onPress={onOpenAgent}>
 					<Text style={styles.noticeTitle}>複数の質問（全{question.questionCount}問）が届いています</Text>
 					<Text style={styles.noticeBody}>エージェント画面ですべての質問に回答してから送信できます</Text>
+				</Pressable>
+			) : isPreviewQuestion ? (
+				<Pressable style={styles.groupNotice} onPress={onOpenAgent}>
+					<Text style={styles.noticeTitle}>選択肢の下書き（プレビュー）付きの質問が届いています</Text>
+					<Text style={styles.noticeBody}>エージェント画面で下書きを見てから回答できます</Text>
 				</Pressable>
 			) : question ? (
 				<QuestionCard

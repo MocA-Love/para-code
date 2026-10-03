@@ -35,6 +35,22 @@ export type ParadisAgentKind = 'claude' | 'codex';
 export interface IParadisAgentQuestionOption {
 	readonly label: string;
 	readonly description?: string;
+	/**
+	 * 選択肢にフォーカスしたとき TUI が枠で囲んで描く下書き（AskUserQuestion の `preview`。Markdown の文字列）。
+	 * 表示専用で、{@link PARADIS_AGENT_QUESTION_PREVIEW_LIMIT} 文字で切ってある。
+	 */
+	readonly preview?: string;
+}
+
+/** モバイルへ送る preview の上限（文字数）。transcript の実測では最大 851 文字。 */
+export const PARADIS_AGENT_QUESTION_PREVIEW_LIMIT = 4_000;
+
+/**
+ * TUI がその質問で preview を描くか（Claude Code 2.1.288 の判定と同じ: 単一選択で、どれかの選択肢に preview がある）。
+ * 描く質問には「Type something」（その他）の行が無く、メモ（notes）を付けられる。
+ */
+export function paradisAgentQuestionHasPreview(question: { readonly multiSelect?: boolean; readonly options?: readonly IParadisAgentQuestionOption[] }): boolean {
+	return question.multiSelect !== true && (question.options ?? []).some(option => option.preview !== undefined);
 }
 
 /**
@@ -170,7 +186,14 @@ export interface IParadisAgentSessionInfo {
 }
 
 export type IParadisAgentInteraction =
-	| { readonly kind: 'question'; readonly id: string }
+	| {
+		readonly kind: 'question'; readonly id: string;
+		/**
+		 * この質問に答える経路。`mod`: Claude Code の mod が待っていて値で答えられる（メモ・「質問に答えずに話す」が使える）。
+		 * `keys`: TUI へのキー注入だけ。古い PC は付けない。
+		 */
+		readonly answerVia?: 'mod' | 'keys';
+	}
 	| {
 		readonly kind: 'approval'; readonly id: string; readonly title?: string; readonly detail?: string;
 		readonly choices?: readonly IParadisAgentApprovalChoice[];

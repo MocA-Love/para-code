@@ -362,6 +362,8 @@ interface AppState extends StoreState {
 	/** `sendId` は預かった送信の id（PC は同じ id を二度送らない。W2-29）。 */
 	sendAgentMessage(terminalKey: string, text: string, sendId?: string): Promise<AgentMessageSendResult>;
 	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<AgentMessageSendResult>;
+	/** 「質問に答えずに話す」（`agent.question.chat.v1`）。`response` が無ければ途中までの回答を添えて取り下げる。 */
+	clarifyAgentQuestion(terminalKey: string, interactionId: string, response: string | undefined, answers: readonly (AgentQuestionAnswer | null)[]): Promise<AgentMessageSendResult>;
 	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }): Promise<AgentMessageSendResult>;
 	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult>;
 	/** agent チャネルの新しい種類の要求（`MobileController.requestAgentReply`）。 */
@@ -2036,6 +2038,11 @@ export const useAppStore = create<AppState>(set => ({
 
 	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]) {
 		return controller?.answerAgentQuestion(terminalKey, interactionId, answers)
+			?? Promise.resolve<AgentMessageSendResult>({ status: 'rejected', message: 'PCとの接続が切れています' });
+	},
+
+	clarifyAgentQuestion(terminalKey: string, interactionId: string, response: string | undefined, answers: readonly (AgentQuestionAnswer | null)[]) {
+		return controller?.clarifyAgentQuestion(terminalKey, interactionId, response, answers)
 			?? Promise.resolve<AgentMessageSendResult>({ status: 'rejected', message: 'PCとの接続が切れています' });
 	},
 

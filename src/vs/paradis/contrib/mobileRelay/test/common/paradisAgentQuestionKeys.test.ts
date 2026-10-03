@@ -14,14 +14,27 @@ suite('paradisAgentQuestionKeySequence', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	const DOWN = '\u001b[B';
-	const single = (optionCount: number) => ({ optionCount, multiSelect: false });
-	const multi = (optionCount: number) => ({ optionCount, multiSelect: true });
+	const single = (optionCount: number) => ({ optionCount, multiSelect: false, hasPreview: false });
+	const multi = (optionCount: number) => ({ optionCount, multiSelect: true, hasPreview: false });
 
 	test('単問の単一選択は番号だけで確定する（Enterを足すと次の入力欄へ落ちる）', () => {
 		assert.deepStrictEqual(
 			paradisAgentQuestionKeySequence([single(3)], [{ kind: 'option', index: 1 }]),
 			['2'],
 		);
+	});
+
+	// Claude Code 2.1.288 を tmux で測った（2026-10-04）: preview のある質問では数字キーはフォーカスを移して preview を
+	// 切り替えるだけで確定せず、単問でも多問でも次へ進まない。Enter で確定し、単問はそのまま送信、多問は次の質問へ進む。
+	// 選択肢の下に「その他」（Type something）の行は無く、区切り線の下が「Chat about this」。
+	test('preview のある質問は「番号 → Enter」で確定する（数字は選ぶだけ）。「その他」の行が無いので自由入力は列を作らない', () => {
+		const withPreview = { optionCount: 3, multiSelect: false, hasPreview: true };
+		assert.deepStrictEqual({
+			single: paradisAgentQuestionKeySequence([withPreview], [{ kind: 'option', index: 1 }]),
+			// 多問: Q1（preview）は番号と Enter で次へ、Q2（ふつう）は番号だけで確認画面へ、最後に確認画面の Enter
+			multi: paradisAgentQuestionKeySequence([withPreview, single(2)], [{ kind: 'option', index: 1 }, { kind: 'option', index: 0 }]),
+			text: paradisAgentQuestionKeySequence([single(2), withPreview], [{ kind: 'option', index: 0 }, { kind: 'text', optionCount: 3, text: 'no notes' }]),
+		}, { single: ['2', '\r'], multi: ['2', '\r', '1', '\r'], text: [] });
 	});
 
 	test('多問の単一選択は番号だけを並べ、最後に確認画面のEnterを1つ足す', () => {

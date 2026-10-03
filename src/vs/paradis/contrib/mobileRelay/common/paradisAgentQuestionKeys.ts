@@ -49,6 +49,11 @@ export interface IParadisAgentQuestionShape {
 	/** 「Other」を除いた選択肢の数。 */
 	readonly optionCount: number;
 	readonly multiSelect: boolean;
+	/**
+	 * TUI がこの質問で preview を描くか（`paradisAgentQuestionHasPreview`）。描く質問には「その他」（Type something）の
+	 * 行が無い（Claude Code 2.1.288 で確認）。
+	 */
+	readonly hasPreview: boolean;
 }
 
 /** 1問ぶんの回答。モバイルから届くものと同じ形。 */
@@ -100,6 +105,14 @@ function downsToSubmitButton(optionCount: number): string[] {
  * 回答をキー列にする。`questions` は `answers` と同じ並び（TUIの質問順）で渡す。
  *
  * 返る各要素は「1回ぶんの入力」で、呼び出し側が一定間隔を空けて順に流す前提。
+ *
+ * preview のある質問（単一選択で、どれかの選択肢に preview がある）は数字キーの規則が違う。Claude Code 2.1.288 を tmux で
+ * 操作して測った（2026-10-04）:
+ *  - 数字キーはフォーカスを移して preview を切り替えるだけで、確定しない。単問でも多問でも次へ進まない
+ *  - 確定は Enter。単問ならそのまま送信され、多問なら次の質問へ進む（多問の最後の確認画面は従来どおり Enter が要る）
+ *  - 「その他」（Type something）の行が無い。選択肢の下は区切り線を挟んで「Chat about this」
+ * そこで preview のある質問の選択肢は「番号 → Enter」にし、自由入力は列を作らない（呼び出し側は送らずに断る）。
+ * `選択肢数+1` は何も選ばず、続く本文の `n` がメモ欄を開き、最後の Enter がフォーカス中の選択肢を確定してしまうため。
  */
 export function paradisAgentQuestionKeySequence(
 	questions: readonly IParadisAgentQuestionShape[],
@@ -111,9 +124,16 @@ export function paradisAgentQuestionKeySequence(
 		if (question === undefined) {
 			continue;
 		}
+		if (answer.kind === 'text' && question.hasPreview === true) {
+			return [];
+		}
 		if (answer.kind === 'option') {
 			// 数字だけで確定し、次の質問へ自動で進む。Enterは送らない。
+			// preview のある質問だけは数字がフォーカスを移すだけなので、Enter で確定する（上の実測）。
 			parts.push(String(answer.index + 1));
+			if (question.hasPreview === true) {
+				parts.push(ENTER);
+			}
 			continue;
 		}
 		if (answer.kind === 'multi') {

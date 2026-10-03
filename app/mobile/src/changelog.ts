@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-03',
 		items: [
 			{
+				icon: 'help-circle-outline',
+				title: '質問の選択肢のプレビューを見て答えられるようになりました',
+				body: 'Claude Code が選択肢ごとに下書きを付けた質問では、選んだ選択肢の下（iPad では右）にプレビューが出ます。Claude Mods が動いている PC では、質問ごとのメモと「質問に答えずに話す」も使えます。',
+			},
+			{
 				icon: 'notifications-outline',
 				title: '通知でエージェントの返答が読めるようになりました',
 				body: '通知の本文にエージェントの最後の発言が入り、長押しで全文を読めます。承認待ちは通知から許可・拒否、完了には返信ができます（Face ID のあとに送ります）。失敗は完了と分けて知らせます。設定の「通知に内容を含める」で、中身を出さないようにもできます。',

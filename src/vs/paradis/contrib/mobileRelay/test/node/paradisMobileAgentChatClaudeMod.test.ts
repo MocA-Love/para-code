@@ -41,6 +41,8 @@ interface IHarness {
 	mod(op: string, body: Record<string, unknown>): Promise<Record<string, unknown>>;
 	/** 送り主の確かめの結果（既定では確かめられる）。 */
 	callerVerified: boolean;
+	/** mod へ渡した回答の鍵の時計を進める量（ms）。 */
+	clockOffset: number;
 	hook(event: string, extra?: Record<string, unknown>): void;
 }
 
@@ -54,14 +56,21 @@ async function waitFor(predicate: () => boolean, message: string): Promise<void>
 	}
 }
 
-async function withHarness(run: (harness: IHarness) => Promise<void>): Promise<void> {
+interface IHarnessOptions {
+	/** tailer を作る前に transcript へ書いておく行（初回読み込みで読まれる）。 */
+	readonly initialLines?: readonly Record<string, unknown>[];
+	/** tailer を作る前に mod から送る要求（`op` と本文）。 */
+	readonly beforeStart?: readonly { readonly op: string; readonly body: Record<string, unknown> }[];
+}
+
+async function withHarness(run: (harness: IHarness) => Promise<void>, options: IHarnessOptions = {}): Promise<void> {
 	const root = await realpath(await mkdtemp(join(tmpdir(), 'paradis-claude-mod-')));
 	const previous = process.env['CLAUDE_CONFIG_DIR'];
 	process.env['CLAUDE_CONFIG_DIR'] = root;
 	const project = join(root, 'projects', 'para-code-tests');
 	await mkdir(project, { recursive: true });
 	const transcriptPath = join(project, `${SESSION}.jsonl`);
-	await writeFile(transcriptPath, '');
+	await writeFile(transcriptPath, (options.initialLines ?? []).map(line => `${JSON.stringify(line)}\n`).join(''));
 	const token = 'pane-claude-mod';
 	const bridge = new ParadisClaudeModBridge();
 	bridge.setPresence(() => 'connected');
@@ -71,7 +80,7 @@ async function withHarness(run: (harness: IHarness) => Promise<void>): Promise<v
 	const chat = new ParadisMobileAgentChat(
 		(_mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))),
 		(_mobileId, _windowId, _windowSession, _generation, payload) => actions.push(JSON.parse(new TextDecoder().decode(payload))),
-		() => { }, new NullLogService(), async () => true, () => { }, undefined, undefined, undefined, bridge,
+		() => { }, new NullLogService(), async () => true, () => { }, undefined, undefined, undefined, bridge, () => Date.now() + harness.clockOffset,
 	);
 	const controller = new AbortController();
 	const access = chat as unknown as { tailers: Map<string, ITailerAccess> };
@@ -81,9 +90,13 @@ async function withHarness(run: (harness: IHarness) => Promise<void>): Promise<v
 		inbound: message => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify({ id: 1, token, ...message }))),
 		mod: async (op, body) => (await bridge.handle(token, op, { sessionId: SESSION, ...body }, controller.signal, async () => harness.callerVerified)).body,
 		callerVerified: true,
+		clockOffset: 0,
 		hook: (event, extra) => fireParadisAgentHookEvent({ token, event, sessionId: SESSION, transcriptPath, cwd: '/workspace', at: Date.now(), ...extra }),
 	};
 	try {
+		for (const request of options.beforeStart ?? []) {
+			await harness.mod(request.op, request.body);
+		}
 		chat.setEagerTailing(true);
 		assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
 		harness.hook('UserPromptSubmit');
@@ -216,6 +229,121 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 			keys: 0,
 		});
 	}));
+
+	test('answers a question with a preview through the mod with the preview and the notes, and marks the card as answerable by the mod', () => withHarness(async harness => {
+		const questions = [
+			{ question: '見せ方は？', header: '表示', multiSelect: false, options: [{ label: 'トースト', description: '', preview: '# Toast\n+---+' }, { label: 'インライン', description: '', preview: '# Inline' }] },
+			{ question: '色は？', header: '色', multiSelect: false, options: [{ label: '赤', description: '' }, { label: '緑', description: '' }] },
+		];
+		await harness.mod('event', { events: [{ type: 'row', uuid: 'u-p', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_p', name: 'AskUserQuestion', input: { questions } }] } }] });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'question', 'the question card was not shown');
+		const before = harness.tailer()!.currentInteraction();
+		const registered = await harness.mod('question', { toolUseId: 'toolu_p', questions });
+		await waitFor(() => (harness.tailer()!.currentInteraction() as { answerVia?: string } | null)?.answerVia === 'mod', 'the card did not become answerable by the mod');
+		// メモは preview のある質問にだけ付けられる
+		harness.inbound({ t: 'action/answerQuestion', requestId: 'notes-wrong', epoch: harness.tailer()!.epoch, interactionId: 'toolu_p', answers: [{ kind: 'option', index: 0 }, { kind: 'option', index: 0, notes: 'x' }] });
+		const waiting = harness.mod('wait', { id: registered.id });
+		harness.inbound({ t: 'action/answerQuestion', requestId: 'notes-1', epoch: harness.tailer()!.epoch, interactionId: 'toolu_p', answers: [{ kind: 'option', index: 1, notes: '短めに' }, { kind: 'option', index: 0 }] });
+		const reply = await waiting;
+		await waitFor(() => harness.sent.filter(message => message.t === 'action-result').length >= 2, 'the answers were not acknowledged');
+		const preview = (harness.tailer()!.messages.find(message => message.kind === 'question') as { options?: readonly { preview?: string }[] } | undefined)?.options?.map(option => option.preview);
+		assert.deepStrictEqual({
+			before,
+			preview,
+			reply,
+			results: harness.sent.filter(message => message.t === 'action-result').map(message => ({ requestId: message.requestId, status: message.status, code: message.code })),
+			keys: harness.actions.filter(action => action.t === 'action/interaction').length,
+		}, {
+			before: { kind: 'question', id: 'toolu_p', answerVia: 'keys' },
+			preview: ['# Toast\n+---+', '# Inline'],
+			reply: { state: 'answer', answers: { '見せ方は？': 'インライン', '色は？': '赤' }, annotations: { '見せ方は？': { preview: '# Inline', notes: '短めに' } } },
+			results: [{ requestId: 'notes-wrong', status: 'rejected', code: 'invalid-answer' }, { requestId: 'notes-1', status: 'accepted', code: undefined }],
+			keys: 0,
+		});
+	}));
+
+	test('withdraws the questions through the mod: with a message as the response, without one as the refusal the terminal writes', () => withHarness(async harness => {
+		const questions = [
+			{ question: '見せ方は？', header: '表示', multiSelect: false, options: [{ label: 'トースト', description: '', preview: '# Toast' }, { label: 'インライン', description: '' }] },
+			{ question: '色は？', header: '色', multiSelect: false, options: [{ label: '赤', description: '' }, { label: '緑', description: '' }] },
+		];
+		await harness.mod('event', { events: [{ type: 'row', uuid: 'u-c', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_c', name: 'AskUserQuestion', input: { questions } }] } }] });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'question', 'the question card was not shown');
+		const first = await harness.mod('question', { toolUseId: 'toolu_c', questions });
+		const waitingFirst = harness.mod('wait', { id: first.id });
+		harness.inbound({ t: 'action/clarifyQuestion', requestId: 'chat-1', epoch: harness.tailer()!.epoch, interactionId: 'toolu_c', response: 'その前に画面を見せて' });
+		const withMessage = await waitingFirst;
+		// 同じカードへの 2 度目は受けない
+		harness.inbound({ t: 'action/clarifyQuestion', requestId: 'chat-2', epoch: harness.tailer()!.epoch, interactionId: 'toolu_c' });
+		await waitFor(() => harness.sent.filter(message => message.t === 'action-result').length >= 2, 'the withdrawals were not acknowledged');
+		// 同じカードへの二度目を断る時間（60 秒）を過ぎたことにする
+		harness.clockOffset = 61_000;
+		const second = await harness.mod('question', { toolUseId: 'toolu_c', questions });
+		const waitingSecond = harness.mod('wait', { id: second.id });
+		harness.inbound({ t: 'action/clarifyQuestion', requestId: 'chat-3', epoch: harness.tailer()!.epoch, interactionId: 'toolu_c', answers: [{ kind: 'option', index: 0, notes: '短めに' }, null] });
+		const withoutMessage = await waitingSecond;
+		assert.deepStrictEqual({
+			withMessage,
+			withoutMessage,
+			results: harness.sent.filter(message => message.t === 'action-result').map(message => ({ requestId: message.requestId, status: message.status, code: message.code })),
+		}, {
+			withMessage: { state: 'clarify', response: 'その前に画面を見せて' },
+			withoutMessage: {
+				state: 'clarify',
+				deny: 'The user wants to clarify these questions.\n    This means they may have additional information, context or questions for you.\n    Take their response into account and then reformulate the questions if appropriate.\n    Start by asking them what they would like to clarify.\n\n    Questions asked:\n- "見せ方は？"\n  Answer: トースト\n  User notes: 短めに\n- "色は？"\n  (No answer provided)',
+			},
+			results: [{ requestId: 'chat-1', status: 'accepted', code: undefined }, { requestId: 'chat-2', status: 'rejected', code: 'interaction-locked' }, { requestId: 'chat-3', status: 'accepted', code: undefined }],
+		});
+	}));
+
+	test('without the mod, refuses the notes, "Other" on a question with a preview and withdrawing, instead of typing keys', () => withHarness(async harness => {
+		const questions = [{ question: '見せ方は？', header: '表示', multiSelect: false, options: [{ label: 'トースト', description: '', preview: '# Toast' }, { label: 'インライン', description: '' }] }];
+		await harness.mod('event', { events: [{ type: 'row', uuid: 'u-k', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_k', name: 'AskUserQuestion', input: { questions } }] } }] });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'question', 'the question card was not shown');
+		const epoch = harness.tailer()!.epoch;
+		harness.inbound({ t: 'action/answerQuestion', requestId: 'k-notes', epoch, interactionId: 'toolu_k', answers: [{ kind: 'option', index: 0, notes: 'メモ' }] });
+		harness.inbound({ t: 'action/answerQuestion', requestId: 'k-other', epoch, interactionId: 'toolu_k', answers: [{ kind: 'text', optionCount: 2, text: 'ダイアログ' }] });
+		harness.inbound({ t: 'action/clarifyQuestion', requestId: 'k-chat', epoch, interactionId: 'toolu_k', response: '話したい' });
+		await waitFor(() => harness.sent.filter(message => message.t === 'action-result').length >= 3, 'the answers were not refused');
+		assert.deepStrictEqual({
+			interaction: harness.tailer()!.currentInteraction(),
+			results: harness.sent.filter(message => message.t === 'action-result').map(message => ({ requestId: message.requestId, status: message.status, code: message.code })),
+			keys: harness.actions.filter(action => action.t === 'action/interaction').length,
+		}, {
+			interaction: { kind: 'question', id: 'toolu_k', answerVia: 'keys' },
+			results: [
+				{ requestId: 'k-notes', status: 'rejected', code: 'invalid-answer' },
+				{ requestId: 'k-other', status: 'rejected', code: 'invalid-answer' },
+				{ requestId: 'k-chat', status: 'rejected', code: 'stale-interaction' },
+			],
+			keys: 0,
+		});
+	}));
+
+	test('marks the card as answerable by the keys again when the mod stops waiting', () => withHarness(async harness => {
+		const questions = [{ question: '見せ方は？', header: '表示', multiSelect: false, options: [{ label: 'トースト', description: '', preview: '# Toast' }, { label: 'インライン', description: '' }] }];
+		await harness.mod('event', { events: [{ type: 'row', uuid: 'u-s', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_s', name: 'AskUserQuestion', input: { questions } }] } }] });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'question', 'the question card was not shown');
+		const registered = await harness.mod('question', { toolUseId: 'toolu_s', questions });
+		await waitFor(() => (harness.tailer()!.currentInteraction() as { answerVia?: string } | null)?.answerVia === 'mod', 'the card did not become answerable by the mod');
+		// the terminal answered first: the mod settles its wait
+		await harness.mod('settle', { ids: [registered.id] });
+		await waitFor(() => (harness.tailer()!.currentInteraction() as { answerVia?: string } | null)?.answerVia === 'keys', 'the card stayed answerable by the mod');
+		const pushed = harness.sent.filter(message => (message.t === 'delta' || message.t === 'snapshot') && (message.interaction as { answerVia?: string } | null)?.answerVia !== undefined)
+			.map(message => (message.interaction as { answerVia: string }).answerVia);
+		assert.deepStrictEqual(pushed.filter((value, index) => index === 0 || value !== pushed[index - 1]), ['keys', 'mod', 'keys']);
+	}));
+
+	test('a question already in the transcript when the pane is first read is answerable by the mod that was waiting before', () => {
+		const questions = [{ question: '見せ方は？', header: '表示', multiSelect: false, options: [{ label: 'トースト', description: '', preview: '# Toast' }, { label: 'インライン', description: '' }] }];
+		return withHarness(async harness => {
+			await waitFor(() => (harness.tailer()?.currentInteraction() as { answerVia?: string } | null | undefined)?.answerVia === 'mod', 'the first read left the card on the keys');
+			assert.deepStrictEqual(harness.tailer()!.currentInteraction(), { kind: 'question', id: 'toolu_i', answerVia: 'mod' });
+		}, {
+			initialLines: [{ type: 'assistant', uuid: 'u-i', timestamp: new Date().toISOString(), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_i', name: 'AskUserQuestion', input: { questions } }] } }],
+			beforeStart: [{ op: 'question', body: { toolUseId: 'toolu_i', questions } }],
+		});
+	});
 
 	test('offers "always allow" on a mod-backed approval and hands the decision to the mod', () => withHarness(async harness => {
 		harness.hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_b', toolInput: { command: 'npm test' } });
