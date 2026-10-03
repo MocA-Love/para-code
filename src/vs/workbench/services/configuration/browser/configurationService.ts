@@ -52,6 +52,7 @@ import { fixSettingLinks } from '../../preferences/common/preferencesModels.js';
 import { IExperimentalSettingsService } from '../common/experimentalSettings.js';
 import { isCancellationError } from '../../../../base/common/errors.js';
 import { paradisIsVerifiedWorkspaceFolder } from '../../../../paradis/contrib/workspaceSwitch/common/paradisWorkspaceFolderVerification.js'; // PARA-PATCH: see doUpdateFolders
+import { ParadisFolderConfigurationParking } from '../../../../paradis/contrib/workspaceSwitch/common/paradisFolderConfigurationParking.js'; // PARA-PATCH: see onFoldersChanged
 
 function getLocalUserConfigurationScopes(userDataProfile: IUserDataProfile, hasRemote: boolean): ConfigurationScope[] | undefined {
 	const isDefaultProfile = userDataProfile.isDefault || userDataProfile.useDefaultFlags?.settings;
@@ -83,6 +84,7 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 	private readonly remoteUserConfiguration: RemoteUserConfiguration | null = null;
 	private readonly workspaceConfiguration: WorkspaceConfiguration;
 	private cachedFolderConfigs: DisposableMap<URI, FolderConfiguration> = this._register(new DisposableMap(new ResourceMap()));
+	private readonly paradisParkedFolderConfigs = this._register(new ParadisFolderConfigurationParking<FolderConfiguration>()); // PARA-PATCH: see onFoldersChanged
 	private readonly workspaceEditingQueue: Queue<void>;
 
 	private readonly _onDidChangeConfiguration: Emitter<IConfigurationChangeEvent> = this._register(new Emitter<IConfigurationChangeEvent>());
@@ -703,6 +705,7 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 	private async loadConfiguration(applicationConfigurationModel: ConfigurationModel, userConfigurationModel: ConfigurationModel, remoteUserConfigurationModel: ConfigurationModel, trigger: boolean): Promise<void> {
 		// reset caches
 		this.cachedFolderConfigs.clearAndDisposeAll();
+		this.paradisParkedFolderConfigs.clear(); // PARA-PATCH: a full reload must not reuse parked folder configurations either
 
 		const folders = this.workspace.folders;
 		const folderConfigurations = await this.loadFolderConfigurations(folders);
@@ -940,6 +943,12 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 	}
 
 	private async onWorkspaceFolderConfigurationChanged(folder: IWorkspaceFolder): Promise<void> {
+		// PARA-PATCH: a folder configuration parked by onFoldersChanged keeps watching its files; its
+		// change must only mark it stale (paradisFolderConfigurationParking.ts), never re-add the
+		// removed folder's settings.
+		if (this.paradisParkedFolderConfigs.has(folder.uri)) {
+			return;
+		}
 		const [folderConfiguration] = await this.loadFolderConfigurations([folder]);
 		const previous = { data: this._configuration.toData(), workspace: this.workspace };
 		const folderConfigurationChange = this._configuration.compareAndUpdateFolderConfiguration(folder.uri, folderConfiguration);
@@ -958,12 +967,25 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 		// Remove the configurations of deleted folders
 		for (const key of this.cachedFolderConfigs.keys()) {
 			if (!this.workspace.folders.filter(folder => folder.uri.toString() === key.toString())[0]) {
-				this.cachedFolderConfigs.deleteAndDispose(key);
+				// PARA-PATCH: park instead of dispose so switching back to a Para Code space does not re-read .vscode/ (paradisFolderConfigurationParking.ts)
+				this.paradisParkedFolderConfigs.park(key, this.cachedFolderConfigs.deleteAndLeak(key), this.getWorkbenchState());
 				changes.push(this._configuration.compareAndDeleteFolderConfiguration(key));
 			}
 		}
 
-		const toInitialize = this.workspace.folders.filter(folder => !this.cachedFolderConfigs.has(folder.uri));
+		const toInitialize = this.workspace.folders.filter(folder => {
+			if (this.cachedFolderConfigs.has(folder.uri)) {
+				return false;
+			}
+			// PARA-PATCH: reuse a parked, unchanged folder configuration; re-derive it for the current trust and registry without reading files
+			const parked = this.paradisParkedFolderConfigs.take(folder.uri, this.getWorkbenchState());
+			if (parked) {
+				this.cachedFolderConfigs.set(folder.uri, parked);
+				changes.push(this._configuration.compareAndUpdateFolderConfiguration(folder.uri, parked.updateWorkspaceTrust(this.isWorkspaceTrusted)));
+				return false;
+			}
+			return true;
+		});
 		if (toInitialize.length) {
 			const folderConfigurations = await this.loadFolderConfigurations(toInitialize);
 			folderConfigurations.forEach((folderConfiguration, index) => {

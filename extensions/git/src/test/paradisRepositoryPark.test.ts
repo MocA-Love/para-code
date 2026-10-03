@@ -7,7 +7,7 @@
 
 import 'mocha';
 import * as assert from 'assert';
-import { IParadisParkedRepository, ParadisRepositoryParkingLot } from '../paradisRepositoryPark';
+import { IParadisParkedRepository, PARADIS_DEFAULT_PARK_LIMIT, ParadisParkedRefreshGate, ParadisRepositoryParkingLot, paradisResolveParkLimit } from '../paradisRepositoryPark';
 
 /** 呼ばれた回数だけ数える待避エントリ。 */
 function createEntry(root: string, log: string[], rootRealPath?: string): IParadisParkedRepository {
@@ -165,6 +165,86 @@ suite('ParadisRepositoryParkingLot', () => {
 		assert.deepStrictEqual({ afterPark, bStillParked: lot.unparkForRoot('/b') }, {
 			afterPark: ['dispose:/a'],
 			bStillParked: true,
+		});
+	});
+});
+
+suite('ParadisRepositoryParkingLot limit', () => {
+
+	test('defaults to 16 and resolves the setting (0 means unlimited, invalid values fall back)', () => {
+		assert.deepStrictEqual({
+			defaultLimit: new ParadisRepositoryParkingLot(silentLogger).currentLimit,
+			exported: PARADIS_DEFAULT_PARK_LIMIT,
+			undefinedSetting: paradisResolveParkLimit(undefined),
+			configured: paradisResolveParkLimit(6),
+			fractional: paradisResolveParkLimit(6.9),
+			unlimited: paradisResolveParkLimit(0),
+			negative: paradisResolveParkLimit(-1),
+			notANumber: paradisResolveParkLimit('8'),
+		}, {
+			defaultLimit: 16,
+			exported: 16,
+			undefinedSetting: 16,
+			configured: 6,
+			fractional: 6,
+			unlimited: Number.POSITIVE_INFINITY,
+			negative: 16,
+			notANumber: 16,
+		});
+	});
+
+	test('keeps 16 repositories by default and evicts the 17th oldest', () => {
+		const log: string[] = [];
+		const lot = new ParadisRepositoryParkingLot(silentLogger);
+		for (let i = 0; i < 17; i++) {
+			lot.park(createEntry(`/repo/${i}`, log));
+		}
+		assert.deepStrictEqual({ size: lot.size, log }, { size: 16, log: ['dispose:/repo/0'] });
+	});
+
+	test('never evicts when unlimited', () => {
+		const log: string[] = [];
+		const lot = new ParadisRepositoryParkingLot(silentLogger, paradisResolveParkLimit(0));
+		for (let i = 0; i < 40; i++) {
+			lot.park(createEntry(`/repo/${i}`, log));
+		}
+		assert.deepStrictEqual({ size: lot.size, log }, { size: 40, log: [] });
+	});
+
+	test('evicts the oldest at once when the limit is lowered, and keeps the rest when raised', () => {
+		const log: string[] = [];
+		const lot = new ParadisRepositoryParkingLot(silentLogger, 5);
+		for (let i = 0; i < 5; i++) {
+			lot.park(createEntry(`/repo/${i}`, log));
+		}
+		lot.setLimit(2);
+		const afterLowering = { size: lot.size, log: [...log] };
+		lot.setLimit(paradisResolveParkLimit(0));
+		lot.park(createEntry('/repo/5', log));
+		assert.deepStrictEqual({ afterLowering, size: lot.size, log }, {
+			afterLowering: { size: 2, log: ['dispose:/repo/0', 'dispose:/repo/1', 'dispose:/repo/2'] },
+			size: 3,
+			log: ['dispose:/repo/0', 'dispose:/repo/1', 'dispose:/repo/2'],
+		});
+	});
+});
+
+suite('ParadisParkedRefreshGate', () => {
+
+	test('holds back configuration refreshes while parked and lets the unpark status() settle them', () => {
+		const gate = new ParadisParkedRefreshGate();
+		const refreshes: string[] = [];
+		const whileActive = gate.request(true, () => refreshes.push('active'));
+		const whileParked = [gate.request(false, () => refreshes.push('parked-1')), gate.request(false, () => refreshes.push('parked-2'))];
+		const deferredBeforeUnpark = gate.deferred;
+		gate.settledByUnpark();
+		assert.deepStrictEqual({ whileActive, whileParked, deferredBeforeUnpark, deferredAfterUnpark: gate.deferred, refreshes }, {
+			whileActive: false,
+			whileParked: [true, true],
+			deferredBeforeUnpark: true,
+			deferredAfterUnpark: false,
+			// 待避中の要求では一度も作り直さない (別スペースの変更をリソースグループへ戻さない)。
+			refreshes: ['active'],
 		});
 	});
 });

@@ -20,6 +20,8 @@ import { IJSONEditingService, IJSONValue, JSONEditingError, JSONEditingErrorCode
 import { ITextModel } from '../../../../editor/common/model.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IFilesConfigurationService } from '../../filesConfiguration/common/filesConfigurationService.js';
+import { hasWorkspaceFileExtension } from '../../../../platform/workspace/common/workspace.js'; // PARA-PATCH: see writeToBuffer
+import { isParadisManagedWorkspaceWindow } from '../../../../paradis/contrib/workspaceSwitch/common/paradisWorkspaceSwitch.js'; // PARA-PATCH: see writeToBuffer
 
 export class JSONEditingService implements IJSONEditingService {
 
@@ -64,7 +66,11 @@ export class JSONEditingService implements IJSONEditingService {
 				hasEdits = (!!edit && this.applyEditsToBuffer(edit, model)) || hasEdits;
 			}
 			if (hasEdits) {
-				return this.textFileService.save(model.uri);
+				// PARA-PATCH: Para Code rewrites its `.code-workspace` on every space switch. Save participants
+				// (format on save, extension host onWillSave) add up to seconds on slow disks and are not
+				// needed for a file the workbench itself generates, so skip them for workspace files of
+				// windows that switch Para Code spaces only.
+				return this.textFileService.save(model.uri, hasWorkspaceFileExtension(model.uri) && isParadisManagedWorkspaceWindow() ? { skipSaveParticipants: true } : undefined);
 			}
 		} finally {
 			disposable?.dispose();

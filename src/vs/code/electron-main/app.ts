@@ -1524,7 +1524,7 @@ export class CodeApplication extends Disposable {
 		disposables.add(paradisRegisterDesignMode(mainProcessElectronServer, accessor.get(IBrowserViewMainService), this.environmentMainService.userDataPath)); // PARA-PATCH: integrated browser Design Mode (see paradis/contrib/browserDesignMode)
 
 		// PARA-PATCH: periodic memory/CPU health beacon to Sentry (see paradis/contrib/healthBeacon)
-		disposables.add(paradisRegisterHealthBeacon(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IBrowserViewMainService), this.lifecycleMainService));
+		disposables.add(paradisRegisterHealthBeacon(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IBrowserViewMainService), this.lifecycleMainService, this.logService));
 
 		// PARA-PATCH: on-demand main process heap snapshot (see paradis/contrib/heapSnapshot)
 		disposables.add(paradisRegisterHeapSnapshot(mainProcessElectronServer));
