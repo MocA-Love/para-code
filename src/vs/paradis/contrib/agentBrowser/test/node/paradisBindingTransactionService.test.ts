@@ -85,6 +85,7 @@ function createFixture(): {
 		_terminalExitedTokens: new Set<string>(),
 		_paneShells: new Map(),
 		_paneRemoteAuthorities: new Map(),
+		_remotePaneWindows: new Map(),
 		_paneStatuses: new Map(),
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set(),

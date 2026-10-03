@@ -13,6 +13,7 @@ import { IParadisBindingAuthorityManifest, ParadisBindingAuthority } from '../..
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChannel.js';
 import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
+import { ParadisRemoteFileTransfer } from '../../node/paradisRemoteFileTransfer.js';
 import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../node/paradisAgentHookBus.js';
 import { IParadisMcpToolCallContext } from '../../common/paradisMcpToolProvider.js';
 import { ParadisAgentHookOwnership } from '../../node/paradisAgentHookOwnership.js';
@@ -129,6 +130,8 @@ function createFixture(): {
 		_terminalExitedTokens: new Set<string>(),
 		_paneShells: paneShells,
 		_paneRemoteAuthorities: new Map<string, string>(),
+		_remotePaneWindows: new Map<string, string>(),
+		_remoteFileTransfer: new ParadisRemoteFileTransfer(() => undefined),
 		_paneStatuses: new Map<string, { status: string; changedAt: number }>(),
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set<string>(),
@@ -2258,7 +2261,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(Reflect.get(fixture.authority, 'connectionStates').size, 0);
 	});
 
-	test('local file arguments of the embedded DevTools tools are refused for a remote pane before reaching the bridge, and forwarded for a local pane', async () => {
+	test('local file arguments of the embedded DevTools tools are refused for a remote pane before reaching the bridge (upload_file reads the remote machine through the owning window instead), and forwarded for a local pane', async () => {
 		const fixture = createFixture();
 		const connection = {};
 		fixture.service.registerRendererConnection('window:1', connection);
@@ -2272,6 +2275,13 @@ suite('ParadisAgentBrowser authority integration', () => {
 			forwarded.push({ token: lease.token, name, args });
 			return { content: [{ type: 'text', text: 'ok' }] };
 		});
+		// upload_file from the remote pane asks the owning window to read the file on the remote machine;
+		// the window decides whether the path may be read (here it refuses).
+		const windowCalls: unknown[] = [];
+		Reflect.set(fixture.service, 'ipcServer', {
+			connections: [{ ctx: 'window:1' }],
+			getChannel: () => ({ call: async (method: string, args: unknown) => { windowCalls.push([method, args]); return { ok: false, reason: 'outsideAllowedFolders' }; } }),
+		});
 		const call = async (token: string, name: string, args: unknown) => {
 			const request = new TestRequest('POST', `/?pane=${token}`);
 			const response = new TestResponse();
@@ -2279,7 +2289,9 @@ suite('ParadisAgentBrowser authority integration', () => {
 			request.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })));
 			request.emit('end');
 			await pending;
-			return response.body.includes('remote window (SSH, WSL, container)') ? 'refused' : response.body.includes('"ok"') ? 'passed' : response.body;
+			return response.body.includes('remote window (SSH, WSL, container)') ? 'refused'
+				: response.body.includes('outside the folders Para Code may use') ? 'refusedByWindow'
+					: response.body.includes('"ok"') ? 'passed' : response.body;
 		};
 		const outcomes = {
 			remoteEvaluate: await call('remote', 'evaluate_script', { function: '() => 1', filePath: '/Users/example/.zshrc' }),
@@ -2288,9 +2300,52 @@ suite('ParadisAgentBrowser authority integration', () => {
 			remoteNoPath: await call('remote', 'take_snapshot', {}),
 			localPath: await call('local', 'take_snapshot', { filePath: '/repos/a/snapshot.txt' }),
 		};
-		assert.deepStrictEqual({ outcomes, forwarded: forwarded.map(entry => `${entry.token}:${entry.name}`) }, {
-			outcomes: { remoteEvaluate: 'refused', remoteUpload: 'refused', remoteNavigateFile: 'refused', remoteNoPath: 'passed', localPath: 'passed' },
+		assert.deepStrictEqual({ outcomes, forwarded: forwarded.map(entry => `${entry.token}:${entry.name}`), windowCalls }, {
+			outcomes: { remoteEvaluate: 'refused', remoteUpload: 'refusedByWindow', remoteNavigateFile: 'refused', remoteNoPath: 'passed', localPath: 'passed' },
 			forwarded: ['remote:take_snapshot', 'local:take_snapshot'],
+			windowCalls: [['paradisReadRemoteFile', ['remote', 'ssh-remote+dev', '/Users/example/.ssh/id_rsa', 64 * 1024 * 1024]]],
+		});
+	});
+
+	test('preview_file accepts filePath and reaches the window of a remote pane whose shell PID is not known yet', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [
+			{ token: 'remote', remoteAuthority: 'ssh-remote+dev' },
+		]));
+		const windowCalls: unknown[] = [];
+		let answer: unknown = { ok: true };
+		Reflect.set(fixture.service, 'ipcServer', {
+			connections: [{ ctx: 'window:1' }],
+			getChannel: () => ({ call: async (method: string, args: unknown) => { windowCalls.push([method, args]); return answer; } }),
+		});
+		const call = async (args: unknown) => {
+			const request = new TestRequest('POST', '/?pane=remote');
+			const response = new TestResponse();
+			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+			request.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'preview_file', arguments: args } })));
+			request.emit('end');
+			await pending;
+			return response.body;
+		};
+		const opened = await call({ filePath: '/home/example/report.html' });
+		answer = { ok: false, reason: 'notFound' };
+		const missing = await call({ path: '/home/example/missing.html' });
+		const noPath = await call({});
+		assert.deepStrictEqual({
+			opened: opened.includes('Opened /home/example/report.html'),
+			missing: missing.includes('the file does not exist'),
+			noPath: noPath.includes('preview_file requires `path`'),
+			windowCalls,
+		}, {
+			opened: true,
+			missing: true,
+			noPath: true,
+			windowCalls: [
+				['previewFile', ['remote', '/home/example/report.html', 'ssh-remote+dev']],
+				['previewFile', ['remote', '/home/example/missing.html', 'ssh-remote+dev']],
+			],
 		});
 	});
 

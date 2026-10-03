@@ -9,7 +9,7 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { IFileService } from '../../../../../platform/files/common/files.js';
+import { FileOperationError, FileOperationResult, IFileService } from '../../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IAuxiliaryEditorPart, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService, PreferredGroup } from '../../../../../workbench/services/editor/common/editorService.js';
@@ -151,7 +151,7 @@ suite('ParadisAgentPreviewChannel', () => {
 
 		assert.strictEqual(serialized.includes(privatePath), false);
 		assert.strictEqual(serialized.includes(privateMarker), false);
-		assert.deepStrictEqual(result, { ok: false });
+		assert.deepStrictEqual(result, { ok: false, reason: 'openFailed' });
 	});
 
 	test('does not return stat failures over IPC', async () => {
@@ -161,7 +161,20 @@ suite('ParadisAgentPreviewChannel', () => {
 		const result = await harness.preview('/private/missing.txt');
 
 		assert.strictEqual(JSON.stringify(result).includes(privateMarker), false);
-		assert.deepStrictEqual(result, { ok: false });
+		assert.deepStrictEqual(result, { ok: false, reason: 'unreadable' });
+	});
+
+	test('tells a missing file and a folder apart from other failures', async () => {
+		const missing = createHarness(store, { stat: async () => { throw new FileOperationError('not found', FileOperationResult.FILE_NOT_FOUND); } });
+		const folder = createHarness(store, { stat: async () => ({ isDirectory: true }) });
+
+		assert.deepStrictEqual([
+			await missing.preview('/repos/a/missing.html'),
+			await folder.preview('/repos/a'),
+		], [
+			{ ok: false, reason: 'notFound' },
+			{ ok: false, reason: 'isDirectory' },
+		]);
 	});
 
 	test('reports a failure when no editor was opened', async () => {
@@ -171,7 +184,7 @@ suite('ParadisAgentPreviewChannel', () => {
 			openEditor: async () => undefined,
 		});
 
-		assert.deepStrictEqual(await harness.preview('/repos/a/report.html'), { ok: false });
+		assert.deepStrictEqual(await harness.preview('/repos/a/report.html'), { ok: false, reason: 'openFailed' });
 	});
 
 	test('opens into the main editor part when the calling pane belongs to the space on screen', async () => {

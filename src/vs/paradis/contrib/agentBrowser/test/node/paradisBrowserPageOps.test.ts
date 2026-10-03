@@ -265,4 +265,31 @@ suite('paradisBrowserPageOps (shared process)', () => {
 		assert.strictEqual(isError(result), false);
 		assert.deepStrictEqual(host.mainCalls.map(call => JSON.parse(call.args[1] as string).fileName), [undefined, 'report.pdf']);
 	});
+
+	test('save_page_as_pdf from a remote pane copies the file to the remote machine and says where (or why not)', async () => {
+		const host = new FakeHost();
+		host.mainResults.set('printExactViewToPdf', { ok: true, path: '/downloads/Example Page.pdf', fileName: 'Example Page.pdf', bytes: 10 });
+		const ops = new ParadisBrowserPageOps(host);
+		const delivered: string[] = [];
+		const copied = await ops.call({
+			...createCall(),
+			deliverSavedFile: async localPath => {
+				delivered.push(localPath);
+				return { ok: true, path: '/tmp/para-code-browser-1234/Example Page.pdf' };
+			},
+		}, 'save_page_as_pdf', {});
+		const failed = await ops.call({ ...createCall(), deliverSavedFile: async () => ({ ok: false, message: 'it is too large' }) }, 'save_page_as_pdf', {});
+		const local = await ops.call(createCall(), 'save_page_as_pdf', {});
+		assert.deepStrictEqual({
+			delivered,
+			copied: [isError(copied), textOf(copied).includes('a copy was written to /tmp/para-code-browser-1234/Example Page.pdf on the machine this agent runs on')],
+			failed: [isError(failed), textOf(failed).includes('could not be copied to your machine: it is too large')],
+			local: textOf(local).includes('machine this agent runs on'),
+		}, {
+			delivered: ['/downloads/Example Page.pdf'],
+			copied: [false, true],
+			failed: [false, true],
+			local: false,
+		});
+	});
 });

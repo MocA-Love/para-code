@@ -563,6 +563,20 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 	}
 
 	/**
+	 * 接続先のフォルダを本人だけが使えるようにする（`chmod 700`）。ブラウザのツールとファイルを受け渡す
+	 * `~/.para-code/browser-files` に使う。IFileService には権限を変える口が無いため、hook の実行権限と同じく
+	 * 単発の ssh で行う。SSH 以外の接続先・相対パスでは何もしない。
+	 */
+	async chmodPrivateFolder(remoteAuthority: string, path: string): Promise<boolean> {
+		const host = paradisSshHostFromAuthority(remoteAuthority);
+		if (host === undefined || !path.startsWith('/')) {
+			return false;
+		}
+		const result = await this.runOneShotSsh([host, 'chmod', '700', paradisShellQuote(path)], false, `chmod 700 ${path} on ${host}`);
+		return result.code === 0;
+	}
+
+	/**
 	 * 単発の ssh を起こし、**終了か時間切れのどちらかで必ず**決着させる。
 	 *
 	 * 呼び出し元はこれを await しているので、戻らないと hook 設置のループごと止まる。TCP が
