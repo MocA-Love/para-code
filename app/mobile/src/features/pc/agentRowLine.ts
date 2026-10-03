@@ -55,7 +55,8 @@ export function lastAssistantText(chat: ChatLike | undefined): string | undefine
 	const messages = chat?.messages ?? [];
 	for (let index = messages.length - 1; index >= 0; index--) {
 		const message = messages[index];
-		if (message !== undefined && message.role === 'assistant' && message.kind === 'text') {
+		// Para Code の知らせ（notice）はエージェントの発言ではない
+		if (message !== undefined && message.role === 'assistant' && message.kind === 'text' && message.notice !== true) {
 			const line = firstLine(message.text);
 			if (line !== undefined) {
 				return line;

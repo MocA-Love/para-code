@@ -2,7 +2,7 @@
 
 import { memo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChevronDown, CircleHelp, Globe, SquareChevronRight, Users } from 'lucide-react-native';
+import { ChevronDown, CircleHelp, Globe, Info, SquareChevronRight, Users } from 'lucide-react-native';
 import { buildTimelineSteps, describeStep, formatToolName, type AgentTimelineStep } from '../../agentToolMeta.js';
 import { IOBlock } from '../../components/agentIoBlock.js';
 import { ThinkingBody, ToolImageCards, ToolStepBody } from '../../components/agentToolBodies.js';
@@ -13,6 +13,7 @@ import type { AgentChatMessage } from '../../store.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
 import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
 import { Icon, useThemeColors } from '../../ui/index.js';
+import { AdvisorChatRowView } from './advisorRow.js';
 import type { ChatRow } from './chatRows.js';
 import { SubagentCardRowView, SubagentResumeLink } from './subagentCard.js';
 
@@ -45,6 +46,8 @@ export const ChatRowView = memo(function ChatRowView({ row, terminalKey, allTool
 			return <HistoryQuestionRow text={row.msgs[0]?.text ?? ''} count={row.msgs.length} answered={row.answered} />;
 		case 'agents':
 			return <SubagentCardRowView row={row} terminalKey={terminalKey} />;
+		case 'advisor':
+			return <AdvisorChatRowView row={row} terminalKey={terminalKey} />;
 	}
 });
 
@@ -66,6 +69,9 @@ function MessageRow({ message, terminalKey }: { message: AgentChatMessage; termi
 				<MarkdownText text={message.text} />
 			</View>
 		);
+	}
+	if (message.notice === true) {
+		return <NoticeRow text={message.text} />;
 	}
 	if (message.role === 'user') {
 		return (
@@ -189,6 +195,21 @@ function WebSearchRow({ msgs, terminalKey }: { msgs: AgentChatMessage[]; termina
 					{results.map(message => <IOBlock key={message.rev} label="検索結果" message={message} terminalKey={terminalKey} lines />)}
 				</View>
 			) : null}
+		</View>
+	);
+}
+
+/**
+ * Para Code からの知らせ（送った発言がエージェントへ届かなかった等）。エージェントの発言と取り違えないよう、
+ * 履歴の質問と同じ灰色の小さな 1 行で出す。
+ */
+function NoticeRow({ text }: { text: string }) {
+	const styles = useChatStyles(baseStyles);
+	const iconSize = useChatIconSize(12);
+	return (
+		<View style={styles.sysline} accessible accessibilityRole="text" accessibilityLabel={`Para Code からの知らせ: ${text}`}>
+			<Icon icon={Info} size={iconSize} color={colors.textMuted} />
+			<Text style={styles.syslineText} selectable>{text}</Text>
 		</View>
 	);
 }

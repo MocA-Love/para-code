@@ -90,6 +90,24 @@ suite('paradisAgentTranscriptParser', () => {
 		});
 	});
 
+	test('turns the Advisor server tool into a marked call and result instead of dropping it', () => {
+		const line = (content: unknown) => paradisParseClaudeTranscriptLineForTest(JSON.stringify({ type: 'assistant', timestamp: '2026-10-04T10:42:08.000Z', advisorModel: 'claude-opus-5-5', message: { id: 'msg_1', role: 'assistant', content: [content] } })).messages
+			.map(message => ({ kind: message.kind, tool: message.tool, text: message.text, toolUseId: message.toolUseId, isError: message.isError, advisor: message.advisor }));
+		assert.deepStrictEqual({
+			call: line({ type: 'server_tool_use', id: 'srvtoolu_1', name: 'advisor', input: {} }),
+			redacted: line({ type: 'advisor_tool_result', tool_use_id: 'srvtoolu_1', content: { type: 'advisor_redacted_result', encrypted_content: 'EsQe...' } }),
+			plain: line({ type: 'advisor_tool_result', tool_use_id: 'srvtoolu_2', content: { type: 'advisor_result', text: '順番を入れ替えてください。' } }),
+			error: line({ type: 'advisor_tool_result', tool_use_id: 'srvtoolu_3', content: { type: 'advisor_tool_result_error', error_code: 'too_many_requests' } }),
+			otherServerTool: line({ type: 'server_tool_use', id: 'srvtoolu_4', name: 'web_fetch', input: {} }),
+		}, {
+			call: [{ kind: 'tool_use', tool: 'Advisor', text: 'claude-opus-5-5', toolUseId: 'srvtoolu_1', isError: undefined, advisor: { model: 'claude-opus-5-5' } }],
+			redacted: [{ kind: 'tool_result', tool: undefined, text: '返答は暗号化されているため、表示できません。', toolUseId: 'srvtoolu_1', isError: undefined, advisor: { model: 'claude-opus-5-5', outcome: 'redacted' } }],
+			plain: [{ kind: 'tool_result', tool: undefined, text: '順番を入れ替えてください。', toolUseId: 'srvtoolu_2', isError: undefined, advisor: { model: 'claude-opus-5-5', outcome: 'text' } }],
+			error: [{ kind: 'tool_result', tool: undefined, text: 'too_many_requests', toolUseId: 'srvtoolu_3', isError: true, advisor: { model: 'claude-opus-5-5', outcome: 'error', errorCode: 'too_many_requests' } }],
+			otherServerTool: [],
+		});
+	});
+
 	test('unwraps pasted_content written by Claude Code 2.1.278+', () => {
 		const user = (content: unknown) => paradisParseClaudeTranscriptLineForTest(JSON.stringify({ type: 'user', timestamp: '2026-10-01T10:00:00.000Z', message: { role: 'user', content } })).messages.map(message => message.text);
 		assert.deepStrictEqual({

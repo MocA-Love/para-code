@@ -23,7 +23,9 @@ import { ParadisMobileBrowserMirror } from '../../node/paradisMobileBrowserMirro
 import type { MobileIdentity } from '../../common/paradisMobileCrypto.js';
 import { Channels } from '../../common/paradisMobileProtocol.js';
 import { IParadisMobileInboundFrame, ParadisMobileInboundFrameWire } from '../../common/paradisMobileRelay.js';
-import { paradisIsValidAgentInboundForTest } from '../../node/paradisMobileAgentChat.js';
+import { paradisAdvisorReplyMessage, paradisIsValidAgentInboundForTest } from '../../node/paradisMobileAgentChat.js';
+import { ParadisAgentActivityTracker } from '../../node/paradisAgentActivity.js';
+import { paradisParseClaudeTranscriptLineForTest } from '../../../agentChat/common/paradisAgentTranscriptParser.js';
 import { ParadisMobileOperationLedger } from '../../node/paradisMobileOperationLedger.js';
 import { MobileSession, ParadisMobileRelayService } from '../../node/paradisMobileRelayService.js';
 import { ParadisMobileTerminalRegistry } from '../../node/paradisMobileTerminalRegistry.js';
@@ -177,6 +179,34 @@ suite('ParadisMobileWireGolden', () => {
 	test('agent: アプリが送る要求はすべて PC の検査を通る', function () {
 		const golden = readGolden<{ toPc: Array<{ t: string }> }>(this, 'agent.json');
 		assert.deepStrictEqual(golden.toPc.map(message => [message.t, paradisIsValidAgentInboundForTest(message)]), golden.toPc.map(message => [message.t, true]));
+	});
+
+	test('agent: PC が組み立てる Advisor の行・一覧の相談・平文の返答はゴールデンと同じ形', function () {
+		type Message = Record<string, unknown>;
+		const golden = readGolden<{ toMobile: Message[] }>(this, 'agent.json');
+		const delta = golden.toMobile.find(message => message.t === 'delta') as { messages: Message[]; activity: { advisors: Message[] } };
+		const detail = golden.toMobile.find(message => message.t === 'activity-detail') as { messages: Message[] };
+		const line = (ts: number, block: unknown) => JSON.stringify({ type: 'assistant', timestamp: new Date(ts).toISOString(), advisorModel: 'claude-opus-5-5', message: { content: [block] } });
+		const parsed = [
+			...paradisParseClaudeTranscriptLineForTest(line(1760000002100, { type: 'server_tool_use', id: 'srvtoolu_golden1', name: 'advisor', input: {} })).messages,
+			...paradisParseClaudeTranscriptLineForTest(line(1760000002900, { type: 'advisor_tool_result', tool_use_id: 'srvtoolu_golden1', content: { type: 'advisor_redacted_result', encrypted_content: 'x' } })).messages,
+		];
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyAdvisors([
+			{ id: 'srvtoolu_golden0', model: 'claude-opus-5-5', status: 'failed', outcome: 'error', errorCode: 'too_many_requests', ownerId: 'agent-sub-1', startedAt: 1760000001000, updatedAt: 1760000001300 },
+			{ id: 'srvtoolu_golden1', model: 'claude-opus-5-5', status: 'completed', outcome: 'redacted', startedAt: 1760000002100, updatedAt: 1760000002900 },
+			{ id: 'srvtoolu_golden2', model: 'claude-opus-4-7', status: 'completed', outcome: 'text', text: '順番を入れ替えてください。', textTruncated: true, startedAt: 1760000002950, updatedAt: 1760000002990 },
+		], 1760000002990);
+		const reply = tracker.advisorReply('srvtoolu_golden2');
+		assert.deepStrictEqual({
+			messages: parsed,
+			advisors: tracker.snapshot()?.advisors,
+			reply: reply !== undefined ? paradisAdvisorReplyMessage(reply) : undefined,
+		}, {
+			messages: delta.messages.filter(message => message.advisor !== undefined).map(({ rev: _rev, ...message }) => message),
+			advisors: delta.activity.advisors,
+			reply: detail.messages[0],
+		});
 	});
 
 	test('browser: アプリが送る形を PC が受け、PC が組み立てる形はゴールデンと同じ形', async function () {

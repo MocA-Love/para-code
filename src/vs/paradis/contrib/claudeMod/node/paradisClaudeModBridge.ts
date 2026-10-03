@@ -107,7 +107,7 @@ export type ParadisClaudeModEvent = { readonly token: string; readonly sessionId
 	 * `verified` は、この行を送ってきた送り主がそのペインのプロセスだと（その便か直前 60 秒の確かめで）分かっているか。
 	 * 分かっていない行は表示にだけ使う（ParadisMobileAgentChat は応答の文章と思考だけを受け、ほかを含む行は捨てる）。
 	 */
-	| { readonly type: 'row'; readonly uuid: string; readonly door: 'prompt' | 'response'; readonly origin?: string; readonly verified: boolean; readonly message: { readonly type: string; readonly role?: string; readonly isMeta?: boolean; readonly name?: string; readonly content: unknown } }
+	| { readonly type: 'row'; readonly uuid: string; readonly door: 'prompt' | 'response'; readonly origin?: string; readonly verified: boolean; readonly advisorModel?: string; readonly message: { readonly type: string; readonly role?: string; readonly isMeta?: boolean; readonly name?: string; readonly content: unknown } }
 	| { readonly type: 'tool-results'; readonly agentId?: string; readonly ids: readonly string[]; readonly errorIds: readonly string[] }
 	| { readonly type: 'turn.start'; readonly turnId: string }
 	| { readonly type: 'turn.complete'; readonly turnId: string; readonly agentId?: string; readonly reason?: string; readonly aborted: boolean }
@@ -350,6 +350,8 @@ export class ParadisClaudeModBridge {
 						this.fire({
 							...base, type: 'row', uuid, door, verified: state !== undefined,
 							...(text(event.origin, 50) !== undefined ? { origin: text(event.origin, 50) } : {}),
+							// transcript の行と同じく、Advisor のモデル名が行に付いていれば写す（会話の Advisor の行に出す）
+							...(text(event.advisorModel, 100) !== undefined ? { advisorModel: text(event.advisorModel, 100) } : {}),
 							message: {
 								type,
 								...(text(message.role, 20) !== undefined ? { role: text(message.role, 20) } : {}),

@@ -122,6 +122,30 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		assert.deepStrictEqual(harness.tailer()?.messages.filter(message => message.kind === 'text').map(message => message.text), ['mod から先に届いた本文', 'ファイルだけの本文', '最後']);
 	}));
 
+	test('shows "consulting the Advisor" while waiting and lists the consultation when the result lands', () => withHarness(async harness => {
+		const access = harness.chat as unknown as {
+			liveStates: Map<string, { phase: string; tool?: string; detail?: string }>;
+			activityTrackers: Map<string, { snapshot(): { advisors?: readonly { id: string; status: string; outcome?: string }[] } | undefined }>;
+		};
+		const advisorLine = (uuid: string, block: unknown) => `${JSON.stringify({ type: 'assistant', uuid, timestamp: new Date().toISOString(), advisorModel: 'claude-opus-5-5', message: { id: 'msg_adv', role: 'assistant', content: [block] } })}\n`;
+		await appendFile(harness.transcriptPath, advisorLine('u-adv-1', { type: 'server_tool_use', id: 'srvtoolu_live', name: 'advisor', input: {} }));
+		await waitFor(() => access.liveStates.get(harness.token)?.tool === 'Advisor', 'the live state did not show the Advisor');
+		const waiting = access.liveStates.get(harness.token);
+		await appendFile(harness.transcriptPath, advisorLine('u-adv-2', { type: 'advisor_tool_result', tool_use_id: 'srvtoolu_live', content: { type: 'advisor_redacted_result', encrypted_content: 'x' } }));
+		await waitFor(() => access.activityTrackers.get(harness.token)?.snapshot()?.advisors?.[0]?.status === 'completed', 'the consultation was not listed as completed');
+		assert.deepStrictEqual({
+			waiting: { phase: waiting?.phase, tool: waiting?.tool, detail: waiting?.detail },
+			after: access.liveStates.get(harness.token)?.phase,
+			advisors: access.activityTrackers.get(harness.token)?.snapshot()?.advisors?.map(advisor => [advisor.id, advisor.status, advisor.outcome]),
+			rows: harness.tailer()?.messages.filter(message => message.toolUseId === 'srvtoolu_live').map(message => message.kind),
+		}, {
+			waiting: { phase: 'tool', tool: 'Advisor', detail: 'claude-opus-5-5' },
+			after: 'thinking',
+			advisors: [['srvtoolu_live', 'completed', 'redacted']],
+			rows: ['tool_use', 'tool_result'],
+		});
+	}));
+
 	test('streams the text the mod sends as the live message and clears it when the row lands', () => withHarness(async harness => {
 		await harness.mod('event', { events: [{ type: 'turn.start', turnId: 't-1' }, { type: 'step', turnId: 't-1', step: 0, chunks: [{ index: 0, text: 'こんに' }], end: false }] });
 		await harness.mod('event', { events: [{ type: 'step', turnId: 't-1', step: 0, chunks: [{ index: 0, text: 'ちは' }], end: true }] });
@@ -381,7 +405,8 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		const head = text.slice(0, 60);
 		assert.deepStrictEqual({
 			notice: notice()?.text,
-			delivered: harness.sent.some(message => message.t === 'delta' && (message.messages as { text: string }[]).some(item => item.text === notice()?.text)),
+			// エージェントの発言と分けて出すための印が付いて届く
+			delivered: harness.sent.some(message => message.t === 'delta' && (message.messages as { text: string; notice?: boolean }[]).some(item => item.text === notice()?.text && item.notice === true)),
 			keys: harness.actions.filter(action => action.t === 'action/sendMessage').length,
 		}, { notice: `送れませんでした: ${head}…`, delivered: true, keys: 0 });
 	}));
