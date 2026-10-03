@@ -105,6 +105,13 @@ export const ParadisMobileCapability = {
 	 * `fetchedAt`・`stale`、時間内に返せないときの `{ error, code: 'no-response' }`（50 秒）。
 	 */
 	UsageMachineId: 'usage.machine-id.v1',
+	/**
+	 * 通知の中身（`paradisNotifyCompose.ts`。PC だけが広告する）。本文に最後の発言・承認の中身・質問文を入れ、
+	 * `category`・`agent`・`tab`・`detail`・`interactionId` を載せ、失敗を `agent-error` で送り、notify の `prefs` の
+	 * `includeContent` を読む。アプリ側の対応は、プッシュの時点ではセッションが無く capability を引けないため、
+	 * `prefs` に `includeContent` が入っているか（＝それを知っているアプリか）で見分ける。
+	 */
+	NotifyContent: 'notify.content.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -141,6 +148,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.ScmFileAt,
 	ParadisMobileCapability.ScmWordDiff,
 	ParadisMobileCapability.UsageMachineId,
+	ParadisMobileCapability.NotifyContent,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

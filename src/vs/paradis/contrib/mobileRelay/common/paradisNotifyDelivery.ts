@@ -44,6 +44,29 @@ export interface IParadisNotifyPrefs {
 	 * 解釈するため、true を残すと巻き戻し時にその挙動が復活する）。
 	 */
 	readonly suppressWhenPcFocused?: boolean;
+	/**
+	 * 通知に内容（最後の発言・承認の中身・質問文）を含めるか（`notify.content.v1`）。オフなら本文は従来の定型文。
+	 * 未設定（この設定を知らない旧アプリ・未同期）なら含めない（従来どおりの定型文。Q175 A）。既定のオンは
+	 * 新しいアプリの設定の既定値で、アプリが `true` を同期してくる。
+	 */
+	readonly includeContent?: boolean;
+}
+
+/**
+ * 「通知に内容を含める」の実効値。アプリが明示的に `true` を同期してきたときだけ含める。
+ * 項目を持たない旧アプリ（{@link paradisNotifyPrefersDetail} と同じ見分け方）には従来どおり定型文を送る。
+ */
+export function paradisNotifyIncludeContent(prefs: IParadisNotifyPrefs | undefined): boolean {
+	return paradisNotifyPrefersDetail(prefs) && prefs?.includeContent === true;
+}
+
+/**
+ * プッシュで長押しの画面の Markdown（`detail`）を本文より優先して残すか。
+ * 「通知に内容を含める」を同期してくるアプリ（＝ Content Extension を持つ版）だけ。プッシュの時点では
+ * アプリのセッションが無く capability を引けないので、保存してある設定に項目があるかで見分ける。
+ */
+export function paradisNotifyPrefersDetail(prefs: IParadisNotifyPrefs | undefined): boolean {
+	return prefs?.includeContent !== undefined;
 }
 
 /** 「PC操作中は鳴らさない」の実効値。未設定なら既定オン。 */

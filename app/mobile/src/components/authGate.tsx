@@ -22,7 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { colors, type } from '../theme.js';
 import { AppLockContext } from '../appLock.js';
-import { setAppLockedNow } from '../appLockState.js';
+import { onAppReauthenticationRequest, setAppLockedNow } from '../appLockState.js';
 import { foregroundAction, isAppLocked, lockedContentProps, type AuthGateState } from '../appLockPolicy.js';
 import { Button } from './button.js';
 
@@ -72,6 +72,13 @@ export function AuthGate({ children, onUnlock }: { children: React.ReactNode; on
 			}
 		}
 	}, [onUnlock]);
+
+	// 通知のボタン（許可・拒否・返信）は送る前に Face ID を通す（notificationActionRunner.ts）。再認証の猶予の間でも認証し直す。
+	useEffect(() => onAppReauthenticationRequest(() => {
+		if (stateRef.current === 'unlocked') {
+			void authenticate();
+		}
+	}), [authenticate]);
 
 	useEffect(() => {
 		void authenticate();

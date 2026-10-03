@@ -38,6 +38,17 @@ describe('notify codec', () => {
 		]).toEqual([[tag], undefined]);
 	});
 
+	test('reads the notify.content.v1 fields, dropping unknown or oversized values', () => {
+		const raw = { kind: 'agent-done', id: 'n4', title: 't', body: '完了: 終わりました', at: 1, category: 'done', agent: 'codex', tab: 'monitor', detail: '## 結果\n- ok', interactionId: 'toolu_1' };
+		expect([
+			decodeNotify(new TextEncoder().encode(JSON.stringify(raw))),
+			decodeNotify(new TextEncoder().encode(JSON.stringify({ ...raw, category: 'bogus', agent: 'gpt', tab: 'x'.repeat(101), detail: 'd'.repeat(8001), interactionId: '' }))),
+		]).toEqual([
+			raw,
+			{ kind: 'agent-done', id: 'n4', title: 't', body: '完了: 終わりました', at: 1 },
+		]);
+	});
+
 	test('rejects malformed / unknown kind', () => {
 		expect(() => decodeNotify(new TextEncoder().encode('{"kind":"bogus","id":"x","title":"a","body":"b","at":1}'))).toThrow();
 		expect(() => decodeNotify(new TextEncoder().encode('not json'))).toThrow();

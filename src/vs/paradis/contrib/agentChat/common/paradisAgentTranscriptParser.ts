@@ -344,6 +344,8 @@ export interface IParseSignals {
 	 * ライブ追記時のみライブ状態（考え中表示）の解除に使う。
 	 */
 	turnEnded: 'completed' | 'failed' | 'interrupted' | undefined;
+	/** 失敗で終わったターンの理由のコード（Codex の `codex_error_info`。例 `usage_limit_exceeded`）。モバイルのエラーの通知に出す。 */
+	turnErrorCode?: string;
 	readonly codexActivityTimeline: ICodexTranscriptActivityEvent[];
 	/**
 	 * この読み取りの塊で見た Codex の spawn_agent の call_id → 平文の指示。直後の SubAgentActivity（started）の
@@ -1244,6 +1246,16 @@ export function paradisParseCodexDetailLinesForTest(lines: readonly string[]): I
 	return out.slice(-200);
 }
 
+/**
+ * Codex の `codex_error_info` から理由のコードを取り出す。文字列（`"usage_limit_exceeded"`）のほか、
+ * `{ "http_connection_failed": { … } }` のように種類を鍵にしたオブジェクトで来ることがある。
+ */
+function paradisCodexErrorCode(info: unknown): string | undefined {
+	const record = rec(info);
+	const code = typeof info === 'string' ? info : record !== undefined ? Object.keys(record)[0] : undefined;
+	return code !== undefined && /^[A-Za-z0-9_.:-]{1,64}$/.test(code) ? code : undefined;
+}
+
 /** Codex rollout JSONL の1行をパースする。表示対象外の行は空配列。 */
 export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): IRawMessage[] {
 	// rollout行: { timestamp, type, payload }
@@ -1294,6 +1306,7 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 		const turnError = eventType === 'task_complete' ? rec(eventPayload?.error) : undefined;
 		if (eventType === 'task_complete' || eventType === 'error' || eventType === 'turn_aborted') {
 			signals.turnEnded = eventType === 'task_complete' && turnError === undefined ? 'completed' : eventType === 'turn_aborted' ? 'interrupted' : 'failed';
+			signals.turnErrorCode = signals.turnEnded === 'failed' ? paradisCodexErrorCode(turnError?.codex_error_info ?? eventPayload?.codex_error_info) : undefined;
 			if (Number.isFinite(lineAt)) { signals.codexActivityTimeline.push({ type: 'turnEnd', reason: signals.turnEnded, at: lineAt }); }
 		}
 		if (turnError !== undefined || eventType === 'error') {

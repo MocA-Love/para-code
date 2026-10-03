@@ -348,6 +348,19 @@ export interface NotifyPayload {
 	 * どれを載せるかは `paradisNotifyDismissLedger.ts`。
 	 */
 	readonly dismiss?: readonly string[];
+	/**
+	 * 通知の種類（`notify.content.v1`。iOS のカテゴリ `para.<種類>`）。これが付いた通知は、受け取る側が
+	 * `agent` と `tab` から副題を組み立て直す（`paradisNotifyCompose.ts`）。旧アプリは読まずに `subtitle` を使う。
+	 */
+	readonly category?: 'done' | 'approval' | 'question' | 'error';
+	/** 送り主のエージェント（副題と、iOS の Communication Notification の送り主のアイコン）。 */
+	readonly agent?: 'claude' | 'codex';
+	/** タブ名（エージェントの印を外したもの。副題に使う）。 */
+	readonly tab?: string;
+	/** 長押しの画面に出す Markdown の原文（「通知に内容を含める」がオンのときだけ）。 */
+	readonly detail?: string;
+	/** 承認・質問の ID（通知のボタンで答えるとき、同じ確認かを確かめるため）。 */
+	readonly interactionId?: string;
 }
 
 export function encodeNotify(payload: NotifyPayload): Uint8Array {

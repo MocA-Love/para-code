@@ -12,6 +12,9 @@ import { AuthGate } from '../src/components/authGate.js';
 import { OverlayHost } from '../src/components/overlayHost.js';
 import { UpdateSheetHost } from '../src/components/updateSheet.js';
 import { AgentSendQueueRunner } from '../src/agentSendQueue.js';
+import { NotificationActionRunner, queueNotificationAction } from '../src/notificationActionRunner.js';
+import { readNotificationAction } from '../src/notificationActions.js';
+import { trayDateMs } from '../src/notificationTray.js';
 import { ToastHost } from '../src/ui/toast.js';
 import { DevProbe } from '../src/devProbe.js';
 import { DevWidthFrame } from '../src/dev/devWidthFrame.js';
@@ -23,7 +26,7 @@ import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 import { reportMobileDiagnosticError } from '../src/mobileDiagnostics.js';
 import { useParaToast } from '../src/paraToast.js';
-import { notificationDestination, notificationNavigationDecision, pendingNotificationWait, readNotificationDeepLink, type NotificationDeepLinkData } from '../src/notificationNavigation.js';
+import { notificationDestination, notificationNavigationDecision, pendingNotificationWait, readNotificationDeepLink, readNotificationInteractionId, type NotificationDeepLinkData } from '../src/notificationNavigation.js';
 import { loadSessionViewSettings } from '../src/features/session/useSessionView.js';
 import { useQuickReplies } from '../src/features/settings/quickRepliesStore.js';
 import { loadThemeColors } from '../src/features/settings/themeColorSettings.js';
@@ -205,20 +208,35 @@ function RootLayout() {
 	}, [tryNavigate]);
 
 	useEffect(() => {
-		const sub = Notifications.addNotificationResponseReceivedListener(response => {
+		const handleResponse = (response: Notifications.NotificationResponse) => {
 			// プッシュは中身が trigger.payload、ローカル通知は content.data にある（readNotificationDeepLink）。
-			pendingRef.current = readNotificationDeepLink(response.notification.request);
+			const link = readNotificationDeepLink(response.notification.request);
+			pendingRef.current = link;
 			switchedForPendingRef.current = undefined;
 			pendingWaitSinceRef.current = undefined;
+			// 通知のボタン（許可・拒否・返信）は、遷移と同じ通知の先へ、アプリのロックが解けてから送る
+			// （notificationActionRunner.ts）。ロックされたまま裏で送ることはしない。
+			const action = readNotificationAction(response.actionIdentifier, response.userText);
+			const pcId = link?.pcId ?? useAppStore.getState().activePcId;
+			if (action !== undefined && link?.terminalKey !== undefined && pcId !== undefined) {
+				const interactionId = readNotificationInteractionId(response.notification.request);
+				queueNotificationAction(`${response.notification.request.identifier}\n${response.actionIdentifier}`, {
+					pcId, terminalKey: link.terminalKey, request: action,
+					at: Number.isFinite(response.notification.date) ? trayDateMs(response.notification.date) : Date.now(),
+					queuedAt: Date.now(),
+					...(interactionId !== undefined ? { interactionId } : {}),
+				});
+			}
+			// 受け取った応答は消す（次の起動で getLastNotificationResponseAsync から同じボタンの操作をもう一度送らないように）。
+			void Notifications.clearLastNotificationResponseAsync().catch(() => undefined);
 			tryNavigate();
-		});
-		// コールドスタート（通知タップでアプリが起動された）対応
+		};
+		const sub = Notifications.addNotificationResponseReceivedListener(handleResponse);
+		// コールドスタート（通知タップでアプリが起動された）対応。取り出したら消す（次の起動で同じボタンの操作を
+		// もう一度送らないように）。
 		void Notifications.getLastNotificationResponseAsync().then(response => {
 			if (response) {
-				pendingRef.current = readNotificationDeepLink(response.notification.request);
-				switchedForPendingRef.current = undefined;
-				pendingWaitSinceRef.current = undefined;
-				tryNavigate();
+				handleResponse(response);
 			}
 		});
 		return () => sub.remove();
@@ -248,6 +266,8 @@ function RootLayout() {
 					{/* PC に届かない間に預かったエージェントへの送信を、つながったら送る（W2-29）。何も描かない。
 					    ロック中は送らない（useAppLocked を読む） */}
 					<AgentSendQueueRunner />
+					{/* 通知のボタン（許可・拒否・返信）を、ロックが解けてから送る。何も描かない（useAppLocked を読む） */}
+					<NotificationActionRunner />
 					{/* 一時的なお知らせ（PC切替・起動完了）を出す唯一の場所。ロック中は出さない（useAppLocked を読む） */}
 					<ToastHost />
 					{/* iPad の外付けキーボードのショートカット。ロック中は効かない（useAppLocked を読む） */}

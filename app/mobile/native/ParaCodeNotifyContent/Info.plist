@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>NotifyExtension</string>
+	<string>ParaCodeNotifyContent</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -17,24 +17,32 @@
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionAttributes</key>
 		<dict>
-			<key>IntentsSupported</key>
+			<key>UNNotificationExtensionCategory</key>
 			<array>
-				<string>INSendMessageIntent</string>
+				<string>para.done</string>
+				<string>para.approval</string>
+				<string>para.approval.open</string>
+				<string>para.question</string>
+				<string>para.error</string>
 			</array>
+			<key>UNNotificationExtensionDefaultContentHidden</key>
+			<true/>
+			<key>UNNotificationExtensionInitialContentSizeRatio</key>
+			<real>0.6</real>
+			<key>UNNotificationExtensionUserInteractionEnabled</key>
+			<true/>
 		</dict>
 		<key>NSExtensionPointIdentifier</key>
-		<string>com.apple.usernotifications.service</string>
+		<string>com.apple.usernotifications.content-extension</string>
 		<key>NSExtensionPrincipalClass</key>
-		<string>$(PRODUCT_MODULE_NAME).NotificationService</string>
+		<string>$(PRODUCT_MODULE_NAME).NotificationViewController</string>
 	</dict>
-	<key>RCTNewArchEnabled</key>
-	<true/>
 </dict>
 </plist>

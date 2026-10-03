@@ -73,6 +73,7 @@ vi.mock('./platform.js', () => ({
 	migrateLegacyTerminalOperationOutbox: async () => { },
 	persistNotifyKey: async () => { },
 	presentLocalNotification: async () => { },
+	registerNotificationCategories: async () => { },
 	rnSocketFactory: () => { throw new Error('socket factory is replaced at the controller I/O boundary'); },
 	secureKeyStore: {
 		getItem: async (key: string) => componentHarness.storage.get(key) ?? null,
