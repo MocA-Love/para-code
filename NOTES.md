@@ -284,6 +284,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/protocol/test/golden/browser.json` | 新規追加（fork所有。先頭の `$comment` に用途）。`state.json` の `capabilities` に `browser.space.v1` / `browser.page.v1` / `browser.focus.v1` / `browser.bookmarks.v1` を追加 | モバイルのブラウザのタブ（案A）の固定形 |
 | `app/protocol/test/golden/state.json` | `capabilities` に `usage.machine-id.v1`、`current` に `machineIdHash` と `renderers[].host.machineIdHash` を追加（2026-10-03） | 使用量を全 PC で合計するための機械の印（NOTES「使用量を全 PC で合計するための PC 側」） |
 | `app/mobile/app.json` | `expo.version` を `0.12.0` に | モバイルのブラウザのタブ（案A）の配信 |
+| `resources/paradis/claude-mod/.claude-plugin/plugin.json` / `resources/paradis/claude-mod/hooks/hooks.json` | 新規追加（fork所有。Claude Code の mod のマニフェストと hooks module の指定。JSON なのでマーカーを書けない。同じフォルダの `hooks/register.ts`・`tests/para-code.test.ts` には PARA-CODE ヘッダーあり）（2026-10-03） | Para Code のターミナルの Claude Code に読ませる mod（NOTES「Claude Code の mod（Claude Mods）で会話・質問・承認・送信をつなぐ」）。`build/gulpfile.vscode.ts` の PARA-PATCH で macOS/Linux のパッケージへ同梱する |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 
@@ -394,6 +395,48 @@ tmux サーバーの環境変数は、サーバーを起こしたペインのも
 | codex-cli 0.155.1 | worktree で確認なし。config.toml は変わらない | 確認が出て「Trusting will apply to the repository root: <元のリポジトリ>」と表示される | 確認が出る |
 
 どちらも「worktree → 元のリポジトリの根」で信頼を引くため、新しい worktree に信頼を書き込む必要は無い。CLI の版上げで挙動が変わったら、この表の手順で測り直すこと（Claude は `hasCompletedOnboarding` と `customApiKeyResponses.approved` を仕込んだ一時 `.claude.json` + ダミーの API キー、Codex は一時 `auth.json` にダミーの `OPENAI_API_KEY` と `check_for_update_on_startup = false` で、ログインや更新の画面を飛ばせる。Para Code のターミナルから測るときは `env -i` で `PARA_CODE_*` / `CLAUDE_CODE_*` を落とす）。
+
+## Claude Code の mod（Claude Mods）で会話・質問・承認・送信をつなぐ（claudeMod、2026-10-03）
+
+手元の macOS / Linux のペインで動く Claude Code（2.1.287 以降）に、Para Code の mod を読ませる。mod は今の hook・transcript・キー注入と並んで動き、来ないペインでは今の経路だけで動く。調査と実測は `claude-mods-mobile-research.html` / `claude-mods-local-verification.html`（作業ツリー直下、未追跡）。
+
+| 場所 | 役割 |
+|---|---|
+| `resources/paradis/claude-mod/` | mod 本体（`hooks/register.ts`）とテスト。Claude Code の中で動く |
+| `src/vs/paradis/contrib/claudeMod/browser/paradisClaudeModEnvironment.ts` | mod を `~/.para-code/claude-mod/<内容の指紋16桁>/` へ写し、managed 設定を確かめる（renderer） |
+| `src/vs/paradis/contrib/agentBrowser/browser/paradisPaneTokenService.ts` | ペインの env に `CLAUDE_CODE_PLUGIN_DIRS` を足す（hook のペイントークンと同じ場所・同じ条件） |
+| `src/vs/paradis/contrib/claudeMod/node/paradisClaudeModBridge.ts` | shared process の受け口 `/claude-mod/v1/<op>`（hook と同じポート、ペイントークンで認証は `ParadisAgentBrowserService`）と、質問・承認・送信の長いポーリング |
+| `src/vs/paradis/contrib/mobileRelay/node/paradisMobileAgentChat.ts` | 受けた出来事をモバイルのチャットへ反映し、モバイルの回答・送信を mod へ回す |
+
+経路ごとの併走は次のとおり。どれも「mod の会話（`$.session.id()`）がペインの今の会話と同じ」ときだけ使う（同じペインで別に起動した `claude -p` は無視する）。
+
+| 経路 | mod が来ているとき | 来ていないとき（今の経路） |
+|---|---|---|
+| 会話の行 | `session.append` の本会話の prompt / response を 300 ms 保留してから足す（その間にファイルへ同じ uuid が現れたら捨てる。足す前にファイルの追記を読み切るので、ツールの結果や作業中に送った発言より前へ割り込まない）。ファイルの方が後なら位置だけ覚える。ツールの結果・添付・画像入りの行はファイルから読む | transcript の tail |
+| 生成中の文章 | `turn.step` の text を 150 ms ごとに受け、live（source は `hook`）に出す。流れている間は MessageDisplay hook を使わない | MessageDisplay hook |
+| ターン | `turn.start` / `turn.complete` は生成中の文章の区切りと mod 側の待ちの片付けにだけ使う。承認のカード・質問・ペインの状態・通知は今までどおり hook の Stop が片付ける | hook |
+| サブエージェント | 開始＝Agent の tool.call の結果の `agentId`、再開＝`classic.SubagentStart`、終了＝agentId 付きの `turn.complete`（`isAborted` で停止）。一覧にある子だけを終える | SubagentStart/Stop hook |
+| 質問 | mod が tool.call で登録し、TUI のダイアログと競う。モバイルの回答は値で返し、PC が先なら mod が `settle` で待ちを打ち切る | キー注入 |
+| 承認 | mod は `classic.PermissionRequest` で先に設定の hook（Para Code の通知を含む）を走らせ、それから登録して待つ。`tool.check` の観測で tool_use_id を結ぶ。モバイルが接続中で、設定 `paradis.agentHooks.claudeMod.approvalWaitMinutes`（既定 10 分）が 0 でないときだけ待つ。PC が先なら tool.call か結果の行で決着する。カードとは tool_use_id か本文の完全一致でだけ結び、決まらなければ mod の内容で別にカードを出す。「以後は確認しない」は permission_suggestions がある承認だけ、足されるルールを文言に入れた選択肢 `always` で出す。設定ファイル（`localSettings` など）やモードを変えるものを含むときは「今回だけ許可」と「許可して設定に残す」に分ける | キー注入（`always` は出さない） |
+| 送信 | エージェントが待機中・スラッシュコマンドでないときだけ `$.prompt.submit`（mod がコマンドの長いポーリングで受け取る）。mod は `$.prompt.submit` の前に「受け取った」を返し、それ以後はキーへ戻さない（判定の直後に TUI でターンが始まると submit はそのターンの終わりまで返らないので、二重送信を防ぐ）。返事を書けなかった（ポーリングの相手が切れていた）・mod が受け取る前に断ったときはキーへ戻す。ack が 15 秒来なければ、mod の会話の行（`origin: plugin`）か transcript に発言が入っているかで確かめ、入っていなければキーへ戻す | キー注入・待ち行列 |
+
+受け口（`ParadisAgentBrowserService._handleClaudeMod`）は、状態を動かす要求（`turn.complete`・`tool-results`・`commands`・`ack`・`permission`・`question`・`wait`・`settle` など）を、hook の許可待ちと同じ `_classifyCaller` で送り主がそのペインのプロセス（シェルの子孫）だと確かめられたときだけ受ける。確かめた結果は会話ごとに 60 秒覚え、観測だけの便（会話の行と生成中の文章）はその間だけ確かめたものとして扱う（確かめ直さない。プロセス表を引くので重い。コマンドの長いポーリングが 25 秒ごとに確かめるので、ふつうは切れない）。確かめていない送り主の行は、応答の文章と思考だけからなるものを表示にだけ使い、ツールの呼び出し・結果や発言を含む行は捨てる（質問カード・Agent・Monitor・回答待ちの解除を作れてしまうため。その行はファイルから読む）。受付は MCP・hook と別枠（`_reserveIngressRequest` の `mod`）で数える。
+
+落とし穴:
+
+- **`disableSideloadFlags` の下で `CLAUDE_CODE_PLUGIN_DIRS` を渡すと、Claude Code は起動そのものを止める**（2.1.288 の preAction で確認。`--plugin-dir` と同じ扱い）。managed 設定（`/Library/Application Support/ClaudeCode/managed-settings.json` と `.d/`、`/Library/Managed Preferences/com.anthropic.claudecode.plist`、`~/.claude/remote-settings.json`。Linux は `/etc/claude-code/`）に名前が現れたら渡さない。サーバーから初めて届く組織の方針は手元に控えが無いので防げない
+- Claude Code は読み込んだ mod のフォルダへ型定義と `tsconfig.json` を書き足す。アプリの中（署名済みのバンドル）を直接指さないのはこのため。`claude plugin validate` / `claude plugin test` もフォルダへ書くので、リポジトリではなく写しで回す（`cp -R resources/paradis/claude-mod /tmp/x && claude plugin test /tmp/x`）
+- mod の中では `$` を変数へ入れられない（`claude plugin validate` が拒む）。関数の引数として渡すのはよい。自前の Promise を待つ時間は 10 秒の予算に数えられるので、待ちはすべて `$.http.fetch`（Para Code が 25 秒で返す）か `next` にする
+- ユーザーがシェルの rc や `~/.claude/settings.json` の `env` で `CLAUDE_CODE_PLUGIN_DIRS` を上書きしていると mod は読まれない（今の経路だけで動く）
+- 設定 `terminal.integrated.env.osx` / `.linux` に `CLAUDE_CODE_PLUGIN_DIRS` を書いている場合、その値はペインの env の組み立て（`createTerminalEnvironment`）で Para Code の値に上書きされて消える（つなぐのは親の環境 `${env:...}` と、呼び出し側が env に入れた値だけ）。そのユーザーの mod を残したいときは、シェルの環境変数に移してもらう
+- インストールした mod は 1 つの worker を共有し、原因の分からないクラッシュが 3 回続くと組み込み以外の mod が全部外れる（公式）。Para Code の mod が他の mod の巻き添えで外れることも、その逆もある。外れたペインは生存の知らせが途絶えて今の経路だけで動く
+- イベント名・`$` の API・`tool.call` の AskUserQuestion の結果の形・`classic.PermissionRequest` の decision の形はリリース間で変わりうる。Claude Code を更新したら `claude plugin validate` / `claude plugin test`（写しで）と、`claude-mods-local-verification.html` の手順での実地確認（モバイルが先・PC が先の質問と承認、送信、サブエージェント）をやり直す
+- 写し先 `~/.para-code/claude-mod/<指紋>/` は 30 日以上使われていない別の指紋のフォルダを起動時に消す。使った時刻は mod のフォルダの外（`~/.para-code/claude-mod/.last-used/<指紋>`）に書く（フォルダの中へ書くと、動いている Claude Code が保存を検知して mod を読み直すため）。写すファイルは許可リスト（`.claude-plugin/plugin.json` と `hooks/` の下）で、`paradisClaudeModShipsFile()` と `build/gulpfile.vscode.ts` の glob をそろえておく
+
+SSH の接続先と Windows は今回入れていない。
+
+- SSH: mod は claude が動く機械で読まれるので、接続先へ写す必要がある。入れるなら `src/vs/paradis/contrib/agentBrowser/electron-browser/paradisRemoteAgentHooks.contribution.ts`（接続先に notify スクリプトとランチャーを置いているところ）で `~/.para-code/claude-mod/<指紋>/` を置き、`paradisPaneTokenService.ts` の `_getRemoteParaCodeDirectory()` で env を組む。戻り道は既存の `ssh -R`（`paradisRemoteAgentTunnel.ts`）と、接続先の PC ごとのポートファイル（`paradisRemoteHookSource.ts`）をそのまま使える。transcript の写し（2 秒）を待たずに済むので効果は大きいが、接続先の版の Claude Code と managed 設定を手元から確かめる方法を先に決める
+- Windows: 区切りが `;`、`curl` の有無、`$.http.fetch` の `socketPath` が使えるかを実機で確かめていない。入れるなら同じ `paradisPaneTokenService.ts` の分岐（いまは `!isWindows`）と区切り文字を変える。WSL の中で動く claude には env が届かない（今の hook と同じ）
 
 ## Codex の複数アカウント（切替とリセットクレジット、2026-09-27）
 

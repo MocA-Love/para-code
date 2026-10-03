@@ -54,9 +54,11 @@ import { paradisAgentSessionKey } from '../common/paradisMobileAgentResume.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/paradisSessionResume.js';
 import { IParadisHistoryCursor, PARADIS_HISTORY_FILE_CAP, PARADIS_HISTORY_PAGE_LIMIT, paradisDecodeHistoryCursor, paradisEncodeHistoryCursor, paradisHistoryCursorHasMore, paradisReadTranscriptHistory } from './paradisAgentChatHistory.js';
 import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
+import { ParadisClaudeModBridge, paradisClaudeModBridge, ParadisClaudeModEvent, IParadisClaudeModPendingPermission } from '../../claudeMod/node/paradisClaudeModBridge.js';
+import { paradisIsDisplayOnlyModRow } from '../../claudeMod/common/paradisClaudeMod.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
-import { IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentSessionInfo, ParadisAgentKind, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
+import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentSessionInfo, ParadisAgentKind, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
 import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
@@ -306,6 +308,69 @@ function paradisIsToolRejection(agent: ParadisAgentKind, message: IParadisAgentC
 
 /** ペインごとに覚える未完了のツール呼び出しの上限（hook の取りこぼしで伸び続けないように）。 */
 const PARADIS_OPEN_TOOL_USE_LIMIT = 256;
+/** mod から受け取った行・ファイルから読んだ行の uuid を覚えておく件数（1 ペインあたり）。 */
+const MOD_ROW_LEDGER_LIMIT = 2_000;
+/** mod へ渡した回答を覚えておく時間（同じカードへの二度目をキーの経路へ回さないため）。 */
+const MOD_ANSWER_LOCK_MS = 60_000;
+/** mod が生成中の文章を流している間、MessageDisplay hook の先出しを使わない時間。 */
+const MOD_STREAM_PREFERRED_MS = 5 * 60_000;
+
+/** hook 由来の承認の選択肢（許可 / 拒否）。モバイルは画面の番号付きの選択肢を求めることがある（W2-21）。 */
+const PARADIS_DEFAULT_APPROVAL_CHOICES: readonly IParadisAgentApprovalChoice[] = Object.freeze([
+	{ id: 'yes', label: '許可', tone: 'approve' },
+	{ id: 'no', label: '拒否', tone: 'deny' },
+]);
+
+/** mod から受け取った行を、ファイルに同じ行が現れるのを待って保留する時間（ファイルの方が先なら mod の行は捨てる）。 */
+const MOD_ROW_HOLD_MS = 300;
+
+/**
+ * mod（Claude Mods）が答えられ、「以後は確認しない」のルールも足せる承認の選択肢。`always` は mod が
+ * PermissionRequest の permission_suggestions をそのまま返す。足されるルールを文言に出し、設定ファイルやモードのように
+ * セッションを越えて残るものを含むときは「今回だけ」と「ルールを残す」をはっきり分ける。モバイルは選択肢が
+ * 「許可 / 拒否」だけでないとき画面の選択肢を求めないので、答えは値のまま mod へ届く。
+ */
+export function paradisModApprovalChoices(suggestions: readonly unknown[]): readonly IParadisAgentApprovalChoice[] {
+	const entries = suggestions.map(rec).filter((entry): entry is Record<string, unknown> => entry !== undefined);
+	const modes = paradisApprovalSuggestionLabels(entries.filter(entry => entry.type === 'setMode')) ?? [];
+	const ruleEntries = entries.filter(entry => entry.type !== 'setMode');
+	const rules = paradisApprovalSuggestionLabels(ruleEntries) ?? [];
+	if (modes.length === 0 && rules.length === 0) {
+		return PARADIS_DEFAULT_APPROVAL_CHOICES;
+	}
+	const persistentRules = ruleEntries.some(entry => typeof entry.destination === 'string' && entry.destination !== 'session');
+	// 文言は 200 文字まで（モバイルの上限）。入りきらない分は「ほか n 件」にまとめる
+	const list = (prefix: string, items: readonly string[], suffix = '') => {
+		for (let shown = items.length; shown > 0; shown--) {
+			const rest = items.length - shown;
+			const label = `${prefix}${items.slice(0, shown).join('、')}${rest > 0 ? ` ほか ${rest} 件` : ''}${suffix}`;
+			if (label.length <= 200) {
+				return label;
+			}
+		}
+		return `${prefix}${items.length} 件${suffix}`.slice(0, 200);
+	};
+	const always = modes.length > 0
+		? list('許可してモードを切り替える: ', [...modes, ...rules])
+		: persistentRules
+			? list('許可して設定に残す: ', rules)
+			: list('許可（このセッションでは以後確認しない: ', rules, '）');
+	// モードの切り替えや設定ファイルへの書き込みはセッションを越えて残るので、「今回だけ」をはっきり分ける
+	const lasting = modes.length > 0 || persistentRules;
+	return [
+		{ id: 'yes', label: lasting ? '今回だけ許可' : '許可', tone: 'approve' },
+		{ id: 'always', label: always, tone: lasting ? 'neutral' : 'approve' },
+		{ id: 'no', label: '拒否', tone: 'deny' },
+	];
+}
+
+
+/** 承認のカードの本文（ツール名と、説明かコマンドか入力の JSON）。hook と mod の承認を突き合わせるのにも使う。 */
+function paradisApprovalRequestText(toolName: string | undefined, toolInput: unknown): string {
+	const input = rec(toolInput);
+	const detail = str(input?.description) ?? str(input?.command) ?? (input !== undefined ? JSON.stringify(input) : '');
+	return [toolName, detail].filter(v => v !== undefined && v.length > 0).join(': ');
+}
 
 /** キーの順序に依らない JSON（PreToolUse と PermissionRequest の tool_input を突き合わせるため）。 */
 function paradisStableJson(value: unknown): string {
@@ -1515,6 +1580,10 @@ class TranscriptTailer {
 
 	dispose(): void {
 		this.disposed = true;
+		for (const timer of this.modRowTimers) {
+			clearTimeout(timer);
+		}
+		this.modRowTimers.clear();
 		this.monitorWatch.dispose();
 		this.watcher?.close();
 		this.watcher = undefined;
@@ -1679,6 +1748,8 @@ class TranscriptTailer {
 				this.lineBase = 0;
 				this.positionByRev.clear();
 				this.evictedPositions.clear();
+				this.modRowRevs.clear();
+				this.fileUuids.clear();
 				// offset 0 から読み直すので、前のバイト境界を持ち越したデコーダは捨てる。
 				this.decoder = new TextDecoder();
 				this.initialTruncated = false;
@@ -1807,9 +1878,8 @@ class TranscriptTailer {
 		this.remainder = lastPiece.slice(-MAX_TRANSCRIPT_LINE_BYTES);
 		// 行の頭のバイト位置（古い発言をファイルから読むときの境目。W2-30）。
 		let lineOffset = this.lineBase;
-		// fullText / imageData はここでだけ通過する（この直後に退避して送信対象から外す）。
-		const added: (IParadisAgentChatMessage & { fullText?: string; imageData?: readonly IFlattenedImage[] })[] = [];
 		const signals = newParseSignals(this.claudeQueuedPrompts);
+		const entries: { readonly obj: Record<string, unknown>; readonly lineStart: number }[] = [];
 		let latestProgress: ITranscriptProgress | undefined;
 		let issueUrlsChanged = false;
 		for (const line of lines) {
@@ -1850,10 +1920,35 @@ class TranscriptTailer {
 					latestProgress = progress;
 					continue;
 				}
+				// mod（Claude Mods）から先に受け取った行。中身は表示済みなので、位置と、ファイルにしか無い値だけを拾う
+				if (this.adoptModRow(obj, lineStart, signals)) {
+					continue;
+				}
 			}
+			entries.push({ obj, lineStart });
+		}
+		this.lineBase = lineOffset + (lastPiece.length > this.remainder.length ? Buffer.byteLength(lastPiece.slice(0, lastPiece.length - this.remainder.length), 'utf8') : 0);
+		this.consumeEntries(entries, signals, emitDelta, latestProgress, issueUrlsChanged);
+	}
+
+	/**
+	 * 解釈した行をメッセージにしてリングへ足す（ファイルから読んだ行と、mod から受け取った行の共通の処理）。
+	 * lineStart はファイルの行の頭のバイト位置（mod の行には無い。ファイルに現れたときに {@link adoptModRow} が入れる）。
+	 */
+	private consumeEntries(
+		entries: readonly { readonly obj: Record<string, unknown>; readonly lineStart?: number; readonly modUuid?: string }[],
+		signals: IParseSignals,
+		emitDelta: boolean,
+		latestProgress?: ITranscriptProgress,
+		issueUrlsChanged = false,
+	): void {
+		// fullText / imageData はここでだけ通過する（この直後に退避して送信対象から外す）。
+		const added: (IParadisAgentChatMessage & { fullText?: string; imageData?: readonly IFlattenedImage[] })[] = [];
+		for (const { obj, lineStart, modUuid } of entries) {
+			const modRevs: { rev: number; keep: number }[] | undefined = modUuid !== undefined ? [] : undefined;
 			const raw = this.agent === 'claude' ? parseClaudeLine(obj, signals) : parseCodexLine(obj, signals);
 			for (const [rawIndex, message] of raw.entries()) {
-				const position: IParadisHistoryCursor = { offset: lineStart, keep: rawIndex };
+				const position: IParadisHistoryCursor | undefined = lineStart !== undefined ? { offset: lineStart, keep: rawIndex } : undefined;
 				// ライブ質問の決着処理: hookで注入済みの質問が決着後に transcript へ本物として
 				// 現れたら間引き（合成カードで表示済み）、対応する tool_result は合成IDへ
 				// 付け替える（モバイル側の合成カードが「回答済み」になる）。
@@ -1877,17 +1972,21 @@ class TranscriptTailer {
 						this.liveQuestionRealIds.delete(message.toolUseId);
 						for (const syntheticId of syntheticIds) {
 							signals.answeredIds.push(syntheticId);
-							this.positionByRev.set(this.rev, position);
+							this.setPosition(this.rev, position);
+							modRevs?.push({ rev: this.rev, keep: rawIndex });
 							added.push({ ...message, toolUseId: syntheticId, rev: this.rev++ });
 						}
 						continue;
 					}
 				}
-				this.positionByRev.set(this.rev, position);
+				this.setPosition(this.rev, position);
+				modRevs?.push({ rev: this.rev, keep: rawIndex });
 				added.push({ ...message, rev: this.rev++ });
 			}
+			if (modUuid !== undefined && modRevs !== undefined) {
+				this.rememberModRow(modUuid, modRevs);
+			}
 		}
-		this.lineBase = lineOffset + (lastPiece.length > this.remainder.length ? Buffer.byteLength(lastPiece.slice(0, lastPiece.length - this.remainder.length), 'utf8') : 0);
 		// fullText / 画像の実体は送信メッセージから外し、rev 単位でここに退避する
 		// （'tool-full' / 'tool-image' の取り寄せ用）。画像はメタ情報だけをメッセージに残す。
 		for (let i = 0; i < added.length; i++) {
@@ -1945,6 +2044,148 @@ class TranscriptTailer {
 		if (emitDelta) {
 			this.delegate.onDelta(added);
 		}
+	}
+
+	// ---- Claude Code の mod（Claude Mods）から受け取る行 -------------------------------------------
+	//
+	// mod は transcript に書かれる行を、書き込みの直前に uuid 付きで渡してくる（ファイルより中央値 93 ms、
+	// AskUserQuestion の行は回答前に）。届いた行はすぐに会話へ足し、同じ uuid の行がファイルに現れたら
+	// 足さずに位置（古い発言を読むときの境目）だけを覚える。mod が来ないペインでは何も変わらない。
+
+	/** mod から足した行の uuid → その行から作った発言の rev と、行の中での順番。ファイルに現れたら消す。 */
+	private readonly modRowRevs = new Map<string, readonly { readonly rev: number; readonly keep: number }[]>();
+	/** ファイルから読んだ行の uuid（mod の行が遅れて届いたときに二重にしない）。 */
+	private readonly fileUuids = new Set<string>();
+
+	private setPosition(rev: number, position: IParadisHistoryCursor | undefined): void {
+		if (position !== undefined) {
+			this.positionByRev.set(rev, position);
+		}
+	}
+
+	private rememberModRow(uuid: string, revs: readonly { readonly rev: number; readonly keep: number }[]): void {
+		this.modRowRevs.set(uuid, revs);
+		while (this.modRowRevs.size > MOD_ROW_LEDGER_LIMIT) {
+			const oldest = this.modRowRevs.keys().next();
+			if (oldest.done === true) {
+				break;
+			}
+			this.modRowRevs.delete(oldest.value);
+		}
+	}
+
+	/**
+	 * ファイルの行が mod から足した行と同じなら、位置とファイルにしか無い値（モデル名・版）だけを拾って true。
+	 * 違えば uuid を覚えて false（ふつうに解釈する）。
+	 */
+	private adoptModRow(obj: Record<string, unknown>, lineStart: number, signals: IParseSignals): boolean {
+		const uuid = str(obj.uuid);
+		if (uuid === undefined) {
+			return false;
+		}
+		const revs = this.modRowRevs.get(uuid);
+		if (revs === undefined) {
+			this.fileUuids.add(uuid);
+			while (this.fileUuids.size > MOD_ROW_LEDGER_LIMIT * 2) {
+				const oldest = this.fileUuids.values().next();
+				if (oldest.done === true) {
+					break;
+				}
+				this.fileUuids.delete(oldest.value);
+			}
+			return false;
+		}
+		this.modRowRevs.delete(uuid);
+		const inRing = new Set(this.messages.map(message => message.rev));
+		for (const { rev, keep } of revs) {
+			(inRing.has(rev) ? this.positionByRev : this.evictedPositions).set(rev, { offset: lineStart, keep });
+		}
+		const version = str(obj.version);
+		if (version !== undefined) {
+			signals.cliVersion = version;
+		}
+		const model = str(rec(obj.message)?.model);
+		if (model !== undefined && model.length > 0) {
+			signals.model = model;
+		}
+		return true;
+	}
+
+	/** 保留中の mod の行のタイマー（届いた順に足すので、順番はタイマーの順のまま）。 */
+	private readonly modRowTimers = new Set<ReturnType<typeof setTimeout>>();
+
+	/**
+	 * mod から受け取った本会話の行（prompt / response）を足す。{@link MOD_ROW_HOLD_MS} だけ保留し、その間に
+	 * ファイルへ同じ行が現れたら捨てる（ファイルの方が速かった）。足す前にファイルの追記を読み切るので、
+	 * ファイルに先に書かれていたもの（ツールの結果・作業中に送った発言など）より後ろに並ぶ。
+	 * 返す Promise は、足し終えた（または捨てた）ところで解決する。
+	 */
+	ingestModRow(row: { readonly uuid: string; readonly at: number; readonly message: { readonly type: string; readonly role?: string; readonly isMeta?: boolean; readonly content: unknown } }): Promise<void> {
+		if (this.agent !== 'claude' || this.disposed) {
+			return Promise.resolve();
+		}
+		return new Promise<void>(resolve => {
+			const timer = setTimeout(() => {
+				this.modRowTimers.delete(timer);
+				this.enqueue(async () => {
+					await this.readAppended();
+					if (this.fileUuids.has(row.uuid) || this.modRowRevs.has(row.uuid)) {
+						return;
+					}
+					const obj: Record<string, unknown> = {
+						type: row.message.type,
+						uuid: row.uuid,
+						timestamp: new Date(row.at).toISOString(),
+						...(row.message.isMeta === true ? { isMeta: true } : {}),
+						message: { ...(row.message.role !== undefined ? { role: row.message.role } : {}), content: row.message.content },
+					};
+					this.consumeEntries([{ obj, modUuid: row.uuid }], newParseSignals(this.claudeQueuedPrompts), this.sawInitialEof);
+				}).then(resolve, resolve);
+			}, MOD_ROW_HOLD_MS);
+			this.modRowTimers.add(timer);
+		});
+	}
+
+	/**
+	 * Para Code からの知らせを会話に 1 行足す（transcript には無い。モバイル・デスクトップの既存の表示でそのまま出る）。
+	 * 送った発言がエージェントへ届かなかったときなど、もう答え終えた操作の失敗を伝えるのに使う。
+	 */
+	injectNotice(text: string): void {
+		this.enqueue(async () => {
+			const message: IParadisAgentChatMessage = { role: 'assistant', kind: 'text', text: truncateText(text, TEXT_LIMIT), ts: Date.now(), rev: this.rev++ };
+			this.messages.push(message);
+			this.trimRing();
+			this.delegate.onDelta([message]);
+		});
+	}
+
+	/** 答えていない承認（表に出す候補）。 */
+	approvalInteractions(): readonly Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>[] {
+		return this.approvalQueue.filter(entry => !entry.answered).map(entry => entry.interaction);
+	}
+
+	/**
+	 * 承認のカードの選択肢を、mod が答えられるか（`resolve` が選択肢を返すか）で直す。答えられないものは「許可 / 拒否」。
+	 */
+	updateModApprovals(resolve: (interaction: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>) => readonly IParadisAgentApprovalChoice[] | undefined): void {
+		this.enqueue(async () => {
+			let changed = false;
+			for (let index = 0; index < this.approvalQueue.length; index++) {
+				const entry = this.approvalQueue[index];
+				if (entry.answered || paradisIsCodexDaemonApprovalInteraction(entry.interaction.id)) {
+					continue;
+				}
+				const choices = resolve(entry.interaction) ?? PARADIS_DEFAULT_APPROVAL_CHOICES;
+				if (JSON.stringify(entry.interaction.choices) !== JSON.stringify(choices)) {
+					this.approvalQueue[index] = { ...entry, interaction: { ...entry.interaction, choices } };
+					changed = true;
+				}
+			}
+			if (changed) {
+				this.delegate.onDelta([]);
+				this.delegate.onActivity();
+			}
+		});
 	}
 
 	/** 直前の user 行（ユーザーの発言か tool_result）の時刻＝次のリクエストを送った時刻の近似。 */
@@ -2027,9 +2268,7 @@ class TranscriptTailer {
 			// 1プロンプトにつき1回しか来ないため、落とすと承認要求が永久に復元されない。
 			// AskUserQuestion 由来の二重カードは currentInteraction が質問を優先することで
 			// 表示上隠れる（承認は解除されるまで保持しておく必要がある）。
-			const input = rec(toolInput);
-			const detail = str(input?.description) ?? str(input?.command) ?? (input !== undefined ? JSON.stringify(input) : '');
-			const text = [toolName, detail].filter(v => v !== undefined && v.length > 0).join(': ');
+			const text = paradisApprovalRequestText(toolName, toolInput);
 			if (text.length === 0) {
 				return;
 			}
@@ -2043,10 +2282,7 @@ class TranscriptTailer {
 			this.approvalQueue.push({
 				interaction: {
 					kind: 'approval', id: interactionId, title: '操作の許可', detail: truncateText(text, TOOL_TEXT_LIMIT),
-					choices: [
-						{ id: 'yes', label: '許可', tone: 'approve' },
-						{ id: 'no', label: '拒否', tone: 'deny' },
-					],
+					choices: PARADIS_DEFAULT_APPROVAL_CHOICES,
 					...(suggestions !== undefined ? { suggestions } : {}),
 				},
 				key,
@@ -2622,9 +2858,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		/** SSH 接続先の transcript を手元へ写す台帳。無ければ接続先の会話は読まないだけ。 */
 		private readonly remoteTranscriptMirror?: ParadisRemoteTranscriptMirrorStore,
 		codexDirectoryWalkBudget?: IParadisDirectoryWalkBudget,
+		/** Claude Code の mod（Claude Mods）の受け口。テストは自前のものを渡す。 */
+		private readonly claudeModBridge: ParadisClaudeModBridge = paradisClaudeModBridge,
 	) {
 		super();
 		this.codexDirectoryWalkLedger = codexDirectoryWalkBudget ?? new ParadisDirectoryWalkLedger(PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS, PARADIS_CODEX_DIRECTORY_WALK_LIMIT);
+		this._register(this.claudeModBridge.onEvent(event => this.onModEvent(event)));
 		this._register(toDisposable(() => clearTimeout(this.desktopInsightTimer)));
 		this._register(toDisposable(() => clearTimeout(this.desktopChatTimer)));
 		this._register(toDisposable(() => {
@@ -3526,7 +3765,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	private handleSendMessageAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>): void {
+	/**
+	 * `viaMod` が true（モバイルからの最初の受け付け）なら、待機中の Claude Code へは mod（Claude Mods）の
+	 * `$.prompt.submit` で送る。mod へ渡せなかったときは false で呼び直し、今までどおりウィンドウのキー入力で送る。
+	 */
+	private handleSendMessageAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>, viaMod = true): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
@@ -3541,6 +3784,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		if (token === undefined || session === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined || !this.hasSubscriber(token, mobileId) || this.pendingActions.has(key) || this.completedActions.has(key)) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' }, token ?? msg.token);
+			return;
+		}
+		if (viaMod && this.trySendViaMod(mobileId, msg, token, session, tailer, key, sendKey)) {
 			return;
 		}
 		const timer = setTimeout(() => {
@@ -3618,6 +3864,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (!answersMatch) {
 			this.recordQuestionAnswerShape(token, msg, questions, 0, 'rejected-mismatch');
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: '質問の選択肢が更新されました' }, token ?? msg.token);
+			return;
+		}
+		// mod（Claude Mods）が質問を待っていれば、キーを打たずに値で答える（mod が無い・待っていなければキーの経路）
+		if (token !== undefined && this.tryAnswerQuestionViaMod(mobileId, msg, token, questions)) {
 			return;
 		}
 		const parts = paradisAgentQuestionKeySequence(
@@ -3720,6 +3970,21 @@ export class ParadisMobileAgentChat extends Disposable {
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
 		if (paradisIsCodexDaemonApprovalInteraction(msg.interactionId)) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: 'この承認要求はすでに完了しています' }, token ?? msg.token);
+			return;
+		}
+		// mod（Claude Mods）が承認を待っていれば、キーを打たずに値で答える（「以後は確認しない」もここだけ）。
+		if (token !== undefined && session?.agent === 'claude') {
+			const viaMod = this.tryAnswerApprovalViaMod(token, msg.interactionId, msg.choice, msg.optionLabel, { mobileId, epoch: msg.epoch });
+			if (viaMod === 'answered' || viaMod === 'locked') {
+				this.sendTo(mobileId, viaMod === 'answered'
+					? { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }
+					: { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'interaction-locked', message: 'PC側で反映を待っています。変わらない場合はPCの画面で確認してください' }, token);
+				return;
+			}
+		}
+		if (msg.choice === 'always') {
+			// 「以後は確認しない」は mod でしか渡せない（キーの列を確かめていない）。mod が待つのをやめた後に押された
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: 'この確認はもう回答を待っていません。PCの画面で確認してください' }, token ?? msg.token);
 			return;
 		}
 		const agent = session?.agent;
@@ -4266,6 +4531,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (event.messageId === undefined || event.messageDelta === undefined || event.messageIndex === undefined) {
 			return;
 		}
+		// mod（Claude Mods）が生成中の文章を流しているなら、そちらが速くて細かい（行単位の hook は使わない）
+		if (this.modStreamingFor(event.token, event.at)) {
+			return;
+		}
 		const previous = this.liveMessageBuffers.get(event.token);
 		if (previous?.messageId === event.messageId && event.messageIndex <= previous.lastIndex) {
 			return;
@@ -4405,6 +4674,391 @@ export class ParadisMobileAgentChat extends Disposable {
 				messages: [], live, liveRevision,
 			});
 		}
+	}
+
+	// ---- Claude Code の mod（Claude Mods） ----------------------------------------------------------
+	//
+	// mod（resources/paradis/claude-mod）が読み込まれたペインでは、今の hook・transcript・キーの経路と並べて
+	// 次を使う（paradisClaudeModBridge.ts）。mod が来ない・止まったペインでは、どれも今の経路だけで動く。
+	//  - 観測: 会話の行（uuid で重複を除き、速い方を使う）・生成中の文章・ターンの始まりと終わり
+	//  - サブエージェント: 開始＝Agent の tool.call の結果、再開＝SubagentStart の再送、終了＝agentId 付きの turn.complete
+	//  - 質問・承認: モバイルの回答をキーではなく値で mod へ渡す（PC の TUI と並んで、先に答えた方を使う）
+	//  - 送信: エージェントが待機中のときだけ mod の `$.prompt.submit` で送る
+
+	/** mod が流している生成中の文章（本会話のいまのブロック）。 */
+	private readonly modLive = new Map<string, { readonly turnId: string; readonly step: number; readonly index: number; readonly text: string; readonly startedAt: number }>();
+	/** mod から生成中の文章が最後に届いた時刻（MessageDisplay hook より mod を使う判断に使う）。 */
+	private readonly modStreamedAt = new Map<string, number>();
+	/** mod へ渡した回答（`token\0kind\0interactionId` → 時刻）。同じカードへの二度目をキーの経路へ回さない。 */
+	private readonly modAnswered = new Map<string, number>();
+	/** mod で送っている最中の発言（actionKey）。同じ requestId の二度目を弾く。 */
+	private readonly modSendRequests = new Set<string>();
+	/** mod の承認に合うカードが無いときに、自前で出すまでの待ち（hook のカードが先に来るのを待つ）。 */
+	private readonly modApprovalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+	private onModEvent(event: ParadisClaudeModEvent): void {
+		const token = event.token;
+		const session = this.paneSessions.get(token);
+		// ペインの今の会話から来たものだけ使う（同じペインで別に起動した claude -p などは無視する）
+		if (session === undefined || session.agent !== 'claude' || session.sessionId !== event.sessionId || !this.isLiveToken(token)) {
+			return;
+		}
+		switch (event.type) {
+			case 'row': {
+				const tailer = this.tailers.get(token);
+				if (tailer === undefined || tailer.transcriptPath !== session.transcriptPath) {
+					return;
+				}
+				const content = event.message.content;
+				if (!event.verified && !paradisIsDisplayOnlyModRow(event.door, event.message.role, content)) {
+					// 送り主を確かめていない行は、応答の文章と思考だけを表示に使う。ツールの呼び出し（質問・Agent・Monitor など）や
+					// 発言を含む行は、カード・回答待ち・サブエージェントの状態を作れてしまうので捨て、ファイルの行に任せる
+					return;
+				}
+				if (event.verified) {
+					this.rememberAgentEvidence(token);
+				}
+				const ingested = tailer.ingestModRow(event);
+				if (event.door === 'response' && Array.isArray(content) && content.some(block => rec(block)?.type === 'text')) {
+					// 確定した本文が会話に入ったので、生成中の文章は消す（二重に見せない）
+					void ingested.then(() => this.clearModLive(token));
+				}
+				return;
+			}
+			case 'turn.start':
+				this.activeTurnTokens.add(token);
+				this.lastTurnEndedAt.delete(token);
+				this.modLive.delete(token);
+				if (!this.liveStates.has(token)) {
+					this.setLiveState(token, { phase: 'thinking', source: 'hook', startedAt: event.at, updatedAt: event.at });
+				}
+				return;
+			case 'turn.complete':
+				if (event.agentId !== undefined) {
+					this.endModSubagent(token, event.agentId, event.aborted ? 'interrupted' : event.reason === 'error' || event.reason === 'refusal' ? 'failed' : 'completed', event.at);
+					return;
+				}
+				// 本会話のターンの終わり。承認のカード・質問・ペインの状態の片付けは hook の Stop に任せる
+				// （mod の知らせだけで承認や質問を消さない）。生成中の文章の控えだけを捨てる。
+				this.modLive.delete(token);
+				return;
+			case 'step':
+				this.updateLiveFromModStep(token, event.turnId, event.step, event.chunks, event.end, event.at);
+				return;
+			case 'subagent.start':
+				this.startModSubagent(token, event.agentId, event.at, event.subagentType ?? event.name, event.description);
+				return;
+			case 'subagent.resume':
+				this.startModSubagent(token, event.agentId, event.at, event.agentType, undefined);
+				return;
+			case 'pending-changed':
+				if (event.kind === 'permission') {
+					this.refreshModApprovals(token);
+				}
+				return;
+			case 'bye':
+				this.modLive.delete(token);
+				this.modStreamedAt.delete(token);
+				return;
+			default:
+				return;
+		}
+	}
+
+	/** mod がこのペインへ生成中の文章を流しているか（流していれば MessageDisplay hook の先出しは使わない）。 */
+	private modStreamingFor(token: string, at: number): boolean {
+		const streamedAt = this.modStreamedAt.get(token);
+		return streamedAt !== undefined && at - streamedAt < MOD_STREAM_PREFERRED_MS && this.claudeModBridge.isAlive(token, this.paneSessions.get(token)?.sessionId);
+	}
+
+	private updateLiveFromModStep(token: string, turnId: string, step: number, chunks: readonly { readonly index: number; readonly text: string }[], end: boolean, at: number): void {
+		if (paradisIsLateHookAfterTurnEnd('MessageDisplay', at, this.lastTurnEndedAt.get(token))) {
+			return;
+		}
+		this.modStreamedAt.set(token, at);
+		let current = this.modLive.get(token);
+		let changed = false;
+		for (const chunk of chunks) {
+			if (current === undefined || current.turnId !== turnId || current.step !== step || current.index !== chunk.index) {
+				current = { turnId, step, index: chunk.index, text: '', startedAt: at };
+			}
+			current = { ...current, text: truncateLiveText(current.text + chunk.text, TEXT_LIMIT) };
+			changed = true;
+		}
+		if (current === undefined || (!changed && !end) || current.turnId !== turnId || current.step !== step || current.text.length === 0) {
+			return;
+		}
+		this.modLive.set(token, current);
+		this.setLiveState(token, {
+			phase: 'message', source: 'hook', startedAt: current.startedAt, updatedAt: at, text: current.text,
+			...(end ? { final: true } : {}),
+		});
+	}
+
+	private clearModLive(token: string): void {
+		if (this.modLive.delete(token) && this.liveStates.get(token)?.phase === 'message') {
+			this.clearLiveState(token);
+		}
+	}
+
+	/** サブエージェントの開始・再開（同じ id で何度来ても一覧は 1 件）。 */
+	private startModSubagent(token: string, agentId: string, at: number, label: string | undefined, detail: string | undefined): void {
+		if (!PARADIS_CLAUDE_AGENT_ID_PATTERN.test(agentId)) {
+			return;
+		}
+		const tracker = this.activityTracker(token);
+		if (tracker.applyClaude('SubagentStart', { agent_id: agentId, ...(label !== undefined ? { agent_type: label } : {}), ...(detail !== undefined ? { prompt: detail } : {}) }, at)) {
+			this.pushActivityToSubscribers(token);
+		}
+		const running = tracker.snapshot()?.agents.some(agent => agent.id === agentId && agent.status === 'running') === true;
+		const backgroundTaskId = `${HOOK_BACKGROUND_TASK_PREFIX}${agentId}`;
+		if (running && backgroundTaskId.length <= BACKGROUND_TASK_ID_MAX_LENGTH) {
+			this.tailers.get(token)?.markBackgroundTaskOpen(backgroundTaskId, at);
+		}
+		this.schedulePersistedAgentActivityReconcile(token);
+	}
+
+	/** サブエージェントの終わり（agentId 付きの turn.complete。TaskStop で止めたときは SubagentStop が来ない）。 */
+	private endModSubagent(token: string, agentId: string, status: 'completed' | 'interrupted' | 'failed', at: number): void {
+		if (this.activityTrackers.get(token)?.applyClaudeSubagentEnd(agentId, status, at) === true) {
+			this.pushActivityToSubscribers(token);
+		}
+		this.tailers.get(token)?.markBackgroundTaskClose(`${HOOK_BACKGROUND_TASK_PREFIX}${agentId}`);
+		this.schedulePersistedAgentActivityReconcile(token);
+	}
+
+	/** 承認のカードに合う、mod の承認の待ち（tool_use_id、無ければカードの本文で突き合わせる）。 */
+	private matchModPermission(
+		interaction: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>,
+		pending: readonly IParadisClaudeModPendingPermission[],
+		cards: readonly Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>[],
+	): IParadisClaudeModPendingPermission | undefined {
+		const byId = pending.find(permission => permission.toolUseId !== undefined && permission.toolUseId === interaction.id);
+		if (byId !== undefined) {
+			return byId;
+		}
+		// 本文が完全に一致し、そのカードもその待ちも 1 つずつに決まるときだけ結ぶ（決まらなければ結ばない。
+		// 呼び出し側が mod の内容で別にカードを出す）。古いカードを別の呼び出しの待ちと結ばないため
+		const textOf = (permission: IParadisClaudeModPendingPermission) => truncateText(paradisApprovalRequestText(permission.toolName, permission.toolInput), TOOL_TEXT_LIMIT);
+		const byText = pending.filter(permission => textOf(permission) === interaction.detail
+			// tool_use_id を持つ待ちは、合成 id のカード（hook が呼び出しを決められなかったもの）とだけ本文で結ぶ
+			&& (permission.toolUseId === undefined || (interaction.id.startsWith('approval:') && !cards.some(card => card.id === permission.toolUseId))));
+		const sameCards = cards.filter(card => card.detail === interaction.detail);
+		return byText.length === 1 && sameCards.length === 1 ? byText[0] : undefined;
+	}
+
+	/**
+	 * mod の承認の待ちが増えた・終わった。カードの選択肢を直し、合うカードが無ければ（自前の PermissionRequest hook が
+	 * 無い・届かない）少し待ってから mod の内容でカードを出す。
+	 */
+	private refreshModApprovals(token: string): void {
+		const session = this.paneSessions.get(token);
+		const tailer = this.tailers.get(token);
+		if (session === undefined || tailer === undefined) {
+			return;
+		}
+		const apply = () => {
+			if (this.tailers.get(token) !== tailer) {
+				return;
+			}
+			const pending = this.claudeModBridge.pendingPermissions(token, session.sessionId);
+			const cards = tailer.approvalInteractions();
+			tailer.updateModApprovals(interaction => {
+				const permission = this.matchModPermission(interaction, pending, cards);
+				return permission !== undefined ? paradisModApprovalChoices(permission.suggestions) : undefined;
+			});
+			const unmatched = pending.filter(permission => !cards.some(card => this.matchModPermission(card, [permission], cards) !== undefined));
+			if (unmatched.length === 0 || this.modApprovalTimers.has(token)) {
+				return;
+			}
+			const timer = setTimeout(() => {
+				this.modApprovalTimers.delete(token);
+				if (this.tailers.get(token) !== tailer) {
+					return;
+				}
+				void tailer.afterQueue(() => {
+					const currentCards = tailer.approvalInteractions();
+					const mobileWants = this.eagerTailing || this.subscribers.has(token);
+					for (const permission of this.claudeModBridge.pendingPermissions(token, session.sessionId)) {
+						if (!currentCards.some(card => this.matchModPermission(card, [permission], currentCards) !== undefined) && tailer.pendingQuestions.size === 0) {
+							tailer.injectApprovalRequest(permission.toolName, permission.toolInput, permission.toolUseId, !mobileWants, undefined, 1, paradisApprovalSuggestionLabels(permission.suggestions));
+						}
+					}
+					void tailer.afterQueue(() => apply());
+				});
+			}, 1_500);
+			this.modApprovalTimers.set(token, timer);
+		};
+		// 同じペインの hook（PermissionRequest のカード）を先に済ませてから突き合わせる
+		void (this.hookProcessing.get(token) ?? Promise.resolve()).then(() => tailer.afterQueue(apply));
+	}
+
+	private lockModAnswer(key: string): void {
+		const now = Date.now();
+		this.modAnswered.set(key, now);
+		for (const [candidate, at] of this.modAnswered) {
+			if (now - at > MOD_ANSWER_LOCK_MS) {
+				this.modAnswered.delete(candidate);
+			}
+		}
+	}
+
+	private isModAnswerLocked(key: string): boolean {
+		const at = this.modAnswered.get(key);
+		return at !== undefined && Date.now() - at <= MOD_ANSWER_LOCK_MS;
+	}
+
+	/**
+	 * モバイルの質問の回答を mod へ値で渡す（`{ questions, answers }` の answers は「質問文 → 選んだラベル」、
+	 * 複数選択は `, ` でつなぐ。Claude Code の TUI が返すものと同じ形）。mod が待っていなければ false（キーの経路）。
+	 */
+	private tryAnswerQuestionViaMod(mobileId: string, msg: Extract<AgentInbound, { t: 'action/answerQuestion' }>, token: string, questions: readonly IParadisAgentChatMessage[]): boolean {
+		const session = this.paneSessions.get(token);
+		const tailer = this.tailers.get(token);
+		if (session?.agent !== 'claude' || tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)
+			|| !tailer.hasPendingInteraction({ kind: 'question', id: msg.interactionId })) {
+			return false;
+		}
+		const lockKey = `${token}\0question\0${msg.interactionId}`;
+		if (this.isModAnswerLocked(lockKey)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'interaction-locked', message: 'PC側で反映を待っています。変わらない場合はPCの画面で確認してください' }, token);
+			return true;
+		}
+		const pending = this.claudeModBridge.pendingQuestions(token, session.sessionId);
+		const sameTexts = (candidate: typeof pending[number]) => candidate.questions.length === questions.length
+			&& candidate.questions.every((question, index) => truncateText(question.question, TEXT_LIMIT) === questions[index]?.text);
+		const target = pending.find(candidate => candidate.toolUseId !== undefined && candidate.toolUseId === msg.interactionId) ?? pending.find(sameTexts);
+		if (target === undefined || target.questions.length !== msg.answers.length) {
+			return false;
+		}
+		const answers: Record<string, string> = {};
+		for (const [index, answer] of msg.answers.entries()) {
+			const question = target.questions[index];
+			const card = questions[index];
+			if (question === undefined || card === undefined) {
+				return false;
+			}
+			// カードの選択肢（表示用に切り詰めたもの）から、mod が受け取った元のラベルを引く
+			const label = (optionIndex: number): string | undefined => {
+				const shown = card.options?.[optionIndex]?.label;
+				return shown === undefined ? undefined : question.options.find(option => truncateText(option.label, 200) === shown)?.label ?? shown;
+			};
+			let value: string | undefined;
+			if (answer.kind === 'option') {
+				value = label(answer.index);
+			} else if (answer.kind === 'multi') {
+				const labels = answer.indices.map(label);
+				value = labels.length > 0 && labels.every(item => item !== undefined) ? labels.join(', ') : undefined;
+			} else {
+				value = answer.text;
+			}
+			if (value === undefined) {
+				return false;
+			}
+			answers[question.question] = value;
+		}
+		if (!this.claudeModBridge.answerQuestion(token, target.id, answers)) {
+			return false;
+		}
+		this.lockModAnswer(lockKey);
+		this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
+		return true;
+	}
+
+	/**
+	 * 承認の回答を mod へ値で渡す。'yes' と画面の 1 番（Yes）は許可、'always' と画面の 2 番以降の Yes（以後は確認しない）は
+	 * 許可とルールの追加、'no' は拒否。mod が待っていなければ 'none'（呼び出し側はキーの経路へ）。
+	 */
+	private tryAnswerApprovalViaMod(token: string, interactionId: string, choice: string, optionLabel: string | undefined, mobile?: { readonly mobileId: string; readonly epoch: string }): 'answered' | 'locked' | 'none' {
+		const session = this.paneSessions.get(token);
+		const tailer = this.tailers.get(token);
+		if (session?.agent !== 'claude' || tailer === undefined || (mobile !== undefined && (tailer.epoch !== mobile.epoch || !this.hasSubscriber(token, mobile.mobileId)))) {
+			return 'none';
+		}
+		const optionNumber = paradisParseApprovalOptionChoice(choice);
+		const yesOption = optionNumber !== undefined && optionLabel !== undefined && /^yes\b/i.test(optionLabel.trim());
+		const decision: { readonly allow: boolean; readonly always: boolean } | undefined = choice === 'yes' || (yesOption && optionNumber === 1) ? { allow: true, always: false }
+			: choice === 'always' || (yesOption && optionNumber !== undefined && optionNumber > 1) ? { allow: true, always: true }
+				: choice === 'no' ? { allow: false, always: false }
+					: undefined;
+		if (decision === undefined) {
+			return 'none';
+		}
+		const cards = tailer.approvalInteractions();
+		const interaction = cards.find(card => card.id === interactionId);
+		const lockKey = `${token}\0approval\0${interactionId}`;
+		if (interaction === undefined) {
+			return this.isModAnswerLocked(lockKey) ? 'locked' : 'none';
+		}
+		const permission = this.matchModPermission(interaction, this.claudeModBridge.pendingPermissions(token, session.sessionId), cards);
+		if (permission === undefined || (decision.always && !permission.hasSuggestions)) {
+			return 'none';
+		}
+		if (this.isModAnswerLocked(lockKey)) {
+			return 'locked';
+		}
+		if (!this.claudeModBridge.answerPermission(token, permission.id, decision.allow ? 'allow' : 'deny', decision.always)) {
+			return 'none';
+		}
+		this.lockModAnswer(lockKey);
+		tailer.markApprovalAnswered(interactionId);
+		return 'answered';
+	}
+
+	/** デスクトップのチャット表示の「以後は確認しない」（キーでは答えられないので mod へ渡す）。 */
+	answerDesktopApprovalViaMod(token: string, interactionId: string, choice: string): boolean {
+		return this.tryAnswerApprovalViaMod(token, interactionId, choice, undefined) === 'answered';
+	}
+
+	/**
+	 * 待機中の Claude Code へ、モバイルの発言を mod の `$.prompt.submit` で送る（キー入力も貼り付けも要らず、
+	 * ターンが始まったところで受理が分かる）。作業中・スラッシュコマンド・mod が無いときは false（キーの経路）。
+	 */
+	private trySendViaMod(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>, token: string, session: IPaneSessionInfo, tailer: TranscriptTailer, key: string, sendKey: string | undefined): boolean {
+		const sessionId = session.sessionId;
+		const text = msg.text;
+		if (session.agent !== 'claude' || sessionId === undefined || text.trim().length === 0 || /^[/!#]/.test(text.trimStart())
+			|| !this.claudeModBridge.isAlive(token, sessionId) || this.claudeModBridge.isBusy(token, sessionId) || !this.isAgentPrompt(token, tailer)) {
+			return false;
+		}
+		if (this.modSendRequests.has(key)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' }, token);
+			return true;
+		}
+		this.modSendRequests.add(key);
+		this.rememberSendId(sendKey);
+		const submittedAt = Date.now();
+		const onLateFailure = () => {
+			// mod は受け取ったが、送れなかった（`$.prompt.submit` が失敗した）。モバイルは答え終えた requestId の 2 回目の
+			// 結果を捨てるので、会話に知らせの行を足して既存の表示で伝える
+			this.forgetSendId(sendKey);
+			const head = text.trim().replace(/\s+/g, ' ');
+			// allow-any-unicode-next-line
+			this.tailers.get(token)?.injectNotice(`送れませんでした: ${head.length > 60 ? `${head.slice(0, 60)}…` : head}`);
+		};
+		this.claudeModBridge.submitPrompt(token, sessionId, text, onLateFailure).then(async result => {
+			if (result === 'unconfirmed') {
+				// mod から返事が無い。transcript にこの発言が入っていれば送れている（入っていなければキーで送る）
+				await this.tailers.get(token)?.afterQueue(() => { });
+				const landed = this.tailers.get(token)?.messages.some(message => message.role === 'user' && message.kind === 'text'
+					&& (message.ts ?? 0) >= submittedAt - 1_000 && message.text.trim() === text.trim()) === true;
+				result = landed ? 'accepted' : 'unavailable';
+			}
+			this.modSendRequests.delete(key);
+			if (result === 'accepted') {
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
+				return;
+			}
+			// mod へ渡していない（または mod が送れなかった）。今までどおりウィンドウのキー入力で送る
+			this.forgetSendId(sendKey);
+			this.handleSendMessageAction(mobileId, msg, false);
+		}, error => {
+			this.modSendRequests.delete(key);
+			this.forgetSendId(sendKey);
+			this.logService.warn('[paradisAgentChat] sending through the Claude Code mod failed', error);
+			this.handleSendMessageAction(mobileId, msg, false);
+		});
+		return true;
 	}
 
 	// ---- デスクトップ UI 向けの読み取り口 ----------------------------------------------------------
@@ -5993,6 +6647,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (recoveryTimer !== undefined) {
 			clearTimeout(recoveryTimer);
 			this.persistedActivityTimers.delete(token);
+		}
+		this.modLive.delete(token);
+		const modApprovalTimer = this.modApprovalTimers.get(token);
+		if (modApprovalTimer !== undefined) {
+			clearTimeout(modApprovalTimer);
+			this.modApprovalTimers.delete(token);
 		}
 		const tailer = this.tailers.get(token);
 		if (tailer !== undefined) {

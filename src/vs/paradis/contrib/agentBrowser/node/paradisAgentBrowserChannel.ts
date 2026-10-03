@@ -112,6 +112,10 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				const args = requireArgs(arg, 1);
 				return this.service.confirmReplayedPrompt(this.rendererConnection, requireToken(args[0])) as Promise<T>;
 			}
+			// Claude Code の設定フォルダ（CLAUDE_CONFIG_DIR）。renderer の Claude Code の mod が managed 設定を探すのに使う
+			case 'getClaudeConfigDir':
+				requireArgs(arg, 0);
+				return this.service.getClaudeConfigDir() as Promise<T>;
 			case 'getVoiceIngressToken':
 				requireArgs(arg, 0);
 				return this.service.getVoiceIngressToken() as Promise<T>;

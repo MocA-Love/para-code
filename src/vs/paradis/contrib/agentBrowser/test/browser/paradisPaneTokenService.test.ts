@@ -20,6 +20,7 @@ import type { IPathService } from '../../../../../workbench/services/path/common
 import { ParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
 import { paradisRemoteHookSourceId } from '../../common/paradisRemoteHookSource.js';
 import type { IParadisCodexLaunchHomeService } from '../../../codexAccounts/browser/paradisCodexLaunchHomeService.js';
+import type { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 
 const PANE_TOKEN = '12345678-1234-4234-8234-123456789abc';
 const USER_DATA_PATH = '/tmp/para-code-user-data';
@@ -33,12 +34,18 @@ function codexLaunchHomeStub(launchHome: string | undefined, recorded: Map<strin
 	} as unknown as IParadisCodexLaunchHomeService;
 }
 
+/** Claude Code の mod の準備（paradisClaudeModEnvironment.ts）。既定では準備ができていない（何も足さない）。 */
+function claudeModStub(directory?: string): IInstantiationService {
+	return { createInstance: () => ({ pluginDirectory: () => directory, dispose: () => { } }) } as unknown as IInstantiationService;
+}
+
 function paneEnvironmentFor(options: { readonly launchHome?: string; readonly remoteAuthority?: string; readonly cwd?: URI; readonly recorded?: Map<string, string | undefined> } = {}): Record<string, string | null | undefined> {
 	const service = new ParadisPaneTokenService(
 		{ onDidCreateInstance: Event.None } as unknown as ITerminalInstanceService,
 		{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, execPath: `${APP_ROOT}/Para Code`, remoteAuthority: options.remoteAuthority } as unknown as IWorkbenchEnvironmentService,
 		{ userHome: async () => URI.file('/home/test') } as unknown as IPathService,
 		codexLaunchHomeStub(options.launchHome, options.recorded),
+		claudeModStub(),
 	);
 	const shellLaunchConfig = { shellIntegrationNonce: PANE_TOKEN, cwd: options.cwd } as IShellLaunchConfig;
 	try {
@@ -81,6 +88,7 @@ suite('Paradis pane token service', () => {
 				{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, remoteAuthority: 'ssh-remote+host', machineId } as unknown as IWorkbenchEnvironmentService,
 				{ userHome: async () => URI.from({ scheme: Schemas.vscodeRemote, authority: 'ssh-remote+host', path: '/home/test' }) } as unknown as IPathService,
 				codexLaunchHomeStub(undefined),
+				claudeModStub(),
 			);
 			try {
 				await new Promise(resolve => setTimeout(resolve, 0));
@@ -127,6 +135,7 @@ suite('Paradis pane token service', () => {
 				getLaunchHome: () => '/home/test/.codex-2',
 				recordPaneHome: (token: string, homePath: string | undefined) => recorded.push([token, homePath]),
 			} as unknown as IParadisCodexLaunchHomeService,
+			claudeModStub(),
 		);
 		try {
 			const createdConfig = { shellIntegrationNonce: PANE_TOKEN } as IShellLaunchConfig;
@@ -199,6 +208,39 @@ suite('Paradis pane token service', () => {
 			remoteRecorded: '/home/test/.codex-2',
 			localInRemote: undefined,
 			localInRemoteRecorded: false,
+		});
+	});
+
+	// Claude Code の mod（Claude Mods）は、手元で動くペインにだけ、ユーザーの値の後ろへつないで渡す。
+	// 準備が済んでいない（または設定・組織の方針で使えない）ときは何も足さない。
+	test('appends the Claude Code mod folder to local terminals only when it is ready', () => {
+		const environmentWithMod = (directory: string | undefined, remoteAuthority?: string, explicit?: string) => {
+			const service = new ParadisPaneTokenService(
+				{ onDidCreateInstance: Event.None } as unknown as ITerminalInstanceService,
+				{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, execPath: `${APP_ROOT}/Para Code`, remoteAuthority } as unknown as IWorkbenchEnvironmentService,
+				{ userHome: async () => URI.file('/home/test') } as unknown as IPathService,
+				codexLaunchHomeStub(undefined),
+				claudeModStub(directory),
+			);
+			const shellLaunchConfig = { shellIntegrationNonce: PANE_TOKEN, ...(explicit !== undefined ? { env: { CLAUDE_CODE_PLUGIN_DIRS: explicit } } : {}) } as IShellLaunchConfig;
+			try {
+				service.prepareShellLaunchConfig(shellLaunchConfig);
+			} finally {
+				service.dispose();
+			}
+			return shellLaunchConfig.env?.CLAUDE_CODE_PLUGIN_DIRS;
+		};
+		const mod = '/home/test/.para-code/claude-mod/0123456789abcdef';
+		assert.deepStrictEqual({
+			ready: environmentWithMod(mod),
+			userValue: environmentWithMod(mod, undefined, '/home/test/my-mod'),
+			notReady: environmentWithMod(undefined),
+			remote: environmentWithMod(mod, 'ssh-remote+host'),
+		}, isWindows ? { ready: undefined, userValue: '/home/test/my-mod', notReady: undefined, remote: undefined } : {
+			ready: `\${env:CLAUDE_CODE_PLUGIN_DIRS}:${mod}`,
+			userValue: `/home/test/my-mod:${mod}`,
+			notReady: undefined,
+			remote: undefined,
 		});
 	});
 });

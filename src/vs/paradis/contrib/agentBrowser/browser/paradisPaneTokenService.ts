@@ -30,6 +30,8 @@ import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
 import { paradisListCurrentPaneTokens } from './paradisLivePaneInstances.js';
 import { IParadisCodexLaunchHomeService, paradisApplyCodexLaunchHome, PARADIS_CODEX_HOME_ENV_VAR, paradisTerminalRunsOnWindowHost } from '../../codexAccounts/browser/paradisCodexLaunchHomeService.js';
 import { paradisPrepareTerminalCloseCleanupEnv } from '../../terminalCloseCleanup/browser/paradisTerminalCloseCleanupEnv.js';
+import { ParadisClaudeModEnvironment } from '../../claudeMod/browser/paradisClaudeModEnvironment.js';
+import { paradisAddClaudePluginDir } from '../../claudeMod/common/paradisClaudeMod.js';
 
 export const IParadisPaneTokenService = createDecorator<IParadisPaneTokenService>('paradisPaneTokenService');
 
@@ -81,13 +83,24 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 	 */
 	private remoteHome: string | undefined;
 
+	/**
+	 * 手元のペインの Claude Code に読ませる Para Code の mod（Claude Mods）。手元で動く desktop の
+	 * ウィンドウだけが持つ（SSH の接続先・Windows・web では作らない。NOTES.md「Claude Mods」）。
+	 */
+	private readonly claudeMod: ParadisClaudeModEnvironment | undefined;
+
 	constructor(
 		@ITerminalInstanceService terminalInstanceService: ITerminalInstanceService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IPathService pathService: IPathService,
 		@IParadisCodexLaunchHomeService private readonly codexLaunchHomeService: IParadisCodexLaunchHomeService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
+		const appRoot = (this.environmentService as IWorkbenchEnvironmentService & { readonly appRoot?: string }).appRoot;
+		this.claudeMod = this.environmentService.remoteAuthority === undefined && typeof appRoot === 'string' && !isWindows
+			? this._register(instantiationService.createInstance(ParadisClaudeModEnvironment, appRoot, () => pathService.userHome(), undefined))
+			: undefined;
 
 		if (this.environmentService.remoteAuthority !== undefined) {
 			pathService.userHome().then(home => {
@@ -150,6 +163,12 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 			? explicitCodexHome
 			: onWindowHost ? this.codexLaunchHomeService.getLaunchHome() : undefined;
 		shellLaunchConfig.env = paradisApplyCodexLaunchHome(shellLaunchConfig.env, codexHome);
+		// Claude Code へ Para Code の mod を読ませる（ユーザーが設定している値の後ろへつなぐ）。手元で動く
+		// ペインだけ。読ませられないとき（準備中・設定でオフ・組織の方針）は何も足さず、今までどおり動く。
+		const claudePluginDirectory = onWindowHost ? this.claudeMod?.pluginDirectory() : undefined;
+		if (claudePluginDirectory !== undefined) {
+			shellLaunchConfig.env = paradisAddClaudePluginDir(shellLaunchConfig.env, claudePluginDirectory, ':');
+		}
 		// 開いたときのホームを覚えるのは新しく開いたペインだけ。再接続したペインのプロセスは元の env
 		// （前回起動したときの CODEX_HOME）のまま動いているので、いまの選択を記録すると食い違う。
 		// 記録しないペインは、切替の通知で「切替の直前の選択で開いたもの」とみなされる
