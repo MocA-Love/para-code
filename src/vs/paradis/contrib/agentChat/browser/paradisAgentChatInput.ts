@@ -16,7 +16,7 @@ import { localize } from '../../../../nls.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence, ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { paradisSendAgentMessageToTui } from '../../mobileRelay/common/paradisAgentMessageSender.js';
 import { paradisBuildPresetInsertText } from '../../terminalPresets/common/paradisTerminalPresets.js';
-import { IParadisAgentChatSource, IParadisAgentInteraction, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
+import { IParadisAgentChatSource, IParadisAgentInteraction, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisQuestionReadyMarker } from '../common/paradisAgentQuestionMarker.js';
 import { paradisPendingCodexQuestion } from '../common/paradisAgentChatTimeline.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
@@ -181,7 +181,11 @@ export class ParadisAgentChatInput {
 		if (marker === undefined) {
 			return localize('paradisAgentChat.errorNoMarker', "この質問はここからは答えられません。ターミナルで答えてください");
 		}
-		const parts = paradisAgentQuestionKeySequence(questions.map(question => ({ optionCount: question.options?.length ?? 0, multiSelect: question.multiSelect === true })), answers);
+		const parts = paradisAgentQuestionKeySequence(questions.map(question => ({ optionCount: question.options?.length ?? 0, multiSelect: question.multiSelect === true, hasPreview: paradisAgentQuestionHasPreview(question) })), answers);
+		// preview のある質問には「その他」の行が無く、自由入力はキーで渡せない（キー列が空になる）。打鍵せずに断る。
+		if (parts.length === 0) {
+			return localize('paradisAgentChat.errorQuestionNoKeys', "この回答はここからは送れません。ターミナルで答えてください");
+		}
 		// 目印は選択肢のラベルだけだと弱い（`Yes` などは許可の確認の `1. Yes` にも一致する）。質問の操作説明と
 		// 質問文の一片が見えていて、許可の確認が出ていないことも条件にする。
 		const questionPiece = paradisQuestionTextPiece(questions[0]?.text ?? '');

@@ -14,10 +14,11 @@ import { describe, expect, it } from 'vitest';
 import { agentQuestionKeySequence, agentQuestionNeedsReviewSubmit, type AgentQuestionKeyAnswer, type AgentQuestionShape } from './agentQuestionKeys.js';
 import { paradisAgentQuestionKeySequence, paradisAgentQuestionNeedsReviewSubmit } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisAgentQuestionKeys.js';
 
-/** 質問の形をひととおり（選択肢0〜5個 × 単一/複数選択）。 */
+/** 質問の形をひととおり（選択肢0〜5個 × 単一/複数選択/preview のある単一選択）。 */
 const SHAPES: AgentQuestionShape[] = [0, 1, 2, 3, 4, 5].flatMap(optionCount => [
-	{ optionCount, multiSelect: false },
-	{ optionCount, multiSelect: true },
+	{ optionCount, multiSelect: false, hasPreview: false },
+	{ optionCount, multiSelect: true, hasPreview: false },
+	{ optionCount, multiSelect: false, hasPreview: true },
 ]);
 
 /** その形に対して送りうる回答（自由入力は改行・タブ入りも含める）。 */

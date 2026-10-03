@@ -72,6 +72,35 @@ suite('ParadisClaudeModBridge', () => {
 		}, { registered: true, reply: { state: 'answer', answers: { 'Pick a color?': 'Green' } }, again: false, pending: 0 });
 	});
 
+	test('keeps the description and the preview of the options, and hands the notes and the withdrawal to the waiting mod', async () => {
+		const questions = [{ question: 'Pick a look?', header: 'Look', multiSelect: false, options: [{ label: 'Toast', description: 'top', preview: '# Toast' }, { label: 'Inline', description: '', preview: '' }] }];
+		const first = (await call('question', { toolUseId: 'toolu_p', questions })).body.id as string;
+		const options = bridge.pendingQuestions(TOKEN, SESSION)[0]?.questions[0]?.options;
+		const answered = call('wait', { id: first });
+		bridge.answerQuestion(TOKEN, first, { 'Pick a look?': 'Toast' }, { 'Pick a look?': { preview: '# Toast', notes: 'shorter' } });
+		const second = (await call('question', { toolUseId: 'toolu_p2', questions })).body.id as string;
+		// 待ちが張られる前に渡した取り下げも、次の wait まで残る
+		const clarified = bridge.clarifyQuestion(TOKEN, second, { kind: 'response', response: 'show me the screen first' });
+		const third = (await call('question', { toolUseId: 'toolu_p3', questions })).body.id as string;
+		const denied = call('wait', { id: third });
+		bridge.clarifyQuestion(TOKEN, third, { kind: 'deny', deny: 'The user wants to clarify these questions.' });
+		assert.deepStrictEqual({
+			options,
+			answered: (await answered).body,
+			clarified,
+			withMessage: (await call('wait', { id: second })).body,
+			denied: (await denied).body,
+			again: bridge.clarifyQuestion(TOKEN, third, { kind: 'response', response: 'x' }),
+		}, {
+			options: [{ label: 'Toast', description: 'top', preview: '# Toast' }, { label: 'Inline', preview: '' }],
+			answered: { state: 'answer', answers: { 'Pick a look?': 'Toast' }, annotations: { 'Pick a look?': { preview: '# Toast', notes: 'shorter' } } },
+			clarified: true,
+			withMessage: { state: 'clarify', response: 'show me the screen first' },
+			denied: { state: 'clarify', deny: 'The user wants to clarify these questions.' },
+			again: false,
+		});
+	});
+
 	test('an answer given before the mod asks again is kept for its next wait', async () => {
 		const id = (await call('question', { questions: QUESTIONS })).body.id as string;
 		bridge.answerQuestion(TOKEN, id, { 'Pick a color?': 'Red' });

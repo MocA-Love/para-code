@@ -152,6 +152,30 @@ suite('ParadisAgentChatInput', () => {
 		});
 	});
 
+	test('answers a question with a preview with its number and Enter, keeps plain questions on the number alone, and refuses "Other" on a preview question', async () => {
+		// Claude Code 2.1.288（tmux で実測）: preview のある質問の数字キーは選ぶだけで確定しない。Enter で確定し、単問は送信、多問は次の質問へ
+		const preview = { rev: 0, role: 'assistant' as const, kind: 'question' as const, text: 'エラーはどう見せますか?', toolUseId: 'q1', questionGroup: 'g', questionIndex: 0, options: [{ label: 'Toast', preview: '# Toast' }, { label: 'Inline', preview: '# Inline' }] };
+		const plain = { rev: 1, role: 'assistant' as const, kind: 'question' as const, text: '色は?', toolUseId: 'q1', questionGroup: 'g', questionIndex: 1, options: [{ label: 'Red' }, { label: 'Blue' }] };
+		const { input, terminal, setView } = setup({ interaction: { kind: 'question', id: 'g' }, pendingQuestions: [preview] });
+		terminal.screen = ['エラーはどう見せますか?', '❯ 1. Toast', '  2. Inline', 'Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel'].join('\n');
+		const single = await input.answerQuestions(1, 't', 'g', [{ kind: 'option', index: 1 }]);
+		const singleSent = [...terminal.sent];
+		terminal.sent.length = 0;
+		const other = await input.answerQuestions(1, 't', 'g', [{ kind: 'text', optionCount: 2, text: 'no notes' }]);
+		const otherSent = [...terminal.sent];
+		setView({ pendingQuestions: [preview, plain] });
+		const mixed = await input.answerQuestions(1, 't', 'g', [{ kind: 'option', index: 1 }, { kind: 'option', index: 0 }]);
+		assert.deepStrictEqual({ single, singleSent, other: other !== undefined, otherSent, mixed, mixedSent: terminal.sent }, {
+			single: undefined,
+			singleSent: ['"2"', '"\\r"'],
+			other: true,
+			otherSent: [],
+			mixed: undefined,
+			// Q1（preview）は番号と Enter、Q2（ふつう）は番号だけ、最後に確認画面の Enter
+			mixedSent: ['"2"', '"\\r"', '"1"', '"\\r"'],
+		});
+	});
+
 	test('answers an approval only when its own prompt is on screen, stops before a stray Enter, and hands Codex approvals to the app-server', async () => {
 		const approval = { kind: 'approval' as const, id: 'approval:e:0', detail: 'Bash: npm test -- auth', choices: [{ id: 'yes', label: '許可', tone: 'approve' as const }] };
 		const { input, terminal, claims, setView } = setup({ interaction: approval });

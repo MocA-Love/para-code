@@ -77,6 +77,49 @@ describe('para-code mod', () => {
 		expect(recorded.find(entry => entry.op === 'question')?.body).toEqual(expect.objectContaining({ sessionId: 'session-1', questions: QUESTIONS }));
 	});
 
+	test('notes from the phone come back as annotations next to the answer', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		const annotations = { 'Pick a color?': { preview: '# Green', notes: 'a darker one' } };
+		fakeParaCode(on, {
+			question: () => ({ id: 'q4', wait: true }),
+			wait: () => ({ state: 'answer', answers: { 'Pick a color?': 'Green' }, annotations }),
+		}, recorded);
+		let releaseTerminal: (() => void) | undefined;
+		on('tool.call', () => new Promise(resolve => {
+			releaseTerminal = () => resolve({ result: { questions: QUESTIONS, answers: { 'Pick a color?': 'Red' } } });
+		}));
+		await startSession($);
+		const answered = await $.tool.call({ tool: 'AskUserQuestion', questions: QUESTIONS });
+		releaseTerminal?.();
+		expect(answered.result).toEqual({ questions: QUESTIONS, answers: { 'Pick a color?': 'Green' }, annotations });
+	});
+
+	test('"Chat about this" from the phone: a message becomes the response, no message the refusal Para Code wrote', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		const replies = [
+			{ state: 'clarify', response: 'show me the screen first' },
+			{ state: 'clarify', deny: 'The user wants to clarify these questions.' },
+		];
+		fakeParaCode(on, {
+			question: () => ({ id: 'q5', wait: true }),
+			wait: () => replies.shift() ?? { state: 'settled' },
+		}, recorded);
+		const releases: (() => void)[] = [];
+		on('tool.call', () => new Promise(resolve => {
+			releases.push(() => resolve({ result: { questions: QUESTIONS, answers: { 'Pick a color?': 'Red' } } }));
+		}));
+		await startSession($);
+		const withMessage = await $.tool.call({ tool: 'AskUserQuestion', questions: QUESTIONS });
+		const withoutMessage = await $.tool.call({ tool: 'AskUserQuestion', questions: QUESTIONS });
+		for (const release of releases) {
+			release();
+		}
+		expect({ withMessage: withMessage.result, withoutMessage: (withoutMessage as Json).deny }).toEqual({
+			withMessage: { questions: QUESTIONS, answers: {}, response: 'show me the screen first' },
+			withoutMessage: 'The user wants to clarify these questions.',
+		});
+	});
+
 	test('an answer in the terminal wins and tells Para Code to stop waiting', async ($, on) => {
 		const recorded: IRecorded[] = [];
 		const settled = new Set<string>();
