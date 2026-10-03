@@ -1,0 +1,62 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* System usage editor tab (see paradisSystemUsageEditor.ts). The charts themselves are styled in paradisSystemUsageChart.css. */
+
+.paradis-sysusage-editor {
+	box-sizing: border-box;
+	height: 100%;
+	padding: 20px 24px;
+	overflow-y: auto;
+	color: var(--vscode-foreground);
+	font-size: 13px;
+}
+
+.paradis-sysusage-editor:focus {
+	outline: none;
+}
+
+.paradis-sysusage-editor-header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 16px;
+}
+
+.paradis-sysusage-editor-title {
+	margin: 0;
+	font-size: 18px;
+	font-weight: 600;
+}
+
+.paradis-sysusage-editor-info {
+	margin-top: 4px;
+	font-size: 12px;
+	opacity: 0.75;
+}
+
+.paradis-sysusage-editor-controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.paradis-sysusage-editor .paradis-sysusage-grid {
+	/* 3 columns at most (3 x 2 for the 6 charts), fewer when the editor is narrow */
+	grid-template-columns: repeat(auto-fill, minmax(max(280px, calc((100% - 24px) / 3)), 1fr));
+}
+
+.paradis-sysusage-editor .paradis-sysusage-chart {
+	height: 120px;
+}
+
+.paradis-sysusage-editor-status {
+	margin-top: 16px;
+	font-size: 12px;
+	opacity: 0.7;
+}

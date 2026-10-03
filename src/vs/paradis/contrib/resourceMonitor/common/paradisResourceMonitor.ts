@@ -9,6 +9,8 @@
 // タイトルバーのCPU/RAM使用率インジケータ(機能E-3、Superset移植)の共有定義。
 // electron-main(実際の収集)と electron-browser(表示・ポーリング)の両方から参照される。
 
+import { IParadisSystemUsageResponse } from './paradisSystemUsage.js';
+
 /**
  * electron-main ⇔ electron-browser 間のリソーススナップショット取得用IPCチャネル名。
  */
@@ -104,6 +106,18 @@ export interface IParadisHostResourcesRequest {
 export interface IParadisResourceMonitorMobileReport {
 	readonly host: IParadisHostResources;
 	readonly snapshot: IParadisResourceMonitorSnapshot;
+	/**
+	 * マシン全体の使用率の時系列（モバイルが `history` を付けて聞いたときだけ。capability `system.history.v1`）。
+	 * SSH のウィンドウなら接続先のマシンの履歴。
+	 */
+	readonly history?: IParadisSystemUsageResponse;
+	/** 履歴を返せなかった理由。`remote-outdated` は接続先の Para Code が古い（今の値の `host` だけ）。 */
+	readonly historyUnavailable?: 'remote-outdated' | 'failed';
+	/**
+	 * `history` / `historyUnavailable` と `host` がどのマシンの値か（`'local'` はこの PC、`'remote'` は SSH の接続先）。
+	 * モバイルは `history.machine` で名指しし、違うマシンの応答なら写しに入れない。
+	 */
+	readonly historyMachine?: 'local' | 'remote';
 }
 
 export interface IParadisResourceMonitorSessionMetrics extends IParadisResourceUsage {

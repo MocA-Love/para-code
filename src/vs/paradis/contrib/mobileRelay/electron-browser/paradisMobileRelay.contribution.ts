@@ -347,7 +347,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			uris => commandService.executeCommand<Record<string, IParadisPrStatus>>(PARADIS_GET_PR_STATUSES_COMMAND_ID, uris.map(uri => uri.toJSON())),
 			// モバイルの「システム」画面。PC版タイトルバーのCPU/RAMモニタと同じクライアントを再利用し、
 			// ホストマシン全体の使用量とPara Code内訳をまとめて返す
-			force => resourceMonitorClient.getMobileReport(force),
+			(force, history) => resourceMonitorClient.getMobileReport(force, history),
 			// スペースごとのディスク使用量。計測は shared process で1時間ごとに走っているので、
 			// ここは基本的に温まったキャッシュを返すだけになる
 			bypassCache => spaceDiskClient.measure(bypassCache),
