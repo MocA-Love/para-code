@@ -8,7 +8,7 @@
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
-import { MobileController, MobileWarmLeaseControllerRegistry, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type BrowserTargetsScope, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type PcPushMessage, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type SpaceNoteSetOptions, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, MobileWarmLeaseControllerRegistry, PcUnreachableError, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type BrowserTargetsScope, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type PcPushMessage, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type SpaceNoteSetOptions, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { pcHasCapability, type UpdateTarget } from './pcCompat.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
@@ -410,7 +410,8 @@ interface AppState extends StoreState {
 	fsMedia(ws: string, path: string): Promise<FsMediaResult>;
 	fsFind(ws: string, query: string): Promise<FsFindResult>;
 	fsGrep(ws: string, query: string): Promise<FsGrepResult>;
-	fsUpload(name: string, dataBase64: string): Promise<FsUploadResult>;
+	/** `ws` を渡すとそのスペースの PC 画面（SSH 接続中なら接続先）の置き場へ上げる。 */
+	fsUpload(name: string, dataBase64: string, ws?: string): Promise<FsUploadResult>;
 	/** コード断片のシンタックスハイライト（PCの現行テーマ）。 */
 	fsHighlight(text: string, lang?: string): Promise<FsHighlightResult>;
 	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult>;
@@ -2334,9 +2335,9 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.fsGrep(ws, query);
 	},
 
-	fsUpload(name: string, dataBase64: string) {
+	fsUpload(name: string, dataBase64: string, ws?: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		return controller.fsUpload(name, dataBase64);
+		return controller.fsUpload(name, dataBase64, ws);
 	},
 
 	fsHighlight(text: string, lang?: string) {
@@ -2504,7 +2505,7 @@ export function pcHasCapabilityFor(pcId: string | undefined, name: string): bool
  */
 export function sendPcRequest<T = Record<string, unknown>>(pcId: string | undefined, channel: 'scm' | 'fs', body: { readonly t: string; readonly ws?: string; readonly [key: string]: unknown }, options?: { readonly timeoutMs?: number }): Promise<T> {
 	const target = runtimeControllerOf(pcId);
-	return target !== undefined ? target.requestPc<T>(channel, body, options) : Promise.reject(new Error('not initialized'));
+	return target !== undefined ? target.requestPc<T>(channel, body, options) : Promise.reject(new PcUnreachableError('not initialized'));
 }
 
 /** その PC の内蔵ブラウザのブックマーク（`browser.bookmarks.v1`。`MobileController.browserBookmarks`）。 */
