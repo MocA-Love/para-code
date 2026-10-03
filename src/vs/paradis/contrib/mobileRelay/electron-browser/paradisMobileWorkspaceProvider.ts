@@ -15,7 +15,7 @@ import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { dirname as uriDirname, extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
+import { extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
 import { OperatingSystem } from '../../../../base/common/platform.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
@@ -86,6 +86,7 @@ import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionsForMobile, paradisParseApprovalOptions, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
 import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
+import { paradisResolveMobileUploadHome } from './paradisMobileUploadHome.js';
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { PARADIS_OFFICE_CHANNEL, marshalParadisOfficeRequest, unmarshalParadisOfficeResponse, type ParadisOfficeV1Negotiation } from '../../fileViewers/common/paradisOfficeChannel.js';
 import type { ParadisOfficeSourceDescriptor } from '../../fileViewers/common/paradisOfficeProtocol.js';
@@ -2204,32 +2205,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 *
 	 * 添付を読むのはこのウィンドウのペインで動くエージェントなので、SSH 接続中は接続先へ置く。
 	 * 置き場はローカルと同じ「userData 配下の専用ディレクトリ」に揃える（ワークスペースを汚さず、
-	 * 掃除の対象も一箇所にまとまる）。接続先の userData は環境が持つ globalStorageHome の親。
-	 *
-	 * 接続中なのに置き場が接続先を指していないときは、手元へ落とさず失敗させる。
-	 * `getEnvironment()` は失敗を握り潰して null を返すので、そこで手元へ落とすと
-	 * 「接続先のつもりで手元に書き、しかも成功として返す」ことになる（同種の事故は
-	 * `agentBrowser/common/paradisRemoteUserHome.ts` に記録がある）。判断は「接続中かどうか」ではなく
-	 * 「今この置き場が接続先を指しているか」で行う。
+	 * 掃除の対象も一箇所にまとまる）。置き場の決め方は読み取り（`fs.attachment.v1`）と共有する
+	 * （`paradisMobileUploadHome.ts`。接続先を確かめられないときは手元へ落とさず例外にする）。
 	 */
 	private async resolveUploadTarget(name: string): Promise<{ uri: URI; path: string }> {
-		const connection = this.remoteAgentService?.getConnection();
-		if (connection) {
-			const environment = await this.remoteAgentService?.getEnvironment();
-			// 接続先の環境は、こちらが送った authority を焼き込んだ URI で返ってくる。別物なら接続先ではない
-			const userData = environment ? uriDirname(environment.globalStorageHome) : undefined;
-			if (!environment || userData === undefined
-				|| userData.scheme !== Schemas.vscodeRemote
-				|| userData.authority.toLowerCase() !== connection.remoteAuthority.toLowerCase()
-			) {
-				// allow-any-unicode-next-line
-				throw new Error(localize('paradis.mobile.uploadRemoteUnavailable', "接続先（{0}）の保存先が確認できないため、添付を送れませんでした。接続が復帰してからやり直してください。", connection.remoteAuthority));
-			}
-			const uri = paradisCreateMobileUploadTarget(userData, name);
-			return { uri, path: paradisRemoteAbsolutePath(uri, environment.os) };
-		}
-		const uri = paradisCreateMobileUploadTarget(this.environmentService.userRoamingDataHome, name);
-		return { uri, path: uri.fsPath };
+		const home = await paradisResolveMobileUploadHome(this.environmentService, this.remoteAgentService);
+		const uri = paradisCreateMobileUploadTarget(home.userData, name);
+		return { uri, path: home.remoteOs !== undefined ? paradisRemoteAbsolutePath(uri, home.remoteOs) : uri.fsPath };
 	}
 
 	private mobileOfficeOperationKey(mobileId: string, requestId: string): string {

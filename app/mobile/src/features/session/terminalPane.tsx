@@ -322,7 +322,8 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 		}
 		setUploading(true);
 		try {
-			const { path } = await fsUpload(asset.fileName ?? 'photo.jpg', asset.base64);
+			// エージェントのいるスペースの PC 画面へ上げる（SSH 接続中のウィンドウなら接続先に置かれる）
+			const { path } = await fsUpload(asset.fileName ?? 'photo.jpg', asset.base64, terminal.ws);
 			if (live) {
 				void sendTextInput(terminalKey, `${path} `, false);
 			} else {

@@ -10,6 +10,7 @@ import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal } from './overlayHost.js';
 import { haptic } from '../haptics.js';
 import { colors, radius, squircle, type } from '../theme.js';
+import { useWindowControlsInset } from '../ipad/windowControls.js';
 import { monoFamily } from '../monoFont.js';
 
 /**
@@ -119,8 +120,7 @@ export function ToolImagePreview({ load, size = 28 }: { load: ImageLoad; size?: 
 }
 
 /**
- * 全画面の画像ビューア。ヘッダーとフッターは Liquid Glass で画像の上に浮かせ、
- * 画像自体は等倍で中央に置いてピンチズームできるようにする。
+ * 全画面の画像ビューア（ツールの結果の画像）。中身の取り寄せだけを持ち、見た目は {@link ImageLightbox}。
  */
 export function ToolImageLightbox({ terminalKey, rev, images, initialIndex, title, subtitle, onClose }: {
 	terminalKey?: string;
@@ -136,7 +136,52 @@ export function ToolImageLightbox({ terminalKey, rev, images, initialIndex, titl
 	const [index, setIndex] = useState(() => Math.min(Math.max(0, initialIndex), Math.max(0, images.length - 1)));
 	const image = images[index];
 	const load = useToolImage(terminalKey, rev, image);
+	return (
+		<ImageLightbox
+			load={load}
+			count={images.length}
+			index={index}
+			onIndexChange={setIndex}
+			title={title}
+			subtitle={subtitle}
+			mediaType={image?.mediaType}
+			bytes={image?.bytes}
+			onClose={onClose}
+		/>
+	);
+}
 
+/** ビューアの上の帯の右に並べる操作（共有・写真に保存など）。 */
+export interface ImageLightboxAction {
+	readonly key: string;
+	/** Ionicons の名前。 */
+	readonly icon: keyof typeof Ionicons.glyphMap;
+	readonly label: string;
+	/** 実行中（くるくる回して押せなくする）。 */
+	readonly busy?: boolean;
+	readonly onPress: () => void;
+}
+
+/**
+ * 全画面の画像ビューアの見た目。ヘッダーとフッターは Liquid Glass で画像の上に浮かせ、
+ * 画像自体は等倍で中央に置いてピンチズームできるようにする。
+ * OverlayPortal に載せるので、iPad の 2 列でもウィンドウ全体に出る。
+ */
+export function ImageLightbox({ load, count, index, onIndexChange, title, subtitle, mediaType, bytes, actions, onClose }: {
+	/** いま出している 1 枚の取り寄せの状態。 */
+	load: ImageLoad;
+	/** 何枚あるか（2 枚以上でページャを出す）。 */
+	count: number;
+	index: number;
+	onIndexChange: (index: number) => void;
+	title: string;
+	subtitle?: string;
+	/** ヘッダーの副題に出す種類と容量（分からなければ省く）。 */
+	mediaType?: string;
+	bytes?: number;
+	actions?: readonly ImageLightboxAction[];
+	onClose: () => void;
+}) {
 	// OverlayPortal は Modal ではないため、OSの戻る操作は自前で拾う（既存のポップオーバーと同じ作法）。
 	useEffect(() => {
 		const subscription = BackHandler.addEventListener('hardwareBackPress', () => { onClose(); return true; });
@@ -144,6 +189,8 @@ export function ToolImageLightbox({ terminalKey, rev, images, initialIndex, titl
 	}, [onClose]);
 
 	const { width, height } = useWindowDimensions();
+	// iPad のウィンドウアプリでは、左上のウィンドウ操作ボタンを避ける（OverlayPortal はウィンドウの左上から描く）。
+	const controlsInset = useWindowControlsInset();
 	const [natural, setNatural] = useState<{ readonly width: number; readonly height: number } | undefined>(undefined);
 	const uri = load.status === 'ready' ? load.uri : undefined;
 
@@ -164,8 +211,8 @@ export function ToolImageLightbox({ terminalKey, rev, images, initialIndex, titl
 
 	const step = useCallback((delta: number) => {
 		haptic('tick');
-		setIndex(current => Math.min(Math.max(0, current + delta), images.length - 1));
-	}, [images.length]);
+		onIndexChange(Math.min(Math.max(0, index + delta), count - 1));
+	}, [count, index, onIndexChange]);
 
 	// 画面いっぱいに収まる大きさへ落とす（縦横比は保つ）。寸法が取れるまでは幅基準で置く。
 	const fitted = useMemo(() => {
@@ -178,9 +225,9 @@ export function ToolImageLightbox({ terminalKey, rev, images, initialIndex, titl
 	}, [natural, width, height]);
 
 	const meta = [
-		image !== undefined ? image.mediaType.replace(/^image\//, '').toUpperCase() : undefined,
+		mediaType !== undefined ? mediaType.replace(/^image\//, '').toUpperCase() : undefined,
 		natural !== undefined ? `${natural.width} × ${natural.height}` : undefined,
-		image !== undefined ? formatImageBytes(image.bytes) : undefined,
+		bytes !== undefined ? formatImageBytes(bytes) : undefined,
 	].filter((part): part is string => part !== undefined && part.length > 0).join(' · ');
 
 	return (
@@ -207,7 +254,7 @@ export function ToolImageLightbox({ terminalKey, rev, images, initialIndex, titl
 					)}
 				</ScrollView>
 
-				<GlassSurface style={styles.bar}>
+				<GlassSurface style={[styles.bar, controlsInset > 0 ? { left: 12 + controlsInset } : undefined]}>
 					<Pressable onPress={() => { haptic('move'); onClose(); }} hitSlop={10} accessibilityRole="button" accessibilityLabel="閉じる" style={styles.close}>
 						<Ionicons name="close" size={18} color={colors.text} />
 					</Pressable>
@@ -217,16 +264,32 @@ export function ToolImageLightbox({ terminalKey, rev, images, initialIndex, titl
 							{[subtitle, meta].filter(part => part !== undefined && part.length > 0).join(' · ')}
 						</Text>
 					</View>
+					{(actions ?? []).map(action => (
+						<Pressable
+							key={action.key}
+							onPress={action.onPress}
+							disabled={action.busy === true || uri === undefined}
+							hitSlop={8}
+							accessibilityRole="button"
+							accessibilityLabel={action.label}
+							accessibilityState={{ disabled: action.busy === true || uri === undefined, busy: action.busy === true }}
+							style={({ pressed }) => [styles.action, pressed ? styles.actionPressed : undefined]}
+						>
+							{action.busy === true
+								? <ActivityIndicator size="small" color={colors.text} />
+								: <Ionicons name={action.icon} size={18} color={uri === undefined ? colors.textDim : colors.text} />}
+						</Pressable>
+					))}
 				</GlassSurface>
 
-				{images.length > 1 ? (
+				{count > 1 ? (
 					<GlassSurface style={styles.pager}>
 						<Pressable onPress={() => step(-1)} disabled={index === 0} hitSlop={13} accessibilityRole="button" accessibilityLabel="前の画像">
 							<Ionicons name="chevron-back" size={18} color={index === 0 ? colors.textDim : colors.text} />
 						</Pressable>
-						<Text style={styles.pagerText}>{index + 1} / {images.length}</Text>
-						<Pressable onPress={() => step(1)} disabled={index >= images.length - 1} hitSlop={13} accessibilityRole="button" accessibilityLabel="次の画像">
-							<Ionicons name="chevron-forward" size={18} color={index >= images.length - 1 ? colors.textDim : colors.text} />
+						<Text style={styles.pagerText}>{index + 1} / {count}</Text>
+						<Pressable onPress={() => step(1)} disabled={index >= count - 1} hitSlop={13} accessibilityRole="button" accessibilityLabel="次の画像">
+							<Ionicons name="chevron-forward" size={18} color={index >= count - 1 ? colors.textDim : colors.text} />
 						</Pressable>
 					</GlassSurface>
 				) : null}
@@ -253,6 +316,8 @@ const styles = StyleSheet.create({
 		paddingHorizontal: 12, paddingVertical: 10,
 		borderRadius: radius.panel, ...squircle, overflow: 'hidden',
 	},
+	action: { width: 32, height: 32, borderRadius: radius.pill, ...squircle, alignItems: 'center', justifyContent: 'center' },
+	actionPressed: { opacity: 0.6 },
 	close: { width: 28, height: 28, borderRadius: radius.pill, ...squircle, backgroundColor: colors.surface3, alignItems: 'center', justifyContent: 'center' },
 	barBody: { flex: 1, minWidth: 0 },
 	barTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },

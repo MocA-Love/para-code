@@ -2,12 +2,26 @@
 
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { paraAlert } from '../../paraAlert.js';
 import { ArrowUp, CornerDownRight, ImagePlus } from 'lucide-react-native';
 import { appendQuickReply } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
-import { appendUploadedPath, flattenAnswerInput, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from '../../components/agentComposerDraft.js';
+import { flattenAnswerInput, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from '../../components/agentComposerDraft.js';
+import { ComposerAttachmentChips } from '../../components/attachmentChips.js';
+import { saveAttachmentDeviceCopy } from '../../attachments/attachmentImages.js';
+import { ATTACHMENT_LIMIT, attachmentNameOf, composeAttachmentMessage } from '../../attachments/attachmentText.js';
+import {
+	appendComposerAttachments,
+	composerAttachmentSendState,
+	composerAttachmentsOf,
+	patchComposerAttachment,
+	remainingAttachmentSlots,
+	restoreComposerAttachments,
+	setComposerAttachments,
+	useComposerAttachments,
+	type ComposerAttachment,
+} from '../../attachments/composerAttachments.js';
 import { agentSlashQuery, filterAgentSlashCommands, normalizeAgentSlashSubmission, selectedAgentSlashCommandText } from '../../components/agentSlashCommands.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
@@ -51,7 +65,9 @@ interface SessionComposerProps {
 	sendText: (text: string) => Promise<AgentMessageSendResult>;
 	updateClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<AgentMessageSendResult>;
 	onAfterSubmit: () => void;
-	fsUpload: (name: string, dataBase64: string) => Promise<FsUploadResult>;
+	fsUpload: (name: string, dataBase64: string, ws?: string) => Promise<FsUploadResult>;
+	/** このエージェントのスペース（添付をそのスペースの PC 画面へ上げる。SSH 接続中は接続先に置かれる）。 */
+	ws?: string;
 	requestAgentModelCatalog: (terminalKey: string) => void;
 	requestAgentCommandCatalog: (terminalKey: string) => void;
 	updateAgentSettings: (terminalKey: string, model: string, effort: string) => void;
@@ -72,11 +88,12 @@ interface SessionComposerProps {
  *  - 質問カードの「その他」を押すと回答入力に切り替わる。書きかけの下書きは入力欄から外し、
  *    回答を送れた・やめた・質問が替わったら戻す（回答に下書きが混ざらないように）
  *  - `/` で始めるとスラッシュコマンドの候補を出す
- *  - 画像は PC へ上げて、保存先のパスを入力欄へ入れる
+ *  - 画像は PC へ上げ、入力欄の文字の上に札で並べる（案 P2。文字にはパスを入れない）。送るときに
+ *    パスを本文の先頭に並べる（案 M1）。上げ終わるまで送れず、失敗した画像は確かめてから外して送る
  */
 export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionComposerProps>(function SessionComposer({
 	draftKey, terminalKey, sessionEpoch, agent, model, effort, modelControl, modelLocked, commandCatalog, monitors,
-	sendText, updateClaudeSetting, onAfterSubmit, fsUpload, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings,
+	sendText, updateClaudeSetting, onAfterSubmit, fsUpload, ws, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings,
 	answerTarget, onCancelAnswer, answerRefreshing,
 }, ref) {
 	const loadDraft = (key: string | undefined): string => key !== undefined ? useAppStore.getState().agentDrafts[key] ?? '' : '';
@@ -96,6 +113,11 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	const answering = answerTarget !== undefined;
 	const answeringRef = useRef(answering);
 	answeringRef.current = answering;
+	// 添付は入力欄ごと（質問への回答の入力は別）に持つ。
+	const attachmentKey = attachmentKeyOf(draftKey, answering);
+	const attachments = useComposerAttachments(attachmentKey);
+	const attachmentState = composerAttachmentSendState(attachments);
+	const hasReadyAttachments = attachments.some(item => item.status === 'ready');
 	if (draftKeyRef.current !== draftKey) {
 		draftKeyRef.current = draftKey;
 		inputRef.current = answering ? '' : loadDraft(draftKey);
@@ -154,6 +176,10 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 			return;
 		}
 		previousAnsweringRef.current = answering;
+		if (!answering) {
+			// 回答をやめた・送れたら、回答の入力に付けていた添付は捨てる（次の質問へ持ち越さない）
+			setComposerAttachments(attachmentKeyOf(draftKeyRef.current, true), () => []);
+		}
 		const text = answering ? '' : loadDraft(draftKeyRef.current);
 		inputRef.current = text;
 		nativeInputRef.current?.setNativeProps({ text });
@@ -167,18 +193,53 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 			return;
 		}
 		const text = inputRef.current;
-		if (text.trim().length === 0 || (answerTarget !== undefined && answerRefreshing)) {
+		const submittedAttachmentKey = attachmentKeyOf(draftKey, answerTarget !== undefined);
+		const attachmentList = composerAttachmentsOf(submittedAttachmentKey);
+		const sendState = composerAttachmentSendState(attachmentList);
+		if (sendState.kind === 'uploading') {
 			return;
 		}
+		if (sendState.kind === 'failed') {
+			// 失敗した画像は、確かめてから外して送る（画像のために本文まで止めない）
+			haptic('warning');
+			paraAlert.alert(
+				'送れなかった画像があります',
+				`アップロードできなかった ${sendState.failed} 枚を外して送りますか？`,
+				[
+					{ text: 'キャンセル', style: 'cancel' },
+					{
+						text: '外して送る',
+						onPress: () => {
+							setComposerAttachments(submittedAttachmentKey, list => list.filter(item => item.status !== 'failed'));
+							submitRef.current();
+						},
+					},
+				],
+			);
+			return;
+		}
+		const sentAttachments = attachmentList.filter(item => item.status === 'ready');
+		if ((text.trim().length === 0 && sendState.paths.length === 0) || (answerTarget !== undefined && answerRefreshing)) {
+			return;
+		}
+		const restoreAttachments = () => {
+			if (sentAttachments.length > 0) {
+				setComposerAttachments(submittedAttachmentKey, list => restoreComposerAttachments(list, sentAttachments));
+			}
+		};
+		setComposerAttachments(submittedAttachmentKey, () => []);
 		const submittedDraftKey = draftKey;
 		const generation = ++submissionGenerationRef.current;
 		setSubmitting(true);
 		if (answerTarget !== undefined) {
-			// 質問への回答として送る（送り方と失敗の表示は質問カードが持つ）。拒否されたら本文を戻す。
+			// 質問への回答として送る（送り方と失敗の表示は質問カードが持つ）。拒否されたら本文と添付を戻す。
 			clearActiveInput();
-			answerTarget.submit(text.trim())
+			answerTarget.submit(composeAttachmentMessage(sendState.paths, text.trim(), true))
 				.catch((): AgentMessageSendResult => ({ status: 'rejected', message: '回答を送信できませんでした' }))
 				.then(result => {
+					if (result.status === 'rejected') {
+						restoreAttachments();
+					}
 					if (result.status === 'rejected' && answeringRef.current && draftKeyRef.current === submittedDraftKey) {
 						replaceActiveInput(text + inputRef.current);
 					}
@@ -191,8 +252,15 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 			return;
 		}
 		clearActiveInput();
-		const submittedText = normalizeAgentSlashSubmission(text, agent, commandCatalog?.commands ?? []);
+		const normalizedText = normalizeAgentSlashSubmission(text, agent, commandCatalog?.commands ?? []);
+		// スラッシュコマンドは先頭が `/` でないと効かないので、添付のパスは後ろへ足す
+		const submittedText = sendState.paths.length > 0 && normalizedText.trimStart().startsWith('/')
+			? `${normalizedText} ${sendState.paths.join(' ')}`
+			: composeAttachmentMessage(sendState.paths, normalizedText);
 		sendText(submittedText).catch((): AgentMessageSendResult => ({ status: 'rejected', message: '送信処理中にエラーが発生しました' })).then(result => {
+			if (result.status === 'rejected') {
+				restoreAttachments();
+			}
 			const storedDraft = submittedDraftKey !== undefined ? useAppStore.getState().agentDrafts[submittedDraftKey] ?? '' : '';
 			const reconciliation = answeringRef.current
 				? (result.status === 'rejected' && submittedDraftKey !== undefined
@@ -222,6 +290,9 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 			}
 		});
 	}, [submitting, draftKey, clearActiveInput, replaceActiveInput, sendText, onAfterSubmit, agent, commandCatalog?.commands, answerTarget, answerRefreshing]);
+	// 確認のダイアログから送り直すときは、その時点の submit を呼ぶ
+	const submitRef = useRef(submit);
+	submitRef.current = submit;
 
 	useImperativeHandle(ref, () => ({
 		insertText: (text: string) => replaceActiveInput(appendQuickReply(inputRef.current, text)),
@@ -245,46 +316,81 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 		}
 	}, [terminalKey, requestAgentCommandCatalog]);
 
-	// 画像の添付: フォトライブラリから選び、PC へ上げて保存先のパスを入力欄へ入れる。
-	const [uploading, setUploading] = useState(false);
-	const attachImage = useCallback(async () => {
-		if (uploading) {
-			return;
-		}
-		const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], base64: true, quality: 0.8 });
-		const asset = result.assets?.[0];
-		if (result.canceled || asset?.base64 === undefined || asset.base64 === null) {
-			return;
-		}
-		setUploading(true);
-		const uploadDraftKey = draftKey;
-		const uploadForAnswer = answeringRef.current;
-		try {
-			const { path } = await fsUpload(asset.fileName ?? 'photo.jpg', asset.base64);
-			const sameInput = draftKeyRef.current === uploadDraftKey && answeringRef.current === uploadForAnswer;
-			if (uploadForAnswer) {
-				if (sameInput) {
-					replaceActiveInput(appendUploadedPath(inputRef.current, path));
-				}
+	// 画像の添付: フォトライブラリから選び（複数可。上限 5 枚）、入力欄の札に並べて選んだ順に 1 枚ずつ PC へ上げる。
+	const startUpload = useCallback((key: string, item: ComposerAttachment) => {
+		enqueueAttachmentUpload(key, async () => {
+			// 待っている間に外されていたら上げない。再試行では一覧の中身（base64）を使う
+			const current = composerAttachmentsOf(key).find(candidate => candidate.id === item.id);
+			if (current === undefined || current.base64 === undefined) {
 				return;
 			}
-			const previous = uploadDraftKey !== undefined ? useAppStore.getState().agentDrafts[uploadDraftKey] ?? '' : inputRef.current;
-			const next = appendUploadedPath(previous, path);
-			if (sameInput) {
-				replaceActiveInput(next);
-			} else if (uploadDraftKey !== undefined) {
-				useAppStore.getState().setAgentDraft(uploadDraftKey, next);
+			patchComposerAttachment(key, item.id, { status: 'uploading' });
+			try {
+				const { path } = await fsUpload(current.fileName, current.base64, ws);
+				const name = attachmentNameOf(path);
+				const copy = name !== undefined ? await saveAttachmentDeviceCopy(name, current.base64) : undefined;
+				patchComposerAttachment(key, item.id, { status: 'ready', path, name, base64: undefined, ...(copy !== undefined ? { previewUri: copy } : {}) });
+			} catch (err) {
+				console.warn('[session] image upload failed', errorKind(err));
+				haptic('error');
+				patchComposerAttachment(key, item.id, { status: 'failed' });
 			}
-		} catch (err) {
-			console.warn('[session] image upload failed', errorKind(err));
-			haptic('error');
-			paraAlert.alert('画像を送れませんでした', 'PC との接続を確認して、もう一度お試しください。');
-		} finally {
-			setUploading(false);
+		});
+	}, [fsUpload, ws]);
+	const attachImage = useCallback(async () => {
+		const key = attachmentKeyOf(draftKey, answeringRef.current);
+		const remaining = remainingAttachmentSlots(composerAttachmentsOf(key));
+		if (remaining <= 0) {
+			haptic('warning');
+			paraAlert.alert('これ以上添付できません', `画像は 1 回に ${ATTACHMENT_LIMIT} 枚まで添付できます。`);
+			return;
 		}
-	}, [uploading, fsUpload, draftKey, replaceActiveInput]);
+		const result = await ImagePicker.launchImageLibraryAsync({
+			mediaTypes: ['images'],
+			base64: true,
+			quality: 0.8,
+			allowsMultipleSelection: true,
+			selectionLimit: remaining,
+			orderedSelection: true,
+		});
+		if (result.canceled) {
+			return;
+		}
+		const picked: ComposerAttachment[] = [];
+		for (const asset of result.assets ?? []) {
+			if (asset.base64 === undefined || asset.base64 === null) {
+				continue;
+			}
+			picked.push({
+				id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+				previewUri: asset.uri,
+				fileName: asset.fileName ?? 'photo.jpg',
+				status: 'uploading',
+				base64: asset.base64,
+			});
+		}
+		let accepted: readonly ComposerAttachment[] = [];
+		setComposerAttachments(key, list => {
+			const appended = appendComposerAttachments(list, picked);
+			accepted = appended.accepted;
+			return appended.next;
+		});
+		for (const item of accepted) {
+			startUpload(key, item);
+		}
+	}, [draftKey, startUpload]);
+	const removeAttachment = useCallback((id: string) => {
+		setComposerAttachments(attachmentKey, list => list.filter(item => item.id !== id));
+	}, [attachmentKey]);
+	const retryAttachment = useCallback((id: string) => {
+		const item = composerAttachmentsOf(attachmentKey).find(candidate => candidate.id === id);
+		if (item !== undefined && item.status === 'failed') {
+			patchComposerAttachment(attachmentKey, id, { status: 'uploading' });
+			startUpload(attachmentKey, item);
+		}
+	}, [attachmentKey, startUpload]);
 
-	const sendDisabled = submitting || !sendable || codexSlashCatalogPending || (answering && answerRefreshing);
+	const sendDisabled = submitting || !(sendable || hasReadyAttachments) || attachmentState.kind === 'uploading' || codexSlashCatalogPending || (answering && answerRefreshing);
 	// 外付けキーボードの ⌘↩（iPad）。送信ボタンと同じ条件で送る。
 	const focused = useIsFocused();
 	useShortcutSlot('send', focused ? { send: () => { if (!sendDisabled) { haptic('commit'); submit(); } } } : undefined);
@@ -304,6 +410,18 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				</View>
 			) : null}
 			<View style={styles.bar}>
+				{attachments.length > 0 ? (
+					<View style={styles.attachments}>
+						<ComposerAttachmentChips items={attachments} onRemove={removeAttachment} onRetry={retryAttachment} />
+						{attachmentState.kind !== 'ok' ? (
+							<Text style={[textStyles.attachmentNote, attachmentState.kind === 'failed' ? styles.attachmentNoteFailed : undefined]} accessibilityLiveRegion="polite">
+								{attachmentState.kind === 'uploading'
+									? `画像をアップロードしています（残り ${attachmentState.uploading} 枚）。終わるまで送信できません`
+									: `${attachmentState.failed} 枚をアップロードできませんでした。札を押すと再試行します`}
+							</Text>
+						) : null}
+					</View>
+				) : null}
 				<ComposerInput
 					key={draftKey}
 					ref={nativeInputRef}
@@ -314,14 +432,13 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				<View style={styles.actions}>
 					<Pressable
 						onPress={() => { void attachImage(); }}
-						disabled={uploading}
 						hitSlop={ROUND_SLOP}
 						style={({ pressed }) => [styles.round, pressed ? styles.pressed : undefined]}
 						accessibilityRole="button"
-						accessibilityState={{ disabled: uploading, busy: uploading }}
+						accessibilityState={{ busy: attachmentState.kind === 'uploading' }}
 						accessibilityLabel="画像を添付"
 					>
-						{uploading ? <ActivityIndicator size="small" color={colors.textDim} /> : <Icon icon={ImagePlus} size={20} color={colors.textDim} />}
+						<Icon icon={ImagePlus} size={20} color={colors.textDim} />
 					</Pressable>
 					<ModelPill
 						key={`${terminalKey ?? 'none'}:${sessionEpoch ?? 'none'}:${agent ?? 'none'}`}
@@ -453,6 +570,17 @@ const styles = StyleSheet.create({
 		fontSize: type.caption,
 		color: colors.textMuted,
 	},
+	attachments: {
+		gap: space.xs,
+	},
+	attachmentNote: {
+		fontSize: type.caption,
+		lineHeight: 15,
+		color: colors.textMuted,
+	},
+	attachmentNoteFailed: {
+		color: colors.red,
+	},
 	answerPrompt: {
 		marginTop: 2,
 		fontSize: type.meta,
@@ -460,3 +588,21 @@ const styles = StyleSheet.create({
 		color: colors.text,
 	},
 });
+
+/** 添付の一覧の鍵（入力欄ごと。質問への回答の入力は別）。 */
+function attachmentKeyOf(draftKey: string | undefined, answering: boolean): string {
+	return `${draftKey ?? 'none'}${answering ? '\0answer' : ''}`;
+}
+
+/** 入力欄ごとのアップロードの列（選んだ順に 1 枚ずつ上げる）。 */
+const uploadQueues = new Map<string, Promise<void>>();
+
+function enqueueAttachmentUpload(key: string, run: () => Promise<void>): void {
+	const previous = uploadQueues.get(key) ?? Promise.resolve();
+	const next: Promise<void> = previous.then(run, run).finally(() => {
+		if (uploadQueues.get(key) === next) {
+			uploadQueues.delete(key);
+		}
+	});
+	uploadQueues.set(key, next);
+}
