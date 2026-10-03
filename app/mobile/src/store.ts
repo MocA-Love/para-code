@@ -888,6 +888,16 @@ export interface AgentChatMessage {
 	isError?: boolean;
 	/** text がPC側で切り詰められている。requestAgentToolFullText で全文を取り寄せられる。 */
 	truncated?: boolean;
+	/**
+	 * kind==='tool_result': サブエージェントの起動・報告の結果の子の ID（PC が transcript の構造化した結果から添える）。
+	 * 本文の末尾の `agentId:` が切り詰めで落ちても会話のカードを一覧の項目へ結べる。古い PC は送らない。
+	 */
+	agentId?: string;
+	/**
+	 * SubAgent 詳細の本文が PC で切り詰められている。詳細の rev は親の会話と無関係なので全文は取り寄せられず、
+	 * `truncated` とは分けて持つ（本文の末尾の `agentId:` を当てにしない判定にだけ使う）。
+	 */
+	detailTruncated?: boolean;
 	/** kind==='tool_result': 結果に含まれていた画像のメタ情報。実体は requestAgentToolImage で取り寄せる。 */
 	images?: AgentChatImage[];
 }
@@ -1101,7 +1111,11 @@ export interface AgentLiveState {
 }
 
 export type AgentActivityStatus = 'running' | 'idle' | 'completed' | 'failed' | 'interrupted' | 'unknown';
-export interface AgentActivityAgent { id: string; label: string; role: 'subagent' | 'teammate'; provider?: 'claude' | 'codex'; detail?: string; parentId?: string; depth?: number; status: AgentActivityStatus; startedAt: number; updatedAt: number }
+/**
+ * `toolUseIds` はこの子を起動・再開した呼び出しの toolUseId（先頭が起動）。会話のサブエージェントのカードが
+ * これで項目を引く。古い PC は送らない。
+ */
+export interface AgentActivityAgent { id: string; label: string; role: 'subagent' | 'teammate'; provider?: 'claude' | 'codex'; detail?: string; parentId?: string; depth?: number; status: AgentActivityStatus; startedAt: number; updatedAt: number; toolUseIds?: string[] }
 export interface AgentActivityTask { id: string; label: string; detail?: string; assignee?: string; agentId?: string; status: AgentActivityStatus; startedAt: number; updatedAt: number }
 export interface AgentActivityCompaction { id: string; trigger?: string; status: 'running' | 'completed'; startedAt: number; updatedAt: number }
 export interface AgentActivityState {
@@ -1121,6 +1135,10 @@ export interface AgentActivityDetailMessage {
 	toolUseId?: string;
 	ts?: number;
 	isError?: boolean;
+	/** text が PC で切り詰められている（本文の末尾の `agentId:` を当てにしない）。 */
+	truncated?: boolean;
+	/** {@link AgentChatMessage.agentId} */
+	agentId?: string;
 }
 
 function parseAgentActivityState(value: unknown): AgentActivityState | undefined {
@@ -1135,7 +1153,8 @@ function parseAgentActivityState(value: unknown): AgentActivityState | undefined
 		if (typeof item['id'] === 'string' && typeof item['label'] === 'string' && (item['role'] === 'subagent' || item['role'] === 'teammate') && statuses.has(item['status'] as AgentActivityStatus) && typeof item['startedAt'] === 'number' && typeof item['updatedAt'] === 'number') {
 			const parentId = typeof item['parentId'] === 'string' && item['parentId'] !== item['id'] ? item['parentId'].slice(0, 500) : undefined;
 			const depth = typeof item['depth'] === 'number' && Number.isFinite(item['depth']) ? Math.min(5, Math.max(1, Math.trunc(item['depth']))) : undefined;
-			agents.push({ id: item['id'].slice(0, 500), label: item['label'].slice(0, 1_000), role: item['role'], ...(item['provider'] === 'claude' || item['provider'] === 'codex' ? { provider: item['provider'] } : {}), ...(typeof item['detail'] === 'string' ? { detail: item['detail'].slice(0, 4_000) } : {}), ...(parentId !== undefined ? { parentId } : {}), ...(depth !== undefined ? { depth } : {}), status: item['status'] as AgentActivityStatus, startedAt: item['startedAt'], updatedAt: item['updatedAt'] });
+			const toolUseIds = Array.isArray(item['toolUseIds']) ? item['toolUseIds'].filter((id): id is string => typeof id === 'string' && id.length > 0).slice(0, 20).map(id => id.slice(0, 200)) : [];
+			agents.push({ id: item['id'].slice(0, 500), label: item['label'].slice(0, 1_000), role: item['role'], ...(item['provider'] === 'claude' || item['provider'] === 'codex' ? { provider: item['provider'] } : {}), ...(typeof item['detail'] === 'string' ? { detail: item['detail'].slice(0, 4_000) } : {}), ...(parentId !== undefined ? { parentId } : {}), ...(depth !== undefined ? { depth } : {}), status: item['status'] as AgentActivityStatus, startedAt: item['startedAt'], updatedAt: item['updatedAt'], ...(toolUseIds.length > 0 ? { toolUseIds } : {}) });
 		}
 	}
 	const tasks: AgentActivityTask[] = [];
@@ -4605,6 +4624,8 @@ export class MobileController {
 					if ((item['role'] === 'user' || item['role'] === 'assistant' || item['role'] === 'tool') && (item['kind'] === 'text' || item['kind'] === 'thinking' || item['kind'] === 'tool') && typeof item['text'] === 'string') {
 						messages.push({
 							role: item['role'], kind: item['kind'], text: item['text'].slice(0, 6_000),
+							...(item['truncated'] === true || item['text'].length > 6_000 ? { truncated: true } : {}),
+							...(typeof item['agentId'] === 'string' && item['agentId'].length <= 200 ? { agentId: item['agentId'] } : {}),
 							...(item['toolKind'] === 'tool_use' || item['toolKind'] === 'tool_result' ? { toolKind: item['toolKind'] } : {}),
 							...(typeof item['tool'] === 'string' && item['tool'].length <= 200 ? { tool: item['tool'] } : {}),
 							...(typeof item['toolUseId'] === 'string' && item['toolUseId'].length <= 500 ? { toolUseId: item['toolUseId'] } : {}),

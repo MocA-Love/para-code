@@ -2,6 +2,7 @@
 
 import { pinnedQuestionIndex } from '../../agentConversationUx.js';
 import type { AgentChatMessage, AgentInteraction } from '../../store.js';
+import { foldSubagentRows, type SubagentCardChatRow } from './subagentCards.js';
 
 /**
  * 会話表示の1行。旧画面（legacy-screens/agent.tsx）の行の組み立てをそのまま移したもの。
@@ -9,13 +10,15 @@ import type { AgentChatMessage, AgentInteraction } from '../../store.js';
  *  - 本文以外の連続する thinking / tool_use / tool_result は1つのツール実行の行へまとめる
  *  - 質問は独立の行（同じ AskUserQuestion 由来の複数の質問は1行にまとめる）
  *  - Web 検索は開始と結果を別の行にする（結果は実際に届いた位置へ置く）
+ *  - サブエージェントの呼び出しは、同じターンのものを 1 枚のカードにまとめる（`subagentCards.ts`）
  */
 export type ChatRow =
 	| { readonly type: 'msg'; readonly m: AgentChatMessage }
 	| { readonly type: 'question'; readonly m: AgentChatMessage; readonly answered: boolean }
 	| { readonly type: 'questionGroup'; readonly key: string; readonly msgs: AgentChatMessage[]; answered: boolean }
 	| { readonly type: 'web'; readonly key: string; readonly msgs: AgentChatMessage[] }
-	| { readonly type: 'group'; readonly key: string; readonly msgs: AgentChatMessage[] };
+	| { readonly type: 'group'; readonly key: string; readonly msgs: AgentChatMessage[] }
+	| SubagentCardChatRow;
 
 export type QuestionChatRow = Extract<ChatRow, { type: 'question' | 'questionGroup' }>;
 
@@ -72,7 +75,7 @@ export function buildChatRows(messages: readonly AgentChatMessage[]): ChatRow[] 
 		}
 	}
 	flush();
-	return result;
+	return foldSubagentRows(result);
 }
 
 /** 質問の行の回答の送り先 ID（questionGroup ?? toolUseId）。 */
@@ -107,7 +110,7 @@ export function splitPinnedQuestion(
 
 /** 一覧の行の鍵（セッションが変わったら全行を作り直す）。 */
 export function chatRowKey(row: ChatRow, epoch: string): string {
-	return row.type === 'group' || row.type === 'questionGroup' || row.type === 'web'
+	return row.type === 'group' || row.type === 'questionGroup' || row.type === 'web' || row.type === 'agents'
 		? `${epoch}:${row.key}`
 		: `${epoch}:${row.m.rev}`;
 }
