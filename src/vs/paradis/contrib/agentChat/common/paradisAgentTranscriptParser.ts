@@ -35,6 +35,10 @@ export interface IParadisAgentActivityDetailMessage {
 	readonly toolUseId?: string;
 	readonly ts?: number;
 	readonly isError?: boolean;
+	/** text が切り詰められている（本文の末尾の `agentId:` などを当てにしない）。 */
+	readonly truncated?: boolean;
+	/** {@link IParadisAgentChatMessage.agentId} */
+	readonly agentId?: string;
 }
 
 /** transcriptの生メッセージを SubAgent詳細用へ落とす（Claude / Codex 共通）。 */
@@ -47,6 +51,8 @@ export function toDetailMessage(message: IRawMessage): IParadisAgentActivityDeta
 		...(message.toolUseId !== undefined ? { toolUseId: message.toolUseId } : {}),
 		...(message.ts !== undefined ? { ts: message.ts } : {}),
 		...(message.isError === true ? { isError: true } : {}),
+		...(message.truncated === true ? { truncated: true } : {}),
+		...(message.agentId !== undefined ? { agentId: message.agentId } : {}),
 	};
 }
 
@@ -111,6 +117,9 @@ export interface IRawMessage {
 	readonly peerName?: string;
 	readonly peerSummary?: string;
 	readonly isError?: boolean;
+	/** {@link IParadisAgentChatMessage.agentId} */
+	readonly agentId?: string;
+	readonly truncated?: true;
 	/** 切り詰め前の全文。モバイルへは送らず tailer が 'tool-full' 用に保持する。 */
 	readonly fullText?: string;
 	/** 画像の実体。モバイルへは送らず tailer が 'tool-image' 用に保持する。 */
@@ -123,7 +132,8 @@ export interface IRawMessage {
  */
 export type ICodexTranscriptActivityEvent =
 	| { readonly type: 'turnStart'; readonly at: number }
-	| { readonly type: 'subagent'; readonly id: string; readonly agentPath?: string; readonly kind: 'started' | 'interacted' | 'interrupted' | 'completed'; readonly at: number; readonly detail?: string; readonly via?: string }
+	/** `callId` は起動・やりとりの呼び出しの call_id（今の rollout だけ。会話のカードと一覧の項目を結ぶ）。 */
+	| { readonly type: 'subagent'; readonly id: string; readonly agentPath?: string; readonly kind: 'started' | 'interacted' | 'interrupted' | 'completed'; readonly at: number; readonly detail?: string; readonly via?: string; readonly callId?: string }
 	| ({ readonly type: 'goal'; readonly at: number } & IParadisCodexGoal)
 	| { readonly type: 'plan'; readonly steps: readonly IParadisCodexPlanStep[]; readonly explanation?: string; readonly at: number }
 	| { readonly type: 'turnEnd'; readonly reason: 'completed' | 'failed' | 'interrupted'; readonly at: number };
@@ -161,7 +171,7 @@ function pushCodexSubagentActivity(signals: IParseSignals, id: string | undefine
 	// interacted がどのツール（send_message / followup_task 等）の呼び出しで起きたか。終わった子へ send_message で
 	// 知らせただけなら子は動き出さないので、トラッカーが状態を変えないために使う
 	const via = kind === 'interacted' && callId !== undefined ? signals.codexCallTools.get(callId) : undefined;
-	signals.codexActivityTimeline.push({ type: 'subagent', id, ...(agentPath !== undefined ? { agentPath } : {}), kind, at, ...(detail !== undefined ? { detail } : {}), ...(via !== undefined ? { via } : {}) });
+	signals.codexActivityTimeline.push({ type: 'subagent', id, ...(agentPath !== undefined ? { agentPath } : {}), kind, at, ...(detail !== undefined ? { detail } : {}), ...(via !== undefined ? { via } : {}), ...(callId !== undefined && kind !== 'completed' && kind !== 'interrupted' ? { callId } : {}) });
 }
 
 function paradisCodexGoalStatus(value: string | undefined): IParadisCodexGoal['status'] {
@@ -865,6 +875,8 @@ function pushClaudeUserContent(out: IRawMessage[], obj: Record<string, unknown>,
 		// ユーザーが貼った画像は tool_result ではなく content 直下に image ブロックとして入る。
 		// 本文と同じ発言の一部なので、テキスト側のメッセージへまとめて添える。
 		const pastedImages: IFlattenedImage[] = [];
+		// 行の toolUseResult は行に 1 つなので、tool_result が 1 つだけの行でしか結果の子の ID に使わない
+		const singleResult = content.filter(block => rec(block)?.type === 'tool_result').length === 1;
 		for (const block of content) {
 			const b = rec(block);
 			if (!b) {
@@ -897,10 +909,13 @@ function pushClaudeUserContent(out: IRawMessage[], obj: Record<string, unknown>,
 						signals.openedTasks.set(idMatch[1], ts ?? Date.now());
 					}
 				}
+				// サブエージェントの起動・報告の結果の子の ID。本文の末尾の `agentId:` は切り詰めで落ちるので、構造化した値を添える
+				const resultAgentId = singleResult ? str(toolUseResult?.agentId) : undefined;
 				if (text.trim().length > 0 || images.length > 0) {
 					out.push({
 						role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts,
 						...(toolUseId !== undefined ? { toolUseId } : {}),
+						...(resultAgentId !== undefined && /^[A-Za-z0-9._:-]{1,200}$/.test(resultAgentId) ? { agentId: resultAgentId } : {}),
 						// transcript の is_error。モバイルは失敗ステップを赤で示す（推定に頼らない）。
 						...(b.is_error === true ? { isError: true } : {}),
 						...(images.length > 0 ? { imageData: images } : {}),

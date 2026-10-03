@@ -44,6 +44,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-03',
 		items: [
 			{
+				icon: 'git-network-outline',
+				title: '会話の中で、呼んだサブエージェントの状態が分かるようになりました',
+				body: '同じ返答で呼んだサブエージェントを 1 枚のカードにまとめ、実行中・完了・経過時間を表示します。行を押すとそのサブエージェントの履歴を開けます。',
+				tone: 'green',
+			},
+			{
 				icon: 'lock-open-outline',
 				title: 'Face ID のあとも、通知から開いた画面や入力途中の文字が残るようになりました',
 				body: 'しばらく離れてから戻ると Face ID でロックし直しますが、これまでは解除するとトップに戻っていました。今は開いていた画面・ターミナル・入力途中の文字・iPad の 2 列がそのまま残ります。開いていたシートは閉じます。',

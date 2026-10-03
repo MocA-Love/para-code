@@ -14,6 +14,7 @@ import { colors, radius, space, squircle, type } from '../../theme.js';
 import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
 import { Icon, useThemeColors } from '../../ui/index.js';
 import type { ChatRow } from './chatRows.js';
+import { SubagentCardRowView, SubagentResumeLink } from './subagentCard.js';
 
 /** ツールの行は見た目 28。当たり判定は上下に 8 ずつ広げて 44 にする。 */
 const LINE_SLOP = { top: 8, bottom: 8, left: 0, right: 0 };
@@ -42,6 +43,8 @@ export const ChatRowView = memo(function ChatRowView({ row, terminalKey, allTool
 			return <HistoryQuestionRow text={row.m.text} answered={row.answered} />;
 		case 'questionGroup':
 			return <HistoryQuestionRow text={row.msgs[0]?.text ?? ''} count={row.msgs.length} answered={row.answered} />;
+		case 'agents':
+			return <SubagentCardRowView row={row} terminalKey={terminalKey} />;
 	}
 });
 
@@ -148,6 +151,7 @@ function ToolLine({ step, terminalKey }: { step: AgentTimelineStep; terminalKey:
 			</Pressable>
 			{open ? (
 				<View style={styles.lineDetail}>
+					{step.use?.tool === 'SendMessage' ? <SubagentResumeLink step={step} terminalKey={terminalKey} /> : null}
 					{step.kind === 'thinking' && step.thinking !== undefined
 						? <ThinkingBody message={step.thinking} terminalKey={terminalKey} />
 						: <ToolStepBody step={step} terminalKey={terminalKey} />}
