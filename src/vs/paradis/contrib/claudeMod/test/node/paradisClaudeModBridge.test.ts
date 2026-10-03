@@ -1,0 +1,294 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese test comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import assert from 'assert';
+import * as sinon from 'sinon';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { ParadisClaudeModBridge, ParadisClaudeModEvent } from '../../node/paradisClaudeModBridge.js';
+
+const TOKEN = 'pane-token';
+const SESSION = 'session-1';
+const QUESTIONS = [{ question: 'Pick a color?', header: 'Color', multiSelect: false, options: [{ label: 'Red', description: '' }, { label: 'Green', description: '' }] }];
+
+suite('ParadisClaudeModBridge', () => {
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	let bridge: ParadisClaudeModBridge;
+	let now: number;
+	let events: ParadisClaudeModEvent[];
+	let signal: AbortController;
+	/** 送り主がそのペインのプロセスだと確かめられるか（hook と同じ確かめの結果）。 */
+	let callerVerified: boolean;
+	let verifications: number;
+
+	setup(() => {
+		now = 1_000_000;
+		bridge = new ParadisClaudeModBridge(() => now);
+		events = [];
+		store.add(bridge.onEvent(event => events.push(event)));
+		bridge.setPresence(() => 'connected');
+		bridge.setApprovalWait(() => 600_000);
+		signal = new AbortController();
+		callerVerified = true;
+		verifications = 0;
+	});
+
+	teardown(() => {
+		signal.abort();
+		bridge.dispose();
+	});
+
+	const verifyCaller = async () => {
+		verifications++;
+		return callerVerified;
+	};
+	/** 要求の処理（送り主の確かめを待つ）を進める。 */
+	const flushRequests = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+	const call = (op: string, body: Record<string, unknown>) => bridge.handle(TOKEN, op, { sessionId: SESSION, ...body }, signal.signal, verifyCaller);
+
+	test('rejects a request without a session id and unknown operations', async () => {
+		assert.deepStrictEqual({
+			noSession: (await bridge.handle(TOKEN, 'event', { events: [] }, signal.signal, verifyCaller)).status,
+			unknown: (await call('nope', {})).status,
+		}, { noSession: 400, unknown: 404 });
+	});
+
+	test('a question answered on the phone is handed to the waiting mod as values', async () => {
+		const registered = await call('question', { toolUseId: 'toolu_q', questions: QUESTIONS });
+		const id = registered.body.id as string;
+		const waiting = call('wait', { id });
+		assert.deepStrictEqual(bridge.pendingQuestions(TOKEN, SESSION).map(question => ({ toolUseId: question.toolUseId, labels: question.questions[0].options.map(option => option.label) })), [{ toolUseId: 'toolu_q', labels: ['Red', 'Green'] }]);
+		assert.strictEqual(bridge.answerQuestion(TOKEN, id, { 'Pick a color?': 'Green' }), true);
+		assert.deepStrictEqual({
+			registered: registered.body.wait,
+			reply: (await waiting).body,
+			again: bridge.answerQuestion(TOKEN, id, { 'Pick a color?': 'Red' }),
+			pending: bridge.pendingQuestions(TOKEN, SESSION).length,
+		}, { registered: true, reply: { state: 'answer', answers: { 'Pick a color?': 'Green' } }, again: false, pending: 0 });
+	});
+
+	test('an answer given before the mod asks again is kept for its next wait', async () => {
+		const id = (await call('question', { questions: QUESTIONS })).body.id as string;
+		bridge.answerQuestion(TOKEN, id, { 'Pick a color?': 'Red' });
+		assert.deepStrictEqual((await call('wait', { id })).body, { state: 'answer', answers: { 'Pick a color?': 'Red' } });
+	});
+
+	test('the terminal answering first (settle) ends the open wait at once', async () => {
+		const id = (await call('question', { questions: QUESTIONS })).body.id as string;
+		const waiting = call('wait', { id });
+		await call('settle', { ids: [id] });
+		assert.deepStrictEqual((await waiting).body, { state: 'settled' });
+	});
+
+	test('waits for approvals only while a phone is connected and the setting allows it', async () => {
+		bridge.setPresence(() => 'enabled');
+		const notConnected = await call('permission', { toolName: 'Bash', toolInput: { command: 'ls' } });
+		bridge.setPresence(() => 'connected');
+		bridge.setApprovalWait(() => 0);
+		const turnedOff = await call('permission', { toolName: 'Bash', toolInput: { command: 'ls' } });
+		bridge.setApprovalWait(() => 600_000);
+		const waits = await call('permission', { toolName: 'Bash', toolInput: { command: 'ls' }, toolUseId: 'toolu_b', suggestions: [{ type: 'addRules' }] });
+		assert.deepStrictEqual({
+			notConnected: notConnected.body,
+			turnedOff: turnedOff.body,
+			waits: waits.body.wait,
+			pending: bridge.pendingPermissions(TOKEN, SESSION).map(permission => ({ toolName: permission.toolName, toolUseId: permission.toolUseId, hasSuggestions: permission.hasSuggestions })),
+		}, {
+			notConnected: { wait: false },
+			turnedOff: { wait: false },
+			waits: true,
+			pending: [{ toolName: 'Bash', toolUseId: 'toolu_b', hasSuggestions: true }],
+		});
+	});
+
+	test('"always" reaches the mod only when there are rules to add', async () => {
+		const withRules = (await call('permission', { toolName: 'Bash', toolInput: {}, suggestions: [{ type: 'addRules' }] })).body.id as string;
+		const withoutRules = (await call('permission', { toolName: 'Bash', toolInput: {} })).body.id as string;
+		bridge.answerPermission(TOKEN, withRules, 'allow', true);
+		bridge.answerPermission(TOKEN, withoutRules, 'allow', true);
+		assert.deepStrictEqual([(await call('wait', { id: withRules })).body, (await call('wait', { id: withoutRules })).body], [
+			{ state: 'answer', decision: 'allow', always: true },
+			{ state: 'answer', decision: 'allow' },
+		]);
+	});
+
+	test('a written tool result or the end of the main turn settles what was still waiting', async () => {
+		const permission = (await call('permission', { toolName: 'Bash', toolInput: {}, toolUseId: 'toolu_1' })).body.id as string;
+		const question = (await call('question', { questions: QUESTIONS })).body.id as string;
+		const permissionWait = call('wait', { id: permission });
+		const questionWait = call('wait', { id: question });
+		await call('event', { events: [{ type: 'tool-results', ids: ['toolu_1'], errorIds: ['toolu_1'] }] });
+		const afterResult = (await permissionWait).body;
+		await call('event', { events: [{ type: 'turn.complete', turnId: 't1', agentId: 'a-sub', aborted: false }] });
+		const pendingAfterSubagent = bridge.pendingQuestions(TOKEN, SESSION).length;
+		await call('event', { events: [{ type: 'turn.complete', turnId: 't1', aborted: true, reason: 'aborted' }] });
+		assert.deepStrictEqual({ afterResult, pendingAfterSubagent, afterTurn: (await questionWait).body }, {
+			afterResult: { state: 'settled' }, pendingAfterSubagent: 1, afterTurn: { state: 'settled' },
+		});
+	});
+
+	test('drops approvals once the phone has been away for a while', async () => {
+		let presence: 'connected' | 'enabled' = 'connected';
+		bridge.setPresence(() => presence);
+		const id = (await call('permission', { toolName: 'Bash', toolInput: {} })).body.id as string;
+		const waiting = call('wait', { id });
+		await flushRequests();
+		presence = 'enabled';
+		bridge.sweep();
+		now += 31_000;
+		bridge.sweep();
+		assert.deepStrictEqual((await waiting).body, { state: 'expired' });
+	});
+
+	test('passes observed events on in order, keeping only well-formed ones', async () => {
+		await call('event', {
+			events: [
+				{ type: 'hello', version: '1.0.0' },
+				{ type: 'row', uuid: 'u1', door: 'response', origin: 'model', message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'hi' }] } },
+				{ type: 'row', uuid: 'u2', door: 'tool-result', message: { type: 'user', content: [] } },
+				{ type: 'step', turnId: 't1', step: 0, chunks: [{ index: 0, text: 'Hel' }, { index: 'x', text: 'bad' }], end: false },
+				{ type: 'subagent.start', agentId: 'a1', subagentType: 'general-purpose', toolUseId: 'toolu_a' },
+				{ type: 'subagent.resume', agentId: 'a1' },
+				{ type: 'unknown' },
+			],
+		});
+		assert.deepStrictEqual(events.map(event => event.type === 'step' ? { type: event.type, chunks: event.chunks } : { type: event.type }), [
+			{ type: 'hello' },
+			{ type: 'row' },
+			{ type: 'step', chunks: [{ index: 0, text: 'Hel' }] },
+			{ type: 'subagent.start' },
+			{ type: 'subagent.resume' },
+		]);
+	});
+
+	test('sends a prompt through a waiting command poll and reports the mod acknowledgement', async () => {
+		const unavailable = await bridge.submitPrompt(TOKEN, SESSION, 'hello');
+		const poll = call('commands', { busy: false });
+		await flushRequests();
+		assert.strictEqual(bridge.isAlive(TOKEN, SESSION), true);
+		const sending = bridge.submitPrompt(TOKEN, SESSION, 'hello');
+		const commands = (await poll).body.commands as { id: string; kind: string; text: string }[];
+		await call('ack', { id: commands[0].id, ok: true });
+		const refusedPoll = call('commands', { busy: false });
+		const refusing = bridge.submitPrompt(TOKEN, SESSION, 'again');
+		const refusedCommand = ((await refusedPoll).body.commands as { id: string }[])[0];
+		await call('ack', { id: refusedCommand.id, ok: false });
+		assert.deepStrictEqual({
+			unavailable,
+			command: { kind: commands[0].kind, text: commands[0].text },
+			sent: await sending,
+			refused: await refusing,
+		}, { unavailable: 'unavailable', command: { kind: 'submit', text: 'hello' }, sent: 'accepted', refused: 'refused' });
+	});
+
+	test('a prompt whose reply could not be written goes back (unavailable), so the keys can send it', async () => {
+		const poll = call('commands', { busy: false });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const sending = bridge.submitPrompt(TOKEN, SESSION, 'hello');
+		const reply = await poll;
+		reply.onNotDelivered?.();
+		assert.deepStrictEqual({ result: await sending, hadCommand: (reply.body.commands as unknown[]).length }, { result: 'unavailable', hadCommand: 1 });
+	});
+
+	test('accepts a prompt when its row shows up in the conversation, and reports it unconfirmed when nothing does', async () => {
+		const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+		try {
+			const poll = call('commands', { busy: false });
+			await clock.tickAsync(0);
+			const sending = bridge.submitPrompt(TOKEN, SESSION, '続けて');
+			await poll;
+			await call('event', { events: [{ type: 'row', uuid: 'u-p', door: 'prompt', origin: 'plugin', message: { type: 'user', role: 'user', content: [{ type: 'text', text: '続けて' }] } }] });
+			const confirmedByRow = await sending;
+			const silentPoll = call('commands', { busy: false });
+			await clock.tickAsync(0);
+			const silent = bridge.submitPrompt(TOKEN, SESSION, 'もう一度');
+			await silentPoll;
+			await clock.tickAsync(15_001);
+			assert.deepStrictEqual({ confirmedByRow, silent: await silent }, { confirmedByRow: 'accepted', silent: 'unconfirmed' });
+		} finally {
+			clock.restore();
+		}
+	});
+
+	test('takes only observation from a caller it could not verify as the pane\'s own process', async () => {
+		callerVerified = false;
+		const permission = await call('permission', { toolName: 'Bash', toolInput: {} });
+		const commands = await call('commands', { busy: false });
+		const questionStatus = (await call('question', { questions: QUESTIONS })).status;
+		const verificationsBefore = verifications;
+		await call('event', { events: [{ type: 'row', uuid: 'u1', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'hi' }] } }, { type: 'step', turnId: 't', step: 0, chunks: [{ index: 0, text: 'h' }], end: false }] });
+		const verificationsForObservation = verifications - verificationsBefore;
+		await call('event', { events: [{ type: 'row', uuid: 'u2', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'x' }] } }, { type: 'turn.complete', turnId: 't', aborted: false }, { type: 'subagent.start', agentId: 'a1' }, { type: 'tool-results', ids: ['x'], errorIds: [] }] });
+		assert.deepStrictEqual({
+			permission: permission.status, commands: commands.status, questionStatus, verificationsForObservation,
+			events: events.map(event => event.type), alive: bridge.isAlive(TOKEN, SESSION),
+		}, {
+			permission: 403, commands: 403, questionStatus: 403, verificationsForObservation: 0,
+			events: ['row', 'step', 'row'], alive: false,
+		});
+	});
+
+	test('keeps the suggested rules (sanitized) with a pending approval', async () => {
+		await call('permission', { toolName: 'set_http_credentials', toolInput: { username: 'me', password: 'secret' }, suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'localSettings' }] });
+		const [pending] = bridge.pendingPermissions(TOKEN, SESSION);
+		assert.deepStrictEqual({ password: (pending.toolInput as Record<string, unknown>).password === 'secret', suggestions: pending.suggestions.length, hasSuggestions: pending.hasSuggestions }, { password: false, suggestions: 1, hasSuggestions: true });
+	});
+
+	test('remembers a verified caller for a minute and marks rows accordingly', async () => {
+		const rows: boolean[] = [];
+		store.add(bridge.onEvent(event => { if (event.type === 'row') { rows.push(event.verified); } }));
+		const row = (uuid: string) => call('event', { events: [{ type: 'row', uuid, door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 't' }] } }] });
+		await call('settle', { ids: [] });
+		const verificationsBefore = verifications;
+		await row('u-a');
+		now += 61_000;
+		await row('u-b');
+		assert.deepStrictEqual({ rows, verificationsForRows: verifications - verificationsBefore }, { rows: [true, false], verificationsForRows: 0 });
+	});
+
+	test('a prompt the mod reports as received is accepted even if it is sent later', async () => {
+		const poll = call('commands', { busy: false });
+		await flushRequests();
+		const sending = bridge.submitPrompt(TOKEN, SESSION, 'hello');
+		const [command] = (await poll).body.commands as { id: string }[];
+		await call('ack', { id: command.id, received: true });
+		assert.strictEqual(await sending, 'accepted');
+	});
+
+	test('checks every batch that carries a tool row, even while a verification is remembered', async () => {
+		await call('settle', { ids: [] });
+		const rows: boolean[] = [];
+		store.add(bridge.onEvent(event => { if (event.type === 'row') { rows.push(event.verified); } }));
+		callerVerified = false;
+		const verificationsBefore = verifications;
+		await call('event', { events: [{ type: 'row', uuid: 'u-q', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_x', name: 'AskUserQuestion', input: {} }] } }] });
+		await call('event', { events: [{ type: 'row', uuid: 'u-p', door: 'prompt', origin: 'plugin', message: { type: 'user', role: 'user', content: [{ type: 'text', text: 'x' }] } }] });
+		assert.deepStrictEqual({ rows, checks: verifications - verificationsBefore }, { rows: [], checks: 2 });
+	});
+
+	test('reports a prompt that the mod received but then could not send', async () => {
+		const poll = call('commands', { busy: false });
+		await flushRequests();
+		let lateFailures = 0;
+		const sending = bridge.submitPrompt(TOKEN, SESSION, 'hello', () => lateFailures++);
+		const [command] = (await poll).body.commands as { id: string }[];
+		await call('ack', { id: command.id, received: true });
+		const result = await sending;
+		await call('ack', { id: command.id, ok: false });
+		await call('ack', { id: command.id, ok: false });
+		assert.deepStrictEqual({ result, lateFailures }, { result: 'accepted', lateFailures: 1 });
+	});
+
+	test('forgets a pane: its waits end and the mod is no longer considered alive', async () => {
+		const id = (await call('question', { questions: QUESTIONS })).body.id as string;
+		const waiting = call('wait', { id });
+		await flushRequests();
+		bridge.forgetToken(TOKEN);
+		assert.deepStrictEqual({ reply: (await waiting).body, alive: bridge.isAlive(TOKEN, SESSION) }, { reply: { state: 'expired' }, alive: false });
+	});
+});

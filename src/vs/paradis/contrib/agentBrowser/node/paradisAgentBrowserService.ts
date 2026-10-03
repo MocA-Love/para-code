@@ -47,9 +47,11 @@ import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, firePara
 import { ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
 import { IParadisReplayedAgentPrompt, IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_ID_PATTERN, PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE, PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SYNC_GRACE_MS, paradisPlanAgentHookReplay } from '../common/paradisAgentHookSpool.js';
 import { paradisPruneAgentHookSpool, paradisStampAgentHookSpoolAlive, paradisTakeAgentHookSpool } from './paradisAgentHookSpoolStore.js';
-import { onDidChangeParadisCodexHomes, paradisCodexHome, paradisCodexHomes } from './paradisAgentHome.js';
+import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexHome, paradisCodexHomes } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler, paradisClaudeManagedHookEvents, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson } from './paradisAgentHooksSetup.js';
 import { ParadisAgentHooksAutoInstall } from './paradisAgentHooksAutoInstall.js';
+import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
+import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_HTTP_PREFIX, paradisClaudeModApprovalWaitMs } from '../../claudeMod/common/paradisClaudeMod.js';
 import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
@@ -126,6 +128,8 @@ const MAX_ACTIVE_INGRESS_REQUESTS = 128;
 /** `initialize` の `instructions` の先頭に置く、このサーバー自身（ブラウザ共有）の説明。 */
 const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on the browser page the user shared with this terminal pane.';
 const MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN = 8;
+/** Claude Code の mod の受付のペインあたりの上限（長いポーリングの上限 16 本 + 観測の送信）。 */
+const MAX_ACTIVE_MOD_REQUESTS_PER_TOKEN = 24;
 const MAX_ACTIVE_MOBILE_VOICE_REQUESTS = 2;
 const MAX_ACTIVE_MOBILE_VOICE_BYTES = 16 * 1024 * 1024;
 const MOBILE_VOICE_TICKET_TTL_MS = 10 * 60_000;
@@ -568,6 +572,12 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private readonly _activeHookRequestsByToken = new Map<string, number>();
 	private _activeHookRequestCount = 0;
+	/**
+	 * Claude Code の mod（`/claude-mod/v1/`）の受付も別枠で数える。mod は会話ごとにコマンドの長いポーリングを
+	 * 1 本張り、質問・承認の待ちでも長いポーリングを持つので、MCP や hook の枠を食わないようにする。
+	 */
+	private readonly _activeModRequestsByToken = new Map<string, number>();
+	private _activeModRequestCount = 0;
 	private _activeMobileVoiceRequestCount = 0;
 	private _activeMobileVoiceBytes = 0;
 	// lease未設定のticketは拡張機能ホスト由来（ペインを持たない）。音声取込だけに使える。
@@ -718,6 +728,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._runNonThrowingDiagnostic(() => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error));
 			},
 		}));
+		// Claude Code の mod（Claude Mods）がモバイルの承認を待つ上限（paradisClaudeModBridge.ts）。
+		paradisClaudeModBridge.setApprovalWait(() => paradisClaudeModApprovalWaitMs(configurationService?.getValue(PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING)));
 		this._register(registerParadisAgentPaneActivityGuard(token => this.captureIngressLease(token) !== undefined));
 		this._register(onParadisAgentTurnStarted(({ token, cwd, at }) => {
 			const ingressLease = this.captureIngressLease(token);
@@ -1635,6 +1647,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._paneShells.delete(token);
 		this._paneRemoteAuthorities.delete(token);
 		this._paneStatuses.delete(token);
+		paradisClaudeModBridge.forgetToken(token);
 		this._paneSessions.delete(token);
 		this._activityApprovalTokens.delete(token);
 		this._awaitingUserTokens.delete(token);
@@ -2274,6 +2287,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (req.method === 'POST' && req.url === '/paradis-mcp/mobile-voice') {
 			return this._handleMobileVoiceIngress(req, res);
 		}
+		// Claude Code の mod（resources/paradis/claude-mod）。hook と同じくペイントークンで認証する。
+		if (req.method === 'POST' && (req.url ?? '').startsWith(PARADIS_CLAUDE_MOD_HTTP_PREFIX)) {
+			return this._handleClaudeMod(req, res);
+		}
 		if (req.method === 'POST' && req.url === '/paradis-mcp/mobile-voice-ticket') {
 			return this._handleMobileVoiceTicket(req, res);
 		}
@@ -2461,6 +2478,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ターミナルのペインを持たない拡張機能ホストへ渡す音声取込トークン。
 	 * 呼べるのは同一プロセスのworkbench（IPCチャネル経由）だけで、値はディスクへ書かない。
 	 */
+	/** Claude Code の設定フォルダ（`CLAUDE_CONFIG_DIR`、無ければ ~/.claude）。中身は返さない。 */
+	async getClaudeConfigDir(): Promise<string> {
+		return paradisClaudeConfigDir();
+	}
+
 	async getVoiceIngressToken(): Promise<string> {
 		return this._voiceIngressToken;
 	}
@@ -2517,6 +2539,79 @@ export class ParadisAgentBrowserService extends Disposable {
 			'Cache-Control': 'no-store',
 		});
 		res.end(body);
+	}
+
+	/**
+	 * Claude Code の mod からの要求（`/claude-mod/v1/<op>`）。ペイントークンで認証し、中身は
+	 * paradisClaudeModBridge に任せる。長いポーリングは相手が切れたら外す（signal）。
+	 */
+	private async _handleClaudeMod(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+		const requestedToken = this._extractToken(req);
+		const ingressLease = requestedToken === undefined ? undefined : this.captureIngressLease(requestedToken);
+		if (ingressLease === undefined) {
+			this._sendIngressRejected(res);
+			return;
+		}
+		const operation = (req.url ?? '').slice(PARADIS_CLAUDE_MOD_HTTP_PREFIX.length).split('?', 1)[0] ?? '';
+		const ingressReservation = this._reserveIngressRequest(ingressLease.token, 'mod');
+		if (ingressReservation === undefined) {
+			this._sendIngressCapacityRejected(res);
+			return;
+		}
+		const activeRequest = this._trackActiveRequest(req, res);
+		try {
+			const { controller } = activeRequest;
+			let body: unknown;
+			try {
+				body = JSON.parse(await this._readBody(req, controller.signal));
+			} catch {
+				if (!controller.signal.aborted && !res.writableEnded) {
+					res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+					res.end(JSON.stringify({ error: 'Request body rejected.' }));
+				}
+				return;
+			}
+			if (!this.isIngressLeaseCurrent(ingressLease)) {
+				this._sendIngressRejected(res);
+				return;
+			}
+			// 状態を動かす要求は、hook の許可待ちと同じく送り主がそのペインのプロセスか確かめる（観測だけの便は確かめない）
+			const verifyCaller = async () => {
+				const caller = await this._classifyCaller(ingressLease.token, req.socket as Socket);
+				return caller !== 'unverified' && this.isIngressLeaseCurrent(ingressLease);
+			};
+			const reply = await paradisClaudeModBridge.handle(ingressLease.token, operation, body, controller.signal, verifyCaller);
+			if (controller.signal.aborted || res.writableEnded || !this.isIngressLeaseCurrent(ingressLease)) {
+				// 渡すはずだったもの（送る発言）は届いていない
+				reply.onNotDelivered?.();
+				if (!controller.signal.aborted && !res.writableEnded) {
+					this._sendIngressRejected(res);
+				}
+				return;
+			}
+			const text = JSON.stringify(reply.body);
+			res.writeHead(reply.status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(text), 'Cache-Control': 'no-store' });
+			if (reply.onNotDelivered !== undefined) {
+				const onNotDelivered = reply.onNotDelivered;
+				res.once('close', () => {
+					if (!res.writableFinished) {
+						onNotDelivered();
+					}
+				});
+			}
+			res.end(text);
+		} catch (error) {
+			this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] Claude Code mod request failed', error));
+			if (!res.writableEnded) {
+				if (!res.headersSent) {
+					res.writeHead(500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+				}
+				res.end(JSON.stringify({ error: 'Internal error' }));
+			}
+		} finally {
+			activeRequest.dispose();
+			ingressReservation.dispose();
+		}
 	}
 
 	private async _handleAgentHook(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -4212,12 +4307,14 @@ export class ParadisAgentBrowserService extends Disposable {
 		};
 	}
 
-	private _reserveIngressRequest(token: string, pool: 'default' | 'hook' = 'default'): { dispose(): void } | undefined {
-		const byToken = pool === 'hook' ? this._activeHookRequestsByToken : this._activeIngressRequestsByToken;
-		const readTotal = () => pool === 'hook' ? this._activeHookRequestCount : this._activeIngressRequestCount;
+	private _reserveIngressRequest(token: string, pool: 'default' | 'hook' | 'mod' = 'default'): { dispose(): void } | undefined {
+		const byToken = pool === 'hook' ? this._activeHookRequestsByToken : pool === 'mod' ? this._activeModRequestsByToken : this._activeIngressRequestsByToken;
+		const readTotal = () => pool === 'hook' ? this._activeHookRequestCount : pool === 'mod' ? this._activeModRequestCount : this._activeIngressRequestCount;
 		const writeTotal = (value: number) => {
 			if (pool === 'hook') {
 				this._activeHookRequestCount = value;
+			} else if (pool === 'mod') {
+				this._activeModRequestCount = value;
 			} else {
 				this._activeIngressRequestCount = value;
 			}
@@ -4225,7 +4322,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		const tokenCount = byToken.get(token) ?? 0;
 		if (this._serverDisposed
 			|| readTotal() >= MAX_ACTIVE_INGRESS_REQUESTS
-			|| tokenCount >= MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN) {
+			|| tokenCount >= (pool === 'mod' ? MAX_ACTIVE_MOD_REQUESTS_PER_TOKEN : MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN)) {
 			return undefined;
 		}
 		writeTotal(readTotal() + 1);
@@ -4406,6 +4503,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._activeIngressRequestCount = 0;
 		this._activeHookRequestsByToken.clear();
 		this._activeHookRequestCount = 0;
+		this._activeModRequestsByToken.clear();
+		this._activeModRequestCount = 0;
 		this._activeMobileVoiceRequestCount = 0;
 		this._activeMobileVoiceBytes = 0;
 		this._mobileVoiceTickets.clear();
