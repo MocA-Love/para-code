@@ -31,6 +31,8 @@ export interface IParadisRecoveredAgentActivity {
 	 * 写した時刻になるため）。親の会話の「完了」が、子のこれより後の作業を打ち消さないための基準。
 	 */
 	readonly lastLineAt?: number;
+	/** この子を起動した Agent / Task の呼び出しの toolUseId（会話のカードと一覧の項目を結ぶ）。 */
+	readonly toolUseIds?: readonly string[];
 }
 
 export interface IParadisClaudePersistedActivity {
@@ -42,6 +44,11 @@ export interface IParadisClaudePersistedActivity {
 	 * 子 transcript が実在する ID にだけ呼び出し側が当てる。
 	 */
 	readonly notifications: ReadonlyMap<string, { readonly status: ParadisRecoveredAgentStatus; readonly at: number }>;
+	/**
+	 * SendMessage で子を再開した呼び出し: 子の ID → 呼び出しの toolUseId。再開した子の起動は読み込み範囲の外に
+	 * あることが多いので、spawned とは別に返し、呼び出し側が一覧にある子へ当てる。
+	 */
+	readonly resumeToolUseIds: ReadonlyMap<string, readonly string[]>;
 }
 
 /** `agent-<id>.meta.json`（Claude Codeが子transcriptの隣に書く素性メタ）。 */
@@ -158,6 +165,21 @@ function harnessNotifications(content: unknown): string[] {
 	return texts.filter(value => value.trimStart().startsWith('<task-notification>'));
 }
 
+/**
+ * 行の `toolUseResult`（Claude Code が tool_result の行に添える構造化した結果）から子の ID を読む。同期の結果は
+ * 本文の末尾にしか ID が無く、本文の中の ID 風の文字列と見分けにくいので、こちらを先に使う。
+ */
+function agentIdFromStructuredResult(entry: Record<string, unknown>, key: 'agentId' | 'resumedAgentId'): string | undefined {
+	const id = text(record(entry.toolUseResult)?.[key]);
+	return id !== undefined && ID_PATTERN.test(id) ? id : undefined;
+}
+
+/** SendMessage の結果（`{"success":true,"message":"Resuming agent …","resumedAgentId":"…"}`）から再開した子の ID を読む。 */
+function resumedAgentIdFromToolResult(value: string): string | undefined {
+	const id = /"resumedAgentId"\s*:\s*"(?<id>[A-Za-z0-9._:-]+)"/.exec(value)?.groups?.id;
+	return id !== undefined && ID_PATTERN.test(id) ? id : undefined;
+}
+
 /** 子がまだ動いている（すぐ返る起動）ことを示す Agent ツールの結果か。それ以外は子が返し終えた結果。 */
 function isAsyncLaunchResult(value: string): boolean {
 	return /Async agent launched|async_launched|spawned successfully|is now running/i.test(value);
@@ -168,6 +190,8 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 	const pendingTools = new Map<string, { readonly label: string; readonly detail?: string; readonly at: number }>();
 	const spawned = new Map<string, IParadisRecoveredAgentActivity>();
 	const notifications = new Map<string, { readonly status: ParadisRecoveredAgentStatus; readonly at: number }>();
+	const pendingResumes = new Set<string>();
+	const resumeToolUseIds = new Map<string, string[]>();
 	let ownerDetail: string | undefined;
 	let ownerLabel = text(meta?.agentType) ?? 'SubAgent';
 	let ownerStartedAt = mtime;
@@ -224,6 +248,8 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 			}
 		}
 		if (!Array.isArray(content)) { continue; }
+		// 構造化した結果は行に 1 つなので、tool_result が 1 つだけの行でしか使わない
+		const singleResult = content.filter(item => record(item)?.type === 'tool_result').length === 1;
 		for (const rawBlock of content) {
 			const block = record(rawBlock);
 			if (block === undefined) { continue; }
@@ -235,11 +261,23 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 					const detail = text(input?.description) ?? text(input?.prompt);
 					const label = text(input?.subagent_type) ?? text(input?.agent_type) ?? 'SubAgent';
 					pendingTools.set(toolUseId, { label, ...(detail !== undefined ? { detail } : {}), at });
+				} else if (tool === 'SendMessage' && toolUseId !== undefined) {
+					pendingResumes.add(toolUseId);
 				}
 			} else if (block.type === 'tool_result') {
 				const resultText = flattenContent(block.content);
-				const agent = agentIdFromToolResult(resultText);
-				const tool = pendingTools.get(text(block.tool_use_id) ?? '');
+				const resultToolUseId = text(block.tool_use_id) ?? '';
+				if (pendingResumes.delete(resultToolUseId)) {
+					const resumed = (singleResult ? agentIdFromStructuredResult(entry, 'resumedAgentId') : undefined) ?? resumedAgentIdFromToolResult(resultText);
+					if (resumed !== undefined) {
+						resumeToolUseIds.set(resumed, [...(resumeToolUseIds.get(resumed) ?? []), resultToolUseId]);
+					}
+					continue;
+				}
+				const textAgent = agentIdFromToolResult(resultText);
+				const structuredId = singleResult && textAgent?.name === undefined ? agentIdFromStructuredResult(entry, 'agentId') : undefined;
+				const agent: { readonly id: string; readonly name?: string } | undefined = structuredId !== undefined ? { id: structuredId } : textAgent;
+				const tool = pendingTools.get(resultToolUseId);
 				// 起動の tool_use を読めた結果だけを数える。Bash などの出力にも起動応答そっくりの文字列は
 				// 現れる（transcript を grep した結果など）。読み込み範囲の外で起動した子は、子 transcript と
 				// 完了通知から拾う。
@@ -249,6 +287,7 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 						id: agent.id, label: tool.label, provider: 'claude', ...(tool.detail !== undefined ? { detail: tool.detail } : {}),
 						...(ownerId !== undefined ? { parentId: ownerId } : {}),
 						...(agent.name !== undefined ? { name: agent.name } : {}),
+						toolUseIds: [resultToolUseId],
 						// フォアグラウンドの Agent は、子が返し終えてから結果が書かれる
 						status: isAsyncLaunch ? activeOrEnded(mtime, now) : 'completed', startedAt: tool.at, updatedAt: at,
 					});
@@ -267,7 +306,7 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 		...(lastLineAt !== undefined ? { lastLineAt } : {}),
 		status: ownerStatus, startedAt: ownerStartedAt, updatedAt: ownerUpdatedAt,
 	} : undefined;
-	return { ...(owner !== undefined ? { owner } : {}), spawned: [...spawned.values()], notifications };
+	return { ...(owner !== undefined ? { owner } : {}), spawned: [...spawned.values()], notifications, resumeToolUseIds };
 }
 
 function parseCodexSource(source: string): { readonly parentId?: string; readonly depth?: number; readonly label?: string } {

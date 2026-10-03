@@ -308,6 +308,8 @@ function paradisIsToolRejection(agent: ParadisAgentKind, message: IParadisAgentC
 
 /** ペインごとに覚える未完了のツール呼び出しの上限（hook の取りこぼしで伸び続けないように）。 */
 const PARADIS_OPEN_TOOL_USE_LIMIT = 256;
+/** Agent の PreToolUse から SubagentStart までを同じ起動とみなす長さ（許可の確認を待つ間も含める）。 */
+const SUBAGENT_START_PAIRING_WINDOW_MS = 10 * 60_000;
 /** mod から受け取った行・ファイルから読んだ行の uuid を覚えておく件数（1 ペインあたり）。 */
 const MOD_ROW_LEDGER_LIMIT = 2_000;
 /** mod へ渡した回答を覚えておく時間（同じカードへの二度目をキーの経路へ回さないため）。 */
@@ -3164,6 +3166,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.codexMessageBuffers.delete(token);
 				this.codexActiveItems.delete(token);
 				this.activityTrackers.delete(token);
+				this.pendingSubagentCalls.delete(token);
 				this.clearClaudeSubagentTranscripts(token);
 				this.activeTurnTokens.delete(token);
 			}
@@ -4746,10 +4749,10 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.updateLiveFromModStep(token, event.turnId, event.step, event.chunks, event.end, event.at);
 				return;
 			case 'subagent.start':
-				this.startModSubagent(token, event.agentId, event.at, event.subagentType ?? event.name, event.description);
+				this.startModSubagent(token, event.agentId, event.at, event.subagentType ?? event.name, event.description, false, event.toolUseId);
 				return;
 			case 'subagent.resume':
-				this.startModSubagent(token, event.agentId, event.at, event.agentType, undefined);
+				this.startModSubagent(token, event.agentId, event.at, event.agentType, undefined, true);
 				return;
 			case 'pending-changed':
 				if (event.kind === 'permission') {
@@ -4801,13 +4804,73 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	/** サブエージェントの開始・再開（同じ id で何度来ても一覧は 1 件）。 */
-	private startModSubagent(token: string, agentId: string, at: number, label: string | undefined, detail: string | undefined): void {
+	/**
+	 * mod の無い Claude ペインで、Agent / Task の PreToolUse の tool_use_id と、直後の SubagentStart の子を結ぶ
+	 * （hook の payload には結果が無いので、記録の読み直しを待たずに会話のカードを一覧へ結ぶため）。
+	 * 待っている呼び出しが Agent 1 件だけのときだけ結ぶ。並列の起動や SendMessage の再開と重なって
+	 * どれがどの子か分からないときは結ばず、待ちを捨てる（記録の読み直しで結ばれる）。
+	 */
+	private linkSubagentStartFromHooks(event: IParadisAgentHookEvent, freshSubagent: string | undefined, tracker: ParadisAgentActivityTracker): boolean {
+		const token = event.token;
+		if (event.event === 'UserPromptSubmit' || paradisIsTurnEndHookEvent(event.event) || event.event === 'SessionStart') {
+			this.pendingSubagentCalls.delete(token);
+			return false;
+		}
+		let pending = this.pendingSubagentCalls.get(token);
+		if (event.event === 'PreToolUse' && event.toolUseId !== undefined && (event.toolName === 'Agent' || event.toolName === 'Task' || event.toolName === 'SendMessage')) {
+			if (pending === undefined) {
+				pending = { launches: new Map(), resumes: new Map() };
+				this.pendingSubagentCalls.set(token, pending);
+			}
+			const target = event.toolName === 'SendMessage' ? pending.resumes : pending.launches;
+			if (target.size < PARADIS_OPEN_TOOL_USE_LIMIT) {
+				target.set(event.toolUseId, event.at);
+			}
+			return false;
+		}
+		if (pending === undefined) {
+			return false;
+		}
+		if ((event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined) {
+			pending.launches.delete(event.toolUseId);
+			pending.resumes.delete(event.toolUseId);
+		} else if (event.event === 'SubagentStart') {
+			// 届かなかった SubagentStart（許可を断った起動など）の待ちが、次の起動と組まないよう古いものは捨てる
+			for (const calls of [pending.launches, pending.resumes]) {
+				for (const [toolUseId, at] of calls) {
+					if (event.at - at > SUBAGENT_START_PAIRING_WINDOW_MS) { calls.delete(toolUseId); }
+				}
+			}
+			const [only] = pending.launches.size === 1 && pending.resumes.size === 0 ? pending.launches.keys() : [];
+			if (freshSubagent !== undefined && only !== undefined) {
+				pending.launches.delete(only);
+				return tracker.linkToolUse(freshSubagent, only, event.at, true);
+			}
+			if (freshSubagent !== undefined || pending.launches.size > 1) {
+				// どの呼び出しの子か決められない。残すと後の起動と取り違えるので、待っている起動を全部捨てる
+				pending.launches.clear();
+			}
+		}
+		if (pending.launches.size === 0 && pending.resumes.size === 0) {
+			this.pendingSubagentCalls.delete(token);
+		}
+		return false;
+	}
+
+	/**
+	 * サブエージェントの開始・再開（同じ id で何度来ても一覧は 1 件）。`resume` は mod の `subagent.resume`
+	 * （classic の SubagentStart）。`subagent.start` は Agent の呼び出しの結果から作られ、フォアグラウンドの子では
+	 * いつも子が終わった後に届く（2 秒以上遅れることもある）ので、終わった子を動いているに戻さない。
+	 */
+	private startModSubagent(token: string, agentId: string, at: number, label: string | undefined, detail: string | undefined, resume: boolean, toolUseId?: string): void {
 		if (!PARADIS_CLAUDE_AGENT_ID_PATTERN.test(agentId)) {
 			return;
 		}
 		const tracker = this.activityTracker(token);
-		if (tracker.applyClaude('SubagentStart', { agent_id: agentId, ...(label !== undefined ? { agent_type: label } : {}), ...(detail !== undefined ? { prompt: detail } : {}) }, at)) {
+		const started = !resume && tracker.hasEndedAgent(agentId) ? false : tracker.applyClaude('SubagentStart', { agent_id: agentId, ...(label !== undefined ? { agent_type: label } : {}), ...(detail !== undefined ? { prompt: detail } : {}) }, at);
+		// 起動した Agent の呼び出し（mod は toolUseId を添えて知らせる）。会話のカードがこれで一覧の項目を引く
+		const linked = toolUseId !== undefined && tracker.linkToolUse(agentId, toolUseId, at, true);
+		if (started || linked) {
 			this.pushActivityToSubscribers(token);
 		}
 		const running = tracker.snapshot()?.agents.some(agent => agent.id === agentId && agent.status === 'running') === true;
@@ -5396,6 +5459,12 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** ペイン → 未完了のツール呼び出し（tool_use_id → ツール名と入力の指紋）。 */
 	private readonly openToolUses = new Map<string, Map<string, { readonly tool: string; readonly inputKey: string }>>();
+	/**
+	 * mod の無い Claude ペインで、SubagentStart をまだ待っている呼び出し（ペインの token → toolUseId → 受けた時刻）。
+	 * `launches` は Agent / Task、`resumes` は SendMessage（子を再開すると SubagentStart がもう一度届く）。
+	 * {@link linkSubagentStartFromHooks} が、待っているのが Agent 1 件だけのときだけ子と結ぶ。
+	 */
+	private readonly pendingSubagentCalls = new Map<string, { readonly launches: Map<string, number>; readonly resumes: Map<string, number> }>();
 	/** ペイン → 待ち合わせの印 → 合成 id の承認が待っている、同名の未完了のツール呼び出し。 */
 	private readonly syntheticApprovalWaits = new Map<string, Map<string, { readonly tool: string; readonly ids: Set<string> }>>();
 	private syntheticWaitSeq = 0;
@@ -5668,12 +5737,22 @@ export class ParadisMobileAgentChat extends Disposable {
 		const now = Date.now();
 		const recovered: IParadisRecoveredAgentActivity[] = [];
 		const claudeTranscriptPaths: { readonly id: string; readonly path: string }[] = [];
+		// SendMessage で再開した呼び出し（子の ID → toolUseId）。会話のカードと一覧の項目を結ぶ
+		const resumeToolUseIds = new Map<string, string[]>();
+		const rememberResumes = (found: ReadonlyMap<string, readonly string[]>) => {
+			for (const [id, toolUseIds] of found) {
+				resumeToolUseIds.set(id, [...(resumeToolUseIds.get(id) ?? []), ...toolUseIds]);
+			}
+		};
 		if (session.agent === 'claude') {
 			const owners = new Map<string, IParadisRecoveredAgentActivity>();
 			const spawned = new Map<string, IParadisRecoveredAgentActivity>();
 			const rememberSpawned = (agent: IParadisRecoveredAgentActivity) => {
 				const previous = spawned.get(agent.id);
-				if (previous === undefined || agent.updatedAt >= previous.updatedAt) { spawned.set(agent.id, agent); }
+				if (previous === undefined || agent.updatedAt >= previous.updatedAt) {
+					// 起動の呼び出しの id は、起動を読めた記録にしか無い。新しい記録で消さない
+					spawned.set(agent.id, agent.toolUseIds === undefined && previous?.toolUseIds !== undefined ? { ...agent, toolUseIds: previous.toolUseIds } : agent);
+				}
 			};
 			// ID の付いていない完了通知（起動の記録が読み込み範囲の外にあった等）。Bash や Monitor の通知も
 			// 混ざるので、子 transcript が実在する ID にだけ当てる。
@@ -5690,6 +5769,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				const parsed = paradisParseClaudePersistedActivity(undefined, rootLines, rootStat.mtimeMs, now);
 				for (const agent of parsed.spawned) { rememberSpawned(agent); }
 				rememberNotifications(parsed.notifications);
+				rememberResumes(parsed.resumeToolUseIds);
 			}
 			const files = await discoverClaudePersistedSubagentFiles(session.transcriptPath);
 			// 名前付きの起動は、親の会話が名前で呼び、ファイルは別の ID を持つ。名前 → ファイル ID で1つに束ねる
@@ -5701,6 +5781,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (parsed.owner !== undefined) { owners.set(file.id, fileName !== undefined ? { ...parsed.owner, name: fileName, label: fileName } : parsed.owner); }
 				for (const agent of parsed.spawned) { rememberSpawned(agent); }
 				rememberNotifications(parsed.notifications);
+				rememberResumes(parsed.resumeToolUseIds);
 				if (fileName !== undefined) { fileIdsByName.set(fileName, file.id); }
 				claudeTranscriptPaths.push({ id: file.id, path: file.path });
 			}
@@ -5709,6 +5790,13 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (fileId !== undefined && fileId !== id && !owners.has(id)) {
 					spawned.delete(id);
 					rememberSpawned({ ...agent, id: fileId });
+				}
+			}
+			for (const [name, toolUseIds] of [...resumeToolUseIds]) {
+				const fileId = fileIdsByName.get(name);
+				if (fileId !== undefined && fileId !== name) {
+					resumeToolUseIds.delete(name);
+					resumeToolUseIds.set(fileId, [...(resumeToolUseIds.get(fileId) ?? []), ...toolUseIds]);
 				}
 			}
 			for (const [id, notice] of notifications) {
@@ -5734,6 +5822,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					...(spawn.detail !== undefined ? { detail: spawn.detail } : {}),
 					...(spawn.parentId !== undefined ? { parentId: spawn.parentId } : {}),
 					...(spawn.depth !== undefined ? { depth: spawn.depth } : {}),
+					...(spawn.toolUseIds !== undefined ? { toolUseIds: spawn.toolUseIds } : {}),
 					status: explicitTerminal ? spawn.status : owner.status,
 					startedAt: Math.min(spawn.startedAt, owner.startedAt),
 					updatedAt: explicitTerminal ? Math.max(spawn.updatedAt, owner.updatedAt) : owner.updatedAt,
@@ -5766,7 +5855,13 @@ export class ParadisMobileAgentChat extends Disposable {
 			allowedIds.add(agent.id);
 			return true;
 		});
-		if (bounded.length > 0 && this.activityTracker(token).mergeRecoveredAgents(bounded, now)) {
+		let changed = bounded.length > 0 && this.activityTracker(token).mergeRecoveredAgents(bounded, now);
+		for (const [id, toolUseIds] of resumeToolUseIds) {
+			for (const toolUseId of toolUseIds) {
+				changed = this.activityTracker(token).linkToolUse(id, toolUseId, now) || changed;
+			}
+		}
+		if (changed) {
 			this.pushActivityToSubscribers(token);
 		}
 	}
@@ -6354,6 +6449,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			// 同じペインで別セッションが始まった (claude再起動・/clear・resume等でファイルが変わる)
 			// → 稼働中の tailer を張り替え、購読者には新セッションのスナップショットを送り直す。
 			this.activityTrackers.delete(event.token);
+			this.pendingSubagentCalls.delete(event.token);
 			this.clearClaudeSubagentTranscripts(event.token);
 			this.activeTurnTokens.delete(event.token);
 			this.disposeTailer(event.token);
@@ -6411,7 +6507,13 @@ export class ParadisMobileAgentChat extends Disposable {
 		const activityPayload = event.payload !== undefined && claudeNestedAgentId !== undefined && event.payload.parent_agent_id === undefined
 			? { ...event.payload, parent_agent_id: claudeNestedAgentId }
 			: event.payload;
-		const activityChanged = activityPayload !== undefined && this.activityTracker(event.token).applyClaude(event.event, activityPayload, event.at);
+		const tracker = this.activityTracker(event.token);
+		// 新しい起動か（一覧にまだいない子の SubagentStart）は、applyClaude が一覧へ足す前に見る
+		const freshSubagent = info.agent === 'claude' && event.event === 'SubagentStart' && subagentId !== undefined && !tracker.hasAgent(subagentId) ? subagentId : undefined;
+		let activityChanged = activityPayload !== undefined && tracker.applyClaude(event.event, activityPayload, event.at);
+		if (info.agent === 'claude') {
+			activityChanged = this.linkSubagentStartFromHooks(event, freshSubagent, tracker) || activityChanged;
+		}
 		if (activityChanged) {
 			this.pushActivityToSubscribers(event.token);
 		}
@@ -6592,7 +6694,7 @@ export class ParadisMobileAgentChat extends Disposable {
 						this.activeTurnTokens.add(token);
 						fireParadisAgentTurnStarted(token, this.tokenToCwd.get(token));
 					} else if (event.type === 'subagent') {
-						changed = tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: event.id, agentPath: event.agentPath, kind: event.kind, ...(event.detail !== undefined ? { prompt: event.detail } : {}), ...(event.via !== undefined ? { interaction: event.via } : {}) } }, event.at) || changed;
+						changed = tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: event.id, agentPath: event.agentPath, kind: event.kind, ...(event.detail !== undefined ? { prompt: event.detail } : {}), ...(event.via !== undefined ? { interaction: event.via } : {}), ...(event.callId !== undefined ? { callId: event.callId } : {}) } }, event.at) || changed;
 						this.enrichCodexActivityRelationship(token, event.id, event.at).catch(err => this.logService.trace('[paradisAgentChat] codex activity relationship lookup failed', String(err)));
 					} else if (event.type === 'goal') {
 						changed = tracker.applyCodexGoal(event, event.at) || changed;

@@ -205,6 +205,67 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		]);
 	}));
 
+	test('links a subagent to the Agent call the mod reports it was started by', () => withHarness(async harness => {
+		await harness.mod('event', { events: [{ type: 'subagent.start', agentId: 'a-one', toolUseId: 'toolu_agent1', subagentType: 'general-purpose' }] });
+		const agents = () => ((harness.chat as unknown as { activityTrackers: Map<string, { snapshot(): { agents: readonly { id: string; toolUseIds?: readonly string[] }[] } | undefined }> }).activityTrackers.get(harness.token)?.snapshot()?.agents ?? []);
+		await waitFor(() => agents().length === 1, 'the subagent was not listed');
+		assert.deepStrictEqual(agents().map(agent => ({ id: agent.id, toolUseIds: agent.toolUseIds })), [{ id: 'a-one', toolUseIds: ['toolu_agent1'] }]);
+	}));
+
+	test('does not revive a finished subagent when the mod reports its start after the end', () => withHarness(async harness => {
+		const agents = () => ((harness.chat as unknown as { activityTrackers: Map<string, { snapshot(): { agents: readonly { id: string; status: string; toolUseIds?: readonly string[] }[] } | undefined }> }).activityTrackers.get(harness.token)?.snapshot()?.agents ?? []);
+		const now = Date.now();
+		harness.hook('SubagentStart', { payload: { agent_id: 'a-grand', agent_type: 'Explore' }, at: now - 5_000 });
+		await waitFor(() => agents().some(agent => agent.id === 'a-grand'), 'the subagent was not listed');
+		harness.hook('SubagentStop', { payload: { agent_id: 'a-grand' }, at: now - 4_000 });
+		await waitFor(() => agents().some(agent => agent.id === 'a-grand' && agent.status === 'completed'), 'the subagent did not end');
+		// フォアグラウンドの子の subagent.start は Agent の結果から作られ、終わった 3 秒後に届く
+		await harness.mod('event', { events: [{ type: 'subagent.start', agentId: 'a-grand', toolUseId: 'toolu_grand', subagentType: 'Explore', at: now - 1_000 }] });
+		await waitFor(() => agents().some(agent => agent.toolUseIds !== undefined), 'the subagent was not linked');
+		assert.deepStrictEqual(agents().map(agent => ({ id: agent.id, status: agent.status, toolUseIds: agent.toolUseIds })), [{ id: 'a-grand', status: 'completed', toolUseIds: ['toolu_grand'] }]);
+	}));
+
+	test('moves the calls that started and resumed a named subagent from its name to its transcript file when reading the records again', () => withHarness(async harness => {
+		const agents = () => ((harness.chat as unknown as { activityTrackers: Map<string, { snapshot(): { agents: readonly { id: string; label: string; toolUseIds?: readonly string[] }[] } | undefined }> }).activityTrackers.get(harness.token)?.snapshot()?.agents ?? []);
+		const at = (second: number) => new Date(Date.now() - 60_000 + second * 1_000).toISOString();
+		await writeFile(harness.transcriptPath, [
+			{ type: 'assistant', timestamp: at(0), message: { content: [{ type: 'tool_use', id: 'toolu_spawn', name: 'Agent', input: { name: 'worker', description: '調べる', subagent_type: 'general-purpose' } }] } },
+			{ type: 'user', timestamp: at(1), message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_spawn', content: 'Spawned successfully.\nagent_id: worker@team\nThe agent is now running.' }] } },
+			{ type: 'assistant', timestamp: at(5), message: { content: [{ type: 'tool_use', id: 'toolu_send', name: 'SendMessage', input: { to: 'worker', message: '続けて' } }] } },
+			{ type: 'user', timestamp: at(6), message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_send', content: '{"success":true,"message":"Resuming agent worker","resumedAgentId":"worker"}' }] } },
+		].map(line => JSON.stringify(line)).join('\n') + '\n');
+		const subagents = join(harness.transcriptPath.replace(/\.jsonl$/, ''), 'subagents');
+		await mkdir(subagents, { recursive: true });
+		await writeFile(join(subagents, 'agent-afile01.jsonl'), JSON.stringify({ type: 'user', timestamp: at(2), message: { content: '調べる' } }) + '\n');
+		await writeFile(join(subagents, 'agent-afile01.meta.json'), JSON.stringify({ name: 'worker', agentType: 'general-purpose' }));
+		// hook のたびに記録を読み直す
+		harness.hook('PostToolUse', { toolName: 'SendMessage', toolUseId: 'toolu_send' });
+		await waitFor(() => agents().some(agent => agent.toolUseIds?.length === 2), 'the calls were not linked to the transcript file');
+		assert.deepStrictEqual(agents().map(agent => ({ id: agent.id, label: agent.label, toolUseIds: agent.toolUseIds })), [{ id: 'afile01', label: 'worker', toolUseIds: ['toolu_spawn', 'toolu_send'] }]);
+	}));
+
+	test('links a subagent to the Agent call from the hooks only when one launch is waiting', () => withHarness(async harness => {
+		const agents = () => ((harness.chat as unknown as { activityTrackers: Map<string, { snapshot(): { agents: readonly { id: string; toolUseIds?: readonly string[] }[] } | undefined }> }).activityTrackers.get(harness.token)?.snapshot()?.agents ?? []);
+		const waiting = () => (harness.chat as unknown as { pendingSubagentCalls: Map<string, { launches: Map<string, number> }> }).pendingSubagentCalls.get(harness.token)?.launches.size ?? 0;
+		harness.hook('PreToolUse', { toolName: 'Agent', toolUseId: 'toolu_one', toolInput: { description: '調べる' } });
+		await waitFor(() => waiting() === 1, 'the launch was not remembered');
+		harness.hook('SubagentStart', { payload: { agent_id: 'a-one', agent_type: 'Explore' } });
+		await waitFor(() => agents().length === 1 && waiting() === 0, 'the subagent was not listed');
+		// 並列の起動はどれがどの子か分からないので結ばない
+		harness.hook('PreToolUse', { toolName: 'Agent', toolUseId: 'toolu_p1', toolInput: { description: 'A' } });
+		harness.hook('PreToolUse', { toolName: 'Agent', toolUseId: 'toolu_p2', toolInput: { description: 'B' } });
+		await waitFor(() => waiting() === 2, 'the parallel launches were not remembered');
+		harness.hook('SubagentStart', { payload: { agent_id: 'a-p1', agent_type: 'Explore' } });
+		await waitFor(() => agents().length === 2, 'the first parallel subagent was not listed');
+		harness.hook('SubagentStart', { payload: { agent_id: 'a-p2', agent_type: 'Explore' } });
+		await waitFor(() => agents().length === 3, 'the second parallel subagent was not listed');
+		assert.deepStrictEqual(agents().map(agent => ({ id: agent.id, toolUseIds: agent.toolUseIds })).sort((a, b) => a.id.localeCompare(b.id)), [
+			{ id: 'a-one', toolUseIds: ['toolu_one'] },
+			{ id: 'a-p1', toolUseIds: undefined },
+			{ id: 'a-p2', toolUseIds: undefined },
+		]);
+	}));
+
 	test('leaves the approval card to the Stop hook when the mod reports the end of the turn', () => withHarness(async harness => {
 		harness.hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_keep', toolInput: { command: 'ls' } });
 		harness.hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'ls' } });

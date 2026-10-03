@@ -46,16 +46,17 @@ export function formatRelativeTime(at: number, now: number = Date.now()): string
  * アプリがactiveの間だけintervalを動かし、復帰時は滞留したtimer callbackを再生せず
  * 現在時刻へ1回で追いつく。
  */
-export function useNow(intervalMs: number = 60_000): number {
+export function useNow(intervalMs: number = 60_000, enabled: boolean = true): number {
 	const [now, setNow] = useState(() => Date.now());
 	const isAppActive = useAppIsActive();
 	useEffect(() => {
-		if (!isAppActive) {
+		// enabled が false の間は刻まない（動いているものが無い画面で 1 分ごとに描き直さない）
+		if (!isAppActive || !enabled) {
 			return;
 		}
 		setNow(Date.now());
 		const timer = setInterval(() => setNow(Date.now()), intervalMs);
 		return () => clearInterval(timer);
-	}, [intervalMs, isAppActive]);
+	}, [intervalMs, isAppActive, enabled]);
 	return now;
 }

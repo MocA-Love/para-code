@@ -27,6 +27,18 @@ export const PARADIS_ACTIVITY_STALE_MS = 30 * 60 * 1000;
  */
 const SUBAGENT_RESTART_MIN_GAP_MS = 2_000;
 
+/** 1 つの子に覚える呼び出しの id の上限（起動の 1 件は必ず残し、再開は新しい方から残す）。 */
+const MAX_TOOL_USE_IDS_PER_AGENT = 10;
+/** 呼び出しの id を覚えておく子の数の上限（一覧の上限 100 件より多く持ち、一覧へ後から載る子にも当てる）。 */
+const MAX_LINKED_AGENTS = 300;
+/**
+ * 再開とみなして戻した子を、記録の読み直しで終わりへ戻すまでの猶予。本物の再開（SendMessage）では子がすぐに
+ * 新しい指示の行を書くので、それより長く行が無ければ遅れて届いた開始の知らせとみなす。
+ */
+const SUBAGENT_REVIVAL_GRACE_MS = 5_000;
+const LINKED_AGENT_ID_PATTERN = /^[A-Za-z0-9._:@-]{1,500}$/;
+const TOOL_USE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
+
 export interface IParadisAgentActivityAgent {
 	readonly id: string;
 	readonly label: string;
@@ -38,6 +50,12 @@ export interface IParadisAgentActivityAgent {
 	readonly status: ParadisAgentActivityStatus;
 	readonly startedAt: number;
 	readonly updatedAt: number;
+	/**
+	 * この子を起動した呼び出し（Claude の Agent / Task、Codex の spawn_agent）の toolUseId と、その後に再開した
+	 * 呼び出し（SendMessage・followup_task）の toolUseId。先頭が起動の呼び出し。モバイルの会話のカードは、
+	 * 呼び出しの toolUseId でこの項目を引いて状態と詳細への入口を出す。古いアプリは知らない項目として捨てる。
+	 */
+	readonly toolUseIds?: readonly string[];
 }
 
 export interface IParadisAgentActivityTask {
@@ -196,6 +214,18 @@ export class ParadisAgentActivityTracker {
 	private activeCompactionId: string | undefined;
 	/** 名前付きのエージェント（チームメイト）の名前 → 子 transcript の ID。TeammateIdle を同じ項目へ当てる。 */
 	private readonly agentIdsByName = new Map<string, string>();
+	/**
+	 * 子の ID → 起動・再開した呼び出しの toolUseId（{@link IParadisAgentActivityAgent.toolUseIds}）。一覧の項目とは
+	 * 別に持つ。起動の知らせ（mod・transcript・rollout）と一覧の項目のどちらが先に来ても結べるようにするため。
+	 */
+	private readonly toolUseIdsByAgent = new Map<string, string[]>();
+	/**
+	 * 終わった後の SubagentStart で動いているに戻した子 → 戻した時刻。遅れて届いた Start（Stop が落ちた・順序の
+	 * 入れ替わり）で戻ったものは、記録の読み直しで再開後の行が無いと分かったら終わりへ戻す（{@link mergeRecoveredAgents}）。
+	 */
+	private readonly revivedAt = new Map<string, number>();
+	/** 一覧にいる子の結びが変わった回数。変化の判定（serialized）は大きな表を JSON にせず、この数だけを比べる。 */
+	private linkGeneration = 0;
 
 	beginTurn(): boolean {
 		// セッション内の完了履歴はモバイルの一覧・詳細へ残す。新しい活動は同じ
@@ -214,6 +244,15 @@ export class ParadisAgentActivityTracker {
 				// 2.1.287 で実測）。終わった後に届いた Start は蘇生として受け入れ、Stop の直後に処理されたもの
 				// （{@link SUBAGENT_RESTART_MIN_GAP_MS} 以内）は順序が入れ替わった遅着として捨てる。
 				if (!(previous !== undefined && terminal(previous.status) && nextStatus === 'running' && at - previous.updatedAt < SUBAGENT_RESTART_MIN_GAP_MS)) {
+					if (previous !== undefined && terminal(previous.status) && nextStatus === 'running') {
+						this.revivedAt.delete(id);
+						this.revivedAt.set(id, at);
+						for (const oldest of [...this.revivedAt.keys()].slice(0, Math.max(0, this.revivedAt.size - MAX_LINKED_AGENTS))) {
+							this.revivedAt.delete(oldest);
+						}
+					} else if (nextStatus !== 'running') {
+						this.revivedAt.delete(id);
+					}
 					const detail = event === 'SubagentStop' ? text(payload.last_assistant_message) ?? previous?.detail : text(payload.prompt) ?? previous?.detail;
 					this.agents.set(id, {
 						id, label: text(payload.agent_type) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'claude',
@@ -275,6 +314,7 @@ export class ParadisAgentActivityTracker {
 			return false;
 		}
 		const before = this.serialized();
+		this.revivedAt.delete(id);
 		this.agents.set(id, { ...previous, status, updatedAt: Math.max(previous.updatedAt, at) });
 		return this.finishApply(before, at);
 	}
@@ -337,6 +377,9 @@ export class ParadisAgentActivityTracker {
 					this.agents.set(id, { id, label: text(item?.agentPath) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(detail !== undefined ? { detail } : {}), ...relationship(id, item?.parentThreadId, item?.depth, previous), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
 				}
 				this.updateCodexTask(id, status, at, { assignee: codexAssignee(item?.agentPath) });
+				// 今の rollout では、子の活動の id が起動（spawn_agent）・やりとり（followup_task 等）の呼び出しの call_id
+				const callId = text(item?.callId);
+				if (callId !== undefined) { this.linkToolUseQuietly(id, callId, kind === 'started'); }
 			}
 		} else if ((type === 'collabAgentToolCall' || type === 'collabToolCall') && item !== undefined) {
 			const collaboration = codexCollaboration(item);
@@ -407,6 +450,32 @@ export class ParadisAgentActivityTracker {
 		return this.finishApply(before, at);
 	}
 
+	/**
+	 * {@link linkToolUse} の、時刻の更新を呼び出し側の finishApply に任せる版。一覧にいる子の結びが変わったときだけ
+	 * true を返す（一覧にいない子の結びは、子が一覧へ載るときの変化と一緒に届く）。
+	 */
+	private linkToolUseQuietly(agentId: string, toolUseId: string, spawn: boolean): boolean {
+		if (!LINKED_AGENT_ID_PATTERN.test(agentId) || !TOOL_USE_ID_PATTERN.test(toolUseId)) {
+			return false;
+		}
+		const previous = this.toolUseIdsByAgent.get(agentId) ?? [];
+		if (previous.includes(toolUseId)) {
+			return false;
+		}
+		const next = spawn ? [toolUseId, ...previous] : [...previous, toolUseId];
+		// 新しく知らせた子を後ろへ回し、上限を超えたら長く知らせの無い子から忘れる
+		this.toolUseIdsByAgent.delete(agentId);
+		this.toolUseIdsByAgent.set(agentId, next.length > MAX_TOOL_USE_IDS_PER_AGENT ? [next[0], ...next.slice(next.length - MAX_TOOL_USE_IDS_PER_AGENT + 1)] : next);
+		for (const oldest of [...this.toolUseIdsByAgent.keys()].slice(0, Math.max(0, this.toolUseIdsByAgent.size - MAX_LINKED_AGENTS))) {
+			this.toolUseIdsByAgent.delete(oldest);
+		}
+		if (!this.agents.has(agentId)) {
+			return false;
+		}
+		this.linkGeneration++;
+		return true;
+	}
+
 	private updateCodexTask(agentId: string, status: ParadisAgentActivityStatus, at: number, options: { readonly create?: boolean; readonly prompt?: string; readonly assignee?: string }): void {
 		const id = codexTaskId(agentId);
 		const previous = this.tasks.get(id);
@@ -418,6 +487,29 @@ export class ParadisAgentActivityTracker {
 			id, label: codexTaskLabel(options.prompt, previous), ...(detail !== undefined ? { detail } : {}), assignee, agentId,
 			status, startedAt: previous?.startedAt ?? at, updatedAt: at,
 		});
+	}
+
+	/**
+	 * 子を起動した（`spawn`）または再開した呼び出しの toolUseId を覚える。同じ組を何度知らせても変わらない。
+	 * 一覧にいる子の結びが変わったときだけ true（送り直す）。結びだけの変化では一覧の開始時刻を立てない。
+	 */
+	linkToolUse(agentId: string, toolUseId: string, at: number, spawn = false): boolean {
+		if (!this.linkToolUseQuietly(agentId, toolUseId, spawn) || this.updatedAt === undefined) {
+			return false;
+		}
+		this.updatedAt = Math.max(this.updatedAt, at);
+		return true;
+	}
+
+	/** 一覧に子がいるか（SubagentStart が新しい起動か再開かを見分ける）。 */
+	hasAgent(agentId: string): boolean {
+		return this.agents.has(agentId);
+	}
+
+	/** 一覧の子が終わっているか（完了・失敗・中断）。 */
+	hasEndedAgent(agentId: string): boolean {
+		const agent = this.agents.get(agentId);
+		return agent !== undefined && terminal(agent.status);
 	}
 
 	/** 永続メタデータから判明した親子関係を、循環を作らず既存Agentへ反映する。 */
@@ -447,8 +539,12 @@ export class ParadisAgentActivityTracker {
 			const previous = this.agents.get(recovered.id);
 			if (previous !== undefined && previous.provider !== recovered.provider) { continue; }
 			let status: ParadisAgentActivityStatus = previous?.status ?? recovered.status;
+			const revivedAt = this.revivedAt.get(recovered.id);
 			if (previous !== undefined && !terminal(previous.status)) {
 				if (terminal(recovered.status) && recovered.updatedAt >= previous.updatedAt) {
+					status = recovered.status;
+				} else if (terminal(recovered.status) && revivedAt !== undefined && at - revivedAt >= SUBAGENT_REVIVAL_GRACE_MS && (recovered.lastLineAt ?? recovered.updatedAt) < revivedAt) {
+					// 終わった後の Start で戻したが、子の記録に戻した後の行が無い（遅れて届いた Start）。終わりへ戻す
 					status = recovered.status;
 				} else if (previous.status === 'unknown' && recovered.status === 'running' && recovered.updatedAt >= previous.updatedAt) {
 					status = 'running';
@@ -456,6 +552,10 @@ export class ParadisAgentActivityTracker {
 			} else if (previous !== undefined && recovered.status === 'running' && recovered.updatedAt > previous.updatedAt) {
 				// 終わった後に子 transcript へ新しい作業が書かれた（SendMessage での再開など）
 				status = 'running';
+			}
+			if (terminal(status) || (revivedAt !== undefined && (recovered.lastLineAt ?? 0) >= revivedAt)) {
+				// 終わった、または戻した後の行が子の記録にある（本物の再開）。もう疑わない
+				this.revivedAt.delete(recovered.id);
 			}
 			// 名前付きの起動は名前で見分ける（hook の agent_type で先に作った項目は種類名を持っている）
 			const label = recovered.name ?? (previous?.label !== undefined && previous.label !== 'SubAgent' ? previous.label : recovered.label);
@@ -469,6 +569,7 @@ export class ParadisAgentActivityTracker {
 				updatedAt: Math.max(previous?.updatedAt ?? recovered.updatedAt, recovered.updatedAt),
 			});
 			relationships.set(recovered.id, { ...(recovered.parentId !== undefined ? { parentId: recovered.parentId } : {}), ...(recovered.depth !== undefined ? { depth: recovered.depth } : {}) });
+			recovered.toolUseIds?.forEach((toolUseId, index) => this.linkToolUseQuietly(recovered.id, toolUseId, index === 0));
 			if (recovered.name !== undefined && recovered.name !== recovered.id) {
 				// 先に TeammateIdle で作った仮の項目があれば、子 transcript の項目へ畳む
 				this.agentIdsByName.set(recovered.name, recovered.id);
@@ -595,7 +696,10 @@ export class ParadisAgentActivityTracker {
 			return undefined;
 		}
 		return {
-			agents: [...this.agents.values()].sort((a, b) => Number(b.status === 'running' || b.status === 'idle') - Number(a.status === 'running' || a.status === 'idle') || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)),
+			agents: [...this.agents.values()].map(agent => {
+				const toolUseIds = this.toolUseIdsByAgent.get(agent.id);
+				return toolUseIds !== undefined ? { ...agent, toolUseIds: [...toolUseIds] } : agent;
+			}).sort((a, b) => Number(b.status === 'running' || b.status === 'idle') - Number(a.status === 'running' || a.status === 'idle') || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)),
 			tasks: [...this.tasks.values()].sort((a, b) => Number(b.status === 'running' || b.status === 'idle') - Number(a.status === 'running' || a.status === 'idle') || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)),
 			compactions: [...this.compactions.values()].sort((a, b) => a.startedAt - b.startedAt).slice(-5),
 			startedAt: this.startedAt, updatedAt: this.updatedAt,
@@ -622,6 +726,6 @@ export class ParadisAgentActivityTracker {
 	}
 
 	private serialized(): string {
-		return JSON.stringify([...[...this.agents].sort(), ...[...this.tasks].sort(), ...[...this.compactions].sort()]);
+		return JSON.stringify([...[...this.agents].sort(), ...[...this.tasks].sort(), ...[...this.compactions].sort(), this.linkGeneration]);
 	}
 }
