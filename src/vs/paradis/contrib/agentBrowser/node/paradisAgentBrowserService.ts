@@ -60,11 +60,12 @@ import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolve
 import { IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisDevtoolsRootsResolution, IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
-import { IParadisDevtoolsPathCaller, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders } from './paradisDevtoolsPathPolicy.js';
+import { IParadisDevtoolsPathCaller, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from './paradisDevtoolsPathPolicy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
 import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOwnerKey } from './paradisBrowserPageOps.js';
+import { PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS, ParadisRemoteFileTransfer, paradisDescribeToolsForRemotePane, paradisRemoteFileToolDirection } from './paradisRemoteFileTransfer.js';
 import { paradisPaneStorageAffinity } from '../common/paradisBrowserPageOps.js';
 import { URI } from '../../../../base/common/uri.js';
 import { AgentNetworkFilterService } from '../../../../platform/networkFilter/common/networkFilterService.js';
@@ -263,7 +264,7 @@ function parseMainRendererManifest(value: unknown): IParadisMobileRendererManife
 }
 
 // allow-any-unicode-next-line
-const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブラウザページはありません。自分用のタブが要るなら open_browser_tab で開けます（承認不要）。ユーザーのタブ（ログイン済みのページなど）を使いたいなら request_browser_page でユーザーに共有を頼めます。ユーザー側から共有する場合は、Para Code側でブラウザページを開き、コマンドパレットから「Para Code: Share Browser Page with Terminal Pane」を実行してこのペインに共有してください。注意: 共有はPara Codeの再起動（自動アップデート適用を含む）でリセットされるため、以前共有していた場合も再共有が必要です。再共有しても届かない場合は、このCLIをペインで起動し直してから再共有してください（ペインの識別トークンが再起動で変わっている可能性があります）。';
+const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブラウザページはありません。自分用のタブが要るなら open_browser_tab で開けます（承認不要）。ユーザーのタブ（ログイン済みのページなど）を使いたいなら request_browser_page でユーザーに共有を頼めます。ユーザー側から共有する場合は、Para Code側でブラウザページを開き、コマンドパレットから「Para Code: Share Browser Page with Terminal Pane」を実行してこのペインに共有してください。Para Code を再起動（自動アップデートの適用を含む）すると、起動後に Para Code が同じペインと同じページの共有を戻すかユーザーに尋ね、承認されれば張り直します（ユーザーがそのスペースを開いたときに尋ねます）。戻らない場合（ページやペインを閉じた、ユーザーが共有を外した、戻さないと答えた）は、ユーザーにもう一度共有してもらってください。それでも届かない場合は、このCLIをペインで起動し直してから再共有してください。';
 
 /**
  * para固有の静的ツール定義。以前はこのファイルと `paradisBrowserMcpShim.ts`
@@ -456,6 +457,13 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 手元へは戻さない（手元のファイルに触れる操作を断る側へ倒すため）。
 	 */
 	private readonly _paneRemoteAuthorities = new Map<string, string>();
+	/**
+	 * 接続先のペインのトークン → そのペインを持つウィンドウ（ctx）。シェルの PID の無い manifest のペインは
+	 * `_paneShells` に載らないため、preview_file やファイルの受け渡しでウィンドウを引けるよう別に覚える。
+	 */
+	private readonly _remotePaneWindows = new Map<string, string>();
+	/** 接続先のペインのエージェントとのファイルの受け渡し（スクリーンショットの保存先・upload_file など）。 */
+	private readonly _remoteFileTransfer = new ParadisRemoteFileTransfer(() => this._devtoolsProxy.ensureTemporaryDirectory());
 	/**
 	 * MCPリクエスト（またはCDPゲートウェイのPID識別）で実際に接続実績のあったペイントークンの集合。
 	 * バインディングダイアログの「MCP未接続」表示に使う（shared processの生存期間のみ保持）。
@@ -1105,6 +1113,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		for (const pane of acceptedManifest.panes) {
 			if (pane.remoteAuthority !== undefined) {
 				this._paneRemoteAuthorities.set(pane.token, pane.remoteAuthority);
+				this._remotePaneWindows.set(pane.token, windowCtx);
 			}
 			const existing = this._paneShells.get(pane.token);
 			const terminalExited = this._terminalExitedTokens.has(pane.token);
@@ -1646,6 +1655,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		const cleanupGeneration = generation ?? this._advanceBindingGeneration(token);
 		this._paneShells.delete(token);
 		this._paneRemoteAuthorities.delete(token);
+		this._remotePaneWindows.delete(token);
 		this._paneStatuses.delete(token);
 		paradisClaudeModBridge.forgetToken(token);
 		this._paneSessions.delete(token);
@@ -3064,7 +3074,9 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'initialize': {
 				const params = rpc.params as { protocolVersion?: unknown } | undefined;
 				const requested = typeof params?.protocolVersion === 'string' ? params.protocolVersion : '2025-03-26';
-				const instructions: string | undefined = this._serverInstructions();
+				const instructions: string | undefined = this._paneRemoteAuthorityOf(ingressLease.token) !== undefined
+					? `${this._serverInstructions()}\n\n${PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS}`
+					: this._serverInstructions();
 				return {
 					protocolVersion: requested,
 					capabilities: { tools: { listChanged: false } },
@@ -3081,7 +3093,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._requireIngressLease(ingressLease);
 				// PARA-PATCH: 登録されたツールプロバイダ（モバイル端末操作など）のツールも1本のサーバーに混ぜて出す
 				const provided = this._allToolProviders().flatMap(provider => [...provider.listTools()]);
-				return { tools: [...TOOLS, ...provided, ...tools] };
+				const listed = [...TOOLS, ...provided, ...tools];
+				// 接続先のペインには、パスの引数を「エージェントの機械のパス」として説明し直す
+				return { tools: this._paneRemoteAuthorityOf(ingressLease.token) !== undefined ? paradisDescribeToolsForRemotePane(listed) : listed };
 			}
 			case 'tools/call':
 				return this._callTool(ingressLease, rpc.params as { name?: unknown; arguments?: unknown } | undefined, signal, socket);
@@ -3112,10 +3126,24 @@ export class ParadisAgentBrowserService extends Disposable {
 			// 「chrome-devtools-mcp のファイルのパスは手元のペインからだけ受け、roots で範囲を絞る」）
 			const pathArguments = paradisDevtoolsPathArguments(name, params?.arguments);
 			if (pathArguments.length > 0) {
-				const pathDecision = paradisDevtoolsPathDecision(await this._devtoolsPathCaller(token, socket), name, pathArguments);
+				const pathDecision = paradisDevtoolsPathDecision(await this._devtoolsPathCaller(token, socket), name, pathArguments, params?.arguments);
 				this._requireIngressLease(ingressLease);
 				if (pathDecision.kind === 'refuse') {
+					// 接続先のペインの `filePath`（スクリーンショット・スナップショットの保存先、upload_file の元）は、
+					// 手元の一時ファイルで動かして接続先と中身を受け渡す
+					const remoteAuthority = this._paneRemoteAuthorityOf(token);
+					const direction = paradisRemoteFileToolDirection(name, pathArguments);
+					if (remoteAuthority !== undefined && direction !== undefined) {
+						return this._remoteFileTransfer.callTool(name, direction, params?.arguments as Record<string, unknown>, this._remoteFileTransferHost(ingressLease, remoteAuthority, name, signal),
+							bridgedArgs => this._callDevtoolsTool(ingressLease, name, bridgedArgs, signal, false));
+					}
 					return this._toolError(pathDecision.message);
+				}
+				// 手元のペイン: シンボリックリンクを通って `.git` などの中を指していないかを、渡す前に realpath で確かめる
+				const versionControl = await paradisDevtoolsVersionControlRealpathRefusal(name, pathArguments, params?.arguments);
+				this._requireIngressLease(ingressLease);
+				if (versionControl !== undefined) {
+					return this._toolError(versionControl);
 				}
 			}
 			// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
@@ -3147,7 +3175,8 @@ export class ParadisAgentBrowserService extends Disposable {
 
 		if (name === 'preview_file') {
 			const toolArgs = params?.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : undefined;
-			const path = typeof toolArgs?.path === 'string' ? toolArgs.path : undefined;
+			// `filePath` も受ける（他のツールの引数名に合わせて渡してくるエージェントが多い）
+			const path = typeof toolArgs?.path === 'string' ? toolArgs.path : typeof toolArgs?.filePath === 'string' ? toolArgs.filePath : undefined;
 			// 接続先のペインのパスは接続先のものとして開かせる。台帳に無いペイン・手元のペインのトークンで
 			// 戻り経路から来たものは、手元のファイルを開かせない（ゲートウェイ・MCP の層と揃える）
 			const remoteAuthority = this._paneRemoteAuthorityOf(token);
@@ -3235,6 +3264,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private async _callPageOpsTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
+		// 接続先のペインには、手元に保存した PDF・ダウンロードを接続先のホームの受け渡し用フォルダへ写す
+		const remoteAuthority = this._paneRemoteAuthorityOf(ingressLease.token);
 		try {
 			return await this._pageOps.call({
 				token: ingressLease.token,
@@ -3251,6 +3282,9 @@ export class ParadisAgentBrowserService extends Disposable {
 					}, signal);
 					return call.ok && call.value === true;
 				},
+				...(remoteAuthority !== undefined ? {
+					deliverSavedFile: (localPath: string) => this._remoteFileTransfer.deliverToRemoteTemporaryFolder(localPath, this._remoteFileTransferHost(ingressLease, remoteAuthority, name, signal)),
+				} : {}),
 			}, name, args);
 		} catch (error) {
 			if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
@@ -3410,7 +3444,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/** ツール呼び出しを内蔵chrome-devtools-mcpへ転送する（転送対象外の名前は -32602）。 */
-	private async _callDevtoolsTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
+	private async _callDevtoolsTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal, offerScreenshotHandoff: boolean = true): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		const token = ingressLease.token;
 		return this._devtoolsGenerationCoordinator.runWithLease(token, async () => {
@@ -3439,7 +3473,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				if (result !== undefined) {
 					// ファイルへ落ちたスクリーンショットは、呼び出し元が別の機械に居ると見えない。
 					// 取りに来るための口を添える（保存に失敗した場合も、どこへ書こうとしたかは示す）。
-					return name === 'take_screenshot' ? this._offerScreenshotHandoff(token, result, args) : result;
+					return name === 'take_screenshot' && offerScreenshotHandoff ? this._offerScreenshotHandoff(token, result, args) : result;
 				}
 			}
 			throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
@@ -3732,7 +3766,9 @@ export class ParadisAgentBrowserService extends Disposable {
 	private async _previewFile(ingressLease: IParadisAgentBrowserIngressLease, path: string | undefined, signal?: AbortSignal, remoteAuthority?: string): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		if (!path || !isAbsolute(path)) {
-			return this._toolError(`preview_file requires an absolute file path (got: ${String(path)}). Resolve the path against your working directory first.`);
+			return this._toolError(path === undefined
+				? 'preview_file requires `path`: the absolute path of the file to open.'
+				: `preview_file requires an absolute file path (got: ${path}). Resolve the path against your working directory first.`);
 		}
 		const call = await this._callOwningWindow<IParadisPreviewFileResult>(ingressLease, {
 			channelName: PARADIS_AGENT_PREVIEW_CHANNEL,
@@ -4119,6 +4155,14 @@ export class ParadisAgentBrowserService extends Disposable {
 				return 'PARA_BROWSER_RETRYABLE: Para Code is still restoring this terminal pane, so it cannot tell which space to open the file in. Retry in a few seconds.';
 			case 'unreachableSpace':
 				return 'The space this terminal pane belongs to can no longer be opened in Para Code (its repository or worktree is gone from the list), so there is nowhere to show the file. Tell the user the path instead.';
+			case 'notFound':
+				return 'preview_file did not open anything: the file does not exist (on a remote window, the path is looked up on the machine this agent runs on). Check the path and retry.';
+			case 'isDirectory':
+				return 'preview_file did not open anything: the path is a folder. Give the path of a file.';
+			case 'unreadable':
+				return 'preview_file did not open anything: Para Code could not read the file (permissions, or the remote connection was interrupted). Retry, or tell the user the path instead.';
+			case 'openFailed':
+				return 'preview_file did not open anything: Para Code found the file but could not open an editor for it. Tell the user the path instead.';
 		}
 	}
 
@@ -4189,7 +4233,9 @@ export class ParadisAgentBrowserService extends Disposable {
 	): Promise<ParadisMcpOwningWindowResult<T>> {
 		this._requireIngressLease(ingressLease);
 		const token = ingressLease.token;
-		const pane = this._paneShells.get(token);
+		// 接続先のペインはシェルの PID が分からず `_paneShells` に載らないことがある（SSH の再読み込み直後など）
+		const remoteWindowCtx = this._remotePaneWindows.get(token);
+		const pane = this._paneShells.get(token) ?? (remoteWindowCtx !== undefined ? { windowCtx: remoteWindowCtx } : undefined);
 		if (!pane) {
 			return { ok: false, error: 'Para Code could not identify the window that owns this terminal pane (the pane may have just been created, or Para Code was restarted after this CLI started). Retry in a few seconds; if it keeps failing, re-launch this CLI in a terminal pane inside Para Code.' };
 		}
@@ -4246,6 +4292,24 @@ export class ParadisAgentBrowserService extends Disposable {
 				signal?.removeEventListener('abort', onAbort);
 			}
 		}
+	}
+
+	/** 接続先のペインとのファイルの受け渡しを、そのペインを所有するウィンドウへ頼む口。 */
+	private _remoteFileTransferHost(ingressLease: IParadisAgentBrowserIngressLease, remoteAuthority: string, label: string, signal?: AbortSignal) {
+		return {
+			callWindow: <T>(method: string, args: unknown[]) => this._callOwningWindow<T>(ingressLease, {
+				channelName: PARADIS_AGENT_PREVIEW_CHANNEL,
+				method,
+				// トークンは読み書きしてよい場所（ペインのスペースのフォルダ）を解くためだけに渡す
+				args: [ingressLease.token, remoteAuthority, ...args],
+				failureLabel: label,
+				failureMessage: 'Para Code could not transfer the file between the browser and the machine this agent runs on.',
+				// 大きなファイルを接続先へ送る時間を見込む
+				timeoutMs: 120_000,
+			}, signal),
+			// 受け渡し用フォルダを本人だけのものにする（SSH の接続先だけ）
+			restrictFolder: (remoteFolder: string) => this._remoteTunnels.chmodPrivateFolder(remoteAuthority, remoteFolder),
+		};
 	}
 
 	private _toolText(text: string): unknown {
@@ -4510,6 +4574,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._mobileVoiceTickets.clear();
 		this._runNonThrowingCleanup('devtools-generation-coordinator', () => this._devtoolsGenerationCoordinator.dispose());
 		this._runNonThrowingCleanup('file-drop-staging', () => this._fileDropStaging.dispose());
+		this._runNonThrowingCleanup('remote-file-transfer', () => this._remoteFileTransfer.dispose());
 		for (const token of new Set([
 			...this._paneShells.keys(),
 			...this._paneStatuses.keys(),
@@ -4530,6 +4595,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._quarantinedTokenState.clear();
 		this._paneShells.clear();
 		this._paneRemoteAuthorities.clear();
+		this._remotePaneWindows.clear();
 		this._paneStatuses.clear();
 		this._paneSessions.clear();
 		this._activityApprovalTokens.clear();

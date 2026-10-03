@@ -60,6 +60,11 @@ export interface IParadisPageOpsCall {
 	confirmPaneProfile(profileId: string): Promise<boolean>;
 	/** uid の要素の中心座標などを内蔵 chrome-devtools-mcp の evaluate_script で求める。失敗は MCP のツールの結果（エラー）で返す。 */
 	resolveElement(uid: string): Promise<{ readonly ok: true; readonly target: IParadisResolvedDropTarget } | { readonly ok: false; readonly result: unknown }>;
+	/**
+	 * 呼び出し元が接続先（SSH・WSL・コンテナ）のペインのときだけある。手元に保存したファイルを接続先のホームの受け渡し用フォルダへ
+	 * 写し、写したパスか写せなかった理由を返す。
+	 */
+	deliverSavedFile?(localPath: string): Promise<{ readonly ok: true; readonly path: string } | { readonly ok: false; readonly message: string }>;
 }
 
 /** サービスが用意する口。 */
@@ -452,7 +457,7 @@ export class ParadisBrowserPageOps {
 		if (!result.ok) {
 			return error(this.failureMessage('save_page_as_pdf', result.reason, result.message));
 		}
-		return text(`Saved the page as a PDF: ${result.path} (${result.bytes} bytes). It is listed in Para Code's download list as saved by an agent.`);
+		return text(`Saved the page as a PDF: ${result.path} (${result.bytes} bytes). It is listed in Para Code's download list as saved by an agent.${await this.deliveredNote(call, result.path)}`);
 	}
 
 	private async applyOverrides(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding, request: IParadisPageOverridesRequest, label: string): Promise<IParadisPageOverridesResult | ToolResult> {
@@ -614,7 +619,7 @@ export class ParadisBrowserPageOps {
 		const size = result.totalBytes > 0 ? `${result.receivedBytes} of ${result.totalBytes} bytes` : `${result.receivedBytes} bytes`;
 		switch (result.state) {
 			case 'completed':
-				return text(`Downloaded "${result.fileName}" (${size}) to ${result.path}. It is listed in Para Code's download list as downloaded by an agent (the user is offered "Show in Folder", not "Open").`);
+				return text(`Downloaded "${result.fileName}" (${size}) to ${result.path}. It is listed in Para Code's download list as downloaded by an agent (the user is offered "Show in Folder", not "Open").${result.path ? await this.deliveredNote(call, result.path) : ''}`);
 			case 'progressing':
 				return text(result.path
 					? `The download of "${result.fileName}" is still in progress (${size}); it is being saved to ${result.path}.`
@@ -624,6 +629,21 @@ export class ParadisBrowserPageOps {
 			case 'interrupted':
 				return error(`The download of "${result.fileName}" failed (${size}).`);
 		}
+	}
+
+	/**
+	 * 呼び出し元が接続先のペインなら、保存したファイルを接続先へ写して、その旨の一文（先頭に空白）を返す。
+	 * 手元のペインなら空文字。
+	 */
+	private async deliveredNote(call: IParadisPageOpsCall, localPath: string): Promise<string> {
+		if (call.deliverSavedFile === undefined) {
+			return '';
+		}
+		const delivered = await call.deliverSavedFile(localPath);
+		call.requireCurrent();
+		return delivered.ok
+			? ` The path above is on the machine running Para Code; a copy was written to ${delivered.path} on the machine this agent runs on.`
+			: ` The path above is on the machine running Para Code, not on the machine this agent runs on, and the file could not be copied to your machine: ${delivered.message}`;
 	}
 
 	private async highlight(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding, args: Record<string, unknown>): Promise<ToolResult> {

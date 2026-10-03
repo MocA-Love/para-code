@@ -10,7 +10,7 @@ import { tmpdir } from 'os';
 import { pathToFileURL } from 'url';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_DEVTOOLS_LOCAL_PATH_ARGUMENTS, paradisDevtoolsExplainRootsDenial, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsRoots, paradisDevtoolsUserTemporaryFolders } from '../../node/paradisDevtoolsPathPolicy.js';
+import { PARADIS_DEVTOOLS_LOCAL_PATH_ARGUMENTS, paradisDevtoolsExplainRootsDenial, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsRoots, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from '../../node/paradisDevtoolsPathPolicy.js';
 
 const REMOTE = { paneKnown: true, remote: true };
 const LOCAL = { paneKnown: true, remote: false };
@@ -62,6 +62,43 @@ suite('ParadisDevtoolsPathPolicy', () => {
 	test('forwards local path arguments from a local pane and refuses them from an unidentified pane', () => {
 		const kinds = (caller: typeof LOCAL) => [...new Set(Object.values(decideEachPathArgument(caller)))];
 		assert.deepStrictEqual({ local: kinds(LOCAL), unknown: kinds(UNKNOWN) }, { local: ['forward'], unknown: ['refuse'] });
+	});
+
+	test('refuses paths inside .git, .hg or .svn even from a local pane', () => {
+		const decide = (args: Record<string, unknown>) => paradisDevtoolsPathDecision(LOCAL, 'take_screenshot', paradisDevtoolsPathArguments('take_screenshot', args), args);
+		const refused = decide({ filePath: '/repos/a/.git/hooks/pre-commit' });
+		assert.deepStrictEqual({
+			git: refused.kind,
+			explains: refused.kind === 'refuse' && refused.message.includes('.git, .hg or .svn'),
+			relativeSvn: decide({ filePath: 'repo/.svn/entries' }).kind,
+			github: decide({ filePath: '/repos/a/.github/shot.png' }).kind,
+			plain: decide({ filePath: '/repos/a/shot.png' }).kind,
+		}, { git: 'refuse', explains: true, relativeSvn: 'refuse', github: 'forward', plain: 'forward' });
+	});
+
+	test('refuses a local path that reaches .git through a symbolic link, also for a file that does not exist yet', async () => {
+		// /repos/a/hooks -> /repos/a/.git/hooks, /repos/a/cfg -> /repos/a/.git/config
+		const links = new Map([['/repos/a/hooks', '/repos/a/.git/hooks'], ['/repos/a/cfg', '/repos/a/.git/config']]);
+		const existing = new Set(['/', '/repos', '/repos/a', '/repos/a/.git', '/repos/a/.git/hooks', '/repos/a/.git/config', '/repos/a/out']);
+		const realpath = async (path: string) => {
+			for (const [link, target] of links) {
+				if (path === link || path.startsWith(`${link}/`)) {
+					return target + path.slice(link.length);
+				}
+			}
+			if (!existing.has(path)) {
+				throw new Error('ENOENT');
+			}
+			return path;
+		};
+		const refusal = (args: Record<string, unknown>) => paradisDevtoolsVersionControlRealpathRefusal('take_screenshot', paradisDevtoolsPathArguments('take_screenshot', args), args, realpath);
+		const newFileInLinkedFolder = await refusal({ filePath: '/repos/a/hooks/pre-commit' });
+		assert.deepStrictEqual({
+			newFileInLinkedFolder: newFileInLinkedFolder?.includes('through a symbolic link'),
+			linkedFile: (await refusal({ filePath: '/repos/a/cfg' })) !== undefined,
+			plain: await refusal({ filePath: '/repos/a/out/shot.png' }),
+			relative: await refusal({ filePath: 'hooks/pre-commit' }),
+		}, { newFileInLinkedFolder: true, linkedFile: true, plain: undefined, relative: undefined });
 	});
 
 	test('explains the refusal and the inline alternative to a remote agent', () => {
