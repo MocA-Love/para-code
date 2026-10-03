@@ -31,6 +31,8 @@ import { BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudge
 import { BrowserViewAutomationKeyExpectationQueue, browserViewAutomationKeySignatureFromCdp, browserViewAutomationKeySignatureFromElectron, type IBrowserViewAutomationKeyRegistration, type IBrowserViewAutomationKeySignature } from '../common/browserViewAutomationInput.js';
 // PARA-PATCH: import the fork's load watchdog, which fails loads that stall before the response ever begins instead of spinning forever (Para Code)
 import { paraInstallBrowserViewLoadWatchdog } from './paraBrowserViewLoadWatchdog.js';
+// PARA-PATCH: import the fork's capture nudge for shown views in undrawn windows (Para Browser MCP frame keepalive)
+import { ParaBrowserViewCaptureNudge } from './paraBrowserViewFrameNudge.js';
 
 // PARA-PATCH: bound how long the main process waits for preload acks and track per-sequence automation key acks in flight (Para Browser MCP automation input isolation)
 const BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS = 1_000;
@@ -856,7 +858,7 @@ export class BrowserView extends Disposable {
 		}
 	}
 
-	// PARA-PATCH: let a hidden agent-bound view be drawn once so viz does not stall its BeginFrames (Para Browser MCP hidden-view frame keepalive)
+	// PARA-PATCH: let a hidden agent-bound view (or a shown one in a minimized / background window) be drawn once so viz does not stall its BeginFrames (Para Browser MCP hidden-view frame keepalive)
 	/**
 	 * Draw this view exactly once while it stays hidden, then hide it again.
 	 *
@@ -879,8 +881,12 @@ export class BrowserView extends Disposable {
 	nudgeHiddenFrame(): boolean {
 		// `_hasBeenLaidOut` mirrors the guard in setVisible(): a view that was never laid out is not
 		// in the window's content view yet, so showing it would not draw anything anyway.
-		if (this._isDisposed || !this._hasBeenLaidOut || this._view.webContents.isDestroyed() || this._view.getVisible()) {
+		if (this._isDisposed || !this._hasBeenLaidOut || this._view.webContents.isDestroyed()) {
 			return false;
+		}
+		if (this._view.getVisible()) {
+			// PARA-PATCH: a shown view in a minimized / hidden / background window is not drawn either; nudge it with a 1x1 capture instead of a visibility toggle (logic in paraBrowserViewFrameNudge.ts)
+			return this._paraCaptureNudge.nudge(this._currentWindow?.win ?? undefined, this._view.webContents);
 		}
 		try {
 			this._view.setVisible(true);
@@ -889,6 +895,9 @@ export class BrowserView extends Disposable {
 		}
 		return true;
 	}
+
+	// PARA-PATCH: per-view capture nudge state for nudgeHiddenFrame() above (Para Browser MCP frame keepalive)
+	private readonly _paraCaptureNudge = new ParaBrowserViewCaptureNudge();
 
 	private consumePopupPermission(location: NewPageLocation): boolean {
 		switch (location) {

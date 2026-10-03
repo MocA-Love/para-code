@@ -610,7 +610,12 @@ export class McpContext {
         if (timeout) {
             locator = locator.setTimeout(timeout);
         }
-        return locator.wait();
+        // PARA-PATCH (Para Code): stop the losing aria/text waits as soon as the race is decided.
+        // Without the signal their in-page polling (Runtime.callFunctionOn with awaitPromise) kept
+        // running for up to the locator timeout and held the next click behind the CDP gateway's
+        // input barrier. See NOTES.md "vendored chrome-devtools-mcp への変更".
+        const controller = new AbortController();
+        return locator.wait({ signal: controller.signal }).finally(() => controller.abort());
     }
     /**
      * We need to ignore favicon request as they make our test flaky

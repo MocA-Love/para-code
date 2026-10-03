@@ -80,6 +80,12 @@ export interface IParadisBoundContext {
 	/** Whether the currently bound BrowserView is visible to the user. */
 	isBoundPageVisible(): Promise<boolean>;
 	dispatchBoundPageInput(expectedTargetId: string, method: string, paramsJson: string, isRouteCurrent?: () => boolean): IParadisCdpInputQueueOperation;
+	/**
+	 * The gateway refused an `Input.*` for a reason the agent never sees: puppeteer's locator
+	 * retries swallow it and the tool reports only "not interactive". Remembered per pane so the
+	 * tool result can say why.
+	 */
+	noteInputRejection?(message: string): void;
 	closeInputConnection(): void;
 	/**
 	 * この接続が接続先（SSH・WSL・コンテナ）のペインのものか、戻り経路から来たか。true のときは手元の
@@ -229,35 +235,67 @@ export class ParadisOutOfScopeAttachRelease {
 
 interface IParadisForwardedRequestBarrier {
 	readonly sessionId: string | undefined;
+	readonly method: string;
+	/**
+	 * Whether a later `Input.*` on the same session waits for this request. False for an
+	 * evaluation that waits on a page promise (`awaitPromise: true`): puppeteer's
+	 * `waitForSelector` polls that way and leaves the losers of a `wait_for` race running for
+	 * seconds, which made the next click wait them out and fail (2026-10 research notes, 2 and 3).
+	 */
+	readonly blocksInput: boolean;
 	readonly settled: Promise<void>;
 	resolve(): void;
+}
+
+/** The answer Chromium gives for a command on a session it no longer has; puppeteer treats it as a closed target. */
+const SESSION_NOT_FOUND_ERROR = Object.freeze({ code: -32001, message: 'Session with given id not found.' });
+
+function forwardedRequestBlocksInput(method: string, params: Record<string, unknown> | undefined): boolean {
+	return !((method === 'Runtime.evaluate' || method === 'Runtime.callFunctionOn') && params?.awaitPromise === true);
 }
 
 function registerForwardedRequestBarrier(
 	barriers: Map<number, IParadisForwardedRequestBarrier>,
 	id: number,
 	sessionId: string | undefined,
+	method = '',
+	params?: Record<string, unknown>,
 ): boolean {
 	if (barriers.has(id) || barriers.size >= MAX_CDP_PENDING_REQUESTS) {
 		return false;
 	}
 	let resolve!: () => void;
 	const settled = new Promise<void>(onResolve => resolve = onResolve);
-	barriers.set(id, { sessionId, settled, resolve });
+	barriers.set(id, { sessionId, method, blocksInput: forwardedRequestBlocksInput(method, params), settled, resolve });
 	return true;
 }
 
+/**
+ * Settles the barrier of a forwarded request. A response without a `sessionId` also settles a
+ * session's request: Chromium answers a command for a session it already dropped with a bare
+ * `-32001 Session with given id not found.`, and that request is not coming back any other way.
+ */
 function completeForwardedRequestBarrier(
 	barriers: Map<number, IParadisForwardedRequestBarrier>,
 	id: number,
 	sessionId: string | undefined,
 ): void {
 	const barrier = barriers.get(id);
-	if (!barrier || barrier.sessionId !== sessionId) {
+	if (!barrier || (sessionId !== undefined && barrier.sessionId !== sessionId)) {
 		return;
 	}
 	barriers.delete(id);
 	barrier.resolve();
+}
+
+/** Settles every barrier of a session that went away (its responses will never arrive). */
+function completeForwardedRequestBarriersOfSession(barriers: Map<number, IParadisForwardedRequestBarrier>, sessionId: string): void {
+	for (const [id, barrier] of [...barriers]) {
+		if (barrier.sessionId === sessionId) {
+			barriers.delete(id);
+			barrier.resolve();
+		}
+	}
 }
 
 function clearForwardedRequestBarriers(barriers: Map<number, IParadisForwardedRequestBarrier>): void {
@@ -267,25 +305,73 @@ function clearForwardedRequestBarriers(barriers: Map<number, IParadisForwardedRe
 	barriers.clear();
 }
 
+/**
+ * The barriers an `Input.*` on `sessionId` has to wait for: earlier requests on the same session
+ * that are not page-promise evaluations. Requests on iframe and worker sessions are left out: Chromium
+ * itself does not order them against input (each session talks to its own process), and puppeteer
+ * awaits the ones it needs (the iframe's DOM.getContentQuads) before it sends the input.
+ */
+function priorBarriersForInput(barriers: Map<number, IParadisForwardedRequestBarrier>, sessionId: string | undefined): IParadisForwardedRequestBarrier[] {
+	return [...barriers.values()].filter(barrier => barrier.sessionId === sessionId && barrier.blocksInput);
+}
+
+type IParadisInputBarrierOutcome =
+	| { readonly kind: 'ready' | 'closed' }
+	| { readonly kind: 'timeout'; readonly remaining: readonly IParadisForwardedRequestBarrier[] };
+
 async function waitForPriorForwardedRequests(
-	barriers: readonly Promise<void>[],
+	barriers: readonly IParadisForwardedRequestBarrier[],
 	connectionClosed: Promise<void>,
-): Promise<'ready' | 'closed' | 'timeout'> {
+): Promise<IParadisInputBarrierOutcome> {
 	if (barriers.length === 0) {
-		return 'ready';
+		return { kind: 'ready' };
 	}
+	const remaining = new Set(barriers);
 	let timeout: ReturnType<typeof setTimeout> | undefined;
 	try {
 		return await Promise.race([
-			Promise.all(barriers).then(() => 'ready' as const),
-			connectionClosed.then(() => 'closed' as const),
-			new Promise<'timeout'>(resolve => timeout = setTimeout(() => resolve('timeout'), PARADIS_CDP_PRE_INPUT_BARRIER_TIMEOUT_MS)),
+			Promise.all(barriers.map(barrier => barrier.settled.then(() => { remaining.delete(barrier); }))).then(() => ({ kind: 'ready' as const })),
+			connectionClosed.then(() => ({ kind: 'closed' as const })),
+			new Promise<IParadisInputBarrierOutcome>(resolve => timeout = setTimeout(() => resolve({ kind: 'timeout', remaining: [...remaining] }), PARADIS_CDP_PRE_INPUT_BARRIER_TIMEOUT_MS)),
 		]);
 	} finally {
 		if (timeout !== undefined) {
 			clearTimeout(timeout);
 		}
 	}
+}
+
+const SAFE_CDP_METHOD = /^[A-Z][A-Za-z]{0,40}\.[a-z][A-Za-z]{0,63}$/;
+
+/** A session id cut down to its head: enough to tell sessions apart in a log, not a capability. */
+function shortSessionId(sessionId: string | undefined): string {
+	return sessionId === undefined ? 'root' : sessionId.slice(0, 8);
+}
+
+/**
+ * Reports an input barrier timeout and returns the agent-facing error text. The text keeps the
+ * `input barrier timeout` phrase the Sentry classifier (paradisBrowserErrorReason.ts) keys on.
+ */
+function describeInputBarrierTimeout(
+	transport: 'page' | 'browser',
+	remaining: readonly IParadisForwardedRequestBarrier[],
+	isSessionAllowed: (sessionId: string | undefined) => boolean,
+	logService: ILogService,
+): string {
+	const first = remaining[0];
+	const method = first !== undefined && SAFE_CDP_METHOD.test(first.method) ? first.method : 'unknown';
+	const allowed = first === undefined ? true : isSessionAllowed(first.sessionId);
+	const detail = first === undefined
+		? 'the pending request settled at the deadline'
+		: `waiting for ${method} on session ${shortSessionId(first.sessionId)} (${allowed ? 'still attached' : 'no longer attached'})${remaining.length > 1 ? ` and ${remaining.length - 1} more` : ''}`;
+	logNonThrowing(logService, 'warn', `[ParadisCdpGateway] ${transport} input barrier timed out after ${PARADIS_CDP_PRE_INPUT_BARRIER_TIMEOUT_MS}ms: ${detail}`);
+	reportParadisDiagnosticError('owned', 'agent-browser', 'cdp-input-barrier-timeout', new Error('CDP input barrier timed out'), {
+		transport,
+		safe_method: method,
+		safe_pending_count: remaining.length,
+		safe_session_allowed: allowed,
+	}, 'warning');
+	return `PARA_BROWSER_RETRYABLE: prior CDP request did not complete before the input barrier timeout (${detail})`;
 }
 
 function rawDataByteLength(data: wsTypes.RawData): number {
@@ -457,13 +543,18 @@ function payloadByteLength(data: wsTypes.RawData | string): number {
 	return typeof data === 'string' ? Buffer.byteLength(data, 'utf8') : rawDataByteLength(data);
 }
 
-function sendWithBoundedBackpressure(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, allowScreenshotFrame = false, forceText = false): boolean {
+type ParadisBoundedSendOutcome = 'sent' | 'frame-too-large' | 'buffer-full' | 'send-failed';
+
+function sendWithBoundedBackpressureOutcome(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, allowScreenshotFrame = false, forceText = false): ParadisBoundedSendOutcome {
 	const bytes = payloadByteLength(data);
 	const frameLimit = allowScreenshotFrame ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES;
 	const bufferedLimit = allowScreenshotFrame ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_OPEN_BUFFERED_BYTES;
 	const bufferedAmount = Number.isSafeInteger(socket.bufferedAmount) && socket.bufferedAmount >= 0 ? socket.bufferedAmount : bufferedLimit + 1;
-	if (bytes > frameLimit || bufferedAmount + bytes > bufferedLimit) {
-		return false;
+	if (bytes > frameLimit) {
+		return 'frame-too-large';
+	}
+	if (bufferedAmount + bytes > bufferedLimit) {
+		return 'buffer-full';
 	}
 	try {
 		// CDPはテキスト専用プロトコル。Bufferをそのまま送るとwsがバイナリフレーム化し、
@@ -474,8 +565,65 @@ function sendWithBoundedBackpressure(socket: wsTypes.WebSocket, data: wsTypes.Ra
 		} else {
 			socket.send(data);
 		}
-		return true;
+		return 'sent';
 	} catch {
+		return 'send-failed';
+	}
+}
+
+function sendWithBoundedBackpressure(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, allowScreenshotFrame = false, forceText = false): boolean {
+	return sendWithBoundedBackpressureOutcome(socket, data, allowScreenshotFrame, forceText) === 'sent';
+}
+
+/**
+ * Events a CDP client can lose without its view of targets, frames or execution contexts going
+ * wrong: logs, network and console traffic. When the client is not draining its socket, one of
+ * these is dropped instead of tearing the whole connection down (which surfaced as `Target closed`
+ * on whatever tool call was in flight).
+ */
+function isDroppableCdpEvent(method: string | undefined): boolean {
+	return method !== undefined && (method.startsWith('Network.')
+		|| method.startsWith('Log.')
+		|| method.startsWith('Audits.')
+		|| method === 'Runtime.consoleAPICalled'
+		|| method === 'Runtime.exceptionThrown'
+		|| method === 'Debugger.scriptParsed');
+}
+
+/**
+ * Records why a frame to the client could not be sent. Returns true when the frame was a
+ * droppable event and the connection can stay open; false means the caller closes it.
+ */
+class ParadisClientBackpressureReporter {
+	private droppedEvents = 0;
+	private closeReported = false;
+
+	constructor(private readonly transport: 'page' | 'browser', private readonly logService: ILogService) { }
+
+	onSendFailure(outcome: Exclude<ParadisBoundedSendOutcome, 'sent'>, method: string | undefined, isResponse: boolean): boolean {
+		const safeMethod = method !== undefined && SAFE_CDP_METHOD.test(method) ? method : 'unknown';
+		if (!isResponse && outcome === 'buffer-full' && isDroppableCdpEvent(method)) {
+			this.droppedEvents++;
+			if (this.droppedEvents === 1) {
+				logNonThrowing(this.logService, 'warn', `[ParadisCdpGateway] ${this.transport} client is not reading fast enough; dropping ${safeMethod} events instead of closing`);
+				reportParadisDiagnosticError('owned', 'agent-browser', 'cdp-client-event-dropped', new Error('CDP client send buffer full; event dropped'), {
+					transport: this.transport,
+					safe_method: safeMethod,
+				}, 'info');
+			}
+			return true;
+		}
+		if (!this.closeReported) {
+			this.closeReported = true;
+			logNonThrowing(this.logService, 'warn', `[ParadisCdpGateway] closing ${this.transport} CDP connection: could not send ${isResponse ? 'the response to ' : ''}${safeMethod} to the client (${outcome}, ${this.droppedEvents} event(s) dropped before)`);
+			reportParadisDiagnosticError('owned', 'agent-browser', 'cdp-client-send-closed', new Error('CDP connection closed because a frame could not be sent to the client'), {
+				transport: this.transport,
+				safe_method: safeMethod,
+				safe_reason: outcome,
+				safe_is_response: isResponse,
+				safe_dropped_events: this.droppedEvents,
+			}, 'warning');
+		}
 		return false;
 	}
 }
@@ -1123,6 +1271,9 @@ export function paradisProxyPageUpgrade(
 		let scheduledClientBytes = 0;
 		let clientCommandTail: Promise<void> | undefined;
 		const forwardedRequestBarriers = new Map<number, IParadisForwardedRequestBarrier>();
+		// Child sessions (flatten auto-attach) that detached on this page connection, for the barrier diagnostics.
+		const detachedSessions = new Set<string>();
+		const backpressure = new ParadisClientBackpressureReporter('page', logService);
 		const rawScreenshots = ctx.rawScreenshotCoordinator;
 		const rawScreenshotOwner = {};
 		// Para Code 自身の isolated world（Design Mode の要素選択、preload）をエージェントから隠す。
@@ -1181,15 +1332,17 @@ export function paradisProxyPageUpgrade(
 		};
 		const dispatchInputAfterPriorRequests = async (msg: IParadisClientCommand, paramsJson: string): Promise<void> => {
 			const barrier = await waitForPriorForwardedRequests(
-				[...forwardedRequestBarriers.values()].map(entry => entry.settled),
+				priorBarriersForInput(forwardedRequestBarriers, msg.sessionId),
 				connectionClosed,
 			);
-			if (barrier !== 'ready' || closed || !ctx.isCurrentLease() || !ctx.boundTargetIds().has(targetId)) {
-				if (barrier === 'timeout' && !closed && ctx.isCurrentLease() && ctx.boundTargetIds().has(targetId)) {
+			if (barrier.kind !== 'ready' || closed || !ctx.isCurrentLease() || !ctx.boundTargetIds().has(targetId)) {
+				if (barrier.kind === 'timeout' && !closed && ctx.isCurrentLease() && ctx.boundTargetIds().has(targetId)) {
+					const reason = describeInputBarrierTimeout('page', barrier.remaining, sessionId => sessionId === undefined || !detachedSessions.has(sessionId), logService);
+					ctx.noteInputRejection?.(reason);
 					sendToClient({
 						id: msg.id,
 						...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}),
-						error: { code: -32000, message: 'PARA_BROWSER_RETRYABLE: prior CDP request did not complete before the input barrier timeout' },
+						error: { code: -32000, message: reason },
 					});
 				}
 				return;
@@ -1273,7 +1426,7 @@ export function paradisProxyPageUpgrade(
 							})) {
 								return;
 							}
-							if (!registerForwardedRequestBarrier(forwardedRequestBarriers, request.id, request.sessionId)) {
+							if (!registerForwardedRequestBarrier(forwardedRequestBarriers, request.id, request.sessionId, msg.method, msg.params)) {
 								closeBoth();
 								return;
 							}
@@ -1284,7 +1437,7 @@ export function paradisProxyPageUpgrade(
 				);
 				return;
 			}
-			if (!registerForwardedRequestBarrier(forwardedRequestBarriers, msg.id, msg.sessionId)) {
+			if (!registerForwardedRequestBarrier(forwardedRequestBarriers, msg.id, msg.sessionId, msg.method, msg.params)) {
 				closeBoth();
 				return;
 			}
@@ -1387,6 +1540,17 @@ export function paradisProxyPageUpgrade(
 						}
 						isolatedWorlds.observeResponse(sessionKey, response.id, response.result);
 					} else if (typeof response.method === 'string') {
+						if (response.method === 'Target.detachedFromTarget') {
+							// A child session's requests will never be answered now; do not let them hold input back.
+							const detachedSessionId = boundedIdentifier(response.params?.sessionId);
+							if (detachedSessionId !== undefined) {
+								completeForwardedRequestBarriersOfSession(forwardedRequestBarriers, detachedSessionId);
+								if (detachedSessions.size >= MAX_CDP_ROUTING_ENTRIES) {
+									detachedSessions.clear();
+								}
+								detachedSessions.add(detachedSessionId);
+							}
+						}
 						const verdict = isolatedWorlds.filterEvent(sessionKey, response.method, response.params);
 						if (verdict === 'resume') {
 							sendToUpstream(Buffer.from(JSON.stringify({ id: -(++isolatedWorldRequestSequence), method: 'Debugger.resume', params: {}, ...(sessionKey ? { sessionId: sessionKey } : {}) })));
@@ -1415,7 +1579,8 @@ export function paradisProxyPageUpgrade(
 				if (clientWs.readyState === ws.WebSocket.OPEN) {
 					// U+FFFD replacement can grow the frame, so size the backpressure check on what is actually sent.
 					const forwarded = cookieSanitized ?? reencodeUtf8(data);
-					if (!sendWithBoundedBackpressure(clientWs, forwarded, payloadByteLength(forwarded) > MAX_CDP_FRAME_BYTES, true)) {
+					const outcome = sendWithBoundedBackpressureOutcome(clientWs, forwarded, payloadByteLength(forwarded) > MAX_CDP_FRAME_BYTES, true);
+					if (outcome !== 'sent' && !backpressure.onSendFailure(outcome, response?.method ?? (typeof response?.id === 'number' ? undefined : 'unknown'), typeof response?.id === 'number')) {
 						closeBoth();
 					}
 				}
@@ -1519,6 +1684,99 @@ export async function paradisProxyBrowserUpgrade(
 			sessionIdToTargetId.set(sessionId, targetId);
 			return true;
 		};
+		// Sessions the client has been told about (an attachedToTarget event or an attachToTarget
+		// result reached it), with the session the event arrived on. Only these get a synthetic
+		// detach when the proxy drops them; the client has never heard of the others.
+		const clientKnownSessions = new Map<string, string | undefined>();
+		const markClientKnownSession = (sessionId: string, parentSessionId: string | undefined) => {
+			if (clientKnownSessions.has(sessionId) || clientKnownSessions.size < MAX_CDP_ROUTING_ENTRIES) {
+				clientKnownSessions.set(sessionId, parentSessionId);
+			}
+		};
+		// Request ids the proxy already answered on its own because their session went away. A late
+		// upstream answer for one of them is dropped quietly instead of being taken for a forged id.
+		const retiredRequestIds = new Set<number>();
+		const retireRequestId = (id: number) => {
+			if (retiredRequestIds.size >= MAX_CDP_PENDING_REQUESTS) {
+				const oldest = retiredRequestIds.values().next();
+				if (!oldest.done) {
+					retiredRequestIds.delete(oldest.value);
+				}
+			}
+			retiredRequestIds.add(id);
+		};
+		/**
+		 * Forgets one session. Its outstanding requests are answered with Chromium's own
+		 * `-32001 Session with given id not found.` (puppeteer turns that into a closed target and
+		 * stops using the session) and their input barriers are released, so a session that vanished
+		 * without a detach event can no longer hold every later `Input.*` for the barrier timeout.
+		 * When the proxy itself dropped the session (`synthesizeDetach`), the client also gets a
+		 * `Target.detachedFromTarget` for it, as it would have from Chromium.
+		 *
+		 * Sessions attached through this one (a worker inside an OOPIF, found by the session their
+		 * attach event arrived on, not by openerId, which Chromium does not set for them) go first,
+		 * deepest first, each with a synthetic detach: Chromium does not always send one for them.
+		 */
+		const forgetSession = (sessionId: string, synthesizeDetach: boolean) => {
+			const descendants: string[] = [];
+			const seen = new Set<string>([sessionId]);
+			for (let index = -1; index < descendants.length; index++) {
+				const parent = index < 0 ? sessionId : descendants[index];
+				for (const [child, childParent] of clientKnownSessions) {
+					if (childParent === parent && !seen.has(child)) {
+						seen.add(child);
+						descendants.push(child);
+					}
+				}
+			}
+			const bound = ctx.boundTargetIds();
+			for (const descendant of descendants.reverse()) {
+				const descendantTargetId = sessionIdToTargetId.get(descendant);
+				forgetSessionOnly(descendant, true);
+				// Its target goes too once nothing is attached to it (never the bound page).
+				if (descendantTargetId !== undefined && !bound.has(descendantTargetId) && !targetHasSession(descendantTargetId)) {
+					allowedTargetIds.delete(descendantTargetId);
+					childToParent.delete(descendantTargetId);
+				}
+			}
+			forgetSessionOnly(sessionId, synthesizeDetach);
+		};
+		const forgetSessionOnly = (sessionId: string, synthesizeDetach: boolean) => {
+			const targetId = sessionIdToTargetId.get(sessionId);
+			allowedSessionIds.delete(sessionId);
+			sessionIdToTargetId.delete(sessionId);
+			isolatedWorlds.forgetSession(sessionId);
+			completeForwardedRequestBarriersOfSession(forwardedRequestBarriers, sessionId);
+			for (const [id, pending] of [...pendingRequests]) {
+				if (pending.sessionId !== sessionId) {
+					continue;
+				}
+				pendingRequests.delete(id);
+				pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
+				retireRequestId(id);
+				const completion = rawScreenshots.complete(rawScreenshotOwner, id, sessionId);
+				if (!(completion.handled && completion.suppress)) {
+					sendToClient({ id, sessionId, error: SESSION_NOT_FOUND_ERROR });
+				}
+			}
+			for (const [id, pending] of [...internalPending]) {
+				if (pending.sessionId === sessionId) {
+					internalPending.delete(id);
+					pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
+					retireRequestId(id);
+				}
+			}
+			const known = clientKnownSessions.has(sessionId);
+			const parentSessionId = clientKnownSessions.get(sessionId);
+			clientKnownSessions.delete(sessionId);
+			if (synthesizeDetach && known && !closed) {
+				sendToClient({
+					method: 'Target.detachedFromTarget',
+					params: { sessionId, ...(targetId !== undefined ? { targetId } : {}) },
+					...(parentSessionId !== undefined && allowedSessionIds.has(parentSessionId) ? { sessionId: parentSessionId } : {}),
+				});
+			}
+		};
 		const refreshBound = (): boolean => {
 			for (const targetId of ctx.boundTargetIds()) {
 				if (!addAllowedTarget(targetId)) {
@@ -1544,10 +1802,16 @@ export async function paradisProxyBrowserUpgrade(
 			}
 			return false;
 		};
-		const dropTarget = (targetId: string | undefined) => {
+		/**
+		 * Drops a target and its descendants. Their sessions are forgotten with a synthetic detach
+		 * (deepest first). Returns whether one of them belonged to the bound page, in which case the
+		 * caller closes the connection so the client reconnects with a fresh view.
+		 */
+		const dropTarget = (targetId: string | undefined): boolean => {
 			if (!targetId) {
-				return;
+				return false;
 			}
+			const bound = ctx.boundTargetIds();
 			const queue = [targetId];
 			const visited = new Set<string>();
 			while (queue.length > 0) {
@@ -1558,7 +1822,8 @@ export async function paradisProxyBrowserUpgrade(
 				visited.add(current);
 				allowedTargetIds.delete(current);
 				for (const [child, parent] of childToParent) {
-					if (parent === current && !visited.has(child)) {
+					// A page the user shared is never dropped because its opener went away.
+					if (parent === current && !visited.has(child) && !bound.has(child)) {
 						queue.push(child);
 					}
 				}
@@ -1569,13 +1834,28 @@ export async function paradisProxyBrowserUpgrade(
 					childToParent.delete(child);
 				}
 			}
-			for (const [sessionId, mappedTargetId] of [...sessionIdToTargetId]) {
-				if (visited.has(mappedTargetId)) {
-					allowedSessionIds.delete(sessionId);
-					sessionIdToTargetId.delete(sessionId);
+			let droppedBoundSession = false;
+			for (const dropped of [...visited].reverse()) {
+				for (const [sessionId, mappedTargetId] of [...sessionIdToTargetId]) {
+					// A session already forgotten as a descendant of an earlier one is skipped.
+					if (mappedTargetId === dropped && sessionIdToTargetId.has(sessionId)) {
+						droppedBoundSession ||= bound.has(mappedTargetId);
+						forgetSession(sessionId, true);
+					}
 				}
 			}
+			return droppedBoundSession;
 		};
+		/** Whether any session still points at the target (a target can have several, e.g. puppeteer's and the DevTools universe's). */
+		const targetHasSession = (targetId: string): boolean => {
+			for (const mappedTargetId of sessionIdToTargetId.values()) {
+				if (mappedTargetId === targetId) {
+					return true;
+				}
+			}
+			return false;
+		};
+		const backpressure = new ParadisClientBackpressureReporter('browser', logService);
 
 		const closeBoth = () => {
 			if (closed) {
@@ -1595,6 +1875,8 @@ export async function paradisProxyBrowserUpgrade(
 			sessionIdToTargetId.clear();
 			allowedTargetIds.clear();
 			childToParent.clear();
+			clientKnownSessions.clear();
+			retiredRequestIds.clear();
 			rawScreenshots.markClosing(rawScreenshotOwner);
 			try { clientWs.close(); } catch { /* ignore */ }
 			if (paradisForceCloseRawScreenshotUpstream(upstream, ws.WebSocket.OPEN, ws.WebSocket.CLOSED)) {
@@ -1609,8 +1891,13 @@ export async function paradisProxyBrowserUpgrade(
 			if (!closed && clientWs.readyState === ws.WebSocket.OPEN) {
 				let serialized: string;
 				try { serialized = JSON.stringify(message); } catch { closeBoth(); return; }
-				if (!sendWithBoundedBackpressure(clientWs, serialized, Buffer.byteLength(serialized, 'utf8') > MAX_CDP_FRAME_BYTES)) {
-					closeBoth();
+				const outcome = sendWithBoundedBackpressureOutcome(clientWs, serialized, Buffer.byteLength(serialized, 'utf8') > MAX_CDP_FRAME_BYTES);
+				if (outcome !== 'sent') {
+					const record = isRecord(message) ? message : {};
+					const isResponse = typeof record.id === 'number';
+					if (!backpressure.onSendFailure(outcome, typeof record.method === 'string' ? record.method : undefined, isResponse)) {
+						closeBoth();
+					}
 				}
 			}
 		};
@@ -1675,13 +1962,14 @@ export async function paradisProxyBrowserUpgrade(
 			}
 			pendingRequests.set(message.id, record);
 			pendingPolicyBytes += record.byteLength;
+			retiredRequestIds.delete(message.id);
 			return true;
 		};
 		const forwardClientRequest = (message: IParadisClientCommand, targetId?: string, rewrittenMessage: unknown = message): boolean => {
 			if (!registerClientRequest(message, targetId)) {
 				return false;
 			}
-			if (!registerForwardedRequestBarrier(forwardedRequestBarriers, message.id, message.sessionId)) {
+			if (!registerForwardedRequestBarrier(forwardedRequestBarriers, message.id, message.sessionId, message.method, message.params)) {
 				closeBoth();
 				return false;
 			}
@@ -1711,12 +1999,14 @@ export async function paradisProxyBrowserUpgrade(
 			isRouteCurrent: () => boolean,
 		): Promise<void> => {
 			const barrier = await waitForPriorForwardedRequests(
-				[...forwardedRequestBarriers.values()].map(entry => entry.settled),
+				priorBarriersForInput(forwardedRequestBarriers, message.sessionId),
 				connectionClosed,
 			);
-			if (barrier !== 'ready' || closed || !ctx.isCurrentLease() || !isRouteCurrent()) {
-				if (barrier === 'timeout' && !closed && ctx.isCurrentLease() && isRouteCurrent()) {
-					rejectRequest(message, 'PARA_BROWSER_RETRYABLE: prior CDP request did not complete before the input barrier timeout');
+			if (barrier.kind !== 'ready' || closed || !ctx.isCurrentLease() || !isRouteCurrent()) {
+				if (barrier.kind === 'timeout' && !closed && ctx.isCurrentLease() && isRouteCurrent()) {
+					const reason = describeInputBarrierTimeout('browser', barrier.remaining, sessionId => sessionId === undefined || allowedSessionIds.has(sessionId), logService);
+					ctx.noteInputRejection?.(reason);
+					rejectRequest(message, reason);
 				}
 				return;
 			}
@@ -1795,7 +2085,10 @@ export async function paradisProxyBrowserUpgrade(
 
 			if (message.sessionId !== undefined) {
 				if (!allowedSessionIds.has(message.sessionId)) {
-					rejectRequest(message, 'The supplied CDP sessionId is not authorized for this Para Code pane binding.');
+					// Answer exactly as Chromium does for a session it does not have. puppeteer then treats the
+					// session as closed and stops sending to it (a custom -32000 left it retrying forever: every
+					// later `emulate` failed, because it applies network conditions to all known sessions).
+					sendToClient({ id: message.id, sessionId: message.sessionId, error: SESSION_NOT_FOUND_ERROR });
 					return;
 				}
 				if (message.method.startsWith('Target.') && !BROWSER_SESSION_ALLOWED_TARGET_METHODS.has(message.method)) {
@@ -1875,7 +2168,7 @@ export async function paradisProxyBrowserUpgrade(
 								})) {
 									return;
 								}
-								if (!registerForwardedRequestBarrier(forwardedRequestBarriers, message.id, requestSessionId)) {
+								if (!registerForwardedRequestBarrier(forwardedRequestBarriers, message.id, requestSessionId, message.method, message.params)) {
 									closeBoth();
 									return;
 								}
@@ -2048,7 +2341,11 @@ export async function paradisProxyBrowserUpgrade(
 						return;
 					}
 					const pending = internalPending.get(message.id);
-					if (!pending || pending.sessionId !== message.sessionId) {
+					if (!pending && retiredRequestIds.delete(message.id)) {
+						// Our own request on a session that went away; already written off.
+						return;
+					}
+					if (!pending || (pending.sessionId !== message.sessionId && !(message.sessionId === undefined && message.error !== undefined))) {
 						closeBoth();
 						return;
 					}
@@ -2065,6 +2362,32 @@ export async function paradisProxyBrowserUpgrade(
 				}
 
 				const pending = pendingRequests.get(message.id);
+				if (!pending && retiredRequestIds.delete(message.id)) {
+					// The proxy already answered this one with -32001 when its session went away.
+					return;
+				}
+				if (pending !== undefined && pending.sessionId !== undefined && message.sessionId === undefined && message.error !== undefined) {
+					// Chromium answers a command for a session it already dropped with a session-less
+					// `-32001 Session with given id not found.`. Match it by id (ids are unique per
+					// connection) and route it back to that session instead of closing the connection.
+					const sessionId = pending.sessionId;
+					const sessionGone = message.error.code === SESSION_NOT_FOUND_ERROR.code;
+					completeForwardedRequestBarrier(forwardedRequestBarriers, message.id, sessionId);
+					pendingRequests.delete(message.id);
+					pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
+					const completion = rawScreenshots.complete(rawScreenshotOwner, message.id, sessionId);
+					if (!(completion.handled && completion.suppress)) {
+						sendToClient({ id: message.id, sessionId, error: message.error });
+					}
+					if (sessionGone && allowedSessionIds.has(sessionId)) {
+						const goneTargetId = sessionIdToTargetId.get(sessionId);
+						forgetSession(sessionId, true);
+						if (goneTargetId !== undefined && ctx.boundTargetIds().has(goneTargetId)) {
+							closeBoth();
+						}
+					}
+					return;
+				}
 				if (!pending || pending.sessionId !== message.sessionId) {
 					closeBoth();
 					return;
@@ -2098,6 +2421,7 @@ export async function paradisProxyBrowserUpgrade(
 						if (!addAllowedSession(sessionId, pending.targetId)) {
 							return;
 						}
+						markClientKnownSession(sessionId, pending.sessionId);
 					}
 				}
 				if (message.sessionId !== undefined) {
@@ -2137,16 +2461,17 @@ export async function paradisProxyBrowserUpgrade(
 							|| !addAllowedSession(childSessionId, childTargetId)) {
 							return;
 						}
+						markClientKnownSession(childSessionId, message.sessionId);
 					}
 				} else if (message.method === 'Target.detachedFromTarget') {
 					const params = message.params as { sessionId?: string; targetId?: string } | undefined;
-					const detachedTargetId = (params?.sessionId ? sessionIdToTargetId.get(params.sessionId) : undefined) ?? params?.targetId;
-					if (params?.sessionId) {
-						allowedSessionIds.delete(params.sessionId);
-						sessionIdToTargetId.delete(params.sessionId);
-						isolatedWorlds.forgetSession(params.sessionId);
+					const detachedSessionId = boundedIdentifier(params?.sessionId);
+					const detachedTargetId = (detachedSessionId ? sessionIdToTargetId.get(detachedSessionId) : undefined) ?? boundedIdentifier(params?.targetId);
+					if (detachedSessionId) {
+						// Only this session goes: the DevTools universe keeps a second session on the same
+						// iframe or worker, and dropping the whole target took that sibling down with it.
+						forgetSession(detachedSessionId, false);
 					}
-					dropTarget(params?.targetId);
 					// 保険: バインド済みtargetのセッションが剥離されたら、イベントを転送した上で接続を閉じる。
 					// 子プロセスは次のツール呼び出しでbrowser.connected===falseを検知して再接続し、
 					// コンテキストを再構築するので自己回復する。スコープ外targetのdetachには影響させない。
@@ -2155,6 +2480,13 @@ export async function paradisProxyBrowserUpgrade(
 						closeBoth();
 						return;
 					}
+					sendToClient(message);
+					// The target itself is let go only once no session is left on it; its descendants'
+					// sessions are then forgotten with a synthetic detach, after this real one.
+					if (detachedTargetId !== undefined && !targetHasSession(detachedTargetId) && dropTarget(detachedTargetId)) {
+						closeBoth();
+					}
+					return;
 				} else {
 					const verdict = isolatedWorlds.filterEvent(message.sessionId, message.method, message.params);
 					if (verdict === 'resume') {
@@ -2195,8 +2527,16 @@ export async function paradisProxyBrowserUpgrade(
 				if (!targetId || !allowedTargetIds.has(targetId)) {
 					return;
 				}
-				dropTarget(targetId);
+				// A crashed page keeps its session (Chromium reuses it when the page reloads), so the bound
+				// page is not dropped on a crash. Anything else that is gone takes its sessions with it,
+				// and the client hears a detach for each (an OOPIF's worker can vanish without one).
+				const droppedBound = message.method === 'Target.targetCrashed' && ctx.boundTargetIds().has(targetId)
+					? false
+					: dropTarget(targetId);
 				sendToClient(params?.targetInfo ? { ...message, params: { ...params, targetInfo: rewriteTargetInfoType(params.targetInfo) } } : message);
+				if (droppedBound) {
+					closeBoth();
+				}
 				return;
 			}
 			if (message.method === 'Target.attachedToTarget') {
@@ -2211,6 +2551,7 @@ export async function paradisProxyBrowserUpgrade(
 					if (!addAllowedSession(params.sessionId, params.targetInfo.targetId)) {
 						return;
 					}
+					markClientKnownSession(params.sessionId, undefined);
 				}
 				sendToClient({ ...message, params: { ...(params ?? {}), targetInfo: rewriteTargetInfoType(params?.targetInfo) } });
 				return;
@@ -2221,9 +2562,8 @@ export async function paradisProxyBrowserUpgrade(
 					return;
 				}
 				const detachedTargetId = sessionIdToTargetId.get(sessionId);
-				allowedSessionIds.delete(sessionId);
-				sessionIdToTargetId.delete(sessionId);
-				isolatedWorlds.forgetSession(sessionId);
+				// Releases the session's outstanding requests and barriers too (Chromium will not answer them).
+				forgetSession(sessionId, false);
 				// 保険: バインド済みtargetのセッションが剥離されたら、イベントを転送した上で接続を閉じる。
 				// 子プロセスは再接続でコンテキストを再構築するので自己回復する。
 				if (detachedTargetId !== undefined && ctx.boundTargetIds().has(detachedTargetId)) {

@@ -1,0 +1,279 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// 内蔵 chrome-devtools-mcp のツールの入口と出口を、Para Code 側で少しだけ変える（vendored は触らない）。
+//   - wait_for: `text` を文字列でも受ける（配列へ包んで渡す）。成功時のスナップショットは `includeSnapshot`
+//     を付けたときだけ返す（既定は返さない。応答の中央値が 5,889 字あり、毎回会話を圧迫していた）
+//   - take_snapshot: 本文を {@link PARADIS_SNAPSHOT_MAX_CHARS} 字で切り、続きは `offset` で取らせる
+//   - click / fill などの「not interactive」に、直前にゲートウェイが入力を断った理由を書き足す
+//   - Target closed で失敗した読み取り系のツールを 1 回だけ呼び直してよいかを決める
+// 子プロセスの zod は未知の引数を断るので、Para Code 側で足した引数は渡す前に必ず取り除く。
+
+/** take_snapshot が 1 回に返す本文の上限（文字数）。 */
+export const PARADIS_SNAPSHOT_MAX_CHARS = 20_000;
+
+const SNAPSHOT_HEADING = '## Latest page snapshot';
+
+/**
+ * Target closed（接続が切れた・セッションが外れた）で失敗したとき、呼び直しても結果が変わらない
+ * ツール。入力・遷移・スクリプト実行は、失敗の前にページへ届いていたかもしれないので入れない。
+ */
+const RETRY_SAFE_TOOLS: ReadonlySet<string> = new Set([
+	'take_snapshot',
+	'take_screenshot',
+	'wait_for',
+	'list_pages',
+	'list_console_messages',
+	'get_console_message',
+	'list_network_requests',
+	'get_network_request',
+	'emulate',
+]);
+
+/** 失敗が「要素が操作できるようにならなかった」としか言わない入力系のツール。 */
+const INPUT_TOOLS: ReadonlySet<string> = new Set([
+	'click', 'click_at', 'hover', 'fill', 'fill_form', 'type_text', 'press_key', 'drag', 'upload_file',
+]);
+
+type IJsonSchemaObject = Record<string, unknown>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Para Code が足した・変えた引数を、子プロセスへ渡す前の形に戻したもの。 */
+export interface IParadisPreparedDevtoolsCall {
+	readonly args: unknown;
+	/** wait_for で、スナップショットを返すか。 */
+	readonly includeSnapshot?: boolean;
+	/** take_snapshot で、本文のどこから返すか。 */
+	readonly snapshotOffset?: number;
+}
+
+/** tools/list で公開するスキーマ。wait_for と take_snapshot の引数を足す・広げる（他はそのまま）。 */
+export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: string; readonly description?: string; readonly inputSchema?: unknown }>(tool: T): T {
+	if (!isRecord(tool.inputSchema) || !isRecord(tool.inputSchema.properties)) {
+		return tool;
+	}
+	const properties: IJsonSchemaObject = { ...tool.inputSchema.properties };
+	let description = tool.description;
+	if (tool.name === 'wait_for') {
+		description = `${tool.description ?? 'Wait for the specified text to appear on the selected page.'} By default the response does not include a page snapshot; pass includeSnapshot: true or call take_snapshot when you need element uids.`;
+		const text = isRecord(properties.text) ? properties.text : { type: 'array', items: { type: 'string' }, minItems: 1 };
+		const arraySchema: IJsonSchemaObject = { ...text };
+		delete arraySchema.description;
+		properties.text = {
+			anyOf: [{ type: 'string', minLength: 1 }, arraySchema],
+			description: 'Text to wait for: one string, or a non-empty list of strings (resolves when any of them appears on the page).',
+		};
+		properties.includeSnapshot = {
+			type: 'boolean',
+			description: 'Whether to include a page snapshot in the response once the text appears. Default is false (call take_snapshot when you need one).',
+		};
+	} else if (tool.name === 'take_snapshot') {
+		properties.offset = {
+			type: 'integer',
+			minimum: 0,
+			description: `Character offset into the snapshot text. Snapshots longer than ${PARADIS_SNAPSHOT_MAX_CHARS} characters are returned in parts; the response says which offset to pass for the next part. Alternatively pass filePath to save the whole snapshot.`,
+		};
+	} else {
+		return tool;
+	}
+	return { ...tool, ...(description !== undefined ? { description } : {}), inputSchema: { ...tool.inputSchema, properties } };
+}
+
+/** 子プロセスへ渡す引数に戻す（足した引数を取り除き、wait_for の文字列を配列へ包む）。 */
+export function paradisPrepareDevtoolsToolCall(name: string, args: unknown): IParadisPreparedDevtoolsCall {
+	if (!isRecord(args)) {
+		return { args };
+	}
+	if (name === 'wait_for') {
+		const { includeSnapshot, ...rest } = args;
+		const text = typeof rest.text === 'string' ? [rest.text] : rest.text;
+		return { args: { ...rest, text }, includeSnapshot: includeSnapshot === true };
+	}
+	if (name === 'take_snapshot') {
+		const { offset, ...rest } = args;
+		const snapshotOffset = typeof offset === 'number' && Number.isSafeInteger(offset) && offset > 0 ? offset : 0;
+		return { args: rest, snapshotOffset };
+	}
+	return { args };
+}
+
+/** Target closed で失敗した呼び出しを 1 回だけ呼び直してよいか。 */
+export function paradisShouldRetryDevtoolsToolAfterTargetClosed(name: string, result: unknown): boolean {
+	if (!RETRY_SAFE_TOOLS.has(name)) {
+		return false;
+	}
+	const text = firstErrorText(result);
+	return text !== undefined && /Target closed|Session closed|Connection closed|Session with given id not found/i.test(text);
+}
+
+function firstErrorText(result: unknown): string | undefined {
+	if (!isRecord(result) || result.isError !== true || !Array.isArray(result.content)) {
+		return undefined;
+	}
+	const part = result.content.find(item => isRecord(item) && item.type === 'text' && typeof item.text === 'string') as { text: string } | undefined;
+	return part?.text;
+}
+
+function mapTextParts(result: Record<string, unknown>, map: (text: string) => string): Record<string, unknown> {
+	if (!Array.isArray(result.content)) {
+		return result;
+	}
+	return {
+		...result,
+		content: result.content.map(item => isRecord(item) && item.type === 'text' && typeof item.text === 'string' ? { ...item, text: map(item.text) } : item),
+	};
+}
+
+/**
+ * 子プロセスの結果を、エージェントへ返す形に直す。
+ * @param recentRejection この呼び出しの間にゲートウェイが入力を断った理由（あれば）。
+ */
+export function paradisAdjustDevtoolsToolResult(name: string, prepared: IParadisPreparedDevtoolsCall, result: unknown, recentRejection?: string): unknown {
+	if (!isRecord(result)) {
+		return result;
+	}
+	if (result.isError === true) {
+		if (recentRejection !== undefined && INPUT_TOOLS.has(name)) {
+			const reason = recentRejection;
+			return mapTextParts(result, text => text.includes('PARA_BROWSER_') ? text : `${text}\nPara Code refused the input during this call: ${reason}`);
+		}
+		return result;
+	}
+	if (name === 'wait_for') {
+		return mapTextParts(result, prepared.includeSnapshot === true ? text => limitSnapshot(text, 0) : stripSnapshot);
+	}
+	if (name === 'take_snapshot') {
+		return mapTextParts(result, text => limitSnapshot(text, prepared.snapshotOffset ?? 0));
+	}
+	return result;
+}
+
+function stripSnapshot(text: string): string {
+	const index = text.indexOf(SNAPSHOT_HEADING);
+	if (index < 0) {
+		return text;
+	}
+	return `${text.slice(0, index).trimEnd()}\n(Snapshot omitted. Call take_snapshot, or pass includeSnapshot: true, when you need element uids.)`;
+}
+
+function isHighSurrogate(code: number): boolean {
+	return code >= 0xD800 && code <= 0xDBFF;
+}
+
+function limitSnapshot(text: string, offset: number): string {
+	const index = text.indexOf(SNAPSHOT_HEADING);
+	if (index < 0) {
+		return text;
+	}
+	const bodyStart = index + SNAPSHOT_HEADING.length + (text[index + SNAPSHOT_HEADING.length] === '\n' ? 1 : 0);
+	const head = text.slice(0, bodyStart);
+	const body = text.slice(bodyStart);
+	if (offset === 0 && body.length <= PARADIS_SNAPSHOT_MAX_CHARS) {
+		return text;
+	}
+	if (offset >= body.length) {
+		return `${head}(The snapshot has ${body.length} characters; offset ${offset} is past its end. Call take_snapshot without offset to start over.)`;
+	}
+	let end = Math.min(body.length, offset + PARADIS_SNAPSHOT_MAX_CHARS);
+	if (end < body.length) {
+		// 行の途中で切らない（uid の行が半分になると読み違える）
+		const lineEnd = body.lastIndexOf('\n', end);
+		if (lineEnd > offset) {
+			end = lineEnd + 1;
+		} else if (isHighSurrogate(body.charCodeAt(end - 1))) {
+			// 1 行が上限より長いときは文字の途中で切る。サロゲートペアの片方だけを残さない。
+			end--;
+		}
+	}
+	const part = body.slice(offset, end);
+	const note = end < body.length
+		? `\n[Para Code: snapshot truncated. Showing characters ${offset}-${end} of ${body.length}. Call take_snapshot with "offset": ${end} for the next part (uids stay the same while the page does not change), or pass "filePath" to save the whole snapshot to a file.]`
+		: `\n[Para Code: end of snapshot. Showing characters ${offset}-${end} of ${body.length}.]`;
+	return `${head}${part}${note}`;
+}
+
+/**
+ * 控えたスナップショットを使ってよい呼び出しか。`verbose`（中身が違う）と `filePath`（ファイルへ書く）は
+ * 毎回取り直す。
+ */
+export function paradisSnapshotCacheUsable(name: string, prepared: IParadisPreparedDevtoolsCall): boolean {
+	if (name !== 'take_snapshot' && name !== 'wait_for') {
+		return false;
+	}
+	return !isRecord(prepared.args) || (prepared.args.verbose !== true && prepared.args.filePath === undefined);
+}
+
+/** 控えたスナップショットから続きを切り出し、いつ取ったものかを注記する。 */
+export function paradisAdjustCachedSnapshotResult(prepared: IParadisPreparedDevtoolsCall, cached: unknown, takenAt: number): unknown {
+	const adjusted = paradisAdjustDevtoolsToolResult('take_snapshot', prepared, cached);
+	if (!isRecord(adjusted)) {
+		return adjusted;
+	}
+	const note = `\n[Para Code: this part comes from the snapshot taken at ${new Date(takenAt).toISOString()}. Call take_snapshot without offset for a fresh one.]`;
+	return mapTextParts(adjusted, text => text.includes(SNAPSHOT_HEADING) ? `${text}${note}` : text);
+}
+
+/** 続き（`offset`）を取る呼び出しが、同じスナップショットを読めるように控えておく時間。 */
+export const PARADIS_SNAPSHOT_CACHE_MS = 60_000;
+const MAX_CACHED_SNAPSHOTS = 8;
+
+/**
+ * 上限より長かったスナップショットの結果を、ペインごとに直近 1 件だけ短時間控える。`take_snapshot` の
+ * `offset` 付きの呼び出しは、取り直さずにこれを切り出す（取り直すとページが変わって続きがずれる）。
+ */
+export class ParadisSnapshotCache {
+	private readonly entries = new Map<string, { readonly result: unknown; readonly at: number }>();
+
+	constructor(private readonly now: () => number = Date.now) { }
+
+	/** 結果にスナップショットがあり、上限より長いときだけ控える。 */
+	remember(token: string, result: unknown): void {
+		if (!isRecord(result) || result.isError === true || !Array.isArray(result.content)) {
+			return;
+		}
+		const long = result.content.some(item => {
+			if (!isRecord(item) || item.type !== 'text' || typeof item.text !== 'string') {
+				return false;
+			}
+			const index = item.text.indexOf(SNAPSHOT_HEADING);
+			return index >= 0 && item.text.length - index > PARADIS_SNAPSHOT_MAX_CHARS;
+		});
+		this.entries.delete(token);
+		if (!long) {
+			return;
+		}
+		if (this.entries.size >= MAX_CACHED_SNAPSHOTS) {
+			const oldest = this.entries.keys().next();
+			if (!oldest.done) {
+				this.entries.delete(oldest.value);
+			}
+		}
+		this.entries.set(token, { result, at: this.now() });
+	}
+
+	/** 控えた結果と、それを取った時刻（ミリ秒）。古ければ undefined。 */
+	recall(token: string): { readonly result: unknown; readonly at: number } | undefined {
+		const entry = this.entries.get(token);
+		if (entry === undefined || this.now() - entry.at > PARADIS_SNAPSHOT_CACHE_MS) {
+			this.entries.delete(token);
+			return undefined;
+		}
+		return entry;
+	}
+
+	forget(token: string): void {
+		this.entries.delete(token);
+	}
+
+	clear(): void {
+		this.entries.clear();
+	}
+}

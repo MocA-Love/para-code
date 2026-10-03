@@ -38,6 +38,7 @@ import {
 } from '../common/paradisAgentBrowser.js';
 import {
 	PARADIS_EXACT_VIEW_FRAME_KEEPALIVE_INTERVAL_MS,
+	PARADIS_EXACT_VIEW_FRAME_KEEPALIVE_MAX_VIEWS,
 	ParadisExactViewFrameKeepaliveRegistry,
 } from '../common/paradisExactViewFrameKeepalive.js';
 import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
@@ -119,6 +120,18 @@ function pageTitle(view: BrowserView): string {
 export function paradisPaneStorageSessionId(ownerKey: string): string {
 	return `agent:${createHash('sha256').update(`affinity:${paradisPaneStorageAffinity(ownerKey)}`).digest('hex')}`;
 }
+
+/**
+ * The user is working in the shared page (it has keyboard focus), so automation input is refused:
+ * a synthetic click or keystroke would land in the middle of what they are doing. The text tells
+ * the agent what actually unblocks it; "retry" alone made agents retry the same refused input.
+ * Keeps the phrases the Sentry classifier keys on (paradisBrowserErrorReason.ts).
+ */
+const PARADIS_INPUT_REFUSED_USER_FOCUSED_MESSAGE = 'PARA_BROWSER_RETRYABLE: the bound BrowserView is focused by the user (the user is interacting with the page). Ask the user to click outside the page, for example on the terminal, and then retry.';
+const PARADIS_INPUT_REFUSED_BECAME_FOCUSED_MESSAGE = 'PARA_BROWSER_RETRYABLE: the bound BrowserView became focused before input dispatch (the user started interacting with the page). Ask the user to click outside the page, for example on the terminal, and then retry.';
+
+/** At most one input-time frame nudge per view in this window (a click is three mouse events). */
+const PARADIS_INPUT_FRAME_NUDGE_INTERVAL_MS = 500;
 
 export class ParadisCdpTargetService implements IParadisCdpExactViewService, IParadisCdpPageOpsService {
 
@@ -620,6 +633,32 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		this.updateFrameKeepaliveTimer();
 	}
 
+	/** When each view was last nudged ahead of input, so a burst of mouse and key events nudges it once. */
+	private readonly inputFrameNudges = new Map<string, number>();
+
+	/**
+	 * Let the page draw a frame right before agent input reaches it. The periodic keepalive only
+	 * runs every few seconds; a view that is hidden, or shown in a window that is minimized or behind
+	 * other apps, sits at about 1fps in between, so locators waiting on requestAnimationFrame or an
+	 * IntersectionObserver time out and the click reports "not interactive".
+	 */
+	private nudgeFrameBeforeInput(viewId: string, view: BrowserView): void {
+		const now = Date.now();
+		const last = this.inputFrameNudges.get(viewId);
+		if (last !== undefined && now - last < PARADIS_INPUT_FRAME_NUDGE_INTERVAL_MS) {
+			return;
+		}
+		if (this.inputFrameNudges.size >= PARADIS_EXACT_VIEW_FRAME_KEEPALIVE_MAX_VIEWS) {
+			this.inputFrameNudges.clear();
+		}
+		this.inputFrameNudges.set(viewId, now);
+		try {
+			view.nudgeHiddenFrame();
+		} catch {
+			// best-effort, like the keepalive
+		}
+	}
+
 	/** Dispatch one validated input command to the exact BrowserView debugger root without focusing it. */
 	async dispatchExactViewInput(descriptorValue: unknown, methodValue: unknown, paramsJsonValue: unknown): Promise<IParadisCdpInputDispatchResult> {
 		const command = paradisParseCdpInputCommand(methodValue, paramsJsonValue);
@@ -640,11 +679,12 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 				// ユーザーが自分で操作し始めた合図。エージェントのカーソルを残すと、実カーソルの
 				// 横で固まったまま「止まっている」ように見えるので、ここで片付ける。
 				this.removeCursorOverlay(descriptor.viewId, view);
-				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: the bound BrowserView is focused by the user' };
+				return { status: 'retryable', message: PARADIS_INPUT_REFUSED_USER_FOCUSED_MESSAGE };
 			}
 		} catch {
 			return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state is unavailable' };
 		}
+		this.nudgeFrameBeforeInput(descriptor.viewId, view);
 
 		// エージェントが操作していることを見せる合成カーソル。実際の配送より先にカーソルを
 		// 目標座標へ滑らせ、着いてから配送することで、ホバーやクリックが「カーソルが着いた瞬間」に
@@ -688,7 +728,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			}
 			try {
 				if (view.webContents.isFocused()) {
-					return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: the bound BrowserView became focused before input dispatch' };
+					return { status: 'retryable', message: PARADIS_INPUT_REFUSED_BECAME_FOCUSED_MESSAGE };
 				}
 			} catch {
 				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state became unavailable before input dispatch' };
@@ -708,7 +748,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 				}
 				try {
 					if (view.webContents.isFocused()) {
-						return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: the bound BrowserView became focused before input dispatch' };
+						return { status: 'retryable', message: PARADIS_INPUT_REFUSED_BECAME_FOCUSED_MESSAGE };
 					}
 				} catch {
 					return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state became unavailable before input dispatch' };
