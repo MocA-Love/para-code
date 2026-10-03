@@ -30,7 +30,7 @@ export interface IParadisRelayPairedMobile {
 	 * 残すと、PCを旧版へ巻き戻したときにその解釈が復活し、PCフォーカス中の通知がAPNsも含めて
 	 * 捨てられる。旧キーは**書かず**、旧アプリから受け取ったときの読み取りだけに使う。
 	 */
-	notifyPrefs?: { agentDone?: boolean; agentQuestion?: boolean; pcFocusQuiet?: boolean; suppressWhenPcFocused?: boolean };
+	notifyPrefs?: { agentDone?: boolean; agentQuestion?: boolean; pcFocusQuiet?: boolean; suppressWhenPcFocused?: boolean; includeContent?: boolean };
 }
 
 export interface IParadisRelayPersistedState {

@@ -40,9 +40,9 @@ export async function reconcileTrayWithState(pcId: string, terminals: readonly T
 /**
  * ローカル通知を出す。同じエージェントの前の通知（プッシュで届いたものを含む）は消して置き換える。
  */
-export async function presentCollapsedNotification(title: string, subtitle: string | undefined, body: string, data: Record<string, unknown>, collapseKey: string | undefined): Promise<void> {
+export async function presentCollapsedNotification(title: string, subtitle: string | undefined, body: string, data: Record<string, unknown>, collapseKey: string | undefined, categoryIdentifier?: string): Promise<void> {
 	if (collapseKey === undefined) {
-		await presentLocalNotification(title, subtitle, body, data);
+		await presentLocalNotification(title, subtitle, body, data, undefined, categoryIdentifier);
 		return;
 	}
 	const identifier = `para-c-${collapseKey}`;
@@ -50,7 +50,7 @@ export async function presentCollapsedNotification(title: string, subtitle: stri
 	if (previous.length > 0) {
 		await dismissPresentedNotifications(previous);
 	}
-	await presentLocalNotification(title, subtitle, body, { ...data, collapse: collapseKey }, identifier);
+	await presentLocalNotification(title, subtitle, body, { ...data, collapse: collapseKey }, identifier, categoryIdentifier);
 }
 
 /**
