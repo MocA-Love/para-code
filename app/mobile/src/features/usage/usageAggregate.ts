@@ -221,7 +221,10 @@ export interface SeenOn {
 export interface AggregatedAccount {
 	readonly key: string;
 	readonly provider: 'claude' | 'codex';
-	/** 採った値（値の取れているもの → 新しいもの → 取得時刻の新しいもの、の順で選ぶ）。 */
+	/**
+	 * 採った値（値の取れているもの → 新しいもの → 取得時刻の新しいもの、の順で選ぶ）。Codex の枠のリセット
+	 * （`resetCredits`）だけは、リセットを添えている PC の中から別に選んで差し込む（{@link aggregateAccounts}）。
+	 */
 	readonly account: RateLimitAccount;
 	readonly at: number;
 	/** 採った値が古い。 */
@@ -259,13 +262,25 @@ function betterCandidate(a: AccountCandidate, b: AccountCandidate): AccountCandi
 	return b.at > a.at ? b : a;
 }
 
+/** リセットを添えている値どうしで、新しいもの（古くない → 取得時刻の新しいもの）を選ぶ。 */
+function betterResetCandidate(a: AccountCandidate, b: AccountCandidate): AccountCandidate {
+	if (a.old !== b.old) {
+		return a.old ? b : a;
+	}
+	return b.at > a.at ? b : a;
+}
+
 /**
  * アカウントごとに束ねる。並びは見つかった順（「PC ごと」の並び → PC 側の並び）。
  * 接続先にログインが無い（`host_not_logged_in`）ものは数えない（その接続先では使っていない）。
+ *
+ * Codex の枠のリセット（`resetCredits`）は、採った値の PC が添えていない（古い PC・読めなかった）ことがある。
+ * そのまま採るとリセットの行が消えるので、リセットだけはリセットを添えている PC の中の新しい値から採る。
  */
 export function aggregateAccounts(entries: readonly UsageEntry[], provider: 'claude' | 'codex', now: number): AggregatedAccount[] {
 	const order: string[] = [];
 	const best = new Map<string, AccountCandidate>();
+	const bestReset = new Map<string, AccountCandidate>();
 	const seen = new Map<string, SeenOn[]>();
 	for (const entry of entries) {
 		const limits = entry.values.limits;
@@ -288,6 +303,10 @@ export function aggregateAccounts(entries: readonly UsageEntry[], provider: 'cla
 			} else {
 				best.set(key, betterCandidate(current, candidate));
 			}
+			if (account.resetCredits !== undefined) {
+				const currentReset = bestReset.get(key);
+				bestReset.set(key, currentReset === undefined ? candidate : betterResetCandidate(currentReset, candidate));
+			}
 			const chips = seen.get(key)!;
 			if (!chips.some(chip => chip.key === entry.key)) {
 				chips.push({ key: entry.key, label: entry.label, old });
@@ -296,7 +315,11 @@ export function aggregateAccounts(entries: readonly UsageEntry[], provider: 'cla
 	}
 	return order.map(key => {
 		const chosen = best.get(key)!;
-		return { key, provider, account: chosen.account, at: chosen.at, old: chosen.old, remoteHost: chosen.remoteHost, seenOn: seen.get(key) ?? [] };
+		const resetSource = bestReset.get(key);
+		const account = resetSource !== undefined && resetSource.account.resetCredits !== chosen.account.resetCredits
+			? { ...chosen.account, resetCredits: resetSource.account.resetCredits }
+			: chosen.account;
+		return { key, provider, account, at: chosen.at, old: chosen.old, remoteHost: chosen.remoteHost, seenOn: seen.get(key) ?? [] };
 	});
 }
 

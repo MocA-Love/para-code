@@ -1,5 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { Fragment } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { ChevronRight } from 'lucide-react-native';
 import { ProviderLogo } from '../../components/providerLogo.js';
@@ -7,8 +8,8 @@ import { alpha, colors, radius, space, type } from '../../theme.js';
 import { formatRelativeTime } from '../../time.js';
 import { updatedAtLabel } from '../../usageFormat.js';
 import { Icon, Meter, MeterRow, iconSize } from '../../ui/index.js';
-import { AccountRow, UsageRow, UsageRowTitle, UsageSection, UsageSeparator } from '../settings/usageSections.js';
-import { providerEmptyMessage } from '../settings/usageSummary.js';
+import { AccountRow, UnavailableAccountsGroup, UsageRow, UsageRowTitle, UsageSection, UsageSeparator } from '../settings/usageSections.js';
+import { accountName, providerEmptyMessage } from '../settings/usageSummary.js';
 import { DetailMessage } from '../settings/usageDetailParts.js';
 import {
 	entryKindLabel,
@@ -79,7 +80,7 @@ export function SeenOnChips({ chips }: { chips: readonly SeenOn[] }) {
  * Claude / Codex の束（全 PC の合計）。アカウントごとに1行で、見えている PC をチップで添える。
  * `showChips` は PC が2台以上のときだけ（1台なら PC の名前は要らない）。
  */
-export function AggregatedProviderSection({ provider, title, accounts, emptySnapshot, anyLimits, loading, now, showChips }: {
+export function AggregatedProviderSection({ provider, title, accounts, emptySnapshot, anyLimits, loading, now, showChips, expandResets = false }: {
 	provider: 'claude' | 'codex';
 	title: string;
 	accounts: readonly AggregatedAccount[];
@@ -90,25 +91,47 @@ export function AggregatedProviderSection({ provider, title, accounts, emptySnap
 	loading: boolean;
 	now: number;
 	showChips: boolean;
+	/** リセットの期限の一覧を最初から開いておく（iPad の広い幅）。 */
+	expandResets?: boolean;
 }) {
+	// 取得できていないアカウントは1行に畳む（接続先のログインは畳まない）
+	const folded = (item: AggregatedAccount) => item.account.status === 'unavailable' && item.remoteHost === undefined;
+	const shown = accounts.filter(item => !folded(item));
+	const unavailable = accounts.filter(folded);
+	const row = (item: AggregatedAccount) => (
+		<AccountRow
+			account={item.account}
+			now={now}
+			remoteHost={item.remoteHost}
+			dimmed={item.old}
+			expandResets={expandResets}
+			extra={showChips ? <SeenOnChips chips={item.seenOn} /> : undefined}
+		/>
+	);
 	return (
 		<UsageSection title={title} logo={<ProviderLogo provider={provider} size={iconSize.sm} />}>
 			{!anyLimits ? (
 				<UsageRow><UsageRowTitle title={loading ? '取得しています…' : 'まだ取得していません'} /></UsageRow>
 			) : accounts.length === 0 ? (
 				<UsageRow><UsageRowTitle title="アカウントがありません" hint={emptySnapshot !== undefined ? providerEmptyMessage(emptySnapshot) : undefined} /></UsageRow>
-			) : accounts.map((item, index) => (
-				<View key={item.key}>
-					{index > 0 ? <UsageSeparator /> : null}
-					<AccountRow
-						account={item.account}
-						now={now}
-						remoteHost={item.remoteHost}
-						dimmed={item.old}
-						extra={showChips ? <SeenOnChips chips={item.seenOn} /> : undefined}
-					/>
-				</View>
-			))}
+			) : (
+				<>
+					{shown.map((item, index) => (
+						<View key={item.key}>
+							{index > 0 ? <UsageSeparator /> : null}
+							{row(item)}
+						</View>
+					))}
+					<UnavailableAccountsGroup names={unavailable.map(item => accountName(item.account))} separated={shown.length > 0}>
+						{unavailable.map((item, index) => (
+							<Fragment key={item.key}>
+								{index > 0 ? <UsageSeparator /> : null}
+								{row(item)}
+							</Fragment>
+						))}
+					</UnavailableAccountsGroup>
+				</>
+			)}
 		</UsageSection>
 	);
 }

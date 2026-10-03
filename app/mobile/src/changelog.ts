@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-03',
 		items: [
 			{
+				icon: 'refresh-circle-outline',
+				title: 'Codex の枠のリセットの残り回数と期限が見られるようになりました',
+				body: 'アカウントの使用量の下に「リセット 残り N 回 · 次は○○に期限」を出し、押すとそれぞれの期限を一覧で見られます。iPad の広い画面では Claude と Codex を左右に並べます。',
+			},
+			{
 				icon: 'help-circle-outline',
 				title: '質問の選択肢のプレビューを見て答えられるようになりました',
 				body: 'Claude Code が選択肢ごとに下書きを付けた質問では、選んだ選択肢の下（iPad では右）にプレビューが出ます。Claude Mods が動いている PC では、質問ごとのメモと「質問に答えずに話す」も使えます。',

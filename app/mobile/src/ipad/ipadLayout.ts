@@ -81,6 +81,20 @@ export function listColumnsFor(contentWidth: number): 1 | 2 {
 	return contentWidth >= MIN_COLUMN_WIDTH * 2 ? 2 : 1;
 }
 
+/** 使用量の画面で Claude と Codex を左右に並べるときの、列と列の間。 */
+export const USAGE_PROVIDER_COLUMN_GAP = 16;
+
+/** 使用量の画面で Claude と Codex を左右に並べるときの、1列の最小の幅（メーター2つとリセットの1行が収まる幅）。 */
+const USAGE_PROVIDER_MIN_COLUMN_WIDTH = 300;
+
+/**
+ * 使用量の画面の Claude と Codex を何列で並べるか。2列の表示（`regular`）で、本文の実際の幅（onLayout。
+ * ウィンドウ幅ではない）に2列が収まるときだけ左右に並べる。幅をまだ測っていない（0）ときは1列。
+ */
+export function usageProviderColumnsFor(regular: boolean, contentWidth: number): 1 | 2 {
+	return regular && contentWidth >= USAGE_PROVIDER_MIN_COLUMN_WIDTH * 2 + USAGE_PROVIDER_COLUMN_GAP ? 2 : 1;
+}
+
 /**
  * 質問のカードの中身がこの幅以上なら、選択肢と preview を左右に並べる（左に選択肢、右に preview）。
  * 選択肢の列 2 : preview の列 3 で、preview の枠に等幅 30 字ほどが入る幅。

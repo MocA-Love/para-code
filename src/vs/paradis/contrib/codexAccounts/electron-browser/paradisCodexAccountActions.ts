@@ -10,7 +10,8 @@
 // paradisLimitsPanelContributions.ts の部品）。カード下端の右寄せの列へ次を並べる。
 //
 //  - リセットクレジット: 残数と期限、「使う…」ボタン（押すと確認ダイアログ）。二重消費は
-//    shared process の台帳が防ぐ（ここでの押下中フラグは見た目のためだけ）
+//    shared process の台帳が防ぐ（ここでの押下中フラグは見た目のためだけ）。残りが2回以上なら「期限」で
+//    1件ごとの期限の一覧を開け、一覧の行の「使う…」でどのリセットを使うかを選べる（`credit_id` で送る）
 //  - 切替: 「このアカウントを使う」ボタン、または「使用中」バッジ。使用率を見比べてから選べるよう
 //    カードの上に置く。選んだアカウントは、すべてのウィンドウで新しく開くターミナルから使われる
 //
@@ -21,8 +22,11 @@
 // すべてのウィンドウで、接続先に新しく開くターミナルから使われる。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { timeout } from '../../../../base/common/async.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { language } from '../../../../base/common/platform.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
@@ -36,12 +40,21 @@ import {
 	IParadisCodexAccountsState,
 	IParadisCodexResetConsumeResult,
 	IParadisCodexResetCreditOffer,
+	IParadisCodexResetSummary,
+	paradisCalendarDayOffset,
+	paradisCodexChosenCreditStillAvailable,
+	paradisCodexResetCreditRows,
+	ParadisCodexResetCreditRow,
+	paradisCodexResetSummary,
 	paradisSelectedCodexHome,
 	ParadisCodexResetOutcome
 } from '../common/paradisCodexAccounts.js';
 import { ParadisCodexAccountsClient } from './paradisCodexAccountsClient.js';
 
 const $ = dom.$;
+
+/** 選んだリセットが本当に使われたかを確かめる2回目の読み取りまでの待ち（明細の反映の遅れを見込む）。 */
+const CHOSEN_CREDIT_RECHECK_DELAY_MS = 20_000;
 
 class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPanelContribution {
 
@@ -53,6 +66,8 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 	private accountsState: IParadisCodexAccountsState | undefined;
 	private accountsStateRequested = false;
 	private readonly consuming = new Set<string>();
+	/** 期限の一覧を開いているホーム（描き直しをまたいで持つ）。 */
+	private readonly expiriesOpen = new Set<string>();
 	private switching = false;
 	/** 裏で読んだ結果が届いたら、パネルに描き直してもらうための口（最後に描いたときのもの）。 */
 	private context: IParadisLimitsPanelContext | undefined;
@@ -162,12 +177,15 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 		this.readOffer(homePath, false);
 	}
 
-	private readOffer(homePath: string, bypassCache: boolean): void {
-		this.client.readResetCredits(homePath, bypassCache).then(offer => {
+	/** 読んで描き直す。読めなければ undefined（ログだけ残す）。 */
+	private readOffer(homePath: string, bypassCache: boolean): Promise<IParadisCodexResetCreditOffer | undefined> {
+		return this.client.readResetCredits(homePath, bypassCache).then(offer => {
 			this.offers.set(homePath, offer);
 			this.redraw();
+			return offer;
 		}, error => {
 			this.logService.warn('[ParadisCodexAccounts] failed to read reset credits', error);
+			return undefined;
 		});
 	}
 
@@ -178,42 +196,114 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 			// 未取得・読めない・リセットクレジットの仕組みが無いアカウントでは何も出さない。
 			return;
 		}
-		const count = credits?.availableCount ?? 0;
+		// 1行の決まりはモバイルの「リセット 残り N 回 · 次は○○に期限」と同じ（paradisCodexResetSummary）。
+		const summary = credits ? paradisCodexResetSummary(credits, Date.now()) : undefined;
+		const count = summary?.count ?? 0;
+		const rows = credits ? paradisCodexResetCreditRows(credits) : [];
+		const listable = summary?.listable === true;
 		const note = dom.append(container, $('span.plm-card-action-note'));
 		if (offer.pendingUnknown) {
 			note.textContent = localize('paradis.codexAccounts.resetPending', "前回のリセットの結果を確認できていません");
-		} else if (count === 0) {
+		} else if (!summary || count === 0) {
 			note.textContent = localize('paradis.codexAccounts.resetNone', "枠のリセット: 残りなし");
 			return;
-		} else if (credits?.nextExpiresAt !== undefined) {
-			note.textContent = localize('paradis.codexAccounts.resetAvailableWithExpiry', "枠のリセット: 残り {0} 回（{1} まで）", count, formatDateTime(credits.nextExpiresAt));
 		} else {
-			note.textContent = localize('paradis.codexAccounts.resetAvailable', "枠のリセット: 残り {0} 回", count);
+			note.textContent = resetSummaryText(summary);
+			note.classList.toggle('soon', summary.nextDayOffset !== undefined && summary.nextDayOffset <= 1);
 		}
+		const open = listable && this.expiriesOpen.has(account.id);
+		if (listable) {
+			const toggle = dom.append(container, $('button.plm-card-action-link')) as HTMLButtonElement;
+			toggle.type = 'button';
+			this.context?.trackFocus(toggle, `codex-expiries:${account.id}`);
+			toggle.setAttribute('aria-expanded', String(open));
+			dom.append(toggle, $('span')).textContent = localize('paradis.codexAccounts.resetExpiries', "期限");
+			toggle.appendChild($(`span${ThemeIcon.asCSSSelector(open ? Codicon.chevronUp : Codicon.chevronDown)}`));
+			store.add(dom.addDisposableListener(toggle, 'click', () => {
+				if (this.expiriesOpen.has(account.id)) {
+					this.expiriesOpen.delete(account.id);
+				} else {
+					this.expiriesOpen.add(account.id);
+				}
+				this.context?.redraw();
+			}));
+		}
+		const busy = this.consuming.has(account.id);
 		const button = dom.append(container, $('button.plm-card-action-btn')) as HTMLButtonElement;
 		button.type = 'button';
-		const busy = this.consuming.has(account.id);
 		button.disabled = busy;
 		button.textContent = busy
 			? localize('paradis.codexAccounts.resetBusy', "リセット中…")
 			: offer.pendingUnknown
 				? localize('paradis.codexAccounts.resetRetry', "結果を確認…")
 				: localize('paradis.codexAccounts.resetUse', "使う…");
-		store.add(dom.addDisposableListener(button, 'click', () => void this.consume(account)));
+		store.add(dom.addDisposableListener(button, 'click', () => void this.consume(account, undefined)));
+		if (open) {
+			this.renderExpiries(container, store, account, rows, busy || offer.pendingUnknown === true);
+		}
 	}
 
-	private async consume(account: IParadisLimitsAccount): Promise<void> {
+	/**
+	 * 1件ごとの期限の一覧（期限の早い順）。今日・明日に切れるものは目立たせる。ID の分かる行には
+	 * 「使う…」を置き、その1件を選んで使えるようにする。結果の分からない前回の要求があるときは置かない
+	 * （次の操作はその要求の再送になるため）。
+	 */
+	private renderExpiries(container: HTMLElement, store: DisposableStore, account: IParadisLimitsAccount, rows: readonly ParadisCodexResetCreditRow[], disabled: boolean): void {
+		const list = dom.append(container, $('ol.plm-reset-expiries'));
+		const now = Date.now();
+		for (const row of rows) {
+			const item = dom.append(list, $('li.plm-reset-expiry'));
+			const label = dom.append(item, $('span.plm-reset-expiry-label'));
+			const when = dom.append(item, $('span.plm-reset-expiry-when'));
+			switch (row.kind) {
+				case 'dated': {
+					label.textContent = localize('paradis.codexAccounts.resetExpiryUntil', "{0} まで", formatDateTime(row.expiresAt));
+					const days = paradisCalendarDayOffset(row.expiresAt, now);
+					when.textContent = relativeDayLabel(days);
+					item.classList.toggle('soon', days <= 1);
+					break;
+				}
+				case 'noExpiry':
+					label.textContent = localize('paradis.codexAccounts.resetExpiryNone', "期限なし");
+					break;
+				case 'unknown':
+					// 一覧は期限の分かる行があるときだけ開けるので、この行はいつも「ほか」になる。
+					label.textContent = localize('paradis.codexAccounts.resetExpiryUnknownRest', "ほか {0} 回（期限は不明）", row.count);
+					break;
+			}
+			if (row.kind !== 'unknown' && row.id !== undefined && !disabled) {
+				const creditId = row.id;
+				const use = dom.append(item, $('button.plm-card-action-btn.plm-reset-expiry-use')) as HTMLButtonElement;
+				use.type = 'button';
+				this.context?.trackFocus(use, `codex-expiry-use:${account.id}:${creditId}`);
+				use.textContent = localize('paradis.codexAccounts.resetUseThis', "使う…");
+				use.setAttribute('aria-label', row.kind === 'dated'
+					? localize('paradis.codexAccounts.resetUseThisDatedAria', "{0} までのリセットを使う", formatDateTime(row.expiresAt))
+					: localize('paradis.codexAccounts.resetUseThisNoExpiryAria', "期限の無いリセットを使う"));
+				store.add(dom.addDisposableListener(use, 'click', () => void this.consume(account, { id: creditId, expiresAt: row.kind === 'dated' ? row.expiresAt : undefined })));
+			}
+		}
+	}
+
+	/** @param credit 期限の一覧で選んだ1件。undefined ならどれを使うかを指定しない（今までどおり）。 */
+	private async consume(account: IParadisLimitsAccount, credit: { readonly id: string; readonly expiresAt: number | undefined } | undefined): Promise<void> {
 		const homePath = account.id;
 		const offer = this.offers.get(homePath);
 		if (!offer || this.consuming.has(homePath) || (!offer.offerRevision && !offer.pendingUnknown)) {
 			return;
 		}
+		// 結果の分からない前回の要求があるときは、選んだものではなくその要求を送り直す（一覧の「使う…」は出していない）。
+		const chosen = offer.pendingUnknown ? undefined : credit;
 		const name = account.email ?? account.homeLabel ?? homePath;
 		const { confirmed } = await this.dialogService.confirm({
 			type: Severity.Warning,
 			message: offer.pendingUnknown
 				? localize('paradis.codexAccounts.resetConfirmRetry', "前回のリセットの結果を確認しますか？")
-				: localize('paradis.codexAccounts.resetConfirm', "Codex の枠のリセットを1回使いますか？"),
+				: chosen === undefined
+					? localize('paradis.codexAccounts.resetConfirm', "Codex の枠のリセットを1回使いますか？")
+					: chosen.expiresAt !== undefined
+						? localize('paradis.codexAccounts.resetConfirmChosen', "{0} までのリセットを使いますか？", formatDateTime(chosen.expiresAt))
+						: localize('paradis.codexAccounts.resetConfirmChosenNoExpiry', "期限の無いリセットを使いますか？"),
 			detail: offer.pendingUnknown
 				? localize('paradis.codexAccounts.resetConfirmRetryDetail', "{0} で前回送ったリセットの要求を、同じ内容でもう一度送ります。前回すでに使われていた場合、2回目は使われません。", name)
 				: localize('paradis.codexAccounts.resetConfirmDetail', "{0} のリセットを1回使い、使い切った Codex の使用枠をすぐに戻します。使い切った枠が無いときは使われません。取り消せません。", name),
@@ -228,7 +318,7 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 		this.redraw();
 		let result: IParadisCodexResetConsumeResult | undefined;
 		try {
-			result = await this.client.consumeResetCredit({ homePath, offerRevision: offer.offerRevision ?? '', idempotencyKey: generateUuid() });
+			result = await this.client.consumeResetCredit({ homePath, offerRevision: offer.offerRevision ?? '', idempotencyKey: generateUuid(), offerFetchedAt: offer.fetchedAt, ...(chosen !== undefined ? { creditId: chosen.id } : {}) });
 		} catch (error) {
 			this.logService.warn('[ParadisCodexAccounts] reset credit consume failed', error);
 			this.notificationService.error(localize('paradis.codexAccounts.resetUnknown', "リセットの結果を確認できませんでした。もう一度押すと同じ要求を送り直します（2回使われることはありません）。"));
@@ -239,19 +329,37 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 			this.notifyResult(result, name);
 		}
 		// 残数を読み直し、使用枠のメーターも取り直してもらう。
-		this.readOffer(homePath, true);
+		const reread = this.readOffer(homePath, true);
 		if (!this._store.isDisposed) {
 			this.context?.requestRefresh(true);
+		}
+		if (chosen !== undefined && result?.kind === 'consumed' && result.outcome === 'reset' && !result.resentPrevious) {
+			// 選んだものがまだ残っているなら、別のリセットが使われた可能性がある（バックエンドが ID を見なかった等）。
+			// 使った直後の明細はまだ古いことがあるので、少し待ってからもう一度読み、それでも残っていたときだけ知らせる。
+			await reread;
+			await timeout(CHOSEN_CREDIT_RECHECK_DELAY_MS);
+			if (this._store.isDisposed) {
+				// パネルを閉じた（部品が破棄された）。読み直しも描き直しもしない。
+				return;
+			}
+			if (paradisCodexChosenCreditStillAvailable((await this.readOffer(homePath, true))?.credits, chosen.id)) {
+				this.notificationService.warn(localize('paradis.codexAccounts.resetChosenStillThere', "{0} で、選んだリセットではなく別のものが使われた可能性があります。数分後に期限の一覧でもう一度確かめてください。", name));
+			}
 		}
 	}
 
 	private notifyResult(result: IParadisCodexResetConsumeResult, name: string): void {
 		if (result.kind === 'consumed') {
-			this.notificationService.notify({ severity: result.outcome === 'reset' || result.outcome === 'alreadyRedeemed' ? Severity.Info : Severity.Warning, message: outcomeMessage(result.outcome, name) });
+			const message = result.resentPrevious
+				? localize('paradis.codexAccounts.resetResentPrevious', "選んだリセットは使わず、結果を確認できていなかった前回の要求を送り直しました。{0}", outcomeMessage(result.outcome, name))
+				: outcomeMessage(result.outcome, name);
+			this.notificationService.notify({ severity: result.outcome === 'reset' || result.outcome === 'alreadyRedeemed' ? Severity.Info : Severity.Warning, message });
 			return;
 		}
 		switch (result.reason) {
 			case 'offerChanged':
+				this.notificationService.info(localize('paradis.codexAccounts.resetOfferRenewed', "内容が新しくなりました。もう一度確かめてください。"));
+				return;
 			case 'alreadyAttempted':
 				this.notificationService.info(localize('paradis.codexAccounts.resetOfferChanged', "リセットの残りが変わっていました（別の画面で使われた可能性があります）。最新の内容を読み直したので、もう一度確かめてください。"));
 				return;
@@ -276,6 +384,56 @@ function outcomeMessage(outcome: ParadisCodexResetOutcome, name: string): string
 		case 'noCredit':
 			return localize('paradis.codexAccounts.resetNoCredit', "{0} には使えるリセットが残っていませんでした。", name);
 	}
+}
+
+/**
+ * メーターの下のリセットの1行（モバイルの `resetCreditsSummary` と同じ決まり）。
+ * 「残り 4 回 · 次は今日 11:12 に期限」「残り 1 回 · 10/20 21:45 に期限」「残り 1 回 · 期限なし」「残り 3 回」。
+ */
+function resetSummaryText(summary: IParadisCodexResetSummary): string {
+	if (summary.nextExpiresAt !== undefined) {
+		const when = expiryWhen(summary.nextExpiresAt, summary.nextDayOffset ?? 2);
+		return summary.count === 1
+			? localize('paradis.codexAccounts.resetOneWithExpiry', "枠のリセット: 残り 1 回 · {0} に期限", when)
+			: localize('paradis.codexAccounts.resetNextExpiry', "枠のリセット: 残り {0} 回 · 次は{1} に期限", summary.count, when);
+	}
+	if (summary.count === 1 && summary.hasNoExpiry) {
+		return localize('paradis.codexAccounts.resetOneNoExpiry', "枠のリセット: 残り 1 回 · 期限なし");
+	}
+	return localize('paradis.codexAccounts.resetAvailable', "枠のリセット: 残り {0} 回", summary.count);
+}
+
+/** 期限の「今日 11:12」「明日 08:00」「10/9 08:00」（今日・明日だけ言葉にする）。 */
+function expiryWhen(epochMs: number, dayOffset: number): string {
+	if (dayOffset === 0) {
+		return localize('paradis.codexAccounts.resetWhenToday', "今日 {0}", formatTime(epochMs));
+	}
+	if (dayOffset === 1) {
+		return localize('paradis.codexAccounts.resetWhenTomorrow', "明日 {0}", formatTime(epochMs));
+	}
+	return formatDateTime(epochMs);
+}
+
+function formatTime(epochMs: number): string {
+	try {
+		return new Date(epochMs).toLocaleTimeString(language, { hour: '2-digit', minute: '2-digit' });
+	} catch {
+		return new Date(epochMs).toLocaleTimeString();
+	}
+}
+
+/** 期限が暦の上で何日後か（「今日」「明日」「N 日後」。過ぎていれば「期限切れ」）。 */
+function relativeDayLabel(days: number): string {
+	if (days < 0) {
+		return localize('paradis.codexAccounts.resetExpired', "期限切れ");
+	}
+	if (days === 0) {
+		return localize('paradis.codexAccounts.resetToday', "今日");
+	}
+	if (days === 1) {
+		return localize('paradis.codexAccounts.resetTomorrow', "明日");
+	}
+	return localize('paradis.codexAccounts.resetInDays', "{0}日後", days);
 }
 
 function formatDateTime(epochMs: number): string {
