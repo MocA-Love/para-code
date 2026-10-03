@@ -565,6 +565,19 @@ export const register: Register = on => {
 					const annotations = rec(first.reply?.annotations);
 					return { result: { questions: e.questions, answers, ...(annotations !== undefined ? { annotations } : {}) } };
 				}
+				// "Chat about this" from the phone: every question is withdrawn. With a message the model
+				// reads "The user responded: …"; without one it gets the same refusal the terminal's own
+				// "Chat about this" writes (Para Code builds the text, with the partial answers and notes).
+				if (first.reply?.state === 'clarify') {
+					const response = str(first.reply.response);
+					if (response !== undefined && response.trim().length > 0) {
+						return { result: { questions: e.questions, answers: {}, response } };
+					}
+					const deny = str(first.reply.deny);
+					if (deny !== undefined && deny.length > 0) {
+						return { deny };
+					}
+				}
 				// Nothing came from the phone (it went away, or Para Code did): the dialog decides.
 				return (await fromTerminal).result;
 			}

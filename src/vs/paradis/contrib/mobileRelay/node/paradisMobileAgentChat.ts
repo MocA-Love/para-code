@@ -49,17 +49,18 @@ import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirro
 import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudeAdvisors, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
+import { PARADIS_AGENT_QUESTION_NOTES_LIMIT, PARADIS_AGENT_QUESTION_RESPONSE_LIMIT, paradisAgentQuestionClarifyDeny, paradisBuildModQuestionAnswer } from '../common/paradisAgentQuestionModAnswer.js';
 import { IParadisAgentApprovalOption, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
 import { paradisAgentSessionKey } from '../common/paradisMobileAgentResume.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/paradisSessionResume.js';
 import { IParadisHistoryCursor, PARADIS_HISTORY_FILE_CAP, PARADIS_HISTORY_PAGE_LIMIT, paradisDecodeHistoryCursor, paradisEncodeHistoryCursor, paradisHistoryCursorHasMore, paradisReadTranscriptHistory } from './paradisAgentChatHistory.js';
 import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
-import { ParadisClaudeModBridge, paradisClaudeModBridge, ParadisClaudeModEvent, IParadisClaudeModPendingPermission } from '../../claudeMod/node/paradisClaudeModBridge.js';
+import { ParadisClaudeModBridge, paradisClaudeModBridge, ParadisClaudeModEvent, IParadisClaudeModPendingPermission, IParadisClaudeModPendingQuestion } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { paradisIsDisplayOnlyModRow } from '../../claudeMod/common/paradisClaudeMod.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
-import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
+import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
 import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
@@ -125,6 +126,11 @@ type AgentInbound =
 	| { t: 'detach'; id: number; token?: string }
 	| { t: 'action/sendMessage'; id: number; token?: string; requestId: string; epoch: string; text: string; sendId?: string }
 	| { t: 'action/answerQuestion'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; answers: readonly AgentQuestionAnswer[] }
+	/**
+	 * 「質問に答えずに話す」（TUI の「Chat about this」、`agent.question.chat.v1`）。全問を取り下げる。mod が待っているときだけ受ける。
+	 * `response` があればそれを返事として渡し、無ければ途中までの回答（`answers`。未回答は null）とメモを添えて拒否する。
+	 */
+	| { t: 'action/clarifyQuestion'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; response?: string; answers?: readonly (AgentQuestionAnswer | null)[] }
 	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: string; optionLabel?: string; promptHash?: string }
 	/** 承認の画面に出ている番号付きの選択肢を求める（W2-21、`agent.approval.options.v1`）。答えは所有ウィンドウが直接返す。 */
 	| { t: 'approval-options'; id: number; token?: string; requestId: string; epoch: string; interactionId: string }
@@ -166,10 +172,15 @@ type AgentOutbound =
 	| { t: 'history'; id: number; requestId: string; epoch: string; messages?: readonly IParadisAgentChatMessage[]; cursor?: string; hasMore?: boolean; capped?: true; error?: string }
 	| { t: 'none'; id: number };
 
+/**
+ * 1 問ぶんの回答。`notes`（メモ、`agent.question.notes.v1`）は preview のある質問にだけ付けられ、mod が待っているときしか渡せない。
+ * `kind: 'notes'` は選択肢を選ばずにメモだけで答えるもの（同じ条件）。
+ */
 type AgentQuestionAnswer =
-	| { readonly kind: 'option'; readonly index: number }
-	| { readonly kind: 'multi'; readonly indices: readonly number[] }
-	| { readonly kind: 'text'; readonly optionCount: number; readonly text: string };
+	| { readonly kind: 'option'; readonly index: number; readonly notes?: string }
+	| { readonly kind: 'multi'; readonly indices: readonly number[]; readonly notes?: string }
+	| { readonly kind: 'text'; readonly optionCount: number; readonly text: string; readonly notes?: string }
+	| { readonly kind: 'notes'; readonly notes: string };
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -675,6 +686,13 @@ function isValidAgentQuestionAnswer(value: unknown): value is AgentQuestionAnswe
 	if (answer === undefined || typeof answer.kind !== 'string') {
 		return false;
 	}
+	const notesValid = answer.notes === undefined || (typeof answer.notes === 'string' && answer.notes.trim().length > 0 && answer.notes.length <= PARADIS_AGENT_QUESTION_NOTES_LIMIT);
+	if (!notesValid) {
+		return false;
+	}
+	if (answer.kind === 'notes') {
+		return answer.notes !== undefined;
+	}
 	if (answer.kind === 'option') {
 		return Number.isInteger(answer.index) && typeof answer.index === 'number' && answer.index >= 0 && answer.index < 100;
 	}
@@ -684,6 +702,41 @@ function isValidAgentQuestionAnswer(value: unknown): value is AgentQuestionAnswe
 	}
 	return answer.kind === 'text' && typeof answer.optionCount === 'number' && Number.isInteger(answer.optionCount) && answer.optionCount >= 0 && answer.optionCount < 100
 		&& typeof answer.text === 'string' && answer.text.trim().length > 0 && answer.text.length <= 10_000;
+}
+
+/** 回答がそのカード（質問）の形に合うか。メモは preview のある質問にだけ付けられる。 */
+function paradisQuestionAnswerFits(question: IParadisAgentChatMessage | undefined, answer: AgentQuestionAnswer): boolean {
+	if (question === undefined) {
+		return false;
+	}
+	const optionCount = question.options?.length ?? 0;
+	if (answer.notes !== undefined && !paradisAgentQuestionHasPreview(question)) {
+		return false;
+	}
+	switch (answer.kind) {
+		case 'option': return question.multiSelect !== true && answer.index < optionCount;
+		case 'multi': return question.multiSelect === true && answer.indices.every(value => value < optionCount);
+		case 'text': return answer.optionCount === optionCount;
+		case 'notes': return true;
+	}
+}
+
+/** キーの列で渡せる回答（メモを持たない、選択肢・複数選択・自由入力）。 */
+function paradisIsKeyQuestionAnswer(answer: AgentQuestionAnswer): answer is Exclude<AgentQuestionAnswer, { readonly kind: 'notes' }> {
+	return answer.kind !== 'notes' && answer.notes === undefined;
+}
+
+function paradisQuestionKeyShape(question: IParadisAgentChatMessage): { readonly optionCount: number; readonly multiSelect: boolean; readonly hasPreview: boolean } {
+	return { optionCount: question.options?.length ?? 0, multiSelect: question.multiSelect === true, hasPreview: paradisAgentQuestionHasPreview(question) };
+}
+
+function paradisShownOptionLabels(question: IParadisAgentChatMessage): readonly string[] {
+	return (question.options ?? []).map(option => option.label);
+}
+
+/** カードの選択肢のラベルの切り詰め（parseAskUserQuestions と同じ）。 */
+function paradisTruncateOptionLabel(label: string): string {
+	return truncateText(label, 200);
 }
 
 function isValidAttachRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'attach' }> {
@@ -712,6 +765,16 @@ function isValidQuestionAction(msg: AgentInboundCandidate): msg is AgentInboundC
 		&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
 		&& Array.isArray(msg.answers) && msg.answers.length > 0 && msg.answers.length <= 20
 		&& msg.answers.every(isValidAgentQuestionAnswer)
+		&& isValidControlRequest(msg);
+}
+
+function isValidClarifyQuestionAction(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'action/clarifyQuestion' }> {
+	return msg.t === 'action/clarifyQuestion'
+		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
+		&& (msg.response === undefined || (typeof msg.response === 'string' && msg.response.trim().length > 0 && msg.response.length <= PARADIS_AGENT_QUESTION_RESPONSE_LIMIT))
+		&& (msg.answers === undefined || (Array.isArray(msg.answers) && msg.answers.length > 0 && msg.answers.length <= 20
+			&& msg.answers.every((answer: unknown) => answer === null || isValidAgentQuestionAnswer(answer))))
 		&& isValidControlRequest(msg);
 }
 
@@ -806,6 +869,7 @@ function parseAgentInbound(value: unknown): AgentInbound | undefined {
 		case 'detach': return isValidDetachRequest(msg) ? msg : undefined;
 		case 'action/sendMessage': return isValidSendMessageAction(msg) ? msg : undefined;
 		case 'action/answerQuestion': return isValidQuestionAction(msg) ? msg : undefined;
+		case 'action/clarifyQuestion': return isValidClarifyQuestionAction(msg) ? msg : undefined;
 		case 'action/answerApproval': return isValidApprovalAction(msg) ? msg : undefined;
 		case 'approval-options': return isValidApprovalOptionsRequest(msg) ? msg : undefined;
 		case 'action/claudeSetting': return isValidClaudeSettingAction(msg) ? msg : undefined;
@@ -1510,6 +1574,8 @@ class TranscriptTailer {
 	readonly backgroundTasks = new Map<string, number>();
 	/** 回答待ちの質問 (AskUserQuestion) の tool_use_id。 */
 	readonly pendingQuestions = new Set<string>();
+	/** mod（Claude Mods）が待っていて値で答えられる質問のカード（questionGroup ?? toolUseId）。`answerVia` の元。 */
+	private modQuestionIds: ReadonlySet<string> = new Set<string>();
 	/** Claude Code の Monitor の一覧（epoch ごと。モバイルのコンポーザーのピルに出す）。 */
 	private readonly monitorWatch = new ParadisAgentMonitorWatch(() => this.delegate.onMonitors?.());
 	/**
@@ -2344,7 +2410,28 @@ class TranscriptTailer {
 	}
 
 	currentInteraction(): IParadisAgentInteraction | null {
-		return paradisPickCurrentInteraction(this.messages, this.pendingQuestions, this.pendingApproval);
+		const current = paradisPickCurrentInteraction(this.messages, this.pendingQuestions, this.pendingApproval);
+		return current?.kind === 'question' ? { ...current, answerVia: this.modQuestionIds.has(current.id) ? 'mod' : 'keys' } : current;
+	}
+
+	/** 回答待ちの質問のカードの ID（questionGroup ?? toolUseId）。 */
+	pendingQuestionInteractionIds(): readonly string[] {
+		const ids = new Set<string>();
+		for (const message of this.messages) {
+			if (message.kind === 'question' && message.toolUseId !== undefined && this.pendingQuestions.has(message.toolUseId)) {
+				ids.add(message.questionGroup ?? message.toolUseId);
+			}
+		}
+		return [...ids];
+	}
+
+	/** mod で答えられる質問のカードを入れ替える。変わったら購読者へ interaction を送り直す。 */
+	setModQuestionIds(ids: ReadonlySet<string>): void {
+		if (ids.size === this.modQuestionIds.size && [...ids].every(id => this.modQuestionIds.has(id))) {
+			return;
+		}
+		this.modQuestionIds = ids;
+		this.delegate.onDelta([]);
 	}
 
 	/**
@@ -2884,6 +2971,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		codexDirectoryWalkBudget?: IParadisDirectoryWalkBudget,
 		/** Claude Code の mod（Claude Mods）の受け口。テストは自前のものを渡す。 */
 		private readonly claudeModBridge: ParadisClaudeModBridge = paradisClaudeModBridge,
+		/** mod へ渡した回答の鍵（同じカードへの二度目を断る時間）に使う時計。テストは差し替える。 */
+		private readonly modAnswerNow: () => number = Date.now,
 	) {
 		super();
 		this.codexDirectoryWalkLedger = codexDirectoryWalkBudget ?? new ParadisDirectoryWalkLedger(PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS, PARADIS_CODEX_DIRECTORY_WALK_LIMIT);
@@ -3519,6 +3608,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'action/answerQuestion':
 				this.handleQuestionAction(mobileId, msg);
 				break;
+			case 'action/clarifyQuestion':
+				this.handleClarifyQuestionAction(mobileId, msg);
+				break;
 			case 'action/answerApproval':
 				this.handleApprovalAction(mobileId, msg);
 				break;
@@ -3899,13 +3991,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private handleQuestionAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/answerQuestion' }>): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const questions = token !== undefined ? this.tailers.get(token)?.pendingQuestionMessages(msg.interactionId) ?? [] : [];
-		const answersMatch = questions.length === msg.answers.length && msg.answers.every((answer, index) => {
-			const question = questions[index];
-			const optionCount = question?.options?.length ?? 0;
-			if (answer.kind === 'option') { return question?.multiSelect !== true && answer.index < optionCount; }
-			if (answer.kind === 'multi') { return question?.multiSelect === true && answer.indices.every(value => value < optionCount); }
-			return answer.optionCount === optionCount;
-		});
+		const answersMatch = questions.length === msg.answers.length && msg.answers.every((answer, index) => paradisQuestionAnswerFits(questions[index], answer));
 		if (!answersMatch) {
 			this.recordQuestionAnswerShape(token, msg, questions, 0, 'rejected-mismatch');
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: '質問の選択肢が更新されました' }, token ?? msg.token);
@@ -3915,10 +4001,14 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (token !== undefined && this.tryAnswerQuestionViaMod(mobileId, msg, token, questions)) {
 			return;
 		}
-		const parts = paradisAgentQuestionKeySequence(
-			questions.map(question => ({ optionCount: question.options?.length ?? 0, multiSelect: question.multiSelect === true })),
-			msg.answers,
-		);
+		// キーで渡せない回答: メモ（キーの列を確かめていない）と、preview のある質問への自由入力（その質問には「その他」の行が無い）
+		const keyAnswers = msg.answers.filter(paradisIsKeyQuestionAnswer);
+		const parts = keyAnswers.length === msg.answers.length ? paradisAgentQuestionKeySequence(questions.map(paradisQuestionKeyShape), keyAnswers) : [];
+		if (parts.length === 0) {
+			this.recordQuestionAnswerShape(token, msg, questions, 0, 'rejected-mismatch');
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: 'この回答は PC のターミナルへ渡せません。メモと、下書きのある質問への「その他」は PC の画面で答えてください' }, token ?? msg.token);
+			return;
+		}
 		this.recordQuestionAnswerShape(token, msg, questions, parts.length, 'dispatched');
 		// TUI が選択肢リストへキーボードフォーカスを移すより前に打鍵を流すと、その1打鍵は
 		// リストではなく**入力欄へ吸われて消える**（Claude Code 2.1.223 で実測）。単問・単一選択は
@@ -4863,6 +4953,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'pending-changed':
 				if (event.kind === 'permission') {
 					this.refreshModApprovals(token);
+				} else {
+					this.refreshModQuestions(token);
 				}
 				return;
 			case 'bye':
@@ -5063,7 +5155,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private lockModAnswer(key: string): void {
-		const now = Date.now();
+		const now = this.modAnswerNow();
 		this.modAnswered.set(key, now);
 		for (const [candidate, at] of this.modAnswered) {
 			if (now - at > MOD_ANSWER_LOCK_MS) {
@@ -5074,17 +5166,53 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private isModAnswerLocked(key: string): boolean {
 		const at = this.modAnswered.get(key);
-		return at !== undefined && Date.now() - at <= MOD_ANSWER_LOCK_MS;
+		return at !== undefined && this.modAnswerNow() - at <= MOD_ANSWER_LOCK_MS;
+	}
+
+	/** 質問のカード（モバイルへ出したもの）に合う、mod の質問の待ち（tool_use_id、無ければ質問文の並びで突き合わせる）。 */
+	private matchModQuestion(token: string, interactionId: string, questions: readonly IParadisAgentChatMessage[]): IParadisClaudeModPendingQuestion | undefined {
+		const session = this.paneSessions.get(token);
+		if (session?.agent !== 'claude' || questions.length === 0) {
+			return undefined;
+		}
+		const pending = this.claudeModBridge.pendingQuestions(token, session.sessionId);
+		const sameTexts = (candidate: IParadisClaudeModPendingQuestion) => candidate.questions.length === questions.length
+			&& candidate.questions.every((question, index) => truncateText(question.question, TEXT_LIMIT) === questions[index]?.text);
+		const target = pending.find(candidate => candidate.toolUseId !== undefined && candidate.toolUseId === interactionId) ?? pending.find(sameTexts);
+		return target !== undefined && target.questions.length === questions.length ? target : undefined;
 	}
 
 	/**
-	 * モバイルの質問の回答を mod へ値で渡す（`{ questions, answers }` の answers は「質問文 → 選んだラベル」、
-	 * 複数選択は `, ` でつなぐ。Claude Code の TUI が返すものと同じ形）。mod が待っていなければ false（キーの経路）。
+	 * mod の質問の待ちが増えた・終わった、または質問のカードが増えた。カードごとに mod で答えられるか（`answerVia`）を直す。
+	 * アプリはこれを見て、メモと「質問に答えずに話す」を出すか決める。
+	 */
+	private refreshModQuestions(token: string): void {
+		const tailer = this.tailers.get(token);
+		if (tailer === undefined) {
+			return;
+		}
+		void tailer.afterQueue(() => {
+			if (this.tailers.get(token) !== tailer) {
+				return;
+			}
+			const ids = new Set<string>();
+			for (const interactionId of tailer.pendingQuestionInteractionIds()) {
+				if (this.matchModQuestion(token, interactionId, tailer.pendingQuestionMessages(interactionId)) !== undefined) {
+					ids.add(interactionId);
+				}
+			}
+			tailer.setModQuestionIds(ids);
+		});
+	}
+
+	/**
+	 * モバイルの質問の回答を mod へ値で渡す（`{ questions, answers, annotations }`。answers は「質問文 → 選んだラベル」、
+	 * 複数選択は `, ` でつなぐ。annotations は選んだ選択肢の preview とメモ。Claude Code の TUI が返すものと同じ形）。
+	 * mod が待っていなければ false（キーの経路）。
 	 */
 	private tryAnswerQuestionViaMod(mobileId: string, msg: Extract<AgentInbound, { t: 'action/answerQuestion' }>, token: string, questions: readonly IParadisAgentChatMessage[]): boolean {
-		const session = this.paneSessions.get(token);
 		const tailer = this.tailers.get(token);
-		if (session?.agent !== 'claude' || tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)
+		if (tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)
 			|| !tailer.hasPendingInteraction({ kind: 'question', id: msg.interactionId })) {
 			return false;
 		}
@@ -5093,45 +5221,54 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'interaction-locked', message: 'PC側で反映を待っています。変わらない場合はPCの画面で確認してください' }, token);
 			return true;
 		}
-		const pending = this.claudeModBridge.pendingQuestions(token, session.sessionId);
-		const sameTexts = (candidate: typeof pending[number]) => candidate.questions.length === questions.length
-			&& candidate.questions.every((question, index) => truncateText(question.question, TEXT_LIMIT) === questions[index]?.text);
-		const target = pending.find(candidate => candidate.toolUseId !== undefined && candidate.toolUseId === msg.interactionId) ?? pending.find(sameTexts);
-		if (target === undefined || target.questions.length !== msg.answers.length) {
-			return false;
-		}
-		const answers: Record<string, string> = {};
-		for (const [index, answer] of msg.answers.entries()) {
-			const question = target.questions[index];
-			const card = questions[index];
-			if (question === undefined || card === undefined) {
-				return false;
-			}
-			// カードの選択肢（表示用に切り詰めたもの）から、mod が受け取った元のラベルを引く
-			const label = (optionIndex: number): string | undefined => {
-				const shown = card.options?.[optionIndex]?.label;
-				return shown === undefined ? undefined : question.options.find(option => truncateText(option.label, 200) === shown)?.label ?? shown;
-			};
-			let value: string | undefined;
-			if (answer.kind === 'option') {
-				value = label(answer.index);
-			} else if (answer.kind === 'multi') {
-				const labels = answer.indices.map(label);
-				value = labels.length > 0 && labels.every(item => item !== undefined) ? labels.join(', ') : undefined;
-			} else {
-				value = answer.text;
-			}
-			if (value === undefined) {
-				return false;
-			}
-			answers[question.question] = value;
-		}
-		if (!this.claudeModBridge.answerQuestion(token, target.id, answers)) {
+		const target = this.matchModQuestion(token, msg.interactionId, questions);
+		// カードの選択肢（表示用に切り詰めたもの）から、mod が受け取った元のラベルと preview を引く
+		const built = target !== undefined ? paradisBuildModQuestionAnswer(target.questions, questions.map(paradisShownOptionLabels), msg.answers, paradisTruncateOptionLabel) : undefined;
+		if (target === undefined || built === undefined || !this.claudeModBridge.answerQuestion(token, target.id, built.answers, built.annotations)) {
 			return false;
 		}
 		this.lockModAnswer(lockKey);
 		this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
 		return true;
+	}
+
+	/**
+	 * 「質問に答えずに話す」（`agent.question.chat.v1`）。mod が待っているときだけ渡せる（キーの列は確かめていない。
+	 * TUI の「Chat about this」は送信ボタンの先にあり、行き過ぎると以降のキーがエージェントへの発言になる）。
+	 */
+	private handleClarifyQuestionAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/clarifyQuestion' }>): void {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const reject = (code: string, message: string) => this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code, message }, token ?? msg.token);
+		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)
+			|| !tailer.hasPendingInteraction({ kind: 'question', id: msg.interactionId })) {
+			reject('stale-interaction', '回答対象の質問が変わりました');
+			return;
+		}
+		const lockKey = `${token}\0question\0${msg.interactionId}`;
+		if (this.isModAnswerLocked(lockKey)) {
+			reject('interaction-locked', 'PC側で反映を待っています。変わらない場合はPCの画面で確認してください');
+			return;
+		}
+		const questions = tailer.pendingQuestionMessages(msg.interactionId);
+		const target = this.matchModQuestion(token, msg.interactionId, questions);
+		if (target === undefined) {
+			reject('stale-interaction', 'この質問はもう取り下げられません。PC の画面で確認してください');
+			return;
+		}
+		const partial = questions.map((question, index) => {
+			const answer = msg.answers?.[index] ?? undefined;
+			return answer !== undefined && paradisQuestionAnswerFits(question, answer) ? answer : undefined;
+		});
+		const clarify = msg.response !== undefined
+			? { kind: 'response' as const, response: msg.response }
+			: { kind: 'deny' as const, deny: paradisAgentQuestionClarifyDeny(target.questions, questions.map(paradisShownOptionLabels), partial, paradisTruncateOptionLabel, index => paradisAgentQuestionHasPreview(questions[index] ?? {})) };
+		if (!this.claudeModBridge.clarifyQuestion(token, target.id, clarify)) {
+			reject('stale-interaction', 'この質問はもう取り下げられません。PC の画面で確認してください');
+			return;
+		}
+		this.lockModAnswer(lockKey);
+		this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
 	}
 
 	/**
@@ -6793,6 +6930,10 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (terminalId !== undefined) {
 					this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, interaction: tailer.currentInteraction() });
 				}
+				// 質問のカードが増えた（mod の待ちが先に来ていれば、ここで初めて突き合わせられる）
+				if (messages.some(message => message.kind === 'question')) {
+					this.refreshModQuestions(token);
+				}
 				// 質問の出現は購読の有無に関わらず通知へ流す（アプリを開いていないモバイルへの
 				// プッシュ供給源。onDelta はライブ追記でのみ呼ばれるため過去分の再通知はない）。
 				for (const message of options?.quiet === true ? [] : messages) {
@@ -6819,6 +6960,8 @@ export class ParadisMobileAgentChat extends Disposable {
 					const info = this.infoOf(token, tailer);
 					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, liveRevision: this.liveRevisions.get(token) ?? 0, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer) });
 				}
+				// 読み直したカードを mod の待ちと突き合わせ直す（変われば delta で answerVia を送り直す）
+				this.refreshModQuestions(token);
 			},
 			// この起動後に transcript が伸びた＝そのペインでエージェントが今も動いている。
 			// hook が届かない構成（WSL のディストロの中）と、質問を出したまま止まっていた
@@ -6908,7 +7051,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.tailers.set(token, tailer);
 		tailer.ready.then(() => {
 			this.scheduleDesktopInsightCheck();
-			if (this.tailers.get(token) === tailer) { this.schedulePersistedAgentActivityReconcile(token, 0); }
+			if (this.tailers.get(token) === tailer) {
+				this.schedulePersistedAgentActivityReconcile(token, 0);
+				// 初回読み込みのカードは onDelta を通らない。mod が先に待っていた質問を keys のまま残さない
+				this.refreshModQuestions(token);
+			}
 		}).catch(error => this.logService.trace('[paradisAgentChat] initial persisted activity recovery failed', String(error)));
 		return tailer;
 	}

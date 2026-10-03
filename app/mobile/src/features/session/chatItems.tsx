@@ -13,8 +13,10 @@ import type { AgentChatMessage } from '../../store.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
 import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
 import { Icon, useThemeColors } from '../../ui/index.js';
+import type { QuestionOutcome } from '../../agentQuestionMod.js';
 import { AdvisorChatRowView } from './advisorRow.js';
 import type { ChatRow } from './chatRows.js';
+import { questionRowOutcome } from './questionOutcomes.js';
 import { SubagentCardRowView, SubagentResumeLink } from './subagentCard.js';
 
 /** ツールの行は見た目 28。当たり判定は上下に 8 ずつ広げて 44 にする。 */
@@ -41,9 +43,9 @@ export const ChatRowView = memo(function ChatRowView({ row, terminalKey, allTool
 		case 'web':
 			return <WebSearchRow msgs={row.msgs} terminalKey={terminalKey} />;
 		case 'question':
-			return <HistoryQuestionRow text={row.m.text} answered={row.answered} />;
+			return <HistoryQuestionRow text={row.m.text} answered={row.answered} outcome={questionRowOutcome(row)} />;
 		case 'questionGroup':
-			return <HistoryQuestionRow text={row.msgs[0]?.text ?? ''} count={row.msgs.length} answered={row.answered} />;
+			return <HistoryQuestionRow text={row.msgs[0]?.text ?? ''} count={row.msgs.length} answered={row.answered} outcome={questionRowOutcome(row)} />;
 		case 'agents':
 			return <SubagentCardRowView row={row} terminalKey={terminalKey} />;
 		case 'advisor':
@@ -218,16 +220,35 @@ function NoticeRow({ text }: { text: string }) {
  * 会話に残る質問（回答済み、または PC がもう待っていないもの）。いま待っている質問は
  * コンポーザーの上のカードに出すので、ここは履歴として1行で示すだけ。
  */
-function HistoryQuestionRow({ text, count, answered }: { text: string; count?: number; answered: boolean }) {
+function HistoryQuestionRow({ text, count, answered, outcome }: { text: string; count?: number; answered: boolean; outcome?: QuestionOutcome }) {
 	const styles = useChatStyles(baseStyles);
 	const iconSize = useChatIconSize(12);
-	return (
+	const theme = useThemeColors();
+	const note = outcome?.kind === 'withdrawnWithMessage' ? '　取り下げ（メッセージで返信）'
+		: outcome?.kind === 'withdrawn' ? '　取り下げ'
+			: answered ? '　回答済み' : '　PC で回答済み、または対象外になりました';
+	const line = (
 		<View style={styles.sysline}>
 			<Icon icon={CircleHelp} size={iconSize} color={colors.textMuted} />
 			<Text style={styles.syslineText} numberOfLines={2}>
 				{`${count !== undefined ? `${count}つの質問: ` : ''}${text}`}
-				<Text style={styles.syslineNote}>{answered ? '　回答済み' : '　PC で回答済み、または対象外になりました'}</Text>
+				<Text style={styles.syslineNote}>{note}</Text>
 			</Text>
+		</View>
+	);
+	if (outcome?.kind !== 'withdrawnWithMessage') {
+		return line;
+	}
+	// 「質問に答えずに話す」で送ったメッセージは、自分の発言として質問の行の上に出す（transcript ではツールの結果に入っている）
+	return (
+		<View>
+			<View style={[styles.row, styles.withdrawnRow]}>
+				<Text style={styles.withdrawnCaption}>質問を取り下げて送信</Text>
+				<View style={[styles.bubble, { backgroundColor: theme.bubble }]}>
+					<Text style={[styles.bubbleText, { color: theme.onBubble }]} selectable>{outcome.text}</Text>
+				</View>
+			</View>
+			{line}
 		</View>
 	);
 }
@@ -236,6 +257,14 @@ const baseStyles = StyleSheet.create({
 	row: {
 		paddingHorizontal: space.lg,
 		paddingVertical: space.sm,
+	},
+	withdrawnRow: {
+		alignItems: 'flex-end',
+		gap: space.xs,
+	},
+	withdrawnCaption: {
+		fontSize: type.caption,
+		color: colors.textMuted,
 	},
 	userRow: {
 		flexDirection: 'row',

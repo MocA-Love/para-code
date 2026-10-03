@@ -3,6 +3,7 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { questionHasPreview } from '../agentQuestionMod.js';
 import type { AgentQuestionShape } from '../agentQuestionKeys.js';
 import type { QuestionGroupAnswer } from '../hooks/useAgentActions.js';
 import { useAnswerSubmission } from '../hooks/useAnswerSubmission.js';
@@ -30,6 +31,11 @@ export interface QuestionFreeTextRequest {
 	readonly prompt: string;
 	/** 回答として送る。拒否されたらコンポーザーは本文を入力欄へ戻す。 */
 	readonly submit: (text: string) => Promise<AgentMessageSendResult>;
+	/**
+	 * `clarify`: 「質問に答えずに話す」。入力欄は「質問を取り下げて送ります」になり、送った本文はエージェントへの返事になる
+	 * （質問はすべて取り下げる）。無ければ「その他」の回答の入力。
+	 */
+	readonly mode?: 'clarify';
 }
 
 /**
@@ -63,7 +69,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 	const multiSelect = message.multiSelect === true;
 	const options = message.options ?? [];
 	/** TUI上の形。回答をキー列に直すのに要る（agentQuestionKeys.ts）。 */
-	const question: AgentQuestionShape = { optionCount: options.length, multiSelect };
+	const question: AgentQuestionShape = { optionCount: options.length, multiSelect, hasPreview: questionHasPreview(message) };
 	const interactionId = message.questionGroup ?? message.toolUseId;
 	// PC側で回答された（answered）か、対象が入れ替わったら送信状態・失敗表示は用済み。
 	const submission = useAnswerSubmission(`${answered ? 'answered' : 'open'}:${interactionId ?? ''}`);
@@ -261,7 +267,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 	const options = current?.options ?? [];
 	const multiSelect = current?.multiSelect === true;
 	/** TUI上の形（質問の並び順）。回答をキー列に直すのに要る（agentQuestionKeys.ts）。 */
-	const questions: AgentQuestionShape[] = messages.map(m => ({ optionCount: m.options?.length ?? 0, multiSelect: m.multiSelect === true }));
+	const questions: AgentQuestionShape[] = messages.map(m => ({ optionCount: m.options?.length ?? 0, multiSelect: m.multiSelect === true, hasPreview: questionHasPreview(m) }));
 	const answeredCount = answers.filter(a => a !== undefined).length;
 	const allAnswered = answeredCount === messages.length;
 	// コンポーザーからの回答は後から非同期に届くので、その時点の最新の回答を読むために控える。

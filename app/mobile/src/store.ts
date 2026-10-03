@@ -857,6 +857,11 @@ export interface BrowserFrame {
 export interface AgentQuestionOption {
 	label: string;
 	description?: string;
+	/**
+	 * 選択肢にフォーカスしたとき TUI が枠で囲んで描く下書き（AskUserQuestion の `preview`。Markdown の文字列。
+	 * `agent.question.notes.v1` の PC だけが送る。PC 側で 4,000 文字ほどで切ってある）。
+	 */
+	preview?: string;
 }
 
 /** agent チャネルの正規化済みチャットメッセージ（PC側 paradisMobileAgentChat.ts と一致）。 */
@@ -1303,6 +1308,11 @@ export interface AgentChatState {
 export interface AgentInteraction {
 	kind: 'question' | 'approval';
 	id: string;
+	/**
+	 * kind==='question': この質問に答える経路。`mod` なら PC の Claude Code の mod が値で受け取れる（メモと「質問に答えずに話す」が
+	 * 使える）。`keys` は TUI へのキー注入だけ。古い PC は付けない。
+	 */
+	answerVia?: 'mod' | 'keys';
 	title?: string;
 	detail?: string;
 	choices?: AgentApprovalChoice[];
@@ -1316,10 +1326,15 @@ export interface AgentApprovalChoice {
 	tone: 'approve' | 'neutral' | 'deny';
 }
 
+/**
+ * 1 問ぶんの回答。`notes`（メモ）と `kind: 'notes'`（選ばずにメモだけ）は、preview のある質問で、PC の mod が待っているとき
+ * （`answerVia: 'mod'`）だけ送る。
+ */
 export type AgentQuestionAnswer =
-	| { kind: 'option'; index: number }
-	| { kind: 'multi'; indices: number[] }
-	| { kind: 'text'; optionCount: number; text: string };
+	| { kind: 'option'; index: number; notes?: string }
+	| { kind: 'multi'; indices: number[]; notes?: string }
+	| { kind: 'text'; optionCount: number; text: string; notes?: string }
+	| { kind: 'notes'; notes: string };
 
 /**
  * 「人間の対応が必要」なエージェント状態か（赤表示・応答待ちバッジの判定）。
@@ -1336,7 +1351,8 @@ function parseAgentInteraction(value: unknown): AgentInteraction | undefined {
 		return undefined;
 	}
 	if (raw['kind'] === 'question') {
-		return { kind: 'question', id: raw['id'] };
+		const answerVia = raw['answerVia'] === 'mod' || raw['answerVia'] === 'keys' ? raw['answerVia'] : undefined;
+		return { kind: 'question', id: raw['id'], ...(answerVia !== undefined ? { answerVia } : {}) };
 	}
 	const title = typeof raw['title'] === 'string' && raw['title'].length <= 200 ? raw['title'] : undefined;
 	const detail = typeof raw['detail'] === 'string' && raw['detail'].length <= 6_000 ? raw['detail'] : undefined;
@@ -2479,6 +2495,28 @@ export class MobileController {
 		}
 		return this.sendAgentActionResult(terminalKey, {
 			t: 'action/answerQuestion', token: this.agentToken(terminalKey), epoch: chat.epoch, interactionId, answers,
+		}, 60_000);
+	}
+
+	/**
+	 * 「質問に答えずに話す」（`agent.question.chat.v1`）。全問を取り下げる。`response` があればそれを返事として渡し、無ければ
+	 * 途中までの回答（`answers`、未回答は null）とメモを添えて「何を確かめたいか」を聞き返してもらう。
+	 */
+	clarifyAgentQuestion(terminalKey: string, interactionId: string, response: string | undefined, answers: readonly (AgentQuestionAnswer | null)[]): Promise<AgentMessageSendResult> {
+		const chat = this.state.agentChats.get(terminalKey);
+		if (!this.isLiveAvailable()) {
+			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
+		}
+		if (chat?.capabilities?.agentActions !== true) {
+			return Promise.resolve({ status: 'rejected', message: 'エージェントセッションを準備中です。少し待ってから試してください。' });
+		}
+		if (chat.interaction?.kind !== 'question' || chat.interaction.id !== interactionId) {
+			return Promise.resolve({ status: 'rejected', message: '回答の対象が変わりました。最新の内容を確認してください。' });
+		}
+		const text = response?.trim();
+		return this.sendAgentActionResult(terminalKey, {
+			t: 'action/clarifyQuestion', token: this.agentToken(terminalKey), epoch: chat.epoch, interactionId,
+			...(text !== undefined && text.length > 0 ? { response: text } : answers.length > 0 ? { answers } : {}),
 		}, 60_000);
 	}
 

@@ -1,10 +1,14 @@
 {
-	"$comment": "agent チャネルの固定形。id はターミナルの数値 ID、token はペイントークン（state.json の current の terminals[0] と揃えてある）。toPc はアプリが送る要求、toMobile は PC が送る応答。delta の monitors は任意項目（agent.monitors.v1）で、先頭の要素に全項目を持たせてある。delta の notice（Para Code からの知らせ）・advisor（Advisor の呼び出しと結果の印）・activity.advisors（Advisor への相談）も任意項目で、古いアプリは無視する。activity-detail の activityId に相談の id を渡すと、平文の返答を返す。時刻は PC の時計で、monitorsAt（PC の送信時刻）との差でアプリが手元の時計へ直す。",
+	"$comment": "agent チャネルの固定形。id はターミナルの数値 ID、token はペイントークン（state.json の current の terminals[0] と揃えてある）。toPc はアプリが送る要求、toMobile は PC が送る応答。delta の monitors は任意項目（agent.monitors.v1）で、先頭の要素に全項目を持たせてある。delta の notice（Para Code からの知らせ）・advisor（Advisor の呼び出しと結果の印）・activity.advisors（Advisor への相談）も任意項目で、古いアプリは無視する。activity-detail の activityId に相談の id を渡すと、平文の返答を返す。質問の選択肢の preview・interaction の answerVia・回答の notes と kind: notes・action/clarifyQuestion は agent.question.notes.v1 / agent.question.chat.v1。時刻は PC の時計で、monitorsAt（PC の送信時刻）との差でアプリが手元の時計へ直す。",
 	"toPc": [
 		{ "t": "attach", "id": 7, "token": "agent-token-1", "liveEncoding": "agent-live-append-v1" },
 		{ "t": "attach", "id": 7, "token": "agent-token-1", "epoch": "golden-agent-epoch", "afterRev": 1, "liveEncoding": "agent-live-append-v1" },
 		{ "t": "action/sendMessage", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-1", "epoch": "golden-agent-epoch", "text": "テストを流して" },
 		{ "t": "action/answerQuestion", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-2", "epoch": "golden-agent-epoch", "interactionId": "question-1", "answers": [{ "kind": "option", "index": 0 }] },
+		{ "t": "action/answerQuestion", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-11", "epoch": "golden-agent-epoch", "interactionId": "question-1", "answers": [{ "kind": "option", "index": 1, "notes": "文言は短めに" }] },
+		{ "t": "action/answerQuestion", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-12", "epoch": "golden-agent-epoch", "interactionId": "question-1", "answers": [{ "kind": "notes", "notes": "どちらでもない" }] },
+		{ "t": "action/clarifyQuestion", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-13", "epoch": "golden-agent-epoch", "interactionId": "question-1", "response": "その前に今の画面を見せて" },
+		{ "t": "action/clarifyQuestion", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-14", "epoch": "golden-agent-epoch", "interactionId": "question-1", "answers": [{ "kind": "option", "index": 0, "notes": "文言は短めに" }] },
 		{ "t": "action/answerApproval", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-3", "epoch": "golden-agent-epoch", "interactionId": "approval-1", "choice": "allow" },
 		{ "t": "tool-full", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-4", "epoch": "golden-agent-epoch", "rev": 1 },
 		{ "t": "approval-options", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-5", "epoch": "golden-agent-epoch", "interactionId": "approval-1" },
@@ -26,13 +30,15 @@
 			"capabilities": { "agentActions": true, "claudeSettings": true }
 		},
 		{
-			"t": "delta", "id": 7, "token": "agent-token-1", "agent": "claude", "epoch": "golden-agent-epoch", "rev": 5,
+			"t": "delta", "id": 7, "token": "agent-token-1", "agent": "claude", "epoch": "golden-agent-epoch", "rev": 6,
 			"messages": [
 				{ "rev": 2, "role": "tool", "kind": "tool_result", "text": "ok", "toolUseId": "tool-1", "ts": 1760000002000 },
 				{ "rev": 3, "role": "assistant", "kind": "tool_use", "tool": "Advisor", "text": "claude-opus-5-5", "toolUseId": "srvtoolu_golden1", "ts": 1760000002100, "advisor": { "model": "claude-opus-5-5" } },
 				{ "rev": 4, "role": "tool", "kind": "tool_result", "text": "返答は暗号化されているため、表示できません。", "toolUseId": "srvtoolu_golden1", "ts": 1760000002900, "advisor": { "model": "claude-opus-5-5", "outcome": "redacted" } },
-				{ "rev": 5, "role": "assistant", "kind": "text", "text": "送れませんでした: 続きをお願い", "ts": 1760000003000, "notice": true }
+				{ "rev": 5, "role": "assistant", "kind": "text", "text": "送れませんでした: 続きをお願い", "ts": 1760000003000, "notice": true },
+				{ "rev": 6, "role": "assistant", "kind": "question", "text": "接続できないときのエラーはどう見せますか?", "header": "エラー表示", "options": [{ "label": "トースト", "description": "画面の上に 4 秒だけ出す", "preview": "# Toast\n\n+----------------------+\n| Connection failed    |\n+----------------------+" }, { "label": "インライン", "description": "入力欄の下に赤字で出す", "preview": "# Inline" }], "toolUseId": "question-1", "questionGroup": "question-1", "questionIndex": 0, "questionCount": 1, "ts": 1760000003500 }
 			],
+			"interaction": { "kind": "question", "id": "question-1", "answerVia": "mod" },
 			"activity": {
 				"agents": [], "tasks": [], "compactions": [],
 				"advisors": [

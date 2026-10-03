@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { agentApprovalKeySequence, agentQuestionKeySequence, type AgentQuestionKeyAnswer, type AgentQuestionShape } from '../agentQuestionKeys.js';
-import type { AgentMessageSendResult } from '../store.js';
+import type { AgentMessageSendResult, AgentQuestionAnswer } from '../store.js';
 
 /**
  * エージェントへの入力・承認応答をまとめたアクション群。
@@ -14,8 +14,16 @@ import type { AgentMessageSendResult } from '../store.js';
  *  - 承認（Codex）: y / d / a のショートカット1文字（Enter不要）
  * agent.tsx（TUIチャット画面）とホーム画面のアテンションカードの両方から使う。
  */
-/** 1問ぶんの回答（複数質問グループでは質問の並び順に1つずつ持つ）。 */
-export type QuestionGroupAnswer = AgentQuestionKeyAnswer;
+/**
+ * 1問ぶんの回答（複数質問グループでは質問の並び順に1つずつ持つ）。メモ（`notes`・`kind: 'notes'`）は PC の mod が待っているときだけ
+ * 送れる（キー注入の経路では断る）。
+ */
+export type QuestionGroupAnswer = AgentQuestionAnswer;
+
+/** キーの列にできる回答（メモを持たない）か。 */
+function isKeyAnswer(answer: QuestionGroupAnswer): answer is AgentQuestionKeyAnswer {
+	return answer.kind !== 'notes' && answer.notes === undefined;
+}
 
 export interface AgentActions {
 	send(data: string): boolean;
@@ -27,6 +35,11 @@ export interface AgentActions {
 	answerQuestionMulti(interactionId: string, question: AgentQuestionShape, indices: number[]): Promise<AgentMessageSendResult>;
 	answerQuestionFreeText(interactionId: string, question: AgentQuestionShape, text: string): Promise<AgentMessageSendResult>;
 	answerQuestionGroup(interactionId: string, questions: readonly AgentQuestionShape[], answers: QuestionGroupAnswer[]): Promise<AgentMessageSendResult>;
+	/**
+	 * 「質問に答えずに話す」（`agent.question.chat.v1`）。全問を取り下げる。`response` があればそれを返事として送り、無ければ
+	 * 途中までの回答（未回答は null）とメモを添えて取り下げる。
+	 */
+	clarifyQuestion(interactionId: string, response: string | undefined, answers: readonly (QuestionGroupAnswer | null)[]): Promise<AgentMessageSendResult>;
 	approve(interactionId: string, choice: string): Promise<AgentMessageSendResult>;
 	updateClaudeSetting(setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult>;
 }
@@ -59,6 +72,7 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 	const sendLiveInput = useAppStore(s => s.sendLiveInput);
 	const sendAgentMessage = useAppStore(s => s.sendAgentMessage);
 	const answerAgentQuestion = useAppStore(s => s.answerAgentQuestion);
+	const clarifyAgentQuestion = useAppStore(s => s.clarifyAgentQuestion);
 	const answerAgentApproval = useAppStore(s => s.answerAgentApproval);
 	const updateClaudeSettingAction = useAppStore(s => s.updateClaudeSetting);
 	const interaction = useAppStore(s => terminalKey !== undefined ? s.agentChats.get(terminalKey)?.interaction : undefined);
@@ -151,10 +165,27 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 			if (supportsAgentActions) {
 				return answerAgentQuestion(terminalKey, interactionId, answers);
 			}
-			return sendSequence(agentQuestionKeySequence(questions, answers)).then(fromInjection);
+			const keyAnswers = answers.filter(isKeyAnswer);
+			if (keyAnswers.length !== answers.length) {
+				return Promise.resolve({ status: 'rejected', message: 'この PC ではメモを付けて回答できません' });
+			}
+			return sendSequence(agentQuestionKeySequence(questions, keyAnswers)).then(fromInjection);
 		},
 		[terminalKey, interaction, stale, supportsAgentActions, answerAgentQuestion, sendSequence],
 	);
+
+	const clarifyQuestion = useCallback((interactionId: string, response: string | undefined, answers: readonly (QuestionGroupAnswer | null)[]): Promise<AgentMessageSendResult> => {
+		if (stale) {
+			return Promise.resolve(REFRESHING_RESULT);
+		}
+		if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
+			return Promise.resolve(STALE_INTERACTION_RESULT);
+		}
+		if (terminalKey === undefined) {
+			return Promise.resolve(NO_TARGET_RESULT);
+		}
+		return clarifyAgentQuestion(terminalKey, interactionId, response, answers);
+	}, [terminalKey, interaction, stale, clarifyAgentQuestion]);
 
 	const answerQuestion = useCallback((interactionId: string, question: AgentQuestionShape, optionIndex: number): Promise<AgentMessageSendResult> => {
 		return answerQuestions(interactionId, [question], [{ kind: 'option', index: optionIndex }]);
@@ -223,7 +254,7 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 		return sendSequence([`/${setting} ${value}`, '\r']).then(fromInjection);
 	}, [terminalKey, agent, interaction, stale, supportsClaudeSettings, updateClaudeSettingAction, sendSequence]);
 
-	return { send, sendText, answerQuestion, answerQuestionMulti, answerQuestionFreeText, answerQuestionGroup, approve, updateClaudeSetting };
+	return { send, sendText, answerQuestion, answerQuestionMulti, answerQuestionFreeText, answerQuestionGroup, clarifyQuestion, approve, updateClaudeSetting };
 }
 
 /** 指定ターミナルのエージェントチャットを購読する（アタッチ/デタッチのライフサイクル込み）。 */

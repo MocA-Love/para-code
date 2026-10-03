@@ -75,8 +75,21 @@ export interface IParadisClaudeModQuestion {
 	readonly question: string;
 	readonly header?: string;
 	readonly multiSelect: boolean;
-	readonly options: readonly { readonly label: string }[];
+	/** preview は TUI が選択肢の横に描く下書き（元の文字列のまま。回答の annotations に入れて返す）。 */
+	readonly options: readonly { readonly label: string; readonly description?: string; readonly preview?: string }[];
 }
+
+/** 質問の回答に添える注記（Claude Code の `annotations[質問文]`）。 */
+export interface IParadisClaudeModQuestionAnnotation {
+	readonly preview?: string;
+	readonly notes?: string;
+}
+
+/**
+ * 「質問に答えずに話す」（TUI の「Chat about this」）。`response` はメッセージ（mod は `{ result: { questions, answers: {}, response } }`
+ * を返し、モデルは「The user responded: …」を読む）、`deny` はメッセージが無いときの拒否の文面（mod は `{ deny }` を返す）。
+ */
+export type ParadisClaudeModQuestionClarify = { readonly kind: 'response'; readonly response: string } | { readonly kind: 'deny'; readonly deny: string };
 
 /** 回答待ちの質問（ParadisMobileAgentChat がモバイルのカードと突き合わせる）。 */
 export interface IParadisClaudeModPendingQuestion {
@@ -135,7 +148,8 @@ type SubmitOutcome = 'ok' | 'received' | 'refused' | 'undelivered';
 const SUBMIT_FINAL_ACK_MS = 10 * 60_000;
 
 type WaitOutcome =
-	| { readonly state: 'answer'; readonly answers?: Record<string, string>; readonly annotations?: Record<string, unknown>; readonly decision?: 'allow' | 'deny'; readonly always?: boolean }
+	| { readonly state: 'answer'; readonly answers?: Record<string, string>; readonly annotations?: Record<string, IParadisClaudeModQuestionAnnotation>; readonly decision?: 'allow' | 'deny'; readonly always?: boolean }
+	| { readonly state: 'clarify'; readonly response?: string; readonly deny?: string }
 	| { readonly state: 'settled' }
 	| { readonly state: 'expired' };
 
@@ -187,9 +201,21 @@ function parseQuestions(value: unknown): IParadisClaudeModQuestion[] | undefined
 		if (question === undefined || questionText === undefined) {
 			return undefined;
 		}
-		const options = Array.isArray(question.options)
-			? question.options.map(option => text(rec(option)?.label, 2_000)).filter((label): label is string => label !== undefined).slice(0, 16).map(label => ({ label }))
-			: [];
+		const options: { label: string; description?: string; preview?: string }[] = [];
+		for (const candidateOption of Array.isArray(question.options) ? question.options : []) {
+			const option = rec(candidateOption);
+			const label = text(option?.label, 2_000);
+			if (label === undefined) {
+				continue;
+			}
+			const description = text(option?.description, 2_000);
+			// preview は空文字も「ある」（TUI は undefined かどうかで決める）
+			const preview = typeof option?.preview === 'string' ? option.preview.slice(0, 20_000) : undefined;
+			options.push({ label, ...(description !== undefined ? { description } : {}), ...(preview !== undefined ? { preview } : {}) });
+			if (options.length >= 16) {
+				break;
+			}
+		}
 		const header = text(question.header, 200);
 		questions.push({ question: questionText, ...(header !== undefined ? { header } : {}), multiSelect: question.multiSelect === true, options });
 	}
@@ -607,7 +633,7 @@ export class ParadisClaudeModBridge {
 			item.waiter = undefined;
 			this.pending.delete(item.id);
 			waiter(outcome);
-		} else if (outcome.state !== 'answer') {
+		} else if (outcome.state !== 'answer' && outcome.state !== 'clarify') {
 			// 答えでなければ受け取りを待たなくてよい（次のポーリングは「決着済み」になる）
 			this.pending.delete(item.id);
 		}
@@ -754,13 +780,26 @@ export class ParadisClaudeModBridge {
 		return [...this.pending.values()].filter(item => item.kind === 'permission' && item.token === token && item.sessionId === sessionId && item.outcome === undefined && item.permission !== undefined).map(item => item.permission!);
 	}
 
-	/** モバイルの回答を mod へ渡す。もう待っていなければ false（呼び出し側はキーの経路へ戻さない）。 */
-	answerQuestion(token: string, itemId: string, answers: Record<string, string>): boolean {
+	/**
+	 * モバイルの回答を mod へ渡す。もう待っていなければ false（呼び出し側はキーの経路へ戻さない）。
+	 * `annotations` は質問文ごとの preview（選んだ選択肢のもの）とメモ（notes）。
+	 */
+	answerQuestion(token: string, itemId: string, answers: Record<string, string>, annotations?: Record<string, IParadisClaudeModQuestionAnnotation>): boolean {
 		const item = this.pending.get(itemId);
 		if (item === undefined || item.kind !== 'question' || item.token !== token || item.outcome !== undefined) {
 			return false;
 		}
-		this.finish(item, { state: 'answer', answers });
+		this.finish(item, { state: 'answer', answers, ...(annotations !== undefined && Object.keys(annotations).length > 0 ? { annotations } : {}) });
+		return true;
+	}
+
+	/** 「質問に答えずに話す」を mod へ渡す（全問を取り下げる）。もう待っていなければ false。 */
+	clarifyQuestion(token: string, itemId: string, clarify: ParadisClaudeModQuestionClarify): boolean {
+		const item = this.pending.get(itemId);
+		if (item === undefined || item.kind !== 'question' || item.token !== token || item.outcome !== undefined) {
+			return false;
+		}
+		this.finish(item, clarify.kind === 'response' ? { state: 'clarify', response: clarify.response } : { state: 'clarify', deny: clarify.deny });
 		return true;
 	}
 
