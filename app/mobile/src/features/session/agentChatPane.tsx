@@ -320,6 +320,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 						updateClaudeSetting={actions.updateClaudeSetting}
 						onAfterSubmit={scrollToLatest}
 						fsUpload={fsUpload}
+						ws={terminal.ws}
 						requestAgentModelCatalog={requestAgentModelCatalog}
 						requestAgentCommandCatalog={requestAgentCommandCatalog}
 						updateAgentSettings={updateAgentSettings}

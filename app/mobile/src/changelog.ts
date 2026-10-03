@@ -44,6 +44,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-03',
 		items: [
 			{
+				icon: 'images-outline',
+				title: '送った画像がパスではなく小さな札で見えるようになりました',
+				body: '画像は 5 枚まで一度に送れ、会話では本文の先頭に札として並びます。札を押すと全画面で開き、共有や写真への保存ができます。長押しでパスをコピーできます。',
+				tone: 'green',
+			},
+			{
 				icon: 'refresh-circle-outline',
 				title: 'Codex の枠のリセットの残り回数と期限が見られるようになりました',
 				body: 'アカウントの使用量の下に「リセット 残り N 回 · 次は○○に期限」を出し、押すとそれぞれの期限を一覧で見られます。iPad の広い画面では Claude と Codex を左右に並べます。',
