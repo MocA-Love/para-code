@@ -28,15 +28,21 @@
 // 同じチャネルの `paneRoots` は、内蔵 chrome-devtools-mcp の roots（ツールが手元で読み書きしてよい
 // フォルダ）に使う、ペインのスペースのフォルダを返す。ペイン→スペースの解決は preview_file と同じ。
 //
+// 同じチャネルの `paradis*RemoteFile` は、接続先（SSH・WSL・コンテナ）のペインのエージェントに代わって
+// 接続先のファイルを読み書きする（スクリーンショットの保存先・upload_file の元ファイル・PDF とダウンロードの
+// 写し。写しは接続先のホームの `.para-code/browser-files` に置く）。読み書きしてよい場所の判断にペインのスペースのフォルダを使うので、ここに置いている
+// （実体は paradisRemoteFileBridge.ts）。
+//
 // 拡張子ごとの分岐は行わない: Markdown/HTML/PDF/Excel等のリッチビューアは fileViewers が
 // EditorResolver（exclusive優先度）で登録済みなので、openEditor だけで自動的に選ばれる。
 
+import { VSBuffer } from '../../../../base/common/buffer.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Event } from '../../../../base/common/event.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { FileOperationError, FileOperationResult, IFileService } from '../../../../platform/files/common/files.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -44,7 +50,10 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { IParadisPreviewFileResult, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL } from '../common/paradisAgentBrowser.js';
+import { IParadisPreviewFileResult, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, ParadisPreviewFileFailure } from '../common/paradisAgentBrowser.js';
+import { ParadisRemoteFileCheckResult, PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD, PARADIS_REMOTE_FILE_READ_METHOD, PARADIS_REMOTE_FILE_WRITE_METHOD, PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD } from '../common/paradisRemoteFileBridge.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { ParadisRemoteFileBridge } from './paradisRemoteFileBridge.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import {
 	IParadisAuxiliaryWindowScopeService,
@@ -73,6 +82,7 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 
 	/** 非表示スペースへの予約プレビュー（スペースの状態キー → 開く順のリソース）。 */
 	private readonly deferredPreviews = new Map<string, URI[]>();
+	private readonly remoteFiles: ParadisRemoteFileBridge;
 
 	constructor(
 		private readonly editorService: IEditorService,
@@ -86,8 +96,20 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 		private readonly logService: ILogService,
 		/** スペースを持たないペインのフォルダ（ウィンドウのワークスペース）を引くため。無ければ引かない。 */
 		private readonly workspaceContextService?: IWorkspaceContextService,
+		/** 接続先のホームと一時フォルダを引くため。無ければスペースのフォルダだけが使える。 */
+		remoteAgentService?: Pick<IRemoteAgentService, 'getConnection' | 'getEnvironment'>,
 	) {
 		super();
+		this.remoteFiles = new ParadisRemoteFileBridge(fileService, {
+			paneFolders: token => this._paneFolderResources(token),
+			remoteFolders: async remoteAuthority => {
+				if (remoteAgentService?.getConnection()?.remoteAuthority !== remoteAuthority) {
+					return undefined;
+				}
+				const environment = await remoteAgentService.getEnvironment();
+				return environment ? { userHome: environment.userHome, tmpDir: environment.tmpDir } : undefined;
+			},
+		}, logService);
 
 		// 切り替え完了（エディタ復元・working set 適用の後）に発火するので、予約分は
 		// 復元済みのタブの後ろに積まれる。失敗して元スペースへ巻き戻った場合もここへ来る。
@@ -114,6 +136,30 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 			const args = Array.isArray(arg) ? arg : [];
 			return this._paneRoots(typeof args[0] === 'string' ? args[0] : undefined) as T;
 		}
+		if (command === PARADIS_REMOTE_FILE_WRITE_METHOD || command === PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD || command === PARADIS_REMOTE_FILE_READ_METHOD || command === PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD) {
+			const args = Array.isArray(arg) ? arg : [];
+			const [token, remoteAuthority, path] = args;
+			if (typeof token !== 'string' || typeof remoteAuthority !== 'string' || remoteAuthority.length === 0 || typeof path !== 'string') {
+				const invalid: ParadisRemoteFileCheckResult = { ok: false, reason: 'invalidPath' };
+				return invalid as T;
+			}
+			switch (command) {
+				case PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD:
+					return this.remoteFiles.checkWrite(token, remoteAuthority, path) as Promise<T>;
+				case PARADIS_REMOTE_FILE_READ_METHOD:
+					return this.remoteFiles.read(token, remoteAuthority, path, typeof args[3] === 'number' ? args[3] : 0) as Promise<T>;
+				default: {
+					const data = args[3];
+					if (!(data instanceof VSBuffer)) {
+						const invalid: ParadisRemoteFileCheckResult = { ok: false, reason: 'ioFailed' };
+						return invalid as T;
+					}
+					return (command === PARADIS_REMOTE_FILE_WRITE_METHOD
+						? this.remoteFiles.write(token, remoteAuthority, path, data)
+						: this.remoteFiles.writeTemporary(token, remoteAuthority, path, data)) as Promise<T>;
+				}
+			}
+		}
 		throw new Error(`Method not found: ${command}`);
 	}
 
@@ -129,10 +175,11 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 		try {
 			const stat = await this.fileService.stat(resource);
 			if (stat.isDirectory) {
-				return this.failed(resource, 'the path is a directory');
+				return this.failed(resource, 'the path is a directory', 'isDirectory');
 			}
 		} catch (error) {
-			return this.failed(resource, error);
+			const notFound = error instanceof FileOperationError && error.fileOperationResult === FileOperationResult.FILE_NOT_FOUND;
+			return this.failed(resource, error, notFound ? 'notFound' : 'unreadable');
 		}
 
 		// 切り替えの最中は、どちらのスペースへ属させても working set の退避・復元に
@@ -165,19 +212,21 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 		if (token === undefined) {
 			return [];
 		}
+		// まだ台帳に無い・所属が決まっていない（undefined）。空で答えると一時フォルダだけに固まるので、後で引き直させる
+		return this._paneFolderResources(token)?.filter(resource => resource.scheme === Schemas.file).map(resource => resource.fsPath);
+	}
+
+	/** ペインが属するスペースのフォルダ（手元・接続先を問わない）。所属がまだ分からないときは undefined。 */
+	private _paneFolderResources(token: string): URI[] | undefined {
 		const target = this.resolvePaneTarget(token);
 		if (target.kind === 'unresolved') {
-			// まだ台帳に無い・所属が決まっていない。空で答えると一時フォルダだけに固まるので、後で引き直させる
 			return undefined;
 		}
-		let resources: readonly URI[];
 		if (target.kind === 'space') {
 			const entry = paradisListSpaces(this.workspaceSwitchService.repositories, this.worktreeService).find(candidate => candidate.space === target.stateKey);
-			resources = entry ? [entry.uri] : [];
-		} else {
-			resources = this.workspaceContextService?.getWorkspace().folders.map(folder => folder.uri) ?? [];
+			return entry ? [entry.uri] : [];
 		}
-		return resources.filter(resource => resource.scheme === Schemas.file).map(resource => resource.fsPath);
+		return this.workspaceContextService?.getWorkspace().folders.map(folder => folder.uri) ?? [];
 	}
 
 	/**
@@ -250,9 +299,9 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 			// preserveFocus: ユーザーは大抵ターミナルでエージェントとやり取り中なので、
 			// 入力フォーカスは奪わずエディタを開いて見せるだけにする。
 			const editor = await this.editorService.openEditor({ resource, options: { preserveFocus: true } }, group);
-			return editor ? { ok: true } : this.failed(resource, 'no editor was opened');
+			return editor ? { ok: true } : this.failed(resource, 'no editor was opened', 'openFailed');
 		} catch (error) {
-			return this.failed(resource, error);
+			return this.failed(resource, error, 'openFailed');
 		}
 	}
 
@@ -313,10 +362,10 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 			.find(entry => entry.space === stateKey)?.name;
 	}
 
-	/** 失敗の詳細はここだけに残し、呼び出し元へは理由を持たない失敗として返す。 */
-	private failed(resource: URI, reason: unknown): IParadisPreviewFileResult {
-		this.logService.warn(`[ParadisAgentPreview] failed to open ${resource.toString()}`, reason);
-		return { ok: false };
+	/** 失敗の詳細はここだけに残し、呼び出し元へは理由の種類だけを返す（パスや例外の文は渡さない）。 */
+	private failed(resource: URI, detail: unknown, reason: ParadisPreviewFileFailure): IParadisPreviewFileResult {
+		this.logService.warn(`[ParadisAgentPreview] failed to open ${resource.toString()}`, detail);
+		return { ok: false, reason };
 	}
 }
 
@@ -345,6 +394,7 @@ class ParadisAgentPreviewContribution extends Disposable implements IWorkbenchCo
 		@IParadisAuxiliaryWindowScopeService auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 		@ILogService logService: ILogService,
 		@IWorkspaceContextService workspaceContextService: IWorkspaceContextService,
+		@IRemoteAgentService remoteAgentService: IRemoteAgentService,
 	) {
 		super();
 		sharedProcessService.registerChannel(PARADIS_AGENT_PREVIEW_CHANNEL, this._register(new ParadisAgentPreviewChannel(
@@ -358,6 +408,7 @@ class ParadisAgentPreviewContribution extends Disposable implements IWorkbenchCo
 			auxiliaryWindowScopeService,
 			logService,
 			workspaceContextService,
+			remoteAgentService,
 		)));
 	}
 }

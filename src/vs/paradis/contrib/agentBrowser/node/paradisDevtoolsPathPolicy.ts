@@ -18,10 +18,12 @@
 // 手元のペインからの呼び出しは通すが、子プロセスへ roots（ペインのスペースのフォルダ・一時フォルダ）を渡し、
 // vendored の validatePath に範囲を確かめさせる（roots を渡さないと validatePath は何も確かめない）。
 
+import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { pathToFileURL, fileURLToPath } from 'url';
-import { isAbsolute } from '../../../../base/common/path.js';
+import { dirname, isAbsolute } from '../../../../base/common/path.js';
 import { paradisIsLocalFileUrl } from './paradisCdpRemotePolicy.js';
+import { paradisPathHasVersionControlSegment } from '../common/paradisRemoteFileBridge.js';
 
 /**
  * vendored chrome-devtools-mcp 1.5.0 のツールのうち、手元のファイル・フォルダを指す引数（各ツールの
@@ -111,9 +113,12 @@ const WITHOUT_PATH_HINTS: ReadonlyMap<string, string> = new Map([
 /**
  * パスの引数を含む呼び出しを子プロセスへ渡してよいかを決める。
  * 接続先（SSH・WSL・コンテナ）のペイン・戻り経路から来た呼び出しは断る。ペインを特定できないときも断る（手元と確かめられないため）。
- * 手元のペインからは通す（範囲は子プロセスの roots で確かめる）。
+ * 手元のペインからは通す（範囲は子プロセスの roots で確かめる）。ただし `.git`・`.hg`・`.svn` の中を指すパスは断る
+ * （roots はスペースのフォルダ全体なので、その中のリポジトリの管理領域にも書けてしまうため）。
+ *
+ * @param args パスの値を見るための引数（省略すると名前だけで決める）
  */
-export function paradisDevtoolsPathDecision(caller: IParadisDevtoolsPathCaller, toolName: string, pathArguments: readonly string[]): ParadisDevtoolsPathDecision {
+export function paradisDevtoolsPathDecision(caller: IParadisDevtoolsPathCaller, toolName: string, pathArguments: readonly string[], args?: unknown): ParadisDevtoolsPathDecision {
 	if (pathArguments.length === 0) {
 		return { kind: 'forward' };
 	}
@@ -131,7 +136,57 @@ export function paradisDevtoolsPathDecision(caller: IParadisDevtoolsPathCaller, 
 			message: `${toolName} was not run: Para Code could not identify the terminal pane this request comes from yet, so it does not accept file paths (${names}) for it. Retry in a few seconds, or call ${toolName} without ${names}.`,
 		};
 	}
+	const record = args && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
+	const versionControl = pathArguments.filter(name => name !== 'url' && typeof record[name] === 'string' && paradisPathHasVersionControlSegment(record[name] as string));
+	if (versionControl.length > 0) {
+		return {
+			kind: 'refuse',
+			message: paradisDevtoolsVersionControlMessage(toolName, versionControl),
+		};
+	}
 	return { kind: 'forward' };
+}
+
+function paradisDevtoolsVersionControlMessage(toolName: string, names: readonly string[]): string {
+	return `${toolName} was not run: ${names.map(name => `\`${name}\``).join(', ')} points inside a .git, .hg or .svn folder (directly or through a symbolic link), which the browser tools never read or write. Choose another path.`;
+}
+
+/**
+ * 手元のペインのパスの引数を realpath で解き、シンボリックリンクを通って `.git`・`.hg`・`.svn` の中を指して
+ * いないかを確かめる（{@link paradisDevtoolsPathDecision} は書かれた文字列しか見ない）。ファイルがまだ無いときは、
+ * 実在する一番近い祖先の realpath で見る。相対パスは子プロセスの作業フォルダが分からないので見ない
+ * （文字列の確認は済んでいる）。断るときはその文を返す。
+ */
+export async function paradisDevtoolsVersionControlRealpathRefusal(
+	toolName: string,
+	pathArguments: readonly string[],
+	args: unknown,
+	realpath: (path: string) => Promise<string> = path => fs.realpath(path),
+): Promise<string | undefined> {
+	const record = args && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
+	const refused: string[] = [];
+	for (const name of pathArguments) {
+		const value = record[name];
+		if (name === 'url' || typeof value !== 'string' || !isAbsolute(value)) {
+			continue;
+		}
+		let probe = value;
+		for (; ;) {
+			const real = await realpath(probe).catch(() => undefined);
+			if (real !== undefined) {
+				if (paradisPathHasVersionControlSegment(real)) {
+					refused.push(name);
+				}
+				break;
+			}
+			const parent = dirname(probe);
+			if (parent === probe) {
+				break;
+			}
+			probe = parent;
+		}
+	}
+	return refused.length > 0 ? paradisDevtoolsVersionControlMessage(toolName, refused) : undefined;
 }
 
 /**
