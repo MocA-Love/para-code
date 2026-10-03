@@ -104,6 +104,7 @@ import { ParadisVoiceSubscriptions } from '../common/paradisVoiceSubscriptions.j
 import { PARADIS_JSON_GZIP_RESPONSE_ENCODING, paradisEncodeNegotiatedGzipJsonResponse } from '../common/paradisMobileGzipJson.js';
 import { paradisDeliverVoiceClip } from './paradisVoiceClipDelivery.js';
 import { paradisGetMachineIdHash } from '../../../node/paradisMachineId.js';
+import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
 
 /**
  * リレー接続の保活間隔。経路のアイドルタイムアウトより十分短く、かつ常時接続の台数分だけ
@@ -817,6 +818,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this._register(toDisposable(() => this.backgroundSessions.dispose()));
 		this._register(this.agentChat.onDidChangeDesktopPaneInsights(() => this._onDidChangeAgentPaneInsights.fire()));
 		this._register(this.agentChat.onDidChangeDesktopChat(tokens => this._onDidChangeAgentChat.fire(tokens)));
+		// Claude Code の mod（Claude Mods）が質問・承認でモバイルの答えを待ってよいか（paradisClaudeModBridge.ts）。
+		// 承認は、アプリが今リレーに繋がっているときだけ待つ。
+		paradisClaudeModBridge.setPresence(() => !this.enabled || this.state.mobiles.length === 0 ? 'off'
+			: [...this.sessions.values()].some(session => session.hasCurrentProtocol) ? 'connected' : 'enabled');
 		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(({ tokens, tokensOutsideHookReach }) => {
 			this.confirmedAgentPanes = { revision: this.confirmedAgentPanes.revision + 1, tokens, tokensOutsideHookReach };
 			this._onDidChangeConfirmedAgentPanes.fire(this.confirmedAgentPanes);
@@ -1291,9 +1296,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 	}
 
-	async answerAgentChatApproval(_token: string, _interactionId: string, _choiceId: string): Promise<boolean> {
-		// 選択肢付きの承認は Codex のペイン専用 app-server から来ていた。それをやめたので答える相手が居ない
-		return false;
+	async answerAgentChatApproval(token: string, interactionId: string, choiceId: string): Promise<boolean> {
+		// 選択肢付きの承認は Codex のペイン専用 app-server から来ていた（それはやめた）。いま答えられるのは、
+		// Claude Code の mod（Claude Mods）が待っている承認の「以後は確認しない」だけ（キーでは渡せない）
+		return paradisIsAgentChatToken(token) && typeof interactionId === 'string' && choiceId === 'always'
+			? this.agentChat.answerDesktopApprovalViaMod(token, interactionId, choiceId)
+			: false;
 	}
 
 	async claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string, lease: IParadisMobileWindowLease): Promise<'claimed' | 'stale' | 'expired'> {
