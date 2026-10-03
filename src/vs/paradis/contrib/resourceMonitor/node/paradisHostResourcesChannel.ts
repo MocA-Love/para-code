@@ -23,6 +23,8 @@ import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisHostResources, IParadisHostResourcesRequest, PARADIS_HOST_MACHINE_ID_HASH_COMMAND, PARADIS_HOST_RESOURCES_CHANNEL } from '../common/paradisResourceMonitor.js';
 import { ParadisHostResourceSampler } from './paradisHostResources.js';
+import { PARADIS_SYSTEM_USAGE_COMMAND } from '../common/paradisSystemUsage.js';
+import { ParadisSystemUsageService } from './paradisSystemUsageService.js';
 import { paradisGetMachineIdHash } from '../../../node/paradisMachineId.js';
 
 /** 短時間に何度も聞かれたときに、同じ結果を返してよい長さ。 */
@@ -65,7 +67,10 @@ export class ParadisHostResourcesService {
 
 class ParadisHostResourcesChannel<TContext> implements IServerChannel<TContext> {
 
-	constructor(private readonly service: ParadisHostResourcesService) { }
+	constructor(
+		private readonly service: ParadisHostResourcesService,
+		private readonly systemUsage: ParadisSystemUsageService,
+	) { }
 
 	listen<T>(_ctx: TContext, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
@@ -79,6 +84,10 @@ class ParadisHostResourcesChannel<TContext> implements IServerChannel<TContext> 
 			// 同じ機械として見分けるのに使う。読めなければ undefined。
 			case PARADIS_HOST_MACHINE_ID_HASH_COMMAND:
 				return paradisGetMachineIdHash() as Promise<T>;
+			// 接続先のマシン全体の使用率の履歴（5 秒刻み 1 時間・1 分刻み 24 時間）。この版より古い REH は
+			// Method not found で失敗し、画面は今の値（getHostResources）だけを出す。
+			case PARADIS_SYSTEM_USAGE_COMMAND:
+				return this.systemUsage.getSystemUsage(arg) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
@@ -87,6 +96,17 @@ class ParadisHostResourcesChannel<TContext> implements IServerChannel<TContext> 
 
 /** serverServices.ts の PARA-PATCH 点から1行で呼べるファクトリ。 */
 export function registerParadisHostResourcesForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
-	server.registerChannel(PARADIS_HOST_RESOURCES_CHANNEL, new ParadisHostResourcesChannel<TContext>(new ParadisHostResourcesService(logService)));
-	return { dispose: () => { } };
+	// 履歴はサーバーが居る間ずっと測る（誰も見ていなくても、開いた瞬間に過去が見えるように）。
+	let warned = false;
+	const systemUsage = new ParadisSystemUsageService({
+		onError: error => {
+			if (!warned) {
+				warned = true;
+				logService.warn('[paradisHostResources] could not read this machine\'s usage history', error);
+			}
+		},
+	});
+	systemUsage.start();
+	server.registerChannel(PARADIS_HOST_RESOURCES_CHANNEL, new ParadisHostResourcesChannel<TContext>(new ParadisHostResourcesService(logService), systemUsage));
+	return systemUsage;
 }

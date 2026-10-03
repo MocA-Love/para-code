@@ -1,11 +1,31 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { useIsFocused, useRouter } from 'expo-router';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../../../src/appState.js';
+import { pcHasCapabilityFor, useAppStore } from '../../../src/appState.js';
+import { SystemUsageChart } from '../../../src/components/systemUsageChart.js';
+import {
+	EMPTY_SYSTEM_USAGE_COPY,
+	LOCAL_MACHINE_KEY,
+	SYSTEM_HISTORY_CAPABILITY,
+	SYSTEM_USAGE_METRICS,
+	responseMatchesMachine,
+	systemResourcesOptionsFor,
+	initialSystemMachineKey,
+	mergeSystemUsage,
+	parseSystemUsageResponse,
+	rangeSpec,
+	systemMachinesFor,
+	systemUsageWindow,
+	type SystemMachine,
+	type SystemUsageCopy,
+	type SystemUsageMetric,
+	type SystemUsageRange,
+	type SystemUsageSample,
+} from '../../../src/systemUsageHistory.js';
 import { hitSlopToMinimum } from '../../../src/components/hitSlop.js';
 import { haptic } from '../../../src/haptics.js';
 import { useAppIsActive } from '../../../src/hooks/useAppIsActive.js';
@@ -53,6 +73,16 @@ const MAX_ROWS = 12;
 /** スペースの容量の「測り直す」の見た目の大きさ（当たり判定は 44 に広げる）。 */
 const REMEASURE_SIZE = 28;
 
+/** 本文の幅がこれ以上なら、グラフを 2 列に並べる（iPad の詳細の列。画面の幅ではなく本文の幅で決める）。 */
+const TWO_COLUMN_MIN_WIDTH = 640;
+const RANGE_OPTIONS: readonly { value: SystemUsageRange; label: string }[] = [
+	{ value: '5m', label: '5 分' },
+	{ value: '1h', label: '1 時間' },
+	{ value: '24h', label: '24 時間' },
+];
+/** 古い接続先（履歴の無い Para Code）で取れない項目。 */
+const LEGACY_UNSUPPORTED: readonly SystemUsageMetric[] = ['diskIo', 'network', 'swap'];
+
 type AxisKey = 'process' | 'scope' | 'volume';
 const AXIS_OPTIONS: readonly { value: AxisKey; label: string }[] = [
 	{ value: 'process', label: 'プロセス' },
@@ -84,23 +114,26 @@ function SystemAllView() {
 	const router = useRouter();
 	const now = useNow();
 	const overview = useUsageOverview();
-	const entries = overview.entries.filter(entry => entry.kind === 'pc');
+	// SSH の接続先もマシンとして選べる（いま開いているものだけ。閉じた接続先には聞きに行けない）
+	const entries = overview.entries.filter(entry => entry.kind === 'pc' || (entry.kind === 'ssh' && entry.online));
+	const pcCount = entries.filter(entry => entry.kind === 'pc').length;
+	const sshCount = entries.length - pcCount;
 	return (
-		<SettingsScreen title="システム" subtitle={`PC ${entries.length} 台`}>
-			<GroupHeader title="PC ごと" first />
+		<SettingsScreen title="システム" subtitle={sshCount > 0 ? `PC ${pcCount} 台 · 接続先 ${sshCount} 台` : `PC ${entries.length} 台`}>
+			<GroupHeader title={sshCount > 0 ? 'マシンごと' : 'PC ごと'} first />
 			<UsageEntryRows
 				entries={entries}
 				values={{}}
 				now={now}
 				onOpen={entry => { haptic('move'); router.push(settingsRoutes.usageDetail('system', entry.key)); }}
 			/>
-			<DetailMessage tone="note">PC を選ぶと、何が CPU・メモリ・ディスクを使っているかを見られます。値は PC から常に届いているものです（オフラインの PC は出せません）。</DetailMessage>
+			<DetailMessage tone="note">PC や SSH の接続先を選ぶと、CPU・メモリ・ディスクなどの推移と、何がそれを使っているかを見られます。値は PC から常に届いているものです（オフラインの PC は出せません）。</DetailMessage>
 		</SettingsScreen>
 	);
 }
 
 function SystemDetailView() {
-	const { scope } = useUsageScope();
+	const { scope, host } = useUsageScope();
 	const { activeConnection, warmLeaseReady, activePcId, controllerRevision, acquireSpaceDiskWarmLease, pcs } = useAppStore(useShallow(s => ({
 		activeConnection: s.connection,
 		warmLeaseReady: s.connection === 'online' && s.pcOnline && s.sessionProtocolReady,
@@ -114,10 +147,73 @@ function SystemDetailView() {
 	const isActivePc = targetPcId === activePcId;
 	const targetPc = pcs.find(pc => pc.id === targetPcId);
 	const connection = isActivePc ? activeConnection : targetPc?.connection === 'online' && targetPc.pcOnline ? 'online' : 'offline';
-	const systemResources = useCallback((bypassCache?: boolean) => {
+
+	// 時系列の履歴とマシンの切り替え（`system.history.v1` の PC だけ。古い PC には今までどおり何も付けない）。
+	// 選択関数は store が変わるたびに読み直されるので、PC の State が届けば追いつく。
+	const historyCapable = useAppStore(() => targetPcId !== undefined && pcHasCapabilityFor(targetPcId, SYSTEM_HISTORY_CAPABILITY));
+	const renderers = useAppStore(s => s.workspace?.renderers);
+	const machines = useMemo(() => {
+		void renderers;
+		const target = targetPcId !== undefined ? useAppStore.getState().usageTargets().find(candidate => candidate.pcId === targetPcId) : undefined;
+		return systemMachinesFor(target, 'この PC');
+	}, [targetPcId, renderers, pcs]);
+	const remoteHostId = host.selectedHost?.kind === 'remote' ? host.selectedHost.id : undefined;
+	const scopeKey = scope.kind === 'source' ? scope.key : '';
+	const [machineKey, setMachineKey] = useState<string>(() => initialSystemMachineKey(scopeKey, targetPcId, remoteHostId, machines));
+	// 来た行（出どころ）・PC が変わったら選び直す。接続先の増減では選び直さない（手で選んだのを戻さない）。
+	const machinesRef = useRef(machines);
+	machinesRef.current = machines;
+	const remoteHostIdRef = useRef(remoteHostId);
+	remoteHostIdRef.current = remoteHostId;
+	useEffect(() => {
+		setMachineKey(initialSystemMachineKey(scopeKey, targetPcId, remoteHostIdRef.current, machinesRef.current));
+	}, [scopeKey, targetPcId]);
+	const machine = historyCapable ? machines.find(candidate => candidate.key === machineKey) ?? machines[0] : undefined;
+	const [range, setRange] = useState<SystemUsageRange>('5m');
+	const tier = rangeSpec(range).tier;
+	/** マシン×段ごとの手元の写し。取り直しの関数が写しに依存しないよう ref に持ち、描き直しは版の数で起こす。 */
+	const copies = useRef(new Map<string, SystemUsageCopy>());
+	const [, setCopiesVersion] = useState(0);
+	const [legacyMachines, setLegacyMachines] = useState<ReadonlySet<string>>(() => new Set());
+	const copyKey = machine !== undefined ? `${targetPcId ?? ''}|${machine.key}|${tier}` : undefined;
+	const machineKeyOfRequest = machine?.key;
+	const machineWindowId = machine?.windowId;
+	const machineRemote = machine?.remote === true;
+
+	const systemResources = useCallback(async (bypassCache?: boolean) => {
 		const requester = targetPcId !== undefined ? useAppStore.getState().usageRequesterFor(targetPcId) : undefined;
-		return requester !== undefined ? requester.systemResources(bypassCache) : Promise.reject(new Error('not initialized'));
-	}, [targetPcId]);
+		if (requester === undefined) {
+			throw new Error('not initialized');
+		}
+		if (machineKeyOfRequest === undefined || copyKey === undefined) {
+			return requester.systemResources(bypassCache);
+		}
+		const requestedMachine: SystemMachine = { key: machineKeyOfRequest, label: '', windowId: machineWindowId, ready: true, remote: machineRemote };
+		const result = await requester.systemResources(bypassCache, systemResourcesOptionsFor(requestedMachine, copies.current.get(copyKey) ?? EMPTY_SYSTEM_USAGE_COPY, tier));
+		// 名指ししたのと違うマシンの応答（あり得ないはずだが）は、写しにも全体の数字にも使わない
+		if (!responseMatchesMachine(result.historyMachine, requestedMachine)) {
+			throw new Error('別のマシンの値が届きました。もう一度お試しください。');
+		}
+		const parsed = parseSystemUsageResponse(result.history);
+		if (parsed !== undefined) {
+			copies.current.set(copyKey, mergeSystemUsage(copies.current.get(copyKey) ?? EMPTY_SYSTEM_USAGE_COPY, parsed));
+			setCopiesVersion(version => version + 1);
+		}
+		const legacy = result.historyUnavailable === 'remote-outdated';
+		setLegacyMachines(prev => {
+			if (prev.has(machineKeyOfRequest) === legacy) {
+				return prev;
+			}
+			const next = new Set(prev);
+			if (legacy) {
+				next.add(machineKeyOfRequest);
+			} else {
+				next.delete(machineKeyOfRequest);
+			}
+			return next;
+		});
+		return result;
+	}, [targetPcId, machineKeyOfRequest, machineWindowId, machineRemote, copyKey, tier]);
 	const spaceDiskUsage = useCallback((bypassCache?: boolean) => {
 		const requester = targetPcId !== undefined ? useAppStore.getState().usageRequesterFor(targetPcId) : undefined;
 		return requester !== undefined ? requester.spaceDisk(bypassCache) : Promise.reject(new Error('not initialized'));
@@ -132,6 +228,12 @@ function SystemDetailView() {
 	const [spaceLoading, setSpaceLoading] = useState(false);
 	const [spaceError, setSpaceError] = useState<string | undefined>();
 	const [openSpaces, setOpenSpaces] = useState<ReadonlySet<string>>(() => new Set());
+	// グラフの列数は本文の幅（onLayout）で決める。画面の幅は使わない（iPad の詳細の列は左の列で幅が変わる）。
+	const [chartAreaWidth, setChartAreaWidth] = useState(0);
+	const onChartAreaLayout = useCallback((event: LayoutChangeEvent) => {
+		const next = Math.round(event.nativeEvent.layout.width);
+		setChartAreaWidth(prev => (prev === next ? prev : next));
+	}, []);
 
 	// 自動更新（6秒）に対し PC 側の処理が間隔を超えることがある。古い結果で新しい結果を上書きしないよう、
 	// 最後に投げた要求だけを採る。
@@ -160,6 +262,7 @@ function SystemDetailView() {
 			}
 		}
 		// targetPcId: 切り替えたら取り直す（connection は online のままなので、これが無いと再取得が起きない）
+		// systemResources はマシン・時間の幅を変えると作り直されるので、それでも取り直す
 	}, [systemResources, connection, targetPcId]);
 
 	useEffect(() => { void refresh(); }, [refresh]);
@@ -209,6 +312,11 @@ function SystemDetailView() {
 		setSpaceError(undefined);
 		spaceRequestGen.current++;
 	}, [targetPcId]);
+	// マシンを切り替えたら、前のマシンの全体の数字を残さない（写しはマシンごとに残す）
+	useEffect(() => {
+		setData(undefined);
+		setError(undefined);
+	}, [machineKeyOfRequest]);
 
 	// 表示中だけ自動更新する（画面を離れる・アプリが背面に回ったら止める）。
 	const isFocused = useIsFocused();
@@ -269,8 +377,28 @@ function SystemDetailView() {
 	const maxMemory = Math.max(1, ...rows.map(row => row.memory));
 	const subtitle = [
 		pcs.length > 1 ? targetPc?.name : undefined,
+		machine?.remote === true ? machine.label : undefined,
 		data !== undefined ? `${updatedAtLabel(data.host.collectedAt, now)} · ${data.host.cores}コア` : undefined,
 	].filter((part): part is string => part !== undefined).join(' · ') || undefined;
+
+	const copy = copyKey !== undefined ? copies.current.get(copyKey) ?? EMPTY_SYSTEM_USAGE_COPY : EMPTY_SYSTEM_USAGE_COPY;
+	const spec = rangeSpec(range);
+	const usageWindow = systemUsageWindow(copy.samples, spec.windowMs);
+	const legacy = machine !== undefined && legacyMachines.has(machine.key);
+	// 古い接続先は今の値だけ（host の値を 1 点にする）。新しい PC は履歴の最新の点。
+	const latest: SystemUsageSample | undefined = legacy && data !== undefined
+		? {
+			t: data.host.collectedAt,
+			...(data.host.cpu !== undefined ? { cpu: data.host.cpu } : {}),
+			mem: memoryPercent,
+			...(primaryDisk !== undefined ? { disk: diskPercent } : {}),
+		}
+		: copy.latest;
+	const unsupportedMetrics = legacy ? LEGACY_UNSUPPORTED : copy.unsupported;
+	const localIsMac = copies.current.get(`${targetPcId ?? ''}|${LOCAL_MACHINE_KEY}|fine`)?.machine?.os === 'darwin'
+		|| copies.current.get(`${targetPcId ?? ''}|${LOCAL_MACHINE_KEY}|coarse`)?.machine?.os === 'darwin';
+	const twoColumns = chartAreaWidth >= TWO_COLUMN_MIN_WIDTH;
+	const chartItemStyle = twoColumns ? { width: Math.floor((chartAreaWidth - space.sm) / 2) } : styles.chartItemFull;
 
 	const toggleSpace = (key: string) => {
 		haptic('move');
@@ -430,13 +558,45 @@ function SystemDetailView() {
 			right={<DetailRefreshButton onPress={() => { void onPullRefresh(); }} disabled={pullRefreshing} />}
 			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { haptic('edge'); void onPullRefresh(); }} tintColor={colors.textDim} />}
 		>
+			{machine !== undefined && machines.length > 1 ? (
+				<ChoiceChips
+					options={machines.map(candidate => ({ value: candidate.key, label: candidate.remote ? candidate.label : localIsMac ? 'この Mac' : candidate.label }))}
+					selected={machine.key}
+					onSelect={setMachineKey}
+				/>
+			) : null}
 			{loading && data === undefined ? <DetailLoading /> : null}
 			{error !== undefined ? <DetailMessage tone="error">{error}</DetailMessage> : null}
 			{data === undefined && connection !== 'online' ? <DetailNotConnected /> : null}
 
 			{data !== undefined ? (
 				<View>
-					<GroupHeader title="PC 全体" first />
+					{machine !== undefined ? (
+						<>
+							<GroupHeader title="推移" first />
+							<ChoiceChips options={RANGE_OPTIONS} selected={range} onSelect={setRange} />
+							<View style={styles.charts} onLayout={onChartAreaLayout}>
+								{SYSTEM_USAGE_METRICS.map(metric => (
+									<View key={metric.id} style={chartItemStyle}>
+										<SystemUsageChart
+											spec={metric}
+											samples={usageWindow.samples}
+											latest={latest}
+											windowStart={usageWindow.start}
+											windowEnd={usageWindow.end}
+											windowMs={spec.windowMs}
+											stepMs={spec.stepMs}
+											unsupported={unsupportedMetrics.includes(metric.id)}
+											legacy={legacy}
+											swapTotal={copy.machine?.swapTotal}
+										/>
+									</View>
+								))}
+							</View>
+							{legacy ? <DetailMessage tone="note">接続先の Para Code を更新すると、CPU・メモリなどの推移とディスク I/O・帯域・スワップも出ます。いまは今の値だけです。</DetailMessage> : null}
+						</>
+					) : null}
+					<GroupHeader title={machine?.remote === true ? `${machine.label} 全体` : 'PC 全体'} first={machine === undefined} />
 					<DetailCard>
 						<BarItem
 							name="CPU"
@@ -499,6 +659,15 @@ function SystemDetailView() {
 }
 
 const styles = StyleSheet.create({
+	charts: {
+		flexDirection: 'row',
+		flexWrap: 'wrap',
+		gap: space.sm,
+		marginTop: space.sm,
+	},
+	chartItemFull: {
+		width: '100%',
+	},
 	spaceHeader: {
 		marginTop: space.xl,
 		marginBottom: space.xs,

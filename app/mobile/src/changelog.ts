@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-03',
 		items: [
 			{
+				icon: 'pulse-outline',
+				title: 'PC のシステム使用率を推移のグラフで見られるようになりました',
+				body: 'CPU・メモリ・ディスク・ディスク I/O・帯域・スワップを 5 分 / 1 時間 / 24 時間で表示します。SSH の接続先のマシンも選べます（PC の Para Code も新しい版が必要です）。',
+			},
+			{
 				icon: 'images-outline',
 				title: '送った画像がパスではなく小さな札で見えるようになりました',
 				body: '画像は 5 枚まで一度に送れ、会話では本文の先頭に札として並びます。札を押すと全画面で開き、共有や写真への保存ができます。長押しでパスをコピーできます。',

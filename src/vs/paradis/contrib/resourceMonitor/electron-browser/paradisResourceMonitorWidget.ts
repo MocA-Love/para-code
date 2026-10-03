@@ -14,6 +14,9 @@
 // パネル非表示中も5秒間隔で自動更新し続け、パネルを開いている間は2秒間隔に切り替える
 // (electron-main側に2.5秒の鮮度キャッシュがあるため負荷は小さい)。
 // `paradis.resourceMonitor.enabled` が false の間はポーリング自体を停止する。
+//
+// 数字はマシン全体の CPU とメモリ（SSH のウィンドウでは接続先の値。paradisSystemUsageModel.ts）。
+// Para Code 自身の内訳はパネルに出す。
 
 import './media/paradisResourceMonitor.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -22,12 +25,16 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IParadisResourceMonitorSnapshot, ParadisResourceMonitorFreshness } from '../common/paradisResourceMonitor.js';
-import { paradisFormatCpu, paradisFormatMemory, paradisGetTrackedHostMemorySeverity } from '../common/paradisResourceMonitorFormat.js';
+import { paradisGetTrackedHostMemorySeverity } from '../common/paradisResourceMonitorFormat.js';
 import { ParadisResourceMonitorClient } from './paradisResourceMonitorClient.js';
 import { IParadisResourceMonitorPanelOptions, ParadisResourceMonitorPanel } from './paradisResourceMonitorPanel.js';
+import { IParadisSystemUsageModel, IParadisSystemUsageView, ParadisSystemUsageMachineId } from './paradisSystemUsageModel.js';
+import { paradisFormatSystemUsageValue } from '../common/paradisSystemUsageFormat.js';
+import { PARADIS_SYSTEM_USAGE_OPEN_COMMAND_ID } from './paradisSystemUsageEditorInput.js';
 
 const $ = dom.$;
 
@@ -82,6 +89,11 @@ export class ParadisResourceMonitorWidget extends Disposable {
 	private readonly pollTimer: IParadisResourceMonitorPollTimer;
 
 	private latestSnapshot: IParadisResourceMonitorSnapshot | undefined;
+	/** タイトルバーに出しているマシンの、最後に取れた値（パネルを開いたときにすぐ描く）。 */
+	private latestSystemUsage: IParadisSystemUsageView | undefined;
+	private isFetchingSystemUsage = false;
+	/** 取得中にマシンが切り替えられた。終わったらもう一度取る（前の取得は前のマシンの値だけを持ち帰る）。 */
+	private systemUsageRefreshPending = false;
 	private isFetching = false;
 	private idleRefreshPending = false;
 	private isDisposed = false;
@@ -91,6 +103,8 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		dependencies: IParadisResourceMonitorWidgetDependencies = { document: dom.getDocument(container), pollTimer: new IntervalTimer() },
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IParadisSystemUsageModel private readonly systemUsageModel: IParadisSystemUsageModel,
+		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super();
 		this.document = dependencies.document;
@@ -177,11 +191,20 @@ export class ParadisResourceMonitorWidget extends Disposable {
 			return;
 		}
 
+		const defaultMachineId = this.systemUsageModel.getDefaultMachineId();
 		const options: IParadisResourceMonitorPanelOptions = {
 			initialSnapshot: this.latestSnapshot,
 			onManualRefresh: () => this.poll(true),
 			onClose: () => this.closePanel(),
 			switchToScope: stateKey => this.client.switchToScope(stateKey),
+			machines: this.systemUsageModel.getMachines(),
+			selectedMachineId: defaultMachineId,
+			initialSystemUsage: this.latestSystemUsage?.machineId === defaultMachineId ? this.latestSystemUsage : undefined,
+			onSelectMachine: () => void this.pollSystemUsage(true),
+			onOpenDetails: machineId => {
+				this.closePanel();
+				void this.commandService.executeCommand(PARADIS_SYSTEM_USAGE_OPEN_COMMAND_ID, machineId);
+			},
 		};
 		this.button.classList.add('active');
 		this.panel.value = this.instantiationService.createInstance(ParadisResourceMonitorPanel, this.button, options);
@@ -205,6 +228,9 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		if (!force && !this.panel.value && this.document.hidden) {
 			return;
 		}
+		// マシン全体の使用率（タイトルバーの数字とパネルのグラフ）。内訳の取得とは別に進める
+		// （内訳は ps を走らせるので遅いことがあり、それを待ってタイトルバーを止めない）。
+		void this.pollSystemUsage();
 		if (this.isFetching) {
 			if (retryWhenBusy) {
 				this.idleRefreshPending = true;
@@ -233,9 +259,60 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		}
 	}
 
-	private updateTriggerText(snapshot: IParadisResourceMonitorSnapshot): void {
-		this.textElement.textContent = `${paradisFormatCpu(snapshot.totalCpu)} / ${paradisFormatMemory(snapshot.totalMemory)}`;
+	/**
+	 * マシン全体の使用率を取る。タイトルバーは SSH のウィンドウなら接続先、そうでなければこのコンピューター。
+	 * パネルを開いていて別のマシンを選んでいれば、そのマシンも取る。前回が終わっていなければ重ねない。
+	 */
+	private async pollSystemUsage(retryWhenBusy = false): Promise<void> {
+		if (this.isDisposed) {
+			return;
+		}
+		if (this.isFetchingSystemUsage) {
+			if (retryWhenBusy) {
+				this.systemUsageRefreshPending = true;
+			}
+			return;
+		}
+		this.isFetchingSystemUsage = true;
+		try {
+			const titleMachineId = this.systemUsageModel.getDefaultMachineId();
+			const titleView = await this.systemUsageModel.refresh(titleMachineId, '5m');
+			if (this.isDisposed) {
+				return;
+			}
+			this.latestSystemUsage = titleView;
+			this.updateTriggerSystemUsage(titleView);
+			const panel = this.panel.value;
+			if (panel) {
+				const panelMachineId: ParadisSystemUsageMachineId = panel.machineId;
+				const view = panelMachineId === titleMachineId ? titleView : await this.systemUsageModel.refresh(panelMachineId, '5m');
+				this.panel.value?.updateSystemUsage(view);
+			}
+		} catch {
+			// 一時的な不通。次のポーリングで回復する。
+		} finally {
+			this.isFetchingSystemUsage = false;
+			if (this.systemUsageRefreshPending) {
+				this.systemUsageRefreshPending = false;
+				void this.pollSystemUsage();
+			}
+		}
+	}
 
+	/** タイトルバーの数字はマシン全体の CPU とメモリ（SSH のウィンドウでは接続先の名前を添える）。 */
+	private updateTriggerSystemUsage(view: IParadisSystemUsageView): void {
+		const latest = view.latest;
+		if (latest === undefined) {
+			return;
+		}
+		const values = localize('paradis.resourceMonitor.triggerValues', "CPU {0} · RAM {1}", paradisFormatSystemUsageValue(latest.cpu, 'percent'), paradisFormatSystemUsageValue(latest.mem, 'percent'));
+		this.textElement.textContent = view.machineId === 'remote' ? `${view.label} · ${values}` : values;
+		this.button.setAttribute('aria-label', localize('paradis.resourceMonitor.triggerAriaMachine', "{0} の CPU とメモリの使用率: {1}", view.label, values));
+	}
+
+	private updateTriggerText(snapshot: IParadisResourceMonitorSnapshot): void {
+		// 数字はマシン全体の値（updateTriggerSystemUsage）で、Para Code 自身の内訳はパネルに出す。
+		// ここで決めるのは、Para Code が物理メモリをどれだけ占めているかの印（ドット）だけ。
 		const sharePercent = snapshot.hostTotalMemory > 0 ? (snapshot.totalMemory / snapshot.hostTotalMemory) * 100 : 0;
 		const severity = paradisGetTrackedHostMemorySeverity(sharePercent);
 		if (severity === 'normal') {

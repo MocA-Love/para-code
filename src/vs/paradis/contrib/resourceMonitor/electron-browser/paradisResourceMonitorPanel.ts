@@ -29,12 +29,16 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { IParadisResourceMonitorScopeMetrics, IParadisResourceMonitorSessionMetrics, IParadisResourceMonitorSnapshot, IParadisResourceUsage } from '../common/paradisResourceMonitor.js';
 import { ParadisUsageSeverity, paradisFormatCpu, paradisFormatMemory, paradisFormatPercent, paradisGetTrackedHostMemorySeverity, paradisGetUsageSeverity } from '../common/paradisResourceMonitorFormat.js';
 import { PARADIS_RESOURCE_MONITOR_OTHER_TERMINALS_STATE_KEY } from './paradisResourceMonitorClient.js';
+import { ParadisSystemUsageGrid, ParadisSystemUsageSegment } from '../browser/paradisSystemUsageChart.js';
+import { IParadisSystemUsageMachineEntry, IParadisSystemUsageView, ParadisSystemUsageMachineId } from './paradisSystemUsageModel.js';
 
 const $ = dom.$;
 
 type ParadisResourceMonitorSortOption = 'memory' | 'cpu' | 'name';
 
 const PANEL_WIDTH = 420;
+/** パネルの小さなグラフに描く点の上限（5 分は 60 点なので、間引かずに全部描く）。 */
+const PANEL_CHART_MAX_POINTS = 120;
 
 export interface IParadisResourceMonitorPanelOptions {
 	/** 生成時点でウィジェットが既に持っている最新のスナップショット(あれば "Loading…" を出さずに即描画)。 */
@@ -42,6 +46,14 @@ export interface IParadisResourceMonitorPanelOptions {
 	readonly onManualRefresh: () => void;
 	readonly onClose: () => void;
 	readonly switchToScope: (stateKey: string) => void;
+	/** マシン全体の使用率のグラフで選べるマシンと、最初に選んでおくマシン（SSH のウィンドウなら接続先）。 */
+	readonly machines: readonly IParadisSystemUsageMachineEntry[];
+	readonly selectedMachineId: ParadisSystemUsageMachineId;
+	/** 生成時点でウィジェットが持っている、選んでいるマシンの値。 */
+	readonly initialSystemUsage: IParadisSystemUsageView | undefined;
+	readonly onSelectMachine: (machineId: ParadisSystemUsageMachineId) => void;
+	/** 「詳しく見る」（エディタのタブで大きなグラフを開く）。 */
+	readonly onOpenDetails: (machineId: ParadisSystemUsageMachineId) => void;
 }
 
 /**
@@ -58,6 +70,12 @@ export class ParadisResourceMonitorPanel extends Disposable {
 	private readonly refreshButton: HTMLElement;
 	private readonly sortSelect: HTMLSelectElement;
 	private readonly bodyElement: HTMLElement;
+	private readonly systemUsageGrid: ParadisSystemUsageGrid;
+	private readonly machineSegment: ParadisSystemUsageSegment<ParadisSystemUsageMachineId> | undefined;
+	private readonly systemUsageCaption: HTMLElement;
+	private selectedMachineId: ParadisSystemUsageMachineId;
+	/** マシンの表示名。接続先は最初の応答でホスト名に置き換わる。 */
+	private readonly machineLabels = new Map<ParadisSystemUsageMachineId, string>();
 
 	private readonly hoverDelegate = getDefaultHoverDelegate('mouse');
 
@@ -106,6 +124,32 @@ export class ParadisResourceMonitorPanel extends Disposable {
 		this.refreshButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
 		this._register(dom.addDisposableListener(this.refreshButton, 'click', () => this.options.onManualRefresh()));
 
+		// マシン全体の使用率（直近 5 分）。SSH のウィンドウでは接続先を最初に選んでおく。
+		this.selectedMachineId = options.selectedMachineId;
+		for (const machine of options.machines) {
+			this.machineLabels.set(machine.id, machine.label);
+		}
+		const system = dom.append(header, $('.prm-system'));
+		const systemTop = dom.append(system, $('.prm-system-top'));
+		if (options.machines.length > 1) {
+			this.machineSegment = this._register(new ParadisSystemUsageSegment<ParadisSystemUsageMachineId>(systemTop, localize('paradis.resourceMonitor.machineAria', "表示するマシン"), machineId => {
+				this.selectedMachineId = machineId;
+				this.renderMachineSegment();
+				this.options.onSelectMachine(machineId);
+			}));
+			this.renderMachineSegment();
+		}
+		this.systemUsageCaption = dom.append(systemTop, $('.prm-system-caption'));
+		this.systemUsageCaption.textContent = localize('paradis.resourceMonitor.last5Minutes', "直近 5 分");
+		const details = dom.append(systemTop, $('button.prm-link'));
+		details.setAttribute('type', 'button');
+		details.textContent = localize('paradis.resourceMonitor.openDetails', "詳しく見る");
+		this._register(dom.addDisposableListener(details, 'click', () => this.options.onOpenDetails(this.selectedMachineId)));
+		this.systemUsageGrid = this._register(new ParadisSystemUsageGrid(system, { compact: true, maxPoints: PANEL_CHART_MAX_POINTS }));
+
+		// ここから下は Para Code 自身の内訳（手元で動いているぶん）。マシン全体の値と混ぜて読まないよう見出しを付ける。
+		const localLabel = this.machineLabels.get('local') ?? '';
+		dom.append(header, $('.prm-subtitle')).textContent = localize('paradis.resourceMonitor.paraCodeOnThisMachine', "Para Code（{0} で動いているぶん）", localLabel);
 		const metrics = dom.append(header, $('.prm-metrics'));
 		this.cpuValueElement = this.createMetric(metrics, localize('paradis.resourceMonitor.metricCpu', "CPU"), localize('paradis.resourceMonitor.metricCpuTooltip', "Sum of CPU used by Para Code and monitored terminal process trees. Over 100% means multiple CPU cores are busy."));
 		this.memoryValueElement = this.createMetric(metrics, localize('paradis.resourceMonitor.metricMemory', "Memory"), localize('paradis.resourceMonitor.metricMemoryTooltip', "Resident memory used by Para Code and monitored terminal process trees."));
@@ -128,6 +172,9 @@ export class ParadisResourceMonitorPanel extends Disposable {
 			}
 		}));
 
+		if (options.initialSystemUsage) {
+			this.updateSystemUsage(options.initialSystemUsage);
+		}
 		if (options.initialSnapshot) {
 			this.updateSnapshot(options.initialSnapshot);
 		} else {
@@ -146,6 +193,38 @@ export class ParadisResourceMonitorPanel extends Disposable {
 		this.latestSnapshot = snapshot;
 		this.renderHeader(snapshot);
 		this.renderBody(snapshot);
+	}
+
+	/** 選んでいるマシン（ウィジェットはこのマシンの値を {@link updateSystemUsage} で渡す）。 */
+	get machineId(): ParadisSystemUsageMachineId {
+		return this.selectedMachineId;
+	}
+
+	/** マシン全体の使用率。選んでいるマシンの値だけを描く（切り替えた直後に前のマシンの応答が届いても描かない）。 */
+	updateSystemUsage(view: IParadisSystemUsageView): void {
+		this.machineLabels.set(view.machineId, view.label);
+		if (view.machineId !== this.selectedMachineId) {
+			return;
+		}
+		this.renderMachineSegment();
+		this.systemUsageCaption.textContent = view.error !== undefined && view.latest === undefined
+			? localize('paradis.resourceMonitor.systemUsageError', "取得できませんでした")
+			: localize('paradis.resourceMonitor.last5Minutes', "直近 5 分");
+		this.systemUsageGrid.update({
+			samples: view.samples,
+			latest: view.latest,
+			windowStart: view.windowStart,
+			windowEnd: view.windowEnd,
+			windowMs: view.windowMs,
+			stepMs: view.stepMs,
+			unsupported: view.unsupported,
+			legacy: view.legacy,
+			swapTotal: view.machine?.swapTotal,
+		});
+	}
+
+	private renderMachineSegment(): void {
+		this.machineSegment?.render(this.options.machines.map(machine => ({ value: machine.id, label: this.machineLabels.get(machine.id) ?? machine.label })), this.selectedMachineId);
 	}
 
 	/** ウィジェットの手動/自動リフレッシュ実行中フラグを反映する(回転アイコン)。 */

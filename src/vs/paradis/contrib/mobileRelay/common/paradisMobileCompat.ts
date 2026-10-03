@@ -124,6 +124,12 @@ export const ParadisMobileCapability = {
 	 * `variant: 'thumb'` は長辺 512px の JPEG、`'full'` は原寸。`paradisMobileAttachmentRequests.ts`）。
 	 */
 	FsAttachment: 'fs.attachment.v1',
+	/**
+	 * fs の `sysres` の任意の `history`（`tier`・`since`・`instanceId`・`maxPoints`）と、応答の任意の `history`
+	 * （マシン全体の使用率の時系列。`paradisSystemUsage.ts` の `IParadisSystemUsageResponse`）・`historyUnavailable`。
+	 * `sysres` をウィンドウを名指しして送ると、SSH のウィンドウなら接続先のマシンの値を返す。
+	 */
+	SystemHistory: 'system.history.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -164,6 +170,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentQuestionNotes,
 	ParadisMobileCapability.AgentQuestionChat,
 	ParadisMobileCapability.FsAttachment,
+	ParadisMobileCapability.SystemHistory,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

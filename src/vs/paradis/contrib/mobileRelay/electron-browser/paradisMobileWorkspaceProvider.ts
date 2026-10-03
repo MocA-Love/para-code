@@ -492,7 +492,8 @@ type FsInbound =
 	// GitHub API利用状況（PC版のGitHub API Usageダッシュボードと同じデータ）
 	| { t: 'github'; id: string; bypassCache?: boolean }
 	// PC本体のリソース使用量（マシン全体のCPU/メモリ/ディスク＋Para Code内訳）
-	| { t: 'sysres'; id: string; bypassCache?: boolean }
+	// history（任意）: マシン全体の使用率の時系列を差分で取る（capability `system.history.v1`）
+	| { t: 'sysres'; id: string; bypassCache?: boolean; history?: unknown }
 	| { t: 'spacedisk'; id: string; bypassCache?: boolean }
 	// テキスト断片のシンタックスハイライト（エージェントチャットのコードブロック用）。
 	// lang はMarkdownフェンスの言語名（ts / typescript / python 等）。
@@ -752,7 +753,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly getPrStatuses: (uris: readonly URI[]) => Promise<Record<string, IParadisPrStatus> | undefined>,
 		// PC本体のCPU/メモリ/ディスクと Para Code 内訳。実体は resourceMonitor のクライアント
 		// （収集はメインプロセス。モバイルの「システム」画面が開いている間だけ呼ばれる）
-		private readonly fetchResourceReport: (force: boolean) => Promise<IParadisResourceMonitorMobileReport>,
+		private readonly fetchResourceReport: (force: boolean, history?: unknown) => Promise<IParadisResourceMonitorMobileReport>,
 		// スペース(リポジトリ/worktree)ごとのディスク使用量。実体は spaceDisk のクライアント
 		// （計測は shared process。1周に数十秒かかるので裏で温めた結果が即座に返る）
 		private readonly fetchSpaceDisk: (bypassCache: boolean) => Promise<IParadisSpaceDiskResult>,
@@ -2502,7 +2503,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// ドロワーに常時出る3値は desktop state 経由で別途届くので、こちらは内訳を見るときだけ呼ばれる。
 		if (msg.t === 'sysres') {
 			try {
-				const data = await this.fetchResourceReport(!!msg.bypassCache);
+				const data = await this.fetchResourceReport(!!msg.bypassCache, msg.history);
 				reply({ t: 'sysres', data });
 			} catch (err) {
 				reply({ error: String(err) });
