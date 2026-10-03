@@ -9,14 +9,14 @@
 import { spawn } from 'child_process';
 import { constants as fsConstants, promises as fs, type Stats } from 'fs';
 import { homedir } from 'os';
-import { extname, join } from '../../../../base/common/path.js';
+import { extname, isAbsolute, join } from '../../../../base/common/path.js';
 import { findExecutable, killTree } from '../../../../base/node/processes.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { paradisWriteRollingBackup } from '../../../node/paradisRollingFileBackup.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
-import { inspectParadisMcpTomlSection, paradisCodexMcpTableBody, paradisMcpServerUrl, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
-import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml } from './paradisMcpConfigStatus.js';
+import { inspectParadisMcpTomlSection, paradisClaudeMcpServerEntry, paradisCodexMcpTableBody, paradisMcpServerUrl, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
+import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexToolTimeoutLine, paradisClaudeMcpEntryNeedsToolTimeout, paradisReadClaudeMcpEntry } from './paradisMcpConfigStatus.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_OUTPUT_LIMIT_BYTES = 64 * 1024;
@@ -32,6 +32,27 @@ const CLAUDE_SETUP_ERROR = 'Automatic setup could not register the MCP server.';
 export type IParadisMcpSetupCommandResult =
 	| { readonly kind: 'exit'; readonly code: number; readonly output: string }
 	| { readonly kind: 'timeout' | 'failure' | 'unavailable'; readonly output: string };
+
+/** 上限を足す入れ直しを試した印の数の上限（設定ファイルとポートの組ごとに 1 つ）。 */
+const MAX_UPGRADE_MARKERS = 64;
+
+function commandSucceeded(result: IParadisMcpSetupCommandResult): boolean {
+	return result.kind === 'exit' && result.code === 0;
+}
+
+function commandAlreadyExists(result: IParadisMcpSetupCommandResult): boolean {
+	return result.kind === 'exit' && result.code !== 0 && result.output.toLowerCase().includes('already exists');
+}
+
+/** Claude Code のエントリの `headers.Authorization`（旧形式の `mcp add` で戻すときに使う）。 */
+function claudeEntryAuthorization(entry: Record<string, unknown>): string | undefined {
+	const headers = entry.headers;
+	if (typeof headers !== 'object' || headers === null || Array.isArray(headers)) {
+		return undefined;
+	}
+	const authorization = (headers as Record<string, unknown>).Authorization;
+	return typeof authorization === 'string' ? authorization : undefined;
+}
 
 interface ISpawnReadableLike {
 	on(event: 'data', listener: (chunk: unknown) => void): unknown;
@@ -238,8 +259,16 @@ export interface IParadisMcpSetupControllerOptions {
 	 * Codex からも para-browser が見えるようにするため。状態表示は {@link codexHome} だけで判断する。
 	 */
 	readonly additionalCodexHomes?: () => readonly string[];
-	/** Claude Code のユーザースコープMCP設定ファイル（既定 `~/.claude.json`）の絶対パス。省略時は既定パス。 */
+	/**
+	 * Claude Code のユーザースコープMCP設定ファイルの絶対パス。省略時はシェルの環境の `CLAUDE_CONFIG_DIR`
+	 * があればその下の `.claude.json`、無ければ `~/.claude.json`（`claude mcp add-json -s user` が書く先と同じ）。
+	 */
 	readonly claudeConfigJsonPath?: string;
+	/**
+	 * ツール呼び出しの上限を足す入れ直し（{@link ParadisMcpSetupController.upgradeToolTimeouts}）を、どの設定ファイルと
+	 * ポートで試したかを残すファイル。試したものは次の起動から試さない。省略時は毎回試す（テスト用）。
+	 */
+	readonly upgradeMarkerPath?: string;
 	readonly log: (message: string, error?: unknown) => void;
 	readonly configReadFileSystem?: IConfigReadFileSystem;
 }
@@ -416,7 +445,7 @@ export class ParadisMcpSetupController {
 		if (existing !== undefined) {
 			return existing;
 		}
-		const flight = (cli === 'claude' ? this.setupClaude(gatewayPort) : this.withCodexPropagation(this.setupCodex(gatewayPort), gatewayPort)).finally(() => {
+		const flight = (cli === 'claude' ? this.setupClaude(gatewayPort, { allowLegacyAdd: true }) : this.withCodexPropagation(this.setupCodex(gatewayPort), gatewayPort)).finally(() => {
 			if (this.flights.get(cli) === flight) {
 				this.flights.delete(cli);
 			}
@@ -435,8 +464,14 @@ export class ParadisMcpSetupController {
 	}
 
 	private async statusClaude(gatewayPort: number | undefined): Promise<IParadisMcpCliConfigStatus> {
-		const claudeConfigJsonPath = this.options.claudeConfigJsonPath ?? join(homedir(), '.claude.json');
+		let claudeConfigJsonPath = '';
 		try {
+			const resolvedPath = await this.claudeConfigJsonPath();
+			if (resolvedPath === undefined) {
+				// CLAUDE_CONFIG_DIR が絶対パスでない。どのファイルか決められないので、判定できなかった扱いにする。
+				return { cli: 'claude', state: 'unconfigured', failed: true };
+			}
+			claudeConfigJsonPath = resolvedPath;
 			const snapshot = await readConfigSnapshot(claudeConfigJsonPath, this.options.configReadFileSystem, MAX_CLAUDE_CONFIG_BYTES);
 			if (!snapshot.exists) {
 				return { cli: 'claude', state: 'unconfigured' };
@@ -510,6 +545,111 @@ export class ParadisMcpSetupController {
 		await this.propagateCodexSetup(gatewayPort);
 	}
 
+	/**
+	 * `claude mcp add-json -s user` が書く設定ファイル。明示されていなければシェルの環境の `CLAUDE_CONFIG_DIR`
+	 * に従う（状態表示・入れ直し・登録が同じファイルを見るように）。
+	 */
+	private async claudeConfigJsonPath(env?: NodeJS.ProcessEnv): Promise<string | undefined> {
+		if (this.options.claudeConfigJsonPath !== undefined) {
+			return this.options.claudeConfigJsonPath;
+		}
+		let configDir: string | undefined;
+		try {
+			configDir = (env ?? await this.options.resolveShellEnv()).CLAUDE_CONFIG_DIR;
+		} catch {
+			configDir = undefined;
+		}
+		if (configDir === undefined || configDir.length === 0) {
+			return join(homedir(), '.claude.json');
+		}
+		// 相対パス（`~` を含む）は claude を起動した場所しだいで指す先が変わる。こちらでは読まない
+		// （`~` も展開しない）: 状態は「分からない」にし、入れ直しもしない。
+		return isAbsolute(configDir) ? join(configDir, '.claude.json') : undefined;
+	}
+
+	/**
+	 * 利用者がセットアップ済みの私たちの登録（今のポートを指したもの）に、ツール呼び出しの上限が無ければ
+	 * 入れ直す。上限を足す前に登録した人の分を直すため。未設定の人の設定は書かない。同じ設定ファイルと
+	 * ポートの組は、成否にかかわらず 1 回しか試さない（印は {@link IParadisMcpSetupControllerOptions.upgradeMarkerPath}）。
+	 */
+	async upgradeToolTimeouts(gatewayPort: number | undefined): Promise<void> {
+		if (gatewayPort === undefined) {
+			return;
+		}
+		const tried = await this.readUpgradeMarker();
+		const attempt = async (key: string, run: () => Promise<void>) => {
+			if (tried.includes(key)) {
+				return;
+			}
+			// 試す前に印を残す（途中で落ちても、次の起動で同じことを繰り返さない）。
+			tried.push(key);
+			await this.writeUpgradeMarker(tried);
+			await run();
+		};
+		try {
+			const claudeConfigJsonPath = await this.claudeConfigJsonPath();
+			const snapshot = claudeConfigJsonPath === undefined ? undefined : await readConfigSnapshot(claudeConfigJsonPath, this.options.configReadFileSystem, MAX_CLAUDE_CONFIG_BYTES);
+			if (snapshot?.exists && paradisClaudeMcpEntryNeedsToolTimeout(snapshot.text, gatewayPort) && !this.flights.has('claude')) {
+				await attempt(`claude:${claudeConfigJsonPath}:${gatewayPort}`, async () => {
+					// 利用者のボタン操作と交差しないよう、同じ flights に載せる（載っていれば今回は見送る）。
+					if (this.flights.has('claude')) {
+						return;
+					}
+					// timeout を付けられない古い CLI では旧形式に戻さず、今の登録をそのまま残す。
+					const flight = this.setupClaude(gatewayPort, { allowLegacyAdd: false }).finally(() => {
+						if (this.flights.get('claude') === flight) {
+							this.flights.delete('claude');
+						}
+					});
+					this.flights.set('claude', flight);
+					const result = await flight;
+					if (!result.servers.some(server => server.outcome === 'success')) {
+						this.options.log('Claude MCP tool timeout upgrade failed');
+					}
+				});
+			}
+		} catch {
+			this.options.log('Claude MCP tool timeout upgrade failed');
+		}
+		const homes = [this.options.codexHome, ...(this.options.additionalCodexHomes?.() ?? []).filter(home => home !== this.options.codexHome)];
+		for (const codexHome of homes) {
+			try {
+				const configPath = join(codexHome, 'config.toml');
+				const original = await readConfigSnapshot(configPath, this.options.configReadFileSystem);
+				// 節を丸ごと書き直さず、`tool_timeout_sec` の 1 行だけを足す（利用者が足した行を消さない）。
+				const content = original.exists ? paradisAddCodexToolTimeoutLine(original.text, gatewayPort) : undefined;
+				if (content !== undefined) {
+					await attempt(`codex:${configPath}:${gatewayPort}`, () => writeConfigAtomic(configPath, original, content, this.options.configReadFileSystem));
+				}
+			} catch {
+				this.options.log('Codex MCP tool timeout upgrade failed');
+			}
+		}
+	}
+
+	private async readUpgradeMarker(): Promise<string[]> {
+		if (this.options.upgradeMarkerPath === undefined) {
+			return [];
+		}
+		try {
+			const parsed: unknown = JSON.parse(await fs.readFile(this.options.upgradeMarkerPath, 'utf8'));
+			return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string').slice(-MAX_UPGRADE_MARKERS) : [];
+		} catch {
+			return [];
+		}
+	}
+
+	private async writeUpgradeMarker(tried: readonly string[]): Promise<void> {
+		if (this.options.upgradeMarkerPath === undefined) {
+			return;
+		}
+		try {
+			await fs.writeFile(this.options.upgradeMarkerPath, JSON.stringify(tried.slice(-MAX_UPGRADE_MARKERS)), { mode: 0o600 });
+		} catch {
+			this.options.log('MCP tool timeout upgrade marker write failed');
+		}
+	}
+
 	/** 既定のホームの結果をそのまま返しつつ、最後に1回だけ他のアカウント用ホームへ反映する。 */
 	private async withCodexPropagation(primary: Promise<IParadisMcpSetupResult>, gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
 		try {
@@ -578,7 +718,7 @@ export class ParadisMcpSetupController {
 	 * ペインごとに違うトークンを設定ファイルへ焼き込まずに済む。引数は配列のまま渡しており
 	 * シェルを経由しないので、ここで展開されることはない。
 	 */
-	private async setupClaude(gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
+	private async setupClaude(gatewayPort: number | undefined, options: { readonly allowLegacyAdd: boolean }): Promise<IParadisMcpSetupResult> {
 		if (gatewayPort === undefined) {
 			return { cli: 'claude', cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'error', detail: CLAUDE_SETUP_ERROR }] };
 		}
@@ -596,18 +736,86 @@ export class ParadisMcpSetupController {
 		if (executable === undefined || (this.options.platform === 'win32' && !/\.(?:exe|com|cmd|bat)$/i.test(extname(executable)))) {
 			return { cli: 'claude', cliAvailable: false, servers: [] };
 		}
-		const addArguments = [
-			'mcp', 'add', '-s', 'user', '--transport', 'http', 'para-browser', paradisMcpServerUrl(gatewayPort),
-			'--header', `Authorization: Bearer \${${PARADIS_PANE_TOKEN_ENV_VAR}}`,
+		const claude = executable;
+		const shellEnv = env;
+		const configPath = await this.claudeConfigJsonPath(env);
+		const run = (args: readonly string[]) => this.options.runCommand(claude, args, shellEnv);
+		// `mcp add` にはツール呼び出しの上限（timeout）を渡す口が無いので、エントリを JSON のまま渡す
+		// `mcp add-json` で登録する。add-json を知らない古い CLI だけ、利用者が押したときに限り `mcp add` に戻る
+		// （上限は既定の 60 秒のまま）。
+		const addJsonArguments = (entry: unknown) => ['mcp', 'add-json', '-s', 'user', 'para-browser', JSON.stringify(entry)];
+		const legacyAddArguments = (url: string, authorization: string) => [
+			'mcp', 'add', '-s', 'user', '--transport', 'http', 'para-browser', url, '--header', `Authorization: ${authorization}`,
 		];
+		const readEntry = async () => {
+			if (configPath === undefined) {
+				throw new Error('Claude configuration path is not absolute');
+			}
+			const snapshot = await readConfigSnapshot(configPath, this.options.configReadFileSystem, MAX_CLAUDE_CONFIG_BYTES);
+			return snapshot.exists ? paradisReadClaudeMcpEntry(snapshot.text) : undefined;
+		};
+		/** 消した後に入れられなかったとき、控えておいた元のエントリで戻し、戻ったかを読み直して確かめる。 */
+		const restore = async (original: Record<string, unknown> | undefined) => {
+			if (original !== undefined) {
+				const restored = await run(addJsonArguments(original));
+				const authorization = claudeEntryAuthorization(original);
+				if (!commandSucceeded(restored) && options.allowLegacyAdd && original.type === 'http' && typeof original.url === 'string' && authorization !== undefined) {
+					await run(legacyAddArguments(original.url, authorization));
+				}
+			}
+			let present: boolean;
+			try {
+				present = (await readEntry()) !== undefined;
+			} catch {
+				present = false;
+			}
+			if (!present) {
+				this.options.log('Claude MCP entry was lost while re-registering');
+			}
+		};
+		// `mcp add` / `add-json` に上書きは無い。既にあるのは旧shim方式・古いポート・上限の無い登録なので、
+		// 元のエントリを控えてから消して入れ直す（同じ名前の私たちのエントリだけが対象）。
+		const addReplacing = async (addArguments: readonly string[]): Promise<IParadisMcpSetupCommandResult> => {
+			const added = await run(addArguments);
+			if (!commandAlreadyExists(added)) {
+				return added;
+			}
+			// 控えが読めない（読むのに失敗した）ときは消さない。「エントリが無い」（undefined）とは区別する。
+			let original: Record<string, unknown> | undefined;
+			try {
+				original = await readEntry();
+			} catch {
+				this.options.log('Claude MCP entry backup read failed');
+				return { kind: 'failure', output: '' };
+			}
+			const removed = await run(['mcp', 'remove', '-s', 'user', 'para-browser']);
+			if (!commandSucceeded(removed)) {
+				this.options.log('Claude MCP remove failed');
+				if (removed.kind === 'timeout' || removed.kind === 'failure') {
+					// 終わりを見届けられなかった。消えていたら控えで戻す。
+					let present: boolean;
+					try {
+						present = (await readEntry()) !== undefined;
+					} catch {
+						present = false;
+					}
+					if (!present) {
+						await restore(original);
+					}
+				}
+				return removed.kind === 'unavailable' ? removed : { kind: 'failure', output: '' };
+			}
+			const readded = await run(addArguments);
+			if (!commandSucceeded(readded)) {
+				await restore(original);
+			}
+			return readded;
+		};
 		let result: IParadisMcpSetupCommandResult;
 		try {
-			result = await this.options.runCommand(executable, addArguments, env);
-			// `mcp add` に上書きは無い。既にあるのは旧shim方式か古いポートを指した登録なので、
-			// 消してから入れ直す（同じ名前の私たちのエントリだけが対象）。
-			if (result.kind === 'exit' && result.code !== 0 && result.output.toLowerCase().includes('already exists')) {
-				await this.options.runCommand(executable, ['mcp', 'remove', '-s', 'user', 'para-browser'], env);
-				result = await this.options.runCommand(executable, addArguments, env);
+			result = await addReplacing(addJsonArguments(paradisClaudeMcpServerEntry(gatewayPort)));
+			if (options.allowLegacyAdd && result.kind === 'exit' && result.code !== 0) {
+				result = await addReplacing(legacyAddArguments(paradisMcpServerUrl(gatewayPort), `Bearer \${${PARADIS_PANE_TOKEN_ENV_VAR}}`));
 			}
 		} catch {
 			this.options.log('Claude MCP runner failed');
@@ -616,7 +824,7 @@ export class ParadisMcpSetupController {
 		if (result.kind === 'unavailable') {
 			return { cli: 'claude', cliAvailable: false, servers: [] };
 		}
-		if (result.kind === 'exit' && result.code === 0) {
+		if (commandSucceeded(result)) {
 			return { cli: 'claude', cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'success' }] };
 		}
 		this.options.log('Claude MCP registration failed');
@@ -662,6 +870,7 @@ export function createParadisMcpSetupController(
 	codexHome: string,
 	log: (message: string, error?: unknown) => void,
 	additionalCodexHomes?: () => readonly string[],
+	upgradeMarkerPath?: string,
 ): ParadisMcpSetupController {
 	return new ParadisMcpSetupController({
 		platform: process.platform,
@@ -670,8 +879,8 @@ export function createParadisMcpSetupController(
 		runCommand: runParadisMcpSetupCommand,
 		codexHome,
 		additionalCodexHomes,
-		// `claude mcp add -s user` はユーザースコープを `~/.claude.json` に書き込む（CLAUDE_CONFIG_DIR ではない）。
-		claudeConfigJsonPath: join(homedir(), '.claude.json'),
+		// claudeConfigJsonPath は渡さない: シェルの環境の CLAUDE_CONFIG_DIR に従って決める（claude 自身が書く先と同じ）。
+		upgradeMarkerPath,
 		log,
 	});
 }

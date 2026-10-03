@@ -12,7 +12,7 @@
 
 import { isWindows } from '../../../../base/common/platform.js';
 import { PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
-import { encodeParadisPosixShellArgument, encodeParadisPowerShellArgument, paradisCodexMcpTableBody, paradisMcpServerUrl } from '../common/paradisMcpSetupEncoding.js';
+import { encodeParadisPosixShellArgument, encodeParadisPowerShellArgument, paradisClaudeMcpServerEntry, paradisCodexMcpTableBody, paradisMcpServerUrl } from '../common/paradisMcpSetupEncoding.js';
 
 /** サーバーが立ち上がる前は番号が決まらない。貼れるものが無いことをそのまま伝える。 */
 const PORT_UNAVAILABLE_SNIPPET = '# Para Code is still starting its browser server. Reopen this dialog in a moment.\n';
@@ -34,15 +34,24 @@ export function getParadisClaudeSetupSnippet(port: number | undefined): string {
 	if (port === undefined) {
 		return PORT_UNAVAILABLE_SNIPPET;
 	}
-	// ヘッダーは `${…}` のまま貼らせる（展開するのは Claude Code 自身）。シェルが先に展開して
+	// エントリは JSON のまま `mcp add-json` で渡す（`mcp add` にはツール呼び出しの上限 timeout を渡す口が無い）。
+	// ヘッダーの `${…}` はそのまま貼らせる（展開するのは Claude Code 自身）。シェルが先に展開して
 	// しまわないよう、POSIX ではシングルクォート相当・PowerShell では `$` を含む素の文字列を使う。
+	const entry = JSON.stringify(paradisClaudeMcpServerEntry(port));
+	if (!isWindows) {
+		return `claude mcp add-json -s user para-browser ${encodeParadisPosixShellArgument(entry)}\n`;
+	}
+	// Windows PowerShell 5.1（と 7.2 以前）は、外部コマンドへ渡す引数の中の `"` を落とす。JSON が壊れるので、
+	// その版向けに `\"` へ書き換えた例と、JSON を使わない旧形式（上限は既定の 60 秒のまま）も並べる。
 	const header = `Authorization: Bearer \${${PARADIS_PANE_TOKEN_ENV_VAR}}`;
-	const quotedHeader = isWindows
-		? encodeParadisPowerShellArgument(header)
-		: encodeParadisPosixShellArgument(header);
 	return [
-		...(isWindows ? ['# PowerShell'] : []),
-		`claude mcp add -s user --transport http para-browser ${paradisMcpServerUrl(port)} --header ${quotedHeader}`,
+		'# PowerShell 7.3 or later',
+		`claude mcp add-json -s user para-browser ${encodeParadisPowerShellArgument(entry)}`,
+		'# Windows PowerShell 5.1: escape the double quotes inside the JSON instead.',
+		'# With the npm version of Claude Code (claude.cmd), use this line too if the one above fails.',
+		`# claude mcp add-json -s user para-browser ${encodeParadisPowerShellArgument(entry.replace(/"/g, '\\"'))}`,
+		'# If add-json is not available (older Claude Code; tool calls then time out after 60 seconds):',
+		`# claude mcp add -s user --transport http para-browser ${paradisMcpServerUrl(port)} --header ${encodeParadisPowerShellArgument(header)}`,
 		'',
 	].join('\n');
 }

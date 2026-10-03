@@ -213,7 +213,8 @@ function couldDefineMcpServers(code: string): boolean {
 	return /(^|[\[\s])mcp_servers(?:\s|\.|=|\]|$)/.test(code);
 }
 
-function findTomlAssignment(code: string): number {
+/** 引用の外にある最初の `=` の位置（キーと値の境目）。無ければ -1。 */
+export function findTomlAssignment(code: string): number {
 	let quote: '"' | '\x27' | undefined;
 	for (let index = 0; index < code.length; index++) {
 		const char = code[index];
@@ -293,6 +294,16 @@ export function paradisMcpServerUrl(port: number): string {
 }
 
 /**
+ * para-browser のツール呼び出しを待つ上限（ミリ秒）。Claude Code の HTTP MCP は既定で 60 秒で打ち切る
+ * （performance trace・lighthouse・長い wait_for が途中で切れていた）。Para Code 側の上限
+ * （paradisDevtoolsMcpProxy.ts の CALL_TIMEOUT_MS）と揃える。
+ */
+export const PARADIS_MCP_TOOL_TIMEOUT_MS = 300_000;
+
+/** Codex の `tool_timeout_sec`（既定 60 秒）に書く値。 */
+export const PARADIS_CODEX_MCP_TOOL_TIMEOUT_SEC = PARADIS_MCP_TOOL_TIMEOUT_MS / 1000;
+
+/**
  * Codex の `[mcp_servers.para-browser]` の中身（ヘッダー行を除く）。
  *
  * トークンはペインごとに違うので値は焼き込まず、環境変数の名前だけを渡す
@@ -302,7 +313,21 @@ export function paradisCodexMcpTableBody(port: number): string {
 	return [
 		`url = ${encodeParadisTomlBasicString(paradisMcpServerUrl(port))}`,
 		`bearer_token_env_var = ${encodeParadisTomlBasicString(PARADIS_PANE_TOKEN_ENV_VAR)}`,
+		`tool_timeout_sec = ${PARADIS_CODEX_MCP_TOOL_TIMEOUT_SEC}`,
 	].join('\n');
+}
+
+/**
+ * Claude Code の `mcpServers['para-browser']` の中身。`timeout` はツール呼び出し 1 回の上限
+ * （無いと Claude Code が 60 秒で打ち切る）。
+ */
+export function paradisClaudeMcpServerEntry(port: number): { readonly type: 'http'; readonly url: string; readonly headers: { readonly Authorization: string }; readonly timeout: number } {
+	return {
+		type: 'http',
+		url: paradisMcpServerUrl(port),
+		headers: { Authorization: `Bearer \${${PARADIS_PANE_TOKEN_ENV_VAR}}` },
+		timeout: PARADIS_MCP_TOOL_TIMEOUT_MS,
+	};
 }
 
 /**
@@ -328,11 +353,7 @@ export function paradisUpsertClaudeMcpJson(existingRaw: string | undefined, port
 	const servers: Record<string, unknown> = existingServers !== null && typeof existingServers === 'object' && !Array.isArray(existingServers)
 		? { ...existingServers as Record<string, unknown> }
 		: {};
-	servers[PARADIS_MCP_SERVER_NAME] = {
-		type: 'http',
-		url: paradisMcpServerUrl(port),
-		headers: { Authorization: `Bearer \${${PARADIS_PANE_TOKEN_ENV_VAR}}` },
-	};
+	servers[PARADIS_MCP_SERVER_NAME] = paradisClaudeMcpServerEntry(port);
 	return JSON.stringify({ ...config, mcpServers: servers }, undefined, 2) + '\n';
 }
 

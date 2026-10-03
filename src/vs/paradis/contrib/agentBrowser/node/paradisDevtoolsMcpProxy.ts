@@ -37,6 +37,7 @@ import { paradisClassifyBrowserToolErrorText } from '../common/paradisBrowserErr
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtoolsRoots } from './paradisDevtoolsPathPolicy.js';
 import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDirectory.js';
+import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed } from './paradisDevtoolsToolAdjustments.js';
 
 /** vendored chrome-devtools-mcp のstdioエントリ（同梱物。更新手順は同フォルダのREADME.md）。 */
 const DEVTOOLS_MCP_ENTRY = 'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js';
@@ -90,6 +91,8 @@ export interface IParadisDevtoolsMcpProxyOptions {
 	readonly spawnChild?: (command: string, args: string[], options: { env: NodeJS.ProcessEnv; stdio: ['pipe', 'pipe', 'pipe'] }) => ChildProcessWithoutNullStreams;
 	readonly handshakeTimeoutMs?: number;
 	readonly callTimeoutMs?: number;
+	/** ツール呼び出しの持ち時間を測る時計（テスト用。既定 `Date.now`）。 */
+	readonly now?: () => number;
 	readonly maxStdoutBufferBytes?: number;
 	readonly maxPendingRequests?: number;
 	readonly maxStdinQueuedBytes?: number;
@@ -109,6 +112,11 @@ export interface IParadisDevtoolsMcpProxyOptions {
 	 * 下に作り、子プロセスを起こすたびに在るかを確かめ、終了時に消す。
 	 */
 	readonly temporaryDirectory?: string;
+	/**
+	 * CDP ゲートウェイがこのペインの入力を `since` 以降に断った理由（直近の 1 件）。click / fill などが
+	 * 「not interactive」とだけ返したときに書き足す。
+	 */
+	readonly recentInputRejection?: (token: string, since: number) => string | undefined;
 }
 
 /** {@link IParadisDevtoolsMcpProxyOptions.resolveRoots} の結果。 */
@@ -206,6 +214,8 @@ function classifyToolErrorText(text: string): 'target-closed' | 'protocol-error'
 export class ParadisDevtoolsMcpProxy extends Disposable {
 
 	private readonly _children = new Map<string, IChildEntry>();
+	/** take_snapshot の続き（offset）用に、上限より長かった直近のスナップショット（ペインごと）。 */
+	private readonly _snapshots = new ParadisSnapshotCache();
 	/** kill要求済みでも実process exit/errorを観測するまではslotを占有する。 */
 	private readonly _childSlots = new Set<IChildEntry>();
 	private readonly _generationHighWatermarks = new Map<string, number>();
@@ -263,7 +273,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			if (!Array.isArray(result?.tools) || !result.tools.every(tool => this._isProxiedTool(tool))) {
 				throw new Error('chrome-devtools-mcp returned an unexpected tools/list response');
 			}
-			this._toolsCache = Object.freeze(result.tools.map(tool => this._deepFreeze(tool)));
+			// wait_for / take_snapshot の引数は Para Code 側で足す・広げる（paradisDevtoolsToolAdjustments.ts）
+			this._toolsCache = Object.freeze(result.tools.map(tool => this._deepFreeze(paradisAdjustDevtoolsToolDescriptor(tool))));
 		}
 		return this._toolsCache.filter(tool => !EXCLUDED_TOOLS.has(tool.name) && !this.reservedToolNames.has(tool.name));
 	}
@@ -302,15 +313,56 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			return undefined;
 		}
 		const startedAt = Date.now();
+		const now = this.options.now ?? Date.now;
+		const budgetStartedAt = now();
 		const safeToolName = vendoredToolName.test(name) ? name : 'other';
+		const prepared = paradisPrepareDevtoolsToolCall(name, args);
+		const snapshotCacheUsable = paradisSnapshotCacheUsable(name, prepared);
+		if (name !== 'take_snapshot' && name !== 'wait_for') {
+			// ほかのツール（クリック・遷移など）でページが変わりうる。控えた続きはもう当てにしない。
+			this._snapshots.forget(token);
+		} else if (snapshotCacheUsable && name === 'take_snapshot' && (prepared.snapshotOffset ?? 0) > 0) {
+			// 続きは、直前に返したスナップショットから切り出す（取り直すとページが変わって続きがずれる）。
+			const cached = this._snapshots.recall(token);
+			if (cached !== undefined) {
+				return paradisAdjustCachedSnapshotResult(prepared, cached.result, cached.at);
+			}
+		}
+		const callTimeoutMs = this.options.callTimeoutMs ?? CALL_TIMEOUT_MS;
 		try {
 			const entry = this._ensureChild(token, generation, wsEndpoint);
 			await this._awaitReady(token, entry, signal);
-			const result = await this._request(token, entry, 'tools/call', { name, arguments: args ?? {} }, this.options.callTimeoutMs ?? CALL_TIMEOUT_MS, signal);
-			this._reportToolResultError(safeToolName, result, Date.now() - startedAt);
+			let result = await this._request(token, entry, 'tools/call', { name, arguments: prepared.args ?? {} }, callTimeoutMs, signal);
+			const remainingMs = callTimeoutMs - (now() - budgetStartedAt);
+			if (paradisShouldRetryDevtoolsToolAfterTargetClosed(name, result) && !signal?.aborted && remainingMs > 0) {
+				// The CDP connection or the page's session went away under the call (a rebind sweep, a
+				// detach, a transport error). chrome-devtools-mcp reconnects on its next call when it sees
+				// the browser disconnected, so one more try of a read-only tool usually succeeds.
+				this._reportToolResultError(safeToolName, result, Date.now() - startedAt);
+				this._debug(`[ParadisDevtoolsProxy] ${safeToolName} failed with a closed target for pane ${entry.tokenFingerprint}; retrying once`);
+				const retryEntry = this._ensureChild(token, generation, wsEndpoint);
+				await this._awaitReady(token, retryEntry, signal);
+				// 2 回目は 1 回の呼び出しの持ち時間の残りまで（呼び出し元の上限を超えない）。子プロセスの
+				// 起動を待つ間に使い切ったら、呼び直さずに 1 回目の結果を返す。
+				const retryBudgetMs = callTimeoutMs - (now() - budgetStartedAt);
+				if (retryBudgetMs > 0) {
+					result = await this._request(token, retryEntry, 'tools/call', { name, arguments: prepared.args ?? {} }, retryBudgetMs, signal);
+					reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-target-closed-retry', new Error('chrome-devtools-mcp tool retried after Target closed'), {
+						safe_tool_name: safeToolName,
+						safe_retry_succeeded: !(this._isRecord(result) && result.isError === true),
+					}, 'info');
+					this._reportToolResultError(safeToolName, result, Date.now() - startedAt);
+				}
+			} else {
+				this._reportToolResultError(safeToolName, result, Date.now() - startedAt);
+			}
+			if (snapshotCacheUsable && (name === 'take_snapshot' || (name === 'wait_for' && prepared.includeSnapshot === true))) {
+				this._snapshots.remember(token, result);
+			}
+			const adjusted = paradisAdjustDevtoolsToolResult(name, prepared, result, this.options.recentInputRejection?.(token, startedAt));
 			// undefined は呼び出し側で「未知ツール」を意味するため、成功時は必ずオブジェクトを返す。
 			// vendored の validatePath に断られたときは、許された場所とパス無しで呼ぶ手を添える
-			return paradisDevtoolsExplainRootsDenial(result, entry.lastRoots) ?? { content: [] };
+			return paradisDevtoolsExplainRootsDenial(adjusted, entry.lastRoots) ?? { content: [] };
 		} catch (error) {
 			this._reportToolCallFailure(safeToolName, error, Date.now() - startedAt, signal);
 			return this._toolCallError(name, error);
@@ -388,6 +440,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		const entry = this._children.get(token);
 		if (entry && entry.generation < generation) {
 			this._killChild(token, entry, 'pane retired');
+			this._snapshots.forget(token);
 		}
 	}
 
@@ -400,6 +453,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		if (entry) {
 			this._killChild(token, entry, 'pane forgotten');
 		}
+		this._snapshots.forget(token);
 		this._generationHighWatermarks.delete(token);
 	}
 
@@ -412,6 +466,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			this._killChild(token, entry, 'service disposed');
 		}
 		this._generationHighWatermarks.clear();
+		this._snapshots.clear();
 		this._toolsCache = undefined;
 		void this._temporaryDirectory?.dispose();
 		super.dispose();

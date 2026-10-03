@@ -16,6 +16,7 @@ import {
 	ParadisMcpSetupController,
 	runParadisMcpSetupCommand,
 } from '../../node/paradisMcpSetup.js';
+import { paradisClaudeMcpEntryNeedsToolTimeout } from '../../common/paradisMcpConfigStatus.js';
 
 /** para-browser MCP サーバーの番号。設定に書き込まれる宛先になる。 */
 const PORT = 47286;
@@ -220,10 +221,280 @@ suite('Para Browser MCP setup', () => {
 		assert.strictEqual(result.cliAvailable, true);
 		assert.deepStrictEqual(calls, [{
 			command: '/safe/claude',
-			args: ['mcp', 'add', '-s', 'user', '--transport', 'http', 'para-browser', `http://127.0.0.1:${PORT}/`,
-				'--header', 'Authorization: Bearer ${PARA_CODE_TERMINAL_PANE_ID}'],
+			args: ['mcp', 'add-json', '-s', 'user', 'para-browser', JSON.stringify({
+				type: 'http',
+				url: `http://127.0.0.1:${PORT}/`,
+				headers: { Authorization: 'Bearer ${PARA_CODE_TERMINAL_PANE_ID}' },
+				timeout: 300000,
+			})],
 			env: { PATH: '/safe' },
 		}]);
+	});
+
+	test('Claude setup replaces an existing entry and falls back to mcp add on a CLI without add-json', async () => {
+		const run = async (answers: Record<string, IParadisMcpSetupCommandResult>) => {
+			const calls: string[] = [];
+			const controller = new ParadisMcpSetupController({
+				platform: 'darwin',
+				resolveShellEnv: async () => ({}),
+				findExecutable: async () => '/safe/claude',
+				runCommand: async (_command, args): Promise<IParadisMcpSetupCommandResult> => {
+					const key = args.slice(0, 2).join(' ');
+					calls.push(key);
+					const answer = answers[`${key}#${calls.filter(call => call === key).length}`] ?? answers[key];
+					return answer ?? { kind: 'exit', code: 0, output: '' };
+				},
+				codexHome: '/unused',
+				claudeConfigJsonPath: join(tmpdir(), 'paradis-mcp-missing-dir', '.claude.json'),
+				log: () => undefined,
+			});
+			return { outcome: (await controller.setup('claude', PORT)).servers[0]?.outcome, calls };
+		};
+		assert.deepStrictEqual({
+			replaced: await run({ 'mcp add-json#1': { kind: 'exit', code: 1, output: 'MCP server para-browser already exists in user config' } }),
+			legacy: await run({ 'mcp add-json': { kind: 'exit', code: 1, output: 'error: unknown command \'add-json\'' } }),
+			removeFailed: await run({
+				'mcp add-json': { kind: 'exit', code: 1, output: 'MCP server para-browser already exists in user config' },
+				'mcp remove': { kind: 'exit', code: 1, output: 'permission denied' },
+			}),
+		}, {
+			replaced: { outcome: 'success', calls: ['mcp add-json', 'mcp remove', 'mcp add-json'] },
+			legacy: { outcome: 'success', calls: ['mcp add-json', 'mcp add'] },
+			removeFailed: { outcome: 'error', calls: ['mcp add-json', 'mcp remove'] },
+		});
+	});
+
+	test('Claude setup puts the original entry back when the re-add after remove fails, and reports a lost entry', async () => {
+		const original = { type: 'http', url: 'http://127.0.0.1:1111/', headers: { Authorization: 'Bearer ${PARA_CODE_TERMINAL_PANE_ID}' } };
+		const run = async (answers: Record<string, IParadisMcpSetupCommandResult>) => {
+			const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-restore-'));
+			try {
+				const claudeJson = join(directory, '.claude.json');
+				const write = (entry: unknown) => fs.writeFile(claudeJson, JSON.stringify({ projects: {}, mcpServers: entry === undefined ? {} : { 'para-browser': entry } }));
+				await write(original);
+				const calls: string[] = [];
+				const logs: string[] = [];
+				// claude のふり: add-json は無ければ書き、あれば already exists。remove は消す。答えを決めた回だけ何もしない。
+				const controller = new ParadisMcpSetupController({
+					platform: 'darwin',
+					resolveShellEnv: async () => ({}),
+					findExecutable: async () => '/safe/claude',
+					runCommand: async (_command, args): Promise<IParadisMcpSetupCommandResult> => {
+						const key = args.slice(0, 2).join(' ');
+						calls.push(key);
+						const answer = answers[`${key}#${calls.filter(call => call === key).length}`];
+						if (answer !== undefined) {
+							return answer;
+						}
+						const current = JSON.parse(await fs.readFile(claudeJson, 'utf8')).mcpServers['para-browser'];
+						if (key === 'mcp remove') {
+							await write(undefined);
+							return { kind: 'exit', code: 0, output: '' };
+						}
+						if (current !== undefined) {
+							return { kind: 'exit', code: 1, output: 'MCP server para-browser already exists in user config' };
+						}
+						await write(JSON.parse(args[5]));
+						return { kind: 'exit', code: 0, output: '' };
+					},
+					codexHome: '/unused',
+					claudeConfigJsonPath: claudeJson,
+					log: message => logs.push(message),
+				});
+				const outcome = (await controller.setup('claude', PORT)).servers[0]?.outcome;
+				const entry = JSON.parse(await fs.readFile(claudeJson, 'utf8')).mcpServers['para-browser'];
+				return { outcome, calls, entry, logs };
+			} finally {
+				await fs.rm(directory, { recursive: true, force: true });
+			}
+		};
+		assert.deepStrictEqual({
+			restored: await run({ 'mcp add-json#2': { kind: 'timeout', output: '' }, 'mcp add#1': { kind: 'timeout', output: '' } }),
+			lost: await run({ 'mcp add-json#2': { kind: 'timeout', output: '' }, 'mcp add-json#3': { kind: 'failure', output: '' }, 'mcp add#1': { kind: 'failure', output: '' } }),
+		}, {
+			restored: {
+				outcome: 'error',
+				calls: ['mcp add-json', 'mcp remove', 'mcp add-json', 'mcp add-json'],
+				entry: original,
+				logs: ['Claude MCP registration failed'],
+			},
+			lost: {
+				outcome: 'error',
+				calls: ['mcp add-json', 'mcp remove', 'mcp add-json', 'mcp add-json', 'mcp add'],
+				entry: undefined,
+				logs: ['Claude MCP entry was lost while re-registering', 'Claude MCP registration failed'],
+			},
+		});
+	});
+
+	test('Claude setup puts the entry back when remove times out after removing it, and never removes without a backup read', async () => {
+		const original = { type: 'http', url: 'http://127.0.0.1:1111/', headers: { Authorization: 'Bearer ${PARA_CODE_TERMINAL_PANE_ID}' } };
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-remove-timeout-'));
+		try {
+			const claudeJson = join(directory, '.claude.json');
+			const write = (entry: unknown) => fs.writeFile(claudeJson, JSON.stringify({ mcpServers: entry === undefined ? {} : { 'para-browser': entry } }));
+			await write(original);
+			const calls: string[] = [];
+			const restoredWith: unknown[] = [];
+			const fakeClaude = async (args: readonly string[]): Promise<IParadisMcpSetupCommandResult> => {
+				const key = args.slice(0, 2).join(' ');
+				calls.push(key);
+				if (key === 'mcp remove') {
+					// It did remove the entry, but the runner gave up waiting.
+					await write(undefined);
+					return { kind: 'timeout', output: '' };
+				}
+				const current = JSON.parse(await fs.readFile(claudeJson, 'utf8')).mcpServers['para-browser'];
+				if (current !== undefined) {
+					return { kind: 'exit', code: 1, output: 'MCP server para-browser already exists in user config' };
+				}
+				restoredWith.push(JSON.parse(args[5]));
+				await write(JSON.parse(args[5]));
+				return { kind: 'exit', code: 0, output: '' };
+			};
+			const controller = (claudeConfigJsonPath: string) => new ParadisMcpSetupController({
+				platform: 'darwin',
+				resolveShellEnv: async () => ({}),
+				findExecutable: async () => '/safe/claude',
+				runCommand: (_command, args) => fakeClaude(args),
+				codexHome: '/unused',
+				claudeConfigJsonPath,
+				log: () => undefined,
+			});
+			const timedOut = (await controller(claudeJson).setup('claude', PORT)).servers[0]?.outcome;
+			const afterTimeout = { calls: [...calls], restoredWith: [...restoredWith], entry: JSON.parse(await fs.readFile(claudeJson, 'utf8')).mcpServers['para-browser'] };
+			calls.length = 0;
+			// The backup cannot be read (the path is a directory): the entry is not removed at all.
+			const unreadable = (await controller(directory).setup('claude', PORT)).servers[0]?.outcome;
+			assert.deepStrictEqual({ timedOut, afterTimeout, unreadable, unreadableCalls: calls }, {
+				timedOut: 'error',
+				afterTimeout: { calls: ['mcp add-json', 'mcp remove', 'mcp add-json'], restoredWith: [original], entry: original },
+				unreadable: 'error',
+				unreadableCalls: ['mcp add-json'],
+			});
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('the startup upgrade shares the in-flight Claude setup with the button, and skips a relative CLAUDE_CONFIG_DIR', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-flight-'));
+		try {
+			const claudeJson = join(directory, '.claude.json');
+			await fs.writeFile(claudeJson, JSON.stringify({ mcpServers: { 'para-browser': { type: 'http', url: `http://127.0.0.1:${PORT}/` } } }));
+			const calls: string[] = [];
+			let release!: () => void;
+			const released = new Promise<void>(resolve => release = resolve);
+			let started!: () => void;
+			const firstCall = new Promise<void>(resolve => started = resolve);
+			const controller = new ParadisMcpSetupController({
+				platform: 'darwin',
+				resolveShellEnv: async () => ({ CLAUDE_CONFIG_DIR: directory }),
+				findExecutable: async () => '/safe/claude',
+				runCommand: async (_command, args): Promise<IParadisMcpSetupCommandResult> => {
+					calls.push(args.slice(0, 2).join(' '));
+					started();
+					await released;
+					return { kind: 'exit', code: 0, output: '' };
+				},
+				codexHome: join(directory, 'missing-codex'),
+				log: () => undefined,
+			});
+			const upgrade = controller.upgradeToolTimeouts(PORT);
+			await firstCall;
+			const button = controller.setup('claude', PORT);
+			release();
+			const [buttonResult] = await Promise.all([button, upgrade]);
+
+			const relative = new ParadisMcpSetupController({
+				platform: 'darwin',
+				resolveShellEnv: async () => ({ CLAUDE_CONFIG_DIR: '~/.claude-alt' }),
+				findExecutable: async () => '/safe/claude',
+				runCommand: async (_command, args): Promise<IParadisMcpSetupCommandResult> => {
+					calls.push(`relative ${args.slice(0, 2).join(' ')}`);
+					return { kind: 'exit', code: 0, output: '' };
+				},
+				codexHome: join(directory, 'missing-codex'),
+				log: () => undefined,
+			});
+			await relative.upgradeToolTimeouts(PORT);
+			const relativeStatus = (await relative.status(PORT)).claude;
+			assert.deepStrictEqual({ calls, button: buttonResult.servers[0]?.outcome, relativeStatus }, {
+				calls: ['mcp add-json'],
+				button: 'success',
+				relativeStatus: { cli: 'claude', state: 'unconfigured', failed: true },
+			});
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('upgrades our current-port registrations once per file and port, adding only the Codex timeout line', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-timeout-'));
+		try {
+			const claudeDir = join(directory, 'claude-config');
+			const claudeJson = join(claudeDir, '.claude.json');
+			const codexHome = join(directory, 'codex');
+			await fs.mkdir(codexHome);
+			await fs.mkdir(claudeDir);
+			await fs.writeFile(claudeJson, JSON.stringify({ mcpServers: { 'para-browser': { type: 'http', url: `http://127.0.0.1:${PORT}/` } } }));
+			const codexOriginal = [
+				'[mcp_servers.para-browser]',
+				`url = "http://127.0.0.1:${PORT}/"`,
+				'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
+				'enabled = false',
+				'',
+				'[mcp_servers.other]',
+				'command = "keep"',
+				'',
+			].join('\n');
+			await fs.writeFile(join(codexHome, 'config.toml'), codexOriginal);
+			const commands: string[] = [];
+			const create = () => new ParadisMcpSetupController({
+				platform: 'darwin',
+				// claudeConfigJsonPath を渡さないときは、シェルの環境の CLAUDE_CONFIG_DIR の下を見る。
+				resolveShellEnv: async () => ({ CLAUDE_CONFIG_DIR: claudeDir }),
+				findExecutable: async () => '/safe/claude',
+				runCommand: async (_command, args): Promise<IParadisMcpSetupCommandResult> => {
+					commands.push(args.slice(0, 2).join(' '));
+					// timeout を付けられない古い CLI
+					return { kind: 'exit', code: 1, output: 'error: unknown command \'add-json\'' };
+				},
+				codexHome,
+				upgradeMarkerPath: join(directory, 'marker.json'),
+				log: () => undefined,
+			});
+			await create().upgradeToolTimeouts(PORT);
+			const codexAfter = await fs.readFile(join(codexHome, 'config.toml'), 'utf8');
+			// 次の起動（別のインスタンス）では、同じファイルとポートの組を試さない。
+			await create().upgradeToolTimeouts(PORT);
+			assert.deepStrictEqual({ commands, codexAfter }, {
+				// 旧形式の `mcp add` には戻さない
+				commands: ['mcp add-json'],
+				codexAfter: [
+					'[mcp_servers.para-browser]',
+					`url = "http://127.0.0.1:${PORT}/"`,
+					'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
+					'enabled = false',
+					'tool_timeout_sec = 300',
+					'',
+					'[mcp_servers.other]',
+					'command = "keep"',
+					'',
+				].join('\n'),
+			});
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('a Claude entry is upgraded only when it has no timeout at all', () => {
+		const entry = (extra: object) => JSON.stringify({ mcpServers: { 'para-browser': { type: 'http', url: `http://127.0.0.1:${PORT}/`, ...extra } } });
+		assert.deepStrictEqual({
+			missing: paradisClaudeMcpEntryNeedsToolTimeout(entry({}), PORT),
+			userShort: paradisClaudeMcpEntryNeedsToolTimeout(entry({ timeout: 10_000 }), PORT),
+			otherPort: paradisClaudeMcpEntryNeedsToolTimeout(entry({}), PORT + 1),
+		}, { missing: true, userShort: false, otherPort: false });
 	});
 
 	test('Claude setup contains rejected runners and does not trust failure output as already configured', async () => {

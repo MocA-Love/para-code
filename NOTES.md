@@ -317,6 +317,16 @@ CDPフィルタプロキシ（`paradisCdpFilterProxy.ts`）に以下を追加し
 | 条件付き/未検証 | handle_dialog（ElectronのJSダイアログ発火未検証）, performance_start/stop_trace, lighthouse_audit（多domain依存。ストレージ消去は拒否済みなので既定フローの一部が失敗する可能性）, emulate(geolocation)（Browser.grantPermissions依存） |
 | 非対応（明示エラー） | new_page（Target.createTarget拒否）, close_page（Target.closeTarget拒否、Para Code UIから閉じる）, resize_page（emulateへ誘導） |
 
+### vendored chrome-devtools-mcp への変更（2026-10-04）
+
+vendored の中身は原則そのまま同梱するが、1 か所だけ直している。パッケージを更新したら、この変更を当て直すこと（`grep -rn "PARA-PATCH" src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build` で見つかる）。
+
+| ファイル | 変更 | 理由 |
+|---|---|---|
+| `build/src/McpContext.js` の `waitForTextOnPage` | `locator.wait()` に `AbortController` の signal を渡し、勝ち負けが決まったら（成功・時間切れとも）`abort()` する | `wait_for` は全フレーム × 全テキストで `aria/` と `text/` の Locator を race させる。rxjs の race は負け側の購読を外すだけで、負け側の `waitForSelector`（`Runtime.callFunctionOn` の awaitPromise）は上流に既定 5 秒残り、直後の click がゲートウェイの入力の関所でそれを待って not interactive になっていた |
+
+上流で `waitForTextOnPage` が signal を渡すようになったら、この変更は外してよい。ツールの入口と出口の調整（`wait_for` の `text` を文字列でも受ける、スナップショットを既定で返さない、`take_snapshot` の文字数の上限と `offset`、not interactive への拒否理由の追記、Target closed の 1 回の再試行）は vendored を触らず `node/paradisDevtoolsToolAdjustments.ts` で行っている。
+
 ### chrome-devtools-mcp のファイルのパスは手元のペインからだけ受け、roots で範囲を絞る（2026-09-29、q.html Q132 案A）
 
 vendored chrome-devtools-mcp と CDP ゲートウェイは手元の shared process にあり、ブラウザも手元で動くので、ツール引数のパスや CDP の `file:` は常に手元のファイルを指す。paracode-110 以降は接続先（SSH・WSL・コンテナ）のエージェントも戻り経路（`ssh -R`）から同じポートへ届き、proxy は roots を名乗らず空で答えていたため vendored の `validatePath`（`McpContext.js`）は何も確かめていなかった。接続先から手元の任意のファイルを書けた（`evaluate_script` の `filePath`）し、読めた（`upload_file`、CDP の `DOM.setFileInputFiles`・`Input.dispatchDragEvent` の `data.files`、`navigate_page` / `Page.navigate` の `file://` を開いてから `take_snapshot`）。

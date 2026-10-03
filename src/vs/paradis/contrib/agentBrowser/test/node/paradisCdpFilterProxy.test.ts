@@ -1547,7 +1547,148 @@ suite('Paradis CDP screenshot filter', () => {
 		await new Promise(resolve => setTimeout(resolve, 0));
 		assert.strictEqual(dispatches, 0);
 	});
+
+	test('a worker inside an OOPIF that vanishes without its own detach is closed for the client, not left unauthorized', async () => {
+		let dispatches = 0;
+		const fixture = await createOpenBrowserProxyFixture(context({
+			dispatchBoundPageInput: () => {
+				dispatches++;
+				return { response: Promise.resolve({ status: 'success', result: {} }), drained: Promise.resolve() };
+			},
+		}));
+		publishAllowedSession(fixture, 'primary-session');
+		publishNestedSession(fixture, 'primary-session', 'iframe-session', 'iframe-target', 'iframe');
+		publishNestedSession(fixture, 'iframe-session', 'worker-session', 'worker-target', 'worker');
+		// A request on the worker that Chromium will never answer.
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 61, sessionId: 'worker-session', method: 'Runtime.evaluate', params: { expression: 'pending()' } })));
+		fixture.client.sent.length = 0;
+
+		// The iframe's session detaches; the worker inside it goes with it without a detach of its own.
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({
+			sessionId: 'primary-session',
+			method: 'Target.detachedFromTarget',
+			params: { sessionId: 'iframe-session', targetId: 'iframe-target' },
+		})));
+		const afterDetach = parseSent(fixture.client);
+		fixture.client.sent.length = 0;
+
+		// puppeteer's emulate() applies network conditions to every session it still knows.
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 62, sessionId: 'worker-session', method: 'Network.emulateNetworkConditions', params: { offline: false } })));
+		// Input on the page is not held behind the dead worker's request.
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 63, sessionId: 'primary-session', method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved', x: 1, y: 1 } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		assert.deepStrictEqual({
+			afterDetach,
+			afterwards: parseSent(fixture.client),
+			dispatches,
+			closeCalls: fixture.client.closeCalls,
+		}, {
+			// The worker is closed first (on the session it was attached through), then the iframe.
+			afterDetach: [
+				{ id: 61, sessionId: 'worker-session', error: { code: -32001, message: 'Session with given id not found.' } },
+				{ sessionId: 'iframe-session', method: 'Target.detachedFromTarget', params: { sessionId: 'worker-session', targetId: 'worker-target' } },
+				{ sessionId: 'primary-session', method: 'Target.detachedFromTarget', params: { sessionId: 'iframe-session', targetId: 'iframe-target' } },
+			],
+			afterwards: [
+				{ id: 62, sessionId: 'worker-session', error: { code: -32001, message: 'Session with given id not found.' } },
+				{ id: 63, sessionId: 'primary-session', result: {} },
+			],
+			dispatches: 1,
+			closeCalls: 0,
+		});
+	});
+
+	test('a shared page is not dropped when the page that opened it goes away', async () => {
+		const bound = new Set(['target-1']);
+		const fixture = await createOpenBrowserProxyFixture(context({ boundTargetIds: () => bound }));
+		const root = (method: string, params: object) => fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method, params })));
+		// target-1 opens helper, helper opens popup; the user then shares popup too.
+		root('Target.targetCreated', { targetInfo: { targetId: 'helper', type: 'page', openerId: 'target-1', attached: true } });
+		root('Target.targetCreated', { targetInfo: { targetId: 'popup', type: 'page', openerId: 'helper', attached: true } });
+		bound.add('popup');
+		root('Target.attachedToTarget', { sessionId: 'popup-session', targetInfo: { targetId: 'popup', type: 'page' } });
+		fixture.upstream.sent.length = 0;
+		fixture.client.sent.length = 0;
+
+		root('Target.targetDestroyed', { targetId: 'helper' });
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 101, sessionId: 'popup-session', method: 'Runtime.evaluate', params: { expression: '1' } })));
+
+		assert.deepStrictEqual({
+			toClient: parseSent(fixture.client),
+			forwarded: parseSent(fixture.upstream).map(message => (message as { id?: number }).id),
+			closeCalls: fixture.client.closeCalls,
+		}, {
+			toClient: [{ method: 'Target.targetDestroyed', params: { targetId: 'helper' } }],
+			forwarded: [101],
+			closeCalls: 0,
+		});
+	});
+
+	test('a session-less -32001 from Chromium is matched by id and closes that session instead of the connection', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		publishAllowedSession(fixture, 'primary-session');
+		publishNestedSession(fixture, 'primary-session', 'worker-session', 'worker-target', 'worker');
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 71, sessionId: 'worker-session', method: 'Network.enable', params: {} })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 72, sessionId: 'worker-session', method: 'Runtime.enable', params: {} })));
+		fixture.client.sent.length = 0;
+
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ id: 71, error: { code: -32001, message: 'Session with given id not found.' } })));
+		// Chromium may still answer the other one late; that must not be taken for a forged id.
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ id: 72, error: { code: -32001, message: 'Session with given id not found.' } })));
+
+		assert.deepStrictEqual({ sent: parseSent(fixture.client), closeCalls: fixture.client.closeCalls }, {
+			sent: [
+				{ id: 71, sessionId: 'worker-session', error: { code: -32001, message: 'Session with given id not found.' } },
+				{ id: 72, sessionId: 'worker-session', error: { code: -32001, message: 'Session with given id not found.' } },
+				{ sessionId: 'primary-session', method: 'Target.detachedFromTarget', params: { sessionId: 'worker-session', targetId: 'worker-target' } },
+			],
+			closeCalls: 0,
+		});
+	});
+
+	test('input waits only for earlier non-promise requests on its own session', async () => {
+		let dispatches = 0;
+		const fixture = await createOpenBrowserProxyFixture(context({
+			dispatchBoundPageInput: () => {
+				dispatches++;
+				return { response: Promise.resolve({ status: 'success', result: {} }), drained: Promise.resolve() };
+			},
+		}));
+		publishAllowedSession(fixture, 'primary-session');
+		publishNestedSession(fixture, 'primary-session', 'iframe-session', 'iframe-target', 'iframe');
+		// A wait_for loser polling on the page, and a request on an iframe: neither holds the click.
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 81, sessionId: 'primary-session', method: 'Runtime.callFunctionOn', params: { functionDeclaration: 'poll', awaitPromise: true } })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 82, sessionId: 'iframe-session', method: 'DOM.getDocument', params: {} })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 83, sessionId: 'primary-session', method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved', x: 1, y: 1 } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.strictEqual(dispatches, 1);
+	});
+
+	test('a barrier timeout names the request it waited for and records the reason for the pane', async () => {
+		const clock = sinon.useFakeTimers();
+		const rejections: string[] = [];
+		const fixture = await createOpenBrowserProxyFixture(context({ noteInputRejection: message => rejections.push(message) }));
+		publishAllowedSession(fixture, 'primary-session');
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 91, sessionId: 'primary-session', method: 'DOM.scrollIntoViewIfNeeded', params: {} })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 92, sessionId: 'primary-session', method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: 1, y: 1 } })));
+		await clock.tickAsync(5_000);
+		const response = parseSent(fixture.client).find(message => (message as { id?: number }).id === 92) as { error?: { message?: string } };
+		assert.deepStrictEqual({ message: response.error?.message, rejections }, {
+			message: 'PARA_BROWSER_RETRYABLE: prior CDP request did not complete before the input barrier timeout (waiting for DOM.scrollIntoViewIfNeeded on session primary- (still attached))',
+			rejections: ['PARA_BROWSER_RETRYABLE: prior CDP request did not complete before the input barrier timeout (waiting for DOM.scrollIntoViewIfNeeded on session primary- (still attached))'],
+		});
+	});
 });
+
+/** Chromium does not set openerId for an OOPIF or a worker attached through a session, so neither does this. */
+function publishNestedSession(fixture: ReturnType<typeof createProxyFixture>, parentSessionId: string, sessionId: string, targetId: string, type: string): void {
+	fixture.upstream.emit('message', Buffer.from(JSON.stringify({
+		sessionId: parentSessionId,
+		method: 'Target.attachedToTarget',
+		params: { sessionId, targetInfo: { targetId, type } },
+	})));
+}
 
 function createScreenshotServiceFixture(call: (command: string) => Promise<string | boolean | null>): {
 	readonly capture: (token: string, options: IParadisCdpScreenshotOptions) => Promise<string | undefined>;

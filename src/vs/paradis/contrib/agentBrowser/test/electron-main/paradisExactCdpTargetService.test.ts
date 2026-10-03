@@ -657,7 +657,7 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
 
 		assert.deepStrictEqual(await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mouseMoved', x: 1, y: 2 })), {
-			status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: the bound BrowserView is focused by the user',
+			status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: the bound BrowserView is focused by the user (the user is interacting with the page). Ask the user to click outside the page, for example on the terminal, and then retry.',
 		});
 		assert.strictEqual(current.counters.input, 0);
 		assert.strictEqual(current.counters.prepareAutomation, 0);
@@ -680,7 +680,7 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		current.state.automationReady = true;
 		current.state.onPrepareAutomation = () => { current.state.focused = true; };
 		assert.deepStrictEqual(await service.dispatchExactViewInput(exact, 'Input.dispatchKeyEvent', params), {
-			status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: the bound BrowserView became focused before input dispatch',
+			status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: the bound BrowserView became focused before input dispatch (the user started interacting with the page). Ask the user to click outside the page, for example on the terminal, and then retry.',
 		});
 		assert.strictEqual(current.counters.input, 0);
 		assert.strictEqual(current.counters.commitAutomation, 0);
@@ -727,7 +727,7 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		current.state.automationActivateReady = true;
 		current.state.onActivateAutomation = () => { current.state.focused = true; };
 		assert.deepStrictEqual(await service.dispatchExactViewInput(exact, 'Input.dispatchKeyEvent', params), {
-			status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: the bound BrowserView became focused before input dispatch',
+			status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: the bound BrowserView became focused before input dispatch (the user started interacting with the page). Ask the user to click outside the page, for example on the terminal, and then retry.',
 		});
 		assert.strictEqual(current.counters.input, 0);
 		assert.strictEqual(current.counters.commitAutomation, 0);
