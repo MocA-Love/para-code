@@ -14,7 +14,7 @@
 // 中継の TranscriptTailer に残し、ここは Node の API を使わない。**正規化の結果はそのままモバイルへ
 // 送られる**ので、出力の形を変えるときはモバイル側の表示も確かめること。
 
-import { IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentQuestionOption } from './paradisAgentChat.js';
+import { IParadisAgentAdvisorInfo, IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentQuestionOption, PARADIS_ADVISOR_TOOL } from './paradisAgentChat.js';
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 import { paradisExpandPastedContent } from '../../../common/paradisPastedContent.js';
 import { IParadisMonitorSignal, paradisMonitorCallSignal, paradisMonitorNotificationSignals, paradisMonitorStartedSignal, paradisMonitorTaskStopSignal } from './paradisAgentMonitors.js';
@@ -39,6 +39,8 @@ export interface IParadisAgentActivityDetailMessage {
 	readonly truncated?: boolean;
 	/** {@link IParadisAgentChatMessage.agentId} */
 	readonly agentId?: string;
+	/** {@link IParadisAgentChatMessage.advisor} */
+	readonly advisor?: IParadisAgentAdvisorInfo;
 }
 
 /** transcriptの生メッセージを SubAgent詳細用へ落とす（Claude / Codex 共通）。 */
@@ -53,6 +55,7 @@ export function toDetailMessage(message: IRawMessage): IParadisAgentActivityDeta
 		...(message.isError === true ? { isError: true } : {}),
 		...(message.truncated === true ? { truncated: true } : {}),
 		...(message.agentId !== undefined ? { agentId: message.agentId } : {}),
+		...(message.advisor !== undefined ? { advisor: message.advisor } : {}),
 	};
 }
 
@@ -119,6 +122,8 @@ export interface IRawMessage {
 	readonly isError?: boolean;
 	/** {@link IParadisAgentChatMessage.agentId} */
 	readonly agentId?: string;
+	/** {@link IParadisAgentChatMessage.advisor} */
+	readonly advisor?: IParadisAgentAdvisorInfo;
 	readonly truncated?: true;
 	/** 切り詰め前の全文。モバイルへは送らず tailer が 'tool-full' 用に保持する。 */
 	readonly fullText?: string;
@@ -1033,6 +1038,10 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 				if (text.trim().length > 0) {
 					out.push({ role: 'assistant', kind: 'thinking', ...withTruncation(text, TOOL_TEXT_LIMIT), ts });
 				}
+			} else if (b.type === 'server_tool_use' && b.name === 'advisor') {
+				out.push(paradisAdvisorUseMessage(b, obj, ts));
+			} else if (b.type === 'advisor_tool_result') {
+				out.push(paradisAdvisorResultMessage(b, obj, ts));
 			} else if (b.type === 'tool_use') {
 				const rawTool = str(b.name) ?? 'tool';
 				const tool = rawTool === 'WebSearch' ? 'web_search' : rawTool;
@@ -1081,6 +1090,53 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 		}
 	}
 	return out;
+}
+
+/** Advisor の暗号化された返答の説明（モバイル・デスクトップ・古いアプリで同じ文を出す）。 */
+// nls を通さない: 会話のメッセージの本文としてモバイルへ送り、古いアプリにもそのまま同じ文で出すため
+const ADVISOR_REDACTED_TEXT = '返答は暗号化されているため、表示できません。';
+const ADVISOR_MODEL_PATTERN = /^[A-Za-z0-9._:@-]{1,100}$/;
+const ADVISOR_ERROR_CODE_PATTERN = /^[A-Za-z0-9._:-]{1,100}$/;
+
+function advisorModel(obj: Record<string, unknown>): string | undefined {
+	const model = str(obj.advisorModel);
+	return model !== undefined && ADVISOR_MODEL_PATTERN.test(model) ? model : undefined;
+}
+
+/**
+ * Advisor の呼び出し（`server_tool_use`、name:"advisor"）。入力は常に空で、会話全体がそのまま渡る。
+ * 本文はモデル名にする（古いアプリはツールの行の引数としてこれを出す）。
+ */
+function paradisAdvisorUseMessage(block: Record<string, unknown>, obj: Record<string, unknown>, ts: number | undefined): IRawMessage {
+	const toolUseId = str(block.id);
+	const model = advisorModel(obj);
+	return {
+		role: 'assistant', kind: 'tool_use', tool: PARADIS_ADVISOR_TOOL, text: model ?? '', ts,
+		...(toolUseId !== undefined ? { toolUseId } : {}),
+		advisor: model !== undefined ? { model } : {},
+	};
+}
+
+/**
+ * Advisor の結果（`advisor_tool_result`）。暗号化された返答（Opus 5 系・Sonnet 5.5・Fable）は読めないので説明の文、
+ * 平文の返答（旧世代）は本文、失敗は `error_code` をそのまま本文にする。
+ */
+function paradisAdvisorResultMessage(block: Record<string, unknown>, obj: Record<string, unknown>, ts: number | undefined): IRawMessage {
+	const toolUseId = str(block.tool_use_id);
+	const model = advisorModel(obj);
+	const content = rec(block.content);
+	const type = str(content?.type);
+	const base = { role: 'tool' as const, kind: 'tool_result' as const, ts, ...(toolUseId !== undefined ? { toolUseId } : {}) };
+	if (type === 'advisor_result') {
+		return { ...base, ...withTruncation(str(content?.text) ?? '', TOOL_TEXT_LIMIT), advisor: { ...(model !== undefined ? { model } : {}), outcome: 'text' } };
+	}
+	if (type === 'advisor_tool_result_error') {
+		const raw = str(content?.error_code);
+		const errorCode = raw !== undefined && ADVISOR_ERROR_CODE_PATTERN.test(raw) ? raw : 'unknown_error';
+		return { ...base, text: errorCode, isError: true, advisor: { ...(model !== undefined ? { model } : {}), outcome: 'error', errorCode } };
+	}
+	// advisor_redacted_result と、知らない種別（中身は読まない）
+	return { ...base, text: ADVISOR_REDACTED_TEXT, advisor: { ...(model !== undefined ? { model } : {}), outcome: 'redacted' } };
 }
 
 /** transcript分類の回帰テスト用。productionと同じparserを1行だけ通す。 */

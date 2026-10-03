@@ -44,6 +44,15 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-03',
 		items: [
 			{
+				icon: 'bulb-outline',
+				title: 'Claude Code が Advisor に相談している様子が分かるようになりました',
+				body: '生成中は「Advisor に相談中」と出し、会話には相談の行が入ります。サブエージェントの画面の「アドバイザー」から、モデル・所要時間・返答を確かめられます。',
+			},
+			{
+				icon: 'information-circle-outline',
+				title: '送れなかったことの知らせを、エージェントの発言と分けて表示します',
+			},
+			{
 				icon: 'git-network-outline',
 				title: '会話の中で、呼んだサブエージェントの状態が分かるようになりました',
 				body: '同じ返答で呼んだサブエージェントを 1 枚のカードにまとめ、実行中・完了・経過時間を表示します。行を押すとそのサブエージェントの履歴を開けます。',

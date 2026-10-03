@@ -8,7 +8,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_ACTIVITY_STALE_MS, ParadisAgentActivityTracker } from '../../node/paradisAgentActivity.js';
-import { paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from '../../node/paradisPersistedAgentActivity.js';
+import { paradisParseClaudeAdvisors, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from '../../node/paradisPersistedAgentActivity.js';
 import { paradisParseCodexRolloutForTest } from '../../../agentChat/common/paradisAgentTranscriptParser.js';
 import { CODEX_FIXTURE_CHILD_ROLLOUT, CODEX_FIXTURE_ENCRYPTED, CODEX_FIXTURE_PARENT_ROLLOUT, CODEX_FIXTURE_USER_MESSAGES } from '../../../agentChat/test/common/paradisCodexRolloutFixture.js';
 
@@ -235,6 +235,84 @@ suite('ParadisAgentActivity', () => {
 				{ id: 'a2', toolUseIds: ['toolu_other'] },
 			],
 		});
+	});
+
+	test('reads Advisor consultations from a transcript and keeps them without reviving a finished one', () => {
+		const at = (second: number) => `2026-10-04T10:42:${String(second).padStart(2, '0')}.000Z`;
+		const line = (second: number, block: unknown) => JSON.stringify({ type: 'assistant', timestamp: at(second), advisorModel: 'claude-opus-4-7', message: { content: [block] } });
+		const lines = [
+			line(0, { type: 'server_tool_use', id: 'srvtoolu_a', name: 'advisor', input: {} }),
+			line(14, { type: 'advisor_tool_result', tool_use_id: 'srvtoolu_a', content: { type: 'advisor_result', text: '順番を入れ替えてください。' } }),
+			line(20, { type: 'server_tool_use', id: 'srvtoolu_b', name: 'advisor', input: {} }),
+			line(23, { type: 'advisor_tool_result', tool_use_id: 'srvtoolu_b', content: { type: 'advisor_tool_result_error', error_code: 'too_many_requests' } }),
+			line(30, { type: 'server_tool_use', id: 'srvtoolu_c', name: 'advisor', input: {} }),
+		];
+		const now = Date.parse(at(40));
+		const parsed = paradisParseClaudeAdvisors('a-sub', lines, now);
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyAdvisors(parsed, now);
+		// 遅れて届いた開始で、終わった相談を相談中に戻さない
+		const revived = tracker.applyAdvisors([{ id: 'srvtoolu_a', status: 'running', startedAt: Date.parse(at(0)), updatedAt: Date.parse(at(0)) }], now + 1);
+		// 親のターンの終わりは、サブエージェントの中の相談を中断にしない
+		tracker.endTurn(now + 2);
+		// 平文の返答は一覧には載せず、詳細を開いたときに返す
+		const reply = tracker.advisorReply('srvtoolu_a');
+		assert.deepStrictEqual({ revived, reply: [reply?.text, reply?.truncated], advisors: tracker.snapshot()?.advisors?.map(advisor => [advisor.id, advisor.status, advisor.outcome, advisor.errorCode, Object.keys(advisor).includes('text'), advisor.ownerId, advisor.updatedAt - advisor.startedAt]) }, {
+			revived: false,
+			reply: ['順番を入れ替えてください。', false],
+			advisors: [
+				['srvtoolu_c', 'running', undefined, undefined, false, 'a-sub', 0],
+				['srvtoolu_b', 'failed', 'error', 'too_many_requests', false, 'a-sub', 3_000],
+				['srvtoolu_a', 'completed', 'text', undefined, false, 'a-sub', 14_000],
+			],
+		});
+	});
+
+	test('ends every unanswered Advisor consultation when the session ends', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyAdvisors([
+			{ id: 'srvtoolu_main', status: 'running', startedAt: 100, updatedAt: 100 },
+			{ id: 'srvtoolu_sub', ownerId: 'a-sub', status: 'running', startedAt: 110, updatedAt: 110 },
+			{ id: 'srvtoolu_done', status: 'completed', outcome: 'redacted', startedAt: 50, updatedAt: 90 },
+		], 110);
+		const busy = tracker.hasActiveWork();
+		tracker.endSession('completed', 200);
+		assert.deepStrictEqual({ busy, idle: tracker.hasActiveWork(), advisors: tracker.snapshot()?.advisors?.map(advisor => [advisor.id, advisor.status, advisor.updatedAt]) }, {
+			busy: true,
+			idle: false,
+			advisors: [['srvtoolu_sub', 'interrupted', 200], ['srvtoolu_main', 'interrupted', 200], ['srvtoolu_done', 'completed', 90]],
+		});
+	});
+
+	test('interrupts the consultations of a subagent when it stops, and completes one whose result is read later', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyClaude('SubagentStart', { agent_id: 'a-sub' }, 100);
+		tracker.applyAdvisors([
+			{ id: 'srvtoolu_sub', ownerId: 'a-sub', status: 'running', startedAt: 110, updatedAt: 110 },
+			{ id: 'srvtoolu_other', ownerId: 'a-other', status: 'running', startedAt: 120, updatedAt: 120 },
+		], 120);
+		tracker.applyClaude('SubagentStop', { agent_id: 'a-sub' }, 200);
+		const stopped = tracker.snapshot()?.advisors?.map(advisor => [advisor.id, advisor.status]);
+		tracker.applyAdvisors([{ id: 'srvtoolu_sub', ownerId: 'a-sub', status: 'completed', outcome: 'redacted', startedAt: 190, updatedAt: 190 }], 210);
+		assert.deepStrictEqual({ stopped, later: tracker.snapshot()?.advisors?.map(advisor => [advisor.id, advisor.status, advisor.startedAt]) }, {
+			stopped: [['srvtoolu_other', 'running'], ['srvtoolu_sub', 'interrupted']],
+			later: [['srvtoolu_other', 'running', 120], ['srvtoolu_sub', 'completed', 110]],
+		});
+	});
+
+	test('sweeps an Advisor consultation that never got a result', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyAdvisors([{ id: 'srvtoolu_lost', ownerId: 'a-sub', status: 'running', startedAt: 0, updatedAt: 0 }], 0);
+		const early = tracker.sweepStale(10 * 60 * 1_000);
+		const late = tracker.sweepStale(PARADIS_ACTIVITY_STALE_MS + 16 * 60 * 1_000);
+		assert.deepStrictEqual({ early, late, advisors: tracker.snapshot()?.advisors?.map(advisor => advisor.status), busy: tracker.hasActiveWork() }, { early: false, late: true, advisors: ['interrupted'], busy: false });
+	});
+
+	test('ends an unanswered Advisor consultation of the main conversation when the turn ends', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyAdvisors([{ id: 'srvtoolu_main', model: 'claude-opus-5-5', status: 'running', startedAt: 100, updatedAt: 100 }], 100);
+		tracker.endTurn(200);
+		assert.deepStrictEqual(tracker.snapshot()?.advisors, [{ id: 'srvtoolu_main', model: 'claude-opus-5-5', status: 'interrupted', startedAt: 100, updatedAt: 200 }]);
 	});
 
 	test('keeps the spawn call and the newest resumes, forgets the least recently linked subagents, and stays quiet for subagents not listed', () => {

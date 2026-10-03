@@ -42,11 +42,11 @@ import { paradisExtractIssueUrls } from '../../../common/paradisIssueDetection.j
 import { paradisIsWslAgentHomePath } from '../../../common/paradisWslAgentHome.js';
 import { paradisCwdGroupKey } from '../../../common/paradisWslPath.js';
 import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from './paradisAgentCommandCatalog.js';
-import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
+import { IParadisAgentActivityState, IParadisAgentAdvisorUpdate, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirrorPath, paradisRemoteTranscriptMirrorRoots } from './paradisRemoteTranscriptMirror.js';
-import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
+import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudeAdvisors, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
@@ -58,7 +58,7 @@ import { ParadisClaudeModBridge, paradisClaudeModBridge, ParadisClaudeModEvent, 
 import { paradisIsDisplayOnlyModRow } from '../../claudeMod/common/paradisClaudeMod.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
-import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentSessionInfo, ParadisAgentKind, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
+import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
 import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
@@ -755,6 +755,15 @@ function isValidSettingsUpdateRequest(msg: AgentInboundCandidate): msg is AgentI
 		&& isValidControlRequest(msg);
 }
 
+/** Advisor の平文の返答を、activity-detail の応答のメッセージ 1 件にする（サブエージェントの詳細と同じ形）。 */
+export function paradisAdvisorReplyMessage(reply: NonNullable<ReturnType<ParadisAgentActivityTracker['advisorReply']>>): IParadisAgentActivityDetailMessage {
+	return {
+		role: 'tool', kind: 'tool', toolKind: 'tool_result', tool: PARADIS_ADVISOR_TOOL, text: reply.text,
+		...(reply.truncated ? { truncated: true } : {}),
+		advisor: { ...(reply.advisor.model !== undefined ? { model: reply.advisor.model } : {}), outcome: 'text' },
+	};
+}
+
 function isValidActivityDetailRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'activity-detail' }> {
 	return msg.t === 'activity-detail'
 		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
@@ -1371,6 +1380,8 @@ interface ITailerDelegate {
 	onMonitors?(): void;
 	/** Claude transcriptのephemeral progress行を受けた。履歴には追加しない。 */
 	onProgress(progress: ITranscriptProgress): void;
+	/** ライブ追記で Advisor の呼び出し・結果（`advisor` の付いたメッセージ）を読んだ。 */
+	onAdvisors?(messages: readonly IParadisAgentChatMessage[]): void;
 	/** ライブ追記でターン終了（task_complete / error / turn_aborted）を検出した。 */
 	onTurnEnded(reason: 'completed' | 'failed' | 'interrupted'): void;
 	/** rolloutに永続化されたCodex活動を順序どおりtrackerへ収束させる。 */
@@ -2026,6 +2037,12 @@ class TranscriptTailer {
 			this.delegate.onToolResults?.(resultIds, rejected);
 		}
 		this.applySignals(signals, emitDelta);
+		if (emitDelta) {
+			const advisors = added.filter(message => message.advisor !== undefined && message.toolUseId !== undefined);
+			if (advisors.length > 0) {
+				this.delegate.onAdvisors?.(advisors);
+			}
+		}
 		if (approvalsSettled && added.length === 0) {
 			this.delegate.onDelta([]);
 		}
@@ -2122,7 +2139,7 @@ class TranscriptTailer {
 	 * ファイルに先に書かれていたもの（ツールの結果・作業中に送った発言など）より後ろに並ぶ。
 	 * 返す Promise は、足し終えた（または捨てた）ところで解決する。
 	 */
-	ingestModRow(row: { readonly uuid: string; readonly at: number; readonly message: { readonly type: string; readonly role?: string; readonly isMeta?: boolean; readonly content: unknown } }): Promise<void> {
+	ingestModRow(row: { readonly uuid: string; readonly at: number; readonly advisorModel?: string; readonly message: { readonly type: string; readonly role?: string; readonly isMeta?: boolean; readonly content: unknown } }): Promise<void> {
 		if (this.agent !== 'claude' || this.disposed) {
 			return Promise.resolve();
 		}
@@ -2139,6 +2156,7 @@ class TranscriptTailer {
 						uuid: row.uuid,
 						timestamp: new Date(row.at).toISOString(),
 						...(row.message.isMeta === true ? { isMeta: true } : {}),
+						...(row.advisorModel !== undefined ? { advisorModel: row.advisorModel } : {}),
 						message: { ...(row.message.role !== undefined ? { role: row.message.role } : {}), content: row.message.content },
 					};
 					this.consumeEntries([{ obj, modUuid: row.uuid }], newParseSignals(this.claudeQueuedPrompts), this.sawInitialEof);
@@ -2149,12 +2167,13 @@ class TranscriptTailer {
 	}
 
 	/**
-	 * Para Code からの知らせを会話に 1 行足す（transcript には無い。モバイル・デスクトップの既存の表示でそのまま出る）。
-	 * 送った発言がエージェントへ届かなかったときなど、もう答え終えた操作の失敗を伝えるのに使う。
+	 * Para Code からの知らせを会話に 1 行足す（transcript には無い）。送った発言がエージェントへ届かなかったときなど、
+	 * もう答え終えた操作の失敗を伝えるのに使う。`notice` を付け、新しいアプリとデスクトップはエージェントの発言と
+	 * 分けて灰色の 1 行で出す（古いアプリは本文として出す）。
 	 */
 	injectNotice(text: string): void {
 		this.enqueue(async () => {
-			const message: IParadisAgentChatMessage = { role: 'assistant', kind: 'text', text: truncateText(text, TEXT_LIMIT), ts: Date.now(), rev: this.rev++ };
+			const message: IParadisAgentChatMessage = { role: 'assistant', kind: 'text', text: truncateText(text, TEXT_LIMIT), ts: Date.now(), rev: this.rev++, notice: true };
 			this.messages.push(message);
 			this.trimRing();
 			this.delegate.onDelta([message]);
@@ -3167,6 +3186,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.codexActiveItems.delete(token);
 				this.activityTrackers.delete(token);
 				this.pendingSubagentCalls.delete(token);
+				this.advisorLiveIds.delete(token);
 				this.clearClaudeSubagentTranscripts(token);
 				this.activeTurnTokens.delete(token);
 			}
@@ -3683,6 +3703,16 @@ export class ParadisMobileAgentChat extends Disposable {
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
 		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
+		// Advisor の平文の返答（旧世代のモデル）。一覧には載せず、詳細を開いたときにここで返す（ファイルは読まない）
+		const advisorReply = token !== undefined ? this.activityTrackers.get(token)?.advisorReply(msg.activityId) : undefined;
+		if (advisorReply !== undefined && token !== undefined) {
+			if (session === undefined || owner === undefined || tailer?.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId) || !await this.authorizeOwner(owner)) {
+				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'Advisor の返答を確認できません' }, token);
+				return;
+			}
+			this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, messages: [paradisAdvisorReplyMessage(advisorReply)] }, token, owner);
+			return;
+		}
 		const known = token !== undefined && this.activityTrackers.get(token)?.snapshot()?.agents.some(agent => agent.id === msg.activityId && agent.role === 'subagent' && (agent.provider === undefined || agent.provider === session?.agent));
 		const requestKey = `${mobileId}\0${msg.requestId}`;
 		const inFlightForToken = token !== undefined ? [...this.activityDetailRequests.values()].filter(value => value === token).length : 0;
@@ -4653,6 +4683,68 @@ export class ParadisMobileAgentChat extends Disposable {
 		});
 	}
 
+	/**
+	 * 会話の追記で読んだ Advisor の呼び出し・結果を、一覧（サブエージェントの画面のアドバイザー）と生成中の表示へ
+	 * 当てる。生成中の表示は `tool:'Advisor'`・`detail:<モデル>` にする（古いアプリは「実行中: Advisor」と出す）。
+	 * この経路は親の会話の transcript だけなので、サブエージェントの中の相談は親の生成中の表示に上がらない。
+	 */
+	private applyAdvisorMessages(token: string, messages: readonly IParadisAgentChatMessage[]): void {
+		const now = Date.now();
+		const advisors: IParadisAgentAdvisorUpdate[] = [];
+		let started: { readonly id: string; readonly model?: string; readonly startedAt: number } | undefined;
+		const ended = new Set<string>();
+		for (const message of messages) {
+			const id = message.toolUseId;
+			const info = message.advisor;
+			if (id === undefined || info === undefined) {
+				continue;
+			}
+			const at = Math.min(message.ts ?? now, now);
+			if (message.kind === 'tool_use') {
+				advisors.push({ id, ...(info.model !== undefined ? { model: info.model } : {}), status: 'running', startedAt: at, updatedAt: at });
+				started = { id, ...(info.model !== undefined ? { model: info.model } : {}), startedAt: at };
+			} else if (message.kind === 'tool_result') {
+				const outcome = info.outcome ?? 'redacted';
+				advisors.push({
+					id, ...(info.model !== undefined ? { model: info.model } : {}),
+					status: outcome === 'error' ? 'failed' : 'completed', outcome,
+					...(info.errorCode !== undefined ? { errorCode: info.errorCode } : {}),
+					...(outcome === 'text' ? this.advisorReplyText(token, message) : {}),
+					startedAt: at, updatedAt: at,
+				});
+				ended.add(id);
+				if (started?.id === id) {
+					started = undefined;
+				}
+			}
+		}
+		const tracker = this.activityTracker(token);
+		if (tracker.applyAdvisors(advisors, now)) {
+			this.pushActivityToSubscribers(token);
+		}
+		const current = this.liveStates.get(token);
+		if (started !== undefined && !ended.has(started.id)) {
+			// mod の行にはモデル名が無いことがある。前の相談で分かったモデル名で補う
+			const model = started.model ?? tracker.advisorModel();
+			this.advisorLiveIds.set(token, started.id);
+			this.setLiveState(token, {
+				phase: 'tool', source: 'transcript', startedAt: started.startedAt, updatedAt: now, tool: PARADIS_ADVISOR_TOOL,
+				...(model !== undefined ? { detail: model } : {}),
+			});
+		} else if (current?.phase === 'tool' && current.tool === PARADIS_ADVISOR_TOOL && ended.has(this.advisorLiveIds.get(token) ?? '')) {
+			// 返答が来た。エージェントは続けて考える（次の hook・本文で置き換わる）
+			this.advisorLiveIds.delete(token);
+			this.setLiveState(token, { phase: 'thinking', source: 'transcript', startedAt: now, updatedAt: now });
+		}
+	}
+
+	/** 平文の返答の本文。会話の行は切り詰めてあるので、tailer が退避した全文があればそちらを使う。 */
+	private advisorReplyText(token: string, message: IParadisAgentChatMessage): { readonly text: string; readonly textTruncated?: true } {
+		const full = message.truncated === true ? this.tailers.get(token)?.fullTextFor(message.rev) : undefined;
+		const text = full ?? message.text;
+		return { text, ...(full === undefined && message.truncated === true ? { textTruncated: true } : {}) };
+	}
+
 	/** 現在attach中の全モバイルへライブ状態だけを空deltaとして送る。 */
 	private pushLiveToSubscribers(token: string, previous: IParadisAgentLiveState | undefined, live: IParadisAgentLiveState, baseRevision: number, revision: number): void {
 		const terminalId = this.terminalIdForToken(token);
@@ -5162,7 +5254,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		let lastMessage: IParadisAgentPaneInsight['lastMessage'];
 		for (let index = (tailer?.messages.length ?? 0) - 1; index >= 0 && tailer !== undefined; index--) {
 			const message = tailer.messages[index];
-			if (message.role === 'assistant' && message.kind === 'text' && message.text.trim().length > 0) {
+			// Para Code の知らせ（notice）はエージェントの発言ではないので、最後の発言に数えない
+			if (message.role === 'assistant' && message.kind === 'text' && message.notice !== true && message.text.trim().length > 0) {
 				lastMessage = { text: paradisOneLine(message.text, 300), ...(message.ts !== undefined ? { at: message.ts } : {}) };
 				break;
 			}
@@ -5459,6 +5552,8 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** ペイン → 未完了のツール呼び出し（tool_use_id → ツール名と入力の指紋）。 */
 	private readonly openToolUses = new Map<string, Map<string, { readonly tool: string; readonly inputKey: string }>>();
+	/** 生成中の表示に出している Advisor の相談（ペインの token → server_tool_use の id）。 */
+	private readonly advisorLiveIds = new Map<string, string>();
 	/**
 	 * mod の無い Claude ペインで、SubagentStart をまだ待っている呼び出し（ペインの token → toolUseId → 受けた時刻）。
 	 * `launches` は Agent / Task、`resumes` は SendMessage（子を再開すると SubagentStart がもう一度届く）。
@@ -5739,6 +5834,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		const claudeTranscriptPaths: { readonly id: string; readonly path: string }[] = [];
 		// SendMessage で再開した呼び出し（子の ID → toolUseId）。会話のカードと一覧の項目を結ぶ
 		const resumeToolUseIds = new Map<string, string[]>();
+		// Advisor への相談（親の会話と、各サブエージェントの transcript から。サブエージェントの分はその子の ID を持つ）
+		const advisors: IParadisAgentAdvisorUpdate[] = [];
 		const rememberResumes = (found: ReadonlyMap<string, readonly string[]>) => {
 			for (const [id, toolUseIds] of found) {
 				resumeToolUseIds.set(id, [...(resumeToolUseIds.get(id) ?? []), ...toolUseIds]);
@@ -5770,12 +5867,15 @@ export class ParadisMobileAgentChat extends Disposable {
 				for (const agent of parsed.spawned) { rememberSpawned(agent); }
 				rememberNotifications(parsed.notifications);
 				rememberResumes(parsed.resumeToolUseIds);
+				advisors.push(...paradisParseClaudeAdvisors(undefined, rootLines, now));
 			}
 			const files = await discoverClaudePersistedSubagentFiles(session.transcriptPath);
 			// 名前付きの起動は、親の会話が名前で呼び、ファイルは別の ID を持つ。名前 → ファイル ID で1つに束ねる
 			const fileIdsByName = new Map<string, string>();
 			for (const file of files) {
-				const parsed = paradisParseClaudePersistedActivity(file.id, await readPersistedTranscriptLines(file.path), file.mtime, now, file.meta);
+				const fileLines = await readPersistedTranscriptLines(file.path);
+				const parsed = paradisParseClaudePersistedActivity(file.id, fileLines, file.mtime, now, file.meta);
+				advisors.push(...paradisParseClaudeAdvisors(file.id, fileLines, now));
 				// ファイル ID から名前を取るのは meta の写らない SSH の写しだけ（手元の古い版の `acompact-` 等を名前と誤読しない）
 				const fileName = file.meta?.name ?? (paradisIsRemoteAgentTranscriptMirrorPath(file.path) ? paradisClaudeNamedAgentFromFileId(file.id) : undefined);
 				if (parsed.owner !== undefined) { owners.set(file.id, fileName !== undefined ? { ...parsed.owner, name: fileName, label: fileName } : parsed.owner); }
@@ -5856,6 +5956,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			return true;
 		});
 		let changed = bounded.length > 0 && this.activityTracker(token).mergeRecoveredAgents(bounded, now);
+		if (advisors.length > 0) {
+			changed = this.activityTracker(token).applyAdvisors(advisors, now) || changed;
+		}
 		for (const [id, toolUseIds] of resumeToolUseIds) {
 			for (const toolUseId of toolUseIds) {
 				changed = this.activityTracker(token).linkToolUse(id, toolUseId, now) || changed;
@@ -6010,6 +6113,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.disposeTailer(token);
 			this.clearLiveState(token);
 			this.activityTrackers.delete(token);
+			this.advisorLiveIds.delete(token);
 			this.clearClaudeSubagentTranscripts(token);
 			this.activeTurnTokens.delete(token);
 		}
@@ -6291,6 +6395,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.disposeTailer(token);
 			this.clearLiveState(token);
 			this.activityTrackers.delete(token);
+			this.advisorLiveIds.delete(token);
 			this.clearClaudeSubagentTranscripts(token);
 			this.activeTurnTokens.delete(token);
 		}
@@ -6413,6 +6518,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.codexMessageBuffers.delete(previousOwner);
 			this.codexActiveItems.delete(previousOwner);
 			this.activityTrackers.delete(previousOwner);
+			this.advisorLiveIds.delete(previousOwner);
 			this.clearClaudeSubagentTranscripts(previousOwner);
 			this.activeTurnTokens.delete(previousOwner);
 			this.cancelCliDiscovery(previousOwner);
@@ -6450,6 +6556,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			// → 稼働中の tailer を張り替え、購読者には新セッションのスナップショットを送り直す。
 			this.activityTrackers.delete(event.token);
 			this.pendingSubagentCalls.delete(event.token);
+			this.advisorLiveIds.delete(event.token);
 			this.clearClaudeSubagentTranscripts(event.token);
 			this.activeTurnTokens.delete(event.token);
 			this.disposeTailer(event.token);
@@ -6686,6 +6793,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 			},
 			onProgress: progress => this.updateLiveFromProgress(token, progress),
+			onAdvisors: messages => this.applyAdvisorMessages(token, messages),
 			onCodexActivityTimeline: events => {
 				const tracker = this.activityTracker(token);
 				let changed = false;
