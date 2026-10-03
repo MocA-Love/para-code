@@ -365,12 +365,60 @@ suite('Para Browser MCP setup', () => {
 			const afterTimeout = { calls: [...calls], restoredWith: [...restoredWith], entry: JSON.parse(await fs.readFile(claudeJson, 'utf8')).mcpServers['para-browser'] };
 			calls.length = 0;
 			// The backup cannot be read (the path is a directory): the entry is not removed at all.
-			const unreadable = (await controller(directory).setup('claude', PORT)).servers[0]?.outcome;
+			const unreadableServer = (await controller(directory).setup('claude', PORT)).servers[0];
+			const unreadable = { outcome: unreadableServer?.outcome, detail: unreadableServer?.detail };
 			assert.deepStrictEqual({ timedOut, afterTimeout, unreadable, unreadableCalls: calls }, {
 				timedOut: 'error',
 				afterTimeout: { calls: ['mcp add-json', 'mcp remove', 'mcp add-json'], restoredWith: [original], entry: original },
-				unreadable: 'error',
+				// The reason is shown, not just the generic failure.
+				unreadable: {
+					outcome: 'error',
+					detail: `Automatic setup could not register the MCP server. The existing para-browser entry in ${directory} could not be read to keep a copy before replacing it (Configuration is not a regular file), so it was left as it is.`,
+				},
 				unreadableCalls: ['mcp add-json'],
+			});
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('a button press that joined a failed startup upgrade runs once more, this time allowed to fall back to mcp add', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-join-'));
+		try {
+			const claudeJson = join(directory, '.claude.json');
+			await fs.writeFile(claudeJson, JSON.stringify({ mcpServers: { 'para-browser': { type: 'http', url: `http://127.0.0.1:${PORT}/` } } }));
+			const calls: string[] = [];
+			let release!: () => void;
+			const released = new Promise<void>(resolve => release = resolve);
+			let started!: () => void;
+			const firstCall = new Promise<void>(resolve => started = resolve);
+			const controller = new ParadisMcpSetupController({
+				platform: 'darwin',
+				resolveShellEnv: async () => ({}),
+				findExecutable: async () => '/safe/claude',
+				runCommand: async (_command, args): Promise<IParadisMcpSetupCommandResult> => {
+					const key = args.slice(0, 2).join(' ');
+					calls.push(key);
+					if (calls.length === 1) {
+						started();
+						await released;
+					}
+					// A CLI without add-json; the old form works.
+					return key === 'mcp add-json' ? { kind: 'exit', code: 1, output: 'error: unknown command \'add-json\'' } : { kind: 'exit', code: 0, output: '' };
+				},
+				codexHome: join(directory, 'missing-codex'),
+				claudeConfigJsonPath: claudeJson,
+				log: () => undefined,
+			});
+			const upgrade = controller.upgradeToolTimeouts(PORT);
+			await firstCall;
+			const button = controller.setup('claude', PORT);
+			release();
+			const [buttonResult] = await Promise.all([button, upgrade]);
+			assert.deepStrictEqual({ calls, button: buttonResult.servers[0]?.outcome }, {
+				// upgrade (no fallback), then the button's own run with the fallback
+				calls: ['mcp add-json', 'mcp add-json', 'mcp add'],
+				button: 'success',
 			});
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });

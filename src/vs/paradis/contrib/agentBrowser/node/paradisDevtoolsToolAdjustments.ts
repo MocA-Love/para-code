@@ -224,18 +224,33 @@ export function paradisAdjustCachedSnapshotResult(prepared: IParadisPreparedDevt
 /** 続き（`offset`）を取る呼び出しが、同じスナップショットを読めるように控えておく時間。 */
 export const PARADIS_SNAPSHOT_CACHE_MS = 60_000;
 const MAX_CACHED_SNAPSHOTS = 8;
+const MAX_SNAPSHOT_EPOCHS = 256;
 
 /**
  * 上限より長かったスナップショットの結果を、ペインごとに直近 1 件だけ短時間控える。`take_snapshot` の
  * `offset` 付きの呼び出しは、取り直さずにこれを切り出す（取り直すとページが変わって続きがずれる）。
  */
 export class ParadisSnapshotCache {
-	private readonly entries = new Map<string, { readonly result: unknown; readonly at: number }>();
+	private readonly entries = new Map<string, { readonly result: unknown; readonly at: number; readonly child: object; readonly generation: number }>();
+	/** ペインごとに、控えを捨てた回数。呼び出しの始めに読み、終わりで変わっていたら控えない。 */
+	private readonly epochs = new Map<string, number>();
 
 	constructor(private readonly now: () => number = Date.now) { }
 
-	/** 結果にスナップショットがあり、上限より長いときだけ控える。 */
-	remember(token: string, result: unknown): void {
+	/** 呼び出しの始めに読む。{@link remember} に渡す。 */
+	epoch(token: string): number {
+		return this.epochs.get(token) ?? 0;
+	}
+
+	/**
+	 * 結果にスナップショットがあり、上限より長いときだけ控える。どの子プロセス（`child`、その世代
+	 * `generation`）が取ったものかも控え、同じ子プロセスへの続きの呼び出しにだけ返す。呼び出しの間に
+	 * {@link forget} されていたら（`epoch` が変わっていたら）控えない。
+	 */
+	remember(token: string, result: unknown, child: object, generation: number, epoch: number): void {
+		if (epoch !== this.epoch(token)) {
+			return;
+		}
 		if (!isRecord(result) || result.isError === true || !Array.isArray(result.content)) {
 			return;
 		}
@@ -256,13 +271,13 @@ export class ParadisSnapshotCache {
 				this.entries.delete(oldest.value);
 			}
 		}
-		this.entries.set(token, { result, at: this.now() });
+		this.entries.set(token, { result, at: this.now(), child, generation });
 	}
 
-	/** 控えた結果と、それを取った時刻（ミリ秒）。古ければ undefined。 */
-	recall(token: string): { readonly result: unknown; readonly at: number } | undefined {
+	/** 控えた結果と、それを取った時刻（ミリ秒）。古い・別の子プロセスや世代のものなら undefined。 */
+	recall(token: string, child: object | undefined, generation: number): { readonly result: unknown; readonly at: number } | undefined {
 		const entry = this.entries.get(token);
-		if (entry === undefined || this.now() - entry.at > PARADIS_SNAPSHOT_CACHE_MS) {
+		if (entry === undefined || this.now() - entry.at > PARADIS_SNAPSHOT_CACHE_MS || entry.child !== child || entry.generation !== generation) {
 			this.entries.delete(token);
 			return undefined;
 		}
@@ -271,9 +286,18 @@ export class ParadisSnapshotCache {
 
 	forget(token: string): void {
 		this.entries.delete(token);
+		if (!this.epochs.has(token) && this.epochs.size >= MAX_SNAPSHOT_EPOCHS) {
+			// 捨てた数を忘れると、進行中の呼び出しの epoch と食い違う（控えない側に倒れるだけ）。
+			const oldest = this.epochs.keys().next();
+			if (!oldest.done) {
+				this.epochs.delete(oldest.value);
+			}
+		}
+		this.epochs.set(token, this.epoch(token) + 1);
 	}
 
 	clear(): void {
 		this.entries.clear();
+		this.epochs.clear();
 	}
 }

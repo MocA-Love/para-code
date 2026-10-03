@@ -291,6 +291,12 @@ suite('Para Browser MCP config status', () => {
 			quotedDottedOutside: add(`mcp_servers."para-browser"."tool_timeout_sec" = 120\n${table()}`),
 			otherServer: add(`${table()}\n\n[mcp_servers.other]\ntool_timeout_sec = 10\n`) !== undefined,
 			inlineTable: add(`${table()}\n\n[other]\nx = { tool_timeout_sec = 1, y = [\n  tool_timeout_sec ] }\n`),
+			// "tool_timeout_sec" is the same key without the literal text: unsure, so nothing is added.
+			unicodeEscapedKey: add(table('"tool\\u005Ftimeout_sec" = 120')),
+			unicodeEscapedHeader: add(`${table()}\n\n["mcp_servers"."para\\u002Dbrowser"]\nenabled = true\n`),
+			// A multi-line string inside our table: where the table ends is not certain line by line.
+			multilineInTable: add(table('note = """', 'tool_timeout_sec = 1', '"""')),
+			multilineLiteralInTable: add(table('note = \'\'\'', 'text', '\'\'\'')),
 		}, {
 			absent: `${table('enabled = false')}\ntool_timeout_sec = 300`,
 			quotedKey: undefined,
@@ -301,6 +307,10 @@ suite('Para Browser MCP config status', () => {
 			quotedDottedOutside: undefined,
 			otherServer: true,
 			inlineTable: undefined,
+			unicodeEscapedKey: undefined,
+			unicodeEscapedHeader: undefined,
+			multilineInTable: undefined,
+			multilineLiteralInTable: undefined,
 		});
 	});
 });

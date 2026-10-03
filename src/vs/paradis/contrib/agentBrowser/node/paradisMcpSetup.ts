@@ -44,6 +44,34 @@ function commandAlreadyExists(result: IParadisMcpSetupCommandResult): boolean {
 	return result.kind === 'exit' && result.code !== 0 && result.output.toLowerCase().includes('already exists');
 }
 
+/** `CLAUDE_CONFIG_DIR` が絶対パスでなく、どの `.claude.json` か決められない。 */
+class ParadisClaudeConfigPathError extends Error {
+	constructor() {
+		super('CLAUDE_CONFIG_DIR is not an absolute path');
+	}
+}
+
+/**
+ * 控えを読めずに入れ直しをやめたときに見せる文。理由は決まった言い方（エラーコードか、こちらで投げた
+ * 決まった文）だけを載せ、読んだ中身や例外の生の文は載せない。
+ */
+function claudeBackupReadFailureDetail(configPath: string | undefined, error: unknown): string {
+	const code = errorCode(error);
+	const knownMessages = [
+		'Configuration is not a regular file',
+		'Configuration exceeds the safe read limit',
+		'Codex configuration is not valid UTF-8',
+		'CLAUDE_CONFIG_DIR is not an absolute path',
+	];
+	const message = error instanceof Error ? error.message : undefined;
+	const reason = typeof code === 'string' && /^E[A-Z]+$/.test(code)
+		? code
+		: message !== undefined && (knownMessages.includes(message) || message.endsWith('changed while being read') || message.endsWith('changed before being read'))
+			? message.replace(/^Codex configuration/, 'The file')
+			: 'unknown error';
+	return `${CLAUDE_SETUP_ERROR} The existing para-browser entry${configPath !== undefined ? ` in ${configPath}` : ''} could not be read to keep a copy before replacing it (${reason}), so it was left as it is.`;
+}
+
 /** Claude Code のエントリの `headers.Authorization`（旧形式の `mcp add` で戻すときに使う）。 */
 function claudeEntryAuthorization(entry: Record<string, unknown>): string | undefined {
 	const headers = entry.headers;
@@ -437,11 +465,18 @@ async function writeConfigAtomic(
 
 export class ParadisMcpSetupController {
 	private readonly flights = new Map<ParadisMcpCli, Promise<IParadisMcpSetupResult>>();
+	/** {@link flights} のうち、起動時の入れ直し（{@link upgradeToolTimeouts}）のもの。 */
+	private readonly upgradeFlights = new WeakSet<Promise<IParadisMcpSetupResult>>();
 
 	constructor(private readonly options: IParadisMcpSetupControllerOptions) { }
 
 	setup(cli: ParadisMcpCli, gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
 		const existing = this.flights.get(cli);
+		if (existing !== undefined && this.upgradeFlights.has(existing)) {
+			// 起動時の入れ直し（旧形式の `mcp add` には戻さない）に合流した。それが失敗だったら、ボタンとして
+			// （旧形式にも戻してよい形で）もう 1 回実行する。
+			return existing.then(result => result.servers.some(server => server.outcome === 'success') ? result : this.setup(cli, gatewayPort));
+		}
 		if (existing !== undefined) {
 			return existing;
 		}
@@ -602,6 +637,7 @@ export class ParadisMcpSetupController {
 						}
 					});
 					this.flights.set('claude', flight);
+					this.upgradeFlights.add(flight);
 					const result = await flight;
 					if (!result.servers.some(server => server.outcome === 'success')) {
 						this.options.log('Claude MCP tool timeout upgrade failed');
@@ -749,7 +785,7 @@ export class ParadisMcpSetupController {
 		];
 		const readEntry = async () => {
 			if (configPath === undefined) {
-				throw new Error('Claude configuration path is not absolute');
+				throw new ParadisClaudeConfigPathError();
 			}
 			const snapshot = await readConfigSnapshot(configPath, this.options.configReadFileSystem, MAX_CLAUDE_CONFIG_BYTES);
 			return snapshot.exists ? paradisReadClaudeMcpEntry(snapshot.text) : undefined;
@@ -773,6 +809,8 @@ export class ParadisMcpSetupController {
 				this.options.log('Claude MCP entry was lost while re-registering');
 			}
 		};
+		// 控えが読めずに入れ直しをやめたときの理由（利用者に見せる）。
+		let backupReadFailure: string | undefined;
 		// `mcp add` / `add-json` に上書きは無い。既にあるのは旧shim方式・古いポート・上限の無い登録なので、
 		// 元のエントリを控えてから消して入れ直す（同じ名前の私たちのエントリだけが対象）。
 		const addReplacing = async (addArguments: readonly string[]): Promise<IParadisMcpSetupCommandResult> => {
@@ -784,8 +822,9 @@ export class ParadisMcpSetupController {
 			let original: Record<string, unknown> | undefined;
 			try {
 				original = await readEntry();
-			} catch {
+			} catch (error) {
 				this.options.log('Claude MCP entry backup read failed');
+				backupReadFailure = claudeBackupReadFailureDetail(configPath, error);
 				return { kind: 'failure', output: '' };
 			}
 			const removed = await run(['mcp', 'remove', '-s', 'user', 'para-browser']);
@@ -828,7 +867,7 @@ export class ParadisMcpSetupController {
 			return { cli: 'claude', cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'success' }] };
 		}
 		this.options.log('Claude MCP registration failed');
-		return { cli: 'claude', cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'error', detail: CLAUDE_SETUP_ERROR }] };
+		return { cli: 'claude', cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'error', detail: backupReadFailure ?? CLAUDE_SETUP_ERROR }] };
 	}
 
 	/**
