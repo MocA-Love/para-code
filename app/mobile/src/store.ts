@@ -832,6 +832,23 @@ export interface SystemResourcesResult {
 		hostTotalMemory: number;
 		collectedAt: number;
 	};
+	/**
+	 * 時系列の履歴（`system.history.v1` の PC に `history` を付けて頼んだときだけ）。形は `systemUsageHistory.ts` の
+	 * `parseSystemUsageResponse` で読む（相手は信用しない）。
+	 */
+	history?: unknown;
+	/** 履歴を返せなかった理由。`remote-outdated` は SSH の接続先の Para Code が古い（host の今の値だけが届く）。 */
+	historyUnavailable?: 'remote-outdated' | 'failed';
+	/** `history`・`historyUnavailable`・`host` がどのマシンの値か（`history.machine` を知っている PC だけ）。 */
+	historyMachine?: 'local' | 'remote';
+}
+
+/** `systemResources` の任意の指定（`system.history.v1` の PC にだけ付ける）。 */
+export interface SystemResourcesOptions {
+	/** 送り先のウィンドウ（手元、または SSH の接続先のウィンドウ）。 */
+	readonly windowId?: number;
+	/** 履歴の要求（`systemUsageHistory.ts` の `historyRequestFor`）。 */
+	readonly history?: { readonly machine: 'local' | 'remote'; readonly tier: 'fine' | 'coarse'; readonly since?: number; readonly instanceId?: string; readonly maxPoints?: number };
 }
 
 /**
@@ -4126,9 +4143,13 @@ export class MobileController {
 	}
 
 	/** PC本体のリソース内訳（「システム」画面）。ドロワーの3値と違い、開いている間だけ取りに行く。 */
-	systemResources(bypassCache?: boolean): Promise<SystemResourcesResult> {
+	systemResources(bypassCache?: boolean, options?: SystemResourcesOptions): Promise<SystemResourcesResult> {
 		// usage/limits/github と同じく、PC側は結果を data フィールドにネストして返すためここで剥がす
-		return this.request<{ data?: SystemResourcesResult }>('fs', { t: 'sysres', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000)
+		return this.request<{ data?: SystemResourcesResult }>('fs', {
+			t: 'sysres',
+			...(bypassCache ? { bypassCache: true } : {}),
+			...(options?.history !== undefined ? { history: options.history } : {}),
+		}, 60_000, undefined, undefined, options?.windowId)
 			.then(response => {
 				if (!response.data) {
 					throw new Error('empty sysres response');

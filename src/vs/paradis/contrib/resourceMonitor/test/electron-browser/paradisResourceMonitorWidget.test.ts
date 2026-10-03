@@ -14,6 +14,56 @@ import { IParadisResourceMonitorSnapshot } from '../../common/paradisResourceMon
 import { ParadisResourceMonitorClient } from '../../electron-browser/paradisResourceMonitorClient.js';
 import { IParadisResourceMonitorPanelOptions, ParadisResourceMonitorPanel } from '../../electron-browser/paradisResourceMonitorPanel.js';
 import { createParadisResourceMonitorWidget, IParadisResourceMonitorPollTimer, ParadisResourceMonitorWidget, paradisResourceMonitorPollingPolicy } from '../../electron-browser/paradisResourceMonitorWidget.js';
+import { IParadisSystemUsageModel, IParadisSystemUsageView, ParadisSystemUsageMachineId } from '../../electron-browser/paradisSystemUsageModel.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
+
+function createSystemUsageView(machineId: ParadisSystemUsageMachineId, label: string, cpu: number, mem: number): IParadisSystemUsageView {
+	return {
+		machineId,
+		label,
+		range: '5m',
+		machine: undefined,
+		legacy: false,
+		error: undefined,
+		unsupported: [],
+		samples: [],
+		windowStart: 0,
+		windowEnd: 0,
+		windowMs: 300_000,
+		stepMs: 5_000,
+		latest: { t: 1, cpu, mem },
+	};
+}
+
+/** タイトルバーが聞くマシン全体の使用率（SSH のウィンドウなら接続先）。 */
+class TestSystemUsageModel implements IParadisSystemUsageModel {
+
+	declare readonly _serviceBrand: undefined;
+	readonly refreshed: ParadisSystemUsageMachineId[] = [];
+
+	constructor(private readonly defaultMachineId: ParadisSystemUsageMachineId = 'local') { }
+
+	getMachines() {
+		return this.defaultMachineId === 'remote'
+			? [{ id: 'local' as const, label: 'This Mac' }, { id: 'remote' as const, label: 'dev-server' }]
+			: [{ id: 'local' as const, label: 'This Mac' }];
+	}
+
+	getDefaultMachineId(): ParadisSystemUsageMachineId {
+		return this.defaultMachineId;
+	}
+
+	async refresh(machineId: ParadisSystemUsageMachineId): Promise<IParadisSystemUsageView> {
+		this.refreshed.push(machineId);
+		return machineId === 'remote' ? createSystemUsageView('remote', 'dev-server', 82.4, 87) : createSystemUsageView('local', 'This Mac', 34, 71.2);
+	}
+
+	async fetchRaw() {
+		return undefined;
+	}
+}
+
+const testCommandService = { executeCommand: async () => undefined } as unknown as ICommandService;
 
 class TestDocument extends EventTarget {
 
@@ -74,7 +124,17 @@ class TestPanel implements IDisposable {
 	readonly snapshots: IParadisResourceMonitorSnapshot[] = [];
 	readonly fetching: boolean[] = [];
 
+	readonly systemUsage: IParadisSystemUsageView[] = [];
+
 	constructor(readonly options: IParadisResourceMonitorPanelOptions) { }
+
+	get machineId(): ParadisSystemUsageMachineId {
+		return this.options.selectedMachineId;
+	}
+
+	updateSystemUsage(view: IParadisSystemUsageView): void {
+		this.systemUsage.push(view);
+	}
 
 	setFetching(fetching: boolean): void {
 		this.fetching.push(fetching);
@@ -156,7 +216,7 @@ function createWidgetHarness(deferInitialSnapshot = false): ITestWidgetHarness {
 	} as unknown as IInstantiationService;
 	const container = document.createElement('div');
 	document.body.append(container);
-	const widget = new ParadisResourceMonitorWidget(container, { document: testDocument, pollTimer: timer }, instantiationService, configuration as unknown as IConfigurationService);
+	const widget = new ParadisResourceMonitorWidget(container, { document: testDocument, pollTimer: timer }, instantiationService, configuration as unknown as IConfigurationService, new TestSystemUsageModel(), testCommandService);
 	return {
 		container,
 		document: testDocument,
@@ -220,6 +280,7 @@ suite('ParadisResourceMonitorWidget', () => {
 			{ getWorktrees: () => [] } as never,
 			{ getChannel: () => channel } as never,
 			{ getConnection: () => null } as never,
+			new TestSystemUsageModel(),
 		);
 
 		await client.getSnapshot(false, 'idle');
@@ -244,7 +305,7 @@ suite('ParadisResourceMonitorWidget', () => {
 		} as unknown as IConfigurationService;
 		const container = document.createElement('div');
 		document.body.append(container);
-		const widget = new ParadisResourceMonitorWidget(container, { document: testDocument, pollTimer }, instantiationService, configurationService);
+		const widget = new ParadisResourceMonitorWidget(container, { document: testDocument, pollTimer }, instantiationService, configurationService, new TestSystemUsageModel(), testCommandService);
 
 		try {
 			await flushMicrotasks();
@@ -413,5 +474,49 @@ suite('ParadisResourceMonitorWidget', () => {
 		} finally {
 			harness.widget.dispose();
 		}
+	});
+
+	test('shows the machine-wide CPU and memory in the title, naming the remote machine in an SSH window', async () => {
+		const render = async (defaultMachineId: ParadisSystemUsageMachineId) => {
+			const model = new TestSystemUsageModel(defaultMachineId);
+			const client = { getSnapshot: async () => createSnapshot(), switchToScope() { } } as unknown as ParadisResourceMonitorClient;
+			const panels: TestPanel[] = [];
+			const instantiationService = {
+				createInstance: (ctor: unknown, ...args: unknown[]) => {
+					if (ctor === ParadisResourceMonitorPanel) {
+						const panel = new TestPanel(args[1] as IParadisResourceMonitorPanelOptions);
+						panels.push(panel);
+						return panel;
+					}
+					return client;
+				},
+			} as unknown as IInstantiationService;
+			const configurationService = {
+				getValue: () => true,
+				onDidChangeConfiguration: () => ({ dispose() { } } satisfies IDisposable),
+			} as unknown as IConfigurationService;
+			const container = document.createElement('div');
+			const widget = new ParadisResourceMonitorWidget(container, { document: new TestDocument(), pollTimer: new TestIntervalTimer() }, instantiationService, configurationService, model, testCommandService);
+			try {
+				await flushMicrotasks();
+				await flushMicrotasks();
+				const title = container.querySelector('.paradis-resource-monitor-trigger-text')?.textContent;
+				container.querySelector('button')?.click();
+				await flushMicrotasks();
+				await flushMicrotasks();
+				return {
+					title,
+					panelMachines: panels[0]?.options.machines.map(machine => machine.id),
+					panelSelected: panels[0]?.options.selectedMachineId,
+					panelViews: panels[0]?.systemUsage.map(view => view.machineId),
+				};
+			} finally {
+				widget.dispose();
+			}
+		};
+		assert.deepStrictEqual([await render('local'), await render('remote')], [
+			{ title: 'CPU 34% · RAM 71%', panelMachines: ['local'], panelSelected: 'local', panelViews: ['local'] },
+			{ title: 'dev-server · CPU 82% · RAM 87%', panelMachines: ['local', 'remote'], panelSelected: 'remote', panelViews: ['remote'] },
+		]);
 	});
 });
