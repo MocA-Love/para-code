@@ -236,6 +236,14 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	}
 
 	/**
+	 * 子プロセスの一時フォルダ（roots に必ず載るもの）。接続先のペインのファイルを手元で受け渡すときの置き場。
+	 * 作れなければ undefined。
+	 */
+	ensureTemporaryDirectory(): string | undefined {
+		return this.options.temporaryDirectory ?? this._temporaryDirectory?.ensure();
+	}
+
+	/**
 	 * 転送対象のツール一覧（除外・衝突フィルタ適用済み）を返す。
 	 * 子プロセスの起動や応答に失敗した場合はthrowする（呼び出し側で縮退させる）。
 	 */

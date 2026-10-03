@@ -211,6 +211,8 @@ export class ParadisFileDropStaging {
 		private readonly ttlMs: number = DEFAULT_STAGING_TTL_MS,
 		private readonly maxEntries: number = DEFAULT_MAX_STAGING_ENTRIES,
 		private readonly maxTotalBytes: number = DEFAULT_MAX_STAGING_TOTAL_BYTES,
+		/** 一時ディレクトリを作る親。作れないときは undefined（stage が失敗する）。既定は os.tmpdir()。 */
+		private readonly parentDirectory: () => string | undefined = tmpdir,
 	) { }
 
 	/** 内容を一時ファイルへ書き出し、実パスを返す。 */
@@ -219,7 +221,11 @@ export class ParadisFileDropStaging {
 			throw new Error('file drop staging area is disposed');
 		}
 		this._evictUntilFits(content.byteLength);
-		const dir = await mkdtemp(join(tmpdir(), 'paradis-mcp-drop-'));
+		const parent = this.parentDirectory();
+		if (parent === undefined) {
+			throw new Error('no temporary folder is available for file drop staging');
+		}
+		const dir = await mkdtemp(join(parent, 'paradis-mcp-drop-'));
 		const filePath = join(dir, fileName);
 		try {
 			await writeFile(filePath, content);

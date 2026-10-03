@@ -190,7 +190,15 @@ export type ParadisPreviewFileFailure =
 	/** 呼び出し元ペインがまだこのウィンドウの台帳に載っていない（リロード直後の復元中など）。再試行すれば通る。 */
 	| 'paneUnresolved'
 	/** 呼び出し元ペインのスペースへユーザーが到達できない（実体を失った worktree など）。再試行しても変わらない。 */
-	| 'unreachableSpace';
+	| 'unreachableSpace'
+	/** ファイルが無い。 */
+	| 'notFound'
+	/** フォルダを指している。 */
+	| 'isDirectory'
+	/** ファイルの情報を読めなかった（権限・接続切れなど）。 */
+	| 'unreadable'
+	/** エディタで開けなかった。 */
+	| 'openFailed';
 
 /**
  * {@link PARADIS_AGENT_PREVIEW_CHANNEL} の `previewFile` 呼び出し結果。
