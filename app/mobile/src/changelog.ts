@@ -40,6 +40,23 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.2',
+		date: '2026-10-03',
+		items: [
+			{
+				icon: 'lock-open-outline',
+				title: 'Face ID のあとも、通知から開いた画面や入力途中の文字が残るようになりました',
+				body: 'しばらく離れてから戻ると Face ID でロックし直しますが、これまでは解除するとトップに戻っていました。今は開いていた画面・ターミナル・入力途中の文字・iPad の 2 列がそのまま残ります。開いていたシートは閉じます。',
+				tone: 'green',
+			},
+			{
+				icon: 'shield-checkmark-outline',
+				title: 'ロック中に確認のダイアログを操作できないようにしました',
+				body: 'ロックする前に出ていた確認のダイアログは閉じ、解除したあとに出し直します。',
+			},
+		],
+	},
+	{
 		version: '0.12.1',
 		date: '2026-10-03',
 		headline: '使用量を全 PC の合計で見られるようになりました',

@@ -18,6 +18,7 @@ export interface KeyCommandSpec {
 
 interface NativeModuleShape {
 	setKeyCommands(specs: readonly KeyCommandSpec[]): void;
+	dismissPresentedAlerts?(): void;
 	addListener(eventName: 'onKeyCommand', listener: (event: { id: string }) => void): { remove(): void };
 	addListener(eventName: 'onWindowControlsInset', listener: (event: WindowControlsInset) => void): { remove(): void };
 	addListener(eventName: 'onDeviceOrientation', listener: (event: { orientation: DeviceOrientation }) => void): { remove(): void };
@@ -39,6 +40,18 @@ const native = Platform.OS === 'ios' ? requireOptionalNativeModule<NativeModuleS
 /** いま効かせるショートカットを差し替える（渡さなかったものは外れる）。 */
 export function setKeyCommands(specs: readonly KeyCommandSpec[]): void {
 	native?.setKeyCommands(specs);
+}
+
+/**
+ * 出ている Alert（UIAlertController）をネイティブで閉じる（アプリのロック時。`src/paraAlert.ts`）。
+ * 閉じる関数がある（このモジュールを含み、関数を足した後のバイナリ）なら true。無ければ何もせず false。
+ */
+export function dismissPresentedAlerts(): boolean {
+	if (native?.dismissPresentedAlerts === undefined) {
+		return false;
+	}
+	native.dismissPresentedAlerts();
+	return true;
 }
 
 /** ショートカットが押されたときに呼ばれる。戻り値で購読をやめる。 */

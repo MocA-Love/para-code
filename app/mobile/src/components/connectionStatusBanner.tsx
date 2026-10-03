@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { paraAlert } from '../paraAlert.js';
 import { Ionicons } from '@expo/vector-icons';
 import { usePathname } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
@@ -64,7 +65,7 @@ export function ConnectionStatusBanner() {
 				<Ionicons name="warning-outline" size={15} color={colors.orange} />
 				<Text style={styles.text}>{issue}</Text>
 				{unknownCount > 0 ? (
-					<Pressable accessibilityRole="button" style={styles.action} onPress={() => Alert.alert(
+					<Pressable accessibilityRole="button" style={styles.action} onPress={() => paraAlert.alert(
 						'結果不明の操作記録を破棄',
 						'PC側の状態を確認しましたか？ 記録を破棄してもPC上の操作は取り消されず、自動再実行もされません。',
 						[{ text: 'キャンセル', style: 'cancel' }, { text: '記録を破棄', style: 'destructive', onPress: () => { void discardUnknown(); } }],

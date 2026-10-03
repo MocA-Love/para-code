@@ -13,6 +13,8 @@ import { useEffect } from 'react';
 import { create } from 'zustand';
 import { decodeUtf8, fromBase64Url, openNotify, randomToken, sealNotify, toBase64Url } from '@para/protocol';
 import { agentSendQueueKey, sendPcRequest, useAppStore } from './appState.js';
+import { useAppLocked } from './appLock.js';
+import { isAppLockedNow } from './appLockState.js';
 import {
 	addAgentSendQueueItem, agentSendLiveDecision, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue,
 	type AgentResumeResult, type AgentSendQueueItem, type AgentSendTarget,
@@ -239,7 +241,8 @@ async function flush(pcId: string): Promise<void> {
 		const terminals = useAppStore.getState().workspace?.terminals ?? [];
 		for (const plan of planAgentSendQueue(useAgentSendQueue.getState().items, pcId, terminals, Date.now())) {
 			const app = useAppStore.getState();
-			if (app.activePcId !== pcId || !isLive(app)) {
+			// 送っている途中でロックされたら、残りは解除後に送る。
+			if (app.activePcId !== pcId || !isLive(app) || isAppLockedNow()) {
 				return;
 			}
 			if (plan.kind === 'confirm') {
@@ -271,16 +274,18 @@ export function useAgentSendQueueRunner(): void {
 	const activePcId = useAppStore(s => s.activePcId);
 	const live = useAppStore(isLive);
 	const waiting = useAgentSendQueue(s => s.items.some(item => item.pcId === activePcId && item.status === 'waiting'));
+	// ロック中は送らない（画面はロック画面の下に残るので、ここで止める。起動直後の認証前も含む）。
+	const locked = useAppLocked();
 	useEffect(() => {
 		if (activePcId !== undefined) {
 			void loadPc(activePcId);
 		}
 	}, [activePcId]);
 	useEffect(() => {
-		if (activePcId !== undefined && live && waiting) {
+		if (activePcId !== undefined && live && waiting && !locked) {
 			void flush(activePcId);
 		}
-	}, [activePcId, live, waiting]);
+	}, [activePcId, live, waiting, locked]);
 }
 
 /** {@link useAgentSendQueueRunner} を木に置くための部品（何も描かない）。アプリの根に 1 つだけ置く。 */

@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import { ActivityIndicator, Alert, Linking, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import { ActivityIndicator, Linking, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import { paraAlert } from '../../paraAlert.js';
 import { useShallow } from 'zustand/react/shallow';
 import { isTerminalViewportRevoked, onTerminalViewportRevoked, pcHasCapabilityFor, reclaimTerminalViewport, sendPcRequest, useAppStore } from '../../appState.js';
 import { appendUploadedPath } from '../../components/agentComposerDraft.js';
@@ -176,7 +177,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 	};
 	const openUrlOnPc = async (url: string) => {
 		if (!pcHasCapabilityFor(activePcId, PcCapability.BrowserOpenUrl)) {
-			Alert.alert('PC のブラウザで開けません', 'PC の Para Code を更新すると、PC の中でしか見られない URL（localhost など）をスマホから開けます。');
+			paraAlert.alert('PC のブラウザで開けません', 'PC の Para Code を更新すると、PC の中でしか見られない URL（localhost など）をスマホから開けます。');
 			return;
 		}
 		const generation = ++openGeneration.current;
@@ -195,10 +196,10 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 		} catch (err) {
 			console.warn('[session] opening a terminal URL on the PC failed', errorKind(err));
 			if (err instanceof Error && err.message === 'space-not-visible') {
-				Alert.alert('PC のブラウザで開けませんでした', 'PC でこのスペースを表示していないため、このスペースにページを開けません。PC でこのスペースに切り替えてから、もう一度お試しください。');
+				paraAlert.alert('PC のブラウザで開けませんでした', 'PC でこのスペースを表示していないため、このスペースにページを開けません。PC でこのスペースに切り替えてから、もう一度お試しください。');
 				return;
 			}
-			Alert.alert('PC のブラウザで開けませんでした', 'PC との接続を確認して、もう一度お試しください。');
+			paraAlert.alert('PC のブラウザで開けませんでした', 'PC との接続を確認して、もう一度お試しください。');
 			return;
 		}
 		if (openGeneration.current !== generation) {
@@ -222,7 +223,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 			if (terminalLinkNeedsConfirmation(link)) {
 				// OSC 8 のリンクは見えている文字と行き先が違いうる。PC の中を開くときだけ、行き先を見せて確かめる。
 				const shown = link.label !== undefined && link.label.length > 80 ? `${link.label.slice(0, 80)}…` : link.label;
-				Alert.alert('PC のブラウザで開きますか', `「${shown}」の行き先は ${terminalUrlHost(link.url) ?? link.url} です。\n${link.url}`, [
+				paraAlert.alert('PC のブラウザで開きますか', `「${shown}」の行き先は ${terminalUrlHost(link.url) ?? link.url} です。\n${link.url}`, [
 					{ text: 'キャンセル', style: 'cancel' },
 					{ text: '開く', onPress: () => { void openUrlOnPc(link.url); } },
 				]);
@@ -330,7 +331,7 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset }:
 		} catch (err) {
 			console.warn('[session] terminal image upload failed', errorKind(err));
 			haptic('error');
-			Alert.alert('画像を送れませんでした', 'PC との接続を確認して、もう一度お試しください。');
+			paraAlert.alert('画像を送れませんでした', 'PC との接続を確認して、もう一度お試しください。');
 		} finally {
 			setUploading(false);
 		}

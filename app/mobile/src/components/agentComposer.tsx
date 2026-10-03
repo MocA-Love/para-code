@@ -2,7 +2,8 @@
 
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { paraAlert } from '../paraAlert.js';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../appState.js';
 import type { AgentCommandCatalogState, AgentCommandOption, AgentMessageSendResult, AgentModelControlState, FsUploadResult, WorkspacePrStatus } from '../store.js';
@@ -220,10 +221,10 @@ export const AgentComposer = memo(forwardRef<AgentComposerHandle, AgentComposerP
 				onAfterSubmit();
 			}
 			if (result.status === 'consumed' && shouldShowSubmissionAlert(result.status, submissionGenerationRef.current, generation)) {
-				Alert.alert('メッセージは未送信です', result.message ?? '本文はターミナルの入力欄に残っています。ターミナルを確認して送信してください。');
+				paraAlert.alert('メッセージは未送信です', result.message ?? '本文はターミナルの入力欄に残っています。ターミナルを確認して送信してください。');
 			}
 			if (result.status === 'rejected' && shouldShowSubmissionAlert(result.status, submissionGenerationRef.current, generation)) {
-				Alert.alert('メッセージを送信できませんでした', result.message ?? '接続とエージェントセッションを確認して再送してください。');
+				paraAlert.alert('メッセージを送信できませんでした', result.message ?? '接続とエージェントセッションを確認して再送してください。');
 			}
 		}).finally(() => {
 			if (submissionGenerationRef.current === generation) {
