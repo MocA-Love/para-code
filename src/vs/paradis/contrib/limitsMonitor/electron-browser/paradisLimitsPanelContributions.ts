@@ -35,6 +35,13 @@ export interface IParadisLimitsPanelContext {
 	readonly client: ParadisLimitsMonitorClient;
 	/** 取り直して描き直す。`force` は手動更新と同じ（Claude は 180 秒より古い分だけ取り直す）。 */
 	requestRefresh(force: boolean): void;
+	/** 取り直さずに、手元の値で描き直す（開閉の切り替えなど、見た目だけが変わったとき）。 */
+	redraw(): void;
+	/**
+	 * 描き直しをまたいでフォーカスを保ちたい要素を知らせる（`key` はパネルの中で一意の値）。描き直す前に
+	 * フォーカスがあった要素と同じ `key` の要素へ、描き直した後にフォーカスを戻す。
+	 */
+	trackFocus(element: HTMLElement, key: string): void;
 	/** パネルを閉じる（ダイアログを開く前など）。 */
 	closePanel(): void;
 }

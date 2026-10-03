@@ -12,7 +12,7 @@
 //    という決定）。この PC 全体の Claude のログインを書き換えるので、押したら確認し、動いている
 //    Claude Code への影響を説明する
 //  - 節の末尾: claude-swap に登録されていて Para Code にはまだ無いアカウントの一覧と、登録し直しの
-//    案内（claude-swap のデータは読むだけ）
+//    案内（claude-swap のデータは読むだけ）。1文に縮め、注意書きと一覧は「詳しく」を開いたときだけ出す
 
 import * as dom from '../../../../base/browser/dom.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
@@ -32,6 +32,8 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 	/** 押した後、結果が返るまで同じボタンを押せなくする（描き直しをまたいで持つ）。 */
 	private registering = false;
 	private switching = false;
+	/** claude-swap の案内の「詳しく」を開いているか（描き直しをまたいで持つ）。 */
+	private legacyDetailsOpen = false;
 
 	constructor(
 		@INotificationService private readonly notificationService: INotificationService,
@@ -71,17 +73,28 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		if (legacy.length === 0) {
 			return undefined;
 		}
-		dom.append(container, $('div')).textContent = localize(
-			'paradis.claudeAccounts.legacyNotice',
-			"claude-swap (cswap) に登録されていた次のアカウントは、Para Code ではまだ使えません。「＋ アカウントを追加」からログインし直して登録してください（いまログインしているアカウントは、カードの「Para Code に登録」で登録できます）。登録したら、claude-swap での切り替えはやめてください。両方で切り替えると、片方が保存したログインが使えなくなることがあります。claude-swap のデータは読むだけで、書き換えません。",
+		const details = dom.append(container, $('details.plm-legacy-notice')) as HTMLDetailsElement;
+		details.open = this.legacyDetailsOpen;
+		const summary = dom.append(details, $('summary'));
+		dom.append(summary, $('span')).textContent = localize(
+			'paradis.claudeAccounts.legacySummary',
+			"claude-swap (cswap) に登録されていた {0} 件は、Para Code ではまだ使えません。「＋ アカウントを追加」からログインし直して登録してください。",
+			legacy.length,
 		);
-		const list = dom.append(container, $('ul.plm-legacy-list'));
+		dom.append(summary, $('span.plm-legacy-more')).textContent = localize('paradis.claudeAccounts.legacyMore', "詳しく");
+		dom.append(details, $('div')).textContent = localize(
+			'paradis.claudeAccounts.legacyDetail',
+			"いまログインしているアカウントは、カードの「Para Code に登録」で登録できます。登録したら、claude-swap での切り替えはやめてください。両方で切り替えると、片方が保存したログインが使えなくなることがあります。claude-swap のデータは読むだけで、書き換えません。",
+		);
+		const list = dom.append(details, $('ul.plm-legacy-list'));
 		for (const account of legacy) {
 			dom.append(list, $('li')).textContent = account.organizationName
 				? localize('paradis.claudeAccounts.legacyWithOrganization', "{0}（{1}）", account.email, account.organizationName)
 				: account.email;
 		}
-		return undefined;
+		return dom.addDisposableListener(details, 'toggle', () => {
+			this.legacyDetailsOpen = details.open;
+		});
 	}
 
 	private async switchTo(account: IParadisLimitsAccount, context: IParadisLimitsPanelContext): Promise<void> {

@@ -17,6 +17,10 @@
 // いまログインしているアカウントだけを読み取り専用で出す。見出しに接続先の名前を出し、
 // アカウントの追加・切り替え・登録・claude-swap の案内（差し込み部品を含む）は出さない。直し方の案内も
 // 接続先のターミナルでの /login に変える。
+//
+// 幅は 800px で、左に Claude、右に Codex の2列にする（列の高さは揃えない）。ウィンドウが狭いときは
+// 幅を縮めるか1列にし、ウィンドウの端からはみ出さないようにする（paradisLimitsPanelLayout.ts）。
+// 使用状況を取得できていない（'unavailable'）カードは1行に縮め、押したときだけ理由とボタンを出す。
 
 import './media/paradisLimitsMonitor.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -35,17 +39,18 @@ import {
 	IParadisLimitsWindow,
 	paradisLimitsFormatCountdown,
 	paradisLimitsNeedsRelogin,
+	paradisLimitsNotFetchedCause,
 	paradisLimitsSeverity,
 	ParadisLimitsAccountStatus,
 	ParadisLimitsProvider
 } from '../common/paradisLimitsMonitor.js';
+import { paradisLimitsPanelLayout } from '../common/paradisLimitsPanelLayout.js';
 import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
 import { ParadisLimitsMonitorClient } from './paradisLimitsMonitorClient.js';
 import { IParadisLimitsPanelContext, IParadisLimitsPanelContribution, ParadisLimitsPanelContributions } from './paradisLimitsPanelContributions.js';
 
 const $ = dom.$;
 
-const PANEL_WIDTH = 400;
 /** この分数より古い Claude の値には、カードに古さを書き添える。 */
 const STALE_CARD_MINUTES = 5;
 
@@ -80,6 +85,12 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	 * 保持して再描画のたびに復元する。持たないと、開いて眺めている最中に勝手に閉じてしまう。
 	 */
 	private readonly _hiddenDisclosureOpen = new Set<ParadisLimitsProvider>();
+	/** 1行に縮めたカードのうち、開いているもの（`provider:id`）。描き直しをまたいで覚えておく。 */
+	private readonly _expandedCompactCards = new Set<string>();
+	/** 描き直しをまたいでフォーカスを保つ要素（描くたびに作り直す）。 */
+	private readonly focusTargets = new Map<string, HTMLElement>();
+	/** 最後に描いた値（開閉の切り替えで、取り直さずに描き直すため）。 */
+	private lastSnapshot: IParadisLimitsSnapshot | undefined;
 	/** プロバイダごとの差し込み部品（パネルを開いている間だけ生きる）。 */
 	private readonly contributions: readonly IParadisLimitsPanelContribution[];
 	private readonly contributionContext: IParadisLimitsPanelContext;
@@ -96,6 +107,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		this.contributionContext = {
 			client: options.client,
 			requestRefresh: force => options.onManualRefresh(force),
+			redraw: () => this.redraw(),
+			trackFocus: (element, key) => this.focusTargets.set(key, element),
 			closePanel: () => options.onClose(),
 		};
 		this.contributions = ParadisLimitsPanelContributions.getAll().map(contribution => this._register(instantiationService.createInstance(contribution)));
@@ -139,9 +152,17 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	}
 
 	updateSnapshot(snapshot: IParadisLimitsSnapshot): void {
+		this.lastSnapshot = snapshot;
 		this.renderBody(snapshot);
 		const secondsAgo = Math.max(0, Math.round((Date.now() - snapshot.fetchedAt) / 1000));
 		this.updatedElement.textContent = localize('paradis.limitsMonitor.updated', "{0}秒前に更新", secondsAgo);
+	}
+
+	/** 取り直さずに、最後の値で描き直す。 */
+	private redraw(): void {
+		if (!this._store.isDisposed && this.lastSnapshot) {
+			this.renderBody(this.lastSnapshot);
+		}
 	}
 
 	setFetching(isFetching: boolean): void {
@@ -162,10 +183,12 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	private reposition(): void {
 		const rect = this.anchor.getBoundingClientRect();
 		const win = dom.getActiveWindow();
-		const left = Math.max(8, Math.min(rect.left, win.innerWidth - PANEL_WIDTH - 8));
+		const layout = paradisLimitsPanelLayout(rect.left, win.innerWidth);
 		const maxTop = win.innerHeight - 40;
 		this.element.style.top = `${Math.min(rect.bottom + 6, maxTop)}px`;
-		this.element.style.left = `${left}px`;
+		this.element.style.left = `${layout.left}px`;
+		this.element.style.width = `${layout.width}px`;
+		this.bodyElement.classList.toggle('two-columns', layout.columns === 2);
 	}
 
 	private renderEmpty(message: string): void {
@@ -177,20 +200,29 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		if (!snapshot) {
 			return;
 		}
+		// 描き直すとボタンが作り直されてフォーカスが外れる（Esc で閉じられなくなる）。知らされた要素なら、
+		// 描き直した後の同じ要素へフォーカスを戻す。
+		const focused = dom.getActiveElement();
+		const focusKey = [...this.focusTargets].find(([, element]) => element === focused)?.[0];
+		this.focusTargets.clear();
 		this._bodyListeners.clear();
 		dom.clearNode(this.bodyElement);
 
-		this.renderProviderSection('claude', localize('paradis.limitsMonitor.claude', "Claude"), snapshot.claude);
-		this.renderProviderSection('codex', localize('paradis.limitsMonitor.codex', "Codex"), snapshot.codex);
+		// 2列のときは左に Claude、右に Codex。1列のときは同じ2つの列が縦に並ぶ（.plm-body.two-columns の有無だけで切り替える）。
+		this.renderProviderSection(dom.append(this.bodyElement, $('.plm-column')), 'claude', localize('paradis.limitsMonitor.claude', "Claude"), snapshot.claude);
+		this.renderProviderSection(dom.append(this.bodyElement, $('.plm-column')), 'codex', localize('paradis.limitsMonitor.codex', "Codex"), snapshot.codex);
+		if (focusKey !== undefined) {
+			(this.focusTargets.get(focusKey) ?? this.element).focus();
+		}
 	}
 
-	private renderProviderSection(provider: ParadisLimitsProvider, title: string, providerSnapshot: IParadisLimitsProviderSnapshot): void {
-		const header = dom.append(this.bodyElement, $('.plm-provider-header'));
+	private renderProviderSection(parent: HTMLElement, provider: ParadisLimitsProvider, title: string, providerSnapshot: IParadisLimitsProviderSnapshot): void {
+		const header = dom.append(parent, $('.plm-provider-header'));
 		appendParadisLimitsLogo(header, provider);
 		dom.append(header, $('span')).textContent = title;
 		const remoteHost = provider === 'claude' ? providerSnapshot.remoteHost : undefined;
 		if (remoteHost) {
-			this.renderRemoteHostSection(header, providerSnapshot, remoteHost.label);
+			this.renderRemoteHostSection(parent, header, providerSnapshot, remoteHost.label);
 			return;
 		}
 		// 非表示にしている分があると「3 アカウント」なのに行が2つしか無い、という食い違いが
@@ -205,12 +237,12 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		addButton.setAttribute('role', 'button');
 		this._bodyListeners.add(dom.addDisposableListener(addButton, 'click', () => this.options.onAddAccount(provider)));
 
-		this.renderProviderAccounts(provider, providerSnapshot);
+		this.renderProviderAccounts(parent, provider, providerSnapshot);
 		for (const contribution of this.contributions) {
 			if (contribution.provider !== provider || !contribution.renderProviderFooter) {
 				continue;
 			}
-			const footer = dom.append(this.bodyElement, $('.plm-provider-footer'));
+			const footer = dom.append(parent, $('.plm-provider-footer'));
 			const disposable = contribution.renderProviderFooter(footer, providerSnapshot, this.contributionContext);
 			if (disposable) {
 				this._bodyListeners.add(disposable);
@@ -225,36 +257,38 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	 * SSH の接続先の Claude のログイン（読み取り専用）。アカウントの数・追加ボタン・差し込み部品は出さず、
 	 * 見出しに接続先の名前を出す。手元のアカウントは手元のウィンドウで見る。
 	 */
-	private renderRemoteHostSection(header: HTMLElement, providerSnapshot: IParadisLimitsProviderSnapshot, hostLabel: string | undefined): void {
+	private renderRemoteHostSection(parent: HTMLElement, header: HTMLElement, providerSnapshot: IParadisLimitsProviderSnapshot, hostLabel: string | undefined): void {
 		dom.append(header, $('.plm-provider-count')).textContent = hostLabel
 			? localize('paradis.limitsMonitor.claudeRemoteHostHeading', "接続先 {0} のログイン", hostLabel)
 			: localize('paradis.limitsMonitor.claudeRemoteHostHeadingUnknown', "接続先のログイン");
-		this.renderProviderAccounts('claude', providerSnapshot, true);
-		dom.append(this.bodyElement, $('.plm-provider-footer')).textContent = localize(
+		this.renderProviderAccounts(parent, 'claude', providerSnapshot, true);
+		dom.append(parent, $('.plm-provider-footer')).textContent = localize(
 			'paradis.limitsMonitor.claudeRemoteHostNote',
 			"接続先の Claude Code がいまログインしているアカウントです。手元の PC のアカウントの確認と切り替えは、手元のウィンドウで行います。",
 		);
 	}
 
-	private renderProviderAccounts(provider: ParadisLimitsProvider, providerSnapshot: IParadisLimitsProviderSnapshot, remoteHost = false): void {
+	private renderProviderAccounts(parent: HTMLElement, provider: ParadisLimitsProvider, providerSnapshot: IParadisLimitsProviderSnapshot, remoteHost = false): void {
 		if (providerSnapshot.sourceError) {
-			dom.append(this.bodyElement, $('.plm-source-error')).textContent = providerSnapshot.sourceError;
+			dom.append(parent, $('.plm-source-error')).textContent = providerSnapshot.sourceError;
 			return;
 		}
 		if (providerSnapshot.accounts.length === 0) {
-			dom.append(this.bodyElement, $('.plm-empty')).textContent = localize('paradis.limitsMonitor.noAccounts', "アカウントが見つかりません");
+			dom.append(parent, $('.plm-empty')).textContent = localize('paradis.limitsMonitor.noAccounts', "アカウントが見つかりません");
 			return;
 		}
 		const hiddenAccounts: IParadisLimitsAccount[] = [];
-		for (const account of providerSnapshot.accounts) {
+		// 使用中のアカウントを列の先頭へ（ほかは届いた順のまま）。
+		const ordered = [...providerSnapshot.accounts].sort((a, b) => Number(b.active === true) - Number(a.active === true));
+		for (const account of ordered) {
 			if (this.options.isAccountHidden(account)) {
 				hiddenAccounts.push(account);
 			} else {
-				this.renderAccount(account, remoteHost);
+				this.renderAccount(parent, account, remoteHost);
 			}
 		}
 		if (hiddenAccounts.length > 0) {
-			this.renderHiddenDisclosure(provider, hiddenAccounts);
+			this.renderHiddenDisclosure(parent, provider, hiddenAccounts);
 		}
 	}
 
@@ -262,8 +296,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	 * ログイン用(~/.codex)と使用量確認用(~/.codex-2)のように重複しがちな行を削除せず個別に
 	 * 隠せるようにする受け皿。隠したアカウントはここへ畳まれ、いつでも再表示できる。
 	 */
-	private renderHiddenDisclosure(provider: ParadisLimitsProvider, accounts: readonly IParadisLimitsAccount[]): void {
-		const details = dom.append(this.bodyElement, $('details.plm-hidden-disclosure')) as HTMLDetailsElement;
+	private renderHiddenDisclosure(parent: HTMLElement, provider: ParadisLimitsProvider, accounts: readonly IParadisLimitsAccount[]): void {
+		const details = dom.append(parent, $('details.plm-hidden-disclosure')) as HTMLDetailsElement;
 		details.open = this._hiddenDisclosureOpen.has(provider);
 		this._bodyListeners.add(dom.addDisposableListener(details, 'toggle', () => {
 			if (details.open) {
@@ -293,10 +327,37 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	}
 
 	/** @param remoteHost SSH の接続先の Claude のログイン（読み取り専用。手元の操作は出さない）。 */
-	private renderAccount(account: IParadisLimitsAccount, remoteHost = false): void {
-		const card = dom.append(this.bodyElement, $('.plm-account'));
+	private renderAccount(parent: HTMLElement, account: IParadisLimitsAccount, remoteHost = false): void {
+		const card = dom.append(parent, $('.plm-account'));
 		const top = dom.append(card, $('.plm-account-top'));
-		dom.append(top, $('.plm-account-mail')).textContent = account.email ?? account.homeLabel ?? account.id;
+		const name = account.email ?? account.homeLabel ?? account.id;
+		// 取得できていないカードは1行に縮め、理由とボタンは開いたときだけ出す（同じ説明文が何枚も並ばないように）。
+		const compact = account.status === 'unavailable' && !remoteHost;
+		const compactKey = `${account.provider}:${account.id}`;
+		const expanded = compact && this._expandedCompactCards.has(compactKey);
+		if (compact) {
+			card.classList.add('compact');
+			card.classList.toggle('expanded', expanded);
+			const toggle = dom.append(top, $('button.plm-account-toggle')) as HTMLButtonElement;
+			toggle.type = 'button';
+			this.focusTargets.set(`compact:${compactKey}`, toggle);
+			toggle.setAttribute('aria-expanded', String(expanded));
+			toggle.setAttribute('aria-label', expanded
+				? localize('paradis.limitsMonitor.collapseAccount', "{0} の説明を閉じる", name)
+				: localize('paradis.limitsMonitor.expandAccount', "{0} の説明を開く", name));
+			toggle.appendChild($(`span${ThemeIcon.asCSSSelector(expanded ? Codicon.chevronDown : Codicon.chevronRight)}`));
+			dom.append(toggle, $('span.plm-account-mail')).textContent = name;
+			this._bodyListeners.add(dom.addDisposableListener(toggle, 'click', () => {
+				if (this._expandedCompactCards.has(compactKey)) {
+					this._expandedCompactCards.delete(compactKey);
+				} else {
+					this._expandedCompactCards.add(compactKey);
+				}
+				this.redraw();
+			}));
+		} else {
+			dom.append(top, $('.plm-account-mail')).textContent = name;
+		}
 
 		// バッジとアイコンボタンを1つの列にまとめて右寄せする。全部をここに集めて高さを
 		// 揃えることで、以前バッジと削除ボタンの縦位置が微妙にずれて見えていた問題を避ける。
@@ -354,6 +415,9 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			this._bodyListeners.add(this.hoverService.setupManagedHover(this.hoverDelegate, removeButton, removeLabel));
 		}
 
+		if (compact && !expanded) {
+			return;
+		}
 		if (account.status !== 'ok') {
 			const errorRow = dom.append(card, $('.plm-error-row'));
 			// Claude の登録していないログインは Para Code からは直せない（ターミナルで claude に
@@ -494,8 +558,15 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 					case 'rate_limited':
 						return localize('paradis.limitsMonitor.rateLimited', "使用状況の取得回数が上限に達したため、しばらく待ってから取り直します");
 					default:
-						// 制限到達で取得が止まっている場合が多いが、通信断や取得失敗でも同じ状態になる。
-						return localize('paradis.limitsMonitor.usageUnavailable', "使用状況を一時的に取得できていません（制限に達したアカウントは、枠がリセットされるまで取得を止めるため、この表示になることがあります）");
+						// 'not_fetched' は statusDetail に本当の理由が入る（取りに行くのを控えている・まだ取れていない）。
+						switch (paradisLimitsNotFetchedCause(account.statusDetail)) {
+							case 'shared_with_claude_swap':
+								return localize('paradis.limitsMonitor.notFetchedSharedWithClaudeSwap', "claude-swap と同じログインを共有している可能性があるため、ログインの更新を控えています（更新すると claude-swap 側のログインが使えなくなるため）。このアカウントを使うと表示されます");
+							case 'same_lineage':
+								return localize('paradis.limitsMonitor.notFetchedSameLineage', "いまのログインと同じトークンを使っているため、ログインの更新は Claude Code に任せています。更新されると表示されます");
+							case 'not_yet':
+								return localize('paradis.limitsMonitor.notFetchedYet', "使用状況をまだ取得していません。順に取りに行くので、しばらくすると表示されます");
+						}
 				}
 			case 'no_credentials':
 				return localize('paradis.limitsMonitor.noCredentialsDetail', "認証情報が見つかりません。再ログインしてください");

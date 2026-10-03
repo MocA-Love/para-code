@@ -51,7 +51,7 @@ import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcus
 // PARA-PATCH: RTK節約データのモバイル配信
 import { ParadisRtkClient } from '../../rtk/electron-browser/paradisRtkClient.js';
 import { ParadisLimitsMonitorClient } from '../../limitsMonitor/electron-browser/paradisLimitsMonitorClient.js';
-import { ParadisCodexMobileLimitsFields } from '../../codexAccounts/electron-browser/paradisCodexMobileLimitsFields.js';
+import { PARADIS_CODEX_MOBILE_RESET_READ_DEADLINE_MS, ParadisCodexMobileLimitsFields } from '../../codexAccounts/electron-browser/paradisCodexMobileLimitsFields.js';
 import { ParadisGithubMetricsClient } from '../../githubMetrics/electron-browser/paradisGithubMetricsClient.js';
 import { ParadisResourceMonitorClient } from '../../resourceMonitor/electron-browser/paradisResourceMonitorClient.js';
 import { ParadisSpaceDiskClient } from '../../spaceDisk/electron-browser/paradisSpaceDiskClient.js';
@@ -249,8 +249,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		const rtkClient = instantiationService.createInstance(ParadisRtkClient);
 		// AIリミット(Rate Limit)スナップショット取得（PC版タイトルバーのリミットモニターと同じクライアント）
 		const limitsClient = instantiationService.createInstance(ParadisLimitsMonitorClient);
-		// Codex の使用中アカウント（active）とリセットの残り（resetCredits）を任意項目として足す（既存の項目は変えない）
-		const codexLimitsFields = instantiationService.createInstance(ParadisCodexMobileLimitsFields);
+		// Codex の使用中アカウント（active）とリセットの残り・1件ごとの期限（resetCredits）を任意項目として足す（既存の項目は変えない）。
+		// リセットは要求のたびに読む（3分のキャッシュつき）ので、PC で使用量パネルを開いていなくても届く
+		const codexLimitsFields = instantiationService.createInstance(ParadisCodexMobileLimitsFields, PARADIS_CODEX_MOBILE_RESET_READ_DEADLINE_MS);
 		// GitHub API利用状況取得（PC版のGitHub API Usageダッシュボードと同じクライアント）
 		const githubClient = instantiationService.createInstance(ParadisGithubMetricsClient);
 		// PC本体のCPU/メモリ/ディスク取得（PC版タイトルバーのリソースモニタと同じクライアント）

@@ -207,6 +207,21 @@ describe('aggregateAccounts', () => {
 		expect(accountFetchedAt(account({ fetchedAt: Number.NaN }), 7)).toBe(7);
 	});
 
+	it('Codex の枠のリセットは、リセットを添えている PC の新しい値から採る', () => {
+		const codex = (extra: Partial<RateLimitAccount>) => account({ provider: 'codex', accountId: 'acct-1', email: 'c@x', ...extra });
+		const result = entries([pc('a'), pc('b'), pc('c')], {
+			// 使用量の値は a が最も新しいが、リセットを添えていない（古い PC）
+			'pc:a': { limits: { value: limits([], [codex({ sevenDay: { usedPercent: 40 } })]), at: NOW, receivedAt: NOW } },
+			'pc:b': { limits: { value: limits([], [codex({ sevenDay: { usedPercent: 30 }, resetCredits: { availableCount: 2, credits: [{ expiresAt: NOW + HOUR }, {}] } })]), at: NOW - HOUR, receivedAt: NOW } },
+			'pc:c': { limits: { value: limits([], [codex({ sevenDay: { usedPercent: 20 }, resetCredits: { availableCount: 3 } })]), at: NOW - 2 * HOUR, receivedAt: NOW } },
+		});
+		const [item] = aggregateAccounts(result, 'codex', NOW);
+		expect([item!.account.sevenDay?.usedPercent, item!.account.resetCredits]).toEqual([40, { availableCount: 2, credits: [{ expiresAt: NOW + HOUR }, {}] }]);
+		// どの PC もリセットを添えていなければ付けない
+		const none = entries([pc('a')], { 'pc:a': { limits: { value: limits([], [codex({})]), at: NOW, receivedAt: NOW } } });
+		expect(aggregateAccounts(none, 'codex', NOW)[0]!.account.resetCredits).toBeUndefined();
+	});
+
 	it('PC が前回の値を返した（stale）ものは古い値として扱う', () => {
 		const result = entries([pc('a')], { 'pc:a': { limits: { value: limits([account({ email: 'u@x' })], [], { stale: true }), at: NOW, receivedAt: NOW } } });
 		expect(aggregateAccounts(result, 'claude', NOW)[0]!.old).toBe(true);
