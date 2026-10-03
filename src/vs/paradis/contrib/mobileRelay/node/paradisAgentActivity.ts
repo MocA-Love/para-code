@@ -265,6 +265,21 @@ export class ParadisAgentActivityTracker {
 	}
 
 	/**
+	 * Claude Code の mod（Claude Mods）が知らせた子の終わり（agentId 付きの turn.complete）。TaskStop で止めたときは
+	 * SubagentStop が来ないので、これが唯一の終わりの知らせになる。一覧にある動いている子だけを終える（Claude Code の
+	 * 内部の補助エージェントにも turn.complete は来ないが、来ても一覧に無いので増やさない）。
+	 */
+	applyClaudeSubagentEnd(id: string, status: 'completed' | 'interrupted' | 'failed', at: number): boolean {
+		const previous = this.agents.get(id);
+		if (previous === undefined || terminal(previous.status)) {
+			return false;
+		}
+		const before = this.serialized();
+		this.agents.set(id, { ...previous, status, updatedAt: Math.max(previous.updatedAt, at) });
+		return this.finishApply(before, at);
+	}
+
+	/**
 	 * ネストした子エージェント（ペイン所有者のCLI配下で起動された別のエージェントCLI。
 	 * ingress の所有権分類が 'nested' としたhook）を活動ツリーへ投影する。
 	 * ペインの親セッション・ライブ状態には一切影響しない。

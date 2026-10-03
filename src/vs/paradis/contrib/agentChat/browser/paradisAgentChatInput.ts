@@ -200,11 +200,14 @@ export class ParadisAgentChatInput {
 		if (!(await this.interactionStillPending(token, 'approval', interactionId))) {
 			return localize('paradisAgentChat.errorApprovalGone', "この確認はもう回答を待っていません");
 		}
-		if (paradisIsCodexDaemonApprovalInteraction(interactionId)) {
-			// Codex の app-server 経由の承認は、キーではなく構造化された回答で返す（モバイルと同じ経路）。
+		if (paradisIsCodexDaemonApprovalInteraction(interactionId) || choiceId === 'always') {
+			// Codex の app-server 経由の承認と、Claude Code の mod が待つ承認の「以後は確認しない」は、キーではなく
+			// 構造化された回答で返す（モバイルと同じ経路）。
 			const answered = await this.dependencies.source.answerAgentChatApproval(token, interactionId, choiceId).catch(() => false);
 			void this.dependencies.session(token).refresh();
-			return answered ? undefined : localize('paradisAgentChat.errorApprovalSend', "Codex へ回答を送れませんでした。ターミナルで答えてください");
+			return answered ? undefined : choiceId === 'always'
+				? localize('paradisAgentChat.errorApprovalSendMod', "Claude Code へ回答を送れませんでした。ターミナルで答えてください")
+				: localize('paradisAgentChat.errorApprovalSend', "Codex へ回答を送れませんでした。ターミナルで答えてください");
 		}
 		if (choiceId !== 'yes' && choiceId !== 'no') {
 			return localize('paradisAgentChat.errorApprovalChoice', "この選択肢はここからは選べません。ターミナルで答えてください");

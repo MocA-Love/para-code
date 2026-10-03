@@ -197,6 +197,8 @@ function createFixture(): {
 		_activeIngressRequestCount: 0,
 		_activeHookRequestsByToken: new Map<string, number>(),
 		_activeHookRequestCount: 0,
+		_activeModRequestsByToken: new Map<string, number>(),
+		_activeModRequestCount: 0,
 		_activeMobileVoiceRequestCount: 0,
 		_activeMobileVoiceBytes: 0,
 		_mobileVoiceTickets: new Map<string, unknown>(),
