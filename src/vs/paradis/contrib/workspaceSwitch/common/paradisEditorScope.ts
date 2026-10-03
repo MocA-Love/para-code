@@ -22,6 +22,13 @@ export interface IParadisEditorScopeService {
 	captureScope(stateKey: string, saveSerializedState: (excludedEditors: readonly EditorInput[]) => void): void;
 	captureAuxiliaryPartOnClose(stateKey: string, part: IEditorPart): void;
 	restoreScope(stateKey: string): Promise<void>;
+	/**
+	 * 預けてある生きた入力のうち `filter` に合い、作業コピーを持たないものだけを先に開く。
+	 * 残りは従来どおり `restoreScope` が開く。巻き戻すときは `revertEarlyRestore` で預け直す。
+	 */
+	restoreScopeEarly(stateKey: string, filter: (editor: EditorInput) => boolean): Promise<void>;
+	/** `restoreScopeEarly` で開いた入力をエディタから切り離し、預けた状態へ戻す。 */
+	revertEarlyRestore(stateKey: string): void;
 	beginSwitch(): void;
 	commitSwitch(stateKey: string, uri: URI): Promise<void>;
 	rollbackSwitch(stateKey: string | undefined, uri: URI | undefined): Promise<void>;

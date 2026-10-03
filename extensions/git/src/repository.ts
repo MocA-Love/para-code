@@ -34,6 +34,7 @@ import { ISourceControlHistoryItemDetailsProviderRegistry } from './historyItemD
 import { GitArtifactProvider } from './artifactProvider';
 import { RepositoryCache } from './repositoryCache';
 import { GitQuickDiffProvider, StagedResourceQuickDiffProvider } from './quickDiffProvider';
+import { ParadisParkedRefreshGate } from './paradisRepositoryPark'; // PARA-PATCH: see paradisUpdateModelStateUnlessParked()
 
 const timeout = (millis: number) => new Promise(c => setTimeout(c, millis));
 
@@ -1021,7 +1022,7 @@ export class Repository implements Disposable {
 			|| e.affectsConfiguration('git.openDiffOnClick', root)
 			|| e.affectsConfiguration('git.showActionButton', root)
 			|| e.affectsConfiguration('git.similarityThreshold', root)
-		)(() => this.updateModelState(), this, this.disposables);
+		)(() => this.paradisUpdateModelStateUnlessParked(), this, this.disposables); // PARA-PATCH: see paradisUpdateModelStateUnlessParked()
 
 		const updateInputBoxVisibility = () => {
 			const config = workspace.getConfiguration('git', root);
@@ -3210,6 +3211,21 @@ export class Repository implements Disposable {
 		this._fileWatcherDisposables.push(new FileEventLogger(onRepositoryWorkingTreeFileChange, onRepositoryDotGitFileChange, logger));
 	}
 
+	/**
+	 * PARA-PATCH: a configuration change must not rebuild the resource groups of a parked repository.
+	 * Doing so would refill the groups that setScopeActive(false) emptied, leaking another space's
+	 * changes into ISCMService, and spend a git status on a repository nobody is looking at. The change
+	 * is remembered and applied by the status() that unparking always runs.
+	 */
+	private paradisUpdateModelStateUnlessParked(): void {
+		if (this._paradisParkedRefreshGate.request(this._scopeActive, () => this.updateModelState())) {
+			this.logger.trace('[Repository][paradisUpdateModelStateUnlessParked] Deferred a configuration refresh until the repository is unparked.');
+		}
+	}
+
+	/** PARA-PATCH: see paradisUpdateModelStateUnlessParked() and ParadisParkedRefreshGate. */
+	private readonly _paradisParkedRefreshGate = new ParadisParkedRefreshGate();
+
 	/** PARA-PATCH: see startFileWatchers(). */
 	private stopFileWatchers(): void {
 		this._fileWatcherDisposables = dispose(this._fileWatcherDisposables);
@@ -3246,6 +3262,9 @@ export class Repository implements Disposable {
 
 		this.startFileWatchers();
 		this.logger.trace(`[Repository][setScopeActive] Unparked repository: ${this.root}`);
+		// The status() below rebuilds the model state with the current configuration, which covers any
+		// refresh deferred while parked (paradisUpdateModelStateUnlessParked()).
+		this._paradisParkedRefreshGate.settledByUnpark();
 		// Nobody watched this repository while it was parked, so unparking always starts with a
 		// status(). Waiters are released only after it settles: waking them first would put auto
 		// fetch and an idle status on git at the same moment, right when the switch is heaviest.

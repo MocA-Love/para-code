@@ -829,3 +829,10 @@ export function markParadisManagedWorkspaceWindow(): void {
 export function isParadisManagedWorkspaceWindow(): boolean {
 	return paradisManagedWorkspaceWindow;
 }
+
+/** テスト専用。前の値を返すので、テストの後で戻すこと。 */
+export function paradisSetManagedWorkspaceWindowForTest(value: boolean): boolean {
+	const previous = paradisManagedWorkspaceWindow;
+	paradisManagedWorkspaceWindow = value;
+	return previous;
+}

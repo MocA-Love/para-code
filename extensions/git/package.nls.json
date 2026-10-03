@@ -256,6 +256,7 @@
 	"config.worktreeIncludeFiles": "Configure [glob patterns](https://aka.ms/vscode-glob-patterns) for files and folders that are included when creating a new worktree. Only files and folders that match the patterns and are listed in `.gitignore` will be copied to the newly created worktree.",
 	"config.alwaysShowStagedChangesResourceGroup": "Always show the Staged Changes resource group.",
 	"config.paraBranchDiff.enabled": "ソース管理に、現在のブランチが分岐元から積み上げた変更をまとめた「ブランチの変更点」欄を表示するかどうかを設定します。",
+	"config.paraParkedRepositoryLimit": "スペースを切り替えたとき、離れたスペースの Git リポジトリを閉じずに預けておく数の上限です。戻ったときにリポジトリを作り直さずに済むので、ソース管理の表示が速く出ます。預けたリポジトリはメモリに残り、1 つあたり普通のリポジトリで 0.1〜0.3MB、ref が数千本あるリポジトリでは 3〜5MB を使います。`0` は無制限で、ウィンドウを開いている間は訪れたスペースの数だけ増え続けます。下げると、超えた分を古い順にすぐ閉じます。",
 	"config.alwaysSignOff": "Controls the signoff flag for all commits.",
 	"config.addAICoAuthor": "Controls whether a 'Co-authored-by' trailer is automatically added to the commit message when AI-generated code is included in the commit.",
 	"config.addAICoAuthor.off": "Never add the AI co-author trailer.",

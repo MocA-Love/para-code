@@ -21,7 +21,7 @@ import { IPostCommitCommandsProviderRegistry } from './postCommitCommands';
 import { IBranchProtectionProviderRegistry } from './branchProtection';
 import { ISourceControlHistoryItemDetailsProviderRegistry } from './historyItemDetailsProvider';
 import { RepositoryCache } from './repositoryCache';
-import { ParadisRepositoryParkingLot } from './paradisRepositoryPark'; // PARA-PATCH: see paradisRepositoryPark.ts
+import { PARADIS_PARK_LIMIT_SETTING, ParadisRepositoryParkingLot, paradisResolveParkLimit } from './paradisRepositoryPark'; // PARA-PATCH: see paradisRepositoryPark.ts
 import { commitRepositoriesForParking } from './paradisUnaccountedToPark'; // PARA-PATCH: see paradisUnaccountedToPark.ts
 
 class RepositoryPick implements QuickPickItem {
@@ -302,7 +302,7 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 
 	constructor(readonly git: Git, private readonly askpass: Askpass, private globalState: Memento, readonly workspaceState: Memento, private logger: LogOutputChannel, private readonly telemetryReporter: TelemetryReporter) {
 		// Repositories managers
-		this._parkingLot = new ParadisRepositoryParkingLot(logger); // PARA-PATCH: see paradisRepositoryPark.ts
+		this._parkingLot = new ParadisRepositoryParkingLot(logger, paradisResolveParkLimit(workspace.getConfiguration('git').get(PARADIS_PARK_LIMIT_SETTING))); // PARA-PATCH: see paradisRepositoryPark.ts
 		this._closedRepositoriesManager = new ClosedRepositoriesManager(workspaceState);
 		this._parentRepositoriesManager = new ParentRepositoriesManager(globalState);
 		this._unsafeRepositoriesManager = new UnsafeRepositoriesManager();
@@ -574,6 +574,8 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 		// See paradisRepositoryPark.ts.
 		this._parkingLot.disposeMatching(root =>
 			workspace.getConfiguration('git', Uri.file(root)).get<boolean>('enabled') !== true);
+		// PARA-PATCH: apply a lowered/raised parking limit right away (evicts the oldest on decrease).
+		this._parkingLot.setLimit(paradisResolveParkLimit(workspace.getConfiguration('git').get(PARADIS_PARK_LIMIT_SETTING)));
 
 		const possibleRepositoryFolders = (workspace.workspaceFolders || [])
 			.filter(folder => workspace.getConfiguration('git', folder.uri).get<boolean>('enabled') === true)

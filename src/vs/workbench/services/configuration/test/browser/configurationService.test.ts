@@ -49,6 +49,7 @@ import { IUserDataProfilesService, toUserDataProfile, UserDataProfilesService } 
 import { NullPolicyService } from '../../../../../platform/policy/common/policy.js';
 import { FilePolicyService } from '../../../../../platform/policy/common/filePolicyService.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
+import { paradisOverrideFolderConfigurationParkingForTest } from '../../../../../paradis/contrib/workspaceSwitch/common/paradisFolderConfigurationParking.js'; // PARA-PATCH: see the para: test in the Multiroot suite
 import { UserDataProfileService } from '../../../userDataProfile/common/userDataProfileService.js';
 import { IUserDataProfileService } from '../../../userDataProfile/common/userDataProfile.js';
 import { TasksSchemaProperties } from '../../../../contrib/tasks/common/tasks.js';
@@ -2629,8 +2630,18 @@ suite('WorkspaceConfigurationService - Profiles', () => {
 
 });
 
+/** PARA-PATCH: an InMemoryFileSystemProvider that records the paths it reads (see the para: test in the Multiroot suite). */
+class ParadisReadRecordingFileSystemProvider extends InMemoryFileSystemProvider {
+	readonly reads: string[] = [];
+	override async readFile(resource: URI): Promise<Uint8Array> {
+		this.reads.push(resource.path);
+		return super.readFile(resource);
+	}
+}
+
 suite('WorkspaceConfigurationService-Multiroot', () => {
 
+	let paradisFileSystemProvider: ParadisReadRecordingFileSystemProvider; // PARA-PATCH: see the para: test below
 	let workspaceContextService: IWorkspaceContextService, jsonEditingServce: IJSONEditingService, testObject: WorkspaceService, fileService: IFileService, environmentService: BrowserWorkbenchEnvironmentService, userDataProfileService: IUserDataProfileService;
 	const configurationRegistry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration);
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
@@ -2688,7 +2699,7 @@ suite('WorkspaceConfigurationService-Multiroot', () => {
 	setup(async () => {
 		const logService = new NullLogService();
 		fileService = disposables.add(new FileService(logService));
-		const fileSystemProvider = disposables.add(new InMemoryFileSystemProvider());
+		const fileSystemProvider = paradisFileSystemProvider = disposables.add(new ParadisReadRecordingFileSystemProvider()); // PARA-PATCH: records reads for the para: test below; behaves like InMemoryFileSystemProvider
 		disposables.add(fileService.registerProvider(ROOT.scheme, fileSystemProvider));
 
 		const appSettingsHome = joinPath(ROOT, 'user');
@@ -3388,6 +3399,53 @@ suite('WorkspaceConfigurationService-Multiroot', () => {
 		assert.strictEqual(actual.userValue, undefined);
 		assert.strictEqual(actual.workspaceValue, undefined);
 		assert.strictEqual(actual.workspaceFolderValue, undefined);
+	}));
+
+	// PARA-PATCH: a folder configuration parked across a Para Code space switch (paradisFolderConfigurationParking.ts)
+	// must never leak the removed folder's settings, must pick up changes made while parked, and is reused when unchanged.
+	test('para: parked folder configuration is not mixed up, follows external changes and is reused when unchanged', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {
+		paradisOverrideFolderConfigurationParkingForTest(true);
+		try {
+			const workspaceService = <WorkspaceService>testObject;
+			const key = 'configurationService.workspace.testResourceSetting';
+			const folderB = workspaceService.getWorkspace().folders[1].uri;
+			const settingsB = joinPath(folderB, '.vscode', 'settings.json');
+			await fileService.writeFile(settingsB, VSBuffer.fromString(`{ "${key}": "b1" }`));
+			await testObject.reloadConfiguration();
+			const before = testObject.getValue(key, { resource: folderB });
+
+			await workspaceService.removeFolders([folderB]);
+			const whileRemoved = testObject.getValue(key, { resource: folderB });
+			// Changed on disk while parked: the parked watcher must only mark it stale, not re-add folder b.
+			await fileService.writeFile(settingsB, VSBuffer.fromString(`{ "${key}": "b2" }`));
+			await timeout(500);
+			const afterChangeWhileRemoved = { value: testObject.getValue(key, { resource: folderB }), folders: workspaceService.getWorkspace().folders.length };
+
+			paradisFileSystemProvider.reads.length = 0;
+			await workspaceService.addFolders([{ uri: folderB }]);
+			const afterReturn = testObject.getValue(key, { resource: folderB });
+			// Changed while parked: it must be read again (proves the read log sees folder reads at all).
+			const readStaleOnReturn = paradisFileSystemProvider.reads.some(path => path.startsWith(joinPath(folderB, '.vscode').path));
+
+			// Unchanged round trip: the parked configuration is reused without reading .vscode/ again.
+			await workspaceService.removeFolders([folderB]);
+			paradisFileSystemProvider.reads.length = 0;
+			await workspaceService.addFolders([{ uri: folderB }]);
+			const reads = paradisFileSystemProvider.reads.filter(path => path.startsWith(joinPath(folderB, '.vscode').path));
+			const afterReuse = testObject.getValue(key, { resource: folderB });
+
+			assert.deepStrictEqual({ before, whileRemoved, afterChangeWhileRemoved, afterReturn, readStaleOnReturn, afterReuse, reads }, {
+				before: 'b1',
+				whileRemoved: 'isSet',
+				afterChangeWhileRemoved: { value: 'isSet', folders: 1 },
+				afterReturn: 'b2',
+				readStaleOnReturn: true,
+				afterReuse: 'b2',
+				reads: [],
+			});
+		} finally {
+			paradisOverrideFolderConfigurationParkingForTest(undefined);
+		}
 	}));
 
 });
