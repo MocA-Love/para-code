@@ -568,11 +568,12 @@ export class ParadisAgentActivityTracker {
 				continue;
 			}
 			const previous = this.advisors.get(advisor.id);
-			if (previous !== undefined && previous.status !== 'running' && advisor.status === 'running') {
+			// 決着した相談を、遅れて届いた開始や、読み直しで推定した中断（結果の行がまだ読めていない）で上書きしない
+			if (previous !== undefined && previous.status !== 'running' && (advisor.status === 'running' || advisor.status === 'interrupted')) {
 				continue;
 			}
 			const ownerId = advisor.ownerId ?? previous?.ownerId;
-			const model = advisor.model ?? previous?.model ?? this.lastAdvisorModel;
+			const model = advisor.model ?? previous?.model;
 			if (advisor.model !== undefined) {
 				this.lastAdvisorModel = advisor.model;
 			}
@@ -779,7 +780,7 @@ export class ParadisAgentActivityTracker {
 			}
 		}
 		// 会話が終わったら、結果の無い相談はもう返らない（サブエージェントの中の相談も含めて）
-		this.endAdvisors(reason === 'completed' ? 'interrupted' : reason, at, () => true);
+		this.endAdvisors('interrupted', at, () => true);
 		this.finishCompactions(at);
 		return this.finishApply(before, at);
 	}

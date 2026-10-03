@@ -122,6 +122,44 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		assert.deepStrictEqual(harness.tailer()?.messages.filter(message => message.kind === 'text').map(message => message.text), ['mod から先に届いた本文', 'ファイルだけの本文', '最後']);
 	}));
 
+	test('returns the plain Advisor reply when its detail is asked for', () => withHarness(async harness => {
+		const trackers = (harness.chat as unknown as { activityTrackers: Map<string, { snapshot(): { advisors?: readonly { id: string; status: string }[] } | undefined }> }).activityTrackers;
+		const line = (uuid: string, block: unknown) => `${JSON.stringify({ type: 'assistant', uuid, timestamp: new Date().toISOString(), advisorModel: 'claude-opus-4-7', message: { id: 'msg_plain', role: 'assistant', content: [block] } })}\n`;
+		await appendFile(harness.transcriptPath, line('u-p1', { type: 'server_tool_use', id: 'srvtoolu_plain', name: 'advisor', input: {} }) + line('u-p2', { type: 'advisor_tool_result', tool_use_id: 'srvtoolu_plain', content: { type: 'advisor_result', text: '順番を入れ替えてください。' } }));
+		await waitFor(() => trackers.get(harness.token)?.snapshot()?.advisors?.[0]?.status === 'completed', 'the consultation was not listed');
+		harness.inbound({ t: 'activity-detail', requestId: 'advisor-ok', epoch: harness.tailer()!.epoch, activityId: 'srvtoolu_plain' });
+		await waitFor(() => harness.sent.some(message => message.t === 'activity-detail' && message.requestId === 'advisor-ok'), 'the detail was not answered');
+		const answer = harness.sent.find(message => message.t === 'activity-detail' && message.requestId === 'advisor-ok');
+		assert.deepStrictEqual({ error: answer?.error, messages: answer?.messages }, {
+			error: undefined,
+			messages: [{ role: 'tool', kind: 'tool', toolKind: 'tool_result', tool: 'Advisor', text: '順番を入れ替えてください。', advisor: { model: 'claude-opus-4-7', outcome: 'text' } }],
+		});
+	}));
+
+	test('refuses the Advisor reply for another conversation, a pane the phone does not follow, and an encrypted reply', () => withHarness(async harness => {
+		const trackers = (harness.chat as unknown as { activityTrackers: Map<string, { snapshot(): { advisors?: readonly { id: string; status: string }[] } | undefined }> }).activityTrackers;
+		const line = (uuid: string, block: unknown) => `${JSON.stringify({ type: 'assistant', uuid, timestamp: new Date().toISOString(), advisorModel: 'claude-opus-4-7', message: { id: 'msg_refuse', role: 'assistant', content: [block] } })}\n`;
+		await appendFile(harness.transcriptPath, [
+			line('u-r1', { type: 'server_tool_use', id: 'srvtoolu_plain', name: 'advisor', input: {} }),
+			line('u-r2', { type: 'advisor_tool_result', tool_use_id: 'srvtoolu_plain', content: { type: 'advisor_result', text: '本文' } }),
+			line('u-r3', { type: 'server_tool_use', id: 'srvtoolu_secret', name: 'advisor', input: {} }),
+			line('u-r4', { type: 'advisor_tool_result', tool_use_id: 'srvtoolu_secret', content: { type: 'advisor_redacted_result', encrypted_content: 'x' } }),
+		].join(''));
+		await waitFor(() => trackers.get(harness.token)?.snapshot()?.advisors?.filter(advisor => advisor.status === 'completed').length === 2, 'the consultations were not listed');
+		const epoch = harness.tailer()!.epoch;
+		harness.inbound({ t: 'activity-detail', requestId: 'advisor-epoch', epoch: 'another-epoch', activityId: 'srvtoolu_plain' });
+		harness.chat.handleInbound('mobile-2', new TextEncoder().encode(JSON.stringify({ id: 1, token: harness.token, t: 'activity-detail', requestId: 'advisor-unfollowed', epoch, activityId: 'srvtoolu_plain' })));
+		harness.inbound({ t: 'activity-detail', requestId: 'advisor-redacted', epoch, activityId: 'srvtoolu_secret' });
+		const answered = ['advisor-epoch', 'advisor-redacted'];
+		await waitFor(() => answered.every(id => harness.sent.some(message => message.t === 'activity-detail' && message.requestId === id)), 'the refusals were not answered');
+		// 購読していない端末の要求は、答えないか拒否するだけで、本文は送らない
+		await new Promise<void>(resolve => setTimeout(resolve, 100));
+		assert.deepStrictEqual(['advisor-epoch', 'advisor-unfollowed', 'advisor-redacted'].map(id => {
+			const answer = harness.sent.find(message => message.t === 'activity-detail' && message.requestId === id);
+			return [id, answer === undefined || typeof answer.error === 'string', answer?.messages];
+		}), [['advisor-epoch', true, undefined], ['advisor-unfollowed', true, undefined], ['advisor-redacted', true, undefined]]);
+	}));
+
 	test('shows "consulting the Advisor" while waiting and lists the consultation when the result lands', () => withHarness(async harness => {
 		const access = harness.chat as unknown as {
 			liveStates: Map<string, { phase: string; tool?: string; detail?: string }>;
