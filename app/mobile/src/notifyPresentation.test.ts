@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { notifySubtitle } from './notifyPresentation.js';
+import { notifyPayloadSubtitle, notifySubtitle } from './notifyPresentation.js';
 
 /**
  * 副題の組み立てを固定するテスト。同じ規則を通知拡張（NotificationService.swift の
@@ -25,5 +25,24 @@ describe('notifySubtitle', () => {
 			notifySubtitle(undefined, undefined, true),
 			notifySubtitle('  ', undefined, false),
 		]).toEqual(['MacBook Pro', 'Codex', undefined, undefined]);
+	});
+});
+
+describe('notifyPayloadSubtitle', () => {
+	test('新しい PC の通知: 2 台以上は「エージェント · タブ名 · PC 名」、1 台はタブ名だけ', () => {
+		const payload = { category: 'done', agent: 'claude' as const, tab: 'monitor', subtitle: 'Claude · monitor' };
+		expect([
+			notifyPayloadSubtitle(payload, 'Mag-Mini', true),
+			notifyPayloadSubtitle(payload, 'Mag-Mini', false),
+			notifyPayloadSubtitle({ category: 'approval', agent: 'codex' as const }, 'Mag-Mini', true),
+			notifyPayloadSubtitle({ category: 'approval', agent: 'codex' as const }, 'Mag-Mini', false),
+		]).toEqual(['Claude · monitor · Mag-Mini', 'monitor', 'Codex · Mag-Mini', undefined]);
+	});
+
+	test('種類の無い旧 PC の通知は従来の規則', () => {
+		expect([
+			notifyPayloadSubtitle({ subtitle: 'Claude' }, 'Mag-Mini', true),
+			notifyPayloadSubtitle({ subtitle: 'Claude' }, 'Mag-Mini', false),
+		]).toEqual(['Claude · Mag-Mini', 'Claude']);
 	});
 });

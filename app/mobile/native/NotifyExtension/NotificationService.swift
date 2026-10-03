@@ -8,10 +8,13 @@
 //  通知の title / body を実際の内容へ差し替える。
 //  復号鍵はメインアプリが共有 Keychain に保存した 32 バイト鍵 (hex 文字列)。
 //  復号できたら、ウィジェットの要約（App Group。WidgetShared.swift の WidgetStore）の要対応も書き換える。
+//  notify.content.v1 の PC の通知は、種類（category）からカテゴリ（para.<種類>。ボタンと長押しの画面）を付け、
+//  送り主のエージェントを Communication Notification（INSendMessageIntent）の送り主として載せる。
 
 import UserNotifications
 import CryptoKit
 import Foundation
+import Intents
 
 final class NotificationService: UNNotificationServiceExtension {
 
@@ -46,6 +49,8 @@ final class NotificationService: UNNotificationServiceExtension {
 		// アプリはタップの遷移と通知センターの後始末で userInfo の識別子を読むので、ここで捨てる。
 		func deliverFallback() {
 			Self.stripAppReadKeys(bestAttempt)
+			// カテゴリも生ペイロード（リレーが書ける）からは採らない。ボタンや長押しの画面を出させない。
+			bestAttempt.categoryIdentifier = ""
 			deliver(bestAttempt)
 		}
 
@@ -69,16 +74,25 @@ final class NotificationService: UNNotificationServiceExtension {
 		if let body = json["body"] as? String {
 			bestAttempt.body = body
 		}
-		// タイトルの下の細い行。PCはエージェント種別までしか作れないので、2台以上と
-		// ペアリングしているときにPC名を継ぎ足すのはこちらの役目
-		// （app/mobile/src/notifyPresentation.ts と同じ規則。変えるときは両方直すこと）。
+		// タイトルの下の細い行。何台の PC とペアリングしているかはこちらしか知らないので、組み立てはこちらの役目
+		// （app/mobile/src/notifyPresentation.ts の notifyPayloadSubtitle と同じ規則。変えるときは両方直すこと）。
+		let category = Self.category(json["category"])
+		let agent = Self.agent(json["agent"])
 		if let subtitle = Self.composeSubtitle(
 			json["subtitle"] as? String,
+			category: category,
+			agent: agent,
+			tab: json["tab"] as? String,
 			pcName: json["pcName"] as? String,
 			multiplePcs: opened.keyCount > 1
 		) {
 			bestAttempt.subtitle = subtitle
 		}
+		// ボタン（許可・拒否・返信・開く）と長押しの画面（ParaCodeNotifyContent）のカテゴリ。
+		// アプリの登録（app/mobile/src/notificationActions.ts の NOTIFY_CATEGORIES と notifyCategoryIdentifier）と一致させる。
+		// どの承認かの ID が無い承認は、許可・拒否のボタンが無いカテゴリにする（通知から答えさせない）。
+		let hasInteractionId = (json["interactionId"] as? String).map { !$0.isEmpty } ?? false
+		bestAttempt.categoryIdentifier = category.map { $0 == "approval" && !hasInteractionId ? "para.approval.open" : "para.\($0)" } ?? ""
 
 		// ディープリンクと対象検証に必要な識別子を userInfo へ残す。
 		var userInfo = bestAttempt.userInfo
@@ -93,6 +107,11 @@ final class NotificationService: UNNotificationServiceExtension {
 		if let agentToken = json["agentToken"] { userInfo["agentToken"] = agentToken }
 		if let windowId = json["windowId"] { userInfo["windowId"] = windowId }
 		if let kind = json["kind"] { userInfo["kind"] = kind }
+		// 長押しの画面とボタンが読む項目（notify.content.v1）。
+		if let category = category { userInfo["category"] = category }
+		if let agent = agent { userInfo["agent"] = agent }
+		if let detail = json["detail"] as? String, !detail.isEmpty, detail.count <= 8000 { userInfo["detail"] = detail }
+		if let interactionId = json["interactionId"] as? String, !interactionId.isEmpty, interactionId.count <= 200 { userInfo["interactionId"] = interactionId }
 		// アプリはこれを見て、通知をタップされたときにそのPCへ切り替える。
 		// 第一の拠り所は「復号できた鍵の名前」。ただし鍵の項目名は保存側（expo-secure-store）が
 		// Data として書くため読めるとは限らないので、読めなかったときは封緘の中でPCが名乗った値を使う。
@@ -112,7 +131,14 @@ final class NotificationService: UNNotificationServiceExtension {
 		if let collapse = collapse {
 			userInfo["collapse"] = collapse
 		}
-		bestAttempt.threadIdentifier = Self.threadKey(pcId: keyPcId, ws: json["ws"] as? String)
+		let threadKey = Self.threadKey(pcId: keyPcId, ws: json["ws"] as? String)
+		bestAttempt.threadIdentifier = threadKey
+		// 送り主のエージェント（Claude / Codex）を Communication Notification の送り主として載せる。
+		// 出すときに作り直す（updating(from:) は新しい中身を返すため）。作れなければ今の中身のまま出す。
+		let communicationAgent = agent
+		let finish: (UNMutableNotificationContent) -> UNNotificationContent = { content in
+			Self.communicationContent(content, agent: communicationAgent, threadKey: threadKey)
+		}
 		// userInfo の書き換えと印は同じ鍵の区間で行う。期限切れの側がその間に割り込んで、
 		// 書きかけの userInfo を剥がしたり、書いた後に剥がしたりしないように。
 		deliverLock.lock()
@@ -136,7 +162,7 @@ final class NotificationService: UNNotificationServiceExtension {
 		// エージェントの確認より前の通知）だけが載る。
 		let dismissTags = Self.dismissTags(json["dismiss"])
 		guard collapse != nil || !dismissTags.isEmpty else {
-			deliver(bestAttempt)
+			deliver(finish(bestAttempt))
 			return
 		}
 		let idKey = Self.pushIdKey(opened.key)
@@ -159,7 +185,7 @@ final class NotificationService: UNNotificationServiceExtension {
 			if !previous.isEmpty {
 				center.removeDeliveredNotifications(withIdentifiers: previous)
 			}
-			self?.deliver(bestAttempt)
+			self?.deliver(finish(bestAttempt))
 		}
 	}
 
@@ -172,6 +198,7 @@ final class NotificationService: UNNotificationServiceExtension {
 		deliverLock.lock()
 		if !wroteDecryptedIds && !delivered {
 			Self.stripAppReadKeys(bestAttemptContent)
+			bestAttemptContent.categoryIdentifier = ""
 		}
 		deliverLock.unlock()
 		deliver(bestAttemptContent)
@@ -200,7 +227,8 @@ final class NotificationService: UNNotificationServiceExtension {
 
 	/// アプリが userInfo から読む識別子（app/mobile/src/notificationTray.ts の readTrayData と、
 	/// notificationNavigation.ts の readNotificationDeepLink）。復号できたときだけ、ここで書く。
-	private static let appReadKeys = ["pcId", "ws", "terminalId", "terminalKey", "agentToken", "windowId", "kind", "notifyId", "collapse"]
+	/// 長押しの画面（ParaCodeNotifyContent）が読む項目（category・agent・detail・interactionId）も同じ扱い。
+	private static let appReadKeys = ["pcId", "ws", "terminalId", "terminalKey", "agentToken", "windowId", "kind", "notifyId", "collapse", "category", "agent", "detail", "interactionId"]
 
 	// MARK: - Collapse / thread keys
 
@@ -406,15 +434,94 @@ final class NotificationService: UNNotificationServiceExtension {
 	///  - 鍵をまだ保存できていないPCがあると、2台でもPC名が付かない
 	///  - PC名をアプリ側で付け替えていると、プッシュだけ元の名前で出る
 	/// どれも表示だけの差で、遷移先（pcId）は別に決めているため実害はない。
-	private static func composeSubtitle(_ subtitle: String?, pcName: String?, multiplePcs: Bool) -> String? {
-		var parts: [String] = []
-		if let agent = clamp(subtitle), !agent.isEmpty {
-			parts.append(agent)
+	///
+	/// 種類（category）が付いた新しい PC の通知は、2 台以上なら「エージェント · タブ名 · PC 名」、1 台ならタブ名だけ。
+	/// 種類の無い旧 PC の通知は、従来どおり `subtitle` に 2 台以上のときだけ PC 名を足す。
+	private static func composeSubtitle(_ subtitle: String?, category: String?, agent: String?, tab: String?, pcName: String?, multiplePcs: Bool) -> String? {
+		let candidates: [String?]
+		if category != nil {
+			candidates = multiplePcs ? [agentLabel(agent), tab, pcName] : [tab]
+		} else {
+			candidates = [subtitle, multiplePcs ? pcName : nil]
 		}
-		if multiplePcs, let pc = clamp(pcName), !pc.isEmpty {
-			parts.append(pc)
-		}
+		let parts = candidates.compactMap { clamp($0) }.filter { !$0.isEmpty }
 		return parts.isEmpty ? nil : parts.joined(separator: " · ")
+	}
+
+	/// 通知の種類（PC の paradisNotifyCompose.ts の ParadisNotifyCategory）。知らない値は捨てる。
+	private static func category(_ raw: Any?) -> String? {
+		guard let value = raw as? String, ["done", "approval", "question", "error"].contains(value) else {
+			return nil
+		}
+		return value
+	}
+
+	/// 送り主のエージェント。知らない値は捨てる。
+	private static func agent(_ raw: Any?) -> String? {
+		guard let value = raw as? String, value == "claude" || value == "codex" else {
+			return nil
+		}
+		return value
+	}
+
+	private static func agentLabel(_ agent: String?) -> String? {
+		switch agent {
+		case "claude": return "Claude"
+		case "codex": return "Codex"
+		default: return nil
+		}
+	}
+
+	// MARK: - Communication Notification
+
+	/// 送り主のエージェントを Communication Notification（INSendMessageIntent）として載せた中身を返す。
+	/// スペース（タイトル）を会話のまとまり（speakableGroupName）、エージェントを送り主にして、送り主の丸い
+	/// アイコンに Claude / Codex のマーク（agent-claude.png / agent-codex.png）を出す。送り主が分からない・
+	/// 作れないときは渡された中身のまま返す。
+	/// 【要確認】アプリの entitlement（com.apple.developer.usernotifications.communication）と Info.plist の
+	/// NSUserActivityTypes（INSendMessageIntent）が無いと updating(from:) は効かない（例外か無変化）。
+	private static func communicationContent(_ content: UNMutableNotificationContent, agent: String?, threadKey: String) -> UNNotificationContent {
+		guard let agent = agent, let name = agentLabel(agent) else {
+			return content
+		}
+		let image = Bundle.main.url(forResource: "agent-\(agent)", withExtension: "png")
+			.flatMap { try? Data(contentsOf: $0) }
+			.map { INImage(imageData: $0) }
+		let sender = INPerson(
+			personHandle: INPersonHandle(value: "para-agent-\(agent)", type: .unknown),
+			nameComponents: nil,
+			displayName: name,
+			image: image,
+			contactIdentifier: nil,
+			customIdentifier: "para.agent.\(agent)"
+		)
+		let me = INPerson(
+			personHandle: INPersonHandle(value: "para-me", type: .unknown),
+			nameComponents: nil,
+			displayName: nil,
+			image: nil,
+			contactIdentifier: nil,
+			customIdentifier: nil,
+			isMe: true
+		)
+		// 本文（エージェントの発言）は intent に入れない。寄贈（donate）した intent は Siri の提案などに使われうるため。
+		let intent = INSendMessageIntent(
+			recipients: [me, sender],
+			outgoingMessageType: .outgoingMessageText,
+			content: nil,
+			speakableGroupName: content.title.isEmpty ? nil : INSpeakableString(spokenPhrase: content.title),
+			conversationIdentifier: threadKey,
+			serviceName: nil,
+			sender: sender,
+			attachments: nil
+		)
+		if let image = image {
+			intent.setImage(image, forParameterNamed: \.sender)
+		}
+		let interaction = INInteraction(intent: intent, response: nil)
+		interaction.direction = .incoming
+		interaction.donate(completion: nil)
+		return (try? content.updating(from: intent)) ?? content
 	}
 
 	/// 前後の空白を落とし、長すぎるものは切る。上限はアプリ側の検証（decodeNotify）と同じ100文字。

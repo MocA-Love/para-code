@@ -9,6 +9,7 @@
 import * as SecureStore from 'expo-secure-store';
 import * as Notifications from 'expo-notifications';
 import { readTrayData, trayDateMs, type TrayNotification } from './notificationTray.js';
+import { NOTIFY_CATEGORIES } from './notificationActions.js';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import type { KeyStore, TerminalOperationOutboxStore } from './store.js';
 import type { SocketFactory, SocketLike } from './relayClient.js';
@@ -338,6 +339,25 @@ export const rnSocketFactory: SocketFactory = (url: string, protocols?: string |
 	return ws as unknown as SocketLike;
 };
 
+/**
+ * 通知のカテゴリとボタン（許可・拒否・返信・開く）を OS へ登録する（`notificationActions.ts`）。
+ * 失敗しても通知そのものは出る（ボタンが出ないだけ）。起動のたびに登録し直してよい（同じ識別子は置き換わる）。
+ */
+export async function registerNotificationCategories(): Promise<void> {
+	for (const category of NOTIFY_CATEGORIES) {
+		try {
+			await Notifications.setNotificationCategoryAsync(category.identifier, category.actions.map(action => ({
+				identifier: action.identifier,
+				buttonTitle: action.buttonTitle,
+				...(action.textInput !== undefined ? { textInput: { ...action.textInput } } : {}),
+				options: { ...action.options },
+			})));
+		} catch (err) {
+			console.warn('[platform] failed to register a notification category', category.identifier, err);
+		}
+	}
+}
+
 // 前面表示中もバナーを出す（既定では前面時に抑制されるため）。
 // モジュールのトップレベルで同期的に呼ぶと、ネイティブモジュール初期化のタイミング次第で
 // 例外が上位（expo-router の entry.js の登録処理）まで伝播し、"App entry not found" として
@@ -404,11 +424,12 @@ export async function getApnsDeviceToken(): Promise<string | undefined> {
  * オフライン時の APNs リモート通知は、リレー→APNs→Notification Service Extension で別途配送する
  * （設計書 §5.2。NSE はネイティブ実装。ios/ の NotifyExtension ターゲット参照）。
  */
-export async function presentLocalNotification(title: string, subtitle: string | undefined, body: string, data: Record<string, unknown>, identifier?: string): Promise<void> {
+export async function presentLocalNotification(title: string, subtitle: string | undefined, body: string, data: Record<string, unknown>, identifier?: string, categoryIdentifier?: string): Promise<void> {
 	await Notifications.scheduleNotificationAsync({
 		// 同じ identifier で出し直すと、iOS は通知センターの前の1件を置き換える（W2-08）。
 		...(identifier !== undefined ? { identifier } : {}),
-		content: { title, ...(subtitle !== undefined ? { subtitle } : {}), body, data },
+		// カテゴリ（para.<種類>）を付けると、通知のボタンと長押しの画面（ParaCodeNotifyContent）が出る。
+		content: { title, ...(subtitle !== undefined ? { subtitle } : {}), body, data, ...(categoryIdentifier !== undefined ? { categoryIdentifier } : {}) },
 		trigger: null, // 即時
 	});
 }

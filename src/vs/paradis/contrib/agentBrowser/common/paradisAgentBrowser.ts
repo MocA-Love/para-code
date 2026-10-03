@@ -999,6 +999,8 @@ export function paradisNormalizeAgentHookEvent(eventType: string, message?: stri
 		// 完了系: Claude Code / Codex / OpenCode
 		// StopFailure は「APIエラーでターンが終わった」(Claude Code)。実行中表示が
 		// 残り続けるより「終わったので確認して」の方が実態に合うため review に畳む。
+		// モバイルの通知は完了と分ける: 通知の出口が hook の StopFailure を見て `agent-error` にする
+		// （mobileRelay/node/paradisNotifyContentSource.ts）。ペインの状態は review のまま。
 		// SubagentStop は含めない: サブエージェント完了は本体ターンの終了ではなく、
 		// review に畳むと本体実行中に完了通知・完了ドットが誤発火する。状態不変（undefined）
 		// に落とし、本体の Stop だけでターン終了を扱う（'working' を返す形にしないのは、

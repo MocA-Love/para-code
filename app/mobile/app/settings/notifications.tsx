@@ -25,7 +25,7 @@ const PERMISSION_VALUE: Record<NotificationPermissionState, string> = {
  * 通知と音声（`/settings/notifications`。モックの「通知」と「音声」、旧「通知と音声」画面）。
  *
  * スイッチはどれも OS のバナーを止めるだけで、通知そのものはアプリ内の一覧に残る。
- * 種類と条件の3つ（`notifyPrefs`）は PC へ同期し、鳴らすかの判断は PC 側が持つ（`src/appState.ts`）。
+ * 種類と条件と中身の4つ（`notifyPrefs`）は PC へ同期し、鳴らすか・本文に何を入れるかの判断は PC 側が持つ（`src/appState.ts`）。
  * 「他の PC からの通知も出す」はこの端末の中だけの判断。
  *
  * モックの「通知を有効にする」（全体のスイッチ）は、Para Code では OS の通知の許可そのものになる。
@@ -91,6 +91,16 @@ export default function NotificationSettingsScreen() {
 					trailing={<SettingsSwitch value={notifyPrefs.agentDone} onValueChange={value => setNotifyPref('agentDone', value)} accessibilityLabel="完了を通知" />}
 				/>
 			</ListGroup>
+
+			<GroupHeader title="通知の中身" />
+			<ListGroup>
+				<ListRow
+					label="通知に内容を含める"
+					hint="完了は最後の発言、承認待ちはコマンド、質問は質問文を本文に出します"
+					trailing={<SettingsSwitch value={notifyPrefs.includeContent} onValueChange={value => setNotifyPref('includeContent', value)} accessibilityLabel="通知に内容を含める" />}
+				/>
+			</ListGroup>
+			<GroupNote after>オフにすると「エージェントが作業を完了しました」などの決まった文だけになります。ロック画面で隠すだけなら、設定アプリの「プレビューを表示」でも変えられます。</GroupNote>
 
 			<GroupHeader title="鳴らす条件" />
 			<ListGroup>

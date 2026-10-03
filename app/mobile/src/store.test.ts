@@ -908,10 +908,10 @@ describe('MobileController', () => {
 			const parsed = JSON.parse(text) as Record<string, unknown>;
 			if (parsed['t'] === 'prefs') { pcPrefsGot.push(parsed); }
 		});
-		controller.sendNotifyPrefs({ agentDone: true, agentQuestion: false, suppressWhenPcFocused: true });
+		controller.sendNotifyPrefs({ agentDone: true, agentQuestion: false, suppressWhenPcFocused: true, includeContent: false });
 		await flush();
 		expect(pcPrefsGot).toEqual([
-			{ t: 'prefs', agentDone: true, agentQuestion: false, suppressWhenPcFocused: false, pcFocusQuiet: true },
+			{ t: 'prefs', agentDone: true, agentQuestion: false, suppressWhenPcFocused: false, pcFocusQuiet: true, includeContent: false },
 		]);
 
 		// quiet（バナーを出さないでほしい）通知も一覧には必ず入り、onNotify も呼ばれる。

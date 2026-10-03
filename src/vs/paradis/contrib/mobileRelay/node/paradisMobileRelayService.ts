@@ -65,7 +65,9 @@ import {
 } from '../common/paradisMobileProtocol.js';
 import { PARADIS_MOBILE_BUILTIN_REQUEST_KINDS } from '../common/paradisMobileRequestKinds.js';
 import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, paradisEvaluateMobileCompat, paradisHasMobileCapability, paradisIsAcceptedMobileWireVersion, paradisParseMobileCapabilities } from '../common/paradisMobileCompat.js';
-import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyPcFocusQuiet, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
+import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyIncludeContent, paradisNotifyPcFocusQuiet, paradisNotifyPrefersDetail, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
+import { PARADIS_NOTIFY_DETAIL_MAX_CHARS, paradisComposeNotifyVariants, paradisFitNotifyBytesForPush, paradisLegacyNotifySubtitle, paradisNotifyTabLabel } from '../common/paradisNotifyCompose.js';
+import { ParadisNotifyHookLedger, paradisResolveNotifyContent } from './paradisNotifyContentSource.js';
 import { decodeNotifyVisibility, encodeNotifyVisibilityAck } from '../common/paradisMobileVisibility.js';
 import { ParadisNotifyDismissLedger, paradisNotifyDismissOpened, paradisWithNotifyDismiss } from '../common/paradisNotifyDismissLedger.js';
 import { ParadisBackgroundSessionWatch, ParadisRecentTrustedNotifies } from '../common/paradisMobileBackgroundGrace.js';
@@ -1442,12 +1444,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	/** transcript に現れた質問を Notify として全モバイルへ届ける（オフラインへはAPNsプッシュ）。 */
 	private notifyAgentQuestion(info: { terminalId: number; agent: 'claude' | 'codex'; text: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner }): void {
-		// 通知はプレビュー用途なので本文を短く切る。長文のまま封緘するとAPNsの4KB制限
-		// （リレー側の3800B上限チェック）を超え、アプリ未起動時のプッシュだけがサイレントに
-		// 落ちる（全文はチャット画面が別経路で同期する）。700字 = 日本語でもUTF-8で約2.1KB、
-		// JSON+GCMタグ+base64url(×1.33)を足しても3800Bに収まる。
-		// allow-any-unicode-next-line
-		const body = info.text.length > 700 ? `${info.text.slice(0, 700)}…` : info.text;
+		// 本文には質問文の原文を入れ、`category: 'question'` を付けて出口へ渡す。種類の言葉・Markdown の除去・
+		// 伏せ字・長さの調整は出口（composeNotifyVariants）がまとめて行う（プッシュの 3800B に収まるまで削るのも出口）。
+		const body = info.text.slice(0, PARADIS_NOTIFY_DETAIL_MAX_CHARS);
 		const desktopState = this.terminalRegistry.desktopState();
 		const terminal = desktopState.terminals.find(candidate => candidate.agentToken === info.agentToken);
 		// ターミナルの ws は shared process が窓IDを冠したキーなので、workspaces 側も同じキーで引ける。
@@ -1460,6 +1459,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			title: paradisNotifyTitle(workspace?.name, terminal?.title),
 			subtitle: paradisAgentLabel(info.agent),
 			body,
+			category: 'question',
+			agent: info.agent,
 			terminalId: info.terminalId,
 			...(terminal !== undefined ? { terminalKey: terminal.terminalKey, windowId: terminal.windowId } : {}),
 			agentToken: info.agentToken,
@@ -1474,6 +1475,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	/** 届いたか分からない通知の取り置き（次に繋がったら通知一覧へ流し直す）。 */
 	private readonly missedNotify = new ParadisMissedNotifyQueue();
+
+	/** 通知の中身の出どころ（hook の最後の発言・失敗の理由・承認の中身。`paradisNotifyContentSource.ts`）。 */
+	private readonly notifyHookLedger = this._register(new ParadisNotifyHookLedger());
 
 	/** 出した通知と、片付いた通知（W2-27。次のプッシュでロック画面から消してもらう）。 */
 	private readonly dismissLedger = new ParadisNotifyDismissLedger();
@@ -1517,31 +1521,38 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	private dispatchNotifyNow(inputBytes: Uint8Array, expectedOwner?: IParadisMobileWindowLease): void {
+		const now = Date.now();
+		// 本文（最後の発言・承認の中身・質問文）と種類を決める（notify.content.v1）。通知を作る場所は2つあるが、
+		// 出口はここだけなので中身を足すのもここ。「通知に内容を含める」はスマホごとの設定なので、含める版と
+		// 含めない版を作っておき、スマホごとに選ぶ。
+		const variants = this.composeNotifyVariants(inputBytes, now);
 		// どのPCから来たかを、フレーム・プッシュ・取り置きの全部に同じ形で乗せる。
 		// 通知を作る場所は shared process と renderer の2つあるが、出口はここだけなので刻むのもここ。
-		const bytes = this.stampNotifyOrigin(inputBytes);
+		const fullBytes = this.stampNotifyOrigin(variants?.withContent ?? inputBytes);
+		const plainBytes = variants !== undefined ? this.stampNotifyOrigin(variants.withoutContent) : fullBytes;
 		// 配送判断と、既読時のキュー刈り取りに要る項目を1回のパースで取り出す
 		// （形式不正なら種別が undefined になり、鳴らす側へ倒れる）。
-		const meta = peekNotifyMeta(bytes);
-		const now = Date.now();
+		const meta = peekNotifyMeta(fullBytes);
 		const pcFocused = this.pcFocused;
 		if (meta.id !== undefined) {
 			this.dismissLedger.record(meta.id, meta.agentToken, meta.kind, now);
 		}
 		// 次のプッシュで消してもらう、片付いた通知（W2-27）。どのスマホにも同じ一覧を載せる（印は鍵ごとに作る）。
 		const dismissIds = this.dismissLedger.dismissable(now, meta.id);
-		// 台数分の再エンコードを避けるため理由ごとに1回だけ作る。
-		const quietCache = new Map<ParadisNotifyQuiet, Uint8Array>();
-		const quietBytes = (reason: ParadisNotifyQuiet) => {
-			let cached = quietCache.get(reason);
+		// 台数分の再エンコードを避けるため、版と理由ごとに1回だけ作る。
+		const quietCache = new Map<string, Uint8Array>();
+		const quietBytes = (bytes: Uint8Array, reason: ParadisNotifyQuiet) => {
+			const cacheKey = `${bytes === fullBytes ? 'full' : 'plain'}:${reason}`;
+			let cached = quietCache.get(cacheKey);
 			if (cached === undefined) {
 				cached = this.quietNotifyBytes(bytes, reason);
-				quietCache.set(reason, cached);
+				quietCache.set(cacheKey, cached);
 			}
 			return cached;
 		};
 		for (const mobile of this.state.mobiles) {
 			const session = this.sessions.get(mobile.mobileId);
+			const bytes = paradisNotifyIncludeContent(mobile.notifyPrefs) ? fullBytes : plainBytes;
 			const delivery = paradisResolveNotifyDelivery({
 				kind: meta.kind,
 				prefs: mobile.notifyPrefs,
@@ -1553,7 +1564,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// フレームは通知一覧のためのもの。鳴らす必要が無い通知も、あとからスマホで
 			// 「PCの前にいた間に何があったか」を追えるように送る（以前は配信自体を止めていた）。
 			if (delivery.frame && session !== undefined) {
-				const frameBytes = delivery.quiet !== undefined ? quietBytes(delivery.quiet) : bytes;
+				const frameBytes = delivery.quiet !== undefined ? quietBytes(bytes, delivery.quiet) : bytes;
 				session.sendFrame(Channels.Notify, undefined, frameBytes).catch(err => this.logService.warn('[paradisMobileRelay] notify frame failed', err));
 			}
 			// 上のフレームが本当に届いたかは分からない（相手が凍っていてもソケットは生きたままに
@@ -1561,7 +1572,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// 通知一覧へ流し直す。モバイルはIDで重複を弾くので、二重に並ぶことはない。
 			// 流し直す分は必ず `muted`: そのときには鳴らす機会が過ぎている。`pushed` にすると、
 			// プッシュを受け取れない端末が復帰時に大昔の通知で鳴ってしまう。
-			this.missedNotify.add(mobile.mobileId, { id: meta.id, agentToken: meta.agentToken, bytes: quietBytes('muted') });
+			this.missedNotify.add(mobile.mobileId, { id: meta.id, agentToken: meta.agentToken, bytes: quietBytes(bytes, 'muted') });
 			if (!delivery.push) {
 				// 鳴らすべきなのに、アプリが自分で出せると信用してプッシュしなかった。直後にアプリが
 				// 「裏に回った」と言ってきたら、プッシュし直す（W2-34。`paradisMobileBackgroundGrace.ts`）。
@@ -1575,17 +1586,23 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	/** 1台のモバイルへ通知をプッシュで送る（通知鍵で封緘し、リレーへ push-notify を頼む）。 */
-	private pushNotifyTo(mobile: IParadisRelayPairedMobile, bytes: Uint8Array, dismissIds: readonly string[], expectedOwner?: IParadisMobileWindowLease): void {
+	private pushNotifyTo(mobile: IParadisRelayPairedMobile, inputBytes: Uint8Array, dismissIds: readonly string[], expectedOwner?: IParadisMobileWindowLease): void {
+		// 長押しの画面（detail）を描けないアプリには詳細を載せない（読まれない分で本文を削らない）。
+		const preferDetail = paradisNotifyPrefersDetail(mobile.notifyPrefs);
+		const bytes = preferDetail ? inputBytes : this.withoutNotifyDetail(inputBytes);
 		this.notifyKeyFor(mobile.mobileId, mobile.pubKey).then(async key => {
-			// 印を載せると上限を超える場合は印を諦める（本文を削ってまで載せない。印は次のプッシュでも載る）。
+			// 片付けの印（W2-27）は捨てない。収まらなければ本文と詳細のほうを削る（`paradisFitNotifyBytesForPush`）。
+			// 印だけで上限を超える（ありえない大きさ）ときに限って、印を外した版で詰め直す。
 			const withDismiss = paradisWithNotifyDismiss(bytes, paradisMobileDismissTags(key, dismissIds));
-			let encoded: string | undefined;
-			if (withDismiss !== bytes) {
-				const sealed = toBase64Url(await sealNotify(key, withDismiss));
-				encoded = sealed.length <= PARADIS_PUSH_PAYLOAD_LIMIT_BYTES ? sealed : undefined;
+			const fitted = paradisFitNotifyBytesForPush(withDismiss, PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, preferDetail)
+				?? (withDismiss !== bytes ? paradisFitNotifyBytesForPush(bytes, PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, preferDetail) : undefined);
+			if (fitted === undefined) {
+				this.logService.warn('[paradisMobileRelay] push payload cannot be trimmed under the relay limit; dropping the push');
+				return;
 			}
-			encoded ??= await this.sealNotifyForPush(key, bytes);
-			if (encoded === undefined) {
+			const encoded = toBase64Url(await sealNotify(key, fitted));
+			if (encoded.length > PARADIS_PUSH_PAYLOAD_LIMIT_BYTES) {
+				this.logService.warn(`[paradisMobileRelay] push payload too large (${encoded.length}B); dropping the push`);
 				return;
 			}
 			// 同じエージェントの通知はロック画面で置き換え、同じスペースの通知はまとめる（W2-08）。
@@ -1601,69 +1618,82 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}).catch(err => this.logService.warn('[paradisMobileRelay] push-notify seal failed', err));
 	}
 
-	/**
-	 * プッシュ用に通知を封緘する。リレーの上限に収まらなければ本文を削って詰め直す。
-	 *
-	 * リレーは大きすぎるペイロードを黙って捨てる（APNsの4KB制限のため）。捨てられると、
-	 * フレーム側は既に「PCがプッシュを送ったから鳴らさないで」と伝えたあとなので、
-	 * その通知だけバナーが**完全に消える**。以前はここで警告を出すだけで送っていた。
-	 *
-	 * 本文は発生元で700字に切ってあるが、そこへ送信元の名乗り・長いワークスペースキー・
-	 * エージェントトークンが積み上がると上限に届きうる。鳴らないより短い方がましなので、
-	 * 収まるまで本文を削る。削り切っても収まらない（本文以外で埋まっている）ときだけ諦める。
-	 */
-	private async sealNotifyForPush(key: Uint8Array, bytes: Uint8Array): Promise<string | undefined> {
-		let payload = bytes;
-		// 削るたびに縮むので2回もあれば収まる。それでも駄目なら本文以外で埋まっているので打ち切る。
-		for (let attempt = 0; attempt < 4; attempt++) {
-			const encoded = toBase64Url(await sealNotify(key, payload));
-			if (encoded.length <= PARADIS_PUSH_PAYLOAD_LIMIT_BYTES) {
-				if (attempt > 0) {
-					this.logService.warn(`[paradisMobileRelay] push payload trimmed to fit ${PARADIS_PUSH_PAYLOAD_LIMIT_BYTES}B`);
-				}
-				return encoded;
+	/** 詳細（detail）を外した版。JSONとして読めない・詳細が無いときはそのまま返す。 */
+	private withoutNotifyDetail(bytes: Uint8Array): Uint8Array {
+		try {
+			const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown> | null;
+			if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.detail === undefined) {
+				return bytes;
 			}
-			// base64url は3バイトを4文字にするので、削るべき文字数の3/4が生バイトでの不足分。
-			// 端数と封緘の増分を吸収するために少し多めに削る。
-			const overflow = encoded.length - PARADIS_PUSH_PAYLOAD_LIMIT_BYTES;
-			const trimmed = this.trimNotifyBody(payload, Math.ceil(overflow * 0.75) + 16);
-			if (trimmed === undefined) {
-				this.logService.warn(`[paradisMobileRelay] push payload too large (${encoded.length}B) and cannot be trimmed; dropping the push`);
-				return undefined;
-			}
-			payload = trimmed;
+			delete parsed.detail;
+			return new TextEncoder().encode(JSON.stringify(parsed));
+		} catch {
+			return bytes;
 		}
-		this.logService.warn('[paradisMobileRelay] push payload stayed over the limit after trimming; dropping the push');
-		return undefined;
 	}
 
 	/**
-	 * 通知の本文を指定バイト数ぶん削った版を作る。これ以上削れない（本文が空、または
-	 * JSONとして読めない）ときは undefined を返し、呼び出し側に打ち切らせる。
+	 * 通知の本文・種類・副題の材料を決める（notify.content.v1）。中身の出どころは hook と tailer
+	 * （`paradisNotifyContentSource.ts`）、文言は `paradisNotifyCompose.ts`。エージェントの通知でなければ undefined。
+	 * 「通知に内容を含める」の版（withContent）と含めない版（withoutContent）を返す。
 	 */
-	private trimNotifyBody(bytes: Uint8Array, shortfall: number): Uint8Array | undefined {
+	private composeNotifyVariants(bytes: Uint8Array, now: number): { readonly withContent: Uint8Array; readonly withoutContent: Uint8Array } | undefined {
+		let record: Record<string, unknown>;
 		try {
-			const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown> | null;
+			const parsed = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
 			if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
 				return undefined;
 			}
-			const body = parsed.body;
-			if (typeof body !== 'string' || body.length === 0) {
-				return undefined;
-			}
-			const encoder = new TextEncoder();
-			// 日本語は1文字3バイトになりうるので、文字数ではなくバイト数で測って削る。
-			const originalBytes = encoder.encode(body).length;
-			let next = body;
-			while (next.length > 0 && originalBytes - encoder.encode(next).length < shortfall) {
-				next = next.slice(0, -1);
-			}
-			// allow-any-unicode-next-line
-			const replacement = next.length > 0 ? `${next}…` : '';
-			return new TextEncoder().encode(JSON.stringify({ ...parsed, body: replacement }));
+			record = parsed as Record<string, unknown>;
 		} catch {
 			return undefined;
 		}
+		const kind = record.kind;
+		if (kind !== 'agent-done' && kind !== 'agent-question' && kind !== 'agent-error') {
+			return undefined;
+		}
+		const token = typeof record.agentToken === 'string' && record.agentToken.length > 0 ? record.agentToken : undefined;
+		const presetQuestion = record.category === 'question';
+		const pane = token !== undefined ? this.agentChat.notifyPaneContent(token) : undefined;
+		const resolution = paradisResolveNotifyContent({
+			kind,
+			...(presetQuestion ? { presetCategory: 'question' as const, ...(typeof record.body === 'string' ? { presetContent: record.body } : {}) } : {}),
+			...(token !== undefined ? { hookTurnEnd: this.notifyHookLedger.turnEnd(token, now), hookApproval: this.notifyHookLedger.approval(token, now) } : {}),
+			...(pane !== undefined ? { pane } : {}),
+			now,
+		});
+		if (resolution === undefined) {
+			return undefined;
+		}
+		const agent = pane?.agent ?? (record.agent === 'claude' || record.agent === 'codex' ? record.agent : undefined);
+		const agentLabel = agent !== undefined ? paradisAgentLabel(agent) : undefined;
+		const title = typeof record.title === 'string' ? record.title : '';
+		// タブ名は PC の状態のターミナル名を正とする（renderer の通知は副題にターミナル名を入れてくるので、無ければそれ）。
+		const terminal = token !== undefined ? this.terminalRegistry.desktopState().terminals.find(candidate => candidate.agentToken === token) : undefined;
+		const tabSource = terminal?.title ?? (!presetQuestion && typeof record.subtitle === 'string' ? record.subtitle : undefined);
+		const tab = paradisNotifyTabLabel(tabSource, agentLabel, title);
+		const legacySubtitle = paradisLegacyNotifySubtitle(agentLabel, tab);
+		const base: Record<string, unknown> = {
+			...record,
+			kind: resolution.kind,
+			category: resolution.category,
+			...(agent !== undefined ? { agent } : {}),
+			...(tab !== undefined ? { tab } : {}),
+			...(resolution.interactionId !== undefined ? { interactionId: resolution.interactionId } : {}),
+		};
+		delete base.subtitle;
+		delete base.detail;
+		if (legacySubtitle !== undefined) {
+			base.subtitle = legacySubtitle;
+		}
+		const variants = paradisComposeNotifyVariants(base, {
+			...(agentLabel !== undefined ? { agentLabel } : {}),
+			category: resolution.category,
+			...(resolution.content !== undefined ? { content: resolution.content } : {}),
+			...(resolution.errorCode !== undefined ? { errorCode: resolution.errorCode } : {}),
+		});
+		const encoder = new TextEncoder();
+		return { withContent: encoder.encode(JSON.stringify(variants.withContent)), withoutContent: encoder.encode(JSON.stringify(variants.withoutContent)) };
 	}
 
 	/**
@@ -1781,7 +1811,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	/** モバイルから同期された通知設定（notifyチャネル M→PC）を保存する。 */
 	private handleNotifyPrefs(mobileId: string, payload: Uint8Array): void {
 		try {
-			const msg = JSON.parse(new TextDecoder().decode(payload)) as { t?: string; agentDone?: boolean; agentQuestion?: boolean; suppressWhenPcFocused?: boolean; pcFocusQuiet?: boolean };
+			const msg = JSON.parse(new TextDecoder().decode(payload)) as { t?: string; agentDone?: boolean; agentQuestion?: boolean; suppressWhenPcFocused?: boolean; pcFocusQuiet?: boolean; includeContent?: boolean };
 			if (msg.t !== 'prefs') {
 				return;
 			}
@@ -1795,11 +1825,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				// 新しいアプリは `pcFocusQuiet` で送ってくる。旧アプリは旧キーしか送らないので
 				// そちらへフォールバックする（旧キーはここでしか読まず、保存もしない）。
 				pcFocusQuiet: typeof msg.pcFocusQuiet === 'boolean' ? msg.pcFocusQuiet : msg.suppressWhenPcFocused === true,
+				// 「通知に内容を含める」（notify.content.v1）。知らない旧アプリは送ってこない。そのときは書かずに
+				// 定型文を送る（Q175 A。書いてあるか自体が「長押しの画面を描けるアプリか」の印になる）。
+				...(typeof msg.includeContent === 'boolean' ? { includeContent: msg.includeContent } : {}),
 			};
 			// モバイルはonline遷移のたびに再送してくるため、値が変わった時だけ書き込む
 			// （バックグラウンド復帰ごとのディスク書き込みチャーンを避ける）。
 			const prev = mobile.notifyPrefs;
-			if (prev && prev.agentDone === next.agentDone && prev.agentQuestion === next.agentQuestion && paradisNotifyPcFocusQuiet(prev) === next.pcFocusQuiet) {
+			if (prev && prev.agentDone === next.agentDone && prev.agentQuestion === next.agentQuestion && paradisNotifyPcFocusQuiet(prev) === next.pcFocusQuiet && prev.includeContent === next.includeContent) {
 				return;
 			}
 			mobile.notifyPrefs = next;

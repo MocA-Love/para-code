@@ -276,6 +276,12 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `product.json` / `resources/paradis/builtin/mobile-canvas-vscode-0.1.16.vsix` | `builtInExtensions` に `mobile-canvas-vscode@0.1.16`（Marketplace上の実体は `redth.mobile-canvas`、MIT）を追加。**リポジトリに vendoring した「ランタイム非同梱版」VSIX（123KB）を `vsix` フィールドで指す**。metadataのUUIDは Visual Studio Marketplace の extensionquery から取得 | iOSシミュレータ/Androidエミュレータをライブ表示・操作する Mobile Canvas を標準同梱するため。**ネイティブランタイムを同梱してはいけない（paracode-116 で実際にリリースが落ちた）**: プラットフォーム別VSIX（12〜14MB）は `dist/runtimes/<rid>/mobile-canvas.gz` に実行ファイルを内包しており、これをアプリに入れると **Apple の公証が gzip を展開して中の Mach-O を検査し、`The binary is not signed.` / `The signature does not include a secure timestamp.` / `The executable does not have the hardened runtime enabled.` の3点で拒否する**（拒否パスは `Para Code.app/Contents/Resources/app/extensions/mobile-canvas-vscode/dist/runtimes/osx-x64/mobile-canvas.gz/mobile-canvas` と、.gz の内側まで具体的に示される）。非同梱版は manifest だけを持ち、ランタイムは初回利用時に `~/.mobile-canvas/runtimes/` へ展開されるため、アプリの外に出て公証の対象外になる。取得は `paradisMobileCanvasHostClient.ts` の `_downloadArchive()` が manifest の `distribution`（repository/tag）と各ファイルの `asset` から GitHub Release のURLを組み立てて行い、展開後のsha256をmanifestと突き合わせる。同梱に戻したい場合は、ビルド時に自前で Developer ID 署名＋hardened runtime を付与して再gzipし、manifest の sha256/id も書き換える工程が要る。**`name` を `redth.mobile-canvas` にしてはいけない**: `name` は `.build/extensions/<name>/` のフォルダ名にしか使われず拡張IDは同梱 `package.json` の `publisher`+`name` から決まるが、`vsix` パスやアセット名と揃えておかないと版上げのときに取り違える。版を上げる際は `gh release download <tag> --repo Redth/mobile-canvas-ghcp --pattern "mobile-canvas-vscode-thin.vsix"` で取り直し、`shasum -a 256` の値を `sha256` に反映する（リリース同梱の `SHA256SUMS` はランタイム `.gz` のみでvsixを含まない） |
 | `app/mobile/native/ParaCodeWidgets/ParaCodeWidgets.entitlements` | 新規追加（fork所有）。Widget Extension の entitlements（追跡用コピー。実体は gitignore された `ios/ParaCodeWidgets/`）。App Group `group.ltd.paradis.paracode.mobile` だけを持つ | ホーム画面・ロック画面のウィジェットが、アプリ・通知拡張と App Group の要約（`widget-snapshot.json` / `widget-settings.json` / `widget-outbox.json`）を受け渡すため（復元手順は同ディレクトリ README 参照）。plist のためマーカーを埋め込めない |
 | `app/mobile/native/NotifyExtension/NotifyExtension.entitlements` | `com.apple.security.application-groups`（`group.ltd.paradis.paracode.mobile`）を追加 | 通知拡張がアプリの閉じている間にウィジェットの要約の要対応を書き換えるため（`WidgetShared.swift` の `WidgetStore.applyNotification`）。実体の `ios/NotifyExtension/` にも同じものを当てる。plist のためマーカーを埋め込めない |
+| `app/mobile/native/NotifyExtension/Info.plist` | `NSExtension.NSExtensionAttributes.IntentsSupported` に `INSendMessageIntent` を追加（2026-10-04） | 通知の作り直し（`notify.content.v1`）の Communication Notification。通知拡張が送り主（Claude / Codex）の INSendMessageIntent で通知を作り直すため。実体の `ios/NotifyExtension/Info.plist` にも同じものを当てた。plist のためマーカーを埋め込めない |
+| `app/mobile/native/NotifyExtension/agent-claude.png` / `agent-codex.png` | 新規追加（fork所有バイナリ、180px）。PC のグリフ（`src/vs/paradis/common/paradisAgentLogoPaths.ts` と同じパス）を白で、Claude・Codex とも `#1f2328` の地に描いたもの（Claude は 2026-10-04 に Q176 B でオレンジ `#D97757` から黒へ。白との混ざり具合を保って地の色だけ置き換えた）（`qlmanage` で SVG から書き出し `sips -Z 180`） | Communication Notification の送り主の丸いアイコン。実体の `ios/NotifyExtension/` に置き、NotifyExtension の Resources に pbxproj で登録（`FE…A5`/`FE…A6`、`FE…B4`/`FE…B5`）。PNG のためマーカーを埋め込めない |
+| `app/mobile/native/ParaCodeNotifyContent/Info.plist` | 新規追加（fork所有）。Notification Content Extension の設定（`UNNotificationExtensionCategory` = `para.done`/`para.approval`/`para.approval.open`/`para.question`/`para.error`、既定の中身を隠す、操作を受ける、`$(MARKETING_VERSION)`/`$(CURRENT_PROJECT_VERSION)`） | 通知の長押しの画面（Markdown の全文と「開く」）。実体は gitignore された `ios/ParaCodeNotifyContent/`。復元手順は同ディレクトリの README。plist のためマーカーを埋め込めない |
+| `app/mobile/ios/ParaCodeMobile/ParaCodeMobile.entitlements`（追跡なし） | `com.apple.developer.usernotifications.communication` を `true` で追加（2026-10-04） | Communication Notification（通知拡張の `INSendMessageIntent` による作り直し）に要る。`ios/` は gitignore されているのでここにだけ記録する。`ios/` を作り直したら当て直す（`app/mobile/native/ParaCodeNotifyContent/README.md`） |
+| `app/mobile/ios/ParaCodeMobile/Info.plist`（追跡なし） | `NSUserActivityTypes` に `INSendMessageIntent` を追加（2026-10-04） | 同上。`ios/` を作り直したら当て直す |
+| `app/mobile/ios/ParaCodeMobile.xcodeproj/project.pbxproj`（追跡なし） | `ParaCodeNotifyContent` ターゲット（ID の接頭辞 `FC…`）を追加してアプリに埋め込み、NotifyExtension の Resources に `agent-claude.png` / `agent-codex.png` を登録（2026-10-04） | 通知の長押しの画面と送り主のアイコン。手で編集した（prebuild は使わない）。手順は `app/mobile/native/ParaCodeNotifyContent/README.md` |
 | `app/mobile/package.json` / `app/pnpm-lock.yaml` | `lucide-react-native@^1.48.0` を依存に追加 | モバイルの画面の作り直し（Orca に合わせたアイコン）で使うアイコン集。JS だけのパッケージで、描画は既存の `react-native-svg` を使う |
 | `build/paradis/computerUse/paradis-computer-use-entitlements.plist` | 新規追加（fork所有）。中身は空の `<dict/>` | Computer Use の補助アプリ（`Para Code Computer Use.app`）に渡す entitlements。アクセシビリティと画面収録は entitlements ではなく TCC で決まるので何も要らない。`build/darwin/sign.ts` の PARA-PATCH と CI の「Pre-notarize Computer Use helper」が参照する。plist のためマーカーを書かない。補助アプリの `Info.plist` は `buildHelper.ts` がビルドのたびに生成するのでリポジトリに置いていない |
 | `app/package.json` / `app/pnpm-lock.yaml` | `pnpm.patchedDependencies` に `react-native@0.86.0` → `patches/react-native@0.86.0.patch` を追加（lock は peer の添え字に `patch_hash` が付くだけで版は変わらない） | ライブ入力で iOS の変換中の範囲（marked text）を JS へ渡すため（W2-24）。react-native を上げたらパッチを作り直し、キーの版も書き換える |
@@ -1508,6 +1514,25 @@ macOS/Linuxの「ペインごとのCodex app-server」（`resources/paradis/bin/
 - **リレーのデプロイ（未実施）**: W2-35 の分はデプロイが要る。`app/relay` で `CLOUDFLARE_ACCOUNT_ID=<アカウントID> npx wrangler deploy`（`wrangler.jsonc` は account_id を持たない）。DO のスキーマは列とテーブルを足すだけで、`migrations` の追加は要らない
 - **残した課題**: スマホ側で解除したときのリレーへの取り消しの送り直し（設計の手順2）と、PC がリレーの一覧と突き合わせる `GET /device/:id/mobiles`（手順4）は入れていない。失効を有効にした後に PC がつながっていなかった分は `pc_notices` で補うが、PC は `mobile-revoked` に確認を返さないので、**送った時点で消している**（届く前に PC のソケットが切れると取りこぼし、PC の台帳に失効済みのスマホが残る。残っても接続・プッシュは失敗するだけ）。PC が確認を返す仕組みは次の段
 
+### 通知の作り直し（`notify.content.v1`、2026-10-04）
+
+設計とモックは `mobile-notification-mock.html`。通知の本文に中身を入れ、長押しで全文と操作を出し、失敗を完了と分けた。**リレーは変えていない**（中身は暗号文の中）ので、デプロイの順序の縛りは無い。版（3）も上げていない。
+
+- **中身を決めるのは PC の通知の出口 1 か所**（`node/paradisMobileRelayService.ts` の `dispatchNotifyNow` → `composeNotifyVariants`）。完了と承認待ちは renderer の状態遷移から、質問は shared process の transcript から来るが、どちらもここを通る。中身の出どころは `node/paradisNotifyContentSource.ts`: hook（Stop の `last_assistant_message`、StopFailure の `error` / `error_details`、PermissionRequest の `tool_input`）を第一に、無ければ tailer（`ParadisMobileAgentChat.notifyPaneContent`。最後の発言・Codex の `task_complete` の失敗と `codex_error_info`・待っている承認や質問）。hook は renderer を往復する状態遷移より先に shared process に届く前提【要確認: 実機で順序】
+- **文言は `common/paradisNotifyCompose.ts` だけ**（利用者の回答で変わりうるため）。本文は「完了: 」「承認待ち: 」「質問: 」「エラー: エージェントがエラーで止まりました（コード）」＋中身（Markdown を外し、`paradisRedactMobileCommandOutput` で伏せ、装飾を外した平文でもう一度伏せる）。`detail` に Markdown の原文（伏せ字済み、6000 字まで。`**`・バッククォート・表に包まれて伏せ字の形に当たらない秘密は、その行を装飾を外した伏せ字の形に置き換える）。「通知に内容を含める」（アプリの設定、notify の `prefs` の `includeContent`。既定オンは新しいアプリの設定の既定値で、アプリが `true` を同期する）がオフのスマホと、この項目を同期してこない旧アプリ（Q175 A）には、従来の定型文で `detail` なし、副題からタブ名も外す（Q177 A）。エラーの理由のコードはオフでも出す
+- **失敗は `agent-error`**。ペインの状態は従来どおり review（`paradisAgentBrowser.ts` の StopFailure の扱いは変えていない）で、通知だけが出口で種類を変える。PC フォーカス中の抑制と種類のスイッチは効かない（`paradisNotifyDelivery.ts` の既存の扱い）
+- **副題は受け手が組み立てる**。PC は `agent` と `tab`（エージェントの印を外したタブ名）を別に送り、受け手は PC 2 台以上なら「エージェント · タブ名 · PC 名」、1 台ならタブ名だけ（#11 は「省く」）。旧い受け手のために `subtitle` に「エージェント · タブ名」も入れる。同じ規則がアプリ（`app/mobile/src/notifyPresentation.ts` の `notifyPayloadSubtitle`）と通知拡張（`NotificationService.swift` の `composeSubtitle`）にある
+- **プッシュの 3800B**: `paradisFitNotifyBytesForPush`。片付けの印（W2-27 の `dismiss`）は捨てず、本文と `detail` を削る。長押しの画面を描けるアプリ（`prefs` に `includeContent` が入っている＝この版以降。プッシュの時点ではセッションが無く capability を引けないため、こう見分ける）には本文を 160 字まで削ってから `detail` を削り、`detail` が 200 字を切るなら捨てて本文を戻す。古いアプリには `detail` を載せず本文だけを削る
+- **ボタン**: カテゴリ `para.done`（返信・開く）/ `para.error`（返信・開く）/ `para.approval`（許可・拒否・開く）/ `para.question`（開く）。アプリが起動時に登録する（`app/mobile/src/notificationActions.ts`）。許可・拒否・返信は `opensAppToForeground` と `isAuthenticationRequired`。押されたらアプリは遷移と同じ先を開き、`notificationActionRunner.ts` が送る。送るのは、預けた後にアプリのロック（AuthGate）の解除があってから（再認証の猶予の間なら Face ID をやり直させる。`appLockState.ts` の `requestAppReauthentication`）、その PC が見えて会話を受け取り直したとき。預けてから 60 秒、届いてから 30 分（Q179 A）を過ぎたら送らない。どの承認かの ID が無い承認はボタンの無い `para.approval.open` にする。承認は通知の `interactionId` と今の承認が同じときだけ答え、違う・分からないときは送らずに知らせる。返信が送れなかったら会話の入力欄に残す
+
+#### 通知拡張と長押しの画面
+
+- **送り主のアイコン**: Q176 B で Claude / Codex のマークを使う。Claude のマークも Codex と同じ黒い地（`#1f2328`）に白
+- **通知拡張**: `category` から `categoryIdentifier` を付け、`category`・`agent`・`detail`・`interactionId` を userInfo の最上位に書く（復号できなければ剥がし、カテゴリも空にする）。送り主のエージェントを `INSendMessageIntent`（スペース名を会話名、`[me, sender]` の宛先、送り主のアイコンは同梱の PNG）にして `content.updating(from:)` で出す。【要確認】群の会話としての見え方（タイトルにスペース名が残るか、副題が残るか）と、審査
+- **長押しの画面**（Notification Content Extension、ターゲット `ParaCodeNotifyContent`、Bundle ID `ltd.paradis.paracode.mobile.ParaCodeNotifyContent`）: `detail` を Markdown で描き、下に「開く」（`performNotificationDefaultAction`）。プッシュは最上位、ローカル通知は `userInfo["body"]` から読む（プッシュの `body` はリレーが書けるので読まない）。App Group・Keychain は使わない。ソースと復元手順は `app/mobile/native/ParaCodeNotifyContent/`
+- **ネイティブの反映**: `ios/` は手で編集済み（このメモの「コメントを書けないファイルへの変更一覧」の 2026-10-04 の行）。新しい pod は無いので `pod install` は不要の見込み。Xcode で Signing を開き、Communication Notifications の capability がアプリの App ID に付くこと、`ParaCodeNotifyContent` が自動署名で作られることを確かめる
+- **残る制約**: アプリが出すローカル通知（前面・裏で繋がっている間）は通知拡張を通らないので、送り主のアイコンと `threadIdentifier` が付かない（expo が渡せない）。質問の選択肢は通知ごとに違うので通知からは答えない（開くだけ）。Codex の usage limit などの失敗は hook が無く、tailer が rollout を読めているとき（スマホがペアリング済みなら常時）だけ理由が付く
+
 ## モバイルアプリの配信手順（2026-08-06整備、アーカイブ前に必ず読む）
 
 `app/mobile/ios/` は `app/.gitignore` で**まるごと無視されている**（Expo prebuild の成果物という扱いのため）。したがって **`app.json` の `version` を上げても、実際にアーカイブされるバイナリのバージョンは変わらない**。`npx expo prebuild` は禁止（手動追加の `NotifyExtension` と `ParaCodeWidgets` が消える）なので、`ios/` 側は手で合わせる。
@@ -1516,11 +1541,11 @@ macOS/Linuxの「ペインごとのCodex app-server」（`resources/paradis/bin/
 
 1. `app/mobile/app.json` の `expo.version`
 2. `app/mobile/src/changelog.ts` の `MOBILE_CHANGELOG` 先頭に同じ版の節を作る（`src/changelog.test.ts` が1と2の一致を検査する）
-3. `app/mobile/ios/ParaCodeMobile.xcodeproj/project.pbxproj` の `MARKETING_VERSION`（6箇所）と `CURRENT_PROJECT_VERSION`（6箇所）
+3. `app/mobile/ios/ParaCodeMobile.xcodeproj/project.pbxproj` の `MARKETING_VERSION`（8箇所）と `CURRENT_PROJECT_VERSION`（8箇所）。本体・NotifyExtension・ParaCodeWidgets・ParaCodeNotifyContent（2026-10-04 追加）の Debug / Release
 4. `app/mobile/ios/ParaCodeMobile/Info.plist` の `CFBundleShortVersionString` と `CFBundleVersion`（**値がハードコードされている**）
 5. `app/mobile/ios/NotifyExtension/Info.plist` の同2つ（同じくハードコード）
 
-`ios/ParaCodeWidgets/Info.plist` だけは `$(MARKETING_VERSION)` / `$(CURRENT_PROJECT_VERSION)` を参照しているので3を直せば追従する。**4と5だけ取り残しやすい**（2026-08-06 の 0.5.0 で実際に踏みかけた）。
+`ios/ParaCodeWidgets/Info.plist` と `ios/ParaCodeNotifyContent/Info.plist` は `$(MARKETING_VERSION)` / `$(CURRENT_PROJECT_VERSION)` を参照しているので3を直せば追従する。**4と5だけ取り残しやすい**（2026-08-06 の 0.5.0 で実際に踏みかけた）。
 
 アーカイブと検証:
 
@@ -1531,7 +1556,7 @@ xcodebuild archive -workspace ParaCodeMobile.xcworkspace -scheme ParaCodeMobile 
   -archivePath /tmp/paracode-archive/ParaCodeMobile.xcarchive -allowProvisioningUpdates
 ```
 
-生成後、本体と2つの拡張の版が揃っているか必ず確認する（揃っていないまま提出すると弾かれる）:
+生成後、本体と3つの拡張（NotifyExtension・ParaCodeWidgets・ParaCodeNotifyContent）の版が揃っているか必ず確認する（揃っていないまま提出すると弾かれる）:
 
 ```sh
 A=/tmp/paracode-archive/ParaCodeMobile.xcarchive/Products/Applications/ParaCodeMobile.app
@@ -1567,7 +1592,7 @@ done
 
 ```sh
 cd app/mobile
-for f in native/ParaCodeWidgets/* native/NotifyExtension/*; do b=$(basename "$f"); [ "$b" = README.md ] && continue
+for f in native/ParaCodeWidgets/* native/NotifyExtension/* native/ParaCodeNotifyContent/*; do b=$(basename "$f"); [ "$b" = README.md ] && continue
   cmp -s "$f" "$(dirname "$f" | sed 's|native|ios|')/$b" || echo "DIFF $f"; done
 ```
 
@@ -1667,7 +1692,7 @@ iPad対応で実際に手で当てた設定:
 | `ios/ParaCodeMobile.xcodeproj/project.pbxproj` | `TARGETED_DEVICE_FAMILY = 1;` → `= "1,2";` を**6箇所**（本体・ParaCodeWidgets・NotifyExtension × Debug/Release）。拡張だけ1のままだと本体がiPad対応でも埋め込み検証で落ちる |
 | `ios/ParaCodeMobile/Info.plist` | `UISupportedInterfaceOrientations~ipad` に4方向を追加（iPhone用の `UISupportedInterfaceOrientations` はportrait 2種のまま） |
 
-**バージョンは全ターゲットで一致必須**（ずれるとApp Store Connectの検証で弾かれる）。今回0.3.0へ上げた際、本体だけ直すと NotifyExtension が 0.1.0 のまま残っていた。揃える箇所は `project.pbxproj` の `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` 各6箇所と、`ParaCodeMobile/Info.plist` ・ `NotifyExtension/Info.plist` の `CFBundleShortVersionString` / `CFBundleVersion`（`ParaCodeWidgets/Info.plist` は `$(MARKETING_VERSION)` 参照なので自動追従）。
+**バージョンは全ターゲットで一致必須**（ずれるとApp Store Connectの検証で弾かれる）。今回0.3.0へ上げた際、本体だけ直すと NotifyExtension が 0.1.0 のまま残っていた。揃える箇所は `project.pbxproj` の `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` 各8箇所（本体・NotifyExtension・ParaCodeWidgets・ParaCodeNotifyContent × Debug/Release。2026-10-04 に ParaCodeNotifyContent を足して 6→8）と、`ParaCodeMobile/Info.plist` ・ `NotifyExtension/Info.plist` の `CFBundleShortVersionString` / `CFBundleVersion`（`ParaCodeWidgets/Info.plist` と `ParaCodeNotifyContent/Info.plist` は `$(MARKETING_VERSION)` 参照なので自動追従）。
 
 **既知の制限（許容して出す）**: 幅700ptをまたぐリサイズ（Split Viewへの出入り）では、`(tabs)/_layout.tsx` が `NativeTabs` と `Tabs` のコンポーネント型そのものを入れ替えるため、タブ配下4画面が作り直される（ターミナルのWebViewの表示内容が消えて再同期がかかる）。選択中のタブとルート側スタック（`/agent`・`/browser` 等）は保たれる。iPhoneのiOS 26ネイティブタブバーを捨てないかぎり避けられないトレードオフなので、リサイズという明示操作に限って許容している。
 
