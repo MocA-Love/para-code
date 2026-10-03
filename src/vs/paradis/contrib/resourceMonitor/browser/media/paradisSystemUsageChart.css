@@ -1,0 +1,186 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * System usage charts (see paradisSystemUsageChart.ts), shared by the title bar panel (compact,
+ * 2 columns) and the editor tab (3 columns). Colors come from --vscode-charts-* theme tokens.
+ */
+
+.paradis-sysusage-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+	gap: 12px;
+}
+
+.paradis-sysusage-grid.compact {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px 12px;
+}
+
+.paradis-sysusage-card {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	padding: 10px 12px;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: var(--vscode-cornerRadius-medium);
+	background: var(--vscode-editorWidget-background);
+}
+
+.paradis-sysusage-grid.compact .paradis-sysusage-card {
+	padding: 0;
+	border: none;
+	background: transparent;
+}
+
+.paradis-sysusage-card-head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 6px;
+}
+
+.paradis-sysusage-card-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12px;
+	opacity: 0.8;
+}
+
+.paradis-sysusage-grid.compact .paradis-sysusage-card-label {
+	font-size: 11px;
+}
+
+.paradis-sysusage-card-value {
+	flex-shrink: 0;
+	font-size: 15px;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-sysusage-grid.compact .paradis-sysusage-card-value {
+	font-size: 12px;
+}
+
+.paradis-sysusage-card-sub {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 2px 10px;
+	min-height: 14px;
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+	opacity: 0.75;
+}
+
+.paradis-sysusage-grid.compact .paradis-sysusage-card-sub {
+	font-size: 10px;
+}
+
+.paradis-sysusage-legend {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	white-space: nowrap;
+}
+
+.paradis-sysusage-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background: var(--vscode-charts-blue);
+}
+
+.paradis-sysusage-dot.series-1 {
+	background: var(--vscode-charts-orange);
+}
+
+.paradis-sysusage-chart {
+	display: block;
+	width: 100%;
+	height: 96px;
+	margin-top: 6px;
+	overflow: hidden;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+}
+
+.paradis-sysusage-grid.compact .paradis-sysusage-chart {
+	height: 44px;
+	margin-top: 4px;
+}
+
+.paradis-sysusage-chart .paradis-sysusage-gridline {
+	stroke: var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	stroke-width: 1;
+	stroke-dasharray: 2 3;
+	vector-effect: non-scaling-stroke;
+	opacity: 0.6;
+}
+
+.paradis-sysusage-chart .paradis-sysusage-area {
+	fill: var(--vscode-charts-blue);
+	opacity: 0.18;
+	stroke: none;
+}
+
+.paradis-sysusage-chart .paradis-sysusage-line {
+	fill: none;
+	stroke: var(--vscode-charts-blue);
+	stroke-width: 1.5;
+	stroke-linejoin: round;
+	vector-effect: non-scaling-stroke;
+}
+
+.paradis-sysusage-chart .paradis-sysusage-line.series-1 {
+	stroke: var(--vscode-charts-orange);
+}
+
+.paradis-sysusage-card-note {
+	margin-top: 4px;
+	font-size: 11px;
+	opacity: 0.7;
+}
+
+.paradis-sysusage-grid.compact .paradis-sysusage-card-note {
+	font-size: 10px;
+}
+
+/* ---------- segment (machine / range) ---------- */
+
+.paradis-sysusage-segment {
+	display: inline-flex;
+	padding: 2px;
+	gap: 2px;
+	border-radius: var(--vscode-cornerRadius-medium);
+	background: var(--vscode-input-background, var(--vscode-editorWidget-background));
+	border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border, transparent));
+}
+
+.paradis-sysusage-segment-button {
+	padding: 2px 10px;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small);
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-size: 12px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.paradis-sysusage-segment-button:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-sysusage-segment-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-sysusage-segment-button.selected {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
