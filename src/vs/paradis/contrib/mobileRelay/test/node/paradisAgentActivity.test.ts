@@ -8,7 +8,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_ACTIVITY_STALE_MS, ParadisAgentActivityTracker } from '../../node/paradisAgentActivity.js';
-import { paradisParseCodexPersistedActivity } from '../../node/paradisPersistedAgentActivity.js';
+import { paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from '../../node/paradisPersistedAgentActivity.js';
 import { paradisParseCodexRolloutForTest } from '../../../agentChat/common/paradisAgentTranscriptParser.js';
 import { CODEX_FIXTURE_CHILD_ROLLOUT, CODEX_FIXTURE_ENCRYPTED, CODEX_FIXTURE_PARENT_ROLLOUT, CODEX_FIXTURE_USER_MESSAGES } from '../../../agentChat/test/common/paradisCodexRolloutFixture.js';
 
@@ -220,11 +220,93 @@ suite('ParadisAgentActivity', () => {
 		assert.strictEqual(tracker.snapshot()?.agents[0].status, 'completed');
 	});
 
+	test('links each subagent to the calls that started and resumed it, whichever arrives first', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		// 一覧の項目より先に、再開と起動の呼び出しが届く（transcript の読み直しと mod の順は決まらない）
+		tracker.linkToolUse('a1', 'toolu_resume', 90);
+		tracker.linkToolUse('a1', 'toolu_spawn', 95, true);
+		tracker.applyClaude('SubagentStart', { agent_id: 'a1', agent_type: 'Explore' }, 100);
+		const unchanged = tracker.linkToolUse('a1', 'toolu_spawn', 110, true);
+		tracker.mergeRecoveredAgents([{ id: 'a2', label: 'Plan', provider: 'claude', status: 'completed', startedAt: 120, updatedAt: 130, toolUseIds: ['toolu_other'] }], 130);
+		assert.deepStrictEqual({ unchanged, agents: tracker.snapshot()?.agents.map(agent => ({ id: agent.id, toolUseIds: agent.toolUseIds })) }, {
+			unchanged: false,
+			agents: [
+				{ id: 'a1', toolUseIds: ['toolu_spawn', 'toolu_resume'] },
+				{ id: 'a2', toolUseIds: ['toolu_other'] },
+			],
+		});
+	});
+
+	test('keeps the spawn call and the newest resumes, forgets the least recently linked subagents, and stays quiet for subagents not listed', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		// 一覧にいない子の結びは送り直さず、一覧の開始時刻も立てない
+		const quiet = tracker.linkToolUse('a0', 'toolu_a0', 10, true);
+		const startedBeforeList = tracker.snapshot();
+		for (let index = 1; index <= 300; index++) {
+			tracker.linkToolUse(`a${index}`, `toolu_a${index}`, 10 + index, true);
+		}
+		tracker.applyClaude('SubagentStart', { agent_id: 'a0' }, 400);
+		tracker.applyClaude('SubagentStart', { agent_id: 'a300' }, 400);
+		for (let index = 1; index <= 11; index++) {
+			tracker.linkToolUse('a300', `toolu_resume${index}`, 400 + index);
+		}
+		const agents = tracker.snapshot()?.agents ?? [];
+		assert.deepStrictEqual({ quiet, startedBeforeList, a0: agents.find(agent => agent.id === 'a0')?.toolUseIds, a300: agents.find(agent => agent.id === 'a300')?.toolUseIds }, {
+			quiet: false,
+			startedBeforeList: undefined,
+			a0: undefined,
+			a300: ['toolu_a300', 'toolu_resume3', 'toolu_resume4', 'toolu_resume5', 'toolu_resume6', 'toolu_resume7', 'toolu_resume8', 'toolu_resume9', 'toolu_resume10', 'toolu_resume11'],
+		});
+	});
+
+	test('returns a subagent revived by a late SubagentStart to completed when its transcript has no newer line, but keeps a real resume running', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		for (const id of ['late', 'resumed']) {
+			tracker.applyClaude('SubagentStart', { agent_id: id }, 1_000);
+			tracker.applyClaude('SubagentStop', { agent_id: id }, 2_000);
+			// Stop の 3 秒後に届いた Start は再開として受け入れる
+			tracker.applyClaude('SubagentStart', { agent_id: id }, 5_000);
+		}
+		const revived = tracker.snapshot()?.agents.map(agent => agent.status);
+		tracker.mergeRecoveredAgents([
+			{ id: 'late', label: 'SubAgent', provider: 'claude', status: 'completed', startedAt: 1_000, updatedAt: 2_000, lastLineAt: 2_000 },
+			{ id: 'resumed', label: 'SubAgent', provider: 'claude', status: 'running', startedAt: 1_000, updatedAt: 6_000, lastLineAt: 6_000 },
+		], 11_000);
+		assert.deepStrictEqual({ revived, after: tracker.snapshot()?.agents.map(agent => ({ id: agent.id, status: agent.status })) }, {
+			revived: ['running', 'running'],
+			after: [{ id: 'resumed', status: 'running' }, { id: 'late', status: 'completed' }],
+		});
+	});
+
+	test('reads which Claude call started or resumed each subagent from the transcript', () => {
+		const at = (second: number) => `2026-10-04T10:00:${String(second).padStart(2, '0')}.000Z`;
+		const lines = [
+			{ type: 'assistant', timestamp: at(0), message: { content: [{ type: 'tool_use', id: 'toolu_async', name: 'Agent', input: { description: 'レビュー', subagent_type: 'code-reviewer' } }, { type: 'tool_use', id: 'toolu_sync', name: 'Agent', input: { description: '調査', subagent_type: 'Explore' } }] } },
+			{ type: 'user', timestamp: at(1), toolUseResult: { status: 'async_launched', agentId: 'aasync01' }, message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_async', content: 'Async agent launched successfully.\nagentId: aasync01 (This tool result is internal metadata)' }] } },
+			// 同期の報告の本文に ID 風の文字列があっても、構造化した結果の ID を使う
+			{ type: 'user', timestamp: at(5), toolUseResult: { status: 'completed', agentId: 'async02', totalToolUseCount: 3 }, message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_sync', content: [{ type: 'text', text: '見つけた設定: agentId: decoy99' }] }] } },
+			{ type: 'assistant', timestamp: at(6), message: { content: [{ type: 'tool_use', id: 'toolu_send', name: 'SendMessage', input: { to: 'aasync01', message: '続けて' } }] } },
+			{ type: 'user', timestamp: at(7), message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_send', content: '{"success":true,"message":"Resuming agent aasync01","resumedAgentId":"aasync01"}' }] } },
+		].map(line => JSON.stringify(line));
+		const now = Date.parse(at(8));
+		const parsed = paradisParseClaudePersistedActivity(undefined, lines, now, now);
+		assert.deepStrictEqual({
+			spawned: parsed.spawned.map(agent => ({ id: agent.id, status: agent.status, toolUseIds: agent.toolUseIds })),
+			resumes: [...parsed.resumeToolUseIds],
+		}, {
+			spawned: [
+				{ id: 'aasync01', status: 'running', toolUseIds: ['toolu_async'] },
+				{ id: 'async02', status: 'completed', toolUseIds: ['toolu_sync'] },
+			],
+			resumes: [['aasync01', ['toolu_send']]],
+		});
+	});
+
 	test('builds the Codex sub-agent, goal and plan from a paginated rollout the same way the tailer feeds it', () => {
 		const tracker = new ParadisAgentActivityTracker();
 		for (const event of paradisParseCodexRolloutForTest(CODEX_FIXTURE_PARENT_ROLLOUT).timeline) {
 			if (event.type === 'subagent') {
-				tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: event.id, agentPath: event.agentPath, kind: event.kind, ...(event.via !== undefined ? { interaction: event.via } : {}) } }, event.at);
+				tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: event.id, agentPath: event.agentPath, kind: event.kind, ...(event.via !== undefined ? { interaction: event.via } : {}), ...(event.callId !== undefined ? { callId: event.callId } : {}) } }, event.at);
 			} else if (event.type === 'goal') {
 				tracker.applyCodexGoal(event, event.at);
 			} else if (event.type === 'plan') {
@@ -238,7 +320,8 @@ suite('ParadisAgentActivity', () => {
 		const endAt = Date.parse('2026-10-01T21:45:00.000Z');
 		const snapshot = tracker.snapshot();
 		assert.deepStrictEqual({ agents: snapshot?.agents, tasks: snapshot?.tasks }, {
-			agents: [{ id: 'thread-child', label: '/root/reviewer', role: 'subagent', provider: 'codex', status: 'completed', startedAt: 1790890475402, updatedAt: 1790890753317 }],
+			// 起動（spawn_agent）とやりとり（send_message）の呼び出しの call_id で、会話のカードからこの項目を引ける
+			agents: [{ id: 'thread-child', label: '/root/reviewer', role: 'subagent', provider: 'codex', status: 'completed', startedAt: 1790890475402, updatedAt: 1790890753317, toolUseIds: ['call_spawn1', 'call_send1'] }],
 			tasks: [
 				// ゴールは目標なので待機として載せ、取りかかったまま失敗で終わった手順はターンの終わりに合わせて畳む
 				{ id: 'codex-plan:2', label: 'テストを足す', assignee: '計画', status: 'idle', startedAt: planAt, updatedAt: planAt },

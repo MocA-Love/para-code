@@ -78,6 +78,18 @@ suite('paradisAgentTranscriptParser', () => {
 		});
 	});
 
+	test('attaches the structured subagent id to the Agent result even when the text is cut', () => {
+		const result = (blocks: unknown[]) => paradisParseClaudeTranscriptLineForTest(JSON.stringify({ type: 'user', timestamp: '2026-10-01T10:00:00.000Z', toolUseResult: { status: 'completed', agentId: 'a1b2c3' }, message: { role: 'user', content: blocks } })).messages.map(message => ({ toolUseId: message.toolUseId, agentId: message.agentId, truncated: message.truncated }));
+		assert.deepStrictEqual({
+			single: result([{ type: 'tool_result', tool_use_id: 'toolu_a', content: `${'報告'.repeat(2_000)}\nagentId: a1b2c3` }]),
+			// 構造化した結果は行に 1 つなので、tool_result が 2 つある行ではどちらにも付けない
+			two: result([{ type: 'tool_result', tool_use_id: 'toolu_b', content: 'one' }, { type: 'tool_result', tool_use_id: 'toolu_c', content: 'two' }]),
+		}, {
+			single: [{ toolUseId: 'toolu_a', agentId: 'a1b2c3', truncated: true }],
+			two: [{ toolUseId: 'toolu_b', agentId: undefined, truncated: undefined }, { toolUseId: 'toolu_c', agentId: undefined, truncated: undefined }],
+		});
+	});
+
 	test('unwraps pasted_content written by Claude Code 2.1.278+', () => {
 		const user = (content: unknown) => paradisParseClaudeTranscriptLineForTest(JSON.stringify({ type: 'user', timestamp: '2026-10-01T10:00:00.000Z', message: { role: 'user', content } })).messages.map(message => message.text);
 		assert.deepStrictEqual({
@@ -154,8 +166,8 @@ suite('paradisAgentTranscriptParser', () => {
 			],
 			timeline: [
 				{ type: 'turnStart', at: Date.parse('2026-10-01T21:34:03.074Z') },
-				{ type: 'subagent', id: 'thread-child', agentPath: '/root/reviewer', kind: 'started', at: 1790890475402 },
-				{ type: 'subagent', id: 'thread-child', agentPath: '/root/reviewer', kind: 'interacted', at: 1790890570020, via: 'send_message' },
+				{ type: 'subagent', id: 'thread-child', agentPath: '/root/reviewer', kind: 'started', at: 1790890475402, callId: 'call_spawn1' },
+				{ type: 'subagent', id: 'thread-child', agentPath: '/root/reviewer', kind: 'interacted', at: 1790890570020, via: 'send_message', callId: 'call_send1' },
 				{ type: 'subagent', id: 'thread-child', agentPath: '/root/reviewer', kind: 'completed', at: 1790890753317 },
 				{ type: 'goal', threadId: 'thread-root', objective: '設定画面の不具合を直してテストまで通す', status: 'active', tokensUsed: 0, timeUsedSeconds: 0, at: Date.parse('2026-10-01T21:40:00.000Z') },
 				{ type: 'plan', steps: [{ step: '原因を調べる', status: 'completed' }, { step: '直す', status: 'in_progress' }, { step: 'テストを足す', status: 'pending' }], explanation: '順に進めます', at: Date.parse('2026-10-01T21:40:05.000Z') },

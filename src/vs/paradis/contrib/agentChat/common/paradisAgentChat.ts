@@ -90,6 +90,12 @@ export interface IParadisAgentChatMessage {
 	/** kind==='tool_result' のとき: ツールがエラーを返したか（transcriptの is_error）。 */
 	readonly isError?: boolean;
 	/**
+	 * kind==='tool_result' のとき: サブエージェント（Agent / Task）の起動・報告の結果に Claude Code が添える子の ID
+	 * （行の `toolUseResult.agentId`）。本文の末尾の `agentId:` が切り詰めで落ちても、会話のカードを一覧の項目へ結べる。
+	 * 古いアプリは知らない項目として無視する。
+	 */
+	readonly agentId?: string;
+	/**
 	 * text が TOOL_TEXT_LIMIT / TEXT_LIMIT で切り詰められている。モバイルは 'tool-full'
 	 * リクエストで全文を取り寄せられる（展開時のオンデマンド取得）。
 	 */
