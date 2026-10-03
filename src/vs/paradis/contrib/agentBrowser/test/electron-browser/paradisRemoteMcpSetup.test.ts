@@ -85,6 +85,7 @@ suite('ParadisRemoteMcpSetupController', () => {
 					type: 'http',
 					url: 'http://127.0.0.1:51234/',
 					headers: { Authorization: 'Bearer ${PARA_CODE_TERMINAL_PANE_ID}' },
+					timeout: 300000,
 				},
 			},
 		});

@@ -12,7 +12,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisMcpSetupController } from '../../node/paradisMcpSetup.js';
-import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml } from '../../node/paradisMcpConfigStatus.js';
+import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexToolTimeoutLine } from '../../node/paradisMcpConfigStatus.js';
 import { paradisCodexMcpTableBody } from '../../common/paradisMcpSetupEncoding.js';
 
 const PORT = 47286;
@@ -271,5 +271,36 @@ suite('Para Browser MCP config status', () => {
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
 		}
+	});
+
+	test('adds tool_timeout_sec only when no key anywhere already defines it, so the TOML never gets a duplicate key', () => {
+		const table = (...extra: string[]) => [
+			'[mcp_servers.para-browser]',
+			`url = "http://127.0.0.1:${PORT}/"`,
+			'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
+			...extra,
+		].join('\n');
+		const add = (text: string) => paradisAddCodexToolTimeoutLine(text, PORT);
+		assert.deepStrictEqual({
+			absent: add(table('enabled = false')),
+			quotedKey: add(table('"tool_timeout_sec" = 120')),
+			commentedOut: add(table('# tool_timeout_sec = 120')) !== undefined,
+			inStringValue: add(table('note = "tool_timeout_sec = 1"')) !== undefined,
+			dottedOutside: add(`mcp_servers.para-browser.tool_timeout_sec = 120\n${table()}`),
+			dottedInParentTable: add(`${table()}\n\n[mcp_servers]\npara-browser.tool_timeout_sec = 120\n`),
+			quotedDottedOutside: add(`mcp_servers."para-browser"."tool_timeout_sec" = 120\n${table()}`),
+			otherServer: add(`${table()}\n\n[mcp_servers.other]\ntool_timeout_sec = 10\n`) !== undefined,
+			inlineTable: add(`${table()}\n\n[other]\nx = { tool_timeout_sec = 1, y = [\n  tool_timeout_sec ] }\n`),
+		}, {
+			absent: `${table('enabled = false')}\ntool_timeout_sec = 300`,
+			quotedKey: undefined,
+			commentedOut: true,
+			inStringValue: true,
+			dottedOutside: undefined,
+			dottedInParentTable: undefined,
+			quotedDottedOutside: undefined,
+			otherServer: true,
+			inlineTable: undefined,
+		});
 	});
 });

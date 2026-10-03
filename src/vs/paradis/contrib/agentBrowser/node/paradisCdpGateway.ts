@@ -67,6 +67,11 @@ export interface IParadisCdpGatewayDelegate {
 		isConnectionCurrent: () => boolean,
 	): IParadisCdpInputQueueOperation;
 	closeInputConnection(connection: object): void;
+	/**
+	 * The gateway refused an `Input.*` of this pane (focus held by the user, barrier timeout, …).
+	 * The agent's tool usually reports only "not interactive"; the service remembers the reason.
+	 */
+	noteInputRejection?(token: string, message: string): void;
 	/** 接続先（SSH・WSL・コンテナ）のペインか（ペインの `remoteAuthority`）。台帳に無いトークンも true。 */
 	isRemotePane(token: string): boolean;
 	/**
@@ -605,7 +610,7 @@ export class ParadisCdpGateway extends Disposable {
 						drained: Promise.resolve(),
 					};
 				}
-				return this.delegate.dispatchBoundPageInput(
+				const operation = this.delegate.dispatchBoundPageInput(
 					token,
 					inputConnection,
 					expectedTargetId,
@@ -613,7 +618,14 @@ export class ParadisCdpGateway extends Disposable {
 					paramsJson,
 					() => isCurrentLease() && isRouteCurrent(),
 				);
+				void operation.response.then(result => {
+					if (result.status !== 'success') {
+						this.delegate.noteInputRejection?.(token, result.message);
+					}
+				}, () => undefined);
+				return operation;
 			},
+			noteInputRejection: message => this.delegate.noteInputRejection?.(token, message),
 			closeInputConnection,
 			isRemotePane,
 			onOpen: ws => {

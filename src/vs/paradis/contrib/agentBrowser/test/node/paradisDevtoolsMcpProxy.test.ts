@@ -359,7 +359,54 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		}, { isError: true, retryable: true, childCount: 0 });
 	});
 
-	test('reports a failed tool result to Sentry as a bucket, never the text', async () => {
+	test('does not retry after Target closed once the call has used its time while the child got ready', async () => {
+		const fixture = createFakeDevtoolsChildren({
+			toolCallResults: [{ content: [{ type: 'text', text: 'Error: Protocol error (Accessibility.getFullAXTree): Target closed' }], isError: true }],
+		});
+		// The clock reads 0 at the start, 999 after the first call, and 1000 once the child is ready again.
+		const readings = [0, 999];
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+			temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
+			spawnChild: fixture.spawn,
+			callTimeoutMs: 1000,
+			now: () => readings.shift() ?? 1000,
+		}));
+		const { result } = await withRecordedReports(async () => [await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {})]);
+		assert.deepStrictEqual({
+			isError: (result[0] as { isError?: boolean }).isError,
+			toolCalls: fixture.children[0].requests.filter(request => request.method === 'tools/call').length,
+		}, { isError: true, toolCalls: 1 });
+	});
+
+	test('serves the next part of a long snapshot from the one just taken, and drops it when another tool runs', async () => {
+		const longSnapshot = { content: [{ type: 'text', text: `## Latest page snapshot\n${'uid=1_1 button "x"\n'.repeat(2000)}` }] };
+		const fixture = createFakeDevtoolsChildren({
+			toolsListResult: { tools: [{ name: 'take_snapshot' }, { name: 'click' }] },
+			toolCallResults: [longSnapshot, { content: [{ type: 'text', text: 'clicked' }] }, longSnapshot, longSnapshot],
+		});
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
+		const call = async (name: string, args: object) => ((await proxy.tryCallTool('secret-token', 1, 'ws://one', name, args)) as { content: { text: string }[] }).content[0].text;
+		const toolCalls = () => fixture.children[0].requests.filter(request => request.method === 'tools/call').length;
+
+		await call('take_snapshot', {});
+		const cached = await call('take_snapshot', { offset: 20 });
+		const afterCachedPart = toolCalls();
+		await call('click', { uid: '1_1' });
+		await call('take_snapshot', { offset: 20 });
+		const afterClick = toolCalls();
+		// verbose snapshots are never kept or served from what was kept.
+		await call('take_snapshot', { verbose: true });
+		await call('take_snapshot', { offset: 20, verbose: true });
+
+		assert.deepStrictEqual({
+			afterCachedPart,
+			cachedNote: /taken at \d{4}-\d{2}-\d{2}T/.test(cached),
+			afterClick,
+			afterVerbose: toolCalls(),
+		}, { afterCachedPart: 1, cachedNote: true, afterClick: 3, afterVerbose: 5 });
+	});
+
+	test('reports a failed tool result to Sentry as a bucket, never the text, and retries a read-only tool once after Target closed', async () => {
 		const fixture = createFakeDevtoolsChildren({
 			toolCallResults: [
 				{ content: [{ type: 'text', text: 'Error: Protocol error (Accessibility.getFullAXTree): Target closed at /Users/alice/private' }], isError: true },
@@ -369,18 +416,22 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
 		const { result, reports } = await withRecordedReports(async () => [
 			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {}),
-			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {}),
 		]);
 
 		assert.deepStrictEqual({
 			isError: result.map(r => (r as { isError?: boolean }).isError),
-			reports: reports.map(r => ({ ...r, extra: { ...r.extra, duration_ms: typeof r.extra?.duration_ms } })),
+			reports: reports.map(r => ({ ...r, extra: { ...r.extra, ...(r.extra?.duration_ms !== undefined ? { duration_ms: typeof r.extra.duration_ms } : {}) } })),
 		}, {
-			isError: [true, undefined],
+			isError: [undefined],
 			reports: [{
 				feature: 'agent-browser',
 				operation: 'devtools-tool-error-target-closed',
 				extra: { duration_ms: 'number', safe_tool_name: 'take_snapshot', safe_error_kind: 'target-closed', safe_gate_reason: 'none', safe_cdp_method: 'Accessibility.getFullAXTree' },
+				severity: 'info',
+			}, {
+				feature: 'agent-browser',
+				operation: 'devtools-target-closed-retry',
+				extra: { safe_tool_name: 'take_snapshot', safe_retry_succeeded: true },
 				severity: 'info',
 			}],
 		});
@@ -600,7 +651,7 @@ suite('ParadisDevtoolsMcpProxy', () => {
 	test('deeply freezes cached tool descriptors against caller mutation', async () => {
 		const fixture = createFakeDevtoolsChildren({
 			toolsListResult: {
-				tools: [{ name: 'take_snapshot', inputSchema: { type: 'object', properties: { selector: { type: 'string' } } } }],
+				tools: [{ name: 'list_pages', inputSchema: { type: 'object', properties: { selector: { type: 'string' } } } }],
 			},
 		});
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
@@ -612,7 +663,7 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		assert.throws(() => mutableTool.name = 'poisoned');
 		assert.throws(() => mutableTool.inputSchema.properties.selector.type = 'number');
 		const cached = await proxy.listTools('secret-token', 1, 'ws://one');
-		assert.deepStrictEqual(cached, [{ name: 'take_snapshot', inputSchema: { type: 'object', properties: { selector: { type: 'string' } } } }]);
+		assert.deepStrictEqual(cached, [{ name: 'list_pages', inputSchema: { type: 'object', properties: { selector: { type: 'string' } } } }]);
 	});
 
 	test('bounds newline-less stdout and rejects every pending request without exposing it', async () => {
