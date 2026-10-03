@@ -27,6 +27,9 @@ import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-m
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
 import { IParadisTeardownLog, paradisReportSlowTeardownStep, paradisTimeTeardownStep } from '../../sentry/common/paradisTeardownTiming.js';
 import { captureParadisMainMeasurementSnapshot, flushParadisMainSentry } from '../../sentry/electron-main/paradisSentryMain.js';
+import { PARADIS_MAIN_LOAD_CHANNEL } from '../../mainLoad/common/paradisMainLoad.js';
+import { ParadisMainLoadMonitor, paradisCreateMainLoadChannel } from '../../mainLoad/node/paradisMainLoadMonitor.js';
+import { ILogService, NullLogService } from '../../../../platform/log/common/log.js';
 import {
 	IParadisHealthBeaconMainService,
 	IParadisHealthProcessSample,
@@ -291,6 +294,8 @@ export function paradisRegisterHealthBeacon(
 	windowsMainService: IWindowsMainService,
 	browserViewMainService: IBrowserViewMainService,
 	lifecycleMainService: ILifecycleMainService,
+	/** main の混雑の計測のログの出し先。無ければ混雑の記録をログに出さない (要約は取る)。 */
+	logService: ILogService = new NullLogService(),
 ): IDisposable {
 	const disposables = new DisposableStore();
 	const beacon = disposables.add(new ParadisHealthBeacon(windowsMainService, browserViewMainService, lifecycleMainService));
@@ -298,5 +303,9 @@ export function paradisRegisterHealthBeacon(
 	beacon.start();
 	// main の固まりの見張り（W2-33）も同じ入り口から起こす。配布版でだけ動く。
 	disposables.add(paradisStartMainHangWatchdog());
+	// main の混雑の計測（イベントループ遅延・稼働率・stat の往復の分割）も同じ入り口から起こす。
+	// app.ts に新しい差し込み口を作らないため（paradis/contrib/mainLoad）。
+	const mainLoad = disposables.add(new ParadisMainLoadMonitor(logService));
+	channelHost.registerChannel(PARADIS_MAIN_LOAD_CHANNEL, paradisCreateMainLoadChannel(mainLoad));
 	return disposables;
 }

@@ -27,8 +27,8 @@ import { IWorkspaceTrustManagementService } from '../../../../../platform/worksp
 import { Workspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
 import { IWorkspaceFolderCreationData } from '../../../../../platform/workspaces/common/workspaces.js';
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
-import { EditorExtensions, IEditorFactoryRegistry } from '../../../../../workbench/common/editor.js';
-import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
+import { EditorExtensions, EditorsOrder, IEditorFactoryRegistry } from '../../../../../workbench/common/editor.js';
+import { GroupDirection, IEditorGroup, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../../workbench/services/layout/browser/layoutService.js';
 import { FileOperationError, FileOperationResult, IFileService, IFileStat } from '../../../../../platform/files/common/files.js';
 import { paradisIsTerminalInputBlocked, paradisResetTerminalInputGateForTest } from '../../browser/paradisTerminalInputGate.js';
@@ -50,6 +50,13 @@ import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex } fr
 import { IProgressService } from '../../../../../platform/progress/common/progress.js';
 import { ILifecycleService } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { ParadisWorkspaceSwitchService } from '../../browser/paradisWorkspaceSwitchService.js';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { extUri } from '../../../../../base/common/resources.js';
+import { IUriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentity.js';
+import { ConfirmResult } from '../../../../../platform/dialogs/common/dialogs.js';
+import { IEditorCloseHandler } from '../../../../../workbench/common/editor/editorInput.js';
+import { TerminalEditorInput } from '../../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
+import { ITextFileEditorModel, ITextFileService, TextFileEditorModelState } from '../../../../../workbench/services/textfile/common/textfiles.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../../common/paradisWorkspaceSwitch.js';
 import { PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, paradisSerializeWorkspaceSwitchTransactions } from '../../common/paradisWorkspaceSwitchTransaction.js';
 import { paradisPrepareRestartedTerminalLaunch, paradisRegisterRestartedTerminalCwdResolver, paradisResetRestartedTerminalsForTest } from '../../common/paradisTerminalLaunchPreparers.js';
@@ -1059,6 +1066,274 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			if (sourceTerminal !== undefined && parked !== sourceTerminal) {
 				sourceTerminal.dispose();
 			}
+			try {
+				await harness?.parts.activeGroup.closeAllEditors();
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('reopens a live terminal before the folders change when returning to its space, and leaves unsaved editors to the regular restore', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		const duringFolderUpdate: { readonly editors: (string | undefined)[]; readonly active: string | undefined }[] = [];
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables, async (phase, uri) => {
+				if (phase === 'start' && uri.path === '/workspace-a' && harness !== undefined) {
+					const group = harness.parts.activeGroup;
+					duringFolderUpdate.push({
+						editors: group.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.path),
+						active: group.activeEditor?.resource?.path,
+					});
+				}
+			});
+			const unsaved = harness.createEditor('/workspace-a/unsaved.txt', true);
+			const saved = harness.createEditor('/workspace-a/saved.txt', false);
+			const live = harness.createLiveTerminalEditor('/workspace-a/claude');
+			await harness.parts.activeGroup.openEditor(unsaved, { pinned: true });
+			await harness.parts.activeGroup.openEditor(saved, { pinned: true });
+			await harness.parts.activeGroup.openEditor(live, { pinned: true });
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const whileAway = harness.parts.activeGroup.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.path);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			assert.deepStrictEqual({
+				whileAway,
+				duringFolderUpdate,
+				editors: harness.parts.activeGroup.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.path),
+				active: harness.parts.activeGroup.activeEditor?.resource?.path,
+				liveDisposed: live.isDisposed(),
+				sourceLiveState: harness.editorScopeService.hasLiveState('space-a'),
+			}, {
+				whileAway: [],
+				// 未保存のファイルはまだ預けたまま。生きたターミナルは元の並びの位置に、アクティブで出ている。
+				duringFolderUpdate: [{ editors: ['/workspace-a/saved.txt', '/workspace-a/claude'], active: '/workspace-a/claude' }],
+				editors: ['/workspace-a/unsaved.txt', '/workspace-a/saved.txt', '/workspace-a/claude'],
+				active: '/workspace-a/claude',
+				liveDisposed: false,
+				sourceLiveState: false,
+			});
+		} finally {
+			try {
+				await harness?.parts.activeGroup.closeAllEditors();
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('puts an early reopened live terminal back into its space when the return switch rolls back', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		let failReturn = false;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables, async (phase, uri) => {
+				if (phase === 'end' && uri.path === '/workspace-a' && failReturn) {
+					failReturn = false;
+					throw new Error('return failed');
+				}
+			});
+			const live = harness.createLiveTerminalEditor('/workspace-a/claude');
+			await harness.parts.activeGroup.openEditor(live, { pinned: true });
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const targetEditor = harness.createEditor('/workspace-b/unsaved.txt', true);
+			await harness.parts.activeGroup.openEditor(targetEditor, { pinned: true });
+
+			failReturn = true;
+			const result = await Promise.allSettled([harness.workspaceSwitchService.switchRepository('space-a')]);
+			const afterRollback = {
+				status: result[0].status,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				editors: harness.parts.activeGroup.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.path),
+				liveDisposed: live.isDisposed(),
+				sourceLiveState: harness.editorScopeService.hasLiveState('space-a'),
+			};
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			assert.deepStrictEqual({
+				afterRollback,
+				editors: harness.parts.activeGroup.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.path),
+				active: harness.parts.activeGroup.activeEditor?.resource?.path,
+				sourceLiveState: harness.editorScopeService.hasLiveState('space-a'),
+			}, {
+				afterRollback: {
+					status: 'rejected',
+					activeStateKey: 'space-b',
+					// 前倒しで開いたターミナルは切り替え先 (space-b) のタブに残らず、space-a へ預け直されている。
+					editors: ['/workspace-b/unsaved.txt'],
+					liveDisposed: false,
+					sourceLiveState: true,
+				},
+				editors: ['/workspace-a/claude'],
+				active: '/workspace-a/claude',
+				sourceLiveState: false,
+			});
+		} finally {
+			try {
+				await harness?.parts.activeGroup.closeAllEditors();
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('takes an early reopened live terminal back even after it was moved to another group before the rollback', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		let failReturn = false;
+		let movedTo: IEditorGroup | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables, async (phase, uri) => {
+				if (phase === 'end' && uri.path === '/workspace-a' && failReturn && harness !== undefined) {
+					failReturn = false;
+					// 前倒しで開いたタブを、巻き戻しの前に利用者が右のグループへ動かした。
+					const source = harness.parts.activeGroup;
+					movedTo = harness.parts.addGroup(source, GroupDirection.RIGHT);
+					source.moveEditor(live, movedTo);
+					throw new Error('return failed');
+				}
+			});
+			const live = harness.createLiveTerminalEditor('/workspace-a/claude');
+			await harness.parts.activeGroup.openEditor(live, { pinned: true });
+			await harness.workspaceSwitchService.switchRepository('space-b');
+
+			failReturn = true;
+			const result = await Promise.allSettled([harness.workspaceSwitchService.switchRepository('space-a')]);
+			const afterRollback = {
+				status: result[0].status,
+				moved: movedTo !== undefined,
+				openAnywhere: harness.parts.groups.some(group => group.contains(live)),
+				liveDisposed: live.isDisposed(),
+				sourceLiveState: harness.editorScopeService.hasLiveState('space-a'),
+			};
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			assert.deepStrictEqual({
+				afterRollback,
+				openCount: harness.parts.groups.filter(group => group.contains(live)).length,
+				sourceLiveState: harness.editorScopeService.hasLiveState('space-a'),
+			}, {
+				afterRollback: { status: 'rejected', moved: true, openAnywhere: false, liveDisposed: false, sourceLiveState: true },
+				// 次に戻ったときに 1 か所にだけ開く (二重に開かない)。
+				openCount: 1,
+				sourceLiveState: false,
+			});
+		} finally {
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('keeps the tab order in every group when live terminals and unsaved editors share groups', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const left = harness.parts.activeGroup;
+			const right = harness.parts.addGroup(left, GroupDirection.RIGHT);
+			const editors = {
+				leftLive: harness.createLiveTerminalEditor('/workspace-a/left-claude'),
+				leftSaved: harness.createEditor('/workspace-a/left-saved.txt', false),
+				leftUnsaved: harness.createEditor('/workspace-a/left-unsaved.txt', true),
+				leftLive2: harness.createLiveTerminalEditor('/workspace-a/left-codex'),
+				rightUnsaved: harness.createEditor('/workspace-a/right-unsaved.txt', true),
+				rightLive: harness.createLiveTerminalEditor('/workspace-a/right-claude'),
+				rightSaved: harness.createEditor('/workspace-a/right-saved.txt', false),
+			};
+			for (const editor of [editors.leftLive, editors.leftSaved, editors.leftUnsaved, editors.leftLive2]) {
+				await left.openEditor(editor, { pinned: true });
+			}
+			for (const editor of [editors.rightUnsaved, editors.rightLive, editors.rightSaved]) {
+				await right.openEditor(editor, { pinned: true });
+			}
+			const order = () => harness!.parts.groups.map(group => group.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.path));
+			const before = order();
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			assert.deepStrictEqual({ after: order(), before }, {
+				after: before,
+				before: [
+					['/workspace-a/left-claude', '/workspace-a/left-saved.txt', '/workspace-a/left-unsaved.txt', '/workspace-a/left-codex'],
+					['/workspace-a/right-unsaved.txt', '/workspace-a/right-claude', '/workspace-a/right-saved.txt'],
+				],
+			});
+		} finally {
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('rolls back and reloads the workspace file when the folders did not actually change (ENOSPC)', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const calls: string[] = [];
+			let saveFailed = true;
+			const workspaceFileModel = {
+				hasState: (state: TextFileEditorModelState) => saveFailed && state === TextFileEditorModelState.ERROR,
+				isDirty: () => saveFailed,
+				revert: async () => {
+					calls.push('revert');
+					saveFailed = false;
+				},
+				save: async () => {
+					calls.push('save');
+					return true;
+				},
+				// 失敗した切り替えの書き換え (folders だけ) が未保存のまま残っている。
+				textEditorModel: { getValue: () => JSON.stringify({ folders: [{ path: '/workspace-b' }] }) },
+			} satisfies Partial<Record<keyof ITextFileEditorModel, unknown>> as unknown as ITextFileEditorModel;
+			// upstream は保存の失敗を握りつぶし、ディスクに残った古い folders を読み直して成功として返す。
+			harness.setFolderWriteSwallowed(uri => uri.path === '/workspace-b');
+			harness.setWorkspaceFile(workspaceFileModel, JSON.stringify({ folders: [{ path: '/workspace-a' }] }));
+			const sourceEditor = harness.createEditor('/workspace-a/kept.txt', true);
+			await harness.parts.activeGroup.openEditor(sourceEditor, { pinned: true });
+
+			const result = await Promise.allSettled([harness.workspaceSwitchService.switchRepository('space-b')]);
+			const afterFailure = {
+				status: result[0].status,
+				namesTarget: result[0].status === 'rejected' && String(result[0].reason.message).includes('space-b'),
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				sourceEditorVisible: harness.parts.activeGroup.contains(sourceEditor),
+				calls: [...calls],
+			};
+
+			harness.setFolderWriteSwallowed(() => false);
+			await harness.workspaceSwitchService.switchRepository('space-b');
+
+			assert.deepStrictEqual({
+				afterFailure,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				calls,
+			}, {
+				afterFailure: {
+					status: 'rejected',
+					namesTarget: true,
+					activeStateKey: 'space-a',
+					sourceEditorVisible: true,
+					// ディスクの中身は正常なので、失敗した書き換えを捨てて読み直す (上書きはしない)。
+					calls: ['revert'],
+				},
+				activeStateKey: 'space-b',
+				// 2回目の切り替えではモデルは正常なので何もしない。
+				calls: ['revert'],
+			});
+		} finally {
 			try {
 				await harness?.parts.activeGroup.closeAllEditors();
 			} finally {
@@ -2486,8 +2761,29 @@ interface IWorkspaceSwitchIntegrationHarness {
 	readonly notifications: IRecordedNotification[];
 	disposeGroup(group: ITerminalGroup): void;
 	createEditor(path: string, modified: boolean): TestFileEditorInput;
+	/**
+	 * 子プロセスが動いているエディタのターミナルに見立てた入力。種類はターミナルで、閉じるときに
+	 * 確認が要る (`closeHandler.showConfirm()` が true) ので、切り替えでは working set から外れて
+	 * 生きたまま預けられる。作業コピーは持たない。
+	 */
+	createLiveTerminalEditor(path: string): TestFileEditorInput;
+	/**
+	 * `.code-workspace` の保存の失敗を再現する。true を返した行き先への `updateFolders` は、
+	 * upstream と同じく folders を変えないまま成功として返る。
+	 */
+	setFolderWriteSwallowed(predicate: (uri: URI) => boolean): void;
+	/** ワークスペースのファイルのモデル (`textFileService.files.get`) と、ディスク上の中身を差し替える。 */
+	setWorkspaceFile(model: ITextFileEditorModel | undefined, diskContent: string | undefined): void;
 	/** `startPty` を渡すと、`processReady` を待たれた時点で初めて呼ばれる（PTY の起動が遅れた端末を作る）。 */
 	addTerminal(input: TestFileEditorInput, instanceId: number, persistentProcessId: number | undefined, shellIntegrationNonce: string, startPty?: () => Promise<void>): ITerminalInstance;
+}
+
+/** 子プロセスが動いているエディタのターミナルの代わり。閉じるときに確認が要る入力。 */
+class ParadisLiveTerminalTestEditorInput extends TestFileEditorInput {
+	override readonly closeHandler: IEditorCloseHandler = {
+		showConfirm: () => true,
+		confirm: async () => ConfirmResult.DONT_SAVE,
+	};
 }
 
 interface IWorkspaceSwitchHarnessBootstrap {
@@ -2708,12 +3004,17 @@ async function createHarness(
 	const editorScopeService = testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
 
 	let folderUpdateIndex = 0;
+	let swallowFolderWrite: (uri: URI) => boolean = () => false;
+	let workspaceFileModel: ITextFileEditorModel | undefined;
+	let workspaceFileDiskContent: string | undefined;
 	const workspaceEditingService = {
 		async updateFolders(_index: number, _deleteCount?: number, foldersToAdd: IWorkspaceFolderCreationData[] = []) {
 			const uri = foldersToAdd[0].uri;
 			const updateIndex = folderUpdateIndex++;
 			await onFolderUpdate('start', uri, updateIndex);
-			workspace.folders = [toWorkspaceFolder(uri)];
+			if (!swallowFolderWrite(uri)) {
+				workspace.folders = [toWorkspaceFolder(uri)];
+			}
 			await onFolderUpdate('end', uri, updateIndex);
 		}
 	} satisfies Pick<IWorkspaceEditingService, 'updateFolders'> as IWorkspaceEditingService;
@@ -2759,7 +3060,15 @@ async function createHarness(
 		terminalEditorService as unknown as ITerminalEditorService,
 		// 切り替え先フォルダの事前確認。ディレクトリを返せば upstream 側の stat が省かれる経路に
 		// 入り、返さなければ従来どおり upstream が自分で確かめる。
-		{ stat: statTargetFolder } as unknown as IFileService,
+		{
+			stat: statTargetFolder,
+			readFile: async () => {
+				if (workspaceFileDiskContent === undefined) {
+					throw new FileOperationError('missing', FileOperationResult.FILE_NOT_FOUND);
+				}
+				return { value: VSBuffer.fromString(workspaceFileDiskContent) };
+			},
+		} as unknown as IFileService,
 		editorScopeService,
 		auxiliaryWindowScopeService as unknown as IParadisAuxiliaryWindowScopeService,
 		instantiationService.get(ILogService),
@@ -2771,6 +3080,8 @@ async function createHarness(
 		notificationService,
 		instantiationService.get(ILifecycleService),
 		configurationService,
+		{ files: { get: () => workspaceFileModel } } as unknown as ITextFileService,
+		{ extUri } as unknown as IUriIdentityService,
 	));
 
 	const parkedGroups = new Set<ITerminalGroup>();
@@ -2916,6 +3227,18 @@ async function createHarness(
 			return scope;
 		},
 		createEditor,
+		createLiveTerminalEditor(path: string): TestFileEditorInput {
+			const editor = testDisposables.add(new ParadisLiveTerminalTestEditorInput(URI.file(path), TerminalEditorInput.ID));
+			inputs.set(editor.resource.toString(), editor);
+			return editor;
+		},
+		setFolderWriteSwallowed(predicate: (uri: URI) => boolean): void {
+			swallowFolderWrite = predicate;
+		},
+		setWorkspaceFile(model: ITextFileEditorModel | undefined, diskContent: string | undefined): void {
+			workspaceFileModel = model;
+			workspaceFileDiskContent = diskContent;
+		},
 		addTerminal(input: TestFileEditorInput, instanceId: number, persistentProcessId: number | undefined, shellIntegrationNonce: string, startPty?: () => Promise<void>): ITerminalInstance {
 			const onDisposed = testDisposables.add(new Emitter<ITerminalInstance>());
 			const instance = {

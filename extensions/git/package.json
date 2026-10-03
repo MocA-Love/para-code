@@ -4001,6 +4001,13 @@
           "default": true,
           "description": "%config.paraBranchDiff.enabled%"
         },
+        "git.paraParkedRepositoryLimit": {
+          "type": "number",
+          "scope": "window",
+          "default": 16,
+          "minimum": 0,
+          "markdownDescription": "%config.paraParkedRepositoryLimit%"
+        },
         "git.alwaysSignOff": {
           "type": "boolean",
           "scope": "resource",

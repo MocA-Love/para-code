@@ -138,6 +138,12 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 	declare readonly _serviceBrand: undefined;
 
 	private readonly liveWorkingSets = new Map<string, IParadisLiveWorkingSet>();
+	/**
+	 * `restoreScopeEarly` で先に開いた配置と、開いたグループ。配置のオブジェクトは
+	 * `liveWorkingSets` のエントリを作り直しても同じものが引き継がれるので、配置をキーにする。
+	 * 預け先 (`liveWorkingSets`) から消えた配置は参照されなくなり、そのまま回収される。
+	 */
+	private readonly earlyRestoredPlacements = new WeakSet<IParadisLiveEditorPlacement>();
 	private readonly preparedRetirements = new Map<string, IParadisPreparedRetirement>();
 	private readonly pendingBackupDiscards = this._register(new DisposableMap<string, DisposableStore>());
 	private readonly pendingBackupDiscardJournal = new Map<string, { readonly identifier: IWorkingCopyIdentifier; readonly stateKey: string }>();
@@ -337,14 +343,129 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		// same dead entry around forever and repeat the same failure on every
 		// subsequent switch into this scope.
 		try {
-			await this.restoreEditorPlacements(liveWorkingSet.placements);
+			// 先に開いた配置は開き直さない。選択の復元にだけ含める。
+			const earlyRestored: { readonly group: IEditorGroup; readonly placement: IParadisLiveEditorPlacement }[] = [];
+			const remaining: IParadisLiveEditorPlacement[] = [];
+			for (const placement of liveWorkingSet.placements) {
+				if (this.earlyRestoredPlacements.has(placement)) {
+					this.earlyRestoredPlacements.delete(placement);
+					// 開いた後に利用者が別のグループ (補助ウィンドウを含む) へ動かしていることがある。
+					// どこかで開いていれば開き直さない。閉じられていれば、それも利用者の意思として開かない。
+					const [group] = this.groupsContaining(placement.editor);
+					if (group !== undefined) {
+						earlyRestored.push({ group, placement });
+					}
+				} else {
+					remaining.push(placement);
+				}
+			}
+			await this.restoreEditorPlacements(remaining, earlyRestored);
 		} finally {
 			this.liveWorkingSets.delete(stateKey);
 			liveWorkingSet.retentions.dispose();
 		}
 	}
 
-	private async restoreEditorPlacements(placementsToRestore: readonly IParadisLiveEditorPlacement[]): Promise<void> {
+	async restoreScopeEarly(stateKey: string, filter: (editor: EditorInput) => boolean): Promise<void> {
+		const liveWorkingSet = this.liveWorkingSets.get(stateKey);
+		if (!liveWorkingSet) {
+			return;
+		}
+		const pending = liveWorkingSet.placements.filter(placement => !this.earlyRestoredPlacements.has(placement));
+		const eligible = new Set(pending.filter(placement => this.canRestoreEarly(placement, liveWorkingSet, filter)));
+		if (eligible.size === 0) {
+			return;
+		}
+		const deferred = pending.filter(placement => !eligible.has(placement));
+		// 位置の小さい順に開く。後から `restoreScope` が残りを元の位置へ差し込むので、ここでは
+		// 「同じグループで自分より前にある、まだ開かない配置」の数だけ位置を詰める。こうすると
+		// 両方が開き終わったときに元の並び順になる。
+		const ordered = [...eligible].sort((left, right) => left.index - right.index);
+		const restored: { readonly group: IEditorGroup; readonly placement: IParadisLiveEditorPlacement }[] = [];
+		for (const placement of ordered) {
+			const group = this.resolveRestoreGroup(placement);
+			if (this.groupsContaining(placement.editor).length > 0) {
+				// 既にどこかで開いている入力は触らない。印を付けると、巻き戻しで元々開いていたタブまで切り離す。
+				continue;
+			}
+			const index = Math.max(0, placement.index - deferred.filter(other => other.groupId === placement.groupId
+				&& other.windowId === placement.windowId
+				&& other.index < placement.index).length);
+			try {
+				await group.openEditor(placement.editor, {
+					index,
+					pinned: placement.pinned,
+					sticky: placement.sticky,
+					transient: placement.transient,
+					inactive: !placement.active,
+					preserveFocus: true,
+					viewState: placement.viewState
+				});
+			} catch (error) {
+				this.logService.error('[ParadisEditorScope] Failed to restore a live editor early; leaving it for the regular restore', error);
+			}
+			if (group.contains(placement.editor, { strictEquals: true })) {
+				// 開けた時点で印を付ける。途中で投げても、巻き戻しは開けた分だけを確実に切り離せる。
+				this.earlyRestoredPlacements.add(placement);
+				restored.push({ group, placement });
+			}
+		}
+		for (const group of new Set(restored.map(entry => entry.group))) {
+			const groupPlacements = restored.filter(entry => entry.group === group).map(entry => entry.placement);
+			const active = groupPlacements.find(placement => placement.active)?.editor;
+			if (active) {
+				await group.setSelection(active, groupPlacements.filter(placement => placement.selected && placement.editor !== active).map(placement => placement.editor));
+			}
+		}
+	}
+
+	revertEarlyRestore(stateKey: string): void {
+		const liveWorkingSet = this.liveWorkingSets.get(stateKey);
+		if (!liveWorkingSet) {
+			return;
+		}
+		for (const placement of liveWorkingSet.placements) {
+			if (!this.earlyRestoredPlacements.has(placement)) {
+				continue;
+			}
+			// 印は必ず外す。次にこのスペースへ戻ったとき、`restoreScope` が改めて開く。
+			this.earlyRestoredPlacements.delete(placement);
+			// 開いたグループだけでなく全グループ (補助ウィンドウを含む) から探す。前倒しから巻き戻しまでの
+			// 間に利用者が別のグループへ動かしていると、元のグループだけ見ても見つからず、切り替え元の
+			// スペースのタブとして残ってしまう。
+			for (const group of this.groupsContaining(placement.editor)) {
+				// `captureScope` と同じ切り離し方。入力は retain されたままなので、ターミナルは生きている。
+				group.detachEditor?.(placement.editor);
+			}
+		}
+	}
+
+	/** その入力を開いている全グループ (補助ウィンドウを含む)。 */
+	private groupsContaining(editor: EditorInput): IEditorGroup[] {
+		return this.editorGroupsService.parts
+			.flatMap(part => part.groups)
+			.filter(group => group.contains(editor, { strictEquals: true }));
+	}
+
+	/** 先に開いてよい配置か。作業コピー (未保存の変更・無題) を持つ入力は必ず外す。 */
+	private canRestoreEarly(placement: IParadisLiveEditorPlacement, liveWorkingSet: IParadisLiveWorkingSet, filter: (editor: EditorInput) => boolean): boolean {
+		const editor = placement.editor;
+		if (editor.isDisposed()
+			|| editor instanceof SideBySideEditorInput
+			|| editor.isModified()
+			|| editor.hasCapability(EditorInputCapabilities.Untitled)
+			|| editor.hasCapability(EditorInputCapabilities.Scratchpad)
+			|| (liveWorkingSet.workingCopiesByEditor.get(editor)?.length ?? 0) > 0) {
+			return false;
+		}
+		try {
+			return filter(editor);
+		} catch {
+			return false;
+		}
+	}
+
+	private async restoreEditorPlacements(placementsToRestore: readonly IParadisLiveEditorPlacement[], alreadyRestored: readonly { readonly group: IEditorGroup; readonly placement: IParadisLiveEditorPlacement }[] = []): Promise<void> {
 		const opened: { readonly group: IEditorGroup; readonly editor: EditorInput }[] = [];
 		const restoredPlacements: { readonly group: IEditorGroup; readonly placement: IParadisLiveEditorPlacement }[] = [];
 		try {
@@ -378,8 +499,12 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 				restoredPlacements.push({ group, placement });
 			}
 
+			// 先に開いた配置も選択の復元に含める (アクティブなタブや複数選択が両方にまたがりうる)。
+			// ただし対象は、ここで何かを開いたグループだけ。先に開いた配置しか無いグループは
+			// `restoreScopeEarly` が選択まで済ませており、その後に利用者が選び直したタブを奪わない。
+			const selectionPlacements = [...alreadyRestored, ...restoredPlacements];
 			for (const group of new Set(restoredPlacements.map(entry => entry.group))) {
-				const groupPlacements = restoredPlacements.filter(entry => entry.group === group).map(entry => entry.placement);
+				const groupPlacements = selectionPlacements.filter(entry => entry.group === group).map(entry => entry.placement);
 				const active = groupPlacements.find(placement => placement.active)?.editor;
 				if (active) {
 					await group.setSelection(active, groupPlacements.filter(placement => placement.selected && placement.editor !== active).map(placement => placement.editor));
