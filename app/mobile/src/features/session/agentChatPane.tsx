@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { RotateCw } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
@@ -9,12 +9,14 @@ import { shouldShowQuickReplies } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
 import { approvalSuggestionNote } from '../../approvalOptions.js';
 import { AGENT_RESUME_CAPABILITY } from '../../agentSessions.js';
+import { AGENT_QUESTION_CHAT_CAPABILITY, AGENT_QUESTION_NOTES_CAPABILITY, askQuestionFeatures, questionHasPreview } from '../../agentQuestionMod.js';
 import { enqueueAgentSend, useAgentSendLive } from '../../agentSendQueue.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
 import { findLatestApprovalRequest } from '../../components/attentionStack.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { haptic } from '../../haptics.js';
 import { useAgentActions } from '../../hooks/useAgentActions.js';
+import { useKeyboardCoverage } from '../../hooks/useKeyboardVisible.js';
 import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import type { SpaceTerminal } from '../../navigationTargets.js';
 import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../../pendingAgentMessages.js';
@@ -24,6 +26,8 @@ import { EmptyState } from '../../ui/index.js';
 import { ChatTextScaleProvider, useChatStyles } from '../../ui/chatTextScale.js';
 import { cardStyles as baseCardStyles } from './answerCardStyles.js';
 import { AskCard, AskGroupCard } from './askCard.js';
+import { pinnedCardMaxHeight, PinnedCardScrollContext, type PinnedCardScroll } from './pinnedCard.js';
+import { withQuestionOutcomes } from './questionOutcomes.js';
 import { ChatChromeRow, PendingMessagesDrawer, QuickReplies } from './chatChrome.js';
 import { ChatList, type ChatListHandle } from './chatList.js';
 import { buildChatRows, questionRowId, splitPinnedQuestion } from './chatRows.js';
@@ -35,6 +39,8 @@ import { useApprovalOptions } from './useApprovalOptions.js';
 
 /** 回答カードの高さの上限。選択肢が多いと会話が見えなくなるので、超えたぶんはカードの中でスクロールする。 */
 const PINNED_CARD_MAX_HEIGHT = 380;
+/** preview のある質問のカードの高さの上限（選んだ選択肢の下に preview の枠が開くぶん高くする）。 */
+const PINNED_PREVIEW_CARD_MAX_HEIGHT = 480;
 
 /**
  * エージェントのタブの会話表示（Orca の MobileNativeChatView）。
@@ -142,7 +148,8 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	// 古い発言（上へさかのぼって読んだぶん。W2-30）を会話の前につなぐ。
 	const history = useAgentHistory(terminalKey, chat);
 	const olderMessages = history.messages;
-	const rows = useMemo(() => buildChatRows(olderMessages.length > 0 ? [...olderMessages, ...(messages ?? [])] : messages ?? []), [olderMessages, messages]);
+	// 「質問に答えずに話す」で取り下げた質問は、その結果を質問の行へまとめる（questionOutcomes.ts）
+	const rows = useMemo(() => withQuestionOutcomes(buildChatRows(olderMessages.length > 0 ? [...olderMessages, ...(messages ?? [])] : messages ?? [])), [olderMessages, messages]);
 	const interactionKind = chat?.interaction?.kind;
 	const interactionId = chat?.interaction?.id;
 	const { pinned, listRows } = useMemo(
@@ -177,6 +184,28 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 		&& (answerRequest.id === pinnedId || answerRequest.id.startsWith(`${pinnedId}:`))
 		? answerRequest
 		: undefined;
+	const clarifying = activeAnswerRequest?.mode === 'clarify';
+	// メモと「質問に答えずに話す」は、PC の mod が待っている質問だけ（agentQuestionMod.ts）
+	const hasQuestionNotes = usePcCapability(AGENT_QUESTION_NOTES_CAPABILITY);
+	const hasQuestionChat = usePcCapability(AGENT_QUESTION_CHAT_CAPABILITY);
+	const questionFeatures = useMemo(() => askQuestionFeatures(chat?.interaction, hasQuestionNotes, hasQuestionChat), [chat?.interaction, hasQuestionNotes, hasQuestionChat]);
+	const pinnedHasPreview = pinned !== undefined && (pinned.type === 'question' ? [pinned.m] : pinned.msgs).some(questionHasPreview);
+	// キーボードが出ているとき（質問へのメモの入力など）はカードの上限を下げ、入力欄をカードの中で見える位置へ送る
+	const keyboardCoverage = useKeyboardCoverage();
+	const { height: windowHeight } = useWindowDimensions();
+	const cardMaxHeight = pinnedCardMaxHeight(pinnedHasPreview ? PINNED_PREVIEW_CARD_MAX_HEIGHT : PINNED_CARD_MAX_HEIGHT, windowHeight, keyboardCoverage);
+	const cardScrollRef = useRef<ScrollView>(null);
+	const cardContentRef = useRef<View>(null);
+	const cardScroll = useMemo<PinnedCardScroll>(() => ({
+		reveal: node => {
+			const content = cardContentRef.current;
+			const target = node as View | null;
+			if (content === null || target === null || typeof target.measureLayout !== 'function') {
+				return;
+			}
+			target.measureLayout(content, (_x, y) => cardScrollRef.current?.scrollTo({ y: Math.max(0, y - space.sm), animated: true }), () => { });
+		},
+	}), []);
 	const insertQuickReply = useCallback((text: string) => composerRef.current?.insertText(text), []);
 	const scrollToLatest = useCallback(() => listRef.current?.scrollToLatest(), []);
 	const [allToolsOpen, setAllToolsOpen] = useState(false);
@@ -199,20 +228,24 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 			key={pinnedId ?? pinned.m.rev}
 			message={pinned.m}
 			refreshing={refreshing}
-			onAnswer={actions.answerQuestion}
-			onMulti={actions.answerQuestionMulti}
-			onFreeText={actions.answerQuestionFreeText}
+			features={questionFeatures}
+			onSubmit={actions.answerQuestionGroup}
+			onClarify={actions.clarifyQuestion}
 			onRequestFreeText={requestFreeText}
-			freeTextActive={activeAnswerRequest !== undefined}
+			freeTextActive={activeAnswerRequest !== undefined && !clarifying}
+			clarifying={clarifying}
 		/>
 	) : pinned?.type === 'questionGroup' ? (
 		<AskGroupCard
 			key={pinned.key}
 			messages={pinned.msgs}
 			refreshing={refreshing}
+			features={questionFeatures}
 			onSubmit={actions.answerQuestionGroup}
+			onClarify={actions.clarifyQuestion}
 			onRequestFreeText={requestFreeText}
 			freeTextActiveId={activeAnswerRequest?.id}
+			clarifying={clarifying}
 		/>
 	) : questionWithoutRow ? (
 		<Notice title="質問の内容を読み込んでいます…" body="表示されない場合は、ターミナル表示で回答してください" />
@@ -251,8 +284,12 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 				)}
 				<View style={[styles.bottom, column]}>
 					{card !== undefined ? (
-						<ScrollView style={styles.cardScroll} contentContainerStyle={styles.cardContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-							{card}
+						<ScrollView ref={cardScrollRef} style={[styles.cardScroll, { maxHeight: cardMaxHeight }]} contentContainerStyle={styles.cardContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+							<View ref={cardContentRef} collapsable={false}>
+								<PinnedCardScrollContext.Provider value={cardScroll}>
+									{card}
+								</PinnedCardScrollContext.Provider>
+							</View>
 						</ScrollView>
 					) : null}
 					{showQuickReplies ? <QuickReplies onPick={insertQuickReply} /> : null}
@@ -330,7 +367,6 @@ const styles = StyleSheet.create({
 	cardScroll: {
 		flexGrow: 0,
 		flexShrink: 1,
-		maxHeight: PINNED_CARD_MAX_HEIGHT,
 	},
 	cardContent: {
 		paddingHorizontal: space.lg,

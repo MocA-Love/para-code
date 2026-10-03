@@ -8,12 +8,31 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisParseClaudeTranscriptBatchesForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexRolloutForTest, paradisParseCodexTranscriptLineForTest } from '../../common/paradisAgentTranscriptParser.js';
+import { parseAskUserQuestions, paradisParseClaudeTranscriptBatchesForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexRolloutForTest, paradisParseCodexTranscriptLineForTest } from '../../common/paradisAgentTranscriptParser.js';
+import { paradisAgentQuestionHasPreview } from '../../common/paradisAgentChat.js';
 import { paradisCodexUserAuthoredContent, paradisIsCodexInjectedText } from '../../common/paradisCodexInjectedContext.js';
 import { CODEX_FIXTURE_CHILD_ROLLOUT, CODEX_FIXTURE_ENCRYPTED, CODEX_FIXTURE_PARENT_ROLLOUT, CODEX_FIXTURE_USER_MESSAGES } from './paradisCodexRolloutFixture.js';
 
 suite('paradisAgentTranscriptParser', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('AskUserQuestion の選択肢の preview を運び（空文字も「ある」）、4,000 文字で切る。preview を描くのは単一選択の質問だけ', () => {
+		const long = 'x'.repeat(4_100);
+		const messages = parseAskUserQuestions({
+			questions: [
+				{ question: 'Q1', header: 'H1', options: [{ label: 'A', description: 'a', preview: '# A' }, { label: 'B', preview: '' }, { label: 'C', preview: long }] },
+				{ question: 'Q2', multiSelect: true, options: [{ label: 'D', preview: '# D' }, { label: 'E' }] },
+				{ question: 'Q3', options: [{ label: 'F' }] },
+			],
+		}, 'toolu_1', 1);
+		assert.deepStrictEqual({
+			options: messages[0].options?.map(option => ({ ...option, preview: option.preview?.length === 4_001 ? 'cut' : option.preview })),
+			hasPreview: messages.map(message => paradisAgentQuestionHasPreview(message)),
+		}, {
+			options: [{ label: 'A', description: 'a', preview: '# A' }, { label: 'B', preview: '' }, { label: 'C', preview: 'cut' }],
+			hasPreview: [true, false, false],
+		});
+	});
 
 	test('does not show the Codex interruption notice as a user message', () => {
 		const userMessage = (text: string) => JSON.stringify({ type: 'response_item', timestamp: '2026-09-27T10:00:00.000Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });

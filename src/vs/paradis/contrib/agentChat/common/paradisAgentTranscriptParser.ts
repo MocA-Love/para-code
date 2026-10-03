@@ -14,7 +14,7 @@
 // 中継の TranscriptTailer に残し、ここは Node の API を使わない。**正規化の結果はそのままモバイルへ
 // 送られる**ので、出力の形を変えるときはモバイル側の表示も確かめること。
 
-import { IParadisAgentAdvisorInfo, IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentQuestionOption, PARADIS_ADVISOR_TOOL } from './paradisAgentChat.js';
+import { IParadisAgentAdvisorInfo, IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentQuestionOption, PARADIS_ADVISOR_TOOL, PARADIS_AGENT_QUESTION_PREVIEW_LIMIT } from './paradisAgentChat.js';
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 import { paradisExpandPastedContent } from '../../../common/paradisPastedContent.js';
 import { IParadisMonitorSignal, paradisMonitorCallSignal, paradisMonitorNotificationSignals, paradisMonitorStartedSignal, paradisMonitorTaskStopSignal } from './paradisAgentMonitors.js';
@@ -621,7 +621,7 @@ export function flattenContentParts(content: unknown): IFlattenedContent {
 }
 
 /**
- * AskUserQuestion の input（{ questions: [{ question, header, options: [{label, description}] , multiSelect? }] }）を
+ * AskUserQuestion の input（{ questions: [{ question, header, options: [{label, description, preview?}] , multiSelect? }] }）を
  * question メッセージ列へ展開する。想定形でなければ空配列（呼び出し側が汎用 tool_use にフォールバック）。
  */
 export function parseAskUserQuestions(input: unknown, toolUseId: string | undefined, ts: number | undefined): IRawMessage[] {
@@ -645,7 +645,13 @@ export function parseAskUserQuestions(input: unknown, toolUseId: string | undefi
 				const label = str(o?.label);
 				if (label !== undefined && label.trim().length > 0) {
 					const description = str(o?.description);
-					options.push({ label: truncateText(label, 200), ...(description !== undefined ? { description: truncateText(description, 500) } : {}) });
+					// preview は空文字でも「preview のある質問」になる（TUI は undefined かどうかで決める）
+					const preview = str(o?.preview);
+					options.push({
+						label: truncateText(label, 200),
+						...(description !== undefined ? { description: truncateText(description, 500) } : {}),
+						...(preview !== undefined ? { preview: truncateText(preview, PARADIS_AGENT_QUESTION_PREVIEW_LIMIT) } : {}),
+					});
 				}
 			}
 		}

@@ -112,6 +112,13 @@ export const ParadisMobileCapability = {
 	 * `prefs` に `includeContent` が入っているか（＝それを知っているアプリか）で見分ける。
 	 */
 	NotifyContent: 'notify.content.v1',
+	/**
+	 * 質問の選択肢の `preview`、質問の interaction の `answerVia`、回答の `notes` と `kind: 'notes'`（メモ。preview のある質問だけ、
+	 * `answerVia: 'mod'` のときだけ）。
+	 */
+	AgentQuestionNotes: 'agent.question.notes.v1',
+	/** agent の `action/clarifyQuestion`（「質問に答えずに話す」。`answerVia: 'mod'` のときだけ）。 */
+	AgentQuestionChat: 'agent.question.chat.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -149,6 +156,8 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.ScmWordDiff,
 	ParadisMobileCapability.UsageMachineId,
 	ParadisMobileCapability.NotifyContent,
+	ParadisMobileCapability.AgentQuestionNotes,
+	ParadisMobileCapability.AgentQuestionChat,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

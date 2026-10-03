@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { agentApprovalKeySequence, agentQuestionKeySequence } from './agentQuestionKeys.js';
 
 const DOWN = '\u001b[B';
-const single = (optionCount: number) => ({ optionCount, multiSelect: false });
-const multi = (optionCount: number) => ({ optionCount, multiSelect: true });
+const single = (optionCount: number) => ({ optionCount, multiSelect: false, hasPreview: false });
+const multi = (optionCount: number) => ({ optionCount, multiSelect: true, hasPreview: false });
 
 describe('agentQuestionKeySequence', () => {
 	it('単問の単一選択は番号だけで確定する（Enterを足すと次の入力欄へ落ちる）', () => {

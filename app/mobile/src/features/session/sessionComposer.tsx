@@ -297,7 +297,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				<View style={styles.answerBanner} accessibilityLiveRegion="polite">
 					<Icon icon={CornerDownRight} size={answerIconSize} color={colors.textDim} />
 					<View style={textStyles.answerBody}>
-						<Text style={textStyles.answerLabel}>{answerRefreshing ? '最新の内容を取得しています。届くまで回答できません' : '質問への回答を入力しています（改行は空白として送られます）'}</Text>
+						<Text style={textStyles.answerLabel}>{answerRefreshing ? '最新の内容を取得しています。届くまで回答できません' : answerTarget.mode === 'clarify' ? '質問を取り下げて送ります' : '質問への回答を入力しています（改行は空白として送られます）'}</Text>
 						<Text style={textStyles.answerPrompt} numberOfLines={1}>{answerTarget.prompt}</Text>
 					</View>
 					<Button label="やめる" variant="ghost" size="sm" onPress={() => { haptic('move'); onCancelAnswer(); }} />
@@ -309,7 +309,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 					ref={nativeInputRef}
 					defaultValue={defaultValueRef.current}
 					onChangeText={updateInput}
-					placeholder={answerTarget !== undefined ? '回答を入力（送信で回答します）' : 'メッセージ、/コマンド'}
+					placeholder={answerTarget === undefined ? 'メッセージ、/コマンド' : answerTarget.mode === 'clarify' ? '伝えたいこと' : '回答を入力（送信で回答します）'}
 				/>
 				<View style={styles.actions}>
 					<Pressable

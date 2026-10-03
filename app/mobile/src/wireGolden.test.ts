@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Channels, FrameMux, generateIdentity, respondHandshake, type Identity } from '@para/protocol';
 import { describe, expect, it } from 'vitest';
-import { MobileController, type PcPushMessage, type StoreState } from './store.js';
+import { MobileController, type AgentQuestionAnswer, type PcPushMessage, type StoreState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
 import { PcCapability, stateRequestFields } from './pcCompat.js';
 
@@ -263,6 +263,9 @@ describe('wire golden (app side)', () => {
 		expect({
 			attach: shapeOf(sent.agent![0]),
 			messages: chat?.messages.map(message => `${message.rev}:${message.kind}`),
+			// 質問の選択肢の preview と、mod で答えられるか（agent.question.notes.v1）
+			previews: chat?.messages.find(message => message.kind === 'question')?.options?.map(option => option.preview),
+			interaction: chat?.interaction,
 			capabilities: chat?.capabilities,
 			// 任意項目の Monitor の一覧（agent.monitors.v1）を全項目のまま読み、時刻は monitorsAt との差で手元の時計へ直す
 			// （直した量を引けばゴールデンと同じになる）
@@ -277,13 +280,50 @@ describe('wire golden (app side)', () => {
 			advisors: chat?.activity?.advisors,
 		}).toEqual({
 			attach: shapeOf(agentGolden.toPc[0]),
-			messages: ['0:text', '1:tool_use', '2:tool_result', '3:tool_use', '4:tool_result', '5:text'],
+			messages: ['0:text', '1:tool_use', '2:tool_result', '3:tool_use', '4:tool_result', '5:text', '6:question'],
+			previews: ['# Toast\n\n+----------------------+\n| Connection failed    |\n+----------------------+', '# Inline'],
+			interaction: { kind: 'question', id: 'question-1', answerVia: 'mod' },
 			notice: [5],
 			advisor: [[3, { model: 'claude-opus-5-5' }], [4, { model: 'claude-opus-5-5', outcome: 'redacted' }]],
 			advisors: (goldenDelta?.['activity'] as Golden | undefined)?.['advisors'],
 			capabilities: { agentActions: true, claudeSettings: true },
 			monitors: goldenDelta?.['monitors'],
 			shifted: true,
+		});
+		controller.disconnect();
+	});
+
+	it('agent: 「質問に答えずに話す」の要求はゴールデンと同じ形で、取り下げるだけで途中の回答も無ければ項目を省く', async () => {
+		const { controller, pcMux, sent } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		for (const message of agentGolden.toMobile.filter(candidate => candidate.t === 'snapshot' || candidate.t === 'delta')) {
+			pcMux.send(Channels.Agent, encode(message));
+			await flush();
+		}
+		const clarifies = agentGolden.toPc.filter(message => message.t === 'action/clarifyQuestion');
+		const sentClarify = () => sent.agent!.filter(message => message.t === 'action/clarifyQuestion').at(-1);
+		void controller.clarifyAgentQuestion('terminal-key-1', 'question-1', clarifies[0]?.['response'] as string, []);
+		await flush();
+		const withMessage = sentClarify();
+		void controller.clarifyAgentQuestion('terminal-key-1', 'question-1', undefined, clarifies[1]?.['answers'] as AgentQuestionAnswer[]);
+		await flush();
+		const withAnswers = sentClarify();
+		void controller.clarifyAgentQuestion('terminal-key-1', 'question-1', undefined, []);
+		await flush();
+		const bare = sentClarify();
+		expect({
+			withMessage: shapeOf(withMessage),
+			withAnswers: shapeOf(withAnswers),
+			values: [withMessage?.['response'], withAnswers?.['answers']],
+			bareKeys: Object.keys(bare ?? {}).filter(key => key === 'response' || key === 'answers'),
+		}).toEqual({
+			withMessage: shapeOf(clarifies[0]),
+			withAnswers: shapeOf(clarifies[1]),
+			values: [clarifies[0]?.['response'], clarifies[1]?.['answers']],
+			bareKeys: [],
 		});
 		controller.disconnect();
 	});
