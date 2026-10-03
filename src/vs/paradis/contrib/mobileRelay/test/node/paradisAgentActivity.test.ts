@@ -308,6 +308,22 @@ suite('ParadisAgentActivity', () => {
 		assert.deepStrictEqual({ early, late, advisors: tracker.snapshot()?.advisors?.map(advisor => advisor.status), busy: tracker.hasActiveWork() }, { early: false, late: true, advisors: ['interrupted'], busy: false });
 	});
 
+	test('keeps a settled Advisor consultation when a reread guesses it was interrupted, and fills the model only for a live start', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyAdvisors([{ id: 'srvtoolu_done', model: 'claude-opus-4-7', status: 'completed', outcome: 'redacted', startedAt: 0, updatedAt: 14_000 }], 14_000);
+		// 読み直しで結果の行がまだ読めず、古い開始だけから中断と推定した値（所要時間 0 秒）
+		const guessed = tracker.applyAdvisors([{ id: 'srvtoolu_done', status: 'interrupted', startedAt: 0, updatedAt: 0 }], 20_000);
+		// モデル名の無い読み直しの値は補わない（ライブの経路だけが補う）
+		tracker.applyAdvisors([{ id: 'srvtoolu_reread', status: 'interrupted', startedAt: 30_000, updatedAt: 30_000 }], 30_000);
+		// 会話が失敗で終わっても、結果の無い相談は失敗ではなく中断
+		tracker.applyAdvisors([{ id: 'srvtoolu_open', status: 'running', startedAt: 35_000, updatedAt: 35_000 }], 35_000);
+		tracker.endSession('failed', 40_000);
+		assert.deepStrictEqual({ guessed, advisors: tracker.snapshot()?.advisors?.map(advisor => [advisor.id, advisor.status, advisor.model, advisor.updatedAt - advisor.startedAt]) }, {
+			guessed: false,
+			advisors: [['srvtoolu_open', 'interrupted', undefined, 5_000], ['srvtoolu_reread', 'interrupted', undefined, 0], ['srvtoolu_done', 'completed', 'claude-opus-4-7', 14_000]],
+		});
+	});
+
 	test('ends an unanswered Advisor consultation of the main conversation when the turn ends', () => {
 		const tracker = new ParadisAgentActivityTracker();
 		tracker.applyAdvisors([{ id: 'srvtoolu_main', model: 'claude-opus-5-5', status: 'running', startedAt: 100, updatedAt: 100 }], 100);

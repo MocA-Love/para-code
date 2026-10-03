@@ -3706,11 +3706,20 @@ export class ParadisMobileAgentChat extends Disposable {
 		// Advisor の平文の返答（旧世代のモデル）。一覧には載せず、詳細を開いたときにここで返す（ファイルは読まない）
 		const advisorReply = token !== undefined ? this.activityTrackers.get(token)?.advisorReply(msg.activityId) : undefined;
 		if (advisorReply !== undefined && token !== undefined) {
-			if (session === undefined || owner === undefined || tailer?.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId) || !await this.authorizeOwner(owner)) {
+			const current = () => this.paneSessions.get(token) === session && this.tailers.get(token) === tailer && tailer?.epoch === msg.epoch && this.hasSubscriber(token, mobileId);
+			if (session === undefined || owner === undefined || !current() || !await this.authorizeOwner(owner)) {
 				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'Advisor の返答を確認できません' }, token);
 				return;
 			}
-			this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, messages: [paradisAdvisorReplyMessage(advisorReply)] }, token, owner);
+			// 承認を待つ間に会話が替わった・購読をやめたかもしれない。確かめ直し、返答も今の tracker から取り直す
+			const reply = current() ? this.activityTrackers.get(token)?.advisorReply(msg.activityId) : undefined;
+			if (reply === undefined) {
+				if (this.hasSubscriber(token, mobileId)) {
+					this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'Advisor の返答の対象セッションが更新されました' }, token, owner);
+				}
+				return;
+			}
+			this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, messages: [paradisAdvisorReplyMessage(reply)] }, token, owner);
 			return;
 		}
 		const known = token !== undefined && this.activityTrackers.get(token)?.snapshot()?.agents.some(agent => agent.id === msg.activityId && agent.role === 'subagent' && (agent.provider === undefined || agent.provider === session?.agent));
@@ -4690,6 +4699,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 */
 	private applyAdvisorMessages(token: string, messages: readonly IParadisAgentChatMessage[]): void {
 		const now = Date.now();
+		const tracker = this.activityTracker(token);
 		const advisors: IParadisAgentAdvisorUpdate[] = [];
 		let started: { readonly id: string; readonly model?: string; readonly startedAt: number } | undefined;
 		const ended = new Set<string>();
@@ -4701,8 +4711,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			const at = Math.min(message.ts ?? now, now);
 			if (message.kind === 'tool_use') {
-				advisors.push({ id, ...(info.model !== undefined ? { model: info.model } : {}), status: 'running', startedAt: at, updatedAt: at });
-				started = { id, ...(info.model !== undefined ? { model: info.model } : {}), startedAt: at };
+				// mod の行にはモデル名が無いことがある。相談中の行だけ、前の相談で分かったモデル名で補う
+				// （結果や読み直しの値は transcript のモデル名を正本にする）
+				const model = info.model ?? tracker.advisorModel();
+				advisors.push({ id, ...(model !== undefined ? { model } : {}), status: 'running', startedAt: at, updatedAt: at });
+				started = { id, ...(model !== undefined ? { model } : {}), startedAt: at };
 			} else if (message.kind === 'tool_result') {
 				const outcome = info.outcome ?? 'redacted';
 				advisors.push({
@@ -4718,14 +4731,12 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 			}
 		}
-		const tracker = this.activityTracker(token);
 		if (tracker.applyAdvisors(advisors, now)) {
 			this.pushActivityToSubscribers(token);
 		}
 		const current = this.liveStates.get(token);
 		if (started !== undefined && !ended.has(started.id)) {
-			// mod の行にはモデル名が無いことがある。前の相談で分かったモデル名で補う
-			const model = started.model ?? tracker.advisorModel();
+			const model = started.model;
 			this.advisorLiveIds.set(token, started.id);
 			this.setLiveState(token, {
 				phase: 'tool', source: 'transcript', startedAt: started.startedAt, updatedAt: now, tool: PARADIS_ADVISOR_TOOL,
