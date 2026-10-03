@@ -60,19 +60,70 @@ export interface IParadisParkLogger {
 }
 
 /**
- * 待避しておくリポジトリの上限。
+ * 待避しておくリポジトリの上限の既定値。設定 `git.paraParkedRepositoryLimit` で変えられる。
  *
- * 待避中も `SourceControl` とリソースグループはメモリに残るので、大きなリポジトリでは無視できない。
- * 「直前に見ていたスペースへ戻る」が最も多い操作なので、少数で十分に効く。
+ * 待避中も `Repository`・`SourceControl`・ref の一覧はメモリに残る。実測では 1 つあたり普通の
+ * リポジトリで 0.1〜0.3MB、ref が数千本あるリポジトリで 3〜5MB。以前は 4 だったが、5 つ以上の
+ * スペースを行き来すると追い出されたリポジトリの作り直し (git 6〜12 本) が毎回走るため 16 にした。
  */
-const PARK_LIMIT = 4;
+export const PARADIS_DEFAULT_PARK_LIMIT = 16;
+
+/** 設定の名前 (`git.` の後ろ)。0 は無制限。 */
+export const PARADIS_PARK_LIMIT_SETTING = 'paraParkedRepositoryLimit';
+
+/**
+ * 設定値を上限に直す。0 は無制限 (`Infinity`)。数でない・負の値は既定値に、小数は切り捨てに倒す
+ * (設定の手書きの誤りで待避が止まったり無限に増えたりしないように)。
+ */
+export function paradisResolveParkLimit(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+		return PARADIS_DEFAULT_PARK_LIMIT;
+	}
+	const limit = Math.floor(value);
+	return limit === 0 ? Number.POSITIVE_INFINITY : limit;
+}
 
 /** 挿入順（= 最後に待避した順）を保つ LRU。上限を超えたら最も古いものから本当に破棄する。 */
 export class ParadisRepositoryParkingLot {
 
 	private readonly parked = new Map<string, IParadisParkedRepository>();
 
-	constructor(private readonly logger: IParadisParkLogger, private readonly limit: number = PARK_LIMIT) { }
+	constructor(private readonly logger: IParadisParkLogger, private limit: number = PARADIS_DEFAULT_PARK_LIMIT) { }
+
+	/** 今の上限。無制限なら `Infinity`。 */
+	get currentLimit(): number {
+		return this.limit;
+	}
+
+	get size(): number {
+		return this.parked.size;
+	}
+
+	/**
+	 * 上限を変える。下げたときは、超えた分を古い順にその場で本当に破棄する
+	 * (設定を下げたのにメモリが減らない、ということが無いように)。
+	 */
+	setLimit(limit: number): void {
+		if (limit === this.limit) {
+			return;
+		}
+		this.limit = limit;
+		this.logger.trace(`[ParadisRepositoryParkingLot][setLimit] Limit changed to ${limit}`);
+		this.evictOverLimit();
+	}
+
+	private evictOverLimit(): void {
+		while (this.parked.size > this.limit) {
+			const oldest = this.parked.keys().next();
+			if (oldest.done) {
+				break;
+			}
+			const evicted = this.parked.get(oldest.value)!;
+			this.parked.delete(oldest.value);
+			this.logger.trace(`[ParadisRepositoryParkingLot] Evicted parked repository: ${evicted.root}`);
+			evicted.dispose();
+		}
+	}
 
 	/** そのルートが待避中か。`root` と `rootRealPath` の双方で照合する。 */
 	private findByRoot(root: string): IParadisParkedRepository | undefined {
@@ -100,16 +151,7 @@ export class ParadisRepositoryParkingLot {
 		this.parked.set(entry.root, entry);
 		this.logger.trace(`[ParadisRepositoryParkingLot][park] Parked repository: ${entry.root} (${this.parked.size}/${this.limit})`);
 
-		while (this.parked.size > this.limit) {
-			const oldest = this.parked.keys().next();
-			if (oldest.done) {
-				break;
-			}
-			const evicted = this.parked.get(oldest.value)!;
-			this.parked.delete(oldest.value);
-			this.logger.trace(`[ParadisRepositoryParkingLot][park] Evicted parked repository: ${evicted.root}`);
-			evicted.dispose();
-		}
+		this.evictOverLimit();
 	}
 
 	/**
@@ -198,5 +240,46 @@ export class ParadisRepositoryParkingLot {
 
 	dispose(): void {
 		this.clear();
+	}
+}
+
+/**
+ * 待避中のリポジトリで、設定の変更による状態の作り直し (`updateModelState()`) を止める門。
+ *
+ * `git.branchSortOrder` / `git.untrackedChanges` / `git.ignoreSubmodules` / `git.openDiffOnClick` /
+ * `git.showActionButton` / `git.similarityThreshold` が変わると、upstream は開いている全リポジトリで
+ * `git status` 相当を流してリソースグループを作り直す。待避中のリポジトリでこれが走ると、
+ * `setScopeActive(false)` が空にしたグループが埋め直され、**別スペースの変更が `ISCMService` を
+ * 直接読む消費者 (検索の「変更されたファイルのみ」、チャットのリポジトリ情報) へ漏れる**。
+ * 誰も見ていないリポジトリに git を走らせる無駄でもある。
+ *
+ * 待避中に来た要求は覚えておくだけにする。復帰時の `status()` は必ず今の設定で作り直すので、
+ * それで反映される (`settledByUnpark()` で覚えを消す)。
+ */
+export class ParadisParkedRefreshGate {
+
+	private _deferred = false;
+
+	/** 待避中に見送った要求があるか。 */
+	get deferred(): boolean {
+		return this._deferred;
+	}
+
+	/**
+	 * `active` なら `refresh` をすぐ呼ぶ。待避中なら呼ばずに覚えておく。
+	 * @returns 見送ったなら true。
+	 */
+	request(active: boolean, refresh: () => unknown): boolean {
+		if (!active) {
+			this._deferred = true;
+			return true;
+		}
+		refresh();
+		return false;
+	}
+
+	/** 復帰時の `status()` が見送った分を反映するので、覚えを消す。 */
+	settledByUnpark(): void {
+		this._deferred = false;
 	}
 }

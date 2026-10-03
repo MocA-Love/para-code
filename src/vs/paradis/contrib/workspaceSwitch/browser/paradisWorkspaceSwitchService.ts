@@ -25,6 +25,12 @@ import { IEditorGroupsService, IEditorWorkingSet } from '../../../../workbench/s
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { ITerminalEditorService, ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
+import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
+import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
+import { paradisRecoverWorkspaceFileAfterFailedSave } from '../common/paradisWorkspaceFileRecovery.js';
+import { IParadisMainLoadService, IParadisMainLoopSummary, IParadisStatRoundTrip, paradisGetMainLoadProbe, paradisSplitStatRoundTrip } from '../../mainLoad/common/paradisMainLoad.js';
+import { IParadisLongTaskSummary, paradisStartLongTaskWindow } from '../../mainLoad/browser/paradisLongTaskMonitor.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisSwitchOptions, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
@@ -329,6 +335,11 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		@ILifecycleService lifecycleService: ILifecycleService,
 		// 下部パネルを共通ターミナルにしている間は、パネルの開閉をスペースごとに切り替えない。
 		@IConfigurationService configurationService: IConfigurationService,
+		// 切り替えの巻き戻しで、保存に失敗したワークスペースのファイルのモデルを直すために使う
+		// (`paradisRecoverWorkspaceFileAfterFailedSave`)。
+		@ITextFileService private readonly textFileService: ITextFileService,
+		// folders の確認と、ワークスペースのファイルの folders の比較に使う (表記の揺れで食い違わないよう)。
+		@IUriIdentityService private readonly uriIdentityService: IUriIdentityService,
 	) {
 		super();
 		this._sharedTerminalPanel = paradisSharedPanelEnabledAtStartup(configurationService);
@@ -1254,6 +1265,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// 解決する前に失敗した回で前回の値を今回の値として送ってしまう）。計測は finally から
 				// 読むので、宣言は try の外に置くこと。
 				let folderStatMs: number | undefined;
+				// main の混雑の計測 (M1〜M4、paradis/contrib/mainLoad)。Electron のウィンドウでだけ
+				// 受け口が登録される。**切り替えを待たせないこと**: 開始も終了も投げっぱなしで、
+				// 結果は計測の送信の直前にだけ待つ (`recordSwitchPhasesWithMainLoad`)。
+				const mainLoadProbe = paradisGetMainLoadProbe();
+				const mainLoopWindow = mainLoadProbe?.beginWindow().catch(() => undefined);
+				const longTaskWindow = paradisStartLongTaskWindow();
+				const statRoundTrip = this.probeMainStat(mainLoadProbe, uri);
 				try {
 					this._onWillSwitchScope.fire(previousKey);
 
@@ -1405,6 +1423,16 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						restoreContext.dispose();
 					}
 					this.updateSwitchTransaction(switchTransaction, 'targetApplied');
+					// 預けておいた生きたターミナル (子プロセスが動いているエディタのターミナル。working set
+					// からは外してある) を、`restore_scope` まで待たずにここで開き直す。待つと
+					// `update_folders` (p95 1086ms) の間、working set のアクティブなタブ (戻る前に見ていた
+					// のとは別のタブ) が映ってから入れ替わる＝チカチカする。
+					//
+					// **作業コピーを持たない入力 (ターミナル) に限る。** 未保存のファイルはバックアップの
+					// 持ち主の振り分けが `commitSwitch` を前提にしているので、従来どおり `restore_scope` で開く。
+					// 巻き戻すときは catch の最初のフェーズで切り離し直す (`revertEarlyRestore`)。
+					// 区間名に `terminal` を入れない (Sentry の sensitiveFields に部分一致して値が消える)。
+					await timePhase('restore_live_early', () => this.editorScopeService.restoreScopeEarly(stateKey, editor => editor.typeId === TerminalEditorInput.ID));
 
 					await timePhase('trust_uris', () => this.trustUris(uri));
 					// 先行実行が終わっていなければここで待つ。切り替えの体感に効くのは
@@ -1462,6 +1490,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						paradisClearVerifiedWorkspaceFolders();
 					}
 
+					// **folders が本当に行き先へ変わったかを確かめてから確定する。** upstream は
+					// `.code-workspace` の保存の失敗 (ディスク満杯の ENOSPC 等) を握りつぶし、ディスクから
+					// 読み直した古い folders のまま `updateFolders` を成功として返す。確かめずに確定すると
+					// `activeStateKey` は行き先・folders は切り替え元に割れ、ターミナルが混ざる
+					// (2026-10-02 の SSH ウィンドウのログで確認)。投げれば下の catch が元のスペースへ戻す。
+					this.assertFoldersUpdatedTo(stateKey, uri);
+
 					this.setActiveEntry(stateKey, uri);
 					await timePhase('commit_switch', () => this.editorScopeService.commitSwitch(stateKey, uri));
 					this.updateSwitchTransaction(switchTransaction, 'foldersCommitted');
@@ -1484,6 +1519,9 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					switchError = error;
 					let rollbackFailed = false;
 					await paradisRunBestEffortPhases([
+						// 前倒しで開いた行き先の生きたターミナルを、元の預け先へ切り離し直す。**下の
+						// working set の再適用より先に。** 後にすると、再適用が行き先のタブとして閉じてしまう。
+						() => this.editorScopeService.revertEarlyRestore(stateKey),
 						async () => {
 							const currentFolders = this.contextService.getWorkspace().folders;
 							if (previousUri && (currentFolders.length !== 1 || !isEqual(currentFolders[0].uri, previousUri))) {
@@ -1514,6 +1552,20 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						rollbackFailed = true;
 						this.logService.error('[ParadisWorkspaceSwitch] Failed to roll back workspace switch phase', rollbackError);
 					});
+					// 保存に失敗して未保存 (エラー・競合) のまま残ったワークスペースのファイルのモデルを
+					// 直す。直さないと、容量が空いた後も次の切り替えから保存が失敗し続ける。投げない。
+					// **巻き戻しの folders の書き戻しの後に置く。** 書き戻しが同じモデルへ編集を足すので、
+					// 先に読み直すと、ディスクが壊れていたときに正しい中身を捨ててしまう。
+					await paradisRecoverWorkspaceFileAfterFailedSave(
+						{
+							configPath: this.contextService.getWorkspace().configuration ?? undefined,
+							currentFolders: this.contextService.getWorkspace().folders.map(folder => folder.uri),
+							extUri: this.uriIdentityService.extUri,
+						},
+						this.textFileService,
+						this.fileService,
+						this.logService,
+					);
 					const rolledBackFolders = this.contextService.getWorkspace().folders;
 					if (!rollbackFailed && previousUri !== undefined && rolledBackFolders.length === 1 && isEqual(rolledBackFolders[0].uri, previousUri)) {
 						if (switchTransaction !== undefined) {
@@ -1564,8 +1616,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 					// 計測は**復元まで済ませた後**。completion participant と完了通知の処理も
 					// ユーザーが感じる切り替え時間に含める。
-					this.recordSwitchPhases({
+					// 合計と長いタスクはここで締める。main の結果を待つ間を含めないため。
+					const longTasks = longTaskWindow.stop();
+					const mainLoop = mainLoopWindow?.then(id => id === undefined ? undefined : mainLoadProbe?.endWindow(id)).catch(() => undefined);
+					void this.recordSwitchPhasesWithMainLoad({
 						startedAt: switchStartedAt,
+						totalMs: Date.now() - switchStartedAt,
 						phaseMs,
 						completed,
 						failed: switchError !== undefined,
@@ -1574,7 +1630,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						folderStatMs,
 						folderStatSkipped: paradisTakeVerifiedWorkspaceFolderHits(),
 						previousFolders: folders.length,
-					});
+						longTasks,
+					}, mainLoop, statRoundTrip);
 				}
 			})).finally(() => {
 				// 解除は**この1箇所**に集約する。ここは `notify_scope_switched` を待ち終えた後で、
@@ -1597,6 +1654,26 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		// 「解決＝切り替えが成立した」という契約は変えない。ここを `queued` のまま返すと、締め切りで
 		// 解決した回に未成立のまま後続処理が走る。
 		return this.trackShutdownOperation(queued.then(() => switchBody ?? Promise.resolve()));
+	}
+
+	/**
+	 * `updateFolders` の後、folders が行き先の1つだけになっているかを確かめる。違えば投げる。
+	 *
+	 * 比べ方は URI の同一性サービス (`IUriIdentityService.extUri`) に揃える。`.code-workspace` へ
+	 * 書いて読み直した URI は別インスタンスなので、表記の揺れで切り替えが常に失敗する、という
+	 * 壊れ方だけは避ける。
+	 */
+	private assertFoldersUpdatedTo(stateKey: string, uri: URI): void {
+		const updatedFolders = this.contextService.getWorkspace().folders;
+		if (updatedFolders.length === 1 && this.uriIdentityService.extUri.isEqual(updatedFolders[0].uri, uri)) {
+			return;
+		}
+		this.logService.error(`[ParadisWorkspaceSwitch] Workspace folders did not change to ${uri.toString()} (now: ${updatedFolders.map(folder => folder.uri.toString()).join(', ') || 'none'}); rolling back`);
+		throw new Error(localize(
+			'paradis.workspaceSwitch.foldersNotUpdated',
+			// allow-any-unicode-next-line
+			"ワークスペースのファイルを保存できなかった可能性があるため、「{0}」への切り替えを取りやめ、元のスペースに戻しました。ディスクの空き容量を確かめてから、もう一度切り替えてください。",
+			this.switchDisplayName(stateKey, uri)));
 	}
 
 	private trackSwitchBody(operation: Promise<void>): Promise<void> {
@@ -1702,8 +1779,46 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 * **ここで投げないこと。** 呼び出し元は切り替えの `finally` で、park 済みターミナルや
 	 * SCM 下書きの復元と同じ経路にいる。計測の失敗で復元を巻き込むのは割に合わない。
 	 */
+	/**
+	 * main の stat の往復を 3 つに割るための計測 (M4)。切り替え先の stat と同時に、同じフォルダを
+	 * main から stat させる。**手元のフォルダだけ** (SSH の接続先のフォルダは main を通らない)。
+	 * 投げない。
+	 */
+	private probeMainStat(probe: IParadisMainLoadService | undefined, uri: URI): Promise<IParadisStatRoundTrip | undefined> {
+		if (probe === undefined || uri.scheme !== Schemas.file) {
+			return Promise.resolve(undefined);
+		}
+		const sentAt = Date.now();
+		return probe.probeStat(uri.toJSON()).then(
+			reply => reply === undefined ? undefined : paradisSplitStatRoundTrip(sentAt, reply, Date.now()),
+			() => undefined,
+		);
+	}
+
+	/**
+	 * main の要約と stat の往復の分割が届くのを待ってから、切り替えの計測を送る。待つのは計測の
+	 * 送信だけで、切り替えは既に終わっている。main が詰まって答えないときも、締め切りで送る
+	 * (main の数値だけ欠ける)。
+	 */
+	private async recordSwitchPhasesWithMainLoad(
+		sample: Parameters<ParadisWorkspaceSwitchService['recordSwitchPhases']>[0],
+		mainLoop: Promise<IParadisMainLoopSummary | undefined> | undefined,
+		statRoundTrip: Promise<IParadisStatRoundTrip | undefined>,
+	): Promise<void> {
+		const [loop, stat] = await Promise.all([
+			mainLoop === undefined ? undefined : raceTimeout(mainLoop, ParadisWorkspaceSwitchService.MAIN_LOAD_RESULT_TIMEOUT_MS),
+			raceTimeout(statRoundTrip, ParadisWorkspaceSwitchService.MAIN_LOAD_RESULT_TIMEOUT_MS),
+		]);
+		this.recordSwitchPhases({ ...sample, mainLoop: loop, statRoundTrip: stat });
+	}
+
+	/** main の計測結果を待つ上限。これを過ぎたら main の数値を欠いたまま送る。 */
+	private static readonly MAIN_LOAD_RESULT_TIMEOUT_MS = 10_000;
+
 	private recordSwitchPhases(sample: {
 		readonly startedAt: number;
+		/** 締めた時点の合計。無ければ今の時刻から出す。 */
+		readonly totalMs?: number;
 		readonly phaseMs: Record<string, number>;
 		readonly completed: boolean;
 		readonly failed: boolean;
@@ -1712,14 +1827,40 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		readonly folderStatMs: number | undefined;
 		readonly folderStatSkipped: number;
 		readonly previousFolders: number;
+		readonly longTasks?: IParadisLongTaskSummary;
+		readonly mainLoop?: IParadisMainLoopSummary;
+		readonly statRoundTrip?: IParadisStatRoundTrip;
 	}): void {
 		try {
 			const durations: Record<string, number> = {};
 			for (const [phase, ms] of Object.entries(sample.phaseMs)) {
 				durations[`safe_${phase}_ms`] = ms;
 			}
+			// main の混雑 (M1〜M4)。**項目名に sensitiveFields の語 (token・session・command・
+			// terminal・env 等) を含めないこと**。部分一致でサーバ側に消される
+			// (メモ para-code-sentry-instrumentation-pitfalls の 1)。測れなかった項目は送らない
+			// (0 を送ると「速かった」と区別がつかない)。
+			const mainLoad: Record<string, number> = {};
+			if (sample.mainLoop !== undefined) {
+				mainLoad.safe_main_loop_p50_ms = sample.mainLoop.p50Ms;
+				mainLoad.safe_main_loop_p99_ms = sample.mainLoop.p99Ms;
+				mainLoad.safe_main_loop_max_ms = sample.mainLoop.maxMs;
+				mainLoad.safe_main_busy_pct = sample.mainLoop.busyPct;
+			}
+			if (sample.longTasks !== undefined) {
+				mainLoad.safe_longtask_count = sample.longTasks.count;
+				mainLoad.safe_longtask_total_ms = sample.longTasks.totalMs;
+				mainLoad.safe_longtask_max_ms = sample.longTasks.maxMs;
+			}
+			if (sample.statRoundTrip !== undefined) {
+				mainLoad.safe_stat_probe_to_main_ms = sample.statRoundTrip.toMainMs;
+				mainLoad.safe_stat_probe_in_main_ms = sample.statRoundTrip.mainMs;
+				mainLoad.safe_stat_probe_fs_ms = sample.statRoundTrip.fsMs;
+				mainLoad.safe_stat_probe_back_ms = sample.statRoundTrip.backMs;
+			}
 			runInParadisSpan('workspaceSwitch', 'phases', {
-				safe_total_ms: Date.now() - sample.startedAt,
+				safe_total_ms: sample.totalMs ?? Date.now() - sample.startedAt,
+				...mainLoad,
 				...durations,
 				safe_completed: sample.completed,
 				// 失敗した切り替えは分布を歪めるので、集計時に分けられるようにしておく。
