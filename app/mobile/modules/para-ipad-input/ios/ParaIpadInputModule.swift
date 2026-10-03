@@ -89,6 +89,14 @@ public class ParaIpadInputModule: Module {
 			}
 		}
 
+		// アプリのロック時に、出ている UIAlertController（RN の Alert.alert / Alert.prompt）を閉じる。ボタンの処理は
+		// 呼ばれず、閉じた Alert は JS 側（`src/paraAlertCore.ts`）が解除後に出し直す。UIKit は主スレッドで触る。
+		Function("dismissPresentedAlerts") {
+			DispatchQueue.main.async {
+				ParaAlertDismisser.dismissAll()
+			}
+		}
+
 		OnDestroy {
 			ParaKeyCommandCenter.shared.onCommand = nil
 			ParaWindowControlsObserver.shared.onChange = nil
@@ -722,5 +730,36 @@ public final class ParaOrientationGate {
 		guard orientation != lastReported else { return }
 		lastReported = orientation
 		onDeviceOrientation?(orientation)
+	}
+}
+
+/// ロック時に Alert を閉じる（`dismissPresentedAlerts`）。
+///
+/// RN の Alert は専用の UIWindow（`RCTAlertController.alertWindow`、アラートより上の高さ）を `makeKeyAndVisible` して
+/// その上に出る。RN はボタンが押されたときにしかこの窓を隠さないので、外から閉じたときは窓もここで隠し、キーを
+/// アプリの窓へ戻す。隠さないと、空の窓が全画面の操作を塞ぐ。
+enum ParaAlertDismisser {
+	static func dismissAll() {
+		let windows = UIApplication.shared.connectedScenes
+			.compactMap { $0 as? UIWindowScene }
+			.flatMap { $0.windows }
+		for window in windows {
+			var presenter = window.rootViewController
+			while let current = presenter, let presented = current.presentedViewController {
+				if presented is UIAlertController {
+					let ownWindow = window.windowLevel.rawValue > UIWindow.Level.normal.rawValue ? window : nil
+					current.dismiss(animated: false) {
+						ownWindow?.isHidden = true
+						ParaAlertDismisser.restoreKeyWindow(windows)
+					}
+					break
+				}
+				presenter = presented
+			}
+		}
+	}
+
+	private static func restoreKeyWindow(_ windows: [UIWindow]) {
+		windows.first(where: { !$0.isHidden && $0.windowLevel.rawValue == UIWindow.Level.normal.rawValue })?.makeKey()
 	}
 }

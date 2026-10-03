@@ -1,7 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { paraAlert } from '../paraAlert.js';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheet } from './bottomSheet.js';
 import { EffortSlider } from './effortSlider.js';
@@ -50,7 +51,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 		} else if (modelControl?.status === 'error') {
 			setCodexUpdatePending(false);
 			if (!open) {
-				Alert.alert('設定を変更できませんでした', modelControl.errorMessage ?? 'Codexから設定変更を確認できませんでした');
+				paraAlert.alert('設定を変更できませんでした', modelControl.errorMessage ?? 'Codexから設定変更を確認できませんでした');
 			}
 		}
 	}, [codexUpdatePending, modelControl?.errorMessage, modelControl?.status, open]);
@@ -139,7 +140,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 			if (!mounted.current) { return; }
 			if (result.status !== 'accepted') {
 				setSubmitting(false);
-				Alert.alert('設定を変更できませんでした', failureDetail(result));
+				paraAlert.alert('設定を変更できませんでした', failureDetail(result));
 				return;
 			}
 		}
@@ -149,7 +150,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 			if (!mounted.current) { return; }
 			if (result.status !== 'accepted') {
 				setSubmitting(false);
-				Alert.alert('設定を変更できませんでした', failureDetail(result));
+				paraAlert.alert('設定を変更できませんでした', failureDetail(result));
 				return;
 			}
 		}

@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { usePathname, useRouter } from 'expo-router';
 import { onKeyCommand, setKeyCommands, type KeyCommandSpec } from '../../modules/para-ipad-input/index.js';
+import { useAppLocked } from '../appLock.js';
 import { isTablet } from '../hooks/useSizeClass.js';
 import { routes } from '../routes.js';
 import { availableShortcuts, shortcutById, type ShortcutAction, type ShortcutContext } from './shortcuts.js';
@@ -12,7 +13,7 @@ import { topSlot, useShortcutRegistry } from './shortcutRegistry.js';
  * 外付けキーボードのショートカットの親（ルートレイアウトに1つだけ置く。iPad だけ）。
  *
  * 受け口（`useShortcutSlot`）の有無と今の画面から「いま効かせるもの」を決めてネイティブへ渡し、押されたら
- * 操作を受け口へ届ける。ロック中に効かないよう、AuthGate の内側に置く（外れたら全部外す）。
+ * 操作を受け口へ届ける。ロック中（`useAppLocked`）は何も効かせず、押されても届けない（外れたら全部外す）。
  */
 export function ShortcutHost() {
 	if (!isTablet) {
@@ -25,6 +26,8 @@ function ShortcutHostInner() {
 	const router = useRouter();
 	const pathname = usePathname();
 	const slots = useShortcutRegistry(s => s.slots);
+	// ロック中も画面は木に残る（AuthGate がロック画面で覆うだけ）ので、ここで止める。
+	const locked = useAppLocked();
 	const session = slots.session[slots.session.length - 1];
 	const context: ShortcutContext = {
 		tabCount: session !== undefined ? session.meta : undefined,
@@ -38,7 +41,7 @@ function ShortcutHostInner() {
 		terminalArrows: slots.terminalArrows.length > 0,
 		find: slots.find.length > 0,
 	};
-	const specs: KeyCommandSpec[] = availableShortcuts(context).map(def => ({
+	const specs: KeyCommandSpec[] = locked ? [] : availableShortcuts(context).map(def => ({
 		id: def.id, input: def.input, modifiers: def.modifiers, title: def.title, priority: def.overridesTextInput === true,
 	}));
 	// 中身が同じなら渡し直さない（ネイティブ側で UIKeyCommand を作り直すので）。
@@ -52,7 +55,14 @@ function ShortcutHostInner() {
 
 	const routerRef = useRef(router);
 	routerRef.current = router;
-	useEffect(() => onKeyCommand(id => dispatchShortcut(id, routerRef.current)), []);
+	const lockedRef = useRef(locked);
+	lockedRef.current = locked;
+	useEffect(() => onKeyCommand(id => {
+		// 外したキーが入れ違いで届いても、ロック中は届けない。
+		if (!lockedRef.current) {
+			dispatchShortcut(id, routerRef.current);
+		}
+	}), []);
 	return null;
 }
 

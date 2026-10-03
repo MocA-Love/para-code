@@ -12,8 +12,8 @@ import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from '
  * OverlayPortal経由でコンテンツを描画する。glass対応のメニュー/ダイアログは
  * 今後もこの基盤に載せること（Modal内にGlassSurfaceを置かない）。
  *
- * OverlayHostはAuthGateの内側にマウントすること（再ロック時にオーバーレイが
- * ロック画面より上に残らないように）。
+ * OverlayHostはAuthGateの内側にマウントすること（ロック中はロック画面の下の層に
+ * 残り、ロック画面に覆われる）。
  *
  * 注意: childrenは呼び出し元ではなくOverlayHost側のツリーで描画されるため、
  * 呼び出し元のReact Context（Provider）は継承されない。テーマ等は

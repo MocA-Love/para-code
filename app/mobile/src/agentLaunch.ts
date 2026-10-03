@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Alert } from 'react-native';
+import { paraAlert } from './paraAlert.js';
 import { useAppStore } from './appState.js';
 import { haptic } from './haptics.js';
 import { useParaToast } from './paraToast.js';
@@ -77,12 +77,12 @@ export function launchAgentInBackground(request: AgentLaunchRequest): void {
 		}).then(result => {
 			showResult(`${request.agentLabel} を起動しました`, `${result.name} · ${result.branch}`, 'done', 2_500);
 			if (result.warning) {
-				Alert.alert('スペースを作成しました', `ただし後続の処理でエラーがありました: ${result.warning}`);
+				paraAlert.alert('スペースを作成しました', `ただし後続の処理でエラーがありました: ${result.warning}`);
 			}
 		}).catch((e: unknown) => {
 			haptic('error');
 			showResult('起動できませんでした', '', 'warn', 1_200);
-			Alert.alert('エージェントを起動できませんでした', String(e instanceof Error ? e.message : e));
+			paraAlert.alert('エージェントを起動できませんでした', String(e instanceof Error ? e.message : e));
 		});
 		return;
 	}
@@ -96,6 +96,6 @@ export function launchAgentInBackground(request: AgentLaunchRequest): void {
 	}).catch((e: unknown) => {
 		haptic('error');
 		showResult('起動できませんでした', '', 'warn', 1_200);
-		Alert.alert('エージェントを起動できませんでした', String(e instanceof Error ? e.message : e));
+		paraAlert.alert('エージェントを起動できませんでした', String(e instanceof Error ? e.message : e));
 	});
 }

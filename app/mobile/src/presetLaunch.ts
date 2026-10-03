@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Alert } from 'react-native';
+import { paraAlert } from './paraAlert.js';
 import { useAppStore } from './appState.js';
 import { haptic } from './haptics.js';
 import { useParaToast } from './paraToast.js';
@@ -54,9 +54,9 @@ export function runPresetInBackground(request: { ws: string; wsLabel: string; pr
 		// 「通信に失敗した」と読める文面にすると、内容が変わったことに気づけない。
 		const message = String(e instanceof Error ? e.message : e);
 		if (message.includes('preset changed')) {
-			Alert.alert('プリセットの内容が変わりました', 'PC側で書き換えられたため実行していません。一覧を開き直すと、新しい内容を確認してから実行できます。');
+			paraAlert.alert('プリセットの内容が変わりました', 'PC側で書き換えられたため実行していません。一覧を開き直すと、新しい内容を確認してから実行できます。');
 			return;
 		}
-		Alert.alert('コマンドプリセットを実行できませんでした', message);
+		paraAlert.alert('コマンドプリセットを実行できませんでした', message);
 	});
 }

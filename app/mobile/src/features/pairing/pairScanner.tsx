@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { CameraView } from 'expo-camera';
+import { useAppLocked } from '../../appLock.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { tintOf, useThemeColors } from '../../ui/index.js';
 
@@ -31,6 +32,8 @@ export function PairScanner({ onScanned }: {
 		setBounds(current => (current.width === width && current.height === height ? current : { width, height }));
 	};
 	const theme = useThemeColors();
+	// ロック中はカメラを止め、読み取りもしない（画面はロック画面の下に残る）。
+	const locked = useAppLocked();
 	// 四隅の鉤は主ボタンの色（設定 → 色）を 70% で。
 	const cornerColor = { borderColor: tintOf(theme.primary, CORNER_OPACITY) };
 	const reticle = Math.min(Math.round(Math.min(bounds.width, bounds.height) * RETICLE_SCALE), RETICLE_MAX_SIZE);
@@ -39,8 +42,9 @@ export function PairScanner({ onScanned }: {
 			<CameraView
 				style={StyleSheet.absoluteFill}
 				facing="back"
+				active={!locked}
 				barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-				onBarcodeScanned={onScanned !== undefined ? ({ data }) => onScanned(data) : undefined}
+				onBarcodeScanned={onScanned !== undefined && !locked ? ({ data }) => onScanned(data) : undefined}
 			/>
 			<View style={styles.reticle} pointerEvents="none">
 				<View style={{ width: reticle, height: reticle }}>

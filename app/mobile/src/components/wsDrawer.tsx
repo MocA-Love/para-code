@@ -1,7 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, UIManager, View, useWindowDimensions } from 'react-native';
+import { LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, UIManager, View, useWindowDimensions } from 'react-native';
+import { paraAlert } from '../paraAlert.js';
 import { Gesture, type PanGesture } from 'react-native-gesture-handler';
 import ReanimatedDrawerLayout, { DrawerLayoutMethods, DrawerLockMode, DrawerPosition, DrawerState, DrawerType } from 'react-native-gesture-handler/ReanimatedDrawerLayout';
 import { useSegments, usePathname, useRouter, useNavigation, useIsFocused } from 'expo-router';
@@ -515,7 +516,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 			return;
 		}
 		const name = pcs.find(pc => pc.id === activePcId)?.name ?? 'このPC';
-		Alert.alert(
+		paraAlert.alert(
 			'ペアリング解除',
 			// 解除は「いま見ているPC」だけ。他のPCとのペアリングはそのまま残る。
 			`${name} とのペアリング情報を削除します。再接続にはPC側でQRコードを再発行してのペアリングが必要です。`,
@@ -524,7 +525,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 				{
 					text: '解除する', style: 'destructive', onPress: () => {
 						haptic('danger');
-						void removePc(activePcId).catch(error => Alert.alert('ペアリングを解除できませんでした', error instanceof Error ? error.message : String(error)));
+						void removePc(activePcId).catch(error => paraAlert.alert('ペアリングを解除できませんでした', error instanceof Error ? error.message : String(error)));
 					},
 				},
 			],

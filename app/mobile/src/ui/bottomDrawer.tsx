@@ -16,6 +16,8 @@ import {
 	useWindowDimensions,
 	type KeyboardEvent,
 } from 'react-native';
+import { useCloseOnAppLock } from '../appLock.js';
+import { lockedModalVisible } from '../appLockPolicy.js';
 import { haptic } from '../haptics.js';
 import { keyboardCoverage } from '../keyboardCoverage.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
@@ -184,6 +186,8 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 	onCloseRef.current = onClose;
 	const onAfterCloseRef = useRef(onAfterClose);
 	onAfterCloseRef.current = onAfterClose;
+	// ロックされたら閉じる。Modal はロック画面より上に出るので、親が閉じるのを待たずに隠す（`appLock.ts`）。
+	const locked = useCloseOnAppLock(visible, () => onCloseRef.current());
 	// 外付けキーボードの Esc で閉じる（iPad）。重なっていれば上のシートから。
 	useShortcutSlot('escape', visible ? { escape: () => onCloseRef.current() } : undefined);
 
@@ -193,9 +197,12 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 	useEffect(() => {
 		if (shownRef.current !== visible) {
 			shownRef.current = visible;
-			haptic('move');
+			// ロックで閉じたときは鳴らさない（ユーザーの操作ではない）。
+			if (!locked) {
+				haptic('move');
+			}
 		}
-	}, [visible]);
+	}, [visible, locked]);
 
 	useEffect(() => {
 		if (visible) {
@@ -208,6 +215,16 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 			return () => open.stop();
 		}
 		if (!mounted) {
+			return undefined;
+		}
+		// ロックで閉じるときは動かさずにその場で片付ける。Modal は隠れていて動きは見えず、途中で止まると
+		// `finished` が false のまま木に残り、解除後に途中のシートや幕が全画面のタップを塞ぐ。
+		if (locked) {
+			offset.stopAnimation();
+			offset.setValue(hiddenOffset);
+			closed.current = true;
+			setMounted(false);
+			onAfterCloseRef.current?.();
 			return undefined;
 		}
 		Keyboard.dismiss();
@@ -223,7 +240,7 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 			onAfterCloseRef.current?.();
 		});
 		return () => close.stop();
-	}, [visible, mounted, offset, hiddenOffset]);
+	}, [visible, mounted, offset, hiddenOffset, locked]);
 
 	// manual-memo: audited — ジェスチャの受け渡し先（見出しの行）が参照の同一性で作り直しを判断するため
 	const grab = useMemo<DrawerGrabCallbacks>(() => {
@@ -257,7 +274,7 @@ export function BottomDrawer({ visible, onClose, onAfterClose, children, scrolla
 	const maxHeight = Math.max(0, windowHeight - insets.top - space.lg - keyboardInset);
 
 	return (
-		<Modal visible transparent animationType="none" statusBarTranslucent onRequestClose={() => onCloseRef.current()} {...(allowLandscape ? { supportedOrientations: [...ALL_ORIENTATIONS] } : {})}>
+		<Modal visible={lockedModalVisible(true, locked)} transparent animationType="none" statusBarTranslucent onRequestClose={() => onCloseRef.current()} {...(allowLandscape ? { supportedOrientations: [...ALL_ORIENTATIONS] } : {})}>
 			{/* Modal は別の画面として出るので、ジェスチャの根をここに置き直す（アプリの根のものは届かない）。 */}
 			<GestureHandlerRootView style={styles.gestureRoot}>
 			<Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>

@@ -9,7 +9,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { paraAlert } from '../paraAlert.js';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { marked } from 'marked';
@@ -24,6 +25,8 @@ import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
 import { isFileViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 import { guardWebViewNavigation } from './webViewLinkGuard.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
+import { useCloseOnAppLock } from '../appLock.js';
+import { lockedModalVisible } from '../appLockPolicy.js';
 import { classifyMobileFileKind, createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from './officeCapability.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoverySnapshot, type ParadisOfficeRecoveryEffect } from '../../../../src/vs/paradis/contrib/fileViewers/common/paradisOfficeRecovery.js';
 
@@ -487,7 +490,7 @@ function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewState, o
 
 	const openExternally = () => {
 		const uri = /^[a-z][a-z\d+.-]*:/i.test(path) ? path : `file://${path}`;
-		void Linking.openURL(uri).catch(() => Alert.alert('ファイルを開けませんでした', path));
+		void Linking.openURL(uri).catch(() => paraAlert.alert('ファイルを開けませんでした', path));
 	};
 
 	if (finalError) {
@@ -564,6 +567,11 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 	const [modalOpen, setModalOpen] = useState(true);
 	const pendingExpandedRef = useRef<boolean | undefined>(undefined);
 	const effectiveSheet = presentedAsSheet && !expanded;
+	// ロックされたら閉じる。Modal はロック画面より上に出るので、親が閉じるのを待たずに隠す（`appLock.ts`）。
+	// 拡大の切り替え途中（`modalOpen` が false）でも閉じる。
+	const locked = useCloseOnAppLock(true, onClose);
+	const lockedRef = useRef(locked);
+	lockedRef.current = locked;
 	const headerTop = effectiveSheet ? 14 : 58;
 
 	const requestToggleExpanded = () => {
@@ -572,6 +580,10 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 		setModalOpen(false);
 	};
 	const handleDismiss = () => {
+		// ロックで隠したときの dismiss。閉じる処理は `useCloseOnAppLock` が済ませているので二重に呼ばない。
+		if (lockedRef.current) {
+			return;
+		}
 		if (pendingExpandedRef.current !== undefined) {
 			setExpanded(pendingExpandedRef.current);
 			pendingExpandedRef.current = undefined;
@@ -585,7 +597,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 	const officeKind = kind === 'spreadsheet' || kind === 'docx';
 	const officeNonce = useMemo(() => officeKind ? createMobileOfficeNonce() : undefined, [officeKind, spreadsheetHtml, docxData]);
 	const guardOfficeNavigation = useMemo(() => (request: { readonly url: string; readonly isTopFrame?: boolean }) => guardMobileOfficeNavigation(request, url => {
-		Alert.alert(
+		paraAlert.alert(
 			'外部リンクを開きますか？',
 			url,
 			[
@@ -650,8 +662,8 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 	return (
 		<Modal
 			key={effectiveSheet ? 'sheet' : 'full'}
-			visible={modalOpen}
-			animationType="slide"
+			visible={lockedModalVisible(modalOpen, locked)}
+			animationType={locked ? 'none' : 'slide'}
 			presentationStyle={effectiveSheet ? 'pageSheet' : 'fullScreen'}
 			onDismiss={handleDismiss}
 			onRequestClose={onClose}

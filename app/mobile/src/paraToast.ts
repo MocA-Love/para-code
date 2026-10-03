@@ -2,6 +2,7 @@
 
 import type { Ionicons } from '@expo/vector-icons';
 import { create } from 'zustand';
+import { isAppLockedNow, onAppLockChange } from './appLockState.js';
 
 /** Ionicons の名前。表示側でキャストしないよう、ここで型を締めておく。 */
 type IoniconName = keyof typeof Ionicons.glyphMap;
@@ -54,6 +55,11 @@ interface ParaToastStore {
 
 /** 自動非表示のタイマー。表示は同時に1件だけなのでモジュールに1本で足りる。 */
 let hideTimer: ReturnType<typeof setTimeout> | undefined;
+/**
+ * 自動で沈むまでの時間（いま出ているお知らせのもの）。ロック中はタイマーを止めて持っておき、解除後に
+ * 最初から数え直す（ロック中はトーストを描かないので、見ないうちに消えないように）。
+ */
+let autoHideFor: number | undefined;
 
 function clearHideTimer(): void {
 	if (hideTimer !== undefined) {
@@ -62,22 +68,39 @@ function clearHideTimer(): void {
 	}
 }
 
+function startHideTimer(hide: () => void): void {
+	clearHideTimer();
+	if (autoHideFor === undefined || isAppLockedNow()) {
+		return;
+	}
+	hideTimer = setTimeout(() => {
+		hideTimer = undefined;
+		autoHideFor = undefined;
+		hide();
+	}, autoHideFor);
+}
+
 export const useParaToast = create<ParaToastStore>()(set => ({
 	current: undefined,
 	show(next, autoHideMs) {
-		clearHideTimer();
 		set({ current: next });
-		if (autoHideMs !== undefined) {
-			hideTimer = setTimeout(() => {
-				hideTimer = undefined;
-				set({ current: undefined });
-			}, autoHideMs);
-		}
+		autoHideFor = autoHideMs;
+		startHideTimer(() => set({ current: undefined }));
 	},
 	hide() {
 		// スワイプで払われたらタイマーも止める。残しておくと、次に出したお知らせが
 		// 前のタイマーで早すぎるタイミングで消える。
 		clearHideTimer();
+		autoHideFor = undefined;
 		set({ current: undefined });
 	},
 }));
+
+// ロックしたら沈むタイマーを止め、解除したら数え直す。
+onAppLockChange(locked => {
+	if (locked) {
+		clearHideTimer();
+	} else if (useParaToast.getState().current !== undefined) {
+		startHideTimer(() => useParaToast.setState({ current: undefined }));
+	}
+});
