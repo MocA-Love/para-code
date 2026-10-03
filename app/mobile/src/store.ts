@@ -1694,7 +1694,7 @@ export class MobileController {
 	private terminalOperationStorageIssue: string | undefined;
 	private terminalOperationCapacityIssue: string | undefined;
 	private terminalOperationEnqueueIssue: string | undefined;
-	private lastNotifyPrefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean } | undefined;
+	private lastNotifyPrefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean; includeContent: boolean } | undefined;
 	private readonly pendingNotificationDismissals = new Set<string>();
 	/**
 	 * 消した通知を PC へどう伝えるか（W2-27）。`opened` は ID で指定して開いた・消した（PC はほかの端末の
@@ -2810,7 +2810,7 @@ export class MobileController {
 	 * 通知設定をPCへ同期する（notifyチャネル M→PC）。PC側はオフライン端末への
 	 * APNsフォールバックプッシュの抑制判定に使う（設定画面参照）。
 	 */
-	sendNotifyPrefs(prefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean }): void {
+	sendNotifyPrefs(prefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean; includeContent: boolean }): void {
 		this.lastNotifyPrefs = prefs;
 		if (!this.isLiveAvailable()) {
 			return;
@@ -2828,6 +2828,9 @@ export class MobileController {
 			agentQuestion: prefs.agentQuestion,
 			suppressWhenPcFocused: false,
 			pcFocusQuiet: prefs.suppressWhenPcFocused,
+			// 「通知に内容を含める」（notify.content.v1）。旧 PC は読まずに捨てる。PC はこの項目があることを
+			// 「長押しの画面を描けるアプリ」の印にも使う（プッシュで Markdown の詳細を残す）。
+			includeContent: prefs.includeContent,
 		})));
 	}
 

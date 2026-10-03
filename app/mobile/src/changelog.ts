@@ -44,6 +44,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-03',
 		items: [
 			{
+				icon: 'notifications-outline',
+				title: '通知でエージェントの返答が読めるようになりました',
+				body: '通知の本文にエージェントの最後の発言が入り、長押しで全文を読めます。承認待ちは通知から許可・拒否、完了には返信ができます（Face ID のあとに送ります）。失敗は完了と分けて知らせます。設定の「通知に内容を含める」で、中身を出さないようにもできます。',
+				tone: 'green',
+			},
+			{
 				icon: 'bulb-outline',
 				title: 'Claude Code が Advisor に相談している様子が分かるようになりました',
 				body: '生成中は「Advisor に相談中」と出し、会話には相談の行が入ります。サブエージェントの画面の「アドバイザー」から、モデル・所要時間・返答を確かめられます。',

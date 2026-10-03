@@ -57,6 +57,7 @@ import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger
 import { ParadisClaudeModBridge, paradisClaudeModBridge, ParadisClaudeModEvent, IParadisClaudeModPendingPermission } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { paradisIsDisplayOnlyModRow } from '../../claudeMod/common/paradisClaudeMod.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
+import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
@@ -1383,7 +1384,7 @@ interface ITailerDelegate {
 	/** ライブ追記で Advisor の呼び出し・結果（`advisor` の付いたメッセージ）を読んだ。 */
 	onAdvisors?(messages: readonly IParadisAgentChatMessage[]): void;
 	/** ライブ追記でターン終了（task_complete / error / turn_aborted）を検出した。 */
-	onTurnEnded(reason: 'completed' | 'failed' | 'interrupted'): void;
+	onTurnEnded(reason: 'completed' | 'failed' | 'interrupted', errorCode?: string): void;
 	/** rolloutに永続化されたCodex活動を順序どおりtrackerへ収束させる。 */
 	onCodexActivityTimeline(events: readonly ICodexTranscriptActivityEvent[]): void;
 	/**
@@ -2672,7 +2673,7 @@ class TranscriptTailer {
 		// ターン終了はライブ追記でのみ通知する（初回読み込み・epoch読み直しの履歴に含まれる
 		// 過去の task_complete で、現在進行中のライブ状態を消してしまわないように）。
 		if (live && signals.turnEnded !== undefined) {
-			this.delegate.onTurnEnded(signals.turnEnded);
+			this.delegate.onTurnEnded(signals.turnEnded, signals.turnErrorCode);
 		}
 		if (signals.turnEnded !== undefined) {
 			this.approvalDeniedInTurn = false;
@@ -2755,6 +2756,8 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** ペイントークン → 既知のセッション情報 (hookバスから学習、購読の有無に関わらず保持)。 */
 	private readonly paneSessions = new Map<string, IPaneSessionInfo>();
+	/** ペイントークン → transcript で見た最後のターンの終わり（通知の中身。失敗の理由。`notifyPaneContent`）。 */
+	private readonly notifyTurnEnds = new Map<string, NonNullable<IParadisNotifyPaneContent['turnEnd']>>();
 	/**
 	 * tokenが一時的にliveでなくなった（renderer交代・ウィンドウ間移動・shared process再起動を
 	 * またぐ再同期の隙間）ペインのセッション退避先。tokenが再びliveになった時点で検証して
@@ -5247,6 +5250,45 @@ export class ParadisMobileAgentChat extends Disposable {
 		return insights;
 	}
 
+	/**
+	 * 通知の中身に使うペインの様子（最後の発言・ターンの終わり・待っている承認や質問）。モバイルへは何も送らない。
+	 * 決め方は `paradisNotifyContentSource.ts` の `paradisResolveNotifyContent`。
+	 */
+	notifyPaneContent(token: string): IParadisNotifyPaneContent | undefined {
+		const session = this.paneSessions.get(token);
+		const tailer = this.tailers.get(token);
+		const turnEnd = this.notifyTurnEnds.get(token);
+		if (session === undefined && tailer === undefined && turnEnd === undefined) {
+			return undefined;
+		}
+		let lastAssistant: IParadisNotifyPaneContent['lastAssistant'];
+		for (let index = (tailer?.messages.length ?? 0) - 1; index >= 0 && tailer !== undefined; index--) {
+			const message = tailer.messages[index];
+			if (message.role === 'user' && message.kind === 'text') {
+				break; // 今のターンより前の発言は、この通知の話ではない
+			}
+			if (message.role === 'assistant' && message.kind === 'text' && message.text.trim().length > 0) {
+				lastAssistant = { text: message.text, isError: message.isError === true, ...(message.ts !== undefined ? { at: message.ts } : {}) };
+				break;
+			}
+		}
+		const current = tailer?.currentInteraction() ?? null;
+		let interaction: IParadisNotifyPaneContent['interaction'];
+		if (current?.kind === 'approval') {
+			interaction = { kind: 'approval', id: current.id, ...(current.detail !== undefined ? { text: current.detail } : {}) };
+		} else if (current?.kind === 'question' && tailer !== undefined) {
+			const text = tailer.pendingQuestionMessages(current.id).map(message => message.text).filter(text => text.trim().length > 0).join('\n\n');
+			interaction = { kind: 'question', id: current.id, ...(text.length > 0 ? { text } : {}) };
+		}
+		const agent = session?.agent ?? tailer?.agent;
+		return {
+			...(agent !== undefined ? { agent } : {}),
+			...(lastAssistant !== undefined ? { lastAssistant } : {}),
+			...(turnEnd !== undefined ? { turnEnd } : {}),
+			...(interaction !== undefined ? { interaction } : {}),
+		};
+	}
+
 	private desktopPaneInsight(token: string): IParadisAgentPaneInsight | undefined {
 		const session = this.paneSessions.get(token);
 		if (session === undefined || !this.isLiveToken(token)) {
@@ -6836,7 +6878,16 @@ export class ParadisMobileAgentChat extends Disposable {
 			},
 			// ターン終了（Codex の task_complete / error / turn_aborted）: 考え中表示を解除し、
 			// ペイン実行状態（working）側の解除は hook バス経由で ParadisAgentBrowserService に任せる。
-			onTurnEnded: reason => {
+			onTurnEnded: (reason, errorCode) => {
+				// 通知の中身（失敗の理由）のために、ペインの状態を動かす前に覚える（状態が変わると完了の通知が出る）。
+				this.notifyTurnEnds.delete(token);
+				this.notifyTurnEnds.set(token, { reason, ...(errorCode !== undefined ? { errorCode } : {}), at: Date.now() });
+				if (this.notifyTurnEnds.size > 500) {
+					const oldest = this.notifyTurnEnds.keys().next().value;
+					if (oldest !== undefined) {
+						this.notifyTurnEnds.delete(oldest);
+					}
+				}
 				this.activeTurnTokens.delete(token);
 				this.clearLiveState(token);
 				// 承認が残ったままターンが中断された（Codex の承認をカードやターミナルで拒否すると、ターンが

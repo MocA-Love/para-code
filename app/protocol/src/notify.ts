@@ -68,7 +68,26 @@ export interface NotifyPayload {
 	 * PC は10件まで載せる。旧アプリ・旧 NSE は読まずに無視する。
 	 */
 	readonly dismiss?: readonly string[];
+	/**
+	 * 通知の種類（`notify.content.v1` の PC だけが付ける。iOS のカテゴリ `para.<種類>`）。これが付いた通知は
+	 * `agent` と `tab` から副題を組み立て直す（`app/mobile/src/notifyPresentation.ts`）。
+	 */
+	readonly category?: NotifyCategory;
+	/** 送り主のエージェント（副題と、Communication Notification の送り主のアイコン）。 */
+	readonly agent?: 'claude' | 'codex';
+	/** タブ名（エージェントの印を外したもの）。 */
+	readonly tab?: string;
+	/** 長押しの画面（Content Extension）に出す Markdown の原文。「通知に内容を含める」がオンのときだけ付く。 */
+	readonly detail?: string;
+	/** 承認・質問の ID（通知のボタンで答えるとき、同じ確認かを確かめる）。 */
+	readonly interactionId?: string;
 }
+
+/** 通知の種類。PC の `paradisNotifyCompose.ts` の `ParadisNotifyCategory` と一致させる。 */
+export type NotifyCategory = 'done' | 'approval' | 'question' | 'error';
+
+/** `detail` を読む上限（PC は 6000 字で切る。それより大きいものは信用しない）。 */
+const NOTIFY_DETAIL_MAX_LENGTH = 8000;
 
 /** `dismiss` の1件の形（16進32桁）と、読む件数の上限。 */
 const NOTIFY_DISMISS_TAG_PATTERN = /^[0-9a-f]{32}$/;
@@ -104,7 +123,15 @@ export function decodeNotify(bytes: Uint8Array): NotifyPayload {
 	const dismiss = Array.isArray(dismissRaw)
 		? dismissRaw.slice(0, NOTIFY_DISMISS_MAX_TAGS).filter((tag): tag is string => typeof tag === 'string' && NOTIFY_DISMISS_TAG_PATTERN.test(tag))
 		: undefined;
-	return { kind, id, title, body, at, ...(dismiss !== undefined && dismiss.length > 0 ? { dismiss } : {}), ...(subtitle !== undefined ? { subtitle } : {}), ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}), ...(terminalKey !== undefined ? { terminalKey } : {}), ...(windowId !== undefined ? { windowId } : {}), ...(agentToken !== undefined ? { agentToken } : {}), ...(pcId !== undefined ? { pcId } : {}), ...(pcName !== undefined ? { pcName } : {}), ...(quiet !== undefined ? { quiet } : {}) };
+	const categoryRaw = raw['category'];
+	const category = categoryRaw === 'done' || categoryRaw === 'approval' || categoryRaw === 'question' || categoryRaw === 'error' ? categoryRaw : undefined;
+	const agent = raw['agent'] === 'claude' || raw['agent'] === 'codex' ? raw['agent'] : undefined;
+	const tab = typeof raw['tab'] === 'string' && raw['tab'].length > 0 && raw['tab'].length <= 100 ? raw['tab'] : undefined;
+	const detail = typeof raw['detail'] === 'string' && raw['detail'].length > 0 && raw['detail'].length <= NOTIFY_DETAIL_MAX_LENGTH ? raw['detail'] : undefined;
+	const interactionId = typeof raw['interactionId'] === 'string' && raw['interactionId'].length > 0 && raw['interactionId'].length <= 200 ? raw['interactionId'] : undefined;
+	return { kind, id, title, body, at, ...(dismiss !== undefined && dismiss.length > 0 ? { dismiss } : {}),
+		...(category !== undefined ? { category } : {}), ...(agent !== undefined ? { agent } : {}), ...(tab !== undefined ? { tab } : {}),
+		...(detail !== undefined ? { detail } : {}), ...(interactionId !== undefined ? { interactionId } : {}), ...(subtitle !== undefined ? { subtitle } : {}), ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}), ...(terminalKey !== undefined ? { terminalKey } : {}), ...(windowId !== undefined ? { windowId } : {}), ...(agentToken !== undefined ? { agentToken } : {}), ...(pcId !== undefined ? { pcId } : {}), ...(pcName !== undefined ? { pcName } : {}), ...(quiet !== undefined ? { quiet } : {}) };
 }
 
 function isNotifyKind(value: string): value is NotifyKind {

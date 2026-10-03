@@ -39,3 +39,31 @@ export function notifySubtitle(subtitle: string | undefined, pcName: string | un
 	}
 	return parts.length > 0 ? parts.join(SEPARATOR) : undefined;
 }
+
+/** エージェントの呼び名（PC の `paradisAgentLabel` と同じ）。 */
+function agentLabel(agent: 'claude' | 'codex' | undefined): string | undefined {
+	return agent === 'codex' ? 'Codex' : agent === 'claude' ? 'Claude' : undefined;
+}
+
+/**
+ * 通知の副題を、届いた通知から組み立てる（notify.content.v1 の並べ方 A1）。
+ *
+ * - 種類（`category`）が付いた新しい PC の通知: 2 台以上なら「エージェント · タブ名 · PC 名」、1 台ならタブ名だけ
+ *   （1 台のときはエージェント名も PC 名も省く）
+ * - 旧 PC の通知: 従来どおり `subtitle` に 2 台以上のときだけ PC 名を足す（{@link notifySubtitle}）
+ *
+ * 通知拡張（NotificationService.swift の composeSubtitle）が同じ規則を Swift で持つ。変えるときは両方直すこと。
+ */
+export function notifyPayloadSubtitle(
+	payload: { readonly category?: string; readonly agent?: 'claude' | 'codex'; readonly tab?: string; readonly subtitle?: string },
+	pcName: string | undefined,
+	multiplePcs: boolean,
+): string | undefined {
+	if (payload.category === undefined) {
+		return notifySubtitle(payload.subtitle, pcName, multiplePcs);
+	}
+	const parts = (multiplePcs ? [agentLabel(payload.agent), payload.tab, pcName] : [payload.tab])
+		.map(part => part?.trim())
+		.filter((part): part is string => part !== undefined && part.length > 0);
+	return parts.length > 0 ? parts.join(SEPARATOR) : undefined;
+}

@@ -34,7 +34,7 @@ import type { ConnectionState, PairedCredentials } from './relayClient.js';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
 import { setMobileDiagnosticCorrelationTag } from './mobileDiagnostics.js';
-import { configureNotificationHandler, createAgentSendOutboxStore, createTerminalOperationOutboxStore, deleteLegacyNotifyKey, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, migrateLegacyTerminalOperationOutbox, persistNotifyKey, rnSocketFactory, secureKeyStore } from './platform.js';
+import { configureNotificationHandler, registerNotificationCategories, createAgentSendOutboxStore, createTerminalOperationOutboxStore, deleteLegacyNotifyKey, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, migrateLegacyTerminalOperationOutbox, persistNotifyKey, rnSocketFactory, secureKeyStore } from './platform.js';
 import { notifyCollapseKey } from './notificationTray.js';
 import { TrayReconcileRequests, dismissTrayHandledByPc, presentCollapsedNotification, reconcileTrayWithState } from './notificationTraySync.js';
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
@@ -42,7 +42,8 @@ import { subscribeNetworkRevival } from './networkRevival.js';
 import { shouldPresentNotifyBanner } from './notificationPolicy.js';
 import { CONNECT_RESULT_WINDOW_MS, connectionHaptic, shouldKnockOnNotify } from './hapticEvents.js';
 import { DISCONNECT_WARNING, haptic } from './haptics.js';
-import { notifySubtitle } from './notifyPresentation.js';
+import { notifyPayloadSubtitle } from './notifyPresentation.js';
+import { notifyCategoryIdentifier } from './notificationActions.js';
 import { defaultTerminalPrefs, normalizeTerminalPrefs, type TerminalPrefs, type TerminalViewport } from './terminalViewport.js';
 import { DEFAULT_CHAT_FONT_SIZE, loadChatFontSize, normalizeChatFontSize, saveChatFontSize, type ChatFontSize } from './chatTextScale.js';
 import { EMPTY_HIDDEN_MODELS, loadHiddenModels, replayHiddenModelOps, saveHiddenModels, withModelHidden, type HiddenModelOp, type HiddenModels, type ModelVisibilityAgent } from './modelVisibility.js';
@@ -252,8 +253,9 @@ interface AppState extends StoreState {
 	 * 3つともPC側へ同期し、鳴らすべきかの判断はPC側の `paradisNotifyDelivery.ts` が持つ
 	 * （アプリ未起動時のプッシュを送るかどうかもそこで決まるため、PCが知っている必要がある）。
 	 */
-	notifyPrefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean };
-	setNotifyPref(key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused', enabled: boolean): void;
+	/** `includeContent`: 通知に内容（最後の発言・承認の中身・質問文）を含めるか。PC へ同期し、本文は PC が決める。 */
+	notifyPrefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean; includeContent: boolean };
+	setNotifyPref(key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused' | 'includeContent', enabled: boolean): void;
 	/**
 	 * ターミナル表示の設定（設定 →「ターミナル」）。この端末の中だけの設定で、PCへは
 	 * 送らない（PCが持つと複数台のスマホで奪い合いになる）。`matchPcWidth` を入れた
@@ -1096,14 +1098,20 @@ function handleNotify(runtime: PcRuntime, payload: NotifyPayload): void {
 	// ユーザーが付け替えた名前をPCが知らないため。
 	// notifyId / kind は通知センターの後始末（notificationTray.ts）が、同じエージェントの前の通知を
 	// 置き換える鍵は W2-08 が使う。プッシュ側は通知拡張（NSE）が同じ項目を userInfo に載せる。
-	void presentCollapsedNotification(payload.title, notifySubtitle(payload.subtitle, runtime.pc.name, runtimes.size > 1), payload.body, {
+	// 新しい PC の通知（category 付き）は副題を「エージェント · タブ名 · PC 名」で組み立て直し、カテゴリを付けて
+	// ボタンと長押しの画面（detail の Markdown）を出す。長押しの画面は data の detail / category / agent を読む。
+	void presentCollapsedNotification(payload.title, notifyPayloadSubtitle(payload, runtime.pc.name, runtimes.size > 1), payload.body, {
 		ws: payload.ws,
 		terminalKey: payload.terminalKey,
 		agentToken: payload.agentToken,
 		pcId: runtime.pc.id,
 		notifyId: payload.id,
 		kind: payload.kind,
-	}, notifyCollapseKey(runtime.pc.id, payload.kind, payload.agentToken, payload.terminalKey))
+		...(payload.category !== undefined ? { category: payload.category } : {}),
+		...(payload.agent !== undefined ? { agent: payload.agent } : {}),
+		...(payload.detail !== undefined ? { detail: payload.detail } : {}),
+		...(payload.interactionId !== undefined ? { interactionId: payload.interactionId } : {}),
+	}, notifyCollapseKey(runtime.pc.id, payload.kind, payload.agentToken, payload.terminalKey), notifyCategoryIdentifier(payload.category, payload.interactionId))
 		.catch(err => console.warn('[appState] failed to present a notification', err));
 }
 
@@ -1298,7 +1306,7 @@ export const useAppStore = create<AppState>(set => ({
 	// suppressWhenPcFocused の既定はオン。PCの前にいる間もスマホが鳴るのが通知過多の
 	// 主因だったため、席を外している間だけ鳴る側を既定にしている（PC側の既定と揃えてある）。
 	// 一度でも設定画面で触ればその値が保存され、以降はこの既定を使わない。
-	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: true },
+	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: true, includeContent: true },
 	// 文字サイズの既定は iPad が 12pt、iPhone が 10pt。
 	terminalPrefs: defaultTerminalPrefs(isTablet),
 	chatFontSize: DEFAULT_CHAT_FONT_SIZE,
@@ -1338,6 +1346,8 @@ export const useAppStore = create<AppState>(set => ({
 		set({ initializing: true, initError: undefined });
 		try {
 			configureNotificationHandler();
+			// 通知のボタン（許可・拒否・返信・開く）と長押しの画面のカテゴリ。待たない（失敗してもボタンが出ないだけ）。
+			void registerNotificationCategories();
 			const loaded = await loadOrCreateIdentity(secureKeyStore);
 			identity = loaded.identity;
 			const operationRun = await reserveOperationRun(secureKeyStore);
@@ -1360,6 +1370,8 @@ export const useAppStore = create<AppState>(set => ({
 							// このキーが欠けた記録を持っており、`=== true` だと新しい既定（オン）が
 							// その人たちにだけ効かない。明示的にオフにした人だけがオフになる。
 							suppressWhenPcFocused: parsed.suppressWhenPcFocused !== false,
+							// 既定はオン（この設定より前の記録には無い）。
+							includeContent: parsed.includeContent !== false,
 						},
 					});
 				}
@@ -2122,7 +2134,7 @@ export const useAppStore = create<AppState>(set => ({
 		set({ viewingTerminalKey: terminalKey });
 	},
 
-	setNotifyPref(key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused', enabled: boolean) {
+	setNotifyPref(key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused' | 'includeContent', enabled: boolean) {
 		const next = { ...useAppStore.getState().notifyPrefs, [key]: enabled };
 		set({ notifyPrefs: next });
 		secureKeyStore.setItem('notifyPrefs', JSON.stringify(next)).catch(err => console.warn('[appState] failed to save notifyPrefs', err));

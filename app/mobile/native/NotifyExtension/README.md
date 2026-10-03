@@ -12,7 +12,7 @@ APNs リモート通知のカスタムペイロード `e`（base64url の AES-25
 
 ## `npx expo prebuild --clean` 等で ios/ を作り直した場合の復元手順
 
-1. このディレクトリの3ファイルを `app/mobile/ios/NotifyExtension/` へコピー。あわせて
+1. このディレクトリの3ファイルと `agent-claude.png` / `agent-codex.png`（Resources に入れる）を `app/mobile/ios/NotifyExtension/` へコピー。あわせて
    `native/ParaCodeWidgets/WidgetShared.swift` を NotifyExtension ターゲットの Sources にも入れる
    （ファイルの実体は `ios/ParaCodeWidgets/` に置いたまま、両方のターゲットに属させる）
 2. Xcode で `ParaCodeMobile.xcworkspace` を開き、File → New → Target… → **Notification Service Extension** を追加
@@ -50,6 +50,17 @@ APNs リモート通知のカスタムペイロード `e`（base64url の AES-25
 - ワイヤ形式は `12Bノンス || AES-256-GCM暗号文(tag込み)` = CryptoKit の
   `AES.GCM.SealedBox(combined:)` がそのまま受ける形式
 - 復号した JSON は `NotifyPayload`（`app/protocol/src/notify.ts`）
+
+## 通知の中身・カテゴリ・送り主（2026-10-04、`notify.content.v1`）
+
+- 復号した `category`（`done` / `approval` / `question` / `error`）から `categoryIdentifier` を `para.<種類>` にする。
+  ボタンはアプリが登録し、長押しの画面は `native/ParaCodeNotifyContent/`。復号できなければカテゴリを空にする
+- `category`・`agent`・`detail`・`interactionId` を userInfo の最上位に書く（`appReadKeys`。復号できなければ剥がす）
+- 副題は、`category` があれば PC 2 台以上で「エージェント · タブ名 · PC 名」、1 台でタブ名だけ（`composeSubtitle`。
+  アプリの `notifyPayloadSubtitle` と同じ規則）
+- 送り主のエージェントを `INSendMessageIntent` にして `content.updating(from:)` で出す（Communication Notification）。
+  アイコンは同じディレクトリの `agent-claude.png` / `agent-codex.png` を Resources に入れる。アプリ側の entitlement と
+  Info.plist の設定は `native/ParaCodeNotifyContent/README.md`。【要確認】群の会話としての実機での見え方
 
 ## ウィジェットの要約の書き換え（2026-09-27）
 

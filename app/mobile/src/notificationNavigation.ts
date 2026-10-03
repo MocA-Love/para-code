@@ -31,6 +31,15 @@ export function readNotificationDeepLink(request: { readonly content: { readonly
 	return Object.keys(link).length > 0 ? link : undefined;
 }
 
+/**
+ * 通知が指していた承認・質問の ID（notify.content.v1 の PC だけが付ける）。通知のボタンで答えるとき、同じ確認かを
+ * 確かめるのに使う。読み方は {@link readNotificationDeepLink} と同じ（プッシュは通知拡張が書いた最上位だけ）。
+ */
+export function readNotificationInteractionId(request: { readonly content: { readonly data?: unknown }; readonly trigger?: unknown }): string | undefined {
+	const value = readTrayData(request)?.['interactionId'];
+	return typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : undefined;
+}
+
 export type NotificationNavigationDecision = 'wait' | 'open' | 'missing';
 
 /** 不完全なmulti-window stateでは通知先の不存在を確定しない。 */
