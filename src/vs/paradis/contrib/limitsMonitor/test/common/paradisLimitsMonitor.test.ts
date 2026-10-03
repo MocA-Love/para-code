@@ -9,6 +9,7 @@ import {
 	IParadisLimitsAccount,
 	paradisLimitsFormatCountdown,
 	paradisLimitsNeedsRelogin,
+	paradisLimitsNotFetchedCause,
 	paradisLimitsSeverity,
 	paradisLimitsWorstPercent,
 	paradisNormalizeCodexLimitWindows,
@@ -21,6 +22,14 @@ suite('ParadisLimitsMonitor', () => {
 		assert.deepStrictEqual(
 			(['ok', 'refreshing', 'relogin_required', 'no_credentials', 'unavailable', 'error'] as const).map(status => [status, paradisLimitsNeedsRelogin(status)]),
 			[['ok', false], ['refreshing', false], ['relogin_required', true], ['no_credentials', true], ['unavailable', false], ['error', true]],
+		);
+	});
+
+	// 「制限に達した…」と一律に出していた説明を、取得を控えている本当の理由で出し分ける。
+	test('tells why a Claude account has not been fetched from its status detail', () => {
+		assert.deepStrictEqual(
+			['shared with claude-swap', 'same lineage as the current login', undefined, 'usage API returned 500'].map(detail => paradisLimitsNotFetchedCause(detail)),
+			['shared_with_claude_swap', 'same_lineage', 'not_yet', 'not_yet'],
 		);
 	});
 

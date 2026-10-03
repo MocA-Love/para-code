@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { dayCost, localDateKey } from '../../usageFormat.js';
-import type { RateLimitAccount, RateLimitProviderSnapshot, RateLimitWindow, UsageAgent, UsageDashboardResult } from '../../store.js';
+import type { RateLimitAccount, RateLimitProviderSnapshot, RateLimitResetCredits, RateLimitWindow, UsageAgent, UsageDashboardResult } from '../../store.js';
 
 /**
  * 使用量（`/settings/usage`、Orca の accounts）の表示の算出。画面から切り離した純関数で、
@@ -60,7 +60,18 @@ export function accountStatusMessage(account: RateLimitAccount, remoteHost = fal
 			if (account.unavailableReason === 'keychain_unavailable') {
 				return 'キーチェーンを読み取れないため、使用状況を取得できません';
 			}
-			return '使用状況を一時的に取得できていません（上限に達したアカウントは、リセットまで取得を止めます）';
+			if (account.unavailableReason === 'rate_limited') {
+				return '使用状況の取得回数が上限に達したため、しばらく待ってから取り直します';
+			}
+			// 'not_fetched' は PC が statusDetail に本当の理由を入れる（PC の使用量パネルと同じ出し分け）
+			switch (account.statusDetail) {
+				case CLAUDE_DETAIL_SHARED_WITH_CLAUDE_SWAP:
+					return 'claude-swap と同じログインを共有している可能性があるため、PC がログインの更新を控えています。PC でこのアカウントを使うと表示されます';
+				case CLAUDE_DETAIL_SAME_LINEAGE:
+					return 'いまのログインと同じトークンのため、ログインの更新は Claude Code に任せています。更新されると表示されます';
+				default:
+					return '使用状況をまだ取得していません。PC が順に取りに行くので、しばらくすると表示されます';
+			}
 		case 'no_credentials':
 			return '認証情報が見つかりません。PC の Para Code から再ログインしてください';
 		case 'relogin_required':
@@ -71,6 +82,13 @@ export function accountStatusMessage(account: RateLimitAccount, remoteHost = fal
 			return '使用状況を取得できていません';
 	}
 }
+
+/**
+ * PC が 'not_fetched' に添える statusDetail（PC の paradisLimitsMonitor.ts の PARADIS_CLAUDE_DETAIL_* と同じ文字列）。
+ * claude-swap と共有しているかもしれないので更新を控えている／いまのログインと同じ系列なので Claude Code に任せている。
+ */
+const CLAUDE_DETAIL_SHARED_WITH_CLAUDE_SWAP = 'shared with claude-swap';
+const CLAUDE_DETAIL_SAME_LINEAGE = 'same lineage as the current login';
 
 /** 接続先のログインで、手元の PC と説明が変わる状態だけを返す（それ以外は undefined）。PC の使用量パネルと同じ文言。 */
 function remoteHostStatusMessage(account: RateLimitAccount): string | undefined {
@@ -150,6 +168,128 @@ export function resetInLabel(resetsAt: number | undefined, now: number): string 
 			? `${hours}時間${minutes > 0 ? `${minutes}分` : ''}`
 			: `${minutes}分`;
 	return `${span}後にリセット`;
+}
+
+/** 「10/4 11:12」（端末の時刻。年はまたいでも省く。期限は数十日先までなので紛れない）。 */
+export function formatMonthDayTime(at: number): string {
+	const date = new Date(at);
+	return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+/** `target` が `now` から見て暦の上で何日後か（端末の時刻。今日は 0、明日は 1、過ぎた日は負）。 */
+export function calendarDayOffset(target: number, now: number): number {
+	const day = (at: number) => {
+		const date = new Date(at);
+		return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+	};
+	return Math.round((day(target) - day(now)) / 86_400_000);
+}
+
+/** 期限の「今日 11:12」「明日 08:00」「10/9 08:00」（今日・明日だけ言葉にする）。 */
+function expiryWhen(at: number, now: number): string {
+	const days = calendarDayOffset(at, now);
+	const time = formatMonthDayTime(at);
+	if (days === 0) {
+		return `今日 ${time.split(' ')[1]}`;
+	}
+	if (days === 1) {
+		return `明日 ${time.split(' ')[1]}`;
+	}
+	return time;
+}
+
+/** 期限の一覧の1行。 */
+export interface ResetCreditRow {
+	/** 「10/4 11:12 まで」「期限なし」「ほか 2 回（期限は不明）」 */
+	readonly label: string;
+	/** 「今日」「明日」「7日後」「期限切れ」（期限のある行だけ）。 */
+	readonly relative?: string;
+	/** 今日・明日（か過ぎた）期限。目立たせる。 */
+	readonly soon: boolean;
+}
+
+/**
+ * 期限の一覧の行（期限の早い順、期限の無いものはその後、期限の分からない残りは最後）。PC の使用量パネルの
+ * 一覧（paradisCodexResetCreditRows）と同じ決まりで、明細と残り回数が合わないときは次のようにする。
+ * - 明細が無い: 残り回数ぶんを「N 回（期限は不明）」の1行
+ * - 明細が残り回数より少ない: 足りない回数を「ほか N 回（期限は不明）」で足す
+ * - 明細が残り回数より多い: 残り回数を正とし、期限の早いものから残り回数ぶんだけ
+ */
+export function resetCreditRows(resetCredits: RateLimitResetCredits, now: number): ResetCreditRow[] {
+	const count = Math.max(0, Math.floor(resetCredits.availableCount));
+	if (count === 0) {
+		return [];
+	}
+	const credits = resetCredits.credits;
+	if (credits === undefined) {
+		return [{ label: `${count} 回（期限は不明）`, soon: false }];
+	}
+	const dated = credits
+		.map(credit => credit.expiresAt)
+		.filter((at): at is number => at !== undefined && Number.isFinite(at))
+		.sort((a, b) => a - b)
+		.map((at): ResetCreditRow => {
+			const days = calendarDayOffset(at, now);
+			return {
+				label: `${formatMonthDayTime(at)} まで`,
+				relative: days < 0 ? '期限切れ' : days === 0 ? '今日' : days === 1 ? '明日' : `${days}日後`,
+				soon: days <= 1,
+			};
+		});
+	const noExpiry = credits.filter(credit => credit.expiresAt === undefined).map((): ResetCreditRow => ({ label: '期限なし', soon: false }));
+	const rows = [...dated, ...noExpiry].slice(0, count);
+	if (rows.length < count) {
+		rows.push({ label: rows.length === 0 ? `${count} 回（期限は不明）` : `ほか ${count - rows.length} 回（期限は不明）`, soon: false });
+	}
+	return rows;
+}
+
+/**
+ * メーターの下に足す1行の決まり（PC の paradisCodexAccounts.ts の `paradisCodexResetSummary` と同じ。両方のテストが同じ表で確かめる）。
+ * - count: 残り回数
+ * - nextExpiresAt / nextDayOffset: 最も早い期限と、それが暦の上で何日後か（期限のあるものが無ければ無い）
+ * - hasNoExpiry: 期限の無いものがある
+ * - listable: 1件ごとの期限の一覧を開けるか（残りが2回以上で、明細が1件でもある。明細の無い古い PC は
+ *   一覧にしても「期限は不明」しか並ばないので開けない）
+ */
+export interface ResetCreditsFacts {
+	readonly count: number;
+	readonly listable: boolean;
+	readonly nextExpiresAt?: number;
+	readonly nextDayOffset?: number;
+	readonly hasNoExpiry: boolean;
+}
+
+export function resetCreditsFacts(resetCredits: RateLimitResetCredits, now: number): ResetCreditsFacts {
+	const count = Math.max(0, Math.floor(resetCredits.availableCount));
+	const nextExpiresAt = resetCredits.credits
+		?.map(credit => credit.expiresAt)
+		.filter((at): at is number => at !== undefined && Number.isFinite(at))
+		.sort((a, b) => a - b)[0] ?? resetCredits.nextExpiresAt;
+	return {
+		count,
+		listable: count >= 2 && (resetCredits.credits?.length ?? 0) > 0,
+		...(count > 0 && nextExpiresAt !== undefined ? { nextExpiresAt, nextDayOffset: calendarDayOffset(nextExpiresAt, now) } : {}),
+		hasNoExpiry: resetCredits.credits?.some(credit => credit.expiresAt === undefined) === true,
+	};
+}
+
+/**
+ * メーターの下に足す1行（「リセット 残り 4 回 · 次は今日 11:12 に期限」）と、期限の一覧を開けるか。
+ * 開けるのは残りが2回以上で、明細があるときだけ（1回なら1行に期限まで書く）。
+ */
+export function resetCreditsSummary(resetCredits: RateLimitResetCredits, now: number): { text: string; listable: boolean; soon: boolean } {
+	const facts = resetCreditsFacts(resetCredits, now);
+	const { count, listable } = facts;
+	if (count === 0) {
+		return { text: 'リセット 残りなし', listable: false, soon: false };
+	}
+	const soon = facts.nextDayOffset !== undefined && facts.nextDayOffset <= 1;
+	if (facts.nextExpiresAt === undefined) {
+		return { text: count === 1 && facts.hasNoExpiry ? 'リセット 残り 1 回 · 期限なし' : `リセット 残り ${count} 回`, listable, soon };
+	}
+	const when = expiryWhen(facts.nextExpiresAt, now);
+	return { text: count === 1 ? `リセット 残り 1 回 · ${when} に期限` : `リセット 残り ${count} 回 · 次は${when} に期限`, listable, soon };
 }
 
 /**
