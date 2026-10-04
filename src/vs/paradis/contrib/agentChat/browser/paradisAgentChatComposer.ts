@@ -19,7 +19,7 @@ import { disposableTimeout } from '../../../../base/common/async.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { IParadisAgentChatCommand } from '../common/paradisAgentChat.js';
-import { paradisFilterAgentChatCommands, paradisAgentChatSlashQuery } from '../common/paradisAgentChatComposerLogic.js';
+import { paradisDuplicateAgentChatCommandNames, paradisFilterAgentChatCommands, paradisAgentChatSlashQuery } from '../common/paradisAgentChatComposerLogic.js';
 
 /** 送信のキー。Q32: 既定は Enter で送信・Shift+Enter で改行。設定で ⌘Enter 送信に変えられる。 */
 export type ParadisAgentChatSendKey = 'enter' | 'modEnter';
@@ -65,6 +65,8 @@ export class ParadisAgentChatComposer extends Disposable {
 	/** 送っている最中（貼り付けと Enter の間に数百 ms かかる）。二重送信を防ぐ。 */
 	private sending = false;
 	private slashItems: readonly IParadisAgentChatCommand[] = [];
+	/** 一覧の中で 2 件以上ある名前（小文字）。この名前の候補には出どころを添える（上にある方が実際に動く）。 */
+	private slashDuplicates: ReadonlySet<string> = new Set();
 	private readonly slashRowListeners = this._register(new DisposableStore());
 	private slashSelected = 0;
 	private slashRequest = 0;
@@ -343,6 +345,7 @@ export class ParadisAgentChatComposer extends Disposable {
 				return;
 			}
 			this.slashItems = paradisFilterAgentChatCommands(commands, query).slice(0, SLASH_MENU_LIMIT);
+			this.slashDuplicates = paradisDuplicateAgentChatCommandNames(commands);
 			this.slashSelected = 0;
 			this.renderSlashMenu();
 		}, () => this.hideSlashMenu());
@@ -364,6 +367,9 @@ export class ParadisAgentChatComposer extends Disposable {
 			append(row, $('span.paradis-agent-chat-slash-name')).textContent = `/${command.name}`;
 			if (command.argumentHint !== undefined) {
 				append(row, $('span.paradis-agent-chat-slash-args')).textContent = command.argumentHint;
+			}
+			if (this.slashDuplicates.has(command.name.toLocaleLowerCase())) {
+				append(row, $('span.paradis-agent-chat-slash-args')).textContent = paradisAgentChatCommandOrigin(command);
 			}
 			append(row, $('span.paradis-agent-chat-slash-description')).textContent = command.description;
 			// クリックで確定する。mousedown で取らないと、先に textarea の blur が走ってメニューが閉じる。
@@ -400,5 +406,15 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.slashMenu.style.display = 'none';
 		this.slashRowListeners.clear();
 		clearNode(this.slashMenu);
+	}
+}
+
+/** 同じ名前の候補に添える出どころ（組み込み・プラグイン名・自作・MCP）。 */
+function paradisAgentChatCommandOrigin(command: IParadisAgentChatCommand): string {
+	switch (command.source) {
+		case 'built-in': return localize('paradisAgentChat.slashOrigin.builtIn', "Built-in");
+		case 'plugin': return command.plugin ?? localize('paradisAgentChat.slashOrigin.plugin', "Plugin");
+		case 'mcp': return localize('paradisAgentChat.slashOrigin.mcp', "MCP");
+		default: return localize('paradisAgentChat.slashOrigin.custom', "Custom");
 	}
 }

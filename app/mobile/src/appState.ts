@@ -382,7 +382,10 @@ interface AppState extends StoreState {
 	detachAgent(terminalKey: string): void;
 	refreshAgent(terminalKey: string): void;
 	requestAgentModelCatalog(terminalKey: string): void;
-	requestAgentCommandCatalog(terminalKey: string): void;
+	/** スラッシュコマンドの一覧を PC へ求める。求められなかったら false（送信を一覧待ちで止めない）。 */
+	requestAgentCommandCatalog(terminalKey: string): boolean;
+	/** 受け付けた後で断られたスラッシュコマンドを、入力欄が受け取った。 */
+	clearAgentSlashRejection(terminalKey: string, requestId: string): void;
 	updateAgentSettings(terminalKey: string, model: string, effort: string): void;
 	scmStatus(ws: string): Promise<ScmStatusResult>;
 	scmDiff(ws: string, path?: string, staged?: boolean): Promise<ScmDiffResult>;
@@ -2113,7 +2116,11 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	requestAgentCommandCatalog(terminalKey: string) {
-		controller?.requestAgentCommandCatalog(terminalKey);
+		return controller?.requestAgentCommandCatalog(terminalKey) ?? false;
+	},
+
+	clearAgentSlashRejection(terminalKey: string, requestId: string) {
+		controller?.clearAgentSlashRejection(terminalKey, requestId);
 	},
 
 	updateAgentSettings(terminalKey: string, model: string, effort: string) {

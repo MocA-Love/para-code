@@ -25,6 +25,7 @@ import { Channels } from '../../common/paradisMobileProtocol.js';
 import { IParadisMobileInboundFrame, ParadisMobileInboundFrameWire } from '../../common/paradisMobileRelay.js';
 import { paradisAdvisorReplyMessage, paradisIsValidAgentInboundForTest } from '../../node/paradisMobileAgentChat.js';
 import { ParadisAgentActivityTracker } from '../../node/paradisAgentActivity.js';
+import { paradisNormalizeModCommandList } from '../../node/paradisAgentCommandCatalog.js';
 import { paradisParseClaudeTranscriptLineForTest } from '../../../agentChat/common/paradisAgentTranscriptParser.js';
 import { ParadisMobileOperationLedger } from '../../node/paradisMobileOperationLedger.js';
 import { MobileSession, ParadisMobileRelayService } from '../../node/paradisMobileRelayService.js';
@@ -179,6 +180,20 @@ suite('ParadisMobileWireGolden', () => {
 	test('agent: アプリが送る要求はすべて PC の検査を通る', function () {
 		const golden = readGolden<{ toPc: Array<{ t: string }> }>(this, 'agent.json');
 		assert.deepStrictEqual(golden.toPc.map(message => [message.t, paradisIsValidAgentInboundForTest(message)]), golden.toPc.map(message => [message.t, true]));
+	});
+
+	test('agent: mod の一覧から PC が組み立てるコマンドの候補（agent.commands.v2）はゴールデンと同じ形', function () {
+		type Message = Record<string, unknown>;
+		const golden = readGolden<{ toMobile: Message[] }>(this, 'agent.json');
+		const catalog = golden.toMobile.find(message => message.t === 'command-catalog') as { commands: Message[]; format: number };
+		const listed = paradisNormalizeModCommandList([
+			{ name: 'context', description: 'project dup of context', source: 'user' },
+			{ name: 'codex:rescue', description: 'Delegate investigation to Codex', source: 'plugin', plugin: 'codex' },
+			{ name: 'mcp__docs__summarize', description: 'Summarize a document', source: 'mcp' },
+			{ name: '__remote-workflow', description: 'internal', source: 'builtin' },
+			{ name: 'context', description: 'Visualize current context usage as a colored grid', source: 'builtin' },
+		]);
+		assert.deepStrictEqual({ commands: listed, format: catalog.format }, { commands: catalog.commands, format: 2 });
 	});
 
 	test('agent: PC が組み立てる Advisor の行・一覧の相談・平文の返答はゴールデンと同じ形', function () {

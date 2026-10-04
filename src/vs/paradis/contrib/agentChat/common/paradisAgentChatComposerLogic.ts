@@ -22,7 +22,10 @@ export function paradisAgentChatSlashQuery(value: string, caret: number): string
 	return /\s/.test(typed) || caret < 1 ? undefined : typed;
 }
 
-/** 候補を絞り込む。名前の前方一致を先に、部分一致を後に並べる（大文字小文字は区別しない）。 */
+/**
+ * 候補を絞り込む。名前の前方一致を先に、部分一致を後に並べる（大文字小文字は区別しない）。
+ * 同じ名前でも出どころが違えば両方を残す（並びは一覧のまま。先にある方が実際に動く）。
+ */
 export function paradisFilterAgentChatCommands(commands: readonly IParadisAgentChatCommand[], query: string): IParadisAgentChatCommand[] {
 	const needle = query.toLowerCase();
 	const prefix: IParadisAgentChatCommand[] = [];
@@ -30,15 +33,16 @@ export function paradisFilterAgentChatCommands(commands: readonly IParadisAgentC
 	const seen = new Set<string>();
 	for (const command of commands) {
 		const name = command.name.toLowerCase();
-		if (seen.has(name)) {
+		const key = `${name}\0${command.source}\0${command.plugin ?? ''}`;
+		if (seen.has(key)) {
 			continue;
 		}
 		if (name.startsWith(needle)) {
 			prefix.push(command);
-			seen.add(name);
+			seen.add(key);
 		} else if (needle.length > 0 && name.includes(needle)) {
 			contains.push(command);
-			seen.add(name);
+			seen.add(key);
 		}
 	}
 	return [...prefix, ...contains];
@@ -52,4 +56,18 @@ export function paradisPushAgentChatHistory(history: readonly string[], text: st
 	}
 	const next = history.at(-1) === text ? [...history] : [...history, text];
 	return next.slice(-limit);
+}
+
+/** 一覧の中で 2 件以上ある名前（小文字で比べる）。Claude Code は同じ名前のうち先にある方を実行する。 */
+export function paradisDuplicateAgentChatCommandNames(commands: readonly IParadisAgentChatCommand[]): ReadonlySet<string> {
+	const seen = new Set<string>();
+	const duplicates = new Set<string>();
+	for (const command of commands) {
+		const key = command.name.toLocaleLowerCase();
+		if (seen.has(key)) {
+			duplicates.add(key);
+		}
+		seen.add(key);
+	}
+	return duplicates;
 }

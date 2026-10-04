@@ -424,6 +424,91 @@ suite('ParadisClaudeModBridge', () => {
 		assert.deepStrictEqual({ result, lateFailures }, { result: 'accepted', lateFailures: 1 });
 	});
 
+	test('asks a mod that lists slash commands for them, and does not ask an older mod', async () => {
+		const oldPoll = call('commands', { busy: false });
+		await flushRequests();
+		const fromOld = { supports: bridge.supports(TOKEN, SESSION, 'commands.list'), listed: await bridge.listCommands(TOKEN, SESSION) };
+		signal.abort();
+		await oldPoll;
+		signal = new AbortController();
+		const poll = call('commands', { busy: false, features: ['commands.list', 'command.run', 'unknown.feature'] });
+		await flushRequests();
+		const listing = bridge.listCommands(TOKEN, SESSION);
+		const [command] = (await poll).body.commands as { id: string; kind: string }[];
+		await call('ack', { id: command.id, ok: true, commands: [{ name: 'context', description: 'mine', source: 'user' }] });
+		assert.deepStrictEqual({
+			fromOld,
+			supports: [bridge.supports(TOKEN, SESSION, 'commands.list'), bridge.supports(TOKEN, SESSION, 'command.run')],
+			kind: command.kind,
+			listed: await listing,
+		}, {
+			fromOld: { supports: false, listed: undefined },
+			supports: [true, true],
+			kind: 'commandList',
+			listed: [{ name: 'context', description: 'mine', source: 'user' }],
+		});
+	});
+
+	test('runs a slash command through the mod and reports a refusal with its reason, or a late failure', async () => {
+		const features = ['commands.list', 'command.run'];
+		const poll = call('commands', { busy: false, features });
+		await flushRequests();
+		const refusing = bridge.runCommand(TOKEN, SESSION, 'nope', 'a b');
+		const [refused] = (await poll).body.commands as { id: string; kind: string; command: string; args: string }[];
+		await call('ack', { id: refused.id, ok: false, reason: 'refused', message: 'no command named /nope in this session' });
+		const panelPoll = call('commands', { busy: false, features });
+		await flushRequests();
+		const late: (string | undefined)[] = [];
+		const opening = bridge.runCommand(TOKEN, SESSION, 'config', '', message => late.push(message));
+		const [panel] = (await panelPoll).body.commands as { id: string }[];
+		await call('ack', { id: panel.id, received: true });
+		const opened = await opening;
+		await call('ack', { id: panel.id, ok: false, reason: 'refused', message: 'closed badly' });
+		assert.deepStrictEqual({
+			command: { kind: refused.kind, command: refused.command, args: refused.args },
+			refused: await refusing,
+			opened,
+			late,
+		}, {
+			command: { kind: 'commandRun', command: 'nope', args: 'a b' },
+			refused: { outcome: 'refused', message: 'no command named /nope in this session' },
+			opened: { outcome: 'accepted' },
+			late: ['closed badly'],
+		});
+	});
+
+	test('asks the mod whether a screen holds the keys, and tells stale and panel-open refusals apart', async () => {
+		const oldPoll = call('commands', { busy: false, features: ['commands.list', 'command.run'] });
+		await flushRequests();
+		const fromOldMod = await bridge.isDialogOpen(TOKEN, SESSION);
+		signal.abort();
+		await oldPoll;
+		signal = new AbortController();
+		const features = ['commands.list', 'command.run', 'prompt.dialog'];
+		const poll = call('commands', { busy: false, features });
+		await flushRequests();
+		const asking = bridge.isDialogOpen(TOKEN, SESSION);
+		const [check] = (await poll).body.commands as { id: string; kind: string }[];
+		await call('ack', { id: check.id, ok: true, dialog: true });
+		const promptPoll = call('commands', { busy: false, features });
+		await flushRequests();
+		const prompting = bridge.submitPrompt(TOKEN, SESSION, 'hello');
+		const [prompt] = (await promptPoll).body.commands as { id: string }[];
+		await call('ack', { id: prompt.id, ok: false, reason: 'panel-open' });
+		const stalePoll = call('commands', { busy: false, features });
+		await flushRequests();
+		const staleRun = bridge.runCommand(TOKEN, SESSION, 'context', '');
+		const [stale] = (await stalePoll).body.commands as { id: string }[];
+		await call('ack', { id: stale.id, ok: false, reason: 'stale' });
+		assert.deepStrictEqual({
+			fromOldMod,
+			kind: check.kind,
+			open: await asking,
+			prompt: await prompting,
+			stale: await staleRun,
+		}, { fromOldMod: undefined, kind: 'dialogCheck', open: true, prompt: 'panel-open', stale: { outcome: 'stale' } });
+	});
+
 	test('forgets a pane: its waits end and the mod is no longer considered alive', async () => {
 		const id = (await call('question', { questions: QUESTIONS })).body.id as string;
 		const waiting = call('wait', { id });

@@ -4,7 +4,7 @@ import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, 
 import * as ImagePicker from 'expo-image-picker';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { paraAlert } from '../../paraAlert.js';
-import { ArrowUp, CornerDownRight, ImagePlus } from 'lucide-react-native';
+import { ArrowUp, CircleAlert, CornerDownRight, ImagePlus } from 'lucide-react-native';
 import { appendQuickReply } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
 import { flattenAnswerInput, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from '../../components/agentComposerDraft.js';
@@ -28,7 +28,7 @@ import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { haptic } from '../../haptics.js';
 import type { AgentMonitor } from '../../agentMonitors.js';
 import type { AgentShell, AgentShellsAccess } from '../../agentShells.js';
-import type { AgentCommandCatalogState, AgentCommandOption, AgentMessageSendResult, AgentModelControlState, FsUploadResult } from '../../store.js';
+import { AGENT_COMPOSER_NOT_EMPTY_CODE, AGENT_PANEL_OPEN_CODE, AGENT_SLASH_COMMAND_REJECTED_CODE, type AgentCommandCatalogState, type AgentSlashRejection, type AgentCommandOption, type AgentMessageSendResult, type AgentModelControlState, type FsUploadResult } from '../../store.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
 import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
 import { Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
@@ -74,8 +74,14 @@ interface SessionComposerProps {
 	/** このエージェントのスペース（添付をそのスペースの PC 画面へ上げる。SSH 接続中は接続先に置かれる）。 */
 	ws?: string;
 	requestAgentModelCatalog: (terminalKey: string) => void;
-	requestAgentCommandCatalog: (terminalKey: string) => void;
+	/** 求められなかったら false（Codex の送信を一覧待ちで止めない）。 */
+	requestAgentCommandCatalog: (terminalKey: string) => boolean;
 	updateAgentSettings: (terminalKey: string, model: string, effort: string) => void;
+	/** 受け付けた後で PC が断ったスラッシュコマンド（理由を出し、入力欄が空なら文を戻してから `onSlashRejectionHandled`）。 */
+	slashRejection?: AgentSlashRejection;
+	onSlashRejectionHandled?: (requestId: string) => void;
+	/** 端末の画面へ移る（PC の画面を閉じる・入力欄の文字を消すための導線）。 */
+	onOpenTerminal?: () => void;
 	/** 質問への回答入力に切り替えているときの依頼（無ければ通常のメッセージ入力）。 */
 	answerTarget?: QuestionFreeTextRequest;
 	onCancelAnswer: () => void;
@@ -92,14 +98,15 @@ interface SessionComposerProps {
  *  - 送った本文は先に入力欄から外し、PC に拒否されたら入力欄へ戻す（`agentComposerDraft.ts`）
  *  - 質問カードの「その他」を押すと回答入力に切り替わる。書きかけの下書きは入力欄から外し、
  *    回答を送れた・やめた・質問が替わったら戻す（回答に下書きが混ざらないように）
- *  - `/` で始めるとスラッシュコマンドの候補を出す
+ *  - `/` で始めるとスラッシュコマンドの候補を出す。一覧は `/` を打つたびに PC へ求める（PC が短く覚えている）
+ *  - エージェントがスラッシュコマンドを断ったら（候補に無い名前など）、理由を入力欄の上に出し、文を入力欄へ戻す
  *  - 画像は PC へ上げ、入力欄の文字の上に札で並べる（案 P2。文字にはパスを入れない）。送るときに
  *    パスを本文の先頭に並べる（案 M1）。上げ終わるまで送れず、失敗した画像は確かめてから外して送る
  */
 export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionComposerProps>(function SessionComposer({
 	draftKey, terminalKey, sessionEpoch, agent, model, effort, modelControl, modelLocked, commandCatalog, monitors, shells, shellsAccess,
 	sendText, updateClaudeSetting, onAfterSubmit, fsUpload, ws, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings,
-	answerTarget, onCancelAnswer, answerRefreshing,
+	answerTarget, onCancelAnswer, answerRefreshing, slashRejection, onSlashRejectionHandled, onOpenTerminal,
 }, ref) {
 	const loadDraft = (key: string | undefined): string => key !== undefined ? useAppStore.getState().agentDrafts[key] ?? '' : '';
 	const nativeInputRef = useRef<TextInput>(null);
@@ -114,6 +121,11 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	const draftKeyRef = useRef(draftKey);
 	const [inputMeta, setInputMeta] = useState(() => ({ key: draftKey, sendable: inputRef.current.trim().length > 0 }));
 	const [slashQuery, setSlashQuery] = useState<string | undefined>(() => agentSlashQuery(inputRef.current));
+	// 入力が `/` で始まっているか（始まったときに一覧を求める。`/name 引数` まで打っても求め直さない）
+	const [slashLead, setSlashLead] = useState(() => inputRef.current.startsWith('/'));
+	// 送ったスラッシュコマンドをエージェントが断った理由（入力欄の上に出す。書き換えたら消す）
+	// `terminal`: 端末の画面で片付ける断り（PC で開いた画面・入力欄に残った文字）。端末へ移るボタンを添える
+	const [slashError, setSlashError] = useState<{ readonly message: string; readonly terminal: boolean } | undefined>(undefined);
 	const [submitting, setSubmitting] = useState(false);
 	const answering = answerTarget !== undefined;
 	const answeringRef = useRef(answering);
@@ -134,12 +146,15 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 		setSubmitting(false);
 		setInputMeta({ key: draftKey, sendable: inputRef.current.trim().length > 0 });
 		setSlashQuery(agentSlashQuery(inputRef.current));
+		setSlashLead(inputRef.current.startsWith('/'));
+		setSlashError(undefined);
 	}, [draftKey]);
+	// `/` を打つたびに（入力が `/` で始まったときに）一覧を求め直す。PC 側で短く覚えているので、打ち直しても重くない
 	useEffect(() => {
-		if (slashQuery !== undefined && commandCatalog === undefined && terminalKey !== undefined && agent !== undefined) {
+		if (slashLead && !answeringRef.current && terminalKey !== undefined && agent !== undefined) {
 			requestAgentCommandCatalog(terminalKey);
 		}
-	}, [terminalKey, agent, commandCatalog, requestAgentCommandCatalog, slashQuery]);
+	}, [terminalKey, agent, requestAgentCommandCatalog, slashLead]);
 
 	const updateInput = useCallback((input: string) => {
 		// 回答は PC で1行に平坦化されて送られるので、改行を打った時点で空白に置き換えて見せる。
@@ -153,6 +168,8 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 		}
 		const nextSendable = text.trim().length > 0;
 		setSlashQuery(agentSlashQuery(text));
+		setSlashLead(text.startsWith('/'));
+		setSlashError(undefined);
 		setInputMeta(current => current.key === draftKey && current.sendable === nextSendable ? current : { key: draftKey, sendable: nextSendable });
 	}, [draftKey]);
 	const replaceActiveInput = useCallback((input: string) => {
@@ -163,6 +180,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 		}
 		nativeInputRef.current?.setNativeProps({ text });
 		setSlashQuery(agentSlashQuery(text));
+		setSlashLead(text.startsWith('/'));
 		setInputMeta({ key: draftKeyRef.current, sendable: text.trim().length > 0 });
 	}, []);
 	const clearActiveInput = useCallback(() => {
@@ -172,8 +190,23 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 		}
 		nativeInputRef.current?.clear();
 		setSlashQuery(undefined);
+		setSlashLead(false);
 		setInputMeta({ key: draftKeyRef.current, sendable: false });
 	}, []);
+	// 受け付けた後で断られたスラッシュコマンド: 理由を出し、入力欄が空なら送った文を戻す（書きかけは上書きしない）
+	const handledRejectionRef = useRef<string | undefined>(undefined);
+	useEffect(() => {
+		if (slashRejection === undefined || handledRejectionRef.current === slashRejection.requestId) {
+			return;
+		}
+		handledRejectionRef.current = slashRejection.requestId;
+		if (!answeringRef.current && inputRef.current.trim().length === 0) {
+			replaceActiveInput(slashRejection.text);
+		}
+		haptic('error');
+		setSlashError({ message: slashRejection.message, terminal: false });
+		onSlashRejectionHandled?.(slashRejection.requestId);
+	}, [slashRejection, onSlashRejectionHandled, replaceActiveInput]);
 	// 回答入力への出入りで入力欄を差し替える（入るときは空に、出るときはストアの下書きを戻す）。
 	const previousAnsweringRef = useRef(answering);
 	useEffect(() => {
@@ -189,6 +222,8 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 		inputRef.current = text;
 		nativeInputRef.current?.setNativeProps({ text });
 		setSlashQuery(answering ? undefined : agentSlashQuery(text));
+		setSlashLead(!answering && text.startsWith('/'));
+		setSlashError(undefined);
 		setInputMeta({ key: draftKeyRef.current, sendable: text.trim().length > 0 });
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- loadDraft はストアを読むだけの関数
 	}, [answering]);
@@ -257,6 +292,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 			return;
 		}
 		clearActiveInput();
+		setSlashError(undefined);
 		const normalizedText = normalizeAgentSlashSubmission(text, agent, commandCatalog?.commands ?? []);
 		// スラッシュコマンドは先頭が `/` でないと効かないので、添付のパスは後ろへ足す
 		const submittedText = sendState.paths.length > 0 && normalizedText.trimStart().startsWith('/')
@@ -284,7 +320,15 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				haptic('warning');
 				paraAlert.alert('メッセージは未送信です', result.message ?? '本文はターミナルの入力欄に残っています。ターミナル表示で確認して送信してください。');
 			}
-			if (result.status === 'rejected' && shouldShowSubmissionAlert(result.status, submissionGenerationRef.current, generation)) {
+			const inlineCode = result.status === 'rejected' ? result.code : undefined;
+			if (result.status === 'rejected' && inlineCode !== undefined && INLINE_REJECTION_CODES.has(inlineCode) && submissionGenerationRef.current === generation) {
+				// エージェントが断った・PC の画面が塞がっている。文は入力欄へ戻してあるので、理由を入力欄の上に出す（ダイアログは出さない）
+				haptic('error');
+				setSlashError({
+					message: result.message ?? 'エージェントがこのコマンドを実行しませんでした',
+					terminal: inlineCode === AGENT_PANEL_OPEN_CODE || inlineCode === AGENT_COMPOSER_NOT_EMPTY_CODE,
+				});
+			} else if (result.status === 'rejected' && shouldShowSubmissionAlert(result.status, submissionGenerationRef.current, generation)) {
 				// 送った時点で commit を鳴らしている。受理では鳴らさず、届かなかったときだけ知らせる
 				haptic('error');
 				paraAlert.alert('メッセージを送信できませんでした', result.message ?? '接続とエージェントのセッションを確認して再送してください。');
@@ -305,11 +349,14 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	}), [replaceActiveInput]);
 
 	const showSlashMenu = slashQuery !== undefined && answerTarget === undefined;
-	const visibleCommands = slashQuery !== undefined && commandCatalog?.status === 'ready'
+	// 取り直している間は、前に取った一覧で候補を出す
+	const visibleCommands = slashQuery !== undefined && commandCatalog !== undefined && (commandCatalog.status === 'ready' || commandCatalog.commands.length > 0)
 		? filterAgentSlashCommands(commandCatalog.commands, slashQuery)
 		: [];
+	// Codex の skill は送る前に `$name` へ直すので、一覧が 1 度も届いていない取得中だけ送信を待たせる。
+	// 求められなかった（PC と繋がっていない等）・失敗・時間切れのときは待たない
 	const codexSlashCatalogPending = answerTarget === undefined && agent === 'codex' && /^\/\S/.test(inputRef.current)
-		&& (commandCatalog === undefined || commandCatalog.status === 'loading');
+		&& commandCatalog?.status === 'loading' && commandCatalog.commands.length === 0;
 	const selectSlashCommand = useCallback((command: AgentCommandOption) => {
 		replaceActiveInput(selectedAgentSlashCommandText(command));
 		setSlashQuery(undefined);
@@ -403,6 +450,18 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 		<View style={styles.root}>
 			{showSlashMenu ? (
 				<SlashCommandList catalog={commandCatalog} commands={visibleCommands} onSelect={selectSlashCommand} onRetry={retryCommandCatalog} />
+			) : null}
+			{slashError !== undefined && answerTarget === undefined ? (
+				<View style={styles.answerBanner} accessibilityLiveRegion="polite">
+					<Icon icon={CircleAlert} size={answerIconSize} color={colors.red} />
+					<View style={textStyles.answerBody}>
+						<Text style={textStyles.slashErrorText}>{slashError.message}</Text>
+					</View>
+					{slashError.terminal && onOpenTerminal !== undefined ? (
+						<Button label="端末を開く" variant="ghost" size="sm" onPress={() => { haptic('move'); setSlashError(undefined); onOpenTerminal(); }} />
+					) : null}
+					<Button label="閉じる" variant="ghost" size="sm" onPress={() => { haptic('move'); setSlashError(undefined); }} />
+				</View>
 			) : null}
 			{answerTarget !== undefined ? (
 				<View style={styles.answerBanner} accessibilityLiveRegion="polite">
@@ -590,6 +649,11 @@ const styles = StyleSheet.create({
 	attachmentNoteFailed: {
 		color: colors.red,
 	},
+	slashErrorText: {
+		fontSize: type.meta,
+		lineHeight: 18,
+		color: colors.text,
+	},
 	answerPrompt: {
 		marginTop: 2,
 		fontSize: type.meta,
@@ -597,6 +661,9 @@ const styles = StyleSheet.create({
 		color: colors.text,
 	},
 });
+
+/** 入力欄の上に理由を出す断り（ダイアログは出さない）。PC の action-result の code。 */
+const INLINE_REJECTION_CODES: ReadonlySet<string> = new Set([AGENT_SLASH_COMMAND_REJECTED_CODE, AGENT_PANEL_OPEN_CODE, AGENT_COMPOSER_NOT_EMPTY_CODE]);
 
 /** 添付の一覧の鍵（入力欄ごと。質問への回答の入力は別）。 */
 function attachmentKeyOf(draftKey: string | undefined, answering: boolean): string {

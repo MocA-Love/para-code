@@ -18,6 +18,9 @@
 //    （`$.http.fetch` には中断が無いので、打ち切るのは受け口の側）
 //  - 送信（`commands` / `ack`）: エージェントが待機中のときだけ、モバイルの発言を mod の `$.prompt.submit` で送る
 //  - 停止（`commands` / `ack`）: バックグラウンドのシェルを mod の `$.tool.call({ tool: 'TaskStop' })` で止める（{@link ParadisClaudeModBridge.stopTask}）
+//  - スラッシュコマンド（`commands` / `ack`。mod 1.2.0 以降。`commands` の要求の `features` で分かる）: 一覧を mod の
+//    `$.command.list()` で取り（{@link ParadisClaudeModBridge.listCommands}）、モバイルの `/name args` を `$.command.run` で
+//    実行する（{@link ParadisClaudeModBridge.runCommand}）
 //
 // mod が来ない・止まったペインでは何も起きない（今の hook・transcript・キーの経路だけで動く）。
 // shared process 内のモジュールシングルトン（hook バスと同じ方式。sharedProcessMain.ts で独立に登録される
@@ -42,6 +45,10 @@ const APPROVAL_PRESENCE_GRACE_MS = 30_000;
 const SUBMIT_ACK_MS = 15_000;
 /** 送る相手（コマンドの長いポーリング）が来るのを待つ上限。来なければキーの経路へ戻す。 */
 const SUBMIT_PICKUP_MS = 1_500;
+/** スラッシュコマンドの一覧（mod の `$.command.list()`）の返事を待つ上限。過ぎたらファイルから組み立てる。 */
+const LIST_ACK_MS = 3_000;
+/** 画面が開いているかの問い合わせ（{@link ParadisClaudeModBridge.isDialogOpen}）の返事を待つ上限。 */
+const DIALOG_ACK_MS = 1_500;
 const MAX_LONG_POLLS = 256;
 const MAX_LONG_POLLS_PER_TOKEN = 16;
 const MAX_PENDING_PER_TOKEN = 32;
@@ -154,11 +161,27 @@ export interface IParadisClaudeModReply {
  */
 export type ParadisClaudeModStopResult = { readonly outcome: 'stopped' | 'refused' | 'unavailable' | 'unconfirmed'; readonly message?: string };
 
+/** mod ができること（`commands` の要求の `features`）。古い mod は送ってこない。 */
+export type ParadisClaudeModFeature = 'commands.list' | 'command.run' | 'prompt.dialog';
+const KNOWN_FEATURES: readonly ParadisClaudeModFeature[] = ['commands.list', 'command.run', 'prompt.dialog'];
+
+/**
+ * スラッシュコマンドの行方（{@link ParadisClaudeModBridge.runCommand}）。
+ * - `accepted`: 実行した、または mod が受け取って実行中（画面を開くコマンドは閉じるまで終わらない）
+ * - `refused`: Claude Code が断った（`message` に理由。名前が無いときは `no command named ...`）。何も実行していない
+ * - `unavailable`: mod へ渡せなかった（キーの経路で送ってよい）
+ * - `busy`: mod が別の発言を送っている最中で断った（何もしていない）
+ * - `unconfirmed`: 渡したが返事が無かった
+ * - `stale`: mod の会話が切り替わっていた（`/clear` 等。何もしていない）
+ * - `panel-open`: 承認・質問以外の画面（`/config` など）が PC でキーを持っている（何もしていない。キーも打たないこと）
+ */
+export type ParadisClaudeModRunCommandResult = { readonly outcome: 'accepted' | 'refused' | 'unavailable' | 'busy' | 'unconfirmed' | 'stale' | 'panel-open'; readonly message?: string };
+
 /** 送った発言の行方（{@link ParadisClaudeModBridge.submitPrompt}）。 */
-export type ParadisClaudeModSubmitResult = 'accepted' | 'unavailable' | 'refused' | 'unconfirmed' | 'busy';
+export type ParadisClaudeModSubmitResult = 'accepted' | 'unavailable' | 'refused' | 'unconfirmed' | 'busy' | 'stale' | 'panel-open';
 
 /** busy: mod が別の発言を送っている最中で断った（ack の `reason: 'busy'`）。何も送っていない。 */
-type SubmitOutcome = 'ok' | 'received' | 'refused' | 'undelivered' | 'busy';
+type SubmitOutcome = 'ok' | 'received' | 'refused' | 'undelivered' | 'busy' | 'stale' | 'panel-open';
 /** 渡した発言のターンが始まる（`turn.start`）のを待つ上限。過ぎたら busy の保持をやめる。 */
 const HELD_BUSY_BEFORE_TURN_MS = 30_000;
 /** ターンが始まってから busy を保持する上限（`turn.complete` が来ないまま固まらないように）。 */
@@ -200,8 +223,13 @@ interface ISessionState {
 	/** mod の最後のポーリングが言った busy（保持をやめたときに戻す値）。 */
 	pollBusy: boolean;
 	commandWaiter?: (commands: readonly Record<string, unknown>[]) => void;
-	/** 渡した発言の id → その行方を知らせる口（ack・会話の行・書けなかった知らせのどれか早いもの）。停止の頼みは ack の文面も渡す。 */
-	readonly acks: Map<string, (outcome: SubmitOutcome, message?: string) => void>;
+	/**
+	 * 渡した発言の id → その行方を知らせる口（ack・会話の行・書けなかった知らせのどれか早いもの）。停止の頼みは ack の文面も、
+	 * 一覧の頼みは ack の中身（`payload`）も渡す。
+	 */
+	readonly acks: Map<string, (outcome: SubmitOutcome, message?: string, payload?: Record<string, unknown>) => void>;
+	/** mod が `commands` の要求で知らせた、できること（古い mod は空）。 */
+	features: ReadonlySet<ParadisClaudeModFeature>;
 	/** 渡した発言の id → 本文（mod の会話の行で受理を確かめるため）。 */
 	readonly submitted: Map<string, string>;
 	readonly pickups: Set<() => void>;
@@ -330,6 +358,7 @@ export class ParadisClaudeModBridge {
 			case 'wait': return this.waitFor(token, sessionId, id(request.id), signal);
 			case 'settle': return this.handleSettle(token, sessionId, request.ids);
 			case 'commands':
+				state.features = new Set(Array.isArray(request.features) ? KNOWN_FEATURES.filter(feature => (request.features as unknown[]).includes(feature)) : []);
 				state.pollBusy = request.busy === true;
 				state.busy = state.pollBusy || this.holdsBusy(state);
 				return this.waitForCommands(token, state, signal);
@@ -337,7 +366,7 @@ export class ParadisClaudeModBridge {
 				const commandId = id(request.id);
 				if (commandId !== undefined) {
 					// received: mod が受け取り、これから `$.prompt.submit` する。その後はキーへ戻さない（二重に送らない）
-					state.acks.get(commandId)?.(request.received === true ? 'received' : request.ok === true ? 'ok' : request.reason === 'busy' ? 'busy' : 'refused', text(request.message, 500));
+					state.acks.get(commandId)?.(request.received === true ? 'received' : request.ok === true ? 'ok' : request.reason === 'busy' ? 'busy' : request.reason === 'stale' ? 'stale' : request.reason === 'panel-open' ? 'panel-open' : 'refused', text(request.message, 500), request);
 				}
 				return { status: 200, body: {} };
 			}
@@ -370,7 +399,7 @@ export class ParadisClaudeModBridge {
 		const key = this.sessionKey(token, sessionId);
 		let state = this.sessions.get(key);
 		if (state === undefined) {
-			state = { lastSeen: this.now(), busy: false, heldBusy: false, pollBusy: false, acks: new Map(), submitted: new Map(), pickups: new Set() };
+			state = { lastSeen: this.now(), busy: false, heldBusy: false, pollBusy: false, acks: new Map(), submitted: new Map(), pickups: new Set(), features: new Set() };
 			this.sessions.set(key, state);
 			this.ensureSweep();
 		}
@@ -899,7 +928,10 @@ export class ParadisClaudeModBridge {
 	 * 待機中の会話へ発言を送る（mod の `$.prompt.submit`）。
 	 * - `accepted`: mod が送ったと答えた、または送った発言が mod の会話の行に現れた
 	 * - `unavailable`: mod へ渡せなかった（渡していないので、呼び出し側はキーの経路で送ってよい）
-	 * - `refused`: mod が送れなかったと答えた（何も送っていないので、キーの経路で送ってよい）
+	 * - `refused`: mod が送れなかったと答えた。キーでは送り直さない（mod が断った文をキーで打つと、断った理由ごと無視することになる）
+	 * - `stale`: mod の会話が切り替わっていた（`/clear` 等）。キーでは送り直さない
+	 * - `panel-open`: 承認・質問以外の画面（`/config` など）が PC でキーを持っている。キーで打つと、その画面に文字と Enter が入る
+	 * - `busy`: mod が別の発言を送っている最中で断った（1 通目の行方が分かってからキーで送ってよい）
 	 * - `unconfirmed`: 渡したが、ack も会話の行も来なかった。呼び出し側が transcript で確かめる
 	 */
 	async submitPrompt(token: string, sessionId: string, promptText: string, onLateFailure?: () => void): Promise<ParadisClaudeModSubmitResult> {
@@ -928,7 +960,7 @@ export class ParadisClaudeModBridge {
 				state.acks.set(commandId, final => {
 					clearTimeout(finalTimer);
 					state.acks.delete(commandId);
-					if (final === 'refused') {
+					if (final !== 'ok' && final !== 'received') {
 						// 送れなかった。この発言のターンは始まらない
 						// 送れなかった。この発言のターンは始まらないので、ポーリングの言う busy に戻す
 						this.releaseHeldBusy(state);
@@ -947,8 +979,121 @@ export class ParadisClaudeModBridge {
 				return 'accepted';
 			case 'refused': return 'refused';
 			case 'busy': return 'busy';
+			case 'stale': return 'stale';
+			case 'panel-open': return 'panel-open';
 			case 'undelivered': return 'unavailable';
 			default: return 'unconfirmed';
+		}
+	}
+
+	/**
+	 * 承認・質問以外の画面（`/config`・`/rewind`・`/model` の一覧など）が、この会話の PC の画面でキーを持っているか。mod が
+	 * 空の文を入力欄へ足してみて（`$.prompt.fill`）、`refusal: 'dialog'` で断られたら開いている（下書きは変わらない。
+	 * Claude Code 2.1.289 で実測）。mod が答えられない（古い・来ない）ときは undefined。
+	 */
+	async isDialogOpen(token: string, sessionId: string): Promise<boolean | undefined> {
+		const state = this.sessions.get(this.sessionKey(token, sessionId));
+		if (state === undefined || !state.features.has('prompt.dialog')) {
+			return undefined;
+		}
+		const waiter = await this.takeCommandWaiter(state);
+		if (waiter === undefined) {
+			return undefined;
+		}
+		const commandId = randomUUID();
+		const answer = new Promise<boolean | undefined>(resolve => {
+			const settle = (outcome: SubmitOutcome | undefined, _message?: string, payload?: Record<string, unknown>) => {
+				clearTimeout(timer);
+				state.acks.delete(commandId);
+				resolve(outcome === 'ok' && typeof payload?.dialog === 'boolean' ? payload.dialog : undefined);
+			};
+			const timer = setTimeout(() => settle(undefined), DIALOG_ACK_MS);
+			state.acks.set(commandId, settle);
+		});
+		waiter([{ id: commandId, kind: 'dialogCheck' }]);
+		return answer;
+	}
+
+	/** この会話の mod がその機能を持っているか（1.2.0 より前の mod は何も持たない）。 */
+	supports(token: string, sessionId: string | undefined, feature: ParadisClaudeModFeature): boolean {
+		const state = sessionId !== undefined ? this.sessions.get(this.sessionKey(token, sessionId)) : undefined;
+		return state !== undefined && state.features.has(feature) && this.isAlive(token, sessionId);
+	}
+
+	/**
+	 * いま使えるスラッシュコマンド（mod の `$.command.list()`。Claude Code の候補と同じ順の、mod が送ってきたままの配列）。
+	 * mod へ渡せない・答えが来ない・断られたときは undefined（呼び出し側はファイルから組み立てる）。
+	 */
+	async listCommands(token: string, sessionId: string): Promise<readonly unknown[] | undefined> {
+		const state = this.sessions.get(this.sessionKey(token, sessionId));
+		if (state === undefined || !state.features.has('commands.list')) {
+			return undefined;
+		}
+		const waiter = await this.takeCommandWaiter(state);
+		if (waiter === undefined) {
+			return undefined;
+		}
+		const commandId = randomUUID();
+		const commands = new Promise<readonly unknown[] | undefined>(resolve => {
+			const settle = (outcome: SubmitOutcome | undefined, _message?: string, payload?: Record<string, unknown>) => {
+				clearTimeout(timer);
+				state.acks.delete(commandId);
+				resolve(outcome === 'ok' && Array.isArray(payload?.commands) ? payload.commands : undefined);
+			};
+			const timer = setTimeout(() => settle(undefined), LIST_ACK_MS);
+			state.acks.set(commandId, settle);
+		});
+		waiter([{ id: commandId, kind: 'commandList' }]);
+		return commands;
+	}
+
+	/**
+	 * 待機中の会話でスラッシュコマンドを実行する（mod の `$.command.run`。`$.prompt.submit` は `/` で始まる文を断る）。
+	 * 名前の無いコマンドは Claude Code が断り、その理由を返す。画面を開くコマンドは閉じるまで終わらないので、mod は
+	 * 少し待って「受け取った」を先に返す。その後に失敗と分かったら `onLateFailure` を呼ぶ。
+	 */
+	async runCommand(token: string, sessionId: string, command: string, args: string, onLateFailure?: (message: string | undefined) => void): Promise<ParadisClaudeModRunCommandResult> {
+		const state = this.sessions.get(this.sessionKey(token, sessionId));
+		if (state === undefined || !state.features.has('command.run')) {
+			return { outcome: 'unavailable' };
+		}
+		const waiter = await this.takeCommandWaiter(state);
+		if (waiter === undefined) {
+			return { outcome: 'unavailable' };
+		}
+		const commandId = randomUUID();
+		const outcome = new Promise<{ readonly outcome: SubmitOutcome; readonly message?: string } | undefined>(resolve => {
+			const settle = (value: SubmitOutcome | undefined, message?: string) => {
+				clearTimeout(timer);
+				state.acks.delete(commandId);
+				resolve(value !== undefined ? { outcome: value, ...(message !== undefined ? { message } : {}) } : undefined);
+			};
+			const timer = setTimeout(() => settle(undefined), SUBMIT_ACK_MS);
+			state.acks.set(commandId, settle);
+		});
+		waiter([{ id: commandId, kind: 'commandRun', command, args }]);
+		const result = await outcome;
+		switch (result?.outcome) {
+			case 'received': {
+				// 画面を開くコマンド・時間のかかるコマンドで、まだ終わっていない。終わりの ack で失敗と分かったら知らせる
+				// （キーでは送り直さない）。画面が開いているかは時間では決めず、{@link isDialogOpen} で mod に聞く
+				const finalTimer = setTimeout(() => state.acks.delete(commandId), SUBMIT_FINAL_ACK_MS);
+				state.acks.set(commandId, (final, message) => {
+					clearTimeout(finalTimer);
+					state.acks.delete(commandId);
+					if (final !== 'ok' && final !== 'received') {
+						onLateFailure?.(message);
+					}
+				});
+				return { outcome: 'accepted' };
+			}
+			case 'ok': return { outcome: 'accepted' };
+			case 'refused': return { outcome: 'refused', ...(result.message !== undefined ? { message: result.message } : {}) };
+			case 'busy': return { outcome: 'busy' };
+			case 'stale': return { outcome: 'stale' };
+			case 'panel-open': return { outcome: 'panel-open' };
+			case 'undelivered': return { outcome: 'unavailable' };
+			default: return { outcome: 'unconfirmed' };
 		}
 	}
 
@@ -1000,7 +1145,11 @@ export class ParadisClaudeModBridge {
 		const result = await outcome;
 		switch (result?.outcome) {
 			case 'ok': return { outcome: 'stopped', ...(result.message !== undefined ? { message: result.message } : {}) };
-			case 'refused': return { outcome: 'refused', ...(result.message !== undefined ? { message: result.message } : {}) };
+			case 'refused':
+			case 'stale':
+			case 'panel-open':
+			case 'busy':
+				return { outcome: 'refused', ...(result.message !== undefined ? { message: result.message } : {}) };
 			case 'undelivered': return { outcome: 'unavailable' };
 			default: return { outcome: 'unconfirmed' };
 		}
