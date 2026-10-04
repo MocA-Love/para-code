@@ -155,6 +155,11 @@ suite('Paradis ElevenLabs pure helpers', () => {
 		}, { unusual: true, needsAuth: true, invalid: true });
 	});
 
+	test('explains a 402 payment_required as a plan or balance shortage', () => {
+		const result = paradisClassifyElevenLabsError(402, JSON.stringify({ detail: { status: 'payment_required', message: 'm' } }));
+		assert.deepStrictEqual(result, { kind: 'fatal', reason: 'ElevenLabs のプランか残高が不足しています' });
+	});
+
 	test('recognizes the missing user_read permission only on 401', () => {
 		const missing = JSON.stringify({ detail: { status: 'missing_permissions', message: 'needs user_read' } });
 		assert.deepStrictEqual([
