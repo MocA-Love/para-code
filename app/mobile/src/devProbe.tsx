@@ -19,6 +19,8 @@ import { useIpadLayout } from './ipad/ipadLayoutStore.js';
 import { devDescribeKeyCommands, devDescribeWindowControls, devFireKeyCommand, devRequestOrientation } from '../modules/para-ipad-input/index.js';
 import { nativeAesGcmModule } from '../modules/para-aes-gcm/index.js';
 import { runAesGcmSelfTest, type AesGcmSelfTestOptions } from './dev/aesGcmSelfTest.js';
+import { runVoiceStreamHarness, type VoiceStreamHarnessOptions } from './dev/voiceStreamHarness.js';
+import { voicePlaybackStats } from '../modules/para-voice-session/index.js';
 
 /**
  * 開発ビルド専用: いま開いている画面をデバッガ（Metro の CDP）から読めるようにする。
@@ -29,6 +31,7 @@ import { runAesGcmSelfTest, type AesGcmSelfTestOptions } from './dev/aesGcmSelfT
  * - ペアリングの無いシミュレータ用に、見本のデータを入れる `demo()`、ターミナルの表示に見本の出力を流す
  *   `terminalDemo()`、ファイル・メモ・差分の見本を入れる `filesDemo()`、アプリの幅を狭めて 2列 ⇄ 1列 を確かめる `setWidth(pt | undefined)` も置く
  * - ネイティブの AES-GCM の自己検査 `aesGcmSelfTest()`（noble との一致と所要時間）も置く
+ * - 音声の流れの確かめ `voiceStream(base64Mp3, options)`（MP3 を小分けに流し込み、鳴り始め・途切れ・溜めの閾値を返す）と `voiceStats()` も置く
  *
  * `__DEV__` のときだけ描画する（リリースビルドには何も残らない）。
  */
@@ -75,6 +78,9 @@ export function DevProbe() {
 			rootState: () => JSON.stringify(navigation.getRootState()),
 			// ネイティブの AES-GCM を noble と突き合わせ、21MB を 700KiB ずつ開く時間を測る（`{ skipNoble: true }` で noble の計測を省く）。
 			aesGcmSelfTest: (options?: AesGcmSelfTestOptions) => JSON.stringify(runAesGcmSelfTest(nativeAesGcmModule, options)),
+			// 合成済みの MP3（base64）を音声の流れと同じ道でネイティブの再生へ小分けに流し込む（鳴り終わるまで待って数を返す）。
+			voiceStream: (base64Mp3: string, options?: VoiceStreamHarnessOptions) => runVoiceStreamHarness(base64Mp3, options),
+			voiceStats: () => JSON.stringify(voicePlaybackStats()),
 		};
 		console.log(`[para-dev] route ${pathname} ${paramsKey}`);
 	}, [pathname, paramsKey, router, navigation]);

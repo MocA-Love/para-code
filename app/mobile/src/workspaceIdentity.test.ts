@@ -16,7 +16,7 @@ function clone(state: WorkspaceState): WorkspaceState {
 
 function makeState(overrides: Partial<WorkspaceState> = {}): WorkspaceState {
 	return {
-		protocolVersion: 3,
+		protocolVersion: 4,
 		desktopEpoch: 'epoch-1',
 		revision: 1,
 		complete: true,

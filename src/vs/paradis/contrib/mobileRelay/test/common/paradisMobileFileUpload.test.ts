@@ -26,14 +26,14 @@ suite('ParadisMobileFileUpload', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('decodes routing metadata and preserves every raw file byte', () => {
-		const metadata = { t: 'upload', id: 'request-42', protocolVersion: 3, desktopEpoch: 'desktop-epoch', windowId: 7, ws: 'repo:main', name: 'photo.jpg', base64Length: 8 };
+		const metadata = { t: 'upload', id: 'request-42', protocolVersion: 4, desktopEpoch: 'desktop-epoch', windowId: 7, ws: 'repo:main', name: 'photo.jpg', base64Length: 8 };
 		const data = new Uint8Array([0x00, 0x01, 0x7f, 0x80, 0xfe, 0xff]);
 		assert.strictEqual(PARADIS_FS_BINARY_UPLOAD_ENCODING, 'fs-binary-v1');
 		assert.deepStrictEqual(paradisDecodeBinaryFsUpload(binaryUpload(metadata, data)), { ...metadata, data });
 	});
 
 	test('rejects JSON, malformed lengths, invalid routing metadata, and unknown versions', () => {
-		const metadata = { t: 'upload', id: 'request-42', protocolVersion: 3, desktopEpoch: 'desktop-epoch', windowId: 7, ws: 'repo:main', name: 'photo.jpg', base64Length: 4 };
+		const metadata = { t: 'upload', id: 'request-42', protocolVersion: 4, desktopEpoch: 'desktop-epoch', windowId: 7, ws: 'repo:main', name: 'photo.jpg', base64Length: 4 };
 		const valid = binaryUpload(metadata, new Uint8Array([1, 2, 3]));
 		assert.strictEqual(paradisDecodeBinaryFsUpload(new TextEncoder().encode('{}')), undefined);
 		assert.strictEqual(paradisDecodeBinaryFsUpload(valid.subarray(0, valid.length - 1)), undefined);

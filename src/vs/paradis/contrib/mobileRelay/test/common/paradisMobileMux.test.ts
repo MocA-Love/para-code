@@ -9,8 +9,9 @@
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { SecureChannel } from '../../common/paradisMobileCrypto.js';
-import { FrameMux, IParadisMobileFrameTrafficSample } from '../../common/paradisMobileMux.js';
-import { Channels } from '../../common/paradisMobileProtocol.js';
+import { FrameMux, IParadisMobileFrameTrafficSample, ParadisMobileFrameAssembler } from '../../common/paradisMobileMux.js';
+import { Channels, decodeFrame, Frame } from '../../common/paradisMobileProtocol.js';
+import { ParadisMobileSendQueue } from '../../common/paradisMobileSendQueue.js';
 
 async function importAesKey(bytes: Uint8Array): Promise<CryptoKey> {
 	return globalThis.crypto.subtle.importKey('raw', bytes as BufferSource, 'AES-GCM', false, ['encrypt', 'decrypt']);
@@ -61,7 +62,7 @@ suite('ParadisMobileMux traffic', () => {
 		const sent: IParadisMobileFrameTrafficSample[] = [];
 		const received: IParadisMobileFrameTrafficSample[] = [];
 		const delivered: Uint8Array[] = [];
-		const payload = new Uint8Array(700 * 1024 + 1);
+		const payload = new Uint8Array(2 * 16 * 1024 + 1);
 		payload[0] = 11;
 		payload[payload.length - 1] = 22;
 		let receive = Promise.resolve();
@@ -79,11 +80,12 @@ suite('ParadisMobileMux traffic', () => {
 		await receive;
 
 		assert.deepStrictEqual(delivered, [payload]);
-		assert.deepStrictEqual(sent.map(sample => sample.more), [true, false]);
-		assert.deepStrictEqual(received.map(sample => sample.more), [true, false]);
+		assert.deepStrictEqual(sent.map(sample => sample.more), [true, true, false]);
+		assert.deepStrictEqual(received.map(sample => sample.more), [true, true, false]);
 		assert.strictEqual(sent.reduce((total, sample) => total + sample.payloadBytes, 0), payload.length);
 		assert.strictEqual(received.reduce((total, sample) => total + sample.payloadBytes, 0), payload.length);
-		assert.deepStrictEqual(sent.map(sample => sample.sealedBytes), [700 * 1024 + 36, 37]);
+		// 断片の見出し 8 バイト＋フレームの見出し 8 バイト＋封緘 28 バイト
+		assert.deepStrictEqual(sent.map(sample => sample.sealedBytes), [16 * 1024 + 44, 16 * 1024 + 44, 45]);
 		assert.deepStrictEqual(received, sent.map(sample => ({ ...sample, direction: 'received' as const })));
 	});
 
@@ -110,5 +112,127 @@ suite('ParadisMobileMux traffic', () => {
 			await receive;
 		});
 		assert.deepStrictEqual(delivered, [[7, 8, 9]]);
+	});
+});
+
+function magicPayload(magic: readonly number[], size: number): Uint8Array {
+	const payload = new Uint8Array(size);
+	payload.set(magic);
+	return payload;
+}
+
+const JPEG_MAGIC = [0x50, 0x4a, 0x46, 0x01];
+const VOICE_MAGIC = [0x50, 0x56, 0x53, 0x01];
+
+suite('ParadisMobileMux version 4', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('sends voice fragments ahead of the remaining screen JPEG fragments and keeps the nonce order equal to the send order', async () => {
+		const channels = await establishChannels();
+		const delivered: string[] = [];
+		const wire: string[] = [];
+		let receive = Promise.resolve();
+		const receiver = new FrameMux(channels.receiver, { sendSealed: () => { } });
+		receiver.on(Channels.Browser, frame => delivered.push(`${String.fromCharCode(frame.payload[1])}:${frame.payload.length}`));
+		receiver.on(Channels.State, frame => delivered.push(`state:${frame.payload.length}`));
+		const sender = new FrameMux(channels.sender, {
+			sendSealed: sealed => {
+				// 受け手はカウンタ nonce を厳密に検査する。送った順に開けなければ例外になる
+				receive = receive.then(() => receiver.receive(sealed));
+			},
+			onTraffic: sample => wire.push(`${sample.channel}:${sample.payloadBytes}`),
+		});
+
+		await Promise.all([
+			sender.send(Channels.Browser, magicPayload(JPEG_MAGIC, 3 * 16 * 1024)),
+			sender.send(Channels.State, new Uint8Array(20 * 1024)),
+			sender.send(Channels.Browser, magicPayload(VOICE_MAGIC, 100)),
+		]);
+		await receive;
+
+		assert.deepStrictEqual({ wire, delivered }, {
+			// JPEG の 1 つ目は既に封緘中。その次は音声、操作・状態、最後に JPEG の残り
+			wire: ['browser:16384', 'browser:100', 'state:16384', 'state:4096', 'browser:16384', 'browser:16384'],
+			delivered: ['V:100', 'state:20480', 'J:49152'],
+		});
+	});
+
+	test('replaces a queued screen JPEG that has not started with the newer one', async () => {
+		const channels = await establishChannels();
+		const queue = new ParadisMobileSendQueue();
+		const delivered: number[] = [];
+		let receive = Promise.resolve();
+		const receiver = new FrameMux(channels.receiver, { sendSealed: () => { } });
+		receiver.on(Channels.Browser, frame => delivered.push(frame.payload.length));
+		const sender = new FrameMux(channels.sender, { sendSealed: sealed => { receive = receive.then(() => receiver.receive(sealed)); }, sendQueue: queue });
+
+		await Promise.all([
+			sender.send(Channels.State, new Uint8Array(40 * 1024)),
+			sender.send(Channels.Browser, magicPayload(JPEG_MAGIC, 1000)),
+			sender.send(Channels.Browser, magicPayload(JPEG_MAGIC, 2000)),
+			sender.send(Channels.Browser, magicPayload(JPEG_MAGIC, 3000)),
+		]);
+		await receive;
+
+		assert.deepStrictEqual(delivered, [3000]);
+	});
+
+	test('waits while the relay socket buffer is above 32 KiB and drops the queue of a disposed mux', async () => {
+		const channels = await establishChannels();
+		let buffered = 40 * 1024;
+		const timers: (() => void)[] = [];
+		const queue = new ParadisMobileSendQueue({ bufferedAmount: () => buffered, setTimeout: handler => { timers.push(handler); } });
+		const sent: number[] = [];
+		const sender = new FrameMux(channels.sender, { sendSealed: sealed => sent.push(sealed.length), sendQueue: queue });
+		const other = new FrameMux(channels.receiver, { sendSealed: sealed => sent.push(-sealed.length), sendQueue: queue });
+
+		const first = sender.send(Channels.Terminal, new Uint8Array(10));
+		const dropped = other.send(Channels.Terminal, new Uint8Array(20));
+		await Promise.resolve();
+		assert.deepStrictEqual({ sent, waiting: timers.length, congestion: queue.congestionBytes() }, { sent: [], waiting: 1, congestion: 40 * 1024 + 30 });
+
+		other.dispose();
+		buffered = 0;
+		timers.shift()!();
+		await first;
+		await dropped;
+		assert.deepStrictEqual({ sent, congestion: queue.congestionBytes() }, { sent: [10 + 8 + 28], congestion: 0 });
+	});
+});
+
+suite('ParadisMobileFrameAssembler', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	const fragment = (id: number, index: number, last: boolean, text: string, seq = 0): Frame => ({ ch: Channels.Fs, seq, payload: new TextEncoder().encode(text), frag: { id, index, last } });
+	const text = (result: Frame | Error | undefined) => result === undefined ? undefined : result instanceof Error ? 'error' : new TextDecoder().decode(result.payload);
+
+	test('reassembles interleaved transfers by id and still accepts legacy chunks', () => {
+		const assembler = new ParadisMobileFrameAssembler();
+		const results = [
+			assembler.push(fragment(1, 0, false, 'a1')),
+			assembler.push(fragment(2, 0, false, 'b1')),
+			assembler.push(fragment(1, 1, true, 'a2')),
+			assembler.push({ ch: Channels.State, seq: 0, payload: new Uint8Array([1]), more: true }),
+			assembler.push(fragment(2, 1, true, 'b2')),
+			assembler.push({ ch: Channels.State, seq: 1, payload: new Uint8Array([2]) }),
+		].map(text);
+
+		assert.deepStrictEqual({ results, pending: assembler.pendingBytes }, { results: [undefined, undefined, 'a1a2', undefined, 'b1b2', '\u0001\u0002'], pending: 0 });
+	});
+
+	test('drops a transfer on a gap and ignores the rest of it', () => {
+		const assembler = new ParadisMobileFrameAssembler();
+		const results = [
+			assembler.push(fragment(1, 0, false, 'a1')),
+			assembler.push(fragment(1, 2, false, 'a3')),
+			assembler.push(fragment(1, 3, true, 'a4')),
+		].map(text);
+
+		assert.deepStrictEqual({ results, pending: assembler.pendingBytes }, { results: [undefined, 'error', undefined], pending: 0 });
+	});
+
+	test('decodes the fragment header written after the workspace', () => {
+		const frame = decodeFrame(new Uint8Array([0x04, 0x05, 0, 0, 0, 9, 0, 1, 0x77, 0, 0, 0, 3, 0, 0, 0, 1, 0xab]));
+		assert.deepStrictEqual({ ch: frame.ch, ws: frame.ws, seq: frame.seq, frag: frame.frag, payload: [...frame.payload] }, { ch: 'fs', ws: 'w', seq: 9, frag: { id: 3, index: 1, last: false }, payload: [0xab] });
 	});
 });

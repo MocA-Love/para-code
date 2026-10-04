@@ -11,7 +11,7 @@ const encoder = new TextEncoder();
 
 export interface BinaryFsUploadMetadata {
 	readonly id: string;
-	readonly protocolVersion: 3;
+	readonly protocolVersion: 4;
 	readonly desktopEpoch: string;
 	readonly windowId: number;
 	readonly ws: string;
@@ -77,7 +77,7 @@ function decodeBase64(text: string): Uint8Array {
 }
 
 function validMetadata<T extends Partial<BinaryFsUploadMetadata>>(metadata: T): metadata is T & BinaryFsUploadMetadata {
-	return metadata.protocolVersion === 3
+	return metadata.protocolVersion === 4
 		&& typeof metadata.id === 'string' && metadata.id.length > 0
 		&& typeof metadata.desktopEpoch === 'string' && metadata.desktopEpoch.length > 0
 		&& typeof metadata.windowId === 'number'
@@ -132,7 +132,7 @@ export function decodeBinaryFsUpload(payload: Uint8Array): BinaryFsUpload | unde
 	}
 	try {
 		const metadata = JSON.parse(decodeUtf8(payload.subarray(HEADER_BYTES, dataOffset))) as Partial<BinaryFsUpload>;
-		if (metadata.t !== 'upload' || metadata.protocolVersion !== 3 || typeof metadata.id !== 'string'
+		if (metadata.t !== 'upload' || metadata.protocolVersion !== 4 || typeof metadata.id !== 'string'
 			|| typeof metadata.desktopEpoch !== 'string' || typeof metadata.windowId !== 'number'
 			|| typeof metadata.ws !== 'string' || typeof metadata.name !== 'string'
 			|| typeof metadata.base64Length !== 'number' || !Number.isSafeInteger(metadata.base64Length) || metadata.base64Length < 0
@@ -142,7 +142,7 @@ export function decodeBinaryFsUpload(payload: Uint8Array): BinaryFsUpload | unde
 		}
 		return {
 			id: metadata.id,
-			protocolVersion: 3,
+			protocolVersion: 4,
 			desktopEpoch: metadata.desktopEpoch,
 			windowId: metadata.windowId,
 			ws: metadata.ws,

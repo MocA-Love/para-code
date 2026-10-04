@@ -22,12 +22,18 @@
  *   古い相手を切るときだけ `MIN_COMPATIBLE_*` を上げる
  */
 
-/** この版（PC・アプリ共通）が話す公開ワイヤの版。 */
-export const PARADIS_MOBILE_PROTOCOL_VERSION = 3;
+/**
+ * この版（PC・アプリ共通）が話す公開ワイヤの版。
+ *
+ * 版 4（2026-10-05、読み上げのストリーミング Q203 C）: 送る仕組み（mux）を作り替えた。16KiB を超えるフレームは
+ * 送信 ID 付きの断片に切り、断片ごとに優先度で送る順を決める（`paradisMobileMux.ts`・`paradisMobileSendQueue.ts`）。
+ * 断片の形を版 3 の相手は組み立てられないので、PC・アプリとも版 3 の相手とは接続しない（更新の案内だけ出す）。
+ */
+export const PARADIS_MOBILE_PROTOCOL_VERSION = 4;
 /** PC がまだ受け入れる、いちばん古いアプリの版（PC がビルド時に決める）。 */
-export const PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE = 3;
+export const PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE = 4;
 /** アプリがまだ受け入れる、いちばん古い PC の版（アプリがビルド時に決める）。 */
-export const PARADIS_MOBILE_MIN_COMPATIBLE_PC = 3;
+export const PARADIS_MOBILE_MIN_COMPATIBLE_PC = 4;
 
 /**
  * capability の名前。`<領域>.<機能>.v<N>` の小文字で書く（例 `scm.push.v1`）。
@@ -45,6 +51,12 @@ export const ParadisMobileCapability = {
 	FsUploadBinary: 'fs.upload-binary.v1',
 	/** 音声通知の MP3 をリレー経由で配る（従来の `voiceClips: 'relay-v1'` と同じ意味）。 */
 	VoiceClips: 'voice.clips.v1',
+	/**
+	 * 音声通知を合成しながら流す（`voice-stream-start` → 2 進の断片 `PVS\x01` → `voice-stream-end`。
+	 * `paradisMobileVoiceStream.ts`）。PC とアプリの両方が広告しているときだけ流し、そうでなければ 1 本まるごとの
+	 * `voice-clip`（`gainDb` 付き）を送る。
+	 */
+	VoiceStream: 'voice.stream.v1',
 	/** スペースのメモの版（`updatedAt`）と、noteSet の `base` / `op`（W2-16。`paradisMobileSpaceNoteSet.ts`）。 */
 	NoteCas: 'note.cas.v1',
 	/** 差分レビューの確認済みの印を PC に保存する（W2-14。`reviewGet` / `reviewSet`）。 */
@@ -160,6 +172,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.TermSync,
 	ParadisMobileCapability.FsUploadBinary,
 	ParadisMobileCapability.VoiceClips,
+	ParadisMobileCapability.VoiceStream,
 	ParadisMobileCapability.NoteCas,
 	ParadisMobileCapability.ReviewStore,
 	ParadisMobileCapability.ReviewNotes,
@@ -205,6 +218,7 @@ export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.TermSync,
 	ParadisMobileCapability.FsUploadBinary,
 	ParadisMobileCapability.VoiceClips,
+	ParadisMobileCapability.VoiceStream,
 	ParadisMobileCapability.TermViewportTakeback,
 	ParadisMobileCapability.AgentApprovalOptions,
 	ParadisMobileCapability.AgentHistoryPage,

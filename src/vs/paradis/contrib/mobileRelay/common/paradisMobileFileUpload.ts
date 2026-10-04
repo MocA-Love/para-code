@@ -11,7 +11,7 @@ export const PARADIS_FS_BINARY_UPLOAD_ENCODING = 'fs-binary-v1';
 export interface IParadisBinaryFsUpload {
 	readonly t: 'upload';
 	readonly id: string;
-	readonly protocolVersion: 3;
+	readonly protocolVersion: 4;
 	readonly desktopEpoch: string;
 	readonly windowId: number;
 	readonly ws: string;
@@ -45,7 +45,7 @@ export function paradisDecodeBinaryFsUpload(payload: Uint8Array): IParadisBinary
 	}
 	try {
 		const metadata = JSON.parse(decoder.decode(payload.subarray(HEADER_BYTES, dataOffset))) as Partial<IParadisBinaryFsUpload>;
-		if (metadata.t !== 'upload' || metadata.protocolVersion !== 3 || typeof metadata.id !== 'string' || metadata.id.length === 0
+		if (metadata.t !== 'upload' || metadata.protocolVersion !== 4 || typeof metadata.id !== 'string' || metadata.id.length === 0
 			|| typeof metadata.desktopEpoch !== 'string' || metadata.desktopEpoch.length === 0
 			|| typeof metadata.windowId !== 'number' || !Number.isSafeInteger(metadata.windowId)
 			|| typeof metadata.ws !== 'string' || metadata.ws.length === 0
@@ -56,7 +56,7 @@ export function paradisDecodeBinaryFsUpload(payload: Uint8Array): IParadisBinary
 		return {
 			t: 'upload',
 			id: metadata.id,
-			protocolVersion: 3,
+			protocolVersion: 4,
 			desktopEpoch: metadata.desktopEpoch,
 			windowId: metadata.windowId,
 			ws: metadata.ws,
