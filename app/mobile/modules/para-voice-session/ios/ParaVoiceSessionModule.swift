@@ -25,6 +25,11 @@ private let limiterCeiling: Float = 0.891_25
 /// AudioConverter の入力関数が「今は手元に無い」を伝える印（'pvnd'）。
 private let paraNoDataStatus: OSStatus = 0x7076_6E64
 private let decodeFramesPerBuffer: AVAudioFrameCount = 4096
+/// デコーダへ一度に渡す MP3 の量。デコード済み（未再生）の PCM は 10 秒ぶんまでにする。
+private let feedSliceBytes = 64 * 1024
+private let maximumDecodedSeconds: Double = 10
+/// 鳴らしている最中にエンジンが止まったまま（割り込みの終わりが来ない等）これだけ続いたら、作り直すか諦める。
+private let stalledEngineTimeout: TimeInterval = 5
 
 /**
  * ユーザーが開始した音声通知の間だけ iOS の playback audio session を持ち、
@@ -130,7 +135,8 @@ public class ParaVoiceSessionModule: Module {
 
 	private func deactivateSession() {
 		stopObserving()
-		player.stopAll()
+		// 再生の列で止め終えてからセッションを手放す（列の中のエンジンがまだ動いていると setActive(false) が失敗する）
+		player.stopAllAndWait()
 		keepAlive.stop()
 		let commands = MPRemoteCommandCenter.shared()
 		if let target = stopTarget {
@@ -208,7 +214,7 @@ public class ParaVoiceSessionModule: Module {
 				return
 			}
 			// メディアサービス再起動後は、セッションもプレイヤーも作り直すしかない。
-			self.player.stopAll()
+			self.player.stopAllAndWait()
 			self.keepAlive.stop()
 			self.sessionActive = false
 			try? self.activateSession()
@@ -578,6 +584,11 @@ private final class ParaVoiceStreamPlayer {
 	private var pending: [AVAudioPCMBuffer] = []
 	private var pendingFrames: AVAudioFramePosition = 0
 	private var scheduled: [(token: Int, buffer: AVAudioPCMBuffer)] = []
+	private var scheduledFrames: AVAudioFramePosition = 0
+	/// 鳴らしている最中にエンジンが止まっているのに気付いた時刻。
+	private var engineStoppedSince: TimeInterval?
+	private let statsLock = NSLock()
+	private var statsCache: [String: Any] = [:]
 	private var nextToken = 0
 	private var generation = 0
 	private var rebuffering = false
@@ -605,12 +616,24 @@ private final class ParaVoiceStreamPlayer {
 
 	func stopAll() {
 		queue.async {
-			self.utterances.removeAll()
-			self.resetHead()
-			self.teardownEngine()
-			self.timer?.cancel()
-			self.timer = nil
+			self.stopAllNow()
 		}
+	}
+
+	/// 止め終えるまで待つ（セッションを手放す前に呼ぶ）。再生の列はメインスレッドを待たないので詰まらない。
+	func stopAllAndWait() {
+		queue.sync {
+			self.stopAllNow()
+		}
+	}
+
+	private func stopAllNow() {
+		utterances.removeAll()
+		resetHead()
+		teardownEngine()
+		timer?.cancel()
+		timer = nil
+		refreshStats()
 	}
 
 	/// 割り込み・出力先の変更の後、エンジンが止まっていたら起こし直す。
@@ -633,6 +656,7 @@ private final class ParaVoiceStreamPlayer {
 			utterance.bytes = data.count
 			utterance.ended = true
 			self.utterances.append(utterance)
+			self.ensureTimer()
 			self.enforceLimits()
 			self.pump()
 		}
@@ -663,11 +687,8 @@ private final class ParaVoiceStreamPlayer {
 				self.endStream(utterance)
 				return
 			}
-			if utterance === self.utterances.first, let decoder = self.decoder {
-				decoder.feed(data)
-			} else {
-				utterance.raw.append(data)
-			}
+			// デコーダへは pump が進み具合に合わせて渡す
+			utterance.raw.append(data)
 			self.enforceLimits()
 			self.pump()
 		}
@@ -689,32 +710,38 @@ private final class ParaVoiceStreamPlayer {
 		}
 	}
 
+	/// 最後に列の中で控えた数を返す（列を待たない。デコード中でも JS を止めない）。
 	func stats() -> [String: Any] {
-		queue.sync {
-			[
-				"prebufferMs": prebufferMs,
-				"cleanStreak": cleanStreak,
-				"queued": utterances.count,
-				"playing": utterances.first?.started ?? false,
-				"rebuffering": rebuffering,
-				"started": startedCount,
-				"finished": finishedCount,
-				"underruns": underrunCount,
-				"dropped": droppedCount,
-				"lastStartDelayMs": lastStartDelayMs,
-				"lastUnderran": lastUnderran,
-				"engineRunning": engine?.isRunning ?? false,
-			]
-		}
+		statsLock.lock()
+		defer { statsLock.unlock() }
+		return statsCache
+	}
+
+	private func refreshStats() {
+		let snapshot: [String: Any] = [
+			"prebufferMs": prebufferMs,
+			"cleanStreak": cleanStreak,
+			"queued": utterances.count,
+			"playing": utterances.first?.started ?? false,
+			"rebuffering": rebuffering,
+			"started": startedCount,
+			"finished": finishedCount,
+			"underruns": underrunCount,
+			"dropped": droppedCount,
+			"lastStartDelayMs": lastStartDelayMs,
+			"lastUnderran": lastUnderran,
+			"engineRunning": engine?.isRunning ?? false,
+			"decodedMs": Double(pendingFrames + scheduledFrames) / outputFormat.sampleRate * 1000,
+		]
+		statsLock.lock()
+		statsCache = snapshot
+		statsLock.unlock()
 	}
 
 	// MARK: - 列の中だけで呼ぶ
 
 	private func endStream(_ utterance: ParaVoiceUtterance) {
 		utterance.ended = true
-		if utterance === utterances.first {
-			decoder?.finish()
-		}
 		pump()
 	}
 
@@ -757,16 +784,31 @@ private final class ParaVoiceStreamPlayer {
 		self.timer = timer
 	}
 
-	/// 最後の断片から 8 秒 end が来ない流れは、届いた分で終える。
+	/// 最後の断片から 8 秒 end が来ない流れは、届いた分で終える。鳴らしている最中にエンジンが 5 秒止まったままなら
+	/// 作り直し、作り直せなければその発話を諦める。
 	private func checkStalledStreams() {
 		let current = now
 		for utterance in utterances where utterance.isStream && !utterance.ended && current - utterance.lastChunkAt > streamEndTimeout {
 			endStream(utterance)
 		}
-		if !utterances.contains(where: { $0.isStream }) {
+		if let head = utterances.first, head.started, let engine, !engine.isRunning {
+			let since = engineStoppedSince ?? current
+			engineStoppedSince = since
+			if current - since >= stalledEngineTimeout {
+				engineStoppedSince = nil
+				rebuildEngine()
+				if self.engine?.isRunning != true {
+					finishHead()
+				}
+			}
+		} else {
+			engineStoppedSince = nil
+		}
+		if utterances.isEmpty {
 			timer?.cancel()
 			timer = nil
 		}
+		refreshStats()
 	}
 
 	private func resetHead() {
@@ -774,14 +816,35 @@ private final class ParaVoiceStreamPlayer {
 		pending.removeAll()
 		pendingFrames = 0
 		rebuffering = false
+		engineStoppedSince = nil
 		if !scheduled.isEmpty {
 			scheduled.removeAll()
+			scheduledFrames = 0
 			generation += 1
 			node?.stop()
 		}
 	}
 
+	/// デコード済み（未再生）が 10 秒ぶんに満たない間、先頭の MP3 を 64KiB ずつデコーダへ渡す。全部渡して終わりが
+	/// 来ていれば、デコーダに残りを出し切らせる。
+	private func feedHead(_ head: ParaVoiceUtterance, _ decoder: ParaMp3Decoder) {
+		let cap = AVAudioFramePosition(outputFormat.sampleRate * maximumDecodedSeconds)
+		while pendingFrames + scheduledFrames < cap, !head.raw.isEmpty, !decoder.failed {
+			let data = head.raw.removeFirst()
+			if data.count > feedSliceBytes {
+				head.raw.insert(Data(data.dropFirst(feedSliceBytes)), at: 0)
+				decoder.feed(Data(data.prefix(feedSliceBytes)))
+			} else {
+				decoder.feed(data)
+			}
+		}
+		if head.raw.isEmpty && head.ended && !decoder.drained {
+			decoder.finish()
+		}
+	}
+
 	private func pump() {
+		defer { refreshStats() }
 		guard let head = utterances.first else {
 			stopEngineWhenIdle()
 			return
@@ -789,26 +852,19 @@ private final class ParaVoiceStreamPlayer {
 		if decoder == nil {
 			limiter = ParaPeakLimiter(sampleRate: outputFormat.sampleRate)
 			let gain = Float(pow(10, Double(head.gainDb) / 20))
-			let newDecoder = ParaMp3Decoder(outputFormat: outputFormat) { [weak self] buffer in
+			decoder = ParaMp3Decoder(outputFormat: outputFormat) { [weak self] buffer in
 				self?.receiveDecoded(buffer, gain: gain)
-			}
-			decoder = newDecoder
-			let raw = head.raw
-			head.raw.removeAll()
-			for data in raw {
-				newDecoder.feed(data)
-			}
-			if head.ended {
-				newDecoder.finish()
 			}
 		}
 		guard let decoder else {
 			return
 		}
+		feedHead(head, decoder)
 		let decoderDone = decoder.failed || (head.ended && decoder.drained)
 		let bufferedMs = Double(pendingFrames) / outputFormat.sampleRate * 1000
 		if !head.started {
-			let threshold = head.isStream ? Double(prebufferMs) : 0
+			// 1 本まるごとも同じ閾値まで先にデコードしてから鳴らす（全部をデコードし終えるのは待たない）
+			let threshold = Double(prebufferMs)
 			if pendingFrames > 0 && (decoderDone || bufferedMs >= threshold) {
 				startPlayback(head)
 			} else if decoderDone && pendingFrames == 0 {
@@ -866,6 +922,7 @@ private final class ParaVoiceStreamPlayer {
 		let token = nextToken
 		nextToken += 1
 		scheduled.append((token, buffer))
+		scheduledFrames += AVAudioFramePosition(buffer.frameLength)
 		let scheduledGeneration = generation
 		node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
 			self?.queue.async {
@@ -878,8 +935,13 @@ private final class ParaVoiceStreamPlayer {
 		guard playedGeneration == generation else {
 			return
 		}
-		scheduled.removeAll { $0.token == token }
+		if let index = scheduled.firstIndex(where: { $0.token == token }) {
+			scheduledFrames -= AVAudioFramePosition(scheduled[index].buffer.frameLength)
+			scheduled.remove(at: index)
+		}
 		guard scheduled.isEmpty, let head = utterances.first, head.started, let decoder else {
+			// まだ鳴らす分が残っている。デコードを先へ進める
+			pump()
 			return
 		}
 		let decoderDone = decoder.failed || (head.ended && decoder.drained)
@@ -979,6 +1041,7 @@ private final class ParaVoiceStreamPlayer {
 		let outstanding = scheduled.map { $0.buffer }
 		teardownEngine()
 		scheduled.removeAll()
+		scheduledFrames = 0
 		guard utterances.first?.started == true else {
 			return
 		}

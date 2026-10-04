@@ -41,6 +41,11 @@ const ACCEPT_DECISION_WAIT_MS = 1_000;
 const INGEST_READY_WAIT_MS = 500;
 /** ビットレートを探すのは先頭のこの大きさまで。 */
 const BITRATE_PROBE_LIMIT = 64 * 1024;
+/**
+ * 手元の `--ingest` へ書く前に溜めておける量。書き込み（子の標準入力の drain）が遅くても、この量まではモバイルへの
+ * 流れ（受け取りの読み進め）を止めない。
+ */
+const LOCAL_WRITE_BUFFER_BYTES = 1024 * 1024;
 
 export interface IParadisRemoteVoiceIngressDeps {
 	/** 手元で鳴らす口（`--ingest`・afplay）。無ければ `--play-audio` だけで積む。 */
@@ -92,6 +97,21 @@ function statusFor(failure: Failure): number {
 
 /** 本文を受け取り、手元で鳴らす・モバイルへ送る。応答を返し終えたら解決する。 */
 export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: http.ServerResponse, request: IParadisRemoteVoiceRequest, deps: IParadisRemoteVoiceIngressDeps): Promise<IParadisRemoteVoiceResult> {
+	const holder: IMobileHolder = {};
+	try {
+		return await receiveRemoteVoice(req, res, request, deps, holder);
+	} finally {
+		// どの道を通っても（例外を含む）モバイルへの流れは必ず閉じる。end の後の abort は何もしない
+		holder.writer?.abort();
+	}
+}
+
+/** モバイルへの流れ（ticket が古くなったら・失敗したら切る）。 */
+interface IMobileHolder {
+	writer?: IParadisMobileVoiceStreamWriter;
+}
+
+async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerResponse, request: IParadisRemoteVoiceRequest, deps: IParadisRemoteVoiceIngressDeps, holder: IMobileHolder): Promise<IParadisRemoteVoiceResult> {
 	const now = deps.now ?? Date.now;
 	const chunked = req.headers['content-length'] === undefined;
 	// 接続先の aivis-mcp が名乗る声とモデル（音量の表の鍵）。無ければ表の補正は 0dB
@@ -128,18 +148,79 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 	let slowSince: number | undefined;
 	let failure: Failure | undefined;
 	let sink: IParadisIngestStream | undefined;
+	// 手元の `--ingest` へ書く列。受け取りの読み進め（とモバイルへの流れ）を、子の drain の待ちから切り離す
+	const localQueue: Buffer[] = [];
+	let localQueuedBytes = 0;
+	let localClosed = false;
+	let localFailed = false;
+	let localWake: (() => void) | undefined;
+	let localDrained: (() => void) | undefined;
+	let localPump: Promise<void> | undefined;
+	const startLocalPump = () => {
+		localPump = (async () => {
+			if (wantLocal && deps.voiceOutput) {
+				sink = await deps.voiceOutput.openIngest(gainKey ? { priority: 'normal', gainKey } : { priority: 'normal' }, INGEST_READY_WAIT_MS);
+			}
+			for (; ;) {
+				if (localQueue.length === 0) {
+					if (localClosed) {
+						return;
+					}
+					await new Promise<void>(resolve => { localWake = resolve; });
+					continue;
+				}
+				const chunk = localQueue.shift()!;
+				localQueuedBytes -= chunk.byteLength;
+				localDrained?.();
+				if (sink === undefined || localFailed) {
+					continue;
+				}
+				try {
+					await sink.write(chunk);
+				} catch {
+					// 手元に渡せなくなった。モバイルへの流れは続け、手元は後で鳴らし直す（下の localFailed）
+					localFailed = true;
+				}
+			}
+		})();
+	};
+	const queueLocal = async (chunk: Buffer) => {
+		localQueue.push(chunk);
+		localQueuedBytes += chunk.byteLength;
+		localWake?.();
+		localWake = undefined;
+		while (localQueuedBytes > LOCAL_WRITE_BUFFER_BYTES && !localFailed) {
+			await new Promise<void>(resolve => { localDrained = resolve; });
+			localDrained = undefined;
+		}
+	};
+	/** 手元への書き込みを終える。`discard` なら溜まっている分は書かない。 */
+	const closeLocal = async (discard: boolean) => {
+		if (discard) {
+			localQueue.length = 0;
+			localQueuedBytes = 0;
+		}
+		localClosed = true;
+		localWake?.();
+		localWake = undefined;
+		localDrained?.();
+		await localPump;
+		if (localFailed && sink !== undefined) {
+			void sink.abort('write-failed');
+			sink = undefined;
+		}
+	};
 	// モバイルへの流れ。ticket が古くなったら（ペインが閉じた・ウィンドウを張り替えた）その時点で切る
-	let mobile: IParadisMobileVoiceStreamWriter | undefined;
 	const writeMobile = (chunk: Uint8Array) => {
-		if (mobile === undefined) {
+		if (holder.writer === undefined) {
 			return;
 		}
 		if (!deps.isTicketCurrent()) {
-			mobile.abort();
-			mobile = undefined;
+			holder.writer.abort();
+			holder.writer = undefined;
 			return;
 		}
-		mobile.write(chunk);
+		holder.writer.write(chunk);
 	};
 	const stop = (reason: Failure) => {
 		failure ??= reason;
@@ -198,21 +279,19 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 				}
 				headChecked = true;
 				if (deps.beginMobileVoiceStream && deps.isTicketCurrent()) {
-					mobile = deps.beginMobileVoiceStream(gainKey);
+					holder.writer = deps.beginMobileVoiceStream(gainKey);
 					for (const pending of chunks) {
 						writeMobile(pending);
 					}
 				}
-				if (wantLocal && deps.voiceOutput) {
-					sink = await deps.voiceOutput.openIngest(gainKey ? { priority: 'normal', gainKey } : { priority: 'normal' }, INGEST_READY_WAIT_MS);
-				}
+				startLocalPump();
 				for (const pending of chunks) {
-					await sink?.write(pending);
+					await queueLocal(pending);
 				}
 				continue;
 			}
 			writeMobile(chunk);
-			await sink?.write(chunk);
+			await queueLocal(chunk);
 		}
 	} catch {
 		failure ??= 'closed';
@@ -230,6 +309,17 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 	if (failure === undefined && declaredLength !== undefined && size !== declaredLength) {
 		failure = 'length-mismatch';
 	}
+	if (failure === undefined && holder.writer !== undefined) {
+		// モバイルへの流れは、手元への書き込みを待たずに終える
+		if (deps.isTicketCurrent()) {
+			holder.writer.end();
+		} else {
+			holder.writer.abort();
+		}
+		holder.writer = undefined;
+	}
+	// 壊れた・大きすぎる本文は手元へ書き足さない。それ以外は溜まっている分を書き切ってから終える
+	await closeLocal(failure !== undefined && failure !== 'slow-arrival' && failure !== 'max-duration');
 	deps.onBodyReceived();
 
 	// 届くのが遅い・長すぎる声は、引き受けた以上、受け取った分を鳴らす（壊れた・大きすぎる本文だけ捨てる）
@@ -237,11 +327,11 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 	if (failure !== undefined) {
 		// 受け取った分を鳴らす件は、モバイルも届いた分で終える。それ以外は切る
 		if (playReceived) {
-			mobile?.end();
+			holder.writer?.end();
 		} else {
-			mobile?.abort();
+			holder.writer?.abort();
 		}
-		mobile = undefined;
+		holder.writer = undefined;
 		if (playReceived && sink) {
 			// worker は届いた分で終える
 			void sink.end();
@@ -271,13 +361,7 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 	await sink?.end();
 	const fullAudio = Buffer.concat(chunks, size);
 	chunks.length = 0;
-	if (mobile !== undefined) {
-		if (deps.isTicketCurrent()) {
-			mobile.end();
-		} else {
-			mobile.abort();
-		}
-	} else if (!deps.beginMobileVoiceStream && deps.isTicketCurrent()) {
+	if (!deps.beginMobileVoiceStream && deps.isTicketCurrent()) {
 		deps.publishMobileVoiceClip?.(fullAudio);
 	}
 

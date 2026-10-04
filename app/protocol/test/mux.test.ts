@@ -151,4 +151,16 @@ describe('FrameMux over SecureChannel', () => {
 
 		expect({ errors: errors.length, received }).toEqual({ errors: 1, received: [FRAME_REASSEMBLY_LIMIT / 2 + 1] });
 	});
+
+	test('sends broken fragment sequences to onAssemblyError instead of onError (no reconnect)', () => {
+		const { mobileChannel, pcChannel } = establish();
+		const fatal: unknown[] = [];
+		const assembly: string[] = [];
+		const pcMux = new FrameMux(pcChannel, { sendSealed: () => { }, onError: error => fatal.push(error), onAssemblyError: error => assembly.push(error.message) });
+		const send = (frame: Frame) => pcMux.receive(mobileChannel.seal(encodeFrame(frame)));
+		send({ ch: Channels.Fs, seq: 0, payload: new Uint8Array(3), frag: { id: 1, index: 0, last: false } });
+		send({ ch: Channels.Fs, seq: 0, payload: new Uint8Array(3), frag: { id: 1, index: 5, last: true } });
+
+		expect({ fatal: fatal.length, assembly }).toEqual({ fatal: 0, assembly: ['frame fragment out of order on transfer 1'] });
+	});
 });

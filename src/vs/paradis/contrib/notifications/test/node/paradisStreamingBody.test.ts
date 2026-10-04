@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisBodyTeeSink, paradisTeeBody } from '../../node/paradisStreamingBody.js';
+import { IParadisBodyTeeSink, ParadisMobileVoiceTaskGate, paradisTeeBody } from '../../node/paradisStreamingBody.js';
 
 async function* body(chunks: readonly number[], failAfter?: number): AsyncGenerator<Uint8Array> {
 	for (const [index, size] of chunks.entries()) {
@@ -56,5 +56,29 @@ suite('paradisTeeBody', () => {
 		paradisTeeBody(body([3]), sink(unread));
 
 		assert.deepStrictEqual({ failed, stopped, unread }, { failed: ['open', 'write:3', 'abort'], stopped: ['open', 'write:3', 'abort'], unread: [] });
+	});
+
+	test('keeps one mobile stream per task across synthesis retries: stops after a stream that already played a head was aborted', async () => {
+		const drain = async (gate: ParadisMobileVoiceTaskGate, chunks: readonly number[], failAfter?: number) => {
+			try {
+				for await (const _chunk of paradisTeeBody(body(chunks, failAfter), () => gate.openSink())) { /* drain */ }
+			} catch { /* retry */ }
+		};
+		// 1 回目が音を流し始めてから切れた → 再試行の成功分はモバイルへ送らない
+		const headPlayed: string[] = [];
+		const gateA = new ParadisMobileVoiceTaskGate(sink(headPlayed));
+		await drain(gateA, [3, 5], 1);
+		await drain(gateA, [3, 5]);
+		// 1 回目が音を流す前に切れた → 再試行で流れを 1 本だけ開く
+		const nothingPlayed: string[] = [];
+		const gateB = new ParadisMobileVoiceTaskGate(sink(nothingPlayed));
+		await drain(gateB, [3], 0);
+		await drain(gateB, [3]);
+		await drain(gateB, [4]);
+
+		assert.deepStrictEqual({ headPlayed, nothingPlayed }, {
+			headPlayed: ['open', 'write:3', 'abort'],
+			nothingPlayed: ['open', 'abort', 'open', 'write:3', 'end'],
+		});
 	});
 });

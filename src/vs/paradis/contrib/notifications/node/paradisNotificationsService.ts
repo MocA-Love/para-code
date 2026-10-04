@@ -41,7 +41,7 @@ import { IParadisIngestOpenOptions, IParadisIngestStream, IParadisLocalVoiceOutp
 import { IParadisAivisIngest, ParadisAivisIngestClient } from './paradisAivisIngestClient.js';
 import { ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { PARADIS_MAX_SYNTHESIZED_AUDIO_BYTES, ParadisElevenLabsClient } from './paradisElevenLabsClient.js';
-import { PARADIS_AIVIS_FIRST_BYTE_TIMEOUT_MS, paradisCollectBody, paradisReadSynthesisBody, ParadisSynthesisTimeouts, paradisTeeBody } from './paradisStreamingBody.js';
+import { PARADIS_AIVIS_FIRST_BYTE_TIMEOUT_MS, paradisCollectBody, paradisReadSynthesisBody, ParadisMobileVoiceTaskGate, ParadisSynthesisTimeouts, paradisTeeBody } from './paradisStreamingBody.js';
 import { paradisHandoffVoice } from './paradisVoiceHandoff.js';
 import {
 	CUSTOM_RINGTONE_ID,
@@ -459,11 +459,13 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			return undefined; // 音量 0
 		}
 		// 合成を受け取りながらモバイルへも流す（voice.stream.v1。受け取れない端末には終わってから 1 本で送る）
+		// 合成の再試行をまたいでも、1 件につきモバイルへの流れは 1 本（ParadisMobileVoiceTaskGate）
 		const synthesizeDirect = synthesizeStream;
 		const mobileGainKey = gainKey;
+		const mobileGate = new ParadisMobileVoiceTaskGate(() => this.beginMobileVoiceStream(mobileGainKey));
 		synthesizeStream = async () => {
 			const synthesis = await synthesizeDirect();
-			return { ...synthesis, body: paradisTeeBody(synthesis.body, () => this.beginMobileVoiceStream(mobileGainKey)) };
+			return { ...synthesis, body: paradisTeeBody(synthesis.body, () => mobileGate.openSink()) };
 		};
 		// 感情タグ（[...]）入りの発話は、音量の覚え直しに使わない
 		const tagged = /\[[^\]]+\]/.test(text);

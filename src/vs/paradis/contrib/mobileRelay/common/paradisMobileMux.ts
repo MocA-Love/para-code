@@ -31,6 +31,11 @@ export interface FrameMuxOptions {
 	readonly sendSealed: (sealed: Uint8Array) => void;
 	readonly onError?: (error: unknown) => void;
 	readonly onTraffic?: (sample: IParadisMobileFrameTrafficSample) => void;
+	/**
+	 * 断片の組み立ての誤り（抜け・上限超え）。復号はできているので暗号層の失敗とは分けて数える。
+	 * 無ければ onError へ渡す。
+	 */
+	readonly onAssemblyError?: (error: Error) => void;
 	/** 全端末で 1 本の送信の列。無ければこの mux だけの列を持つ（テスト用。送信バッファは見ない）。 */
 	readonly sendQueue?: ParadisMobileSendQueue;
 }
@@ -262,7 +267,11 @@ export class FrameMux {
 				return;
 			}
 			if (full instanceof Error) {
-				this.options.onError?.(full);
+				if (this.options.onAssemblyError !== undefined) {
+					this.options.onAssemblyError(full);
+				} else {
+					this.options.onError?.(full);
+				}
 				return;
 			}
 			this.handlers.get(full.ch)?.(full);

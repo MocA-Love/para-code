@@ -402,6 +402,8 @@ export class MobileSession {
 					// セッションをリセットする」自己回復も計装も、確立後は一切効かない
 					// （旧セッションに固着したモバイルが二度と接続できなくなる経路）。
 					onError: (err: unknown) => { this.lastMuxError = err; },
+					// 断片の組み立ての誤りは復号できた後の話なので、張り直しの判定（暗号層の失敗）には数えない
+					onAssemblyError: (err: Error) => this.recordAssemblyError(err),
 					...(this.onTraffic !== undefined ? { onTraffic: this.onTraffic } : {}),
 				});
 				this.mux.on(Channels.State, f => this.emit(f));
@@ -608,6 +610,21 @@ export class MobileSession {
 			const encoded = await paradisEncodeNegotiatedGzipJsonResponse(this.negotiatedStateEncoding, state) ?? state;
 			await mux.send(Channels.State, encoded);
 		});
+	}
+
+	/** 断片の組み立ての誤りの数（暗号層の失敗とは別に数える）。 */
+	private assemblyErrors = 0;
+
+	get assemblyErrorCount(): number {
+		return this.assemblyErrors;
+	}
+
+	private recordAssemblyError(error: Error): void {
+		this.assemblyErrors++;
+		// 1 回目と、その後は 100 回ごとに残す（壊れた送り手がログを埋めないように）
+		if (this.assemblyErrors === 1 || this.assemblyErrors % 100 === 0) {
+			this.logService.warn(`[paradisMobileRelay] session ${this.mobileId}: dropped a frame that could not be reassembled (${this.assemblyErrors} so far)`, error);
+		}
 	}
 
 	/** このセッションを捨てる。列に残った送信を取り下げる。 */
