@@ -151,4 +151,21 @@ suite('paradisHandoffVoice', () => {
 			notReady: { kind: 'fallback' },
 		});
 	});
+
+	test('waits briefly after a synthesis failure to learn whether the worker had started the ringtone', async () => {
+		const stream = new FakeStream();
+		let started = false;
+		await assert.rejects(paradisHandoffVoice({
+			ingest: port(stream).ingest,
+			open: { priority: 'normal', prelude },
+			synthesize: async () => {
+				// 中断を送った直後に、worker から鳴り始めの知らせが届く
+				setTimeout(() => stream.start(), 50);
+				throw new AivisError('retryable', 'timeout');
+			},
+			onStarted: () => { started = true; },
+			onPlayLocally: () => { },
+		}), AivisError);
+		assert.deepStrictEqual({ started, events: stream.events }, { started: true, events: ['abort:synth-failed'] });
+	});
 });

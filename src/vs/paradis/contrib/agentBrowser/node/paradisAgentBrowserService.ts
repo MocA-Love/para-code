@@ -2513,6 +2513,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * pane ownerが直前に発行した1回限りの短命ticketで認証し、音声は保存せずイベントへ渡す。
 	 */
 	private async _handleMobileVoiceIngress(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+		// 本文を読まずに断る要求は、接続ごと閉じる（chunked の本文を送り続けさせない・接続を使い回させない）
+		const closeAfterReply = () => {
+			res.setHeader('Connection', 'close');
+			res.once('finish', () => req.destroy());
+		};
 		const requestedTicket = this._extractToken(req);
 		const ticket = requestedTicket === undefined ? undefined : this._mobileVoiceTickets.get(requestedTicket);
 		if (requestedTicket !== undefined) {
@@ -2520,23 +2525,27 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._mobileVoiceTickets.delete(requestedTicket);
 		}
 		if (ticket === undefined || ticket.expiresAt < Date.now() || !this._isMobileVoiceTicketCurrent(ticket)) {
+			closeAfterReply();
 			this._sendIngressRejected(res);
 			return;
 		}
 		const publishMobileVoiceClip = this.publishMobileVoiceClip;
 		// モバイルへ届ける口が無くても、手元で鳴らす約束をした ticket は受け取る
 		if (publishMobileVoiceClip === undefined && !ticket.localPlayback) {
+			closeAfterReply();
 			this._sendIngressRejected(res);
 			return;
 		}
 		const contentType = String(req.headers['content-type'] ?? '').split(';', 1)[0]?.trim().toLowerCase();
 		if (contentType !== 'audio/mpeg' && contentType !== 'application/octet-stream') {
+			closeAfterReply();
 			res.writeHead(415, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
 			res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
 			return;
 		}
 		const reservation = this._reserveIngressRequest(ticket.lease?.token ?? this._voiceIngressToken);
 		if (reservation === undefined) {
+			closeAfterReply();
 			this._sendIngressCapacityRejected(res);
 			return;
 		}
@@ -2544,6 +2553,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		const voiceReservation = this._reserveMobileVoiceIngress();
 		if (voiceReservation === undefined) {
 			reservation.dispose();
+			closeAfterReply();
 			this._sendIngressCapacityRejected(res);
 			return;
 		}
