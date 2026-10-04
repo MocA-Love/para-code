@@ -53,6 +53,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'システムの画面で、グラフと同じ値のバーを出さないようにしました',
 				body: 'Para Code の割合・メモリの総量・ディスクの空きは各グラフの下に出します。',
 			},
+			{
+				icon: 'terminal-outline',
+				title: 'Claude Code が裏で動かしているシェルを、入力欄の右のピルから確かめて止められるようになりました',
+				body: 'Monitor と同じピルにまとめ、出力の末尾と状態を見られます。止められるのは Claude Mods が動いている手元の PC だけです（PC の Para Code も新しい版が必要です）。',
+			},
 		],
 	},
 	{

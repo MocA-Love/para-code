@@ -672,6 +672,47 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	});
 
+	test('tracks background shells next to Monitors, closes one stopped in the TUI from the queue-operation line, and sends them with their access', async () => {
+		const home = await realpath(await mkdtemp(join(tmpdir(), 'paradis-agent-shell-home-')));
+		const previousHome = process.env['CLAUDE_CONFIG_DIR'];
+		process.env['CLAUDE_CONFIG_DIR'] = home;
+		await mkdir(join(home, 'projects', 'para-code-tests'), { recursive: true });
+		const transcript = join(home, 'projects', 'para-code-tests', 'shell.jsonl');
+		const at = (offsetMs: number) => new Date(Date.now() - 60_000 + offsetMs).toISOString();
+		const lines = [
+			JSON.stringify({ type: 'assistant', timestamp: at(0), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_s1', name: 'Bash', input: { command: 'sleep 600', description: '待つ', run_in_background: true } }] } }),
+			JSON.stringify({ type: 'user', timestamp: at(500), toolUseResult: { backgroundTaskId: 'bshell1' }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_s1', content: 'Command running in background with ID: bshell1. Output is being written to: /private/tmp/claude-501/-workspace/shell-session/tasks/bshell1.output' }] } }),
+		];
+		await writeFile(transcript, lines.join('\n') + '\n');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { tailers: Map<string, { shells(): readonly { readonly id: string; readonly status: string; readonly stoppedBy?: string }[] }> };
+		const shellsOf = () => access.tailers.get('pane-shell')?.shells().map(shell => `${shell.id}:${shell.status}:${shell.stoppedBy ?? ''}`);
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token: 'pane-shell' }]), true);
+			fireParadisAgentHookEvent({ token: 'pane-shell', event: 'SessionStart', sessionId: 'shell-session', transcriptPath: transcript, cwd: '/workspace', at: Date.now() });
+			await waitFor(() => shellsOf()?.length === 1, 'the background shell was not tracked');
+			const started = shellsOf();
+			const sentRunning = chat.monitorsForTest('pane-shell');
+			await writeFile(transcript, [...lines, JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: at(2_000), sessionId: 'shell-session', content: '<task-notification>\n<task-id>bshell1</task-id>\n<tool-use-id>toolu_s1</tool-use-id>\n<status>killed</status>\n<summary>Task "sleep 600" was stopped by the user</summary>\n</task-notification>' })].join('\n') + '\n');
+			await waitFor(() => shellsOf()?.[0]?.startsWith('bshell1:stopped') === true, 'the TUI stop was not tracked');
+			assert.deepStrictEqual({ started, ended: shellsOf(), sent: { count: sentRunning?.shells?.length, at: typeof sentRunning?.shellsAt, access: sentRunning?.shellsAccess } }, {
+				started: ['bshell1:running:'],
+				ended: ['bshell1:stopped:user'],
+				// mod が来ていない手元のペイン: 出力は読めるが、止められない
+				sent: { count: 1, at: 'number', access: process.platform === 'win32' ? { output: false, stop: false, where: 'windows' } : { output: true, stop: false } },
+			});
+		} finally {
+			chat.dispose();
+			if (previousHome === undefined) {
+				delete process.env['CLAUDE_CONFIG_DIR'];
+			} else {
+				process.env['CLAUDE_CONFIG_DIR'] = previousHome;
+			}
+			await rm(home, { recursive: true, force: true });
+		}
+	});
+
 	test('applies complete turn cleanup when Stop is overtaken during path validation', async () => {
 		const token = 'pane-stop-order';
 		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'stop-order.jsonl');

@@ -328,6 +328,52 @@ describe('wire golden (app side)', () => {
 		controller.disconnect();
 	});
 
+	it('agent: バックグラウンドのシェル（agent.shells.v1）を読み、出力と停止の要求はゴールデンと同じ形で送る', async () => {
+		const { controller, pcMux, sent, latest } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		for (const message of agentGolden.toMobile.filter(candidate => candidate.t === 'snapshot' || candidate.t === 'delta')) {
+			pcMux.send(Channels.Agent, encode(message));
+			await flush();
+		}
+		const chat = latest()?.agentChats.get('terminal-key-1');
+		const goldenDelta = agentGolden.toMobile.find(message => message.t === 'delta');
+		const goldenShells = goldenDelta?.['shells'] as Golden[] | undefined;
+		const outputRequest = agentGolden.toPc.find(message => message.t === 'shell-output');
+		const outputReply = agentGolden.toMobile.find(message => message.t === 'shell-output');
+		const reading = controller.requestAgentShellOutput('terminal-key-1', outputRequest?.['shellIds'] as string[], outputRequest?.['lines'] as number);
+		await flush();
+		const sentOutput = sent.agent!.filter(message => message.t === 'shell-output').at(-1);
+		pcMux.send(Channels.Agent, encode({ ...outputReply, requestId: sentOutput?.['requestId'] }));
+		const read = await reading;
+		const stopping = controller.stopAgentShell('terminal-key-1', 'bgolden03');
+		await flush();
+		const sentStop = sent.agent!.filter(message => message.t === 'action/stopShell').at(-1);
+		pcMux.send(Channels.Agent, encode({ t: 'action-result', id: 7, token: 'agent-token-1', requestId: sentStop?.['requestId'], status: 'accepted' }));
+		const shift = (chat?.shells?.[0]?.startedAt ?? 0) - (goldenShells?.[0]?.['startedAt'] as number);
+		expect({
+			// 全項目のまま読み、時刻は shellsAt との差で手元の時計へ直す（直した量を引けばゴールデンと同じ）
+			shells: chat?.shells?.map(shell => ({ ...shell, startedAt: shell.startedAt - shift, ...(shell.endedAt !== undefined ? { endedAt: shell.endedAt - shift } : {}) })),
+			access: chat?.shellsAccess,
+			outputRequest: shapeOf(sentOutput),
+			outputValues: [sentOutput?.['shellIds'], sentOutput?.['lines']],
+			outputs: [...read.outputs.entries()],
+			stopRequest: shapeOf(sentStop),
+			stopped: await stopping,
+		}).toEqual({
+			shells: goldenShells,
+			access: goldenDelta?.['shellsAccess'],
+			outputRequest: shapeOf(outputRequest),
+			outputValues: [outputRequest?.['shellIds'], outputRequest?.['lines']],
+			outputs: [['bgolden02', { lines: ['VITE v6.2.0 ready in 412 ms', '[killed]'], truncated: true }], ['bgolden03', { lines: [], truncated: false, error: 'not-found' }]],
+			stopRequest: shapeOf(agentGolden.toPc.find(message => message.t === 'action/stopShell')),
+			stopped: { status: 'accepted' },
+		});
+		controller.disconnect();
+	});
+
 	it('公開の送信口: requestPc は PC の応答で resolve / reject し、id の無い知らせは onPcMessage へ届く', async () => {
 		const { controller, pcMux, sent } = await connect();
 		pcMux.send(Channels.State, encode(stateGolden.current));

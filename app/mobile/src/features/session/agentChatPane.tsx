@@ -316,6 +316,8 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 						modelLocked={chat?.info?.modelControl === 'none'}
 						commandCatalog={chat?.commandCatalog}
 						monitors={chatReady ? chat?.monitors : undefined}
+						shells={chatReady ? chat?.shells : undefined}
+						shellsAccess={chatReady ? chat?.shellsAccess : undefined}
 						sendText={sendText}
 						updateClaudeSetting={actions.updateClaudeSetting}
 						onAfterSubmit={scrollToLatest}
