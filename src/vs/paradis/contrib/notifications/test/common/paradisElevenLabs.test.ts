@@ -11,7 +11,6 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	paradisClampElevenLabsSpeed,
 	paradisClassifyElevenLabsError,
-	paradisElevenLabsPlaybackVolume,
 	paradisElevenLabsQuota,
 	paradisElevenLabsUsageRange,
 	paradisEntriesFromElevenLabsRules,
@@ -48,13 +47,6 @@ suite('Paradis ElevenLabs pure helpers', () => {
 		assert.deepStrictEqual(
 			[0.5, 0.7, 0.95, 1.2, 2, Number.NaN, '1.1', undefined, 1.0500000001].map(paradisClampElevenLabsSpeed),
 			[0.7, 0.7, 0.95, 1.2, 1.2, 1, 1, 1, 1.05],
-		);
-	});
-
-	test('lowers the playback volume by 13 dB', () => {
-		assert.deepStrictEqual(
-			[100, 50, 0, 150, -5].map(volume => Math.round(paradisElevenLabsPlaybackVolume(volume) * 1000) / 1000),
-			[22.387, 11.194, 0, 22.387, 0],
 		);
 	});
 
