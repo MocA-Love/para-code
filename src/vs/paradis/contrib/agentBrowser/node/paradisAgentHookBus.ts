@@ -53,6 +53,11 @@ export interface IParadisAgentHookEvent {
 	 * あっても別物）。手元の hook と旧版スクリプトの hook では undefined になる。
 	 */
 	readonly remoteHostId?: string;
+	/**
+	 * ペインの持ち主かどうかを、発信元のプロセスを辿らずに transcript だけで決めた（pid の無い hook など）。
+	 * Claude Code の daemon の配下の会話（`/fork` の分岐先）の hook とペインの hook を見分けられていない。
+	 */
+	readonly ownerUnverified?: true;
 	/** 受信時刻（epoch ms）。 */
 	readonly at: number;
 }
@@ -124,6 +129,12 @@ export const onParadisAgentHookEvent: Event<IParadisAgentHookEvent> = emitter.ev
 export interface IParadisAgentNestedHookEvent extends IParadisAgentHookEvent {
 	/** 子エージェントの種別（プロセスコマンドライン由来。不明なら undefined）。 */
 	readonly nestedAgent: 'claude' | 'codex' | undefined;
+	/**
+	 * Claude Code の daemon の配下で動く会話（`/fork` の分岐先・`claude --bg`）の hook。daemon を最初に起こした
+	 * ペインの token を持って届くが、そのペインの子エージェントではない。transcript を「どのペインの会話でもない」
+	 * と覚えるためだけに流す。
+	 */
+	readonly background?: true;
 }
 
 const nestedEmitter = new Emitter<IParadisAgentNestedHookEvent>();

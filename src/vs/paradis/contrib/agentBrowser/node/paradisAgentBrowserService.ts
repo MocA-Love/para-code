@@ -1282,7 +1282,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		fireParadisAgentHookEvent({
 			token, event: record.event, sessionId: field('session_id'), transcriptPath: field('transcript_path'), cwd,
 			toolName: field('tool_name'), toolInput: record.payload?.tool_input, toolUseId: field('tool_use_id'),
-			payload: record.payload, at: now,
+			payload: record.payload, ownerUnverified: true, at: now,
 		});
 		this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] a replayed ${pending.status} is still on screen; showing it`));
 		return true;
@@ -2788,6 +2788,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			// 継承されるため、所有エージェントの配下で動く別エージェント（例: plugin 経由の
 			// `codex exec`）のhookをここで仕分けないと、ペインのセッションrebind・状態・通知の
 			// すべてが子に乗っ取られる。分類は状態更新とhookバス発火のどちらよりも前に行う。
+			let ownerUnverified = false;
 			if (eventType === 'TerminalExit') {
 				this._hookOwnership.clear(token);
 			} else if (eventType) {
@@ -2805,10 +2806,25 @@ export class ParadisAgentBrowserService extends Disposable {
 					this._sendIngressRejected(res);
 					return;
 				}
+				ownerUnverified = hookOrigin.unverified === true;
 				if (hookOrigin.origin === 'invalid') {
 					this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] agent-hook rejected (origin mismatch): ${eventType}`));
 					res.writeHead(200, { 'Content-Type': 'application/json' });
 					res.end(JSON.stringify({ ok: false, reason: 'origin rejected' }));
+					return;
+				}
+				if (hookOrigin.origin === 'background') {
+					// Claude Code の daemon の配下で動く会話（`/fork` の分岐先・`claude --bg`）。daemon を最初に起こした
+					// ペインの token を持っているだけで、そのペインの会話でも子エージェントでもない。ペインの状態・
+					// 通知・子エージェントの一覧には出さず、transcript を照合の候補から外すためにだけ知らせる。
+					fireParadisAgentNestedHookEvent({
+						token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput,
+						toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,
+						remoteHostId, at: Date.now(), nestedAgent: hookOrigin.agentKind, background: true,
+					});
+					this._runNonThrowingDiagnostic(() => this.logService.trace(`[ParadisAgentBrowser] agent-hook (daemon-hosted session): ${eventType}`));
+					res.writeHead(200, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify({ ok: true, background: true }));
 					return;
 				}
 				if (hookOrigin.origin === 'nested') {
@@ -2840,7 +2856,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				fireParadisAgentHookEvent({
 					token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput,
 					toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,
-					remoteHostId, at: Date.now(),
+					remoteHostId, ...(ownerUnverified ? { ownerUnverified: true } : {}), at: Date.now(),
 				});
 			}
 			if (!this.isIngressLeaseCurrent(ingressLease)) {
