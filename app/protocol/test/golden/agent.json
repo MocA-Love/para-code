@@ -1,5 +1,5 @@
 {
-	"$comment": "agent チャネルの固定形。id はターミナルの数値 ID、token はペイントークン（state.json の current の terminals[0] と揃えてある）。toPc はアプリが送る要求、toMobile は PC が送る応答。delta の monitors は任意項目（agent.monitors.v1）で、先頭の要素に全項目を持たせてある。delta の notice（Para Code からの知らせ）・advisor（Advisor の呼び出しと結果の印）・activity.advisors（Advisor への相談）も任意項目で、古いアプリは無視する。activity-detail の activityId に相談の id を渡すと、平文の返答を返す。質問の選択肢の preview・interaction の answerVia・回答の notes と kind: notes・action/clarifyQuestion は agent.question.notes.v1 / agent.question.chat.v1。delta の shells・shellsAt・shellsAccess（バックグラウンドのシェル）と、要求 shell-output・action/stopShell は agent.shells.v1 で、shells の先頭の要素に全項目を持たせてある。shell-output は ID だけを送り、パスは送らない。時刻は PC の時計で、monitorsAt・shellsAt（PC の送信時刻）との差でアプリが手元の時計へ直す。command-catalog の要求の format: 2 と応答（agent.commands.v2）は、実際に効く順の一覧で、同じ名前の重なりと出どころ plugin（plugin にプラグイン名）・mcp を含む。古いアプリ（format 無し）には、同じ名前を先の 1 件にし、plugin / mcp を user にした一覧を返す。送った発言をエージェントが「そのコマンドは無い」と断ったら action-result を code: unknown-command で返す（理由は message）。キーで送った Claude Code のスラッシュコマンドは、受け付けた後で同じ requestId へ late: true の断りを追いかけて送る。2 つ目の delta の noticeSource: command はスラッシュコマンドの出力の知らせ（読み上げの文言を分ける）。",
+	"$comment": "agent チャネルの固定形。id はターミナルの数値 ID、token はペイントークン（state.json の current の terminals[0] と揃えてある）。toPc はアプリが送る要求、toMobile は PC が送る応答。delta の monitors は任意項目（agent.monitors.v1）で、先頭の要素に全項目を持たせてある。delta の notice（Para Code からの知らせ）・advisor（Advisor の呼び出しと結果の印）・activity.advisors（Advisor への相談）も任意項目で、古いアプリは無視する。activity-detail の activityId に相談の id を渡すと、平文の返答を返す。質問の選択肢の preview・interaction の answerVia・回答の notes と kind: notes・action/clarifyQuestion は agent.question.notes.v1 / agent.question.chat.v1。delta の shells・shellsAt・shellsAccess（バックグラウンドのシェル）と、要求 shell-output・action/stopShell は agent.shells.v1 で、shells の先頭の要素に全項目を持たせてある。shell-output は ID だけを送り、パスは送らない。時刻は PC の時計で、monitorsAt・shellsAt（PC の送信時刻）との差でアプリが手元の時計へ直す。command-catalog の要求の format: 2 と応答（agent.commands.v2）は、実際に効く順の一覧で、同じ名前の重なりと出どころ plugin（plugin にプラグイン名）・mcp を含む。古いアプリ（format 無し）には、同じ名前を先の 1 件にし、plugin / mcp を user にした一覧を返す。送った発言をエージェントが「そのコマンドは無い」と断ったら action-result を code: unknown-command で返す（理由は message）。キーで送った Claude Code のスラッシュコマンドは、受け付けた後で同じ requestId へ late: true の断りを追いかけて送る。2 つ目の delta の noticeSource: command はスラッシュコマンドの出力の知らせ（読み上げの文言を分ける）。3 つ目の delta の noticeSource: compaction はコンテキストの圧縮の区切り（compaction に trigger と、取れたときだけ tokensBefore / tokensAfter）、compact-summary は圧縮で作られた要約の先頭（全文は tool-full、compaction.summaryChars は全体の文字数）で、古いアプリは灰色の知らせの行として出す。同じ delta の panel（agent.panel.v1）は PC の Claude Code で開いている画面（command はモバイルから送って開いたときだけ。閉じたら null）、toPc の action/closePanel はそれを Esc で閉じる要求。",
 	"toPc": [
 		{ "t": "attach", "id": 7, "token": "agent-token-1", "liveEncoding": "agent-live-append-v1" },
 		{ "t": "attach", "id": 7, "token": "agent-token-1", "epoch": "golden-agent-epoch", "afterRev": 1, "liveEncoding": "agent-live-append-v1" },
@@ -21,6 +21,7 @@
 		{ "t": "action/stopShell", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-16", "epoch": "golden-agent-epoch", "shellId": "bgolden03" },
 		{ "t": "action/answerApproval", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-17", "epoch": "golden-agent-epoch", "interactionId": "approval-2", "choice": "no", "message": "削除はせず、echo kept だけ実行してください" },
 		{ "t": "command-catalog", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-18", "format": 2 },
+		{ "t": "action/closePanel", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-21", "epoch": "golden-agent-epoch" },
 		{ "t": "detach", "id": 7, "token": "agent-token-1" }
 	],
 	"toMobile": [
@@ -69,6 +70,14 @@
 			"messages": [
 				{ "rev": 7, "role": "assistant", "kind": "text", "text": "Context Usage\nHaiku 4.5\nMessages: 7.6k tokens", "ts": 1760000003500, "notice": true, "noticeSource": "command" }
 			]
+		},
+		{
+			"t": "delta", "id": 7, "token": "agent-token-1", "agent": "claude", "epoch": "golden-agent-epoch", "rev": 9,
+			"messages": [
+				{ "rev": 8, "role": "assistant", "kind": "text", "text": "コンテキストを圧縮しました（自動） 168,412 → 21,907 トークン", "ts": 1760000003600, "notice": true, "noticeSource": "compaction", "compaction": { "trigger": "auto", "tokensBefore": 168412, "tokensAfter": 21907 } },
+				{ "rev": 9, "role": "assistant", "kind": "text", "text": "1. Primary Request and Intent:\n   モバイルの入力欄で /model を送ったとき、PC に一覧を残さずモデルのシートを開きたい。…", "ts": 1760000003600, "truncated": true, "notice": true, "noticeSource": "compact-summary", "compaction": { "summaryChars": 4812 } }
+			],
+			"panel": { "command": "config", "since": 1760000003700 }
 		},
 		{ "t": "action-result", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-1", "status": "accepted", "consumed": true },
 		{ "t": "approval-options", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-5", "interactionId": "approval-1", "options": [{ "n": 1, "label": "Yes" }, { "n": 2, "label": "Yes, and don't ask again for npm test commands" }, { "n": 3, "label": "No, and tell Claude what to do differently (esc)" }], "promptHash": "0123456789abcdef0123456789abcdef01234567", "warning": "This shell -c script runs rm and could not be checked" },

@@ -77,7 +77,7 @@ import { type IParadisMobileRequestHost, paradisDispatchMobileRequest } from './
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { ParadisMobileFileTiming } from '../common/paradisMobileFileTiming.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
-import { PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_COMPOSER_NOT_EMPTY_MESSAGE, PARADIS_SLASH_COMMAND_REJECTED_CODE, PARADIS_SLASH_REJECTION_POLL_MS, PARADIS_SLASH_LEFT_IN_COMPOSER, PARADIS_SLASH_REJECTION_WAIT_MS, paradisCodexComposerHoldsCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
+import { PARADIS_CLAUDE_SETTING_VALUE_PATTERN, PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_COMPOSER_NOT_EMPTY_MESSAGE, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeConfigModelCommand, paradisClaudeModelAlias, PARADIS_SLASH_REJECTION_POLL_MS, PARADIS_SLASH_LEFT_IN_COMPOSER, PARADIS_SLASH_REJECTION_WAIT_MS, paradisCodexComposerHoldsCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
 
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
@@ -1499,14 +1499,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const sendMessage = msg.t === 'action/sendMessage' && typeof msg.text === 'string'
 			&& typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
 		const claudeSetting = msg.t === 'action/claudeSetting' && (msg.setting === 'model' || msg.setting === 'effort')
-			&& typeof msg.value === 'string' && /^[A-Za-z0-9._:-]{1,200}$/.test(msg.value)
+			&& typeof msg.value === 'string' && PARADIS_CLAUDE_SETTING_VALUE_PATTERN.test(msg.value)
 			&& typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
+		// PC で開いている画面（/config など）を Esc で閉じる。開いているかは shared process が mod に聞いてから回してくる
+		const closePanel = msg.t === 'action/closePanel' && typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
 		const interaction = msg.t === 'action/interaction' && Array.isArray(msg.parts) && msg.parts.length > 0 && msg.parts.length <= 500
 			&& msg.parts.every(part => typeof part === 'string' && part.length <= 10_000)
 			&& typeof msg.delayMs === 'number' && Number.isInteger(msg.delayMs) && msg.delayMs >= 0 && msg.delayMs <= 1_000
 			&& (msg.readyMarker === undefined || (typeof msg.readyMarker === 'string' && msg.readyMarker.length > 0 && msg.readyMarker.length <= 64))
 			&& typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
-		if ((!sendMessage && !interaction && !claudeSetting) || typeof msg.id !== 'number' || typeof msg.token !== 'string'
+		if ((!sendMessage && !interaction && !claudeSetting && !closePanel) || typeof msg.id !== 'number' || typeof msg.token !== 'string'
 			|| typeof msg.requestId !== 'string' || typeof msg.epoch !== 'string') {
 			return;
 		}
@@ -1561,10 +1563,24 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						`${paradisSlashRejectionMessage(slashCheck.agent, slashCheck.command)}${left ? PARADIS_SLASH_LEFT_IN_COMPOSER : ''}`);
 					return;
 				}
+			} else if (closePanel) {
+				await instance.sendText('\x1b', false);
 			} else if (claudeSetting) {
-				await this.modelSwitchGuard.execute(instance, `/${msg.setting as 'model' | 'effort'} ${msg.value as string}`,
-					// クロージャ内では typeof ガードによる絞り込みが効かないため as で明示する（ガード済み）
-					() => this.validateAgentAction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number));
+				// クロージャ内では typeof ガードによる絞り込みが効かないため as で明示する（ガード済み）
+				const validate = () => this.validateAgentAction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number);
+				const modelAlias = msg.setting === 'model' ? paradisClaudeModelAlias(msg.value as string) : undefined;
+				if (modelAlias !== undefined) {
+					// モデルは確認（Switch model?）を出さない `/config model=<別名>` で切り替える（Claude Code 2.1.289 で実測）。
+					// 確認が出ないので Enter を送るガードは使わない。結果は transcript の出力から会話の知らせの行になる
+					const outcome = await paradisSendAgentMessageToTui(paradisClaudeConfigModelCommand(modelAlias), (text, execute, bracketedPasteMode) => instance.sendText(text, execute ?? false, bracketedPasteMode), validate);
+					if (!outcome.executed) {
+						throw new Error('Claude setting session changed before submission');
+					}
+				} else {
+					// effort（`/effort <段階>` は会話の途中だと「Change effort level?」を出すことがある）と、別名でないモデルの ID
+					// （`/config` は別名しか受け付けない）は、今までどおり確認に Enter を送るガードで切り替える
+					await this.modelSwitchGuard.execute(instance, `/${msg.setting as 'model' | 'effort'} ${msg.value as string}`, validate);
+				}
 				if (!(await this.validateAgentAction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId as number))) {
 					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', '設定変更中にClaude Codeセッションが変わりました');
 					return;
@@ -1657,7 +1673,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'accepted');
 		} catch {
-			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', claudeSetting ? 'confirmation-failed' : 'send-failed', claudeSetting ? 'Claude Codeの設定変更を確認できませんでした' : 'メッセージを送信できませんでした');
+			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', claudeSetting ? 'confirmation-failed' : 'send-failed', claudeSetting ? 'Claude Codeの設定変更を確認できませんでした' : closePanel ? 'PC の画面を閉じられませんでした' : 'メッセージを送信できませんでした');
 		} finally {
 			if (interaction) {
 				await this.finalizeAgentInteraction(mobileId, msg.requestId, msg.token, interactionAccepted ? 'accepted' : 'failed').catch(err => this.logService.warn('[paradisMobileRelay] finalize agent interaction failed', err));

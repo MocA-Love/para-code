@@ -60,7 +60,8 @@ suite('paradisAgentTranscriptParser', () => {
 			]])),
 		}, {
 			context: [['user', '/context', false, undefined], ['assistant', 'Context Usage\nHaiku 4.5\nMessages: 7.6k tokens', true, 'command']],
-			empty: [['user', '/compact', false, undefined]],
+			// /compact は区切り線（compact_boundary）が実行を表すので、実行記録の吹き出しも出さない
+			empty: [],
 			status: [['user', '/status', false, undefined]],
 			mcp: [['user', '/mcp', false, undefined]],
 			noCommand: [],
@@ -75,6 +76,66 @@ suite('paradisAgentTranscriptParser', () => {
 			messages: [],
 			unknown: [{ name: 'nonexistent', ts: Date.parse('2026-10-04T09:00:00.000Z') }],
 		});
+	});
+
+	test('shows a manual /compact as one divider with the tokens and a folded summary, without the two /compact bubbles (Claude Code 2.1.289)', () => {
+		const at = '2026-10-04T09:00:00.000Z';
+		const user = (content: string, extra: Record<string, unknown> = {}) => JSON.stringify({ type: 'user', timestamp: at, message: { role: 'user', content }, ...extra });
+		const summary = `This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. Primary Request and Intent:\n${'x'.repeat(700)}`;
+		const lines = [
+			user('/compact'),
+			JSON.stringify({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', timestamp: at, compactMetadata: { trigger: 'manual', preTokens: 846988, postTokens: 9720 } }),
+			user(summary, { isCompactSummary: true, isVisibleInTranscriptOnly: true }),
+			user('<local-command-caveat>The command below was run directly in Claude Code</local-command-caveat>', { isMeta: true }),
+			user('<command-name>/compact</command-name>\n            <command-message>compact</command-message>\n            <command-args></command-args>'),
+			user('<local-command-stdout>\u001b[2mCompacted (ctrl+o to see full summary)\u001b[22m</local-command-stdout>'),
+		];
+		const messages = paradisParseClaudeTranscriptBatchesForTest([lines]);
+		const body = summary.replace(/^This session[^\n]*\n+Summary:\n+/, '');
+		assert.deepStrictEqual(messages.map(message => ({ role: message.role, text: message.noticeSource === 'compact-summary' ? message.text.slice(0, 40) : message.text, notice: message.notice, source: message.noticeSource, compaction: message.compaction, truncated: message.truncated, full: message.fullText?.length })), [
+			{ role: 'assistant', text: 'コンテキストを圧縮しました（手動） 846,988 → 9,720 トークン', notice: true, source: 'compaction', compaction: { trigger: 'manual', tokensBefore: 846988, tokensAfter: 9720 }, truncated: undefined, full: undefined },
+			{ role: 'assistant', text: body.slice(0, 40), notice: true, source: 'compact-summary', compaction: { summaryChars: body.length }, truncated: true, full: body.length },
+		]);
+	});
+
+	test('shows an automatic compaction without tokens when the metadata has none, and keeps a failed /compact output', () => {
+		const at = '2026-10-04T09:00:00.000Z';
+		const command = JSON.stringify({ type: 'system', subtype: 'local_command', timestamp: at, content: '<command-name>/compact</command-name>\n            <command-args></command-args>' });
+		const failed = JSON.stringify({ type: 'system', subtype: 'local_command', timestamp: at, content: '<local-command-stdout>Error: Not enough messages to compact.</local-command-stdout>' });
+		assert.deepStrictEqual({
+			auto: paradisParseClaudeTranscriptLineForTest(JSON.stringify({ type: 'system', subtype: 'compact_boundary', timestamp: at, compactMetadata: { trigger: 'auto' } })).messages.map(message => [message.text, message.compaction]),
+			failed: paradisParseClaudeTranscriptBatchesForTest([[command, failed]]).map(message => [message.text, message.noticeSource]),
+		}, {
+			auto: [['コンテキストを圧縮しました（自動）', { trigger: 'auto' }]],
+			failed: [['Error: Not enough messages to compact.', 'command']],
+		});
+	});
+
+	test('turns /config model=<alias> into a notice of the result instead of a /config bubble (Claude Code 2.1.289)', () => {
+		const at = '2026-10-04T11:46:29.049Z';
+		const system = (content: string) => JSON.stringify({ type: 'system', subtype: 'local_command', content, level: 'info', timestamp: at, isMeta: false });
+		const config = (args: string) => system(`<command-name>/config</command-name>\n            <command-message>config</command-message>\n            <command-args>${args}</command-args>`);
+		const stdout = (text: string) => system(`<local-command-stdout>${text}</local-command-stdout>`);
+		const shown = (lines: string[]) => paradisParseClaudeTranscriptBatchesForTest([lines]).map(message => [message.role, message.text, message.notice === true]);
+		assert.deepStrictEqual({
+			set: shown([config('model=sonnet'), stdout('Set Model to sonnet')]),
+			refused: shown([config('model=claude-sonnet-5-5'), stdout('Model takes one of: default, sonnet, opus. For a specific model ID, use /model.')]),
+			other: shown([config('theme=dark'), stdout('Set Theme to dark')]),
+		}, {
+			set: [['assistant', 'モデルを sonnet に変えました', true]],
+			refused: [['assistant', 'モデルを変えられませんでした（Model takes one of: default, sonnet, opus. For a specific model ID, use /model.）', true]],
+			other: [['user', '/config theme=dark', false]],
+		});
+	});
+
+	test('shows a Codex compaction as a divider from the compacted row only', () => {
+		const lines = [
+			JSON.stringify({ timestamp: '2026-08-10T11:32:07.617Z', type: 'compacted', payload: { message: '', replacement_history: [], window_number: 1 } }),
+			JSON.stringify({ timestamp: '2026-08-10T11:32:07.624Z', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'ContextCompaction', id: 'c1' }, started_at_ms: 1786361454704, completed_at_ms: 1786361527624 } }),
+		];
+		assert.deepStrictEqual(paradisParseCodexRolloutForTest(lines).messages.map(message => [message.text, message.notice, message.noticeSource, message.ts]), [
+			['コンテキストを圧縮しました', true, 'compaction', Date.parse('2026-08-10T11:32:07.617Z')],
+		]);
 	});
 
 	test('shows a prompt queued while Claude Code is working as a user message', () => {

@@ -278,15 +278,20 @@ describe('wire golden (app side)', () => {
 			shifted: chat?.monitors?.[0] !== undefined && chat.monitors[0].startedAt !== goldenMonitor?.['startedAt'],
 			// 任意項目: Para Code からの知らせ・Advisor の印・一覧の Advisor への相談
 			notice: chat?.messages.filter(message => message.notice === true).map(message => [message.rev, message.noticeSource]),
+			// 任意項目: コンテキストの圧縮の中身（区切りと要約）と、PC で開いている画面（agent.panel.v1）
+			compaction: chat?.messages.filter(message => message.compaction !== undefined).map(message => [message.rev, message.compaction]),
+			panel: chat?.panel,
 			advisor: chat?.messages.filter(message => message.advisor !== undefined).map(message => [message.rev, message.advisor]),
 			advisors: chat?.activity?.advisors,
 		}).toEqual({
 			attach: shapeOf(agentGolden.toPc[0]),
-			messages: ['0:text', '1:tool_use', '2:tool_result', '3:tool_use', '4:tool_result', '5:text', '6:question', '7:text'],
+			messages: ['0:text', '1:tool_use', '2:tool_result', '3:tool_use', '4:tool_result', '5:text', '6:question', '7:text', '8:text', '9:text'],
 			previews: ['# Toast\n\n+----------------------+\n| Connection failed    |\n+----------------------+', '# Inline'],
 			interaction: { kind: 'question', id: 'question-1', answerVia: 'mod' },
 			// noticeSource: 'command' はスラッシュコマンドの出力（読み上げの文言を分ける）
-			notice: [[5, undefined], [7, 'command']],
+			notice: [[5, undefined], [7, 'command'], [8, 'compaction'], [9, 'compact-summary']],
+			compaction: [[8, { trigger: 'auto', tokensBefore: 168412, tokensAfter: 21907 }], [9, { summaryChars: 4812 }]],
+			panel: { command: 'config', since: 1760000003700 },
 			advisor: [[3, { model: 'claude-opus-5-5' }], [4, { model: 'claude-opus-5-5', outcome: 'redacted' }]],
 			advisors: (goldenDelta?.['activity'] as Golden | undefined)?.['advisors'],
 			capabilities: { agentActions: true, claudeSettings: true },
@@ -437,6 +442,38 @@ describe('wire golden (app side)', () => {
 			accepted: [{ status: 'accepted' }, { status: 'accepted' }],
 			rejection: { requestId: slashSent?.['requestId'], text: '/nonexistent', message: late?.['message'] },
 			cleared: undefined,
+		});
+		controller.disconnect();
+	});
+
+	it('agent: PC で開いている画面（agent.panel.v1）を閉じる要求はゴールデンと同じ形で送り、panel: null で帯を外す', async () => {
+		const { controller, pcMux, sent, latest } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		for (const message of agentGolden.toMobile.filter(candidate => candidate.t === 'snapshot' || candidate.t === 'delta')) {
+			pcMux.send(Channels.Agent, encode(message));
+			await flush();
+		}
+		const opened = latest()?.agentChats.get('terminal-key-1')?.panel;
+		const closing = controller.closeAgentPanel('terminal-key-1');
+		await flush();
+		const request = sent.agent!.filter(message => message.t === 'action/closePanel').at(-1);
+		pcMux.send(Channels.Agent, encode({ t: 'action-result', id: 7, token: 'agent-token-1', requestId: request?.['requestId'], status: 'accepted' }));
+		const delta = agentGolden.toMobile.find(message => message.t === 'delta' && message['panel'] !== undefined);
+		pcMux.send(Channels.Agent, encode({ t: 'delta', id: 7, token: 'agent-token-1', agent: 'claude', epoch: delta?.['epoch'], rev: delta?.['rev'], messages: [], panel: null }));
+		await flush();
+		expect({
+			opened,
+			request: shapeOf(request),
+			result: await closing,
+			closed: latest()?.agentChats.get('terminal-key-1')?.panel,
+		}).toEqual({
+			opened: { command: 'config', since: 1760000003700 },
+			request: shapeOf(agentGolden.toPc.find(message => message.t === 'action/closePanel')),
+			result: { status: 'accepted' },
+			closed: undefined,
 		});
 		controller.disconnect();
 	});

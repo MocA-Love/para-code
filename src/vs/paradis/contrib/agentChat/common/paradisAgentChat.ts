@@ -128,8 +128,16 @@ export interface IParadisAgentChatMessage {
 	 * 分けて、小さな灰色の 1 行で出す。古いアプリは知らない項目として無視し、これまでどおり本文として出す。
 	 */
 	readonly notice?: true;
-	/** 知らせの出どころ。`command` はスラッシュコマンドの出力（読み上げの文言を分ける）。無ければ Para Code からの知らせ。 */
-	readonly noticeSource?: 'command';
+	/**
+	 * 知らせの出どころ。無ければ Para Code からの知らせ。
+	 * - `command`: スラッシュコマンドの出力（読み上げの文言を分ける）
+	 * - `compaction`: コンテキストを圧縮した区切り（{@link compaction} に手動・自動とトークン数）
+	 * - `compact-summary`: 圧縮で作られた要約（本文は先頭だけ。全文は 'tool-full' で取り寄せる）
+	 * 古いアプリは知らない値として、灰色の 1 行で出す。
+	 */
+	readonly noticeSource?: 'command' | 'compaction' | 'compact-summary';
+	/** `noticeSource: 'compaction' | 'compact-summary'` に付く、圧縮の中身。{@link IParadisAgentCompactionInfo} */
+	readonly compaction?: IParadisAgentCompactionInfo;
 	/** Advisor の呼び出し（tool_use）と結果（tool_result）に付く。{@link IParadisAgentAdvisorInfo} */
 	readonly advisor?: IParadisAgentAdvisorInfo;
 	/**
@@ -149,6 +157,31 @@ export interface IParadisAgentChatMessage {
 	 * 実体は 'tool-image' で別途取り寄せる。
 	 */
 	readonly images?: readonly IParadisAgentChatImage[];
+}
+
+/**
+ * コンテキストの圧縮（Claude Code の `system/compact_boundary` と `isCompactSummary` の要約、Codex の `compacted`）。
+ * 取れた項目だけを持つ（Codex は手動・自動もトークン数も rollout に無い）。
+ */
+export interface IParadisAgentCompactionInfo {
+	/** 手動（`/compact`）か、上限に近づいて自動で圧縮したか。 */
+	readonly trigger?: 'manual' | 'auto';
+	/** 圧縮の前後のコンテキストのトークン数（Claude Code の `compactMetadata.preTokens` / `postTokens`）。 */
+	readonly tokensBefore?: number;
+	readonly tokensAfter?: number;
+	/** `compact-summary`: 要約の全体の文字数（本文は先頭だけを送る）。 */
+	readonly summaryChars?: number;
+}
+
+/**
+ * 承認・質問以外の画面（`/config`・`/model` の一覧など）が PC の Claude Code でキーを持っている（agent.panel.v1）。
+ * mod（Claude Mods）の `dialogCheck` で確かめたときだけ送る。閉じたら `null`。
+ */
+export interface IParadisAgentPanel {
+	/** モバイルから送って開いたコマンドの名前（`/` 無し）。PC で開いたなど分からなければ無い。 */
+	readonly command?: string;
+	/** 開いていると分かった時刻（PC の時計）。 */
+	readonly since: number;
 }
 
 /** transcript確定前に表示する一時的な実行状況。履歴revには含めず、常に最新値で置換する。 */

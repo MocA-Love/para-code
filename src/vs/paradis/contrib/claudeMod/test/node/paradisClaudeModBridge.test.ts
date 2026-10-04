@@ -459,7 +459,8 @@ suite('ParadisClaudeModBridge', () => {
 		const panelPoll = call('commands', { busy: false, features });
 		await flushRequests();
 		const late: (string | undefined)[] = [];
-		const opening = bridge.runCommand(TOKEN, SESSION, 'config', '', message => late.push(message));
+		let finished = 0;
+		const opening = bridge.runCommand(TOKEN, SESSION, 'config', '', message => late.push(message), () => finished++);
 		const [panel] = (await panelPoll).body.commands as { id: string }[];
 		await call('ack', { id: panel.id, received: true });
 		const opened = await opening;
@@ -469,11 +470,13 @@ suite('ParadisClaudeModBridge', () => {
 			refused: await refusing,
 			opened,
 			late,
+			finished,
 		}, {
 			command: { kind: 'commandRun', command: 'nope', args: 'a b' },
 			refused: { outcome: 'refused', message: 'no command named /nope in this session' },
-			opened: { outcome: 'accepted' },
+			opened: { outcome: 'accepted', running: true },
 			late: ['closed badly'],
+			finished: 1,
 		});
 	});
 
