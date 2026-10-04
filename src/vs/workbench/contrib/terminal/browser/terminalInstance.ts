@@ -98,6 +98,8 @@ import { hasKey, isNumber, isString } from '../../../../base/common/types.js';
 // PARA-PATCH: read the Para Code space-switch input gate so keystrokes are not delivered to a
 // terminal whose owning space is being swapped out from under the user
 import { paradisIsTerminalInputBlocked } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalInputGate.js';
+// PARA-PATCH: drop xterm.js mouse reports with NaN coordinates before they reach the pty
+import { paradisSanitizeTerminalInput } from '../../../../paradis/contrib/terminalMouseReport/common/paradisTerminalMouseReport.js';
 
 const enum Constants {
 	/**
@@ -693,6 +695,11 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 	}
 
 	private async _handleOnData(data: string): Promise<void> {
+		// PARA-PATCH: xterm.js sends `\x1b[<0;NaN;NaNm` when a terminal leaves the DOM mid-click; drop such reports
+		data = paradisSanitizeTerminalInput(data, this._logService);
+		if (!data) {
+			return;
+		}
 		await this._processManager.write(data);
 		this._onDidInputData.fire(data);
 	}
