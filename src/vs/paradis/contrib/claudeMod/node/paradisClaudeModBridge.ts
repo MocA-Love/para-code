@@ -17,6 +17,7 @@
 //    PC（TUI）が先に答えたら mod の `settle`、または Para Code が観測から決着を知って、待ちを即座に返す
 //    （`$.http.fetch` には中断が無いので、打ち切るのは受け口の側）
 //  - 送信（`commands` / `ack`）: エージェントが待機中のときだけ、モバイルの発言を mod の `$.prompt.submit` で送る
+//  - 停止（`commands` / `ack`）: バックグラウンドのシェルを mod の `$.tool.call({ tool: 'TaskStop' })` で止める（{@link ParadisClaudeModBridge.stopTask}）
 //
 // mod が来ない・止まったペインでは何も起きない（今の hook・transcript・キーの経路だけで動く）。
 // shared process 内のモジュールシングルトン（hook バスと同じ方式。sharedProcessMain.ts で独立に登録される
@@ -131,6 +132,8 @@ export type ParadisClaudeModEvent = { readonly token: string; readonly sessionId
 	| { readonly type: 'tool.check'; readonly toolUseId: string; readonly tool: string }
 	/** 質問・承認の待ちが増えた・終わった（ParadisMobileAgentChat がカードの選択肢を直す）。 */
 	| { readonly type: 'pending-changed'; readonly kind: 'question' | 'permission' }
+	/** {@link ParadisClaudeModBridge.isAlive} の答えが変わった（来た・途絶えた・ペインが消えた）。停止の可否を送り直すのに使う。 */
+	| { readonly type: 'alive-changed'; readonly alive: boolean }
 );
 
 export interface IParadisClaudeModReply {
@@ -140,10 +143,24 @@ export interface IParadisClaudeModReply {
 	readonly onNotDelivered?: () => void;
 }
 
-/** 送った発言の行方（{@link ParadisClaudeModBridge.submitPrompt}）。 */
-export type ParadisClaudeModSubmitResult = 'accepted' | 'unavailable' | 'refused' | 'unconfirmed';
+/**
+ * 止める頼みの行方（{@link ParadisClaudeModBridge.stopTask}）。
+ * - `stopped`: mod が TaskStop を呼び、止まったと答えた
+ * - `refused`: mod が TaskStop を呼んだが止まらなかった（もう終わっていた等。`message` に Claude Code の文面）
+ * - `unavailable`: mod へ渡せなかった
+ * - `unconfirmed`: 渡したが答えが来なかった
+ */
+export type ParadisClaudeModStopResult = { readonly outcome: 'stopped' | 'refused' | 'unavailable' | 'unconfirmed'; readonly message?: string };
 
-type SubmitOutcome = 'ok' | 'received' | 'refused' | 'undelivered';
+/** 送った発言の行方（{@link ParadisClaudeModBridge.submitPrompt}）。 */
+export type ParadisClaudeModSubmitResult = 'accepted' | 'unavailable' | 'refused' | 'unconfirmed' | 'busy';
+
+/** busy: mod が別の発言を送っている最中で断った（ack の `reason: 'busy'`）。何も送っていない。 */
+type SubmitOutcome = 'ok' | 'received' | 'refused' | 'undelivered' | 'busy';
+/** 渡した発言のターンが始まる（`turn.start`）のを待つ上限。過ぎたら busy の保持をやめる。 */
+const HELD_BUSY_BEFORE_TURN_MS = 30_000;
+/** ターンが始まってから busy を保持する上限（`turn.complete` が来ないまま固まらないように）。 */
+const HELD_BUSY_TURN_MS = 10 * 60_000;
 /** 「受け取った」の後、最後の ack（送れたか）を待つ上限。過ぎたら失敗の知らせは出さない。 */
 const SUBMIT_FINAL_ACK_MS = 10 * 60_000;
 
@@ -170,9 +187,19 @@ interface IPendingItem {
 interface ISessionState {
 	lastSeen: number;
 	busy: boolean;
+	/**
+	 * mod に発言を渡した（`received` / `ok`）。その発言のターンが終わる（本会話の `turn.complete`）まで busy を下ろさない。
+	 * mod のポーリングは `$.prompt.submit` を待たずに `busy: false` で来ることがあり、それで下ろすと次の発言を mod へ
+	 * 渡してしまう（mod は 1 通ずつしか送らず、2 通目は断る）。
+	 */
+	heldBusy: boolean;
+	/** {@link heldBusy} を下ろす期限（received から 30 秒。ターンが始まったら 10 分）。 */
+	heldBusyUntil?: number;
+	/** mod の最後のポーリングが言った busy（保持をやめたときに戻す値）。 */
+	pollBusy: boolean;
 	commandWaiter?: (commands: readonly Record<string, unknown>[]) => void;
-	/** 渡した発言の id → その行方を知らせる口（ack・会話の行・書けなかった知らせのどれか早いもの）。 */
-	readonly acks: Map<string, (outcome: SubmitOutcome) => void>;
+	/** 渡した発言の id → その行方を知らせる口（ack・会話の行・書けなかった知らせのどれか早いもの）。停止の頼みは ack の文面も渡す。 */
+	readonly acks: Map<string, (outcome: SubmitOutcome, message?: string) => void>;
 	/** 渡した発言の id → 本文（mod の会話の行で受理を確かめるため）。 */
 	readonly submitted: Map<string, string>;
 	readonly pickups: Set<() => void>;
@@ -229,6 +256,8 @@ export class ParadisClaudeModBridge {
 	readonly onEvent: Event<ParadisClaudeModEvent> = this._onEvent.event;
 
 	private readonly sessions = new Map<string, ISessionState>();
+	/** 会話ごとに最後に知らせた生き死に（`alive-changed` を境目でだけ出すため）。 */
+	private readonly aliveNotified = new Map<string, boolean>();
 	/** 会話（`token\0sessionId`）→ 送り主をそのペインのプロセスだと確かめた時刻。 */
 	private readonly callerVerifiedAt = new Map<string, number>();
 	private readonly pending = new Map<string, IPendingItem>();
@@ -299,13 +328,14 @@ export class ParadisClaudeModBridge {
 			case 'wait': return this.waitFor(token, sessionId, id(request.id), signal);
 			case 'settle': return this.handleSettle(token, sessionId, request.ids);
 			case 'commands':
-				state.busy = request.busy === true;
+				state.pollBusy = request.busy === true;
+				state.busy = state.pollBusy || this.holdsBusy(state);
 				return this.waitForCommands(token, state, signal);
 			case 'ack': {
 				const commandId = id(request.id);
 				if (commandId !== undefined) {
 					// received: mod が受け取り、これから `$.prompt.submit` する。その後はキーへ戻さない（二重に送らない）
-					state.acks.get(commandId)?.(request.received === true ? 'received' : request.ok === true ? 'ok' : 'refused');
+					state.acks.get(commandId)?.(request.received === true ? 'received' : request.ok === true ? 'ok' : request.reason === 'busy' ? 'busy' : 'refused', text(request.message, 500));
 				}
 				return { status: 200, body: {} };
 			}
@@ -338,12 +368,28 @@ export class ParadisClaudeModBridge {
 		const key = this.sessionKey(token, sessionId);
 		let state = this.sessions.get(key);
 		if (state === undefined) {
-			state = { lastSeen: this.now(), busy: false, acks: new Map(), submitted: new Map(), pickups: new Set() };
+			state = { lastSeen: this.now(), busy: false, heldBusy: false, pollBusy: false, acks: new Map(), submitted: new Map(), pickups: new Set() };
 			this.sessions.set(key, state);
 			this.ensureSweep();
 		}
 		state.lastSeen = this.now();
+		this.noteAlive(token, sessionId);
 		return state;
+	}
+
+	/** 生き死にが前に知らせたものと変わっていれば `alive-changed` を出す。 */
+	private noteAlive(token: string, sessionId: string): void {
+		const key = this.sessionKey(token, sessionId);
+		const alive = this.isAlive(token, sessionId);
+		if ((this.aliveNotified.get(key) ?? false) === alive) {
+			return;
+		}
+		if (alive) {
+			this.aliveNotified.set(key, true);
+		} else {
+			this.aliveNotified.delete(key);
+		}
+		this.fire({ token, sessionId, at: this.now(), type: 'alive-changed', alive });
 	}
 
 	/** state が無い（送り主を確かめていない）ときは、会話の行と生成中の文章だけを受ける。 */
@@ -401,6 +447,9 @@ export class ParadisClaudeModBridge {
 				case 'turn.start': {
 					const turnId = id(event.turnId);
 					if (turnId !== undefined && state !== undefined) {
+						if (state.heldBusy) {
+							state.heldBusyUntil = this.now() + HELD_BUSY_TURN_MS;
+						}
 						state.busy = true;
 						this.fire({ ...base, type: 'turn.start', turnId });
 					}
@@ -412,6 +461,7 @@ export class ParadisClaudeModBridge {
 					if (turnId !== undefined && state !== undefined) {
 						if (agentId === undefined) {
 							state.busy = false;
+							this.releaseHeldBusy(state);
 							// ターンが終わった（Esc を含む）。残った待ちに答える相手はもう居ない
 							this.settleSession(token, sessionId, 'settled');
 						}
@@ -748,6 +798,10 @@ export class ParadisClaudeModBridge {
 				this.sessions.delete(key);
 			}
 		}
+		for (const key of new Set([...this.sessions.keys(), ...this.aliveNotified.keys()])) {
+			const separator = key.indexOf('\0');
+			this.noteAlive(key.slice(0, separator), key.slice(separator + 1));
+		}
 		for (const [key, at] of [...this.callerVerifiedAt]) {
 			if (now - at > CALLER_VERIFIED_TTL_MS) {
 				this.callerVerifiedAt.delete(key);
@@ -769,7 +823,24 @@ export class ParadisClaudeModBridge {
 
 	/** mod から見て本会話のターンが走っているか。 */
 	isBusy(token: string, sessionId: string): boolean {
-		return this.sessions.get(this.sessionKey(token, sessionId))?.busy === true;
+		const state = this.sessions.get(this.sessionKey(token, sessionId));
+		if (state !== undefined && state.heldBusy && !this.holdsBusy(state)) {
+			state.busy = state.pollBusy;
+		}
+		return state?.busy === true;
+	}
+
+	/** 渡した発言のために busy を保持しているか。期限を過ぎていたら下ろす。 */
+	private holdsBusy(state: ISessionState): boolean {
+		if (state.heldBusy && state.heldBusyUntil !== undefined && this.now() > state.heldBusyUntil) {
+			this.releaseHeldBusy(state);
+		}
+		return state.heldBusy;
+	}
+
+	private releaseHeldBusy(state: ISessionState): void {
+		state.heldBusy = false;
+		state.heldBusyUntil = undefined;
 	}
 
 	pendingQuestions(token: string, sessionId: string | undefined): IParadisClaudeModPendingQuestion[] {
@@ -821,29 +892,8 @@ export class ParadisClaudeModBridge {
 	 */
 	async submitPrompt(token: string, sessionId: string, promptText: string, onLateFailure?: () => void): Promise<ParadisClaudeModSubmitResult> {
 		const state = this.sessions.get(this.sessionKey(token, sessionId));
-		if (state === undefined) {
-			return 'unavailable';
-		}
-		if (state.commandWaiter === undefined) {
-			// 長いポーリングの張り直しの合間かもしれない。少しだけ待つ
-			const picked = await new Promise<boolean>(resolve => {
-				const pickup = () => {
-					clearTimeout(timer);
-					state.pickups.delete(pickup);
-					resolve(true);
-				};
-				const timer = setTimeout(() => {
-					state.pickups.delete(pickup);
-					resolve(false);
-				}, SUBMIT_PICKUP_MS);
-				state.pickups.add(pickup);
-			});
-			if (!picked) {
-				return 'unavailable';
-			}
-		}
-		const waiter = state.commandWaiter;
-		if (waiter === undefined) {
+		const waiter = state !== undefined ? await this.takeCommandWaiter(state) : undefined;
+		if (state === undefined || waiter === undefined) {
 			return 'unavailable';
 		}
 		const commandId = randomUUID();
@@ -858,7 +908,6 @@ export class ParadisClaudeModBridge {
 			state.acks.set(commandId, settle);
 			state.submitted.set(commandId, promptText);
 		});
-		state.commandWaiter = undefined;
 		waiter([{ id: commandId, kind: 'submit', text: promptText }]);
 		switch (await outcome) {
 			case 'received': {
@@ -868,18 +917,80 @@ export class ParadisClaudeModBridge {
 					clearTimeout(finalTimer);
 					state.acks.delete(commandId);
 					if (final === 'refused') {
+						// 送れなかった。この発言のターンは始まらない
+						// 送れなかった。この発言のターンは始まらないので、ポーリングの言う busy に戻す
+						this.releaseHeldBusy(state);
+						state.busy = state.pollBusy;
 						onLateFailure?.();
 					}
 				});
 				state.busy = true;
+				state.heldBusy = true;
+				state.heldBusyUntil = this.now() + HELD_BUSY_BEFORE_TURN_MS;
 				return 'accepted';
 			}
 			case 'ok':
 				state.busy = true;
+				// 最初の ack が送れた（received を経ていない）。保持はしない（ターンの始まり・終わりは mod の知らせで分かる）
 				return 'accepted';
 			case 'refused': return 'refused';
+			case 'busy': return 'busy';
 			case 'undelivered': return 'unavailable';
 			default: return 'unconfirmed';
+		}
+	}
+
+	/** コマンドの長いポーリングを取る。張り直しの合間かもしれないので少しだけ待つ。来なければ undefined。 */
+	private async takeCommandWaiter(state: ISessionState): Promise<((commands: readonly Record<string, unknown>[]) => void) | undefined> {
+		if (state.commandWaiter === undefined) {
+			const picked = await new Promise<boolean>(resolve => {
+				const pickup = () => {
+					clearTimeout(timer);
+					state.pickups.delete(pickup);
+					resolve(true);
+				};
+				const timer = setTimeout(() => {
+					state.pickups.delete(pickup);
+					resolve(false);
+				}, SUBMIT_PICKUP_MS);
+				state.pickups.add(pickup);
+			});
+			if (!picked) {
+				return undefined;
+			}
+		}
+		const waiter = state.commandWaiter;
+		state.commandWaiter = undefined;
+		return waiter;
+	}
+
+	/**
+	 * バックグラウンドのタスク（シェル）を mod の `$.tool.call({ tool: 'TaskStop', task_id })` で止める。
+	 * 許可のダイアログは出ず、transcript にも何も残らないので、止まったかは mod の ack だけで知る。
+	 */
+	async stopTask(token: string, sessionId: string, taskId: string): Promise<ParadisClaudeModStopResult> {
+		const state = this.sessions.get(this.sessionKey(token, sessionId));
+		const waiter = state !== undefined ? await this.takeCommandWaiter(state) : undefined;
+		if (state === undefined || waiter === undefined) {
+			return { outcome: 'unavailable' };
+		}
+		const commandId = randomUUID();
+		const outcome = new Promise<{ readonly outcome: SubmitOutcome; readonly message?: string } | undefined>(resolve => {
+			const settle = (value: SubmitOutcome | undefined, message?: string) => {
+				clearTimeout(timer);
+				state.acks.delete(commandId);
+				resolve(value !== undefined ? { outcome: value, ...(message !== undefined ? { message } : {}) } : undefined);
+			};
+			const timer = setTimeout(() => settle(undefined), SUBMIT_ACK_MS);
+			state.acks.set(commandId, settle);
+		});
+		waiter([{ id: commandId, kind: 'taskStop', taskId }]);
+		const result = await outcome;
+		switch (result?.outcome) {
+			case 'ok': return { outcome: 'stopped', ...(result.message !== undefined ? { message: result.message } : {}) };
+			case 'refused': return { outcome: 'refused', ...(result.message !== undefined ? { message: result.message } : {}) };
+			case 'undelivered': return { outcome: 'unavailable' };
+			default: return { outcome: 'unconfirmed' };
 		}
 	}
 
@@ -896,6 +1007,11 @@ export class ParadisClaudeModBridge {
 				this.sessions.delete(key);
 			}
 		}
+		for (const key of [...this.aliveNotified.keys()]) {
+			if (key.startsWith(`${token}\0`)) {
+				this.noteAlive(token, key.slice(token.length + 1));
+			}
+		}
 		for (const key of [...this.callerVerifiedAt.keys()]) {
 			if (key.startsWith(`${token}\0`)) {
 				this.callerVerifiedAt.delete(key);
@@ -906,3 +1022,19 @@ export class ParadisClaudeModBridge {
 
 /** shared process に 1 つだけ（hook バスと同じ方式）。 */
 export const paradisClaudeModBridge = new ParadisClaudeModBridge();
+
+/**
+ * mod が別の発言の最中で断った（busy）2 通目を、1 通目の行方が分かるまで待つ。`previous` が無ければすぐ、
+ * 上限（`timeoutMs`）を過ぎたら待つのをやめる（呼び出し側はその後キーで送る）。
+ */
+export async function paradisClaudeModWaitForPrevious(previous: Promise<unknown> | undefined, timeoutMs: number): Promise<void> {
+	if (previous === undefined) {
+		return;
+	}
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		await Promise.race([previous.then(() => undefined, () => undefined), new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs); })]);
+	} finally {
+		clearTimeout(timer);
+	}
+}

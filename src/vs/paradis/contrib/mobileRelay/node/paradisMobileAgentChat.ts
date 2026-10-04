@@ -56,13 +56,15 @@ import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/pa
 import { IParadisHistoryCursor, PARADIS_HISTORY_FILE_CAP, PARADIS_HISTORY_PAGE_LIMIT, paradisDecodeHistoryCursor, paradisEncodeHistoryCursor, paradisHistoryCursorHasMore, paradisReadTranscriptHistory } from './paradisAgentChatHistory.js';
 import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
 import { IParadisClaudeTranscriptPrefixMatch, ParadisHookTranscriptSightings, paradisClaudeTranscriptIsBackground, paradisClaudeTranscriptSessionKind, paradisFindClaudeTranscriptByIdPrefix, paradisListClaudeTranscriptsByIdPrefixAcrossProjects } from './paradisClaudeBackgroundSessions.js';
-import { ParadisClaudeModBridge, paradisClaudeModBridge, ParadisClaudeModEvent, IParadisClaudeModPendingPermission, IParadisClaudeModPendingQuestion } from '../../claudeMod/node/paradisClaudeModBridge.js';
+import { ParadisClaudeModBridge, paradisClaudeModBridge, paradisClaudeModWaitForPrevious, ParadisClaudeModEvent, IParadisClaudeModPendingPermission, IParadisClaudeModPendingQuestion } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { paradisIsDisplayOnlyModRow } from '../../claudeMod/common/paradisClaudeMod.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
+import { IParadisAgentShell, paradisShellsAccess, paradisShellsForStoppedPane } from '../../agentChat/common/paradisAgentShells.js';
+import { IParadisAgentShellsField, ParadisAgentShellInbound, ParadisAgentShellOutbound, paradisClaudeSessionIdFromTranscript, paradisHandleShellRequest, paradisIsValidShellRequest } from './paradisAgentShellOutput.js';
 import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
 // 会話の型と transcript の正規化は、デスクトップのチャット表示と共有するため agentChat/common へ
@@ -147,12 +149,14 @@ type AgentInbound =
 	 * 古い発言を求める（W2-30、`agent.history.page.v1`）。`beforeRev` はモバイルが持っているいちばん古い発言の rev。
 	 * `cursor` が無ければ PC のメモリ（リング）から、あれば前回の返事の `cursor` の位置から記録ファイルを後ろへ読む。
 	 */
-	| { t: 'history'; id: number; token?: string; requestId: string; epoch: string; beforeRev: number; cursor?: string; limit?: number };
+	| { t: 'history'; id: number; token?: string; requestId: string; epoch: string; beforeRev: number; cursor?: string; limit?: number }
+	/** バックグラウンドのシェルの出力の末尾と停止（`agent.shells.v1`。paradisAgentShellOutput.ts）。 */
+	| ParadisAgentShellInbound;
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number }
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number }
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } & IParadisAgentShellsField
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } & IParadisAgentShellsField
 	| { t: 'command-catalog'; id: number; requestId: string; commands: readonly IParadisAgentCommandOption[] }
 	| { t: 'command-catalog-error'; id: number; requestId: string; message: string }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
@@ -172,6 +176,7 @@ type AgentOutbound =
 	 * `capped`（1 ペインで読める上限に達した）。
 	 */
 	| { t: 'history'; id: number; requestId: string; epoch: string; messages?: readonly IParadisAgentChatMessage[]; cursor?: string; hasMore?: boolean; capped?: true; error?: string }
+	| ParadisAgentShellOutbound
 	| { t: 'none'; id: number };
 
 /**
@@ -332,6 +337,8 @@ const MOD_ROW_LEDGER_LIMIT = 2_000;
 const MOD_ANSWER_LOCK_MS = 60_000;
 /** mod が生成中の文章を流している間、MessageDisplay hook の先出しを使わない時間。 */
 const MOD_STREAM_PREFERRED_MS = 5 * 60_000;
+/** mod が busy で断った発言を、1 通目の行方が分かるまで待つ上限。過ぎたらキーで送る。 */
+const MOD_BUSY_WAIT_MS = 15_000;
 
 /** hook 由来の承認の選択肢（許可 / 拒否）。モバイルは画面の番号付きの選択肢を求めることがある（W2-21）。 */
 const PARADIS_DEFAULT_APPROVAL_CHOICES: readonly IParadisAgentApprovalChoice[] = Object.freeze([
@@ -884,6 +891,8 @@ function parseAgentInbound(value: unknown): AgentInbound | undefined {
 		case 'tool-full': return isValidToolFullRequest(msg) ? msg : undefined;
 		case 'tool-image': return isValidToolImageRequest(msg) ? msg : undefined;
 		case 'history': return isValidHistoryRequest(msg) ? msg : undefined;
+		case 'shell-output':
+		case 'action/stopShell': return isValidControlRequest(msg) && paradisIsValidShellRequest(msg) ? msg as ValidControlRequest & ParadisAgentShellInbound : undefined;
 		default: return undefined;
 	}
 }
@@ -2988,6 +2997,34 @@ class TranscriptTailer {
 		return this.monitorWatch.snapshot();
 	}
 
+	/** バックグラウンドのシェルの一覧（Monitor と同じ係が追う）。 */
+	shells(): IParadisAgentShell[] {
+		return this.monitorWatch.shellSnapshot();
+	}
+
+	shellOutputFile(shellId: string): string | undefined {
+		return this.monitorWatch.shellOutputFile(shellId);
+	}
+
+	isShellRunning(shellId: string): boolean {
+		return this.monitorWatch.isShellRunning(shellId);
+	}
+
+	/** アプリから止めた（transcript に残らない）。変われば onMonitors で一覧を送る。 */
+	markShellStoppedFromMobile(shellId: string): void {
+		this.monitorWatch.markShellStoppedFromMobile(shellId);
+	}
+
+	/** 出力ファイルの最後の行が印ではなかった（推定の終わりを取り消す）。 */
+	markShellRunningFromOutput(shellId: string): void {
+		this.monitorWatch.markShellRunningFromOutput(shellId);
+	}
+
+	/** 出力ファイルの最後の印で終わりが分かった（推定）。 */
+	markShellEndedFromOutput(shellId: string, end: { readonly status: 'completed' | 'failed' | 'stopped'; readonly exitCode?: number }): void {
+		this.monitorWatch.markShellEndedFromOutput(shellId, end);
+	}
+
 	/**
 	 * Claude Code のセッションが終わった（SessionEnd hook）。Monitor はプロセスと一緒に止まるが
 	 * transcript には何も残らないので、動いていたものを「停止（推定）」にする。
@@ -3088,7 +3125,7 @@ class TranscriptTailer {
 		}
 		if (signals.codexActivityTimeline.length > 0) { this.delegate.onCodexActivityTimeline(signals.codexActivityTimeline); }
 		// 初回読み込み・読み直し（live でない）では知らせない。その後の snapshot が一覧を運ぶ。
-		this.monitorWatch.apply(signals.monitorSignals, live);
+		this.monitorWatch.apply(signals.monitorSignals, live, signals.shellSignals);
 		// ターン終了はライブ追記でのみ通知する（初回読み込み・epoch読み直しの履歴に含まれる
 		// 過去の task_complete で、現在進行中のライブ状態を消してしまわないように）。
 		if (live && signals.turnEnded !== undefined) {
@@ -3280,6 +3317,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly activityDetailRequests = new Map<string, string>();
 	/** 記録ファイルから古い発言を読んでいるペイン（1 ペインで同時に 1 本。W2-30）。 */
 	private readonly historyReads = new Set<string>();
+	/** バックグラウンドのシェルの出力を読んでいるペイン（1 ペインで同時に 1 本。agent.shells.v1）。 */
+	private readonly shellOutputReads = new Set<string>();
+	/** 最後に送った `shellsAccess`（mod の生き死にで変わったら送り直す）。 */
+	private readonly shellsAccessSent = new Map<string, string>();
 	/** 送信中の 'tool-image': `mobileId\0requestId` → token。1件あたり数MBのため同時数を抑える。 */
 	private readonly toolImageRequests = new Map<string, string>();
 	private readonly persistedActivityTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -4045,6 +4086,53 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'history':
 				this.handleHistoryRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] history failed', err));
 				break;
+			case 'shell-output':
+			case 'action/stopShell':
+				this.handleShellRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] background shell request failed', err));
+				break;
+		}
+	}
+
+	/**
+	 * バックグラウンドのシェルの出力の末尾（`shell-output`）と停止（`action/stopShell`）。agent.shells.v1。
+	 * 出力のパスは transcript で覚えたものだけを使い、SSH・WSL・Windows では読まない・止めない（`shellsAccess`）。
+	 * 止めるのは mod（Claude Mods）の TaskStop だけで、transcript に残らないので ack で一覧を「停止」に直す。
+	 */
+	private async handleShellRequest(mobileId: string, msg: ParadisAgentShellInbound): Promise<void> {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const valid = token !== undefined && tailer !== undefined && tailer.agent === 'claude' && tailer.epoch === msg.epoch && this.hasSubscriber(token, mobileId);
+		await paradisHandleShellRequest(msg, valid ? {
+			// 出力の置き場も mod も、tailer が読んでいる transcript の会話のもの
+			key: token, access: this.shellsAccessFor(token, tailer), sessionId: paradisClaudeSessionIdFromTranscript(tailer.transcriptPath), reads: this.shellOutputReads,
+			outputFile: shellId => tailer.shellOutputFile(shellId),
+			isRunning: shellId => tailer.isShellRunning(shellId),
+			markOutputEnded: (shellId, end) => tailer.markShellEndedFromOutput(shellId, end),
+			markOutputRunning: shellId => tailer.markShellRunningFromOutput(shellId),
+			markStopped: shellId => this.tailers.get(token)?.markShellStoppedFromMobile(shellId),
+			stopTask: (sessionId, shellId) => this.claudeModBridge.stopTask(token, sessionId, shellId),
+			log: message => this.logService.info(message),
+		} : undefined, reply => this.sendTo(mobileId, { ...reply, id: msg.id, requestId: msg.requestId }, token ?? msg.token));
+	}
+
+	/** この構成でシェルの出力と停止を使えるか（SSH・WSL・Windows では使えない。停止は mod が生きているときだけ）。 */
+	private shellsAccessFor(token: string, tailer: TranscriptTailer) {
+		const cwd = this.tokenToCwd.get(token);
+		const where = this.isRemoteAgentPane(token) ? 'ssh' as const
+			: cwd !== undefined && paradisResolveAgentHomes(cwd).wsl !== undefined ? 'wsl' as const
+				: process.platform === 'win32' ? 'windows' as const : undefined;
+		return paradisShellsAccess(where, this.claudeModBridge.isAlive(token, paradisClaudeSessionIdFromTranscript(tailer.transcriptPath)));
+	}
+
+	/** mod の生き死に（`alive-changed`・`hello`・`bye`・`pending-changed`）で停止の可否が変わったら、一覧ごと送り直す。 */
+	private resendShellsAccessIfChanged(token: string): void {
+		const tailer = this.tailers.get(token);
+		const terminalId = this.terminalIdForToken(token);
+		if (tailer === undefined || tailer.agent !== 'claude' || terminalId === undefined) {
+			return;
+		}
+		if (JSON.stringify(this.shellsAccessFor(token, tailer)) !== this.shellsAccessSent.get(token)) {
+			this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...this.monitorsField(token, tailer) });
 		}
 	}
 
@@ -5296,6 +5384,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly modAnswered = new Map<string, number>();
 	/** mod で送っている最中の発言（actionKey）。同じ requestId の二度目を弾く。 */
 	private readonly modSendRequests = new Set<string>();
+	/** ペインごとに、mod へ渡して行方を待っている発言（受け取った・送れた・失敗で決着する）。 */
+	private readonly modSendsInFlight = new Map<string, Promise<void>>();
 	/** mod の承認に合うカードが無いときに、自前で出すまでの待ち（hook のカードが先に来るのを待つ）。 */
 	private readonly modApprovalTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -5305,6 +5395,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		// ペインの今の会話から来たものだけ使う（同じペインで別に起動した claude -p などは無視する）
 		if (session === undefined || session.agent !== 'claude' || session.sessionId !== event.sessionId || !this.isLiveToken(token)) {
 			return;
+		}
+		if (event.type === 'alive-changed' || event.type === 'hello' || event.type === 'bye' || event.type === 'pending-changed') {
+			this.resendShellsAccessIfChanged(token);
 		}
 		switch (event.type) {
 			case 'row': {
@@ -5746,7 +5839,21 @@ export class ParadisMobileAgentChat extends Disposable {
 			// allow-any-unicode-next-line
 			this.tailers.get(token)?.injectNotice(`送れませんでした: ${head.length > 60 ? `${head.slice(0, 60)}…` : head}`);
 		};
-		this.claudeModBridge.submitPrompt(token, sessionId, text, onLateFailure).then(async result => {
+		// mod は 1 通ずつしか送らず、最中に渡した 2 通目は busy で断る。
+		// そのときは 1 通目の行方（受け取った・送れた・失敗）が分かるまで待ってからキーで送る（先に打つと順番が入れ替わる）
+		const previousModSend = this.modSendsInFlight.get(token);
+		const sending = this.claudeModBridge.submitPrompt(token, sessionId, text, onLateFailure);
+		const settled = sending.then(() => undefined, () => undefined);
+		this.modSendsInFlight.set(token, settled);
+		void settled.then(() => {
+			if (this.modSendsInFlight.get(token) === settled) {
+				this.modSendsInFlight.delete(token);
+			}
+		});
+		sending.then(async result => {
+			if (result === 'busy') {
+				await paradisClaudeModWaitForPrevious(previousModSend, MOD_BUSY_WAIT_MS);
+			}
 			if (result === 'unconfirmed') {
 				// mod から返事が無い。transcript にこの発言が入っていれば送れている（入っていなければキーで送る）
 				await this.tailers.get(token)?.afterQueue(() => { });
@@ -5985,6 +6092,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (!live.has(token)) {
 				this.desktopExitedTokens.delete(token);
 				this.sessionEndedAt.delete(token);
+			}
+		}
+		for (const token of [...this.shellsAccessSent.keys()]) {
+			if (!live.has(token)) {
+				this.shellsAccessSent.delete(token);
 			}
 		}
 		let changed = false;
@@ -7831,17 +7943,25 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 「停止（推定）」にして送る。推定は tailer のメモリにしか無く、作り直すと再生で running に戻るため、
 	 * 送るたびにここで判定する。
 	 */
-	private monitorsField(token: string, tailer: TranscriptTailer): { monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } {
+	private monitorsField(token: string, tailer: TranscriptTailer): { monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } & IParadisAgentShellsField {
 		if (tailer.agent !== 'claude') {
 			return {};
 		}
 		const monitors = tailer.monitors();
+		const shells = tailer.shells();
 		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
-		return { monitors: paneStopped ? paradisMonitorsForStoppedPane(monitors, this.sessionEndedAt.get(token)) : monitors, monitorsAt: Date.now() };
+		const now = Date.now();
+		const shellsAccess = this.shellsAccessFor(token, tailer);
+		this.shellsAccessSent.set(token, JSON.stringify(shellsAccess));
+		return {
+			monitors: paneStopped ? paradisMonitorsForStoppedPane(monitors, this.sessionEndedAt.get(token)) : monitors, monitorsAt: now,
+			// バックグラウンドのシェル（agent.shells.v1）も同じ決まりで送る。出力と停止の可否を添える
+			shells: paneStopped ? paradisShellsForStoppedPane(shells, this.sessionEndedAt.get(token)) : shells, shellsAt: now, shellsAccess,
+		};
 	}
 
 	/** {@link monitorsField} の判定をテストから確かめるため。 */
-	monitorsForTest(token: string): { monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } | undefined {
+	monitorsForTest(token: string): ({ monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } & IParadisAgentShellsField) | undefined {
 		const tailer = this.tailers.get(token);
 		return tailer !== undefined ? this.monitorsField(token, tailer) : undefined;
 	}

@@ -9,7 +9,7 @@
 // into the folder it tests, so test a copy (see NOTES.md, "Claude Mods").
 
 import type { On } from 'claude-code';
-import { describe, expect, mock, test, type Engine } from 'claude-code/testing';
+import { describe, expect, mock, test, type Engine, type MockClock } from 'claude-code/testing';
 
 type Json = Record<string, unknown>;
 
@@ -28,12 +28,12 @@ const QUESTIONS = [{
 }];
 
 /** Para Code as the mod sees it: the pane's environment, the port file and the loopback endpoint. */
-function fakeParaCode(on: On, handlers: Readonly<Record<string, (body: Json) => Json>>, recorded: IRecorded[], withPane = true): void {
+function fakeParaCode(on: On, handlers: Readonly<Record<string, (body: Json) => Json>>, recorded: IRecorded[], withPane = true, sessionId: () => string = () => 'session-1'): MockClock {
 	mock.env(on, withPane ? { PARA_CODE_TERMINAL_PANE_ID: 'pane-token', PARA_CODE_MCP_PORT_FILE: PORT_FILE } : {});
-	// Holds the command loop's timer: the tests drive the hooks, not the loop.
-	mock.clock(on);
+	// Holds the command loop's timer: the tests drive the hooks, and move the clock to run the loop.
+	const clock = mock.clock(on);
 	on('fs.read', ($, e) => e.path === PORT_FILE ? { value: '{"port":47999}' } : { deny: 'no such file' });
-	on('session.id', () => ({ value: 'session-1' }));
+	on('session.id', () => ({ value: sessionId() }));
 	on('session.start', ($, e) => ({ cwd: e.cwd }));
 	on('http.fetch', ($, e) => {
 		const op = e.url.slice(e.url.lastIndexOf('/') + 1);
@@ -42,6 +42,7 @@ function fakeParaCode(on: On, handlers: Readonly<Record<string, (body: Json) => 
 		const handler = handlers[op];
 		return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(handler !== undefined ? handler(body) : {}) } };
 	});
+	return clock;
 }
 
 async function startSession($: Engine): Promise<void> {
@@ -174,6 +175,136 @@ describe('para-code mod', () => {
 		const decided = await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'ls' } });
 		expect(decided).toEqual({});
 		expect(recorded.some(entry => entry.op === 'wait')).toBe(false);
+	});
+
+	test('a stop from the phone calls TaskStop and acks the outcome', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		let handed = false;
+		const clock = fakeParaCode(on, {
+			commands: () => {
+				if (handed) {
+					return { commands: [] };
+				}
+				handed = true;
+				return { commands: [{ id: 'c1', kind: 'taskStop', taskId: 'b123abc' }, { id: 'c2', kind: 'taskStop', taskId: '../bad' }] };
+			},
+		}, recorded);
+		const stopped: unknown[] = [];
+		on('tool.call', ($, e) => {
+			stopped.push({ tool: e.tool, task_id: (e as unknown as Json).task_id });
+			return { result: { message: 'Successfully stopped task: b123abc (sleep 600)', task_id: 'b123abc', task_type: 'local_bash' } };
+		});
+		await startSession($);
+		await clock.advance(1);
+		await clock.settle();
+		expect({ stopped, acks: recorded.filter(entry => entry.op === 'ack').map(entry => entry.body) }).toEqual({
+			stopped: [{ tool: 'TaskStop', task_id: 'b123abc' }],
+			acks: [{ sessionId: 'session-1', id: 'c1', ok: true, message: 'Successfully stopped task: b123abc (sleep 600)' }],
+		});
+	});
+
+	test('a stop is not held behind a prompt that waits for the running turn to end', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		const handed: Json[][] = [[{ id: 's1', kind: 'submit', text: 'next please' }], [{ id: 'c1', kind: 'taskStop', taskId: 'b42' }]];
+		const clock = fakeParaCode(on, { commands: () => ({ commands: handed.shift() ?? [] }) }, recorded);
+		let finishTurn: (() => void) | undefined;
+		// The prompt is taken only once the running turn ends (what `$.prompt.submit` does while the agent works).
+		on('prompt.submit', ($, e, next) => new Promise(resolve => {
+			finishTurn = () => resolve(next(e));
+		}));
+		const stopped: unknown[] = [];
+		on('tool.call', ($, e) => {
+			stopped.push((e as unknown as Json).task_id);
+			return { result: { message: 'Successfully stopped task: b42', task_id: 'b42', task_type: 'local_bash' } };
+		});
+		await startSession($);
+		for (let i = 0; i < 5; i++) {
+			await clock.advance(1);
+		}
+		const whileWorking = { stopped: [...stopped], acks: recorded.filter(entry => entry.op === 'ack').map(entry => entry.body) };
+		finishTurn?.();
+		await clock.settle();
+		expect(whileWorking).toEqual({
+			stopped: ['b42'],
+			acks: [{ sessionId: 'session-1', id: 's1', received: true }, { sessionId: 'session-1', id: 'c1', ok: true, message: 'Successfully stopped task: b42' }],
+		});
+	});
+
+	test('a second prompt handed over while the first is still being submitted is refused, never sent', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		const handed: Json[][] = [[{ id: 's1', kind: 'submit', text: 'first' }], [{ id: 's2', kind: 'submit', text: 'second' }, { id: 's3', kind: 'submit', text: 'third' }]];
+		const clock = fakeParaCode(on, { commands: () => ({ commands: handed.shift() ?? [] }) }, recorded);
+		const submitted: string[] = [];
+		let finishTurn: (() => void) | undefined;
+		on('prompt.submit', ($, e, next) => {
+			submitted.push(e.text);
+			return new Promise(resolve => {
+				finishTurn = () => resolve(next(e));
+			});
+		});
+		await startSession($);
+		for (let i = 0; i < 5; i++) {
+			await clock.advance(1);
+		}
+		const acks = recorded.filter(entry => entry.op === 'ack').map(entry => entry.body);
+		finishTurn?.();
+		await clock.settle();
+		expect({ submitted, acks }).toEqual({
+			submitted: ['first'],
+			acks: [
+				{ sessionId: 'session-1', id: 's1', received: true },
+				{ sessionId: 'session-1', id: 's2', ok: false, reason: 'busy' },
+				{ sessionId: 'session-1', id: 's3', ok: false, reason: 'busy' },
+			],
+		});
+	});
+
+	test('a prompt handed over for a session that has since changed is refused, not sent', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		let session = 'session-1';
+		let handed = false;
+		const clock = fakeParaCode(on, {
+			commands: () => {
+				if (handed) {
+					return { commands: [] };
+				}
+				handed = true;
+				// /clear while the command poll was open: the prompt was asked for the old session
+				session = 'session-2';
+				return { commands: [{ id: 's9', kind: 'submit', text: 'for the old session' }] };
+			},
+		}, recorded, true, () => session);
+		const submitted: string[] = [];
+		on('prompt.submit', ($, e, next) => {
+			submitted.push(e.text);
+			return next(e);
+		});
+		await startSession($);
+		await clock.advance(1);
+		await clock.settle();
+		expect({ submitted, acks: recorded.filter(entry => entry.op === 'ack').map(entry => entry.body) }).toEqual({
+			submitted: [],
+			acks: [{ sessionId: 'session-1', id: 's9', ok: false }],
+		});
+	});
+
+	test('a TaskStop that is refused acks not ok with the reason', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		let handed = false;
+		const clock = fakeParaCode(on, {
+			commands: () => {
+				if (handed) {
+					return { commands: [] };
+				}
+				handed = true;
+				return { commands: [{ id: 'c3', kind: 'taskStop', taskId: 'b999' }] };
+			},
+		}, recorded);
+		on('tool.call', () => ({ deny: 'No task found with ID: b999' }));
+		await startSession($);
+		await clock.advance(1);
+		await clock.settle();
+		expect(recorded.filter(entry => entry.op === 'ack').map(entry => entry.body)).toEqual([{ sessionId: 'session-1', id: 'c3', ok: false, message: 'No task found with ID: b999' }]);
 	});
 
 	test('switches to curl only when a fresh fetch fails again while curl gets through', async ($, on) => {

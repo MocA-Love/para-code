@@ -81,6 +81,11 @@ export const ParadisMobileCapability = {
 	BrowserKeys: 'browser.keys.v1',
 	/** agent の snapshot / delta の任意項目 `monitors`（Claude Code の Monitor の一覧。`paradisAgentMonitors.ts`）。 */
 	AgentMonitors: 'agent.monitors.v1',
+	/**
+	 * agent の snapshot / delta の任意項目 `shells`・`shellsAt`・`shellsAccess`（Claude Code のバックグラウンドのシェル。
+	 * `paradisAgentShells.ts`）と、要求 `shell-output`（出力の末尾）・`action/stopShell`（Claude Mods の TaskStop で止める）。
+	 */
+	AgentShells: 'agent.shells.v1',
 	/** browser の `targets` の `windowId` / `ws` で、そのスペースのページだけを返す。fs の `openUrl` の `ws`（`paradisMobileBrowserProtocol.ts`）。 */
 	BrowserSpace: 'browser.space.v1',
 	/** browser の通知 `page`（URL・題名・読み込み中・戻る/進むの可否）と入力 `stop` / `open`。 */
@@ -171,6 +176,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentQuestionChat,
 	ParadisMobileCapability.FsAttachment,
 	ParadisMobileCapability.SystemHistory,
+	ParadisMobileCapability.AgentShells,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

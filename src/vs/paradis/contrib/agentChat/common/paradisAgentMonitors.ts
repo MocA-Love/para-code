@@ -16,10 +16,14 @@
 //    `<status>` は無い。時間切れも同じ形で `<event>` が `[Monitor timed out — re-arm if needed.]`
 //  - 終了: `<status>` 付きの通知（completed / killed / failed、次のセッションの冒頭に stopped）。
 //    バックグラウンドの Bash も同じ b 始まりの ID と形で終わるので、知らない ID は `Monitor "` で始まる要約のときだけ拾う
-//  - 停止: エージェントが TaskStop を呼ぶ（結果の `toolUseResult` に `task_id`）。TUI から止めた場合は何も残らない
+//  - 停止: エージェントが TaskStop を呼ぶ（結果の `toolUseResult` に `task_id`）。TUI から止めた場合は `queue-operation` の
+//    enqueue 行にだけ `<status>killed</status>` の通知が残る（{@link paradisQueueOperationSignals}）
 //
 // 通知はユーザーの発言（content が文字列）か、作業中なら `queued_command` の attachment として書かれる。
 // Node の API は使わない（パーサーと同じく common に置き、テストから直接呼ぶ）。
+// バックグラウンドの Bash（paradisAgentShells.ts）も同じ時計と同じ知らせの口で追う（{@link ParadisAgentMonitorWatch}）。
+
+import { IParadisAgentShell, IParadisShellSignal, ParadisAgentShellTracker, paradisShellNotificationSignals } from './paradisAgentShells.js';
 
 /** モバイルへ送る Monitor 1件（agent の snapshot / delta の任意項目 `monitors`）。 */
 export interface IParadisAgentMonitor {
@@ -200,6 +204,23 @@ export function paradisMonitorNotificationSignals(text: string, at: number): IPa
 		});
 	}
 	return out;
+}
+
+/**
+ * transcript の `queue-operation` 行（作業中に届いた通知・発言の待ち行列）から、終わりの手がかりを読む。
+ * TUI の x で止めたものはここにしか残らない。Monitor の出力の通知（`<event>`）は後から queued_command か user 行にも
+ * 同じものが時刻を変えて書かれ、数え直しになるので、ここでは状態の付いた終わりだけを拾う。
+ */
+export function paradisQueueOperationSignals(obj: Record<string, unknown>, at: number | undefined): { readonly monitors: IParadisMonitorSignal[]; readonly shells: IParadisShellSignal[] } {
+	const content = obj.operation === 'enqueue' && typeof obj.content === 'string' ? obj.content : undefined;
+	if (content === undefined || !content.trimStart().startsWith('<task-notification>')) {
+		return { monitors: [], shells: [] };
+	}
+	const when = at ?? Date.now();
+	return {
+		monitors: paradisMonitorNotificationSignals(content, when).filter(signal => signal.type === 'ended'),
+		shells: paradisShellNotificationSignals(content, when),
+	};
 }
 
 interface IMutableMonitor {
@@ -540,6 +561,8 @@ const DEFAULT_TIMERS: IParadisMonitorTimers = {
 export class ParadisAgentMonitorWatch {
 
 	private readonly tracker = new ParadisAgentMonitorTracker();
+	/** バックグラウンドの Bash（Monitor と同じ時計・同じ知らせの口を使う）。 */
+	private readonly shells = new ParadisAgentShellTracker();
 	private timer: unknown;
 	private disposed = false;
 
@@ -549,20 +572,61 @@ export class ParadisAgentMonitorWatch {
 	) { }
 
 	get size(): number {
-		return this.tracker.size;
+		return this.tracker.size + this.shells.size;
 	}
 
 	snapshot(): IParadisAgentMonitor[] {
 		return this.tracker.snapshot();
 	}
 
+	/** バックグラウンドのシェルの一覧（起動の古い順。時刻は PC の時計）。 */
+	shellSnapshot(): IParadisAgentShell[] {
+		return this.shells.snapshot();
+	}
+
+	/** シェルの出力ファイル（transcript で覚えたもの）。 */
+	shellOutputFile(taskId: string): string | undefined {
+		return this.shells.outputFileFor(taskId);
+	}
+
+	isShellRunning(taskId: string): boolean {
+		return this.shells.isRunning(taskId);
+	}
+
+	/** アプリから止めた（transcript に残らない）。変われば知らせる。 */
+	markShellStoppedFromMobile(taskId: string): void {
+		if (this.shells.markStoppedFromMobile(taskId, this.timers.now())) {
+			this.schedule();
+			this.onChange();
+		}
+	}
+
+	/** 出力ファイルの最後の行が印ではなかった（印から推定した終わりを取り消す）。変われば知らせる。 */
+	markShellRunningFromOutput(taskId: string): void {
+		if (this.shells.markRunningFromOutput(taskId)) {
+			this.schedule();
+			this.onChange();
+		}
+	}
+
+	/** 出力ファイルの最後の印で終わりが分かった（推定。本物の通知が上書きする）。変われば知らせる。 */
+	markShellEndedFromOutput(taskId: string, end: { readonly status: 'completed' | 'failed' | 'stopped'; readonly exitCode?: number }): void {
+		if (this.shells.markEndedFromOutput(taskId, end, this.timers.now())) {
+			this.schedule();
+			this.onChange();
+		}
+	}
+
 	/** ライブ追記で読んだ行の transcript の時刻（時計のずれを測る）。 */
 	observeClock(transcriptAt: number): void {
 		this.tracker.observeClock(transcriptAt, this.timers.now());
+		this.shells.observeClock(transcriptAt, this.timers.now());
 	}
 
-	apply(signals: readonly IParadisMonitorSignal[], live: boolean): void {
-		if (signals.length === 0 || !this.tracker.apply(signals, this.timers.now())) {
+	apply(signals: readonly IParadisMonitorSignal[], live: boolean, shellSignals: readonly IParadisShellSignal[] = []): void {
+		const monitorsChanged = signals.length > 0 && this.tracker.apply(signals, this.timers.now());
+		const shellsChanged = shellSignals.length > 0 && this.shells.apply(shellSignals, this.timers.now());
+		if (!monitorsChanged && !shellsChanged) {
 			return;
 		}
 		this.schedule();
@@ -573,7 +637,8 @@ export class ParadisAgentMonitorWatch {
 
 	/** SessionEnd。動いているものを「停止（推定）」にする（at は PC の時計）。 */
 	endSession(at: number): void {
-		if (this.tracker.endSession(at)) {
+		const monitorsChanged = this.tracker.endSession(at);
+		if (this.shells.endSession(at) || monitorsChanged) {
 			this.schedule();
 			this.onChange();
 		}
@@ -582,7 +647,8 @@ export class ParadisAgentMonitorWatch {
 	/** epoch の切り替え。空にしたかを返す（呼び出し側は続く snapshot で知らせる）。 */
 	clear(): boolean {
 		this.cancel();
-		return this.tracker.clear();
+		const shellsCleared = this.shells.clear();
+		return this.tracker.clear() || shellsCleared;
 	}
 
 	dispose(): void {
@@ -599,7 +665,9 @@ export class ParadisAgentMonitorWatch {
 
 	private schedule(): void {
 		this.cancel();
-		const deadline = this.tracker.nextDeadline();
+		const monitorDeadline = this.tracker.nextDeadline();
+		const shellDeadline = this.shells.nextDeadline();
+		const deadline = monitorDeadline === undefined ? shellDeadline : shellDeadline === undefined ? monitorDeadline : Math.min(monitorDeadline, shellDeadline);
 		if (deadline === undefined || this.disposed) {
 			return;
 		}
@@ -610,7 +678,8 @@ export class ParadisAgentMonitorWatch {
 			if (this.disposed) {
 				return;
 			}
-			const changed = this.tracker.refresh(this.timers.now());
+			const shellsChanged = this.shells.refresh(this.timers.now());
+			const changed = this.tracker.refresh(this.timers.now()) || shellsChanged;
 			this.schedule();
 			if (changed) {
 				this.onChange();
