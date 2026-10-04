@@ -17,7 +17,8 @@
 import { IParadisAgentAdvisorInfo, IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentQuestionOption, PARADIS_ADVISOR_TOOL, PARADIS_AGENT_QUESTION_PREVIEW_LIMIT } from './paradisAgentChat.js';
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 import { paradisExpandPastedContent } from '../../../common/paradisPastedContent.js';
-import { IParadisMonitorSignal, paradisMonitorCallSignal, paradisMonitorNotificationSignals, paradisMonitorStartedSignal, paradisMonitorTaskStopSignal } from './paradisAgentMonitors.js';
+import { IParadisMonitorSignal, paradisMonitorCallSignal, paradisMonitorNotificationSignals, paradisMonitorStartedSignal, paradisMonitorTaskStopSignal, paradisQueueOperationSignals } from './paradisAgentMonitors.js';
+import { IParadisShellSignal, paradisShellCallSignal, paradisShellNotificationSignals, paradisShellStartedSignal, paradisShellTaskStopSignal } from './paradisAgentShells.js';
 import { paradisCodexUserAuthoredContent, paradisIsCodexEncryptedPayload, paradisMaskCodexEncryptedPayloads } from './paradisCodexInjectedContext.js';
 
 export { paradisQuestionReadyMarker } from './paradisAgentQuestionMarker.js';
@@ -356,6 +357,8 @@ export interface IParseSignals {
 	readonly codexCallTools: Map<string, string>;
 	/** Claude Code の Monitor の起動・出力・終了・停止（出現順。tailer の Monitor 一覧へ当てる）。 */
 	readonly monitorSignals: IParadisMonitorSignal[];
+	/** Claude Code のバックグラウンドの Bash の起動・終了・停止（出現順。paradisAgentShells.ts）。 */
+	readonly shellSignals: IParadisShellSignal[];
 	/**
 	 * 直前に現れた Codex の view_image 呼び出しの call_id。
 	 * Codex は読んだ画像の実体を「関数の結果」ではなく直後の user メッセージへ書くため、
@@ -399,7 +402,7 @@ export function newClaudeQueuedPromptState(): IClaudeQueuedPromptState {
 }
 
 export function newParseSignals(claudeQueuedPrompts: IClaudeQueuedPromptState = newClaudeQueuedPromptState()): IParseSignals {
-	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], codexSpawnMessages: new Map(), codexCallTools: new Map(), monitorSignals: [], userText: false, turnEnded: undefined, claudeQueuedPrompts };
+	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], codexSpawnMessages: new Map(), codexCallTools: new Map(), monitorSignals: [], shellSignals: [], userText: false, turnEnded: undefined, claudeQueuedPrompts };
 }
 
 export function decodeXmlAttribute(value: string): string {
@@ -812,6 +815,7 @@ export function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: numb
 			signals.closedTasks.push(match[1].trim());
 		}
 		signals.monitorSignals.push(...paradisMonitorNotificationSignals(trimmed, ts ?? Date.now()));
+		signals.shellSignals.push(...paradisShellNotificationSignals(trimmed, ts ?? Date.now()));
 		const summary = /<summary>([\s\S]*?)<\/summary>/.exec(trimmed)?.[1]?.trim();
 		const result = /<result>([\s\S]*?)<\/result>/.exec(trimmed)?.[1]?.trim();
 		const status = /<status>([^<\n]+)<\/status>/.exec(trimmed)?.[1]?.trim();
@@ -948,6 +952,10 @@ function pushClaudeUserContent(out: IRawMessage[], obj: Record<string, unknown>,
 				if (monitorSignal !== undefined) {
 					signals.monitorSignals.push(monitorSignal);
 				}
+				const shellSignal = paradisShellStartedSignal(text, toolUseResult, toolUseId, ts ?? Date.now()) ?? paradisShellTaskStopSignal(toolUseResult, ts ?? Date.now());
+				if (shellSignal !== undefined) {
+					signals.shellSignals.push(shellSignal);
+				}
 				// バックグラウンドタスク（サブエージェント等）の起動応答から実行中タスクを学習する。
 				if (/Async agent launched|running in the background/i.test(text)) {
 					const idMatch = /\bagentId:\s*([A-Za-z0-9_-]+)/.exec(text) ?? /background with ID:\s*([A-Za-z0-9_-]+)/.exec(text);
@@ -1006,6 +1014,7 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 			// Monitor の出力・終了もこの形で届く（作業中に届いたもの）。
 			const attachmentTs = Date.parse(str(obj.timestamp) ?? '');
 			signals.monitorSignals.push(...paradisMonitorNotificationSignals(prompt, Number.isFinite(attachmentTs) ? attachmentTs : Date.now()));
+			signals.shellSignals.push(...paradisShellNotificationSignals(prompt, Number.isFinite(attachmentTs) ? attachmentTs : Date.now()));
 			return [];
 		}
 		// 作業中にユーザーが送った発言も、user 行ではなくこの attachment（commandMode: 'prompt'）としてだけ
@@ -1032,6 +1041,13 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 		const out: IRawMessage[] = [];
 		pushClaudeUserContent(out, obj, queuedPrompt, Number.isFinite(attachmentTs) ? attachmentTs : lineTimestamp(obj), signals);
 		return out;
+	}
+	if (type === 'queue-operation') {
+		// 作業中に届いた通知の待ち行列。TUI の x で止めたタスクの終わりはここにしか残らない（表示はしない）
+		const queued = paradisQueueOperationSignals(obj, lineTimestamp(obj));
+		signals.monitorSignals.push(...queued.monitors);
+		signals.shellSignals.push(...queued.shells);
+		return [];
 	}
 	if (type !== 'user' && type !== 'assistant') {
 		return []; // summary / system / file-history-snapshot 等
@@ -1107,6 +1123,10 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 					if (monitorCall !== undefined) {
 						signals.monitorSignals.push(monitorCall);
 					}
+				}
+				const shellCall = tool === 'Bash' ? paradisShellCallSignal(input, toolUseId, ts ?? Date.now()) : undefined;
+				if (shellCall !== undefined) {
+					signals.shellSignals.push(shellCall);
 				}
 				if (tool === 'Agent' || tool === 'Task') {
 					// サブエージェント起動は description（何をさせるか）を出す方が JSON より分かりやすい。

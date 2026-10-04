@@ -173,8 +173,8 @@ export function monitorPillSummary(monitors: readonly AgentMonitor[] | undefined
 	};
 }
 
-/** 終わり方の短い言葉（ピル用）。 */
-function monitorEndWord(monitor: AgentMonitor): string {
+/** 終わり方の短い言葉（ピル用。シェルとまとめたピルでも使う）。 */
+export function monitorEndWord(monitor: AgentMonitor): string {
 	switch (monitor.status) {
 		case 'completed': return '終了';
 		case 'failed': return '失敗';

@@ -67,6 +67,11 @@ let flushing = false;
 const pendingPermissions = new Map<string, { readonly toolUseId: string | undefined; readonly toolName: string }>();
 /** tool.check answered `ask`: `tool\0input` -> tool_use_ids, oldest first. */
 const askedCalls = new Map<string, string[]>();
+/**
+ * A prompt from Para Code Mobile is being submitted. Only one at a time: another one handed over meanwhile is
+ * refused at once (ack ok: false) and Para Code sends it with keys instead, so this mod never sends it.
+ */
+let submitting = false;
 /** A prompt submitted for Para Code, waiting for its row to learn the row's uuid. */
 let submitWatch: { readonly id: string; readonly text: string; uuid?: string } | undefined;
 
@@ -375,27 +380,71 @@ function observeRow($: Engine, e: { readonly message: unknown; readonly door: st
 	}
 }
 
-/** The commands Para Code hands over: for now, prompts sent from Para Code Mobile while the session is idle. */
-async function runCommand($: Engine, sessionId: string, command: Json): Promise<void> {
+/**
+ * Stops a background task (a shell started with run_in_background) for Para Code Mobile. TaskStop asks no
+ * permission and the call leaves nothing in the transcript, so the ack is how Para Code learns the outcome.
+ */
+async function stopTask($: Engine, sessionId: string, id: string, taskId: string): Promise<void> {
+	let ok = false;
+	let message: string | undefined;
+	try {
+		const reply = await $.tool.call({ tool: 'TaskStop', task_id: taskId }) as unknown as Json;
+		const deny = str(reply.deny);
+		ok = deny === undefined && reply.isError !== true && rec(reply.result) !== undefined;
+		message = deny ?? str(rec(reply.result)?.message) ?? str(reply.text);
+	} catch (error) {
+		message = error instanceof Error ? error.message : undefined;
+	}
+	await request($, 'ack', { sessionId, id, ok, ...(message !== undefined ? { message: message.slice(0, 500) } : {}) });
+}
+
+/**
+ * The commands Para Code hands over: prompts sent from Para Code Mobile while the session is idle, and
+ * background tasks to stop.
+ */
+async function runCommand($: Engine, sessionId: string, command: Json, generation: number): Promise<void> {
 	const id = str(command.id);
+	if (id !== undefined && command.kind === 'taskStop') {
+		const taskId = str(command.taskId);
+		if (taskId !== undefined && /^[A-Za-z0-9_-]{1,64}$/.test(taskId)) {
+			await stopTask($, sessionId, id, taskId);
+		}
+		return;
+	}
 	const text = str(command.text);
 	if (id === undefined || command.kind !== 'submit' || text === undefined) {
 		return;
 	}
-	submitWatch = { id, text };
-	// Tell Para Code first that the prompt is ours now: if a turn started meanwhile, $.prompt.submit
-	// only resolves once that turn ends, and Para Code must not send the same text again with keys.
-	await request($, 'ack', { sessionId, id, received: true });
-	let ok = false;
-	try {
-		await $.prompt.submit({ text, asUser: true });
-		ok = true;
-	} catch {
-		ok = false;
+	if (submitting) {
+		// `reason: 'busy'`: Para Code waits for the first prompt to be taken before it types this one with keys.
+		await request($, 'ack', { sessionId, id, ok: false, reason: 'busy' });
+		return;
 	}
-	const uuid = submitWatch?.id === id ? submitWatch.uuid : undefined;
-	submitWatch = undefined;
-	await request($, 'ack', { sessionId, id, ok, ...(uuid !== undefined ? { uuid } : {}) });
+	// Taken before any await, so a second prompt of the same batch sees it.
+	submitting = true;
+	try {
+		// The session moved on (a new session.start, /clear) since this prompt was handed over: it was for the old one.
+		if (generation !== pumpGeneration || !active || await $.session.id() !== sessionId) {
+			await request($, 'ack', { sessionId, id, ok: false });
+			return;
+		}
+		submitWatch = { id, text };
+		// Tell Para Code first that the prompt is ours now: if a turn started meanwhile, $.prompt.submit
+		// only resolves once that turn ends, and Para Code must not send the same text again with keys.
+		await request($, 'ack', { sessionId, id, received: true });
+		let ok = false;
+		try {
+			await $.prompt.submit({ text, asUser: true });
+			ok = true;
+		} catch {
+			ok = false;
+		}
+		const uuid = submitWatch?.id === id ? submitWatch.uuid : undefined;
+		submitWatch = undefined;
+		await request($, 'ack', { sessionId, id, ok, ...(uuid !== undefined ? { uuid } : {}) });
+	} finally {
+		submitting = false;
+	}
 }
 
 function schedulePump($: Engine, generation: number, delayMs: number): void {
@@ -419,9 +468,13 @@ async function pumpOnce($: Engine, generation: number): Promise<void> {
 			const commands = Array.isArray(reply.json?.commands) ? reply.json.commands : [];
 			for (const command of commands.slice(0, 8)) {
 				const record = rec(command);
-				if (record !== undefined) {
-					await runCommand($, sessionId, record);
+				if (record === undefined) {
+					continue;
 				}
+				// Never hold the loop on a command: a prompt's `$.prompt.submit` only resolves once a running turn
+				// ends, and a stop must still reach the task meanwhile. A prompt that comes while another is being
+				// submitted is refused (runCommand), never queued.
+				void runCommand($, sessionId, record, generation).catch(() => undefined);
 			}
 		}
 	} catch {

@@ -135,6 +135,35 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		assert.deepStrictEqual(harness.tailer()?.messages.filter(message => message.kind === 'text').map(message => message.text), ['mod から先に届いた本文', 'ファイルだけの本文', '最後']);
 	}));
 
+	test('sends the stop access again when the mod arrives, and stops a background shell through it', () => withHarness(async harness => {
+		const accessOf = (message: Record<string, unknown> | undefined) => JSON.stringify(message?.shellsAccess);
+		const snapshot = harness.sent.find(message => message.t === 'snapshot');
+		await harness.mod('event', { events: [{ type: 'hello', version: '1.0.0' }] });
+		await waitFor(() => harness.sent.some(message => message.t === 'delta' && accessOf(message) === JSON.stringify({ output: process.platform !== 'win32', stop: process.platform !== 'win32' })), 'the access was not sent again when the mod arrived');
+		const poll = harness.mod('commands', { busy: true });
+		harness.inbound({ t: 'action/stopShell', requestId: 'stop-1', epoch: harness.tailer()!.epoch, shellId: 'bshell1' });
+		const commands = (await poll).commands as { id: string; kind: string; taskId: string }[];
+		await harness.mod('ack', { id: commands[0]?.id, ok: true, message: 'Successfully stopped task: bshell1 (sleep 600)' });
+		await waitFor(() => harness.sent.some(message => message.t === 'action-result' && message.requestId === 'stop-1'), 'the stop was not answered');
+		const shells = (harness.chat as unknown as { tailers: Map<string, { shells(): readonly { id: string; status: string; stoppedBy?: string }[] }> }).tailers.get(harness.token)?.shells();
+		assert.deepStrictEqual({
+			before: accessOf(snapshot),
+			command: { kind: commands[0]?.kind, taskId: commands[0]?.taskId },
+			result: harness.sent.find(message => message.t === 'action-result' && message.requestId === 'stop-1')?.status,
+			shells: shells?.map(shell => `${shell.id}:${shell.status}:${shell.stoppedBy}`),
+		}, {
+			before: JSON.stringify({ output: process.platform !== 'win32', stop: false }),
+			command: { kind: 'taskStop', taskId: 'bshell1' },
+			result: 'accepted',
+			shells: ['bshell1:stopped:mobile'],
+		});
+	}, {
+		initialLines: [
+			{ type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_s1', name: 'Bash', input: { command: 'sleep 600', run_in_background: true } }] } },
+			{ type: 'user', timestamp: new Date().toISOString(), toolUseResult: { backgroundTaskId: 'bshell1' }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_s1', content: 'Command running in background with ID: bshell1.' }] } },
+		],
+	}));
+
 	test('returns the plain Advisor reply when its detail is asked for', () => withHarness(async harness => {
 		const trackers = (harness.chat as unknown as { activityTrackers: Map<string, { snapshot(): { advisors?: readonly { id: string; status: string }[] } | undefined }> }).activityTrackers;
 		const line = (uuid: string, block: unknown) => `${JSON.stringify({ type: 'assistant', uuid, timestamp: new Date().toISOString(), advisorModel: 'claude-opus-4-7', message: { id: 'msg_plain', role: 'assistant', content: [block] } })}\n`;
@@ -375,6 +404,31 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 			result: harness.sent.filter(message => message.t === 'action-result').map(message => ({ status: message.status })),
 			keys: harness.actions.filter(action => action.t === 'action/sendMessage').length,
 		}, { command: { kind: 'submit', text: '続けて' }, result: [{ status: 'accepted' }], keys: 0 });
+	}));
+
+	test('a second message the mod refuses as busy goes by keys only after the first one was received', () => withHarness(async harness => {
+		harness.hook('Stop');
+		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
+		const firstPoll = harness.mod('commands', { busy: false });
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		harness.inbound({ t: 'action/sendMessage', requestId: 'send-first', epoch: harness.tailer()!.epoch, text: '一通目' });
+		const [first] = (await firstPoll).commands as { id: string }[];
+		// mod は 1 通目を送っている最中に次のポーリングへ来る。2 通目を渡し、busy で断らせる
+		const secondPoll = harness.mod('commands', { busy: false });
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		harness.inbound({ t: 'action/sendMessage', requestId: 'send-second', epoch: harness.tailer()!.epoch, text: '二通目' });
+		const [second] = (await secondPoll).commands as { id: string }[];
+		await harness.mod('ack', { id: second.id, ok: false, reason: 'busy' });
+		await new Promise<void>(resolve => setTimeout(resolve, 100));
+		const keysBeforeFirst = harness.actions.filter(action => action.t === 'action/sendMessage').length;
+		await harness.mod('ack', { id: first.id, received: true });
+		await waitFor(() => harness.actions.some(action => action.t === 'action/sendMessage'), 'the second message did not go by keys');
+		assert.deepStrictEqual({
+			keysBeforeFirst,
+			keys: harness.actions.filter(action => action.t === 'action/sendMessage').map(action => action.text),
+			firstResult: harness.sent.find(message => message.t === 'action-result' && message.requestId === 'send-first')?.status,
+		}, { keysBeforeFirst: 0, keys: ['二通目'], firstResult: 'accepted' });
 	}));
 
 	test('falls back to the keys when no mod is listening', () => withHarness(async harness => {
