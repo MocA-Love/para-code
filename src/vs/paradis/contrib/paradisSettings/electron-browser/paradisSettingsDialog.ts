@@ -30,7 +30,9 @@ import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogSt
 import { ParadisModalFocus } from '../browser/paradisModalFocus.js';
 import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
 import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/common/paradisCodexHookTrust.js';
+import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_ENABLED_SETTING } from '../../claudeMod/common/paradisClaudeMod.js';
 import { PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
+import { PARADIS_PRESET_FOLDERS_SETTING } from '../../terminalPresets/common/paradisTerminalPresets.js';
 
 const $ = dom.$;
 
@@ -230,6 +232,31 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-space',
+		// Git 拡張機能の設定 (extensions/git/package.json に PARA-PATCH で登録)。拡張機能の設定が
+		// 登録されるまでは書き込めないので、その間はコントロールを無効にしておく (_isRegistered)
+		key: 'git.paraParkedRepositoryLimit',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.parkedRepositoryLimit', "Git リポジトリを預けておく数"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.parkedRepositoryLimitDesc', "スペースを切り替えたとき、離れたスペースの Git リポジトリを閉じずに預けておきます。戻ったときにソース管理が速く出ますが、預けた分だけメモリを使います。"),
+		keywords: 'git scm repository park parked limit space switch memory',
+		choices: [
+			// allow-any-unicode-next-line
+			{ value: 0, label: localize('paradis.settings.parkedRepositoryLimit0', "無制限") },
+			// allow-any-unicode-next-line
+			{ value: 4, label: localize('paradis.settings.parkedRepositoryLimit4', "4件") },
+			// allow-any-unicode-next-line
+			{ value: 8, label: localize('paradis.settings.parkedRepositoryLimit8', "8件") },
+			// allow-any-unicode-next-line
+			{ value: 16, label: localize('paradis.settings.parkedRepositoryLimit16', "16件（既定）") },
+			// allow-any-unicode-next-line
+			{ value: 32, label: localize('paradis.settings.parkedRepositoryLimit32', "32件") },
+			// allow-any-unicode-next-line
+			{ value: 64, label: localize('paradis.settings.parkedRepositoryLimit64', "64件") },
+		],
+	},
+	{
+		sectionId: 'psd-sec-space',
 		key: 'paradis.workspaceSwitch.defaultAgent',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.defaultAgent', "既定のエージェント"),
@@ -355,6 +382,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			commandId: 'paradis.terminal.configurePresets',
 			primary: true,
 		},
+	},
+	{
+		sectionId: 'psd-sec-preset',
+		key: PARADIS_PRESET_FOLDERS_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.presetFolders', "プリセットのフォルダ"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.presetFoldersDesc', "空のフォルダも一覧に残しておくためのフォルダ名の一覧です。プリセットを入れたフォルダは、ここに書かなくても一覧に出ます。"),
+		keywords: 'terminal presets folders folder group empty',
 	},
 
 	// --- 使用量ダッシュボード ---
@@ -530,6 +566,40 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			label: localize('paradis.settings.codexHookStatusAction', "状態を確認…"),
 			commandId: PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID,
 		},
+	},
+	{
+		sectionId: 'psd-sec-notif',
+		key: PARADIS_CLAUDE_MOD_ENABLED_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.claudeMod', "Claude Code に Para Code の mod（Claude Mods）を読ませる"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.claudeModDesc', "会話がモバイルへ速く届き、モバイルからの回答・承認・送信をキーの入力ではなく値で渡せます。上の hook の自動設置がオンのときだけ働き、新しく開いたターミナルから反映されます。macOS と Linux の手元のターミナルが対象です。"),
+		keywords: 'claude mod mods plugin mobile approval answer send hook',
+	},
+	{
+		sectionId: 'psd-sec-notif',
+		key: PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.claudeModApprovalWait', "モバイルから許可の確認に答えられる時間"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.claudeModApprovalWaitDesc', "モバイルが接続している間、この時間まではモバイルからも答えられます。PC のターミナルでも答えられ、先に答えた方が使われます。上の項目がオンのときだけ有効です。"),
+		keywords: 'claude mod mods mobile approval permission wait minutes timeout',
+		choices: [
+			// allow-any-unicode-next-line
+			{ value: 0, label: localize('paradis.settings.claudeModApprovalWait0', "使わない（キーの入力で答える）") },
+			// allow-any-unicode-next-line
+			{ value: 1, label: localize('paradis.settings.claudeModApprovalWait1', "1分") },
+			// allow-any-unicode-next-line
+			{ value: 3, label: localize('paradis.settings.claudeModApprovalWait3', "3分") },
+			// allow-any-unicode-next-line
+			{ value: 5, label: localize('paradis.settings.claudeModApprovalWait5', "5分") },
+			// allow-any-unicode-next-line
+			{ value: 10, label: localize('paradis.settings.claudeModApprovalWait10', "10分（既定）") },
+			// allow-any-unicode-next-line
+			{ value: 30, label: localize('paradis.settings.claudeModApprovalWait30', "30分") },
+			// allow-any-unicode-next-line
+			{ value: 60, label: localize('paradis.settings.claudeModApprovalWait60', "60分") },
+		],
 	},
 
 	// --- エージェントの操作 ---
@@ -1075,6 +1145,11 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 ];
 
+/** paradis.* の外にある設定キー。変更の通知を拾うときに paradis 以外も見る必要がある。 */
+const ROW_KEYS_OUTSIDE_PARADIS: readonly string[] = ROWS
+	.map(row => row.key)
+	.filter((key): key is string => key !== undefined && !key.startsWith('paradis.'));
+
 export class ParadisSettingsDialog extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
@@ -1134,12 +1209,23 @@ export class ParadisSettingsDialog extends Disposable {
 			}
 		}));
 
-		// 別ウィンドウ・設定エディタ側からの変更にも追従させる
+		// 別ウィンドウ・設定エディタ側からの変更にも追従させる。paradis.* の外の設定
+		// (git.* や accessibility.* など) も載せているので、それらのキーも見る
+		const refreshAll = () => {
+			for (const refresh of this._refreshers) {
+				refresh();
+			}
+		};
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration('paradis')) {
-				for (const refresh of this._refreshers) {
-					refresh();
-				}
+			if (e.affectsConfiguration('paradis') || ROW_KEYS_OUTSIDE_PARADIS.some(key => e.affectsConfiguration(key))) {
+				refreshAll();
+			}
+		}));
+		// 拡張機能の設定 (git.*) は、拡張機能の一覧を読み終えるまで登録されていない。
+		// 登録されたらコントロールを有効にし直す
+		this._register(Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).onDidUpdateConfiguration(e => {
+			if (ROW_KEYS_OUTSIDE_PARADIS.some(key => e.properties.has(key))) {
+				refreshAll();
 			}
 		}));
 
@@ -1295,6 +1381,7 @@ export class ParadisSettingsDialog extends Disposable {
 					extraOption.textContent = current;
 				}
 				select.value = current;
+				select.disabled = !this._isRegistered(key);
 			};
 			sync();
 			this._refreshers.push(sync);
@@ -1309,7 +1396,10 @@ export class ParadisSettingsDialog extends Disposable {
 		if (typeof value === 'boolean') {
 			const toggle = dom.append(row, $('input.psd-toggle')) as HTMLInputElement;
 			toggle.type = 'checkbox';
-			const sync = () => { toggle.checked = this.configurationService.getValue<boolean>(key) === true; };
+			const sync = () => {
+				toggle.checked = this.configurationService.getValue<boolean>(key) === true;
+				toggle.disabled = !this._isRegistered(key);
+			};
 			sync();
 			this._refreshers.push(sync);
 			this._register(dom.addDisposableListener(toggle, 'change', () => void this._write(key, toggle.checked)));
@@ -1323,7 +1413,10 @@ export class ParadisSettingsDialog extends Disposable {
 			if (spec.placeholder) {
 				input.placeholder = spec.placeholder;
 			}
-			const sync = () => { input.value = this.configurationService.getValue<string>(key) ?? ''; };
+			const sync = () => {
+				input.value = this.configurationService.getValue<string>(key) ?? '';
+				input.disabled = !this._isRegistered(key);
+			};
 			sync();
 			this._refreshers.push(sync);
 			// 入力途中で毎回書かない (設定ファイルが1文字ごとに書き変わるのを避ける)
@@ -1352,7 +1445,18 @@ export class ParadisSettingsDialog extends Disposable {
 		this._refreshers.push(sync);
 	}
 
+	/**
+	 * 設定が登録済みか。拡張機能の設定 (git.*) は拡張機能の一覧を読み終えるまで登録されず、
+	 * その間に書くと設定の書き込みが「登録されていない設定」として失敗する。
+	 */
+	private _isRegistered(key: string): boolean {
+		return Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).getConfigurationProperties()[key] !== undefined;
+	}
+
 	private async _write(key: string, value: unknown): Promise<void> {
+		if (!this._isRegistered(key)) {
+			return;
+		}
 		// スコープは設定スキーマ側の宣言 (APPLICATION/MACHINE/WINDOW) に任せる。
 		// USER を明示すると WINDOW スコープの設定が意図しない側へ書かれる
 		await this.configurationService.updateValue(key, value, ConfigurationTarget.USER);
