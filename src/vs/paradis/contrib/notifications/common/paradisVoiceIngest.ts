@@ -81,6 +81,9 @@ export interface IParadisLocalVoiceOutput {
 	openIngest(options: IParadisIngestOpenOptions, waitMs: number): Promise<IParadisIngestStream | undefined>;
 	/** 手元に `--play-audio` か `--ingest` を持つ aivis-mcp（2.4.0 以上）があるか。`waitMs` まで版の確認を待つ。 */
 	hasLocalAivis(waitMs: number): Promise<boolean>;
-	/** aivis-mcp に渡せなかった声を、Para Code が自分で（afplay 等で）鳴らす。通知の読み上げと重ならないよう同じ列に入れる。 */
-	playFallback(audio: Uint8Array): Promise<void>;
+	/**
+	 * aivis-mcp に渡せなかった声を、Para Code が自分で（afplay 等で）鳴らす。通知の読み上げと重ならないよう同じ列に入れる。
+	 * `gainKey` があれば音量の表で揃える（100 は超えない）。
+	 */
+	playFallback(audio: Uint8Array, gainKey?: string): Promise<void>;
 }

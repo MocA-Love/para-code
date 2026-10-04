@@ -90,11 +90,11 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
  * sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。
  */
 export function registerParadisNotifications(server: IPCServer<string>, logService: ILogService, configurationService?: IConfigurationService, args?: NativeParsedArgs): ParadisNotificationsService {
-	// 手元の aivis-mcp（`--ingest`）はログインシェル由来の PATH（npm・bun のグローバル）で探す
+	// 手元の aivis-mcp（`--ingest`）・ssh はログインシェル由来の環境で起こす。agentBrowser とこの 1 本を共有する
 	const cachedShellEnv = configurationService && args
-		? new ParadisCachedShellEnv(logService, 'ParadisNotifications', createParadisShellEnvResolver(logService, configurationService, args), Date.now, reportParadisShellEnvDiagnosticError)
+		? new ParadisCachedShellEnv(logService, 'ParadisVoice', createParadisShellEnvResolver(logService, configurationService, args), Date.now, reportParadisShellEnvDiagnosticError)
 		: undefined;
-	const service = new ParadisNotificationsService(logService, cachedShellEnv ? () => cachedShellEnv.getEnv() : undefined);
+	const service = new ParadisNotificationsService(logService, cachedShellEnv);
 	server.registerChannel(PARADIS_NOTIFICATIONS_CHANNEL, new ParadisNotificationsChannel(service));
 	service.trackClientDisconnects(
 		Event.map(server.onDidRemoveConnection, connection => connection.ctx),

@@ -19,6 +19,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisBindingTicketRequest, IParadisMcpSetupRequest, IParadisPrepareBindRequest, PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { IParadisPlaywrightInvoker, ParadisAgentBrowserService } from './paradisAgentBrowserService.js';
 import { IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoiceIngest.js';
+import { ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 
 export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 
@@ -326,7 +327,7 @@ export function registerParadisAgentBrowser(
 	configurationService: IConfigurationService,
 	args: NativeParsedArgs,
 	publishMobileVoiceClip?: (audio: Uint8Array) => void,
-	localVoiceOutput?: IParadisLocalVoiceOutput,
+	localVoiceOutput?: IParadisLocalVoiceOutput & { readonly shellEnv?: ParadisCachedShellEnv },
 ): ParadisAgentBrowserService {
 	const service = new ParadisAgentBrowserService(userDataPath, playwrightInvoker, server, mainProcessService, logService, configurationService, args, publishMobileVoiceClip, localVoiceOutput);
 	server.registerChannel(PARADIS_AGENT_BROWSER_CHANNEL, new ParadisAgentBrowserChannel(service));

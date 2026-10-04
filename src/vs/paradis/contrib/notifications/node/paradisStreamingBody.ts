@@ -6,13 +6,18 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 合成 API の応答を少しずつ読む（設計 3.3）。最初の 1 バイトまで 10 秒、途切れ 8 秒で打ち切る。
+// 合成 API の応答を少しずつ読む（設計 3.3）。最初の 1 バイトまで（ElevenLabs 8 秒・Aivis 20 秒）と途切れ 8 秒で打ち切る。
+// ElevenLabs は worker の「最初の音まで 10 秒」より先に諦めて afplay へ回れるよう 8 秒にする。Aivis の
+// /v1/tts/synthesize は全部まとめて返すこともあるので 20 秒にする（worker が先に諦めた件は、音声の枠を 1 つも
+// 書いていなければ Para Code が鳴らし直す）。
 // 打ち切りは AbortController で fetch ごと止め、呼び出し側には retryable の AivisError として見せる。
 
 import { AivisError } from './paradisAudioScheduler.js';
 
-/** 要求を送ってから最初の 1 バイトが届くまでの上限。 */
-export const PARADIS_SYNTH_FIRST_BYTE_TIMEOUT_MS = 10_000;
+/** 要求を送ってから最初の 1 バイトが届くまでの上限（ElevenLabs の /stream）。 */
+export const PARADIS_ELEVENLABS_FIRST_BYTE_TIMEOUT_MS = 8_000;
+/** 同じく Aivis（全部まとめて返る場合も見込む）。 */
+export const PARADIS_AIVIS_FIRST_BYTE_TIMEOUT_MS = 20_000;
 /** 届いている途中で途切れたときの上限。 */
 export const PARADIS_SYNTH_IDLE_TIMEOUT_MS = 8_000;
 
@@ -23,7 +28,7 @@ export class ParadisSynthesisTimeouts {
 	private timedOut = false;
 
 	constructor(
-		private readonly firstByteMs = PARADIS_SYNTH_FIRST_BYTE_TIMEOUT_MS,
+		private readonly firstByteMs: number,
 		private readonly idleMs = PARADIS_SYNTH_IDLE_TIMEOUT_MS,
 	) {
 		this.arm(this.firstByteMs);

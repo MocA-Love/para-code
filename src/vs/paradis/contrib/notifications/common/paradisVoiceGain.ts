@@ -43,6 +43,10 @@ export const PARADIS_VOICE_INITIAL_GAIN_DB: Readonly<Record<string, number>> = {
 export interface IParadisVoiceGainTable {
 	readonly entries: Readonly<Record<string, number>>;
 	readonly defaultDb: number;
+	/** 利用者の上乗せ（aivis-mcp の volume_db の移行分・AIVIS_VOLUME_OFFSET_DB）。どの声にも足す。 */
+	readonly volumeOffsetDb?: number;
+	/** ElevenLabs の声だけに足す上乗せ（古い ELEVENLABS_VOLUME_DB の読み替え）。 */
+	readonly elevenLabsVolumeOffsetDb?: number;
 }
 
 export const PARADIS_VOICE_INITIAL_GAIN_TABLE: IParadisVoiceGainTable = { entries: PARADIS_VOICE_INITIAL_GAIN_DB, defaultDb: 0 };
@@ -97,7 +101,7 @@ export function paradisResolveVoiceGainDb(key: string | undefined, table: IParad
 }
 
 /** `gain?` の返事を表として読む。壊れていれば undefined。 */
-export function paradisParseVoiceGainTable(message: { readonly entries?: unknown; readonly defaultDb?: unknown }): IParadisVoiceGainTable | undefined {
+export function paradisParseVoiceGainTable(message: { readonly entries?: unknown; readonly defaultDb?: unknown; readonly volumeOffsetDb?: unknown; readonly elevenLabsVolumeOffsetDb?: unknown }): IParadisVoiceGainTable | undefined {
 	if (typeof message.entries !== 'object' || message.entries === null || Array.isArray(message.entries)) {
 		return undefined;
 	}
@@ -107,8 +111,13 @@ export function paradisParseVoiceGainTable(message: { readonly entries?: unknown
 			entries[key] = value;
 		}
 	}
-	const defaultDb = typeof message.defaultDb === 'number' && Number.isFinite(message.defaultDb) ? message.defaultDb : 0;
-	return { entries, defaultDb };
+	const finite = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+	return {
+		entries,
+		defaultDb: finite(message.defaultDb) ?? 0,
+		volumeOffsetDb: finite(message.volumeOffsetDb),
+		elevenLabsVolumeOffsetDb: finite(message.elevenLabsVolumeOffsetDb),
+	};
 }
 
 /**
@@ -123,15 +132,16 @@ export function paradisVolumePercentToDb(volume: number): number | undefined {
 }
 
 /**
- * Para Code が自分で鳴らすときの音量（0〜100 を基準にした値。100 を超えると上げる）。
- * 表の補正を足し、合計に上げる方向の上限（+8dB）を掛ける。macOS の afplay は -v が 1.0 を超えても
- * 効く（AudioQueue の音量で上がる）ので上げる方向も使う。ほかの OS の再生側は 100 で頭打ちになる。
+ * Para Code が自分で（afplay 等で）鳴らすときの音量（0〜100）。表の補正と利用者の上乗せを足すが、100 を超える分は
+ * 捨てる（aivis-mcp の afplay と同じく、頭打ちの無いプレイヤーで上げる方向は使わない。上げるのは 2.5.0 の worker
+ * 経由のときだけ）。
  */
 export function paradisCorrectedPlaybackVolume(volume: number, gainKey: string | undefined, table?: IParadisVoiceGainTable): number {
 	const base = Math.max(0, Math.min(100, Number.isFinite(volume) ? volume : 100));
 	if (base === 0) {
 		return 0;
 	}
-	const totalDb = Math.min(PARADIS_VOICE_MAX_BOOST_DB, 20 * Math.log10(base / 100) + paradisResolveVoiceGainDb(gainKey, table));
-	return 100 * Math.pow(10, totalDb / 20);
+	const offset = (table?.volumeOffsetDb ?? 0) + (gainKey?.startsWith('elevenlabs:') ? table?.elevenLabsVolumeOffsetDb ?? 0 : 0);
+	const totalDb = 20 * Math.log10(base / 100) + paradisResolveVoiceGainDb(gainKey, table) + offset;
+	return Math.min(100, 100 * Math.pow(10, totalDb / 20));
 }

@@ -722,5 +722,31 @@ suite('AudioScheduler', () => {
 			await waitForIdle(scheduler);
 			assert.deepStrictEqual(events, ['synthesize:local', 'play:local']);
 		});
+
+		test('keeps presynthesized local voices out of the rate-limit wait and the fatal pause', async () => {
+			const events: string[] = [];
+			const sleeps: number[] = [];
+			const scheduler = track(createScheduler({ sleep: async ms => { sleeps.push(ms); }, now: () => 0 }));
+			// 残り 0 のレート制限を覚えさせてから、fatal で止める
+			scheduler.enqueueAivis(successfulRunner('limited', events, { audio: Buffer.from('limited'), rateLimit: { remaining: 0, resetSeconds: 60, capturedAt: 0 } }));
+			await waitForIdle(scheduler);
+			scheduler.enqueueAivis({
+				synthesize: async () => { throw new AivisError('fatal', 'bad key', 401); },
+				play: async () => { },
+			});
+			const entered = scheduler.enqueueAivis({ synthesize: async () => ({ audio: Buffer.from('remote') }), play: async audio => { events.push(`play:${audio.toString()}`); } }, 'normal', { localOnly: true, ignorePause: true, presynthesized: true });
+			for (let i = 0; i < 30; i++) {
+				await Promise.resolve();
+			}
+			const enteredWhilePaused = scheduler.enqueueAivis(successfulRunner('dropped', events));
+			assert.deepStrictEqual({ events, isPaused: scheduler.isPaused, entered, enteredWhilePaused, sleeps: sleeps.length }, {
+				events: ['synthesize:limited', 'play:limited', 'play:remote'],
+				isPaused: true,
+				entered: true,
+				enteredWhilePaused: false,
+				// fatal の件はレート制限を待つが、合成済みの声は待たない
+				sleeps: 1,
+			});
+		});
 	});
 });

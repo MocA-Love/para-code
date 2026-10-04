@@ -36,11 +36,12 @@ import {
 } from './paradisAudioScheduler.js';
 import { ParadisDictationHold } from '../common/paradisDictationHold.js';
 import { IParadisPlayElevenLabsRequest, PARADIS_ELEVENLABS_DEFAULT_MODEL_ID, paradisStripSsmlTags } from '../common/paradisElevenLabs.js';
-import { paradisAivisGainKey, paradisCorrectedPlaybackVolume, paradisElevenLabsGainKey, paradisVolumePercentToDb, PARADIS_VOICE_MAX_BOOST_DB } from '../common/paradisVoiceGain.js';
+import { paradisAivisGainKey, paradisCorrectedPlaybackVolume, paradisElevenLabsGainKey, paradisVolumePercentToDb } from '../common/paradisVoiceGain.js';
 import { IParadisIngestOpenOptions, IParadisIngestStream, IParadisLocalVoiceOutput } from '../common/paradisVoiceIngest.js';
-import { ParadisAivisIngestClient } from './paradisAivisIngestClient.js';
+import { IParadisAivisIngest, ParadisAivisIngestClient } from './paradisAivisIngestClient.js';
+import { ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { PARADIS_MAX_SYNTHESIZED_AUDIO_BYTES, ParadisElevenLabsClient } from './paradisElevenLabsClient.js';
-import { paradisCollectBody, paradisReadSynthesisBody, ParadisSynthesisTimeouts } from './paradisStreamingBody.js';
+import { PARADIS_AIVIS_FIRST_BYTE_TIMEOUT_MS, paradisCollectBody, paradisReadSynthesisBody, ParadisSynthesisTimeouts } from './paradisStreamingBody.js';
 import { paradisHandoffVoice } from './paradisVoiceHandoff.js';
 import {
 	CUSTOM_RINGTONE_ID,
@@ -172,6 +173,14 @@ function reasonForAivisStatus(status: number, bodyHint: string): string {
 	}
 }
 
+/** テストで差し替える口（本番では使わない）。 */
+export interface IParadisNotificationsTestingOptions {
+	readonly ingest?: IParadisAivisIngest;
+	readonly playRingtoneFile?: (ringtoneId: string, volume: number) => Promise<void>;
+	readonly playVoiceAudio?: (audio: Buffer, volume: number) => Promise<void>;
+	readonly resolveRingtonePath?: (ringtoneId: string) => string | null;
+}
+
 /**
  * 通知サウンド機能のバックエンド本体。カスタム音源の保存 (`~/.para-code/assets/ringtones/`)、
  * YouTube取込 (yt-dlp/ffmpeg 呼び出し)、Aivis Cloud APIクライアント、TTS再生を担う。
@@ -226,19 +235,27 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	 * `aivis-mcp --ingest`（2.5.0 以上）の常駐の子。あれば通知の読み上げと SSH 先の声を worker の 1 列へ渡す。
 	 * 無い（テスト・aivis-mcp を入れていない）ときは今までどおり afplay で鳴らす。
 	 */
-	private readonly _ingest: ParadisAivisIngestClient | undefined;
+	private readonly _ingest: IParadisAivisIngest | undefined;
 
-	constructor(private readonly logService: ILogService, getShellEnv?: () => Promise<NodeJS.ProcessEnv>) {
+	constructor(
+		private readonly logService: ILogService,
+		/** ログインシェル由来の環境。agentBrowser（SSH の戻り経路・`--play-audio`）と 1 本を共有する。 */
+		readonly shellEnv?: ParadisCachedShellEnv,
+		private readonly testing: IParadisNotificationsTestingOptions = {},
+	) {
 		super();
 		this.elevenLabs = new ParadisElevenLabsClient(logService);
-		if (getShellEnv) {
-			this._ingest = this._register(new ParadisAivisIngestClient({
-				getEnv: getShellEnv,
+		if (testing.ingest) {
+			this._ingest = testing.ingest;
+		} else if (shellEnv) {
+			const ingest = this._register(new ParadisAivisIngestClient({
+				getEnv: () => shellEnv.getEnv(),
 				// 着信音として鳴らしてよいのは、Para Code の着信音のフォルダとアプリの中だけ
 				preludeDirs: () => [this._assetsDir, FileAccess.asFileUri('vs/paradis/contrib/notifications/browser/media/sounds').fsPath],
 				logService,
 			}));
-			this._ingest.start();
+			ingest.start();
+			this._ingest = ingest;
 		}
 		this._scheduler = new AudioScheduler({
 			playRingtone: onComplete => {
@@ -322,19 +339,29 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	 */
 	notifyAudio(request: IParadisNotifyAudioRequest): void {
 		const priority: AivisPriority = request.priority === 'high' ? 'high' : 'normal';
+		// 音声入力中の着信音はマイクに拾われるだけなので今までどおり捨てる（前置きにも、着信音だけのジョブにもしない）
+		const ringtone = this._dictationHold.held ? undefined : request.ringtone;
 		const voice = this._createVoiceTask(request, priority);
 		// `--ingest` が使えるときは、着信音を声のジョブの前置き（prelude）にして worker の 1 列で鳴らす
 		const deferRingtone = this._ingest?.isUsable() === true;
-		if (request.ringtone && !deferRingtone) {
-			this._playRingtoneNow(request.ringtone);
-		}
 		if (voice) {
-			if (deferRingtone && request.ringtone) {
-				voice.setRingtone(request.ringtone);
+			if (ringtone) {
+				if (deferRingtone) {
+					voice.setRingtone(ringtone);
+				} else {
+					this._playRingtoneNow(ringtone);
+				}
 			}
-			this._scheduler.enqueueAivis(voice.runner, priority);
-		} else if (request.ringtone && deferRingtone) {
-			void this._handOffRingtoneOnly(request.ringtone, priority);
+			if (!this._scheduler.enqueueAivis(voice.runner, priority)) {
+				// 一時停止中・列が満杯で入らなかった。預けた着信音は今鳴らす
+				voice.runner.onDropped?.();
+			}
+		} else if (ringtone) {
+			if (deferRingtone) {
+				void this._handOffRingtoneOnly(ringtone, priority);
+			} else {
+				this._playRingtoneNow(ringtone);
+			}
 		}
 	}
 
@@ -351,10 +378,14 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		return this._ingest !== undefined && await this._ingest.hasLocalAivis(waitMs);
 	}
 
-	/** 通知の読み上げと同じ列に入れて、Para Code が自分で鳴らす（音声入力中は待つ）。鳴り終わりは待たない。 */
-	async playFallback(audio: Uint8Array): Promise<void> {
+	/**
+	 * 通知の読み上げと同じ列に入れて、Para Code が自分で鳴らす（音声入力中は待つ。Aivis の一時停止・レート制限には
+	 * 巻き込まない）。鳴り終わりは待たない。音量は表で揃えるが 100 は超えない。
+	 */
+	async playFallback(audio: Uint8Array, gainKey?: string): Promise<void> {
 		const buffer = Buffer.from(audio);
-		this._scheduler.enqueueAivis({ synthesize: async () => ({ audio: buffer }), play: data => this._playAivisAudio(data, 100) }, 'normal', { localOnly: true, ignorePause: true });
+		const volume = paradisCorrectedPlaybackVolume(100, gainKey, this._ingest?.gainTable);
+		this._scheduler.enqueueAivis({ synthesize: async () => ({ audio: buffer }), play: data => this._playAivisAudio(data, volume) }, 'normal', { localOnly: true, ignorePause: true, presynthesized: true });
 	}
 
 	/** scheduler.playRingtone() は同期で deps.playRingtone を呼ぶため、直前セットで取り違えは起きない。 */
@@ -387,6 +418,9 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	/**
 	 * 読み上げ 1 件のタスク。`--ingest` が使えれば worker へ渡し（handoff）、使えなければ全部受け取ってから
 	 * afplay で鳴らす。音量は、worker へ渡すときは dB にしてジョブに載せ、自分で鳴らすときは音量の表で揃える。
+	 *
+	 * 預かった着信音（setRingtone）は、worker が鳴らし始めるまで手放さない。worker へ渡せなかった・取り下げられた・
+	 * 列に入らなかった件は、Para Code が鳴らす。
 	 */
 	private _createVoiceTask(request: IParadisNotifyAudioRequest, priority: AivisPriority): { readonly runner: AivisTaskRunner; setRingtone(ringtone: { readonly id: string; readonly volume: number }): void } | undefined {
 		let synthesizeStream: () => Promise<AivisStreamingSynthesis>;
@@ -423,52 +457,73 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 		// 感情タグ（[...]）入りの発話は、音量の覚え直しに使わない
 		const tagged = /\[[^\]]+\]/.test(text);
-		// worker へ渡すときに前置きにする着信音。afplay で鳴らすことになったら、その前に Para Code が鳴らす
+		// まだ誰も鳴らしていない着信音
 		let pendingRingtone: { readonly id: string; readonly volume: number } | undefined;
+		const playPendingRingtone = () => {
+			const ringtone = pendingRingtone;
+			pendingRingtone = undefined;
+			if (ringtone) {
+				this._playRingtoneNow(ringtone);
+			}
+		};
 		const playLocally = (audio: Buffer) => this._playAivisAudio(audio, paradisCorrectedPlaybackVolume(volume, gainKey, this._ingest?.gainTable));
 		const ingest = this._ingest;
 		const runner: AivisTaskRunner = {
-			synthesize: async () => {
-				const ringtone = pendingRingtone;
-				pendingRingtone = undefined;
-				if (ringtone) {
-					this._playRingtoneNow(ringtone);
-				}
-				return { audio: await paradisCollectBody((await synthesizeStream()).body, PARADIS_MAX_SYNTHESIZED_AUDIO_BYTES) };
-			},
+			synthesize: async () => ({ audio: await paradisCollectBody((await synthesizeStream()).body, PARADIS_MAX_SYNTHESIZED_AUDIO_BYTES) }),
 			play: audio => {
 				// モバイルは副経路。購読側の不在・失敗に関係なく従来のPC再生を続ける。
 				this.publishMobileVoiceClip(audio);
 				return playLocally(audio);
 			},
-			handoff: ingest === undefined ? undefined : async attempt => {
-				const ringtone = attempt === 1 ? pendingRingtone : undefined;
-				const prelude = ringtone ? this._ringtonePrelude(ringtone) : undefined;
+			// Para Code が自分で鳴らす直前・列から外れたときに、預かった着信音を鳴らす
+			startRingtone: playPendingRingtone,
+			onDropped: playPendingRingtone,
+			handoff: ingest === undefined ? undefined : async () => {
+				const ringtone = pendingRingtone;
+				const prelude = ringtone && !this._dictationHold.held ? this._ringtonePrelude(ringtone) : undefined;
+				if (ringtone && !prelude) {
+					// 音声入力中（捨てる決まり）か、鳴らせる着信音が無い
+					pendingRingtone = undefined;
+				}
+				let started = false;
 				let result: AivisHandoffResult;
 				try {
 					result = await paradisHandoffVoice({
 						ingest,
 						open: { priority, gainKey, volumeDb, tagged, prelude },
-						attempt,
 						synthesize: synthesizeStream,
-						onComplete: audio => this.publishMobileVoiceClip(audio),
-						onWithdrawn: audio => {
-							// worker が取り出さないまま取り下げられた。着信音も鳴っていないので、両方 Para Code が鳴らす
-							if (ringtone) {
-								this._playRingtoneNow(ringtone);
+						onStarted: () => {
+							started = true;
+							if (prelude) {
+								// worker が着信音を鳴らした
+								pendingRingtone = undefined;
 							}
-							this._scheduler.enqueueAivis({ synthesize: async () => ({ audio }), play: playLocally }, priority, { localOnly: true, ignorePause: true });
+						},
+						onComplete: audio => this.publishMobileVoiceClip(audio),
+						onPlayLocally: audio => {
+							// worker は何も鳴らさなかった。着信音も鳴っていなければ、両方 Para Code が鳴らす
+							const ringtoneToPlay = prelude && !started ? ringtone : undefined;
+							this._scheduler.enqueueAivis({
+								synthesize: async () => ({ audio }),
+								play: playLocally,
+								startRingtone: () => {
+									if (ringtoneToPlay) {
+										this._playRingtoneNow(ringtoneToPlay);
+									}
+								},
+							}, priority, { localOnly: true, ignorePause: true, presynthesized: true });
 						},
 					});
 				} catch (error) {
-					// 合成に失敗した。着信音は worker に渡したので、作り直すジョブにも afplay にも付けない
-					if (prelude) {
+					// 合成に失敗した。worker が鳴らし始める前なら、着信音は預かったまま（再試行のジョブに付け直すか、
+					// あきらめたら Para Code が鳴らす）
+					if (started) {
 						pendingRingtone = undefined;
 					}
 					throw error;
 				}
 				if (result.kind === 'released') {
-					// 着信音は worker が鳴らす
+					// 着信音は worker が鳴らす（取り下げられたら onPlayLocally で鳴らす）
 					pendingRingtone = undefined;
 				}
 				return result;
@@ -527,6 +582,9 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 
 	/** ringtoneId から実ファイルパスを解決して再生し、完了を待つ。解決不可なら即 resolve（＝スキップ）。 */
 	private async _playRingtoneFile(ringtoneId: string, volume: number): Promise<void> {
+		if (this.testing.playRingtoneFile) {
+			return this.testing.playRingtoneFile(ringtoneId, volume);
+		}
 		const path = this._resolveRingtonePath(ringtoneId);
 		if (!path) {
 			return;
@@ -536,6 +594,9 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 
 	/** ビルトイン音源は out 配下の media から、カスタム音源は ~/.para-code の保存先から解決する。 */
 	private _resolveRingtonePath(ringtoneId: string): string | null {
+		if (this.testing.resolveRingtonePath) {
+			return this.testing.resolveRingtonePath(ringtoneId);
+		}
 		if (ringtoneId === CUSTOM_RINGTONE_ID) {
 			const filename = this._findFileByStem(CUSTOM_STEM, ALLOWED_AUDIO_EXTENSIONS);
 			return filename ? join(this._assetsDir, filename) : null;
@@ -1371,7 +1432,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			body.speaking_rate = request.speakingRate;
 		}
 
-		const timeouts = new ParadisSynthesisTimeouts();
+		const timeouts = new ParadisSynthesisTimeouts(PARADIS_AIVIS_FIRST_BYTE_TIMEOUT_MS);
 		let response: Response;
 		try {
 			response = await fetch(new URL('/v1/tts/synthesize', AIVIS_BASE_URL), {
@@ -1404,6 +1465,9 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 
 	/** 合成済み音声を一時ファイルへ書き出して再生し、完了後に削除する。 */
 	private async _playAivisAudio(audio: Buffer, volume: number): Promise<void> {
+		if (this.testing.playVoiceAudio) {
+			return this.testing.playVoiceAudio(audio, volume);
+		}
 		const tempPath = join(tmpdir(), `paradis-aivis-${Date.now()}-${randomUUID().slice(0, 8)}.mp3`);
 		await writeFile(tempPath, audio);
 		try {
@@ -1422,10 +1486,8 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			this.logService.warn(`[ParadisNotifications] sound file not found: ${soundPath}`);
 			return;
 		}
-		// 100 を超える値は音量の表で上げる分。macOS の afplay は -v が 1.0 を超えても効く（AudioQueue の音量で
-		// 上がることを確かめた）ので +8dB まで使う。ほかの OS の再生側は 1.0 で頭打ちにする
-		const requested = Math.max(0, Number.isFinite(volume) ? volume / 100 : 1);
-		const volumeDecimal = Math.min(process.platform === 'darwin' ? Math.pow(10, PARADIS_VOICE_MAX_BOOST_DB / 20) : 1, requested);
+		// afplay 等には頭打ち（リミッター）が無いので、1.0 を超えて上げない（上げるのは aivis-mcp 2.5.0 の worker 経由だけ）
+		const volumeDecimal = Math.max(0, Math.min(1, Number.isFinite(volume) ? volume / 100 : 1));
 		if (volumeDecimal === 0) {
 			return;
 		}

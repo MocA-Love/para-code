@@ -20,7 +20,9 @@ class FakeStream implements IParadisIngestStream {
 	readonly finishedGate = new DeferredPromise<IParadisIngestTerminal>();
 	readonly handoff = this.handoffGate.p;
 	readonly finished = this.finishedGate.p;
-	onDidStart(): void { }
+	private readonly startListeners: Array<() => void> = [];
+	onDidStart(listener: () => void): void { this.startListeners.push(listener); }
+	start(): void { this.startListeners.forEach(listener => listener()); }
 	async write(chunk: Uint8Array): Promise<void> { this.events.push(`write:${chunk.byteLength}`); }
 	async end(): Promise<void> { this.events.push('end'); }
 	async abort(reason: string): Promise<void> { this.events.push(`abort:${reason}`); }
@@ -61,10 +63,9 @@ suite('paradisHandoffVoice', () => {
 		const pending = paradisHandoffVoice({
 			ingest,
 			open: { priority: 'high', gainKey: 'aivis:m:default', volumeDb: -3, prelude },
-			attempt: 1,
 			synthesize: async () => ({ body: body(100, 200) }),
 			onComplete: audio => completed.push(audio.byteLength),
-			onWithdrawn: () => assert.fail('not withdrawn'),
+			onPlayLocally: () => assert.fail('the worker played it'),
 		});
 		stream.handoffGate.complete(true);
 		const result = await pending;
@@ -84,9 +85,8 @@ suite('paradisHandoffVoice', () => {
 		const pending = paradisHandoffVoice({
 			ingest: port(stream).ingest,
 			open: { priority: 'normal' },
-			attempt: 1,
 			synthesize: async () => ({ body: body(10, 20) }),
-			onWithdrawn: () => { },
+			onPlayLocally: () => { },
 		});
 		await flush();
 		stream.handoffGate.complete(false);
@@ -94,38 +94,60 @@ suite('paradisHandoffVoice', () => {
 		assert.deepStrictEqual({ kind: result.kind, bytes: result.kind === 'fallback' ? result.audio?.byteLength : undefined }, { kind: 'fallback', bytes: 30 });
 	});
 
-	test('plays locally only the clips the worker withdrew after the handoff', async () => {
-		const stream = new FakeStream();
-		const withdrawn: number[] = [];
-		const pending = paradisHandoffVoice({
-			ingest: port(stream).ingest,
-			open: { priority: 'normal' },
-			attempt: 1,
-			synthesize: async () => ({ body: body(40) }),
-			onWithdrawn: audio => withdrawn.push(audio.byteLength),
-		});
-		stream.handoffGate.complete(true);
-		await pending;
-		await flush();
-		stream.finishedGate.complete({ status: 'failed', reason: 'worker-unavailable', withdrawn: true });
-		await flush();
-		assert.deepStrictEqual(withdrawn, [40]);
+	test('plays locally only what the worker withdrew or gave up on before any audio frame was written', async () => {
+		const played: string[] = [];
+		const run = async (name: string, terminal: IParadisIngestTerminal, synthesizeAfterFinish: boolean) => {
+			const stream = new FakeStream();
+			const audio = new DeferredPromise<void>();
+			const pending = paradisHandoffVoice({
+				ingest: port(stream).ingest,
+				open: { priority: 'normal' },
+				synthesize: async () => ({
+					body: (async function* () {
+						if (synthesizeAfterFinish) {
+							await audio.p;
+						}
+						yield new Uint8Array(40);
+					})(),
+				}),
+				onPlayLocally: clip => played.push(`${name}:${clip.byteLength}`),
+			});
+			stream.handoffGate.complete(true);
+			await pending;
+			if (!synthesizeAfterFinish) {
+				await flush();
+			}
+			stream.finishedGate.complete(terminal);
+			await flush();
+			audio.complete();
+			await flush();
+		};
+		await run('withdrawn', { status: 'failed', reason: 'worker-unavailable', withdrawn: true }, false);
+		await run('first-audio-before-write', { status: 'failed', reason: 'first-audio-timeout' }, true);
+		await run('first-audio-after-write', { status: 'failed', reason: 'first-audio-timeout' }, false);
+		await run('lost', { status: 'failed', reason: 'lost' }, false);
+		assert.deepStrictEqual(played, ['withdrawn:40', 'first-audio-before-write:40']);
 	});
 
-	test('aborts the job and rethrows when the synthesis fails, and drops the ringtone on a retry', async () => {
+	test('aborts the job and rethrows when the synthesis fails, reporting whether the worker had started', async () => {
 		const stream = new FakeStream();
 		const { ingest, opened } = port(stream);
+		let started = false;
 		await assert.rejects(paradisHandoffVoice({
 			ingest,
 			open: { priority: 'normal', prelude },
-			attempt: 2,
-			synthesize: async () => { throw new AivisError('retryable', 'timeout'); },
-			onWithdrawn: () => { },
+			synthesize: async () => {
+				stream.start();
+				throw new AivisError('retryable', 'timeout');
+			},
+			onStarted: () => { started = true; },
+			onPlayLocally: () => { },
 		}), AivisError);
-		const notReady = await paradisHandoffVoice({ ingest: port(undefined, false).ingest, open: { priority: 'normal' }, attempt: 1, synthesize: async () => ({ body: body(1) }), onWithdrawn: () => { } });
-		assert.deepStrictEqual({ opened, events: stream.events, notReady }, {
-			opened: [{ priority: 'normal', prelude: undefined }],
+		const notReady = await paradisHandoffVoice({ ingest: port(undefined, false).ingest, open: { priority: 'normal' }, synthesize: async () => ({ body: body(1) }), onPlayLocally: () => { } });
+		assert.deepStrictEqual({ opened, events: stream.events, started, notReady }, {
+			opened: [{ priority: 'normal', prelude }],
 			events: ['abort:synth-failed'],
+			started: true,
 			notReady: { kind: 'fallback' },
 		});
 	});

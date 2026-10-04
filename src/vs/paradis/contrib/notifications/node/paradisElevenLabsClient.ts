@@ -41,7 +41,7 @@ import {
 	PARADIS_ELEVENLABS_DEFAULT_MODEL_ID,
 } from '../common/paradisElevenLabs.js';
 import { AivisError, AivisStreamingSynthesis, AivisSynthesizeResult } from './paradisAudioScheduler.js';
-import { paradisCollectBody, paradisReadSynthesisBody, ParadisSynthesisTimeouts } from './paradisStreamingBody.js';
+import { PARADIS_ELEVENLABS_FIRST_BYTE_TIMEOUT_MS, paradisCollectBody, paradisReadSynthesisBody, ParadisSynthesisTimeouts } from './paradisStreamingBody.js';
 
 const ELEVENLABS_BASE_URL = 'https://api.elevenlabs.io';
 /** 合成した音声 1 本の上限（読み上げ 1 回分としては十分に大きい）。 */
@@ -168,7 +168,7 @@ export class ParadisElevenLabsClient {
 
 	/**
 	 * 合成を少しずつ受け取る（`/stream`）。応答のヘッダーまでを待って返し、失敗の状態は AivisError にして投げる。
-	 * 最初の 1 バイトまで 10 秒、途切れ 8 秒で打ち切る。
+	 * 最初の 1 バイトまで 8 秒、途切れ 8 秒で打ち切る。
 	 */
 	async synthesizeStream(request: IParadisPlayElevenLabsRequest): Promise<AivisStreamingSynthesis> {
 		const text = paradisStripSsmlTags(request.text);
@@ -190,7 +190,7 @@ export class ParadisElevenLabsClient {
 
 		const url = new URL(`/v1/text-to-speech/${encodeURIComponent(request.voiceId)}/stream`, ELEVENLABS_BASE_URL);
 		url.searchParams.set('output_format', ELEVENLABS_OUTPUT_FORMAT);
-		const timeouts = new ParadisSynthesisTimeouts();
+		const timeouts = new ParadisSynthesisTimeouts(PARADIS_ELEVENLABS_FIRST_BYTE_TIMEOUT_MS);
 		let response: Response;
 		try {
 			response = await this.fetchImpl(url, {
