@@ -64,7 +64,7 @@ suite('ParadisElevenLabsClient', () => {
 	test('sends the synthesis request with stripped text, speed and the latest dictionary version', async () => {
 		const fake = new FakeFetch()
 			.on('GET', '/v1/pronunciation-dictionaries/dict1', () => json({ id: 'dict1', name: 'D', latest_version_id: 'ver9' }))
-			.on('POST', '/v1/text-to-speech/voice1', () => new Response(Uint8Array.of(1, 2, 3), { headers: { 'content-type': 'audio/mpeg' } }));
+			.on('POST', '/v1/text-to-speech/voice1/stream', () => new Response(Uint8Array.of(1, 2, 3), { headers: { 'content-type': 'audio/mpeg' } }));
 		const client = createClient(fake);
 
 		const result = await client.synthesize({ apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'eleven_flash_v2_5', text: '<speak>完了<break time="1s"/>しました</speak>', speed: 1.5, dictionaryId: 'dict1', volume: 80 });
@@ -75,7 +75,7 @@ suite('ParadisElevenLabsClient', () => {
 				{ method: 'GET', path: '/v1/pronunciation-dictionaries/dict1', query: {}, apiKeyHeader: TEST_KEY, body: undefined },
 				{
 					method: 'POST',
-					path: '/v1/text-to-speech/voice1',
+					path: '/v1/text-to-speech/voice1/stream',
 					query: { output_format: 'mp3_44100_128' },
 					apiKeyHeader: TEST_KEY,
 					body: {
@@ -92,7 +92,7 @@ suite('ParadisElevenLabsClient', () => {
 	test('reads without the dictionary when its version cannot be resolved', async () => {
 		const fake = new FakeFetch()
 			.on('GET', '/v1/pronunciation-dictionaries/gone', () => json({ detail: { status: 'not_found' } }, 404))
-			.on('POST', '/v1/text-to-speech/voice1', () => new Response(Uint8Array.of(9)));
+			.on('POST', '/v1/text-to-speech/voice1/stream', () => new Response(Uint8Array.of(9)));
 		await createClient(fake).synthesize({ apiKey: TEST_KEY, voiceId: 'voice1', modelId: '', text: 'hello', dictionaryId: 'gone' });
 
 		assert.deepStrictEqual(fake.requests[1].body, { text: 'hello', model_id: 'eleven_flash_v2_5', voice_settings: { speed: 1 } });
@@ -108,7 +108,7 @@ suite('ParadisElevenLabsClient', () => {
 		];
 		const results: { kind: string; status: number | undefined; reset: number | undefined; leaksKey: boolean }[] = [];
 		for (const [status, body, headers] of cases) {
-			const fake = new FakeFetch().on('POST', '/v1/text-to-speech/voice1', () => new Response(JSON.stringify(body), { status, headers }));
+			const fake = new FakeFetch().on('POST', '/v1/text-to-speech/voice1/stream', () => new Response(JSON.stringify(body), { status, headers }));
 			try {
 				await createClient(fake).synthesize({ apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'm', text: 'x' });
 				assert.fail('expected a failure');
@@ -174,7 +174,7 @@ suite('ParadisElevenLabsClient', () => {
 	});
 
 	test('caps a long Retry-After at 60 seconds', async () => {
-		const fake = new FakeFetch().on('POST', '/v1/text-to-speech/voice1', () => new Response('{}', { status: 429, headers: { 'retry-after': '3600' } }));
+		const fake = new FakeFetch().on('POST', '/v1/text-to-speech/voice1/stream', () => new Response('{}', { status: 429, headers: { 'retry-after': '3600' } }));
 		const error = await createClient(fake).synthesize({ apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'm', text: 'x' }).then(() => undefined, (e: unknown) => e);
 
 		assert.deepStrictEqual(error instanceof AivisError ? [error.kind, error.rateLimitReset] : error, ['retryable', 60]);
@@ -185,7 +185,7 @@ suite('ParadisElevenLabsClient', () => {
 		const fake = new FakeFetch()
 			.on('GET', '/v1/pronunciation-dictionaries/archived', () => json({ id: 'archived', latest_version_id: 'v1', archived_time_unix: 1700000100, rules: [] }))
 			.on('GET', '/v1/pronunciation-dictionaries/broken', () => json({ detail: 'boom' }, 500))
-			.on('POST', '/v1/text-to-speech/voice1', () => new Response(Uint8Array.of(1)));
+			.on('POST', '/v1/text-to-speech/voice1/stream', () => new Response(Uint8Array.of(1)));
 		const client = createClient(fake, () => now);
 		const speak = (dictionaryId: string) => client.synthesize({ apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'm', text: 'x', dictionaryId });
 		await speak('archived');
@@ -239,7 +239,7 @@ suite('ParadisElevenLabsClient', () => {
 				rules: [{ type: 'alias', string_to_replace: 'PR', alias: 'ぷるりく', case_sensitive: true, word_boundaries: false }],
 			}))
 			.on('POST', '/v1/pronunciation-dictionaries/d1/set-rules', () => json({ id: 'd1', version_id: 'v2', version_rules_num: 1 }))
-			.on('POST', '/v1/text-to-speech/voice1', () => new Response(Uint8Array.of(1)));
+			.on('POST', '/v1/text-to-speech/voice1/stream', () => new Response(Uint8Array.of(1)));
 		const client = createClient(fake);
 		const detail = await client.getDictionary(TEST_KEY, 'd1');
 		await client.setDictionaryRules(TEST_KEY, 'd1', detail.rules);
@@ -247,14 +247,14 @@ suite('ParadisElevenLabsClient', () => {
 
 		assert.deepStrictEqual(fake.requests.slice(1).map(request => [request.method, request.path, request.body]), [
 			['POST', '/v1/pronunciation-dictionaries/d1/set-rules', { rules: [{ type: 'alias', string_to_replace: 'PR', alias: 'ぷるりく', case_sensitive: true, word_boundaries: false }] }],
-			['POST', '/v1/text-to-speech/voice1', { text: 'x', model_id: 'm', voice_settings: { speed: 1 }, pronunciation_dictionary_locators: [{ pronunciation_dictionary_id: 'd1', version_id: 'v2' }] }],
+			['POST', '/v1/text-to-speech/voice1/stream', { text: 'x', model_id: 'm', voice_settings: { speed: 1 }, pronunciation_dictionary_locators: [{ pronunciation_dictionary_id: 'd1', version_id: 'v2' }] }],
 		]);
 	});
 
 	test('reads without an applied dictionary that has been archived', async () => {
 		const fake = new FakeFetch()
 			.on('GET', '/v1/pronunciation-dictionaries/d1', () => json({ id: 'd1', name: 'D', latest_version_id: 'v1', archived_time_unix: 1700000100, rules: [] }))
-			.on('POST', '/v1/text-to-speech/voice1', () => new Response(Uint8Array.of(1)));
+			.on('POST', '/v1/text-to-speech/voice1/stream', () => new Response(Uint8Array.of(1)));
 		await createClient(fake).synthesize({ apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'm', text: 'x', dictionaryId: 'd1' });
 
 		assert.deepStrictEqual(fake.requests[1].body, { text: 'x', model_id: 'm', voice_settings: { speed: 1 } });

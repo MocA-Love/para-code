@@ -11,7 +11,11 @@
 
 import { Event } from '../../../../base/common/event.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
+import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
 import { paradisNormalizeElevenLabsRules } from '../common/paradisElevenLabs.js';
 import { ParadisNotificationsService } from './paradisNotificationsService.js';
@@ -85,8 +89,12 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 /**
  * sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。
  */
-export function registerParadisNotifications(server: IPCServer<string>, logService: ILogService): ParadisNotificationsService {
-	const service = new ParadisNotificationsService(logService);
+export function registerParadisNotifications(server: IPCServer<string>, logService: ILogService, configurationService?: IConfigurationService, args?: NativeParsedArgs): ParadisNotificationsService {
+	// 手元の aivis-mcp（`--ingest`）はログインシェル由来の PATH（npm・bun のグローバル）で探す
+	const cachedShellEnv = configurationService && args
+		? new ParadisCachedShellEnv(logService, 'ParadisNotifications', createParadisShellEnvResolver(logService, configurationService, args), Date.now, reportParadisShellEnvDiagnosticError)
+		: undefined;
+	const service = new ParadisNotificationsService(logService, cachedShellEnv ? () => cachedShellEnv.getEnv() : undefined);
 	server.registerChannel(PARADIS_NOTIFICATIONS_CHANNEL, new ParadisNotificationsChannel(service));
 	service.trackClientDisconnects(
 		Event.map(server.onDidRemoveConnection, connection => connection.ctx),

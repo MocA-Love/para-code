@@ -552,7 +552,7 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 		this.server.registerChannel('playwright', playwrightChannel);
 
 		// PARA-PATCH: 通知サウンド/Aivis読み上げバックエンド（カスタム音源管理・YouTube取込・Aivis Cloud APIクライアント）
-		const paradisNotifications = this._register(registerParadisNotifications(this.server, accessor.get(ILogService)));
+		const paradisNotifications = this._register(registerParadisNotifications(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
 
 		// PARA-PATCH: ブラウザページ⇔エージェントCLI紐付け（バインディングレジストリ+MCP/CDPゲートウェイサーバーの生成とチャネル登録）
 		const paradisAgentBrowser = this._register(registerParadisAgentBrowser(
@@ -564,6 +564,7 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 			accessor.get(IConfigurationService),
 			this.configuration.args,
 			audio => paradisNotifications.publishMobileVoiceClip(audio),
+			paradisNotifications,
 		));
 
 		// PARA-PATCH: モバイル端末⇔ターミナルペインのアタッチ台帳。ツールは上のMCPサーバーへ相乗りさせるため、
