@@ -27,6 +27,7 @@ import {
 	paradisClassifyElevenLabsError,
 	ParadisElevenLabsRule,
 	ParadisElevenLabsSubscriptionResult,
+	paradisElevenLabsRetryAfter,
 	paradisElevenLabsUsageRange,
 	paradisFilterElevenLabsModels,
 	paradisIsElevenLabsDictionaryArchived,
@@ -49,6 +50,8 @@ const ELEVENLABS_OUTPUT_FORMAT = 'mp3_44100_128';
 const MAX_VOICE_PAGES = 5;
 /** 辞書の最新版 ID を覚えておく時間。辞書を直した直後の合成に古い版が乗らないよう短めにする。 */
 const DICTIONARY_VERSION_TTL_MS = 60_000;
+/** アーカイブ済み・取得に失敗した辞書を「使わない」と覚えておく時間。 */
+const DICTIONARY_UNUSABLE_TTL_MS = 5 * 60_000;
 
 /** ElevenLabs API の失敗。メッセージにはステータスと本文の要約だけを入れる（キーは入れない）。 */
 export class ParadisElevenLabsApiError extends Error {
@@ -68,7 +71,8 @@ interface IRequestInit {
 
 export class ParadisElevenLabsClient {
 
-	private readonly _dictionaryVersions = new Map<string, { readonly versionId: string; readonly at: number }>();
+	/** 辞書ごとの最新版 ID。undefined は「アーカイブ済み・取得失敗で使わない」を短い間覚えたもの。 */
+	private readonly _dictionaryVersions = new Map<string, { readonly versionId: string | undefined; readonly at: number }>();
 
 	constructor(
 		private readonly logService: ILogService,
@@ -76,7 +80,11 @@ export class ParadisElevenLabsClient {
 		private readonly now: () => number = Date.now,
 	) { }
 
-	private async _fetch(path: string, apiKey: string, init: IRequestInit = {}): Promise<Response> {
+	/**
+	 * 要求を送り、`read` で本文を読み終えるまでをタイムアウトの中に入れる
+	 * （ヘッダーだけ返して本文が止まる応答でも打ち切れるように）。
+	 */
+	private async _request<T>(path: string, apiKey: string, init: IRequestInit, read: (response: Response) => Promise<T>): Promise<T> {
 		const url = new URL(path, ELEVENLABS_BASE_URL);
 		for (const [key, value] of Object.entries(init.query ?? {})) {
 			if (value !== undefined) {
@@ -97,15 +105,23 @@ export class ParadisElevenLabsClient {
 				const text = await response.text().catch(() => '');
 				throw new ParadisElevenLabsApiError(response.status, text);
 			}
-			return response;
+			return await read(response);
 		} finally {
 			clearTimeout(timer);
 		}
 	}
 
-	private async _json<T>(path: string, apiKey: string, init?: IRequestInit): Promise<T> {
-		const response = await this._fetch(path, apiKey, init);
-		return response.json() as Promise<T>;
+	private _json<T>(path: string, apiKey: string, init: IRequestInit = {}): Promise<T> {
+		return this._request(path, apiKey, init, response => response.json() as Promise<T>);
+	}
+
+	private _text(path: string, apiKey: string, init: IRequestInit = {}): Promise<string> {
+		return this._request(path, apiKey, init, response => response.text());
+	}
+
+	/** 本文を使わない要求。本文は読み捨てる。 */
+	private _send(path: string, apiKey: string, init: IRequestInit = {}): Promise<void> {
+		return this._request(path, apiKey, init, async response => { await response.arrayBuffer().catch(() => undefined); });
 	}
 
 	// --- 声・モデル ------------------------------------------------------------------------------
@@ -184,8 +200,8 @@ export class ParadisElevenLabsClient {
 			if (!response.ok) {
 				const bodyText = await response.text().catch(() => '');
 				const { kind, reason } = paradisClassifyElevenLabsError(response.status, bodyText);
-				const retryAfter = response.status === 429 ? Number.parseInt(response.headers.get('retry-after') ?? '', 10) : Number.NaN;
-				throw new AivisError(kind, reason, response.status, Number.isFinite(retryAfter) ? retryAfter : undefined);
+				const retryAfter = response.status === 429 ? paradisElevenLabsRetryAfter(response.headers.get('retry-after')) : undefined;
+				throw new AivisError(kind, reason, response.status, retryAfter);
 			}
 			return { audio: Buffer.from(await response.arrayBuffer()) };
 		} finally {
@@ -196,29 +212,25 @@ export class ParadisElevenLabsClient {
 	/** 辞書の最新版 ID。取れなければ undefined（その回は辞書なしで読み上げる）。 */
 	private async _resolveDictionaryVersion(apiKey: string, dictionaryId: string): Promise<string | undefined> {
 		const cached = this._dictionaryVersions.get(dictionaryId);
-		if (cached && this.now() - cached.at < DICTIONARY_VERSION_TTL_MS) {
+		const ttl = cached?.versionId ? DICTIONARY_VERSION_TTL_MS : DICTIONARY_UNUSABLE_TTL_MS;
+		if (cached && this.now() - cached.at < ttl) {
 			return cached.versionId;
 		}
 		try {
 			const detail = await this.getDictionary(apiKey, dictionaryId, false);
-			if (detail.archived) {
-				// 適用中の辞書がアーカイブされていたら、辞書なしで読み上げる。
-				this._dictionaryVersions.delete(dictionaryId);
-				return undefined;
-			}
-			return detail.latestVersionId || undefined;
+			// アーカイブ済みなら辞書なしで読み上げる（getDictionary が「使わない」を覚える）。
+			return detail.archived ? undefined : (detail.latestVersionId || undefined);
 		} catch (error) {
 			this.logService.warn(`[ParadisNotifications] could not resolve the ElevenLabs dictionary version; reading without the dictionary: ${getErrorMessage(error)}`);
+			// 失敗した辞書を通知のたびに取りに行かないよう、しばらく「使わない」と覚える。
+			this._dictionaryVersions.set(dictionaryId, { versionId: undefined, at: this.now() });
 			return undefined;
 		}
 	}
 
+	/** 最新版 ID を覚える。undefined（アーカイブ済み等）は「使わない」として短い間覚える。 */
 	private _rememberDictionaryVersion(dictionaryId: string, versionId: string | undefined): void {
-		if (versionId) {
-			this._dictionaryVersions.set(dictionaryId, { versionId, at: this.now() });
-		} else {
-			this._dictionaryVersions.delete(dictionaryId);
-		}
+		this._dictionaryVersions.set(dictionaryId, { versionId: versionId || undefined, at: this.now() });
 	}
 
 	// --- 使用量 ----------------------------------------------------------------------------------
@@ -279,7 +291,7 @@ export class ParadisElevenLabsClient {
 			}
 			for (const raw of json.pronunciation_dictionaries ?? []) {
 				if (raw.id && paradisIsElevenLabsDictionaryArchived(raw.archived_time_unix)) {
-					this._dictionaryVersions.delete(raw.id);
+					this._rememberDictionaryVersion(raw.id, undefined);
 				}
 			}
 			if (!json.has_more || !json.next_cursor) {
@@ -323,38 +335,16 @@ export class ParadisElevenLabsClient {
 		return { id: json.id, versionId: json.version_id ?? '' };
 	}
 
-	/**
-	 * 辞書の規則を丸ごと置き換える。`set-rules` が無い（404/405）ときは、今の規則を全部外して
-	 * 入れ直す（remove-rules → add-rules）。
-	 */
+	/** 辞書の規則を丸ごと置き換える（`set-rules`）。新しい版 ID を覚えて、次の合成に使う。 */
 	async setDictionaryRules(apiKey: string, id: string, rules: readonly ParadisElevenLabsRule[]): Promise<void> {
-		const base = `/v1/pronunciation-dictionaries/${encodeURIComponent(id)}`;
-		try {
-			const json = await this._json<{ version_id?: string }>(`${base}/set-rules`, apiKey, { method: 'POST', json: { rules } });
-			this._rememberDictionaryVersion(id, json.version_id);
-			return;
-		} catch (error) {
-			if (!(error instanceof ParadisElevenLabsApiError) || (error.status !== 404 && error.status !== 405)) {
-				throw error;
-			}
-		}
-		const current = await this.getDictionary(apiKey, id);
-		const ruleStrings = [...new Set(current.rules.map(rule => rule.string_to_replace))];
-		if (ruleStrings.length > 0) {
-			await this._json(`${base}/remove-rules`, apiKey, { method: 'POST', json: { rule_strings: ruleStrings } });
-		}
-		if (rules.length > 0) {
-			const json = await this._json<{ version_id?: string }>(`${base}/add-rules`, apiKey, { method: 'POST', json: { rules } });
-			this._rememberDictionaryVersion(id, json.version_id);
-		} else {
-			this._dictionaryVersions.delete(id);
-		}
+		const json = await this._json<{ version_id?: string }>(`/v1/pronunciation-dictionaries/${encodeURIComponent(id)}/set-rules`, apiKey, { method: 'POST', json: { rules } });
+		this._rememberDictionaryVersion(id, json.version_id);
 	}
 
 	/** 辞書を消す。物理削除の API が無いのでアーカイブする。 */
 	async archiveDictionary(apiKey: string, id: string): Promise<void> {
-		await this._fetch(`/v1/pronunciation-dictionaries/${encodeURIComponent(id)}`, apiKey, { method: 'PATCH', json: { archived: true } });
-		this._dictionaryVersions.delete(id);
+		await this._send(`/v1/pronunciation-dictionaries/${encodeURIComponent(id)}`, apiKey, { method: 'PATCH', json: { archived: true } });
+		this._rememberDictionaryVersion(id, undefined);
 	}
 
 	/** 最新版の PLS（XML）を書き出す。 */
@@ -368,7 +358,6 @@ export class ParadisElevenLabsClient {
 	}
 
 	private async _downloadVersion(apiKey: string, id: string, versionId: string): Promise<string> {
-		const response = await this._fetch(`/v1/pronunciation-dictionaries/${encodeURIComponent(id)}/${encodeURIComponent(versionId)}/download`, apiKey, { accept: 'application/pls+xml, application/xml, text/xml, */*' });
-		return response.text();
+		return this._text(`/v1/pronunciation-dictionaries/${encodeURIComponent(id)}/${encodeURIComponent(versionId)}/download`, apiKey, { accept: 'application/pls+xml, application/xml, text/xml, */*' });
 	}
 }

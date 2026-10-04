@@ -32,7 +32,7 @@ import {
 	PARADIS_NOTIFICATIONS_CHANNEL,
 	renderParadisAivisTemplate,
 } from '../common/paradisNotifications.js';
-import { IParadisAivisSettings, IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
+import { IParadisAivisSettings, IParadisNotificationsSettingsService, ParadisApiKeyField } from '../browser/paradisNotificationsSettings.js';
 import { ParadisVoiceEngine, PARADIS_ELEVENLABS_SPEED_MAX, PARADIS_ELEVENLABS_SPEED_MIN } from '../common/paradisElevenLabs.js';
 import { IParadisElevenLabsSampleHost, ParadisElevenLabsVoiceFields } from './paradisElevenLabsVoiceFields.js';
 import { getCachedAivisDictionaryList, getCachedAivisModelInfo, setCachedAivisDictionaryList, setCachedAivisModelInfo } from './paradisAivisApiCache.js';
@@ -63,6 +63,8 @@ const STR_VOLUME_LABEL = localize('paradis.notif.aivis.volumeLabel', "音量");
 const STR_RATE_LABEL = localize('paradis.notif.aivis.rateLabel', "話速");
 // allow-any-unicode-next-line
 const STR_API_KEY_LABEL = localize('paradis.notif.aivis.apiKeyLabel', "API Key");
+// allow-any-unicode-next-line
+const STR_API_KEY_LOST = localize('paradis.notif.voice.apiKeyLost', "API キーを読み出せませんでした。もう一度入力してください");
 // allow-any-unicode-next-line
 const STR_TOGGLE_API_KEY_VISIBILITY = localize('paradis.notif.aivis.toggleApiKeyVisibility', "API キーの表示/非表示を切り替え");
 // allow-any-unicode-next-line
@@ -135,6 +137,9 @@ export class ParadisAivisVoiceSection extends Disposable {
 	private _playingSampleButton: HTMLButtonElement | undefined;
 
 	private readonly _elevenLabsFields: ParadisElevenLabsVoiceFields;
+	private _waitingForApiKeys = false;
+	/** テスト再生ボタンごとの失敗表示。描き直しで要素ごと捨てられるので WeakMap で持つ。 */
+	private readonly _testErrors = new WeakMap<HTMLButtonElement, HTMLElement>();
 
 	constructor(
 		private readonly container: HTMLElement,
@@ -152,7 +157,7 @@ export class ParadisAivisVoiceSection extends Disposable {
 					this._setSampleButtonPlaying(button, true);
 				}
 			},
-			renderApiKeyField: (parent, apiKey, placeholder, description, onCommit) => this._renderApiKeyField(parent, apiKey, placeholder, description, onCommit),
+			renderApiKeyField: (parent, field, apiKey, placeholder, description) => this._renderApiKeyField(parent, apiKey, placeholder, description, field),
 		};
 		this._elevenLabsFields = instantiationService.createInstance(ParadisElevenLabsVoiceFields, sampleHost, () => this._store.isDisposed);
 		this._register(this.settingsService.onDidChange(scope => {
@@ -180,6 +185,14 @@ export class ParadisAivisVoiceSection extends Disposable {
 		// 再描画で直前にフォーカスされていた要素がDOMから外れることでスクロール位置が
 		// 先頭に戻ってしまう問題への対策(paradisNotificationSettingsDomUtils.ts参照)。
 		paradisPreserveScroll(this.container, () => this._renderBody());
+		if (!this.settingsService.areApiKeysLoaded() && !this._waitingForApiKeys) {
+			// キーを読み終えるまでキー欄は触れない。読み終えたら描き直して欄を開ける。
+			this._waitingForApiKeys = true;
+			void this.settingsService.whenApiKeysLoaded().then(() => {
+				this._waitingForApiKeys = false;
+				this._render();
+			});
+		}
 	}
 
 	private _renderBody(): void {
@@ -323,7 +336,7 @@ export class ParadisAivisVoiceSection extends Disposable {
 		}));
 	}
 
-	private _renderApiKeyField(parent: HTMLElement, apiKey: string, placeholder: string = 'aivis_...', description?: string, onCommit?: (value: string) => void): void {
+	private _renderApiKeyField(parent: HTMLElement, apiKey: string, placeholder: string = 'aivis_...', description?: string, keyField: ParadisApiKeyField = 'apiKey'): void {
 		const field = dom.append(parent, $('.setting-row'));
 		const main = dom.append(field, $('.sr-main'));
 		dom.append(main, $('.sr-label')).textContent = STR_API_KEY_LABEL;
@@ -337,14 +350,22 @@ export class ParadisAivisVoiceSection extends Disposable {
 		input.autocomplete = 'off';
 		input.placeholder = placeholder;
 		input.value = apiKey;
+		// 読み込み中の空欄を blur しただけで保存済みのキーを消さないよう、読み終えるまでは触れなくする。
+		input.disabled = !this.settingsService.areApiKeysLoaded();
+		if (this.settingsService.isApiKeyLost(keyField)) {
+			const lost = dom.append(main, $('.pns-uuid-hint.ng'));
+			lost.textContent = STR_API_KEY_LOST;
+		}
 		this._renderDisposables.add(dom.addDisposableListener(input, 'blur', () => {
-			if (onCommit) {
-				if (input.value.trim() !== apiKey) {
-					onCommit(input.value);
-				}
+			// 値が変わったときだけ保存する（未変更の blur で secret storage を書き直さない）。
+			if (input.disabled || input.value === apiKey) {
 				return;
 			}
-			this.settingsService.setAivisSettings({ apiKey: input.value });
+			if (keyField === 'elevenLabsApiKey') {
+				this.settingsService.setAivisSettings({ elevenLabsApiKey: input.value.trim() });
+			} else {
+				this.settingsService.setAivisSettings({ apiKey: input.value });
+			}
 		}));
 		const toggleVisibilityBtn = dom.append(group, $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;
 		toggleVisibilityBtn.setAttribute('aria-label', STR_TOGGLE_API_KEY_VISIBILITY);
@@ -673,6 +694,7 @@ export class ParadisAivisVoiceSection extends Disposable {
 		}
 		button.disabled = true;
 		button.textContent = STR_TEST_PLAYING;
+		this._showTestError(button, undefined);
 		try {
 			const settings = this.settingsService.getAivisSettings();
 			const template = kind === 'permission' ? settings.formatPermission : settings.format;
@@ -686,16 +708,22 @@ export class ParadisAivisVoiceSection extends Disposable {
 				if (!settings.elevenLabsApiKey || !settings.elevenLabsVoiceId) {
 					return;
 				}
-				await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('playElevenLabs', [{
-					apiKey: settings.elevenLabsApiKey,
-					voiceId: settings.elevenLabsVoiceId,
-					modelId: settings.elevenLabsModelId,
-					// allow-any-unicode-next-line
-					text: rendered.trim() || 'テストです',
-					speed: settings.elevenLabsSpeed,
-					dictionaryId: settings.elevenLabsDictionaryId || undefined,
-					volume: settings.volume,
-				}]);
+				try {
+					await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('playElevenLabs', [{
+						apiKey: settings.elevenLabsApiKey,
+						voiceId: settings.elevenLabsVoiceId,
+						modelId: settings.elevenLabsModelId,
+						// allow-any-unicode-next-line
+						text: rendered.trim() || 'テストです',
+						speed: settings.elevenLabsSpeed,
+						dictionaryId: settings.elevenLabsDictionaryId || undefined,
+						volume: settings.volume,
+					}]);
+				} catch (error) {
+					// ElevenLabs はキーの権限・残り文字数で失敗しやすいので、理由を画面に出す。
+					this._showTestError(button, error instanceof Error ? error.message : String(error));
+					throw error;
+				}
 				return;
 			}
 			if (!settings.apiKey || !settings.modelUuid) {
@@ -716,5 +744,24 @@ export class ParadisAivisVoiceSection extends Disposable {
 			button.disabled = false;
 			button.textContent = STR_TEST_PLAY;
 		}
+	}
+
+	/** テスト再生ボタンの下に失敗の理由を出す（undefined で消す）。 */
+	private _showTestError(button: HTMLButtonElement, message: string | undefined): void {
+		const control = button.parentElement;
+		if (!control) {
+			return;
+		}
+		let errorEl = this._testErrors.get(button);
+		if (!message) {
+			errorEl?.remove();
+			this._testErrors.delete(button);
+			return;
+		}
+		if (!errorEl) {
+			errorEl = dom.append(control, $('.pns-error'));
+			this._testErrors.set(button, errorEl);
+		}
+		errorEl.textContent = message;
 	}
 }

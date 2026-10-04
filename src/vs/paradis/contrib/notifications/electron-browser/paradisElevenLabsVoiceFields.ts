@@ -25,7 +25,7 @@ import {
 	PARADIS_ELEVENLABS_DEFAULT_MODEL_ID,
 } from '../common/paradisElevenLabs.js';
 import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
-import { IParadisAivisSettings, IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
+import { IParadisAivisSettings, IParadisNotificationsSettingsService, ParadisApiKeyField } from '../browser/paradisNotificationsSettings.js';
 import { paradisElevenLabsDictionaryCache, paradisElevenLabsModelCache, paradisElevenLabsVoiceCache } from './paradisElevenLabsApiCache.js';
 
 const $ = dom.$;
@@ -76,7 +76,7 @@ export interface IParadisElevenLabsSampleHost {
 	/** 描き直しで作り直したボタンに、再生中の表示を引き継ぐ。 */
 	attachSampleButton(id: string, button: HTMLButtonElement): void;
 	/** API Key の入力欄（表示切替つき）。Aivis と同じ部品を使う。 */
-	renderApiKeyField(parent: HTMLElement, apiKey: string, placeholder: string, description: string, onCommit: (value: string) => void): void;
+	renderApiKeyField(parent: HTMLElement, field: ParadisApiKeyField, apiKey: string, placeholder: string, description: string): void;
 }
 
 export class ParadisElevenLabsVoiceFields {
@@ -93,7 +93,7 @@ export class ParadisElevenLabsVoiceFields {
 	) { }
 
 	render(parent: HTMLElement, settings: IParadisAivisSettings, disposables: DisposableStore): void {
-		this.host.renderApiKeyField(parent, settings.elevenLabsApiKey, 'sk_...', STR_API_KEY_DESC, value => this.settingsService.setAivisSettings({ elevenLabsApiKey: value.trim() }));
+		this.host.renderApiKeyField(parent, 'elevenLabsApiKey', settings.elevenLabsApiKey, 'sk_...', STR_API_KEY_DESC);
 
 		// 声の一覧は非同期に届く。届いたら voice_id 欄の「選択中」表示も合わせる。
 		const onVoicesLoaded: ((voices: readonly IParadisElevenLabsVoice[]) => void)[] = [];

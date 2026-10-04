@@ -49,11 +49,18 @@ export function paradisElevenLabsPlaybackVolume(volume: number): number {
 }
 
 /**
- * 文面から SSML 風のタグ（`<break time="1s"/>` 等）を取り除く。ElevenLabs はタグを文字として
+ * 取り除く SSML のタグ名。Aivis 向けに書いた文面のタグ（aivis-mcp と同じもの）を想定する。
+ * `Array<string>` のように本文に出てくる山括弧は、ここに無い名前なので残す。
+ */
+const SSML_TAG_NAMES = ['speak', 'break', 'prosody', 'emphasis', 'say-as', 'phoneme', 'sub', 'voice', 'audio', 'p', 's', 'lang', 'mark', 'w', 'par', 'seq', 'media', 'desc'];
+const SSML_TAG_RE = new RegExp(`<\\/?\\s*(?:${SSML_TAG_NAMES.join('|')})(?=[\\s/>])[^<>]*>`, 'gi');
+
+/**
+ * 文面から SSML のタグ（`<break time="1s"/>` 等）を取り除く。ElevenLabs はタグを文字として
  * 読み上げてしまうため。タグを消したあとの連続空白は1つにまとめる。
  */
 export function paradisStripSsmlTags(text: string): string {
-	return text.replace(/<[^<>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+	return text.replace(SSML_TAG_RE, ' ').replace(/\s+/g, ' ').trim();
 }
 
 // --- 声 -----------------------------------------------------------------------------------------
@@ -240,9 +247,18 @@ export function paradisClassifyElevenLabsError(status: number, bodyText: string)
 		// allow-any-unicode-next-line
 		return { kind: 'fatal', reason: 'ElevenLabs の API キーに読み上げ (Text to Speech) の権限がありません' };
 	}
+	if (detailStatus === 'detected_unusual_activity') {
+		// allow-any-unicode-next-line
+		return { kind: 'fatal', reason: 'ElevenLabs が通常と違う利用を検知して止めています（無料プランの制限など）。ElevenLabs のアカウントを確認してください' };
+	}
 	if (detailStatus === 'voice_not_found' || status === 404) {
 		// allow-any-unicode-next-line
 		return { kind: 'fatal', reason: 'ElevenLabs の声が見つかりません。設定画面で声を選び直してください' };
+	}
+	// detail.status ごとの理由を、401 の汎用文より先に見る。
+	if (detailStatus !== undefined && detailStatus !== 'invalid_api_key' && FATAL_DETAIL_STATUSES.has(detailStatus)) {
+		// allow-any-unicode-next-line
+		return { kind: 'fatal', reason: `ElevenLabs API エラー (${detailStatus}) ${message}`.trim() };
 	}
 	if (status === 401 || detailStatus === 'invalid_api_key') {
 		// allow-any-unicode-next-line
@@ -251,10 +267,6 @@ export function paradisClassifyElevenLabsError(status: number, bodyText: string)
 	if (status === 402) {
 		// allow-any-unicode-next-line
 		return { kind: 'fatal', reason: 'ElevenLabs のプランか残高が不足しています' };
-	}
-	if (detailStatus !== undefined && FATAL_DETAIL_STATUSES.has(detailStatus)) {
-		// allow-any-unicode-next-line
-		return { kind: 'fatal', reason: `ElevenLabs API エラー (${detailStatus}) ${message}`.trim() };
 	}
 	if (status === 422) {
 		// allow-any-unicode-next-line
@@ -605,6 +617,22 @@ export function paradisPlanApiKeyMigration(jsonKey: string | undefined, secretKe
 			: { use: jsonKey, writeSecret: jsonKey, removeFromJson: true };
 	}
 	return { use: secretKey ?? '', removeFromJson: jsonKey !== undefined };
+}
+
+/** 「secret storage に置いた」印があるのに、読み込んだキーが空なら消えたとみなす。 */
+export function paradisIsApiKeyLost(markedAsMoved: boolean, loadedKey: string): boolean {
+	return markedAsMoved && !loadedKey;
+}
+
+/** 429 の Retry-After（秒）。数でないものは捨て、長すぎる値は 60 秒で打ち切る。 */
+export const PARADIS_ELEVENLABS_MAX_RETRY_AFTER_SECONDS = 60;
+
+export function paradisElevenLabsRetryAfter(header: string | null): number | undefined {
+	const seconds = Number.parseInt(header ?? '', 10);
+	if (!Number.isFinite(seconds) || seconds < 0) {
+		return undefined;
+	}
+	return Math.min(seconds, PARADIS_ELEVENLABS_MAX_RETRY_AFTER_SECONDS);
 }
 
 // --- IPC で渡す合成の要求 -----------------------------------------------------------------------

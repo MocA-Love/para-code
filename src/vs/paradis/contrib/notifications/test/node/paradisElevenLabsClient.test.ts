@@ -166,19 +166,40 @@ suite('ParadisElevenLabsClient', () => {
 		await assert.rejects(() => createClient(invalid).getSubscription(TEST_KEY));
 	});
 
-	test('falls back to remove-rules and add-rules when set-rules is not available', async () => {
-		const fake = new FakeFetch()
-			.on('POST', '/v1/pronunciation-dictionaries/d1/set-rules', () => json({ detail: 'Not Found' }, 404))
-			.on('GET', '/v1/pronunciation-dictionaries/d1', () => json({ id: 'd1', name: 'D', latest_version_id: 'v1', rules: [{ type: 'alias', string_to_replace: 'old', alias: 'おーるど' }] }))
-			.on('POST', '/v1/pronunciation-dictionaries/d1/remove-rules', () => json({ id: 'd1', version_id: 'v2' }))
-			.on('POST', '/v1/pronunciation-dictionaries/d1/add-rules', () => json({ id: 'd1', version_id: 'v3' }));
-		await createClient(fake).setDictionaryRules(TEST_KEY, 'd1', [{ type: 'alias', string_to_replace: 'new', alias: 'にゅー' }]);
+	test('reports a set-rules failure without trying another route', async () => {
+		const fake = new FakeFetch().on('POST', '/v1/pronunciation-dictionaries/d1/set-rules', () => json({ detail: 'Not Found' }, 404));
+		await assert.rejects(() => createClient(fake).setDictionaryRules(TEST_KEY, 'd1', [{ type: 'alias', string_to_replace: 'new', alias: 'にゅー' }]));
 
-		assert.deepStrictEqual(fake.requests.map(request => [request.method, request.path, request.body]), [
-			['POST', '/v1/pronunciation-dictionaries/d1/set-rules', { rules: [{ type: 'alias', string_to_replace: 'new', alias: 'にゅー' }] }],
-			['GET', '/v1/pronunciation-dictionaries/d1', undefined],
-			['POST', '/v1/pronunciation-dictionaries/d1/remove-rules', { rule_strings: ['old'] }],
-			['POST', '/v1/pronunciation-dictionaries/d1/add-rules', { rules: [{ type: 'alias', string_to_replace: 'new', alias: 'にゅー' }] }],
+		assert.deepStrictEqual(fake.requests.map(request => request.path), ['/v1/pronunciation-dictionaries/d1/set-rules']);
+	});
+
+	test('caps a long Retry-After at 60 seconds', async () => {
+		const fake = new FakeFetch().on('POST', '/v1/text-to-speech/voice1', () => new Response('{}', { status: 429, headers: { 'retry-after': '3600' } }));
+		const error = await createClient(fake).synthesize({ apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'm', text: 'x' }).then(() => undefined, (e: unknown) => e);
+
+		assert.deepStrictEqual(error instanceof AivisError ? [error.kind, error.rateLimitReset] : error, ['retryable', 60]);
+	});
+
+	test('remembers an archived or failing dictionary for a while instead of fetching it every time', async () => {
+		let now = Date.UTC(2026, 9, 4, 12);
+		const fake = new FakeFetch()
+			.on('GET', '/v1/pronunciation-dictionaries/archived', () => json({ id: 'archived', latest_version_id: 'v1', archived_time_unix: 1700000100, rules: [] }))
+			.on('GET', '/v1/pronunciation-dictionaries/broken', () => json({ detail: 'boom' }, 500))
+			.on('POST', '/v1/text-to-speech/voice1', () => new Response(Uint8Array.of(1)));
+		const client = createClient(fake, () => now);
+		const speak = (dictionaryId: string) => client.synthesize({ apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'm', text: 'x', dictionaryId });
+		await speak('archived');
+		await speak('broken');
+		now += 4 * 60_000;
+		await speak('archived');
+		await speak('broken');
+		now += 2 * 60_000;
+		await speak('archived');
+
+		assert.deepStrictEqual(fake.requests.filter(request => request.method === 'GET').map(request => request.path), [
+			'/v1/pronunciation-dictionaries/archived',
+			'/v1/pronunciation-dictionaries/broken',
+			'/v1/pronunciation-dictionaries/archived',
 		]);
 	});
 

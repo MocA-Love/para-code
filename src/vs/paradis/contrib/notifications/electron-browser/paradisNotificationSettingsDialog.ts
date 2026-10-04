@@ -68,7 +68,7 @@ const STR_NAV_CAPTION_GENERAL = localize('paradis.notif.navCaptionGeneral', "一
 // allow-any-unicode-next-line
 const STR_NAV_CAPTION_SOUND = localize('paradis.notif.navCaptionSound', "サウンド");
 // allow-any-unicode-next-line
-const STR_NAV_CAPTION_AIVIS = localize('paradis.notif.navCaptionVoice', "音声報告");
+const STR_NAV_CAPTION_AIVIS = localize('paradis.notif.navCaptionVoice', "音声");
 // allow-any-unicode-next-line
 const STR_NAV_DND = localize('paradis.notif.navDnd', "おやすみモード");
 // allow-any-unicode-next-line

@@ -17,6 +17,8 @@ import {
 	paradisEntriesFromElevenLabsRules,
 	paradisFilterElevenLabsModels,
 	paradisFilterElevenLabsVoices,
+	paradisElevenLabsRetryAfter,
+	paradisIsApiKeyLost,
 	paradisIsElevenLabsDictionaryArchived,
 	paradisIsElevenLabsMissingPermissions,
 	paradisNameElevenLabsBreakdown,
@@ -63,13 +65,26 @@ suite('Paradis ElevenLabs pure helpers', () => {
 			'タグなし',
 			'<break/>',
 			'1 < 2 なので',
+			'<prosody rate="slow">ゆっくり</prosody><say-as interpret-as="characters">PR</say-as>',
+			'Array<string> を返す <S>と<p>',
+			'<pre>そのまま</pre> <speaker>',
 		].map(paradisStripSsmlTags), [
 			'作業が 完了しました',
 			'a b c',
 			'タグなし',
 			'',
 			'1 < 2 なので',
+			'ゆっくり PR',
+			'Array<string> を返す と',
+			'<pre>そのまま</pre> <speaker>',
 		]);
+	});
+
+	test('caps Retry-After and recognizes a key lost after migration', () => {
+		assert.deepStrictEqual({
+			retryAfter: ['3', '600', 'soon', null, '-1'].map(paradisElevenLabsRetryAfter),
+			lost: [paradisIsApiKeyLost(true, ''), paradisIsApiKeyLost(true, 'k'), paradisIsApiKeyLost(false, '')],
+		}, { retryAfter: [3, 60, undefined, undefined, undefined], lost: [true, false, false] });
 	});
 
 	test('keeps only text-to-speech models that support Japanese', () => {
@@ -129,6 +144,15 @@ suite('Paradis ElevenLabs pure helpers', () => {
 		].map(([status, text]) => paradisClassifyElevenLabsError(status as number, text as string).kind), [
 			'fatal', 'fatal', 'fatal', 'fatal', 'fatal', 'fatal', 'retryable', 'retryable', 'item-specific', 'item-specific',
 		]);
+	});
+
+	test('explains a 401 by its detail.status before the generic invalid-key text', () => {
+		const reason = (status: string) => paradisClassifyElevenLabsError(401, JSON.stringify({ detail: { status, message: 'm' } })).reason;
+		assert.deepStrictEqual({
+			unusual: reason('detected_unusual_activity').includes('通常と違う利用'),
+			needsAuth: reason('needs_authorization').includes('needs_authorization'),
+			invalid: reason('invalid_api_key').includes('API キーが無効'),
+		}, { unusual: true, needsAuth: true, invalid: true });
 	});
 
 	test('recognizes the missing user_read permission only on 401', () => {
