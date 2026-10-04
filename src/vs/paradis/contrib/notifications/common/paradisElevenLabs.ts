@@ -256,6 +256,10 @@ export function paradisClassifyElevenLabsError(status: number, bodyText: string)
 		return { kind: 'fatal', reason: 'ElevenLabs の声が見つかりません。設定画面で声を選び直してください' };
 	}
 	// detail.status ごとの理由を、401 の汎用文より先に見る。
+	if (status === 402 || detailStatus === 'payment_required') {
+		// allow-any-unicode-next-line
+		return { kind: 'fatal', reason: 'ElevenLabs のプランか残高が不足しています' };
+	}
 	if (detailStatus !== undefined && detailStatus !== 'invalid_api_key' && FATAL_DETAIL_STATUSES.has(detailStatus)) {
 		// allow-any-unicode-next-line
 		return { kind: 'fatal', reason: `ElevenLabs API エラー (${detailStatus}) ${message}`.trim() };
@@ -263,10 +267,6 @@ export function paradisClassifyElevenLabsError(status: number, bodyText: string)
 	if (status === 401 || detailStatus === 'invalid_api_key') {
 		// allow-any-unicode-next-line
 		return { kind: 'fatal', reason: 'ElevenLabs の API キーが無効です。設定画面でキーを確認してください' };
-	}
-	if (status === 402) {
-		// allow-any-unicode-next-line
-		return { kind: 'fatal', reason: 'ElevenLabs のプランか残高が不足しています' };
 	}
 	if (status === 422) {
 		// allow-any-unicode-next-line
