@@ -53,6 +53,8 @@ import { ParadisAgentHooksAutoInstall } from './paradisAgentHooksAutoInstall.js'
 import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_HTTP_PREFIX, paradisClaudeModApprovalWaitMs } from '../../claudeMod/common/paradisClaudeMod.js';
 import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
+import { ParadisLocalVoicePlayer } from './paradisLocalVoicePlayer.js';
+import { PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING, paradisRemoteVoiceLocalPlaybackEnabled } from '../common/paradisRemoteVoice.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
@@ -137,6 +139,8 @@ const MAX_ACTIVE_MOBILE_VOICE_BYTES = 16 * 1024 * 1024;
 const MOBILE_VOICE_TICKET_TTL_MS = 10 * 60_000;
 const MAX_MOBILE_VOICE_TICKETS = 256;
 const MAX_MOBILE_VOICE_TICKETS_PER_PANE = 8;
+/** 接続先の aivis-mcp が答えを待つ 15 秒より短く。本文を読み終えてから数える。 */
+const LOCAL_VOICE_ENQUEUE_DEADLINE_MS = 10_000;
 
 interface IParadisPaneStatusEntry {
 	readonly status: ParadisAgentStatus;
@@ -592,7 +596,10 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _activeMobileVoiceRequestCount = 0;
 	private _activeMobileVoiceBytes = 0;
 	// lease未設定のticketは拡張機能ホスト由来（ペインを持たない）。音声取込だけに使える。
-	private readonly _mobileVoiceTickets = new Map<string, { readonly lease: IParadisAgentBrowserIngressLease | undefined; readonly expiresAt: number }>();
+	private readonly _mobileVoiceTickets = new Map<string, { readonly lease: IParadisAgentBrowserIngressLease | undefined; readonly expiresAt: number; readonly localPlayback: boolean }>();
+	/** SSH の接続先から届いた読み上げを手元で鳴らす口（Q190〜Q193）。 */
+	private readonly _localVoicePlayer: ParadisLocalVoicePlayer;
+	private readonly _remoteVoiceLocalPlaybackEnabled: () => boolean;
 	/**
 	 * ターミナルのペインを持たない拡張機能ホスト（およびそこから起動されるCodex等）が、
 	 * 音声取込の宛先を認証するためのインスタンススコープのトークン。
@@ -692,6 +699,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 構成（1Password / gpg-agent 等）だと、shared process が継いだ環境のままでは公開鍵認証が
 		// 黙って失敗し、拡張機能側の接続だけ成功して戻り経路が張れない状態になる
 		this._remoteTunnels = this._register(new ParadisRemoteAgentTunnels(logService, undefined, () => cachedShellEnv.getEnv()));
+		// 手元の aivis-mcp もログインシェルの PATH（npm・bun のグローバル）で探す
+		this._localVoicePlayer = new ParadisLocalVoicePlayer(() => cachedShellEnv.getEnv());
+		this._remoteVoiceLocalPlaybackEnabled = () => paradisRemoteVoiceLocalPlaybackEnabled(configurationService?.getValue(PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING));
 		this._devtoolsGenerationCoordinator = new ParadisDevtoolsGenerationCoordinator(token => this._devtoolsProxy.forget(token));
 		// Renderer IPC切断はreloadでも発生するため、退役根拠にはしない。実windowの生存権威は
 		// Electron Mainのmanifestであり、reload gap中はpending entryが残り、destroy時だけ消える。
@@ -2422,10 +2432,6 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * pane ownerが直前に発行した1回限りの短命ticketで認証し、音声は保存せずイベントへ渡す。
 	 */
 	private async _handleMobileVoiceIngress(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-		if (this.publishMobileVoiceClip === undefined) {
-			this._sendIngressRejected(res);
-			return;
-		}
 		const requestedTicket = this._extractToken(req);
 		const ticket = requestedTicket === undefined ? undefined : this._mobileVoiceTickets.get(requestedTicket);
 		if (requestedTicket !== undefined) {
@@ -2433,6 +2439,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._mobileVoiceTickets.delete(requestedTicket);
 		}
 		if (ticket === undefined || ticket.expiresAt < Date.now() || !this._isMobileVoiceTicketCurrent(ticket)) {
+			this._sendIngressRejected(res);
+			return;
+		}
+		const publishMobileVoiceClip = this.publishMobileVoiceClip;
+		// モバイルへ届ける口が無くても、手元で鳴らす約束をした ticket は受け取る
+		if (publishMobileVoiceClip === undefined && !ticket.localPlayback) {
 			this._sendIngressRejected(res);
 			return;
 		}
@@ -2485,9 +2497,22 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._sendIngressRejected(res);
 				return;
 			}
-			this.publishMobileVoiceClip(audio);
-			res.writeHead(202, { 'Cache-Control': 'no-store' });
-			res.end();
+			publishMobileVoiceClip?.(audio);
+			// 手元で積む待ちの間、音声取込の枠を握り続けない（手元の拡張機能ホストの発話が断られる）
+			voiceReservation.dispose();
+			reservation.dispose();
+			// 手元で鳴らすときは、積めたかどうかを返す。積めなければ接続先の aivis-mcp が自分で鳴らす。
+			// 接続先の待ち（15 秒）を過ぎてから積むと二重に鳴るので、締め切りを短めに切る
+			const playedLocally = ticket.localPlayback && await this._localVoicePlayer.play(audio, {
+				signal: activeRequest.controller.signal,
+				deadline: Date.now() + LOCAL_VOICE_ENQUEUE_DEADLINE_MS,
+			});
+			if (res.writableEnded || activeRequest.controller.signal.aborted) {
+				return;
+			}
+			const body = JSON.stringify({ localPlayback: playedLocally });
+			res.writeHead(202, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
+			res.end(body);
 		} finally {
 			activeRequest?.dispose();
 			voiceReservation.dispose();
@@ -2552,8 +2577,12 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		const voiceTicket = `${randomUUID()}-${randomUUID()}`;
 		const expiresAt = now + MOBILE_VOICE_TICKET_TTL_MS;
-		this._mobileVoiceTickets.set(voiceTicket, { lease: ingressLease, expiresAt });
-		const body = JSON.stringify({ ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId });
+		// SSH の接続先のペインからの発話は手元で鳴らす。答えを見た接続先の aivis-mcp は自分では鳴らさない
+		const localPlayback = ingressLease !== undefined && this._paneRemoteAuthorityOf(ingressLease.token) !== undefined && this._remoteVoiceLocalPlaybackEnabled();
+		this._mobileVoiceTickets.set(voiceTicket, { lease: ingressLease, expiresAt, localPlayback });
+		const body = JSON.stringify(localPlayback
+			? { ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId, localPlayback }
+			: { ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId });
 		res.writeHead(201, {
 			'Content-Type': 'application/json',
 			'Content-Length': Buffer.byteLength(body),

@@ -24,6 +24,7 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, paradisAgentHooksEnabled } from '../common/paradisAgentHooks.js';
+import { PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING } from '../common/paradisRemoteVoice.js';
 import { paradisIsSettingsDialogOpen } from '../../paradisSettings/common/paradisSettingsDialogState.js';
 
 // 他の Para Code 設定と同じ id/title にして、設定 UI では1つの「Para Code」セクションにまとめる。
@@ -44,6 +45,14 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			// allow-any-unicode-next-line
 			markdownDescription: localize('paradis.agentHooks.enabled', "Claude Code と Codex へ、Para Code がエージェントの状態を受け取るための hook を自動で設置します（`~/.claude/settings.json` と `~/.codex/hooks.json`。SSH で接続中は接続先にも）。\n\nオフにすると、その時点で Para Code が設置した hook だけを取り外し、オフの間は設置し直しません。あなた自身が書いた hook は触りません。起動した時点でオフの場合は、取り外しもしません（同じ PC の別の Para Code が使っている hook を壊さないため）。\n\nオフの間は、エージェントの状態表示（実行中・許可待ち・完了）、完了や許可待ちの通知、モバイルへの通知とチャットの表示、音声での読み上げが弱くなるか、働かなくなります。"),
+		},
+		[PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING]: {
+			type: 'boolean',
+			default: true,
+			// 鳴らすのは手元の PC（shared process）なので、PC 全体で1つ
+			scope: ConfigurationScope.APPLICATION,
+			// allow-any-unicode-next-line
+			markdownDescription: localize('paradis.voice.playRemoteLocally', "SSH の接続先のターミナルで aivis-mcp が読み上げた音声を、接続先ではなくこの PC で鳴らします。この PC の aivis-mcp（2.4.0 以上）のキューへ積むので、この PC の読み上げと重ならず、`aivis --mute` も効きます。この PC に aivis-mcp が無いときは、今までどおり接続先で鳴ります。接続先の aivis-mcp も 2.4.0 以上が必要です。"),
 		}
 	}
 });

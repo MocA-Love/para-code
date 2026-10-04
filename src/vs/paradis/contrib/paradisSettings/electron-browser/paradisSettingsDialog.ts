@@ -555,6 +555,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-notif',
+		key: 'paradis.voice.playRemoteLocally',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.remoteVoiceLocal', "SSH の接続先の読み上げをこの PC で鳴らす"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.remoteVoiceLocalDesc', "接続先とこの PC の両方に aivis-mcp 2.4.0 以上が必要です。この PC の読み上げと同じ順番待ちに入り、ミュートも効きます。"),
+		keywords: 'aivis voice ssh remote speech local playback',
+	},
+	{
+		sectionId: 'psd-sec-notif',
 		key: 'paradis.agentHooks.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.agentHooks', "Claude Code と Codex に状態通知用の hook を自動で設置する"),
