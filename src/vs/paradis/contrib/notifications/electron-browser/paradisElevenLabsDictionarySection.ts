@@ -69,6 +69,7 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 
 	private readonly _renderDisposables = this._register(new DisposableStore());
 	private readonly _nestedDialog = this._register(new MutableDisposable<Disposable>());
+	private _actionErrorEl: HTMLElement | undefined;
 
 	constructor(
 		private readonly container: HTMLElement,
@@ -120,6 +121,8 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 			return;
 		}
 
+		// 書き出し・削除の失敗はここに出す。
+		this._actionErrorEl = dom.append(this.container, $('.pns-error'));
 		const listEl = dom.append(this.container, $('div'));
 		const cached = paradisElevenLabsDictionaryCache.get(apiKey);
 		if (cached) {
@@ -204,6 +207,9 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 	}
 
 	private async _export(apiKey: string, dict: IParadisElevenLabsDictionaryListItem): Promise<void> {
+		if (this._actionErrorEl) {
+			this._actionErrorEl.textContent = '';
+		}
 		try {
 			const xml = await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<string>('downloadElevenLabsDictionary', [apiKey, dict.id]);
 			const blob = new Blob([xml], { type: 'application/pls+xml' });
@@ -215,6 +221,7 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 			URL.revokeObjectURL(url);
 		} catch (error) {
 			this.logService.warn('[ParadisNotifications] ElevenLabs dictionary export failed', error);
+			this._showActionError(error);
 		}
 	}
 
@@ -236,6 +243,13 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 			this._render();
 		} catch (error) {
 			this.logService.warn('[ParadisNotifications] ElevenLabs dictionary archive failed', error);
+			this._showActionError(error);
+		}
+	}
+
+	private _showActionError(error: unknown): void {
+		if (this._actionErrorEl?.isConnected) {
+			this._actionErrorEl.textContent = error instanceof Error ? error.message : String(error);
 		}
 	}
 

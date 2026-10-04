@@ -20,6 +20,7 @@ import {
 	ParadisNotificationsChangeScope,
 	ParadisNotificationsSettingsService,
 	paradisScheduleDoNotDisturbExternalChange,
+	paradisWaitForApiKeys,
 } from '../../browser/paradisNotificationsSettings.js';
 
 const KEY_DO_NOT_DISTURB = 'paradis.notifications.doNotDisturb';
@@ -327,7 +328,8 @@ suite('Paradis notifications voice API keys', () => {
 			apiKey: 'aivis_plain',
 			engine: 'aivis',
 			secret: 'aivis_plain',
-			json: { enabled: true, modelUuid: 'm' },
+			// キー本体は消え、「secret に置いた」印だけが残る。
+			json: { enabled: true, modelUuid: 'm', secretApiKeys: ['apiKey'] },
 		});
 	});
 
@@ -379,6 +381,70 @@ suite('Paradis notifications voice API keys', () => {
 			secrets: ['aivis_key', 'el_key'],
 			jsonHasKeys: [false, false],
 		});
+	});
+
+	test('deletes the secrets when the keys are cleared, as the dialog reset does', async () => {
+		const storage = store.add(new InMemoryStorageService());
+		const secrets = store.add(new PersistedSecretStorage());
+		const service = store.add(new ParadisNotificationsSettingsService(storage, secrets));
+		await service.whenApiKeysLoaded();
+		service.setAivisSettings({ apiKey: 'aivis_key', elevenLabsApiKey: 'el_key' });
+		await timeout(0);
+		const markersAfterSet = stored(storage).secretApiKeys;
+		service.setAivisSettings({ apiKey: '', elevenLabsApiKey: '', engine: 'aivis' });
+		await timeout(0);
+
+		assert.deepStrictEqual({
+			markersAfterSet,
+			secrets: [await secrets.get(SECRET_AIVIS), await secrets.get(SECRET_ELEVENLABS)],
+			markers: stored(storage).secretApiKeys,
+			settings: [service.getAivisSettings().apiKey, service.getAivisSettings().elevenLabsApiKey],
+		}, { markersAfterSet: ['apiKey', 'elevenLabsApiKey'], secrets: [undefined, undefined], markers: [], settings: ['', ''] });
+	});
+
+	test('reloads a key that another window changed in secret storage', async () => {
+		const storage = store.add(new InMemoryStorageService());
+		const secrets = store.add(new PersistedSecretStorage());
+		const service = store.add(new ParadisNotificationsSettingsService(storage, secrets));
+		await service.whenApiKeysLoaded();
+		const scopes: string[] = [];
+		store.add(service.onDidChange(scope => scopes.push(scope)));
+		await secrets.set(SECRET_ELEVENLABS, 'from_other_window');
+		await timeout(0);
+
+		assert.deepStrictEqual({ key: service.getAivisSettings().elevenLabsApiKey, scopes }, { key: 'from_other_window', scopes: ['aivis'] });
+	});
+
+	test('flags a moved key that can no longer be read and clears the flag when a new key is entered', async () => {
+		const storage = store.add(new InMemoryStorageService());
+		const secrets = store.add(new PersistedSecretStorage());
+		// 前回は secret に置いた印があるのに、復号に失敗して上流の get が消した状態。
+		seed(storage, { enabled: true, secretApiKeys: ['apiKey'] });
+		const service = store.add(new ParadisNotificationsSettingsService(storage, secrets));
+		await service.whenApiKeysLoaded();
+		const lostAfterLoad = [service.isApiKeyLost('apiKey'), service.isApiKeyLost('elevenLabsApiKey')];
+		const settingsHaveNoMarker = !Object.keys(service.getAivisSettings()).includes('secretApiKeys');
+		service.setAivisSettings({ apiKey: 'aivis_new' });
+		await timeout(0);
+
+		assert.deepStrictEqual({ lostAfterLoad, settingsHaveNoMarker, lostAfterEntry: service.isApiKeyLost('apiKey'), secret: await secrets.get(SECRET_AIVIS) }, {
+			lostAfterLoad: [true, false],
+			settingsHaveNoMarker: true,
+			lostAfterEntry: false,
+			secret: 'aivis_new',
+		});
+	});
+
+	test('gives up waiting for keys when secret storage never answers', async () => {
+		const hanging = { areApiKeysLoaded: () => false, whenApiKeysLoaded: () => new Promise<void>(() => { /* never */ }) };
+		const loaded = { areApiKeysLoaded: () => true, whenApiKeysLoaded: () => new Promise<void>(() => { /* never */ }) };
+		const later = { areApiKeysLoaded: () => false, whenApiKeysLoaded: () => Promise.resolve() };
+
+		assert.deepStrictEqual([
+			await paradisWaitForApiKeys(hanging, 10),
+			await paradisWaitForApiKeys(loaded, 10),
+			await paradisWaitForApiKeys(later, 10),
+		], [false, true, true]);
 	});
 
 	test('does not drop the plaintext key when other settings change before loading finishes', async () => {

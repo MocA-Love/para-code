@@ -193,6 +193,8 @@ class TestSettingsService extends Disposable implements IParadisNotificationsSet
 	}
 	setAivisSettings(_patch: Partial<IParadisAivisSettings>): void { this.genericEmitter.fire('aivis'); }
 	whenApiKeysLoaded(): Promise<void> { return Promise.resolve(); }
+	areApiKeysLoaded(): boolean { return true; }
+	isApiKeyLost(): boolean { return false; }
 	getCustomAivisModelPresets(): readonly IParadisAivisModelPreset[] { return []; }
 	addCustomAivisModelPreset(_preset: IParadisAivisModelPreset): void { this.genericEmitter.fire('aivis'); }
 	removeCustomAivisModelPreset(_uuid: string): void { this.genericEmitter.fire('aivis'); }
