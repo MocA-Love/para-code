@@ -33,10 +33,42 @@ suite('ParadisLongTaskMonitor', () => {
 		});
 	});
 
+	test('takes running totals without stopping, so a phase can be the difference of two snapshots', () => {
+		let deliver: (entries: readonly { readonly duration: number }[]) => void = () => { };
+		let pending: { readonly duration: number }[] = [];
+		const log: string[] = [];
+		const window = paradisStartLongTaskWindow(onEntries => {
+			deliver = onEntries;
+			return {
+				observe: () => { },
+				takeRecords: () => {
+					const records = pending;
+					pending = [];
+					return records;
+				},
+				disconnect: () => log.push('disconnect'),
+			} satisfies IParadisLongTaskObserver;
+		});
+		deliver([{ duration: 80 }]);
+		const before = window.snapshot();
+		// 配られていない分も snapshot が拾う。
+		pending = [{ duration: 200.4 }];
+		const after = window.snapshot();
+		const final = window.stop();
+		assert.deepStrictEqual({ before, after, final, afterStop: window.snapshot(), log }, {
+			before: { count: 1, totalMs: 80, maxMs: 80 },
+			after: { count: 2, totalMs: 280, maxMs: 200 },
+			final: { count: 2, totalMs: 280, maxMs: 200 },
+			afterStop: undefined,
+			log: ['disconnect'],
+		});
+	});
+
 	test('reports nothing where long tasks cannot be observed', () => {
 		assert.deepStrictEqual({
 			unsupported: paradisStartLongTaskWindow(() => undefined).stop(),
+			unsupportedSnapshot: paradisStartLongTaskWindow(() => undefined).snapshot(),
 			throwing: paradisStartLongTaskWindow(() => { throw new Error('no observer'); }).stop(),
-		}, { unsupported: undefined, throwing: undefined });
+		}, { unsupported: undefined, unsupportedSnapshot: undefined, throwing: undefined });
 	});
 });
