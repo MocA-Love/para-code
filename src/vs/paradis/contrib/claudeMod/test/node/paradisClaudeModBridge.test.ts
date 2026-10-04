@@ -186,7 +186,8 @@ suite('ParadisClaudeModBridge', () => {
 				{ type: 'unknown' },
 			],
 		});
-		assert.deepStrictEqual(events.map(event => event.type === 'step' ? { type: event.type, chunks: event.chunks } : { type: event.type }), [
+		// 生き死にの知らせ（alive-changed）は別の試験で見る
+		assert.deepStrictEqual(events.filter(event => event.type !== 'alive-changed').map(event => event.type === 'step' ? { type: event.type, chunks: event.chunks } : { type: event.type }), [
 			{ type: 'hello' },
 			{ type: 'row' },
 			{ type: 'step', chunks: [{ index: 0, text: 'Hel' }] },
@@ -213,6 +214,116 @@ suite('ParadisClaudeModBridge', () => {
 			sent: await sending,
 			refused: await refusing,
 		}, { unavailable: 'unavailable', command: { kind: 'submit', text: 'hello' }, sent: 'accepted', refused: 'refused' });
+	});
+
+	test('hands a background task to stop through the command poll and reports the ack with its message', async () => {
+		const poll = call('commands', { busy: true });
+		await flushRequests();
+		const stopping = bridge.stopTask(TOKEN, SESSION, 'b123');
+		const command = ((await poll).body.commands as { id: string; kind: string; taskId: string }[])[0];
+		await call('ack', { id: command.id, ok: true, message: 'Successfully stopped task: b123 (sleep 600)' });
+		const refusedPoll = call('commands', { busy: true });
+		await flushRequests();
+		const refusing = bridge.stopTask(TOKEN, SESSION, 'b999');
+		const refused = ((await refusedPoll).body.commands as { id: string }[])[0];
+		await call('ack', { id: refused.id, ok: false, message: 'No task found with ID: b999' });
+		assert.deepStrictEqual({
+			command: { kind: command.kind, taskId: command.taskId },
+			stopped: await stopping,
+			refused: await refusing,
+		}, {
+			command: { kind: 'taskStop', taskId: 'b123' },
+			stopped: { outcome: 'stopped', message: 'Successfully stopped task: b123 (sleep 600)' },
+			refused: { outcome: 'refused', message: 'No task found with ID: b999' },
+		});
+	});
+
+	test('keeps the session busy from a handed-over prompt until its turn completes, whatever the polls say', async () => {
+		const poll = call('commands', { busy: false });
+		await flushRequests();
+		const sending = bridge.submitPrompt(TOKEN, SESSION, 'hello');
+		const command = ((await poll).body.commands as { id: string }[])[0];
+		await call('ack', { id: command.id, received: true });
+		const sent = await sending;
+		// mod は $.prompt.submit を待たずに次のポーリングへ来る（busy: false のことがある）
+		const nextPoll = call('commands', { busy: false });
+		await flushRequests();
+		const busyAfterPoll = bridge.isBusy(TOKEN, SESSION);
+		await call('event', { events: [{ type: 'turn.start', turnId: 't1' }, { type: 'turn.complete', turnId: 't1', aborted: false }] });
+		const busyAfterTurn = bridge.isBusy(TOKEN, SESSION);
+		signal.abort();
+		await nextPoll;
+		assert.deepStrictEqual({ sent, busyAfterPoll, busyAfterTurn }, { sent: 'accepted', busyAfterPoll: true, busyAfterTurn: false });
+	});
+
+	/** 発言を 1 通渡し、mod の最初の ack を返す（`received` か `ok`）。 */
+	async function handOver(firstAck: Record<string, unknown>): Promise<{ readonly id: string; readonly result: string }> {
+		const poll = call('commands', { busy: false });
+		await flushRequests();
+		const sending = bridge.submitPrompt(TOKEN, SESSION, 'hello');
+		const command = ((await poll).body.commands as { id: string }[])[0];
+		await call('ack', { id: command.id, ...firstAck });
+		return { id: command.id, result: await sending };
+	}
+
+	/** mod の次のポーリング（busy: false）を張り、受け口に busy を計算させる。 */
+	async function pollIdle(): Promise<void> {
+		void call('commands', { busy: false });
+		await flushRequests();
+	}
+
+	test('drops the held busy when the final ack says the prompt could not be sent', async () => {
+		const { id: commandId } = await handOver({ received: true });
+		await pollIdle();
+		const held = bridge.isBusy(TOKEN, SESSION);
+		await call('ack', { id: commandId, ok: false });
+		assert.deepStrictEqual({ held, afterRefused: bridge.isBusy(TOKEN, SESSION) }, { held: true, afterRefused: false });
+	});
+
+	test('drops the held busy on an aborted turn.complete', async () => {
+		await handOver({ received: true });
+		await call('event', { events: [{ type: 'turn.start', turnId: 't1' }] });
+		await pollIdle();
+		const held = bridge.isBusy(TOKEN, SESSION);
+		await call('event', { events: [{ type: 'turn.complete', turnId: 't1', aborted: true, reason: 'aborted' }] });
+		assert.deepStrictEqual({ held, afterAbort: bridge.isBusy(TOKEN, SESSION) }, { held: true, afterAbort: false });
+	});
+
+	test('does not hold busy when the first ack already says sent (no received)', async () => {
+		const { result } = await handOver({ ok: true });
+		await pollIdle();
+		assert.deepStrictEqual({ result, busy: bridge.isBusy(TOKEN, SESSION) }, { result: 'accepted', busy: false });
+	});
+
+	test('the held busy expires 30 s after received without a turn, and 10 minutes after the turn started', async () => {
+		await handOver({ received: true });
+		await pollIdle();
+		now += 30_001;
+		const noTurn = bridge.isBusy(TOKEN, SESSION);
+		await handOver({ received: true });
+		await call('event', { events: [{ type: 'turn.start', turnId: 't2' }] });
+		await pollIdle();
+		now += 31_000;
+		const turnRunning = bridge.isBusy(TOKEN, SESSION);
+		now += 10 * 60_000;
+		const turnTooLong = bridge.isBusy(TOKEN, SESSION);
+		assert.deepStrictEqual({ noTurn, turnRunning, turnTooLong }, { noTurn: false, turnRunning: true, turnTooLong: false });
+	});
+
+	test('a prompt the mod refuses because it is sending another one comes back as busy', async () => {
+		const { result } = await handOver({ ok: false, reason: 'busy' });
+		assert.strictEqual(result, 'busy');
+	});
+
+	test('tells when the mod comes and goes (alive-changed), only at the boundary', async () => {
+		await call('event', { events: [{ type: 'hello' }] });
+		await call('event', { events: [{ type: 'turn.start', turnId: 't1' }] });
+		now += 76_000;
+		bridge.sweep();
+		bridge.sweep();
+		await call('event', { events: [{ type: 'hello' }] });
+		bridge.forgetToken(TOKEN);
+		assert.deepStrictEqual(events.filter(event => event.type === 'alive-changed').map(event => event.type === 'alive-changed' ? event.alive : undefined), [true, false, true, false]);
 	});
 
 	test('a prompt whose reply could not be written goes back (unavailable), so the keys can send it', async () => {

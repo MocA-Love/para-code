@@ -21,6 +21,7 @@ import type { RelayWindowHost } from './relayHosts.js';
 import { BACKGROUND_GRACE_CAPABILITY } from './backgroundGraceCapability.js';
 import type { BrowserInput } from './browserKeys.js';
 import { localizeAgentMonitors, parseAgentMonitors, type AgentMonitor } from './agentMonitors.js';
+import { ShellOutputBusyError, isShellStoppable, localizeAgentShells, parseAgentShells, parseAgentShellsAccess, parseShellOutputReply, type AgentShell, type AgentShellOutput, type AgentShellsAccess } from './agentShells.js';
 import { APP_PROTOCOL_VERSION, PcCapability, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
 import { paradisParseMobileBookmarks, paradisParseMobileBrowserFocus, paradisParseMobileBrowserInputRejected, paradisParseMobileBrowserPage, type IParadisMobileBookmarks, type IParadisMobileBrowserFocus, type IParadisMobileBrowserInputRejected, type IParadisMobileBrowserPage } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileBrowserProtocol.js';
 
@@ -1330,6 +1331,10 @@ export interface AgentChatState {
 	activity?: AgentActivityState;
 	/** Claude Code の Monitor の一覧（PC が `monitors` を送るときだけ。古い PC では無い）。 */
 	monitors?: AgentMonitor[];
+	/** Claude Code のバックグラウンドのシェルの一覧（PC が `shells` を送るときだけ。agent.shells.v1）。 */
+	shells?: AgentShell[];
+	/** シェルの出力と停止をこの構成で使えるか（`shellsAccess`）。 */
+	shellsAccess?: AgentShellsAccess;
 	/** Codex app-server由来の動的モデルカタログと設定更新状態。 */
 	modelControl?: AgentModelControlState;
 	/** PC側でプロバイダーとcwdを検証して構築したスラッシュコマンド一覧。 */
@@ -2685,6 +2690,37 @@ export class MobileController {
 			this.pendingToolImages.set(requestId, { terminalKey, rendererTarget, rev, index, resolve, reject, timer });
 			this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'tool-image', id: terminal.id, token: this.agentToken(terminalKey), requestId, epoch: chat.epoch, rev, index })));
 		});
+	}
+
+	/**
+	 * バックグラウンドのシェルの出力の末尾を取り寄せる（agent.shells.v1。シートを開いている間だけ呼ぶ）。
+	 * 送るのはシェルの ID だけで、PC は transcript で覚えたファイルだけを読む。
+	 */
+	async requestAgentShellOutput(terminalKey: string, shellIds: readonly string[], lines: number): Promise<{ readonly outputs: ReadonlyMap<string, AgentShellOutput>; readonly readAt?: number }> {
+		const chat = this.state.agentChats.get(terminalKey);
+		if (chat === undefined || chat.shells === undefined || shellIds.length === 0) {
+			throw new Error('シェルが見つかりません');
+		}
+		const reply = parseShellOutputReply(await this.requestAgentReply(terminalKey, { t: 'shell-output', epoch: chat.epoch, shellIds: shellIds.slice(0, 20), lines }, 'shell-output'));
+		if (reply === undefined) {
+			throw new Error('出力の応答が不正です');
+		}
+		if (reply.error !== undefined) {
+			if (reply.error === 'busy') {
+				throw new ShellOutputBusyError();
+			}
+			throw new Error(reply.error === 'unavailable' ? 'この PC からは出力を読めません' : 'セッションが変わりました');
+		}
+		return reply;
+	}
+
+	/** バックグラウンドのシェルを止める（PC が Claude Mods の TaskStop を呼ぶ。agent.shells.v1）。 */
+	stopAgentShell(terminalKey: string, shellId: string): Promise<AgentMessageSendResult> {
+		const chat = this.state.agentChats.get(terminalKey);
+		if (chat?.shellsAccess?.stop !== true || chat.shells?.some(shell => shell.id === shellId && isShellStoppable(shell)) !== true) {
+			return Promise.resolve({ status: 'rejected', message: 'このシェルはここからは止められません' });
+		}
+		return this.sendAgentActionResult(terminalKey, { t: 'action/stopShell', token: this.agentToken(terminalKey), epoch: chat.epoch, shellId }, 30_000);
 	}
 
 	/**
@@ -4781,6 +4817,10 @@ export class MobileController {
 			// 時刻は PC の時計で届くので、PC の送信時刻（monitorsAt）との差で手元の時計へ直す。
 			const rawMonitors = parseAgentMonitors((msg as { monitors?: unknown }).monitors);
 			const parsedMonitors = rawMonitors !== undefined ? localizeAgentMonitors(rawMonitors, (msg as { monitorsAt?: unknown }).monitorsAt, Date.now()) : undefined;
+			// バックグラウンドのシェル（agent.shells.v1）も同じく、届いたときだけ丸ごと置き換える。
+			const rawShells = parseAgentShells((msg as { shells?: unknown }).shells);
+			const parsedShells = rawShells !== undefined ? localizeAgentShells(rawShells, (msg as { shellsAt?: unknown }).shellsAt, Date.now()) : undefined;
+			const parsedShellsAccess = rawShells !== undefined ? parseAgentShellsAccess((msg as { shellsAccess?: unknown }).shellsAccess) : undefined;
 			if (msg.t === 'activity-detail' && typeof msg.requestId === 'string' && typeof msg.activityId === 'string') {
 				const pending = this.pendingActivityDetails.get(msg.requestId);
 				if (pending === undefined || pending.terminalKey !== terminalKey || pending.rendererTarget !== rendererTarget || pending.activityId !== msg.activityId) { return; }
@@ -4865,6 +4905,7 @@ export class MobileController {
 					...(isNonNegativeSafeInteger(msg.liveRevision) ? { liveRevision: msg.liveRevision } : {}),
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
 					...(parsedMonitors !== undefined ? { monitors: parsedMonitors } : {}),
+					...(parsedShells !== undefined ? { shells: parsedShells, ...(parsedShellsAccess !== undefined ? { shellsAccess: parsedShellsAccess } : {}) } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 					...(previous?.modelControl !== undefined && previous.epoch === msg.epoch ? { modelControl: previous.modelControl } : {}),
@@ -4941,6 +4982,7 @@ export class MobileController {
 					...(appliedLiveAppend !== undefined ? appliedLiveAppend : {}),
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
 					...(parsedMonitors !== undefined ? { monitors: parsedMonitors } : {}),
+					...(parsedShells !== undefined ? { shells: parsedShells, ...(parsedShellsAccess !== undefined ? { shellsAccess: parsedShellsAccess } : {}) } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 				});
