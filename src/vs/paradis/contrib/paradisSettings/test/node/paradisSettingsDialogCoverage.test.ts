@@ -33,9 +33,6 @@ const NOT_IN_DIALOG = new Map<string, string>([
 	['paradis.officeViewer.engine', 'internal (included: false)'],
 	['paradis.officeViewer.kernelShadow', 'internal diagnostics (included: false)'],
 	['paradis.officeViewer.platformBackend', 'internal (included: false)'],
-	// フォルダごと (resource スコープ) に変えられる設定。ダイアログはユーザー設定にしか書かないので、
-	// フォルダ側で上書きされていると画面と実際がずれる
-	['git.paraBranchDiff.enabled', 'resource-scoped; the dialog only writes user settings'],
 ]);
 
 function repositoryRoot(): string {
