@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisCodexComposerHoldsCommand, paradisParseSlashCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../../common/paradisAgentSlashCommand.js';
+import { PARADIS_CLAUDE_SETTING_VALUE_PATTERN, paradisClaudeModelSwitch, paradisCodexComposerHoldsCommand, paradisParseSlashCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../../common/paradisAgentSlashCommand.js';
 
 suite('ParadisAgentSlashCommand', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -80,6 +80,20 @@ suite('ParadisAgentSlashCommand', () => {
 		}, {
 			checks: [{ agent: 'codex', command: 'x' }, undefined, undefined, undefined],
 			messages: ['Codex に /x というコマンドはありません', 'Claude Code が /x を実行しませんでした（no command named /x in this session）'],
+		});
+	});
+
+	test('switches the model with /config model=<alias> for /model <alias>, and refuses a value that is not an alias', () => {
+		assert.deepStrictEqual({
+			switched: ['/model sonnet', '  /model Opus[1M] ', '/model default'].map(paradisClaudeModelSwitch),
+			refused: ['/model claude-sonnet-5-5', '/model sonnet please'].map(paradisClaudeModelSwitch),
+			untouched: ['/model', '/models sonnet', 'use /model sonnet', '/effort high'].map(paradisClaudeModelSwitch),
+			values: ['sonnet', 'opus[1m]', 'claude-opus-5-5', 'opus[1m] x', 'opus;rm'].map(value => PARADIS_CLAUDE_SETTING_VALUE_PATTERN.test(value)),
+		}, {
+			switched: [{ kind: 'switch', text: '/config model=sonnet' }, { kind: 'switch', text: '/config model=opus[1m]' }, { kind: 'switch', text: '/config model=default' }],
+			refused: [{ kind: 'not-alias', value: 'claude-sonnet-5-5' }, { kind: 'not-alias', value: 'sonnet please' }],
+			untouched: [undefined, undefined, undefined, undefined],
+			values: [true, true, true, false, false],
 		});
 	});
 });

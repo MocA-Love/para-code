@@ -968,8 +968,14 @@ export interface AgentChatMessage {
 	 * 発言ではないので、小さな灰色の 1 行で出し、最後の発言にも数えない。古い PC は送らない。
 	 */
 	notice?: boolean;
-	/** 知らせの出どころ。`command` はスラッシュコマンドの出力（読み上げの文言を分ける）。無ければ Para Code からの知らせ。 */
+	/**
+	 * 知らせの出どころ。無ければ Para Code からの知らせ。`command` はスラッシュコマンドの出力（読み上げの文言を分ける）、
+	 * `compaction` はコンテキストの圧縮の区切り、`compact-summary` は圧縮で作られた要約（本文は先頭だけ。全文は
+	 * requestAgentToolFullText で取り寄せる）。古い PC は送らない。
+	 */
 	noticeSource?: string;
+	/** `noticeSource: 'compaction' | 'compact-summary'` の中身（{@link parseAgentCompactionInfo} で確かめたもの）。 */
+	compaction?: AgentCompactionInfo;
 	/**
 	 * Claude Code の Advisor の呼び出し（tool_use、`tool:'Advisor'`）と結果（tool_result）に PC が付ける印。
 	 * 届いたまま検証せずに入るので、使うときは `parseAgentAdvisorInfo()` を通す。
@@ -987,6 +993,57 @@ export interface AgentChatMessage {
 	detailTruncated?: boolean;
 	/** kind==='tool_result': 結果に含まれていた画像のメタ情報。実体は requestAgentToolImage で取り寄せる。 */
 	images?: AgentChatImage[];
+}
+
+/** コンテキストの圧縮の中身（PC の `IParadisAgentCompactionInfo`）。取れた項目だけ。 */
+export interface AgentCompactionInfo {
+	trigger?: 'manual' | 'auto';
+	tokensBefore?: number;
+	tokensAfter?: number;
+	summaryChars?: number;
+}
+
+/** PC が送ってきた圧縮の中身を確かめる。形が違う項目は落とす（何も残らなければ undefined）。 */
+export function parseAgentCompactionInfo(value: unknown): AgentCompactionInfo | undefined {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		return undefined;
+	}
+	const raw = value as Record<string, unknown>;
+	const count = (item: unknown): number | undefined => typeof item === 'number' && Number.isSafeInteger(item) && item >= 0 ? item : undefined;
+	const tokensBefore = count(raw['tokensBefore']);
+	const tokensAfter = count(raw['tokensAfter']);
+	const summaryChars = count(raw['summaryChars']);
+	const info: AgentCompactionInfo = {
+		...(raw['trigger'] === 'manual' || raw['trigger'] === 'auto' ? { trigger: raw['trigger'] } : {}),
+		...(tokensBefore !== undefined && tokensAfter !== undefined ? { tokensBefore, tokensAfter } : {}),
+		...(summaryChars !== undefined ? { summaryChars } : {}),
+	};
+	return Object.keys(info).length > 0 ? info : undefined;
+}
+
+/**
+ * 承認・質問以外の画面（`/config` など）が PC の Claude Code で開いている（agent.panel.v1）。`command` はモバイルから送って
+ * 開いたコマンドの名前（分からなければ無い）。
+ */
+export interface AgentPanel {
+	command?: string;
+	since: number;
+}
+
+/** PC が送ってきた `panel` を確かめる。`null` は閉じた。形が違えば undefined（届かなかったものとして扱う）。 */
+export function parseAgentPanel(value: unknown): AgentPanel | null | undefined {
+	if (value === null) {
+		return null;
+	}
+	if (typeof value !== 'object' || Array.isArray(value)) {
+		return undefined;
+	}
+	const raw = value as Record<string, unknown>;
+	if (typeof raw['since'] !== 'number' || !Number.isFinite(raw['since'])) {
+		return undefined;
+	}
+	const command = typeof raw['command'] === 'string' && /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/.test(raw['command']) ? raw['command'] : undefined;
+	return { since: raw['since'], ...(command !== undefined ? { command } : {}) };
 }
 
 /** tool_result に含まれていた画像1枚のメタ情報（実体は含まない）。 */
@@ -1182,11 +1239,16 @@ function parseAgentChatImages(value: unknown): AgentChatImage[] | undefined {
 /** relay境界で受けたチャットメッセージ配列の、検証が必要な部分だけを差し替える。 */
 function normalizeAgentChatMessages(value: AgentChatMessage[] | undefined): AgentChatMessage[] {
 	return (value ?? []).map(message => {
-		if (message?.images === undefined) {
-			return message;
+		let normalized = message;
+		if (normalized?.compaction !== undefined) {
+			const compaction = parseAgentCompactionInfo(normalized.compaction);
+			normalized = compaction !== undefined ? { ...normalized, compaction } : (({ compaction: _compaction, ...rest }) => rest)(normalized);
 		}
-		const images = parseAgentChatImages(message.images);
-		return images !== undefined ? { ...message, images } : (({ images: _images, ...rest }) => rest)(message);
+		if (normalized?.images === undefined) {
+			return normalized;
+		}
+		const images = parseAgentChatImages(normalized.images);
+		return images !== undefined ? { ...normalized, images } : (({ images: _images, ...rest }) => rest)(normalized);
 	});
 }
 
@@ -1418,6 +1480,8 @@ export interface AgentChatState {
 	 * 理由を出して文を戻したら {@link MobileController.clearAgentSlashRejection} で消す。
 	 */
 	slashRejection?: AgentSlashRejection;
+	/** PC で開いている画面（agent.panel.v1。開いている間だけ）。入力欄の上に帯を出し、閉じるまで送信を止める。 */
+	panel?: AgentPanel;
 	/** PC側がsession検証付きAgent Actionを受け付ける。 */
 	capabilities?: { agentActions: true; claudeSettings?: true };
 	interaction?: AgentInteraction;
@@ -2724,12 +2788,29 @@ export class MobileController {
 		if (chat.interaction !== undefined) {
 			return Promise.resolve({ status: 'rejected', message: '質問や許可への回答が先に必要です' });
 		}
-		if (!/^[A-Za-z0-9._:-]{1,200}$/.test(value)) {
+		// `opus[1m]` のような `[1m]` 付きの別名は、受け付ける PC（agent.panel.v1 と同じ版）にだけ送る
+		const valuePattern = this.hasPcCapability(PcCapability.AgentPanel) ? /^[A-Za-z0-9._:-]{1,200}(?:\[[a-z0-9]{1,8}\])?$/ : /^[A-Za-z0-9._:-]{1,200}$/;
+		if (!valuePattern.test(value)) {
 			return Promise.resolve({ status: 'rejected', message: '指定された値は送信できません' });
 		}
 		return this.sendAgentActionResult(terminalKey, {
 			t: 'action/claudeSetting', token: this.agentToken(terminalKey), epoch: chat.epoch, setting, value,
 		});
+	}
+
+	/**
+	 * PC で開いている画面（`/config` など）を Esc で閉じる（agent.panel.v1。入力欄の上の帯の「閉じる」）。PC は打つ直前に
+	 * 画面が開いているかを確かめ、作業中や承認・質問を待っているときは断る。
+	 */
+	closeAgentPanel(terminalKey: string): Promise<AgentMessageSendResult> {
+		const chat = this.state.agentChats.get(terminalKey);
+		if (!this.isLiveAvailable()) {
+			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
+		}
+		if (chat?.agent !== 'claude' || chat.panel === undefined || !this.hasPcCapability(PcCapability.AgentPanel)) {
+			return Promise.resolve({ status: 'rejected', message: 'PC で開いている画面はありません' });
+		}
+		return this.sendAgentActionResult(terminalKey, { t: 'action/closePanel', token: this.agentToken(terminalKey), epoch: chat.epoch }, 15_000);
 	}
 
 	requestAgentActivityDetail(terminalKey: string, activityId: string): Promise<AgentActivityDetailMessage[]> {
@@ -5001,6 +5082,10 @@ export class MobileController {
 			}
 			const parsedActivity = msg.activity !== null ? parseAgentActivityState(msg.activity) : undefined;
 			const parsedInteraction = msg.interaction !== null ? parseAgentInteraction(msg.interaction) : undefined;
+			// PC で開いている画面（agent.panel.v1）。delta では届いたときだけ置き換える（null は閉じた）。attach の応答
+			// （capabilities 付き）は今の状態を丸ごと運ぶので、無ければ閉じている
+			const panelPresent = Object.prototype.hasOwnProperty.call(msg, 'panel');
+			const parsedPanel = panelPresent ? parseAgentPanel((msg as { panel?: unknown }).panel) : undefined;
 			// 任意項目。届いたときだけ丸ごと置き換える（delta で無ければ手元のまま）。
 			// 時刻は PC の時計で届くので、PC の送信時刻（monitorsAt）との差で手元の時計へ直す。
 			const rawMonitors = parseAgentMonitors((msg as { monitors?: unknown }).monitors);
@@ -5096,6 +5181,7 @@ export class MobileController {
 					...(parsedShells !== undefined ? { shells: parsedShells, ...(parsedShellsAccess !== undefined ? { shellsAccess: parsedShellsAccess } : {}) } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
+					...(parsedPanel !== undefined && parsedPanel !== null ? { panel: parsedPanel } : {}),
 					...(previous?.modelControl !== undefined && previous.epoch === msg.epoch ? { modelControl: previous.modelControl } : {}),
 					...(previous?.commandCatalog !== undefined && previous.epoch === msg.epoch ? { commandCatalog: previous.commandCatalog } : {}),
 					...(previous?.slashRejection !== undefined ? { slashRejection: previous.slashRejection } : {}),
@@ -5156,7 +5242,8 @@ export class MobileController {
 					: withoutInteraction;
 				const merged = [...existing.messages, ...fresh];
 				// 前の差分で切った分は持ち越さない（1 回だけ渡す）。
-				const { trimmedByDelta: _previousTrim, ...kept } = base;
+				const { trimmedByDelta: _previousTrim, ...keptAll } = base;
+				const kept = panelPresent || msg.capabilities?.agentActions === true ? (({ panel: _panel, ...rest }) => rest)(keptAll) : keptAll;
 				this.state.agentChats.set(terminalKey, {
 					...kept,
 					rev: msg.rev ?? existing.rev,
@@ -5174,6 +5261,7 @@ export class MobileController {
 					...(parsedShells !== undefined ? { shells: parsedShells, ...(parsedShellsAccess !== undefined ? { shellsAccess: parsedShellsAccess } : {}) } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
+					...(parsedPanel !== undefined && parsedPanel !== null ? { panel: parsedPanel } : {}),
 				});
 				// ターン継続中（live あり）の高頻度な delta だけ throttle でまとめる。ターン終了
 				// （live === null）や live 情報を伴わない確定 delta は即時反映する（追従の遅延・

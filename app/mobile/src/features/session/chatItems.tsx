@@ -1,8 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { memo, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChevronDown, CircleHelp, Globe, Info, SquareChevronRight, Users } from 'lucide-react-native';
+import { memo, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ChevronDown, ChevronRight, CircleHelp, FoldVertical, Globe, Info, ScrollText, SquareChevronRight, Users } from 'lucide-react-native';
 import { buildTimelineSteps, describeStep, formatToolName, type AgentTimelineStep } from '../../agentToolMeta.js';
 import { attachmentImagesDuplicate, attachmentImagesMatch } from '../../attachments/attachmentFetchPolicy.js';
 import { useAttachmentSizes } from '../../attachments/attachmentImages.js';
@@ -13,10 +13,11 @@ import { ThinkingBody, ToolImageCards, ToolStepBody } from '../../components/age
 import { MarkdownText } from '../../components/markdownText.js';
 import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
+import { useAppStore } from '../../appState.js';
 import type { AgentChatMessage } from '../../store.js';
-import { colors, radius, space, squircle, type } from '../../theme.js';
+import { alpha, colors, radius, space, squircle, tint, type } from '../../theme.js';
 import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
-import { Icon, useThemeColors } from '../../ui/index.js';
+import { BottomDrawer, Button, DrawerTitle, Icon, useThemeColors } from '../../ui/index.js';
 import type { QuestionOutcome } from '../../agentQuestionMod.js';
 import { AdvisorChatRowView } from './advisorRow.js';
 import type { ChatRow } from './chatRows.js';
@@ -75,6 +76,13 @@ function MessageRow({ message, terminalKey }: { message: AgentChatMessage; termi
 		);
 	}
 	if (message.notice === true) {
+		// コンテキストの圧縮は、区切り線と畳んだ要約のカードにする（古い PC は送らない）
+		if (message.noticeSource === 'compaction') {
+			return <CompactionDivider message={message} />;
+		}
+		if (message.noticeSource === 'compact-summary') {
+			return <CompactSummaryCard message={message} terminalKey={terminalKey} />;
+		}
 		return <NoticeRow text={message.text} source={message.noticeSource} />;
 	}
 	if (message.role === 'user') {
@@ -247,6 +255,106 @@ function NoticeRow({ text, source }: { text: string; source?: string }) {
 	);
 }
 
+/** トークン数を短く（168,412 → 168k）。 */
+function shortTokens(count: number): string {
+	return count >= 1000 ? `${Math.round(count / 1000).toLocaleString('en-US')}k` : String(count);
+}
+
+/**
+ * コンテキストを圧縮した区切り（モックの A6-1 と A6-3 の軽い版）。線の中に手動・自動と、取れたときだけトークンの減り方を出す。
+ * 色は圧縮の色（colors.purple）。
+ */
+function CompactionDivider({ message }: { message: AgentChatMessage }) {
+	const styles = useChatStyles(baseStyles);
+	const iconSize = useChatIconSize(13);
+	const info = message.compaction;
+	const label = info?.trigger === 'auto' ? '自動でコンテキストを圧縮しました' : info?.trigger === 'manual' ? 'コンテキストを圧縮しました（手動）' : 'コンテキストを圧縮しました';
+	const tokens = info?.tokensBefore !== undefined && info.tokensAfter !== undefined ? info : undefined;
+	const spoken = tokens !== undefined
+		? `${label}。${tokens.tokensBefore!.toLocaleString('en-US')} トークンから ${tokens.tokensAfter!.toLocaleString('en-US')} トークンへ${info?.trigger === 'auto' ? '。上限に近づいたため' : ''}`
+		: label;
+	return (
+		<View style={styles.compactRow} accessible accessibilityRole="text" accessibilityLabel={spoken}>
+			<View style={styles.compactLine} />
+			<View style={styles.compactLabel}>
+				<Icon icon={FoldVertical} size={iconSize} color={colors.purple} />
+				<Text style={styles.compactText} numberOfLines={2}>{label}</Text>
+				{tokens !== undefined ? <Text style={styles.compactTokens}>{`${shortTokens(tokens.tokensBefore!)} → ${shortTokens(tokens.tokensAfter!)}`}</Text> : null}
+			</View>
+			<View style={styles.compactLine} />
+		</View>
+	);
+}
+
+/**
+ * 圧縮で作られた要約（モックの A6-1）。既定は畳み、開くと先頭の 5 行と「全文を読む」（全文はシートで、PC から取り寄せる）。
+ * 自分の発言の吹き出しにはしない（今までは最大 6,000 字の吹き出しになっていた）。
+ */
+function CompactSummaryCard({ message, terminalKey }: { message: AgentChatMessage; terminalKey: string }) {
+	const styles = useChatStyles(baseStyles);
+	const iconSize = useChatIconSize(14);
+	const [open, setOpen] = useState(false);
+	const [sheetOpen, setSheetOpen] = useState(false);
+	const chars = message.compaction?.summaryChars ?? message.text.length;
+	// 「約 4,800 字」（100 字単位）
+	const charsLabel = `約 ${(Math.max(100, Math.round(chars / 100) * 100)).toLocaleString('en-US')} 字`;
+	return (
+		<View style={styles.row}>
+			<View style={styles.summaryCard}>
+				<Pressable
+					style={styles.summaryHead}
+					onPress={() => { haptic('move'); setOpen(value => !value); }}
+					accessibilityRole="button"
+					accessibilityState={{ expanded: open }}
+					accessibilityLabel={`それまでの会話の要約、${charsLabel}。${open ? '畳む' : '開く'}`}
+				>
+					<Icon icon={ScrollText} size={iconSize} color={colors.purple} />
+					<Text style={styles.summaryTitle} numberOfLines={1}>それまでの会話の要約</Text>
+					<Text style={styles.summaryMeta}>{charsLabel}</Text>
+					<Icon icon={open ? ChevronDown : ChevronRight} size={iconSize} color={colors.textMuted} />
+				</Pressable>
+				{open ? (
+					<View style={styles.summaryBody}>
+						<Text style={styles.summaryPreview} numberOfLines={5} selectable>{message.text}</Text>
+						<Button label="全文を読む" variant="ghost" size="sm" onPress={() => { haptic('move'); setSheetOpen(true); }} />
+					</View>
+				) : null}
+			</View>
+			<CompactSummarySheet visible={sheetOpen} message={message} terminalKey={terminalKey} onClose={() => setSheetOpen(false)} />
+		</View>
+	);
+}
+
+/** 要約の全文のシート。PC で切り詰めた要約は開いたときに取り寄せ、取れなければ先頭だけを出す。 */
+function CompactSummarySheet({ visible, message, terminalKey, onClose }: { visible: boolean; message: AgentChatMessage; terminalKey: string; onClose: () => void }) {
+	const styles = useChatStyles(baseStyles);
+	const requestFull = useAppStore(state => state.requestAgentToolFullText);
+	const [full, setFull] = useState<{ readonly rev: number; readonly text?: string; readonly failed?: boolean } | undefined>(undefined);
+	useEffect(() => {
+		if (!visible || message.truncated !== true || full?.rev === message.rev) {
+			return;
+		}
+		let alive = true;
+		setFull({ rev: message.rev });
+		requestFull(terminalKey, message.rev).then(
+			text => { if (alive) { setFull({ rev: message.rev, text }); } },
+			() => { if (alive) { setFull({ rev: message.rev, failed: true }); } },
+		);
+		return () => { alive = false; };
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- 取り寄せは開いたときに 1 回だけ
+	}, [visible, message.rev, message.truncated, terminalKey]);
+	const loading = message.truncated === true && full?.rev === message.rev && full.text === undefined && full.failed !== true;
+	const text = full?.rev === message.rev && full.text !== undefined ? full.text : message.text;
+	return (
+		<BottomDrawer visible={visible} onClose={onClose} accessibilityLabel="それまでの会話の要約">
+			<DrawerTitle title="それまでの会話の要約" />
+			{loading ? <ActivityIndicator color={colors.textDim} /> : null}
+			{full?.rev === message.rev && full.failed === true ? <Text style={styles.summaryMeta}>全文を取得できなかったため、先頭だけを表示しています</Text> : null}
+			<Text style={styles.summaryFull} selectable>{text}</Text>
+		</BottomDrawer>
+	);
+}
+
 /**
  * 会話に残る質問（回答済み、または PC がもう待っていないもの）。いま待っている質問は
  * コンポーザーの上のカードに出すので、ここは履歴として1行で示すだけ。
@@ -401,5 +509,77 @@ const baseStyles = StyleSheet.create({
 	},
 	syslineNote: {
 		color: colors.textMuted,
+	},
+	compactRow: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.sm,
+		paddingHorizontal: space.lg,
+		paddingVertical: space.md,
+	},
+	compactLine: {
+		flex: 1,
+		height: StyleSheet.hairlineWidth,
+		backgroundColor: tint(colors.purple, alpha.line),
+	},
+	compactLabel: {
+		flexShrink: 1,
+		flexDirection: 'row',
+		alignItems: 'center',
+		flexWrap: 'wrap',
+		gap: space.xs,
+	},
+	compactText: {
+		flexShrink: 1,
+		fontSize: type.meta,
+		fontWeight: '600',
+		color: colors.purple,
+	},
+	compactTokens: {
+		fontFamily: monoFamily,
+		fontSize: type.caption,
+		color: colors.textMuted,
+	},
+	summaryCard: {
+		borderRadius: radius.card,
+		...squircle,
+		borderWidth: StyleSheet.hairlineWidth,
+		borderColor: tint(colors.purple, alpha.line),
+		backgroundColor: tint(colors.purple, alpha.wash),
+		overflow: 'hidden',
+	},
+	summaryHead: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.sm,
+		minHeight: 44,
+		paddingHorizontal: space.md,
+	},
+	summaryTitle: {
+		flexShrink: 1,
+		fontSize: type.meta,
+		fontWeight: '600',
+		color: colors.text,
+	},
+	summaryMeta: {
+		flex: 1,
+		fontSize: type.caption,
+		color: colors.textMuted,
+	},
+	summaryBody: {
+		gap: space.xs,
+		paddingHorizontal: space.md,
+		paddingBottom: space.sm,
+		alignItems: 'flex-start',
+	},
+	summaryPreview: {
+		fontSize: type.meta,
+		lineHeight: 18,
+		color: colors.textDim,
+	},
+	summaryFull: {
+		fontSize: type.body,
+		lineHeight: 21,
+		color: colors.text,
 	},
 });

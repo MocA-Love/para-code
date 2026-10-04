@@ -7,7 +7,7 @@ import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import type { AgentCommandCatalogState, AgentCommandOption } from '../../store.js';
 import { agentSlashCommandOriginLabel, duplicateAgentSlashCommandNames } from '../../components/agentSlashCommands.js';
-import { HIT_SIZE, colors, radius, space, squircle, type } from '../../theme.js';
+import { HIT_SIZE, alpha, colors, radius, space, squircle, tint, type } from '../../theme.js';
 import { Icon, useThemeColors } from '../../ui/index.js';
 
 /** 候補の一覧の高さの上限（5行ぶん。超えたら中でスクロールする）。 */
@@ -18,12 +18,14 @@ const LIST_MAX_HEIGHT = 260;
  * 候補の絞り込みと挿入する文字は既存の `components/agentSlashCommands.ts`。
  * 一覧は実際に効く順。同じ名前が 2 件あれば出どころ（組み込み・プラグイン名・自作）を小さく添える（上の方が動く）。
  * 取り直している間は、前に取った一覧のまま出す。
+ * 組み込みのコマンドには扱いの札を添える（`badgeFor`。黄は PC で画面が開く、青はこの端末で開く。agentBuiltinCommands.ts）。
  */
-export function SlashCommandList({ catalog, commands, onSelect, onRetry }: {
+export function SlashCommandList({ catalog, commands, onSelect, onRetry, badgeFor }: {
 	catalog: AgentCommandCatalogState | undefined;
 	commands: readonly AgentCommandOption[];
 	onSelect: (command: AgentCommandOption) => void;
 	onRetry: () => void;
+	badgeFor?: (command: AgentCommandOption) => { readonly label: string; readonly tone: 'pc' | 'local' | 'result' } | undefined;
 }) {
 	const theme = useThemeColors();
 	const duplicates = useMemo(() => duplicateAgentSlashCommandNames(catalog?.commands ?? []), [catalog?.commands]);
@@ -50,13 +52,15 @@ export function SlashCommandList({ catalog, commands, onSelect, onRetry }: {
 				</View>
 			) : (
 				<ScrollView keyboardShouldPersistTaps="always" style={styles.list}>
-					{commands.map((command, index) => (
+					{commands.map((command, index) => {
+						const badge = badgeFor?.(command);
+						return (
 						<Pressable
 							key={`${index}:${command.source}:${command.plugin ?? ''}:${command.kind}:${command.name}`}
 							style={({ pressed }) => [styles.row, index > 0 ? styles.divider : undefined, pressed ? styles.pressed : undefined]}
 							onPress={() => { haptic('tick'); onSelect(command); }}
 							accessibilityRole="button"
-							accessibilityLabel={`${command.insertText}${duplicates.has(command.name.toLocaleLowerCase()) ? ` ${agentSlashCommandOriginLabel(command)}` : ''} ${command.description}`}
+							accessibilityLabel={`${command.insertText}${duplicates.has(command.name.toLocaleLowerCase()) ? ` ${agentSlashCommandOriginLabel(command)}` : ''}${badge !== undefined ? ` ${badge.label}` : ''} ${command.description}`}
 						>
 							<Icon icon={command.kind === 'skill' ? Sparkles : command.kind === 'prompt' ? FileText : SquareTerminal} color={colors.textDim} />
 							<View style={styles.body}>
@@ -64,11 +68,13 @@ export function SlashCommandList({ catalog, commands, onSelect, onRetry }: {
 									<Text style={styles.name}>{command.insertText}</Text>
 									{command.argumentHint !== undefined ? <Text style={styles.argument} numberOfLines={1}>{command.argumentHint}</Text> : null}
 									{duplicates.has(command.name.toLocaleLowerCase()) ? <Text style={styles.origin} numberOfLines={1}>{agentSlashCommandOriginLabel(command)}</Text> : null}
+									{badge !== undefined ? <Text style={[styles.badge, BADGE_TONES[badge.tone]]} numberOfLines={1}>{badge.label}</Text> : null}
 								</View>
 								<Text style={styles.description} numberOfLines={1}>{command.description}</Text>
 							</View>
 						</Pressable>
-					))}
+						);
+					})}
 				</ScrollView>
 			)}
 		</View>
@@ -136,6 +142,14 @@ const styles = StyleSheet.create({
 		color: colors.textMuted,
 		overflow: 'hidden',
 	},
+	badge: {
+		flexShrink: 1,
+		paddingHorizontal: space.xs,
+		borderRadius: radius.pill,
+		borderWidth: StyleSheet.hairlineWidth,
+		fontSize: type.caption,
+		overflow: 'hidden',
+	},
 	description: {
 		marginTop: 2,
 		fontSize: type.meta,
@@ -161,4 +175,11 @@ const styles = StyleSheet.create({
 		fontSize: type.caption,
 		color: colors.accent,
 	},
+});
+
+/** 札の色（黄: PC で画面が開く、青: この端末で開く、灰: 結果を会話に出す）。 */
+const BADGE_TONES = StyleSheet.create({
+	pc: { color: colors.yellow, borderColor: tint(colors.yellow, alpha.line), backgroundColor: tint(colors.yellow, alpha.faint) },
+	local: { color: colors.blue, borderColor: tint(colors.blue, alpha.line), backgroundColor: tint(colors.blue, alpha.faint) },
+	result: { color: colors.textMuted, borderColor: colors.border },
 });

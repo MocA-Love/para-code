@@ -634,11 +634,17 @@ export class ParadisAgentChatView extends Disposable {
 					// Para Code からの知らせ（送れなかった発言など）。エージェントの発言と分けて灰色の 1 行で出す
 					const notice = $('.paradis-agent-chat-message.system');
 					notice.setAttribute('role', 'note');
+					// 圧縮の区切りと要約は、届いた日本語の文ではなく項目から言葉を作る
+					const text = paradisCompactionNoticeLabel(item.message) ?? item.message.text;
 					notice.setAttribute('aria-label', item.message.noticeSource === 'command'
-						? localize('paradisAgentChat.commandOutputLabel', "Command output: {0}", item.message.text)
-						: localize('paradisAgentChat.noticeLabel', "Notice from Para Code: {0}", item.message.text));
-					append(notice, $('span.codicon.codicon-info'));
-					append(notice, $('span.paradis-agent-chat-system-text')).textContent = item.message.text;
+						? localize('paradisAgentChat.commandOutputLabel', "Command output: {0}", text)
+						: item.message.noticeSource === 'compaction'
+							? localize('paradisAgentChat.compactionDividerLabel', "Conversation divider: {0}", text)
+							: item.message.noticeSource === 'compact-summary'
+								? localize('paradisAgentChat.compactSummaryLabel', "{0}: {1}", text, item.message.text)
+								: localize('paradisAgentChat.noticeLabel', "Notice from Para Code: {0}", text));
+					append(notice, $(item.message.noticeSource === 'compaction' || item.message.noticeSource === 'compact-summary' ? 'span.codicon.codicon-fold' : 'span.codicon.codicon-info'));
+					append(notice, $('span.paradis-agent-chat-system-text')).textContent = item.message.noticeSource === 'compact-summary' ? `${text}\n${item.message.text}` : text;
 					return notice;
 				}
 				const element = $('.paradis-agent-chat-message.assistant');
@@ -1461,4 +1467,25 @@ function paradisIsFileDrag(e: DragEvent): boolean {
 		return false;
 	}
 	return containsDragType(e, DataTransfers.FILES, DataTransfers.RESOURCES, CodeDataTransfers.FILES);
+}
+
+/** 圧縮の区切りと要約の見出し（{@link IParadisAgentChatMessage.compaction} から作る）。ほかの知らせは undefined。 */
+function paradisCompactionNoticeLabel(message: IParadisAgentChatMessage): string | undefined {
+	const compaction = message.compaction;
+	if (message.noticeSource === 'compact-summary') {
+		return compaction?.summaryChars !== undefined
+			? localize('paradisAgentChat.compactSummaryChars', "Summary of the earlier conversation ({0} characters)", compaction.summaryChars.toLocaleString())
+			: localize('paradisAgentChat.compactSummary', "Summary of the earlier conversation");
+	}
+	if (message.noticeSource !== 'compaction') {
+		return undefined;
+	}
+	const title = compaction?.trigger === 'manual'
+		? localize('paradisAgentChat.compactedManual', "Context compacted (manual)")
+		: compaction?.trigger === 'auto'
+			? localize('paradisAgentChat.compactedAuto', "Context compacted automatically")
+			: localize('paradisAgentChat.compacted', "Context compacted");
+	return compaction?.tokensBefore !== undefined && compaction.tokensAfter !== undefined
+		? localize('paradisAgentChat.compactedTokens', "{0}: {1} to {2} tokens", title, compaction.tokensBefore.toLocaleString(), compaction.tokensAfter.toLocaleString())
+		: title;
 }
