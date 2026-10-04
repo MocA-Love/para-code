@@ -39,6 +39,7 @@ import {
 	diskLevel,
 	formatBytes,
 	formatCpu,
+	hostUsageDetails,
 	sortRowsBy,
 	usageLevel,
 	usagePercent,
@@ -397,6 +398,14 @@ function SystemDetailView() {
 	const unsupportedMetrics = legacy ? LEGACY_UNSUPPORTED : copy.unsupported;
 	const localIsMac = copies.current.get(`${targetPcId ?? ''}|${LOCAL_MACHINE_KEY}|fine`)?.machine?.os === 'darwin'
 		|| copies.current.get(`${targetPcId ?? ''}|${LOCAL_MACHINE_KEY}|coarse`)?.machine?.os === 'darwin';
+	// 推移のグラフが出ているマシンでは、全体の値はグラフのカードに出す（同じ値のバーを重ねない）。バーにしか無かった
+	// 補足（Para Code のぶん・メモリの量・ディスクの空き）はカードの 2 行目へ移す。履歴の無い古い PC・接続先はバーを残す。
+	const historyShown = machine !== undefined && !legacy;
+	const hostDetails = data !== undefined ? hostUsageDetails(data) : undefined;
+	const chartDetails: Partial<Record<SystemUsageMetric, string>> = historyShown && hostDetails !== undefined
+		? { cpu: hostDetails.cpu, memory: hostDetails.memory, ...(hostDetails.disk !== undefined ? { disk: hostDetails.disk } : {}) }
+		: {};
+	const subject = machine?.remote === true ? machine.label : 'この PC';
 	const twoColumns = chartAreaWidth >= TWO_COLUMN_MIN_WIDTH;
 	const chartItemStyle = twoColumns ? { width: Math.floor((chartAreaWidth - space.sm) / 2) } : styles.chartItemFull;
 
@@ -589,6 +598,7 @@ function SystemDetailView() {
 											unsupported={unsupportedMetrics.includes(metric.id)}
 											legacy={legacy}
 											swapTotal={copy.machine?.swapTotal}
+											detail={chartDetails[metric.id]}
 										/>
 									</View>
 								))}
@@ -596,28 +606,31 @@ function SystemDetailView() {
 							{legacy ? <DetailMessage tone="note">接続先の Para Code を更新すると、CPU・メモリなどの推移とディスク I/O・帯域・スワップも出ます。いまは今の値だけです。</DetailMessage> : null}
 						</>
 					) : null}
-					<GroupHeader title={machine?.remote === true ? `${machine.label} 全体` : 'PC 全体'} first={machine === undefined} />
-					<DetailCard>
-						<BarItem
-							name="CPU"
-							value={formatCpu(data.host.cpu)}
-							sub={`Para Code ${formatCpu(data.host.cores > 0 ? data.snapshot.app.cpu / data.host.cores : undefined)}`}
-							segments={[{ percent: data.host.cpu ?? 0, color: resourceLevelColor(usageLevel(data.host.cpu ?? 0, CPU_THRESHOLDS)) }]}
-						/>
-						<BarItem
-							name="メモリ"
-							value={`${Math.round(memoryPercent)}%`}
-							sub={`${formatBytes(data.host.memory.used)} / ${formatBytes(data.host.memory.total)}`}
-							segments={[{ percent: memoryPercent, color: resourceLevelColor(usageLevel(memoryPercent, MEMORY_THRESHOLDS)) }]}
-						/>
-						<BarItem
-							name="SSD"
-							value={primaryDisk !== undefined ? `${Math.round(diskPercent)}%` : '—'}
-							sub={primaryDisk !== undefined ? `空き ${formatBytes(primaryDisk.free)}` : '取得できません'}
-							// 色は使用率ではなく空き容量のしきい値（diskLevel）でも決まる
-							segments={primaryDisk !== undefined ? [{ percent: diskPercent, color: resourceLevelColor(diskLevel(primaryDisk.total, primaryDisk.free)) }] : []}
-						/>
-					</DetailCard>
+					{/* 履歴のグラフが出ているときは消すだけにする（木の形は変えない） */}
+					<View style={historyShown ? styles.hidden : undefined}>
+						<GroupHeader title={machine?.remote === true ? `${machine.label} 全体` : 'PC 全体'} first={machine === undefined} />
+						<DetailCard>
+							<BarItem
+								name="CPU"
+								value={formatCpu(data.host.cpu)}
+								sub={hostDetails?.cpu}
+								segments={[{ percent: data.host.cpu ?? 0, color: resourceLevelColor(usageLevel(data.host.cpu ?? 0, CPU_THRESHOLDS)) }]}
+							/>
+							<BarItem
+								name="メモリ"
+								value={`${Math.round(memoryPercent)}%`}
+								sub={hostDetails?.memory}
+								segments={[{ percent: memoryPercent, color: resourceLevelColor(usageLevel(memoryPercent, MEMORY_THRESHOLDS)) }]}
+							/>
+							<BarItem
+								name="SSD"
+								value={primaryDisk !== undefined ? `${Math.round(diskPercent)}%` : '—'}
+								sub={hostDetails?.disk ?? '取得できません'}
+								// 色は使用率ではなく空き容量のしきい値（diskLevel）でも決まる
+								segments={primaryDisk !== undefined ? [{ percent: diskPercent, color: resourceLevelColor(diskLevel(primaryDisk.total, primaryDisk.free)) }] : []}
+							/>
+						</DetailCard>
+					</View>
 
 					<GroupHeader title="内訳" />
 					<ChoiceChips options={AXIS_OPTIONS} selected={axis} onSelect={setAxis} />
@@ -650,7 +663,7 @@ function SystemDetailView() {
 					)}
 
 					<DetailMessage tone="note">
-						「PC 全体」は PC 全体の使用量です。内訳に出るのは Para Code 本体と、Para Code が開いているターミナルのぶんだけなので、合計は PC 全体と一致しません（ほかのアプリのぶんが差になります）。内訳の CPU はマルチコアの合計なので、1つのターミナルでも 100% を超えることがあります（「PC 全体」の CPU は全コアの平均です）。
+						{`CPU・メモリ・ディスクの値は${subject}の全体の使用量です。内訳に出るのは Para Code 本体と、Para Code が開いているターミナルのぶんだけなので、内訳の合計は全体と一致しません（ほかのアプリのぶんが差になります）。内訳の CPU はマルチコアの合計なので、1つのターミナルでも 100% を超えることがあります（全体の CPU は全コアの平均です）。`}
 					</DetailMessage>
 				</View>
 			) : null}
@@ -664,6 +677,9 @@ const styles = StyleSheet.create({
 		flexWrap: 'wrap',
 		gap: space.sm,
 		marginTop: space.sm,
+	},
+	hidden: {
+		display: 'none',
 	},
 	chartItemFull: {
 		width: '100%',
