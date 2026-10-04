@@ -14,6 +14,9 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IParadisIngestOpenOptions, IParadisIngestStream, IParadisIngestTerminal, IParadisLocalVoiceOutput } from '../../../notifications/common/paradisVoiceIngest.js';
 import { paradisMp3Bitrate } from '../../common/paradisRemoteVoice.js';
 import { IParadisRemoteVoiceIngressDeps, IParadisRemoteVoiceResult, paradisReceiveRemoteVoice } from '../../node/paradisRemoteVoiceIngress.js';
+import { PARADIS_MCP_REQUEST_TIMEOUT_MS, paradisArmRequestBodyTimeout, paradisConfigureMcpHttpServer } from '../../node/paradisHttpRequestTimeouts.js';
+import * as sinon from 'sinon';
+import { EventEmitter } from 'events';
 
 /** MPEG1 Layer III 128kbps のフレームの先頭。 */
 function mp3(size: number): Buffer {
@@ -54,6 +57,7 @@ async function startServer(options: {
 	readonly playAudio?: boolean;
 	readonly reserve?: (bytes: number) => boolean;
 	readonly limits?: IParadisRemoteVoiceIngressDeps['limits'];
+	readonly now?: () => number;
 }): Promise<IHarness> {
 	const events: string[] = [];
 	const streams: FakeStream[] = [];
@@ -65,7 +69,7 @@ async function startServer(options: {
 			if (!options.ingest) {
 				return undefined;
 			}
-			events.push(`open:${open.priority}`);
+			events.push(open.gainKey ? `open:${open.priority}:${open.gainKey}` : `open:${open.priority}`);
 			const stream = new FakeStream();
 			streams.push(stream);
 			if (options.handoff !== undefined) {
@@ -76,7 +80,7 @@ async function startServer(options: {
 			}
 			return stream;
 		},
-		playFallback: async audio => { events.push(`afplay:${audio.byteLength}`); },
+		playFallback: async (audio, gainKey) => { events.push(gainKey ? `afplay:${audio.byteLength}:${gainKey}` : `afplay:${audio.byteLength}`); },
 	};
 	const server = httpModule.createServer((req, res) => {
 		const controller = new AbortController();
@@ -90,12 +94,15 @@ async function startServer(options: {
 			onBodyReceived: () => events.push('body-received'),
 			isTicketCurrent: () => true,
 			limits: options.limits,
+			now: options.now,
 		}).then(async result => {
 			await result.localPlayback;
 			results.push(result);
 			resultGate.complete(result);
 		});
 	});
+	// 本番と同じ時間の上限で動かす（requestTimeout が 30 秒だと chunked の声が途中で切られる）
+	paradisConfigureMcpHttpServer(server);
 	await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
 	const port = (server.address() as AddressInfo).port;
 	return {
@@ -296,7 +303,8 @@ suite('paradisReceiveRemoteVoice', () => {
 		}
 		assert.deepStrictEqual(outcomes, [
 			{ outcome: 'rejected', streams: 0 },
-			{ outcome: 'rejected', stream: ['write:418', 'abort:slow-arrival'] },
+			// 引き受けた声は、届いた分で worker に終えてもらう
+			{ outcome: 'played-locally', stream: ['write:418', 'end'] },
 		]);
 	});
 
@@ -313,5 +321,101 @@ suite('paradisReceiveRemoteVoice', () => {
 			{ kbps: 32, offset: 0 },
 			undefined,
 		]);
+	});
+
+	test('after accepting, plays what arrived with --play-audio then afplay when the stream is too slow and --ingest is not there', async () => {
+		const harness = await startServer({ localPlayback: true, ingest: false, playAudio: false, limits: { slowArrivalMs: 400 } });
+		try {
+			const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked', 'X-Para-Gain-Key': 'elevenlabs:voice1:eleven_v3' });
+			request.on('error', () => { });
+			request.write(mp3(418));
+			const head = await response;
+			const result = await harness.resultReady;
+			assert.deepStrictEqual({ accepted: head.accepted, outcome: result.outcome, events: harness.events }, {
+				accepted: 'accepted',
+				outcome: 'played-locally',
+				events: ['body-received', 'play-audio:418', 'afplay:418:elevenlabs:voice1:eleven_v3'],
+			});
+		} finally {
+			await harness.close();
+		}
+	});
+
+	test('keeps a chunked voice that streams for more than 30 seconds on the production server settings', async () => {
+		// 時計を 1 秒ずつ進めながら、実時間と同じ速さ（128kbps で 1 秒 16000 バイト）で 35 秒分を送る
+		let fakeNow = 1_000_000;
+		const harness = await startServer({ localPlayback: true, ingest: true, handoff: true, now: () => fakeNow });
+		try {
+			const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked', 'X-Para-Gain-Key': 'aivis:model:default' });
+			request.write(mp3(16_000));
+			const head = await response;
+			for (let second = 1; second < 35; second++) {
+				fakeNow += 1_000;
+				request.write(mp3(16_000));
+				await new Promise(resolve => setTimeout(resolve, 2));
+			}
+			fakeNow += 1_000;
+			request.end();
+			const body = JSON.parse(await head.body);
+			const result = await harness.resultReady;
+			assert.deepStrictEqual({
+				requestTimeout: PARADIS_MCP_REQUEST_TIMEOUT_MS >= 130_000,
+				body,
+				outcome: result.outcome,
+				open: harness.events[0],
+				ended: harness.streams[0].events.at(-1),
+				bytes: harness.streams[0].events.filter(event => event.startsWith('write:')).reduce((sum, event) => sum + Number(event.slice(6)), 0),
+			}, {
+				requestTimeout: true,
+				body: { localPlayback: true },
+				outcome: 'played-locally',
+				open: 'open:normal:aivis:model:default',
+				ended: 'end',
+				bytes: 35 * 16_000,
+			});
+		} finally {
+			await harness.close();
+		}
+	});
+
+	test('the other routes keep the 30-second limit for receiving a request body', () => {
+		const clock = sinon.useFakeTimers();
+		try {
+			const make = () => {
+				const req = Object.assign(new EventEmitter(), { complete: false, destroyed: false, destroy() { this.destroyed = true; } });
+				const res = Object.assign(new EventEmitter(), { headersSent: false, writableEnded: false, status: 0, writeHead(status: number) { this.status = status; this.headersSent = true; }, end() { this.writableEnded = true; } });
+				return { req, res };
+			};
+			const slow = make();
+			paradisArmRequestBodyTimeout(slow.req as unknown as http.IncomingMessage, slow.res as unknown as http.ServerResponse);
+			const finished = make();
+			paradisArmRequestBodyTimeout(finished.req as unknown as http.IncomingMessage, finished.res as unknown as http.ServerResponse);
+			finished.req.complete = true;
+			finished.res.emit('finish');
+			clock.tick(29_999);
+			const before = slow.req.destroyed;
+			clock.tick(1);
+			assert.deepStrictEqual({ before, slow: { destroyed: slow.req.destroyed, status: slow.res.status }, finished: finished.req.destroyed }, {
+				before: false,
+				slow: { destroyed: true, status: 408 },
+				finished: false,
+			});
+		} finally {
+			clock.restore();
+		}
+	});
+
+	test('cuts off a Content-Length request that stops sending with a 4xx before closing', async () => {
+		const harness = await startServer({ localPlayback: true, ingest: true, limits: { slowArrivalMs: 400 } });
+		try {
+			const { request, response } = openRequest(harness.url, { 'Content-Length': 100_000 });
+			request.on('error', () => { });
+			request.write(mp3(418));
+			const head = await response;
+			await harness.resultReady;
+			assert.deepStrictEqual({ status: head.status, stream: harness.streams[0].events }, { status: 408, stream: ['write:418', 'abort:slow-arrival'] });
+		} finally {
+			await harness.close();
+		}
 	});
 });

@@ -55,6 +55,7 @@ import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_HTTP_PREFI
 import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { ParadisLocalVoicePlayer } from './paradisLocalVoicePlayer.js';
 import { paradisReceiveRemoteVoice } from './paradisRemoteVoiceIngress.js';
+import { paradisArmRequestBodyTimeout, paradisConfigureMcpHttpServer } from './paradisHttpRequestTimeouts.js';
 import { IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoiceIngest.js';
 import { PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING, PARADIS_REMOTE_VOICE_STREAM_INGRESS, paradisRemoteVoiceLocalPlaybackEnabled } from '../common/paradisRemoteVoice.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
@@ -623,7 +624,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		args?: NativeParsedArgs,
 		private readonly publishMobileVoiceClip?: (audio: Uint8Array) => void,
 		/** 手元の aivis-mcp の `--ingest` と afplay で鳴らす口（通知の読み上げと同じ列）。 */
-		private readonly localVoiceOutput?: IParadisLocalVoiceOutput,
+		private readonly localVoiceOutput?: IParadisLocalVoiceOutput & { readonly shellEnv?: ParadisCachedShellEnv },
 	) {
 		super();
 		this._portFilePath = join(this._userDataPath, PARADIS_MCP_PORT_FILE_NAME);
@@ -694,7 +695,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		});
 		// エージェントCLI (Claude Code / Codex) の通知hookを冪等に自動設置する
 		// (Superset の setupAgentHooks 相当。失敗しても起動は妨げない)。
-		const cachedShellEnv = new ParadisCachedShellEnv(
+		// ログインシェルの解決は通知（aivis-mcp --ingest）と 1 本を共有する
+		const cachedShellEnv = localVoiceOutput?.shellEnv ?? new ParadisCachedShellEnv(
 			logService,
 			'ParadisAgentHooks',
 			createParadisShellEnvResolver(logService, configurationService, args),
@@ -2250,13 +2252,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._settleUnexpectedRequestError(res, error);
 			});
 		});
-		server.maxConnections = 256;
-		server.maxHeadersCount = 100;
-		server.maxRequestsPerSocket = 100;
-		server.headersTimeout = 10_000;
-		server.requestTimeout = 30_000;
-		server.keepAliveTimeout = 5_000;
-		server.timeout = 300_000;
+		// requestTimeout は音声取込の 120 秒に合わせて 130 秒。ほかの経路の 30 秒は _handleRequest で経路ごとに掛ける
+		paradisConfigureMcpHttpServer(server);
 		// CDPゲートウェイのWebSocket upgrade（/cdp/devtools/* および /devtools/*）
 		server.on('upgrade', (req, socket, head) => {
 			void this._cdpGateway.handleUpgrade(req, socket, head);
@@ -2361,6 +2358,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._sendIngressRejected(res);
 			return;
 		}
+		// 音声取込（自前の 120 秒・最初の音・届く速さで縛る）以外は、本文を受け取りきるまで以前と同じ 30 秒で縛る
+		if (req.url !== '/paradis-mcp/mobile-voice') {
+			paradisArmRequestBodyTimeout(req, res);
+		}
 		if (req.method === 'GET' && req.url === PARADIS_MCP_HEALTH_PATH) {
 			const body = JSON.stringify({
 				protocolVersion: PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION,
@@ -2395,6 +2396,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._handleScreenshotFetch(req, res);
 		}
 		if (req.method === 'POST' && req.url === '/paradis-mcp/mobile-voice') {
+			// 自前の 120 秒・最初の音・届く速さで縛る（paradisRemoteVoiceIngress）
 			return this._handleMobileVoiceIngress(req, res);
 		}
 		// Claude Code の mod（resources/paradis/claude-mod）。hook と同じくペイントークンで認証する。

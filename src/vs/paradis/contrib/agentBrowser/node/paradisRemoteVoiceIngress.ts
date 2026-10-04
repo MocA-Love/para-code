@@ -22,7 +22,7 @@
 import type * as http from 'http';
 import { IParadisIngestStream, IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoiceIngest.js';
 import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
-import { PARADIS_REMOTE_VOICE_ACCEPTED_HEADER, paradisLooksLikeMp3, paradisMp3Bitrate } from '../common/paradisRemoteVoice.js';
+import { PARADIS_REMOTE_VOICE_ACCEPTED_HEADER, PARADIS_REMOTE_VOICE_GAIN_KEY_HEADER, paradisLooksLikeMp3, paradisMp3Bitrate, paradisRemoteVoiceGainKey } from '../common/paradisRemoteVoice.js';
 import { IParadisLocalVoicePlayOptions } from './paradisLocalVoicePlayer.js';
 
 /** 1 発話の上限。 */
@@ -90,6 +90,15 @@ function statusFor(failure: Failure): number {
 export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: http.ServerResponse, request: IParadisRemoteVoiceRequest, deps: IParadisRemoteVoiceIngressDeps): Promise<IParadisRemoteVoiceResult> {
 	const now = deps.now ?? Date.now;
 	const chunked = req.headers['content-length'] === undefined;
+	// 接続先の aivis-mcp が名乗る声とモデル（音量の表の鍵）。無ければ表の補正は 0dB
+	const gainKey = paradisRemoteVoiceGainKey(req.headers[PARADIS_REMOTE_VOICE_GAIN_KEY_HEADER.toLowerCase()]);
+	// 引き受けた声を `--play-audio`、それも駄目なら afplay で Para Code が鳴らす
+	const playLocalChain = async (audio: Buffer) => {
+		const queued = await deps.playViaPlayAudio(audio, { signal: new AbortController().signal, deadline: now() + request.enqueueDeadlineMs }).catch(() => false);
+		if (!queued) {
+			await deps.voiceOutput?.playFallback(audio, gainKey);
+		}
+	};
 	const declaredLength = chunked ? undefined : Number(req.headers['content-length']);
 	if (declaredLength !== undefined && (!Number.isSafeInteger(declaredLength) || declaredLength <= 0 || declaredLength > PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES)) {
 		res.writeHead(413, JSON_HEADERS);
@@ -117,6 +126,11 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 	let sink: IParadisIngestStream | undefined;
 	const stop = (reason: Failure) => {
 		failure ??= reason;
+		// 応答のヘッダーを送る前（Content-Length の旧方式）なら、理由の分かる 4xx を返してから切る
+		if (!res.headersSent && !res.writableEnded) {
+			res.writeHead(statusFor(reason), { ...JSON_HEADERS, Connection: 'close' });
+			res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
+		}
 		req.destroy();
 	};
 	const maxTimer = setTimeout(() => stop('max-duration'), deps.limits?.maxDurationMs ?? PARADIS_REMOTE_VOICE_MAX_DURATION_MS);
@@ -167,7 +181,7 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 				}
 				headChecked = true;
 				if (wantLocal && deps.voiceOutput) {
-					sink = await deps.voiceOutput.openIngest({ priority: 'normal' }, INGEST_READY_WAIT_MS);
+					sink = await deps.voiceOutput.openIngest(gainKey ? { priority: 'normal', gainKey } : { priority: 'normal' }, INGEST_READY_WAIT_MS);
 				}
 				for (const pending of chunks) {
 					await sink?.write(pending);
@@ -194,20 +208,31 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 	}
 	deps.onBodyReceived();
 
+	// 届くのが遅い・長すぎる声は、引き受けた以上、受け取った分を鳴らす（壊れた・大きすぎる本文だけ捨てる）
+	const playReceived = failure !== undefined && chunked && wantLocal && headChecked && (failure === 'slow-arrival' || failure === 'max-duration');
 	if (failure !== undefined) {
-		// 鳴り始める前なら worker は捨て、鳴り始めた後なら届いた分を鳴らし切る
-		void sink?.abort(failure === 'closed' ? 'ssh-closed' : failure);
+		if (playReceived && sink) {
+			// worker は届いた分で終える
+			void sink.end();
+		} else {
+			// 鳴り始める前なら worker は捨て、鳴り始めた後なら届いた分を鳴らし切る
+			void sink?.abort(failure === 'closed' ? 'ssh-closed' : failure);
+		}
+		const received = playReceived && !sink ? Buffer.concat(chunks, size) : undefined;
 		chunks.length = 0;
 		if (failure !== 'closed' && !res.writableEnded) {
 			if (!res.headersSent) {
 				res.writeHead(statusFor(failure), JSON_HEADERS);
 				res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
 			} else {
-				res.end(JSON.stringify({ localPlayback: false }));
+				res.end(JSON.stringify({ localPlayback: playReceived }));
 			}
 		}
 		if (!req.destroyed && failure !== 'closed') {
 			req.destroy();
+		}
+		if (playReceived) {
+			return { outcome: 'played-locally', localPlayback: received ? playLocalChain(received) : undefined };
 		}
 		return { outcome: failure === 'closed' ? 'aborted' : 'rejected' };
 	}
@@ -225,7 +250,6 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 		if (!wantLocal) {
 			return { outcome: 'declined' };
 		}
-		const voiceOutput = deps.voiceOutput;
 		const ingestSink = sink;
 		let audio: Buffer | undefined = fullAudio;
 		// worker が鳴らし始めたら、鳴らし直し用の控えは要らない
@@ -239,13 +263,8 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 			}
 			const pending = audio;
 			audio = undefined;
-			if (!pending) {
-				return;
-			}
-			// 引き受けたので、`--play-audio`、それも駄目なら afplay で Para Code が鳴らす
-			const queued = await deps.playViaPlayAudio(pending, { signal: new AbortController().signal, deadline: now() + request.enqueueDeadlineMs }).catch(() => false);
-			if (!queued) {
-				await voiceOutput?.playFallback(pending);
+			if (pending) {
+				await playLocalChain(pending);
 			}
 		})();
 		return { outcome: 'played-locally', localPlayback };
@@ -274,10 +293,7 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 					const withdrawn = pending;
 					pending = undefined;
 					if (withdrawn && terminal.status === 'failed' && terminal.withdrawn === true) {
-						const queued = await deps.playViaPlayAudio(withdrawn, { signal: new AbortController().signal, deadline: now() + request.enqueueDeadlineMs }).catch(() => false);
-						if (!queued) {
-							await deps.voiceOutput?.playFallback(withdrawn);
-						}
+						await playLocalChain(withdrawn);
 					}
 				});
 			}

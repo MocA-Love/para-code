@@ -42,10 +42,16 @@ class FakeIngestChild implements IParadisIngestChild {
 	readonly stdout = new PassThrough();
 	private readonly exitListeners: Array<(code: number | null) => void> = [];
 	killed = false;
+	/** 標準入力を閉じられた（止めるよう頼まれた）。 */
+	ended = false;
 
 	constructor() {
 		this.stdin = new Writable({
 			highWaterMark: 1,
+			final: callback => {
+				this.ended = true;
+				callback();
+			},
 			write: (chunk: Buffer, _encoding, callback) => {
 				this.written.push(chunk);
 				// 生きている確認には答える
@@ -109,7 +115,7 @@ suite('ParadisAivisIngestClient', () => {
 
 	teardown(() => sinon.restore());
 
-	function createClient(options: { version?: string; lockAlive?: boolean } = {}) {
+	function createClient(options: { version?: string; lock?: 'alive' | 'gone' | 'unknown' } = {}) {
 		const children: FakeIngestChild[] = [];
 		const spawned: string[][] = [];
 		let version = options.version ?? 'aivis-mcp v2.5.0\n';
@@ -118,7 +124,7 @@ suite('ParadisAivisIngestClient', () => {
 			preludeDirs: () => ['/sounds'],
 			logService: new NullLogService(),
 			probeVersion: async () => version,
-			probeWorkerLock: async () => options.lockAlive ?? false,
+			probeWorkerLock: async () => options.lock === 'alive' ? true : options.lock === 'unknown' ? undefined : false,
 			spawnIngest: args => {
 				spawned.push([...args]);
 				const child = new FakeIngestChild();
@@ -228,14 +234,15 @@ suite('ParadisAivisIngestClient', () => {
 		child.releaseWrites();
 		await clock.tickAsync(0);
 		assert.deepStrictEqual({ before, after: { firstDone, secondDone } }, {
-			before: { firstDone: false, secondDone: false, writes: before.writes },
+			// 1 つ目は標準入力へ渡した時点で終わり、2 つ目は drain を待つ
+			before: { firstDone: true, secondDone: false, writes: before.writes },
 			after: { firstDone: true, secondDone: true },
 		});
 		assert.ok(before.writes >= 3, 'the first audio frame was written but the second one waited');
 	});
 
 	test('restarts after 1, 2, 4, 8 seconds and switches to afplay after 5 failures when the worker lock is gone', async () => {
-		const context = createClient({ lockAlive: false });
+		const context = createClient({ lock: 'gone' });
 		context.client.start();
 		await clock.tickAsync(0);
 		const spawnTimes: number[] = [Date.now()];
@@ -261,7 +268,7 @@ suite('ParadisAivisIngestClient', () => {
 	});
 
 	test('keeps restarting instead of switching to afplay while the worker lock is alive', async () => {
-		const context = createClient({ lockAlive: true });
+		const context = createClient({ lock: 'alive' });
 		context.client.start();
 		await clock.tickAsync(0);
 		for (let i = 0; i < 5; i++) {
@@ -296,14 +303,122 @@ suite('ParadisAivisIngestClient', () => {
 		});
 	});
 
-	test('restarts --ingest when the installed aivis-mcp version changes', async () => {
+	test('on a version change, waits for open streams, starts the new child and stops the old one only after the new hello', async () => {
 		const context = createClient();
 		const child = await startReady(context);
+		context.client.setHold('voice-input', true);
+		const stream = context.client.open({ priority: 'normal' })!;
 		context.setVersion('aivis-mcp v2.5.1');
 		await clock.tickAsync(10 * 60_000);
+		const whileBusy = context.children.length;
+		await stream.end();
+		await clock.tickAsync(1_000);
+		const next = context.children.at(-1)!;
+		const oldStoppedBeforeHello = child.ended;
+		next.say({ type: 'hello', protocol: 1, version: '2.5.1' });
+		await clock.tickAsync(0);
+		const oldStoppedAfterHello = child.ended;
 		child.exit(0);
 		await clock.tickAsync(0);
-		assert.deepStrictEqual({ spawned: context.children.length, state: context.client.state }, { spawned: 2, state: 'starting' });
+		assert.deepStrictEqual({
+			whileBusy,
+			spawned: context.children.length,
+			oldStoppedBeforeHello,
+			oldStoppedAfterHello,
+			state: context.client.state,
+			// 古い子が終わってから hold を掛け直す（古い子は終わるときに同じ持ち主の hold を外す）
+			newHolds: next.controls().filter(control => control.type === 'hold').length,
+		}, {
+			whileBusy: 1,
+			spawned: 2,
+			oldStoppedBeforeHello: false,
+			oldStoppedAfterHello: true,
+			state: 'ready',
+			newHolds: 2,
+		});
+	});
+
+	test('stops using --ingest when aivis-mcp is downgraded to 2.4', async () => {
+		const context = createClient();
+		const child = await startReady(context);
+		context.setVersion('aivis-mcp v2.4.3');
+		await clock.tickAsync(10 * 60_000);
+		child.exit(0);
+		await clock.tickAsync(10_000);
+		assert.deepStrictEqual({ state: context.client.state, spawned: context.children.length, stopped: child.ended }, { state: 'unsupported', spawned: 1, stopped: true });
+	});
+
+	test('does not kill the child for a ping stuck behind backpressure, and sends control frames before queued audio', async () => {
+		const context = createClient();
+		const child = await startReady(context);
+		const stream = context.client.open({ priority: 'normal' })!;
+		await clock.tickAsync(0);
+		child.holdWrites = true;
+		void stream.write(new Uint8Array(10));
+		void stream.write(new Uint8Array(10));
+		void stream.write(new Uint8Array(10));
+		await clock.tickAsync(0);
+		context.client.setHold('voice-input', true);
+		// 30 秒の確認の時刻を過ぎても、書けずにいる間は返事を待つ時計を掛けない
+		await clock.tickAsync(60_000);
+		const killedWhileStuck = child.killed;
+		const before = child.written.length;
+		child.releaseWrites();
+		await clock.tickAsync(0);
+		child.releaseWrites();
+		await clock.tickAsync(0);
+		const frames = readFrames(Buffer.concat(child.written.slice(before)));
+		const firstAudio = frames.findIndex(frame => frame.audio);
+		assert.deepStrictEqual({
+			killedWhileStuck,
+			// 書けずにいた音声の後ろに並ばず、hold と ping が先に出る
+			controlFirst: [...new Set(frames.slice(0, firstAudio).map(frame => frame.control?.type))].sort(),
+			audioAfter: frames.slice(firstAudio).filter(frame => frame.audio).length,
+		}, { killedWhileStuck: false, controlFirst: ['hold', 'ping'], audioAfter: 2 });
+	});
+
+	test('asks the next child to withdraw jobs queued before the crash and reports only removed ones as withdrawn', async () => {
+		const context = createClient();
+		const child = await startReady(context);
+		const first = context.client.open({ priority: 'normal' })!;
+		const second = context.client.open({ priority: 'normal' })!;
+		const playing = context.client.open({ priority: 'normal' })!;
+		for (const stream of [first, second, playing]) {
+			child.say({ type: 'status', id: stream.id, status: 'queued' });
+		}
+		child.say({ type: 'status', id: playing.id, status: 'playing' });
+		await clock.tickAsync(0);
+		child.exit(1);
+		await clock.tickAsync(1_000);
+		const next = context.children.at(-1)!;
+		next.say({ type: 'hello', protocol: 1, version: '2.5.0' });
+		await clock.tickAsync(0);
+		const withdraws = next.controls().filter(control => control.type === 'withdraw').map(control => control.id);
+		next.say({ type: 'withdrawn', id: first.id, removed: true });
+		next.say({ type: 'withdrawn', id: second.id, removed: false });
+		await clock.tickAsync(0);
+		assert.deepStrictEqual({
+			withdraws: withdraws.map(id => id === first.id ? 'first' : id === second.id ? 'second' : 'other'),
+			first: await first.finished,
+			second: await second.finished,
+			playing: await playing.finished,
+		}, {
+			withdraws: ['first', 'second'],
+			first: { status: 'failed', reason: 'ingest-exited', withdrawn: true },
+			second: { status: 'failed', reason: 'ingest-exited' },
+			playing: { status: 'failed', reason: 'ingest-exited' },
+		});
+	});
+
+	test('does not switch to afplay when the worker lock cannot be checked', async () => {
+		const context = createClient({ lock: 'unknown' });
+		context.client.start();
+		await clock.tickAsync(0);
+		for (let i = 0; i < 5; i++) {
+			context.children.at(-1)!.exit(1);
+			await clock.tickAsync(8_000);
+		}
+		assert.strictEqual(context.client.state, 'starting');
 	});
 
 	test('stops handing off after the worker fails three times in a row', async () => {

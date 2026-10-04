@@ -8,8 +8,9 @@
 
 // 通知の読み上げ 1 件を `aivis-mcp --ingest` へ渡す（設計 3.3）。ジョブを先に積み（合成の最初の音を待つ間に
 // worker が着信音を鳴らす）、合成を受け取りながら流す。`queued` が返ったら手放す。`queued` の前に失敗したら、
-// 受け取った音声を返して Para Code が afplay で鳴らす。worker が取り出さないまま lock が切れて取り下げられた
-// （worker-unavailable、withdrawn）件だけは、手放した後でも Para Code が鳴らしてよい。
+// 受け取った音声を返して Para Code が afplay で鳴らす。手放した後でも Para Code が鳴らすのは、worker から
+// 取り下げられた（withdrawn）件と、worker が最初の音を待ちきれずに諦めた（first-audio-timeout）のに、音声の枠を
+// 1 つも書いていなかった件だけ（どちらも worker は何も鳴らしていない）。
 
 import { IParadisIngestOpenOptions, IParadisIngestStream } from '../common/paradisVoiceIngest.js';
 import { AivisError, AivisHandoffResult, AivisStreamingSynthesis } from './paradisAudioScheduler.js';
@@ -27,13 +28,13 @@ export interface IParadisVoiceIngestPort {
 export interface IParadisVoiceHandoffOptions {
 	readonly ingest: IParadisVoiceIngestPort;
 	readonly open: IParadisIngestOpenOptions;
-	/** 1 から数える再試行の回数。2 回目以降は着信音を付けない（合成を作り直すジョブ）。 */
-	readonly attempt: number;
 	readonly synthesize: () => Promise<AivisStreamingSynthesis>;
+	/** worker が鳴らし始めた（着信音を含む）。 */
+	readonly onStarted?: () => void;
 	/** 合成を全部受け取った（モバイルへ 1 本で送る）。手放した件だけ呼ぶ（afplay で鳴らす件は鳴らす側が送る）。 */
 	readonly onComplete?: (audio: Buffer) => void;
-	/** 手放した後に worker から取り下げられた（まだ鳴っていない）。Para Code が自分で鳴らす。 */
-	readonly onWithdrawn: (audio: Buffer) => void;
+	/** 手放した後に、worker が何も鳴らさなかったと分かった。Para Code が自分で鳴らす。 */
+	readonly onPlayLocally: (audio: Buffer) => void;
 	readonly readyWaitMs?: number;
 }
 
@@ -42,10 +43,12 @@ export async function paradisHandoffVoice(options: IParadisVoiceHandoffOptions):
 	if (!(await options.ingest.whenReady(options.readyWaitMs ?? PARADIS_HANDOFF_READY_WAIT_MS))) {
 		return { kind: 'fallback' };
 	}
-	const open: IParadisIngestOpenOptions = options.attempt > 1 && options.open.prelude ? { ...options.open, prelude: undefined } : options.open;
-	const stream = options.ingest.open(open);
+	const stream = options.ingest.open(options.open);
 	if (!stream) {
 		return { kind: 'fallback' };
+	}
+	if (options.onStarted) {
+		stream.onDidStart(options.onStarted);
 	}
 	let synthesis: AivisStreamingSynthesis;
 	try {
@@ -57,9 +60,12 @@ export async function paradisHandoffVoice(options: IParadisVoiceHandoffOptions):
 
 	const chunks: Buffer[] = [];
 	let bytes = 0;
+	let written = 0;
+	// 終わりの知らせが来た時点で、音声の枠を書いていたか
+	let wroteBeforeFinish: boolean | undefined;
+	void stream.finished.then(() => { wroteBeforeFinish = written > 0; });
 	// 合成を受け取りながら流す。受け取った分は、渡せなかったときと取り下げられたときのために控える
 	const pumped = (async (): Promise<boolean> => {
-		let written = 0;
 		try {
 			for await (const chunk of synthesis.body) {
 				bytes += chunk.byteLength;
@@ -98,8 +104,9 @@ export async function paradisHandoffVoice(options: IParadisVoiceHandoffOptions):
 			options.onComplete?.(audio);
 		}
 		const terminal = await stream.finished;
-		if (audio && terminal.status === 'failed' && terminal.withdrawn === true) {
-			options.onWithdrawn(audio);
+		const nothingPlayed = terminal.status === 'failed' && (terminal.withdrawn === true || (terminal.reason === 'first-audio-timeout' && wroteBeforeFinish === false));
+		if (audio && nothingPlayed) {
+			options.onPlayLocally(audio);
 		}
 	})();
 	return { kind: 'released', ...(synthesis.rateLimit ? { rateLimit: synthesis.rateLimit } : {}) };

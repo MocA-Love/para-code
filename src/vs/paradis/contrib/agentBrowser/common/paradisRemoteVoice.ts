@@ -86,3 +86,14 @@ export function paradisMp3Bitrate(audio: Uint8Array): { readonly kbps: number; r
 	const kbps = (versionBits === 0x03 ? MPEG1_LAYER3_KBPS : MPEG2_LAYER3_KBPS)[bitrateIndex];
 	return kbps ? { kbps, offset } : undefined;
 }
+
+/** 接続先の aivis-mcp が、合成した声とモデルを名乗る要求のヘッダー（`provider:voice:model`、音量の表の鍵）。 */
+export const PARADIS_REMOTE_VOICE_GAIN_KEY_HEADER = 'X-Para-Gain-Key';
+
+/** 要求のヘッダーの値を音量の表の鍵として読む。形が違えば undefined（表の補正は 0dB）。 */
+export function paradisRemoteVoiceGainKey(value: string | string[] | undefined): string | undefined {
+	if (typeof value !== 'string' || value.length > 300) {
+		return undefined;
+	}
+	return /^[a-z][a-z0-9-]{0,31}:[A-Za-z0-9_.-]{1,128}:[A-Za-z0-9_.-]{1,128}$/.test(value) ? value : undefined;
+}
