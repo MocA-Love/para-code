@@ -106,6 +106,12 @@ class TestSettingsService extends Disposable implements IParadisNotificationsSet
 		formatPermission: '',
 		volume: 100,
 		speakingRate: 1,
+		engine: 'aivis',
+		elevenLabsApiKey: '',
+		elevenLabsVoiceId: '',
+		elevenLabsModelId: '',
+		elevenLabsSpeed: 1,
+		elevenLabsDictionaryId: '',
 	};
 
 	fireAivisChange(patch: Partial<IParadisAivisSettings> = {}): void {
@@ -131,6 +137,7 @@ class TestSettingsService extends Disposable implements IParadisNotificationsSet
 	setDoNotDisturb(_enabled: boolean, _until: number | undefined): void { }
 	getAivisSettings(): IParadisAivisSettings { return this.aivisSettings; }
 	setAivisSettings(patch: Partial<IParadisAivisSettings>): void { this.fireAivisChange(patch); }
+	whenApiKeysLoaded(): Promise<void> { return Promise.resolve(); }
 	getCustomAivisModelPresets(): readonly IParadisAivisModelPreset[] { return []; }
 	addCustomAivisModelPreset(_preset: IParadisAivisModelPreset): void { }
 	removeCustomAivisModelPreset(_uuid: string): void { }

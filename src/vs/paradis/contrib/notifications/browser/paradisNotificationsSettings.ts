@@ -9,12 +9,15 @@
 // 通知サウンド + Aivis読み上げ設定の永続化サービス（IStorageService、APPLICATIONスコープ）。
 // キーは `paradis.notifications.*` プレフィックスで統一する。APIキー等の機微情報を含むため
 // StorageTarget.MACHINE を使い、Settings Sync による同期対象から外す。
+// 読み上げの API キー（Aivis・ElevenLabs）は ISecretStorageService に置く。secret storage が
+// 暗号化して保存できない環境（in-memory にしかならない場合）だけ、今までどおり JSON に残す。
 
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { ISecretStorageService } from '../../../../platform/secrets/common/secrets.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import {
 	DEFAULT_RINGTONE_ID,
@@ -22,7 +25,19 @@ import {
 	PARADIS_AIVIS_DEFAULT_FORMAT,
 	PARADIS_AIVIS_DEFAULT_FORMAT_PERMISSION,
 } from '../common/paradisNotifications.js';
+import {
+	paradisClampElevenLabsSpeed,
+	paradisNormalizeVoiceEngine,
+	paradisPlanApiKeyMigration,
+	ParadisVoiceEngine,
+	PARADIS_ELEVENLABS_DEFAULT_MODEL_ID,
+	PARADIS_ELEVENLABS_SPEED_DEFAULT,
+} from '../common/paradisElevenLabs.js';
 
+/**
+ * 音声報告（読み上げ）の設定。名前は Aivis 専用だった頃のままだが、ElevenLabs の設定も同じ JSON に持つ。
+ * 有効化・音量・文面は2つのエンジンで共通。API キーと声はエンジンごとに別々に覚え、切り替えても消えない。
+ */
 export interface IParadisAivisSettings {
 	enabled: boolean;
 	apiKey: string;
@@ -34,6 +49,15 @@ export interface IParadisAivisSettings {
 	volume: number;
 	/** 0.5-2.0 */
 	speakingRate: number;
+	/** 読み上げエンジン。既定は Aivis。 */
+	engine: ParadisVoiceEngine;
+	elevenLabsApiKey: string;
+	elevenLabsVoiceId: string;
+	elevenLabsModelId: string;
+	/** 0.7-1.2（ElevenLabs の voice_settings.speed） */
+	elevenLabsSpeed: number;
+	/** 適用する ElevenLabs の発音辞書の ID。空なら辞書なし。 */
+	elevenLabsDictionaryId: string;
 }
 
 const DEFAULT_AIVIS_SETTINGS: IParadisAivisSettings = Object.freeze({
@@ -45,7 +69,23 @@ const DEFAULT_AIVIS_SETTINGS: IParadisAivisSettings = Object.freeze({
 	formatPermission: PARADIS_AIVIS_DEFAULT_FORMAT_PERMISSION,
 	volume: 100,
 	speakingRate: 1.0,
+	engine: 'aivis',
+	elevenLabsApiKey: '',
+	elevenLabsVoiceId: '',
+	elevenLabsModelId: PARADIS_ELEVENLABS_DEFAULT_MODEL_ID,
+	elevenLabsSpeed: PARADIS_ELEVENLABS_SPEED_DEFAULT,
+	elevenLabsDictionaryId: '',
 });
+
+/** API キーを入れる設定のフィールド。secret storage のキーと対にする。 */
+type ParadisApiKeyField = 'apiKey' | 'elevenLabsApiKey';
+
+const API_KEY_SECRETS: Readonly<Record<ParadisApiKeyField, string>> = Object.freeze({
+	apiKey: 'paradis.notifications.aivis.apiKey',
+	elevenLabsApiKey: 'paradis.notifications.elevenLabs.apiKey',
+});
+
+const API_KEY_FIELDS: readonly ParadisApiKeyField[] = ['apiKey', 'elevenLabsApiKey'];
 
 /** おやすみモードの状態。`until` は解除予定時刻（epoch ms、undefined は「自分でオフにするまで」）。 */
 export interface IParadisDoNotDisturbState {
@@ -118,6 +158,12 @@ export interface IParadisNotificationsSettingsService {
 	getAivisSettings(): IParadisAivisSettings;
 	setAivisSettings(patch: Partial<IParadisAivisSettings>): void;
 
+	/**
+	 * API キーを secret storage から読み終えたら解決する。起動直後の通知で読み上げのキーが
+	 * まだ空に見えるのを避けるため、読み上げの直前に待つ。読み込みに失敗しても解決する。
+	 */
+	whenApiKeysLoaded(): Promise<void>;
+
 	/** ユーザーが追加したAivisモデルプリセット（ビルトイン9種とは別に保持）。 */
 	getCustomAivisModelPresets(): readonly IParadisAivisModelPreset[];
 	addCustomAivisModelPreset(preset: IParadisAivisModelPreset): void;
@@ -159,10 +205,27 @@ export class ParadisNotificationsSettingsService extends Disposable implements I
 		0,
 	));
 
+	/** secret storage から読んだ（または画面で入れた）API キー。JSON の値より優先する。 */
+	private readonly _apiKeyOverrides = new Map<ParadisApiKeyField, string>();
+	/** secret storage が暗号化して保存できるか。読み込みが終わるまでは undefined。 */
+	private _secretsPersisted: boolean | undefined;
+	/** secret storage へ移せず、JSON に置いたままにしているキー。JSON から消さない。 */
+	private readonly _apiKeysKeptInJson = new Set<ParadisApiKeyField>();
+	private readonly _apiKeysLoaded: Promise<void>;
+
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
+		@ISecretStorageService private readonly secretStorageService: ISecretStorageService,
 	) {
 		super();
+
+		this._apiKeysLoaded = this._loadApiKeys().catch(() => { /* 読めなければ JSON の値のまま動く */ });
+		this._register(this.secretStorageService.onDidChangeSecret(key => {
+			const field = API_KEY_FIELDS.find(candidate => API_KEY_SECRETS[candidate] === key);
+			if (field && this._secretsPersisted) {
+				void this._reloadApiKey(field);
+			}
+		}));
 
 		for (const key of [KEY_DO_NOT_DISTURB, KEY_DO_NOT_DISTURB_UNTIL]) {
 			this.storageService.onDidChangeValue(StorageScope.APPLICATION, key, this._store)(event => {
@@ -270,22 +333,163 @@ export class ParadisNotificationsSettingsService extends Disposable implements I
 		this._onDidChangeDoNotDisturb.fire({ external: false });
 	}
 
-	getAivisSettings(): IParadisAivisSettings {
+	/** JSON に保存されている値（API キーの上書きを当てる前）。 */
+	private _readStoredAivisSettings(): Partial<IParadisAivisSettings> {
 		const raw = this.storageService.get(KEY_AIVIS, StorageScope.APPLICATION);
 		if (!raw) {
-			return { ...DEFAULT_AIVIS_SETTINGS };
+			return {};
 		}
 		try {
-			const parsed = JSON.parse(raw) as Partial<IParadisAivisSettings>;
-			return { ...DEFAULT_AIVIS_SETTINGS, ...parsed };
+			const parsed = JSON.parse(raw);
+			return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Partial<IParadisAivisSettings> : {};
 		} catch {
-			return { ...DEFAULT_AIVIS_SETTINGS };
+			return {};
 		}
 	}
 
+	private _writeStoredAivisSettings(value: Partial<IParadisAivisSettings>): void {
+		this.storageService.store(KEY_AIVIS, JSON.stringify(value), StorageScope.APPLICATION, StorageTarget.MACHINE);
+	}
+
+	getAivisSettings(): IParadisAivisSettings {
+		const settings: IParadisAivisSettings = { ...DEFAULT_AIVIS_SETTINGS, ...this._readStoredAivisSettings() };
+		for (const [field, value] of this._apiKeyOverrides) {
+			settings[field] = value;
+		}
+		settings.engine = paradisNormalizeVoiceEngine(settings.engine);
+		settings.elevenLabsSpeed = paradisClampElevenLabsSpeed(settings.elevenLabsSpeed);
+		return settings;
+	}
+
 	setAivisSettings(patch: Partial<IParadisAivisSettings>): void {
-		const next = { ...this.getAivisSettings(), ...patch };
-		this.storageService.store(KEY_AIVIS, JSON.stringify(next), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		const next: Partial<IParadisAivisSettings> = { ...DEFAULT_AIVIS_SETTINGS, ...this._readStoredAivisSettings(), ...patch };
+		for (const field of API_KEY_FIELDS) {
+			const value = patch[field];
+			if (value !== undefined) {
+				this._apiKeyOverrides.set(field, value);
+				void this._persistApiKey(field, value);
+			}
+			if (this._apiKeysKeptInJson.has(field)) {
+				continue;
+			}
+			if (this._secretsPersisted === true || (this._secretsPersisted === undefined && value !== undefined)) {
+				// キーは secret storage に置く（書けなかったときは _persistApiKey が JSON に戻す）。
+				// 読み込み前に入れ直されたキーも、行き先が決まるまで JSON へは書かない。
+				// 読み込み前に他の項目だけを変えた場合は、移行前の JSON のキーを消さない。
+				delete next[field];
+			}
+		}
+		this._writeStoredAivisSettings(next);
+		this._onDidChange.fire('aivis');
+	}
+
+	whenApiKeysLoaded(): Promise<void> {
+		return this._apiKeysLoaded;
+	}
+
+	/**
+	 * 起動時に API キーを読み込み、JSON に平文で残っているキーを secret storage へ移す。
+	 * 移せなかったら JSON から消さない。
+	 */
+	private async _loadApiKeys(): Promise<void> {
+		const secrets = new Map<ParadisApiKeyField, string | undefined>();
+		for (const field of API_KEY_FIELDS) {
+			try {
+				secrets.set(field, await this.secretStorageService.get(API_KEY_SECRETS[field]));
+			} catch {
+				secrets.set(field, undefined);
+			}
+		}
+		// type は最初の get で決まる（それまでは 'unknown'）。移行が終わるまでは _secretsPersisted を
+		// 決めないでおき、その間の setAivisSettings が移行前の JSON のキーを消さないようにする。
+		const persisted = this.secretStorageService.type === 'persisted';
+
+		let changed = false;
+		const removeFromJson: ParadisApiKeyField[] = [];
+		for (const field of API_KEY_FIELDS) {
+			if (this._apiKeyOverrides.has(field)) {
+				continue; // 読み込み中に画面で入れ直された。その値を _persistApiKey が保存する
+			}
+			const stored = this._readStoredAivisSettings()[field];
+			const jsonKey = typeof stored === 'string' ? stored : undefined;
+			const plan = paradisPlanApiKeyMigration(jsonKey, secrets.get(field), persisted);
+			if (!persisted) {
+				continue; // 今までどおり JSON の値を使う
+			}
+			if (plan.writeSecret !== undefined) {
+				try {
+					await this.secretStorageService.set(API_KEY_SECRETS[field], plan.writeSecret);
+				} catch {
+					this._apiKeysKeptInJson.add(field);
+					continue; // 移せなかった。JSON のキーを使い続け、消さない
+				}
+			}
+			if (plan.use !== (jsonKey ?? '')) {
+				changed = true;
+			}
+			this._apiKeyOverrides.set(field, plan.use);
+			if (plan.removeFromJson) {
+				removeFromJson.push(field);
+			}
+		}
+		if (removeFromJson.length > 0) {
+			const stored = this._readStoredAivisSettings();
+			for (const field of removeFromJson) {
+				delete stored[field];
+			}
+			this._writeStoredAivisSettings(stored);
+		}
+		this._secretsPersisted = persisted;
+		if (changed) {
+			this._onDidChange.fire('aivis');
+		}
+	}
+
+	/** 画面で入れた API キーを保存する。secret storage に書けなければ JSON に戻す。 */
+	private async _persistApiKey(field: ParadisApiKeyField, value: string): Promise<void> {
+		await this._apiKeysLoaded;
+		if (this._apiKeyOverrides.get(field) !== value) {
+			return; // 後から別の値が入った。そちらの保存に任せる
+		}
+		if (this._secretsPersisted) {
+			try {
+				if (value) {
+					await this.secretStorageService.set(API_KEY_SECRETS[field], value);
+				} else {
+					await this.secretStorageService.delete(API_KEY_SECRETS[field]);
+				}
+				if (this._apiKeysKeptInJson.delete(field)) {
+					// 以前 JSON に残したキーは、secret storage に書けたので消す。
+					const stored = this._readStoredAivisSettings();
+					delete stored[field];
+					this._writeStoredAivisSettings(stored);
+				}
+				return;
+			} catch {
+				// 下で JSON に書く
+			}
+		}
+		if (this._secretsPersisted) {
+			this._apiKeysKeptInJson.add(field);
+		}
+		const stored = this._readStoredAivisSettings();
+		stored[field] = value;
+		this._writeStoredAivisSettings(stored);
+	}
+
+	/** 別のウィンドウが secret storage のキーを変えたときに読み直す。 */
+	private async _reloadApiKey(field: ParadisApiKeyField): Promise<void> {
+		let value: string | undefined;
+		try {
+			value = await this.secretStorageService.get(API_KEY_SECRETS[field]);
+		} catch {
+			return;
+		}
+		const next = value ?? '';
+		if (this._apiKeyOverrides.get(field) === next) {
+			return;
+		}
+		this._apiKeyOverrides.set(field, next);
 		this._onDidChange.fire('aivis');
 	}
 

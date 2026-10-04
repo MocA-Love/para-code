@@ -1001,3 +1001,56 @@
 	gap: 8px;
 	margin-top: 16px;
 }
+
+/* ---------- 音声報告: 読み上げエンジンの切り替え・ElevenLabs の声 ---------- */
+
+.paradis-notif-settings .pns-engine-switch {
+	display: flex;
+	gap: 4px;
+	flex-shrink: 0;
+}
+
+.paradis-notif-settings .pns-voice-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-basis: 100%;
+}
+
+.paradis-notif-settings .setting-row.pns-field-block .pns-voice-header .sr-label {
+	flex: 1;
+	flex-basis: auto;
+}
+
+.paradis-notif-settings .setting-row.pns-field-block .pns-voice-note {
+	flex-basis: 100%;
+}
+
+.paradis-notif-settings .pns-voice-tags {
+	display: flex;
+	gap: 4px;
+	min-height: 16px;
+}
+
+.paradis-notif-settings .pns-voice-tag {
+	font-size: 10px;
+	line-height: 14px;
+	padding: 0 6px;
+	border-radius: 8px;
+	border: 1px solid var(--vscode-focusBorder);
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-notif-settings .pns-quota-bar {
+	height: 6px;
+	border-radius: 3px;
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	overflow: hidden;
+	margin-bottom: 14px;
+}
+
+.paradis-notif-settings .pns-quota-fill {
+	height: 100%;
+	background: var(--vscode-charts-green, var(--vscode-button-background));
+}

@@ -32,6 +32,8 @@ import {
 	AudioScheduler,
 } from './paradisAudioScheduler.js';
 import { ParadisDictationHold } from '../common/paradisDictationHold.js';
+import { IParadisPlayElevenLabsRequest, paradisElevenLabsPlaybackVolume, paradisStripSsmlTags } from '../common/paradisElevenLabs.js';
+import { ParadisElevenLabsClient } from './paradisElevenLabsClient.js';
 import {
 	CUSTOM_RINGTONE_ID,
 	getRingtoneFilename,
@@ -196,6 +198,9 @@ export class ParadisNotificationsService extends Disposable {
 	/** 通知音と Aivis 再生の重なりを調停する単一スケジューラ。 */
 	private readonly _scheduler: AudioScheduler;
 
+	/** ElevenLabs API クライアント。読み上げエンジンが ElevenLabs のときの合成と、設定画面の各 API を受け持つ。 */
+	readonly elevenLabs: ParadisElevenLabsClient;
+
 	/** 再生中の音声プレイヤー（afplay 等）。音声入力が始まったら止める。 */
 	private readonly _audioPlayers = new Set<ChildProcess>();
 	/** 音声入力で止めたプレイヤー。その終了は失敗として扱わない。 */
@@ -208,6 +213,7 @@ export class ParadisNotificationsService extends Disposable {
 
 	constructor(private readonly logService: ILogService) {
 		super();
+		this.elevenLabs = new ParadisElevenLabsClient(logService);
 		this._scheduler = new AudioScheduler({
 			playRingtone: onComplete => {
 				const ringtone = this._currentRingtone;
@@ -303,6 +309,20 @@ export class ParadisNotificationsService extends Disposable {
 						// モバイルは副経路。購読側の不在・失敗に関係なく従来のPC再生を続ける。
 						this.publishMobileVoiceClip(audio);
 						return this._playAivisAudio(audio, aivis.volume ?? 100);
+					},
+				};
+				this._scheduler.enqueueAivis(runner, request.priority === 'high' ? 'high' : 'normal');
+			}
+		} else if (request.elevenLabs) {
+			// ElevenLabs でも同じスケジューラ（通知音の後・FIFO・一時停止・音声入力中の保留）に乗せる。
+			const elevenLabs = request.elevenLabs;
+			const text = paradisStripSsmlTags(elevenLabs.text);
+			if (text && elevenLabs.apiKey && elevenLabs.voiceId) {
+				const runner: AivisTaskRunner = {
+					synthesize: () => this.elevenLabs.synthesize({ ...elevenLabs, text }),
+					play: audio => {
+						this.publishMobileVoiceClip(audio);
+						return this._playAivisAudio(audio, paradisElevenLabsPlaybackVolume(elevenLabs.volume ?? 100));
 					},
 				};
 				this._scheduler.enqueueAivis(runner, request.priority === 'high' ? 'high' : 'normal');
@@ -1169,6 +1189,15 @@ export class ParadisNotificationsService extends Disposable {
 		}
 		const { audio } = await this._synthesizeAivis({ ...request, text });
 		await this._playAivisAudio(audio, request.volume ?? 100);
+	}
+
+	/** 設定画面の「テスト再生」の ElevenLabs 版。playAivis と同じくスケジューラを通さない。 */
+	async playElevenLabs(request: IParadisPlayElevenLabsRequest): Promise<void> {
+		if (!request.apiKey || !request.voiceId || !paradisStripSsmlTags(request.text)) {
+			return;
+		}
+		const { audio } = await this.elevenLabs.synthesize(request);
+		await this._playAivisAudio(audio, paradisElevenLabsPlaybackVolume(request.volume ?? 100));
 	}
 
 	/**

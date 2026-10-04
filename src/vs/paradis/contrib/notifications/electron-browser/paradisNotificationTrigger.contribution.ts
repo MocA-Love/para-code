@@ -275,15 +275,33 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		// （通知音 → 完了後に Aivis の順。重複通知音は捨て、Aivis は FIFO。ただし待機キューには
 		// 上限があり、超過した発話は捨てられる）。
 		const muted = this.settingsService.getSoundsMuted();
-		const request: { ringtone?: IParadisNotifyAudioRequest['ringtone']; aivis?: IParadisNotifyAudioRequest['aivis']; priority: IParadisNotifyAudioRequest['priority'] } = {
+		const request: { ringtone?: IParadisNotifyAudioRequest['ringtone']; aivis?: IParadisNotifyAudioRequest['aivis']; elevenLabs?: IParadisNotifyAudioRequest['elevenLabs']; priority: IParadisNotifyAudioRequest['priority'] } = {
 			priority: needsAction ? 'high' : 'normal',
 		};
 		if (!muted) {
 			request.ringtone = { id: this.settingsService.getSelectedRingtoneId(), volume: this.settingsService.getVolume() };
 		}
 
+		// 起動直後は API キーを secret storage から読み終えていないことがある。
+		await this.settingsService.whenApiKeysLoaded();
 		const aivis = this.settingsService.getAivisSettings();
-		if (aivis.enabled && aivis.apiKey && aivis.modelUuid) {
+		if (aivis.enabled && aivis.engine === 'elevenlabs') {
+			if (aivis.elevenLabsApiKey && aivis.elevenLabsVoiceId) {
+				const template = needsAction ? aivis.formatPermission : aivis.format;
+				const text = renderParadisAivisTemplate(template, placeholders).trim();
+				if (text) {
+					request.elevenLabs = {
+						apiKey: aivis.elevenLabsApiKey,
+						voiceId: aivis.elevenLabsVoiceId,
+						modelId: aivis.elevenLabsModelId,
+						text,
+						speed: aivis.elevenLabsSpeed,
+						dictionaryId: aivis.elevenLabsDictionaryId || undefined,
+						volume: aivis.volume,
+					};
+				}
+			}
+		} else if (aivis.enabled && aivis.apiKey && aivis.modelUuid) {
 			const template = needsAction ? aivis.formatPermission : aivis.format;
 			const text = renderParadisAivisTemplate(template, placeholders).trim();
 			if (text) {
@@ -298,7 +316,7 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 			}
 		}
 
-		if (!request.ringtone && !request.aivis) {
+		if (!request.ringtone && !request.aivis && !request.elevenLabs) {
 			return; // ミュート かつ Aivis 無効なら何もしない
 		}
 

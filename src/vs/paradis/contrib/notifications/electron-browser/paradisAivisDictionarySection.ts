@@ -108,6 +108,11 @@ export class ParadisAivisDictionarySection extends Disposable {
 		dom.clearNode(this.container);
 		this._renderDisposables.clear();
 
+		// 読み上げエンジンが ElevenLabs のときは ElevenLabs 用のセクションが描く。こちらは空にして API も叩かない。
+		if (this.settingsService.getAivisSettings().engine !== 'aivis') {
+			return;
+		}
+
 		const header = dom.append(this.container, $('.setting-row'));
 		const titles = dom.append(header, $('.sr-main'));
 		dom.append(titles, $('.pns-section-title')).textContent = STR_TITLE;

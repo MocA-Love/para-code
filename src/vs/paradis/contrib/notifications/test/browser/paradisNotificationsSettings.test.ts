@@ -8,9 +8,12 @@
 
 import assert from 'assert';
 import { timeout } from '../../../../../base/common/async.js';
-import { Event } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { InMemoryStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
+import { ISecretStorageService } from '../../../../../platform/secrets/common/secrets.js';
+import { TestSecretStorageService } from '../../../../../platform/secrets/test/common/testSecretStorageService.js';
 import {
 	IParadisDoNotDisturbChangeEvent,
 	IParadisDoNotDisturbState,
@@ -36,7 +39,7 @@ suite('Paradis notifications DND settings', () => {
 		readonly storage: TestStorageService;
 	} {
 		return {
-			service: store.add(new ParadisNotificationsSettingsService(storage)),
+			service: store.add(new ParadisNotificationsSettingsService(storage, store.add(new TestSecretStorageService()))),
 			storage,
 		};
 	}
@@ -262,5 +265,131 @@ suite('Paradis notifications DND settings', () => {
 			storedEnabled: undefined,
 			storedUntil: undefined,
 		});
+	});
+});
+
+/** 暗号化して保存できる secret storage の代わり。書き込みを失敗させることもできる。 */
+class PersistedSecretStorage extends Disposable implements ISecretStorageService {
+	declare readonly _serviceBrand: undefined;
+	readonly type = 'persisted' as const;
+	failWrites = false;
+
+	private readonly values = new Map<string, string>();
+	private readonly changeEmitter = this._register(new Emitter<string>());
+	readonly onDidChangeSecret = this.changeEmitter.event;
+
+	async get(key: string): Promise<string | undefined> {
+		return this.values.get(key);
+	}
+
+	async set(key: string, value: string): Promise<void> {
+		if (this.failWrites) {
+			throw new Error('cannot write');
+		}
+		this.values.set(key, value);
+		this.changeEmitter.fire(key);
+	}
+
+	async delete(key: string): Promise<void> {
+		this.values.delete(key);
+		this.changeEmitter.fire(key);
+	}
+}
+
+const KEY_AIVIS = 'paradis.notifications.aivis';
+const SECRET_AIVIS = 'paradis.notifications.aivis.apiKey';
+const SECRET_ELEVENLABS = 'paradis.notifications.elevenLabs.apiKey';
+
+suite('Paradis notifications voice API keys', () => {
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	function seed(storage: InMemoryStorageService, value: object): void {
+		storage.store(KEY_AIVIS, JSON.stringify(value), StorageScope.APPLICATION, StorageTarget.MACHINE);
+	}
+
+	function stored(storage: InMemoryStorageService): Record<string, unknown> {
+		return JSON.parse(storage.get(KEY_AIVIS, StorageScope.APPLICATION) ?? '{}');
+	}
+
+	test('moves the plaintext Aivis key into secret storage and removes it from the JSON', async () => {
+		const storage = store.add(new InMemoryStorageService());
+		const secrets = store.add(new PersistedSecretStorage());
+		seed(storage, { enabled: true, apiKey: 'aivis_plain', modelUuid: 'm' });
+		const service = store.add(new ParadisNotificationsSettingsService(storage, secrets));
+		await service.whenApiKeysLoaded();
+
+		assert.deepStrictEqual({
+			apiKey: service.getAivisSettings().apiKey,
+			engine: service.getAivisSettings().engine,
+			secret: await secrets.get(SECRET_AIVIS),
+			json: stored(storage),
+		}, {
+			apiKey: 'aivis_plain',
+			engine: 'aivis',
+			secret: 'aivis_plain',
+			json: { enabled: true, modelUuid: 'm' },
+		});
+	});
+
+	test('keeps the plaintext key when it cannot be moved', async () => {
+		const storage = store.add(new InMemoryStorageService());
+		const secrets = store.add(new PersistedSecretStorage());
+		secrets.failWrites = true;
+		seed(storage, { enabled: true, apiKey: 'aivis_plain' });
+		const service = store.add(new ParadisNotificationsSettingsService(storage, secrets));
+		await service.whenApiKeysLoaded();
+		service.setAivisSettings({ volume: 40 });
+
+		assert.deepStrictEqual({ apiKey: service.getAivisSettings().apiKey, json: stored(storage).apiKey }, { apiKey: 'aivis_plain', json: 'aivis_plain' });
+	});
+
+	test('leaves keys in the JSON when secret storage only lives in memory', async () => {
+		const storage = store.add(new InMemoryStorageService());
+		const secrets = store.add(new TestSecretStorageService());
+		seed(storage, { apiKey: 'aivis_plain' });
+		const service = store.add(new ParadisNotificationsSettingsService(storage, secrets));
+		await service.whenApiKeysLoaded();
+		service.setAivisSettings({ elevenLabsApiKey: 'el_key' });
+		await timeout(0);
+
+		assert.deepStrictEqual({
+			settings: [service.getAivisSettings().apiKey, service.getAivisSettings().elevenLabsApiKey],
+			json: [stored(storage).apiKey, stored(storage).elevenLabsApiKey],
+			secrets: await secrets.keys(),
+		}, { settings: ['aivis_plain', 'el_key'], json: ['aivis_plain', 'el_key'], secrets: [] });
+	});
+
+	test('stores each engine key separately and keeps the other when switching engines', async () => {
+		const storage = store.add(new InMemoryStorageService());
+		const secrets = store.add(new PersistedSecretStorage());
+		const service = store.add(new ParadisNotificationsSettingsService(storage, secrets));
+		await service.whenApiKeysLoaded();
+		service.setAivisSettings({ apiKey: 'aivis_key', modelUuid: 'model' });
+		service.setAivisSettings({ engine: 'elevenlabs', elevenLabsApiKey: 'el_key', elevenLabsVoiceId: 'voice', elevenLabsSpeed: 5 });
+		service.setAivisSettings({ engine: 'aivis' });
+		await timeout(0);
+		const settings = service.getAivisSettings();
+
+		assert.deepStrictEqual({
+			settings: [settings.engine, settings.apiKey, settings.modelUuid, settings.elevenLabsApiKey, settings.elevenLabsVoiceId, settings.elevenLabsSpeed],
+			secrets: [await secrets.get(SECRET_AIVIS), await secrets.get(SECRET_ELEVENLABS)],
+			jsonHasKeys: [stored(storage).apiKey !== undefined, stored(storage).elevenLabsApiKey !== undefined],
+		}, {
+			settings: ['aivis', 'aivis_key', 'model', 'el_key', 'voice', 1.2],
+			secrets: ['aivis_key', 'el_key'],
+			jsonHasKeys: [false, false],
+		});
+	});
+
+	test('does not drop the plaintext key when other settings change before loading finishes', async () => {
+		const storage = store.add(new InMemoryStorageService());
+		const secrets = store.add(new PersistedSecretStorage());
+		seed(storage, { apiKey: 'aivis_plain' });
+		const service = store.add(new ParadisNotificationsSettingsService(storage, secrets));
+		service.setAivisSettings({ volume: 30 });
+		const beforeLoad = stored(storage).apiKey;
+		await service.whenApiKeysLoaded();
+
+		assert.deepStrictEqual({ beforeLoad, apiKey: service.getAivisSettings().apiKey, secret: await secrets.get(SECRET_AIVIS) }, { beforeLoad: 'aivis_plain', apiKey: 'aivis_plain', secret: 'aivis_plain' });
 	});
 });
