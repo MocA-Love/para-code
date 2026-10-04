@@ -45,6 +45,7 @@ import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } f
 import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, ParadisAgentTurnEndCause, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
+import { IParadisAgentHookDropRecord, ParadisAgentHookDropCounter, ParadisHookIngressCause, paradisFormatHookDropLog, paradisHookDropPaneKey } from '../common/paradisAgentHookDropLog.js';
 import { IParadisReplayedAgentPrompt, IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_ID_PATTERN, PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE, PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SYNC_GRACE_MS, paradisPlanAgentHookReplay } from '../common/paradisAgentHookSpool.js';
 import { paradisPruneAgentHookSpool, paradisStampAgentHookSpoolAlive, paradisTakeAgentHookSpool } from './paradisAgentHookSpoolStore.js';
 import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexHome, paradisCodexHomes } from './paradisAgentHome.js';
@@ -415,6 +416,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _cdpInputQueue = this._register(new ParadisCdpInputQueue());
 	/** ゲートウェイが断った入力の理由（ペインごとに直近 1 件）。click などの「not interactive」に書き足す。 */
 	private readonly _inputRejections = new ParadisInputRejectionLog();
+	/** 捨てた hook のペイン・理由ごとの累計（診断ログの間引き用。判定には使わない）。 */
+	private readonly _hookDrops = new ParadisAgentHookDropCounter();
 	private readonly _quarantinedBindings = new Set<IBindingEntry>();
 	/**
 	 * リタイア不整合で隔離した個別ペイントークン。authority全体を殺す({@link _authorityFaulted})代わりに、
@@ -1240,6 +1243,16 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (!this.isIngressLeaseCurrent(ingressLease) || this._hookReportedTokens.has(token)) {
 				return;
 			}
+			if (origin.origin === 'invalid') {
+				const rejection = origin.rejection;
+				this._noteAgentHookDrop(() => ({
+					reason: 'spool-origin-mismatch', pane: this._tokenFingerprint(token), event: record.event,
+					side: this._paneShells.get(token)?.remoteAuthority !== undefined ? 'remote' : 'local', pid: 'absent',
+					identityLoss: rejection?.identityLoss, ownerPinnedBy: rejection?.ownerPinnedBy,
+					transcriptPath, ownerTranscriptPath: rejection?.ownerTranscriptPath,
+					ownerIdleMs: rejection !== undefined ? Date.now() - rejection.ownerAt : undefined,
+				}));
+			}
 			if (origin.origin !== 'owner') {
 				continue;
 			}
@@ -1781,6 +1794,69 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	private _tokenFingerprint(token: string): string {
 		return createHash('sha256').update(token).digest('hex').slice(0, 12);
+	}
+
+	/**
+	 * 捨てた hook を数え、ペイン・理由の組ごとに初回と件数が 2 の累乗のときだけログに出す。
+	 * 診断専用（hook の扱いは変えない）。会話のパスと token そのものは出さない。
+	 */
+	private _noteAgentHookDrop(build: () => IParadisAgentHookDropRecord): void {
+		this._runNonThrowingDiagnostic(() => {
+			const record = build();
+			const count = this._hookDrops.note(record.pane, record.reason);
+			if (count.emit) {
+				this.logService.info(`[ParadisAgentBrowser] ${paradisFormatHookDropLog(record, count.paneCount, count.reasonTotal)}`);
+			}
+		});
+	}
+
+	/** hook が手元か接続先か、pid が来たか（`_handleAgentHook` の pid の扱いと同じ読み方）。 */
+	private _agentHookDropSource(url: URL, token: string | undefined): Pick<IParadisAgentHookDropRecord, 'side' | 'pid'> {
+		const remote = paradisIsAgentHookRemoteHostId(url.searchParams.get(PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM))
+			|| (token !== undefined && this._paneShells.get(token)?.remoteAuthority !== undefined);
+		const pidParam = url.searchParams.get('pid');
+		const pidSent = pidParam !== null && /^\d{1,10}$/.test(pidParam);
+		return { side: remote ? 'remote' : 'local', pid: !pidSent ? 'absent' : remote ? 'stripped' : 'sent' };
+	}
+
+	/** 受け口で hook を断った（または処理の途中で印が使えなくなった）ときに数える。 */
+	private _noteAgentHookIngressDrop(req: http.IncomingMessage, token: string | undefined, stage: 'ingress' | 'lease-lost', status: number): void {
+		this._noteAgentHookDrop(() => {
+			const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+			const lockedCause = this._agentHookIngressCause(token);
+			// 503 は「まだ同期していないだけかもしれない」ペイン。印そのものが断られている理由があればそちらを出す
+			const cause: ParadisHookIngressCause = status === 503 && lockedCause === 'unknown-pane' ? 'unsynced' : lockedCause;
+			// 知っているペイン（シェルの記録がある・終わった・隔離した）だけ token ごとに分け、知らない token は
+			// 1 つにまとめて数える（token を毎回変えて送られても間引きが効くように）。
+			const known = token !== undefined && (this._paneShells.has(token) || cause === 'exited-pane' || cause === 'faulted-pane');
+			return {
+				reason: `${stage}-${cause}`,
+				pane: paradisHookDropPaneKey(known, () => this._tokenFingerprint(token ?? '')),
+				event: url.searchParams.get('event') ?? '',
+				...this._agentHookDropSource(url, known ? token : undefined),
+				status,
+			};
+		});
+	}
+
+	/** {@link captureIngressLease} が印を断る理由（診断ログ用。同じ条件を同じ順に見る）。 */
+	private _agentHookIngressCause(token: string | undefined): ParadisHookIngressCause {
+		if (token === undefined || token.length === 0 || token.length > MAX_PANE_TOKEN_LENGTH) {
+			return 'no-token';
+		}
+		if (this._serverDisposed) {
+			return 'server-disposed';
+		}
+		if (this._authorityFaulted) {
+			return 'authority-faulted';
+		}
+		if (this._faultedTokens.has(token)) {
+			return 'faulted-pane';
+		}
+		if (this._terminalExitedTokens.has(token)) {
+			return 'exited-pane';
+		}
+		return 'unknown-pane';
 	}
 
 	/** Returns only the target fixed by the committed exact BrowserView descriptor. */
@@ -2671,10 +2747,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			// まだ同期していないだけかもしれないペインには 503 で答え、notify スクリプトに控えさせる。
 			// 知らない・終わったペインには 404（控えない）。W2-20 レビュー M3。
 			if (requestedToken !== undefined && this._isHookTokenPossiblyUnsynced(requestedToken)) {
+				this._noteAgentHookIngressDrop(req, requestedToken, 'ingress', 503);
 				res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
 				res.end(JSON.stringify({ error: 'Pane not synced yet.' }));
 				return;
 			}
+			this._noteAgentHookIngressDrop(req, requestedToken, 'ingress', 404);
 			this._sendIngressRejected(res);
 			return;
 		}
@@ -2748,6 +2826,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				return;
 			}
 			if (!this.isIngressLeaseCurrent(ingressLease)) {
+				this._noteAgentHookIngressDrop(req, token, 'lease-lost', 404);
 				this._sendIngressRejected(res);
 				return;
 			}
@@ -2771,6 +2850,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (initiallyInWait || entersWait || initiallyChecksPendingRelease) {
 				const caller = await this._classifyCaller(token, req.socket as Socket);
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
+					this._noteAgentHookIngressDrop(req, token, 'lease-lost', 404);
 					this._sendIngressRejected(res);
 					return;
 				}
@@ -2790,7 +2870,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					// られないまま解いた印を付けて IDE 操作ツールの入力を断る（偽の hook で解いた状態へ送らせない）。
 					// 確かめられた hook で入った待ち（普通の手元のペイン）を確かめられない hook で解くのは偽装とみなす。
 					if (!paradisIsAgentHookReleaseEvent(eventType) || currentEntry?.waitEntryUnverified !== true) {
-						this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] agent-hook ignored while waiting for the user (caller not verified): ${eventType}`));
+						this._noteAgentHookDrop(() => ({ reason: 'wait-caller-unverified', pane: this._tokenFingerprint(token), event: eventType, ...this._agentHookDropSource(url, token) }));
 						res.writeHead(200, { 'Content-Type': 'application/json' });
 						res.end(JSON.stringify({ ok: false, reason: 'caller not verified' }));
 						return;
@@ -2832,12 +2912,21 @@ export class ParadisAgentBrowserService extends Disposable {
 				const hookPid = remoteHostId !== undefined || this._paneShells.get(token)?.remoteAuthority !== undefined ? undefined : parsedPid;
 				const hookOrigin = await this._hookOwnership.classify({ token, hookPid, transcriptPath, at: Date.now() });
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
+					this._noteAgentHookIngressDrop(req, token, 'lease-lost', 404);
 					this._sendIngressRejected(res);
 					return;
 				}
 				ownerUnverified = hookOrigin.unverified === true;
 				if (hookOrigin.origin === 'invalid') {
-					this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] agent-hook rejected (origin mismatch): ${eventType}`));
+					const rejection = hookOrigin.rejection;
+					this._noteAgentHookDrop(() => ({
+						reason: rejection !== undefined && rejection.identityLoss === undefined ? 'origin-not-ancestor' : 'origin-transcript-mismatch',
+						pane: this._tokenFingerprint(token), event: eventType, ...this._agentHookDropSource(url, token),
+						identityLoss: rejection?.identityLoss, ownerPinnedBy: rejection?.ownerPinnedBy,
+						transcriptPath, ownerTranscriptPath: rejection?.ownerTranscriptPath,
+						ownerIdleMs: rejection !== undefined ? Date.now() - rejection.ownerAt : undefined,
+						snapshotAgeMs: rejection?.snapshotAgeMs,
+					}));
 					res.writeHead(200, { 'Content-Type': 'application/json' });
 					res.end(JSON.stringify({ ok: false, reason: 'origin rejected' }));
 					return;
@@ -2889,6 +2978,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				});
 			}
 			if (!this.isIngressLeaseCurrent(ingressLease)) {
+				this._noteAgentHookIngressDrop(req, token, 'lease-lost', 404);
 				this._sendIngressRejected(res);
 				return;
 			}

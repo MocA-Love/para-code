@@ -28,6 +28,7 @@
 import { exec } from 'child_process';
 import { statSync } from 'fs';
 import { promisify } from 'util';
+import { ParadisHookIdentityLoss } from '../common/paradisAgentHookDropLog.js';
 import { paradisIsWithinCodexHome } from './paradisAgentHome.js';
 
 const execAsync = promisify(exec);
@@ -56,6 +57,8 @@ export interface IParadisHookProcessInfo {
 /** プロセス表の取得（テストではfakeへ差し替える）。 */
 export interface IParadisHookProcessInspector {
 	snapshot(): Promise<ReadonlyMap<number, IParadisHookProcessInfo> | undefined>;
+	/** 直近に使ったプロセス表を取り始めた時刻（診断ログ用。分からなければ undefined）。 */
+	lastSnapshotAt?(): number | undefined;
 }
 
 interface IOwnerRecord {
@@ -550,6 +553,10 @@ export class ParadisDefaultHookProcessInspector implements IParadisHookProcessIn
 		this.cached = { at: now, value };
 		return value;
 	}
+
+	lastSnapshotAt(): number | undefined {
+		return this.cached?.at;
+	}
 }
 
 export interface IParadisHookClassification {
@@ -562,6 +569,21 @@ export interface IParadisHookClassification {
 	 * 中身（`sessionKind`）でも確かめる。
 	 */
 	readonly unverified?: true;
+	/** invalid にしたときの診断情報（ログ専用。判定には使わない）。 */
+	readonly rejection?: IParadisHookRejectionDetail;
+}
+
+/** invalid にした分岐の診断情報。 */
+export interface IParadisHookRejectionDetail {
+	/** pid を使わない判定に落ちたわけ。pid で辿って invalid にしたときは undefined。 */
+	readonly identityLoss: ParadisHookIdentityLoss | undefined;
+	/** 所有者が pid で決まっているか、transcript だけで決まっているか。 */
+	readonly ownerPinnedBy: 'pid' | 'transcript';
+	readonly ownerTranscriptPath: string | undefined;
+	/** 所有者の記録を最後に更新した時刻。 */
+	readonly ownerAt: number;
+	/** 使ったプロセス表の控えの古さ（取っていなければ undefined）。 */
+	readonly snapshotAgeMs: number | undefined;
 }
 
 /**
@@ -592,7 +614,7 @@ export class ParadisAgentHookOwnership {
 			return await this.doClassify(input);
 		} catch {
 			// 分類の失敗でhookを失わない: 所有権が不明なら fail-closed ポリシーへ。
-			return this.classifyWithoutIdentity(input.token, input.transcriptPath, input.at, undefined);
+			return this.classifyWithoutIdentity(input.token, input.transcriptPath, input.at, undefined, 'error', undefined);
 		}
 	}
 
@@ -600,11 +622,12 @@ export class ParadisAgentHookOwnership {
 		const { token, hookPid, transcriptPath, at } = input;
 		const eventKind = transcriptPath !== undefined ? paradisHookAgentKindForTranscript(transcriptPath) : undefined;
 		if (hookPid === undefined) {
-			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind);
+			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind, 'no-pid', undefined);
 		}
 		const snapshot = await this.inspector.snapshot();
+		const snapshotAgeMs = this.snapshotAgeMs();
 		if (snapshot === undefined) {
-			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind);
+			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind, 'no-snapshot', snapshotAgeMs);
 		}
 		const chain = this.chainInsidePanes(snapshot, hookPid);
 		// daemon の配下の会話は、このペインの所有者にも子エージェントにもしない（所有者の記録も触らない）。
@@ -613,7 +636,8 @@ export class ParadisAgentHookOwnership {
 		}
 		const emitter = this.findEmitter(chain, eventKind);
 		if (emitter === undefined) {
-			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind);
+			const identityLoss = chain.length > 0 ? 'no-emitter' : snapshot.has(hookPid) ? 'pid-outside-panes' : 'pid-not-in-snapshot';
+			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind, identityLoss, snapshotAgeMs);
 		}
 		const emitterKind = paradisHookAgentKindFromCommandLine(emitter.command);
 		let owner = this.owners.get(token);
@@ -651,7 +675,10 @@ export class ParadisAgentHookOwnership {
 			return { origin: 'nested', agentKind: emitterKind };
 		}
 		// 所有者が生存しているのに祖先関係が無い = 兄弟や誤配送。ペイン状態を触らせない。
-		return { origin: 'invalid', agentKind: emitterKind };
+		return {
+			origin: 'invalid', agentKind: emitterKind,
+			rejection: { identityLoss: undefined, ownerPinnedBy: 'pid', ownerTranscriptPath: owner.transcriptPath, ownerAt: owner.at, snapshotAgeMs },
+		};
 	}
 
 	/** チェーン内で最も祖先側（ペインのシェルに最も近い）のエージェントプロセスを返す。 */
@@ -669,7 +696,7 @@ export class ParadisAgentHookOwnership {
 	 * 所有者が既知なら、同じtranscriptへのイベントとtranscript無しイベント（状態のみのGET
 	 * フォールバック等）だけを通し、別transcriptへのrebindは拒否する。
 	 */
-	private classifyWithoutIdentity(token: string, transcriptPath: string | undefined, at: number, eventKind: ParadisHookAgentKind | undefined): IParadisHookClassification {
+	private classifyWithoutIdentity(token: string, transcriptPath: string | undefined, at: number, eventKind: ParadisHookAgentKind | undefined, identityLoss: ParadisHookIdentityLoss, snapshotAgeMs: number | undefined): IParadisHookClassification {
 		const owner = this.owners.get(token);
 		if (owner === undefined) {
 			this.setOwner(token, { pid: undefined, startKey: undefined, agentKind: eventKind, transcriptPath, at });
@@ -681,7 +708,21 @@ export class ParadisAgentHookOwnership {
 			}
 			return { origin: 'owner', agentKind: eventKind ?? owner.agentKind, unverified: true };
 		}
-		return { origin: 'invalid', agentKind: eventKind };
+		return {
+			origin: 'invalid', agentKind: eventKind,
+			rejection: { identityLoss, ownerPinnedBy: owner.pid !== undefined ? 'pid' : 'transcript', ownerTranscriptPath: owner.transcriptPath, ownerAt: owner.at, snapshotAgeMs },
+		};
+	}
+
+	/** 直近に使ったプロセス表の控えの古さ（診断ログ用）。 */
+	private snapshotAgeMs(): number | undefined {
+		try {
+			const takenAt = this.inspector.lastSnapshotAt?.();
+			return takenAt === undefined ? undefined : Math.max(0, Date.now() - takenAt);
+		} catch {
+			// 診断のための値なので、取れなくても判定には影響させない。
+			return undefined;
+		}
 	}
 
 	/** {@link ancestorChain} のうち、Para Code 自身（とその祖先）に届く手前まで。 */
