@@ -167,6 +167,20 @@ describe('para-code mod', () => {
 		expect(decided).toEqual({ decision: { behavior: 'deny', message: 'Denied from Para Code Mobile.' } });
 	});
 
+	test('a refusal with an instruction from the phone hands that text to Claude Code, and the mod says it can', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		const message = 'The user doesn\'t want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\nkeep build, run echo kept';
+		fakeParaCode(on, {
+			permission: () => ({ id: 'p4', wait: true }),
+			wait: () => ({ state: 'answer', decision: 'deny', message }),
+		}, recorded);
+		on('classic.PermissionRequest', () => ({}));
+		await startSession($);
+		const decided = await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'rm -rf build' } });
+		expect(decided).toEqual({ decision: { behavior: 'deny', message } });
+		expect(recorded.find(entry => entry.op === 'permission')?.body.denyMessage).toBe(true);
+	});
+
 	test('when Para Code does not wait (no phone connected) the terminal prompt alone decides', async ($, on) => {
 		const recorded: IRecorded[] = [];
 		fakeParaCode(on, { permission: () => ({ id: 'p3', wait: false }) }, recorded);

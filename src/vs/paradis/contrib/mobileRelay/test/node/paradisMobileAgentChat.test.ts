@@ -191,7 +191,13 @@ suite('ParadisMobileAgentChat', () => {
 			optAnswer: paradisIsValidAgentInboundForTest({ t: 'action/answerApproval', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'approval:1:0', choice: 'opt:2', optionLabel: 'Yes, and don\'t ask again' }),
 			badLabel: paradisIsValidAgentInboundForTest({ t: 'action/answerApproval', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'approval:1:0', choice: 'opt:2', optionLabel: 3 }),
 			longLabel: paradisIsValidAgentInboundForTest({ t: 'action/answerApproval', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'approval:1:0', choice: 'opt:2', optionLabel: 'x'.repeat(501) }),
-		}, { options: true, optionsWithoutInteraction: false, optAnswer: true, badLabel: false, longLabel: false });
+			// 拒否に添える指示（agent.approval.detail.v1）は拒否にだけ、空でなく上限まで
+			denyMessage: paradisIsValidAgentInboundForTest({ t: 'action/answerApproval', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'approval:1:0', choice: 'no', message: 'echo kept にして' }),
+			allowMessage: paradisIsValidAgentInboundForTest({ t: 'action/answerApproval', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'approval:1:0', choice: 'yes', message: 'echo kept にして' }),
+			blankMessage: paradisIsValidAgentInboundForTest({ t: 'action/answerApproval', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'approval:1:0', choice: 'no', message: '  ' }),
+			longMessage: paradisIsValidAgentInboundForTest({ t: 'action/answerApproval', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'approval:1:0', choice: 'no', message: 'x'.repeat(4_001) }),
+			controlOnly: paradisIsValidAgentInboundForTest({ t: 'action/answerApproval', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'approval:1:0', choice: 'no', message: '\u0007\u001b' }),
+		}, { options: true, optionsWithoutInteraction: false, optAnswer: true, badLabel: false, longLabel: false, denyMessage: true, allowMessage: false, blankMessage: false, longMessage: false, controlOnly: false });
 	});
 
 	test('forwards approval option reads and opt:<n> answers to the owning window with the label to re-check (W2-21)', async () => {
@@ -205,7 +211,7 @@ suite('ParadisMobileAgentChat', () => {
 			() => { }, new NullLogService(),
 		);
 		const access = chat as unknown as {
-			tailers: Map<string, { readonly epoch: string; currentInteraction(): { readonly kind: string; readonly id: string; readonly suggestions?: readonly string[] } | null }>;
+			tailers: Map<string, { readonly epoch: string; currentInteraction(): { readonly kind: string; readonly id: string; readonly suggestions?: readonly string[]; readonly request?: unknown; readonly suggestionScope?: string } | null }>;
 		};
 		const inbound = (message: Record<string, unknown>) => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify(message)));
 		try {
@@ -230,15 +236,21 @@ suite('ParadisMobileAgentChat', () => {
 			inbound({ t: 'approval-options', ...base, interactionId: 'approval:other', requestId: 'options-2' });
 			inbound({ t: 'action/answerApproval', ...base, requestId: 'answer-1', choice: 'opt:2' });
 			inbound({ t: 'action/answerApproval', ...base, requestId: 'answer-2', choice: 'opt:2', optionLabel: 'Yes, and don\'t ask again for npm test commands', promptHash: 'dddddddddddddddddddddddddddddddddddddddd' });
+			// 指示を添えた拒否は mod が待っていなければ断る（指示を落として Esc を送らない）
+			inbound({ t: 'action/answerApproval', ...base, requestId: 'answer-3', choice: 'no', message: '代わりに npm run lint にして' });
 			// 断りの返事は所有ウィンドウの確認を待ってから送られる
-			await waitFor(() => sent.length >= 2, 'the rejections were not delivered');
+			await waitFor(() => sent.length >= 3, 'the rejections were not delivered');
 
 			assert.deepStrictEqual({
 				suggestions: interaction.suggestions,
+				request: interaction.request,
+				suggestionScope: interaction.suggestionScope,
 				actions: actions.map(action => ({ t: action.t, requestId: action.requestId, agent: action.agent, parts: action.parts, expectOption: action.expectOption, expectPromptHash: action.expectPromptHash })),
 				sent: sent.map(message => ({ t: message.t, requestId: message.requestId, code: message.code, error: message.error })),
 			}, {
 				suggestions: ['Bash(npm test:*)'],
+				request: { tool: 'Bash', kind: 'bash', command: 'npm test' },
+				suggestionScope: 'settings',
 				actions: [
 					{ t: 'action/approvalOptions', requestId: 'options-1', agent: 'claude', parts: undefined, expectOption: undefined, expectPromptHash: undefined },
 					{ t: 'action/interaction', requestId: 'answer-2', agent: 'claude', parts: ['2'], expectOption: { n: 2, label: 'Yes, and don\'t ask again for npm test commands' }, expectPromptHash: 'dddddddddddddddddddddddddddddddddddddddd' },
@@ -246,6 +258,7 @@ suite('ParadisMobileAgentChat', () => {
 				sent: [
 					{ t: 'approval-options', requestId: 'options-2', code: undefined, error: 'stale-interaction' },
 					{ t: 'action-result', requestId: 'answer-1', code: 'invalid-answer', error: undefined },
+					{ t: 'action-result', requestId: 'answer-3', code: 'stale-interaction', error: undefined },
 				],
 			});
 		} finally {

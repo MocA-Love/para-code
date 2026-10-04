@@ -33,9 +33,12 @@ export interface QuestionFreeTextRequest {
 	readonly submit: (text: string) => Promise<AgentMessageSendResult>;
 	/**
 	 * `clarify`: 「質問に答えずに話す」。入力欄は「質問を取り下げて送ります」になり、送った本文はエージェントへの返事になる
-	 * （質問はすべて取り下げる）。無ければ「その他」の回答の入力。
+	 * （質問はすべて取り下げる）。`deny`: 許可のカードの「拒否して指示を書く」。送った本文を添えて拒否する。
+	 * 無ければ「その他」の回答の入力。
 	 */
-	readonly mode?: 'clarify';
+	readonly mode?: 'clarify' | 'deny';
+	/** 入力の上限（`deny` の指示は PC が受ける上限まで）。 */
+	readonly maxLength?: number;
 }
 
 /**

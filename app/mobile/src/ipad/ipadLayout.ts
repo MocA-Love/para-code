@@ -144,3 +144,19 @@ export const QUESTION_PREVIEW_SPLIT_MIN_WIDTH = 520;
 export function questionPreviewSplit(regular: boolean, cardWidth: number): boolean {
 	return regular && cardWidth >= QUESTION_PREVIEW_SPLIT_MIN_WIDTH;
 }
+
+/**
+ * 許可のカードの中身がこの幅以上なら、コマンド（左）と説明・危険の札・警告（右の {@link APPROVAL_DETAIL_SIDE_WIDTH}）を
+ * 左右に並べる（`mobile-approval-detail-mock.html` の iPad の案 A）。右の列を除いても等幅 40 字ほどが入る幅。
+ */
+export const APPROVAL_DETAIL_SPLIT_MIN_WIDTH = 600;
+/** 左右に並べたときの右の列の幅（pt）。 */
+export const APPROVAL_DETAIL_SIDE_WIDTH = 260;
+
+/**
+ * 許可のカードで中身を左右に並べるか。2列の表示（`regular`）で、カードの実際の幅（onLayout。ウィンドウ幅ではない）が
+ * 足りるときだけ。幅をまだ測っていない（0）ときは並べない。
+ */
+export function approvalDetailSplit(regular: boolean, cardWidth: number): boolean {
+	return regular && cardWidth >= APPROVAL_DETAIL_SPLIT_MIN_WIDTH;
+}

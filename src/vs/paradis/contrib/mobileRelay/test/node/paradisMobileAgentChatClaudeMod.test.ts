@@ -15,9 +15,10 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { fireParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
+import { fireParadisAgentHookEvent, onParadisAgentAwaitingUser } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { ParadisClaudeModBridge } from '../../../claudeMod/node/paradisClaudeModBridge.js';
 import { ParadisMobileAgentChat, paradisModApprovalChoices } from '../../node/paradisMobileAgentChat.js';
+import { paradisApprovalDenyMessage } from '../../common/paradisAgentApprovalRequest.js';
 
 const SESSION = 'session-claude-mod';
 
@@ -387,6 +388,89 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 			keys: harness.actions.filter(action => action.t === 'action/interaction').length,
 		}, { reply: { state: 'answer', decision: 'allow', always: true }, keys: 0 });
 		await waitFor(() => harness.sent.some(message => message.t === 'action-result' && message.requestId === 'approve-1' && message.status === 'accepted'), 'the approval was not acknowledged');
+	}));
+
+	test('denies with the instruction through a mod that accepts it, and shows what was asked and by which subagent', () => withHarness(async harness => {
+		const input = { command: 'sh -c "rm -rf build"', description: 'Clean the build' };
+		harness.hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_d', toolInput: input });
+		harness.hook('PermissionRequest', { toolName: 'Bash', toolInput: input, payload: { agent_id: 'a-sub', agent_type: 'general-purpose', permission_suggestions: [] } });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'approval', 'the approval card was not shown');
+		const registered = await harness.mod('permission', { toolUseId: 'toolu_d', toolName: 'Bash', toolInput: input, suggestions: [], agentId: 'a-sub', denyMessage: true });
+		const card = () => harness.tailer()?.currentInteraction() as { readonly answerVia?: string; readonly request?: unknown; readonly detail?: string } | null | undefined;
+		await waitFor(() => card()?.answerVia === 'mod', 'the approval was not marked as answerable with an instruction');
+		const shown = { detail: card()?.detail, request: card()?.request };
+		const waiting = harness.mod('wait', { id: registered.id });
+		harness.inbound({ t: 'action/answerApproval', requestId: 'deny-1', epoch: harness.tailer()!.epoch, interactionId: 'toolu_d', choice: 'no', message: 'build は残して、echo kept だけ実行して' });
+		assert.deepStrictEqual({
+			shown,
+			reply: await waiting,
+			keys: harness.actions.filter(action => action.t === 'action/interaction').length,
+		}, {
+			shown: {
+				detail: 'Bash: Clean the build',
+				request: { tool: 'Bash', kind: 'bash', command: 'sh -c "rm -rf build"', description: 'Clean the build', agent: { id: 'a-sub', name: 'general-purpose', role: 'subagent' } },
+			},
+			reply: { state: 'answer', decision: 'deny', message: paradisApprovalDenyMessage('build は残して、echo kept だけ実行して') },
+			keys: 0,
+		});
+	}));
+
+	test('keeps the pane working after a refusal that carries an instruction (the phone or the terminal amend), and stops it on a plain refusal', () => withHarness(async harness => {
+		const access = harness.chat as unknown as { liveStates: Map<string, unknown>; activeTurnTokens: Set<string> };
+		const awaiting: number[] = [];
+		const listener = onParadisAgentAwaitingUser(event => { if (event.token === harness.token) { awaiting.push(event.at); } });
+		try {
+			// Claude Code 2.1.289 が書く tool_result（実測。指示付きは TUI の amend とモバイルの「拒否して指示を書く」で同じ）
+			const plain = 'The user doesn\'t want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.';
+			const result = (id: string, text: string) => `${JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: { command: 'rm -rf build' } }] } })}\n${JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text, is_error: true }] } })}\n`;
+			const refuse = async (id: string, text: string) => {
+				harness.hook('PreToolUse', { toolName: 'Bash', toolUseId: id, toolInput: { command: 'rm -rf build' } });
+				harness.hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'rm -rf build' } });
+				await waitFor(() => harness.tailer()?.currentInteraction()?.id === id, `the approval ${id} was not shown`);
+				await appendFile(harness.transcriptPath, result(id, text));
+				await waitFor(() => harness.tailer()?.currentInteraction() === null, `the approval ${id} was not settled`);
+				await new Promise<void>(resolve => setTimeout(resolve, 50));
+				return { live: access.liveStates.has(harness.token), activeTurn: access.activeTurnTokens.has(harness.token), awaitingUser: awaiting.length };
+			};
+			const withInstruction = await refuse('toolu_i', paradisApprovalDenyMessage('build は残して、echo kept だけ実行して'));
+			const plainRefusal = await refuse('toolu_p', plain);
+			assert.deepStrictEqual({ withInstruction, plainRefusal }, {
+				withInstruction: { live: true, activeTurn: true, awaitingUser: 0 },
+				plainRefusal: { live: false, activeTurn: false, awaitingUser: 1 },
+			});
+		} finally {
+			listener.dispose();
+		}
+	}));
+
+	test('does not tie a card to a mod wait with the same description but another command', () => withHarness(async harness => {
+		type Card = { readonly id: string; readonly answerVia?: string; readonly request?: { readonly command?: string; readonly agent?: unknown } };
+		const cards = () => (harness.tailer() as unknown as { approvalInteractions(): readonly Card[] }).approvalInteractions();
+		// agent_type だけの hook（agent_id が無い）は送り元を作らない
+		harness.hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'npm test', description: 'Run the checks' }, payload: { agent_type: 'general-purpose' } });
+		await waitFor(() => cards().length === 1, 'the hook card was not shown');
+		await harness.mod('permission', { toolName: 'Bash', toolInput: { command: 'rm -rf build', description: 'Run the checks' }, suggestions: [], denyMessage: true });
+		// 合わなければ少し後に mod の内容で別のカードを出す
+		await waitFor(() => cards().length === 2, 'the mod card was not shown separately');
+		assert.deepStrictEqual(cards().map(card => ({ command: card.request?.command, agent: card.request?.agent, answerVia: card.answerVia })), [
+			{ command: 'npm test', agent: undefined, answerVia: undefined },
+			{ command: 'rm -rf build', agent: undefined, answerVia: 'mod' },
+		]);
+	}));
+
+	test('does not drop the instruction when the mod cannot carry it (an older mod), and sends no keys', () => withHarness(async harness => {
+		harness.hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_e', toolInput: { command: 'npm test' } });
+		harness.hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'npm test' } });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'approval', 'the approval card was not shown');
+		await harness.mod('permission', { toolUseId: 'toolu_e', toolName: 'Bash', toolInput: { command: 'npm test' }, suggestions: [] });
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		harness.inbound({ t: 'action/answerApproval', requestId: 'deny-2', epoch: harness.tailer()!.epoch, interactionId: 'toolu_e', choice: 'no', message: 'やめて' });
+		await waitFor(() => harness.sent.some(message => message.t === 'action-result' && message.requestId === 'deny-2'), 'the answer was not acknowledged');
+		assert.deepStrictEqual({
+			answerVia: (harness.tailer()?.currentInteraction() as { readonly answerVia?: string } | null | undefined)?.answerVia,
+			result: harness.sent.filter(message => message.t === 'action-result' && message.requestId === 'deny-2').map(message => ({ status: message.status, code: message.code })),
+			keys: harness.actions.filter(action => action.t === 'action/interaction').length,
+		}, { answerVia: undefined, result: [{ status: 'rejected', code: 'stale-interaction' }], keys: 0 });
 	}));
 
 	test('sends a message through the mod while the agent is idle', () => withHarness(async harness => {

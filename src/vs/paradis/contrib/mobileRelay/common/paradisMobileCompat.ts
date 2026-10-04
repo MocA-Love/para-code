@@ -135,6 +135,12 @@ export const ParadisMobileCapability = {
 	 * `sysres` をウィンドウを名指しして送ると、SSH のウィンドウなら接続先のマシンの値を返す。
 	 */
 	SystemHistory: 'system.history.v1',
+	/**
+	 * 承認の interaction の任意項目 `request`（操作の中身。`paradisAgentApprovalRequest.ts`）・`suggestionScope`・`answerVia`、
+	 * `approval-options` の応答の任意項目 `warning`（選択肢の上の警告の行）、`action/answerApproval` の `message`
+	 * （拒否に添える指示。`answerVia: 'mod'` のときだけ）。
+	 */
+	AgentApprovalDetail: 'agent.approval.detail.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -177,6 +183,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.FsAttachment,
 	ParadisMobileCapability.SystemHistory,
 	ParadisMobileCapability.AgentShells,
+	ParadisMobileCapability.AgentApprovalDetail,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
