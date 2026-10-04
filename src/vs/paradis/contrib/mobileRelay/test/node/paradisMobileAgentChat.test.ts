@@ -16,7 +16,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/node/paradisAgentHome.js';
-import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
+import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexForkCandidateAllowed, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisReadCodexForkHistory, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from '../../node/paradisRemoteTranscriptMirror.js';
 
 const nodeRequire = createRequire(import.meta.url);
@@ -1042,6 +1042,341 @@ suite('ParadisMobileAgentChat', () => {
 			{ transcriptPath: '/sessions/a.jsonl', mtime: 20 },
 			{ transcriptPath: '/sessions/b.jsonl', mtime: 21 },
 		], 10, new Set(['/sessions/a.jsonl'])), { transcriptPath: '/sessions/b.jsonl', mtime: 21 });
+	});
+
+	suite('Codex fork', () => {
+		const ROOT = '01a10509-174f-7a50-8db2-15c8c5def743';
+		const FORK = '01a10509-4a1d-7a72-b8bb-30fcf84c4ade';
+		const FORK_OF_FORK = '01a10509-aa80-7f22-a40e-79640d480d20';
+		const OTHER_ROOT = '01a10509-0000-7000-8000-000000000001';
+		const OTHER_FORK = '01a10509-0000-7000-8000-000000000002';
+		/** codex-cli 0.160.0 の rollout の行（形は実データ、本文は匿名）。 */
+		const line = (ordinal: number, type: string, payload: Record<string, unknown>) => JSON.stringify({ timestamp: '2026-10-04T03:50:44.000Z', ordinal, type, payload });
+		const meta = (id: string, cwd: string, fork?: { readonly parent: string; readonly endByteOffset?: number }) => line(0, 'session_meta', {
+			id, session_id: id, cwd, source: 'cli', thread_source: 'user', cli_version: '0.160.0', history_mode: 'paginated',
+			...(fork !== undefined ? { forked_from_id: fork.parent, ...(fork.endByteOffset !== undefined ? { history_base: { thread_id: fork.parent, end_ordinal_exclusive: 24, end_byte_offset: fork.endByteOffset } } : {}) } : {}),
+		});
+		const user = (ordinal: number, text: string) => line(ordinal, 'response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text }], internal_chat_message_metadata_passthrough: { content_item_kinds: ['user.text'] } });
+		const assistant = (ordinal: number, text: string) => line(ordinal, 'response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
+		const exec = (ordinal: number, callId: string, output: string) => [
+			line(ordinal, 'response_item', { type: 'custom_tool_call', id: `ctc_${callId}`, status: 'completed', call_id: callId, name: 'exec', input: 'text(await tools.exec_command({cmd:"ls"}));\n' }),
+			line(ordinal + 1, 'response_item', { type: 'custom_tool_call_output', id: `ctco_${callId}`, call_id: callId, output: [{ type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n' }, { type: 'input_text', text: output }] }),
+		];
+		const jsonl = (lines: readonly string[]) => lines.map(item => `${item}\n`).join('');
+		const rolloutPath = (codexHome: string, id: string) => join(codexHome, 'sessions', '2026', '10', '04', `rollout-2026-10-04T12-50-44-${id}.jsonl`);
+		interface IThreadRow { readonly id: string; readonly path: string; readonly cwd: string; readonly createdAt: number; readonly updatedAt: number }
+		const writeStateDatabase = async (codexHome: string, rows: readonly IThreadRow[]) => {
+			await rm(join(codexHome, 'state_1.sqlite'), { force: true });
+			createEmptyCodexStateDatabase(codexHome);
+			const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+			const database = new DatabaseSync(join(codexHome, 'state_1.sqlite'));
+			try {
+				const insert = database.prepare('INSERT INTO threads (id, rollout_path, source, cwd, archived, updated_at_ms, updated_at, created_at_ms, created_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)');
+				for (const row of rows) {
+					insert.run(row.id, row.path, 'cli', row.cwd, row.updatedAt, Math.floor(row.updatedAt / 1000), row.createdAt, Math.floor(row.createdAt / 1000));
+				}
+			} finally {
+				database.close();
+			}
+		};
+		interface ICodexForkAccess {
+			readonly paneSessions: Map<string, { readonly transcriptPath: string; readonly sessionId?: string }>;
+			readonly cliDiscoveryGenerations: Map<string, number>;
+			readonly tailers: Map<string, { readonly ready: Promise<void>; readonly wasInitialTruncated: boolean; readonly messages: readonly { readonly rev: number; readonly role: string; readonly kind: string; readonly text: string }[] }>;
+			discoverAndNotify(token: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork' | 'attach', cwd: string, minMtime: number | undefined, generation: number, requestedSessionId?: string): Promise<void>;
+			scanPanesForUnclaimedSessions(): Promise<void>;
+		}
+
+		test('decides which pane a fork may bind to from forked_from_id', () => {
+			const policy = (allowed: readonly string[], options: { readonly anyParent?: boolean; readonly foreign?: readonly string[]; readonly reserved?: readonly string[]; readonly forkOnly?: boolean } = {}) => ({
+				allowedParents: new Set(allowed), anyParent: options.anyParent === true, foreignParents: new Set(options.foreign ?? []), reservedParents: new Set(options.reserved ?? []), forkOnly: options.forkOnly === true,
+			});
+			assert.deepStrictEqual([
+				// fork 先でない会話は、これまでどおり採る（fork を打った直後の探索だけは採らない）
+				paradisCodexForkCandidateAllowed(undefined, policy([])),
+				paradisCodexForkCandidateAllowed(undefined, policy([ROOT], { forkOnly: true })),
+				// TUI の /fork: 元がこのペインの会話なら採る。ほかのペインの照合・常駐スキャンは採らない
+				paradisCodexForkCandidateAllowed(ROOT, policy([ROOT])),
+				paradisCodexForkCandidateAllowed(ROOT, policy([])),
+				paradisCodexForkCandidateAllowed(ROOT, policy([OTHER_ROOT])),
+				// `codex fork X` を打ったペインは X の fork 先を採り、X を持つペインは採らない
+				paradisCodexForkCandidateAllowed(ROOT, policy([ROOT], { forkOnly: true })),
+				paradisCodexForkCandidateAllowed(ROOT, policy([ROOT], { reserved: [ROOT] })),
+				// `codex fork`（id 無し・`--last`）は元を問わない。ただし元がほかの生存ペインの今の会話なら採らない
+				paradisCodexForkCandidateAllowed(OTHER_ROOT, policy([], { anyParent: true, forkOnly: true })),
+				paradisCodexForkCandidateAllowed(OTHER_ROOT, policy([], { anyParent: true, forkOnly: true, foreign: [OTHER_ROOT] })),
+			], [true, false, true, false, false, true, false, true, false]);
+		});
+
+		test('reads forked_from_id and history_base from the session_meta of a fork', () => {
+			assert.deepStrictEqual([
+				paradisParseCodexSessionMeta(meta(FORK, '/w', { parent: ROOT, endByteOffset: 40990 })),
+				paradisParseCodexSessionMeta(meta(ROOT, '/w')),
+			], [
+				{ cwd: '/w', sessionId: FORK, forkedFromId: ROOT, historyBase: { threadId: ROOT, endByteOffset: 40990 } },
+				{ cwd: '/w', sessionId: ROOT },
+			]);
+		});
+
+		test('binds a fork only to the pane that forked: TUI /fork, the neighbor reconciliation and the standing scan', async () => {
+			await withDirectoryWalkFixture(async ({ workspace, codexHome }) => {
+				const elsewhere = join(workspace, 'elsewhere');
+				await mkdir(elsewhere, { recursive: true });
+				await mkdir(join(codexHome, 'sessions', '2026', '10', '04'), { recursive: true });
+				const now = Date.now();
+				const paths = Object.fromEntries([ROOT, FORK, FORK_OF_FORK, OTHER_ROOT, OTHER_FORK].map(id => [id, rolloutPath(codexHome, id)]));
+				await writeFile(paths[ROOT], jsonl([meta(ROOT, workspace), user(1, '最初の質問')]));
+				await writeFile(paths[OTHER_ROOT], jsonl([meta(OTHER_ROOT, elsewhere), user(1, '別の会話')]));
+				// fork 先は fork した瞬間に作られる（まだ発言は無い）
+				await writeFile(paths[FORK], jsonl([meta(FORK, workspace, { parent: ROOT, endByteOffset: 1 })]));
+				await writeFile(paths[OTHER_FORK], jsonl([meta(OTHER_FORK, elsewhere, { parent: OTHER_ROOT, endByteOffset: 1 })]));
+				const rows: IThreadRow[] = [
+					{ id: ROOT, path: paths[ROOT], cwd: workspace, createdAt: now - 600_000, updatedAt: now - 600_000 },
+					{ id: OTHER_ROOT, path: paths[OTHER_ROOT], cwd: elsewhere, createdAt: now - 600_000, updatedAt: now - 600_000 },
+					{ id: FORK, path: paths[FORK], cwd: workspace, createdAt: now + 1_000, updatedAt: now + 1_000 },
+					{ id: OTHER_FORK, path: paths[OTHER_FORK], cwd: elsewhere, createdAt: now + 1_000, updatedAt: now + 1_000 },
+				];
+				await writeStateDatabase(codexHome, rows);
+				const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+				const access = chat as unknown as ICodexForkAccess;
+				try {
+					assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [
+						{ terminalId: 1, token: 'pane-original', cwd: workspace },
+						{ terminalId: 2, token: 'pane-neighbor', cwd: workspace },
+						{ terminalId: 3, token: 'pane-scan', cwd: elsewhere },
+					]), true);
+					fireParadisAgentHookEvent({ token: 'pane-original', event: 'SessionStart', sessionId: ROOT, transcriptPath: paths[ROOT], cwd: workspace, payload: { source: 'startup' }, at: now });
+					await waitFor(() => access.paneSessions.get('pane-original')?.transcriptPath === paths[ROOT], 'the original pane was not bound');
+					for (const token of ['pane-original', 'pane-neighbor', 'pane-scan']) {
+						access.cliDiscoveryGenerations.set(token, 0);
+					}
+					const minMtime = now - 60_000;
+					// 同じフォルダの別のペインの照合・別のフォルダの常駐スキャンは、持ち主の決まっていない fork 先を採らない
+					await access.discoverAndNotify('pane-neighbor', 'codex', 'resume', workspace, minMtime, 0);
+					await access.scanPanesForUnclaimedSessions();
+					const neighbor = access.paneSessions.get('pane-neighbor')?.transcriptPath;
+					const scanned = access.paneSessions.get('pane-scan')?.transcriptPath;
+					// /fork したペインの照合は、元が今の会話と一致する fork 先へ張り替える
+					await access.discoverAndNotify('pane-original', 'codex', 'resume', workspace, minMtime, 0);
+					const followed = access.paneSessions.get('pane-original');
+					// 張り替えた後の /fork（fork の fork）も同じように追う
+					await writeFile(paths[FORK_OF_FORK], jsonl([meta(FORK_OF_FORK, workspace, { parent: FORK, endByteOffset: 1 })]));
+					await writeStateDatabase(codexHome, [...rows, { id: FORK_OF_FORK, path: paths[FORK_OF_FORK], cwd: workspace, createdAt: now + 2_000, updatedAt: now + 2_000 }]);
+					await access.discoverAndNotify('pane-neighbor', 'codex', 'resume', workspace, minMtime, 0);
+					await access.discoverAndNotify('pane-original', 'codex', 'resume', workspace, now + 1_500, 0);
+					assert.deepStrictEqual({
+						neighbor, scanned, followed,
+						neighborAfterSecondFork: access.paneSessions.get('pane-neighbor')?.transcriptPath,
+						followedTwice: access.paneSessions.get('pane-original')?.sessionId,
+					}, {
+						neighbor: undefined, scanned: undefined,
+						followed: { token: 'pane-original', agent: 'codex', transcriptPath: paths[FORK], sessionId: FORK },
+						neighborAfterSecondFork: undefined,
+						followedTwice: FORK_OF_FORK,
+					});
+				} finally {
+					chat.dispose();
+				}
+			});
+		});
+
+		test('codex fork X binds the new fork of X, not X itself, and leaves X with the pane that runs it', async () => {
+			await withDirectoryWalkFixture(async ({ workspace, codexHome }) => {
+				await mkdir(join(codexHome, 'sessions', '2026', '10', '04'), { recursive: true });
+				const now = Date.now();
+				const root = rolloutPath(codexHome, ROOT);
+				const fork = rolloutPath(codexHome, FORK);
+				await writeFile(root, jsonl([meta(ROOT, workspace), user(1, '最初の質問')]));
+				await writeFile(fork, jsonl([meta(FORK, workspace, { parent: ROOT, endByteOffset: 1 })]));
+				await writeStateDatabase(codexHome, [
+					{ id: ROOT, path: root, cwd: workspace, createdAt: now - 600_000, updatedAt: now - 600_000 },
+					{ id: FORK, path: fork, cwd: workspace, createdAt: now + 1_000, updatedAt: now + 1_000 },
+				]);
+				const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+				const access = chat as unknown as ICodexForkAccess;
+				try {
+					assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [
+						{ terminalId: 1, token: 'pane-original', cwd: workspace },
+						{ terminalId: 2, token: 'pane-forked', cwd: workspace },
+					]), true);
+					fireParadisAgentHookEvent({ token: 'pane-original', event: 'SessionStart', sessionId: ROOT, transcriptPath: root, cwd: workspace, payload: { source: 'startup' }, at: now });
+					await waitFor(() => access.paneSessions.get('pane-original')?.transcriptPath === root, 'the original pane was not bound');
+					chat.onCliCommandDetected('pane-forked', 'codex', 'fork', workspace, undefined, ROOT);
+					// 元のペインの照合は、ほかのペインで `codex fork X` を打った X の fork 先を採らない
+					const originalGeneration = access.cliDiscoveryGenerations.get('pane-original') ?? 0;
+					access.cliDiscoveryGenerations.set('pane-original', originalGeneration);
+					await access.discoverAndNotify('pane-original', 'codex', 'resume', workspace, now - 60_000, originalGeneration);
+					const originalWhileForking = access.paneSessions.get('pane-original')?.transcriptPath;
+					await access.discoverAndNotify('pane-forked', 'codex', 'fork', workspace, now - 15_000, access.cliDiscoveryGenerations.get('pane-forked') ?? -1);
+					assert.deepStrictEqual({
+						originalWhileForking,
+						original: access.paneSessions.get('pane-original')?.transcriptPath,
+						forked: access.paneSessions.get('pane-forked'),
+					}, {
+						originalWhileForking: root,
+						original: root,
+						forked: { token: 'pane-forked', agent: 'codex', transcriptPath: fork, sessionId: FORK },
+					});
+				} finally {
+					chat.dispose();
+				}
+			});
+		});
+
+		test('still binds a new thread whose rollout is not written yet, and does not guess when another candidate exists', async () => {
+			await withDirectoryWalkFixture(async ({ workspace, codexHome }) => {
+				await mkdir(join(codexHome, 'sessions', '2026', '10', '04'), { recursive: true });
+				const now = Date.now();
+				const written = rolloutPath(codexHome, ROOT);
+				// Codex は最初の発言まで rollout を作らない（DB の行だけがある）
+				const notWritten = rolloutPath(codexHome, OTHER_ROOT);
+				const broken = rolloutPath(codexHome, OTHER_FORK);
+				await writeFile(written, jsonl([meta(ROOT, workspace), user(1, '最初の質問')]));
+				await writeFile(broken, '{"timestamp":"2026-10-04T03:50:44.000Z","type":"session_meta","payload":{"id"');
+				const row = (id: string, path: string) => ({ id, path, cwd: workspace, createdAt: now + 1_000, updatedAt: now + 1_000 });
+				// 1 回ずつ新しいペインで探す（前の回の claim を持ち越さない）
+				const discover = async (rows: readonly IThreadRow[]) => {
+					await writeStateDatabase(codexHome, rows);
+					const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+					const access = chat as unknown as ICodexForkAccess;
+					try {
+						assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token: 'pane-new', cwd: workspace }]), true);
+						access.cliDiscoveryGenerations.set('pane-new', 0);
+						await access.discoverAndNotify('pane-new', 'codex', 'new', workspace, now - 15_000, 0);
+						return access.paneSessions.get('pane-new')?.transcriptPath;
+					} finally {
+						chat.dispose();
+					}
+				};
+				assert.deepStrictEqual({
+					alone: await discover([row(OTHER_ROOT, notWritten)]),
+					// 同じフォルダの 2 つのペインの会話で、片方だけ rollout が書かれている: どちらか決めない
+					two: await discover([row(ROOT, written), row(OTHER_ROOT, notWritten)]),
+					// 先頭行が読めない候補は選ばれても結ばない。ほかの候補と並べば一意と数えない
+					broken: await discover([row(OTHER_FORK, broken)]),
+					brokenPair: await discover([row(ROOT, written), row(OTHER_FORK, broken)]),
+				}, { alone: notWritten, two: undefined, broken: undefined, brokenPair: undefined });
+			});
+		});
+
+		test('codex fork --last in two panes binds each pane to the fork of its own conversation, and a malformed id binds nothing', async () => {
+			await withDirectoryWalkFixture(async ({ workspace, codexHome }) => {
+				await mkdir(join(codexHome, 'sessions', '2026', '10', '04'), { recursive: true });
+				const now = Date.now();
+				const paths = Object.fromEntries([ROOT, FORK, OTHER_ROOT, OTHER_FORK].map(id => [id, rolloutPath(codexHome, id)]));
+				await writeFile(paths[ROOT], jsonl([meta(ROOT, workspace), user(1, 'A の質問')]));
+				await writeFile(paths[OTHER_ROOT], jsonl([meta(OTHER_ROOT, workspace), user(1, 'B の質問')]));
+				await writeFile(paths[FORK], jsonl([meta(FORK, workspace, { parent: ROOT, endByteOffset: 1 })]));
+				await writeFile(paths[OTHER_FORK], jsonl([meta(OTHER_FORK, workspace, { parent: OTHER_ROOT, endByteOffset: 1 })]));
+				await writeStateDatabase(codexHome, [
+					{ id: ROOT, path: paths[ROOT], cwd: workspace, createdAt: now - 600_000, updatedAt: now - 600_000 },
+					{ id: OTHER_ROOT, path: paths[OTHER_ROOT], cwd: workspace, createdAt: now - 600_000, updatedAt: now - 600_000 },
+					{ id: FORK, path: paths[FORK], cwd: workspace, createdAt: now + 1_000, updatedAt: now + 1_000 },
+					{ id: OTHER_FORK, path: paths[OTHER_FORK], cwd: workspace, createdAt: now + 1_000, updatedAt: now + 1_000 },
+				]);
+				const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+				const access = chat as unknown as ICodexForkAccess;
+				try {
+					assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [
+						{ terminalId: 1, token: 'pane-a', cwd: workspace },
+						{ terminalId: 2, token: 'pane-b', cwd: workspace },
+						{ terminalId: 3, token: 'pane-malformed', cwd: workspace },
+					]), true);
+					fireParadisAgentHookEvent({ token: 'pane-a', event: 'SessionStart', sessionId: ROOT, transcriptPath: paths[ROOT], cwd: workspace, payload: { source: 'startup' }, at: now });
+					fireParadisAgentHookEvent({ token: 'pane-b', event: 'SessionStart', sessionId: OTHER_ROOT, transcriptPath: paths[OTHER_ROOT], cwd: workspace, payload: { source: 'startup' }, at: now });
+					await waitFor(() => access.paneSessions.has('pane-a') && access.paneSessions.has('pane-b'), 'the panes were not bound');
+					// 形に合わない id: 元が分からないので、照合では fork 先を結ばない（hook に任せる）
+					chat.onCliCommandDetected('pane-malformed', 'codex', 'fork', workspace, undefined, 'not a thread id');
+					await access.discoverAndNotify('pane-malformed', 'codex', 'fork', workspace, now - 15_000, access.cliDiscoveryGenerations.get('pane-malformed') ?? -1);
+					// 2 つのペインで `codex fork --last`: 元がほかのペインの今の会話である fork 先は採らない
+					chat.onCliCommandDetected('pane-a', 'codex', 'fork', workspace);
+					chat.onCliCommandDetected('pane-b', 'codex', 'fork', workspace);
+					await access.discoverAndNotify('pane-a', 'codex', 'fork', workspace, now - 15_000, access.cliDiscoveryGenerations.get('pane-a') ?? -1);
+					await access.discoverAndNotify('pane-b', 'codex', 'fork', workspace, now - 15_000, access.cliDiscoveryGenerations.get('pane-b') ?? -1);
+					assert.deepStrictEqual({
+						malformed: access.paneSessions.get('pane-malformed')?.transcriptPath,
+						a: access.paneSessions.get('pane-a')?.transcriptPath,
+						b: access.paneSessions.get('pane-b')?.transcriptPath,
+					}, { malformed: undefined, a: paths[FORK], b: paths[OTHER_FORK] });
+				} finally {
+					chat.dispose();
+				}
+			});
+		});
+
+		test('shows the history of a fork from the rollouts it refers to, without duplicates', async () => {
+			await withDirectoryWalkFixture(async ({ workspace, codexHome }) => {
+				await mkdir(join(codexHome, 'sessions', '2026', '10', '04'), { recursive: true });
+				const root = rolloutPath(codexHome, ROOT);
+				const fork = rolloutPath(codexHome, FORK);
+				const forkOfFork = rolloutPath(codexHome, FORK_OF_FORK);
+				const rootHistory = jsonl([meta(ROOT, workspace), user(1, '最初の質問'), ...exec(2, 'call_root', 'README.md'), assistant(4, '最初の答え')]);
+				// fork した後に元の会話へ足された行は、fork 先の過去の会話ではない
+				await writeFile(root, rootHistory + jsonl([user(5, 'fork の後に元で聞いた')]));
+				const forkLines = jsonl([meta(FORK, workspace, { parent: ROOT, endByteOffset: Buffer.byteLength(rootHistory) }), line(25, 'event_msg', { type: 'thread_settings_applied' }), user(26, 'fork で聞いた'), ...exec(27, 'call_fork', 'src'), assistant(29, 'fork の答え')]);
+				await writeFile(fork, forkLines);
+				await writeFile(forkOfFork, jsonl([meta(FORK_OF_FORK, workspace, { parent: FORK, endByteOffset: Buffer.byteLength(forkLines) }), user(31, '二度目の fork')]));
+				await writeStateDatabase(codexHome, [ROOT, FORK, FORK_OF_FORK].map(id => ({ id, path: rolloutPath(codexHome, id), cwd: workspace, createdAt: Date.now(), updatedAt: Date.now() })));
+				const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+				const access = chat as unknown as ICodexForkAccess;
+				try {
+					assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token: 'pane-fork', cwd: workspace }]), true);
+					fireParadisAgentHookEvent({ token: 'pane-fork', event: 'SessionStart', sessionId: FORK_OF_FORK, transcriptPath: forkOfFork, cwd: workspace, payload: { source: 'fork' }, at: Date.now() });
+					await waitFor(() => access.tailers.has('pane-fork'), 'the fork was not tailed');
+					const tailer = access.tailers.get('pane-fork')!;
+					await tailer.ready;
+					assert.strictEqual(tailer.wasInitialTruncated, false);
+					assert.deepStrictEqual(tailer.messages.map(message => `${message.rev}:${message.role}:${message.kind}:${message.text}`), [
+						'0:user:text:最初の質問',
+						'1:assistant:tool_use:text(await tools.exec_command({cmd:"ls"}));\n',
+						'2:tool:tool_result:Script completed\nWall time 0.1 seconds\nOutput:\nREADME.md',
+						'3:assistant:text:最初の答え',
+						'4:user:text:fork で聞いた',
+						'5:assistant:tool_use:text(await tools.exec_command({cmd:"ls"}));\n',
+						'6:tool:tool_result:Script completed\nWall time 0.1 seconds\nOutput:\nsrc',
+						'7:assistant:text:fork の答え',
+						'8:user:text:二度目の fork',
+					]);
+				} finally {
+					chat.dispose();
+				}
+			});
+		});
+
+		test('shows only the fork when the referred rollout is missing, too short or not at a line boundary', async () => {
+			await withDirectoryWalkFixture(async ({ workspace, codexHome }) => {
+				await mkdir(join(codexHome, 'sessions', '2026', '10', '04'), { recursive: true });
+				const root = rolloutPath(codexHome, ROOT);
+				const rootHistory = jsonl([meta(ROOT, workspace), user(1, '最初の質問'), assistant(2, '最初の答え')]);
+				await writeFile(root, rootHistory);
+				const resolveRoot = async (threadId: string) => threadId === ROOT ? root : undefined;
+				const read = (endByteOffset: number, budget = 1024 * 1024, parent = ROOT) => paradisReadCodexForkHistory(meta(FORK, workspace, { parent, endByteOffset }), resolveRoot, budget);
+				const size = Buffer.byteLength(rootHistory);
+				const lastLine = `${assistant(2, '最初の答え')}\n`;
+				// fork の fork で、さらに古い段が読めない（元の元が無い）
+				const forkOfMissing = rolloutPath(codexHome, FORK);
+				const forkHistory = jsonl([meta(FORK, workspace, { parent: OTHER_ROOT, endByteOffset: 10 }), user(1, 'fork で聞いた')]);
+				await writeFile(forkOfMissing, forkHistory);
+				const readForkOfFork = paradisReadCodexForkHistory(meta(FORK_OF_FORK, workspace, { parent: FORK, endByteOffset: Buffer.byteLength(forkHistory) }), async threadId => threadId === FORK ? forkOfMissing : undefined, 1024 * 1024);
+				assert.deepStrictEqual(await Promise.all([
+					readForkOfFork,
+					read(size),
+					// 予算を超えたら新しい方から、完全な行だけ
+					read(size, Buffer.byteLength(lastLine) + 5),
+					// ファイルより長い・行の境目でない・元の rollout が無い
+					read(size + 1),
+					read(size - 1),
+					read(size, 1024 * 1024, OTHER_ROOT),
+					// fork 先でない
+					paradisReadCodexForkHistory(meta(FORK, workspace), resolveRoot, 1024 * 1024),
+				]), [
+					{ text: forkHistory, truncated: true },
+					{ text: rootHistory, truncated: false },
+					{ text: lastLine, truncated: true },
+					undefined, undefined, undefined, undefined,
+				]);
+			});
+		});
 	});
 
 	suite('Claude Code /fork and background sessions', () => {

@@ -438,6 +438,7 @@ export interface IParadisMobileRelayService {
 	 * integration 由来)。起動の確定情報としては使わず、そのペインの cwd ベースのセッション探索を
 	 * 前倒しするトリガーとしてのみ使う (実在する新しい transcript の発見をもって確定するため、
 	 * `claude --help` のような空振りは誤検知にならない)。
+	 * sessionId は resume・attach では対象の会話、Codex の fork では元の会話（fork 先ではない）。
 	 */
 	notifyAgentCliCommand(lease: IParadisMobileWindowLease, paneToken: string, generation: number, commandLine: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork' | 'attach', cwd: string | undefined, commandCwd?: string, sessionId?: string): Promise<ParadisAgentCommandDeliveryResult>;
 	/**

@@ -621,6 +621,39 @@ export function flattenContentParts(content: unknown): IFlattenedContent {
 }
 
 /**
+ * Codex のツール結果の配列形式（`[{type:'input_text',text}, {type:'input_image',image_url}]`）を読む。
+ * exec の結果は「Script completed…Output:\n」と本文が別の要素に分かれて書かれる（前の要素が改行で終わる）。
+ * MCP の結果は content ごとに要素が分かれ、改行で終わらない。前の要素が改行で終わっていればそのまま、
+ * そうでなければ改行を挟んでつなぐ。画像は {@link flattenContentParts} と同じく本文に `[image]` を置き、実体を別に返す。
+ */
+function codexToolOutputParts(output: unknown): IFlattenedContent {
+	if (!Array.isArray(output)) {
+		return { text: '', images: [] };
+	}
+	let text = '';
+	let first = true;
+	const images: IFlattenedImage[] = [];
+	const append = (part: string) => {
+		text += first || text.endsWith('\n') ? part : `\n${part}`;
+		first = false;
+	};
+	for (const item of output) {
+		const block = rec(item);
+		const type = str(block?.type);
+		if (type === 'input_text' || type === 'output_text' || type === 'text') {
+			append(str(block?.text) ?? '');
+		} else if (type === 'input_image') {
+			append('[image]');
+			const image = parseImageDataUri(str(block?.image_url));
+			if (image !== undefined) {
+				images.push(image);
+			}
+		}
+	}
+	return { text, images };
+}
+
+/**
  * AskUserQuestion の input（{ questions: [{ question, header, options: [{label, description, preview?}] , multiSelect? }] }）を
  * question メッセージ列へ展開する。想定形でなければ空配列（呼び出し側が汎用 tool_use にフォールバック）。
  */
@@ -1476,9 +1509,10 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 		}
 	} else if (ptype === 'custom_tool_call_output') {
-		const text = str(payload.output) ?? '';
-		if (text.trim().length > 0) {
-			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
+		// 今の Codex（exec 等）は output を `[{type:'input_text',text}]` の配列で書く（文字列は旧形式）
+		const { text, images } = typeof payload.output === 'string' ? { text: payload.output, images: [] } : codexToolOutputParts(payload.output);
+		if (text.trim().length > 0 || images.length > 0) {
+			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}), ...(images.length > 0 ? { imageData: images } : {}) });
 		}
 	} else if (ptype === 'local_shell_call') {
 		let text = '';
@@ -1489,6 +1523,7 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 	} else if (ptype === 'function_call_output') {
 		const output = payload.output;
 		let text: string;
+		let images: readonly IFlattenedImage[] = [];
 		let failed = false;
 		if (typeof output === 'string') {
 			// spawn_agent の結果は起動した子の名前だけの JSON（`{"task_name":"/root/reviewer"}`）
@@ -1496,6 +1531,11 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 			const spawned = parsedOutput !== undefined && Object.keys(parsedOutput).length === 1 ? str(parsedOutput.task_name) : undefined;
 			// allow-any-unicode-next-line
 			text = spawned !== undefined ? `起動しました: ${spawned}` : output;
+		} else if (Array.isArray(output)) {
+			// exec の結果などの配列形式（custom_tool_call_output と同じ）
+			const parts = codexToolOutputParts(output);
+			text = parts.text;
+			images = parts.images;
 		} else {
 			const o = rec(output);
 			text = str(o?.content) ?? flattenContent(output) ?? '';
@@ -1513,8 +1553,8 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 		// view_image は結果本文を持たず（"attached local image path" とだけ書く）、実体は直後の
 		// user メッセージに来る。この定型文を出すと画像カードと同じ枠が二重に並ぶので落とす。
 		const isViewImagePlaceholder = callId !== undefined && callId === signals.pendingCodexImageCallId && text.trim() === 'attached local image path';
-		if (text.trim().length > 0 && !isViewImagePlaceholder) {
-			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}), ...(failed ? { isError: true } : {}) });
+		if ((text.trim().length > 0 || images.length > 0) && !isViewImagePlaceholder) {
+			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}), ...(failed ? { isError: true } : {}), ...(images.length > 0 ? { imageData: images } : {}) });
 		}
 	}
 	return out;
