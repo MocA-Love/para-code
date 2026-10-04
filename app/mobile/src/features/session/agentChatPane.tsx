@@ -36,6 +36,7 @@ import { QueuedSendsBanner } from './queuedSends.js';
 import { SessionComposer, type SessionComposerHandle } from './sessionComposer.js';
 import { useAgentHistory } from './useAgentHistory.js';
 import { useApprovalOptions } from './useApprovalOptions.js';
+import { useSessionView } from './useSessionView.js';
 
 /** 回答カードの高さの上限。選択肢が多いと会話が見えなくなるので、超えたぶんはカードの中でスクロールする。 */
 const PINNED_CARD_MAX_HEIGHT = 380;
@@ -71,6 +72,12 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 		requestAgentCommandCatalog: s.requestAgentCommandCatalog,
 		updateAgentSettings: s.updateAgentSettings,
 	})));
+	const clearAgentSlashRejection = useAppStore(s => s.clearAgentSlashRejection);
+	const handleSlashRejection = useCallback((requestId: string) => clearAgentSlashRejection(terminalKey, requestId), [clearAgentSlashRejection, terminalKey]);
+	// 断りの「端末を開く」: このタブをターミナル表示に切り替える（PC で開いた画面を Esc で閉じる・入力欄の文字を消す）
+	const viewPcId = useAppStore(s => s.activePcId);
+	const { setView } = useSessionView(viewPcId, terminalKey);
+	const openTerminal = useCallback(() => setView('terminal'), [setView]);
 	// 会話の文字サイズ（設定 → チャット UI）。変えたらその場で描き直す。
 	const chatFontSize = useAppStore(s => s.chatFontSize);
 	const actions = useAgentActions(terminalKey, chat?.agent);
@@ -337,6 +344,9 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 						requestAgentModelCatalog={requestAgentModelCatalog}
 						requestAgentCommandCatalog={requestAgentCommandCatalog}
 						updateAgentSettings={updateAgentSettings}
+						slashRejection={chat?.slashRejection}
+						onSlashRejectionHandled={handleSlashRejection}
+						onOpenTerminal={openTerminal}
 						answerTarget={activeAnswerRequest}
 						onCancelAnswer={cancelAnswer}
 						answerRefreshing={refreshing}

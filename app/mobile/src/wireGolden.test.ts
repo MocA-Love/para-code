@@ -277,15 +277,16 @@ describe('wire golden (app side)', () => {
 			}),
 			shifted: chat?.monitors?.[0] !== undefined && chat.monitors[0].startedAt !== goldenMonitor?.['startedAt'],
 			// 任意項目: Para Code からの知らせ・Advisor の印・一覧の Advisor への相談
-			notice: chat?.messages.filter(message => message.notice === true).map(message => message.rev),
+			notice: chat?.messages.filter(message => message.notice === true).map(message => [message.rev, message.noticeSource]),
 			advisor: chat?.messages.filter(message => message.advisor !== undefined).map(message => [message.rev, message.advisor]),
 			advisors: chat?.activity?.advisors,
 		}).toEqual({
 			attach: shapeOf(agentGolden.toPc[0]),
-			messages: ['0:text', '1:tool_use', '2:tool_result', '3:tool_use', '4:tool_result', '5:text', '6:question'],
+			messages: ['0:text', '1:tool_use', '2:tool_result', '3:tool_use', '4:tool_result', '5:text', '6:question', '7:text'],
 			previews: ['# Toast\n\n+----------------------+\n| Connection failed    |\n+----------------------+', '# Inline'],
 			interaction: { kind: 'question', id: 'question-1', answerVia: 'mod' },
-			notice: [5],
+			// noticeSource: 'command' はスラッシュコマンドの出力（読み上げの文言を分ける）
+			notice: [[5, undefined], [7, 'command']],
 			advisor: [[3, { model: 'claude-opus-5-5' }], [4, { model: 'claude-opus-5-5', outcome: 'redacted' }]],
 			advisors: (goldenDelta?.['activity'] as Golden | undefined)?.['advisors'],
 			capabilities: { agentActions: true, claudeSettings: true },
@@ -373,6 +374,88 @@ describe('wire golden (app side)', () => {
 			stopRequest: shapeOf(agentGolden.toPc.find(message => message.t === 'action/stopShell')),
 			stopped: { status: 'accepted' },
 		});
+		controller.disconnect();
+	});
+
+	it('agent: コマンドの一覧（agent.commands.v2）はゴールデンと同じ形で求め、重なりと出どころを読み、断りの理由を返す', async () => {
+		const { controller, pcMux, sent, latest } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		pcMux.send(Channels.Agent, encode(agentGolden.toMobile.find(message => message.t === 'snapshot')));
+		await flush();
+		controller.requestAgentCommandCatalog('terminal-key-1');
+		await flush();
+		const sentCatalog = sent.agent!.filter(message => message.t === 'command-catalog').at(-1);
+		const goldenCatalog = agentGolden.toMobile.find(message => message.t === 'command-catalog');
+		pcMux.send(Channels.Agent, encode({ ...goldenCatalog, requestId: sentCatalog?.['requestId'] }));
+		await flush();
+		const sending = controller.sendAgentMessage('terminal-key-1', '/nonexistent');
+		await flush();
+		const sentMessage = sent.agent!.filter(message => message.t === 'action/sendMessage').at(-1);
+		const goldenRejected = agentGolden.toMobile.find(message => message.t === 'action-result' && message['code'] === 'unknown-command' && message['late'] !== true);
+		pcMux.send(Channels.Agent, encode({ ...goldenRejected, requestId: sentMessage?.['requestId'] }));
+		expect({
+			request: shapeOf(sentCatalog),
+			format: sentCatalog?.['format'],
+			catalog: latest()?.agentChats.get('terminal-key-1')?.commandCatalog,
+			rejected: await sending,
+		}).toEqual({
+			request: shapeOf(agentGolden.toPc.find(message => message.t === 'command-catalog')),
+			format: 2,
+			catalog: { status: 'ready', commands: goldenCatalog?.['commands'] },
+			rejected: { status: 'rejected', code: 'unknown-command', message: goldenRejected?.['message'] },
+		});
+		controller.disconnect();
+	});
+
+	it('agent: 受け付けた後で届いた断り（late: true）を、送ったスラッシュコマンドの文と一緒に会話の状態へ載せる', async () => {
+		const { controller, pcMux, sent, latest } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		pcMux.send(Channels.Agent, encode(agentGolden.toMobile.find(message => message.t === 'snapshot')));
+		await flush();
+		const sending = controller.sendAgentMessage('terminal-key-1', '/nonexistent');
+		const plain = controller.sendAgentMessage('terminal-key-1', '続けて');
+		await flush();
+		const [slashSent, plainSent] = sent.agent!.filter(message => message.t === 'action/sendMessage');
+		pcMux.send(Channels.Agent, encode({ t: 'action-result', id: 7, token: 'agent-token-1', requestId: slashSent?.['requestId'], status: 'accepted' }));
+		pcMux.send(Channels.Agent, encode({ t: 'action-result', id: 7, token: 'agent-token-1', requestId: plainSent?.['requestId'], status: 'accepted' }));
+		const accepted = [await sending, await plain];
+		const late = agentGolden.toMobile.find(message => message.t === 'action-result' && message['late'] === true);
+		// 発言（スラッシュコマンドでない）への遅い断りは捨てる
+		pcMux.send(Channels.Agent, encode({ ...late, requestId: plainSent?.['requestId'] }));
+		pcMux.send(Channels.Agent, encode({ ...late, requestId: slashSent?.['requestId'] }));
+		await flush();
+		const rejection = latest()?.agentChats.get('terminal-key-1')?.slashRejection;
+		controller.clearAgentSlashRejection('terminal-key-1', String(slashSent?.['requestId']));
+		await flush();
+		expect({ accepted, rejection, cleared: latest()?.agentChats.get('terminal-key-1')?.slashRejection }).toEqual({
+			accepted: [{ status: 'accepted' }, { status: 'accepted' }],
+			rejection: { requestId: slashSent?.['requestId'], text: '/nonexistent', message: late?.['message'] },
+			cleared: undefined,
+		});
+		controller.disconnect();
+	});
+
+	it('agent: 受け付けより先に届いた遅い断り（late: true）で、待っている送信を断りとして終える', async () => {
+		const { controller, pcMux, sent } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		pcMux.send(Channels.Agent, encode(agentGolden.toMobile.find(message => message.t === 'snapshot')));
+		await flush();
+		const sending = controller.sendAgentMessage('terminal-key-1', '/nonexistent');
+		await flush();
+		const slashSent = sent.agent!.filter(message => message.t === 'action/sendMessage').at(-1);
+		const late = agentGolden.toMobile.find(message => message.t === 'action-result' && message['late'] === true);
+		pcMux.send(Channels.Agent, encode({ ...late, requestId: slashSent?.['requestId'] }));
+		pcMux.send(Channels.Agent, encode({ t: 'action-result', id: 7, token: 'agent-token-1', requestId: slashSent?.['requestId'], status: 'accepted' }));
+		expect(await sending).toEqual({ status: 'rejected', code: 'unknown-command', message: late?.['message'] });
 		controller.disconnect();
 	});
 

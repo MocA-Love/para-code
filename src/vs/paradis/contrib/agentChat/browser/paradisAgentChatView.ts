@@ -634,6 +634,9 @@ export class ParadisAgentChatView extends Disposable {
 					// Para Code からの知らせ（送れなかった発言など）。エージェントの発言と分けて灰色の 1 行で出す
 					const notice = $('.paradis-agent-chat-message.system');
 					notice.setAttribute('role', 'note');
+					notice.setAttribute('aria-label', item.message.noticeSource === 'command'
+						? localize('paradisAgentChat.commandOutputLabel', "Command output: {0}", item.message.text)
+						: localize('paradisAgentChat.noticeLabel', "Notice from Para Code: {0}", item.message.text));
 					append(notice, $('span.codicon.codicon-info'));
 					append(notice, $('span.paradis-agent-chat-system-text')).textContent = item.message.text;
 					return notice;

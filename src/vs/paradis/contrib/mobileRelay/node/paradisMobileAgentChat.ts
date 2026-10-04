@@ -41,7 +41,8 @@ import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHomes, paradisE
 import { paradisExtractIssueUrls } from '../../../common/paradisIssueDetection.js';
 import { paradisIsWslAgentHomePath } from '../../../common/paradisWslAgentHome.js';
 import { paradisCwdGroupKey } from '../../../common/paradisWslPath.js';
-import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from './paradisAgentCommandCatalog.js';
+import { paradisBuildAgentCommandCatalog, paradisBuiltInAgentCommands, paradisLegacyAgentCommandCatalog, paradisNormalizeModCommandList, type IParadisAgentCommandOption } from './paradisAgentCommandCatalog.js';
+import { IParadisSlashCommand, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisParseSlashCommand, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
 import { IParadisAgentActivityState, IParadisAgentAdvisorUpdate, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
@@ -125,6 +126,19 @@ export function paradisIsLateHookAfterTurnEnd(eventName: string, at: number, tur
 }
 
 
+/**
+ * mod が `ok: false` で断った送信への返事（キーでは送り直さない）。`busy`（別の発言の最中）と `unavailable`（渡せなかった）は
+ * undefined（呼び出し側がキーで送る）。
+ */
+function paradisModRefusalResult(result: string): { readonly code: string; readonly message: string } | undefined {
+	switch (result) {
+		case 'refused': return { code: 'send-refused', message: MOD_SEND_REFUSED_MESSAGE };
+		case 'stale': return { code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' };
+		case 'panel-open': return { code: PARADIS_PANEL_OPEN_CODE, message: PARADIS_PANEL_OPEN_MESSAGE };
+		default: return undefined;
+	}
+}
+
 /** agentチャネルのモバイル→PCメッセージ。 */
 type AgentInbound =
 	| { t: 'attach'; id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }
@@ -142,7 +156,8 @@ type AgentInbound =
 	| { t: 'approval-options'; id: number; token?: string; requestId: string; epoch: string; interactionId: string }
 	| { t: 'action/claudeSetting'; id: number; token?: string; requestId: string; epoch: string; setting: 'model' | 'effort'; value: string }
 	| { t: 'model-catalog'; id: number; token?: string; requestId: string }
-	| { t: 'command-catalog'; id: number; token?: string; requestId: string }
+	/** `format: 2`（`agent.commands.v2`）: 同じ名前の重なり・`plugin` / `mcp` の出どころを含む一覧を求める。無ければ古い形で返す。 */
+	| { t: 'command-catalog'; id: number; token?: string; requestId: string; format?: 2 }
 	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string }
 	| { t: 'activity-detail'; id: number; token?: string; requestId: string; epoch: string; activityId: string }
 	| { t: 'tool-full'; id: number; token?: string; requestId: string; epoch: string; rev: number }
@@ -159,10 +174,11 @@ type AgentInbound =
 type AgentOutbound =
 	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } & IParadisAgentShellsField
 	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } & IParadisAgentShellsField
-	| { t: 'command-catalog'; id: number; requestId: string; commands: readonly IParadisAgentCommandOption[] }
+	| { t: 'command-catalog'; id: number; requestId: string; commands: readonly IParadisAgentCommandOption[]; format?: 2 }
 	| { t: 'command-catalog-error'; id: number; requestId: string; message: string }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
-	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string; consumed?: boolean }
+	/** `late: true`: 受け付けた後で断られたと分かった（キーで送ったスラッシュコマンドへの Claude Code の `Unknown command`）。 */
+	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string; consumed?: boolean; late?: true }
 	| { t: 'activity-detail'; id: number; requestId: string; activityId: string; messages?: readonly IParadisAgentActivityDetailMessage[]; error?: string }
 	| { t: 'tool-full'; id: number; requestId: string; rev: number; text?: string; error?: string }
 	| { t: 'tool-image'; id: number; requestId: string; rev: number; index: number; mediaType?: string; data?: string; error?: string }
@@ -195,6 +211,17 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 const POLL_INTERVAL_MS = 1500;
+/** スラッシュコマンドの一覧を覚えておく時間（`/` を打つたびに求められる。デスクトップのチャット欄の COMMAND_CACHE_TTL と同じ考え方）。 */
+const COMMAND_CATALOG_CACHE_MS = 30_000;
+/** キーで送った Claude Code のスラッシュコマンドが断られたか（transcript の `Unknown command: /x`）を見張る上限（送った時刻から）。 */
+const CLAUDE_UNKNOWN_COMMAND_WAIT_MS = 8_000;
+/** 画面が開いているかの答えを覚えておく時間（続けて送るときの往復を省く。画面を開け閉めする間よりは十分短い）。 */
+const DIALOG_ANSWER_CACHE_MS = 500;
+/** 承認・質問以外の画面（/config など）が PC でキーを持っているときの断り（`action-result` の code と文）。 */
+const PARADIS_PANEL_OPEN_CODE = 'panel-open';
+const PARADIS_PANEL_OPEN_MESSAGE = 'PC の Claude Code で画面（/config など）が開いたままです。端末を開いて Esc を送ると閉じられます。閉じてから送り直してください';
+/** mod が発言を送れなかったと答えたときの文（理由が届かなかったとき）。 */
+const MOD_SEND_REFUSED_MESSAGE = 'PC の Claude Code がこの発言を受け付けませんでした。PC の画面で確かめてください';
 /** Claude hookが渡す agent_id の受理形。SubagentStart/Stopの2経路(親子関係の解決・backgroundTasks反映)で共有する。 */
 const PARADIS_CLAUDE_AGENT_ID_PATTERN = /^[A-Za-z0-9._:-]{1,500}$/;
 /** state DB・rollout の名前に使われる Codex の thread ID の形（SQL・パスへ渡す前の検査）。 */
@@ -829,7 +856,8 @@ function isValidModelCatalogRequest(msg: AgentInboundCandidate): msg is AgentInb
 }
 
 function isValidCommandCatalogRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'command-catalog' }> {
-	return msg.t === 'command-catalog' && Object.keys(msg).every(key => key === 't' || key === 'id' || key === 'token' || key === 'requestId')
+	return msg.t === 'command-catalog' && Object.keys(msg).every(key => key === 't' || key === 'id' || key === 'token' || key === 'requestId' || key === 'format')
+		&& (msg.format === undefined || msg.format === 2)
 		&& isValidControlRequest(msg);
 }
 
@@ -1874,6 +1902,8 @@ class TranscriptTailer {
 	effort: string | undefined;
 	/** transcript の行が書かれた CLI のバージョン。計測にのみ使う（モバイルへは送らない）。 */
 	cliVersion: string | undefined;
+	/** Claude Code が「そのコマンドは無い」と書いたコマンド（最近 20 件。行の時刻）。モバイルの送信の断りに使う。 */
+	readonly unknownSlashCommands: { readonly name: string; readonly at: number }[] = [];
 	/**
 	 * Claude のプロンプトキャッシュを最後に使ったリクエストの時刻と有効期限の長さ
 	 * （デスクトップのスペース一覧・ターミナルの残り時間表示用。モバイルへは送らない）。
@@ -3141,6 +3171,10 @@ class TranscriptTailer {
 		if (signals.cliVersion !== undefined) {
 			this.cliVersion = signals.cliVersion;
 		}
+		for (const sighting of signals.unknownSlashCommands ?? []) {
+			this.unknownSlashCommands.push({ name: sighting.name, at: sighting.ts ?? Date.now() });
+		}
+		this.unknownSlashCommands.splice(0, Math.max(0, this.unknownSlashCommands.length - 20));
 		if (activityChanged) {
 			this.delegate.onActivity();
 		}
@@ -3501,6 +3535,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly paneRegistry = new ParadisMobilePaneRegistry();
 	/** mobileId + requestId → 対象ペイン。設定ファイル走査の重複と濫用を抑止する。 */
 	private readonly commandCatalogRequests = new Map<string, string>();
+	/** ペインごとのスラッシュコマンドの一覧（{@link agentCommandCatalog}）。 */
+	private readonly commandCatalogCache = new Map<string, { readonly at: number; readonly promise: Promise<readonly IParadisAgentCommandOption[]> }>();
 
 	/**
 	 * renderer から同期される「ターミナルinstanceId ⇔ ペイントークン」対応表。
@@ -4421,8 +4457,9 @@ export class ParadisMobileAgentChat extends Disposable {
 	/**
 	 * `viaMod` が true（モバイルからの最初の受け付け）なら、待機中の Claude Code へは mod（Claude Mods）の
 	 * `$.prompt.submit` で送る。mod へ渡せなかったときは false で呼び直し、今までどおりウィンドウのキー入力で送る。
+	 * `dialogChecked` は、承認・質問以外の画面（`/config` など）が開いていないかを mod に聞き終えたか（{@link checkClaudeDialog}）。
 	 */
-	private handleSendMessageAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>, viaMod = true): void {
+	private handleSendMessageAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>, viaMod = true, dialogChecked = false): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
@@ -4435,8 +4472,17 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted', code: 'duplicate' }, token ?? msg.token);
 			return;
 		}
-		if (token === undefined || session === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined || !this.hasSubscriber(token, mobileId) || this.pendingActions.has(key) || this.completedActions.has(key)) {
+		if (token === undefined || session === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined || !this.hasSubscriber(token, mobileId) || this.pendingActions.has(key) || this.completedActions.has(key)
+			|| (!dialogChecked && this.dialogChecks.has(key))) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' }, token ?? msg.token);
+			return;
+		}
+		const rejection = this.sendRejection(session, msg.text);
+		if (rejection !== undefined) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', ...rejection }, token);
+			return;
+		}
+		if (!dialogChecked && this.checkClaudeDialog(mobileId, msg.id, msg.requestId, key, token, session, tailer, () => this.handleSendMessageAction(mobileId, msg, viaMod, true))) {
 			return;
 		}
 		if (viaMod && this.trySendViaMod(mobileId, msg, token, session, tailer, key, sendKey)) {
@@ -4450,7 +4496,135 @@ export class ParadisMobileAgentChat extends Disposable {
 		}, 5_000);
 		this.rememberSendId(sendKey);
 		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, timer, ...(sendKey !== undefined ? { sendKey } : {}) });
-		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({ ...msg, token, windowId: owner.windowId })));
+		// スラッシュコマンドが「そのコマンドは無い」と断られたら、受け付けずに断る。
+		// - Claude Code: transcript に書かれる `Unknown command: /x` の行で確かめる（受け付けはそのまま返し、
+		//   {@link watchClaudeSlashRejection} が後から断りを送る）
+		// - Codex: transcript に残らないので、所有ウィンドウが Enter の後の画面を読む
+		const slash = paradisParseSlashCommand(msg.text);
+		if (slash !== undefined && session.agent === 'claude') {
+			this.rememberClaudeSlashCheck(key, { token, command: slash.name, sentAt: Date.now(), sendKey });
+			void this.watchClaudeSlashRejection(mobileId, msg.id, msg.requestId, key).catch(error => this.logService.warn('[paradisAgentChat] watching a slash command failed', error));
+		}
+		// `agent`: 所有ウィンドウは Codex のペインで、前に断られたコマンドの文字が入力欄に残っていないかを貼り付けの前に確かめる
+		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
+			...msg, token, windowId: owner.windowId, agent: session.agent,
+			...(slash !== undefined && session.agent === 'codex' ? { slashCheck: { agent: 'codex', command: slash.name } } : {}),
+		})));
+	}
+
+	/** mod に画面のことを聞いている最中の操作（actionKey）。同じ requestId の二度目を弾く。 */
+	private readonly dialogChecks = new Set<string>();
+	/** ペインごとに、画面が開いていると答えられた時刻（{@link DIALOG_ANSWER_CACHE_MS} だけ使う）。 */
+	private readonly dialogAnswers = new Map<string, { readonly sessionId: string; readonly at: number }>();
+
+	/**
+	 * Claude Code で、承認・質問以外の画面（`/config`・`/rewind` など）がキーを持っていないかを mod に聞いてから `proceed` する。
+	 * 開いていれば、キーを打たずに断る（その画面に文字と Enter が入る）。承認・質問を待っている間は、その判定を優先して
+	 * 聞かない（mod の問い合わせはそれらの画面と区別できない）。mod が答えられないときはそのまま進む。聞いたら true。
+	 */
+	private checkClaudeDialog(mobileId: string, terminalId: number, requestId: string, key: string, token: string, session: IPaneSessionInfo, tailer: TranscriptTailer, proceed: () => void): boolean {
+		const sessionId = session.sessionId;
+		if (session.agent !== 'claude' || sessionId === undefined || !this.claudeModBridge.supports(token, sessionId, 'prompt.dialog') || tailer.currentInteraction() !== null) {
+			return false;
+		}
+		const reject = () => this.sendTo(mobileId, { t: 'action-result', id: terminalId, requestId, status: 'rejected', code: PARADIS_PANEL_OPEN_CODE, message: PARADIS_PANEL_OPEN_MESSAGE }, token);
+		// 画面が開いている間に続けて送るときの往復を省く（「開いている」の答えだけを少しの間使う。「閉じている」を使い回すと、
+		// その間に開いた画面へ打ってしまう）
+		const cached = this.dialogAnswers.get(token);
+		if (cached !== undefined && cached.sessionId === sessionId && Date.now() - cached.at < DIALOG_ANSWER_CACHE_MS) {
+			reject();
+			return true;
+		}
+		this.dialogChecks.add(key);
+		void this.claudeModBridge.isDialogOpen(token, sessionId).catch(() => undefined).then(open => {
+			this.dialogChecks.delete(key);
+			if (open === true) {
+				this.dialogAnswers.set(token, { sessionId, at: Date.now() });
+			} else {
+				this.dialogAnswers.delete(token);
+			}
+			if (open === true) {
+				this.sendTo(mobileId, { t: 'action-result', id: terminalId, requestId, status: 'rejected', code: PARADIS_PANEL_OPEN_CODE, message: PARADIS_PANEL_OPEN_MESSAGE }, token);
+				return;
+			}
+			proceed();
+		});
+		return true;
+	}
+
+	/** 送る前に断る理由: Claude Code の内部向けのコマンド（`__` で始まるもの）。 */
+	private sendRejection(session: IPaneSessionInfo, text: string): { readonly code: string; readonly message: string } | undefined {
+		if (session.agent !== 'claude') {
+			return undefined;
+		}
+		const slash = paradisParseSlashCommand(text);
+		if (slash !== undefined && slash.name.startsWith('__')) {
+			return { code: PARADIS_SLASH_COMMAND_REJECTED_CODE, message: `/${slash.name} は Claude Code の内部向けのコマンドなので送れません` };
+		}
+		return undefined;
+	}
+
+	/** キーで送った Claude Code のスラッシュコマンド（actionKey → 確かめる中身）。所有ウィンドウの返事を待たせて確かめる。 */
+	private readonly claudeSlashChecks = new Map<string, { readonly token: string; readonly command: string; readonly sentAt: number; readonly sendKey: string | undefined }>();
+
+	private rememberClaudeSlashCheck(key: string, check: { readonly token: string; readonly command: string; readonly sentAt: number; readonly sendKey: string | undefined }): void {
+		const now = Date.now();
+		for (const [candidate, entry] of this.claudeSlashChecks) {
+			if (now - entry.sentAt > 60_000) {
+				this.claudeSlashChecks.delete(candidate);
+			}
+		}
+		this.claudeSlashChecks.set(key, check);
+	}
+
+	/**
+	 * キーで送った Claude Code のスラッシュコマンドを見張る（所有ウィンドウの受け付けの返事は止めない）。transcript に
+	 * `Unknown command: /x` が書かれたら、同じ requestId への追いかけの断り（`late: true`。新しいアプリは理由を出して文を
+	 * 入力欄へ戻す。古いアプリは答え終えた requestId を捨てる）と、会話の知らせの行（古いアプリにも見える）を送る。
+	 * コマンドの実行記録が先に書かれたら見張りをやめる。relay の送信の鎖とは別に、ここだけで待つ。
+	 */
+	private async watchClaudeSlashRejection(mobileId: string, terminalId: number, requestId: string, key: string): Promise<void> {
+		const check = this.claudeSlashChecks.get(key);
+		if (check === undefined) {
+			return;
+		}
+		try {
+			// 所有ウィンドウが受け取って打った送信（claim 済み）に限る。打たなかった送信へ、同じ名前の別の断りを結びつけない
+			if (!await this.waitForClaudeUnknownCommand(check) || !this.completedActions.has(key)) {
+				return;
+			}
+		} finally {
+			this.claudeSlashChecks.delete(key);
+		}
+		// 何も実行されていないので、同じ預かりの送信を送り直せるようにする
+		this.forgetSendId(check.sendKey);
+		const message = paradisSlashRejectionMessage('claude', check.command);
+		this.tailers.get(check.token)?.injectNotice(message);
+		this.sendTo(mobileId, { t: 'action-result', id: terminalId, requestId, status: 'rejected', code: PARADIS_SLASH_COMMAND_REJECTED_CODE, message, late: true }, check.token);
+	}
+
+	private async waitForClaudeUnknownCommand(check: { readonly token: string; readonly command: string; readonly sentAt: number }): Promise<boolean> {
+		const deadline = check.sentAt + CLAUDE_UNKNOWN_COMMAND_WAIT_MS;
+		const since = check.sentAt - 1_000;
+		for (; ;) {
+			const tailer = this.tailers.get(check.token);
+			if (tailer === undefined) {
+				return false;
+			}
+			await tailer.afterQueue(() => { });
+			if (tailer.unknownSlashCommands.some(entry => entry.name === check.command && entry.at >= since)) {
+				return true;
+			}
+			// 実行記録（`/name` の発言）が書かれた: そのコマンドはあった
+			if (tailer.messages.some(message => message.role === 'user' && message.kind === 'text' && (message.ts ?? 0) >= since
+				&& (message.text === `/${check.command}` || message.text.startsWith(`/${check.command} `)))) {
+				return false;
+			}
+			if (Date.now() >= deadline) {
+				return false;
+			}
+			await new Promise<void>(resolve => setTimeout(resolve, 150));
+		}
 	}
 
 	/** ウィンドウへ渡した預かりの送信の id（mobileId と組。最近 {@link SEND_ID_LIMIT} 件、24 時間）。 */
@@ -4477,15 +4651,20 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	private handleClaudeSettingAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/claudeSetting' }>): void {
+	private handleClaudeSettingAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/claudeSetting' }>, dialogChecked = false): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
 		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
 		const key = this.actionKey(mobileId, msg.requestId);
 		if (token === undefined || session?.agent !== 'claude' || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined
-			|| !this.hasSubscriber(token, mobileId) || !this.isAgentPrompt(token, tailer) || this.pendingActions.has(key) || this.completedActions.has(key)) {
+			|| !this.hasSubscriber(token, mobileId) || !this.isAgentPrompt(token, tailer) || this.pendingActions.has(key) || this.completedActions.has(key)
+			|| (!dialogChecked && this.dialogChecks.has(key))) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'not-at-prompt', message: 'Claude Codeが入力待ちの時だけ設定を変更できます' }, token ?? msg.token);
+			return;
+		}
+		// `/model` などを打つので、ほかの画面（モバイルから開いた /config など）が開いていればキーを打たずに断る
+		if (!dialogChecked && this.checkClaudeDialog(mobileId, msg.id, msg.requestId, key, token, session, tailer, () => this.handleClaudeSettingAction(mobileId, msg, true))) {
 			return;
 		}
 		const timer = setTimeout(() => {
@@ -4897,14 +5076,15 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			this.commandCatalogRequests.set(requestKey, token);
 
-			const commands = await paradisBuildAgentCommandCatalog(session.agent, cwd);
+			const catalog = await this.agentCommandCatalog(token, session, cwd);
+			const commands = msg.format === 2 ? catalog : paradisLegacyAgentCommandCatalog(catalog);
 			const currentOwner = this.ownerForPane(msg.id, token);
 			if (this.paneSessions.get(token) !== session || this.tokenToCwd.get(token) !== cwd || currentOwner === undefined
 				|| !this.samePaneOwner(currentOwner, owner) || !this.hasSubscriber(token, mobileId) || !await this.authorizeOwner(owner)) {
 				this.sendCommandCatalogError(mobileId, msg, '対象セッションが切り替わりました');
 				return;
 			}
-			if (!await this.sendToAuthorized(mobileId, { t: 'command-catalog', id: msg.id, requestId: msg.requestId, commands }, token, owner)) {
+			if (!await this.sendToAuthorized(mobileId, { t: 'command-catalog', id: msg.id, requestId: msg.requestId, commands, ...(msg.format === 2 ? { format: 2 as const } : {}) }, token, owner)) {
 				this.sendCommandCatalogError(mobileId, msg, '対象セッションが切り替わりました');
 			}
 		} catch {
@@ -4912,6 +5092,46 @@ export class ParadisMobileAgentChat extends Disposable {
 		} finally {
 			this.commandCatalogRequests.delete(requestKey);
 		}
+	}
+
+	/**
+	 * そのペインで使えるスラッシュコマンド（モバイルとデスクトップのチャット欄で共有。{@link COMMAND_CATALOG_CACHE_MS} だけ覚える）。
+	 * - SSH の接続先で動くペイン: 手元の設定は読まず、組み込みだけ
+	 * - mod（1.2.0 以降）が生きている Claude: mod の `$.command.list()`（プラグイン・MCP の prompt を含む、Claude Code の候補と同じ順）
+	 * - それ以外: ファイルから組み立てる
+	 */
+	private agentCommandCatalog(token: string, session: IPaneSessionInfo, cwd: string): Promise<readonly IParadisAgentCommandOption[]> {
+		const remote = this.isRemoteAgentPane(token);
+		const codexVersion = session.agent === 'codex' ? this.tailers.get(token)?.cliVersion : undefined;
+		const key = [token, session.sessionId ?? '', session.agent, cwd, remote ? 'remote' : 'local', codexVersion ?? ''].join('\0');
+		const now = Date.now();
+		for (const [candidate, entry] of this.commandCatalogCache) {
+			if (now - entry.at >= COMMAND_CATALOG_CACHE_MS) {
+				this.commandCatalogCache.delete(candidate);
+			}
+		}
+		const cached = this.commandCatalogCache.get(key);
+		if (cached !== undefined) {
+			return cached.promise;
+		}
+		const promise = (async (): Promise<readonly IParadisAgentCommandOption[]> => {
+			if (remote) {
+				// 接続先のコマンドは手元からは分からない（向こうの設定を読む口が無い）。組み込みだけを返す
+				return paradisBuiltInAgentCommands(session.agent);
+			}
+			const sessionId = session.sessionId;
+			if (session.agent === 'claude' && sessionId !== undefined && this.claudeModBridge.supports(token, sessionId, 'commands.list')) {
+				const listed = paradisNormalizeModCommandList(await this.claudeModBridge.listCommands(token, sessionId).catch(() => undefined));
+				if (listed !== undefined && listed.length > 0) {
+					return listed;
+				}
+			}
+			return paradisBuildAgentCommandCatalog(session.agent, cwd, { ...(codexVersion !== undefined ? { codexVersion } : {}) });
+		})();
+		this.commandCatalogCache.set(key, { at: now, promise });
+		// 失敗した一覧は覚えない（次の `/` で取り直す）
+		promise.catch(() => this.commandCatalogCache.delete(key));
+		return promise;
 	}
 
 	private async waitForCommandCatalogContext(mobileId: string, msg: Extract<AgentInbound, { t: 'command-catalog' }>): Promise<ICommandCatalogContext | undefined> {
@@ -5879,13 +6099,22 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/**
 	 * 待機中の Claude Code へ、モバイルの発言を mod の `$.prompt.submit` で送る（キー入力も貼り付けも要らず、
-	 * ターンが始まったところで受理が分かる）。作業中・スラッシュコマンド・mod が無いときは false（キーの経路）。
+	 * ターンが始まったところで受理が分かる）。スラッシュコマンドは mod の `$.command.run` で実行する（mod 1.2.0 以降）。
+	 * 作業中・`!` `#` で始まる文・mod が無いときは false（キーの経路）。
 	 */
 	private trySendViaMod(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>, token: string, session: IPaneSessionInfo, tailer: TranscriptTailer, key: string, sendKey: string | undefined): boolean {
 		const sessionId = session.sessionId;
 		const text = msg.text;
-		if (session.agent !== 'claude' || sessionId === undefined || text.trim().length === 0 || /^[/!#]/.test(text.trimStart())
+		if (session.agent !== 'claude' || sessionId === undefined || text.trim().length === 0
 			|| !this.claudeModBridge.isAlive(token, sessionId) || this.claudeModBridge.isBusy(token, sessionId) || !this.isAgentPrompt(token, tailer)) {
+			return false;
+		}
+		if (text.trimStart().startsWith('/')) {
+			const slash = paradisParseSlashCommand(text);
+			return slash !== undefined && this.claudeModBridge.supports(token, sessionId, 'command.run')
+				&& this.trySendSlashCommandViaMod(mobileId, msg, token, sessionId, slash, key, sendKey);
+		}
+		if (/^[!#]/.test(text.trimStart())) {
 			return false;
 		}
 		if (this.modSendRequests.has(key)) {
@@ -5930,13 +6159,80 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
 				return;
 			}
-			// mod へ渡していない（または mod が送れなかった）。今までどおりウィンドウのキー入力で送る
 			this.forgetSendId(sendKey);
+			// mod が断った（`ok: false`）。キーでは送り直さない（断った理由ごと無視して打つことになる）
+			const refusal = paradisModRefusalResult(result);
+			if (refusal !== undefined) {
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', ...refusal }, token);
+				return;
+			}
+			// mod へ渡していない（または別の発言の最中だった）。今までどおりウィンドウのキー入力で送る
 			this.handleSendMessageAction(mobileId, msg, false);
 		}, error => {
 			this.modSendRequests.delete(key);
 			this.forgetSendId(sendKey);
 			this.logService.warn('[paradisAgentChat] sending through the Claude Code mod failed', error);
+			this.handleSendMessageAction(mobileId, msg, false);
+		});
+		return true;
+	}
+
+	/**
+	 * スラッシュコマンドを mod の `$.command.run` で実行する。Claude Code が断ったら（名前が無い等）、その理由を付けて
+	 * 受け付けずに返す（アプリは理由を入力欄の上に出し、文を入力欄へ戻す）。mod へ渡せなければキーの経路で送る。
+	 */
+	private trySendSlashCommandViaMod(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>, token: string, sessionId: string, slash: IParadisSlashCommand, key: string, sendKey: string | undefined): boolean {
+		if (this.modSendRequests.has(key)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' }, token);
+			return true;
+		}
+		this.modSendRequests.add(key);
+		this.rememberSendId(sendKey);
+		const onLateFailure = (reason: string | undefined) => {
+			// 画面を開くコマンドなどで、受け取った後に失敗した。モバイルはもう答えを受け取っているので、会話に知らせの行を足す
+			this.forgetSendId(sendKey);
+			this.tailers.get(token)?.injectNotice(paradisSlashRejectionMessage('claude', slash.name, reason));
+		};
+		const previousModSend = this.modSendsInFlight.get(token);
+		const running = this.claudeModBridge.runCommand(token, sessionId, slash.name, slash.args, onLateFailure);
+		const settled = running.then(() => undefined, () => undefined);
+		this.modSendsInFlight.set(token, settled);
+		void settled.then(() => {
+			if (this.modSendsInFlight.get(token) === settled) {
+				this.modSendsInFlight.delete(token);
+			}
+		});
+		running.then(async result => {
+			if (result.outcome === 'busy') {
+				await paradisClaudeModWaitForPrevious(previousModSend, MOD_BUSY_WAIT_MS);
+			}
+			this.modSendRequests.delete(key);
+			if (result.outcome === 'accepted') {
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
+				return;
+			}
+			this.forgetSendId(sendKey);
+			if (result.outcome === 'refused') {
+				// 理由が届かなくても断りとして返す（キーでは送り直さない）
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: PARADIS_SLASH_COMMAND_REJECTED_CODE, message: paradisSlashRejectionMessage('claude', slash.name, result.message) }, token);
+				return;
+			}
+			const refusal = paradisModRefusalResult(result.outcome);
+			if (refusal !== undefined) {
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', ...refusal }, token);
+				return;
+			}
+			if (result.outcome === 'unconfirmed') {
+				// mod へ渡したが返事が無い。キーで送り直すと二度実行しうるので、送らずに確かめてもらう
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: 'PC の Claude Code から返事がありませんでした。PC の画面で確かめてから送り直してください' }, token);
+				return;
+			}
+			// mod へ渡していない（または mod が送れなかった）。今までどおりウィンドウのキー入力で送る
+			this.handleSendMessageAction(mobileId, msg, false);
+		}, error => {
+			this.modSendRequests.delete(key);
+			this.forgetSendId(sendKey);
+			this.logService.warn('[paradisAgentChat] running a slash command through the Claude Code mod failed', error);
 			this.handleSendMessageAction(mobileId, msg, false);
 		});
 		return true;
@@ -6303,12 +6599,12 @@ export class ParadisMobileAgentChat extends Disposable {
 	async getDesktopChatCommands(token: string): Promise<readonly IParadisAgentChatCommand[]> {
 		const session = this.paneSessions.get(token);
 		const cwd = this.tokenToCwd.get(token);
-		// 接続先で動いているペインは、手元の設定からコマンドを作らない（向こうのものではない）。
-		if (session === undefined || !this.isLiveToken(token) || this.isRemoteAgentPane(token)) {
+		if (session === undefined || !this.isLiveToken(token)) {
 			return [];
 		}
-		// cwd がまだ同期されていないときは、プロジェクトのコマンドを探さずホームの分だけにする。
-		return paradisBuildAgentCommandCatalog(session.agent, cwd ?? homedir());
+		// 接続先で動いているペインは組み込みだけ（手元の設定からは作らない）。cwd がまだ同期されていないときは、
+		// プロジェクトのコマンドを探さずホームの分だけにする。
+		return this.agentCommandCatalog(token, session, cwd ?? homedir());
 	}
 
 	// ---- 許可要求と tool_use_id の対応付け ---------------------------------------------------------

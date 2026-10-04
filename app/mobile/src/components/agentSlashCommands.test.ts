@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentSlashQuery, filterAgentSlashCommands, normalizeAgentSlashSubmission, selectedAgentSlashCommandText, type AgentSlashCommand } from './agentSlashCommands.js';
+import { agentSlashCommandOriginLabel, agentSlashQuery, duplicateAgentSlashCommandNames, filterAgentSlashCommands, normalizeAgentSlashSubmission, selectedAgentSlashCommandText, type AgentSlashCommand } from './agentSlashCommands.js';
 
 const commands: AgentSlashCommand[] = [
 	{ name: 'aivis', insertText: '/aivis', description: '音声報告', kind: 'skill', source: 'user' },
@@ -44,5 +44,20 @@ describe('slash command selection and submission', () => {
 		expect(normalizeAgentSlashSubmission('/unknown arg', 'codex', commands)).toBe('/unknown arg');
 		expect(normalizeAgentSlashSubmission('説明 /aivis', 'codex', commands)).toBe('説明 /aivis');
 		expect(normalizeAgentSlashSubmission('/aivis', 'claude', commands)).toBe('/aivis');
+	});
+});
+
+describe('agentSlashCommandOriginLabel', () => {
+	it('labels only the names that appear twice, by where each one comes from', () => {
+		const listed: AgentSlashCommand[] = [
+			{ name: 'context', insertText: '/context', description: '', kind: 'command', source: 'project' },
+			{ name: 'codex:rescue', insertText: '/codex:rescue', description: '', kind: 'command', source: 'plugin', plugin: 'codex' },
+			{ name: 'Context', insertText: '/Context', description: '', kind: 'command', source: 'built-in' },
+		];
+		expect({
+			duplicates: [...duplicateAgentSlashCommandNames(listed)],
+			labels: listed.map(agentSlashCommandOriginLabel),
+			mcp: agentSlashCommandOriginLabel({ ...listed[0]!, source: 'mcp' }),
+		}).toEqual({ duplicates: ['context'], labels: ['自作', 'codex', '組み込み'], mcp: 'MCP' });
 	});
 });

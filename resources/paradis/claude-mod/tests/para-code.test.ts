@@ -28,19 +28,19 @@ const QUESTIONS = [{
 }];
 
 /** Para Code as the mod sees it: the pane's environment, the port file and the loopback endpoint. */
-function fakeParaCode(on: On, handlers: Readonly<Record<string, (body: Json) => Json>>, recorded: IRecorded[], withPane = true, sessionId: () => string = () => 'session-1'): MockClock {
+function fakeParaCode(on: On, handlers: Readonly<Record<string, (body: Json) => Json | Promise<Json>>>, recorded: IRecorded[], withPane = true, sessionId: () => string = () => 'session-1'): MockClock {
 	mock.env(on, withPane ? { PARA_CODE_TERMINAL_PANE_ID: 'pane-token', PARA_CODE_MCP_PORT_FILE: PORT_FILE } : {});
 	// Holds the command loop's timer: the tests drive the hooks, and move the clock to run the loop.
 	const clock = mock.clock(on);
 	on('fs.read', ($, e) => e.path === PORT_FILE ? { value: '{"port":47999}' } : { deny: 'no such file' });
 	on('session.id', () => ({ value: sessionId() }));
 	on('session.start', ($, e) => ({ cwd: e.cwd }));
-	on('http.fetch', ($, e) => {
+	on('http.fetch', async ($, e) => {
 		const op = e.url.slice(e.url.lastIndexOf('/') + 1);
 		const body = JSON.parse(e.init?.body ?? '{}') as Json;
 		recorded.push({ op, body });
 		const handler = handlers[op];
-		return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(handler !== undefined ? handler(body) : {}) } };
+		return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(handler !== undefined ? await handler(body) : {}) } };
 	});
 	return clock;
 }
@@ -298,7 +298,7 @@ describe('para-code mod', () => {
 		await clock.settle();
 		expect({ submitted, acks: recorded.filter(entry => entry.op === 'ack').map(entry => entry.body) }).toEqual({
 			submitted: [],
-			acks: [{ sessionId: 'session-1', id: 's9', ok: false }],
+			acks: [{ sessionId: 'session-1', id: 's9', ok: false, reason: 'stale' }],
 		});
 	});
 
@@ -348,6 +348,154 @@ describe('para-code mod', () => {
 			noMoreFetches: fetches === fetchesAfterFirst,
 			permissionsByCurl: curls.filter(op => op === 'permission').length,
 		}).toEqual({ retriedFetchFirst: true, noMoreFetches: true, permissionsByCurl: 2 });
+	});
+
+	test('tells Para Code what it can do, and answers a list request with the slash commands in their order', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		const handed: Json[][] = [[{ id: 'l1', kind: 'commandList' }]];
+		const clock = fakeParaCode(on, { commands: () => ({ commands: handed.shift() ?? [] }) }, recorded);
+		on('command.list', () => ({
+			value: [
+				{ name: 'context', description: 'mine', source: 'user' },
+				{ name: 'codex:rescue', description: 'Rescue', source: 'plugin', plugin: 'codex' },
+				{ name: 'context', description: 'Visualize', source: 'builtin' },
+			],
+		}));
+		await startSession($);
+		await clock.advance(1);
+		await clock.settle();
+		expect({
+			features: recorded.find(entry => entry.op === 'commands')?.body.features,
+			acks: recorded.filter(entry => entry.op === 'ack').map(entry => entry.body),
+		}).toEqual({
+			features: ['commands.list', 'command.run', 'prompt.dialog'],
+			acks: [{
+				sessionId: 'session-1', id: 'l1', ok: true, commands: [
+					{ name: 'context', description: 'mine', source: 'user' },
+					{ name: 'codex:rescue', description: 'Rescue', source: 'plugin', plugin: 'codex' },
+					{ name: 'context', description: 'Visualize', source: 'builtin' },
+				],
+			}],
+		});
+	});
+
+	test('runs a slash command from the phone, and acks a refusal with its reason', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		const handed: Json[][] = [[{ id: 'r1', kind: 'commandRun', command: 'review', args: '123' }], [{ id: 'r2', kind: 'commandRun', command: 'nope', args: '' }]];
+		const clock = fakeParaCode(on, { commands: () => ({ commands: handed.shift() ?? [] }) }, recorded);
+		const ran: unknown[] = [];
+		on('command.run', ($, e) => {
+			ran.push({ command: e.command, args: e.args });
+			if (e.command === 'nope') {
+				throw new Error('no command named /nope in this session');
+			}
+			return { text: 'reviewed' };
+		});
+		await startSession($);
+		await clock.advance(1);
+		await clock.settle();
+		await clock.advance(1);
+		await clock.settle();
+		const acks = recorded.filter(entry => entry.op === 'ack').map(entry => entry.body);
+		expect({
+			ran,
+			ok: acks.find(ack => ack.id === 'r1'),
+			refused: { ok: acks.find(ack => ack.id === 'r2')?.ok, reason: acks.find(ack => ack.id === 'r2')?.reason, hasMessage: typeof acks.find(ack => ack.id === 'r2')?.message === 'string' },
+		}).toEqual({
+			ran: [{ command: 'review', args: '123' }, { command: 'nope', args: '' }],
+			ok: { sessionId: 'session-1', id: 'r1', ok: true },
+			refused: { ok: false, reason: 'refused', hasMessage: true },
+		});
+	});
+
+	test('answers whether a screen holds the keys by an empty append to the prompt box', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		const handed: Json[][] = [[{ id: 'd1', kind: 'dialogCheck' }]];
+		const clock = fakeParaCode(on, { commands: () => ({ commands: handed.shift() ?? [] }) }, recorded);
+		const fills: unknown[] = [];
+		// Under the test host no box is drawn (`no_composer`); a hook cannot claim the `dialog` cause itself, so this
+		// checks the call and that anything other than `dialog` is not a screen holding the keys.
+		on('prompt.fill', ($, e) => {
+			fills.push({ text: e.text, mode: e.mode });
+			return { isFilled: true };
+		});
+		await startSession($);
+		await clock.advance(1);
+		await clock.settle();
+		expect({
+			features: recorded.find(entry => entry.op === 'commands')?.body.features,
+			fills,
+			ack: recorded.find(entry => entry.op === 'ack')?.body,
+		}).toEqual({
+			features: ['commands.list', 'command.run', 'prompt.dialog'],
+			fills: [{ text: '', mode: 'append' }],
+			ack: { sessionId: 'session-1', id: 'd1', ok: true, dialog: false },
+		});
+	});
+
+	test('a new session forgets a send of the old one', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		let restarted = false;
+		const handed: Json[][] = [[{ id: 'p1', kind: 'commandRun', command: 'config', args: '' }], [{ id: 's1', kind: 'submit', text: 'hello' }]];
+		const clock = fakeParaCode(on, {
+			commands: async () => {
+				if (handed.length === 2 || (restarted && handed.length > 0)) {
+					return { commands: handed.shift() ?? [] };
+				}
+				await clock.sleep(500);
+				return { commands: [] };
+			},
+		}, recorded);
+		const submitted: string[] = [];
+		on('prompt.submit', ($, e, next) => {
+			submitted.push(e.text);
+			return next(e);
+		});
+		on('command.run', async ($, e) => {
+			if (e.command === 'config') {
+				await clock.sleep(60_000);
+			}
+			return { text: '' };
+		});
+		await startSession($);
+		await clock.advance(1);
+		await clock.advance(1_600);
+		// /clear or a reload of the mod: session.start comes again while the old panel's run is still pending
+		restarted = true;
+		await startSession($);
+		await clock.advance(600);
+		const acks = recorded.filter(entry => entry.op === 'ack').map(entry => entry.body);
+		// The prompt is taken (not refused as panel-open or busy): what Claude Code then does with it is its own
+		expect({ submitted, s1: acks.find(ack => ack.id === 's1')?.received }).toEqual({ submitted: ['hello'], s1: true });
+		await clock.advance(60_000);
+	});
+
+	test('refuses an internal command, and marks a refusal for a session that moved on as stale', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		let session = 'session-1';
+		const handed: Json[][] = [[{ id: 'i1', kind: 'commandRun', command: '__remote-workflow', args: '' }], [{ id: 'r1', kind: 'commandRun', command: 'context', args: '' }]];
+		const clock = fakeParaCode(on, {
+			commands: () => {
+				const next = handed.shift() ?? [];
+				if (next.some(command => command.id === 'r1')) {
+					// /clear while the command poll was open: the command was asked for the old session
+					session = 'session-2';
+				}
+				return { commands: next };
+			},
+		}, recorded, true, () => session);
+		const ran: string[] = [];
+		on('command.run', ($, e) => {
+			ran.push(e.command);
+			return { text: '' };
+		});
+		await startSession($);
+		await clock.advance(1);
+		await clock.settle();
+		await clock.advance(1);
+		await clock.settle();
+		const acks = recorded.filter(entry => entry.op === 'ack').map(entry => entry.body);
+		expect({ ran, acks: acks.map(ack => [ack.id, ack.ok, ack.reason]) }).toEqual({ ran: [], acks: [['i1', false, 'refused'], ['r1', false, 'stale']] });
 	});
 
 	test('keeps using fetch when it works again after reading the port file once more', async ($, on) => {

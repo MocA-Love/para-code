@@ -298,6 +298,9 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/mobile/app.json` | `expo.version` を `0.12.0` に | モバイルのブラウザのタブ（案A）の配信 |
 | `resources/paradis/claude-mod/.claude-plugin/plugin.json` / `resources/paradis/claude-mod/hooks/hooks.json` | 新規追加（fork所有。Claude Code の mod のマニフェストと hooks module の指定。JSON なのでマーカーを書けない。同じフォルダの `hooks/register.ts`・`tests/para-code.test.ts` には PARA-CODE ヘッダーあり）（2026-10-03） | Para Code のターミナルの Claude Code に読ませる mod（NOTES「Claude Code の mod（Claude Mods）で会話・質問・承認・送信をつなぐ」）。`build/gulpfile.vscode.ts` の PARA-PATCH で macOS/Linux のパッケージへ同梱する |
 | `resources/paradis/claude-mod/.claude-plugin/plugin.json` | `version` を `1.1.0` に上げた（`hooks/register.ts` の `MOD_VERSION` と揃える。拒否に添えた指示を Claude Code へ渡す版）（2026-10-04） | mod の版の表示。指示付きの拒否を受けられるかは登録の `denyMessage: true` で見分ける |
+| `resources/paradis/claude-mod/.claude-plugin/plugin.json` | `version` を `1.2.0` に上げた（`hooks/register.ts` の `MOD_VERSION` と揃える。スラッシュコマンドの一覧 `commandList` と実行 `commandRun` を受ける版。`commands` の要求の `features` で PC に知らせる）（2026-10-04） | モバイルのスラッシュコマンドの一覧を `$.command.list()` で取り、`/name args` を `$.command.run` で実行する |
+| `app/protocol/test/golden/state.json` / `agent.json` | `state.json` の `capabilities` に `agent.commands.v2`、`agent.json` に `command-catalog`（`format: 2`）の要求と応答、`code: 'unknown-command'` の `action-result` を追加（2026-10-04） | スラッシュコマンドの一覧の新しい形（同じ名前の重なり・出どころ plugin / mcp）と、断りの理由の固定形 |
+| `app/mobile/app.json` | `expo.version` を `0.12.4` に（2026-10-04） | スラッシュコマンドの一覧と断りの表示の配信 |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 

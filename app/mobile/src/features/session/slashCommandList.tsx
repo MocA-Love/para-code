@@ -1,10 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { useMemo } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { FileText, RotateCw, Search, Sparkles, SquareTerminal } from 'lucide-react-native';
 import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import type { AgentCommandCatalogState, AgentCommandOption } from '../../store.js';
+import { agentSlashCommandOriginLabel, duplicateAgentSlashCommandNames } from '../../components/agentSlashCommands.js';
 import { HIT_SIZE, colors, radius, space, squircle, type } from '../../theme.js';
 import { Icon, useThemeColors } from '../../ui/index.js';
 
@@ -14,6 +16,8 @@ const LIST_MAX_HEIGHT = 260;
 /**
  * `/` で始めたときに入力欄の上へ出すスラッシュコマンドの候補（Orca の MobileNativeChatComposerSuggestions）。
  * 候補の絞り込みと挿入する文字は既存の `components/agentSlashCommands.ts`。
+ * 一覧は実際に効く順。同じ名前が 2 件あれば出どころ（組み込み・プラグイン名・自作）を小さく添える（上の方が動く）。
+ * 取り直している間は、前に取った一覧のまま出す。
  */
 export function SlashCommandList({ catalog, commands, onSelect, onRetry }: {
 	catalog: AgentCommandCatalogState | undefined;
@@ -22,14 +26,16 @@ export function SlashCommandList({ catalog, commands, onSelect, onRetry }: {
 	onRetry: () => void;
 }) {
 	const theme = useThemeColors();
+	const duplicates = useMemo(() => duplicateAgentSlashCommandNames(catalog?.commands ?? []), [catalog?.commands]);
+	const refreshing = catalog?.status === 'loading' && catalog.commands.length > 0;
 	return (
 		<View style={styles.surface}>
-			{catalog === undefined || catalog.status === 'loading' ? (
+			{catalog === undefined || (catalog.status === 'loading' && !refreshing) ? (
 				<View style={styles.message}>
 					<ActivityIndicator size="small" color={colors.textDim} />
 					<Text style={styles.messageText}>コマンドの一覧を取得しています…</Text>
 				</View>
-			) : catalog.status === 'error' ? (
+			) : catalog.status === 'error' && commands.length === 0 ? (
 				<Pressable style={styles.message} onPress={onRetry} accessibilityRole="button" accessibilityLabel="コマンドの一覧を取り直す">
 					<Icon icon={RotateCw} color={colors.textDim} />
 					<View style={styles.body}>
@@ -46,17 +52,18 @@ export function SlashCommandList({ catalog, commands, onSelect, onRetry }: {
 				<ScrollView keyboardShouldPersistTaps="always" style={styles.list}>
 					{commands.map((command, index) => (
 						<Pressable
-							key={`${command.source}:${command.kind}:${command.name}`}
+							key={`${index}:${command.source}:${command.plugin ?? ''}:${command.kind}:${command.name}`}
 							style={({ pressed }) => [styles.row, index > 0 ? styles.divider : undefined, pressed ? styles.pressed : undefined]}
 							onPress={() => { haptic('tick'); onSelect(command); }}
 							accessibilityRole="button"
-							accessibilityLabel={`${command.insertText} ${command.description}`}
+							accessibilityLabel={`${command.insertText}${duplicates.has(command.name.toLocaleLowerCase()) ? ` ${agentSlashCommandOriginLabel(command)}` : ''} ${command.description}`}
 						>
 							<Icon icon={command.kind === 'skill' ? Sparkles : command.kind === 'prompt' ? FileText : SquareTerminal} color={colors.textDim} />
 							<View style={styles.body}>
 								<View style={styles.nameLine}>
 									<Text style={styles.name}>{command.insertText}</Text>
 									{command.argumentHint !== undefined ? <Text style={styles.argument} numberOfLines={1}>{command.argumentHint}</Text> : null}
+									{duplicates.has(command.name.toLocaleLowerCase()) ? <Text style={styles.origin} numberOfLines={1}>{agentSlashCommandOriginLabel(command)}</Text> : null}
 								</View>
 								<Text style={styles.description} numberOfLines={1}>{command.description}</Text>
 							</View>
@@ -118,6 +125,16 @@ const styles = StyleSheet.create({
 		fontFamily: monoFamily,
 		fontSize: type.caption,
 		color: colors.textMuted,
+	},
+	origin: {
+		flexShrink: 1,
+		paddingHorizontal: space.xs,
+		borderRadius: radius.pill,
+		borderWidth: StyleSheet.hairlineWidth,
+		borderColor: colors.border,
+		fontSize: type.caption,
+		color: colors.textMuted,
+		overflow: 'hidden',
 	},
 	description: {
 		marginTop: 2,

@@ -28,7 +28,21 @@ type Engine = EngineInterface;
 type Json = Record<string, unknown>;
 
 const MOD_PROTOCOL = '1';
-const MOD_VERSION = '1.1.0';
+const MOD_VERSION = '1.2.0';
+/**
+ * What this mod can do beyond the first version, sent with every wait for commands (Para Code may have
+ * restarted since hello): `commands.list` answers `commandList` with `$.command.list()`, `command.run` runs a
+ * slash command for Para Code Mobile with `$.command.run`, `prompt.dialog` answers `dialogCheck` (whether a
+ * screen such as `/config` holds the keys).
+ */
+const MOD_FEATURES = ['commands.list', 'command.run', 'prompt.dialog'];
+/** How long a slash command may take before Para Code is told it was taken (a panel holds `$.command.run` open). */
+const COMMAND_RUN_EARLY_MS = 1_500;
+/**
+ * Commands sent back for `commandList` at most (Claude Code lists hundreds with many skills). The built-ins come
+ * last in the typeahead's order, so they keep their places first and the rest fill what is left, in order.
+ */
+const MAX_LISTED_COMMANDS = 2_000;
 /** How long the port read from the port file is trusted before it is read again. */
 const ENDPOINT_TTL_MS = 30_000;
 /** Text chunks of a response are sent at most this often. */
@@ -69,9 +83,14 @@ const pendingPermissions = new Map<string, { readonly toolUseId: string | undefi
 const askedCalls = new Map<string, string[]>();
 /**
  * A prompt from Para Code Mobile is being submitted. Only one at a time: another one handed over meanwhile is
- * refused at once (ack ok: false) and Para Code sends it with keys instead, so this mod never sends it.
+ * refused at once (ack ok: false, reason: 'busy') and Para Code sends it with keys once the first one is
+ * taken, so this mod never sends it. Every other refusal carries a reason (`stale`: the session moved on,
+ * `panel-open`: a screen such as /config holds the keys, `refused`), and Para Code then answers the phone instead
+ * of typing the text.
  */
 let submitting = false;
+/** Counts the sends, so one that finishes after a new session started does not clear the flag of a later send. */
+let submitGeneration = 0;
 /** A prompt submitted for Para Code, waiting for its row to learn the row's uuid. */
 let submitWatch: { readonly id: string; readonly text: string; uuid?: string } | undefined;
 
@@ -398,9 +417,100 @@ async function stopTask($: Engine, sessionId: string, id: string, taskId: string
 	await request($, 'ack', { sessionId, id, ok, ...(message !== undefined ? { message: message.slice(0, 500) } : {}) });
 }
 
+/** The slash commands the person can run now, for Para Code's list on Para Code Mobile (in the typeahead's order). */
+async function listCommands($: Engine, sessionId: string, id: string): Promise<void> {
+	try {
+		const listed = await $.command.list();
+		const builtIns = listed.filter(command => command.source === 'builtin').length;
+		let others = Math.max(0, MAX_LISTED_COMMANDS - builtIns);
+		const kept = listed.length <= MAX_LISTED_COMMANDS ? listed : listed.filter(command => command.source === 'builtin' || others-- > 0);
+		const commands = kept.slice(0, MAX_LISTED_COMMANDS).map(command => ({
+			name: command.name,
+			description: typeof command.description === 'string' ? command.description.slice(0, 300) : '',
+			source: command.source,
+			...(typeof command.plugin === 'string' ? { plugin: command.plugin.slice(0, 100) } : {}),
+		}));
+		await request($, 'ack', { sessionId, id, ok: true, commands });
+	} catch (error) {
+		await request($, 'ack', { sessionId, id, ok: false, ...(error instanceof Error ? { message: error.message.slice(0, 500) } : {}) });
+	}
+}
+
 /**
- * The commands Para Code hands over: prompts sent from Para Code Mobile while the session is idle, and
- * background tasks to stop.
+ * Whether a screen holds the keys (`/config`, `/rewind`, `/model`'s picker, and also an approval or a question):
+ * an empty append to the prompt box is refused with `dialog` then, and leaves the draft as it is otherwise.
+ * Telling an approval or a question apart is Para Code's: it asks only while it sees none waiting.
+ */
+async function panelOpen($: Engine): Promise<boolean> {
+	try {
+		const filled = await $.prompt.fill({ text: '', mode: 'append' });
+		return !filled.isFilled && filled.refusal === 'dialog';
+	} catch {
+		return false;
+	}
+}
+
+async function checkDialog($: Engine, sessionId: string, id: string): Promise<void> {
+	await request($, 'ack', { sessionId, id, ok: true, dialog: await panelOpen($) });
+}
+
+function errorText(error: unknown): string | undefined {
+	return error instanceof Error ? error.message.slice(0, 500) : typeof error === 'string' ? error.slice(0, 500) : undefined;
+}
+
+/**
+ * Runs a slash command sent from Para Code Mobile (`$.prompt.submit` refuses a text that begins with `/`).
+ * An unknown name is refused at once, and that refusal goes back to the phone. A command that opens a panel
+ * holds `$.command.run` open until the panel closes: past {@link COMMAND_RUN_EARLY_MS} Para Code is told it
+ * was taken, and the outcome follows in a second ack.
+ */
+async function runSlashCommand($: Engine, sessionId: string, id: string, name: string, args: string, generation: number): Promise<void> {
+	if (name.startsWith('__')) {
+		// Claude Code's own internal commands are not run for the phone.
+		await request($, 'ack', { sessionId, id, ok: false, reason: 'refused', message: `/${name} is internal to Claude Code` });
+		return;
+	}
+	if (submitting) {
+		await request($, 'ack', { sessionId, id, ok: false, reason: 'busy' });
+		return;
+	}
+	submitting = true;
+	const mine = ++submitGeneration;
+	try {
+		if (generation !== pumpGeneration || !active || await $.session.id() !== sessionId) {
+			await request($, 'ack', { sessionId, id, ok: false, reason: 'stale' });
+			return;
+		}
+		if (await panelOpen($)) {
+			// A screen holds the keys: the command would only queue behind it, and Para Code must not type either.
+			await request($, 'ack', { sessionId, id, ok: false, reason: 'panel-open' });
+			return;
+		}
+		const running = $.command.run({ command: name, args }).then(
+			() => ({ ok: true }),
+			(error: unknown) => ({ ok: false, reason: 'refused', ...(errorText(error) !== undefined ? { message: errorText(error) } : {}) }),
+		);
+		const early = await Promise.race([
+			running,
+			new Promise<undefined>(resolve => $.clock.after(COMMAND_RUN_EARLY_MS, () => resolve(undefined))),
+		]);
+		if (early !== undefined) {
+			await request($, 'ack', { sessionId, id, ...early });
+			return;
+		}
+		// Still running (a screen it opened, or a long command such as /compact): tell Para Code it was taken, then how it ended.
+		await request($, 'ack', { sessionId, id, received: true });
+		await request($, 'ack', { sessionId, id, ...await running });
+	} finally {
+		if (submitGeneration === mine) {
+			submitting = false;
+		}
+	}
+}
+
+/**
+ * The commands Para Code hands over: prompts and slash commands sent from Para Code Mobile while the session
+ * is idle, background tasks to stop, and the list of slash commands.
  */
 async function runCommand($: Engine, sessionId: string, command: Json, generation: number): Promise<void> {
 	const id = str(command.id);
@@ -408,6 +518,22 @@ async function runCommand($: Engine, sessionId: string, command: Json, generatio
 		const taskId = str(command.taskId);
 		if (taskId !== undefined && /^[A-Za-z0-9_-]{1,64}$/.test(taskId)) {
 			await stopTask($, sessionId, id, taskId);
+		}
+		return;
+	}
+	if (id !== undefined && command.kind === 'dialogCheck') {
+		await checkDialog($, sessionId, id);
+		return;
+	}
+	if (id !== undefined && command.kind === 'commandList') {
+		await listCommands($, sessionId, id);
+		return;
+	}
+	if (id !== undefined && command.kind === 'commandRun') {
+		const name = str(command.command);
+		const args = typeof command.args === 'string' ? command.args : '';
+		if (name !== undefined) {
+			await runSlashCommand($, sessionId, id, name, args, generation);
 		}
 		return;
 	}
@@ -422,10 +548,16 @@ async function runCommand($: Engine, sessionId: string, command: Json, generatio
 	}
 	// Taken before any await, so a second prompt of the same batch sees it.
 	submitting = true;
+	const mine = ++submitGeneration;
 	try {
 		// The session moved on (a new session.start, /clear) since this prompt was handed over: it was for the old one.
 		if (generation !== pumpGeneration || !active || await $.session.id() !== sessionId) {
-			await request($, 'ack', { sessionId, id, ok: false });
+			await request($, 'ack', { sessionId, id, ok: false, reason: 'stale' });
+			return;
+		}
+		if (await panelOpen($)) {
+			// A screen such as /config holds the keys: the prompt would wait behind it.
+			await request($, 'ack', { sessionId, id, ok: false, reason: 'panel-open' });
 			return;
 		}
 		submitWatch = { id, text };
@@ -433,17 +565,21 @@ async function runCommand($: Engine, sessionId: string, command: Json, generatio
 		// only resolves once that turn ends, and Para Code must not send the same text again with keys.
 		await request($, 'ack', { sessionId, id, received: true });
 		let ok = false;
+		let message: string | undefined;
 		try {
 			await $.prompt.submit({ text, asUser: true });
 			ok = true;
-		} catch {
+		} catch (error) {
 			ok = false;
+			message = errorText(error);
 		}
 		const uuid = submitWatch?.id === id ? submitWatch.uuid : undefined;
 		submitWatch = undefined;
-		await request($, 'ack', { sessionId, id, ok, ...(uuid !== undefined ? { uuid } : {}) });
+		await request($, 'ack', { sessionId, id, ok, ...(ok ? {} : { reason: 'refused' }), ...(message !== undefined ? { message } : {}), ...(uuid !== undefined ? { uuid } : {}) });
 	} finally {
-		submitting = false;
+		if (submitGeneration === mine) {
+			submitting = false;
+		}
 	}
 }
 
@@ -461,7 +597,7 @@ async function pumpOnce($: Engine, generation: number): Promise<void> {
 	let delayMs = 1;
 	try {
 		const sessionId = await $.session.id();
-		const reply = await request($, 'commands', { sessionId, busy: mainBusy });
+		const reply = await request($, 'commands', { sessionId, busy: mainBusy, features: MOD_FEATURES });
 		if (reply === undefined || reply.status !== 200) {
 			delayMs = 5_000;
 		} else {
@@ -490,6 +626,9 @@ export const register: Register = on => {
 		const started = await next(e);
 		active = false;
 		pumpGeneration++;
+		// A new session (or a reload of this module) starts with nothing being sent and no panel of ours open.
+		submitting = false;
+		submitGeneration++;
 		if (e.isInteractive && await resolveEndpoint($, true) !== undefined) {
 			active = true;
 			mainBusy = false;

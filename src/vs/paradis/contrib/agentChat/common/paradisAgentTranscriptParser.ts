@@ -17,6 +17,7 @@
 import { IParadisAgentAdvisorInfo, IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentQuestionOption, PARADIS_ADVISOR_TOOL, PARADIS_AGENT_QUESTION_PREVIEW_LIMIT } from './paradisAgentChat.js';
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 import { paradisExpandPastedContent } from '../../../common/paradisPastedContent.js';
+import { paradisRedactMobileCommandOutput } from '../../mobileRelay/common/paradisMobileOutputRedaction.js';
 import { IParadisMonitorSignal, paradisMonitorCallSignal, paradisMonitorNotificationSignals, paradisMonitorStartedSignal, paradisMonitorTaskStopSignal, paradisQueueOperationSignals } from './paradisAgentMonitors.js';
 import { IParadisShellSignal, paradisShellCallSignal, paradisShellNotificationSignals, paradisShellStartedSignal, paradisShellTaskStopSignal } from './paradisAgentShells.js';
 import { paradisCodexUserAuthoredContent, paradisIsCodexEncryptedPayload, paradisMaskCodexEncryptedPayloads } from './paradisCodexInjectedContext.js';
@@ -126,6 +127,10 @@ export interface IRawMessage {
 	/** {@link IParadisAgentChatMessage.advisor} */
 	readonly advisor?: IParadisAgentAdvisorInfo;
 	readonly truncated?: true;
+	/** {@link IParadisAgentChatMessage.notice}（スラッシュコマンドの出力を小さな 1 行で出す）。 */
+	readonly notice?: true;
+	/** {@link IParadisAgentChatMessage.noticeSource} */
+	readonly noticeSource?: 'command';
 	/** 切り詰め前の全文。モバイルへは送らず tailer が 'tool-full' 用に保持する。 */
 	readonly fullText?: string;
 	/** 画像の実体。モバイルへは送らず tailer が 'tool-image' 用に保持する。 */
@@ -375,6 +380,11 @@ export interface IParseSignals {
 	 */
 	cliVersion?: string;
 	/**
+	 * Claude Code が「そのコマンドは無い」と書いた行（`type: system`・`subtype: informational`・`Unknown command: /x`）の
+	 * コマンド名と行の時刻。モバイルからキーで送ったスラッシュコマンドが断られたかを、画面を読まずに確かめるのに使う。
+	 */
+	unknownSlashCommands?: { readonly name: string; readonly ts: number | undefined }[];
+	/**
 	 * Claude Code の、作業中に送った発言（queued_command）と、Esc で割り込んだ後に同じ本文が user 行として
 	 * 書き直されたものとの重複を見分ける状態。行をまたいで持つ必要があるので、tailer のように続けて読む側は
 	 * `newClaudeQueuedPromptState()` を1つ作って `newParseSignals` へ渡し続ける。
@@ -392,6 +402,11 @@ export interface IClaudeQueuedPromptState {
 	texts: string[];
 	/** 控えがある状態で割り込みの印を見た。 */
 	interrupted: boolean;
+	/**
+	 * 直前に実行されたローカルコマンドの名前（`/` 無し、小文字）。次に来る出力（`<local-command-stdout>`）を出してよいかを
+	 * {@link PARADIS_SHOWN_COMMAND_OUTPUTS} で決めるのに使う（実行記録と出力は別の行・別の読み込みの回に来ることがある）。
+	 */
+	lastLocalCommand?: string;
 }
 
 /** 控えておく queued_command の本文の上限（読み込みが長く続いても状態が膨らまないように）。 */
@@ -783,6 +798,37 @@ export function paradisHasPendingDuplicateQuestion(
 	return false;
 }
 
+/** 知らせの行に出すコマンドの出力の上限（/context の表のように長いものがある）。 */
+const LOCAL_COMMAND_OUTPUT_LIMIT = 2_000;
+
+/**
+ * 出力を会話へ出してよいコマンド（許可リスト）。ここに無いもの（`/status` のアカウント・接続先、`/mcp` のサーバーの設定、
+ * `/doctor` の環境、自作のコマンドなど）は、秘密やパスが出うるので出さない。出す前にも秘密らしい値を伏せる。
+ */
+export const PARADIS_SHOWN_COMMAND_OUTPUTS: ReadonlySet<string> = new Set([
+	'context', 'usage', 'cost', 'compact', 'model', 'effort', 'fast', 'plan', 'goal', 'rename', 'clear',
+	'reload-skills', 'reload-plugins', 'skills', 'tasks', 'btw',
+]);
+
+/**
+ * `<local-command-stdout>` / `<local-command-stderr>` の中身を、知らせの行に出せる文字にする。色の制御文字と、
+ * /context の使用量の升目（記号だけの並び）を外す。何も残らなければ undefined。
+ */
+export function paradisLocalCommandOutputText(raw: string): string | undefined {
+	const body = [...raw.matchAll(/<local-command-(?:stdout|stderr)>([\s\S]*?)<\/local-command-(?:stdout|stderr)>/g)].map(match => match[1]).join('\n');
+	const lines = body
+		.replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, '')
+		.replace(/[\u26c0-\u26ff]/g, '')
+		.split('\n')
+		.map(line => line.trim())
+		.filter(line => line.trim().length > 0);
+	const text = paradisRedactMobileCommandOutput(lines.join('\n')).trim();
+	if (text.length === 0) {
+		return undefined;
+	}
+	return text.length > LOCAL_COMMAND_OUTPUT_LIMIT ? `${text.slice(0, LOCAL_COMMAND_OUTPUT_LIMIT)}\u2026` : text;
+}
+
 /**
  * Claude Code のユーザーロール行のテキストを表示メッセージへ変換する。
  * ハーネスが user ロールとして注入する合成テキスト（バックグラウンドタスクの完了通知・
@@ -834,17 +880,27 @@ export function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: numb
 	// スラッシュコマンドの実行記録（/compact 等）。コマンド名だけを短く出す。
 	const commandName = /<command-name>([^<\n]*)<\/command-name>/.exec(trimmed)?.[1]?.trim();
 	if (commandName !== undefined && commandName.length > 0) {
+		signals.claudeQueuedPrompts.lastLocalCommand = commandName.replace(/^\//, '').toLocaleLowerCase();
 		const commandArgs = /<command-args>([^<\n]*)<\/command-args>/.exec(trimmed)?.[1]?.trim();
 		out.push({ role: 'user', kind: 'text', text: truncateText(commandArgs ? `${commandName} ${commandArgs}` : commandName, TEXT_LIMIT), ts });
 		return;
 	}
-	// ローカルコマンドの出力・注意書きはノイズなので出さない。ただし /effort の実行記録は
-	// セッションの effort 変更としてメタ情報へ反映する（Claude の transcript に effort の
-	// 直接の記録は無く、これと settings.json の既定値だけが手掛かり）。
-	if (trimmed.startsWith('<local-command-stdout>') || trimmed.startsWith('<local-command-caveat>')) {
+	// ローカルコマンドの注意書きは出さない。出力（/context・/usage 等の結果）は、送ったのに何も返ってこないように
+	// 見えないよう、小さな知らせの行で出す。/effort の実行記録はセッションの effort 変更としてメタ情報へも反映する
+	// （Claude の transcript に effort の直接の記録は無く、これと settings.json の既定値だけが手掛かり）。
+	if (trimmed.startsWith('<local-command-caveat>')) {
+		return;
+	}
+	if (trimmed.startsWith('<local-command-stdout>') || trimmed.startsWith('<local-command-stderr>')) {
 		const effortMatch = /^<local-command-stdout>Set effort level to (\w+)/.exec(trimmed);
 		if (effortMatch) {
 			signals.effort = effortMatch[1];
+		}
+		const command = signals.claudeQueuedPrompts.lastLocalCommand;
+		signals.claudeQueuedPrompts.lastLocalCommand = undefined;
+		const output = command !== undefined && PARADIS_SHOWN_COMMAND_OUTPUTS.has(command) ? paradisLocalCommandOutputText(trimmed) : undefined;
+		if (output !== undefined) {
+			out.push({ role: 'assistant', kind: 'text', text: output, ts, notice: true, noticeSource: 'command' });
 		}
 		return;
 	}
@@ -1049,6 +1105,25 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 		signals.shellSignals.push(...queued.shells);
 		return [];
 	}
+	if (type === 'system' && obj.subtype === 'informational' && typeof obj.content === 'string') {
+		// 表示はしない。「そのコマンドは無い」だけを拾う（モバイルの送信の断りに使う）
+		const unknown = /^Unknown command: \/(?<name>[^\s/]+)\s*$/.exec(obj.content.trim())?.groups?.name;
+		if (unknown !== undefined) {
+			(signals.unknownSlashCommands ??= []).push({ name: unknown, ts: lineTimestamp(obj) });
+		}
+		return [];
+	}
+	if (type === 'system' && obj.subtype === 'local_command' && typeof obj.content === 'string') {
+		// 2.1.289 では /context 等の実行記録（`<command-name>`）と出力（`<local-command-stdout>`）が system の行に書かれる
+		// （user の行に書かれるコマンドもある）。どちらも user の行と同じように出す
+		const content = obj.content.trim();
+		if (!content.startsWith('<command-') && !content.startsWith('<local-command-')) {
+			return [];
+		}
+		const out: IRawMessage[] = [];
+		pushClaudeUserText(out, content, lineTimestamp(obj), signals);
+		return out;
+	}
 	if (type !== 'user' && type !== 'assistant') {
 		return []; // summary / system / file-history-snapshot 等
 	}
@@ -1201,7 +1276,7 @@ function paradisAdvisorResultMessage(block: Record<string, unknown>, obj: Record
 }
 
 /** transcript分類の回帰テスト用。productionと同じparserを1行だけ通す。 */
-export function paradisParseClaudeTranscriptLineForTest(line: string): { messages: IRawMessage[]; userText: boolean } {
+export function paradisParseClaudeTranscriptLineForTest(line: string): { messages: IRawMessage[]; userText: boolean; unknownSlashCommands?: IParseSignals['unknownSlashCommands'] } {
 	let obj: Record<string, unknown> | undefined;
 	try {
 		obj = rec(JSON.parse(line));
@@ -1213,7 +1288,7 @@ export function paradisParseClaudeTranscriptLineForTest(line: string): { message
 	}
 	const signals = newParseSignals();
 	const messages = JSON.parse(JSON.stringify(parseClaudeLine(obj, signals))) as IRawMessage[];
-	return { messages, userText: signals.userText };
+	return { messages, userText: signals.userText, ...(signals.unknownSlashCommands !== undefined ? { unknownSlashCommands: signals.unknownSlashCommands } : {}) };
 }
 
 /**
