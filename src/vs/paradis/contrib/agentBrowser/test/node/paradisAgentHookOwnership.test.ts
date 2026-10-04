@@ -524,6 +524,37 @@ suite('ParadisAgentHookOwnership', () => {
 		assert.deepStrictEqual(second, { origin: 'owner', agentKind: 'claude' });
 	});
 
+	test('records which branch rejected a hook for the drop diagnostics', async () => {
+		const tree = standardTree();
+		tree.set(400, proc(400, 100, '/opt/codex/vendor/bin/codex'));
+		tree.set(401, proc(401, 400, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh'));
+		const ownership = new ParadisAgentHookOwnership({ snapshot: async () => tree, lastSnapshotAt: () => undefined });
+		await ownership.classify({ token: 'pid', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
+		await ownership.classify({ token: 'remote', hookPid: undefined, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
+		const results = [
+			await ownership.classify({ token: 'pid', hookPid: 401, transcriptPath: CODEX_TRANSCRIPT, at: 2 }),
+			await ownership.classify({ token: 'pid', hookPid: 999, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 3 }),
+			await ownership.classify({ token: 'remote', hookPid: undefined, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 4 }),
+		].map(result => [result.origin, result.rejection]);
+		assert.deepStrictEqual(results, [
+			['invalid', { identityLoss: undefined, ownerPinnedBy: 'pid', ownerTranscriptPath: CLAUDE_TRANSCRIPT, ownerAt: 1, snapshotAgeMs: undefined }],
+			['invalid', { identityLoss: 'pid-not-in-snapshot', ownerPinnedBy: 'pid', ownerTranscriptPath: CLAUDE_TRANSCRIPT, ownerAt: 1, snapshotAgeMs: undefined }],
+			['invalid', { identityLoss: 'no-pid', ownerPinnedBy: 'transcript', ownerTranscriptPath: CLAUDE_TRANSCRIPT, ownerAt: 1, snapshotAgeMs: undefined }],
+		]);
+	});
+
+	test('tells a pid outside the panes apart from a pid missing in the snapshot, and survives a failing snapshot age', async () => {
+		const tree = standardTree();
+		// Para Code 自身をペインのシェル (100) とみなす。100 から出た hook の祖先は全部ペインの外になる。
+		const ownership = new ParadisAgentHookOwnership({ snapshot: async () => tree, lastSnapshotAt: () => { throw new Error('boom'); } }, 100);
+		await ownership.classify({ token: 't', hookPid: undefined, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
+		const results = [
+			await ownership.classify({ token: 't', hookPid: 100, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2 }),
+			await ownership.classify({ token: 't', hookPid: 999, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 3 }),
+		].map(result => [result.origin, result.rejection?.identityLoss, result.rejection?.snapshotAgeMs]);
+		assert.deepStrictEqual(results, [['invalid', 'pid-outside-panes', undefined], ['invalid', 'pid-not-in-snapshot', undefined]]);
+	});
+
 	test('a hook from a vanished pid does not hijack an existing owner', async () => {
 		const ownership = ownershipWith(standardTree());
 		await ownership.classify({ token: 't', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
