@@ -470,6 +470,8 @@ export class RelayClient {
 					this.mux = new FrameMux(channel, {
 						sendSealed: sealed => socket.send(toArrayBuffer(sealed)),
 						onError: error => this.onFatal(error),
+						// 断片の組み立ての誤りはその論理フレームを捨てるだけ（復号はできているので張り直さない）
+						onAssemblyError: error => console.warn('[relay] dropped a frame that could not be reassembled', error),
 						...(this.callbacks.onFrameChunk !== undefined ? { onChunkOpened: this.callbacks.onFrameChunk } : {}),
 					});
 					if (this.callbacks.onFrame) {

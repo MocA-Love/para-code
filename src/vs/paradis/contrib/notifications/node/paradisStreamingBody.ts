@@ -141,3 +141,41 @@ export async function* paradisTeeBody(body: AsyncIterable<Uint8Array>, openSink:
 		}
 	}
 }
+
+/**
+ * 読み上げ 1 件（スケジューラの 1 タスク）のモバイルへの流れを 1 本に絞る。合成の再試行のたびに {@link paradisTeeBody} が
+ * 流れを開こうとしても、前の試行が音を流し始めてから切れていたら（モバイルでは頭が鳴っている）、そのタスクのモバイルへの
+ * 配信はやめる（再試行の成功分は送らない。頭が 2 回鳴るのを防ぐ）。音を流す前に切れた試行は数えない。流し終えたら以後は開かない。
+ */
+export class ParadisMobileVoiceTaskGate {
+	private done = false;
+
+	constructor(private readonly open: () => IParadisBodyTeeSink | undefined) { }
+
+	openSink(): IParadisBodyTeeSink | undefined {
+		if (this.done) {
+			return undefined;
+		}
+		const inner = this.open();
+		if (inner === undefined) {
+			return undefined;
+		}
+		let wrote = false;
+		return {
+			write: chunk => {
+				wrote = true;
+				inner.write(chunk);
+			},
+			end: () => {
+				this.done = true;
+				inner.end();
+			},
+			abort: () => {
+				if (wrote) {
+					this.done = true;
+				}
+				inner.abort();
+			},
+		};
+	}
+}

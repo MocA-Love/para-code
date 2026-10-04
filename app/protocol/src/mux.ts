@@ -32,6 +32,11 @@ export interface FrameMuxOptions {
 	 * チャンクごとにいつ届き、開封（復号）にどれだけかかったかを測るためだけに使い、振る舞いは変えない。
 	 */
 	readonly onChunkOpened?: (chunk: FrameChunkTiming) => void;
+	/**
+	 * 断片の組み立ての誤り（抜け・上限超え）。復号はできているので、暗号層の失敗（onError、切断の判断）とは分ける。
+	 * 無ければ onError へ渡す。
+	 */
+	readonly onAssemblyError?: (error: Error) => void;
 }
 
 /** {@link FrameMuxOptions.onChunkOpened} へ渡す、チャンク1つ分の計測値。 */
@@ -238,7 +243,11 @@ export class FrameMux {
 			return;
 		}
 		if (full instanceof Error) {
-			this.options.onError?.(full);
+			if (this.options.onAssemblyError !== undefined) {
+				this.options.onAssemblyError(full);
+			} else {
+				this.options.onError?.(full);
+			}
 			return;
 		}
 		const handler = this.handlers.get(full.ch);

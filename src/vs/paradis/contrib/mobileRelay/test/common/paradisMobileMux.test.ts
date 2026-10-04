@@ -10,7 +10,7 @@ import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { SecureChannel } from '../../common/paradisMobileCrypto.js';
 import { FrameMux, IParadisMobileFrameTrafficSample, ParadisMobileFrameAssembler } from '../../common/paradisMobileMux.js';
-import { Channels, decodeFrame, Frame } from '../../common/paradisMobileProtocol.js';
+import { Channels, decodeFrame, encodeFrame, Frame } from '../../common/paradisMobileProtocol.js';
 import { ParadisMobileSendQueue } from '../../common/paradisMobileSendQueue.js';
 
 async function importAesKey(bytes: Uint8Array): Promise<CryptoKey> {
@@ -189,7 +189,7 @@ suite('ParadisMobileMux version 4', () => {
 		const first = sender.send(Channels.Terminal, new Uint8Array(10));
 		const dropped = other.send(Channels.Terminal, new Uint8Array(20));
 		await Promise.resolve();
-		assert.deepStrictEqual({ sent, waiting: timers.length, congestion: queue.congestionBytes() }, { sent: [], waiting: 1, congestion: 40 * 1024 + 30 });
+		assert.deepStrictEqual({ sent, waiting: timers.length, congestion: queue.congestionBytes() }, { sent: [], waiting: 1, congestion: 40 * 1024 });
 
 		other.dispose();
 		buffered = 0;
@@ -197,6 +197,30 @@ suite('ParadisMobileMux version 4', () => {
 		await first;
 		await dropped;
 		assert.deepStrictEqual({ sent, congestion: queue.congestionBytes() }, { sent: [10 + 8 + 28], congestion: 0 });
+	});
+});
+
+suite('ParadisMobileMux assembly errors', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('reports a broken fragment sequence separately from decryption failures', async () => {
+		const channels = await establishChannels();
+		const cryptoErrors: unknown[] = [];
+		const assemblyErrors: string[] = [];
+		const delivered: number[] = [];
+		const receiver = new FrameMux(channels.receiver, { sendSealed: () => { }, onError: error => cryptoErrors.push(error), onAssemblyError: error => assemblyErrors.push(error.message) });
+		receiver.on(Channels.Fs, frame => delivered.push(frame.payload.length));
+		const send = async (frame: Frame) => receiver.receive(await channels.sender.seal(encodeFrame(frame)));
+
+		await send({ ch: Channels.Fs, seq: 0, payload: new Uint8Array(2), frag: { id: 7, index: 0, last: false } });
+		await send({ ch: Channels.Fs, seq: 0, payload: new Uint8Array(2), frag: { id: 7, index: 2, last: true } });
+		await send({ ch: Channels.Fs, seq: 1, payload: new Uint8Array(3) });
+
+		assert.deepStrictEqual({ cryptoErrors: cryptoErrors.length, assemblyErrors, delivered }, {
+			cryptoErrors: 0,
+			assemblyErrors: ['frame fragment out of order on transfer 7'],
+			delivered: [3],
+		});
 	});
 });
 

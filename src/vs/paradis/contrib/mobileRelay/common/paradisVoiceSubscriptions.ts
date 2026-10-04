@@ -26,6 +26,11 @@ export const PARADIS_VOICE_SUBSCRIPTION_TTL_MS = 60_000;
 const VOICE_STREAM_CAPABILITY = 'voice.stream.v1';
 /** 同時に追う流れの上限。超えた分は 1 本まるごとも送らない（出どころは通知・SSH・手元の 3 つ）。 */
 const MAX_ACTIVE_STREAMS = 16;
+/**
+ * 最後の書き込み（開始・断片）からこれだけ何も来ない流れは、出どころが閉じ忘れたとみなして切る（end が来ないまま枠を
+ * 握り続けて、後の流れが全部止まるのを防ぐ）。1 発話の上限 120 秒より長くとる。
+ */
+export const PARADIS_VOICE_STREAM_IDLE_LIMIT_MS = 150_000;
 
 /** A currently subscribed and online mobile that can receive the next voice clip. */
 export interface IParadisVoiceRecipient {
@@ -129,6 +134,8 @@ interface IActiveVoiceStream {
 	clipBytes: number;
 	/** 上限を超えて切った。以後の音は捨てる。 */
 	closed: boolean;
+	/** 最後に開始・断片を受けた時刻。 */
+	lastWriteAt: number;
 }
 
 function concatBytes(chunks: readonly Uint8Array[], total: number): Uint8Array {
@@ -156,6 +163,7 @@ export class ParadisMobileVoiceDelivery {
 	constructor(private readonly subscriptions: ParadisVoiceSubscriptions, private readonly options: IParadisVoiceDeliveryOptions) { }
 
 	handle(event: ParadisMobileVoiceEvent): void {
+		this.sweepIdleStreams();
 		switch (event.kind) {
 			case 'clip':
 				if (event.audio.byteLength > 0 && event.audio.byteLength <= PARADIS_VOICE_STREAM_MAX_BYTES) {
@@ -193,6 +201,19 @@ export class ParadisMobileVoiceDelivery {
 		});
 	}
 
+	/** 長く何も来ない流れを切って消す（宛先には aborted の end を送る）。 */
+	private sweepIdleStreams(): void {
+		const now = this.now();
+		for (const [streamId, stream] of this.streams) {
+			if (now - stream.lastWriteAt > PARADIS_VOICE_STREAM_IDLE_LIMIT_MS) {
+				this.streams.delete(streamId);
+				if (!stream.closed) {
+					this.abortStream(stream);
+				}
+			}
+		}
+	}
+
 	private startStream(streamId: string, gainDb: number): void {
 		if (this.streams.has(streamId) || this.streams.size >= MAX_ACTIVE_STREAMS) {
 			return;
@@ -210,6 +231,7 @@ export class ParadisMobileVoiceDelivery {
 			clipChunks: [],
 			clipBytes: 0,
 			closed: false,
+			lastWriteAt: this.now(),
 		});
 	}
 
@@ -230,6 +252,8 @@ export class ParadisMobileVoiceDelivery {
 			const canStream = !congested && session.capabilities?.includes(VOICE_STREAM_CAPABILITY) === true;
 			stream.targets.set(mobileId, { sid, epoch: session.epoch, mode: canStream ? 'stream' : 'clip' });
 			if (canStream) {
+				// epoch は記録用。アプリは使わない（張り直した後の古い流れは、アプリが知らない streamId として捨てるか、
+				// 最後の断片から 8 秒で終える。それは許容する）
 				const start: IParadisVoiceStreamStartMessage = { t: 'voice-stream-start', sid, streamId: stream.id, mime: PARADIS_VOICE_STREAM_MIME, gainDb: stream.gainDb, epoch: session.epoch };
 				this.send(session, new TextEncoder().encode(JSON.stringify(start)));
 			}
@@ -241,6 +265,7 @@ export class ParadisMobileVoiceDelivery {
 		if (stream === undefined || stream.closed || chunk.byteLength === 0) {
 			return;
 		}
+		stream.lastWriteAt = this.now();
 		const first = !stream.decided;
 		if (first) {
 			this.decide(stream);
@@ -248,7 +273,8 @@ export class ParadisMobileVoiceDelivery {
 		if (stream.targets.size === 0) {
 			return;
 		}
-		if (stream.sentBytes + stream.pendingBytes + chunk.byteLength > PARADIS_VOICE_STREAM_MAX_BYTES) {
+		// 流す宛先は送った分、1 本まるごとの宛先は控えた分で数える（どちらにも 8MiB の上限を効かせる）
+		if (Math.max(stream.sentBytes + stream.pendingBytes, stream.clipBytes) + chunk.byteLength > PARADIS_VOICE_STREAM_MAX_BYTES) {
 			this.abortStream(stream);
 			return;
 		}
@@ -353,6 +379,7 @@ export class ParadisMobileVoiceDelivery {
 		stream.pending = [];
 		stream.pendingBytes = 0;
 		stream.clipChunks = [];
+		stream.clipBytes = 0;
 		for (const [session] of this.liveStreamTargets(stream)) {
 			this.sendEnd(session, stream, true);
 		}

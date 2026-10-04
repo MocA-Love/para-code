@@ -14,7 +14,8 @@
  *
  * 1 回の発話は次の順に browser チャネルで届く（宛先の端末が `voice.stream.v1` を広告しているときだけ）:
  *
- * 1. `voice-stream-start {sid, streamId, mime, gainDb, epoch}`（JSON）
+ * 1. `voice-stream-start {sid, streamId, mime, gainDb, epoch}`（JSON）。`epoch` は PC の暗号セッションの世代で、記録用
+ *    （アプリは使わない。張り直した後に届いた古い流れの続きは、知らない streamId として捨てるか、最後の断片から 8 秒で終える）
  * 2. 2 進の断片（先頭 4 バイトの印 `PVS\x01` ＋ streamId 16 バイト ＋ seq 4 バイト（BE）＋ MP3）。
  *    PC は 8KiB か 100ms ごとにまとめて送る
  * 3. `voice-stream-end {streamId, seq, bytes, aborted}`（JSON）。`seq` は送った断片の数、`bytes` は MP3 の合計。
