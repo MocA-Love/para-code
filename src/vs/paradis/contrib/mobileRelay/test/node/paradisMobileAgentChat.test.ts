@@ -7,14 +7,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, realpath, rm, utimes, writeFile } from 'fs/promises';
 import { createRequire } from 'module';
 import { tmpdir } from 'os';
 import * as sinon from 'sinon';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { fireParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
+import { fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/node/paradisAgentHome.js';
 import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from '../../node/paradisRemoteTranscriptMirror.js';
@@ -1042,6 +1042,299 @@ suite('ParadisMobileAgentChat', () => {
 			{ transcriptPath: '/sessions/a.jsonl', mtime: 20 },
 			{ transcriptPath: '/sessions/b.jsonl', mtime: 21 },
 		], 10, new Set(['/sessions/a.jsonl'])), { transcriptPath: '/sessions/b.jsonl', mtime: 21 });
+	});
+
+	suite('Claude Code /fork and background sessions', () => {
+		const ORIGINAL = '11111111-1111-4111-8111-111111111111';
+		const FORK = '22222222-2222-4222-8222-222222222222';
+		/** 会話の行。sessionKind: "bg" は daemon の配下の会話（`/fork` の分岐先）が書く形。 */
+		const transcript = (sessionId: string, sessionKind?: string) => [
+			JSON.stringify({ type: 'ai-title', aiTitle: '調査', sessionId }),
+			JSON.stringify({ type: 'user', uuid: `u-${sessionId}`, parentUuid: null, sessionId, message: { role: 'user', content: '調べて' }, timestamp: '2026-10-03T13:32:42.642Z', ...(sessionKind !== undefined ? { sessionKind } : {}) }),
+			'',
+		].join('\n');
+		const projectDirOf = (claudeHome: string, cwd: string) => join(claudeHome, 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+		interface IForkAccess {
+			readonly paneSessions: Map<string, { readonly transcriptPath: string; readonly sessionId?: string }>;
+			readonly cliReconciliationTimers: Map<string, unknown>;
+			readonly cliDiscoveryGenerations: Map<string, number>;
+			readonly hookProcessing: Map<string, Promise<void>>;
+			readonly activityTrackers: Map<string, unknown>;
+			readonly attachProjectScans: Map<string, unknown>;
+			readonly hookTranscriptSightings: { excludedFor(token: string, now: number): Set<string> };
+			discoverAndNotify(token: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork' | 'attach', cwd: string, minMtime: number | undefined, generation: number, requestedSessionId?: string): Promise<void>;
+			pushToSubscribers(token: string): void;
+		}
+
+		test('replays a /fork timeline through the reconciliation tick: neither a hooked nor a hook-less pane switches to the fork, but both follow a real switch', async () => {
+			// 実ファイルの更新時刻と hook の列を、本物の 5 秒ごとの照合（setInterval）に通す。
+			await withDirectoryWalkFixture(async ({ workspace, claudeHome }) => {
+				const hooklessCwd = join(workspace, 'hookless');
+				await mkdir(hooklessCwd, { recursive: true });
+				const hookedProject = projectDirOf(claudeHome, workspace);
+				const hooklessProject = projectDirOf(claudeHome, hooklessCwd);
+				await mkdir(hookedProject, { recursive: true });
+				await mkdir(hooklessProject, { recursive: true });
+				const now = Date.now();
+				const touch = (path: string, seconds: number) => utimes(path, (now + seconds * 1000) / 1000, (now + seconds * 1000) / 1000);
+				const write = async (path: string, content: string, seconds: number) => {
+					await writeFile(path, content);
+					await touch(path, seconds);
+				};
+				const original = join(hookedProject, `${ORIGINAL}.jsonl`);
+				const fork = join(hookedProject, `${FORK}.jsonl`);
+				const resumed = join(hookedProject, '99999999-9999-4999-8999-999999999999.jsonl');
+				const hooklessOriginal = join(hooklessProject, '33333333-3333-4333-8333-333333333333.jsonl');
+				const hooklessFork = join(hooklessProject, '44444444-4444-4444-8444-444444444444.jsonl');
+				const hooklessResumed = join(hooklessProject, '55555555-5555-4555-8555-555555555555.jsonl');
+				await write(original, transcript(ORIGINAL), 1);
+				await write(hooklessOriginal, transcript('hookless'), 1);
+				const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+				const access = chat as unknown as IForkAccess;
+				const discover = sinon.spy(access, 'discoverAndNotify');
+				const clock = sinon.useFakeTimers({ now, toFake: ['setInterval', 'clearInterval'] });
+				try {
+					assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [
+						{ terminalId: 1, token: 'pane-hooked', cwd: workspace },
+						{ terminalId: 2, token: 'pane-hookless', cwd: hooklessCwd },
+					]), true);
+					chat.onCliCommandDetected('pane-hooked', 'claude', 'new', workspace);
+					chat.onCliCommandDetected('pane-hookless', 'claude', 'new', hooklessCwd);
+					fireParadisAgentHookEvent({ token: 'pane-hooked', event: 'SessionStart', sessionId: ORIGINAL, transcriptPath: original, cwd: workspace, payload: { source: 'startup' }, at: Date.now() });
+					await waitFor(() => access.paneSessions.get('pane-hooked')?.transcriptPath === original, 'the hook was not applied');
+					const timeline: { readonly step: string; readonly hooked?: string; readonly hookless?: string; readonly reconciling: boolean }[] = [];
+					const tick = async (step: string) => {
+						const before = discover.callCount;
+						clock.tick(5_000);
+						await Promise.all(discover.getCalls().slice(before).map(call => call.returnValue));
+						timeline.push({
+							step,
+							hooked: access.paneSessions.get('pane-hooked')?.transcriptPath,
+							hookless: access.paneSessions.get('pane-hookless')?.transcriptPath,
+							reconciling: access.cliReconciliationTimers.has('pane-hooked') && access.cliReconciliationTimers.has('pane-hookless'),
+						});
+					};
+					await tick('started');
+					// `/fork`: 分岐先は daemon の配下で動く。元のペインの token で daemon の hook が届く
+					// （hook の来ないペインの分岐先は sessionKind だけで外れる）
+					await write(fork, transcript(FORK, 'bg'), 6);
+					await write(hooklessFork, transcript('hookless-fork', 'bg'), 6);
+					fireParadisAgentNestedHookEvent({ token: 'pane-hooked', event: 'SessionStart', sessionId: FORK, transcriptPath: fork, cwd: workspace, nestedAgent: 'claude', background: true, at: Date.now(), payload: { source: 'fork' } });
+					await tick('forked');
+					// 元の会話と分岐先が交互に更新される
+					await touch(original, 12);
+					await touch(hooklessOriginal, 12);
+					await touch(fork, 9);
+					await touch(hooklessFork, 9);
+					await tick('original updated');
+					await touch(fork, 18);
+					await touch(hooklessFork, 18);
+					await tick('fork updated');
+					// SessionStart を出さない TUI 内の切り替え（Codex の /resume など）は、照合でこれまでどおり追う
+					await write(resumed, transcript('resumed'), 24);
+					await write(hooklessResumed, transcript('hookless-resumed'), 24);
+					await tick('switched in the TUI');
+					assert.deepStrictEqual(timeline, [
+						{ step: 'started', hooked: original, hookless: hooklessOriginal, reconciling: true },
+						{ step: 'forked', hooked: original, hookless: hooklessOriginal, reconciling: true },
+						{ step: 'original updated', hooked: original, hookless: hooklessOriginal, reconciling: true },
+						{ step: 'fork updated', hooked: original, hookless: hooklessOriginal, reconciling: true },
+						{ step: 'switched in the TUI', hooked: resumed, hookless: hooklessResumed, reconciling: true },
+					]);
+				} finally {
+					clock.restore();
+					chat.dispose();
+				}
+			});
+		});
+
+		test('follows /clear by the SessionStart hook and stops reconciling when the CLI exits', async () => {
+			await withDirectoryWalkFixture(async ({ workspace, claudeHome }) => {
+				const project = projectDirOf(claudeHome, workspace);
+				await mkdir(project, { recursive: true });
+				const original = join(project, `${ORIGINAL}.jsonl`);
+				const cleared = join(project, '33333333-3333-4333-8333-333333333333.jsonl');
+				await writeFile(original, transcript(ORIGINAL));
+				await writeFile(cleared, transcript('cleared'));
+				const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+				const access = chat as unknown as IForkAccess;
+				try {
+					assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token: 'pane-clear', cwd: workspace }]), true);
+					chat.onCliCommandDetected('pane-clear', 'claude', 'new', workspace);
+					fireParadisAgentHookEvent({ token: 'pane-clear', event: 'SessionStart', sessionId: ORIGINAL, transcriptPath: original, cwd: workspace, payload: { source: 'startup' }, at: Date.now() });
+					await waitFor(() => access.paneSessions.get('pane-clear')?.transcriptPath === original, 'first hook was not applied');
+					fireParadisAgentHookEvent({ token: 'pane-clear', event: 'SessionStart', sessionId: '33333333-3333-4333-8333-333333333333', transcriptPath: cleared, cwd: workspace, payload: { source: 'clear' }, at: Date.now() });
+					await waitFor(() => access.paneSessions.get('pane-clear')?.transcriptPath === cleared, '/clear was not followed');
+					const reconcilingWhileRunning = access.cliReconciliationTimers.has('pane-clear');
+					chat.onCliCommandFinished('pane-clear');
+					assert.deepStrictEqual({ reconcilingWhileRunning, reconcilingAfterExit: access.cliReconciliationTimers.has('pane-clear') }, { reconcilingWhileRunning: true, reconcilingAfterExit: false });
+				} finally {
+					chat.dispose();
+				}
+			});
+		});
+
+		test('checks the transcript of an unverified hook before binding a pane to a daemon-hosted session', async () => {
+			await withDirectoryWalkFixture(async ({ workspace, claudeHome }) => {
+				const project = projectDirOf(claudeHome, workspace);
+				await mkdir(project, { recursive: true });
+				const own = join(project, `${ORIGINAL}.jsonl`);
+				const fork = join(project, `${FORK}.jsonl`);
+				await writeFile(own, transcript(ORIGINAL));
+				await writeFile(fork, transcript(FORK, 'bg'));
+				const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+				const access = chat as unknown as IForkAccess;
+				try {
+					assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [
+						{ terminalId: 1, token: 'pane-unverified', cwd: workspace },
+						{ terminalId: 2, token: 'pane-verified', cwd: '/elsewhere' },
+						{ terminalId: 3, token: 'pane-resumed', cwd: '/elsewhere' },
+					]), true);
+					// pid の無い hook: 所有者が決まる前に分岐先の hook が先に届いた
+					fireParadisAgentHookEvent({ token: 'pane-unverified', event: 'SessionStart', sessionId: FORK, transcriptPath: fork, cwd: workspace, payload: { source: 'fork' }, ownerUnverified: true, at: Date.now() });
+					await waitFor(() => !access.hookProcessing.has('pane-unverified'), 'the unverified fork hook was not processed');
+					const afterForkHook = access.paneSessions.get('pane-unverified')?.transcriptPath;
+					// 捨てた hook は daemon の会話として控えに残さない（次の hook でもう一度確かめる）
+					const forkRemembered = access.hookTranscriptSightings.excludedFor('pane-other', Date.now()).has(fork);
+					fireParadisAgentHookEvent({ token: 'pane-unverified', event: 'SessionStart', sessionId: ORIGINAL, transcriptPath: own, cwd: workspace, payload: { source: 'startup' }, ownerUnverified: true, at: Date.now() });
+					await waitFor(() => access.paneSessions.get('pane-unverified')?.transcriptPath === own, 'the pane session was not bound');
+					// 発信元を確かめた hook（分岐先をペインで --resume し直した等）は中身を見ずに採る
+					fireParadisAgentHookEvent({ token: 'pane-verified', event: 'SessionStart', sessionId: FORK, transcriptPath: fork, cwd: workspace, payload: { source: 'resume' }, at: Date.now() });
+					await waitFor(() => access.paneSessions.get('pane-verified')?.transcriptPath === fork, 'the verified hook was not bound');
+					// SessionStart の source: resume は持ち主の行為なので、確かめられない hook でも中身を見ずに採る
+					// （分岐先を --resume し直した直後は、まだ末尾の行も bg）。ここでは別のペインが先に採っているので
+					// claim を移す（hook はペインの環境を伴う強い証拠）
+					fireParadisAgentHookEvent({ token: 'pane-resumed', event: 'SessionStart', sessionId: FORK, transcriptPath: fork, cwd: workspace, payload: { source: 'resume' }, ownerUnverified: true, at: Date.now() });
+					await waitFor(() => access.paneSessions.get('pane-resumed')?.transcriptPath === fork, 'the unverified resume hook was not bound');
+					assert.deepStrictEqual({ afterForkHook, forkRemembered, unverified: access.paneSessions.get('pane-unverified')?.transcriptPath }, { afterForkHook: undefined, forkRemembered: false, unverified: own });
+				} finally {
+					chat.dispose();
+				}
+			});
+		});
+
+		test('leaves forked, nested and daemon-hosted transcripts out of the cwd reconciliation', async () => {
+			await withDirectoryWalkFixture(async ({ workspace, claudeHome }) => {
+				const project = projectDirOf(claudeHome, workspace);
+				await mkdir(project, { recursive: true });
+				const own = join(project, `${ORIGINAL}.jsonl`);
+				const fork = join(project, `${FORK}.jsonl`);
+				const nested = join(project, '55555555-5555-4555-8555-555555555555.jsonl');
+				const daemonHosted = join(project, '66666666-6666-4666-8666-666666666666.jsonl');
+				await writeFile(own, transcript(ORIGINAL));
+				await writeFile(fork, transcript(FORK, 'bg'));
+				await writeFile(nested, transcript('nested'));
+				await writeFile(daemonHosted, transcript('daemon'));
+				const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+				const access = chat as unknown as IForkAccess;
+				try {
+					assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [
+						{ terminalId: 1, token: 'pane-scan', cwd: workspace },
+						{ terminalId: 2, token: 'pane-nested-parent', cwd: '/elsewhere' },
+						{ terminalId: 3, token: 'pane-daemon-origin', cwd: '/elsewhere' },
+					]), true);
+					// 本物の子エージェント（nested）は、これまでどおり親ペインの子エージェントの一覧に出る
+					fireParadisAgentNestedHookEvent({ token: 'pane-nested-parent', event: 'SessionStart', sessionId: 'nested', transcriptPath: nested, cwd: workspace, nestedAgent: 'claude', at: Date.now() });
+					// daemon の配下の会話は、daemon を起こしたペインの token で届くが、そのペインには何も出さない
+					fireParadisAgentNestedHookEvent({ token: 'pane-daemon-origin', event: 'SessionStart', sessionId: 'daemon', transcriptPath: daemonHosted, cwd: workspace, nestedAgent: 'claude', background: true, at: Date.now() });
+					access.cliDiscoveryGenerations.set('pane-scan', 0);
+					await access.discoverAndNotify('pane-scan', 'claude', 'resume', workspace, Date.now() - 60_000, 0);
+					assert.deepStrictEqual({
+						scan: access.paneSessions.get('pane-scan')?.transcriptPath,
+						nestedProjected: access.activityTrackers.has('pane-nested-parent'),
+						daemonProjected: access.activityTrackers.has('pane-daemon-origin'),
+					}, {
+						scan: own,
+						nestedProjected: true,
+						daemonProjected: false,
+					});
+				} finally {
+					chat.dispose();
+				}
+			});
+		});
+
+		test('pins claude attach <id> to the transcript named by the id and does not guess otherwise', async () => {
+			await withDirectoryWalkFixture(async ({ workspace, claudeHome }) => {
+				const paneProject = projectDirOf(claudeHome, workspace);
+				const forkProject = join(claudeHome, 'projects', '-somewhere-else');
+				await mkdir(paneProject, { recursive: true });
+				await mkdir(forkProject, { recursive: true });
+				// 同じ作業フォルダの元の会話は新しく更新されていても採らない
+				await writeFile(join(paneProject, `${ORIGINAL}.jsonl`), transcript(ORIGINAL));
+				const fork = join(forkProject, `${FORK}.jsonl`);
+				await writeFile(fork, transcript(FORK, 'bg'));
+				await writeFile(join(paneProject, '77777777-aaaa-4777-8777-777777777777.jsonl'), transcript('a'));
+				await writeFile(join(paneProject, '77777777-bbbb-4777-8777-777777777777.jsonl'), transcript('b'));
+				const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+				const access = chat as unknown as IForkAccess;
+				try {
+					assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [
+						{ terminalId: 1, token: 'pane-attach', cwd: workspace },
+						{ terminalId: 2, token: 'pane-ambiguous', cwd: workspace },
+						{ terminalId: 3, token: 'pane-missing', cwd: workspace },
+					]), true);
+					// daemon の会話として hook で見ていても、attach の決め打ちでは採る
+					fireParadisAgentNestedHookEvent({ token: 'pane-other', event: 'Stop', sessionId: FORK, transcriptPath: fork, cwd: workspace, nestedAgent: 'claude', background: true, at: Date.now() });
+					chat.onCliCommandDetected('pane-attach', 'claude', 'attach', workspace, undefined, FORK.slice(0, 8));
+					await waitFor(() => access.paneSessions.has('pane-attach'), 'attach was not pinned');
+					for (const [token, id] of [['pane-ambiguous', '77777777'], ['pane-missing', '88888888']]) {
+						access.cliDiscoveryGenerations.set(token, 0);
+						await access.discoverAndNotify(token, 'claude', 'attach', workspace, undefined, 0, id);
+					}
+					assert.deepStrictEqual({
+						attach: access.paneSessions.get('pane-attach'),
+						attachReconciles: access.cliReconciliationTimers.has('pane-attach'),
+						ambiguous: access.paneSessions.get('pane-ambiguous'),
+						missing: access.paneSessions.get('pane-missing'),
+						// 全作業フォルダの走査は、一致があったときだけ同じ起動の再試行で使い回す
+						reusedScans: ['pane-attach', 'pane-ambiguous', 'pane-missing'].map(token => access.attachProjectScans.has(token)),
+					}, {
+						attach: { token: 'pane-attach', agent: 'claude', transcriptPath: fork, sessionId: FORK },
+						attachReconciles: false,
+						ambiguous: undefined,
+						missing: undefined,
+						reusedScans: [true, false, false],
+					});
+				} finally {
+					chat.dispose();
+				}
+			});
+		});
+
+		test('tells the subscribers of a pane whose session a hook took away', async () => {
+			await withDirectoryWalkFixture(async ({ workspace, claudeHome }) => {
+				const project = projectDirOf(claudeHome, workspace);
+				await mkdir(project, { recursive: true });
+				const shared = join(project, `${ORIGINAL}.jsonl`);
+				await writeFile(shared, transcript(ORIGINAL));
+				const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+				const access = chat as unknown as IForkAccess;
+				try {
+					assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [
+						{ terminalId: 1, token: 'pane-guessed', cwd: workspace },
+						{ terminalId: 2, token: 'pane-hooked', cwd: '/elsewhere' },
+					]), true);
+					access.cliDiscoveryGenerations.set('pane-guessed', 0);
+					await access.discoverAndNotify('pane-guessed', 'claude', 'resume', workspace, undefined, 0);
+					const guessed = access.paneSessions.get('pane-guessed')?.transcriptPath;
+					const pushes = sinon.spy(access, 'pushToSubscribers');
+					fireParadisAgentHookEvent({ token: 'pane-hooked', event: 'UserPromptSubmit', sessionId: ORIGINAL, transcriptPath: shared, cwd: workspace, payload: { prompt: '続けて' }, at: Date.now() });
+					await waitFor(() => access.paneSessions.get('pane-hooked')?.transcriptPath === shared, 'hook did not take the session');
+					assert.deepStrictEqual({
+						guessed,
+						guessedAfter: access.paneSessions.get('pane-guessed'),
+						pushedTo: pushes.getCalls().map(call => call.args[0]),
+					}, {
+						guessed: shared,
+						guessedAfter: undefined,
+						pushedTo: ['pane-guessed', 'pane-hooked'],
+					});
+				} finally {
+					chat.dispose();
+				}
+			});
+		});
 	});
 
 	test('keeps the image limits inside what a transcript line can carry', () => {
