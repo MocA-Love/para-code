@@ -111,6 +111,8 @@ export interface IParadisClaudeModPendingPermission {
 	readonly hasSuggestions: boolean;
 	/** その permission_suggestions（切り詰め済み）。カードに足されるルールを出すのに使う。 */
 	readonly suggestions: readonly unknown[];
+	/** 拒否に添えた文を Claude Code へ渡せる mod か（登録に `denyMessage: true` を付けてくる版）。古い mod は固定の文で拒否する。 */
+	readonly acceptsDenyMessage: boolean;
 }
 
 export type ParadisClaudeModEvent = { readonly token: string; readonly sessionId: string; readonly at: number } & (
@@ -165,7 +167,7 @@ const HELD_BUSY_TURN_MS = 10 * 60_000;
 const SUBMIT_FINAL_ACK_MS = 10 * 60_000;
 
 type WaitOutcome =
-	| { readonly state: 'answer'; readonly answers?: Record<string, string>; readonly annotations?: Record<string, IParadisClaudeModQuestionAnnotation>; readonly decision?: 'allow' | 'deny'; readonly always?: boolean }
+	| { readonly state: 'answer'; readonly answers?: Record<string, string>; readonly annotations?: Record<string, IParadisClaudeModQuestionAnnotation>; readonly decision?: 'allow' | 'deny'; readonly always?: boolean; readonly message?: string }
 	| { readonly state: 'clarify'; readonly response?: string; readonly deny?: string }
 	| { readonly state: 'settled' }
 	| { readonly state: 'expired' };
@@ -574,7 +576,7 @@ export class ParadisClaudeModBridge {
 			id: itemId, kind: 'permission', token, sessionId, expiresAt: now + waitMs, lastPollAt: now,
 			permission: {
 				...this.sanitizedPermissionInput(toolName, request.toolInput, request.suggestions),
-				id: itemId, toolName,
+				id: itemId, toolName, acceptsDenyMessage: request.denyMessage === true,
 				...(toolUseId !== undefined ? { toolUseId } : {}),
 				...(agentId !== undefined ? { agentId } : {}),
 			},
@@ -874,12 +876,22 @@ export class ParadisClaudeModBridge {
 		return true;
 	}
 
-	answerPermission(token: string, itemId: string, decision: 'allow' | 'deny', always: boolean): boolean {
+	/**
+	 * 承認の回答を mod へ渡す。`denyMessage` は拒否のときに Claude Code へ返す文（モデルが読む）で、受け取れる mod
+	 * （{@link IParadisClaudeModPendingPermission.acceptsDenyMessage}）にだけ渡す。受け取れない mod には false を返す
+	 * （黙って固定の文で拒否させない）。もう待っていなければ false。
+	 */
+	answerPermission(token: string, itemId: string, decision: 'allow' | 'deny', always: boolean, denyMessage?: string): boolean {
 		const item = this.pending.get(itemId);
-		if (item === undefined || item.kind !== 'permission' || item.token !== token || item.outcome !== undefined) {
+		if (item === undefined || item.kind !== 'permission' || item.token !== token || item.outcome !== undefined
+			|| (denyMessage !== undefined && (decision !== 'deny' || item.permission?.acceptsDenyMessage !== true))) {
 			return false;
 		}
-		this.finish(item, { state: 'answer', decision, ...(always && decision === 'allow' && item.permission?.hasSuggestions === true ? { always: true } : {}) });
+		this.finish(item, {
+			state: 'answer', decision,
+			...(always && decision === 'allow' && item.permission?.hasSuggestions === true ? { always: true } : {}),
+			...(denyMessage !== undefined ? { message: denyMessage } : {}),
+		});
 		return true;
 	}
 

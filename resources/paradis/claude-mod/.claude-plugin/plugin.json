@@ -1,6 +1,6 @@
 {
 	"name": "para-code",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"description": "Connects Claude Code sessions in Para Code terminals to Para Code and Para Code Mobile (conversation, live text, questions, approvals, sending).",
 	"author": {
 		"name": "Para Code"

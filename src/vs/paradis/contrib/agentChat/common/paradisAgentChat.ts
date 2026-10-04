@@ -15,6 +15,7 @@
 // （app/mobile/src/store.ts の AgentChatMessage 等）が知らない値を無視できるかを確かめること。
 
 import { Event } from '../../../../base/common/event.js';
+import type { IParadisAgentApprovalRequest, ParadisAgentApprovalSuggestionScope } from '../../mobileRelay/common/paradisAgentApprovalRequest.js';
 
 /** デスクトップのチャット表示（エディタエリアのターミナルタブを ⌘⇧J でチャットに切り替える）を使うか。 */
 export const PARADIS_AGENT_CHAT_ENABLED_SETTING = 'paradis.agentChat.enabled';
@@ -202,6 +203,16 @@ export type IParadisAgentInteraction =
 		 * 「今後は確認しない」の対象を添えて見せるだけで、送るキーには使わない。
 		 */
 		readonly suggestions?: readonly string[];
+		/**
+		 * 以下は `agent.approval.detail.v1`（古いアプリは知らない項目として捨て、`detail` を出す）。
+		 * `request`: 操作の中身（ツールごとに項目を分けたもの。サブエージェントからの許可なら `agent` も）。
+		 * `detail` は hook と mod の承認を本文で突き合わせるのにも使うので、形を変えずに残す。
+		 */
+		readonly request?: IParadisAgentApprovalRequest;
+		/** `suggestions` が足されたあと、どう残るか（「設定に残る」の書き分けに使う）。 */
+		readonly suggestionScope?: ParadisAgentApprovalSuggestionScope;
+		/** `mod`: Claude Code の mod が待っていて、拒否に指示を添えられる（`action/answerApproval` の `message`）。 */
+		readonly answerVia?: 'mod';
 	};
 
 export function paradisIsCodexDaemonApprovalInteraction(interactionId: string): boolean {

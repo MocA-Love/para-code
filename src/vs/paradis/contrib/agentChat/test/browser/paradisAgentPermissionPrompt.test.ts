@@ -10,7 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
-import { paradisParseApprovalOptions } from '../../../mobileRelay/common/paradisAgentApprovalOptions.js';
+import { paradisParseApprovalOptions, paradisParsePermissionWarning } from '../../../mobileRelay/common/paradisAgentApprovalOptions.js';
 
 suite('paradisPermissionPromptParts (W2-21 review M1 / M2)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -79,5 +79,32 @@ suite('paradisPermissionPromptParts (W2-21 review M1 / M2)', () => {
 
 	test('returns undefined when no permission prompt is on screen', () => {
 		assert.strictEqual(paradisPermissionPromptParts('1. First step\n2. Second step\n'), undefined);
+	});
+
+	test('reads the warning line between the dashed rule under the command and the heading (Claude Code 2.1.289 screens)', () => {
+		// Claude Code 2.1.289 の実画面（パスは匿名化）。説明 → 点線 → コマンド → 点線 → 警告 → 見出し
+		const rule = '╌'.repeat(60);
+		const prompt = (header: string, command: string, warning: string) => [
+			'⏺ Bash(…)',
+			'  ⎿  Waiting…',
+			'─'.repeat(60),
+			` ${header}`,
+			' Copy and clean staging',
+			rule,
+			` │ ${command}`,
+			rule,
+			` ${warning}`,
+			' Do you want to proceed?',
+			' ❯ 1. Yes',
+			'   2. No',
+			'',
+			' Esc to cancel · Tab to amend',
+		].join('\n');
+		const warningOf = (screen: string) => paradisParsePermissionWarning(paradisPermissionPromptParts(screen)!.context);
+		assert.deepStrictEqual([
+			warningOf(prompt('Bash command', 'cd ~/projects/demo && sh -c "md5 $C/a.txt; rm -rf ./$C/.staging"', 'This shell -c script runs rm and could not be checked')),
+			warningOf(prompt('Bash command · from the general-purpose agent', 'cd ~/projects/demo && sh -c "rm -rf ./junk"', 'This command requires approval')),
+			warningOf(screen('git push origin main')),
+		], ['This shell -c script runs rm and could not be checked', undefined, undefined]);
 	});
 });

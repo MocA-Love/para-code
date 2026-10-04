@@ -51,6 +51,7 @@ import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, 
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 import { PARADIS_AGENT_QUESTION_NOTES_LIMIT, PARADIS_AGENT_QUESTION_RESPONSE_LIMIT, paradisAgentQuestionClarifyDeny, paradisBuildModQuestionAnswer } from '../common/paradisAgentQuestionModAnswer.js';
 import { IParadisAgentApprovalOption, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
+import { IParadisAgentApprovalAgent, IParadisAgentApprovalRequest, PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, PARADIS_APPROVAL_INSTRUCTION_MARKER, ParadisAgentApprovalSuggestionScope, paradisApprovalDenyMessage, paradisSanitizeApprovalInstruction, paradisApprovalSuggestionScope, paradisBuildAgentApprovalRequest } from '../common/paradisAgentApprovalRequest.js';
 import { paradisAgentSessionKey } from '../common/paradisMobileAgentResume.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/paradisSessionResume.js';
 import { IParadisHistoryCursor, PARADIS_HISTORY_FILE_CAP, PARADIS_HISTORY_PAGE_LIMIT, paradisDecodeHistoryCursor, paradisEncodeHistoryCursor, paradisHistoryCursorHasMore, paradisReadTranscriptHistory } from './paradisAgentChatHistory.js';
@@ -135,7 +136,8 @@ type AgentInbound =
 	 * `response` があればそれを返事として渡し、無ければ途中までの回答（`answers`。未回答は null）とメモを添えて拒否する。
 	 */
 	| { t: 'action/clarifyQuestion'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; response?: string; answers?: readonly (AgentQuestionAnswer | null)[] }
-	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: string; optionLabel?: string; promptHash?: string }
+	/** `message`: 拒否（`no`）に添える指示（`agent.approval.detail.v1`。承認の `answerVia: 'mod'` のときだけ。mod へ値で渡す）。 */
+	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: string; optionLabel?: string; promptHash?: string; message?: string }
 	/** 承認の画面に出ている番号付きの選択肢を求める（W2-21、`agent.approval.options.v1`）。答えは所有ウィンドウが直接返す。 */
 	| { t: 'approval-options'; id: number; token?: string; requestId: string; epoch: string; interactionId: string }
 	| { t: 'action/claudeSetting'; id: number; token?: string; requestId: string; epoch: string; setting: 'model' | 'effort'; value: string }
@@ -169,7 +171,7 @@ type AgentOutbound =
 	 * 承認の選択肢（W2-21）。ふつうは所有ウィンドウ（画面を読める renderer）が直接返し、ここから送るのは
 	 * 求めが古い・画面を読めない相手のときの `error` だけ。
 	 */
-	| { t: 'approval-options'; id: number; requestId: string; interactionId: string; options?: readonly IParadisAgentApprovalOption[]; promptHash?: string; error?: string }
+	| { t: 'approval-options'; id: number; requestId: string; interactionId: string; options?: readonly IParadisAgentApprovalOption[]; promptHash?: string; warning?: string; error?: string }
 	/**
 	 * 古い発言（W2-30）。messages は古い順。記録ファイルから読んだものの rev は負の数（-1 から古い方へ減る）で、全文・画像の
 	 * 取り寄せはできない。`cursor` があれば続きがあり、次の求めにそのまま付ける。`hasMore` が false ならこれより前は無いか、
@@ -317,14 +319,20 @@ const PARADIS_CLAUDE_TOOL_REJECTED_PREFIX = `The user doesn't want to proceed wi
  */
 const PARADIS_CODEX_TOOL_ABORTED_TEXT = 'aborted by user';
 
-/** 利用者が許可を拒否したツールの結果か（Claude Code の定型文、Codex の `aborted by user`）。 */
-function paradisIsToolRejection(agent: ParadisAgentKind, message: IParadisAgentChatMessage): boolean {
+/**
+ * 利用者が許可を拒否して、エージェントが止まって次の指示を待つツールの結果か（Claude Code の定型文、Codex の `aborted by user`）。
+ *
+ * 拒否に指示が添えてあるもの（TUI の Tab to amend の「No, and tell Claude what to do differently」と、モバイルの「拒否して
+ * 指示を書く」。どちらも {@link PARADIS_APPROVAL_INSTRUCTION_MARKER} を含む）は、エージェントがその指示で作業を続けるので
+ * 止まった拒否に数えない（数えると、作業中のペインを待機へ落とし、live を消してしまう）。
+ */
+export function paradisIsToolRejection(agent: ParadisAgentKind, message: IParadisAgentChatMessage): boolean {
 	if (message.kind !== 'tool_result') {
 		return false;
 	}
 	return agent === 'codex'
 		? message.text.trim().split('\n').pop()?.trim() === PARADIS_CODEX_TOOL_ABORTED_TEXT
-		: message.isError === true && message.text.startsWith(PARADIS_CLAUDE_TOOL_REJECTED_PREFIX);
+		: message.isError === true && message.text.startsWith(PARADIS_CLAUDE_TOOL_REJECTED_PREFIX) && !message.text.includes(PARADIS_APPROVAL_INSTRUCTION_MARKER);
 }
 
 /** ペインごとに覚える未完了のツール呼び出しの上限（hook の取りこぼしで伸び続けないように）。 */
@@ -363,7 +371,8 @@ export function paradisModApprovalChoices(suggestions: readonly unknown[]): read
 	if (modes.length === 0 && rules.length === 0) {
 		return PARADIS_DEFAULT_APPROVAL_CHOICES;
 	}
-	const persistentRules = ruleEntries.some(entry => typeof entry.destination === 'string' && entry.destination !== 'session');
+	// 残り方の分からないもの（`destination` が無い・知らない値）は、残る側に倒す（paradisApprovalSuggestionScope と同じ）
+	const persistentRules = ruleEntries.some(entry => entry.destination !== 'session');
 	// 文言は 200 文字まで（モバイルの上限）。入りきらない分は「ほか n 件」にまとめる
 	const list = (prefix: string, items: readonly string[], suffix = '') => {
 		for (let shown = items.length; shown > 0; shown--) {
@@ -796,6 +805,7 @@ function isValidApprovalAction(msg: AgentInboundCandidate): msg is AgentInboundC
 		&& typeof msg.choice === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(msg.choice)
 		&& (msg.optionLabel === undefined || (typeof msg.optionLabel === 'string' && msg.optionLabel.length > 0 && msg.optionLabel.length <= 500))
 		&& (msg.promptHash === undefined || (typeof msg.promptHash === 'string' && /^[0-9a-f]{40}$/.test(msg.promptHash)))
+		&& (msg.message === undefined || (msg.choice === 'no' && typeof msg.message === 'string' && paradisSanitizeApprovalInstruction(msg.message).length > 0 && msg.message.length <= PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT))
 		&& isValidControlRequest(msg);
 }
 
@@ -2595,8 +2605,9 @@ class TranscriptTailer {
 
 	/**
 	 * 承認のカードの選択肢を、mod が答えられるか（`resolve` が選択肢を返すか）で直す。答えられないものは「許可 / 拒否」。
+	 * `answerVia: 'mod'` は、mod が拒否に指示を添えられるときだけ付ける（それ以外は外す）。
 	 */
-	updateModApprovals(resolve: (interaction: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>) => readonly IParadisAgentApprovalChoice[] | undefined): void {
+	updateModApprovals(resolve: (interaction: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>) => { readonly choices: readonly IParadisAgentApprovalChoice[]; readonly denyMessage: boolean } | undefined): void {
 		this.enqueue(async () => {
 			let changed = false;
 			for (let index = 0; index < this.approvalQueue.length; index++) {
@@ -2604,9 +2615,12 @@ class TranscriptTailer {
 				if (entry.answered || paradisIsCodexDaemonApprovalInteraction(entry.interaction.id)) {
 					continue;
 				}
-				const choices = resolve(entry.interaction) ?? PARADIS_DEFAULT_APPROVAL_CHOICES;
-				if (JSON.stringify(entry.interaction.choices) !== JSON.stringify(choices)) {
-					this.approvalQueue[index] = { ...entry, interaction: { ...entry.interaction, choices } };
+				const resolved = resolve(entry.interaction);
+				const choices = resolved?.choices ?? PARADIS_DEFAULT_APPROVAL_CHOICES;
+				const viaMod = resolved?.denyMessage === true;
+				if (JSON.stringify(entry.interaction.choices) !== JSON.stringify(choices) || (entry.interaction.answerVia === 'mod') !== viaMod) {
+					const { answerVia: _previous, ...rest } = entry.interaction;
+					this.approvalQueue[index] = { ...entry, interaction: { ...rest, choices, ...(viaMod ? { answerVia: 'mod' as const } : {}) } };
 					changed = true;
 				}
 			}
@@ -2690,8 +2704,13 @@ class TranscriptTailer {
 	 * 注入する。Codex は承認要求を rollout に一切書かず、Claude もプロンプト表示中は
 	 * transcript に現れないため、hook が唯一のライブな供給源。モバイル側はこのメッセージの
 	 * 内容を承認バー（許可/拒否）に添えて表示する。
+	 *
+	 * `detail`（1 行）は古いアプリの表示と、hook と mod の承認の本文での突き合わせに使うので形を変えない。
+	 * 新しいアプリ向けには、ツールごとに分けた中身（`request`）と、許可を求めたサブエージェント、
+	 * 「以後は確認しない」の残り方を添える（agent.approval.detail.v1）。
 	 */
-	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string, desktopOnly = false, waitKey?: string, sameContentLimit = 1, suggestions?: readonly string[]): void {
+	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string, desktopOnly = false, waitKey?: string, sameContentLimit = 1, suggestions?: readonly string[],
+		extra?: { readonly agent?: IParadisAgentApprovalAgent; readonly suggestionScope?: ParadisAgentApprovalSuggestionScope }): void {
 		this.enqueue(async () => {
 			// ここで pendingQuestions を見て注入自体を捨ててはいけない。PermissionRequest hook は
 			// 1プロンプトにつき1回しか来ないため、落とすと承認要求が永久に復元されない。
@@ -2701,18 +2720,23 @@ class TranscriptTailer {
 			if (text.length === 0) {
 				return;
 			}
-			const key = toolUseId !== undefined ? `${toolUseId}:${text}` : text;
+			// 本文（説明を先に採る）だけだと、説明が同じで中身の違う呼び出しを再送と取り違えるので、入力も鍵に含める
+			const content = `${text}\0${paradisStableJson(toolInput)}`;
+			const key = toolUseId !== undefined ? `${toolUseId}:${content}` : content;
 			// 同じ内容の要求が、同じ内容の未完了のツール呼び出しの数より多くなるなら、同じ hook の再送として捨てる。
 			// 並列の同じ呼び出し（同じファイルの Read を2つ等）は、呼び出しの数まで別の承認として積む。
 			if (this.approvalQueue.filter(entry => entry.key === key).length >= Math.max(1, sameContentLimit)) {
 				return;
 			}
 			const interactionId = toolUseId ?? `approval:${this.epoch}:${this.approvalSeq++}`;
+			const request = paradisBuildAgentApprovalRequest(toolName, toolInput, extra?.agent);
 			this.approvalQueue.push({
 				interaction: {
 					kind: 'approval', id: interactionId, title: '操作の許可', detail: truncateText(text, TOOL_TEXT_LIMIT),
 					choices: PARADIS_DEFAULT_APPROVAL_CHOICES,
 					...(suggestions !== undefined ? { suggestions } : {}),
+					...(request !== undefined ? { request } : {}),
+					...(suggestions !== undefined && extra?.suggestionScope !== undefined ? { suggestionScope: extra.suggestionScope } : {}),
 				},
 				key,
 				desktopOnly,
@@ -4601,13 +4625,19 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		// mod（Claude Mods）が承認を待っていれば、キーを打たずに値で答える（「以後は確認しない」もここだけ）。
 		if (token !== undefined && session?.agent === 'claude') {
-			const viaMod = this.tryAnswerApprovalViaMod(token, msg.interactionId, msg.choice, msg.optionLabel, { mobileId, epoch: msg.epoch });
+			const viaMod = this.tryAnswerApprovalViaMod(token, msg.interactionId, msg.choice, msg.optionLabel, { mobileId, epoch: msg.epoch }, msg.message);
 			if (viaMod === 'answered' || viaMod === 'locked') {
 				this.sendTo(mobileId, viaMod === 'answered'
 					? { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }
 					: { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'interaction-locked', message: 'PC側で反映を待っています。変わらない場合はPCの画面で確認してください' }, token);
 				return;
 			}
+		}
+		if (msg.message !== undefined) {
+			// 指示を添えた拒否は mod でしか渡せない（キーの経路は選択肢の位置に依って確かめられない）。指示を落として
+			// Esc で拒否すると、指示を書いた人には伝わったように見えてしまうので、送らずに断る
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '指示を添えて拒否できなくなりました。拒否だけを送るか、PCの画面で回答してください' }, token ?? msg.token);
+			return;
 		}
 		if (msg.choice === 'always') {
 			// 「以後は確認しない」は mod でしか渡せない（キーの列を確かめていない）。mod が待つのをやめた後に押された
@@ -5585,6 +5615,22 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.schedulePersistedAgentActivityReconcile(token);
 	}
 
+	/**
+	 * 許可を求めたサブエージェント（hook の `agent_id` / `agent_type`、mod の `agentId`）。本会話からの許可は undefined。
+	 * 呼び名は TUI の「from the … agent」と同じ `agent_type` を優先し、無ければ活動の一覧の名前を使う。
+	 */
+	private approvalAgent(token: string, agentId: string | undefined, agentType: string | undefined): IParadisAgentApprovalAgent | undefined {
+		// 送り元を作るのは agent_id があるときだけ（本会話の hook に agent_type だけが付くことがあっても送り元にしない）
+		const id = agentId !== undefined && agentId.length > 0 && agentId.length <= 200 ? agentId : undefined;
+		const type = agentType !== undefined && agentType.trim().length > 0 ? agentType.slice(0, 200) : undefined;
+		if (id === undefined) {
+			return undefined;
+		}
+		const known = this.activityTrackers.get(token)?.agentSummary(id);
+		const name = type ?? known?.label;
+		return { id, ...(name !== undefined ? { name: name.slice(0, 200) } : {}), role: known?.role ?? 'subagent' };
+	}
+
 	/** 承認のカードに合う、mod の承認の待ち（tool_use_id、無ければカードの本文で突き合わせる）。 */
 	private matchModPermission(
 		interaction: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>,
@@ -5597,11 +5643,22 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		// 本文が完全に一致し、そのカードもその待ちも 1 つずつに決まるときだけ結ぶ（決まらなければ結ばない。
 		// 呼び出し側が mod の内容で別にカードを出す）。古いカードを別の呼び出しの待ちと結ばないため
+		// 本文（`detail`）は説明をコマンドより先に採るので、説明が同じで中身が違う呼び出しを取り違えうる。中身（ツールごとに
+		// 分けた入力。送り元は除く）も一致することを条件にする。中身を持たない古いカードは本文だけで見る
 		const textOf = (permission: IParadisClaudeModPendingPermission) => truncateText(paradisApprovalRequestText(permission.toolName, permission.toolInput), TOOL_TEXT_LIMIT);
+		const inputKey = (request: IParadisAgentApprovalRequest | undefined) => {
+			if (request === undefined) {
+				return undefined;
+			}
+			const { agent: _agent, ...input } = request;
+			return paradisStableJson(input);
+		};
+		const sameInput = (card: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>, key: string | undefined) => card.request === undefined || inputKey(card.request) === key;
 		const byText = pending.filter(permission => textOf(permission) === interaction.detail
+			&& sameInput(interaction, inputKey(paradisBuildAgentApprovalRequest(permission.toolName, permission.toolInput)))
 			// tool_use_id を持つ待ちは、合成 id のカード（hook が呼び出しを決められなかったもの）とだけ本文で結ぶ
 			&& (permission.toolUseId === undefined || (interaction.id.startsWith('approval:') && !cards.some(card => card.id === permission.toolUseId))));
-		const sameCards = cards.filter(card => card.detail === interaction.detail);
+		const sameCards = cards.filter(card => card.detail === interaction.detail && sameInput(card, inputKey(interaction.request)));
 		return byText.length === 1 && sameCards.length === 1 ? byText[0] : undefined;
 	}
 
@@ -5623,7 +5680,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			const cards = tailer.approvalInteractions();
 			tailer.updateModApprovals(interaction => {
 				const permission = this.matchModPermission(interaction, pending, cards);
-				return permission !== undefined ? paradisModApprovalChoices(permission.suggestions) : undefined;
+				return permission !== undefined ? { choices: paradisModApprovalChoices(permission.suggestions), denyMessage: permission.acceptsDenyMessage } : undefined;
 			});
 			const unmatched = pending.filter(permission => !cards.some(card => this.matchModPermission(card, [permission], cards) !== undefined));
 			if (unmatched.length === 0 || this.modApprovalTimers.has(token)) {
@@ -5639,7 +5696,10 @@ export class ParadisMobileAgentChat extends Disposable {
 					const mobileWants = this.eagerTailing || this.subscribers.has(token);
 					for (const permission of this.claudeModBridge.pendingPermissions(token, session.sessionId)) {
 						if (!currentCards.some(card => this.matchModPermission(card, [permission], currentCards) !== undefined) && tailer.pendingQuestions.size === 0) {
-							tailer.injectApprovalRequest(permission.toolName, permission.toolInput, permission.toolUseId, !mobileWants, undefined, 1, paradisApprovalSuggestionLabels(permission.suggestions));
+							tailer.injectApprovalRequest(permission.toolName, permission.toolInput, permission.toolUseId, !mobileWants, undefined, 1, paradisApprovalSuggestionLabels(permission.suggestions), {
+								agent: this.approvalAgent(token, permission.agentId, undefined),
+								suggestionScope: paradisApprovalSuggestionScope(permission.suggestions),
+							});
 						}
 					}
 					void tailer.afterQueue(() => apply());
@@ -5771,8 +5831,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	/**
 	 * 承認の回答を mod へ値で渡す。'yes' と画面の 1 番（Yes）は許可、'always' と画面の 2 番以降の Yes（以後は確認しない）は
 	 * 許可とルールの追加、'no' は拒否。mod が待っていなければ 'none'（呼び出し側はキーの経路へ）。
+	 * `denyMessage`（拒否に添える指示）は、指示を受け取れる mod が待っているときだけ渡す。渡せなければ 'none'
+	 * （呼び出し側は指示を落として Esc で拒否してはいけない）。
 	 */
-	private tryAnswerApprovalViaMod(token: string, interactionId: string, choice: string, optionLabel: string | undefined, mobile?: { readonly mobileId: string; readonly epoch: string }): 'answered' | 'locked' | 'none' {
+	private tryAnswerApprovalViaMod(token: string, interactionId: string, choice: string, optionLabel: string | undefined, mobile?: { readonly mobileId: string; readonly epoch: string }, denyMessage?: string): 'answered' | 'locked' | 'none' {
 		const session = this.paneSessions.get(token);
 		const tailer = this.tailers.get(token);
 		if (session?.agent !== 'claude' || tailer === undefined || (mobile !== undefined && (tailer.epoch !== mobile.epoch || !this.hasSubscriber(token, mobile.mobileId)))) {
@@ -5794,13 +5856,15 @@ export class ParadisMobileAgentChat extends Disposable {
 			return this.isModAnswerLocked(lockKey) ? 'locked' : 'none';
 		}
 		const permission = this.matchModPermission(interaction, this.claudeModBridge.pendingPermissions(token, session.sessionId), cards);
-		if (permission === undefined || (decision.always && !permission.hasSuggestions)) {
+		if (permission === undefined || (decision.always && !permission.hasSuggestions)
+			|| (denyMessage !== undefined && (decision.allow || !permission.acceptsDenyMessage))) {
 			return 'none';
 		}
 		if (this.isModAnswerLocked(lockKey)) {
 			return 'locked';
 		}
-		if (!this.claudeModBridge.answerPermission(token, permission.id, decision.allow ? 'allow' : 'deny', decision.always)) {
+		if (!this.claudeModBridge.answerPermission(token, permission.id, decision.allow ? 'allow' : 'deny', decision.always,
+			denyMessage !== undefined ? paradisApprovalDenyMessage(denyMessage) : undefined)) {
 			return 'none';
 		}
 		this.lockModAnswer(lockKey);
@@ -7472,7 +7536,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
 			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
 			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, approvalTarget.toolUseId, !mobileWants, approvalTarget.waitKey, approvalTarget.sameContentLimit,
-				paradisApprovalSuggestionLabels(event.payload?.permission_suggestions));
+				paradisApprovalSuggestionLabels(event.payload?.permission_suggestions), {
+				agent: this.approvalAgent(event.token, str(event.payload?.agent_id), str(event.payload?.agent_type)),
+				suggestionScope: paradisApprovalSuggestionScope(event.payload?.permission_suggestions),
+			});
 		}
 		const forceApprovalClear = event.event === 'PermissionDenied';
 		const matchingApprovalClear = (event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined;

@@ -10,7 +10,7 @@ import { useAppStore } from '../../appState.js';
 import { flattenAnswerInput, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from '../../components/agentComposerDraft.js';
 import { ComposerAttachmentChips } from '../../components/attachmentChips.js';
 import { saveAttachmentDeviceCopy } from '../../attachments/attachmentImages.js';
-import { ATTACHMENT_LIMIT, attachmentNameOf, composeAttachmentMessage } from '../../attachments/attachmentText.js';
+import { ATTACHMENT_LIMIT, attachmentNameOf, attachmentTextBudget, composeAttachmentMessage } from '../../attachments/attachmentText.js';
 import {
 	appendComposerAttachments,
 	composerAttachmentSendState,
@@ -408,7 +408,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				<View style={styles.answerBanner} accessibilityLiveRegion="polite">
 					<Icon icon={CornerDownRight} size={answerIconSize} color={colors.textDim} />
 					<View style={textStyles.answerBody}>
-						<Text style={textStyles.answerLabel}>{answerRefreshing ? '最新の内容を取得しています。届くまで回答できません' : answerTarget.mode === 'clarify' ? '質問を取り下げて送ります' : '質問への回答を入力しています（改行は空白として送られます）'}</Text>
+						<Text style={textStyles.answerLabel}>{answerRefreshing ? '最新の内容を取得しています。届くまで回答できません' : answerTarget.mode === 'clarify' ? '質問を取り下げて送ります' : answerTarget.mode === 'deny' ? '拒否して、この指示を送ります' : '質問への回答を入力しています（改行は空白として送られます）'}</Text>
 						<Text style={textStyles.answerPrompt} numberOfLines={1}>{answerTarget.prompt}</Text>
 					</View>
 					<Button label="やめる" variant="ghost" size="sm" onPress={() => { haptic('move'); onCancelAnswer(); }} />
@@ -432,7 +432,8 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 					ref={nativeInputRef}
 					defaultValue={defaultValueRef.current}
 					onChangeText={updateInput}
-					placeholder={answerTarget === undefined ? 'メッセージ、/コマンド' : answerTarget.mode === 'clarify' ? '伝えたいこと' : '回答を入力（送信で回答します）'}
+					placeholder={answerTarget === undefined ? 'メッセージ、/コマンド' : answerTarget.mode === 'clarify' ? '伝えたいこと' : answerTarget.mode === 'deny' ? '代わりにどうしてほしいか' : '回答を入力（送信で回答します）'}
+					maxLength={answerTarget?.maxLength !== undefined && attachmentState.kind !== 'uploading' ? attachmentTextBudget(answerTarget.maxLength, attachmentState.paths) : answerTarget?.maxLength}
 				/>
 				<View style={styles.actions}>
 					<Pressable
@@ -483,7 +484,9 @@ const ComposerInput = memo(forwardRef<TextInput, {
 	defaultValue: string;
 	onChangeText: (text: string) => void;
 	placeholder: string;
-}>(function ComposerInput({ defaultValue, onChangeText, placeholder }, ref) {
+	/** 入力の上限（回答の入力のうち、上限のあるもの。拒否に添える指示など）。 */
+	maxLength?: number | undefined;
+}>(function ComposerInput({ defaultValue, onChangeText, placeholder, maxLength }, ref) {
 	// 文字サイズの設定が変わったときは、memo を越えて Context から描き直される（値は持たないので入力は消えない）。
 	const inputStyle = useChatStyles(styles).input;
 	return (
@@ -494,6 +497,7 @@ const ComposerInput = memo(forwardRef<TextInput, {
 			onChangeText={onChangeText}
 			placeholder={placeholder}
 			placeholderTextColor={colors.textMuted}
+			maxLength={maxLength}
 			autoCapitalize="none"
 			autoCorrect={false}
 			multiline

@@ -1,9 +1,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PARADIS_AGENT_APPROVAL_OPTIONS_CAPABILITY } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisAgentApprovalOptions.js';
 import { useAppStore } from '../../appState.js';
-import { approvalChoicesFromOptions, parseApprovalOptionsReply, shouldRequestApprovalOptions, type ApprovalOptionChoices } from '../../approvalOptions.js';
+import { approvalChoicesFromOptions, parseApprovalOptionsReply, shouldRequestApprovalOptions, shouldRequestApprovalWarningOnly, type ApprovalOptionChoices } from '../../approvalOptions.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
 import type { AgentInteraction, AgentMessageSendResult } from '../../store.js';
 
@@ -25,7 +25,9 @@ export function useApprovalOptions(
 	const supported = usePcCapability(PARADIS_AGENT_APPROVAL_OPTIONS_CAPABILITY);
 	const requestAgentReply = useAppStore(s => s.requestAgentReply);
 	const [loaded, setLoaded] = useState<{ readonly key: string; readonly value: ApprovalOptionChoices } | undefined>(undefined);
-	const wanted = supported && epoch !== undefined && shouldRequestApprovalOptions(interaction);
+	const warningOnly = supported && shouldRequestApprovalWarningOnly(interaction);
+	const wanted = supported && epoch !== undefined && (shouldRequestApprovalOptions(interaction) || warningOnly);
+	const ownChoices = interaction?.kind === 'approval' ? interaction.choices : undefined;
 	const interactionId = interaction?.id;
 	// 番号の選択肢で答えて断られたら（PC の選択肢が変わっていた等）、取り直す（シミュレータ確認の気づき (b)）。
 	const [reload, setReload] = useState(0);
@@ -39,9 +41,10 @@ export function useApprovalOptions(
 		requestAgentReply(terminalKey, { t: 'approval-options', epoch, interactionId }, 'approval-options', APPROVAL_OPTIONS_TIMEOUT_MS)
 			.then(reply => {
 				const parsed = parseApprovalOptionsReply(reply);
-				if (!cancelled && parsed !== undefined) {
-					setLoaded({ key, value: approvalChoicesFromOptions(parsed.options, parsed.promptHash) });
+				if (cancelled || parsed === undefined) {
+					return;
 				}
+				setLoaded({ key, value: approvalChoicesFromOptions(parsed.options, parsed.promptHash, parsed.warning) });
 			})
 			.catch(() => { /* 読めない・古い・切断: 「許可 / 拒否」のまま */ });
 		return () => {
@@ -49,7 +52,11 @@ export function useApprovalOptions(
 		};
 	}, [key, terminalKey, epoch, interactionId, requestAgentReply]);
 
-	const value = loaded !== undefined && loaded.key === key ? loaded.value : undefined;
+	const read = loaded !== undefined && loaded.key === key ? loaded.value : undefined;
+	// mod が値で答える承認（always あり）は、PC が広告した選択肢のまま答える。画面からは警告だけを使う
+	const value = useMemo((): ApprovalOptionChoices | undefined => read !== undefined && warningOnly
+		? { choices: ownChoices ?? [], labels: new Map(), ...(read.warning !== undefined ? { warning: read.warning } : {}) }
+		: read, [read, warningOnly, ownChoices]);
 	const approveOption = useCallback(async (id: string, choice: string) => {
 		const label = value?.labels.get(choice);
 		const result = await approve(id, choice, label !== undefined ? { label, ...(value?.promptHash !== undefined ? { promptHash: value.promptHash } : {}) } : undefined);

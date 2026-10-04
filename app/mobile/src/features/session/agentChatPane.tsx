@@ -7,11 +7,11 @@ import { RotateCw } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { shouldShowQuickReplies } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
-import { approvalSuggestionNote } from '../../approvalOptions.js';
 import { AGENT_RESUME_CAPABILITY } from '../../agentSessions.js';
 import { AGENT_QUESTION_CHAT_CAPABILITY, AGENT_QUESTION_NOTES_CAPABILITY, askQuestionFeatures, questionHasPreview } from '../../agentQuestionMod.js';
 import { enqueueAgentSend, useAgentSendLive } from '../../agentSendQueue.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
+import { PcCapability } from '../../pcCompat.js';
 import { findLatestApprovalRequest } from '../../components/attentionStack.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { haptic } from '../../haptics.js';
@@ -180,14 +180,19 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 		composerRef.current?.focus();
 	}, []);
 	const cancelAnswer = useCallback(() => setAnswerRequest(undefined), []);
-	const activeAnswerRequest = answerRequest !== undefined && pinnedId !== undefined
-		&& (answerRequest.id === pinnedId || answerRequest.id.startsWith(`${pinnedId}:`))
+	// 許可のカードの「拒否して指示を書く」は、その承認が表に出ている間だけ有効
+	const activeAnswerRequest = answerRequest !== undefined && (answerRequest.mode === 'deny'
+		? approval !== undefined && answerRequest.id === approval.id
+		: pinnedId !== undefined && (answerRequest.id === pinnedId || answerRequest.id.startsWith(`${pinnedId}:`)))
 		? answerRequest
 		: undefined;
 	const clarifying = activeAnswerRequest?.mode === 'clarify';
 	// メモと「質問に答えずに話す」は、PC の mod が待っている質問だけ（agentQuestionMod.ts）
 	const hasQuestionNotes = usePcCapability(AGENT_QUESTION_NOTES_CAPABILITY);
 	const hasQuestionChat = usePcCapability(AGENT_QUESTION_CHAT_CAPABILITY);
+	// 指示を添えた拒否は、PC の mod が待っている承認だけ（agent.approval.detail.v1）
+	const hasApprovalDetail = usePcCapability(PcCapability.AgentApprovalDetail);
+	const canDenyWithMessage = hasApprovalDetail && approval?.answerVia === 'mod';
 	const questionFeatures = useMemo(() => askQuestionFeatures(chat?.interaction, hasQuestionNotes, hasQuestionChat), [chat?.interaction, hasQuestionNotes, hasQuestionChat]);
 	const pinnedHasPreview = pinned !== undefined && (pinned.type === 'question' ? [pinned.m] : pinned.msgs).some(questionHasPreview);
 	// キーボードが出ているとき（質問へのメモの入力など）はカードの上限を下げ、入力欄をカードの中で見える位置へ送る
@@ -218,7 +223,13 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 			title={approval.title}
 			detail={approval.detail ?? findLatestApprovalRequest(chat)}
 			choices={approvalOptions?.choices ?? approval.choices}
-			note={approvalSuggestionNote(approval.suggestions)}
+			{...(approvalOptions !== undefined ? { screenLabels: approvalOptions.labels } : {})}
+			{...(approval.request !== undefined ? { request: approval.request } : {})}
+			{...(approvalOptions?.warning !== undefined ? { warning: approvalOptions.warning } : {})}
+			{...(approval.suggestions !== undefined ? { suggestions: approval.suggestions } : {})}
+			{...(approval.suggestionScope !== undefined ? { suggestionScope: approval.suggestionScope } : {})}
+			{...(canDenyWithMessage ? { onDenyWithMessage: actions.denyWithMessage, onRequestDenyMessage: requestFreeText } : {})}
+			denyMessageActive={activeAnswerRequest?.mode === 'deny'}
 			refreshing={refreshing}
 		/>
 	) : approvalUnavailable ? (
