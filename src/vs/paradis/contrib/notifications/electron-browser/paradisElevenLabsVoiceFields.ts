@@ -304,7 +304,7 @@ export class ParadisElevenLabsVoiceFields {
 		const select = dom.append(field, $('select')) as HTMLSelectElement;
 		select.style.width = '230px';
 		select.disabled = !apiKey;
-		const populate = (list: readonly IParadisElevenLabsDictionaryListItem[]) => {
+		const populate = (list: readonly IParadisElevenLabsDictionaryListItem[], loaded: boolean) => {
 			dom.clearNode(select);
 			const none = dom.append(select, $('option')) as HTMLOptionElement;
 			none.value = '';
@@ -314,15 +314,16 @@ export class ParadisElevenLabsVoiceFields {
 				option.value = dict.id;
 				option.textContent = dict.ruleCount === null ? dict.name : `${dict.name} (${dict.ruleCount})`;
 			}
-			// 一覧が読めない間も、保存済みの辞書を選択肢に残して勝手に外れないようにする。
-			if (settings.elevenLabsDictionaryId && !list.some(dict => dict.id === settings.elevenLabsDictionaryId)) {
+			// 一覧が読めない間は、保存済みの辞書を選択肢に残して勝手に外れないようにする。
+			// 読めた一覧に無い（アーカイブ済み等）なら「辞書なし」と出す。読み上げも辞書なしになる。
+			if (!loaded && settings.elevenLabsDictionaryId && !list.some(dict => dict.id === settings.elevenLabsDictionaryId)) {
 				const option = dom.append(select, $('option')) as HTMLOptionElement;
 				option.value = settings.elevenLabsDictionaryId;
 				option.textContent = settings.elevenLabsDictionaryId;
 			}
-			select.value = settings.elevenLabsDictionaryId;
+			select.value = [...select.options].some(option => option.value === settings.elevenLabsDictionaryId) ? settings.elevenLabsDictionaryId : '';
 		};
-		populate([]);
+		populate([], false);
 		disposables.add(dom.addDisposableListener(select, 'change', () => {
 			this.settingsService.setAivisSettings({ elevenLabsDictionaryId: select.value });
 		}));
@@ -331,13 +332,13 @@ export class ParadisElevenLabsVoiceFields {
 		}
 		const cached = paradisElevenLabsDictionaryCache.get(apiKey);
 		if (cached) {
-			populate(cached);
+			populate(cached, true);
 			return;
 		}
 		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisElevenLabsDictionaryListItem[]>('listElevenLabsDictionaries', [apiKey]).then(list => {
 			paradisElevenLabsDictionaryCache.set(apiKey, list);
 			if (!this.isDisposed() && select.isConnected) {
-				populate(list);
+				populate(list, true);
 			}
 		}, error => {
 			this.logService.warn('[ParadisNotifications] failed to list ElevenLabs dictionaries', error);

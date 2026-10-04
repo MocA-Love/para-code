@@ -279,7 +279,10 @@ export interface IParadisElevenLabsUsageDay {
 }
 
 export interface IParadisElevenLabsUsageBreakdownEntry {
-	/** モデル ID または voice の ID（API のキーそのまま）。表示名は UI で引き当てる。 */
+	/**
+	 * API のキーそのまま。モデル別は model_id（UI でモデル名に引き当てる）、
+	 * 声別は声の名前（API が名前で返すので、そのまま出す）。
+	 */
 	readonly key: string;
 	readonly characterCount: number;
 }
@@ -403,9 +406,30 @@ export function paradisElevenLabsQuota(subscription: IParadisElevenLabsSubscript
 // --- 発音辞書 -----------------------------------------------------------------------------------
 
 /** ElevenLabs の発音辞書の規則。alias だけを画面で扱い、phoneme は作らない（日本語で音が崩れるため）。 */
-export type ParadisElevenLabsRule =
+export type ParadisElevenLabsRule = (
 	| { readonly type: 'alias'; readonly string_to_replace: string; readonly alias: string }
-	| { readonly type: 'phoneme'; readonly string_to_replace: string; readonly phoneme: string; readonly alphabet: string };
+	| { readonly type: 'phoneme'; readonly string_to_replace: string; readonly phoneme: string; readonly alphabet: string }
+) & {
+	/** API が返す照合の設定。画面では変えず、保存するときに元の値を引き継ぐ。 */
+	readonly case_sensitive?: boolean;
+	readonly word_boundaries?: boolean;
+};
+
+/** 一覧・詳細の `archived_time_unix` が数値ならアーカイブ済み（未アーカイブは null）。 */
+export function paradisIsElevenLabsDictionaryArchived(archivedTimeUnix: unknown): boolean {
+	return typeof archivedTimeUnix === 'number' && Number.isFinite(archivedTimeUnix);
+}
+
+function ruleFlags(rule: Record<string, unknown>): { case_sensitive?: boolean; word_boundaries?: boolean } {
+	const flags: { case_sensitive?: boolean; word_boundaries?: boolean } = {};
+	if (typeof rule.case_sensitive === 'boolean') {
+		flags.case_sensitive = rule.case_sensitive;
+	}
+	if (typeof rule.word_boundaries === 'boolean') {
+		flags.word_boundaries = rule.word_boundaries;
+	}
+	return flags;
+}
 
 /** 画面の1行（表記・読み）。 */
 export interface IParadisElevenLabsDictionaryEntry {
@@ -429,6 +453,8 @@ export interface IParadisElevenLabsDictionaryDetail {
 	readonly description: string;
 	readonly latestVersionId: string;
 	readonly rules: readonly ParadisElevenLabsRule[];
+	/** アーカイブ済みか。アーカイブ済みの辞書は合成に使わない。 */
+	readonly archived: boolean;
 }
 
 /** API の規則配列から、形の正しいものだけを取り出す。 */
@@ -446,9 +472,9 @@ export function paradisNormalizeElevenLabsRules(raw: unknown): ParadisElevenLabs
 			continue;
 		}
 		if (rule.type === 'alias' && typeof rule.alias === 'string') {
-			rules.push({ type: 'alias', string_to_replace: rule.string_to_replace, alias: rule.alias });
+			rules.push({ type: 'alias', string_to_replace: rule.string_to_replace, alias: rule.alias, ...ruleFlags(rule) });
 		} else if (rule.type === 'phoneme' && typeof rule.phoneme === 'string') {
-			rules.push({ type: 'phoneme', string_to_replace: rule.string_to_replace, phoneme: rule.phoneme, alphabet: typeof rule.alphabet === 'string' ? rule.alphabet : 'ipa' });
+			rules.push({ type: 'phoneme', string_to_replace: rule.string_to_replace, phoneme: rule.phoneme, alphabet: typeof rule.alphabet === 'string' ? rule.alphabet : 'ipa', ...ruleFlags(rule) });
 		}
 	}
 	return rules;
@@ -484,7 +510,10 @@ export function paradisRulesFromElevenLabsEntries(entries: readonly IParadisElev
 		}
 	}
 	for (const [surface, reading] of aliases) {
-		rules.push({ type: 'alias', string_to_replace: surface, alias: reading });
+		// 同じ表記の alias が元からあれば、その照合の設定（case_sensitive 等）を引き継ぐ。
+		const previous = existing.find(rule => rule.type === 'alias' && rule.string_to_replace === surface);
+		const flags = previous ? ruleFlags(previous as unknown as Record<string, unknown>) : {};
+		rules.push({ type: 'alias', string_to_replace: surface, alias: reading, ...flags });
 	}
 	return rules;
 }

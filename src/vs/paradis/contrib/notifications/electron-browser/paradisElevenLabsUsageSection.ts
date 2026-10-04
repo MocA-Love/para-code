@@ -17,7 +17,6 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import {
 	IParadisElevenLabsModel,
 	IParadisElevenLabsUsageResult,
-	IParadisElevenLabsVoice,
 	paradisElevenLabsQuota,
 	ParadisElevenLabsSubscriptionResult,
 	paradisNameElevenLabsBreakdown,
@@ -25,7 +24,7 @@ import {
 import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { ParadisAivisRenderGeneration } from './paradisAivisApiCache.js';
-import { paradisElevenLabsModelCache, paradisElevenLabsVoiceCache } from './paradisElevenLabsApiCache.js';
+import { paradisElevenLabsModelCache } from './paradisElevenLabsApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 
 const $ = dom.$;
@@ -74,7 +73,6 @@ interface IUsageBundle {
 	readonly usage: IParadisElevenLabsUsageResult;
 	readonly subscription: ParadisElevenLabsSubscriptionResult | { readonly kind: 'error'; readonly message: string };
 	readonly modelNames: ReadonlyMap<string, string>;
-	readonly voiceNames: ReadonlyMap<string, string>;
 }
 
 export class ParadisElevenLabsUsageSection extends Disposable {
@@ -162,17 +160,15 @@ export class ParadisElevenLabsUsageSection extends Disposable {
 		}
 		const channel = this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL);
 		const created = (async (): Promise<IUsageBundle> => {
-			const [usage, subscription, models, voices] = await Promise.all([
+			const [usage, subscription, models] = await Promise.all([
 				channel.call<IParadisElevenLabsUsageResult>('getElevenLabsUsage', [apiKey, days]),
 				channel.call<ParadisElevenLabsSubscriptionResult>('getElevenLabsSubscription', [apiKey]).catch(error => ({ kind: 'error' as const, message: error instanceof Error ? error.message : String(error) })),
 				paradisElevenLabsModelCache.get(apiKey) ?? channel.call<IParadisElevenLabsModel[]>('listElevenLabsModels', [apiKey]).catch(() => []),
-				paradisElevenLabsVoiceCache.get(apiKey) ?? channel.call<IParadisElevenLabsVoice[]>('listElevenLabsVoices', [apiKey]).catch(() => []),
 			]);
 			return {
 				usage,
 				subscription,
 				modelNames: new Map(models.map(model => [model.modelId, model.name])),
-				voiceNames: new Map(voices.map(voice => [voice.voiceId, voice.name])),
 			};
 		})();
 		this._requests.set(key, created);
@@ -233,7 +229,8 @@ export class ParadisElevenLabsUsageSection extends Disposable {
 		}
 
 		this._renderBreakdown(container, STR_BY_MODEL, paradisNameElevenLabsBreakdown(usage.byModel, bundle.modelNames));
-		this._renderBreakdown(container, STR_BY_VOICE, paradisNameElevenLabsBreakdown(usage.byVoice, bundle.voiceNames));
+		// 声別は API が声の名前をキーにして返すので、そのまま出す。
+		this._renderBreakdown(container, STR_BY_VOICE, paradisNameElevenLabsBreakdown(usage.byVoice, new Map()));
 	}
 
 	private _renderBreakdown(container: HTMLElement, title: string, entries: readonly { readonly label: string; readonly characterCount: number }[]): void {

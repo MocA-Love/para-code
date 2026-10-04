@@ -17,6 +17,7 @@ import {
 	paradisEntriesFromElevenLabsRules,
 	paradisFilterElevenLabsModels,
 	paradisFilterElevenLabsVoices,
+	paradisIsElevenLabsDictionaryArchived,
 	paradisIsElevenLabsMissingPermissions,
 	paradisNameElevenLabsBreakdown,
 	paradisNormalizeElevenLabsRules,
@@ -184,8 +185,8 @@ suite('Paradis ElevenLabs pure helpers', () => {
 
 	test('converts dictionary rules to editable rows and back', () => {
 		const existing = paradisNormalizeElevenLabsRules([
-			{ type: 'alias', string_to_replace: 'Para Code', alias: 'パラコード' },
-			{ type: 'phoneme', string_to_replace: 'tomato', phoneme: 'təˈmeɪtoʊ', alphabet: 'ipa' },
+			{ type: 'alias', string_to_replace: 'Para Code', alias: 'パラコード', case_sensitive: false, word_boundaries: true },
+			{ type: 'phoneme', string_to_replace: 'tomato', phoneme: 'təˈmeɪtoʊ', alphabet: 'ipa', case_sensitive: true },
 			{ type: 'phoneme', string_to_replace: 'API', phoneme: 'eɪ', alphabet: 'ipa' },
 			{ type: 'alias', string_to_replace: 'broken' },
 			'garbage',
@@ -200,11 +201,15 @@ suite('Paradis ElevenLabs pure helpers', () => {
 		assert.deepStrictEqual({ rows, saved }, {
 			rows: [{ surface: 'Para Code', reading: 'パラコード' }],
 			saved: [
-				{ type: 'phoneme', string_to_replace: 'tomato', phoneme: 'təˈmeɪtoʊ', alphabet: 'ipa' },
+				{ type: 'phoneme', string_to_replace: 'tomato', phoneme: 'təˈmeɪtoʊ', alphabet: 'ipa', case_sensitive: true },
 				{ type: 'alias', string_to_replace: 'API', alias: 'エーピーアイ' },
-				{ type: 'alias', string_to_replace: 'Para Code', alias: 'ぱらこーど' },
+				{ type: 'alias', string_to_replace: 'Para Code', alias: 'ぱらこーど', case_sensitive: false, word_boundaries: true },
 			],
 		});
+	});
+
+	test('treats only a numeric archived_time_unix as archived', () => {
+		assert.deepStrictEqual([1700000100, null, undefined, 0, '1700000100'].map(paradisIsElevenLabsDictionaryArchived), [true, false, false, true, false]);
 	});
 
 	test('validates rows by reporting the first incomplete one', () => {

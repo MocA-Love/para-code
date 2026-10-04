@@ -29,6 +29,7 @@ import {
 	ParadisElevenLabsSubscriptionResult,
 	paradisElevenLabsUsageRange,
 	paradisFilterElevenLabsModels,
+	paradisIsElevenLabsDictionaryArchived,
 	paradisIsElevenLabsMissingPermissions,
 	paradisNormalizeElevenLabsRules,
 	paradisParseElevenLabsPls,
@@ -200,6 +201,11 @@ export class ParadisElevenLabsClient {
 		}
 		try {
 			const detail = await this.getDictionary(apiKey, dictionaryId, false);
+			if (detail.archived) {
+				// 適用中の辞書がアーカイブされていたら、辞書なしで読み上げる。
+				this._dictionaryVersions.delete(dictionaryId);
+				return undefined;
+			}
 			return detail.latestVersionId || undefined;
 		} catch (error) {
 			this.logService.warn(`[ParadisNotifications] could not resolve the ElevenLabs dictionary version; reading without the dictionary: ${getErrorMessage(error)}`);
@@ -258,7 +264,7 @@ export class ParadisElevenLabsClient {
 		for (let page = 0; page < MAX_VOICE_PAGES; page++) {
 			const json = await this._json<ListResponse>('/v1/pronunciation-dictionaries', apiKey, { query: { page_size: 100, cursor } });
 			for (const raw of json.pronunciation_dictionaries ?? []) {
-				if (!raw.id || raw.archived_time_unix) {
+				if (!raw.id || paradisIsElevenLabsDictionaryArchived(raw.archived_time_unix)) {
 					continue;
 				}
 				items.push({
@@ -270,6 +276,11 @@ export class ParadisElevenLabsClient {
 					createdAt: typeof raw.creation_time_unix === 'number' ? raw.creation_time_unix * 1000 : null,
 				});
 				this._rememberDictionaryVersion(raw.id, raw.latest_version_id);
+			}
+			for (const raw of json.pronunciation_dictionaries ?? []) {
+				if (raw.id && paradisIsElevenLabsDictionaryArchived(raw.archived_time_unix)) {
+					this._dictionaryVersions.delete(raw.id);
+				}
 			}
 			if (!json.has_more || !json.next_cursor) {
 				break;
@@ -284,10 +295,10 @@ export class ParadisElevenLabsClient {
 	 * （`withRules` が false なら規則は取りに行かない）。
 	 */
 	async getDictionary(apiKey: string, id: string, withRules: boolean = true): Promise<IParadisElevenLabsDictionaryDetail> {
-		interface RawDetail { id?: string; name?: string; description?: string | null; latest_version_id?: string; rules?: unknown }
+		interface RawDetail { id?: string; name?: string; description?: string | null; latest_version_id?: string; archived_time_unix?: number | null; rules?: unknown }
 		const json = await this._json<RawDetail>(`/v1/pronunciation-dictionaries/${encodeURIComponent(id)}`, apiKey);
 		const latestVersionId = json.latest_version_id ?? '';
-		this._rememberDictionaryVersion(id, latestVersionId);
+		this._rememberDictionaryVersion(id, paradisIsElevenLabsDictionaryArchived(json.archived_time_unix) ? undefined : latestVersionId);
 		let rules: ParadisElevenLabsRule[] = [];
 		if (withRules) {
 			if (Array.isArray(json.rules)) {
@@ -296,7 +307,7 @@ export class ParadisElevenLabsClient {
 				rules = paradisParseElevenLabsPls(await this._downloadVersion(apiKey, id, latestVersionId));
 			}
 		}
-		return { id: json.id ?? id, name: json.name ?? id, description: json.description ?? '', latestVersionId, rules };
+		return { id: json.id ?? id, name: json.name ?? id, description: json.description ?? '', latestVersionId, rules, archived: paradisIsElevenLabsDictionaryArchived(json.archived_time_unix) };
 	}
 
 	async createDictionary(apiKey: string, name: string, description: string, rules: readonly ParadisElevenLabsRule[]): Promise<{ id: string; versionId: string }> {

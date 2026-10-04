@@ -187,7 +187,7 @@ suite('ParadisElevenLabsClient', () => {
 			.on('PATCH', '/v1/pronunciation-dictionaries/d1', () => json({ id: 'd1' }))
 			.on('GET', '/v1/pronunciation-dictionaries', () => json({
 				pronunciation_dictionaries: [
-					{ id: 'd1', name: 'Kept', latest_version_id: 'v1', latest_version_rules_num: 2, creation_time_unix: 1700000000 },
+					{ id: 'd1', name: 'Kept', latest_version_id: 'v1', latest_version_rules_num: 2, creation_time_unix: 1700000000, archived_time_unix: null },
 					{ id: 'd2', name: 'Archived', latest_version_id: 'v1', archived_time_unix: 1700000100 },
 				],
 				has_more: false,
@@ -208,6 +208,34 @@ suite('ParadisElevenLabsClient', () => {
 			.on('GET', '/v1/pronunciation-dictionaries/d1/v7/download', () => new Response('<lexicon alphabet="ipa"><lexeme><grapheme>PR</grapheme><alias>ぷるりく</alias></lexeme></lexicon>'));
 		const detail = await createClient(fake).getDictionary(TEST_KEY, 'd1');
 
-		assert.deepStrictEqual(detail, { id: 'd1', name: 'D', description: 'desc', latestVersionId: 'v7', rules: [{ type: 'alias', string_to_replace: 'PR', alias: 'ぷるりく' }] });
+		assert.deepStrictEqual(detail, { id: 'd1', name: 'D', description: 'desc', latestVersionId: 'v7', rules: [{ type: 'alias', string_to_replace: 'PR', alias: 'ぷるりく' }], archived: false });
+	});
+
+	test('keeps rule flags from the detail and saves through set-rules', async () => {
+		const fake = new FakeFetch()
+			.on('GET', '/v1/pronunciation-dictionaries/d1', () => json({
+				id: 'd1', name: 'D', latest_version_id: 'v1', latest_version_rules_num: 1, archived_time_unix: null,
+				rules: [{ type: 'alias', string_to_replace: 'PR', alias: 'ぷるりく', case_sensitive: true, word_boundaries: false }],
+			}))
+			.on('POST', '/v1/pronunciation-dictionaries/d1/set-rules', () => json({ id: 'd1', version_id: 'v2', version_rules_num: 1 }))
+			.on('POST', '/v1/text-to-speech/voice1', () => new Response(Uint8Array.of(1)));
+		const client = createClient(fake);
+		const detail = await client.getDictionary(TEST_KEY, 'd1');
+		await client.setDictionaryRules(TEST_KEY, 'd1', detail.rules);
+		await client.synthesize({ apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'm', text: 'x', dictionaryId: 'd1' });
+
+		assert.deepStrictEqual(fake.requests.slice(1).map(request => [request.method, request.path, request.body]), [
+			['POST', '/v1/pronunciation-dictionaries/d1/set-rules', { rules: [{ type: 'alias', string_to_replace: 'PR', alias: 'ぷるりく', case_sensitive: true, word_boundaries: false }] }],
+			['POST', '/v1/text-to-speech/voice1', { text: 'x', model_id: 'm', voice_settings: { speed: 1 }, pronunciation_dictionary_locators: [{ pronunciation_dictionary_id: 'd1', version_id: 'v2' }] }],
+		]);
+	});
+
+	test('reads without an applied dictionary that has been archived', async () => {
+		const fake = new FakeFetch()
+			.on('GET', '/v1/pronunciation-dictionaries/d1', () => json({ id: 'd1', name: 'D', latest_version_id: 'v1', archived_time_unix: 1700000100, rules: [] }))
+			.on('POST', '/v1/text-to-speech/voice1', () => new Response(Uint8Array.of(1)));
+		await createClient(fake).synthesize({ apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'm', text: 'x', dictionaryId: 'd1' });
+
+		assert.deepStrictEqual(fake.requests[1].body, { text: 'x', model_id: 'm', voice_settings: { speed: 1 } });
 	});
 });
