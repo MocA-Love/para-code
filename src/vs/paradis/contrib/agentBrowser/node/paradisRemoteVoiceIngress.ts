@@ -152,7 +152,12 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 	const localQueue: Buffer[] = [];
 	let localQueuedBytes = 0;
 	let localClosed = false;
+	// 手元への書き込みをやめた（書き込みに失敗した、または受け取りを打ち切った）。溜まりすぎの待ちからも抜ける
 	let localFailed = false;
+	// 書き込みそのものに失敗した（手元はもう渡せない）
+	let localWriteError = false;
+	// worker が鳴らし始めた（着信音を含む）。鳴り始めた件は Para Code が頭から鳴らし直さない
+	let workerStarted = false;
 	let localWake: (() => void) | undefined;
 	let localDrained: (() => void) | undefined;
 	let localPump: Promise<void> | undefined;
@@ -160,6 +165,7 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 		localPump = (async () => {
 			if (wantLocal && deps.voiceOutput) {
 				sink = await deps.voiceOutput.openIngest(gainKey ? { priority: 'normal', gainKey } : { priority: 'normal' }, INGEST_READY_WAIT_MS);
+				sink?.onDidStart(() => { workerStarted = true; });
 			}
 			for (; ;) {
 				if (localQueue.length === 0) {
@@ -178,8 +184,10 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 				try {
 					await sink.write(chunk);
 				} catch {
-					// 手元に渡せなくなった。モバイルへの流れは続け、手元は後で鳴らし直す（下の localFailed）
+					// 手元に渡せなくなった。モバイルへの流れは続け、手元は後で鳴らし直す（下の localWriteError）
 					localFailed = true;
+					localWriteError = true;
+					localDrained?.();
 				}
 			}
 		})();
@@ -204,8 +212,11 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 		localWake?.();
 		localWake = undefined;
 		localDrained?.();
-		await localPump;
-		if (localFailed && sink !== undefined) {
+		if (!localFailed) {
+			await localPump;
+		}
+		// 打ち切ったとき（stop）は、固まった書き込みを待たない。後始末は下の失敗の扱いが sink に対して行う
+		if (localWriteError && sink !== undefined) {
 			void sink.abort('write-failed');
 			sink = undefined;
 		}
@@ -224,6 +235,9 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 	};
 	const stop = (reason: Failure) => {
 		failure ??= reason;
+		// 固まった手元の書き込みの待ちから、受け取りの読み進めを抜けさせる
+		localFailed = true;
+		localDrained?.();
 		// 応答のヘッダーを送る前（Content-Length の旧方式）なら、理由の分かる 4xx を返してから切る
 		if (!res.headersSent && !res.writableEnded) {
 			res.writeHead(statusFor(reason), { ...JSON_HEADERS, Connection: 'close' });
@@ -339,7 +353,7 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 			// 鳴り始める前なら worker は捨て、鳴り始めた後なら届いた分を鳴らし切る
 			void sink?.abort(failure === 'closed' ? 'ssh-closed' : failure);
 		}
-		const received = playReceived && !sink ? Buffer.concat(chunks, size) : undefined;
+		const received = playReceived && !sink && !workerStarted ? Buffer.concat(chunks, size) : undefined;
 		chunks.length = 0;
 		if (failure !== 'closed' && !res.writableEnded) {
 			if (!res.headersSent) {
@@ -372,7 +386,8 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 			return { outcome: 'declined' };
 		}
 		const ingestSink = sink;
-		let audio: Buffer | undefined = fullAudio;
+		// worker が既に鳴らし始めていたら（手元への書き込みが途中で失敗した件も）、頭から鳴らし直さない
+		let audio: Buffer | undefined = workerStarted ? undefined : fullAudio;
 		// worker が鳴らし始めたら、鳴らし直し用の控えは要らない
 		ingestSink?.onDidStart(() => { audio = undefined; });
 		const localPlayback = (async () => {

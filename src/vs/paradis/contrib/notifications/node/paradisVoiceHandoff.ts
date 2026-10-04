@@ -14,6 +14,7 @@
 
 import { IParadisIngestOpenOptions, IParadisIngestStream } from '../common/paradisVoiceIngest.js';
 import { AivisError, AivisHandoffResult, AivisStreamingSynthesis } from './paradisAudioScheduler.js';
+import { ParadisBoundedLocalWriter } from './paradisStreamingBody.js';
 
 /** 起動中の `--ingest` を待つ上限。過ぎたら afplay で鳴らす。 */
 export const PARADIS_HANDOFF_READY_WAIT_MS = 3_000;
@@ -75,12 +76,15 @@ export async function paradisHandoffVoice(options: IParadisVoiceHandoffOptions):
 
 	const chunks: Buffer[] = [];
 	let bytes = 0;
-	let written = 0;
+	// 手元への書き込みは有界の列で切り離す（子の drain が遅くても本文の読み進め＝モバイルへの流れを止めない）
+	const local = new ParadisBoundedLocalWriter(chunk => stream.write(chunk));
 	// 終わりの知らせが来た時点で、音声の枠を書いていたか
 	let wroteBeforeFinish: boolean | undefined;
-	void stream.finished.then(() => { wroteBeforeFinish = written > 0; });
-	// 合成を受け取りながら流す。受け取った分は、渡せなかったときと取り下げられたときのために控える
+	void stream.finished.then(() => { wroteBeforeFinish = local.written > 0; });
+	// 合成を受け取りながら流す。受け取った分は、渡せなかったときと取り下げられたときのために控える。手元への書き込みに
+	// 失敗しても本文は最後まで読む（モバイルへの流れを途中で切らない）
 	const pumped = (async (): Promise<boolean> => {
+		let complete = false;
 		try {
 			for await (const chunk of synthesis.body) {
 				bytes += chunk.byteLength;
@@ -89,20 +93,22 @@ export async function paradisHandoffVoice(options: IParadisVoiceHandoffOptions):
 					throw new AivisError('item-specific', '合成した音声が大きすぎます');
 				}
 				chunks.push(Buffer.from(chunk));
-				await stream.write(chunk);
-				written += chunk.byteLength;
+				await local.push(chunk);
 			}
-			await stream.end();
-			return true;
+			complete = true;
 		} catch {
-			// 途中で切れた。まだ何も流していなければ捨ててもらい、流していれば届いた分で終えてもらう
-			if (written === 0) {
-				await stream.abort('synth-failed');
-			} else {
-				await stream.end();
-			}
-			return false;
+			// 途中で切れた。下で、まだ何も流していなければ捨ててもらい、流していれば届いた分で終えてもらう
 		}
+		await local.close();
+		if (local.failed) {
+			// 手元へ渡せなくなった（--ingest が落ちた等）。行方は stream.handoff・finished が知らせる
+			await stream.abort('write-failed');
+		} else if (!complete && local.written === 0) {
+			await stream.abort('synth-failed');
+		} else {
+			await stream.end();
+		}
+		return complete;
 	})();
 
 	if (!(await stream.handoff)) {

@@ -23,7 +23,19 @@ class FakeStream implements IParadisIngestStream {
 	private readonly startListeners: Array<() => void> = [];
 	onDidStart(listener: () => void): void { this.startListeners.push(listener); }
 	start(): void { this.startListeners.forEach(listener => listener()); }
-	async write(chunk: Uint8Array): Promise<void> { this.events.push(`write:${chunk.byteLength}`); }
+	writeMode: 'ok' | 'block' | 'fail-second' = 'ok';
+	readonly writeGate = new DeferredPromise<void>();
+	private writes = 0;
+	async write(chunk: Uint8Array): Promise<void> {
+		this.events.push(`write:${chunk.byteLength}`);
+		this.writes++;
+		if (this.writeMode === 'fail-second' && this.writes === 2) {
+			throw new Error('stdin closed');
+		}
+		if (this.writeMode === 'block') {
+			await this.writeGate.p;
+		}
+	}
 	async end(): Promise<void> { this.events.push('end'); }
 	async abort(reason: string): Promise<void> { this.events.push(`abort:${reason}`); }
 }
@@ -167,5 +179,41 @@ suite('paradisHandoffVoice', () => {
 			onPlayLocally: () => { },
 		}), AivisError);
 		assert.deepStrictEqual({ started, events: stream.events }, { started: true, events: ['abort:synth-failed'] });
+	});
+
+	test('keeps reading the synthesis while the --ingest write is slow or fails, so the mobile stream is not cut', async () => {
+		const outcomes: unknown[] = [];
+		for (const writeMode of ['block', 'fail-second'] as const) {
+			const stream = new FakeStream();
+			stream.writeMode = writeMode;
+			const { ingest } = port(stream);
+			const consumed: number[] = [];
+			async function* tracked(): AsyncGenerator<Uint8Array> {
+				for (const size of [100, 200, 300]) {
+					consumed.push(size);
+					yield new Uint8Array(size);
+				}
+			}
+			const pending = paradisHandoffVoice({
+				ingest,
+				open: { priority: 'normal' },
+				synthesize: async () => ({ body: tracked() }),
+				onPlayLocally: () => { },
+			});
+			stream.handoffGate.complete(true);
+			await pending;
+			await flush();
+			// 手元の 1 つ目の書き込みが止まっていても、本文は最後まで読み終えている
+			const readWhileStuck = [...consumed];
+			stream.writeGate.complete();
+			await flush();
+			stream.finishedGate.complete({ status: 'done' });
+			await flush();
+			outcomes.push({ writeMode, readWhileStuck, events: stream.events });
+		}
+		assert.deepStrictEqual(outcomes, [
+			{ writeMode: 'block', readWhileStuck: [100, 200, 300], events: ['write:100', 'write:200', 'write:300', 'end'] },
+			{ writeMode: 'fail-second', readWhileStuck: [100, 200, 300], events: ['write:100', 'write:200', 'abort:write-failed'] },
+		]);
 	});
 });
