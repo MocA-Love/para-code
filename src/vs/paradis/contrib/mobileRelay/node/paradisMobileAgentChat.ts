@@ -55,6 +55,7 @@ import { paradisAgentSessionKey } from '../common/paradisMobileAgentResume.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/paradisSessionResume.js';
 import { IParadisHistoryCursor, PARADIS_HISTORY_FILE_CAP, PARADIS_HISTORY_PAGE_LIMIT, paradisDecodeHistoryCursor, paradisEncodeHistoryCursor, paradisHistoryCursorHasMore, paradisReadTranscriptHistory } from './paradisAgentChatHistory.js';
 import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
+import { IParadisClaudeTranscriptPrefixMatch, ParadisHookTranscriptSightings, paradisClaudeTranscriptIsBackground, paradisClaudeTranscriptSessionKind, paradisFindClaudeTranscriptByIdPrefix, paradisListClaudeTranscriptsByIdPrefixAcrossProjects } from './paradisClaudeBackgroundSessions.js';
 import { ParadisClaudeModBridge, paradisClaudeModBridge, ParadisClaudeModEvent, IParadisClaudeModPendingPermission, IParadisClaudeModPendingQuestion } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { paradisIsDisplayOnlyModRow } from '../../claudeMod/common/paradisClaudeMod.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -71,7 +72,8 @@ export { paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction 
 export type { IParadisAgentActivityDetailMessage } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 export { paradisHasPendingDuplicateQuestion, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
-export type ParadisCliDiscoveryMode = 'new' | 'resume' | 'fork';
+/** `attach` は `claude attach <id>`（会話 id の先頭で決め打ちする。作業ディレクトリからは推測しない）。 */
+export type ParadisCliDiscoveryMode = 'new' | 'resume' | 'fork' | 'attach';
 
 /** Codex のモデルをモバイルから変えようとしたときの返事（ライブ連携をやめたため）。 */
 const PARADIS_CODEX_MODEL_CONTROL_UNSUPPORTED_MESSAGE = 'Codex のモデルはモバイルから変えられません。PC のターミナルで /model から変えてください';
@@ -998,7 +1000,7 @@ export function paradisParseCodexThreadSource(source: string): IParadisCodexThre
 /** 新規起動は生成時刻、resumeは更新時刻でCLI実行との相関を検証する。 */
 export function paradisCliDiscoveryCandidateIsFresh(candidate: { readonly mtime: number; readonly createdAt?: number }, minMtime: number | undefined, mode: ParadisCliDiscoveryMode): boolean {
 	if (minMtime === undefined) { return true; }
-	return mode === 'resume' ? candidate.mtime >= minMtime : candidate.createdAt !== undefined && candidate.createdAt >= minMtime;
+	return mode === 'resume' || mode === 'attach' ? candidate.mtime >= minMtime : candidate.createdAt !== undefined && candidate.createdAt >= minMtime;
 }
 
 export function paradisSelectUnambiguousSessionCandidate<T extends { readonly transcriptPath: string; readonly mtime: number }>(
@@ -1303,6 +1305,34 @@ async function readCodexRolloutSessionMeta(rolloutPath: string): Promise<IParadi
 }
 
 /**
+ * 作業ディレクトリの Claude Code の記録の置き場（`~/.claude/projects/<cwdスラッグ>`）。
+ *
+ * Claude Code はcwdをrealpath解決してからスラッグ化するため、symlink経由のターミナルでも
+ * 一致するよう解決後のパスを使う（解決失敗時は文字面のまま）。
+ * スラッグは Claude Code が cwd から機械的に作る。したがって、こちらも
+ * **その CLI から見た作業ディレクトリ**から作らないと一致しない。WSL の中で動く
+ * claude が作るのは `-home-u-projects-repo` で、UNC から作った
+ * `--wsl-localhost-<distro>-home-u-projects-repo` とは構造的に別物になる。
+ * なおディストロの中の symlink は解決しない（Windows 側の realpath は UNC を
+ * そのまま返すため）。リポジトリへの道中に symlink がある構成では当たらない。
+ */
+async function paradisClaudeProjectDirForCwd(cwd: string, homes: IParadisAgentHomes): Promise<string> {
+	let resolvedCwd = homes.matchCwd;
+	if (homes.wsl === undefined) {
+		try {
+			resolvedCwd = await fs.realpath(cwd);
+		} catch { /* 消えたディレクトリ等は文字面で試す */ }
+	}
+	return join(homes.claude, 'projects', resolvedCwd.replace(/[^a-zA-Z0-9]/g, '-'));
+}
+
+/** Claude の transcript のファイル名から会話 id（小文字）を返す。サブエージェントの記録は対象外。 */
+function paradisClaudeSessionIdOfTranscript(transcriptPath: string): string | undefined {
+	const name = transcriptPath.split(/[\\/]/).pop() ?? '';
+	return name.endsWith('.jsonl') && !name.startsWith('agent-') ? name.slice(0, -'.jsonl'.length).toLowerCase() : undefined;
+}
+
+/**
  * ターミナルのcwdから実行中らしいエージェントセッションのtranscriptを探す。
  * hookは「アプリ起動後に発火したイベント」しか知れないため、Para Code起動前から
  * 動いているセッションや発言がまだ無いセッションはこれで拾う（後からhookが発火したら
@@ -1318,24 +1348,9 @@ async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMti
 	const homes = paradisResolveAgentHomes(cwd);
 
 	// Claude: cwd → プロジェクトディレクトリのスラッグ（英数字以外を '-' に置換）。
-	// Claude Code はcwdをrealpath解決してからスラッグ化するため、symlink経由のターミナルでも
-	// 一致するよう解決後のパスを使う（解決失敗時は文字面のまま）。
 	if (agent === 'claude') {
 		try {
-			// スラッグは Claude Code が cwd から機械的に作る。したがって、こちらも
-			// **その CLI から見た作業ディレクトリ**から作らないと一致しない。WSL の中で動く
-			// claude が作るのは `-home-u-projects-repo` で、UNC から作った
-			// `--wsl-localhost-<distro>-home-u-projects-repo` とは構造的に別物になる。
-			// なおディストロの中の symlink は解決しない（Windows 側の realpath は UNC を
-			// そのまま返すため）。リポジトリへの道中に symlink がある構成では当たらない。
-			let resolvedCwd = homes.matchCwd;
-			if (homes.wsl === undefined) {
-				try {
-					resolvedCwd = await fs.realpath(cwd);
-				} catch { /* 消えたディレクトリ等は文字面で試す */ }
-			}
-			const slug = resolvedCwd.replace(/[^a-zA-Z0-9]/g, '-');
-			const dir = join(homes.claude, 'projects', slug);
+			const dir = await paradisClaudeProjectDirForCwd(cwd, homes);
 			const names = await fs.readdir(dir);
 			for (const name of names) {
 				if (!name.endsWith('.jsonl')) {
@@ -1411,7 +1426,25 @@ async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMti
 	const eligible = agent === 'codex' && minMtime !== undefined && mode !== undefined
 		? candidates.filter(candidate => paradisCliDiscoveryCandidateIsFresh(candidate, minMtime, mode))
 		: candidates;
-	return paradisSelectUnambiguousSessionCandidate(eligible, minMtime, excludedPaths);
+	// daemon が動かす会話（`/fork` の分岐先・`claude --bg`）は、同じ作業フォルダで元の会話と並んで
+	// 更新され続けるが、どのペインの会話でもない。候補に残すと、元のペインがこれと元の会話を行き来する。
+	const inPane = agent === 'claude' ? await paradisWithoutClaudeBackgroundTranscripts(eligible, minMtime, excludedPaths) : eligible;
+	return paradisSelectUnambiguousSessionCandidate(inPane, minMtime, excludedPaths);
+}
+
+/**
+ * 照合の候補から、daemon が動かす Claude の会話を外す（どのみち選ばれない候補は読まない）。
+ * 読めない・決まらない候補も外す（fail-closed。照合は推測なので、分岐先かもしれないものは採らない）。
+ */
+async function paradisWithoutClaudeBackgroundTranscripts<T extends { readonly transcriptPath: string; readonly mtime: number }>(candidates: readonly T[], minMtime: number | undefined, excludedPaths: ReadonlySet<string>): Promise<T[]> {
+	const kept: T[] = [];
+	for (const candidate of candidates) {
+		if (excludedPaths.has(candidate.transcriptPath) || (minMtime !== undefined && candidate.mtime < minMtime)
+			|| await paradisClaudeTranscriptSessionKind(candidate.transcriptPath) === 'pane') {
+			kept.push(candidate);
+		}
+	}
+	return kept;
 }
 
 // ---- tailer ---------------------------------------------------------------------------------
@@ -3017,6 +3050,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			for (const timer of this.cliReconciliationTimers.values()) { clearInterval(timer); }
 			this.cliReconciliationTimers.clear();
 			this.cliReconciliationWatermarks.clear();
+			this.hookTranscriptSightings.clear();
+			this.attachProjectScans.clear();
 			for (const timer of this.pendingHookTimers.values()) {
 				clearTimeout(timer);
 			}
@@ -3315,6 +3350,12 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.cliReconciliationWatermarks.delete(token);
 			}
 		}
+		this.hookTranscriptSightings.forgetRootsExcept(token => liveTokens.has(token) || this.retiredSessions.has(token));
+		for (const token of [...this.attachProjectScans.keys()]) {
+			if (!liveTokens.has(token)) {
+				this.attachProjectScans.delete(token);
+			}
+		}
 		for (const token of liveTokens) {
 			if (!this.paneSessions.has(token) && this.retiredSessions.has(token)) {
 				this.reviveRetiredSession(token);
@@ -3442,6 +3483,13 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly cliDiscoveryGenerations = new Map<string, number>();
 	private readonly cliReconciliationTimers = new Map<string, ReturnType<typeof setInterval>>();
 	private readonly cliReconciliationWatermarks = new Map<string, number>();
+	/** hook で見た transcript。ほかのペインの照合で採らないために覚える。 */
+	private readonly hookTranscriptSightings = new ParadisHookTranscriptSightings();
+	/**
+	 * `claude attach <id>` で全作業フォルダを見て一致があった結果。同じ起動（世代）の再試行では使い回す
+	 * （再試行は 4 回あり、毎回 `~/.claude/projects` 全体を読むと重い）。
+	 */
+	private readonly attachProjectScans = new Map<string, { readonly generation: number; readonly idPrefix: string; readonly result: readonly IParadisClaudeTranscriptPrefixMatch[] }>();
 
 	/**
 	 * ターミナルで `claude` / `codex` コマンドの実行開始を検知した (shell integration 由来)。
@@ -3469,32 +3517,35 @@ export class ParadisMobileAgentChat extends Disposable {
 		// resume 直後は既存transcriptへの追記になるため、開始時刻より少し手前まで許容する。
 		const minMtime = Date.now() - 15_000;
 		this.cliReconciliationWatermarks.set(token, minMtime);
+		const previousReconciliation = this.cliReconciliationTimers.get(token);
+		if (previousReconciliation !== undefined) {
+			clearInterval(previousReconciliation);
+			this.cliReconciliationTimers.delete(token);
+		}
+		if (mode === 'attach') {
+			// `claude attach <id>`: 会話は daemon の配下で動いていて、このペインには hook が来ない。どの会話かは
+			// id でしか決まらないので、作業フォルダからは探さない（同じフォルダの元の会話や別の分岐先を掴む）。
+			// attach 中の会話の切り替え（agent view からの選び直し）も hook が無いので追えない。照合も始めない
+			// （daemon の会話は照合の候補に入らないので、張り替え先は誤りにしかならない）。
+			if (agent !== 'claude' || sessionId === undefined) {
+				return;
+			}
+			for (const delayMs of [500, 2_000, 6_000, 15_000]) {
+				this.scheduleCliDiscovery(token, generation, delayMs, () => this.discoverAndNotify(token, agent, mode, effectiveCwd, undefined, generation, sessionId));
+			}
+			return;
+		}
 		// 共有daemonは起動済みthreadのrollout初回flushが遅れることがあるため、短い即時探索に
 		// 加えて30秒・60秒でも再確認する。鮮度ガードは維持されるので、待機を延ばしても
 		// コマンド開始前の古いセッションを誤って拾うことはない。
 		for (const delayMs of [2_000, 6_000, 15_000, 30_000, 60_000]) {
-			const timer = setTimeout(() => {
-				const timers = this.cliDiscoveryTimers.get(token);
-				timers?.delete(timer);
-				if (timers?.size === 0) {
-					this.cliDiscoveryTimers.delete(token);
-				}
-				if (this.cliDiscoveryGenerations.get(token) !== generation) {
-					return;
-				}
-				this.discoverAndNotify(token, agent, mode, effectiveCwd, minMtime, generation, sessionId).catch(err => this.logService.warn('[paradisAgentChat] discovery on cli command failed', err));
-			}, delayMs);
-			let timers = this.cliDiscoveryTimers.get(token);
-			if (timers === undefined) {
-				timers = new Set();
-				this.cliDiscoveryTimers.set(token, timers);
-			}
-			timers.add(timer);
+			this.scheduleCliDiscovery(token, generation, delayMs, () => this.discoverAndNotify(token, agent, mode, effectiveCwd, minMtime, generation, sessionId));
 		}
-		const previousReconciliation = this.cliReconciliationTimers.get(token);
-		if (previousReconciliation !== undefined) { clearInterval(previousReconciliation); }
 		// TUI内の /resume はshell commandを再発火しない。hookが無い環境でも、CLIが
 		// 実行中の間だけroot threadの一意な更新を追跡してsession切替を検出する。
+		// hook が届くペインでも続ける（Codex の TUI の /resume は SessionStart を出さないことがある）。
+		// `/fork` の分岐先は、sessionKind: "bg" と hook の控え（daemon の会話・ほかのペインの会話・子エージェント）の
+		// 両方で候補から外れるので、照合が元の会話と分岐先を行き来することはない。
 		const reconciliation = setInterval(() => {
 			if (this.cliDiscoveryGenerations.get(token) !== generation || !this.isLiveToken(token)) { return; }
 			const watermark = this.cliReconciliationWatermarks.get(token) ?? minMtime;
@@ -3523,11 +3574,41 @@ export class ParadisMobileAgentChat extends Disposable {
 			tailer?.clearApprovalRequest(undefined, true, true);
 			tailer?.clearPendingQuestions();
 			this.releaseInteractionClaimsFor(token);
+			// このペインの会話は、別のペインで `--resume` し直されうる。照合で採れるように控えから外す。
+			this.hookTranscriptSightings.forgetRoots(token);
 		} else {
 			fireParadisAgentTurnEnded(token);
 		}
+		this.stopCliReconciliation(token);
+	}
+
+	/** コマンド検知トリガーの探索を1回予約する（世代が変わっていたら走らせない）。 */
+	private scheduleCliDiscovery(token: string, generation: number, delayMs: number, discover: () => Promise<void>): void {
+		const timer = setTimeout(() => {
+			const timers = this.cliDiscoveryTimers.get(token);
+			timers?.delete(timer);
+			if (timers?.size === 0) {
+				this.cliDiscoveryTimers.delete(token);
+			}
+			if (this.cliDiscoveryGenerations.get(token) !== generation) {
+				return;
+			}
+			discover().catch(err => this.logService.warn('[paradisAgentChat] discovery on cli command failed', err));
+		}, delayMs);
+		let timers = this.cliDiscoveryTimers.get(token);
+		if (timers === undefined) {
+			timers = new Set();
+			this.cliDiscoveryTimers.set(token, timers);
+		}
+		timers.add(timer);
+	}
+
+	private stopCliReconciliation(token: string): void {
 		const timer = this.cliReconciliationTimers.get(token);
-		if (timer !== undefined) { clearInterval(timer); this.cliReconciliationTimers.delete(token); }
+		if (timer !== undefined) {
+			clearInterval(timer);
+			this.cliReconciliationTimers.delete(token);
+		}
 		this.cliReconciliationWatermarks.delete(token);
 	}
 
@@ -6398,6 +6479,15 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (event.remoteHostId !== undefined) {
 			this.tokenToRemoteHost.set(event.token, { host: event.remoteHostId, at: Date.now() });
 		}
+		// 子エージェントや daemon の会話の transcript は、どのペインの会話でもない。照合で採らないよう覚える。
+		if (event.transcriptPath !== undefined && event.transcriptPath.length > 0 && event.remoteHostId === undefined) {
+			this.hookTranscriptSightings.note(event.transcriptPath, event.token, event.background === true ? 'background' : 'nested', Date.now());
+		}
+		if (event.background === true) {
+			// daemon の配下で動く会話（`/fork` の分岐先・`claude --bg`）。daemon を最初に起こしたペインの
+			// token を持って届くだけで、そのペインの子エージェントではない。ペインには何も出さない。
+			return;
+		}
 		if (!this.isLiveToken(event.token)) {
 			return;
 		}
@@ -6526,6 +6616,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (requestedSessionId !== undefined && previous?.sessionId === requestedSessionId) {
 			return;
 		}
+		if (mode === 'attach' && requestedSessionId !== undefined && previous !== undefined && previous.agent === 'claude'
+			&& paradisClaudeSessionIdOfTranscript(previous.transcriptPath)?.startsWith(requestedSessionId.toLowerCase()) === true) {
+			return;
+		}
 		const claimedByOthers = new Set([...this.transcriptClaims]
 			.filter(([, owner]) => owner !== token)
 			.map(([path]) => path));
@@ -6535,8 +6629,42 @@ export class ParadisMobileAgentChat extends Disposable {
 		for (const path of additionalExcludedPaths ?? []) {
 			claimedByOthers.add(path);
 		}
+		// hook で見たほかのペインの会話・子エージェントの会話・daemon の会話は、作業フォルダが同じでも採らない。
+		for (const path of this.hookTranscriptSightings.excludedFor(token, Date.now())) {
+			claimedByOthers.add(path);
+		}
 		let exactSession = false;
 		let discovered: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number } | undefined;
+		if (mode === 'attach') {
+			// `claude attach <id>`: 会話 id の先頭で決め打ちする。見つからない・決められないときは何もしない
+			// （作業フォルダから推測すると、同じフォルダの元の会話や別の分岐先を掴む）。daemon の会話の控えは
+			// ここでは外さない（attach する相手そのものなので）。ほかのペインの claim だけを避ける。
+			if (agent !== 'claude' || requestedSessionId === undefined) {
+				return;
+			}
+			const homes = paradisResolveAgentHomes(cwd);
+			const projectsRoot = join(homes.claude, 'projects');
+			const scanAllProjects = async (idPrefix: string) => {
+				const cached = this.attachProjectScans.get(token);
+				if (cached !== undefined && cached.generation === generation && cached.idPrefix === idPrefix) {
+					return cached.result;
+				}
+				const result = await paradisListClaudeTranscriptsByIdPrefixAcrossProjects(projectsRoot, idPrefix);
+				// 一致があったときだけ使い回す（まだ書かれていない transcript は、次の再試行で見つかりうる）
+				if (result.length > 0) {
+					this.attachProjectScans.set(token, { generation, idPrefix, result });
+				}
+				return result;
+			};
+			const found = await paradisFindClaudeTranscriptByIdPrefix(projectsRoot, await paradisClaudeProjectDirForCwd(cwd, homes), requestedSessionId, scanAllProjects);
+			// ほかのペインの claim と、退避中のペイン（復活を待っている）の会話は採らない
+			const retained = [...this.retiredSessions].some(([retiredToken, entry]) => retiredToken !== token && entry.session.transcriptPath === found?.transcriptPath);
+			if (found === undefined || retained || this.transcriptClaimedByOther(found.transcriptPath, token)) {
+				return;
+			}
+			discovered = { agent: 'claude', transcriptPath: found.transcriptPath, mtime: found.mtime, sessionId: found.sessionId };
+			exactSession = true;
+		}
 		if (agent === 'codex' && requestedSessionId !== undefined && /^[A-Za-z0-9._:-]{1,500}$/.test(requestedSessionId)) {
 			const transcriptPath = await discoverCodexRootTranscriptByThreadId(requestedSessionId, paradisResolveAgentHomes(cwd));
 			if (transcriptPath !== undefined && !claimedByOthers.has(transcriptPath)) {
@@ -6547,7 +6675,9 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 			}
 		}
-		discovered ??= await discoverSessionByCwd(cwd, agent, minMtime, claimedByOthers, mode, allowCodexDirectoryWalk, onCodexDirectoryWalk);
+		if (mode !== 'attach') {
+			discovered ??= await discoverSessionByCwd(cwd, agent, minMtime, claimedByOthers, mode, allowCodexDirectoryWalk, onCodexDirectoryWalk);
+		}
 		if (discovered === undefined || this.attachDisposed
 			|| this.cliDiscoveryGenerations.get(token) !== generation
 			|| !this.isLiveToken(token) || this.tokenToCwd.get(token) !== cwd
@@ -6673,6 +6803,28 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		const { transcriptPath: sessionTranscriptPath, nested } = resolved;
+		// 発信元のプロセスを確かめられなかった hook（pid が無い等）は、daemon の配下の会話（`/fork` の分岐先）の
+		// ものかもしれない。所有者が決まる前に分岐先の hook が先に届くと、分岐先がこのペインの会話になってしまう。
+		// Claude の transcript を初めてこのペインの会話にするときだけ、中身の sessionKind でも確かめる。
+		// SessionStart の source: resume はペインの持ち主が会話を開き直した（分岐先を `--resume` し直したときは、
+		// まだ末尾の行も bg のまま）ので確かめない。捨てた hook は控えに残さない（次の hook でもう一度確かめる。
+		// 分岐先は照合の候補から sessionKind で外れるので、控えが無くても照合には採られない）。
+		if (event.ownerUnverified === true && event.remoteHostId === undefined && nested === undefined
+			&& !(event.event === 'SessionStart' && str(event.payload?.source) === 'resume')
+			&& agentKindForPath(sessionTranscriptPath) === 'claude'
+			&& this.paneSessions.get(event.token)?.transcriptPath !== sessionTranscriptPath
+			&& !this.hookTranscriptSightings.isRootFor(sessionTranscriptPath, event.token)
+			&& await paradisClaudeTranscriptIsBackground(sessionTranscriptPath)) {
+			this.logService.trace(`[paradisAgentChat] dropped an unverified hook whose transcript is a daemon-hosted Claude session: ${event.event}`);
+			return;
+		}
+		if (event.remoteHostId === undefined) {
+			const seenAt = Date.now();
+			this.hookTranscriptSightings.note(sessionTranscriptPath, event.token, 'root', seenAt);
+			if (transcriptPath !== sessionTranscriptPath) {
+				this.hookTranscriptSightings.note(transcriptPath, event.token, 'nested', seenAt);
+			}
+		}
 		this.pendingHooks.delete(event.token);
 		const pendingTimer = this.pendingHookTimers.get(event.token);
 		if (pendingTimer !== undefined) {
@@ -6713,6 +6865,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.activeTurnTokens.delete(previousOwner);
 			this.cancelCliDiscovery(previousOwner);
 			this.cliDiscoveryGenerations.set(previousOwner, (this.cliDiscoveryGenerations.get(previousOwner) ?? 0) + 1);
+			// 奪われた側を見ているモバイルへ知らせ直す（会話が無くなったので 'none' が届く）。知らせないと、
+			// tailer が消えたまま前の会話の表示が残り、以後の更新も届かない。
+			this.pushToSubscribers(previousOwner);
 		}
 		const previous = this.paneSessions.get(event.token);
 		const info: IPaneSessionInfo = {

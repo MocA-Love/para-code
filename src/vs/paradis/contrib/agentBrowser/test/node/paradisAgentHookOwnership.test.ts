@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisHookProcessInfo, ParadisAgentHookOwnership, paradisHookAgentKindFromCommandLine } from '../../node/paradisAgentHookOwnership.js';
+import { IParadisHookProcessInfo, ParadisAgentHookOwnership, paradisHookAgentKindFromCommandLine, paradisIsClaudeBackgroundHostCommand } from '../../node/paradisAgentHookOwnership.js';
 
 suite('ParadisAgentHookOwnership', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -530,5 +530,78 @@ suite('ParadisAgentHookOwnership', () => {
 		// 送信直後にプロセスが消えた（スナップショットに存在しないPID）。
 		const result = await ownership.classify({ token: 't', hookPid: 999, transcriptPath: CODEX_TRANSCRIPT, at: 2 });
 		assert.strictEqual(result.origin, 'invalid');
+	});
+
+	/**
+	 * Claude Code 2.1.289 の `/fork` で実測した形を写したツリー:
+	 *   100 (zsh, ペインのシェル) ← 200 (claude, 所有者) ← 500 (`claude daemon run`)
+	 *     ← 510 (`claude bg-pty-host`) ← 520 (`claude bg-spare`, 分岐先の会話) ← 521 (notify script)
+	 * daemon は所有者の子として起き、所有者の環境（ペインの token）を持ち続ける。
+	 */
+	function forkTree(): Map<number, IParadisHookProcessInfo> {
+		const tree = standardTree();
+		tree.set(500, proc(500, 200, '/home/user/.local/bin/claude daemon run --origin transient --spawned-by {"label":"claude","cwd":"/repo","pid":200}'));
+		tree.set(510, proc(510, 500, 'claude bg-pty-host --bg-pty-host /tmp/cc-daemon-501/x/spare/a.pty.sock 200 50 -- /home/user/.local/share/claude/versions/2.1.289 --bg-spare /tmp/cc-daemon-501/x/spare/a.claim.sock'));
+		tree.set(520, proc(520, 510, 'claude bg-spare --bg-spare /tmp/cc-daemon-501/x/spare/a.claim.sock'));
+		tree.set(521, proc(521, 520, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh'));
+		return tree;
+	}
+
+	test('recognizes the processes of the Claude Code daemon', () => {
+		assert.deepStrictEqual([
+			'/home/user/.local/bin/claude daemon run --origin transient',
+			'claude bg-pty-host --bg-pty-host /tmp/a.pty.sock 200 50 -- /x/versions/2.1.289 --bg-spare /tmp/a.claim.sock',
+			'claude bg-spare --bg-spare /tmp/a.claim.sock',
+			// argv[0] が版のディレクトリのパスに見える形
+			'/home/user/.local/share/claude/versions/2.1.289 --bg-spare /tmp/a.claim.sock',
+			'claude',
+			'claude --resume 11111111',
+			'claude attach 52a3701d',
+			'claude daemon status',
+			'/bin/zsh -il',
+			// プロンプトや後ろの引数に同じ綴りが出るだけのもの
+			'claude "--bg-spare について"',
+			'claude --resume 11111111 --bg-spare',
+			'node /x/claude-helper.js run daemon run',
+			// node 経由の起動（npm 版など）。claude のスクリプトの次の語で見る
+			'node /x/claude bg-spare --bg-spare s',
+			'node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js daemon run',
+			'env FOO=1 node --require /x/preload.js /x/claude bg-pty-host --bg-pty-host s',
+			'node /x/claude "--bg-spare について"',
+			'node /x/other.js bg-spare',
+		].map(paradisIsClaudeBackgroundHostCommand), [true, true, true, true, false, false, false, false, false, false, false, false, true, true, true, false, false]);
+	});
+
+	test('a hook from a forked session in the daemon is neither nested nor the owner, before and after the pane owner exits', async () => {
+		const tree = forkTree();
+		const ownership = ownershipWith(tree);
+		const owner = await ownership.classify({ token: 't', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
+		const whileOwnerAlive = await ownership.classify({ token: 't', hookPid: 521, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2 });
+		// 所有者の claude が終わると daemon は launchd の子になる。daemon を後継の所有者にしない。
+		tree.delete(200);
+		tree.delete(205);
+		tree.delete(206);
+		tree.set(500, proc(500, 1, '/home/user/.local/bin/claude daemon run --origin transient'));
+		const afterOwnerExit = await ownership.classify({ token: 't', hookPid: 521, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 3 });
+		// 同じペインで claude を起動し直したら、それが所有者になる（daemon が所有者の席を取っていない）。
+		tree.set(300, proc(300, 100, 'claude'));
+		tree.set(305, proc(305, 300, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh'));
+		const restarted = await ownership.classify({ token: 't', hookPid: 305, transcriptPath: CLAUDE_TRANSCRIPT, at: 4 });
+		assert.deepStrictEqual([owner, whileOwnerAlive, afterOwnerExit, restarted], [
+			{ origin: 'owner', agentKind: 'claude' },
+			{ origin: 'background', agentKind: 'claude' },
+			{ origin: 'background', agentKind: 'claude' },
+			{ origin: 'owner', agentKind: 'claude' },
+		]);
+	});
+
+	test('a real nested claude under the pane owner stays nested next to a running daemon', async () => {
+		const tree = forkTree();
+		tree.set(240, proc(240, 200, 'node /usr/local/bin/claude -p "sub"'));
+		tree.set(241, proc(241, 240, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh'));
+		const ownership = ownershipWith(tree);
+		await ownership.classify({ token: 't', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
+		const result = await ownership.classify({ token: 't', hookPid: 241, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2 });
+		assert.deepStrictEqual(result, { origin: 'nested', agentKind: 'claude' });
 	});
 });

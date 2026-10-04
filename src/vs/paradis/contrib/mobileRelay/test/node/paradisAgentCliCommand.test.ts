@@ -68,6 +68,23 @@ suite('ParadisAgentCliCommand', () => {
 		}
 	});
 
+	test('takes the session id out of claude attach and leaves the background session commands alone', () => {
+		assert.deepStrictEqual([
+			paradisInteractiveAgentCommand('claude attach 52a3701d'),
+			paradisInteractiveAgentCommand('claude attach 52a3701d-a5b0-4252-99f9-e155af08db4d'),
+			paradisInteractiveAgentCommand('/Users/example/.local/bin/claude attach "52a3701d"'),
+			paradisInteractiveAgentCommand('claude attach'),
+		], [
+			{ agent: 'claude', mode: 'attach', sessionId: '52a3701d' },
+			{ agent: 'claude', mode: 'attach', sessionId: '52a3701d-a5b0-4252-99f9-e155af08db4d' },
+			{ agent: 'claude', mode: 'attach', sessionId: '52a3701d' },
+			{ agent: 'claude', mode: 'attach' },
+		]);
+		for (const command of ['claude logs 52a3701d', 'claude stop 52a3701d', 'claude kill 52a3701d', 'claude rm 52a3701d', 'claude respawn --all', 'claude purge /tmp/x', 'claude attach --help']) {
+			assert.strictEqual(paradisInteractiveAgentCommand(command), undefined, command);
+		}
+	});
+
 	test('reconciles a running Agent only after both CommandDetection and the retained pane token are available, regardless of arrival order', () => {
 		const commandFirst = paradisResolveRunningAgentCommand('codex resume 019f-thread', undefined);
 		const tokenFirst = paradisResolveRunningAgentCommand(undefined, 'retained-pane-token');

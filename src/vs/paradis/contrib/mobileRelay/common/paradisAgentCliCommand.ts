@@ -7,15 +7,20 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-export type ParadisInteractiveAgentMode = 'new' | 'resume' | 'fork';
-export interface ParadisInteractiveAgentCommand {
-	readonly agent: 'claude' | 'codex';
-	readonly mode: ParadisInteractiveAgentMode;
+/**
+ * `attach` は `claude attach <id>`。会話は daemon の配下で動いていて、このペインには表示役（client）しか
+ * いないので hook が来ない。どの会話かは `<id>`（会話 id の先頭）でしか決まらない。
+ */
+export type ParadisInteractiveAgentMode = 'new' | 'resume' | 'fork' | 'attach';
+interface IParadisInteractiveAgentCommandBase {
 	/** Codexの-C/--cdで指定された実行ディレクトリ（シェルcwdからの相対値を含む）。 */
 	readonly cwd?: string;
-	/** `codex resume <thread-id>` / `codex fork <thread-id>` の明示対象。 */
+	/** `codex resume <thread-id>` / `codex fork <thread-id>` / `claude attach <id>` の明示対象。 */
 	readonly sessionId?: string;
 }
+export type ParadisInteractiveAgentCommand =
+	| IParadisInteractiveAgentCommandBase & { readonly agent: 'codex'; readonly mode: Exclude<ParadisInteractiveAgentMode, 'attach'> }
+	| IParadisInteractiveAgentCommandBase & { readonly agent: 'claude'; readonly mode: ParadisInteractiveAgentMode };
 
 /** 実行中Agentの通知に必要なcommandとretained pane identityの組。 */
 export interface ParadisRunningAgentCommand {
@@ -28,7 +33,8 @@ const codexOptionsWithValue = new Set(['-c', '--config', '--enable', '--disable'
 /** `resources/paradis/bin/codex` と `paradisCodexPaneLauncher.cjs` の同名リストと一致させること（一致は paradisCodexPaneLauncher.test.ts が検査する）。 */
 const codexNonInteractiveCommands = new Set(['exec', 'e', 'review', 'login', 'logout', 'mcp', 'plugin', 'mcp-server', 'app-server', 'remote-control', 'app', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'a', 'archive', 'delete', 'unarchive', 'cloud', 'exec-server', 'execpolicy', 'responses-api-proxy', 'stdio-to-uds', 'features', 'help', 'agents', 'queue', 'migrate-rollouts', 'tcp-tunnel']);
 const claudeOptionsWithValue = new Set(['--add-dir', '--agent', '--agents', '--allowedTools', '--allowed-tools', '--append-system-prompt', '--betas', '--debug-file', '--disallowedTools', '--disallowed-tools', '--effort', '--fallback-model', '--file', '--input-format', '--json-schema', '--max-budget-usd', '--mcp-config', '--model', '-n', '--name', '--output-format', '--permission-mode', '--plugin-dir', '--plugin-url', '--remote-control', '-r', '--resume', '--session-id', '--setting-sources']);
-const claudeNonInteractiveCommands = new Set(['agents', 'auth', 'auto-mode', 'doctor', 'gateway', 'install', 'mcp', 'plugin', 'plugins', 'project', 'setup-token', 'ultrareview', 'update', 'upgrade']);
+// `logs`・`stop`・`kill`・`rm`・`respawn`・`purge` はバックグラウンドの会話を操作してすぐ終わる（会話を表示しない）。
+const claudeNonInteractiveCommands = new Set(['agents', 'auth', 'auto-mode', 'doctor', 'gateway', 'install', 'kill', 'logs', 'mcp', 'plugin', 'plugins', 'project', 'purge', 'respawn', 'rm', 'setup-token', 'stop', 'ultrareview', 'update', 'upgrade']);
 const claudeForkableResumeOptions = new Set(['-r', '--resume', '-c', '--continue']);
 const claudeResumeOptions = new Set([...claudeForkableResumeOptions, '--from-pr', '--teleport']);
 
@@ -109,8 +115,13 @@ export function paradisInteractiveAgentCommand(commandLine: string): ParadisInte
 		};
 	}
 	if (words.some(argument => argument === '-p' || argument === '--print' || argument === '--bg' || argument === '--background')) { return undefined; }
-	const positional = firstPositional(words, claudeOptionsWithValue);
+	const positionalIndex = firstPositionalIndex(words, claudeOptionsWithValue);
+	const positional = positionalIndex !== undefined ? words[positionalIndex] : undefined;
 	if (positional !== undefined && claudeNonInteractiveCommands.has(positional)) { return undefined; }
+	if (positional === 'attach' && positionalIndex !== undefined) {
+		const sessionId = firstPositional(words.slice(positionalIndex + 1), claudeOptionsWithValue);
+		return { agent: 'claude', mode: 'attach', ...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}) };
+	}
 	const resume = words.some(argument => claudeResumeOptions.has(argument) || argument.startsWith('--resume=') || argument.startsWith('--from-pr='));
 	const fork = words.includes('--fork-session') && words.some(argument => claudeForkableResumeOptions.has(argument) || argument.startsWith('--resume='));
 	return { agent: 'claude', mode: fork ? 'fork' : resume ? 'resume' : 'new' };

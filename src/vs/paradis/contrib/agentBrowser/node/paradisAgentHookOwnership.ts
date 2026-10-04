@@ -21,6 +21,7 @@
 //   - 現所有者が emitter の祖先に生存           → nested（子エージェント。状態を汚染させない）
 //   - 現所有者が死亡/PID再利用                  → owner を昇格
 //   - 現所有者が生存しているのに祖先にいない     → invalid（誤配送。破棄）
+//   - 祖先に Claude Code の daemon がいる         → background（`/fork` の分岐先・`claude --bg`。後述）
 // PIDが取れない場合（旧スクリプト・プロセス消滅・ps失敗）は fail-closed:
 // 既知の所有者と同じtranscriptへのイベントだけを通す。
 
@@ -41,7 +42,7 @@ const MAX_OWNER_RECORDS = 4_096;
 
 export type ParadisHookAgentKind = 'claude' | 'codex';
 
-export type ParadisHookOrigin = 'owner' | 'nested' | 'invalid';
+export type ParadisHookOrigin = 'owner' | 'nested' | 'invalid' | 'background';
 
 /** プロセス表スナップショットの1行。 */
 export interface IParadisHookProcessInfo {
@@ -386,6 +387,92 @@ export function paradisHookAgentKindFromCommandLine(command: string): ParadisHoo
 	return agentMatchOfCommand(command, 0)?.kind;
 }
 
+// Claude Code の daemon の形（2.1.289 で実測）。`/fork` の分岐先と `claude --bg` の会話は、元のペインの
+// claude ではなく次の連なりの末端が動かす:
+//   claude（daemon を最初に起こしたペインの claude）→ `claude daemon run …` → `claude bg-pty-host --bg-pty-host … -- <本体> --bg-spare …`
+//   → `claude bg-spare --bg-spare …`（会話の本体。hook はここから出る）
+// daemon は最初に起こしたペインの環境（PARA_CODE_TERMINAL_PANE_ID）を持ち続けるので、その配下の会話の hook は
+// 無関係なペインの token で届く。そのペインの claude が生きている間は祖先にいるので nested に、終わった後は
+// daemon が後継の所有者になってペインの会話を奪う。どちらも誤りなので、祖先に daemon がいる hook は別扱いにする。
+const CLAUDE_BACKGROUND_HOST_ARGUMENTS = new Set(['--bg-spare', '--bg-pty-host', 'bg-spare', 'bg-pty-host']);
+/** Linux などで本体の argv[0] が版のディレクトリのパス（`…/claude/versions/2.1.289`）に見える形。 */
+const CLAUDE_VERSIONED_BINARY = /[\\/]claude[\\/]versions[\\/][^\\/]+$/i;
+
+/**
+ * 起動行のうち、claude 本体（本体の形か、ランタイムが実行する claude のスクリプト）の次の語の位置。
+ * {@link agentMatchOfTokens} と同じ読み方で、`env`・node・bun・deno を経た起動も辿る。claude でなければ undefined。
+ */
+function claudeArgumentsStart(tokens: readonly ICommandLineToken[]): number | undefined {
+	let index = 0;
+	if (normalizedBasename(tokens[0]?.value ?? '') === 'env') {
+		// `env [-i] [-u NAME] [NAME=VALUE ...] program ...`
+		for (index = 1; index < tokens.length; index++) {
+			const value = tokens[index].value;
+			if (ENV_OPTIONS_WITH_VALUE.has(value)) {
+				index++;
+			} else if (!value.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(value)) {
+				break;
+			}
+		}
+	}
+	if (index >= tokens.length) {
+		return undefined;
+	}
+	const programToken = tokens[index].value;
+	const program = normalizedBasename(programToken);
+	if (agentKindOfBasename(program) === 'claude' || CLAUDE_VERSIONED_BINARY.test(programToken)) {
+		return index + 1;
+	}
+	if (!SCRIPT_RUNTIME_BASENAMES.has(program)) {
+		return undefined;
+	}
+	let subcommandAllowed = program === 'bun' || program === 'deno';
+	for (let i = index + 1; i < tokens.length; i++) {
+		const value = tokens[i].value;
+		if (value === '--') {
+			return i + 1 < tokens.length && agentKindOfScriptPath(tokens[i + 1].value) === 'claude' ? i + 2 : undefined;
+		}
+		if (RUNTIME_INLINE_CODE_OPTIONS.has(value)) {
+			return undefined;
+		}
+		if (RUNTIME_OPTIONS_WITH_VALUE.has(value)) {
+			i++;
+			continue;
+		}
+		if (value.startsWith('-')) {
+			continue;
+		}
+		if (subcommandAllowed && RUNTIME_RUNNER_SUBCOMMANDS.has(value)) {
+			return undefined;
+		}
+		if (subcommandAllowed && RUNTIME_SCRIPT_SUBCOMMANDS.has(value)) {
+			subcommandAllowed = false;
+			continue;
+		}
+		return agentKindOfScriptPath(value) === 'claude' ? i + 1 : undefined;
+	}
+	return undefined;
+}
+
+/**
+ * Claude Code の daemon（`claude daemon run`）か、その配下で会話を動かすプロセス（`bg-pty-host`・`bg-spare`）か。
+ * 見るのは claude 本体の次の語だけ（`claude bg-spare …`・`node …/claude bg-spare …`・`node …/cli.js daemon run`・
+ * argv[0] が版のディレクトリのパスの `…/versions/2.1.289 --bg-spare …`）。`claude "--bg-spare について"` のように、
+ * プロンプトや後ろの引数に同じ綴りが出るだけのものは当てない。
+ */
+export function paradisIsClaudeBackgroundHostCommand(command: string): boolean {
+	const tokens = tokenizeCommandLine(command);
+	if (tokens.length < 2) {
+		return false;
+	}
+	const start = claudeArgumentsStart(tokens);
+	if (start === undefined || start >= tokens.length) {
+		return false;
+	}
+	const next = tokens[start].value;
+	return CLAUDE_BACKGROUND_HOST_ARGUMENTS.has(next) || (next === 'daemon' && tokens[start + 1]?.value === 'run');
+}
+
 /** POSIX: `ps ax` 1回でプロセス表を取得する（LC_ALL=C で lstart を5トークン固定にする）。 */
 async function posixProcessSnapshot(): Promise<ReadonlyMap<number, IParadisHookProcessInfo> | undefined> {
 	try {
@@ -469,6 +556,12 @@ export interface IParadisHookClassification {
 	readonly origin: ParadisHookOrigin;
 	/** nested の場合の子エージェント種別（活動ツリーへの投影に使う）。 */
 	readonly agentKind: ParadisHookAgentKind | undefined;
+	/**
+	 * owner を、発信元のプロセスを辿らずに transcript だけで決めた（pid が無い・プロセス表が取れない・発信元の
+	 * プロセスが見つからない）。このときは daemon の会話の hook を見分けられないので、受け手が transcript の
+	 * 中身（`sessionKind`）でも確かめる。
+	 */
+	readonly unverified?: true;
 }
 
 /**
@@ -514,6 +607,10 @@ export class ParadisAgentHookOwnership {
 			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind);
 		}
 		const chain = this.chainInsidePanes(snapshot, hookPid);
+		// daemon の配下の会話は、このペインの所有者にも子エージェントにもしない（所有者の記録も触らない）。
+		if (chain.some(entry => paradisIsClaudeBackgroundHostCommand(entry.command))) {
+			return { origin: 'background', agentKind: eventKind ?? 'claude' };
+		}
 		const emitter = this.findEmitter(chain, eventKind);
 		if (emitter === undefined) {
 			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind);
@@ -576,13 +673,13 @@ export class ParadisAgentHookOwnership {
 		const owner = this.owners.get(token);
 		if (owner === undefined) {
 			this.setOwner(token, { pid: undefined, startKey: undefined, agentKind: eventKind, transcriptPath, at });
-			return { origin: 'owner', agentKind: eventKind };
+			return { origin: 'owner', agentKind: eventKind, unverified: true };
 		}
 		if (transcriptPath === undefined || owner.transcriptPath === undefined || owner.transcriptPath === transcriptPath) {
 			if (owner.pid === undefined) {
 				this.setOwner(token, { ...owner, transcriptPath: owner.transcriptPath ?? transcriptPath, agentKind: owner.agentKind ?? eventKind, at });
 			}
-			return { origin: 'owner', agentKind: eventKind ?? owner.agentKind };
+			return { origin: 'owner', agentKind: eventKind ?? owner.agentKind, unverified: true };
 		}
 		return { origin: 'invalid', agentKind: eventKind };
 	}
