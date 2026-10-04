@@ -2,8 +2,8 @@
 
 import { describe, expect, test } from 'vitest';
 import { createInitiator, generateIdentity, respondHandshake } from '../src/crypto.js';
-import { Channels } from '../src/frames.js';
-import { FRAME_CHUNK_BYTES, FrameMux } from '../src/mux.js';
+import { Channels, encodeFrame, type Frame } from '../src/frames.js';
+import { FRAME_CHUNK_BYTES, FRAME_REASSEMBLY_LIMIT, FrameMux } from '../src/mux.js';
 
 function establish() {
 	const mobile = generateIdentity();
@@ -102,5 +102,53 @@ describe('FrameMux over SecureChannel', () => {
 		// 2番目を先に渡す → カウンタnonce不一致でonErrorに流れる
 		pcMux.receive(seq[1]!);
 		expect(errors.length).toBe(1);
+	});
+
+	test('reassembles interleaved v4 fragments by transfer id', () => {
+		const { mobileChannel, pcChannel } = establish();
+		const received: string[] = [];
+		const pcMux = new FrameMux(pcChannel, { sendSealed: () => { }, onError: error => received.push(`error:${String(error)}`) });
+		pcMux.on(Channels.Browser, f => received.push(`${f.seq}:${new TextDecoder().decode(f.payload)}`));
+		const send = (frame: Frame) => pcMux.receive(mobileChannel.seal(encodeFrame(frame)));
+		const bytes = (text: string) => new TextEncoder().encode(text);
+
+		send({ ch: Channels.Browser, seq: 1, payload: bytes('jpeg-1|'), frag: { id: 10, index: 0, last: false } });
+		send({ ch: Channels.Browser, seq: 2, payload: bytes('voice-1|'), frag: { id: 11, index: 0, last: false } });
+		send({ ch: Channels.Browser, seq: 2, payload: bytes('voice-2'), frag: { id: 11, index: 1, last: true } });
+		send({ ch: Channels.Browser, seq: 3, payload: bytes('small') });
+		send({ ch: Channels.Browser, seq: 1, payload: bytes('jpeg-2'), frag: { id: 10, index: 1, last: true } });
+
+		expect(received).toEqual(['2:voice-1|voice-2', '3:small', '1:jpeg-1|jpeg-2']);
+	});
+
+	test('drops a transfer whose fragments arrive out of order and reports it', () => {
+		const { mobileChannel, pcChannel } = establish();
+		const errors: unknown[] = [];
+		const received: number[] = [];
+		const pcMux = new FrameMux(pcChannel, { sendSealed: () => { }, onError: error => errors.push(error) });
+		pcMux.on(Channels.Fs, f => received.push(f.payload.length));
+		const send = (frame: Frame) => pcMux.receive(mobileChannel.seal(encodeFrame(frame)));
+
+		send({ ch: Channels.Fs, seq: 0, payload: new Uint8Array(3), frag: { id: 1, index: 0, last: false } });
+		send({ ch: Channels.Fs, seq: 0, payload: new Uint8Array(3), frag: { id: 1, index: 2, last: false } });
+		// 捨てた送信の続きは黙って捨てる
+		send({ ch: Channels.Fs, seq: 0, payload: new Uint8Array(3), frag: { id: 1, index: 3, last: true } });
+
+		expect({ errors: errors.length, received }).toEqual({ errors: 1, received: [] });
+	});
+
+	test('stops assembling when the transfers in flight exceed the reassembly limit', () => {
+		const { mobileChannel, pcChannel } = establish();
+		const errors: unknown[] = [];
+		const received: number[] = [];
+		const pcMux = new FrameMux(pcChannel, { sendSealed: () => { }, onError: error => errors.push(error) });
+		pcMux.on(Channels.Fs, f => received.push(f.payload.length));
+		const send = (frame: Frame) => pcMux.receive(mobileChannel.seal(encodeFrame(frame)));
+
+		send({ ch: Channels.Fs, seq: 0, payload: new Uint8Array(FRAME_REASSEMBLY_LIMIT / 2), frag: { id: 1, index: 0, last: false } });
+		send({ ch: Channels.Fs, seq: 1, payload: new Uint8Array(FRAME_REASSEMBLY_LIMIT / 2 + 1), frag: { id: 2, index: 0, last: false } });
+		send({ ch: Channels.Fs, seq: 0, payload: new Uint8Array(1), frag: { id: 1, index: 1, last: true } });
+
+		expect({ errors: errors.length, received }).toEqual({ errors: 1, received: [FRAME_REASSEMBLY_LIMIT / 2 + 1] });
 	});
 });

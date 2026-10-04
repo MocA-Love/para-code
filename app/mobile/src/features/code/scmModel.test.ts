@@ -131,7 +131,7 @@ describe('rendererTargetOf', () => {
 		pcOnline: true,
 		sessionProtocolReady: true,
 		workspace: {
-			protocolVersion: 3,
+			protocolVersion: 4,
 			desktopEpoch: 'e1',
 			revision: 1,
 			complete: true,

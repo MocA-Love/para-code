@@ -10,8 +10,13 @@ import { decodeUtf8 } from './utf8.js';
  * バイナリ形式:
  *   [chId:u8][flags:u8][seq:u32 BE][wsLen:u16 BE][ws bytes(UTF-8)][payload...]
  *   flags bit0: ws が存在するか
- *   flags bit1: 続きのチャンクがある（大きな論理フレームの分割。リレーのWebSocket
- *               メッセージ上限(1MiB)を超えるペイロードを FrameMux が分割・再結合する）
+ *   flags bit1: 続きのチャンクがある（版 3 までの分割。受け取りだけ残す）
+ *   flags bit2: 版 4 の断片。ws の後ろに [送信ID:u32 BE][何番目か:u32 BE] が続く
+ *   flags bit3: 版 4 の最後の断片
+ *
+ * 版 4 の FrameMux は 16KiB を超える論理フレームを断片に切り、送信 ID ごとに組み立て直す
+ * （断片は交互に届いてよい）。16KiB 以下は断片の見出しを付けず、版 3 と同じバイト列で送る
+ * （古い相手に「更新してください」を伝える State の案内はこの形で届く）。
  */
 
 /** 論理チャネルID。 */
@@ -57,9 +62,25 @@ export interface Frame {
 	readonly seq: number;
 	/** チャネル固有のペイロード。 */
 	readonly payload: Uint8Array;
-	/** 続きのチャンクがある（分割された論理フレームの途中。FrameMuxが再結合する）。 */
+	/** 続きのチャンクがある（版 3 までの分割。受け取りだけ残す。FrameMuxが再結合する）。 */
 	readonly more?: boolean;
+	/** 版 4 の断片（送信 ID・何番目か・最後か）。FrameMux が送信 ID ごとに組み立て直す。 */
+	readonly frag?: FrameFragment;
 }
+
+/** 版 4 の断片の見出し。 */
+export interface FrameFragment {
+	/** 送信 ID（送り手ごとに採番。u32）。 */
+	readonly id: number;
+	/** 何番目か（0 始まり。u32）。 */
+	readonly index: number;
+	/** 最後の断片か。 */
+	readonly last: boolean;
+}
+
+const FLAG_FRAGMENT = 0x04;
+const FLAG_FRAGMENT_LAST = 0x08;
+const FRAGMENT_HEADER_BYTES = 8;
 
 export function encodeFrame(frame: Frame): Uint8Array {
 	const chId = CHANNEL_TO_ID[frame.ch];
@@ -73,17 +94,24 @@ export function encodeFrame(frame: Frame): Uint8Array {
 	if (wsBytes.length > 0xffff) {
 		throw new Error('frame ws too long');
 	}
-	const header = new Uint8Array(1 + 1 + 4 + 2);
-	const view = new DataView(header.buffer);
+	const frag = frame.frag;
+	if (frag !== undefined && (!Number.isSafeInteger(frag.id) || frag.id < 0 || frag.id > 0xffffffff || !Number.isSafeInteger(frag.index) || frag.index < 0 || frag.index > 0xffffffff)) {
+		throw new Error('frame fragment out of range');
+	}
+	const fragBytes = frag !== undefined ? FRAGMENT_HEADER_BYTES : 0;
+	const out = new Uint8Array(8 + wsBytes.length + fragBytes + frame.payload.length);
+	const view = new DataView(out.buffer);
 	view.setUint8(0, chId);
-	view.setUint8(1, (frame.ws !== undefined ? 0x01 : 0x00) | (frame.more === true ? 0x02 : 0x00));
+	view.setUint8(1, (frame.ws !== undefined ? 0x01 : 0x00) | (frame.more === true ? 0x02 : 0x00)
+		| (frag !== undefined ? FLAG_FRAGMENT : 0x00) | (frag?.last === true ? FLAG_FRAGMENT_LAST : 0x00));
 	view.setUint32(2, frame.seq, false);
 	view.setUint16(6, wsBytes.length, false);
-
-	const out = new Uint8Array(header.length + wsBytes.length + frame.payload.length);
-	out.set(header, 0);
-	out.set(wsBytes, header.length);
-	out.set(frame.payload, header.length + wsBytes.length);
+	out.set(wsBytes, 8);
+	if (frag !== undefined) {
+		view.setUint32(8 + wsBytes.length, frag.id, false);
+		view.setUint32(8 + wsBytes.length + 4, frag.index, false);
+	}
+	out.set(frame.payload, 8 + wsBytes.length + fragBytes);
 	return out;
 }
 
@@ -106,12 +134,22 @@ export function decodeFrame(bytes: Uint8Array): Frame {
 		throw new Error('malformed frame: ws length exceeds buffer');
 	}
 	const ws = hasWs ? decodeUtf8(bytes.subarray(8, 8 + wsLen)) : undefined;
-	const payload = bytes.subarray(8 + wsLen);
+	let frag: FrameFragment | undefined;
+	let payloadStart = 8 + wsLen;
+	if ((flags & FLAG_FRAGMENT) !== 0) {
+		if (payloadStart + FRAGMENT_HEADER_BYTES > bytes.length) {
+			throw new Error('malformed frame: fragment header exceeds buffer');
+		}
+		frag = { id: view.getUint32(payloadStart, false), index: view.getUint32(payloadStart + 4, false), last: (flags & FLAG_FRAGMENT_LAST) !== 0 };
+		payloadStart += FRAGMENT_HEADER_BYTES;
+	}
+	const payload = bytes.subarray(payloadStart);
 	return {
 		ch,
 		seq,
 		payload,
 		...(ws !== undefined ? { ws } : {}),
 		...(more ? { more: true } : {}),
+		...(frag !== undefined ? { frag } : {}),
 	};
 }

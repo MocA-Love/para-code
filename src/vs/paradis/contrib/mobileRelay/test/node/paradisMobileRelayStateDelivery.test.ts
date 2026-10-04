@@ -166,6 +166,7 @@ suite('ParadisMobileRelay State delivery', () => {
 		const mux = {
 			send: async (_channel: number, payload: Uint8Array) => { delivered.push([...payload]); },
 			receive: async () => { throw new Error('old session cannot decrypt fresh hello'); },
+			dispose: () => { },
 		} as unknown as FrameMux;
 		const access = session as unknown as {
 			channel: SecureChannel | undefined;
@@ -246,7 +247,7 @@ suite('ParadisMobileRelay State delivery', () => {
 			// 2. 確立はしたが、まだ1つも復号できていない（直後）
 			let decryptOk = false;
 			// 本物の FrameMux と同じく、復号の失敗は onError（lastMuxError）で知らせる
-			const mux = { receive: async () => { if (!decryptOk) { access.lastMuxError = new Error('stale key'); } } } as unknown as FrameMux;
+			const mux = { receive: async () => { if (!decryptOk) { access.lastMuxError = new Error('stale key'); } }, dispose: () => { } } as unknown as FrameMux;
 			Object.assign(access, { channel: {} as SecureChannel, mux, confirmed: true, decryptedSinceConfirm: false });
 			await session.enqueuePayload(staleFrame);
 			const justAfterConfirm = [...reports];
@@ -289,13 +290,14 @@ suite('ParadisMobileRelay State delivery', () => {
 		const stopped: string[] = [];
 		const dropped: string[] = [];
 		let voiceSubscriptionsCleared = false;
-		const sessions = new Map<string, object>([['mobile-1', {}], ['mobile-2', {}]]);
+		const sessions = new Map<string, object>([['mobile-1', { close: () => { } }], ['mobile-2', { close: () => { } }]]);
 		const service = Object.assign(Object.create(ParadisMobileRelayService.prototype) as object, {
 			sessions,
 			webrtcRendererLeases: new Map(),
 			// handleDisconnected が畳む対象はここに揃えておくこと。足りないと
 			// 「clear が undefined」で落ちるだけで、何が欠けたのかは分からない。
 			voiceSubscriptions: { clear: () => { voiceSubscriptionsCleared = true; } },
+			voiceDelivery: { clear: () => { } },
 			enabled: true,
 			connectionState: 'online',
 			reconnectAttempt: 0,

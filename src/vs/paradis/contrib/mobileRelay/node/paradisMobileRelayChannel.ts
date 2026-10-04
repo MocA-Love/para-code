@@ -6,7 +6,6 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { IPCServer, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -20,6 +19,7 @@ import { NativeHostService } from '../../../../platform/native/common/nativeHost
 import { IParadisCdpFrameSubscription, IParadisSharedPageBindings, PARADIS_CDP_TARGET_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../common/paradisMobileRelay.js';
 import { PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, ParadisMobileWindowLeaseClient } from '../common/paradisMobileWindowLease.js';
+import { ParadisMobileVoiceEvent } from '../common/paradisMobileVoiceStream.js';
 import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
 
 /**
@@ -30,11 +30,11 @@ import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
  * 長期秘密鍵の暗号化のため、main プロセスの 'encryption'(safeStorage) チャネルを注入する。
  * sharedPageBindings は agentBrowser の共有ページバインディング（同一 shared process 内の
  * ParadisAgentBrowserService 実体。targets応答の sharedToken 用）。
- * voiceClips は同一 shared process の通知サービスが発火する生成済みAivis音声（MP3）で、
- * 音声通知を開始しているモバイルへそのまま配るために注入する。
+ * voiceClips は同一 shared process の通知サービスが発火する音声通知（流れの開始・断片・終わりと、
+ * 1 本まるごとの MP3）で、音声通知を開始しているモバイルへ配るために注入する。
  * OS のスリープ復帰は main の 'nativeHost' チャネルから受け、リレーの接続を即座に確かめさせる。
  */
-export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs, sharedPageBindings?: IParadisSharedPageBindings, voiceClips?: Event<VSBuffer>): IDisposable {
+export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs, sharedPageBindings?: IParadisSharedPageBindings, voiceClips?: Event<ParadisMobileVoiceEvent>): IDisposable {
 	const store = new DisposableStore();
 	const encryptionService = ProxyChannel.toService<IEncryptionService>(mainProcessService.getChannel('encryption'));
 	// ブラウザミラーの再描画プッシュ購読（electron-main の beginFrameSubscription を中継）

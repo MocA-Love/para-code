@@ -112,3 +112,32 @@ export async function paradisCollectBody(body: AsyncIterable<Uint8Array>, maxByt
 	}
 	return Buffer.concat(chunks, size);
 }
+
+/** {@link paradisTeeBody} が流し込む先（モバイルへの音声の流れ）。 */
+export interface IParadisBodyTeeSink {
+	write(chunk: Uint8Array): void;
+	end(): void;
+	abort(): void;
+}
+
+/**
+ * 合成を受け取りながら、同じ断片を `openSink()` の先（モバイル）へも流す。読み終えたら end、途中で切れた・読むのを
+ * やめたら abort。`openSink` は最初に読み始めた時点で 1 回だけ呼ぶ（読まれなかった合成は流れを作らない）。
+ */
+export async function* paradisTeeBody(body: AsyncIterable<Uint8Array>, openSink: () => IParadisBodyTeeSink | undefined): AsyncGenerator<Uint8Array> {
+	const sink = openSink();
+	let completed = false;
+	try {
+		for await (const chunk of body) {
+			sink?.write(chunk);
+			yield chunk;
+		}
+		completed = true;
+	} finally {
+		if (completed) {
+			sink?.end();
+		} else {
+			sink?.abort();
+		}
+	}
+}

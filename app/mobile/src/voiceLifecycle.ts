@@ -14,6 +14,16 @@ export interface VoiceNotificationState {
 	readonly error?: string;
 }
 
+/**
+ * PC から届いた音声（browser チャネル）。1 本まるごとの `voice-clip` と、`voice.stream.v1` の流れ
+ * （開始 → 2 進の断片 → 終わり）。`gainDb` は -20 LUFS に揃える補正。
+ */
+export type VoiceDelivery =
+	| { readonly kind: 'clip'; readonly base64: string; readonly gainDb: number }
+	| { readonly kind: 'stream-start'; readonly streamId: string; readonly gainDb: number }
+	| { readonly kind: 'stream-chunk'; readonly streamId: string; readonly seq: number; readonly data: Uint8Array }
+	| { readonly kind: 'stream-end'; readonly streamId: string; readonly aborted: boolean };
+
 export interface VoiceLifecycleSnapshot {
 	readonly nativeSupported: boolean;
 	readonly protocolUnsupported: boolean;
@@ -29,10 +39,11 @@ export interface MobileVoiceLifecycleHost {
 	deactivate(): Promise<void>;
 	subscribe(sid: string): Promise<void>;
 	unsubscribe(sid: string): void;
-	setClipHandler(sid: string, handler: (base64: string) => void): void;
+	setClipHandler(sid: string, handler: (delivery: VoiceDelivery) => void): void;
 	clearClipHandler(sid: string): void;
 	onRemoteStop(handler: () => void): () => void;
-	enqueueClip(base64: string): Promise<void>;
+	/** 届いた音声を再生の列へ渡す（ネイティブは届いた順に受け取る）。 */
+	deliver(delivery: VoiceDelivery): void;
 	afterStop(): void;
 }
 
@@ -184,9 +195,11 @@ export class MobileVoiceLifecycle {
 			this.remoteStopSubscription = this.host.onRemoteStop(() => {
 				this.lifecycle.runIfCurrent(generation, () => this.stop());
 			});
-			this.host.setClipHandler(sid, base64 => {
+			this.host.setClipHandler(sid, delivery => {
 				this.lifecycle.runIfCurrent(generation, () => {
-					void this.host.enqueueClip(base64).catch(() => { /* 再生できないクリップは捨てる */ });
+					try {
+						this.host.deliver(delivery);
+					} catch { /* 再生できない音声は捨てる */ }
 				});
 			});
 			await this.connect(generation, sid);

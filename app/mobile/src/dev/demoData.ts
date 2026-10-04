@@ -31,7 +31,7 @@ const terminal = (id: number, key: string, title: string, ws: string, agentStatu
 
 function demoWorkspace(): WorkspaceState {
 	return {
-		protocolVersion: 3,
+		protocolVersion: 4,
 		desktopEpoch: 'demo-epoch',
 		revision: 1,
 		complete: true,

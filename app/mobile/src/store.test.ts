@@ -4,6 +4,8 @@ import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UP
 import { describe, expect, it, vi } from 'vitest';
 import { clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, MobileWarmLeaseControllerRegistry, MobileWarmLeaseLifecycle, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type FsReadResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
+import { paradisEncodeVoiceStreamChunk } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileVoiceStream.js';
+import type { VoiceDelivery } from './voiceLifecycle.js';
 
 class MemoryKeyStore implements KeyStore {
 	private readonly map = new Map<string, string>();
@@ -177,7 +179,7 @@ function drivePc(pair: FakePair, pc: Identity, mobilePub: Uint8Array, onMux?: (m
 
 function desktopState(terminals: { id: number; title: string; agentToken?: string; agent?: boolean }[], revision = 1) {
 	return {
-		protocolVersion: 3 as const,
+		protocolVersion: 4 as const,
 		desktopEpoch: 'desktop-test',
 		revision,
 		complete: true,
@@ -436,12 +438,12 @@ describe('MobileController', () => {
 
 	it('does not retain activeWs from a renderer that is no longer pending or present', () => {
 		const previous: WorkspaceState = {
-			protocolVersion: 3, desktopEpoch: 'desktop', revision: 1, complete: true,
+			protocolVersion: 4, desktopEpoch: 'desktop', revision: 1, complete: true,
 			renderers: [{ windowId: 1, rendererGeneration: 1, ready: true }], activeWs: '1:w1',
 			workspaces: [{ id: '1:w1', sourceId: 'w1', windowId: 1, name: 'one' }], terminals: [],
 		};
 		const incoming: WorkspaceState = {
-			protocolVersion: 3, desktopEpoch: 'desktop', revision: 2, complete: false,
+			protocolVersion: 4, desktopEpoch: 'desktop', revision: 2, complete: false,
 			renderers: [{ windowId: 2, rendererGeneration: 2, ready: false }], activeWs: undefined,
 			workspaces: [], terminals: [],
 		};
@@ -453,13 +455,13 @@ describe('MobileController', () => {
 		// PC再起動 = desktopEpochが変わる。起動直後の部分state（window未claim）で旧表示を
 		// 破壊すると、再起動のたびにホームからエージェント・ターミナルが全消えする。
 		const previous: WorkspaceState = {
-			protocolVersion: 3, desktopEpoch: 'old-desktop', revision: 9, complete: true,
+			protocolVersion: 4, desktopEpoch: 'old-desktop', revision: 9, complete: true,
 			renderers: [{ windowId: 1, rendererGeneration: 3, ready: true }], activeWs: '1:w1',
 			workspaces: [{ id: '1:w1', sourceId: 'w1', windowId: 1, name: 'one' }],
 			terminals: [{ terminalKey: 'terminal-1', id: 1, windowId: 1, rendererGeneration: 3, title: 'agent', agent: true }],
 		};
 		const bootState: WorkspaceState = {
-			protocolVersion: 3, desktopEpoch: 'new-desktop', revision: 1, complete: false,
+			protocolVersion: 4, desktopEpoch: 'new-desktop', revision: 1, complete: false,
 			renderers: [], activeWs: undefined, workspaces: [], terminals: [],
 		};
 		// 表示データは旧epochのまま保持しつつ、能力bitだけは新PCの値を採用する。
@@ -467,7 +469,7 @@ describe('MobileController', () => {
 
 		// 新epochのwindowがreadyになったら、そのwindowの内容は新stateへ置換し、未観測分は残す。
 		const firstReady: WorkspaceState = {
-			protocolVersion: 3, desktopEpoch: 'new-desktop', revision: 2, complete: false,
+			protocolVersion: 4, desktopEpoch: 'new-desktop', revision: 2, complete: false,
 			renderers: [{ windowId: 1, rendererGeneration: 1, ready: true }], activeWs: '1:w1',
 			workspaces: [{ id: '1:w1', sourceId: 'w1', windowId: 1, name: 'one' }],
 			terminals: [{ terminalKey: 'terminal-1', id: 1, windowId: 1, rendererGeneration: 1, title: 'agent', agent: true }],
@@ -496,7 +498,7 @@ describe('MobileController', () => {
 
 		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
 		pcMux.send(Channels.State, encode({
-			protocolVersion: 3,
+			protocolVersion: 4,
 			desktopEpoch: 'desktop-1',
 			revision: 2,
 			complete: true,
@@ -532,7 +534,7 @@ describe('MobileController', () => {
 		expect(latest?.terminalOutput.get('terminal-a')).toBe('output-a');
 		expect(latest?.terminalOutput.get('terminal-b')).toBe('output-b');
 		expect(received.find(message => message.t === 'input')).toMatchObject({
-			protocolVersion: 3,
+			protocolVersion: 4,
 			desktopEpoch: 'desktop-1',
 			terminalKey: 'terminal-b',
 			t: 'input',
@@ -540,7 +542,7 @@ describe('MobileController', () => {
 		});
 
 		pcMux.send(Channels.State, encode({
-			protocolVersion: 3,
+			protocolVersion: 4,
 			desktopEpoch: 'desktop-1',
 			revision: 1,
 			complete: true,
@@ -553,7 +555,7 @@ describe('MobileController', () => {
 		expect(latest?.workspace?.terminals).toHaveLength(2);
 
 		pcMux.send(Channels.State, encode({
-			protocolVersion: 3,
+			protocolVersion: 4,
 			desktopEpoch: 'desktop-2',
 			revision: 1,
 			complete: true,
@@ -608,7 +610,7 @@ describe('MobileController', () => {
 		await flush();
 
 		pcMux.send(Channels.State, encode({
-			protocolVersion: 3, desktopEpoch: 'desktop-test', revision: 2, complete: false,
+			protocolVersion: 4, desktopEpoch: 'desktop-test', revision: 2, complete: false,
 			renderers: [{ windowId: 1, rendererGeneration: 2, ready: false }],
 			activeWs: undefined, workspaces: [], terminals: [],
 		}));
@@ -621,7 +623,7 @@ describe('MobileController', () => {
 		expect(lateReplay).toEqual([{ kind: 'snapshot', data: 'last screen' }]);
 
 		pcMux.send(Channels.State, encode({
-			protocolVersion: 3, desktopEpoch: 'desktop-test', revision: 3, complete: true,
+			protocolVersion: 4, desktopEpoch: 'desktop-test', revision: 3, complete: true,
 			renderers: [{ windowId: 1, rendererGeneration: 2, ready: true }], activeWs: '1:w1',
 			workspaces: [{ id: '1:w1', sourceId: 'w1', windowId: 1, name: 'para-code' }],
 			terminals: [{ terminalKey: 'terminal-1', id: 9, windowId: 1, rendererGeneration: 2, title: 'zsh', ws: '1:w1' }],
@@ -856,7 +858,7 @@ describe('MobileController', () => {
 			await controller.sendInput('terminal-1', 'ls');
 		await flush();
 		expect(pcGot.find(message => message.t === 'input')).toMatchObject({
-			protocolVersion: 3, desktopEpoch: 'desktop-test', terminalKey: 'terminal-1', t: 'input', data: 'ls',
+			protocolVersion: 4, desktopEpoch: 'desktop-test', terminalKey: 'terminal-1', t: 'input', data: 'ls',
 		});
 
 		// PC → notify: 質問通知が state に反映され onNotify が呼ばれる
@@ -941,7 +943,7 @@ describe('MobileController', () => {
 		// PC側: scm/fs リクエストに id 付きで応答するエコーサーバ
 		pcMux.on(Channels.Scm, f => {
 			const req = JSON.parse(new TextDecoder().decode(f.payload)) as { id: string; t: string; ws: string; protocolVersion: number; desktopEpoch: string; windowId: number };
-			expect(req).toMatchObject({ protocolVersion: 3, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1' });
+			expect(req).toMatchObject({ protocolVersion: 4, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1' });
 			if (req.t === 'status') {
 				pcMux.send(Channels.Scm, new TextEncoder().encode(JSON.stringify({ id: req.id, t: 'status', branch: 'main', files: [{ x: 'M', y: ' ', path: 'a.ts' }] })));
 			} else {
@@ -950,7 +952,7 @@ describe('MobileController', () => {
 		});
 		pcMux.on(Channels.Fs, f => {
 			const req = JSON.parse(new TextDecoder().decode(f.payload)) as { id: string; t: string; path: string; protocolVersion: number; desktopEpoch: string; windowId: number; ws: string };
-			expect(req).toMatchObject({ protocolVersion: 3, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1' });
+			expect(req).toMatchObject({ protocolVersion: 4, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1' });
 			pcMux.send(Channels.Fs, new TextEncoder().encode(JSON.stringify({ id: req.id, t: 'list', entries: [{ name: 'src', dir: true }] })));
 		});
 
@@ -1170,7 +1172,7 @@ describe('MobileController', () => {
 
 		await expect(controller.fsUpload('photo.jpg', 'AAF/gP7/')).resolves.toMatchObject({ t: 'upload', path: '/tmp/photo.jpg' });
 		expect(upload).toEqual({
-			t: 'upload', id: expect.any(String), protocolVersion: 3, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1', name: 'photo.jpg', base64Length: 8,
+			t: 'upload', id: expect.any(String), protocolVersion: 4, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1', name: 'photo.jpg', base64Length: 8,
 			data: new Uint8Array([0x00, 0x01, 0x7f, 0x80, 0xfe, 0xff]),
 		});
 
@@ -1203,7 +1205,7 @@ describe('MobileController', () => {
 		});
 
 		await expect(controller.fsUpload('photo.jpg', 'AAF/gP7/')).resolves.toMatchObject({ t: 'upload', path: '/tmp/photo.jpg' });
-		expect(upload).toMatchObject({ t: 'upload', protocolVersion: 3, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1', name: 'photo.jpg', data: 'AAF/gP7/' });
+		expect(upload).toMatchObject({ t: 'upload', protocolVersion: 4, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1', name: 'photo.jpg', data: 'AAF/gP7/' });
 	});
 
 	it('emit only swaps references for the collection that actually changed', async () => {
@@ -1255,6 +1257,44 @@ describe('MobileController', () => {
 		expect(afterFrame.terminalOutput).toBe(beforeFrame.terminalOutput);
 		expect(afterFrame.agentChats).toBe(beforeFrame.agentChats);
 		expect(afterFrame.notifications).toBe(beforeFrame.notifications);
+	});
+
+	it('routes voice clips and voice.stream.v1 parts to the voice handler without JSON-parsing binary chunks', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		const controller = new MobileController(mobile, () => pair.client, () => { });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
+		pcMux.send(Channels.State, enc(desktopState([])));
+		await flush();
+		const delivered: VoiceDelivery[] = [];
+		controller.voiceClipHandler = { sid: 'sid-1', fn: delivery => delivered.push(delivery) };
+		const streamId = '0123456789abcdef0123456789abcdef';
+
+		pcMux.send(Channels.Browser, enc({ t: 'voice-stream-start', sid: 'other-sid', streamId: 'f'.repeat(32), mime: 'audio/mpeg', gainDb: 0, epoch: 1 }));
+		pcMux.send(Channels.Browser, enc({ t: 'voice-stream-start', sid: 'sid-1', streamId, mime: 'audio/mpeg', gainDb: 4.1, epoch: 1 }));
+		pcMux.send(Channels.Browser, paradisEncodeVoiceStreamChunk(streamId, 0, Uint8Array.of(0xff, 0xfb, 0x90, 0x64)));
+		pcMux.send(Channels.Browser, enc({ t: 'voice-stream-end', streamId, seq: 1, bytes: 4, aborted: false }));
+		pcMux.send(Channels.Browser, enc({ t: 'voice-clip', sid: 'sid-1', mime: 'audio/mpeg', data: 'AAEC', gainDb: 99 }));
+		pcMux.send(Channels.Browser, enc({ t: 'voice-clip', sid: 'sid-1', mime: 'audio/mpeg', data: 'AAED' }));
+		await flush();
+
+		expect(delivered).toEqual([
+			{ kind: 'stream-start', streamId, gainDb: 4.1 },
+			{ kind: 'stream-chunk', streamId, seq: 0, data: Uint8Array.of(0xff, 0xfb, 0x90, 0x64) },
+			{ kind: 'stream-end', streamId, aborted: false },
+			// 上げる方向は +8dB まで
+			{ kind: 'clip', base64: 'AAEC', gainDb: 8 },
+			// gainDb を添えない古い PC は 0dB
+			{ kind: 'clip', base64: 'AAED', gainDb: 0 },
+		]);
+		controller.disconnect();
 	});
 
 	it('requests binary JPEG frames, accepts them losslessly, and drops them before conversion while suspended', async () => {
@@ -1901,7 +1941,7 @@ describe('MobileController terminal sync protocol', () => {
 		await flush();
 		expect(events).toEqual([{ kind: 'snapshot', data: 'SNAP', cols: 120, rows: 40, unicode: '11' }]);
 		const ack = pcGot.find(m => m.t === 'ack');
-		expect(ack).toMatchObject({ protocolVersion: 3, desktopEpoch: 'desktop-test', terminalKey: 'terminal-1', t: 'ack', epoch, seq: 1 });
+		expect(ack).toMatchObject({ protocolVersion: 4, desktopEpoch: 'desktop-test', terminalKey: 'terminal-1', t: 'ack', epoch, seq: 1 });
 
 		// 連続seqのdataは追記イベントになる
 		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'abc', epoch, seq: 2 }));

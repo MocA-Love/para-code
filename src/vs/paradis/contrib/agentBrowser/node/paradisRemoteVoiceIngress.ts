@@ -17,10 +17,12 @@
 //   積めなければ接続先が自分で鳴らす
 // - MP3 らしさは最初の固まりで確かめる。流れ 1 本 8MiB、押さえる量は受け取った分だけ増やす。1 発話 120 秒、
 //   最初の音まで 10 秒、届く速さが実時間の半分を 3 秒続けて下回ったら打ち切る
-// - モバイルへの配信は、今どおり全部受け取ってから 1 本で送る
+// - モバイルへは、MP3 らしさを確かめた時点から受け取りながら流す（voice.stream.v1。流せない端末にはモバイルリレーが
+//   終わってから 1 本で送る）。流す口が無ければ、今どおり全部受け取ってから 1 本で送る
 
 import type * as http from 'http';
 import { IParadisIngestStream, IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoiceIngest.js';
+import { IParadisMobileVoiceStreamWriter } from '../../mobileRelay/common/paradisMobileVoiceStream.js';
 import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
 import { PARADIS_REMOTE_VOICE_ACCEPTED_HEADER, PARADIS_REMOTE_VOICE_GAIN_KEY_HEADER, paradisLooksLikeMp3, paradisMp3Bitrate, paradisRemoteVoiceGainKey } from '../common/paradisRemoteVoice.js';
 import { IParadisLocalVoicePlayOptions } from './paradisLocalVoicePlayer.js';
@@ -46,6 +48,8 @@ export interface IParadisRemoteVoiceIngressDeps {
 	/** 今の `aivis-mcp --play-audio` で積む。積めたら true。 */
 	readonly playViaPlayAudio: (audio: Uint8Array, options: IParadisLocalVoicePlayOptions) => Promise<boolean>;
 	readonly publishMobileVoiceClip?: (audio: Uint8Array) => void;
+	/** モバイルへの音声の流れを始める（あれば publishMobileVoiceClip より優先する）。 */
+	readonly beginMobileVoiceStream?: (gainKey: string | undefined) => IParadisMobileVoiceStreamWriter;
 	/** 受け取った分だけ押さえる量を増やす。超えたら false。 */
 	readonly reserveBytes: (bytes: number) => boolean;
 	/** 本文を受け取り終えた（枠を手放してよい）。 */
@@ -124,6 +128,19 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 	let slowSince: number | undefined;
 	let failure: Failure | undefined;
 	let sink: IParadisIngestStream | undefined;
+	// モバイルへの流れ。ticket が古くなったら（ペインが閉じた・ウィンドウを張り替えた）その時点で切る
+	let mobile: IParadisMobileVoiceStreamWriter | undefined;
+	const writeMobile = (chunk: Uint8Array) => {
+		if (mobile === undefined) {
+			return;
+		}
+		if (!deps.isTicketCurrent()) {
+			mobile.abort();
+			mobile = undefined;
+			return;
+		}
+		mobile.write(chunk);
+	};
 	const stop = (reason: Failure) => {
 		failure ??= reason;
 		// 応答のヘッダーを送る前（Content-Length の旧方式）なら、理由の分かる 4xx を返してから切る
@@ -180,6 +197,12 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 					break;
 				}
 				headChecked = true;
+				if (deps.beginMobileVoiceStream && deps.isTicketCurrent()) {
+					mobile = deps.beginMobileVoiceStream(gainKey);
+					for (const pending of chunks) {
+						writeMobile(pending);
+					}
+				}
 				if (wantLocal && deps.voiceOutput) {
 					sink = await deps.voiceOutput.openIngest(gainKey ? { priority: 'normal', gainKey } : { priority: 'normal' }, INGEST_READY_WAIT_MS);
 				}
@@ -188,6 +211,7 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 				}
 				continue;
 			}
+			writeMobile(chunk);
 			await sink?.write(chunk);
 		}
 	} catch {
@@ -211,6 +235,13 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 	// 届くのが遅い・長すぎる声は、引き受けた以上、受け取った分を鳴らす（壊れた・大きすぎる本文だけ捨てる）
 	const playReceived = failure !== undefined && chunked && wantLocal && headChecked && (failure === 'slow-arrival' || failure === 'max-duration');
 	if (failure !== undefined) {
+		// 受け取った分を鳴らす件は、モバイルも届いた分で終える。それ以外は切る
+		if (playReceived) {
+			mobile?.end();
+		} else {
+			mobile?.abort();
+		}
+		mobile = undefined;
 		if (playReceived && sink) {
 			// worker は届いた分で終える
 			void sink.end();
@@ -240,7 +271,13 @@ export async function paradisReceiveRemoteVoice(req: http.IncomingMessage, res: 
 	await sink?.end();
 	const fullAudio = Buffer.concat(chunks, size);
 	chunks.length = 0;
-	if (deps.isTicketCurrent()) {
+	if (mobile !== undefined) {
+		if (deps.isTicketCurrent()) {
+			mobile.end();
+		} else {
+			mobile.abort();
+		}
+	} else if (!deps.beginMobileVoiceStream && deps.isTicketCurrent()) {
 		deps.publishMobileVoiceClip?.(fullAudio);
 	}
 

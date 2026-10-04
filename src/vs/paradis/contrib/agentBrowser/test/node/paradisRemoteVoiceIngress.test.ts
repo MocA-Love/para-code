@@ -58,6 +58,8 @@ async function startServer(options: {
 	readonly reserve?: (bytes: number) => boolean;
 	readonly limits?: IParadisRemoteVoiceIngressDeps['limits'];
 	readonly now?: () => number;
+	/** モバイルへの流れの口を渡す（無ければ全部受け取ってから 1 本で渡す）。 */
+	readonly mobileStream?: boolean;
 }): Promise<IHarness> {
 	const events: string[] = [];
 	const streams: FakeStream[] = [];
@@ -90,6 +92,14 @@ async function startServer(options: {
 			voiceOutput,
 			playViaPlayAudio: async audio => { events.push(`play-audio:${audio.byteLength}`); return options.playAudio ?? false; },
 			publishMobileVoiceClip: audio => events.push(`mobile:${audio.byteLength}`),
+			beginMobileVoiceStream: options.mobileStream ? gainKey => {
+				events.push(`mobile-start:${gainKey ?? '-'}`);
+				return {
+					write: chunk => events.push(`mobile-write:${chunk.byteLength}`),
+					end: () => events.push('mobile-end'),
+					abort: () => events.push('mobile-abort'),
+				};
+			} : undefined,
 			reserveBytes: options.reserve ?? (() => true),
 			onBodyReceived: () => events.push('body-received'),
 			isTicketCurrent: () => true,
@@ -163,6 +173,46 @@ suite('paradisReceiveRemoteVoice', () => {
 				stream: ['write:1000', 'write:500', 'end'],
 				outcome: 'played-locally',
 			});
+		} finally {
+			await harness.close();
+		}
+	});
+
+	test('chunked: streams to the mobile while receiving once the head looks like MP3, with the gain key of the voice', async () => {
+		const harness = await startServer({ localPlayback: false, mobileStream: true });
+		try {
+			const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked', 'X-Para-Gain-Key': 'elevenlabs:voice:eleven_v4_turbo' });
+			request.write(mp3(1000));
+			const head = await response;
+			for (let i = 0; i < 50 && !harness.events.includes('mobile-write:1000'); i++) {
+				await new Promise(resolve => setTimeout(resolve, 10));
+			}
+			// 本文を送り終える前に、最初の固まりはもうモバイルへ流れている
+			const beforeEnd = [...harness.events];
+			request.end(mp3(500));
+			await head.body;
+			await harness.resultReady;
+			assert.deepStrictEqual({ beforeEnd, events: harness.events }, {
+				beforeEnd: ['mobile-start:elevenlabs:voice:eleven_v4_turbo', 'mobile-write:1000'],
+				events: ['mobile-start:elevenlabs:voice:eleven_v4_turbo', 'mobile-write:1000', 'mobile-write:500', 'body-received', 'mobile-end'],
+			});
+		} finally {
+			await harness.close();
+		}
+	});
+
+	test('chunked: aborts the mobile stream when the remote side disconnects midway', async () => {
+		const harness = await startServer({ localPlayback: false, mobileStream: true });
+		try {
+			const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked' });
+			request.write(mp3(400));
+			await response;
+			for (let i = 0; i < 50 && !harness.events.includes('mobile-write:400'); i++) {
+				await new Promise(resolve => setTimeout(resolve, 10));
+			}
+			request.destroy();
+			await harness.resultReady;
+			assert.deepStrictEqual(harness.events, ['mobile-start:-', 'mobile-write:400', 'body-received', 'mobile-abort']);
 		} finally {
 			await harness.close();
 		}

@@ -24,6 +24,8 @@ import { localizeAgentMonitors, parseAgentMonitors, type AgentMonitor } from './
 import { ShellOutputBusyError, isShellStoppable, localizeAgentShells, parseAgentShells, parseAgentShellsAccess, parseShellOutputReply, type AgentShell, type AgentShellOutput, type AgentShellsAccess } from './agentShells.js';
 import { APP_PROTOCOL_VERSION, PcCapability, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
 import { PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, paradisParseAgentApprovalRequest, paradisSanitizeApprovalInstruction, paradisParseApprovalSuggestionScope, type IParadisAgentApprovalRequest, type ParadisAgentApprovalSuggestionScope } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisAgentApprovalRequest.js';
+import { paradisClampVoiceGainDb, paradisDecodeVoiceStreamChunk, paradisIsVoiceStreamChunk, paradisParseVoiceStreamEnd, paradisParseVoiceStreamStart } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileVoiceStream.js';
+import type { VoiceDelivery } from './voiceLifecycle.js';
 import { paradisParseMobileBookmarks, paradisParseMobileBrowserFocus, paradisParseMobileBrowserInputRejected, paradisParseMobileBrowserPage, type IParadisMobileBookmarks, type IParadisMobileBrowserFocus, type IParadisMobileBrowserInputRejected, type IParadisMobileBrowserPage } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileBrowserProtocol.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -4357,7 +4359,7 @@ export class MobileController {
 			? (id: string, requestBody: object) => {
 				// 2進アップロードの枠は版 3 の形で固定（app/protocol の fileUpload.ts と PC の複製）。
 				// 版を上げるときはこの枠の検査も合わせて直す（NOTES.md「PC とアプリの互換の窓」）。
-				const request = requestBody as { protocolVersion: 3; desktopEpoch: string; windowId: number; ws: string };
+				const request = requestBody as { protocolVersion: 4; desktopEpoch: string; windowId: number; ws: string };
 				return encodeBinaryFsUpload({ id, protocolVersion: request.protocolVersion, desktopEpoch: request.desktopEpoch, windowId: request.windowId, ws: request.ws, name }, dataBase64);
 			}
 			: undefined;
@@ -4572,8 +4574,8 @@ export class MobileController {
 	 * 過渡的に共存するため、sidで宛先を識別する。
 	 */
 	webrtcIceHandler: { sid: string; fn: (candidate: object) => void } | undefined;
-	/** PCから届いた音声クリップ（MP3のbase64）の受信先。開始中だけ登録される。 */
-	voiceClipHandler: { sid: string; fn: (base64: string) => void } | undefined;
+	/** PCから届いた音声（1 本まるごとの MP3 と、voice.stream.v1 の流れ）の受信先。開始中だけ登録される。 */
+	voiceClipHandler: { sid: string; fn: (delivery: VoiceDelivery) => void } | undefined;
 
 	/** WebRTC offer を送り、PC側ストリーマの answer SDP を待つ。 */
 	webrtcOffer(targetId: string, sdp: string, sid: string): Promise<{ sdp?: string }> {
@@ -4661,6 +4663,16 @@ export class MobileController {
 			return;
 		}
 		if (frame.ch === 'browser') {
+			// 音声の流れの 2 進の断片（`PVS\x01`）。JSON として読まない。sid を持たないので、今の受信先へ渡す
+			// （ネイティブは開始を受けていない streamId の断片を捨てる）。
+			if (paradisIsVoiceStreamChunk(frame.payload)) {
+				const chunk = paradisDecodeVoiceStreamChunk(frame.payload);
+				const handler = this.voiceClipHandler;
+				if (chunk !== undefined && handler) {
+					handler.fn({ kind: 'stream-chunk', streamId: chunk.streamId, seq: chunk.seq, data: chunk.data });
+				}
+				return;
+			}
 			// screencastフレーム（id無しのストリーム）と要求応答（id有り）が混在する。
 			// フレームは数百KBのbase64を含むため、表示に使わない間（WebRTCミラー表示中・
 			// 停止処理中）は先頭バイトのプレフィックス判定だけでフルパース前に読み捨てる
@@ -4715,7 +4727,19 @@ export class MobileController {
 				} else if (msg.t === 'voice-clip' && typeof msg.data === 'string') {
 					const handler = this.voiceClipHandler;
 					if (handler && msg.sid === handler.sid) {
-						handler.fn(msg.data);
+						handler.fn({ kind: 'clip', base64: msg.data, gainDb: paradisClampVoiceGainDb((msg as { gainDb?: unknown }).gainDb) });
+					}
+				} else if (msg.t === 'voice-stream-start') {
+					const start = paradisParseVoiceStreamStart(msg);
+					const handler = this.voiceClipHandler;
+					if (start !== undefined && handler && start.sid === handler.sid) {
+						handler.fn({ kind: 'stream-start', streamId: start.streamId, gainDb: start.gainDb });
+					}
+				} else if (msg.t === 'voice-stream-end') {
+					const end = paradisParseVoiceStreamEnd(msg);
+					const handler = this.voiceClipHandler;
+					if (end !== undefined && handler) {
+						handler.fn({ kind: 'stream-end', streamId: end.streamId, aborted: end.aborted });
 					}
 				} else if (msg.id) {
 					this.settleResponse(frame.payload);
