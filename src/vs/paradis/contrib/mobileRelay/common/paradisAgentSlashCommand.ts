@@ -6,6 +6,10 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { PARADIS_CLAUDE_MODEL_ALIASES, paradisClaudeModelAlias } from './paradisClaudeModelAliases.js';
+
+export { PARADIS_CLAUDE_MODEL_ALIASES, paradisClaudeModelAlias };
+
 // モバイルから送るスラッシュコマンドの読み取りと、エージェントが「そのコマンドは無い」と断ったことの見分け。
 //
 // - Claude Code（2.1.289 で実測）: 画面に `Unknown command: /x` が出て、入力欄は空になる。何も実行されない。
@@ -130,6 +134,34 @@ export const PARADIS_COMPOSER_NOT_EMPTY_MESSAGE = 'PC の Codex の入力欄に�
 
 /** 断りの文に足す、PC の入力欄に文字が残っていることの知らせ（Codex。消さないので）。 */
 export const PARADIS_SLASH_LEFT_IN_COMPOSER = '。PC の入力欄に文字が残っています。端末を開いて消してから送り直してください';
+
+/** モバイルから受け付けるモデルの値の形（別名と `[1m]` の付いた別名。キーで打つので、ほかの文字は通さない）。 */
+export const PARADIS_CLAUDE_SETTING_VALUE_PATTERN = /^[A-Za-z0-9._:-]{1,200}(?:\[[a-z0-9]{1,8}\])?$/;
+
+/** モデルを切り替えるときに打つ文（確認を出さない `/config model=<別名>`）。 */
+export function paradisClaudeConfigModelCommand(alias: string): string {
+	return `/config model=${alias}`;
+}
+
+/**
+ * Claude Code へ送る文が `/model <値>` なら、その扱い。
+ * - `switch`: 別名。確認を出さない `/config model=<別名>`（`text`）に置き換えて送る
+ * - `not-alias`: 別名でない（フル ID・誤字・余計な語）。`/model <値>` は確認の画面を出し、`/config` は断るので、送らずに案内する
+ * 引数の無い `/model`（一覧が開く）やほかの文は undefined（そのまま送る）。
+ */
+export function paradisClaudeModelSwitch(text: string): { readonly kind: 'switch'; readonly text: string } | { readonly kind: 'not-alias'; readonly value: string } | undefined {
+	const slash = paradisParseSlashCommand(text);
+	if (slash === undefined || slash.name.toLowerCase() !== 'model' || slash.args.length === 0) {
+		return undefined;
+	}
+	const alias = paradisClaudeModelAlias(slash.args);
+	return alias !== undefined ? { kind: 'switch', text: paradisClaudeConfigModelCommand(alias) } : { kind: 'not-alias', value: slash.args.slice(0, 100) };
+}
+
+/** 別名でない `/model <値>` への断り。 */
+export function paradisClaudeModelNotAliasMessage(value: string): string {
+	return `「${value}」はモデルの別名ではないので送りませんでした。${PARADIS_CLAUDE_MODEL_ALIASES.join('・')} のどれかを指定するか、モデルのピルから選んでください`;
+}
 
 /** アプリへ返す断りの文。 */
 export function paradisSlashRejectionMessage(agent: 'claude' | 'codex', name: string, reason?: string): string {

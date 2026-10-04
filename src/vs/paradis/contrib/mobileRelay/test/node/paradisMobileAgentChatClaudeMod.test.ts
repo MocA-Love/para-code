@@ -606,6 +606,9 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		await answer(() => ({ ok: true, dialog: false }));
 		await answer(() => ({ received: true }));
 		const opened = await resultOf('open-config');
+		// まだ終わっていないコマンドは、画面を開いたかを聞き直し、開いていればアプリへ帯（panel）を送る
+		await answer(() => ({ ok: true, dialog: true }));
+		await waitFor(() => harness.sent.some(message => message.t === 'delta' && message.panel !== undefined), 'the open panel was not sent');
 
 		harness.inbound({ t: 'action/sendMessage', requestId: 'while-open', epoch, text: '!ls' });
 		await answer(() => ({ ok: true, dialog: true }));
@@ -627,15 +630,168 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		assert.deepStrictEqual({
 			opened, whileOpen, modelWhileOpen, refused, internal, handed,
 			keys: harness.actions.filter(action => action.t === 'action/sendMessage' || action.t === 'action/claudeSetting').length,
+			// 開いた画面は /config の名前付きで送り、閉じていると分かったら null で外す
+			panels: harness.sent.filter(message => message.t === 'delta' && message.panel !== undefined).map(message => message.panel === null ? null : (message.panel as { command?: string }).command ?? '(unknown)'),
 		}, {
 			opened: [{ status: 'accepted', code: undefined }],
 			whileOpen: [{ status: 'rejected', code: 'panel-open' }],
 			modelWhileOpen: [{ status: 'rejected', code: 'panel-open' }],
 			refused: [{ status: 'rejected', code: 'send-refused' }],
 			internal: [{ status: 'rejected', code: 'unknown-command' }],
-			handed: ['dialogCheck', 'commandRun', 'dialogCheck', 'dialogCheck', 'submit'],
+			handed: ['dialogCheck', 'commandRun', 'dialogCheck', 'dialogCheck', 'dialogCheck', 'submit'],
 			keys: 0,
+			panels: ['config', null],
 		});
+	}));
+
+	test('closes an open panel with Esc only after the mod says it is open, and switches the model by /config for /model <alias>', () => withHarness(async harness => {
+		harness.hook('Stop');
+		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
+		const features = ['commands.list', 'command.run', 'prompt.dialog'];
+		const openPoll = () => harness.mod('commands', { busy: false, features });
+		let poll = openPoll();
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		const handed: Record<string, unknown>[] = [];
+		const answer = async (ack: Record<string, unknown>) => {
+			const [command] = (await poll).commands as Record<string, unknown>[];
+			handed.push({ kind: command.kind, ...(command.command !== undefined ? { command: command.command, args: command.args } : {}) });
+			poll = openPoll();
+			await new Promise<void>(resolve => setTimeout(resolve, 20));
+			await harness.mod('ack', { id: command.id, ...ack });
+		};
+		const resultOf = async (requestId: string) => {
+			await waitFor(() => harness.sent.some(message => message.t === 'action-result' && message.requestId === requestId), `${requestId} was not answered`);
+			return harness.sent.filter(message => message.t === 'action-result' && message.requestId === requestId).map(message => ({ status: message.status, code: message.code }));
+		};
+		const epoch = harness.tailer()!.epoch;
+
+		// PC で開いた画面: 送ろうとしたときに分かり、名前の無い帯を出す
+		harness.inbound({ t: 'action/sendMessage', requestId: 'blocked', epoch, text: '続けて' });
+		await answer({ ok: true, dialog: true });
+		const blocked = await resultOf('blocked');
+		// 「閉じる」: 開いていると答えたら Esc を打つ（所有ウィンドウへ回す）
+		harness.inbound({ t: 'action/closePanel', requestId: 'close-1', epoch });
+		await answer({ ok: true, dialog: true });
+		await waitFor(() => harness.actions.some(action => action.t === 'action/closePanel'), 'the Esc did not go to the window');
+		// もう閉じていれば打たない
+		harness.inbound({ t: 'action/closePanel', requestId: 'close-2', epoch });
+		await answer({ ok: true, dialog: false });
+		const closedAlready = await resultOf('close-2');
+
+		// `/model <別名>` は確認を出さない `/config model=<別名>` で、別名でなければ送らない
+		harness.inbound({ t: 'action/sendMessage', requestId: 'model-alias', epoch, text: '/model Sonnet' });
+		await answer({ ok: true, dialog: false });
+		await answer({ ok: true });
+		const switched = await resultOf('model-alias');
+		harness.inbound({ t: 'action/sendMessage', requestId: 'model-id', epoch, text: '/model claude-sonnet-5-5' });
+		const notAlias = await resultOf('model-id');
+
+		assert.deepStrictEqual({
+			blocked, closedAlready, switched, notAlias, handed,
+			escapes: harness.actions.filter(action => action.t === 'action/closePanel').map(action => action.requestId),
+			panels: harness.sent.filter(message => message.t === 'delta' && message.panel !== undefined).map(message => message.panel === null ? null : Object.keys(message.panel as object).sort()),
+		}, {
+			blocked: [{ status: 'rejected', code: 'panel-open' }],
+			closedAlready: [{ status: 'accepted', code: 'already-closed' }],
+			switched: [{ status: 'accepted', code: undefined }],
+			notAlias: [{ status: 'rejected', code: 'unknown-command' }],
+			handed: [
+				{ kind: 'dialogCheck' }, { kind: 'dialogCheck' }, { kind: 'dialogCheck' },
+				{ kind: 'dialogCheck' }, { kind: 'commandRun', command: 'config', args: 'model=sonnet' },
+			],
+			escapes: ['close-1'],
+			panels: [['since'], null],
+		});
+	}));
+
+	test('does not send Esc to close a panel while working, compacting, waiting for an approval, without a mod that can tell, or when a turn started before the window took it', () => withHarness(async harness => {
+		const epoch = harness.tailer()!.epoch;
+		const closeResult = async (requestId: string) => {
+			harness.inbound({ t: 'action/closePanel', requestId, epoch });
+			await waitFor(() => harness.sent.some(message => message.t === 'action-result' && message.requestId === requestId), `${requestId} was not answered`);
+			return harness.sent.filter(message => message.t === 'action-result' && message.requestId === requestId).map(message => message.code);
+		};
+		// mod が来ていないペイン（入力待ち）
+		harness.hook('Stop');
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		const noMod = await closeResult('close-no-mod');
+
+		const features = ['commands.list', 'command.run', 'prompt.dialog'];
+		let poll = harness.mod('commands', { busy: false, features });
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+
+		// 作業中
+		harness.hook('UserPromptSubmit');
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		const working = await closeResult('close-working');
+		harness.hook('Stop');
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+
+		// 圧縮中（PreCompact から PostCompact まで）
+		harness.hook('PreCompact', { payload: { hook_event_name: 'PreCompact', trigger: 'manual' } });
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		const compacting = await closeResult('close-compacting');
+		harness.hook('PostCompact', { payload: { hook_event_name: 'PostCompact', trigger: 'manual' } });
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+
+		// mod が prompt.dialog を持たない（古い mod）
+		poll = harness.mod('commands', { busy: false, features: ['commands.list', 'command.run'] });
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		const noDialog = await closeResult('close-no-dialog');
+		poll = harness.mod('commands', { busy: false, features });
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+
+		// Esc を回した後、所有ウィンドウが受け取る前にターンが始まった（claim で確かめ直して stale）
+		harness.inbound({ t: 'action/closePanel', requestId: 'close-raced', epoch });
+		const [check] = (await poll).commands as Record<string, unknown>[];
+		poll = harness.mod('commands', { busy: false, features });
+		await harness.mod('ack', { id: check.id, ok: true, dialog: true });
+		await waitFor(() => harness.actions.some(action => action.t === 'action/closePanel' && action.requestId === 'close-raced'), 'the Esc did not go to the window');
+		harness.hook('UserPromptSubmit');
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		const raced = harness.chat.claimSendMessageAction('mobile-1', 'close-raced', harness.token, epoch, 1, 'window-session');
+		harness.hook('Stop');
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+
+		// 承認を待っている（mod の画面の問い合わせはその画面と区別できない）
+		harness.hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_close', toolInput: { command: 'npm test' } });
+		harness.hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'npm test' } });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'approval', 'the approval card was not shown');
+		const approval = await closeResult('close-approval');
+
+		void poll.catch(() => undefined);
+		assert.deepStrictEqual({ noMod, working, compacting, noDialog, raced, approval, escapes: harness.actions.filter(action => action.t === 'action/closePanel').map(action => action.requestId) }, {
+			noMod: ['panel-not-closable'],
+			working: ['panel-not-closable'],
+			compacting: ['panel-not-closable'],
+			noDialog: ['panel-not-closable'],
+			raced: 'stale',
+			approval: ['panel-not-closable'],
+			escapes: ['close-raced'],
+		});
+	}));
+
+	test('keeps the full compaction summary apart from the tool outputs, so many tool results do not push it out', () => withHarness(async harness => {
+		const at = () => new Date().toISOString();
+		const body = `1. Primary Request and Intent:\n${'summary '.repeat(200)}`;
+		const lines = [
+			JSON.stringify({ type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', timestamp: at(), compactMetadata: { trigger: 'auto', preTokens: 1000, postTokens: 100 } }),
+			JSON.stringify({ type: 'user', timestamp: at(), isCompactSummary: true, message: { role: 'user', content: body } }),
+		];
+		for (let index = 0; index < 45; index++) {
+			lines.push(JSON.stringify({ type: 'assistant', timestamp: at(), message: { role: 'assistant', content: [{ type: 'tool_use', id: `toolu_fill${index}`, name: 'Bash', input: { command: 'cat big' } }] } }));
+			lines.push(JSON.stringify({ type: 'user', timestamp: at(), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu_fill${index}`, content: `${index} `.repeat(1000) }] } }));
+		}
+		await appendFile(harness.transcriptPath, lines.map(line => `${line}\n`).join(''));
+		const summaryRev = () => (harness.tailer()?.messages as readonly { readonly rev?: number; readonly noticeSource?: string }[] | undefined)?.find(message => message.noticeSource === 'compact-summary')?.rev;
+		await waitFor(() => summaryRev() !== undefined && harness.tailer()!.messages.filter(message => message.kind === 'tool_result').length >= 45, 'the summary and the tool results were not read');
+		harness.inbound({ t: 'tool-full', requestId: 'summary-full', epoch: harness.tailer()!.epoch, rev: summaryRev() });
+		await waitFor(() => harness.sent.some(message => message.t === 'tool-full' && message.requestId === 'summary-full'), 'the full summary was not answered');
+		const reply = harness.sent.find(message => message.t === 'tool-full' && message.requestId === 'summary-full');
+		assert.deepStrictEqual({ text: reply?.text, error: reply?.error }, { text: body.trim(), error: undefined });
 	}));
 
 	test('ends a subagent on its turn.complete, also when it was stopped', () => withHarness(async harness => {

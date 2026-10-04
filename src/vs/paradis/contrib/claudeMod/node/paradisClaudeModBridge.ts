@@ -175,7 +175,11 @@ const KNOWN_FEATURES: readonly ParadisClaudeModFeature[] = ['commands.list', 'co
  * - `stale`: mod の会話が切り替わっていた（`/clear` 等。何もしていない）
  * - `panel-open`: 承認・質問以外の画面（`/config` など）が PC でキーを持っている（何もしていない。キーも打たないこと）
  */
-export type ParadisClaudeModRunCommandResult = { readonly outcome: 'accepted' | 'refused' | 'unavailable' | 'busy' | 'unconfirmed' | 'stale' | 'panel-open'; readonly message?: string };
+export type ParadisClaudeModRunCommandResult = {
+	readonly outcome: 'accepted' | 'refused' | 'unavailable' | 'busy' | 'unconfirmed' | 'stale' | 'panel-open'; readonly message?: string;
+	/** `accepted` のうち、mod が受け取ってまだ実行中のもの（画面を開くコマンドは閉じるまで、`/compact` は終わるまで終わらない）。 */
+	readonly running?: true;
+};
 
 /** 送った発言の行方（{@link ParadisClaudeModBridge.submitPrompt}）。 */
 export type ParadisClaudeModSubmitResult = 'accepted' | 'unavailable' | 'refused' | 'unconfirmed' | 'busy' | 'stale' | 'panel-open';
@@ -1050,9 +1054,10 @@ export class ParadisClaudeModBridge {
 	/**
 	 * 待機中の会話でスラッシュコマンドを実行する（mod の `$.command.run`。`$.prompt.submit` は `/` で始まる文を断る）。
 	 * 名前の無いコマンドは Claude Code が断り、その理由を返す。画面を開くコマンドは閉じるまで終わらないので、mod は
-	 * 少し待って「受け取った」を先に返す。その後に失敗と分かったら `onLateFailure` を呼ぶ。
+	 * 少し待って「受け取った」を先に返す（`running: true`）。その後に失敗と分かったら `onLateFailure` を呼び、終わりの ack が
+	 * 届いたら（画面が閉じた・コマンドが終わった）成否に関わらず `onFinished` を呼ぶ。
 	 */
-	async runCommand(token: string, sessionId: string, command: string, args: string, onLateFailure?: (message: string | undefined) => void): Promise<ParadisClaudeModRunCommandResult> {
+	async runCommand(token: string, sessionId: string, command: string, args: string, onLateFailure?: (message: string | undefined) => void, onFinished?: () => void): Promise<ParadisClaudeModRunCommandResult> {
 		const state = this.sessions.get(this.sessionKey(token, sessionId));
 		if (state === undefined || !state.features.has('command.run')) {
 			return { outcome: 'unavailable' };
@@ -1084,8 +1089,10 @@ export class ParadisClaudeModBridge {
 					if (final !== 'ok' && final !== 'received') {
 						onLateFailure?.(message);
 					}
+					// 開いた画面が閉じた（または長いコマンドが終わった）
+					onFinished?.();
 				});
-				return { outcome: 'accepted' };
+				return { outcome: 'accepted', running: true };
 			}
 			case 'ok': return { outcome: 'accepted' };
 			case 'refused': return { outcome: 'refused', ...(result.message !== undefined ? { message: result.message } : {}) };

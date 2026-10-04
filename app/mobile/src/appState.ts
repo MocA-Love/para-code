@@ -386,6 +386,8 @@ interface AppState extends StoreState {
 	requestAgentCommandCatalog(terminalKey: string): boolean;
 	/** 受け付けた後で断られたスラッシュコマンドを、入力欄が受け取った。 */
 	clearAgentSlashRejection(terminalKey: string, requestId: string): void;
+	/** PC で開いている画面（`/config` など）を Esc で閉じる（agent.panel.v1）。 */
+	closeAgentPanel(terminalKey: string): Promise<AgentMessageSendResult>;
 	updateAgentSettings(terminalKey: string, model: string, effort: string): void;
 	scmStatus(ws: string): Promise<ScmStatusResult>;
 	scmDiff(ws: string, path?: string, staged?: boolean): Promise<ScmDiffResult>;
@@ -2121,6 +2123,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	clearAgentSlashRejection(terminalKey: string, requestId: string) {
 		controller?.clearAgentSlashRejection(terminalKey, requestId);
+	},
+
+	closeAgentPanel(terminalKey: string) {
+		return controller?.closeAgentPanel(terminalKey) ?? Promise.resolve({ status: 'rejected' as const, message: 'PCとの接続が切れています' });
 	},
 
 	updateAgentSettings(terminalKey: string, model: string, effort: string) {

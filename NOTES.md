@@ -301,6 +301,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `resources/paradis/claude-mod/.claude-plugin/plugin.json` | `version` を `1.2.0` に上げた（`hooks/register.ts` の `MOD_VERSION` と揃える。スラッシュコマンドの一覧 `commandList` と実行 `commandRun` を受ける版。`commands` の要求の `features` で PC に知らせる）（2026-10-04） | モバイルのスラッシュコマンドの一覧を `$.command.list()` で取り、`/name args` を `$.command.run` で実行する |
 | `app/protocol/test/golden/state.json` / `agent.json` | `state.json` の `capabilities` に `agent.commands.v2`、`agent.json` に `command-catalog`（`format: 2`）の要求と応答、`code: 'unknown-command'` の `action-result` を追加（2026-10-04） | スラッシュコマンドの一覧の新しい形（同じ名前の重なり・出どころ plugin / mcp）と、断りの理由の固定形 |
 | `app/mobile/app.json` | `expo.version` を `0.12.4` に（2026-10-04） | スラッシュコマンドの一覧と断りの表示の配信 |
+| `app/protocol/test/golden/state.json` / `agent.json` | `state.json` の `capabilities` に `agent.panel.v1`、`agent.json` に圧縮の区切りと要約（`noticeSource: compaction` / `compact-summary`・`compaction`）と `panel` を持つ `delta`、`action/closePanel` の要求を追加（2026-10-04） | PC で開いている画面の帯と「閉じる」（Esc）、コンテキストの圧縮の区切り線と畳んだ要約の固定形 |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 
