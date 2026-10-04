@@ -96,6 +96,42 @@ export function usageProviderColumnsFor(regular: boolean, contentWidth: number):
 }
 
 /**
+ * 使用量の画面で Claude と Codex を左右に並べるときの、1列の幅（pt）。1列のときは `undefined`（本文の幅いっぱい）。
+ *
+ * 2列は `flex: 1` で割らず、この幅を列にそのまま当てる。`flex: 1` の列は中身（改行しない期限の一覧や、畳んだ
+ * アカウントのメールの並びなど）の幅で押し広げられ、Codex の列が本文の幅を越えて画面の外へはみ出したため。
+ * 2列の幅と間の和は、必ず本文の幅（onLayout で測った値）以下になる。
+ */
+export function usageProviderColumnWidthFor(regular: boolean, contentWidth: number): number | undefined {
+	if (usageProviderColumnsFor(regular, contentWidth) === 1) {
+		return undefined;
+	}
+	return Math.floor((contentWidth - USAGE_PROVIDER_COLUMN_GAP) / 2);
+}
+
+/**
+ * アカウントの行でメーター（と下のリセットまでの時間）以外が取る横幅（行の左右の余白 14×2 と、右の印の列 24＋8）。
+ * `usageSections.tsx` の `row` / `trailing` と合わせる。
+ */
+const USAGE_ACCOUNT_ROW_CHROME = 14 * 2 + 24 + 8;
+/** メーター1つが「5日14時間後にリセット」を切らずに出せる幅（ラベル 34＋間 4＋文字 12pt で約 13 字）。 */
+const USAGE_METER_MIN_WIDTH = 200;
+/** 横に並べたメーターの間（`meter.tsx` の `row` の gap）。 */
+const USAGE_METER_GAP = 12;
+
+/**
+ * 使用量の画面で、アカウントの行のメーターを1行に何個並べるか。左右2列にしたとき（`columnWidth` が決まっているとき）は、
+ * 列の幅にメーター2つが収まらなければ1つずつ縦に積む（並べたまま狭くすると、リセットまでの時間が「4時間52…」と切れる）。
+ * 1列のとき（`undefined`。iPhone を含む）は今までどおり2つ並べる。
+ */
+export function usageMetersPerRowFor(columnWidth: number | undefined): 1 | 2 {
+	if (columnWidth === undefined) {
+		return 2;
+	}
+	return columnWidth - USAGE_ACCOUNT_ROW_CHROME >= USAGE_METER_MIN_WIDTH * 2 + USAGE_METER_GAP ? 2 : 1;
+}
+
+/**
  * 質問のカードの中身がこの幅以上なら、選択肢と preview を左右に並べる（左に選択肢、右に preview）。
  * 選択肢の列 2 : preview の列 3 で、preview の枠に等幅 30 字ほどが入る幅。
  */

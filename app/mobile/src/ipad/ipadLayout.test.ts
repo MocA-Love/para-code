@@ -4,12 +4,15 @@ import { describe, expect, test } from 'vitest';
 import {
 	DOCK_DEFAULT_WIDTH,
 	SIDEBAR_DEFAULT_WIDTH,
+	USAGE_PROVIDER_COLUMN_GAP,
 	canDockPanel,
 	clampSidebarWidth,
 	dockWidthFor,
 	sidebarWidthFor,
 	listColumnsFor,
 	questionPreviewSplit,
+	usageMetersPerRowFor,
+	usageProviderColumnWidthFor,
 	usageProviderColumnsFor,
 } from './ipadLayout.js';
 
@@ -97,5 +100,37 @@ describe('usageProviderColumnsFor', () => {
 			usageProviderColumnsFor(true, 0),
 			usageProviderColumnsFor(false, 728),
 		]).toEqual([2, 2, 1, 1, 1]);
+	});
+});
+
+describe('usageProviderColumnWidthFor', () => {
+	test('2列のときは本文の幅から間を引いて二等分し、1列のときは幅を決めない', () => {
+		expect([
+			usageProviderColumnWidthFor(true, 728),
+			usageProviderColumnWidthFor(true, 729),
+			usageProviderColumnWidthFor(true, 616),
+			usageProviderColumnWidthFor(true, 615),
+			usageProviderColumnWidthFor(true, 0),
+			usageProviderColumnWidthFor(false, 728),
+		]).toEqual([356, 356, 300, undefined, undefined, undefined]);
+	});
+
+	test('2列の幅と間の和は本文の幅を越えない', () => {
+		for (const width of [616, 617, 700, 727, 728, 1000]) {
+			const column = usageProviderColumnWidthFor(true, width);
+			expect(column).toBeDefined();
+			expect((column ?? 0) * 2 + USAGE_PROVIDER_COLUMN_GAP).toBeLessThanOrEqual(width);
+		}
+	});
+});
+
+describe('usageMetersPerRowFor', () => {
+	test('左右に並べた列にメーター2つが収まらなければ1つずつ積み、1列のときは2つ並べる', () => {
+		expect([
+			usageMetersPerRowFor(undefined),
+			usageMetersPerRowFor(356),
+			usageMetersPerRowFor(471),
+			usageMetersPerRowFor(472),
+		]).toEqual([2, 1, 1, 2]);
 	});
 });

@@ -85,7 +85,7 @@ export function UsageSeparator() {
  * ログインしているアカウントだけが届く。「使用中」の印は付けず、行の補足にどの接続先のログインかを書く
  * （接続先の名前は上の接続先の選択にも出るので、見出しには重ねない）。
  */
-export function ProviderUsageSection({ provider, title, snapshot, now, loading, dimmed, expandResets = false }: {
+export function ProviderUsageSection({ provider, title, snapshot, now, loading, dimmed, expandResets = false, metersPerRow = 2 }: {
 	provider: 'claude' | 'codex';
 	title: string;
 	snapshot: RateLimitProviderSnapshot | undefined;
@@ -94,6 +94,8 @@ export function ProviderUsageSection({ provider, title, snapshot, now, loading, 
 	dimmed: boolean;
 	/** リセットの期限の一覧を最初から開いておく（iPad の広い幅）。 */
 	expandResets?: boolean;
+	/** メーターを1行に何個並べるか（iPad で左右に並べた列が狭いときは 1）。 */
+	metersPerRow?: 1 | 2;
 }) {
 	const accounts = snapshot?.accounts ?? [];
 	const remoteHost = snapshot?.remoteHost;
@@ -109,14 +111,14 @@ export function ProviderUsageSection({ provider, title, snapshot, now, loading, 
 					{shown.map((account, index) => (
 						<View key={account.id}>
 							{index > 0 ? <UsageSeparator /> : null}
-							<AccountRow account={account} now={now} remoteHost={remoteHost} expandResets={expandResets} />
+							<AccountRow account={account} now={now} remoteHost={remoteHost} expandResets={expandResets} metersPerRow={metersPerRow} />
 						</View>
 					))}
 					<UnavailableAccountsGroup names={unavailable.map(accountName)} separated={shown.length > 0}>
 						{unavailable.map((account, index) => (
 							<Fragment key={account.id}>
 								{index > 0 ? <UsageSeparator /> : null}
-								<AccountRow account={account} now={now} remoteHost={remoteHost} />
+								<AccountRow account={account} now={now} remoteHost={remoteHost} metersPerRow={metersPerRow} />
 							</Fragment>
 						))}
 					</UnavailableAccountsGroup>
@@ -188,7 +190,7 @@ export function UnavailableAccountsGroup({ names, separated, children }: {
  * アカウント1行（見出し・補足・メーター）。全 PC の合計では、見えている PC のチップを `extra` に渡し、
  * オフラインの PC の最後の値なら `dimmed` で薄くする。
  */
-export function AccountRow({ account, now, remoteHost, extra, dimmed = false, expandResets = false }: {
+export function AccountRow({ account, now, remoteHost, extra, dimmed = false, expandResets = false, metersPerRow = 2 }: {
 	account: RateLimitAccount;
 	now: number;
 	remoteHost: RateLimitProviderSnapshot['remoteHost'];
@@ -197,14 +199,16 @@ export function AccountRow({ account, now, remoteHost, extra, dimmed = false, ex
 	dimmed?: boolean;
 	/** リセットの期限の一覧を最初から開いておく（iPad の広い幅）。 */
 	expandResets?: boolean;
+	/** メーターを1行に何個並べるか（既定は2つ。iPad で左右に並べた列が狭いときは 1）。 */
+	metersPerRow?: 1 | 2;
 }) {
 	const windows = accountWindows(account);
 	const hint = accountHint(account, remoteHost);
 	const inUse = remoteHost === undefined && account.active === true;
-	// メーターは2つずつ横に並べる（5時間・7日 → 追加の枠）
+	// メーターは2つずつ横に並べる（5時間・7日 → 追加の枠）。狭い列では1つずつ積む
 	const pairs: (typeof windows)[] = [];
-	for (let i = 0; i < windows.length; i += 2) {
-		pairs.push(windows.slice(i, i + 2));
+	for (let i = 0; i < windows.length; i += metersPerRow) {
+		pairs.push(windows.slice(i, i + metersPerRow));
 	}
 	return (
 		<UsageRow trailing={inUse ? 'check' : undefined}>
@@ -222,7 +226,7 @@ export function AccountRow({ account, now, remoteHost, extra, dimmed = false, ex
 								reset={isWindowExpired(item.window, now) ? 'リセット済みの可能性' : resetInLabel(item.window.resetsAt, now)}
 							/>
 						))}
-						{pair.length === 1 ? <View style={styles.meterSpacer} /> : null}
+						{pair.length < metersPerRow ? <View style={styles.meterSpacer} /> : null}
 					</MeterRow>
 				)) : null}
 				{account.status === 'ok' && account.resetCredits !== undefined ? (

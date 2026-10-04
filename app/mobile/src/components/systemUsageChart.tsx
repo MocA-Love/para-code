@@ -34,6 +34,8 @@ export interface SystemUsageChartProps {
 	/** 接続先の Para Code が古く、今の値しか無い。 */
 	readonly legacy: boolean;
 	readonly swapTotal: number | undefined;
+	/** 2 行目に添える補足（CPU の「Para Code 1%」、メモリの「60.6 GB / 121.5 GB」など）。無ければ出さない。 */
+	readonly detail?: string | undefined;
 }
 
 /**
@@ -41,7 +43,7 @@ export interface SystemUsageChartProps {
  * 幅は自分の `onLayout` で測る（画面の幅を本文の幅と思わない。iPad の詳細の列は左の列で幅が変わる）。
  */
 export const SystemUsageChart = memo(function SystemUsageChart(props: SystemUsageChartProps) {
-	const { spec, samples, latest, windowStart, windowEnd, windowMs, stepMs, unsupported, legacy, swapTotal } = props;
+	const { spec, samples, latest, windowStart, windowEnd, windowMs, stepMs, unsupported, legacy, swapTotal, detail } = props;
 	const [width, setWidth] = useState(0);
 	const onLayout = (event: LayoutChangeEvent) => {
 		const next = Math.round(event.nativeEvent.layout.width);
@@ -70,7 +72,7 @@ export const SystemUsageChart = memo(function SystemUsageChart(props: SystemUsag
 		: legacy
 			? '接続先の Para Code を更新すると推移が出ます'
 			: samples.length < 2 ? '記録しています…' : undefined;
-	const accessibilityLabel = `${spec.label} ${spec.series.map((series, index) => (spec.series.length > 1 ? `${series.label} ${current[index]}` : current[index])).join('、')}${max !== undefined && !unsupported ? `、最大 ${formatUsageValue(max, spec.unit)}` : ''}`;
+	const accessibilityLabel = `${spec.label} ${spec.series.map((series, index) => (spec.series.length > 1 ? `${series.label} ${current[index]}` : current[index])).join('、')}${detail !== undefined ? `、${detail}` : ''}${max !== undefined && !unsupported ? `、最大 ${formatUsageValue(max, spec.unit)}` : ''}`;
 
 	return (
 		<View style={styles.card} accessible accessibilityLabel={accessibilityLabel}>
@@ -85,6 +87,7 @@ export const SystemUsageChart = memo(function SystemUsageChart(props: SystemUsag
 						<Text style={styles.subText}>{series.label} {current[index]}</Text>
 					</View>
 				)) : null}
+				{detail !== undefined ? <Text style={styles.subText}>{detail}</Text> : null}
 				{max !== undefined && !unsupported && !legacy ? <Text style={styles.subText}>最大 {formatUsageValue(max, spec.unit)}</Text> : null}
 			</View>
 			<View style={styles.chart} onLayout={onLayout}>
@@ -109,6 +112,7 @@ export const SystemUsageChart = memo(function SystemUsageChart(props: SystemUsag
 	&& prev.unsupported === next.unsupported
 	&& prev.legacy === next.legacy
 	&& prev.swapTotal === next.swapTotal
+	&& prev.detail === next.detail
 	&& prev.windowMs === next.windowMs
 	&& prev.windowStart === next.windowStart
 	&& prev.windowEnd === next.windowEnd
