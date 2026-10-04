@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { attachmentFileName, attachmentMediaTypeOfBase64, attachmentNameOf, composeAttachmentMessage, parseAttachmentMessage } from './attachmentText.js';
+import { attachmentFileName, attachmentMediaTypeOfBase64, attachmentNameOf, attachmentTextBudget, composeAttachmentMessage, parseAttachmentMessage } from './attachmentText.js';
 
 const MAC = '/Users/example/Library/Application Support/Para Code/User/paraMobileUploads';
 const A = `${MAC}/attachment-1759500000000-abc123.jpg`;
@@ -92,5 +92,15 @@ describe('添付の文字の組み立てと名前', () => {
 			files: ['attachment-1759500000000-abc123.jpg', 'attachment-1759500000003-r3m.jpg', 'attachment-1759500000003-r3m.png'],
 			types: ['image/jpeg', 'image/png', undefined],
 		});
+	});
+
+	test('引く分は、添付のパスを空白でつないだ長さと本文との間の 1 文字', () => {
+		const paths = ['/u/a.png', '/u/bb.png'];
+		expect([
+			attachmentTextBudget(4_000, []),
+			attachmentTextBudget(4_000, paths),
+			composeAttachmentMessage(paths, 'x'.repeat(attachmentTextBudget(4_000, paths)), true).length,
+			attachmentTextBudget(5, paths),
+		]).toEqual([4_000, 3_981, 4_000, 0]);
 	});
 });

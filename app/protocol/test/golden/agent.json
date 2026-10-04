@@ -19,6 +19,7 @@
 		{ "t": "activity-detail", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-10", "epoch": "golden-agent-epoch", "activityId": "srvtoolu_golden2" },
 		{ "t": "shell-output", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-15", "epoch": "golden-agent-epoch", "shellIds": ["bgolden02", "bgolden03"], "lines": 20 },
 		{ "t": "action/stopShell", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-16", "epoch": "golden-agent-epoch", "shellId": "bgolden03" },
+		{ "t": "action/answerApproval", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-17", "epoch": "golden-agent-epoch", "interactionId": "approval-2", "choice": "no", "message": "削除はせず、echo kept だけ実行してください" },
 		{ "t": "detach", "id": 7, "token": "agent-token-1" }
 	],
 	"toMobile": [
@@ -63,10 +64,33 @@
 			"shellsAccess": { "output": true, "stop": true }
 		},
 		{ "t": "action-result", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-1", "status": "accepted", "consumed": true },
-		{ "t": "approval-options", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-5", "interactionId": "approval-1", "options": [{ "n": 1, "label": "Yes" }, { "n": 2, "label": "Yes, and don't ask again for npm test commands" }, { "n": 3, "label": "No, and tell Claude what to do differently (esc)" }], "promptHash": "0123456789abcdef0123456789abcdef01234567" },
+		{ "t": "approval-options", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-5", "interactionId": "approval-1", "options": [{ "n": 1, "label": "Yes" }, { "n": 2, "label": "Yes, and don't ask again for npm test commands" }, { "n": 3, "label": "No, and tell Claude what to do differently (esc)" }], "promptHash": "0123456789abcdef0123456789abcdef01234567", "warning": "This shell -c script runs rm and could not be checked" },
 		{ "t": "history", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-8", "epoch": "golden-agent-epoch", "messages": [{ "rev": -1, "role": "user", "kind": "text", "text": "最初の依頼", "ts": 1759990000000 }], "hasMore": true, "cursor": "f:512:0" },
 		{ "t": "activity-detail", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-10", "activityId": "srvtoolu_golden2", "messages": [{ "role": "tool", "kind": "tool", "toolKind": "tool_result", "tool": "Advisor", "text": "順番を入れ替えてください。", "truncated": true, "advisor": { "model": "claude-opus-4-7", "outcome": "text" } }] },
 		{ "t": "shell-output", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-15", "shells": [{ "id": "bgolden02", "lines": ["VITE v6.2.0 ready in 412 ms", "[killed]"], "truncated": true }, { "id": "bgolden03", "error": "not-found" }], "readAt": 1760000003100 },
 		{ "t": "none", "id": 7, "token": "agent-token-1" }
-	]
+	],
+	"approval": {
+		"$comment": "承認のカードの中身（agent.approval.detail.v1）。delta は toMobile の delta の後に届く、承認を表に出した差分。interaction の request（ツールごとに分けた操作の中身と、許可を求めたサブエージェント）・suggestionScope・answerVia は任意項目で、古いアプリは捨てて detail を出す。detail は hook と mod の承認の突き合わせに使うので形を変えない。toPc の answerApproval の message（拒否に添える指示）は answerVia: mod のときだけ送る。approval-options の応答の warning は選択肢の上の警告の行。",
+		"delta": {
+			"t": "delta", "id": 7, "token": "agent-token-1", "agent": "claude", "epoch": "golden-agent-epoch", "rev": 7,
+			"messages": [
+				{ "rev": 7, "role": "assistant", "kind": "tool_use", "tool": "approval_request", "text": "Bash: Copy render data into backend container", "toolUseId": "approval-2", "ts": 1760000004000 }
+			],
+			"interaction": {
+				"kind": "approval", "id": "approval-2", "title": "操作の許可", "detail": "Bash: Copy render data into backend container",
+				"choices": [{ "id": "yes", "label": "許可", "tone": "approve" }, { "id": "always", "label": "許可（このセッションでは以後確認しない: Bash(docker cp:*)）", "tone": "approve" }, { "id": "no", "label": "拒否", "tone": "deny" }],
+				"suggestions": ["Bash(docker cp:*)"],
+				"request": {
+					"tool": "Bash", "kind": "bash",
+					"command": "cd ~/projects/acme-shop && C=$(docker compose ps -q backend); docker cp render-data \"$C:/srv/render/\"; docker exec $C sh -c \"rm -rf /srv/render/.staging\"",
+					"description": "Copy render data into backend container",
+					"agent": { "id": "agent-sub-1", "name": "general-purpose", "role": "subagent" }
+				},
+				"suggestionScope": "session",
+				"answerVia": "mod"
+			},
+			"capabilities": { "agentActions": true, "claudeSettings": true }
+		}
+	}
 }

@@ -83,7 +83,7 @@ import { PARADIS_MOBILE_SHOW_PREFIX_ARGS, ParadisMobileIgnoredRuns, paradisMarkM
 import { paradisReadMobileScmStatus } from '../common/paradisMobileScmStatusRead.js';
 import { PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisIsMobileHostNoResponse, paradisMobileUsageErrorReply, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
-import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionsForMobile, paradisParseApprovalOptions, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
+import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionsForMobile, paradisParseApprovalOptions, paradisParsePermissionWarning, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
 import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import { paradisResolveMobileUploadHome } from './paradisMobileUploadHome.js';
@@ -1653,12 +1653,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const agent = msg.agent === 'codex' ? 'codex' : 'claude';
 		let options: readonly IParadisAgentApprovalOption[] | undefined;
 		let promptHash: string | undefined;
+		let warning: string | undefined;
 		const deadline = Date.now() + PARADIS_APPROVAL_OPTIONS_WAIT_MS;
 		for (; ;) {
 			// 選択肢は許可の確認の見出しより後の行からだけ読む（レビュー M1）。見出しまでの指紋を添え、回答で返させる（M2）。
 			const prompt = paradisPermissionPromptParts(paradisVisibleTerminalLogicalText(instance));
 			options = prompt !== undefined ? paradisApprovalOptionsForMobile(agent, paradisParseApprovalOptions(prompt.options)) : undefined;
 			promptHash = prompt !== undefined ? paradisPermissionPromptHash(prompt.context) : undefined;
+			// 見出しの上の警告の行（Claude Code だけ。hook には来ない。agent.approval.detail.v1）
+			warning = prompt !== undefined && agent === 'claude' ? paradisParsePermissionWarning(prompt.context) : undefined;
 			if (options !== undefined || Date.now() >= deadline || this.findAuthoritativePaneInstance(msg.id, msg.token) !== instance) {
 				break;
 			}
@@ -1668,7 +1671,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			ch: Channels.Agent, ws: undefined, seq: 0, mobileId,
 			payload: VSBuffer.fromString(JSON.stringify({
 				t: 'approval-options', id: msg.id, token: msg.token, requestId: msg.requestId, interactionId: msg.interactionId,
-				...(options !== undefined && promptHash !== undefined ? { options, promptHash } : { error: 'unreadable' }),
+				...(options !== undefined && promptHash !== undefined ? { options, promptHash, ...(warning !== undefined ? { warning } : {}) } : { error: 'unreadable' }),
 			})),
 		});
 	}

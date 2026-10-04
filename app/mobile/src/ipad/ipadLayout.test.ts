@@ -5,6 +5,7 @@ import {
 	DOCK_DEFAULT_WIDTH,
 	SIDEBAR_DEFAULT_WIDTH,
 	USAGE_PROVIDER_COLUMN_GAP,
+	approvalDetailSplit,
 	canDockPanel,
 	clampSidebarWidth,
 	dockWidthFor,
@@ -87,6 +88,15 @@ describe('questionPreviewSplit', () => {
 		expect([
 			questionPreviewSplit(true, 600), questionPreviewSplit(true, 520), questionPreviewSplit(true, 519),
 			questionPreviewSplit(true, 0), questionPreviewSplit(false, 900),
+		]).toEqual([true, true, false, false, false]);
+	});
+});
+
+describe('approvalDetailSplit', () => {
+	test('2列の表示で、許可のカードの幅が 600pt 以上のときだけコマンドと説明を左右に並べる（測る前の 0 は並べない）', () => {
+		expect([
+			approvalDetailSplit(true, 720), approvalDetailSplit(true, 600), approvalDetailSplit(true, 599),
+			approvalDetailSplit(true, 0), approvalDetailSplit(false, 900),
 		]).toEqual([true, true, false, false, false]);
 	});
 });

@@ -365,7 +365,8 @@ interface AppState extends StoreState {
 	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<AgentMessageSendResult>;
 	/** 「質問に答えずに話す」（`agent.question.chat.v1`）。`response` が無ければ途中までの回答を添えて取り下げる。 */
 	clarifyAgentQuestion(terminalKey: string, interactionId: string, response: string | undefined, answers: readonly (AgentQuestionAnswer | null)[]): Promise<AgentMessageSendResult>;
-	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }): Promise<AgentMessageSendResult>;
+	/** `denyMessage`: 拒否に添える指示（`agent.approval.detail.v1`。承認の `answerVia: 'mod'` のときだけ）。 */
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }, denyMessage?: string): Promise<AgentMessageSendResult>;
 	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult>;
 	/** agent チャネルの新しい種類の要求（`MobileController.requestAgentReply`）。 */
 	requestAgentReply(terminalKey: string, body: { readonly t: string; readonly [key: string]: unknown }, replyType: string, timeoutMs?: number): Promise<Record<string, unknown>>;
@@ -2052,8 +2053,8 @@ export const useAppStore = create<AppState>(set => ({
 			?? Promise.resolve<AgentMessageSendResult>({ status: 'rejected', message: 'PCとの接続が切れています' });
 	},
 
-	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }) {
-		return controller?.answerAgentApproval(terminalKey, interactionId, choice, option)
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }, denyMessage?: string) {
+		return controller?.answerAgentApproval(terminalKey, interactionId, choice, option, denyMessage)
 			?? Promise.resolve<AgentMessageSendResult>({ status: 'rejected', message: 'PCとの接続が切れています' });
 	},
 

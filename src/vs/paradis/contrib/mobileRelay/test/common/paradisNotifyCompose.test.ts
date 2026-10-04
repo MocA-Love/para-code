@@ -28,6 +28,17 @@ suite('paradisComposeNotifyBody', () => {
 		]);
 	});
 
+	test('本文の材料（summary）があれば本文はそれから作り、詳細は content のまま。秘密は両方で伏せる', () => {
+		const content = 'Bash: 掃除する\n\n```\nTOKEN=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 rm -rf build\nnpm test\n```';
+		const composed = paradisComposeNotifyBody({ category: 'approval', content, summary: 'Bash: 掃除する\n`TOKEN=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 rm -rf build`', includeContent: true });
+		assert.deepStrictEqual({
+			bodyHead: composed.body.split('\n')[0],
+			bodyLines: composed.body.split('\n').length,
+			leaked: [composed.body, composed.detail ?? ''].some(text => text.includes('abcdefghijklmnop')),
+			detailHasAll: composed.detail?.includes('npm test'),
+		}, { bodyHead: '承認待ち: Bash: 掃除する', bodyLines: 2, leaked: false, detailHasAll: true });
+	});
+
 	test('内容を含めない設定・中身が無いときは定型文（エラーの理由のコードだけは出す）', () => {
 		assert.deepStrictEqual([
 			paradisComposeNotifyBody({ category: 'done', content: '秘密の話', includeContent: false }),

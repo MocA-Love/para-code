@@ -41,6 +41,11 @@ export interface AgentActions {
 	 */
 	clarifyQuestion(interactionId: string, response: string | undefined, answers: readonly (QuestionGroupAnswer | null)[]): Promise<AgentMessageSendResult>;
 	approve(interactionId: string, choice: string): Promise<AgentMessageSendResult>;
+	/**
+	 * 拒否して、エージェントへの指示を添える（TUI の「No, and tell Claude what to do differently」。`agent.approval.detail.v1`）。
+	 * PC の Claude Code の mod が待っている承認（`answerVia: 'mod'`）だけ。キーの経路は使わない。
+	 */
+	denyWithMessage(interactionId: string, message: string): Promise<AgentMessageSendResult>;
 	updateClaudeSetting(setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult>;
 }
 
@@ -235,6 +240,22 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 			: sendSequence([...keys]).then(fromInjection);
 	}, [terminalKey, agent, interaction, stale, supportsAgentActions, answerAgentApproval, send, sendSequence]);
 
+	const denyWithMessage = useCallback((interactionId: string, message: string): Promise<AgentMessageSendResult> => {
+		if (stale) {
+			return Promise.resolve(REFRESHING_RESULT);
+		}
+		if (interaction?.kind !== 'approval' || interaction.id !== interactionId) {
+			return Promise.resolve(STALE_INTERACTION_RESULT);
+		}
+		if (terminalKey === undefined) {
+			return Promise.resolve(NO_TARGET_RESULT);
+		}
+		if (!supportsAgentActions) {
+			return Promise.resolve({ status: 'rejected', message: 'この PC では指示を添えて拒否できません' });
+		}
+		return answerAgentApproval(terminalKey, interactionId, 'no', undefined, message);
+	}, [terminalKey, interaction, stale, supportsAgentActions, answerAgentApproval]);
+
 	const updateClaudeSetting = useCallback((setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult> => {
 		if (stale) {
 			return Promise.resolve(REFRESHING_RESULT);
@@ -254,7 +275,7 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 		return sendSequence([`/${setting} ${value}`, '\r']).then(fromInjection);
 	}, [terminalKey, agent, interaction, stale, supportsClaudeSettings, updateClaudeSettingAction, sendSequence]);
 
-	return { send, sendText, answerQuestion, answerQuestionMulti, answerQuestionFreeText, answerQuestionGroup, clarifyQuestion, approve, updateClaudeSetting };
+	return { send, sendText, answerQuestion, answerQuestionMulti, answerQuestionFreeText, answerQuestionGroup, clarifyQuestion, approve, denyWithMessage, updateClaudeSetting };
 }
 
 /** 指定ターミナルのエージェントチャットを購読する（アタッチ/デタッチのライフサイクル込み）。 */

@@ -63,6 +63,8 @@ export interface IParadisNotifyContentResolution {
 	readonly category: ParadisNotifyCategory;
 	/** 本文・詳細に使う Markdown（無ければ定型文）。 */
 	readonly content?: string;
+	/** 本文だけに使う短い Markdown（承認の「説明 + コマンドの先頭 1 行」。無ければ content から作る）。 */
+	readonly summary?: string;
 	readonly errorCode?: string;
 	readonly interactionId?: string;
 }
@@ -153,27 +155,59 @@ function str(value: unknown): string | undefined {
 	return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
 }
 
-/**
- * 承認の中身を Markdown にする（本文では「Bash: npm run test」、長押しではコードの枠）。
- * コマンドを説明より優先する（何が実行されるかが判断の材料なので）。
- */
-export function paradisApprovalNotifyContent(toolName: string | undefined, toolInput: unknown): string | undefined {
-	const input = typeof toolInput === 'object' && toolInput !== null && !Array.isArray(toolInput) ? toolInput as Record<string, unknown> : undefined;
-	const subject = str(input?.command) ?? str(input?.file_path) ?? str(input?.path) ?? str(input?.url) ?? str(input?.description)
-		?? (input !== undefined && Object.keys(input).length > 0 ? JSON.stringify(input).slice(0, 2000) : undefined);
-	if (subject === undefined) {
-		return toolName;
-	}
-	const body = subject.trim();
-	const label = toolName ?? '操作';
-	// コマンドの見た目は変えない（バッククォートを別の文字へ置き換えない）。短い 1 行でバッククォートを含まなければ
-	// インラインコード、それ以外はコードブロックにする。囲いは中身のいちばん長いバッククォートの並びより長くする。
-	if (!body.includes('\n') && body.length <= 120 && !body.includes('`')) {
-		return `${label}: \`${body}\``;
-	}
+/** 本文に出すコマンドの先頭 1 行の長さの上限。 */
+const SUMMARY_COMMAND_CHARS = 200;
+
+/** コードの枠（囲いは中身のいちばん長いバッククォートの並びより長くする）。 */
+function fencedCode(body: string): string {
 	const longestRun = Math.max(0, ...(body.match(/`+/g) ?? []).map(run => run.length));
 	const fence = '`'.repeat(Math.max(3, longestRun + 1));
-	return `${label}\n\n${fence}\n${body}\n${fence}`;
+	return `${fence}\n${body}\n${fence}`;
+}
+
+/**
+ * 承認の中身を Markdown にする（長押しの詳細。本文は {@link paradisApprovalNotifyParts} の `summary` があればそちら）。
+ * 説明のあるコマンドは、カードと同じく説明を先に、コマンドの全文をコードの枠で続ける。
+ */
+export function paradisApprovalNotifyContent(toolName: string | undefined, toolInput: unknown): string | undefined {
+	return paradisApprovalNotifyParts(toolName, toolInput).content;
+}
+
+/**
+ * 承認の通知の材料。`content` は詳細（長押し）に、`summary` は本文に使う（「説明 + コマンドの先頭 1 行」。
+ * コマンドが無ければ undefined で、本文も `content` から作る）。
+ */
+export function paradisApprovalNotifyParts(toolName: string | undefined, toolInput: unknown): { readonly content?: string; readonly summary?: string } {
+	const input = typeof toolInput === 'object' && toolInput !== null && !Array.isArray(toolInput) ? toolInput as Record<string, unknown> : undefined;
+	const label = toolName ?? '操作';
+	const command = str(input?.command)?.trim();
+	const description = str(input?.description)?.trim().replace(/\s+/g, ' ');
+	let summary: string | undefined;
+	if (command !== undefined) {
+		const lines = command.split('\n');
+		const first = lines[0].trim();
+		// allow-any-unicode-next-line
+		const head = first.length > SUMMARY_COMMAND_CHARS || lines.length > 1 ? `${first.slice(0, SUMMARY_COMMAND_CHARS)}…` : first;
+		const code = head.includes('`') ? head : `\`${head}\``;
+		// 説明が無く 1 行に収まるコマンドは、本文も詳細と同じでよい
+		summary = description !== undefined ? `${label}: ${description}\n${code}` : head !== command ? `${label}: ${code}` : undefined;
+		if (description !== undefined) {
+			return { content: `${label}: ${description}\n\n${fencedCode(command)}`, summary };
+		}
+	}
+	const subject = command ?? str(input?.file_path) ?? str(input?.path) ?? str(input?.url) ?? description
+		?? (input !== undefined && Object.keys(input).length > 0 ? JSON.stringify(input).slice(0, 2000) : undefined);
+	if (subject === undefined) {
+		return toolName !== undefined ? { content: toolName } : {};
+	}
+	const body = subject.trim();
+	const summaryField = summary !== undefined ? { summary } : {};
+	// コマンドの見た目は変えない（バッククォートを別の文字へ置き換えない）。短い 1 行でバッククォートを含まなければ
+	// インラインコード、それ以外はコードブロックにする。
+	if (!body.includes('\n') && body.length <= 120 && !body.includes('`')) {
+		return { content: `${label}: \`${body}\``, ...summaryField };
+	}
+	return { content: `${label}\n\n${fencedCode(body)}`, ...summaryField };
 }
 
 /**
@@ -229,11 +263,12 @@ export function paradisResolveNotifyContent(input: {
 		// hook の中身だけを使い、ID は付けない（通知から答えさせない）。
 		const hookApproval = input.hookApproval;
 		const hookMatches = hookApproval !== undefined && (interaction?.kind !== 'approval' || (hookApproval.toolUseId !== undefined && hookApproval.toolUseId === interaction.id));
-		const fromHook = hookMatches ? paradisApprovalNotifyContent(hookApproval.toolName, hookApproval.toolInput) : undefined;
-		const content = fromHook ?? (interaction?.kind === 'approval' ? interaction.text : undefined);
+		const fromHook = hookMatches ? paradisApprovalNotifyParts(hookApproval.toolName, hookApproval.toolInput) : undefined;
+		const content = fromHook?.content ?? (interaction?.kind === 'approval' ? interaction.text : undefined);
 		return {
 			kind: 'agent-question', category: 'approval',
 			...(content !== undefined ? { content } : {}),
+			...(fromHook?.content !== undefined && fromHook.summary !== undefined ? { summary: fromHook.summary } : {}),
 			...(interaction?.kind === 'approval' ? { interactionId: interaction.id } : {}),
 		};
 	}

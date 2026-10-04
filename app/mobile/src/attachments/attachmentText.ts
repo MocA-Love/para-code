@@ -160,6 +160,14 @@ export function parseAttachmentMessage(text: string): ParsedAttachmentMessage {
  * 送る文字を組み立てる（案 M1）: 添付のパスを選んだ順に空白で並べ、本文があれば改行して続ける。
  * 質問への回答（1 行に平坦化される）では改行の代わりに空白でつなぐ。
  */
+/**
+ * 本文の上限から、先頭に付く添付のパス（{@link composeAttachmentMessage} の形。パスを空白でつなぎ、本文との間に 1 文字）の
+ * 分を引いた、入力欄に打てる長さ。
+ */
+export function attachmentTextBudget(limit: number, paths: readonly string[]): number {
+	return paths.length === 0 ? limit : Math.max(0, limit - paths.join(' ').length - 1);
+}
+
 export function composeAttachmentMessage(paths: readonly string[], text: string, singleLine = false): string {
 	if (paths.length === 0) {
 		return text;
