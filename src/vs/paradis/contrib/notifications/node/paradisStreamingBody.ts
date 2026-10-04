@@ -179,3 +179,93 @@ export class ParadisMobileVoiceTaskGate {
 		};
 	}
 }
+
+/** 手元の `--ingest` へ書く前に溜めておける量（これを超えるまでは本文の読み進めを止めない）。 */
+export const PARADIS_LOCAL_WRITE_BUFFER_BYTES = 1024 * 1024;
+
+/**
+ * 有界の列を通して、子の標準入力（`--ingest`）へ順に書く。本文の読み進め（とモバイルへの流れ）を、子の drain の待ちから
+ * 切り離すためのもの。書き込みに失敗したら以後は書かず {@link failed} を立てる（読み進めは止めない）。
+ */
+export class ParadisBoundedLocalWriter {
+	private readonly queue: Uint8Array[] = [];
+	private queuedBytes = 0;
+	private closed = false;
+	private _failed = false;
+	private _written = 0;
+	private wake: (() => void) | undefined;
+	private drained: (() => void) | undefined;
+	private readonly pump: Promise<void>;
+
+	constructor(private readonly write: (chunk: Uint8Array) => Promise<void>, private readonly limitBytes = PARADIS_LOCAL_WRITE_BUFFER_BYTES) {
+		this.pump = this.run();
+	}
+
+	get failed(): boolean {
+		return this._failed;
+	}
+
+	/** 書き終えたバイト数。 */
+	get written(): number {
+		return this._written;
+	}
+
+	/** 積む。溜まりすぎていれば、減るか失敗するまで待つ。 */
+	async push(chunk: Uint8Array): Promise<void> {
+		if (this._failed || this.closed) {
+			return;
+		}
+		this.queue.push(chunk);
+		this.queuedBytes += chunk.byteLength;
+		this.wake?.();
+		this.wake = undefined;
+		while (this.queuedBytes > this.limitBytes && !this._failed) {
+			await new Promise<void>(resolve => { this.drained = resolve; });
+			this.drained = undefined;
+		}
+	}
+
+	/** 書き込みをやめる（固まった書き込みを待っている push を抜けさせる）。 */
+	fail(): void {
+		this._failed = true;
+		this.drained?.();
+	}
+
+	/** 積み終えた。`discard` なら溜まっている分は書かない。書き込みが終わるまで待つ。 */
+	async close(discard = false): Promise<void> {
+		if (discard) {
+			this.queue.length = 0;
+			this.queuedBytes = 0;
+		}
+		this.closed = true;
+		this.wake?.();
+		this.wake = undefined;
+		this.drained?.();
+		await this.pump;
+	}
+
+	private async run(): Promise<void> {
+		for (; ;) {
+			if (this.queue.length === 0) {
+				if (this.closed) {
+					return;
+				}
+				await new Promise<void>(resolve => { this.wake = resolve; });
+				continue;
+			}
+			const chunk = this.queue.shift()!;
+			this.queuedBytes -= chunk.byteLength;
+			this.drained?.();
+			if (this._failed) {
+				continue;
+			}
+			try {
+				await this.write(chunk);
+				this._written += chunk.byteLength;
+			} catch {
+				this._failed = true;
+				this.drained?.();
+			}
+		}
+	}
+}

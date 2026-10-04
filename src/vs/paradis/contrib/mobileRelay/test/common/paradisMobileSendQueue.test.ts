@@ -216,4 +216,31 @@ suite('ParadisMobileSendQueue', () => {
 		const result = queue.enqueue(transfer({}, 'b', 1, log));
 		assert.deepStrictEqual({ result: await result, log }, { result: true, log: ['a0', 'b0'] });
 	});
+
+	test('a screen JPEG replaced every 200 ms keeps its waiting time and still goes out after 500 ms of control traffic', async () => {
+		let now = 0;
+		const queue = new ParadisMobileSendQueue({ now: () => now });
+		const log: string[] = [];
+		const owner = {};
+		const control = gatedTransfer({}, 'state', log, { priority: ParadisMobileSendPriority.Control, fragmentCount: 4 });
+		const results: Promise<boolean>[] = [queue.enqueue(control.value)];
+		const jpegs = [0, 1, 2].map(n => gatedTransfer(owner, `jpeg${n}-`, log, { replaceKey: 'screencast' }));
+		results.push(queue.enqueue(jpegs[0].value));
+		for (const n of [1, 2]) {
+			now += 200;
+			control.release();
+			await new Promise(resolve => setTimeout(resolve, 0));
+			results.push(queue.enqueue(jpegs[n].value));
+		}
+		// 最初の JPEG を積んでから 500ms。差し替えても待った時間は引き継がれている（引き継がなければ 100ms しか待っていない）
+		now += 100;
+		control.release();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		jpegs[2].release();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		control.release();
+		await Promise.all(results);
+
+		assert.deepStrictEqual(log, ['seal:state0', 'send:state0', 'seal:state1', 'send:state1', 'seal:state2', 'send:state2', 'seal:jpeg2-0', 'send:jpeg2-0', 'seal:state3', 'send:state3']);
+	});
 });

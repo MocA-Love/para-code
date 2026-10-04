@@ -247,6 +247,25 @@ suite('paradisReceiveRemoteVoice', () => {
 		]);
 	});
 
+	test('chunked: a stuck local --ingest write does not keep the reader waiting after the utterance is cut off', async () => {
+		const harness = await startServer({ localPlayback: true, ingest: true, mobileStream: true, ingestWrite: 'block', limits: { maxDurationMs: 300, slowArrivalMs: 60_000 } });
+		try {
+			const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked' });
+			request.on('error', () => { });
+			await new Promise<void>(resolve => request.write(mp3(1000), () => resolve()));
+			await response;
+			// 手元の列（1MiB）を超えるまで送る。読み進めは溜まりすぎの待ちで止まる
+			for (let i = 0; i < 24; i++) {
+				request.write(mp3(64 * 1024));
+			}
+			const result = await harness.resultReady;
+			assert.deepStrictEqual({ outcome: result.outcome, mobileClosed: harness.events.includes('mobile-end') || harness.events.includes('mobile-abort') }, { outcome: 'played-locally', mobileClosed: true });
+		} finally {
+			harness.streams[0]?.writeGate.complete();
+			await harness.close();
+		}
+	});
+
 	test('chunked: aborts the mobile stream when the remote side disconnects midway', async () => {
 		const harness = await startServer({ localPlayback: false, mobileStream: true });
 		try {

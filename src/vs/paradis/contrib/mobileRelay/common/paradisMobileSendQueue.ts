@@ -133,10 +133,13 @@ export class ParadisMobileSendQueue {
 				queue = [];
 				lane.set(transfer.owner, queue);
 			}
+			let waitingSince = this.now();
 			if (transfer.replaceKey !== undefined) {
 				// まだ 1 断片も封緘していないものだけ差し替える（封緘中のものは nonce を採っているので必ず送る）
 				for (const queued of [...queue]) {
 					if (queued.next === 0 && !queued.sealing && queued.transfer.replaceKey === transfer.replaceKey) {
+						// 待った時間は引き継ぐ（差し替えが続いても、繰り上げまでの 500ms が延びないように）
+						waitingSince = Math.min(waitingSince, queued.waitingSince);
 						this.settle(queued);
 						queued.resolve(false);
 					}
@@ -148,7 +151,7 @@ export class ParadisMobileSendQueue {
 				queue = [];
 				lane.set(transfer.owner, queue);
 			}
-			queue.push({ transfer, next: 0, sentBytes: 0, sealing: false, settled: false, cancelled: false, waitingSince: this.now(), resolve, reject });
+			queue.push({ transfer, next: 0, sentBytes: 0, sealing: false, settled: false, cancelled: false, waitingSince, resolve, reject });
 			this.unsent[transfer.priority]! += transfer.bytes;
 			this.pump();
 		});
@@ -244,8 +247,9 @@ export class ParadisMobileSendQueue {
 	}
 
 	/**
-	 * 今は送れないなら待つ時間（ms）。bufferedAmount が閾値を超えていれば待つ。超えたまま 2 秒変わらなければその値を
-	 * 信用せず、256KiB/秒 の速さで送る。値が変われば信用し直す。
+	 * 今は送れないなら待つ時間（ms）。bufferedAmount が閾値を超えていれば待つ。時間ベースの安全策に切り替えるのは、
+	 * 閾値を超えたまま値が 2 秒「まったく変わらない」ときだけ（減らない・取れない実装への保険）。値が動いている間は、
+	 * どれだけ大きくても待ち続ける。切り替えた後は 256KiB/秒 の速さで送り、値が変われば信用し直す。
 	 */
 	private waitBeforeSend(): number {
 		const buffered = this.socketBuffered();
