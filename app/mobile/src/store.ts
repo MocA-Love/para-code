@@ -23,6 +23,7 @@ import type { BrowserInput } from './browserKeys.js';
 import { localizeAgentMonitors, parseAgentMonitors, type AgentMonitor } from './agentMonitors.js';
 import { ShellOutputBusyError, isShellStoppable, localizeAgentShells, parseAgentShells, parseAgentShellsAccess, parseShellOutputReply, type AgentShell, type AgentShellOutput, type AgentShellsAccess } from './agentShells.js';
 import { APP_PROTOCOL_VERSION, PcCapability, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
+import { PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, paradisParseAgentApprovalRequest, paradisSanitizeApprovalInstruction, paradisParseApprovalSuggestionScope, type IParadisAgentApprovalRequest, type ParadisAgentApprovalSuggestionScope } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisAgentApprovalRequest.js';
 import { paradisParseMobileBookmarks, paradisParseMobileBrowserFocus, paradisParseMobileBrowserInputRejected, paradisParseMobileBrowserPage, type IParadisMobileBookmarks, type IParadisMobileBrowserFocus, type IParadisMobileBrowserInputRejected, type IParadisMobileBrowserPage } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileBrowserProtocol.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -1372,6 +1373,12 @@ export interface AgentInteraction {
 	choices?: AgentApprovalChoice[];
 	/** hook の「今後は確認しない」の候補を短くしたもの（表示の補助。W2-21）。 */
 	suggestions?: string[];
+	/**
+	 * kind==='approval'（`agent.approval.detail.v1`。古い PC は付けない）: 操作の中身（ツールごとに分けたもの・サブエージェント）と、
+	 * 「以後は確認しない」で足されるものの残り方。`answerVia: 'mod'` なら拒否に指示を添えられる。
+	 */
+	request?: IParadisAgentApprovalRequest;
+	suggestionScope?: ParadisAgentApprovalSuggestionScope;
 }
 
 export interface AgentApprovalChoice {
@@ -1430,9 +1437,14 @@ function parseAgentInteraction(value: unknown): AgentInteraction | undefined {
 	const suggestions = Array.isArray(raw['suggestions'])
 		? raw['suggestions'].filter((item): item is string => typeof item === 'string' && item.length > 0 && item.length <= 200).slice(0, 5)
 		: undefined;
+	const request = paradisParseAgentApprovalRequest(raw['request']);
+	const suggestionScope = paradisParseApprovalSuggestionScope(raw['suggestionScope']);
 	return {
 		kind: 'approval', id: raw['id'], ...(title !== undefined ? { title } : {}), ...(detail !== undefined ? { detail } : {}), ...(choices !== undefined ? { choices } : {}),
 		...(suggestions !== undefined && suggestions.length > 0 ? { suggestions } : {}),
+		...(request !== undefined ? { request } : {}),
+		...(suggestionScope !== undefined ? { suggestionScope } : {}),
+		...(raw['answerVia'] === 'mod' ? { answerVia: 'mod' as const } : {}),
 	};
 }
 
@@ -2579,7 +2591,10 @@ export class MobileController {
 	 * 選択肢を読んだときの確認の見出しまでの指紋）。PC は送る直前に画面が同じ確認で、その番号が同じ文言かを確かめ、
 	 * 違えば送らずに断る。
 	 */
-	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }): Promise<AgentMessageSendResult> {
+	/**
+	 * 承認に答える。`denyMessage` は拒否（`no`）に添える指示（`agent.approval.detail.v1`。承認の `answerVia: 'mod'` のときだけ）。
+	 */
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string, option?: { readonly label: string; readonly promptHash?: string }, denyMessage?: string): Promise<AgentMessageSendResult> {
 		const optionLabel = option?.label;
 		const chat = this.state.agentChats.get(terminalKey);
 		if (!this.isLiveAvailable()) {
@@ -2598,9 +2613,19 @@ export class MobileController {
 		if (!choiceIsValid) {
 			return Promise.resolve({ status: 'rejected', message: 'この選択肢は送信できません' });
 		}
+		// 制御文字（改行とタブ以外）は送らない（PC も同じ関数で除く）
+		const message = denyMessage !== undefined ? paradisSanitizeApprovalInstruction(denyMessage) : undefined;
+		if (denyMessage !== undefined && denyMessage.length > PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT) {
+			return Promise.resolve({ status: 'rejected', message: `指示が長すぎます。添付した画像のパスも含めて ${PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT.toLocaleString('en-US')} 字までにしてください` });
+		}
+		if (denyMessage !== undefined && (choice !== 'no' || chat.interaction.answerVia !== 'mod' || message === undefined || message.length === 0
+			|| !this.hasPcCapability(PcCapability.AgentApprovalDetail))) {
+			return Promise.resolve({ status: 'rejected', message: '指示を添えて拒否できません。拒否だけを送るか、PC の画面で回答してください' });
+		}
 		return this.sendAgentActionResult(terminalKey, {
 			t: 'action/answerApproval', token: this.agentToken(terminalKey), epoch: chat.epoch, interactionId, choice,
 			...(screenOption ? { optionLabel, ...(option?.promptHash !== undefined && /^[0-9a-f]{40}$/.test(option.promptHash) ? { promptHash: option.promptHash } : {}) } : {}),
+			...(message !== undefined ? { message } : {}),
 		}, 60_000);
 	}
 

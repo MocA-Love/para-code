@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { approvalChoicesFromOptions, approvalSuggestionNote, parseApprovalOptionsReply, shouldRequestApprovalOptions } from './approvalOptions.js';
+import { approvalChoicesFromOptions, parseApprovalOptionsReply, shouldRequestApprovalOptions, shouldRequestApprovalWarningOnly } from './approvalOptions.js';
 
 describe('approvalOptions (W2-21)', () => {
 	it('asks the PC only for hook approvals that carry the plain allow / deny choices', () => {
@@ -34,9 +34,9 @@ describe('approvalOptions (W2-21)', () => {
 		]);
 		expect({ choices: result.choices, labels: [...result.labels] }).toEqual({
 			choices: [
-				{ id: 'opt:1', label: 'Yes', tone: 'approve' },
+				{ id: 'opt:1', label: '許可', tone: 'approve' },
 				{ id: 'opt:2', label: `Yes, and don't ask again for git push commands in /Users/example/projects/demo`, tone: 'neutral' },
-				{ id: 'no', label: 'No, and tell Claude what to do differently', tone: 'deny' },
+				{ id: 'no', label: '拒否', tone: 'deny' },
 			],
 			labels: [
 				['opt:1', 'Yes'],
@@ -60,11 +60,32 @@ describe('approvalOptions (W2-21)', () => {
 		});
 	});
 
-	it('writes the hook suggestions as one note line', () => {
+	it('merges the screen\'s plain "No" into the one 拒否 button and names the plain "Yes" 許可 (decision 2)', () => {
+		const result = approvalChoicesFromOptions([{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }], 'cccccccccccccccccccccccccccccccccccccccc', 'This shell -c script runs rm and could not be checked');
+		expect({ choices: result.choices, labels: [...result.labels], warning: result.warning }).toEqual({
+			choices: [{ id: 'opt:1', label: '許可', tone: 'approve' }, { id: 'no', label: '拒否', tone: 'deny' }],
+			labels: [['opt:1', 'Yes']],
+			warning: 'This shell -c script runs rm and could not be checked',
+		});
+	});
+
+	it('asks only for the warning on a mod approval that can add rules, and keeps its own choices', () => {
+		const modChoices = [{ id: 'yes', label: '許可', tone: 'approve' as const }, { id: 'always', label: '許可（以後確認しない）', tone: 'approve' as const }, { id: 'no', label: '拒否', tone: 'deny' as const }];
+		const plain = [{ id: 'yes', label: '許可', tone: 'approve' as const }, { id: 'no', label: '拒否', tone: 'deny' as const }];
 		expect({
-			note: approvalSuggestionNote(['Bash(npm test:*)', 'mode: acceptEdits']),
-			none: approvalSuggestionNote(undefined),
-			empty: approvalSuggestionNote([]),
-		}).toEqual({ note: '今後確認しない候補: Bash(npm test:*)、mode: acceptEdits', none: undefined, empty: undefined });
+			mod: [shouldRequestApprovalOptions({ kind: 'approval', id: 'toolu_1', choices: modChoices }), shouldRequestApprovalWarningOnly({ kind: 'approval', id: 'toolu_1', choices: modChoices })],
+			hook: [shouldRequestApprovalOptions({ kind: 'approval', id: 'toolu_2', choices: plain }), shouldRequestApprovalWarningOnly({ kind: 'approval', id: 'toolu_2', choices: plain })],
+			codex: shouldRequestApprovalWarningOnly({ kind: 'approval', id: 'codex:t:1', choices: modChoices }),
+		}).toEqual({ mod: [false, true], hook: [true, false], codex: false });
+	});
+
+	it('reads the warning line from the reply only when it is a short string', () => {
+		const options = [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }];
+		expect({
+			warning: parseApprovalOptionsReply({ options, warning: 'This shell -c script runs rm and could not be checked' })?.warning,
+			empty: parseApprovalOptionsReply({ options, warning: ' ' })?.warning,
+			long: parseApprovalOptionsReply({ options, warning: 'x'.repeat(301) })?.warning,
+			notString: parseApprovalOptionsReply({ options, warning: 1 })?.warning,
+		}).toEqual({ warning: 'This shell -c script runs rm and could not be checked', empty: undefined, long: undefined, notString: undefined });
 	});
 });

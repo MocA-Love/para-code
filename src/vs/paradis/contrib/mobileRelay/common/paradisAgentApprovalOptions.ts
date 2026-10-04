@@ -165,6 +165,52 @@ export function paradisParseApprovalOptions(screen: string): readonly IParadisAg
 	});
 }
 
+/** 許可の確認の枠の中で、コマンドの上下に引かれる点線（Claude Code 2.1.289 の実画面: `╌╌╌…`）。 */
+const DASHED_RULE_LINE = /^[\s│┃|]*╌{8,}[\s│┃|]*$/;
+/** 理由を言わない定型の行（空白を除いた小文字）。警告として出さない。 */
+const GENERIC_WARNINGS: readonly string[] = ['thiscommandrequiresapproval'];
+/** 警告の行の数と長さの上限（これを超えるものは警告ではなく本文とみなす）。 */
+const MAX_WARNING_LINES = 3;
+const MAX_WARNING_LENGTH = 300;
+
+/**
+ * 許可の確認の見出しの上に出ている警告の行（`This shell -c script runs rm and could not be checked` など）を読む。
+ * 警告は hook の入力に無く、Claude Code が判定の理由として画面にだけ書く（2.1.289 で実測）。
+ *
+ * `context` は {@link paradisPermissionPromptParts}（agentChat/browser/paradisAgentTuiInput.ts）が切り出した、見出しの行と
+ * その上の行。Claude Code の Bash の確認は「Bash command / 説明 / 点線 / コマンド / 点線 / 警告 / 見出し」の形なので、
+ * 最後の点線と見出しの間の行を警告とする。点線が無い（Edit などの確認・Codex）・定型の行だけ・長すぎるときは undefined。
+ */
+export function paradisParsePermissionWarning(context: string): string | undefined {
+	const lines = context.split('\n');
+	let separator = -1;
+	for (let index = lines.length - 2; index >= 0; index--) {
+		if (DASHED_RULE_LINE.test(lines[index] ?? '')) {
+			separator = index;
+			break;
+		}
+	}
+	if (separator < 0) {
+		return undefined;
+	}
+	const body = lines.slice(separator + 1, lines.length - 1)
+		.map(line => line.replace(/^[\s│┃|]+/, '').replace(/[\s│┃|]+$/, ''))
+		.filter(line => line.length > 0);
+	if (body.length === 0 || body.length > MAX_WARNING_LINES) {
+		return undefined;
+	}
+	const warning = normalizeLabel(body.join(' '));
+	if (warning.length > MAX_WARNING_LENGTH || GENERIC_WARNINGS.includes(warning.replace(/\s+/g, '').toLowerCase())) {
+		return undefined;
+	}
+	return warning;
+}
+
+/** 届いた `warning` を読む（アプリが使う）。 */
+export function paradisReadPermissionWarning(value: unknown): string | undefined {
+	return typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_WARNING_LENGTH ? value : undefined;
+}
+
 /**
  * 2 つの文言が同じ選択肢を指すか。空白（折り返しの位置の違い）と大文字小文字は見ない。
  * ペインの幅が変わって折り返しの位置が動いても、同じ選択肢なら一致する。

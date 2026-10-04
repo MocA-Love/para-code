@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
-import { ParadisNotifyHookLedger, paradisApprovalNotifyContent, paradisResolveNotifyContent } from '../../node/paradisNotifyContentSource.js';
+import { ParadisNotifyHookLedger, paradisApprovalNotifyContent, paradisApprovalNotifyParts, paradisResolveNotifyContent } from '../../node/paradisNotifyContentSource.js';
 
 function hook(event: string, fields: Partial<IParadisAgentHookEvent> = {}): IParadisAgentHookEvent {
 	return { token: 'tok', event, sessionId: undefined, transcriptPath: undefined, cwd: undefined, at: 1000, ...fields };
@@ -90,7 +90,8 @@ suite('paradisResolveNotifyContent', () => {
 		], [
 			{ kind: 'agent-question', category: 'question', content: 'どれ？' },
 			{ kind: 'agent-question', category: 'question', content: 'どちら？', interactionId: 'q1' },
-			{ kind: 'agent-question', category: 'approval', content: 'Bash: `npm test`', interactionId: 'toolu_1' },
+			// 説明のあるコマンドは、詳細を「説明 + 全文」、本文を「説明 + コマンドの先頭 1 行」にする（カードと同じ順）
+			{ kind: 'agent-question', category: 'approval', content: 'Bash: テスト\n\n```\nnpm test\n```', summary: 'Bash: テスト\n`npm test`', interactionId: 'toolu_1' },
 			{ kind: 'agent-question', category: 'approval', content: 'Edit: a.ts', interactionId: 'toolu_2' },
 			{ kind: 'agent-question', category: 'approval', content: 'Edit: b.ts', interactionId: 'toolu_3' },
 			{ kind: 'agent-question', category: 'approval', content: 'Edit: c.ts', interactionId: 'toolu_4' },
@@ -114,6 +115,23 @@ suite('paradisResolveNotifyContent', () => {
 			'操作: `ls`',
 			'Bash\n\n```\necho `date`\n```',
 			'Bash\n\n````\nprintf "```"\n````',
+		]);
+	});
+
+	test('承認の本文: 説明 + コマンドの先頭 1 行（長い・複数行は「…」で切る）。説明が無い 1 行のコマンドは本文を分けない', () => {
+		const long = `docker compose exec backend sh -c "${'x'.repeat(250)}"`;
+		assert.deepStrictEqual([
+			paradisApprovalNotifyParts('Bash', { command: 'cd repo &&\nnpm test', description: 'テストを流す' }),
+			paradisApprovalNotifyParts('Bash', { command: long }).summary,
+			paradisApprovalNotifyParts('Bash', { command: 'ls' }),
+			paradisApprovalNotifyParts('Edit', { file_path: '/repo/a.ts', description: '直す' }),
+		], [
+			// allow-any-unicode-next-line
+			{ content: 'Bash: テストを流す\n\n```\ncd repo &&\nnpm test\n```', summary: 'Bash: テストを流す\n`cd repo &&…`' },
+			// allow-any-unicode-next-line
+			`Bash: \`${long.slice(0, 200)}…\``,
+			{ content: 'Bash: `ls`' },
+			{ content: 'Edit: `/repo/a.ts`' },
 		]);
 	});
 });

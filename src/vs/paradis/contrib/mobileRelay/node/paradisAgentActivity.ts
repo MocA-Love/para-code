@@ -635,6 +635,12 @@ export class ParadisAgentActivityTracker {
 		return this.agents.has(agentId);
 	}
 
+	/** 一覧の子の呼び名と種類（許可のカードの送り元に出す）。一覧にいなければ undefined。 */
+	agentSummary(agentId: string): { readonly label: string; readonly role: 'subagent' | 'teammate' } | undefined {
+		const agent = this.agents.get(agentId);
+		return agent !== undefined ? { label: agent.label, role: agent.role } : undefined;
+	}
+
 	/** 一覧の子が終わっているか（完了・失敗・中断）。 */
 	hasEndedAgent(agentId: string): boolean {
 		const agent = this.agents.get(agentId);

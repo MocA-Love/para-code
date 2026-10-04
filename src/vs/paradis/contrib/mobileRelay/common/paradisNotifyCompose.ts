@@ -65,6 +65,11 @@ export interface IParadisNotifyComposeInput {
 	readonly category: ParadisNotifyCategory;
 	/** 最後の発言・承認の中身・質問文（Markdown のまま）。無ければ定型文になる。 */
 	readonly content?: string;
+	/**
+	 * 本文だけに使う短い Markdown（承認の「説明 + コマンドの先頭 1 行」）。無ければ `content` から本文を作る。
+	 * 詳細（長押し）は常に `content`。
+	 */
+	readonly summary?: string;
 	/** エラーの理由のコード（`usage_limit_exceeded` など。言い換えない）。 */
 	readonly errorCode?: string;
 	/** 「通知に内容を含める」。オフなら本文は定型文、詳細は付けない。 */
@@ -94,7 +99,10 @@ export function paradisComposeNotifyBody(input: IParadisNotifyComposeInput): IPa
 	// 原文で伏せたあと、Markdown の装飾（`**` `__` バッククォート・表）に包まれて伏せ字の形に当たらなかった秘密を
 	// 行ごとに伏せ直す（詳細）。本文は装飾を外した平文でもう一度伏せる。
 	const redacted = paradisRedactMarkdownSecrets(paradisRedactNotifyText(raw, PARADIS_NOTIFY_DETAIL_MAX_CHARS));
-	const plain = paradisRedactMobileCommandOutput(paradisStripMarkdownForNotify(redacted)).trim();
+	// 本文の材料が別にあれば（承認の「説明 + コマンドの先頭 1 行」）、同じ伏せ方をしてそちらを使う
+	const summary = input.summary?.trim();
+	const bodySource = summary !== undefined && summary.length > 0 ? paradisRedactMarkdownSecrets(paradisRedactNotifyText(summary, PARADIS_NOTIFY_DETAIL_MAX_CHARS)) : redacted;
+	const plain = paradisRedactMobileCommandOutput(paradisStripMarkdownForNotify(bodySource)).trim();
 	if (plain.length === 0) {
 		return { body: fixed };
 	}

@@ -28,7 +28,7 @@ type Engine = EngineInterface;
 type Json = Record<string, unknown>;
 
 const MOD_PROTOCOL = '1';
-const MOD_VERSION = '1.0.0';
+const MOD_VERSION = '1.1.0';
 /** How long the port read from the port file is trusted before it is read again. */
 const ENDPOINT_TTL_MS = 30_000;
 /** Text chunks of a response are sent at most this often. */
@@ -665,8 +665,9 @@ export const register: Register = on => {
 		const sessionId = e.session_id;
 		const toolUseId = takeAskedCall(e.tool_name, e.tool_input);
 		const suggestions = Array.isArray(e.permission_suggestions) ? e.permission_suggestions : [];
+		// denyMessage: this mod hands the refusal text Para Code sends back to Claude Code (older mods use a fixed one).
 		const registered = await request($, 'permission', {
-			sessionId, toolName: e.tool_name, toolInput: e.tool_input, suggestions,
+			sessionId, toolName: e.tool_name, toolInput: e.tool_input, suggestions, denyMessage: true,
 			...(toolUseId !== undefined ? { toolUseId } : {}),
 			...(e.agent_id !== undefined ? { agentId: e.agent_id } : {}),
 		});
@@ -687,7 +688,10 @@ export const register: Register = on => {
 				};
 			}
 			if (reply?.state === 'answer' && reply.decision === 'deny') {
-				return { ...decided, decision: { behavior: 'deny', message: 'Denied from Para Code Mobile.' } };
+				// With an instruction from the phone, Para Code sends the same refusal the terminal's
+				// "No, and tell Claude what to do differently" writes, so the model reads it as the user's.
+				const message = str(reply.message);
+				return { ...decided, decision: { behavior: 'deny', message: message !== undefined && message.length > 0 ? message : 'Denied from Para Code Mobile.' } };
 			}
 			return decided;
 		} finally {

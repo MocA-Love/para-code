@@ -1690,6 +1690,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			...(agentLabel !== undefined ? { agentLabel } : {}),
 			category: resolution.category,
 			...(resolution.content !== undefined ? { content: resolution.content } : {}),
+			...(resolution.summary !== undefined ? { summary: resolution.summary } : {}),
 			...(resolution.errorCode !== undefined ? { errorCode: resolution.errorCode } : {}),
 		});
 		const encoder = new TextEncoder();

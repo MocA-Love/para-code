@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 import { MobileController, type AgentQuestionAnswer, type PcPushMessage, type StoreState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
 import { PcCapability, stateRequestFields } from './pcCompat.js';
+import { parseApprovalOptionsReply } from './approvalOptions.js';
 
 type Golden = Record<string, unknown>;
 
@@ -115,7 +116,8 @@ async function connect() {
 const stateGolden = readGolden<{ current: Golden; preW217: Golden }>('state.json');
 const stateRequestGolden = readGolden<{ current: Golden; preW217: Golden }>('state-request.json');
 const termGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[] }>('term.json');
-const agentGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[] }>('agent.json');
+const agentGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[]; approval: { delta: Golden } }>('agent.json');
+const agentApprovalGolden = agentGolden.approval;
 const browserGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[]; bookmarks: { toPc: Golden; toMobile: Golden; push: Golden } }>('browser.json');
 
 describe('wire golden (app side)', () => {
@@ -370,6 +372,43 @@ describe('wire golden (app side)', () => {
 			outputs: [['bgolden02', { lines: ['VITE v6.2.0 ready in 412 ms', '[killed]'], truncated: true }], ['bgolden03', { lines: [], truncated: false, error: 'not-found' }]],
 			stopRequest: shapeOf(agentGolden.toPc.find(message => message.t === 'action/stopShell')),
 			stopped: { status: 'accepted' },
+		});
+		controller.disconnect();
+	});
+
+	it('agent: 承認の中身（agent.approval.detail.v1）を全項目のまま読み、指示を添えた拒否はゴールデンと同じ形で送る', async () => {
+		const { controller, pcMux, sent, latest } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		for (const message of [...agentGolden.toMobile.filter(candidate => candidate.t === 'snapshot' || candidate.t === 'delta'), agentApprovalGolden.delta]) {
+			pcMux.send(Channels.Agent, encode(message));
+			await flush();
+		}
+		const interaction = latest()?.agentChats.get('terminal-key-1')?.interaction;
+		const goldenDeny = agentGolden.toPc.find(message => message.t === 'action/answerApproval' && message['message'] !== undefined);
+		void controller.answerAgentApproval('terminal-key-1', 'approval-2', 'no', undefined, goldenDeny?.['message'] as string);
+		await flush();
+		const sentDeny = sent.agent!.filter(message => message.t === 'action/answerApproval').at(-1);
+		// 許可に指示は添えられない（送らずに断る）
+		const allowWithMessage = await controller.answerAgentApproval('terminal-key-1', 'approval-2', 'yes', undefined, 'これも');
+		// 長すぎる指示は、長さが原因だと分かる文言で断る（送らない）
+		const tooLong = await controller.answerAgentApproval('terminal-key-1', 'approval-2', 'no', undefined, 'x'.repeat(4_001));
+		expect({
+			interaction,
+			deny: shapeOf(sentDeny),
+			denyValues: [sentDeny?.['choice'], sentDeny?.['message']],
+			allowWithMessage: allowWithMessage.status,
+			tooLong: [tooLong.status, tooLong.status === 'rejected' && tooLong.message?.startsWith('指示が長すぎます')],
+			warning: parseApprovalOptionsReply(agentGolden.toMobile.find(message => message.t === 'approval-options') ?? {})?.warning,
+		}).toEqual({
+			interaction: agentApprovalGolden.delta['interaction'],
+			deny: shapeOf(goldenDeny),
+			denyValues: ['no', goldenDeny?.['message']],
+			allowWithMessage: 'rejected',
+			tooLong: ['rejected', true],
+			warning: agentGolden.toMobile.find(message => message.t === 'approval-options')?.['warning'],
 		});
 		controller.disconnect();
 	});

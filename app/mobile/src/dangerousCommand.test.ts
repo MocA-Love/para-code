@@ -27,6 +27,12 @@ describe('dangerousCommandLabels', () => {
 		expect(dangerousCommandLabels('git clean -xdf')).toEqual(['削除を含む']);
 	});
 
+	it('detects deletion inside a quoted shell -c script', () => {
+		expect(dangerousCommandLabels('docker exec $C sh -c "rm -rf /srv/render/.staging"')).toEqual(['削除を含む']);
+		expect(dangerousCommandLabels("bash -c 'rm -r build'")).toEqual(['削除を含む']);
+		expect(dangerousCommandLabels('echo "rm" -r')).toEqual([]);
+	});
+
 	it('does not mistake look-alike flags for rm -r', () => {
 		expect(dangerousCommandLabels('docker run --rm -it node')).toEqual([]);
 		expect(dangerousCommandLabels('rmdir -p a/b')).toEqual([]);
