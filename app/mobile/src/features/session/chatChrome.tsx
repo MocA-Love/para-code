@@ -2,15 +2,16 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react-native';
+import { ChevronRight, ChevronsDownUp, ChevronsUpDown, FoldVertical } from 'lucide-react-native';
 import { formatToolName } from '../../agentToolMeta.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { haptic } from '../../haptics.js';
 import { useAppIsActive } from '../../hooks/useAppIsActive.js';
 import { useQuickReplyList } from '../settings/quickRepliesStore.js';
 import type { PendingAgentMessage } from '../../pendingAgentMessages.js';
-import type { AgentLiveState } from '../../store.js';
-import { colors, radius, space, squircle, type } from '../../theme.js';
+import type { AgentActivityState, AgentChatMessage, AgentLiveState } from '../../store.js';
+import { runningCompactionSince } from './compaction.js';
+import { alpha, colors, radius, space, squircle, tint, type } from '../../theme.js';
 import { BottomDrawer, DrawerCaption, DrawerTitle, Icon, iconSize } from '../../ui/index.js';
 import { advisorLiveLabel, isAdvisorLive } from './advisor.js';
 
@@ -23,6 +24,7 @@ const DOT = 5;
  * 会話とコンポーザーの間の行（モックの `.chromerow`）。
  * 左に「エージェントが作業中」と3つの点（Orca の MobileAgentWorkingIndicator）と経過時間・いまの段階、
  * その右に「ツール／たたむ」（すべてのツール実行を開閉）。右端に送信予定の件数。
+ * コンテキストを圧縮している間は、この行ではなく {@link CompactingRow} が出す。
  */
 export function ChatChromeRow({ working, live, allToolsOpen, onToggleTools, pendingCount, onOpenPending }: {
 	working: boolean;
@@ -69,10 +71,44 @@ function elapsedLabel(seconds: number): string {
 	return seconds < 60 ? `${seconds}秒` : `${Math.floor(seconds / 60)}分${String(seconds % 60).padStart(2, '0')}秒`;
 }
 
+/** 1 秒ごとに描き直す（経過時間の表示用）。 */
+function useSecondTick(enabled: boolean): void {
+	const active = useAppIsActive();
+	const [, setClock] = useState(0);
+	useEffect(() => {
+		if (!enabled || !active) {
+			return undefined;
+		}
+		const timer = setInterval(() => setClock(Date.now()), 1000);
+		return () => clearInterval(timer);
+	}, [enabled, active]);
+}
+
+/**
+ * コンテキストを圧縮している間、会話の末尾に出す紫の行（モックの A6-2）。始まりは PreCompact の hook、終わりは
+ * 区切り線（compact_boundary）か PostCompact。1 秒ごとに描き直すたびに確かめ直すので、終わりの知らせが落ちて古くなった
+ * 「圧縮中」もここで消える。圧縮していなければ何も描かない。
+ */
+export function CompactingRow({ activity, messages }: { activity: AgentActivityState | undefined; messages: readonly AgentChatMessage[] | undefined }) {
+	const since = runningCompactionSince(activity, messages, Date.now());
+	useSecondTick(since !== undefined);
+	if (since === undefined) {
+		return null;
+	}
+	const seconds = Math.max(0, Math.floor((Date.now() - since) / 1000));
+	const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+	return (
+		<View style={styles.compacting} accessibilityRole="progressbar" accessibilityLabel={`会話を要約しています。${elapsedLabel(seconds)}`}>
+			<Icon icon={FoldVertical} size={iconSize.sm} color={colors.purple} />
+			<Text style={styles.compactingText} numberOfLines={1}>会話を要約しています…</Text>
+			<Text style={styles.compactingClock}>{clock}</Text>
+		</View>
+	);
+}
+
 function WorkingIndicator({ live }: { live: AgentLiveState | undefined }) {
 	const dots = useRef([new Animated.Value(0.3), new Animated.Value(0.3), new Animated.Value(0.3)]).current;
 	const active = useAppIsActive();
-	const [, setClock] = useState(0);
 	useEffect(() => {
 		if (!active) {
 			return undefined;
@@ -85,15 +121,8 @@ function WorkingIndicator({ live }: { live: AgentLiveState | undefined }) {
 		loops.forEach(loop => loop.start());
 		return () => loops.forEach(loop => loop.stop());
 	}, [active, dots]);
-	const isLive = live !== undefined;
 	// 依存は「live があるか」だけにする（差分のたびにタイマーを張り直さない）。
-	useEffect(() => {
-		if (!isLive || !active) {
-			return undefined;
-		}
-		const timer = setInterval(() => setClock(Date.now()), 1000);
-		return () => clearInterval(timer);
-	}, [isLive, active]);
+	useSecondTick(live !== undefined);
 	const seconds = live !== undefined
 		? Math.max(live.elapsedSeconds ?? 0, Math.max(0, Math.floor((Date.now() - live.startedAt) / 1000)))
 		: undefined;
@@ -228,6 +257,30 @@ const styles = StyleSheet.create({
 	toggleText: {
 		fontSize: type.meta,
 		fontWeight: '600',
+		color: colors.textMuted,
+	},
+	compacting: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.sm,
+		marginHorizontal: space.lg,
+		marginBottom: space.xs,
+		paddingHorizontal: space.md,
+		paddingVertical: space.sm,
+		borderRadius: radius.control,
+		...squircle,
+		borderWidth: StyleSheet.hairlineWidth,
+		borderColor: tint(colors.purple, alpha.line),
+		backgroundColor: tint(colors.purple, alpha.wash),
+	},
+	compactingText: {
+		flex: 1,
+		fontSize: type.meta,
+		color: colors.purple,
+	},
+	compactingClock: {
+		fontSize: type.caption,
+		fontVariant: ['tabular-nums'],
 		color: colors.textMuted,
 	},
 	pending: {

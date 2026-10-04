@@ -147,6 +147,11 @@ export const ParadisMobileCapability = {
 	 * 「そのコマンドは無い」と断ったら、`action-result` を `code: 'unknown-command'` で返す（古いアプリにも返す）。
 	 */
 	AgentCommandsV2: 'agent.commands.v2',
+	/**
+	 * agent の snapshot・delta の `panel`（承認・質問以外の画面が PC の Claude Code で開いている。閉じたら `null`）と、それを
+	 * Esc で閉じる要求 `action/closePanel`。mod（Claude Mods 1.2.0 以降）が開いていると答えたときだけ送る・打つ。
+	 */
+	AgentPanel: 'agent.panel.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -191,6 +196,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentShells,
 	ParadisMobileCapability.AgentApprovalDetail,
 	ParadisMobileCapability.AgentCommandsV2,
+	ParadisMobileCapability.AgentPanel,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

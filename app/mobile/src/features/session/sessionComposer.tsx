@@ -4,7 +4,7 @@ import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, 
 import * as ImagePicker from 'expo-image-picker';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { paraAlert } from '../../paraAlert.js';
-import { ArrowUp, CircleAlert, CornerDownRight, ImagePlus } from 'lucide-react-native';
+import { ArrowUp, CircleAlert, CornerDownRight, ImagePlus, Info, Monitor } from 'lucide-react-native';
 import { appendQuickReply } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
 import { flattenAnswerInput, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from '../../components/agentComposerDraft.js';
@@ -23,17 +23,19 @@ import {
 	type ComposerAttachment,
 } from '../../attachments/composerAttachments.js';
 import { agentSlashQuery, filterAgentSlashCommands, normalizeAgentSlashSubmission, selectedAgentSlashCommandText } from '../../components/agentSlashCommands.js';
+import { agentBuiltinCommandBadge, agentComposerIntercept, agentPanelLabel, claudeBuiltinCommand, type AgentComposerIntercept } from '../../components/agentBuiltinCommands.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { haptic } from '../../haptics.js';
 import type { AgentMonitor } from '../../agentMonitors.js';
 import type { AgentShell, AgentShellsAccess } from '../../agentShells.js';
-import { AGENT_COMPOSER_NOT_EMPTY_CODE, AGENT_PANEL_OPEN_CODE, AGENT_SLASH_COMMAND_REJECTED_CODE, type AgentCommandCatalogState, type AgentSlashRejection, type AgentCommandOption, type AgentMessageSendResult, type AgentModelControlState, type FsUploadResult } from '../../store.js';
+import { AGENT_COMPOSER_NOT_EMPTY_CODE, AGENT_PANEL_OPEN_CODE, AGENT_SLASH_COMMAND_REJECTED_CODE, type AgentCommandCatalogState, type AgentSlashRejection, type AgentCommandOption, type AgentMessageSendResult, type AgentModelControlState, type AgentPanel, type FsUploadResult } from '../../store.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
 import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
 import { Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import { errorKind } from './errorKind.js';
-import { ModelPill } from './modelDrawer.js';
+import { ModelPill, type ModelPillHandle } from './modelDrawer.js';
+import { SessionStatusCard } from './sessionStatusCard.js';
 import { BackgroundPill } from './backgroundPill.js';
 import { SlashCommandList } from './slashCommandList.js';
 import { useIsFocused } from 'expo-router';
@@ -82,6 +84,17 @@ interface SessionComposerProps {
 	onSlashRejectionHandled?: (requestId: string) => void;
 	/** 端末の画面へ移る（PC の画面を閉じる・入力欄の文字を消すための導線）。 */
 	onOpenTerminal?: () => void;
+	/** PC で開いている画面（agent.panel.v1）。あれば入力欄の上に帯を出し、閉じるまで送信を止める。 */
+	panel?: AgentPanel;
+	/** PC が画面の帯と「閉じる」を扱える（agent.panel.v1）。断りの panel-open は帯に任せる。 */
+	panelSupported?: boolean;
+	/** 帯の「閉じる」（PC へ Esc を送る）。 */
+	onClosePanel?: () => Promise<AgentMessageSendResult>;
+	/** `/usage`: アプリの「使用量」の画面へ移る。 */
+	onOpenUsage?: () => void;
+	/** `/status` のカードに出すスペースの名前とブランチ（この端末が持っている値）。 */
+	spaceName?: string;
+	branch?: string;
 	/** 質問への回答入力に切り替えているときの依頼（無ければ通常のメッセージ入力）。 */
 	answerTarget?: QuestionFreeTextRequest;
 	onCancelAnswer: () => void;
@@ -100,6 +113,10 @@ interface SessionComposerProps {
  *    回答を送れた・やめた・質問が替わったら戻す（回答に下書きが混ざらないように）
  *  - `/` で始めるとスラッシュコマンドの候補を出す。一覧は `/` を打つたびに PC へ求める（PC が短く覚えている）
  *  - エージェントがスラッシュコマンドを断ったら（候補に無い名前など）、理由を入力欄の上に出し、文を入力欄へ戻す
+ *  - 組み込みのコマンドの一部は送らずにこの端末で引き受ける（agentBuiltinCommands.ts）: 引数の無い `/model`・`/effort` は
+ *    モデルのシート、`/model <別名>`・`/effort <段階>` はピルと同じ経路、`/usage` は使用量の画面、`/status` はカード。
+ *    PC で画面が開くコマンドは候補に札を付け、手で打って送ったときは送る前に確かめる。Codex の `/model …` は案内を出す
+ *  - PC で画面が開いている間（agent.panel.v1）は、入力欄の上に帯と「閉じる」（Esc）を出し、送信を止める
  *  - 画像は PC へ上げ、入力欄の文字の上に札で並べる（案 P2。文字にはパスを入れない）。送るときに
  *    パスを本文の先頭に並べる（案 M1）。上げ終わるまで送れず、失敗した画像は確かめてから外して送る
  */
@@ -107,6 +124,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	draftKey, terminalKey, sessionEpoch, agent, model, effort, modelControl, modelLocked, commandCatalog, monitors, shells, shellsAccess,
 	sendText, updateClaudeSetting, onAfterSubmit, fsUpload, ws, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings,
 	answerTarget, onCancelAnswer, answerRefreshing, slashRejection, onSlashRejectionHandled, onOpenTerminal,
+	panel, panelSupported = false, onClosePanel, onOpenUsage, spaceName, branch,
 }, ref) {
 	const loadDraft = (key: string | undefined): string => key !== undefined ? useAppStore.getState().agentDrafts[key] ?? '' : '';
 	const nativeInputRef = useRef<TextInput>(null);
@@ -125,7 +143,23 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	const [slashLead, setSlashLead] = useState(() => inputRef.current.startsWith('/'));
 	// 送ったスラッシュコマンドをエージェントが断った理由（入力欄の上に出す。書き換えたら消す）
 	// `terminal`: 端末の画面で片付ける断り（PC で開いた画面・入力欄に残った文字）。端末へ移るボタンを添える
-	const [slashError, setSlashError] = useState<{ readonly message: string; readonly terminal: boolean } | undefined>(undefined);
+	// `sheet`: モデルのシートを開くボタンを添える（別名でない `/model <値>` への案内）
+	const [slashError, setSlashError] = useState<{ readonly message: string; readonly terminal: boolean; readonly sheet?: boolean } | undefined>(undefined);
+	// 入力欄の上に出す、この端末で引き受けたコマンドのカード（`/status`）と案内（Codex の `/model …`）
+	const [localCard, setLocalCard] = useState<'status' | 'codex-model' | undefined>(undefined);
+	const [closingPanel, setClosingPanel] = useState(false);
+	// 「閉じる」を受け付けた画面（since）。PC が閉じたと知らせてくるまで帯を先に隠す（二度押しを防ぐ）。まだ開いていると
+	// 断られたら（panel-open）出し直す
+	const [dismissedPanelSince, setDismissedPanelSince] = useState<number | undefined>(undefined);
+	const modelPillRef = useRef<ModelPillHandle>(null);
+	// 候補から選んだコマンドの名前（札を見て選んだので、PC で画面が開くコマンドでも送る前に確かめない）
+	const pickedCommandRef = useRef<string | undefined>(undefined);
+	// 確かめた・「文章として送る」を選んだ送信は、入力欄で引き受けずにそのまま送る
+	const bypassInterceptRef = useRef(false);
+	// 入力欄が引き受けた送信の処理（下で毎回作り直す。submit からは最新のものを呼ぶ）
+	const handleInterceptRef = useRef<(intercept: AgentComposerIntercept, text: string) => void>(() => { });
+	const panelSupportedRef = useRef(panelSupported);
+	panelSupportedRef.current = panelSupported;
 	const [submitting, setSubmitting] = useState(false);
 	const answering = answerTarget !== undefined;
 	const answeringRef = useRef(answering);
@@ -170,6 +204,12 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 		setSlashQuery(agentSlashQuery(text));
 		setSlashLead(text.startsWith('/'));
 		setSlashError(undefined);
+		setLocalCard(current => current === 'codex-model' ? undefined : current);
+		// 候補から選んだコマンドを打ち替えたら、選んだ印を外す（手で打ったものは送る前に確かめる）
+		const picked = pickedCommandRef.current;
+		if (picked !== undefined && !text.trimStart().toLocaleLowerCase().startsWith(`/${picked.toLocaleLowerCase()}`)) {
+			pickedCommandRef.current = undefined;
+		}
 		setInputMeta(current => current.key === draftKey && current.sendable === nextSendable ? current : { key: draftKey, sendable: nextSendable });
 	}, [draftKey]);
 	const replaceActiveInput = useCallback((input: string) => {
@@ -262,6 +302,17 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 		if ((text.trim().length === 0 && sendState.paths.length === 0) || (answerTarget !== undefined && answerRefreshing)) {
 			return;
 		}
+		// 組み込みのコマンドの一部は送らずにここで引き受ける（回答の入力と、添付のある文はそのまま送る）
+		const bypass = bypassInterceptRef.current;
+		bypassInterceptRef.current = false;
+		const intercept = bypass || answerTarget !== undefined || sendState.paths.length > 0
+			? undefined
+			: agentComposerIntercept(text, agent, commandCatalog?.commands ?? [], pickedCommandRef.current);
+		if (intercept !== undefined) {
+			handleInterceptRef.current(intercept, text);
+			return;
+		}
+		pickedCommandRef.current = undefined;
 		const restoreAttachments = () => {
 			if (sentAttachments.length > 0) {
 				setComposerAttachments(submittedAttachmentKey, list => restoreComposerAttachments(list, sentAttachments));
@@ -293,6 +344,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 		}
 		clearActiveInput();
 		setSlashError(undefined);
+		setLocalCard(undefined);
 		const normalizedText = normalizeAgentSlashSubmission(text, agent, commandCatalog?.commands ?? []);
 		// スラッシュコマンドは先頭が `/` でないと効かないので、添付のパスは後ろへ足す
 		const submittedText = sendState.paths.length > 0 && normalizedText.trimStart().startsWith('/')
@@ -321,7 +373,11 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 				paraAlert.alert('メッセージは未送信です', result.message ?? '本文はターミナルの入力欄に残っています。ターミナル表示で確認して送信してください。');
 			}
 			const inlineCode = result.status === 'rejected' ? result.code : undefined;
-			if (result.status === 'rejected' && inlineCode !== undefined && INLINE_REJECTION_CODES.has(inlineCode) && submissionGenerationRef.current === generation) {
+			if (result.status === 'rejected' && inlineCode === AGENT_PANEL_OPEN_CODE && panelSupportedRef.current && submissionGenerationRef.current === generation) {
+				// PC の画面が開いている。帯（panel）が理由と「閉じる」を出すので、ここでは鳴らすだけ（先に隠した帯も出し直す）
+				haptic('error');
+				setDismissedPanelSince(undefined);
+			} else if (result.status === 'rejected' && inlineCode !== undefined && INLINE_REJECTION_CODES.has(inlineCode) && submissionGenerationRef.current === generation) {
 				// エージェントが断った・PC の画面が塞がっている。文は入力欄へ戻してあるので、理由を入力欄の上に出す（ダイアログは出さない）
 				haptic('error');
 				setSlashError({
@@ -343,6 +399,98 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	const submitRef = useRef(submit);
 	submitRef.current = submit;
 
+	/** 設定の変更（`/model <別名>`・`/effort <段階>`）。断られたら文を入力欄へ戻し、理由を上に出す。 */
+	const applySetting = (setting: 'model' | 'effort', value: string, text: string) => {
+		clearActiveInput();
+		setSlashError(undefined);
+		setSubmitting(true);
+		const generation = ++submissionGenerationRef.current;
+		updateClaudeSetting(setting, value).catch((): AgentMessageSendResult => ({ status: 'rejected' })).then(result => {
+			if (result.status === 'accepted') {
+				// 結果は PC の会話に知らせの行で出る（モデルを sonnet に変えました）
+				onAfterSubmit();
+				return;
+			}
+			if (!answeringRef.current && inputRef.current.trim().length === 0) {
+				replaceActiveInput(text);
+			}
+			haptic('error');
+			setSlashError({ message: (result.status === 'rejected' && result.message) || 'Claude Code が入力待ちであることを確かめてから送り直してください', terminal: false });
+		}).finally(() => {
+			if (submissionGenerationRef.current === generation) {
+				setSubmitting(false);
+			}
+		});
+	};
+
+	/** 入力欄が引き受けた送信（agentComposerIntercept）と、候補で選んだシート・使用量・状態。 */
+	handleInterceptRef.current = (intercept: AgentComposerIntercept, text: string) => {
+		switch (intercept.kind) {
+			case 'model-sheet':
+			case 'effort-sheet':
+				if (modelPillRef.current?.open(intercept.kind === 'effort-sheet' ? 'effort' : 'model') === true) {
+					clearActiveInput();
+				} else {
+					haptic('warning');
+					setSlashError({ message: 'いまはモデルを選べません。Claude Code が入力待ちになってから試してください', terminal: false });
+				}
+				return;
+			case 'model-switch':
+				applySetting('model', intercept.alias, text);
+				return;
+			case 'effort-switch':
+				applySetting('effort', intercept.level, text);
+				return;
+			case 'model-not-alias':
+				haptic('warning');
+				setSlashError({ message: `「${intercept.value}」はモデルの別名ではないので送りませんでした。default・sonnet・opus・haiku・fable・best・opusplan（[1m] 付きも可）のどれかを指定するか、シートで選んでください`, terminal: false, sheet: true });
+				return;
+			case 'usage':
+				clearActiveInput();
+				haptic('move');
+				onOpenUsage?.();
+				return;
+			case 'status':
+				clearActiveInput();
+				haptic('move');
+				setLocalCard('status');
+				return;
+			case 'codex-model':
+				haptic('warning');
+				setLocalCard('codex-model');
+				return;
+			case 'confirm-panel':
+				haptic('warning');
+				paraAlert.alert(
+					'PC で画面が開きます',
+					`/${intercept.command} は PC に${intercept.title}の画面を開きます。この端末からは中を操作できず、閉じるまで発言を送れません。`,
+					[
+						{ text: 'やめる', style: 'cancel' },
+						{ text: 'PC で開く', onPress: () => { bypassInterceptRef.current = true; submitRef.current(); } },
+					],
+				);
+				return;
+		}
+	};
+
+	const closePanel = () => {
+		if (onClosePanel === undefined || closingPanel || panel === undefined) {
+			return;
+		}
+		haptic('move');
+		setClosingPanel(true);
+		// 押したらすぐに帯を隠す（二度押しで Esc を 2 回送らない）。断られたら出し直す
+		const since = panel.since;
+		setDismissedPanelSince(since);
+		onClosePanel().catch((): AgentMessageSendResult => ({ status: 'rejected' })).then(result => {
+			if (result.status === 'rejected') {
+				haptic('error');
+				setDismissedPanelSince(current => current === since ? undefined : current);
+				setSlashError({ message: result.message ?? 'PC の画面を閉じられませんでした。端末を開いて Esc を送ってください', terminal: true });
+			}
+		}).finally(() => setClosingPanel(false));
+	};
+
 	useImperativeHandle(ref, () => ({
 		insertText: (text: string) => replaceActiveInput(appendQuickReply(inputRef.current, text)),
 		focus: () => nativeInputRef.current?.focus(),
@@ -357,11 +505,19 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	// 求められなかった（PC と繋がっていない等）・失敗・時間切れのときは待たない
 	const codexSlashCatalogPending = answerTarget === undefined && agent === 'codex' && /^\/\S/.test(inputRef.current)
 		&& commandCatalog?.status === 'loading' && commandCatalog.commands.length === 0;
-	const selectSlashCommand = useCallback((command: AgentCommandOption) => {
+	const selectSlashCommand = (command: AgentCommandOption) => {
+		// シート・使用量・状態のカードで済むコマンドは、文字を入れずにその場で開く
+		const builtin = agent === 'claude' && command.source === 'built-in' ? claudeBuiltinCommand(command.name, commandCatalog?.commands ?? []) : undefined;
+		if (builtin?.action === 'model-sheet' || builtin?.action === 'effort-sheet' || builtin?.action === 'usage' || builtin?.action === 'status') {
+			handleInterceptRef.current({ kind: builtin.action }, `/${command.name}`);
+			return;
+		}
+		pickedCommandRef.current = command.name;
 		replaceActiveInput(selectedAgentSlashCommandText(command));
 		setSlashQuery(undefined);
 		nativeInputRef.current?.focus();
-	}, [replaceActiveInput]);
+	};
+	const commandBadge = (command: AgentCommandOption) => agentBuiltinCommandBadge(agent, command, commandCatalog?.commands ?? []);
 	const retryCommandCatalog = useCallback(() => {
 		if (terminalKey !== undefined) {
 			requestAgentCommandCatalog(terminalKey);
@@ -442,14 +598,42 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 		}
 	}, [attachmentKey, startUpload]);
 
-	const sendDisabled = submitting || !(sendable || hasReadyAttachments) || attachmentState.kind === 'uploading' || codexSlashCatalogPending || (answering && answerRefreshing);
+	// PC で画面が開いている間は送らない（送ると画面に打ち込まれる）。回答の入力は承認・質問の画面へ向けたものなので止めない
+	const panelOpen = panel !== undefined && panel.since !== dismissedPanelSince && !answering;
+	const sendDisabled = submitting || !(sendable || hasReadyAttachments) || attachmentState.kind === 'uploading' || codexSlashCatalogPending || (answering && answerRefreshing) || panelOpen;
 	// 外付けキーボードの ⌘↩（iPad）。送信ボタンと同じ条件で送る。
 	const focused = useIsFocused();
 	useShortcutSlot('send', focused ? { send: () => { if (!sendDisabled) { haptic('commit'); submit(); } } } : undefined);
 	return (
 		<View style={styles.root}>
 			{showSlashMenu ? (
-				<SlashCommandList catalog={commandCatalog} commands={visibleCommands} onSelect={selectSlashCommand} onRetry={retryCommandCatalog} />
+				<SlashCommandList catalog={commandCatalog} commands={visibleCommands} onSelect={selectSlashCommand} onRetry={retryCommandCatalog} badgeFor={commandBadge} />
+			) : null}
+			{localCard === 'status' && answerTarget === undefined ? (
+				<SessionStatusCard agent={agent} model={model} effort={effort} spaceName={spaceName} branch={branch} onClose={() => { haptic('move'); setLocalCard(undefined); }} />
+			) : null}
+			{localCard === 'codex-model' && answerTarget === undefined ? (
+				<View style={styles.answerBanner} accessibilityLiveRegion="polite">
+					<Icon icon={Info} size={answerIconSize} color={colors.yellow} />
+					<View style={textStyles.answerBody}>
+						<Text style={textStyles.answerPrompt}>Codex のモデルはこの端末から変えられません</Text>
+						<Text style={textStyles.slashErrorText}>PC のターミナルで /model を使ってください。このまま送ると、Codex への発言として届きます。</Text>
+					</View>
+					<View style={styles.bannerActions}>
+						<Button label="文章として送る" variant="ghost" size="sm" onPress={() => { haptic('move'); setLocalCard(undefined); bypassInterceptRef.current = true; submitRef.current(); }} />
+						<Button label="消す" variant="ghost" size="sm" onPress={() => { haptic('move'); setLocalCard(undefined); clearActiveInput(); }} />
+					</View>
+				</View>
+			) : null}
+			{panelOpen ? (
+				<View style={styles.answerBanner} accessibilityLiveRegion="polite">
+					<Icon icon={Monitor} size={answerIconSize} color={colors.yellow} />
+					<View style={textStyles.answerBody}>
+						<Text style={textStyles.answerPrompt}>PC で画面が開いています。閉じるまで送れません</Text>
+						<Text style={textStyles.answerLabel} numberOfLines={1}>{agentPanelLabel(panel?.command) ?? '画面'}</Text>
+					</View>
+					{onClosePanel !== undefined ? <Button label="閉じる" variant="ghost" size="sm" loading={closingPanel} onPress={closePanel} /> : null}
+				</View>
 			) : null}
 			{slashError !== undefined && answerTarget === undefined ? (
 				<View style={styles.answerBanner} accessibilityLiveRegion="polite">
@@ -459,6 +643,9 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 					</View>
 					{slashError.terminal && onOpenTerminal !== undefined ? (
 						<Button label="端末を開く" variant="ghost" size="sm" onPress={() => { haptic('move'); setSlashError(undefined); onOpenTerminal(); }} />
+					) : null}
+					{slashError.sheet === true ? (
+						<Button label="シートで選ぶ" variant="ghost" size="sm" onPress={() => { haptic('move'); setSlashError(undefined); if (modelPillRef.current?.open('model') === true) { clearActiveInput(); } }} />
 					) : null}
 					<Button label="閉じる" variant="ghost" size="sm" onPress={() => { haptic('move'); setSlashError(undefined); }} />
 				</View>
@@ -491,7 +678,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 					ref={nativeInputRef}
 					defaultValue={defaultValueRef.current}
 					onChangeText={updateInput}
-					placeholder={answerTarget === undefined ? 'メッセージ、/コマンド' : answerTarget.mode === 'clarify' ? '伝えたいこと' : answerTarget.mode === 'deny' ? '代わりにどうしてほしいか' : '回答を入力（送信で回答します）'}
+					placeholder={panelOpen ? 'PC の画面を閉じると送れます' : answerTarget === undefined ? 'メッセージ、/コマンド' : answerTarget.mode === 'clarify' ? '伝えたいこと' : answerTarget.mode === 'deny' ? '代わりにどうしてほしいか' : '回答を入力（送信で回答します）'}
 					maxLength={answerTarget?.maxLength !== undefined && attachmentState.kind !== 'uploading' ? attachmentTextBudget(answerTarget.maxLength, attachmentState.paths) : answerTarget?.maxLength}
 				/>
 				<View style={styles.actions}>
@@ -506,6 +693,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 						<Icon icon={ImagePlus} size={20} color={colors.textDim} />
 					</Pressable>
 					<ModelPill
+						ref={modelPillRef}
 						key={`${terminalKey ?? 'none'}:${sessionEpoch ?? 'none'}:${agent ?? 'none'}`}
 						agent={agent}
 						model={model}
@@ -633,6 +821,9 @@ const styles = StyleSheet.create({
 		flex: 1,
 		minWidth: 0,
 		paddingVertical: space.sm,
+	},
+	bannerActions: {
+		alignItems: 'flex-end',
 	},
 	answerLabel: {
 		fontSize: type.caption,

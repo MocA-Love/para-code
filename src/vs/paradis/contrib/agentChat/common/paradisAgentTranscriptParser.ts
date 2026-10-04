@@ -14,13 +14,14 @@
 // 中継の TranscriptTailer に残し、ここは Node の API を使わない。**正規化の結果はそのままモバイルへ
 // 送られる**ので、出力の形を変えるときはモバイル側の表示も確かめること。
 
-import { IParadisAgentAdvisorInfo, IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentQuestionOption, PARADIS_ADVISOR_TOOL, PARADIS_AGENT_QUESTION_PREVIEW_LIMIT } from './paradisAgentChat.js';
+import { IParadisAgentAdvisorInfo, IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentCompactionInfo, IParadisAgentQuestionOption, PARADIS_ADVISOR_TOOL, PARADIS_AGENT_QUESTION_PREVIEW_LIMIT } from './paradisAgentChat.js';
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 import { paradisExpandPastedContent } from '../../../common/paradisPastedContent.js';
 import { paradisRedactMobileCommandOutput } from '../../mobileRelay/common/paradisMobileOutputRedaction.js';
 import { IParadisMonitorSignal, paradisMonitorCallSignal, paradisMonitorNotificationSignals, paradisMonitorStartedSignal, paradisMonitorTaskStopSignal, paradisQueueOperationSignals } from './paradisAgentMonitors.js';
 import { IParadisShellSignal, paradisShellCallSignal, paradisShellNotificationSignals, paradisShellStartedSignal, paradisShellTaskStopSignal } from './paradisAgentShells.js';
 import { paradisCodexUserAuthoredContent, paradisIsCodexEncryptedPayload, paradisMaskCodexEncryptedPayloads } from './paradisCodexInjectedContext.js';
+import { PARADIS_COMPACT_SUMMARY_PREVIEW_LIMIT, paradisClaudeCompactionInfo, paradisCompactionNoticeText, paradisCompactSummaryBody } from './paradisAgentCompaction.js';
 
 export { paradisQuestionReadyMarker } from './paradisAgentQuestionMarker.js';
 
@@ -130,7 +131,9 @@ export interface IRawMessage {
 	/** {@link IParadisAgentChatMessage.notice}（スラッシュコマンドの出力を小さな 1 行で出す）。 */
 	readonly notice?: true;
 	/** {@link IParadisAgentChatMessage.noticeSource} */
-	readonly noticeSource?: 'command';
+	readonly noticeSource?: 'command' | 'compaction' | 'compact-summary';
+	/** {@link IParadisAgentChatMessage.compaction} */
+	readonly compaction?: IParadisAgentCompactionInfo;
 	/** 切り詰め前の全文。モバイルへは送らず tailer が 'tool-full' 用に保持する。 */
 	readonly fullText?: string;
 	/** 画像の実体。モバイルへは送らず tailer が 'tool-image' 用に保持する。 */
@@ -810,6 +813,19 @@ export const PARADIS_SHOWN_COMMAND_OUTPUTS: ReadonlySet<string> = new Set([
 	'reload-skills', 'reload-plugins', 'skills', 'tasks', 'btw',
 ]);
 
+/** `/config model=…` の実行記録を見たときの {@link IClaudeQueuedPromptState.lastLocalCommand}（`/config` のほかの設定と分ける）。 */
+const CONFIG_MODEL_COMMAND = 'config:model';
+
+/**
+ * `/config model=<別名>` の出力（2.1.289 で実測: 成功は `Set Model to sonnet`、別名でなければ `Model takes one of: …`）を
+ * 知らせの行の文にする。
+ */
+function paradisConfigModelNotice(output: string): string {
+	const value = /^Set Model to (?<value>\S+)/.exec(output)?.groups?.value;
+	// allow-any-unicode-next-line
+	return value !== undefined ? `モデルを ${value} に変えました` : `モデルを変えられませんでした（${truncateText(output, 300)}）`;
+}
+
 /**
  * `<local-command-stdout>` / `<local-command-stderr>` の中身を、知らせの行に出せる文字にする。色の制御文字と、
  * /context の使用量の升目（記号だけの並び）を外す。何も残らなければ undefined。
@@ -877,12 +893,24 @@ export function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: numb
 		out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(parts.join('\n'), TOOL_TEXT_LIMIT), ts });
 		return;
 	}
-	// スラッシュコマンドの実行記録（/compact 等）。コマンド名だけを短く出す。
+	// スラッシュコマンドの実行記録（/context 等）。コマンド名だけを短く出す。
 	const commandName = /<command-name>([^<\n]*)<\/command-name>/.exec(trimmed)?.[1]?.trim();
 	if (commandName !== undefined && commandName.length > 0) {
-		signals.claudeQueuedPrompts.lastLocalCommand = commandName.replace(/^\//, '').toLocaleLowerCase();
+		const command = commandName.replace(/^\//, '').toLocaleLowerCase();
 		const commandArgs = /<command-args>([^<\n]*)<\/command-args>/.exec(trimmed)?.[1]?.trim();
+		// モデルの切り替え（モバイルのピルと `/model <別名>` は `/config model=<別名>` で送る）は、出力を知らせの行に
+		// するだけで、`/config model=…` の吹き出しは出さない
+		const configModel = command === 'config' && commandArgs !== undefined && /^model=\S+$/i.test(commandArgs);
+		signals.claudeQueuedPrompts.lastLocalCommand = configModel ? CONFIG_MODEL_COMMAND : command;
+		// /compact は区切り線（compact_boundary）が実行を表すので出さない
+		if (configModel || command === 'compact') {
+			return;
+		}
 		out.push({ role: 'user', kind: 'text', text: truncateText(commandArgs ? `${commandName} ${commandArgs}` : commandName, TEXT_LIMIT), ts });
+		return;
+	}
+	// `/compact` と打った発言そのものの行（実行記録の行とは別に書かれる）。区切り線と重なるので出さない
+	if (/^\/compact(?:\s|$)/.test(trimmed)) {
 		return;
 	}
 	// ローカルコマンドの注意書きは出さない。出力（/context・/usage 等の結果）は、送ったのに何も返ってこないように
@@ -898,8 +926,11 @@ export function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: numb
 		}
 		const command = signals.claudeQueuedPrompts.lastLocalCommand;
 		signals.claudeQueuedPrompts.lastLocalCommand = undefined;
-		const output = command !== undefined && PARADIS_SHOWN_COMMAND_OUTPUTS.has(command) ? paradisLocalCommandOutputText(trimmed) : undefined;
-		if (output !== undefined) {
+		const output = command !== undefined && (PARADIS_SHOWN_COMMAND_OUTPUTS.has(command) || command === CONFIG_MODEL_COMMAND) ? paradisLocalCommandOutputText(trimmed) : undefined;
+		if (output !== undefined && command === CONFIG_MODEL_COMMAND) {
+			out.push({ role: 'assistant', kind: 'text', text: paradisConfigModelNotice(output), ts, notice: true, noticeSource: 'command' });
+		} else if (output !== undefined && !(command === 'compact' && /^Compacted\b/.test(output))) {
+			// /compact の「Compacted (ctrl+o …)」は区切り線と重なるので出さない（失敗の文は出す）
 			out.push({ role: 'assistant', kind: 'text', text: output, ts, notice: true, noticeSource: 'command' });
 		}
 		return;
@@ -1105,6 +1136,11 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 		signals.shellSignals.push(...queued.shells);
 		return [];
 	}
+	if (type === 'system' && obj.subtype === 'compact_boundary') {
+		// コンテキストを圧縮した区切り（手動・自動とトークン数は compactMetadata）
+		const compaction = paradisClaudeCompactionInfo(obj.compactMetadata);
+		return [{ role: 'assistant', kind: 'text', text: paradisCompactionNoticeText(compaction), ts: lineTimestamp(obj), notice: true, noticeSource: 'compaction', compaction }];
+	}
 	if (type === 'system' && obj.subtype === 'informational' && typeof obj.content === 'string') {
 		// 表示はしない。「そのコマンドは無い」だけを拾う（モバイルの送信の断りに使う）
 		const unknown = /^Unknown command: \/(?<name>[^\s/]+)\s*$/.exec(obj.content.trim())?.groups?.name;
@@ -1136,6 +1172,13 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 	const content = message.content;
 
 	if (type === 'user') {
+		if (obj.isCompactSummary === true) {
+			// 圧縮で作られた要約。利用者の発言ではないので、畳んだカード（古いアプリは灰色の行）にする
+			const summary = paradisCompactSummaryBody(claudeUserRowText(content));
+			return summary !== undefined
+				? [{ role: 'assistant', kind: 'text', ...withTruncation(summary.body, PARADIS_COMPACT_SUMMARY_PREVIEW_LIMIT), ts, notice: true, noticeSource: 'compact-summary', compaction: { summaryChars: summary.chars } }]
+				: [];
+		}
 		if (isRepeatedQueuedPrompt(signals.claudeQueuedPrompts, content)) {
 			return out;
 		}
@@ -1393,6 +1436,11 @@ function paradisCodexErrorCode(info: unknown): string | undefined {
 /** Codex rollout JSONL の1行をパースする。表示対象外の行は空配列。 */
 export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): IRawMessage[] {
 	// rollout行: { timestamp, type, payload }
+	if (obj.type === 'compacted') {
+		// コンテキストを圧縮した区切り。対になる event_msg の ContextCompaction からは作らない（paradisAgentCompaction.ts）。
+		// 要約の本文（message）は空で、手動・自動もトークン数も書かれないので、区切りの線だけにする
+		return [{ role: 'assistant', kind: 'text', text: paradisCompactionNoticeText({}), ts: lineTimestamp(obj), notice: true, noticeSource: 'compaction' }];
+	}
 	if (obj.type === 'turn_context') {
 		// ターンごとの実行コンテキスト（model / effort 等）。表示メッセージは無いがメタ情報を学習する。
 		const context = rec(obj.payload);

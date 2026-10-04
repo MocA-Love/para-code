@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { AccessibilityInfo, ActivityIndicator, Pressable, StyleSheet, Text, View, findNodeHandle } from 'react-native';
 import { paraAlert } from '../../paraAlert.js';
 import { Check, ChevronDown, ChevronLeft, Settings, X } from 'lucide-react-native';
@@ -32,6 +32,12 @@ interface ModelOption {
 	readonly isDefault?: boolean;
 }
 
+/** 入力欄から開くときの口（引数の無い `/model`・`/effort` を送らずにシートを開く）。 */
+export interface ModelPillHandle {
+	/** シートを開く。`effort` なら Effort の段へ読み上げの位置を移す。開けない（表示だけのピル）なら false。 */
+	open(section?: 'model' | 'effort'): boolean;
+}
+
 /** シートの中身。歯車で「表示するモデル」に切り替え、「完了」か戻るで「モデルを選ぶ」へ戻る。 */
 type DrawerPage = 'pick' | 'visibility';
 
@@ -54,8 +60,11 @@ const AGENT_NAMES: Readonly<Record<'claude' | 'codex', string>> = { claude: 'Cla
  * 別のシートを重ねて出さないのは、閉じる途中で次のモーダルを出すと iOS が取りこぼすため（`BottomDrawer` の約束）。
  * 隠したモデルは「モデルを選ぶ」に出さない（使用中のものと仮に選んでいるものは「非表示」の印付きで残す）。計算は `modelVisibility.ts`。
  * ページを切り替えたら、VoiceOver の読み上げ位置を新しいページの見出しへ移す。
+ *
+ * 入力欄で引数の無い `/model`・`/effort` を送ったとき（候補で選んだときも）は、PC に一覧を開かずにこのシートを開く
+ * （`ModelPillHandle.open`。`/effort` は Effort の段へ読み上げの位置を移す）。
  */
-export function ModelPill({ agent, model, effort, modelControl, readOnly = false, onClaudeSetting, onRequestCodexCatalog, onUpdateCodexSettings }: {
+export const ModelPill = forwardRef<ModelPillHandle, {
 	agent: string | undefined;
 	model: string | undefined;
 	effort: string | undefined;
@@ -64,7 +73,7 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 	onClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<AgentMessageSendResult>;
 	onRequestCodexCatalog: () => void;
 	onUpdateCodexSettings: (model: string, effort: string) => void;
-}) {
+}>(function ModelPill({ agent, model, effort, modelControl, readOnly = false, onClaudeSetting, onRequestCodexCatalog, onUpdateCodexSettings }, ref) {
 	const theme = useThemeColors();
 	const [open, setOpen] = useState(false);
 	const [page, setPage] = useState<DrawerPage>('pick');
@@ -164,6 +173,34 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 			setOpen(false);
 		}
 	};
+	// `/effort` から開いたときは、開き終えたところで Effort の段の見出しへ読み上げの位置を移す
+	const effortHeadingRef = useRef<Text>(null);
+	const [focusEffort, setFocusEffort] = useState(false);
+	useEffect(() => {
+		if (!focusEffort || !open) {
+			return undefined;
+		}
+		const timer = setTimeout(() => {
+			setFocusEffort(false);
+			const node = effortHeadingRef.current !== null ? findNodeHandle(effortHeadingRef.current) : null;
+			if (node !== null) {
+				AccessibilityInfo.setAccessibilityFocus(node);
+			}
+		}, 400);
+		return () => clearTimeout(timer);
+	}, [focusEffort, open]);
+	const openDrawerRef = useRef(openDrawer);
+	openDrawerRef.current = openDrawer;
+	useImperativeHandle(ref, () => ({
+		open: section => {
+			if (readOnly || submitting || modelControl?.status === 'updating') {
+				return false;
+			}
+			openDrawerRef.current();
+			setFocusEffort(section === 'effort');
+			return true;
+		},
+	}), [readOnly, submitting, modelControl?.status]);
 	const apply = async () => {
 		if (submitting || selected === undefined) {
 			setOpen(false);
@@ -331,7 +368,7 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 						) : null}
 						{selected !== undefined && selected.efforts.length > 0 ? (
 							<>
-								<Text style={styles.section}>{`Effort（${selected.label}）`}</Text>
+								<Text ref={effortHeadingRef} style={styles.section} accessibilityRole="header">{`Effort（${selected.label}）`}</Text>
 								<View style={styles.efforts}>
 									{selected.efforts.map(level => {
 										const on = level === effectiveEffort;
@@ -354,7 +391,7 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 						<Text style={styles.hint}>
 							{agent === 'codex'
 								? '適用すると、モデルと effort が次のターンから同時に変わります'
-								: submitting ? 'Claude Code へ設定を送っています…' : '適用すると、入力待ちであることを確かめてからモデルと effort を変えます'}
+								: submitting ? 'Claude Code へ設定を送っています…' : '適用すると、入力待ちであることを確かめてから、確認の画面を出さずにモデルと effort を変えます'}
 						</Text>
 						<Button label="適用" onPress={() => { void apply(); }} loading={submitting} disabled={locked || selected === undefined} style={styles.apply} />
 					</>
@@ -362,7 +399,7 @@ export function ModelPill({ agent, model, effort, modelControl, readOnly = false
 			</BottomDrawer>
 		</>
 	);
-}
+});
 
 const styles = StyleSheet.create({
 	pill: {

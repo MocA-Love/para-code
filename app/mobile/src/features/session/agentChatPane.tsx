@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { RotateCw } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { shouldShowQuickReplies } from '../../agentConversationUx.js';
@@ -20,6 +20,7 @@ import { useKeyboardCoverage } from '../../hooks/useKeyboardVisible.js';
 import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import type { SpaceTerminal } from '../../navigationTargets.js';
 import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../../pendingAgentMessages.js';
+import { routes } from '../../routes.js';
 import { pinKeyForTerminal, type AgentChatMessage, type AgentMessageSendResult } from '../../store.js';
 import { colors, space, type } from '../../theme.js';
 import { EmptyState } from '../../ui/index.js';
@@ -28,7 +29,7 @@ import { cardStyles as baseCardStyles } from './answerCardStyles.js';
 import { AskCard, AskGroupCard } from './askCard.js';
 import { pinnedCardMaxHeight, PinnedCardScrollContext, type PinnedCardScroll } from './pinnedCard.js';
 import { withQuestionOutcomes } from './questionOutcomes.js';
-import { ChatChromeRow, PendingMessagesDrawer, QuickReplies } from './chatChrome.js';
+import { ChatChromeRow, CompactingRow, PendingMessagesDrawer, QuickReplies } from './chatChrome.js';
 import { ChatList, type ChatListHandle } from './chatList.js';
 import { buildChatRows, questionRowId, splitPinnedQuestion } from './chatRows.js';
 import { PermissionCard } from './permissionCard.js';
@@ -73,6 +74,13 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 		updateAgentSettings: s.updateAgentSettings,
 	})));
 	const clearAgentSlashRejection = useAppStore(s => s.clearAgentSlashRejection);
+	const closeAgentPanel = useAppStore(s => s.closeAgentPanel);
+	// PC で開いている画面の帯と「閉じる」（agent.panel.v1）
+	const panelSupported = usePcCapability(PcCapability.AgentPanel);
+	const closePanel = useCallback(() => closeAgentPanel(terminalKey), [closeAgentPanel, terminalKey]);
+	// `/usage` は送らずにアプリの「使用量」へ移る
+	const router = useRouter();
+	const openUsage = useCallback(() => router.push(routes.settings('usage')), [router]);
 	const handleSlashRejection = useCallback((requestId: string) => clearAgentSlashRejection(terminalKey, requestId), [clearAgentSlashRejection, terminalKey]);
 	// 断りの「端末を開く」: このタブをターミナル表示に切り替える（PC で開いた画面を Esc で閉じる・入力欄の文字を消す）
 	const viewPcId = useAppStore(s => s.activePcId);
@@ -118,7 +126,11 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	const live = useAgentSendLive();
 	const canQueue = usePcCapability(AGENT_RESUME_CAPABILITY);
 	const activePcId = useAppStore(s => s.activePcId);
-	const sourceId = useAppStore(s => s.workspace?.workspaces.find(space => space.id === terminal.ws)?.sourceId);
+	const spaceInfo = useAppStore(useShallow(s => {
+		const found = s.workspace?.workspaces.find(candidate => candidate.id === terminal.ws);
+		return { sourceId: found?.sourceId, name: found?.name, branch: found?.branch };
+	}));
+	const sourceId = spaceInfo.sourceId;
 	const resumeKey = chat?.info?.resumeKey;
 	const sendText = useCallback((text: string) => {
 		const afterRev = (messagesRef.current ?? []).reduce((max, message) => Math.max(max, message.rev), 0);
@@ -312,6 +324,8 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 					) : null}
 					{showQuickReplies ? <QuickReplies onPick={insertQuickReply} /> : null}
 					<QueuedSendsBanner pcId={activePcId} terminalKey={terminalKey} />
+					{/* コンテキストを圧縮している最中（PreCompact から区切りの行が届くまで。モックの A6-2）。圧縮していなければ何も描かない */}
+					{chatReady ? <CompactingRow activity={chat?.activity} messages={messages} /> : null}
 					{chatReady ? (
 						<ChatChromeRow
 							working={working}
@@ -347,6 +361,12 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 						slashRejection={chat?.slashRejection}
 						onSlashRejectionHandled={handleSlashRejection}
 						onOpenTerminal={openTerminal}
+						panel={chatReady ? chat?.panel : undefined}
+						panelSupported={panelSupported}
+						{...(panelSupported ? { onClosePanel: closePanel } : {})}
+						onOpenUsage={openUsage}
+						spaceName={spaceInfo.name}
+						branch={spaceInfo.branch}
 						answerTarget={activeAnswerRequest}
 						onCancelAnswer={cancelAnswer}
 						answerRefreshing={refreshing}
