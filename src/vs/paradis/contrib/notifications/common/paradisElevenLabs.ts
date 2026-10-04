@@ -38,17 +38,6 @@ export function paradisClampElevenLabsSpeed(value: unknown): number {
 }
 
 /**
- * ElevenLabs の音声は Aivis より約 13dB 大きく出る。再生音量（0-100）を -13dB 相当に下げて揃える。
- * Aivis と同じく再生プレイヤーの音量（afplay -v 等）で下げるため、ここでは 0-100 の値を返す。
- */
-export const PARADIS_ELEVENLABS_GAIN_DB = -13;
-
-export function paradisElevenLabsPlaybackVolume(volume: number): number {
-	const base = Math.max(0, Math.min(100, Number.isFinite(volume) ? volume : 100));
-	return base * Math.pow(10, PARADIS_ELEVENLABS_GAIN_DB / 20);
-}
-
-/**
  * 取り除く SSML のタグ名。Aivis 向けに書いた文面のタグ（aivis-mcp と同じもの）を想定する。
  * `Array<string>` のように本文に出てくる山括弧は、ここに無い名前なので残す。
  */

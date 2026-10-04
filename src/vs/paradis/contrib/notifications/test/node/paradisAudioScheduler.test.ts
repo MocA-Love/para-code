@@ -9,6 +9,7 @@ import { DeferredPromise } from '../../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	AivisError,
+	AivisHandoffResult,
 	AivisSynthesizeResult,
 	AivisTaskRunner,
 	AudioScheduler,
@@ -625,6 +626,153 @@ suite('AudioScheduler', () => {
 				'synthesize:h3',
 				'play:h3',
 			]);
+		});
+	});
+
+	suite('handoff to aivis-mcp --ingest', () => {
+		test('hands off up to three at a time, high first, and keeps the rest queued until one is released', async () => {
+			const gates = new Map<string, DeferredPromise<AivisHandoffResult>>();
+			const started: string[] = [];
+			const runner = (name: string): AivisTaskRunner => ({
+				synthesize: async () => ({ audio: Buffer.from(name) }),
+				play: async () => { },
+				handoff: () => {
+					started.push(name);
+					const gate = new DeferredPromise<AivisHandoffResult>();
+					gates.set(name, gate);
+					return gate.p;
+				},
+			});
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true }));
+			scheduler.setHeld(true); // 音声入力中でも渡す（止めるのは worker の hold）
+			scheduler.enqueueAivis(runner('n1'), 'normal');
+			scheduler.enqueueAivis(runner('n2'), 'normal');
+			scheduler.enqueueAivis(runner('n3'), 'normal');
+			scheduler.enqueueAivis(runner('h1'), 'high');
+			scheduler.enqueueAivis(runner('n4'), 'normal');
+			await Promise.resolve();
+			const firstWave = [...started];
+			gates.get('n1')!.complete({ kind: 'released' });
+			for (let i = 0; i < 10; i++) {
+				await Promise.resolve();
+			}
+			assert.deepStrictEqual({ firstWave, afterRelease: [...started] }, {
+				firstWave: ['n1', 'n2', 'n3'],
+				afterRelease: ['n1', 'n2', 'n3', 'h1'],
+			});
+			for (const gate of gates.values()) {
+				if (!gate.isSettled) {
+					gate.complete({ kind: 'released' });
+				}
+			}
+		});
+
+		test('plays a handoff that failed before queued with the audio it already received', async () => {
+			const events: string[] = [];
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true }));
+			scheduler.enqueueAivis({
+				synthesize: async () => { events.push('synthesize'); return { audio: Buffer.from('fresh') }; },
+				play: async audio => { events.push(`play:${audio.toString()}`); },
+				handoff: async attempt => { events.push(`handoff:${attempt}`); return { kind: 'fallback', audio: Buffer.from('received') }; },
+			});
+			await waitForIdle(scheduler);
+			for (let i = 0; i < 10; i++) {
+				await Promise.resolve();
+			}
+			assert.deepStrictEqual(events, ['handoff:1', 'play:received']);
+		});
+
+		test('retries a retryable synthesis failure and pauses on a fatal one', async () => {
+			const events: string[] = [];
+			const paused: string[] = [];
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true, sleep: async () => { }, notifyAivisPaused: reason => paused.push(reason) }));
+			scheduler.enqueueAivis({
+				synthesize: async () => ({ audio: EMPTY_AUDIO }),
+				play: async () => { },
+				handoff: async attempt => {
+					events.push(`handoff:${attempt}`);
+					if (attempt === 1) {
+						throw new AivisError('retryable', 'timeout');
+					}
+					return { kind: 'released' };
+				},
+			});
+			scheduler.enqueueAivis({
+				synthesize: async () => ({ audio: EMPTY_AUDIO }),
+				play: async () => { },
+				handoff: async () => { events.push('handoff:fatal'); throw new AivisError('fatal', 'bad key', 401); },
+			});
+			for (let i = 0; i < 30; i++) {
+				await Promise.resolve();
+			}
+			assert.deepStrictEqual({ events, paused, isPaused: scheduler.isPaused }, {
+				events: ['handoff:1', 'handoff:fatal', 'handoff:2'],
+				paused: ['bad key'],
+				isPaused: true,
+			});
+		});
+
+		test('falls back to the local playback path when --ingest is unavailable', async () => {
+			const events: string[] = [];
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => false }));
+			scheduler.enqueueAivis({
+				...successfulRunner('local', events),
+				handoff: async () => { events.push('handoff'); return { kind: 'released' }; },
+			});
+			await waitForIdle(scheduler);
+			assert.deepStrictEqual(events, ['synthesize:local', 'play:local']);
+		});
+
+		test('keeps presynthesized local voices out of the rate-limit wait and the fatal pause', async () => {
+			const events: string[] = [];
+			const sleeps: number[] = [];
+			const scheduler = track(createScheduler({ sleep: async ms => { sleeps.push(ms); }, now: () => 0 }));
+			// 残り 0 のレート制限を覚えさせてから、fatal で止める
+			scheduler.enqueueAivis(successfulRunner('limited', events, { audio: Buffer.from('limited'), rateLimit: { remaining: 0, resetSeconds: 60, capturedAt: 0 } }));
+			await waitForIdle(scheduler);
+			scheduler.enqueueAivis({
+				synthesize: async () => { throw new AivisError('fatal', 'bad key', 401); },
+				play: async () => { },
+			});
+			const entered = scheduler.enqueueAivis({ synthesize: async () => ({ audio: Buffer.from('remote') }), play: async audio => { events.push(`play:${audio.toString()}`); } }, 'normal', { localOnly: true, ignorePause: true, presynthesized: true });
+			for (let i = 0; i < 30; i++) {
+				await Promise.resolve();
+			}
+			const enteredWhilePaused = scheduler.enqueueAivis(successfulRunner('dropped', events));
+			assert.deepStrictEqual({ events, isPaused: scheduler.isPaused, entered, enteredWhilePaused, sleeps: sleeps.length }, {
+				events: ['synthesize:limited', 'play:limited', 'play:remote'],
+				isPaused: true,
+				entered: true,
+				enteredWhilePaused: false,
+				// fatal の件はレート制限を待つが、合成済みの声は待たない
+				sleeps: 1,
+			});
+		});
+
+		test('plays the held ringtone when a handoff falls back without audio while the scheduler is paused', async () => {
+			const fallback = new DeferredPromise<AivisHandoffResult>();
+			const dropped: string[] = [];
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true }));
+			scheduler.enqueueAivis({
+				synthesize: async () => ({ audio: EMPTY_AUDIO }),
+				play: async () => { },
+				handoff: async () => { throw new AivisError('fatal', 'bad key', 401); },
+				onDropped: () => dropped.push('fatal'),
+			});
+			scheduler.enqueueAivis({
+				synthesize: async () => ({ audio: EMPTY_AUDIO }),
+				play: async () => { },
+				handoff: () => fallback.p,
+				onDropped: () => dropped.push('fallback'),
+			});
+			for (let i = 0; i < 10; i++) {
+				await Promise.resolve();
+			}
+			fallback.complete({ kind: 'fallback' });
+			for (let i = 0; i < 10; i++) {
+				await Promise.resolve();
+			}
+			assert.deepStrictEqual({ dropped, paused: scheduler.isPaused }, { dropped: ['fatal', 'fallback'], paused: true });
 		});
 	});
 });

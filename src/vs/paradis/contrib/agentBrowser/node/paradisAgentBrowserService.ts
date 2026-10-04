@@ -42,7 +42,6 @@ import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBinding
 import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
 import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator, ParadisExactViewBackgroundThrottlingDispatcher } from '../common/paradisExactViewBackgroundThrottling.js';
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
-import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, ParadisAgentTurnEndCause, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
 import { IParadisAgentHookDropRecord, ParadisAgentHookDropCounter, ParadisHookIngressCause, paradisFormatHookDropLog, paradisHookDropPaneKey } from '../common/paradisAgentHookDropLog.js';
@@ -55,7 +54,10 @@ import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBri
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_HTTP_PREFIX, paradisClaudeModApprovalWaitMs } from '../../claudeMod/common/paradisClaudeMod.js';
 import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { ParadisLocalVoicePlayer } from './paradisLocalVoicePlayer.js';
-import { PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING, paradisRemoteVoiceLocalPlaybackEnabled } from '../common/paradisRemoteVoice.js';
+import { paradisReceiveRemoteVoice } from './paradisRemoteVoiceIngress.js';
+import { paradisArmRequestBodyTimeout, paradisConfigureMcpHttpServer } from './paradisHttpRequestTimeouts.js';
+import { IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoiceIngest.js';
+import { PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING, PARADIS_REMOTE_VOICE_STREAM_INGRESS, paradisRemoteVoiceLocalPlaybackEnabled } from '../common/paradisRemoteVoice.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
@@ -621,6 +623,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		configurationService?: IConfigurationService,
 		args?: NativeParsedArgs,
 		private readonly publishMobileVoiceClip?: (audio: Uint8Array) => void,
+		/** 手元の aivis-mcp の `--ingest` と afplay で鳴らす口（通知の読み上げと同じ列）。 */
+		private readonly localVoiceOutput?: IParadisLocalVoiceOutput & { readonly shellEnv?: ParadisCachedShellEnv },
 	) {
 		super();
 		this._portFilePath = join(this._userDataPath, PARADIS_MCP_PORT_FILE_NAME);
@@ -691,7 +695,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		});
 		// エージェントCLI (Claude Code / Codex) の通知hookを冪等に自動設置する
 		// (Superset の setupAgentHooks 相当。失敗しても起動は妨げない)。
-		const cachedShellEnv = new ParadisCachedShellEnv(
+		// ログインシェルの解決は通知（aivis-mcp --ingest）と 1 本を共有する
+		const cachedShellEnv = localVoiceOutput?.shellEnv ?? new ParadisCachedShellEnv(
 			logService,
 			'ParadisAgentHooks',
 			createParadisShellEnvResolver(logService, configurationService, args),
@@ -2247,13 +2252,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._settleUnexpectedRequestError(res, error);
 			});
 		});
-		server.maxConnections = 256;
-		server.maxHeadersCount = 100;
-		server.maxRequestsPerSocket = 100;
-		server.headersTimeout = 10_000;
-		server.requestTimeout = 30_000;
-		server.keepAliveTimeout = 5_000;
-		server.timeout = 300_000;
+		// requestTimeout は音声取込の 120 秒に合わせて 130 秒。ほかの経路の 30 秒は _handleRequest で経路ごとに掛ける
+		paradisConfigureMcpHttpServer(server);
 		// CDPゲートウェイのWebSocket upgrade（/cdp/devtools/* および /devtools/*）
 		server.on('upgrade', (req, socket, head) => {
 			void this._cdpGateway.handleUpgrade(req, socket, head);
@@ -2358,6 +2358,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._sendIngressRejected(res);
 			return;
 		}
+		// 音声取込（自前の 120 秒・最初の音・届く速さで縛る）以外は、本文を受け取りきるまで以前と同じ 30 秒で縛る
+		if (req.url !== '/paradis-mcp/mobile-voice') {
+			paradisArmRequestBodyTimeout(req, res);
+		}
 		if (req.method === 'GET' && req.url === PARADIS_MCP_HEALTH_PATH) {
 			const body = JSON.stringify({
 				protocolVersion: PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION,
@@ -2392,6 +2396,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._handleScreenshotFetch(req, res);
 		}
 		if (req.method === 'POST' && req.url === '/paradis-mcp/mobile-voice') {
+			// 自前の 120 秒・最初の音・届く速さで縛る（paradisRemoteVoiceIngress）
 			return this._handleMobileVoiceIngress(req, res);
 		}
 		// Claude Code の mod（resources/paradis/claude-mod）。hook と同じくペイントークンで認証する。
@@ -2508,6 +2513,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * pane ownerが直前に発行した1回限りの短命ticketで認証し、音声は保存せずイベントへ渡す。
 	 */
 	private async _handleMobileVoiceIngress(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+		// 本文を読まずに断る要求は、接続ごと閉じる（chunked の本文を送り続けさせない・接続を使い回させない）
+		const closeAfterReply = () => {
+			res.setHeader('Connection', 'close');
+			res.once('finish', () => req.destroy());
+		};
 		const requestedTicket = this._extractToken(req);
 		const ticket = requestedTicket === undefined ? undefined : this._mobileVoiceTickets.get(requestedTicket);
 		if (requestedTicket !== undefined) {
@@ -2515,80 +2525,58 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._mobileVoiceTickets.delete(requestedTicket);
 		}
 		if (ticket === undefined || ticket.expiresAt < Date.now() || !this._isMobileVoiceTicketCurrent(ticket)) {
+			closeAfterReply();
 			this._sendIngressRejected(res);
 			return;
 		}
 		const publishMobileVoiceClip = this.publishMobileVoiceClip;
 		// モバイルへ届ける口が無くても、手元で鳴らす約束をした ticket は受け取る
 		if (publishMobileVoiceClip === undefined && !ticket.localPlayback) {
+			closeAfterReply();
 			this._sendIngressRejected(res);
 			return;
 		}
-		const ingressLease = ticket.lease;
 		const contentType = String(req.headers['content-type'] ?? '').split(';', 1)[0]?.trim().toLowerCase();
 		if (contentType !== 'audio/mpeg' && contentType !== 'application/octet-stream') {
+			closeAfterReply();
 			res.writeHead(415, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
 			res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
 			return;
 		}
-		const declaredLength = Number(req.headers['content-length']);
-		if (!Number.isSafeInteger(declaredLength) || declaredLength <= 0 || declaredLength > PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES) {
-			res.writeHead(413, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-			res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
-			return;
-		}
-		const reservation = this._reserveIngressRequest(ingressLease?.token ?? this._voiceIngressToken);
+		const reservation = this._reserveIngressRequest(ticket.lease?.token ?? this._voiceIngressToken);
 		if (reservation === undefined) {
+			closeAfterReply();
 			this._sendIngressCapacityRejected(res);
 			return;
 		}
-		const voiceReservation = this._reserveMobileVoiceIngress(declaredLength);
+		// 押さえる量は受け取った分だけ増やす（chunked は長さが先に分からない）
+		const voiceReservation = this._reserveMobileVoiceIngress();
 		if (voiceReservation === undefined) {
 			reservation.dispose();
+			closeAfterReply();
 			this._sendIngressCapacityRejected(res);
 			return;
 		}
 		let activeRequest: ReturnType<ParadisAgentBrowserService['_trackActiveRequest']> | undefined;
 		try {
 			activeRequest = this._trackActiveRequest(req, res);
-			let audio: Buffer;
-			try {
-				audio = await this._readBodyBytes(req, PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES, activeRequest.controller.signal);
-			} catch {
-				if (!activeRequest.controller.signal.aborted) {
-					res.writeHead(413, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-					res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
-				}
-				return;
-			}
-			if (activeRequest.controller.signal.aborted) {
-				return;
-			}
-			if (audio.byteLength !== declaredLength) {
-				res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-				res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
-				return;
-			}
-			if (!this._isMobileVoiceTicketCurrent(ticket)) {
-				this._sendIngressRejected(res);
-				return;
-			}
-			publishMobileVoiceClip?.(audio);
-			// 手元で積む待ちの間、音声取込の枠を握り続けない（手元の拡張機能ホストの発話が断られる）
-			voiceReservation.dispose();
-			reservation.dispose();
-			// 手元で鳴らすときは、積めたかどうかを返す。積めなければ接続先の aivis-mcp が自分で鳴らす。
-			// 接続先の待ち（15 秒）を過ぎてから積むと二重に鳴るので、締め切りを短めに切る
-			const playedLocally = ticket.localPlayback && await this._localVoicePlayer.play(audio, {
+			await paradisReceiveRemoteVoice(req, res, {
+				localPlayback: ticket.localPlayback,
 				signal: activeRequest.controller.signal,
-				deadline: Date.now() + LOCAL_VOICE_ENQUEUE_DEADLINE_MS,
+				// 接続先の待ち（Content-Length の旧方式は 30 秒）を過ぎてから積むと二重に鳴るので、締め切りを短めに切る
+				enqueueDeadlineMs: LOCAL_VOICE_ENQUEUE_DEADLINE_MS,
+			}, {
+				voiceOutput: this.localVoiceOutput,
+				playViaPlayAudio: (audio, options) => this._localVoicePlayer.play(audio, options),
+				publishMobileVoiceClip,
+				reserveBytes: bytes => voiceReservation.grow(bytes),
+				// 手元で積む待ちの間、音声取込の枠を握り続けない（手元の拡張機能ホストの発話が断られる）
+				onBodyReceived: () => {
+					voiceReservation.dispose();
+					reservation.dispose();
+				},
+				isTicketCurrent: () => this._isMobileVoiceTicketCurrent(ticket),
 			});
-			if (res.writableEnded || activeRequest.controller.signal.aborted) {
-				return;
-			}
-			const body = JSON.stringify({ localPlayback: playedLocally });
-			res.writeHead(202, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Cache-Control': 'no-store' });
-			res.end(body);
 		} finally {
 			activeRequest?.dispose();
 			voiceReservation.dispose();
@@ -2656,9 +2644,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		// SSH の接続先のペインからの発話は手元で鳴らす。答えを見た接続先の aivis-mcp は自分では鳴らさない
 		const localPlayback = ingressLease !== undefined && this._paneRemoteAuthorityOf(ingressLease.token) !== undefined && this._remoteVoiceLocalPlaybackEnabled();
 		this._mobileVoiceTickets.set(voiceTicket, { lease: ingressLease, expiresAt, localPlayback });
+		// `ingress: "stream-v1"` を名乗ると、接続先の aivis-mcp 2.5.0 は合成を受け取りながら chunked で送る
 		const body = JSON.stringify(localPlayback
-			? { ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId, localPlayback }
-			: { ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId });
+			? { ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId, localPlayback, ingress: PARADIS_REMOTE_VOICE_STREAM_INGRESS }
+			: { ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId, ingress: PARADIS_REMOTE_VOICE_STREAM_INGRESS });
 		res.writeHead(201, {
 			'Content-Type': 'application/json',
 			'Content-Length': Buffer.byteLength(body),
@@ -4555,16 +4544,23 @@ export class ParadisAgentBrowserService extends Disposable {
 		};
 	}
 
-	private _reserveMobileVoiceIngress(bytes: number): { dispose(): void } | undefined {
+	private _reserveMobileVoiceIngress(): { grow(bytes: number): boolean; dispose(): void } | undefined {
 		if (this._serverDisposed
-			|| this._activeMobileVoiceRequestCount >= MAX_ACTIVE_MOBILE_VOICE_REQUESTS
-			|| this._activeMobileVoiceBytes + bytes > MAX_ACTIVE_MOBILE_VOICE_BYTES) {
+			|| this._activeMobileVoiceRequestCount >= MAX_ACTIVE_MOBILE_VOICE_REQUESTS) {
 			return undefined;
 		}
 		this._activeMobileVoiceRequestCount++;
-		this._activeMobileVoiceBytes += bytes;
+		let bytes = 0;
 		let released = false;
 		return {
+			grow: (more: number) => {
+				if (released || this._activeMobileVoiceBytes + more > MAX_ACTIVE_MOBILE_VOICE_BYTES) {
+					return false;
+				}
+				bytes += more;
+				this._activeMobileVoiceBytes += more;
+				return true;
+			},
 			dispose: () => {
 				if (released) {
 					return;

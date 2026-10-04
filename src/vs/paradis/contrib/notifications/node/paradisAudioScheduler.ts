@@ -22,6 +22,11 @@
 //     fatal (401 / 402 / 404): キューを破棄して一時停止し、ユーザーへ可視通知。APIキー/クレジット/
 //       モデル設定の修正が必要なため自動再開しない。
 //     item-specific (422 / 再生失敗): そのアイテムだけスキップし、他は処理を続ける。
+//
+// aivis-mcp 2.5.0 の `--ingest` があるとき（設計 3.3）は、タスクを worker へ渡す（handoff）。鳴らす順番と
+// 着信音は worker が決めるので、ここに残すのは優先の割り込み・レート制限・再試行・一時停止の判断だけ。
+// `queued`（列に入った）で手放し、同時に渡すのは 3 本まで（high が先）。音声入力中も渡してよい（worker の
+// hold が鳴らすのを止める）。渡せなかった件は、afplay で鳴らす普通のタスクとして列の先頭へ戻す。
 
 export type AivisErrorKind = 'retryable' | 'fatal' | 'item-specific';
 
@@ -53,6 +58,20 @@ export interface AivisSynthesizeResult {
 	readonly rateLimit?: AivisRateLimit;
 }
 
+/** 少しずつ受け取る合成。応答のヘッダーまでを確かめた後の本文。 */
+export interface AivisStreamingSynthesis {
+	readonly body: AsyncIterable<Uint8Array>;
+	readonly rateLimit?: AivisRateLimit;
+}
+
+/**
+ * worker へ渡した結果。`released` は列に入った（手放してよい）。`fallback` は渡せなかったので、Para Code が
+ * 自分で鳴らす（`audio` があれば合成し直さずにそれを鳴らす）。
+ */
+export type AivisHandoffResult =
+	| { readonly kind: 'released'; readonly rateLimit?: AivisRateLimit }
+	| { readonly kind: 'fallback'; readonly audio?: Buffer };
+
 /**
  * キュー投入可能な Aivis タスク1件。スケジューラは synthesize()（AivisError を throw しうる）を
  * 呼び、返った audio で play() を呼ぶ。play() は再生完了で resolve する（reject は item-specific
@@ -61,6 +80,18 @@ export interface AivisSynthesizeResult {
 export interface AivisTaskRunner {
 	synthesize(): Promise<AivisSynthesizeResult>;
 	play(audio: Buffer): Promise<void>;
+	/**
+	 * worker へ渡す（`--ingest` があるときだけ呼ばれる）。`attempt` は 1 から数える再試行の回数で、2 回目以降は
+	 * 着信音を付けない。合成の失敗は AivisError を投げる（再試行・一時停止の判断はスケジューラがする）。
+	 */
+	handoff?(attempt: number): Promise<AivisHandoffResult>;
+	/**
+	 * Para Code が自分で鳴らす直前（再生中の判定より前）に呼ぶ。預かった着信音をここで鳴らす（合成の中で鳴らすと、
+	 * 再生中として捨てられる）。
+	 */
+	startRingtone?(): void;
+	/** 列に入らなかった・追い出された・一時停止で捨てられた。預かった着信音を今鳴らす。 */
+	onDropped?(): void;
 }
 
 export type AivisPriority = 'normal' | 'high';
@@ -101,6 +132,21 @@ export interface AudioSchedulerDeps {
 	 * 追い出して割り込む。既定 20。
 	 */
 	maxQueuedAivisTasks?: number;
+	/** いま worker へ渡せるか（`--ingest` が使えるか）。無ければ渡さない。 */
+	isHandoffAvailable?(): boolean;
+	/** 同時に worker へ渡す本数の上限。既定 3。 */
+	maxConcurrentHandoffs?: number;
+}
+
+export interface AivisEnqueueOptions {
+	/** 列の先頭に入れる（渡せなかった件を鳴らし直すとき）。 */
+	readonly front?: boolean;
+	/** worker へ渡さず、Para Code が自分で鳴らす。 */
+	readonly localOnly?: boolean;
+	/** 一時停止中でも入れ、一時停止で捨てない（Para Code の合成と関係ない声）。 */
+	readonly ignorePause?: boolean;
+	/** 合成済み。レート制限を待たない。 */
+	readonly presynthesized?: boolean;
 }
 
 const MAX_RETRY_ATTEMPTS = 3;
@@ -116,6 +162,7 @@ const AIVIS_PLAY_SAFETY_TIMEOUT_MS = 30_000;
 // 待機キューの上限。発話1件は数秒〜数十秒の再生を伴うため、この値でもバックログとしては
 // 十分に長い。上限なしだと通知爆発×レート制限滞留でメモリと読み上げ遅延が単調増加する。
 const MAX_AIVIS_QUEUE_SIZE = 20;
+const MAX_CONCURRENT_HANDOFFS = 3;
 
 function defaultSleep(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -124,11 +171,15 @@ function defaultSleep(ms: number): Promise<void> {
 interface QueueEntry {
 	priority: AivisPriority;
 	runner: AivisTaskRunner;
+	localOnly?: boolean;
+	ignorePause?: boolean;
+	presynthesized?: boolean;
 }
 
 export class AudioScheduler {
 	private ringtoneBusy = false;
 	private aivisBusy = false;
+	private activeHandoffs = 0;
 	private queue: QueueEntry[] = [];
 	private paused = false;
 	/** 音声入力（ディクテーション）中。新しい再生を始めない（キューは捨てない）。 */
@@ -183,23 +234,33 @@ export class AudioScheduler {
 		});
 	}
 
-	enqueueAivis(runner: AivisTaskRunner, priority: AivisPriority = 'normal'): void {
-		if (this.disposed || this.paused) { return; }
+	/** 列に入れる。入らなかった（一時停止中・満杯・破棄済み）ら false。 */
+	enqueueAivis(runner: AivisTaskRunner, priority: AivisPriority = 'normal', options: AivisEnqueueOptions = {}): boolean {
+		if (this.disposed || (this.paused && !options.ignorePause)) { return false; }
 		const max = Math.max(1, this.deps.maxQueuedAivisTasks ?? MAX_AIVIS_QUEUE_SIZE);
 		if (this.queue.length >= max) {
 			if (priority === 'high') {
 				// 要対応の通知は可能な限り生かす。最も古い normal を追い出して割り込む
 				// （normal が1件もなければ最も古いエントリを追い出す=新しめの要対応を優先）。
 				const oldestNormal = this.queue.findIndex(e => e.priority === 'normal');
-				this.queue.splice(oldestNormal >= 0 ? oldestNormal : 0, 1);
+				const [evicted] = this.queue.splice(oldestNormal >= 0 ? oldestNormal : 0, 1);
+				evicted?.runner.onDropped?.();
 				this.deps.logInfo?.('[audio-scheduler] evicted a queued Aivis task to admit a high-priority one');
 			} else {
 				this.deps.logInfo?.('[audio-scheduler] dropped a normal-priority Aivis task because the queue is full');
-				return;
+				return false;
 			}
 		}
-		const entry: QueueEntry = { priority, runner };
-		if (priority === 'high') {
+		const entry: QueueEntry = {
+			priority,
+			runner,
+			...(options.localOnly ? { localOnly: true } : {}),
+			...(options.ignorePause ? { ignorePause: true } : {}),
+			...(options.presynthesized ? { presynthesized: true } : {}),
+		};
+		if (options.front) {
+			this.queue.unshift(entry);
+		} else if (priority === 'high') {
 			const firstNormal = this.queue.findIndex(e => e.priority === 'normal');
 			if (firstNormal < 0) { this.queue.push(entry); }
 			else { this.queue.splice(firstNormal, 0, entry); }
@@ -207,6 +268,7 @@ export class AudioScheduler {
 			this.queue.push(entry);
 		}
 		void this.pump();
+		return true;
 	}
 
 	get aivisQueueSize(): number {
@@ -255,6 +317,7 @@ export class AudioScheduler {
 	resume(): void {
 		if (this.disposed) { return; }
 		this.paused = false;
+		void this.pump();
 	}
 
 	dispose(): void {
@@ -275,24 +338,97 @@ export class AudioScheduler {
 		for (const resolve of waiters) { resolve(); }
 	}
 
+	/** worker へ渡す件か。 */
+	private canHandoff(entry: QueueEntry): boolean {
+		return !entry.localOnly && entry.runner.handoff !== undefined && (this.deps.isHandoffAvailable?.() ?? false);
+	}
+
 	private async pump(): Promise<void> {
+		if (this.disposed) { return; }
+		// worker へ渡す件は、同時に渡す上限まで先頭から順に渡す（音声入力中も渡す。止めるのは worker の hold）
+		while (!this.paused && this.queue.length > 0 && this.canHandoff(this.queue[0])) {
+			if (this.activeHandoffs >= Math.max(1, this.deps.maxConcurrentHandoffs ?? MAX_CONCURRENT_HANDOFFS)) { return; }
+			const handoffEntry = this.queue.shift()!;
+			this.activeHandoffs++;
+			void this.runHandoff(handoffEntry).finally(() => {
+				this.activeHandoffs--;
+				void this.pump();
+			});
+		}
 		if (this.aivisBusy) { return; }
-		if (this.disposed || this.paused || this.held) { return; }
+		if (this.paused || this.held) {
+			// 一時停止中でも、Para Code の合成と関係ない声（ignorePause で入れた件）は鳴らす
+			if (this.held || !this.queue[0]?.ignorePause) { return; }
+		}
 		const entry = this.queue.shift();
 		if (!entry) { return; }
+		// 預かった着信音は、再生中の判定より前に鳴らす（runOne は鳴り終わりを待ってから声を鳴らす）
+		try {
+			entry.runner.startRingtone?.();
+		} catch (err) {
+			this.deps.logWarn?.(`[audio-scheduler] ringtone failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
 		this.aivisBusy = true;
 		try {
-			await this.runOne(entry.runner);
+			await this.runOne(entry.runner, entry.presynthesized === true);
 		} finally {
 			this.aivisBusy = false;
-			if (!this.disposed && !this.paused && !this.held && this.queue.length > 0) {
+			if (!this.disposed && this.queue.length > 0) {
 				void this.pump();
 			}
 		}
 	}
 
-	private async runOne(runner: AivisTaskRunner): Promise<void> {
+	/** worker へ渡す。合成の失敗は runOne と同じ決まりで再試行・一時停止する。 */
+	private async runHandoff(entry: QueueEntry): Promise<void> {
 		await this.waitForRateLimitWindow();
+		let lastErr: AivisError | undefined;
+		for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+			if (this.disposed) { return; }
+			try {
+				const result = await entry.runner.handoff!(attempt);
+				if (result.kind === 'released') {
+					if (result.rateLimit) { this.rateLimit = result.rateLimit; }
+					return;
+				}
+				// 渡せなかった。Para Code が自分で鳴らす件として先頭へ戻す（合成済みならそれを使う）
+				const audio = result.audio;
+				const runner: AivisTaskRunner = audio
+					? { synthesize: async () => ({ audio }), play: buffer => entry.runner.play(buffer), startRingtone: () => entry.runner.startRingtone?.(), onDropped: () => entry.runner.onDropped?.() }
+					: entry.runner;
+				if (!this.enqueueAivis(runner, entry.priority, { front: true, localOnly: true, ignorePause: audio !== undefined, presynthesized: audio !== undefined })) {
+					// 一時停止中で入らなかった。預かった着信音は今鳴らす
+					runner.onDropped?.();
+				}
+				return;
+			} catch (err) {
+				const aivisErr = toAivisError(err);
+				lastErr = aivisErr;
+				this.deps.onError?.(aivisErr);
+				if (aivisErr.kind === 'fatal') {
+					entry.runner.onDropped?.();
+					this.drainAndPause(aivisErr.reason);
+					return;
+				}
+				if (aivisErr.kind === 'item-specific') {
+					entry.runner.onDropped?.();
+					return;
+				}
+				if (attempt >= MAX_RETRY_ATTEMPTS) { break; }
+				await (this.deps.sleep ?? defaultSleep)(this.computeBackoffMs(aivisErr, attempt));
+			}
+		}
+		// 読み上げはあきらめたが、預かった着信音（worker が鳴らしていなければ）は鳴らす
+		entry.runner.onDropped?.();
+		if (lastErr) {
+			this.deps.logWarn?.(`[audio-scheduler] aivis handoff gave up after ${MAX_RETRY_ATTEMPTS} attempts: ${lastErr.reason}`);
+		}
+	}
+
+	private async runOne(runner: AivisTaskRunner, presynthesized = false): Promise<void> {
+		if (!presynthesized) {
+			await this.waitForRateLimitWindow();
+		}
 
 		let lastErr: AivisError | undefined;
 		for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
@@ -401,12 +537,21 @@ export class AudioScheduler {
 	}
 
 	private drainAndPause(reason: string): void {
-		const dropped = this.queue.length;
-		this.queue = [];
+		// Para Code の合成と関係ない声（SSH 先の声・合成済みの鳴らし直し）は残す
+		const kept = this.queue.filter(entry => entry.ignorePause);
+		const droppedEntries = this.queue.filter(entry => !entry.ignorePause);
+		const dropped = droppedEntries.length;
+		this.queue = kept;
+		for (const entry of droppedEntries) {
+			entry.runner.onDropped?.();
+		}
 		this.paused = true;
 		this.deps.notifyAivisPaused(reason);
 		if (dropped > 0) {
 			this.deps.logInfo?.(`[audio-scheduler] dropped ${dropped} queued Aivis task(s) after fatal error: ${reason}`);
+		}
+		if (kept.length > 0) {
+			void this.pump();
 		}
 	}
 }
