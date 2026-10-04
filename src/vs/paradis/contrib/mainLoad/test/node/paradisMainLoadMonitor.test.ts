@@ -47,6 +47,7 @@ function createFakes() {
 		now: () => now,
 		setInterval: (_handler, ms) => { intervalMs = ms; return 1; },
 		clearInterval: () => { cleared = true; },
+		hostLoad: () => ({ loadAvg1m: 3.25, cpuCount: 10 }),
 	};
 	const logService = new class extends NullLogService {
 		override warn(message: string): void {
@@ -152,10 +153,26 @@ suite('ParadisMainLoad', () => {
 			windowResolutions: Array(PARADIS_MAIN_LOAD_DEFAULTS.maxOpenWindows + 2).fill(PARADIS_MAIN_LOAD_DEFAULTS.windowResolutionMs),
 			dropped: undefined,
 			notOwner: undefined,
-			last: { p50Ms: 2, p99Ms: 30, maxMs: 40, busyPct: 90, durationMs: 1_500 },
+			last: { p50Ms: 2, p99Ms: 30, maxMs: 40, busyPct: 90, durationMs: 1_500, hostLoad: { loadAvg1m: 3.25, cpuCount: 10 } },
 			other: 1_500,
 			lastHistogramEnabled: false,
 			unknown: undefined,
+		});
+	});
+
+	test('takes the host load when a window begins and leaves it out where it cannot be read', () => {
+		const fakes = createFakes();
+		let load: { loadAvg1m: number; cpuCount: number } | undefined = { loadAvg1m: 1.5, cpuCount: 8 };
+		const monitor = store.add(new ParadisMainLoadMonitor(fakes.logService, { ...fakes.deps, hostLoad: () => load }));
+		const withLoad = monitor.beginWindow('window:1');
+		// 区間の途中で変わっても、始めた時点の値を返す。
+		load = { loadAvg1m: 9, cpuCount: 8 };
+		const later = monitor.endWindow('window:1', withLoad);
+		load = undefined;
+		const withoutLoad = monitor.endWindow('window:1', monitor.beginWindow('window:1'));
+		assert.deepStrictEqual({ later: later?.hostLoad, withoutLoad: withoutLoad !== undefined && Object.keys(withoutLoad).includes('hostLoad') }, {
+			later: { loadAvg1m: 1.5, cpuCount: 8 },
+			withoutLoad: false,
 		});
 	});
 
