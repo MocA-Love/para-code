@@ -261,6 +261,8 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 	private readonly retiring = new Set<IChildState>();
 	private env: NodeJS.ProcessEnv | undefined;
 	private failures = 0;
+	/** worker の lock を確かめられなかった回数（続けて）。 */
+	private unknownLockStreak = 0;
 	private failedStreak = 0;
 	private degradedUntil = 0;
 	private installedVersion: readonly [number, number, number] | undefined;
@@ -559,10 +561,16 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 			return;
 		}
 		const child = this.child;
-		if (!supported && version !== undefined && child) {
-			// 2.4 以前へ戻された。古い版の --ingest を起こし続けない
+		if (!supported && version !== undefined) {
+			// 2.4 以前へ戻された。子がいない間（起動し直しの待ち・afplay への切り替え中）も、古い版の --ingest を起こし続けない
 			this.options.logService.info(`[ParadisAivisIngest] aivis-mcp is now ${version.join('.')}; --ingest needs 2.5.0 or later`);
-			this.stopChild(child, 'unsupported');
+			if (this.restartTimer !== undefined) {
+				clearTimeout(this.restartTimer);
+				this.restartTimer = undefined;
+			}
+			if (child) {
+				this.stopChild(child, 'unsupported');
+			}
 			this.setState('unsupported');
 			return;
 		}
@@ -618,6 +626,11 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 	/** 子を起こす。`replace` は版が変わったときの入れ替え（今の子は名乗るまで動かしたまま）。 */
 	private spawnChild(replace = false): void {
 		if (this._state === 'disposed') {
+			return;
+		}
+		if (this.installedVersion !== undefined && !paradisAivisVersionAtLeast(this.installedVersion, PARADIS_AIVIS_INGEST_MIN_VERSION)) {
+			// 最後に確かめた版が 2.5.0 未満。--ingest を知らない版を起こさない
+			this.setState('unsupported');
 			return;
 		}
 		if (!replace) {
@@ -877,6 +890,11 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		if (this.retiring.delete(child)) {
 			// 古い子は終わるときに自分の hold（新しい子と同じ持ち主）を外すので、掛け直す
 			this.sendHolds();
+			// 古い子に積んでいて鳴っていない件は、新しい子に取り下げを頼む
+			const current = this.child;
+			if (current?.readyAt !== undefined && !current.exited && this.orphans.size > 0) {
+				this.withdrawOrphans(current);
+			}
 			return;
 		}
 		if (child === this.incoming) {
@@ -917,11 +935,14 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		if (this.isDisposed()) {
 			return;
 		}
-		if (alive !== false) {
-			// worker が動いている（または確かめられない）。列に積んだ発話は worker が鳴らすので、afplay で重ねずに起こし直し続ける
+		this.unknownLockStreak = alive === undefined ? this.unknownLockStreak + 1 : 0;
+		if (alive === true || (alive === undefined && this.unknownLockStreak < PARADIS_INGEST_MAX_FAILURES)) {
+			// worker が動いている（または確かめられない）。列に積んだ発話は worker が鳴らすので、afplay で重ねずに起こし直し続ける。
+			// 確かめられないのが 5 回続いたら afplay に倒す
 			this.scheduleRestart(PARADIS_INGEST_RESTART_DELAYS_MS[PARADIS_INGEST_RESTART_DELAYS_MS.length - 1]);
 			return;
 		}
+		this.unknownLockStreak = 0;
 		this.options.logService.warn(`[ParadisAivisIngest] aivis-mcp --ingest failed ${this.failures} times in a row; playing with afplay for now`);
 		this.setState('fallback');
 		this.settleOrphans();

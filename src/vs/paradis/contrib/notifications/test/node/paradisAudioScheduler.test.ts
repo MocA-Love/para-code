@@ -748,5 +748,31 @@ suite('AudioScheduler', () => {
 				sleeps: 1,
 			});
 		});
+
+		test('plays the held ringtone when a handoff falls back without audio while the scheduler is paused', async () => {
+			const fallback = new DeferredPromise<AivisHandoffResult>();
+			const dropped: string[] = [];
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true }));
+			scheduler.enqueueAivis({
+				synthesize: async () => ({ audio: EMPTY_AUDIO }),
+				play: async () => { },
+				handoff: async () => { throw new AivisError('fatal', 'bad key', 401); },
+				onDropped: () => dropped.push('fatal'),
+			});
+			scheduler.enqueueAivis({
+				synthesize: async () => ({ audio: EMPTY_AUDIO }),
+				play: async () => { },
+				handoff: () => fallback.p,
+				onDropped: () => dropped.push('fallback'),
+			});
+			for (let i = 0; i < 10; i++) {
+				await Promise.resolve();
+			}
+			fallback.complete({ kind: 'fallback' });
+			for (let i = 0; i < 10; i++) {
+				await Promise.resolve();
+			}
+			assert.deepStrictEqual({ dropped, paused: scheduler.isPaused }, { dropped: ['fatal', 'fallback'], paused: true });
+		});
 	});
 });

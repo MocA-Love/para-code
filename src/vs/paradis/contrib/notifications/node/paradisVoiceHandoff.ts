@@ -17,6 +17,8 @@ import { AivisError, AivisHandoffResult, AivisStreamingSynthesis } from './parad
 
 /** 起動中の `--ingest` を待つ上限。過ぎたら afplay で鳴らす。 */
 export const PARADIS_HANDOFF_READY_WAIT_MS = 3_000;
+/** 合成に失敗して中断した件の、worker からの進み具合を待つ上限。 */
+const PRELUDE_SETTLE_WAIT_MS = 500;
 /** 合成した音声 1 本の上限。 */
 const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
 
@@ -55,6 +57,19 @@ export async function paradisHandoffVoice(options: IParadisVoiceHandoffOptions):
 		synthesis = await options.synthesize();
 	} catch (error) {
 		void stream.abort('synth-failed');
+		if (options.open.prelude) {
+			// worker が着信音を鳴らし始めたところかもしれない。進み具合（鳴り始めた・捨てた）を少し待ってから、
+			// 呼び出し側が着信音を付け直すか決める（2 回鳴らさない）
+			await new Promise<void>(resolve => {
+				const timer = setTimeout(resolve, PRELUDE_SETTLE_WAIT_MS);
+				const done = () => {
+					clearTimeout(timer);
+					resolve();
+				};
+				stream.onDidStart(done);
+				void stream.finished.then(done);
+			});
+		}
 		throw error;
 	}
 

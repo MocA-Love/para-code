@@ -410,15 +410,29 @@ suite('ParadisAivisIngestClient', () => {
 		});
 	});
 
-	test('does not switch to afplay when the worker lock cannot be checked', async () => {
+	test('does not switch to afplay while the worker lock cannot be checked, until that happens five times in a row', async () => {
 		const context = createClient({ lock: 'unknown' });
 		context.client.start();
 		await clock.tickAsync(0);
-		for (let i = 0; i < 5; i++) {
+		const states: string[] = [];
+		for (let i = 0; i < 9; i++) {
 			context.children.at(-1)!.exit(1);
 			await clock.tickAsync(8_000);
+			states.push(context.client.state);
 		}
-		assert.strictEqual(context.client.state, 'starting');
+		assert.deepStrictEqual(states, ['starting', 'starting', 'starting', 'starting', 'starting', 'starting', 'starting', 'starting', 'fallback']);
+	});
+
+	test('stops restarting --ingest when aivis-mcp is downgraded to 2.4 while no child is running', async () => {
+		const context = createClient();
+		await startReady(context);
+		await clock.tickAsync(10 * 60_000 - 500);
+		// 子が落ちて、起動し直しを待っている間に 2.4 へ戻された
+		context.children.at(-1)!.exit(1);
+		context.setVersion('aivis-mcp v2.4.3');
+		await clock.tickAsync(500);
+		await clock.tickAsync(30_000);
+		assert.deepStrictEqual({ state: context.client.state, spawned: context.children.length }, { state: 'unsupported', spawned: 1 });
 	});
 
 	test('stops handing off after the worker fails three times in a row', async () => {

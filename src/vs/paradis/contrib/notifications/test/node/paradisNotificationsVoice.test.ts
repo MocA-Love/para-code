@@ -25,7 +25,12 @@ class FakeStream implements IParadisIngestStream {
 	onDidStart(): void { }
 	async write(): Promise<void> { }
 	async end(): Promise<void> { }
-	async abort(): Promise<void> { }
+	async abort(reason: string): Promise<void> {
+		// 鳴り始める前の中断は、aivis-mcp が skipped で知らせる
+		if (!this.finishedGate.isSettled) {
+			this.finishedGate.complete({ status: 'skipped', reason });
+		}
+	}
 }
 
 class FakeIngest implements IParadisAivisIngest {

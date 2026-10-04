@@ -2389,6 +2389,16 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - 端末の控え（原寸）と、PC から取り寄せたサムネイルは、どちらも caches（`cacheDirectory`）に置く。サムネイルは「掃除しない・無期限に持つ」が決定だが、iCloud のバックアップに載せたくない。Library/Application Support に「バックアップの対象外」の属性を付けるのが本来の置き場所だが、expo-file-system（SDK 57）にも既存のネイティブモジュール（`modules/para-*`）にも属性を付ける口が無いため、caches にした。アプリは消さず、OS が消したら PC から取り直す（PC は置き場を掃除しない）
 - Application Support へ移すなら、既存のモジュール（例 `para-ipad-input`）の Swift に `URLResourceValues.isExcludedFromBackup = true` を付ける関数を足す（ネイティブの再ビルドが要る）
 
+## 読み上げを aivis-mcp の `--ingest` へ流す（2026-10-05、voice streaming PR 2）
+
+通知の読み上げと SSH 先の声は、手元に aivis-mcp 2.5.0 以上があれば `aivis-mcp --ingest`（shared process の常駐の子、`src/vs/paradis/contrib/notifications/node/paradisAivisIngestClient.ts`）経由で worker の 1 列へ渡し、`queued` で手放す。取り決めの正は aivis-mcp の `docs/ingest-protocol.md`。設計は `voice-streaming-design.html`。
+
+既知の挙動（直していない、2026-10-05 の再レビューで記録を決めた）:
+
+- worker が最初の音を 10 秒待ちきれずに `failed`/`first-audio-timeout` を返し、Para Code が音声の枠を 1 つも書いていなかった件は、合成を受け取りきってから Para Code が afplay で鳴らし直す。worker はその間に次の件を鳴らしているので、鳴らし直しは worker の次の件と重なることがある
+- Aivis の `/v1/tts/synthesize` が全部まとめて返す（最初の 1 バイトが 10 秒より遅い）と、上の `first-audio-timeout` が続く。worker の `failed` が 3 回続くと 5 分間は全部 afplay で鳴らす（`PARADIS_INGEST_MAX_FAILED_STREAK`・`DEGRADED_RETRY_MS`）。遅い Aivis だけでこの状態に入りうる
+- afplay の音量は 1.0 を上限にしている（頭打ちが無いので上げない）。上げる方向の補正は worker 経由のときだけ効く
+
 ## 今後の方針候補（未確定、要議論）
 
 - 優先実装ターゲットの選定（機能1〜3のうちfork版でしか解決できない部分から着手すべきか）

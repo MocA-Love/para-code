@@ -396,7 +396,10 @@ export class AudioScheduler {
 				const runner: AivisTaskRunner = audio
 					? { synthesize: async () => ({ audio }), play: buffer => entry.runner.play(buffer), startRingtone: () => entry.runner.startRingtone?.(), onDropped: () => entry.runner.onDropped?.() }
 					: entry.runner;
-				this.enqueueAivis(runner, entry.priority, { front: true, localOnly: true, ignorePause: audio !== undefined, presynthesized: audio !== undefined });
+				if (!this.enqueueAivis(runner, entry.priority, { front: true, localOnly: true, ignorePause: audio !== undefined, presynthesized: audio !== undefined })) {
+					// 一時停止中で入らなかった。預かった着信音は今鳴らす
+					runner.onDropped?.();
+				}
 				return;
 			} catch (err) {
 				const aivisErr = toAivisError(err);
