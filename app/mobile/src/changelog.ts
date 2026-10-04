@@ -40,6 +40,22 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.4',
+		date: '2026-10-04',
+		items: [
+			{
+				icon: 'code-slash-outline',
+				title: 'スラッシュコマンドの候補に、プラグインや MCP のコマンドも出るようになりました',
+				body: '`/` を打つたびに最新の一覧を取り直します。同じ名前が 2 つあるときは出どころ（組み込み・プラグイン名・自作）を添え、上にある方が実際に動きます（PC の Para Code も新しい版が必要です）。',
+			},
+			{
+				icon: 'alert-circle-outline',
+				title: '存在しないコマンドを送ったとき、理由を入力欄の上に出して文を入力欄に戻すようになりました',
+				body: 'PC で設定などの画面が開いたままのときや、Codex の入力欄に文字が残っているときは、送らずに理由を出し、端末を開くボタンを添えます。Codex で送信ボタンが押せないままになることがあったのも直しました。',
+			},
+		],
+	},
+	{
 		version: '0.12.3',
 		date: '2026-10-04',
 		items: [

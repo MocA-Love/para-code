@@ -128,6 +128,8 @@ export interface IParadisAgentChatMessage {
 	 * 分けて、小さな灰色の 1 行で出す。古いアプリは知らない項目として無視し、これまでどおり本文として出す。
 	 */
 	readonly notice?: true;
+	/** 知らせの出どころ。`command` はスラッシュコマンドの出力（読み上げの文言を分ける）。無ければ Para Code からの知らせ。 */
+	readonly noticeSource?: 'command';
 	/** Advisor の呼び出し（tool_use）と結果（tool_result）に付く。{@link IParadisAgentAdvisorInfo} */
 	readonly advisor?: IParadisAgentAdvisorInfo;
 	/**
@@ -294,7 +296,10 @@ export interface IParadisAgentChatCommand {
 	readonly description: string;
 	readonly argumentHint?: string;
 	readonly kind: 'command' | 'skill' | 'prompt';
-	readonly source: 'built-in' | 'user' | 'project';
+	/** 並びは実際に効く順で、同じ名前が重なることがある（先にある方が動く）。 */
+	readonly source: 'built-in' | 'user' | 'project' | 'plugin' | 'mcp';
+	/** `source: 'plugin'` のとき、足したプラグインの名前。 */
+	readonly plugin?: string;
 }
 
 /** 取り寄せた画像の実体。 */

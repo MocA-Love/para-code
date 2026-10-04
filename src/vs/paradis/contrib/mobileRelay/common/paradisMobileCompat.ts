@@ -141,6 +141,12 @@ export const ParadisMobileCapability = {
 	 * （拒否に添える指示。`answerVia: 'mod'` のときだけ）。
 	 */
 	AgentApprovalDetail: 'agent.approval.detail.v1',
+	/**
+	 * agent の `command-catalog` の要求の `format: 2` と、その応答（`format: 2`）。一覧は実際に効く順で、同じ名前が重なっても両方を
+	 * 含み、出どころに `plugin`（`plugin` にプラグインの名前）・`mcp` を使う。上限は 500 件。送った発言をエージェントが
+	 * 「そのコマンドは無い」と断ったら、`action-result` を `code: 'unknown-command'` で返す（古いアプリにも返す）。
+	 */
+	AgentCommandsV2: 'agent.commands.v2',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -184,6 +190,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.SystemHistory,
 	ParadisMobileCapability.AgentShells,
 	ParadisMobileCapability.AgentApprovalDetail,
+	ParadisMobileCapability.AgentCommandsV2,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

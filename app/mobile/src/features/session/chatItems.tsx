@@ -75,7 +75,7 @@ function MessageRow({ message, terminalKey }: { message: AgentChatMessage; termi
 		);
 	}
 	if (message.notice === true) {
-		return <NoticeRow text={message.text} />;
+		return <NoticeRow text={message.text} source={message.noticeSource} />;
 	}
 	if (message.role === 'user') {
 		return <UserMessageRow message={message} terminalKey={terminalKey} />;
@@ -236,11 +236,11 @@ function WebSearchRow({ msgs, terminalKey }: { msgs: AgentChatMessage[]; termina
  * Para Code からの知らせ（送った発言がエージェントへ届かなかった等）。エージェントの発言と取り違えないよう、
  * 履歴の質問と同じ灰色の小さな 1 行で出す。
  */
-function NoticeRow({ text }: { text: string }) {
+function NoticeRow({ text, source }: { text: string; source?: string }) {
 	const styles = useChatStyles(baseStyles);
 	const iconSize = useChatIconSize(12);
 	return (
-		<View style={styles.sysline} accessible accessibilityRole="text" accessibilityLabel={`Para Code からの知らせ: ${text}`}>
+		<View style={styles.sysline} accessible accessibilityRole="text" accessibilityLabel={source === 'command' ? `コマンドの出力: ${text}` : `Para Code からの知らせ: ${text}`}>
 			<Icon icon={Info} size={iconSize} color={colors.textMuted} />
 			<Text style={styles.syslineText} selectable>{text}</Text>
 		</View>
