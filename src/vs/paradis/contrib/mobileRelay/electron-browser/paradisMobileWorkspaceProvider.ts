@@ -77,6 +77,8 @@ import { type IParadisMobileRequestHost, paradisDispatchMobileRequest } from './
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { ParadisMobileFileTiming } from '../common/paradisMobileFileTiming.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
+import { PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_COMPOSER_NOT_EMPTY_MESSAGE, PARADIS_SLASH_COMMAND_REJECTED_CODE, PARADIS_SLASH_REJECTION_POLL_MS, PARADIS_SLASH_LEFT_IN_COMPOSER, PARADIS_SLASH_REJECTION_WAIT_MS, paradisCodexComposerHoldsCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
+
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
 import { PARADIS_MOBILE_SHOW_PREFIX_ARGS, ParadisMobileIgnoredRuns, paradisMarkMobileIgnoredEntries, paradisMobileIgnoredRepoDir, paradisMobileIgnoredStatusArgs, paradisParseMobileIgnoredNames } from '../common/paradisMobileIgnoredEntries.js';
@@ -91,6 +93,9 @@ import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeReq
 import { PARADIS_OFFICE_CHANNEL, marshalParadisOfficeRequest, unmarshalParadisOfficeResponse, type ParadisOfficeV1Negotiation } from '../../fileViewers/common/paradisOfficeChannel.js';
 import type { ParadisOfficeSourceDescriptor } from '../../fileViewers/common/paradisOfficeProtocol.js';
 import { paradisIsQuietReplayedPane } from '../../agentBrowser/browser/paradisQuietReplayedPanes.js';
+
+/** Codex の入力欄に残った文字の印を持つ上限（PC で消した後に確かめる機会が無くても、いつまでも断り続けない）。 */
+const CODEX_COMPOSER_RESIDUE_MAX_MS = 10 * 60_000;
 
 // 画面の目印の照合は、デスクトップのチャット表示と共有するため agentChat/browser へ切り出した。
 export { paradisScreenShowsMarker } from '../../agentChat/browser/paradisAgentTuiInput.js';
@@ -788,6 +793,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.pushStateSoon(); void this.pushAgentPanes(); }));
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => { this.detectAndNotify(); this.pushStateSoon(); }));
 		this._register(this.terminalService.onDidChangeInstances(() => this.pushStateSoon()));
+		this._register(this.terminalService.onDidDisposeInstance(instance => this.codexComposerResidue.delete(instance)));
 		this._register(this.terminalIdentityService.onDidChange(() => this.pushStateSoon()));
 		// タイトル変更（F2手動リネーム、モバイルからのrename、プロセス由来の自動タイトルなど）を
 		// 他のペアリング端末・他ウィンドウへも伝播する。
@@ -1479,7 +1485,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (mobileId === undefined) {
 			return;
 		}
-		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown; interactionId?: unknown; agent?: unknown; expectOption?: unknown; expectPromptHash?: unknown };
+		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown; interactionId?: unknown; agent?: unknown; expectOption?: unknown; expectPromptHash?: unknown; slashCheck?: unknown };
 		let interactionAccepted = false;
 		try {
 			msg = JSON.parse(payload.toString());
@@ -1520,6 +1526,19 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		try {
 			if (sendMessage) {
+				// スラッシュコマンドは Enter の後の画面で「そのコマンドは無い」を探す（送る前の画面と比べる）
+				const slashCheck = paradisReadSlashCheck(msg.slashCheck);
+				// 前に断られたコマンドの文字が Codex の入力欄に残っているなら、貼り付けない（つながってモデルへ届く）。
+				// 残りが消えていたら印を外す
+				const residue = msg.agent === 'codex' ? this.codexComposerResidue.get(instance) : undefined;
+				if (residue !== undefined) {
+					if (Date.now() - residue.at < CODEX_COMPOSER_RESIDUE_MAX_MS && paradisCodexComposerHoldsCommand(paradisVisibleTerminalText(instance), residue.command)) {
+						this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_COMPOSER_NOT_EMPTY_MESSAGE);
+						return;
+					}
+					this.codexComposerResidue.delete(instance);
+				}
+				const screenBefore = slashCheck !== undefined ? paradisVisibleTerminalText(instance) : '';
 				const outcome = await paradisSendAgentMessageToTui(
 					msg.text as string,
 					(text, execute, bracketedPasteMode) => instance.sendText(text, execute ?? false, bracketedPasteMode),
@@ -1530,6 +1549,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				);
 				if (!outcome.executed) {
 					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', outcome.consumed ? 'メッセージの貼り付け後にエージェントセッションが変わりました' : '送信前にエージェントセッションが変わりました', outcome.consumed);
+					return;
+				}
+				const slashRejected = slashCheck !== undefined ? await this.slashCommandRejected(instance, slashCheck, screenBefore) : 'no';
+				if (slashCheck !== undefined && slashRejected !== 'no') {
+					const left = slashRejected === 'left-in-composer';
+					if (left) {
+						this.codexComposerResidue.set(instance, { command: slashCheck.command, at: Date.now() });
+					}
+					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', left ? PARADIS_COMPOSER_NOT_EMPTY_CODE : PARADIS_SLASH_COMMAND_REJECTED_CODE,
+						`${paradisSlashRejectionMessage(slashCheck.agent, slashCheck.command)}${left ? PARADIS_SLASH_LEFT_IN_COMPOSER : ''}`);
 					return;
 				}
 			} else if (claudeSetting) {
@@ -1632,6 +1661,30 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		} finally {
 			if (interaction) {
 				await this.finalizeAgentInteraction(mobileId, msg.requestId, msg.token, interactionAccepted ? 'accepted' : 'failed').catch(err => this.logService.warn('[paradisMobileRelay] finalize agent interaction failed', err));
+			}
+		}
+	}
+
+	/**
+	 * Enter の後、Codex が「そのコマンドは無い」と画面に出したかを少し待って確かめる。残った文字は消さない
+	 * （消すキーが無い。paradisAgentSlashCommand.ts 参照）。残っていれば `left-in-composer` を返し、アプリへ伝える。
+	 */
+	/**
+	 * ペイン → Codex の入力欄に残っている、断られたコマンドの名前と、残ったと分かった時刻。消えたと確かめたとき・ペインを
+	 * 閉じたとき・{@link CODEX_COMPOSER_RESIDUE_MAX_MS} を過ぎたときに外す。
+	 */
+	private readonly codexComposerResidue = new Map<ITerminalInstance, { readonly command: string; readonly at: number }>();
+
+	private async slashCommandRejected(instance: ITerminalInstance, check: { readonly agent: 'claude' | 'codex'; readonly command: string }, screenBefore: string): Promise<'no' | 'rejected' | 'left-in-composer'> {
+		const deadline = Date.now() + PARADIS_SLASH_REJECTION_WAIT_MS;
+		for (; ;) {
+			await new Promise<void>(resolve => setTimeout(resolve, PARADIS_SLASH_REJECTION_POLL_MS));
+			const screen = paradisVisibleTerminalText(instance);
+			if (paradisSlashCommandRejected(check.agent, check.command, screenBefore, screen)) {
+				return check.agent === 'codex' && paradisCodexComposerHoldsCommand(screen, check.command) ? 'left-in-composer' : 'rejected';
+			}
+			if (Date.now() >= deadline) {
+				return 'no';
 			}
 		}
 	}

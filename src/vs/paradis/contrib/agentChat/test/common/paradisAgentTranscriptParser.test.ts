@@ -42,6 +42,41 @@ suite('paradisAgentTranscriptParser', () => {
 		assert.deepStrictEqual({ aborted: aborted.messages.length, normal: normal.messages.map(message => message.text) }, { aborted: 0, normal: ['P6CXASK 質問して'] });
 	});
 
+	test('shows a slash command and the output of allowed commands written as system rows (Claude Code 2.1.289), with secrets masked', () => {
+		const system = (content: string) => JSON.stringify({ type: 'system', subtype: 'local_command', content, timestamp: '2026-10-04T09:00:00.000Z' });
+		const command = (name: string) => system(`<command-name>/${name}</command-name>\n            <command-message>${name}</command-message>\n            <command-args></command-args>`);
+		const stdout = (text: string) => system(`<local-command-stdout>${text}</local-command-stdout>`);
+		const shown = (messages: ReturnType<typeof paradisParseClaudeTranscriptBatchesForTest>) => messages.map(message => [message.role, message.text, message.notice === true, message.noticeSource]);
+		assert.deepStrictEqual({
+			context: shown(paradisParseClaudeTranscriptBatchesForTest([[command('context')], [stdout(' \u001b[1mContext Usage\u001b[22m\n\u001b[38;5;244m⛁ ⛁ ⛀ \u001b[39m  Haiku 4.5\n⛶ ⛶   ⛁ Messages: 7.6k tokens')]])),
+			empty: shown(paradisParseClaudeTranscriptBatchesForTest([[command('compact'), stdout('')]])),
+			status: shown(paradisParseClaudeTranscriptBatchesForTest([[command('status'), stdout('Account: someone@example.com')]])),
+			mcp: shown(paradisParseClaudeTranscriptBatchesForTest([[command('mcp'), stdout('github: https://user:secret@example.com')]])),
+			noCommand: shown(paradisParseClaudeTranscriptBatchesForTest([[stdout('orphan output')]])),
+			masked: shown(paradisParseClaudeTranscriptBatchesForTest([[command('usage'), stdout('token ghp_abcdefghijklmnopqrstuvwxyz0123456789 and https://user:pass@example.com/repo')]])),
+			userRow: shown(paradisParseClaudeTranscriptBatchesForTest([[
+				JSON.stringify({ type: 'user', timestamp: '2026-10-04T09:00:00.000Z', message: { role: 'user', content: '<command-name>/reload-skills</command-name>' } }),
+				JSON.stringify({ type: 'user', timestamp: '2026-10-04T09:00:00.000Z', message: { role: 'user', content: '<local-command-stdout>Reloaded skills: 229 skills available</local-command-stdout>' } }),
+			]])),
+		}, {
+			context: [['user', '/context', false, undefined], ['assistant', 'Context Usage\nHaiku 4.5\nMessages: 7.6k tokens', true, 'command']],
+			empty: [['user', '/compact', false, undefined]],
+			status: [['user', '/status', false, undefined]],
+			mcp: [['user', '/mcp', false, undefined]],
+			noCommand: [],
+			masked: [['user', '/usage', false, undefined], ['assistant', 'token *** and https://***@example.com/repo', true, 'command']],
+			userRow: [['user', '/reload-skills', false, undefined], ['assistant', 'Reloaded skills: 229 skills available', true, 'command']],
+		});
+	});
+
+	test('picks up the "Unknown command" row without showing it', () => {
+		const parsed = paradisParseClaudeTranscriptLineForTest(JSON.stringify({ type: 'system', subtype: 'informational', content: 'Unknown command: /nonexistent', timestamp: '2026-10-04T09:00:00.000Z' }));
+		assert.deepStrictEqual({ messages: parsed.messages, unknown: parsed.unknownSlashCommands }, {
+			messages: [],
+			unknown: [{ name: 'nonexistent', ts: Date.parse('2026-10-04T09:00:00.000Z') }],
+		});
+	});
+
 	test('shows a prompt queued while Claude Code is working as a user message', () => {
 		const queued = (prompt: unknown, commandMode = 'prompt', extra: Record<string, unknown> = { origin: { kind: 'human' }, humanTurn: true }) => paradisParseClaudeTranscriptLineForTest(JSON.stringify({
 			type: 'attachment', timestamp: '2026-10-01T10:00:00.000Z',

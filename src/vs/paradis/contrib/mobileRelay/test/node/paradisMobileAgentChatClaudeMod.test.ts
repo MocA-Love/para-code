@@ -522,6 +522,122 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		await waitFor(() => harness.actions.some(action => action.t === 'action/sendMessage'), 'the send did not go to the window');
 	}));
 
+	test('runs a slash command through a mod that can, and answers its refusal with the reason', () => withHarness(async harness => {
+		harness.hook('Stop');
+		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
+		const poll = harness.mod('commands', { busy: false, features: ['commands.list', 'command.run'] });
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		harness.inbound({ t: 'action/sendMessage', requestId: 'slash-1', epoch: harness.tailer()!.epoch, text: '/nonexistent a b' });
+		const [command] = (await poll).commands as { id: string; kind: string; command: string; args: string }[];
+		await harness.mod('ack', { id: command.id, ok: false, reason: 'refused', message: 'no command named /nonexistent in this session' });
+		await waitFor(() => harness.sent.some(message => message.t === 'action-result' && message.requestId === 'slash-1'), 'the slash command was not answered');
+		assert.deepStrictEqual({
+			command: { kind: command.kind, command: command.command, args: command.args },
+			result: harness.sent.filter(message => message.t === 'action-result').map(message => ({ status: message.status, code: message.code, message: message.message })),
+			keys: harness.actions.filter(action => action.t === 'action/sendMessage').length,
+		}, {
+			command: { kind: 'commandRun', command: 'nonexistent', args: 'a b' },
+			result: [{ status: 'rejected', code: 'unknown-command', message: 'Claude Code が /nonexistent を実行しませんでした（no command named /nonexistent in this session）' }],
+			keys: 0,
+		});
+	}));
+
+	test('a slash command sent by keys to Claude Code is refused afterwards when the transcript says "Unknown command", without holding the window\'s answer', () => withHarness(async harness => {
+		harness.hook('Stop');
+		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
+		const poll = harness.mod('commands', { busy: false });
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		const epoch = harness.tailer()!.epoch;
+		harness.inbound({ t: 'action/sendMessage', requestId: 'slash-keys', epoch, text: '/nonexistent' });
+		harness.inbound({ t: 'action/sendMessage', requestId: 'slash-known', epoch, text: '/context' });
+		harness.inbound({ t: 'action/sendMessage', requestId: 'slash-untyped', epoch, text: '/other' });
+		await waitFor(() => harness.actions.filter(action => action.t === 'action/sendMessage').length === 3, 'the slash commands did not go to the window');
+		// 古い mod のポーリングは、後片付けで切れる
+		void poll.catch(() => undefined);
+		// 所有ウィンドウが受け取って打ったもの（claim 済み）だけ。`slash-untyped` は打たれていない
+		for (const requestId of ['slash-keys', 'slash-known']) {
+			assert.strictEqual(harness.chat.claimSendMessageAction('mobile-1', requestId, harness.token, epoch, 1, 'window-session'), 'claimed');
+		}
+		const now = new Date().toISOString();
+		await appendFile(harness.transcriptPath, [
+			JSON.stringify({ type: 'system', subtype: 'informational', content: 'Unknown command: /nonexistent', timestamp: now }),
+			JSON.stringify({ type: 'system', subtype: 'informational', content: 'Unknown command: /other', timestamp: now }),
+			JSON.stringify({ type: 'system', subtype: 'local_command', content: '<command-name>/context</command-name>', timestamp: now }),
+		].map(line => `${line}\n`).join(''));
+		await waitFor(() => harness.sent.some(message => message.t === 'action-result' && message.requestId === 'slash-keys'), 'the late refusal was not sent');
+		await new Promise<void>(resolve => setTimeout(resolve, 400));
+		assert.deepStrictEqual({
+			window: harness.actions.filter(action => action.t === 'action/sendMessage').map(action => [action.agent, action.slashCheck]),
+			late: harness.sent.filter(message => message.t === 'action-result' && message.late === true).map(message => ({ requestId: message.requestId, status: message.status, code: message.code, message: message.message, late: message.late })),
+			notice: harness.tailer()?.messages.filter(message => (message as { notice?: boolean }).notice === true).map(message => message.text),
+		}, {
+			window: [['claude', undefined], ['claude', undefined], ['claude', undefined]],
+			late: [{ requestId: 'slash-keys', status: 'rejected', code: 'unknown-command', message: 'Claude Code に /nonexistent というコマンドはありません', late: true }],
+			notice: ['Claude Code に /nonexistent というコマンドはありません'],
+		});
+	}));
+
+	test('asks the mod whether a screen holds the keys before typing, and does not retry by keys what the mod refused', () => withHarness(async harness => {
+		harness.hook('Stop');
+		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
+		const features = ['commands.list', 'command.run', 'prompt.dialog'];
+		const openPoll = () => harness.mod('commands', { busy: false, features });
+		const handed: string[] = [];
+		let poll = openPoll();
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		/** Takes the command the open poll hands over, opens the next poll, then acks it. */
+		const answer = async (ack: (command: Record<string, unknown>) => Record<string, unknown>) => {
+			const [command] = (await poll).commands as Record<string, unknown>[];
+			handed.push(String(command.kind));
+			poll = openPoll();
+			await new Promise<void>(resolve => setTimeout(resolve, 20));
+			await harness.mod('ack', { id: command.id, ...ack(command) });
+		};
+		const resultOf = async (requestId: string) => {
+			await waitFor(() => harness.sent.some(message => message.t === 'action-result' && message.requestId === requestId), `${requestId} was not answered`);
+			return harness.sent.filter(message => message.t === 'action-result' && message.requestId === requestId).map(message => ({ status: message.status, code: message.code }));
+		};
+		const epoch = harness.tailer()!.epoch;
+
+		harness.inbound({ t: 'action/sendMessage', requestId: 'open-config', epoch, text: '/config' });
+		await answer(() => ({ ok: true, dialog: false }));
+		await answer(() => ({ received: true }));
+		const opened = await resultOf('open-config');
+
+		harness.inbound({ t: 'action/sendMessage', requestId: 'while-open', epoch, text: '!ls' });
+		await answer(() => ({ ok: true, dialog: true }));
+		const whileOpen = await resultOf('while-open');
+
+		// 「開いている」の答えは少しの間使う（mod へ聞き直さない）
+		harness.inbound({ t: 'action/claudeSetting', requestId: 'model-while-open', epoch, setting: 'model', value: 'haiku' });
+		const modelWhileOpen = await resultOf('model-while-open');
+		await new Promise<void>(resolve => setTimeout(resolve, 600));
+
+		harness.inbound({ t: 'action/sendMessage', requestId: 'refused', epoch, text: '続けて' });
+		await answer(() => ({ ok: true, dialog: false }));
+		await answer(() => ({ ok: false }));
+		const refused = await resultOf('refused');
+
+		harness.inbound({ t: 'action/sendMessage', requestId: 'internal', epoch, text: '/__remote-workflow' });
+		const internal = await resultOf('internal');
+
+		assert.deepStrictEqual({
+			opened, whileOpen, modelWhileOpen, refused, internal, handed,
+			keys: harness.actions.filter(action => action.t === 'action/sendMessage' || action.t === 'action/claudeSetting').length,
+		}, {
+			opened: [{ status: 'accepted', code: undefined }],
+			whileOpen: [{ status: 'rejected', code: 'panel-open' }],
+			modelWhileOpen: [{ status: 'rejected', code: 'panel-open' }],
+			refused: [{ status: 'rejected', code: 'send-refused' }],
+			internal: [{ status: 'rejected', code: 'unknown-command' }],
+			handed: ['dialogCheck', 'commandRun', 'dialogCheck', 'dialogCheck', 'submit'],
+			keys: 0,
+		});
+	}));
+
 	test('ends a subagent on its turn.complete, also when it was stopped', () => withHarness(async harness => {
 		await harness.mod('event', { events: [{ type: 'subagent.start', agentId: 'a-one', subagentType: 'general-purpose', description: '調べる' }, { type: 'subagent.start', agentId: 'a-two', subagentType: 'Explore' }] });
 		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-a', agentId: 'a-one', aborted: false, reason: 'answer' }, { type: 'turn.complete', turnId: 't-b', agentId: 'a-two', aborted: true, reason: 'aborted' }, { type: 'turn.complete', turnId: 't-c', agentId: 'a-internal', aborted: false }] });

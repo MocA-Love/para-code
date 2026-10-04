@@ -162,6 +162,8 @@ suite('ParadisMobileAgentChat', () => {
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'attach', id: 1, token: 'pane-1', liveEncoding: 'agent-live-append-v1' }), true);
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'model-catalog', id: 1, requestId: 'request-1' }), true);
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'command-catalog', id: 1, token: 'pane-1', requestId: 'request-1' }), true);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'command-catalog', id: 1, token: 'pane-1', requestId: 'request-1', format: 2 }), true);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'command-catalog', id: 1, token: 'pane-1', requestId: 'request-1', format: 3 }), false);
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'settings-update', id: 1, requestId: 'request-1', model: 'gpt-5', effort: 'high' }), true);
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'activity-detail', id: 1, requestId: 'request-1', epoch: 'epoch-1', activityId: 'agent-1' }), true);
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'action/answerQuestion', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'question-1', answers: [{ kind: 'multi', indices: [0, 2] }] }), true);

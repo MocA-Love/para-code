@@ -498,15 +498,34 @@ export interface FsUploadResult {
 /** Agent message submission outcome. `consumed` means pasted into the TUI but not executed. */
 export type AgentMessageSendResult =
 	| { readonly status: 'accepted' }
-	| { readonly status: 'rejected'; readonly message?: string }
+	/** `code: 'unknown-command'`: エージェントがそのスラッシュコマンドを実行しなかった（`message` に理由）。 */
+	| { readonly status: 'rejected'; readonly message?: string; readonly code?: string }
 	| { readonly status: 'consumed'; readonly message?: string };
 
-export function toAgentMessageSendResult(status: 'accepted' | 'rejected', consumed: boolean, message?: string): AgentMessageSendResult {
+/** 送ったスラッシュコマンドをエージェントが断ったときの code（PC の `PARADIS_SLASH_COMMAND_REJECTED_CODE`）。 */
+export const AGENT_SLASH_COMMAND_REJECTED_CODE = 'unknown-command';
+/** モバイルから開いた Claude Code の画面が PC で開いたまま（端末を開いて Esc で閉じる）。 */
+export const AGENT_PANEL_OPEN_CODE = 'panel-open';
+/** Codex の入力欄に、前に断られたコマンドの文字が残っている（端末を開いて消す）。 */
+export const AGENT_COMPOSER_NOT_EMPTY_CODE = 'composer-not-empty';
+
+/** 受け付けより先に届いた遅い断りを覚えておく時間。 */
+const EARLY_LATE_REJECTION_MS = 15_000;
+
+/** 受け付けた後で断られたと分かったスラッシュコマンド。 */
+export interface AgentSlashRejection {
+	readonly requestId: string;
+	/** 送った文（入力欄へ戻す）。 */
+	readonly text: string;
+	readonly message: string;
+}
+
+export function toAgentMessageSendResult(status: 'accepted' | 'rejected', consumed: boolean, message?: string, code?: string): AgentMessageSendResult {
 	return status === 'accepted'
 		? { status: 'accepted' }
 		: consumed
 			? { status: 'consumed', ...(message !== undefined ? { message } : {}) }
-			: { status: 'rejected', ...(message !== undefined ? { message } : {}) };
+			: { status: 'rejected', ...(message !== undefined ? { message } : {}), ...(code !== undefined && code.length > 0 && code.length <= 64 ? { code } : {}) };
 }
 /** fs hl 応答（コード断片のPCテーマハイライト。失敗時は全フィールド欠落＝プレーン表示）。 */
 export interface FsHighlightResult {
@@ -949,6 +968,8 @@ export interface AgentChatMessage {
 	 * 発言ではないので、小さな灰色の 1 行で出し、最後の発言にも数えない。古い PC は送らない。
 	 */
 	notice?: boolean;
+	/** 知らせの出どころ。`command` はスラッシュコマンドの出力（読み上げの文言を分ける）。無ければ Para Code からの知らせ。 */
+	noticeSource?: string;
 	/**
 	 * Claude Code の Advisor の呼び出し（tool_use、`tool:'Advisor'`）と結果（tool_result）に PC が付ける印。
 	 * 届いたまま検証せずに入るので、使うときは `parseAgentAdvisorInfo()` を通す。
@@ -1029,14 +1050,20 @@ export interface AgentModelControlState {
 	errorMessage?: string;
 }
 
-/** PC側で正規化し、モバイル側でも再検証したコマンド候補。 */
+/**
+ * PC側で正規化し、モバイル側でも再検証したコマンド候補。並びは実際に効く順で、同じ名前が 2 件あれば先の方が動く
+ * （`agent.commands.v2`。古い PC は同じ名前を 1 件にして送る）。
+ */
 export interface AgentCommandOption {
 	name: string;
 	insertText: string;
 	description: string;
 	argumentHint?: string;
 	kind: 'command' | 'skill' | 'prompt';
-	source: 'built-in' | 'user' | 'project';
+	/** `plugin` と `mcp` は `agent.commands.v2` の PC だけが送る。 */
+	source: 'built-in' | 'user' | 'project' | 'plugin' | 'mcp';
+	/** `source: 'plugin'` のとき、足したプラグインの名前。 */
+	plugin?: string;
 }
 
 /** コマンドカタログの取得状態と直近の検証済み候補。 */
@@ -1047,7 +1074,19 @@ export interface AgentCommandCatalogState {
 	errorMessage?: string;
 }
 
-function parseAgentCommandOptions(value: unknown): AgentCommandOption[] {
+/** `format: 2`（`agent.commands.v2`）の一覧の上限と名前の形。 */
+const AGENT_COMMANDS_V2_MAX = 500;
+const AGENT_COMMAND_NAME_V2 = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/;
+const AGENT_COMMAND_SOURCES_V2: readonly string[] = ['built-in', 'user', 'project', 'plugin', 'mcp'];
+
+/**
+ * PC が送ってきたコマンド候補を検証する。`format: 2` は同じ名前の重なり（先の方が動く）と出どころ plugin / mcp を含む。
+ * 形の合わない候補が 1 件でもあれば一覧ごと捨てる（PC の不具合を一覧の欠けとして隠さない）。
+ */
+export function parseAgentCommandOptions(value: unknown, format?: unknown): AgentCommandOption[] {
+	if (format === 2) {
+		return parseAgentCommandOptionsV2(value);
+	}
 	if (!Array.isArray(value) || value.length === 0 || value.length > 200) {
 		return [];
 	}
@@ -1074,6 +1113,40 @@ function parseAgentCommandOptions(value: unknown): AgentCommandOption[] {
 			name: raw['name'], insertText: raw['insertText'], description: raw['description'],
 			...(typeof raw['argumentHint'] === 'string' ? { argumentHint: raw['argumentHint'] } : {}),
 			kind: raw['kind'], source: raw['source'],
+		});
+	}
+	return commands;
+}
+
+function parseAgentCommandOptionsV2(value: unknown): AgentCommandOption[] {
+	if (!Array.isArray(value) || value.length === 0 || value.length > AGENT_COMMANDS_V2_MAX) {
+		return [];
+	}
+	const commands: AgentCommandOption[] = [];
+	for (const candidate of value) {
+		if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+			return [];
+		}
+		const raw = candidate as Record<string, unknown>;
+		const name = raw['name'];
+		const description = raw['description'];
+		const argumentHint = raw['argumentHint'];
+		const kind = raw['kind'];
+		const source = raw['source'];
+		const plugin = raw['plugin'];
+		if (typeof name !== 'string' || !AGENT_COMMAND_NAME_V2.test(name) || raw['insertText'] !== `/${name}`
+			|| typeof description !== 'string' || description.length > 240
+			|| (argumentHint !== undefined && (typeof argumentHint !== 'string' || argumentHint.length > 120))
+			|| (kind !== 'command' && kind !== 'skill' && kind !== 'prompt')
+			|| typeof source !== 'string' || !AGENT_COMMAND_SOURCES_V2.includes(source)
+			|| (plugin !== undefined && (typeof plugin !== 'string' || plugin.length === 0 || plugin.length > 100))) {
+			return [];
+		}
+		commands.push({
+			name, insertText: `/${name}`, description,
+			...(typeof argumentHint === 'string' ? { argumentHint } : {}),
+			kind, source: source as AgentCommandOption['source'],
+			...(typeof plugin === 'string' ? { plugin } : {}),
 		});
 	}
 	return commands;
@@ -1340,6 +1413,11 @@ export interface AgentChatState {
 	modelControl?: AgentModelControlState;
 	/** PC側でプロバイダーとcwdを検証して構築したスラッシュコマンド一覧。 */
 	commandCatalog?: AgentCommandCatalogState;
+	/**
+	 * 受け付けた後で PC が「そのコマンドは無い」と知らせてきたスラッシュコマンド（`late: true` の断り）。入力欄が
+	 * 理由を出して文を戻したら {@link MobileController.clearAgentSlashRejection} で消す。
+	 */
+	slashRejection?: AgentSlashRejection;
 	/** PC側がsession検証付きAgent Actionを受け付ける。 */
 	capabilities?: { agentActions: true; claudeSettings?: true };
 	interaction?: AgentInteraction;
@@ -1729,7 +1807,11 @@ export class MobileController {
 	/** relay瞬断で制御応答だけ失われても、モデルUIを永久にbusyへ固定しない。 */
 	private readonly agentControlTimers = new Map<string, { requestId: string; rendererTarget: string; timer: ReturnType<typeof setTimeout> }>();
 	private readonly agentCommandCatalogTimers = new Map<string, { requestId: string; rendererTarget: string; timer: ReturnType<typeof setTimeout> }>();
-	private readonly pendingAgentActions = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly resolve: (result: AgentMessageSendResult) => void; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingAgentActions = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly resolve: (result: AgentMessageSendResult) => void; readonly timer: ReturnType<typeof setTimeout>; readonly slashText?: string }>();
+	/** 受け付けられたスラッシュコマンド（requestId → 中身）。後から断り（`late: true`）が届いたら文を入力欄へ戻すのに使う。 */
+	private readonly acceptedSlashSends = new Map<string, { readonly terminalKey: string; readonly text: string; readonly at: number }>();
+	/** 受け付けより先に届いた遅い断り（requestId → 理由）。受け付けが来たら断りに差し替える。 */
+	private readonly earlyLateRejections = new Map<string, { readonly terminalKey: string; readonly message: string; readonly at: number }>();
 	private readonly pendingActivityDetails = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly activityId: string; readonly resolve: (messages: AgentActivityDetailMessage[]) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 	/** ツール出力の全文取得（展開時オンデマンド）。rev単位で1件だけ在庫させる。 */
 	private readonly pendingToolFulls = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly rev: number; readonly resolve: (text: string) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
@@ -2542,7 +2624,7 @@ export class MobileController {
 		return this.sendAgentActionResult(terminalKey, {
 			t: 'action/sendMessage', token: this.agentToken(terminalKey), epoch: chat.epoch, text,
 			...(sendId !== undefined ? { sendId } : {}),
-		});
+		}, undefined, text.trimStart().startsWith('/') ? text : undefined);
 	}
 
 	// 回答系は sendAgentMessage と同じく理由付きの結果を返す。boolean だけを返していた頃は、
@@ -2797,7 +2879,7 @@ export class MobileController {
 		return this.sendAgentActionResult(terminalKey, body, timeoutMs).then(result => result.status === 'accepted');
 	}
 
-	private sendAgentActionResult(terminalKey: string, body: Record<string, unknown>, timeoutMs = 30_000): Promise<AgentMessageSendResult> {
+	private sendAgentActionResult(terminalKey: string, body: Record<string, unknown>, timeoutMs = 30_000, slashText?: string): Promise<AgentMessageSendResult> {
 		if (!this.isLiveAvailable()) {
 			return Promise.resolve({ status: 'rejected', message: 'PCへ再接続してから操作してください' });
 		}
@@ -2813,9 +2895,82 @@ export class MobileController {
 					resolve({ status: 'rejected' });
 				}
 			}, timeoutMs);
-			this.pendingAgentActions.set(requestId, { terminalKey, rendererTarget, resolve, timer });
+			this.pendingAgentActions.set(requestId, { terminalKey, rendererTarget, resolve, timer, ...(slashText !== undefined ? { slashText } : {}) });
 			this.client?.send('agent', encoder.encode(JSON.stringify({ ...body, id: terminal.id, requestId })));
 		});
+	}
+
+	private rememberAcceptedSlashSend(requestId: string, terminalKey: string, text: string): void {
+		const now = Date.now();
+		for (const [candidate, entry] of this.acceptedSlashSends) {
+			if (now - entry.at > 60_000) {
+				this.acceptedSlashSends.delete(candidate);
+			}
+		}
+		this.acceptedSlashSends.set(requestId, { terminalKey, text, at: now });
+	}
+
+	/**
+	 * 受け付けた後で届いた断り（`late: true`。キーで送った Claude Code のスラッシュコマンドへの `Unknown command`）。
+	 * 受け付けたときの文を覚えていれば、会話の状態に載せて入力欄へ戻させる。
+	 */
+	private handleLateSlashRejection(terminalKey: string, requestId: string, status: unknown, code: unknown, message: unknown): void {
+		if (status !== 'rejected' || code !== AGENT_SLASH_COMMAND_REJECTED_CODE) {
+			return;
+		}
+		const reason = typeof message === 'string' ? message.slice(0, 500) : 'エージェントがこのコマンドを実行しませんでした';
+		// 受け付けより先に届いた（届く順は保証されない）: 待っている送信を断りで終える。入力欄は断りとして文を戻す
+		const pending = this.pendingAgentActions.get(requestId);
+		if (pending !== undefined && pending.terminalKey === terminalKey) {
+			clearTimeout(pending.timer);
+			this.pendingAgentActions.delete(requestId);
+			pending.resolve({ status: 'rejected', code: AGENT_SLASH_COMMAND_REJECTED_CODE, message: reason });
+			return;
+		}
+		const sent = this.acceptedSlashSends.get(requestId);
+		const chat = this.state.agentChats.get(terminalKey);
+		if (sent === undefined) {
+			// まだ送っていない・受け付けが来る前に待ちが消えた: 少しだけ覚えておき、受け付けが来たら断りに差し替える
+			this.rememberEarlyLateRejection(requestId, terminalKey, reason);
+			return;
+		}
+		if (sent.terminalKey !== terminalKey || chat === undefined) {
+			return;
+		}
+		this.acceptedSlashSends.delete(requestId);
+		this.state.agentChats.set(terminalKey, {
+			...chat,
+			slashRejection: { requestId, text: sent.text, message: reason },
+		});
+		this.emit({ agentChats: true });
+	}
+
+	private rememberEarlyLateRejection(requestId: string, terminalKey: string, message: string): void {
+		const now = Date.now();
+		for (const [candidate, entry] of this.earlyLateRejections) {
+			if (now - entry.at > EARLY_LATE_REJECTION_MS) {
+				this.earlyLateRejections.delete(candidate);
+			}
+		}
+		this.earlyLateRejections.set(requestId, { terminalKey, message, at: now });
+	}
+
+	/** 受け付けより先に届いていた遅い断り（{@link EARLY_LATE_REJECTION_MS} 以内のもの）を取り出す。 */
+	private takeEarlyLateRejection(requestId: string, terminalKey: string): string | undefined {
+		const entry = this.earlyLateRejections.get(requestId);
+		this.earlyLateRejections.delete(requestId);
+		return entry !== undefined && entry.terminalKey === terminalKey && Date.now() - entry.at <= EARLY_LATE_REJECTION_MS ? entry.message : undefined;
+	}
+
+	/** 入力欄が {@link AgentChatState.slashRejection} を受け取った（理由を出して文を戻した）。 */
+	clearAgentSlashRejection(terminalKey: string, requestId: string): void {
+		const chat = this.state.agentChats.get(terminalKey);
+		if (chat?.slashRejection?.requestId !== requestId) {
+			return;
+		}
+		const { slashRejection: _handled, ...rest } = chat;
+		this.state.agentChats.set(terminalKey, rest);
+		this.emit({ agentChats: true });
 	}
 
 	private cancelPendingAgentActions(): void {
@@ -3502,14 +3657,19 @@ export class MobileController {
 		this.scheduleAgentControlTimeout(terminalKey, requestId, rendererTarget, 'Codexのモデル一覧取得がタイムアウトしました');
 	}
 
-	/** 対象セッションのプロバイダー別スラッシュコマンドとスキル一覧をPCへ要求する。 */
-	requestAgentCommandCatalog(terminalKey: string): void {
+	/**
+	 * 対象セッションのプロバイダー別スラッシュコマンドとスキル一覧をPCへ要求する（`/` を打つたびに呼ぶ。PC が短く覚えている）。
+	 * 要求を出せなかったら false（送信を一覧待ちで止めないこと）。取得中なら出さずに true。
+	 */
+	requestAgentCommandCatalog(terminalKey: string): boolean {
 		const existing = this.state.agentChats.get(terminalKey);
 		const terminal = this.terminalForKey(terminalKey);
 		const rendererTarget = this.rendererTargetFor(terminalKey);
-		if (!this.isLiveAvailable() || rendererTarget === undefined || existing === undefined || existing.none || terminal === undefined
-			|| existing.commandCatalog?.status === 'loading') {
-			return;
+		if (!this.isLiveAvailable() || rendererTarget === undefined || existing === undefined || existing.none || terminal === undefined) {
+			return false;
+		}
+		if (existing.commandCatalog?.status === 'loading') {
+			return true;
 		}
 		const requestId = `${this.requestPrefix}-agent-commands-${this.requestCounter++}`;
 		this.state.agentChats.set(terminalKey, {
@@ -3517,7 +3677,9 @@ export class MobileController {
 			commandCatalog: { status: 'loading', requestId, commands: existing.commandCatalog?.commands ?? [] },
 		});
 		this.emit({ agentChats: true });
-		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'command-catalog', id: terminal.id, token: this.agentToken(terminalKey), requestId })));
+		// 古い PC は知らない項目のある要求を捨てるので、`agent.commands.v2` を広告している PC にだけ format を付ける
+		const format = this.hasPcCapability(PcCapability.AgentCommandsV2) ? { format: 2 } : {};
+		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'command-catalog', id: terminal.id, token: this.agentToken(terminalKey), requestId, ...format })));
 		this.clearAgentCommandCatalogTimeout(terminalKey);
 		const timer = setTimeout(() => {
 			const current = this.state.agentChats.get(terminalKey);
@@ -3531,6 +3693,7 @@ export class MobileController {
 			this.agentCommandCatalogTimers.delete(terminalKey);
 		}, 15_000);
 		this.agentCommandCatalogTimers.set(terminalKey, { requestId, rendererTarget, timer });
+		return true;
 	}
 
 	private clearAgentCommandCatalogTimeout(terminalKey: string, requestId?: string): void {
@@ -4820,7 +4983,7 @@ export class MobileController {
 			const msg = JSON.parse(decodeUtf8(payload)) as {
 				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number; index?: number;
 				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null; liveRevision?: number; liveAppend?: unknown; activity?: AgentActivityState | null;
-				requestId?: string; activityId?: string; error?: string; models?: AgentModelOption[]; commands?: unknown; status?: string; code?: string; message?: string; consumed?: boolean; capabilities?: { agentActions?: unknown; claudeSettings?: unknown }; interaction?: AgentInteraction | null;
+				requestId?: string; activityId?: string; error?: string; models?: AgentModelOption[]; commands?: unknown; format?: unknown; late?: unknown; status?: string; code?: string; message?: string; consumed?: boolean; capabilities?: { agentActions?: unknown; claudeSettings?: unknown }; interaction?: AgentInteraction | null;
 			};
 			if (typeof msg.id !== 'number') {
 				return;
@@ -4935,6 +5098,7 @@ export class MobileController {
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 					...(previous?.modelControl !== undefined && previous.epoch === msg.epoch ? { modelControl: previous.modelControl } : {}),
 					...(previous?.commandCatalog !== undefined && previous.epoch === msg.epoch ? { commandCatalog: previous.commandCatalog } : {}),
+					...(previous?.slashRejection !== undefined ? { slashRejection: previous.slashRejection } : {}),
 				});
 				this.emit({ agentChats: true });
 				return;
@@ -5022,6 +5186,10 @@ export class MobileController {
 				}
 				return;
 			}
+			if (msg.t === 'action-result' && typeof msg.requestId === 'string' && msg.late === true) {
+				this.handleLateSlashRejection(terminalKey, msg.requestId, msg.status, msg.code, msg.message);
+				return;
+			}
 			if (msg.t === 'action-result' && typeof msg.requestId === 'string') {
 				const pending = this.pendingAgentActions.get(msg.requestId);
 					if (pending === undefined || pending.terminalKey !== terminalKey || pending.rendererTarget !== rendererTarget || (msg.status !== 'accepted' && msg.status !== 'rejected')) {
@@ -5029,7 +5197,16 @@ export class MobileController {
 				}
 				clearTimeout(pending.timer);
 				this.pendingAgentActions.delete(msg.requestId);
-				pending.resolve(toAgentMessageSendResult(msg.status, msg.consumed === true, typeof msg.message === 'string' ? msg.message : undefined));
+				const earlyRejection = msg.status === 'accepted' ? this.takeEarlyLateRejection(msg.requestId, terminalKey) : undefined;
+				if (earlyRejection !== undefined) {
+					// 受け付けより先に遅い断りが届いていた: 受け付けを断りに差し替える
+					pending.resolve({ status: 'rejected', code: AGENT_SLASH_COMMAND_REJECTED_CODE, message: earlyRejection });
+					return;
+				}
+				if (msg.status === 'accepted' && pending.slashText !== undefined) {
+					this.rememberAcceptedSlashSend(msg.requestId, terminalKey, pending.slashText);
+				}
+				pending.resolve(toAgentMessageSendResult(msg.status, msg.consumed === true, typeof msg.message === 'string' ? msg.message : undefined, typeof msg.code === 'string' ? msg.code : undefined));
 				return;
 			}
 			if (msg.t === 'model-catalog' && typeof msg.requestId === 'string' && Array.isArray(msg.models)) {
@@ -5053,7 +5230,7 @@ export class MobileController {
 				if (existing?.commandCatalog?.requestId !== msg.requestId) {
 					return;
 				}
-				const commands = parseAgentCommandOptions(msg.commands);
+				const commands = parseAgentCommandOptions(msg.commands, msg.format);
 				this.clearAgentCommandCatalogTimeout(terminalKey, msg.requestId);
 				this.state.agentChats.set(terminalKey, {
 					...existing,
