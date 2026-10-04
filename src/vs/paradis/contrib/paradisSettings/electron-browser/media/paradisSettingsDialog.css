@@ -216,6 +216,7 @@
 
 .paradis-settings-dialog .psd-section.hidden,
 .paradis-settings-dialog .psd-row.hidden,
+.paradis-settings-dialog .psd-row-desc.hidden,
 .paradis-settings-dialog .psd-nav-item.hidden,
 .paradis-settings-dialog .psd-search-empty.hidden {
 	display: none;

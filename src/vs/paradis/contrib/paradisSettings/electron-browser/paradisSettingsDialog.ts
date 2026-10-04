@@ -26,6 +26,7 @@ import { ConfigurationTarget, IConfigurationService } from '../../../../platform
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { paradisMarkSettingsDialogOpen } from '../common/paradisSettingsDialogState.js';
 import { ParadisModalFocus } from '../browser/paradisModalFocus.js';
 import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
@@ -52,6 +53,8 @@ const STR_NAV_CAPTION_FEATURES = localize('paradis.settings.navCaptionFeatures',
 const STR_NAV_CAPTION_WINDOW = localize('paradis.settings.navCaptionWindow', "ウィンドウ");
 // allow-any-unicode-next-line
 const STR_OPEN_SETTINGS_EDITOR = localize('paradis.settings.openSettingsEditor', "設定エディタで開く");
+// allow-any-unicode-next-line
+const STR_OVERRIDDEN_BY_WORKSPACE = localize('paradis.settings.overriddenByWorkspace', "ワークスペースの設定で上書きされています。");
 
 /** セクション見出しと、ナビ項目のラベル。 */
 interface IParadisSettingsSectionSpec {
@@ -194,6 +197,17 @@ interface IParadisSettingRowSpec {
 	 * 代わりにここで、その行の中に何が起きるかを出す。
 	 */
 	readonly offWarning?: string;
+	/**
+	 * 値の型。拡張機能の設定 (git.*) は登録されるまで値が読めず、型から
+	 * コントロールを選べない (オン/オフの設定が文字の入力欄になる) ので明示する。
+	 */
+	readonly valueType?: 'boolean';
+	/**
+	 * resource スコープの設定 (オン/オフのみ対応)。ワークスペースやフォルダの設定がユーザー設定より
+	 * 優先されるので、ダイアログがユーザー設定へ書いても実際の値が変わらないことがある。
+	 * 表示はフォルダごとに実際に効いている値から作り、上書きされているときは説明にその旨を出す。
+	 */
+	readonly resourceScoped?: boolean;
 }
 
 const ROWS: readonly IParadisSettingRowSpec[] = [
@@ -254,6 +268,19 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			// allow-any-unicode-next-line
 			{ value: 64, label: localize('paradis.settings.parkedRepositoryLimit64', "64件") },
 		],
+	},
+	{
+		sectionId: 'psd-sec-space',
+		// Git 拡張機能の resource スコープの設定。登録前は無効にし (_isRegistered)、
+		// ワークスペースやフォルダの設定で上書きされていればその旨を出す (resourceScoped)
+		key: 'git.paraBranchDiff.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.branchDiff', "ソース管理に「ブランチの変更点」を表示"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.branchDiffDesc', "現在のブランチが分岐元から積み上げた変更を、ソース管理にまとめて表示します。"),
+		keywords: 'git scm branch diff changes base compare view',
+		valueType: 'boolean',
+		resourceScoped: true,
 	},
 	{
 		sectionId: 'psd-sec-space',
@@ -1166,6 +1193,7 @@ export class ParadisSettingsDialog extends Disposable {
 		@ILayoutService layoutService: ILayoutService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ICommandService private readonly commandService: ICommandService,
+		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
 		this._register(paradisMarkSettingsDialogOpen());
@@ -1228,6 +1256,8 @@ export class ParadisSettingsDialog extends Disposable {
 				refreshAll();
 			}
 		}));
+		// resource スコープの設定は、フォルダが増減すると実際に効いている値も変わる
+		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => refreshAll()));
 
 		layoutService.activeContainer.appendChild(this._backdrop);
 		// 開く前のフォーカスを覚えて閉じたら戻す・Esc・描き直しの後のフォーカス・後から開いたモーダルを前に出す
@@ -1296,6 +1326,9 @@ export class ParadisSettingsDialog extends Disposable {
 		}
 		if (spec.description) {
 			dom.append(main, $('.psd-row-desc')).textContent = spec.description;
+		}
+		if (spec.key && spec.resourceScoped) {
+			this._buildOverrideNote(main, spec.key);
 		}
 
 		if (spec.action) {
@@ -1393,11 +1426,14 @@ export class ParadisSettingsDialog extends Disposable {
 			return;
 		}
 
-		if (typeof value === 'boolean') {
+		if (spec.valueType === 'boolean' || typeof value === 'boolean') {
 			const toggle = dom.append(row, $('input.psd-toggle')) as HTMLInputElement;
 			toggle.type = 'checkbox';
 			const sync = () => {
-				toggle.checked = this.configurationService.getValue<boolean>(key) === true;
+				toggle.checked = spec.resourceScoped
+					// Git 拡張機能と同じく、どれか 1 つのフォルダでオンなら表示される (paraBranchDiffView.ts)
+					? this._effectiveResourceValues(key).some(effective => effective === true)
+					: this.configurationService.getValue<boolean>(key) === true;
 				toggle.disabled = !this._isRegistered(key);
 			};
 			sync();
@@ -1443,6 +1479,32 @@ export class ParadisSettingsDialog extends Disposable {
 		const sync = () => warning.classList.toggle('hidden', this.configurationService.getValue(key) !== false);
 		sync();
 		this._refreshers.push(sync);
+	}
+
+	/** resource スコープの設定がワークスペースやフォルダの設定で上書きされている間だけ、説明に出す。 */
+	private _buildOverrideNote(main: HTMLElement, key: string): void {
+		const note = dom.append(main, $('.psd-row-desc'));
+		note.textContent = STR_OVERRIDDEN_BY_WORKSPACE;
+		const sync = () => note.classList.toggle('hidden', !this._isOverriddenByWorkspace(key));
+		sync();
+		this._refreshers.push(sync);
+	}
+
+	/** フォルダごとに実際に効いている値。フォルダが無ければ、フォルダを指定しないときの値。 */
+	private _effectiveResourceValues(key: string): unknown[] {
+		const folders = this.workspaceContextService.getWorkspace().folders;
+		if (folders.length === 0) {
+			return [this.configurationService.inspect(key).value];
+		}
+		return folders.map(folder => this.configurationService.inspect(key, { resource: folder.uri }).value);
+	}
+
+	/** ワークスペースかいずれかのフォルダの設定に値があり、ユーザー設定より優先されているか。 */
+	private _isOverriddenByWorkspace(key: string): boolean {
+		const overridden = (inspected: { readonly workspaceValue?: unknown; readonly workspaceFolderValue?: unknown }) =>
+			inspected.workspaceValue !== undefined || inspected.workspaceFolderValue !== undefined;
+		return overridden(this.configurationService.inspect(key))
+			|| this.workspaceContextService.getWorkspace().folders.some(folder => overridden(this.configurationService.inspect(key, { resource: folder.uri })));
 	}
 
 	/**
