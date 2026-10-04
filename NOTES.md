@@ -406,6 +406,17 @@ tmux サーバーの環境変数は、サーバーを起こしたペインのも
 
 将来の直し方の案は、tmux のクライアントでペインとセッションを対応づけることです。tmux の中で動く hook は `$TMUX`（ソケット・サーバー pid・セッション）と `$TMUX_PANE` を持っています。notify スクリプトがこれを送り、shared process が `tmux -S <socket> list-clients -t <session> -F '#{client_pid}'` でそのセッションに付いているクライアントを調べます。クライアントの祖先にこのペインのシェル（`paradisAgentBrowserService.ts` の `_paneShells` の `shellPid`）がいれば、このペインのエージェントとして後継を認めます。ペイン B のエージェントのセッションには、ペイン B のシェルの下のクライアントしか付いていないので弾けます。notify スクリプトの版上げ（schema v4）と、hook ごとに tmux を1回起動するコストの扱いが要ります。
 
+### Claude Code の daemon（`/fork`・`claude --bg`）の会話の hook は `background` に分ける（2026-10-04）
+
+tmux と同じ形の問題が Claude Code 2.1.289 の daemon にもあります。`/fork` の分岐先と `claude --bg` の会話は、`claude daemon run` → `claude bg-pty-host` → `claude bg-spare` が動かします。daemon を最初に起こしたペインの `PARA_CODE_TERMINAL_PANE_ID` を持ち続けるので、hook はそのペインのトークンで届きます。そのままでは、所有者の claude が生きている間は `nested`（子エージェント）として出て、終わった後は daemon が後継の所有者になってペインの会話を奪いました。
+
+今は hook の祖先に daemon のプロセス（argv[1] が `--bg-spare`・`--bg-pty-host`・`bg-spare`・`bg-pty-host`、または `claude daemon run`）がいれば `background` にして、ペインの状態・通知・子エージェントの一覧には出しません。transcript は「どのペインの会話でもない」と覚え、作業フォルダからの照合の候補から外します。照合は、transcript の会話の行に `sessionKind: "bg"` があるものも外します（`paradisClaudeBackgroundSessions.ts`）。分岐先を見るペイン（`claude attach <id>`）には hook が来ないので、`<id>` の前方一致で transcript を決め打ちします。
+
+残る制限:
+- pid の無い hook（古いスクリプト・プロセス表が取れない）は daemon の会話と見分けられない。受け手が transcript の `sessionKind` で確かめるが、所有者の記録は先に届いた分岐先の transcript で決まりうる（その後のペインの hook は `invalid` で捨てられる）。pid の無いペインで分岐先を `--resume` し直したときは、最初のターンの行が書かれるまで分岐先として扱われる
+- `claude attach` の中で agent view から別の会話を選び直しても、hook が来ないので追えない
+- daemon の会話の状態（許可待ち・完了）は、どのペインのタブにも出ない
+
 ### worktree の「このフォルダを信頼しますか」は元のリポジトリから引き継がれる（2026-09-27 実測、実装なし）
 
 当初の方針は「worktree に信頼が引き継がれなければ、元のリポジトリが信頼済みのときだけ、スペース作成時に worktree のパスへ信頼を書き込む」だったが、両方の CLI とも引き継ぐので実装していない。一時 HOME / `CLAUDE_CONFIG_DIR` / `CODEX_HOME` で、`git worktree add ../repo-worktrees/wt`（Para Code の既定の置き場所と同じ、リポジトリの外の兄弟ディレクトリ）を作って TUI を起動して確かめた。
