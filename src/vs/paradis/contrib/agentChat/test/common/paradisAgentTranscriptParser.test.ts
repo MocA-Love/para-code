@@ -11,7 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { parseAskUserQuestions, paradisParseClaudeTranscriptBatchesForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexRolloutForTest, paradisParseCodexTranscriptLineForTest } from '../../common/paradisAgentTranscriptParser.js';
 import { paradisAgentQuestionHasPreview } from '../../common/paradisAgentChat.js';
 import { paradisCodexUserAuthoredContent, paradisIsCodexInjectedText } from '../../common/paradisCodexInjectedContext.js';
-import { CODEX_FIXTURE_CHILD_ROLLOUT, CODEX_FIXTURE_ENCRYPTED, CODEX_FIXTURE_PARENT_ROLLOUT, CODEX_FIXTURE_USER_MESSAGES } from './paradisCodexRolloutFixture.js';
+import { CODEX_FIXTURE_CHILD_ROLLOUT, CODEX_FIXTURE_ENCRYPTED, CODEX_FIXTURE_EXEC, CODEX_FIXTURE_PARENT_ROLLOUT, CODEX_FIXTURE_USER_MESSAGES } from './paradisCodexRolloutFixture.js';
 
 suite('paradisAgentTranscriptParser', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -225,6 +225,35 @@ suite('paradisAgentTranscriptParser', () => {
 			subagents: 0,
 			turnEnded: 'completed',
 		});
+	});
+
+	test('reads Codex exec results written as an input_text array in the parent chat and in a sub-agent', () => {
+		const parent = paradisParseCodexRolloutForTest([CODEX_FIXTURE_EXEC.parentCall, CODEX_FIXTURE_EXEC.parentOutput, CODEX_FIXTURE_EXEC.functionOutputArray, CODEX_FIXTURE_EXEC.legacyString]);
+		assert.deepStrictEqual({
+			parent: parent.messages.map(message => ({ role: message.role, kind: message.kind, text: message.text, toolUseId: message.toolUseId })),
+			child: paradisParseCodexDetailLinesForTest([...CODEX_FIXTURE_CHILD_ROLLOUT, CODEX_FIXTURE_EXEC.childCall, CODEX_FIXTURE_EXEC.childOutput]).map(message => `${message.role}:${message.tool ?? message.kind}:${message.text}`),
+		}, {
+			parent: [
+				{ role: 'assistant', kind: 'tool_use', text: 'text(await tools.exec_command({cmd:"ls"}));\n', toolUseId: 'call_exec_parent' },
+				{ role: 'tool', kind: 'tool_result', text: 'Script completed\nWall time 0.3 seconds\nOutput:\n{"exit_code":0,"output":"README.md\\nsrc\\n"}', toolUseId: 'call_exec_parent' },
+				{ role: 'tool', kind: 'tool_result', text: 'Script failed\nWall time 0.0 seconds\nOutput:\nScript error:\nexec cell 6 not found', toolUseId: 'call_wait' },
+				{ role: 'tool', kind: 'tool_result', text: 'Script running with cell ID 6\nWall time 31.0 seconds\nOutput:\n', toolUseId: 'call_exec_legacy' },
+			],
+			child: [
+				'assistant:send_message:{"target":"/root"}',
+				'assistant:text:レビューの結果、問題は 2 件です。',
+				'assistant:exec:text(await tools.exec_command({cmd:"git status"}));\n',
+				'tool:tool:Script completed\nWall time 0.1 seconds\nOutput:\nOn branch main',
+			],
+		});
+	});
+
+	test('joins the parts of a Codex array result with a newline unless the previous part ends with one, and keeps an image-only result', () => {
+		const parsed = paradisParseCodexRolloutForTest([CODEX_FIXTURE_EXEC.mcpOutput, CODEX_FIXTURE_EXEC.imageOnly]);
+		assert.deepStrictEqual(parsed.messages.map(message => ({ text: message.text, toolUseId: message.toolUseId, images: message.imageData?.length })), [
+			{ text: '{"title":"Issue 1"}\n{"title":"Issue 2"}', toolUseId: 'call_mcp', images: undefined },
+			{ text: '[image]', toolUseId: 'call_image', images: 1 },
+		]);
 	});
 
 	test('never shows a Codex encrypted payload in a multi-agent tool call', () => {
