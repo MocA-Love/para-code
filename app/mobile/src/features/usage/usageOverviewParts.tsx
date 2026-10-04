@@ -80,7 +80,7 @@ export function SeenOnChips({ chips }: { chips: readonly SeenOn[] }) {
  * Claude / Codex の束（全 PC の合計）。アカウントごとに1行で、見えている PC をチップで添える。
  * `showChips` は PC が2台以上のときだけ（1台なら PC の名前は要らない）。
  */
-export function AggregatedProviderSection({ provider, title, accounts, emptySnapshot, anyLimits, loading, now, showChips, expandResets = false }: {
+export function AggregatedProviderSection({ provider, title, accounts, emptySnapshot, anyLimits, loading, now, showChips, expandResets = false, metersPerRow = 2 }: {
 	provider: 'claude' | 'codex';
 	title: string;
 	accounts: readonly AggregatedAccount[];
@@ -93,6 +93,8 @@ export function AggregatedProviderSection({ provider, title, accounts, emptySnap
 	showChips: boolean;
 	/** リセットの期限の一覧を最初から開いておく（iPad の広い幅）。 */
 	expandResets?: boolean;
+	/** メーターを1行に何個並べるか（iPad で左右に並べた列が狭いときは 1）。 */
+	metersPerRow?: 1 | 2;
 }) {
 	// 取得できていないアカウントは1行に畳む（接続先のログインは畳まない）
 	const folded = (item: AggregatedAccount) => item.account.status === 'unavailable' && item.remoteHost === undefined;
@@ -105,6 +107,7 @@ export function AggregatedProviderSection({ provider, title, accounts, emptySnap
 			remoteHost={item.remoteHost}
 			dimmed={item.old}
 			expandResets={expandResets}
+			metersPerRow={metersPerRow}
 			extra={showChips ? <SeenOnChips chips={item.seenOn} /> : undefined}
 		/>
 	);

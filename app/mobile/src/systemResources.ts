@@ -99,6 +99,21 @@ export function formatCpu(percent: number | undefined): string {
 	return `${Math.round(percent)}%`;
 }
 
+/**
+ * マシン全体の CPU・メモリ・ディスクに添える補足（「システム」画面）。グラフのカードの 2 行目と、履歴の無いマシンで出す
+ * 全体のバーの補足の両方に使う。CPU は Para Code のぶん（全コアの平均にそろえる）、メモリは使用量と総量、
+ * ディスクは先頭のボリュームの空き（取れなければ `undefined`）。
+ */
+export function hostUsageDetails(report: SystemResourcesResult): { readonly cpu: string; readonly memory: string; readonly disk: string | undefined } {
+	const { host } = report;
+	const primaryDisk = host.disks[0];
+	return {
+		cpu: `Para Code ${formatCpu(host.cores > 0 ? report.snapshot.app.cpu / host.cores : undefined)}`,
+		memory: `${formatBytes(host.memory.used)} / ${formatBytes(host.memory.total)}`,
+		disk: primaryDisk !== undefined ? `空き ${formatBytes(primaryDisk.free)}` : undefined,
+	};
+}
+
 /** 「システム」画面の内訳1行。 */
 export interface ResourceRow {
 	key: string;
