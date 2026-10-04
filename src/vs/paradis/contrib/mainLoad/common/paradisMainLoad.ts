@@ -35,6 +35,22 @@ export interface IParadisMainLoopSummary {
 	readonly durationMs: number;
 }
 
+/**
+ * Mac 全体の負荷。main が `os.loadavg()` と CPU のコア数から作る。renderer からは直接取れない。
+ * ロードアベレージは Windows では常に 0 なので、Windows では作らない (0 を「暇だった」と読ませない)。
+ */
+export interface IParadisHostLoad {
+	/** 1 分のロードアベレージ。小数 2 桁に丸める。 */
+	readonly loadAvg1m: number;
+	/** 論理 CPU の数。ロードアベレージをコア数で割って読むために一緒に送る。 */
+	readonly cpuCount: number;
+}
+
+/** 切り替えなどの区間の要約。Mac 全体の負荷は区間を始めた時点の値を添える。 */
+export interface IParadisMainLoopWindowSummary extends IParadisMainLoopSummary {
+	readonly hostLoad?: IParadisHostLoad;
+}
+
 /** 定期の要約。いつの区間か (`endedAt`) を添える。 */
 export interface IParadisMainLoopPeriodSummary extends IParadisMainLoopSummary {
 	readonly endedAt: number;
@@ -53,8 +69,11 @@ export interface IParadisStatProbeReply {
 export interface IParadisMainLoadService {
 	/** 切り替えなどの区間の計測を始める。返した番号を `endWindow` に渡す。 */
 	beginWindow(): Promise<number>;
-	/** 区間の計測を終えて要約を返す。番号が分からなければ undefined。 */
-	endWindow(id: number): Promise<IParadisMainLoopSummary | undefined>;
+	/**
+	 * 区間の計測を終えて要約を返す。番号が分からなければ undefined。
+	 * Mac 全体の負荷もこの返事に相乗りさせる (切り替えのたびに IPC を 1 往復増やさないため)。
+	 */
+	endWindow(id: number): Promise<IParadisMainLoopWindowSummary | undefined>;
 	/** main からそのファイルを stat し、受け取った時刻と返した時刻を返す。file 以外は undefined。 */
 	probeStat(resource: UriComponents): Promise<IParadisStatProbeReply | undefined>;
 	/** 直近の定期の要約（新しい順ではなく古い順）。 */
