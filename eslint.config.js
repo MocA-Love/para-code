@@ -1965,6 +1965,9 @@ export default defineConfig(
 						// ハーネス内部タグを除去するヘルパー(paradisHumanizeAgentSessionTitle)を呼ぶための
 						// 共通型/関数import（common層のみ。末尾は既にcommonという末端レイヤー名なので'~'にせず'**'で完結させる）
 						'vs/paradis/contrib/agentSessionTitle/common/**',
+						// PARA-PATCH: terminalInstance.ts が座標 NaN のマウス報告を捨てるヘルパー
+						// (paradisSanitizeTerminalInput) を呼ぶための逆方向 import（common層のみ）
+						'vs/paradis/contrib/terminalMouseReport/common/**',
 						'vs/workbench/contrib/terminal/terminalContribChatExports*',
 						'vs/workbench/contrib/terminal/terminalContribExports*',
 						'vscode-notebook-renderer', // Type only import
