@@ -40,6 +40,22 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.3',
+		date: '2026-10-04',
+		items: [
+			{
+				icon: 'resize-outline',
+				title: 'iPad で使用量の画面の右の列がはみ出していたのを直しました',
+				body: 'Claude と Codex の 2 列を同じ幅にし、狭いときはメーターを縦に並べます。',
+			},
+			{
+				icon: 'pulse-outline',
+				title: 'システムの画面で、グラフと同じ値のバーを出さないようにしました',
+				body: 'Para Code の割合・メモリの総量・ディスクの空きは各グラフの下に出します。',
+			},
+		],
+	},
+	{
 		version: '0.12.2',
 		date: '2026-10-03',
 		items: [

@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import {
 	CPU_THRESHOLDS, DISK_CRITICAL_FREE_BYTES, buildProcessRows, buildScopeRows, diskLevel, formatBytes,
-	buildSpaceDiskRows, formatCpu, sortRowsBy, usageLevel, usagePercent, worstLevel,
+	buildSpaceDiskRows, formatCpu, hostUsageDetails, sortRowsBy, usageLevel, usagePercent, worstLevel,
 } from './systemResources.js';
 import type { SystemResourcesResult } from './store.js';
 
@@ -174,5 +174,16 @@ describe('buildSpaceDiskRows', () => {
 	test('worktreeを持たないスペースは合計と本体が一致する', () => {
 		const para = buildSpaceDiskRows(result).find(r => r.name === 'Paracode')!;
 		expect([para.totalBytes, para.worktrees.length]).toStrictEqual([para.ownBytes, 0]);
+	});
+});
+
+describe('hostUsageDetails', () => {
+	test('CPU は Para Code のぶんを全コアの平均に、メモリは使用量と総量、ディスクは先頭のボリュームの空き', () => {
+		expect(hostUsageDetails(report())).toEqual({ cpu: 'Para Code 1%', memory: '21.0 GB / 32.0 GB', disk: '空き 582.0 GB' });
+	});
+
+	test('ボリュームもコア数も取れないときは、ディスクを出さず CPU はダッシュにする', () => {
+		const base = report();
+		expect(hostUsageDetails({ ...base, host: { ...base.host, cores: 0, disks: [] } })).toEqual({ cpu: 'Para Code —', memory: '21.0 GB / 32.0 GB', disk: undefined });
 	});
 });
