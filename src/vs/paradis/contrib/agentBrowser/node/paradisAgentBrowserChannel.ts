@@ -18,6 +18,7 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisBindingTicketRequest, IParadisMcpSetupRequest, IParadisPrepareBindRequest, PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { IParadisPlaywrightInvoker, ParadisAgentBrowserService } from './paradisAgentBrowserService.js';
+import { IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoiceIngest.js';
 
 export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 
@@ -325,8 +326,9 @@ export function registerParadisAgentBrowser(
 	configurationService: IConfigurationService,
 	args: NativeParsedArgs,
 	publishMobileVoiceClip?: (audio: Uint8Array) => void,
+	localVoiceOutput?: IParadisLocalVoiceOutput,
 ): ParadisAgentBrowserService {
-	const service = new ParadisAgentBrowserService(userDataPath, playwrightInvoker, server, mainProcessService, logService, configurationService, args, publishMobileVoiceClip);
+	const service = new ParadisAgentBrowserService(userDataPath, playwrightInvoker, server, mainProcessService, logService, configurationService, args, publishMobileVoiceClip, localVoiceOutput);
 	server.registerChannel(PARADIS_AGENT_BROWSER_CHANNEL, new ParadisAgentBrowserChannel(service));
 	service.installRendererConnectionChannels(connection => new ParadisAgentBrowserChannel(service, connection));
 	return service;

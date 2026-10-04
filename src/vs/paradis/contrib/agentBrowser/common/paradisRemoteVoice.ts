@@ -53,3 +53,36 @@ export function paradisLooksLikeMp3(audio: Uint8Array): boolean {
 	}
 	return audio[0] === 0xff && (audio[1] & 0xe0) === 0xe0;
 }
+
+/** ticket の応答で名乗る取込の形式。接続先の aivis-mcp 2.5.0 は、これがあれば合成を受け取りながら chunked で送る。 */
+export const PARADIS_REMOTE_VOICE_STREAM_INGRESS = 'stream-v1';
+
+/** chunked の取込で、要求のヘッダーを受けた時点で「手元で鳴らす」と引き受けたことを返す応答のヘッダー。 */
+export const PARADIS_REMOTE_VOICE_ACCEPTED_HEADER = 'X-Para-Local-Playback';
+
+const MPEG1_LAYER3_KBPS = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+const MPEG2_LAYER3_KBPS = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+
+/**
+ * MP3 の先頭（ID3v2 タグがあれば飛ばす）にある最初のフレームのヘッダーから、ビットレート（kbps）と音声の
+ * 始まる位置を読む。Layer III 以外・読み切れていない・壊れているときは undefined。届く速さ（実時間の何倍で
+ * 届いているか）を見積もるのに使う。
+ */
+export function paradisMp3Bitrate(audio: Uint8Array): { readonly kbps: number; readonly offset: number } | undefined {
+	let offset = 0;
+	if (audio.byteLength >= 10 && audio[0] === 0x49 && audio[1] === 0x44 && audio[2] === 0x33) {
+		const size = ((audio[6] & 0x7f) << 21) | ((audio[7] & 0x7f) << 14) | ((audio[8] & 0x7f) << 7) | (audio[9] & 0x7f);
+		offset = 10 + size + ((audio[5] & 0x10) ? 10 : 0);
+	}
+	if (audio.byteLength < offset + 4 || audio[offset] !== 0xff || (audio[offset + 1] & 0xe0) !== 0xe0) {
+		return undefined;
+	}
+	const versionBits = (audio[offset + 1] >> 3) & 0x03;
+	const layerBits = (audio[offset + 1] >> 1) & 0x03;
+	const bitrateIndex = (audio[offset + 2] >> 4) & 0x0f;
+	if (versionBits === 0x01 || layerBits !== 0x01 || bitrateIndex === 0 || bitrateIndex === 0x0f) {
+		return undefined;
+	}
+	const kbps = (versionBits === 0x03 ? MPEG1_LAYER3_KBPS : MPEG2_LAYER3_KBPS)[bitrateIndex];
+	return kbps ? { kbps, offset } : undefined;
+}

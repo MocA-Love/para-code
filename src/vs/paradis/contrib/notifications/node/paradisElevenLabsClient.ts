@@ -40,10 +40,12 @@ import {
 	paradisToElevenLabsVoice,
 	PARADIS_ELEVENLABS_DEFAULT_MODEL_ID,
 } from '../common/paradisElevenLabs.js';
-import { AivisError, AivisSynthesizeResult } from './paradisAudioScheduler.js';
+import { AivisError, AivisStreamingSynthesis, AivisSynthesizeResult } from './paradisAudioScheduler.js';
+import { paradisCollectBody, paradisReadSynthesisBody, ParadisSynthesisTimeouts } from './paradisStreamingBody.js';
 
 const ELEVENLABS_BASE_URL = 'https://api.elevenlabs.io';
-const ELEVENLABS_SYNTHESIZE_TIMEOUT_MS = 30_000;
+/** 合成した音声 1 本の上限（読み上げ 1 回分としては十分に大きい）。 */
+export const PARADIS_MAX_SYNTHESIZED_AUDIO_BYTES = 8 * 1024 * 1024;
 const ELEVENLABS_REQUEST_TIMEOUT_MS = 20_000;
 const ELEVENLABS_OUTPUT_FORMAT = 'mp3_44100_128';
 /** 声の一覧を取りに行くページ数の上限（1ページ100件）。 */
@@ -156,10 +158,19 @@ export class ParadisElevenLabsClient {
 	// --- 合成 ------------------------------------------------------------------------------------
 
 	/**
-	 * 合成して MP3 を返す。失敗は AivisError（retryable / fatal / item-specific）にして投げる。
+	 * 合成して MP3 を返す（全部受け取ってから）。失敗は AivisError（retryable / fatal / item-specific）にして投げる。
 	 * 文面の SSML 風タグは取り除いてから送る。
 	 */
 	async synthesize(request: IParadisPlayElevenLabsRequest): Promise<AivisSynthesizeResult> {
+		const { body } = await this.synthesizeStream(request);
+		return { audio: await paradisCollectBody(body, PARADIS_MAX_SYNTHESIZED_AUDIO_BYTES) };
+	}
+
+	/**
+	 * 合成を少しずつ受け取る（`/stream`）。応答のヘッダーまでを待って返し、失敗の状態は AivisError にして投げる。
+	 * 最初の 1 バイトまで 10 秒、途切れ 8 秒で打ち切る。
+	 */
+	async synthesizeStream(request: IParadisPlayElevenLabsRequest): Promise<AivisStreamingSynthesis> {
 		const text = paradisStripSsmlTags(request.text);
 		if (!text) {
 			// allow-any-unicode-next-line
@@ -177,36 +188,33 @@ export class ParadisElevenLabsClient {
 			}
 		}
 
-		const url = new URL(`/v1/text-to-speech/${encodeURIComponent(request.voiceId)}`, ELEVENLABS_BASE_URL);
+		const url = new URL(`/v1/text-to-speech/${encodeURIComponent(request.voiceId)}/stream`, ELEVENLABS_BASE_URL);
 		url.searchParams.set('output_format', ELEVENLABS_OUTPUT_FORMAT);
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), ELEVENLABS_SYNTHESIZE_TIMEOUT_MS);
+		const timeouts = new ParadisSynthesisTimeouts();
+		let response: Response;
 		try {
-			let response: Response;
-			try {
-				response = await this.fetchImpl(url, {
-					method: 'POST',
-					headers: { 'xi-api-key': request.apiKey, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
-					body: JSON.stringify(body),
-					signal: controller.signal,
-				});
-			} catch (error) {
-				if (error instanceof Error && error.name === 'AbortError') {
-					// allow-any-unicode-next-line
-					throw new AivisError('retryable', 'ElevenLabs API のリクエストがタイムアウトしました', undefined, undefined, error);
-				}
-				throw new AivisError('retryable', getErrorMessage(error), undefined, undefined, error);
+			response = await this.fetchImpl(url, {
+				method: 'POST',
+				headers: { 'xi-api-key': request.apiKey, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
+				body: JSON.stringify(body),
+				signal: timeouts.signal,
+			});
+		} catch (error) {
+			timeouts.dispose();
+			if (error instanceof Error && error.name === 'AbortError') {
+				// allow-any-unicode-next-line
+				throw new AivisError('retryable', 'ElevenLabs API のリクエストがタイムアウトしました', undefined, undefined, error);
 			}
-			if (!response.ok) {
-				const bodyText = await response.text().catch(() => '');
-				const { kind, reason } = paradisClassifyElevenLabsError(response.status, bodyText);
-				const retryAfter = response.status === 429 ? paradisElevenLabsRetryAfter(response.headers.get('retry-after')) : undefined;
-				throw new AivisError(kind, reason, response.status, retryAfter);
-			}
-			return { audio: Buffer.from(await response.arrayBuffer()) };
-		} finally {
-			clearTimeout(timer);
+			throw new AivisError('retryable', getErrorMessage(error), undefined, undefined, error);
 		}
+		if (!response.ok) {
+			const bodyText = await response.text().catch(() => '');
+			timeouts.dispose();
+			const { kind, reason } = paradisClassifyElevenLabsError(response.status, bodyText);
+			const retryAfter = response.status === 429 ? paradisElevenLabsRetryAfter(response.headers.get('retry-after')) : undefined;
+			throw new AivisError(kind, reason, response.status, retryAfter);
+		}
+		return { body: paradisReadSynthesisBody(response, timeouts, 'ElevenLabs') };
 	}
 
 	/** 辞書の最新版 ID。取れなければ undefined（その回は辞書なしで読み上げる）。 */

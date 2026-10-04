@@ -9,6 +9,7 @@ import { DeferredPromise } from '../../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	AivisError,
+	AivisHandoffResult,
 	AivisSynthesizeResult,
 	AivisTaskRunner,
 	AudioScheduler,
@@ -625,6 +626,101 @@ suite('AudioScheduler', () => {
 				'synthesize:h3',
 				'play:h3',
 			]);
+		});
+	});
+
+	suite('handoff to aivis-mcp --ingest', () => {
+		test('hands off up to three at a time, high first, and keeps the rest queued until one is released', async () => {
+			const gates = new Map<string, DeferredPromise<AivisHandoffResult>>();
+			const started: string[] = [];
+			const runner = (name: string): AivisTaskRunner => ({
+				synthesize: async () => ({ audio: Buffer.from(name) }),
+				play: async () => { },
+				handoff: () => {
+					started.push(name);
+					const gate = new DeferredPromise<AivisHandoffResult>();
+					gates.set(name, gate);
+					return gate.p;
+				},
+			});
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true }));
+			scheduler.setHeld(true); // 音声入力中でも渡す（止めるのは worker の hold）
+			scheduler.enqueueAivis(runner('n1'), 'normal');
+			scheduler.enqueueAivis(runner('n2'), 'normal');
+			scheduler.enqueueAivis(runner('n3'), 'normal');
+			scheduler.enqueueAivis(runner('h1'), 'high');
+			scheduler.enqueueAivis(runner('n4'), 'normal');
+			await Promise.resolve();
+			const firstWave = [...started];
+			gates.get('n1')!.complete({ kind: 'released' });
+			for (let i = 0; i < 10; i++) {
+				await Promise.resolve();
+			}
+			assert.deepStrictEqual({ firstWave, afterRelease: [...started] }, {
+				firstWave: ['n1', 'n2', 'n3'],
+				afterRelease: ['n1', 'n2', 'n3', 'h1'],
+			});
+			for (const gate of gates.values()) {
+				if (!gate.isSettled) {
+					gate.complete({ kind: 'released' });
+				}
+			}
+		});
+
+		test('plays a handoff that failed before queued with the audio it already received', async () => {
+			const events: string[] = [];
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true }));
+			scheduler.enqueueAivis({
+				synthesize: async () => { events.push('synthesize'); return { audio: Buffer.from('fresh') }; },
+				play: async audio => { events.push(`play:${audio.toString()}`); },
+				handoff: async attempt => { events.push(`handoff:${attempt}`); return { kind: 'fallback', audio: Buffer.from('received') }; },
+			});
+			await waitForIdle(scheduler);
+			for (let i = 0; i < 10; i++) {
+				await Promise.resolve();
+			}
+			assert.deepStrictEqual(events, ['handoff:1', 'play:received']);
+		});
+
+		test('retries a retryable synthesis failure and pauses on a fatal one', async () => {
+			const events: string[] = [];
+			const paused: string[] = [];
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true, sleep: async () => { }, notifyAivisPaused: reason => paused.push(reason) }));
+			scheduler.enqueueAivis({
+				synthesize: async () => ({ audio: EMPTY_AUDIO }),
+				play: async () => { },
+				handoff: async attempt => {
+					events.push(`handoff:${attempt}`);
+					if (attempt === 1) {
+						throw new AivisError('retryable', 'timeout');
+					}
+					return { kind: 'released' };
+				},
+			});
+			scheduler.enqueueAivis({
+				synthesize: async () => ({ audio: EMPTY_AUDIO }),
+				play: async () => { },
+				handoff: async () => { events.push('handoff:fatal'); throw new AivisError('fatal', 'bad key', 401); },
+			});
+			for (let i = 0; i < 30; i++) {
+				await Promise.resolve();
+			}
+			assert.deepStrictEqual({ events, paused, isPaused: scheduler.isPaused }, {
+				events: ['handoff:1', 'handoff:fatal', 'handoff:2'],
+				paused: ['bad key'],
+				isPaused: true,
+			});
+		});
+
+		test('falls back to the local playback path when --ingest is unavailable', async () => {
+			const events: string[] = [];
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => false }));
+			scheduler.enqueueAivis({
+				...successfulRunner('local', events),
+				handoff: async () => { events.push('handoff'); return { kind: 'released' }; },
+			});
+			await waitForIdle(scheduler);
+			assert.deepStrictEqual(events, ['synthesize:local', 'play:local']);
 		});
 	});
 });
