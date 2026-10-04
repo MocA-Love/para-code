@@ -31,7 +31,7 @@ import { ITerminalService } from '../../../../workbench/contrib/terminal/browser
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
+import { IParadisNotificationsSettingsService, paradisWaitForApiKeys } from '../browser/paradisNotificationsSettings.js';
 import { IParadisAivisPlaceholders, IParadisNotifyAudioRequest, PARADIS_NOTIFICATIONS_CHANNEL, renderParadisAivisTemplate } from '../common/paradisNotifications.js';
 import { paradisIsWorkbenchWindowFocused } from '../../workspaceSwitch/browser/paradisWindowFocus.js';
 import { paradisRevealNotifiedPane } from './paradisNotificationReveal.js';
@@ -41,6 +41,9 @@ import { PARADIS_MOBILE_RELAY_CHANNEL } from '../../mobileRelay/common/paradisMo
 import '../../notificationInbox/electron-browser/paradisNotificationInboxService.js';
 import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING, ParadisInboxDelivery, paradisInboxHasRecorded, paradisInboxPaneKey, paradisNotificationBody, paradisNotificationPreview, paradisPickNotificationMessage } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { ParadisAgentStatusNotificationConsumer, ParadisAgentStatusNotificationTracker, ParadisAgentNotifyStatus } from './paradisAgentStatusNotificationTracker.js';
+
+/** 読み上げの前に API キーの読み込みを待つ上限。 */
+const API_KEY_WAIT_TIMEOUT_MS = 3000;
 
 /** {{event}} の読み上げ用ラベル（日本語）。 */
 const EVENT_LABELS: Readonly<Record<ParadisAgentNotifyStatus, string>> = Object.freeze({
@@ -275,15 +278,45 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		// （通知音 → 完了後に Aivis の順。重複通知音は捨て、Aivis は FIFO。ただし待機キューには
 		// 上限があり、超過した発話は捨てられる）。
 		const muted = this.settingsService.getSoundsMuted();
-		const request: { ringtone?: IParadisNotifyAudioRequest['ringtone']; aivis?: IParadisNotifyAudioRequest['aivis']; priority: IParadisNotifyAudioRequest['priority'] } = {
+		const request: { ringtone?: IParadisNotifyAudioRequest['ringtone']; aivis?: IParadisNotifyAudioRequest['aivis']; elevenLabs?: IParadisNotifyAudioRequest['elevenLabs']; priority: IParadisNotifyAudioRequest['priority'] } = {
 			priority: needsAction ? 'high' : 'normal',
 		};
 		if (!muted) {
 			request.ringtone = { id: this.settingsService.getSelectedRingtoneId(), volume: this.settingsService.getVolume() };
 		}
 
+		const channel = this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL);
+		// 起動直後は API キーを secret storage から読み終えていないことがある。そのときは着信音だけ先に
+		// 送り、読み上げはキーを待ってから送る（scheduler が着信音の後に並べる）。secret storage が
+		// 応答しなくても着信音が鳴らなくならないよう、待つのは読み上げだけで、上限も付ける。
+		if (!this.settingsService.areApiKeysLoaded()) {
+			if (request.ringtone) {
+				await this._sendAudio(channel, { ringtone: request.ringtone, priority: request.priority });
+				request.ringtone = undefined;
+			}
+			if (!(await paradisWaitForApiKeys(this.settingsService, API_KEY_WAIT_TIMEOUT_MS))) {
+				this.logService.warn('[ParadisNotifications] API keys were not loaded in time; skipping the voice announcement');
+				return;
+			}
+		}
 		const aivis = this.settingsService.getAivisSettings();
-		if (aivis.enabled && aivis.apiKey && aivis.modelUuid) {
+		if (aivis.enabled && aivis.engine === 'elevenlabs') {
+			if (aivis.elevenLabsApiKey && aivis.elevenLabsVoiceId) {
+				const template = needsAction ? aivis.formatPermission : aivis.format;
+				const text = renderParadisAivisTemplate(template, placeholders).trim();
+				if (text) {
+					request.elevenLabs = {
+						apiKey: aivis.elevenLabsApiKey,
+						voiceId: aivis.elevenLabsVoiceId,
+						modelId: aivis.elevenLabsModelId,
+						text,
+						speed: aivis.elevenLabsSpeed,
+						dictionaryId: aivis.elevenLabsDictionaryId || undefined,
+						volume: aivis.volume,
+					};
+				}
+			}
+		} else if (aivis.enabled && aivis.apiKey && aivis.modelUuid) {
 			const template = needsAction ? aivis.formatPermission : aivis.format;
 			const text = renderParadisAivisTemplate(template, placeholders).trim();
 			if (text) {
@@ -298,12 +331,15 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 			}
 		}
 
-		if (!request.ringtone && !request.aivis) {
+		if (!request.ringtone && !request.aivis && !request.elevenLabs) {
 			return; // ミュート かつ Aivis 無効なら何もしない
 		}
+		await this._sendAudio(channel, request);
+	}
 
+	private async _sendAudio(channel: ReturnType<ISharedProcessService['getChannel']>, request: IParadisNotifyAudioRequest): Promise<void> {
 		try {
-			await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('notifyAudio', [request]);
+			await channel.call('notifyAudio', [request]);
 		} catch (error) {
 			this.logService.warn('[ParadisNotifications] notifyAudio failed', error);
 		}
