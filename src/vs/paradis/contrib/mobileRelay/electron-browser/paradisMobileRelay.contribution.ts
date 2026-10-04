@@ -475,7 +475,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			const { paneToken: runningPaneToken, commandLine: normalizedCommandLine, command } = running;
 			const cwd = instance.capabilities.get(TerminalCapability.CommandDetection)?.cwd;
 			this.agentCommandCoordinator?.start(runningPaneToken, normalizedCommandLine, generation => withCurrentRendererLease(lease => this.service.notifyAgentCliCommand(
-				lease, runningPaneToken, generation, normalizedCommandLine, command.agent, command.mode, cwd, command.cwd, command.sessionId,
+				// `codex fork X` は mode 'fork' と X を渡す（受け手は X を元の会話として扱い、X そのものには結ばない）
+				lease, runningPaneToken, generation, normalizedCommandLine, command.agent, command.mode, cwd, command.cwd, command.sessionId ?? command.forkedFromId,
 			)));
 			this.agentCommandsByInstance.set(instance.instanceId, { token: runningPaneToken, commandLine: normalizedCommandLine });
 			if (command.agent === 'codex' && cwd !== undefined) {

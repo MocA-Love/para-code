@@ -18,12 +18,17 @@ suite('ParadisAgentCliCommand', () => {
 			paradisInteractiveAgentCommand('codex'),
 			paradisInteractiveAgentCommand('CODEX_HOME=/tmp/codex /usr/local/bin/codex --search "調査して"'),
 			paradisInteractiveAgentCommand('codex resume --last'),
+			paradisInteractiveAgentCommand('codex resume 019f-thread'),
 			paradisInteractiveAgentCommand('codex fork 019f-thread'),
+			paradisInteractiveAgentCommand('codex fork --last'),
 		], [
 			{ agent: 'codex', mode: 'new' },
 			{ agent: 'codex', mode: 'new' },
 			{ agent: 'codex', mode: 'resume' },
-			{ agent: 'codex', mode: 'fork', sessionId: '019f-thread' },
+			{ agent: 'codex', mode: 'resume', sessionId: '019f-thread' },
+			// fork の id は元の会話で、このペインの会話ではない（sessionId にしない）
+			{ agent: 'codex', mode: 'fork', forkedFromId: '019f-thread' },
+			{ agent: 'codex', mode: 'fork' },
 		]);
 	});
 

@@ -190,6 +190,8 @@ const decoder = new TextDecoder();
 const POLL_INTERVAL_MS = 1500;
 /** Claude hookが渡す agent_id の受理形。SubagentStart/Stopの2経路(親子関係の解決・backgroundTasks反映)で共有する。 */
 const PARADIS_CLAUDE_AGENT_ID_PATTERN = /^[A-Za-z0-9._:-]{1,500}$/;
+/** state DB・rollout の名前に使われる Codex の thread ID の形（SQL・パスへ渡す前の検査）。 */
+const PARADIS_CODEX_THREAD_ID_PATTERN = /^[A-Za-z0-9._:-]{1,500}$/;
 /** backgroundTasks上でtranscriptパース由来ID (openedTasks/closedTasks) と衝突させないための名前空間。 */
 const HOOK_BACKGROUND_TASK_PREFIX = 'hook:';
 /** 初回読み込みでファイルがこれより大きい場合、末尾のみ読む (長大セッション対策)。 */
@@ -626,7 +628,7 @@ async function discoverCodexPersistedSubagentFiles(rootThreadId: string, homes: 
 }
 
 async function discoverCodexPersistedSubagentFilesInHome(rootThreadId: string, homes: IParadisAgentHomes): Promise<readonly ICodexPersistedSubagentFile[]> {
-	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(rootThreadId)) { return []; }
+	if (!PARADIS_CODEX_THREAD_ID_PATTERN.test(rootThreadId)) { return []; }
 	let database: DatabaseSync | undefined;
 	try {
 		const names = await fs.readdir(homes.codex);
@@ -649,7 +651,7 @@ async function discoverCodexPersistedSubagentFilesInHome(rootThreadId: string, h
 			const source = str(row?.source);
 			const mtime = num(row?.mtime);
 			const relationship = source !== undefined ? paradisParseCodexThreadSource(source) : undefined;
-			return id !== undefined && /^[A-Za-z0-9._:-]{1,500}$/.test(id) && path !== undefined && isAbsolute(path) && path.endsWith('.jsonl') && source !== undefined && mtime !== undefined && relationship !== undefined
+			return id !== undefined && PARADIS_CODEX_THREAD_ID_PATTERN.test(id) && path !== undefined && isAbsolute(path) && path.endsWith('.jsonl') && source !== undefined && mtime !== undefined && relationship !== undefined
 				? { id, path, source, mtime, parentId: relationship.parentThreadId, depth: relationship.depth }
 				: undefined;
 		}).filter((value): value is ICodexPersistedSubagentFile & { readonly parentId: string; readonly depth: number } => value !== undefined);
@@ -906,6 +908,20 @@ export interface IParadisCodexSessionMeta {
 	readonly depth?: number;
 	readonly agentPath?: string;
 	readonly agentNickname?: string;
+	/**
+	 * `codex fork` / TUI の `/fork` で作った thread なら、元の thread ID（codex-cli 0.160.0 で実測）。
+	 * fork 先は fork した瞬間に state DB の行と rollout ができ、持ち主のペインが決まる前から照合の候補に入る。
+	 * サブエージェントの rollout にも入ることがある（その場合は {@link subagent} も立つ）。
+	 */
+	readonly forkedFromId?: string;
+	/** fork 先の rollout が過去の会話を写さずに参照している、元の rollout の範囲（`history_base`）。 */
+	readonly historyBase?: IParadisCodexHistoryBase;
+}
+
+/** fork 先の rollout の `history_base`。元の rollout の先頭から `endByteOffset` バイトまでが、fork 先の過去の会話。 */
+export interface IParadisCodexHistoryBase {
+	readonly threadId: string;
+	readonly endByteOffset: number;
 }
 
 export function paradisParseCodexSessionMeta(firstLine: string): IParadisCodexSessionMeta | undefined {
@@ -931,11 +947,20 @@ export function paradisParseCodexSessionMeta(firstLine: string): IParadisCodexSe
 		const ownThreadId = str(payload?.id) ?? sessionId;
 		const spawnedAsSubagent = sourceSpawn !== undefined || str(payload?.thread_source) === 'subagent';
 		const subagent = spawnedAsSubagent || (parentThreadId !== undefined && parentThreadId !== ownThreadId);
+		const forkedFromId = str(payload?.forked_from_id);
+		const historyBaseRaw = rec(payload?.history_base);
+		const historyBaseThreadId = str(historyBaseRaw?.thread_id);
+		const historyBaseEnd = num(historyBaseRaw?.end_byte_offset);
+		const historyBase = historyBaseThreadId !== undefined && PARADIS_CODEX_THREAD_ID_PATTERN.test(historyBaseThreadId)
+			&& historyBaseEnd !== undefined && Number.isSafeInteger(historyBaseEnd) && historyBaseEnd >= 0
+			? { threadId: historyBaseThreadId, endByteOffset: historyBaseEnd } : undefined;
 		return {
 			cwd, ...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}),
 			...(subagent ? { subagent: true as const, ...(parentThreadId !== undefined ? { parentThreadId } : {}) } : {}),
 			...(depth !== undefined ? { depth } : {}), ...(agentPath !== undefined ? { agentPath } : {}),
 			...(agentNickname !== undefined ? { agentNickname } : {}),
+			...(forkedFromId !== undefined && forkedFromId.length > 0 && forkedFromId !== ownThreadId ? { forkedFromId } : {}),
+			...(historyBase !== undefined ? { historyBase } : {}),
 		};
 	} catch {
 		return undefined;
@@ -1185,7 +1210,7 @@ async function discoverCodexTranscriptByThreadId(threadId: string, homes: IParad
 }
 
 async function discoverCodexTranscriptByThreadIdInHome(threadId: string, homes: IParadisAgentHomes): Promise<string | undefined> {
-	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(threadId)) { return undefined; }
+	if (!PARADIS_CODEX_THREAD_ID_PATTERN.test(threadId)) { return undefined; }
 	let database: DatabaseSync | undefined;
 	try {
 		const names = await fs.readdir(homes.codex);
@@ -1209,7 +1234,7 @@ async function discoverCodexRootTranscriptByThreadId(threadId: string, homes: IP
 }
 
 async function discoverCodexRootTranscriptByThreadIdInHome(threadId: string, homes: IParadisAgentHomes): Promise<string | undefined> {
-	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(threadId)) { return undefined; }
+	if (!PARADIS_CODEX_THREAD_ID_PATTERN.test(threadId)) { return undefined; }
 	let database: DatabaseSync | undefined;
 	try {
 		const names = await fs.readdir(homes.codex);
@@ -1235,7 +1260,7 @@ async function discoverCodexThreadSourceById(threadId: string, homes: IParadisAg
 }
 
 async function discoverCodexThreadSourceByIdInHome(threadId: string, homes: IParadisAgentHomes): Promise<IParadisCodexThreadSource | undefined> {
-	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(threadId)) { return undefined; }
+	if (!PARADIS_CODEX_THREAD_ID_PATTERN.test(threadId)) { return undefined; }
 	let database: DatabaseSync | undefined;
 	try {
 		const names = await fs.readdir(homes.codex);
@@ -1304,6 +1329,105 @@ async function readCodexRolloutSessionMeta(rolloutPath: string): Promise<IParadi
 	}
 }
 
+/** fork の fork（TUI で `/fork` を重ねたもの）を、元の会話へさかのぼる段数の上限。 */
+const CODEX_FORK_HISTORY_MAX_DEPTH = 8;
+
+/**
+ * Codex の fork 先の rollout の先頭行（session_meta）の `history_base` から、fork 先の過去の会話を読む
+ * （codex-cli 0.160.0 の fork 先は過去の会話を写さず、元の rollout の先頭から `end_byte_offset` バイトまでを参照する）。
+ * 元がさらに fork 先なら、その `history_base` もさかのぼる。返すのは古い順に並べた完全な行の文字列で、
+ * fork 先の rollout の行の前にそのまま続けて読めばよい（元の rollout の範囲と fork 先の行は重ならない）。
+ *
+ * 元の rollout が見つからない・`end_byte_offset` がファイルの長さを超える・行の境目でない・中の thread ID が
+ * 違うときは、その段より古い会話は出さない（1 段目でそうなら undefined。fork 先だけを出す）。
+ * 読むのは新しい方から合計 budgetBytes まで（初回読み込みの末尾窓と同じ考え方。途中の行は捨てる）。
+ * truncated は、1 段以上読めたうえで、それより古い会話を出していない（予算・段数の上限・さらに古い段が
+ * 読めない）こと。
+ */
+export async function paradisReadCodexForkHistory(firstLine: string, resolveThreadTranscript: (threadId: string) => Promise<string | undefined>, budgetBytes: number): Promise<{ readonly text: string; readonly truncated: boolean } | undefined> {
+	const segments: Buffer[] = [];
+	const visited = new Set<string>();
+	let meta = paradisParseCodexSessionMeta(firstLine);
+	let remaining = budgetBytes;
+	let truncated = false;
+	for (let depth = 0; ; depth++) {
+		const base = meta?.historyBase;
+		if (base === undefined || base.endByteOffset === 0) {
+			break;
+		}
+		if (depth >= CODEX_FORK_HISTORY_MAX_DEPTH || remaining <= 0 || visited.has(base.threadId)) {
+			truncated = segments.length > 0;
+			break;
+		}
+		visited.add(base.threadId);
+		const parentPath = await resolveThreadTranscript(base.threadId).catch(() => undefined);
+		const segment = parentPath !== undefined ? await paradisReadCodexHistoryBaseSegment(parentPath, base, remaining) : undefined;
+		if (segment === undefined) {
+			truncated = segments.length > 0;
+			break;
+		}
+		segments.unshift(segment.body);
+		remaining -= segment.body.length;
+		if (segment.truncated) {
+			truncated = true; // 予算を使い切った。これより古い段は読まない
+			break;
+		}
+		meta = segment.meta;
+	}
+	return segments.length > 0 ? { text: Buffer.concat(segments).toString('utf8'), truncated } : undefined;
+}
+
+/** 元の rollout の先頭から `history_base.end_byte_offset` までの、完全な行だけ（予算を超えたら新しい方から）。 */
+async function paradisReadCodexHistoryBaseSegment(rolloutPath: string, base: IParadisCodexHistoryBase, budgetBytes: number): Promise<{ readonly body: Buffer; readonly truncated: boolean; readonly meta: IParadisCodexSessionMeta | undefined } | undefined> {
+	let handle: fs.FileHandle;
+	try {
+		handle = await fs.open(rolloutPath, 'r');
+	} catch {
+		return undefined;
+	}
+	try {
+		if (!await isAllowedOpenTranscriptPath(handle, rolloutPath)) {
+			return undefined;
+		}
+		const stat = await handle.stat();
+		if (base.endByteOffset > stat.size) {
+			return undefined;
+		}
+		const firstLine = await paradisReadFirstLine(handle, CODEX_SESSION_META_MAX_BYTES);
+		const meta = firstLine !== undefined ? paradisParseCodexSessionMeta(firstLine) : undefined;
+		// 中の thread ID（rollout 自身の id。session_id はサブエージェントだと親の値になる）が一致するか
+		const ownId = firstLine !== undefined ? str(rec(rec(safeJsonParseRecord(firstLine))?.payload)?.id) : undefined;
+		if (ownId !== base.threadId) {
+			return undefined;
+		}
+		const start = Math.max(0, base.endByteOffset - budgetBytes);
+		const buffer = Buffer.alloc(base.endByteOffset - start);
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+		let body = buffer.subarray(0, bytesRead);
+		// 行の境目で終わっていないなら、範囲の読み違い（形式が変わった等）。混ぜて出さない
+		if (bytesRead !== buffer.length || body[body.length - 1] !== 0x0a) {
+			return undefined;
+		}
+		if (start > 0) {
+			const firstNewline = body.indexOf(0x0a);
+			body = body.subarray(firstNewline + 1);
+		}
+		return { body, truncated: start > 0, meta };
+	} catch {
+		return undefined;
+	} finally {
+		await handle.close().catch(() => { /* ignore */ });
+	}
+}
+
+function safeJsonParseRecord(text: string): Record<string, unknown> | undefined {
+	try {
+		return rec(JSON.parse(text));
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * 作業ディレクトリの Claude Code の記録の置き場（`~/.claude/projects/<cwdスラッグ>`）。
  *
@@ -1341,7 +1465,7 @@ function paradisClaudeSessionIdOfTranscript(transcriptPath: string): string | un
  * - Codex:  ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl の直近ファイルのうち
  *           先頭行 session_meta の cwd が一致する最新のもの
  */
-async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMtime?: number, excludedPaths: ReadonlySet<string> = new Set(), mode?: ParadisCliDiscoveryMode, allowCodexDirectoryWalk: boolean = true, onCodexDirectoryWalk?: () => void): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number } | undefined> {
+async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMtime?: number, excludedPaths: ReadonlySet<string> = new Set(), mode?: ParadisCliDiscoveryMode, allowCodexDirectoryWalk: boolean = true, onCodexDirectoryWalk?: () => void, codexForkPolicy?: IParadisCodexForkPolicy): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number } | undefined> {
 	const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] = [];
 	// エージェントCLIが実際に読み書きしているホームと、その CLI から見た作業ディレクトリ。
 	// ペインが WSL の中を指していれば、ここでディストロ側へ切り替わる。
@@ -1428,8 +1552,108 @@ async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMti
 		: candidates;
 	// daemon が動かす会話（`/fork` の分岐先・`claude --bg`）は、同じ作業フォルダで元の会話と並んで
 	// 更新され続けるが、どのペインの会話でもない。候補に残すと、元のペインがこれと元の会話を行き来する。
+	// Codex の fork 先は fork した瞬間に作られ、持ち主のペインが最初の発言まで分からない。fork を打ったペイン以外が
+	// 採らないよう、fork 先は forked_from_id がそのペインの会話（または `codex fork X` の X）のときだけ残す。
+	if (agent === 'codex' && codexForkPolicy !== undefined) {
+		const { kept, unreadable } = await paradisWithCodexForkPolicy(eligible, minMtime, excludedPaths, codexForkPolicy);
+		const selected = paradisSelectUnambiguousSessionCandidate(kept, minMtime, excludedPaths);
+		// 素性を読めなかった候補は、一意かどうかの判定には数えるが、選ばれても結ばない（次の照合で読み直す）
+		return selected !== undefined && unreadable.has(selected.transcriptPath) ? undefined : selected;
+	}
 	const inPane = agent === 'claude' ? await paradisWithoutClaudeBackgroundTranscripts(eligible, minMtime, excludedPaths) : eligible;
 	return paradisSelectUnambiguousSessionCandidate(inPane, minMtime, excludedPaths);
+}
+
+/** ペインで打った `codex fork` の元。parent は `codex fork X`、any は id 無し・`--last`、unknown は id が形に合わない。 */
+type ParadisCodexForkRequest = { readonly kind: 'parent'; readonly parentId: string } | { readonly kind: 'any' } | { readonly kind: 'unknown' };
+
+/** 照合で、Codex の fork 先（session_meta に forked_from_id がある thread）をこのペインに結んでよいか。 */
+export interface IParadisCodexForkPolicy {
+	/** fork 先を結んでよい元の thread ID（このペインの今の会話と、このペインで打った `codex fork X` の X）。 */
+	readonly allowedParents: ReadonlySet<string>;
+	/**
+	 * `codex fork`（id 無し・`--last`）を打った後。打った後に作られた fork 先を、元が {@link foreignParents} で
+	 * なければ結んでよい。
+	 */
+	readonly anyParent: boolean;
+	/**
+	 * ほかの生存ペインの今の会話。元がこれらの fork 先は、そのペインの TUI の `/fork` かもしれないので、
+	 * {@link anyParent} では結ばない（hook に任せる）。
+	 */
+	readonly foreignParents: ReadonlySet<string>;
+	/** ほかのペインで打った `codex fork X` の X。その fork 先はそのペインのものなので、ここでは結ばない。 */
+	readonly reservedParents: ReadonlySet<string>;
+	/** fork 先だけを採る（`codex fork` を打った直後の探索。同じフォルダで始まった別の会話を採らない）。 */
+	readonly forkOnly: boolean;
+}
+
+/** fork 元が forkedFromId（fork 先でなければ undefined）の候補を、このペインに結んでよいか。 */
+export function paradisCodexForkCandidateAllowed(forkedFromId: string | undefined, policy: IParadisCodexForkPolicy): boolean {
+	if (forkedFromId === undefined) {
+		return !policy.forkOnly;
+	}
+	if (policy.reservedParents.has(forkedFromId)) {
+		return false;
+	}
+	if (policy.allowedParents.has(forkedFromId)) {
+		return true;
+	}
+	return policy.anyParent && !policy.foreignParents.has(forkedFromId);
+}
+
+/** rollout のパス → forked_from_id（fork 先でなければ null）。session_meta は書いた後に変わらないので使い回す。 */
+const codexForkedFromCache = new Map<string, string | null>();
+const CODEX_FORKED_FROM_CACHE_LIMIT = 1024;
+
+/**
+ * rollout の forked_from_id。fork 先でなければ null、読めない（先頭行が書きかけ・壊れている等）なら 'unreadable'。
+ * ファイルが無い thread は fork 先ではない（Codex は最初の発言まで rollout を作らないが、fork 先は fork した瞬間に作る）。
+ */
+async function paradisCodexForkedFromId(rolloutPath: string): Promise<string | null | 'unreadable'> {
+	const cached = codexForkedFromCache.get(rolloutPath);
+	if (cached !== undefined) {
+		return cached;
+	}
+	const meta = await readCodexRolloutSessionMeta(rolloutPath);
+	if (meta === undefined) {
+		const missing = await fs.stat(rolloutPath).then(() => false, (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
+		// 無いことは覚えない（最初の発言で作られる）
+		return missing ? null : 'unreadable';
+	}
+	const forkedFromId = meta.forkedFromId ?? null;
+	codexForkedFromCache.set(rolloutPath, forkedFromId);
+	while (codexForkedFromCache.size > CODEX_FORKED_FROM_CACHE_LIMIT) {
+		const oldest = codexForkedFromCache.keys().next();
+		if (oldest.done === true) {
+			break;
+		}
+		codexForkedFromCache.delete(oldest.value);
+	}
+	return forkedFromId;
+}
+
+/**
+ * 照合の候補から、このペインのものでない Codex の fork 先を外す（どのみち選ばれない候補は読まない）。
+ * session_meta を読めない候補は残して unreadable に入れる。一意かどうかの判定には数え（ほかの候補を
+ * 一意と取り違えないため）、選ばれたときだけ見送る（fork 先かもしれないので、次の照合で読み直す）。
+ */
+async function paradisWithCodexForkPolicy<T extends { readonly transcriptPath: string; readonly mtime: number }>(candidates: readonly T[], minMtime: number | undefined, excludedPaths: ReadonlySet<string>, policy: IParadisCodexForkPolicy): Promise<{ readonly kept: T[]; readonly unreadable: ReadonlySet<string> }> {
+	const kept: T[] = [];
+	const unreadable = new Set<string>();
+	for (const candidate of candidates) {
+		if (excludedPaths.has(candidate.transcriptPath) || (minMtime !== undefined && candidate.mtime < minMtime)) {
+			kept.push(candidate); // 後段で落ちる
+			continue;
+		}
+		const forkedFromId = await paradisCodexForkedFromId(candidate.transcriptPath);
+		if (forkedFromId === 'unreadable') {
+			unreadable.add(candidate.transcriptPath);
+			kept.push(candidate);
+		} else if (paradisCodexForkCandidateAllowed(forkedFromId ?? undefined, policy)) {
+			kept.push(candidate);
+		}
+	}
+	return { kept, unreadable };
 }
 
 /**
@@ -1663,6 +1887,11 @@ class TranscriptTailer {
 		 * 手元の設定ファイルは向こうのエージェントとは無関係なので、既定値の補完をやめる。
 		 */
 		remote: boolean = false,
+		/**
+		 * Codex の thread ID から rollout のパスを引く（fork 先の過去の会話を、元の rollout から読むため）。
+		 * 渡さなければ fork 先の rollout だけを出す（SSH の写しは元の rollout を写さない）。
+		 */
+		private readonly resolveCodexThreadTranscript?: (threadId: string) => Promise<string | undefined>,
 	) {
 		this.ready = this.enqueue(() => this.initialLoad());
 		this.startWatching();
@@ -1761,12 +1990,26 @@ class TranscriptTailer {
 				lineBase = firstNewline >= 0 ? start + firstNewline + 1 : start + bytesRead;
 				body = body.subarray(firstNewline >= 0 ? firstNewline + 1 : bytesRead);
 			}
+			// fork 先の rollout は過去の会話を写さず、元の rollout の範囲を参照する。先頭から読めたときだけ、
+			// その範囲を先に読んで続けて出す（読み込みの合計は末尾窓と同じ幅まで）
+			const forkHistory = start === 0 && this.agent === 'codex' && this.resolveCodexThreadTranscript !== undefined
+				? await this.readCodexForkHistory(body, INITIAL_READ_TAIL_BYTES - bytesRead) : undefined;
+			if (this.disposed) {
+				return;
+			}
 			const text = this.decoder.decode(body, { stream: true });
 			this.lineBase = lineBase;
 			this.offset = start + bytesRead;
 			// ここまで来て初めて「現在の末尾」を掴めた。open に失敗した回はここを通らず
 			// offset が 0 のままなので、次の読みは追記ではなく全文の読み直しになる。
 			this.sawInitialEof = true;
+			if (forkHistory !== undefined) {
+				this.consumeForkHistory(forkHistory.text);
+				// 元の会話の古い方を出していない。モバイルに「これより前がある」と伝える
+				if (forkHistory.truncated) {
+					this.initialTruncated = true;
+				}
+			}
 			this.consumeText(text, false);
 			if (!this.watcher) {
 				this.startWatching();
@@ -1778,6 +2021,53 @@ class TranscriptTailer {
 
 	/** {@link initialLoad} で現在の末尾を掴めたか。掴む前の読みは追記ではない。 */
 	private sawInitialEof = false;
+
+	/** 読み込んだ fork 先の rollout の先頭行から、元の rollout の過去の会話を読む（fork 先でなければ undefined）。 */
+	private async readCodexForkHistory(body: Buffer, budgetBytes: number): Promise<{ readonly text: string; readonly truncated: boolean } | undefined> {
+		const newline = body.indexOf(0x0a);
+		const resolveThread = this.resolveCodexThreadTranscript;
+		if (newline <= 0 || budgetBytes <= 0 || resolveThread === undefined) {
+			return undefined;
+		}
+		try {
+			return await paradisReadCodexForkHistory(body.subarray(0, newline).toString('utf8'), resolveThread, budgetBytes);
+		} catch (err) {
+			this.logService.trace('[paradisAgentChat] reading the history of a forked Codex thread failed', String(err));
+			return undefined;
+		}
+	}
+
+	/**
+	 * fork 先の過去の会話（元の rollout の行）を、会話の頭に足す。表示するだけで、ペインの状態（タスク・質問・
+	 * ターン・サブエージェント）には使わない（それは fork 先の行から作る）。行の位置も持たせない（古い発言の
+	 * 読み取りは fork 先の rollout を読むので、別のファイルの位置を混ぜない）。
+	 *
+	 * 制限: 古い発言の読み取り（モバイルの 'history'）は fork 先の rollout しか読まないので、リングから押し出された
+	 * 元の会話の行や、予算を超えて読まなかった元の会話の行は、後から取り寄せられない（`truncated` は立つが、
+	 * 取り寄せても何も返らない）。
+	 * 元の会話の行が操作できるカードに見えることは無い: Codex の行から質問（kind: 'question'）は作らず、
+	 * 承認のカードは hook のライブの列から出る（行からは作らない）。ツールの呼び出しは、結果の行が範囲内に
+	 * あれば完了として出る。
+	 */
+	private consumeForkHistory(text: string): void {
+		const signals = newParseSignals(this.claudeQueuedPrompts);
+		const entries: { readonly obj: Record<string, unknown> }[] = [];
+		for (const line of text.split('\n')) {
+			const trimmed = line.trim();
+			if (trimmed.length === 0) {
+				continue;
+			}
+			try {
+				const obj = rec(JSON.parse(trimmed));
+				if (obj !== undefined) {
+					entries.push({ obj });
+				}
+			} catch {
+				// 壊れた行はスキップ
+			}
+		}
+		this.consumeEntries(entries, signals, false, undefined, false, true);
+	}
 
 	/** 持ち越している不完全な行（remainder）の頭のバイト位置。行の頭の位置を数える起点（W2-30）。 */
 	private lineBase = 0;
@@ -2054,6 +2344,7 @@ class TranscriptTailer {
 		emitDelta: boolean,
 		latestProgress?: ITranscriptProgress,
 		issueUrlsChanged = false,
+		forkHistory = false,
 	): void {
 		// fullText / imageData はここでだけ通過する（この直後に退避して送信対象から外す）。
 		const added: (IParadisAgentChatMessage & { fullText?: string; imageData?: readonly IFlattenedImage[] })[] = [];
@@ -2119,6 +2410,14 @@ class TranscriptTailer {
 				replacement = images.length > 0 ? { ...rest, images } : rest;
 			}
 			added[i] = replacement;
+		}
+		if (forkHistory) {
+			// fork 先の過去の会話: 発言とモデル・effort だけを取る（fork 先の行が後から上書きする）
+			this.model = signals.model ?? this.model;
+			this.effort = signals.effort ?? this.effort;
+			this.messages.push(...added);
+			this.trimRing();
+			return;
 		}
 		// 結果が書かれたツールの承認は決着している（ターミナルで拒否したときは hook が来ず、これが唯一の手がかり）。
 		const resultIds = added.filter(message => message.kind === 'tool_result' && message.toolUseId !== undefined).map(message => message.toolUseId!);
@@ -3350,6 +3649,11 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.cliReconciliationWatermarks.delete(token);
 			}
 		}
+		for (const token of [...this.cliCodexForkRequests.keys()]) {
+			if (!liveTokens.has(token)) {
+				this.cliCodexForkRequests.delete(token);
+			}
+		}
 		this.hookTranscriptSightings.forgetRootsExcept(token => liveTokens.has(token) || this.retiredSessions.has(token));
 		for (const token of [...this.attachProjectScans.keys()]) {
 			if (!liveTokens.has(token)) {
@@ -3486,6 +3790,11 @@ export class ParadisMobileAgentChat extends Disposable {
 	/** hook で見た transcript。ほかのペインの照合で採らないために覚える。 */
 	private readonly hookTranscriptSightings = new ParadisHookTranscriptSightings();
 	/**
+	 * ペインで打った `codex fork [X]`。fork 先が見つかって結ばれるまで（または CLI が終わるまで）持つ。
+	 * 照合はこれを見て、fork 先をコマンドを打ったペインにだけ結ぶ（{@link codexForkPolicyFor}）。
+	 */
+	private readonly cliCodexForkRequests = new Map<string, ParadisCodexForkRequest>();
+	/**
 	 * `claude attach <id>` で全作業フォルダを見て一致があった結果。同じ起動（世代）の再試行では使い回す
 	 * （再試行は 4 回あり、毎回 `~/.claude/projects` 全体を読むと重い）。
 	 */
@@ -3512,6 +3821,17 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		this.tokenToCwd.set(token, effectiveCwd);
 		this.cancelCliDiscovery(token);
+		// `codex fork X` の X は元の会話で、このペインの会話ではない（X を完全一致で結ぶと、元のペインの
+		// 会話を奪う）。X は「fork 先を探す手がかり」として控え、探索は forked_from_id が X の新しい thread を採る。
+		this.cliCodexForkRequests.delete(token);
+		let requestedSessionId = sessionId;
+		if (agent === 'codex' && mode === 'fork') {
+			// id が無い（`codex fork`・`--last`）なら元は問わない。id が形に合わないなら元は分からないので、
+			// fork 先は照合では結ばず hook に任せる
+			this.cliCodexForkRequests.set(token, sessionId === undefined ? { kind: 'any' }
+				: PARADIS_CODEX_THREAD_ID_PATTERN.test(sessionId) ? { kind: 'parent', parentId: sessionId } : { kind: 'unknown' });
+			requestedSessionId = undefined;
+		}
 		const generation = (this.cliDiscoveryGenerations.get(token) ?? 0) + 1;
 		this.cliDiscoveryGenerations.set(token, generation);
 		// resume 直後は既存transcriptへの追記になるため、開始時刻より少し手前まで許容する。
@@ -3539,13 +3859,15 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 加えて30秒・60秒でも再確認する。鮮度ガードは維持されるので、待機を延ばしても
 		// コマンド開始前の古いセッションを誤って拾うことはない。
 		for (const delayMs of [2_000, 6_000, 15_000, 30_000, 60_000]) {
-			this.scheduleCliDiscovery(token, generation, delayMs, () => this.discoverAndNotify(token, agent, mode, effectiveCwd, minMtime, generation, sessionId));
+			this.scheduleCliDiscovery(token, generation, delayMs, () => this.discoverAndNotify(token, agent, mode, effectiveCwd, minMtime, generation, requestedSessionId));
 		}
 		// TUI内の /resume はshell commandを再発火しない。hookが無い環境でも、CLIが
 		// 実行中の間だけroot threadの一意な更新を追跡してsession切替を検出する。
 		// hook が届くペインでも続ける（Codex の TUI の /resume は SessionStart を出さないことがある）。
 		// `/fork` の分岐先は、sessionKind: "bg" と hook の控え（daemon の会話・ほかのペインの会話・子エージェント）の
 		// 両方で候補から外れるので、照合が元の会話と分岐先を行き来することはない。
+		// Codex の `/fork` の分岐先は同じペインで動く（TUI が分岐先へ切り替わる）。照合は forked_from_id が
+		// このペインの今の会話と一致する分岐先だけを採り、ほかのペインの照合からは外す（codexForkPolicyFor）。
 		const reconciliation = setInterval(() => {
 			if (this.cliDiscoveryGenerations.get(token) !== generation || !this.isLiveToken(token)) { return; }
 			const watermark = this.cliReconciliationWatermarks.get(token) ?? minMtime;
@@ -3604,6 +3926,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private stopCliReconciliation(token: string): void {
+		this.cliCodexForkRequests.delete(token);
 		const timer = this.cliReconciliationTimers.get(token);
 		if (timer !== undefined) {
 			clearInterval(timer);
@@ -6604,6 +6927,36 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
+	/**
+	 * このペインの照合で、Codex の fork 先をどう扱うか。fork 先を結んでよいのは、元がこのペインの今の会話
+	 * （TUI の `/fork`）か、このペインで打った `codex fork X` の X のときだけ。ほかのペインで打った
+	 * `codex fork X` の X から作られた fork 先は、そのペインのものなので外す。
+	 */
+	private codexForkPolicyFor(token: string, mode: ParadisCliDiscoveryMode): IParadisCodexForkPolicy {
+		const request = this.cliCodexForkRequests.get(token);
+		const allowedParents = new Set<string>();
+		const ownSessionId = this.paneSessions.get(token)?.sessionId;
+		if (ownSessionId !== undefined) {
+			allowedParents.add(ownSessionId);
+		}
+		if (request?.kind === 'parent') {
+			allowedParents.add(request.parentId);
+		}
+		const reservedParents = new Set<string>();
+		for (const [other, otherRequest] of this.cliCodexForkRequests) {
+			if (other !== token && otherRequest.kind === 'parent' && this.isLiveToken(other)) {
+				reservedParents.add(otherRequest.parentId);
+			}
+		}
+		const foreignParents = new Set<string>();
+		for (const [other, session] of this.paneSessions) {
+			if (other !== token && session.agent === 'codex' && session.sessionId !== undefined && this.isLiveToken(other)) {
+				foreignParents.add(session.sessionId);
+			}
+		}
+		return { allowedParents, anyParent: request?.kind === 'any', foreignParents, reservedParents, forkOnly: mode === 'fork' };
+	}
+
 	/** cwdからセッションを探し、見つかれば登録して購読者へスナップショットを送り直す。 */
 	private async discoverAndNotify(token: string, agent: ParadisAgentKind, mode: ParadisCliDiscoveryMode, cwd: string, minMtime: number | undefined, generation: number, requestedSessionId?: string, additionalExcludedPaths?: ReadonlySet<string>, allowCodexDirectoryWalk: boolean = true, onCodexDirectoryWalk?: () => void): Promise<void> {
 		// 探索先はどれも手元のディスク（~/.claude/projects と ~/.codex/sessions）。接続先で
@@ -6665,7 +7018,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			discovered = { agent: 'claude', transcriptPath: found.transcriptPath, mtime: found.mtime, sessionId: found.sessionId };
 			exactSession = true;
 		}
-		if (agent === 'codex' && requestedSessionId !== undefined && /^[A-Za-z0-9._:-]{1,500}$/.test(requestedSessionId)) {
+		if (agent === 'codex' && requestedSessionId !== undefined && PARADIS_CODEX_THREAD_ID_PATTERN.test(requestedSessionId)) {
 			const transcriptPath = await discoverCodexRootTranscriptByThreadId(requestedSessionId, paradisResolveAgentHomes(cwd));
 			if (transcriptPath !== undefined && !claimedByOthers.has(transcriptPath)) {
 				const stat = await fs.stat(transcriptPath).catch(() => undefined);
@@ -6676,7 +7029,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 		}
 		if (mode !== 'attach') {
-			discovered ??= await discoverSessionByCwd(cwd, agent, minMtime, claimedByOthers, mode, allowCodexDirectoryWalk, onCodexDirectoryWalk);
+			const codexForkPolicy = agent === 'codex' ? this.codexForkPolicyFor(token, mode) : undefined;
+			discovered ??= await discoverSessionByCwd(cwd, agent, minMtime, claimedByOthers, mode, allowCodexDirectoryWalk, onCodexDirectoryWalk, codexForkPolicy);
 		}
 		if (discovered === undefined || this.attachDisposed
 			|| this.cliDiscoveryGenerations.get(token) !== generation
@@ -6722,6 +7076,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		const session: IPaneSessionInfo = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: discovered.sessionId };
 		this.paneSessions.set(token, session);
 		this.retiredSessions.delete(token);
+		// `codex fork X` の fork 先が結ばれた（以後の `/fork` は、今の会話を元にして追う）
+		this.cliCodexForkRequests.delete(token);
 		this.persistSessions();
 		this.transcriptClaims.set(discovered.transcriptPath, token);
 		this.cliReconciliationWatermarks.set(token, Math.max(this.cliReconciliationWatermarks.get(token) ?? 0, discovered.mtime + 1));
@@ -6887,6 +7243,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		this.paneSessions.set(event.token, info);
 		this.retiredSessions.delete(event.token);
+		if (previous?.transcriptPath !== info.transcriptPath) {
+			this.cliCodexForkRequests.delete(event.token);
+		}
 		this.persistSessions();
 		this.transcriptClaims.set(sessionTranscriptPath, event.token);
 		this.emitConfirmedAgentPanesIfChanged();
@@ -7073,6 +7432,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				pendingApproval: tailer.hasPendingApproval(),
 			});
 		};
+		const remote = this.isRemoteAgentPane(token) || paradisIsRemoteAgentTranscriptMirrorPath(session.transcriptPath);
 		const tailer = new TranscriptTailer(session.transcriptPath, session.agent, {
 			onDelta: (messages, options) => {
 				this.scheduleDesktopInsightCheck();
@@ -7202,7 +7562,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			// 接続先かどうかは、これから読むファイルそのものでも見る。`isRemoteAgentPane` は
 			// 「今このペインに載っているセッション」を見るが、ここへは差し替え中の新しい
 			// セッションが渡ってくることがあり、その一瞬だけ判定が食い違う
-		}, this.logService, this.isRemoteAgentPane(token) || paradisIsRemoteAgentTranscriptMirrorPath(session.transcriptPath));
+		}, this.logService, remote, remote || session.agent !== 'codex' ? undefined : async threadId => {
+			// fork 先の過去の会話は、同じホームの元の rollout から読む（許可した場所の外は読まない）
+			const transcriptPath = await discoverCodexTranscriptByThreadId(threadId, this.agentHomesForToken(token) ?? paradisResolveAgentHomes(''));
+			return transcriptPath !== undefined && await isAllowedTranscriptPath(transcriptPath) ? transcriptPath : undefined;
+		});
 		this.tailers.set(token, tailer);
 		tailer.ready.then(() => {
 			this.scheduleDesktopInsightCheck();

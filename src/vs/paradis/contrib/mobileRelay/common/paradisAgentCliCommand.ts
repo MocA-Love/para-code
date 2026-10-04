@@ -15,8 +15,13 @@ export type ParadisInteractiveAgentMode = 'new' | 'resume' | 'fork' | 'attach';
 interface IParadisInteractiveAgentCommandBase {
 	/** Codexの-C/--cdで指定された実行ディレクトリ（シェルcwdからの相対値を含む）。 */
 	readonly cwd?: string;
-	/** `codex resume <thread-id>` / `codex fork <thread-id>` / `claude attach <id>` の明示対象。 */
+	/** `codex resume <thread-id>` / `claude attach <id>` の明示対象（このペインで動く会話そのもの）。 */
 	readonly sessionId?: string;
+	/**
+	 * `codex fork <thread-id>` の元の会話。fork 先は別の新しい thread で、この id の会話はこのペインのものではない
+	 * （元の会話は別のペインで動いていることがある）。探索は forked_from_id がこの id の新しい thread を探す。
+	 */
+	readonly forkedFromId?: string;
 }
 export type ParadisInteractiveAgentCommand =
 	| IParadisInteractiveAgentCommandBase & { readonly agent: 'codex'; readonly mode: Exclude<ParadisInteractiveAgentMode, 'attach'> }
@@ -106,12 +111,12 @@ export function paradisInteractiveAgentCommand(commandLine: string): ParadisInte
 		const positional = commandIndex !== undefined ? words[commandIndex] : undefined;
 		if (positional !== undefined && codexNonInteractiveCommands.has(positional)) { return undefined; }
 		const mode = positional === 'resume' ? 'resume' : positional === 'fork' ? 'fork' : 'new';
-		const sessionId = mode !== 'new' && commandIndex !== undefined ? firstPositional(words.slice(commandIndex + 1), codexOptionsWithValue) : undefined;
+		const targetId = mode !== 'new' && commandIndex !== undefined ? firstPositional(words.slice(commandIndex + 1), codexOptionsWithValue) : undefined;
 		const cwd = optionValue(words, new Set(['-C', '--cd']));
 		return {
 			agent: 'codex', mode,
 			...(cwd !== undefined && cwd.length > 0 ? { cwd } : {}),
-			...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}),
+			...(targetId !== undefined && targetId.length > 0 ? mode === 'fork' ? { forkedFromId: targetId } : { sessionId: targetId } : {}),
 		};
 	}
 	if (words.some(argument => argument === '-p' || argument === '--print' || argument === '--bg' || argument === '--background')) { return undefined; }

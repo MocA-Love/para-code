@@ -85,3 +85,19 @@ export const CODEX_FIXTURE_CHILD_ROLLOUT: readonly string[] = [
 	line('2026-10-01T21:39:13.282Z', 'response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'レビューの結果、問題は 2 件です。' }] }),
 	line('2026-10-01T21:39:13.315Z', 'event_msg', { type: 'task_complete', turn_id: 'turn-2', last_agent_message: 'レビューの結果、問題は 2 件です。' }),
 ];
+
+/**
+ * exec（custom_tool_call）の呼び出しと結果（codex-cli 0.160.0）。今の結果は output が `input_text` の配列で、
+ * 1 つ目に「Script completed…Output:\n」、2 つ目以降に本文が入る。`legacyString` は文字列で書いていた頃の形。
+ */
+export const CODEX_FIXTURE_EXEC = {
+	parentCall: line('2026-10-03T05:41:44.100Z', 'response_item', { type: 'custom_tool_call', id: 'ctc_parent', status: 'completed', call_id: 'call_exec_parent', name: 'exec', input: 'text(await tools.exec_command({cmd:"ls"}));\n' }),
+	parentOutput: line('2026-10-03T05:41:44.500Z', 'response_item', { type: 'custom_tool_call_output', id: 'ctco_parent', call_id: 'call_exec_parent', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.3 seconds\nOutput:\n' }, { type: 'input_text', text: '{"exit_code":0,"output":"README.md\\nsrc\\n"}' }] }),
+	childCall: line('2026-10-03T05:42:10.000Z', 'response_item', { type: 'custom_tool_call', id: 'ctc_child', status: 'completed', call_id: 'call_exec_child', name: 'exec', input: 'text(await tools.exec_command({cmd:"git status"}));\n' }),
+	childOutput: line('2026-10-03T05:42:11.000Z', 'response_item', { type: 'custom_tool_call_output', id: 'ctco_child', call_id: 'call_exec_child', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n' }, { type: 'input_text', text: 'On branch main' }] }),
+	functionOutputArray: line('2026-10-03T05:43:00.000Z', 'response_item', { type: 'function_call_output', id: 'fco_array', call_id: 'call_wait', output: [{ type: 'input_text', text: 'Script failed\nWall time 0.0 seconds\nOutput:\n' }, { type: 'input_text', text: 'Script error:\nexec cell 6 not found' }] }),
+	// MCP の結果は content ごとに要素が分かれ、改行で終わらない
+	mcpOutput: line('2026-10-03T05:43:30.000Z', 'response_item', { type: 'function_call_output', id: 'fco_mcp', call_id: 'call_mcp', output: [{ type: 'input_text', text: '{"title":"Issue 1"}' }, { type: 'input_text', text: '{"title":"Issue 2"}' }] }),
+	imageOnly: line('2026-10-03T05:43:40.000Z', 'response_item', { type: 'custom_tool_call_output', id: 'ctco_image', call_id: 'call_image', output: [{ type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgo=' }] }),
+	legacyString: line('2026-10-03T05:44:00.000Z', 'response_item', { type: 'custom_tool_call_output', id: 'ctco_legacy', call_id: 'call_exec_legacy', output: 'Script running with cell ID 6\nWall time 31.0 seconds\nOutput:\n' }),
+} as const;
