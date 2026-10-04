@@ -189,9 +189,12 @@ class TestSettingsService extends Disposable implements IParadisNotificationsSet
 	getNotifyWhileFocused(): boolean { return false; }
 	setNotifyWhileFocused(_enabled: boolean): void { this.genericEmitter.fire('notifications'); }
 	getAivisSettings(): IParadisAivisSettings {
-		return { enabled: false, apiKey: '', modelUuid: '', userDictionaryUuid: '', format: '', formatPermission: '', volume: 100, speakingRate: 1 };
+		return { enabled: false, apiKey: '', modelUuid: '', userDictionaryUuid: '', format: '', formatPermission: '', volume: 100, speakingRate: 1, engine: 'aivis', elevenLabsApiKey: '', elevenLabsVoiceId: '', elevenLabsModelId: '', elevenLabsSpeed: 1, elevenLabsDictionaryId: '' };
 	}
 	setAivisSettings(_patch: Partial<IParadisAivisSettings>): void { this.genericEmitter.fire('aivis'); }
+	whenApiKeysLoaded(): Promise<void> { return Promise.resolve(); }
+	areApiKeysLoaded(): boolean { return true; }
+	isApiKeyLost(): boolean { return false; }
 	getCustomAivisModelPresets(): readonly IParadisAivisModelPreset[] { return []; }
 	addCustomAivisModelPreset(_preset: IParadisAivisModelPreset): void { this.genericEmitter.fire('aivis'); }
 	removeCustomAivisModelPreset(_uuid: string): void { this.genericEmitter.fire('aivis'); }

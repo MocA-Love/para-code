@@ -8,10 +8,11 @@
 
 // 通知設定ダイアログのシェル（自前backdrop+モーダル。paradisBindingDialog.ts と同じ方式）。
 // Settings Editor 風のレイアウト: ヘッダー（検索ボックス + 自動保存フラッシュ）、左ナビ、
-// 右コンテンツ（おやすみモード / デスクトップ通知 / 通知サウンド / Aivis Voice Announcement /
+// 右コンテンツ（おやすみモード / デスクトップ通知 / 通知サウンド / 音声報告 /
 // ユーザー辞書 / 使用量）。検索は全セクションの setting-row / 着信音カード / 辞書カード /
 // 使用量カード / プリセットタイルを横断フィルタする（FILTERABLE_SELECTOR）。
-// 「Aivis Voice Announcement / ユーザー辞書 / 使用量」の各セクションは別ファイルのクラスに委譲する。
+// 「音声報告 / ユーザー辞書 / 使用量」の各セクションは別ファイルのクラスに委譲する。
+// 辞書と使用量は読み上げエンジン（Aivis / ElevenLabs）ごとに別のクラスが描き、選んでいない方は空になる。
 
 import './media/paradisNotificationSettings.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -29,8 +30,12 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { CUSTOM_RINGTONE_ID, DEFAULT_RINGTONE_ID, IParadisCustomRingtoneInfo, IParadisRingtoneData, PARADIS_AIVIS_DEFAULT_FORMAT, PARADIS_AIVIS_DEFAULT_FORMAT_PERMISSION, PARADIS_NOTIFICATIONS_CHANNEL, PARADIS_RINGTONES, getRingtoneById } from '../common/paradisNotifications.js';
+import { PARADIS_ELEVENLABS_DEFAULT_MODEL_ID, PARADIS_ELEVENLABS_SPEED_DEFAULT } from '../common/paradisElevenLabs.js';
 import { IParadisDoNotDisturbRefreshState, paradisCreateDoNotDisturbRefreshController, ParadisDoNotDisturbRefreshController } from '../common/paradisDoNotDisturb.js';
 import { clearAivisApiCaches } from './paradisAivisApiCache.js';
+import { clearElevenLabsApiCaches } from './paradisElevenLabsApiCache.js';
+import { ParadisElevenLabsDictionarySection } from './paradisElevenLabsDictionarySection.js';
+import { ParadisElevenLabsUsageSection } from './paradisElevenLabsUsageSection.js';
 import { ParadisAivisDictionarySection } from './paradisAivisDictionarySection.js';
 import { ParadisAivisUsageSection } from './paradisAivisUsageSection.js';
 import { ParadisAivisVoiceSection } from './paradisAivisVoiceSection.js';
@@ -63,7 +68,7 @@ const STR_NAV_CAPTION_GENERAL = localize('paradis.notif.navCaptionGeneral', "一
 // allow-any-unicode-next-line
 const STR_NAV_CAPTION_SOUND = localize('paradis.notif.navCaptionSound', "サウンド");
 // allow-any-unicode-next-line
-const STR_NAV_CAPTION_AIVIS = localize('paradis.notif.navCaptionAivis', "Aivis");
+const STR_NAV_CAPTION_AIVIS = localize('paradis.notif.navCaptionVoice', "音声");
 // allow-any-unicode-next-line
 const STR_NAV_DND = localize('paradis.notif.navDnd', "おやすみモード");
 // allow-any-unicode-next-line
@@ -76,6 +81,9 @@ const STR_NAV_AIVIS = localize('paradis.notif.navAivis', "音声報告");
 const STR_NAV_DICT = localize('paradis.notif.navDict', "ユーザー辞書");
 // allow-any-unicode-next-line
 const STR_NAV_USAGE = localize('paradis.notif.navUsage', "使用量 (日別)");
+// エンジン名は製品名なので訳さない。
+const STR_ENGINE_AIVIS = 'Aivis';
+const STR_ENGINE_ELEVENLABS = 'ElevenLabs';
 // allow-any-unicode-next-line
 const STR_ON = localize('paradis.notif.navOn', "オン");
 // allow-any-unicode-next-line
@@ -219,6 +227,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		// ダイアログを閉じている間にAivisSpeech側（外部）で辞書・モデルが変更されている可能性が
 		// あるため、開くたびにAivis関連APIのキャッシュ（paradisAivisApiCache.ts）を破棄する。
 		clearAivisApiCaches();
+		clearElevenLabsApiCaches();
 
 		this._player = this._register(this.instantiationService.createInstance(ParadisNotificationSoundPlayer));
 
@@ -294,7 +303,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			}
 			if (scope === 'dnd') {
 				this._dndRefreshController?.refresh();
-			} else if (scope === 'notifications') {
+			} else if (scope === 'notifications' || scope === 'aivis') {
 				this._updateNavStatuses();
 			}
 			this._scheduleApplySearchFilter();
@@ -335,7 +344,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		this._addNavItem(nav, STR_NAV_SOUND, 'pns-sec-sound', { status: true });
 
 		this._addNavCaption(nav, STR_NAV_CAPTION_AIVIS);
-		this._addNavItem(nav, STR_NAV_AIVIS, 'pns-sec-aivis', {});
+		this._addNavItem(nav, STR_NAV_AIVIS, 'pns-sec-aivis', { status: true });
 		this._addNavItem(nav, STR_NAV_DICT, 'pns-sec-dict', {});
 		this._addNavItem(nav, STR_NAV_USAGE, 'pns-sec-usage', {});
 	}
@@ -400,7 +409,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		this._aivisSectionEl = this._createSection(
 			'pns-sec-aivis',
 			// allow-any-unicode-next-line
-			'aivis 音声 読み上げ voice api key model uuid 辞書 テスト再生 プリセット',
+			'aivis elevenlabs 音声 読み上げ エンジン voice api key model uuid voice_id モデル 辞書 テスト再生 プリセット 声',
 		);
 		this._aivisSection = this._register(this.instantiationService.createInstance(ParadisAivisVoiceSection, this._aivisSectionEl));
 
@@ -409,14 +418,16 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			// allow-any-unicode-next-line
 			'ユーザー辞書 dictionary 単語 import export',
 		);
-		this._register(this.instantiationService.createInstance(ParadisAivisDictionarySection, dictSection));
+		this._register(this.instantiationService.createInstance(ParadisAivisDictionarySection, dom.append(dictSection, $('div'))));
+		this._register(this.instantiationService.createInstance(ParadisElevenLabsDictionarySection, dom.append(dictSection, $('div'))));
 
 		const usageSection = this._createSection(
 			'pns-sec-usage',
 			// allow-any-unicode-next-line
-			'使用量 usage requests characters credits 日別',
+			'使用量 usage requests characters credits 日別 文字数 上限',
 		);
-		this._register(this.instantiationService.createInstance(ParadisAivisUsageSection, usageSection));
+		this._register(this.instantiationService.createInstance(ParadisAivisUsageSection, dom.append(usageSection, $('div'))));
+		this._register(this.instantiationService.createInstance(ParadisElevenLabsUsageSection, dom.append(usageSection, $('div'))));
 
 		// 検索でどのセクションも残らなかったときの受け皿。セクションと違い再描画で作り直されないため
 		// コンテンツ末尾に一度だけ置き、表示切替だけをフィルタから行う。
@@ -475,6 +486,12 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 				: (getRingtoneById(id)?.name ?? id);
 			soundEntry.status.className = 'pns-nav-status st-ok';
 		}
+		const voiceEntry = this._navItems.get('pns-sec-aivis');
+		if (voiceEntry?.status) {
+			const settings = this.settingsService.getAivisSettings();
+			voiceEntry.status.textContent = settings.engine === 'elevenlabs' ? STR_ENGINE_ELEVENLABS : STR_ENGINE_AIVIS;
+			voiceEntry.status.className = `pns-nav-status ${settings.enabled ? 'st-ok' : 'st-off'}`;
+		}
 	}
 
 	// ==========================================================================================
@@ -503,6 +520,12 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			formatPermission: PARADIS_AIVIS_DEFAULT_FORMAT_PERMISSION,
 			volume: 100,
 			speakingRate: 1.0,
+			engine: 'aivis',
+			elevenLabsApiKey: '',
+			elevenLabsVoiceId: '',
+			elevenLabsModelId: PARADIS_ELEVENLABS_DEFAULT_MODEL_ID,
+			elevenLabsSpeed: PARADIS_ELEVENLABS_SPEED_DEFAULT,
+			elevenLabsDictionaryId: '',
 		});
 	}
 

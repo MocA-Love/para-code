@@ -13,6 +13,7 @@ import { Event } from '../../../../base/common/event.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
+import { paradisNormalizeElevenLabsRules } from '../common/paradisElevenLabs.js';
 import { ParadisNotificationsService } from './paradisNotificationsService.js';
 
 export class ParadisNotificationsChannel implements IServerChannel<string> {
@@ -59,6 +60,17 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 			case 'getAivisUsageDaily': return this.service.getAivisUsageDaily(String(args[0]), String(args[1]), String(args[2])) as Promise<T>;
 			case 'getAivisMe': return this.service.getAivisMe(String(args[0])) as Promise<T>;
 			case 'playAivis': return this.service.playAivis(args[0] as Parameters<ParadisNotificationsService['playAivis']>[0]) as Promise<T>;
+			case 'playElevenLabs': return this.service.playElevenLabs(args[0] as Parameters<ParadisNotificationsService['playElevenLabs']>[0]) as Promise<T>;
+			case 'listElevenLabsVoices': return this.service.elevenLabs.listVoices(String(args[0])) as Promise<T>;
+			case 'listElevenLabsModels': return this.service.elevenLabs.listModels(String(args[0])) as Promise<T>;
+			case 'getElevenLabsUsage': return this.service.elevenLabs.getUsage(String(args[0]), Number(args[1]) || 30) as Promise<T>;
+			case 'getElevenLabsSubscription': return this.service.elevenLabs.getSubscription(String(args[0])) as Promise<T>;
+			case 'listElevenLabsDictionaries': return this.service.elevenLabs.listDictionaries(String(args[0])) as Promise<T>;
+			case 'getElevenLabsDictionary': return this.service.elevenLabs.getDictionary(String(args[0]), String(args[1])) as Promise<T>;
+			case 'createElevenLabsDictionary': return this.service.elevenLabs.createDictionary(String(args[0]), String(args[1]), String(args[2] ?? ''), paradisNormalizeElevenLabsRules(args[3])) as Promise<T>;
+			case 'setElevenLabsDictionaryRules': return this.service.elevenLabs.setDictionaryRules(String(args[0]), String(args[1]), paradisNormalizeElevenLabsRules(args[2])) as Promise<T>;
+			case 'archiveElevenLabsDictionary': return this.service.elevenLabs.archiveDictionary(String(args[0]), String(args[1])) as Promise<T>;
+			case 'downloadElevenLabsDictionary': return this.service.elevenLabs.downloadDictionary(String(args[0]), String(args[1])) as Promise<T>;
 			case 'notifyAudio': { this.service.notifyAudio(args[0] as Parameters<ParadisNotificationsService['notifyAudio']>[0]); return Promise.resolve(undefined as T); }
 			case 'resumeAivis': { this.service.resumeAivis(); return Promise.resolve(undefined as T); }
 			// 音声入力中は読み上げを止める。止めるかどうかはウィンドウ（接続）ごとに持つ。

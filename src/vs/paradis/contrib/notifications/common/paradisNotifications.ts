@@ -13,6 +13,8 @@
 /** shared process 側の通知バックエンド (node/paradisNotificationsChannel.ts) のIPCチャネル名。 */
 export const PARADIS_NOTIFICATIONS_CHANNEL = 'paradisNotifications';
 
+import type { IParadisPlayElevenLabsRequest } from './paradisElevenLabs.js';
+
 // --- 着信音（ビルトイン + カスタム） ----------------------------------------------------------
 
 export interface IParadisRingtoneData {
@@ -300,6 +302,8 @@ export interface IParadisNotifyAudioRequest {
 	};
 	/** Aivis 読み上げ。無効・未設定・空テキスト時は undefined。 */
 	readonly aivis?: IParadisPlayAivisRequest;
+	/** ElevenLabs 読み上げ。読み上げエンジンが ElevenLabs のときだけ入る（aivis とは同時に入らない）。 */
+	readonly elevenLabs?: IParadisPlayElevenLabsRequest;
 	/** 'high' は要対応（PermissionRequest）。待機中の完了通知より前に割り込む。 */
 	readonly priority: 'normal' | 'high';
 }
