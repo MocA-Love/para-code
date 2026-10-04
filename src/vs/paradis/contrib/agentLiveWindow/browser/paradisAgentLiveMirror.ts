@@ -18,6 +18,8 @@ import { IDetachedTerminalInstance, IDetachedXtermTerminal, ITerminalInstance, I
 import { DetachedProcessInfo } from '../../../../workbench/contrib/terminal/browser/detachedTerminal.js';
 import { XtermAddonImporter } from '../../../../workbench/contrib/terminal/browser/xterm/xtermAddonImporter.js';
 import { PARADIS_TERMINAL_SHIFT_ENTER_SETTING } from '../../terminalShiftEnter/common/paradisTerminalShiftEnter.js';
+import { paradisSanitizeTerminalInput } from '../../terminalMouseReport/common/paradisTerminalMouseReport.js';
+import { ITerminalLogService } from '../../../../platform/terminal/common/terminal.js';
 
 interface ISerializeAddon {
 	serialize(options?: { scrollback?: number }): string;
@@ -126,6 +128,7 @@ export class ParadisAgentLiveMirror extends Disposable {
 		resizeObserverCtor: typeof ResizeObserver | undefined,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@ITerminalLogService private readonly logService: ITerminalLogService,
 	) {
 		super();
 		this.resizeObserverCtor = resizeObserverCtor ?? container.ownerDocument.defaultView?.ResizeObserver;
@@ -363,7 +366,12 @@ export class ParadisAgentLiveMirror extends Disposable {
 			return;
 		}
 		this.forwardUserInput = false;
-		this.instance.sendText(data, false).catch(onUnexpectedError);
+		// ミラーの xterm も同じ不具合で座標 NaN のマウス報告を出すため、元の端末へ渡す前に取り除く
+		const sanitized = paradisSanitizeTerminalInput(data, this.logService);
+		if (!sanitized) {
+			return;
+		}
+		this.instance.sendText(sanitized, false).catch(onUnexpectedError);
 	}
 
 	/**
