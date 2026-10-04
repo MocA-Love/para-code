@@ -31,6 +31,14 @@ function defaultObserverFactory(onEntries: (entries: readonly { readonly duratio
 
 /** `paradisStartLongTaskWindow` の戻り値。`stop()` は 1 回だけ意味を持つ。 */
 export interface IParadisLongTaskWindow {
+	/**
+	 * 区間の始まりから今までの累計を、監視を止めずに返す。段階の前後で呼んで差を取れば、
+	 * その段階に重なった長いタスクが分かる。観測できない環境と `stop()` の後は undefined。
+	 *
+	 * 長いタスクは**終わった時点で**数えられる。段階の境目を跨いだ 1 つの長いタスクは、
+	 * 境目より後で終わった側の段階に丸ごと載る。
+	 */
+	snapshot(): IParadisLongTaskSummary | undefined;
 	stop(): IParadisLongTaskSummary | undefined;
 }
 
@@ -60,7 +68,19 @@ export function paradisStartLongTaskWindow(createObserver: ParadisLongTaskObserv
 		observer = undefined;
 	}
 	let stopped = false;
+	const summarize = (): IParadisLongTaskSummary => ({ count, totalMs: Math.round(totalMs), maxMs: Math.round(maxMs) });
 	return {
+		snapshot: () => {
+			if (stopped || observer === undefined) {
+				return undefined;
+			}
+			try {
+				add(observer.takeRecords());
+			} catch {
+				// 取れなかった分を数えないだけで、それまでの累計は壊れない。
+			}
+			return summarize();
+		},
 		stop: () => {
 			if (stopped || observer === undefined) {
 				stopped = true;
@@ -72,7 +92,7 @@ export function paradisStartLongTaskWindow(createObserver: ParadisLongTaskObserv
 			} finally {
 				observer.disconnect();
 			}
-			return { count, totalMs: Math.round(totalMs), maxMs: Math.round(maxMs) };
+			return summarize();
 		},
 	};
 }

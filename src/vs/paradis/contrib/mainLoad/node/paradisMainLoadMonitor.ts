@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { promises as fs } from 'fs';
+import * as os from 'os';
 import { EventLoopUtilization, monitorEventLoopDelay, performance } from 'perf_hooks';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -14,7 +15,7 @@ import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI, UriComponents } from '../../../../base/common/uri.js';
-import { IParadisLoopDelayHistogram, IParadisMainLoopPeriodSummary, IParadisMainLoopSummary, IParadisStatProbeReply, paradisIsMainLoopCongested, paradisSummarizeMainLoop } from '../common/paradisMainLoad.js';
+import { IParadisHostLoad, IParadisLoopDelayHistogram, IParadisMainLoopPeriodSummary, IParadisMainLoopWindowSummary, IParadisStatProbeReply, paradisIsMainLoopCongested, paradisSummarizeMainLoop } from '../common/paradisMainLoad.js';
 
 /** 計測に使う道具。テストでは偽物を渡す。 */
 export interface IParadisMainLoadDependencies {
@@ -24,6 +25,8 @@ export interface IParadisMainLoadDependencies {
 	setInterval(handler: () => void, ms: number): unknown;
 	clearInterval(handle: unknown): void;
 	stat(fsPath: string): Promise<unknown>;
+	/** Mac 全体の負荷。取れない環境 (Windows) では undefined。 */
+	hostLoad(): IParadisHostLoad | undefined;
 }
 
 export const PARADIS_MAIN_LOAD_DEFAULTS = {
@@ -63,7 +66,28 @@ function defaultDependencies(): IParadisMainLoadDependencies {
 		setInterval: (handler, ms) => setInterval(handler, ms),
 		clearInterval: handle => clearInterval(handle as ReturnType<typeof setInterval>),
 		stat: fsPath => fs.stat(fsPath),
+		hostLoad: readHostLoad,
 	};
+}
+
+/**
+ * `os.loadavg()` は Windows では常に `[0, 0, 0]` を返すので、Windows では undefined にする。
+ * どちらも同期の軽い呼び出し (macOS では sysctl 1 回ずつ) で、ディスクにも触らない。
+ */
+function readHostLoad(): IParadisHostLoad | undefined {
+	if (process.platform === 'win32') {
+		return undefined;
+	}
+	try {
+		const loadAvg1m = os.loadavg()[0];
+		const cpuCount = os.availableParallelism();
+		if (!Number.isFinite(loadAvg1m) || loadAvg1m < 0 || !Number.isFinite(cpuCount) || cpuCount <= 0) {
+			return undefined;
+		}
+		return { loadAvg1m: Math.round(loadAvg1m * 100) / 100, cpuCount };
+	} catch {
+		return undefined;
+	}
 }
 
 interface IOpenWindow {
@@ -71,6 +95,8 @@ interface IOpenWindow {
 	readonly histogram: ReturnType<IParadisMainLoadDependencies['createHistogram']>;
 	readonly elu: EventLoopUtilization;
 	readonly startedAt: number;
+	/** 区間を始めた時点の Mac 全体の負荷。 */
+	readonly hostLoad: IParadisHostLoad | undefined;
 }
 
 /**
@@ -163,12 +189,12 @@ export class ParadisMainLoadMonitor extends Disposable {
 		const id = this.nextWindowId++;
 		const histogram = this.deps.createHistogram(this.options.windowResolutionMs);
 		histogram.enable();
-		this.openWindows.set(id, { owner, histogram, elu: this.deps.eventLoopUtilization(), startedAt: now });
+		this.openWindows.set(id, { owner, histogram, elu: this.deps.eventLoopUtilization(), startedAt: now, hostLoad: this.deps.hostLoad() });
 		return id;
 	}
 
 	/** 開いた本人以外は終わらせられない (別のウィンドウの区間を番号で閉じない)。 */
-	endWindow(owner: string, id: number): IParadisMainLoopSummary | undefined {
+	endWindow(owner: string, id: number): IParadisMainLoopWindowSummary | undefined {
 		const window = this.openWindows.get(id);
 		if (window === undefined || window.owner !== owner) {
 			return undefined;
@@ -176,7 +202,8 @@ export class ParadisMainLoadMonitor extends Disposable {
 		this.openWindows.delete(id);
 		window.histogram.disable();
 		const elu = this.deps.eventLoopUtilization(window.elu);
-		return paradisSummarizeMainLoop(window.histogram, elu.utilization, this.deps.now() - window.startedAt);
+		const summary = paradisSummarizeMainLoop(window.histogram, elu.utilization, this.deps.now() - window.startedAt);
+		return window.hostLoad === undefined ? summary : { ...summary, hostLoad: window.hostLoad };
 	}
 
 	async probeStat(resource: UriComponents): Promise<IParadisStatProbeReply | undefined> {
