@@ -164,6 +164,11 @@ export const ParadisMobileCapability = {
 	 * Esc で閉じる要求 `action/closePanel`。mod（Claude Mods 1.2.0 以降）が開いていると答えたときだけ送る・打つ。
 	 */
 	AgentPanel: 'agent.panel.v1',
+	/**
+	 * fs の `voiceUsage`（読み上げの Aivis・ElevenLabs の使用量。キーは送らず、キーの印 `keyId` だけを付ける。
+	 * `paradisMobileVoiceUsage.ts`）。
+	 */
+	VoiceUsage: 'usage.voice.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -210,6 +215,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentApprovalDetail,
 	ParadisMobileCapability.AgentCommandsV2,
 	ParadisMobileCapability.AgentPanel,
+	ParadisMobileCapability.VoiceUsage,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

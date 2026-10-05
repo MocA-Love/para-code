@@ -293,6 +293,15 @@ export interface IParadisElevenLabsUsageResult {
 	readonly totalCharacters: number;
 	readonly byModel: readonly IParadisElevenLabsUsageBreakdownEntry[];
 	readonly byVoice: readonly IParadisElevenLabsUsageBreakdownEntry[];
+	/**
+	 * 直近 `days` 日だけのモデル別・声別（`getUsage` に `recentDays` を渡したときだけ）。同じ取得の日別の内訳から切り出すので、
+	 * 短い期間のために API をもう一度叩かずに済む（モバイルの 7 日の表示）。
+	 */
+	readonly recent?: {
+		readonly days: number;
+		readonly byModel: readonly IParadisElevenLabsUsageBreakdownEntry[];
+		readonly byVoice: readonly IParadisElevenLabsUsageBreakdownEntry[];
+	};
 }
 
 export interface IParadisElevenLabsSubscription {
@@ -330,10 +339,22 @@ function sumSeries(series: readonly number[] | undefined): number {
 	return total;
 }
 
-function toBreakdown(stats: IParadisElevenLabsRawCharacterStats | undefined): IParadisElevenLabsUsageBreakdownEntry[] {
+/** `sinceMs` を渡すと、その時刻以降に始まる区間だけを足す（区間の時刻 `time` が無い値は数えない）。 */
+function sumSeriesSince(series: readonly number[] | undefined, times: readonly number[] | undefined, sinceMs: number): number {
+	let total = 0;
+	(series ?? []).forEach((value, index) => {
+		const time = times?.[index];
+		if (typeof value === 'number' && Number.isFinite(value) && typeof time === 'number' && time >= sinceMs) {
+			total += value;
+		}
+	});
+	return total;
+}
+
+function toBreakdown(stats: IParadisElevenLabsRawCharacterStats | undefined, sinceMs?: number): IParadisElevenLabsUsageBreakdownEntry[] {
 	const entries: IParadisElevenLabsUsageBreakdownEntry[] = [];
 	for (const [key, series] of Object.entries(stats?.usage ?? {})) {
-		const characterCount = sumSeries(series);
+		const characterCount = sinceMs === undefined ? sumSeries(series) : sumSeriesSince(series, stats?.time, sinceMs);
 		if (characterCount > 0) {
 			entries.push({ key, characterCount });
 		}
@@ -350,6 +371,7 @@ export function paradisSummarizeElevenLabsUsage(
 	byModel: IParadisElevenLabsRawCharacterStats | undefined,
 	byVoice: IParadisElevenLabsRawCharacterStats | undefined,
 	range: { readonly startMs: number; readonly endMs: number },
+	recentDays?: number,
 ): IParadisElevenLabsUsageResult {
 	const counts = new Map<string, number>();
 	const times = daily.time ?? [];
@@ -377,6 +399,11 @@ export function paradisSummarizeElevenLabsUsage(
 		totalCharacters: days.reduce((acc, day) => acc + day.characterCount, 0),
 		byModel: toBreakdown(byModel),
 		byVoice: toBreakdown(byVoice),
+		...(recentDays !== undefined ? (() => {
+			// 今日（UTC）を含む直近 recentDays 日。範囲の日別と同じ区切り方。
+			const sinceMs = Math.floor(range.endMs / DAY_MS) * DAY_MS - (Math.max(1, Math.floor(recentDays)) - 1) * DAY_MS;
+			return { recent: { days: Math.max(1, Math.floor(recentDays)), byModel: toBreakdown(byModel, sinceMs), byVoice: toBreakdown(byVoice, sinceMs) } };
+		})() : {}),
 	};
 }
 

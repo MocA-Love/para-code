@@ -6,6 +6,7 @@ import { sha256 } from '@noble/hashes/sha256';
 import type { GithubUsageResult, RateLimitsResult, RtkSavingsResult, UsageDashboardResult } from '../../store.js';
 import { localDateKey } from '../../usageFormat.js';
 import type { SourceUsageValues, Timed, UsageKind, UsageSourceKind } from './usageAggregate.js';
+import { isVoiceUsageResult, parseVoiceUsageResult, type VoiceUsageResult } from './voiceUsageWire.js';
 
 /**
  * 使用量の「最後に取れた値」の控え（出どころごと。取得時刻つき）。オフラインの PC の値を薄く出して合計に入れるため、
@@ -66,12 +67,19 @@ const VALIDATORS: Record<UsageKind, (value: Record<string, unknown>) => boolean>
 	rtk: value => Array.isArray(value['days']) && isRecord(value['totals']) && Array.isArray(value['commands']) && Array.isArray(value['history']) && Array.isArray(value['failedReports']),
 	github: value => isFiniteNumber(value['generatedAt']) && Array.isArray(value['rateLimits']) && Array.isArray(value['operations'])
 		&& Array.isArray(value['spaces']) && isRecord(value['totals']) && Array.isArray(value['lastErrors']) && Array.isArray(value['consumption']),
+	voice: value => isVoiceUsageResult(value),
 };
+
+/** 読み上げの控えは壊れた要素を捨てて読み直す（版の違い・書きかけで画面が欠けた値を受け取らないように）。 */
+function sanitizeVoice(timed: Timed<VoiceUsageResult> | undefined): Timed<VoiceUsageResult> | undefined {
+	const value = timed !== undefined ? parseVoiceUsageResult(timed.value) : undefined;
+	return timed !== undefined && value !== undefined ? { ...timed, value } : undefined;
+}
 
 /** 期限（7日）を過ぎた値を落とす。値が1つも残らなければ undefined。 */
 export function pruneUsageRecord(record: UsageCacheRecord, now: number): UsageCacheRecord | undefined {
 	const values: { -readonly [K in UsageKind]?: Timed<unknown> } = {};
-	for (const kind of ['limits', 'cost', 'rtk', 'github'] as const) {
+	for (const kind of ['limits', 'cost', 'rtk', 'github', 'voice'] as const) {
 		const value = record.values[kind];
 		if (value !== undefined && now - value.at <= USAGE_CACHE_TTL_MS) {
 			values[kind] = value;
@@ -97,6 +105,7 @@ export function parseUsageRecord(raw: unknown, now: number): UsageCacheRecord | 
 			cost: parseTimed<UsageDashboardResult>(rawValues['cost'], VALIDATORS.cost),
 			rtk: parseTimed<RtkSavingsResult>(rawValues['rtk'], VALIDATORS.rtk),
 			github: parseTimed<GithubUsageResult>(rawValues['github'], VALIDATORS.github),
+			voice: sanitizeVoice(parseTimed<VoiceUsageResult>(rawValues['voice'], VALIDATORS.voice)),
 		},
 	}, now);
 }
@@ -133,12 +142,14 @@ export function prepareForCache(values: SourceUsageValues, now: number): SourceU
 			},
 		} : undefined,
 		github: github !== undefined ? { ...github, value: { ...github.value, lastErrors: github.value.lastErrors.slice(0, MAX_ERRORS) } } : undefined,
+		// 読み上げは 30 日ぶんの数と内訳だけ（キーは PC から届かない）なので、そのまま残す
+		voice: values.voice,
 	};
 }
 
 /** 書き直すかの判定に使う印（指標ごとの取得時刻。変わらなければ書かない）。 */
 export function usageRecordSignature(record: UsageCacheRecord): string {
-	return [record.values.limits?.at, record.values.cost?.at, record.values.rtk?.at, record.values.github?.at, record.machineIdHash, record.hostLabel, record.pcName]
+	return [record.values.limits?.at, record.values.cost?.at, record.values.rtk?.at, record.values.github?.at, record.values.voice?.at, record.machineIdHash, record.hostLabel, record.pcName]
 		.map(part => String(part ?? '')).join('|');
 }
 

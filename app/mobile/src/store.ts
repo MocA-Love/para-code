@@ -23,6 +23,7 @@ import type { BrowserInput } from './browserKeys.js';
 import { localizeAgentMonitors, parseAgentMonitors, type AgentMonitor } from './agentMonitors.js';
 import { ShellOutputBusyError, isShellStoppable, localizeAgentShells, parseAgentShells, parseAgentShellsAccess, parseShellOutputReply, type AgentShell, type AgentShellOutput, type AgentShellsAccess } from './agentShells.js';
 import { APP_PROTOCOL_VERSION, PcCapability, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
+import { VoiceUsageUnsupportedError, parseVoiceUsageResult, type VoiceUsageResult } from './features/usage/voiceUsageWire.js';
 import { PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, paradisParseAgentApprovalRequest, paradisSanitizeApprovalInstruction, paradisParseApprovalSuggestionScope, type IParadisAgentApprovalRequest, type ParadisAgentApprovalSuggestionScope } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisAgentApprovalRequest.js';
 import { paradisClampVoiceGainDb, paradisDecodeVoiceStreamChunk, paradisIsVoiceStreamChunk, paradisParseVoiceStreamEnd, paradisParseVoiceStreamStart } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileVoiceStream.js';
 import type { VoiceDelivery } from './voiceLifecycle.js';
@@ -4447,6 +4448,24 @@ export class MobileController {
 				}
 				return response.data;
 			});
+	}
+
+	/**
+	 * 読み上げ（Aivis・ElevenLabs）の使用量（PC の通知の設定の「使用量 (日別)」と同じ値。`usage.voice.v1`）。
+	 * キーは届かず、キーの印（`keyId`）だけが届く。広告しない古い PC には送らずに {@link VoiceUsageUnsupportedError} で失敗する。
+	 */
+	async voiceUsage(bypassCache?: boolean): Promise<VoiceUsageResult> {
+		if (!this.hasPcCapability(PcCapability.VoiceUsage)) {
+			throw new VoiceUsageUnsupportedError();
+		}
+		// usage/limits/github と同じく、PC側は結果を data フィールドにネストして返すためここで剥がす
+		const response = await this.requestPc<{ data?: unknown }>('fs', { t: 'voiceUsage', ...(bypassCache ? { bypassCache: true } : {}) }, { timeoutMs: 60_000 });
+		// 壊れた要素は捨てて読む（画面が欠けた値で落ちないように）
+		const data = parseVoiceUsageResult(response.data);
+		if (data === undefined) {
+			throw new Error('empty voiceUsage response');
+		}
+		return data;
 	}
 
 	/** PC本体のリソース内訳（「システム」画面）。ドロワーの3値と違い、開いている間だけ取りに行く。 */

@@ -187,6 +187,23 @@ suite('Paradis ElevenLabs pure helpers', () => {
 		});
 	});
 
+	test('cuts the recent breakdown out of the same daily series', () => {
+		const now = Date.UTC(2026, 9, 4, 15, 30);
+		const day = (offset: number) => Date.UTC(2026, 9, 2 + offset);
+		const result = paradisSummarizeElevenLabsUsage(
+			{ time: [day(0), day(1), day(2)], usage: { All: [120, 5, 30] } },
+			{ time: [day(0), day(1), day(2)], usage: { flash: [100, 5, 30], v3: [20, 0, 0] } },
+			{ time: [day(0), day(2)], usage: { voiceA: [120, 30] } },
+			paradisElevenLabsUsageRange(3, now),
+			2,
+		);
+		assert.deepStrictEqual(result.recent, {
+			days: 2,
+			byModel: [{ key: 'flash', characterCount: 35 }],
+			byVoice: [{ key: 'voiceA', characterCount: 30 }],
+		});
+	});
+
 	test('names breakdown entries and computes the remaining quota', () => {
 		const subscription = paradisToElevenLabsSubscription({ character_count: 38120, character_limit: 100000, next_character_count_reset_unix: 1792540800, tier: 'starter' });
 		assert.deepStrictEqual({

@@ -303,6 +303,9 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/mobile/app.json` | `expo.version` を `0.12.4` に（2026-10-04） | スラッシュコマンドの一覧と断りの表示の配信 |
 | `app/protocol/test/golden/state.json` / `agent.json` | `state.json` の `capabilities` に `agent.panel.v1`、`agent.json` に圧縮の区切りと要約（`noticeSource: compaction` / `compact-summary`・`compaction`）と `panel` を持つ `delta`、`action/closePanel` の要求を追加（2026-10-04） | PC で開いている画面の帯と「閉じる」（Esc）、コンテキストの圧縮の区切り線と畳んだ要約の固定形 |
 | `app/protocol/test/golden/state.json` / `state-request.json` / `term.json` | `current` の `protocolVersion`・`minCompatibleMobile`・`minCompatiblePc` を 4 に、`capabilities` に `voice.stream.v1` を追加。`term.json` の操作の `protocolVersion` を 4 に（2026-10-05） | mux の版 4（16KiB の断片・優先順）と音声通知のストリーミング。`preW217` は版 3 の相手の形として残し、テストは「つながらない（更新の案内）」側を確かめる |
+| `app/protocol/test/golden/state.json` | `capabilities` に `usage.voice.v1` を追加（2026-10-05） | モバイルの読み上げ（Aivis・ElevenLabs）の使用量（fs の `voiceUsage`。キーは送らずキーの印 `keyId` だけ） |
+| `app/protocol/test/golden/voice-usage.json` | 新規（2026-10-05）。fs の `voiceUsage` の応答の `data`（取れたとき・前回の値が無いまま失敗したとき） | PC の組み立てとアプリの読み取りの形の一致を、両側のテスト（`paradisMobileWireGolden.test.ts`・`voiceUsageModel.test.ts`）で確かめる |
+| `app/mobile/app.json` | `expo.version` を `0.12.5` に（2026-10-05） | 読み上げの使用量の画面の配信 |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 
