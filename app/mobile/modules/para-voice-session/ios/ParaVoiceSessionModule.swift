@@ -10,7 +10,7 @@ import UIKit
 private let maximumClipBytes = 8 * 1024 * 1024
 /// 再生待ちの滞留上限。発話の数・流れの数・バイト数で抑える（常駐機能なのでjetsamを避ける）。
 private let maximumQueuedUtterances = 8
-private let maximumQueuedStreams = 3
+private let maximumQueuedStreams = 5
 private let maximumQueuedBytes = 12 * 1024 * 1024
 /// 最後の断片からこれだけ end が来なければ、届いた分で終える。
 private let streamEndTimeout: TimeInterval = 8
@@ -29,7 +29,10 @@ private let decodeFramesPerBuffer: AVAudioFrameCount = 4096
 private let feedSliceBytes = 64 * 1024
 private let maximumDecodedSeconds: Double = 10
 /// 鳴らしている最中にエンジンが止まったまま（割り込みの終わりが来ない等）これだけ続いたら、作り直すか諦める。
+/// 割り込み中（電話・Siri 等）は数えない。
 private let stalledEngineTimeout: TimeInterval = 5
+/// 割り込みの終わりが来ないまま、これだけ経ったら割り込み中とみなすのをやめる（終わりの知らせが来ないことがある）。
+private let maximumInterruptionWait: TimeInterval = 60
 
 /**
  * ユーザーが開始した音声通知の間だけ iOS の playback audio session を持ち、
@@ -205,8 +208,20 @@ public class ParaVoiceSessionModule: Module {
 			}
 			let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt ?? 0
 			guard AVAudioSession.InterruptionType(rawValue: raw) == .ended else {
+				// 割り込みが始まった。終わるまでエンジンを作り直さず、鳴らしかけの発話も捨てずに待つ
+				self.player.setInterrupted(true)
 				return
 			}
+			self.player.setInterrupted(false)
+			self.resumeSession()
+		})
+		observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+			guard let self, self.sessionActive else {
+				return
+			}
+			// 通話から戻ったときなど、割り込みの終わりの知らせが来ないことがある。前面に戻ったら、割り込みの終わりと同じく
+			// セッションを有効にし直してからエンジンを起こし直す
+			self.player.setInterrupted(false)
 			self.resumeSession()
 		})
 		observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
@@ -587,6 +602,13 @@ private final class ParaVoiceStreamPlayer {
 	private var scheduledFrames: AVAudioFramePosition = 0
 	/// 鳴らしている最中にエンジンが止まっているのに気付いた時刻。
 	private var engineStoppedSince: TimeInterval?
+	/// 割り込み（電話・Siri 等）が始まった時刻。終わりの知らせで外す。
+	private var interruptedSince: TimeInterval?
+	/// エンジンを起こせなかった（割り込み中など）。先頭の発話を捨てずに、起こせるようになるまで待つ。
+	private var suspended = false
+	private var suspendedSince: TimeInterval?
+	/// 最後のエンジンの起動が、ほかのアプリが音声を握っていたために失敗した（cannotInterruptOthers・insufficientPriority）。
+	private var lastStartBlockedByOthers = false
 	private let statsLock = NSLock()
 	private var statsCache: [String: Any] = [:]
 	private var nextToken = 0
@@ -629,6 +651,8 @@ private final class ParaVoiceStreamPlayer {
 
 	private func stopAllNow() {
 		utterances.removeAll()
+		suspended = false
+		suspendedSince = nil
 		resetHead()
 		teardownEngine()
 		timer?.cancel()
@@ -636,13 +660,30 @@ private final class ParaVoiceStreamPlayer {
 		refreshStats()
 	}
 
-	/// 割り込み・出力先の変更の後、エンジンが止まっていたら起こし直す。
+	/// 割り込みが始まった・終わった。
+	func setInterrupted(_ interrupted: Bool) {
+		queue.async {
+			self.interruptedSince = interrupted ? (self.interruptedSince ?? self.now) : nil
+		}
+	}
+
+	/// 割り込み・出力先の変更の後、エンジンが止まっていたら起こし直す。起こせずに待っていた発話も鳴らし直す。
 	func reviveEngineIfStopped() {
 		queue.async {
 			if let engine = self.engine, !engine.isRunning {
 				self.rebuildEngine()
+			} else if self.suspended {
+				self.rebuildEngine()
 			}
 		}
+	}
+
+	/// 割り込み中か（終わりの知らせが来ないまま長く経ったら、割り込み中とはみなさない）。
+	private var isInterrupted: Bool {
+		guard let since = interruptedSince else {
+			return false
+		}
+		return now - since < maximumInterruptionWait
 	}
 
 	func enqueueClip(base64: String, gainDb: Float) {
@@ -753,11 +794,12 @@ private final class ParaVoiceStreamPlayer {
 		droppedCount += 1
 	}
 
-	/// 溜める上限（発話 8・流れ 3・合計 12MiB）を超えたら、まだ鳴り始めていない一番新しい発話を捨てる。
+	/// 溜める上限（発話 8・流れ 5・合計 12MiB）を超えたら、まだ鳴り始めていない一番新しい発話を捨てる。合計は、まだ
+	/// デコーダへ渡していない MP3 の残りで数える（デコードし終えた分は手元に残っていない）。
 	private func enforceLimits() {
 		while true {
 			let streams = utterances.filter { $0.isStream }.count
-			let bytes = utterances.reduce(0) { $0 + $1.bytes }
+			let bytes = utterances.reduce(0) { total, utterance in total + utterance.raw.reduce(0) { $0 + $1.count } }
 			if utterances.count <= maximumQueuedUtterances && streams <= maximumQueuedStreams && bytes <= maximumQueuedBytes {
 				return
 			}
@@ -768,6 +810,7 @@ private final class ParaVoiceStreamPlayer {
 				return
 			}
 			remove(victim)
+			NSLog("[ParaVoice] dropped a queued utterance (utterances \(utterances.count), streams \(streams), bytes \(bytes)); dropped \(droppedCount) so far")
 		}
 	}
 
@@ -791,13 +834,37 @@ private final class ParaVoiceStreamPlayer {
 		for utterance in utterances where utterance.isStream && !utterance.ended && current - utterance.lastChunkAt > streamEndTimeout {
 			endStream(utterance)
 		}
-		if let head = utterances.first, head.started, let engine, !engine.isRunning {
+		if isInterrupted {
+			// 割り込み中は作り直さない（作り直しても起こせない）。終わりの知らせで起こし直す
+			engineStoppedSince = nil
+			suspendedSince = nil
+		} else if suspended {
+			// 割り込みでもないのに起こせない。5 秒待って作り直し、それでも駄目ならその発話は諦める
+			let since = suspendedSince ?? current
+			suspendedSince = since
+			if current - since >= stalledEngineTimeout {
+				suspendedSince = nil
+				rebuildEngine()
+				if suspended && (lastStartBlockedByOthers || AVAudioSession.sharedInstance().isOtherAudioPlaying) {
+					// 通話など、ほかのアプリが音声を握っている（割り込みの終わりが 60 秒を過ぎても来ない長い通話を含む）。
+					// 捨てずに待ち、5 秒ごとに起こし直してみる
+					suspendedSince = current
+				} else if suspended {
+					suspended = false
+					finishHead()
+				}
+			}
+		} else if let head = utterances.first, head.started, let engine, !engine.isRunning {
 			let since = engineStoppedSince ?? current
 			engineStoppedSince = since
 			if current - since >= stalledEngineTimeout {
 				engineStoppedSince = nil
 				rebuildEngine()
-				if self.engine?.isRunning != true {
+				if suspended && (lastStartBlockedByOthers || AVAudioSession.sharedInstance().isOtherAudioPlaying) {
+					// ほかのアプリが音声を握っている。捨てずに待つ（上の suspended の扱いへ）
+					suspendedSince = current
+				} else if self.engine?.isRunning != true {
+					suspended = false
 					finishHead()
 				}
 			}
@@ -860,6 +927,10 @@ private final class ParaVoiceStreamPlayer {
 			return
 		}
 		feedHead(head, decoder)
+		if suspended {
+			// エンジンを起こせるようになるまで、デコード済みの PCM は手元に溜めておく（10 秒ぶんまで）
+			return
+		}
 		let decoderDone = decoder.failed || (head.ended && decoder.drained)
 		let bufferedMs = Double(pendingFrames) / outputFormat.sampleRate * 1000
 		if !head.started {
@@ -894,8 +965,8 @@ private final class ParaVoiceStreamPlayer {
 
 	private func startPlayback(_ head: ParaVoiceUtterance) {
 		guard ensureEngine() else {
-			// 鳴らせない（セッションを奪われている等）。この発話は捨てて次へ
-			finishHead()
+			// 鳴らせない（割り込み中・セッションを奪われている等）。発話は捨てずに、起こせるようになるまで待つ
+			suspend()
 			return
 		}
 		head.started = true
@@ -981,6 +1052,18 @@ private final class ParaVoiceStreamPlayer {
 		pump()
 	}
 
+	private func suspend() {
+		if !suspended {
+			suspended = true
+			suspendedSince = now
+		}
+		// 止まっているエンジンは捨てる（起こすときに作り直す）
+		teardownEngine()
+		scheduled.removeAll()
+		scheduledFrames = 0
+		refreshStats()
+	}
+
 	private func ensureEngine() -> Bool {
 		if engine == nil {
 			buildEngine()
@@ -993,8 +1076,13 @@ private final class ParaVoiceStreamPlayer {
 				try engine.start()
 			} catch {
 				NSLog("[ParaVoice] AVAudioEngine.start failed: \(error)")
+				// ほかのアプリ（通話など）が音声を握っている間の失敗。握っている間は発話を捨てずに待つ
+				let code = (error as NSError).code
+				lastStartBlockedByOthers = code == AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue
+					|| code == AVAudioSession.ErrorCode.insufficientPriority.rawValue
 				return false
 			}
+			lastStartBlockedByOthers = false
 		}
 		if !node.isPlaying {
 			node.play()
@@ -1009,9 +1097,13 @@ private final class ParaVoiceStreamPlayer {
 		engine.connect(node, to: engine.mainMixerNode, format: outputFormat)
 		engine.prepare()
 		// 出力先・形式が変わるとエンジンは止まる。起こし直して、ノードを付け直す
-		engineObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
+		engineObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self, weak engine] _ in
 			self?.queue.async {
-				self?.rebuildEngine()
+				// 作り直した後に古いエンジンの知らせが遅れて届いたら、何もしない（二重に作り直さない）
+				guard let self, let engine, engine === self.engine else {
+					return
+				}
+				self.rebuildEngine()
 			}
 		}
 		self.engine = engine
@@ -1033,27 +1125,36 @@ private final class ParaVoiceStreamPlayer {
 		engine = nil
 	}
 
-	/// エンジンを作り直し、まだ鳴り終わっていない PCM を付け直す（鳴りかけの固まりは頭から鳴り直す）。
+	/// エンジンを作り直し、まだ鳴り終わっていない PCM を付け直す（鳴りかけの固まりは頭から鳴り直す）。起こせなければ
+	/// PCM を手元に戻して待つ（割り込みの終わり・出力先の変更でもう一度呼ばれる）。
 	private func rebuildEngine() {
-		guard engine != nil else {
+		guard engine != nil || suspended else {
 			return
 		}
 		let outstanding = scheduled.map { $0.buffer }
 		teardownEngine()
 		scheduled.removeAll()
 		scheduledFrames = 0
-		guard utterances.first?.started == true else {
+		let wasSuspended = suspended
+		suspended = false
+		suspendedSince = nil
+		guard let head = utterances.first, head.started else {
+			if wasSuspended {
+				// 鳴らし始める前に止まっていた発話。もう一度鳴らし始めを試す
+				pump()
+			}
 			return
 		}
 		guard ensureEngine() else {
+			pending.insert(contentsOf: outstanding, at: 0)
+			pendingFrames += outstanding.reduce(AVAudioFramePosition(0)) { $0 + AVAudioFramePosition($1.frameLength) }
+			suspend()
 			return
 		}
 		for buffer in outstanding {
 			schedule(buffer)
 		}
-		if outstanding.isEmpty {
-			pump()
-		}
+		pump()
 	}
 
 	private func stopEngineWhenIdle() {

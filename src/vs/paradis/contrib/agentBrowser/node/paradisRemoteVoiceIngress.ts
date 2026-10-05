@@ -9,22 +9,24 @@
 // `/paradis-mcp/mobile-voice` の本文の受け取り（設計 3.4）。ticket の確認と枠の押さえはサービス側で済ませてから呼ぶ。
 //
 // - chunked（Content-Length 無し。ticket に `ingress: "stream-v1"` を名乗ったときに接続先の aivis-mcp 2.5.0 が
-//   送る）: 要求のヘッダーを受けたらすぐ応答のヘッダーを返す。手元で鳴らす ticket なら
-//   `X-Para-Local-Playback: accepted` を付け、その先の鳴らし方（`--ingest` → `--play-audio` → afplay）は
-//   Para Code の責任にする。受け取りながら `--ingest` へ流し、本文を受け取り終えたら応答を閉じる（鳴り終わりは
-//   待たない）。接続先が途中で切れたら `--ingest` に abort を送る
-// - Content-Length 付き（古い aivis-mcp）: 今どおり全部受け取ってから、手元で積めたかを `localPlayback` で返す。
-//   積めなければ接続先が自分で鳴らす
+//   送る）: 引き受けない ticket は要求のヘッダーを受けたらすぐ応答のヘッダーを返す。手元で鳴らす ticket は、最初の
+//   固まりで MP3 らしさを確かめてから `X-Para-Local-Playback: accepted` を付けて返し、その先の鳴らし方
+//   （`--ingest` → `--play-audio` → Para Code の列）は Para Code の責任にする。受け取りながら `--ingest` へ流し、
+//   本文を受け取り終えたら応答を閉じる（鳴り終わりは待たない）。接続先が途中で切れたら `--ingest` に abort を送る
+// - Content-Length 付き（古い aivis-mcp）: 全部受け取り、長さと ticket の現行性を確かめてから手元へ渡し、積めたかを
+//   `localPlayback` で返す（受け取りの途中では鳴らさない）。`queued` が締め切りまでに来なければ、中断ではなく取り下げを
+//   頼み、外せたときだけ「積めなかった」と返す。積めなければ接続先が自分で鳴らす
+// - ticket の持ち主（ペイン）がいなくなったら、受け取りも手元への転送もやめ、鳴らし直しもしない
 // - MP3 らしさは最初の固まりで確かめる。流れ 1 本 8MiB、押さえる量は受け取った分だけ増やす。1 発話 120 秒、
 //   最初の音まで 10 秒、届く速さが実時間の半分を 3 秒続けて下回ったら打ち切る
 // - モバイルへは、MP3 らしさを確かめた時点から受け取りながら流す（voice.stream.v1。流せない端末にはモバイルリレーが
 //   終わってから 1 本で送る）。流す口が無ければ、今どおり全部受け取ってから 1 本で送る
 
 import type * as http from 'http';
-import { IParadisIngestStream, IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoiceIngest.js';
+import { IParadisIngestStream, IParadisLocalVoiceOutput, IParadisVoiceRetention } from '../../notifications/common/paradisVoiceIngest.js';
 import { IParadisMobileVoiceStreamWriter } from '../../mobileRelay/common/paradisMobileVoiceStream.js';
 import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
-import { PARADIS_REMOTE_VOICE_ACCEPTED_HEADER, PARADIS_REMOTE_VOICE_GAIN_KEY_HEADER, paradisLooksLikeMp3, paradisMp3Bitrate, paradisRemoteVoiceGainKey } from '../common/paradisRemoteVoice.js';
+import { PARADIS_REMOTE_VOICE_ACCEPTED_HEADER, PARADIS_REMOTE_VOICE_GAIN_KEY_HEADER, PARADIS_REMOTE_VOICE_MUTED_HEADER, PARADIS_REMOTE_VOICE_TAGGED_HEADER, paradisLooksLikeMp3, paradisMp3Bitrate, paradisRemoteVoiceGainKey } from '../common/paradisRemoteVoice.js';
 import { IParadisLocalVoicePlayOptions } from './paradisLocalVoicePlayer.js';
 
 /** 1 発話の上限。 */
@@ -46,6 +48,8 @@ const BITRATE_PROBE_LIMIT = 64 * 1024;
  * 流れ（受け取りの読み進め）を止めない。
  */
 const LOCAL_WRITE_BUFFER_BYTES = 1024 * 1024;
+/** 本文を受け取り終えた後、手元への書き込みが終わるのを待つ上限（--ingest が読まなくなっても待ち続けない）。 */
+const LOCAL_CLOSE_TIMEOUT_MS = 30_000;
 
 export interface IParadisRemoteVoiceIngressDeps {
 	/** 手元で鳴らす口（`--ingest`・afplay）。無ければ `--play-audio` だけで積む。 */
@@ -62,7 +66,7 @@ export interface IParadisRemoteVoiceIngressDeps {
 	readonly isTicketCurrent: () => boolean;
 	readonly now?: () => number;
 	/** 打ち切りの時間（テストで縮める）。 */
-	readonly limits?: { readonly maxDurationMs?: number; readonly firstAudioTimeoutMs?: number; readonly slowArrivalMs?: number; readonly acceptDecisionWaitMs?: number };
+	readonly limits?: { readonly maxDurationMs?: number; readonly firstAudioTimeoutMs?: number; readonly slowArrivalMs?: number; readonly acceptDecisionWaitMs?: number; readonly localCloseTimeoutMs?: number };
 }
 
 export interface IParadisRemoteVoiceRequest {
@@ -80,9 +84,41 @@ export interface IParadisRemoteVoiceResult {
 	readonly localPlayback?: Promise<void>;
 }
 
-type Failure = 'too-large' | 'not-mp3' | 'first-audio-timeout' | 'max-duration' | 'slow-arrival' | 'closed' | 'length-mismatch' | 'empty';
+type Failure = 'too-large' | 'not-mp3' | 'first-audio-timeout' | 'max-duration' | 'slow-arrival' | 'closed' | 'length-mismatch' | 'empty' | 'revoked';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
+
+/**
+ * ticket が通らなかった（知らない・期限切れ・使用済み・今の instance のものでない・持ち主がいなくなった）ときの状態。
+ * aivis-mcp 2.5.1 は 401・403 を受けると、手元で鳴らす前提の発話を接続先で鳴らさない（`ticket-unavailable`）。ほかの
+ * 4xx・5xx は接続先で鳴らす。
+ */
+export const PARADIS_VOICE_TICKET_REJECTED_STATUS = 401;
+
+/** 音声の取込口で ticket が通らなかったことを返す（{@link PARADIS_VOICE_TICKET_REJECTED_STATUS}）。 */
+export function paradisSendVoiceTicketRejected(res: http.ServerResponse): void {
+	if (res.writableEnded) {
+		return;
+	}
+	if (!res.headersSent) {
+		res.writeHead(PARADIS_VOICE_TICKET_REJECTED_STATUS, JSON_HEADERS);
+	}
+	res.end(JSON.stringify({ error: 'Voice ticket rejected.' }));
+}
+
+/**
+ * Para Code が終わるところで、音声を受け取れない（503）。aivis-mcp 2.5.1 は手元で鳴らす ticket の 404 を ticket が通らなかった
+ * とみなして鳴らさないので、終了中は 503 を返して接続先で鳴らしてもらう。本文は読まないので接続は使い回させない。
+ */
+export function paradisSendVoiceIngressUnavailable(res: http.ServerResponse): void {
+	if (res.writableEnded) {
+		return;
+	}
+	if (!res.headersSent) {
+		res.writeHead(503, { ...JSON_HEADERS, 'Connection': 'close' });
+	}
+	res.end(JSON.stringify({ error: 'Para Code is shutting down.' }));
+}
 
 function statusFor(failure: Failure): number {
 	switch (failure) {
@@ -91,6 +127,8 @@ function statusFor(failure: Failure): number {
 		case 'first-audio-timeout':
 		case 'max-duration':
 		case 'slow-arrival': return 408;
+		// ticket が通らなかった（持ち主がいない）。接続先は鳴らさない（aivis-mcp 2.5.1 の取り決めで 401・403 は ticket-unavailable）
+		case 'revoked': return PARADIS_VOICE_TICKET_REJECTED_STATUS;
 		default: return 400;
 	}
 }
@@ -116,10 +154,18 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 	const chunked = req.headers['content-length'] === undefined;
 	// 接続先の aivis-mcp が名乗る声とモデル（音量の表の鍵）。無ければ表の補正は 0dB
 	const gainKey = paradisRemoteVoiceGainKey(req.headers[PARADIS_REMOTE_VOICE_GAIN_KEY_HEADER.toLowerCase()]);
-	// 引き受けた声を `--play-audio`、それも駄目なら afplay で Para Code が鳴らす
+	// 感情タグ入りの発話（音量の覚え直しに使わない）
+	const tagged = req.headers[PARADIS_REMOTE_VOICE_TAGGED_HEADER.toLowerCase()] === '1';
+	// 接続先でミュート中の発話。引き受けるが手元では鳴らさない（--ingest にも afplay にも渡さない）。モバイルへは届ける
+	const remoteMuted = request.localPlayback && req.headers[PARADIS_REMOTE_VOICE_MUTED_HEADER.toLowerCase()] === '1';
+	// 引き受けた声を `--play-audio`、それも駄目なら Para Code の列（worker へ渡し直すか afplay）で鳴らす。ticket の
+	// 持ち主（ペイン）がもういなければ鳴らさない
 	const playLocalChain = async (audio: Buffer) => {
+		if (remoteMuted || !deps.isTicketCurrent()) {
+			return;
+		}
 		const queued = await deps.playViaPlayAudio(audio, { signal: new AbortController().signal, deadline: now() + request.enqueueDeadlineMs }).catch(() => false);
-		if (!queued) {
+		if (!queued && deps.isTicketCurrent()) {
 			await deps.voiceOutput?.playFallback(audio, gainKey);
 		}
 	};
@@ -130,15 +176,27 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 		return { outcome: 'rejected' };
 	}
 
-	// chunked は要求のヘッダーを受けた時点で返事をする。手元に aivis-mcp が無ければ引き受けない（接続先が自分で鳴らす）
-	const wantLocal = request.localPlayback && (!chunked || (deps.voiceOutput !== undefined && await deps.voiceOutput.hasLocalAivis(deps.limits?.acceptDecisionWaitMs ?? ACCEPT_DECISION_WAIT_MS)));
+	// 手元に aivis-mcp が無ければ引き受けない（接続先が自分で鳴らす）
+	const wantLocal = request.localPlayback && (!chunked || remoteMuted || (deps.voiceOutput !== undefined && await deps.voiceOutput.hasLocalAivis(deps.limits?.acceptDecisionWaitMs ?? ACCEPT_DECISION_WAIT_MS)));
 	if (chunked) {
 		if (request.signal.aborted) {
 			return { outcome: 'aborted' };
 		}
-		res.writeHead(202, wantLocal ? { ...JSON_HEADERS, [PARADIS_REMOTE_VOICE_ACCEPTED_HEADER]: 'accepted' } : JSON_HEADERS);
-		res.flushHeaders();
+		if (!wantLocal) {
+			// 引き受けない。すぐに明示の拒否を返して、接続先には自分で鳴らしてもらう
+			res.writeHead(202, { ...JSON_HEADERS, [PARADIS_REMOTE_VOICE_ACCEPTED_HEADER]: 'rejected' });
+			res.flushHeaders();
+		}
+		// 引き受けるときは、MP3 らしさを確かめてから `accepted` を返す（受け取れない本文を引き受けたことにしない。2.5.0 の
+		// 接続先は本文の `localPlayback` を読まない）。引き受けた後に鳴らせなくなったら、本文で `localPlayback: false` を返す
+		// （2.5.1 の接続先は自分で鳴らす）
 	}
+	const acceptHeaders = () => {
+		if (chunked && wantLocal && !res.headersSent && !res.writableEnded) {
+			res.writeHead(202, { ...JSON_HEADERS, [PARADIS_REMOTE_VOICE_ACCEPTED_HEADER]: 'accepted' });
+			res.flushHeaders();
+		}
+	};
 
 	const chunks: Buffer[] = [];
 	let size = 0;
@@ -163,8 +221,8 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 	let localPump: Promise<void> | undefined;
 	const startLocalPump = () => {
 		localPump = (async () => {
-			if (wantLocal && deps.voiceOutput) {
-				sink = await deps.voiceOutput.openIngest(gainKey ? { priority: 'normal', gainKey } : { priority: 'normal' }, INGEST_READY_WAIT_MS);
+			if (wantLocal && !remoteMuted && deps.voiceOutput && deps.isTicketCurrent()) {
+				sink = await deps.voiceOutput.openIngest({ priority: 'normal', ...(gainKey ? { gainKey } : {}), ...(tagged ? { tagged: true } : {}) }, INGEST_READY_WAIT_MS);
 				sink?.onDidStart(() => { workerStarted = true; });
 			}
 			for (; ;) {
@@ -202,8 +260,8 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 			localDrained = undefined;
 		}
 	};
-	/** 手元への書き込みを終える。`discard` なら溜まっている分は書かない。 */
-	const closeLocal = async (discard: boolean) => {
+	/** 手元への書き込みを終える。`discard` なら溜まっている分は書かない。書き込みが止まったままなら上限で諦める。 */
+	const closeLocal = async (discard: boolean, timeoutMs = deps.limits?.localCloseTimeoutMs ?? LOCAL_CLOSE_TIMEOUT_MS) => {
 		if (discard) {
 			localQueue.length = 0;
 			localQueuedBytes = 0;
@@ -212,8 +270,20 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 		localWake?.();
 		localWake = undefined;
 		localDrained?.();
-		if (!localFailed) {
-			await localPump;
+		if (!localFailed && localPump) {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const finished = await Promise.race([
+				localPump.then(() => true),
+				new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+			]);
+			clearTimeout(timer);
+			if (!finished) {
+				// 手元の書き込みが進まない（--ingest が読まない）。待ち続けず、手元は諦める
+				localFailed = true;
+				localWriteError = true;
+				localQueue.length = 0;
+				localQueuedBytes = 0;
+			}
 		}
 		// 打ち切ったとき（stop）は、固まった書き込みを待たない。後始末は下の失敗の扱いが sink に対して行う
 		if (localWriteError && sink !== undefined) {
@@ -238,7 +308,7 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 		// 固まった手元の書き込みの待ちから、受け取りの読み進めを抜けさせる
 		localFailed = true;
 		localDrained?.();
-		// 応答のヘッダーを送る前（Content-Length の旧方式）なら、理由の分かる 4xx を返してから切る
+		// 応答のヘッダーを送る前なら、理由の分かる 4xx を返してから切る
 		if (!res.headersSent && !res.writableEnded) {
 			res.writeHead(statusFor(reason), { ...JSON_HEADERS, Connection: 'close' });
 			res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
@@ -248,6 +318,11 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 	const maxTimer = setTimeout(() => stop('max-duration'), deps.limits?.maxDurationMs ?? PARADIS_REMOTE_VOICE_MAX_DURATION_MS);
 	const firstAudioTimer = setTimeout(() => stop('first-audio-timeout'), deps.limits?.firstAudioTimeoutMs ?? PARADIS_REMOTE_VOICE_FIRST_AUDIO_TIMEOUT_MS);
 	const arrivalTimer = setInterval(() => {
+		// ticket の持ち主（ペイン）がいなくなったら、受け取りも手元への転送もやめる
+		if (!deps.isTicketCurrent()) {
+			stop('revoked');
+			return;
+		}
 		if (firstAudioAt === undefined || bitrate === undefined) {
 			return;
 		}
@@ -292,20 +367,26 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 					break;
 				}
 				headChecked = true;
+				acceptHeaders();
 				if (deps.beginMobileVoiceStream && deps.isTicketCurrent()) {
 					holder.writer = deps.beginMobileVoiceStream(gainKey);
 					for (const pending of chunks) {
 						writeMobile(pending);
 					}
 				}
-				startLocalPump();
-				for (const pending of chunks) {
-					await queueLocal(pending);
+				if (chunked) {
+					// 受け取りながら手元へ流すのは、引き受けた chunked だけ（旧方式は全部受け取ってから確かめて渡す）
+					startLocalPump();
+					for (const pending of chunks) {
+						await queueLocal(pending);
+					}
 				}
 				continue;
 			}
 			writeMobile(chunk);
-			await queueLocal(chunk);
+			if (chunked) {
+				await queueLocal(chunk);
+			}
 		}
 	} catch {
 		failure ??= 'closed';
@@ -323,17 +404,18 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 	if (failure === undefined && declaredLength !== undefined && size !== declaredLength) {
 		failure = 'length-mismatch';
 	}
+	if (failure === undefined && !deps.isTicketCurrent()) {
+		failure = 'revoked';
+	}
 	if (failure === undefined && holder.writer !== undefined) {
 		// モバイルへの流れは、手元への書き込みを待たずに終える
-		if (deps.isTicketCurrent()) {
-			holder.writer.end();
-		} else {
-			holder.writer.abort();
-		}
+		holder.writer.end();
 		holder.writer = undefined;
 	}
-	// 壊れた・大きすぎる本文は手元へ書き足さない。それ以外は溜まっている分を書き切ってから終える
-	await closeLocal(failure !== undefined && failure !== 'slow-arrival' && failure !== 'max-duration');
+	if (localPump !== undefined) {
+		// 壊れた・大きすぎる本文・持ち主のいない本文は手元へ書き足さない。それ以外は溜まっている分を書き切ってから終える
+		await closeLocal(failure !== undefined && failure !== 'slow-arrival' && failure !== 'max-duration');
+	}
 	deps.onBodyReceived();
 
 	// 届くのが遅い・長すぎる声は、引き受けた以上、受け取った分を鳴らす（壊れた・大きすぎる本文だけ捨てる）
@@ -385,56 +467,49 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 		if (!wantLocal) {
 			return { outcome: 'declined' };
 		}
-		const ingestSink = sink;
-		// worker が既に鳴らし始めていたら（手元への書き込みが途中で失敗した件も）、頭から鳴らし直さない
-		let audio: Buffer | undefined = workerStarted ? undefined : fullAudio;
-		// worker が鳴らし始めたら、鳴らし直し用の控えは要らない
-		ingestSink?.onDidStart(() => { audio = undefined; });
-		const localPlayback = (async () => {
-			if (ingestSink && await ingestSink.handoff) {
-				const terminal = await ingestSink.finished;
-				if (!(terminal.status === 'failed' && terminal.withdrawn === true)) {
-					return;
-				}
-			}
-			const pending = audio;
-			audio = undefined;
-			if (pending) {
-				await playLocalChain(pending);
-			}
-		})();
-		return { outcome: 'played-locally', localPlayback };
+		if (remoteMuted) {
+			// ミュート中の発話はモバイルへ届けただけ（接続先にも鳴らさせない）
+			return { outcome: 'played-locally' };
+		}
+		return { outcome: 'played-locally', localPlayback: followIngest(sink, workerStarted ? undefined : fullAudio, deps, playLocalChain) };
 	}
 
-	// Content-Length の旧方式。積めたかどうかを返す（積めなければ接続先の aivis-mcp が自分で鳴らす）
+	// Content-Length の旧方式。全部受け取って長さと ticket を確かめてから手元へ渡し、積めたかどうかを返す
+	// （積めなければ接続先の aivis-mcp が自分で鳴らす）
 	let playedLocally = false;
-	if (request.localPlayback) {
+	if (remoteMuted) {
+		// ミュート中の発話は手元で鳴らさず、接続先にも鳴らさせない（モバイルへは届けた）
+		playedLocally = true;
+	} else if (request.localPlayback) {
 		const deadline = now() + request.enqueueDeadlineMs;
-		if (sink) {
+		startLocalPump();
+		await queueLocal(fullAudio);
+		// 接続先が答えを待つ締め切りを越えて手元への書き込みを待たない
+		await closeLocal(false, Math.max(0, deadline - now()));
+		const ingestSink = sink;
+		if (ingestSink) {
+			await ingestSink.end();
 			let timer: ReturnType<typeof setTimeout> | undefined;
 			playedLocally = await Promise.race([
-				sink.handoff,
-				new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), request.enqueueDeadlineMs); }),
+				ingestSink.handoff,
+				new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(0, deadline - now())); }),
 			]);
 			clearTimeout(timer);
 			if (!playedLocally) {
-				// 手放せないまま締め切りを過ぎた件は、遅れて鳴らないよう中断する
-				void sink.abort('handoff-timeout');
-			} else {
+				// 締め切りまでに `queued` が来なかった。積まれたかもしれないので、中断ではなく取り下げを頼んでその結果で決める
+				// （外せた件だけ `--play-audio` か接続先に鳴らしてもらう。外せなかった・分からない件は worker が鳴らす）
+				if (ingestSink.withdraw) {
+					playedLocally = (await ingestSink.withdraw()) !== true;
+				} else {
+					void ingestSink.abort('handoff-timeout');
+				}
+			}
+			if (playedLocally) {
 				// 手放した後に worker から取り下げられた（まだ鳴っていない）件だけ、Para Code が鳴らす
-				const ingestSink = sink;
-				let pending: Buffer | undefined = fullAudio;
-				ingestSink.onDidStart(() => { pending = undefined; });
-				void ingestSink.finished.then(async terminal => {
-					const withdrawn = pending;
-					pending = undefined;
-					if (withdrawn && terminal.status === 'failed' && terminal.withdrawn === true) {
-						await playLocalChain(withdrawn);
-					}
-				});
+				void followIngest(ingestSink, fullAudio, deps, playLocalChain);
 			}
 		}
-		if (!playedLocally && !request.signal.aborted) {
+		if (!playedLocally && !request.signal.aborted && deps.isTicketCurrent()) {
 			playedLocally = await deps.playViaPlayAudio(fullAudio, { signal: request.signal, deadline }).catch(() => false);
 		}
 	}
@@ -445,4 +520,40 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 	res.writeHead(202, { ...JSON_HEADERS, 'Content-Length': Buffer.byteLength(body) });
 	res.end(body);
 	return { outcome: playedLocally ? 'played-locally' : 'declined' };
+}
+
+/**
+ * 手元の worker へ渡した声の行方を見届ける。worker が声を鳴らせなかった（取り下げられた・最初の音を待ちきれなかった）
+ * 件と、渡せなかった件だけ Para Code が鳴らす。控えは全体の枠の中でだけ持ち、worker が鳴らし始めたら捨てる。
+ */
+async function followIngest(sink: IParadisIngestStream | undefined, audio: Buffer | undefined, deps: IParadisRemoteVoiceIngressDeps, playLocalChain: (audio: Buffer) => Promise<void>): Promise<void> {
+	let pending = audio;
+	let retention: IParadisVoiceRetention | undefined;
+	if (pending && sink && deps.voiceOutput?.reserveFallbackCopy) {
+		retention = deps.voiceOutput.reserveFallbackCopy();
+		if (!retention?.grow(pending.byteLength)) {
+			// 控えの枠が足りない。鳴らし直しは諦める（worker が鳴らせば困らない）
+			retention?.release();
+			retention = undefined;
+			pending = undefined;
+		}
+	}
+	try {
+		// worker が鳴らし始めたら、鳴らし直し用の控えは要らない
+		sink?.onDidStart(() => { pending = undefined; });
+		if (sink && await sink.handoff) {
+			const terminal = await sink.finished;
+			const nothingPlayed = terminal.status === 'failed' && (terminal.withdrawn === true || terminal.reason === 'first-audio-timeout');
+			if (!nothingPlayed) {
+				return;
+			}
+		}
+		const replay = pending;
+		pending = undefined;
+		if (replay) {
+			await playLocalChain(replay);
+		}
+	} finally {
+		retention?.release();
+	}
 }

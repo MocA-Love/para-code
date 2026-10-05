@@ -54,7 +54,7 @@ import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBri
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_HTTP_PREFIX, paradisClaudeModApprovalWaitMs } from '../../claudeMod/common/paradisClaudeMod.js';
 import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { ParadisLocalVoicePlayer } from './paradisLocalVoicePlayer.js';
-import { paradisReceiveRemoteVoice } from './paradisRemoteVoiceIngress.js';
+import { paradisReceiveRemoteVoice, paradisSendVoiceIngressUnavailable, paradisSendVoiceTicketRejected } from './paradisRemoteVoiceIngress.js';
 import { paradisArmRequestBodyTimeout, paradisConfigureMcpHttpServer } from './paradisHttpRequestTimeouts.js';
 import { IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoiceIngest.js';
 import { PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING, PARADIS_REMOTE_VOICE_STREAM_INGRESS, paradisRemoteVoiceLocalPlaybackEnabled } from '../common/paradisRemoteVoice.js';
@@ -137,11 +137,18 @@ const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the 
 const MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN = 8;
 /** Claude Code の mod の受付のペインあたりの上限（長いポーリングの上限 16 本 + 観測の送信）。 */
 const MAX_ACTIVE_MOD_REQUESTS_PER_TOKEN = 24;
-const MAX_ACTIVE_MOBILE_VOICE_REQUESTS = 2;
+/**
+ * 音声取込の同時本数。SSH 先の声は合成の間ずっと 1 本を握るので、2 本だと 3 本目の声が接続先へ回ってしまう。
+ * 枠が空くのを {@link MOBILE_VOICE_SLOT_WAIT_MS} まで待ってから断る。
+ */
+const MAX_ACTIVE_MOBILE_VOICE_REQUESTS = 8;
+const MOBILE_VOICE_SLOT_WAIT_MS = 3_000;
+const MOBILE_VOICE_SLOT_POLL_MS = 100;
 const MAX_ACTIVE_MOBILE_VOICE_BYTES = 16 * 1024 * 1024;
 const MOBILE_VOICE_TICKET_TTL_MS = 10 * 60_000;
 const MAX_MOBILE_VOICE_TICKETS = 256;
-const MAX_MOBILE_VOICE_TICKETS_PER_PANE = 8;
+/** 接続先の aivis-mcp 2.5.1 は鳴らし始めるときに ticket を取るので、1 ペインで同時に持つ枚数は少ない。余裕を持たせる。 */
+const MAX_MOBILE_VOICE_TICKETS_PER_PANE = 32;
 /** 接続先の aivis-mcp が答えを待つ 15 秒より短く。本文を読み終えてから数える。 */
 const LOCAL_VOICE_ENQUEUE_DEADLINE_MS = 10_000;
 
@@ -2355,13 +2362,17 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	private async _handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
 		if (this._serverDisposed) {
+			if (req.method === 'POST' && req.url === '/paradis-mcp/mobile-voice') {
+				// 終了中に届いた音声取込。404 だと接続先の aivis-mcp は ticket が通らなかったとみなして鳴らさないので、503 で接続先に鳴らしてもらう
+				paradisSendVoiceIngressUnavailable(res);
+				return;
+			}
 			this._sendIngressRejected(res);
 			return;
 		}
-		// 音声取込（自前の 120 秒・最初の音・届く速さで縛る）以外は、本文を受け取りきるまで以前と同じ 30 秒で縛る
-		if (req.url !== '/paradis-mcp/mobile-voice') {
-			paradisArmRequestBodyTimeout(req, res);
-		}
+		// 本文を受け取りきるまで以前と同じ 30 秒で縛る。音声取込は実際に受理した時点で外す（自前の 120 秒・最初の音・
+		// 届く速さで縛る）
+		const bodyTimeout = paradisArmRequestBodyTimeout(req, res);
 		if (req.method === 'GET' && req.url === PARADIS_MCP_HEALTH_PATH) {
 			const body = JSON.stringify({
 				protocolVersion: PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION,
@@ -2397,7 +2408,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		if (req.method === 'POST' && req.url === '/paradis-mcp/mobile-voice') {
 			// 自前の 120 秒・最初の音・届く速さで縛る（paradisRemoteVoiceIngress）
-			return this._handleMobileVoiceIngress(req, res);
+			return this._handleMobileVoiceIngress(req, res, bodyTimeout);
 		}
 		// Claude Code の mod（resources/paradis/claude-mod）。hook と同じくペイントークンで認証する。
 		if (req.method === 'POST' && (req.url ?? '').startsWith(PARADIS_CLAUDE_MOD_HTTP_PREFIX)) {
@@ -2512,11 +2523,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * aivis-mcpが生成済みMP3を再利用するためのloopback専用取込口。
 	 * pane ownerが直前に発行した1回限りの短命ticketで認証し、音声は保存せずイベントへ渡す。
 	 */
-	private async _handleMobileVoiceIngress(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-		// 本文を読まずに断る要求は、接続ごと閉じる（chunked の本文を送り続けさせない・接続を使い回させない）
+	private async _handleMobileVoiceIngress(req: http.IncomingMessage, res: http.ServerResponse, bodyTimeout: { dispose(): void }): Promise<void> {
+		// 本文を読まずに断る要求は、接続を使い回させない。返し終えた後は bodyTimeout が残りを 1 秒だけ読み捨ててから閉じる
+		// （すぐ切ると、相手が応答を受け取る前に接続が切れることがある。L-2）
 		const closeAfterReply = () => {
 			res.setHeader('Connection', 'close');
-			res.once('finish', () => req.destroy());
 		};
 		const requestedTicket = this._extractToken(req);
 		const ticket = requestedTicket === undefined ? undefined : this._mobileVoiceTickets.get(requestedTicket);
@@ -2526,7 +2537,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		if (ticket === undefined || ticket.expiresAt < Date.now() || !this._isMobileVoiceTicketCurrent(ticket)) {
 			closeAfterReply();
-			this._sendIngressRejected(res);
+			// ticket が通らない（知らない・期限切れ・使用済み・今の instance のものでない）。401 を返すと、接続先の
+			// aivis-mcp 2.5.1 は手元で鳴らす前提の発話を自分では鳴らさない（ticket-unavailable）。ほかの 4xx・5xx は接続先で鳴らす
+			paradisSendVoiceTicketRejected(res);
 			return;
 		}
 		const publishMobileVoiceClip = this.publishMobileVoiceClip;
@@ -2549,8 +2562,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._sendIngressCapacityRejected(res);
 			return;
 		}
-		// 押さえる量は受け取った分だけ増やす（chunked は長さが先に分からない）
-		const voiceReservation = this._reserveMobileVoiceIngress();
+		// 押さえる量は受け取った分だけ増やす（chunked は長さが先に分からない）。枠が埋まっていたら少しだけ空くのを待つ
+		const voiceReservation = await this._reserveMobileVoiceIngressWithin(MOBILE_VOICE_SLOT_WAIT_MS, req);
 		if (voiceReservation === undefined) {
 			reservation.dispose();
 			closeAfterReply();
@@ -2560,6 +2573,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		let activeRequest: ReturnType<ParadisAgentBrowserService['_trackActiveRequest']> | undefined;
 		try {
 			activeRequest = this._trackActiveRequest(req, res);
+			// 受理した。ここからは自前の 120 秒・最初の音・届く速さで縛る
+			bodyTimeout.dispose();
 			await paradisReceiveRemoteVoice(req, res, {
 				localPlayback: ticket.localPlayback,
 				signal: activeRequest.controller.signal,
@@ -2649,9 +2664,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		const localPlayback = ingressLease !== undefined && this._paneRemoteAuthorityOf(ingressLease.token) !== undefined && this._remoteVoiceLocalPlaybackEnabled();
 		this._mobileVoiceTickets.set(voiceTicket, { lease: ingressLease, expiresAt, localPlayback });
 		// `ingress: "stream-v1"` を名乗ると、接続先の aivis-mcp 2.5.0 は合成を受け取りながら chunked で送る
+		// `muteAware: true` を名乗ると、接続先の aivis-mcp 2.5.1 はミュート中の発話に `X-Para-Muted: 1` を付けて送る
+		// （Para Code は手元で鳴らさず、モバイルへだけ届ける）
 		const body = JSON.stringify(localPlayback
-			? { ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId, localPlayback, ingress: PARADIS_REMOTE_VOICE_STREAM_INGRESS }
-			: { ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId, ingress: PARADIS_REMOTE_VOICE_STREAM_INGRESS });
+			? { ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId, localPlayback, ingress: PARADIS_REMOTE_VOICE_STREAM_INGRESS, muteAware: true }
+			: { ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId, ingress: PARADIS_REMOTE_VOICE_STREAM_INGRESS, muteAware: true });
 		res.writeHead(201, {
 			'Content-Type': 'application/json',
 			'Content-Length': Buffer.byteLength(body),
@@ -4546,6 +4563,18 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 			},
 		};
+	}
+
+	/** 音声取込の枠を押さえる。埋まっていれば `waitMs` まで空くのを待つ（相手が切れたらやめる）。 */
+	private async _reserveMobileVoiceIngressWithin(waitMs: number, req: http.IncomingMessage): Promise<{ grow(bytes: number): boolean; dispose(): void } | undefined> {
+		const deadline = Date.now() + waitMs;
+		for (; ;) {
+			const reservation = this._reserveMobileVoiceIngress();
+			if (reservation !== undefined || this._serverDisposed || req.destroyed || Date.now() >= deadline) {
+				return reservation;
+			}
+			await new Promise<void>(resolve => setTimeout(resolve, MOBILE_VOICE_SLOT_POLL_MS));
+		}
 	}
 
 	private _reserveMobileVoiceIngress(): { grow(bytes: number): boolean; dispose(): void } | undefined {

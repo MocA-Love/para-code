@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import { createInitiator, generateIdentity, respondHandshake } from '../src/crypto.js';
 import { Channels, encodeFrame, type Frame } from '../src/frames.js';
-import { FRAME_CHUNK_BYTES, FRAME_REASSEMBLY_LIMIT, FrameMux } from '../src/mux.js';
+import { FRAME_CHUNK_BYTES, FRAME_REASSEMBLY_LIMIT, FrameAssembler, FrameMux } from '../src/mux.js';
 
 function establish() {
 	const mobile = generateIdentity();
@@ -162,5 +162,31 @@ describe('FrameMux over SecureChannel', () => {
 		send({ ch: Channels.Fs, seq: 0, payload: new Uint8Array(3), frag: { id: 1, index: 5, last: true } });
 
 		expect({ fatal: fatal.length, assembly }).toEqual({ fatal: 0, assembly: ['frame fragment out of order on transfer 1'] });
+	});
+});
+
+describe('FrameAssembler', () => {
+	const fragment = (id: number, index: number, last: boolean, text: string): Frame => ({ ch: Channels.Fs, seq: 0, payload: new TextEncoder().encode(text), frag: { id, index, last } });
+	const text = (result: Frame | Error | undefined) => result === undefined ? undefined : result instanceof Error ? 'error' : new TextDecoder().decode(result.payload);
+
+	test('drops the oldest of 33 concurrent transfers, reports it, and keeps assembling the new one like the PC (F5)', () => {
+		const assembler = new FrameAssembler();
+		const starts = Array.from({ length: 33 }, (_, id) => assembler.push(fragment(id, 0, false, `s${id}`)));
+		const overflow = starts.at(-1);
+		expect({
+			firstStarts: starts.slice(0, 32).every(result => result === undefined),
+			overflow: overflow instanceof Error ? overflow.message : overflow,
+			newest: text(assembler.push(fragment(32, 1, true, '-end'))),
+			oldest: text(assembler.push(fragment(0, 1, true, '-end'))),
+		}).toEqual({ firstStarts: true, overflow: 'too many concurrent frame transfers', newest: 's32-end', oldest: undefined });
+	});
+
+	test('checks the reassembly limit even for the transfer that evicted the oldest one', () => {
+		const assembler = new FrameAssembler();
+		for (let id = 0; id < 32; id++) {
+			assembler.push({ ch: Channels.Fs, seq: 0, payload: new Uint8Array(FRAME_REASSEMBLY_LIMIT / 32), frag: { id, index: 0, last: false } });
+		}
+		const result = assembler.push({ ch: Channels.Fs, seq: 0, payload: new Uint8Array(FRAME_REASSEMBLY_LIMIT / 32 + 1), frag: { id: 99, index: 0, last: false } });
+		expect({ error: result instanceof Error ? result.message : result, pending: assembler.pendingBytes }).toEqual({ error: 'frame reassembly limit exceeded on transfer 99', pending: FRAME_REASSEMBLY_LIMIT - FRAME_REASSEMBLY_LIMIT / 32 });
 	});
 });

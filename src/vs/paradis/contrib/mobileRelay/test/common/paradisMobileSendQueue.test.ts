@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisMobileSendTransfer, PARADIS_MOBILE_FALLBACK_PACE_BYTES_PER_SECOND, PARADIS_MOBILE_SCREEN_MAX_WAIT_MS, PARADIS_MOBILE_STUCK_BUFFER_MS, ParadisMobileSendPriority, ParadisMobileSendQueue, paradisMobileSendPriorityOf } from '../../common/paradisMobileSendQueue.js';
+import { IParadisMobileSendTransfer, PARADIS_MOBILE_FALLBACK_PACE_BYTES_PER_SECOND, PARADIS_MOBILE_FRAGMENT_BYTES, PARADIS_MOBILE_PACING_MAX_BYTES, PARADIS_MOBILE_SCREEN_MAX_WAIT_MS, PARADIS_MOBILE_STUCK_BUFFER_MS, ParadisMobileSendPriority, ParadisMobileSendQueue, paradisMobileSendPriorityOf } from '../../common/paradisMobileSendQueue.js';
 
 function transfer(owner: object, name: string, fragmentCount: number, log: string[], priority: ParadisMobileSendPriority = ParadisMobileSendPriority.Control, sealLog?: string[]): IParadisMobileSendTransfer {
 	return {
@@ -66,8 +66,8 @@ suite('ParadisMobileSendQueue', () => {
 		], [
 			{ priority: ParadisMobileSendPriority.Voice },
 			{ priority: ParadisMobileSendPriority.Voice },
-			// 1 本まるごとの voice-clip は数 MB になりうるので音声の列を塞がない
-			{ priority: ParadisMobileSendPriority.Control },
+			// 1 本まるごとの voice-clip（詰まったときの救済）は音声の列の中の順を守り、操作・状態と交互に送る（L4・M-5）
+			{ priority: ParadisMobileSendPriority.Voice, interleave: true },
 			{ priority: ParadisMobileSendPriority.Screen, replaceKey: 'screencast' },
 			{ priority: ParadisMobileSendPriority.Screen, replaceKey: 'screencast' },
 			{ priority: ParadisMobileSendPriority.Control },
@@ -242,5 +242,76 @@ suite('ParadisMobileSendQueue', () => {
 		await Promise.all(results);
 
 		assert.deepStrictEqual(log, ['seal:state0', 'send:state0', 'seal:state1', 'send:state1', 'seal:state2', 'send:state2', 'seal:jpeg2-0', 'send:jpeg2-0', 'seal:state3', 'send:state3']);
+	});
+	test('keeps a voice clip behind the voice stream fragments queued before it for the same mobile (L4)', async () => {
+		const queue = new ParadisMobileSendQueue();
+		const log: string[] = [];
+		const owner = {};
+		await Promise.all([
+			queue.enqueue(transfer(owner, 'stream', 2, log, ParadisMobileSendPriority.Voice)),
+			queue.enqueue({ ...transfer(owner, 'clip', 3, log, ParadisMobileSendPriority.Voice), interleave: paradisMobileSendPriorityOf('browser', new TextEncoder().encode('{"t":"voice-clip","sid":"s"}')).interleave }),
+			queue.enqueue(transfer(owner, 'state', 2, log)),
+		]);
+		// clip は先に始まった流れを追い越さず、操作・状態と 1 断片ずつ交互に送る（M-5）
+		assert.deepStrictEqual(log, ['stream0', 'stream1', 'clip0', 'state0', 'clip1', 'state1', 'clip2']);
+	});
+
+	test('sends a promoted screen JPEG to its last fragment before control frames (F3)', async () => {
+		let now = 0;
+		const queue = new ParadisMobileSendQueue({ now: () => now });
+		const log: string[] = [];
+		const control = gatedTransfer({}, 'state', log, { priority: ParadisMobileSendPriority.Control, fragmentCount: 3 });
+		const screen = gatedTransfer({}, 'jpeg', log, { fragmentCount: 3 });
+		const results = [queue.enqueue(control.value), queue.enqueue(screen.value)];
+		now = PARADIS_MOBILE_SCREEN_MAX_WAIT_MS;
+		control.release();
+		for (let i = 0; i < 3; i++) {
+			await new Promise(resolve => setTimeout(resolve, 0));
+			screen.release();
+		}
+		for (let i = 0; i < 2; i++) {
+			await new Promise(resolve => setTimeout(resolve, 0));
+			control.release();
+		}
+		await Promise.all(results);
+		assert.deepStrictEqual(log.filter(entry => entry.startsWith('send:')), ['send:state0', 'send:jpeg0', 'send:jpeg1', 'send:jpeg2', 'send:state1', 'send:state2']);
+	});
+
+	test('stops pacing after 2 MiB while bufferedAmount stays stuck, and resumes once it moves (F2)', async () => {
+		let now = 0;
+		let buffered = 64 * 1024;
+		const timers: (() => void)[] = [];
+		const queue = new ParadisMobileSendQueue({
+			bufferedAmount: () => buffered,
+			now: () => now,
+			setTimeout: handler => { timers.push(handler); },
+		});
+		const log: string[] = [];
+		const fragments = Math.ceil(PARADIS_MOBILE_PACING_MAX_BYTES / (PARADIS_MOBILE_FRAGMENT_BYTES + 64)) + 4;
+		const big: IParadisMobileSendTransfer = {
+			owner: {},
+			priority: ParadisMobileSendPriority.Control,
+			fragmentCount: fragments,
+			bytes: fragments * PARADIS_MOBILE_FRAGMENT_BYTES,
+			sealFragment: async index => new Uint8Array([index]),
+			sendSealed: (_sealed, index) => { log.push(`f${index}`); },
+		};
+		const sent = queue.enqueue(big);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		now = PARADIS_MOBILE_STUCK_BUFFER_MS;
+		// 時間で送る速さに切り替えたまま、時計を進めて待ちを解き続ける
+		for (let i = 0; i < fragments * 3 && timers.length > 0; i++) {
+			now += 1_000;
+			timers.shift()!();
+			await new Promise(resolve => setTimeout(resolve, 0));
+		}
+		const whileStuck = log.length;
+		buffered = 0;
+		while (timers.length > 0) {
+			timers.shift()!();
+			await new Promise(resolve => setTimeout(resolve, 0));
+		}
+		await sent;
+		assert.deepStrictEqual({ whileStuck, after: log.length }, { whileStuck: Math.ceil(PARADIS_MOBILE_PACING_MAX_BYTES / (PARADIS_MOBILE_FRAGMENT_BYTES + 64)), after: fragments });
 	});
 });

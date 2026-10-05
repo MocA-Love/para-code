@@ -18,7 +18,8 @@
  *    （アプリは使わない。張り直した後に届いた古い流れの続きは、知らない streamId として捨てるか、最後の断片から 8 秒で終える）
  * 2. 2 進の断片（先頭 4 バイトの印 `PVS\x01` ＋ streamId 16 バイト ＋ seq 4 バイト（BE）＋ MP3）。
  *    PC は 8KiB か 100ms ごとにまとめて送る
- * 3. `voice-stream-end {streamId, seq, bytes, aborted}`（JSON）。`seq` は送った断片の数、`bytes` は MP3 の合計。
+ * 3. `voice-stream-end {streamId, seq, bytes, aborted}`（JSON）。`seq` は送った断片の数、`bytes` は MP3 の合計で、
+ *    どちらも記録用（アプリは読まない。断片の抜けは mux の組み立てと暗号のカウンタで分かるので、ここでは確かめない）。
  *    途中で切るときも必ず `aborted: true` の end を送る（張り直した後の古い流れを除く）
  *
  * 広告していない端末と、鳴り始めの時点で送信が詰まっていた端末には、その発話を全部受け取ってから
