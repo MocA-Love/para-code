@@ -7,7 +7,7 @@ import assert from 'assert';
 import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisCdpInputDispatchResult } from '../../common/paradisAgentBrowser.js';
-import { ParadisCdpInputQueue } from '../../node/paradisCdpInputQueue.js';
+import { IParadisCdpInputQueueDiagnostic, ParadisCdpInputQueue } from '../../node/paradisCdpInputQueue.js';
 
 function success(value: unknown = {}): IParadisCdpInputDispatchResult {
 	return { status: 'success', result: value };
@@ -77,13 +77,14 @@ suite('ParadisCdpInputQueue', () => {
 		queue.dispose();
 	});
 
-	test('drains a timed-out command, poisons only its exact descriptor, and only a new lease recovers', async () => {
+	test('drains a timed-out command, pauses only its exact descriptor, and resumes it when the late dispatch settles', async () => {
 		const clock = sinon.useFakeTimers();
-		const queue = new ParadisCdpInputQueue({ dispatchTimeoutMs: 5_000 });
+		const diagnostics: IParadisCdpInputQueueDiagnostic[] = [];
+		const queue = new ParadisCdpInputQueue({ dispatchTimeoutMs: 5_000, onDiagnostic: event => diagnostics.push(event) });
 		let release!: (value: IParadisCdpInputDispatchResult) => void;
 		const dispatch = new Promise<IParadisCdpInputDispatchResult>(resolve => release = resolve);
 		let sameDescriptorDispatches = 0;
-		const first = queue.enqueue({ queueKey: 'exact', connection: {}, isAuthorityCurrent: () => true, dispatch: () => dispatch });
+		const first = queue.enqueue({ queueKey: 'exact', method: 'Input.dispatchMouseEvent', connection: {}, isAuthorityCurrent: () => true, dispatch: () => dispatch });
 		const second = queue.enqueue({
 			queueKey: 'exact', connection: {}, isAuthorityCurrent: () => true,
 			dispatch: async () => { sameDescriptorDispatches++; return success(); },
@@ -95,20 +96,51 @@ suite('ParadisCdpInputQueue', () => {
 		});
 		await clock.tickAsync(0);
 		await first.drained;
-		assert.deepStrictEqual(await second.response, {
-			status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: exact BrowserView input queue is poisoned by an unresolved dispatch',
-		});
+		// Never sent, so the outcome is definite: the agent may simply retry.
+		assert.strictEqual((await second.response).status, 'retryable');
+		assert.match((await second.response as { message: string }).message, /input on this page is paused/);
 		await second.drained;
 		assert.strictEqual(sameDescriptorDispatches, 0);
 
-		const replacement = queue.enqueue({ queueKey: 'exact-new-lease', connection: {}, isAuthorityCurrent: () => true, dispatch: async () => success() });
-		assert.strictEqual((await replacement.response).status, 'success');
-		await replacement.drained;
+		const independent = queue.enqueue({ queueKey: 'exact-new-lease', connection: {}, isAuthorityCurrent: () => true, dispatch: async () => success() });
+		assert.strictEqual((await independent.response).status, 'success');
+		await independent.drained;
+
+		await clock.tickAsync(2_000);
 		release(success());
 		await clock.tickAsync(0);
-		const stillPoisoned = queue.enqueue({ queueKey: 'exact', connection: {}, isAuthorityCurrent: () => true, dispatch: async () => success() });
-		assert.strictEqual((await stillPoisoned.response).status, 'outcome-unknown');
-		await stillPoisoned.drained;
+		const resumed = queue.enqueue({ queueKey: 'exact', connection: {}, isAuthorityCurrent: () => true, dispatch: async () => success() });
+		assert.strictEqual((await resumed.response).status, 'success');
+		await resumed.drained;
+		assert.deepStrictEqual(diagnostics, [
+			{ kind: 'paused', cause: 'dispatch-timeout', method: 'Input.dispatchMouseEvent' },
+			{ kind: 'resumed', how: 'settled', cause: 'dispatch-timeout', method: 'Input.dispatchMouseEvent', pausedMs: 2_000 },
+		]);
+		queue.dispose();
+	});
+
+	test('abandons a dispatch that never settles after the recovery time, so the page takes input again', async () => {
+		const clock = sinon.useFakeTimers();
+		const diagnostics: IParadisCdpInputQueueDiagnostic[] = [];
+		const queue = new ParadisCdpInputQueue({ dispatchTimeoutMs: 1_000, poisonRecoveryMs: 30_000, onDiagnostic: event => diagnostics.push(event) });
+		const stuck = queue.enqueue({ queueKey: 'exact', method: 'Input.dispatchKeyEvent', connection: {}, isAuthorityCurrent: () => true, dispatch: () => new Promise(() => { }) });
+		await clock.tickAsync(1_000);
+		assert.strictEqual((await stuck.response).status, 'outcome-unknown');
+		await stuck.drained;
+
+		await clock.tickAsync(29_999);
+		const stillPaused = queue.enqueue({ queueKey: 'exact', connection: {}, isAuthorityCurrent: () => true, dispatch: async () => success() });
+		assert.strictEqual((await stillPaused.response).status, 'retryable');
+		await stillPaused.drained;
+
+		await clock.tickAsync(1);
+		const resumed = queue.enqueue({ queueKey: 'exact', connection: {}, isAuthorityCurrent: () => true, dispatch: async () => success() });
+		assert.strictEqual((await resumed.response).status, 'success');
+		await resumed.drained;
+		assert.deepStrictEqual(diagnostics, [
+			{ kind: 'paused', cause: 'dispatch-timeout', method: 'Input.dispatchKeyEvent' },
+			{ kind: 'resumed', how: 'recovery-timeout', cause: 'dispatch-timeout', method: 'Input.dispatchKeyEvent', pausedMs: 30_000 },
+		]);
 		queue.dispose();
 	});
 
@@ -137,11 +169,15 @@ suite('ParadisCdpInputQueue', () => {
 		});
 		assert.strictEqual(independentStarted, true);
 		assert.strictEqual((await independent.response).status, 'success');
-		const poisoned = queue.enqueue({ queueKey: 'exact', connection: connectionB, isAuthorityCurrent: () => true, dispatch: async () => success() });
-		assert.strictEqual((await poisoned.response).status, 'outcome-unknown');
-		await poisoned.drained;
+		const paused = queue.enqueue({ queueKey: 'exact', connection: connectionB, isAuthorityCurrent: () => true, dispatch: async () => success() });
+		assert.strictEqual((await paused.response).status, 'retryable');
+		await paused.drained;
 		release();
 		await Promise.all([queued.drained, independent.drained]);
+		// The closed connection's dispatch has settled: nothing can be overtaken any more.
+		const resumed = queue.enqueue({ queueKey: 'exact', connection: connectionB, isAuthorityCurrent: () => true, dispatch: async () => success() });
+		assert.strictEqual((await resumed.response).status, 'success');
+		await resumed.drained;
 		queue.dispose();
 	});
 
@@ -157,9 +193,9 @@ suite('ParadisCdpInputQueue', () => {
 		await Promise.resolve();
 	});
 
-	test('bounds poisoned descriptor state and fails closed after saturation', async () => {
+	test('bounds paused descriptor state and pauses all input for one recovery period after saturation', async () => {
 		const clock = sinon.useFakeTimers();
-		const queue = new ParadisCdpInputQueue({ dispatchTimeoutMs: 1, poisonedKeyLimit: 2 });
+		const queue = new ParadisCdpInputQueue({ dispatchTimeoutMs: 1, poisonedKeyLimit: 2, poisonRecoveryMs: 100 });
 		for (const queueKey of ['exact-1', 'exact-2', 'exact-3']) {
 			const operation = queue.enqueue({ queueKey, connection: {}, isAuthorityCurrent: () => true, dispatch: () => new Promise(() => { }) });
 			await clock.tickAsync(1);
@@ -167,8 +203,12 @@ suite('ParadisCdpInputQueue', () => {
 			await operation.drained;
 		}
 		const rejected = queue.enqueue({ queueKey: 'new-lease', connection: {}, isAuthorityCurrent: () => true, dispatch: async () => success() });
-		assert.strictEqual((await rejected.response).status, 'outcome-unknown');
+		assert.strictEqual((await rejected.response).status, 'retryable');
 		await rejected.drained;
+		await clock.tickAsync(100);
+		const accepted = queue.enqueue({ queueKey: 'new-lease', connection: {}, isAuthorityCurrent: () => true, dispatch: async () => success() });
+		assert.strictEqual((await accepted.response).status, 'success');
+		await accepted.drained;
 		queue.dispose();
 	});
 
