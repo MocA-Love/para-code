@@ -133,6 +133,8 @@ function createFixture(): {
 		_remotePaneWindows: new Map<string, string>(),
 		_remoteFileTransfer: new ParadisRemoteFileTransfer(() => undefined),
 		_paneStatuses: new Map<string, { status: string; changedAt: number }>(),
+		_userTurnStarts: new Map<string, number>(),
+		_announcedReviews: new Map<string, { turn: number; certain: boolean }>(),
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set<string>(),
 		_awaitingUserTokens: new Set<string>(),

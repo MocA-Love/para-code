@@ -13,10 +13,12 @@
 
 import { useEffect, useState } from 'react';
 import { useAppStore } from './appState.js';
+import { agentSendIds } from './agentSendIds.js';
 import { useAppLocked } from './appLock.js';
 import { appLastUnlockedAt, isAppLockedNow, requestAppReauthentication } from './appLockState.js';
 import { useAgentSendLive } from './agentSendQueue.js';
 import { notificationActionReadiness, planNotificationActionSend, type PendingNotificationAction } from './notificationActions.js';
+import type { AgentMessageSendResult } from './store.js';
 import { useParaToast } from './paraToast.js';
 
 /** 会話の状態を受け取り直すまで、取り直しを頼まずに待つ時間。 */
@@ -51,7 +53,10 @@ export function queueNotificationAction(key: string, next: PendingNotificationAc
 	if (handledKeys.length > HANDLED_LIMIT) {
 		handledKeys.shift();
 	}
-	replacePending(next);
+	// 返信の id はボタンを押した 1 回につき 1 つ（ロックの解除待ちで送り直しても同じ id）
+	replacePending(next.request.kind === 'reply' && next.sendId === undefined
+		? { ...next, sendId: agentSendIds.idFor(next.terminalKey, next.request.text) }
+		: next);
 	kick();
 }
 
@@ -82,6 +87,14 @@ function fail(action: PendingNotificationAction, message: string): void {
 		return;
 	}
 	showResult(false, action.request.kind === 'approve' ? '許可を送れませんでした' : '拒否を送れませんでした', message);
+}
+
+/** 返信を送る。届いたか分からないまま失敗した返信は入力欄へ戻り、そこから送り直すと同じ id になる（PC が二重に送らない）。 */
+async function sendReply(action: PendingNotificationAction, text: string): Promise<AgentMessageSendResult> {
+	const sendId = action.sendId ?? agentSendIds.idFor(action.terminalKey, text);
+	const result = await useAppStore.getState().sendAgentMessage(action.terminalKey, text, sendId);
+	agentSendIds.settle(action.terminalKey, text, sendId, result);
+	return result;
 }
 
 async function run(action: PendingNotificationAction): Promise<void> {
@@ -123,7 +136,7 @@ async function run(action: PendingNotificationAction): Promise<void> {
 		const store = useAppStore.getState();
 		const result = decision.kind === 'approval'
 			? await store.answerAgentApproval(action.terminalKey, decision.interactionId, decision.choice)
-			: await store.sendAgentMessage(action.terminalKey, decision.text);
+			: await sendReply(action, decision.text);
 		if (result.status === 'accepted') {
 			showResult(true, action.request.kind === 'approve' ? '許可しました' : action.request.kind === 'deny' ? '拒否しました' : '返信を送りました');
 			return;

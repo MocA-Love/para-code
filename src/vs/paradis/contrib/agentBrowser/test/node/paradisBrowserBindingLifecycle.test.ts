@@ -732,6 +732,8 @@ function createServiceFixture(generation: number): {
 		_paneRemoteAuthorities: new Map(),
 		_remotePaneWindows: new Map(),
 		_paneStatuses: new Map(),
+		_userTurnStarts: new Map<string, number>(),
+		_announcedReviews: new Map<string, { turn: number; certain: boolean }>(),
 		_paneSessions: new Map(),
 		_activityApprovalTokens: new Set(),
 		_awaitingUserTokens: new Set<string>(),

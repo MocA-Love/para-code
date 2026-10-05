@@ -33,7 +33,7 @@ export function paradisIsGzipWorthwhile(rawBytes: number, compressedBytes: numbe
 
 /** 従来のUTF-8 JSON bytesをgzip response v1へ可逆変換する。縮み方が足りなければ undefined。 */
 export async function paradisEncodeGzipJsonResponse(json: Uint8Array): Promise<Uint8Array | undefined> {
-	if (json.length < MIN_JSON_BYTES || json.length > MAX_JSON_BYTES) {
+	if (!paradisIsGzipJsonCandidate(json.length)) {
 		return undefined;
 	}
 	try {
@@ -42,18 +42,30 @@ export async function paradisEncodeGzipJsonResponse(json: Uint8Array): Promise<U
 		const writer = stream.writable.getWriter();
 		await writer.write(json.slice());
 		await writer.close();
-		const compressed = new Uint8Array(await output);
-		if (!paradisIsGzipWorthwhile(json.length, HEADER_BYTES + compressed.length)) {
-			return undefined;
-		}
-		const payload = new Uint8Array(HEADER_BYTES + compressed.length);
-		payload.set([0x50, 0x43, 0x4a, 0x01, 1, 0, 0, 0], 0); // "PCJ" + wire version 1 + gzip + reserved
-		new DataView(payload.buffer).setUint32(8, json.length, false);
-		payload.set(compressed, HEADER_BYTES);
-		return payload;
+		return paradisFrameGzipJsonResponse(json.length, new Uint8Array(await output));
 	} catch {
 		return undefined;
 	}
+}
+
+/** 元の JSON の大きさが gzip v1 の対象の範囲か（小さすぎると展開の手間の方が高く、大きすぎるとモバイルが受けない）。 */
+export function paradisIsGzipJsonCandidate(rawBytes: number): boolean {
+	return rawBytes >= MIN_JSON_BYTES && rawBytes <= MAX_JSON_BYTES;
+}
+
+/**
+ * gzip で縮めたバイト列に gzip response v1 の見出しを付ける。縮み方が足りなければ undefined。
+ * 圧縮そのものは呼び出し側が持つ（shared process は zlib の同期版で、送る順を崩さずに縮める）。
+ */
+export function paradisFrameGzipJsonResponse(rawBytes: number, compressed: Uint8Array): Uint8Array | undefined {
+	if (!paradisIsGzipJsonCandidate(rawBytes) || !paradisIsGzipWorthwhile(rawBytes, HEADER_BYTES + compressed.length)) {
+		return undefined;
+	}
+	const payload = new Uint8Array(HEADER_BYTES + compressed.length);
+	payload.set([0x50, 0x43, 0x4a, 0x01, 1, 0, 0, 0], 0); // "PCJ" + wire version 1 + gzip + reserved
+	new DataView(payload.buffer).setUint32(8, rawBytes, false);
+	payload.set(compressed, HEADER_BYTES);
+	return payload;
 }
 
 /** 旧MobileにはJSONを維持し、明示交渉した要求だけgzip v1を使う。 */

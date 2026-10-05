@@ -103,6 +103,8 @@ export interface PendingNotificationAction {
 	readonly at: number;
 	/** アプリが操作を預かった時刻。この後にロックの解除（Face ID）があるまで送らない。 */
 	readonly queuedAt: number;
+	/** 返信の送信の id（agentSendIds.ts）。預けたときに 1 度だけ決め、同じ預かりを送り直すときも使い回す。 */
+	readonly sendId?: string;
 }
 
 /** 預かってからこれを過ぎたら送らない（Face ID に手間取った・PC につながらない）。 */

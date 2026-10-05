@@ -14,7 +14,7 @@
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { PARADIS_AGENT_BACKGROUND_TASK_STALE_MS } from '../common/paradisAgentStatusStale.js';
+import { paradisBackgroundTaskCounts } from '../common/paradisAgentStatusStale.js';
 import { paradisRedactToolInputSecrets } from '../common/paradisBrowserPageOps.js';
 
 /** notify.sh (v2) がPOSTするhook JSONから抽出した、1回のhook発火の内容。 */
@@ -218,8 +218,13 @@ export function fireParadisAgentAwaitingUser(token: string): void {
 
 /** 1ペインのtranscript由来アクティビティ。 */
 export interface IParadisAgentPaneActivity {
-	/** 実行中バックグラウンドタスクID → 起動時刻 (epoch ms)。 */
+	/** 実行中バックグラウンドタスクID → 最後に動いている印を見た時刻 (epoch ms。印がまだ無ければ起動時刻)。 */
 	readonly backgroundTasks: ReadonlyMap<string, number>;
+	/**
+	 * backgroundTasks のうち、動いている印を拾えない種類（バックグラウンドの Bash）。起動から
+	 * `PARADIS_AGENT_BACKGROUND_TASK_STALE_MS` で数えなくなる（印が途絶えた「分からない」の猶予は無い）。
+	 */
+	readonly expiringBackgroundTasks?: ReadonlySet<string>;
 	/** 回答待ちの質問 (AskUserQuestion) があるか。 */
 	readonly pendingQuestion: boolean;
 	/** 回答待ちの操作承認があるか。 */
@@ -253,8 +258,15 @@ function copyPaneActivity(activity: IParadisAgentPaneActivity): IParadisAgentPan
 			backgroundTasks.set(taskId, openedAt);
 		}
 	}
+	const expiringBackgroundTasks = new Set<string>();
+	for (const taskId of activity.expiringBackgroundTasks ?? []) {
+		if (backgroundTasks.has(taskId)) {
+			expiringBackgroundTasks.add(taskId);
+		}
+	}
 	return Object.freeze({
 		backgroundTasks,
+		...(expiringBackgroundTasks.size > 0 ? { expiringBackgroundTasks } : {}),
 		pendingQuestion: activity.pendingQuestion === true,
 		pendingApproval: activity.pendingApproval === true,
 	});
@@ -317,13 +329,15 @@ export function clearParadisAgentPaneActivity(token: string): void {
 }
 
 /**
- * 実行中とみなせるバックグラウンドタスク数。完了通知(task-notification)を取りこぼした
- * エントリで 'working' が永久に残らないよう、古すぎるものは数えない。
+ * 実行中とみなせるバックグラウンドタスク数。期限は最後に動いている印から数える。印が途絶えても完了の知らせの無い
+ * サブエージェント・Workflow は「分からない」として猶予の間は数え、完了通知(task-notification)を取りこぼした
+ * エントリで 'working' が永久に残らないよう、猶予を過ぎたものは数えない（paradisBackgroundTaskCounts）。
  */
 export function paradisCountLiveBackgroundTasks(token: string, now: number): number {
+	const activity = getParadisAgentPaneActivity(token);
 	let count = 0;
-	for (const openedAt of getParadisAgentPaneActivity(token).backgroundTasks.values()) {
-		if (now - openedAt < PARADIS_AGENT_BACKGROUND_TASK_STALE_MS) {
+	for (const [taskId, lastSign] of activity.backgroundTasks) {
+		if (paradisBackgroundTaskCounts(now - lastSign, activity.expiringBackgroundTasks?.has(taskId) === true)) {
 			count++;
 		}
 	}

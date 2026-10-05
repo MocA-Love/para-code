@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { CircleAlert, CircleCheck, CircleDashed, RefreshCw } from 'lucide-react-native';
@@ -19,7 +19,7 @@ import { colors, space, type } from '../../../../../../src/theme.js';
 import { useNow } from '../../../../../../src/time.js';
 import { Card, EmptyState, Icon, iconSize, ListGroup, Screen, ScreenHeader, SectionHeader } from '../../../../../../src/ui/index.js';
 import { CenterSpinner, useReadableColumn } from '../../../../../../src/features/code/codeParts.js';
-import { activityEndAt, formatActivityDuration } from '../../../../../../src/features/activity/activityModel.js';
+import { activityDetailRefreshDelay, activityEndAt, formatActivityDuration, shouldRefreshActivityDetail } from '../../../../../../src/features/activity/activityModel.js';
 import { ActivityAgentRow, ActivityId, ActivityMetrics, chatProvider, providerLabel, useActivityRoute } from '../../../../../../src/features/activity/activityParts.js';
 import { ChatRowView } from '../../../../../../src/features/session/chatItems.js';
 import { buildChatRows, chatRowKey, type ChatRow } from '../../../../../../src/features/session/chatRows.js';
@@ -33,7 +33,8 @@ const CRUMB_HEIGHT = 24;
  *
  * 上から: 親からの道筋（押すとその階層を開く）、数字（状態と経過・直接の子・配下全体・完了）、
  * 頼まれた内容、担当のタスク、会話とツールの履歴（セッション画面の会話表示と同じ行）、子のエージェント。
- * 履歴は開いたとき（と親の会話のセッションが替わったとき）に PC から取り寄せる。
+ * 履歴は開いたとき（と親の会話のセッションが替わったとき）に PC から取り寄せ、開いている間は一覧の更新時刻が
+ * 進んだら取り直す（動いている子の会話が開いた時のまま止まらないように。行の購読に置き換えるまでの暫定）。
  */
 export default function AgentActivityDetailScreen() {
 	const router = useRouter();
@@ -58,21 +59,86 @@ export default function AgentActivityDetailScreen() {
 	const [failed, setFailed] = useState(false);
 	const selectedId = agent?.id;
 	const chatEpoch = chat?.epoch;
+	const agentUpdatedAt = agent?.updatedAt;
+	const agentUpdatedAtRef = useRef(agentUpdatedAt);
+	agentUpdatedAtRef.current = agentUpdatedAt;
+	// 取り直しの判断: 最後に取れた内容が一覧のどの更新時刻のものか、取得中か、最後に取り始めた時刻
+	const [fetchedUpdatedAt, setFetchedUpdatedAt] = useState<number | undefined>(undefined);
+	const [inFlight, setInFlight] = useState(false);
+	const lastFetchAtRef = useRef(0);
+	// 古い要求の応答を捨てる印（PC の要求は止められないので、届いても使わない）
+	const generationRef = useRef(0);
+	const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const clearRefreshTimer = useCallback(() => {
+		if (refreshTimerRef.current !== undefined) {
+			clearTimeout(refreshTimerRef.current);
+			refreshTimerRef.current = undefined;
+		}
+	}, []);
+	const fetchDetail = useCallback((initial: boolean) => {
+		if (terminalKey === undefined || selectedId === undefined) {
+			return;
+		}
+		const generation = ++generationRef.current;
+		const updatedAt = agentUpdatedAtRef.current;
+		lastFetchAtRef.current = Date.now();
+		setInFlight(true);
+		if (initial) {
+			setLoading(true);
+		}
+		requestDetail(terminalKey, selectedId)
+			.then(result => {
+				if (generationRef.current === generation) {
+					setMessages(result);
+					setFailed(false);
+					setFetchedUpdatedAt(updatedAt);
+				}
+			})
+			.catch(() => {
+				if (generationRef.current !== generation) {
+					return;
+				}
+				if (initial) {
+					setFailed(true);
+				} else {
+					// 取り直しに失敗したら前の内容のまま。同じ更新時刻で取り直しを繰り返さない
+					setFetchedUpdatedAt(updatedAt);
+				}
+			})
+			.finally(() => {
+				if (generationRef.current === generation) {
+					setLoading(false);
+					setInFlight(false);
+				}
+			});
+	}, [requestDetail, selectedId, terminalKey]);
 	useEffect(() => {
+		clearRefreshTimer();
 		setMessages([]);
 		setFailed(false);
+		setFetchedUpdatedAt(undefined);
 		if (terminalKey === undefined || selectedId === undefined) {
+			generationRef.current++;
 			setLoading(false);
+			setInFlight(false);
 			return undefined;
 		}
-		let cancelled = false;
-		setLoading(true);
-		requestDetail(terminalKey, selectedId)
-			.then(result => { if (!cancelled) { setMessages(result); } })
-			.catch(() => { if (!cancelled) { setFailed(true); } })
-			.finally(() => { if (!cancelled) { setLoading(false); } });
-		return () => { cancelled = true; };
-	}, [chatEpoch, requestDetail, selectedId, terminalKey]);
+		fetchDetail(true);
+		return () => {
+			generationRef.current++;
+			clearRefreshTimer();
+		};
+	}, [chatEpoch, fetchDetail, clearRefreshTimer, selectedId, terminalKey]);
+	// 一覧の更新時刻が進んだら取り直す。待っている間に届いた更新は同じ 1 回にまとめる（タイマーを張り直さない）
+	useEffect(() => {
+		if (inFlight || refreshTimerRef.current !== undefined || !shouldRefreshActivityDetail(fetchedUpdatedAt, agentUpdatedAt)) {
+			return;
+		}
+		refreshTimerRef.current = setTimeout(() => {
+			refreshTimerRef.current = undefined;
+			fetchDetail(false);
+		}, activityDetailRefreshDelay(lastFetchAtRef.current, Date.now()));
+	}, [agentUpdatedAt, fetchedUpdatedAt, inFlight, fetchDetail]);
 
 	// FlatList の data。毎回作り直すと全行の props が変わるので、元の値が変わったときだけ組み直す。
 	const rows = useMemo<ChatRow[]>(() => buildChatRows(detailToChatMessages(messages)), [messages]);
