@@ -8,13 +8,29 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { parseAskUserQuestions, paradisParseClaudeTranscriptBatchesForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexRolloutForTest, paradisParseCodexTranscriptLineForTest } from '../../common/paradisAgentTranscriptParser.js';
+import { parseAskUserQuestions, paradisBackgroundTaskLaunch, paradisParseClaudeTranscriptBatchesForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexRolloutForTest, paradisParseCodexTranscriptLineForTest } from '../../common/paradisAgentTranscriptParser.js';
 import { paradisAgentQuestionHasPreview } from '../../common/paradisAgentChat.js';
 import { paradisCodexUserAuthoredContent, paradisIsCodexInjectedText } from '../../common/paradisCodexInjectedContext.js';
 import { CODEX_FIXTURE_CHILD_ROLLOUT, CODEX_FIXTURE_ENCRYPTED, CODEX_FIXTURE_EXEC, CODEX_FIXTURE_PARENT_ROLLOUT, CODEX_FIXTURE_USER_MESSAGES } from './paradisCodexRolloutFixture.js';
 
 suite('paradisAgentTranscriptParser', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('reads background launches of subagents, Workflows and Bash with their kind (Claude Code 2.1 results)', () => {
+		assert.deepStrictEqual([
+			paradisBackgroundTaskLaunch('Async agent launched successfully.\nagentId: a26518e457e28a0b2 (internal ID)', { isAsync: true, status: 'async_launched', agentId: 'a26518e457e28a0b2' }),
+			paradisBackgroundTaskLaunch('Workflow launched in background. Task ID: wtt5a7mts\nSummary: x', { status: 'async_launched', taskId: 'wtt5a7mts', taskType: 'local_workflow', runId: 'wf_c9889fa1-754' }),
+			paradisBackgroundTaskLaunch('Workflow launched in background. Task ID: wgq21crt0', undefined),
+			paradisBackgroundTaskLaunch('Command running in the background with ID: bsn1ipvue. Output is being written to: /tmp/x', undefined),
+			paradisBackgroundTaskLaunch('done', { stdout: 'x' }),
+		], [
+			{ id: 'a26518e457e28a0b2', kind: 'agent' },
+			{ id: 'wtt5a7mts', kind: 'workflow', runId: 'wf_c9889fa1-754' },
+			{ id: 'wgq21crt0', kind: 'workflow' },
+			{ id: 'bsn1ipvue', kind: 'shell' },
+			undefined,
+		]);
+	});
 
 	test('AskUserQuestion の選択肢の preview を運び（空文字も「ある」）、4,000 文字で切る。preview を描くのは単一選択の質問だけ', () => {
 		const long = 'x'.repeat(4_100);

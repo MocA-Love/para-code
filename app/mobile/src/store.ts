@@ -3919,9 +3919,10 @@ export class MobileController {
 		const lastMessageRev = existing !== undefined
 			? existing.messages[existing.messages.length - 1]?.rev ?? existing.rev - 1
 			: undefined;
+		// responseEncoding: 大きい応答（snapshot・古い発言・サブエージェントの詳細）を gzip で受ける。知らない古い PC は無視する
 		const body = existing !== undefined && !existing.none && lastMessageRev !== undefined
-			? { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), epoch: existing.epoch, afterRev: lastMessageRev, liveEncoding: AGENT_LIVE_APPEND_ENCODING }
-			: { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), liveEncoding: AGENT_LIVE_APPEND_ENCODING };
+			? { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), epoch: existing.epoch, afterRev: lastMessageRev, liveEncoding: AGENT_LIVE_APPEND_ENCODING, responseEncoding: JSON_GZIP_RESPONSE_ENCODING }
+			: { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), liveEncoding: AGENT_LIVE_APPEND_ENCODING, responseEncoding: JSON_GZIP_RESPONSE_ENCODING };
 		this.client?.send('agent', encoder.encode(JSON.stringify(body)));
 	}
 
@@ -5180,7 +5181,12 @@ export class MobileController {
 		}
 	}
 
-	private handleAgentFrame(payload: Uint8Array): void {
+	private handleAgentFrame(frame: Uint8Array): void {
+		// attach で交渉した gzip の応答（magic 付き）。壊れていれば捨てる（rev の飛びで attach し直して追いつく）
+		const payload = isGzipJsonResponse(frame) ? decodeGzipJsonResponse(frame) : frame;
+		if (payload === undefined) {
+			return;
+		}
 		try {
 			const msg = JSON.parse(decodeUtf8(payload)) as {
 				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number; index?: number;

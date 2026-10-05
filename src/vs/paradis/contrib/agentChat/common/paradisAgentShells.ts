@@ -74,6 +74,8 @@ export const PARADIS_SHELL_LIMITS = {
 	/** アプリから止めた・出力の末尾で終わりが分かった、の記録（transcript に残らないので読み直しに備えて持つ）。 */
 	externalEnds: 50,
 	outputPathLength: 4_096,
+	/** 終わったと分かったタスク ID の控え（一覧から捨てた後に、子の transcript の起動の行で生き返らせないため）。 */
+	endedIds: 500,
 } as const;
 
 /** transcript の解析で集めるシェルの手がかり（順序どおりに追跡へ渡す）。 */
@@ -246,6 +248,8 @@ export class ParadisAgentShellTracker {
 	private readonly externalEnds = new Map<string, IExternalEnd>();
 	/** PC の時計 − transcript の時計（{@link ParadisAgentMonitorTracker} と同じ測り方）。 */
 	private clockSkewMs: number | undefined;
+	/** このセッションで終わったと分かったタスク ID（一覧から捨てた後も持つ。{@link applyFromChild} が使う）。 */
+	private readonly endedIds = new Set<string>();
 
 	get size(): number {
 		return this.shells.size;
@@ -256,6 +260,7 @@ export class ParadisAgentShellTracker {
 		const changed = this.shells.size > 0;
 		this.shells.clear();
 		this.calls.clear();
+		this.endedIds.clear();
 		this.clockSkewMs = undefined;
 		return changed;
 	}
@@ -286,6 +291,20 @@ export class ParadisAgentShellTracker {
 			this.enforceLimit();
 		}
 		return this.refresh(now) || changed;
+	}
+
+	/**
+	 * 子（サブエージェント・Workflow の子）が起動したシェルの手がかりを当てる。子の起動は子の transcript（と子の hook）にしか
+	 * 書かれず、終わりの通知は親の transcript に届く（Claude Code 2.1.289 で実測）。子の transcript は親より後から読むことが
+	 * あるので、既に終わって一覧から捨てたシェルの起動の行では生き返らせない。一覧が変わったら true。
+	 */
+	applyFromChild(signals: readonly IParadisShellSignal[], now: number): boolean {
+		return this.apply(signals.filter(signal => signal.type !== 'started' || this.shells.has(signal.taskId) || !this.endedIds.has(signal.taskId)), now);
+	}
+
+	/** PC の時計の時刻を transcript の時計へ直す（hook の受信時刻を手がかりの時刻にするとき）。 */
+	transcriptTime(localAt: number): number {
+		return this.toTranscript(localAt);
 	}
 
 	/**
@@ -426,6 +445,15 @@ export class ParadisAgentShellTracker {
 		shell.estimated = undefined;
 		shell.endedFromOutput = undefined;
 		shell.endedAt = at;
+		this.endedIds.delete(shell.id);
+		this.endedIds.add(shell.id);
+		while (this.endedIds.size > PARADIS_SHELL_LIMITS.endedIds) {
+			const oldest = this.endedIds.values().next();
+			if (oldest.done === true) {
+				break;
+			}
+			this.endedIds.delete(oldest.value);
+		}
 		shell.stoppedBy = status === 'stopped' ? stoppedBy : undefined;
 		if (exitCode !== undefined) {
 			shell.exitCode = exitCode;

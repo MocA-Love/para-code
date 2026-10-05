@@ -20,6 +20,7 @@ import { isLinux } from '../../../../base/common/platform.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHomes, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { paradisSessionCatalogId } from '../../sessionResume/node/paradisSessionResumeChannel.js';
+import { paradisIsClaudeAgentTranscriptName, paradisListClaudeWorkflowRunDirs } from '../../mobileRelay/node/paradisClaudeSubagentFiles.js';
 import {
 	IParadisActivityFileSummary,
 	IParadisSpaceUsageRequest,
@@ -412,6 +413,14 @@ export class ParadisAgentActivityService extends Disposable {
 					for (const sub of await readDir(subagents)) {
 						if (sub.isFile() && sub.name.endsWith('.jsonl')) {
 							await add(join(subagents, sub.name), 'claude', true);
+						}
+					}
+					// Workflow の子は `subagents/workflows/<runId>/agent-*.jsonl` に書かれる（直下だけ見ると使用量が漏れる）
+					for (const runDir of await paradisListClaudeWorkflowRunDirs(subagents)) {
+						for (const sub of await readDir(runDir)) {
+							if (sub.isFile() && paradisIsClaudeAgentTranscriptName(sub.name)) {
+								await add(join(runDir, sub.name), 'claude', true);
+							}
 						}
 					}
 				}

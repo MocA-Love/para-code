@@ -39,7 +39,7 @@ import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneSta
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
-import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
+import { IParadisAnnouncedReview, paradisIsHarnessNotificationPrompt, paradisIsRepeatedReview, paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
 import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator, ParadisExactViewBackgroundThrottlingDispatcher } from '../common/paradisExactViewBackgroundThrottling.js';
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, ParadisAgentTurnEndCause, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
@@ -493,6 +493,13 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * renderer-local producerがlistAgentStatusSnapshotでatomic取得し、Workspaces表示と通知へ配る。
 	 */
 	private readonly _paneStatuses = new Map<string, IParadisPaneStatusEntry>();
+	/**
+	 * ペインごとの、利用者が始めた最後のターンの開始時刻（UserPromptSubmit のうちバックグラウンドの完了の知らせ
+	 * `<task-notification>` で起きたものを除く。Codex は transcript のターン開始）。完了の通知を 1 ターン 1 回にする鍵。
+	 */
+	private readonly _userTurnStarts = new Map<string, number>();
+	/** ペインごとに、完了の通知を出したターンと、そのときバックグラウンドタスクが残っていなかった（確かな完了）か。 */
+	private readonly _announcedReviews = new Map<string, IParadisAnnouncedReview>();
 	/** transcript/app-server由来の承認待ちを一度観測したtoken。解除時だけpermissionをworkingへ戻す。 */
 	private readonly _activityApprovalTokens = new Set<string>();
 	/**
@@ -786,6 +793,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				if (previous === 'permission' || previous === 'question') {
 					this._unconfirmedReleaseTokens.add(token);
 				}
+				this._userTurnStarts.set(token, at);
 				this._paneStatuses.set(token, { status: 'working', changedAt: at, ...(cwd !== undefined ? { cwd } : {}) });
 			}
 		}));
@@ -1673,7 +1681,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (paradisCountLiveBackgroundTasks(token, at) > 0) {
 			this._paneStatuses.set(token, { ...entry, changedAt: at, backgroundCompletionFallback: true });
 		} else {
-			this._paneStatuses.set(token, { status: 'review', changedAt: at, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) });
+			this._paneStatuses.set(token, this._reviewEntry(token, at, entry.cwd));
 		}
 	}
 
@@ -1703,6 +1711,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._paneRemoteAuthorities.delete(token);
 		this._remotePaneWindows.delete(token);
 		this._paneStatuses.delete(token);
+		this._userTurnStarts.delete(token);
+		this._announcedReviews.delete(token);
 		paradisClaudeModBridge.forgetToken(token);
 		this._paneSessions.delete(token);
 		this._activityApprovalTokens.delete(token);
@@ -3046,8 +3056,14 @@ export class ParadisAgentBrowserService extends Disposable {
 				res.end(JSON.stringify({ ok: false, reason: 'caller not verified' }));
 				return;
 			}
+			if (eventType === 'UserPromptSubmit' && !paradisIsHarnessNotificationPrompt(hookPayload?.prompt)) {
+				this._userTurnStarts.set(token, Date.now());
+			}
 			if (normalized === 'idle') {
 				this._paneStatuses.delete(token);
+			} else if (normalized === 'review') {
+				const previous = this._paneStatuses.get(token);
+				this._paneStatuses.set(token, this._reviewEntry(token, Date.now(), cwd ?? previous?.cwd));
 			} else {
 				// cwd はhookが報告した最新値を保持する (今回のイベントに無ければ既知の値を維持)。
 				const previous = this._paneStatuses.get(token);
@@ -3074,6 +3090,26 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
+	 * 確認待ち（review）の記録を作る。同じ利用者のターンで完了の通知を出した後の review は鳴らさない（`quiet`。印は出す。
+	 * 規則は paradisIsRepeatedReview）。長いバックグラウンドタスクで親が何度も止まる（完了の知らせで起きては Stop する）
+	 * たびに完了の通知が出ていた。
+	 */
+	private _reviewEntry(token: string, at: number, cwd: string | undefined): IParadisPaneStatusEntry {
+		// 確認待ちのまま重ねて届いた Stop は、前の判定のまま（まだ画面が拾っていない初回の通知を消さない）
+		const current = this._paneStatuses.get(token);
+		if (current?.status === 'review') {
+			return { status: 'review', changedAt: at, ...(cwd !== undefined ? { cwd } : {}), ...(current.quiet ? { quiet: true } : {}) };
+		}
+		const turn = this._userTurnStarts.get(token);
+		const certain = getParadisAgentPaneActivity(token).backgroundTasks.size === 0;
+		const quiet = paradisIsRepeatedReview(turn, this._announcedReviews.get(token), certain);
+		if (turn !== undefined && !quiet) {
+			this._announcedReviews.set(token, { turn, certain });
+		}
+		return { status: 'review', changedAt: at, ...(cwd !== undefined ? { cwd } : {}), ...(quiet ? { quiet: true } : {}) };
+	}
+
+	/**
 	 * Stop の review がバックグラウンドタスク補正で working になった状態だけを、一定時間後に
 	 * reviewへ降格する。通常のPreToolUse→PostToolUse間や長い推論は途中hookが無いため、単に
 	 * workingの更新時刻だけを見ると正常な長時間処理を完了扱いにしてしまう。
@@ -3082,8 +3118,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		const now = Date.now();
 		for (const [token, entry] of this._paneStatuses) {
 			if (eligibleTokens.has(token)
-				&& paradisShouldSweepStaleWorkingStatus(entry.status, entry.backgroundCompletionFallback, entry.changedAt, now)) {
-				this._paneStatuses.set(token, { status: 'review', changedAt: now, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) });
+				&& paradisShouldSweepStaleWorkingStatus(entry.status, entry.backgroundCompletionFallback, entry.changedAt, now, paradisCountLiveBackgroundTasks(token, now))) {
+				this._paneStatuses.set(token, this._reviewEntry(token, now, entry.cwd));
 			}
 		}
 	}

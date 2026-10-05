@@ -50,6 +50,9 @@ import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirrorPath, paradisRemoteTranscriptMirrorRoots } from './paradisRemoteTranscriptMirror.js';
 import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudeAdvisors, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
+import { PARADIS_JSON_GZIP_RESPONSE_ENCODING } from '../common/paradisMobileGzipJson.js';
+import { paradisEncodeAgentOutboundPayload } from './paradisAgentChatGzip.js';
+import { paradisClaudeWorkflowRunLastWrite, paradisDiscoverClaudeSubagentFiles, paradisFindClaudeSubagentTranscript, paradisParseClaudeSubagentTranscriptPath } from './paradisClaudeSubagentFiles.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 import { PARADIS_AGENT_QUESTION_NOTES_LIMIT, PARADIS_AGENT_QUESTION_RESPONSE_LIMIT, paradisAgentQuestionClarifyDeny, paradisBuildModQuestionAnswer } from '../common/paradisAgentQuestionModAnswer.js';
 import { IParadisAgentApprovalOption, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
@@ -66,9 +69,9 @@ import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js'
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentPanel, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
-import { IParadisAgentShell, paradisShellsAccess, paradisShellsForStoppedPane } from '../../agentChat/common/paradisAgentShells.js';
+import { IParadisAgentShell, IParadisShellSignal, paradisShellCallSignal, paradisShellsAccess, paradisShellsForStoppedPane, paradisShellStartedSignal } from '../../agentChat/common/paradisAgentShells.js';
 import { IParadisAgentShellsField, ParadisAgentShellInbound, ParadisAgentShellOutbound, paradisClaudeSessionIdFromTranscript, paradisHandleShellRequest, paradisIsValidShellRequest } from './paradisAgentShellOutput.js';
-import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
+import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, type ParadisBackgroundTaskKind, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
 // 会話の型と transcript の正規化は、デスクトップのチャット表示と共有するため agentChat/common へ
 // 切り出した。既存の呼び出し元（テスト）がこのモジュールから引けるよう、公開していたものは再公開する。
@@ -142,7 +145,7 @@ function paradisModRefusalResult(result: string): { readonly code: string; reado
 
 /** agentチャネルのモバイル→PCメッセージ。 */
 type AgentInbound =
-	| { t: 'attach'; id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }
+	| { t: 'attach'; id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string; responseEncoding?: string }
 	| { t: 'detach'; id: number; token?: string }
 	| { t: 'action/sendMessage'; id: number; token?: string; requestId: string; epoch: string; text: string; sendId?: string }
 	| { t: 'action/answerQuestion'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; answers: readonly AgentQuestionAnswer[] }
@@ -240,6 +243,18 @@ const PARADIS_CLAUDE_AGENT_ID_PATTERN = /^[A-Za-z0-9._:-]{1,500}$/;
 const PARADIS_CODEX_THREAD_ID_PATTERN = /^[A-Za-z0-9._:-]{1,500}$/;
 /** backgroundTasks上でtranscriptパース由来ID (openedTasks/closedTasks) と衝突させないための名前空間。 */
 const HOOK_BACKGROUND_TASK_PREFIX = 'hook:';
+/** バックグラウンドタスクの動いている印を記録し直す最小の間隔（細かい印で状態の知らせを連発しない）。 */
+const BACKGROUND_TASK_SIGN_STEP_MS = 60_000;
+/** 1 回の見回りで動いている印を確かめるバックグラウンドタスクの上限（stat の数）。 */
+const BACKGROUND_TASK_PROBE_LIMIT = 64;
+/** 子が起動したシェルを探すとき、1 つの会話で読む子の transcript の数（新しい順）。 */
+const CHILD_SHELL_SCAN_FILES = 16;
+/** 子が起動したシェルを探すとき、1 回に読む 1 ファイルの上限（初回は末尾だけ。以後は追記だけを読む）。 */
+const CHILD_SHELL_SCAN_MAX_BYTES = 1024 * 1024;
+/** 1 回の見回りで子の transcript を読む回数の上限（全部の会話で。残りは次の見回りで読む）。 */
+const CHILD_SHELL_SCAN_READS_PER_SWEEP = 16;
+/** これより前に書かれたきりの子の transcript は、子が起動したシェルを探しに読まない。 */
+const CHILD_SHELL_SCAN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** 初回読み込みでファイルがこれより大きい場合、末尾のみ読む (長大セッション対策)。 */
 const INITIAL_READ_MAX_BYTES = 8 * 1024 * 1024;
 const INITIAL_READ_TAIL_BYTES = 4 * 1024 * 1024;
@@ -630,24 +645,9 @@ async function readClaudeSubagentMeta(transcriptPath: string): Promise<IParadisC
 	}
 }
 
+/** 子の transcript（ふつうの子と Workflow の子。paradisClaudeSubagentFiles.ts）を新しい順に、素性メタを添えて返す。 */
 async function discoverClaudePersistedSubagentFiles(rootTranscriptPath: string): Promise<readonly IClaudePersistedSubagentFile[]> {
-	const dir = resolve(rootTranscriptPath, '..');
-	const filename = rootTranscriptPath.slice(rootTranscriptPath.lastIndexOf(sep) + 1).replace(/\.jsonl$/i, '');
-	const subagentsDir = join(dir, filename, 'subagents');
-	let entries: Dirent[];
-	try { entries = await fs.readdir(subagentsDir, { withFileTypes: true }); } catch { return []; }
-	const files: { id: string; path: string; mtime: number }[] = [];
-	for (const entry of entries) {
-		if (!entry.isFile()) { continue; }
-		const match = /^agent-([A-Za-z0-9._:-]{1,500})\.jsonl$/.exec(entry.name);
-		// `/btw` の脇の質問も同じ置き場に `agent-aside_question-*` として書かれるが、サブエージェントではない
-		if (match === null || match[1].startsWith('aside_question-')) { continue; }
-		const path = join(subagentsDir, entry.name);
-		if (!await isAllowedTranscriptPath(path)) { continue; }
-		const stat = await fs.stat(path).catch(() => undefined);
-		if (stat?.isFile()) { files.push({ id: match[1], path, mtime: stat.mtimeMs }); }
-	}
-	const selected = files.sort((a, b) => b.mtime - a.mtime).slice(0, PERSISTED_ACTIVITY_MAX_AGENTS);
+	const selected = (await paradisDiscoverClaudeSubagentFiles(rootTranscriptPath, isAllowedTranscriptPath)).slice(0, PERSISTED_ACTIVITY_MAX_AGENTS);
 	return Promise.all(selected.map(async file => {
 		const meta = await readClaudeSubagentMeta(file.path);
 		return { ...file, ...(meta !== undefined ? { meta } : {}) };
@@ -803,6 +803,7 @@ function isValidAttachRequest(msg: AgentInboundCandidate): msg is AgentInboundCa
 		&& (msg.epoch === undefined || (typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200))
 		&& (msg.afterRev === undefined || (typeof msg.afterRev === 'number' && Number.isSafeInteger(msg.afterRev) && msg.afterRev >= -1))
 		&& (msg.liveEncoding === undefined || (typeof msg.liveEncoding === 'string' && msg.liveEncoding.length > 0 && msg.liveEncoding.length <= 100))
+		&& (msg.responseEncoding === undefined || (typeof msg.responseEncoding === 'string' && msg.responseEncoding.length > 0 && msg.responseEncoding.length <= 100))
 		&& isValidTerminalIdentity(msg);
 }
 
@@ -1133,19 +1134,26 @@ export function paradisClaudeNamedAgentFromFileId(fileId: string): string | unde
 	return /^a(?<name>[A-Za-z0-9._:-]+)-[0-9a-f]{16}$/.exec(fileId)?.groups?.name;
 }
 
-/** Claudeの子transcript pathに埋め込まれた所有Agent ID。root transcriptならundefined。 */
-export function paradisClaudeAgentIdFromTranscriptPath(transcriptPath: string): string | undefined {
-	const normalized = transcriptPath.replace(/\\/g, '/');
-	const match = /\/subagents\/agent-([^/]+)\.jsonl$/i.exec(normalized);
-	return match?.[1];
+/**
+ * 子（サブエージェント・Workflow の子）の Bash の PostToolUse hook から、バックグラウンドのシェルの手がかりを作る（時刻は
+ * hook の受信時刻 = PC の時計）。`tool_response` は transcript の `toolUseResult` と同じ形（`backgroundTaskId` など）。
+ */
+export function paradisChildShellSignalsFromHook(event: Pick<IParadisAgentHookEvent, 'payload' | 'toolUseId' | 'at'>): IParadisShellSignal[] {
+	const toolUseId = event.toolUseId ?? str(event.payload?.tool_use_id);
+	const response = event.payload?.tool_response;
+	const call = paradisShellCallSignal(rec(event.payload?.tool_input), toolUseId, event.at);
+	const started = paradisShellStartedSignal(typeof response === 'string' ? response : '', rec(response), toolUseId, event.at);
+	return started === undefined ? [] : [...(call !== undefined ? [call] : []), started];
 }
 
-/** 現行Claudeの `<session>/subagents/agent-*.jsonl` からroot transcriptを復元する。 */
+/** Claudeの子transcript pathに埋め込まれた所有Agent ID（Workflow の子を含む）。root transcriptならundefined。 */
+export function paradisClaudeAgentIdFromTranscriptPath(transcriptPath: string): string | undefined {
+	return paradisParseClaudeSubagentTranscriptPath(transcriptPath)?.agentId;
+}
+
+/** 現行Claudeの `<session>/subagents/agent-*.jsonl`（`subagents/workflows/<runId>/agent-*.jsonl` も）からroot transcriptを復元する。 */
 export function paradisClaudeRootTranscriptPath(transcriptPath: string): string | undefined {
-	const normalized = transcriptPath.replace(/\\/g, '/');
-	const match = /^(.*)\/([^/]+)\/subagents\/agent-[^/]+\.jsonl$/i.exec(normalized);
-	if (match?.[1] === undefined || match[2] === undefined) { return undefined; }
-	return `${match[1]}/${match[2]}.jsonl`;
+	return paradisParseClaudeSubagentTranscriptPath(transcriptPath)?.rootTranscriptPath;
 }
 
 /**
@@ -1898,8 +1906,12 @@ class TranscriptTailer {
 	private readonly imageOwner = `tailer-${newEpoch()}`;
 	/** これまでに追記行から検出した GitHub Issue URL（出現順、重複無し）。epochリセットで捨てる。 */
 	private readonly issueUrls = new Set<string>();
-	/** 実行中バックグラウンドタスク（サブエージェント等）: id → 起動時刻 (epoch ms)。 */
+	/** 実行中バックグラウンドタスク（サブエージェント等）: id → 最後に動いている印を見た時刻 (epoch ms。印がまだ無ければ起動時刻)。 */
 	readonly backgroundTasks = new Map<string, number>();
+	/** backgroundTasks の種類（hook 由来の `hook:<agentId>` は agent）。 */
+	private readonly backgroundTaskKinds = new Map<string, ParadisBackgroundTaskKind>();
+	/** Workflow のタスク id → 実行の ID（`subagents/workflows/<runId>`）。 */
+	private readonly backgroundWorkflowRuns = new Map<string, string>();
 	/** 回答待ちの質問 (AskUserQuestion) の tool_use_id。 */
 	readonly pendingQuestions = new Set<string>();
 	/** mod（Claude Mods）が待っていて値で答えられる質問のカード（questionGroup ?? toolUseId）。`answerVia` の元。 */
@@ -1945,6 +1957,8 @@ class TranscriptTailer {
 	// epoch reset（offset 0 へ巻き戻し）時は新しいインスタンスに差し替えて内部状態を捨てる。
 	private decoder = new TextDecoder();
 	private initialTruncated = false;
+	/** 今の epoch で最初に読んだ行の時刻（transcript の時計）。末尾だけ読んだときの、読んだ範囲の始まり。 */
+	private firstLineAt: number | undefined;
 	private watcher: FSWatcher | undefined;
 	private pollTimer: ReturnType<typeof setInterval> | undefined;
 	private chain: Promise<void> = Promise.resolve();
@@ -1991,6 +2005,17 @@ class TranscriptTailer {
 
 	get wasInitialTruncated(): boolean {
 		return this.initialTruncated;
+	}
+
+	/**
+	 * 子（サブエージェント・Workflow の子）が起動したバックグラウンドのシェルの手がかりを当てる（子の transcript と子の
+	 * hook から読む。終わりの通知は親の transcript に届くので、親の読みが閉じる）。`localClock` なら時刻は PC の時計。
+	 * 親を末尾だけ読んだときは、読んだ範囲より前の起動は当てない（その通知を読んでいないので、終わったシェルが動いたまま残る）。
+	 */
+	applyChildShellSignals(signals: readonly IParadisShellSignal[], localClock: boolean): void {
+		const windowStart = this.initialTruncated ? this.firstLineAt : undefined;
+		const accepted = windowStart === undefined || localClock ? signals : signals.filter(signal => signal.type !== 'started' || signal.at >= windowStart);
+		this.monitorWatch.applyChildShells(accepted, localClock);
 	}
 
 	dispose(): void {
@@ -2229,7 +2254,10 @@ class TranscriptTailer {
 				// offset 0 から読み直すので、前のバイト境界を持ち越したデコーダは捨てる。
 				this.decoder = new TextDecoder();
 				this.initialTruncated = false;
+				this.firstLineAt = undefined;
 				this.backgroundTasks.clear();
+				this.backgroundTaskKinds.clear();
+				this.backgroundWorkflowRuns.clear();
 				this.pendingQuestions.clear();
 				// 会話が替わったので Monitor の一覧も空にする（読み直しで今の transcript から作り直す）。
 				this.monitorWatch.clear();
@@ -2393,6 +2421,12 @@ class TranscriptTailer {
 			}
 			if (!obj) {
 				continue;
+			}
+			if (this.firstLineAt === undefined) {
+				const lineAt = Date.parse(str(obj.timestamp) ?? '');
+				if (Number.isFinite(lineAt)) {
+					this.firstLineAt = lineAt;
+				}
 			}
 			if (this.agent === 'claude') {
 				if (emitDelta) {
@@ -3140,14 +3174,89 @@ class TranscriptTailer {
 			return;
 		}
 		this.backgroundTasks.set(id, at);
+		this.backgroundTaskKinds.set(id, 'agent');
 		this.delegate.onActivity();
 	}
 
 	/** SubagentStart/SubagentStop hook 由来のバックグラウンドタスク終了を反映する。 */
 	markBackgroundTaskClose(id: string): void {
-		if (this.backgroundTasks.delete(id)) {
+		if (this.forgetBackgroundTask(id)) {
 			this.delegate.onActivity();
 		}
+	}
+
+	private forgetBackgroundTask(id: string): boolean {
+		this.backgroundTaskKinds.delete(id);
+		this.backgroundWorkflowRuns.delete(id);
+		return this.backgroundTasks.delete(id);
+	}
+
+	/**
+	 * 動いている印を拾えない（起動からの時間で切る）バックグラウンドタスク。バックグラウンドの Bash
+	 * （dev サーバーのように終わらないものもあり、印が無いのを「分からない」として残すと作業中が続いてしまう）。
+	 */
+	expiringBackgroundTasks(): ReadonlySet<string> {
+		const ids = new Set<string>();
+		for (const [id, kind] of this.backgroundTaskKinds) {
+			if (kind === 'shell') {
+				ids.add(id);
+			}
+		}
+		return ids;
+	}
+
+	/** 動いている印を確かめるバックグラウンドタスク（サブエージェントの子の ID・Workflow の実行の ID）。 */
+	backgroundTasksToProbe(): { readonly agents: ReadonlyMap<string, string>; readonly workflows: ReadonlyMap<string, string> } {
+		const agents = new Map<string, string>();
+		const workflows = new Map<string, string>();
+		for (const id of this.backgroundTasks.keys()) {
+			const kind = this.backgroundTaskKinds.get(id);
+			if (kind === 'agent') {
+				agents.set(id, id.startsWith(HOOK_BACKGROUND_TASK_PREFIX) ? id.slice(HOOK_BACKGROUND_TASK_PREFIX.length) : id);
+			} else if (kind === 'workflow') {
+				const runId = this.backgroundWorkflowRuns.get(id);
+				if (runId !== undefined) {
+					workflows.set(id, runId);
+				}
+			}
+		}
+		return { agents, workflows };
+	}
+
+	/**
+	 * バックグラウンドタスクが動いている印（`at` に見た）。期限は最後の印から数える（paradisCountLiveBackgroundTasks）。
+	 * 細かい印（子のツール呼び出しごとの hook）で毎回知らせないよう、前の印から {@link BACKGROUND_TASK_SIGN_STEP_MS}
+	 * 以上進んだときだけ記録して知らせる。Bash は印を拾えないので扱わない。
+	 */
+	noteBackgroundTasksAlive(ids: Iterable<string>, at: number): void {
+		const sign = Math.min(at, Date.now());
+		let changed = false;
+		for (const id of ids) {
+			const previous = this.backgroundTasks.get(id);
+			const kind = this.backgroundTaskKinds.get(id);
+			if (previous === undefined || kind === undefined || kind === 'shell' || sign - previous < BACKGROUND_TASK_SIGN_STEP_MS) {
+				continue;
+			}
+			this.backgroundTasks.set(id, sign);
+			changed = true;
+		}
+		if (changed) {
+			this.delegate.onActivity();
+		}
+	}
+
+	/**
+	 * サブエージェント（`agent_id`）が動いている印。その子を追っていれば（transcript 由来の `<id>`・hook 由来の
+	 * `hook:<id>`）それを、追っていない子なら Workflow の子とみなして動いている Workflow を延ばす（Workflow の子は
+	 * 親の会話に起動が書かれず、子の ID から実行を引くには置き場を探す必要があるため）。
+	 */
+	noteBackgroundAgentAlive(agentId: string, at: number): void {
+		const own = [agentId, `${HOOK_BACKGROUND_TASK_PREFIX}${agentId}`].filter(id => this.backgroundTasks.has(id));
+		if (own.length > 0) {
+			this.noteBackgroundTasksAlive(own, at);
+			return;
+		}
+		this.noteBackgroundTasksAlive([...this.backgroundTaskKinds].filter(([, kind]) => kind === 'workflow').map(([id]) => id), at);
 	}
 
 	/**
@@ -3157,8 +3266,8 @@ class TranscriptTailer {
 	 */
 	clearHookBackgroundTasks(): void {
 		let changed = false;
-		for (const id of this.backgroundTasks.keys()) {
-			if (id.startsWith(HOOK_BACKGROUND_TASK_PREFIX) && this.backgroundTasks.delete(id)) {
+		for (const id of [...this.backgroundTasks.keys()]) {
+			if (id.startsWith(HOOK_BACKGROUND_TASK_PREFIX) && this.forgetBackgroundTask(id)) {
 				changed = true;
 			}
 		}
@@ -3173,11 +3282,16 @@ class TranscriptTailer {
 		for (const [id, at] of signals.openedTasks) {
 			if (!this.backgroundTasks.has(id)) {
 				this.backgroundTasks.set(id, at);
+				this.backgroundTaskKinds.set(id, signals.openedTaskKinds.get(id) ?? 'agent');
+				const runId = signals.openedWorkflowRuns.get(id);
+				if (runId !== undefined) {
+					this.backgroundWorkflowRuns.set(id, runId);
+				}
 				activityChanged = true;
 			}
 		}
 		for (const id of signals.closedTasks) {
-			if (this.backgroundTasks.delete(id)) {
+			if (this.forgetBackgroundTask(id)) {
 				activityChanged = true;
 			}
 		}
@@ -3259,6 +3373,21 @@ interface ICommandCatalogContext {
 interface IAgentSubscriber {
 	readonly owner: IParadisMobilePaneOwner;
 	readonly liveEncoding: string | undefined;
+	/** attach で交渉した応答の圧縮（`json-gzip-v1`）。古いアプリは付けないので undefined（圧縮しない）。 */
+	readonly responseEncoding: string | undefined;
+}
+
+/**
+ * attach の求め（モバイルから・PC が自分で送り直すとき）。`liveEncoding` と `responseEncoding` は購読の属性で、
+ * PC が自分で送り直すときは購読が持っている値をそのまま付ける（省くと交渉していないことになる）。
+ */
+interface IAgentAttachRequest {
+	readonly id: number;
+	readonly token?: string;
+	readonly epoch?: string;
+	readonly afterRev?: number;
+	readonly liveEncoding?: string;
+	readonly responseEncoding?: string;
 }
 
 /**
@@ -3357,6 +3486,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly activityTrackers = new Map<string, ParadisAgentActivityTracker>();
 	/** Claude SubagentStopが通知した子transcript（pane token + agent ID → 許可済みpath）。 */
 	private readonly claudeSubagentTranscriptPaths = new Map<string, string>();
+	/** 子が起動したシェルを探して子の transcript をどこまで読んだか（tailer の epoch ごと。path → 読んだ位置）。 */
+	private readonly childShellReads = new WeakMap<TranscriptTailer, { readonly epoch: string; readonly offsets: Map<string, number> }>();
 	/**
 	 * Codex rollout path → root thread か SubAgent か。session_meta は書き出し後に
 	 * 変わらないため、hookのたびに読み直さずここへ覚える（'unknown' は覚えない）。
@@ -3423,7 +3554,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly toolImageRequests = new Map<string, string>();
 	private readonly persistedActivityTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	/** Stateがpane snapshotより先着したattachを、対応表の同期完了まで短時間だけ保留する。 */
-	private readonly pendingAttaches = new Map<string, { readonly mobileId: string; readonly msg: { id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }; readonly timer: ReturnType<typeof setTimeout>; attempt: number }>();
+	private readonly pendingAttaches = new Map<string, { readonly mobileId: string; readonly msg: IAgentAttachRequest; readonly timer: ReturnType<typeof setTimeout>; attempt: number }>();
 	private readonly attachGenerations = new Map<string, number>();
 	private attachGenerationCounter = 0;
 	private attachDisposed = false;
@@ -4471,6 +4602,8 @@ export class ParadisMobileAgentChat extends Disposable {
 				break;
 			}
 		}
+		// Workflow の子（`subagents/workflows/<runId>/`）は ID からパスを組み立てられないので探す
+		selected ??= await paradisFindClaudeSubagentTranscript(transcriptPath, activityId, isAllowedTranscriptPath);
 		if (selected === undefined) { return []; }
 		const stat = await fs.stat(selected);
 		const start = Math.max(0, stat.size - INITIAL_READ_TAIL_BYTES);
@@ -5411,7 +5544,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& a.terminalId === b.terminalId && a.token === b.token;
 	}
 
-	private async handleAttach(mobileId: string, msg: { id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }, retry = false): Promise<void> {
+	private async handleAttach(mobileId: string, msg: IAgentAttachRequest, retry = false): Promise<void> {
 		const pendingKey = this.pendingAttachKey(mobileId, msg.id, msg.token);
 		const attachGeneration = retry ? this.attachGenerations.get(pendingKey) : ++this.attachGenerationCounter;
 		if (attachGeneration === undefined || this.attachDisposed) {
@@ -5452,11 +5585,11 @@ export class ParadisMobileAgentChat extends Disposable {
 				// 「ターミナルタブで見る」案内を出す。トークンが分かる場合は購読者として
 				// 記録しておき、後からhookでセッションが判明したら自動でスナップショットを
 				// 送り直す(エージェント起動を待たずにattachしたケースの自己回復)。
-				this.addSubscriber(token, mobileId, owner, msg.liveEncoding);
+				this.addSubscriber(token, mobileId, owner, msg);
 				this.sendTo(mobileId, { t: 'none', id: msg.id }, token, owner);
 				return;
 			}
-			this.addSubscriber(token, mobileId, owner, msg.liveEncoding);
+			this.addSubscriber(token, mobileId, owner, msg);
 			const tailer = this.ensureTailer(token, currentSession);
 			await tailer.ready;
 			// attach処理中に購読またはセッションが置き換わっていたら旧snapshotを送らない。
@@ -5498,7 +5631,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		return `${mobileId}\0${terminalId}\0${token ?? ''}`;
 	}
 
-	private deferAttach(key: string, mobileId: string, msg: { id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }): { readonly mobileId: string; readonly msg: { id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }; readonly timer: ReturnType<typeof setTimeout>; attempt: number } {
+	private deferAttach(key: string, mobileId: string, msg: IAgentAttachRequest): { readonly mobileId: string; readonly msg: IAgentAttachRequest; readonly timer: ReturnType<typeof setTimeout>; attempt: number } {
 		const existing = this.pendingAttaches.get(key);
 		if (existing !== undefined) {
 			return existing;
@@ -7091,6 +7224,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 「まだ動いている子Agentが状態不明になる」誤表示が必ず起きる。
 	 */
 	private async sweepAgentActivity(): Promise<void> {
+		await this.probeBackgroundTaskSigns().catch(error => this.logService.trace('[paradisAgentChat] background task sign check failed', String(error)));
+		await this.scanChildShells().catch(error => this.logService.trace('[paradisAgentChat] child shell scan failed', String(error)));
 		const active = [...this.activityTrackers].filter(([, tracker]) => tracker.hasActiveWork()).map(([token]) => token);
 		await Promise.all(active.map(token => this.reconcilePersistedAgentActivity(token)
 			.catch(error => this.logService.trace('[paradisAgentChat] activity liveness check failed', String(error)))));
@@ -7101,6 +7236,146 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 		}
 		this.sweepStaleLiveStates(now);
+	}
+
+	/**
+	 * バックグラウンドの子・Workflow が動いている印を、子の transcript と Workflow の実行のフォルダ（journal.jsonl と子）の
+	 * 更新時刻から拾う（hook の届かない間も期限を最後の印から数えるため）。1 回に見るのは {@link BACKGROUND_TASK_PROBE_LIMIT} 件まで。
+	 */
+	private async probeBackgroundTaskSigns(): Promise<void> {
+		let budget = BACKGROUND_TASK_PROBE_LIMIT;
+		for (const [token, tailer] of [...this.tailers]) {
+			if (tailer.agent !== 'claude') {
+				continue;
+			}
+			const { agents, workflows } = tailer.backgroundTasksToProbe();
+			for (const [taskId, agentId] of agents) {
+				if (budget-- <= 0) {
+					return;
+				}
+				const path = this.claudeSubagentTranscriptPaths.get(`${token}\0${agentId}`)
+					?? await paradisFindClaudeSubagentTranscript(tailer.transcriptPath, agentId, isAllowedTranscriptPath);
+				const mtime = path === undefined ? undefined : await fs.stat(path).then(stat => stat.mtimeMs, () => undefined);
+				if (mtime !== undefined && this.tailers.get(token) === tailer) {
+					tailer.noteBackgroundTasksAlive([taskId], mtime);
+				}
+			}
+			for (const [taskId, runId] of workflows) {
+				if (budget-- <= 0) {
+					return;
+				}
+				const lastWrite = await paradisClaudeWorkflowRunLastWrite(tailer.transcriptPath, runId);
+				if (lastWrite !== undefined && this.tailers.get(token) === tailer) {
+					tailer.noteBackgroundTasksAlive([taskId], lastWrite);
+				}
+			}
+		}
+	}
+
+	/**
+	 * 子（サブエージェント・Workflow の子）が起動したバックグラウンドのシェルを、子の transcript から拾う。子の起動は子の
+	 * transcript にしか書かれず、親には終わりの通知だけが届く（Claude Code 2.1.289 で実測。Claude Code の下部の
+	 * 「N shells」に出るのにモバイルの一覧に出なかった）。hook が届いていれば子の PostToolUse で先に拾っている。
+	 * ここは hook の無かった間（Para Code を後から開いた・hook を切っている）の分。各会話の新しい子
+	 * {@link CHILD_SHELL_SCAN_FILES} 件を、前に読んだ位置から追記だけ読む。
+	 */
+	private async scanChildShells(): Promise<void> {
+		const now = Date.now();
+		const budget = { reads: CHILD_SHELL_SCAN_READS_PER_SWEEP };
+		for (const [token, tailer] of [...this.tailers]) {
+			if (budget.reads <= 0) {
+				return;
+			}
+			if (tailer.agent !== 'claude') {
+				continue;
+			}
+			let state = this.childShellReads.get(tailer);
+			if (state === undefined || state.epoch !== tailer.epoch) {
+				state = { epoch: tailer.epoch, offsets: new Map() };
+				this.childShellReads.set(tailer, state);
+			}
+			const files = (await paradisDiscoverClaudeSubagentFiles(tailer.transcriptPath, isAllowedTranscriptPath))
+				.filter(file => now - file.mtime <= CHILD_SHELL_SCAN_MAX_AGE_MS)
+				.slice(0, CHILD_SHELL_SCAN_FILES);
+			const signals: IParadisShellSignal[] = [];
+			for (const file of files) {
+				if (budget.reads <= 0) {
+					break;
+				}
+				signals.push(...await this.readChildShellSignals(file.path, state.offsets, budget));
+			}
+			// 一覧から外れた子の位置は忘れる（また新しい側に来たら頭から読み直す。同じ起動を当て直しても一覧は変わらない）
+			const kept = new Set(files.map(file => file.path));
+			for (const path of [...state.offsets.keys()]) {
+				if (!kept.has(path)) {
+					state.offsets.delete(path);
+				}
+			}
+			if (signals.length > 0 && this.tailers.get(token) === tailer && state.epoch === tailer.epoch) {
+				tailer.applyChildShellSignals(signals, false);
+			}
+		}
+	}
+
+	/** 子の transcript の追記から、バックグラウンドのシェルの手がかりを読む（`offsets` に読んだ位置を残す）。 */
+	private async readChildShellSignals(path: string, offsets: Map<string, number>, budget: { reads: number }): Promise<IParadisShellSignal[]> {
+		let handle: fs.FileHandle;
+		try {
+			handle = await fs.open(path, 'r');
+		} catch {
+			return [];
+		}
+		try {
+			if (!await isAllowedOpenTranscriptPath(handle, path)) {
+				return [];
+			}
+			const size = (await handle.stat()).size;
+			const previous = offsets.get(path) ?? 0;
+			// 縮んだ（作り直された）ら頭から。初回の大きいファイルと、溜まりすぎた追記は末尾だけ読む
+			let start = previous > size ? 0 : previous;
+			if (size - start > CHILD_SHELL_SCAN_MAX_BYTES) {
+				start = size - CHILD_SHELL_SCAN_MAX_BYTES;
+			}
+			if (size <= start) {
+				offsets.set(path, size);
+				return [];
+			}
+			budget.reads--;
+			const buffer = Buffer.alloc(size - start);
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+			let body = buffer.subarray(0, bytesRead);
+			let skipped = 0;
+			if (start > 0 && start !== previous) {
+				// 途中から読んだので、最初の不完全な行を捨てる
+				const firstNewline = body.indexOf(0x0a);
+				skipped = firstNewline >= 0 ? firstNewline + 1 : body.length;
+				body = body.subarray(skipped);
+			}
+			// 書きかけの最後の行は次に読む
+			const lastNewline = body.lastIndexOf(0x0a);
+			offsets.set(path, start + skipped + lastNewline + 1);
+			if (lastNewline < 0) {
+				return [];
+			}
+			const signals = newParseSignals();
+			for (const line of body.subarray(0, lastNewline).toString('utf8').split('\n')) {
+				// Bash の呼び出しと、背景へ回った結果・終わりの通知の行だけを解く
+				if (!line.includes('"Bash"') && !line.includes('background') && !line.includes('<task-notification>')) {
+					continue;
+				}
+				try {
+					const obj = rec(JSON.parse(line));
+					if (obj !== undefined) {
+						parseClaudeLine(obj, signals, true);
+					}
+				} catch {
+					// 壊れた行は飛ばす
+				}
+			}
+			return signals.shellSignals;
+		} finally {
+			await handle.close();
+		}
 	}
 
 	private schedulePersistedAgentActivityReconcile(token: string, delay = 350): void {
@@ -7789,13 +8064,20 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	/** 購読者がいれば、そのペインの現行セッションでattach相当のスナップショットを送る。 */
+	/**
+	 * 購読者がいれば、そのペインの現行セッションでattach相当のスナップショットを送る。
+	 * 購読が attach で交渉した値（live の差分・応答の圧縮）は引き継ぐ。省くと次の attach まで live が毎回全量になる。
+	 */
 	private pushToSubscribers(token: string): void {
-		const subscribers = [...(this.subscribers.get(token)?.keys() ?? [])];
+		const subscribers = [...(this.subscribers.get(token) ?? [])];
 		const terminalId = this.terminalIdForToken(token);
 		if (terminalId !== undefined) {
-			for (const subscriber of subscribers) {
-				this.handleAttach(subscriber, { id: terminalId, token }).catch(err => this.logService.warn('[paradisAgentChat] push after session discovery failed', err));
+			for (const [mobileId, subscriber] of subscribers) {
+				this.handleAttach(mobileId, {
+					id: terminalId, token,
+					...(subscriber.liveEncoding !== undefined ? { liveEncoding: subscriber.liveEncoding } : {}),
+					...(subscriber.responseEncoding !== undefined ? { responseEncoding: subscriber.responseEncoding } : {}),
+				}).catch(err => this.logService.warn('[paradisAgentChat] push after session discovery failed', err));
 			}
 		}
 	}
@@ -7992,6 +8274,19 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 			}
 		}
+		// 子が動いている印（agent_id 付きの hook。子の中で起きた hook は子の transcript を名乗ることもある）。
+		// バックグラウンドの子の期限を最後の印から数え直す（長く動く子で親の Stop のたびに完了扱いにしない）
+		const aliveAgentId = str(event.payload?.agent_id) ?? claudeNestedAgentId;
+		if (info.agent === 'claude' && event.event !== 'SubagentStop' && aliveAgentId !== undefined && PARADIS_CLAUDE_AGENT_ID_PATTERN.test(aliveAgentId)) {
+			this.tailers.get(event.token)?.noteBackgroundAgentAlive(aliveAgentId, event.at);
+			// 子がバックグラウンドで起動したシェル。起動は子の transcript にしか書かれない（SSH 先でも hook は届く）
+			if (event.event === 'PostToolUse' && (event.toolName ?? str(event.payload?.tool_name)) === 'Bash') {
+				const childShell = paradisChildShellSignalsFromHook(event);
+				if (childShell.length > 0) {
+					this.tailers.get(event.token)?.applyChildShellSignals(childShell, true);
+				}
+			}
+		}
 		if (event.event === 'UserPromptSubmit' && !isLocalSettingCommand && !isHarnessNotification) {
 			// 新しいユーザーターンが始まった時点で前ターンのsubagentは全て終わっている。
 			// SubagentStop の発火漏れ (Claude Code側の既知の制約) やhookの到着順序の逆転
@@ -8126,6 +8421,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.scheduleDesktopInsightCheck();
 			setParadisAgentPaneActivity(token, {
 				backgroundTasks: new Map(tailer.backgroundTasks),
+				expiringBackgroundTasks: tailer.expiringBackgroundTasks(),
 				pendingQuestion: tailer.hasPendingQuestionForStatus(),
 				// currentInteraction は質問を優先して承認を隠すため、ここは「承認が存在するか」の事実を渡す
 				pendingApproval: tailer.hasPendingApproval(),
@@ -8628,7 +8924,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 
-	private addSubscriber(token: string, mobileId: string, owner: IParadisMobilePaneOwner, liveEncoding: string | undefined): void {
+	private addSubscriber(token: string, mobileId: string, owner: IParadisMobilePaneOwner, encodings: Pick<IAgentAttachRequest, 'liveEncoding' | 'responseEncoding'>): void {
 		let subscribers = this.subscribers.get(token);
 		if (subscribers === undefined) {
 			subscribers = new Map<string, IAgentSubscriber>();
@@ -8636,7 +8932,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		subscribers.set(mobileId, {
 			owner,
-			liveEncoding: liveEncoding === PARADIS_AGENT_LIVE_APPEND_ENCODING ? PARADIS_AGENT_LIVE_APPEND_ENCODING : undefined,
+			liveEncoding: encodings.liveEncoding === PARADIS_AGENT_LIVE_APPEND_ENCODING ? PARADIS_AGENT_LIVE_APPEND_ENCODING : undefined,
+			responseEncoding: encodings.responseEncoding === PARADIS_JSON_GZIP_RESPONSE_ENCODING ? PARADIS_JSON_GZIP_RESPONSE_ENCODING : undefined,
 		});
 		// デスクトップのためだけに入れていた質問・承認は、モバイルが見始めたらふつうの扱いに戻す。
 		this.tailers.get(token)?.promoteDesktopOnly();
@@ -8670,7 +8967,13 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private async sendToAuthorized(mobileId: string, msg: AgentOutbound, token?: string, expectedOwner?: IParadisMobilePaneOwner): Promise<boolean> {
-		const payload = encoder.encode(JSON.stringify({ ...msg, ...(token !== undefined ? { token } : {}) }));
+		const stringifyStartedAt = performance.now();
+		const json = encoder.encode(JSON.stringify({ ...msg, ...(token !== undefined ? { token } : {}) }));
+		const stringifyMs = performance.now() - stringifyStartedAt;
+		// attach で gzip を交渉した購読へは、大きい応答を縮めて送る（同期で縮めるので送る順は変わらない）
+		const responseEncoding = token !== undefined ? this.subscribers.get(token)?.get(mobileId)?.responseEncoding : undefined;
+		const payload = paradisEncodeAgentOutboundPayload(msg.t, json, responseEncoding, sample => this.logService.trace(
+			`[paradisAgentChat] gzip ${sample.type}: ${sample.rawBytes}B -> ${sample.wireBytes}B, stringify ${stringifyMs.toFixed(2)}ms, gzip ${sample.gzipMs.toFixed(2)}ms`));
 		if (token === undefined) {
 			this.send(mobileId, payload);
 			return true;

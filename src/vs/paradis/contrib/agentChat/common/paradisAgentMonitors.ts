@@ -635,6 +635,19 @@ export class ParadisAgentMonitorWatch {
 		}
 	}
 
+	/**
+	 * 子（サブエージェント・Workflow の子）が起動したシェルの手がかり（子の transcript・子の hook から読んだもの）。
+	 * `localClock` なら手がかりの時刻は PC の時計（hook の受信時刻）。変われば知らせる。
+	 */
+	applyChildShells(shellSignals: readonly IParadisShellSignal[], localClock: boolean): void {
+		const signals = localClock ? shellSignals.map(signal => ({ ...signal, at: this.shells.transcriptTime(signal.at) })) : shellSignals;
+		if (signals.length === 0 || !this.shells.applyFromChild(signals, this.timers.now())) {
+			return;
+		}
+		this.schedule();
+		this.onChange();
+	}
+
 	/** SessionEnd。動いているものを「停止（推定）」にする（at は PC の時計）。 */
 	endSession(at: number): void {
 		const monitorsChanged = this.tracker.endSession(at);

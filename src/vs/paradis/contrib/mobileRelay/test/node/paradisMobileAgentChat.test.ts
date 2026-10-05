@@ -878,6 +878,19 @@ suite('ParadisMobileAgentChat', () => {
 		assert.strictEqual(paradisClaudeAgentIdFromTranscriptPath('/Users/test/.claude/projects/workspace/session.jsonl'), undefined);
 	});
 
+	test('maps a Workflow child transcript back to its agent and root session', () => {
+		const path = '/Users/test/.claude/projects/workspace/session/subagents/workflows/wf_473f5bf9-bfb/agent-a0613cb1795156962.jsonl';
+		assert.deepStrictEqual({
+			agentId: paradisClaudeAgentIdFromTranscriptPath(path),
+			root: paradisClaudeRootTranscriptPath(path),
+			windows: paradisClaudeRootTranscriptPath('C:\\Users\\test\\.claude\\projects\\workspace\\session\\subagents\\workflows\\wf_1\\agent-a1.jsonl'),
+		}, {
+			agentId: 'a0613cb1795156962',
+			root: '/Users/test/.claude/projects/workspace/session.jsonl',
+			windows: 'C:/Users/test/.claude/projects/workspace/session.jsonl',
+		});
+	});
+
 	test('keeps the pane session and epoch when a Codex subagent thread fires a hook', async () => {
 		const token = 'pane-codex-subagent';
 		const parentPath = join(paradisCodexHome(), 'sessions', 'para-code-tests', 'rollout-parent.jsonl');
@@ -919,6 +932,106 @@ suite('ParadisMobileAgentChat', () => {
 				transcriptPath: parentPath,
 				sessionId: 'thread-parent',
 				epochChanged: false,
+			});
+		} finally {
+			chat.dispose();
+		}
+	});
+
+	test('counts a background subagent\'s deadline from its latest hook instead of its start (15-minute repeat notifications)', async () => {
+		const token = 'pane-subagent-alive-sign';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'subagent-alive-sign.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as {
+			tailers: Map<string, { readonly backgroundTasks: ReadonlyMap<string, number> }>;
+			hookProcessing: Map<string, Promise<void>>;
+		};
+		const startedAt = Date.now() - 20 * 60_000;
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'UserPromptSubmit', sessionId: 'session-alive', transcriptPath, cwd: '/workspace', payload: { prompt: '調査して' }, at: startedAt });
+			await waitFor(() => !access.hookProcessing.has(token), 'UserPromptSubmit was not processed');
+			fireParadisAgentHookEvent({ token, event: 'SubagentStart', sessionId: 'session-alive', transcriptPath, cwd: '/workspace', payload: { agent_id: 'abc-2' }, at: startedAt });
+			await waitFor(() => !access.hookProcessing.has(token), 'SubagentStart was not processed');
+			const opened = access.tailers.get(token)?.backgroundTasks.get('hook:abc-2');
+			// 子のツール呼び出しの hook（agent_id 付き）が動いている印になる
+			const signAt = Date.now();
+			fireParadisAgentHookEvent({ token, event: 'PreToolUse', sessionId: 'session-alive', transcriptPath, cwd: '/workspace', toolName: 'Bash', payload: { agent_id: 'abc-2', tool_name: 'Bash' }, at: signAt });
+			await waitFor(() => !access.hookProcessing.has(token), 'PreToolUse was not processed');
+			assert.deepStrictEqual({ opened, latest: access.tailers.get(token)?.backgroundTasks.get('hook:abc-2') }, { opened: startedAt, latest: signAt });
+		} finally {
+			chat.dispose();
+		}
+	});
+
+	test('lists background shells started by a subagent or a Workflow child, from the child hook and from the child transcript', async () => {
+		const token = 'pane-child-shells';
+		const project = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests');
+		const transcriptPath = join(project, 'child-shells.jsonl');
+		const run = join(project, 'child-shells', 'subagents', 'workflows', 'wf_child-1');
+		await mkdir(run, { recursive: true });
+		await writeFile(transcriptPath, '');
+		const at = new Date().toISOString();
+		await writeFile(join(run, 'agent-w1.jsonl'), [
+			JSON.stringify({ type: 'assistant', isSidechain: true, timestamp: at, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_file', name: 'Bash', input: { command: 'npm run watch', run_in_background: true } }] } }),
+			JSON.stringify({ type: 'user', isSidechain: true, timestamp: at, toolUseResult: { stdout: '', stderr: '', interrupted: false, isImage: false, backgroundTaskId: 'bfile' }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_file', content: 'Command running in background with ID: bfile.' }] } }),
+			'',
+		].join('\n'));
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as {
+			tailers: Map<string, { shells(): readonly { readonly id: string; readonly status: string; readonly command?: string }[] }>;
+			hookProcessing: Map<string, Promise<void>>;
+			scanChildShells(): Promise<void>;
+		};
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'UserPromptSubmit', sessionId: 'session-child-shells', transcriptPath, cwd: '/workspace', payload: { prompt: '調べて' }, at: Date.now() });
+			await waitFor(() => !access.hookProcessing.has(token), 'UserPromptSubmit was not processed');
+			// SSH 先でも届く子の hook（tool_response は transcript の toolUseResult と同じ形）
+			fireParadisAgentHookEvent({
+				token, event: 'PostToolUse', sessionId: 'session-child-shells', transcriptPath, cwd: '/workspace', toolName: 'Bash', toolUseId: 'toolu_hook', at: Date.now(),
+				payload: { agent_id: 'a1', tool_name: 'Bash', tool_input: { command: 'npm run dev', run_in_background: true }, tool_response: { stdout: '', stderr: '', interrupted: false, isImage: false, backgroundTaskId: 'bhook' } },
+			});
+			await waitFor(() => !access.hookProcessing.has(token), 'PostToolUse was not processed');
+			await access.scanChildShells();
+			const shells = access.tailers.get(token)?.shells().map(shell => `${shell.id}:${shell.status}:${shell.command}`).sort();
+			assert.deepStrictEqual(shells, ['bfile:running:npm run watch', 'bhook:running:npm run dev']);
+		} finally {
+			chat.dispose();
+		}
+	});
+
+	test('keeps the negotiated live and response encodings when the PC re-sends a snapshot to its subscribers', async () => {
+		const token = 'pane-keep-encodings';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'keep-encodings.jsonl');
+		const sent: Record<string, unknown>[] = [];
+		const chat = new ParadisMobileAgentChat(
+			(_mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))),
+			() => { }, () => { }, new NullLogService(),
+		);
+		const access = chat as unknown as {
+			subscribers: Map<string, Map<string, { readonly liveEncoding: string | undefined; readonly responseEncoding: string | undefined }>>;
+			pushToSubscribers(token: string): void;
+		};
+		const encodings = () => {
+			const subscriber = access.subscribers.get(token)?.get('mobile-1');
+			return { live: subscriber?.liveEncoding, response: subscriber?.responseEncoding };
+		};
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'UserPromptSubmit', sessionId: 'session-keep-encodings', transcriptPath, cwd: '/workspace', at: Date.now() });
+			chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify({ t: 'attach', id: 1, token, liveEncoding: 'agent-live-append-v1', responseEncoding: 'json-gzip-v1' })));
+			await waitFor(() => sent.some(message => message.t === 'snapshot'), 'the attach did not answer with a snapshot');
+			const attached = encodings();
+			sent.length = 0;
+			access.pushToSubscribers(token);
+			await waitFor(() => sent.some(message => message.t === 'snapshot'), 'the re-send did not answer with a snapshot');
+			assert.deepStrictEqual({ attached, afterPush: encodings() }, {
+				attached: { live: 'agent-live-append-v1', response: 'json-gzip-v1' },
+				afterPush: { live: 'agent-live-append-v1', response: 'json-gzip-v1' },
 			});
 		} finally {
 			chat.dispose();

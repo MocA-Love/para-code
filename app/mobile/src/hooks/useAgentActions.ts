@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
+import { newAgentSendId } from '../agentSendIds.js';
 import { agentApprovalKeySequence, agentQuestionKeySequence, type AgentQuestionKeyAnswer, type AgentQuestionShape } from '../agentQuestionKeys.js';
 import type { AgentMessageSendResult, AgentQuestionAnswer } from '../store.js';
 
@@ -27,7 +28,8 @@ function isKeyAnswer(answer: QuestionGroupAnswer): answer is AgentQuestionKeyAns
 
 export interface AgentActions {
 	send(data: string): boolean;
-	sendText(text: string): Promise<AgentMessageSendResult>;
+	/** `sendId` は送信の id（agentSendIds.ts）。省くとこの呼び出し 1 回ぶんの新しい id を付ける。 */
+	sendText(text: string, sendId?: string): Promise<AgentMessageSendResult>;
 	// 回答系はテキスト送信と同じく理由付きの結果を返す。失敗の理由をUIまで運べないと
 	// 「押したのに何も起きない」としか見えず、接続断・対象変更・PC側の拒否を区別できない。
 	// question / questions はTUI上の形（選択肢の数と複数選択か）。キー列の組み立てに要る。
@@ -144,11 +146,11 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 
 	// TUIの入力欄へテキストを入れ、少し置いてからCRで確定する（貼り付け直後の
 	// 確定はTUI側の取りこぼしがあるため。承認番号注入と同じ250ms方式）。
-	const sendText = useCallback((text: string) => {
+	const sendText = useCallback((text: string, sendId: string = newAgentSendId()) => {
 		if (terminalKey === undefined) {
 			return Promise.resolve({ status: 'rejected' as const, message: '送信先のエージェントが見つかりません' });
 		}
-		return sendAgentMessage(terminalKey, text);
+		return sendAgentMessage(terminalKey, text, sendId);
 	}, [terminalKey, sendAgentMessage]);
 
 	/**
