@@ -80,6 +80,13 @@ suite('paradisBrowserQuery (shared process)', () => {
 		], ['ok', 'ok']);
 	});
 
+	test('a predicate that never settles ends the check at the end of its slice', async () => {
+		const source = paradisBuildQueryFunction({ mode: 'wait', sliceMs: 100, intervalMs: 50 }, 0, '() => new Promise(() => { })');
+		const run = new Function('location', `return (${source});`)({ href: 'about:blank' }) as () => Promise<Record<string, unknown>>;
+		const result = await run();
+		assert.deepStrictEqual({ met: result.met, predicateError: result.predicateError }, { met: false, predicateError: 'the predicate did not settle within this check' });
+	});
+
 	test('locators: uid alone, role needs a name only with role, within needs something to search', () => {
 		assert.deepStrictEqual([
 			paradisParseQueryLocator({ uid: '1_2' }),
