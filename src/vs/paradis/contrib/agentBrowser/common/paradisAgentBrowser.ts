@@ -838,8 +838,9 @@ export interface IParadisAgentPaneStatus {
 	 */
 	readonly cwd?: string;
 	/**
-	 * Para Code が止まっている間の hook を控えから流し直して付けた「確認待ち」（W2-20）。印は出すが、
-	 * 完了の通知（音・モバイルのプッシュ）は出さない。status が review のときだけ付く。
+	 * 鳴らさない「確認待ち」。Para Code が止まっている間の hook を控えから流し直して付けたもの（W2-20）と、同じ利用者の
+	 * ターンで完了の通知を出した後にもう一度確認待ちになったもの（バックグラウンドタスクの完了の知らせで親が起きては
+	 * 止まる。paradisIsRepeatedReview）。印は出すが、完了の通知（音・モバイルのプッシュ）は出さない。status が review のときだけ付く。
 	 */
 	readonly quiet?: true;
 }

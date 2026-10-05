@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { AgentActivityAgent, AgentActivityState, AgentActivityTask } from '../../store.js';
-import { activityEndAt, activityMenuHint, activityOverview, formatActivityDuration, hasAgentActivity } from './activityModel.js';
+import { ACTIVITY_DETAIL_REFRESH_DEBOUNCE_MS, ACTIVITY_DETAIL_REFRESH_INTERVAL_MS, activityDetailRefreshDelay, activityEndAt, activityMenuHint, activityOverview, formatActivityDuration, hasAgentActivity, shouldRefreshActivityDetail } from './activityModel.js';
 
 const HOUR = 60 * 60 * 1000;
 const NOW = 100 * HOUR;
@@ -62,5 +62,21 @@ describe('activityOverview', () => {
 		expect(folded.rows.map(row => row.agent.id)).toEqual(['new']);
 		expect(folded.olderCount).toBe(1);
 		expect(activityOverview(state, NOW, true).rows.map(row => row.agent.id)).toEqual(['old', 'new']);
+	});
+
+	it('refreshes an open subagent detail only after the list moved past what was fetched, and spaces the refreshes', () => {
+		expect({
+			beforeFirstFetch: shouldRefreshActivityDetail(undefined, 10),
+			unchanged: shouldRefreshActivityDetail(10, 10),
+			moved: shouldRefreshActivityDetail(10, 11),
+			soonAfterFetch: activityDetailRefreshDelay(1_000, 1_500),
+			longAfterFetch: activityDetailRefreshDelay(1_000, 60_000),
+		}).toEqual({
+			beforeFirstFetch: false,
+			unchanged: false,
+			moved: true,
+			soonAfterFetch: ACTIVITY_DETAIL_REFRESH_INTERVAL_MS - 500,
+			longAfterFetch: ACTIVITY_DETAIL_REFRESH_DEBOUNCE_MS,
+		});
 	});
 });

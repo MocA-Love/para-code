@@ -339,6 +339,13 @@ function parseCodexAgentMessage(payload: Record<string, unknown>, ts: number | u
 export interface IParseSignals {
 	/** バックグラウンドタスク（サブエージェント等）の起動: id → 起動時刻。 */
 	readonly openedTasks: Map<string, number>;
+	/**
+	 * 起動したバックグラウンドタスクの種類（openedTasks と同じ id）。`agent` はサブエージェント、`workflow` は Workflow、
+	 * `shell` はバックグラウンドの Bash。動いている印の拾い方と、印が途絶えたときの扱いが違う。
+	 */
+	readonly openedTaskKinds: Map<string, ParadisBackgroundTaskKind>;
+	/** Workflow のタスク id → 実行の ID（子の transcript の置き場 `subagents/workflows/<runId>`）。 */
+	readonly openedWorkflowRuns: Map<string, string>;
 	/** task-notification が届いた（完了・失敗・停止いずれも）タスクID。 */
 	readonly closedTasks: string[];
 	/** 出現した質問 (AskUserQuestion) の tool_use_id。 */
@@ -419,8 +426,48 @@ export function newClaudeQueuedPromptState(): IClaudeQueuedPromptState {
 	return { texts: [], interrupted: false };
 }
 
+/**
+ * tool_result から、バックグラウンドで起動したタスクを読む（実データで確認、Claude Code 2.1）。
+ * - サブエージェント: `Async agent launched successfully. agentId: <id>`（toolUseResult.status `async_launched`・agentId）
+ * - Workflow: `Workflow launched in background. Task ID: <id>`（toolUseResult.taskType `local_workflow`・taskId・runId）
+ * - Bash: `Command running in the background with ID: <id>`
+ * 完了は `<task-notification>` の `<task-id>` で閉じる（どれも同じ id）。
+ */
+export function paradisBackgroundTaskLaunch(text: string, toolUseResult: Record<string, unknown> | undefined): { readonly id: string; readonly kind: ParadisBackgroundTaskKind; readonly runId?: string } | undefined {
+	const idPattern = /^[A-Za-z0-9_-]{1,200}$/;
+	if (str(toolUseResult?.status) === 'async_launched') {
+		const taskId = str(toolUseResult?.taskId);
+		if (str(toolUseResult?.taskType) === 'local_workflow' && taskId !== undefined && idPattern.test(taskId)) {
+			const runId = str(toolUseResult?.runId);
+			return { id: taskId, kind: 'workflow', ...(runId !== undefined && /^[A-Za-z0-9._-]{1,200}$/.test(runId) ? { runId } : {}) };
+		}
+		const agentId = str(toolUseResult?.agentId);
+		if (agentId !== undefined && idPattern.test(agentId)) {
+			return { id: agentId, kind: 'agent' };
+		}
+	}
+	const workflow = /Workflow launched in background\. Task ID:\s*([A-Za-z0-9_-]+)/.exec(text);
+	if (workflow !== null) {
+		return { id: workflow[1], kind: 'workflow' };
+	}
+	if (/Async agent launched|running in the background/i.test(text)) {
+		const agent = /\bagentId:\s*([A-Za-z0-9_-]+)/.exec(text);
+		if (agent !== null) {
+			return { id: agent[1], kind: 'agent' };
+		}
+		const shell = /background with ID:\s*([A-Za-z0-9_-]+)/.exec(text);
+		if (shell !== null) {
+			return { id: shell[1], kind: 'shell' };
+		}
+	}
+	return undefined;
+}
+
+/** バックグラウンドタスクの種類（IParseSignals.openedTaskKinds）。 */
+export type ParadisBackgroundTaskKind = 'agent' | 'workflow' | 'shell';
+
 export function newParseSignals(claudeQueuedPrompts: IClaudeQueuedPromptState = newClaudeQueuedPromptState()): IParseSignals {
-	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], codexSpawnMessages: new Map(), codexCallTools: new Map(), monitorSignals: [], shellSignals: [], userText: false, turnEnded: undefined, claudeQueuedPrompts };
+	return { openedTasks: new Map(), openedTaskKinds: new Map(), openedWorkflowRuns: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], codexSpawnMessages: new Map(), codexCallTools: new Map(), monitorSignals: [], shellSignals: [], userText: false, turnEnded: undefined, claudeQueuedPrompts };
 }
 
 export function decodeXmlAttribute(value: string): string {
@@ -1044,10 +1091,12 @@ function pushClaudeUserContent(out: IRawMessage[], obj: Record<string, unknown>,
 					signals.shellSignals.push(shellSignal);
 				}
 				// バックグラウンドタスク（サブエージェント等）の起動応答から実行中タスクを学習する。
-				if (/Async agent launched|running in the background/i.test(text)) {
-					const idMatch = /\bagentId:\s*([A-Za-z0-9_-]+)/.exec(text) ?? /background with ID:\s*([A-Za-z0-9_-]+)/.exec(text);
-					if (idMatch) {
-						signals.openedTasks.set(idMatch[1], ts ?? Date.now());
+				const launched = paradisBackgroundTaskLaunch(text, singleResult ? toolUseResult : undefined);
+				if (launched !== undefined) {
+					signals.openedTasks.set(launched.id, ts ?? Date.now());
+					signals.openedTaskKinds.set(launched.id, launched.kind);
+					if (launched.runId !== undefined) {
+						signals.openedWorkflowRuns.set(launched.id, launched.runId);
 					}
 				}
 				// サブエージェントの起動・報告の結果の子の ID。本文の末尾の `agentId:` は切り詰めで落ちるので、構造化した値を添える
