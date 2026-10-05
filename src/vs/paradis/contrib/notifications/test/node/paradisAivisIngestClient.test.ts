@@ -607,6 +607,9 @@ suite('ParadisAivisIngestClient', () => {
 		const sent = next.controls().filter(control => control.type === 'withdraw' || control.type === 'adopt').map(control => `${control.type}:${name(control.id)}`).sort();
 		next.say({ type: 'adopted', id: adopted.id, adopted: true });
 		next.say({ type: 'adopted', id: missing.id, adopted: false });
+		await clock.tickAsync(0);
+		// adopted: false の件は withdraw で確かめてから決める（N-3）
+		next.say({ type: 'withdrawn', id: missing.id, removed: false, notQueued: true });
 		next.say({ type: 'withdrawn', id: halfWritten.id, removed: false, notQueued: true });
 		next.say({ type: 'status', id: adopted.id, status: 'playing' });
 		next.say({ type: 'status', id: adopted.id, status: 'done' });
@@ -621,6 +624,72 @@ suite('ParadisAivisIngestClient', () => {
 			adopted: { status: 'done' },
 			missing: { status: 'failed', reason: 'ingest-exited', withdrawn: true },
 			half: { status: 'failed', reason: 'ingest-exited', withdrawn: true },
+		});
+	});
+
+	test('does not play an unstarted job on adopted: false or unknown: true, but asks for a withdraw and follows its answer (N-3)', async () => {
+		const context = createClient({ version: 'aivis-mcp v2.5.1\n' });
+		context.client.start();
+		await clock.tickAsync(0);
+		const child = context.children.at(-1)!;
+		child.say({ type: 'hello', protocol: 1, version: '2.5.1' });
+		await clock.tickAsync(0);
+		const names = ['removed', 'notQueued', 'taken', 'unconfirmed', 'unknownRemoved', 'unknownTaken', 'noReply'] as const;
+		const streams = new Map(names.map(name => [name, context.client.open({ priority: 'normal' })!]));
+		for (const stream of streams.values()) {
+			await stream.end();
+			child.say({ type: 'status', id: stream.id, status: 'queued' });
+		}
+		await clock.tickAsync(0);
+		child.exit(1);
+		await clock.tickAsync(1_000);
+		const next = context.children.at(-1)!;
+		next.say({ type: 'hello', protocol: 1, version: '2.5.1' });
+		await clock.tickAsync(0);
+		const idOf = (name: typeof names[number]) => streams.get(name)!.id;
+		const settled = new Set<string>();
+		for (const name of names) {
+			void streams.get(name)!.finished.then(() => settled.add(name));
+		}
+		for (const name of names) {
+			next.say({ type: 'adopted', id: idOf(name), adopted: false, ...(name.startsWith('unknown') ? { unknown: true } : {}) });
+		}
+		await clock.tickAsync(0);
+		const nameOf = (id: unknown) => names.find(name => idOf(name) === id);
+		const withdrawsAfterAdopt = next.controls().filter(control => control.type === 'withdraw').map(control => nameOf(control.id));
+		const settledBeforeAnswer = names.filter(name => settled.has(name));
+		next.say({ type: 'withdrawn', id: idOf('removed'), removed: true });
+		next.say({ type: 'withdrawn', id: idOf('notQueued'), removed: false, notQueued: true });
+		next.say({ type: 'withdrawn', id: idOf('taken'), removed: false, taken: true });
+		next.say({ type: 'withdrawn', id: idOf('unconfirmed'), removed: false });
+		next.say({ type: 'withdrawn', id: idOf('unknownRemoved'), removed: true });
+		next.say({ type: 'withdrawn', id: idOf('unknownTaken'), removed: false, taken: true });
+		// noReply は返事が来ないまま待ち切る
+		await clock.tickAsync(30_000);
+		const mayPlay: Record<string, boolean> = {};
+		for (const name of names) {
+			mayPlay[name] = (await streams.get(name)!.finished).withdrawn === true;
+		}
+		assert.deepStrictEqual({ withdrawsAfterAdopt, settledBeforeAnswer, mayPlay }, {
+			withdrawsAfterAdopt: [...names],
+			settledBeforeAnswer: [],
+			mayPlay: { removed: true, notQueued: true, taken: false, unconfirmed: false, unknownRemoved: true, unknownTaken: false, noReply: false },
+		});
+	});
+
+	test('reports replacing while a new child has not introduced itself yet (N-1)', async () => {
+		const context = createClient();
+		await startReady(context);
+		const before = context.client.isReplacing();
+		context.setVersion('aivis-mcp v2.5.1');
+		await clock.tickAsync(10 * 60_000);
+		const during = { replacing: context.client.isReplacing(), usable: context.client.isUsable(), mayPlayDirectly: context.client.mayPlayDirectly() };
+		context.children.at(-1)!.say({ type: 'hello', protocol: 1, version: '2.5.1' });
+		await clock.tickAsync(0);
+		assert.deepStrictEqual({ before, during, after: context.client.isReplacing() }, {
+			before: false,
+			during: { replacing: true, usable: false, mayPlayDirectly: false },
+			after: false,
 		});
 	});
 

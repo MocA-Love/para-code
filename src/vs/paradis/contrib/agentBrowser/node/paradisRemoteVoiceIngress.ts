@@ -106,6 +106,20 @@ export function paradisSendVoiceTicketRejected(res: http.ServerResponse): void {
 	res.end(JSON.stringify({ error: 'Voice ticket rejected.' }));
 }
 
+/**
+ * Para Code が終わるところで、音声を受け取れない（503）。aivis-mcp 2.5.1 は手元で鳴らす ticket の 404 を ticket が通らなかった
+ * とみなして鳴らさないので、終了中は 503 を返して接続先で鳴らしてもらう。本文は読まないので接続は使い回させない。
+ */
+export function paradisSendVoiceIngressUnavailable(res: http.ServerResponse): void {
+	if (res.writableEnded) {
+		return;
+	}
+	if (!res.headersSent) {
+		res.writeHead(503, { ...JSON_HEADERS, 'Connection': 'close' });
+	}
+	res.end(JSON.stringify({ error: 'Para Code is shutting down.' }));
+}
+
 function statusFor(failure: Failure): number {
 	switch (failure) {
 		case 'too-large': return 413;

@@ -23,7 +23,8 @@
 //   worker が鳴らすとみなす（二重に鳴らすより、鳴らし損ねの方を選ぶ）
 // - 落ちた子・こちらから入れ替えた子の件のうち、書き終えた件と鳴り始めた件は取り下げず、新しい子に `adopt` で追跡を
 //   引き継いでもらう（2.5.1 以上。2.5.0 の子なら追跡をやめて worker に任せる）。取り下げを頼むのは書きかけだった件だけ。
-//   withdraw の返事は `removed`・`notQueued` のときだけ鳴らし、`taken` と確かめられなかった件は鳴らさない
+//   withdraw の返事は `removed`・`notQueued` のときだけ鳴らし、`taken` と確かめられなかった件は鳴らさない。`adopt` の
+//   返事が `adopted: false`（`unknown: true` を含む）でも鳴らさず、続けて withdraw を送って同じ決まりで決める
 // - 版の入れ替えの間（新しい子が名乗るまで）は新しい流れを開かない（`whenReady` で待たせる）。古い子は、書きかけの
 //   流れを書き終え、書き込みの列が空になってから（上限 60 秒）標準入力を閉じる
 // - 子の終わりは標準出力を読み切ってから扱う（終わる直前の `queued` などを捨てない）
@@ -35,7 +36,7 @@ import { execFile, spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import { connect } from 'net';
 import { homedir } from 'os';
-import { Emitter } from '../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -344,7 +345,14 @@ class ParadisIngestStream implements IParadisIngestStream {
 export interface IParadisAivisIngest {
 	readonly state: ParadisIngestClientState;
 	readonly gainTable: IParadisVoiceGainTable | undefined;
+	/** 状態が変わった（子が名乗った・入れ替えが終わった時にも知らせる）。 */
+	readonly onDidChangeState: Event<ParadisIngestClientState>;
 	isUsable(): boolean;
+	/**
+	 * 版が変わって新しい子へ入れ替えている最中（新しい子が名乗る前）か。この間は {@link isUsable} が false だが、worker は
+	 * 動いているので、呼び出し側は afplay で鳴らさず入れ替えを待って渡す。
+	 */
+	isReplacing(): boolean;
 	whenReady(timeoutMs: number): Promise<boolean>;
 	hasLocalAivis(timeoutMs: number): Promise<boolean>;
 	open(options: IParadisIngestOpenOptions): IParadisIngestStream | undefined;
@@ -361,6 +369,8 @@ export interface IParadisAivisIngest {
 	 * 自分で鳴らす前に呼ぶ（worker の声と重ねない）。
 	 */
 	whenPlayLockFree(timeoutMs: number): Promise<void>;
+	/** worker の再生 lock がいま持たれているか（待たない）。確かめられなければ false。 */
+	isPlayLockHeld(): Promise<boolean>;
 }
 
 /**
@@ -454,6 +464,10 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		return !(this.incoming && !this.incoming.exited) && this._state === 'ready' && this.child?.readyAt !== undefined && !this.child.exited && !this.isDegraded();
 	}
 
+	isReplacing(): boolean {
+		return this._state !== 'disposed' && this.incoming !== undefined && !this.incoming.exited;
+	}
+
 	private isDegraded(): boolean {
 		if (this.failedStreak < PARADIS_INGEST_MAX_FAILED_STREAK) {
 			return false;
@@ -495,6 +509,13 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		while (!this.isDisposed() && (await this.probePlayLock(this.env ?? process.env).catch(() => undefined)) === true && this.now() < deadline) {
 			await new Promise<void>(resolve => setTimeout(resolve, PLAY_LOCK_POLL_MS));
 		}
+	}
+
+	async isPlayLockHeld(): Promise<boolean> {
+		if (this._state === 'disposed' || !paradisAivisVersionAtLeast(this.installedVersion, [2, 4, 0])) {
+			return false;
+		}
+		return (await this.probePlayLock(this.env ?? process.env).catch(() => undefined)) === true;
 	}
 
 	/**
@@ -1020,8 +1041,13 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 				} else if (orphan.started) {
 					orphan.settle({ status: 'failed', reason: 'ingest-exited' }, true);
 				} else {
-					// 列にも知らせにも痕跡が無い（積まれていない）。withdraw の notQueued と同じく呼び出し側が鳴らす
-					orphan.settle({ status: 'failed', reason: 'ingest-exited', withdrawn: true }, false);
+					// 引き継げなかった（痕跡が無い、または Redis を読めず確かめられなかった `unknown: true`）。痕跡の読み取りと
+					// worker の取り出しは行き違うことがあるので、ここでは鳴らさず withdraw で確かめる。removed・notQueued なら
+					// 鳴らし、taken・確かめられなければ鳴らさない（withdrawn の処理と返事待ちの時計に任せる）
+					this.orphans.set(orphan.id, orphan);
+					this.orphanModes.set(orphan.id, 'withdraw');
+					void this.send(child, paradisEncodeIngestControl({ type: 'withdraw', id: orphan.id }), 'control');
+					this.armOrphanTimer();
 				}
 				return;
 			}

@@ -973,6 +973,24 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(Reflect.get(fixture.service, '_seenTokens').size, 0);
 	});
 
+	test('answers a voice ingress that arrives while shutting down with 503 so the remote side plays it, and other requests with 404', async () => {
+		const fixture = createFixture();
+		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
+		Reflect.set(fixture.service, '_serverDisposed', true);
+		const statuses: Array<number | undefined> = [];
+		try {
+			for (const url of ['/paradis-mcp/mobile-voice', '/paradis-mcp/mobile-voice-ticket', '/?pane=owned']) {
+				const request = new TestRequest('POST', url);
+				const response = new TestResponse();
+				await handleRequest(request, response);
+				statuses.push(response.statusCode);
+			}
+		} finally {
+			Reflect.set(fixture.service, '_serverDisposed', false);
+		}
+		assert.deepStrictEqual(statuses, [503, 404, 404]);
+	});
+
 	test('reserves MCP ingress before body listeners, caps it per token, and keeps hooks on a separate cap', async () => {
 		const fixture = createFixture();
 		const connection = {};

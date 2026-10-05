@@ -142,6 +142,11 @@ export interface AudioSchedulerDeps {
 	 */
 	aivisPlaySafetyTimeoutMs?: number;
 	/**
+	 * Para Code が自分で声を鳴らす直前に、worker の再生 lock が空くのを待つ（重ねない）。{@link aivisPlaySafetyTimeoutMs}
+	 * の外で待つ（待ちが安全網の時間を食って、鳴らしている途中で次の声を重ねないように）。任意。
+	 */
+	waitForPlayLock?(): Promise<void>;
+	/**
 	 * 待機キューの上限。通知爆発×レート制限滞留の組合せでキュー（テキスト+APIキーを capture した
 	 * クロージャ）が単調増加しないようにする。超過時は normal を落とし、high は最も古い normal を
 	 * 追い出して割り込む。既定 20。
@@ -422,6 +427,14 @@ export class AudioScheduler {
 		for (const resolve of waiters) { resolve(); }
 	}
 
+	/**
+	 * `--ingest` の子が名乗った（worker へ渡せるようになった）。復旧待ちの時間切れを忘れ、次に渡せなくなったときはまた
+	 * 待つ。
+	 */
+	noteHandoffReady(): void {
+		this.deferExpired = false;
+	}
+
 	/** worker へ渡す件か。 */
 	private canHandoff(entry: QueueEntry): boolean {
 		return !entry.localOnly && entry.runner.handoff !== undefined && (this.deps.isHandoffAvailable?.() ?? false);
@@ -616,6 +629,11 @@ export class AudioScheduler {
 				await this.waitForRingtoneIdle();
 				await this.waitForRelease();
 				if (this.disposed) { return; }
+				// worker の再生 lock の待ちは安全網の外で待つ（安全網は鳴らし始めてから数える）
+				if (this.deps.waitForPlayLock) {
+					await this.deps.waitForPlayLock().catch(() => undefined);
+					if (this.disposed) { return; }
+				}
 				try {
 					await this.playWithSafetyTimeout(runner, audio);
 				} catch (playErr) {
