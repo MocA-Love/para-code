@@ -2614,6 +2614,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// 計測がオフの間は時計も読まない
 		const calledAt = metrics.enabled ? metrics.now() : 0;
 		const cancelTag = paradisRendererCancelTag(lease);
+		// ターミナルの出力は上限で断らない。snapshot（64KiB を超えうる）を断るとアプリは次の snapshot を待ったまま
+		// 空の画面になり、取り直す契機が無い。量はアプリの ack（未 ack 10 万文字で止まる）と snapshot の行数で抑えてある
+		const bounded = ch !== Channels.Terminal;
 		const submitted = await this.withCurrentRegisteredLease(lease, async (): Promise<{ readonly handles: readonly IParadisMobileSendHandle[]; readonly session?: MobileSession } | 'notify'> => {
 			const bytes = payload.buffer;
 			if (ch === Channels.Notify && mobileId === undefined) {
@@ -2637,12 +2640,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 						}
 					}
 				}
-				return { handles: [session.submitFrame(ch, ws, bytes, { bounded: true, cancelTag })], session };
+				return { handles: [session.submitFrame(ch, ws, bytes, { bounded, cancelTag })], session };
 			}
 			const handles: IParadisMobileSendHandle[] = [];
 			for (const session of this.sessions.values()) {
 				if (session.hasCurrentProtocol) {
-					handles.push(session.submitFrame(ch, ws, bytes, { bounded: true, cancelTag }));
+					handles.push(session.submitFrame(ch, ws, bytes, { bounded, cancelTag }));
 				}
 			}
 			return { handles };

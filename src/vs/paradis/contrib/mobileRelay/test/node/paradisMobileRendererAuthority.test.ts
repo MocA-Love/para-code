@@ -108,7 +108,7 @@ suite('ParadisMobileRelay renderer authority', () => {
 			assert.deepStrictEqual({ beforeSent, results: await Promise.all([first, second]), options: session.submitted[0]?.options }, {
 				beforeSent: ['out-1', 'out-2'],
 				results: ['sent', 'sent'],
-				options: { bounded: true, cancelTag: '7:session:1' },
+				options: { bounded: false, cancelTag: '7:session:1' },
 			});
 		} finally {
 			dispose();
@@ -141,13 +141,17 @@ suite('ParadisMobileRelay renderer authority', () => {
 		}
 	});
 
-	test('送信前の列が上限なら busy を返し、ファイルの要求元には小さな失敗の返事を返す', async () => {
+	test('送信前の列が上限なら busy を返し、ファイルの要求元には小さな失敗の返事を返す（ファイルの応答は上限を守って積む）', async () => {
 		const { service, session, dispose } = createHarness();
 		try {
+			const accepted = service.sendFrame(lease, Channels.Fs, undefined, 'mobile-a', VSBuffer.fromString(JSON.stringify({ id: 'read-0', t: 'read' })));
+			await new Promise(resolve => setTimeout(resolve, 0));
+			session.finish.forEach(finish => finish('sent'));
+			await accepted;
 			session.refuse = true;
 			const result = await service.sendFrame(lease, Channels.Fs, undefined, 'mobile-a', VSBuffer.fromString(JSON.stringify({ id: 'read-1', t: 'read', content: 'x'.repeat(1024) })));
 
-			assert.deepStrictEqual({ result, replies: session.replies.map(reply => JSON.parse(reply).id) }, { result: 'busy', replies: ['read-1'] });
+			assert.deepStrictEqual({ options: session.submitted[0]?.options, result, replies: session.replies.map(reply => JSON.parse(reply).id) }, { options: { bounded: true, cancelTag: '7:session:1' }, result: 'busy', replies: ['read-1'] });
 		} finally {
 			dispose();
 		}
