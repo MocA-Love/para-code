@@ -3026,9 +3026,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				this.handleTerminalAck(instance, id, mobileId, msg);
 			} else if (msg.t === 'input') {
 				const metrics = paradisMobileLinkMetrics;
-				const inputStartedAt = metrics.now();
+				const inputStartedAt = metrics.enabled ? metrics.now() : 0;
 				await this.handleTerminalInput(instance, msg);
-				if (metrics.enabled) {
+				if (metrics.enabled && inputStartedAt > 0) {
 					// 受けてから PTY へ書き終えるまで
 					metrics.observeSince('renderer.term.input.writeMs', inputStartedAt);
 					this.linkEchoTracker.mark(String(id), metrics.now());
@@ -3528,7 +3528,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return; // 旧世代のACKは無視（再attach直後の混在で正常に起きる）
 		}
 		const metrics = paradisMobileLinkMetrics;
-		const ackedAt = metrics.now();
+		const ackedAt = metrics.enabled ? metrics.now() : 0;
 		while (sync.inflight.length > 0 && sync.inflight[0].seq <= msg.seq) {
 			const sentAt = sync.inflight[0].sentAt;
 			if (sentAt !== undefined) {

@@ -686,7 +686,7 @@ export class MobileSession {
 		return this.stateDelivery.deliver(payload, force, async state => {
 			// 「変わっていない」の返事は小さいので圧縮しない（アプリは magic の無い JSON をそのまま読む）
 			const metrics = paradisMobileLinkMetrics;
-			const encodeStartedAt = metrics.now();
+			const encodeStartedAt = metrics.enabled ? metrics.now() : 0;
 			const encoded = state === unchanged?.reply ? state : await paradisEncodeNegotiatedGzipJsonResponse(this.negotiatedStateEncoding, state) ?? state;
 			if (state === unchanged?.reply) {
 				metrics.count('pc.state.unchangedReplies');
@@ -2535,7 +2535,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	async sendFrame(lease: IParadisMobileWindowLease, ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<void> {
 		const metrics = paradisMobileLinkMetrics;
-		const calledAt = metrics.now();
+		// 計測がオフの間は時計も読まない
+		const calledAt = metrics.enabled ? metrics.now() : 0;
 		await this.withCurrentRegisteredLease(lease, async () => {
 			const bytes = payload.buffer;
 			if (ch === Channels.Notify && mobileId === undefined) {
@@ -2557,9 +2558,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 							}
 						}
 					}
-					const sendStartedAt = metrics.now();
+					const sendStartedAt = metrics.enabled ? metrics.now() : 0;
 					await session.sendFrame(ch, ws, bytes);
-					if (ch === Channels.Terminal) {
+					if (ch === Channels.Terminal && sendStartedAt > 0) {
 						// 送信の列へ積んでから最後の断片をソケットへ渡すまで（この間、権限の列は止まっている）
 						metrics.observeSince('pc.term.out.sendMs', sendStartedAt);
 					}
@@ -2691,7 +2692,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				return;
 			}
 			const metrics = paradisMobileLinkMetrics;
-			const stringifyStartedAt = metrics.now();
+			const stringifyStartedAt = metrics.enabled ? metrics.now() : 0;
 			const state = this.terminalRegistry.desktopState();
 			const bytes = new TextEncoder().encode(JSON.stringify(state));
 			if (metrics.enabled) {
@@ -2755,8 +2756,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		const metrics = paradisMobileLinkMetrics;
 		let measured = task;
 		if (metrics.enabled) {
-			// 列に入ってから始まるまでの待ちと、仕事そのものの長さ（送信の完了まで待つ仕事も含む。設計 2.3）
+			// 列に入ってから始まるまでの待ちと、仕事そのものの長さ（送信の完了まで待つ仕事も含む。設計 2.3）。
+			// 列の深さは計測中に積んだ仕事だけ数える（オフの間は Promise を 1 つも増やさない）
 			metrics.observe('pc.authority.depth', this.rendererAuthorityDepth);
+			this.rendererAuthorityDepth++;
 			const enqueuedAt = metrics.now();
 			measured = async () => {
 				const startedAt = metrics.now();
@@ -2764,15 +2767,13 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				try {
 					return await task();
 				} finally {
+					this.rendererAuthorityDepth--;
 					metrics.observeSince('pc.authority.runMs', startedAt);
 				}
 			};
 		}
-		this.rendererAuthorityDepth++;
 		const run = this.rendererAuthorityChain.then(measured);
-		const settled = run.then(() => undefined, () => undefined);
-		this.rendererAuthorityChain = settled;
-		void settled.then(() => { this.rendererAuthorityDepth--; });
+		this.rendererAuthorityChain = run.then(() => undefined, () => undefined);
 		return run;
 	}
 
@@ -2851,7 +2852,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// （入力・作成・閉じる）の再送の判定を壊す。台帳と結果の返信を飛ばし、版・epoch・持ち主の検査だけ残して届ける
 		// （設計書 4 章の着手順 11。旧アプリの envelope もそのまま受ける）
 		const metrics = paradisMobileLinkMetrics;
-		const receivedAt = metrics.now();
+		const receivedAt = metrics.enabled ? metrics.now() : 0;
 		if (message.t === 'ack' || message.t === 'viewport') {
 			if (message.t === 'ack' && metrics.enabled) {
 				// ターミナルの ack の頻度（設計 5 章「ack の実態」）
@@ -2922,7 +2923,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 						this.sendTerminalOperationResult(mobileId, operationId, 'outcome-unknown');
 					}
 				}, 10_000));
-				if (message.t === 'input' && metrics.enabled) {
+				if (message.t === 'input' && metrics.enabled && receivedAt > 0) {
 					// 受けてから renderer へ渡すまで（台帳・権限の列・lease の確かめを含む）
 					const now = metrics.now();
 					metrics.observe('pc.term.input.dispatchMs', now - receivedAt);

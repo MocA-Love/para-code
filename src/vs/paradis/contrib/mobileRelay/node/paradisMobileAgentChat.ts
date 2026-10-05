@@ -8980,7 +8980,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		const responseEncoding = token !== undefined ? this.subscribers.get(token)?.get(mobileId)?.responseEncoding : undefined;
 		const payload = paradisEncodeAgentOutboundPayload(msg.t, json, responseEncoding, sample => {
 			this.logService.trace(`[paradisAgentChat] gzip ${sample.type}: ${sample.rawBytes}B -> ${sample.wireBytes}B, stringify ${stringifyMs.toFixed(2)}ms, gzip ${sample.gzipMs.toFixed(2)}ms`);
-			paradisMobileLinkMetrics.observe(`pc.agent.${paradisAgentMetricKind(sample.type)}.gzipMs`, sample.gzipMs);
+			if (paradisMobileLinkMetrics.enabled) {
+				paradisMobileLinkMetrics.observe(`pc.agent.${paradisAgentMetricKind(sample.type)}.gzipMs`, sample.gzipMs);
+			}
 		});
 		if (paradisMobileLinkMetrics.enabled) {
 			// トークの snapshot・履歴・差分の大きさと作る時間（設計 5 章「全体状態の大きさ」と同じ考え）
