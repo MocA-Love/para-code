@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisMobileSendTransfer, PARADIS_MOBILE_FALLBACK_PACE_BYTES_PER_SECOND, PARADIS_MOBILE_FRAGMENT_BYTES, PARADIS_MOBILE_PACING_MAX_BYTES, PARADIS_MOBILE_SCREEN_MAX_WAIT_MS, PARADIS_MOBILE_STUCK_BUFFER_MS, ParadisMobileSendPriority, ParadisMobileSendQueue, paradisMobileSendPriorityOf } from '../../common/paradisMobileSendQueue.js';
+import { IParadisMobileSendTransfer, PARADIS_MOBILE_FALLBACK_PACE_BYTES_PER_SECOND, PARADIS_MOBILE_FRAGMENT_BYTES, PARADIS_MOBILE_PACING_MAX_BYTES, PARADIS_MOBILE_QUEUE_ALWAYS_ACCEPT_BYTES, PARADIS_MOBILE_QUEUE_STREAM_LIMIT_BYTES, PARADIS_MOBILE_SCREEN_MAX_WAIT_MS, PARADIS_MOBILE_STUCK_BUFFER_MS, ParadisMobileSendPriority, ParadisMobileSendQueue, paradisMobileSendPriorityOf } from '../../common/paradisMobileSendQueue.js';
 import { ParadisMobileLinkMetrics } from '../../common/paradisMobileLinkMetrics.js';
 
 function transfer(owner: object, name: string, fragmentCount: number, log: string[], priority: ParadisMobileSendPriority = ParadisMobileSendPriority.Control, sealLog?: string[]): IParadisMobileSendTransfer {
@@ -346,6 +346,70 @@ suite('ParadisMobileSendQueue', () => {
 			},
 			bytes: 20,
 			socket: 100,
+		});
+	});
+	test('keeps a stream in order across priorities and lets only independent streams overtake (stream FIFO)', async () => {
+		const queue = new ParadisMobileSendQueue();
+		const log: string[] = [];
+		const owner = {};
+		// 同じターミナルの出力: 先の 2 断片が操作・状態、後の 1 件が音声の優先度でも追い越さない。別ストリームの音声は
+		// 送り始めた out の 2 断片目より先に出る（out0 は積んだ直後に送り始めている）
+		await Promise.all([
+			queue.enqueue({ ...transfer(owner, 'out', 2, log), stream: 'term' }),
+			queue.enqueue({ ...transfer(owner, 'echo', 1, log, ParadisMobileSendPriority.Voice), stream: 'term' }),
+			queue.enqueue({ ...transfer(owner, 'voice', 1, log, ParadisMobileSendPriority.Voice), stream: 'browser:voice' }),
+		]);
+
+		assert.deepStrictEqual(log, ['out0', 'voice0', 'out1', 'echo0']);
+	});
+
+	test('separates accepted from settled and refuses a large bounded send over the stream limit with busy', async () => {
+		const queue = new ParadisMobileSendQueue();
+		const log: string[] = [];
+		const owner = {};
+		const big = (name: string, bytes: number): IParadisMobileSendTransfer => ({ ...transfer(owner, name, 1, log), bytes, stream: 'fs' });
+		const gated = gatedTransfer(owner, 'first', log, { priority: ParadisMobileSendPriority.Control });
+		const first = queue.submit({ ...gated.value, bytes: PARADIS_MOBILE_QUEUE_STREAM_LIMIT_BYTES - 1024, stream: 'fs' }, { bounded: true });
+		const refused = queue.submit(big('second', 2 * 1024 * 1024), { bounded: true });
+		const small = queue.submit(big('small', PARADIS_MOBILE_QUEUE_ALWAYS_ACCEPT_BYTES), { bounded: true });
+		const otherStream = queue.submit({ ...big('other', 2 * 1024 * 1024), stream: 'scm' }, { bounded: true });
+		const unbounded = queue.submit(big('internal', 2 * 1024 * 1024));
+		gated.release();
+
+		assert.deepStrictEqual({
+			accepted: [first, refused, small, otherStream, unbounded].map(handle => handle.accepted ? 'accepted' : handle.reason),
+			settled: await Promise.all([first, refused, small, otherStream, unbounded].map(handle => handle.settled)),
+			log,
+			pending: queue.pendingBytes,
+		}, {
+			accepted: ['accepted', 'busy', 'accepted', 'accepted', 'accepted'],
+			settled: ['sent', 'cancelled', 'sent', 'sent', 'sent'],
+			log: ['seal:first0', 'send:first0', 'small0', 'other0', 'internal0'],
+			pending: 0,
+		});
+	});
+
+	test('cancelTag drops only transfers that reserved no nonce yet and sends a sealing one in order', async () => {
+		const queue = new ParadisMobileSendQueue();
+		const log: string[] = [];
+		const owner = {};
+		const sealing = gatedTransfer(owner, 'old', log, { priority: ParadisMobileSendPriority.Control, fragmentCount: 2 });
+		const results = [
+			queue.submit({ ...sealing.value, cancelTag: 'renderer-1', stream: 'term' }),
+			queue.submit({ ...transfer(owner, 'queued', 1, log), cancelTag: 'renderer-1', stream: 'term' }),
+			queue.submit({ ...transfer(owner, 'other', 1, log), cancelTag: 'renderer-2', stream: 'term' }),
+		];
+		// old は 1 断片目を封緘中（nonce を予約した）。queued は待っているだけ
+		const cancelled = queue.cancelTag('renderer-1');
+		sealing.release();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		sealing.release();
+
+		assert.deepStrictEqual({ cancelled, settled: await Promise.all(results.map(handle => handle.settled)), log, pending: queue.pendingBytes }, {
+			cancelled: 1,
+			settled: ['sent', 'cancelled', 'sent'],
+			log: ['seal:old0', 'send:old0', 'seal:old1', 'send:old1', 'other0'],
+			pending: 0,
 		});
 	});
 });
