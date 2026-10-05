@@ -361,10 +361,58 @@ describe('relay APNs push', () => {
 		vi.restoreAllMocks();
 		const revoke = await SELF.fetch(`https://relay/device/${deviceId}/mobile/revoke`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` }, body: JSON.stringify({ mobileId }) });
 		expect(revoke.ok).toBe(true);
+		// 失効と一緒に再送待ちの行も消える
+		expect(await readQueue(deviceId)).toEqual([]);
 
 		const after = stubFetch(200);
 		await runDueRetries(deviceId);
 		expect(after).not.toHaveBeenCalled();
+	});
+
+	it('acknowledges a push with a request id after recording it, and does not send the same request twice', async () => {
+		const { deviceId, pcWs, mobileId } = await offlineMobileWithToken();
+
+		const fetchMock = stubFetch(200);
+		const requestId = 'req-0123456789abcdef';
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA', requestId }));
+		const firstAck = await pcWs.nextControlOfType('push-ack');
+		await waitFor(() => fetchMock.mock.calls.length >= 1);
+		// PC が ack を受け取れずに送り直した（同じ依頼 ID）
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA', requestId }));
+		const secondAck = await pcWs.nextControlOfType('push-ack');
+		await new Promise(r => setTimeout(r, 100));
+
+		expect({ firstAck, secondAck, sends: fetchMock.mock.calls.length, queue: await readQueue(deviceId) }).toEqual({
+			firstAck: { type: 'push-ack', requestId, result: 'accepted' },
+			secondAck: { type: 'push-ack', requestId, result: 'accepted' },
+			sends: 1,
+			queue: [],
+		});
+	});
+
+	it('keeps an acknowledged push in the queue until a temporary failure is retried', async () => {
+		const { deviceId, pcWs, mobileId } = await offlineMobileWithToken();
+
+		const failing = stubFetch(503, 'ServiceUnavailable');
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA', requestId: 'req-retry-0001' }));
+		await pcWs.nextControlOfType('push-ack');
+		await waitFor(() => failing.mock.calls.length >= 1);
+		await new Promise(r => setTimeout(r, 50));
+		expect((await readQueue(deviceId)).map(row => row.attempt)).toEqual([1]);
+		vi.restoreAllMocks();
+
+		const ok = stubFetch(200);
+		await runDueRetries(deviceId);
+		expect({ sends: ok.mock.calls.length, queue: await readQueue(deviceId) }).toEqual({ sends: 1, queue: [] });
+	});
+
+	it('rejects an oversized push with a request id so the PC stops resending it', async () => {
+		const { pcWs, mobileId } = await offlineMobileWithToken();
+
+		const fetchMock = stubFetch(200);
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'A'.repeat(4000), requestId: 'req-too-large-01' }));
+		const ack = await pcWs.nextControlOfType('push-ack');
+		expect({ ack, sends: fetchMock.mock.calls.length }).toEqual({ ack: { type: 'push-ack', requestId: 'req-too-large-01', result: 'rejected' }, sends: 0 });
 	});
 
 	it('resends after a transport failure with the same collapse id, adding a random one when the PC gave none', async () => {

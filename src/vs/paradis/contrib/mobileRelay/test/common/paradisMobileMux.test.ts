@@ -8,7 +8,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { SecureChannel } from '../../common/paradisMobileCrypto.js';
+import { ParadisMobileSealBrokenError, SecureChannel } from '../../common/paradisMobileCrypto.js';
 import { FrameMux, IParadisMobileFrameTrafficSample, ParadisMobileFrameAssembler } from '../../common/paradisMobileMux.js';
 import { Channels, decodeFrame, encodeFrame, Frame } from '../../common/paradisMobileProtocol.js';
 import { ParadisMobileSendQueue } from '../../common/paradisMobileSendQueue.js';
@@ -197,6 +197,46 @@ suite('ParadisMobileMux version 4', () => {
 		await first;
 		await dropped;
 		assert.deepStrictEqual({ sent, congestion: queue.congestionBytes() }, { sent: [10 + 8 + 28], congestion: 0 });
+	});
+});
+
+suite('ParadisMobileCrypto nonce reservation', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('reserves a distinct nonce before awaiting and resolves concurrent seals in nonce order', async () => {
+		const channels = await establishChannels();
+		const settled: number[] = [];
+		const sealed = await Promise.all([1, 2, 3].map(async value => {
+			const result = await channels.sender.seal(new Uint8Array([value]));
+			settled.push(value);
+			return result;
+		}));
+		const opened: number[] = [];
+		for (const message of sealed) {
+			opened.push((await channels.receiver.open(message))[0]);
+		}
+
+		assert.deepStrictEqual({ nonces: sealed.map(message => message[7]), settled, opened }, { nonces: [0, 1, 2], settled: [1, 2, 3], opened: [1, 2, 3] });
+	});
+
+	test('stops sealing after a failure and lets the mux end the session instead of skipping the lost nonce', async () => {
+		// encrypt を許さない鍵で封緘を失敗させる
+		const decryptOnly = await globalThis.crypto.subtle.importKey('raw', new Uint8Array(32).fill(3) as BufferSource, 'AES-GCM', false, ['decrypt']);
+		const receiverKey = await importAesKey(new Uint8Array(32).fill(4));
+		const channel = new SecureChannel(decryptOnly, receiverKey);
+		const failures: string[] = [];
+		const sent: number[] = [];
+		const mux = new FrameMux(channel, {
+			sendSealed: sealed => sent.push(sealed.length),
+			onSealFailure: error => failures.push(error instanceof ParadisMobileSealBrokenError ? 'broken' : 'other'),
+		});
+
+		// 取り下げた送信は（今までどおり）送らずに解決する
+		const first = await mux.send(Channels.State, new Uint8Array(4)).then(() => 'resolved', () => 'rejected');
+		const second = await mux.send(Channels.State, new Uint8Array(4)).then(() => 'resolved', () => 'rejected');
+		const again = await channel.seal(new Uint8Array(1)).then(() => 'sealed', error => error instanceof ParadisMobileSealBrokenError ? 'broken' : 'other');
+
+		assert.deepStrictEqual({ first, second, again, failures, sent }, { first: 'resolved', second: 'resolved', again: 'broken', failures: ['broken'], sent: [] });
 	});
 });
 

@@ -71,7 +71,14 @@ export type RelayControlMessage =
 	// 置き換わる）、threadId は `aps.thread-id`（通知センターでまとまる）になる。
 	// 形式は PARADIS_PUSH_ID_PATTERN。外れた値はリレーが黙って捨てる（プッシュ自体は送る）。
 	// threadId は aps.thread-id として平文で出るので、同じスペースの通知どうしの紐付けはリレーと Apple に見える。
-	| { readonly type: 'push-notify'; readonly mobileId: string; readonly payload: string; readonly collapseId?: string; readonly threadId?: string }
+	//
+	// requestId は任意（push.ack.v1。旧PCは送らない、旧リレーは読まずに無視する）。付けて頼まれたリレーは、
+	// 依頼をストレージへ書いてから push-ack を返し、同じ requestId の送り直しは APNs へ送らずに push-ack だけ返す。
+	// 形式は PARADIS_PUSH_ID_PATTERN。外れた値は「付いていない」として扱う（push-ack は返さない）。
+	| { readonly type: 'push-notify'; readonly mobileId: string; readonly payload: string; readonly collapseId?: string; readonly threadId?: string; readonly requestId?: string }
+	// リレー→PC: requestId 付きの push-notify を受理した（accepted: 書き留めた。rejected: 形が悪く送れない）。
+	// どちらでも PC は outbox から外す。APNs が受け取ったか・端末に出たかの証拠ではない。
+	| { readonly type: 'push-ack'; readonly requestId: string; readonly result: 'accepted' | 'rejected' }
 	// リレー→PC: モバイル自身がペアリングを解除した（self-revoke）。PCは登録デバイス一覧から
 	// この mobileId を取り除く。
 	| { readonly type: 'mobile-revoked'; readonly mobileId: string }
@@ -100,12 +107,17 @@ export const PARADIS_PUSH_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
  * 取り消されたスマホが理由を知らないまま永久に再接続していた。いまはソケットを
  * 受理してから、この値で閉じる（旧アプリは未知のcloseとして従来どおり再接続するだけ）。
  * - CREDENTIAL_REFUSED: mobileToken が一致しない
- * - UNKNOWN_MOBILE: その mobileId の登録がリレーに無い（PCで解除された、PCが登録し直した）
- * どちらも待っても直らず、再ペアリングだけが解決策。
+ * - UNKNOWN_MOBILE: その mobileId の登録がリレーに無い（PCで解除された、PCが登録し直した）。
+ *   PC からの失効（revoke）も今はこの値で閉じる
+ * - REVOKED: PC がこの端末を失効させた。アプリは 4401 / 4404 と同じ認証拒否として扱うが、
+ *   リレーはまだこの値で閉じない（この値を知らない旧アプリは張り直し続けるので、新しいアプリが
+ *   行き渡ってから切り替える）
+ * どれも待っても直らず、再ペアリングだけが解決策。
  */
 export const PARADIS_RELAY_CLOSE_CODE = Object.freeze({
 	CREDENTIAL_REFUSED: 4401,
 	UNKNOWN_MOBILE: 4404,
+	REVOKED: 4410,
 } as const);
 
 export function encodeRelayControl(message: RelayControlMessage): string {

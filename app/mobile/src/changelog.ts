@@ -40,6 +40,32 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.6',
+		date: '2026-10-06',
+		items: [
+			{
+				icon: 'notifications-outline',
+				title: '音声通知をオンにしたまま別のアプリへ移っても、完了や質問のバナーが出るようになりました',
+				body: 'アプリを裏へ回したことを PC へ伝えるようにしました。あわせて、PC から登録を外されたときは再接続を繰り返さず、ペアリングし直しの案内を出します（PC の Para Code も新しい版が必要です）。',
+			},
+			{
+				icon: 'checkmark-done-outline',
+				title: '送れたか分からないまま失敗した指示を送り直しても、二重に届かないようになりました',
+				body: '入力欄と通知からの返信で、時間切れで入力欄へ戻った同じ文を送り直したとき、PC が先に受け取っていれば二度は送りません。',
+			},
+			{
+				icon: 'git-network-outline',
+				title: 'サブエージェントの詳細が、開いている間も新しい会話に追いつくようになりました',
+				body: '動いている子を開いたままにすると、開いた時の内容で止まっていたのを直しました。Workflow が動かしたサブエージェントも一覧と詳細に出ます（PC の Para Code も新しい版が必要です）。',
+			},
+			{
+				icon: 'flash-outline',
+				title: '会話を開いたときの読み込みが軽くなりました',
+				body: '最近の発言・さかのぼり・サブエージェントの詳細を、PC が縮めて送るようになりました（PC の Para Code も新しい版が必要です）。',
+			},
+		],
+	},
+	{
 		version: '0.12.5',
 		date: '2026-10-05',
 		items: [
@@ -58,21 +84,6 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				icon: 'call-outline',
 				title: '電話などで音声通知が途切れても、終わった後に続きから鳴るようになりました',
 				body: '割り込みの間に届いた音声通知を捨てていたのを直しました。続けて届いた音声通知も、5 件までは溜めて順に鳴らします。',
-			},
-			{
-				icon: 'checkmark-done-outline',
-				title: '送れたか分からないまま失敗した指示を送り直しても、二重に届かないようになりました',
-				body: '入力欄と通知からの返信で、時間切れで入力欄へ戻った同じ文を送り直したとき、PC が先に受け取っていれば二度は送りません。',
-			},
-			{
-				icon: 'git-network-outline',
-				title: 'サブエージェントの詳細が、開いている間も新しい会話に追いつくようになりました',
-				body: '動いている子を開いたままにすると、開いた時の内容で止まっていたのを直しました。Workflow が動かしたサブエージェントも一覧と詳細に出ます（PC の Para Code も新しい版が必要です）。',
-			},
-			{
-				icon: 'flash-outline',
-				title: '会話を開いたときの読み込みが軽くなりました',
-				body: '最近の発言・さかのぼり・サブエージェントの詳細を、PC が縮めて送るようになりました（PC の Para Code も新しい版が必要です）。',
 			},
 		],
 	},
