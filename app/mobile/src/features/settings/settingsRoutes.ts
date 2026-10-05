@@ -17,9 +17,10 @@ import type { RouteHref } from '../../routes.js';
  * | `/settings/usage/rtk` | RTK の節約 |
  * | `/settings/usage/github` | GitHub API |
  * | `/settings/usage/system` | システム（CPU・メモリ・ディスクの内訳） |
+ * | `/settings/usage/voice` | 読み上げ（Aivis・ElevenLabs の使用量。通知と音声の「読み上げの使用量」からも開く） |
  * | `/settings/connection-log` | 接続の記録と簡単な診断（W2-22） |
  */
-export type UsageDetailPage = 'cost' | 'rtk' | 'github' | 'system';
+export type UsageDetailPage = 'cost' | 'rtk' | 'github' | 'system' | 'voice';
 
 export const settingsRoutes = {
 	sessionView: (): RouteHref => '/settings/session-view',

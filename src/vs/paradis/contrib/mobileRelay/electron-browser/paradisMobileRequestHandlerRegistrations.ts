@@ -21,5 +21,6 @@ import './paradisMobileFileAtRequests.js'; // 差分の画面の変更前・変�
 import './paradisMobileWordDiffRequests.js'; // 差分の画面の Word の差分（scm.word-diff.v1）
 import './paradisMobileFileIconRequests.js'; // ファイルの一覧のアイコン（fs.icon-theme.v1）
 import './paradisMobileAttachmentRequests.js'; // モバイルから上げた添付画像のサムネイルと原寸（fs.attachment.v1）
+import './paradisMobileVoiceUsageRequests.js'; // 読み上げ（Aivis・ElevenLabs）の使用量（usage.voice.v1）
 
 export { };

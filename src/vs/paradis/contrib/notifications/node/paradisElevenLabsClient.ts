@@ -243,8 +243,11 @@ export class ParadisElevenLabsClient {
 
 	// --- 使用量 ----------------------------------------------------------------------------------
 
-	/** 直近 `days` 日の日別の文字数と、モデル別・声別の内訳。内訳が取れなくても日別は返す。 */
-	async getUsage(apiKey: string, days: number): Promise<IParadisElevenLabsUsageResult> {
+	/**
+	 * 直近 `days` 日の日別の文字数と、モデル別・声別の内訳。内訳が取れなくても日別は返す。
+	 * `recentDays` を渡すと、同じ取得から直近 `recentDays` 日だけの内訳（`recent`）も作る。
+	 */
+	async getUsage(apiKey: string, days: number, recentDays?: number): Promise<IParadisElevenLabsUsageResult> {
 		const range = paradisElevenLabsUsageRange(Math.max(1, Math.min(90, Math.floor(days))), this.now());
 		const query = { start_unix: range.startMs, end_unix: range.endMs, aggregation_interval: 'day' };
 		const [daily, byModel, byVoice] = await Promise.all([
@@ -258,7 +261,7 @@ export class ParadisElevenLabsClient {
 				return undefined;
 			}),
 		]);
-		return paradisSummarizeElevenLabsUsage(daily, byModel, byVoice, range);
+		return paradisSummarizeElevenLabsUsage(daily, byModel, byVoice, range, recentDays);
 	}
 
 	/** プランの上限と残り。キーに user_read が無ければ missing-permissions を返す。 */

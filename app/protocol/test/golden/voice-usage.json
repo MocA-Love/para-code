@@ -1,0 +1,30 @@
+{
+	"$comment": "PC -> mobile の fs の voiceUsage の応答の data（読み上げの使用量、usage.voice.v1）の固定形。current は両方のキーが入っていて取れたとき、failed は前に取れた値が無いまま失敗したとき。PC の組み立て（paradisMobileVoiceUsage.ts）とアプリの読み取り（app/mobile/src/features/usage/voiceUsageWire.ts の parseVoiceUsageResult）を両方このファイルで確かめる。配列は先頭の要素に全項目を持たせる。",
+	"current": {
+		"fetchedAt": 1791000000000,
+		"engine": "elevenlabs",
+		"aivis": {
+			"keyId": "0123456789ab",
+			"fetchedAt": 1791000000000,
+			"days": [{ "date": "2026-10-05", "requests": 96, "chars": 3920, "credits": 0.5 }],
+			"byApiKey7": [{ "name": "para-code", "requests": 96, "chars": 3920, "credits": 0.5 }],
+			"byApiKey30": [{ "name": "para-code", "requests": 1102, "chars": 45200, "credits": 0.5 }],
+			"creditBalance": 1000
+		},
+		"elevenLabs": {
+			"keyId": "ba9876543210",
+			"fetchedAt": 1791000000000,
+			"days": [{ "date": "2026-10-05", "chars": 3920 }],
+			"byModel7": [{ "label": "Eleven v4 Turbo", "chars": 3920 }],
+			"byModel30": [{ "label": "Eleven v4 Turbo", "chars": 41800 }],
+			"byVoice7": [{ "label": "voice-a", "chars": 3920 }],
+			"byVoice30": [{ "label": "voice-a", "chars": 39020 }],
+			"subscription": { "used": 61540, "limit": 100000, "resetAt": 1792540800000, "tier": "creator" }
+		}
+	},
+	"failed": {
+		"fetchedAt": 1791000000000,
+		"engine": "aivis",
+		"aivis": { "keyId": "0123456789ab", "fetchedAt": 1791000000000, "error": "Aivis API error 503" }
+	}
+}

@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from 'react';
 import { Linking } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
@@ -14,6 +14,29 @@ import { readNotificationPermission } from '../../src/features/settings/onboardi
 import { GroupHeader, GroupNote, SettingsScreen, SettingsSwitch } from '../../src/features/settings/settingsScaffold.js';
 import { voiceNotificationValue } from '../../src/features/settings/settingsSummary.js';
 import { VoiceNotificationDrawer } from '../../src/features/settings/voiceNotificationDrawer.js';
+import { settingsRoutes } from '../../src/features/settings/settingsRoutes.js';
+import { useUsageAutoRefresh, useUsageOverview } from '../../src/features/usage/usageStore.js';
+import { groupVoiceUsage, voiceEmptyReason, voiceEmptyText, voiceSummaryHint } from '../../src/features/usage/voiceUsageModel.js';
+import type { UsageKind } from '../../src/features/usage/usageAggregate.js';
+import { useNow } from '../../src/time.js';
+
+const VOICE_KINDS: readonly UsageKind[] = ['voice'];
+
+/** 「読み上げの使用量」の行の補足（残りと残高。無ければ、出ない理由）。 */
+function useVoiceUsageHint(): string | undefined {
+	const now = useNow();
+	const overview = useUsageOverview({ resources: false });
+	useUsageAutoRefresh(VOICE_KINDS);
+	const entries = overview.entries.filter(entry => entry.kind === 'pc');
+	const groups = groupVoiceUsage(entries, now);
+	const summary = voiceSummaryHint(groups);
+	if (summary !== undefined) {
+		return summary;
+	}
+	const errors = entries.flatMap(entry => entry.sourceKeys.map(key => overview.errorOf(key, 'voice')).filter(error => error !== undefined));
+	const reason = voiceEmptyReason({ groups, anyValue: entries.some(entry => entry.values.voice !== undefined), errors, loading: overview.isLoading('voice') });
+	return reason === 'no-keys' || reason === 'update-pc' ? voiceEmptyText(reason) : undefined;
+}
 
 const PERMISSION_VALUE: Record<NotificationPermissionState, string> = {
 	granted: '許可済み',
@@ -40,6 +63,8 @@ export default function NotificationSettingsScreen() {
 		voice: s.voiceNotifications,
 	})));
 	const [voiceOpen, setVoiceOpen] = useState(false);
+	const router = useRouter();
+	const voiceUsageHint = useVoiceUsageHint();
 	const [permission, setPermission] = useState<NotificationPermissionState | undefined>(undefined);
 	// 設定アプリで許可を変えて戻ってきたときにも読み直す
 	const appActive = useAppIsActive();
@@ -125,6 +150,12 @@ export default function NotificationSettingsScreen() {
 					value={voiceNotificationValue(voice)}
 					trailing="chevron"
 					onPress={() => { haptic('move'); setVoiceOpen(true); }}
+				/>
+				<ListRow
+					label="読み上げの使用量"
+					hint={voiceUsageHint}
+					trailing="chevron"
+					onPress={() => { haptic('move'); router.push(settingsRoutes.usageDetail('voice')); }}
 				/>
 			</ListGroup>
 		</SettingsScreen>
