@@ -203,7 +203,11 @@ export type RelayControlMessage =
 	// 置き換わる）、threadId は `aps.thread-id`（通知センターでまとまる）になる。
 	// 形式は PARADIS_PUSH_ID_PATTERN。外れた値はリレーが黙って捨てる（プッシュ自体は送る）。
 	// threadId は aps.thread-id として平文で出るので、同じスペースの通知どうしの紐付けはリレーと Apple に見える。
-	| { readonly type: 'push-notify'; readonly mobileId: string; readonly payload: string; readonly collapseId?: string; readonly threadId?: string }
+	// requestId（push.ack.v1）を付けると、リレーは依頼を書き留めてから push-ack を返し、同じ requestId の送り直しを
+	// APNs へ二重に送らない。旧リレーは読まずに無視する（push-ack も返さない）。
+	| { readonly type: 'push-notify'; readonly mobileId: string; readonly payload: string; readonly collapseId?: string; readonly threadId?: string; readonly requestId?: string }
+	// リレー→PC: requestId 付きの push-notify を受理した（accepted）／形が悪く送れない（rejected）。どちらでも outbox から外す
+	| { readonly type: 'push-ack'; readonly requestId: string; readonly result: 'accepted' | 'rejected' }
 	// リレー→PC: モバイル自身がペアリングを解除した（self-revoke）。PCは登録一覧から取り除く
 	| { readonly type: 'mobile-revoked'; readonly mobileId: string }
 	// 保活。pingにはリレーのDurable Objectを起こさずエッジが自動応答する（setWebSocketAutoResponse）
@@ -228,6 +232,8 @@ export const PARADIS_PUSH_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 export const PARADIS_RELAY_CLOSE_CODE = Object.freeze({
 	CREDENTIAL_REFUSED: 4401,
 	UNKNOWN_MOBILE: 4404,
+	/** PC からの失効。アプリは認証拒否として扱うが、リレーはまだ送らない（今は 4404 で閉じる）。 */
+	REVOKED: 4410,
 } as const);
 
 export function encodeRelayControl(message: RelayControlMessage): string {

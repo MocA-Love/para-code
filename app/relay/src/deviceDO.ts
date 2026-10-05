@@ -50,6 +50,19 @@ const MAX_PUSH_PAYLOAD_BYTES = 3800;
  */
 const MAX_PUSH_QUEUE_ROWS = 50;
 
+/**
+ * 送信中の行を「送った」とみなして別の送信から外しておく時間。送っている間に DO が落ちて結果を書けなかった
+ * 行は、この後で送り直す（同じ apns-collapse-id なので、届いていても端末上で置き換わる）。
+ */
+const PUSH_SEND_LEASE_MS = 60_000;
+
+/**
+ * PC の依頼 ID（push-notify の requestId）を覚えておく時間と数。PC の outbox は最長 10 分で諦めるので、
+ * それより長く覚えて、同じ依頼の送り直しで APNs へ二重に送らない。
+ */
+const PUSH_REQUEST_RETENTION_MS = 15 * 60_000;
+const MAX_PUSH_REQUEST_ROWS = 500;
+
 /** 再送待ちのプッシュ1件（push_queue の1行）。 */
 interface QueuedPush {
 	readonly id: number;
@@ -110,6 +123,8 @@ export class DeviceDO implements DurableObject {
 		// APNsの一時的な失敗（429 / 5xx / 通信失敗）を後で送り直すための待ち行列。
 		// DOは再送を待つ間に退避（evict）されうるので、メモリではなくSQLへ置いてalarmで起こす。
 		this.sql.exec(`CREATE TABLE IF NOT EXISTS push_queue (id INTEGER PRIMARY KEY, mobileId TEXT, payload TEXT, collapseId TEXT, threadId TEXT, attempt INTEGER, nextAt INTEGER, expiresAt INTEGER)`);
+		// PC が依頼 ID を付けて頼んだプッシュ（受理した ID）。同じ ID の送り直しを二重に送らないため。
+		this.sql.exec(`CREATE TABLE IF NOT EXISTS push_requests (requestId TEXT PRIMARY KEY, at INTEGER)`);
 		// 後方互換マイグレーション: 既存DOの mobiles テーブルにAPNs列を追加する。
 		// SQLiteは `ADD COLUMN IF NOT EXISTS` を持たないため、既に存在する場合の例外は握りつぶす。
 		this.migrateMobilesForPush();
@@ -396,8 +411,12 @@ export class DeviceDO implements DurableObject {
 			return Response.json({ error: 'missing mobileId' }, { status: 400 });
 		}
 		this.sql.exec('DELETE FROM mobiles WHERE mobileId = ?', body.mobileId);
+		// 失効した端末へのプッシュの再送待ちは届け先が無いので消す
+		this.sql.exec('DELETE FROM push_queue WHERE mobileId = ?', body.mobileId);
+		// 1000 で閉じるとアプリは理由を知らずに張り直し続ける。アプリが認証拒否として扱う 4404 で閉じる
+		// （4410 は新しいアプリしか知らないので、まだ使わない）
 		for (const ws of this.state.getWebSockets(`m:${body.mobileId}`)) {
-			try { ws.close(1000, 'revoked'); } catch { /* ignore */ }
+			try { ws.close(PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE, 'revoked'); } catch { /* ignore */ }
 		}
 		return Response.json({ ok: true });
 	}
@@ -415,6 +434,7 @@ export class DeviceDO implements DurableObject {
 			return new Response('unauthorized', { status: 401 });
 		}
 		this.sql.exec('DELETE FROM mobiles WHERE mobileId = ?', body.mobileId);
+		this.sql.exec('DELETE FROM push_queue WHERE mobileId = ?', body.mobileId);
 		for (const ws of this.state.getWebSockets(`m:${body.mobileId}`)) {
 			try { ws.close(1000, 'revoked'); } catch { /* ignore */ }
 		}
@@ -661,7 +681,12 @@ export class DeviceDO implements DurableObject {
 					try { ws.close(1000, 'rejected'); } catch { /* ignore */ }
 				}
 			} else if (msg.type === 'push-notify') {
-				await this.pushNotify(msg.mobileId, msg.payload, pushIdOrUndefined(msg.collapseId), pushIdOrUndefined(msg.threadId));
+				const requestId = pushIdOrUndefined(msg.requestId);
+				if (requestId !== undefined) {
+					await this.pushNotifyDurably(ws, requestId, msg.mobileId, msg.payload, pushIdOrUndefined(msg.collapseId), pushIdOrUndefined(msg.threadId));
+				} else {
+					await this.pushNotify(msg.mobileId, msg.payload, pushIdOrUndefined(msg.collapseId), pushIdOrUndefined(msg.threadId));
+				}
 			}
 			// 注: PC→pairing方向のpairing-msg中継は行わない（現行プロトコルはpairing→PCの一方向）。
 		}
@@ -710,6 +735,85 @@ export class DeviceDO implements DurableObject {
 	}
 
 	/**
+	 * 依頼 ID 付きの push-notify（push.ack.v1）。APNs へ送る前に依頼と再送待ちの行を SQL へ書き、書けたら
+	 * PC へ push-ack を返す（PC はそれを見て自分の outbox から外す）。同じ依頼 ID がもう一度来たら、送らずに
+	 * もう一度 push-ack だけ返す（PC の送り直しで二重に鳴らさない）。結果（送れた・再送待ち）は後から行に残す。
+	 */
+	private async pushNotifyDurably(ws: WebSocket, requestId: string, mobileId: string, payload: string, collapseId: string | undefined, threadId: string | undefined): Promise<void> {
+		const now = Date.now();
+		this.sql.exec('DELETE FROM push_requests WHERE at < ?', now - PUSH_REQUEST_RETENTION_MS);
+		if (this.sql.exec('SELECT requestId FROM push_requests WHERE requestId = ?', requestId).toArray().length > 0) {
+			this.sendPushAck(ws, requestId, 'accepted');
+			return;
+		}
+		if (typeof payload !== 'string' || typeof mobileId !== 'string' || new TextEncoder().encode(payload).length > MAX_PUSH_PAYLOAD_BYTES) {
+			console.warn('[push] payload missing or too large; dropping');
+			// 送り直しても変わらないので、PC には受け取ったと返して outbox から外させる
+			this.sendPushAck(ws, requestId, 'rejected');
+			return;
+		}
+		const expiresAtSeconds = Math.floor(now / 1000) + PUSH_EXPIRATION_SECONDS;
+		const pushCollapseId = collapseId ?? randomTokenB64u(16);
+		this.sql.exec('INSERT INTO push_requests (requestId, at) VALUES (?, ?)', requestId, now);
+		this.sql.exec('DELETE FROM push_requests WHERE requestId NOT IN (SELECT requestId FROM push_requests ORDER BY at DESC LIMIT ?)', MAX_PUSH_REQUEST_ROWS);
+		// 送る前に行を置く。送っている間に落ちても alarm が送り直す（行は送り終えてから消す）
+		const id = this.insertPushRow({ mobileId, payload, collapseId: pushCollapseId, threadId, attempt: 0, expiresAtSeconds }, now + PUSH_SEND_LEASE_MS);
+		await this.scheduleAlarm();
+		this.sendPushAck(ws, requestId, 'accepted');
+		await this.sendQueuedPush({ id, mobileId, payload, collapseId: pushCollapseId, threadId, attempt: 0, expiresAtSeconds });
+		await this.scheduleAlarm();
+	}
+
+	private sendPushAck(ws: WebSocket, requestId: string, result: 'accepted' | 'rejected'): void {
+		try { ws.send(encodeRelayControl({ type: 'push-ack', requestId, result })); } catch { /* PC は送り直すので、その時にまた返す */ }
+	}
+
+	private insertPushRow(push: Omit<QueuedPush, 'id'>, nextAt: number): number {
+		const row = this.sql.exec(
+			'INSERT INTO push_queue (mobileId, payload, collapseId, threadId, attempt, nextAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id',
+			push.mobileId, push.payload, push.collapseId ?? null, push.threadId ?? null, push.attempt, nextAt, push.expiresAtSeconds,
+		).toArray()[0];
+		this.sql.exec('DELETE FROM push_queue WHERE id NOT IN (SELECT id FROM push_queue ORDER BY id DESC LIMIT ?)', MAX_PUSH_QUEUE_ROWS);
+		return row!.id as number;
+	}
+
+	/**
+	 * 行に置いたプッシュを1回送り、結果を行へ書く。送れた・送り先が無い・送り直しても変わらない失敗なら行を消し、
+	 * 一時的な失敗なら次の時刻を書く（上限・有効期限を超えるなら消す）。送信が例外で終わったら、行は貸し出しの
+	 * 期限まで残し、その後に送り直す（失敗の回数は数える）。
+	 */
+	private async sendQueuedPush(push: QueuedPush): Promise<void> {
+		this.sql.exec('UPDATE push_queue SET nextAt = ? WHERE id = ?', Date.now() + PUSH_SEND_LEASE_MS, push.id);
+		let result: ApnsSendResult | undefined;
+		try {
+			result = await this.sendPushOnce(push);
+		} catch (err) {
+			console.warn('[push] send failed:', err);
+			this.reschedulePushRow(push, undefined, Date.now() + PUSH_SEND_LEASE_MS);
+			return;
+		}
+		if (result?.kind === 'retry') {
+			this.reschedulePushRow(push, result.retryAfterMs);
+			return;
+		}
+		this.sql.exec('DELETE FROM push_queue WHERE id = ?', push.id);
+	}
+
+	/** 失敗を1回数えて次の時刻を書く。上限を超えた・有効期限までに送れないなら消す。 */
+	private reschedulePushRow(push: QueuedPush, retryAfterMs: number | undefined, at?: number): void {
+		const attempt = push.attempt + 1;
+		const nextAt = at ?? Date.now() + pushRetryDelayMs(attempt, retryAfterMs, Math.random());
+		if (attempt > PUSH_MAX_RETRIES || nextAt >= push.expiresAtSeconds * 1000) {
+			if (attempt > PUSH_MAX_RETRIES) {
+				console.warn('[push] giving up after retries');
+			}
+			this.sql.exec('DELETE FROM push_queue WHERE id = ?', push.id);
+			return;
+		}
+		this.sql.exec('UPDATE push_queue SET attempt = ?, nextAt = ? WHERE id = ?', attempt, nextAt, push.id);
+	}
+
+	/**
 	 * 登録済みトークンへ1回だけ送る。トークンが無い（未登録・削除済み・モバイル自体が解除済み）
 	 * なら undefined。トークンが失効していれば、ここで消す。
 	 */
@@ -746,16 +850,13 @@ export class DeviceDO implements DurableObject {
 		if (nextAt >= push.expiresAtSeconds * 1000) {
 			return;
 		}
-		this.sql.exec(
-			'INSERT INTO push_queue (mobileId, payload, collapseId, threadId, attempt, nextAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?)',
-			push.mobileId, push.payload, push.collapseId ?? null, push.threadId ?? null, push.attempt, nextAt, push.expiresAtSeconds,
-		);
-		this.sql.exec('DELETE FROM push_queue WHERE id NOT IN (SELECT id FROM push_queue ORDER BY id DESC LIMIT ?)', MAX_PUSH_QUEUE_ROWS);
+		this.insertPushRow(push, nextAt);
 	}
 
 	/**
-	 * 送信時刻が来た再送待ちを送る（alarm から呼ぶ）。行は送る前に消す: 送信中に例外で
-	 * alarm が打ち切られても、同じ通知を二重に鳴らすより1回落とす方がまし。
+	 * 送信時刻が来た再送待ちを送る（alarm から呼ぶ）。行は送り終えてから消す（送る前に消すと、送っている間に
+	 * 落ちたときに通知が消える）。送っている間は貸し出しの時刻を書いておき、落ちたらその後に送り直す
+	 * （同じ apns-collapse-id なので、届いていても端末上で置き換わる）。
 	 */
 	private async flushPushQueue(): Promise<void> {
 		const now = Date.now();
@@ -770,18 +871,11 @@ export class DeviceDO implements DurableObject {
 				attempt: raw.attempt as number,
 				expiresAtSeconds: raw.expiresAt as number,
 			};
-			this.sql.exec('DELETE FROM push_queue WHERE id = ?', push.id);
 			if (push.expiresAtSeconds * 1000 <= Date.now()) {
+				this.sql.exec('DELETE FROM push_queue WHERE id = ?', push.id);
 				continue;
 			}
-			try {
-				const result = await this.sendPushOnce(push);
-				if (result?.kind === 'retry') {
-					this.enqueuePushRetry({ ...push, attempt: push.attempt + 1 }, result.retryAfterMs);
-				}
-			} catch (err) {
-				console.warn('[push] retry failed:', err);
-			}
+			await this.sendQueuedPush(push);
 		}
 	}
 

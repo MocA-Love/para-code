@@ -30,6 +30,11 @@ export interface IParadisMobileFrameTrafficSample {
 export interface FrameMuxOptions {
 	readonly sendSealed: (sealed: Uint8Array) => void;
 	readonly onError?: (error: unknown) => void;
+	/**
+	 * 封緘に失敗した（予約した nonce に欠番ができた）。この mux は以後何も送らない。受け手は nonce の完全一致を
+	 * 求めるので、同じ暗号セッションは続けられない。呼び手はセッションを畳み、新しい握手へ移すこと（設計 2.12）。
+	 */
+	readonly onSealFailure?: (error: unknown) => void;
 	readonly onTraffic?: (sample: IParadisMobileFrameTrafficSample) => void;
 	/**
 	 * 断片の組み立ての誤り（抜け・上限超え）。復号はできているので暗号層の失敗とは分けて数える。
@@ -216,7 +221,14 @@ export class FrameMux {
 			...(interleave ? { interleave: true } : {}),
 			fragmentCount,
 			bytes: payload.length,
-			sealFragment: index => this.channel.seal(encodeFrame(fragmentAt(index))),
+			sealFragment: async index => {
+				try {
+					return await this.channel.seal(encodeFrame(fragmentAt(index)));
+				} catch (error) {
+					this.failSealing(error);
+					throw error;
+				}
+			},
 			sendSealed: (sealed, index) => {
 				this.options.sendSealed(sealed);
 				const trafficObserver = this.options.onTraffic;
@@ -232,6 +244,19 @@ export class FrameMux {
 				}
 			},
 		});
+	}
+
+	/** 封緘の失敗で暗号セッションが使えなくなった。残りを取り下げ、呼び手へ一度だけ知らせる。 */
+	private failSealing(error: unknown): void {
+		if (this.disposed) {
+			return;
+		}
+		this.dispose();
+		try {
+			this.options.onSealFailure?.(error);
+		} catch {
+			// 知らせる側の例外で送信の列を止めない
+		}
 	}
 
 	/** この mux の送信を全部取り下げ、以後は送らない（セッションを張り替えた・捨てた）。 */
