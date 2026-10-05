@@ -40,6 +40,28 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.5',
+		date: '2026-10-05',
+		items: [
+			{
+				icon: 'volume-high-outline',
+				title: '読み上げ（Aivis・ElevenLabs）の使用量を見られるようになりました',
+				body: '使用量の画面の「読み上げ」と、通知と音声の「読み上げの使用量」から開きます。ElevenLabs の残り文字数と上限に戻る日、Aivis の回数と残高を、日別のグラフと内訳で出します（PC の Para Code も新しい版が必要です）。',
+			},
+			{
+				icon: 'volume-high-outline',
+				title: '音声通知が、PC で合成を始めるとすぐ鳴り始め、声の大きさも揃うようになりました',
+				body: '受け取りながら鳴らし、回線が荒れたときだけ少し長めに溜めます。画面の映像を送っている間も声が遅れません。通信の仕組みを新しくしたので、PC の Para Code とこのアプリの両方を新しい版にしないとつながりません（片方だけ古いと更新の案内が出ます）。',
+				tone: 'green',
+			},
+			{
+				icon: 'call-outline',
+				title: '電話などで音声通知が途切れても、終わった後に続きから鳴るようになりました',
+				body: '割り込みの間に届いた音声通知を捨てていたのを直しました。続けて届いた音声通知も、5 件までは溜めて順に鳴らします。',
+			},
+		],
+	},
+	{
 		version: '0.12.4',
 		date: '2026-10-04',
 		items: [
@@ -67,17 +89,6 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				icon: 'layers-outline',
 				title: 'コンテキストの圧縮を、区切り線と畳んだ要約で出すようになりました',
 				body: '要約が自分の発言として長く出ていたのと、「/compact」が 2 つ並んでいたのを直しました。圧縮している間は「会話を要約しています」と出し、Claude Code では減ったトークン数も添えます。Codex の圧縮も区切り線で出ます。',
-			},
-			{
-				icon: 'volume-high-outline',
-				title: '音声通知が、PC で合成を始めるとすぐ鳴り始め、声の大きさも揃うようになりました',
-				body: '受け取りながら鳴らし、回線が荒れたときだけ少し長めに溜めます。画面の映像を送っている間も声が遅れません。通信の仕組みを新しくしたので、PC の Para Code とこのアプリの両方を新しい版にしないとつながりません（片方だけ古いと更新の案内が出ます）。',
-				tone: 'green',
-			},
-			{
-				icon: 'call-outline',
-				title: '電話などで音声通知が途切れても、終わった後に続きから鳴るようになりました',
-				body: '割り込みの間に届いた音声通知を捨てていたのを直しました。続けて届いた音声通知も、5 件までは溜めて順に鳴らします。',
 			},
 		],
 	},

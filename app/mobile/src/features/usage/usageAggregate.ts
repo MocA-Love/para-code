@@ -20,6 +20,7 @@ import {
 	type UsageModelSlice,
 } from '../../store.js';
 import { dayCost, localDateKey } from '../../usageFormat.js';
+import type { VoiceUsageResult } from './voiceUsageWire.js';
 
 /**
  * 使用量の「全 PC の合計」（案 B）の算出。画面から切り離した純関数で、`usageAggregate.test.ts` で固定している。
@@ -40,7 +41,8 @@ import { dayCost, localDateKey } from '../../usageFormat.js';
 export const USAGE_MACHINE_ID_CAPABILITY = 'usage.machine-id.v1';
 
 export type UsageSourceKind = 'pc' | 'ssh';
-export type UsageKind = 'limits' | 'cost' | 'rtk' | 'github';
+/** `voice` は読み上げ（Aivis・ElevenLabs）の使用量（PC の値。`usage.voice.v1` の PC だけ）。 */
+export type UsageKind = 'limits' | 'cost' | 'rtk' | 'github' | 'voice';
 
 /** 値の出どころ1つ（ペアリング済みの PC 1台、または PC が開いている SSH の接続先1つ）。 */
 export interface UsageSourceInfo {
@@ -80,6 +82,7 @@ export interface SourceUsageValues {
 	readonly cost?: Timed<UsageDashboardResult> | undefined;
 	readonly rtk?: Timed<RtkSavingsResult> | undefined;
 	readonly github?: Timed<GithubUsageResult> | undefined;
+	readonly voice?: Timed<VoiceUsageResult> | undefined;
 }
 
 /** 1つの機械（同じ機械の出どころをまとめたもの）。「PC ごと」の1行。 */
@@ -140,7 +143,7 @@ export function buildUsageEntries(sources: readonly UsageSourceInfo[], valuesByK
 	return groups.map(group => {
 		const primary = group[0]!;
 		const values: { -readonly [K in keyof SourceUsageValues]: SourceUsageValues[K] } = {};
-		for (const kind of ['limits', 'cost', 'rtk', 'github'] as const) {
+		for (const kind of ['limits', 'cost', 'rtk', 'github', 'voice'] as const) {
 			for (const source of group) {
 				const candidate = valuesByKey[source.key]?.[kind];
 				const current = values[kind];

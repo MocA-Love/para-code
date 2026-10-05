@@ -131,7 +131,7 @@ export interface PcResourceSummary {
 }
 
 /** 使用量を PC を名指しして取るための要求（PC ごとのコントローラの使用量の口だけ）。 */
-export type PcUsageRequester = Pick<MobileController, 'rateLimits' | 'usageDashboard' | 'rtkSavings' | 'githubUsage' | 'systemResources' | 'spaceDisk'>;
+export type PcUsageRequester = Pick<MobileController, 'rateLimits' | 'usageDashboard' | 'rtkSavings' | 'githubUsage' | 'voiceUsage' | 'systemResources' | 'spaceDisk'>;
 
 /** 使用量を取る先（PC 1台ぶん）。手元のウィンドウと、SSH の接続先のウィンドウ。 */
 export interface PcUsageTarget {

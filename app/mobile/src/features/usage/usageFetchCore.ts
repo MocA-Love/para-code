@@ -125,7 +125,7 @@ export function mergeLoadedRecords(
 			continue;
 		}
 		const values: Record<string, Timed<unknown> | undefined> = { ...file.values };
-		for (const kind of ['limits', 'cost', 'rtk', 'github'] as const) {
+		for (const kind of ['limits', 'cost', 'rtk', 'github', 'voice'] as const) {
 			const mine = record.values[kind];
 			const theirs = file.values[kind];
 			if (mine !== undefined && (theirs === undefined || mine.at >= theirs.at)) {

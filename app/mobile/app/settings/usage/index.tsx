@@ -39,6 +39,7 @@ import {
 } from '../../../src/features/usage/usageOverviewParts.js';
 import { useUsageAutoRefresh, useUsageOverview, useUsageStore } from '../../../src/features/usage/usageStore.js';
 import { useUsageScope } from '../../../src/features/usage/useUsageScope.js';
+import { VoiceUsageSection } from '../../../src/features/usage/voiceUsageSection.js';
 
 const DETAIL_LINKS: readonly { readonly page: UsageDetailPage; readonly label: string; readonly hint: string; readonly icon: typeof Activity }[] = [
 	{ page: 'cost', label: 'コスト', hint: 'トークンとコストを日別・モデル別に', icon: Activity },
@@ -47,7 +48,7 @@ const DETAIL_LINKS: readonly { readonly page: UsageDetailPage; readonly label: s
 	{ page: 'system', label: 'システム', hint: 'CPU・メモリ・ディスクと、何が使っているか', icon: Cuboid },
 ];
 
-const KINDS: readonly UsageKind[] = ['limits', 'cost', 'github'];
+const KINDS: readonly UsageKind[] = ['limits', 'cost', 'github', 'voice'];
 
 /**
  * 使用量（`/settings/usage`。Orca の accounts、モックの「使用量」）。
@@ -144,7 +145,7 @@ function UsageAllView() {
 	const onlineCount = entries.filter(entry => entry.online).length;
 	const subtitle = `${scopeCountLabel(entries)}の合計${onlineCount < entries.length ? `（オフライン ${entries.length - onlineCount}）` : ''}`;
 	const costValues = Object.fromEntries(cost.rows.map(row => [row.key, { value: row.today !== undefined ? formatUsd(row.today) : undefined, at: row.at }]));
-	const nothing = !anyOnline && entries.every(entry => entry.values.limits === undefined && entry.values.cost === undefined && entry.values.github === undefined);
+	const nothing = !anyOnline && entries.every(entry => entry.values.limits === undefined && entry.values.cost === undefined && entry.values.github === undefined && entry.values.voice === undefined);
 
 	return (
 		<SettingsScreen
@@ -175,6 +176,8 @@ function UsageAllView() {
 							) : null}
 						</UsageRow>
 					</UsageSection>
+
+					<VoiceUsageSection entries={entries} overview={overview} now={now} onPress={() => openDetail('voice')} />
 
 					<AggregatedFetchNotes items={fetchNoteItems(overview, 'github')} now={now} />
 					<UsageSection title="GitHub" icon={GitPullRequest} onPress={() => openDetail('github')}>
@@ -284,7 +287,7 @@ function UsageSourceView() {
 	const loadingLimits = overview.isLoading('limits', key);
 	const loadingCost = overview.isLoading('cost', key);
 	const loadingGithub = overview.isLoading('github', key);
-	const notConnected = !online && limits === undefined && cost === undefined && github === undefined;
+	const notConnected = !online && limits === undefined && cost === undefined && github === undefined && values?.voice === undefined;
 	const staleNote = (value: { value: { stale?: boolean }; at: number } | undefined) => (value?.value.stale === true ? value.at : undefined);
 
 	return (
@@ -318,6 +321,8 @@ function UsageSourceView() {
 
 					{isPc ? (
 						<>
+							<VoiceUsageSection entries={entry !== undefined ? [entry] : []} overview={overview} now={now} onPress={() => openDetail('voice')} dimmed={dimmed} />
+
 							<UsageFetchNote error={overview.errorOf(key, 'github')} hasPrevious={github !== undefined} staleAt={staleNote(github)} now={now} />
 							<UsageSection title="GitHub" icon={GitPullRequest} onPress={() => openDetail('github')} dimmed={dimmed}>
 								<UsageRow trailing="chevron">
