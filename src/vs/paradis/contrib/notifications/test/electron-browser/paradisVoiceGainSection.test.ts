@@ -46,7 +46,7 @@ suite('Paradis voice gain section', () => {
 			getCustomAivisModelPresets: () => [],
 		} as unknown as IParadisNotificationsSettingsService;
 		const dialog = { confirm: async () => ({ confirmed: true }) } as unknown as IDialogService;
-		const notifications = { info: () => undefined, error: () => undefined } as unknown as INotificationService;
+		const notifications = { info: () => undefined, warn: () => undefined, error: () => undefined } as unknown as INotificationService;
 		store.add(new ParadisVoiceGainSection(container, sharedProcess, settings, dialog, {} as IFileDialogService, notifications));
 		return container;
 	}
@@ -62,19 +62,24 @@ suite('Paradis voice gain section', () => {
 				target: -20, learnWindow: 9, minLearnSeconds: 2.5, entries: [
 					{ key: 'aivis:a670e6b8-0852-45b2-8704-1bc9862f2fe6:default', provider: 'aivis', voice: 'a670e6b8-0852-45b2-8704-1bc9862f2fe6', model: 'default', gainDb: 4.5, sampleCount: 9, updatedAt: 2 },
 					{ key: 'elevenlabs:abcdefghijklmnop:eleven_v4_turbo', provider: 'elevenlabs', voice: 'abcdefghijklmnop', model: 'eleven_v4_turbo', gainDb: -11.7, sampleCount: 3, updatedAt: 1 },
+					{ key: 'elevenlabs:initialvoice:eleven_v3', provider: 'elevenlabs', voice: 'initialvoice', model: 'eleven_v3', gainDb: -2, sampleCount: 0, updatedAt: undefined },
 				],
 			},
 		}, calls);
 		await flush();
 		const listed = rows(container);
+		const resetDisabled = Array.from(container.querySelectorAll<HTMLButtonElement>('tbody tr button')).map(button => button.disabled);
 		container.querySelector<HTMLButtonElement>('tbody tr button')?.click();
 		await flush();
 
-		assert.deepStrictEqual({ listed, calls }, {
+		assert.deepStrictEqual({ listed, resetDisabled, calls }, {
 			listed: [
 				['花音 (Aivis)', '—', '+4.5 dB', '9/9'],
 				['abcdefghij…', 'eleven_v4_turbo', '-11.7 dB', '3/9 学習中'],
+				// 一度も測っていない行は「初期値」と出し、やり直しは押せない
+				['initialvoi…', 'eleven_v3', '-2.0 dB', '初期値'],
 			],
+			resetDisabled: [false, false, true],
 			calls: ['list null', 'reset ["aivis:a670e6b8-0852-45b2-8704-1bc9862f2fe6:default"]', 'list null'],
 		});
 	});

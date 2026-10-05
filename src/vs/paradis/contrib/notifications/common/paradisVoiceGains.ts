@@ -14,9 +14,13 @@
 //     → {"version":1,"target":-20,"learnWindow":9,"minLearnSeconds":2.5,"entries":[{"key","provider","voice","model","gainDb","sampleCount","updatedAt"}]}
 //   aivis-mcp --reset-gain --key <key>                       → `ok`
 //   aivis-mcp --export-gains <file> --json                   → {"ok":true,"written":N}
-//   aivis-mcp --import-gains <file> [--overwrite] --json     → {"ok":true,"added":N,"updated":N,"skipped":N,"evicted":N}
+//   aivis-mcp --import-gains <file> [--overwrite] --json     → {"ok":true,"added":N,"updated":N,"skipped":N,"evicted":N,"dropped":N}
 //   aivis-mcp --set-gain-learning [--window N] [--min-seconds S]  → `ok`
 // 失敗は標準エラーに `error: <理由>` で終了 1。
+//
+// `--list-gains` の行には、学習した行のほかに aivis-mcp が最初から持つ値だけの行（`sampleCount: 0`・
+// `updatedAt: null`）も入る。`learnWindow` / `minLearnSeconds` は CLI を動かしたプロセスの環境変数 >
+// config.json > 既定で決まるので、worker を起こしたプロセスの環境変数と違うと worker の値とずれることがある。
 
 export const PARADIS_VOICE_GAINS_CHANNEL = 'paradisVoiceGains';
 
@@ -37,7 +41,7 @@ export interface IParadisVoiceGainEntry {
 	readonly model: string;
 	/** 今の補正（dB）。読めなければ undefined。 */
 	readonly gainDb: number | undefined;
-	/** 覚えている測定の数（窓より多いことがある）。 */
+	/** 覚えている測定の数（窓より多いことがある）。aivis-mcp が最初から持つ値だけの行は 0。 */
 	readonly sampleCount: number;
 	/** 最後に測った時刻（epoch ms）。 */
 	readonly updatedAt: number | undefined;
@@ -55,6 +59,8 @@ export interface IParadisVoiceGainImportResult {
 	readonly updated: number;
 	readonly skipped: number;
 	readonly evicted: number;
+	/** 表の上限で入らなかった、ファイルの行。 */
+	readonly dropped: number;
 }
 
 /** node 側の返事。古い・無い aivis-mcp は `unsupported`（`version` は読めた版）。 */
@@ -63,11 +69,30 @@ export type ParadisVoiceGainsResult<T> =
 	| { readonly status: 'unsupported'; readonly version: string | undefined }
 	| { readonly status: 'failed'; readonly message: string };
 
-const KEY = /^[a-z0-9_-]{1,32}:[A-Za-z0-9_.-]{1,128}:[A-Za-z0-9_.-]{1,128}$/;
+/** aivis-mcp の `--reset-gain --key` が受け付ける鍵の文字と長さ。 */
+const KEY = /^[A-Za-z0-9:_.-]{1,200}$/;
 
-/** `--reset-gain --key` に渡せる鍵か（`provider:voice:model`）。 */
+/**
+ * 鍵を `provider:voice:model` に分ける（aivis-mcp の splitKey と同じく、最初と最後の `:` で切る。
+ * voice に `:` が入っていてもよい）。分けられなければ undefined。
+ */
+export function paradisSplitVoiceGainKey(key: string): { readonly provider: string; readonly voice: string; readonly model: string } | undefined {
+	const first = key.indexOf(':');
+	const last = key.lastIndexOf(':');
+	if (first <= 0 || last <= first || last === key.length - 1) {
+		return undefined;
+	}
+	return { provider: key.slice(0, first), voice: key.slice(first + 1, last), model: key.slice(last + 1) };
+}
+
+/** aivis-mcp の音量の表の鍵の形か（`provider:voice:model`。`--reset-gain --key` が受け付けるもの）。 */
 export function paradisIsVoiceGainKey(key: string): boolean {
-	return KEY.test(key);
+	return KEY.test(key) && paradisSplitVoiceGainKey(key) !== undefined;
+}
+
+/** aivis-mcp が最初から持つ値だけの行か（まだ一度も測っていない）。 */
+export function paradisIsInitialVoiceGain(entry: Pick<IParadisVoiceGainEntry, 'sampleCount' | 'updatedAt'>): boolean {
+	return entry.sampleCount === 0 && entry.updatedAt === undefined;
 }
 
 /**
@@ -102,7 +127,7 @@ function parseJson(stdout: string): Record<string, unknown> | undefined {
 	}
 }
 
-/** `--list-gains --json` の出力を読む。形が違えば undefined。鍵の形が違う行は捨てる。 */
+/** `--list-gains --json` の出力を読む。形が違えば undefined。`provider:voice:model` に分けられない行は捨てる。 */
 export function paradisParseVoiceGainList(stdout: string): IParadisVoiceGainList | undefined {
 	const json = parseJson(stdout);
 	if (!json || !Array.isArray(json.entries)) {
@@ -116,16 +141,17 @@ export function paradisParseVoiceGainList(stdout: string): IParadisVoiceGainList
 			continue;
 		}
 		const value = raw as Record<string, unknown>;
-		const key = typeof value.key === 'string' ? value.key : '';
-		if (!paradisIsVoiceGainKey(key)) {
+		// 表示は aivis-mcp が読む行（300 文字まで）をすべて出す。やり直せるかは paradisIsVoiceGainKey で別に見る
+		const key = typeof value.key === 'string' && value.key.length <= 300 ? value.key : '';
+		const parts = paradisSplitVoiceGainKey(key);
+		if (!parts) {
 			continue;
 		}
-		const [keyProvider, keyVoice, keyModel] = key.split(':');
 		entries.push({
 			key,
-			provider: typeof value.provider === 'string' && value.provider ? value.provider : keyProvider,
-			voice: typeof value.voice === 'string' && value.voice ? value.voice : keyVoice,
-			model: typeof value.model === 'string' && value.model ? value.model : keyModel,
+			provider: typeof value.provider === 'string' && value.provider ? value.provider : parts.provider,
+			voice: typeof value.voice === 'string' && value.voice ? value.voice : parts.voice,
+			model: typeof value.model === 'string' && value.model ? value.model : parts.model,
 			gainDb: finiteNumber(value.gainDb),
 			sampleCount: count(value.sampleCount),
 			updatedAt: finiteNumber(value.updatedAt),
@@ -151,7 +177,7 @@ export function paradisParseVoiceGainImport(stdout: string): IParadisVoiceGainIm
 	if (json?.ok !== true) {
 		return undefined;
 	}
-	return { added: count(json.added), updated: count(json.updated), skipped: count(json.skipped), evicted: count(json.evicted) };
+	return { added: count(json.added), updated: count(json.updated), skipped: count(json.skipped), evicted: count(json.evicted), dropped: count(json.dropped) };
 }
 
 export function paradisListVoiceGainsArgs(): string[] {
@@ -159,7 +185,8 @@ export function paradisListVoiceGainsArgs(): string[] {
 }
 
 export function paradisResetVoiceGainArgs(key: string): string[] | undefined {
-	return paradisIsVoiceGainKey(key) ? ['--reset-gain', '--key', key] : undefined;
+	// `-` で始まる鍵は次の引数の名前と取り違えられるので渡さない
+	return paradisIsVoiceGainKey(key) && !key.startsWith('-') ? ['--reset-gain', '--key', key] : undefined;
 }
 
 export function paradisExportVoiceGainsArgs(path: string, platform: string): string[] | undefined {

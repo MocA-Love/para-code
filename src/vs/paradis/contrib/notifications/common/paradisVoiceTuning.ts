@@ -19,10 +19,12 @@
 // 書いた値は aivis-mcp の `config.json` の `elevenlabs.voiceSettings[<voice_id>]` に入る。
 
 const VOICE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+/** aivis-mcp が声の調整の鍵として拒む名前（Object の性質の名前）。 */
+const RESERVED_VOICE_IDS = new Set(['__proto__', 'constructor', 'prototype']);
 
-/** aivis-mcp・ElevenLabs が受け付ける voice_id の形か（英数字と `-` `_`）。 */
+/** aivis-mcp・ElevenLabs が受け付ける voice_id の形か（英数字と `-` `_`、128 文字まで。Object の性質の名前は拒む）。 */
 export function paradisIsElevenLabsVoiceId(voiceId: string): boolean {
-	return VOICE_ID.test(voiceId);
+	return VOICE_ID.test(voiceId) && !RESERVED_VOICE_IDS.has(voiceId);
 }
 
 /** `--set-voice-settings` / `--clear-voice-settings` を持つ aivis-mcp の版。 */
@@ -150,7 +152,10 @@ export type ParadisVoiceTuningStep =
  * 1 つの声について、aivis-mcp へ何をするかを決める（辞書と同じ考え方）。
  *
  * - 使う設定で値がある: 前回書いた値と同じ、または aivis-mcp に既に同じ値が入っているなら何もしない。
- *   aivis-mcp 側に、渡す値に無い項目が残っているときは、先に消してから書く（項目を足すだけの書き方なので）
+ *   aivis-mcp 側に、渡す値に無い項目が残っているときは、先に消してから書く（`--set-voice-settings` は指定した
+ *   項目だけを置き換え、1 項目だけを消す引数は無いので 1 回では済まない）。消してから書くまでの間（CLI 1 回分）に
+ *   worker が読むと、その発話は ElevenLabs の保存値で鳴る。設定画面はスライダーの 2 項目をいつも揃えて書くので、
+ *   この手順になるのは設定ファイルを手で直して 1 項目だけにしたときだけで、そのずれは許す
  * - 使わない設定か、値が無い: Para Code が書いた値がそのまま残っているときだけ消す。別の値に
  *   変わっていたら消さずに、覚えている値を忘れる。aivis-mcp の設定が読めなければ何もしない
  */
@@ -195,7 +200,8 @@ function formatTuningArg(value: number): string {
 
 /** aivis-mcp へ渡す引数。`forget` と、渡せない値のときは undefined。 */
 export function paradisVoiceTuningArgs(step: ParadisVoiceTuningStep): string[] | undefined {
-	if (!paradisIsElevenLabsVoiceId(step.voiceId)) {
+	// `-` で始まる ID は次の引数の名前と取り違えられるので渡さない
+	if (!paradisIsElevenLabsVoiceId(step.voiceId) || step.voiceId.startsWith('-')) {
 		return undefined;
 	}
 	switch (step.kind) {

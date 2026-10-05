@@ -62,11 +62,14 @@ suite('paradisVoiceTuning', () => {
 			fromSettings: paradisAgentDictionaryRequestFromSettings({ shareDictionaryWithAgents: true, elevenLabsVoiceSettings: map }),
 			fromSettingsEmpty: paradisAgentDictionaryRequestFromSettings({ elevenLabsVoiceSettings: {} }),
 			normalized: paradisNormalizeAgentDictionaryRequest({ enabled: true, dictionaries: {}, voiceSettings: { 'a"b': { stability: 1 }, v1: { stability: 0.3 } } }),
+			// aivis-mcp が拒む名前（Object の性質の名前）は声として扱わない
+			reserved: Object.keys(paradisNormalizeVoiceTuningMap(JSON.parse('{"__proto__":{"stability":1},"constructor":{"stability":1},"prototype":{"stability":1},"v1":{"stability":1}}'))),
 		}, {
 			map: { voiceA: { stability: 0.5 }, voiceC: { similarityBoost: 0 } },
 			fromSettings: { enabled: true, dictionaries: { elevenlabs: '', aivis: '' }, voiceSettings: { voiceA: { stability: 0.5 }, voiceC: { similarityBoost: 0 } } },
 			fromSettingsEmpty: { enabled: true, dictionaries: { elevenlabs: '', aivis: '' } },
 			normalized: { enabled: true, dictionaries: { elevenlabs: '', aivis: '' }, voiceSettings: { v1: { stability: 0.3 } } },
+			reserved: ['v1'],
 		});
 	});
 
@@ -117,11 +120,15 @@ suite('paradisVoiceTuning', () => {
 			paradisVoiceTuningArgs({ kind: 'clear', voiceId: 'v1' }),
 			paradisVoiceTuningArgs({ kind: 'forget', voiceId: 'v1' }),
 			paradisVoiceTuningArgs({ kind: 'clear', voiceId: 'v 1;' }),
+			paradisVoiceTuningArgs({ kind: 'clear', voiceId: '--stability' }),
+			paradisVoiceTuningArgs({ kind: 'clear', voiceId: 'constructor' }),
 		], [
 			['--set-voice-settings', '--voice', 'v_1-A', '--stability', '0.5', '--similarity', '0.75'],
 			['--set-voice-settings', '--voice', 'v1', '--similarity', '1'],
 			undefined,
 			['--clear-voice-settings', '--voice', 'v1'],
+			undefined,
+			undefined,
 			undefined,
 			undefined,
 		]);

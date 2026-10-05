@@ -18,7 +18,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { IParadisAivisSettings, IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { IParadisElevenLabsVoice, PARADIS_ELEVENLABS_DEFAULT_MODEL_ID } from '../common/paradisElevenLabs.js';
 import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
-import { paradisVoiceGainProgress } from '../common/paradisVoiceGains.js';
+import { paradisIsInitialVoiceGain, paradisVoiceGainProgress } from '../common/paradisVoiceGains.js';
 import { paradisElevenLabsGainKey } from '../common/paradisVoiceGain.js';
 import {
 	IParadisElevenLabsVoiceTuning,
@@ -86,6 +86,8 @@ const STR_GAIN_UNSUPPORTED = localize('paradis.notif.tune.gainUnsupported', "aiv
 const STR_GAIN_LOADING = localize('paradis.notif.tune.gainLoading', "読み込み中…");
 // allow-any-unicode-next-line
 const strGainLearned = (done: number, window: number) => localize('paradis.notif.tune.gainLearned', "学習 {0}/{1} 回", done, window);
+// allow-any-unicode-next-line
+const STR_GAIN_INITIAL = localize('paradis.notif.tune.gainInitial', "初期値（まだ測っていません）");
 
 /** ElevenLabs が声を作ったときの値（保存値が読めないときにスライダーを置く位置）。 */
 const ELEVENLABS_DEFAULT_TUNING: Required<IParadisElevenLabsVoiceTuning> = { stability: 0.5, similarityBoost: 0.75 };
@@ -263,6 +265,11 @@ export class ParadisElevenLabsVoiceTuningFields {
 			const entry = result.value.entries.find(candidate => candidate.key === key);
 			if (!entry || entry.gainDb === undefined) {
 				dom.append(value, $('span.pns-pill')).textContent = STR_GAIN_UNMEASURED;
+				return;
+			}
+			if (paradisIsInitialVoiceGain(entry)) {
+				dom.append(value, $('span.pns-pill')).textContent = paradisFormatGainDb(entry.gainDb);
+				dom.append(value, $('span.pns-pill')).textContent = STR_GAIN_INITIAL;
 				return;
 			}
 			const progress = paradisVoiceGainProgress(entry, result.value.learnWindow);
