@@ -34,6 +34,10 @@ class FakeSession implements ICDPConnection {
 	cacheDisabled = false;
 	bypassServiceWorker = false;
 	highlightShown = false;
+	/** Identifiers of scripts added with Page.addScriptToEvaluateOnNewDocument and not removed. */
+	readonly initScripts = new Set<string>();
+	pageEnabled = false;
+	private nextScript = 1;
 	/** When set, commands with this method fail (the tab did not accept them). */
 	failing: string | undefined;
 
@@ -52,6 +56,14 @@ class FakeSession implements ICDPConnection {
 			case 'Network.setBypassServiceWorker': this.bypassServiceWorker = value?.bypass === true; break;
 			case 'Overlay.highlightRect': this.highlightShown = true; break;
 			case 'Overlay.hideHighlight': this.highlightShown = false; break;
+			case 'Page.enable': this.pageEnabled = true; break;
+			case 'Page.disable': this.pageEnabled = false; break;
+			case 'Page.removeScriptToEvaluateOnNewDocument': this.initScripts.delete(String(value?.identifier)); break;
+			case 'Page.addScriptToEvaluateOnNewDocument': {
+				const identifier = String(this.nextScript++);
+				this.initScripts.add(identifier);
+				return { identifier };
+			}
 		}
 		return {};
 	}
@@ -121,7 +133,7 @@ class FakeTarget implements IParadisPageOpsTarget {
 
 	/** Whether any session still has something enabled that the overrides turned on. */
 	hasLeftovers(): boolean {
-		return this.sessions.some(session => session.fetchEnabled || session.networkEnabled || session.cacheDisabled || session.bypassServiceWorker || session.highlightShown);
+		return this.sessions.some(session => session.fetchEnabled || session.networkEnabled || session.cacheDisabled || session.bypassServiceWorker || session.highlightShown || session.pageEnabled || session.initScripts.size > 0);
 	}
 
 	destroy(): void {
@@ -449,5 +461,53 @@ suite('ParadisBrowserPageOpsController', () => {
 		target.destroy();
 		await flush();
 		assert.deepStrictEqual([beforeClose, target.sessions.map(session => session.disposed)], [[1, true, false], [true]]);
+	});
+	test('init scripts stay until removed, are listed per pane, and go away when the sharing changes or the tab is released', async () => {
+		const controller = new ParadisBrowserPageOpsController(() => 1000);
+		const target = createTarget();
+		const added = await controller.addInitScript(target, OWNER, 2, { source: 'window.__a = 1', label: 'hook', runNow: true });
+		const fromOther = await controller.addInitScript(target, OTHER_OWNER, 5, { source: 'window.__b = 1', label: 'other', runNow: false });
+		const session = target.sessions[0];
+		const listed = controller.listInitScripts(target, OWNER);
+		const unknown = await controller.removeInitScripts(target, OWNER, 's99');
+		controller.releaseOwner(OWNER, 3);
+		await flush();
+		const afterRelease = [controller.listInitScripts(target, OWNER), session.initScripts.size, session.pageEnabled];
+		const stale = await controller.addInitScript(target, OWNER, 2, { source: 'window.__c = 1', label: 'late', runNow: false });
+		controller.releaseTarget(target);
+		await flush();
+		assert.deepStrictEqual({
+			added,
+			addCommand: session.commands.slice(0, 2),
+			listed,
+			unknown: unknown.ok ? 'ok' : unknown.reason,
+			afterRelease,
+			stale: stale.ok ? 'ok' : stale.reason,
+			fromOther: fromOther.ok,
+			leftovers: target.hasLeftovers(),
+		}, {
+			added: { ok: true, scripts: [{ id: 's1', label: 'hook', chars: 14, addedAt: 1000 }], otherPanes: 0, added: { id: 's1', label: 'hook', chars: 14, addedAt: 1000 } },
+			addCommand: [{ method: 'Page.enable', params: undefined }, { method: 'Page.addScriptToEvaluateOnNewDocument', params: { source: 'window.__a = 1', runImmediately: true } }],
+			listed: { ok: true, scripts: [{ id: 's1', label: 'hook', chars: 14, addedAt: 1000 }], otherPanes: 1 },
+			unknown: 'invalid',
+			afterRelease: [{ ok: true, scripts: [], otherPanes: 1 }, 1, true],
+			stale: 'stale',
+			fromOther: true,
+			leftovers: false,
+		});
+	});
+
+	test('removing the last init script disables Page again, and a full tab is refused', async () => {
+		const controller = new ParadisBrowserPageOpsController();
+		const target = createTarget();
+		for (let i = 0; i < 10; i++) {
+			await controller.addInitScript(target, OWNER, 1, { source: `window.__n = ${i}`, label: `n${i}`, runNow: false });
+		}
+		const full = await controller.addInitScript(target, OWNER, 1, { source: 'x', label: 'x', runNow: false });
+		const one = await controller.removeInitScripts(target, OWNER, 's1');
+		const all = await controller.removeInitScripts(target, OWNER, undefined);
+		assert.deepStrictEqual([full.ok, one.ok && one.removed, all.ok && all.removed, target.sessions[0].initScripts.size, target.sessions[0].pageEnabled], [false, 1, 9, 0, false]);
+		controller.releaseTarget(target);
+		await flush();
 	});
 });

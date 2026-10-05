@@ -21,6 +21,7 @@ import { IParadisCdpInputDispatchResult, IParadisExactBrowserViewDescriptor } fr
 import {
 	IParadisAgentDownloadResult,
 	IParadisHighlightRect,
+	IParadisInitScriptsResult,
 	IParadisPageOverridesRequest,
 	IParadisPageOverridesResult,
 	IParadisPageStorageDescription,
@@ -31,6 +32,7 @@ import {
 	paradisParseHeaderMap,
 	paradisParseHeaderOrigins,
 	paradisParseHttpCredentials,
+	paradisParseInitScriptRequest,
 	paradisParsePdfOptions,
 	paradisParseRequestRules,
 } from '../common/paradisBrowserPageOps.js';
@@ -88,6 +90,8 @@ function text(message: string): ToolResult {
 function error(message: string): ToolResult {
 	return { content: [{ type: 'text', text: message }], isError: true };
 }
+
+const INIT_SCRIPT_REMINDER = 'When you have finished checking, call remove_init_script to take it off (it also runs while the user browses in this tab).';
 
 const BINDING_CHANGED = 'PARA_BROWSER_RETRYABLE: the page shared with this terminal pane changed while the tool was running; check get_shared_page and retry.';
 
@@ -252,6 +256,9 @@ export class ParadisBrowserPageOps {
 			case 'get_page_network_overrides': return this.getOverrides(call, binding);
 			case 'download_by_click': return this.downloadByClick(call, binding, args);
 			case 'highlight_element': return this.highlight(call, binding, args);
+			case 'add_init_script': return this.addInitScript(call, binding, args);
+			case 'remove_init_script': return this.removeInitScript(call, binding, args);
+			case 'list_init_scripts': return this.listInitScripts(call, binding);
 			default: return error(`Unknown tool: ${name}`);
 		}
 	}
@@ -678,6 +685,56 @@ export class ParadisBrowserPageOps {
 		return shown
 			? text(`Highlighted (${Math.round(rect.x)}, ${Math.round(rect.y)}, ${Math.round(rect.width)}x${Math.round(rect.height)}) for ${duration} seconds.`)
 			: error('Para Code could not draw the highlight on the shared page. Retry once; the page may have been navigating.');
+	}
+
+	private async addInitScript(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding, args: Record<string, unknown>): Promise<ToolResult> {
+		const request = paradisParseInitScriptRequest({ source: args.source, label: args.label, runNow: args.run_now });
+		if (!request.ok) {
+			return error(request.error);
+		}
+		const result = await this.host.callMain<IParadisInitScriptsResult>('addExactViewInitScript', [binding.exactView, paradisPageOpsOwnerKey(call.token), binding.generation, JSON.stringify(request.value)]);
+		if (!this.isCurrent(call, binding)) {
+			return error(BINDING_CHANGED);
+		}
+		if (!result.ok) {
+			return error(this.failureMessage('add_init_script', result.reason, result.message));
+		}
+		const added = result.added;
+		const when = request.value.runNow ? 'It ran once in the open document and runs again' : 'It runs';
+		return text(`Added script ${added?.id ?? ''} ("${added?.label ?? request.value.label}"). ${when} at the start of every document this tab loads, until removed. ${INIT_SCRIPT_REMINDER}${this.initScriptsSummary(result)}`);
+	}
+
+	private async removeInitScript(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding, args: Record<string, unknown>): Promise<ToolResult> {
+		const all = args.all === true;
+		const id = args.id;
+		if (all === (typeof id === 'string' && id.length > 0) || (id !== undefined && typeof id !== 'string')) {
+			return error('Give either "id" (from list_init_scripts) or "all": true.');
+		}
+		const result = await this.host.callMain<IParadisInitScriptsResult>('removeExactViewInitScripts', [binding.exactView, paradisPageOpsOwnerKey(call.token), all ? null : id]);
+		if (!this.isCurrent(call, binding)) {
+			return error(BINDING_CHANGED);
+		}
+		if (!result.ok) {
+			return error(this.failureMessage('remove_init_script', result.reason, result.message));
+		}
+		return text(`Removed ${result.removed ?? 0} script(s). Documents already loaded keep what the script did until they reload.${this.initScriptsSummary(result)}`);
+	}
+
+	private async listInitScripts(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding): Promise<ToolResult> {
+		const result = await this.host.callMain<IParadisInitScriptsResult>('listExactViewInitScripts', [binding.exactView, paradisPageOpsOwnerKey(call.token)]);
+		if (!this.isCurrent(call, binding)) {
+			return error(BINDING_CHANGED);
+		}
+		if (!result.ok) {
+			return error(this.failureMessage('list_init_scripts', result.reason, result.message));
+		}
+		return text(`${result.scripts.length === 0 ? 'You have no scripts on this tab.' : INIT_SCRIPT_REMINDER}${this.initScriptsSummary(result)}`);
+	}
+
+	private initScriptsSummary(result: Extract<IParadisInitScriptsResult, { ok: true }>): string {
+		const lines = result.scripts.map(script => `- ${script.id}: "${script.label}" (${script.chars} characters, added ${new Date(script.addedAt).toISOString()})`);
+		const others = result.otherPanes > 0 ? `\nOther terminal panes have ${result.otherPanes} script(s) on this tab.` : '';
+		return `${lines.length > 0 ? `\nYour scripts on this tab:\n${lines.join('\n')}` : ''}${others}`;
 	}
 
 	private failureMessage(tool: string, reason: ParadisPageOpsFailure, detail?: string): string {

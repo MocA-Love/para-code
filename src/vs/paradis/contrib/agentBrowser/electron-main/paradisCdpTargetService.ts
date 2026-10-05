@@ -54,6 +54,8 @@ import {
 	paradisIsPageOpsOwnerKey,
 	paradisParseHighlightRect,
 	paradisParsePageOverridesRequest,
+	IParadisInitScriptsResult,
+	paradisParseInitScriptRequest,
 	paradisParsePdfOptions,
 } from '../common/paradisBrowserPageOps.js';
 import { IParadisPageOpsTarget, ParadisBrowserPageOpsController } from './paradisBrowserPageOpsController.js';
@@ -861,6 +863,44 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		if (paradisIsPageOpsOwnerKey(ownerKeyValue) && typeof generationValue === 'number' && Number.isSafeInteger(generationValue)) {
 			this.pageOps.releaseOwner(ownerKeyValue, generationValue);
 		}
+	}
+
+	async addExactViewInitScript(descriptorValue: unknown, ownerKeyValue: unknown, generationValue: unknown, requestJsonValue: unknown): Promise<IParadisInitScriptsResult> {
+		const target = this.resolvePageOpsTarget(descriptorValue);
+		if (!paradisIsPageOpsOwnerKey(ownerKeyValue) || typeof generationValue !== 'number' || !Number.isSafeInteger(generationValue) || typeof requestJsonValue !== 'string' || requestJsonValue.length > 1024 * 1024) {
+			return { ok: false, reason: 'invalid' };
+		}
+		if (!target) {
+			return { ok: false, reason: 'unavailable' };
+		}
+		let raw: unknown;
+		try {
+			raw = JSON.parse(requestJsonValue);
+		} catch {
+			return { ok: false, reason: 'invalid' };
+		}
+		// shared process で検証済みでも、ここで受け取った値をもう一度同じ関数で確かめる。
+		const request = paradisParseInitScriptRequest(raw);
+		if (!request.ok) {
+			return { ok: false, reason: 'invalid', message: request.error };
+		}
+		return this.pageOps.addInitScript(target, ownerKeyValue, generationValue, request.value);
+	}
+
+	async removeExactViewInitScripts(descriptorValue: unknown, ownerKeyValue: unknown, idValue: unknown): Promise<IParadisInitScriptsResult> {
+		const target = this.resolvePageOpsTarget(descriptorValue);
+		if (!paradisIsPageOpsOwnerKey(ownerKeyValue) || (idValue !== null && (typeof idValue !== 'string' || !/^s\d{1,12}$/.test(idValue)))) {
+			return { ok: false, reason: 'invalid' };
+		}
+		return target ? this.pageOps.removeInitScripts(target, ownerKeyValue, idValue ?? undefined) : { ok: false, reason: 'unavailable' };
+	}
+
+	async listExactViewInitScripts(descriptorValue: unknown, ownerKeyValue: unknown): Promise<IParadisInitScriptsResult> {
+		const target = this.resolvePageOpsTarget(descriptorValue);
+		if (!paradisIsPageOpsOwnerKey(ownerKeyValue)) {
+			return { ok: false, reason: 'invalid' };
+		}
+		return target ? this.pageOps.listInitScripts(target, ownerKeyValue) : { ok: false, reason: 'unavailable' };
 	}
 
 	async printExactViewToPdf(descriptorValue: unknown, optionsJsonValue: unknown): Promise<IParadisPdfResult> {
