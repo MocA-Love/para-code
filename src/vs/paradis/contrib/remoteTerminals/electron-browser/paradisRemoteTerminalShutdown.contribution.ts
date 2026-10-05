@@ -34,23 +34,13 @@ import { IParadisShutdownTerminal, paradisRegisterTerminalShutdownPolicy } from 
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ILifecycleService, ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
-import { IParadisKeptRemoteTerminals, paradisParseKeepRemoteTerminalsChoice, paradisPlanRemoteTerminalShutdown, paradisRememberedChoice, paradisShouldReportStrandedTerminals } from '../common/paradisRemoteTerminalShutdown.js';
-import { PARADIS_TERMINAL_RECONNECTION_GRACE_TIME } from '../common/paradisTerminalGraceTime.js';
+import { IParadisKeptRemoteTerminals, PARADIS_KEEP_REMOTE_TERMINALS_KEY, paradisKeptPaneTokensStorageKey, paradisKeptTerminalsStorageKey, paradisParseKeepRemoteTerminalsChoice, paradisPlanRemoteTerminalShutdown, paradisRememberedChoice } from '../common/paradisRemoteTerminalShutdown.js';
 import { paradisRemoteHandlesTerminal } from '../../../common/paradisTerminalKeepPlan.js';
-import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-
-const PARADIS_KEEP_REMOTE_TERMINALS_KEY = 'paradis.remote.keepTerminalsAliveOnClose';
-
-/**
- * 「この接続先へターミナルを残した」記録の置き場所。接続先ごとに分けるのは、別のホストへ
- * 残したぶんで判断を汚さないため。APPLICATION スコープなのは、残したのがこの PC である一方、
- * 次に繋ぎ直すのが同じウィンドウ・同じワークスペースとは限らないため。
- */
-function paradisKeptTerminalsStorageKey(authority: string): string {
-	return `paradis.remote.keptTerminals.${authority}`;
-}
+import { IUpdateService } from '../../../../platform/update/common/update.js';
+import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
+import { paradisGetRemoteTerminalsAcrossUpdate, paradisIsUpdateQuitApproved, paradisMergeKeptPaneTokens, paradisParseKeptPaneTokens, paradisUpdateAppliesOnQuitHere, paradisUpdateQuitEndsTerminals } from '../../updateTerminals/common/paradisUpdateTerminals.js';
 
 // 設定 UI 上は他の Para Code 設定と同じ1セクションに入るよう、id と title を揃える。
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
@@ -68,7 +58,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				localize('paradis.remote.keepTerminalsAliveOnClose.never', "ローカルのウィンドウと同様、常にターミナルを終了する"),
 			],
 			default: 'ask',
-			description: localize('paradis.remote.keepTerminalsAliveOnClose', "接続先で動いているターミナルを、開いていたウィンドウを閉じたときにどう扱うかを設定します。残したターミナルは次に同じ接続先へつなぎ直したときに、タブと分割レイアウトごと復元されます。再接続の猶予期間が過ぎると接続先側で終了し、復元されなかったターミナルも次に同じ接続先へつないだ直後に終了します。アプリ全体を終了するときは確認せず、覚えている選択に従うか、なければターミナルを残したまま終了します。ローカルのウィンドウや、接続先ウィンドウ内のローカルターミナルには影響しません。"),
+			description: localize('paradis.remote.keepTerminalsAliveOnClose', "接続先で動いているターミナルを、開いていたウィンドウを閉じたときにどう扱うかを設定します。残したターミナルは次に同じ接続先へつなぎ直したときに、タブと分割レイアウトごと復元されます。再接続の猶予期間が過ぎると接続先側で終了し、復元されなかったターミナルも次に同じ接続先へつないだ直後に終了します。アプリ全体を終了するときは確認せず、覚えている選択に従うか、なければターミナルを残したまま終了します。更新が当たる終了では、残しても新しい版から開けないため終了します。ローカルのウィンドウや、接続先ウィンドウ内のローカルターミナルには影響しません。"),
 		},
 	},
 });
@@ -98,9 +88,10 @@ class ParadisRemoteTerminalShutdown extends Disposable implements IWorkbenchCont
 		@ITerminalGroupService private readonly terminalGroupService: ITerminalGroupService,
 		@ILogService private readonly logService: ILogService,
 		@IStorageService private readonly storageService: IStorageService,
-		@INotificationService private readonly notificationService: INotificationService,
 		@IProductService private readonly productService: IProductService,
 		@ILifecycleService private readonly lifecycleService: ILifecycleService,
+		@IUpdateService private readonly updateService: IUpdateService,
+		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 	) {
 		super();
 		this._register(paradisRegisterTerminalShutdownPolicy({
@@ -112,66 +103,8 @@ class ParadisRemoteTerminalShutdown extends Disposable implements IWorkbenchCont
 		}));
 		// 閉じるのが取り消されたら、`prepare` で控えた記録も取り消す。
 		this._register(this.lifecycleService.onShutdownVeto(() => this.forgetKeptTerminals()));
-		this.reportStrandedTerminals();
-	}
-
-	/**
-	 * 前の版で残したターミナルが取り残されていたら、そう伝える。
-	 *
-	 * 拾い直しは接続してすぐ（この contribution が動く AfterRestored の前）に済んでいるので、
-	 * ここで記録を消してよい。伝えられるのは1回だけで、取りこぼしても次に残したときに
-	 * また記録される。なぜ回収できないのかは common 側に書いてある。
-	 */
-	private reportStrandedTerminals(): void {
-		const authority = this.environmentService.remoteAuthority;
-		if (authority === undefined) {
-			return;
-		}
-		const key = paradisKeptTerminalsStorageKey(authority);
-		const record = this.readKeptTerminals(key);
-		// 読んだ時点で捨てる。伝えるかどうかに関わらず、この記録が意味を持つのは
-		// 「残した次の接続」の1回だけ。残すと今度は版が同じでも延々と残り続ける。
-		//
-		// 同じ接続先のウィンドウが**同時に**立ち上がると、消す前に両方が読み、お知らせが
-		// 2回出ることがある（APPLICATION スコープの書き込みが他のウィンドウへ届くのは
-		// 非同期のため）。順番に開いたときは2つ目が何も読まないので出ない。重複しても
-		// 出るのは同じ通知1つぶんなので、ここは消す速さで押さえるに留める。
-		this.storageService.remove(key, StorageScope.APPLICATION);
-		if (!paradisShouldReportStrandedTerminals({
-			record,
-			commit: this.productService.commit,
-			now: Date.now(),
-			// 接続先が実際に使っている猶予時間は分からない（`--reconnection-grace-time` で
-			// 変えられるが、その値はクライアントへ出てこない）。ここで使うのは既定値で、
-			// 「いつまでの記録なら意味があるか」の上限として置いているだけ。接続先の猶予が
-			// これより短ければ、既に消えていたぶんについても知らせることになる——伝える内容
-			// （このウィンドウからは開けない）自体は、その場合でも正しい。
-			graceTime: PARADIS_TERMINAL_RECONNECTION_GRACE_TIME,
-		})) {
-			return;
-		}
-		this.logService.info(`[paradisRemoteTerminalShutdown] ${record?.count} terminal(s) were left on ${authority} by a different build (${record?.commit}); they cannot be reclaimed by this one (${this.productService.commit})`);
-		// 「まだ動いている」と言い切らない。接続先の猶予は `--reconnection-grace-time` で
-		// 変えられるが、こちらからはその値を知る手立てが無い（下の graceTime を参照）。
-		// 既に猶予切れで消えていた場合でも、この文面なら誤りにならない。
-		this.notificationService.notify({
-			severity: Severity.Info,
-			// allow-any-unicode-next-line
-			message: localize('paradis.remote.strandedTerminals', "前のバージョンで接続先に残したターミナルは、このウィンドウからは開けません。Para Code を更新すると、接続先でも新しいバージョンのサーバーにつながるためです。前のものがまだ動いていれば、接続先の猶予時間が過ぎたときに終了します。"),
-		});
-	}
-
-	private readKeptTerminals(key: string): IParadisKeptRemoteTerminals | undefined {
-		const raw = this.storageService.get(key, StorageScope.APPLICATION);
-		if (raw === undefined) {
-			return undefined;
-		}
-		try {
-			const parsed = JSON.parse(raw) as IParadisKeptRemoteTerminals;
-			return typeof parsed?.commit === 'string' && typeof parsed.at === 'number' && typeof parsed.count === 'number' ? parsed : undefined;
-		} catch {
-			return undefined;
-		}
+		// 「前の版で残したターミナルは開けない」のお知らせは、古い版のサーバーが動いているかを
+		// 確かめてから出す（`updateTerminals/electron-browser/paradisStaleRemoteServer.contribution.ts`）。
 	}
 
 	/**
@@ -184,8 +117,21 @@ class ParadisRemoteTerminalShutdown extends Disposable implements IWorkbenchCont
 	 */
 	private rememberKeptTerminals(count: number): void {
 		const authority = this.environmentService.remoteAuthority;
+		if (authority === undefined) {
+			return;
+		}
+		// この PC が残したペインを控える。更新の前に止めるとき、同じ接続先を使う別の PC が
+		// 残したものと見分けるのに使う（`updateTerminals`）。版が分からなくても控える。
+		const tokens = this.listPersistentTerminals()
+			.map(instance => this.paneTokenService.getTokenForInstance(instance.instanceId))
+			.filter((token): token is string => typeof token === 'string' && token.length > 0);
+		if (tokens.length > 0) {
+			const tokenKey = paradisKeptPaneTokensStorageKey(authority);
+			const merged = paradisMergeKeptPaneTokens(paradisParseKeptPaneTokens(this.storageService.get(tokenKey, StorageScope.APPLICATION)), tokens);
+			this.storageService.store(tokenKey, JSON.stringify(merged), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		}
 		const commit = this.productService.commit;
-		if (authority === undefined || commit === undefined) {
+		if (commit === undefined) {
 			return;
 		}
 		const record: IParadisKeptRemoteTerminals = { commit, at: Date.now(), count };
@@ -212,6 +158,14 @@ class ParadisRemoteTerminalShutdown extends Disposable implements IWorkbenchCont
 		const keepable = this.countPersistentTerminals();
 		const plan = paradisPlanRemoteTerminalShutdown({
 			isQuit: reason === ShutdownReason.QUIT,
+			// 更新が当たる終了では残さない。接続先のサーバーが新しい版に替わり、残しても開けない
+			// （確認は「再起動して更新」の前に済ませているか、用意できた時点で知らせてある）。
+			isUpdateQuit: paradisUpdateQuitEndsTerminals({
+				stateType: this.updateService.state.type,
+				appliesOnQuit: paradisUpdateAppliesOnQuitHere(),
+				approved: paradisIsUpdateQuitApproved(Date.now()),
+				acrossUpdate: paradisGetRemoteTerminalsAcrossUpdate(),
+			}),
 			// 接続先を開いていないウィンドウには関わらない。ローカルのターミナルの実体はこの PC の
 			// プロセスで、残しても次に開いたときに繋ぎ直す相手が居ない（アプリごと終わる）。
 			hasRemoteAuthority: this.environmentService.remoteAuthority !== undefined,
@@ -301,12 +255,17 @@ class ParadisRemoteTerminalShutdown extends Disposable implements IWorkbenchCont
 	 * 「数えたのに残らない」（尋ねたのに全部死ぬ）か「残るのに尋ねない」になる。
 	 */
 	private countPersistentTerminals(): number {
-		const counted = new Set<number>();
+		return this.listPersistentTerminals().length;
+	}
+
+	/** 残せるターミナル（{@link countPersistentTerminals} が数えるもの）。 */
+	private listPersistentTerminals(): ITerminalInstance[] {
+		const counted = new Map<number, ITerminalInstance>();
 		// 判断本体 (`shouldKeepProcessAlive`) と同じ条件で数える。ここだけ緩いと、手元の端末しか
 		// 開いていない接続先ウィンドウでも尋ねてしまい、「残すと答えたのに消えた」になる。
 		const add = (instance: ITerminalInstance): void => {
 			if (!instance.isDisposed && instance.shouldPersist && instance.hasRemoteAuthority) {
-				counted.add(instance.instanceId);
+				counted.set(instance.instanceId, instance);
 			}
 		};
 		for (const instance of this.terminalService.instances) {
@@ -322,7 +281,7 @@ class ParadisRemoteTerminalShutdown extends Disposable implements IWorkbenchCont
 		for (const instance of paradisListParkedTerminalEditorInstances()) {
 			add(instance);
 		}
-		return counted.size;
+		return [...counted.values()];
 	}
 }
 

@@ -24,6 +24,8 @@ import { ITelemetryService } from '../../telemetry/common/telemetry.js';
 import { AvailableForDownload, DisablementReason, IUpdate, IUpdateService, State, StateType, UpdateType } from '../common/update.js';
 // PARA-PATCH: beta builds follow the channel stamped into product.json instead of quality (see CLAUDE.md).
 import { resolveParadisUpdateChannel } from '../common/paradisUpdateChannel.js';
+// PARA-PATCH: confirm ending terminals kept on remotes / the pty daemon before restarting to update (see paradis/contrib/updateTerminals).
+import { paradisPassUpdateQuitGate } from '../common/paradisUpdateQuitGate.js';
 
 const LAST_KNOWN_VERSION_STORAGE_KEY = 'abstractUpdateService/lastKnownVersion';
 
@@ -590,6 +592,8 @@ export abstract class AbstractUpdateService extends Disposable implements IUpdat
 				return;
 			}
 		}
+
+		if (!await paradisPassUpdateQuitGate() || (this.state as State).type !== StateType.Ready) { return; } // PARA-PATCH: ask before ending kept terminals; "later" leaves the update Ready (see paradis/contrib/updateTerminals).
 
 		// Remember the Ready state so we can restore it if the quit is vetoed
 		const readyState = this.state;
