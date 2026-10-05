@@ -7,7 +7,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 通知の読み上げに選んだ辞書（Aivis のユーザー辞書・ElevenLabs の発音辞書）を、エージェントの読み上げ
-// （aivis-mcp）にも使わせる。起動時と、辞書か「通知と同じ辞書をエージェントの読み上げにも使う」が変わったときに、
+// （aivis-mcp）にも使わせる。ElevenLabs の声ごとの調整（安定度・声の近さ）も同じスイッチで渡す。
+// 起動時と、辞書・声の調整か「通知と同じ辞書と声の調整をエージェントの読み上げにも使う」が変わったときに、
 // 手元の aivis-mcp（shared process）へ、SSH で接続中なら接続先の aivis-mcp（REH サーバー）へも今の設定を渡す。
 //
 // 何を書く・消すか（同じ値なら呼ばない、Para Code が書いた値のときだけ消す、2.5.3 未満なら何もしない）は

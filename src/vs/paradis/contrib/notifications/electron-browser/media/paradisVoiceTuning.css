@@ -1,0 +1,148 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* 通知設定の「声の調整」（音声報告の中）と「音量の補正」ページ */
+
+/* 選んでいるモデルでは効かない項目（話速など） */
+.paradis-notif-settings .setting-row.pns-row-dimmed {
+	opacity: .5;
+}
+
+.paradis-notif-settings .pns-tune-title {
+	font-size: 13px;
+	font-weight: 600;
+	margin: 16px 0 2px 0;
+}
+
+.paradis-notif-settings .pns-tune-slider {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 2px;
+}
+
+.paradis-notif-settings .pns-tune-slider-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.paradis-notif-settings .pns-tune-slider-row input[type=range] {
+	width: 200px;
+}
+
+.paradis-notif-settings .pns-tune-value {
+	width: 34px;
+	text-align: right;
+	font-size: 12px;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-notif-settings .pns-tune-ends {
+	display: flex;
+	justify-content: space-between;
+	width: 200px;
+	margin-right: 42px;
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-notif-settings .pns-tune-actions {
+	display: flex;
+	gap: 6px;
+	flex: none;
+}
+
+.paradis-notif-settings .pns-pill {
+	display: inline-block;
+	font-size: 10.5px;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 10px;
+	padding: 0 7px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.paradis-notif-settings .pns-pill.ok {
+	border-color: var(--vscode-terminal-ansiGreen, var(--vscode-charts-green));
+	color: var(--vscode-terminal-ansiGreen, var(--vscode-charts-green));
+}
+
+.paradis-notif-settings .pns-pill.warn {
+	border-color: var(--vscode-editorWarning-foreground);
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.paradis-notif-settings .pns-gain-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 12px;
+}
+
+.paradis-notif-settings .pns-gain-table th,
+.paradis-notif-settings .pns-gain-table td {
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	padding: 5px 8px;
+	text-align: left;
+}
+
+.paradis-notif-settings .pns-gain-table th {
+	font-weight: 600;
+	background: var(--vscode-keybindingTable-headerBackground, transparent);
+}
+
+.paradis-notif-settings .pns-gain-table td.num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.paradis-notif-settings .pns-gain-meter {
+	display: inline-block;
+	width: 60px;
+	height: 6px;
+	border-radius: 3px;
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+	overflow: hidden;
+	vertical-align: middle;
+	margin-right: 6px;
+}
+
+.paradis-notif-settings .pns-gain-meter > i {
+	display: block;
+	height: 100%;
+	background: var(--vscode-button-background);
+}
+
+.paradis-notif-settings .pns-gain-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	margin-top: 8px;
+}
+
+.paradis-notif-settings .pns-gain-learning {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.paradis-notif-settings .pns-gain-learning input {
+	width: 56px;
+}
+
+.paradis-notif-settings .pns-gain-note {
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 6px;
+	padding: 8px 12px;
+	margin-top: 10px;
+	line-height: 1.55;
+}

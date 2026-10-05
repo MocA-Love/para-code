@@ -313,6 +313,7 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 						speed: aivis.elevenLabsSpeed,
 						dictionaryId: aivis.elevenLabsDictionaryId || undefined,
 						volume: aivis.volume,
+						...aivis.elevenLabsVoiceSettings[aivis.elevenLabsVoiceId],
 					};
 				}
 			}

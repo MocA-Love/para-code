@@ -664,4 +664,7 @@ export interface IParadisPlayElevenLabsRequest {
 	readonly dictionaryId?: string;
 	/** 0-100（-13dB の補正は shared process 側でかける） */
 	readonly volume?: number;
+	/** 声の調整（0〜1）。無い項目は送らない（ElevenLabs の保存値を使う）。 */
+	readonly stability?: number;
+	readonly similarityBoost?: number;
 }

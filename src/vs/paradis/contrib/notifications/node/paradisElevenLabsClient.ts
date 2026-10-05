@@ -40,6 +40,7 @@ import {
 	paradisToElevenLabsVoice,
 	PARADIS_ELEVENLABS_DEFAULT_MODEL_ID,
 } from '../common/paradisElevenLabs.js';
+import { IParadisElevenLabsVoiceTuning, paradisElevenLabsVoiceSettingsBody, paradisToElevenLabsSavedVoiceTuning } from '../common/paradisVoiceTuning.js';
 import { AivisError, AivisStreamingSynthesis, AivisSynthesizeResult } from './paradisAudioScheduler.js';
 import { PARADIS_ELEVENLABS_FIRST_BYTE_TIMEOUT_MS, paradisCollectBody, paradisReadSynthesisBody, ParadisSynthesisTimeouts } from './paradisStreamingBody.js';
 
@@ -149,6 +150,12 @@ export class ParadisElevenLabsClient {
 		return voices;
 	}
 
+	/** 声に保存した stability・similarity_boost（`/v1/voices/{voice_id}/settings`）。 */
+	async getVoiceSettings(apiKey: string, voiceId: string): Promise<IParadisElevenLabsVoiceTuning> {
+		const json = await this._json<unknown>(`/v1/voices/${encodeURIComponent(voiceId)}/settings`, apiKey);
+		return paradisToElevenLabsSavedVoiceTuning(json);
+	}
+
 	/** 読み上げに使えて日本語に対応したモデルだけ（`/v1/models`）。 */
 	async listModels(apiKey: string): Promise<IParadisElevenLabsModel[]> {
 		const json = await this._json<IParadisElevenLabsRawModel[]>('/v1/models', apiKey);
@@ -179,7 +186,7 @@ export class ParadisElevenLabsClient {
 		const body: Record<string, unknown> = {
 			text,
 			model_id: request.modelId || PARADIS_ELEVENLABS_DEFAULT_MODEL_ID,
-			voice_settings: { speed: paradisClampElevenLabsSpeed(request.speed) },
+			voice_settings: paradisElevenLabsVoiceSettingsBody(request.modelId || PARADIS_ELEVENLABS_DEFAULT_MODEL_ID, paradisClampElevenLabsSpeed(request.speed), { stability: request.stability, similarityBoost: request.similarityBoost }),
 		};
 		if (request.dictionaryId) {
 			const versionId = await this._resolveDictionaryVersion(request.apiKey, request.dictionaryId);
