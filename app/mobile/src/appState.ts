@@ -1567,6 +1567,10 @@ export const useAppStore = create<AppState>(set => ({
 							// 張り直さず、「前面に戻った」を送って続きから使う（W2-34）。
 							const targets = connectedRuntimes();
 							backgroundGrace.enterForeground(targets.map(graceTarget));
+							for (const runtime of runtimes.values()) {
+								// 音声通知のために裏で保っていた PC へ「前面に戻った」を送る（設計 4 章 #4）
+								runtime.controller.leaveVoiceBackground();
+							}
 							for (const runtime of targets) {
 								// PCで既に見た通知をロック画面・通知センターから消す（W2-02）
 								requestTrayReconcile(runtime);
@@ -1593,6 +1597,12 @@ export const useAppStore = create<AppState>(set => ({
 						if (!state.manualOffline && !state.voiceNotifications.desired) {
 							// PC が「裏に回った」を確認した PC だけ30秒保ち、残りは今までどおり閉じる（W2-34）。
 							backgroundGrace.enterBackground([...runtimes.values()].map(graceTarget));
+						} else if (!state.manualOffline) {
+							// 音声通知のためにソケットを保つ。保つだけだと PC はアプリを前面と信じて通知をプッシュせず、
+							// アプリは裏ではバナーを出さないので、通知が出ない。「裏に回った」を送ってプッシュに切り替えさせる（設計 4 章 #4）
+							for (const runtime of connectedRuntimes()) {
+								runtime.controller.enterVoiceBackground();
+							}
 						}
 					}
 				});

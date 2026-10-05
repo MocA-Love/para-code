@@ -26,7 +26,10 @@ describe('notify visibility (W2-34) contract sync', () => {
 			text(encodeNotifyVisibility('background', 'v1')) === text(pcEncode('background', 'v1')),
 			text(encodeNotifyVisibility('foreground')) === text(pcEncode('foreground')),
 			text(encodeNotifyVisibilityAck('background', 'v1')) === text(pcEncodeAck('background', 'v1')),
-		]).toEqual([true, true, true]);
+			text(encodeNotifyVisibility('background', undefined, 'voice')) === text(pcEncode('background', undefined, 'voice')),
+		]).toEqual([true, true, true, true]);
+		expect([pcDecode(encodeNotifyVisibility('background', undefined, 'voice')), decodeNotifyVisibility(pcEncode('background', 'v2', 'voice'))])
+			.toEqual([{ t: 'visibility', state: 'background', keep: 'voice' }, { t: 'visibility', state: 'background', id: 'v2', keep: 'voice' }]);
 		expect([pcDecode(encodeNotifyVisibility('background', 'v1')), decodeNotifyVisibility(pcEncodeAck('background', 'v1'))])
 			.toEqual([{ t: 'visibility', state: 'background', id: 'v1' }, { t: 'visibility-ack', state: 'background', id: 'v1' }]);
 	});

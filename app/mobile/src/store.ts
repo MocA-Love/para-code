@@ -1919,6 +1919,11 @@ export class MobileController {
 	private visibilityCounter = 0;
 	/** この接続で PC へ「裏に回った」を送ったか（前面に戻ったら取り消しを送る）。 */
 	private backgroundVisibilitySent = false;
+	/**
+	 * 音声通知のために裏でもソケットを保っている（設計 4 章 #4）。この間は、つながり直すたびに
+	 * 「裏に回った（keep: voice）」を送り直す（PC は新しいセッションを前面として始めるため）。
+	 */
+	private voiceBackground = false;
 	private static readonly LIVENESS_IDLE_MS = 45_000;
 	private static readonly LIVENESS_CHECK_INTERVAL_MS = 20_000;
 	private outboxReplayEpoch: string | undefined;
@@ -2408,6 +2413,35 @@ export class MobileController {
 			this.backgroundVisibilitySent = true;
 			client.send('notify', encodeNotifyVisibility('background', id));
 		});
+	}
+
+	/**
+	 * 音声通知のためにソケットを保ったまま裏に回った（設計 4 章 #4）。PC へ「裏に回った（keep: voice）」を送り、
+	 * 通知をプッシュで出させる。送らないと PC はアプリを前面と信じて、バナーが出ない。広告していない PC には送らない
+	 * （旧 PC は保持の期限でセッションを捨て、音声が止まる）。
+	 */
+	enterVoiceBackground(): void {
+		this.voiceBackground = true;
+		this.sendVoiceBackgroundVisibility();
+	}
+
+	/** 音声通知のために保っていた裏から前面へ戻った。 */
+	leaveVoiceBackground(): void {
+		if (!this.voiceBackground) {
+			return;
+		}
+		this.voiceBackground = false;
+		this.sendForegroundVisibility();
+	}
+
+	private sendVoiceBackgroundVisibility(): void {
+		const client = this.client;
+		if (!this.voiceBackground || this.backgroundVisibilitySent || client === undefined || this.state.connection !== 'online'
+			|| !this.state.sessionProtocolReady || !this.hasPcCapability(PcCapability.NotifyVisibilityVoice)) {
+			return;
+		}
+		this.backgroundVisibilitySent = true;
+		client.send('notify', encodeNotifyVisibility('background', undefined, 'voice'));
 	}
 
 	/** 前面に戻ったことを PC へ伝える（「裏に回った」を送っていたときだけ。W2-34）。 */
@@ -3125,9 +3159,33 @@ export class MobileController {
 	 * `stateEncoding` は圧縮の交渉。**PCは要求されたときだけ圧縮する**（この申告を知らない
 	 * 旧アプリへ gzip を送ると、JSON.parse の例外が握り潰されてホームが空のまま固まるため）。
 	 */
-	requestState(): void {
+	requestState(full = false): void {
 		// 版と、受け入れる PC の最低版・このアプリの機能を広告する（W2-17。旧PCは知らない項目を読まない）。
-		this.client?.send('state', encoder.encode(JSON.stringify({ ...stateRequestFields(), stateEncoding: JSON_GZIP_RESPONSE_ENCODING })));
+		// この接続で全量を受け取った後は、手元の版を `known` で添える。PC は変わっていなければ全量の代わりに
+		// `unchanged` を返す（state.unchanged.v1。25 秒ごとの生存確認で毎回全量を送らせない。設計 4 章 #14）
+		const workspace = this.state.workspace;
+		const known = !full && this.state.sessionProtocolReady && workspace?.complete === true && this.hasPcCapability(PcCapability.StateUnchanged)
+			? { known: { desktopEpoch: workspace.desktopEpoch, revision: workspace.revision } }
+			: {};
+		this.client?.send('state', encoder.encode(JSON.stringify({ ...stateRequestFields(), stateEncoding: JSON_GZIP_RESPONSE_ENCODING, ...known })));
+	}
+
+	/**
+	 * PC が「手元の State から変わっていない」と答えた（state.unchanged.v1）。手元の版と一致すれば、同じ版の
+	 * 全量を受け取ったときと同じ後処理をする。一致しなければ（取り違え・途中で変わった）全量を求め直す。
+	 */
+	private applyUnchangedState(desktopEpoch: unknown, revision: unknown): void {
+		const workspace = this.state.workspace;
+		if (!this.state.sessionProtocolReady || workspace?.complete !== true || workspace.desktopEpoch !== desktopEpoch || workspace.revision !== revision) {
+			this.requestState(true);
+			return;
+		}
+		this.stateFramesReceived++;
+		this.state.pcOnline = true;
+		this.emit();
+		this.reconcileTerminalOperationOutbox(workspace.desktopEpoch);
+		this.refreshWarmLeaseTargets();
+		this.replayResumeFrames();
 	}
 
 	private resumeLiveSessionSubscriptions(): void {
@@ -4777,6 +4835,11 @@ export class MobileController {
 					return;
 				}
 				const incoming = JSON.parse(decodeUtf8(raw)) as WorkspaceState;
+				const unchanged = incoming as unknown as { t?: unknown; desktopEpoch?: unknown; revision?: unknown };
+				if (unchanged.t === 'unchanged') {
+					this.applyUnchangedState(unchanged.desktopEpoch, unchanged.revision);
+					return;
+				}
 				// 版の窓の判定は PC と同じ関数（pcCompat.ts → paradisMobileCompat.ts）。
 				// minCompatibleMobile を送らない旧PCは、これまでどおり版の完全一致だけが通る。
 				const verdict = evaluatePcCompat(incoming);
@@ -4849,6 +4912,10 @@ export class MobileController {
 				this.state.pcOnline = true;
 				const firstReadyState = !this.state.sessionProtocolReady;
 				this.state.sessionProtocolReady = true;
+				if (firstReadyState) {
+					// 音声のために裏で保っている間につながり直した。新しいセッションへも「裏に回った」を送る
+					this.sendVoiceBackgroundVisibility();
+				}
 				const previous = this.state.workspace;
 				if (previous?.desktopEpoch === incoming.desktopEpoch
 					&& (incoming.revision < previous.revision || (incoming.revision === previous.revision && (previous.complete || !incoming.complete)))) {
