@@ -22,6 +22,7 @@ import './contrib/agentBrowser/electron-browser/paradisAgentBrowserTabs.contribu
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowserBindingRestore.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentNotes.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowserCursorSettings.contribution.js';
+import './contrib/agentBrowser/electron-browser/paradisAgentPageScriptsBanner.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisBrowserScope.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisAgentStatus.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';

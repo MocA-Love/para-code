@@ -510,4 +510,18 @@ suite('ParadisBrowserPageOpsController', () => {
 		controller.releaseTarget(target);
 		await flush();
 	});
+
+	test('the number of init scripts on a tab is reported as it changes, and the user can remove the scripts of every pane', async () => {
+		const counts: number[] = [];
+		const controller = new ParadisBrowserPageOpsController(Date.now, () => { }, (_target, count) => counts.push(count));
+		const target = createTarget();
+		await controller.addInitScript(target, OWNER, 1, { source: 'window.__a = 1', label: 'a', runNow: false });
+		await controller.addInitScript(target, OTHER_OWNER, 1, { source: 'window.__b = 1', label: 'b', runNow: false });
+		const listed = controller.initScriptCounts().map(([, count]) => count);
+		const removed = await controller.removeAllInitScripts(target);
+		await controller.addInitScript(target, OWNER, 1, { source: 'window.__c = 1', label: 'c', runNow: false });
+		controller.releaseTarget(target);
+		await flush();
+		assert.deepStrictEqual({ counts, listed, removed, browser: target.sessions[0].initScripts.size }, { counts: [1, 2, 0, 1, 0], listed: [2], removed: 2, browser: 0 });
+	});
 });
