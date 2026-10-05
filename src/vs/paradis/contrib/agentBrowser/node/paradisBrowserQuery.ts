@@ -20,6 +20,7 @@
 
 import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from './paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAMES } from './paradisBrowserQueryTools.js';
+import type { IParadisNetworkActivitySnapshot } from './paradisCdpNetworkActivity.js';
 
 /** 「読む・待つ」ツールの名前。 */
 export const PARADIS_BROWSER_QUERY_TOOL_NAME_SET: ReadonlySet<string> = new Set(PARADIS_BROWSER_QUERY_TOOL_NAMES);
@@ -34,6 +35,11 @@ export interface IParadisBrowserQueryCall {
 	evaluate(functionSource: string, uids: readonly string[]): Promise<unknown>;
 	/** ingress lease が古ければ投げる。共有が変わっていたら false。await の後に呼ぶ。 */
 	isCurrent(): boolean;
+	/**
+	 * 共有中のタブの通信の様子（CDP ゲートウェイが数えたもの）。`ignoreOlderThanMs` より長く続く要求は
+	 * 数えない。まだ何も数えていなければ undefined。
+	 */
+	networkActivity?(ignoreOlderThanMs: number): IParadisNetworkActivitySnapshot | undefined;
 }
 
 type ToolResult = unknown;
@@ -50,13 +56,15 @@ const BINDING_CHANGED = 'PARA_BROWSER_RETRYABLE: the page shared with this termi
 
 /** wait_until の 1 回の evaluate でページの中に留まる上限。 */
 export const PARADIS_WAIT_UNTIL_SLICE_MS = 1000;
+/** network idle で、これより長く続く要求（ストリーミング・ロングポーリング）は数えない。 */
+export const PARADIS_NETWORK_IDLE_IGNORE_AFTER_MS = 30_000;
 const MAX_STRING = 2000;
 const MAX_PREDICATE = 20_000;
 const DEFAULT_STYLES = ['display', 'visibility', 'opacity', 'position', 'z-index', 'overflow', 'pointer-events', 'cursor', 'transform', 'color', 'background-color', 'font-size'];
 
 /** ページの中で使う引数（JSON にしてページの関数へ埋め込む）。 */
 export interface IParadisQuerySpec {
-	readonly mode: 'wait' | 'text' | 'inspect' | 'scroll';
+	readonly mode: 'wait' | 'text' | 'inspect' | 'scroll' | 'locate' | 'focusField' | 'selectOption' | 'setValue' | 'readField' | 'rect';
 	readonly selector?: string;
 	readonly role?: string;
 	readonly name?: string;
@@ -148,6 +156,11 @@ function numberIn(args: Record<string, unknown>, key: string, min: number, max: 
 
 function isError(value: unknown): value is { error: string } {
 	return isRecord(value) && typeof value.error === 'string';
+}
+
+/** {@link paradisParseQueryLocator} が引数の誤りを返したか。 */
+export function paradisIsLocatorError(value: ReturnType<typeof paradisParseQueryLocator>): value is { error: string } {
+	return isError(value);
 }
 
 /** 探す要素の引数（selector / role+name / text / uid と within）を読む。 */
@@ -262,8 +275,18 @@ export class ParadisBrowserQuery {
 		if (isError(predicate)) {
 			return error(predicate.error);
 		}
-		if (!locator.given && predicate === undefined) {
-			return error('wait_until needs something to wait for: a locator (selector, role + name, text or uid), a "predicate", or both.');
+		const networkIdleMs = args.network_idle_ms === undefined ? undefined : numberIn(args, 'network_idle_ms', 100, 30_000, 500);
+		const maxInflight = numberIn(args, 'network_idle_max_inflight', 0, 10, 0);
+		for (const value of [networkIdleMs, maxInflight]) {
+			if (isError(value)) {
+				return error(value.error);
+			}
+		}
+		if (args.network_idle_max_inflight !== undefined && networkIdleMs === undefined) {
+			return error('"network_idle_max_inflight" needs "network_idle_ms".');
+		}
+		if (!locator.given && predicate === undefined && networkIdleMs === undefined) {
+			return error('wait_until needs something to wait for: a locator (selector, role + name, text or uid), a "predicate", "network_idle_ms", or a combination.');
 		}
 		const state = args.state ?? 'visible';
 		if (state !== 'visible' && state !== 'attached' && state !== 'hidden' && state !== 'detached') {
@@ -285,6 +308,17 @@ export class ParadisBrowserQuery {
 		let last: Record<string, unknown> | undefined;
 		let lastFailure: ToolResult | undefined;
 		let checks = 0;
+		let lastNetwork: IParadisNetworkActivitySnapshot | undefined;
+		/** 通信が静かか。network idle を頼まれていなければ常に true。 */
+		const networkIdle = (): boolean => {
+			if (networkIdleMs === undefined) {
+				return true;
+			}
+			lastNetwork = call.networkActivity?.(PARADIS_NETWORK_IDLE_IGNORE_AFTER_MS);
+			// まだ何も数えていない（台帳が無い・要求を 1 つも見ていない）ときは、待ち始めてからの時間で測る
+			const quietMs = lastNetwork?.quietMs ?? (this.now() - startedAt);
+			return (lastNetwork?.inflight ?? 0) <= (maxInflight as number) && quietMs >= (networkIdleMs as number);
+		};
 		for (; ;) {
 			if (call.signal?.aborted) {
 				return error('wait_until was cancelled.');
@@ -298,8 +332,20 @@ export class ParadisBrowserQuery {
 				last = outcome.value;
 				lastFailure = undefined;
 				if (outcome.value.met === true) {
-					const elapsed = ((this.now() - startedAt) / 1000).toFixed(1);
-					return text(`Condition met after ${elapsed}s.\n${JSON.stringify(outcome.value, null, 2)}`);
+					if (networkIdle()) {
+						const elapsed = ((this.now() - startedAt) / 1000).toFixed(1);
+						const network = networkIdleMs !== undefined ? { network: { inflight: lastNetwork?.inflight ?? 0, quietMs: lastNetwork?.quietMs, ...(lastNetwork?.longLived ? { longLivedIgnored: lastNetwork.longLived } : {}), ...(lastNetwork?.quietMs === undefined ? { observed: false, note: 'Para Code has not seen any request of this tab yet (requests are counted only while the browser tools are connected), so the quiet time was measured from the start of wait_until.' } : {}) } } : {};
+						return text(`Condition met after ${elapsed}s.\n${JSON.stringify({ ...outcome.value, ...network }, null, 2)}`);
+					}
+					if (this.now() >= deadline) {
+						break;
+					}
+					// 要素・述語は満たしたが通信がまだ。ページの関数はすぐ返るので、ここで間を空ける
+					await this.delay(Math.min(intervalMs as number, Math.max(0, deadline - this.now())), call.signal);
+					if (!call.isCurrent()) {
+						return error(BINDING_CHANGED);
+					}
+					continue;
 				}
 			} else if (!outcome.transient) {
 				return outcome.result;
@@ -317,8 +363,9 @@ export class ParadisBrowserQuery {
 				}
 			}
 		}
-		const what = [locator.given ? `${state} ${describeLocator(args)}` : '', predicate !== undefined ? 'predicate truthy' : ''].filter(Boolean).join(' and ');
-		const seen = last !== undefined ? `\nLast check: ${JSON.stringify(last, null, 2)}` : lastFailure !== undefined ? '\nThe page was still navigating or reloading at the last check.' : '';
+		const what = [locator.given ? `${state} ${describeLocator(args)}` : '', predicate !== undefined ? 'predicate truthy' : '', networkIdleMs !== undefined ? `network idle for ${networkIdleMs}ms` : ''].filter(Boolean).join(' and ');
+		const network = lastNetwork !== undefined ? `\nNetwork at the last check: ${lastNetwork.inflight} request(s) in flight${lastNetwork.pendingUrls.length > 0 ? ` (${lastNetwork.pendingUrls.join(', ')})` : ''}, quiet for ${lastNetwork.quietMs ?? 0}ms.` : '';
+		const seen = (last !== undefined ? `\nLast check: ${JSON.stringify(last, null, 2)}` : lastFailure !== undefined ? '\nThe page was still navigating or reloading at the last check.' : '') + network;
 		return error(`Timed out after ${timeoutSeconds}s waiting for ${what} (${checks} checks).${seen}`);
 	}
 

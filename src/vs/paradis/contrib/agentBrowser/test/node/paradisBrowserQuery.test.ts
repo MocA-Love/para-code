@@ -191,6 +191,32 @@ suite('paradisBrowserQuery (shared process)', () => {
 		});
 	});
 
+	test('wait_until with network_idle_ms waits until the shared tab has been quiet for long enough', async () => {
+		const page = new FakePage([returned({ met: true })], 100);
+		const snapshots = [
+			{ inflight: 2, quietMs: 0, pendingUrls: ['https://example.com/api'], longLived: 0 },
+			{ inflight: 0, quietMs: 200, pendingUrls: [], longLived: 0 },
+			{ inflight: 0, quietMs: 600, pendingUrls: [], longLived: 1 },
+		];
+		const call = { ...page.call(), networkActivity: () => snapshots.length > 1 ? snapshots.shift() : snapshots[0] };
+		const result = await page.query().call(call, 'wait_until', { network_idle_ms: 500 });
+		const quiet = new FakePage([returned({ met: true })], 100);
+		const never = await quiet.query().call({ ...quiet.call(), networkActivity: () => ({ inflight: 1, quietMs: 0, pendingUrls: ['https://example.com/slow'], longLived: 0 }) }, 'wait_until', { network_idle_ms: 500, timeout_seconds: 1 });
+		assert.deepStrictEqual({
+			error: isError(result),
+			checks: page.calls.length,
+			network: JSON.parse(textOf(result).split('\n').slice(1).join('\n')).network,
+			timedOut: [isError(never), textOf(never).includes('1 request(s) in flight (https://example.com/slow)')],
+			needsIdle: isError(await page.query().call(page.call(), 'wait_until', { network_idle_max_inflight: 2 })),
+		}, {
+			error: false,
+			checks: 3,
+			network: { inflight: 0, quietMs: 600, longLivedIgnored: 1 },
+			timedOut: [true, true],
+			needsIdle: true,
+		});
+	});
+
 	test('a change of the shared page stops the tool', async () => {
 		const page = new FakePage([returned({ met: false })]);
 		page.current = false;
