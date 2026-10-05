@@ -8,8 +8,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_AGENT_STATUS_POLL_FAILURE_CLEAR_THRESHOLD, paradisShouldClearAgentStatusAfterPollFailures, paradisShouldSweepStaleWorkingStatus } from '../../common/paradisAgentStatusStale.js';
-import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, IParadisAgentHookEvent, onParadisAgentHookEvent, onParadisAgentPaneActivity, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard, setParadisAgentPaneActivity, setParadisAgentPaneIssueUrls } from '../../node/paradisAgentHookBus.js';
+import { PARADIS_AGENT_STATUS_POLL_FAILURE_CLEAR_THRESHOLD, paradisIsHarnessNotificationPrompt, paradisIsRepeatedReview, paradisShouldClearAgentStatusAfterPollFailures, paradisShouldSweepStaleWorkingStatus } from '../../common/paradisAgentStatusStale.js';
+import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, paradisCountLiveBackgroundTasks, fireParadisAgentHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, IParadisAgentHookEvent, onParadisAgentHookEvent, onParadisAgentPaneActivity, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard, setParadisAgentPaneActivity, setParadisAgentPaneIssueUrls } from '../../node/paradisAgentHookBus.js';
 
 suite('ParadisAgentBrowserStatus', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -24,6 +24,61 @@ suite('ParadisAgentBrowserStatus', () => {
 			afterTimeout: paradisShouldSweepStaleWorkingStatus('working', true, 0, 15 * 60 * 1000 + 1),
 			review: paradisShouldSweepStaleWorkingStatus('review', true, 0, 16 * 60 * 1000),
 		}, { beforeTimeout: false, afterTimeout: true, review: false });
+	});
+
+	test('keeps the Stop fallback while a background task still counts', () => {
+		assert.deepStrictEqual({
+			withLiveTask: paradisShouldSweepStaleWorkingStatus('working', true, 0, 16 * 60 * 1000, 1),
+			withoutLiveTask: paradisShouldSweepStaleWorkingStatus('working', true, 0, 16 * 60 * 1000, 0),
+		}, { withLiveTask: false, withoutLiveTask: true });
+	});
+
+	test('counts background tasks from their latest sign, keeps unknown subagents for the grace period and expires shells from their start', () => {
+		clearParadisAgentPaneActivity('sign-pane');
+		const guard = registerParadisAgentPaneActivityGuard(token => token === 'sign-pane');
+		const minute = 60 * 1000;
+		const now = Date.now();
+		try {
+			setParadisAgentPaneActivity('sign-pane', {
+				backgroundTasks: new Map([
+					['agent-recent-sign', now - 5 * minute],
+					['agent-unknown', now - 30 * minute],
+					['agent-given-up', now - 61 * minute],
+					['shell-recent', now - 5 * minute],
+					['shell-old', now - 16 * minute],
+				]),
+				expiringBackgroundTasks: new Set(['shell-recent', 'shell-old', 'not-a-task']),
+				pendingQuestion: false,
+				pendingApproval: false,
+			});
+			assert.deepStrictEqual({
+				count: paradisCountLiveBackgroundTasks('sign-pane', now),
+				expiring: [...getParadisAgentPaneActivity('sign-pane').expiringBackgroundTasks ?? []],
+			}, { count: 3, expiring: ['shell-recent', 'shell-old'] });
+		} finally {
+			guard.dispose();
+			clearParadisAgentPaneActivity('sign-pane');
+		}
+	});
+
+	test('announces a completion once per user turn, plus once more when a background-task completion becomes certain', () => {
+		assert.deepStrictEqual({
+			unknownTurn: paradisIsRepeatedReview(undefined, { turn: 1, certain: true }, true),
+			firstInTurn: paradisIsRepeatedReview(1, undefined, true),
+			newTurn: paradisIsRepeatedReview(2, { turn: 1, certain: true }, true),
+			repeatAfterCertain: paradisIsRepeatedReview(1, { turn: 1, certain: true }, true),
+			repeatWhileTasksRemain: paradisIsRepeatedReview(1, { turn: 1, certain: false }, false),
+			finalAfterUncertain: paradisIsRepeatedReview(1, { turn: 1, certain: false }, true),
+		}, { unknownTurn: false, firstInTurn: false, newTurn: false, repeatAfterCertain: true, repeatWhileTasksRemain: true, finalAfterUncertain: false });
+	});
+
+	test('tells a background completion wake-up apart from a user prompt', () => {
+		assert.deepStrictEqual([
+			paradisIsHarnessNotificationPrompt('<task-notification>\n<task-id>a1</task-id>'),
+			paradisIsHarnessNotificationPrompt('  <task-notification>'),
+			paradisIsHarnessNotificationPrompt('続きをお願い'),
+			paradisIsHarnessNotificationPrompt(undefined),
+		], [true, true, false, false]);
 	});
 
 	test('clears renderer status only after sustained shared-process poll failure', () => {

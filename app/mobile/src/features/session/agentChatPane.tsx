@@ -9,6 +9,7 @@ import { shouldShowQuickReplies } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
 import { AGENT_RESUME_CAPABILITY } from '../../agentSessions.js';
 import { AGENT_QUESTION_CHAT_CAPABILITY, AGENT_QUESTION_NOTES_CAPABILITY, askQuestionFeatures, questionHasPreview } from '../../agentQuestionMod.js';
+import { agentSendIds } from '../../agentSendIds.js';
 import { enqueueAgentSend, useAgentSendLive } from '../../agentSendQueue.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
 import { PcCapability } from '../../pcCompat.js';
@@ -135,15 +136,22 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	const sendText = useCallback((text: string) => {
 		const afterRev = (messagesRef.current ?? []).reduce((max, message) => Math.max(max, message.rev), 0);
 		const wasWorking = workingRef.current;
+		// 1 回の送信に 1 つの id。届いたか分からないまま戻した同じ文の送り直しなら前の id（PC が二重に送らない）
+		const sendId = agentSendIds.idFor(terminalKey, text);
 		if (!live && canQueue && activePcId !== undefined) {
 			return enqueueAgentSend(activePcId, text, {
 				kind: 'live', terminalKey, ...(sourceId !== undefined ? { ws: sourceId } : {}), ...(resumeKey !== undefined ? { resumeKey } : {}), title: terminal.title,
-			}).then(
-				(): AgentMessageSendResult => ({ status: 'accepted' }),
+			}, sendId).then(
+				(): AgentMessageSendResult => {
+					// 預けたので、この id は預かりの送信が使う（同じ文をもう一度送っても別の送信）
+					agentSendIds.settle(terminalKey, text, sendId, { status: 'accepted' });
+					return { status: 'accepted' };
+				},
 				(error: unknown): AgentMessageSendResult => ({ status: 'rejected', message: error instanceof Error ? error.message : '送信を預かれませんでした' }),
 			);
 		}
-		return sendTextAction(text).then(result => {
+		return sendTextAction(text, sendId).then(result => {
+			agentSendIds.settle(terminalKey, text, sendId, result);
 			if (wasWorking && result.status === 'accepted' && chatEpoch !== undefined) {
 				usePendingAgentMessages.getState().add(terminalKey, text, afterRev, chatEpoch);
 			}

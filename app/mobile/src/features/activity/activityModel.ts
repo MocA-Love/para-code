@@ -59,3 +59,24 @@ export function activityOverview(activity: AgentActivityState, now: number, expa
 		olderCount: older.length,
 	};
 }
+
+/** 詳細を取り直す前に待つ最短の時間（一覧の更新が続けて届いても、まとめて 1 回にする）。 */
+export const ACTIVITY_DETAIL_REFRESH_DEBOUNCE_MS = 1_000;
+/**
+ * 詳細を取り直す最短の間隔。PC は取り直しのたびに子の transcript の末尾（最大 4MiB）を読み直すので詰めすぎない
+ * （行の購読に置き換えるまでの暫定）。
+ */
+export const ACTIVITY_DETAIL_REFRESH_INTERVAL_MS = 3_000;
+
+/**
+ * 開いているサブエージェントの詳細を取り直すか。前に取ったときの一覧の更新時刻（`fetchedUpdatedAt`）より、
+ * 今の一覧の更新時刻が進んでいれば取り直す。最初の取得がまだ（または失敗した）なら取り直さない。
+ */
+export function shouldRefreshActivityDetail(fetchedUpdatedAt: number | undefined, updatedAt: number | undefined): boolean {
+	return fetchedUpdatedAt !== undefined && updatedAt !== undefined && updatedAt > fetchedUpdatedAt;
+}
+
+/** 取り直すまで待つ時間（前の取得の開始 `lastFetchAt` から最短の間隔を空け、最低でも少し待つ）。 */
+export function activityDetailRefreshDelay(lastFetchAt: number, now: number): number {
+	return Math.max(ACTIVITY_DETAIL_REFRESH_DEBOUNCE_MS, ACTIVITY_DETAIL_REFRESH_INTERVAL_MS - (now - lastFetchAt));
+}

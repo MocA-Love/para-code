@@ -107,12 +107,13 @@ function patch(pcId: string, id: string, fields: Partial<Pick<AgentSendQueueItem
 }
 
 /** 送信を預かる。保存し終えたら resolve する。 */
-export async function enqueueAgentSend(pcId: string, text: string, target: AgentSendTarget): Promise<AgentSendQueueItem> {
+/** `id` は PC へ送るときの sendId にもなる（入力欄で付けた id を渡すと、届いたか分からない送信の送り直しを PC が二重にしない）。 */
+export async function enqueueAgentSend(pcId: string, text: string, target: AgentSendTarget, id: string = newRequestId()): Promise<AgentSendQueueItem> {
 	await loadPc(pcId);
 	if (!useAgentSendQueue.getState().loaded.has(pcId)) {
 		throw new Error('送信を預かれませんでした。PC にもう一度つないでから送ってください');
 	}
-	const item: AgentSendQueueItem = { id: newRequestId(), pcId, createdAt: Date.now(), text, target, status: 'waiting' };
+	const item: AgentSendQueueItem = { id, pcId, createdAt: Date.now(), text, target, status: 'waiting' };
 	update(pcId, items => addAgentSendQueueItem(items, item));
 	await savePc(pcId);
 	return item;
