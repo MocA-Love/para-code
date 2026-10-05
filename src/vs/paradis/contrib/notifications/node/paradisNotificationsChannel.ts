@@ -67,6 +67,7 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 			case 'playElevenLabs': return this.service.playElevenLabs(args[0] as Parameters<ParadisNotificationsService['playElevenLabs']>[0]) as Promise<T>;
 			case 'listElevenLabsVoices': return this.service.elevenLabs.listVoices(String(args[0])) as Promise<T>;
 			case 'listElevenLabsModels': return this.service.elevenLabs.listModels(String(args[0])) as Promise<T>;
+			case 'getElevenLabsVoiceSettings': return this.service.elevenLabs.getVoiceSettings(String(args[0]), String(args[1])) as Promise<T>;
 			// args[2]（任意）: 直近だけの内訳を作る日数（モバイルの 7 日）
 			case 'getElevenLabsUsage': return this.service.elevenLabs.getUsage(String(args[0]), Number(args[1]) || 30, typeof args[2] === 'number' && Number.isFinite(args[2]) ? args[2] : undefined) as Promise<T>;
 			case 'getElevenLabsSubscription': return this.service.elevenLabs.getSubscription(String(args[0])) as Promise<T>;

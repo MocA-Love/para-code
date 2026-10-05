@@ -40,6 +40,7 @@ import { ParadisAivisDictionarySection } from './paradisAivisDictionarySection.j
 import { ParadisAgentDictionarySection } from './paradisAgentDictionarySection.js';
 import { ParadisAivisUsageSection } from './paradisAivisUsageSection.js';
 import { ParadisAivisVoiceSection } from './paradisAivisVoiceSection.js';
+import { ParadisVoiceGainSection } from './paradisVoiceGainSection.js';
 import { ParadisDoNotDisturbSection } from './paradisDoNotDisturbSection.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { ParadisNotificationSoundPlayer } from './paradisNotificationSoundPlayer.js';
@@ -80,6 +81,8 @@ const STR_NAV_SOUND = localize('paradis.notif.navSound', "通知サウンド");
 const STR_NAV_AIVIS = localize('paradis.notif.navAivis', "音声報告");
 // allow-any-unicode-next-line
 const STR_NAV_DICT = localize('paradis.notif.navDict', "ユーザー辞書");
+// allow-any-unicode-next-line
+const STR_NAV_GAIN = localize('paradis.notif.navGain', "音量の補正");
 // allow-any-unicode-next-line
 const STR_NAV_USAGE = localize('paradis.notif.navUsage', "使用量 (日別)");
 // エンジン名は製品名なので訳さない。
@@ -346,6 +349,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 
 		this._addNavCaption(nav, STR_NAV_CAPTION_AIVIS);
 		this._addNavItem(nav, STR_NAV_AIVIS, 'pns-sec-aivis', { status: true });
+		this._addNavItem(nav, STR_NAV_GAIN, 'pns-sec-gain', {});
 		this._addNavItem(nav, STR_NAV_DICT, 'pns-sec-dict', {});
 		this._addNavItem(nav, STR_NAV_USAGE, 'pns-sec-usage', {});
 	}
@@ -410,9 +414,16 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		this._aivisSectionEl = this._createSection(
 			'pns-sec-aivis',
 			// allow-any-unicode-next-line
-			'aivis elevenlabs 音声 読み上げ エンジン voice api key model uuid voice_id モデル 辞書 テスト再生 プリセット 声',
+			'aivis elevenlabs 音声 読み上げ エンジン voice api key model uuid voice_id モデル 辞書 テスト再生 プリセット 声 調整 安定度 stability similarity',
 		);
 		this._aivisSection = this._register(this.instantiationService.createInstance(ParadisAivisVoiceSection, this._aivisSectionEl));
+
+		const gainSection = this._createSection(
+			'pns-sec-gain',
+			// allow-any-unicode-next-line
+			'音量の補正 gain 学習 lufs aivis-mcp 書き出し 読み込み export import やり直す',
+		);
+		this._register(this.instantiationService.createInstance(ParadisVoiceGainSection, dom.append(gainSection, $('div'))));
 
 		const dictSection = this._createSection(
 			'pns-sec-dict',
@@ -529,6 +540,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			elevenLabsSpeed: PARADIS_ELEVENLABS_SPEED_DEFAULT,
 			elevenLabsDictionaryId: '',
 			shareDictionaryWithAgents: true,
+			elevenLabsVoiceSettings: {},
 		});
 	}
 

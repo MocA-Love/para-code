@@ -13,6 +13,7 @@ import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisAgentDictionaryCurrent } from '../../common/paradisAgentDictionary.js';
+import { IParadisElevenLabsVoiceTuning } from '../../common/paradisVoiceTuning.js';
 import { IParadisAivisMcpRunResult, ParadisAgentDictionarySyncService, paradisRunAivisMcp } from '../../node/paradisAgentDictionarySync.js';
 
 const UUID_A = '11111111-2222-4333-8444-555555555555';
@@ -22,6 +23,7 @@ class FakeAivisMcp {
 	readonly calls: string[][] = [];
 	version: string | undefined = 'aivis-mcp v2.5.3';
 	current: IParadisAgentDictionaryCurrent = {};
+	voices: Record<string, IParadisElevenLabsVoiceTuning> = {};
 	fail = false;
 
 	readonly run = async (args: readonly string[]): Promise<IParadisAivisMcpRunResult> => {
@@ -31,6 +33,20 @@ class FakeAivisMcp {
 		}
 		if (this.fail) {
 			return { code: 1, stdout: '', stderr: 'error: lock' };
+		}
+		if (args[0] === '--set-voice-settings' || args[0] === '--clear-voice-settings') {
+			const voices = { ...this.voices };
+			if (args[0] === '--clear-voice-settings') {
+				delete voices[args[2]];
+			} else {
+				const entry: { stability?: number; similarityBoost?: number } = { ...voices[args[2]] };
+				for (let i = 3; i < args.length; i += 2) {
+					entry[args[i] === '--stability' ? 'stability' : 'similarityBoost'] = Number(args[i + 1]);
+				}
+				voices[args[2]] = entry;
+			}
+			this.voices = voices;
+			return { code: 0, stdout: 'ok\n', stderr: '' };
 		}
 		const provider = args[2] as 'elevenlabs' | 'aivis';
 		const next = { ...this.current };
@@ -65,6 +81,7 @@ suite('ParadisAgentDictionarySyncService', () => {
 			logService: new NullLogService(),
 			run: fake.run,
 			readCurrent: async () => fake.current,
+			readCurrentVoiceSettings: async () => fake.voices,
 			statePath,
 		});
 	}
@@ -118,6 +135,51 @@ suite('ParadisAgentDictionarySyncService', () => {
 			results: ['unsupported', 'unsupported', 'failed'],
 			calls: [[['--version']], [['--version']], [['--version'], ['--set-dictionary', '--provider', 'elevenlabs', '--id', 'el1']]],
 			stateWritten: {},
+		});
+	});
+
+	test('writes the voice settings with aivis-mcp 2.5.4, keeps the dictionary only on 2.5.3, and clears only what it wrote', async () => {
+		const dictionaries = { elevenlabs: 'el1', aivis: '' };
+		const voiceSettings = { v1: { stability: 0.5, similarityBoost: 0.75 }, v2: { stability: 0.3 } };
+		// 2.5.3: 辞書だけ書いて、声の調整は飛ばす（覚えない）
+		const older = new FakeAivisMcp();
+		const olderResult = await create(older).apply({ enabled: true, dictionaries, voiceSettings });
+		const olderState = JSON.parse(readFileSync(statePath, 'utf8'));
+		rmSync(statePath);
+
+		const fake = new FakeAivisMcp();
+		fake.version = 'aivis-mcp v2.5.4';
+		const service = create(fake);
+		const first = await service.apply({ enabled: true, dictionaries, voiceSettings });
+		const again = await service.apply({ enabled: true, dictionaries, voiceSettings });
+		// 利用者が aivis-mcp 側で v2 を変えた後にオフにする: v2 は消さずに忘れる
+		fake.voices = { ...fake.voices, v2: { stability: 0.9 } };
+		const off = await service.apply({ enabled: false, dictionaries, voiceSettings });
+		assert.deepStrictEqual({
+			older: { status: olderResult.status, calls: older.calls, voices: older.voices, state: olderState },
+			statuses: [first.status, again.status, off.status],
+			calls: fake.calls,
+			voices: fake.voices,
+			state: JSON.parse(readFileSync(statePath, 'utf8')),
+		}, {
+			older: {
+				status: 'applied',
+				calls: [['--version'], ['--set-dictionary', '--provider', 'elevenlabs', '--id', 'el1']],
+				voices: {},
+				state: { elevenlabs: 'el1' },
+			},
+			statuses: ['applied', 'unchanged', 'applied'],
+			calls: [
+				['--version'],
+				['--set-dictionary', '--provider', 'elevenlabs', '--id', 'el1'],
+				['--set-voice-settings', '--voice', 'v1', '--stability', '0.5', '--similarity', '0.75'],
+				['--set-voice-settings', '--voice', 'v2', '--stability', '0.3'],
+				['--version'],
+				['--clear-dictionary', '--provider', 'elevenlabs'],
+				['--clear-voice-settings', '--voice', 'v1'],
+			],
+			voices: { v2: { stability: 0.9 } },
+			state: {},
 		});
 	});
 

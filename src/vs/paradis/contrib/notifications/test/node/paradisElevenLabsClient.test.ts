@@ -89,6 +89,21 @@ suite('ParadisElevenLabsClient', () => {
 		});
 	});
 
+	test('sends the voice tuning of the voice and reads the saved settings of a voice', async () => {
+		const fake = new FakeFetch()
+			.on('POST', '/v1/text-to-speech/voice1/stream', () => new Response(Uint8Array.of(9)))
+			.on('GET', '/v1/voices/voice1/settings', () => json({ stability: 0.45, similarity_boost: 0.8, style: 0, use_speaker_boost: true, speed: 1 }));
+		const client = createClient(fake);
+		await client.synthesize({ apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'eleven_v3', text: 'x', stability: 0.7, similarityBoost: 0.6 });
+		const saved = await client.getVoiceSettings(TEST_KEY, 'voice1');
+
+		assert.deepStrictEqual({ body: fake.requests[0].body, saved, path: fake.requests[1].path }, {
+			body: { text: 'x', model_id: 'eleven_v3', voice_settings: { speed: 1, stability: 0.5, similarity_boost: 0.6 } },
+			saved: { stability: 0.45, similarityBoost: 0.8 },
+			path: '/v1/voices/voice1/settings',
+		});
+	});
+
 	test('reads without the dictionary when its version cannot be resolved', async () => {
 		const fake = new FakeFetch()
 			.on('GET', '/v1/pronunciation-dictionaries/gone', () => json({ detail: { status: 'not_found' } }, 404))
