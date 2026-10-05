@@ -125,12 +125,13 @@ export class AppLinkMetrics {
 
 	// --- ターミナルの入力からエコーの描画まで ---
 
-	/** ターミナルへの入力を送ると決めた（キーを押した）。戻り値は送る直前の区間に使う時刻。 */
-	noteInput(): number {
-		const now = this.deps.now();
-		if (this.metrics.enabled) {
-			this.echo.mark('input', now);
+	/** ターミナルへの入力を送ると決めた（キーを押した）。戻り値は送る直前の区間に使う時刻（オフなら undefined で、時計も読まない）。 */
+	noteInput(): number | undefined {
+		if (!this.metrics.enabled) {
+			return undefined;
 		}
+		const now = this.deps.now();
+		this.echo.mark('input', now);
 		return now;
 	}
 

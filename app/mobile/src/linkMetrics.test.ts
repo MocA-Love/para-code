@@ -28,17 +28,17 @@ describe('AppLinkMetrics', () => {
 		const h = harness();
 		const sent: string[] = [];
 		h.metrics.registerPinger(text => { sent.push(text); return true; });
-		h.metrics.noteInput();
+		const inputAt = h.metrics.noteInput();
 		h.metrics.noteTermData(3);
 		h.metrics.noteChunk({ ch: 'term', bytes: 10, more: false, openMs: 1 });
 		h.tick();
-		expect({ counts: h.counts(), sent, ticking: h.ticking() }).toEqual({ counts: {}, sent: [], ticking: false });
+		expect({ counts: h.counts(), sent, ticking: h.ticking(), inputAt }).toEqual({ counts: {}, sent: [], ticking: false, inputAt: undefined });
 	});
 
 	test('measures a key from the send through the echo to the drawn frame', () => {
 		const h = harness();
 		h.metrics.setEnabled(true);
-		const inputAt = h.metrics.noteInput();
+		const inputAt = h.metrics.noteInput()!;
 		h.advance(4);
 		h.metrics.noteInputSent(inputAt);
 		h.advance(60);

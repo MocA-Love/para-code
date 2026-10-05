@@ -4880,7 +4880,7 @@ export class MobileController {
 			try {
 				// 新しいPCは requestState の交渉に応じて gzip で返してくる。magic を持たない
 				// 従来のJSONはそのまま通す（PCを更新していない場合の経路）。
-				const decodeStartedAt = appLinkMetrics.metrics.now();
+				const decodeStartedAt = appLinkMetrics.enabled ? appLinkMetrics.metrics.now() : 0;
 				const raw = isGzipJsonResponse(frame.payload) ? decodeGzipJsonResponse(frame.payload) : frame.payload;
 				if (raw === undefined) {
 					// 壊れた圧縮フレームは捨てる。stateは常に全量なので次の再送で自動的に追いつく。

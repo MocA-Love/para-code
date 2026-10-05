@@ -208,7 +208,10 @@ export class FrameMux {
 			this.nextTransferId = (this.nextTransferId + 1) % 0x100000000;
 		}
 		const { priority, replaceKey, interleave } = paradisMobileSendPriorityOf(channel, payload);
-		this.options.metrics?.observe(`pc.tx.${channel}.frameBytes`, payload.length);
+		if (this.options.metrics?.enabled === true) {
+			// 名前の文字列は計測中だけ組み立てる（オフの送信の経路に負荷を足さない）
+			this.options.metrics.observe(`pc.tx.${channel}.frameBytes`, payload.length);
+		}
 		const fragmentAt = (index: number): Frame => {
 			if (!fragmented) {
 				// 16KiB 以下は断片の見出しを付けない（版 3 と同じバイト列。古い相手への更新の案内もこの形で届く）
