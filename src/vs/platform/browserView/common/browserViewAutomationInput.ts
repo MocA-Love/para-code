@@ -33,6 +33,37 @@ export interface IBrowserViewAutomationKeyRegistration {
 }
 
 export type BrowserViewAutomationKeyRoute = 'preload-keydown' | 'before-input-event';
+
+/** Why an automation key could not be registered or activated. Carries no page data. */
+export type BrowserViewAutomationKeyFailureReason =
+	/** The view or its webContents is gone. */
+	| 'view-unavailable'
+	/** No live frame to register in. */
+	| 'no-frames'
+	/** Too many keys in flight. */
+	| 'expectation-limit'
+	/** A frame did not answer in time (its page's main thread was busy, or it has no preload). */
+	| 'ack-timeout'
+	/** A frame refused (the user was interacting with it). */
+	| 'rejected'
+	/** Pending keys were cleared by a navigation or a debugger detach. */
+	| 'cleared'
+	/** The view gained real user focus. */
+	| 'user-focus'
+	/** Frames were added or removed while the frames answered. */
+	| 'frames-changed'
+	/** The registration was cancelled or already used. */
+	| 'cancelled';
+
+/**
+ * Whether a `did-start-navigation` discards the preload state that holds automation key expectations.
+ * Same-document navigations (`history.pushState`, `replaceState`, fragment changes) keep the document and
+ * its preload, so they must not cancel a key in flight: single-page apps do this on many clicks, and the
+ * cancelled key surfaced to the agent as "automation key suppression could not be registered".
+ */
+export function browserViewAutomationNavigationDiscardsPreloadState(details: unknown): boolean {
+	return !(isRecord(details) && details.isSameDocument === true);
+}
 export type BrowserViewAutomationTrustedFocusPredicate = (value: unknown) => boolean;
 
 interface IExpectationState extends IBrowserViewAutomationKeyExpectation {

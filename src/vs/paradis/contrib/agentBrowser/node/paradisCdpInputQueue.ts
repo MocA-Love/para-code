@@ -3,23 +3,48 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IParadisCdpInputDispatchResult } from '../common/paradisAgentBrowser.js';
 
 const PARADIS_CDP_INPUT_QUEUE_LIMIT = 256;
-const PARADIS_CDP_INPUT_DISPATCH_TIMEOUT_MS = 5_000;
+/**
+ * How long one dispatch may take before it is reported as outcome unknown. Covers the key suppression
+ * acks (two round trips to the page's preload), the agent cursor glide and Chromium's input ack, which
+ * waits for the page's main thread: a page busy for a few seconds after a click is normal.
+ */
+const PARADIS_CDP_INPUT_DISPATCH_TIMEOUT_MS = 10_000;
+/**
+ * A timed-out dispatch pauses its view until it settles. If it never settles, the pause ends after this
+ * long and the stuck dispatch is abandoned (its late result is ignored), so one lost input cannot disable
+ * a page until restart.
+ */
+const PARADIS_CDP_INPUT_POISON_RECOVERY_MS = 30_000;
 const PARADIS_CDP_INPUT_POISONED_KEY_LIMIT = 4_096;
 const PARADIS_CDP_INPUT_ACTIVE_KEY_LIMIT = 4_096;
 const PARADIS_CDP_INPUT_QUEUE_KEY_MAX_LENGTH = 4_096;
+
+/** Why a view's input was paused, and how the pause ended. Carries no page data. */
+export type IParadisCdpInputQueueDiagnostic =
+	| { readonly kind: 'paused'; readonly cause: 'dispatch-timeout' | 'connection-closed'; readonly method: string }
+	| { readonly kind: 'resumed'; readonly how: 'settled' | 'recovery-timeout'; readonly cause: 'dispatch-timeout' | 'connection-closed'; readonly method: string; readonly pausedMs: number }
+	| { readonly kind: 'saturated' };
 
 export interface IParadisCdpInputQueueOptions {
 	readonly dispatchTimeoutMs?: number;
 	readonly poisonedKeyLimit?: number;
 	readonly activeKeyLimit?: number;
+	/** How long a pause may last when the dispatch that caused it never settles. */
+	readonly poisonRecoveryMs?: number;
+	/** Receives pauses and recoveries for the log and Sentry. Must not throw. */
+	readonly onDiagnostic?: (event: IParadisCdpInputQueueDiagnostic) => void;
 }
 
 export interface IParadisCdpInputQueueRequest {
 	readonly queueKey: string;
+	/** CDP method, for diagnostics only. */
+	readonly method?: string;
 	readonly connection: object;
 	readonly isAuthorityCurrent: () => boolean;
 	readonly dispatch: () => Promise<IParadisCdpInputDispatchResult>;
@@ -39,7 +64,18 @@ interface IQueueEntry extends IParadisCdpInputQueueRequest {
 	resolveDrained: () => void;
 	resolveRelease: () => void;
 	readonly release: Promise<void>;
+	/** The dispatch once committed, so a pause can end when it settles. */
+	inflight?: Promise<unknown>;
 }
+
+interface IPoisonRecord {
+	readonly cause: 'dispatch-timeout' | 'connection-closed';
+	readonly method: string;
+	readonly since: number;
+	timer: ReturnType<typeof setTimeout> | undefined;
+}
+
+const SAFE_METHOD = /^[A-Za-z]{1,40}\.[A-Za-z]{1,64}$/;
 
 interface IKeyQueue {
 	readonly entries: IQueueEntry[];
@@ -54,14 +90,32 @@ function outcomeUnknown(message: string): IParadisCdpInputDispatchResult {
 	return Object.freeze({ status: 'outcome-unknown', message: `PARA_BROWSER_OUTCOME_UNKNOWN: ${message}` });
 }
 
-/** One ordered input queue per exact BrowserView identity. */
+function pausedMessage(recoveryMs: number): IParadisCdpInputDispatchResult {
+	return retryable(`browser input on this page is paused because an earlier input has not finished (the page may be busy); this input was not sent. Retry in a few seconds (the pause ends when that input finishes, or after ${Math.round(recoveryMs / 1000)}s at most)`);
+}
+
+function saturatedMessage(recoveryMs: number): IParadisCdpInputDispatchResult {
+	return retryable(`browser input is paused on too many pages with unfinished input; this input was not sent. Retry in ${Math.round(recoveryMs / 1000)}s`);
+}
+
+/**
+ * One ordered input queue per exact BrowserView identity.
+ *
+ * A dispatch that times out (or whose connection closes after it was sent) may still land later, so later
+ * input to the same view must not overtake it: the view is paused. The pause ends as soon as that dispatch
+ * settles, and at the latest after the recovery time, when the stuck dispatch is abandoned. Input that
+ * arrives during a pause is not sent and is answered as retryable.
+ */
 export class ParadisCdpInputQueue implements IDisposable {
 	private readonly queues = new Map<string, IKeyQueue>();
-	private readonly poisonedQueueKeys = new Set<string>();
+	private readonly poisonedQueueKeys = new Map<string, IPoisonRecord>();
 	private readonly dispatchTimeoutMs: number;
 	private readonly poisonedKeyLimit: number;
 	private readonly activeKeyLimit: number;
+	private readonly poisonRecoveryMs: number;
+	private readonly onDiagnostic: ((event: IParadisCdpInputQueueDiagnostic) => void) | undefined;
 	private poisonSaturated = false;
+	private saturationTimer: ReturnType<typeof setTimeout> | undefined;
 	private disposed = false;
 
 	constructor(options: IParadisCdpInputQueueOptions = {}) {
@@ -74,6 +128,10 @@ export class ParadisCdpInputQueue implements IDisposable {
 		this.activeKeyLimit = Number.isSafeInteger(options.activeKeyLimit) && (options.activeKeyLimit ?? 0) > 0
 			? Math.min(options.activeKeyLimit!, PARADIS_CDP_INPUT_ACTIVE_KEY_LIMIT)
 			: PARADIS_CDP_INPUT_ACTIVE_KEY_LIMIT;
+		this.poisonRecoveryMs = Number.isSafeInteger(options.poisonRecoveryMs) && (options.poisonRecoveryMs ?? 0) > 0
+			? options.poisonRecoveryMs!
+			: PARADIS_CDP_INPUT_POISON_RECOVERY_MS;
+		this.onDiagnostic = options.onDiagnostic;
 	}
 
 	enqueue(request: IParadisCdpInputQueueRequest): IParadisCdpInputQueueOperation {
@@ -90,10 +148,9 @@ export class ParadisCdpInputQueue implements IDisposable {
 			resolveDrained();
 			return operation;
 		}
-		if (this.poisonSaturated || this.poisonedQueueKeys.has(request.queueKey)) {
-			resolveResponse(outcomeUnknown(this.poisonSaturated
-				? 'browser input queue poison capacity reached; input is disabled until restart'
-				: 'exact BrowserView input queue is poisoned by an unresolved dispatch'));
+		const paused = this.pausedResult(request.queueKey);
+		if (paused) {
+			resolveResponse(paused);
 			resolveDrained();
 			return operation;
 		}
@@ -136,7 +193,7 @@ export class ParadisCdpInputQueue implements IDisposable {
 				}
 				entry.cancelled = true;
 				if (entry.committed) {
-					this.poison(entry.queueKey);
+					this.poison(entry, 'connection-closed');
 					this.settleResponse(entry, outcomeUnknown('browser input connection closed after dispatch'));
 					entry.resolveRelease();
 				} else {
@@ -180,10 +237,9 @@ export class ParadisCdpInputQueue implements IDisposable {
 		if (entry.cancelled) {
 			return;
 		}
-		if (this.poisonSaturated || this.poisonedQueueKeys.has(entry.queueKey)) {
-			this.settleResponse(entry, outcomeUnknown(this.poisonSaturated
-				? 'browser input queue poison capacity reached; input is disabled until restart'
-				: 'exact BrowserView input queue is poisoned by an unresolved dispatch'));
+		const paused = this.pausedResult(entry.queueKey);
+		if (paused) {
+			this.settleResponse(entry, paused);
 			return;
 		}
 		let authorityCurrent: boolean;
@@ -206,6 +262,7 @@ export class ParadisCdpInputQueue implements IDisposable {
 		} catch (error) {
 			dispatchPromise = Promise.reject(error);
 		}
+		entry.inflight = dispatchPromise;
 		const timeoutPromise = new Promise<undefined>(resolve => {
 			timeout = setTimeout(() => resolve(undefined), this.dispatchTimeoutMs);
 		});
@@ -216,7 +273,7 @@ export class ParadisCdpInputQueue implements IDisposable {
 		]);
 
 		if (first.kind === 'timeout') {
-			this.poison(entry.queueKey);
+			this.poison(entry, 'dispatch-timeout');
 			this.settleResponse(entry, outcomeUnknown(`browser input dispatch timed out after ${this.dispatchTimeoutMs}ms`));
 			return;
 		}
@@ -255,15 +312,64 @@ export class ParadisCdpInputQueue implements IDisposable {
 		entry.resolveResponse(result);
 	}
 
-	private poison(queueKey: string): void {
-		if (this.poisonSaturated || this.poisonedQueueKeys.has(queueKey)) {
+	private pausedResult(queueKey: string): IParadisCdpInputDispatchResult | undefined {
+		if (this.poisonSaturated) {
+			return saturatedMessage(this.poisonRecoveryMs);
+		}
+		return this.poisonedQueueKeys.has(queueKey) ? pausedMessage(this.poisonRecoveryMs) : undefined;
+	}
+
+	private poison(entry: IQueueEntry, cause: IPoisonRecord['cause']): void {
+		const queueKey = entry.queueKey;
+		if (this.disposed || this.poisonedQueueKeys.has(queueKey)) {
 			return;
 		}
 		if (this.poisonedQueueKeys.size >= this.poisonedKeyLimit) {
-			this.poisonSaturated = true;
+			// Too many views paused at once: pause all input for one recovery period instead of forever.
+			if (!this.poisonSaturated) {
+				this.poisonSaturated = true;
+				this.emit({ kind: 'saturated' });
+				this.saturationTimer = setTimeout(() => {
+					this.saturationTimer = undefined;
+					this.poisonSaturated = false;
+				}, this.poisonRecoveryMs);
+			}
 			return;
 		}
-		this.poisonedQueueKeys.add(queueKey);
+		const record: IPoisonRecord = {
+			cause,
+			method: typeof entry.method === 'string' && SAFE_METHOD.test(entry.method) ? entry.method : 'unknown',
+			since: Date.now(),
+			timer: undefined,
+		};
+		this.poisonedQueueKeys.set(queueKey, record);
+		this.emit({ kind: 'paused', cause, method: record.method });
+		record.timer = setTimeout(() => this.resume(queueKey, record, 'recovery-timeout'), this.poisonRecoveryMs);
+		// The late answer itself is ignored (the caller was already told the outcome is unknown); it only
+		// proves nothing from that input is still on its way, so later input can no longer overtake it.
+		entry.inflight?.then(() => this.resume(queueKey, record, 'settled'), () => this.resume(queueKey, record, 'settled'));
+	}
+
+	private resume(queueKey: string, record: IPoisonRecord, how: 'settled' | 'recovery-timeout'): void {
+		if (this.poisonedQueueKeys.get(queueKey) !== record) {
+			return;
+		}
+		if (record.timer !== undefined) {
+			clearTimeout(record.timer);
+			record.timer = undefined;
+		}
+		this.poisonedQueueKeys.delete(queueKey);
+		if (!this.disposed) {
+			this.emit({ kind: 'resumed', how, cause: record.cause, method: record.method, pausedMs: Math.max(0, Date.now() - record.since) });
+		}
+	}
+
+	private emit(event: IParadisCdpInputQueueDiagnostic): void {
+		try {
+			this.onDiagnostic?.(event);
+		} catch {
+			// Diagnostics must never change input ordering.
+		}
 	}
 
 	dispose(): void {
@@ -271,11 +377,21 @@ export class ParadisCdpInputQueue implements IDisposable {
 			return;
 		}
 		this.disposed = true;
+		for (const record of this.poisonedQueueKeys.values()) {
+			if (record.timer !== undefined) {
+				clearTimeout(record.timer);
+				record.timer = undefined;
+			}
+		}
+		this.poisonedQueueKeys.clear();
+		if (this.saturationTimer !== undefined) {
+			clearTimeout(this.saturationTimer);
+			this.saturationTimer = undefined;
+		}
 		for (const queue of this.queues.values()) {
 			for (const entry of queue.entries) {
 				entry.cancelled = true;
 				if (entry.committed) {
-					this.poison(entry.queueKey);
 					this.settleResponse(entry, outcomeUnknown('browser input queue disposed after dispatch'));
 					entry.resolveRelease();
 				} else {

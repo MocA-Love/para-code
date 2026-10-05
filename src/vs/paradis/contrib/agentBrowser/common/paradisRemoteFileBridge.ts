@@ -19,6 +19,7 @@
 // シンボリックリンクを置ける）。読む側は加えて接続先の一時フォルダも許す。
 // shared process から場所の一覧は渡さない（トークンを手に入れた別の利用者に、任意の場所を読み書きさせないため）。
 
+import { VSBuffer } from '../../../../base/common/buffer.js';
 import { posix } from '../../../../base/common/path.js';
 
 /** 接続先へ書く。引数は `[token, remoteAuthority, path, VSBuffer]`、結果は {@link ParadisRemoteFileWriteResult}。 */
@@ -27,7 +28,7 @@ export const PARADIS_REMOTE_FILE_WRITE_METHOD = 'paradisWriteRemoteFile';
 /** 接続先のホームの {@link PARADIS_REMOTE_FILE_USER_FOLDER} へ、重ならない名前で書く。引数は `[token, remoteAuthority, fileName, VSBuffer]`。 */
 export const PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD = 'paradisWriteRemoteTemporaryFile';
 
-/** 接続先から読む。引数は `[token, remoteAuthority, path, maxBytes]`、結果は {@link ParadisRemoteFileReadResult}。 */
+/** 接続先から読む。引数は `[token, remoteAuthority, path, maxBytes]`、結果は {@link paradisEncodeRemoteFileReadResult} の形。 */
 export const PARADIS_REMOTE_FILE_READ_METHOD = 'paradisReadRemoteFile';
 
 /** 書く前に、書いてよい場所かだけを確かめる（撮影などの重い処理の前に断るため）。引数は `[token, remoteAuthority, path]`。 */
@@ -82,10 +83,51 @@ export type ParadisRemoteFileCheckResult =
 	| { readonly ok: true }
 	| { readonly ok: false; readonly reason: ParadisRemoteFileFailure };
 
-/** 読んだ中身は IPC で VSBuffer として渡る（shared process 側では Uint8Array として扱う）。 */
+/** 読んだ結果。renderer の中では VSBuffer、shared process では Uint8Array として扱う。 */
 export type ParadisRemoteFileReadResult<TData = Uint8Array> =
 	| { readonly ok: true; readonly data: TData; readonly name: string }
 	| { readonly ok: false; readonly reason: ParadisRemoteFileFailure };
+
+/** 読んだ中身を IPC で運ぶときの形の印（{@link paradisEncodeRemoteFileReadResult}）。 */
+const REMOTE_FILE_READ_WIRE_TAG = 'paradis-remote-file-read/1';
+
+/**
+ * 読んだ結果を IPC に載せる形にする。
+ *
+ * IPC（`base/parts/ipc`）が VSBuffer をそのまま運ぶのは、値そのものか配列の要素のときだけで、オブジェクトの
+ * 中にある VSBuffer は JSON にされて `{"buffer":{"0":37,...}}` という別物になる。`{ ok, data, name }` のまま
+ * 返すと shared process で中身を取り出せず、接続先の upload_file が全件「読み書きに失敗」になっていた。
+ * そこで成功は配列 `[印, name, data]` で返す。失敗は文字列だけなのでオブジェクトのまま返す。
+ */
+export function paradisEncodeRemoteFileReadResult(result: ParadisRemoteFileReadResult<VSBuffer>): unknown {
+	return result.ok ? [REMOTE_FILE_READ_WIRE_TAG, result.name, result.data] : result;
+}
+
+/** IPC で届いた読んだ結果を戻す。形が合わなければ undefined。 */
+export function paradisDecodeRemoteFileReadResult(value: unknown): ParadisRemoteFileReadResult<Uint8Array> | undefined {
+	if (Array.isArray(value)) {
+		const [tag, name, data] = value;
+		const bytes = remoteFileBytes(data);
+		return tag === REMOTE_FILE_READ_WIRE_TAG && typeof name === 'string' && bytes !== undefined ? { ok: true, data: bytes, name } : undefined;
+	}
+	if (typeof value !== 'object' || value === null) {
+		return undefined;
+	}
+	const record = value as { readonly ok?: unknown; readonly reason?: unknown; readonly data?: unknown; readonly name?: unknown };
+	if (record.ok === false && typeof record.reason === 'string') {
+		return { ok: false, reason: record.reason as ParadisRemoteFileFailure };
+	}
+	// IPC を通らない呼び出し（同じプロセスの中）では、元の形のまま届く
+	const bytes = remoteFileBytes(record.data);
+	return record.ok === true && typeof record.name === 'string' && bytes !== undefined ? { ok: true, data: bytes, name: record.name } : undefined;
+}
+
+function remoteFileBytes(data: unknown): Uint8Array | undefined {
+	if (data instanceof VSBuffer) {
+		return data.buffer;
+	}
+	return data instanceof Uint8Array ? data : undefined;
+}
 
 /** 制御文字（NUL を含む）。パスに入っていれば断る。 */
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;

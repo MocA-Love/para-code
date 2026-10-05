@@ -51,7 +51,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisPreviewFileResult, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, ParadisPreviewFileFailure } from '../common/paradisAgentBrowser.js';
-import { ParadisRemoteFileCheckResult, PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD, PARADIS_REMOTE_FILE_READ_METHOD, PARADIS_REMOTE_FILE_WRITE_METHOD, PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD } from '../common/paradisRemoteFileBridge.js';
+import { ParadisRemoteFileCheckResult, paradisEncodeRemoteFileReadResult, PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD, PARADIS_REMOTE_FILE_READ_METHOD, PARADIS_REMOTE_FILE_WRITE_METHOD, PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD } from '../common/paradisRemoteFileBridge.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ParadisRemoteFileBridge } from './paradisRemoteFileBridge.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
@@ -147,7 +147,8 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 				case PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD:
 					return this.remoteFiles.checkWrite(token, remoteAuthority, path) as Promise<T>;
 				case PARADIS_REMOTE_FILE_READ_METHOD:
-					return this.remoteFiles.read(token, remoteAuthority, path, typeof args[3] === 'number' ? args[3] : 0) as Promise<T>;
+					// 中身（VSBuffer）を IPC で壊さずに運ぶ形にする
+					return paradisEncodeRemoteFileReadResult(await this.remoteFiles.read(token, remoteAuthority, path, typeof args[3] === 'number' ? args[3] : 0)) as T;
 				default: {
 					const data = args[3];
 					if (!(data instanceof VSBuffer)) {

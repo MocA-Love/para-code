@@ -6,6 +6,7 @@
 import * as assert from 'assert';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import type { BrowserViewAutomationKeyFailureReason } from '../../../../../platform/browserView/common/browserViewAutomationInput.js';
 import type { BrowserView } from '../../../../../platform/browserView/electron-main/browserView.js';
 import type { IBrowserViewMainService } from '../../../../../platform/browserView/electron-main/browserViewMainService.js';
 import {
@@ -40,6 +41,8 @@ interface ITestViewState {
 	automationCommitReady: boolean;
 	inputResult: Promise<unknown>;
 	onPrepareAutomation?: () => void;
+	/** Reason the fake preparation reports when it fails. */
+	automationFailure?: BrowserViewAutomationKeyFailureReason;
 	onActivateAutomation?: () => void;
 	onInput?: () => void;
 }
@@ -167,9 +170,12 @@ function createTestView(overrides: Partial<ITestViewState> = {}): {
 			state.onCapture?.();
 			return state.captureResult;
 		},
-		prepareAutomationKeyInput: async () => {
+		prepareAutomationKeyInput: async (_signature: unknown, onFailure?: (reason: BrowserViewAutomationKeyFailureReason, phase: 'register' | 'activate') => void) => {
 			counters.prepareAutomation++;
 			state.onPrepareAutomation?.();
+			if (!state.automationReady && state.automationFailure !== undefined) {
+				onFailure?.(state.automationFailure, 'register');
+			}
 			return state.automationReady
 				? {
 					sequence: 1,
@@ -665,17 +671,19 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 	});
 
 	test('requires preload registration ack and revalidates focus and identity before debugger send', async () => {
-		const current = createTestView({ automationReady: false });
+		const current = createTestView({ automationReady: false, automationFailure: 'ack-timeout' });
 		const replacement = createTestView();
 		const registry = createRegistry({ 'view-1': current.view });
-		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1', undefined, undefined, () => { });
 		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
 		const params = JSON.stringify({ type: 'keyDown', key: 'Escape', code: 'Escape' });
 
 		assert.deepStrictEqual(await service.dispatchExactViewInput(exact, 'Input.dispatchKeyEvent', params), {
-			status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: automation key suppression could not be registered',
+			status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: automation key suppression could not be registered (the page did not answer in time, it may be busy; retry in a moment)',
 		});
 		assert.strictEqual(current.counters.input, 0);
+		// A busy page is not asked again inside the same input
+		assert.strictEqual(current.counters.prepareAutomation, 1);
 
 		current.state.automationReady = true;
 		current.state.onPrepareAutomation = () => { current.state.focused = true; };
@@ -709,16 +717,46 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.strictEqual(current.counters.cancelAutomation, 3);
 	});
 
+	test('prepares the key once more when a navigation or a frame change cancelled the first preparation', async () => {
+		const current = createTestView({ automationReady: false, automationFailure: 'cleared' });
+		current.state.onPrepareAutomation = () => {
+			if (current.counters.prepareAutomation === 2) {
+				current.state.automationReady = true;
+			}
+		};
+		const registry = createRegistry({ 'view-1': current.view });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1', undefined, undefined, () => { });
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		const params = JSON.stringify({ type: 'keyDown', key: 'a', code: 'KeyA' });
+
+		const retried = await service.dispatchExactViewInput(exact, 'Input.dispatchKeyEvent', params);
+		current.state.automationReady = false;
+		current.state.automationFailure = 'frames-changed';
+		current.state.onPrepareAutomation = undefined;
+		const twice = await service.dispatchExactViewInput(exact, 'Input.dispatchKeyEvent', params);
+		assert.deepStrictEqual({
+			retried: retried.status,
+			twice,
+			prepared: current.counters.prepareAutomation,
+			sent: current.counters.input,
+		}, {
+			retried: 'success',
+			twice: { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: automation key suppression could not be registered (frames on the page changed while the key was being prepared; retry)' },
+			prepared: 4,
+			sent: 1,
+		});
+	});
+
 	test('activates preload suppression in a second phase and revalidates focus and identity afterwards', async () => {
 		const current = createTestView({ automationActivateReady: false });
 		const replacement = createTestView();
 		const registry = createRegistry({ 'view-1': current.view });
-		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1', undefined, undefined, () => { });
 		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
 		const params = JSON.stringify({ type: 'keyDown', key: 'Escape', code: 'Escape' });
 
 		assert.deepStrictEqual(await service.dispatchExactViewInput(exact, 'Input.dispatchKeyEvent', params), {
-			status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: automation key suppression could not be activated',
+			status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: automation key suppression could not be activated (retry)',
 		});
 		assert.strictEqual(current.counters.input, 0);
 		assert.strictEqual(current.counters.commitAutomation, 0);
