@@ -98,6 +98,13 @@ export async function* paradisReadSynthesisBody(response: Response, timeouts: Pa
 	}
 }
 
+/** 合成済みの音声を、合成の本文と同じ形で返す（worker へ渡し直すとき）。 */
+export async function* paradisBufferBody(audio: Uint8Array): AsyncGenerator<Uint8Array> {
+	if (audio.byteLength > 0) {
+		yield audio;
+	}
+}
+
 /** 本文を全部読む（Para Code が自分で鳴らすとき）。 */
 export async function paradisCollectBody(body: AsyncIterable<Uint8Array>, maxBytes: number): Promise<Buffer> {
 	const chunks: Buffer[] = [];
@@ -182,6 +189,11 @@ export class ParadisMobileVoiceTaskGate {
 
 /** 手元の `--ingest` へ書く前に溜めておける量（これを超えるまでは本文の読み進めを止めない）。 */
 export const PARADIS_LOCAL_WRITE_BUFFER_BYTES = 1024 * 1024;
+/**
+ * 本文を読み終えた後、手元への書き込みが終わるのを待つ上限。`--ingest` 側の見限り（20 秒）より長くし、通常は
+ * そちらで書き込みが解ける。
+ */
+export const PARADIS_LOCAL_WRITE_CLOSE_TIMEOUT_MS = 30_000;
 
 /**
  * 有界の列を通して、子の標準入力（`--ingest`）へ順に書く。本文の読み進め（とモバイルへの流れ）を、子の drain の待ちから
@@ -231,8 +243,11 @@ export class ParadisBoundedLocalWriter {
 		this.drained?.();
 	}
 
-	/** 積み終えた。`discard` なら溜まっている分は書かない。書き込みが終わるまで待つ。 */
-	async close(discard = false): Promise<void> {
+	/**
+	 * 積み終えた。`discard` なら溜まっている分は書かない。書き込みが終わるまで待つ。`timeoutMs` を過ぎても終わらなければ
+	 * 書き込みをやめて（{@link failed} を立てて）戻る（止まった子の書き込みを待ち続けない）。
+	 */
+	async close(discard = false, timeoutMs = PARADIS_LOCAL_WRITE_CLOSE_TIMEOUT_MS): Promise<void> {
 		if (discard) {
 			this.queue.length = 0;
 			this.queuedBytes = 0;
@@ -241,7 +256,17 @@ export class ParadisBoundedLocalWriter {
 		this.wake?.();
 		this.wake = undefined;
 		this.drained?.();
-		await this.pump;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const finished = await Promise.race([
+			this.pump.then(() => true),
+			new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+		]);
+		clearTimeout(timer);
+		if (!finished) {
+			this.queue.length = 0;
+			this.queuedBytes = 0;
+			this.fail();
+		}
 	}
 
 	private async run(): Promise<void> {

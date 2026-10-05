@@ -1643,7 +1643,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			});
 			// フレームは通知一覧のためのもの。鳴らす必要が無い通知も、あとからスマホで
 			// 「PCの前にいた間に何があったか」を追えるように送る（以前は配信自体を止めていた）。
-			if (delivery.frame && session !== undefined) {
+			// 版が合わないアプリ（版 3 など、交渉が済んでいないセッション）へは送らない。`delivery.frame` も同じ条件から
+			// 決まるが、送る口でも確かめる（通知のフレームは 16KiB を超えると版 4 の断片になり、古いアプリは読めない）
+			if (delivery.frame && session !== undefined && session.hasCurrentProtocol) {
 				const frameBytes = delivery.quiet !== undefined ? quietBytes(bytes, delivery.quiet) : bytes;
 				session.sendFrame(Channels.Notify, undefined, frameBytes).catch(err => this.logService.warn('[paradisMobileRelay] notify frame failed', err));
 			}

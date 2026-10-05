@@ -15,7 +15,17 @@
 //   lock が生きている間は切り替えない（列に積んだ発話を worker が鳴らせるので、afplay で重ねない）
 // - 起動し直したら hold を掛け直す。aivis-mcp の版が変わったら起動し直す
 // - 書き込みは子の標準入力の drain を待つ。制御の枠（hold・abort・ping・withdraw）は音声の後ろに並ばない
-// - 列に入った後に子が落ちたら、次の子に withdraw を頼み、取り下げられた件だけ呼び出し側が鳴らし直す
+// - 呼び出し側が自分で鳴らしてよいのは、`withdrawn: true` の付いた終わりの知らせと、withdraw の `removed: true` の件
+//   だけ（aivis-mcp の docs/ingest-protocol.md 2.5.1「親が自分で鳴らしてよいとき」）。`queued` が遅れて届くこともある
+//   ので、`queued` が来ないことを「積まれていない」とは扱わない
+// - `open` を子の標準入力へ書いた件は、`queued` が届く前に子が落ちても「積まれたかもしれない」として扱う。次の子に
+//   withdraw を頼み、取り下げられた（removed: true）件だけ呼び出し側が鳴らし直す。返事が無い・外せなかった件は
+//   worker が鳴らすとみなす（二重に鳴らすより、鳴らし損ねの方を選ぶ）
+// - こちらから入れ替えた（版が変わった）古い子の件は取り下げない。書き終えて列に入った件は worker が鳴らすので、
+//   追跡だけやめる。取り下げを頼むのは、書きかけだった件だけ
+// - 子の終わりは標準出力を読み切ってから扱う（終わる直前の `queued` などを捨てない）
+// - 標準入力への書き込みが {@link PARADIS_INGEST_WRITE_STALL_MS} 進まなければ、その子を見限って（落ちたものとして扱い）
+//   止める。止まらなければ SIGKILL する。動いている子はすべて終わるまで追いかけ、終了時に止める
 // - worker の `failed` が 3 回続いたら、しばらく afplay に任せる（手放した件は鳴らし直さない）
 
 import { execFile, spawn } from 'child_process';
@@ -73,15 +83,29 @@ const VERSION_RESTART_MAX_WAIT_MS = 60_000;
 const VERSION_RESTART_POLL_MS = 1_000;
 /** 子が落ちた後、列に残った件の withdraw の返事を待つ上限。 */
 const ORPHAN_WITHDRAW_WAIT_MS = 30_000;
+/** 呼び出し側が頼んだ withdraw の返事を待つ上限。 */
+const WITHDRAW_REPLY_WAIT_MS = 5_000;
+/**
+ * 標準入力の drain がこれだけ来なければ子を見限る。aivis-mcp は読むのを止めても 10 秒で読み直すので、それより長くする。
+ */
+export const PARADIS_INGEST_WRITE_STALL_MS = 20_000;
+/** `aivis-mcp --mute` の状態を読み直すまで（afplay の前に毎回 Redis を読まない）。 */
+const MUTE_CACHE_MS = 1_000;
 const WORKER_LOCK_KEY = 'aivis-mcp:worker-lock';
+/** `queued` の前の失敗にも `withdrawn` を付けるようになった aivis-mcp の版（それより前は `queued` の前の失敗＝積めていない）。 */
+const PARADIS_AIVIS_WITHDRAWN_CONTRACT_VERSION: readonly [number, number, number] = [2, 5, 1];
+/** `aivis --mute` が置くキー（aivis-mcp の src/services/mute-service.ts）。あればミュート中。 */
+const MUTE_KEY = 'aivis-mcp:muted';
 
 /** `--ingest` の子プロセス（テストで差し替える）。 */
 export interface IParadisIngestChild {
 	readonly stdin: NodeJS.WritableStream;
 	readonly stdout: NodeJS.ReadableStream;
+	/** プロセスが終わり、標準出力も読み切った（または終わってから少し待っても閉じなかった）。 */
 	onExit(listener: (code: number | null) => void): void;
 	onError(listener: (error: Error) => void): void;
-	kill(): void;
+	/** 止める。`force` は SIGKILL（Windows は taskkill /T /F）。 */
+	kill(force?: boolean): void;
 }
 
 export type ParadisIngestSpawner = (args: readonly string[], env: NodeJS.ProcessEnv) => IParadisIngestChild;
@@ -89,6 +113,8 @@ export type ParadisIngestSpawner = (args: readonly string[], env: NodeJS.Process
 export type ParadisAivisVersionProbe = (env: NodeJS.ProcessEnv) => Promise<string | undefined>;
 /** worker の lock が生きているか。確かめられないときは undefined（afplay へ切り替えない）。 */
 export type ParadisWorkerLockProbe = (env: NodeJS.ProcessEnv) => Promise<boolean | undefined>;
+/** `aivis --mute` 中か。確かめられないときは undefined（ミュートしていないとみなす）。 */
+export type ParadisMuteProbe = (env: NodeJS.ProcessEnv) => Promise<boolean | undefined>;
 
 export type ParadisIngestClientState = 'idle' | 'checking' | 'unsupported' | 'starting' | 'ready' | 'fallback' | 'disposed';
 
@@ -100,6 +126,7 @@ export interface IParadisAivisIngestClientOptions {
 	readonly spawnIngest?: ParadisIngestSpawner;
 	readonly probeVersion?: ParadisAivisVersionProbe;
 	readonly probeWorkerLock?: ParadisWorkerLockProbe;
+	readonly probeMute?: ParadisMuteProbe;
 	readonly now?: () => number;
 }
 
@@ -108,7 +135,8 @@ type ParadisIngestLane = 'control' | 'audio';
 
 interface IPendingWrite {
 	readonly frame: Buffer;
-	readonly resolve: () => void;
+	/** 標準入力へ渡せたら true、渡す前に子が終わった（見限った）ら false。 */
+	readonly resolve: (written: boolean) => void;
 }
 
 interface IChildState {
@@ -118,6 +146,9 @@ interface IChildState {
 	version: readonly [number, number, number] | undefined;
 	/** こちらから止めた理由。終わりを失敗として数えない。 */
 	stopReason: 'retired' | 'dispose' | 'unsupported' | undefined;
+	/** プロセスが本当に終わった（{@link exited} は見限った時点で立つ）。 */
+	processExited: boolean;
+	killTimer: ReturnType<typeof setTimeout> | undefined;
 	helloTimer: ReturnType<typeof setTimeout> | undefined;
 	pingTimer: ReturnType<typeof setTimeout> | undefined;
 	pingInterval: ReturnType<typeof setInterval> | undefined;
@@ -145,16 +176,23 @@ class ParadisIngestStream implements IParadisIngestStream {
 	readonly handoff = this.handoffDeferred.promise;
 	readonly finished = this.finishedDeferred.promise;
 	private readonly startListeners: Array<() => void> = [];
+	private readonly preludeRejectListeners: Array<(reason: string) => void> = [];
+	private preludeRejectedReason: string | undefined;
 	private ended = false;
 	private aborted = false;
 	private settled = false;
 	queued = false;
 	started = false;
+	/** `open` を子の標準入力へ渡した（aivis-mcp が積んだかもしれない）。 */
+	openWritten = false;
+	/** 音声と `end` を書き終えた（`end` を標準入力へ渡した）。 */
+	fullyWritten = false;
 
 	constructor(
 		/** この流れを開いた子。音声と `end` はこの子へ書く。 */
 		readonly child: IChildState,
-		private readonly send: (child: IChildState, frame: Buffer, lane: ParadisIngestLane) => Promise<void>,
+		private readonly send: (child: IChildState, frame: Buffer, lane: ParadisIngestLane) => Promise<boolean>,
+		private readonly requestWithdraw: (stream: ParadisIngestStream) => Promise<boolean | undefined>,
 	) { }
 
 	onDidStart(listener: () => void): void {
@@ -167,8 +205,32 @@ class ParadisIngestStream implements IParadisIngestStream {
 		}
 	}
 
+	onDidRejectPrelude(listener: (reason: string) => void): void {
+		if (this.preludeRejectedReason !== undefined) {
+			listener(this.preludeRejectedReason);
+			return;
+		}
+		if (!this.settled) {
+			this.preludeRejectListeners.push(listener);
+		}
+	}
+
+	rejectPrelude(reason: string): void {
+		if (this.preludeRejectedReason !== undefined) {
+			return;
+		}
+		this.preludeRejectedReason = reason;
+		for (const listener of this.preludeRejectListeners.splice(0)) {
+			listener(reason);
+		}
+	}
+
 	get isClosed(): boolean {
 		return this.ended || this.aborted || this.settled || this.child.exited;
+	}
+
+	get isSettled(): boolean {
+		return this.settled;
 	}
 
 	async write(chunk: Uint8Array): Promise<void> {
@@ -182,7 +244,9 @@ class ParadisIngestStream implements IParadisIngestStream {
 			return;
 		}
 		this.ended = true;
-		await this.send(this.child, paradisEncodeIngestControl({ type: 'end', id: this.id }), 'audio');
+		if (await this.send(this.child, paradisEncodeIngestControl({ type: 'end', id: this.id }), 'audio')) {
+			this.fullyWritten = true;
+		}
 	}
 
 	async abort(reason: string): Promise<void> {
@@ -191,6 +255,10 @@ class ParadisIngestStream implements IParadisIngestStream {
 		}
 		this.aborted = true;
 		await this.send(this.child, paradisEncodeIngestControl({ type: 'abort', id: this.id, reason: reason.slice(0, 64) }), 'control');
+	}
+
+	withdraw(): Promise<boolean | undefined> {
+		return this.requestWithdraw(this);
 	}
 
 	/** aivis-mcp から届いた進み具合。終わりなら true。 */
@@ -208,7 +276,11 @@ class ParadisIngestStream implements IParadisIngestStream {
 			case 'held':
 			case 'muted':
 			case 'failed':
-				this.settle({ status, ...(reason !== undefined ? { reason } : {}), ...(withdrawn ? { withdrawn: true } : {}) });
+				// `queued` の前に終わった件を呼び出し側が鳴らしてよいのは `withdrawn: true`（列に無く worker は鳴らさないと
+				// aivis-mcp が確かめた）のときだけ。それ以外は worker が鳴らしたかもしれないので、手放したことにする
+				// （取り決め 2.5.1「親が自分で鳴らしてよいとき」）。2.5.0 は `queued` の前の失敗に `withdrawn` を付けない
+				// （積めなかった件だけ `queued` の前に終わる）ので、今までどおり呼び出し側に鳴らさせる
+				this.settle({ status, ...(reason !== undefined ? { reason } : {}), ...(withdrawn ? { withdrawn: true } : {}) }, paradisAivisVersionAtLeast(this.child.version, PARADIS_AIVIS_WITHDRAWN_CONTRACT_VERSION) && !withdrawn);
 				return true;
 			default:
 				return false;
@@ -225,14 +297,18 @@ class ParadisIngestStream implements IParadisIngestStream {
 		}
 	}
 
-	settle(terminal: IParadisIngestTerminal): void {
+	/**
+	 * 終える。`handedOff` は `queued` の前に終わった件の handoff の値（既定 false＝手放せなかったので呼び出し側が鳴らす）。
+	 * 積まれたかもしれないのに確かめられなかった件は true（worker が鳴らすとみなし、呼び出し側に鳴らさせない）。
+	 */
+	settle(terminal: IParadisIngestTerminal, handedOff = false): void {
 		if (this.settled) {
 			return;
 		}
 		this.settled = true;
 		this.startListeners.length = 0;
-		// `queued` の前に終わった件は「手放せなかった」
-		this.handoffDeferred.resolve(false);
+		this.preludeRejectListeners.length = 0;
+		this.handoffDeferred.resolve(handedOff);
 		this.finishedDeferred.resolve(terminal);
 	}
 }
@@ -246,6 +322,13 @@ export interface IParadisAivisIngest {
 	hasLocalAivis(timeoutMs: number): Promise<boolean>;
 	open(options: IParadisIngestOpenOptions): IParadisIngestStream | undefined;
 	setHold(owner: string, active: boolean): void;
+	/**
+	 * `--ingest` へ渡せないとき、Para Code が自分で（afplay 等で）鳴らしてよいか。worker が生きているかもしれない間
+	 * （`--ingest` を起こし直している・版を確かめている）は false で、呼び出し側は復旧を待って列経由で渡す。
+	 */
+	mayPlayDirectly(): boolean;
+	/** ユーザー（またはおやすみモード）が `aivis --mute` しているか。Para Code が自分で鳴らす前に確かめる。 */
+	isMuted(): Promise<boolean>;
 }
 
 /**
@@ -259,6 +342,11 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 	private incoming: IChildState | undefined;
 	/** 入れ替えで止めている古い子。終わったら hold を掛け直す（古い子は終わるときに同じ持ち主の hold を外す）。 */
 	private readonly retiring = new Set<IChildState>();
+	/** プロセスがまだ終わっていない子（見限った子・入れ替えで止めている子を含む）。終了時に全部止める。 */
+	private readonly alive = new Set<IChildState>();
+	/** 呼び出し側が頼んだ withdraw の返事待ち。 */
+	private readonly withdrawWaiters = new Map<string, (removed: boolean | undefined) => void>();
+	private muteCache: { readonly at: number; readonly value: Promise<boolean> } | undefined;
 	private env: NodeJS.ProcessEnv | undefined;
 	private failures = 0;
 	/** worker の lock を確かめられなかった回数（続けて）。 */
@@ -286,6 +374,7 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 	private readonly spawnIngest: ParadisIngestSpawner;
 	private readonly probeVersion: ParadisAivisVersionProbe;
 	private readonly probeWorkerLock: ParadisWorkerLockProbe;
+	private readonly probeMute: ParadisMuteProbe;
 	private readonly now: () => number;
 
 	constructor(private readonly options: IParadisAivisIngestClientOptions) {
@@ -293,6 +382,7 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		this.spawnIngest = options.spawnIngest ?? spawnAivisIngest;
 		this.probeVersion = options.probeVersion ?? probeAivisVersion;
 		this.probeWorkerLock = options.probeWorkerLock ?? probeAivisWorkerLock;
+		this.probeMute = options.probeMute ?? probeAivisMute;
 		this.now = options.now ?? Date.now;
 		const versionTimer = setInterval(() => void this.checkVersion(), VERSION_CHECK_INTERVAL_MS);
 		this._register(toDisposable(() => clearInterval(versionTimer)));
@@ -334,6 +424,28 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 			return false;
 		}
 		return true;
+	}
+
+	mayPlayDirectly(): boolean {
+		if (this.isUsable()) {
+			return false;
+		}
+		// 2.5.0 が無い・afplay に切り替えた（worker の lock も無い）・失敗が続いた・止めた
+		return this._state === 'unsupported' || this._state === 'fallback' || this._state === 'disposed' || this._state === 'idle' || this.isDegraded();
+	}
+
+	isMuted(): Promise<boolean> {
+		if (this._state === 'disposed' || !paradisAivisVersionAtLeast(this.installedVersion, [2, 4, 0])) {
+			// 手元に aivis-mcp が無い（ミュートの持ち主がいない）
+			return Promise.resolve(false);
+		}
+		const now = this.now();
+		if (this.muteCache && now - this.muteCache.at < MUTE_CACHE_MS) {
+			return this.muteCache.value;
+		}
+		const value = this.probeMute(this.env ?? process.env).then(muted => muted === true, () => false);
+		this.muteCache = { at: now, value };
+		return value;
 	}
 
 	/**
@@ -384,7 +496,7 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		if (!this.isUsable() || !child) {
 			return undefined;
 		}
-		const stream = new ParadisIngestStream(child, (target, frame, lane) => this.send(target, frame, lane));
+		const stream = new ParadisIngestStream(child, (target, frame, lane) => this.send(target, frame, lane), target => this.withdrawStream(target));
 		this.streams.set(stream.id, stream);
 		const message: { type: string;[key: string]: unknown } = {
 			type: 'open',
@@ -404,9 +516,51 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		if (options.prelude) {
 			message.prelude = { path: options.prelude.path, volume: Math.max(0, Math.min(1, options.prelude.volume)) };
 		}
-		void this.send(child, paradisEncodeIngestControl(message), 'control');
+		void this.send(child, paradisEncodeIngestControl(message), 'control').then(written => {
+			if (written) {
+				stream.openWritten = true;
+			}
+		});
 		void stream.finished.then(terminal => this.noteTerminal(terminal));
 		return stream;
+	}
+
+	/**
+	 * `queued` の前に `withdrawn` の無い `failed` が来た件。列に残っていれば外してもらい、外せたときだけ呼び出し側に
+	 * 鳴らさせる（外せた件は withdrawn の返事の処理が `withdrawn: true` で終える）。外せない・分からない件は worker が
+	 * 鳴らしたかもしれないので、手放したことにする。
+	 */
+	private async verifyUnqueuedFailure(stream: ParadisIngestStream, reason: string | undefined): Promise<void> {
+		const removed = await this.withdrawStream(stream);
+		if (removed === true || stream.isSettled) {
+			return;
+		}
+		this.streams.delete(stream.id);
+		stream.settle({ status: 'failed', ...(reason !== undefined ? { reason } : {}) }, true);
+	}
+
+	/** 呼び出し側が頼んだ取り下げ。返事（removed）を待つ。返事が無い・子が落ちたら undefined。 */
+	private async withdrawStream(stream: ParadisIngestStream): Promise<boolean | undefined> {
+		const child = stream.child;
+		if (stream.isSettled || child.exited || this.withdrawWaiters.has(stream.id)) {
+			return undefined;
+		}
+		const reply = new Promise<boolean | undefined>(resolve => {
+			const timer = setTimeout(() => finish(undefined), WITHDRAW_REPLY_WAIT_MS);
+			const finish = (removed: boolean | undefined) => {
+				clearTimeout(timer);
+				if (this.withdrawWaiters.get(stream.id) === finish) {
+					this.withdrawWaiters.delete(stream.id);
+				}
+				resolve(removed);
+			};
+			this.withdrawWaiters.set(stream.id, finish);
+			void stream.finished.then(() => finish(undefined));
+		});
+		if (!(await this.send(child, paradisEncodeIngestControl({ type: 'withdraw', id: stream.id }), 'control'))) {
+			this.withdrawWaiters.get(stream.id)?.(undefined);
+		}
+		return reply;
 	}
 
 	/** 音声入力中などに鳴らすのを止める。掛けている間は 20 秒ごとに延長し、起動し直したら掛け直す。 */
@@ -462,12 +616,14 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 
 	// --- 書き込み ------------------------------------------------------------------------------
 
-	/** 子の標準入力へ書く。制御の枠を音声より先に書き、drain を待つ。子が終わっていれば捨てる。 */
-	private send(child: IChildState, frame: Buffer, lane: ParadisIngestLane): Promise<void> {
+	/**
+	 * 子の標準入力へ書く。制御の枠を音声より先に書き、drain を待つ。子が終わっていれば捨てる。標準入力へ渡せたら true。
+	 */
+	private send(child: IChildState, frame: Buffer, lane: ParadisIngestLane): Promise<boolean> {
 		if (child.exited) {
-			return Promise.resolve();
+			return Promise.resolve(false);
 		}
-		return new Promise<void>(resolve => {
+		return new Promise<boolean>(resolve => {
 			(lane === 'control' ? child.controlQueue : child.audioQueue).push({ frame, resolve });
 			void this.pumpWrites(child);
 		});
@@ -490,17 +646,24 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 				} catch {
 					ok = true;
 				}
-				next.resolve();
+				next.resolve(true);
 				if (!ok && !child.exited) {
-					await new Promise<void>(resolve => {
-						const done = () => {
-							child.process.stdin.removeListener('drain', done);
+					// drain を待つ。進まないまま期限を過ぎたら子を見限る（書き込みを待つ人を全員起こす）
+					const drained = await new Promise<boolean>(resolve => {
+						const timer = setTimeout(() => done(false), PARADIS_INGEST_WRITE_STALL_MS);
+						const done = (value: boolean) => {
+							clearTimeout(timer);
+							child.process.stdin.removeListener('drain', onDrain);
 							child.drainWaiter = undefined;
-							resolve();
+							resolve(value);
 						};
-						child.drainWaiter = done;
-						child.process.stdin.once('drain', done);
+						const onDrain = () => done(true);
+						child.drainWaiter = () => done(true);
+						child.process.stdin.once('drain', onDrain);
 					});
+					if (!drained && !child.exited) {
+						this.abandonChild(child);
+					}
 				}
 			}
 		} finally {
@@ -508,9 +671,16 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		}
 		if (child.exited) {
 			for (const pending of [...child.controlQueue.splice(0), ...child.audioQueue.splice(0)]) {
-				pending.resolve();
+				pending.resolve(false);
 			}
 		}
+	}
+
+	/** 標準入力が進まない子を見限る。落ちたものとして扱い（件は次の子に取り下げを頼む）、止める。 */
+	private abandonChild(child: IChildState): void {
+		this.options.logService.warn(`[ParadisAivisIngest] aivis-mcp --ingest stopped reading for ${PARADIS_INGEST_WRITE_STALL_MS / 1000}s; abandoning it`);
+		this.killChild(child);
+		this.onChildExit(child, null);
 	}
 
 	// --- 起動 ----------------------------------------------------------------------------------
@@ -611,6 +781,8 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 			readyAt: undefined,
 			version: undefined,
 			stopReason: undefined,
+			processExited: false,
+			killTimer: undefined,
 			helloTimer: undefined,
 			pingTimer: undefined,
 			pingInterval: undefined,
@@ -633,6 +805,17 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 			this.setState('unsupported');
 			return;
 		}
+		// 二重に起こさない（起動し直しの予約と版の入れ替えが重なっても、追跡しない子を作らない）
+		if (this.incoming && !this.incoming.exited) {
+			return;
+		}
+		if (!replace && this.child && !this.child.exited) {
+			return;
+		}
+		if (this.restartTimer !== undefined) {
+			clearTimeout(this.restartTimer);
+			this.restartTimer = undefined;
+		}
 		if (!replace) {
 			this.setState('starting');
 		}
@@ -652,6 +835,7 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 			return;
 		}
 		const child = this.createChild(process_);
+		this.alive.add(child);
 		if (replace) {
 			this.incoming = child;
 		} else {
@@ -667,9 +851,19 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		process_.stdout.on('data', (chunk: Buffer) => this.onChildData(child, chunk));
 		process_.onError(error => {
 			this.options.logService.trace(`[ParadisAivisIngest] aivis-mcp --ingest error: ${error.message}`);
-			this.onChildExit(child, null);
+			this.onProcessExit(child, null);
 		});
-		process_.onExit(code => this.onChildExit(child, code));
+		process_.onExit(code => this.onProcessExit(child, code));
+	}
+
+	private onProcessExit(child: IChildState, code: number | null): void {
+		child.processExited = true;
+		this.alive.delete(child);
+		if (child.killTimer !== undefined) {
+			clearTimeout(child.killTimer);
+			child.killTimer = undefined;
+		}
+		this.onChildExit(child, code);
 	}
 
 	private isTracked(child: IChildState): boolean {
@@ -698,15 +892,26 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 			case 'hello':
 				this.onHello(child, message);
 				return;
-			case 'accepted':
+			case 'accepted': {
 				if (typeof message.preludeRejected === 'string') {
 					this.options.logService.info(`[ParadisAivisIngest] the ringtone was not accepted as a prelude: ${message.preludeRejected}`);
+					const stream = typeof message.id === 'string' ? this.streams.get(message.id) : undefined;
+					if (stream && stream.child === child) {
+						// 着信音を付けずに積まれた。呼び出し側が着信音を鳴らす
+						stream.rejectPrelude(message.preludeRejected);
+					}
 				}
 				return;
+			}
 			case 'status': {
 				const id = typeof message.id === 'string' ? message.id : undefined;
 				const stream = id === undefined ? undefined : this.streams.get(id);
 				if (stream && stream.child === child && typeof message.status === 'string') {
+					if (message.status === 'failed' && message.withdrawn !== true && !stream.queued && paradisAivisVersionAtLeast(child.version, PARADIS_AIVIS_WITHDRAWN_CONTRACT_VERSION)) {
+						// `queued` の前の、`withdrawn` の付かない失敗（積めたか分からない件）。鳴らさずに withdraw で確かめる
+						void this.verifyUnqueuedFailure(stream, typeof message.reason === 'string' ? message.reason : undefined);
+						return;
+					}
 					const terminal = stream.onStatus(message.status, typeof message.reason === 'string' ? message.reason : undefined, message.withdrawn === true);
 					if (terminal) {
 						this.streams.delete(stream.id);
@@ -716,11 +921,28 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 			}
 			case 'withdrawn': {
 				const id = typeof message.id === 'string' ? message.id : undefined;
-				const orphan = id === undefined ? undefined : this.orphans.get(id);
+				if (id === undefined) {
+					return;
+				}
+				const orphan = this.orphans.get(id);
 				if (orphan) {
 					this.orphans.delete(orphan.id);
-					// removed: true のときだけ、まだ鳴っていないと aivis-mcp が保証している（呼び出し側が鳴らし直す）
-					orphan.settle(message.removed === true ? { status: 'failed', reason: 'ingest-exited', withdrawn: true } : { status: 'failed', reason: 'ingest-exited' });
+					// removed: true のときだけ、まだ鳴っていないと aivis-mcp が保証している（呼び出し側が鳴らし直す）。
+					// 外せなかった件は worker が鳴らした（鳴らす）とみなし、呼び出し側には鳴らさせない
+					if (message.removed === true) {
+						orphan.settle({ status: 'failed', reason: 'ingest-exited', withdrawn: true }, false);
+					} else {
+						orphan.settle({ status: 'failed', reason: 'ingest-exited' }, true);
+					}
+					return;
+				}
+				const waiter = this.withdrawWaiters.get(id);
+				const stream = this.streams.get(id);
+				waiter?.(message.removed === true);
+				if (stream && stream.child === child && message.removed === true) {
+					// 外せた件には以後 status が来ない
+					this.streams.delete(id);
+					stream.settle({ status: 'skipped', reason: 'withdrawn', withdrawn: true });
 				}
 				return;
 			}
@@ -755,7 +977,7 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 	}
 
 	private onHello(child: IChildState, message: IParadisIngestMessage): void {
-		if (child.readyAt !== undefined) {
+		if (child.readyAt !== undefined || child.exited) {
 			return;
 		}
 		const version = typeof message.version === 'string' ? paradisParseAivisVersion(message.version) : undefined;
@@ -779,16 +1001,22 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		child.version = version;
 		child.readyAt = this.now();
 		if (child === this.incoming) {
-			// 版が変わったときの入れ替え。新しい子が名乗ってから古い子を止める（hold は古い子が終わってから掛け直す）
+			// 版が変わったときの入れ替え（または今の子が落ちた間に名乗った）。新しい子が名乗ってから古い子を止める
+			// （hold は古い子が終わってから掛け直す）
 			this.incoming = undefined;
 			const previous = this.child;
 			this.child = child;
-			if (previous) {
+			if (previous && !previous.exited) {
 				this.retiring.add(previous);
 				this.stopChild(previous, 'retired');
 			}
 			this.failures = 0;
 			this.failedStreak = 0;
+		}
+		// 起動し直しの予約が残っていたら外す（名乗った子を、予約で起こした別の子に置き換えない）
+		if (this.restartTimer !== undefined) {
+			clearTimeout(this.restartTimer);
+			this.restartTimer = undefined;
 		}
 		if (this.stableTimer !== undefined) {
 			clearTimeout(this.stableTimer);
@@ -822,13 +1050,21 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		}
 		this.orphanTimer = setTimeout(() => {
 			this.orphanTimer = undefined;
-			this.settleOrphans();
+			this.settleOrphans(true);
 		}, ORPHAN_WITHDRAW_WAIT_MS);
 	}
 
-	private settleOrphans(): void {
+	/**
+	 * 取り下げの返事が来ないまま終える。`maybePlayed` は worker が鳴らすかもしれない（呼び出し側に鳴らさせない）。
+	 * worker がいない・古い版に戻された（2.5 の列を読む worker がいない）ときは false で、呼び出し側が鳴らす。
+	 */
+	private settleOrphans(maybePlayed: boolean): void {
+		if (this.orphanTimer !== undefined) {
+			clearTimeout(this.orphanTimer);
+			this.orphanTimer = undefined;
+		}
 		for (const orphan of this.orphans.values()) {
-			orphan.settle({ status: 'failed', reason: 'ingest-exited' });
+			orphan.settle(maybePlayed ? { status: 'failed', reason: 'ingest-exited' } : { status: 'failed', reason: 'ingest-exited', withdrawn: true }, maybePlayed);
 		}
 		this.orphans.clear();
 	}
@@ -853,6 +1089,7 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		}, PING_INTERVAL_MS);
 	}
 
+	/** 子が終わった（または見限った）。 */
 	private onChildExit(child: IChildState, code: number | null): void {
 		if (child.exited) {
 			return;
@@ -869,19 +1106,24 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		}
 		child.drainWaiter?.();
 		for (const pending of [...child.controlQueue.splice(0), ...child.audioQueue.splice(0)]) {
-			pending.resolve();
+			pending.resolve(false);
 		}
-		// この子の流れ。`queued` の前なら呼び出し側が afplay で鳴らし直す。列に入っていてまだ鳴っていない件は、
-		// 次の子に withdraw を頼んでから決める
+		const retired = child.stopReason === 'retired';
+		const disposing = child.stopReason === 'dispose' || this._state === 'disposed';
 		for (const stream of [...this.streams.values()]) {
 			if (stream.child !== child) {
 				continue;
 			}
 			this.streams.delete(stream.id);
-			if (stream.queued && !stream.started && child.stopReason !== 'dispose' && this._state !== 'disposed') {
-				this.orphans.set(stream.id, stream);
-			} else {
+			if (disposing || stream.started || !stream.openWritten) {
+				// 鳴り始めた件は worker が鳴らし切る。`open` を書けなかった件は積まれていない（呼び出し側が鳴らす）
 				stream.settle({ status: 'failed', reason: 'ingest-exited' });
+			} else if (retired && stream.queued && stream.fullyWritten) {
+				// こちらから入れ替えた子の、書き終えて列に入った件。worker が鳴らすので取り下げず、追跡だけやめる
+				stream.settle({ status: 'done', reason: 'untracked' }, true);
+			} else {
+				// 積まれたかもしれない（`queued` が届く前に落ちた件も含む）。次の子に取り下げを頼んでから決める
+				this.orphans.set(stream.id, stream);
 			}
 		}
 		if (this.orphans.size > 0) {
@@ -890,7 +1132,6 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		if (this.retiring.delete(child)) {
 			// 古い子は終わるときに自分の hold（新しい子と同じ持ち主）を外すので、掛け直す
 			this.sendHolds();
-			// 古い子に積んでいて鳴っていない件は、新しい子に取り下げを頼む
 			const current = this.child;
 			if (current?.readyAt !== undefined && !current.exited && this.orphans.size > 0) {
 				this.withdrawOrphans(current);
@@ -898,17 +1139,23 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 			return;
 		}
 		if (child === this.incoming) {
-			// 入れ替えに失敗した。今の子を使い続け、次の版の確認でもう一度試す
 			this.incoming = undefined;
+			if (this.child === undefined && !disposing && child.stopReason === undefined) {
+				// 今の子が落ちた後、代わりの子も名乗る前に落ちた
+				this.options.logService.warn(`[ParadisAivisIngest] aivis-mcp --ingest exited before introducing itself (code ${code === null ? 'none' : code})`);
+				this.onStartFailure();
+			}
+			// それ以外は入れ替えに失敗しただけ。今の子を使い続け、次の版の確認でもう一度試す
 			return;
 		}
 		if (this.child !== child) {
 			return;
 		}
 		this.child = undefined;
-		if (this._state === 'disposed' || child.stopReason === 'dispose' || child.stopReason === 'unsupported') {
+		if (disposing || child.stopReason === 'unsupported') {
 			if (child.stopReason === 'unsupported') {
-				this.settleOrphans();
+				// 2.5 の列を読む worker がいなくなる。取り下げを確かめられない件は呼び出し側が鳴らす
+				this.settleOrphans(false);
 			}
 			return;
 		}
@@ -917,6 +1164,11 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 			this.failures = 0;
 		}
 		this.options.logService.warn(`[ParadisAivisIngest] aivis-mcp --ingest exited (code ${code === null ? 'none' : code})`);
+		if (this.incoming && !this.incoming.exited) {
+			// 版の入れ替えで起こした子が名乗れば、それを使う（別の子を起こさない）
+			this.setState('starting');
+			return;
+		}
 		this.onStartFailure();
 	}
 
@@ -932,7 +1184,7 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 
 	private async decideFallback(): Promise<void> {
 		const alive = await this.probeWorkerLock(this.env ?? process.env).catch(() => undefined);
-		if (this.isDisposed()) {
+		if (this.isDisposed() || this._state === 'unsupported' || (this.child && !this.child.exited) || this.incoming) {
 			return;
 		}
 		this.unknownLockStreak = alive === undefined ? this.unknownLockStreak + 1 : 0;
@@ -945,7 +1197,8 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		this.unknownLockStreak = 0;
 		this.options.logService.warn(`[ParadisAivisIngest] aivis-mcp --ingest failed ${this.failures} times in a row; playing with afplay for now`);
 		this.setState('fallback');
-		this.settleOrphans();
+		// worker の lock が無い（鳴らす worker がいない）なら、取り下げを確かめられない件は呼び出し側が鳴らす
+		this.settleOrphans(alive !== false);
 		this.scheduleRestart(FALLBACK_RETRY_MS, true);
 	}
 
@@ -962,7 +1215,7 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		}, delayMs);
 	}
 
-	/** 標準入力を閉じて終わってもらう。終わらなければ止める。 */
+	/** 標準入力を閉じて終わってもらう。終わらなければ止める（それでも終わらなければ SIGKILL）。 */
 	private stopChild(child: IChildState, reason: NonNullable<IChildState['stopReason']>): void {
 		child.stopReason = reason;
 		try {
@@ -971,30 +1224,48 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 			// 既に閉じている
 		}
 		const timer = setTimeout(() => {
-			if (!child.exited) {
+			if (!child.processExited) {
 				this.killChild(child);
 			}
 		}, KILL_GRACE_MS);
 		(timer as { unref?: () => void }).unref?.();
 	}
 
+	/** 止める。{@link KILL_GRACE_MS} 待っても終わらなければ SIGKILL する。 */
 	private killChild(child: IChildState): void {
+		if (child.processExited) {
+			return;
+		}
 		try {
 			child.process.kill();
 		} catch {
 			// 既に終わっている
 		}
+		if (child.killTimer === undefined && !child.processExited) {
+			child.killTimer = setTimeout(() => {
+				child.killTimer = undefined;
+				if (!child.processExited) {
+					try {
+						child.process.kill(true);
+					} catch {
+						// 既に終わっている
+					}
+				}
+			}, KILL_GRACE_MS);
+			(child.killTimer as { unref?: () => void }).unref?.();
+		}
 	}
 
 	override dispose(): void {
 		if (this._state !== 'disposed') {
-			const children = [this.child, this.incoming].filter((child): child is IChildState => child !== undefined);
+			const children = [...this.alive];
 			this._state = 'disposed';
 			for (const timer of [this.restartTimer, this.stableTimer, this.versionRestartTimer, this.orphanTimer]) {
 				if (timer !== undefined) {
 					clearTimeout(timer);
 				}
 			}
+			this.restartTimer = undefined;
 			if (this.holdTimer !== undefined) {
 				clearInterval(this.holdTimer);
 				this.holdTimer = undefined;
@@ -1002,11 +1273,14 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 			for (const waiter of this.versionCheckedWaiters.splice(0)) {
 				waiter();
 			}
+			for (const waiter of [...this.withdrawWaiters.values()]) {
+				waiter(undefined);
+			}
 			for (const stream of this.streams.values()) {
 				stream.settle({ status: 'failed', reason: 'ingest-exited' });
 			}
 			this.streams.clear();
-			this.settleOrphans();
+			this.settleOrphans(true);
 			for (const child of children) {
 				if (child.pingInterval !== undefined) {
 					clearInterval(child.pingInterval);
@@ -1031,6 +1305,33 @@ function sameVersion(a: readonly number[], b: readonly number[]): boolean {
 
 // --- 既定の実装 ---------------------------------------------------------------------------------
 
+/** 子が終わって標準出力も閉じた（`close`）のを待つ上限。`exit` の後これだけ待っても閉じなければ終わったとみなす。 */
+const STDOUT_CLOSE_WAIT_MS = 2_000;
+
+/**
+ * 子の終わりを 1 回だけ知らせる。`exit` の後にも標準出力に残った枠（終わる直前の `queued` など）が届くので、標準出力まで
+ * 閉じた `close` で知らせる。孫が標準出力を握ったままで `close` が来ないときは、`exit` から少し待って知らせる。
+ */
+export function paradisOnIngestChildDone(child: Pick<NodeJS.EventEmitter, 'once'>, listener: (code: number | null) => void, waitMs = STDOUT_CLOSE_WAIT_MS): void {
+	let reported = false;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const report = (code: number | null) => {
+		if (reported) {
+			return;
+		}
+		reported = true;
+		if (timer !== undefined) {
+			clearTimeout(timer);
+		}
+		listener(code);
+	};
+	child.once('close', (code: number | null) => report(code));
+	child.once('exit', (code: number | null) => {
+		timer = setTimeout(() => report(code), waitMs);
+		(timer as { unref?: () => void }).unref?.();
+	});
+}
+
 /** 手元の `aivis-mcp --ingest` をログインシェル由来の PATH で起こす。 */
 function spawnAivisIngest(args: readonly string[], env: NodeJS.ProcessEnv): IParadisIngestChild {
 	const isWindows = process.platform === 'win32';
@@ -1045,15 +1346,15 @@ function spawnAivisIngest(args: readonly string[], env: NodeJS.ProcessEnv): IPar
 	return {
 		stdin: child.stdin!,
 		stdout: child.stdout!,
-		onExit: listener => { child.once('exit', code => listener(code)); },
+		onExit: listener => paradisOnIngestChildDone(child, listener),
 		onError: listener => { child.once('error', listener); },
-		kill: () => {
+		kill: force => {
 			if (isWindows && child.pid !== undefined) {
 				// cmd.exe の下の node まで止める
 				spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).once('error', () => child.kill());
 				return;
 			}
-			child.kill();
+			child.kill(force ? 'SIGKILL' : 'SIGTERM');
 		},
 	};
 }
@@ -1095,6 +1396,15 @@ function respCommand(parts: readonly string[]): string {
  * 確かめられないときは undefined（「分からない」として afplay へ切り替えない）。
  */
 export function probeAivisWorkerLock(env: NodeJS.ProcessEnv): Promise<boolean | undefined> {
+	return probeAivisRedisKey(env, WORKER_LOCK_KEY);
+}
+
+/** `aivis --mute` のキーがあるか（読むだけ）。確かめられなければ undefined。 */
+export function probeAivisMute(env: NodeJS.ProcessEnv): Promise<boolean | undefined> {
+	return probeAivisRedisKey(env, MUTE_KEY);
+}
+
+function probeAivisRedisKey(env: NodeJS.ProcessEnv, key: string): Promise<boolean | undefined> {
 	const commands: string[][] = [];
 	let host: string;
 	let port: number;
@@ -1115,7 +1425,7 @@ export function probeAivisWorkerLock(env: NodeJS.ProcessEnv): Promise<boolean | 
 	} catch {
 		return Promise.resolve(undefined);
 	}
-	commands.push(['GET', WORKER_LOCK_KEY]);
+	commands.push(['GET', key]);
 	return new Promise<boolean | undefined>(resolve => {
 		let settled = false;
 		let buffer = '';

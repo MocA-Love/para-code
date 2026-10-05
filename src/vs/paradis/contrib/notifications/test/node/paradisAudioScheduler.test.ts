@@ -774,5 +774,122 @@ suite('AudioScheduler', () => {
 			}
 			assert.deepStrictEqual({ dropped, paused: scheduler.isPaused }, { dropped: ['fatal', 'fallback'], paused: true });
 		});
+		test('waits for --ingest to come back instead of playing directly while the worker may be alive, up to a limit (H5)', async () => {
+			const events: string[] = [];
+			let now = 0;
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true, sleep: async () => { }, now: () => now, maxHandoffDeferMs: 5_000 }));
+			let calls = 0;
+			scheduler.enqueueAivis({
+				...successfulRunner('a', events),
+				handoff: async () => { events.push(`handoff:${++calls}`); return calls < 3 ? { kind: 'defer' } : { kind: 'released' }; },
+			});
+			for (let i = 0; i < 40; i++) {
+				await Promise.resolve();
+			}
+			scheduler.enqueueAivis({
+				...successfulRunner('b', events),
+				handoff: async () => { events.push('handoff:b'); now += 6_000; return { kind: 'defer' }; },
+			});
+			for (let i = 0; i < 40; i++) {
+				await Promise.resolve();
+			}
+			assert.deepStrictEqual(events, ['handoff:1', 'handoff:2', 'handoff:3', 'handoff:b', 'handoff:b', 'synthesize:b', 'play:b']);
+		});
+
+		test('retries a handoff whose synthesis broke before the first audio byte after it was released (M6)', async () => {
+			const events: string[] = [];
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true, sleep: async () => { } }));
+			scheduler.enqueueAivis({
+				synthesize: async () => ({ audio: EMPTY_AUDIO }),
+				play: async () => { },
+				handoff: async attempt => {
+					events.push(`handoff:${attempt}`);
+					return { kind: 'released', settled: Promise.resolve(attempt === 1 ? { retry: new AivisError('retryable', 'reset') } : {}) };
+				},
+			});
+			for (let i = 0; i < 40; i++) {
+				await Promise.resolve();
+			}
+			assert.deepStrictEqual(events, ['handoff:1', 'handoff:2']);
+		});
+
+		test('keeps at most four transfers in flight even after they are released (H4)', async () => {
+			const started: string[] = [];
+			const transfers: Array<DeferredPromise<{}>> = [];
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true }));
+			for (const name of ['a', 'b', 'c', 'd', 'e']) {
+				scheduler.enqueueAivis({
+					synthesize: async () => ({ audio: EMPTY_AUDIO }),
+					play: async () => { },
+					handoff: async () => {
+						started.push(name);
+						const transfer = new DeferredPromise<{}>();
+						transfers.push(transfer);
+						return { kind: 'released', settled: transfer.p };
+					},
+				});
+			}
+			for (let i = 0; i < 40; i++) {
+				await Promise.resolve();
+			}
+			const whileTransferring = [...started];
+			transfers[0].complete({});
+			for (let i = 0; i < 40; i++) {
+				await Promise.resolve();
+			}
+			assert.deepStrictEqual({ whileTransferring, after: [...started] }, { whileTransferring: ['a', 'b', 'c', 'd'], after: ['a', 'b', 'c', 'd', 'e'] });
+			for (const transfer of transfers) {
+				if (!transfer.isSettled) {
+					transfer.complete({});
+				}
+			}
+		});
+
+		test('admits accepted voices into reserved slots when the queue is full and never evicts them (M7)', async () => {
+			const scheduler = track(createScheduler({ maxQueuedAivisTasks: 1 }));
+			scheduler.setHeld(true);
+			const runner = successfulRunner('x', []);
+			const normal = scheduler.enqueueAivis(runner, 'normal');
+			const reserved = Array.from({ length: 9 }, () => scheduler.enqueueAivis(runner, 'normal', { localOnly: true, ignorePause: true, presynthesized: true, reserved: true }));
+			const high = scheduler.enqueueAivis(runner, 'high');
+			const overflow = scheduler.enqueueAivis(runner, 'normal');
+			assert.deepStrictEqual({ normal, reserved, high, overflow, size: scheduler.aivisQueueSize }, {
+				normal: true,
+				reserved: [true, true, true, true, true, true, true, true, false],
+				high: true,
+				overflow: false,
+				size: 9,
+			});
+		});
+
+		test('hands synthesized audio back to the worker once before playing it locally (OM2, H5)', async () => {
+			const events: string[] = [];
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true }));
+			scheduler.enqueueAivis({
+				synthesize: async () => { events.push('synthesize'); return { audio: Buffer.from('fresh') }; },
+				play: async audio => { events.push(`play:${audio.toString()}`); },
+				handoff: async () => { events.push('handoff'); return { kind: 'fallback', audio: Buffer.from('received') }; },
+				handoffAudio: async audio => { events.push(`handoff-audio:${audio.toString()}`); return { kind: 'fallback', audio }; },
+			});
+			for (let i = 0; i < 40; i++) {
+				await Promise.resolve();
+			}
+			await waitForIdle(scheduler);
+			assert.deepStrictEqual(events, ['handoff', 'handoff-audio:received', 'play:received']);
+		});
+
+		test('keeps the rate limit reported by a handoff that fell back (M8)', async () => {
+			const sleeps: number[] = [];
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true, sleep: async ms => { sleeps.push(ms); }, now: () => 0 }));
+			scheduler.enqueueAivis({
+				...successfulRunner('first', []),
+				handoff: async () => ({ kind: 'fallback', rateLimit: { remaining: 0, resetSeconds: 10, capturedAt: 0 } }),
+			});
+			for (let i = 0; i < 40; i++) {
+				await Promise.resolve();
+			}
+			// 合成し直す前に、覚えたレート制限の窓が空くのを待つ
+			assert.deepStrictEqual(sleeps, [10_500]);
+		});
 	});
 });

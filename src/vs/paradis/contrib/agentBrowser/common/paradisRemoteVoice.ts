@@ -89,6 +89,13 @@ export function paradisMp3Bitrate(audio: Uint8Array): { readonly kbps: number; r
 
 /** 接続先の aivis-mcp が、合成した声とモデルを名乗る要求のヘッダー（`provider:voice:model`、音量の表の鍵）。 */
 export const PARADIS_REMOTE_VOICE_GAIN_KEY_HEADER = 'X-Para-Gain-Key';
+/** 感情タグ入りの発話の印（値 `1`）。音量の覚え直しに使わない（aivis-mcp 2.5.1 の docs/ingest-protocol.md）。 */
+export const PARADIS_REMOTE_VOICE_TAGGED_HEADER = 'X-Para-Tagged';
+/**
+ * 接続先で `aivis --mute` 中の発話の印（値 `1`）。ticket に `muteAware: true` を載せた Para Code にだけ付く。手元では
+ * 鳴らさず、モバイルへだけ届ける（Q209 B）。
+ */
+export const PARADIS_REMOTE_VOICE_MUTED_HEADER = 'X-Para-Muted';
 
 /** 要求のヘッダーの値を音量の表の鍵として読む。形が違えば undefined（表の補正は 0dB）。 */
 export function paradisRemoteVoiceGainKey(value: string | string[] | undefined): string | undefined {

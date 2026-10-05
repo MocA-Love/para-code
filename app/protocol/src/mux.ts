@@ -127,6 +127,9 @@ export class FrameAssembler {
 
 	private pushFragment(frame: Frame, id: number, index: number, last: boolean): Frame | Error | undefined {
 		let transfer = this.transfers.get(id);
+		// 同時に組み立てる本数の上限で最古を捨てたときの知らせ。新しい送信は組み立て続け、合計の上限も確かめてから返す
+		// （PC の ParadisMobileFrameAssembler と同じ順・同じ表記）
+		let error: Error | undefined;
 		if (index === 0) {
 			if (transfer !== undefined) {
 				// 同じ送信 ID が最初から始まり直した（相手が送るのをやめた）。古い方は捨てる
@@ -138,8 +141,7 @@ export class FrameAssembler {
 			if (this.transfers.size >= FRAME_MAX_CONCURRENT_TRANSFERS) {
 				const oldest = this.transfers.keys().next().value as number;
 				this.drop(oldest, this.transfers.get(oldest)!);
-				this.addFirst(frame, id);
-				return new Error('too many concurrent frame transfers');
+				error = new Error('too many concurrent frame transfers');
 			}
 			transfer = this.addFirst(frame, id);
 		} else {
@@ -159,6 +161,9 @@ export class FrameAssembler {
 		if (this.assemblingBytes > FRAME_REASSEMBLY_LIMIT) {
 			this.drop(id, transfer);
 			return new Error(`frame reassembly limit exceeded on transfer ${id}`);
+		}
+		if (error !== undefined) {
+			return error;
 		}
 		if (!last) {
 			return undefined;

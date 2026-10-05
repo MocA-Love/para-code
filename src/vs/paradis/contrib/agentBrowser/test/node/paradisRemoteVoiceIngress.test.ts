@@ -11,7 +11,8 @@ import type * as http from 'http';
 import { AddressInfo } from 'net';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisIngestOpenOptions, IParadisIngestStream, IParadisIngestTerminal, IParadisLocalVoiceOutput } from '../../../notifications/common/paradisVoiceIngest.js';
+import { IParadisIngestOpenOptions, IParadisIngestStream, IParadisIngestTerminal, IParadisLocalVoiceOutput, IParadisVoiceRetention } from '../../../notifications/common/paradisVoiceIngest.js';
+import { ParadisVoiceRetentionBudget } from '../../../notifications/common/paradisVoiceRetention.js';
 import { paradisMp3Bitrate } from '../../common/paradisRemoteVoice.js';
 import { IParadisRemoteVoiceIngressDeps, IParadisRemoteVoiceResult, paradisReceiveRemoteVoice } from '../../node/paradisRemoteVoiceIngress.js';
 import { PARADIS_MCP_REQUEST_TIMEOUT_MS, paradisArmRequestBodyTimeout, paradisConfigureMcpHttpServer } from '../../node/paradisHttpRequestTimeouts.js';
@@ -47,6 +48,18 @@ class FakeStream implements IParadisIngestStream {
 	}
 	async end(): Promise<void> { this.events.push('end'); }
 	async abort(reason: string): Promise<void> { this.events.push(`abort:${reason}`); }
+	/** withdraw の答え（undefined なら withdraw を持たない古い実装）。 */
+	withdrawAnswer: boolean | undefined;
+	get withdraw(): (() => Promise<boolean | undefined>) | undefined {
+		const answer = this.withdrawAnswer;
+		return answer === undefined ? undefined : async () => {
+			this.events.push(`withdraw:${answer}`);
+			if (answer) {
+				this.finishedGate.complete({ status: 'skipped', reason: 'withdrawn', withdrawn: true });
+			}
+			return answer;
+		};
+	}
 }
 
 interface IHarness {
@@ -72,6 +85,12 @@ async function startServer(options: {
 	/** モバイルへの流れの口を渡す（無ければ全部受け取ってから 1 本で渡す）。 */
 	readonly mobileStream?: boolean;
 	readonly ingestWrite?: 'ok' | 'block' | 'fail';
+	readonly ticketCurrent?: () => boolean;
+	readonly withdrawAnswer?: boolean;
+	/** handoff の後に worker が知らせる終わり。 */
+	readonly terminal?: IParadisIngestTerminal;
+	/** 控えの枠（無ければ上限なし）。 */
+	readonly retention?: () => IParadisVoiceRetention | undefined;
 }): Promise<IHarness> {
 	const events: string[] = [];
 	const streams: FakeStream[] = [];
@@ -83,19 +102,21 @@ async function startServer(options: {
 			if (!options.ingest) {
 				return undefined;
 			}
-			events.push(open.gainKey ? `open:${open.priority}:${open.gainKey}` : `open:${open.priority}`);
+			events.push(`${open.gainKey ? `open:${open.priority}:${open.gainKey}` : `open:${open.priority}`}${open.tagged ? ':tagged' : ''}`);
 			const stream = new FakeStream();
 			stream.writeMode = options.ingestWrite ?? 'ok';
+			stream.withdrawAnswer = options.withdrawAnswer;
 			streams.push(stream);
 			if (options.handoff !== undefined) {
 				stream.handoffGate.complete(options.handoff);
 				if (options.handoff) {
-					stream.finishedGate.complete({ status: 'done' });
+					stream.finishedGate.complete(options.terminal ?? { status: 'done' });
 				}
 			}
 			return stream;
 		},
-		playFallback: async (audio, gainKey) => { events.push(gainKey ? `afplay:${audio.byteLength}:${gainKey}` : `afplay:${audio.byteLength}`); },
+		...(options.retention ? { reserveFallbackCopy: options.retention } : {}),
+		playFallback: async (audio, gainKey) => { events.push(gainKey ? `afplay:${audio.byteLength}:${gainKey}` : `afplay:${audio.byteLength}`); return true; },
 	};
 	const server = httpModule.createServer((req, res) => {
 		const controller = new AbortController();
@@ -115,7 +136,7 @@ async function startServer(options: {
 			} : undefined,
 			reserveBytes: options.reserve ?? (() => true),
 			onBodyReceived: () => events.push('body-received'),
-			isTicketCurrent: () => true,
+			isTicketCurrent: options.ticketCurrent ?? (() => true),
 			limits: options.limits,
 			now: options.now,
 		}).then(async result => {
@@ -316,8 +337,9 @@ suite('paradisReceiveRemoteVoice', () => {
 			}
 		}
 		assert.deepStrictEqual(results, [
-			{ accepted: undefined, body: { localPlayback: false }, events: ['body-received', 'mobile:300'] },
-			{ accepted: undefined, body: { localPlayback: false }, events: ['body-received', 'mobile:300'] },
+			// 引き受けないときは明示の拒否を返す（aivis-mcp 2.5.1 の取り決め）
+			{ accepted: 'rejected', body: { localPlayback: false }, events: ['body-received', 'mobile:300'] },
+			{ accepted: 'rejected', body: { localPlayback: false }, events: ['body-received', 'mobile:300'] },
 		]);
 	});
 
@@ -358,9 +380,10 @@ suite('paradisReceiveRemoteVoice', () => {
 			}
 		}
 		assert.deepStrictEqual(outcomes, [
-			{ status: 202, accepted: undefined, body: { localPlayback: true }, events: ['open:normal', 'body-received', 'mobile:600'] },
+			// 旧方式は全部受け取ってから手元へ渡す（受け取りの途中では鳴らさない。M1）
+			{ status: 202, accepted: undefined, body: { localPlayback: true }, events: ['body-received', 'mobile:600', 'open:normal'] },
 			{ status: 202, accepted: undefined, body: { localPlayback: true }, events: ['body-received', 'mobile:600', 'play-audio:600'] },
-			{ status: 202, accepted: undefined, body: { localPlayback: false }, events: ['open:normal', 'body-received', 'mobile:600', 'play-audio:600'] },
+			{ status: 202, accepted: undefined, body: { localPlayback: false }, events: ['body-received', 'mobile:600', 'open:normal', 'play-audio:600'] },
 		]);
 	});
 
@@ -507,13 +530,41 @@ suite('paradisReceiveRemoteVoice', () => {
 			paradisArmRequestBodyTimeout(finished.req as unknown as http.IncomingMessage, finished.res as unknown as http.ServerResponse);
 			finished.req.complete = true;
 			finished.res.emit('finish');
+			// 本文を読まずに返し終えた要求は、時計を待たずに接続ごと閉じる（M2）
+			const repliedEarly = make();
+			paradisArmRequestBodyTimeout(repliedEarly.req as unknown as http.IncomingMessage, repliedEarly.res as unknown as http.ServerResponse);
+			repliedEarly.res.emit('finish');
+			const repliedEarlyDestroyed = repliedEarly.req.destroyed;
+			// 応答を返し終えても、本文がまだ届いている間は時計を外さない（SSE など応答を先に閉じない経路は 30 秒で切る）
+			const streaming = make();
+			paradisArmRequestBodyTimeout(streaming.req as unknown as http.IncomingMessage, streaming.res as unknown as http.ServerResponse);
+			streaming.res.emit('close');
+			// 受理した音声取込は守りを外す
+			const accepted = make();
+			paradisArmRequestBodyTimeout(accepted.req as unknown as http.IncomingMessage, accepted.res as unknown as http.ServerResponse).dispose();
+			// 本文を読み終えたら外す
+			const read = make();
+			paradisArmRequestBodyTimeout(read.req as unknown as http.IncomingMessage, read.res as unknown as http.ServerResponse);
+			read.req.complete = true;
 			clock.tick(29_999);
 			const before = slow.req.destroyed;
 			clock.tick(1);
-			assert.deepStrictEqual({ before, slow: { destroyed: slow.req.destroyed, status: slow.res.status }, finished: finished.req.destroyed }, {
+			assert.deepStrictEqual({
+				before,
+				slow: { destroyed: slow.req.destroyed, status: slow.res.status },
+				finished: finished.req.destroyed,
+				repliedEarlyDestroyed,
+				streaming: streaming.req.destroyed,
+				accepted: accepted.req.destroyed,
+				read: read.req.destroyed,
+			}, {
 				before: false,
 				slow: { destroyed: true, status: 408 },
 				finished: false,
+				repliedEarlyDestroyed: true,
+				streaming: true,
+				accepted: false,
+				read: false,
 			});
 		} finally {
 			clock.restore();
@@ -528,9 +579,137 @@ suite('paradisReceiveRemoteVoice', () => {
 			request.write(mp3(418));
 			const head = await response;
 			await harness.resultReady;
-			assert.deepStrictEqual({ status: head.status, stream: harness.streams[0].events }, { status: 408, stream: ['write:418', 'abort:slow-arrival'] });
+			// 受け取りきるまで手元へは渡さない（M1）
+			assert.deepStrictEqual({ status: head.status, streams: harness.streams.length }, { status: 408, streams: 0 });
 		} finally {
 			await harness.close();
 		}
+	});
+	test('Content-Length: withdraws instead of aborting when queued does not arrive in time, and decides by the answer (L14)', async () => {
+		const outcomes: unknown[] = [];
+		for (const withdrawAnswer of [true, false]) {
+			const harness = await startServer({ localPlayback: true, ingest: true, withdrawAnswer, playAudio: true });
+			try {
+				const audio = mp3(600);
+				const { request, response } = openRequest(harness.url, { 'Content-Length': audio.byteLength });
+				request.end(audio);
+				const head = await response;
+				outcomes.push({ body: JSON.parse(await head.body), stream: harness.streams[0]?.events, events: harness.events });
+			} finally {
+				await harness.close();
+			}
+		}
+		assert.deepStrictEqual(outcomes, [
+			// 外せた（まだ鳴っていない）ので --play-audio へ
+			{ body: { localPlayback: true }, stream: ['write:600', 'end', 'withdraw:true'], events: ['body-received', 'mobile:600', 'open:normal', 'play-audio:600'] },
+			// 外せなかった（worker が鳴らす）ので鳴らし直さない
+			{ body: { localPlayback: true }, stream: ['write:600', 'end', 'withdraw:false'], events: ['body-received', 'mobile:600', 'open:normal'] },
+		]);
+	});
+
+	test('chunked: answers accepted only after the head looks like MP3, so a rejected body is never accepted (OM1)', async () => {
+		const harness = await startServer({ localPlayback: true, ingest: true, handoff: true });
+		try {
+			const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked' });
+			request.on('error', () => { });
+			request.write(Buffer.from('<html>not audio</html>'));
+			const head = await response;
+			await harness.resultReady;
+			assert.deepStrictEqual({ status: head.status, accepted: head.accepted, streams: harness.streams.length }, { status: 415, accepted: undefined, streams: 0 });
+		} finally {
+			await harness.close();
+		}
+	});
+
+	test('chunked: stops receiving and forwarding when the ticket owner goes away, and does not replay (M9)', async () => {
+		let current = true;
+		const harness = await startServer({ localPlayback: true, ingest: true, ticketCurrent: () => current });
+		try {
+			const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked' });
+			request.on('error', () => { });
+			request.write(mp3(400));
+			await response;
+			for (let i = 0; i < 50 && harness.streams[0]?.events.length !== 1; i++) {
+				await new Promise(resolve => setTimeout(resolve, 10));
+			}
+			current = false;
+			const result = await harness.resultReady;
+			assert.deepStrictEqual({ outcome: result.outcome, stream: harness.streams[0].events, afplay: harness.events.some(event => event.startsWith('afplay') || event.startsWith('play-audio')) }, {
+				outcome: 'rejected',
+				stream: ['write:400', 'abort:revoked'],
+				afplay: false,
+			});
+		} finally {
+			await harness.close();
+		}
+	});
+
+	test('chunked: gives up on a stuck local write after the close limit instead of waiting forever (H3)', async () => {
+		const harness = await startServer({ localPlayback: true, ingest: true, ingestWrite: 'block', limits: { localCloseTimeoutMs: 100 } });
+		try {
+			const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked' });
+			request.end(mp3(500));
+			const head = await response;
+			await head.body;
+			const result = await harness.resultReady;
+			assert.deepStrictEqual({ outcome: result.outcome, stream: harness.streams[0].events }, { outcome: 'played-locally', stream: ['write:500', 'abort:write-failed'] });
+		} finally {
+			harness.streams[0]?.writeGate.complete();
+			await harness.close();
+		}
+	});
+
+	test('chunked: replays a voice the worker gave up on before the first audio, only within the retention budget (L2, H4)', async () => {
+		const outcomes: unknown[] = [];
+		for (const budget of [new ParadisVoiceRetentionBudget(), new ParadisVoiceRetentionBudget(100)]) {
+			const harness = await startServer({ localPlayback: true, ingest: true, handoff: true, terminal: { status: 'failed', reason: 'first-audio-timeout' }, playAudio: false, retention: () => budget.open() });
+			try {
+				const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked' });
+				request.end(mp3(700));
+				const head = await response;
+				await head.body;
+				await harness.resultReady;
+				outcomes.push({ events: harness.events, held: budget.usage });
+			} finally {
+				await harness.close();
+			}
+		}
+		assert.deepStrictEqual(outcomes, [
+			{ events: ['open:normal', 'body-received', 'mobile:700', 'play-audio:700', 'afplay:700'], held: { bytes: 0, count: 0 } },
+			{ events: ['open:normal', 'body-received', 'mobile:700'], held: { bytes: 0, count: 0 } },
+		]);
+	});
+	test('chunked: passes X-Para-Tagged to --ingest as a tagged job', async () => {
+		const harness = await startServer({ localPlayback: true, ingest: true, handoff: true });
+		try {
+			const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked', 'X-Para-Tagged': '1' });
+			request.end(mp3(300));
+			const head = await response;
+			await head.body;
+			await harness.resultReady;
+			assert.deepStrictEqual(harness.events[0], 'open:normal:tagged');
+		} finally {
+			await harness.close();
+		}
+	});
+	test('accepts a voice muted on the remote side but only forwards it to the mobile (X-Para-Muted)', async () => {
+		const outcomes: unknown[] = [];
+		for (const headers of [{ 'Transfer-Encoding': 'chunked', 'X-Para-Muted': '1' }, { 'Content-Length': 500, 'X-Para-Muted': '1' }]) {
+			const harness = await startServer({ localPlayback: true, ingest: true, handoff: true, hasLocalAivis: false, playAudio: true });
+			try {
+				const { request, response } = openRequest(harness.url, headers);
+				request.end(mp3(500));
+				const head = await response;
+				const body = JSON.parse(await head.body);
+				await harness.resultReady;
+				outcomes.push({ accepted: head.accepted, body, events: harness.events });
+			} finally {
+				await harness.close();
+			}
+		}
+		assert.deepStrictEqual(outcomes, [
+			{ accepted: 'accepted', body: { localPlayback: true }, events: ['body-received', 'mobile:500'] },
+			{ accepted: undefined, body: { localPlayback: true }, events: ['body-received', 'mobile:500'] },
+		]);
 	});
 });

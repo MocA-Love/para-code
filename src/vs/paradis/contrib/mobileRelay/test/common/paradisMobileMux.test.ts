@@ -255,6 +255,19 @@ suite('ParadisMobileFrameAssembler', () => {
 		assert.deepStrictEqual({ results, pending: assembler.pendingBytes }, { results: [undefined, 'error', undefined], pending: 0 });
 	});
 
+	test('drops the oldest of 33 concurrent transfers, reports it, and keeps assembling the new one like the app (F5)', () => {
+		const assembler = new ParadisMobileFrameAssembler();
+		const starts = Array.from({ length: 33 }, (_, id) => assembler.push(fragment(id, 0, false, `s${id}`)));
+		const overflow = starts.at(-1);
+		const results = {
+			firstStarts: starts.slice(0, 32).every(result => result === undefined),
+			overflow: overflow instanceof Error ? overflow.message : overflow,
+			newest: text(assembler.push(fragment(32, 1, true, '-end'))),
+			oldest: text(assembler.push(fragment(0, 1, true, '-end'))),
+		};
+		assert.deepStrictEqual(results, { firstStarts: true, overflow: 'too many concurrent frame transfers', newest: 's32-end', oldest: undefined });
+	});
+
 	test('decodes the fragment header written after the workspace', () => {
 		const frame = decodeFrame(new Uint8Array([0x04, 0x05, 0, 0, 0, 9, 0, 1, 0x77, 0, 0, 0, 3, 0, 0, 0, 1, 0xab]));
 		assert.deepStrictEqual({ ch: frame.ch, ws: frame.ws, seq: frame.seq, frag: frame.frag, payload: [...frame.payload] }, { ch: 'fs', ws: 'w', seq: 9, frag: { id: 3, index: 1, last: false }, payload: [0xab] });
