@@ -34,7 +34,9 @@ import { paradisTimeTeardownStep } from '../../sentry/common/paradisTeardownTimi
 import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { paradisDaemonHandlesTerminal, paradisParseKeepTerminalsChoice, paradisPlanTerminalKeep, paradisRememberedKeepChoice } from '../../../common/paradisTerminalKeepPlan.js';
 import { IParadisPtyDaemonStatusService, PARADIS_PTY_DAEMON_CHANNEL } from '../common/paradisPtyDaemonStatus.js';
-import { PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE } from '../common/paradisPtyDaemonSettingKey.js';
+import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { IUpdateService } from '../../../../platform/update/common/update.js';
+import { paradisIsUpdateQuitApproved, paradisLocalTerminalsAcrossUpdate, paradisUpdateAppliesOnQuitHere, paradisUpdateQuitEndsTerminals } from '../../updateTerminals/common/paradisUpdateTerminals.js';
 
 class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribution {
 
@@ -88,6 +90,7 @@ class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribut
 		@IDialogService private readonly dialogService: IDialogService,
 		@IMainProcessService mainProcessService: IMainProcessService,
 		@ILogService private readonly logService: ILogService,
+		@IUpdateService private readonly updateService: IUpdateService,
 	) {
 		super();
 		this.status = ProxyChannel.toService<IParadisPtyDaemonStatusService>(mainProcessService.getChannel(PARADIS_PTY_DAEMON_CHANNEL));
@@ -138,6 +141,17 @@ class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribut
 		const input = {
 			isReload: reason === ShutdownReason.RELOAD,
 			isQuit: reason === ShutdownReason.QUIT,
+			// 更新が当たる終了では残さない。版で区切られた常駐は、更新後の版からは開けない
+			// （更新をまたげる方式の常駐なら `survives` になり、ここは false のまま）。
+			isUpdateQuit: paradisUpdateQuitEndsTerminals({
+				stateType: this.updateService.state.type,
+				appliesOnQuit: paradisUpdateAppliesOnQuitHere(),
+				approved: paradisIsUpdateQuitApproved(Date.now()),
+				acrossUpdate: paradisLocalTerminalsAcrossUpdate(
+					this.configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) === true,
+					this.configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true,
+				),
+			}),
 			choice: paradisParseKeepTerminalsChoice(this.configurationService.getValue(PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE)),
 			persistentTerminalCount: keepable,
 		};

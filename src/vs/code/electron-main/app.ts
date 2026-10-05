@@ -56,6 +56,7 @@ import { paradisRegisterBrowserProfiles } from '../../paradis/contrib/browserPro
 import { paradisRegisterBrowserDownloads } from '../../paradis/contrib/browserDownloads/electron-main/paradisBrowserDownloadsMain.js'; // PARA-PATCH: browser download list channel for the URL bar button
 // PARA-PATCH: pty daemon status channel for the status bar entry (see paradis/contrib/ptyDaemon)
 import { paradisRegisterPtyDaemonStatus } from '../../paradis/contrib/ptyDaemon/electron-main/paradisPtyDaemonStatusService.js';
+import { paradisRegisterUpdateTerminals } from '../../paradis/contrib/updateTerminals/electron-main/paradisUpdateTerminalsMain.js'; // PARA-PATCH: confirm ending kept terminals before restarting to update
 // PARA-PATCH: menu bar (tray) icon for the notification inbox (see paradis/contrib/notificationInbox)
 import { paradisRegisterNotificationTray } from '../../paradis/contrib/notificationInbox/electron-main/paradisNotificationTrayMain.js';
 import { paradisRegisterKeepAwake } from '../../paradis/contrib/keepAwake/electron-main/paradisKeepAwakeMain.js'; // PARA-PATCH: sleep prevention blockers owned per window (see paradis/contrib/keepAwake)
@@ -1536,6 +1537,7 @@ export class CodeApplication extends Disposable {
 		// PARA-PATCH: what the pty daemon is holding, for the status bar entry that makes terminals
 		// running outside the app visible (see paradis/contrib/ptyDaemon)
 		disposables.add(paradisRegisterPtyDaemonStatus(mainProcessElectronServer, accessor.get(ILocalPtyService), this.configurationService, this.environmentMainService, this.productService, this.logService));
+		disposables.add(paradisRegisterUpdateTerminals(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IDialogMainService), this.configurationService, this.environmentMainService, this.productService, accessor.get(IUpdateService), this.lifecycleMainService, this.logService)); // PARA-PATCH: ask before ending terminals kept on remotes / the pty daemon when restarting to update (see paradis/contrib/updateTerminals)
 
 		// PARA-PATCH: menu bar (tray) icon for the notification inbox, off by default (see paradis/contrib/notificationInbox)
 		disposables.add(paradisRegisterNotificationTray(mainProcessElectronServer, accessor.get(IWindowsMainService), this.configurationService, this.logService));
